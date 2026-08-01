@@ -16,6 +16,7 @@
 
 #include "cutlass_kernels/cutlass_preprocessors.h"
 #include "thop/th_utils.h"
+#include "weight_layout.h"
 
 #if defined(TORCH_VERSION_MAJOR)                                                                                       \
     && ((TORCH_VERSION_MAJOR > 1) || ((TORCH_VERSION_MAJOR == 1) && (TORCH_VERSION_MINOR >= 9)))
@@ -106,6 +107,46 @@ Tensor subbyte_transpose(Tensor quantized_tensor, torch::ScalarType quant_type)
 
     subbyte_transpose(output_byte_ptr, input_byte_ptr, {num_experts, num_rows, num_cols}, ac_quant_type);
     return transposed_tensor;
+}
+
+// THE NAMED ENTRY POINT. Takes the arrangement's NAME instead of two booleans; see weight_layout.h for why. The
+// boolean form below stays as the implementation and is still reachable as an op for the step-level unit tests, but
+// a caller that stores a weight should name what it is storing, because the name is the only thing that will
+// distinguish it afterwards.
+Tensor preprocess_weights_for_mixed_gemm(Tensor row_major_quantized_weight, torch::ScalarType quant_type,
+    bool is_int8_mma, bool use_aiu_interleaved);
+
+Tensor preprocess_weights_to_layout(Tensor row_major_quantized_weight, torch::ScalarType quant_type,
+                                    std::string layout)
+{
+    quactlize::LayoutPlan plan;
+    std::string err;
+    TORCH_CHECK(quactlize::resolve_layout(layout, &plan, &err), err);
+
+    if (plan.name == "logical") {
+        // Naming the un-reordered arrangement is not a no-op worth optimising away: it is how a caller says "this
+        // weight has been through nothing", which is a claim the type system cannot make.
+        return row_major_quantized_weight.clone();
+    }
+
+    QuantType const requested = get_quant_type(quant_type);
+    TORCH_CHECK(int(get_bits_in_quant_type(requested)) == plan.bits,
+                "layout '", plan.name, "' is for ", plan.bits, "-bit weights, but the quant type given is ",
+                get_bits_in_quant_type(requested), "-bit. Layouts are per element width because the step parameters "
+                "are: cl4 for 4-bit, cl2 for 8-bit, cl8 for 2-bit.");
+
+    if (plan.requires_multiple > 0) {
+        size_t const bits = get_bits_in_quant_type(requested);
+        size_t const rows = row_major_quantized_weight.size(-2);
+        size_t const cols = (8 / bits) * row_major_quantized_weight.size(-1);
+        TORCH_CHECK(rows % plan.requires_multiple == 0 && cols % plan.requires_multiple == 0,
+                    "layout '", plan.name, "' needs k and n both multiples of ", plan.requires_multiple,
+                    "; got k=", rows, " n=", cols, ". A shape that misses this does not get the arrangement the "
+                    "name promises -- the step is skipped downstream and the result is a different layout.");
+    }
+
+    return preprocess_weights_for_mixed_gemm(row_major_quantized_weight, quant_type,
+                                             plan.is_int8_mma, plan.use_aiu_interleave);
 }
 
 Tensor preprocess_weights_for_mixed_gemm(Tensor row_major_quantized_weight, torch::ScalarType quant_type,
@@ -456,8 +497,13 @@ static auto symmetric_quantize_last_axis_of_batched_matrix =
     torch::RegisterOperators("quactlize::symmetric_quantize_last_axis_of_batched_matrix",
                              &torch_ext::symmetric_quantize_last_axis_of_batched_matrix);
 
+static auto preprocess_weights_to_layout = torch::RegisterOperators(
+    "quactlize::preprocess_weights_to_layout", &torch_ext::preprocess_weights_to_layout);
+
+// The boolean form stays registered for the step-level tests. Underscored: naming a layout is the supported way to
+// produce one, and a caller reaching for two flags is a caller who will not be able to say what they produced.
 static auto preprocess_weights_for_mixed_gemm = torch::RegisterOperators(
-    "quactlize::preprocess_weights_for_mixed_gemm", &torch_ext::preprocess_weights_for_mixed_gemm);
+    "quactlize::_preprocess_weights_for_mixed_gemm", &torch_ext::preprocess_weights_for_mixed_gemm);
 
 static auto unpack_int4_packed_tensor_to_int8 = torch::RegisterOperators(
     "quactlize::unpack_int4_packed_tensor_to_int8", &torch_ext::unpack_int4_packed_tensor_to_int8);

@@ -1,6 +1,6 @@
 // MEMORY SAFETY OF THE PREPROCESSING CHAIN, UNDER ASAN, WITH NO TORCH AND NO DEVICE.
 //
-// Why this is a separate program rather than a pytest: the bug it was written for -- interleave_column_major_tensor
+// Why this is a separate program rather than a pytest: the bug it was written for -- mem_cacheline_col_tile_interleave
 // writing a full buffer's length past the end of its destination -- did not fail where it happened. It corrupted the
 // heap and surfaced as an intermittent Bus error or SIGSEGV several tests later, in a test that had nothing to do
 // with it, about four runs in five. No amount of assertion in python would have located that; ASAN named the line on

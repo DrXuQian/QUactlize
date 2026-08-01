@@ -32,6 +32,11 @@ if WITH_DEVICE:
     sys.exit("QUACTLIZE_WITH_DEVICE is not implemented yet: the kernels are built through actlize's PPUToolchain by "
              "build.sh, and moving them into this extension is the open structural work. See docs/CHECKPOINT.md.")
 
+# HEADERS ARE NOT TRACKED BY setuptools. Editing weight_layout.h and rebuilding produced a .so with the OLD table
+# and a test failure that read like a logic error. `depends` makes the headers part of the extension's dependency
+# set so a change to one forces a recompile.
+HEADERS = sorted(str(p) for p in (ROOT / "quactlize/csrc/preprocess").rglob("*.h"))
+
 cuda_inc = [p for p in ("/usr/local/cuda/include", os.environ.get("CUDA_HOME", "") + "/include") if p and Path(p).exists()]
 
 ext = CppExtension(
@@ -49,6 +54,7 @@ ext = CppExtension(
     # and preprocess_weights_for_mixed_gemm(..., use_aiu_interleaved=true) would return the ordinary layout; the op now
     # refuses that request rather than returning wrongly-ordered bytes, but the flag is what makes it answerable.
     define_macros=[("USE_AIU", "1")],
+    depends=HEADERS,
     extra_compile_args=["-std=c++17", "-O2", "-Wno-unused-function", "-Wno-sign-compare"],
 )
 

@@ -168,7 +168,7 @@ def test_preprocess_does_not_grow_the_weight(shape):
     """THE CONSTRAINT THE WHOLE FORMAT PLAN RESTS ON: an offline reorder may permute bytes but must not add any. Every
     format's readiness was judged against this, so it is asserted rather than assumed."""
     p = Q.pack_int8_tensor_to_packed_int4(torch.randint(-8, 8, shape, dtype=torch.int8))
-    out = Q.preprocess_weights_for_mixed_gemm(p, INT4, False, False)
+    out = Q._preprocess_weights_for_mixed_gemm(p, INT4, False, False)
     assert out.shape == p.shape and out.dtype == p.dtype
     assert out.numel() * out.element_size() == p.numel() * p.element_size()
 
@@ -181,7 +181,7 @@ def test_preprocess_is_a_permutation_composed_with_the_plus_8_bias(shape):
     knowing the layout, so it stays valid when the layout changes."""
     w = torch.randint(-8, 8, shape, dtype=torch.int8)
     p = Q.pack_int8_tensor_to_packed_int4(w)
-    out = Q.preprocess_weights_for_mixed_gemm(p, INT4, False, False)
+    out = Q._preprocess_weights_for_mixed_gemm(p, INT4, False, False)
     got = torch.sort(unpack_nibbles(out).to(torch.int64)).values
     want = torch.sort(((w.flatten().to(torch.int64) + 8) & 0xF)).values
     assert torch.equal(got, want)
@@ -197,18 +197,18 @@ def test_preprocess_is_injective():
     every column of the tile structure the transform is built around."""
     a = torch.randint(-7, 7, (256, 256), dtype=torch.int8)
     pa = Q.pack_int8_tensor_to_packed_int4(a)
-    ta = Q.preprocess_weights_for_mixed_gemm(pa, INT4, False, False)
+    ta = Q._preprocess_weights_for_mixed_gemm(pa, INT4, False, False)
     for i in range(0, 256, 8):
         for r, c in ((i, i), (i, 255 - i)):
             b = a.clone()
             b[r, c] = a[r, c] + 1                       # in range: a was drawn from [-7, 7)
-            tb = Q.preprocess_weights_for_mixed_gemm(Q.pack_int8_tensor_to_packed_int4(b), INT4, False, False)
+            tb = Q._preprocess_weights_for_mixed_gemm(Q.pack_int8_tensor_to_packed_int4(b), INT4, False, False)
             assert not torch.equal(ta, tb), f"changing element ({r},{c}) vanished in preprocessing"
 
 
 def test_int8_preprocess_shifts_by_128():
     w = torch.randint(-128, 127, (2, 64, 128), dtype=torch.int8)
-    out = Q.preprocess_weights_for_mixed_gemm(w, INT8, False, False)
+    out = Q._preprocess_weights_for_mixed_gemm(w, INT8, False, False)
     got = torch.sort(out.flatten().to(torch.int64) & 0xFF).values
     want = torch.sort((w.flatten().to(torch.int64) + 128) & 0xFF).values
     assert torch.equal(got, want)
@@ -219,7 +219,7 @@ def test_is_int8_mma_skips_the_bias():
     the INPUT's, with no +8 -- the same invariant with the bias removed, which is how we know the flag is read."""
     w = torch.randint(-8, 8, (256, 256), dtype=torch.int8)
     p = Q.pack_int8_tensor_to_packed_int4(w)
-    out = Q.preprocess_weights_for_mixed_gemm(p, INT4, True, False)
+    out = Q._preprocess_weights_for_mixed_gemm(p, INT4, True, False)
     got = torch.sort(unpack_nibbles(out).to(torch.int64)).values
     want = torch.sort((w.flatten().to(torch.int64) & 0xF)).values
     assert torch.equal(got, want)
@@ -248,8 +248,8 @@ def aiu_permutation(num_rows, num_cols, elts_in_int32=8, rows_per_tile=256):
 def test_aiu_interleave_matches_the_derived_index_map(k, n):
     w = torch.randint(-8, 8, (k, n), dtype=torch.int8)
     p = Q.pack_int8_tensor_to_packed_int4(w)
-    plain = Q.preprocess_weights_for_mixed_gemm(p, INT4, True, False)   # is_int8_mma=True: no bias, layout only
-    aiu = Q.preprocess_weights_for_mixed_gemm(p, INT4, True, True)
+    plain = Q._preprocess_weights_for_mixed_gemm(p, INT4, True, False)   # is_int8_mma=True: no bias, layout only
+    aiu = Q._preprocess_weights_for_mixed_gemm(p, INT4, True, True)
     src = aiu_permutation(k, n)
     a32 = aiu.flatten().view(torch.int32)
     p32 = plain.flatten().view(torch.int32)
@@ -261,8 +261,8 @@ def test_aiu_interleave_is_the_identity_at_exactly_one_row_tile():
     test because a k=256 shape was the first thing tried and its 'AIU changes nothing' result was nearly read as the
     flag being dead. A degenerate shape is a measurement of nothing; this pins which shape is degenerate and why."""
     p = Q.pack_int8_tensor_to_packed_int4(torch.randint(-8, 8, (256, 256), dtype=torch.int8))
-    assert torch.equal(Q.preprocess_weights_for_mixed_gemm(p, INT4, True, True),
-                       Q.preprocess_weights_for_mixed_gemm(p, INT4, True, False))
+    assert torch.equal(Q._preprocess_weights_for_mixed_gemm(p, INT4, True, True),
+                       Q._preprocess_weights_for_mixed_gemm(p, INT4, True, False))
 
 
 @pytest.mark.parametrize("k,n,why", [
@@ -277,7 +277,7 @@ def test_aiu_refuses_shapes_it_would_silently_skip(k, n, why):
     non-AIU call, and both the missing USE_AIU define and this shape guard were responsible at once."""
     p = Q.pack_int8_tensor_to_packed_int4(torch.randint(-8, 8, (k, n), dtype=torch.int8))
     with pytest.raises(RuntimeError, match="divisible by 256"):
-        Q.preprocess_weights_for_mixed_gemm(p, INT4, True, True)
+        Q._preprocess_weights_for_mixed_gemm(p, INT4, True, True)
 
 
 # ---------------------------------------------------------------------------------------------------------------

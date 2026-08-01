@@ -520,7 +520,10 @@ void add_bias_and_interleave_quantized_tensor_inplace(int8_t* tensor, const size
     }
 }
 
-void interleave_column_major_tensor(int8_t*                    interleaved_quantized_tensor,
+// RENAMED from interleave_column_major_tensor. "interleave" named three different things in this file -- this one,
+// the AIU's, and a permutation of elements inside a 32-bit word -- so the names now say <consumer><parameter>:
+// mem = the memory system, and the parameter is the cache line this exists to fill.
+void mem_cacheline_col_tile_interleave(int8_t*                    interleaved_quantized_tensor,
                                     const int8_t*              quantized_tensor,
                                     const std::vector<size_t>& shape,
                                     QuantType                  quant_type,
@@ -579,7 +582,9 @@ void interleave_column_major_tensor(int8_t*                    interleaved_quant
 }
 
 #ifdef USE_AIU
-void interleave_column_major_tensor_aiu(int8_t*                    interleaved_quantized_tensor,
+// RENAMED from interleave_column_major_tensor_aiu. aiu = the bulk copy engine, which is what breaks if this is
+// wrong or skipped; the tile is 256 rows and that number is in the layout name (aiu256).
+void aiu_col_tile_interleave(int8_t*                    interleaved_quantized_tensor,
                                         const int8_t*              quantized_tensor,
                                         const std::vector<size_t>& shape,
                                         QuantType                  quant_type,
@@ -661,7 +666,7 @@ void preprocess_weights_for_mixed_gemm(int8_t*                    preprocessed_q
         src_buf.swap(dst_buf);
     }
     if (details.columns_interleaved > 1) {
-        interleave_column_major_tensor(dst_buf.data(), src_buf.data(), shape, quant_type, details);
+        mem_cacheline_col_tile_interleave(dst_buf.data(), src_buf.data(), shape, quant_type, details);
         src_buf.swap(dst_buf);
     }
 #if defined(USE_AIU)
@@ -672,7 +677,7 @@ void preprocess_weights_for_mixed_gemm(int8_t*                    preprocessed_q
         const size_t num_rows    = shape.size() == 2 ? shape[0] : shape[1];     // k
         const size_t num_cols    = shape.size() == 2 ? shape[1] : shape[2];     // n
         if (!(num_rows % details.rows_per_column_tile || num_cols % details.rows_per_column_tile)) {
-            interleave_column_major_tensor_aiu(dst_buf.data(), src_buf.data(), shape, quant_type, details);
+            aiu_col_tile_interleave(dst_buf.data(), src_buf.data(), shape, quant_type, details);
             src_buf.swap(dst_buf);
         }
     }
