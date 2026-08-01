@@ -23,7 +23,11 @@ import glob
 import os
 
 import pytest
-import torch
+
+# importorskip, not a plain import: this file is collected on machines with no torch (the local CI tier runs the whole
+# tests/ directory, and tests/test_formats.py deliberately needs neither torch nor a device). A plain import would
+# turn "torch is not installed here" into a collection ERROR for the whole directory.
+torch = pytest.importorskip("torch")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

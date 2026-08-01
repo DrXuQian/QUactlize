@@ -63,6 +63,37 @@ FORMATS = ["int4", "int2", "int1", "gguf-q2k", "gguf-q3k", "gguf-q4k", "gguf-q5k
            "gptq-int4-sym", "awq-int4"]
 
 
+# quactlize.formats names the formats a PATH can run; this file names the formats a HARNESS has evidence for. They
+# are different axes and both are needed, but they must not contradict: a format the dispatcher would route to a
+# kernel, with nothing anywhere validating that kernel on it, is a capability claim with no evidence behind it.
+# Only the QuantTypes map -- "int4"/"int2"/"int1" here are bit widths of the synthetic path, not storage formats.
+FORMAT_TO_QUANT_TYPE = {
+    "gguf-q2k": "Q2_K", "gguf-q3k": "Q3_K", "gguf-q4k": "Q4_K", "gguf-q5k": "Q5_K", "gguf-q6k": "Q6_K",
+    "gptq-int4-sym": "GPTQ_INT4_SYM", "awq-int4": "AWQ_INT4",
+}
+
+
+def check_against_formats():
+    """Every format in a capability set must have at least a synthetic oracle here. Returns a list of problems."""
+    try:
+        sys.path.insert(0, str(ROOT))
+        from quactlize import formats
+    except Exception as e:                                  # formats.py is pure python; an import failure IS a problem
+        return [f"cannot import quactlize.formats to cross-check capability claims: {e}"]
+
+    have = coverage()
+    quant_to_format = {v: k for k, v in FORMAT_TO_QUANT_TYPE.items()}
+    bad = []
+    for set_name in ("GEMV", "FUSED_NATIVE_SCALE", "FUSED_FP16_SCALE", "DEQUANT_THEN_DENSE"):
+        for q in getattr(formats, set_name):
+            fmt = quant_to_format.get(q.name)
+            if fmt is None:
+                bad.append(f"formats.{set_name} contains {q.name}, which no registry format maps to")
+            elif not have.get(fmt):
+                bad.append(f"formats.{set_name} claims {q.name}, but no harness validates {fmt!r}")
+    return bad
+
+
 def check():
     """Verify every declaration against the source. Returns a list of problems."""
     bad = []
@@ -100,6 +131,7 @@ def check():
     for name in sorted(p.stem for p in tests.glob("test_*.cu")):
         if name not in HARNESSES:
             bad.append(f"tests/{name}.cu exists but is not declared in the registry")
+    bad += check_against_formats()
     return bad
 
 

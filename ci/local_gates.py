@@ -92,14 +92,11 @@ def asan():
 
 
 def pytests():
-    try:
-        import torch  # noqa: F401
-    except ImportError:
-        return "SKIP", "torch not importable -- the host half cannot be exercised here", 0.0
-    if not list((ROOT / "quactlize").glob("_C*.so")):
-        return "SKIP", "extension not built (python setup.py build_ext --inplace)", 0.0
+    """The whole tests/ directory. Individual files skip themselves when what they need is missing -- test_formats.py
+    needs neither torch nor the built extension, test_preprocess_ops.py needs both -- so this runs unconditionally
+    and the skips are visible in the summary rather than decided here."""
     rc, log, dt = run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                       str(ROOT / "tests" / "test_preprocess_ops.py")], cwd=str(ROOT))
+                       str(ROOT / "tests")], cwd=str(ROOT))
     summary = [l for l in log.splitlines() if "passed" in l or "failed" in l or "error" in l.lower()]
     return ("PASS" if rc == 0 else "FAIL"), (summary[-1] if summary else f"exit {rc}"), dt
 
