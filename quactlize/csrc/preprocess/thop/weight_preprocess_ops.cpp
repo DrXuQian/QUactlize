@@ -126,6 +126,25 @@ Tensor preprocess_weights_for_mixed_gemm(Tensor row_major_quantized_weight, torc
     const size_t num_rows    = row_major_quantized_weight.size(-2);
     const size_t num_cols    = (8 / bits_in_quant_type) * row_major_quantized_weight.size(-1);
 
+    // REFUSE AN AIU REQUEST THAT CANNOT BE HONOURED. Two conditions downstream silently skip the AIU interleave and
+    // return the ordinary layout: the whole branch is compiled out unless USE_AIU is defined, and even then it applies
+    // only to PACKED_INT4 with both k and n divisible by 256. A caller that asked for the AIU layout and got the other
+    // one back has a tensor whose bytes are in the wrong physical order, and NOTHING about its dtype or shape says so
+    // -- the first symptom is wrong numbers from a kernel, far from here. This was not hypothetical: the first call
+    // through this op with use_aiu_interleaved=true returned bytes identical to the false case, on both counts at once.
+    if (use_aiu_interleaved)
+    {
+#if !defined(USE_AIU)
+        TORCH_CHECK(false, "use_aiu_interleaved=true, but this library was built without USE_AIU, so the AIU column "
+                           "interleave does not exist in it. Rebuild with -DUSE_AIU or pass false.");
+#endif
+        TORCH_CHECK(ac_quant_type == QuantType::PACKED_INT4_WEIGHT_ONLY,
+                    "use_aiu_interleaved=true is only implemented for packed int4 weights");
+        TORCH_CHECK(num_rows % 256 == 0 && num_cols % 256 == 0,
+                    "use_aiu_interleaved=true needs k and n both divisible by 256 (the AIU column tile); got k=",
+                    num_rows, " n=", num_cols, ", which would silently fall back to the non-AIU layout");
+    }
+
     Tensor  processed_tensor = torch::zeros_like(row_major_quantized_weight);
     int8_t* input_byte_ptr   = get_ptr<int8_t>(row_major_quantized_weight);
     int8_t* output_byte_ptr  = get_ptr<int8_t>(processed_tensor);
@@ -403,39 +422,44 @@ Tensor unpack_uint4_packed_tensor_to_uint8(Tensor weight)
 
 }  // namespace torch_ext
 
-// Utility methods that may be useful for preprocessing weights in torch.
+// REGISTERED UNDER quactlize::, NOT THE VENDOR PREFIX. These names arrived from a vendor TRT-LLM port that spells its
+// namespace `acext::` -- the same `ac` that names actlize and the acu counters. If the PPU box's own torch package
+// registers that namespace, a second registration of the same qualified name aborts at library-load time, before any
+// Python code can catch it. A project-specific namespace is also what torch.library documents. Compatibility aliases
+// are deliberately NOT provided: an alias would reintroduce exactly the collision this avoids, and nothing outside
+// this repo calls these yet.
 static auto symmetric_quantize_last_axis_of_batched_matrix =
-    torch::RegisterOperators("acext::symmetric_quantize_last_axis_of_batched_matrix",
+    torch::RegisterOperators("quactlize::symmetric_quantize_last_axis_of_batched_matrix",
                              &torch_ext::symmetric_quantize_last_axis_of_batched_matrix);
 
 static auto preprocess_weights_for_mixed_gemm = torch::RegisterOperators(
-    "acext::preprocess_weights_for_mixed_gemm", &torch_ext::preprocess_weights_for_mixed_gemm);
+    "quactlize::preprocess_weights_for_mixed_gemm", &torch_ext::preprocess_weights_for_mixed_gemm);
 
 static auto unpack_int4_packed_tensor_to_int8 = torch::RegisterOperators(
-    "acext::unpack_int4_packed_tensor_to_int8", &torch_ext::unpack_int4_packed_tensor_to_int8);
+    "quactlize::unpack_int4_packed_tensor_to_int8", &torch_ext::unpack_int4_packed_tensor_to_int8);
 
 static auto pack_int8_tensor_to_packed_int4 = torch::RegisterOperators(
-    "acext::pack_int8_tensor_to_packed_int4", &torch_ext::pack_int8_tensor_to_packed_int4);
+    "quactlize::pack_int8_tensor_to_packed_int4", &torch_ext::pack_int8_tensor_to_packed_int4);
 
 static auto pack_uint8_tensor_to_packed_uint4 = torch::RegisterOperators(
-    "acext::pack_uint8_tensor_to_packed_uint4", &torch_ext::pack_uint8_tensor_to_packed_uint4);
+    "quactlize::pack_uint8_tensor_to_packed_uint4", &torch_ext::pack_uint8_tensor_to_packed_uint4);
 
 static auto unpack_uint4_packed_tensor_to_uint8 = torch::RegisterOperators(
-    "acext::unpack_uint4_packed_tensor_to_uint8", &torch_ext::unpack_uint4_packed_tensor_to_uint8);
+    "quactlize::unpack_uint4_packed_tensor_to_uint8", &torch_ext::unpack_uint4_packed_tensor_to_uint8);
 
 // Utility methods exposed purely for unit tests in torch.
 static auto _symmetric_quantize_last_axis_of_batched_matrix =
-    torch::RegisterOperators("acext::_symmetric_quantize_last_axis_of_batched_matrix",
+    torch::RegisterOperators("quactlize::_symmetric_quantize_last_axis_of_batched_matrix",
                              &torch_ext::_symmetric_quantize_last_axis_of_batched_matrix);
 
 static auto add_bias_and_interleave_int4s = torch::RegisterOperators(
-    "acext::_add_bias_and_interleave_int4s", &torch_ext::add_bias_and_interleave_int4s);
+    "quactlize::_add_bias_and_interleave_int4s", &torch_ext::add_bias_and_interleave_int4s);
 
 static auto add_bias_and_interleave_int8s = torch::RegisterOperators(
-    "acext::_add_bias_and_interleave_int8s", &torch_ext::add_bias_and_interleave_int8s);
+    "quactlize::_add_bias_and_interleave_int8s", &torch_ext::add_bias_and_interleave_int8s);
 
 static auto permute_B_rows_for_mixed_gemm = torch::RegisterOperators(
-    "acext::_permute_B_rows_for_mixed_gemm", &torch_ext::permute_B_rows_for_mixed_gemm);
+    "quactlize::_permute_B_rows_for_mixed_gemm", &torch_ext::permute_B_rows_for_mixed_gemm);
 
 static auto subbyte_transpose =
-    torch::RegisterOperators("acext::_subbyte_transpose", &torch_ext::subbyte_transpose);
+    torch::RegisterOperators("quactlize::_subbyte_transpose", &torch_ext::subbyte_transpose);

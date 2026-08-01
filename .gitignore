@@ -8,3 +8,8 @@ build_*/
 *.ncu-rep
 .cache/
 compile_commands.json
+
+# built extension and setuptools scratch
+quactlize/_C*.so
+build/
+*.egg-info/

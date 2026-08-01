@@ -190,6 +190,22 @@ void permute_B_rows_for_mixed_gemm(int8_t*                    permuted_quantized
         fmtstr("Invalid shape for quantized tensor. On turing/Ampere, the number of cols must be a multiple of %d.",
                MMA_SHAPE_N));
 
+    // THE is_int8_mma INDEX FORMULA ONLY FITS A 32-ROW TILE. Below, is_int8_mma computes
+    //     tile_read_row = (tile_row % 8) / 4 * 16 + tile_row / 8 * 4 + tile_row % 4
+    // whose range is [0, 32). B_ROWS_PER_MMA is 8 * (16 / BITS_PER_ELT), so it is 32 for 4-bit weights and only 16
+    // for 8-bit ones. With 8-bit weights the formula therefore reads up to 16 rows beyond the tile, and beyond the
+    // BUFFER on the last tile of the matrix -- an out-of-bounds read that ASAN reports at the first shape tried and
+    // that otherwise corrupts nothing visible until much later.
+    //
+    // is_int8_mma means "these weights feed an int8-activation MMA", which is the W4A8 path: 4-bit weights. Passing
+    // it with 8-bit weights is a caller error, not a supported combination, so it is refused here -- at the formula's
+    // own precondition, where every caller is covered -- rather than at any single entry point.
+    FT_CHECK_WITH_INFO(
+        !is_int8_mma || B_ROWS_PER_MMA == 32,
+        fmtstr("is_int8_mma requires a 32-row MMA tile (4-bit weights); this quant type gives %d rows per tile, and "
+               "the int8-mma row permutation would read outside it",
+               B_ROWS_PER_MMA));
+
     // The code is written as below so it works for both int8 and packed int4.
     for (int expert = 0; expert < num_experts; ++expert) {
         const int64_t matrix_offset = expert * int64_t(num_rows) * int64_t(num_vec_cols);

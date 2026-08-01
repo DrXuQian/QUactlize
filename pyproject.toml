@@ -1,3 +1,10 @@
+# BUILD WITH --no-build-isolation. setup.py imports torch to get its C++ extension machinery, and torch is
+# deliberately NOT listed in `requires`: an isolated build would then fetch a generic PyPI torch, and the extension
+# would be compiled and ABI-linked against a torch that is not the one the PPU box runs. Requiring the already-installed
+# torch is the point.
+#
+#     pip install --no-build-isolation -e .
+#
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
@@ -12,3 +19,6 @@ dependencies = []
 
 [tool.setuptools]
 packages = ["quactlize"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
