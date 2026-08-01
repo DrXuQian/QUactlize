@@ -29,7 +29,7 @@ EX="${EX:-$ROOT/third_party/actlize/build_w4a16_compare/examples/99_kernels_w4a1
 OUT="${OUT:-$HOME/ab}"
 BAND="${BAND:-64 8 2048 2048 32 3}"                 # L=64, top-k 8, N=K=2048, gs=32, decode
 CFG="${CFG:-16x128:256 w16x16 s2}"                  # the pinned row; SPLITK_S below pins the slice count
-REPS="${REPS:-3}"                                    # repetitions per variant; REPS=1 restores the old single-sample run
+BLOCKS="${BLOCKS:-10}"                               # interleaved measurement blocks; see do_perf
 mkdir -p "$OUT"
 
 # name : defines.  SK_QUANT=2 is FinegrainedScaleZero, what ships.
@@ -192,44 +192,105 @@ do_check() {
 
 do_perf() {
   echo
-  echo "== perf: $REPS run(s) of one pinned row, $CFG S=1, band '$BAND' =="
-  echo "   min is the statistic to read: it is the least-disturbed sample, and the spread column says whether the"
-  echo "   difference between two variants is larger than the noise within either of them."
-  local v n i us best worst out
-  for v in "${VARIANTS[@]}"; do
-    n="${v%%:*}"
-    best=""; worst=""
-    for i in $(seq 1 "$REPS"); do
+  echo "== perf: $BLOCKS interleaved blocks, $CFG S=1, band '$BAND' =="
+  # WHY BLOCKS AND NOT REPETITIONS. The effect this bench exists to resolve is a few per cent, and the documented
+  # same-config spread is ~13%. Three consecutive runs of one variant, then three of the next, measures each variant
+  # under whatever the machine was doing during ITS window -- the two windows are not the same experiment. Blocks
+  # interleave the variants and reverse their order on alternate blocks (ABBA), so a drift across the session falls
+  # on every variant equally and cancels in the within-block ratio.
+  #
+  # EVERY OBSERVATION IS KEPT, in $OUT/perf_samples.txt as "block variant us". A summary that discards its samples
+  # cannot be re-analysed, and the statistic worth reading -- the paired per-block ratio against base -- cannot be
+  # recovered from a min and a max.
+  #
+  # THE FIRST QUESTION IS WHETHER THERE IS AN EFFECT AT ALL. Every pack-vs-base figure recorded before commit
+  # 80dfeec compared two kernels computing DIFFERENT NUMBERS (see test_moe_splitk_bench.cu, "LIKE FOR LIKE"), so the
+  # 12.9% that motivated this investigation is not a valid measurement and no like-for-like figure has replaced it.
+  local samples="$OUT/perf_samples.txt"; : > "$samples"
+  # AN ARRAY, NOT A STRING. Each VARIANT is "name:DEF1 DEF2 ..." and CONTAINS SPACES, so flattening with ${VAR[*]}
+  # and iterating the result word-splits the defines into separate "variants" -- the dry-run showed blocks running
+  # PPU_SCALE_SWIZZLE=1 and PPU_PACKED_SCALE=1 as if they were binaries. bash -n cannot see this.
+  local b v n us out
+  local -a order
+  local -i i
+  for b in $(seq 1 "$BLOCKS"); do
+    order=("${VARIANTS[@]}")
+    if [ $((b % 2)) -eq 0 ]; then                      # reverse on even blocks: ABBA, not AABB
+      order=()
+      for ((i=${#VARIANTS[@]}-1; i>=0; i--)); do order+=("${VARIANTS[i]}"); done
+    fi
+    for v in "${order[@]}"; do
+      n="${v%%:*}"
       out=$(SPLITK_CFG="$CFG" SPLITK_S=1 "$OUT/test_moe_splitk_bench__$n" $BAND 2>&1 | grep -E "^  i4" | head -1)
       us=$(printf '%s' "$out" | grep -oE "[0-9]+\.[0-9]+ us" | head -1 | cut -d' ' -f1)
-      [ -z "$us" ] && { printf -- '-- %-10s NO TIMING ROW: %s\n' "$n" "$(printf '%s' "$out" | head -c 80)"; best=""; break; }
-      best=$(printf '%s\n%s\n' "$best" "$us" | grep -v '^$' | sort -g | head -1)
-      worst=$(printf '%s\n%s\n' "$worst" "$us" | grep -v '^$' | sort -g | tail -1)
+      if [ -z "$us" ]; then
+        echo "   block $b $n: NO TIMING ROW -- $(printf '%s' "$out" | head -c 70)"; continue
+      fi
+      printf '%s %s %s\n' "$b" "$n" "$us" >> "$samples"
     done
-    [ -z "$best" ] && continue
-    printf -- '-- %-10s min %8s us   max %8s us   spread %s%%\n' "$n" "$best" "$worst" \
-      "$(awk -v a="$best" -v b="$worst" 'BEGIN{printf "%.1f", (b-a)/a*100}')"
+    printf '   block %d/%d done\r' "$b" "$BLOCKS"
   done
+  echo
+  echo "   samples: $samples ($(wc -l < "$samples") observations)"
+  echo
+  # THE CONFIDENCE INTERVAL OF THE ESTIMATE, not the spread of the samples. The first version reported the 10th and
+  # 90th percentiles of the per-block ratios and called an interval spanning 1.0 "not established". That is the wrong
+  # statistic: it describes how far ONE observation scatters, which does not shrink with more blocks, so a genuine
+  # 5% effect under 6% per-sample noise still "spanned 1.0" at thirty blocks while the median recovered it to 5.3%.
+  # What shrinks with sqrt(n) is the uncertainty of the MEAN, and that is what decides whether an effect is real.
+  #
+  # Mean of the LOG ratios, with a normal-approximation interval: a ratio is multiplicative, so its errors are
+  # symmetric in log space and not in linear space. exp(mean +- 1.96*sd/sqrt(n)) is the interval on the ratio.
+  awk '
+    { t[$1" "$2] = $3; if ($2 == "base") base[$1] = $3; v[$2] = 1; blk[$1] = 1 }
+    END {
+      printf "   %-11s %9s %9s   %s\n", "variant", "median us", "vs base", "95% CI on the paired ratio"
+      for (name in v) {
+        n = 0; sl = 0; sq = 0; su = 0
+        for (b in blk) {
+          k = b" "name
+          if ((k in t) && (b in base) && base[b] > 0) {
+            n++; lr = log(t[k]/base[b]); sl += lr; sq += lr*lr; su += t[k]
+          }
+        }
+        if (n == 0) continue
+        mu = sl/n; mean_us = su/n
+        sd = (n > 1) ? sqrt((sq - n*mu*mu)/(n-1)) : 0
+        se = (n > 1) ? sd/sqrt(n) : 0
+        lo = exp(mu - 1.96*se); hi = exp(mu + 1.96*se)
+        flag = (n < 2) ? "  <-- one block, no interval" : ((lo <= 1.0 && hi >= 1.0) ? "  <-- includes 1.0: no effect established" : "")
+        printf "   %-11s %9.2f %8.1f%%   %.3f .. %.3f  (n=%d)%s\n", name, mean_us, (exp(mu)-1)*100, lo, hi, n, flag
+      }
+    }' "$samples" | sort -k2 -n
+  cat <<'EOR'
+
+   READ THE INTERVAL, NOT THE PERCENTAGE. A variant whose 95% interval includes 1.0 has no established difference
+   from base at this block count -- raise BLOCKS, the interval narrows as sqrt(n). The paired ratio is the statistic
+   because it is formed WITHIN a block, so drift across the session cancels; the mean-us column is context only.
+EOR
   cat <<'EOT'
 
-== how to read it ==
-   base                     the shipped path
-   swz     - base           the scale read's bank conflicts, 4-way -> 1-way (l98). Attacks the 6.6% that
-                            PPU_SCALE_PREFETCH could not: SK_QUANT=0 prices the whole reload at 7.3% and
-                            prefetch, which removes only the WAITING, recovered 0.7%
-   base    - bdqnop         what the BASELINE int4->fp16 dequant costs. Upper bound: the ablation also drops
-                            most of the scale/zero LOADS, since only one fragment element stays live
-   pack    - base           the native-format tax as it stands (+12.9% at last measurement)
-   pack    - packnop        the packed decode's ARITHMETIC alone
-   packnop - base           its transport, its explicit stores, and the barrier slot they sit in
-   packsplit - pack         eight warps decoding four groups each instead of four decoding eight. Better means the
-                            publication barrier's critical path costs; no change means aggregate issue demand does
+== what each difference isolates ==
+   swz       - base       the scale read's bank conflicts, 4-way -> 1-way (l98)
+   base      - bdqnop     what the BASELINE int4->fp16 dequant costs. Upper bound: the ablation also drops most of
+                          the scale/zero LOADS, since only one fragment element stays live
+   pack      - base       THE NATIVE-FORMAT TAX, AND IT IS CURRENTLY UNMEASURED. Every figure quoted before commit
+                          80dfeec ("+12.9%", "+2.4%") came from a bench whose two paths computed DIFFERENT NUMBERS;
+                          the two disagree with each other and their baselines differ by 17%. Nothing has replaced
+                          them. This run is the first like-for-like measurement, not a re-measurement
+   pack      - packnop    the packed decode's ARITHMETIC alone
+   packnop   - base       its transport, the shared round trip, the explicit stores, and the barrier slot they
+                          sit in. THE LEADING STRUCTURAL CANDIDATE if a tax exists at all
+   (packsplit - pack) - (splitnop - packnop)
+                          the placement effect with the duplicated-read cost subtracted out. packsplit - pack alone
+                          cannot tell "no placement benefit" from "benefit smaller than the added read", which is
+                          why splitnop exists and why the earlier "placement is dead" conclusion does not follow
 
    bdqnop and packnop produce DELIBERATELY WRONG numbers -- read their time, never their MATCH.
 
-   AND READ THE SPREAD COLUMN FIRST. If a variant's own spread is comparable to its difference from base, that
-   difference has not been measured -- it has been sampled once from a distribution wide enough to contain it.
-   Raise REPS before drawing any conclusion from a gap under ~15%.
+   A TIMING DIFFERENCE WITHOUT MATCHING acu COUNTERS IS NOT A STRUCTURAL ABLATION. packnop consumes only u[0], so
+   the other three words' loads may be eliminated entirely; if its raw shared-load and store counts do not match
+   pack's, the subtraction above is measuring a different kernel and not an ablation.
 EOT
 }
 
