@@ -129,9 +129,103 @@ def test_changing_a_step_parameter_changes_the_name():
 
 
 def test_adding_a_step_changes_the_name_with_no_version_counter():
-    folded = L.Layout(L.MIXED_GEMM_AIU_INT4.steps + (L.aiu_n_fold(2),), "folded", "N-folded")
-    assert folded.name == "mmarow32_tr_cl4_aiu256_cvtword_bias_foldn2"
-    assert folded.name not in L.LAYOUTS
+    placed = L.Layout(L.MIXED_GEMM_AIU_INT4.steps + (L.xplane(4, 64, 64, 32, 1),), "placed", "xplane-placed")
+    assert placed.name == "mmarow32_tr_cl4_aiu256_cvtword_bias_xp4n64k64wn32f1"
+    assert placed.name not in L.LAYOUTS
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# the xplane token, whose parameter set was measured rather than assumed
+# ---------------------------------------------------------------------------------------------------------------
+
+XPLANE_PROBE = r"""
+#include <cstdio>
+#include <vector>
+#include "xplane_offline.hpp"
+template <int B,int TM,int TN,int TK,int WM,int WN,int F>
+void show() {
+  auto m = xplane::plane_map<B, TM, TN, TK, WM, WN, F>();
+  unsigned h = 2166136261u;
+  for (size_t i = 0; i < m.size(); ++i) { h ^= (unsigned)m[i]; h *= 16777619u; }
+  printf("%zu %08x\n", m.size(), h);
+}
+int main() {
+  show<1,64,64,256,32,32,1>();   // baseline
+  show<1,128,64,256,32,32,1>();  // TM varies
+  show<1,64,64,256,32,64,1>();   // WN varies
+  show<1,64,128,256,32,32,1>();  // TN varies
+  show<1,64,64,256,32,32,2>();   // F varies
+  show<1,64,64,128,32,32,2>();   // TK varies (with F=2 to stay legal)
+  show<1,64,64,128,64,32,2>();   // WM varies
+  show<1,64,64,128,32,64,2>();   // WN varies again, at the other TK
+  return 0;
+}
+"""
+
+
+@pytest.mark.slow
+def test_the_xplane_token_carries_exactly_the_parameters_that_change_the_map():
+    """THE MEASUREMENT THE TOKEN RESTS ON, re-run rather than remembered.
+
+    Omitting a parameter that matters is silent -- two arrangements share a name and one of them computes nonsense.
+    Including one that does not is loud -- a false rejection someone investigates. So the omissions of TM and WM are
+    the risky half of this decision, and they are checked here by instantiating plane_map and comparing hashes.
+
+    Needs nvcc. Skipped, not failed, without it: this pins a claim about the C++ template, and a machine that cannot
+    compile it cannot speak to the claim either way."""
+    import shutil, subprocess, tempfile
+    if not shutil.which("nvcc"):
+        pytest.skip("needs nvcc to instantiate xplane::plane_map")
+    with tempfile.TemporaryDirectory() as d:
+        src, exe = Path(d) / "probe.cu", Path(d) / "probe"
+        src.write_text(XPLANE_PROBE)
+        r = subprocess.run(["nvcc", "-std=c++17", "-x", "cu", "-arch=sm_80", "-w",
+                            "-I", str(ROOT / "dev/fold_derivation/stub_inc"),
+                            "-I", str(ROOT / "quactlize/include"),
+                            "-I", str(ROOT / "third_party/actlize/include"),
+                            "-o", str(exe), str(src)], capture_output=True, text=True)
+        if r.returncode != 0:
+            pytest.skip(f"xplane probe does not build here: {r.stderr.strip().splitlines()[:1]}")
+        out = subprocess.run([str(exe)], capture_output=True, text=True).stdout.split("\n")
+    rows = [l for l in out if l.strip()][:8]
+    assert len(rows) == 8, f"probe printed {len(rows)} rows, expected 8"
+    base, tm, wn, tn, f, tk, wm, wn2 = rows
+
+    # These MUST change the map, so they are in the token
+    for label, got in (("TN", tn), ("F", f), ("TK", tk)):
+        assert got != base, f"{label} does not change the map -- the token carries a parameter that does nothing"
+
+    # WN IS CONDITIONAL, and that is the interesting case. At (TK=256, F=1) it changes nothing; at (TK=128, F=2) it
+    # does. A token cannot be conditional, so a parameter that matters in ANY legal configuration has to be carried
+    # in all of them -- carrying it where it is inert costs a false rejection, which is loud, while dropping it where
+    # it matters costs two arrangements sharing a name, which is silent. The first draft of this test asserted WN
+    # changes the map everywhere; it does not, and the conclusion survives the correction unchanged.
+    assert wn == base, "WN now changes the map at (TK=256, F=1) too -- the conditionality noted here has moved"
+    assert wn2 != tk, "WN no longer changes the map at (TK=128, F=2) -- the only evidence for carrying it is gone"
+
+    # These must NOT, which is why the token omits them. This is the assertion that would break first if the
+    # placement ever grew a dependence on the M axis, and it is the omission that would be silent.
+    assert tm == base, "TM changes the map -- it must be added to the xplane token"
+    assert wm == tk, "WM changes the map -- it must be added to the xplane token"
+
+
+def test_xplane_rejects_a_configuration_that_cannot_be_built():
+    """F * TK * bits >= 256 is the AIU's 32-byte delivery floor, and it is why int1 exists only at (TK=256, F=1) and
+    (TK=128, F=2). A name that violates it describes a placement the template refuses to instantiate, so the name
+    should refuse too rather than being written down and failing later at a static_assert."""
+    with pytest.raises(ValueError, match="32-byte delivery floor"):
+        L.xplane(1, 64, 128, 32, 1)
+    assert L.xplane(1, 64, 256, 32, 1).token == "xp1n64k256wn32f1"
+    assert L.xplane(1, 64, 128, 32, 2).token == "xp1n64k128wn32f2"
+
+
+def test_the_xplane_token_distinguishes_configurations_that_differ():
+    """One token per (bits, TN, TK, WN, F). The two tokens this replaced -- plane<P> and foldn<F> -- were two names
+    for facets of ONE transform, and between them carried two of the five parameters."""
+    seen = {L.xplane(*c).token for c in [(1, 64, 256, 32, 1), (1, 64, 128, 32, 2), (1, 64, 128, 64, 2),
+                                         (1, 128, 256, 32, 1), (2, 64, 128, 32, 1), (4, 64, 64, 32, 1)]}
+    assert len(seen) == 6, "two different placements collided on one token"
+
 
 
 def test_only_the_bias_step_changes_values():

@@ -89,9 +89,44 @@ def aiu_col_tile(tile_rows: int = 256) -> Step:
                 f"multiples of {tile_rows}; it is the IDENTITY when k == {tile_rows} (one tile)")
 
 
-def aiu_n_fold(factor: int) -> Step:
-    return Step(f"foldn{factor}", "aiu", "element group", "fold_traits / nfold", True,
-                f"regroups {factor} N-slices contiguously so a transfer reaches the AIU's 32-byte minimum")
+def xplane(bits: int, tn: int, tk: int, wn: int, f: int) -> Step:
+    """The offline placement that xplane::place_derived produces -- ONE step, with every parameter that changes it.
+
+    THIS REPLACES TWO EARLIER TOKENS, `plane<P>` and `foldn<F>`, and both were wrong in the same way.
+
+    They were two names for facets of one transform: place_derived covers the fold walk AND the interleave-256 walk
+    in a single pass, which is why it replaced preprocess_weights_for_mixed_gemm + nfold_regroup_gmem. And between
+    them they carried two parameters, the plane count and F, out of the five that actually matter.
+
+    WHICH PARAMETERS MATTER WAS MEASURED, NOT REASONED. Instantiating plane_map and hashing the result, varying one
+    template argument at a time:
+
+        TN   changes it            map size 16384 -> 32768
+        TK   changes it            map size 8192 -> 16384
+        F    changes it            same size, hash 45c77dc5 -> 6f78bdc5
+        WN   changes it SOMETIMES  at (TK=128,F=2): w32x32 == w64x32, w32x64 == w64x64, and the pairs differ.
+                                   At (TK=256,F=1) it changes nothing.
+        WM   does not              (the two pairs above)
+        TM   does not              TM=64 vs 128, both 45c77dc5
+
+    WN's conditionality is the interesting one. A token cannot be conditional, so a parameter that matters in ANY
+    legal configuration is carried in all of them: carrying it where it is inert costs a false rejection, which is
+    loud, and dropping it where it matters costs two arrangements sharing a name, which is silent.
+
+    So the token carries (bits, TN, TK, WN, F) and omits TM and WM. Omitting is the risky direction -- a parameter
+    left out means two different arrangements share a name, which is silent, while one left in means a false
+    rejection, which is loud -- so the omissions rest on that measurement and it is pinned in tests/test_layouts.py
+    rather than left as a remark here.
+
+    Note the legality constraint F * TK * bits >= 256, the AIU's 32-byte delivery floor: int1 exists only at
+    (TK=256, F=1) and (TK=128, F=2). A name that violates it describes a placement that cannot be built.
+    """
+    if f * tk * bits < 256:
+        raise ValueError(f"xplane needs F*TK*bits >= 256 (the AIU's 32-byte delivery floor); "
+                         f"{f}*{tk}*{bits} = {f * tk * bits}")
+    return Step(f"xp{bits}n{tn}k{tk}wn{wn}f{f}", "aiu", "element", "xplane::place_derived", True,
+                f"offline placement for a {bits}-bit plane consumed by a TN={tn} TK={tk} WN={wn} kernel with a "
+                f"{f}-fold. TM and WM do not enter the map and are deliberately absent from the token")
 
 
 def cvt_word_permute() -> Step:
@@ -106,12 +141,6 @@ def code_bias(amount: int) -> Step:
     return Step("bias", "cvt", "element", "add_bias_and_interleave_*_inplace (step 1)", False,
                 f"adds {amount} to每 code so the signed range becomes unsigned. NOT a permutation -- it changes "
                 f"values -- which is why it is its own step even though it shares a function with cvtword")
-
-
-def cvt_plane_fold(planes: int) -> Step:
-    return Step(f"plane{planes}", "cvt", "element", "xplane_offline", True,
-                f"places the folded high plane of a {planes}-plane B-concat so the converter's fixed emission order "
-                f"delivers both planes to the right lanes")
 
 
 class Layout(NamedTuple):
