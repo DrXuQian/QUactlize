@@ -9,9 +9,9 @@ layout, twice over, and nothing about the result could have revealed it.
 
 THE NAMING RULE. A layout's name is the ORDERED JOIN OF ITS STEP TOKENS. Not an opaque label:
 
-    mmarow_tr_cl4_cvtword_bias              the plain mixed-GEMM arrangement
-    mmarow_tr_cl4_aiu256_cvtword_bias       the same, plus the AIU column interleave
-    mmarow_tr_cl4                           W4A8: neither the bias nor the word permutation (one gate covers both)
+    mmarow32_tr_cl4_cvtword_bias            the plain mixed-GEMM arrangement
+    mmarow32_tr_cl4_aiu256_cvtword_bias     the same, plus the AIU column interleave
+    mmarow32i_tr_cl4                        W4A8: the IMMA row formula, and neither the bias nor the word permutation
 
 Three things follow for free, and each of them is a bug this project actually had:
 
@@ -53,11 +53,22 @@ class Step(NamedTuple):
     note: str = ""
 
 
-def mma_row(rows_per_tile: int) -> Step:
-    return Step(f"mmarow{'' if rows_per_tile == 32 else rows_per_tile}", "mma", "row",
+def mma_row(rows_per_tile: int, imma: bool = False) -> Step:
+    """Row permutation within one MMA tile. BOTH parameters are in the token, and both had to be forced there:
+
+    * The tile HEIGHT is 8 * (16 / bits) -- 16 for 8-bit, 32 for 4-bit, 64 for 2-bit. It was originally omitted when
+      it took its commonest value, 32, which is a parameter you cannot see; the int2 layout was recorded with a
+      32-row tile as a result, and nothing could have shown it.
+    * The VARIANT, because permute_B_rows_for_mixed_gemm holds TWO different index formulas selected by is_int8_mma,
+      and on a 32-row tile they disagree in 24 of 32 positions. One token naming both is a token that lies. The
+      current table happened not to collide -- W4A8 also drops cvtword and bias -- but that is an accident of which
+      other steps differ, not a property of the name.
+    """
+    return Step(f"mmarow{rows_per_tile}{'i' if imma else ''}", "mma", "row",
                 "permute_B_rows_for_mixed_gemm", True,
-                f"reorders rows within a {rows_per_tile}-row MMA tile to match the fragment's lane map. The "
-                f"is_int8_mma variant's index formula has range [0,32) and only fits a 32-row tile")
+                f"reorders rows within a {rows_per_tile}-row MMA tile to match the fragment's lane map, using the "
+                f"{'IMMA (is_int8_mma)' if imma else 'ldsm'} index formula. The IMMA formula's range is [0,32) and "
+                f"it only fits a 32-row tile")
 
 
 def axis_transpose() -> Step:
@@ -154,15 +165,17 @@ MIXED_GEMM_AIU_INT4 = _add(
 # promised a permutation the chain never runs. The cross-check missed it because the assertion had been written from
 # the same wrong belief as the table.
 W4A8_INT4 = _add(
-    [mma_row(32), axis_transpose(), mem_cacheline_col_tile(4)],
+    [mma_row(32, imma=True), axis_transpose(), mem_cacheline_col_tile(4)],
     "w4a8", "packed int4 feeding an int8-activation MMA")
 
 MIXED_GEMM_INT8 = _add(
     [mma_row(16), axis_transpose(), mem_cacheline_col_tile(2), cvt_word_permute(), code_bias(128)],
     "mixed_gemm_int8", "int8")
 
+# 2-bit's MMA tile is 64 rows, not 32: B_ROWS_PER_MMA is 8 * (16 / bits). This entry said 32 while the height was
+# omitted from the token for its commonest value, so the error was invisible in the name AND in the table.
 MIXED_GEMM_INT2 = _add(
-    [mma_row(32), axis_transpose(), mem_cacheline_col_tile(8), cvt_word_permute(), code_bias(2)],
+    [mma_row(64), axis_transpose(), mem_cacheline_col_tile(8), cvt_word_permute(), code_bias(2)],
     "mixed_gemm_int2", "packed int2")
 
 

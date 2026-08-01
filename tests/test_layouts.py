@@ -72,8 +72,19 @@ def test_each_cpp_row_matches_the_steps_python_composed(row):
     cl = next((t for t in tokens if t.startswith("cl")), None)
     if cl is None:
         assert bits == 0, "only the logical layout has no cache-line step"
-    else:
-        assert {"cl2": 8, "cl4": 4, "cl8": 2}[cl] == bits
+        return
+    assert {"cl2": 8, "cl4": 4, "cl8": 2}[cl] == bits
+
+    # THE MMA TILE HEIGHT IS DETERMINED BY THE ELEMENT WIDTH, so it can be derived and checked rather than trusted:
+    # B_ROWS_PER_MMA = 8 * (16 / bits), which is 16 / 32 / 64 for 8 / 4 / 2-bit. The int2 layout was recorded with a
+    # 32-row tile, and neither the table nor the name could show it while the height was omitted from the token
+    # whenever it took its commonest value.
+    mmarow = next(t for t in tokens if t.startswith("mmarow"))
+    height = int(mmarow[len("mmarow"):].rstrip("i"))
+    assert height == 8 * (16 // bits), f"{name}: {bits}-bit gives a {8 * (16 // bits)}-row MMA tile, token says {height}"
+
+    # and the row-permutation VARIANT is the same bit as is_int8_mma
+    assert mmarow.endswith("i") == is_int8_mma
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -81,8 +92,28 @@ def test_each_cpp_row_matches_the_steps_python_composed(row):
 # ---------------------------------------------------------------------------------------------------------------
 
 def test_a_name_is_the_ordered_join_of_its_step_tokens():
-    assert L.MIXED_GEMM_AIU_INT4.name == "mmarow_tr_cl4_aiu256_cvtword_bias"
+    assert L.MIXED_GEMM_AIU_INT4.name == "mmarow32_tr_cl4_aiu256_cvtword_bias"
     assert L.LOGICAL.name == "logical"
+
+
+def test_the_two_row_permutation_formulas_get_different_tokens():
+    """permute_B_rows_for_mixed_gemm holds two index formulas selected by is_int8_mma, and on a 32-row tile they
+    disagree in 24 of 32 positions -- reproduced below so the claim is checked, not asserted. One token naming both
+    would be a token that lies; the current table merely happened not to collide, because W4A8 also drops cvtword
+    and bias, which is an accident of which OTHER steps differ."""
+    imma = [(t % 8) // 4 * 16 + t // 8 * 4 + t % 4 for t in range(32)]
+    ldsm = [8 * ((t % 8) // 2) + t % 2 + 2 * (t // 8) for t in range(32)]
+    assert sorted(imma) == sorted(ldsm) == list(range(32)), "both must be permutations of the tile"
+    assert sum(a != b for a, b in zip(imma, ldsm)) == 24
+    assert L.mma_row(32).token != L.mma_row(32, imma=True).token
+
+
+def test_the_tile_height_is_always_in_the_token():
+    """No omission for a common value. A parameter that disappears when it takes its usual value is a parameter
+    nobody can check, which is how the int2 layout carried a 32-row tile where the width demands 64."""
+    for bits, height in ((8, 16), (4, 32), (2, 64)):
+        assert L.mma_row(height).token == f"mmarow{height}"
+        assert 8 * (16 // bits) == height
 
 
 def test_changing_a_step_parameter_changes_the_name():
@@ -91,7 +122,7 @@ def test_changing_a_step_parameter_changes_the_name():
     Under this rule it is named cl256, which is not registered, so loading it fails instead of computing nonsense."""
     stale = L.Layout((L.mma_row(32), L.axis_transpose(), L.mem_cacheline_col_tile(256),
                       L.aiu_col_tile(256), L.cvt_word_permute(), L.code_bias(8)), "stale", "the pre-fix reorder")
-    assert stale.name == "mmarow_tr_cl256_aiu256_cvtword_bias"
+    assert stale.name == "mmarow32_tr_cl256_aiu256_cvtword_bias"
     assert stale.name != L.MIXED_GEMM_AIU_INT4.name
     with pytest.raises(KeyError, match="not a registered layout"):
         L.resolve(stale.name)
@@ -99,7 +130,7 @@ def test_changing_a_step_parameter_changes_the_name():
 
 def test_adding_a_step_changes_the_name_with_no_version_counter():
     folded = L.Layout(L.MIXED_GEMM_AIU_INT4.steps + (L.aiu_n_fold(2),), "folded", "N-folded")
-    assert folded.name == "mmarow_tr_cl4_aiu256_cvtword_bias_foldn2"
+    assert folded.name == "mmarow32_tr_cl4_aiu256_cvtword_bias_foldn2"
     assert folded.name not in L.LAYOUTS
 
 
@@ -110,7 +141,7 @@ def test_only_the_bias_step_changes_values():
         non_neutral = [s.token for s in lay.steps if not s.bytes_neutral]
         assert non_neutral in ([], ["bias"]), f"{lay.name} changes values in {non_neutral}"
     assert L.W4A8_INT4.bytes_neutral
-    assert L.W4A8_INT4.name == "mmarow_tr_cl4"
+    assert L.W4A8_INT4.name == "mmarow32i_tr_cl4"
 
 
 def test_every_step_names_a_consumer_that_says_what_breaks():
@@ -134,7 +165,10 @@ def test_compatible_with_itself():
 
 @pytest.mark.parametrize("stored,required,expect", [
     ("mixed_gemm", "mixed_gemm_aiu", "step 4 differs"),
-    ("mixed_gemm", "w4a8", "extra step 4"),
+    # step 1, not a later one: W4A8's row permutation genuinely differs from mixed_gemm's. Before the variant was
+    # in the token this reported "extra step 4", pointing at the bias while the real incompatibility was the first
+    # transform in the chain -- a diagnosis that would have sent someone to the wrong function.
+    ("mixed_gemm", "w4a8", "step 1 differs"),
     ("logical", "mixed_gemm", "missing step 1"),
 ])
 def test_incompatibility_names_the_step_not_just_the_layout(stored, required, expect):
@@ -144,7 +178,7 @@ def test_incompatibility_names_the_step_not_just_the_layout(stored, required, ex
 
 
 def test_an_alias_resolves_to_the_same_layout_as_the_canonical_name():
-    assert L.resolve("mixed_gemm_aiu") is L.resolve("mmarow_tr_cl4_aiu256_cvtword_bias")
+    assert L.resolve("mixed_gemm_aiu") is L.resolve("mmarow32_tr_cl4_aiu256_cvtword_bias")
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -174,7 +208,7 @@ def test_op_refuses_an_unregistered_name(Q):
     import torch
     w = Q.pack_int8_tensor_to_packed_int4(torch.randint(-8, 8, (512, 256), dtype=torch.int8))
     with pytest.raises(RuntimeError, match="not a registered weight layout"):
-        Q.preprocess_weights_to_layout(w, torch.quint4x2, "mmarow_tr_cl256_aiu256_cvtword_bias")
+        Q.preprocess_weights_to_layout(w, torch.quint4x2, "mmarow32_tr_cl256_aiu256_cvtword_bias")
 
 
 def test_op_refuses_a_layout_for_a_different_element_width(Q):

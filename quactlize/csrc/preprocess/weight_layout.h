@@ -43,11 +43,11 @@ inline std::vector<Registered> const& registry()
 {
     static std::vector<Registered> const kTable = {
         {"logical",                           "logical",          false, false,  0,   0},
-        {"mmarow_tr_cl4_cvtword_bias",        "mixed_gemm",       false, false,  4,   0},
-        {"mmarow_tr_cl4_aiu256_cvtword_bias", "mixed_gemm_aiu",   false, true,   4, 256},
-        {"mmarow_tr_cl4",                     "w4a8",             true,  false,  4,   0},
+        {"mmarow32_tr_cl4_cvtword_bias",      "mixed_gemm",       false, false,  4,   0},
+        {"mmarow32_tr_cl4_aiu256_cvtword_bias","mixed_gemm_aiu",  false, true,   4, 256},
+        {"mmarow32i_tr_cl4",                  "w4a8",             true,  false,  4,   0},
         {"mmarow16_tr_cl2_cvtword_bias",      "mixed_gemm_int8",  false, false,  8,   0},
-        {"mmarow_tr_cl8_cvtword_bias",        "mixed_gemm_int2",  false, false,  2,   0},
+        {"mmarow64_tr_cl8_cvtword_bias",      "mixed_gemm_int2",  false, false,  2,   0},
     };
     return kTable;
 }
