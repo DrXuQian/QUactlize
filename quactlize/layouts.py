@@ -89,34 +89,40 @@ def aiu_col_tile(tile_rows: int = 256) -> Step:
                 f"multiples of {tile_rows}; it is the IDENTITY when k == {tile_rows} (one tile)")
 
 
+def _won(tn: int, wn: int) -> int:
+    """Warp-columns per tile: TN / max(WN, 16), the MMA instruction's N being 16.
+
+    THE PLACEMENT DEPENDS ON THIS RATIO, NOT ON TN AND WN SEPARATELY. Measured on the stored bytes of
+    place_derived over a 256x256 int2 input: (TN=64,WN=32), (TN=128,WN=64) and any other pair with WON=2 are
+    byte-identical, while WON=2 vs 4 and WON=2 vs 1 differ in about half the buffer.
+    """
+    return tn // max(wn, 16)
+
+
 def xplane(bits: int, tn: int, tk: int, wn: int, f: int) -> Step:
-    """The offline placement that xplane::place_derived produces -- ONE step, with every parameter that changes it.
+    """The offline placement that xplane::place_derived produces -- ONE step, parameterised by what changes its
+    STORED BYTES.
 
-    THIS REPLACES TWO EARLIER TOKENS, `plane<P>` and `foldn<F>`, and both were wrong in the same way.
+    THIS REPLACES TWO EARLIER TOKENS, `plane<P>` and `foldn<F>`, which were two names for facets of one transform
+    (place_derived covers the fold walk and the interleave-256 walk in a single pass) and between them carried two
+    parameters out of the several that matter.
 
-    They were two names for facets of one transform: place_derived covers the fold walk AND the interleave-256 walk
-    in a single pass, which is why it replaced preprocess_weights_for_mixed_gemm + nfold_regroup_gmem. And between
-    them they carried two parameters, the plane count and F, out of the five that actually matter.
+    WHAT MATTERS WAS MEASURED TWICE, AND THE FIRST MEASUREMENT WAS OF THE WRONG OBJECT. It hashed plane_map, an
+    intermediate whose size varies with TN for trivial reasons, and concluded the placement depended on five
+    parameters. On the STORED BYTES -- which is what a layout name describes -- the picture is different:
 
-    WHICH PARAMETERS MATTER WAS MEASURED, NOT REASONED. Instantiating plane_map and hashing the result, varying one
-    template argument at a time:
+        TM   no effect
+        WM   no effect
+        TK   changes it
+        F    changes it
+        TN   changes it ) but only through TN / max(WN,16): (TN=64,WN=32) and (TN=128,WN=64) are byte-identical,
+        WN   changes it ) and so is every other pair with the same ratio
 
-        TN   changes it            map size 16384 -> 32768
-        TK   changes it            map size 8192 -> 16384
-        F    changes it            same size, hash 45c77dc5 -> 6f78bdc5
-        WN   changes it SOMETIMES  at (TK=128,F=2): w32x32 == w64x32, w32x64 == w64x64, and the pairs differ.
-                                   At (TK=256,F=1) it changes nothing.
-        WM   does not              (the two pairs above)
-        TM   does not              TM=64 vs 128, both 45c77dc5
+    So the token carries (bits, WON, TK, F). Naming TN and WN separately was OVERNAMING -- it would have rejected a
+    weight a kernel could read perfectly well, which is a cheaper failure than the reverse but still a wrong answer.
 
-    WN's conditionality is the interesting one. A token cannot be conditional, so a parameter that matters in ANY
-    legal configuration is carried in all of them: carrying it where it is inert costs a false rejection, which is
-    loud, and dropping it where it matters costs two arrangements sharing a name, which is silent.
-
-    So the token carries (bits, TN, TK, WN, F) and omits TM and WM. Omitting is the risky direction -- a parameter
-    left out means two different arrangements share a name, which is silent, while one left in means a false
-    rejection, which is loud -- so the omissions rest on that measurement and it is pinned in tests/test_layouts.py
-    rather than left as a remark here.
+    The lesson worth keeping is not "measure" -- the first version did measure -- but MEASURE THE OBJECT THE NAME
+    DESCRIBES. A name for a stored arrangement has to be derived from stored bytes.
 
     Note the legality constraint F * TK * bits >= 256, the AIU's 32-byte delivery floor: int1 exists only at
     (TK=256, F=1) and (TK=128, F=2). A name that violates it describes a placement that cannot be built.
@@ -127,9 +133,10 @@ def xplane(bits: int, tn: int, tk: int, wn: int, f: int) -> Step:
     if f * tk * bits < 256:
         raise ValueError(f"xplane needs F*TK*bits >= 256 (the AIU's 32-byte delivery floor); "
                          f"{f}*{tk}*{bits} = {f * tk * bits}")
-    return Step(f"xp{bits}n{tn}k{tk}wn{wn}f{f}", "aiu", "element", "xplane::place_derived", True,
-                f"offline placement for a {bits}-bit plane consumed by a TN={tn} TK={tk} WN={wn} kernel with a "
-                f"{f}-fold. TM and WM do not enter the map and are deliberately absent from the token")
+    return Step(f"xp{bits}w{_won(tn, wn)}k{tk}f{f}", "aiu", "element", "xplane::place_derived", True,
+                f"offline placement of a {bits}-bit plane for a kernel with {_won(tn, wn)} warp-columns "
+                f"(TN={tn}, WN={wn}), TK={tk}, {f}-fold. TM and WM do not reach the stored bytes, and TN and WN "
+                f"reach them only through their ratio")
 
 
 def xplane_hi(low_bits: int, hi_bits: int, tn: int, tk: int, wn: int, f_hi: int, f_lo: int) -> Step:
@@ -137,26 +144,18 @@ def xplane_hi(low_bits: int, hi_bits: int, tn: int, tk: int, wn: int, f_hi: int,
 
     A SEPARATE TOKEN FROM xplane(), because the same plane placed the two ways is not the same arrangement. At
     identical (bits=1, TN=64, TK=128, WN=32, F=2), Q5's high plane through place_hi<low=4, high=1> and a standalone
-    1-bit placement through place_derived differ in 6144 of 8192 map entries and 6114 of 8192 stored bytes. Both
-    would have been named xp1n64k128wn32f2: the token had nowhere to say "low_bits=4" or "cross-plane".
-
-    That is the third time the same error has appeared here -- a parameter of the transform left out of its name --
-    and the third time it was invisible until someone instantiated both and compared. The generalisation worth
-    keeping: the token's parameters are the TEMPLATE ARGUMENTS, and the burden is on showing one does NOT matter,
-    never on assuming it.
-
-    The low plane's own placement is an ordinary xplane() step; this names only the high one, which is the plane
-    whose position depends on what it is paired with.
+    1-bit placement through place_derived differ in 6114 of 8192 STORED BYTES. Both would have been named
+    xp1w2k128f2: the token had nowhere to say low_bits=4, or that this is a cross-plane placement at all.
     """
     for label, bits, f in (("high", hi_bits, f_hi), ("low", low_bits, f_lo)):
         if f * tk * bits < 256:
             raise ValueError(f"the {label} plane needs F*TK*bits >= 256 (the AIU's 32-byte delivery floor); "
                              f"{f}*{tk}*{bits} = {f * tk * bits}")
-    return Step(f"xphi{low_bits}x{hi_bits}n{tn}k{tk}wn{wn}f{f_hi}lf{f_lo}", "aiu", "element",
+    return Step(f"xphi{low_bits}x{hi_bits}w{_won(tn, wn)}k{tk}f{f_hi}lf{f_lo}", "aiu", "element",
                 "xplane::place_hi", True,
-                f"places the {hi_bits}-bit high plane of a ({low_bits}+{hi_bits}) B-concat for a TN={tn} TK={tk} "
-                f"WN={wn} kernel, high fold {f_hi}, low fold {f_lo}. Distinct from a standalone {hi_bits}-bit "
-                f"placement at the same parameters: they disagree in 6144 of 8192 map entries")
+                f"places the {hi_bits}-bit high plane of a ({low_bits}+{hi_bits}) B-concat for a kernel with "
+                f"{_won(tn, wn)} warp-columns, TK={tk}, high fold {f_hi}, low fold {f_lo}. Distinct from a "
+                f"standalone {hi_bits}-bit placement at the same parameters: 6114 of 8192 stored bytes differ")
 
 
 def cvt_word_permute() -> Step:

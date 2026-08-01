@@ -22,13 +22,34 @@ HEADER = ROOT / "quactlize" / "csrc" / "preprocess" / "weight_layout.h"
 
 
 def cpp_registry():
-    """The rows of detail::registry() in weight_layout.h, as (name, alias, is_int8_mma, use_aiu, bits, multiple)."""
-    text = HEADER.read_text()
-    body = text[text.index("kTable = {"):text.index("};", text.index("kTable = {"))]
+    """The C++ registry AS THE COMPILER SEES IT: compile ci/dump_weight_layouts.cpp and read what it prints.
+
+    This replaces a regex over the header, which codex defeated by hand -- a commented-out table with the expected
+    rows placed ahead of the real one, then a real row changed. Every regex comparison read the comment and passed
+    while the compiled resolver returned the changed value. Comments, #if, macros and line continuations are things
+    a compiler resolves and a pattern cannot, so the comparison has to be against the compiler's answer.
+
+    Returns [] if g++ is missing, and the tests that use it skip: a machine that cannot compile the header cannot
+    speak to what it compiles to.
+    """
+    import shutil, subprocess, tempfile
+    if not shutil.which("g++"):
+        return []
+    with tempfile.TemporaryDirectory() as d:
+        exe = Path(d) / "dump"
+        r = subprocess.run(["g++", "-std=c++17", "-I", str(ROOT / "quactlize/csrc/preprocess"),
+                            "-o", str(exe), str(ROOT / "ci/dump_weight_layouts.cpp")],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            raise AssertionError(f"weight_layout.h does not compile: {r.stderr.strip()[:400]}")
+        out = subprocess.run([str(exe)], capture_output=True, text=True)
+        assert out.returncode == 0, f"the registry dump failed: {out.stdout}{out.stderr}"
     rows = []
-    for m in re.finditer(r'\{"([^"]+)",\s*"([^"]+)",\s*(true|false),\s*(true|false),\s*(-?\d+),\s*(-?\d+)\}', body):
-        rows.append((m.group(1), m.group(2), m.group(3) == "true", m.group(4) == "true",
-                     int(m.group(5)), int(m.group(6))))
+    for line in out.stdout.splitlines():
+        if not line.strip():
+            continue
+        name, alias, mma, aiu, bits, mult = line.split("\t")
+        rows.append((name, alias, mma == "1", aiu == "1", int(bits), int(mult)))
     return rows
 
 
@@ -39,14 +60,21 @@ def cpp_registry():
 def test_the_cpp_table_and_the_python_registry_have_the_same_names_in_the_same_order():
     """Order too, not just the set: the table is meant to be diffable against layouts.py by eye, and a reordering
     would break that without breaking anything a set comparison could see."""
-    assert [r[0] for r in cpp_registry()] == list(L.LAYOUTS)
+    rows = cpp_registry()
+    if not rows:
+        pytest.skip("needs g++ to compile the registry dump")
+    assert [r[0] for r in rows] == list(L.LAYOUTS)
 
 
 def test_the_two_copies_agree_on_aliases():
-    assert {r[0]: r[1] for r in cpp_registry()} == {n: lay.alias for n, lay in L.LAYOUTS.items()}
+    rows = cpp_registry()
+    if not rows:
+        pytest.skip("needs g++ to compile the registry dump")
+    assert {r[0]: r[1] for r in rows} == {n: lay.alias for n, lay in L.LAYOUTS.items()}
 
 
-@pytest.mark.parametrize("row", cpp_registry(), ids=lambda r: r[0])
+@pytest.mark.parametrize("row", cpp_registry() or [pytest.param(None, marks=pytest.mark.skip(reason="needs g++"))],
+                         ids=lambda r: r[0] if r else "no-g++")
 def test_each_cpp_row_matches_the_steps_python_composed(row):
     """The C++ flags are a SUMMARY of the python step list, so they can be derived from it and compared. This is
     where a drift actually shows: adding aiu256 to a python layout without setting use_aiu in the table would leave
@@ -130,7 +158,7 @@ def test_changing_a_step_parameter_changes_the_name():
 
 def test_adding_a_step_changes_the_name_with_no_version_counter():
     placed = L.Layout(L.MIXED_GEMM_AIU_INT4.steps + (L.xplane(4, 64, 64, 32, 1),), "placed", "xplane-placed")
-    assert placed.name == "mmarow32_tr_cl4_aiu256_cvtword_bias_xp4n64k64wn32f1"
+    assert placed.name == "mmarow32_tr_cl4_aiu256_cvtword_bias_xp4w2k64f1"
     assert placed.name not in L.LAYOUTS
 
 
@@ -138,44 +166,49 @@ def test_adding_a_step_changes_the_name_with_no_version_counter():
 # the xplane token, whose parameter set was measured rather than assumed
 # ---------------------------------------------------------------------------------------------------------------
 
+# Compares the STORED BYTES of place_derived, not the plane_map an earlier version hashed. plane_map is an
+# intermediate whose size varies with TN for reasons that never reach the buffer; measuring it concluded the
+# placement depended on five parameters when it depends on four, one of them a ratio. A name for a stored
+# arrangement has to be derived from stored bytes.
 XPLANE_PROBE = r"""
 #include <cstdio>
 #include <vector>
+#include <cstdint>
 #include "xplane_offline.hpp"
-template <int B,int TM,int TN,int TK,int WM,int WN,int F>
-void show() {
-  auto m = xplane::plane_map<B, TM, TN, TK, WM, WN, F>();
-  unsigned h = 2166136261u;
-  for (size_t i = 0; i < m.size(); ++i) { h ^= (unsigned)m[i]; h *= 16777619u; }
-  printf("%zu %08x\n", m.size(), h);
-}
-int main() {
-  show<1,64,64,256,32,32,1>();   // baseline
-  show<1,128,64,256,32,32,1>();  // TM varies
-  show<1,64,64,256,32,64,1>();   // WN varies
-  show<1,64,128,256,32,32,1>();  // TN varies
-  show<1,64,64,256,32,32,2>();   // F varies
-  show<1,64,64,128,32,32,2>();   // TK varies (with F=2 to stay legal)
-  show<1,64,64,128,64,32,2>();   // WM varies
-  show<1,64,64,128,32,64,2>();   // WN varies again, at the other TK
+constexpr int N = 256, K = 256, B = 2;
+static std::vector<uint8_t> mk(){ std::vector<uint8_t> q((size_t)N*K); uint32_t s=0x9e3779b9u;
+  for(size_t i=0;i<q.size();++i){s^=s<<13;s^=s>>17;s^=s<<5;q[i]=uint8_t(s&3);} return q; }
+static std::vector<uint8_t> Q = mk();
+template <int TM,int TN,int TK,int WM,int WN,int F>
+std::vector<int8_t> place(){ std::vector<int8_t> o((size_t)N*K*B/8);
+  xplane::place_derived<B,TM,TN,TK,WM,WN,F>(o.data(), Q, N, K); return o; }
+static void d(std::vector<int8_t> const& a, std::vector<int8_t> const& b){
+  size_t n=0; for(size_t i=0;i<a.size();++i) n += a[i]!=b[i]; printf("%zu ", n); }
+int main(){
+  auto base = place<64,64,64,32,32,2>();          // WON = 64/32 = 2
+  d(base, place<128,64,64,32,32,2>());            // 0: TM
+  d(base, place<64,64,64,64,32,2>());             // 1: WM
+  d(base, place<64,128,64,32,64,2>());            // 2: same WON, different TN and WN
+  d(base, place<64,128,64,32,32,2>());            // 3: WON 2 -> 4
+  d(base, place<64,64,64,32,64,2>());             // 4: WON 2 -> 1
+  d(base, place<64,64,128,32,32,2>());            // 5: TK
+  d(base, place<64,64,128,32,32,1>());            // 6: TK and F
   return 0;
 }
 """
 
 
 @pytest.mark.slow
-def test_the_xplane_token_carries_exactly_the_parameters_that_change_the_map():
-    """THE MEASUREMENT THE TOKEN RESTS ON, re-run rather than remembered.
+def test_the_xplane_token_carries_exactly_what_changes_the_stored_bytes():
+    """THE MEASUREMENT THE TOKEN RESTS ON, re-run rather than remembered -- and on the right object this time.
 
-    Omitting a parameter that matters is silent -- two arrangements share a name and one of them computes nonsense.
-    Including one that does not is loud -- a false rejection someone investigates. So the omissions of TM and WM are
-    the risky half of this decision, and they are checked here by instantiating plane_map and comparing hashes.
-
-    Needs nvcc. Skipped, not failed, without it: this pins a claim about the C++ template, and a machine that cannot
-    compile it cannot speak to the claim either way."""
+    Two failure directions, and they are not symmetric. Omitting a parameter that matters means two arrangements
+    share a name, which is silent and computes nonsense. Carrying one that does not means a false rejection, which
+    is loud. Both are wrong; only one is dangerous. So TM and WM are omitted on measurement, TN and WN are folded
+    into their ratio on measurement, and this re-runs both."""
     import shutil, subprocess, tempfile
     if not shutil.which("nvcc"):
-        pytest.skip("needs nvcc to instantiate xplane::plane_map")
+        pytest.skip("needs nvcc to instantiate xplane::place_derived")
     with tempfile.TemporaryDirectory() as d:
         src, exe = Path(d) / "probe.cu", Path(d) / "probe"
         src.write_text(XPLANE_PROBE)
@@ -186,27 +219,25 @@ def test_the_xplane_token_carries_exactly_the_parameters_that_change_the_map():
                             "-o", str(exe), str(src)], capture_output=True, text=True)
         if r.returncode != 0:
             pytest.skip(f"xplane probe does not build here: {r.stderr.strip().splitlines()[:1]}")
-        out = subprocess.run([str(exe)], capture_output=True, text=True).stdout.split("\n")
-    rows = [l for l in out if l.strip()][:8]
-    assert len(rows) == 8, f"probe printed {len(rows)} rows, expected 8"
-    base, tm, wn, tn, f, tk, wm, wn2 = rows
+        out = subprocess.run([str(exe)], capture_output=True, text=True).stdout
+    n = [int(x) for x in out.split()]
+    assert len(n) == 7, f"probe printed {len(n)} numbers, expected 7"
+    tm, wm, same_won, won4, won1, tk, tk_f = n
 
-    # These MUST change the map, so they are in the token
-    for label, got in (("TN", tn), ("F", f), ("TK", tk)):
-        assert got != base, f"{label} does not change the map -- the token carries a parameter that does nothing"
+    assert tm == 0, "TM reaches the stored bytes -- it must be added to the xplane token"
+    assert wm == 0, "WM reaches the stored bytes -- it must be added to the xplane token"
+    assert same_won == 0, ("TN and WN reach the stored bytes independently of their ratio -- the token must carry "
+                           "them separately again")
+    for label, got in (("WON 2->4", won4), ("WON 2->1", won1), ("TK", tk), ("TK+F", tk_f)):
+        assert got > 0, f"{label} does not reach the stored bytes -- the token carries a parameter that does nothing"
 
-    # WN IS CONDITIONAL, and that is the interesting case. At (TK=256, F=1) it changes nothing; at (TK=128, F=2) it
-    # does. A token cannot be conditional, so a parameter that matters in ANY legal configuration has to be carried
-    # in all of them -- carrying it where it is inert costs a false rejection, which is loud, while dropping it where
-    # it matters costs two arrangements sharing a name, which is silent. The first draft of this test asserted WN
-    # changes the map everywhere; it does not, and the conclusion survives the correction unchanged.
-    assert wn == base, "WN now changes the map at (TK=256, F=1) too -- the conditionality noted here has moved"
-    assert wn2 != tk, "WN no longer changes the map at (TK=128, F=2) -- the only evidence for carrying it is gone"
 
-    # These must NOT, which is why the token omits them. This is the assertion that would break first if the
-    # placement ever grew a dependence on the M axis, and it is the omission that would be silent.
-    assert tm == base, "TM changes the map -- it must be added to the xplane token"
-    assert wm == tk, "WM changes the map -- it must be added to the xplane token"
+def test_the_won_ratio_is_what_the_token_carries():
+    """Same ratio, same token, however TN and WN are split between them."""
+    assert L.xplane(2, 64, 64, 32, 2).token == L.xplane(2, 128, 64, 64, 2).token == "xp2w2k64f2"
+    assert L.xplane(2, 128, 64, 32, 2).token == "xp2w4k64f2"
+    assert L.xplane(2, 64, 64, 64, 2).token == "xp2w1k64f2"
+
 
 
 def test_xplane_rejects_a_configuration_that_cannot_be_built():
@@ -215,8 +246,8 @@ def test_xplane_rejects_a_configuration_that_cannot_be_built():
     should refuse too rather than being written down and failing later at a static_assert."""
     with pytest.raises(ValueError, match="32-byte delivery floor"):
         L.xplane(1, 64, 128, 32, 1)
-    assert L.xplane(1, 64, 256, 32, 1).token == "xp1n64k256wn32f1"
-    assert L.xplane(1, 64, 128, 32, 2).token == "xp1n64k128wn32f2"
+    assert L.xplane(1, 64, 256, 32, 1).token == "xp1w2k256f1"
+    assert L.xplane(1, 64, 128, 32, 2).token == "xp1w2k128f2"
 
 
 XPLANE_HI_PROBE = r"""
@@ -281,7 +312,7 @@ def test_the_xplane_token_distinguishes_configurations_that_differ():
     """One token per (bits, TN, TK, WN, F). The two tokens this replaced -- plane<P> and foldn<F> -- were two names
     for facets of ONE transform, and between them carried two of the five parameters."""
     seen = {L.xplane(*c).token for c in [(1, 64, 256, 32, 1), (1, 64, 128, 32, 2), (1, 64, 128, 64, 2),
-                                         (1, 128, 256, 32, 1), (2, 64, 128, 32, 1), (4, 64, 64, 32, 1)]}
+                                         (1, 256, 256, 32, 1), (2, 64, 128, 32, 1), (4, 64, 64, 32, 1)]}
     assert len(seen) == 6, "two different placements collided on one token"
 
 
@@ -339,21 +370,57 @@ def test_an_alias_resolves_to_the_same_layout_as_the_canonical_name():
 
 @pytest.fixture(scope="module")
 def Q():
+    """Load the built extension, FAILING if it is older than the sources it was built from.
+
+    A stale .so is the failure mode that wasted a debugging cycle here already: weight_layout.h was edited, setuptools
+    does not track headers, and the rebuilt .so carried the previous table -- producing a test failure that read like
+    a logic error. setup.py now declares the headers as dependencies, and this is the second line of defence, because
+    a test that silently exercises last hour's binary reports on code nobody is running."""
     torch = pytest.importorskip("torch")
     so = sorted((ROOT / "quactlize").glob("_C*.so"))
     if not so:
-        pytest.skip("extension not built")
+        pytest.skip("extension not built -- python setup.py build_ext --inplace")
+    built = so[0].stat().st_mtime
+    newer = [p for p in (ROOT / "quactlize" / "csrc").rglob("*")
+             if p.suffix in (".cpp", ".h", ".hpp") and p.stat().st_mtime > built]
+    assert not newer, ("the built extension is older than " + ", ".join(p.name for p in newer[:4])
+                       + " -- rebuild before trusting these results: python setup.py build_ext --inplace")
     torch.ops.load_library(str(so[0]))
     return torch.ops.quactlize
 
 
 def test_op_accepts_every_registered_int4_layout(Q):
+    """Byte count, VALUE MULTISET, and mutual distinctness -- not just numel.
+
+    Checking numel alone accepts an all-zero output and any wrong permutation, which is most of what could go wrong.
+    The multiset check is the same invariant used on the preprocessing itself: a layout transform may move nibbles
+    and (where the layout has `bias`) shift them by 8, and may do nothing else. Distinctness is what says the layout
+    argument was read at all -- three names returning identical bytes would pass every other assertion here."""
     import torch
-    w = Q.pack_int8_tensor_to_packed_int4(torch.randint(-8, 8, (512, 256), dtype=torch.int8))
+    src = torch.randint(-8, 8, (512, 256), dtype=torch.int8)
+    w = Q.pack_int8_tensor_to_packed_int4(src)
+    plain = torch.sort(src.flatten().to(torch.int64) & 0xF).values
+    biased = torch.sort((src.flatten().to(torch.int64) + 8) & 0xF).values
+
+    produced = {}
     for name, lay in L.LAYOUTS.items():
-        if lay.applies_to.startswith("packed int4") or name == "logical":
-            out = Q.preprocess_weights_to_layout(w, torch.quint4x2, name)
-            assert out.numel() == w.numel(), f"{name} is not byte-neutral"
+        if not (lay.applies_to.startswith("packed int4") or name == "logical"):
+            continue
+        out = Q.preprocess_weights_to_layout(w, torch.quint4x2, name)
+        assert out.numel() == w.numel() and out.dtype == w.dtype, f"{name} is not byte-neutral"
+
+        b = out.flatten().to(torch.int32) & 0xFF
+        nibbles = torch.sort(torch.stack([b & 0xF, (b >> 4) & 0xF], 1).flatten().to(torch.int64)).values
+        want = biased if any(st.token == "bias" for st in lay.steps) else plain
+        assert torch.equal(nibbles, want), f"{name} lost, duplicated or corrupted a nibble"
+
+        # The WHOLE buffer, not a prefix. A 64-element fingerprint reported mixed_gemm and mixed_gemm_aiu as
+        # identical: they differ in 65042 of 65536 bytes, but the first difference is at index 128, so the AIU
+        # interleave leaves the opening tile in place. A prefix is not a fingerprint of a permutation.
+        key = hash(out.flatten().numpy().tobytes())
+        assert key not in produced, f"{name} produced the same bytes as {produced[key]} -- the layout was not read"
+        produced[key] = name
+    assert len(produced) >= 3, "fewer than three int4 layouts were exercised"
 
 
 def test_op_refuses_an_unregistered_name(Q):
@@ -380,8 +447,9 @@ def test_op_refuses_a_shape_that_would_skip_the_aiu_step(Q):
 
 
 def test_named_and_boolean_forms_agree(Q):
-    """The named entry point is a front end, so it must produce exactly what the flags it resolves to produce. If
-    these ever differ, the table in weight_layout.h is describing a chain the chain does not run."""
+    """WIRING ONLY, and worth saying so. Both entry points call the same implementation, so this shows the name
+    resolves to the flags the table claims -- it cannot show those flags produce the arrangement the name promises.
+    The check that could is a kernel on the box reading the result."""
     import torch
     w = Q.pack_int8_tensor_to_packed_int4(torch.randint(-8, 8, (512, 256), dtype=torch.int8))
     for name, mma, aiu in (("mixed_gemm", False, False), ("mixed_gemm_aiu", False, True), ("w4a8", True, False)):

@@ -45,6 +45,7 @@ const char* name(QuantType q)
     switch (q) {
         case QuantType::INT8_WEIGHT_ONLY: return "int8";
         case QuantType::PACKED_INT4_WEIGHT_ONLY: return "int4";
+        case QuantType::PACKED_INT2_WEIGHT_ONLY: return "int2";
         default: return "other";
     }
 }
@@ -90,12 +91,22 @@ void probe_preprocess(Shape s, QuantType q, bool int8_mma, bool aiu)
 
 int main()
 {
-    const QuantType kTypes[] = {QuantType::PACKED_INT4_WEIGHT_ONLY, QuantType::INT8_WEIGHT_ONLY};
+    // int2 IS IN THE SWEEP because the sweep is the reason to trust the fix: its MMA tile is 64 rows, and that row
+    // count was wrong in the layout table until the tile height was forced into the token. A memory-safety sweep
+    // that skipped the width whose row arithmetic had just changed would have proved nothing about it.
+    const QuantType kTypes[] = {QuantType::PACKED_INT4_WEIGHT_ONLY, QuantType::INT8_WEIGHT_ONLY,
+                                QuantType::PACKED_INT2_WEIGHT_ONLY};
     int n = 0;
     for (Shape s : kShapes) {
         for (QuantType q : kTypes) {
-            probe_quantize(s, q);
-            ++n;
+            // symmetric_quantize covers int4 and int8 only -- it throws "Unsupported quantization type" for int2,
+            // whose codes are produced by the offline packers rather than by this quantiser. The LAYOUT transform
+            // does support int2, and that is the half this sweep needs it for: int2's 64-row MMA tile is the row
+            // arithmetic that was recently wrong in the layout table.
+            if (q != QuantType::PACKED_INT2_WEIGHT_ONLY) {
+                probe_quantize(s, q);
+                ++n;
+            }
             for (bool mma : {false, true}) {
                 // is_int8_mma is the W4A8 path and its row permutation only fits a 32-row MMA tile, which 4-bit
                 // weights give and 8-bit weights do not. The combination is refused at the permutation's own

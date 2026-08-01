@@ -17,6 +17,19 @@
 #   ./syntax_check.sh --baseline <files...>   record/refresh the accepted noise
 #   ./syntax_check.sh <files...>              fail on anything not in the baseline
 set -u
+# NOT `set -o pipefail`, deliberately: the nvcc call below is piped into grep, and a CLEAN compile makes that grep
+# exit 1 because it matched nothing. pipefail would turn every clean file into a failure.
+#
+# But without it the pipeline's status is `sort`'s, which always succeeds -- so nvcc's own status was discarded, and
+# with nvcc absent from PATH this script printed "clean (0 known-noise lines, 0 new)" and exited 0. Ten of the CI
+# tier's twenty-two checks are this script. A gate that passes while compiling nothing is worse than no gate.
+#
+# The fix is not a better status check but a POSITIVE one: a clean verdict now requires evidence that the compiler
+# ran -- it must have produced a non-empty output file. Absence of errors is not evidence of compilation.
+command -v nvcc >/dev/null 2>&1 || {
+  echo "syntax_check: nvcc is not on PATH -- this gate compiles, so it cannot report anything without a compiler" >&2
+  exit 2
+}
 # The repo root, and the three directories a checkable source can live in. This used to be one directory
 # up; the tree now separates kernels, tests and benchmarks, so -I has to name all of them or a harness
 # fails on its own neighbour's header and the failure looks like the header being wrong.
@@ -70,13 +83,23 @@ for f in $FILES; do
 # Two signatures are dropped as ENVIRONMENTAL, not filtered by pattern-guessing: cute::_ and cute::product report
   # "undefined in device code" because CUTE_INLINE_CONSTANT resolves to `static constexpr` here while the box takes
   # the `static const __device__` branch. They cannot mask a real error -- a real one has a different message.
-  sig=$(nvcc -std=c++17 -arch=sm_80 --expt-relaxed-constexpr -D__HGGCCC__ -DPPU_FORCE_INSTANTIATE=1 $EXTRA_DEFS $_gen_flag \
+  # Emit to a real file, not /dev/null: the file is the PROOF the compiler ran. With -o /dev/null there is no
+  # artifact, so "no errors" and "no compiler" produce identical output.
+  _raw="$(mktemp)"; _out="$(mktemp -u)".cu.cpp
+  nvcc -std=c++17 -arch=sm_80 --expt-relaxed-constexpr -D__HGGCCC__ -DPPU_FORCE_INSTANTIATE=1 $EXTRA_DEFS $_gen_flag \
         -I"$STUB" -I"$ACT/include" -I"$ACT/tools/util/include" -I"$SRC" -I"$ROOT/benchmarks" -I"$ROOT/quactlize/include" -I"$ROOT/dev" \
-        -cuda -o /dev/null -x cu "$f" -Wno-deprecated-gpu-targets 2>&1 \
+        -cuda -o "$_out" -x cu "$f" -Wno-deprecated-gpu-targets >"$_raw" 2>&1
+  _rc=$?
+  if [ ! -s "$_out" ] && [ "$_rc" -eq 0 ]; then
+    echo "syntax_check: nvcc exited 0 but produced no output for $f -- it did not compile anything" >&2
+    rm -f "$_raw" "$_out"; exit 2
+  fi
+  sig=$(cat "$_raw" \
         | grep -E ": (error|fatal error|catastrophic error):" | grep -v 'identifier "cute::_" is undefined in device code' \
                          | grep -v 'identifier "cute::product" is undefined in device code' \
         | sed -E 's#^.*/([^/]+)#\1#; s#\(([0-9]+)\)#()#' | sort | uniq -c \
         | sed -E 's/^ +//' | sort)
+  rm -f "$_raw" "$_out"
   bl="$BLDIR/$base.txt"
   # A FATAL ERROR MEANS NOTHING WAS CHECKED, so it must never become "accepted noise". The preprocessor stops at
   # the first one -- a missing generated .inc gives exactly this -- and baselining it turns the check into a
