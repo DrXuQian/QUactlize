@@ -17,9 +17,13 @@
 #   ./syntax_check.sh --baseline <files...>   record/refresh the accepted noise
 #   ./syntax_check.sh <files...>              fail on anything not in the baseline
 set -u
-SRC="$(cd "$(dirname "$0")/.." && pwd)"
+# The repo root, and the three directories a checkable source can live in. This used to be one directory
+# up; the tree now separates kernels, tests and benchmarks, so -I has to name all of them or a harness
+# fails on its own neighbour's header and the failure looks like the header being wrong.
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+SRC="$ROOT/tests"
 STUB="$(cd "$(dirname "$0")/stub_inc" && pwd)"
-ACT="$(cd "$(dirname "$0")/../../../../third_party/actlize" && pwd)"
+ACT="$(cd "$ROOT/third_party/actlize" && pwd)"
 BLDIR="$(cd "$(dirname "$0")" && pwd)/syntax_baseline"
 mkdir -p "$BLDIR"
 RECORD=0
@@ -67,7 +71,7 @@ for f in $FILES; do
   # "undefined in device code" because CUTE_INLINE_CONSTANT resolves to `static constexpr` here while the box takes
   # the `static const __device__` branch. They cannot mask a real error -- a real one has a different message.
   sig=$(nvcc -std=c++17 -arch=sm_80 --expt-relaxed-constexpr -D__HGGCCC__ -DPPU_FORCE_INSTANTIATE=1 $EXTRA_DEFS $_gen_flag \
-        -I"$STUB" -I"$ACT/include" -I"$ACT/tools/util/include" -I"$SRC" \
+        -I"$STUB" -I"$ACT/include" -I"$ACT/tools/util/include" -I"$SRC" -I"$ROOT/benchmarks" -I"$ROOT/quactlize/include" -I"$ROOT/dev" \
         -cuda -o /dev/null -x cu "$f" -Wno-deprecated-gpu-targets 2>&1 \
         | grep -E ": (error|fatal error|catastrophic error):" | grep -v 'identifier "cute::_" is undefined in device code' \
                          | grep -v 'identifier "cute::product" is undefined in device code' \
