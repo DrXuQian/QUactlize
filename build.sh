@@ -15,8 +15,16 @@
 # Prereq: PPU_SDK=<path with bin/hgcc> (or PPU_HOME). ppu001 == ppu0010 == ACOMPUTE 10000.
 set -Eeuo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ACTLIZE="$(cd "$HERE/../../../third_party/actlize" && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"          # the repository root
+ACTLIZE="$(cd "$HERE/third_party/actlize" && pwd)"
+# THE SOURCE IS NO LONGER ONE FLAT DIRECTORY. The tree separates kernels, tests and benchmarks, and the overlay
+# FLATTENS all of them into one example directory -- which is only sound because no basename repeats across them
+# (45 files, 45 distinct names; the completeness check below is what keeps that true as files are added).
+# gemv_lowbit stays a real subdirectory because sources say #include "gemv_lowbit/gemv_launcher.hpp": the directory
+# name is load-bearing, so renaming it would have been churn for nothing.
+_src_dirs=(quactlize/include tests benchmarks)
+_overlay_dirs=(gemv_lowbit)
+_subdir_src="quactlize/include/gemv_lowbit"
 EX_NAME="99_kernels_w4a16_compare"
 EX_DIR="$ACTLIZE/examples/$EX_NAME"
 EX_LIST="$ACTLIZE/examples/CMakeLists.txt"
@@ -66,9 +74,14 @@ mkdir -p "$EX_DIR"
 # EXTENSION WHITELIST: leaving it out did not fail here, it failed 100+ lines into hgcc as
 # `fatal error: moe_bench_unit.inc: No such file or directory` repeated once per generated unit.
 shopt -s nullglob
-_overlay_files=("$HERE"/*.cu "$HERE"/*.cpp "$HERE"/*.cuh "$HERE"/*.hpp "$HERE"/*.h "$HERE"/*.inc "$HERE/CMakeLists.txt")
+_overlay_files=()
+for _sd in "${_src_dirs[@]}"; do
+  _overlay_files+=("$HERE/$_sd"/*.cu "$HERE/$_sd"/*.cpp "$HERE/$_sd"/*.cuh "$HERE/$_sd"/*.hpp "$HERE/$_sd"/*.h "$HERE/$_sd"/*.inc)
+done
+_overlay_files+=("$HERE/quactlize/csrc/CMakeLists.txt.in")
 shopt -u nullglob
 cp "${_overlay_files[@]}" "$EX_DIR/"
+mv "$EX_DIR/CMakeLists.txt.in" "$EX_DIR/CMakeLists.txt"
 
 # SOURCE SUBDIRECTORIES that must be overlaid whole. This list is separate from the extension whitelist above
 # because most tracked subdirectories (fold_derivation/, real_weight/, low_bit/) are local harnesses that must
@@ -77,10 +90,10 @@ cp "${_overlay_files[@]}" "$EX_DIR/"
 # library moved into one would be dropped silently by the very check written to catch dropped source.
 _overlay_dirs=(gemv_lowbit)
 for _d in "${_overlay_dirs[@]}"; do
-  [ -d "$HERE/$_d" ] || continue
+  [ -d "$HERE/$_subdir_src" ] || continue
   mkdir -p "$EX_DIR/$_d"
   shopt -s nullglob
-  _sub=("$HERE/$_d"/*.cu "$HERE/$_d"/*.cpp "$HERE/$_d"/*.cuh "$HERE/$_d"/*.hpp "$HERE/$_d"/*.h "$HERE/$_d"/*.inc)
+  _sub=("$HERE/$_subdir_src"/*.cu "$HERE/$_subdir_src"/*.cpp "$HERE/$_subdir_src"/*.cuh "$HERE/$_subdir_src"/*.hpp "$HERE/$_subdir_src"/*.h "$HERE/$_subdir_src"/*.inc)
   shopt -u nullglob
   [ ${#_sub[@]} -gt 0 ] && cp "${_sub[@]}" "$EX_DIR/$_d/"
 done
@@ -100,14 +113,14 @@ done
 # a newly added .def or .tpp is tracked the moment it is `git add`ed, which is also the moment it could reach the box.
 _ignored='sh|md|py|log|bin|json|patch|pyc|txt'
 _missing=""
-if _tracked=$(git -C "$HERE" ls-files . 2>/dev/null) && [ -n "$_tracked" ]; then
-  while IFS= read -r _b; do
-    # Subdirectories are skipped UNLESS they are in _overlay_dirs, in which case their files are checked like
-    # any other -- see the comment on that list.
-    case "$_b" in
-      */*) _dir="${_b%%/*}"; _keep=0
-           for _od in "${_overlay_dirs[@]}"; do [ "$_dir" = "$_od" ] && _keep=1; done
-           [ "$_keep" = 1 ] || continue ;;
+if _tracked=$(git -C "$HERE" ls-files "${_src_dirs[@]}" 2>/dev/null) && [ -n "$_tracked" ]; then
+  while IFS= read -r _p; do
+    # Paths come back relative to the repository root now. Everything flattens to its basename in $EX_DIR except
+    # the gemv_lowbit subdirectory, which keeps its name because the #includes say so.
+    case "$_p" in
+      "$_subdir_src"/*) _b="gemv_lowbit/$(basename "$_p")" ;;
+      */data/*)         continue ;;                       # fixtures are read at runtime, not compiled
+      *)                _b="$(basename "$_p")" ;;
     esac
     echo "$_b" | grep -qE "\.($_ignored)\$" && continue
     [ -f "$EX_DIR/$_b" ] || _missing="$_missing $_b"

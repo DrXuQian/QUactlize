@@ -16,7 +16,8 @@
 #   ./run_batch.sh           all three, in that order
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
-EX="${EX:-$(cd "$HERE/../../../third_party/actlize" && pwd)/build_w4a16_compare/examples/99_kernels_w4a16_compare}"
+ROOT="$(cd "$HERE/.." && pwd)"                      # this lives in benchmarks/ now; the repo root is one up
+EX="${EX:-$ROOT/third_party/actlize/build_w4a16_compare/examples/99_kernels_w4a16_compare}"
 OUT="${OUT:-$HOME/ab}"
 BAND="${BAND:-64 8 2048 2048 32 3}"                 # L=64, top-k 8, N=K=2048, gs=32, decode
 CFG="${CFG:-16x128:256 w16x16 s2}"                  # the pinned row; SPLITK_S below pins the slice count
@@ -39,7 +40,7 @@ build_one() {  # $1 name  $2 defines  $3 target
   local name="$1" defs="$2" tgt="$3"
   local log="$OUT/build_$name.log"
   printf '  %-10s %s\n' "$name" "$defs"
-  ( cd "$HERE" && PPU_DEFS="$defs" TARGET="$tgt" ./build.sh ) >"$log" 2>&1
+  ( cd "$ROOT" && PPU_DEFS="$defs" TARGET="$tgt" ./build.sh ) >"$log" 2>&1
   if ! grep -q "PPU_DEFS verified on $tgt" "$log"; then
     # A missing verification line means the define never reached the DEVICE compile, and every number from this
     # binary would silently be the default build's.
@@ -76,11 +77,11 @@ do_check() {
   echo "-- packed, five runs (rowC has been intermittent; the cause is NOT known)"
   for i in 1 2 3 4 5; do
     printf '   run %d: ' "$i"
-    "$OUT/test_q4k_packed_gemm__gate_pack" "$HERE/real_weight/q4k_packed.bin" 2>&1 | grep -E "rowC|== (PASS|FAIL)" | tr '\n' ' '; echo
+    "$OUT/test_q4k_packed_gemm__gate_pack" "$ROOT/tests/data/q4k_packed.bin" 2>&1 | grep -E "rowC|== (PASS|FAIL)" | tr '\n' ' '; echo
   done
   for g in split swz; do
     echo "-- packed + $g"
-    "$OUT/test_q4k_packed_gemm__gate_$g" "$HERE/real_weight/q4k_packed.bin" 2>&1 | grep -E "rowA|rowB|rowC|== (PASS|FAIL)"
+    "$OUT/test_q4k_packed_gemm__gate_$g" "$ROOT/tests/data/q4k_packed.bin" 2>&1 | grep -E "rowA|rowB|rowC|== (PASS|FAIL)"
   done
   # The swizzle changes ADDRESSES, not values. Any mismatch here means a view of the scale buffer that does not carry
   # it -- i.e. the kernel writes at one address and reads at another.

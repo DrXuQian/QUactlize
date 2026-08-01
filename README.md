@@ -11,7 +11,7 @@ Q3_K, Q5_K and Q6_K — reached through **bit-plane decomposition** rather than 
 | **Mixed-input grouped GEMM** | MoE, one weight matrix per expert, per-group scale and zero. `quactlize/include/moe_grouped_ppu.cuh` |
 | **Dense mixed-input GEMM** | `fpA_intB_ppu.cuh` |
 | **Split-K grouped GEMM** | the slice on `gridDim.z`, a light reduce kernel after. `moe_splitk_ppu.cuh` |
-| **CUDA-core GEMV** | the decode band, no shared memory in the main loop. `quactlize/include/gemv/` |
+| **CUDA-core GEMV** | the decode band, no shared memory in the main loop. `quactlize/include/gemv_lowbit/` |
 | **Format definitions and the offline** | `gguf_scale_layout.hpp`, `xplane_offline.hpp`, `tools/` |
 
 ### Formats
@@ -32,7 +32,7 @@ Q3_K and Q6_K carry **no zero plane at all**: the format's centre rides on the c
 
 ```
 quactlize/include/     the kernels: launchers, format definitions, the fold/delivery traits
-quactlize/include/gemv/ the CUDA-core GEMV family (shares nothing with the cutlass path)
+quactlize/include/gemv_lowbit/ the CUDA-core GEMV family (shares nothing with the cutlass path)
 tests/                 correctness, each against an INDEPENDENT oracle -- a native golden or a host reference
 tests/data/            real-weight fixtures the tests read
 benchmarks/            timing harnesses, and run_batch.sh which pins one row and builds the traps in
