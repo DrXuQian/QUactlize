@@ -88,5 +88,11 @@ int main() {
       ++shown;
     }
   }
-  return 0;
+  // EXIT STATUS CARRIES THE VERDICT. These printed MISMATCH and returned 0, so any caller that checked
+
+  // the status -- run_batch.sh, a CI step, a shell loop -- saw a pass. The text was the only signal, and
+
+  // a harness whose only signal is text is a harness nothing can gate on.
+
+  return bad ? 1 : 0;
 }

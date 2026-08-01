@@ -14,7 +14,11 @@
 #   ./run_batch.sh check     correctness gates -- must pass before any timing is meaningful
 #   ./run_batch.sh perf      the pinned rows
 #   ./run_batch.sh           all three, in that order
-set -u
+# pipefail, because do_check pipes each executable through grep and tail: without it the pipeline reports the
+# status of `tail`, the harness's own exit code is discarded, and a MISMATCH or a crash still lets `all`
+# proceed to timing. The whole point of running the gates before the timings is that nothing below them
+# means anything if they fail.
+set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"                      # this lives in benchmarks/ now; the repo root is one up
 EX="${EX:-$ROOT/third_party/actlize/build_w4a16_compare/examples/99_kernels_w4a16_compare}"
@@ -74,19 +78,34 @@ do_check() {
   # rowC is the only row where Scale_TileK == 8, i.e. the only one on the packed path. It has been INTERMITTENT --
   # bad=128, then 724, then MATCH with no semantic source change -- and the cause is still unknown, so it is run five
   # times. A single pass proves nothing about a flaky failure.
+  local fails=0 out rc
   echo "-- packed, five runs (rowC has been intermittent; the cause is NOT known)"
   for i in 1 2 3 4 5; do
     printf '   run %d: ' "$i"
-    "$OUT/test_q4k_packed_gemm__gate_pack" "$ROOT/tests/data/q4k_packed.bin" 2>&1 | grep -E "rowC|== (PASS|FAIL)" | tr '\n' ' '; echo
+    # STATUS FIRST, filtering second: piping straight into grep reports grep's status and loses the harness's.
+    out=$("$OUT/test_q4k_packed_gemm__gate_pack" "$ROOT/tests/data/q4k_packed.bin" 2>&1) && rc=0 || rc=$?
+    printf '%s' "$out" | grep -E "rowC|== (PASS|FAIL)" | tr '\n' ' '; echo "  [exit $rc]"
+    [ "$rc" -eq 0 ] || fails=$((fails+1))
   done
   for g in split swz; do
     echo "-- packed + $g"
-    "$OUT/test_q4k_packed_gemm__gate_$g" "$ROOT/tests/data/q4k_packed.bin" 2>&1 | grep -E "rowA|rowB|rowC|== (PASS|FAIL)"
+    out=$("$OUT/test_q4k_packed_gemm__gate_$g" "$ROOT/tests/data/q4k_packed.bin" 2>&1) && rc=0 || rc=$?
+    printf '%s\n' "$out" | grep -E "rowA|rowB|rowC|== (PASS|FAIL)"; echo "   [exit $rc]"
+    [ "$rc" -eq 0 ] || fails=$((fails+1))
   done
   # The swizzle changes ADDRESSES, not values. Any mismatch here means a view of the scale buffer that does not carry
   # it -- i.e. the kernel writes at one address and reads at another.
   echo "-- swizzle alone, on the grouped verifier (addresses change, numbers must not)"
-  "$OUT/test_moe_grouped_verify__gate_swz_only" 8 1 2>&1 | tail -6
+  out=$("$OUT/test_moe_grouped_verify__gate_swz_only" 8 1 2>&1) && rc=0 || rc=$?
+  printf '%s\n' "$out" | tail -6; echo "   [exit $rc]"
+  [ "$rc" -eq 0 ] || fails=$((fails+1))
+  # THIS GATE IS CURRENTLY VACUOUS and is labelled rather than trusted: test_moe_grouped_verify hardcodes Stages = 3
+  # and the swizzle is gated on a power-of-two Stages, so PPU_SCALE_SWIZZLE changes no address in this launch. A gate
+  # that measures nothing is worse than no gate once it is believed to have passed.
+  if [ "$fails" -ne 0 ]; then
+    echo "== $fails correctness gate(s) FAILED -- the timings below would be meaningless =="; return 1
+  fi
+  echo "== all correctness gates passed =="
 }
 
 do_perf() {

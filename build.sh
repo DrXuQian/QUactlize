@@ -53,19 +53,24 @@ echo "[build.sh] CUTLASS_PPU_ARCHS=$ARCH"
 # CHEAP LOCAL CHECKS FIRST, because the expensive failures here are configure-time and box-only. Three target
 # registrations once named a helper that does not exist; nothing caught it until cmake ran on the box, which
 # costs a full pull-and-build to discover a typo.
-if [ -x "$HERE/fold_derivation/cmake_calls_check.sh" ]; then
-  "$HERE/fold_derivation/cmake_calls_check.sh" || exit 1
+if [ -x "$HERE/dev/fold_derivation/cmake_calls_check.sh" ]; then
+  "$HERE/dev/fold_derivation/cmake_calls_check.sh" || exit 1
 fi
 # NVIDIA-only spellings in box-built sources. The syntax check cannot see these: local nvcc has cuda_fp16.h
 # whether or not -D__HGGCCC__ is passed, so a wrong-platform include parses clean and only hgcc disagrees.
-if [ -x "$HERE/fold_derivation/ppu_portability_check.py" ]; then
-  "$HERE/fold_derivation/ppu_portability_check.py" || exit 1
+if [ -x "$HERE/dev/fold_derivation/ppu_portability_check.py" ]; then
+  "$HERE/dev/fold_derivation/ppu_portability_check.py" || exit 1
 fi
 # The unit generators, run against the axis lists rather than a written-down count. A malformed row once
 # produced the RIGHT unit count out of the wrong iterations, so the configure log looked correct.
-if [ -x "$HERE/fold_derivation/gen_gemv_units_check.sh" ]; then
-  "$HERE/fold_derivation/gen_gemv_units_check.sh" || exit 1
+if [ -x "$HERE/dev/fold_derivation/gen_gemv_units_check.sh" ]; then
+  "$HERE/dev/fold_derivation/gen_gemv_units_check.sh" || exit 1
 fi
+
+# The checks above live under dev/fold_derivation and are absent from a main-branch checkout, where the `-x` test
+# simply skips them. That is intended -- but it means a release build silently runs FEWER checks than a dev build, so
+# say which happened rather than leaving it to be inferred from nothing being printed.
+[ -d "$HERE/dev/fold_derivation" ] || echo "  NOTE: dev/fold_derivation absent (main checkout) -- generator and portability checks skipped"
 
 # --- overlay our example into the actlize example tree ---
 mkdir -p "$EX_DIR"
@@ -141,8 +146,14 @@ fi
 for _f in "$EX_DIR"/*; do
   [ -f "$_f" ] || continue
   _b="$(basename "$_f")"
-  if [ -f "$HERE/$_b" ] && ! cmp -s "$_f" "$HERE/$_b"; then
-    echo "  ERROR: the overlaid $_b differs from the checked-out one -- the build would not compile your tree."
+  # FIND THE SOURCE IN THE DIRECTORY IT ACTUALLY CAME FROM. This used to look for $HERE/<basename>, which was right
+  # when everything was one flat directory and is now right for almost nothing: sources live under quactlize/include,
+  # tests and benchmarks, so every comparison silently found no file and the staleness check passed vacuously -- the
+  # exact failure it exists to prevent, wearing its own uniform.
+  _src=""
+  for _sd in "${_src_dirs[@]}"; do [ -f "$HERE/$_sd/$_b" ] && _src="$HERE/$_sd/$_b" && break; done
+  if [ -n "$_src" ] && ! cmp -s "$_f" "$_src"; then
+    echo "  ERROR: the overlaid $_b differs from $_src -- the build would not compile your tree."
     exit 1
   fi
 done
@@ -151,8 +162,14 @@ for _d in "${_overlay_dirs[@]}"; do
   for _f in "$EX_DIR/$_d"/*; do
     [ -f "$_f" ] || continue
     _b="$_d/$(basename "$_f")"
-    if [ -f "$HERE/$_b" ] && ! cmp -s "$_f" "$HERE/$_b"; then
-      echo "  ERROR: the overlaid $_b differs from the checked-out one -- the build would not compile your tree."
+    # FIND THE SOURCE IN THE DIRECTORY IT ACTUALLY CAME FROM. This used to look for $HERE/<basename>, which was right
+  # when everything was one flat directory and is now right for almost nothing: sources live under quactlize/include,
+  # tests and benchmarks, so every comparison silently found no file and the staleness check passed vacuously -- the
+  # exact failure it exists to prevent, wearing its own uniform.
+  _src=""
+  for _sd in "${_src_dirs[@]}"; do [ -f "$HERE/$_sd/$_b" ] && _src="$HERE/$_sd/$_b" && break; done
+  if [ -n "$_src" ] && ! cmp -s "$_f" "$_src"; then
+      echo "  ERROR: the overlaid $_b differs from $_src -- the build would not compile your tree."
       exit 1
     fi
   done
