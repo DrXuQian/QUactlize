@@ -6,6 +6,8 @@
 //          mode 3 = DECODE batch=1 (default), 2 = skewed prefill band, 0 = uniform
 //   SPLITK_ONLY=<substring>  run only rows whose tag contains this
 //   SPLITK_ACU=1             ONE COLD launch per row (a capture, not a timing)
+#include <cstring>
+#include "cutlass/gguf_packed_scale.h"
 #include "moe_splitk_bench_common.hpp"
 #include "moe_splitk_units.inc"     // GENERATED: unit declarations + splitk_run_all()
 
@@ -84,12 +86,45 @@ int main(int argc, char** argv) {
   std::vector<half_t> hA((size_t)bd.total * bd.K), hSc((size_t)bd.L * bd.scale_k * bd.N),
                       hZr((size_t)bd.L * bd.scale_k * bd.N);
   for (auto& v : hA)  v = half_t(0.01f);
-  for (auto& v : hSc) v = half_t(0.0625f);
-  for (auto& v : hZr) v = half_t(-0.0625f);
+  // LIKE FOR LIKE. The fp16 planes and the packed units must decode to the SAME numbers, or pack-against-base times
+  // two kernels computing different things -- which is what this bench did: hZr was -0.0625 while the packed path
+  // decodes zero = 8*scale - dmin*mn, so the two representations disagreed and every pack-vs-base figure quoted so
+  // far compared different arithmetic.
+  //
+  // Pick x = 0.0625, every sc = 1, every mn = 7. Then scale = d*sc = x and zero = 8*scale - dmin*mn = 8x - 7x = x,
+  // so both planes are the constant +x and the packed unit reproduces it exactly. x is 0x2c00, well clear of the
+  // subnormal range, so nothing here exercises the denormal path either way.
+  half_t const kX(0.0625f);
+  for (auto& v : hSc) v = kX;
+  for (auto& v : hZr) v = kX;
 
   cutlass::DeviceAllocation<half_t> dA((size_t)bd.total * bd.K), dSc((size_t)bd.L * bd.scale_k * bd.N),
                                     dZr((size_t)bd.L * bd.scale_k * bd.N), dD((size_t)bd.total * bd.N);
   dA.copy_from_host(hA.data()); dSc.copy_from_host(hSc.data()); dZr.copy_from_host(hZr.data());
+
+  // The same values in the gguf's own 16-byte units, laid out [L][nsb][N][16] to match the tensor the collective
+  // builds. Bit positions come from gguf_packed_scale.h's one map rather than being written out here -- put_code is
+  // the same function the offline uses, so a change to the packing cannot leave this behind.
+  size_t const nsb = size_t(bd.scale_k) / 8;
+  cutlass::DeviceAllocation<uint8_t> dPk(nsb ? (size_t)bd.L * nsb * bd.N * 16 : 1);
+  if (bd.scale_k % 8 == 0) {
+    std::vector<uint8_t> hPk((size_t)bd.L * nsb * bd.N * 16, 0);
+    uint16_t const xb = kX.raw();
+    for (int e = 0; e < bd.L; ++e)
+      for (size_t b = 0; b < nsb; ++b)
+        for (int n = 0; n < bd.N; ++n) {
+          uint8_t* u = hPk.data() + ((size_t(e) * nsb + b) * bd.N + n) * 16;
+          std::memcpy(u + 0, &xb, 2);                      // d
+          std::memcpy(u + 2, &xb, 2);                      // dmin
+          for (int g = 0; g < 8; ++g) {
+            cutlass::gguf_packed::put_code(u, g, 0, 1);    // sc = 1  -> scale = d
+            cutlass::gguf_packed::put_code(u, g, 1, 7);    // mn = 7  -> zero  = 8*scale - 7*dmin = d
+          }
+        }
+    dPk.copy_from_host(hPk.data());
+  } else {
+    std::printf("   NOTE: scale_k %% 8 != 0, so no packed plane is built and packed rows would read the fp16 one\n");
+  }
 
   int const S_MAX = 8;
   cutlass::DeviceAllocation<half_t> dPart((size_t)S_MAX * bd.total * bd.N);
@@ -128,6 +163,7 @@ int main(int argc, char** argv) {
   SkCtx cx{};
   cx.dPart = &dPart; cx.pdAll = &pdAll; cx.pdOne = &pd; cx.sdAll = &sdAll; cx.sdOne = &sd; cx.dRef = &dRef;
   cx.dD = &dD; cx.S_max = S_MAX;
+  cx.dPackedScale = (bd.scale_k % 8 == 0) ? reinterpret_cast<half_t const*>(dPk.get()) : nullptr;
   std::printf("   in-kernel split-K: ONE launch, the slice on gridDim.z, so the concurrent grid is mt*ntile*S\n");
   SkBest b1, bS;
   std::printf("\n-- %d generated config units, S in {1,2,4,8} (legal when S divides the k-tile count) --\n",

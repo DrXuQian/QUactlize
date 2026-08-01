@@ -35,6 +35,11 @@ VARIANTS=(
   "pack:SK_QUANT=2 PPU_PACKED_SCALE=1"
   "packnop:SK_QUANT=2 PPU_PACKED_SCALE=1 PPU_PACKED_SCALE_NOP=1"
   "packsplit:SK_QUANT=2 PPU_PACKED_SCALE=1 PPU_PACKED_SPLIT_GROUPS=1"
+  # splitnop prices the split's OWN added cost -- the duplicated 16 B unit read and the duplicated per-column setup --
+  # without the decode arithmetic. packsplit alone could not tell "the placement benefit is zero" from "the added
+  # cost exceeded it", and the difference of differences can:
+  #     (packsplit - pack) - (splitnop - packnop)
+  "splitnop:SK_QUANT=2 PPU_PACKED_SCALE=1 PPU_PACKED_SPLIT_GROUPS=1 PPU_PACKED_SCALE_NOP=1"
 )
 
 build_one() {  # $1 name  $2 defines  $3 target
@@ -62,7 +67,15 @@ do_build() {
   build_one gate_pack  "PPU_PACKED_SCALE=1"                            test_q4k_packed_gemm || ok=0
   build_one gate_split "PPU_PACKED_SCALE=1 PPU_PACKED_SPLIT_GROUPS=1"  test_q4k_packed_gemm || ok=0
   build_one gate_swz   "PPU_PACKED_SCALE=1 PPU_SCALE_SWIZZLE=1"        test_q4k_packed_gemm || ok=0
+  build_one gate_swz_fp16 "PPU_SCALE_SWIZZLE=1"                        test_q4k_packed_gemm || ok=0
   build_one gate_swz_only "PPU_SCALE_SWIZZLE=1"                        test_moe_grouped_verify || ok=0
+  # THE CONTROL THAT WAS MISSING. test_moe_grouped_verify died with a device assert under PPU_SCALE_SWIZZLE=1 and I
+  # read that as the swizzle's doing -- but the verifier hardcodes Stages = 3 and the swizzle is gated on a power of
+  # two, so it was never active in that launch. The assert sits on the COARSE scale path, reached when
+  # ceil(TileK/gs) <= TileK/64, which the verifier's default gs=128 satisfies and the bench's gs=32 never does. If
+  # this default build dies identically the flag is exonerated; if only the swizzle build dies, something is
+  # macro-sensitive and neither explanation stands.
+  build_one verify_default ""                                          test_moe_grouped_verify || ok=0
   echo "== distinct-binary check =="
   # Two identical binaries mean an A/B that compares something with itself.
   local dup
@@ -95,6 +108,13 @@ do_check() {
   done
   # The swizzle changes ADDRESSES, not values. Any mismatch here means a view of the scale buffer that does not carry
   # it -- i.e. the kernel writes at one address and reads at another.
+  echo "-- swizzle alone on rowC's fp16 planes (the swizzle IS active there: TN=128, Stages=2)"
+  out=$("$OUT/test_q4k_packed_gemm__gate_swz_fp16" "$ROOT/tests/data/q4k_packed.bin" 2>&1) && rc=0 || rc=$?
+  printf '%s\n' "$out" | grep -E "rowA|rowB|rowC|== (PASS|FAIL)"; echo "   [exit $rc]"
+  [ "$rc" -eq 0 ] || fails=$((fails+1))
+  echo "-- the assert control: default build of the same verifier, no macros at all"
+  out=$("$OUT/test_moe_grouped_verify__verify_default" 8 1 2>&1) && rc=0 || rc=$?
+  printf '%s\n' "$out" | tail -3; echo "   [exit $rc]  <-- if this dies too, the assert is not the swizzle's"
   echo "-- swizzle alone, on the grouped verifier (addresses change, numbers must not)"
   out=$("$OUT/test_moe_grouped_verify__gate_swz_only" 8 1 2>&1) && rc=0 || rc=$?
   printf '%s\n' "$out" | tail -6; echo "   [exit $rc]"

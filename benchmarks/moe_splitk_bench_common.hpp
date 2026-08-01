@@ -102,6 +102,12 @@ struct SkCtx {
   cutlass::DeviceAllocation<half_t*>* pdOne;    // the plain L-entry ptr_D, for slices == 1
   cutlass::DeviceAllocation<DStride>* sdAll;    // L*S_MAX strides (the L strides repeated)
   cutlass::DeviceAllocation<DStride>* sdOne;    // the plain L-entry stride_D
+  // THE PACKED SCALE PLANE, held beside the fp16 one rather than instead of it. One generated binary contains rows
+  // whose Scale_TileK is 8 (the packed path) AND rows whose Scale_TileK is 2 or 4 (still the fp16 path), so the
+  // choice cannot be made once in main(); it is per row, below. Kept as a separate allocation and not a reinterpret
+  // of the fp16 buffer: the two byte counts are equal for this format by arithmetic
+  // (L*(scale_k/8)*N*16 == L*scale_k*N*2) and a format where they stop being equal would overrun silently.
+  half_t const* dPackedScale = nullptr;
   int S_max;
 };
 
@@ -120,9 +126,16 @@ inline void sk_row(Band const& bd, SkCtx const& cx, cutlass::DeviceAllocation<in
       return;
     }
 
+    // WHICH SCALE REPRESENTATION THIS ROW READS. kPackedScaleOn in the collective is (Scale_TileK == 8), so the row
+    // selector has to be the same expression or the pointer and the kernel disagree about what the bytes mean.
+    half_t const* scale_ptr = bd.dSc;
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
+    if (cx.dPackedScale != nullptr && (TK + bd.gs - 1) / bd.gs == 8) scale_ptr = cx.dPackedScale;
+#endif
+
     auto go = [&] {
       moe_splitk_ppu::launch_splitk<SK_QUANT_MODE, TM, TN, TK, WM, WN, Stages, int4_t>(
-          bd.dA, dB.get(), bd.dSc, bd.dZr,
+          bd.dA, dB.get(), scale_ptr, bd.dZr,
           cx.dD->get(), cx.dPart->get(),
           slices == 1 ? cx.pdOne->get() : cx.pdAll->get(),
           slices == 1 ? cx.sdOne->get() : cx.sdAll->get(), bd.gm,
