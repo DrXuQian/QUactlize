@@ -25,6 +25,25 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# WHICH PATH A HARNESS EXERCISES. Evidence is per (format, path), not per format: a harness that validates Q4_K on
+# the native-scale GEMM says nothing about Q4_K through the GEMV kernel or the dequantise-then-dense fallback. The
+# first version of the cross-check collapsed evidence to "this format has some harness" and then approved every
+# capability set containing it, which is how a set can look validated while nothing has ever run it.
+#
+# Path names match quactlize.formats' capability sets. "scale_decode" and "probe" are not GEMM paths -- they are
+# harnesses for a component -- and are named so they cannot be mistaken for evidence of a path.
+GEMV_P, NATIVE_P, FP16_P, DENSE_P = "gemv", "fused_native_scale", "fused_fp16_scale", "dequant_then_dense"
+
+HARNESS_PATHS = {
+    "test_moe_grouped_verify": [FP16_P], "test_moe_grouped_real": [FP16_P], "test_lowbit_grouped": [FP16_P],
+    "test_q3_concat_real": [FP16_P], "test_q3_bconcat_real": [FP16_P], "test_q65_bconcat_real": [FP16_P],
+    "test_w2a16_real": [FP16_P], "test_q4k_packed_gemm": [NATIVE_P, FP16_P], "test_q4k_native_scale": ["scale_decode"],
+    "test_ppu_f16x2_probe": ["probe"], "test_w1a16_grouped": [FP16_P], "test_w2a16_grouped": [FP16_P],
+    "test_w1a16_diag": [FP16_P], "test_w2a16_diag": [FP16_P], "test_w4a16_diag": [FP16_P],
+    "test_fpA_intB_ppu": [FP16_P], "test_gemv_lowbit": [GEMV_P], "test_moe_gemm_ppu": [FP16_P],
+    "test_moe_grouped_ppu": [FP16_P],
+}
+
 # harness -> (formats it covers, oracle kind, fixture it must read or None, note)
 HARNESSES = {
     "test_moe_grouped_verify":  (["int4"],            "self",      None,
@@ -42,7 +61,8 @@ HARNESSES = {
     "test_w2a16_real":          (["gguf-q2k"],        "real",      "real_q2k_ffn_gate_L0.bin",
         "int2 on a real 3B ffn_gate slice at gs=16"),
     "test_q4k_packed_gemm":     (["gguf-q4k"],        "real",      "q4k_packed.bin",
-        "the native 16 B scale unit end to end; rowC is the only Scale_TileK==8 row"),
+        "rowA/rowB run Q4_K on fp16 scale planes and rowC on the native 16 B unit, so it is evidence for BOTH paths; "
+        "rowC is the only Scale_TileK==8 row and the only one that has been intermittent"),
     "test_q4k_native_scale":    (["gguf-q4k"],        "real",      "q4k_packed.bin",
         "device decode vs a host reference, no GEMM"),
     "test_ppu_f16x2_probe":     (["gguf-q4k"],        "synthetic", None,
@@ -53,7 +73,11 @@ HARNESSES = {
     "test_w2a16_diag":          (["int2"],            "synthetic", None, "diagonal probe"),
     "test_w4a16_diag":          (["int4"],            "synthetic", None, "diagonal probe"),
     "test_fpA_intB_ppu":        (["int4"],            "self",      None, "dense launcher sweep"),
-    "test_gemv_lowbit":         (["int4", "int2", "int1"], "synthetic", None, "CUDA-core GEMV"),
+    # Also declares gptq-int4-sym, and the reason is representational rather than a second harness: this sweep
+    # instantiates a scale-only quant op with fp16 per-group scales over packed int4, which IS the GPTQ symmetric
+    # representation -- same packing, same scale dtype, zero folded into the code range. What it does NOT cover is a
+    # real GPTQ checkpoint reaching the GEMV, so the oracle stays synthetic.
+    "test_gemv_lowbit":         (["int4", "int2", "int1", "gptq-int4-sym"], "synthetic", None, "CUDA-core GEMV"),
     "test_moe_gemm_ppu":        (["int4"],            "self",      None, ""),
     "test_moe_grouped_ppu":     (["int4"],            "self",      None, ""),
 }
@@ -73,24 +97,39 @@ FORMAT_TO_QUANT_TYPE = {
 }
 
 
+def coverage_by_path():
+    """(format, path) -> the strongest oracle any harness gives that pair."""
+    rank = {"self": 0, "synthetic": 1, "real": 2}
+    best = {}
+    for name, (fmts, oracle, _fx, _n) in HARNESSES.items():
+        for path in HARNESS_PATHS.get(name, []):
+            for f in fmts:
+                key = (f, path)
+                if rank[oracle] > best.get(key, (None, -1))[1]:
+                    best[key] = (f"{name} ({oracle})", rank[oracle])
+    return {k: v[0] for k, v in best.items()}
+
+
 def check_against_formats():
-    """Every format in a capability set must have at least a synthetic oracle here. Returns a list of problems."""
+    """Every (format, path) a capability set claims must have at least a synthetic oracle. Returns a list of
+    problems, EACH ONE A CAPABILITY CLAIM WITH NOTHING BEHIND IT -- not a test failure, a claim to withdraw."""
     try:
         sys.path.insert(0, str(ROOT))
         from quactlize import formats
     except Exception as e:                                  # formats.py is pure python; an import failure IS a problem
         return [f"cannot import quactlize.formats to cross-check capability claims: {e}"]
 
-    have = coverage()
+    have = coverage_by_path()
     quant_to_format = {v: k for k, v in FORMAT_TO_QUANT_TYPE.items()}
     bad = []
-    for set_name in ("GEMV", "FUSED_NATIVE_SCALE", "FUSED_FP16_SCALE", "DEQUANT_THEN_DENSE"):
-        for q in getattr(formats, set_name):
+    for set_name, path in (("GEMV", GEMV_P), ("FUSED_NATIVE_SCALE", NATIVE_P),
+                           ("FUSED_FP16_SCALE", FP16_P), ("DEQUANT_THEN_DENSE", DENSE_P)):
+        for q in sorted(getattr(formats, set_name), key=lambda x: x.name):
             fmt = quant_to_format.get(q.name)
             if fmt is None:
                 bad.append(f"formats.{set_name} contains {q.name}, which no registry format maps to")
-            elif not have.get(fmt):
-                bad.append(f"formats.{set_name} claims {q.name}, but no harness validates {fmt!r}")
+            elif not have.get((fmt, path)):
+                bad.append(f"formats.{set_name} claims {q.name}, but no harness runs {fmt!r} through {path!r}")
     return bad
 
 

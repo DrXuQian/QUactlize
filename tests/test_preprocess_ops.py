@@ -6,16 +6,23 @@ and hardest: a kernel that reads a correct layout wrongly fails loudly on the bo
 here fails as wrong numbers much later, with nothing in the tensor's dtype or shape to say which physical format it
 is actually in.
 
-WHAT COUNTS AS AN ORACLE HERE. Every check below either
+WHAT COUNTS AS AN ORACLE HERE, AND WHAT DOES NOT. Three strengths appear below, and each test says which it has,
+because an earlier version of this docstring claimed all of them were the strongest and that was not true:
 
-  (a) compares against a *different* implementation -- torch's own transpose, an inverse op, a python re-derivation
-      of the index arithmetic; or
-  (b) asserts a structural INVARIANT that holds regardless of the layout's details -- byte count preserved, value
-      multiset preserved, the transform injective.
+  (a) INDEPENDENT -- a different implementation. torch's own transpose; a torch reimplementation of the quantiser;
+      hand-computed byte literals. These can catch a shared misconception.
+  (b) INVARIANT -- a structural property that holds whatever the layout is: byte count preserved, value multiset
+      preserved, the transform injective. Blind to which arrangement was chosen, sharp about corruption.
+  (c) MUTUAL -- an inverse pair, or two ops sharing a convention. pack/unpack round trips, and any test that
+      unpacks the output with the production unpacker, are this. A convention wrong in BOTH -- reversed nibble
+      order, say -- survives every one of them.
 
-Neither form reconstructs the expected answer by calling the code under test, which is the way a preprocessing test
-usually manages to pass while the layout is wrong. Where an oracle is a re-derivation rather than an independent
-implementation, the docstring says so -- it catches transcription and build problems, not a shared misconception.
+The (c) checks are still worth having, and they are the majority: they catch corruption, shape errors and
+regressions. But they cannot establish the packed-byte convention, so test_packed_byte_convention_is_pinned_by_hand
+does that with literals worked out by hand, and the rest are honest about resting on it.
+
+NOTHING HERE ESTABLISHES THE PHYSICAL LAYOUT THE DEVICE WANTS. The layout transforms are checked for
+self-consistency and memory safety only; the oracle for "is this what the AIU reads" is a kernel on the box.
 
     pytest tests/test_preprocess_ops.py -v
 """
@@ -57,11 +64,40 @@ def unpack_nibbles(packed: torch.Tensor) -> torch.Tensor:
 
 
 # ---------------------------------------------------------------------------------------------------------------
-# pack / unpack: an inverse pair, so each is the other's oracle
+# pack / unpack
 # ---------------------------------------------------------------------------------------------------------------
+
+def test_packed_byte_convention_is_pinned_by_hand():
+    """INDEPENDENT. The one check here that does not rest on the convention it is testing.
+
+    Values -8..7 in order, so the nibbles are 0x8,0x9,0xA,...,0xF,0x0,0x1,...,0x7. Two int4 go per byte, LOW NIBBLE
+    FIRST: byte i is (nibble[2i+1] << 4) | nibble[2i]. Byte 0 is therefore (0x9 << 4) | 0x8 = 0x98, and byte 4 --
+    where the values cross zero -- is (0x1 << 4) | 0x0 = 0x10. Worked out by hand from that sentence rather than
+    produced by running anything.
+
+    Without this, every other test in this section is mutual: pack and unpack could agree on the REVERSED order and
+    round-trip perfectly, the transpose oracle packs both sides with the same packer, and the quantiser comparison
+    decodes with the same unpacker. A convention wrong in all of them is invisible to all of them."""
+    w = torch.arange(-8, 8, dtype=torch.int8).reshape(1, 16)
+    got = Q.pack_int8_tensor_to_packed_int4(w).flatten().tolist()
+    want = [0x98, 0xBA, 0xDC, 0xFE, 0x10, 0x32, 0x54, 0x76]
+    assert got == [b if b < 128 else b - 256 for b in want], f"packed bytes {[x & 0xFF for x in got]!r}"
+
+
+def test_unpack_sign_extends_independently_of_the_packer():
+    """INDEPENDENT of the packer: the input bytes are literals, and the expected values are read off the nibbles by
+    hand. A high nibble of 0x8 is -8, not +8; an unpacker that forgot the sign extension would pass every round-trip
+    test in this file and fail this one."""
+    packed = torch.tensor([[0x80 - 256, 0x0F, 0x71]], dtype=torch.int8)
+    got = Q.unpack_int4_packed_tensor_to_int8(packed).flatten().tolist()
+    assert got == [0, -8, -1, 0, 1, 7]
+
+
 
 @pytest.mark.parametrize("shape", [(64, 128), (2, 64, 128), (256, 256), (1, 32, 64)])
 def test_int4_pack_unpack_is_exact_inverse(shape):
+    """MUTUAL: an inverse pair. Catches corruption and shape errors; cannot see a convention wrong in both halves --
+    that is what test_packed_byte_convention_is_pinned_by_hand is for."""
     w = torch.randint(-8, 8, shape, dtype=torch.int8)
     p = Q.pack_int8_tensor_to_packed_int4(w)
     assert p.shape[:-1] == w.shape[:-1] and p.shape[-1] == w.shape[-1] // 2
@@ -88,8 +124,9 @@ def test_int4_pack_covers_the_whole_code_range():
 
 @pytest.mark.parametrize("shape", [(64, 128), (128, 64), (2, 64, 128), (256, 256)])
 def test_subbyte_transpose_matches_torch_transpose(shape):
-    """THE STRONGEST ORACLE IN THIS FILE. Unpack, transpose in torch, repack, and compare against transposing the
-    packed form directly. Nothing in the chain shares code with subbyte_transpose.
+    """INDEPENDENT for the TRANSPOSE, mutual for the packing. torch's transpose owes nothing to subbyte_transpose,
+    so a wrong transpose is caught. But both sides are packed by the production packer, so a wrong packing convention
+    cancels and is invisible here; test_packed_byte_convention_is_pinned_by_hand carries that.
 
     Compared FLATTENED, because the op's returned shape does not describe its contents -- see the next test."""
     w = torch.randint(-8, 8, shape, dtype=torch.int8)
@@ -151,15 +188,22 @@ def test_preprocess_is_a_permutation_composed_with_the_plus_8_bias(shape):
 
 
 def test_preprocess_is_injective():
-    """Two different weights must not preprocess to the same bytes. A permutation is injective for free; a transform
-    that overwrote part of its output -- an index formula that collides -- would not be, and would still pass the
-    multiset check if the collision happened to duplicate an equal value."""
-    a = torch.randint(-8, 8, (256, 256), dtype=torch.int8)
-    b = a.clone()
-    b[7, 11] = -8 if a[7, 11] != -8 else 7
-    pa, pb = (Q.pack_int8_tensor_to_packed_int4(x) for x in (a, b))
-    ta, tb = (Q.preprocess_weights_for_mixed_gemm(x, INT4, False, False) for x in (pa, pb))
-    assert not torch.equal(ta, tb), "a one-element change vanished in preprocessing"
+    """INVARIANT. A permutation is injective for free; a transform that overwrote part of its output -- an index
+    formula that collides -- would not be, and would still pass the multiset check whenever the collision happened
+    to duplicate an equal value.
+
+    Every position is perturbed in turn along two diagonals rather than one hand-picked coordinate: a collision
+    affects specific indices, and testing one index tests one index. Diagonals because they cross every row and
+    every column of the tile structure the transform is built around."""
+    a = torch.randint(-7, 7, (256, 256), dtype=torch.int8)
+    pa = Q.pack_int8_tensor_to_packed_int4(a)
+    ta = Q.preprocess_weights_for_mixed_gemm(pa, INT4, False, False)
+    for i in range(0, 256, 8):
+        for r, c in ((i, i), (i, 255 - i)):
+            b = a.clone()
+            b[r, c] = a[r, c] + 1                       # in range: a was drawn from [-7, 7)
+            tb = Q.preprocess_weights_for_mixed_gemm(Q.pack_int8_tensor_to_packed_int4(b), INT4, False, False)
+            assert not torch.equal(ta, tb), f"changing element ({r},{c}) vanished in preprocessing"
 
 
 def test_int8_preprocess_shifts_by_128():
@@ -263,7 +307,10 @@ def test_symmetric_quantize_codes_match_an_independent_reimplementation():
     torch.manual_seed(0)
     w = torch.randn(128, 64, dtype=torch.float16) * 3.0
     packed_unproc, _, stored_scale = Q._symmetric_quantize_last_axis_of_batched_matrix(w, INT4, 80)
-    got = Q.unpack_int4_packed_tensor_to_int8(packed_unproc).to(torch.int64)
+    # Decoded with the pure-python nibble reader, not the production unpacker: the quantiser and the unpacker share
+    # the low-nibble-first convention, so using the unpacker here would let a wrong convention cancel itself out.
+    nib = unpack_nibbles(packed_unproc).to(torch.int64)
+    got = torch.where(nib >= 8, nib - 16, nib).reshape(w.shape)          # sign-extend 4 bits, written out here
 
     scale_f32 = w.abs().amax(dim=0).to(torch.float32) / 8.0
     # C's round() is HALF AWAY FROM ZERO; torch.round is half to even. With torch.round, 3 of 8192 codes differ --

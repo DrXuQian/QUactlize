@@ -9,9 +9,25 @@
 //   LayoutDetailsB<TypeB, Arch>                                 -- per (element, architecture) preprocessing traits:
 //       which layout B is stored in and the interleave granularity.
 //
-// THE VALUES BELOW ARE THE PPU's, NOT NVIDIA's, and that is the point of shimming rather than vendoring: the upstream
-// header answers "what does an SM75/SM80 tensor core want", and this tree's answer is the AIU's. They are declared
-// here so that a wrong interleave is a visible constant rather than a silent inheritance from another accelerator.
+// STATUS OF THE VALUES BELOW: NVIDIA-DERIVED, MEMORY-SAFE, PPU-UNVERIFIED. This header once claimed they were "the
+// PPU's, not NVIDIA's". That claim is false and the correction matters more than the constant it corrects.
+//
+// ColumnsInterleaved = ElementsPerCacheLine / ThreadblockK, with a 128-byte line, is TensorRT-LLM's own expression
+// for an SM75/SM80 tensor core, reproduced here exactly. Fixing the earlier hardcoded 256 made the preprocessing
+// memory-safe -- it was writing a buffer's length past its destination -- and made it agree with the NVIDIA-derived
+// consumer. It did NOT establish that this is what the PPU's AIU wants. A cache line size cannot determine a
+// swizzle on its own: lane mapping, load width, the MMA K tile and the consumer's own address arithmetic do.
+//
+// Note also that the preprocessing COMPOSES two layouts -- this column interleave first, then the PPU-specific
+// 256-row AIU interleave in cutlass_preprocessors.cpp. The AIU test compares the two-step result against the
+// one-step result, so both sides contain this transform and the test is structurally blind to it being wrong.
+//
+// What would settle it, in increasing order of what it proves:
+//   * the device kernel's B-load offset and lane map, or the vendor's preprocessing contract for that kernel;
+//   * an offset-by-offset comparison of this output against the device iterator's expected addresses;
+//   * an end-to-end PPU run on basis-vector weights against a CPU dense golden, at shapes where k and n are not
+//     multiples of each other or of the tile.
+// Until one of those exists, do not describe this as the layout the PPU kernels assume.
 //
 // Anything using a specialisation that is not listed falls back to the unspecialised template, which has no members
 // and therefore fails to compile -- deliberately. A missing (element, arch) pair must be added on purpose.

@@ -323,7 +323,19 @@ Tensor pack_int8_tensor_to_packed_int4(Tensor weight)
     TORCH_CHECK(weight.numel() != 0, "weight should not be empty tensor");
     TORCH_CHECK(weight.dtype() == torch::kInt8, "Weight must be a int8 tensor");
 
-    std::vector<long int> packed_tensor_size(weight.dim());
+        // THE LAST DIMENSION MUST BE EVEN. The loop below is FLAT -- it reads unpacked_ptr[2*i] and [2*i+1] over the whole
+    // buffer -- so an odd last dimension breaks in three ways at once, and only the third is loud:
+    //   * the output is sized ceil(n/2), so the final iteration reads one element past the tensor;
+    //   * every row after the first is packed against the wrong partner: with shape (2,3), elements 3 and 4 -- the
+    //     last of row 0 and the first of row 1 -- land in the same byte;
+    //   * unpacking doubles the last dimension, so the round trip cannot even return the original shape.
+    // Padding would hide all three. Rejecting is the honest answer: a caller with an odd dimension has to decide what
+    // the padding means, and that is not a decision this function can make for them.
+    TORCH_CHECK(weight.size(weight.dim() - 1) % 2 == 0,
+                "the last dimension must be even to pack two int4 per byte; got ", weight.size(weight.dim() - 1),
+                ". Pad or reshape at the call site, where what the padding means is known.");
+
+std::vector<long int> packed_tensor_size(weight.dim());
     for (int i = 0; i < weight.dim(); ++i) {
         packed_tensor_size[i] = weight.size(i);
     }
@@ -358,7 +370,19 @@ Tensor pack_uint8_tensor_to_packed_uint4(Tensor weight)
     TORCH_CHECK(weight.numel() != 0, "weight should not be empty tensor");
     TORCH_CHECK(weight.dtype() == torch::kInt8, "Weight must be a int8 tensor");
 
-    std::vector<long int> packed_tensor_size(weight.dim());
+        // THE LAST DIMENSION MUST BE EVEN. The loop below is FLAT -- it reads unpacked_ptr[2*i] and [2*i+1] over the whole
+    // buffer -- so an odd last dimension breaks in three ways at once, and only the third is loud:
+    //   * the output is sized ceil(n/2), so the final iteration reads one element past the tensor;
+    //   * every row after the first is packed against the wrong partner: with shape (2,3), elements 3 and 4 -- the
+    //     last of row 0 and the first of row 1 -- land in the same byte;
+    //   * unpacking doubles the last dimension, so the round trip cannot even return the original shape.
+    // Padding would hide all three. Rejecting is the honest answer: a caller with an odd dimension has to decide what
+    // the padding means, and that is not a decision this function can make for them.
+    TORCH_CHECK(weight.size(weight.dim() - 1) % 2 == 0,
+                "the last dimension must be even to pack two int4 per byte; got ", weight.size(weight.dim() - 1),
+                ". Pad or reshape at the call site, where what the padding means is known.");
+
+std::vector<long int> packed_tensor_size(weight.dim());
     for (int i = 0; i < weight.dim(); ++i) {
         packed_tensor_size[i] = weight.size(i);
     }

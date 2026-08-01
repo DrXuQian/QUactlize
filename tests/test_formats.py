@@ -8,6 +8,8 @@ adds them up.
 
 Needs no torch and no device.
 """
+from pathlib import Path
+
 import pytest
 
 from quactlize.formats import (BLOCKS, DEQUANT_THEN_DENSE, FUSED_FP16_SCALE, FUSED_NATIVE_SCALE, GEMV, QuantType,
@@ -73,22 +75,51 @@ def test_every_kquant_needs_a_native_channel_and_gptq_does_not():
 # dispatch
 # ---------------------------------------------------------------------------------------------------------------
 
-def test_decode_takes_the_gemv_path_and_prefill_the_dense_one():
-    assert select_path(QuantType.Q4_K, 1) == "gemv"
-    assert select_path(QuantType.Q4_K, 2048) == "dequant_then_dense"
+def test_decode_uses_the_only_gemv_the_repo_has_evidence_for():
+    """GPTQ symmetric is the one format with a validated GEMV here. Q4_K is deliberately absent: a Q4_K GEMV exists
+    in the wider tree, but the ones in this repository read fp16 scale planes, which at decode would have to be
+    resident -- the stored-byte increase the constraint forbids."""
     assert select_path(QuantType.GPTQ_INT4_SYM, 1) == "gemv"
+    assert QuantType.Q4_K not in GEMV
+    assert select_path(QuantType.Q4_K, 1) == "fused_native_scale"
 
 
 def test_the_middle_band_prefers_native_scale_when_it_exists():
     assert select_path(QuantType.Q4_K, 128) == "fused_native_scale"
-    assert select_path(QuantType.Q4_K, 128, native_scale_available=False) == "fused_fp16_scale"
 
 
-def test_a_format_without_a_fast_path_falls_back_rather_than_failing():
-    """Q3_K has no GEMV kernel. At one row it must still produce an answer, on a slower path -- falling back is a
-    real outcome, and it is the difference between 'slow' and 'unsupported'."""
-    assert QuantType.Q3_K not in GEMV
-    assert select_path(QuantType.Q3_K, 1) == "fused_fp16_scale"
+def test_storage_admissibility_is_part_of_selection_not_a_separate_check():
+    """THE POINT OF THIS FILE IN ONE TEST. Q4_K without its native channel has only plane-consuming paths left, and
+    materialising those planes is the increase the constraint forbids. Selection must refuse, not quietly route
+    there -- an earlier version returned fused_fp16_scale for a format its own needs_native_scale() called
+    inadmissible, which is the file contradicting itself."""
+    assert needs_native_scale(QuantType.Q4_K)
+    with pytest.raises(NotImplementedError, match="grows the stored weight"):
+        select_path(QuantType.Q4_K, 128, native_scale_available=False)
+
+
+def test_transient_planes_are_allowed_because_a_workspace_is_not_storage():
+    """The constraint is on STORED bytes. A prefill pre-pass may build fp16 planes and discard them; the weight on
+    disk and in HBM is unchanged. That is what separates 'Q3_K cannot ship' from 'Q3_K cannot prefill'."""
+    assert select_path(QuantType.Q3_K, 2048, fp16_planes="workspace") == "fused_fp16_scale"
+    assert select_path(QuantType.Q4_K, 128, native_scale_available=False,
+                       fp16_planes="workspace") == "fused_fp16_scale"
+    with pytest.raises(NotImplementedError):
+        select_path(QuantType.Q3_K, 2048, fp16_planes="never")
+
+
+def test_a_format_whose_scales_are_already_fp16_needs_no_special_pleading():
+    """GPTQ symmetric passes fp16_planes='auto' because its scales ARE fp16 planes -- nothing is materialised, so
+    nothing grows. This is the mechanism by which one format can ship today and the k-quants cannot."""
+    assert select_path(QuantType.GPTQ_INT4_SYM, 128) == "fused_fp16_scale"
+    assert storage_growth(QuantType.GPTQ_INT4_SYM) == 0.0
+
+
+def test_the_dense_fallback_is_empty_and_that_is_a_recorded_gap():
+    """No harness in this repository runs any format through dequantise-then-dense against an independent oracle, so
+    the set is empty. It listed all six k-quants until evidence was checked per (format, path) rather than per
+    format. An empty set that says why beats a populated one nobody has run."""
+    assert DEQUANT_THEN_DENSE == frozenset()
 
 
 def test_a_format_with_no_path_at_all_raises():
@@ -106,6 +137,15 @@ def test_native_scale_set_is_a_subset_of_the_fp16_one():
 def test_gemv_formats_have_a_batched_path_too():
     """Anything that can decode must also be able to prefill; a model cannot run on the decode path alone."""
     assert GEMV <= (FUSED_FP16_SCALE | DEQUANT_THEN_DENSE)
+
+
+def test_every_capability_claim_has_evidence_behind_it():
+    """The registry cross-check, run from the test suite as well as from the CI tier, because this is the assertion
+    that keeps formats.py from becoming a wish list. Each problem it reports is a claim to withdraw."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ci"))
+    import registry
+    assert registry.check_against_formats() == []
 
 
 def test_report_names_every_format():

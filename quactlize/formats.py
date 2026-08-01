@@ -112,8 +112,13 @@ BLOCKS: Dict[QuantType, BlockLayout] = {
 # packed int4, so materialising them as fp16 is a 4x increase on that tensor and it must be decoded on device.
 NON_BLOCK_SCALE_GROWTH: Dict[QuantType, Optional[float]] = {
     QuantType.GPTQ_INT4_SYM: 0.0,
-    QuantType.GPTQ_INT4_ASYM: 0.0,
-    QuantType.AWQ_INT4: None,      # not a single ratio: only the zero-point tensor grows, and it grows 4x
+    # ASYMMETRIC GPTQ IS NOT FREE, though its scales are fp16 like the symmetric case. It also carries qzeros, packed
+    # 4-bit inside int32 (vLLM models them exactly that way), and expanding those to fp16 is a 4x increase on that
+    # tensor. This entry read 0.0 because "GPTQ scales are already fp16" was applied to the whole format instead of to
+    # the scale tensor alone -- the same shape of error as reading a numerator for a quotient. None, not a number:
+    # the ratio depends on group size and shape, so there is no single figure to quote.
+    QuantType.GPTQ_INT4_ASYM: None,
+    QuantType.AWQ_INT4: None,      # same reason: only the zero-point tensor grows, and it grows 4x
 }
 
 
@@ -125,8 +130,11 @@ NON_BLOCK_SCALE_GROWTH: Dict[QuantType, Optional[float]] = {
 # run -- at the storage cost computed above, which for Q2_K is +52% and therefore not shippable.
 # ---------------------------------------------------------------------------------------------------------------
 
-#: single-token decode, CUDA-core GEMV
-GEMV: FrozenSet[QuantType] = frozenset({QuantType.GPTQ_INT4_SYM, QuantType.Q4_K})
+#: single-token decode, CUDA-core GEMV.
+#: Q4_K IS NOT HERE, though a Q4_K GEMV exists elsewhere in the wider tree. In quactlize the GEMV kernels read fp16
+#: scale planes, and for Q4_K at decode those planes would have to be resident -- exactly the stored-byte increase
+#: the constraint forbids. A Q4_K entry needs a GEMV that reads the native 16-byte scale unit, not a harness.
+GEMV: FrozenSet[QuantType] = frozenset({QuantType.GPTQ_INT4_SYM})
 
 #: the fused mixed-input tensor-core GEMM, fp16 scale planes
 FUSED_FP16_SCALE: FrozenSet[QuantType] = frozenset({
@@ -137,9 +145,13 @@ FUSED_FP16_SCALE: FrozenSet[QuantType] = frozenset({
 FUSED_NATIVE_SCALE: FrozenSet[QuantType] = frozenset({QuantType.Q4_K})
 
 #: dequantise to fp16 then a dense GEMM. Wins above roughly M=512, where the weight read stops dominating.
-DEQUANT_THEN_DENSE: FrozenSet[QuantType] = frozenset({
-    QuantType.GPTQ_INT4_SYM, QuantType.Q2_K, QuantType.Q3_K, QuantType.Q4_K, QuantType.Q5_K, QuantType.Q6_K,
-})
+#:
+#: EMPTY, DELIBERATELY. The path was measured elsewhere -- 2.1x faster than fused at M=2048 -- but no harness in this
+#: repository runs any format through it against an independent oracle, and a benchmark is not an oracle. The set
+#: listed all six formats until evidence was checked per (format, path) instead of per format, at which point every
+#: one of those six entries turned out to rest on a harness for a different path. Populating it requires a dense-path
+#: harness, not an edit here.
+DEQUANT_THEN_DENSE: FrozenSet[QuantType] = frozenset()
 
 #: Above this many rows the dense path's extra pass over the weights is repaid. Measured, not assumed: at 2048 it
 #: was 2.1x faster than the fused path. The crossover itself has not been swept, so the constant is a boundary
@@ -150,23 +162,50 @@ DENSE_CROSSOVER_ROWS = 512
 GEMV_MAX_ROWS = 1
 
 
-def select_path(qtype: QuantType, num_rows: int, native_scale_available: bool = True) -> str:
+def select_path(qtype: QuantType, num_rows: int, native_scale_available: bool = True,
+                fp16_planes: str = "auto") -> str:
     """Which implementation should run this (format, shape). Returns a path name, or raises if none can.
 
-    The order matters and is the same as vLLM's: try the fastest path the format is actually in, then fall back,
-    then fail loudly. Falling back is a real outcome, not an error -- but silently producing a wrong answer is not
-    an option anywhere in this file.
+    THE STORAGE CONSTRAINT IS PART OF THE SELECTION, not a separate check someone remembers to make. A path that
+    consumes fp16 scale planes is only admissible if those planes are allowed to exist, and for a format whose
+    native scale meta is smaller than fp16 planes -- every k-quant -- materialising them is exactly the increase the
+    constraint forbids. An earlier version routed Q3_K to fused_fp16_scale while needs_native_scale(Q3_K) was True,
+    which is a contradiction the file itself could have caught.
+
+    But "forbidden" is about STORED bytes, not about bytes that exist for the duration of one call. Prefill can
+    convert scales into a transient workspace and the weight on disk and in HBM is unchanged; decode cannot, because
+    the planes would have to be resident for every token. So the caller says which situation it is in:
+
+      fp16_planes="auto"       planes are free for formats that do not need a native channel (their scales already
+                               ARE fp16), and forbidden for the ones that do. The conservative reading, and the
+                               right default for a resident weight.
+      fp16_planes="workspace"  the caller will build the planes transiently and discard them; permitted for any
+                               format. This is the prefill pre-pass.
+      fp16_planes="never"      do not consider a plane-consuming path at all.
     """
+    if fp16_planes not in ("auto", "workspace", "never"):
+        raise ValueError(f"fp16_planes must be auto, workspace or never; got {fp16_planes!r}")
+    planes_ok = {"never": False,
+                 "workspace": True,
+                 "auto": not needs_native_scale(qtype)}[fp16_planes]
+
+    # The order is the same as vLLM's: try the fastest path the format is actually in, then fall back, then fail
+    # loudly. Falling back is a real outcome; silently producing a wrong answer is not an option anywhere here.
     if num_rows <= GEMV_MAX_ROWS and qtype in GEMV:
         return "gemv"
-    if num_rows >= DENSE_CROSSOVER_ROWS and qtype in DEQUANT_THEN_DENSE:
+    if num_rows >= DENSE_CROSSOVER_ROWS and qtype in DEQUANT_THEN_DENSE and planes_ok:
         return "dequant_then_dense"
     if native_scale_available and qtype in FUSED_NATIVE_SCALE:
         return "fused_native_scale"
-    if qtype in FUSED_FP16_SCALE:
+    if qtype in FUSED_FP16_SCALE and planes_ok:
         return "fused_fp16_scale"
-    if qtype in DEQUANT_THEN_DENSE:
+    if qtype in DEQUANT_THEN_DENSE and planes_ok:
         return "dequant_then_dense"
+    if not planes_ok and (qtype in FUSED_FP16_SCALE or qtype in DEQUANT_THEN_DENSE):
+        raise NotImplementedError(
+            f"{qtype.name} at {num_rows} rows has only fp16-scale-plane paths, and materialising those planes grows "
+            f"the stored weight by {storage_growth(qtype) if storage_growth(qtype) is not None else float('nan'):.1%}"
+            f". Pass fp16_planes='workspace' if the planes are transient, or give the format a native scale channel.")
     raise NotImplementedError(f"{qtype.name} has no path at {num_rows} rows")
 
 
