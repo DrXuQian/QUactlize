@@ -32,25 +32,39 @@ ARCH="${PPU_ARCHS:-ppu0010}"
 # Default to this box's SDK location; override with PPU_SDK=<path> (or PPU_HOME) if it moves.
 PPU_SDK_ROOT="${PPU_SDK:-${PPU_HOME:-/sim/eec/shared/junfu.qx/PPU_SDK}}"
 
-if [ ! -x "$PPU_SDK_ROOT/bin/hgcc" ]; then
-  echo "ERROR: hgcc not found at $PPU_SDK_ROOT/bin/hgcc. Set PPU_SDK=<path> and re-run." >&2
-  exit 1
+# --print-overlay: the EXACT list of files the overlay would copy, one per line, then exit. This exists so that
+# nothing else has to MODEL this script. dev/fold_derivation/overlay_targets_check.py used to reconstruct the globs
+# in python and got them subtly wrong -- it applied the common extension list to dev/, which this script's dev glob
+# does not, and it parsed `_src_dirs=(...)` with python .split(), so quoting the entries would have broken it. Both
+# were found by review rather than by use, which is the point: a second implementation of a list is a second list.
+#
+# Deliberately BEFORE the SDK check. The cheap local checks below are the ones a developer without a PPU can run,
+# and gating them on hgcc means they never run anywhere they would be useful.
+if [ "${1:-}" = "--print-overlay" ]; then
+  shopt -s nullglob
+  for _sd in "${_src_dirs[@]}"; do
+    for _f in "$HERE/$_sd"/*.cu "$HERE/$_sd"/*.cpp "$HERE/$_sd"/*.cuh "$HERE/$_sd"/*.hpp "$HERE/$_sd"/*.h "$HERE/$_sd"/*.inc; do
+      printf '%s\n' "$_f"
+    done
+  done
+  if [ -d "$HERE/dev" ]; then
+    for _f in "$HERE/dev"/*.cu "$HERE/dev"/*.cuh "$HERE/dev"/*.hpp "$HERE/dev"/*.h "$HERE/dev"/*.inc; do
+      printf '%s\n' "$_f"
+    done
+  fi
+  for _f in "$HERE/$_subdir_src"/*.cu "$HERE/$_subdir_src"/*.cpp "$HERE/$_subdir_src"/*.cuh "$HERE/$_subdir_src"/*.hpp "$HERE/$_subdir_src"/*.h "$HERE/$_subdir_src"/*.inc; do
+    printf 'gemv_lowbit/|%s\n' "$_f"
+  done
+  shopt -u nullglob
+  printf 'CMakeLists.txt|%s\n' "$HERE/quactlize/csrc/CMakeLists.txt.in"
+  exit 0
 fi
-export PATH="$PPU_SDK_ROOT/bin:$PATH"
 
-cleanup() {
-  # Restore ONLY the example-list registration + remove the overlay. The actlize W4A16 changes now live as real
-  # commits on the DrXuQian/actlize fork (submodule branch ppu-w4a16-dev), NOT as build-time patches, so we must
-  # NOT `git checkout --` the include/ files here (that would wipe uncommitted collective WIP during iteration).
-  git -C "$ACTLIZE" checkout -- examples/CMakeLists.txt 2>/dev/null || true
-  rm -rf "$EX_DIR"
-}
-trap cleanup EXIT
-echo "[build.sh] CUTLASS_PPU_ARCHS=$ARCH"
-
-# NOTE: the former MoE/gs32 *.patch files are now baked into the submodule (fork ppu-w4a16-dev). No patch step.
-
-# CHEAP LOCAL CHECKS FIRST, because the expensive failures here are configure-time and box-only. Three target
+# CHEAP LOCAL CHECKS FIRST -- and BEFORE THE SDK GATE, which is the only thing that makes "first" true. They used to
+# sit after it, so on any machine without hgcc the script exited before running a single one of them: exactly the
+# machines where a local check is the only check available. Not one of them needs the SDK.
+#
+# because the expensive failures here are configure-time and box-only. Three target
 # registrations once named a helper that does not exist; nothing caught it until cmake ran on the box, which
 # costs a full pull-and-build to discover a typo.
 #
@@ -80,11 +94,43 @@ fi
 if [ -x "$HERE/dev/fold_derivation/gen_gemv_units_check.sh" ]; then
   "$HERE/dev/fold_derivation/gen_gemv_units_check.sh" || exit 1
 fi
+# THE ONE THAT WOULD HAVE SAVED TWO BOX ROUND-TRIPS. CMakeLists.txt names sources and this script decides which
+# directories are copied; the two lists live in different files, in different languages, and nothing compared them
+# until cmake ran on the accelerator. A source CMake names but the overlay lacks is a CONFIGURE-time error, so it
+# fails for EVERY target at once and the message names only whichever file it tripped over first.
+if [ -x "$HERE/dev/fold_derivation/overlay_targets_check.py" ]; then
+  "$HERE/dev/fold_derivation/overlay_targets_check.py" || exit 1
+fi
+# The MoE sweep's generator, the sibling of gen_gemv_units_check above. It was called from nowhere and its path to
+# CMakeLists.txt had been stale since the reorganisation -- two facts that hid each other, since an uncalled check
+# cannot report a broken path.
+if [ -x "$HERE/dev/fold_derivation/gen_moe_units_check.sh" ]; then
+  "$HERE/dev/fold_derivation/gen_moe_units_check.sh" || exit 1
+fi
 
 # The checks above live under dev/fold_derivation and are absent from a main-branch checkout, where the `-x` test
 # simply skips them. That is intended -- but it means a release build silently runs FEWER checks than a dev build, so
 # say which happened rather than leaving it to be inferred from nothing being printed.
 [ -d "$HERE/dev/fold_derivation" ] || echo "  NOTE: dev/fold_derivation absent (main checkout) -- generator and portability checks skipped"
+
+if [ ! -x "$PPU_SDK_ROOT/bin/hgcc" ]; then
+  echo "ERROR: hgcc not found at $PPU_SDK_ROOT/bin/hgcc. Set PPU_SDK=<path> and re-run." >&2
+  exit 1
+fi
+export PATH="$PPU_SDK_ROOT/bin:$PATH"
+
+cleanup() {
+  # Restore ONLY the example-list registration + remove the overlay. The actlize W4A16 changes now live as real
+  # commits on the DrXuQian/actlize fork (submodule branch ppu-w4a16-dev), NOT as build-time patches, so we must
+  # NOT `git checkout --` the include/ files here (that would wipe uncommitted collective WIP during iteration).
+  git -C "$ACTLIZE" checkout -- examples/CMakeLists.txt 2>/dev/null || true
+  rm -rf "$EX_DIR"
+}
+trap cleanup EXIT
+echo "[build.sh] CUTLASS_PPU_ARCHS=$ARCH"
+
+# NOTE: the former MoE/gs32 *.patch files are now baked into the submodule (fork ppu-w4a16-dev). No patch step.
+
 
 # --- overlay our example into the actlize example tree ---
 mkdir -p "$EX_DIR"

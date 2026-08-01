@@ -13,3 +13,11 @@ compile_commands.json
 quactlize/_C*.so
 build/
 *.egg-info/
+
+# GENERATED CHECK OUTPUT, not fixtures. gen_moe_units_check.sh does `OUT="$HERE/.moe_units_check${BAD:+_bad}"` and
+# mkdir -p's it; the _bad variant is just where the negative-control run writes. 1473 of these files were committed
+# by the migration's `cp -r fold_derivation/`, and the copies still carried gen.cmake files naming an absolute path
+# in the PRE-migration tree. They also broke `git switch` for anyone who had run the check themselves: git refuses
+# to overwrite untracked files with tracked ones, so a checkout aborted listing hundreds of generated units.
+dev/fold_derivation/.moe_units_check/
+dev/fold_derivation/.moe_units_check_bad/

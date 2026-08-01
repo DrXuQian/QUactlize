@@ -23,26 +23,52 @@ endif()
 # binary without the macro -- because test_q3_bconcat_bench was not one of the three. The perf run that followed
 # compared a binary against ITSELF and reported "no change", which is indistinguishable from "the change does nothing".
 # Enumerating call sites is what made that possible, so the fix must not enumerate.
+# Targets whose sources are OPTIONAL, and the only ones a missing source may silently skip. They live in dev/,
+# which build.sh overlays when it exists and a main-branch checkout does not have at all. Anything NOT on this list
+# that is missing a source is a mistake, and gets the loud CMake error it deserves.
+set(_PPU_OPTIONAL_TARGETS
+  swzl_ldmatrix_probe test_fold_int2 test_int1_sweep test_moe_grouped_dataslice
+  test_moe_grouped_probe test_q3_bconcat_ablate test_q3_bconcat_probe test_width_acu)
+
 function(ppu_w4a16_executable NAME)
   cmake_parse_arguments(A "" "" "DEV_COMPILE_FLAGS" ${ARGN})
 
-  # SKIP A TARGET WHOSE SOURCES ARE NOT IN THIS OVERLAY, and say so. Eight probe targets have their .cu under dev/,
-  # which build.sh deliberately does not overlay (dev/ holds local harnesses that must not reach the box) and which a
-  # main-branch checkout does not contain at all. A missing source is a CONFIGURE-time error in CMake, so those eight
-  # registrations made cmake fail for EVERY target -- one shared failure that surfaced as eleven build variants all
-  # reporting "the macro did not reach the device compile", which is a different problem entirely.
-  #
-  # Skipping is right rather than a workaround: the file list is shared by two checkouts that legitimately contain
-  # different sources. What must not happen is skipping SILENTLY, so each omission is named -- a target that vanished
-  # because someone moved its source is otherwise indistinguishable from one that was never meant to build here.
+  # ABSOLUTE PATHS ARE GENERATED SOURCES AND MUST NOT BE PREFIXED. _SK_SRCS, _GEMV_UNIT_SRCS and _MOE_UNIT_SRCS all
+  # expand to "${CMAKE_CURRENT_BINARY_DIR}/<dir>/<unit>.cu", written by file(WRITE) earlier in this file. Prefixing
+  # one with CMAKE_CURRENT_SOURCE_DIR produced "<overlay>//abs/path", which never exists -- so the first version of
+  # this guard SKIPPED test_moe_splitk_bench, a target run_batch.sh cannot do without, and the unconditional
+  # target_compile_options() below then failed with "not built by this project". The guard written to prevent a
+  # configure failure caused one. IS_ABSOLUTE is the discriminator: every overlaid source is relative, every
+  # generated one is absolute.
   set(_missing "")
   foreach(_src ${A_UNPARSED_ARGUMENTS})
-    if(_src MATCHES "\\.(cu|cpp)$" AND NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_src}")
+    if(NOT _src MATCHES "\\.(cu|cpp)$")
+      continue()
+    endif()
+    if(IS_ABSOLUTE "${_src}")
+      set(_full "${_src}")
+    else()
+      set(_full "${CMAKE_CURRENT_SOURCE_DIR}/${_src}")
+    endif()
+    if(NOT EXISTS "${_full}")
       list(APPEND _missing ${_src})
     endif()
   endforeach()
+
   if(_missing)
-    message(STATUS "ppu_w4a16: skipping ${NAME} -- not in this overlay: ${_missing}")
+    # SKIPPING IS FOR THE DECLARED-OPTIONAL ONLY. Skipping anything else trades a deterministic "Cannot find source
+    # file" -- which names the file -- for "target not built by this project" several lines later, which names the
+    # symptom. The first version skipped everything, which is how a generated-source bug turned into a confusing
+    # error about compile options.
+    list(FIND _PPU_OPTIONAL_TARGETS ${NAME} _opt)
+    if(_opt EQUAL -1)
+      message(FATAL_ERROR
+        "ppu_w4a16_executable(${NAME}): source(s) not in this overlay: ${_missing}\n"
+        "  Every registered source must be copied into the example directory by build.sh. If this target is meant\n"
+        "  to be optional -- present only on a checkout that has dev/ -- add it to _PPU_OPTIONAL_TARGETS above.\n"
+        "  dev/fold_derivation/overlay_targets_check.py checks this without a build.")
+    endif()
+    message(STATUS "ppu_w4a16: skipping optional ${NAME} -- not in this overlay: ${_missing}")
     return()
   endif()
 

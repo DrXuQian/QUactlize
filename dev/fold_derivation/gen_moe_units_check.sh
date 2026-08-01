@@ -19,7 +19,10 @@
 # diagnosed "q6 is missing WarpN=64" from the corpse of my own negative control once.
 set -Eeuo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CML="$HERE/../CMakeLists.txt"
+# Told by build.sh; the fallback is the repo layout, for running this by hand. It used to be "one directory up",
+# which held CMakeLists.txt before the tree split into quactlize/include, tests/ and benchmarks/. Nothing noticed,
+# because nothing CALLED this script -- it was wired into neither build.sh nor ci/local_gates.py. It is now.
+CML="${QUACTLIZE_CMAKE:-$HERE/../../quactlize/csrc/CMakeLists.txt.in}"
 OUT="$HERE/.moe_units_check${BAD:+_bad}"
 GEN="$OUT/gen.cmake"
 mkdir -p "$OUT"

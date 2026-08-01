@@ -105,13 +105,29 @@ def asan():
 
 
 def pytests():
-    """The whole tests/ directory. Individual files skip themselves when what they need is missing -- test_formats.py
-    needs neither torch nor the built extension, test_preprocess_ops.py needs both -- so this runs unconditionally
-    and the skips are visible in the summary rather than decided here."""
-    rc, log, dt = run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+    """The whole tests/ directory -- and SKIPS ARE NOT PASSES.
+
+    pytest exits 0 when tests skip, so this gate once reported the tier green over a run of "64 passed, 42 skipped":
+    the built extension had been deleted and never rebuilt, so two fifths of the suite never executed and the summary
+    line said 31/31. A skip is legitimate when the machine genuinely cannot run something -- no torch, no nvcc, no
+    g++ -- and is a FAILURE when the reason is that something buildable here was not built. The two are told apart by
+    the skip reason, because that is the only place the difference is recorded.
+
+    The counts go in the message either way. A gate that hides how much it ran is a gate nobody can size."""
+    rc, log, dt = run([sys.executable, "-m", "pytest", "-q", "-rs", "-p", "no:cacheprovider",
                        str(ROOT / "tests")], cwd=str(ROOT))
     summary = [l for l in log.splitlines() if "passed" in l or "failed" in l or "error" in l.lower()]
-    return ("PASS" if rc == 0 else "FAIL"), (summary[-1] if summary else f"exit {rc}"), dt
+    msg = summary[-1] if summary else f"exit {rc}"
+    if rc != 0:
+        return "FAIL", msg, dt
+
+    # "not built" is the actionable reason: the sources are here and so is the toolchain, so a skip means the tier is
+    # reporting on code it did not run.
+    fixable = [l for l in log.splitlines() if l.startswith("SKIPPED") and "not built" in l]
+    if fixable:
+        return "FAIL", (f"{msg} -- {len(fixable)} skipped because the extension is not built; "
+                        f"run `python setup.py build_ext --inplace`"), dt
+    return "PASS", msg, dt
 
 
 def run(cmd, **kw):
@@ -157,7 +173,8 @@ def main():
 
     items = ([("gate", n, args) for n, args in GATES]
              + [("syntax", f"{Path(s).name} {d}".strip(), (s, d)) for s, d in SYNTAX]
-             + [("asan", "preprocessing chain under ASAN", None),
+             + [("overlay", "CMake targets vs the overlay", None),
+                ("asan", "preprocessing chain under ASAN", None),
                 ("pytest", "torch op tests", None),
                 ("registry", "declarations vs source", None)])
     items = [i for i in items if a.k in i[1]]
@@ -173,6 +190,12 @@ def main():
             st, msg, dt = gate(name, payload)
         elif kind == "syntax":
             st, msg, dt = syntax(*payload)
+        elif kind == "overlay":
+            # build.sh runs this too; here as well because it is pure python and needs neither nvcc nor the SDK, so
+            # a machine that cannot run any other gate can still answer "is this checkout self-consistent".
+            rc, log, dt = run([sys.executable, str(ROOT / "dev/fold_derivation/overlay_targets_check.py")])
+            last = [l for l in log.splitlines() if l.strip()]
+            st, msg = ("PASS" if rc == 0 else "FAIL"), (last[-1].strip() if last else f"exit {rc}")
         elif kind == "asan":
             st, msg, dt = asan()
         elif kind == "pytest":
