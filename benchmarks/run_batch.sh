@@ -48,12 +48,29 @@ build_one() {  # $1 name  $2 defines  $3 target
   # why this script is now dry-run against a stubbed build.sh before it ships.
   local name="$1" defs="$2" tgt="$3"
   local log="$OUT/build_$name.log"
-  printf '  %-10s %s\n' "$name" "$defs"
-  ( cd "$ROOT" && PPU_DEFS="$defs" TARGET="$tgt" ./build.sh ) >"$log" 2>&1
-  if ! grep -q "PPU_DEFS verified on $tgt" "$log"; then
-    # A missing verification line means the define never reached the DEVICE compile, and every number from this
-    # binary would silently be the default build's.
-    echo "    FAILED: no 'PPU_DEFS verified' line in $log -- the macro did not reach the device compile"; return 1
+  printf '  %-10s %s\n' "$name" "${defs:-<no defines>}"
+  local rc=0
+  ( cd "$ROOT" && PPU_DEFS="$defs" TARGET="$tgt" ./build.sh ) >"$log" 2>&1 || rc=$?
+
+  # THE BUILD'S OWN EXIT CODE FIRST. This used to jump straight to the grep below, so a build that failed at cmake or
+  # at hgcc -- exiting non-zero, producing no binary -- was reported as "the macro did not reach the device compile".
+  # That diagnosis names a real failure mode and was simply the wrong one, which is worse than no diagnosis: it sent
+  # the reader to look at macro plumbing while the actual error sat in the log's last forty lines.
+  if [ "$rc" -ne 0 ]; then
+    echo "    FAILED: ./build.sh exited $rc. Last lines of $log:"
+    tail -20 "$log" | sed 's/^/      /'
+    return 1
+  fi
+
+  # A missing verification line means the define never reached the DEVICE compile, and every number from this binary
+  # would silently be the default build's. ONLY MEANINGFUL WHEN THERE ARE DEFINES: build.sh's verification block is
+  # guarded by `if [ -n "$PPU_DEFS" ]`, so a variant with none -- verify_default is one -- prints nothing and could
+  # never satisfy this. Requiring it there was a guaranteed false failure in a script whose whole job is to be
+  # trusted before any timing is read.
+  if [ -n "$defs" ] && ! grep -q "PPU_DEFS verified on $tgt" "$log"; then
+    echo "    FAILED: no 'PPU_DEFS verified' line in $log -- the macro did not reach the device compile"
+    grep -E "WARNING|ERROR" "$log" | head -3 | sed 's/^/      /'
+    return 1
   fi
   [ -x "$EX/$tgt" ] || { echo "    FAILED: $EX/$tgt not built (see $log)"; return 1; }
   cp "$EX/$tgt" "$OUT/${tgt}__$name"                 # BEFORE the next build deletes it
@@ -78,16 +95,56 @@ do_build() {
   build_one verify_default ""                                          test_moe_grouped_verify || ok=0
   echo "== distinct-binary check =="
   # Two identical binaries mean an A/B that compares something with itself.
-  local dup
-  dup=$(md5sum "$OUT"/test_moe_splitk_bench__* | awk '{print $1}' | sort | uniq -d)
-  if [ -n "$dup" ]; then echo "  !!! two splitk binaries are IDENTICAL -- the A/B is invalid"; md5sum "$OUT"/test_moe_splitk_bench__*; ok=0
-  else echo "  all six splitk binaries differ"; fi
+  #
+  # COUNT THEM FIRST. When every build_one failed, no `cp` ran, the glob matched nothing, md5sum read stdin, uniq -d
+  # produced nothing, and this printed "all six splitk binaries differ" over an empty directory -- a gate reporting
+  # success about files that do not exist, immediately below eleven FAILED lines.
+  local want=${#VARIANTS[@]} have
+  have=$(ls "$OUT"/test_moe_splitk_bench__* 2>/dev/null | wc -l)
+  if [ "$have" -ne "$want" ]; then
+    echo "  !!! expected $want splitk binaries, found $have -- nothing below this can be compared"; ok=0
+  else
+    local dup
+    dup=$(md5sum "$OUT"/test_moe_splitk_bench__* | awk '{print $1}' | sort | uniq -d)
+    if [ -n "$dup" ]; then echo "  !!! two splitk binaries are IDENTICAL -- the A/B is invalid"; md5sum "$OUT"/test_moe_splitk_bench__*; ok=0
+    else echo "  all $have splitk binaries differ"; fi
+  fi
   return $((1-ok))
+}
+
+# EVERY BINARY THIS RUN NEEDS, and it must have been produced by THIS checkout. Without the second half, do_check
+# happily ran binaries left in $OUT by an earlier session: a build round in which every build_one failed -- so no `cp`
+# ran at all -- still produced five green rowC MATCH lines, from binaries of unknown provenance, while the two
+# variants added since that older build reported "No such file or directory". Five passes and two 127s side by side,
+# and the passes were the misleading half.
+require_fresh_binaries() {
+  local newest missing=() stale=() b
+  newest=$(cd "$ROOT" && git ls-files -z | xargs -0 stat -c %Y 2>/dev/null | sort -n | tail -1)
+  for b in "$@"; do
+    if [ ! -x "$OUT/$b" ]; then missing+=("$b")
+    elif [ -n "$newest" ] && [ "$(stat -c %Y "$OUT/$b")" -lt "$newest" ]; then stale+=("$b"); fi
+  done
+  if [ ${#missing[@]} -ne 0 ]; then
+    echo "  !!! not built: ${missing[*]}"
+    echo "      run './run_batch.sh build' and read its output -- a build that failed leaves the PREVIOUS run's"
+    echo "      binaries in $OUT, and results from those describe code nobody is running."
+    return 1
+  fi
+  if [ ${#stale[@]} -ne 0 ]; then
+    echo "  !!! older than the sources: ${stale[*]}"
+    echo "      rebuild before reading anything below."
+    return 1
+  fi
+  return 0
 }
 
 do_check() {
   echo
   echo "== correctness (nothing below matters until these pass) =="
+  require_fresh_binaries \
+    test_q4k_packed_gemm__gate_pack test_q4k_packed_gemm__gate_split test_q4k_packed_gemm__gate_swz \
+    test_q4k_packed_gemm__gate_swz_fp16 test_moe_grouped_verify__gate_swz_only \
+    test_moe_grouped_verify__verify_default || { echo "== aborting: the binaries are not this checkout's =="; return 1; }
   # rowC is the only row where Scale_TileK == 8, i.e. the only one on the packed path. It has been INTERMITTENT --
   # bad=128, then 724, then MATCH with no semantic source change -- and the cause is still unknown, so it is run five
   # times. A single pass proves nothing about a flaky failure.
