@@ -61,7 +61,10 @@ echo "[build.sh] CUTLASS_PPU_ARCHS=$ARCH"
 # checks quietly passing over an empty file set. Exporting the paths from the one place that already knows them
 # means they cannot drift from the overlay again.
 export QUACTLIZE_ROOT="$HERE"
-export QUACTLIZE_SRC_DIRS="${_src_dirs[*]}"
+# dev/ IS IN THIS LIST WHEN IT EXISTS, because its top-level sources are overlaid onto the box (see the overlay step
+# below). The portability check's whole job is to cover what ships; listing a narrower set than the overlay copies is
+# the same drift this export was introduced to remove, one directory later.
+export QUACTLIZE_SRC_DIRS="${_src_dirs[*]}$([ -d "$HERE/dev" ] && echo " dev")"
 export QUACTLIZE_GEMV_DIR="$HERE/$_subdir_src"
 export QUACTLIZE_CMAKE="$HERE/quactlize/csrc/CMakeLists.txt.in"
 if [ -x "$HERE/dev/fold_derivation/cmake_calls_check.sh" ]; then
@@ -94,6 +97,21 @@ _overlay_files=()
 for _sd in "${_src_dirs[@]}"; do
   _overlay_files+=("$HERE/$_sd"/*.cu "$HERE/$_sd"/*.cpp "$HERE/$_sd"/*.cuh "$HERE/$_sd"/*.hpp "$HERE/$_sd"/*.h "$HERE/$_sd"/*.inc)
 done
+# dev/'s TOP LEVEL, when it exists. These are device probes -- swzl_ldmatrix_probe reads the hardware swizzle, the
+# ablations and sweeps run on the accelerator -- so they belong on the box, and in the pre-reorganisation tree they
+# sat alongside everything else and were overlaid as a matter of course. The move to dev/ silently dropped them from
+# the overlay while CMakeLists.txt kept registering them, and a missing source is a CONFIGURE-time error, so cmake
+# failed for EVERY target: eleven build variants all reporting "the macro did not reach the device compile".
+#
+# Only the top level. dev/fold_derivation and dev/low_bit are host-only derivation harnesses that no CMake target
+# builds and that must not reach the box; the glob does not recurse, which is what keeps them out.
+if [ -d "$HERE/dev" ]; then
+  shopt -s nullglob
+  _dev_files=("$HERE/dev"/*.cu "$HERE/dev"/*.cuh "$HERE/dev"/*.hpp "$HERE/dev"/*.h "$HERE/dev"/*.inc)
+  shopt -u nullglob
+  [ ${#_dev_files[@]} -gt 0 ] && _overlay_files+=("${_dev_files[@]}")
+  echo "  overlaying ${#_dev_files[@]} dev/ probe source(s)"
+fi
 _overlay_files+=("$HERE/quactlize/csrc/CMakeLists.txt.in")
 shopt -u nullglob
 cp "${_overlay_files[@]}" "$EX_DIR/"
