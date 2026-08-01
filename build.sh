@@ -23,7 +23,6 @@ ACTLIZE="$(cd "$HERE/third_party/actlize" && pwd)"
 # gemv_lowbit stays a real subdirectory because sources say #include "gemv_lowbit/gemv_launcher.hpp": the directory
 # name is load-bearing, so renaming it would have been churn for nothing.
 _src_dirs=(quactlize/include tests benchmarks)
-_overlay_dirs=(gemv_lowbit)
 _subdir_src="quactlize/include/gemv_lowbit"
 EX_NAME="99_kernels_w4a16_compare"
 EX_DIR="$ACTLIZE/examples/$EX_NAME"
@@ -31,6 +30,54 @@ EX_LIST="$ACTLIZE/examples/CMakeLists.txt"
 ARCH="${PPU_ARCHS:-ppu0010}"
 # Default to this box's SDK location; override with PPU_SDK=<path> (or PPU_HOME) if it moves.
 PPU_SDK_ROOT="${PPU_SDK:-${PPU_HOME:-/sim/eec/shared/junfu.qx/PPU_SDK}}"
+
+# THE OVERLAY MANIFEST, PRODUCED ONCE. Everything that copies files, and everything that checks what would be
+# copied, reads this function -- there is no second enumeration of the globs.
+#
+# It emits one line per file, either "<abs path>" for a file that lands at the top of the example directory, or
+# "<dest>|<abs path>" where <dest> ends in "/" for a subdirectory or names a rename. That shape exists so the
+# checker can materialise the overlay exactly, without knowing the rules.
+#
+# WHY IT IS A FUNCTION. The first version had --print-overlay enumerate the globs a second time, next to the copy
+# path that enumerates them for real. Review pointed out that the gate then proved the PRINT implementation and said
+# nothing about the COPY implementation -- the exact duplication the gate was introduced to remove, reintroduced by
+# the gate. The extension whitelist also appeared three times, and _overlay_dirs was declared twice.
+#
+# *.inc is in the whitelist because the MoE sweep's generated units all #include moe_bench_unit.inc. Leaving it out
+# did not fail here: it failed 100+ lines into hgcc as "fatal error: moe_bench_unit.inc: No such file or directory",
+# once per generated unit.
+_OVERLAY_EXTS=(cu cpp cuh hpp h inc)
+
+# $1 = directory (absolute), $2 = optional "dest/" prefix, $3.. = extensions to use (defaults to _OVERLAY_EXTS)
+_emit_dir() {
+  local dir="$1" dest="$2"; shift 2
+  local exts=("$@"); [ ${#exts[@]} -eq 0 ] && exts=("${_OVERLAY_EXTS[@]}")
+  [ -d "$dir" ] || return 0
+  local e f
+  shopt -s nullglob
+  for e in "${exts[@]}"; do
+    for f in "$dir"/*."$e"; do printf '%s%s\n' "${dest:+$dest|}" "$f"; done
+  done
+  shopt -u nullglob
+}
+
+overlay_manifest() {
+  local _sd
+  for _sd in "${_src_dirs[@]}"; do _emit_dir "$HERE/$_sd" ""; done
+  # dev/'s TOP LEVEL, when it exists. These are DEVICE probes -- swzl_ldmatrix_probe reads the hardware swizzle, the
+  # ablations and sweeps run on the accelerator -- so they belong on the box, and before the reorganisation they sat
+  # alongside everything else and were overlaid as a matter of course. The move to dev/ dropped them from the overlay
+  # while CMakeLists.txt kept registering them, and a missing source is a CONFIGURE-time error, so cmake failed for
+  # EVERY target: eleven build variants all reporting "the macro did not reach the device compile".
+  #
+  # NO .cpp here, and that asymmetry is deliberate rather than an oversight: dev/ holds .cu probes only. It is called
+  # out because a checker that assumed the shared list would pass a dev/*.cpp the overlay would never copy.
+  _emit_dir "$HERE/dev" "" cu cuh hpp h inc
+  # A library split across a subdirectory has to come whole; most subdirectories (fold_derivation/, low_bit/) are
+  # host-only harnesses that must NOT reach the box, which is why this is one named path and not a recursive walk.
+  _emit_dir "$HERE/$_subdir_src" "gemv_lowbit/"
+  printf 'CMakeLists.txt|%s\n' "$HERE/quactlize/csrc/CMakeLists.txt.in"
+}
 
 # --print-overlay: the EXACT list of files the overlay would copy, one per line, then exit. This exists so that
 # nothing else has to MODEL this script. dev/fold_derivation/overlay_targets_check.py used to reconstruct the globs
@@ -41,22 +88,7 @@ PPU_SDK_ROOT="${PPU_SDK:-${PPU_HOME:-/sim/eec/shared/junfu.qx/PPU_SDK}}"
 # Deliberately BEFORE the SDK check. The cheap local checks below are the ones a developer without a PPU can run,
 # and gating them on hgcc means they never run anywhere they would be useful.
 if [ "${1:-}" = "--print-overlay" ]; then
-  shopt -s nullglob
-  for _sd in "${_src_dirs[@]}"; do
-    for _f in "$HERE/$_sd"/*.cu "$HERE/$_sd"/*.cpp "$HERE/$_sd"/*.cuh "$HERE/$_sd"/*.hpp "$HERE/$_sd"/*.h "$HERE/$_sd"/*.inc; do
-      printf '%s\n' "$_f"
-    done
-  done
-  if [ -d "$HERE/dev" ]; then
-    for _f in "$HERE/dev"/*.cu "$HERE/dev"/*.cuh "$HERE/dev"/*.hpp "$HERE/dev"/*.h "$HERE/dev"/*.inc; do
-      printf '%s\n' "$_f"
-    done
-  fi
-  for _f in "$HERE/$_subdir_src"/*.cu "$HERE/$_subdir_src"/*.cpp "$HERE/$_subdir_src"/*.cuh "$HERE/$_subdir_src"/*.hpp "$HERE/$_subdir_src"/*.h "$HERE/$_subdir_src"/*.inc; do
-    printf 'gemv_lowbit/|%s\n' "$_f"
-  done
-  shopt -u nullglob
-  printf 'CMakeLists.txt|%s\n' "$HERE/quactlize/csrc/CMakeLists.txt.in"
+  overlay_manifest
   exit 0
 fi
 
@@ -138,45 +170,22 @@ mkdir -p "$EX_DIR"
 # *.inc is in the list because the MoE sweep's generated units all #include moe_bench_unit.inc, and this glob is an
 # EXTENSION WHITELIST: leaving it out did not fail here, it failed 100+ lines into hgcc as
 # `fatal error: moe_bench_unit.inc: No such file or directory` repeated once per generated unit.
-shopt -s nullglob
-_overlay_files=()
-for _sd in "${_src_dirs[@]}"; do
-  _overlay_files+=("$HERE/$_sd"/*.cu "$HERE/$_sd"/*.cpp "$HERE/$_sd"/*.cuh "$HERE/$_sd"/*.hpp "$HERE/$_sd"/*.h "$HERE/$_sd"/*.inc)
-done
-# dev/'s TOP LEVEL, when it exists. These are device probes -- swzl_ldmatrix_probe reads the hardware swizzle, the
-# ablations and sweeps run on the accelerator -- so they belong on the box, and in the pre-reorganisation tree they
-# sat alongside everything else and were overlaid as a matter of course. The move to dev/ silently dropped them from
-# the overlay while CMakeLists.txt kept registering them, and a missing source is a CONFIGURE-time error, so cmake
-# failed for EVERY target: eleven build variants all reporting "the macro did not reach the device compile".
-#
-# Only the top level. dev/fold_derivation and dev/low_bit are host-only derivation harnesses that no CMake target
-# builds and that must not reach the box; the glob does not recurse, which is what keeps them out.
-if [ -d "$HERE/dev" ]; then
-  shopt -s nullglob
-  _dev_files=("$HERE/dev"/*.cu "$HERE/dev"/*.cuh "$HERE/dev"/*.hpp "$HERE/dev"/*.h "$HERE/dev"/*.inc)
-  shopt -u nullglob
-  [ ${#_dev_files[@]} -gt 0 ] && _overlay_files+=("${_dev_files[@]}")
-  echo "  overlaying ${#_dev_files[@]} dev/ probe source(s)"
-fi
-_overlay_files+=("$HERE/quactlize/csrc/CMakeLists.txt.in")
-shopt -u nullglob
-cp "${_overlay_files[@]}" "$EX_DIR/"
-mv "$EX_DIR/CMakeLists.txt.in" "$EX_DIR/CMakeLists.txt"
-
-# SOURCE SUBDIRECTORIES that must be overlaid whole. This list is separate from the extension whitelist above
-# because most tracked subdirectories (fold_derivation/, real_weight/, low_bit/) are local harnesses that must
-# NOT reach the box -- but a library split across a subdirectory has to. The completeness check below covers
-# these paths instead of skipping them; before this list existed it skipped ALL subdirectories, which meant a
-# library moved into one would be dropped silently by the very check written to catch dropped source.
-_overlay_dirs=(gemv_lowbit)
-for _d in "${_overlay_dirs[@]}"; do
-  [ -d "$HERE/$_subdir_src" ] || continue
-  mkdir -p "$EX_DIR/$_d"
-  shopt -s nullglob
-  _sub=("$HERE/$_subdir_src"/*.cu "$HERE/$_subdir_src"/*.cpp "$HERE/$_subdir_src"/*.cuh "$HERE/$_subdir_src"/*.hpp "$HERE/$_subdir_src"/*.h "$HERE/$_subdir_src"/*.inc)
-  shopt -u nullglob
-  [ ${#_sub[@]} -gt 0 ] && cp "${_sub[@]}" "$EX_DIR/$_d/"
-done
+# ONE PRODUCER, ONE CONSUMER. Every path below comes from overlay_manifest above; nothing here re-enumerates.
+_n_overlaid=0 _n_dev=0
+while IFS= read -r _line; do
+  case "$_line" in
+    *"|"*) _dest="${_line%%|*}"; _src="${_line#*|}"
+           case "$_dest" in
+             */) mkdir -p "$EX_DIR/$_dest"; cp "$_src" "$EX_DIR/$_dest" ;;
+             *)  cp "$_src" "$EX_DIR/$_dest" ;;
+           esac ;;
+    *)     cp "$_line" "$EX_DIR/"
+           case "$_line" in "$HERE/dev/"*) _n_dev=$((_n_dev+1)) ;; esac ;;
+  esac
+  _n_overlaid=$((_n_overlaid+1))
+done < <(overlay_manifest)
+[ "$_n_dev" -gt 0 ] && echo "  overlaying $_n_dev dev/ probe source(s)"
+echo "  overlay: $_n_overlaid file(s)"
 
 # ...and then ASSERT THE WHITELIST IS COMPLETE. The criterion is GIT TRACKING, and the two earlier attempts show why it
 # has to be something this specific:
@@ -210,52 +219,43 @@ else
 fi
 if [ -n "$_missing" ]; then
   echo "  ERROR: the overlay is an extension whitelist and it dropped tracked source:$_missing"
-  echo "         add the extension to _overlay_files above, or to _ignored if it is genuinely not needed to build."
+  echo "         add the extension to _OVERLAY_EXTS above, or to _ignored if it is genuinely not needed to build."
   exit 1
 fi
 
-# AND PROVE THE OVERLAY IS THE CHECKOUT, not a survivor of an earlier run. cleanup() rm -rf's $EX_DIR on exit, so a stale
-# copy should be impossible -- but a build failed with a macro expansion from the PRE-fix header while the checkout had the
-# fixed one, and from outside the box there was no way to tell "built an older commit" from "overlay was stale". cmp is
-# cheap and turns that into a one-line answer.
-for _f in "$EX_DIR"/*; do
-  [ -f "$_f" ] || continue
-  _b="$(basename "$_f")"
-  # FIND THE SOURCE IN THE DIRECTORY IT ACTUALLY CAME FROM. This used to look for $HERE/<basename>, which was right
-  # when everything was one flat directory and is now right for almost nothing: sources live under quactlize/include,
-  # tests and benchmarks, so every comparison silently found no file and the staleness check passed vacuously -- the
-  # exact failure it exists to prevent, wearing its own uniform.
-  _src=""
-  for _sd in "${_src_dirs[@]}"; do [ -f "$HERE/$_sd/$_b" ] && _src="$HERE/$_sd/$_b" && break; done
-  if [ -n "$_src" ] && ! cmp -s "$_f" "$_src"; then
-    echo "  ERROR: the overlaid $_b differs from $_src -- the build would not compile your tree."
-    exit 1
+# AND PROVE THE OVERLAY IS THE CHECKOUT, not a survivor of an earlier run. cleanup() rm -rf's $EX_DIR on exit, so a
+# stale copy should be impossible -- but a build once failed with a macro expansion from the PRE-fix header while the
+# checkout had the fixed one, and from outside the box there was no way to tell "built an older commit" from "overlay
+# was stale". cmp is cheap and turns that into a one-line answer.
+#
+# IT WALKS THE MANIFEST, not the overlay directory. The previous version took each overlaid file's BASENAME and
+# searched _src_dirs for a match -- a third re-derivation of the source-to-destination mapping the manifest already
+# holds exactly. It searched the wrong set: dev/ was not in _src_dirs, so the eight device probes were never
+# compared at all, and the gemv_lowbit subdirectory matched only by coincidence of path shape. A check that silently
+# covers less than it claims is the failure this one exists to prevent.
+_stale=""
+while IFS= read -r _line; do
+  case "$_line" in
+    *"|"*) _dest="${_line%%|*}"; _src="${_line#*|}"
+           case "$_dest" in
+             */) _dst="$EX_DIR/$_dest$(basename "$_src")" ;;
+             *)  _dst="$EX_DIR/$_dest" ;;
+           esac ;;
+    *)     _src="$_line"; _dst="$EX_DIR/$(basename "$_line")" ;;
+  esac
+  if [ ! -f "$_dst" ]; then
+    _stale="$_stale
+    MISSING  $_dst  (from $_src)"
+  elif ! cmp -s "$_dst" "$_src"; then
+    _stale="$_stale
+    DIFFERS  $_dst  vs  $_src"
   fi
-done
-for _d in "${_overlay_dirs[@]}"; do
-  [ -d "$EX_DIR/$_d" ] || continue
-  for _f in "$EX_DIR/$_d"/*; do
-    [ -f "$_f" ] || continue
-    _b="$_d/$(basename "$_f")"
-    # FIND THE SOURCE IN THE DIRECTORY IT ACTUALLY CAME FROM. This used to look for $HERE/<basename>, which was right
-  # when everything was one flat directory and is now right for almost nothing: sources live under quactlize/include,
-  # tests and benchmarks, so every comparison silently found no file and the staleness check passed vacuously -- the
-  # exact failure it exists to prevent, wearing its own uniform.
-  _src=""
-  for _sd in "${_src_dirs[@]}"; do [ -f "$HERE/$_sd/$_b" ] && _src="$HERE/$_sd/$_b" && break; done
-  if [ -n "$_src" ] && ! cmp -s "$_f" "$_src"; then
-      echo "  ERROR: the overlaid $_b differs from $_src -- the build would not compile your tree."
-      exit 1
-    fi
-  done
-done
-
-# register it in the foreach list (idempotent: only if absent)
-if ! grep -q "$EX_NAME" "$EX_LIST"; then
-  # insert just before the closing paren of the foreach(EXAMPLE ... ) block that ends with 16_ppu_mixed_dtype_gemm
-  sed -i "s|^\( *16_ppu_mixed_dtype_gemm\)\$|\1\n  $EX_NAME|" "$EX_LIST"
+done < <(overlay_manifest)
+if [ -n "$_stale" ]; then
+  echo "  ERROR: the overlay does not match the checkout -- the build would not compile your tree:$_stale"
+  exit 1
 fi
-grep -q "$EX_NAME" "$EX_LIST" || { echo "ERROR: failed to register example in $EX_LIST" >&2; exit 1; }
+
 
 # --- tile/warp/stages tuning: forward from the environment (defaults match the stock example) ---
 TILE_M="${TILE_M:-32}"; TILE_N="${TILE_N:-32}"; WARP_M="${WARP_M:-16}"; WARP_N="${WARP_N:-16}"; STAGES="${STAGES:-3}"

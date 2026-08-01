@@ -168,7 +168,7 @@ def cvt_word_permute() -> Step:
 
 def code_bias(amount: int) -> Step:
     return Step("bias", "cvt", "element", "add_bias_and_interleave_*_inplace (step 1)", False,
-                f"adds {amount} to每 code so the signed range becomes unsigned. NOT a permutation -- it changes "
+                f"adds {amount} to every code so the signed range becomes unsigned. NOT a permutation -- it changes "
                 f"values -- which is why it is its own step even though it shares a function with cvtword")
 
 

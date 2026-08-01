@@ -1,7 +1,7 @@
 // THE NAME OF A STORED WEIGHT'S ARRANGEMENT. C++ side of quactlize/layouts.py; the two are checked against each
 // other by tests/test_layouts.py, because a vocabulary that exists twice will otherwise drift.
 //
-// A layout's name is the ordered join of its step tokens -- mmarow_tr_cl4_aiu256_cvtword_bias -- so a layout that
+// A layout's name is the ordered join of its step tokens -- mmarow32_tr_cl4_aiu256_cvtword_bias -- so a layout that
 // gains, loses or reorders a step gets a different name with no version counter to remember. See layouts.py for why
 // each of those properties corresponds to a bug this tree actually had.
 //

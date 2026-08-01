@@ -21,7 +21,7 @@ and reconstructed build.sh's globs in python. Both models were wrong, and review
     could vanish from the check while remaining valid CMake.
 
 Every one of those is a second implementation of something that already exists. So now: build.sh prints its own
-manifest (`--print-overlay`), this materialises it, and CMAKE parses the CMakeLists. The only模型 left is the stub
+manifest (`--print-overlay`), this materialises it, and CMAKE parses the CMakeLists. The only model left is the stub
 prelude, which is small and whose failure is loud.
 
 WHAT THE STUBS DO. actlize supplies cutlass_example_add_executable; here it records the target name. The per-target
@@ -110,8 +110,11 @@ def materialise(entries, dst):
 def main():
     show_all, keep = "--list" in sys.argv, "--keep" in sys.argv
     if not shutil.which("cmake"):
-        print("  [SKIP] overlay_targets: cmake not installed")
-        return 0
+        # EXIT 2, NOT 0. ci/local_gates.py turns any zero exit into PASS, so returning 0 here printed "[SKIP] cmake
+        # not installed" and was then counted as a check that passed -- the runner had no way to tell the two apart.
+        # A distinct status is the only thing that survives the boundary between a program and its runner.
+        print("  [SKIP] overlay_targets: cmake not installed -- this check cannot run here")
+        return 2
 
     entries = manifest()
     if not entries:

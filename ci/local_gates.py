@@ -195,7 +195,10 @@ def main():
             # a machine that cannot run any other gate can still answer "is this checkout self-consistent".
             rc, log, dt = run([sys.executable, str(ROOT / "dev/fold_derivation/overlay_targets_check.py")])
             last = [l for l in log.splitlines() if l.strip()]
-            st, msg = ("PASS" if rc == 0 else "FAIL"), (last[-1].strip() if last else f"exit {rc}")
+            # Exit 2 is "cannot run here", distinct from 0 "ran and passed". Mapping every zero to PASS erased that
+            # distinction and reported a check that never executed as one that succeeded.
+            st = {0: "PASS", 2: "SKIP"}.get(rc, "FAIL")
+            msg = last[-1].strip() if last else f"exit {rc}"
         elif kind == "asan":
             st, msg, dt = asan()
         elif kind == "pytest":

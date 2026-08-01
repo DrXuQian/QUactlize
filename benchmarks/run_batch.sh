@@ -8,7 +8,11 @@
 #     "PPU_DEFS verified on <target>'s compile command" and this script FAILS if that line is missing
 #   * SPLITK_ONLY matches the whole tag, so "16x128:256" keeps every warp shape, every Stages and every slice count --
 #     ~228 rows, one cold launch each. SPLITK_CFG + SPLITK_S pin exactly one
-#   * same-config run-to-run spread is ~13%, so every number here comes from ONE run of ONE binary set
+#   * same-config run-to-run spread is ~13%. The old mitigation was "every number comes from ONE run of ONE binary
+#     set", which controls for BETWEEN-run drift and gives no error bar at all. The effect being chased -- the native
+#     scale path measuring 12.9% slower than fp16 planes -- is SMALLER THAN THAT SPREAD, and one sample per variant
+#     cannot separate the two. REPS (default 3) now repeats each pinned row and reports min and spread, so the first
+#     question the perf run answers is "is this effect real", not "what is its cause"
 #
 #   ./run_batch.sh build     build all six and copy them out (slow: ~6 compiles)
 #   ./run_batch.sh check     correctness gates -- must pass before any timing is meaningful
@@ -25,6 +29,7 @@ EX="${EX:-$ROOT/third_party/actlize/build_w4a16_compare/examples/99_kernels_w4a1
 OUT="${OUT:-$HOME/ab}"
 BAND="${BAND:-64 8 2048 2048 32 3}"                 # L=64, top-k 8, N=K=2048, gs=32, decode
 CFG="${CFG:-16x128:256 w16x16 s2}"                  # the pinned row; SPLITK_S below pins the slice count
+REPS="${REPS:-3}"                                    # repetitions per variant; REPS=1 restores the old single-sample run
 mkdir -p "$OUT"
 
 # name : defines.  SK_QUANT=2 is FinegrainedScaleZero, what ships.
@@ -187,12 +192,23 @@ do_check() {
 
 do_perf() {
   echo
-  echo "== perf: one pinned row, $CFG S=1, band '$BAND' =="
+  echo "== perf: $REPS run(s) of one pinned row, $CFG S=1, band '$BAND' =="
+  echo "   min is the statistic to read: it is the least-disturbed sample, and the spread column says whether the"
+  echo "   difference between two variants is larger than the noise within either of them."
+  local v n i us best worst out
   for v in "${VARIANTS[@]}"; do
-    local n="${v%%:*}"
-    printf -- '-- %s\n' "$n"
-    SPLITK_CFG="$CFG" SPLITK_S=1 "$OUT/test_moe_splitk_bench__$n" $BAND 2>&1 \
-      | grep -E "^  i4|SPLITK_CFG|launches refused" | sed 's/^/   /'
+    n="${v%%:*}"
+    best=""; worst=""
+    for i in $(seq 1 "$REPS"); do
+      out=$(SPLITK_CFG="$CFG" SPLITK_S=1 "$OUT/test_moe_splitk_bench__$n" $BAND 2>&1 | grep -E "^  i4" | head -1)
+      us=$(printf '%s' "$out" | grep -oE "[0-9]+\.[0-9]+ us" | head -1 | cut -d' ' -f1)
+      [ -z "$us" ] && { printf -- '-- %-10s NO TIMING ROW: %s\n' "$n" "$(printf '%s' "$out" | head -c 80)"; best=""; break; }
+      best=$(printf '%s\n%s\n' "$best" "$us" | grep -v '^$' | sort -g | head -1)
+      worst=$(printf '%s\n%s\n' "$worst" "$us" | grep -v '^$' | sort -g | tail -1)
+    done
+    [ -z "$best" ] && continue
+    printf -- '-- %-10s min %8s us   max %8s us   spread %s%%\n' "$n" "$best" "$worst" \
+      "$(awk -v a="$best" -v b="$worst" 'BEGIN{printf "%.1f", (b-a)/a*100}')"
   done
   cat <<'EOT'
 
@@ -210,6 +226,10 @@ do_perf() {
                             publication barrier's critical path costs; no change means aggregate issue demand does
 
    bdqnop and packnop produce DELIBERATELY WRONG numbers -- read their time, never their MATCH.
+
+   AND READ THE SPREAD COLUMN FIRST. If a variant's own spread is comparable to its difference from base, that
+   difference has not been measured -- it has been sampled once from a distribution wide enough to contain it.
+   Raise REPS before drawing any conclusion from a gap under ~15%.
 EOT
 }
 

@@ -84,7 +84,11 @@ endfunction()
 # build.sh overlays this directory into actlize's examples/ tree as a new example and builds just this target,
 # so we ride actlize's proven example build exactly (see build.sh for why the overlay).
 
-# Tuning knobs (defaults match the stock example: 32x32 tile, 16x16 warp, 3 stages). build.sh forwards these
+# Tuning knobs. THE VALUES BELOW ARE NOT WHAT A build.sh BUILD USES: build.sh always passes -DTILE_M=... from its
+# own defaults, which are 32x32 tile / 16x16 warp / 3 stages, so these apply only to a direct `cmake` invocation.
+# The comment here used to claim these WERE the stock 32/16/3 while the set() lines said 64/32/4 -- two numbers for
+# one fact, in adjacent lines, disagreeing. Neither value is changed here, because which tile a direct cmake run
+# should default to is a tuning decision and not a cleanup. build.sh forwards these
 # from the environment as -D cache vars. They must reach BOTH compiles: the host g++ (TileShape is used in
 # host code for strides/args) via target_compile_definitions, and the device hgcc via DEV_COMPILE_FLAGS
 # (hgcc is driven by a custom command that does not see target_compile_definitions).

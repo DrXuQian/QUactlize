@@ -55,21 +55,28 @@ def _ops():
 # maps the signed code range to unsigned). That is what lets the product satisfy "an offline reorder is allowed, an
 # increase in stored bytes is not", and it is asserted in tests/test_preprocess_ops.py rather than assumed here.
 
-def preprocess_weights_for_mixed_gemm(w_row_major, quant_type, is_int8_mma: bool = False,
-                                      use_aiu_interleaved: bool = False):
-    """Row permutation, sub-byte transpose and column-tile interleave, as one byte-neutral transform.
+def preprocess_weights_to_layout(w_row_major, quant_type, layout: str = "mixed_gemm"):
+    """Rearrange a packed weight into a NAMED layout. This is the supported entry point.
 
-    There is NO arch parameter: the layout is fixed by (element type, this accelerator) at compile time, in
-    cutlass_extensions/gemm/kernel/mixed_gemm_B_layout.h. An arch argument here would suggest a choice that the
-    library does not offer.
+    `layout` is a canonical name or an alias from quactlize.layouts -- "mixed_gemm", "mixed_gemm_aiu", "w4a8",
+    "logical", or the full token join such as "mmarow32_tr_cl4_aiu256_cvtword_bias". The name is the only thing that
+    distinguishes one arrangement from another afterwards: two layouts of the same weight have identical dtype,
+    shape and byte count, so a caller that stores a weight must record which layout it is in.
 
-    is_int8_mma        the weights feed an int8-activation MMA (W4A8). Skips the +8 bias, and requires 4-bit weights
-                       -- the row permutation it selects only fits a 32-row MMA tile.
-    use_aiu_interleaved  additionally apply the PPU's 256-column AIU interleave. Requires 4-bit weights with k and n
-                       both multiples of 256; the op refuses other cases rather than returning the ordinary layout,
-                       which is indistinguishable from the AIU one by dtype or shape.
+    The op validates the element width against the name and the shape against any step that constrains it, and
+    refuses rather than returning a different arrangement than the name promises.
+
+    The two-boolean form this replaced is still reachable as _preprocess_weights_for_mixed_gemm, for the step-level
+    tests. It is underscored on both sides now; it was public here while the C++ had already demoted it, which left
+    the package exporting exactly the interface the implementation had moved away from.
     """
-    return _ops().preprocess_weights_for_mixed_gemm(w_row_major, quant_type, is_int8_mma, use_aiu_interleaved)
+    return _ops().preprocess_weights_to_layout(w_row_major, quant_type, layout)
+
+
+def _preprocess_weights_for_mixed_gemm(w_row_major, quant_type, is_int8_mma: bool = False,
+                                       use_aiu_interleaved: bool = False):
+    """The flag form. Prefer preprocess_weights_to_layout: two booleans cannot name what they produced."""
+    return _ops()._preprocess_weights_for_mixed_gemm(w_row_major, quant_type, is_int8_mma, use_aiu_interleaved)
 
 
 def symmetric_quantize(w, quant_type, arch: int = 80):
@@ -141,6 +148,6 @@ def matmul_w4a16(a, b_packed, scales, zeros=None, group_size: int = 128,
 
 
 __all__ = [
-    "preprocess_weights_for_mixed_gemm", "symmetric_quantize", "symmetric_quantize_unprocessed",
+    "preprocess_weights_to_layout", "symmetric_quantize", "symmetric_quantize_unprocessed",
     "pack_int4", "unpack_int4", "pack_uint4", "unpack_uint4", "matmul_w4a16",
 ]
