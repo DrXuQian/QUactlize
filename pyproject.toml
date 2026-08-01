@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quactlize"
+version = "0.1.0"
+description = "Low-bit weight-only GEMM kernels for the T-Head PPU"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.9"
+dependencies = []
+
+[tool.setuptools]
+packages = ["quactlize"]
