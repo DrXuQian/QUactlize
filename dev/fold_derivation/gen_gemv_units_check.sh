@@ -11,7 +11,8 @@
 #   BAD=1 ./gen_gemv_units_check.sh    negative control (inject a ';' into a row and require failure)
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
-CML="$HERE/../CMakeLists.txt"
+# Told by build.sh; the fallback is the repo layout, for running this by hand.
+CML="${QUACTLIZE_CMAKE:-$HERE/../../quactlize/csrc/CMakeLists.txt.in}"
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 

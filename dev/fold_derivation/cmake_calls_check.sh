@@ -11,7 +11,9 @@
 # example or executable) are required to be defined here. Builtins and cutlass's own helpers are out of scope,
 # because an allowlist of those would go stale and start hiding real errors.
 set -u
-CM="$(cd "$(dirname "$0")/.." && pwd)/CMakeLists.txt"
+# Told by build.sh; the fallback is the repo layout, for running this by hand. It used to be "one directory up",
+# which was true before the tree split into quactlize/include, tests/ and benchmarks/.
+CM="${QUACTLIZE_CMAKE:-$(cd "$(dirname "$0")/../.." && pwd)/quactlize/csrc/CMakeLists.txt.in}"
 [ -f "$CM" ] || { echo "no CMakeLists.txt at $CM"; exit 1; }
 
 defined=$(grep -oE '^[[:space:]]*(function|macro)\([[:space:]]*[A-Za-z0-9_]+' "$CM" \

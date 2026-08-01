@@ -53,6 +53,17 @@ echo "[build.sh] CUTLASS_PPU_ARCHS=$ARCH"
 # CHEAP LOCAL CHECKS FIRST, because the expensive failures here are configure-time and box-only. Three target
 # registrations once named a helper that does not exist; nothing caught it until cmake ran on the box, which
 # costs a full pull-and-build to discover a typo.
+#
+# THE CHECKS ARE TOLD WHERE THINGS ARE rather than deriving it. All three assumed the pre-reorganisation layout, in
+# which this script's directory held CMakeLists.txt, the headers and gemv_lowbit/ side by side. After the split into
+# quactlize/include, tests/ and benchmarks/ all three failed -- loudly, each with its own self-check ("the deny list
+# matches nothing", "the anchors moved"), which is the only reason the breakage was visible at all rather than three
+# checks quietly passing over an empty file set. Exporting the paths from the one place that already knows them
+# means they cannot drift from the overlay again.
+export QUACTLIZE_ROOT="$HERE"
+export QUACTLIZE_SRC_DIRS="${_src_dirs[*]}"
+export QUACTLIZE_GEMV_DIR="$HERE/$_subdir_src"
+export QUACTLIZE_CMAKE="$HERE/quactlize/csrc/CMakeLists.txt.in"
 if [ -x "$HERE/dev/fold_derivation/cmake_calls_check.sh" ]; then
   "$HERE/dev/fold_derivation/cmake_calls_check.sh" || exit 1
 fi

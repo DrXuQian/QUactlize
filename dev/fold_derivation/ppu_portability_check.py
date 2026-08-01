@@ -62,12 +62,25 @@ def live_lines(path):
     return out
 
 def main():
-    here = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    files = [os.path.join(here, f) for f in sorted(os.listdir(here))
-             if f.endswith(('.cu', '.cuh', '.hpp', '.h'))]
-    sub = os.path.join(here, 'gemv_lowbit')
+    # WHERE THE SOURCES ARE, told by build.sh so this cannot drift from what the overlay actually ships. The fallback
+    # is the repo layout, for running this by hand. It used to be "the directory above this one", which held every
+    # source before the tree split into quactlize/include, tests/ and benchmarks/ -- after the split this scanned an
+    # empty set, and only the vacuity self-check below made that visible instead of a silent pass.
+    root = os.environ.get('QUACTLIZE_ROOT') or os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    src_dirs = (os.environ.get('QUACTLIZE_SRC_DIRS') or 'quactlize/include tests benchmarks').split()
+    files = []
+    for d in src_dirs:
+        full = os.path.join(root, d)
+        if os.path.isdir(full):
+            files += [os.path.join(full, f) for f in sorted(os.listdir(full))
+                      if f.endswith(('.cu', '.cuh', '.hpp', '.h'))]
+    sub = os.environ.get('QUACTLIZE_GEMV_DIR') or os.path.join(root, 'quactlize/include/gemv_lowbit')
     if os.path.isdir(sub):
-        files += [os.path.join(sub, f) for f in sorted(os.listdir(sub))]
+        files += [os.path.join(sub, f) for f in sorted(os.listdir(sub))
+                  if f.endswith(('.cu', '.cuh', '.hpp', '.h'))]
+    if not files:
+        print("  [FAIL] ppu_portability: scanned no files at all -- the source directories moved")
+        return 1
 
     bad = 0
     for f in files:
