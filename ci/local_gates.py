@@ -63,6 +63,19 @@ SYNTAX = [
     ("tests/test_moe_grouped_real.cu", ""),
     ("benchmarks/test_moe_splitk_bench.cu", ""),
     ("benchmarks/test_moe_splitk_bench.cu", "-DPPU_PACKED_SCALE=1"),
+    # dev/'s top-level probes. They are DEVICE probes -- swzl_ldmatrix_probe reads the hardware swizzle, the
+    # ablations and sweeps run on the accelerator -- so build.sh overlays them onto the box, and anything that
+    # reaches the box belongs in the tier whose whole purpose is catching box-only compile failures locally.
+    # They were absent from this list while they were also absent from the overlay, and the two facts hid each
+    # other: cmake failed on a missing source before any of them could fail to compile.
+    ("dev/swzl_ldmatrix_probe.cu", ""),
+    ("dev/test_fold_int2.cu", ""),
+    ("dev/test_int1_sweep.cu", ""),
+    ("dev/test_moe_grouped_dataslice.cu", ""),
+    ("dev/test_moe_grouped_probe.cu", ""),
+    ("dev/test_q3_bconcat_ablate.cu", ""),
+    ("dev/test_q3_bconcat_probe.cu", ""),
+    ("dev/test_width_acu.cu", ""),
 ]
 
 NVCC = ["nvcc", "-std=c++17", "-x", "cu", "-arch=sm_80", "-w"]

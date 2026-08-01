@@ -8,6 +8,10 @@
 // Build (box): TARGET=swzl_ldmatrix_probe ./build.sh   (or hgcc directly; needs PPU SDK). Run: ./<bin>
 #include <cstdio>
 #include <cstdint>
+// hggcDeviceSynchronize's declaration. This file deliberately pulls in no cutlass, and it also pulled in nothing
+// else -- so the one runtime call it makes had no declaration in scope. Every other probe here gets it through
+// helper.h, which includes this header; this one does not include helper.h because it wants no cutlass with it.
+#include "hggc_runtime.h"
 
 // CUBE_H = Block_MN (N-tile) = 64 in the real W2A16 config. channel_bytes_offset = coord_w (K byte offset) = 0.
 template <int CUBE_H>
