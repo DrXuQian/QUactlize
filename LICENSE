@@ -1,0 +1,10 @@
+PLACEHOLDER -- NOT A LICENCE YET.
+
+The intended licence is Apache-2.0, matching the reference project (IST-DASLab/qutlass). This file must be replaced
+with the FULL Apache License 2.0 text from https://www.apache.org/licenses/LICENSE-2.0.txt before the repository is
+made public: a truncated or paraphrased licence is worse than none, because it is legally ambiguous rather than
+merely absent. It is left as a placeholder rather than reconstructed from memory, since a legal document is exactly
+the kind of text that must be copied and not recalled.
+
+Choose deliberately -- the tree builds on NVIDIA CUTLASS (BSD-3-Clause) and on actlize, whose own licence terms
+govern what this may be released under.
