@@ -22,3 +22,6 @@ packages = ["quactlize"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "slow: instantiates C++ templates with nvcc (~20s) to re-run a measurement a design decision rests on",
+]

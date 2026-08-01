@@ -120,6 +120,9 @@ def xplane(bits: int, tn: int, tk: int, wn: int, f: int) -> Step:
 
     Note the legality constraint F * TK * bits >= 256, the AIU's 32-byte delivery floor: int1 exists only at
     (TK=256, F=1) and (TK=128, F=2). A name that violates it describes a placement that cannot be built.
+
+    For the high plane of a two-plane B-concat use xplane_hi() -- the same plane placed as half of a pair is a
+    DIFFERENT arrangement, and this token cannot express the difference.
     """
     if f * tk * bits < 256:
         raise ValueError(f"xplane needs F*TK*bits >= 256 (the AIU's 32-byte delivery floor); "
@@ -127,6 +130,33 @@ def xplane(bits: int, tn: int, tk: int, wn: int, f: int) -> Step:
     return Step(f"xp{bits}n{tn}k{tk}wn{wn}f{f}", "aiu", "element", "xplane::place_derived", True,
                 f"offline placement for a {bits}-bit plane consumed by a TN={tn} TK={tk} WN={wn} kernel with a "
                 f"{f}-fold. TM and WM do not enter the map and are deliberately absent from the token")
+
+
+def xplane_hi(low_bits: int, hi_bits: int, tn: int, tk: int, wn: int, f_hi: int, f_lo: int) -> Step:
+    """The HIGH plane of a two-plane B-concat, placed by xplane::place_hi.
+
+    A SEPARATE TOKEN FROM xplane(), because the same plane placed the two ways is not the same arrangement. At
+    identical (bits=1, TN=64, TK=128, WN=32, F=2), Q5's high plane through place_hi<low=4, high=1> and a standalone
+    1-bit placement through place_derived differ in 6144 of 8192 map entries and 6114 of 8192 stored bytes. Both
+    would have been named xp1n64k128wn32f2: the token had nowhere to say "low_bits=4" or "cross-plane".
+
+    That is the third time the same error has appeared here -- a parameter of the transform left out of its name --
+    and the third time it was invisible until someone instantiated both and compared. The generalisation worth
+    keeping: the token's parameters are the TEMPLATE ARGUMENTS, and the burden is on showing one does NOT matter,
+    never on assuming it.
+
+    The low plane's own placement is an ordinary xplane() step; this names only the high one, which is the plane
+    whose position depends on what it is paired with.
+    """
+    for label, bits, f in (("high", hi_bits, f_hi), ("low", low_bits, f_lo)):
+        if f * tk * bits < 256:
+            raise ValueError(f"the {label} plane needs F*TK*bits >= 256 (the AIU's 32-byte delivery floor); "
+                             f"{f}*{tk}*{bits} = {f * tk * bits}")
+    return Step(f"xphi{low_bits}x{hi_bits}n{tn}k{tk}wn{wn}f{f_hi}lf{f_lo}", "aiu", "element",
+                "xplane::place_hi", True,
+                f"places the {hi_bits}-bit high plane of a ({low_bits}+{hi_bits}) B-concat for a TN={tn} TK={tk} "
+                f"WN={wn} kernel, high fold {f_hi}, low fold {f_lo}. Distinct from a standalone {hi_bits}-bit "
+                f"placement at the same parameters: they disagree in 6144 of 8192 map entries")
 
 
 def cvt_word_permute() -> Step:

@@ -219,6 +219,64 @@ def test_xplane_rejects_a_configuration_that_cannot_be_built():
     assert L.xplane(1, 64, 128, 32, 2).token == "xp1n64k128wn32f2"
 
 
+XPLANE_HI_PROBE = r"""
+#include <cstdio>
+#include <vector>
+#include <cstdint>
+#include "xplane_offline.hpp"
+int main() {
+  auto a = xplane::tile_map_hi<4,1,64,64,128,32,32,2,1>();
+  auto b = xplane::plane_map<1,64,64,128,32,32,2>();
+  size_t n = a.size() < b.size() ? a.size() : b.size(), d = 0;
+  for (size_t i = 0; i < n; ++i) d += (a[i] != b[i]);
+  printf("%zu %zu\n", d, n);
+  constexpr int N = 256, K = 256;
+  std::vector<uint8_t> q((size_t)N * K);
+  uint32_t s = 0x9e3779b9u;
+  for (size_t i = 0; i < q.size(); ++i) { s ^= s << 13; s ^= s >> 17; s ^= s << 5; q[i] = uint8_t(s & 1); }
+  std::vector<int8_t> own((size_t)N * K / 8), hi(own.size());
+  xplane::place_derived<1,64,64,128,32,32,2>(own.data(), q, N, K);
+  xplane::place_hi<4,1,64,64,128,32,32,2,1>(hi.data(), q, N, K);
+  size_t bd = 0;
+  for (size_t i = 0; i < own.size(); ++i) bd += own[i] != hi[i];
+  printf("%zu %zu\n", bd, own.size());
+  return 0;
+}
+"""
+
+
+@pytest.mark.slow
+def test_a_high_plane_is_not_a_standalone_plane_at_the_same_parameters():
+    """THE COLLISION THAT FORCED xplane_hi INTO EXISTENCE, re-measured rather than remembered.
+
+    At identical (bits=1, TN=64, TK=128, WN=32, F=2), Q5's high plane placed through place_hi<low=4, high=1> and a
+    standalone 1-bit placement through place_derived disagree in 6144 of 8192 map entries and 6114 of 8192 stored
+    bytes on a non-aliasing probe. Both would have carried the name xp1n64k128wn32f2.
+
+    If this test ever reports zero differences, the two placements have converged and xplane_hi is redundant -- so
+    it fails on agreement as well as on a changed count."""
+    import shutil, subprocess, tempfile
+    if not shutil.which("nvcc"):
+        pytest.skip("needs nvcc to instantiate the two placements")
+    with tempfile.TemporaryDirectory() as d:
+        src, exe = Path(d) / "probe.cu", Path(d) / "probe"
+        src.write_text(XPLANE_HI_PROBE)
+        r = subprocess.run(["nvcc", "-std=c++17", "-x", "cu", "-arch=sm_80", "-w",
+                            "-I", str(ROOT / "dev/fold_derivation/stub_inc"),
+                            "-I", str(ROOT / "quactlize/include"),
+                            "-I", str(ROOT / "third_party/actlize/include"),
+                            "-o", str(exe), str(src)], capture_output=True, text=True)
+        if r.returncode != 0:
+            pytest.skip(f"probe does not build here: {r.stderr.strip().splitlines()[:1]}")
+        lines = [l for l in subprocess.run([str(exe)], capture_output=True, text=True).stdout.split("\n") if l.strip()]
+    map_diff, map_n = (int(x) for x in lines[0].split())
+    byte_diff, byte_n = (int(x) for x in lines[1].split())
+    assert (map_diff, map_n) == (6144, 8192), f"map differences moved: {map_diff}/{map_n}"
+    assert (byte_diff, byte_n) == (6114, 8192), f"stored-byte differences moved: {byte_diff}/{byte_n}"
+    # and the two tokens must differ, which is the whole point
+    assert L.xplane(1, 64, 128, 32, 2).token != L.xplane_hi(4, 1, 64, 128, 32, 2, 1).token
+
+
 def test_the_xplane_token_distinguishes_configurations_that_differ():
     """One token per (bits, TN, TK, WN, F). The two tokens this replaced -- plane<P> and foldn<F> -- were two names
     for facets of ONE transform, and between them carried two of the five parameters."""
