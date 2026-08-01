@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+build/
+build_*/
+*.o
+*.so
+*.report
+*.ncu-rep
+.cache/
+compile_commands.json
