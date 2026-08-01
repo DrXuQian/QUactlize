@@ -46,9 +46,27 @@ int main() {
   }
   std::printf("\n   threads whose stage-0 slice lands at or past stage 1: %d (first = %d)\n", oob, first_oob);
   std::printf("   highest start byte %d against a tile of %d bytes\n", worst, int(cosize(lay)));
-  bool const wraps = (oob == 0);
-  std::printf("== l97 %s: cute %s the thread index ==\n", wraps ? "PASS" : "FAIL",
-              wraps ? "WRAPS (out-of-range threads are harmless)"
-                    : "does NOT wrap -- threads beyond the layout write into other stages");
-  return wraps ? 0 : 1;
+  // WHAT THIS FILE NOW ASSERTS, and what it got wrong before. cute does not wrap an out-of-range thread index -- the
+  // table above shows thread 128 landing exactly on stage 1 -- but the call path never presents one: mma() passes
+  // `thread_idx % (Scale_GmemCopyThrLayoutH * Scale_GmemCopyThrLayoutW)` into partition_extra_inputs, so the slice
+  // only ever sees [0, 128). The first version of this file modelled get_slice(t) for t up to 255, a call that does
+  // not exist, concluded there was an unconditional out-of-bounds write, and I committed a "fix" for it.
+  //
+  // So the check is: cute does NOT wrap (a fact about cute, recorded), AND the wrapped index is in range (the fact
+  // about our code that actually matters). A gate that fails on a true statement about a dependency is a gate that
+  // gets ignored.
+  bool const cute_wraps = (oob == 0);
+  int wrapped_bad = 0;
+  for (int t = 0; t < THREADS; ++t) {
+    auto thr = tiled.get_slice(t % TN);                     // the index the collective actually passes
+    Tensor s  = make_tensor(make_smem_ptr(base), lay);
+    Tensor td = thr.partition_D(s);
+    int const off = int(reinterpret_cast<intptr_t>(&td(0, 0, 0, 0)));
+    if (off < 0 || off >= TN * UNIT) ++wrapped_bad;          // must stay inside stage 0
+  }
+  std::printf("   cute wraps an out-of-range index: %s (a fact about cute, not about us)\n", cute_wraps ? "yes" : "no");
+  std::printf("   with the caller's `%% %d`, every thread's slice stays inside its own stage: %d bad\n",
+              TN, wrapped_bad);
+  std::printf("== l97 %s ==\n", wrapped_bad ? "FAIL" : "PASS");
+  return wrapped_bad ? 1 : 0;
 }
