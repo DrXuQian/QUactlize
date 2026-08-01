@@ -86,5 +86,11 @@ int main(int argc, char** argv) {
     double got=(double)float(hD[(size_t)m*N+n]), exp=(double)float(gold[(size_t)m*N+n]);
     if (std::abs(got-exp) > 2e-2 + 6e-2*std::abs(exp)) { std::printf("    m=%d n=%d got=%.4f exp=%.4f\n", m,n,got,exp); ++shown; }
   }
-  return 0;
+  // EXIT STATUS CARRIES THE VERDICT. These printed MISMATCH and returned 0, so any caller that checked
+
+  // the status -- run_batch.sh, a CI step, a shell loop -- saw a pass. The text was the only signal, and
+
+  // a harness whose only signal is text is a harness nothing can gate on.
+
+  return bad ? 1 : 0;
 }
