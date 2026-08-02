@@ -51,6 +51,7 @@ GATES = [
     ("l97_packed_g2s_threads",[]),
     ("l98_scale_swizzle",     []),
     ("l99_bench_like_for_like", []),
+    ("l100_fused_active",     []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -58,6 +59,13 @@ GATES = [
 SYNTAX = [
     ("tests/test_q4k_packed_gemm.cu", ""),
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_PACKED_SCALE=1"),
+    # THE CONFIGURATION THAT SHIPPED BROKEN. kFusedScaleZero's definition referenced KernelConversionMode from a
+    # point in the class where it is not yet declared, and the offending conjunct lives inside
+    # `#if defined(PPU_PACKED_SCALE_FUSED)` -- so every build WITHOUT the macro preprocessed it away and compiled,
+    # and the one build that used it was the only one that could not. Nothing here covered that combination, so the
+    # define reached the box, was reported as a WARNING, applied to nothing, and produced a green correctness run and
+    # an acu capture identical to pack. A macro that changes types needs its own row; this is why.
+    ("tests/test_q4k_packed_gemm.cu", "-DPPU_PACKED_SCALE=1 -DPPU_PACKED_SCALE_FUSED=1"),
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_PACKED_SCALE=1 -DPPU_PACKED_SPLIT_GROUPS=1"),
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_PACKED_SCALE=1 -DPPU_SCALE_SWIZZLE=1"),
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_SCALE_PAD=8"),
@@ -139,7 +147,12 @@ def run(cmd, **kw):
     return p.returncode, (p.stdout + p.stderr), time.time() - t
 
 
-GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"]}
+GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
+              # THE MACROS ARE THE POINT. This gate asserts the fused path is ON, so it has to be built the way the
+              # box builds packfuse -- without these two it would assert about a configuration nobody runs and pass
+              # for the wrong reason, which is the failure it exists to catch.
+              "l100_fused_active": ["-D__HGGCCC__", "--expt-relaxed-constexpr",
+                                    "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_SCALE_FUSED=1"]}
 
 
 def gate(name, args):

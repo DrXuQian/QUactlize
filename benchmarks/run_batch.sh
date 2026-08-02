@@ -129,10 +129,23 @@ build_one() {  # $1 name  $2 defines  $3 target
   # guarded by `if [ -n "$PPU_DEFS" ]`, so a variant with none -- verify_default is one -- prints nothing and could
   # never satisfy this. Requiring it there was a guaranteed false failure in a script whose whole job is to be
   # trusted before any timing is read.
-  if [ -n "$defs" ] && ! grep -q "PPU_DEFS verified on $tgt" "$log"; then
-    echo "    FAILED: no 'PPU_DEFS verified' line in $log -- the macro did not reach the device compile"
-    grep -E "WARNING|ERROR" "$log" | head -3 | sed 's/^/      /'
-    return 1
+  # EVERY DEFINE, NOT ONE OF THEM. build.sh prints one verification line per define and a WARNING for each one that
+  # is missing, so a single `grep -q "PPU_DEFS verified"` passes as long as ANY define landed. That is how
+  # PPU_PACKED_SCALE_FUSED reached the box applying to nothing: SK_QUANT and PPU_PACKED_SCALE verified, the third did
+  # not, the gate saw a verified line and let it through, and the resulting binary was pack under another name -- with
+  # a passing correctness run and an acu capture identical to pack's, which is the most expensive possible way to
+  # learn that a flag did nothing.
+  if [ -n "$defs" ]; then
+    local _d _miss=()
+    for _d in $defs; do
+      grep -qF "PPU_DEFS verified on $tgt's compile command: -D$_d" "$log" || _miss+=("$_d")
+    done
+    if [ ${#_miss[@]} -ne 0 ]; then
+      echo "    FAILED: these defines did NOT reach $tgt's device compile: ${_miss[*]}"
+      echo "            a binary built without them is another variant under a different name."
+      grep -E "WARNING|ERROR" "$log" | head -5 | sed 's/^/      /'
+      return 1
+    fi
   fi
   [ -x "$EX/$tgt" ] || { echo "    FAILED: $EX/$tgt not built (see $log)"; return 1; }
   cp "$EX/$tgt" "$out"                               # BEFORE the next build deletes it
@@ -221,7 +234,20 @@ do_build() {
 # What the question actually is: were these binaries compiled from the sources this checkout now has? That is a
 # content question, and build.sh already enumerates exactly the files that get compiled -- so hash those. Pulling a
 # change to run_batch.sh or a README does not invalidate anything, because neither is in the manifest.
-build_stamp() { ( cd "$ROOT" && ./build.sh --print-overlay | sed 's/.*|//' | sort | xargs md5sum 2>/dev/null | md5sum | cut -d' ' -f1 ); }
+# THE MANIFEST IS NOT THE WHOLE COMPILED SET. build.sh --print-overlay lists the files this repo OVERLAYS onto
+# actlize -- 62 of them -- and the collective this entire task edits is not among them, because it lives in the
+# submodule and is compiled where it sits. So the stamp was blind to the one file being changed: binaries built
+# before a collective edit passed require_fresh_binaries, and the per-binary cache added later would have gone one
+# worse and printed [cached] instead of recompiling. Hash the submodule's HEAD and any modified tracked file beside
+# the overlay, which covers both a submodule bump and a local edit.
+build_stamp() {
+  ( cd "$ROOT" && {
+      ./build.sh --print-overlay | sed 's/.*|//' | sort | xargs md5sum 2>/dev/null
+      git -C third_party/actlize rev-parse HEAD 2>/dev/null
+      git -C third_party/actlize ls-files -m 2>/dev/null | sort |
+        while IFS= read -r f; do md5sum "third_party/actlize/$f" 2>/dev/null; done
+    } | md5sum | cut -d' ' -f1 )
+}
 
 require_fresh_binaries() {
   local missing=() b stamp
