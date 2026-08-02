@@ -110,105 +110,94 @@ CUTLASS_HOST_DEVICE int q3k_scale(uint8_t const* sc, int g) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// ONE SUPERBLOCK, ONE DOT PRODUCT. `block` is the format's RAW GGUF block, exactly as it sits in the file: no
-// repacking, which is what makes this usable at decode with the checkpoint's own bytes.
-template <KType T>
-CUTLASS_HOST_DEVICE float vecdot_block(uint8_t const* block, float const* x);
-
-template <>
-CUTLASS_HOST_DEVICE float vecdot_block<KType::Q4_K>(uint8_t const* b, float const* x) {
+// ONE TRAVERSAL, TWO CONSUMERS. visit<T> walks a superblock and hands each element its index, its GROUP index, its
+// integer code, and that group's (dl, ml). vecdot_block and dequantize_block are both thin users of it.
+//
+// THE ALTERNATIVE IS TWO TRANSCRIPTIONS OF THE SAME BIT LAYOUT, and this file's whole claim is that the layout was
+// transcribed once, from the official dequantiser, and checked. A second copy for the dequantise path would be a
+// second thing to be wrong, and wrong in the way that is hardest to catch: each would be tested against the
+// reference separately and could disagree with the other only on a format nobody exercised that week.
+//
+// The GROUP INDEX is passed rather than inferred. A first version detected group boundaries by watching (dl, ml)
+// change, which is correct only by accident -- two adjacent groups with equal scale and min would not flush, and it
+// happens to still give the right answer because the scalars are equal. Correct-by-accident in a traversal that two
+// paths depend on is not worth the four bytes it saves.
+template <class F> CUTLASS_HOST_DEVICE void visit_q4k(uint8_t const* b, F f) {
   float const d = float(half_t::bitcast(uint16_t(b[0] | (b[1] << 8))));
   float const dmin = float(half_t::bitcast(uint16_t(b[2] | (b[3] << 8))));
-  uint8_t const* sc = b + 4;
-  uint8_t const* qs = b + 16;
-  float acc = 0.f;
+  uint8_t const* sc = b + 4; uint8_t const* qs = b + 16;
   for (int g = 0; g < 8; ++g) {
-    GroupAcc a{0.f, 0.f};
-    for (int j = 0; j < 32; ++j) {
-      int const i = g * 32 + j;
-      a.sumqx += float(q4k_code(qs, i)) * x[i];
-      a.sumx += x[i];
-    }
-    acc += apply_group(a, d * float(scale_of<KType::Q4_K>(sc, g)), dmin * float(min_of<KType::Q4_K>(sc, g)));
+    float const dl = d * float(scale_of<KType::Q4_K>(sc, g));
+    float const ml = dmin * float(min_of<KType::Q4_K>(sc, g));
+    for (int j = 0; j < 32; ++j) { int const i = g * 32 + j; f(i, g, q4k_code(qs, i), dl, ml); }
   }
-  return acc;
 }
-
-template <>
-CUTLASS_HOST_DEVICE float vecdot_block<KType::Q5_K>(uint8_t const* b, float const* x) {
+template <class F> CUTLASS_HOST_DEVICE void visit_q5k(uint8_t const* b, F f) {
   float const d = float(half_t::bitcast(uint16_t(b[0] | (b[1] << 8))));
   float const dmin = float(half_t::bitcast(uint16_t(b[2] | (b[3] << 8))));
-  uint8_t const* sc = b + 4;
-  uint8_t const* qh = b + 16;
-  uint8_t const* qs = b + 48;
-  float acc = 0.f;
+  uint8_t const* sc = b + 4; uint8_t const* qh = b + 16; uint8_t const* qs = b + 48;
   for (int g = 0; g < 8; ++g) {
-    GroupAcc a{0.f, 0.f};
-    for (int j = 0; j < 32; ++j) {
-      int const i = g * 32 + j;
-      a.sumqx += float(q5k_code(qs, qh, i)) * x[i];
-      a.sumx += x[i];
-    }
-    acc += apply_group(a, d * float(scale_of<KType::Q5_K>(sc, g)), dmin * float(min_of<KType::Q5_K>(sc, g)));
+    float const dl = d * float(scale_of<KType::Q5_K>(sc, g));
+    float const ml = dmin * float(min_of<KType::Q5_K>(sc, g));
+    for (int j = 0; j < 32; ++j) { int const i = g * 32 + j; f(i, g, q5k_code(qs, qh, i), dl, ml); }
   }
-  return acc;
 }
-
-template <>
-CUTLASS_HOST_DEVICE float vecdot_block<KType::Q2_K>(uint8_t const* b, float const* x) {
-  uint8_t const* sc = b;
-  uint8_t const* qs = b + 16;
+template <class F> CUTLASS_HOST_DEVICE void visit_q2k(uint8_t const* b, F f) {
+  uint8_t const* sc = b; uint8_t const* qs = b + 16;
   float const d = float(half_t::bitcast(uint16_t(b[80] | (b[81] << 8))));
   float const dmin = float(half_t::bitcast(uint16_t(b[82] | (b[83] << 8))));
-  float acc = 0.f;
   for (int g = 0; g < 16; ++g) {
-    GroupAcc a{0.f, 0.f};
-    for (int j = 0; j < 16; ++j) {
-      int const i = g * 16 + j;
-      a.sumqx += float(q2k_code(qs, i)) * x[i];
-      a.sumx += x[i];
-    }
-    acc += apply_group(a, d * float(sc[g] & 0xF), dmin * float(sc[g] >> 4));
+    float const dl = d * float(sc[g] & 0xF), ml = dmin * float(sc[g] >> 4);
+    for (int j = 0; j < 16; ++j) { int const i = g * 16 + j; f(i, g, q2k_code(qs, i), dl, ml); }
   }
-  return acc;
 }
-
-template <>
-CUTLASS_HOST_DEVICE float vecdot_block<KType::Q6_K>(uint8_t const* b, float const* x) {
-  uint8_t const* ql = b;
-  uint8_t const* qh = b + 128;
+template <class F> CUTLASS_HOST_DEVICE void visit_q6k(uint8_t const* b, F f) {
+  uint8_t const* ql = b; uint8_t const* qh = b + 128;
   int8_t const* sc = reinterpret_cast<int8_t const*>(b + 192);
   float const d = float(half_t::bitcast(uint16_t(b[208] | (b[209] << 8))));
-  float acc = 0.f;
   for (int g = 0; g < 16; ++g) {
-    GroupAcc a{0.f, 0.f};
-    for (int j = 0; j < 16; ++j) {
-      int const i = g * 16 + j;
-      a.sumqx += float(q6k_code(ql, qh, i)) * x[i];
-      a.sumx += x[i];
-    }
-    acc += apply_group(a, d * float(sc[g]), 0.f);      // no min channel; the centre rides in the code
+    float const dl = d * float(sc[g]);                    // no min channel; the centre rides in the code
+    for (int j = 0; j < 16; ++j) { int const i = g * 16 + j; f(i, g, q6k_code(ql, qh, i), dl, 0.f); }
   }
-  return acc;
+}
+template <class F> CUTLASS_HOST_DEVICE void visit_q3k(uint8_t const* b, F f) {
+  uint8_t const* hmask = b; uint8_t const* qs = b + 32; uint8_t const* sc = b + 96;
+  float const d = float(half_t::bitcast(uint16_t(b[108] | (b[109] << 8))));
+  for (int g = 0; g < 16; ++g) {
+    float const dl = d * float(q3k_scale(sc, g));
+    for (int j = 0; j < 16; ++j) { int const i = g * 16 + j; f(i, g, q3k_code(qs, hmask, i), dl, 0.f); }
+  }
 }
 
-template <>
-CUTLASS_HOST_DEVICE float vecdot_block<KType::Q3_K>(uint8_t const* b, float const* x) {
-  uint8_t const* hmask = b;
-  uint8_t const* qs = b + 32;
-  uint8_t const* sc = b + 96;
-  float const d = float(half_t::bitcast(uint16_t(b[108] | (b[109] << 8))));
-  float acc = 0.f;
-  for (int g = 0; g < 16; ++g) {
-    GroupAcc a{0.f, 0.f};
-    for (int j = 0; j < 16; ++j) {
-      int const i = g * 16 + j;
-      a.sumqx += float(q3k_code(qs, hmask, i)) * x[i];
-      a.sumx += x[i];
-    }
-    acc += apply_group(a, d * float(q3k_scale(sc, g)), 0.f);
-  }
-  return acc;
+template <KType T, class F>
+CUTLASS_HOST_DEVICE void visit(uint8_t const* b, F f) {
+  if constexpr      (T == KType::Q2_K) visit_q2k(b, f);
+  else if constexpr (T == KType::Q3_K) visit_q3k(b, f);
+  else if constexpr (T == KType::Q4_K) visit_q4k(b, f);
+  else if constexpr (T == KType::Q5_K) visit_q5k(b, f);
+  else                                 visit_q6k(b, f);
+}
+
+// THE GEMV CONSUMER. Grouping the dot as dl*sum(q x) - ml*sum(x) keeps both scalars out of the inner loop, which is
+// the whole reason this shape is worth having at decode.
+template <KType T>
+CUTLASS_HOST_DEVICE float vecdot_block(uint8_t const* b, float const* x) {
+  float acc = 0.f, sumqx = 0.f, sumx = 0.f, dl = 0.f, ml = 0.f;
+  int cur = -1;
+  visit<T>(b, [&](int i, int g, int q, float gdl, float gml) {
+    if (g != cur) { if (cur >= 0) acc += dl * sumqx - ml * sumx; cur = g; dl = gdl; ml = gml; sumqx = 0.f; sumx = 0.f; }
+    sumqx += float(q) * x[i];
+    sumx += x[i];
+  });
+  return acc + dl * sumqx - ml * sumx;
+}
+
+// THE FALLBACK CONSUMER: full fp16 weights, which is what a cuBLAS or DeepGemm path multiplies. NO ZMul here -- that
+// is the mixed-input CONVERTER's centre correction, and these are the actual weight values. Adding it would shift
+// every weight by 8*scale and still look entirely plausible, which is the failure mode that parameter exists for.
+template <KType T>
+CUTLASS_HOST_DEVICE void dequantize_block(uint8_t const* b, half_t* out) {
+  visit<T>(b, [&](int i, int, int q, float dl, float ml) { out[i] = half_t(dl * float(q) - ml); });
 }
 
 }  // namespace vecdot

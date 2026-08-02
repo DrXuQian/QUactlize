@@ -109,6 +109,21 @@ def gguf_vecdot(blocks, x, qtype: int):
     return _ops().gguf_vecdot(blocks, x, qtype)
 
 
+def gguf_dequantize(blocks, qtype: int):
+    """RAW GGUF blocks -> full fp16 weights. THE FALLBACK PATH'S MISSING LINK.
+
+    The fallback is dequantise-then-library-GEMM: cuBLAS for dense, DeepGemm for MoE. dequantize_weight in
+    unfused_weight_dequantize.hpp already handles the symmetric packed forms, but cannot read a k-quant block, so a
+    GGUF checkpoint had no route to those GEMMs. Uses the same traversal as gguf_vecdot, so each format's bit layout
+    is transcribed once.
+
+    Costs what it says: a dequantised fp16 weight is 4x the int4 codes and ~3.6x the native k-quant block, so this
+    path only pays where the result is reused across many rows. `blocks` is uint8 [rows, type_size]; returns fp16
+    [rows, 256].
+    """
+    return _ops().gguf_dequantize(blocks, qtype)
+
+
 def gguf_scale_block_shape(qtype: int):
     """(block_bytes, groups, group_size, has_min, scale_bias, signed) for a k-quant's SCALE block.
 
@@ -189,6 +204,6 @@ def matmul_w4a16(a, b_packed, scales, zeros=None, group_size: int = 128,
 
 __all__ = [
     "preprocess_weights_to_layout", "symmetric_quantize", "symmetric_quantize_unprocessed",
-    "gguf_scale_prepass", "gguf_scale_block_shape", "gguf_vecdot",
+    "gguf_scale_prepass", "gguf_scale_block_shape", "gguf_vecdot", "gguf_dequantize",
     "pack_int4", "unpack_int4", "pack_uint4", "unpack_uint4", "matmul_w4a16",
 ]

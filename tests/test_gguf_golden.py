@@ -337,3 +337,27 @@ def test_vecdot_matches_llama_cpp(name, qtype, hdr, scales, codes, qmax):
     # same element order; the shipping GEMV consumes the offline-reordered weight and will need a looser,
     # summation-order tolerance. See gguf_vecdot.hpp's header -- that path is not what this tests.
     assert rel < 2e-5, f"{name}: vecdot disagrees with llama.cpp, worst relative error {rel:.3e}"
+
+
+@pytest.mark.parametrize("name,qtype,hdr,scales,codes,qmax", FORMATS)
+def test_dequantize_matches_llama_cpp(name, qtype, hdr, scales, codes, qmax):
+    """THE FALLBACK PATH: raw block -> fp16 weights, compared elementwise to the reference.
+
+    Tolerance is fp16 rounding, not float32: the output dtype is half, so 2^-11 relative is the floor and asking for
+    the ~1e-7 the vecdot reaches would fail on the one thing that is not a bug. This is the same traversal vecdot
+    uses, so a disagreement here would mean the fp16 conversion, not the layout.
+    """
+    quactlize = pytest.importorskip("quactlize", reason="needs the built operator library")
+    torch = pytest.importorskip("torch")
+    rng = np.random.default_rng(555 + qmax)
+    block_size, type_size = GGML_QUANT_SIZES[qtype]
+    n = 64
+    raw = rng.integers(0, 256, size=(n, type_size), dtype=np.uint8)
+    for lo, hi in hdr:
+        v = (rng.random(n) * 0.1 + 0.001).astype(np.float16)
+        raw[:, lo:hi] = v.view(np.uint8).reshape(n, 2)
+    ref = gguf.quants.dequantize(raw.reshape(-1), qtype).reshape(n, block_size).astype(np.float64)
+    _assert_finite(ref, f"{name} golden")
+    got = quactlize.gguf_dequantize(torch.from_numpy(raw), int(qtype)).numpy().astype(np.float64)
+    rel = np.abs(got - ref).max() / max(1e-9, np.abs(ref).max())
+    assert rel < 1e-3, f"{name}: fp16 dequantise disagrees with llama.cpp, worst relative error {rel:.3e}"

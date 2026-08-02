@@ -171,6 +171,36 @@ torch::Tensor gguf_vecdot(torch::Tensor blocks, torch::Tensor x, int64_t qtype) 
   });
 }
 
+// THE FALLBACK PATH'S MISSING LINK: raw GGUF blocks -> full fp16 weights, which is what cuBLAS and DeepGemm
+// multiply. dequantize_weight in unfused_weight_dequantize.hpp already covers the symmetric packed representations
+// (INT8/INT4/INT2/INT1 with fp16 scale planes); it cannot read a k-quant block, so a GGUF checkpoint had no route to
+// the library GEMMs at all. This is that route, and it reuses the SAME traversal vecdot uses, so there is one
+// transcription of each format's bit layout rather than two.
+//
+// NO ZMul. That is the mixed-input converter's centre correction; these are the actual weight values.
+torch::Tensor gguf_dequantize(torch::Tensor blocks, int64_t qtype) {
+  CHECK_CPU(blocks); CHECK_CONTIGUOUS(blocks);
+  TORCH_CHECK(blocks.dtype() == torch::kUInt8 && blocks.dim() == 2, "blocks must be uint8 [rows, type_size]");
+  int64_t const rows = blocks.size(0), ts = blocks.size(1);
+  torch::Tensor out = torch::empty({rows, 256}, torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCPU));
+  auto const* bp = get_ptr<uint8_t const>(blocks);
+  return dispatch_ktype(qtype, [&](auto tag) -> torch::Tensor {
+    constexpr KType T = decltype(tag)::value;
+    constexpr int64_t kRaw = (T == KType::Q2_K) ? 84 : (T == KType::Q3_K) ? 110
+                           : (T == KType::Q4_K) ? 144 : (T == KType::Q5_K) ? 176 : 210;
+    TORCH_CHECK(ts == kRaw, "this format's raw GGUF block is ", kRaw, " bytes, got ", ts);
+    // The same bit-preserving copy the pre-pass op uses: at::Half and cutlass::half_t are distinct types and reading
+    // one through the other is UB whatever the bits do.
+    std::vector<cutlass::half_t> tmp(256);
+    auto* op = get_ptr<at::Half>(out);
+    for (int64_t r = 0; r < rows; ++r) {
+      gguf_scale::vecdot::dequantize_block<T>(bp + r * ts, tmp.data());
+      for (int j = 0; j < 256; ++j) std::memcpy(op + r * 256 + j, &tmp[size_t(j)], sizeof(cutlass::half_t));
+    }
+    return out;
+  });
+}
+
 // The format's own shape, so Python does not carry a second copy of it. quactlize.formats already has block byte
 // counts for the storage arithmetic; these are the SCALE block's, which is a different number, and a test that
 // slices the wrong range would otherwise fail in a way that looks like a decode bug.
@@ -186,6 +216,9 @@ std::vector<int64_t> gguf_scale_block_shape(int64_t qtype) {
 
 static auto gguf_scale_prepass_op =
     torch::RegisterOperators("quactlize::gguf_scale_prepass", &torch_ext::gguf_scale_prepass);
+
+static auto gguf_dequantize_op =
+    torch::RegisterOperators("quactlize::gguf_dequantize", &torch_ext::gguf_dequantize);
 
 static auto gguf_vecdot_op = torch::RegisterOperators("quactlize::gguf_vecdot", &torch_ext::gguf_vecdot);
 
