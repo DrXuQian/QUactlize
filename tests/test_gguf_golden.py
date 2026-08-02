@@ -158,3 +158,128 @@ def test_q4k_field_layout_matches_llama_cpp():
             w[g * 32:(g + 1) * 32] = dd * sc * nib.astype(np.float64) - dm * mn
         worst = max(worst, np.abs(w - ref[b]).max() / max(1e-9, np.abs(ref[b]).max()))
     assert worst < 1e-6, f"Q4_K field layout disagrees with llama.cpp: worst relative error {worst:.3e}"
+
+
+# ===================================================================================================================
+# THE WHOLE PRE-PASS, FOR ALL FIVE FORMATS, AGAINST THE OFFICIAL IMPLEMENTATION AND THROUGH THE PYTHON ENTRY.
+#
+# HOW scale AND zero ARE OBTAINED FROM THE REFERENCE WITHOUT WRITING DOWN A SINGLE FORMAT CONSTANT. Each format's
+# dequantisation is w = code * scale + affine, with `code` running over an integer range whose OFFSET differs per
+# format (Q3_K's codes are centred at -4, Q6_K's at -32, the rest start at 0). Writing those offsets down here is
+# exactly the mistake this file has already made twice about byte ranges, so they are derived instead:
+#
+#   1. set dmin = 0, so the affine term vanishes and w = code * scale exactly
+#   2. fill the codes 0x00 and 0xFF -- the only two byte values uniform in every bit, so every element of a group
+#      gets the same code -- giving w(c_lo) and w(c_hi)
+#   3. scale = (w_hi - w_lo) / (c_hi - c_lo), where the DIFFERENCE is just the bit width and nothing else
+#   4. c_lo = w_lo / scale then falls out, and the test ASSERTS IT IS AN INTEGER rather than assuming its value.
+#      If our scale were wrong by any factor, this ratio would not be a whole number.
+#
+# Then dmin is restored and the shift in w isolates the format's affine term, which is what `zero` must carry.
+#
+# WHY THIS IS THE ORACLE THAT MATTERS. Every constant in gguf_scale_layout.hpp came from our own numpy parser, so a
+# test against that parser proves nothing about either. gguf.quants is a separate implementation of the same spec.
+def _official(raw, qtype, block_size):
+    w = gguf.quants.dequantize(raw.reshape(-1), qtype).reshape(len(raw), block_size).astype(np.float64)
+    _assert_finite(w, "golden")
+    return w
+
+
+@pytest.mark.parametrize("name,qtype,hdr,scales,codes,qmax", FORMATS)
+def test_prepass_scale_matches_llama_cpp(name, qtype, hdr, scales, codes, qmax):
+    quactlize = pytest.importorskip("quactlize", reason="needs the built operator library")
+    torch = pytest.importorskip("torch")
+    rng = np.random.default_rng(1234 + qmax)
+    block_size, _ = GGML_QUANT_SIZES[qtype]
+    blk_bytes, groups, gsize, has_min, _bias, _signed = quactlize.gguf_scale_block_shape(int(qtype))
+    assert (scales[1] - scales[0]) == blk_bytes, \
+        f"{name}: the layout table's scale range is {scales[1]-scales[0]} bytes but Traits says {blk_bytes}"
+    assert groups * gsize == block_size, f"{name}: groups*group_size != block size"
+
+    n = 64
+    base = _make_blocks(qtype, hdr, scales, codes, n, rng, code_fill=0x00)
+    if has_min:                                   # dmin = 0 isolates the scale; hdr[1] is the dmin range
+        base[:, hdr[1][0]:hdr[1][1]] = 0
+
+    ws = []
+    for fill in (0x00, 0xFF):
+        raw = base.copy()
+        for lo, hi in codes:
+            raw[:, lo:hi] = fill
+        ws.append(_official(raw, qtype, block_size))
+    w_lo = ws[0].reshape(n, groups, gsize)[:, :, 0]      # constant within a group; checked by the coverage test
+    w_hi = ws[1].reshape(n, groups, gsize)[:, :, 0]
+    scale_ref = (w_hi - w_lo) / qmax
+
+    d = base[:, hdr[0][0]:hdr[0][1]].copy().view(np.float16).reshape(n)
+    dmin = (base[:, hdr[1][0]:hdr[1][1]].copy().view(np.float16).reshape(n) if has_min
+            else np.zeros(n, np.float16))
+    sb = torch.from_numpy(np.ascontiguousarray(base[:, scales[0]:scales[1]]))
+    scale_ours, zero_ours = quactlize.gguf_scale_prepass(
+        sb, torch.from_numpy(d.copy()), torch.from_numpy(dmin.copy()), int(qtype), 0)
+    scale_ours = scale_ours.numpy().astype(np.float64)
+
+    m = np.abs(scale_ref) > 1e-7
+    assert m.sum() > n, f"{name}: almost every reference scale is zero; the fixture says nothing"
+    rel = np.abs(scale_ours[m] - scale_ref[m]) / np.abs(scale_ref[m])
+    assert rel.max() < 2e-3, \
+        f"{name}: our scale disagrees with llama.cpp, worst relative error {rel.max():.3e}"
+
+    # THE CODE OFFSET, DERIVED. If it is not a whole number our scale is wrong by a factor, which the relative check
+    # above could miss only if the reference were wrong the same way -- it cannot be, being a separate implementation.
+    c_lo = w_lo[m] / scale_ours[m]
+    # THE TOLERANCE MUST SCALE WITH |c_lo|, and that is arithmetic rather than a loosened number. The numerator is
+    # the reference's float32 output; the denominator is OUR fp16 scale, whose relative error is up to 2^-11 ~ 4.9e-4.
+    # The ratio therefore carries an ABSOLUTE error of |c_lo| * 4.9e-4, which at Q6_K's offset of -32 is 1.6e-2 --
+    # a fixed 1e-2 bound fails there while nothing is wrong. It still discriminates: an offset that is genuinely
+    # non-integral is off by O(0.1), two orders above this.
+    tol = 1e-3 * np.maximum(1.0, np.abs(c_lo))
+    assert (np.abs(c_lo - np.round(c_lo)) < tol).all(), \
+        f"{name}: w(0x00)/scale is not an integer code (spread {c_lo.min():.3f}..{c_lo.max():.3f})"
+    assert np.allclose(np.round(c_lo), np.round(c_lo)[0]), f"{name}: the derived code offset is not uniform"
+
+
+@pytest.mark.parametrize("name,qtype,hdr,scales,codes,qmax",
+                         [f for f in FORMATS if f[0] in ("Q2_K", "Q4_K", "Q5_K")])
+def test_prepass_zero_carries_the_affine_term(name, qtype, hdr, scales, codes, qmax):
+    """The min channel, isolated: with the codes held fixed, restoring dmin shifts w by exactly the affine term.
+
+    This is the half that a prepass gets silently wrong. -dmin*mn looks like a small correction and dropping it
+    produces weights that are the right magnitude and the wrong values.
+    """
+    quactlize = pytest.importorskip("quactlize", reason="needs the built operator library")
+    torch = pytest.importorskip("torch")
+    rng = np.random.default_rng(99 + qmax)
+    block_size, _ = GGML_QUANT_SIZES[qtype]
+    _blk, groups, gsize, has_min, _b, _s = quactlize.gguf_scale_block_shape(int(qtype))
+    assert has_min, f"{name} should have a min channel"
+
+    n = 64
+    base = _make_blocks(qtype, hdr, scales, codes, n, rng, code_fill=0x00)
+    for lo, hi in codes:
+        base[:, lo:hi] = 0x00                       # codes fixed, so only the affine term can move
+    with_dmin = base.copy()
+    zero_dmin = base.copy()
+    zero_dmin[:, hdr[1][0]:hdr[1][1]] = 0
+
+    w_with = _official(with_dmin, qtype, block_size).reshape(n, groups, gsize)[:, :, 0]
+    w_zero = _official(zero_dmin, qtype, block_size).reshape(n, groups, gsize)[:, :, 0]
+    affine_ref = w_with - w_zero                    # = -dmin*mn, by construction of the two fixtures
+
+    d = with_dmin[:, hdr[0][0]:hdr[0][1]].copy().view(np.float16).reshape(n)
+    dmin = with_dmin[:, hdr[1][0]:hdr[1][1]].copy().view(np.float16).reshape(n)
+    sb = torch.from_numpy(np.ascontiguousarray(with_dmin[:, scales[0]:scales[1]]))
+    scale0, zero0 = quactlize.gguf_scale_prepass(
+        sb, torch.from_numpy(d.copy()), torch.from_numpy(dmin.copy()), int(qtype), 0)
+    zero0 = zero0.numpy().astype(np.float64)
+
+    denom = np.maximum(np.abs(affine_ref).max(), 1e-6)
+    err = np.abs(zero0 - affine_ref).max() / denom
+    assert err < 5e-3, f"{name}: our zero does not carry llama.cpp's affine term (worst rel {err:.3e})"
+
+    # ZMul IS ADDED ON TOP OF THAT, not instead of it. Getting this backwards is the recorded trap.
+    scale8, zero8 = quactlize.gguf_scale_prepass(
+        sb, torch.from_numpy(d.copy()), torch.from_numpy(dmin.copy()), int(qtype), 8)
+    lhs = zero8.numpy().astype(np.float64)
+    rhs = zero0 + 8.0 * scale0.numpy().astype(np.float64)
+    assert np.abs(lhs - rhs).max() < 5e-3 * denom, f"{name}: zero(zmul=8) != zero(0) + 8*scale"

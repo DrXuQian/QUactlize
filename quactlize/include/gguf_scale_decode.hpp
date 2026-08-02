@@ -26,7 +26,18 @@
 #include "cutlass/cutlass.h"
 #include "cutlass/half.h"
 #include "gguf_scale_layout.hpp"
-#include "cutlass/gguf_packed_scale.h"
+// THE PACKED-UNIT HELPERS ARE OPTIONAL, and that is what makes this header usable from the portable host side.
+// cutlass/gguf_packed_scale.h lives in the actlize submodule, whose cutlass/half.h includes <hggc_fp16.h> from the
+// PPU SDK -- so pulling it in unconditionally means the plain decode cannot be built against stock cutlass, and the
+// torch extension that exposes this to Python could only be built on a machine with the SDK. The PLAIN decode needs
+// none of it: scale_of / min_of / make_group_scale are pure arithmetic over the format's own bytes. Only the
+// re-exports at the bottom of this file need the packed unit, so they follow the same condition.
+#if defined(__has_include)
+#  if __has_include("cutlass/gguf_packed_scale.h")
+#    define GGUF_SCALE_HAVE_PACKED 1
+#    include "cutlass/gguf_packed_scale.h"
+#  endif
+#endif
 
 namespace gguf_scale {
 
@@ -117,6 +128,7 @@ CUTLASS_HOST_DEVICE constexpr float bytes_per_group_per_col_fp16() {
 // the mainloop is there. This header re-exports them so existing callers (fold_derivation/l94, the offline harnesses) are
 // unchanged, and so there is exactly ONE definition of the bit map -- copying it here is the failure this work keeps
 // recording. The Q4_K parameters are named where they are used, not baked into the re-export.
+#if defined(GGUF_SCALE_HAVE_PACKED)
 using cutlass::gguf_packed::PackBits;
 using cutlass::gguf_packed::kUnitBytes;
 static constexpr int kPackBitBase = cutlass::gguf_packed::kBitBase;
@@ -128,5 +140,7 @@ CUTLASS_HOST_DEVICE GroupScale packed_group(uint8_t const* unit, int g) {
   auto const g2 = cutlass::gguf_packed::group_of<Traits<T>::kScaleBias, Traits<T>::kHasMin>(unit, g);
   return GroupScale{g2.scale, g2.zero};
 }
+
+#endif  // GGUF_SCALE_HAVE_PACKED
 
 }  // namespace gguf_scale

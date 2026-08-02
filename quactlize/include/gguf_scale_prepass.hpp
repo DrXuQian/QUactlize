@@ -40,13 +40,13 @@
 #include "gguf_scale_layout.hpp"
 #include "gguf_scale_decode.hpp"
 
-namespace quactlize {
-namespace gguf_prepass {
+namespace gguf_scale {
+namespace prepass {
 
 using cutlass::half_t;
-using ::quactlize::gguf::KType;
-using ::quactlize::gguf::Traits;
-using ::quactlize::gguf::GroupScale;
+using ::gguf_scale::KType;
+using ::gguf_scale::Traits;
+using ::gguf_scale::GroupScale;
 
 // ONE SUPERBLOCK-COLUMN'S WORTH OF DECODE, and the ONLY place the arithmetic exists. The device kernel below and the
 // host reference both call this, so "the two agree" is not a property that has to be tested -- there is one of them.
@@ -57,13 +57,13 @@ CUTLASS_HOST_DEVICE GroupScale
 group_scale_zero(uint8_t const* block, int g, half_t d, half_t dmin) {
   using Tr = Traits<T>;
   GroupScale out;
-  int const sc = ::quactlize::gguf::scale_of<T>(block, g);
+  int const sc = ::gguf_scale::scale_of<T>(block, g);
   if constexpr (Tr::kHasMin) {
-    out = ::quactlize::gguf::make_group_scale<T>(sc, ::quactlize::gguf::min_of<T>(block, g), d, dmin);
+    out = ::gguf_scale::make_group_scale<T>(sc, ::gguf_scale::min_of<T>(block, g), d, dmin);
   } else {
     // NO MIN CHANNEL AT ALL for Q3_K and Q6_K: the code's own centre is carried by Traits::kScaleBias (32 for Q3_K)
     // or by the sign of the code itself (Q6_K's int8), so there is nothing for a format-level zero to hold.
-    out.scale = ::quactlize::gguf::make_group_scale_only<T>(sc, d);
+    out.scale = ::gguf_scale::make_group_scale_only<T>(sc, d);
     out.zero  = half_t(0.f);
   }
   // THE CONSUMER'S CORRECTION, LAST. It is added to the SPLIT zero, exactly as the in-kernel decoder does it, so a
@@ -152,5 +152,5 @@ CUTLASS_HOST_DEVICE constexpr int bytes_per_column_superblock(bool with_zero) {
        + Traits<T>::kGroups * 2 * (with_zero ? 2 : 1);
 }
 
-}  // namespace gguf_prepass
-}  // namespace quactlize
+}  // namespace prepass
+}  // namespace gguf_scale

@@ -79,6 +79,33 @@ def _preprocess_weights_for_mixed_gemm(w_row_major, quant_type, is_int8_mma: boo
     return _ops()._preprocess_weights_for_mixed_gemm(w_row_major, quant_type, is_int8_mma, use_aiu_interleaved)
 
 
+def gguf_scale_prepass(scale_blocks, d, dmin, qtype: int, zmul: int):
+    """GGUF k-quant scale metadata -> the fp16 (scale, zero) planes the collectives consume. THE ONLINE PRE-PASS.
+
+    `scale_blocks` is uint8 [rows, block_bytes] holding the format's SCALE block only -- not the whole GGUF block,
+    whose layout differs per format (Q2_K, Q3_K and Q6_K put d at the END). Slicing it out is the caller's job, and
+    tests/test_gguf_golden.py verifies those ranges against the official gguf package rather than trusting them.
+
+    `zmul` IS NOT A PROPERTY OF THE FORMAT. It is the consuming converter's centre correction: the int4 converter
+    emits q-8 where a k-quant means q, so a consumer built on it needs zmul=8 and one without a shift needs 0. There
+    is no default because a missing correction is off by 8*scale everywhere and still produces plausible-looking
+    weights. Accepted values are 0 and 8, the two that exist in this tree.
+
+    Returns (scale, zero), each fp16 [rows, groups].
+    """
+    return _ops().gguf_scale_prepass(scale_blocks, d, dmin, qtype, zmul)
+
+
+def gguf_scale_block_shape(qtype: int):
+    """(block_bytes, groups, group_size, has_min, scale_bias, signed) for a k-quant's SCALE block.
+
+    Read from the C++ Traits so Python cannot carry a second, drifting copy. Note block_bytes is the SCALE block's,
+    which is not the GGUF block size quactlize.formats uses for storage arithmetic -- confusing the two makes a test
+    slice the wrong bytes and fail as if the decode were wrong.
+    """
+    return _ops().gguf_scale_block_shape(qtype)
+
+
 def symmetric_quantize(w, quant_type, arch: int = 80):
     """fp16/bf16/fp32 weights -> (preprocessed codes, per-column scales). The reference path for GPTQ-style symmetric.
 
@@ -149,5 +176,6 @@ def matmul_w4a16(a, b_packed, scales, zeros=None, group_size: int = 128,
 
 __all__ = [
     "preprocess_weights_to_layout", "symmetric_quantize", "symmetric_quantize_unprocessed",
+    "gguf_scale_prepass", "gguf_scale_block_shape",
     "pack_int4", "unpack_int4", "pack_uint4", "unpack_uint4", "matmul_w4a16",
 ]

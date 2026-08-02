@@ -44,9 +44,13 @@ ext = CppExtension(
     sources=[
         "quactlize/csrc/preprocess/cutlass_kernels/cutlass_preprocessors.cpp",
         "quactlize/csrc/preprocess/thop/weight_preprocess_ops.cpp",
+        # THE ONLINE SCALE PRE-PASS. Host-only and portable: gguf_scale_decode.hpp's packed-unit
+        # re-exports are behind __has_include, so this builds against stock cutlass with no PPU SDK.
+        "quactlize/csrc/preprocess/thop/gguf_prepass_ops.cpp",
     ],
     include_dirs=[
         str(ROOT / "quactlize/csrc/preprocess"),
+        str(ROOT / "quactlize/include"),
         str(ROOT / "third_party/cutlass/include"),
         *cuda_inc,
     ],
