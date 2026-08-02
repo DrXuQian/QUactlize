@@ -106,10 +106,25 @@ struct BlockDesc {
 // collectives that want planes, and the GEMV reads it per group. Without it the reordered checkpoint would need the
 // GGUF scale block kept beside it purely so the pre-pass had something to read, which is stored bytes for nothing.
 //
-// WHAT IT DOES NOT SOLVE, so nobody reads more into it than is there: it fixes the SOURCE. If the weight's n axis is
-// permuted offline, the planes' n has to be permuted the same way, and that is the destination side -- PlaneDesc's
-// strides plus a permutation, the same open item the GEMV has. The weight CODES are not read here at all, so
-// shuffling them offline is invisible to this path either way.
+// AND THE PLANES NEED NO TRANSFORMATION FOR AN OFFLINE-REORDERED WEIGHT. I claimed the opposite twice, in both
+// directions, before measuring; the answer is neither and only becomes visible from the reorder's own code.
+//
+// The k axis is safe because the row permutation stays inside its own block: measured at max displacement 18 over a
+// 32-row permutation for int4 and 6 over 16 rows for int8, 100% of elements inside their own 32-block in both. A
+// scale indexed by k//gs at gs=32 therefore cannot see it. (The int4 measurement needs two label passes -- 4-bit
+// labels alias across a 32-row permutation, and a single pass reports agreement it has not established.)
+//
+// The n axis is safe for a different and less obvious reason. mem_cacheline_col_tile_interleave does not permute n
+// within the n axis; it FOLDS `interleave` adjacent columns into one, moving them along the row axis --
+// write_col = read_col / interleave, vec_write_row = interleave*base + vec_rows_per_tile*(read_col % interleave) +
+// ... -- so the output has N/interleave columns and interleave*K rows. The kernel must recover the source n to write
+// its output column at all, and having recovered it, it indexes the scale in LOGICAL (n, k//gs) order. The reorder
+// changes where bytes sit, not which logical coordinate they are.
+//
+// Corroboration that this is the design and not a coincidence: nothing in this codebase ever preprocesses a scale
+// tensor. preprocess_weights_to_layout takes only the weight, and symmetric_quantize returns its scales unprocessed.
+//
+// The weight CODES are not read here in any case, so what happens to them is invisible to this path.
 template <KType T, int ZMul>
 CUTLASS_HOST_DEVICE GroupScale group_scale_zero_from_unit(uint8_t const* unit, int g) {
   return ::gguf_scale::packed_unit::unit_group<T, ZMul>(unit, g);
