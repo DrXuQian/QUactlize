@@ -14,6 +14,8 @@ Three kinds of check:
   syntax   nvcc's front end over a device source, diffed against a recorded baseline of accepted noise. Catches
            template instantiation failures that only appear under a macro combination.
   registry the coverage declarations against the source (see registry.py).
+  boxdry   build.sh itself, against a stub PPU SDK, as far as the compile. The only check that goes through
+           actlize's example registration -- everything else verifies a piece of the build in isolation.
   asan     the host preprocessing chain compiled with -fsanitize=address and swept over shapes. It found two
            out-of-bounds accesses that no assertion could have located: both corrupted the heap silently and
            surfaced as an intermittent Bus error or SIGSEGV in an unrelated test, several tests later.
@@ -25,6 +27,7 @@ Three kinds of check:
   ./ci/local_gates.py -k q4k     run only matching names
 """
 import argparse, os, re, subprocess, sys, time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -169,11 +172,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", action="store_true")
     ap.add_argument("-k", default="", help="only run checks whose name contains this")
+    ap.add_argument("--strict", action="store_true",
+                    help="treat SKIP as failure. The local tier tolerates a skip -- a machine without nvcc or gcc "
+                         "genuinely cannot answer -- but a pre-commit or CI use must not, or the one check that "
+                         "covers actlize's example registration can be absent and the exit status still zero, "
+                         "which is how the deleted registration reached the box.")
     a = ap.parse_args()
 
     items = ([("gate", n, args) for n, args in GATES]
              + [("syntax", f"{Path(s).name} {d}".strip(), (s, d)) for s, d in SYNTAX]
              + [("overlay", "CMake targets vs the overlay", None),
+                ("boxdry", "build.sh through actlize, stub SDK: test_moe_splitk_bench", "test_moe_splitk_bench"),
+                ("boxdry", "build.sh through actlize, stub SDK: test_q4k_packed_gemm",
+                 "test_q4k_packed_gemm PPU_PACKED_SCALE=1"),
                 ("asan", "preprocessing chain under ASAN", None),
                 ("pytest", "torch op tests", None),
                 ("registry", "declarations vs source", None)])
@@ -184,34 +195,63 @@ def main():
         return 0
 
     print(f"== quactlize local tier: {len(items)} checks, no device needed ==")
-    fails = []
-    for kind, name, payload in items:
+
+    # RUN THEM CONCURRENTLY. Every check here is an independent process -- an nvcc front end, a g++ build, a cmake
+    # configure -- and running twenty of them one after another took ten minutes, which is long enough that the tier
+    # stopped being run after small edits. That is the failure mode: a gate nobody waits for is a gate nobody runs.
+    # Results are collected first and printed in declaration order, so the output is still a stable table.
+    def run_one(item):
+        kind, name, payload = item
         if kind == "gate":
-            st, msg, dt = gate(name, payload)
-        elif kind == "syntax":
-            st, msg, dt = syntax(*payload)
-        elif kind == "overlay":
-            # build.sh runs this too; here as well because it is pure python and needs neither nvcc nor the SDK, so
-            # a machine that cannot run any other gate can still answer "is this checkout self-consistent".
+            return gate(name, payload)
+        if kind == "syntax":
+            return syntax(*payload)
+        if kind == "boxdry":
+            args = payload.split()
+            rc, log, dt = run(["bash", str(ROOT / "ci/box_build_dryrun.sh"), args[0]]
+                              + ([" ".join(args[1:])] if len(args) > 1 else []))
+            last = [l for l in log.splitlines() if l.strip()]
+            st = {0: "PASS", 2: "SKIP"}.get(rc, "FAIL")
+            msg = next((l.strip() for l in last if "[ok]" in l or "[FAIL]" in l or "[SKIP]" in l),
+                       last[-1].strip() if last else f"exit {rc}")
+            return st, msg, dt
+        if kind == "overlay":
             rc, log, dt = run([sys.executable, str(ROOT / "dev/fold_derivation/overlay_targets_check.py")])
             last = [l for l in log.splitlines() if l.strip()]
-            # Exit 2 is "cannot run here", distinct from 0 "ran and passed". Mapping every zero to PASS erased that
-            # distinction and reported a check that never executed as one that succeeded.
-            st = {0: "PASS", 2: "SKIP"}.get(rc, "FAIL")
-            msg = last[-1].strip() if last else f"exit {rc}"
-        elif kind == "asan":
-            st, msg, dt = asan()
-        elif kind == "pytest":
-            st, msg, dt = pytests()
-        else:
-            sys.path.insert(0, str(ROOT / "ci"))
-            import registry
-            probs = registry.check()
-            st, msg, dt = ("PASS" if not probs else "FAIL"), (probs[0] if probs else "0 problems"), 0.0
+            return {0: "PASS", 2: "SKIP"}.get(rc, "FAIL"), (last[-1].strip() if last else f"exit {rc}"), dt
+        if kind == "asan":
+            return asan()
+        if kind == "pytest":
+            return pytests()
+        sys.path.insert(0, str(ROOT / "ci"))
+        import registry
+        probs = registry.check()
+        return ("PASS" if not probs else "FAIL"), (probs[0] if probs else "0 problems"), 0.0
+
+    t0 = time.time()
+    # NOT EVERYTHING IS INDEPENDENT. The boxdry checks each run the real build.sh, which REGISTERS our example in
+    # actlize's examples/CMakeLists.txt and restores that file on exit -- two of them at once means one restores the
+    # file while the other still needs the registration, and the second reports "our CMakeLists was not reached".
+    # Concurrency found that immediately, which is the right outcome; they run one at a time and everything else
+    # concurrently. Bounded workers because each nvcc front end takes GBs.
+    exclusive = [i for i in items if i[0] == "boxdry"]
+    parallel = [i for i in items if i[0] != "boxdry"]
+    got = {}
+    with ThreadPoolExecutor(max_workers=min(8, (os.cpu_count() or 4))) as pool:
+        futures = {id(i): pool.submit(run_one, i) for i in parallel}
+        for i in exclusive:                       # serialised, and overlapped with the pool's work
+            got[id(i)] = run_one(i)
+        for k, f in futures.items():
+            got[k] = f.result()
+    results = [got[id(i)] for i in items]
+
+    fails = []
+    for (kind, name, _), (st, msg, dt) in zip(items, results):
         mark = {"PASS": "ok  ", "FAIL": "FAIL", "BUILD": "BLD!", "MISSING": "MISS", "SKIP": "skip"}[st]
         print(f"  [{mark}] {kind:<8} {name:<44} {dt:5.1f}s  {msg[:88]}")
-        if st not in ("PASS", "SKIP"):
-            fails.append(f"{kind}/{name}: {msg}")
+        if st in ("FAIL", "BUILD", "MISSING") or (a.strict and st == "SKIP"):
+            fails.append(f"{kind}/{name}: {msg}" + (" (skipped, and --strict was given)" if st == "SKIP" else ""))
+    print(f"  wall clock {time.time() - t0:.0f}s")
 
     print(f"\n== {len(items) - len(fails)}/{len(items)} passed or skipped ==")
     for f in fails:

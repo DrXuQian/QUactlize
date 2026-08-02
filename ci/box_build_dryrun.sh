@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# THE BOX'S BUILD, LOCALLY, UP TO THE COMPILE ITSELF -- with a stub PPU SDK.
+#
+# WHY THIS EXISTS, AND WHY THE OTHER CHECKS COULD NOT REPLACE IT. build.sh does five things before hgcc runs:
+# overlays the sources, REGISTERS the example in actlize's foreach list, configures cmake, lets cmake
+# add_subdirectory OUR CMakeLists, and creates the targets. Every local check written so far verified the first,
+# third and fourth in isolation and none of them verified the second:
+#
+#   * dev/fold_derivation/overlay_targets_check.py runs cmake on the overlay DIRECTLY. It proves our CMakeLists
+#     configures, and is structurally blind to whether anything REACHES it -- there is no examples/CMakeLists.txt
+#     in that scratch tree at all.
+#   * a build.sh run against an incomplete stub SDK died inside PPUToolchain's find_library, which happens BEFORE
+#     the example is processed. Everything past that point was untested by construction.
+#
+# So when the registration step was deleted -- by a refactor, three commits before anyone noticed -- both checks
+# stayed green while the box reported "No rule to make target test_moe_splitk_bench" alongside "cmake did not
+# report PPU_EXTRA_DEFS". Two symptoms of one missing sed, and a diagnosis that reads like macro plumbing.
+#
+# THE STUB SDK is enough for cmake to configure and for make to reach the compile: an hgcc that exits 0 without
+# producing output, empty shared libraries for the five find_library() names, and the two directories PPUToolchain
+# checks for. The compile then fails, which is expected and is where this check stops. Everything before it --
+# registration, add_subdirectory, target creation, and the defines landing on the device compile command -- is
+# exactly what the box does.
+#
+#   ./ci/box_build_dryrun.sh [TARGET] [PPU_DEFS]
+#
+# Exit 0 = every pre-compile stage reached the box's own conclusion. Exit 1 = one of them did not. Exit 2 = the
+# stub could not be built here (no gcc), which is a skip, not a pass.
+set -uo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TARGET="${1:-test_moe_splitk_bench}"
+DEFS="${2:-SK_QUANT=2}"
+# ALWAYS A PRIVATE TEMPORARY DIRECTORY. This used to accept BOX_DRYRUN_SDK from the caller and then rm -rf it --
+# pointed at a real SDK or at the repository, that deletes it. A fixed path also races between concurrent runs.
+SDK="$(mktemp -d)"
+BUILDDIR="$(mktemp -d)"
+SENTINEL="$(mktemp -u)"
+LOG="$(mktemp)"
+cleanup() { rm -rf "$SDK" "$BUILDDIR"; rm -f "$SENTINEL" "$LOG"; }
+trap cleanup EXIT
+
+command -v gcc >/dev/null 2>&1 || { echo "  [SKIP] box_build_dryrun: no gcc to build the stub SDK"; exit 2; }
+command -v cmake >/dev/null 2>&1 || { echo "  [SKIP] box_build_dryrun: no cmake"; exit 2; }
+
+# --- the stub SDK ------------------------------------------------------------------------------------------------
+mkdir -p "$SDK/targets/x86_64-linux/include" "$SDK/include" "$SDK/lib" "$SDK/bin"
+# THE STUB hgcc RECORDS THAT IT RAN, and on which file. Without that, "the build failed" is not evidence that the
+# compile was ever reached: a broken recipe ANYWHERE in the graph produces the same `make: *** [...] Error`, and the
+# first version of this script accepted exactly that. Demonstrated in review with a prerequisite whose command was
+# /bin/false -- configuration succeeded, the defines were on the right build.make, no hgcc ran, and this reported ok.
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexit 0\n' "$SENTINEL" > "$SDK/bin/hgcc"
+chmod +x "$SDK/bin/hgcc"
+_c="$SDK/stub.c"
+for _l in hg_wrapper hggc_wrapper hggcrt1 hggc hgrtc; do
+  printf 'void _quactlize_stub_%s(void){}\n' "$_l" > "$_c"
+  gcc -shared -fPIC -o "$SDK/lib/lib$_l.so" "$_c" 2>/dev/null || {
+    echo "  [SKIP] box_build_dryrun: cannot build stub lib$_l.so"; exit 2; }
+done
+rm -f "$_c"
+
+# --- the real build.sh, exactly as the box runs it, but writing NOWHERE the box would ------------------------------
+# PPU_BUILD_DIR keeps this out of third_party/actlize/build_w4a16_compare. Without it, "checking the build" DELETED
+# the real build tree on every run -- on the box, someone's working build. JOBS=1 so the sentinel's contents are a
+# sequence rather than an interleaving.
+( cd "$ROOT" && PPU_SDK="$SDK" PPU_BUILD_DIR="$BUILDDIR" JOBS=1 PPU_DEFS="$DEFS" TARGET="$TARGET" ./build.sh ) >"$LOG" 2>&1
+rc=$?
+
+fail() { echo "  [FAIL] box_build_dryrun: $1"; echo "         last lines of the build log:"; tail -12 "$LOG" | sed 's/^/           /'; exit 1; }
+
+# 1. cmake must have PROCESSED OUR CMakeLists. This message comes from it and from nowhere else, so its absence
+#    means the example was never add_subdirectory'd -- the exact failure this check was written for.
+grep -q "PPU_EXTRA_DEFS ->" "$LOG" || fail "cmake never reported PPU_EXTRA_DEFS -- our CMakeLists was not reached, so the example is not registered in actlize's foreach list"
+
+# 2. the target must EXIST in the real build system, not in a scratch tree with stubbed helpers.
+BM="$(find "$BUILDDIR" -path "*${TARGET}.dir/build.make" 2>/dev/null | head -1)"
+[ -n "$BM" ] || fail "no build.make for $TARGET -- cmake configured but the target was not created"
+
+# 3. the defines must reach the DEVICE compile command. build.sh checks this too, but only if the build gets far
+#    enough to; here it is checked directly off the generated makefile.
+# A WHOLE ARGUMENT, not a substring: -DSK_QUANT=2 must not be satisfied by -DSK_QUANT=20.
+for _d in $DEFS; do
+  _esc="$(printf '%s' "$_d" | sed 's/[][\.^$*+?(){}|]/\\&/g')"
+  grep -qE -- "(^|[[:space:]])-D$_esc([[:space:]]|\$)" "$BM" || fail "-D$_d is not a whole argument on $TARGET's compile command"
+done
+
+# 4. THE STUB hgcc MUST HAVE RUN. This is the only evidence that the graph was walked as far as compiling; a make
+#    error on its own proves nothing about where the graph stopped. The stub exits 0 and writes no object, so what
+#    actually fails afterwards is the link -- which is why the failure is not classified, only the sentinel is.
+[ -s "$SENTINEL" ] || fail "the stub hgcc never ran -- the build stopped before compiling anything, so registration and target creation are the only things this proves"
+_n="$(wc -l < "$SENTINEL")"
+if [ "$rc" -eq 0 ]; then
+  echo "  [ok]   box_build_dryrun: $TARGET configured, registered, and built ($_n hgcc invocations)"
+else
+  echo "  [ok]   box_build_dryrun: $TARGET registered, created, -D$DEFS a whole argument on its compile command, and the stub hgcc ran $_n time(s); only the link fails, because the stub writes no object"
+fi

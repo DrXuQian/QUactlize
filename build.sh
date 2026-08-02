@@ -155,7 +155,10 @@ cleanup() {
   # Restore ONLY the example-list registration + remove the overlay. The actlize W4A16 changes now live as real
   # commits on the DrXuQian/actlize fork (submodule branch ppu-w4a16-dev), NOT as build-time patches, so we must
   # NOT `git checkout --` the include/ files here (that would wipe uncommitted collective WIP during iteration).
-  git -C "$ACTLIZE" checkout -- examples/CMakeLists.txt 2>/dev/null || true
+  # RESTORE THE EXACT BYTES WE SAVED, not whatever git holds. `git checkout --` discards any UNCOMMITTED edit
+  # someone had in that file, which is not this script's to throw away -- and on the box that file belongs to a
+  # submodule someone may be working in.
+  if [ -f "${_EX_LIST_BACKUP:-}" ]; then cp "$_EX_LIST_BACKUP" "$EX_LIST"; rm -f "$_EX_LIST_BACKUP"; fi
   rm -rf "$EX_DIR"
 }
 trap cleanup EXIT
@@ -257,6 +260,27 @@ if [ -n "$_stale" ]; then
 fi
 
 
+# REGISTER THE EXAMPLE IN actlize's foreach LIST. Without this the overlay is copied, cmake runs, and our
+# CMakeLists is never add_subdirectory'd -- so no target is created and no message from it appears. The symptom is
+# "No rule to make target test_moe_splitk_bench" together with "cmake did not report PPU_EXTRA_DEFS", which reads
+# like a macro-plumbing problem and is not one.
+#
+# This step existed with its own verification and I DELETED IT while collapsing the overlay into one manifest
+# function -- the splice that replaced the copy path took the registration with it. cleanup() restores the file on
+# exit, so the edit is not persistent.
+#
+# dev/fold_derivation/overlay_targets_check.py cannot catch this: it runs cmake on the overlay DIRECTLY, which
+# proves the CMakeLists configures and says nothing about whether anything reaches it. The grep below is the only
+# check of that, which is why it is a hard failure and not a warning.
+_EX_LIST_BACKUP="$(mktemp)"; cp "$EX_LIST" "$_EX_LIST_BACKUP"
+# EXACT LIST ENTRY, not a substring anywhere in the file. The name appearing in a comment, or outside the foreach
+# block, would satisfy a bare grep and register nothing.
+if ! grep -qE "^[[:space:]]*$EX_NAME[[:space:]]*$" "$EX_LIST"; then
+  # insert just before the closing paren of the foreach(EXAMPLE ... ) block that ends with 16_ppu_mixed_dtype_gemm
+  sed -i "s|^\( *16_ppu_mixed_dtype_gemm\)\$|\1\n  $EX_NAME|" "$EX_LIST"
+fi
+grep -qE "^[[:space:]]*$EX_NAME[[:space:]]*$" "$EX_LIST" || { echo "ERROR: failed to register example as a list entry in $EX_LIST" >&2; exit 1; }
+
 # --- tile/warp/stages tuning: forward from the environment (defaults match the stock example) ---
 TILE_M="${TILE_M:-32}"; TILE_N="${TILE_N:-32}"; WARP_M="${WARP_M:-16}"; WARP_N="${WARP_N:-16}"; STAGES="${STAGES:-3}"
 QUANT="${QUANT:-int4}"   # int4 (default) or uint2 -> bench_cutlass_w4a16's QuantType (W4A16 vs W2A16 perf)
@@ -264,7 +288,13 @@ TSK="${TSK:-}"           # TileShapeK override (empty = per-quant default: int2-
 echo "[build.sh] TILE=${TILE_M}x${TILE_N} WARP=${WARP_M}x${WARP_N} STAGES=${STAGES} QUANT=${QUANT} TSK=${TSK}"
 
 # --- configure & build just our target ---
-BUILD="$ACTLIZE/build_w4a16_compare"
+# OVERRIDABLE, because build.sh rm -rf's this and something that RUNS build.sh to check it must be able to point it
+# somewhere disposable. Without the override, ci/box_build_dryrun.sh destroyed the real build tree every time the
+# local tier ran -- on the box, that is someone's working build.
+BUILD="${PPU_BUILD_DIR:-$ACTLIZE/build_w4a16_compare}"
+# EXPLICIT SOURCE DIRECTORY. `cmake ..` only meant "the actlize root" while $BUILD was inside it; once the build
+# directory became overridable, `..` resolved to wherever that happened to be. Naming the source is both correct and
+# independent of where the build lands.
 rm -rf "$BUILD" && mkdir -p "$BUILD" && cd "$BUILD"
 # FORWARD THE SWEEP AXIS KNOBS. They were added to CMakeLists.txt and then not wired through here, so narrowing a sweep was
 # impossible from build.sh -- the knob existed and could not be reached, which is worse than no knob because it reads as
@@ -273,7 +303,7 @@ _MOE_VARS=()
 for _v in MOE_TM_LIST MOE_TN_LIST MOE_WM_LIST MOE_FORMATS MOE_CORES; do
   if [ -n "${!_v:-}" ]; then _MOE_VARS+=("-D$_v=${!_v}"); echo "[build.sh] $_v=${!_v}"; fi
 done
-cmake .. -DPPU_SDK_ROOT="$PPU_SDK_ROOT" -DCUTLASS_PPU_ARCHS="$ARCH" \
+cmake "$ACTLIZE" -DPPU_SDK_ROOT="$PPU_SDK_ROOT" -DCUTLASS_PPU_ARCHS="$ARCH" \
   -DTILE_M="$TILE_M" -DTILE_N="$TILE_N" -DWARP_M="$WARP_M" -DWARP_N="$WARP_N" -DSTAGES="$STAGES" -DBENCH_QUANT="$QUANT" -DTSK="$TSK" \
   -DPPU_EXTRA_DEFS="${PPU_DEFS:-}" "${_MOE_VARS[@]+"${_MOE_VARS[@]}"}" \
   >cmake.log 2>&1 || { tail -40 cmake.log; exit 1; }
@@ -335,7 +365,8 @@ if [ -n "${PPU_DEFS:-}" ]; then
     echo "  WARNING: no build.make found for $TARGET -- cannot verify the defines reached it."
   else
     for _d in $PPU_DEFS; do
-      if grep -qF -- "-D$_d" "$_bm"; then
+      # A WHOLE ARGUMENT, not a substring: -DSK_QUANT=2 must not be satisfied by -DSK_QUANT=20.
+      if grep -qE -- "(^|[[:space:]])-D$(printf '%s' "$_d" | sed 's/[][\.^$*+?(){}|]/\\&/g')([[:space:]]|$)" "$_bm"; then
         echo "PPU_DEFS verified on $TARGET's compile command: -D$_d"
       else
         echo "  WARNING: -D$_d is NOT on $TARGET's compile command -- THIS BUILD DOES NOT HAVE IT."
