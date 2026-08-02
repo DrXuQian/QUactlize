@@ -86,6 +86,31 @@ makes every removed instruction and every removed bank service worth its face va
 that the +9.2% publication cost gets absorbed by scheduling: it is STRUCTURAL, and the only mechanism left is a
 shorter critical path.
 
+## SOFTWARE Swizzle IS NOT HARDWARE swzl, and only the first one was measured
+
+Do not read "the swizzle lost" as "swizzling the scale tile lost". `PPU_SCALE_SWIZZLE` is cute's `Swizzle<B,M,S>`,
+which lowers to XOR/shift/AND on the SALU -- that is what the +97% SALU is. The hardware `swzl` family passes the
+permutation as INSTRUCTION OPERANDS to address generation (`{%5,%6,%7,%8,%9,%10}` on the ldmatrix asm) and costs no
+ALU at all. The measurement indicts the software form only.
+
+But the ISA surface decides where it can be used, and it is not symmetric. Every swzl instruction in the tree is one
+of two kinds:
+
+    ppu.cp.async.aiu.bulk.tensor.shared.global.padz.swzl.2d.{b8,b16,b32}    gmem -> smem
+    ppu.tc0{1,2}.ldmatrix[...].swzl[...]                                    smem -> reg
+
+There is NO register-to-smem swzl store; stores are plain `tsm.st`. So:
+
+  * the PACKED decoder cannot use it at all -- it writes smem from REGISTERS, and that member of the family does not
+    exist. This is the instruction list, not an estimate.
+  * the BASE scale channel could, in principle: it is gmem -> smem, and the AIU b16 copy already exists. That would
+    attack the 278,528 with zero address arithmetic, which is what the software form could not do.
+
+OPEN, and to be answered with the local cute-layout harness rather than by hand: the AIU copy wants
+`CUBE_W * sizeof(Element) == 128` for swzl_mode 0 and the swzl read has a 16-row constraint, while the scale tile is
+(n = Scale_TileN, group = Scale_TileK) with Scale_TileK = 8. Eight is not sixteen. Print the layouts before deciding.
+Bound it first: the WHOLE load channel is 0.8-2.3%, so this is a large change for a small ceiling.
+
 ## THEREFORE, in order
 
 0. **Delete PPU_SCALE_SWIZZLE and PPU_SCALE_PAD.** Both measured negative -- pad to the non-power-of-two multiply,

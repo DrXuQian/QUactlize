@@ -52,7 +52,8 @@ awk '
     if (("pack" in v) && ("base" in v))     contrast("pack","base","","","pack / base  (the native-format tax)")
     if (("packnop" in v) && ("base" in v))  contrast("packnop","base","","","packnop / base  (transport + stores + barrier)")
     if (("pack" in v) && ("packnop" in v))  contrast("pack","packnop","","","pack / packnop  (the decode ARITHMETIC alone)")
-    if (("swz" in v) && ("base" in v))      contrast("swz","base","","","swz / base  (the scale-read bank swizzle)")
+    if (("packfuse" in v) && ("pack" in v)) contrast("packfuse","pack","","","packfuse / pack  (the STORE-conflict fix)")
+    if (("swz" in v) && ("base" in v))      contrast("swz","base","","","swz / base  (swizzle: removed 0 conflicts)")
     if (("bdqnop" in v) && ("base" in v))   contrast("bdqnop","base","","","bdqnop / base  (baseline int4 dequant, upper bound)")
     if (("packsplit" in v) && ("splitnop" in v))
       contrast("packsplit","pack","splitnop","packnop",
@@ -67,6 +68,12 @@ cat <<'EOT'
                     stores, and the slot they occupy between cp_async_wait and the publishing barrier.
      pack/packnop   is the arithmetic. If this is the small half, optimising the decoder cannot reach parity and
                     the publication shape is what costs.
+
+   packfuse/pack  IS THE ONLY CONTRAST THAT PRICES A BANK CONFLICT HERE, and it must be read against pack rather
+                  than base: base has no decoder stores at all, so packfuse/base would fold the whole native-format
+                  tax into a number about store conflicts. The interval to beat is 1.0 -- pack's +73,728 store
+                  conflicts should go to ~0 while nothing else moves. Shared bytes are unchanged, so an occupancy
+                  explanation is unavailable in advance, which is what makes this contrast clean.
 
    THE DECOMPOSITION IS PROVISIONAL WITHOUT acu. packnop consumes only u[0], so the loads of the other three words
    may be eliminated entirely. If its raw shared-load and store counts do not match pack's, pack/packnop is the

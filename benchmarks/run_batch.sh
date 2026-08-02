@@ -38,6 +38,10 @@ VARIANTS=(
   "swz:SK_QUANT=2 PPU_SCALE_SWIZZLE=1"
   "bdqnop:SK_QUANT=2 PPU_B_DEQUANT_NOP=1"
   "pack:SK_QUANT=2 PPU_PACKED_SCALE=1"
+  # THE STORE-CONFLICT FIX: one interleaved 32-bit (scale, zero) slot instead of two 16-bit planes, so the
+  # decoder's 32 lanes write 32 adjacent WORDS and hit all 32 banks once. Read against pack, never base:
+  # it changes nothing base does, and pack is the only variant that has the +73,728 to remove.
+  "packfuse:SK_QUANT=2 PPU_PACKED_SCALE=1 PPU_PACKED_SCALE_FUSED=1"
   "packnop:SK_QUANT=2 PPU_PACKED_SCALE=1 PPU_PACKED_SCALE_NOP=1"
   "packsplit:SK_QUANT=2 PPU_PACKED_SCALE=1 PPU_PACKED_SPLIT_GROUPS=1"
   # splitnop prices the split's OWN added cost -- the duplicated 16 B unit read and the duplicated per-column setup --
@@ -89,6 +93,9 @@ do_build() {
   build_one gate_pack  "PPU_PACKED_SCALE=1"                            test_q4k_packed_gemm || ok=0
   build_one gate_split "PPU_PACKED_SCALE=1 PPU_PACKED_SPLIT_GROUPS=1"  test_q4k_packed_gemm || ok=0
   build_one gate_swz   "PPU_PACKED_SCALE=1 PPU_SCALE_SWIZZLE=1"        test_q4k_packed_gemm || ok=0
+  # rowC is the ONLY row where kPackedScaleOn is true, so it is the only row that exercises the fused store --
+  # and the paired-column attempt that this replaces passed rowA and rowB while rowC went to bad=128/4096.
+  build_one gate_fuse  "PPU_PACKED_SCALE=1 PPU_PACKED_SCALE_FUSED=1"  test_q4k_packed_gemm || ok=0
   build_one gate_swz_fp16 "PPU_SCALE_SWIZZLE=1"                        test_q4k_packed_gemm || ok=0
   build_one gate_swz_only "PPU_SCALE_SWIZZLE=1"                        test_moe_grouped_verify || ok=0
   # THE CONTROL THAT WAS MISSING. test_moe_grouped_verify died with a device assert under PPU_SCALE_SWIZZLE=1 and I
@@ -169,7 +176,7 @@ do_check() {
   echo
   echo "== correctness (nothing below matters until these pass) =="
   require_fresh_binaries \
-    test_q4k_packed_gemm__gate_pack test_q4k_packed_gemm__gate_split test_q4k_packed_gemm__gate_swz \
+    test_q4k_packed_gemm__gate_pack test_q4k_packed_gemm__gate_split test_q4k_packed_gemm__gate_swz  test_q4k_packed_gemm__gate_fuse \
     test_q4k_packed_gemm__gate_swz_fp16 test_moe_grouped_verify__gate_swz_only \
     test_moe_grouped_verify__verify_default || { echo "== aborting: the binaries are not this checkout's =="; return 1; }
   # rowC is the only row where Scale_TileK == 8, i.e. the only one on the packed path. It has been INTERMITTENT --
@@ -323,7 +330,13 @@ EOR
   cat <<'EOT'
 
 == what each difference isolates ==
-   swz       - base       the scale read's bank conflicts, 4-way -> 1-way (l98)
+   packfuse  - pack     THE STORE-CONFLICT FIX. pack adds +73,728 store conflicts over base -- 32 lanes storing
+                        32 adjacent 2-byte values cover 16 of 32 banks two deep, and stores cannot broadcast.
+                        Fusing makes it one 32-bit store per (n, group). Read it against PACK, not base.
+                        Shared bytes do NOT change (4 KiB + 4 KiB is 8 KiB either way), so expect no
+                        occupancy movement; if the time moves it is bank service and instruction count.
+   swz       - base       DELETED FROM THE PLAN. acu: it removed ZERO conflicts (278,528, +0.00%) while
+                        Inst Executed Pipe SALU rose ~97% of peak. Kept only as the record of that.
    base      - bdqnop     what the BASELINE int4->fp16 dequant costs. Upper bound: the ablation also drops most of
                           the scale/zero LOADS, since only one fragment element stays live
    pack      - base       THE NATIVE-FORMAT TAX, AND IT IS CURRENTLY UNMEASURED. Every figure quoted before commit
