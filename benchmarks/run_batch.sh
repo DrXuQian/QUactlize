@@ -196,16 +196,34 @@ do_check() {
   out=$("$OUT/test_q4k_packed_gemm__gate_swz_fp16" "$ROOT/tests/data/q4k_packed.bin" 2>&1) && rc=0 || rc=$?
   printf '%s\n' "$out" | grep -E "rowA|rowB|rowC|== (PASS|FAIL)"; echo "   [exit $rc]"
   [ "$rc" -eq 0 ] || fails=$((fails+1))
-  echo "-- the assert control: default build of the same verifier, no macros at all"
-  out=$("$OUT/test_moe_grouped_verify__verify_default" 8 1 2>&1) && rc=0 || rc=$?
-  printf '%s\n' "$out" | tail -3; echo "   [exit $rc]  <-- if this dies too, the assert is not the swizzle's"
-  echo "-- swizzle alone, on the grouped verifier (addresses change, numbers must not)"
-  out=$("$OUT/test_moe_grouped_verify__gate_swz_only" 8 1 2>&1) && rc=0 || rc=$?
-  printf '%s\n' "$out" | tail -6; echo "   [exit $rc]"
-  [ "$rc" -eq 0 ] || fails=$((fails+1))
-  # THIS GATE IS CURRENTLY VACUOUS and is labelled rather than trusted: test_moe_grouped_verify hardcodes Stages = 3
-  # and the swizzle is gated on a power-of-two Stages, so PPU_SCALE_SWIZZLE changes no address in this launch. A gate
-  # that measures nothing is worse than no gate once it is believed to have passed.
+  # THE TWO VERIFIER RUNS ARE ONE ATTRIBUTION EXPERIMENT, not two gates. Their question is "is the device assert the
+  # swizzle's doing", and the answer comes from COMPARING them -- so a death is an OUTCOME, not a failure. Counting
+  # the control's death as a failure blocked the timings behind a result that was working exactly as designed.
+  #
+  # What the assert is, now that it has been read: an unconditional `if constexpr (false) {} else { assert(false); }`
+  # on the ModeHasScales branch, where a commented-out static_assert used to be. Anything reaching that path dies,
+  # macros or not. The verifier's default gs=128 reaches it; the bench's gs=32 never does.
+  echo "-- assert attribution: default build (no macros) vs swizzle-only build, same verifier"
+  out=$("$OUT/test_moe_grouped_verify__verify_default" 8 1 2>&1) && rc_def=0 || rc_def=$?
+  printf '%s\n' "$out" | tail -2 | sed 's/^/     default: /'
+  out=$("$OUT/test_moe_grouped_verify__gate_swz_only" 8 1 2>&1) && rc_swz=0 || rc_swz=$?
+  printf '%s\n' "$out" | tail -2 | sed 's/^/     swz-only: /'
+  echo "   default exit=$rc_def, swizzle-only exit=$rc_swz"
+  if [ "$rc_def" -ne 0 ] && [ "$rc_swz" -ne 0 ]; then
+    echo "   -> both die: the assert is NOT the swizzle's. It is a path this verifier's default configuration"
+    echo "      reaches and the collective does not implement. Not a gate failure."
+  elif [ "$rc_def" -eq 0 ] && [ "$rc_swz" -ne 0 ]; then
+    echo "   -> ONLY the swizzle build dies: the swizzle IS implicated. This is a real failure."
+    fails=$((fails+1))
+  elif [ "$rc_def" -ne 0 ] && [ "$rc_swz" -eq 0 ]; then
+    echo "   -> only the DEFAULT dies while the swizzle build survives, which no hypothesis here predicts."
+    fails=$((fails+1))
+  else
+    echo "   -> both pass: the assert is not reached in this configuration, so this comparison says nothing."
+    echo "      NOTE: test_moe_grouped_verify hardcodes Stages = 3 and the swizzle is gated on a power-of-two"
+    echo "      Stages, so PPU_SCALE_SWIZZLE may change no address in this launch at all."
+  fi
+
   if [ "$fails" -ne 0 ]; then
     echo "== $fails correctness gate(s) FAILED -- the timings below would be meaningless =="; return 1
   fi
