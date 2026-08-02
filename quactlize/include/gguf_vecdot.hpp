@@ -204,7 +204,7 @@ CUTLASS_HOST_DEVICE float vecdot_block(uint8_t const* b, float const* x) {
 //
 // `dst` takes the block-local element index and returns the offset to write. Identity keeps the old behaviour, and
 // DstStrided covers the (N, K) case, which is what the fallback actually needs.
-struct DstIdentity { CUTLASS_HOST_DEVICE int64_t operator()(int i) const { return i; } };
+struct DstIdentity { CUTLASS_HOST_DEVICE int64_t operator()(int64_t i) const { return i; } };
 
 // A LINEAR MAP, base + i*stride, because contiguous is not general enough. The pre-pass does not change any layout,
 // but the LIBRARY GEMMs this feeds want their own: cuBLAS takes a leading dimension and either orientation, and
@@ -214,12 +214,12 @@ struct DstIdentity { CUTLASS_HOST_DEVICE int64_t operator()(int i) const { retur
 struct DstLinear {
   int64_t base;                                   // n*ld + k0 for row-major, k0*ld + n for column-major
   int64_t stride;                                 // 1 for row-major, ld for column-major
-  CUTLASS_HOST_DEVICE int64_t operator()(int i) const { return base + int64_t(i) * stride; }
+  CUTLASS_HOST_DEVICE int64_t operator()(int64_t i) const { return base + i * stride; }
 };
 // Kept as the name the earlier commit introduced, now a special case rather than the only case.
 struct DstStrided {
   int64_t base;
-  CUTLASS_HOST_DEVICE int64_t operator()(int i) const { return base + i; }
+  CUTLASS_HOST_DEVICE int64_t operator()(int64_t i) const { return base + i; }
 };
 
 // AND THE GENERAL CASE IS A cute::Layout, WHICH NEEDS NO NEW TYPE. `Dst` is any callable from the block-local index
@@ -235,17 +235,22 @@ template <class Layout>
 struct DstLayout {
   Layout layout;
   int64_t base = 0;
-  CUTLASS_HOST_DEVICE int64_t operator()(int i) const { return base + int64_t(layout(i)); }
+  CUTLASS_HOST_DEVICE int64_t operator()(int64_t i) const { return base + int64_t(layout(i)); }
 };
 template <class Layout>
 CUTLASS_HOST_DEVICE DstLayout<Layout> dst_of(Layout const& l, int64_t base = 0) { return DstLayout<Layout>{l, base}; }
 
-// The per-block origin, so one kernel fills a whole tensor without the caller writing a lambda per launch.
+// THE PER-BLOCK ORIGIN SHIFTS THE INPUT, NOT THE OUTPUT, and getting that backwards makes the whole-tensor kernel
+// wrong for every destination except a contiguous one. Block b holds elements b*256 .. b*256+255 of the logical
+// weight, so the destination of its element i is dst(b*256 + i). Writing base + dst(i) instead is only the same
+// thing when dst is the identity: for a column-major map the address is n + (b*256+i)*ld, and base + dst(i) gives
+// b*256 + n + i*ld, which is a different place. Hierarchical cute layouts fail the same way and more silently,
+// since their offsets are not arithmetic and the error does not look like a stride mistake.
 template <class Dst>
-struct DstLayoutShifted {
+struct DstAtBlock {
   Dst inner;
-  int64_t base;
-  CUTLASS_HOST_DEVICE int64_t operator()(int i) const { return base + inner(i); }
+  int64_t first;                                     // the logical index of this block's element 0
+  CUTLASS_HOST_DEVICE int64_t operator()(int i) const { return inner(first + int64_t(i)); }
 };
 
 template <KType T, class Dst>
@@ -345,7 +350,7 @@ template <KType T, class Dst>
 __global__ void dequantize_kernel(uint8_t const* blocks, int64_t block_bytes, half_t* out, int n_blocks, Dst dst) {
   int const b = blockIdx.x * blockDim.x + threadIdx.x;
   if (b >= n_blocks) return;
-  dequantize_block_to<T>(blocks + int64_t(b) * block_bytes, out, DstLayoutShifted<Dst>{dst, int64_t(b) * kQK});
+  dequantize_block_to<T>(blocks + int64_t(b) * block_bytes, out, DstAtBlock<Dst>{dst, int64_t(b) * kQK});
 }
 
 #endif

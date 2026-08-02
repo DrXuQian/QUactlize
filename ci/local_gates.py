@@ -52,6 +52,9 @@ GATES = [
     ("l98_scale_swizzle",     []),
     ("l99_bench_like_for_like", []),
     ("l100_fused_active",     []),
+    # One entry per format that CAN activate. A format added to the packed path without an entry here is a format
+    # whose decoder nobody has instantiated.
+    ("l103_packed_format_active", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -70,7 +73,11 @@ SYNTAX = [
     # limits it hit on the way -- a unit that is 2 mod 4 bytes against a cp.async that takes 4, 8 or 16, and a
     # second construction of the copy that spelled uint128 out while its declared type derived it -- were both
     # invisible until a format other than Q4_K was compiled. 0=Q4_K 1=Q5_K 2=Q2_K 3=Q3_K 4=Q6_K.
-    *[("tests/test_q4k_packed_gemm.cu", f"-DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT={f}") for f in range(5)],
+    # ONLY THE FORMATS THAT ACTUALLY ACTIVATE. Compiling the other two here proved the branch parses and nothing
+    # more: every row of this fixture has Scale_TileK of 8 or 2, and the 16-group formats need 16, so their decoder
+    # was never instantiated as live code while the gate reported clean. l103 is what checks activation; this row
+    # covers the formats l103 says can be active. 0=Q4_K 1=Q5_K 2=Q2_K.
+    *[("tests/test_q4k_packed_gemm.cu", f"-DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT={f}") for f in (0, 1, 2)],
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_PACKED_SCALE=1 -DPPU_PACKED_SPLIT_GROUPS=1"),
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_PACKED_SCALE=1 -DPPU_SCALE_SWIZZLE=1"),
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_SCALE_PAD=8"),
@@ -156,6 +163,8 @@ GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               # THE MACROS ARE THE POINT. This gate asserts the fused path is ON, so it has to be built the way the
               # box builds packfuse -- without these two it would assert about a configuration nobody runs and pass
               # for the wrong reason, which is the failure it exists to catch.
+              "l103_packed_format_active": ["-D__HGGCCC__", "--expt-relaxed-constexpr",
+                                            "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_FORMAT=2"],
               "l100_fused_active": ["-D__HGGCCC__", "--expt-relaxed-constexpr",
                                     "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_SCALE_FUSED=1"]}
 
