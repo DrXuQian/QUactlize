@@ -124,7 +124,12 @@ do_build() {
 # and the passes were the misleading half.
 require_fresh_binaries() {
   local newest missing=() stale=() b
-  newest=$(cd "$ROOT" && git ls-files -z | xargs -0 stat -c %Y 2>/dev/null | sort -n | tail -1)
+  # THE NEWEST OF OUR OWN SOURCES, and third_party is deliberately excluded. `git ls-files` lists the submodules as
+  # tracked entries, and stat on a gitlink returns the DIRECTORY's mtime -- which build.sh moves on every run, since
+  # it creates and removes the overlay inside third_party/actlize and restores the example list there on exit. That
+  # happens AFTER the last binary is copied out, so the newest "source" was always newer than every binary and this
+  # check rejected a build that had just succeeded. A guard that fires on a correct tree is one people learn to skip.
+  newest=$(cd "$ROOT" && git ls-files -z -- ':!third_party' | xargs -0 stat -c %Y 2>/dev/null | sort -n | tail -1)
   for b in "$@"; do
     if [ ! -x "$OUT/$b" ]; then missing+=("$b")
     elif [ -n "$newest" ] && [ "$(stat -c %Y "$OUT/$b")" -lt "$newest" ]; then stale+=("$b"); fi
