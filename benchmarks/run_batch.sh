@@ -98,6 +98,8 @@ do_build() {
   # this default build dies identically the flag is exonerated; if only the swizzle build dies, something is
   # macro-sensitive and neither explanation stands.
   build_one verify_default ""                                          test_moe_grouped_verify || ok=0
+  # The stamp is written LAST, so it exists only if every build_one succeeded.
+  if [ "$ok" -eq 1 ]; then build_stamp > "$OUT/build_stamp"; echo "  build stamp: $(cat "$OUT/build_stamp")"; fi
   echo "== distinct-binary check =="
   # Two identical binaries mean an A/B that compares something with itself.
   #
@@ -122,26 +124,41 @@ do_build() {
 # ran at all -- still produced five green rowC MATCH lines, from binaries of unknown provenance, while the two
 # variants added since that older build reported "No such file or directory". Five passes and two 127s side by side,
 # and the passes were the misleading half.
+# THE BINARIES MUST COME FROM THIS CHECKOUT'S SOURCES -- decided by CONTENT, not by mtime.
+#
+# The first version compared modification times against the newest tracked file. Two things broke it, and the second
+# is fatal to the whole idea: `git ls-files` lists the submodules, and stat on a gitlink returns a directory mtime
+# that build.sh moves on every run; and `git pull` REWRITES THE MTIME of every file it updates, so building and then
+# pulling makes every source newer than every binary. A correct build was rejected twice, which is how a guard
+# teaches people to bypass it.
+#
+# What the question actually is: were these binaries compiled from the sources this checkout now has? That is a
+# content question, and build.sh already enumerates exactly the files that get compiled -- so hash those. Pulling a
+# change to run_batch.sh or a README does not invalidate anything, because neither is in the manifest.
+build_stamp() { ( cd "$ROOT" && ./build.sh --print-overlay | sed 's/.*|//' | sort | xargs md5sum 2>/dev/null | md5sum | cut -d' ' -f1 ); }
+
 require_fresh_binaries() {
-  local newest missing=() stale=() b
-  # THE NEWEST OF OUR OWN SOURCES, and third_party is deliberately excluded. `git ls-files` lists the submodules as
-  # tracked entries, and stat on a gitlink returns the DIRECTORY's mtime -- which build.sh moves on every run, since
-  # it creates and removes the overlay inside third_party/actlize and restores the example list there on exit. That
-  # happens AFTER the last binary is copied out, so the newest "source" was always newer than every binary and this
-  # check rejected a build that had just succeeded. A guard that fires on a correct tree is one people learn to skip.
-  newest=$(cd "$ROOT" && git ls-files -z -- ':!third_party' | xargs -0 stat -c %Y 2>/dev/null | sort -n | tail -1)
-  for b in "$@"; do
-    if [ ! -x "$OUT/$b" ]; then missing+=("$b")
-    elif [ -n "$newest" ] && [ "$(stat -c %Y "$OUT/$b")" -lt "$newest" ]; then stale+=("$b"); fi
-  done
+  local missing=() b stamp
+  for b in "$@"; do [ -x "$OUT/$b" ] || missing+=("$b"); done
   if [ ${#missing[@]} -ne 0 ]; then
     echo "  !!! not built: ${missing[*]}"
     echo "      run './run_batch.sh build' and read its output -- a build that failed leaves the PREVIOUS run's"
     echo "      binaries in $OUT, and results from those describe code nobody is running."
     return 1
   fi
-  if [ ${#stale[@]} -ne 0 ]; then
-    echo "  !!! older than the sources: ${stale[*]}"
+  stamp="$(build_stamp)"
+  if [ ! -f "$OUT/build_stamp" ]; then
+    # No stamp means the binaries predate this mechanism. Allowed, once, and said out loud -- refusing would force a
+    # rebuild that proves nothing, and silently allowing is what let a previous session's binaries produce five
+    # green rowC lines.
+    echo "  NOTE: $OUT/build_stamp is absent, so these binaries cannot be tied to a checkout. Allowed because the"
+    echo "        stamp is new; the next './run_batch.sh build' will write one."
+    return 0
+  fi
+  if [ "$(cat "$OUT/build_stamp")" != "$stamp" ]; then
+    echo "  !!! the compiled sources have changed since these binaries were built."
+    echo "      stamp at build: $(cat "$OUT/build_stamp")"
+    echo "      stamp now:      $stamp"
     echo "      rebuild before reading anything below."
     return 1
   fi
