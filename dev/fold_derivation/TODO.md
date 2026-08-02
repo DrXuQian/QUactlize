@@ -1,3 +1,62 @@
+# Q4_K native scale: what is settled, what blocks the rest
+
+**Settled by measurement (20-block ABBA, 95% CI, every interval excludes 1.0):** the native-format tax is +13.1%
+(1.111..1.150); transport+stores+barrier is +9.2%; the decode ARITHMETIC alone is +3.5% (1.025..1.045). acu confirms
+the NOP ablation is structurally sound -- every memory counter identical between pack and packnop -- so that split is
+real, not a compiler artefact.
+
+**Optimising the decoder is a dead end.** Its ceiling is 3.5%, and `s.wait` RISES by 9,216 when the arithmetic is
+removed, so the true marginal cost is below that: the arithmetic was partly hidden in an existing stall window.
+
+**Store bank conflicts are closed.** base 8,192 -> pack 81,920, +73,728, matching the source-level derivation to the
+unit: 4 decoder warps x 8 groups x 2 planes x 9 publications x 128 CTAs. Mechanism: 32 adjacent 16-bit stores over 16
+four-byte banks, and stores cannot broadcast.
+
+## THE ONE THING BLOCKING EVERYTHING ELSE
+
+PPU_SCALE_SWIZZLE provably converts the scale read from 4-way-on-4-banks to 1-way-on-16-banks (l98), and measures
+**+7.0% SLOWER** (CI 1.053..1.087). Until that is explained, "reduce bank conflicts" is not known to be a win on this
+machine, and every conflict-driven change below is speculative -- including the half2 merge.
+
+One capture decides it. Capture `swz` and read: tsm.ld instructions, Shared Load transactions, Shared Load bank
+conflicts, integer AND/shift/XOR deltas, s.wait.
+
+  * conflicts and transactions DID NOT fall -> l98 modelled an access the compiler does not emit
+  * they fell and time still rose -> address generation and codegen, not bank service
+
+Timing alone cannot separate those, which is why this is a counter question and not another A/B.
+
+## AFTER that, in order
+
+1. **Merge scale and zero into one interleaved half2 plane.** Two traps, both hit on the first attempt:
+   `y2 = half2(d*sc, -dmin*mn)` is NOT the value to store -- after the split the decoder adds `zero += 8*scale`
+   (kPackedZMul=8), so storing raw y2 drops the converter-bias cancellation and computes wrong numbers. And it saves
+   NO shared memory: scale 4 KiB + zero 4 KiB combined is still 8 KiB, so 61,440 stands. Only the `smem_zero` member
+   goes, not the bytes.
+   The real gain is halving the CHANNEL COUNT, not removing conflicts: a 32-bit slot probe still measures 4-way (on
+   8 banks instead of 4), because the decoder's lanes own consecutive n while the MMA consumer has a 256-element
+   thread stride. Expect ~136,192 fewer tsm.ld and 36,864 fewer tsm.st, with conflicts roughly halved.
+   The read side is SoA registers against an AoS tile: coarse reloads, FINE reloads, prefetch reloads, fragment setup
+   and both transform operands. A medium collective-layout change, not two lines.
+
+2. **Delete the ninth decode pass.** Eight K tiles are decoded nine times; the drain loop adds one. 12.5% redundant
+   producer work, worth about one of the 9.2 points. Mechanical and low risk.
+
+3. **Measure a real dequant-scale prepass** rather than inferring it. The legal comparison is not pack vs base --
+   base's fp16 planes cost +11.1% stored bytes and cannot legally be resident. It is `pack alone` vs
+   `prepass + base`. The prepass moves 6.29 MB, so it is 22.32 us at DRAM peak and 26.06 us at base's own effective
+   rate, against pack's 22.54. At peak that is a 0.22 us difference, so a real prepass is very likely slower -- but
+   that is an estimate from byte counts, not a measurement, and it does NOT extrapolate across M: prepass bytes are
+   independent of M while pack's decode repeats per M-tile (1x at M<=TileM, 16x at M=2048/TileM=128).
+
+## Two analysis errors recorded so they are not repeated
+
+  * "+73,728 conflicts / +71,704 store instructions = 1.03, so every added store conflicts" -- INVALID. 71,704 is a
+    NET delta; the packed path also removes the zero-plane clear. The source-level derivation is the evidence.
+  * "plain tsm.ld carries 6.39 transactions per instruction" -- WRONG. It assumed tsm.ld.swzl is one transaction, but
+    that instruction writes four 32-bit registers per lane, i.e. 512 bytes, so its floor is about four. The plain
+    ceiling is 4.53. The aggregate counters CANNOT uniquely split the two streams; that is a limit of the instrument.
+
 # Low-bit / bit-plane mixed-input GEMM: open items
 
 Kept here because the list has so far lived only in conversation, which does not survive a context compaction. Numbers
