@@ -190,6 +190,50 @@ STILL OPEN, and to be answered with the local cute-layout harness rather than by
 (n = Scale_TileN, group = Scale_TileK) with Scale_TileK = 8. Eight is not sixteen. Print the layouts before deciding.
 Bound it first: the WHOLE load channel is 0.8-2.3%, so this is a large change for a small ceiling.
 
+## PPU_PACKED_SCALE_FUSED IS BUILT AND THE CONFLICT COUNTER DID NOT MOVE. UNSOLVED.
+
+Do not read the +0.3% (CI 0.989..1.017) as "the fix is correct but worth nothing". acu reports Shared Store bank
+conflicts UNCHANGED at 81,920. If the word store were emitted and still conflicted, the count would HALVE (two
+planes become one); if it were emitted and conflict-free it would drop to base's 8,192. Unchanged is neither.
+
+What is established, and what is not:
+
+  * the macro reached the DEVICE compile -- all three defines verified in the build log
+  * the binaries differ -- pack c9acf2eb..., packfuse 2bb36d1b...
+  * l100_fused_active.cu asserts is_fused_scale_zero on the real CollectiveOp for the pinned row and passes
+  * NONE OF THAT PROVES A 32-BIT STORE WAS EMITTED. The first two are preprocessing and file bytes; the third is the
+    TYPE, and l100 has no kernel at all -- it is static_asserts and a host main().
+
+Ruled out by reading the source, not by argument: the bench's pinned row really instantiates the schedule and
+ScaleTileShape l100 names (moe_grouped_ppu.cuh's filter_and_run picks KernelAiuMultistageMixedInputFinegrainedGs32
+and ScaleTileShape<TN,8> at gs=32); with split-groups off the decoder loop gives each of the first four warps 32
+CONSECUTIVE n; and `packed_decode_stage<kPackedScaleOn>` does not gate the fused branch, which is evaluated
+independently inside. cute does not scalarise the store either -- make_smem_ptr only wraps a typed iterator, tensor
+indexing is `data()[layout()(coord)]`, and ArrayEngine's array_aligned is 16-byte aligned, so `sSZw(...)` really is a
+`uint32_t&` assignment.
+
+WHAT IS LEFT, and both are unproven rather than unlikely:
+
+  * the PPU BACKEND may lower a non-atomic 32-bit store as two 16-bit stores. A local answer is unavailable: nvcc
+    cannot codegen this tree at all (`cute::product` is undefined in device code from int_tuple.hpp:261, with or
+    without --extended-lambda), and the syntax gate only runs the front end, which is why this was never caught.
+  * the profiler's bank-conflict EVENT may count conflicted instructions or replays rather than four-byte-bank
+    collisions. PLAN_task20_scale.md:1123 already says its exact definition is unknown, and TODO.md's swizzle section
+    already records the static bank model failing to predict the hardware once.
+
+THE ONE DATUM THAT DECIDES IT is the Shared Store INSTRUCTION count for packfuse, not its conflict count:
+
+    instructions fall by ~36,864  ->  the word store WAS emitted, and unchanged conflicts refute the bank/event model
+    instructions unchanged        ->  two half stores, or the branch is absent from that executable, or it was stale
+
+Timing cannot decide it: this project has already recorded removed work being absorbed by increased waiting.
+
+A build-cache hole was found while chasing this and is fixed, though it was NOT the cause here (the submodule has no
+staged edits): build_stamp hashed `git ls-files -m`, which compares the worktree to the INDEX and therefore cannot
+see a staged modification. That state produces the most misleading round available -- stamp unchanged, every binary
+[cached], the preserved build log still showing the defines verified from the previous build, and a local type gate
+compiling the new source and passing. It now diffs against HEAD and includes untracked files.
+
 ## THEREFORE, in order
 
 0. **Delete PPU_SCALE_SWIZZLE and PPU_SCALE_PAD.** Both measured negative -- pad to the non-power-of-two multiply,

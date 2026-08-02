@@ -267,7 +267,14 @@ build_stamp() {
   ( cd "$ROOT" && {
       ./build.sh --print-overlay | sed 's/.*|//' | sort | xargs md5sum 2>/dev/null
       git -C third_party/actlize rev-parse HEAD 2>/dev/null
-      git -C third_party/actlize ls-files -m 2>/dev/null | sort |
+      # AGAINST HEAD, NOT ls-files -m. `git ls-files -m` compares the worktree to the INDEX, so a modification that
+      # has been `git add`ed is invisible to it -- and that is precisely the state that produces the most misleading
+      # possible round: the stamp does not move, every binary prints [cached], the preserved build log still shows
+      # the defines verified from the PREVIOUS build, and a local type gate compiles the NEW source and passes.
+      # Everything agrees and the binary is old. `diff --name-only HEAD` covers staged and unstaged alike; untracked
+      # files are included because a new header dropped into the submodule compiles just as hard as an edited one.
+      { git -C third_party/actlize diff --name-only HEAD 2>/dev/null
+        git -C third_party/actlize ls-files -o --exclude-standard 2>/dev/null; } | sort -u |
         while IFS= read -r f; do md5sum "third_party/actlize/$f" 2>/dev/null; done
     } | md5sum | cut -d' ' -f1 )
 }
