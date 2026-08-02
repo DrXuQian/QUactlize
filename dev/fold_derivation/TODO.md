@@ -79,12 +79,43 @@ waiting". The TileN ladder is 1.066x. `16x32:64 s4` at 38 warps/CU is 19% SLOWER
 So acu's advisory has the diagnosis right and its remedy is already refuted on this kernel by direct measurement.
 Do not re-run it.
 
-**The consequence is the useful part: at 0.44 waves NOTHING is hidden, so work is paid ~1:1 IN BOTH DIRECTIONS.**
-Work added to the producer costs its full price -- which is why the swizzle's address math cost 7% while buying
-nothing -- and work REMOVED from it is refunded at its full price too. So this does not devalue conflict removal; it
-makes every removed instruction and every removed bank service worth its face value. What it does kill is any hope
-that the +9.2% publication cost gets absorbed by scheduling: it is STRUCTURAL, and the only mechanism left is a
-shorter critical path.
+**RETRACTED IN FULL: "nothing is hidden", "work is paid 1:1 in both directions", and "the +9.2% is STRUCTURAL".**
+I wrote all three here and none survives review. Three contradictions, two of them with this same file:
+
+  * **It contradicts line 8 of this document.** `s.wait` RISES by 9,216 when the decode arithmetic is removed, which
+    is recorded above as evidence that the arithmetic was PARTLY HIDDEN in an existing stall window. "Nothing is
+    hidden" and "some of it was hidden" cannot both be true, and I wrote them 74 lines apart.
+  * **It quotes a number this document forbids quoting.** Attributing the swizzle's 7% to its address math is exactly
+    the step the swz section above rules out: swz vs pack differs by the g2s channel count, the decoder stores and
+    register allocation, so pricing the XOR needs swz-vs-base counters that were never captured. The +7.0% ABBA
+    contrast against base is real; the MECHANISM behind it is not established, and naming it here smuggled that in.
+  * **A placement test already contradicts "a shorter critical path is the only mechanism left".**
+    PPU_PACKED_SPLIT_GROUPS turns 4 publisher warps x 8 groups into 8 x 4 with identical decode, store and conflict
+    counts -- a strictly shorter producer critical path -- and it is WORSE, +3.4% (CI 1.022..1.045) even after the
+    four-way difference of differences subtracts its added read. Shortening that path is not an untested hope; it is
+    a tested loss.
+
+1.8 CTAs/CU is ~14.2 warps/CU, not one warp. Warps inside a CTA issue independently before reaching the barrier, and
+on 56 of 72 CUs a second CTA runs as well. Cover collapses only once every resident CTA is aligned at the barrier,
+which is a phase, not the launch. And the split-K result points the other way: Memory Dependency DOUBLING as warps/CU
+went 14.02 -> 26.84 says the request path is already under pressure, i.e. work IS being overlapped and queueing, not
+that overlap is absent.
+
+WHAT ACTUALLY SURVIVES, and it is still worth having:
+
+    The +9.2% is a real, measured cost of the CURRENT packed transport/store/barrier implementation. At S=1 no
+    resource-capacity increase can raise achieved residency, because a 128-CTA grid supplies 1.78 CTAs/CU whatever
+    the per-block limit is. The existing split-K path reaches 26.84 warps/CU and is net negative, so it is not the
+    remedy acu's advisory is asking for. But work is demonstrably PARTLY hidden, added and removed work are NOT
+    symmetric, and no clean scheduling ablation has ever shown the +9.2% to be schedule-invariant.
+
+So it is a measured IMPLEMENTATION cost, not a structural one, and whether removing work refunds anything has to be
+MEASURED rather than argued -- which is what the packfuse run is for.
+
+TWO METHOD NOTES so this is not repeated. "0.44 waves" is relative to FULL THEORETICAL residency (72 x 4 blocks); the
+same grid is 1.78 one-block-per-CU dispatch waves, so "less than half of one wave" is misleading without saying which
+wave. And the 4-blocks/CU limit is INFERRED here -- acu reports Block Limit SMem / Registers directly (see the row at
+TODO.md's PPU_A_PACK section) and that section of the report should have been captured instead of reconstructed.
 
 ## SOFTWARE Swizzle IS NOT HARDWARE swzl, and only the first one was measured
 
