@@ -429,3 +429,65 @@ def test_q4k_reaches_the_existing_layout_packers():
     laid = quactlize.preprocess_weights_to_layout(packed, torch.quint4x2, "mixed_gemm")
     assert laid.numel() == packed.numel(), "the layout transform must be byte-neutral"
     assert not torch.equal(laid, packed), "the layout transform must actually rearrange something"
+
+
+# ===================================================================================================================
+# THE PPU SEAM. PPU device code is built by build.sh with hgcc; this extension is built by setup.py with gcc and has
+# to keep working on a machine with no SDK, because that is what makes the official gguf package usable as an oracle.
+# The two halves share a PROCESS: build.sh emits libquactlize_ppu.so with C entry points, the extension dlopens it,
+# and the ops forward.
+#
+# The failure this seam can have is not a crash. It is forwarding silently NOT happening -- correct numbers from the
+# CPU arm, no message, indistinguishable from the device path working. So the test uses a stub library whose entry
+# points write recognisable sentinels, and asserts the sentinel arrives.
+def _build_stub(tmp_path):
+    import subprocess, shutil
+    if shutil.which("gcc") is None:
+        pytest.skip("no gcc to build the stub device library")
+    src = tmp_path / "stub.c"
+    src.write_text(
+        "#include <stdint.h>\n"
+        "int quactlize_ppu_vecdot(uint8_t const* b,int64_t bb,float const* x,float* o,int r,int p,int q){"
+        "(void)b;(void)bb;(void)x;(void)p;(void)q;for(int i=0;i<r;++i)o[i]=-12345.f;return 0;}\n"
+        "int quactlize_ppu_dequantize(uint8_t const* b,int64_t bb,uint16_t* o,int n,int q){"
+        "(void)b;(void)bb;(void)q;for(int i=0;i<n*256;++i)o[i]=0x3C00;return 0;}\n"
+        "int quactlize_ppu_prepass(uint8_t const* b,int64_t bb,uint16_t const* d,uint16_t const* m,int n,"
+        "uint16_t* s,uint16_t* z,int g,int q,int zm){(void)b;(void)bb;(void)d;(void)m;(void)q;(void)zm;"
+        "for(int i=0;i<n*g;++i){s[i]=0x3C00;z[i]=0;}return 0;}\n")
+    so = tmp_path / "libquactlize_ppu_stub.so"
+    subprocess.run(["gcc", "-shared", "-fPIC", "-o", str(so), str(src)], check=True)
+    return so
+
+
+def test_ppu_seam_reports_and_forwards(tmp_path):
+    import subprocess, sys, os, textwrap
+    pytest.importorskip("quactlize", reason="needs the built operator library")
+    so = _build_stub(tmp_path)
+    code = textwrap.dedent("""
+        import numpy as np, torch, quactlize
+        print(quactlize.gguf_backend().split(" (")[0])
+        raw = torch.from_numpy(np.zeros((4,144), np.uint8))
+        x = torch.from_numpy(np.zeros((4,256), np.float32))
+        print(float(quactlize.gguf_vecdot(raw, x, 12).numpy()[0]))
+        s, _ = quactlize.gguf_scale_prepass(torch.from_numpy(np.zeros((4,12), np.uint8)),
+                                            torch.from_numpy(np.zeros(4, np.float16)),
+                                            torch.from_numpy(np.zeros(4, np.float16)), 12, 8)
+        print(float(s[0,0]))
+    """)
+    # A SUBPROCESS PER CASE, because the loader resolves once per process on purpose -- retrying dlopen per call
+    # would turn a missing library into a per-op cost. That makes the env var unusable in-process.
+    def run(env_extra):
+        env = dict(os.environ); env.update(env_extra)
+        r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True,
+                           cwd=str(__import__("pathlib").Path(__file__).resolve().parent.parent))
+        assert r.returncode == 0, r.stderr
+        return r.stdout.split()
+
+    backend, vd, pp = run({"QUACTLIZE_PPU_LIB": "/nonexistent-quactlize.so"})
+    assert backend == "cpu", f"with no library the backend must report cpu, got {backend}"
+    assert float(vd) != -12345.0 and float(pp) != 1.0, "the CPU arm must not produce the stub's sentinels"
+
+    backend, vd, pp = run({"QUACTLIZE_PPU_LIB": str(so)})
+    assert backend == "ppu", f"with the library present the backend must report ppu, got {backend}"
+    assert float(vd) == -12345.0, "gguf_vecdot did not forward to the device library"
+    assert float(pp) == 1.0, "gguf_scale_prepass did not forward to the device library"

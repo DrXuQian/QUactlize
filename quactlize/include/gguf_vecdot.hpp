@@ -240,6 +240,14 @@ struct DstLayout {
 template <class Layout>
 CUTLASS_HOST_DEVICE DstLayout<Layout> dst_of(Layout const& l, int64_t base = 0) { return DstLayout<Layout>{l, base}; }
 
+// The per-block origin, so one kernel fills a whole tensor without the caller writing a lambda per launch.
+template <class Dst>
+struct DstLayoutShifted {
+  Dst inner;
+  int64_t base;
+  CUTLASS_HOST_DEVICE int64_t operator()(int i) const { return base + inner(i); }
+};
+
 template <KType T, class Dst>
 CUTLASS_HOST_DEVICE void dequantize_block_to(uint8_t const* b, half_t* out, Dst dst) {
   visit<T>(b, [&](int i, int, int q, float dl, float ml) { out[dst(i)] = half_t(dl * float(q) - ml); });
@@ -296,6 +304,40 @@ CUTLASS_HOST_DEVICE void unpack_block(uint8_t const* b, int8_t* codes, half_t* s
 // not in doubt, while saying nothing about whether the map matches the offline packer -- and that agreement is the
 // only thing that can actually be wrong. It needs the real layout, and then a golden test that permutes the
 // reference the same way, with a SUMMATION-ORDER tolerance for the vecdot consumer.
+
+#if defined(__CUDACC__) || defined(__HGGCCC__)
+// ---------------------------------------------------------------------------------------------------------------
+// THE DEVICE ENTRY POINTS. Everything above is CUTLASS_HOST_DEVICE, which in a host-only build degrades to `inline`
+// -- so until these existed there was no kernel at all, only arithmetic that COULD be compiled as device code. That
+// distinction is worth stating because the torch ops that validate all of this are CPU loops: they establish that
+// the arithmetic matches llama.cpp and nothing whatever about a device path.
+//
+// One block per (row, superblock) for the dequantiser and one thread per row for the GEMV. Neither is tuned; they
+// exist so the device path is compiled and can be measured, which is the step before tuning it.
+
+// GEMV: one output row per thread. `dst` is a callable, so the caller passes whichever cute Layout its weight is in.
+template <KType T>
+__global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, float const* x,
+                                   float* out, int rows, int blocks_per_row) {
+  int const r = blockIdx.x * blockDim.x + threadIdx.x;
+  if (r >= rows) return;
+  float acc = 0.f;
+  for (int b = 0; b < blocks_per_row; ++b) {
+    acc += vecdot_block<T>(blocks + (int64_t(r) * blocks_per_row + b) * block_bytes, x + int64_t(b) * kQK);
+  }
+  out[r] = acc;
+}
+
+// FALLBACK: one thread per block, writing through the destination map. The map is a template parameter rather than a
+// runtime pointer so a cute Layout stays a compile-time object and its offsets fold into the addressing.
+template <KType T, class Dst>
+__global__ void dequantize_kernel(uint8_t const* blocks, int64_t block_bytes, half_t* out, int n_blocks, Dst dst) {
+  int const b = blockIdx.x * blockDim.x + threadIdx.x;
+  if (b >= n_blocks) return;
+  dequantize_block_to<T>(blocks + int64_t(b) * block_bytes, out, DstLayoutShifted<Dst>{dst, int64_t(b) * kQK});
+}
+
+#endif
 
 }  // namespace vecdot
 }  // namespace gguf_scale

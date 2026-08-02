@@ -69,6 +69,12 @@ group_scale_zero(uint8_t const* block, int g, half_t d, half_t dmin) {
   }
   // THE CONSUMER'S CORRECTION, LAST. It is added to the SPLIT zero, exactly as the in-kernel decoder does it, so a
   // format with no min still gets it -- the converter's shift does not care whether the format had an affine term.
+  // THE HOST AND DEVICE RESULTS DIFFER BY UP TO 1 ULP HERE, and only here. On the host this goes through float and
+  // rounds once; on the device half_t arithmetic lowers to native fp16, so 8*scale is rounded before the add.
+  // Measured on a 5090: Q3_K and Q6_K (ZMul = 0) are bit-identical, while Q2_K, Q4_K and Q5_K differ by 3.12e-2,
+  // which is exactly one fp16 ulp at magnitude 32. So the CPU op is NOT a bit-exact oracle for the device path on
+  // any format with a ZMul, and a device test comparing them must allow an ulp rather than equality -- otherwise it
+  // fails for the one reason that is not a bug.
   if constexpr (ZMul != 0) {
     out.zero = out.zero + half_t(float(ZMul)) * out.scale;
   }

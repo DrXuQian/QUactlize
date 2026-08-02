@@ -53,6 +53,8 @@ ext = CppExtension(
         # THE ONLINE SCALE PRE-PASS. Host-only and portable: gguf_scale_decode.hpp's packed-unit
         # re-exports are behind __has_include, so this builds against stock cutlass with no PPU SDK.
         "quactlize/csrc/preprocess/thop/gguf_prepass_ops.cpp",
+        # dlopen seam to the hgcc-built device .so; host-only, links nothing but libdl.
+        "quactlize/csrc/preprocess/thop/ppu_backend.cpp",
     ],
     include_dirs=[
         str(ROOT / "quactlize/csrc/preprocess"),
@@ -66,6 +68,7 @@ ext = CppExtension(
     define_macros=[("USE_AIU", "1")],
     depends=HEADERS,
     extra_compile_args=["-std=c++17", "-O2", "-Wno-unused-function", "-Wno-sign-compare"],
+    libraries=["dl"],
 )
 
 setup(

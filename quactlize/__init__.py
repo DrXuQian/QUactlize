@@ -138,6 +138,21 @@ def gguf_unpack(blocks, qtype: int):
     return _ops().gguf_unpack(blocks, qtype)
 
 
+def gguf_backend():
+    """Which backend the gguf ops resolve to, as a string, plus why.
+
+    PPU device code is built by build.sh with hgcc and cannot live in this extension, which setup.py builds with gcc
+    and which has to keep running on machines with no SDK -- that is what makes the official gguf package usable as
+    an oracle at all. The two halves share a PROCESS instead: build.sh emits libquactlize_ppu.so with C entry points,
+    this extension dlopens it, and the op forwards. Set QUACTLIZE_PPU_LIB to point at a specific one.
+
+    Returns "ppu (...)" or "cpu (...)". It is a value rather than something to infer from a timing because a silent
+    fallback produces correct numbers slowly and reports nothing, which is indistinguishable from the device path
+    working.
+    """
+    return _ops().gguf_backend()
+
+
 def gguf_scale_block_shape(qtype: int):
     """(block_bytes, groups, group_size, has_min, scale_bias, signed) for a k-quant's SCALE block.
 
@@ -218,6 +233,6 @@ def matmul_w4a16(a, b_packed, scales, zeros=None, group_size: int = 128,
 
 __all__ = [
     "preprocess_weights_to_layout", "symmetric_quantize", "symmetric_quantize_unprocessed",
-    "gguf_scale_prepass", "gguf_scale_block_shape", "gguf_vecdot", "gguf_dequantize", "gguf_unpack",
+    "gguf_scale_prepass", "gguf_scale_block_shape", "gguf_vecdot", "gguf_dequantize", "gguf_unpack", "gguf_backend",
     "pack_int4", "unpack_int4", "pack_uint4", "unpack_uint4", "matmul_w4a16",
 ]

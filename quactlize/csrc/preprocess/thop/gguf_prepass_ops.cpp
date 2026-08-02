@@ -21,6 +21,7 @@
 #include "gguf_scale_prepass.hpp"
 #include "gguf_vecdot.hpp"
 #include "thop/th_utils.h"
+#include "thop/ppu_backend.h"
 
 namespace torch_ext {
 
@@ -113,6 +114,15 @@ std::vector<torch::Tensor> gguf_scale_prepass(torch::Tensor scale_blocks, torch:
     // contiguous double loop, so prepass_host's descriptor and stride arithmetic -- the part the device kernel
     // mirrors -- was never executed by any test, and "one implementation, so they cannot disagree" was true only of
     // the per-group arithmetic. Going through BlockDesc/PlaneDesc means the golden tests exercise the placement too.
+    if (auto const* api = ppu_backend::load()) {
+      TORCH_CHECK(api->prepass(blocks, int64_t(Tr::kBlockBytes),
+                               reinterpret_cast<uint16_t const*>(get_ptr<at::Half const>(d)),
+                               has_dmin ? reinterpret_cast<uint16_t const*>(get_ptr<at::Half const>(dmin)) : nullptr,
+                               int(rows), reinterpret_cast<uint16_t*>(get_ptr<at::Half>(scale)),
+                               reinterpret_cast<uint16_t*>(get_ptr<at::Half>(zero)),
+                               int(Tr::kGroups), int(qtype), int(zmul)) == 0, "PPU prepass failed");
+      return {scale, zero};
+    }
     // ZMul IS A TEMPLATE PARAMETER of the shared arithmetic, so the runtime value is dispatched. Only the two that
     // exist in this tree are accepted. WITHOUT THIS CHECK the dispatch below silently treats anything that is not 8
     // as 0 -- I dropped it once while refactoring, and a caller passing 4 would have got a plane that is wrong by
@@ -159,6 +169,14 @@ torch::Tensor gguf_vecdot(torch::Tensor blocks, torch::Tensor x, int64_t qtype) 
   auto const* bp = get_ptr<uint8_t const>(blocks);
   auto const* xp = get_ptr<float const>(x);
   auto* op = get_ptr<float>(out);
+  // FORWARD TO THE DEVICE LIBRARY WHEN IT IS LOADED. The CPU loop below stays as the oracle and as the path on a
+  // machine with no SDK; it is not a fallback that hides a failure, because gguf_backend() reports which one ran.
+  if (auto const* api = ppu_backend::load()) {
+    // rows blocks, one activation slice of 256 each -- the same shape the CPU arm below consumes, so the two are
+    // interchangeable and the golden tests apply to whichever one ran.
+    TORCH_CHECK(api->vecdot(bp, ts, xp, op, int(rows), 1, int(qtype)) == 0, "PPU vecdot failed");
+    return out;
+  }
   return dispatch_ktype(qtype, [&](auto tag) -> torch::Tensor {
     constexpr KType T = decltype(tag)::value;
     // THE RAW BLOCK SIZE IS THE GGUF ONE, not Traits::kBlockBytes -- that is the SCALE block and is a different
@@ -239,6 +257,15 @@ std::vector<torch::Tensor> gguf_unpack(torch::Tensor blocks, int64_t qtype) {
   });
 }
 
+// WHICH BACKEND THE OPS WILL USE, as a value rather than something inferred from a timing. A device path that
+// silently falls back to the CPU produces correct numbers slowly and says nothing, which looks exactly like the
+// device path working -- so this is queryable and the tests assert on it.
+std::string gguf_backend() {
+  std::string why;
+  ppu_backend::load(&why);
+  return ppu_backend::resolved_backend() + " (" + why + ")";
+}
+
 // The format's own shape, so Python does not carry a second copy of it. quactlize.formats already has block byte
 // counts for the storage arithmetic; these are the SCALE block's, which is a different number, and a test that
 // slices the wrong range would otherwise fail in a way that looks like a decode bug.
@@ -254,6 +281,8 @@ std::vector<int64_t> gguf_scale_block_shape(int64_t qtype) {
 
 static auto gguf_scale_prepass_op =
     torch::RegisterOperators("quactlize::gguf_scale_prepass", &torch_ext::gguf_scale_prepass);
+
+static auto gguf_backend_op = torch::RegisterOperators("quactlize::gguf_backend", &torch_ext::gguf_backend);
 
 static auto gguf_unpack_op = torch::RegisterOperators("quactlize::gguf_unpack", &torch_ext::gguf_unpack);
 
