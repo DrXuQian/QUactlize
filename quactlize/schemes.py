@@ -80,21 +80,29 @@ _DEQ = "quactlize/include/unfused_weight_dequantize.hpp"
 
 _NO_DEQUANT_GEMM = Impl(
     Status.PARTIAL, _DEQ, note=(
-        "dequantize_weight exists and is correct -- every harness's fp16 reference comes from it -- but nothing "
-        "consumes it as a production path. There is no dense fp16 GEMM launcher here and no harness with an "
-        "independent oracle, which is why formats.DEQUANT_THEN_DENSE is empty"))
+        "the GEMM is a LIBRARY CALL -- cuBLAS dense, DeepGemm MoE -- so what was missing was never a launcher, it "
+        "was a dequantiser that can read a k-quant block: unfused_weight_dequantize.hpp handles the symmetric "
+        "packed forms and cannot. quactlize.gguf_dequantize now does, checked elementwise against the official gguf "
+        "package for all five at fp16 rounding. What remains is host-side wiring -- the workspace, the library call "
+        "and the per-expert arrangement -- not arithmetic. Cost is why this stays a fallback: a dequantised fp16 "
+        "weight is 4x the int4 codes and ~3.6x the native block, so it only pays where the result is reused across "
+        "many rows"))
 
 _NO_PACKED_2PLANE = Impl(
     Status.ABSENT, "", note=(
         "two-plane formats run through the SEPARATE two-plane collective, which has no packed-scale plumbing at "
-        "all. This is structural, not unfinished: the packed path's staging, unit size and converter all assume a "
-        "single plane"))
+        "all. This is structural, not unfinished, and generalising the multistage collective does NOT reach it: "
+        "that work unlocks Q2_K only. The scale UNIT is format-general now (gguf_packed_unit.hpp, byte-neutral at "
+        "20/14/16/16/18 against GGUF's own, bit-exact round trip for all five in CI) -- the unit was the "
+        "prerequisite, not the feature"))
 
 _NO_PACKED_TRAITS = Impl(
     Status.ABSENT, "", note=(
-        "single-plane, so the shape fits, but the packed path hardcodes Q4_K: kPackedScaleBias=0, kPackedHasMin, "
-        "kPackedZMul=8, 16 bytes per unit, one 128-bit cp.async, Scale_TileK==8, four words and 6-bit extraction. "
-        "Generalising is a trait-driven change to the staging skeleton, not three constants"))
+        "single-plane, so the shape fits. The scale unit is generalised already -- gguf_packed_unit.hpp derives "
+        "every number from a trait and reproduces the shipped Q4_K bit positions exactly -- but the COLLECTIVE "
+        "still hardcodes 16 bytes per unit, one 128-bit cp.async, Scale_TileK==8 and four 32-bit words, and the "
+        "unit size genuinely differs per format (20 for Q2_K), which is what that single cp.async assumes away. "
+        "The staging tile and its copy have to come from the trait"))
 
 
 # (scheme, shape, format) -> Impl. Absent entries mean ABSENT with no note worth writing.
@@ -135,10 +143,14 @@ _add(Scheme.SCALE_FIRST, Shape.GEMV, (QuantType.GPTQ_INT4_SYM,),
 # Every k-quant is absent from GEMV, and for one reason: these GEMV kernels read fp16 scale planes, and at decode
 # those planes have to be resident, which is exactly the stored-byte increase the product constraint forbids.
 _add(Scheme.SCALE_FIRST, Shape.GEMV, _KQUANTS, Impl(
-    Status.ABSENT, "", note=(
-        "the GEMV kernels read fp16 scale planes; at decode those must be resident, and for a k-quant that is the "
-        "stored-byte increase the constraint forbids. A k-quant GEMV needs the NATIVE scale, i.e. an entry under "
-        "FULLY_QUANTIZED, not a harness here")))
+    Status.PARTIAL, _GEMV, note=(
+        "the GEMV kernels read fp16 scale planes, which at decode must be resident -- the stored-byte increase the "
+        "constraint forbids. The PRE-PASS does not fix that: it removes the storage cost by building the planes in "
+        "a workspace, and at decode they would be rebuilt every token. What changed is that the offline chain now "
+        "reaches this launcher -- gguf_unpack then pack_int4 then preprocess_weights_to_layout, all validated ops -- "
+        "and the row permutation was MEASURED to stay inside its own 32-block for both int4 and int8, so a scale "
+        "plane indexed by k//gs is unaffected by the reorder. So this is wiring, not a kernel. The native-scale "
+        "answer for this band is the FULLY_QUANTIZED entry")))
 
 # --- FULLY_QUANTIZED: one format, behind a flag -----------------------------------------------------------------
 _add(Scheme.FULLY_QUANTIZED, Shape.GROUPED, (QuantType.Q4_K,), Impl(
@@ -151,9 +163,14 @@ _add(Scheme.FULLY_QUANTIZED, Shape.GROUPED, (QuantType.Q4_K,), Impl(
 _add(Scheme.FULLY_QUANTIZED, Shape.GROUPED, (QuantType.Q2_K,), _NO_PACKED_TRAITS)
 _add(Scheme.FULLY_QUANTIZED, Shape.GROUPED, tuple(TWO_PLANE), _NO_PACKED_2PLANE)
 _add(Scheme.FULLY_QUANTIZED, Shape.GEMV, _KQUANTS, Impl(
-    Status.ABSENT, "", note=(
-        "the band with no M reuse at all, so the mid band's shared-memory publication buys nothing. llama.cpp uses "
-        "MMVQ here, extracting only the scale pair each vec-dot fragment consumes, straight into registers")))
+    Status.PARTIAL, "quactlize/include/gguf_vecdot.hpp", note=(
+        "the band with no M reuse, so the mid band's shared-memory publication buys nothing and the scale pair has "
+        "to be consumed where it is produced. The DECODE exists for all five and is checked as a DOT PRODUCT "
+        "against the official gguf package -- which the per-group scale tests cannot do, since a decoder with the "
+        "right scales and the wrong element order passes those. dp4a is ruled out by decision: it quantises the "
+        "activation and this band has no second chance at the error, and PPU is confirmed to have an int8 TENSOR "
+        "core but not a cuda-core four-way int8 dot. What is missing is a PPU kernel: the __global__ here is a "
+        "portable reference, and the shipping answer is to wire gemv_lowbit rather than tune it")))
 
 
 def get(scheme: Scheme, shape: Shape, fmt: QuantType) -> Impl:

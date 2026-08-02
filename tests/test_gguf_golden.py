@@ -542,3 +542,69 @@ def test_packed_unit_round_trips_bit_exactly(name, qtype, hdr, scales, codes, qm
     s_ref, z_ref = quactlize.gguf_scale_prepass(sb, d, dmin, int(qtype), zmul)
     assert torch.equal(s_unit, s_ref), f"{name}: scale from the unit differs from scale from the GGUF block"
     assert torch.equal(z_unit, z_ref), f"{name}: zero from the unit differs from zero from the GGUF block"
+
+
+# ===================================================================================================================
+# THE FOUR ROUTES MUST AGREE BEFORE ANY OF THEM IS TIMED. quactlize will pick between dequantise-then-library-GEMM,
+# the scale pre-pass, the in-kernel packed decode and the native GEMV by measurement -- and a timing comparison
+# between paths that compute different numbers is worse than no comparison, which this project has already paid for
+# once: every pack-versus-base figure before commit 80dfeec came from a bench whose two paths computed different
+# things, and the two disagreed with each other by more than the effect being chased.
+#
+# So this pins the correctness baseline: one set of GGUF blocks, one activation, and every route that exists today
+# reproduces llama.cpp's own answer. The tolerances differ by route and each one is the arithmetic's floor rather
+# than a number chosen to make the test pass.
+@pytest.mark.parametrize("name,qtype,hdr,scales,codes,qmax", FORMATS)
+def test_all_routes_agree_with_llama_cpp(name, qtype, hdr, scales, codes, qmax):
+    quactlize = pytest.importorskip("quactlize", reason="needs the built operator library")
+    torch = pytest.importorskip("torch")
+    rng = np.random.default_rng(31337 + qmax)
+    block_size, type_size = GGML_QUANT_SIZES[qtype]
+    n = 32
+    raw = rng.integers(0, 256, size=(n, type_size), dtype=np.uint8)
+    for lo, hi in hdr:
+        v = (rng.random(n) * 0.1 + 0.001).astype(np.float16)
+        raw[:, lo:hi] = v.view(np.uint8).reshape(n, 2)
+    ref_w = gguf.quants.dequantize(raw.reshape(-1), qtype).reshape(n, block_size).astype(np.float64)
+    _assert_finite(ref_w, f"{name} golden")
+    x = (rng.random((n, block_size)) * 2 - 1).astype(np.float32)
+    ref_dot = (ref_w * x.astype(np.float64)).sum(1)
+    scale_ref = max(1e-9, np.abs(ref_dot).max())
+
+    # ROUTE 1 -- fallback: dequantise to fp16, then a library GEMM would multiply. The dot is done here in float64 so
+    # the route's OWN error is the fp16 weight and nothing else.
+    w_fp16 = quactlize.gguf_dequantize(torch.from_numpy(raw), int(qtype)).numpy().astype(np.float64)
+    dot_fallback = (w_fp16 * x.astype(np.float64)).sum(1)
+
+    # ROUTE 2 -- pre-pass: fp16 (scale, zero) planes plus the integer codes, which is what a mixed-input collective
+    # consumes. zmul=0 because this reconstructs the ACTUAL weights, not the converter's shifted view.
+    sb_lo, sb_hi = SCALE_BLOCK[name]
+    sb = torch.from_numpy(np.ascontiguousarray(raw[:, sb_lo:sb_hi]))
+    d = torch.from_numpy(np.ascontiguousarray(raw[:, hdr[0][0]:hdr[0][1]]).view(np.float16).reshape(n).copy())
+    dmin = (torch.from_numpy(np.ascontiguousarray(raw[:, hdr[1][0]:hdr[1][1]]).view(np.float16).reshape(n).copy())
+            if len(hdr) > 1 else torch.zeros(n, dtype=torch.float16))
+    s_pl, z_pl = quactlize.gguf_scale_prepass(sb, d, dmin, int(qtype), 0)
+    c, _s, _z = quactlize.gguf_unpack(torch.from_numpy(raw), int(qtype))
+    groups = s_pl.shape[1]
+    gsz = block_size // groups
+    w_prepass = (c.numpy().astype(np.float64).reshape(n, groups, gsz)
+                 * s_pl.numpy().astype(np.float64)[:, :, None]
+                 + z_pl.numpy().astype(np.float64)[:, :, None]).reshape(n, block_size)
+    dot_prepass = (w_prepass * x.astype(np.float64)).sum(1)
+
+    # ROUTE 3 -- the packed unit, which is the pre-pass reading the REORDERED artifact instead of GGUF's bytes.
+    units = quactlize.gguf_pack_unit(sb, d, dmin, int(qtype))
+    s_u, z_u = quactlize.gguf_unit_decode(units, int(qtype), 0)
+    assert torch.equal(s_u, s_pl) and torch.equal(z_u, z_pl), \
+        f"{name}: the packed unit and the GGUF block must decode to the same planes, bit for bit"
+
+    # ROUTE 4 -- the native GEMV, no planes materialised at all.
+    dot_gemv = quactlize.gguf_vecdot(torch.from_numpy(raw), torch.from_numpy(x),
+                                     int(qtype)).numpy().astype(np.float64)
+
+    # fp16 weights carry 2^-11 relative; the GEMV keeps its scales in fp32 registers and only rounds the sum.
+    for label, got, tol in (("fallback(fp16 weights)", dot_fallback, 2e-3),
+                            ("prepass(fp16 planes)", dot_prepass, 2e-3),
+                            ("gemv(native)", dot_gemv, 2e-5)):
+        rel = np.abs(got - ref_dot).max() / scale_ref
+        assert rel < tol, f"{name}: route {label} disagrees with llama.cpp, worst relative error {rel:.3e}"
