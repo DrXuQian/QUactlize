@@ -66,6 +66,11 @@ SYNTAX = [
     # define reached the box, was reported as a WARNING, applied to nothing, and produced a green correctness run and
     # an acu capture identical to pack. A macro that changes types needs its own row; this is why.
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_PACKED_SCALE=1 -DPPU_PACKED_SCALE_FUSED=1"),
+    # EVERY FORMAT THE PACKED PATH NOW CLAIMS. The generalisation is only real if each one instantiates, and the
+    # limits it hit on the way -- a unit that is 2 mod 4 bytes against a cp.async that takes 4, 8 or 16, and a
+    # second construction of the copy that spelled uint128 out while its declared type derived it -- were both
+    # invisible until a format other than Q4_K was compiled. 0=Q4_K 1=Q5_K 2=Q2_K 3=Q3_K 4=Q6_K.
+    *[("tests/test_q4k_packed_gemm.cu", f"-DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT={f}") for f in range(5)],
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_PACKED_SCALE=1 -DPPU_PACKED_SPLIT_GROUPS=1"),
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_PACKED_SCALE=1 -DPPU_SCALE_SWIZZLE=1"),
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_SCALE_PAD=8"),
