@@ -245,16 +245,22 @@ CUTLASS_HOST_DEVICE void unpack_block(uint8_t const* b, int8_t* codes, half_t* s
 // every other reorder in this tree already lives rather than as index arithmetic copied per kernel, and it is the
 // same discipline that made the sub-byte B path work: pi derived from frag.layout()^-1, not written down.
 //
-// AND THE TWO OPEN THINGS ARE THE SAME THING. llama.cpp's MMVQ (ggml-cuda/mmvq.cu, vecdotq.cuh) gets its speed by
-// quantising the ACTIVATION to int8 per 32-block and accumulating with __dp4a, which needs FOUR CODES IN ONE 32-BIT
-// REGISTER matching four activation bytes. The raw GGUF order does not give that -- Q4_K's element i lives in byte
-// i%32 of chunk i/64 at nibble half (i%64)/32, so four consecutive i are not four consecutive nibbles -- which is
-// exactly why vecdotq.cuh does its own shuffling on the fly. An offline reorder produces that arrangement once
-// instead of per launch, so the layout question and the dp4a question have one answer.
+// DECIDED: NO dp4a. llama.cpp's MMVQ gets its speed by quantising the ACTIVATION to int8 per 32-block and
+// accumulating with __dp4a, which is a CUDA-core instruction doing four int8 products into an int32 in one issue.
+// That branch is NOT taken here, for two reasons that both stand on their own.
 //
-// TRT-LLM's weight-only GEMV takes the other branch: fp16 activations, weights dequantised into registers, fma. It
-// costs more ALU per element and introduces NO activation quantisation error. vecdot_block above is that shape. The
-// two are a real numerical choice, not just a speed one, and which is wanted has to be stated rather than assumed.
+// The numerical one: it quantises the activation, and this path exists to serve decode, where there is no second
+// chance to recover the error. TRT-LLM's weight-only GEMV takes the other branch -- fp16 activations, weights
+// dequantised into registers, fma -- and introduces no activation error at all. vecdot_block above is that shape.
+//
+// The hardware one, which should be checked before anyone revisits this: PPU is confirmed to have an int8 TENSOR
+// core (ppu.mma.m16n16k32.s32.s8.s8.s32) and is NOT confirmed to have a cuda-core four-way int8 dot at all. If it
+// does not, the MMVQ shape has no advantage to trade the error against.
+//
+// A consequence worth stating because it removes a constraint rather than adding one: dp4a is what would have forced
+// four codes into one 32-bit register lined up with four activation bytes, which raw GGUF order does not give and
+// which is why vecdotq.cuh shuffles on the fly. Without it, the offline reorder only has to serve the kernel's own
+// access pattern.
 //
 // It is deliberately NOT faked here. A synthetic permutation would test that indexing through a map works, which is
 // not in doubt, while saying nothing about whether the map matches the offline packer -- and that agreement is the

@@ -39,6 +39,7 @@
 #include "cutlass/numeric_types.h"
 #include "gguf_scale_layout.hpp"
 #include "gguf_scale_decode.hpp"
+#include "gguf_packed_unit.hpp"
 
 namespace gguf_scale {
 namespace prepass {
@@ -93,6 +94,20 @@ struct BlockDesc {
   int64_t block_stride_n, block_stride_sb;
   int64_t hdr_stride_n,   hdr_stride_sb;
 };
+
+// THE SAME PRE-PASS, READING THE PACKED UNIT INSTEAD OF THE GGUF BLOCK. This is what makes ONE offline artifact
+// serve every route: the packed collective reads the unit in the kernel, this expands it to fp16 planes for the
+// collectives that want planes, and the GEMV reads it per group. Without it the reordered checkpoint would need the
+// GGUF scale block kept beside it purely so the pre-pass had something to read, which is stored bytes for nothing.
+//
+// WHAT IT DOES NOT SOLVE, so nobody reads more into it than is there: it fixes the SOURCE. If the weight's n axis is
+// permuted offline, the planes' n has to be permuted the same way, and that is the destination side -- PlaneDesc's
+// strides plus a permutation, the same open item the GEMV has. The weight CODES are not read here at all, so
+// shuffling them offline is invisible to this path either way.
+template <KType T, int ZMul>
+CUTLASS_HOST_DEVICE GroupScale group_scale_zero_from_unit(uint8_t const* unit, int g) {
+  return ::gguf_scale::packed_unit::unit_group<T, ZMul>(unit, g);
+}
 
 // THE HOST REFERENCE. Not a test helper -- it is the definition of what the kernel must produce, and the CI gate
 // checks THIS against the format spec. A device kernel that matches it is then correct by construction.
