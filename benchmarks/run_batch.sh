@@ -59,6 +59,24 @@ VARIANTS=(
 # not silently bless the others, and leaving the others alone does not block the run when they are already current.
 ALL_BINS=()
 
+# THE PACKED CORRECTNESS GATES, ONE LIST, USED THREE TIMES: to build them, to require them fresh, and to RUN them.
+# It is a list because the previous shape -- three literal enumerations in three functions -- lost `fuse` on the third
+# one. gate_fuse was built and its freshness was demanded, and then the run loop said `for g in split swz` and never
+# executed it, so a round reported five green PASS blocks while the variant the round existed for was never launched.
+# A missing gate does not fail; it is simply absent, which is the hardest kind of hole to see in an output someone is
+# scanning for FAIL. Adding "fuse" to the third list would have re-created the same hole for the next variant.
+PACKED_GATES=(
+  "pack:PPU_PACKED_SCALE=1"
+  "split:PPU_PACKED_SCALE=1 PPU_PACKED_SPLIT_GROUPS=1"
+  "swz:PPU_PACKED_SCALE=1 PPU_SCALE_SWIZZLE=1"
+  # rowC is the ONLY row where kPackedScaleOn is true, so it is the only row that exercises the fused store -- and the
+  # paired-column attempt this replaces passed rowA and rowB while rowC went to bad=128/4096.
+  "fuse:PPU_PACKED_SCALE=1 PPU_PACKED_SCALE_FUSED=1"
+)
+
+PACKED_GATE_BINS=()
+for _pg in "${PACKED_GATES[@]}"; do PACKED_GATE_BINS+=("test_q4k_packed_gemm__gate_${_pg%%:*}"); done
+
 build_one() {  # $1 name  $2 defines  $3 target
   # SEPARATE STATEMENTS. `local a=$1 log=...$a...` fails under `set -u` in bash 5.1: local declares every name first
   # and only then assigns, so the self-reference is unbound. bash -n does not catch it -- only running does, which is
@@ -137,12 +155,10 @@ do_build() {
   local ok=1
   for v in "${VARIANTS[@]}"; do build_one "${v%%:*}" "${v#*:}" test_moe_splitk_bench || ok=0; done
   # the correctness gate needs its own target, packed on, plus the two variants that change the packed path
-  build_one gate_pack  "PPU_PACKED_SCALE=1"                            test_q4k_packed_gemm || ok=0
-  build_one gate_split "PPU_PACKED_SCALE=1 PPU_PACKED_SPLIT_GROUPS=1"  test_q4k_packed_gemm || ok=0
-  build_one gate_swz   "PPU_PACKED_SCALE=1 PPU_SCALE_SWIZZLE=1"        test_q4k_packed_gemm || ok=0
-  # rowC is the ONLY row where kPackedScaleOn is true, so it is the only row that exercises the fused store --
-  # and the paired-column attempt that this replaces passed rowA and rowB while rowC went to bad=128/4096.
-  build_one gate_fuse  "PPU_PACKED_SCALE=1 PPU_PACKED_SCALE_FUSED=1"  test_q4k_packed_gemm || ok=0
+  local pg
+  for pg in "${PACKED_GATES[@]}"; do
+    build_one "gate_${pg%%:*}" "${pg#*:}" test_q4k_packed_gemm || ok=0
+  done
   build_one gate_swz_fp16 "PPU_SCALE_SWIZZLE=1"                        test_q4k_packed_gemm || ok=0
   build_one gate_swz_only "PPU_SCALE_SWIZZLE=1"                        test_moe_grouped_verify || ok=0
   # THE CONTROL THAT WAS MISSING. test_moe_grouped_verify died with a device assert under PPU_SCALE_SWIZZLE=1 and I
@@ -239,13 +255,13 @@ do_check() {
   echo
   echo "== correctness (nothing below matters until these pass) =="
   require_fresh_binaries \
-    test_q4k_packed_gemm__gate_pack test_q4k_packed_gemm__gate_split test_q4k_packed_gemm__gate_swz  test_q4k_packed_gemm__gate_fuse \
+    "${PACKED_GATE_BINS[@]}" \
     test_q4k_packed_gemm__gate_swz_fp16 test_moe_grouped_verify__gate_swz_only \
     test_moe_grouped_verify__verify_default || { echo "== aborting: the binaries are not this checkout's =="; return 1; }
   # rowC is the only row where Scale_TileK == 8, i.e. the only one on the packed path. It has been INTERMITTENT --
   # bad=128, then 724, then MATCH with no semantic source change -- and the cause is still unknown, so it is run five
   # times. A single pass proves nothing about a flaky failure.
-  local fails=0 out rc
+  local fails=0 out rc g ran_gates=0
   echo "-- packed, five runs (rowC has been intermittent; the cause is NOT known)"
   for i in 1 2 3 4 5; do
     printf '   run %d: ' "$i"
@@ -254,12 +270,20 @@ do_check() {
     printf '%s' "$out" | grep -E "rowC|== (PASS|FAIL)" | tr '\n' ' '; echo "  [exit $rc]"
     [ "$rc" -eq 0 ] || fails=$((fails+1))
   done
-  for g in split swz; do
+  local pg
+  for pg in "${PACKED_GATES[@]}"; do
+    g="${pg%%:*}"; [ "$g" = pack ] && continue        # pack already ran five times above
     echo "-- packed + $g"
     out=$("$OUT/test_q4k_packed_gemm__gate_$g" "$ROOT/tests/data/q4k_packed.bin" 2>&1) && rc=0 || rc=$?
     printf '%s\n' "$out" | grep -E "rowA|rowB|rowC|== (PASS|FAIL)"; echo "   [exit $rc]"
     [ "$rc" -eq 0 ] || fails=$((fails+1))
+    ran_gates=$((ran_gates+1))
   done
+  # THE HOLE THIS CLOSES IS "ABSENT", NOT "FAILED". Count what ran against what exists, so a gate that stops being
+  # launched says so instead of quietly not appearing.
+  if [ "$ran_gates" -ne $(( ${#PACKED_GATES[@]} - 1 )) ]; then
+    echo "  !!! ran $ran_gates packed gates but ${#PACKED_GATES[@]} are declared (pack runs separately)"; fails=$((fails+1))
+  fi
   # The swizzle changes ADDRESSES, not values. Any mismatch here means a view of the scale buffer that does not carry
   # it -- i.e. the kernel writes at one address and reads at another.
   echo "-- swizzle alone on rowC's fp16 planes (the swizzle IS active there: TN=128, Stages=2)"
