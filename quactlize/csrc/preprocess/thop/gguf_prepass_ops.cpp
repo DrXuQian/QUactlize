@@ -201,6 +201,44 @@ torch::Tensor gguf_dequantize(torch::Tensor blocks, int64_t qtype) {
   });
 }
 
+// CODES, SCALE AND ZERO AS THREE TENSORS -- the triple every offline packer in this tree already takes. This is
+// what lets a GGUF checkpoint reach the existing kernels: they consume a packed low-bit weight plus fp16 planes, and
+// nothing turned a k-quant block into that. With this, the chain is
+//     raw GGUF -> unpack -> pack_int4 -> preprocess_weights_to_layout -> the kernel's own arrangement
+// entirely through ops that are already validated, instead of a new packer to be wrong in a new way.
+//
+// The split obeys W = code * scale + zero, so reconstructing and comparing to the reference is a test that can fail.
+std::vector<torch::Tensor> gguf_unpack(torch::Tensor blocks, int64_t qtype) {
+  CHECK_CPU(blocks); CHECK_CONTIGUOUS(blocks);
+  TORCH_CHECK(blocks.dtype() == torch::kUInt8 && blocks.dim() == 2, "blocks must be uint8 [rows, type_size]");
+  int64_t const rows = blocks.size(0), ts = blocks.size(1);
+  auto const* bp = get_ptr<uint8_t const>(blocks);
+  return dispatch_ktype(qtype, [&](auto tag) -> std::vector<torch::Tensor> {
+    constexpr KType T = decltype(tag)::value;
+    using Tr = Traits<T>;
+    constexpr int64_t kRaw = (T == KType::Q2_K) ? 84 : (T == KType::Q3_K) ? 110
+                           : (T == KType::Q4_K) ? 144 : (T == KType::Q5_K) ? 176 : 210;
+    TORCH_CHECK(ts == kRaw, "this format's raw GGUF block is ", kRaw, " bytes, got ", ts);
+    auto i8 = torch::TensorOptions().dtype(torch::kInt8).device(torch::kCPU);
+    auto f16 = torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCPU);
+    torch::Tensor codes = torch::empty({rows, 256}, i8);
+    torch::Tensor scale = torch::empty({rows, int64_t(Tr::kGroups)}, f16);
+    torch::Tensor zero = torch::empty({rows, int64_t(Tr::kGroups)}, f16);
+    auto* cp = get_ptr<int8_t>(codes);
+    auto* sp = get_ptr<at::Half>(scale);
+    auto* zp = get_ptr<at::Half>(zero);
+    std::vector<cutlass::half_t> ts_(Tr::kGroups), tz_(Tr::kGroups);
+    for (int64_t r = 0; r < rows; ++r) {
+      gguf_scale::vecdot::unpack_block<T>(bp + r * ts, cp + r * 256, ts_.data(), tz_.data());
+      for (int g = 0; g < Tr::kGroups; ++g) {
+        std::memcpy(sp + r * Tr::kGroups + g, &ts_[size_t(g)], sizeof(cutlass::half_t));
+        std::memcpy(zp + r * Tr::kGroups + g, &tz_[size_t(g)], sizeof(cutlass::half_t));
+      }
+    }
+    return {codes, scale, zero};
+  });
+}
+
 // The format's own shape, so Python does not carry a second copy of it. quactlize.formats already has block byte
 // counts for the storage arithmetic; these are the SCALE block's, which is a different number, and a test that
 // slices the wrong range would otherwise fail in a way that looks like a decode bug.
@@ -216,6 +254,8 @@ std::vector<int64_t> gguf_scale_block_shape(int64_t qtype) {
 
 static auto gguf_scale_prepass_op =
     torch::RegisterOperators("quactlize::gguf_scale_prepass", &torch_ext::gguf_scale_prepass);
+
+static auto gguf_unpack_op = torch::RegisterOperators("quactlize::gguf_unpack", &torch_ext::gguf_unpack);
 
 static auto gguf_dequantize_op =
     torch::RegisterOperators("quactlize::gguf_dequantize", &torch_ext::gguf_dequantize);

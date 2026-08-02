@@ -124,6 +124,20 @@ def gguf_dequantize(blocks, qtype: int):
     return _ops().gguf_dequantize(blocks, qtype)
 
 
+def gguf_unpack(blocks, qtype: int):
+    """RAW GGUF blocks -> (codes int8 [rows,256], scale fp16 [rows,groups], zero fp16 [rows,groups]).
+
+    THE PIECE THAT LETS A CHECKPOINT REACH THE EXISTING KERNELS. They consume a packed low-bit weight plus fp16
+    planes; nothing turned a k-quant block into that triple, so a GGUF file had no route to them. With this the chain
+    is raw GGUF -> unpack -> pack_int4 -> preprocess_weights_to_layout, entirely through already-validated ops rather
+    than a new packer with new ways to be wrong.
+
+    The split obeys W = code * scale + zero exactly, so reconstructing and comparing against the official reference
+    is a test that can fail. Codes are SIGNED for Q3_K (-4..3) and Q6_K (-32..31); int8 covers every format.
+    """
+    return _ops().gguf_unpack(blocks, qtype)
+
+
 def gguf_scale_block_shape(qtype: int):
     """(block_bytes, groups, group_size, has_min, scale_bias, signed) for a k-quant's SCALE block.
 
@@ -204,6 +218,6 @@ def matmul_w4a16(a, b_packed, scales, zeros=None, group_size: int = 128,
 
 __all__ = [
     "preprocess_weights_to_layout", "symmetric_quantize", "symmetric_quantize_unprocessed",
-    "gguf_scale_prepass", "gguf_scale_block_shape", "gguf_vecdot", "gguf_dequantize",
+    "gguf_scale_prepass", "gguf_scale_block_shape", "gguf_vecdot", "gguf_dequantize", "gguf_unpack",
     "pack_int4", "unpack_int4", "pack_uint4", "unpack_uint4", "matmul_w4a16",
 ]

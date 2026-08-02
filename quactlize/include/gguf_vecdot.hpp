@@ -219,6 +219,21 @@ CUTLASS_HOST_DEVICE void dequantize_block(uint8_t const* b, half_t* out) {
   dequantize_block_to<T>(b, out, DstIdentity{});
 }
 
+// THE SPLIT CONSUMER: codes, scale and zero as SEPARATE arrays, which is what every offline packer in this tree
+// takes. It is the piece that lets a GGUF checkpoint reach the existing kernels at all -- they consume a packed
+// low-bit weight plus fp16 planes, and until now nothing turned a k-quant block into that triple.
+//
+// The split is exact by construction: W = code * scale + zero with zero = -dmin*mn, so the reconstruction is a test
+// that can actually fail, and does if the traversal hands out the wrong element for a code.
+template <KType T>
+CUTLASS_HOST_DEVICE void unpack_block(uint8_t const* b, int8_t* codes, half_t* scale, half_t* zero) {
+  visit<T>(b, [&](int i, int g, int q, float dl, float ml) {
+    codes[i] = int8_t(q);
+    scale[g] = half_t(dl);
+    zero[g] = half_t(-ml);
+  });
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // THE SOURCE SIDE IS THE ONE STILL MISSING, and it is not the same problem. Everything above reads the block in the
 // CHECKPOINT's element order. One stored artifact has to serve all four routes -- packed, GEMV, pre-pass and this
@@ -230,7 +245,7 @@ CUTLASS_HOST_DEVICE void dequantize_block(uint8_t const* b, half_t* out) {
 // every other reorder in this tree already lives rather than as index arithmetic copied per kernel, and it is the
 // same discipline that made the sub-byte B path work: pi derived from frag.layout()^-1, not written down.
 //
-AND THE TWO OPEN THINGS ARE THE SAME THING. llama.cpp's MMVQ (ggml-cuda/mmvq.cu, vecdotq.cuh) gets its speed by
+// AND THE TWO OPEN THINGS ARE THE SAME THING. llama.cpp's MMVQ (ggml-cuda/mmvq.cu, vecdotq.cuh) gets its speed by
 // quantising the ACTIVATION to int8 per 32-block and accumulating with __dp4a, which needs FOUR CODES IN ONE 32-BIT
 // REGISTER matching four activation bytes. The raw GGUF order does not give that -- Q4_K's element i lives in byte
 // i%32 of chunk i/64 at nibble half (i%64)/32, so four consecutive i are not four consecutive nibbles -- which is

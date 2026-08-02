@@ -361,3 +361,71 @@ def test_dequantize_matches_llama_cpp(name, qtype, hdr, scales, codes, qmax):
     got = quactlize.gguf_dequantize(torch.from_numpy(raw), int(qtype)).numpy().astype(np.float64)
     rel = np.abs(got - ref).max() / max(1e-9, np.abs(ref).max())
     assert rel < 1e-3, f"{name}: fp16 dequantise disagrees with llama.cpp, worst relative error {rel:.3e}"
+
+
+@pytest.mark.parametrize("name,qtype,hdr,scales,codes,qmax", FORMATS)
+def test_unpack_split_reconstructs(name, qtype, hdr, scales, codes, qmax):
+    """codes/scale/zero must satisfy W = code*scale + zero against the reference, exactly.
+
+    This is the split every offline packer in the tree consumes, so it is also the point where a traversal that hands
+    out the wrong element for a code shows up: the per-group tests cannot see it, and the vecdot test sees it only as
+    a changed sum. Here each element is compared on its own.
+    """
+    quactlize = pytest.importorskip("quactlize", reason="needs the built operator library")
+    torch = pytest.importorskip("torch")
+    rng = np.random.default_rng(777 + qmax)
+    block_size, type_size = GGML_QUANT_SIZES[qtype]
+    n = 64
+    raw = rng.integers(0, 256, size=(n, type_size), dtype=np.uint8)
+    for lo, hi in hdr:
+        v = (rng.random(n) * 0.1 + 0.001).astype(np.float16)
+        raw[:, lo:hi] = v.view(np.uint8).reshape(n, 2)
+    ref = gguf.quants.dequantize(raw.reshape(-1), qtype).reshape(n, block_size).astype(np.float64)
+    _assert_finite(ref, f"{name} golden")
+
+    c, s, z = quactlize.gguf_unpack(torch.from_numpy(raw), int(qtype))
+    c = c.numpy().astype(np.float64); s = s.numpy().astype(np.float64); z = z.numpy().astype(np.float64)
+    groups = s.shape[1]
+    gsz = block_size // groups
+    w = (c.reshape(n, groups, gsz) * s[:, :, None] + z[:, :, None]).reshape(n, block_size)
+    rel = np.abs(w - ref).max() / max(1e-9, np.abs(ref).max())
+    assert rel < 1e-3, f"{name}: code*scale+zero does not reconstruct llama.cpp's weights (rel {rel:.3e})"
+
+    # The code range is a property of the format and is asserted, not printed: a decoder that silently clamped or
+    # sign-extended wrongly would still reconstruct if the scale absorbed it, but the range would move.
+    lo_hi = {"Q2_K": (0, 3), "Q3_K": (-4, 3), "Q4_K": (0, 15), "Q5_K": (0, 31), "Q6_K": (-32, 31)}[name]
+    assert (c.min(), c.max()) == lo_hi, f"{name}: codes span {c.min()}..{c.max()}, expected {lo_hi}"
+
+
+def test_q4k_reaches_the_existing_layout_packers():
+    """The chain a GGUF checkpoint has to walk to reach the kernels that already work.
+
+    raw block -> gguf_unpack -> shift to the signed code range -> pack_int4 -> preprocess_weights_to_layout.
+    Every step after the first is an op this repo already validates, which is the point: the alternative was a new
+    packer for GGUF, i.e. a second thing to be wrong about a layout.
+    """
+    quactlize = pytest.importorskip("quactlize", reason="needs the built operator library")
+    torch = pytest.importorskip("torch")
+    rng = np.random.default_rng(31)
+    rows = 64                                        # 64 superblocks -> a (1, 64*256) row of codes
+    raw = rng.integers(0, 256, size=(rows, 144), dtype=np.uint8)
+    for lo, hi in [(0, 2), (2, 4)]:
+        v = (rng.random(rows) * 0.1 + 0.001).astype(np.float16)
+        raw[:, lo:hi] = v.view(np.uint8).reshape(rows, 2)
+    c, _s, _z = quactlize.gguf_unpack(torch.from_numpy(raw), 12)
+
+    # Q4_K codes are UNSIGNED 0..15; the packers take the signed -8..7 range, and the +8 that maps between them is
+    # the same constant the in-kernel converter carries as kPackedZMul. Skipping it here would pack the right bits
+    # under the wrong interpretation and only show up as wrong numbers much later.
+    # SHAPE MATTERS TO THE PACKER, and the first version flattened to (1, 16384) and was refused with "number of
+    # rows of quantized matrix must be a multiple of ...". Keeping the natural (rows, 256) -- one superblock per row
+    # of the weight -- is both what a checkpoint looks like and what the packer's row constraint expects.
+    signed = (c.to(torch.int8) - 8)
+    packed = quactlize.pack_int4(signed)
+    assert packed.numel() * 2 == signed.numel(), "pack_int4 must halve the element count"
+    back = quactlize.unpack_int4(packed)
+    assert torch.equal(back, signed), "pack/unpack_int4 must round-trip the GGUF codes"
+
+    laid = quactlize.preprocess_weights_to_layout(packed, torch.quint4x2, "mixed_gemm")
+    assert laid.numel() == packed.numel(), "the layout transform must be byte-neutral"
+    assert not torch.equal(laid, packed), "the layout transform must actually rearrange something"
