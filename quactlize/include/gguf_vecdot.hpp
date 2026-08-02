@@ -46,7 +46,7 @@
 // written). The code extraction functions above stay as they are; only the element index they are handed changes.
 #include <cstdint>
 #include "cutlass/numeric_types.h"
-#include "gguf_scale_layout.hpp"
+#include "gguf_scale_layout.hpp"   // brings cute/tensor.hpp, so cute::Layout is available as a destination
 
 #ifndef CUTLASS_HOST_DEVICE
 #  define CUTLASS_HOST_DEVICE inline
@@ -205,10 +205,40 @@ CUTLASS_HOST_DEVICE float vecdot_block(uint8_t const* b, float const* x) {
 // `dst` takes the block-local element index and returns the offset to write. Identity keeps the old behaviour, and
 // DstStrided covers the (N, K) case, which is what the fallback actually needs.
 struct DstIdentity { CUTLASS_HOST_DEVICE int64_t operator()(int i) const { return i; } };
+
+// A LINEAR MAP, base + i*stride, because contiguous is not general enough. The pre-pass does not change any layout,
+// but the LIBRARY GEMMs this feeds want their own: cuBLAS takes a leading dimension and either orientation, and
+// DeepGemm wants its grouped per-expert arrangement. Row-major is stride 1 and column-major is stride ld, and the
+// first version of this offered only base + i -- i.e. row-major only -- which would have produced a transposed
+// weight for half the callers, silently and with every element individually correct.
+struct DstLinear {
+  int64_t base;                                   // n*ld + k0 for row-major, k0*ld + n for column-major
+  int64_t stride;                                 // 1 for row-major, ld for column-major
+  CUTLASS_HOST_DEVICE int64_t operator()(int i) const { return base + int64_t(i) * stride; }
+};
+// Kept as the name the earlier commit introduced, now a special case rather than the only case.
 struct DstStrided {
-  int64_t base;                                   // n*ld + k0, computed by the caller
+  int64_t base;
   CUTLASS_HOST_DEVICE int64_t operator()(int i) const { return base + i; }
 };
+
+// AND THE GENERAL CASE IS A cute::Layout, WHICH NEEDS NO NEW TYPE. `Dst` is any callable from the block-local index
+// to an offset, and a cute Layout is exactly that -- `layout(i)` is its offset -- so the arrangements this project
+// actually ships can be passed straight in. That matters because they are neither row- nor column-major: the offline
+// reorders here are hierarchical, tiled and interleaved, and an affine base + i*stride cannot express them. DstLinear
+// covers the library GEMMs' plain leading-dimension cases and nothing more.
+//
+// Composing with an offset is `[=](int i){ return base + int64_t(L(i)); }`, so a per-expert or per-tile origin does
+// not need a variant type either. Nothing here has to know which layout it was handed, which is the point: the
+// arrangement stays in the layout registry where every other reorder in this tree lives.
+template <class Layout>
+struct DstLayout {
+  Layout layout;
+  int64_t base = 0;
+  CUTLASS_HOST_DEVICE int64_t operator()(int i) const { return base + int64_t(layout(i)); }
+};
+template <class Layout>
+CUTLASS_HOST_DEVICE DstLayout<Layout> dst_of(Layout const& l, int64_t base = 0) { return DstLayout<Layout>{l, base}; }
 
 template <KType T, class Dst>
 CUTLASS_HOST_DEVICE void dequantize_block_to(uint8_t const* b, half_t* out, Dst dst) {
