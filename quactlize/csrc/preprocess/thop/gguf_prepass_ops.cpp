@@ -21,6 +21,7 @@
 
 #include "gguf_scale_prepass.hpp"
 #include "gguf_vecdot.hpp"
+#include "gguf_packed_unit.hpp"
 #include "thop/th_utils.h"
 #include "thop/ppu_backend.h"
 
@@ -290,6 +291,71 @@ std::string gguf_backend() {
   return ppu_backend::resolved_backend() + " (" + why + ")";
 }
 
+// THE PACKED UNIT, BOTH DIRECTIONS. The packed in-kernel path reads a REORDERED scale unit rather than GGUF's own
+// bytes, because GGUF's packing is not half-separable -- Q4_K's get_scale_min_k4 takes groups 4..7 from bytes 8-11
+// AND the top two bits of bytes 0-3, so a k-tile covering half a superblock could not read half a block. The unit
+// fixes that at no cost in stored bytes, which is the licence for the whole path and is asserted per format.
+//
+// Exposed so the round trip is a CI test rather than a scratch harness: pack a GGUF scale block into the unit,
+// decode it back, and compare against the same decode taken from the GGUF block. Bit-exact for all five, which is
+// the strongest statement available -- not "within tolerance".
+std::vector<torch::Tensor> gguf_pack_unit(torch::Tensor scale_blocks, torch::Tensor d, torch::Tensor dmin,
+                                          int64_t qtype) {
+  CHECK_CPU(scale_blocks); CHECK_CONTIGUOUS(scale_blocks);
+  TORCH_CHECK(scale_blocks.dtype() == torch::kUInt8 && scale_blocks.dim() == 2, "scale_blocks must be uint8 2-D");
+  TORCH_CHECK(d.dtype() == torch::kFloat16, "d must be float16");
+  int64_t const rows = scale_blocks.size(0);
+  bool const has_dmin = dmin.defined() && dmin.numel() > 0;
+  auto const* bp = get_ptr<uint8_t const>(scale_blocks);
+  return dispatch_ktype(qtype, [&](auto tag) -> std::vector<torch::Tensor> {
+    constexpr KType T = decltype(tag)::value;
+    using U = gguf_scale::packed_unit::Unit<T>;
+    TORCH_CHECK(scale_blocks.size(1) == Traits<T>::kBlockBytes, "scale_blocks second dim must be the SCALE block");
+    TORCH_CHECK(!U::kHasMin || has_dmin, "this format has a min channel, so dmin is required");
+    torch::Tensor units = torch::empty({rows, int64_t(U::kUnitBytes)},
+                                       torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCPU));
+    auto* up = get_ptr<uint8_t>(units);
+    auto const* dp = get_ptr<at::Half const>(d);
+    auto const* mp = has_dmin ? get_ptr<at::Half const>(dmin) : nullptr;
+    for (int64_t r = 0; r < rows; ++r) {
+      cutlass::half_t dd, dm{0.f};
+      std::memcpy(&dd, dp + r, sizeof(dd));
+      if (mp) std::memcpy(&dm, mp + r, sizeof(dm));
+      gguf_scale::packed_unit::pack_unit<T>(bp + r * Traits<T>::kBlockBytes, dd, dm, up + r * U::kUnitBytes);
+    }
+    return {units};
+  });
+}
+
+// The decode side, so the round trip closes through Python rather than through a header nobody calls from a test.
+std::vector<torch::Tensor> gguf_unit_decode(torch::Tensor units, int64_t qtype, int64_t zmul) {
+  CHECK_CPU(units); CHECK_CONTIGUOUS(units);
+  TORCH_CHECK(units.dtype() == torch::kUInt8 && units.dim() == 2, "units must be uint8 2-D");
+  TORCH_CHECK(zmul == 0 || zmul == 8, "zmul must be 0 or 8; it is the consumer's converter shift");
+  int64_t const rows = units.size(0);
+  auto const* up = get_ptr<uint8_t const>(units);
+  return dispatch_ktype(qtype, [&](auto tag) -> std::vector<torch::Tensor> {
+    constexpr KType T = decltype(tag)::value;
+    using U = gguf_scale::packed_unit::Unit<T>;
+    TORCH_CHECK(units.size(1) == U::kUnitBytes, "this format's unit is ", U::kUnitBytes, " bytes, got ",
+                units.size(1));
+    auto f16 = torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCPU);
+    torch::Tensor scale = torch::empty({rows, int64_t(U::kGroups)}, f16);
+    torch::Tensor zero = torch::empty({rows, int64_t(U::kGroups)}, f16);
+    auto* sp = get_ptr<at::Half>(scale);
+    auto* zp = get_ptr<at::Half>(zero);
+    for (int64_t r = 0; r < rows; ++r) {
+      for (int g = 0; g < U::kGroups; ++g) {
+        auto sz = (zmul == 8) ? gguf_scale::packed_unit::unit_group<T, 8>(up + r * U::kUnitBytes, g)
+                              : gguf_scale::packed_unit::unit_group<T, 0>(up + r * U::kUnitBytes, g);
+        std::memcpy(sp + r * U::kGroups + g, &sz.scale, sizeof(sz.scale));
+        std::memcpy(zp + r * U::kGroups + g, &sz.zero, sizeof(sz.zero));
+      }
+    }
+    return {scale, zero};
+  });
+}
+
 // The format's own shape, so Python does not carry a second copy of it. quactlize.formats already has block byte
 // counts for the storage arithmetic; these are the SCALE block's, which is a different number, and a test that
 // slices the wrong range would otherwise fail in a way that looks like a decode bug.
@@ -307,6 +373,9 @@ static auto gguf_scale_prepass_op =
     torch::RegisterOperators("quactlize::gguf_scale_prepass", &torch_ext::gguf_scale_prepass);
 
 static auto gguf_backend_op = torch::RegisterOperators("quactlize::gguf_backend", &torch_ext::gguf_backend);
+
+static auto gguf_pack_unit_op = torch::RegisterOperators("quactlize::gguf_pack_unit", &torch_ext::gguf_pack_unit);
+static auto gguf_unit_decode_op = torch::RegisterOperators("quactlize::gguf_unit_decode", &torch_ext::gguf_unit_decode);
 
 static auto gguf_unpack_op = torch::RegisterOperators("quactlize::gguf_unpack", &torch_ext::gguf_unpack);
 

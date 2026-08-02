@@ -153,6 +153,22 @@ def gguf_backend():
     return _ops().gguf_backend()
 
 
+def gguf_pack_unit(scale_blocks, d, dmin, qtype: int):
+    """GGUF scale block -> the REORDERED packed unit the in-kernel path reads. Byte-neutral by construction.
+
+    GGUF's own scale packing is not half-separable -- Q4_K's get_scale_min_k4 takes groups 4..7 from bytes 8-11 and
+    the top two bits of bytes 0-3 -- so a k-tile covering half a superblock cannot read half a block. The unit makes
+    each run of groups self-contained at no cost in stored bytes: 20, 14, 16, 16 and 18 bytes for Q2/Q3/Q4/Q5/Q6
+    against GGUF's own 20, 14, 16, 16 and 18.
+    """
+    return _ops().gguf_pack_unit(scale_blocks, d, dmin, qtype)[0]
+
+
+def gguf_unit_decode(units, qtype: int, zmul: int):
+    """The packed unit -> (scale, zero), the same decode the collective runs in the kernel."""
+    return _ops().gguf_unit_decode(units, qtype, zmul)
+
+
 def gguf_scale_block_shape(qtype: int):
     """(block_bytes, groups, group_size, has_min, scale_bias, signed) for a k-quant's SCALE block.
 
@@ -233,6 +249,6 @@ def matmul_w4a16(a, b_packed, scales, zeros=None, group_size: int = 128,
 
 __all__ = [
     "preprocess_weights_to_layout", "symmetric_quantize", "symmetric_quantize_unprocessed",
-    "gguf_scale_prepass", "gguf_scale_block_shape", "gguf_vecdot", "gguf_dequantize", "gguf_unpack", "gguf_backend",
+    "gguf_scale_prepass", "gguf_scale_block_shape", "gguf_vecdot", "gguf_dequantize", "gguf_unpack", "gguf_backend", "gguf_pack_unit", "gguf_unit_decode",
     "pack_int4", "unpack_int4", "pack_uint4", "unpack_uint4", "matmul_w4a16",
 ]

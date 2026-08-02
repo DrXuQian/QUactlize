@@ -491,3 +491,54 @@ def test_ppu_seam_reports_and_forwards(tmp_path):
     assert backend == "ppu", f"with the library present the backend must report ppu, got {backend}"
     assert float(vd) == -12345.0, "gguf_vecdot did not forward to the device library"
     assert float(pp) == 1.0, "gguf_scale_prepass did not forward to the device library"
+
+
+# ===================================================================================================================
+# THE PACKED UNIT, ALL FIVE FORMATS. The in-kernel packed path reads a REORDERED unit rather than GGUF's own bytes,
+# because GGUF's packing is not half-separable: Q4_K's get_scale_min_k4 takes groups 4..7 from bytes 8-11 AND the top
+# two bits of bytes 0-3, so a k-tile covering half a superblock could not read half a block.
+#
+# Byte neutrality is the licence for the whole path -- an offline reorder is permitted, an increase in stored bytes is
+# not -- so it is asserted per format here as well as in the C++, because the two say it about different things: the
+# static_assert is about the trait, this is about what the op actually returns.
+UNIT_BYTES = {"Q2_K": 20, "Q3_K": 14, "Q4_K": 16, "Q5_K": 16, "Q6_K": 18}
+SCALE_BLOCK = {"Q2_K": (0, 16), "Q3_K": (96, 108), "Q4_K": (4, 16), "Q5_K": (4, 16), "Q6_K": (192, 208)}
+
+
+@pytest.mark.parametrize("name,qtype,hdr,scales,codes,qmax", FORMATS)
+def test_packed_unit_round_trips_bit_exactly(name, qtype, hdr, scales, codes, qmax):
+    """pack into the unit, decode back, and get the SAME numbers the GGUF-sourced decode gives -- bit for bit.
+
+    Not "within tolerance": both sides produce fp16 from the same integer codes and the same header, so any
+    difference at all is a lost or misplaced bit rather than rounding. A tolerance here would hide exactly the
+    failures the reordering can have.
+    """
+    quactlize = pytest.importorskip("quactlize", reason="needs the built operator library")
+    torch = pytest.importorskip("torch")
+    rng = np.random.default_rng(4096 + qmax)
+    _bs, type_size = GGML_QUANT_SIZES[qtype]
+    n = 64
+    raw = rng.integers(0, 256, size=(n, type_size), dtype=np.uint8)
+    for lo, hi in hdr:
+        v = (rng.random(n) * 0.1 + 0.001).astype(np.float16)
+        raw[:, lo:hi] = v.view(np.uint8).reshape(n, 2)
+
+    sb_lo, sb_hi = SCALE_BLOCK[name]
+    sb = torch.from_numpy(np.ascontiguousarray(raw[:, sb_lo:sb_hi]))
+    d = torch.from_numpy(np.ascontiguousarray(raw[:, hdr[0][0]:hdr[0][1]]).view(np.float16).reshape(n).copy())
+    dmin = (torch.from_numpy(np.ascontiguousarray(raw[:, hdr[1][0]:hdr[1][1]]).view(np.float16).reshape(n).copy())
+            if len(hdr) > 1 else torch.zeros(n, dtype=torch.float16))
+    zmul = 8 if len(hdr) > 1 else 0
+
+    units = quactlize.gguf_pack_unit(sb, d, dmin, int(qtype))
+    assert units.shape[1] == UNIT_BYTES[name], f"{name}: unit is {units.shape[1]} B, expected {UNIT_BYTES[name]}"
+    # THE STORAGE CONSTRAINT, on the value the op returned rather than on the trait that computed it.
+    gguf_meta = (sb_hi - sb_lo) + 2 * len(hdr)
+    assert units.shape[1] <= gguf_meta, \
+        f"{name}: the unit is {units.shape[1]} B against GGUF's {gguf_meta} B of scale metadata -- an offline " \
+        f"reorder is permitted, an increase in stored bytes is not"
+
+    s_unit, z_unit = quactlize.gguf_unit_decode(units, int(qtype), zmul)
+    s_ref, z_ref = quactlize.gguf_scale_prepass(sb, d, dmin, int(qtype), zmul)
+    assert torch.equal(s_unit, s_ref), f"{name}: scale from the unit differs from scale from the GGUF block"
+    assert torch.equal(z_unit, z_ref), f"{name}: zero from the unit differs from zero from the GGUF block"
