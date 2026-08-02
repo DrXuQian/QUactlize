@@ -106,7 +106,19 @@ There is NO register-to-smem swzl store; stores are plain `tsm.st`. So:
   * the BASE scale channel could, in principle: it is gmem -> smem, and the AIU b16 copy already exists. That would
     attack the 278,528 with zero address arithmetic, which is what the software form could not do.
 
-OPEN, and to be answered with the local cute-layout harness rather than by hand: the AIU copy wants
+RULED OUT BY DECISION, not by measurement: DO NOT LOAD THE SCALE WITH ldmatrix. It is a per-(n, group) broadcast
+operand, not a matrix fragment, and routing it through ldmatrix imposes that instruction's 16-row / 512-byte delivery
+shape on a channel that wants a handful of values. The swzl address map stays available for the WRITE side if it is
+ever useful, but the read stays an ordinary load.
+
+WHAT TO DERIVE INSTEAD -- a plain static cute Layout L with POWER-OF-TWO strides, read with ordinary loads. Now that
+the fused element is 32 bits it is exactly one bank word, so the algebra is clean: find L such that the 32 lanes of
+one read instruction land on 32 distinct banks, the decoder's write stays 32-consecutive-words, L is a bijection onto
+the same allocation, and every stride is a power of two. The last one is the constraint that killed PPU_SCALE_PAD (an
+additive pad forces a non-power-of-two multiply) and it is what makes L free where a Swizzle is not: changing strides
+changes only compile-time constants.
+
+STILL OPEN, and to be answered with the local cute-layout harness rather than by hand: the AIU copy wants
 `CUBE_W * sizeof(Element) == 128` for swzl_mode 0 and the swzl read has a 16-row constraint, while the scale tile is
 (n = Scale_TileN, group = Scale_TileK) with Scale_TileK = 8. Eight is not sixteen. Print the layouts before deciding.
 Bound it first: the WHOLE load channel is 0.8-2.3%, so this is a large change for a small ceiling.
