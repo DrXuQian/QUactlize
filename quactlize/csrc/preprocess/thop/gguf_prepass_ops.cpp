@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <vector>
 
 #include "gguf_scale_prepass.hpp"
@@ -32,6 +33,13 @@ using gguf_scale::Traits;
 
 // The ggml type numbers, which are also quactlize.formats.QuantType's values. Kept as the wire format rather than a
 // private enum so the Python side does not need a translation table that could drift.
+// Big enough that every golden test and every hand check runs untouched, small enough that no real workload does.
+constexpr int64_t kCpuReferenceRowLimit = 4096;
+bool cpu_reference_allowed() {
+  char const* e = std::getenv("QUACTLIZE_ALLOW_CPU_REFERENCE");
+  return e && *e && *e != '0';
+}
+
 constexpr int64_t kGgmlQ2K = 10, kGgmlQ3K = 11, kGgmlQ4K = 12, kGgmlQ5K = 13, kGgmlQ6K = 14;
 
 // ONE PLACE THAT KNOWS EVERY FORMAT, so adding one cannot be half-done. The alternative -- a switch per property --
@@ -176,6 +184,22 @@ torch::Tensor gguf_vecdot(torch::Tensor blocks, torch::Tensor x, int64_t qtype) 
     // interchangeable and the golden tests apply to whichever one ran.
     TORCH_CHECK(api->vecdot(bp, ts, xp, op, int(rows), 1, int(qtype)) == 0, "PPU vecdot failed");
     return out;
+  }
+  // THE CPU ARM OF AN INFERENCE OP IS A REFERENCE, NOT A FALLBACK, and the difference has to be enforced rather
+  // than documented. It is a serial host loop -- no kernel, single-threaded -- and it exists to be the oracle the
+  // official gguf package is compared against and to define the arithmetic the device kernels share. Silently
+  // running it for a real GEMV would produce correct numbers at an unusable rate and report nothing, which is the
+  // same class of failure as the seam not forwarding.
+  //
+  // Offline ops are the opposite: gguf_unpack and the layout packers are MEANT to run here, on an ordinary machine
+  // preparing a checkpoint. So the refusal is on this op and not on those.
+  if (rows > kCpuReferenceRowLimit && !cpu_reference_allowed()) {
+    TORCH_CHECK(false,
+                "gguf_vecdot has no device backend (", ppu_backend::resolved_backend(),
+                ") and ", rows, " rows exceeds the ", kCpuReferenceRowLimit,
+                "-row reference limit. The CPU arm is a serial host loop kept as the oracle for the official gguf "
+                "package, not an inference path. Build libquactlize_ppu.so, or set QUACTLIZE_ALLOW_CPU_REFERENCE=1 "
+                "to run it anyway.");
   }
   return dispatch_ktype(qtype, [&](auto tag) -> torch::Tensor {
     constexpr KType T = decltype(tag)::value;

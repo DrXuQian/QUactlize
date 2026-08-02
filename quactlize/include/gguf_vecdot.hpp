@@ -307,6 +307,17 @@ CUTLASS_HOST_DEVICE void unpack_block(uint8_t const* b, int8_t* codes, half_t* s
 
 #if defined(__CUDACC__) || defined(__HGGCCC__)
 // ---------------------------------------------------------------------------------------------------------------
+// THESE ARE A REFERENCE PATH, NOT THE INTENDED PPU KERNEL, and mistaking one for the other is why they nearly
+// became the device route. quactlize already HAS a validated weight-only GEMV -- quactlize/include/gemv_lowbit/,
+// the TRT-LLM-shaped launcher, recorded in schemes.py as VALIDATED for SCALE_FIRST x GEMV -- and it consumes exactly
+// what the offline chain built tonight produces: packed int4 through preprocess_weights_to_layout, fp16 scale and
+// zero planes, group size as a template parameter with gs=32 already tuned. So the GGUF GEMV is a WIRING problem,
+// not a kernel problem, and libquactlize_ppu.so should export entry points that call that launcher rather than
+// these, which are untuned and duplicate it.
+//
+// What these are for: a portable path on hardware that is not PPU, and a device-side check of the shared arithmetic
+// that can run locally. Both are real and neither is the product.
+//
 // THE DEVICE ENTRY POINTS. Everything above is CUTLASS_HOST_DEVICE, which in a host-only build degrades to `inline`
 // -- so until these existed there was no kernel at all, only arithmetic that COULD be compiled as device code. That
 // distinction is worth stating because the torch ops that validate all of this are CPU loops: they establish that
