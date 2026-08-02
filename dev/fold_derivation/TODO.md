@@ -12,30 +12,104 @@ removed, so the true marginal cost is below that: the arithmetic was partly hidd
 unit: 4 decoder warps x 8 groups x 2 planes x 9 publications x 128 CTAs. Mechanism: 32 adjacent 16-bit stores over 16
 four-byte banks, and stores cannot broadcast.
 
-## THE ONE THING BLOCKING EVERYTHING ELSE
+## THE SWIZZLE COUNTEREXAMPLE IS RESOLVED -- outcome (a), as pre-registered
 
-PPU_SCALE_SWIZZLE provably converts the scale read from 4-way-on-4-banks to 1-way-on-16-banks (l98), and measures
-**+7.0% SLOWER** (CI 1.053..1.087). Until that is explained, "reduce bank conflicts" is not known to be a win on this
-machine, and every conflict-driven change below is speculative -- including the half2 merge.
+The `swz` capture landed (Current swz, Baseline pack, same launch shape, `16x128:256 w16x16 s2`):
 
-One capture decides it. Capture `swz` and read: tsm.ld instructions, Shared Load transactions, Shared Load bank
-conflicts, integer AND/shift/XOR deltas, s.wait.
+    Shared Load   Inst 441,344 (-1.03%)   Trans 1,908,736 (-1.89%)   Bank Conflicts 278,528 (+0.00%)
+    Shared Store  Inst  12,800 (-84.85%)  Trans    50,176 (-72.32%)  Bank Conflicts   8,192 (-90.00%)
+    Time  21.52 us / 36,576 cycles (swz)   vs   22.54 us / 38,323 cycles (pack)
 
-  * conflicts and transactions DID NOT fall -> l98 modelled an access the compiler does not emit
-  * they fell and time still rose -> address generation and codegen, not bank service
+**The swizzle removes ZERO load bank conflicts.** 278,528 is +0.00%, and the swizzle IS active for this shape --
+`TN=128` selects `Swizzle<2,3,5>`, cosize 128*8*2 = 2048, and 128/8/2/2048 are all powers of two, so every condition
+at collective:477 holds and collective:1561 swizzles the consumer view too. It is not the vacuous Stages=3 case.
+The scale read stays conflicted DESPITE the logical swizzle: l98's static bank model (l98_scale_swizzle.cu:58,
+distinct-addresses-per-bank in C++ layout space) does not predict the emitted instruction, the hardware bank
+function, or the profiler's event semantics. That is pre-registered outcome (a), in its weaker form.
 
-Timing alone cannot separate those, which is why this is a counter question and not another A/B.
+**RETRACTED, and my own notes already said so.** I first read the invariance of 278,528 across base and pack as
+proof that the conflicts are not the scale read. That is wrong: **pack decodes INTO the same two fp16 planes and
+leaves the whole read side untouched** -- collective:574 says it in as many words ("smem still holds the same two
+fp16 planes and the whole read side ... is untouched"), the decoder stores are at collective:1389, the FINE consumer
+reloads at collective:1901. base and pack are IDENTICAL on the consumer side by construction, so their equality
+carries no information at all. The real attribution is the earlier controlled `sz` vs `pc` ablation at
+PLAN_task20_scale.md:1094: adding the FINE scale/zero channel added ~272,384 scalar loads and ~252k conflicts, and
+441,344 - 168,960 A/B swzl loads = 272,384 scalar loads against 278,528 conflicts = **1.0226 conflicts per load**.
+**The conflicts ARE the scale/zero reads.** The half2 merge can therefore attack them; see below.
 
-## AFTER that, in order
+**The store row is vacuous too.** swz has no decoder, so its scale/zero publications are cp.async and land under
+"Shared Store From Global Load", not "Shared Store". swz = base = 8,192 shows only that neither has the decoder's
+16-bit store stream -- not that the swizzle tried and failed on it.
+
+**What it costs is scalar-ALU work, but do not quote a number.** `Inst Executed Pipe SALU` is +97.47% of peak and
+`PU Pipe SALU Cycles Active` reaches 38.74%, the busiest compute pipe (Tensor 14.04%). Converting %peak to absolute
+with the headline cycle ratio gives +17.0% instructions and +88% SALU -- but that conversion does not reconcile:
+shared-load transactions 0.9811 / cycles 0.9544 predicts +2.79% throughput where acu reports +4.47%, so the metric's
+denominator is not the headline cycle count. The rise is far too large to be an artefact, but it is not a counter.
+**And swz vs pack is not an XOR ablation** -- it also differs by two fp16 g2s channels vs one packed channel (G2S
+instructions +61.54%, with their own address and predicate work), by the decoder stores, and by register allocation.
+Pricing the XOR needs **swz vs base** compute counters, plus the AND/shift/XOR opcode deltas and `s.wait` the
+pre-registration asked for and this capture does not contain.
+
+**Decision: abandon PPU_SCALE_SWIZZLE** -- repeatedly slower, with no measured memory-counter benefit. Its mechanism
+is NOT closed, and it does not need to be.
+
+The header comment at `ppu_mma_aiu_multistage_mixed_input.hpp:454` -- "an XOR is free" -- is true on a busy machine
+and false here. See the next section for why.
+
+## WHY IT IS FALSE HERE: this shape has NO latency cover, and that is the governing fact
+
+acu's Launch Statistics on the same run:
+
+    Grid Size 128 blocks    Block Size 256    Registers/Thread 104    Dynamic Shared 57.36 KB (pack: 61.44 KB)
+    Waves Per CU  0.44
+
+0.44 = 128 CTAs / (72 CUs x 4 blocks/CU), and 4 blocks/CU is what 61,440 B buys against the 256 KB cap. Executed
+blocks per CU is 128/72 = **1.8**, which is what acu's "Small Grid" advisory reports. The launch fills less than half
+of ONE wave.
+
+**This explains every flat occupancy experiment on record.** They all raised the blocks/CU the RESOURCES PERMIT --
+PPU_A_PACK 4 -> 12, A-smem stride-0 9 -> 23, PPU_MAXREG 106 regs -> 9 blocks -- while the grid supplied 1.8. Slots
+you have no blocks to put in are not a lever, and every one of those measured nothing.
+
+**The one lever that does raise the RESIDENT count was measured and it loses.** split-K S=1 -> S=2 delivers
+warps/CU 14.02 -> 26.84 (1.9x) for 20.18 -> 20.96 us, **-4%**: "the extra parallelism converted one-for-one into extra
+waiting". The TileN ladder is 1.066x. `16x32:64 s4` at 38 warps/CU is 19% SLOWER than `16x32:256 s2` at 18.
+
+So acu's advisory has the diagnosis right and its remedy is already refuted on this kernel by direct measurement.
+Do not re-run it.
+
+**The consequence is the useful part: at 0.44 waves NOTHING is hidden, so work is paid ~1:1 IN BOTH DIRECTIONS.**
+Work added to the producer costs its full price -- which is why the swizzle's address math cost 7% while buying
+nothing -- and work REMOVED from it is refunded at its full price too. So this does not devalue conflict removal; it
+makes every removed instruction and every removed bank service worth its face value. What it does kill is any hope
+that the +9.2% publication cost gets absorbed by scheduling: it is STRUCTURAL, and the only mechanism left is a
+shorter critical path.
+
+## THEREFORE, in order
+
+0. **Delete PPU_SCALE_SWIZZLE and PPU_SCALE_PAD.** Both measured negative -- pad to the non-power-of-two multiply,
+   swizzle to the XOR -- and neither moved a single conflict. Keep the finding, drop the code.
+
+## AFTER that, in order -- and note the justification has CHANGED
 
 1. **Merge scale and zero into one interleaved half2 plane.** Two traps, both hit on the first attempt:
    `y2 = half2(d*sc, -dmin*mn)` is NOT the value to store -- after the split the decoder adds `zero += 8*scale`
    (kPackedZMul=8), so storing raw y2 drops the converter-bias cancellation and computes wrong numbers. And it saves
    NO shared memory: scale 4 KiB + zero 4 KiB combined is still 8 KiB, so 61,440 stands. Only the `smem_zero` member
    goes, not the bytes.
-   The real gain is halving the CHANNEL COUNT, not removing conflicts: a 32-bit slot probe still measures 4-way (on
-   8 banks instead of 4), because the decoder's lanes own consecutive n while the MMA consumer has a 256-element
-   thread stride. Expect ~136,192 fewer tsm.ld and 36,864 fewer tsm.st, with conflicts roughly halved.
+   It now has THREE gains, and it is the clear next move:
+     * **the store side goes to zero, not to half.** 32 lanes storing 32 adjacent 4-byte words hit all 32 banks
+       exactly once, where 32 adjacent 2-byte values occupy 16 bank words two-deep. That removes essentially the
+       whole +73,728, and PLAN_task20_scale.md:1109 already names this exact design as "the ownership-safe store
+       fix". It must be CHECKED that the compiler emits a real 32-bit store.
+     * **the load side roughly halves** -- not because the degree improves (a 32-bit slot probe still measures
+       4-way, on 8 banks instead of 4, since the decoder's lanes own consecutive n while the MMA consumer has a
+       256-element thread stride) but because halving the instruction stream halves the conflict EVENTS. Bound this
+       honestly: PLAN_task20_scale.md:1123 prices the entire 278,528 at 0.8-2.3% (0.16-0.47 us), so half of it is
+       second order on its own. It is the store side and the channel count that carry the case.
+     * ~136,192 fewer tsm.ld and 36,864 fewer tsm.st, paid back at face value because nothing is hidden here.
+   It changes the physical layout, so the read bank probe must be rerun -- not a free patch.
    The read side is SoA registers against an AoS tile: coarse reloads, FINE reloads, prefetch reloads, fragment setup
    and both transform operands. A medium collective-layout change, not two lines.
 
