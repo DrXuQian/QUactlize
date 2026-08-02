@@ -111,12 +111,48 @@ operand, not a matrix fragment, and routing it through ldmatrix imposes that ins
 shape on a channel that wants a handful of values. The swzl address map stays available for the WRITE side if it is
 ever useful, but the read stays an ordinary load.
 
-WHAT TO DERIVE INSTEAD -- a plain static cute Layout L with POWER-OF-TWO strides, read with ordinary loads. Now that
-the fused element is 32 bits it is exactly one bank word, so the algebra is clean: find L such that the 32 lanes of
-one read instruction land on 32 distinct banks, the decoder's write stays 32-consecutive-words, L is a bijection onto
-the same allocation, and every stride is a power of two. The last one is the constraint that killed PPU_SCALE_PAD (an
-additive pad forces a non-power-of-two multiply) and it is what makes L free where a Swizzle is not: changing strides
-changes only compile-time constants.
+DERIVED, AND IT IS AN IMPOSSIBILITY PROOF: THE FUSED LAYOUT IS ALREADY OPTIMAL. There is no static, power-of-two
+strided cute layout that improves the read while keeping the decoder's write conflict-free and staying a bijection
+onto the same 2,048 words. Stop looking for one.
+
+The read coordinates, off the TiledMma's BLayout and make_tiled_copy_B rather than off my formula. With t = 4q + r,
+q = floor(t/4) in [0,8), r = t mod 4 in [0,4), one read instruction at fixed (u, p, stage) touches
+
+    n = 16w + 8u + q        8 distinct columns, consecutive
+    g = 2r + p              4 distinct groups, {0,2,4,6} or {1,3,5,7}
+
+-- 32 distinct fused words, the Cartesian product. Under the compact fused word layout L(n,g,s) = n + 128g + 1024s
+that gives L(t) = 256r + q + C, hence
+
+    bank(t) = (16w + 8u + q) mod 32          <-- INDEPENDENT OF r
+
+so 8 banks, and the four r values put four distinct words on each: 4-way on 8 banks. That reproduces the measured
+32-bit-slot signature, which is the stop condition this derivation had to pass before its conclusion counted.
+
+WHY NOTHING BEATS IT, and the tension is between the two sides rather than a limitation of one. The WRITE fixes G and
+s and varies 32 consecutive n, so injectivity mod 32 forces the five low n bits to occupy all five bank bits --
+therefore no group bit may occupy a bank bit, therefore the group stride is 0 mod 32. But then the read's group term
+2*b*r vanishes mod 32 too, leaving only the three q bits to vary the bank: at most 8 banks, and 32 distinct words
+over 8 banks is 4-way. The bound is reached by what is already there.
+
+The near miss is worth recording because it looks like a solution. Making the four r values occupy four disjoint
+eight-bank regions needs 2b = 8 mod 32, so b = 4 -- a power of two. But n_lo has shape 8 and stride 1 and owns
+address bits 0-2, while a group mode of shape 8 and stride 4 owns bits 2-4, and the overlap collides outright:
+L(n_lo=4, g=0) = L(n_lo=0, g=1). It is not a bijection, so it was never a layout.
+
+Dropping the write constraint does buy 16 banks on the read -- Layout<Shape<Shape<_8,_16>,_8,_2>,
+Stride<Stride<_1,_64>,_8,_1024>> -- at the price of a 4-way-on-8-banks decoder write. By the counts that is roughly a
+wash (halving 278,528 read conflicts against re-conflicting ~42k stores four ways) and the whole read channel is
+bounded at 0.8-2.3%, so it does not pay for undoing the change that was just made.
+
+WHAT THIS LEAVES. The read's MULTIPLICITY is irreducible at 4-way. The only remaining lever on the read is its
+INSTRUCTION COUNT, which is exactly what the second half of the fused change does: one 32-bit load plus a register
+deinterleave instead of two 16-bit loads, halving the conflict events without touching the multiplicity. That is now
+the whole of the remaining read-side opportunity, and it is bounded by the same 0.8-2.3%.
+
+CONFIRMED SEPARATELY: fused must stay packed-only. cp.async cannot gather from two pointers or scatter alternate
+halfwords, so no byte-neutral reorder of the two base gmem tensors can make a 128-bit copy populate interleaved
+(scale, zero) words. Base keeps its own layout unless its ABI changes to a single pre-fused tensor.
 
 STILL OPEN, and to be answered with the local cute-layout harness rather than by hand: the AIU copy wants
 `CUBE_W * sizeof(Element) == 128` for swzl_mode 0 and the swzl read has a 16-row constraint, while the scale tile is
