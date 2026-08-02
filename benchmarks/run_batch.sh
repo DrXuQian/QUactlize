@@ -227,7 +227,19 @@ do_check() {
   if [ "$fails" -ne 0 ]; then
     echo "== $fails correctness gate(s) FAILED -- the timings below would be meaningless =="; return 1
   fi
-  echo "== all correctness gates passed =="
+  # NOT A BARE "all passed". The attribution experiment above prints a device assert and two exit=1 lines, and a
+  # summary reading "all correctness gates passed" directly under those is a script contradicting its own output.
+  # Both verifiers dying is the ANSWER to "is the assert the swizzle's" -- and it is also a real hole: this verifier
+  # cannot run in its default configuration at all. That belongs in the summary, not only in the paragraph above it.
+  if [ "$rc_def" -ne 0 ] && [ "$rc_swz" -ne 0 ]; then
+    echo "== the correctness gates that CAN run passed =="
+    echo "   Q4_K's packed path (rowC) is MATCH on every run above."
+    echo "   STILL UNRUNNABLE: test_moe_grouped_verify in its default configuration, both with and without macros."
+    echo "   It reaches an unconditional assert(false) in the collective -- a path that is not implemented, not a"
+    echo "   regression and not the swizzle's. Nothing above tested that configuration, in either build."
+  else
+    echo "== all correctness gates passed =="
+  fi
 }
 
 do_perf() {
