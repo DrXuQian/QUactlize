@@ -195,10 +195,56 @@ CUTLASS_HOST_DEVICE float vecdot_block(uint8_t const* b, float const* x) {
 // THE FALLBACK CONSUMER: full fp16 weights, which is what a cuBLAS or DeepGemm path multiplies. NO ZMul here -- that
 // is the mixed-input CONVERTER's centre correction, and these are the actual weight values. Adding it would shift
 // every weight by 8*scale and still look entirely plausible, which is the failure mode that parameter exists for.
+//
+// THE DESTINATION IS A MAP, NOT AN INDEX. A superblock is 256 consecutive elements of ONE row of the weight, so
+// writing out[i] only produces the right thing when the caller wants those 256 contiguous -- which a library GEMM
+// does not: it wants element (n, k0 + i) of an (N, K) matrix, i.e. n*ld + k0 + i, and a MoE expert wants that again
+// offset per expert. Hardcoding out[i] would make this correct only for a single-row test and silently wrong for the
+// path it exists to feed.
+//
+// `dst` takes the block-local element index and returns the offset to write. Identity keeps the old behaviour, and
+// DstStrided covers the (N, K) case, which is what the fallback actually needs.
+struct DstIdentity { CUTLASS_HOST_DEVICE int64_t operator()(int i) const { return i; } };
+struct DstStrided {
+  int64_t base;                                   // n*ld + k0, computed by the caller
+  CUTLASS_HOST_DEVICE int64_t operator()(int i) const { return base + i; }
+};
+
+template <KType T, class Dst>
+CUTLASS_HOST_DEVICE void dequantize_block_to(uint8_t const* b, half_t* out, Dst dst) {
+  visit<T>(b, [&](int i, int, int q, float dl, float ml) { out[dst(i)] = half_t(dl * float(q) - ml); });
+}
 template <KType T>
 CUTLASS_HOST_DEVICE void dequantize_block(uint8_t const* b, half_t* out) {
-  visit<T>(b, [&](int i, int, int q, float dl, float ml) { out[i] = half_t(dl * float(q) - ml); });
+  dequantize_block_to<T>(b, out, DstIdentity{});
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// THE SOURCE SIDE IS THE ONE STILL MISSING, and it is not the same problem. Everything above reads the block in the
+// CHECKPOINT's element order. One stored artifact has to serve all four routes -- packed, GEMV, pre-pass and this
+// fallback -- so if the low-bit weight is reordered offline for the kernels, these functions are reading a layout
+// that no longer exists on disk.
+//
+// What that needs is a per-format cute Layout mapping the logical (n, k) coordinate to its position in the stored
+// bytes, with the decode indexing through it instead of through the raw formula. That keeps the arrangement where
+// every other reorder in this tree already lives rather than as index arithmetic copied per kernel, and it is the
+// same discipline that made the sub-byte B path work: pi derived from frag.layout()^-1, not written down.
+//
+AND THE TWO OPEN THINGS ARE THE SAME THING. llama.cpp's MMVQ (ggml-cuda/mmvq.cu, vecdotq.cuh) gets its speed by
+// quantising the ACTIVATION to int8 per 32-block and accumulating with __dp4a, which needs FOUR CODES IN ONE 32-BIT
+// REGISTER matching four activation bytes. The raw GGUF order does not give that -- Q4_K's element i lives in byte
+// i%32 of chunk i/64 at nibble half (i%64)/32, so four consecutive i are not four consecutive nibbles -- which is
+// exactly why vecdotq.cuh does its own shuffling on the fly. An offline reorder produces that arrangement once
+// instead of per launch, so the layout question and the dp4a question have one answer.
+//
+// TRT-LLM's weight-only GEMV takes the other branch: fp16 activations, weights dequantised into registers, fma. It
+// costs more ALU per element and introduces NO activation quantisation error. vecdot_block above is that shape. The
+// two are a real numerical choice, not just a speed one, and which is wanted has to be stated rather than assumed.
+//
+// It is deliberately NOT faked here. A synthetic permutation would test that indexing through a map works, which is
+// not in doubt, while saying nothing about whether the map matches the offline packer -- and that agreement is the
+// only thing that can actually be wrong. It needs the real layout, and then a golden test that permutes the
+// reference the same way, with a SUMMATION-ORDER tolerance for the vecdot consumer.
 
 }  // namespace vecdot
 }  // namespace gguf_scale
