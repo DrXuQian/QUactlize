@@ -14,7 +14,10 @@
 #     cannot separate the two. REPS (default 3) now repeats each pinned row and reports min and spread, so the first
 #     question the perf run answers is "is this effect real", not "what is its cause"
 #
-#   ./run_batch.sh build     build all six and copy them out (slow: ~6 compiles)
+#   ./run_batch.sh build     build every variant and copy it out. Each binary is CACHED against the overlay content
+#                            hash plus its own defines, so a rerun with no source change compiles nothing. ONLY=a,b
+#                            restricts the work to those variants and FORCE=1 ignores the cache. Editing a shared
+#                            header still invalidates everything -- see build_one for why that is deliberate.
 #   ./run_batch.sh check     correctness gates -- must pass before any timing is meaningful
 #   ./run_batch.sh perf      the pinned rows
 #   ./run_batch.sh           all three, in that order
@@ -51,13 +54,45 @@ VARIANTS=(
   "splitnop:SK_QUANT=2 PPU_PACKED_SCALE=1 PPU_PACKED_SPLIT_GROUPS=1 PPU_PACKED_SCALE_NOP=1"
 )
 
+# EVERY BINARY THIS RUN IS RESPONSIBLE FOR, whether it was compiled, cached or skipped. The freshness stamp at the
+# end is written only if every one of them is current, which is what makes ONLY= safe: rebuilding one variant does
+# not silently bless the others, and leaving the others alone does not block the run when they are already current.
+ALL_BINS=()
+
 build_one() {  # $1 name  $2 defines  $3 target
   # SEPARATE STATEMENTS. `local a=$1 log=...$a...` fails under `set -u` in bash 5.1: local declares every name first
   # and only then assigns, so the self-reference is unbound. bash -n does not catch it -- only running does, which is
   # why this script is now dry-run against a stubbed build.sh before it ships.
   local name="$1" defs="$2" tgt="$3"
   local log="$OUT/build_$name.log"
-  printf '  %-10s %s\n' "$name" "${defs:-<no defines>}"
+  local out="$OUT/${tgt}__$name" side="$OUT/${tgt}__$name.built"
+  ALL_BINS+=("$name|$defs|$tgt")
+
+  # DON'T RECOMPILE WHAT CANNOT HAVE CHANGED. A binary is current iff it was produced from the same overlay CONTENT,
+  # the same defines and the same target -- the same content question require_fresh_binaries already asks, asked per
+  # binary instead of once for the set. Eight compiles for a change that touches one variant is most of the iteration
+  # cost of this loop.
+  #
+  # BE CLEAR ABOUT WHAT THIS DOES NOT BUY. The overlay stamp covers every compiled file, so editing a shared header --
+  # the collective, say -- invalidates ALL of them, even the variants whose generated code is provably identical
+  # because the change sits behind a macro they do not set. That is the conservative answer and it is the right one:
+  # deciding "this edit cannot affect that variant" without compiling is exactly the assumption this project keeps
+  # getting wrong. What it does buy is a free rerun after no source change, and ONLY= for when you know better.
+  if [ -n "${ONLY:-}" ] && ! printf '%s' " ${ONLY//,/ } " | grep -q -- " $name "; then
+    printf '  %-14s %s\n' "$name" "skipped by ONLY=$ONLY"
+    return 0
+  fi
+  local want="$OVERLAY_STAMP|$defs|$tgt"
+  if [ -z "${FORCE:-}" ] && [ -x "$out" ] && [ -f "$side" ] && [ "$(head -1 "$side" 2>/dev/null)" = "$want" ]; then
+    printf '  %-14s %s\n' "$name" "[cached] ${defs:-<no defines>}"
+    return 0
+  fi
+  local was=""
+  [ -x "$out" ] && was="$(md5sum < "$out" | cut -d" " -f1)"
+  # REMOVED BEFORE, WRITTEN AFTER. An interrupted or failed build must not leave a sidecar claiming the stale binary
+  # beside it is current -- that would be the mtime guard's bug in a new place.
+  rm -f "$side"
+  printf '  %-14s %s\n' "$name" "${defs:-<no defines>}"
   local rc=0
   ( cd "$ROOT" && PPU_DEFS="$defs" TARGET="$tgt" ./build.sh ) >"$log" 2>&1 || rc=$?
 
@@ -82,11 +117,23 @@ build_one() {  # $1 name  $2 defines  $3 target
     return 1
   fi
   [ -x "$EX/$tgt" ] || { echo "    FAILED: $EX/$tgt not built (see $log)"; return 1; }
-  cp "$EX/$tgt" "$OUT/${tgt}__$name"                 # BEFORE the next build deletes it
+  cp "$EX/$tgt" "$out"                               # BEFORE the next build deletes it
+  local now; now="$(md5sum < "$out" | cut -d" " -f1)"
+  # WORTH SAYING OUT LOUD. A rebuild that reproduces the previous bytes proves the edit was inert for THIS variant --
+  # which is the fact a "only build what changed" cache would have had to assume in advance and could not.
+  [ -n "$was" ] && [ "$was" = "$now" ] && printf '  %-14s %s\n' "" "(binary unchanged by this edit)"
+  { printf '%s\n' "$want"; printf '%s\n' "$now"; } > "$side"
 }
 
 do_build() {
   echo "== build =="
+  # ONCE. build_stamp shells out to build.sh --print-overlay and hashes every compiled file; calling it per variant
+  # would run it a dozen times to answer the same question.
+  OVERLAY_STAMP="$(build_stamp)"
+  ALL_BINS=()
+  [ -n "${ONLY:-}" ] && echo "  ONLY=$ONLY -- every other variant is left alone; the stamp below is written only if"
+  [ -n "${ONLY:-}" ] && echo "  they are all still current, so a stale one blocks the run rather than passing quietly"
+  [ -n "${FORCE:-}" ] && echo "  FORCE=1 -- ignoring the per-binary cache"
   local ok=1
   for v in "${VARIANTS[@]}"; do build_one "${v%%:*}" "${v#*:}" test_moe_splitk_bench || ok=0; done
   # the correctness gate needs its own target, packed on, plus the two variants that change the packed path
@@ -105,8 +152,24 @@ do_build() {
   # this default build dies identically the flag is exonerated; if only the swizzle build dies, something is
   # macro-sensitive and neither explanation stands.
   build_one verify_default ""                                          test_moe_grouped_verify || ok=0
-  # The stamp is written LAST, so it exists only if every build_one succeeded.
-  if [ "$ok" -eq 1 ]; then build_stamp > "$OUT/build_stamp"; echo "  build stamp: $(cat "$OUT/build_stamp")"; fi
+  # THE STAMP MEANS "EVERY BINARY THIS RUN IS RESPONSIBLE FOR IS CURRENT", and with ONLY= that is no longer implied
+  # by "every build_one succeeded" -- the skipped ones were never looked at. So check them all, by the same content
+  # question, and refuse the stamp if any is stale. Without this, ONLY= would let do_check and do_perf run against a
+  # variant compiled from code nobody has any more, which is the exact failure require_fresh_binaries exists to stop.
+  local entry ename edefs etgt eside stale=()
+  for entry in "${ALL_BINS[@]}"; do
+    ename="${entry%%|*}"; etgt="${entry##*|}"; edefs="${entry#*|}"; edefs="${edefs%|*}"
+    eside="$OUT/${etgt}__${ename}.built"
+    if [ ! -x "$OUT/${etgt}__${ename}" ] || [ ! -f "$eside" ] ||
+       [ "$(head -1 "$eside" 2>/dev/null)" != "$OVERLAY_STAMP|$edefs|$etgt" ]; then stale+=("$ename"); fi
+  done
+  if [ ${#stale[@]} -ne 0 ]; then
+    echo "  !!! not current: ${stale[*]}"
+    echo "      no build stamp written, so check/perf will refuse. Rerun without ONLY= (or with those names in it)."
+    ok=0
+  elif [ "$ok" -eq 1 ]; then
+    printf '%s\n' "$OVERLAY_STAMP" > "$OUT/build_stamp"; echo "  build stamp: $OVERLAY_STAMP"
+  fi
   echo "== distinct-binary check =="
   # Two identical binaries mean an A/B that compares something with itself.
   #
