@@ -36,7 +36,16 @@ and the reported mismatch count was zero. Hence assert_finite below, run on the 
 import numpy as np
 import pytest
 
-gguf = pytest.importorskip("gguf", reason="the official llama.cpp gguf package is the golden for these tests")
+# NOT importorskip. This module IS the independent oracle for every k-quant constant in the tree, and a skip is
+# indistinguishable from a pass in a CI summary line -- the whole file would vanish and the run would still say
+# "all passed". If the golden is missing the honest outcome is a failure that says to install it.
+try:
+    import gguf
+    import gguf.quants  # noqa: F401
+except ImportError as _e:                                    # pragma: no cover
+    raise RuntimeError(
+        "the official llama.cpp `gguf` package is the golden for these tests and is not importable "
+        f"({_e}). Install it (pip install gguf) -- skipping would report green while checking nothing.") from _e
 from gguf.constants import GGMLQuantizationType as GT     # noqa: E402
 from gguf.constants import GGML_QUANT_SIZES               # noqa: E402
 
@@ -101,19 +110,31 @@ def test_code_ranges_cover_every_plane(name, qtype, hdr, scales, codes, qmax):
     bytes, those elements would differ, and this fails -- which is exactly the mistake the two earlier versions of
     this file made about byte ranges, caught here instead of silently weakening the extraction below.
     """
+    quactlize = pytest.importorskip("quactlize", reason="needs the built operator library")
     rng = np.random.default_rng(abs(hash(name)) & 0xFFFF)
     block_size, _ = GGML_QUANT_SIZES[qtype]
-    n, gsz = 32, block_size // 16
-    raw = _make_blocks(qtype, hdr, scales, codes, n, rng, code_fill=None)   # random everywhere first
-    for lo, hi in codes:
-        raw[:, lo:hi] = 0x00
-    w = gguf.quants.dequantize(raw.reshape(-1), qtype).reshape(n, block_size).astype(np.float64)
-    _assert_finite(w, f"{name} golden at code fill 0x00")
-    g = w.reshape(n, block_size // gsz, gsz)
-    spread = np.abs(g - g[:, :, :1]).max()
-    assert spread < 1e-9 * max(1.0, np.abs(w).max()), \
-        f"{name}: with every declared code range zeroed, a group is still not constant (spread {spread:.3e}) -- " \
-        f"the code_ranges table is missing a plane, so any scale extracted from a fill would be wrong"
+    # THE REAL GROUP SHAPE, from the C++ Traits. An earlier version hardcoded block_size // 16, which is right for
+    # Q2_K/Q3_K/Q6_K and WRONG for Q4_K and Q5_K -- they have eight groups of 32, not sixteen of 16. It still passed,
+    # because uniformity over a 32-element group implies it over each 16-element half, so the check was weaker than
+    # it claimed rather than broken. Asking the op removes the guess.
+    _blk, groups, gsz, _hm, _b, _s = quactlize.gguf_scale_block_shape(int(qtype))
+    assert groups * gsz == block_size
+    n = 32
+    raw0 = _make_blocks(qtype, hdr, scales, codes, n, rng, code_fill=None)   # random everywhere first
+    # BOTH FILLS. The scale extraction divides by (w_hi - w_lo), so a plane missing from the table breaks 0xFF just
+    # as badly as 0x00 and only one of them was being checked.
+    for fill in (0x00, 0xFF):
+        raw = raw0.copy()
+        for lo, hi in codes:
+            raw[:, lo:hi] = fill
+        w = gguf.quants.dequantize(raw.reshape(-1), qtype).reshape(n, block_size).astype(np.float64)
+        _assert_finite(w, f"{name} golden at code fill 0x{fill:02X}")
+        g = w.reshape(n, groups, gsz)
+        spread = np.abs(g - g[:, :, :1]).max()
+        assert spread < 1e-9 * max(1.0, np.abs(w).max()), \
+            f"{name}: with every declared code range set to 0x{fill:02X}, a group is not constant " \
+            f"(spread {spread:.3e}) -- the code_ranges table is missing a plane, so any scale extracted " \
+            f"from a fill would be wrong"
 
 
 def _our_q4k_sc_mn(s):

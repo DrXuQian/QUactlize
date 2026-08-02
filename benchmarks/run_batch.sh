@@ -196,9 +196,11 @@ do_build() {
     echo "  !!! not current: ${stale[*]}"
     echo "      no build stamp written, so check/perf will refuse. Rerun without ONLY= (or with those names in it)."
     ok=0
-  elif [ "$ok" -eq 1 ]; then
-    printf '%s\n' "$OVERLAY_STAMP" > "$OUT/build_stamp"; echo "  build stamp: $OVERLAY_STAMP"
   fi
+  # THE STAMP IS WRITTEN AT THE VERY END, AFTER the distinct-binary check below, and that ordering is the bug this
+  # comment exists for. It used to be written here, so two IDENTICAL binaries set ok=0 and printed a loud warning
+  # while the stamp was already on disk -- do_perf's freshness guard then passed and timed one binary against itself,
+  # which is indistinguishable from "the change does nothing". That is exactly the reading the packfuse round got.
   echo "== distinct-binary check =="
   # Two identical binaries mean an A/B that compares something with itself.
   #
@@ -212,8 +214,29 @@ do_build() {
   else
     local dup
     dup=$(md5sum "$OUT"/test_moe_splitk_bench__* | awk '{print $1}' | sort | uniq -d)
-    if [ -n "$dup" ]; then echo "  !!! two splitk binaries are IDENTICAL -- the A/B is invalid"; md5sum "$OUT"/test_moe_splitk_bench__*; ok=0
+    if [ -n "$dup" ]; then
+      # NAME THE PAIR. "two binaries are identical" over eight files leaves the reader to diff md5s by eye, and the
+      # thing they need to know is WHICH variant collapsed onto which -- that names the macro that did not apply.
+      echo "  !!! IDENTICAL binaries -- the A/B against them is a binary compared with itself:"
+      local h
+      for h in $dup; do
+        printf '        %s :' "${h:0:8}"
+        md5sum "$OUT"/test_moe_splitk_bench__* | awk -v H="$h" '$1==H {n=$2; sub(/.*__/,"",n); printf " %s", n}'
+        echo
+      done
+      ok=0
     else echo "  all $have splitk binaries differ"; fi
+  fi
+  # ALWAYS SHOW THE FINGERPRINTS. A byte-neutral change -- one whose shared memory, results and counters are
+  # identical by design, which is exactly what PPU_PACKED_SCALE_FUSED is -- cannot be seen in any run. The binary
+  # hash is the one observable that always moves when the code does, so it is printed whether or not anything is
+  # wrong, and a reader comparing two rounds can see at a glance which variants actually changed.
+  echo "  binary fingerprints:"
+  md5sum "$OUT"/test_moe_splitk_bench__* 2>/dev/null |
+    awk '{n=$2; sub(/.*__/,"",n); printf "        %-12s %s\n", n, substr($1,1,12)}'
+  # AFTER the duplicate check, so a duplicate genuinely blocks check and perf instead of warning beside a stamp.
+  if [ "$ok" -eq 1 ]; then
+    printf '%s\n' "$OVERLAY_STAMP" > "$OUT/build_stamp"; echo "  build stamp: $OVERLAY_STAMP"
   fi
   return $((1-ok))
 }

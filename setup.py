@@ -35,7 +35,13 @@ if WITH_DEVICE:
 # HEADERS ARE NOT TRACKED BY setuptools. Editing weight_layout.h and rebuilding produced a .so with the OLD table
 # and a test failure that read like a logic error. `depends` makes the headers part of the extension's dependency
 # set so a change to one forces a recompile.
-HEADERS = sorted(str(p) for p in (ROOT / "quactlize/csrc/preprocess").rglob("*.h"))
+# EVERY HEADER THE EXTENSION COMPILES, not just the .h files under csrc. This list is passed as `depends`, so what
+# it misses is what setuptools will not rebuild for -- and it used to miss both the .hpp extension and the whole of
+# quactlize/include, which is where the pre-pass arithmetic under test actually lives. The failure that produces is a
+# golden suite reporting green against a stale .so, i.e. the oracle certifying code nobody is running.
+HEADERS = sorted(str(p) for d in ("quactlize/csrc/preprocess", "quactlize/include")
+                 for ext in ("*.h", "*.hpp", "*.cuh")
+                 for p in (ROOT / d).rglob(ext))
 
 cuda_inc = [p for p in ("/usr/local/cuda/include", os.environ.get("CUDA_HOME", "") + "/include") if p and Path(p).exists()]
 

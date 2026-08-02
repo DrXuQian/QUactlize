@@ -15,6 +15,7 @@
 #include <torch/script.h>
 
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 #include "gguf_scale_prepass.hpp"
@@ -91,29 +92,44 @@ std::vector<torch::Tensor> gguf_scale_prepass(torch::Tensor scale_blocks, torch:
     torch::Tensor scale = torch::empty({rows, int64_t(Tr::kGroups)}, opts);
     torch::Tensor zero = torch::empty({rows, int64_t(Tr::kGroups)}, opts);
 
+    // BIT-PRESERVING COPIES, NOT reinterpret_cast. at::Half and cutlass::half_t are distinct types with the same
+    // size and representation, and reading one through the other is undefined behaviour regardless -- strict
+    // aliasing does not care that the bits match, and this is compiled with -O2. It usually works, which is worse
+    // than failing: the correctness ORACLE for the whole format family would have rested on UB.
     auto const* blocks = get_ptr<uint8_t const>(scale_blocks);
-    auto const* dp = reinterpret_cast<cutlass::half_t const*>(get_ptr<at::Half const>(d));
-    auto const* dmp = has_dmin ? reinterpret_cast<cutlass::half_t const*>(get_ptr<at::Half const>(dmin)) : nullptr;
-    auto* sp = reinterpret_cast<cutlass::half_t*>(get_ptr<at::Half>(scale));
-    auto* zp = reinterpret_cast<cutlass::half_t*>(get_ptr<at::Half>(zero));
+    static_assert(sizeof(at::Half) == sizeof(cutlass::half_t), "half types must be the same width to copy bits");
+    auto to_cutlass = [](at::Half const* src, int64_t n) {
+      std::vector<cutlass::half_t> v(size_t(n ? n : 0));
+      for (int64_t i = 0; i < n; ++i) std::memcpy(&v[size_t(i)], src + i, sizeof(cutlass::half_t));
+      return v;
+    };
+    std::vector<cutlass::half_t> dv = to_cutlass(get_ptr<at::Half const>(d), rows);
+    std::vector<cutlass::half_t> dmv = has_dmin ? to_cutlass(get_ptr<at::Half const>(dmin), rows)
+                                                : std::vector<cutlass::half_t>();
+    std::vector<cutlass::half_t> sv(size_t(rows) * Tr::kGroups), zv(size_t(rows) * Tr::kGroups);
 
-    // ZMul IS A TEMPLATE PARAMETER of the shared arithmetic, so the runtime value is dispatched rather than passed.
-    // Only the two that exist in this tree are accepted: 0 for a consumer whose converter has no shift, and 8 for the
-    // int4 one. A third would be a new consumer, and inventing it silently here is how a wrong constant ships.
+    // CALL THE SHARED HOST REFERENCE rather than repeating its loop. The first version of this op had its own
+    // contiguous double loop, so prepass_host's descriptor and stride arithmetic -- the part the device kernel
+    // mirrors -- was never executed by any test, and "one implementation, so they cannot disagree" was true only of
+    // the per-group arithmetic. Going through BlockDesc/PlaneDesc means the golden tests exercise the placement too.
+    // ZMul IS A TEMPLATE PARAMETER of the shared arithmetic, so the runtime value is dispatched. Only the two that
+    // exist in this tree are accepted. WITHOUT THIS CHECK the dispatch below silently treats anything that is not 8
+    // as 0 -- I dropped it once while refactoring, and a caller passing 4 would have got a plane that is wrong by
+    // 4*scale everywhere and looks entirely plausible, which is the exact failure this parameter exists to prevent.
     TORCH_CHECK(zmul == 0 || zmul == 8, "zmul must be 0 or 8; got ", zmul,
                 " -- it is the consumer's converter shift, not a free parameter");
 
-    for (int64_t r = 0; r < rows; ++r) {
-      uint8_t const* blk = blocks + r * Tr::kBlockBytes;
-      cutlass::half_t const dd = dp[r];
-      cutlass::half_t const dm = dmp ? dmp[r] : cutlass::half_t(0.f);
-      for (int g = 0; g < Tr::kGroups; ++g) {
-        gguf_scale::GroupScale sz =
-            (zmul == 8) ? gguf_scale::prepass::group_scale_zero<T, 8>(blk, g, dd, dm)
-                        : gguf_scale::prepass::group_scale_zero<T, 0>(blk, g, dd, dm);
-        sp[r * Tr::kGroups + g] = sz.scale;
-        zp[r * Tr::kGroups + g] = sz.zero;
-      }
+    gguf_scale::prepass::BlockDesc src{blocks, dv.data(), has_dmin ? dmv.data() : nullptr,
+                                       int64_t(Tr::kBlockBytes), 0, 1, 0};
+    gguf_scale::prepass::PlaneDesc dst{sv.data(), zv.data(), int64_t(Tr::kGroups), 1};
+    if (zmul == 8) gguf_scale::prepass::prepass_host<T, 8>(src, dst, int(rows), 1);
+    else           gguf_scale::prepass::prepass_host<T, 0>(src, dst, int(rows), 1);
+
+    auto* sp = get_ptr<at::Half>(scale);
+    auto* zp = get_ptr<at::Half>(zero);
+    for (size_t i = 0; i < sv.size(); ++i) {
+      std::memcpy(sp + i, &sv[i], sizeof(cutlass::half_t));
+      std::memcpy(zp + i, &zv[i], sizeof(cutlass::half_t));
     }
     return {scale, zero};
   });
