@@ -304,3 +304,36 @@ def test_prepass_zero_carries_the_affine_term(name, qtype, hdr, scales, codes, q
     lhs = zero8.numpy().astype(np.float64)
     rhs = zero0 + 8.0 * scale0.numpy().astype(np.float64)
     assert np.abs(lhs - rhs).max() < 5e-3 * denom, f"{name}: zero(zmul=8) != zero(0) + 8*scale"
+
+
+# ===================================================================================================================
+# THE PURE CUDA-CORE DECODE, ALL FIVE FORMATS, THROUGH THE PYTHON ENTRY.
+#
+# WHY A DOT PRODUCT AND NOT A PER-GROUP COMPARISON. The pre-pass tests above compare scale and zero, which are
+# per-group scalars -- so a decoder with the right scales and the WRONG ELEMENT ORDER passes every one of them. A dot
+# product against the reference's own weights cannot be fooled that way: permute anything and the sum moves. This is
+# therefore the first test in the tree that checks the k-quant weight unpacking at all, and for Q4_K and Q5_K it also
+# cross-validates gguf_scale_layout.hpp's 6-bit field maps end to end, since vecdot reads them through scale_of/min_of.
+@pytest.mark.parametrize("name,qtype,hdr,scales,codes,qmax", FORMATS)
+def test_vecdot_matches_llama_cpp(name, qtype, hdr, scales, codes, qmax):
+    quactlize = pytest.importorskip("quactlize", reason="needs the built operator library")
+    torch = pytest.importorskip("torch")
+    rng = np.random.default_rng(4242 + qmax)
+    block_size, type_size = GGML_QUANT_SIZES[qtype]
+    n = 64
+    raw = rng.integers(0, 256, size=(n, type_size), dtype=np.uint8)
+    for lo, hi in hdr:                       # normal fp16 headers, or the golden is NaN and every check passes
+        v = (rng.random(n) * 0.1 + 0.001).astype(np.float16)
+        raw[:, lo:hi] = v.view(np.uint8).reshape(n, 2)
+    w = gguf.quants.dequantize(raw.reshape(-1), qtype).reshape(n, block_size).astype(np.float64)
+    _assert_finite(w, f"{name} golden")
+
+    x = (rng.random((n, block_size)) * 2 - 1).astype(np.float32)
+    ref = (w * x.astype(np.float64)).sum(1)
+    got = quactlize.gguf_vecdot(torch.from_numpy(raw), torch.from_numpy(x), int(qtype)).numpy().astype(np.float64)
+
+    rel = np.abs(got - ref).max() / max(1e-9, np.abs(ref).max())
+    # ~1e-7 is float32 summation noise over 256 terms. It is this tight ONLY because both sides accumulate in the
+    # same element order; the shipping GEMV consumes the offline-reordered weight and will need a looser,
+    # summation-order tolerance. See gguf_vecdot.hpp's header -- that path is not what this tests.
+    assert rel < 2e-5, f"{name}: vecdot disagrees with llama.cpp, worst relative error {rel:.3e}"

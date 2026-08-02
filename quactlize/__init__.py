@@ -96,6 +96,19 @@ def gguf_scale_prepass(scale_blocks, d, dmin, qtype: int, zmul: int):
     return _ops().gguf_scale_prepass(scale_blocks, d, dmin, qtype, zmul)
 
 
+def gguf_vecdot(blocks, x, qtype: int):
+    """PURE CUDA-CORE DECODE: one dot product per RAW GGUF block, scales taken straight into registers.
+
+    This is the decode-band answer the pre-pass cannot give. The pre-pass removes the STORAGE cost of a k-quant's
+    fp16 planes by building them in a workspace; at decode they would have to be rebuilt per token or kept resident,
+    and keeping them is the forbidden storage again. Here nothing is materialised at all.
+
+    `blocks` is uint8 [rows, type_size] holding RAW GGUF blocks -- the checkpoint's own bytes, no repacking. `x` is
+    fp32 [rows, 256]. Returns fp32 [rows].
+    """
+    return _ops().gguf_vecdot(blocks, x, qtype)
+
+
 def gguf_scale_block_shape(qtype: int):
     """(block_bytes, groups, group_size, has_min, scale_bias, signed) for a k-quant's SCALE block.
 
@@ -176,6 +189,6 @@ def matmul_w4a16(a, b_packed, scales, zeros=None, group_size: int = 128,
 
 __all__ = [
     "preprocess_weights_to_layout", "symmetric_quantize", "symmetric_quantize_unprocessed",
-    "gguf_scale_prepass", "gguf_scale_block_shape",
+    "gguf_scale_prepass", "gguf_scale_block_shape", "gguf_vecdot",
     "pack_int4", "unpack_int4", "pack_uint4", "unpack_uint4", "matmul_w4a16",
 ]

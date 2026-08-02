@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "gguf_scale_prepass.hpp"
+#include "gguf_vecdot.hpp"
 #include "thop/th_utils.h"
 
 namespace torch_ext {
@@ -135,6 +136,41 @@ std::vector<torch::Tensor> gguf_scale_prepass(torch::Tensor scale_blocks, torch:
   });
 }
 
+// PURE CUDA-CORE DECODE, one dot product per RAW GGUF block. Exposed for the same reason the pre-pass is: the only
+// oracle worth having is the official gguf package, and reaching it means reaching Python.
+//
+// THIS VALIDATES MORE THAN THE PRE-PASS TESTS CAN. Those compare per-group scalars, so a decoder with the right
+// scales and the wrong element ORDER passes every one of them. A dot product against the reference's own weights
+// cannot be fooled that way -- reorder anything and the sum moves.
+//
+// blocks : uint8 [rows, type_size]   RAW GGUF blocks, exactly as they sit in the file. No repacking, which is the
+//                                    point: at decode the checkpoint's own bytes are what is resident.
+// x      : fp32  [rows, 256]         the activation slice this superblock multiplies.
+torch::Tensor gguf_vecdot(torch::Tensor blocks, torch::Tensor x, int64_t qtype) {
+  CHECK_CPU(blocks); CHECK_CONTIGUOUS(blocks);
+  CHECK_CPU(x); CHECK_CONTIGUOUS(x);
+  TORCH_CHECK(blocks.dtype() == torch::kUInt8 && blocks.dim() == 2, "blocks must be uint8 [rows, type_size]");
+  TORCH_CHECK(x.dtype() == torch::kFloat32 && x.dim() == 2, "x must be float32 [rows, 256]");
+  TORCH_CHECK(x.size(1) == 256, "a k-quant superblock is 256 elements; x's second dim is ", x.size(1));
+  TORCH_CHECK(x.size(0) == blocks.size(0), "blocks and x must have the same number of rows");
+  int64_t const rows = blocks.size(0);
+  int64_t const ts = blocks.size(1);
+  torch::Tensor out = torch::empty({rows}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+  auto const* bp = get_ptr<uint8_t const>(blocks);
+  auto const* xp = get_ptr<float const>(x);
+  auto* op = get_ptr<float>(out);
+  return dispatch_ktype(qtype, [&](auto tag) -> torch::Tensor {
+    constexpr KType T = decltype(tag)::value;
+    // THE RAW BLOCK SIZE IS THE GGUF ONE, not Traits::kBlockBytes -- that is the SCALE block and is a different
+    // number. Confusing them slices the wrong bytes and fails as if the decode were wrong, so it is checked.
+    constexpr int64_t kRaw = (T == KType::Q2_K) ? 84 : (T == KType::Q3_K) ? 110
+                           : (T == KType::Q4_K) ? 144 : (T == KType::Q5_K) ? 176 : 210;
+    TORCH_CHECK(ts == kRaw, "this format's raw GGUF block is ", kRaw, " bytes, got ", ts);
+    for (int64_t r = 0; r < rows; ++r) op[r] = gguf_scale::vecdot::vecdot_block<T>(bp + r * ts, xp + r * 256);
+    return out;
+  });
+}
+
 // The format's own shape, so Python does not carry a second copy of it. quactlize.formats already has block byte
 // counts for the storage arithmetic; these are the SCALE block's, which is a different number, and a test that
 // slices the wrong range would otherwise fail in a way that looks like a decode bug.
@@ -150,6 +186,8 @@ std::vector<int64_t> gguf_scale_block_shape(int64_t qtype) {
 
 static auto gguf_scale_prepass_op =
     torch::RegisterOperators("quactlize::gguf_scale_prepass", &torch_ext::gguf_scale_prepass);
+
+static auto gguf_vecdot_op = torch::RegisterOperators("quactlize::gguf_vecdot", &torch_ext::gguf_vecdot);
 
 static auto gguf_scale_block_shape_op =
     torch::RegisterOperators("quactlize::gguf_scale_block_shape", &torch_ext::gguf_scale_block_shape);
