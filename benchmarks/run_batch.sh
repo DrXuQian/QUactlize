@@ -480,6 +480,22 @@ do_pytest() {
   [ -n "$so" ] && [ -f "$so" ] || { echo "   !!! build.sh reported no 'built:' path, or it does not exist: '$so'"; return 1; }
   echo "   $so"
 
+  # ASSERT THE DEFINE REACHED THE COMPILE, here, instead of discovering it as rc=34 inside a test.
+  # This step passed PPU_DEFS and then trusted it. On ppu001 the library came out WITHOUT packed scale anyway and
+  # the first sign was two oracles failing deep in pytest with "rc=34 means this library is not built with
+  # PPU_PACKED_SCALE=1" -- an accurate message arriving several minutes after the point where it could have been
+  # one line. run_batch's C++ build path has asserted this since it was written; the python one simply did not.
+  local _d
+  for _d in ${PPU_DEFS:-PPU_PACKED_SCALE=1}; do
+    grep -qF "PPU_DEFS verified on quactlize_ppu's compile command: -D$_d" "$blog" && continue
+    echo "   !!! -D$_d did NOT reach quactlize_ppu's compile command."
+    grep -E "PPU_DEFS applied|PPU_EXTRA_DEFS|did NOT reach" "$blog" | sed 's/^/       /' | head -4
+    echo "       Everything below would run against a library missing the feature, and the FULLY_QUANTIZED"
+    echo "       cells would fail with rc=34 for a build reason rather than a numerical one. Refusing."
+    return 1
+  done
+  echo "   defines verified: ${PPU_DEFS:-PPU_PACKED_SCALE=1}"
+
   # 2. preconditions, named individually. A bare "pytest failed to import" sends the reader into the test files
   #    when the answer is that this box has no torch.
   local missing=""
