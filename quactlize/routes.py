@@ -213,6 +213,24 @@ def has_op(name: str) -> bool:
         return False                     # extension not built at all -- absent, not stale
 
 
+def _unpack_fq(artifact, where: str):
+    """(low, high, units), with a message about the CONTRACT instead of a bare unpacking error.
+
+    The tuple grew from (low, units) to (low, high, units) on 2026-08-03 so that `units` could sit at a fixed
+    index while the plane count varies. A producer built before that change returns two tensors, and plain
+    tuple unpacking then says "not enough values to unpack" -- true, and silent about which side is old.
+    """
+    xs = list(artifact)
+    if len(xs) != 3:
+        raise ValueError(
+            f"{where}: the artifact has {len(xs)} tensor(s); the contract is (low, high, units) -- three, with "
+            f"`high` an EMPTY tensor for a single-plane format. Two means the device library or the host "
+            f"extension predates the (low, high, units) change: rebuild both, and check that the producer emits "
+            f"the empty high plane for Q4_K/Q2_K rather than omitting it.\n"
+            f"  shapes seen: {[tuple(x.shape) for x in xs]}")
+    return xs[0], xs[1], xs[2]
+
+
 def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: int):
     """Offline artifact for FULLY_QUANTIZED/DENSE: the code plane plus the PACKED SCALE UNIT.
 
@@ -235,7 +253,7 @@ def matmul_fully_quantized_dense(a: torch.Tensor, artifact, qtype: int):
     always exists and the launch returns rc=34, which surfaces here as an error naming the macro. A silent
     fallback would make a build that cannot run this cell indistinguishable from one that can.
     """
-    low, high, units = artifact
+    low, high, units = _unpack_fq(artifact, "matmul_fully_quantized_dense")
     return _op("gguf_dense_fully_quantized")(a, low, high, units, int(qtype))
 
 
@@ -259,7 +277,7 @@ def matmul_fully_quantized_grouped(a: torch.Tensor, artifact, qtype: int, rows_p
     the C++ op takes (a, low, units, rows, qtype) and the reorder happens here rather than in the kernel. One
     convention per layer -- the alternative is a caller that has to remember which side it is on.
     """
-    low, high, units = artifact
+    low, high, units = _unpack_fq(artifact, "matmul_fully_quantized_grouped")
     return _op("gguf_grouped_fully_quantized")(a, low, high, units, rows_per_expert.to(torch.int32), int(qtype))
 
 
