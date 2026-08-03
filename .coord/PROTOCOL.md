@@ -17,6 +17,12 @@ paid in polling: every "how is codex doing" meant grepping a log and correlating
 
 ## The four rules
 
+0. **STATUS.md carries a WALL-CLOCK timestamp**, not just a heartbeat number. `last-heartbeat: 082` says what
+   codex last did; it does not say whether that was a minute ago or an hour. Three times on 2026-08-03 codex's
+   session simply ENDED and instructions sat unread — and the monitor could not show it, because a monitor
+   reports what someone said, never that they stopped. `inbox-consumed` made unread instructions visible;
+   this makes an absent agent visible. Both failures look identical without it.
+
 1. **codex re-reads INBOX.md at every checkpoint** -- before starting a queue item, and after every commit --
    and stamps the highest item number it has consumed into STATUS.md. That stamp is the whole point: Claude can
    then SEE whether the latest instruction has landed instead of inferring it from behaviour.
