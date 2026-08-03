@@ -196,8 +196,9 @@ std::vector<torch::Tensor> gguf_packed_scale_prepass(torch::Tensor units, int64_
   CHECK_CPU(units); CHECK_CONTIGUOUS(units);
   TORCH_CHECK(units.dtype() == torch::kUInt8 && (units.dim() == 3 || units.dim() == 4),
               "packed units must be dense [unit,n,bytes] or grouped [experts,unit,n,bytes]");
-  TORCH_CHECK(zmul == 0 || zmul == 8, "zmul must be 0 or 8; got ", zmul,
-              " -- it is the consumer's converter shift, not a format property");
+  TORCH_CHECK(zmul == -32 || zmul == -24 || zmul == -4 || zmul == 0 || zmul == 8,
+              "zmul must be one of -32, -24, -4, 0, 8; got ", zmul,
+              " -- it is the consumer's complete converter/offset-binary correction, not a format property");
   return dispatch_ktype(qtype, [&](auto tag) -> std::vector<torch::Tensor> {
     constexpr KType T = decltype(tag)::value;
     using U = gguf_scale::packed_unit::Unit<T>;
@@ -232,9 +233,15 @@ std::vector<torch::Tensor> gguf_packed_scale_prepass(torch::Tensor units, int64_
     std::vector<cutlass::half_t> sv(static_cast<size_t>(plane_elems));
     std::vector<cutlass::half_t> zv(static_cast<size_t>(plane_elems));
     gguf_scale::prepass::UnitPlaneDesc dst{sv.data(), zv.data(), scale_k * n, n, 1};
-    if (zmul == 8) gguf_scale::prepass::prepass_unit_host<T, 8>(
+    if      (zmul == -32) gguf_scale::prepass::prepass_unit_host<T, -32>(
         get_ptr<uint8_t const>(units), dst, int(experts), int(n), int(num_superblocks));
-    else           gguf_scale::prepass::prepass_unit_host<T, 0>(
+    else if (zmul == -24) gguf_scale::prepass::prepass_unit_host<T, -24>(
+        get_ptr<uint8_t const>(units), dst, int(experts), int(n), int(num_superblocks));
+    else if (zmul ==  -4) gguf_scale::prepass::prepass_unit_host<T,  -4>(
+        get_ptr<uint8_t const>(units), dst, int(experts), int(n), int(num_superblocks));
+    else if (zmul ==   8) gguf_scale::prepass::prepass_unit_host<T,   8>(
+        get_ptr<uint8_t const>(units), dst, int(experts), int(n), int(num_superblocks));
+    else                  gguf_scale::prepass::prepass_unit_host<T,   0>(
         get_ptr<uint8_t const>(units), dst, int(experts), int(n), int(num_superblocks));
     auto* sp = get_ptr<at::Half>(scale);
     auto* zp = get_ptr<at::Half>(zero);
@@ -493,6 +500,101 @@ torch::Tensor gguf_gemv_scale_first_moe(torch::Tensor a, torch::Tensor low, torc
                                          torch::Tensor scale, torch::Tensor zero,
                                          torch::Tensor row_offsets, int64_t qtype) {
   return gguf_gemv_scale_first_impl(a, low, high, scale, zero, row_offsets, qtype, true);
+}
+
+namespace {
+
+torch::Tensor gguf_gemv_bc_impl(torch::Tensor a, torch::Tensor low, torch::Tensor high,
+                                torch::Tensor units, torch::Tensor row_offsets,
+                                int64_t qtype, bool grouped) {
+  CHECK_CPU(a); CHECK_CONTIGUOUS(a); CHECK_CPU(low); CHECK_CONTIGUOUS(low);
+  CHECK_CPU(units); CHECK_CONTIGUOUS(units);
+  TORCH_CHECK((a.dtype() == torch::kFloat16 || a.dtype() == torch::kFloat32) && a.dim() == 2,
+              "a must be fp16/fp32 [rows,k]");
+  TORCH_CHECK(low.dtype() == torch::kUInt8 && low.dim() == 3,
+              "low must be the placed uint8 artifact [experts,n,format_packed_k]");
+  TORCH_CHECK(units.dtype() == torch::kUInt8, "units must be the packed uint8 scale artifact");
+  auto const meta = dispatch_ktype(qtype, [](auto tag) -> std::vector<int64_t> {
+    constexpr KType T = decltype(tag)::value;
+    using U = gguf_scale::packed_unit::Unit<T>;
+    constexpr int kLoBits = (T == KType::Q2_K || T == KType::Q3_K) ? 2 : 4;
+    constexpr int kHiBits = (T == KType::Q3_K || T == KType::Q5_K) ? 1
+                          : (T == KType::Q6_K) ? 2 : 0;
+    return {kLoBits, kHiBits, U::kUnitTotal, U::kSbPerUnit};
+  });
+  int const artifact_experts = int(low.size(0));
+  int const n = int(low.size(1));
+  int const k = int(a.size(1));
+  TORCH_CHECK(n > 0 && n % 256 == 0 && k > 0 && k % (256 * meta[3]) == 0,
+              "BC GEMV needs n multiple 256 and k multiple ", 256 * meta[3]);
+  TORCH_CHECK(low.size(2) == int64_t(k) * meta[0] / 8,
+              "low plane byte count disagrees with k/qtype");
+  uint8_t const* hp = nullptr;
+  if (meta[1]) {
+    CHECK_CPU(high); CHECK_CONTIGUOUS(high);
+    TORCH_CHECK(high.dtype() == torch::kUInt8 && high.dim() == 3 &&
+                high.size(0) == artifact_experts && high.size(1) == n &&
+                high.size(2) == int64_t(k) * meta[1] / 8,
+                "high plane shape disagrees with qtype");
+    hp = get_ptr<uint8_t const>(high);
+  } else {
+    TORCH_CHECK(!high.defined() || high.numel() == 0,
+                "single-plane format must have an empty high plane");
+  }
+
+  int experts = 0, max_rows = 1;
+  int const* off = nullptr;
+  int64_t const num_units = (k / 256) / meta[3];
+  if (grouped) {
+    TORCH_CHECK(artifact_experts > 0, "grouped BC artifact must contain experts");
+    TORCH_CHECK(units.dim() == 4 && units.size(0) == artifact_experts &&
+                units.size(1) == num_units && units.size(2) == n && units.size(3) == meta[2],
+                "grouped packed units must be [experts,copyable_unit,n,", meta[2], "]");
+    CHECK_CPU(row_offsets); CHECK_CONTIGUOUS(row_offsets);
+    TORCH_CHECK(row_offsets.dtype() == torch::kInt32 && row_offsets.dim() == 1 &&
+                row_offsets.numel() == artifact_experts + 1,
+                "row_offsets must be int32 [experts+1]");
+    experts = artifact_experts;
+    off = get_ptr<int const>(row_offsets);
+    TORCH_CHECK(off[0] == 0 && off[experts] == a.size(0),
+                "row_offsets must span every activation row");
+    max_rows = 0;
+    for (int e = 0; e < experts; ++e) {
+      TORCH_CHECK(off[e + 1] >= off[e], "row_offsets must be nondecreasing");
+      max_rows = std::max(max_rows, off[e + 1] - off[e]);
+    }
+  } else {
+    TORCH_CHECK(a.size(0) == 1, "dense BC decode is GEMV and requires exactly one activation row");
+    TORCH_CHECK(artifact_experts == 1, "dense BC artifact must have one expert dimension");
+    TORCH_CHECK(units.dim() == 3 && units.size(0) == num_units &&
+                units.size(1) == n && units.size(2) == meta[2],
+                "dense packed units must be [copyable_unit,n,", meta[2], "]");
+  }
+
+  torch::Tensor a16 = a.dtype() == torch::kFloat16 ? a : a.to(torch::kFloat16);
+  torch::Tensor out = torch::empty({a.size(0), n},
+      torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+  if (a.size(0) == 0) return out;
+  auto const* api = ppu_backend::load();
+  TORCH_CHECK(api && api->bc_gemv,
+              "BC GEMV requires libquactlize_ppu.so with the merged-artifact CUDA-core symbol");
+  TORCH_CHECK(api->bc_gemv(reinterpret_cast<uint16_t const*>(get_ptr<at::Half const>(a16)),
+                           get_ptr<uint8_t const>(low), hp, get_ptr<uint8_t const>(units), off,
+                           get_ptr<float>(out), int(a.size(0)), n, k, experts, max_rows, int(qtype)) == 0,
+              "PPU BC GEMV failed");
+  return out;
+}
+
+}  // namespace
+
+torch::Tensor gguf_gemv_bc(torch::Tensor a, torch::Tensor low, torch::Tensor high,
+                           torch::Tensor units, int64_t qtype) {
+  return gguf_gemv_bc_impl(a, low, high, units, torch::Tensor(), qtype, false);
+}
+
+torch::Tensor gguf_gemv_bc_moe(torch::Tensor a, torch::Tensor low, torch::Tensor high,
+                               torch::Tensor units, torch::Tensor row_offsets, int64_t qtype) {
+  return gguf_gemv_bc_impl(a, low, high, units, row_offsets, qtype, true);
 }
 
 torch::Tensor gguf_dense_scale_first(torch::Tensor a, torch::Tensor low, torch::Tensor high,
@@ -1137,7 +1239,8 @@ std::vector<torch::Tensor> gguf_unit_decode(torch::Tensor units, int64_t qtype, 
   CHECK_CPU(units); CHECK_CONTIGUOUS(units);
   TORCH_CHECK(units.dtype() == torch::kUInt8 && (units.dim() == 2 || units.dim() == 3),
               "units must be uint8 [rows,unit] or artifact [unit_sb,N,unit]");
-  TORCH_CHECK(zmul == 0 || zmul == 8, "zmul must be 0 or 8; it is the consumer's converter shift");
+  TORCH_CHECK(zmul == -32 || zmul == -24 || zmul == -4 || zmul == 0 || zmul == 8,
+              "zmul must be one of -32, -24, -4, 0, 8; it is the consumer's complete code correction");
   bool const artifact = units.dim() == 3;
   int64_t const unit_sb = units.size(0);
   int64_t const ncols = artifact ? units.size(1) : 0;
@@ -1165,8 +1268,12 @@ std::vector<torch::Tensor> gguf_unit_decode(torch::Tensor units, int64_t qtype, 
       uint8_t const* u = up + unit_row * U::kUnitTotal;
       int const sb = int(sb_global % U::kSbPerUnit);
       for (int g = 0; g < U::kGroups; ++g) {
-        auto sz = (zmul == 8) ? gguf_scale::packed_unit::unit_group_sb<T, 8>(u, sb, g)
-                              : gguf_scale::packed_unit::unit_group_sb<T, 0>(u, sb, g);
+        gguf_scale::GroupScale sz;
+        if      (zmul == -32) sz = gguf_scale::packed_unit::unit_group_sb<T, -32>(u, sb, g);
+        else if (zmul == -24) sz = gguf_scale::packed_unit::unit_group_sb<T, -24>(u, sb, g);
+        else if (zmul ==  -4) sz = gguf_scale::packed_unit::unit_group_sb<T,  -4>(u, sb, g);
+        else if (zmul ==   8) sz = gguf_scale::packed_unit::unit_group_sb<T,   8>(u, sb, g);
+        else                  sz = gguf_scale::packed_unit::unit_group_sb<T,   0>(u, sb, g);
         std::memcpy(sp + r * U::kGroups + g, &sz.scale, sizeof(sz.scale));
         std::memcpy(zp + r * U::kGroups + g, &sz.zero, sizeof(sz.zero));
       }
@@ -1329,6 +1436,12 @@ static auto gguf_gemv_scale_first_op =
 
 static auto gguf_gemv_scale_first_moe_op =
     torch::RegisterOperators("quactlize::gguf_gemv_scale_first_moe", &torch_ext::gguf_gemv_scale_first_moe);
+
+static auto gguf_gemv_bc_op =
+    torch::RegisterOperators("quactlize::gguf_gemv_bc", &torch_ext::gguf_gemv_bc);
+
+static auto gguf_gemv_bc_moe_op =
+    torch::RegisterOperators("quactlize::gguf_gemv_bc_moe", &torch_ext::gguf_gemv_bc_moe);
 
 static auto gguf_dense_scale_first_op =
     torch::RegisterOperators("quactlize::gguf_dense_scale_first", &torch_ext::gguf_dense_scale_first);

@@ -13,6 +13,7 @@
 #include <cstring>
 #include <vector>
 
+#include "gguf_bc_vecdot.hpp"
 #include "gguf_scale_prepass.hpp"
 #include "gguf_vecdot.hpp"
 #include "gemv_lowbit/gemv_launcher.hpp"
@@ -92,6 +93,37 @@ int native_moe(uint8_t const* blocks, uint16_t const* x, int const* offsets, flo
   launch_native<T, true>(db.as<uint8_t>(), dx.as<VecdotActivation>(), dout.as<float>(), n, bpr,
                          doff.as<int>(), max_rows, experts);
   ppu_gemv::rt_sync("native MoE GEMV");
+  dout.to_host(out);
+  return 0;
+}
+
+// The merged BC resident artifact: xplane-placed low/high codes plus byte-neutral packed scale units. The CUDA-core
+// decode path consumes those exact bytes; unlike SCALE_FIRST it neither materialises nor reads fp16 affine planes.
+// experts==0 is one dense decode row. Grouped mode uses the same gathered-row/offset contract as native_moe.
+template <KType T>
+int bc_gemv(uint16_t const* x, uint8_t const* low, uint8_t const* high, uint8_t const* units,
+            int const* offsets, float* out, int total_rows, int n, int k, int experts, int max_rows) {
+  using U = gguf_scale::packed_unit::Unit<T>;
+  using BT = gguf_scale::bc_vecdot::Traits<T>;
+  int const weight_experts = experts > 0 ? experts : 1;
+  int const bpr = k / 256;
+  int const num_units = bpr / U::kSbPerUnit;
+  size_t const low_bytes = size_t(weight_experts) * n * k * BT::Lo / 8;
+  size_t const high_bytes = size_t(weight_experts) * n * k * BT::Hi / 8;
+  size_t const unit_bytes = size_t(weight_experts) * num_units * n * U::kUnitTotal;
+  DevBuf dx(size_t(total_rows) * k * sizeof(uint16_t)), dl(low_bytes), dh(high_bytes), du(unit_bytes),
+         doff(experts > 0 ? size_t(experts + 1) * sizeof(int) : 0),
+         dout(size_t(total_rows) * n * sizeof(float));
+  dx.from_host(x); dl.from_host(low); if constexpr (BT::Hi != 0) dh.from_host(high); du.from_host(units);
+  if (experts > 0) doff.from_host(offsets);
+  if (experts > 0) {
+    gguf_scale::bc_vecdot::launch<T, true>(dl.as<uint8_t>(), dh.as<uint8_t>(), du.as<uint8_t>(),
+        dx.as<VecdotActivation>(), doff.as<int>(), dout.as<float>(), n, bpr, experts, max_rows);
+  } else {
+    gguf_scale::bc_vecdot::launch<T, false>(dl.as<uint8_t>(), dh.as<uint8_t>(), du.as<uint8_t>(),
+        dx.as<VecdotActivation>(), nullptr, dout.as<float>(), n, bpr, 1, 1);
+  }
+  ppu_gemv::rt_sync(experts > 0 ? "BC MoE GEMV" : "BC dense GEMV");
   dout.to_host(out);
   return 0;
 }
@@ -218,6 +250,19 @@ extern "C" int quactlize_ppu_vecdot_moe(uint8_t const* b, int64_t block_bytes, u
 #undef RUN
 }
 
+extern "C" int quactlize_ppu_bc_gemv(uint16_t const* x, uint8_t const* low, uint8_t const* high,
+                                       uint8_t const* units, int const* offsets, float* out,
+                                       int total_rows, int n, int k, int experts, int max_rows, int qtype) {
+  if (!x || !low || !units || !out || total_rows <= 0 || n <= 0 || n % 256 || k <= 0 || k % 256 ||
+      experts < 0 || (experts > 0 && (!offsets || max_rows <= 0)) || (experts == 0 && total_rows != 1)) return 13;
+#define RUN(T) (gguf_scale::bc_vecdot::Traits<KType::T>::Hi && !high ? 14 : \
+                ((k / 256) % gguf_scale::packed_unit::Unit<KType::T>::kSbPerUnit ? 15 : \
+                 bc_gemv<KType::T>(x,low,high,units,offsets,out,total_rows,n,k,experts,max_rows)))
+  switch (qtype) { case 10: return RUN(Q2_K); case 11: return RUN(Q3_K); case 12: return RUN(Q4_K);
+                   case 13: return RUN(Q5_K); case 14: return RUN(Q6_K); default: return 16; }
+#undef RUN
+}
+
 extern "C" int quactlize_ppu_dequantize(uint8_t const* b, int64_t block_bytes, uint16_t* out,
                                          int count, int qtype) {
 #define RUN(T) (block_bytes == raw_block_bytes<KType::T>() && count > 0 ? dequant<KType::T>(b, out, count) : 12)
@@ -241,9 +286,12 @@ extern "C" int quactlize_ppu_prepass(uint8_t const* b, int64_t block_bytes, uint
 extern "C" int quactlize_ppu_prepass_unit(uint8_t const* units, uint16_t* scale, uint16_t* zero,
                                            int n, int k, int experts, int qtype, int zmul) {
   if (!units || !scale || !zero || n <= 0 || k <= 0 || k % 256 || experts <= 0) return 7;
-  if (zmul != 0 && zmul != 8) return 8;
-#define RUN(T) (zmul == 8 ? prepass_unit<KType::T, 8>(units, scale, zero, n, k, experts) \
-                          : prepass_unit<KType::T, 0>(units, scale, zero, n, k, experts))
+  if (zmul != -32 && zmul != -24 && zmul != -4 && zmul != 0 && zmul != 8) return 8;
+#define RUN(T) (zmul == -32 ? prepass_unit<KType::T, -32>(units,scale,zero,n,k,experts) : \
+                zmul == -24 ? prepass_unit<KType::T, -24>(units,scale,zero,n,k,experts) : \
+                zmul ==  -4 ? prepass_unit<KType::T,  -4>(units,scale,zero,n,k,experts) : \
+                zmul ==   8 ? prepass_unit<KType::T,   8>(units,scale,zero,n,k,experts) : \
+                              prepass_unit<KType::T,   0>(units,scale,zero,n,k,experts))
   switch (qtype) { case 10: return RUN(Q2_K); case 11: return RUN(Q3_K); case 12: return RUN(Q4_K);
                    case 13: return RUN(Q5_K); case 14: return RUN(Q6_K); default: return 9; }
 #undef RUN
