@@ -39,6 +39,10 @@ struct Api {
   // scale blocks + fp16 headers -> the two planes
   int (*prepass)(uint8_t const* blocks, int64_t block_bytes, uint16_t const* d, uint16_t const* dmin,
                  int n, uint16_t* scale, uint16_t* zero, int groups, int qtype, int zmul);
+  // Merged BC packed units [E,K-unit,N,unit-bytes] -> consumer fp16 planes [E,K-group,N]. Optional while an older
+  // device library can still serve the established raw prepass; a BC route must check this pointer and refuse.
+  int (*prepass_unit)(uint8_t const* units, uint16_t* scale, uint16_t* zero,
+                      int n, int k, int experts, int qtype, int zmul);
   // Resident SCALE_FIRST artifact -> fp16 GEMV result. experts==0 is dense; otherwise offsets is [E+1].
   int (*gemv_lowbit)(uint16_t const* act, uint8_t const* low, uint8_t const* high,
                      uint16_t const* scale, uint16_t const* zero, uint16_t* out,

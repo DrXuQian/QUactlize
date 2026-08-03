@@ -102,6 +102,42 @@ struct BlockDesc {
   int64_t hdr_stride_n,   hdr_stride_sb;
 };
 
+// The merged BC artifact's scale source and destination. Units are stored K-major exactly as the packed GEMM copies
+// them: [expert, copyable-unit, column, kUnitTotal]. The destination is the existing consumer-ready plane convention
+// [expert, superblock*group, column]. Keeping every stride explicit matters for Q3/Q6: one 28/36-byte COPYABLE unit
+// contains two independently headed superblocks, and treating kUnitTotal as one scale block would decode only half.
+struct UnitPlaneDesc {
+  half_t* scale;
+  half_t* zero;
+  int64_t stride_e;
+  int64_t stride_k;
+  int64_t stride_n;
+};
+
+template <KType T, int ZMul>
+void prepass_unit_host(uint8_t const* units, UnitPlaneDesc const& dst,
+                       int num_experts, int num_cols, int num_superblocks) {
+  using U = packed_unit::Unit<T>;
+  int const num_units = num_superblocks / U::kSbPerUnit;
+  for (int e = 0; e < num_experts; ++e) {
+    for (int sb = 0; sb < num_superblocks; ++sb) {
+      int const unit = sb / U::kSbPerUnit;
+      int const sb_in_unit = sb % U::kSbPerUnit;
+      for (int n = 0; n < num_cols; ++n) {
+        uint8_t const* src = units + ((int64_t(e) * num_units + unit) * num_cols + n) * U::kUnitTotal;
+        for (int g = 0; g < U::kGroups; ++g) {
+          GroupScale const sz = packed_unit::unit_group_sb<T, ZMul>(src, sb_in_unit, g);
+          int64_t const o = int64_t(e) * dst.stride_e
+                          + (int64_t(sb) * U::kGroups + g) * dst.stride_k
+                          + int64_t(n) * dst.stride_n;
+          dst.scale[o] = sz.scale;
+          if (dst.zero) dst.zero[o] = sz.zero;
+        }
+      }
+    }
+  }
+}
+
 // THE SAME PRE-PASS, READING THE PACKED UNIT INSTEAD OF THE GGUF BLOCK. This is what makes ONE offline artifact
 // serve every route: the packed collective reads the unit in the kernel, this expands it to fp16 planes for the
 // collectives that want planes, and the GEMV reads it per group. Without it the reordered checkpoint would need the
@@ -263,6 +299,54 @@ __global__ void prepass_kernel(BlockDesc src, PlaneDesc dst, int num_cols, int n
       cute::copy(tiled_copy, zero_fragment, thr_zero);
     }
   }
+}
+
+// FOUR GROUPS x EIGHT COLUMNS per warp for one logical superblock. This is the transpose of the raw prepass's
+// ownership because the two sources have different resident orders: packed units are [unit,N,bytes], and the fp16
+// destination is [K-group,N]. Lanes therefore stay contiguous along N on both sides. Each pass advances four groups;
+// Q4/Q5 take two passes and Q2/Q3/Q6 four. The source record is selected through (unit,sb_in_unit), so the device path
+// witnesses the same paired-superblock axis as prepass_unit_host rather than relying on an outer caller to offset it.
+template <KType T, int ZMul>
+__global__ void prepass_unit_kernel(uint8_t const* units, UnitPlaneDesc dst,
+                                    int num_experts, int num_cols, int num_superblocks) {
+  using U = packed_unit::Unit<T>;
+  static_assert(U::kGroups == 8 || U::kGroups == 16, "packed unit warp mapping expects 8 or 16 groups");
+  static_assert(U::kUnitTotal == U::kSbPerUnit * U::kSbBytes,
+                "the kernel must address a complete copyable/paired unit");
+  int const warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+  int const lane = threadIdx.x & 31;
+  int const col_tiles = (num_cols + 7) / 8;
+  int const warps_per_expert = num_superblocks * col_tiles;
+  int const e = warp / warps_per_expert;
+  if (e >= num_experts) return;
+  int const in_expert = warp - e * warps_per_expert;
+  int const sb = in_expert / col_tiles;
+  int const n = (in_expert - sb * col_tiles) * 8 + lane / 4;
+  if (n >= num_cols) return;
+  int const g0 = lane & 3;
+  int const unit = sb / U::kSbPerUnit;
+  int const sb_in_unit = sb % U::kSbPerUnit;
+  int const num_units = num_superblocks / U::kSbPerUnit;
+  uint8_t const* src = units + ((int64_t(e) * num_units + unit) * num_cols + n) * U::kUnitTotal;
+
+  CUTLASS_PRAGMA_UNROLL
+  for (int pass = 0; pass < U::kGroups / 4; ++pass) {
+    int const g = g0 + 4 * pass;
+    GroupScale const sz = packed_unit::unit_group_sb<T, ZMul>(src, sb_in_unit, g);
+    int64_t const o = int64_t(e) * dst.stride_e
+                    + (int64_t(sb) * U::kGroups + g) * dst.stride_k
+                    + int64_t(n) * dst.stride_n;
+    dst.scale[o] = sz.scale;
+    if (dst.zero) dst.zero[o] = sz.zero;
+  }
+}
+
+template <KType T>
+CUTLASS_HOST_DEVICE constexpr int prepass_unit_grid_size(
+    int num_experts, int num_cols, int num_superblocks, int threads_per_cta) {
+  int64_t const warps = int64_t(num_experts) * num_superblocks * ((num_cols + 7) / 8);
+  int64_t const threads = warps * 32;
+  return int((threads + threads_per_cta - 1) / threads_per_cta);
 }
 #endif
 

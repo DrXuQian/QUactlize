@@ -187,7 +187,10 @@ CUTLASS_HOST_DEVICE GroupScale unit_group(uint8_t const* unit, int g) {
     out.scale = make_group_scale_only<T>(sc, d);
     out.zero = half_t(0.f);
   }
-  if constexpr (ZMul != 0) out.zero = out.zero + half_t(float(ZMul)) * out.scale;
+  // A PERSISTENT WORKSPACE MUST BE BIT-IDENTICAL on host and device. Native fp16 arithmetic rounds the product
+  // before the add on CUDA, while the host operators promote through float; that made the packed-unit prepass differ
+  // by one fp16 ulp from its portable definition. Match group_scale_zero's single float expression explicitly.
+  if constexpr (ZMul != 0) out.zero = half_t(float(out.zero) + float(ZMul) * float(out.scale));
   return out;
 }
 

@@ -188,6 +188,64 @@ std::vector<torch::Tensor> gguf_scale_prepass(torch::Tensor scale_blocks, torch:
   });
 }
 
+// MERGED BC -> C WORKSPACE. The input is exactly the packed-scale channel returned beside the placed code planes by
+// prepare_fully_quantized_{dense,grouped}: dense [unit,N,bytes], grouped [E,unit,N,bytes]. No raw GGUF block, detached
+// header, or duplicate scale block is accepted. The output is the established SCALE_FIRST plane order
+// [E,K/group_size,N], so every existing fp16-scale consumer can use it without another transpose.
+std::vector<torch::Tensor> gguf_packed_scale_prepass(torch::Tensor units, int64_t qtype, int64_t zmul) {
+  CHECK_CPU(units); CHECK_CONTIGUOUS(units);
+  TORCH_CHECK(units.dtype() == torch::kUInt8 && (units.dim() == 3 || units.dim() == 4),
+              "packed units must be dense [unit,n,bytes] or grouped [experts,unit,n,bytes]");
+  TORCH_CHECK(zmul == 0 || zmul == 8, "zmul must be 0 or 8; got ", zmul,
+              " -- it is the consumer's converter shift, not a format property");
+  return dispatch_ktype(qtype, [&](auto tag) -> std::vector<torch::Tensor> {
+    constexpr KType T = decltype(tag)::value;
+    using U = gguf_scale::packed_unit::Unit<T>;
+    int64_t const experts = units.dim() == 4 ? units.size(0) : 1;
+    int64_t const unit_axis = units.dim() == 4 ? 1 : 0;
+    int64_t const n_axis = units.dim() == 4 ? 2 : 1;
+    int64_t const byte_axis = units.dim() == 4 ? 3 : 2;
+    int64_t const num_units = units.size(unit_axis), n = units.size(n_axis);
+    TORCH_CHECK(experts > 0 && num_units > 0 && n > 0, "packed unit axes must be nonempty");
+    TORCH_CHECK(units.size(byte_axis) == U::kUnitTotal, "this format's copyable unit is ", U::kUnitTotal,
+                " bytes (", U::kSbPerUnit, " superblock(s)); got ", units.size(byte_axis));
+    int64_t const num_superblocks = num_units * U::kSbPerUnit;
+    int64_t const k = num_superblocks * 256;
+    int64_t const scale_k = num_superblocks * U::kGroups;
+    auto opts = torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCPU);
+    torch::Tensor scale = torch::empty({experts, scale_k, n}, opts);
+    torch::Tensor zero = torch::empty_like(scale);
+
+    auto const* api = ppu_backend::load();
+    if (api && api->prepass_unit) {
+      TORCH_CHECK(api->prepass_unit(get_ptr<uint8_t const>(units),
+                                    reinterpret_cast<uint16_t*>(get_ptr<at::Half>(scale)),
+                                    reinterpret_cast<uint16_t*>(get_ptr<at::Half>(zero)),
+                                    int(n), int(k), int(experts), int(qtype), int(zmul)) == 0,
+                  "PPU packed-unit scale prepass failed");
+      return {scale, zero};
+    }
+
+    // Portable host definition. Keep cutlass::half_t in its own storage and copy bits into at::Half at the boundary;
+    // the representations agree, but aliasing one C++ type as the other is still undefined under this file's -O2.
+    int64_t const plane_elems = experts * scale_k * n;
+    std::vector<cutlass::half_t> sv(static_cast<size_t>(plane_elems));
+    std::vector<cutlass::half_t> zv(static_cast<size_t>(plane_elems));
+    gguf_scale::prepass::UnitPlaneDesc dst{sv.data(), zv.data(), scale_k * n, n, 1};
+    if (zmul == 8) gguf_scale::prepass::prepass_unit_host<T, 8>(
+        get_ptr<uint8_t const>(units), dst, int(experts), int(n), int(num_superblocks));
+    else           gguf_scale::prepass::prepass_unit_host<T, 0>(
+        get_ptr<uint8_t const>(units), dst, int(experts), int(n), int(num_superblocks));
+    auto* sp = get_ptr<at::Half>(scale);
+    auto* zp = get_ptr<at::Half>(zero);
+    for (int64_t i = 0; i < plane_elems; ++i) {
+      std::memcpy(sp + i, &sv[size_t(i)], sizeof(cutlass::half_t));
+      std::memcpy(zp + i, &zv[size_t(i)], sizeof(cutlass::half_t));
+    }
+    return {scale, zero};
+  });
+}
+
 // PURE CUDA-CORE DECODE, one dot product per RAW GGUF block. Exposed for the same reason the pre-pass is: the only
 // oracle worth having is the official gguf package, and reaching it means reaching Python.
 //
@@ -1222,6 +1280,8 @@ std::vector<int64_t> gguf_scale_block_shape(int64_t qtype) {
 
 static auto gguf_scale_prepass_op =
     torch::RegisterOperators("quactlize::gguf_scale_prepass", &torch_ext::gguf_scale_prepass);
+static auto gguf_packed_scale_prepass_op = torch::RegisterOperators(
+    "quactlize::gguf_packed_scale_prepass", &torch_ext::gguf_packed_scale_prepass);
 
 static auto gguf_backend_op = torch::RegisterOperators("quactlize::gguf_backend", &torch_ext::gguf_backend);
 

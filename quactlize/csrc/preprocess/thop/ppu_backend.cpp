@@ -48,6 +48,10 @@ State& state() {
     if (!sym("quactlize_ppu_vecdot_moe", reinterpret_cast<void**>(&s.api.vecdot_moe))) return;
     if (!sym("quactlize_ppu_dequantize", reinterpret_cast<void**>(&s.api.dequantize))) return;
     if (!sym("quactlize_ppu_prepass", reinterpret_cast<void**>(&s.api.prepass))) return;
+    dlerror();
+    s.api.prepass_unit = reinterpret_cast<decltype(s.api.prepass_unit)>(
+        dlsym(h, "quactlize_ppu_prepass_unit"));
+    dlerror();
     if (!sym("quactlize_ppu_gemv_lowbit", reinterpret_cast<void**>(&s.api.gemv_lowbit))) return;
     // Dense tensor-core symbols are hgcc-only. Do not make their absence invalidate a plain-nvcc CUDA-core GEMV
     // library; the dense op checks these pointers explicitly and refuses instead of falling back.

@@ -131,6 +131,28 @@ int prepass(uint8_t const* blocks, uint16_t const* d, uint16_t const* dmin,
   return 0;
 }
 
+template <KType T, int ZMul>
+int prepass_unit(uint8_t const* units, uint16_t* scale, uint16_t* zero,
+                 int n, int k, int experts) {
+  using U = gguf_scale::packed_unit::Unit<T>;
+  int const num_superblocks = k / 256;
+  if (num_superblocks % U::kSbPerUnit) return 6;
+  int const num_units = num_superblocks / U::kSbPerUnit;
+  int64_t const plane_elems = int64_t(experts) * num_superblocks * U::kGroups * n;
+  size_t const unit_bytes = size_t(experts) * num_units * n * U::kUnitTotal;
+  DevBuf du(unit_bytes), ds(size_t(plane_elems) * 2), dz(size_t(plane_elems) * 2);
+  du.from_host(units);
+  int64_t const expert_stride = int64_t(num_superblocks) * U::kGroups * n;
+  gguf_scale::prepass::UnitPlaneDesc dst{
+      ds.as<cutlass::half_t>(), dz.as<cutlass::half_t>(), expert_stride, n, 1};
+  int const grid = gguf_scale::prepass::prepass_unit_grid_size<T>(experts, n, num_superblocks, 256);
+  gguf_scale::prepass::prepass_unit_kernel<T, ZMul><<<grid, 256>>>(
+      du.as<uint8_t>(), dst, experts, n, num_superblocks);
+  ppu_gemv::rt_sync("packed-unit scale prepass");
+  ds.to_host(scale); dz.to_host(zero);
+  return 0;
+}
+
 template <ppu_gemv::WFormat F, int StepK, int Threads>
 int lowbit(uint16_t const* act, uint8_t const* low, uint8_t const* high,
            uint16_t const* scale, uint16_t const* zero, uint16_t* out,
@@ -213,6 +235,17 @@ extern "C" int quactlize_ppu_prepass(uint8_t const* b, int64_t block_bytes, uint
   if (zmul != 0 && zmul != 8) return 4;
   switch (qtype) { case 10: return RUN(Q2_K); case 11: return RUN(Q3_K); case 12: return RUN(Q4_K);
                    case 13: return RUN(Q5_K); case 14: return RUN(Q6_K); default: return 5; }
+#undef RUN
+}
+
+extern "C" int quactlize_ppu_prepass_unit(uint8_t const* units, uint16_t* scale, uint16_t* zero,
+                                           int n, int k, int experts, int qtype, int zmul) {
+  if (!units || !scale || !zero || n <= 0 || k <= 0 || k % 256 || experts <= 0) return 7;
+  if (zmul != 0 && zmul != 8) return 8;
+#define RUN(T) (zmul == 8 ? prepass_unit<KType::T, 8>(units, scale, zero, n, k, experts) \
+                          : prepass_unit<KType::T, 0>(units, scale, zero, n, k, experts))
+  switch (qtype) { case 10: return RUN(Q2_K); case 11: return RUN(Q3_K); case 12: return RUN(Q4_K);
+                   case 13: return RUN(Q5_K); case 14: return RUN(Q6_K); default: return 9; }
 #undef RUN
 }
 
