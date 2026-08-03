@@ -13,7 +13,7 @@ the whole basis for choosing between them.
 |---|---|---|---|
 | **fallback** | `DEQUANT_FIRST` | the whole weight as fp16, then cuBLAS / DeepGemm | write 8.39 + read 8.39 MB, and the GEMM then reads 8.39 instead of 2.36 |
 | **pre-pass** | `SCALE_FIRST` | the fp16 scale/zero planes, in a workspace | write 0.52 + read 0.52 MB |
-| **packed** | `FULLY_QUANTIZED` | nothing; the collective decodes the scale in-kernel | none, plus a measured +11.6% tax |
+| **packed** | `FULLY_QUANTIZED` | nothing; the collective decodes the scale in-kernel | none, plus an UNDETERMINED tax (see §3) |
 | **GEMV** | `FULLY_QUANTIZED` | nothing; the scale pair is consumed in registers | none |
 
 The fallback's extra traffic is **16×** the pre-pass's and its GEMM reads **3.6×** more bytes, so the crossover is in
@@ -65,11 +65,31 @@ non-zero scale. The discriminator is the relative comparison that precedes it.
 
 ## 3. Kernels
 
-| kernel | state | measured (RTX 5090) |
-|---|---|---|
-| `dequantize_kernel_warp` | landed | 779.4 → **58.4 µs**, 13.4×, 1.473 TB/s = **82.2% of peak**, bit-identical |
-| `prepass_kernel` (cooperative) | landed | speedup grows with size — 1.32× / 1.91× / 2.95× — the fixed-duration floor made visible |
-| `vecdot_rows_kernel` | landed | correctness only; not tuned |
+**Correctness is at 5/5 on every check; SPEED IS AT ONE KERNEL.** That asymmetry is the honest summary of this
+section, and it is easy to miss because the coverage table above is full.
+
+| kernel | hw | state | measured |
+|---|---|---|---|
+| `dequantize_kernel_warp` | 5090 | tuned | 779.4 → **58.4 µs**, 13.4×, 1.473 TB/s = **82.2% of peak**, bit-identical |
+| `dequantize_kernel_warp_logical` | 5090 | kept slow on purpose | 196.6 vs 65.5 µs on a nontrivial reorder — the general path for layouts `right_inverse` cannot take |
+| `prepass_kernel` (cooperative) | 5090 | tuned | speedup grows with size — 1.32× / 1.91× / 2.95× — the fixed-duration floor made visible |
+| `vecdot_rows_kernel` | — | **never timed** | one thread per output row; see below |
+| packed collective | PPU | **tax undetermined** | see below |
+| `gemv_lowbit` | PPU | tuned earlier | 22.27 µs, and **ALU-bound, not bandwidth-bound** |
+
+**The packed path's tax is not a number yet.** `CHECKPOINT.md` records the same pinned configuration measuring
+`base` at 23.67 µs in one run and 20.11 µs in another — **17% apart, wider than `pack − base` itself**, which lands
+at +2.4% against one baseline and +12.9% against the other. Cross-run comparison is therefore void and any single
+figure quoted for it (this document said +11.6%) is a selection, not a measurement. The one term in that document
+that does survive is `base − bdqnop = −11.1%`: the int4→fp16 dequant pipeline, 43% of dynamic instructions and 11%
+of time, which is the ceiling for every dequant-side idea.
+
+**`vecdot_rows_kernel` has one output row per thread**, so 32 lanes read addresses `blocks_per_row × block_bytes`
+apart — 1152 B for Q4_K. That is the same sector pathology fixed on the STORE side below, now on the load side.
+It has never been timed, so the size of the loss is a prior, not a result.
+
+**Every number above is a 5090 number, and not one GGUF kernel has run on PPU.** The ordering does not transfer:
+at gs=32 the 5090's ranking of GEMV configurations inverted against PPU's. Treat these as directional only.
 
 **The loss both removed was the store pattern.** One thread per block puts a warp's lane addresses 512 bytes apart,
 so one store instruction touches 32 separate 32-byte sectors for 64 useful bytes: **6.25% sector utilisation, exactly

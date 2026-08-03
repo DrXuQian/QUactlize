@@ -205,7 +205,7 @@ def lint_unroll():
                     prev = is_d
     if hits:
         return "FAIL", "two unroll directives on one loop (hgcc rejects this, nvcc does not): " + ", ".join(hits[:4]), 0.0
-    return "ok", "no duplicate unroll directives", 0.0
+    return "PASS", "no duplicate unroll directives", 0.0
 
 
 def gate(name, args):
