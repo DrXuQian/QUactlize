@@ -498,13 +498,40 @@ do_pytest() {
   #     way, with the device .so sitting built at the path step 1 had just printed.
   #     Built in place rather than installed: --inplace writes into this checkout and touches no site-packages,
   #     which is the same blast radius build.sh already has. QUACTLIZE_NO_HOST_BUILD=1 turns it into a check.
-  if ! PYTHONPATH="$ROOT" python3 -c 'import quactlize; quactlize._ops()' >/dev/null 2>&1; then
+  # PRESENT IS NOT THE SAME AS CURRENT, and the box proved it. This step checked only that _ops() imports, so
+  # after a pull that changed gguf_prepass_ops.cpp / ppu_backend.cpp / ppu_backend.h the run went green through a
+  # STALE .so -- the whole suite reported on code nobody was running, and the only thing that noticed was
+  # test_layouts.py's own guard, one ERROR at the end, after everything else had already been measured against
+  # last build's binary. That is the same failure shape run_batch already refuses for the C++ binaries
+  # ("the compiled sources have changed since these binaries were built"); the python extension just lacked it.
+  # The rule is copied from tests/test_layouts.py:373 rather than re-derived: any .cpp/.h/.hpp under csrc newer
+  # than the .so means rebuild. setuptools does not track headers, which is why the header extensions are in it.
+  # The verdict goes to STDOUT so it can be captured; the NAMES go with it, because "stale" without saying
+  # which file is stale sends the reader to the wrong place. Nothing is discarded -- an earlier draft sent the
+  # diagnostic to stderr and then captured with 2>/dev/null, which would have hidden the one useful line.
+  local ext_verdict
+  ext_verdict=$(PYTHONPATH="$ROOT" python3 - "$ROOT" <<'PYEOF'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+so = sorted((root / "quactlize").glob("_C*.so"))
+if not so:
+    print("ABSENT"); raise SystemExit
+built = so[0].stat().st_mtime
+newer = sorted(p.name for p in (root / "quactlize" / "csrc").rglob("*")
+               if p.suffix in (".cpp", ".h", ".hpp") and p.stat().st_mtime > built)
+print("STALE " + ", ".join(newer[:4]) if newer else "CURRENT")
+PYEOF
+) || ext_verdict="ABSENT"
+  case "$ext_verdict" in
+    STALE*) echo "   ${ext_verdict#STALE } is newer than the built extension" ;;
+  esac
+  if [ "$ext_verdict" != CURRENT ] || ! PYTHONPATH="$ROOT" python3 -c 'import quactlize; quactlize._ops()' >/dev/null 2>&1; then
     if [ -n "${QUACTLIZE_NO_HOST_BUILD:-}" ]; then
-      echo "   !!! quactlize's host operator extension is not built, and QUACTLIZE_NO_HOST_BUILD is set."
+      echo "   !!! quactlize's host operator extension is absent or STALE, and QUACTLIZE_NO_HOST_BUILD is set."
       echo "       Build it with:  cd $ROOT && python3 setup.py build_ext --inplace"
       return 1
     fi
-    echo "-- host operator extension absent; building it in place (needs no PPU)"
+    echo "-- host operator extension absent or older than csrc; rebuilding it in place (needs no PPU)"
     local hlog="$OUT/quactlize_host_ext.log"
     ( cd "$ROOT" && python3 setup.py build_ext --inplace ) >"$hlog" 2>&1 \
       || { echo "   !!! host extension build failed:"; tail -20 "$hlog" | sed 's/^/       /'; return 1; }
