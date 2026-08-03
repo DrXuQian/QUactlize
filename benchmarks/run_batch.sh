@@ -659,8 +659,12 @@ do_pytest() {
   # ggml type : label : extra defines.  The default build (no PPU_PACKED_FORMAT) is Q4_K.
   #   Q2_K single-plane, 20 B unit staged as five 4 B copies      PPU_PACKED_FORMAT=2
   #   Q5_K TWO-plane weight, scu16x1 -- the SAME scale unit as Q4  PPU_PACKED_FORMAT=1
-  # Q3_K and Q6_K are not here yet: two-plane AND a paired 28/36 B unit.
-  for _fmt in "12:Q4_K:" "10:Q2_K:PPU_PACKED_FORMAT=2" "13:Q5_K:PPU_PACKED_FORMAT=1"; do
+  #   Q3_K two-plane, PAIRED 28 B unit spanning two superblocks     PPU_PACKED_FORMAT=3
+  #   Q6_K two-plane, PAIRED 36 B unit, weight kept at TK128        PPU_PACKED_FORMAT=4
+  # FIVE BUILDS IS THE COST OF FORMAT-SPECIFIC BINARIES, not an oversight. There is no library that runs more
+  # than one of these, so a run that built once would report one fifth of the matrix as though it were all of it.
+  for _fmt in "12:Q4_K:" "10:Q2_K:PPU_PACKED_FORMAT=2" "13:Q5_K:PPU_PACKED_FORMAT=1" \
+              "11:Q3_K:PPU_PACKED_FORMAT=3" "14:Q6_K:PPU_PACKED_FORMAT=4"; do
     IFS=: read -r _fmtname _label _fmtdefs <<<"$_fmt"
     _fqlog="$OUT/fully_quantized_$_label.log"
     if [ -z "$_fmtdefs" ]; then

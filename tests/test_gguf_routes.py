@@ -366,10 +366,15 @@ def ppu_backend_dense():
 # whole of wiring this oracle up -- deliberately, so the moment the signature is posted this is a one-line edit
 # rather than an hour of test writing under a deadline.
 # THE SINGLE-PLANE FORMATS. Q3/Q5/Q6 are two-plane and their packed-scale path does not exist yet -- the Builder
-# routes tuple<B,S,Z,B2> to ppu_mma_aiu_mixed_input_2plane.hpp. Q5_K joined once that collective gained the shared
-# packed-scale channel -- a reachability lift, not a format-specific scale design: Q5's unit is scu16x1, the SAME
-# sixteen bytes as Q4_K. Q3/Q6 follow; they need the multi-copy unit staging (28 and 36 bytes) that Q2 already has.
-FQ_IMPLEMENTED = [f for f in FORMATS if f[0] in ("Q4_K", "Q2_K", "Q5_K")]
+# ALL FIVE, and the order they arrived in says what the two axes actually were. Q4_K single-plane scu16x1;
+# Q2_K single-plane with a 20 B unit staged as five 4 B copies; Q5_K two-plane weight with Q4's SAME scale unit,
+# which is why it was a reachability lift rather than a new scale design; Q3_K and Q6_K two-plane AND paired --
+# their units span two superblocks (scu28x2, scu36x2), so the units tensor is indexed by K/512, not K/256.
+#
+# Q6 keeps its box-validated TK128 weight placement and lets scu36x2 span four tiles, rather than moving the
+# weight to TK256 to suit the scale. That direction is not arbitrary: TK256 is the tactic whose high-plane map
+# produced conditioned error 8.76e-1 earlier today. The scale channel adapts to the weight, not the reverse.
+FQ_IMPLEMENTED = list(FORMATS)          # all five, once Q3/Q6 landed
 
 
 FQ_DENSE_PRODUCER = "prepare_fully_quantized_dense"   # host-side, the analogue of prepare_scale_first_dense
