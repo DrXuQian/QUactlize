@@ -369,6 +369,72 @@ FQ_DENSE_PRODUCER = "prepare_fully_quantized_dense"   # host-side, the analogue 
 FQ_DENSE_ROUTE    = "matmul_fully_quantized_dense"    # the launch
 
 
+FQ_GROUPED_ROUTE = "matmul_fully_quantized_grouped"   # the grouped launch; producer is FQ_DENSE_PRODUCER's analogue
+FQ_GROUPED_PRODUCER = "prepare_fully_quantized_grouped"
+
+
+@pytest.mark.fully_quantized_dense
+@pytest.mark.parametrize("name,gt,hdr,qtype", FORMATS)
+def test_fully_quantized_grouped_matches_dequant_first_and_rejects_fault(name, gt, hdr, qtype, ppu_backend_dense):
+    """FULLY_QUANTIZED/GROUPED -- the MoE GEMM -- against the same independent arm as the dense cell.
+
+    WHY THIS EXISTS EVEN THOUGH THE CELL ALREADY READS VALIDATED for Q4_K. Its note says what its evidence
+    actually is: "ONLY test_q4k_packed_gemm's rowC exercises the packed decoder -- rowA and rowB are fp16-path
+    controls". One row of one C++ test, at one group size, behind PPU_PACKED_SCALE=1. That was enough to believe
+    the decoder works and it is not enough to believe the CELL works: it says nothing about the assembly -- whether
+    n*(k/256) blocks reshape into the weight the GEMM wants, whether a per-expert slice lands on the right expert,
+    whether a ragged row count is handled. Those are ordering mistakes and each produces a plausible number.
+
+    RAGGED ROWS WITH AN EMPTY EXPERT are in the fixture on purpose. An expert with zero rows is the case that a
+    cumulative-offset bug reads straight past, and it cannot be reached by any uniform shape.
+
+    The planted fault reuses expert 0's slice for every expert -- the specific mistake this fixture is built to
+    catch, and the one a shape check cannot see.
+    """
+    prepare = getattr(routes, FQ_GROUPED_PRODUCER, None)
+    launch = getattr(routes, FQ_GROUPED_ROUTE, None)
+    if prepare is None or launch is None:
+        pytest.skip(f"routes.{FQ_GROUPED_PRODUCER}/{FQ_GROUPED_ROUTE} do not exist yet. The grouped packed GEMM "
+                    f"is reachable ONLY from C++ today (test_q4k_packed_gemm), so this cell cannot be checked "
+                    f"from the route level at all -- see .coord/INBOX.md item 013.")
+
+    experts, n, k = 4, 256, 512
+    rows = np.array([2, 0, 3, 1], dtype=np.int32)      # an EMPTY expert, and no two alike
+    rng = np.random.default_rng(29000 + qtype)
+    raw = _raw_blocks(gt, hdr, experts * n * (k // 256), rng)
+    blocks = torch.from_numpy(raw)
+    artifact = prepare(blocks, n, k, qtype, experts)
+    official = gguf.quants.dequantize(raw.reshape(-1), gt).reshape(experts, n, k).astype(np.float64)
+    bound, observed = 5e-3, []
+
+    m = int(rows.sum())
+    a = (rng.standard_normal((m, k)) * .2).astype(np.float16)
+    at, rt = torch.from_numpy(a), torch.from_numpy(rows)
+    independent = routes.matmul_dequant_first_grouped(
+        at, blocks, n, k, qtype, experts, rt).numpy().astype(np.float64)
+    # per-row denominator against that row's own expert, so an empty expert contributes nothing rather than a zero
+    per_row = np.repeat(np.arange(experts), rows)
+    denom = np.stack([np.abs(a.astype(np.float64)[i][None, :] * official[per_row[i]]).sum(1) for i in range(m)])
+    conditioned = lambda out: float(np.max(np.abs(out.astype(np.float64) - independent) /
+                                           np.maximum(denom, np.finfo(np.float64).tiny)))
+
+    fault = [x.clone() for x in artifact] if isinstance(artifact, (tuple, list)) else [artifact.clone()]
+    for x in fault:                                     # every expert reads expert 0 -- the ordering mistake itself
+        if x.ndim >= 3 and x.shape[0] == experts:
+            for e in range(1, experts):
+                x[e].copy_(x[0])
+    planted_in = tuple(fault) if isinstance(artifact, (tuple, list)) else fault[0]
+    planted_err = conditioned(launch(at, planted_in, qtype, rt).numpy())
+    assert planted_err > bound, (
+        f"{name}: the grouped oracle MISSED every expert reading expert 0 ({planted_err:.3e}). "
+        f"Until this fails, a pass below is not evidence about per-expert addressing.")
+
+    err = conditioned(launch(at, artifact, qtype, rt).numpy())
+    assert err < bound, f"{name}: packed grouped disagrees with dequant-first ({err:.3e})"
+    observed.append(f"rows={list(rows)} err={err:.3e} planted={planted_err:.3e}")
+    print(f"{name} packed grouped vs dequant-first: " + "; ".join(observed))
+
+
 @pytest.mark.fully_quantized_dense
 @pytest.mark.parametrize("name,gt,hdr,qtype", FORMATS)
 def test_fully_quantized_dense_matches_dequant_first_and_rejects_fault(name, gt, hdr, qtype, ppu_backend_dense):
