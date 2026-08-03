@@ -523,6 +523,14 @@ EOR
                         Fusing makes it one 32-bit store per (n, group). Read it against PACK, not base.
                         Shared bytes do NOT change (4 KiB + 4 KiB is 8 KiB either way), so expect no
                         occupancy movement; if the time moves it is bank service and instruction count.
+                        MEASURED AND ANSWERED, 2026-08-03 -- see CHECKPOINT.md 4a. It fused (tsm.st -26.83%,
+                        tsm.ld -48.8%, total shared conflicts -48.30%) and the time moved +0.46%, because
+                        Compute is at 38.99% and Memory at 29.87% of their roofs, so the shared work removed
+                        was issuing in something else's shadow. It also PAYS ALU to save shared (v.shrl.i
+                        +63.61%, v.or.i +89.16%, v.cnvt +720%) on the pipe that IS limiting. Does not ship.
+                        READ BOTH `Shared Store` AND `Shared Store From Global Load`. A counter on the second
+                        went 0 -> 36,864, exactly the store reduction: the fuse RELOCATED one conflict per
+                        publication onto the global->shared path. Reading only the first shows a clean win.
    swz       - base       DELETED FROM THE PLAN. acu: it removed ZERO conflicts (278,528, +0.00%) while
                         Inst Executed Pipe SALU rose ~97% of peak. Kept only as the record of that.
    base      - bdqnop     what the BASELINE int4->fp16 dequant costs. Upper bound: the ablation also drops most of

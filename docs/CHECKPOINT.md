@@ -120,9 +120,15 @@ And the fuse is not free. It trades shared traffic for ALU on the path that *is*
 `swz`, `packfuse` and `packsplit` together — all three optimise a path at 30% of its roof. The 11.1% dequant
 pipeline remains the only measured term that is actually on the critical path.
 
-One loose end, which does not change the above: a bank-conflict counter went from 0 to **36,864 (+inf%)** — a new
-conflict class, and 36,864 is exactly the predicted store-instruction reduction. 32 lanes × 4 B is 128 B across 32
-banks and should be conflict-free unless the stride is not 1. Worth naming the counter; not worth acting on.
+**The fuse RELOCATED part of the conflicts rather than removing them.** The counter that went from 0 to **36,864
+(+inf%)** is `Shared Store From Global Load` — the global→shared path, not the publication path the fuse targets.
+36,864 is exactly the predicted store-instruction reduction, i.e. one new conflict on that path per fused
+publication. The net is still −48.30% and the time still did not move, so nothing above changes; but "fused stores
+are conflict-free" is not what happened.
+
+⚠ **The acu recipe that produced this run said to read `Shared Store` and NOT `Shared Store From Global Load`.**
+Following it shows a clean win and hides the relocation completely. Read both rows; the guidance in
+`benchmarks/run_batch.sh` says so now.
 
 ## 5. Every switch, and what it is for
 
