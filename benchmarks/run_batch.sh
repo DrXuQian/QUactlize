@@ -636,7 +636,7 @@ PYEOF
   # The default build (already made above) is Q4_K. Each additional format gets its own build, and
   # QUACTLIZE_PACKED_FORMAT tells the oracles which one they are looking at so the other formats skip with a
   # reason instead of failing against a binary that was never meant to run them.
-  local fqrc=0 _fmt _fmtname _fmtdefs _fmtso _fqlog
+  local fqrc=0 _fmt _fmtname _label _fmtdefs _fmtso _fqlog _r _b2 _d2
   for _fmt in "12:Q4_K:" "10:Q2_K:PPU_PACKED_FORMAT=2"; do
     IFS=: read -r _fmtname _label _fmtdefs <<<"$_fmt"
     _fqlog="$OUT/fully_quantized_$_label.log"
