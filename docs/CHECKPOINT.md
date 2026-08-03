@@ -116,6 +116,26 @@ And the fuse is not free. It trades shared traffic for ALU on the path that *is*
 `v.or.i` +89.16%, `v.shll.i` +55.11%, `v.cnvt` +720% — the cost of packing and unpacking the interleaved
 `(scale, zero)` word. Saving in the shadow and paying in the light is why the net is zero.
 
+**It is a ONE-FOR-ONE trade, and the counters say so to the digit.** `v.cnvt` goes 5,120 → 41,984, a rise of
+exactly **36,864** — the same number as the store-instruction reduction and the same number as the new conflicts on
+the global→shared path. Per fused publication: one shared store removed, one convert added, one conflict moved.
+Nothing here "roughly cancels"; it is an exchange at par.
+
+**ADDRESSING DID FOLD TO COMPILE TIME — the rise is DATA packing, not address arithmetic.** The instructions that
+did *not* move are the evidence: `tsm.ld.swzl` 168,960 (0%), `v.bfi.i` 270,336 (0%), and the whole scalar pipe flat
+or down (`s.add` −11.04%, `s.wait` −30.32%). Address computation lives on the scalar pipe; if it had gone dynamic,
+that is what would have grown. It shrank.
+
+**`swz` AND `packfuse` DIED OF DIFFERENT CAUSES and must not be filed together.**
+
+* `swz` failed as an **implementation**: it removed ZERO conflicts while `Inst Executed Pipe SALU` rose to ~97% of
+  peak. SALU *is* the address pipe, so its addressing did **not** fold — the objection that a swizzle should be a
+  compile-time address computation with no runtime cost is correct, and this build did not achieve it. It is also
+  numerically broken (device assert in `copy_B_and_extra_info`). Reopening it means explaining that 97% first, not
+  re-running the timing.
+* `packfuse` failed as a **choice of target**: the implementation is right — addressing folded, conflicts genuinely
+  fell 48% — and it still bought nothing, because it exchanges a resource at 30% of its roof for one at 39%.
+
 **Conclusion: `packfuse` does not ship, and the +73,728 store conflicts were never worth chasing.** That retires
 `swz`, `packfuse` and `packsplit` together — all three optimise a path at 30% of its roof. The 11.1% dequant
 pipeline remains the only measured term that is actually on the critical path.
