@@ -108,6 +108,39 @@ Cold launches cannot be batched: only the first launch after an L2 flush is cold
 one event pair and divided by the batch size, which resolves sub-tick differences without pretending they are cold.
 The benchmark now treats rows<=0 as rows=131072, and every large-shape A/B below uses 131072 rows × 8 blocks.
 
+### 3b. The SIMT-vs-collective comparison CANNOT be settled on a 5090, and the reason is L2
+
+A real SIMT MoE GEMV was built and measured: `gemv_lowbit`'s grouped arm — experts on the grid's z dimension,
+ragged rows via `row_offsets`, real gather — through the REAL CMake unit generator (20 int4 units, no PPU SDK
+needed; `dev/fold_derivation/gen_gemv_units_check.sh` drives the generator slice with `cmake -P`).
+
+| shape | best W4 config | median | compulsory bytes | ÷ 1.792 TB/s |
+|---|---|---:|---:|---:|
+| MoE `L=8`, one row/expert, `N=K=2048`, gs=32 | `int4 tileK s8/t256 N8 C2` | **7.64 µs** | 21.04 MB | **153.7%** |
+| dense `m=1`, `N=K=2048`, gs=32 | `int4 tileK s8/t256 N4 C2` | **2.60 µs** | 2.63 MB | 56.4% |
+
+**153.7% of DRAM peak is not a result, it is a diagnosis.** The 21 MB operand fits the 5090's L2, so the
+number is L2-served at an effective 2.754 TB/s. On PPU the same operand does not fit. The collective's 29.87%
+Memory SoL is an HBM number; this is a cache number; **they have no common denominator**, and the gap between
+them is not a performance difference at all. A cache-flushed counter run was attempted and `ERR_NVGPUCTRPERM`
+blocked it — this container has no profiling-counter permission.
+
+The grid mechanism is real and measured: `1 × 256 × 8 = 2048` CTAs, exactly **16×** the collective's 128,
+because the tilings differ for the same problem. And PPU has already run this comparison at parity of memory
+level: **grouped GEMM 20.74 µs / 37.5% HBM against `gemv_lowbit` 22.27 µs / 34.1%** — the SIMT GEMV had 16×
+the CTA supply and was still **7.4% slower**. The 5090 does not reproduce that ordering, and cannot settle
+it: the result is L2-served, no 5090 collective was measured against it, and this project has a recorded case
+of configuration rankings inverting between the two machines at gs=32.
+
+⚠ Strictly `SCALE_FIRST`. `gemv_lowbit` reads pre-materialised fp16 scale and zero planes. What this scopes is
+the *structural* upside of `FULLY_QUANTIZED × GEMV_MOE` — still an empty cell in schemes.py — not its
+native-scale decode cost, which is the term that would actually be added.
+
+Two things that did transfer, because they are properties of the binary rather than of the machine: the SASS
+contains **zero tensor-op mnemonics and 287,278 half2 arithmetic instructions**, so "CUDA cores only" is
+proven rather than asserted, and so is the fp16 accumulation reaching packed instructions instead of being
+scalarised.
+
 ### 3a. Every GEMV number above is a LARGE-GRID number, and the shipping shape is not
 
 `rows` is the OUTPUT dimension N. At `bpr=8` the tuning shape is N=131072, K=2048 — **sixty-four times a real
