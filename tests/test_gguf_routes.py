@@ -18,6 +18,8 @@ ASYMMETRIC IN THREE WAYS, each hiding a different mistake:
   * each expert's weight differs, so a grouped route reading expert 0 for everyone still passes a shape check
 A previous fixture in this project had every row identical and measured nothing but its own axis confusion.
 """
+import os
+
 import numpy as np
 import pytest
 import torch
@@ -90,10 +92,29 @@ def ppu_backend_cuda(tmp_path_factory):
     They need different include precedence: the backend intentionally uses stock CUTLASS for CUDA, while xplane is
     an actlize host template and uses the SDK stubs. Separate objects make that boundary explicit, then one .so is
     linked exactly like the hgcc build does.
+
+    A REAL LIBRARY WINS OVER THE STAND-IN, and forgetting that broke two tests on ppu001. This fixture is a
+    STAND-IN: on an NVIDIA development machine there is no libquactlize_ppu.so, so it builds one with nvcc against
+    STOCK NVIDIA CUTLASS. On the box there IS one -- build.sh produced it and QUACTLIZE_PPU_LIB points at it -- and
+    the skip condition did not notice, because the PPU box has nvcc and reports torch.cuda.is_available(). So it
+    compiled PPU device code (ppu_backend.cu -> gemv_wformat.hpp -> cute/tensor.hpp) against NVIDIA's cute instead
+    of actlize's, and died in the include chain:
+
+        AssertionError: In file included from .../quactlize/include/gemv_lowbit/gemv_wformat.hpp:35,
+
+    Two tests errored for a build that should never have been attempted there. Taking the provided library is both
+    the correct behaviour and strictly less work.
+
+    The check is is_file() rather than "is the variable set", because run_batch's CPU-reference pass deliberately
+    sets QUACTLIZE_PPU_LIB to a nonexistent path -- that must still fall through to the stand-in, or the pass would
+    lose its device tests entirely for a reason unrelated to what it is testing.
     """
     import shutil, subprocess
+    provided = os.environ.get("QUACTLIZE_PPU_LIB", "")
+    if provided and Path(provided).is_file():
+        return Path(provided)
     if shutil.which("nvcc") is None or not torch.cuda.is_available():
-        pytest.skip("CUDA backend oracle needs nvcc and a CUDA device")
+        pytest.skip("no device library provided and the CUDA stand-in needs nvcc and a CUDA device")
     root = Path(__file__).resolve().parent.parent
     major, minor = torch.cuda.get_device_capability()
     tmp = tmp_path_factory.mktemp("ppu_backend")
