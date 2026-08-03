@@ -489,7 +489,11 @@ do_pytest() {
   for _d in ${PPU_DEFS:-PPU_PACKED_SCALE=1}; do
     grep -qF "PPU_DEFS verified on quactlize_ppu's compile command: -D$_d" "$blog" && continue
     echo "   !!! -D$_d did NOT reach quactlize_ppu's compile command."
-    grep -E "PPU_DEFS applied|PPU_EXTRA_DEFS|did NOT reach" "$blog" | sed 's/^/       /' | head -4
+    # build.sh's own words, not a paraphrase of them. The first version of this grep looked for "did NOT reach"
+    # while build.sh says "is NOT on <target>'s compile command" and "no build.make found for <target>" -- so the
+    # one line that says WHY was filtered out by the diagnostic meant to surface it, and the operator saw a
+    # refusal with no cause. Match WARNING, which is build.sh's marker for all three.
+    grep -E "PPU_DEFS|PPU_EXTRA_DEFS|WARNING" "$blog" | sed 's/^/       /' | head -8
     echo "       Everything below would run against a library missing the feature, and the FULLY_QUANTIZED"
     echo "       cells would fail with rc=34 for a build reason rather than a numerical one. Refusing."
     return 1
