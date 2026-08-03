@@ -58,7 +58,8 @@ inline int& moeg_fail_count() { static int c = 0; return c; }
 template <QuantMode QuantOp, class KernelSchedule,
           class TileShape, class ScaleTileShape, class WarpShape, int Stages, bool AiuInterleaved,
           class ElementB = cutlass::int4b_t,   // default W4A16; pass cutlass::uint2b_t for W2A16
-          class PlaneB2 = void>                // bit-plane concat: 2nd (high) B plane; void = single plane
+          class PlaneB2 = void,                // bit-plane concat: 2nd (high) B plane; void = single plane
+          bool ExpectPackedScale = false>
 void launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* scales,
             const cutlass::half_t* zeros,
             cutlass::half_t** ptr_D,        // device [L] per-expert output base pointers (contiguous: D+offs[e]*N)
@@ -141,6 +142,10 @@ void launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
       cutlass::arch::PPU0010, OperatorClass, ElementA, LayoutA, AlignmentA,
       ElementBInfo, LayoutB, AlignmentB, ElementAccumulator,
       cute::tuple<TileShape, ScaleTileShape>, ClusterShape, cute::Int<Stages>, KernelSchedule>::CollectiveOp;
+  if constexpr (ExpectPackedScale) {
+    static_assert(CollectiveMainloop::is_packed_scale,
+                  "fully-quantized grouped requires the shared packed-scale mainloop at this tile shape");
+  }
 
   // GroupProblemShape -> hits ppu_aiu_gemm_mixed_input_group.hpp's specialization.
   using GemmKernel = cutlass::gemm::kernel::GemmUniversal<GroupProblemShape, CollectiveMainloop, CollectiveEpilogue>;
@@ -338,7 +343,8 @@ void launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
 
 template <QuantMode QuantOp, int TM, int TN, int TK, int WM, int WN, int Stages,
           class ElementB = cutlass::int4b_t,   // default W4A16; pass cutlass::uint2b_t for W2A16
-          class PlaneB2 = void>                // bit-plane concat: 2nd (high) B plane; void = single plane
+          class PlaneB2 = void,                // bit-plane concat: 2nd (high) B plane; void = single plane
+          bool ExpectPackedScale = false>
 void filter_and_run(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* scales,
                     const cutlass::half_t* zeros,
                     cutlass::half_t** ptr_D, DStride* stride_D, int const* group_M,
@@ -359,7 +365,7 @@ void filter_and_run(const cutlass::half_t* A, const ElementB* B, const cutlass::
   static constexpr int MOEG_FOLD     = MOEG_RUN_B >= 32 ? 1 : (32 / MOEG_RUN_B); // fold factor needed
   #define MOEG_SCHED(SCH) std::conditional_t<(MOEG_FOLD > 1), \
       cutlass::gemm::KernelAiuFold<(MOEG_FOLD > 1 ? MOEG_FOLD : 2), SCH>, SCH>
-  #define MOEG_CALL(SCH, STK, IL) launch<QuantOp, MOEG_SCHED(SCH), TileShape, cute::Shape<cute::Int<TN>, STK>, WarpShape, Stages, IL, ElementB, PlaneB2>( \
+  #define MOEG_CALL(SCH, STK, IL) launch<QuantOp, MOEG_SCHED(SCH), TileShape, cute::Shape<cute::Int<TN>, STK>, WarpShape, Stages, IL, ElementB, PlaneB2, ExpectPackedScale>( \
       A,B,scales,zeros,ptr_D,stride_D,group_M,m,n,k,L,group_size,gsd,gsh,group_row_offsets,ws,ws_bytes,stream,B2,k_full,prefix_ready,splitk,false)
   // COLLECTIVE CONSTRAINT (SK = Scale_TileK = ceil(TK/gs) = #scale groups per K-tile):
   //   Scale_TileK <= mma_K_atoms (= TK/16), i.e. gs >= 16, so each scale group covers >=1 mma atom. The collective

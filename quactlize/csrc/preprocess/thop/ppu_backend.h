@@ -57,6 +57,9 @@ struct Api {
   // the symbol returns 34 when the library was built without PPU_PACKED_SCALE=1.
   int (*dense_fully_quantized)(uint16_t const* act, uint8_t const* low, uint8_t const* units,
                                uint16_t* out, int m, int n, int k, int qtype);
+  int (*grouped_fully_quantized)(uint16_t const* act, uint8_t const* low, uint8_t const* units,
+                                 int const* rows_per_expert, uint16_t* out,
+                                 int total_rows, int n, int k, int experts, int qtype);
 };
 
 // Loads libquactlize_ppu.so once. QUACTLIZE_PPU_LIB overrides the path, which is what lets a stub stand in for the

@@ -492,6 +492,47 @@ torch::Tensor gguf_dense_fully_quantized(torch::Tensor a, torch::Tensor low, tor
   return out;
 }
 
+torch::Tensor gguf_grouped_fully_quantized(torch::Tensor a, torch::Tensor low, torch::Tensor units,
+                                            torch::Tensor rows_per_expert, int64_t qtype) {
+  using U = gguf_scale::packed_unit::Unit<KType::Q4_K>;
+  CHECK_CPU(a); CHECK_CONTIGUOUS(a); CHECK_CPU(low); CHECK_CONTIGUOUS(low);
+  CHECK_CPU(units); CHECK_CONTIGUOUS(units); CHECK_CPU(rows_per_expert); CHECK_CONTIGUOUS(rows_per_expert);
+  TORCH_CHECK(qtype == kGgmlQ4K, "fully-quantized grouped currently instantiates Q4_K only");
+  TORCH_CHECK((a.dtype() == torch::kFloat16 || a.dtype() == torch::kFloat32) && a.dim() == 2,
+              "a must be fp16/fp32 concatenated [total_rows,k]");
+  TORCH_CHECK(low.dtype() == torch::kUInt8 && low.dim() == 3,
+              "low must be the uint8 grouped artifact [experts,n,k/2]");
+  TORCH_CHECK(units.dtype() == torch::kUInt8 && units.dim() == 4 && units.size(3) == U::kUnitTotal,
+              "Q4_K grouped units must be uint8 [experts,k/256,n,", U::kUnitTotal, "]");
+  TORCH_CHECK(rows_per_expert.dtype() == torch::kInt32 && rows_per_expert.dim() == 1,
+              "rows_per_expert must be contiguous int32 [experts]");
+  int const experts = int(low.size(0)), n = int(low.size(1)), k = int(a.size(1));
+  TORCH_CHECK(experts > 0 && rows_per_expert.size(0) == experts && units.size(0) == experts,
+              "artifact and rows_per_expert must agree on experts");
+  TORCH_CHECK(n > 0 && n % 256 == 0 && k > 0 && k % 256 == 0 && low.size(2) == int64_t(k) / 2,
+              "Q4_K grouped artifact needs n/k multiples of 256 and k/2 low bytes per expert row");
+  TORCH_CHECK(units.size(1) == k / 256 && units.size(2) == n,
+              "Q4_K grouped unit shape disagrees with the weight artifact");
+  int const* rp = get_ptr<int const>(rows_per_expert);
+  int64_t total = 0;
+  for (int e = 0; e < experts; ++e) { TORCH_CHECK(rp[e] >= 0, "expert row counts must be nonnegative"); total += rp[e]; }
+  TORCH_CHECK(total == a.size(0), "rows_per_expert sums to ", total, " but a has ", a.size(0), " rows");
+
+  torch::Tensor a16 = a.dtype() == torch::kFloat16 ? a : a.to(torch::kFloat16);
+  torch::Tensor out = torch::empty({total, n}, torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCPU));
+  if (total == 0) return out;
+  auto const* api = ppu_backend::load();
+  TORCH_CHECK(api && api->grouped_fully_quantized,
+              "fully-quantized grouped requires a current hgcc libquactlize_ppu.so");
+  int const rc = api->grouped_fully_quantized(
+      reinterpret_cast<uint16_t const*>(get_ptr<at::Half const>(a16)), get_ptr<uint8_t const>(low),
+      get_ptr<uint8_t const>(units), rp, reinterpret_cast<uint16_t*>(get_ptr<at::Half>(out)),
+      int(total), n, k, experts, int(qtype));
+  TORCH_CHECK(rc == 0, "PPU fully-quantized grouped GEMM failed (rc=", rc,
+              "; rc=34 means this library is not built with PPU_PACKED_SCALE=1)");
+  return out;
+}
+
 // THE FALLBACK PATH'S MISSING LINK: raw GGUF blocks -> full fp16 weights, which is what cuBLAS and DeepGemm
 // multiply. dequantize_weight in unfused_weight_dequantize.hpp already covers the symmetric packed representations
 // (INT8/INT4/INT2/INT1 with fp16 scale planes); it cannot read a k-quant block, so a GGUF checkpoint had no route to
@@ -705,6 +746,50 @@ std::vector<torch::Tensor> gguf_prepare_fully_quantized_dense(torch::Tensor bloc
     }
   }
   return {dense[0], units};
+}
+
+std::vector<torch::Tensor> gguf_prepare_fully_quantized_grouped(
+    torch::Tensor blocks, int64_t n, int64_t k, int64_t qtype, int64_t experts) {
+  using U = gguf_scale::packed_unit::Unit<KType::Q4_K>;
+  CHECK_CPU(blocks); CHECK_CONTIGUOUS(blocks);
+  TORCH_CHECK(qtype == kGgmlQ4K, "fully-quantized grouped preparation currently supports Q4_K only");
+  TORCH_CHECK(experts > 0 && n > 0 && n % 256 == 0 && k > 0 && k % 256 == 0,
+              "fully-quantized grouped preparation needs positive experts and n/k multiples of 256");
+  int64_t const nsb = k / 256, blocks_per_expert = n * nsb;
+  TORCH_CHECK(blocks.dtype() == torch::kUInt8 && blocks.dim() == 2 && blocks.size(1) == 144 &&
+              blocks.size(0) == experts * blocks_per_expert,
+              "Q4_K grouped blocks must be uint8 [experts*n*k/256,144]");
+
+  auto raw = gguf_prepare_gemv(blocks.view({experts, blocks_per_expert, 144}), n, k, qtype);
+  torch::Tensor low = torch::empty_like(raw[0]);
+  auto const* api = ppu_backend::load();
+  TORCH_CHECK(api && api->prepare_dense,
+              "fully-quantized grouped preparation requires the hgcc dense layout symbol");
+  size_t const low_expert_bytes = size_t(n) * k / 2;
+  auto const* native = get_ptr<uint8_t const>(raw[0]);
+  auto* placed = get_ptr<uint8_t>(low);
+  for (int64_t e = 0; e < experts; ++e) {
+    TORCH_CHECK(api->prepare_dense(native + size_t(e) * low_expert_bytes, nullptr,
+                                   placed + size_t(e) * low_expert_bytes, nullptr,
+                                   int(n), int(k), int(qtype)) == 0,
+                "PPU grouped dense placement failed for expert ", e);
+  }
+
+  torch::Tensor units = torch::empty({experts, nsb, n, U::kUnitTotal},
+      torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCPU));
+  uint8_t const* src = get_ptr<uint8_t const>(blocks);
+  uint8_t* dst = get_ptr<uint8_t>(units);
+  for (int64_t e = 0; e < experts; ++e)
+    for (int64_t col = 0; col < n; ++col)
+      for (int64_t sb = 0; sb < nsb; ++sb) {
+        uint8_t const* b = src + ((e * n + col) * nsb + sb) * 144;
+        cutlass::half_t d, dmin;
+        std::memcpy(&d, b, sizeof(d));
+        std::memcpy(&dmin, b + 2, sizeof(dmin));
+        gguf_scale::packed_unit::pack_unit_sb<KType::Q4_K>(
+            b + 4, d, dmin, 0, dst + ((e * nsb + sb) * n + col) * U::kUnitTotal);
+      }
+  return {low, units};
 }
 
 // BOTH RESIDENT ARTIFACTS HAVE AN INVERSE. Returning consumer-ready [E,N,K/gs] scale/zero planes separately is
@@ -1071,6 +1156,9 @@ static auto gguf_prepare_dense_op =
 static auto gguf_prepare_fully_quantized_dense_op = torch::RegisterOperators(
     "quactlize::gguf_prepare_fully_quantized_dense", &torch_ext::gguf_prepare_fully_quantized_dense);
 
+static auto gguf_prepare_fully_quantized_grouped_op = torch::RegisterOperators(
+    "quactlize::gguf_prepare_fully_quantized_grouped", &torch_ext::gguf_prepare_fully_quantized_grouped);
+
 static auto gguf_gemv_artifact_dequantize_op = torch::RegisterOperators(
     "quactlize::gguf_gemv_artifact_dequantize", &torch_ext::gguf_gemv_artifact_dequantize);
 static auto gguf_gemv_artifact_dequantize_scale_op = torch::RegisterOperators(
@@ -1102,6 +1190,9 @@ static auto gguf_dense_scale_first_op =
 
 static auto gguf_dense_fully_quantized_op = torch::RegisterOperators(
     "quactlize::gguf_dense_fully_quantized", &torch_ext::gguf_dense_fully_quantized);
+
+static auto gguf_grouped_fully_quantized_op = torch::RegisterOperators(
+    "quactlize::gguf_grouped_fully_quantized", &torch_ext::gguf_grouped_fully_quantized);
 
 static auto gguf_scale_block_shape_op =
     torch::RegisterOperators("quactlize::gguf_scale_block_shape", &torch_ext::gguf_scale_block_shape);

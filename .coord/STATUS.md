@@ -1,7 +1,7 @@
 # codex status
 
     inbox-consumed: 013
-    working-on:     flag-on Q4 baseline compatibility, then grouped Q4 raw ABI seam
-    blocked-on:     Q4 dense numerical validation requires PPU_PACKED_SCALE=1 ppu001 oracle
-    last-commit:    2beeb02 Instantiate Q4 packed-scale dense GEMM
-    last-heartbeat: 067
+    working-on:     grouped Q4 raw ABI and multi-expert producer complete; running local compile/shape gates
+    blocked-on:     dense+grouped numerical validation require PPU_PACKED_SCALE=1 ppu001 oracle
+    last-commit:    bb4d917 Keep scale-first Q4 in packed builds
+    last-heartbeat: 068
