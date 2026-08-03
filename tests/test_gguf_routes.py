@@ -366,9 +366,10 @@ def ppu_backend_dense():
 # whole of wiring this oracle up -- deliberately, so the moment the signature is posted this is a one-line edit
 # rather than an hour of test writing under a deadline.
 # THE SINGLE-PLANE FORMATS. Q3/Q5/Q6 are two-plane and their packed-scale path does not exist yet -- the Builder
-# routes tuple<B,S,Z,B2> to ppu_mma_aiu_mixed_input_2plane.hpp, which has no PPU_PACKED_SCALE plumbing, for dense
-# AND grouped alike. Listing them here would report an absence as five failures.
-FQ_IMPLEMENTED = [f for f in FORMATS if f[0] in ("Q4_K", "Q2_K")]
+# routes tuple<B,S,Z,B2> to ppu_mma_aiu_mixed_input_2plane.hpp. Q5_K joined once that collective gained the shared
+# packed-scale channel -- a reachability lift, not a format-specific scale design: Q5's unit is scu16x1, the SAME
+# sixteen bytes as Q4_K. Q3/Q6 follow; they need the multi-copy unit staging (28 and 36 bytes) that Q2 already has.
+FQ_IMPLEMENTED = [f for f in FORMATS if f[0] in ("Q4_K", "Q2_K", "Q5_K")]
 
 
 FQ_DENSE_PRODUCER = "prepare_fully_quantized_dense"   # host-side, the analogue of prepare_scale_first_dense
@@ -502,12 +503,14 @@ def test_fully_quantized_dense_matches_dequant_first_and_rejects_fault(name, gt,
         conditioned = lambda out: float(np.max(np.abs(out.astype(np.float64) - independent) /
                                                np.maximum(denom, np.finfo(np.float64).tiny)))
 
-        # CORRUPT THE SCALE UNIT, index 1 of (low, units). Named rather than found: an earlier version located
-        # it by elimination on element count, and against the real shapes -- low uint8[1,n,k/2] and
-        # units uint8[k/256,n,16] -- that heuristic picks LOW, the code plane. It would have planted a fault the
-        # scale-first cell already catches and reported the packed unit as covered without ever touching it.
+        # CORRUPT THE SCALE UNIT, which is artifact[-1] BY CONTRACT. Two earlier versions of this got it wrong in
+        # different ways: an elimination heuristic on element count picks LOW (both tensors divide by the group
+        # count), and a hardcoded index 1 was right only while the tuple was (low, units) -- it lands on HIGH the
+        # moment a two-plane format arrives. The contract puts units last precisely so one expression serves every
+        # format, and a fault on the code plane is one the scale-first cell already catches, so getting this wrong
+        # reports the packed unit as covered without ever touching it.
         fault = [x.clone() for x in artifact]
-        fault[1] = torch.zeros_like(fault[1])
+        fault[-1] = torch.zeros_like(fault[-1])
 
         planted = launch(at, tuple(fault), qtype).numpy()
         planted_err = conditioned(planted)

@@ -220,7 +220,9 @@ def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: i
     packed bytes, reordered into 16-byte units the collective can bulk-copy. That is the whole difference between
     the two cells, and it is why the storage does not grow.
 
-    Returns (low, units): low uint8[1, n, k/2], units uint8[k/256, n, 16].
+    Returns (low, high, units). `high` is the second weight plane -- EMPTY for a single-plane format and
+    uint8[1, n, k/8] for Q5_K's 1-bit plane -- so the tuple's shape does not change with the format and `units`
+    is always the LAST element. That is the property both oracles plant their fault on.
     """
     _check_shape(blocks, n, k, int(qtype))
     return _op("gguf_prepare_fully_quantized_dense")(blocks, n, k, int(qtype))
@@ -233,15 +235,15 @@ def matmul_fully_quantized_dense(a: torch.Tensor, artifact, qtype: int):
     always exists and the launch returns rc=34, which surfaces here as an error naming the macro. A silent
     fallback would make a build that cannot run this cell indistinguishable from one that can.
     """
-    low, units = artifact
-    return _op("gguf_dense_fully_quantized")(a, low, units, int(qtype))
+    low, high, units = artifact
+    return _op("gguf_dense_fully_quantized")(a, low, high, units, int(qtype))
 
 
 def prepare_fully_quantized_grouped(blocks: torch.Tensor, n: int, k: int, qtype: int, experts: int):
     """The MoE artifact: one (low, units) pair per expert, nothing expanded.
 
     blocks is [E*n*(k/256), type_size] -- expert-major, so expert e's weight is a contiguous slice. Returns
-    (low uint8[E, n, k/2], units uint8[E, k/256, n, 16]).
+    (low, high, units), with `high` empty for single-plane formats and uint8[E, n, k/8] for Q5_K.
     """
     want = experts * n * (k // 256)
     if blocks.dim() != 2 or blocks.shape[0] != want:
@@ -257,8 +259,8 @@ def matmul_fully_quantized_grouped(a: torch.Tensor, artifact, qtype: int, rows_p
     the C++ op takes (a, low, units, rows, qtype) and the reorder happens here rather than in the kernel. One
     convention per layer -- the alternative is a caller that has to remember which side it is on.
     """
-    low, units = artifact
-    return _op("gguf_grouped_fully_quantized")(a, low, units, rows_per_expert.to(torch.int32), int(qtype))
+    low, high, units = artifact
+    return _op("gguf_grouped_fully_quantized")(a, low, high, units, rows_per_expert.to(torch.int32), int(qtype))
 
 
 def matmul_scale_first_dense(a: torch.Tensor, artifact, qtype: int) -> torch.Tensor:

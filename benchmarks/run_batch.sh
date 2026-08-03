@@ -637,7 +637,11 @@ PYEOF
   # QUACTLIZE_PACKED_FORMAT tells the oracles which one they are looking at so the other formats skip with a
   # reason instead of failing against a binary that was never meant to run them.
   local fqrc=0 _fmt _fmtname _label _fmtdefs _fmtso _fqlog _r _b2 _d2
-  for _fmt in "12:Q4_K:" "10:Q2_K:PPU_PACKED_FORMAT=2"; do
+  # ggml type : label : extra defines.  The default build (no PPU_PACKED_FORMAT) is Q4_K.
+  #   Q2_K single-plane, 20 B unit staged as five 4 B copies      PPU_PACKED_FORMAT=2
+  #   Q5_K TWO-plane weight, scu16x1 -- the SAME scale unit as Q4  PPU_PACKED_FORMAT=1
+  # Q3_K and Q6_K are not here yet: two-plane AND a paired 28/36 B unit.
+  for _fmt in "12:Q4_K:" "10:Q2_K:PPU_PACKED_FORMAT=2" "13:Q5_K:PPU_PACKED_FORMAT=1"; do
     IFS=: read -r _fmtname _label _fmtdefs <<<"$_fmt"
     _fqlog="$OUT/fully_quantized_$_label.log"
     if [ -z "$_fmtdefs" ]; then
