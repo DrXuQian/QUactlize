@@ -5,39 +5,31 @@ exactly what output settles the question, so a partial paste is still useful.
 
 ## OPEN
 
-1. **ON THE CRITICAL PATH RIGHT NOW.** codex has the Q4_K packed-dense C++ API done and is blocked on device
-   numerical validation, which needs PPU_PACKED_SCALE=1 and therefore needs you. Nothing it does next can be
-   called validated until this runs.
+1. **THE ONLY THING BETWEEN 51/60 AND 60/60.** All five k-quants now have FULLY_QUANTIZED dense AND grouped
+   implemented, local gates green on both sides. Nine cells sit at PARTIAL solely because no ppu001 oracle has
+   run against them; there is no further code to write for those cells.
 
-       cd /sim/eec/shared/junfu.qx/quactlize && git pull && PPU_DEFS=PPU_PACKED_SCALE=1 ./benchmarks/run_batch.sh pytest
+       cd /sim/eec/shared/junfu.qx/quactlize && git pull --recurse-submodules && ./benchmarks/run_batch.sh pytest
 
-   USE run_batch, NOT a bare `pytest tests`. Two of today's runs were against a stale extension and produced
-   plausible garbage -- "worst nan" on all five formats and a planted fault going uncaught, both about a .so
-   built before the commit under test. run_batch rebuilds; a bare pytest did not. (As of this commit a bare
-   pytest REFUSES to run when the extension is stale rather than reporting, so the trap is closed either way.)
+   It builds the device library FIVE TIMES -- once per PPU_PACKED_FORMAT, because no binary runs more than one
+   format -- runs each format's dense and grouped oracle against official gguf with a planted fault required to
+   fail FIRST, and restores the default-format library at the end.
 
-   WANTED: the two pass summaries, plus any FAILED/ERROR ids.
-   PPU_DEFS is load-bearing: run_batch's pytest subcommand otherwise builds the DEFAULT device library, whose
-   fully-quantized symbol returns rc=34 by design. The flag-on library keeps the existing scale-first Q4 control at
-   TileK=128 (packed selection off) and instantiates the new fully-quantized Q4 entry at TileK=256 (selection on),
-   so the same run checks the green baseline and the new contract rather than substituting one for the other.
+   USE run_batch, NOT a bare `pytest tests`. Three runs today produced plausible garbage from a stale host
+   extension; a bare pytest now refuses rather than reporting, but only run_batch rebuilds the DEVICE library and
+   passes PPU_PACKED_SCALE=1, without which the whole cell answers rc=34.
 
+   WANTED: the per-format summary lines, plus any FAILED/ERROR ids (named now, -rfE).
 
+## SETTLED
 
-
-- `$OUT/dense_python_oracle.log` -> "5 passed, 5115 warnings in 4.81s" (2026-08-03). Five passing dense-oracle
-  cases on ppu001, zero skipped. This is the evidence for promoting scale_first/dense.
-
-2. THE LAST RUN WAS AGAINST A STALE EXTENSION -- nothing in it is evidence.
-
-   50023d4 changed gguf_prepass_ops.cpp / ppu_backend.cpp / ppu_backend.h; the box pulled them but the host
-   extension was not rebuilt, so the whole tier ran on the previous binary. run_batch now detects this and
-   rebuilds automatically (commit above), so a plain re-run is enough:
-
-       cd /sim/eec/shared/junfu.qx/quactlize && git pull && ./benchmarks/run_batch.sh pytest
-
-   WANTED: the two pass summaries, plus any FAILED/ERROR ids.
-   TWO Q2_K FAILURES ARE PENDING THIS and must not be diagnosed before it:
-     - test_device_decode_routes... "Q2_K: native dense oracle missed planted row-0 reuse"
-     - test_the_two_routes_agree_on_identical_bytes[Q2_K] "worst nan"
-   Both may be artefacts of the stale build. If they survive a fresh one, they are real and Q2_K-specific.
+- **The whole python tier was green on ppu001 once today**, which closed four things at once: codex's vecdot
+  activation-contract fix confirmed ON THE DEVICE, the two stock-CUTLASS stand-in build errors gone, the sixteen
+  cpu_reference ERRORs gone, and the two Q2_K failures ("native dense oracle missed planted row-0 reuse",
+  "worst nan") shown to be STALE-BUILD ARTEFACTS -- they were never about Q2_K. Refusing to diagnose them before
+  the rebuild was the right call.
+- `$OUT/dense_python_oracle.log` -> "5 passed, 5115 warnings in 4.81s": five passing dense-oracle cases, zero
+  skipped, on ppu001. That is the evidence scale_first/dense was promoted on.
+- The FULLY_QUANTIZED build needs PPU_PACKED_SCALE=1 to reach the compile command, and for a while it did not:
+  quactlize_ppu was built by cutlass_add_library and so sat outside the wrapper that applies PPU_EXTRA_DEFS.
+  Fixed; run_batch now asserts the define reached the compile before running anything.
