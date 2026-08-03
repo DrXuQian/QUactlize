@@ -628,19 +628,46 @@ PYEOF
   # ops are not in the build, and on a box built with PPU_PACKED_SCALE=1 a skip means the cell was not exercised.
   # This is the obligation the marker's own description records -- wiring the oracle up and NOT adding it here
   # would let a skip read as a pass.
-  echo "-- fully_quantized cells (a skip here is a failure once the ops are built)"
-  local fqlog fqrc
-  fqlog="$OUT/fully_quantized.log"
-  QUACTLIZE_PPU_LIB="$so" PYTHONPATH="$ROOT" python3 -m pytest "$ROOT/tests" -q -rs -m fully_quantized_dense \
-    >"$fqlog" 2>&1 && fqrc=0 || fqrc=$?
-  tail -3 "$fqlog" | sed 's/^/   /'
-  if grep -qi "are not in this build yet" "$fqlog"; then
-    echo "   (ops not built yet -- not counted against this run; see .coord/INBOX.md 012/013)"
-    fqrc=0
-  elif [ "$fqrc" -ne 0 ] || grep -qi "skipped" "$fqlog" || ! grep -Eq '[1-9][0-9]* passed' "$fqlog"; then
-    echo "   !!! the fully_quantized oracle did not run to a pass (exit $fqrc)"
-    fqrc=1
-  fi
+  # ONE BUILD PER FORMAT, because the device library is format-specific ON PURPOSE: a PPU_PACKED_FORMAT=2 binary
+  # cannot run the Q4 packed launch (codex, 070). Testing both therefore means building both -- there is no
+  # single binary that covers them, and a run that quietly tested only the default would report half a matrix as
+  # if it were the whole one.
+  #
+  # The default build (already made above) is Q4_K. Each additional format gets its own build, and
+  # QUACTLIZE_PACKED_FORMAT tells the oracles which one they are looking at so the other formats skip with a
+  # reason instead of failing against a binary that was never meant to run them.
+  local fqrc=0 _fmt _fmtname _fmtdefs _fmtso _fqlog
+  for _fmt in "12:Q4_K:" "10:Q2_K:PPU_PACKED_FORMAT=2"; do
+    IFS=: read -r _fmtname _label _fmtdefs <<<"$_fmt"
+    _fqlog="$OUT/fully_quantized_$_label.log"
+    if [ -z "$_fmtdefs" ]; then
+      _fmtso="$so"                                     # the build made above
+    else
+      echo "-- rebuilding the device library for $_label ($_fmtdefs)"
+      local _b2="$OUT/quactlize_ppu.$_label.build.log"
+      timeout "$timeout_s" env PPU_DEFS="PPU_PACKED_SCALE=1 $_fmtdefs" TARGET=quactlize_ppu "$ROOT/build.sh" \
+        >"$_b2" 2>&1 || { echo "   !!! $_label build failed:"; tail -12 "$_b2" | sed 's/^/       /'; fqrc=1; continue; }
+      local _d2
+      for _d2 in PPU_PACKED_SCALE=1 $_fmtdefs; do
+        grep -qF "PPU_DEFS verified on quactlize_ppu's compile command: -D$_d2" "$_b2" && continue
+        echo "   !!! -D$_d2 did NOT reach the $_label build"
+        grep -E "PPU_DEFS|WARNING" "$_b2" | sed 's/^/       /' | head -6; fqrc=1
+      done
+      _fmtso="$(grep -m1 '^built: ' "$_b2" | cut -d' ' -f2-)"
+      [ -f "$_fmtso" ] || { echo "   !!! no library from the $_label build"; fqrc=1; continue; }
+    fi
+
+    echo "-- fully_quantized cells, $_label (a skip here is a failure once the ops are built)"
+    QUACTLIZE_PPU_LIB="$_fmtso" QUACTLIZE_PACKED_FORMAT="$_fmtname" PYTHONPATH="$ROOT" \
+      python3 -m pytest "$ROOT/tests" -q -rs -m fully_quantized_dense >"$_fqlog" 2>&1 && _r=0 || _r=$?
+    tail -3 "$_fqlog" | sed 's/^/   /'
+    if grep -qi "are not in this build yet" "$_fqlog"; then
+      echo "   ($_label ops not built yet -- not counted; see .coord/INBOX.md 012/013)"
+    elif [ "$_r" -ne 0 ] || grep -qi "skipped" "$_fqlog" || ! grep -Eq '[1-9][0-9]* passed' "$_fqlog"; then
+      echo "   !!! the $_label fully_quantized oracles did not run to a pass (exit $_r)"
+      fqrc=1
+    fi
+  done
 
   # THE DEVICE-VS-CPU-ARM COMPARISON MUST NOT SKIP HERE. It skips honestly on a machine with no device, and this
   # is not one -- so a skip means the comparison it exists for did not happen, and pass 2 would go green having

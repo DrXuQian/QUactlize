@@ -365,6 +365,12 @@ def ppu_backend_dense():
 # lands these resolve to nothing and the test below skips with a reason that says so. Changing a name here is the
 # whole of wiring this oracle up -- deliberately, so the moment the signature is posted this is a one-line edit
 # rather than an hour of test writing under a deadline.
+# THE SINGLE-PLANE FORMATS. Q3/Q5/Q6 are two-plane and their packed-scale path does not exist yet -- the Builder
+# routes tuple<B,S,Z,B2> to ppu_mma_aiu_mixed_input_2plane.hpp, which has no PPU_PACKED_SCALE plumbing, for dense
+# AND grouped alike. Listing them here would report an absence as five failures.
+FQ_IMPLEMENTED = [f for f in FORMATS if f[0] in ("Q4_K", "Q2_K")]
+
+
 FQ_DENSE_PRODUCER = "prepare_fully_quantized_dense"   # host-side, the analogue of prepare_scale_first_dense
 FQ_DENSE_ROUTE    = "matmul_fully_quantized_dense"    # the launch
 
@@ -374,7 +380,7 @@ FQ_GROUPED_PRODUCER = "prepare_fully_quantized_grouped"
 
 
 @pytest.mark.fully_quantized_dense
-@pytest.mark.parametrize("name,gt,hdr,qtype", [f for f in FORMATS if f[0] == "Q4_K"])   # Q4 only, as for dense
+@pytest.mark.parametrize("name,gt,hdr,qtype", FQ_IMPLEMENTED)
 def test_fully_quantized_grouped_matches_dequant_first_and_rejects_fault(name, gt, hdr, qtype, ppu_backend_dense):
     """FULLY_QUANTIZED/GROUPED -- the MoE GEMM -- against the same independent arm as the dense cell.
 
@@ -394,6 +400,7 @@ def test_fully_quantized_grouped_matches_dequant_first_and_rejects_fault(name, g
     if not (routes.has_op("gguf_prepare_fully_quantized_grouped")
             and routes.has_op("gguf_grouped_fully_quantized")):
         pytest.skip("the grouped packed ops are not in this build yet (INBOX 013).")
+    _require_packed_format(qtype, name)
     prepare, launch = routes.prepare_fully_quantized_grouped, routes.matmul_fully_quantized_grouped
 
     experts, n, k = 4, 256, 512
@@ -433,11 +440,25 @@ def test_fully_quantized_grouped_matches_dequant_first_and_rejects_fault(name, g
     print(f"{name} packed grouped vs dequant-first: " + "; ".join(observed))
 
 
-# Q4_K ONLY until the other cells land, on codex's instruction (065): the other four need either the unit-size
-# generalisation (Q2/Q3/Q6) or PPU_PACKED_SCALE plumbing in the two-plane collective (Q5/Q3/Q6), so parametrising
-# over five today would report four failures that are absences rather than defects.
+# THE DEVICE LIBRARY IS BUILT PER FORMAT, and that is deliberate: a PPU_PACKED_FORMAT=2 binary intentionally
+# cannot run the Q4 packed launch (codex, 070). So "which formats can this run" is a property of the LIBRARY, not
+# of the test file, and a test that parametrised over every implemented format would report a build's scope as a
+# set of failures. run_batch builds once per format and sets QUACTLIZE_PACKED_FORMAT to match; the default is
+# Q4_K's ggml type, which is what a library built with no PPU_PACKED_FORMAT contains.
+def _packed_format_under_test() -> int:
+    return int(os.environ.get("QUACTLIZE_PACKED_FORMAT", "12"))
+
+
+def _require_packed_format(qtype: int, name: str):
+    want = _packed_format_under_test()
+    if qtype != want:
+        pytest.skip(f"this library is built for packed format {want}, not {name} ({qtype}). A format-specific "
+                    f"binary cannot run another format's packed launch -- run_batch builds one per format. "
+                    f"Set QUACTLIZE_PACKED_FORMAT={qtype} against a matching build to run this case.")
+
+
 @pytest.mark.fully_quantized_dense
-@pytest.mark.parametrize("name,gt,hdr,qtype", [f for f in FORMATS if f[0] == "Q4_K"])
+@pytest.mark.parametrize("name,gt,hdr,qtype", FQ_IMPLEMENTED)
 def test_fully_quantized_dense_matches_dequant_first_and_rejects_fault(name, gt, hdr, qtype, ppu_backend_dense):
     """FULLY_QUANTIZED/DENSE against an INDEPENDENT arm, from the cell's first day rather than after the fact.
 
@@ -460,6 +481,7 @@ def test_fully_quantized_dense_matches_dequant_first_and_rejects_fault(name, gt,
         pytest.skip("the packed-dense ops are not in this build yet (INBOX 012). When they land, run_batch's "
                     "required-not-to-skip list must be updated in the same change, or a skip on a device box "
                     "reads as a pass.")
+    _require_packed_format(qtype, name)
     prepare, launch = routes.prepare_fully_quantized_dense, routes.matmul_fully_quantized_dense
 
     n, k = 256, 512
