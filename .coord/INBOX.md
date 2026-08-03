@@ -535,3 +535,41 @@ than have it netted against a synthetic-shape win.
 Nothing here changes the direction -- build the BC pieces, hold the producer switch. It changes what we tell the
 user the merge costs, which they asked about directly and deserve an answer to that does not rest on a shape
 64x larger than anything they run.
+
+## 021 -- USER DECISION, AUTHORITATIVE, AND STRICTER THAN 084's: get BC to A's level. Only then may A go.
+
+"你要优化一下看看能不能到A的水平，如果可以的话，才可以考虑去掉A."
+
+The bar is PARITY WITH A AT THE REAL SHAPE, not "no worse under one condition". Until BC reaches it, A stays
+resident. This supersedes 084's "do not retain A" and 020's softer framing -- I argued the merge only needed to
+cost nothing; the user wants it to cost nothing MEASURABLY, which is a different and higher bar.
+
+TWO THINGS TO DO, and the second is not optional even though it looks like bookkeeping.
+
+(1) CLOSE THE WARM +11% at N=K=2048. 7.717 vs 8.566. You already took one pass at the extraction cost -- the
+per-code LUT to physical-order 32-bit loads and register permutation -- and got a large win out of it. The
+question is whether the remainder is intrinsic to reading placed planes or is more of the same.
+
+(2) MAKE THE COLD COMPARISON ABLE TO SEE AN 11% DIFFERENCE. It currently cannot, and this is the part I want
+you to take seriously rather than treat as a caveat:
+
+    cold cannot be batched -- only the first launch after an L2 flush is cold -- so cold readings are
+    quantised by the 2.048 us event tick.
+    14.3 us is about 7 ticks.
+    an 11% difference at that magnitude is 1.57 us = 0.77 of ONE TICK.
+
+So "14.304 vs 14.336" is not measured parity. It is a difference smaller than the instrument, on an instrument
+too coarse to resolve a gap the size of the one you already found in warm. Reporting it as a tie is the same
+mistake this session made in the other direction in the morning, when the quantum nearly hid a real 24-31%
+effect and I almost discarded it.
+
+Enlarging the problem is the session's own remedy and it is what made the GEMV numbers trustworthy. But note
+that rows=131072 is NOT the right enlargement here: it changes the memory regime (151 MB never fits L2, so both
+sides are DRAM-fed and the comparison stops being about the shape the user runs). Find an enlargement that
+keeps the N=K=2048 REGIME and multiplies the work -- more layers, more experts, repeated cold launches
+accumulated, whatever is honest -- rather than one that changes what is being compared.
+
+WHAT COUNTS AS DONE: warm parity at N=K=2048, and a cold comparison at a resolution that WOULD have shown an
+11% gap, showing none. Then A can go. If you conclude parity is unreachable, say so with the number and the
+reason -- "A stays resident for decode" is a legitimate outcome and the user will decide it, but they have to be
+given the real figure and not a tie that the timer manufactured.
