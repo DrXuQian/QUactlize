@@ -9,13 +9,18 @@ What exists, what is verified and by what, what is not, and the traps that cost 
 A GGUF k-quant checkpoint can reach the hardware four ways. They differ in **what gets materialised**, and that is
 the whole basis for choosing between them.
 
-| route | scheme | materialises | extra DRAM per expert (N=K=2048, gs=32, Q4_K) |
-|---|---|---|---|
-| **fallback** | `DEQUANT_FIRST` | the whole weight as fp16, then cuBLAS / DeepGemm | write 8.39 + read 8.39 MB, and the GEMM then reads 8.39 instead of 2.36 |
-| **pre-pass** | `SCALE_FIRST` | the fp16 scale/zero planes, in a workspace | write 0.52 + read 0.52 MB |
-| **packed** | `FULLY_QUANTIZED` | nothing; the collective decodes the scale in-kernel | none, plus an UNDETERMINED tax (see §3) |
-| **native GEMV** | `FULLY_QUANTIZED` | nothing; the scale pair is consumed in registers | none |
-| **resident GEMV** | `SCALE_FIRST` | packed code planes plus resident fp16 scale/zero planes | format-dependent |
+| route | scheme | reads from disk | materialises | extra DRAM per expert (N=K=2048, gs=32, Q4_K) |
+|---|---|---|---|---|
+| **fallback** | `DEQUANT_FIRST` | raw GGUF | the whole weight as fp16, then cuBLAS / DeepGemm | write 8.39 + read 8.39 MB, and the GEMM then reads 8.39 instead of 2.36 |
+| **pre-pass** | `SCALE_FIRST` | raw GGUF | the fp16 scale/zero planes, in a workspace | write 0.52 + read 0.52 MB |
+| **packed** | `FULLY_QUANTIZED` | **`scu16x1` artifact** | nothing; the collective decodes the scale in-kernel | none, plus an UNDETERMINED tax (see §3) |
+| **native GEMV** | `FULLY_QUANTIZED` | raw GGUF | nothing; the scale pair is consumed in registers | none |
+| **resident GEMV** | `SCALE_FIRST` | **`sf(*)` artifact** | packed code planes plus resident fp16 scale/zero planes | format-dependent |
+
+**The third column is the integration axis, and it is not the same axis as the second.** A route that reads raw GGUF
+drops into llama.cpp with no offline step and no loader change; a route that reads a reordered artifact needs a named
+on-disk representation, a producer, a loader, and both inverses (§4a) before it can replace anything. Two routes
+materialise nothing at run time and still sit on opposite sides of this line.
 
 The fallback's extra traffic is **16×** the pre-pass's and its GEMM reads **3.6×** more bytes, so the crossover is in
 **M**, not in implementation quality: at decode it is absurd, in the middle band the pre-pass's 1.05 MB constant
@@ -331,7 +336,12 @@ compiled and run under nvcc in CI; `build.sh` registers the same source as an hg
 
 GGUF's own packing is **not half-separable** — Q4_K's `get_scale_min_k4` takes groups 4..7 from bytes 8-11 *and* the
 top two bits of bytes 0-3 — so a k-tile covering part of a superblock cannot read part of a block. The reordered
-unit fixes that **at no cost in stored bytes**, and that byte-neutrality is the licence for the whole path.
+unit fixes that **at no cost in stored bytes**.
+
+⚠ **Byte-neutrality buys "storage does not grow". It does not buy "the file is still a GGUF".** Those are different
+properties and this document conflated them. A `scu*` tensor has the same *size* as the GGUF metadata it replaces and
+a different *order*, so `llama.cpp`'s loader reads it as garbage. Byte-neutrality licences the storage argument in
+§1 — nothing more. The licence for the *path* is §4a, and it has not been issued yet.
 
 Q4_K has always been reordered this way; what is new is that it is **named**, **generalised**, and **checked**.
 
@@ -350,6 +360,36 @@ Q4_K has always been reordered this way; what is new is that it is **named**, **
 column a thread owns — withdrawn. Pairing two *superblocks of the same column* needs neither: 28 and 36 bytes, no
 padding, and a thread still owns exactly its own column. Each superblock keeps its own header, so a consumer wanting
 one reads a contiguous run.
+
+### 4a. The six offline formats, and what each still owes
+
+**A weight's `wgt + scale + min` arrangement is one storage format.** Naming the kernel that consumes it is not the
+same as having the format, and this is the debt that separates "the kernels work" from "llama.cpp can load a file".
+
+| format | produced by | consumed by | on-disk repr | loader | dequant-all | dequant-scale |
+|---|---|---|---|---|---|---|
+| `sf(i2)` Q2_K | `routes.prepare_scale_first` | resident GEMV, `SCALE_FIRST` dense/grouped | ❌ | ❌ | 🔨 | 🔨 |
+| `sf(i2+i1)` Q3_K | ″ | ″ | ❌ | ❌ | 🔨 | 🔨 |
+| `sf(i4)` Q4_K | ″ | ″ | ❌ | ❌ | 🔨 | 🔨 |
+| `sf(i4+i1)` Q5_K | ″ | ″ | ❌ | ❌ | 🔨 | 🔨 |
+| `sf(i4+i2)` Q6_K | ″ | ″ | ❌ | ❌ | 🔨 | 🔨 |
+| `scu16x1` etc. | `put_code` at **load time** (task #27) | packed collective | ❌ | ❌ | 🔨 | 🔨 |
+
+🔨 = in flight. The four Python-reachable ops landed 2026-08-03; the **semantic** oracle (not the round trip) is what
+gates them, and it immediately failed Q6 at conditioned err 8.76e-1 — see the distinction below.
+
+Two properties, and only one of them is an oracle:
+
+- **round trip** — `recover(prepare(x)) == x` bit-exactly. Proves *serialisation integrity*. It is a self-comparison,
+  so a `prepare` that stores the wrong thing and a `recover` that reads it back faithfully both pass.
+- **semantic inverse** — dequantise the artifact, compare to `gguf.quants.dequantize` on the bytes it came from.
+  Proves the arrangement *means* what the source meant. **This is the one a matrix cell's OK may rest on.**
+
+The repo has the failure on record: `test_fpA_intB_ppu` compares the launcher to another configuration of itself,
+which is why its cell reads IMPLEMENTED and not VALIDATED however green it runs.
+
+The route that owes nothing here is **native GEMV** — raw GGUF in, no offline step, no loader. That is the whole of
+its integration story, and it is why it is the byte-minimal decode route in §1 rather than merely the fastest.
 
 ---
 
