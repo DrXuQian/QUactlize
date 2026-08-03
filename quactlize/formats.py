@@ -146,12 +146,17 @@ FUSED_NATIVE_SCALE: FrozenSet[QuantType] = frozenset({QuantType.Q4_K})
 
 #: dequantise to fp16 then a dense GEMM. Wins above roughly M=512, where the weight read stops dominating.
 #:
-#: EMPTY, DELIBERATELY. The path was measured elsewhere -- 2.1x faster than fused at M=2048 -- but no harness in this
-#: repository runs any format through it against an independent oracle, and a benchmark is not an oracle. The set
-#: listed all six formats until evidence was checked per (format, path) instead of per format, at which point every
-#: one of those six entries turned out to rest on a harness for a different path. Populating it requires a dense-path
-#: harness, not an edit here.
-DEQUANT_THEN_DENSE: FrozenSet[QuantType] = frozenset()
+#: The five k-quants, and the evidence is tests/test_gguf_routes.py: raw blocks -> fp16 weight -> torch's cuBLAS,
+#: dense and per-expert, against the official gguf package as an independent oracle, worst relative error 1.05e-3.
+#:
+#: THE EMPTY SET IT REPLACES WAS CORRECT AT THE TIME, and the reason it stayed empty is worth keeping. It listed all
+#: six formats until evidence was checked per (format, path) instead of per format, at which point every entry
+#: turned out to rest on a harness for a DIFFERENT path; the note then said populating it needs a dense-path
+#: harness, not an edit here. That is what happened -- the harness came first. GPTQ is deliberately still absent:
+#: routes.py reads k-quant blocks, and the symmetric packed forms have no host binding to reach the route at all.
+DEQUANT_THEN_DENSE: FrozenSet[QuantType] = frozenset({
+    QuantType.Q2_K, QuantType.Q3_K, QuantType.Q4_K, QuantType.Q5_K, QuantType.Q6_K,
+})
 
 #: Above this many rows the dense path's extra pass over the weights is repaid. Measured, not assumed: at 2048 it
 #: was 2.1x faster than the fused path. The crossover itself has not been swept, so the constant is a boundary

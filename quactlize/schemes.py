@@ -13,8 +13,11 @@ Crossed with the GEMM shape -- dense, grouped (MoE), and the CUDA-core GEMV used
 reader needs to see before asking "is format X supported". "Supported" alone is not a fact: Q4_K is validated on
 SCALE_FIRST/grouped, exists behind a build flag on FULLY_QUANTIZED/grouped, and has nothing at all on GEMV.
 
-THE FOUR CAPABILITY SETS IN formats.py ARE NOW DERIVED FROM THIS TABLE rather than written beside it. They were a
-second place where the same facts lived, and a second place is where drift starts.
+THE FOUR CAPABILITY SETS IN formats.py ARE CROSS-CHECKED AGAINST THIS TABLE, not derived from it -- formats.py
+cannot import this module, because this one imports formats.py for QuantType. The distinction matters because the
+header used to claim derivation and there was none: the sets were literals, capability() below had no callers at
+all, and the two places drifted exactly as the warning said they would. tests/test_schemes_consistency.py is what
+makes the claim true; capability() is what it compares against.
 
 WHAT THE STATUSES MEAN, and why PARTIAL exists. A path can have its pieces without having the path: DEQUANT_FIRST
 has a working dequantiser -- unfused_weight_dequantize.hpp, which produces the fp16 reference every other harness
@@ -78,15 +81,25 @@ _DENSE = "quactlize/include/fpA_intB_ppu.cuh"
 _GEMV = "quactlize/include/gemv_lowbit/"
 _DEQ = "quactlize/include/unfused_weight_dequantize.hpp"
 
-_NO_DEQUANT_GEMM = Impl(
-    Status.PARTIAL, _DEQ, note=(
-        "the GEMM is a LIBRARY CALL -- cuBLAS dense, DeepGemm MoE -- so what was missing was never a launcher, it "
-        "was a dequantiser that can read a k-quant block: unfused_weight_dequantize.hpp handles the symmetric "
-        "packed forms and cannot. quactlize.gguf_dequantize now does, checked elementwise against the official gguf "
-        "package for all five at fp16 rounding. What remains is host-side wiring -- the workspace, the library call "
-        "and the per-expert arrangement -- not arithmetic. Cost is why this stays a fallback: a dequantised fp16 "
-        "weight is 4x the int4 codes and ~3.6x the native block, so it only pays where the result is reused across "
-        "many rows"))
+_ROUTES = "quactlize/routes.py"
+
+_DEQUANT_DENSE = Impl(
+    Status.VALIDATED, _ROUTES, note=(
+        "RUNS END TO END: raw GGUF blocks -> fp16 weight -> torch's cuBLAS -> (m, n), against the official gguf "
+        "package as oracle for all five k-quants at m in (1, 7, 64), worst relative error 1.05e-3 which is the fp16 "
+        "weight's own floor. Exercised on a CUDA tensor as well, so the GEMM half is the library and not a CPU "
+        "matmul. This sat at PARTIAL for longer than it deserved on a note saying the remainder was 'host-side "
+        "wiring' -- the remainder was one line, and the cost of not writing it was that no two routes had ever "
+        "produced the same number in the same process. Cost is why it stays a FALLBACK, not why it stayed unwired: "
+        "a dequantised fp16 weight is 4x the int4 codes and ~3.6x the native block, so it pays only where the "
+        "result is reused across many rows"))
+
+_DEQUANT_GROUPED = Impl(
+    Status.VALIDATED, _ROUTES, note=(
+        "the same route with a per-expert weight and ragged rows, validated with DIFFERENT bytes per expert (so "
+        "reading expert 0 for everyone fails) and a zero-row expert (so the skip branch runs). The GEMM is one "
+        "library call per expert; substituting DeepGemm changes the GEMM, not the route, and the arrangement it "
+        "would need is the same expert-ordered gather the grouped kernels already assume"))
 
 _NO_PACKED_2PLANE = Impl(
     Status.ABSENT, "", note=(
@@ -118,8 +131,15 @@ _KQUANTS = (QuantType.Q2_K, QuantType.Q3_K, QuantType.Q4_K, QuantType.Q5_K, Quan
 _ALL = tuple(QuantType)
 
 # --- DEQUANT_FIRST: a dequantiser without a GEMM ----------------------------------------------------------------
-_add(Scheme.DEQUANT_FIRST, Shape.DENSE, _KQUANTS + (QuantType.GPTQ_INT4_SYM,), _NO_DEQUANT_GEMM)
-_add(Scheme.DEQUANT_FIRST, Shape.GROUPED, _KQUANTS + (QuantType.GPTQ_INT4_SYM,), _NO_DEQUANT_GEMM)
+_add(Scheme.DEQUANT_FIRST, Shape.DENSE, _KQUANTS, _DEQUANT_DENSE)
+_add(Scheme.DEQUANT_FIRST, Shape.GROUPED, _KQUANTS, _DEQUANT_GROUPED)
+# GPTQ is NOT covered by the above: routes.py reads k-quant blocks, and the symmetric packed forms go through
+# unfused_weight_dequantize.hpp, which has no host binding. Left PARTIAL rather than folded in, because a table
+# that generalises from five formats to six is how a claim outruns its test.
+_add(Scheme.DEQUANT_FIRST, Shape.DENSE, (QuantType.GPTQ_INT4_SYM,), Impl(
+    Status.PARTIAL, _DEQ, note="dequantiser exists in C++; no host binding, so the route cannot be called"))
+_add(Scheme.DEQUANT_FIRST, Shape.GROUPED, (QuantType.GPTQ_INT4_SYM,), Impl(
+    Status.PARTIAL, _DEQ, note="dequantiser exists in C++; no host binding, so the route cannot be called"))
 
 # --- SCALE_FIRST: the workhorse ---------------------------------------------------------------------------------
 # Grouped, validated against an INDEPENDENT oracle. The oracle strength per format is in ci/registry.py and is
@@ -169,8 +189,12 @@ _add(Scheme.FULLY_QUANTIZED, Shape.GEMV, _KQUANTS, Impl(
         "against the official gguf package -- which the per-group scale tests cannot do, since a decoder with the "
         "right scales and the wrong element order passes those. dp4a is ruled out by decision: it quantises the "
         "activation and this band has no second chance at the error, and PPU is confirmed to have an int8 TENSOR "
-        "core but not a cuda-core four-way int8 dot. What is missing is a PPU kernel: the __global__ here is a "
-        "portable reference, and the shipping answer is to wire gemv_lowbit rather than tune it")))
+        "core but not a cuda-core four-way int8 dot. THE HOST SIDE IS WIRED NOW -- routes.matmul_native_gemv "
+        "assembles a full (1, n) product from the per-block op and agrees with the official gguf package to 1.4e-7, "
+        "tighter than every other route because it never rounds the weight to fp16. It stays PARTIAL because that "
+        "assembly tiles the ACTIVATION k/256-fold on the host: correct, and useless as a timing. What is missing is "
+        "the kernel -- vecdot_rows_kernel gives one output row per thread, so 32 lanes read addresses "
+        "blocks_per_row*block_bytes apart, and it has never been timed at all")))
 
 
 def get(scheme: Scheme, shape: Shape, fmt: QuantType) -> Impl:
@@ -187,8 +211,44 @@ def capability(scheme: Scheme, *shapes: Shape, minimum: Status = Status.IMPLEMEN
                      if any(get(scheme, s, f).status >= minimum for s in want))
 
 
+# (scheme, shape) -> the registry's path name. The registry has carried per-(format, path) evidence all along --
+# coverage_by_path() -- and this file was calling the WEAKER coverage(), which answers "does this format have an
+# oracle anywhere". Under that question a format validated on one cell approved every other cell for free: ten new
+# VALIDATED cells were added and the check reported no problems, and a planted claim that Q2_K was validated on
+# fully_quantized/dense -- a path with no harness in existence -- also reported no problems. The strong function
+# was already written; it was simply not the one wired in.
+_CELL_PATH = {
+    (Scheme.DEQUANT_FIRST, Shape.DENSE): "dequant_then_dense",
+    (Scheme.DEQUANT_FIRST, Shape.GROUPED): "dequant_then_dense",
+    (Scheme.SCALE_FIRST, Shape.DENSE): "fused_fp16_scale",
+    (Scheme.SCALE_FIRST, Shape.GROUPED): "fused_fp16_scale",
+    (Scheme.SCALE_FIRST, Shape.GEMV): "gemv",
+    (Scheme.FULLY_QUANTIZED, Shape.DENSE): "fused_native_scale",
+    (Scheme.FULLY_QUANTIZED, Shape.GROUPED): "fused_native_scale",
+    (Scheme.FULLY_QUANTIZED, Shape.GEMV): "gemv",
+    (Scheme.DEQUANT_FIRST, Shape.GEMV): "dequant_then_dense",
+}
+
+# WHERE THE PATH VOCABULARY IS COARSER THAN THE CELL. ci/registry.py has four path names and this table has nine
+# cells, so some cells share a name -- and sharing a name means sharing EVIDENCE. Two of those shares are wrong
+# enough to matter:
+#
+#   fully_quantized/gemv  borrows "gemv", whose only harness is the fp16-PLANE GEMV. Native-scale and fp16-plane
+#                         GEMV are precisely the two routes the decode band must choose between.
+#   dequant_first/gemv    borrows "dequant_then_dense", whose harness runs a GEMM at m in (1, 7, 64). A materialise-
+#                         then-GEMV route shares the materialisation and nothing else.
+#
+# Left mapped rather than unmapped, because an UNMAPPED cell is approved by default: the lookup that should refuse
+# it finds nothing to check and returns no problem. Mapped-but-listed-here is refused instead -- a consistency test
+# asserts no cell in this set is VALIDATED, so the day one is, the vocabulary has to be split first.
+_CELL_PATH_IS_COARSE = frozenset({
+    (Scheme.FULLY_QUANTIZED, Shape.GEMV),
+    (Scheme.DEQUANT_FIRST, Shape.GEMV),
+})
+
+
 def check_against_registry():
-    """Every VALIDATED cell must have an oracle in ci/registry.py. Returns a list of problems.
+    """Every VALIDATED cell must have a harness for THAT (format, path). Returns a list of problems.
 
     One direction only, deliberately: a format may have a real oracle for one scheme and nothing for another, so a
     registry entry does not imply a cell here. What must not happen is the reverse -- this table calling a path
@@ -200,17 +260,21 @@ def check_against_registry():
     except Exception as e:
         return [f"cannot import ci/registry.py to check VALIDATED claims: {e}"]
 
-    have = registry.coverage()
+    have = registry.coverage_by_path()
     quant_to_format = {v: k for k, v in registry.FORMAT_TO_QUANT_TYPE.items()}
     bad = []
     for (scheme, shape, fmt), impl in sorted(IMPL.items(), key=lambda kv: (kv[0][0].value, kv[0][1].value, kv[0][2].name)):
         if impl.status < Status.VALIDATED:
             continue
+        cell = f"{scheme.value}/{shape.value}/{fmt.name}"
         name = quant_to_format.get(fmt.name)
+        path = _CELL_PATH.get((scheme, shape))
         if name is None:
-            bad.append(f"{scheme.value}/{shape.value}/{fmt.name} is VALIDATED but maps to no registry format")
-        elif not have.get(name):
-            bad.append(f"{scheme.value}/{shape.value}/{fmt.name} is VALIDATED, but no harness validates {name!r}")
+            bad.append(f"{cell} is VALIDATED but maps to no registry format")
+        elif path is None:
+            bad.append(f"{cell} is VALIDATED but ({scheme.value}, {shape.value}) maps to no registry path")
+        elif not have.get((name, path)):
+            bad.append(f"{cell} is VALIDATED, but no harness runs {name!r} through {path!r}")
     return bad
 
 

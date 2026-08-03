@@ -42,6 +42,10 @@ HARNESS_PATHS = {
     "test_w1a16_diag": [FP16_P], "test_w2a16_diag": [FP16_P], "test_w4a16_diag": [FP16_P],
     "test_fpA_intB_ppu": [FP16_P], "test_gemv_lowbit": [GEMV_P], "test_moe_gemm_ppu": [FP16_P],
     "test_moe_grouped_ppu": [FP16_P],
+    # THE FIRST EVIDENCE FOR dequant_then_dense. Until this existed DENSE_P appeared in the path vocabulary and in
+    # no harness at all, which is the honest state of a route whose host side was never wired -- and check_against_
+    # formats() said nothing, because formats.DEQUANT_THEN_DENSE was empty too. Two empty sets agree.
+    "test_gguf_routes": [DENSE_P],
 }
 
 # harness -> (formats it covers, oracle kind, fixture it must read or None, note)
@@ -80,6 +84,13 @@ HARNESSES = {
     "test_gemv_lowbit":         (["int4", "int2", "int1", "gptq-int4-sym"], "synthetic", None, "CUDA-core GEMV"),
     "test_moe_gemm_ppu":        (["int4"],            "self",      None, ""),
     "test_moe_grouped_ppu":     (["int4"],            "self",      None, ""),
+    # SYNTHETIC, and the reason is a property of the oracle rather than a shortcut: the official gguf package has no
+    # k-quant QUANTISER, only dequantize(), so there is no way to ask it for the bytes of a given weight. The bytes
+    # are synthesised and the official dequantiser defines what they mean -- an independent implementation of the
+    # spec over generated inputs, which is exactly this file's definition of synthetic. Real-checkpoint bytes reach
+    # only Q4_K, through test_q4k_packed_gemm, and that is a different path.
+    "test_gguf_routes":         (["gguf-q2k", "gguf-q3k", "gguf-q4k", "gguf-q5k", "gguf-q6k"], "synthetic", None,
+        "raw blocks -> fp16 weight -> torch's cuBLAS, dense and per-expert, against the official gguf package"),
 }
 
 # Formats we intend to ship, and what each one needs before it can be called supported.
@@ -138,12 +149,16 @@ def check():
     bad = []
     tests = ROOT / "tests"
     for name, (fmts, oracle, fixture, _note) in HARNESSES.items():
-        src = tests / f"{name}.cu"
-        if not src.exists():
-            bad.append(f"{name}: declared but tests/{name}.cu does not exist")
+        # A harness is evidence whatever language it is in. dequant_then_dense is exercised from Python, because its
+        # GEMM is a library call and its dequantiser is already a torch op -- writing it in CUDA would have added a
+        # toolchain dependency to the one route that does not need one.
+        src = next((tests / f"{name}{ext}" for ext in (".cu", ".py") if (tests / f"{name}{ext}").exists()), None)
+        if src is None:
+            bad.append(f"{name}: declared but neither tests/{name}.cu nor tests/{name}.py exists")
             continue
         text = src.read_text(errors="ignore")
-        code = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("//"))
+        comment = "#" if src.suffix == ".py" else "//"
+        code = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith(comment))
 
         if oracle == "real":
             if fixture and fixture not in text:
@@ -167,6 +182,11 @@ def check():
         if "MISMATCH" in code and "return bad" not in code and "return fail" not in code and "g_fail" not in code:
             bad.append(f"{name}: prints MISMATCH but the exit status may not carry it")
 
+    # THE SWEEP IS .cu ONLY, and that is a KNOWN HOLE rather than an oversight. It enforces "every CUDA harness is
+    # declared"; the Python tests are not enumerated, so one could be added as evidence for a path and never appear
+    # here. Not closed in the same change that first needed it, because turning it on demands declaring every
+    # existing tests/*.py -- test_gguf_golden, test_formats, test_layouts -- and a sweep that goes red the moment it
+    # is switched on gets switched off. Declared as a gap so it is a task, not a surprise.
     for name in sorted(p.stem for p in tests.glob("test_*.cu")):
         if name not in HARNESSES:
             bad.append(f"tests/{name}.cu exists but is not declared in the registry")

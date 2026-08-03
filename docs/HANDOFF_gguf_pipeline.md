@@ -18,9 +18,18 @@ the whole basis for choosing between them.
 
 The fallback's extra traffic is **16×** the pre-pass's and its GEMM reads **3.6×** more bytes, so the crossover is in
 **M**, not in implementation quality: at decode it is absurd, in the middle band the pre-pass's 1.05 MB constant
-trades against the packed path's 11.6% rate, and only at large M does reuse amortise the dequantised weight far
-enough for cuBLAS-grade efficiency to pay for the bytes. `formats.select_path` already takes `num_rows`; what it
-lacks is measurement to set the thresholds with.
+trades against the packed path's rate, and only at large M does reuse amortise the dequantised weight far enough for
+cuBLAS-grade efficiency to pay for the bytes. `formats.select_path` already takes `num_rows`; what it lacks is
+measurement to set the thresholds with.
+
+**Two of these are callable from Python now** (`quactlize/routes.py`), which is what makes that measurement possible
+at all: `matmul_dequant_first` (dense and per-expert) and `matmul_native_gemv`. Both are checked against the official
+`gguf` package for all five k-quants — worst relative error 1.05e-3 and 1.4e-7 respectively, each its own arithmetic's
+floor — and the dense route is exercised on a CUDA tensor so its GEMM is the library rather than a CPU matmul.
+
+The fallback sat at "a piece exists, the path does not" on a note saying the remainder was *host-side wiring*. The
+note was accurate and it functioned as a blocker anyway: the remainder was `a @ w.T`, and the cost of not writing it
+was that **no two routes had ever produced the same number in the same process**.
 
 **The pre-pass removes the STORAGE objection, not the RESIDENCY one.** Materialising fp16 planes costs +9…52% stored
 bytes depending on format, which the project forbids; a workspace does not count. But at decode the planes would be
@@ -142,8 +151,21 @@ one reads a contiguous run.
 5. **The destination should be a cute Tensor/Layout, not a callable** — measured: partitioning physical output
    addresses and deriving logical source indices with `right_inverse` is **3× faster** than striping logical indices
    (65.5 vs 196.6 µs) on a non-affine layout.
-6. **The GEMV is wiring, not a kernel** — `gemv_lowbit` is validated and consumes exactly what the offline chain
-   produces. Note it produces `SCALE_FIRST` execution, not native-scale `FULLY_QUANTIZED`.
+6. **The GEMV's kernel, not its wiring** — the host side is done: `routes.matmul_native_gemv` assembles a full
+   `(1, n)` product and agrees with the oracle to 1.4e-7. It stays PARTIAL because that assembly tiles the
+   *activation* k/256-fold on the host — correct, and useless as a timing. `vecdot_rows_kernel` gives one output row
+   per thread, so 32 lanes read addresses `blocks_per_row × block_bytes` apart, and **it has never been timed**.
+   `gemv_lowbit` is the tuned alternative but produces `SCALE_FIRST` execution, not native-scale.
+
+7. **The registry's path vocabulary is coarser than the matrix** — four path names, nine cells. Two shares are
+   wrong enough to matter: `fully_quantized/gemv` would be approved by the fp16-*plane* GEMV harness, and
+   `dequant_first/gemv` by a GEMM. Both are mapped anyway, because an *unmapped* cell is approved by default —
+   the lookup that should refuse it finds nothing to check — and a test now refuses any VALIDATED claim in them.
+   Splitting the vocabulary is the fix; it is a task, not a surprise.
+
+8. **`ci/registry.py`'s completeness sweep is `.cu` only.** Every CUDA harness must be declared; a Python one need
+   not be. Turning it on requires declaring every existing `tests/*.py`, and a sweep that goes red the moment it is
+   switched on gets switched off.
 
 ---
 

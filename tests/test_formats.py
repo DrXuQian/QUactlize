@@ -12,7 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from quactlize.formats import (BLOCKS, DEQUANT_THEN_DENSE, FUSED_FP16_SCALE, FUSED_NATIVE_SCALE, GEMV, QuantType,
+from quactlize.formats import (BLOCKS, DENSE_CROSSOVER_ROWS, DEQUANT_THEN_DENSE, FUSED_FP16_SCALE,
+                               FUSED_NATIVE_SCALE, GEMV, QuantType,
                                needs_native_scale, report, select_path, storage_growth)
 
 # block size in bytes, from ggml-common.h. These are the numbers the format is DEFINED by -- a GGUF file's tensor
@@ -100,8 +101,13 @@ def test_storage_admissibility_is_part_of_selection_not_a_separate_check():
 
 def test_transient_planes_are_allowed_because_a_workspace_is_not_storage():
     """The constraint is on STORED bytes. A prefill pre-pass may build fp16 planes and discard them; the weight on
-    disk and in HBM is unchanged. That is what separates 'Q3_K cannot ship' from 'Q3_K cannot prefill'."""
-    assert select_path(QuantType.Q3_K, 2048, fp16_planes="workspace") == "fused_fp16_scale"
+    disk and in HBM is unchanged. That is what separates 'Q3_K cannot ship' from 'Q3_K cannot prefill'.
+
+    The row counts are BELOW DENSE_CROSSOVER_ROWS on purpose. At 2048 this used to read fused_fp16_scale and now
+    reads dequant_then_dense, because populating that capability set activated a branch that had always been there
+    -- so the original 2048 would have kept passing while testing a different claim. The claim here is about
+    planes_ok, and it needs a row count where the plane-consuming path is the one under test."""
+    assert select_path(QuantType.Q3_K, 256, fp16_planes="workspace") == "fused_fp16_scale"
     assert select_path(QuantType.Q4_K, 128, native_scale_available=False,
                        fp16_planes="workspace") == "fused_fp16_scale"
     with pytest.raises(NotImplementedError):
@@ -115,11 +121,35 @@ def test_a_format_whose_scales_are_already_fp16_needs_no_special_pleading():
     assert storage_growth(QuantType.GPTQ_INT4_SYM) == 0.0
 
 
-def test_the_dense_fallback_is_empty_and_that_is_a_recorded_gap():
-    """No harness in this repository runs any format through dequantise-then-dense against an independent oracle, so
-    the set is empty. It listed all six k-quants until evidence was checked per (format, path) rather than per
-    format. An empty set that says why beats a populated one nobody has run."""
-    assert DEQUANT_THEN_DENSE == frozenset()
+def test_the_dense_fallback_is_populated_by_a_harness_and_not_by_an_edit():
+    """The set was EMPTY, and the note said populating it needed a dense-path harness rather than an edit here. That
+    is what happened: tests/test_gguf_routes.py runs raw blocks -> fp16 weight -> torch's cuBLAS, dense and
+    per-expert, against the official gguf package.
+
+    GPTQ stays out, and the exclusion is the substance of this test. routes.py reads k-quant blocks; the symmetric
+    packed forms have no host binding, so nothing can call the route for them. A set that generalises from the five
+    formats a harness covers to the six a path could in principle serve is how a claim outruns its evidence -- which
+    is exactly what the previous version of this set did before per-(format, path) evidence caught it."""
+    assert DEQUANT_THEN_DENSE == frozenset({
+        QuantType.Q2_K, QuantType.Q3_K, QuantType.Q4_K, QuantType.Q5_K, QuantType.Q6_K})
+    assert QuantType.GPTQ_INT4_SYM not in DEQUANT_THEN_DENSE
+
+
+def test_populating_a_capability_set_changed_the_ROUTING(  ):
+    """POPULATING A SET IS A DISPATCH CHANGE, and it happened silently the first time.
+
+    select_path's second branch -- num_rows >= DENSE_CROSSOVER_ROWS and qtype in DEQUANT_THEN_DENSE -- was written
+    to prefer the dense fallback at large M and was inert only because the set was empty. Filling the set activated
+    it, and two existing tests changed answer without anyone deciding to change them.
+
+    The routing is what the branch always intended. What is worth pinning is that it now rests on
+    DENSE_CROSSOVER_ROWS, whose own comment says the crossover has NOT been swept -- it is one measurement at
+    M=2048 (2.1x) turned into a boundary. So this asserts the new behaviour AND that it is a boundary someone chose,
+    by checking it flips exactly at that constant rather than at some emergent value."""
+    below = select_path(QuantType.Q4_K, DENSE_CROSSOVER_ROWS - 1, fp16_planes="workspace")
+    at = select_path(QuantType.Q4_K, DENSE_CROSSOVER_ROWS, fp16_planes="workspace")
+    assert below == "fused_native_scale", f"below the crossover Q4_K should stay native, got {below}"
+    assert at == "dequant_then_dense", f"at the crossover Q4_K should go dense, got {at}"
 
 
 def test_a_format_with_no_path_at_all_raises():
