@@ -321,8 +321,10 @@ def gguf_cuda_probe(tmp_path_factory):
         pytest.skip("CUDA golden needs nvcc and a CUDA device")
     major, minor = torch.cuda.get_device_capability()
     out = tmp_path_factory.mktemp("gguf_cuda") / "libgguf_cuda_probe.so"
-    cmd = ["nvcc", "-std=c++17", "-O3", f"-arch=sm_{major}{minor}", "-shared", "-Xcompiler=-fPIC",
+    cmd = ["nvcc", "-std=c++17", "-O3", f"-arch=sm_{major}{minor}", "--expt-relaxed-constexpr",
+           "-shared", "-Xcompiler=-fPIC",
            f"-I{ROOT / 'quactlize' / 'include'}", f"-I{ROOT / 'third_party' / 'cutlass' / 'include'}",
+           f"-I{ROOT / 'third_party' / 'actlize' / 'include'}",
            "-o", str(out), str(ROOT / "tests" / "gguf_cuda_probe.cu")]
     built = subprocess.run(cmd, capture_output=True, text=True)
     assert built.returncode == 0, built.stdout + built.stderr
@@ -336,12 +338,28 @@ def gguf_cuda_probe(tmp_path_factory):
     lib.quactlize_cuda_q4_prepass_bench.argtypes = [ctypes.c_int, ctypes.c_int, fp, fp, dp]
     lib.quactlize_cuda_q4_layout_check.argtypes = [u8p, u16p, u16p]
     lib.quactlize_cuda_q4_layout_bench.argtypes = [ctypes.c_int, fp, fp]
-    lib.quactlize_cuda_vecdot.argtypes = [u8p, fp, fp, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+    lib.quactlize_cuda_vecdot.argtypes = [u8p, u16p, fp, ctypes.c_int, ctypes.c_int, ctypes.c_int]
     lib.quactlize_cuda_vecdot_bench.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
                                                  fp, fp, dp]
     lib.quactlize_cuda_vecdot_bench_config.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
                                                         ctypes.c_int, fp, fp, dp]
+    lib.quactlize_cuda_vecdot_rows_per_warp.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
     return lib, ctypes
+
+
+def test_cuda_shared_byte4_converter_keeps_all_bias_and_order_contracts(gguf_cuda_probe):
+    """The shared prmt constants serve both this GEMV and the historical mixed-GEMM int8 specialization."""
+    lib, _ctypes = gguf_cuda_probe
+    assert lib.quactlize_cuda_byte4_converter_check() == 0
+
+
+def test_cuda_vecdot_launch_policy_keeps_shipping_and_saturated_shapes_distinct(gguf_cuda_probe):
+    lib, _ctypes = gguf_cuda_probe
+    selected = lib.quactlize_cuda_vecdot_rows_per_warp
+    assert [selected(q, 2048, 8) for q in range(10, 15)] == [2, 2, 2, 2, 2]
+    assert [selected(q, 131072, 8) for q in range(10, 15)] == [2, 4, 4, 8, 2]
+    assert selected(11, 131072, 16) == 2               # Q3's high-bpr crossover measured separately
+    assert selected(12, 8192, 8) == 8                  # Q4 middle band keeps the same 128-CTA supply as rows=2048
 
 
 def test_cuda_prepass_is_bit_exact_and_shows_the_fixed_duration_floor(gguf_cuda_probe):
@@ -423,20 +441,22 @@ def test_cuda_destination_partitions_physical_addresses_and_inverts_the_layout(g
 
 
 def test_cuda_vecdot_cooperative_matches_cpu_reference(gguf_cuda_probe):
-    """All five cooperative kernels against the scalar CPU vecdot_block reference, including ragged rows.
+    """All five cooperative kernels against fp64 official weights, including ragged rows.
 
-    Every format gives lanes whole groups (an adjacent group pair for Q4/Q5) and the final butterfly reassociates
-    group and block contributions. The 2e-6 threshold is a summation-order tolerance, not a widened weight-decode
-    tolerance; the observed worst case on the tuning seed is 2.16e-7. Neither side quantises activation.
+    The shipping kernel accumulates in fp16/half2. Error is therefore conditioned by sum(abs(w*x)), not by abs(dot):
+    Q6's centred codes make cancellation routinely put those denominators two orders of magnitude apart. The bound
+    is fp16's own half-ULP output floor, 2^-11, rather than a tolerance selected from the observed answers.
     """
     torch = pytest.importorskip("torch")
     quactlize = pytest.importorskip("quactlize", reason="needs the built operator library")
     lib, ctypes = gguf_cuda_probe
-    u8p, fp = ctypes.POINTER(ctypes.c_uint8), ctypes.POINTER(ctypes.c_float)
+    u8p = ctypes.POINTER(ctypes.c_uint8)
+    u16p, fp = ctypes.POINTER(ctypes.c_uint16), ctypes.POINTER(ctypes.c_float)
     assert quactlize.gguf_backend().startswith("cpu"), "this comparison needs gguf_vecdot's CPU reference arm"
     rng = np.random.default_rng(8675309)
     rows, blocks_per_row = 37, 3
     x = (rng.random((blocks_per_row, 256), dtype=np.float32) * 2 - 1).astype(np.float32)
+    x16 = x.astype(np.float16)
     checked = []
     raw_accum = []
     for name, qtype, hdr, _scales, _codes, _qmax in FORMATS:
@@ -446,27 +466,41 @@ def test_cuda_vecdot_cooperative_matches_cpu_reference(gguf_cuda_probe):
             v = (rng.random(rows * blocks_per_row) * .1 + .001).astype(np.float16)
             raw[:, lo:hi] = v.view(np.uint8).reshape(-1, 2)
         got = np.empty(rows, np.float32)
-        rc = lib.quactlize_cuda_vecdot(raw.ctypes.data_as(u8p), x.ctypes.data_as(fp), got.ctypes.data_as(fp),
+        rc = lib.quactlize_cuda_vecdot(raw.ctypes.data_as(u8p), x16.ctypes.data_as(u16p), got.ctypes.data_as(fp),
                                        rows, blocks_per_row, int(qtype))
         assert rc == 0 and np.isfinite(got).all(), f"{name}: CUDA vecdot failed ({rc})"
 
-        # The Python op invokes scalar vecdot_block once per raw block and left-folds those blocks. Every cooperative
-        # format deliberately reduces its group/block owners at row end.
-        x_per_block = np.tile(x, (rows, 1))
+        # Keep the scalar Python path in the test: it remains the public fp32 reference arm and catches a disagreement
+        # between the official weights and our serial decode independently of the cooperative arithmetic below.
+        x_per_block = np.tile(x16, (rows, 1))
         block_dot = quactlize.gguf_vecdot(torch.from_numpy(raw), torch.from_numpy(x_per_block),
                                           int(qtype)).numpy().reshape(rows, blocks_per_row)
-        ref = np.zeros(rows, np.float32)
+        ref32 = np.zeros(rows, np.float32)
         for b in range(blocks_per_row):
-            ref = np.float32(ref + block_dot[:, b])
-        scale = max(1e-9, float(np.abs(ref.astype(np.float64)).max()))
-        rel = float(np.abs(got.astype(np.float64) - ref.astype(np.float64)).max()) / scale
-        assert rel < 2e-6, f"{name}: cooperative CUDA vs CPU vecdot relative error {rel:.3e}"
-        checked.append(f"{name} {rel:.2e}")
+            ref32 = np.float32(ref32 + block_dot[:, b])
+
+        w64 = gguf.quants.dequantize(raw.reshape(-1), qtype).reshape(rows, blocks_per_row, 256).astype(np.float64)
+        terms64 = w64 * x16.astype(np.float64)[None, :, :]
+        ref64 = terms64.sum(axis=(1, 2))
+        sumabs = np.abs(terms64).sum(axis=(1, 2))
+        err = np.abs(got.astype(np.float64) - ref64)
+        conditioned = float(np.max(err / np.maximum(sumabs, np.finfo(np.float64).tiny)))
+        result_rel = float(np.max(err / np.maximum(np.abs(ref64), np.finfo(np.float64).tiny)))
+        fp16_output_floor = 2.0 ** -11
+        assert conditioned < fp16_output_floor, \
+            (f"{name}: fp16 CUDA accumulation conditioned error {conditioned:.3e} exceeds its "
+             f"2^-11 output floor; cancellation-sensitive error/abs(dot)={result_rel:.3e}")
+        # The fp32 arm is not the asserted oracle for fp16 arithmetic, but it must remain substantially closer than
+        # the output floor or this fixture has stopped measuring the intended width difference.
+        fp32_conditioned = float(np.max(np.abs(ref32.astype(np.float64) - ref64)
+                                         / np.maximum(sumabs, np.finfo(np.float64).tiny)))
+        assert fp32_conditioned < fp16_output_floor / 4
+        checked.append(f"{name} fp16={conditioned:.2e} fp32={fp32_conditioned:.2e} result-rel={result_rel:.2e}")
         groups = 8 if name in ("Q4_K", "Q5_K") else 16
         group_size = 256 // groups
         codes = quactlize.gguf_unpack(torch.from_numpy(raw), int(qtype))[0].numpy().astype(np.float32)
-        terms = codes.reshape(rows, blocks_per_row, groups, group_size) * x.reshape(1, blocks_per_row,
-                                                                                   groups, group_size)
+        terms = codes.reshape(rows, blocks_per_row, groups, group_size) * x16.reshape(1, blocks_per_row,
+                                                                                     groups, group_size)
         # This is the value whose wider dynamic range the affine hoist introduces. Record both the actual reduced
         # value and the cancellation-free sum of magnitudes for the same seeded correctness fixture; neither is an
         # asserted range inferred only from the nominal code width.
@@ -618,7 +652,7 @@ def _build_stub(tmp_path):
     src = tmp_path / "stub.c"
     src.write_text(
         "#include <stdint.h>\n"
-        "int quactlize_ppu_vecdot(uint8_t const* b,int64_t bb,float const* x,float* o,int r,int p,int q){"
+        "int quactlize_ppu_vecdot(uint8_t const* b,int64_t bb,uint16_t const* x,float* o,int r,int p,int q){"
         "(void)b;(void)bb;(void)x;(void)p;(void)q;for(int i=0;i<r;++i)o[i]=-12345.f;return 0;}\n"
         "int quactlize_ppu_dequantize(uint8_t const* b,int64_t bb,uint16_t* o,int n,int q){"
         "(void)b;(void)bb;(void)q;for(int i=0;i<n*256;++i)o[i]=0x3C00;return 0;}\n"
@@ -638,7 +672,7 @@ def test_ppu_seam_reports_and_forwards(tmp_path):
         import numpy as np, torch, quactlize
         print(quactlize.gguf_backend().split(" (")[0])
         raw = torch.from_numpy(np.zeros((4,144), np.uint8))
-        x = torch.from_numpy(np.zeros((4,256), np.float32))
+        x = torch.from_numpy(np.zeros((4,256), np.float16))
         print(float(quactlize.gguf_vecdot(raw, x, 12).numpy()[0]))
         s, _ = quactlize.gguf_scale_prepass(torch.from_numpy(np.zeros((4,12), np.uint8)),
                                             torch.from_numpy(np.zeros(4, np.float16)),
@@ -774,14 +808,15 @@ def test_all_routes_agree_with_llama_cpp(name, qtype, hdr, scales, codes, qmax):
     assert torch.equal(s_u, s_pl) and torch.equal(z_u, z_pl), \
         f"{name}: the packed unit and the GGUF block must decode to the same planes, bit for bit"
 
-    # ROUTE 4 -- the native GEMV, no planes materialised at all.
+    # ROUTE 4 -- the native GEMV CPU witness, no planes materialised. The direct CUDA golden above separately owns
+    # the fp16 device arithmetic and its conditioned tolerance.
     dot_gemv = quactlize.gguf_vecdot(torch.from_numpy(raw), torch.from_numpy(x),
                                      int(qtype)).numpy().astype(np.float64)
 
-    # fp16 weights carry 2^-11 relative; the GEMV keeps its scales in fp32 registers and only rounds the sum.
+    # The two materialised routes carry fp16 weight error; the CPU native witness keeps its tight fp32 gate.
     for label, got, tol in (("fallback(fp16 weights)", dot_fallback, 2e-3),
                             ("prepass(fp16 planes)", dot_prepass, 2e-3),
-                            ("gemv(native)", dot_gemv, 2e-5)):
+                            ("gemv(native CPU witness)", dot_gemv, 2e-5)):
         rel = np.abs(got - ref_dot).max() / scale_ref
         assert rel < tol, f"{name}: route {label} disagrees with llama.cpp, worst relative error {rel:.3e}"
 

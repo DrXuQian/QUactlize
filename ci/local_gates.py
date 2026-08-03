@@ -208,6 +208,38 @@ def lint_unroll():
     return "PASS", "no duplicate unroll directives", 0.0
 
 
+def lint_ppu_asm_device_guard():
+    """Reject the compiler-pass guard that previously exposed PPU asm to hgcc's host pass.
+
+    `__HGGCCC__` is the analogue of `__CUDACC__`: it is true in both host and device passes. PPU instructions must
+    instead sit behind `__HGGC_ARCH__`, the analogue of `__CUDA_ARCH__`. The exact compiler-only spelling below was
+    used by the native GGUF byte-permute trial and cannot be falsified by nvcc on a machine without hgcc.
+    """
+    roots = [ROOT / "quactlize/include", ROOT / "third_party/actlize/include"]
+    bad = []
+    # This existing arm is box-proven: test_q4k_packed_gemm rowC passed 5/5 on ppu001 and necessarily traverses
+    # ppu_f16x2_sub/fma. Replacing its working compiler guard with an architecture guard cannot be falsified without
+    # hgcc and could silently select the slower scalar fallback, so only NEW uses are rejected locally.
+    proven_exemptions = {"third_party/actlize/include/cutlass/gguf_packed_scale.h"}
+    compiler_only = re.compile(r"^\s*#(?:if|elif).*__HGGCCC__.*!\s*defined\s*\(\s*__NVCC__\s*\)")
+    for root in roots:
+        if not root.exists():
+            continue
+        for f in list(root.rglob("*.h")) + list(root.rglob("*.hpp")) + list(root.rglob("*.cuh")):
+            try:
+                lines = f.read_text().splitlines()
+            except Exception:
+                continue
+            for i, line in enumerate(lines, 1):
+                rel = str(f.relative_to(ROOT))
+                if compiler_only.search(line) and rel not in proven_exemptions:
+                    bad.append(f"{rel}:{i}")
+    if bad:
+        return ("FAIL", "PPU device asm/compiler branch must use __HGGC_ARCH__, not "
+                "__HGGCCC__ && !__NVCC__: " + ", ".join(bad[:4]), 0.0)
+    return "PASS", "no new PPU device branch uses the hgcc compiler-pass guard (1 box-proven exemption)", 0.0
+
+
 def gate(name, args):
     src = DEV / f"{name}.cu"
     if not src.exists():
@@ -254,6 +286,7 @@ def main():
                 ("asan", "preprocessing chain under ASAN", None),
                 ("pytest", "torch op tests", None),
                 ("lint", "duplicate unroll directives (hgcc-only error)", lint_unroll),
+                ("lint", "PPU asm uses device-pass architecture guard", lint_ppu_asm_device_guard),
     ("registry", "declarations vs source", None)])
     items = [i for i in items if a.k in i[1]]
     if a.list:

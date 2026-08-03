@@ -34,11 +34,16 @@
 #include "cutlass/util/device_memory.h"
 #include "ppu_include.hpp"
 #include "helper.h"
+#include "cutlass/fast_numeric_conversion_for_mix_gemm.h"
 #include "cutlass/gguf_packed_scale.h"
 #include "rwmoep_loader.hpp"
 
 using cutlass::half_t;
 namespace gp = cutlass::gguf_packed;
+
+__global__ void probe_mix_byte4_guard(int* out) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) out[0] = CUTLASS_MIX_GEMM_BYTE4_TO_HALF_PPU_ASM;
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 // (1) the instructions, alone. `want` is computed on the DEVICE with scalar half ops, so this compares two device
@@ -148,6 +153,14 @@ int main(int argc, char** argv) {
   std::printf("  (3) CUTLASS_GGUF_PACKED_F16X2_ASM = %d  -> the device build uses %s\n",
               CUTLASS_GGUF_PACKED_F16X2_ASM,
               CUTLASS_GGUF_PACKED_F16X2_ASM ? "the ppu.*.f16x2 ASM" : "the SCALAR FALLBACK (asm never runs!)");
+  cutlass::DeviceAllocation<int> dMixGuard(1);
+  probe_mix_byte4_guard<<<1, 1>>>(dMixGuard.get());
+  CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
+  int mix_guard = -1;
+  dMixGuard.copy_to_host(&mix_guard);
+  std::printf("  (3) CUTLASS_MIX_GEMM_BYTE4_TO_HALF_PPU_ASM(device) = %d  -> expected 1 on ppu001\n",
+              mix_guard);
+  g_fail += mix_guard != 1;
 
   // ---- (1) operands. Lanes are given DIFFERENT values throughout: an instruction that broadcasts one lane, or
   // swaps them, is invisible to any case where lo == hi.

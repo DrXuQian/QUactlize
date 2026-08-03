@@ -41,6 +41,8 @@ using DStride = moe_grouped_ppu::DStride;
 using GS      = moe_grouped_ppu::GroupShape;
 
 int main(int argc, char** argv) {
+  std::printf("[guard] CUTLASS_GGUF_PACKED_F16X2_ASM=%d (expected 1 on ppu001)\n",
+              CUTLASS_GGUF_PACKED_F16X2_ASM);
   char const* path = argc > 1 ? argv[1] : "real_weight/q4k_packed.bin";
   rwmoep::File f;
   if (!f.load(path)) return 64;

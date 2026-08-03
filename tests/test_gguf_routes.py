@@ -76,9 +76,9 @@ def _worst_rel(got, ref):
 # ceasing to discriminate -- a wrong element ORDER on this fixture lands at O(1).
 TOL = 5e-3
 
-# The native route never rounds the weight to fp16, so its floor is fp32 accumulation alone. MEASURED worst case
-# 1.43e-7. Set from the measurement rather than from caution: a 1e-4 tolerance here would pass a route that had
-# lost three digits, which is exactly what the loose number in the first draft of this file did.
+# This route test resolves to the CPU arm deliberately: it remains the clean fp32-accumulation witness over the
+# production fp16 activation and keeps its measured 1.43e-7 / 1e-6 gate. The direct gguf_cuda_probe test separately
+# runs the shipping fp16 accumulator and asserts conditioned error at the fixed 2^-11 floor.
 TOL_NATIVE = 1e-6
 
 
@@ -153,18 +153,19 @@ def test_native_gemv_matches_the_oracle(name, gt, hdr, qtype):
     """FULLY_QUANTIZED/GEMV against the oracle directly, not against another of our routes.
 
     This is the comparison schemes.py could not make before -- not because either decode was unproven, but because
-    neither route could be CALLED from Python. The native route keeps fp32 throughout, so its tolerance is tighter
-    than dequant_first's: it never rounds the weight to fp16."""
+    neither route could be CALLED from Python. This CPU-resolved assembly witness accumulates the production fp16
+    activation in fp32; the direct CUDA golden separately exercises the fp16 accumulator."""
     raw, w_ref = _fixture(gt, hdr, seed=qtype)
     rng = np.random.default_rng(99)
     a = (rng.standard_normal((1, K)).astype(np.float32) * 0.5)
-    ref = a.astype(np.float64) @ w_ref.T
+    # The native route's production activation contract is fp16; only its CPU oracle's ACCUMULATOR remains fp32.
+    ref = a.astype(np.float16).astype(np.float64) @ w_ref.T
 
     got = routes.matmul_native_gemv(torch.from_numpy(a), torch.from_numpy(raw), N, K, qtype) \
                 .numpy().astype(np.float64)
     assert got.shape == (1, N)
     rel = _worst_rel(got, ref)
-    assert rel < TOL_NATIVE, f"{name}: native GEMV disagrees with the oracle, worst {rel:.3e}"
+    assert rel < TOL_NATIVE, f"{name}: native CPU witness disagrees with the oracle, worst {rel:.3e}"
 
 
 @pytest.mark.parametrize("name,gt,hdr,qtype", FORMATS)

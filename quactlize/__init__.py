@@ -104,7 +104,7 @@ def gguf_vecdot(blocks, x, qtype: int):
     and keeping them is the forbidden storage again. Here nothing is materialised at all.
 
     `blocks` is uint8 [rows, type_size] holding RAW GGUF blocks -- the checkpoint's own bytes, no repacking. `x` is
-    fp32 [rows, 256]. Returns fp32 [rows].
+    fp16 or fp32 [rows, 256]; the device path consumes fp16 and the CPU oracle accepts both. Returns fp32 [rows].
     """
     return _ops().gguf_vecdot(blocks, x, qtype)
 

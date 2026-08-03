@@ -32,6 +32,7 @@ namespace {
 
 using gguf_scale::KType;
 using gguf_scale::Traits;
+using cutlass::half_t;
 
 // The ggml type numbers, which are also quactlize.formats.QuantType's values. Kept as the wire format rather than a
 // private enum so the Python side does not need a translation table that could drift.
@@ -165,26 +166,29 @@ std::vector<torch::Tensor> gguf_scale_prepass(torch::Tensor scale_blocks, torch:
 //
 // blocks : uint8 [rows, type_size]   RAW GGUF blocks, exactly as they sit in the file. No repacking, which is the
 //                                    point: at decode the checkpoint's own bytes are what is resident.
-// x      : fp32  [rows, 256]         the activation slice this superblock multiplies.
+// x      : fp16/fp32 [rows, 256]      the activation slice this superblock multiplies. The device ABI is fp16;
+//                                     fp32 remains accepted by the CPU oracle and is converted before forwarding.
 torch::Tensor gguf_vecdot(torch::Tensor blocks, torch::Tensor x, int64_t qtype) {
   CHECK_CPU(blocks); CHECK_CONTIGUOUS(blocks);
   CHECK_CPU(x); CHECK_CONTIGUOUS(x);
   TORCH_CHECK(blocks.dtype() == torch::kUInt8 && blocks.dim() == 2, "blocks must be uint8 [rows, type_size]");
-  TORCH_CHECK(x.dtype() == torch::kFloat32 && x.dim() == 2, "x must be float32 [rows, 256]");
+  TORCH_CHECK((x.dtype() == torch::kFloat16 || x.dtype() == torch::kFloat32) && x.dim() == 2,
+              "x must be float16 or float32 [rows, 256]");
   TORCH_CHECK(x.size(1) == 256, "a k-quant superblock is 256 elements; x's second dim is ", x.size(1));
   TORCH_CHECK(x.size(0) == blocks.size(0), "blocks and x must have the same number of rows");
   int64_t const rows = blocks.size(0);
   int64_t const ts = blocks.size(1);
   torch::Tensor out = torch::empty({rows}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
   auto const* bp = get_ptr<uint8_t const>(blocks);
-  auto const* xp = get_ptr<float const>(x);
   auto* op = get_ptr<float>(out);
   // FORWARD TO THE DEVICE LIBRARY WHEN IT IS LOADED. The CPU loop below stays as the oracle and as the path on a
   // machine with no SDK; it is not a fallback that hides a failure, because gguf_backend() reports which one ran.
   if (auto const* api = ppu_backend::load()) {
+    torch::Tensor x16 = x.dtype() == torch::kFloat16 ? x : x.to(torch::kFloat16);
+    auto const* xp16 = get_ptr<uint16_t const>(x16);
     // rows blocks, one activation slice of 256 each -- the same shape the CPU arm below consumes, so the two are
     // interchangeable and the golden tests apply to whichever one ran.
-    TORCH_CHECK(api->vecdot(bp, ts, xp, op, int(rows), 1, int(qtype)) == 0, "PPU vecdot failed");
+    TORCH_CHECK(api->vecdot(bp, ts, xp16, op, int(rows), 1, int(qtype)) == 0, "PPU vecdot failed");
     return out;
   }
   // THE CPU ARM OF AN INFERENCE OP IS A REFERENCE, NOT A FALLBACK, and the difference has to be enforced rather
@@ -210,7 +214,15 @@ torch::Tensor gguf_vecdot(torch::Tensor blocks, torch::Tensor x, int64_t qtype) 
     constexpr int64_t kRaw = (T == KType::Q2_K) ? 84 : (T == KType::Q3_K) ? 110
                            : (T == KType::Q4_K) ? 144 : (T == KType::Q5_K) ? 176 : 210;
     TORCH_CHECK(ts == kRaw, "this format's raw GGUF block is ", kRaw, " bytes, got ", ts);
-    for (int64_t r = 0; r < rows; ++r) op[r] = gguf_scale::vecdot::vecdot_block<T>(bp + r * ts, xp + r * 256);
+    if (x.dtype() == torch::kFloat32) {
+      auto const* xp = get_ptr<float const>(x);
+      for (int64_t r = 0; r < rows; ++r)
+        op[r] = gguf_scale::vecdot::vecdot_block<T>(bp + r * ts, xp + r * 256);
+    } else {
+      auto const* xp = get_ptr<half_t const>(x);
+      for (int64_t r = 0; r < rows; ++r)
+        op[r] = gguf_scale::vecdot::vecdot_block_input<T>(bp + r * ts, xp + r * 256);
+    }
     return out;
   });
 }

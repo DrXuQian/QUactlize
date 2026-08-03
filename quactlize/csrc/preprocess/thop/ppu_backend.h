@@ -23,8 +23,8 @@ namespace ppu_backend {
 // Every entry point the device .so must export, with C linkage. Raw pointers and shapes only -- no torch types, so
 // the .so can be built by a toolchain that has never heard of torch.
 struct Api {
-  // blocks [rows*blocks_per_row, block_bytes], x [blocks_per_row*256], out [rows]
-  int (*vecdot)(uint8_t const* blocks, int64_t block_bytes, float const* x, float* out,
+  // blocks [rows*blocks_per_row, block_bytes], x fp16 [blocks_per_row*256], out fp32 [rows]
+  int (*vecdot)(uint8_t const* blocks, int64_t block_bytes, uint16_t const* x, float* out,
                 int rows, int blocks_per_row, int qtype);
   // blocks [n_blocks, block_bytes] -> out fp16, dst_span elements per block
   int (*dequantize)(uint8_t const* blocks, int64_t block_bytes, uint16_t* out, int n_blocks, int qtype);

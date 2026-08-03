@@ -26,11 +26,14 @@
 // THE SOURCE CONTRACT IS RAW GGUF. This route intentionally reads the checkpoint's native k-quant blocks in their
 // own element order and materialises neither weights nor fp16 scale/zero planes. The SCALE_FIRST route is different:
 // its packed code tensor can be reordered for gemv_lowbit/, but that representation is not an input to this kernel.
-// The cooperative reduction below changes only fp32 summation order: every format combines its group/block owners
-// in one final row butterfly. Its device golden therefore uses an explicit summation-order tolerance against this
-// scalar traversal.
+// The cooperative reduction below deliberately accumulates in fp16/half2: every format combines its group/block
+// owners in one final row butterfly. Its device golden therefore measures error against sum(abs(w*x)), which stays
+// meaningful for centred formats even when cancellation makes error/abs(dot) arbitrarily large.
 #include <cstdint>
 #include "cutlass/numeric_types.h"
+#if defined(__CUDACC__) || defined(__HGGCCC__)
+#include "cutlass/fast_numeric_conversion_for_mix_gemm.h"
+#endif
 #include "gguf_scale_layout.hpp"   // brings cute/tensor.hpp, so cute::Layout is available as a destination
 #include "cute/atom/copy_atom.hpp"
 
@@ -273,16 +276,21 @@ CUTLASS_HOST_DEVICE void visit(uint8_t const* b, F f) {
 
 // THE GEMV CONSUMER. Grouping the dot as dl*sum(q x) - ml*sum(x) keeps both scalars out of the inner loop, which is
 // the whole reason this shape is worth having at decode.
-template <KType T>
-CUTLASS_HOST_DEVICE float vecdot_block(uint8_t const* b, float const* x) {
+template <KType T, class X>
+CUTLASS_HOST_DEVICE float vecdot_block_input(uint8_t const* b, X const* x) {
   float acc = 0.f, sumqx = 0.f, sumx = 0.f, dl = 0.f, ml = 0.f;
   int cur = -1;
   visit<T>(b, [&](int i, int g, int q, float gdl, float gml) {
     if (g != cur) { if (cur >= 0) acc += dl * sumqx - ml * sumx; cur = g; dl = gdl; ml = gml; sumqx = 0.f; sumx = 0.f; }
-    sumqx += float(q) * x[i];
-    sumx += x[i];
+    float const xv = float(x[i]);
+    sumqx += float(q) * xv;
+    sumx += xv;
   });
   return acc + dl * sumqx - ml * sumx;
+}
+template <KType T>
+CUTLASS_HOST_DEVICE float vecdot_block(uint8_t const* b, float const* x) {
+  return vecdot_block_input<T>(b, x);
 }
 
 // THE FALLBACK CONSUMER: full fp16 weights, which is what a cuBLAS or DeepGemm path multiplies. NO ZMul here -- that
@@ -334,8 +342,9 @@ CUTLASS_HOST_DEVICE void unpack_block(uint8_t const* b, int8_t* codes, half_t* s
 // core (ppu.mma.m16n16k32.s32.s8.s8.s32) and is NOT confirmed to have a cuda-core four-way int8 dot at all. If it
 // does not, the MMVQ shape has no advantage to trade the error against.
 //
-// dp4a would also force four codes into one 32-bit register lined up with four quantised activation bytes. Keeping
-// fp32 activation loads and register-dequantised weights avoids both that packing constraint and its numerical error.
+// dp4a would also force four codes into one 32-bit register lined up with four INT8-quantised activation bytes.
+// This kernel instead consumes fp16 activations: it keeps their exponent/dynamic range and avoids dp4a's scale
+// error. Reducing accumulator precision is a separate, conditioned-error trade and does not reopen dp4a.
 
 #if defined(__CUDACC__) || defined(__HGGCCC__)
 // ---------------------------------------------------------------------------------------------------------------
@@ -354,14 +363,26 @@ CUTLASS_HOST_DEVICE void unpack_block(uint8_t const* b, int8_t* codes, half_t* s
 // The old GEMV is retained as a named timing baseline. One thread owns an entire output row, so a warp's raw-weight
 // loads are blocks_per_row*block_bytes apart (1152 B for Q4_K at eight superblocks). That is the source-side analogue
 // of dequantize_kernel_warp's measured store pathology below.
+#if defined(GGUF_VECDOT_FP32_ACTIVATION) && (GGUF_VECDOT_FP32_ACTIVATION != 0)
+using VecdotActivation = float;
+static constexpr bool kVecdotFp16Activation = false;
+#else
+// Production. The fp32 arm is measurement-only: after independently retuning rpw for both dtypes, converting every
+// pair inside every output row still costs 1.06-1.32x cold at rows=131072. The native route can instead convert its
+// one K-vector once before fan-out over N rows.
+using VecdotActivation = half_t;
+static constexpr bool kVecdotFp16Activation = true;
+#endif
+
 template <KType T>
-__global__ void vecdot_rows_kernel_serial(uint8_t const* blocks, int64_t block_bytes, float const* x,
+__global__ void vecdot_rows_kernel_serial(uint8_t const* blocks, int64_t block_bytes, VecdotActivation const* x,
                                           float* out, int rows, int blocks_per_row) {
   int const r = blockIdx.x * blockDim.x + threadIdx.x;
   if (r >= rows) return;
   float acc = 0.f;
   for (int b = 0; b < blocks_per_row; ++b) {
-    acc += vecdot_block<T>(blocks + (int64_t(r) * blocks_per_row + b) * block_bytes, x + int64_t(b) * kQK);
+    acc += vecdot_block_input<T>(blocks + (int64_t(r) * blocks_per_row + b) * block_bytes,
+                                 x + int64_t(b) * kQK);
   }
   out[r] = acc;
 }
@@ -371,15 +392,54 @@ __global__ void vecdot_rows_kernel_serial(uint8_t const* blocks, int64_t block_b
 // lane. Q4/Q5 use four lanes; lane L owns the adjacent pair (2L,2L+1), hence both nibbles of qs[32L..32L+31].
 //
 // Every code word supplies four adjacent elements. The separate high plane is merged while the four codes are still
-// byte-packed; conversion and multiplication remain scalar CUDA-core fp32 operations. One butterfly at row end
-// combines the owners. This changes fp32 summation order but introduces no activation/weight quantisation; dp4a and
-// tensor-core MMA remain forbidden.
+// byte-packed, then actlize's shared byte4 converter produces two fp16 pairs. The activation and every cooperative-
+// kernel product, group sum, row accumulator and final butterfly are fp16/half2 CUDA-core operations. The output is
+// widened to fp32 only after the final reduction. dp4a and tensor-core MMA remain forbidden.
+
+__device__ __forceinline__ half2 vecdot_half2_zero() { return __float2half2_rn(0.f); }
+
+__device__ __forceinline__ half2 vecdot_float2_to_half2(float x, float y) {
+  float2 pair; pair.x = x; pair.y = y;
+  return __float22half2_rn(pair);
+}
+
+__device__ __forceinline__ half2 vecdot_load_activation2(VecdotActivation const* p) {
+  if constexpr (kVecdotFp16Activation) {
+    return *reinterpret_cast<half2 const*>(p);
+  } else {
+    return vecdot_float2_to_half2(p[0], p[1]);
+  }
+}
+
+__device__ __forceinline__ half vecdot_load_activation(VecdotActivation const* p) {
+  return half_t(*p).to_half();
+}
+
+__device__ __forceinline__ half2 vecdot_half2_from_halves(half x, half y) {
+  half2 pair; pair.x = x; pair.y = y;
+  return pair;
+}
+
+__device__ __forceinline__ half vecdot_half2_horizontal(half2 v) { return __hadd(v.x, v.y); }
+
 template <int Width>
-__device__ __forceinline__ float vecdot_subgroup_sum(float v) {
+__device__ __forceinline__ half2 vecdot_subgroup_sum_half2(half2 v) {
   static_assert(Width >= 1 && Width <= 32 && (Width & (Width - 1)) == 0, "subgroup width must be a warp divisor");
   CUTLASS_PRAGMA_UNROLL
-  for (int off = Width / 2; off > 0; off >>= 1) v += __shfl_xor_sync(~0u, v, off);
+  for (int off = Width / 2; off > 0; off >>= 1) {
+    uint32_t shuffled_bits = __shfl_xor_sync(~0u, reinterpret_cast<uint32_t const&>(v), off);
+    v = __hadd2(v, reinterpret_cast<half2 const&>(shuffled_bits));
+  }
   return v;
+}
+
+template <bool HasMin>
+__device__ __forceinline__ half vecdot_apply_group_half(half2 qx, half2 sx, float dl, float ml) {
+  half const sumq = vecdot_half2_horizontal(qx);
+  half const sumx = HasMin ? vecdot_half2_horizontal(sx) : __float2half(0.f);
+  half2 const sums = vecdot_half2_from_halves(sumq, sumx);
+  half2 const affine = vecdot_float2_to_half2(dl, HasMin ? -ml : 0.f);
+  return vecdot_half2_horizontal(__hmul2(sums, affine));
 }
 
 // Measurement-only NOPs used by the rows=131072 cost probes. A constant nonzero code removes packed-code loads and
@@ -411,9 +471,7 @@ __device__ __forceinline__ uint32_t vecdot_load_u32_le(uint8_t const* p) {
   return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24);
 }
 
-struct VecdotCode4 {
-  float q0, q1, q2, q3;
-};
+using VecdotCode4 = cutlass::Array<half_t, 4>;
 
 struct VecdotCodePair4 {
   VecdotCode4 lo, hi;
@@ -421,25 +479,23 @@ struct VecdotCodePair4 {
 
 template <KType T>
 __device__ __forceinline__ VecdotCode4 vecdot_code4_from_bytes(uint32_t bytes) {
-  constexpr float kOffset = T == KType::Q3_K ? -4.f : T == KType::Q6_K ? -32.f : 0.f;
-  // A guarded CUDA __byte_perm / PPU ppu.prmt.b32 A/B produced the same Q2/Q3/Q5 time and cost Q4 one event tick.
-  // Keep ordinary exact integer-to-float conversion and no private copy of the selector/magic constants. Actlize's
-  // MixGemmNumericArrayConverter<half_t,int8_t,4> is not a fit here: it emits fp16 operand fragments with PPU-only
-  // asm, whereas this CUDA/hgcc-common GEMV immediately needs four fp32 values for fp32 activation products.
-  return {float( bytes        & 0xFFu) + kOffset,
-          float((bytes >>  8) & 0xFFu) + kOffset,
-          float((bytes >> 16) & 0xFFu) + kOffset,
-          float((bytes >> 24) & 0xFFu) + kOffset};
+  // Bias is value semantics, kept in the shared converter beside the prmt selectors and exponent constant. Q3's
+  // merged byte is q+4 and Q6's is q+32; selecting it here avoids two private post-conversion hsub2 operations.
+  constexpr int kBias = T == KType::Q3_K ? 4 : T == KType::Q6_K ? 32 : 0;
+  return cutlass::MixGemmByte4ToHalf<kBias, false>::convert(bytes);
 }
 
 // Four-code word decode for one whole-group owner. Each physical plane is loaded once; two-plane formats merge the
 // high bits while they are still byte-packed. Q3 returns q+4 and Q6 q+32 here so every byte stays unsigned; the
-// format offset is applied by vecdot_code4_from_bytes after extraction.
+// shared conversion's Bias template applies the format offset while constructing the half pairs.
 template <KType T>
 __device__ __forceinline__ VecdotCode4 vecdot_kernel_code4(uint8_t const* b, int g, int j) {
 #if defined(GGUF_VECDOT_CODE_NOP)
   (void)b; (void)g; (void)j;
-  return {1.f, 1.f, 1.f, 1.f};
+  VecdotCode4 one;
+  CUTLASS_PRAGMA_UNROLL
+  for (int lane = 0; lane < 4; ++lane) one[lane] = half_t(1.f);
+  return one;
 #else
   using C = CodeTraits<T>;
   int const c = C::word_coord(g, j / 4);
@@ -463,7 +519,9 @@ __device__ __forceinline__ VecdotCodePair4 vecdot_kernel_q45_pair4(uint8_t const
   static_assert(T == KType::Q4_K || T == KType::Q5_K, "paired word decode is only Q4/Q5");
 #if defined(GGUF_VECDOT_CODE_NOP)
   (void)b; (void)pair; (void)j;
-  VecdotCode4 const one{1.f, 1.f, 1.f, 1.f};
+  VecdotCode4 one;
+  CUTLASS_PRAGMA_UNROLL
+  for (int lane = 0; lane < 4; ++lane) one[lane] = half_t(1.f);
   return {one, one};
 #else
   using C = CodeTraits<T>;
@@ -497,12 +555,37 @@ __device__ __forceinline__ void vecdot_kernel_group_dl_ml(uint8_t const* b, int 
 #endif
 }
 
-// Retuned at rows=131072 after packed-word extraction. Q2/Q3 select four rows per warp, Q4/Q5 eight, and Q6 two.
+// Saturated defaults, retuned after fp16 activation + half2 accumulation at rows=131072, blocks_per_row=8. Keep
+// these beside the runtime policy below: they name the shipping large-N shapes rather than letting a low-latency
+// exception silently become the apparent default.
 template <KType T>
 CUTLASS_HOST_DEVICE constexpr int vecdot_preferred_rows_per_warp() {
-  if constexpr (T == KType::Q4_K || T == KType::Q5_K) return 8;
-  else if constexpr (T == KType::Q6_K) return 2;
+  if constexpr (T == KType::Q2_K || T == KType::Q6_K) return 2;
+  else if constexpr (T == KType::Q5_K) return 8;
   else return 4;
+}
+
+// Runtime launch policy. The shipped decode shape is rows=2048, K=2048 (blocks_per_row=8), where using a saturated
+// default left too few CTAs and cost 1.45-1.67x in the fp32 predecessor. Warm timings here batch enough launches to
+// resolve below the 2.048-us event quantum; cold timings always contain one post-flush launch.
+//
+// Measured boundaries on the fp16 kernel:
+//   Q2/Q6: 2 throughout the rows/bpr sweep.
+//   Q3:    2 below 65536 rows; 4 above it only through bpr=8 (at bpr=16, 2 remains faster at 131072 rows).
+//   Q4:    2 at the 2048-row latency point, 8 in the middle, then 4 when rows*bpr reaches 3*2^18.
+//   Q5:    2 only for the 2048-row, K>=2048 decode shape; 8 is the throughput shape.
+template <KType T>
+CUTLASS_HOST_DEVICE constexpr int vecdot_rows_per_warp(int rows, int blocks_per_row) {
+  if constexpr (T == KType::Q2_K || T == KType::Q6_K) {
+    return 2;
+  } else if constexpr (T == KType::Q3_K) {
+    return rows >= 65536 && blocks_per_row <= 8 ? 4 : 2;
+  } else if constexpr (T == KType::Q4_K) {
+    if (rows <= 2048) return 2;
+    return int64_t(rows) * blocks_per_row >= 786432 ? 4 : 8;
+  } else {
+    return rows <= 2048 && blocks_per_row >= 8 ? 2 : 8;
+  }
 }
 
 template <KType T, int RowsPerWarp = vecdot_preferred_rows_per_warp<T>()>
@@ -513,7 +596,7 @@ CUTLASS_HOST_DEVICE constexpr int vecdot_grid_size(int rows, int threads) {
 }
 
 template <KType T, int RowsPerWarp = vecdot_preferred_rows_per_warp<T>()>
-__global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, float const* x,
+__global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, VecdotActivation const* x,
                                    float* out, int rows, int blocks_per_row) {
   static_assert(RowsPerWarp >= 1 && RowsPerWarp <= 32 && (RowsPerWarp & (RowsPerWarp - 1)) == 0,
                 "rows per warp must be a power of two");
@@ -536,7 +619,7 @@ __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, f
   // exactly once and decoded into both groups. Q5's qh[j] is likewise loaded once for the pair, then the two group
   // bit positions are selected from that byte. Other sweep points preserve the same pair-strided ownership.
   if constexpr (T == KType::Q4_K || T == KType::Q5_K) {
-    float lane_acc0 = 0.f, lane_acc1 = 0.f;
+    half2 lane_acc = vecdot_half2_zero();
     for (int block = 0; block < blocks_per_row; ++block) {
       uint8_t const* blk = active
           ? blocks + (int64_t(r) * blocks_per_row + block) * block_bytes
@@ -552,46 +635,49 @@ __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, f
         float dl0, ml0, dl1, ml1;
         vecdot_kernel_group_dl_ml<T>(blk, g0, d, dmin, dl0, ml0);
         vecdot_kernel_group_dl_ml<T>(blk, g1, d, dmin, dl1, ml1);
-        float qx00 = 0.f, qx01 = 0.f, qx10 = 0.f, qx11 = 0.f;
-        float sx00 = 0.f, sx01 = 0.f, sx10 = 0.f, sx11 = 0.f;
+        half2 qx0 = vecdot_half2_zero(), qx1 = vecdot_half2_zero();
+        half2 sx0 = vecdot_half2_zero(), sx1 = vecdot_half2_zero();
         if (active) {
           int j = 0;
           CUTLASS_PRAGMA_UNROLL
           for (; j + 3 < kGroupSize; j += 4) {
             VecdotCodePair4 const q = vecdot_kernel_q45_pair4<T>(blk, pair, j);
-            float const x00 = x[int64_t(block) * kQK + g0 * kGroupSize + j];
-            float const x01 = x[int64_t(block) * kQK + g0 * kGroupSize + j + 1];
-            float const x02 = x[int64_t(block) * kQK + g0 * kGroupSize + j + 2];
-            float const x03 = x[int64_t(block) * kQK + g0 * kGroupSize + j + 3];
-            float const x10 = x[int64_t(block) * kQK + g1 * kGroupSize + j];
-            float const x11 = x[int64_t(block) * kQK + g1 * kGroupSize + j + 1];
-            float const x12 = x[int64_t(block) * kQK + g1 * kGroupSize + j + 2];
-            float const x13 = x[int64_t(block) * kQK + g1 * kGroupSize + j + 3];
-            qx00 += q.lo.q0*x00; qx01 += q.lo.q1*x01; qx00 += q.lo.q2*x02; qx01 += q.lo.q3*x03;
-            qx10 += q.hi.q0*x10; qx11 += q.hi.q1*x11; qx10 += q.hi.q2*x12; qx11 += q.hi.q3*x13;
-            sx00 += x00; sx01 += x01; sx00 += x02; sx01 += x03;
-            sx10 += x10; sx11 += x11; sx10 += x12; sx11 += x13;
+            int64_t const x0 = int64_t(block) * kQK + g0 * kGroupSize + j;
+            int64_t const x1 = int64_t(block) * kQK + g1 * kGroupSize + j;
+            half2 const hx00 = vecdot_load_activation2(x + x0);
+            half2 const hx02 = vecdot_load_activation2(x + x0 + 2);
+            half2 const hx10 = vecdot_load_activation2(x + x1);
+            half2 const hx12 = vecdot_load_activation2(x + x1 + 2);
+            half2 const* q0 = reinterpret_cast<half2 const*>(&q.lo);
+            half2 const* q1 = reinterpret_cast<half2 const*>(&q.hi);
+            qx0 = __hfma2(q0[0], hx00, qx0); qx0 = __hfma2(q0[1], hx02, qx0);
+            qx1 = __hfma2(q1[0], hx10, qx1); qx1 = __hfma2(q1[1], hx12, qx1);
+            sx0 = __hadd2(sx0, hx00); sx0 = __hadd2(sx0, hx02);
+            sx1 = __hadd2(sx1, hx10); sx1 = __hadd2(sx1, hx12);
           }
           CUTLASS_PRAGMA_UNROLL
           for (; j < kGroupSize; ++j) {
-            float const x0 = x[int64_t(block) * kQK + g0 * kGroupSize + j];
-            float const x1 = x[int64_t(block) * kQK + g1 * kGroupSize + j];
-            float const q0 = float(vecdot_kernel_code_at<T>(blk, g0, j));
-            float const q1 = float(vecdot_kernel_code_at<T>(blk, g1, j));
-            if (j & 1) { qx01 += q0*x0; qx11 += q1*x1; sx01 += x0; sx11 += x1; }
-            else       { qx00 += q0*x0; qx10 += q1*x1; sx00 += x0; sx10 += x1; }
+            half const x0 = vecdot_load_activation(x + int64_t(block) * kQK + g0 * kGroupSize + j);
+            half const x1 = vecdot_load_activation(x + int64_t(block) * kQK + g1 * kGroupSize + j);
+            half2 const hx0 = vecdot_half2_from_halves(x0, __float2half(0.f));
+            half2 const hx1 = vecdot_half2_from_halves(x1, __float2half(0.f));
+            half2 const hq0 = vecdot_float2_to_half2(float(vecdot_kernel_code_at<T>(blk, g0, j)), 0.f);
+            half2 const hq1 = vecdot_float2_to_half2(float(vecdot_kernel_code_at<T>(blk, g1, j)), 0.f);
+            qx0 = __hfma2(hq0, hx0, qx0); qx1 = __hfma2(hq1, hx1, qx1);
+            sx0 = __hadd2(sx0, hx0); sx1 = __hadd2(sx1, hx1);
           }
         }
-        lane_acc0 += apply_group({qx00 + qx01, sx00 + sx01}, dl0, ml0);
-        lane_acc1 += apply_group({qx10 + qx11, sx10 + sx11}, dl1, ml1);
+        half const group0 = vecdot_apply_group_half<true>(qx0, sx0, dl0, ml0);
+        half const group1 = vecdot_apply_group_half<true>(qx1, sx1, dl1, ml1);
+        lane_acc = __hadd2(lane_acc, vecdot_half2_from_halves(group0, group1));
       }
     }
-    float lane_acc = vecdot_subgroup_sum<kLanesPerRow>(lane_acc0 + lane_acc1);
-    if (active && row_lane == 0) out[r] = lane_acc;
+    lane_acc = vecdot_subgroup_sum_half2<kLanesPerRow>(lane_acc);
+    if (active && row_lane == 0) out[r] = __half2float(vecdot_half2_horizontal(lane_acc));
     return;
   }
 
-  float lane_acc = 0.f;
+  half2 lane_acc = vecdot_half2_zero();
 
   for (int block = 0; block < blocks_per_row; ++block) {
     uint8_t const* blk = active
@@ -601,74 +687,43 @@ __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, f
     bool const owns_group = row_lane < kGroups;
     if (active && owns_group) block_d_dmin<T>(blk, d, dmin);
 
+    int owner_slot = 0;
     CUTLASS_PRAGMA_UNROLL
-    for (int g = row_lane; g < kGroups; g += kLanesPerRow) {
+    for (int g = row_lane; g < kGroups; g += kLanesPerRow, ++owner_slot) {
       float dl, ml;
       vecdot_kernel_group_dl_ml<T>(blk, g, d, dmin, dl, ml);
-      float sum0 = 0.f, sum1 = 0.f;
-#if !defined(GGUF_VECDOT_PER_ELEMENT_AFFINE)
-      float sumx0 = 0.f, sumx1 = 0.f;
-#endif
+      half2 qx = vecdot_half2_zero(), sx = vecdot_half2_zero();
       if (active) {
-#if !defined(GGUF_VECDOT_PER_ELEMENT_AFFINE)
         int j = 0;
         CUTLASS_PRAGMA_UNROLL
         for (; j + 3 < kGroupSize; j += 4) {
           VecdotCode4 const q = vecdot_kernel_code4<T>(blk, g, j);
-          float const x0 = x[int64_t(block) * kQK + g * kGroupSize + j];
-          float const x1 = x[int64_t(block) * kQK + g * kGroupSize + j + 1];
-          float const x2 = x[int64_t(block) * kQK + g * kGroupSize + j + 2];
-          float const x3 = x[int64_t(block) * kQK + g * kGroupSize + j + 3];
-          if constexpr (T == KType::Q2_K) {
-            // Preserve Q2's measured single dependency chain; two accumulators lost one event tick at both tested K.
-            sum0 += q.q0 * x0; sum0 += q.q1 * x1; sum0 += q.q2 * x2; sum0 += q.q3 * x3;
-            if constexpr (kHasMin) { sumx0 += x0; sumx0 += x1; sumx0 += x2; sumx0 += x3; }
-          } else {
-            sum0 += q.q0 * x0; sum1 += q.q1 * x1; sum0 += q.q2 * x2; sum1 += q.q3 * x3;
-            if constexpr (kHasMin) { sumx0 += x0; sumx1 += x1; sumx0 += x2; sumx1 += x3; }
-          }
+          int64_t const xi = int64_t(block) * kQK + g * kGroupSize + j;
+          half2 const hx0 = vecdot_load_activation2(x + xi);
+          half2 const hx1 = vecdot_load_activation2(x + xi + 2);
+          half2 const* q2 = reinterpret_cast<half2 const*>(&q);
+          qx = __hfma2(q2[0], hx0, qx); qx = __hfma2(q2[1], hx1, qx);
+          if constexpr (kHasMin) { sx = __hadd2(sx, hx0); sx = __hadd2(sx, hx1); }
         }
         // Current k-quant groups are multiples of four. Keep the scalar tail explicit so widening the helper does not
         // silently make a future odd group read past its plane.
         CUTLASS_PRAGMA_UNROLL
         for (; j < kGroupSize; ++j) {
-          float const xv = x[int64_t(block) * kQK + g * kGroupSize + j];
-          float const qv = float(vecdot_kernel_code_at<T>(blk, g, j));
-          if constexpr (T == KType::Q2_K) {
-            sum0 += qv * xv;
-            if constexpr (kHasMin) sumx0 += xv;
-          } else if (j & 1) {
-            sum1 += qv * xv;
-            if constexpr (kHasMin) sumx1 += xv;
-          } else {
-            sum0 += qv * xv;
-            if constexpr (kHasMin) sumx0 += xv;
-          }
+          half const xv = vecdot_load_activation(x + int64_t(block) * kQK + g * kGroupSize + j);
+          half2 const hx = vecdot_half2_from_halves(xv, __float2half(0.f));
+          half2 const hq = vecdot_float2_to_half2(float(vecdot_kernel_code_at<T>(blk, g, j)), 0.f);
+          qx = __hfma2(hq, hx, qx);
+          if constexpr (kHasMin) sx = __hadd2(sx, hx);
         }
-#else
-        CUTLASS_PRAGMA_UNROLL
-        for (int j = 0; j < kGroupSize; j += (T == KType::Q2_K ? 1 : 2)) {
-          float const x0 = x[int64_t(block) * kQK + g * kGroupSize + j];
-          int const q0 = vecdot_kernel_code_at<T>(blk, g, j);
-          sum0 += (dl * float(q0) - ml) * x0;
-          if constexpr (T != KType::Q2_K) {
-            float const x1 = x[int64_t(block) * kQK + g * kGroupSize + j + 1];
-            int const q1 = vecdot_kernel_code_at<T>(blk, g, j + 1);
-            // Counterfactual: keep group ownership and one final reduction, but apply affine arithmetic per element.
-            sum1 += (dl * float(q1) - ml) * x1;
-          }
-        }
-#endif
       }
-#if defined(GGUF_VECDOT_PER_ELEMENT_AFFINE)
-      lane_acc += sum0 + sum1;
-#else
-      lane_acc += apply_group({sum0 + sum1, sumx0 + sumx1}, dl, ml);
-#endif
+      half const group = vecdot_apply_group_half<kHasMin>(qx, sx, dl, ml);
+      half2 add = vecdot_half2_zero();
+      if (owner_slot & 1) add.y = group; else add.x = group;
+      lane_acc = __hadd2(lane_acc, add);
     }
   }
-  lane_acc = vecdot_subgroup_sum<kLanesPerRow>(lane_acc);
-  if (active && row_lane == 0) out[r] = lane_acc;
+  lane_acc = vecdot_subgroup_sum_half2<kLanesPerRow>(lane_acc);
+  if (active && row_lane == 0) out[r] = __half2float(vecdot_half2_horizontal(lane_acc));
 }
 
 // ONE WARP PER 256 PHYSICAL DESTINATIONS. This is the shape that matters and the numbers say why:

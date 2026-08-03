@@ -33,6 +33,42 @@ __global__ void flush_l2_kernel(uint8_t const* p, size_t bytes, unsigned long lo
   if (v) atomicAdd(sink, v);
 }
 
+// Shared-converter regression: the GEMV uses natural byte order with Bias 0/4/32, while the existing mixed-GEMM
+// specialization must retain its historical (0,2,1,3) int8 emission. Check all source-byte values and distinct lanes.
+__global__ void check_byte4_converter_kernel(int* errors) {
+  int const i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= 256) return;
+  uint8_t const b0 = uint8_t(32 + (i % 224));
+  uint8_t const b1 = uint8_t(32 + ((i * 3 + 1) % 224));
+  uint8_t const b2 = uint8_t(32 + ((i * 5 + 2) % 224));
+  uint8_t const b3 = uint8_t(32 + ((i * 7 + 3) % 224));
+  uint32_t const bytes = uint32_t(b0) | (uint32_t(b1) << 8) | (uint32_t(b2) << 16) | (uint32_t(b3) << 24);
+  auto const natural = cutlass::MixGemmByte4ToHalf<0, false>::convert(bytes);
+  auto const q3 = cutlass::MixGemmByte4ToHalf<4, false>::convert(bytes);
+  auto const q6 = cutlass::MixGemmByte4ToHalf<32, false>::convert(bytes);
+  int bad = 0;
+  uint8_t const lane[4] = {b0, b1, b2, b3};
+  CUTLASS_PRAGMA_UNROLL
+  for (int j = 0; j < 4; ++j) {
+    half_t const n = natural[j], h3 = q3[j], h6 = q6[j];
+    bad += n.raw() != half_t(float(lane[j])).raw();
+    bad += h3.raw() != half_t(float(int(lane[j]) - 4)).raw();
+    bad += h6.raw() != half_t(float(int(lane[j]) - 32)).raw();
+  }
+  cutlass::Array<int8_t, 4> signed_source;
+  // The historical converter interprets each source object's raw byte as an unsigned lane and subtracts 128.
+  signed_source[0] = int8_t(b0); signed_source[1] = int8_t(b1);
+  signed_source[2] = int8_t(b2); signed_source[3] = int8_t(b3);
+  auto const historical = cutlass::MixGemmNumericArrayConverter<half_t, int8_t, 4>::convert(signed_source);
+  int const order[4] = {0, 2, 1, 3};
+  CUTLASS_PRAGMA_UNROLL
+  for (int j = 0; j < 4; ++j) {
+    half_t const got = historical[j];
+    bad += got.raw() != half_t(float(int(lane[order[j]]) - 128)).raw();
+  }
+  if (bad) atomicAdd(errors, bad);
+}
+
 template <KType T>
 struct PrepassDevice {
   using Tr = gguf_scale::Traits<T>;
@@ -173,7 +209,8 @@ struct VecdotDevice {
   static constexpr int kBlockBytes = T == KType::Q2_K ? 84 : T == KType::Q3_K ? 110
                                          : T == KType::Q4_K ? 144 : T == KType::Q5_K ? 176 : 210;
   uint8_t *blocks = nullptr, *flush = nullptr;
-  float *x = nullptr, *out = nullptr;
+  gguf_scale::vecdot::VecdotActivation *x = nullptr;
+  float *out = nullptr;
   unsigned long long* sink = nullptr;
   size_t block_bytes = 0, x_bytes = 0, out_bytes = 0, flush_bytes = 0;
 
@@ -184,7 +221,8 @@ struct VecdotDevice {
     int dev = 0;
     if (cuda_ok(cudaGetDevice(&dev)) || cuda_ok(cudaGetDeviceProperties(&prop, dev))) return 1;
     block_bytes = size_t(rows) * blocks_per_row * kBlockBytes;
-    x_bytes = size_t(blocks_per_row) * gguf_scale::vecdot::kQK * sizeof(float);
+    x_bytes = size_t(blocks_per_row) * gguf_scale::vecdot::kQK
+            * sizeof(gguf_scale::vecdot::VecdotActivation);
     out_bytes = size_t(rows) * sizeof(float);
     flush_bytes = std::max<size_t>(size_t(prop.l2CacheSize) * 2, size_t(128) << 20);
     if (cuda_ok(cudaMalloc(&blocks, block_bytes)) || cuda_ok(cudaMalloc(&x, x_bytes)) ||
@@ -197,12 +235,20 @@ struct VecdotDevice {
   void flush_l2() const { flush_l2_kernel<<<4096, 256>>>(flush, flush_bytes, sink); }
 };
 
-template <KType T, int RowsPerWarp = gguf_scale::vecdot::vecdot_preferred_rows_per_warp<T>(), bool Serial = false>
+// RowsPerWarp=-1 is the production runtime dispatcher. Positive values are fixed-shape measurement witnesses.
+template <KType T, int RowsPerWarp = -1, bool Serial = false>
 void launch_vecdot(VecdotDevice<T> const& q, int rows, int blocks_per_row) {
   constexpr int kThreads = 256;
   if constexpr (Serial) {
     gguf_scale::vecdot::vecdot_rows_kernel_serial<T><<<(rows + kThreads - 1) / kThreads, kThreads>>>(
         q.blocks, VecdotDevice<T>::kBlockBytes, q.x, q.out, rows, blocks_per_row);
+  } else if constexpr (RowsPerWarp < 0) {
+    switch (gguf_scale::vecdot::vecdot_rows_per_warp<T>(rows, blocks_per_row)) {
+      case 1: launch_vecdot<T, 1>(q, rows, blocks_per_row); break;
+      case 2: launch_vecdot<T, 2>(q, rows, blocks_per_row); break;
+      case 4: launch_vecdot<T, 4>(q, rows, blocks_per_row); break;
+      case 8: launch_vecdot<T, 8>(q, rows, blocks_per_row); break;
+    }
   } else {
     gguf_scale::vecdot::vecdot_rows_kernel<T, RowsPerWarp>
         <<<gguf_scale::vecdot::vecdot_grid_size<T, RowsPerWarp>(rows, kThreads), kThreads>>>(
@@ -211,7 +257,8 @@ void launch_vecdot(VecdotDevice<T> const& q, int rows, int blocks_per_row) {
 }
 
 template <KType T>
-int run_vecdot(uint8_t const* blocks, float const* x, float* out, int rows, int blocks_per_row) {
+int run_vecdot(uint8_t const* blocks, gguf_scale::vecdot::VecdotActivation const* x,
+               float* out, int rows, int blocks_per_row) {
   VecdotDevice<T> q;
   if (int e = q.allocate(rows, blocks_per_row)) return 400 + e;
   if (cuda_ok(cudaMemcpy(q.blocks, blocks, q.block_bytes, cudaMemcpyHostToDevice)) ||
@@ -222,7 +269,7 @@ int run_vecdot(uint8_t const* blocks, float const* x, float* out, int rows, int 
   return 0;
 }
 
-template <KType T, bool Cold, int RowsPerWarp = gguf_scale::vecdot::vecdot_preferred_rows_per_warp<T>(),
+template <KType T, bool Cold, int RowsPerWarp = -1,
           bool Serial = false>
 int bench_vecdot_variant(VecdotDevice<T> const& q, int rows, int blocks_per_row, int reps, float* usec) {
   cudaEvent_t begin{}, end{};
@@ -236,16 +283,20 @@ int bench_vecdot_variant(VecdotDevice<T> const& q, int rows, int blocks_per_row,
       launch_vecdot<T, RowsPerWarp, Serial>(q, rows, blocks_per_row);
     if (cuda_ok(cudaDeviceSynchronize())) return 2;
   }
+  // Cold timing must contain exactly one post-flush launch. Warm timing may batch launches under one event pair;
+  // scale the batch inversely with rows so even the 2048-row shipping shape spans hundreds of timer quanta.
+  int const launch_batch = Cold ? 1 : std::max(1, std::min(64, (kDefaultVecdotBenchRows + rows - 1) / rows));
   for (int r = 0; r < reps + 5; ++r) {
     // The flush and any dirty writeback it induces precede `begin` in the same stream. The events contain one
     // vecdot launch and nothing else; allocations, initialisation and transfers all happen outside this loop.
     if constexpr (Cold) q.flush_l2();
     if (cuda_ok(cudaEventRecord(begin))) return 3;
-    launch_vecdot<T, RowsPerWarp, Serial>(q, rows, blocks_per_row);
+    for (int launch = 0; launch < launch_batch; ++launch)
+      launch_vecdot<T, RowsPerWarp, Serial>(q, rows, blocks_per_row);
     if (cuda_ok(cudaGetLastError()) || cuda_ok(cudaEventRecord(end)) || cuda_ok(cudaEventSynchronize(end))) return 4;
     float ms = 0.f;
     if (cuda_ok(cudaEventElapsedTime(&ms, begin, end))) return 5;
-    if (r >= 5) samples.push_back(ms * 1000.f);
+    if (r >= 5) samples.push_back(ms * 1000.f / float(launch_batch));
   }
   cudaEventDestroy(begin); cudaEventDestroy(end);
   std::sort(samples.begin(), samples.end());
@@ -253,11 +304,11 @@ int bench_vecdot_variant(VecdotDevice<T> const& q, int rows, int blocks_per_row,
   return 0;
 }
 
-template <KType T, int RowsPerWarp = gguf_scale::vecdot::vecdot_preferred_rows_per_warp<T>(), bool Serial = false>
+template <KType T, int RowsPerWarp = -1, bool Serial = false>
 int bench_vecdot(int rows, int blocks_per_row, int reps, float* cold_us, float* warm_us, double* bytes) {
   VecdotDevice<T> q;
   if (int e = q.allocate(rows, blocks_per_row)) return 420 + e;
-  // 0x01 is finite in the half scale fields and 0x3f is finite as fp32 activation data. Values do not affect the
+  // 0x01 is finite in the half scale fields and repeated 0x3f is finite as fp16 activation data. Values do not affect the
   // instruction or address trace, but avoiding NaNs makes the same allocation useful to profilers and sanitizers.
   if (cuda_ok(cudaMemset(q.blocks, 0x01, q.block_bytes)) || cuda_ok(cudaMemset(q.x, 0x3f, q.x_bytes)) ||
       cuda_ok(cudaMemset(q.out, 0, q.out_bytes))) return 430;
@@ -286,6 +337,18 @@ int bench_vecdot_config(int rows_per_warp, int rows, int blocks_per_row, int rep
 }
 
 }  // namespace
+
+extern "C" int quactlize_cuda_byte4_converter_check() {
+  int* errors = nullptr;
+  int host_errors = 0;
+  if (cuda_ok(cudaMalloc(&errors, sizeof(int))) || cuda_ok(cudaMemset(errors, 0, sizeof(int)))) return 90;
+  check_byte4_converter_kernel<<<1, 256>>>(errors);
+  int const rc = cuda_ok(cudaGetLastError()) || cuda_ok(cudaDeviceSynchronize()) ||
+                 cuda_ok(cudaMemcpy(&host_errors, errors, sizeof(int), cudaMemcpyDeviceToHost));
+  cudaFree(errors);
+  if (rc) return 91;
+  return host_errors;
+}
 
 extern "C" int quactlize_cuda_q4_prepass(uint8_t const* blocks, uint16_t const* d, uint16_t const* dmin,
                                           uint16_t* scale, uint16_t* zero, int cols, int superblocks,
@@ -373,7 +436,8 @@ extern "C" int quactlize_cuda_q4_layout_bench(int reps, float* physical_us, floa
   return 0;
 }
 
-extern "C" int quactlize_cuda_vecdot(uint8_t const* blocks, float const* x, float* out,
+extern "C" int quactlize_cuda_vecdot(uint8_t const* blocks,
+                                      gguf_scale::vecdot::VecdotActivation const* x, float* out,
                                       int rows, int blocks_per_row, int qtype) {
 #define RUN_VECDOT(TYPE) run_vecdot<KType::TYPE>(blocks, x, out, rows, blocks_per_row)
   switch (qtype) {
@@ -416,4 +480,17 @@ extern "C" int quactlize_cuda_vecdot_bench_config(int qtype, int rows_per_warp, 
     default: return 493;
   }
 #undef BENCH_CONFIG
+}
+
+extern "C" int quactlize_cuda_vecdot_rows_per_warp(int qtype, int rows, int blocks_per_row) {
+#define SELECT_RPW(TYPE) gguf_scale::vecdot::vecdot_rows_per_warp<KType::TYPE>(rows, blocks_per_row)
+  switch (qtype) {
+    case 10: return SELECT_RPW(Q2_K);
+    case 11: return SELECT_RPW(Q3_K);
+    case 12: return SELECT_RPW(Q4_K);
+    case 13: return SELECT_RPW(Q5_K);
+    case 14: return SELECT_RPW(Q6_K);
+    default: return -1;
+  }
+#undef SELECT_RPW
 }

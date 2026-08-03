@@ -88,7 +88,7 @@ def matmul_dequant_first_grouped(a: torch.Tensor, blocks: torch.Tensor, n: int, 
 
 
 def matmul_native_gemv(a: torch.Tensor, blocks: torch.Tensor, n: int, k: int, qtype: int) -> torch.Tensor:
-    """FULLY_QUANTIZED, GEMV: nothing materialised. a is (1, k) fp32; returns (1, n) fp32.
+    """FULLY_QUANTIZED, GEMV: nothing materialised. a is (1, k) fp16/fp32; returns (1, n) fp32.
 
     REFERENCE SPEED, NOT A COMPETITOR. The bound op computes one dot product per (block, 256-element activation
     slice) pair, so a full GEMV is assembled here by tiling the activation across a row's blocks and summing. That
@@ -102,7 +102,10 @@ def matmul_native_gemv(a: torch.Tensor, blocks: torch.Tensor, n: int, k: int, qt
     if a.shape[0] != 1:
         raise ValueError(f"the GEMV band is m=1; got m={a.shape[0]}")
     bpr = k // 256
-    x = a.reshape(bpr, 256).to(torch.float32)                  # one 256-slice per block position
+    # Convert ONCE per K slice here: converting inside every output row measured 1.01-1.32x slower cold. The CPU arm
+    # remains a tight fp32-accumulation oracle over these rounded inputs; the direct CUDA probe owns the separate
+    # fp16-accumulation tolerance.
+    x = a.reshape(bpr, 256).to(torch.float16)                  # one 256-slice per block position
     x = x.unsqueeze(0).expand(n, bpr, 256).reshape(n * bpr, 256).contiguous()
     return gguf_vecdot(blocks, x, int(qtype)).view(n, bpr).sum(dim=1).view(1, n)
 

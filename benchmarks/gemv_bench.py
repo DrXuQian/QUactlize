@@ -8,7 +8,8 @@ started by asking for it again" -- and this file is the same fix for the GEMV.
   ./benchmarks/gemv_bench.py               the shipped config at the tuning shape AND at a real layer
   ./benchmarks/gemv_bench.py --sizes       %peak against problem size: where saturation begins
   ./benchmarks/gemv_bench.py --rpw         rows-per-warp sweep at both shapes, which is how the mis-tuning was found
-  ./benchmarks/gemv_bench.py --define X=1  add a -D to the probe build, e.g. GGUF_VECDOT_Q45_PAIRED=1
+  ./benchmarks/gemv_bench.py --rpw --bpr 4 repeat the sweep at K=1024 for the rows/bpr dispatcher
+  ./benchmarks/gemv_bench.py --define X=1  add a -D, e.g. GGUF_VECDOT_FP32_ACTIVATION=1
 
 TWO THINGS THAT WILL MISLEAD YOU IF NOBODY SAYS THEM.
 
@@ -19,9 +20,13 @@ TWO THINGS THAT WILL MISLEAD YOU IF NOBODY SAYS THEM.
    first launch after an L2 flush is cold -- so the only lever on cold resolution is a bigger PROBLEM.
 
 2. `rows` IS THE OUTPUT DIMENSION N, and the tuning shape is not the shipping shape. rows=131072 at bpr=8 is
-   N=131072, K=2048: sixty-four times a real dense layer at decode, which is rows=2048. The kernel reads 60.7% of
-   peak at the first and 5.0% at the second, and the per-format rows-per-warp defaults chosen at the first are
-   wrong at the second. That is why the default run below prints BOTH.
+   N=131072, K=2048: sixty-four times a real dense layer at decode, which is rows=2048. Q4 reads 65.5% of peak at
+   the first and 9.3% at the second. The launcher therefore dispatches rows-per-warp from both rows and bpr; the
+   fixed-rpw sweep is the witness used to set that policy. The default run prints BOTH shapes.
+
+Warm launches are batched under one event pair so small-shape results are not quantised to whole 2.048-us ticks.
+At rows=2048 the operand fits in L2 and cold/warm is meaningful. At rows=131072 Q3..Q6 exceed L2, so their ratio
+near one means both readings are DRAM-fed, not that the kernel is insensitive to memory.
 """
 import argparse, ctypes, subprocess, sys
 from pathlib import Path
@@ -56,6 +61,7 @@ def build(defines, tmp):
     fp, dp = ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_double)
     lib.quactlize_cuda_vecdot_bench.argtypes = [ctypes.c_int] * 4 + [fp, fp, dp]
     lib.quactlize_cuda_vecdot_bench_config.argtypes = [ctypes.c_int] * 5 + [fp, fp, dp]
+    lib.quactlize_cuda_vecdot_rows_per_warp.argtypes = [ctypes.c_int] * 3
     return lib
 
 
@@ -67,14 +73,19 @@ def run(lib, qtype, rows, bpr, reps, rpw=None):
     return None if rc else (c.value, w.value, b.value)
 
 
-def show(name, rows, bpr, r, peak):
+def show(name, rows, bpr, r, peak, rpw="-"):
     cold, warm, byts = r
     els = rows * bpr * 256
-    return (f"{name:6} {cold:9.2f} {cold/QUANTUM_US:6.0f}t {warm:9.2f} {cold/warm:5.2f} "
-            f"{els/(cold*1e-6)/1e9:8.0f} {byts/(cold*1e-6)/peak*100:6.1f}%")
+    cold_gelem = els / (cold * 1e-6) / 1e9
+    warm_gelem = els / (warm * 1e-6) / 1e9
+    cold_peak = byts / (cold * 1e-6) / peak * 100
+    warm_peak = byts / (warm * 1e-6) / peak * 100
+    return (f"{name:6} {str(rpw):>3} {cold:9.2f} {cold/QUANTUM_US:6.0f}t {cold_gelem:8.0f} {cold_peak:6.1f}% "
+            f"{warm:9.2f} {warm_gelem:8.0f} {warm_peak:6.1f}% {cold/warm:5.2f}")
 
 
-HEAD = f"{'fmt':6} {'cold us':>9} {'ticks':>7} {'warm us':>9} {'c/w':>5} {'Gelem/s':>8} {'%peak':>7}"
+HEAD = (f"{'fmt':6} {'rpw':>3} {'cold us':>9} {'ticks':>7} {'c Gel/s':>8} {'c peak':>7} "
+        f"{'warm us':>9} {'w Gel/s':>8} {'w peak':>7} {'c/w':>5}")
 
 
 def main():
@@ -83,6 +94,7 @@ def main():
     ap.add_argument("--rpw", action="store_true", help="rows-per-warp sweep at both shapes")
     ap.add_argument("--define", action="append", default=[], help="extra -D for the probe build")
     ap.add_argument("--reps", type=int, default=30)
+    ap.add_argument("--bpr", type=int, default=8, help="256-element blocks per output row (default: 8, K=2048)")
     ap.add_argument("--peak", type=float, default=1.792e12, help="DRAM peak in B/s (default: RTX 5090)")
     ap.add_argument("--tmp", default="/tmp", help="where to put the built probe")
     a = ap.parse_args()
@@ -90,33 +102,38 @@ def main():
     lib = build(a.define, tmp)
 
     if a.sizes:
-        print("Q4_K, shipped config, sweeping only problem size. 16 rows per CTA at rpw=4.")
-        print(f"{'rows':>8} {'CTAs':>7} | " + HEAD)
+        print(f"Q4_K, runtime rows/bpr dispatch, sweeping only problem size at bpr={a.bpr}.")
+        print(f"{'rows':>8} {'launch':>7} | " + HEAD)
         for rows in (2048, 8192, 16384, 32768, 65536, 131072, 262144):
-            r = run(lib, 12, rows, 8, a.reps)
+            r = run(lib, 12, rows, a.bpr, a.reps)
             if r:
-                print(f"{rows:8} {(rows+15)//16:7} | " + show("Q4_K", rows, 8, r, a.peak))
+                # Ask the policy for a timing, not a guessed CTA count; the latter depends on its selected rpw and is
+                # printed only for the default bpr=8 sweep documented in the handoff.
+                rpw = lib.quactlize_cuda_vecdot_rows_per_warp(12, rows, a.bpr)
+                print(f"{rows:8} {'policy':>7} | " + show("Q4_K", rows, a.bpr, r, a.peak, rpw))
         return
 
     if a.rpw:
-        for rows, label in ((2048, "N=K=2048, a real dense layer at decode"),
+        for rows, label in ((2048, f"N=2048, K={a.bpr * 256}, a decode layer when K matches"),
                             (131072, "the shape the defaults were tuned at")):
             print(f"\n-- rows={rows}: {label}")
-            print(f"{'fmt':6} {'rpw':>4} | " + HEAD)
+            print(HEAD)
             for name, q in FORMATS:
                 for rpw in (1, 2, 4, 8, 16):
-                    r = run(lib, q, rows, 8, a.reps, rpw)
+                    r = run(lib, q, rows, a.bpr, a.reps, rpw)
                     if r:
-                        print(f"{'':6} {rpw:4} | " + show(name, rows, 8, r, a.peak))
+                        print(show(name, rows, a.bpr, r, a.peak, rpw))
         return
 
-    for rows, label in ((131072, "the tuning shape"), (2048, "N=K=2048, what actually ships")):
-        print(f"\n-- rows={rows}, bpr=8: {label}")
+    for rows, label in ((131072, "the throughput tuning shape"),
+                        (2048, f"N=2048, K={a.bpr * 256}, the decode layer shape when K matches")):
+        print(f"\n-- rows={rows}, bpr={a.bpr}: {label}")
         print(HEAD)
         for name, q in FORMATS:
-            r = run(lib, q, rows, 8, a.reps)
+            r = run(lib, q, rows, a.bpr, a.reps)
             if r:
-                print(show(name, rows, 8, r, a.peak))
+                rpw = lib.quactlize_cuda_vecdot_rows_per_warp(q, rows, a.bpr)
+                print(show(name, rows, a.bpr, r, a.peak, rpw))
 
 
 if __name__ == "__main__":

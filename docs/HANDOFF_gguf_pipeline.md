@@ -124,9 +124,9 @@ size after the fp16 rewrite:
 | 131072 | 4 | 4096 | 24.1 | 129.02 | 2081 | 65.5% |
 | 262144 | 4 | 8192 | 48.2 | 245.76 | 2185 | 68.8% |
 
-The dispatcher deliberately keeps both 2048 and 8192 rows at **256** CTAs by moving Q4 from rpw2 to rpw8 — 128
-threads is four warps, so a CTA owns `4 x rpw` rows: 2048/8 and 8192/32 are both 256 — and four times the work
-costs only 1.14x. This is a launch/latency regime, not a throughput regime. The instrument forced the
+The dispatcher deliberately keeps both 2048 and 8192 rows at **128** CTAs by moving Q4 from rpw2 to rpw8. The
+probe launches 256 threads = eight warps, so a CTA owns `8 x rpw` rows: 2048/16 and 8192/64 are both 128. Four
+times the work costs only 1.14x. This is a launch/latency regime, not a throughput regime. The instrument forced the
 large shape for throughput A/Bs; at 2048 rows cold is seven 2.048-us ticks, so differences below ~14% are unresolved.
 Warm measurement batches up to 64 launches and can resolve the launch-policy crossover, while cold retains exactly
 one post-flush launch.
@@ -140,20 +140,24 @@ at rows<=2048 with bpr>=8 and otherwise 8. Fixed-rpw entry points remain as meas
 Both the saturated defaults (`rows=131072`, bpr=8) and the runtime boundaries are now written beside the policy in
 the header. The omitted tuning shape was how a large-grid optimisation became a shipping-shape regression.
 
-**This also reframes the comparison against the PPU collective — but only if the WORK is matched, not the label.**
-The collective's grid at the pinned band is 128 CTAs (Waves Per CU 0.44 = 128 over 72 CU × 4 theoretical block
-slots), and it comes from eight active experts × `ceil(2048/128)` = 16 N tiles. The comparable SIMT shape is
-therefore NOT one dense layer: eight experts × 2048 output rows is **rows=16384**, and there the fp16 SIMT kernel
-reaches **51.6% cold and 68.1% warm** against the collective's Memory 29.87% / Compute 38.99%. At ONE dense layer
-(rows=2048, which the dispatcher runs at 256 CTAs) it reaches only **9.3%**.
+**This also reframes the comparison against the PPU collective — grid and work must both be matched.** The pinned
+collective launches 128 CTAs (Waves Per CU 0.44 = 128 over 72 CU × 4 theoretical block slots), from eight active
+experts × `ceil(2048/128)=16` N tiles. Three SIMT points separate the confounders:
 
-So "the SIMT kernel is worse at the real shape" is true for a single dense layer and false for the MoE decode band,
-and the gap between those two readings is 8× in work per launch. ⚠ The 51.6% carries no expert gather, no routing
-and no ragged rows — `vecdot_rows_kernel` is dense-only — so it BOUNDS what a real MoE GEMV could reach rather than
-predicting it. That kernel does not exist; see `FULLY_QUANTIZED × GEMV_MOE` in schemes.py. The earlier
-comparison was saturated SIMT against unsaturated collective and flattered SIMT badly. Grid supply explains most of
-that apparent advantage, not all absolute time: the two CTAs do different work and have different dependency and
-barrier chains.
+| Q4_K SIMT point | useful MoE-sized work | CTAs | cold % peak | warm % peak | what it matches |
+|---|---:|---:|---:|---:|---|
+| rows=2048, policy rpw2 | 1 × 2048 outputs | 128 | 9.3% | 17.0% | grid only; one eighth of the work |
+| rows=16384, policy rpw8 | 8 × 2048 outputs | 256 | 51.6% | 69.9% | work only; twice the CTAs |
+| rows=16384, fixed rpw16 | 8 × 2048 outputs | 128 | **36.9%** | 60.3% | work and grid |
+
+The last row is the defensible comparison against collective Memory 29.87% / Compute 38.99%. Grid supply therefore
+explains a large part of the apparent saturated-SIMT advantage (65.5% at rows=131072 falls to 36.9%), but not all of
+it: seven cold bandwidth-percentage points remain, and the CTAs still have different delivery, dependency and
+barrier chains. Warm SIMT is an L2-resident counterfactual at this size, not a PPU HBM comparison.
+
+⚠ Even the matched row has no expert gather, routing or ragged-row handling — `vecdot_rows_kernel` is dense-only —
+so it bounds a native-scale MoE GEMV rather than predicting one. That kernel does not exist; see
+`FULLY_QUANTIZED × GEMV_MOE` in schemes.py.
 
 The collective's 0.44 is set first by **tile count**: at the pinned `16x128:256` shape, eight active experts times
 `ceil(2048/128)=16` N tiles is 128 CTAs. acu's four-block/CU capacity is shared-memory-limited (57,344 B per CTA in
