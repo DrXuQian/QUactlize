@@ -694,11 +694,22 @@ do_pytest() {
     QUACTLIZE_PPU_LIB="$_fmtso" QUACTLIZE_PACKED_FORMAT="$_fmtname" PYTHONPATH="$ROOT" \
       python3 -m pytest "$ROOT/tests" -q -rs -m fully_quantized_dense >"$_fqlog" 2>&1 && _r=0 || _r=$?
     tail -3 "$_fqlog" | sed 's/^/   /'
+    # SKIPS ARE THE DESIGN HERE, and this check predated it. Ten tests are collected -- five formats x dense and
+    # grouped -- and the format gate lets exactly ONE format's two through, because no binary runs more than one.
+    # So the correct shape is 2 passed / 8 skipped, and "any skip is a failure" (written before the gate existed)
+    # called five green formats red. What must be distinguished is WHY something skipped:
+    #     "this library is built for packed format N"  -> the gate, expected, 8 of them
+    #     "are not in this build yet"                  -> the ops are missing, which is the real absence
     if grep -qi "are not in this build yet" "$_fqlog"; then
       echo "   ($_label ops not built yet -- not counted; see .coord/INBOX.md 012/013)"
-    elif [ "$_r" -ne 0 ] || grep -qi "skipped" "$_fqlog" || ! grep -Eq '[1-9][0-9]* passed' "$_fqlog"; then
-      echo "   !!! the $_label fully_quantized oracles did not run to a pass (exit $_r)"
+    elif [ "$_r" -ne 0 ] || ! grep -Eq '(^| )2 passed' "$_fqlog"; then
+      echo "   !!! the $_label fully_quantized oracles did not run to TWO passes -- dense and grouped (exit $_r)"
       fqrc=1
+    elif grep -qi "skipped" "$_fqlog" && ! grep -qi "built for packed format" "$_fqlog"; then
+      echo "   !!! $_label skipped for a reason that is NOT the format gate -- read $_fqlog"
+      fqrc=1
+    else
+      echo "   $_label: dense and grouped oracles PASSED on the device"
     fi
   done
 
