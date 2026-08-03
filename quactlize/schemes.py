@@ -162,6 +162,46 @@ _add(Scheme.SCALE_FIRST, Shape.DENSE, (QuantType.GPTQ_INT4_SYM,),
          "test_fpA_intB_ppu compares the launcher against ANOTHER CONFIGURATION OF ITSELF. That catches plumbing "
          "and is structurally blind to a wrong shared constant, since both sides move together")))
 
+# --- DENSE DECODE. The cell I left blank while filling in its MoE sibling, which is incoherent -----------------
+# DEQUANT_FIRST/GEMV is not a separate route: the weight is materialised to fp16 and handed to the same library
+# call, so it is that GEMM at m=1 -- and test_dequant_first_dense_matches_oracle runs m in (1, 7, 64) explicitly.
+# It read ABSENT only because I added the GEMV_MOE column and forgot its dense twin, which then showed the grouped
+# route validated at one row per expert while the dense route at m=1 showed nothing.
+_add(Scheme.DEQUANT_FIRST, Shape.GEMV, _KQUANTS, Impl(
+    Status.VALIDATED, _ROUTES, note=(
+        "the dense route at m=1, which the oracle test covers directly. Correct and the wrong thing to ship at "
+        "decode: it materialises the whole weight in fp16 for ONE token, so its extra DRAM traffic is 16x the "
+        "pre-pass's before the GEMM has read a byte. It is the fallback that proves the others are needed")))
+
+# --- SCALE_FIRST x DENSE for the k-quants: both halves exist and nobody has joined them ------------------------
+_add(Scheme.SCALE_FIRST, Shape.DENSE, _KQUANTS, Impl(
+    Status.PARTIAL, _DENSE, note=(
+        "the pre-pass produces exactly what this launcher consumes -- fp16 scale and zero planes over packed "
+        "codes -- and fpA_intB_ppu.cuh consumes exactly that for GPTQ int4. What is missing is the join: no "
+        "caller hands a k-quant's pre-passed planes to the dense launcher, and no harness runs the pair. Note the "
+        "launcher's own GPTQ cell is only IMPLEMENTED, because its test compares the launcher against another "
+        "configuration of ITSELF -- so joining these would inherit an oracle that cannot see a wrong shared "
+        "constant, not gain one")))
+
+# --- FULLY_QUANTIZED x DENSE: structural, not unfinished -------------------------------------------------------
+_add(Scheme.FULLY_QUANTIZED, Shape.DENSE, _KQUANTS, Impl(
+    Status.ABSENT, "", note=(
+        "the packed scale path lives in the GROUPED collective. The dense launcher has no staging for a native "
+        "scale unit at all -- not a missing wire, a missing mechanism -- and the mid-band case it would serve is "
+        "the one the pre-pass already covers with a workspace")))
+
+# --- THE TWO FORMATS WITH NOTHING, and why that is a decision rather than an oversight -------------------------
+# GPTQ_INT4_ASYM and AWQ_INT4 are declared in QuantType and reachable by name, and every cell for them is empty.
+# Neither has an importer, a fixture, or a harness; ci/registry.py lists 'awq-int4' among the formats we intend to
+# ship and its coverage() reports NOTHING for it. They are in the enum so that a caller naming them gets a refusal
+# from select_path rather than a KeyError, which is the whole reason the enum is wider than the support.
+_add(Scheme.SCALE_FIRST, Shape.GROUPED, (QuantType.GPTQ_INT4_ASYM, QuantType.AWQ_INT4), Impl(
+    Status.ABSENT, "", note=(
+        "no importer, no fixture, no harness. The asymmetric forms carry a per-group ZERO POINT that the "
+        "symmetric path folds into the code range, so this is a different scale channel rather than a different "
+        "checkpoint layout -- the collective's ConvertAndScaleWithZero mode is the mechanism, and nothing has "
+        "been wired to feed it from either format. Declared in QuantType so select_path can refuse them by name")))
+
 # --- MoE AT DECODE. The column that did not exist, and what it exposes ---------------------------------------
 # gemv_lowbit ALREADY serves this: gemv_exec launches dim3(grid_m, n/CtaN, Grouped ? num_experts : 1), so experts
 # are a grid dimension, and test_gemv_lowbit drives it with num_experts/row_offsets/max_rows. That was invisible
