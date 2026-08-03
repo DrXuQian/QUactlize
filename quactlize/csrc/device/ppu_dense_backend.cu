@@ -75,7 +75,13 @@ extern "C" int quactlize_ppu_dense_lowbit(uint16_t const* act, uint8_t const* lo
   if (!act || !low || !scale || !zero || !out || m <= 0 || n <= 0 || k <= 0 || n % 256 || k % 256) return 30;
   switch (qtype) {
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 10
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 2
+    // The selected Q2 unit has 16 groups, so TileK=256 would reinterpret this ABI's fp16 scale plane as raw units.
+    // Its single unfolded code plane is tile-invariant; TileK=128 keeps the established scale-first contract live.
+    case 10: return group_size == 16 ? dense<cutlass::uint2b_t,void,16,128>(act,low,high,scale,zero,out,m,n,k,group_size) : 32;
+#else
     case 10: return group_size == 16 ? dense<cutlass::uint2b_t,void,16>(act,low,high,scale,zero,out,m,n,k,group_size) : 32;
+#endif
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 11
     case 11: return group_size == 16 ? dense<cutlass::uint2b_t,cutlass::uint1b_t,16>(act,low,high,scale,zero,out,m,n,k,group_size) : 32;
@@ -91,7 +97,14 @@ extern "C" int quactlize_ppu_dense_lowbit(uint16_t const* act, uint8_t const* lo
 #endif
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 13
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 1
+    // Q5's high-plane placement is tied to this TileK=256 tactic, while this exact type selects raw packed metadata
+    // in a format-1 build. Refuse the fp16 scale-first contract explicitly instead of reinterpreting its scale plane
+    // as units; the default build and every differently selected packed-format build retain the established path.
+    case 13: return 36;
+#else
     case 13: return group_size == 32 ? dense<cutlass::int4b_t,cutlass::uint1b_t,32>(act,low,high,scale,zero,out,m,n,k,group_size) : 32;
+#endif
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 14
     case 14: return group_size == 16 ? dense<cutlass::int4b_t,cutlass::uint2b_t,16,128>(act,low,high,scale,zero,out,m,n,k,group_size) : 32;
@@ -100,12 +113,12 @@ extern "C" int quactlize_ppu_dense_lowbit(uint16_t const* act, uint8_t const* lo
   }
 }
 
-// FULLY_QUANTIZED x DENSE, single-plane k-quants. This is only a second ABI contract: it instantiates the SAME
-// dense() wrapper and CollectiveBuilder as scale-first. TileK=256 covers one selected packed unit (8 Q4 groups or
-// 16 Q2 groups), and decoding remains solely in the shared mainloop. Builds without PPU_PACKED_SCALE retain the
-// symbol but return 34, so callers can distinguish "not in the default build" from a missing library.
+// FULLY_QUANTIZED x DENSE, format-selected k-quants. This is only a second ABI contract: it instantiates the SAME
+// dense() wrapper and CollectiveBuilder as scale-first. TileK=256 covers one selected packed unit; Q5's high code
+// plane selects the structurally separate two-plane collective, whose scale channel calls the same packed helpers.
+// Builds without PPU_PACKED_SCALE retain the symbol but return 34.
 extern "C" int quactlize_ppu_dense_fully_quantized(uint16_t const* act, uint8_t const* low,
-                                                     uint8_t const* units, uint16_t* out,
+                                                     uint8_t const* high, uint8_t const* units, uint16_t* out,
                                                      int m, int n, int k, int qtype) {
   if (!act || !low || !units || !out || m <= 0 || n <= 0 || k <= 0 || n % 256 || k % 256) return 30;
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
@@ -117,9 +130,13 @@ extern "C" int quactlize_ppu_dense_fully_quantized(uint16_t const* act, uint8_t 
   if (qtype != 10) return 33;
   return dense<cutlass::uint2b_t, void, 16, 256, true>(
       act, low, nullptr, units, nullptr, out, m, n, k, 16);
+#elif PPU_PACKED_FORMAT == 1
+  if (qtype != 13 || !high) return 33;
+  return dense<cutlass::int4b_t, cutlass::uint1b_t, 32, 256, true>(
+      act, low, high, units, nullptr, out, m, n, k, 32);
 #else
   (void)qtype;
-  return 35;  // this binary's packed-scale format has no single-plane entry here
+  return 35;  // this binary's packed-scale format has no entry here yet
 #endif
 #else
   (void)qtype;
@@ -129,13 +146,14 @@ extern "C" int quactlize_ppu_dense_fully_quantized(uint16_t const* act, uint8_t 
 
 namespace {
 
-template <class Low, int GroupSize>
-int grouped_fully_quantized(uint16_t const* act, uint8_t const* low, uint8_t const* units,
+template <class Low, class High, int GroupSize>
+int grouped_fully_quantized(uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
                             int const* rows_per_expert, uint16_t* out,
                             int total_rows, int n, int k, int experts) {
   using GS = moe_grouped_ppu::GroupShape;
   using DS = moe_grouped_ppu::DStride;
   constexpr int LowBits = cutlass::sizeof_bits<Low>::value;
+  constexpr int HighBits = std::is_void_v<High> ? 0 : cutlass::sizeof_bits<High>::value;
   constexpr int ScaleGroups = 256 / GroupSize;
   static_assert(ScaleGroups == SelectedPackedUnit::kGroups,
                 "the fixed grouped TileK must cover exactly one selected packed unit");
@@ -153,8 +171,14 @@ int grouped_fully_quantized(uint16_t const* act, uint8_t const* low, uint8_t con
 
   size_t const low_bytes = size_t(experts) * n * k * LowBits / 8;
   size_t const unit_bytes = size_t(experts) * (k / 256) * n * SelectedPackedUnit::kUnitBytes;
-  DevBuf da(size_t(total_rows) * k * 2), dl(low_bytes), du(unit_bytes), dout(size_t(total_rows) * n * 2);
+  size_t const high_bytes = size_t(experts) * n * k * HighBits / 8;
+  DevBuf da(size_t(total_rows) * k * 2), dl(low_bytes), dh(high_bytes), du(unit_bytes),
+         dout(size_t(total_rows) * n * 2);
   da.from_host(act); dl.from_host(low); du.from_host(units);
+  if constexpr (HighBits != 0) {
+    if (!high) return 33;
+    dh.from_host(high);
+  }
 
   std::vector<GS> shapes(static_cast<size_t>(experts));
   std::vector<half_t*> out_ptrs(static_cast<size_t>(experts));
@@ -182,10 +206,14 @@ int grouped_fully_quantized(uint16_t const* act, uint8_t const* low, uint8_t con
   // together, so asserting packed selection there would correctly fail on its non-selected control branches.
   moe_grouped_ppu::launch<GQM::FinegrainedScaleZero,
                           cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
-                          GTile, GScale, GWarp, 2, true, Low, void, true>(
+                          GTile, GScale, GWarp, 2, true, Low, High, true>(
       da.as<half_t>(), dl.as<Low>(), reinterpret_cast<half_t const*>(du.p), nullptr,
       d_out_ptrs.as<half_t*>(), d_out_strides.as<DS>(), d_rows.as<int>(), max_rows, n, k, experts, GroupSize,
-      d_shapes.as<GS>(), shapes.data(), d_offsets.as<int>(), ws.as<char>(), ws_bytes, nullptr);
+      d_shapes.as<GS>(), shapes.data(), d_offsets.as<int>(), ws.as<char>(), ws_bytes, nullptr,
+      [&]() {
+        if constexpr (std::is_void_v<High>) return static_cast<High const*>(nullptr);
+        else return dh.as<High>();
+      }(), k, false, 1, false);
   if (moe_grouped_ppu::moeg_fail_count() != failures) return 31;
   ppu_gemv::rt_sync("fully-quantized grouped GEMM");
   dout.to_host(out);
@@ -194,24 +222,30 @@ int grouped_fully_quantized(uint16_t const* act, uint8_t const* low, uint8_t con
 
 }  // namespace
 
-// FULLY_QUANTIZED x GROUPED. The artifact is [E,N,packed-K] low codes plus [E,K/256,N,unit] units; activations and
+// FULLY_QUANTIZED x GROUPED. The artifact is low codes, an optional high code plane, and [E,K/256,N,unit] metadata;
+// activations and
 // output are concatenated in expert order and rows_per_expert supplies the ragged boundaries. All tensor-core work
 // remains in moe_grouped_ppu's existing grouped scheduler and shared packed-scale collective. This wrapper only
 // materialises the raw-pointer arrays that the grouped CUTLASS interface requires.
 extern "C" int quactlize_ppu_grouped_fully_quantized(
-    uint16_t const* act, uint8_t const* low, uint8_t const* units, int const* rows_per_expert,
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
+    int const* rows_per_expert,
     uint16_t* out, int total_rows, int n, int k, int experts, int qtype) {
   if (!act || !low || !units || !rows_per_expert || !out || total_rows <= 0 || n <= 0 || k <= 0 ||
       experts <= 0 || n % 256 || k % 256) return 30;
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
   if (qtype != 12) return 33;
-  return grouped_fully_quantized<cutlass::int4b_t, 32>(
-      act, low, units, rows_per_expert, out, total_rows, n, k, experts);
+  return grouped_fully_quantized<cutlass::int4b_t, void, 32>(
+      act, low, nullptr, units, rows_per_expert, out, total_rows, n, k, experts);
 #elif PPU_PACKED_FORMAT == 2
   if (qtype != 10) return 33;
-  return grouped_fully_quantized<cutlass::uint2b_t, 16>(
-      act, low, units, rows_per_expert, out, total_rows, n, k, experts);
+  return grouped_fully_quantized<cutlass::uint2b_t, void, 16>(
+      act, low, nullptr, units, rows_per_expert, out, total_rows, n, k, experts);
+#elif PPU_PACKED_FORMAT == 1
+  if (qtype != 13 || !high) return 33;
+  return grouped_fully_quantized<cutlass::int4b_t, cutlass::uint1b_t, 32>(
+      act, low, high, units, rows_per_expert, out, total_rows, n, k, experts);
 #else
   (void)qtype;
   return 35;

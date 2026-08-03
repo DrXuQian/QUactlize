@@ -106,8 +106,8 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
   // FULLY_QUANTIZED is an INSTANTIATION of the shared mainloop, not a dense-specific decoder. Make that selection
   // compile-time observable at its call site: a flagged binary that accidentally falls back to fp16 scale planes
   // must fail to build instead of accepting packed bytes through the half pointer and producing plausible garbage.
-  // The false/default arm deliberately does not name this member because the separate two-plane collective has no
-  // packed-scale channel yet and therefore does not expose is_packed_scale.
+  // The false/default arm deliberately does not name the witness, so ordinary fp16-scale instantiations remain
+  // independent of whether their selected collective exposes a packed channel.
   if constexpr (ExpectPackedScale) {
     static_assert(CollectiveMainloop::is_packed_scale,
                   "fully-quantized dense requires the shared packed-scale mainloop at this tile shape");
