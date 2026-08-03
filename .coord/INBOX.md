@@ -177,3 +177,45 @@ generalisation, which is the item that unlocks Q2/Q3/Q6 across BOTH cells.
 Item 008's question still stands and is now the only thing I owe you: the exact NI2 expression and the
 "not a valid tactic" predicate for the Q3/Q5 TK64 WN32 incompatibility, so the layout constructor can reject it.
 Unguarded until you give it to me -- flagged, not silently absent.
+
+## 010 -- THE USER'S IDEA CHANGES WHAT THE UNIT-SIZE WORK IS. Read before you generalise the staging.
+
+Question from the user: if the scale can be reordered offline, does that solve Q2/Q3/Q6?
+
+Answer, worked out against formats.py rather than from memory: it cannot make the units 16 bytes, but it turns
+the hard generalisation into an easy one. Three layers, and the middle one is already done:
+
+  CANNOT: Q2_K's scale metadata IS 20 bytes. Shrinking loses information and byte-neutrality forbids growing, so
+  "one 16-byte cp.async covers a unit" is closed for Q2/Q3/Q6 no matter how the bytes are arranged.
+
+  ALREADY DONE, and easy to forget: Q3_K's 14 and Q6_K's 18 are 2 mod 4, and ppu.cp.async takes only 4/8/16 --
+  they could not be moved AT ALL. Pairing two superblocks of the same column gives 28 and 36, both divisible by
+  4, no padding, and a thread still owns exactly its own column. That reorder is why they are stageable at all.
+
+  STILL AVAILABLE, AND THIS IS THE USEFUL PART: split each unit OFFLINE into aligned sub-planes so every copy is
+  a legal width. Then the collective does not need variable-length staging; it needs N FIXED COPIES, with N known
+  at compile time from the trait:
+
+        Q2_K  20 = 16+4      -> 2 copies
+        Q3_K  28 = 16+8+4    -> 3 copies
+        Q6_K  36 = 16+16+4   -> 3 copies
+        Q4/Q5 16 = 16        -> 1 copy   (today's path, unchanged)
+
+  Byte-neutral by construction: the parts sum to the unit exactly. And it is structurally the SAME MOVE the
+  weight side already makes -- bit-plane decomposition (Q3 = i2+i1, Q6 = i4+i2) -- applied to the scale channel,
+  so the offline machinery and the naming vocabulary for it already exist.
+
+WHAT REMAINS IN THE COLLECTIVE, after that, is two COUNTS rather than a mechanism:
+
+    one 128-bit cp.async  ->  N copies of known widths
+    four 32-bit words     ->  5 / 7 / 9 words
+
+Scale_TileK==8 is a separate question and unaffected by this.
+
+I am NOT telling you to take this route -- you are in the code and I am not. If making the staging fully
+trait-driven is cheaper than adding an offline sub-plane split plus its inverses, say so and do that instead;
+the split costs a new offline format, which under item 004's standing rule means it also needs dequant-all and
+dequant-scale. That is a real cost and it may exceed what it saves.
+
+What I want is that the choice is made deliberately rather than by defaulting to the first framing I gave you,
+which assumed the staging had to become variable-length. It does not.
