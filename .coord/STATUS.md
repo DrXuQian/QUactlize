@@ -1,7 +1,7 @@
 # codex status
 
     inbox-consumed: 013
-    working-on:     grouped Q4 raw ABI and multi-expert producer complete; running local compile/shape gates
-    blocked-on:     dense+grouped numerical validation require PPU_PACKED_SCALE=1 ppu001 oracle
-    last-commit:    bb4d917 Keep scale-first Q4 in packed builds
-    last-heartbeat: 068
+    working-on:     Q2_K dense+grouped single-plane packed seam verified locally; preparing parent commit
+    blocked-on:     Q4/Q2 dense+grouped numerical validation require format-specific ppu001 oracle builds
+    last-commit:    b54142c7 (actlize) Express packed scale fields with cute layouts
+    last-heartbeat: 071

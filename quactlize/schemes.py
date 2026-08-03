@@ -155,15 +155,6 @@ _NO_PACKED_2PLANE = Impl(
         "packed-scale channel added to the two-plane mainloop; their byte-neutral 28/16/36-byte units and bit-exact "
         "round trips are prerequisites, not evidence that this consumer exists"))
 
-_NO_PACKED_TRAITS = Impl(
-    Status.ABSENT, "", note=(
-        "single-plane, so the shape fits. The scale unit is generalised already -- gguf_packed_unit.hpp derives "
-        "every number from a trait and reproduces the shipped Q4_K bit positions exactly -- but the COLLECTIVE "
-        "still hardcodes 16 bytes per unit, one 128-bit cp.async, Scale_TileK==8 and four 32-bit words, and the "
-        "unit size genuinely differs per format (20 for Q2_K), which is what that single cp.async assumes away. "
-        "The staging tile and its copy have to come from the trait"))
-
-
 # (scheme, shape, format) -> Impl. Absent entries mean ABSENT with no note worth writing.
 IMPL: Dict[Tuple[Scheme, Shape, QuantType], Impl] = {}
 
@@ -240,13 +231,21 @@ _add(Scheme.FULLY_QUANTIZED, Shape.DENSE, (QuantType.Q4_K,), Impl(
         "compile, but the independent ppu001 numerical oracle has not run yet, so this is deliberately PARTIAL, not "
         "IMPLEMENTED or VALIDATED. This cell is NOT IN THE DEFAULT BUILD: it requires PPU_PACKED_SCALE=1, and the "
         "always-present device symbol returns rc=34 explicitly without that flag")))
+_add(Scheme.FULLY_QUANTIZED, Shape.DENSE, (QuantType.Q2_K,), Impl(
+    Status.PARTIAL, _DENSE, flag="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=2", note=(
+        "Q2_K now instantiates the SAME single-plane CollectiveBuilder path at TileK=256, where gs=16 gives "
+        "Scale_TileK==kGroups==16. Its trait-derived 20-byte unit is staged as five legal 4-byte cp.async copies; "
+        "the device mainloop contains no Q2-specific addressing or decoder. The raw producer uses the same cute-"
+        "addressed packed-unit writer as Q4 and emits low [1,n,k/4] plus units [k/256,n,20]. Host compilation, the "
+        "complete forced device front end, packed-unit round trips, and a planted multi-expert producer/hash gate "
+        "pass locally, but no real-PPU numerical oracle has run, so the cell remains PARTIAL. It is NOT IN THE "
+        "DEFAULT BUILD and also needs PPU_PACKED_FORMAT=2; a Q4-selected packed binary intentionally rejects Q2")))
 _add(Scheme.FULLY_QUANTIZED, Shape.DENSE,
-     (QuantType.Q2_K, QuantType.Q3_K, QuantType.Q5_K, QuantType.Q6_K), Impl(
+     (QuantType.Q3_K, QuantType.Q5_K, QuantType.Q6_K), Impl(
     Status.ABSENT, "", note=(
-        "Q2_K still needs its 20-byte unit carried by the single-plane mainloop. Q3_K/Q5_K/Q6_K all route through "
-        "ppu_mma_aiu_mixed_input_2plane.hpp for dense as well as grouped, and that collective has no packed-scale "
-        "channel; Q3_K/Q6_K additionally need their 28/36-byte paired units carried. These are two shared-mainloop "
-        "changes, not per-shape implementations")))
+        "Q3_K/Q5_K/Q6_K all route through ppu_mma_aiu_mixed_input_2plane.hpp for dense as well as grouped, and "
+        "that collective has no packed-scale channel. Q3_K/Q6_K additionally need their 28/36-byte paired units "
+        "carried. These are shared-mainloop changes, not per-shape implementations")))
 
 # --- THE TWO FORMATS WITH NOTHING, and why that is a decision rather than an oversight -------------------------
 # GPTQ_INT4_ASYM and AWQ_INT4 are declared in QuantType and reachable by name, and every cell for them is empty.
@@ -304,7 +303,7 @@ _add(Scheme.SCALE_FIRST, Shape.GEMV, _KQUANTS, Impl(
         "production .so against official gguf at asymmetric n=24/k=2048 and first zeros the complete low-code "
         "plane to demonstrate that this dense kernel's oracle fails on a well-formed planted fault")))
 
-# --- FULLY_QUANTIZED: one format, behind a flag -----------------------------------------------------------------
+# --- FULLY_QUANTIZED: packed tensor-core paths, behind format-selecting flags ------------------------------------
 _add(Scheme.FULLY_QUANTIZED, Shape.GROUPED, (QuantType.Q4_K,), Impl(
     Status.VALIDATED, _GROUPED, flag="PPU_PACKED_SCALE=1", note=(
         "numerically validated on real Q4_K checkpoint bytes, but ONLY test_q4k_packed_gemm's rowC exercises the "
@@ -312,7 +311,14 @@ _add(Scheme.FULLY_QUANTIZED, Shape.GROUPED, (QuantType.Q4_K,), Impl(
         "unit, not GGUF's on-disk 12-byte packing, which is not half-separable; the reorder is byte-neutral. "
         "PERFORMANCE IS UNMEASURED: every figure recorded before commit 80dfeec came from a bench whose two paths "
         "computed different numbers")))
-_add(Scheme.FULLY_QUANTIZED, Shape.GROUPED, (QuantType.Q2_K,), _NO_PACKED_TRAITS)
+_add(Scheme.FULLY_QUANTIZED, Shape.GROUPED, (QuantType.Q2_K,), Impl(
+    Status.PARTIAL, _GROUPED, flag="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=2", note=(
+        "the existing grouped scheduler now reaches the same Q2_K TileK=256 packed collective as dense; only the "
+        "ragged expert pointer/shape assembly differs. The artifact is low [E,n,k/4] plus byte-neutral units "
+        "[E,k/256,n,20]. Four independently produced dense expert slices are byte-identical to the grouped producer, "
+        "and a planted all-experts-read-expert-0 input changes both artifact hashes. The full flag-on device front "
+        "end compiles, but the independent official dequant-first numerical oracle has not run on ppu001, so this is "
+        "PARTIAL. It is NOT IN THE DEFAULT BUILD and requires BOTH PPU_PACKED_SCALE=1 and PPU_PACKED_FORMAT=2")))
 _add(Scheme.FULLY_QUANTIZED, Shape.GROUPED, tuple(TWO_PLANE), _NO_PACKED_2PLANE)
 _add(Scheme.FULLY_QUANTIZED, Shape.GEMV, _KQUANTS, Impl(
     Status.VALIDATED, "quactlize/include/gguf_vecdot.hpp", note=(

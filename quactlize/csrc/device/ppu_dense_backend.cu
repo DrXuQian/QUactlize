@@ -16,6 +16,12 @@ using QM = fpa_intb_ppu::QuantMode;
 using GQM = moe_grouped_ppu::QuantMode;
 using Q4PackedUnit = cutlass::gguf_packed::Unit<cutlass::gguf_packed::Fmt::Q4K>;
 static_assert(Q4PackedUnit::kUnitBytes == 16, "Q4_K's byte-neutral packed unit is the shipped 16-byte unit");
+#if defined(PPU_PACKED_FORMAT)
+static constexpr auto kSelectedPackedFmt = cutlass::gguf_packed::Fmt(PPU_PACKED_FORMAT);
+#else
+static constexpr auto kSelectedPackedFmt = cutlass::gguf_packed::Fmt::Q4K;
+#endif
+using SelectedPackedUnit = cutlass::gguf_packed::Unit<kSelectedPackedFmt>;
 
 template <class Low, class High = void, int GroupSize = 16, int TileK = 256, bool PackedScale = false>
 int dense(uint16_t const* act, uint8_t const* low, uint8_t const* high,
@@ -26,11 +32,10 @@ int dense(uint16_t const* act, uint8_t const* low, uint8_t const* high,
   size_t const low_bytes = size_t(n) * k * LowBits / 8;
   size_t const high_bytes = size_t(n) * k * HighBits / 8;
   size_t const plane_elems = size_t(k / GroupSize) * n;
-  // Q4_K's byte-neutral packed unit is 16 B per (superblock,column). At TileK=256 this is exactly the byte count
-  // of one fp16 scale plane, but it is not a half tensor: the shared mainloop reinterprets ptr_S as raw unit bytes
-  // when kPackedScaleOn is true and does not read ptr_Z. Keep the allocation distinction explicit so this entry
-  // cannot grow into a second decode implementation beside the collective.
-  size_t const scale_bytes = PackedScale ? size_t(k / 256) * n * Q4PackedUnit::kUnitBytes : plane_elems * 2;
+  // A packed unit is byte-neutral metadata for one (superblock,column), selected at build time. It is not a half
+  // tensor: the shared mainloop reinterprets ptr_S as raw bytes when kPackedScaleOn is true and does not read ptr_Z.
+  // Keep the allocation distinction explicit so this entry cannot grow a second decoder beside the collective.
+  size_t const scale_bytes = PackedScale ? size_t(k / 256) * n * SelectedPackedUnit::kUnitBytes : plane_elems * 2;
   DevBuf da(size_t(m) * k * 2), dl(low_bytes), dh(high_bytes), ds(scale_bytes),
          dz(PackedScale ? 0 : plane_elems * 2),
          dout(size_t(m) * n * 2);
@@ -95,10 +100,10 @@ extern "C" int quactlize_ppu_dense_lowbit(uint16_t const* act, uint8_t const* lo
   }
 }
 
-// FULLY_QUANTIZED x DENSE, Q4_K. This is only a second ABI contract: it instantiates the SAME dense() wrapper and
-// the SAME CollectiveBuilder as scale-first, with TileK=256 making Scale_TileK==PackedUnit::kGroups==8. The packed
-// decode remains solely in the shared mainloop. Builds without PPU_PACKED_SCALE retain the symbol but return 34,
-// so callers can distinguish "not in the default build" from a missing library.
+// FULLY_QUANTIZED x DENSE, single-plane k-quants. This is only a second ABI contract: it instantiates the SAME
+// dense() wrapper and CollectiveBuilder as scale-first. TileK=256 covers one selected packed unit (8 Q4 groups or
+// 16 Q2 groups), and decoding remains solely in the shared mainloop. Builds without PPU_PACKED_SCALE retain the
+// symbol but return 34, so callers can distinguish "not in the default build" from a missing library.
 extern "C" int quactlize_ppu_dense_fully_quantized(uint16_t const* act, uint8_t const* low,
                                                      uint8_t const* units, uint16_t* out,
                                                      int m, int n, int k, int qtype) {
@@ -108,9 +113,13 @@ extern "C" int quactlize_ppu_dense_fully_quantized(uint16_t const* act, uint8_t 
   if (qtype != 12) return 33;
   return dense<cutlass::int4b_t, void, 32, 256, true>(
       act, low, nullptr, units, nullptr, out, m, n, k, 32);
+#elif PPU_PACKED_FORMAT == 2
+  if (qtype != 10) return 33;
+  return dense<cutlass::uint2b_t, void, 16, 256, true>(
+      act, low, nullptr, units, nullptr, out, m, n, k, 16);
 #else
   (void)qtype;
-  return 35;  // this binary's packed-scale format is not Q4_K
+  return 35;  // this binary's packed-scale format has no single-plane entry here
 #endif
 #else
   (void)qtype;
@@ -118,20 +127,18 @@ extern "C" int quactlize_ppu_dense_fully_quantized(uint16_t const* act, uint8_t 
 #endif
 }
 
-// FULLY_QUANTIZED x GROUPED, Q4_K. The artifact is [E,N,K/2] low codes plus [E,K/256,N,16] units; activations and
-// output are concatenated in expert order and rows_per_expert supplies the ragged boundaries. All tensor-core work
-// remains in moe_grouped_ppu's existing grouped scheduler and shared packed-scale collective. This wrapper only
-// materialises the raw-pointer arrays that the grouped CUTLASS interface requires.
-extern "C" int quactlize_ppu_grouped_fully_quantized(
-    uint16_t const* act, uint8_t const* low, uint8_t const* units, int const* rows_per_expert,
-    uint16_t* out, int total_rows, int n, int k, int experts, int qtype) {
-  if (!act || !low || !units || !rows_per_expert || !out || total_rows <= 0 || n <= 0 || k <= 0 ||
-      experts <= 0 || n % 256 || k % 256) return 30;
-#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
-#if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
-  if (qtype != 12) return 33;
+namespace {
+
+template <class Low, int GroupSize>
+int grouped_fully_quantized(uint16_t const* act, uint8_t const* low, uint8_t const* units,
+                            int const* rows_per_expert, uint16_t* out,
+                            int total_rows, int n, int k, int experts) {
   using GS = moe_grouped_ppu::GroupShape;
   using DS = moe_grouped_ppu::DStride;
+  constexpr int LowBits = cutlass::sizeof_bits<Low>::value;
+  constexpr int ScaleGroups = 256 / GroupSize;
+  static_assert(ScaleGroups == SelectedPackedUnit::kGroups,
+                "the fixed grouped TileK must cover exactly one selected packed unit");
 
   std::vector<int> rows(static_cast<size_t>(experts)), offsets(static_cast<size_t>(experts));
   int sum = 0, max_rows = 0;
@@ -144,8 +151,8 @@ extern "C" int quactlize_ppu_grouped_fully_quantized(
   }
   if (sum != total_rows || max_rows <= 0) return 36;
 
-  size_t const low_bytes = size_t(experts) * n * k / 2;
-  size_t const unit_bytes = size_t(experts) * (k / 256) * n * Q4PackedUnit::kUnitBytes;
+  size_t const low_bytes = size_t(experts) * n * k * LowBits / 8;
+  size_t const unit_bytes = size_t(experts) * (k / 256) * n * SelectedPackedUnit::kUnitBytes;
   DevBuf da(size_t(total_rows) * k * 2), dl(low_bytes), du(unit_bytes), dout(size_t(total_rows) * n * 2);
   da.from_host(act); dl.from_host(low); du.from_host(units);
 
@@ -169,20 +176,42 @@ extern "C" int quactlize_ppu_grouped_fully_quantized(
   DevBuf ws(ws_bytes);
   int const failures = moe_grouped_ppu::moeg_fail_count();
   using GTile = cute::Shape<cute::_16, cute::_128, cute::C<256>>;
-  using GScale = cute::Shape<cute::_128, cute::_8>;
+  using GScale = cute::Shape<cute::_128, cute::C<ScaleGroups>>;
   using GWarp = cute::Shape<cute::_16, cute::_16, cute::C<256>>;
-  // Call the fixed gs32 instantiation directly. filter_and_run's runtime group-size ladder instantiates SK=2/4/8/16
-  // together, so asserting packed selection there would correctly fail on its non-SK8 control branches.
+  // Call the fixed group-size instantiation directly. filter_and_run's runtime ladder instantiates several SK values
+  // together, so asserting packed selection there would correctly fail on its non-selected control branches.
   moe_grouped_ppu::launch<GQM::FinegrainedScaleZero,
                           cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
-                          GTile, GScale, GWarp, 2, true, cutlass::int4b_t, void, true>(
-      da.as<half_t>(), dl.as<cutlass::int4b_t>(), reinterpret_cast<half_t const*>(du.p), nullptr,
-      d_out_ptrs.as<half_t*>(), d_out_strides.as<DS>(), d_rows.as<int>(), max_rows, n, k, experts, 32,
+                          GTile, GScale, GWarp, 2, true, Low, void, true>(
+      da.as<half_t>(), dl.as<Low>(), reinterpret_cast<half_t const*>(du.p), nullptr,
+      d_out_ptrs.as<half_t*>(), d_out_strides.as<DS>(), d_rows.as<int>(), max_rows, n, k, experts, GroupSize,
       d_shapes.as<GS>(), shapes.data(), d_offsets.as<int>(), ws.as<char>(), ws_bytes, nullptr);
   if (moe_grouped_ppu::moeg_fail_count() != failures) return 31;
   ppu_gemv::rt_sync("fully-quantized grouped GEMM");
   dout.to_host(out);
   return 0;
+}
+
+}  // namespace
+
+// FULLY_QUANTIZED x GROUPED. The artifact is [E,N,packed-K] low codes plus [E,K/256,N,unit] units; activations and
+// output are concatenated in expert order and rows_per_expert supplies the ragged boundaries. All tensor-core work
+// remains in moe_grouped_ppu's existing grouped scheduler and shared packed-scale collective. This wrapper only
+// materialises the raw-pointer arrays that the grouped CUTLASS interface requires.
+extern "C" int quactlize_ppu_grouped_fully_quantized(
+    uint16_t const* act, uint8_t const* low, uint8_t const* units, int const* rows_per_expert,
+    uint16_t* out, int total_rows, int n, int k, int experts, int qtype) {
+  if (!act || !low || !units || !rows_per_expert || !out || total_rows <= 0 || n <= 0 || k <= 0 ||
+      experts <= 0 || n % 256 || k % 256) return 30;
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
+#if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
+  if (qtype != 12) return 33;
+  return grouped_fully_quantized<cutlass::int4b_t, 32>(
+      act, low, units, rows_per_expert, out, total_rows, n, k, experts);
+#elif PPU_PACKED_FORMAT == 2
+  if (qtype != 10) return 33;
+  return grouped_fully_quantized<cutlass::uint2b_t, 16>(
+      act, low, units, rows_per_expert, out, total_rows, n, k, experts);
 #else
   (void)qtype;
   return 35;

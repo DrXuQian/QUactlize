@@ -62,6 +62,28 @@ auto dispatch_ktype(int64_t qtype, F&& f) {
   }
 }
 
+// Raw GGUF locations needed by the single-plane fully-quantized producers. Field placement inside the REORDERED
+// unit remains owned by gguf_packed_unit's cute layouts; these traits only name the byte-aligned record slices the
+// official formats publish. Adding two scattered offset ladders to dense and grouped would recreate the relation.
+template <KType T> struct PackedRaw;
+template <> struct PackedRaw<KType::Q4_K> {
+  static constexpr int kRawBytes=144, kScaleOffset=4, kDOffset=0, kDminOffset=2;
+};
+template <> struct PackedRaw<KType::Q2_K> {
+  static constexpr int kRawBytes=84, kScaleOffset=0, kDOffset=80, kDminOffset=82;
+};
+
+template <KType T>
+void pack_raw_unit(uint8_t const* block, uint8_t* unit) {
+  using R = PackedRaw<T>;
+  using U = gguf_scale::packed_unit::Unit<T>;
+  static_assert(U::kSbPerUnit == 1, "this producer currently emits one-superblock units");
+  cutlass::half_t d, dmin;
+  std::memcpy(&d, block + R::kDOffset, sizeof(d));
+  std::memcpy(&dmin, block + R::kDminOffset, sizeof(dmin));
+  gguf_scale::packed_unit::pack_unit_sb<T>(block + R::kScaleOffset, d, dmin, 0, unit);
+}
+
 }  // namespace
 
 // scale_blocks : uint8 [rows, block_bytes]   the format's SCALE block only, not the whole GGUF block. Slicing it out
@@ -453,29 +475,35 @@ torch::Tensor gguf_dense_scale_first(torch::Tensor a, torch::Tensor low, torch::
   return out;
 }
 
-// FULLY_QUANTIZED x DENSE, Q4_K. `low` and `units` are both resident artifacts: low has already crossed the fixed
+// FULLY_QUANTIZED x DENSE, single-plane k-quants. `low` and `units` are both resident artifacts: low has crossed the fixed
 // dense xplane placement and units have crossed gguf_pack_unit's byte-neutral reorder. This op performs no decode;
 // its device entry is an explicit TileK=256 instantiation of the shared CollectiveBuilder packed-scale mainloop.
 // Keeping the contract separate from gguf_dense_scale_first prevents a flagged binary from interpreting an fp16
-// scale plane as raw unit bytes merely because both happen to occupy the same number of bytes for Q4_K.
+// scale plane as raw unit bytes. The build-time PPU_PACKED_FORMAT selects which unit trait the device consumes.
 torch::Tensor gguf_dense_fully_quantized(torch::Tensor a, torch::Tensor low, torch::Tensor units,
                                           int64_t qtype) {
-  using U = gguf_scale::packed_unit::Unit<KType::Q4_K>;
   CHECK_CPU(a); CHECK_CONTIGUOUS(a); CHECK_CPU(low); CHECK_CONTIGUOUS(low);
   CHECK_CPU(units); CHECK_CONTIGUOUS(units);
-  TORCH_CHECK(qtype == kGgmlQ4K, "fully-quantized dense currently instantiates Q4_K only");
+  auto const meta = dispatch_ktype(qtype, [](auto tag) -> std::vector<int64_t> {
+    constexpr KType T = decltype(tag)::value;
+    TORCH_CHECK(T == KType::Q4_K || T == KType::Q2_K,
+                "fully-quantized single-plane dense supports Q4_K and Q2_K; this format needs the two-plane path");
+    using U = gguf_scale::packed_unit::Unit<T>;
+    constexpr int kLoBits = T == KType::Q2_K ? 2 : 4;
+    return {kLoBits, U::kUnitTotal};
+  });
   TORCH_CHECK((a.dtype() == torch::kFloat16 || a.dtype() == torch::kFloat32) && a.dim() == 2,
               "a must be fp16/fp32 [m,k]");
   TORCH_CHECK(low.dtype() == torch::kUInt8 && low.dim() == 3 && low.size(0) == 1,
               "low must be the uint8 dense artifact [1,n,k/2]");
-  TORCH_CHECK(units.dtype() == torch::kUInt8 && units.dim() == 3 && units.size(2) == U::kUnitTotal,
-              "Q4_K units must be uint8 [k/256,n,", U::kUnitTotal, "]");
+  TORCH_CHECK(units.dtype() == torch::kUInt8 && units.dim() == 3 && units.size(2) == meta[1],
+              "packed units must be uint8 [k/256,n,", meta[1], "] for this format");
   int const m = int(a.size(0)), k = int(a.size(1)), n = int(low.size(1));
   TORCH_CHECK(m >= 0 && n > 0 && n % 256 == 0 && k > 0 && k % 256 == 0,
               "fully-quantized dense needs n and k multiples of 256");
-  TORCH_CHECK(low.size(2) == int64_t(k) / 2, "Q4_K low artifact byte count disagrees with k");
+  TORCH_CHECK(low.size(2) == int64_t(k) * meta[0] / 8, "low artifact byte count disagrees with k/qtype");
   TORCH_CHECK(units.size(0) == k / 256 && units.size(1) == n,
-              "Q4_K unit shape disagrees with the dense artifact");
+              "packed unit shape disagrees with the dense artifact");
 
   torch::Tensor a16 = a.dtype() == torch::kFloat16 ? a : a.to(torch::kFloat16);
   torch::Tensor out = torch::empty({m, n}, torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCPU));
@@ -494,25 +522,32 @@ torch::Tensor gguf_dense_fully_quantized(torch::Tensor a, torch::Tensor low, tor
 
 torch::Tensor gguf_grouped_fully_quantized(torch::Tensor a, torch::Tensor low, torch::Tensor units,
                                             torch::Tensor rows_per_expert, int64_t qtype) {
-  using U = gguf_scale::packed_unit::Unit<KType::Q4_K>;
   CHECK_CPU(a); CHECK_CONTIGUOUS(a); CHECK_CPU(low); CHECK_CONTIGUOUS(low);
   CHECK_CPU(units); CHECK_CONTIGUOUS(units); CHECK_CPU(rows_per_expert); CHECK_CONTIGUOUS(rows_per_expert);
-  TORCH_CHECK(qtype == kGgmlQ4K, "fully-quantized grouped currently instantiates Q4_K only");
+  auto const meta = dispatch_ktype(qtype, [](auto tag) -> std::vector<int64_t> {
+    constexpr KType T = decltype(tag)::value;
+    TORCH_CHECK(T == KType::Q4_K || T == KType::Q2_K,
+                "fully-quantized single-plane grouped supports Q4_K and Q2_K; this format needs the two-plane path");
+    using U = gguf_scale::packed_unit::Unit<T>;
+    constexpr int kLoBits = T == KType::Q2_K ? 2 : 4;
+    return {kLoBits, U::kUnitTotal};
+  });
   TORCH_CHECK((a.dtype() == torch::kFloat16 || a.dtype() == torch::kFloat32) && a.dim() == 2,
               "a must be fp16/fp32 concatenated [total_rows,k]");
   TORCH_CHECK(low.dtype() == torch::kUInt8 && low.dim() == 3,
               "low must be the uint8 grouped artifact [experts,n,k/2]");
-  TORCH_CHECK(units.dtype() == torch::kUInt8 && units.dim() == 4 && units.size(3) == U::kUnitTotal,
-              "Q4_K grouped units must be uint8 [experts,k/256,n,", U::kUnitTotal, "]");
+  TORCH_CHECK(units.dtype() == torch::kUInt8 && units.dim() == 4 && units.size(3) == meta[1],
+              "grouped units must be uint8 [experts,k/256,n,", meta[1], "] for this format");
   TORCH_CHECK(rows_per_expert.dtype() == torch::kInt32 && rows_per_expert.dim() == 1,
               "rows_per_expert must be contiguous int32 [experts]");
   int const experts = int(low.size(0)), n = int(low.size(1)), k = int(a.size(1));
   TORCH_CHECK(experts > 0 && rows_per_expert.size(0) == experts && units.size(0) == experts,
               "artifact and rows_per_expert must agree on experts");
-  TORCH_CHECK(n > 0 && n % 256 == 0 && k > 0 && k % 256 == 0 && low.size(2) == int64_t(k) / 2,
-              "Q4_K grouped artifact needs n/k multiples of 256 and k/2 low bytes per expert row");
+  TORCH_CHECK(n > 0 && n % 256 == 0 && k > 0 && k % 256 == 0 &&
+              low.size(2) == int64_t(k) * meta[0] / 8,
+              "grouped artifact needs n/k multiples of 256 and the format's low-byte count");
   TORCH_CHECK(units.size(1) == k / 256 && units.size(2) == n,
-              "Q4_K grouped unit shape disagrees with the weight artifact");
+              "packed grouped unit shape disagrees with the weight artifact");
   int const* rp = get_ptr<int const>(rows_per_expert);
   int64_t total = 0;
   for (int e = 0; e < experts; ++e) { TORCH_CHECK(rp[e] >= 0, "expert row counts must be nonnegative"); total += rp[e]; }
@@ -714,82 +749,89 @@ std::vector<torch::Tensor> gguf_prepare_dense(torch::Tensor blocks, int64_t n, i
   return {low, high, raw[2], zero};
 }
 
-// THE Q4_K FULLY-QUANTIZED DENSE ARTIFACT. Weight placement is exactly gguf_prepare_dense's existing Q4 path;
+// THE SINGLE-PLANE FULLY-QUANTIZED DENSE ARTIFACT. Weight placement is exactly gguf_prepare_dense's existing path;
 // only its low plane is retained. Scale metadata is reordered directly from each official GGUF block into the
-// byte-neutral [superblock,N,16] unit consumed by the shared packed-scale mainloop. pack_unit_sb owns the field
-// addressing through Unit::ScaleBitLayout/MinBitLayout, so this producer adds no second bit-position formula.
+// byte-neutral [superblock,N,unit] object consumed by the shared packed-scale mainloop. pack_unit_sb owns the field
+// addressing through Unit::ScaleBitLayout/MinBitLayout; PackedRaw names only official byte-aligned record slices.
 std::vector<torch::Tensor> gguf_prepare_fully_quantized_dense(torch::Tensor blocks, int64_t n, int64_t k,
                                                               int64_t qtype) {
-  using U = gguf_scale::packed_unit::Unit<KType::Q4_K>;
   CHECK_CPU(blocks); CHECK_CONTIGUOUS(blocks);
-  TORCH_CHECK(qtype == kGgmlQ4K, "fully-quantized dense preparation currently supports Q4_K only");
-  TORCH_CHECK(blocks.dtype() == torch::kUInt8 && blocks.dim() == 2 && blocks.size(1) == 144,
-              "Q4_K blocks must be uint8 [n*k/256,144]");
   TORCH_CHECK(n > 0 && n % 256 == 0 && k > 0 && k % 256 == 0,
               "fully-quantized dense preparation needs n and k multiples of 256");
-  int64_t const nsb = k / 256;
-  TORCH_CHECK(blocks.size(0) == n * nsb, "Q4_K dense weight needs n*k/256 blocks");
+  return dispatch_ktype(qtype, [&](auto tag) -> std::vector<torch::Tensor> {
+    constexpr KType T = decltype(tag)::value;
+    if constexpr (T == KType::Q4_K || T == KType::Q2_K) {
+      using R = PackedRaw<T>;
+      using U = gguf_scale::packed_unit::Unit<T>;
+      int64_t const nsb = k / 256;
+      TORCH_CHECK(blocks.dtype() == torch::kUInt8 && blocks.dim() == 2 && blocks.size(1) == R::kRawBytes,
+                  "single-plane blocks must be uint8 [n*k/256,", R::kRawBytes, "] for this format");
+      TORCH_CHECK(blocks.size(0) == n * nsb, "dense weight needs n*k/256 blocks");
 
-  auto dense = gguf_prepare_dense(blocks, n, k, qtype);
-  torch::Tensor units = torch::empty({nsb, n, U::kUnitTotal},
-      torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCPU));
-  uint8_t const* src = get_ptr<uint8_t const>(blocks);
-  uint8_t* dst = get_ptr<uint8_t>(units);
-  for (int64_t col = 0; col < n; ++col) {
-    for (int64_t sb = 0; sb < nsb; ++sb) {
-      uint8_t const* b = src + (col * nsb + sb) * 144;
-      cutlass::half_t d, dmin;
-      std::memcpy(&d, b, sizeof(d));
-      std::memcpy(&dmin, b + 2, sizeof(dmin));
-      gguf_scale::packed_unit::pack_unit_sb<KType::Q4_K>(
-          b + 4, d, dmin, 0, dst + (sb * n + col) * U::kUnitTotal);
+      auto dense = gguf_prepare_dense(blocks, n, k, qtype);
+      torch::Tensor units = torch::empty({nsb, n, U::kUnitTotal},
+          torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCPU));
+      uint8_t const* src = get_ptr<uint8_t const>(blocks);
+      uint8_t* dst = get_ptr<uint8_t>(units);
+      for (int64_t col = 0; col < n; ++col)
+        for (int64_t sb = 0; sb < nsb; ++sb)
+          pack_raw_unit<T>(src + (col * nsb + sb) * R::kRawBytes,
+                           dst + (sb * n + col) * U::kUnitTotal);
+      return {dense[0], units};
+    } else {
+      TORCH_CHECK(false, "fully-quantized dense preparation supports Q4_K and Q2_K; this format needs two planes");
+      return {};
     }
-  }
-  return {dense[0], units};
+  });
 }
 
 std::vector<torch::Tensor> gguf_prepare_fully_quantized_grouped(
     torch::Tensor blocks, int64_t n, int64_t k, int64_t qtype, int64_t experts) {
-  using U = gguf_scale::packed_unit::Unit<KType::Q4_K>;
   CHECK_CPU(blocks); CHECK_CONTIGUOUS(blocks);
-  TORCH_CHECK(qtype == kGgmlQ4K, "fully-quantized grouped preparation currently supports Q4_K only");
   TORCH_CHECK(experts > 0 && n > 0 && n % 256 == 0 && k > 0 && k % 256 == 0,
               "fully-quantized grouped preparation needs positive experts and n/k multiples of 256");
-  int64_t const nsb = k / 256, blocks_per_expert = n * nsb;
-  TORCH_CHECK(blocks.dtype() == torch::kUInt8 && blocks.dim() == 2 && blocks.size(1) == 144 &&
-              blocks.size(0) == experts * blocks_per_expert,
-              "Q4_K grouped blocks must be uint8 [experts*n*k/256,144]");
+  return dispatch_ktype(qtype, [&](auto tag) -> std::vector<torch::Tensor> {
+    constexpr KType T = decltype(tag)::value;
+    if constexpr (T == KType::Q4_K || T == KType::Q2_K) {
+      using R = PackedRaw<T>;
+      using U = gguf_scale::packed_unit::Unit<T>;
+      constexpr int kLowBits = T == KType::Q2_K ? 2 : 4;
+      int64_t const nsb = k / 256, blocks_per_expert = n * nsb;
+      TORCH_CHECK(blocks.dtype() == torch::kUInt8 && blocks.dim() == 2 && blocks.size(1) == R::kRawBytes &&
+                  blocks.size(0) == experts * blocks_per_expert,
+                  "grouped blocks must be uint8 [experts*n*k/256,", R::kRawBytes, "] for this format");
 
-  auto raw = gguf_prepare_gemv(blocks.view({experts, blocks_per_expert, 144}), n, k, qtype);
-  torch::Tensor low = torch::empty_like(raw[0]);
-  auto const* api = ppu_backend::load();
-  TORCH_CHECK(api && api->prepare_dense,
-              "fully-quantized grouped preparation requires the hgcc dense layout symbol");
-  size_t const low_expert_bytes = size_t(n) * k / 2;
-  auto const* native = get_ptr<uint8_t const>(raw[0]);
-  auto* placed = get_ptr<uint8_t>(low);
-  for (int64_t e = 0; e < experts; ++e) {
-    TORCH_CHECK(api->prepare_dense(native + size_t(e) * low_expert_bytes, nullptr,
-                                   placed + size_t(e) * low_expert_bytes, nullptr,
-                                   int(n), int(k), int(qtype)) == 0,
-                "PPU grouped dense placement failed for expert ", e);
-  }
-
-  torch::Tensor units = torch::empty({experts, nsb, n, U::kUnitTotal},
-      torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCPU));
-  uint8_t const* src = get_ptr<uint8_t const>(blocks);
-  uint8_t* dst = get_ptr<uint8_t>(units);
-  for (int64_t e = 0; e < experts; ++e)
-    for (int64_t col = 0; col < n; ++col)
-      for (int64_t sb = 0; sb < nsb; ++sb) {
-        uint8_t const* b = src + ((e * n + col) * nsb + sb) * 144;
-        cutlass::half_t d, dmin;
-        std::memcpy(&d, b, sizeof(d));
-        std::memcpy(&dmin, b + 2, sizeof(dmin));
-        gguf_scale::packed_unit::pack_unit_sb<KType::Q4_K>(
-            b + 4, d, dmin, 0, dst + ((e * nsb + sb) * n + col) * U::kUnitTotal);
+      auto raw = gguf_prepare_gemv(
+          blocks.view({experts, blocks_per_expert, int64_t(R::kRawBytes)}), n, k, qtype);
+      torch::Tensor low = torch::empty_like(raw[0]);
+      auto const* api = ppu_backend::load();
+      TORCH_CHECK(api && api->prepare_dense,
+                  "fully-quantized grouped preparation requires the hgcc dense layout symbol");
+      size_t const low_expert_bytes = size_t(n) * k * kLowBits / 8;
+      auto const* native = get_ptr<uint8_t const>(raw[0]);
+      auto* placed = get_ptr<uint8_t>(low);
+      for (int64_t e = 0; e < experts; ++e) {
+        TORCH_CHECK(api->prepare_dense(native + size_t(e) * low_expert_bytes, nullptr,
+                                       placed + size_t(e) * low_expert_bytes, nullptr,
+                                       int(n), int(k), int(qtype)) == 0,
+                    "PPU grouped dense placement failed for expert ", e);
       }
-  return {low, units};
+
+      torch::Tensor units = torch::empty({experts, nsb, n, U::kUnitTotal},
+          torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCPU));
+      uint8_t const* src = get_ptr<uint8_t const>(blocks);
+      uint8_t* dst = get_ptr<uint8_t>(units);
+      for (int64_t e = 0; e < experts; ++e)
+        for (int64_t col = 0; col < n; ++col)
+          for (int64_t sb = 0; sb < nsb; ++sb)
+            pack_raw_unit<T>(src + ((e * n + col) * nsb + sb) * R::kRawBytes,
+                             dst + ((e * nsb + sb) * n + col) * U::kUnitTotal);
+      return {low, units};
+    } else {
+      TORCH_CHECK(false, "fully-quantized grouped preparation supports Q4_K and Q2_K; this format needs two planes");
+      return {};
+    }
+  });
 }
 
 // BOTH RESIDENT ARTIFACTS HAVE AN INVERSE. Returning consumer-ready [E,N,K/gs] scale/zero planes separately is
