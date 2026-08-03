@@ -76,8 +76,9 @@ SYNTAX = [
     # ONLY THE FORMATS THAT ACTUALLY ACTIVATE. Compiling the other two here proved the branch parses and nothing
     # more: every row of this fixture has Scale_TileK of 8 or 2, and the 16-group formats need 16, so their decoder
     # was never instantiated as live code while the gate reported clean. l103 is what checks activation; this row
-    # covers the formats l103 says can be active. 0=Q4_K 1=Q5_K 2=Q2_K.
-    *[("tests/test_q4k_packed_gemm.cu", f"-DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT={f}") for f in (0, 1, 2)],
+    # covers the formats l103 says can be active. 0=Q4_K 1=Q5_K 2=Q2_K 3=Q3_K 4=Q6_K -- all five now, since the
+    # two-plane collective gained the shared packed-scale channel and Q3/Q6 gained paired-unit staging.
+    *[("tests/test_q4k_packed_gemm.cu", f"-DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT={f}") for f in (0, 1, 2, 3, 4)],
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_PACKED_SCALE=1 -DPPU_PACKED_SPLIT_GROUPS=1"),
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_PACKED_SCALE=1 -DPPU_SCALE_SWIZZLE=1"),
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_SCALE_PAD=8"),
