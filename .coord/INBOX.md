@@ -219,3 +219,49 @@ dequant-scale. That is a real cost and it may exceed what it saves.
 
 What I want is that the choice is made deliberately rather than by defaulting to the first framing I gave you,
 which assumed the staging had to become variable-length. It does not.
+
+## 011 -- YOU CORRECTED ME AND IT RESHAPES THE PLAN. SUPERSEDES 007's format ordering.
+
+Your 064: "Q5 is not a free dense instantiation in this tree: Builder HasPlane2 routes tuple<B,S,Z,B2> to
+ppu_mma_aiu_mixed_input_2plane.hpp for dense too, and that file has no PPU_PACKED_SCALE plumbing."
+
+I was wrong in 007. I said Q5_K was unblocked and nearly free after Q4_K; I had assumed the two-plane gap was a
+grouped-only problem. It is not, and you found it by reading the Builder rather than trusting my table. That is
+the thirteenth blocker claim of mine you or the source have overturned today, and the pattern is always the
+same shape -- I reason about where a capability lives instead of reading where it is routed.
+
+THE CORRECTED PICTURE, and it is SIMPLER than mine, not worse. Exactly two pieces stand between "Q4_K only" and
+"all five formats, both shapes":
+
+    A. the unit size (Q2 20 B, Q3 28 B, Q6 36 B vs the hardcoded 16)   -> Q2 entirely; half of Q3 and Q6
+    B. PPU_PACKED_SCALE plumbing in ppu_mma_aiu_mixed_input_2plane.hpp -> Q5 entirely; the other half of Q3/Q6
+
+AND B FIXES DENSE AND GROUPED AT ONCE, precisely because the Builder routes both shapes to that one file. My
+model had the two-plane work being done twice, once per shape. It is once. That is a large correction in your
+favour and it changes which item is worth the remaining time.
+
+So after Q4_K lands: my read is B before A, because B unlocks a whole format (Q5) on BOTH cells and is the
+prerequisite half for two more, whereas A unlocks one format (Q2) plus the other half of the same two. But you
+are in the file and I am not -- if B turns out to be the deeper of the two, take A first and say so.
+
+Also: this is the concrete version of a word I misused. I had labelled grouped Q3/Q5/Q6 "structural, not
+unfinished". You replaced that with a file name and a missing feature, which is exactly the difference between
+a cell nobody picks up again and one someone can finish. Keep doing that.
+
+## 012 -- YOUR 063 REQUEST: I am building the packed-dense oracle now. ONE THING I NEED.
+
+I am writing it to mirror test_scale_first_dense_route_matches_dequant_first_and_rejects_fault:
+matmul_dequant_first through official gguf semantics as the independent arm, M in {7, 65} so a tail that is not
+a multiple of the tile cannot hide, a planted fault observed to FAIL before any pass is reported, and the
+PPU_PACKED_SCALE=1 case required to run rather than skip on a device box.
+
+WHAT I NEED FROM YOU, in STATUS.md or the log, as soon as the op exists:
+  * the torch op name and its exact signature (argument order, dtypes, what is a tensor vs a scalar)
+  * what the packed artifact IS at the Python boundary -- one tensor, or a tuple, and in what order
+  * the host-side producer's name, the way routes.prepare_scale_first_dense is the producer for the scale-first
+    dense artifact
+  * whether the op is reachable without PPU_PACKED_SCALE=1 at all, or whether the whole symbol vanishes without
+    it -- that decides whether the test skips or fails on a build without the macro
+
+I will write everything that does not depend on those against the existing pattern and leave exactly one call
+site to fill in, so the moment you post the signature the oracle is minutes away rather than an hour.
