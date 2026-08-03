@@ -425,9 +425,9 @@ def test_cuda_destination_partitions_physical_addresses_and_inverts_the_layout(g
 def test_cuda_vecdot_cooperative_matches_cpu_reference(gguf_cuda_probe):
     """All five cooperative kernels against the scalar CPU vecdot_block reference, including ragged rows.
 
-    The warp butterfly deliberately reassociates each 16/32-element group. The 2e-6 relative threshold is therefore
-    a summation-order tolerance, not a widened weight-decode tolerance; the observed worst case on the tuning seed is
-    1.5e-7. No activation quantisation is present on either side.
+    Q4/Q5 butterflies reassociate within each group; Q2/Q3/Q6 give lanes whole groups and the final butterfly also
+    reassociates group and block contributions. The 2e-6 threshold is a summation-order tolerance, not a widened
+    weight-decode tolerance; the observed worst case on the tuning seed is 1.62e-7. Neither side quantises activation.
     """
     torch = pytest.importorskip("torch")
     quactlize = pytest.importorskip("quactlize", reason="needs the built operator library")
@@ -438,6 +438,7 @@ def test_cuda_vecdot_cooperative_matches_cpu_reference(gguf_cuda_probe):
     rows, blocks_per_row = 37, 3
     x = (rng.random((blocks_per_row, 256), dtype=np.float32) * 2 - 1).astype(np.float32)
     checked = []
+    raw_accum = []
     for name, qtype, hdr, _scales, _codes, _qmax in FORMATS:
         _block_size, block_bytes = GGML_QUANT_SIZES[qtype]
         raw = rng.integers(0, 256, (rows * blocks_per_row, block_bytes), np.uint8)
@@ -449,9 +450,8 @@ def test_cuda_vecdot_cooperative_matches_cpu_reference(gguf_cuda_probe):
                                        rows, blocks_per_row, int(qtype))
         assert rc == 0 and np.isfinite(got).all(), f"{name}: CUDA vecdot failed ({rc})"
 
-        # The Python op invokes the scalar CPU vecdot_block once per raw block. Accumulate those block results in
-        # the same outer left-to-right order as vecdot_rows_kernel; only the within-group butterfly is allowed to
-        # differ.
+        # The Python op invokes scalar vecdot_block once per raw block and left-folds those blocks. Q4/Q5 preserve
+        # that outer order; whole-group Q2/Q3/Q6 deliberately reduce their group/block contributions at row end.
         x_per_block = np.tile(x, (rows, 1))
         block_dot = quactlize.gguf_vecdot(torch.from_numpy(raw), torch.from_numpy(x_per_block),
                                           int(qtype)).numpy().reshape(rows, blocks_per_row)
@@ -462,7 +462,19 @@ def test_cuda_vecdot_cooperative_matches_cpu_reference(gguf_cuda_probe):
         rel = float(np.abs(got.astype(np.float64) - ref.astype(np.float64)).max()) / scale
         assert rel < 2e-6, f"{name}: cooperative CUDA vs CPU vecdot relative error {rel:.3e}"
         checked.append(f"{name} {rel:.2e}")
+        groups = 8 if name in ("Q4_K", "Q5_K") else 16
+        group_size = 256 // groups
+        codes = quactlize.gguf_unpack(torch.from_numpy(raw), int(qtype))[0].numpy().astype(np.float32)
+        terms = codes.reshape(rows, blocks_per_row, groups, group_size) * x.reshape(1, blocks_per_row,
+                                                                                   groups, group_size)
+        # This is the value whose wider dynamic range the affine hoist introduces. Record both the actual reduced
+        # value and the cancellation-free sum of magnitudes for the same seeded correctness fixture; neither is an
+        # asserted range inferred only from the nominal code width.
+        peak_sumqx = float(np.abs(terms.sum(axis=-1, dtype=np.float32)).max())
+        peak_abs_terms = float(np.abs(terms).sum(axis=-1, dtype=np.float32).max())
+        raw_accum.append(f"{name} sumqx={peak_sumqx:.2f} sumabs={peak_abs_terms:.2f}")
     print("vecdot CUDA summation-order check: " + ", ".join(checked))
+    print("vecdot raw-code accumulator peaks: " + ", ".join(raw_accum))
 
 
 # ===================================================================================================================

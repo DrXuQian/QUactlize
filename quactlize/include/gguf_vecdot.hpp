@@ -26,8 +26,9 @@
 // THE SOURCE CONTRACT IS RAW GGUF. This route intentionally reads the checkpoint's native k-quant blocks in their
 // own element order and materialises neither weights nor fp16 scale/zero planes. The SCALE_FIRST route is different:
 // its packed code tensor can be reordered for gemv_lowbit/, but that representation is not an input to this kernel.
-// The cooperative reduction below changes only fp32 summation order inside each group, so its device golden uses an
-// explicit summation-order tolerance against this scalar traversal.
+// The cooperative reduction below changes only fp32 summation order: Q4/Q5 reassociate within groups, while the
+// whole-group Q2/Q3/Q6 path also reassociates group and block contributions in its final row reduction. Its device
+// golden therefore uses an explicit summation-order tolerance against this scalar traversal.
 #include <cstdint>
 #include "cutlass/numeric_types.h"
 #include "gguf_scale_layout.hpp"   // brings cute/tensor.hpp, so cute::Layout is available as a destination
@@ -169,6 +170,51 @@ CUTLASS_HOST_DEVICE int code_at(uint8_t const* b, int i) {
   else if constexpr (T == KType::Q4_K) return q4k_code(b + 16, i);
   else if constexpr (T == KType::Q5_K) return q5k_code(b + 48, b + 16, i);
   else                                 return q6k_code(b, b + 128, i);
+}
+
+// WHOLE-GROUP RANDOM ACCESS. The cooperative GEMV assigns group g to one lane, so spelling its (g,j) addressing
+// directly both removes division from the inner loop and makes the new memory pattern reviewable. For every format
+// j walks a contiguous run in each physical code plane. Adjacent groups either cover the next run or revisit the
+// same packed bytes at another bit position:
+//
+//   Q2/Q3 low: 16-byte run; groups 0/1 cover 32 B, then groups 2/3 revisit it at the next two-bit shift.
+//   Q4/Q5 low: 32-byte run; each odd group revisits the preceding even group's bytes at the high nibble.
+//   Q3 hmask:  16-byte run at bit g/2.       Q5 qh: one 32-byte run at bit g.
+//   Q6 ql/qh:  16-byte runs at respectively nibble (g/4)%2 and two-bit field (g/2)%4.
+//
+// Thus every plane stays inside the original compact superblock footprint; the separate high-bit planes are not
+// inferred from low-plane indexing. CUDA correctness checks exercise all 256 (g,j) pairs against code_at/vecdot_block.
+template <KType T>
+CUTLASS_HOST_DEVICE int code_at_group(uint8_t const* b, int g, int j) {
+  if constexpr (T == KType::Q2_K) {
+    uint8_t const* qs = b + 16;
+    int const byte = (g / 8) * 32 + (g % 2) * 16 + j;
+    int const shift = 2 * ((g / 2) % 4);
+    return (qs[byte] >> shift) & 3;
+  } else if constexpr (T == KType::Q3_K) {
+    uint8_t const* hmask = b;
+    uint8_t const* qs = b + 32;
+    int const byte = (g / 8) * 32 + (g % 2) * 16 + j;
+    int const lo = (qs[byte] >> (2 * ((g / 2) % 4))) & 3;
+    int const hbit = (hmask[(g % 2) * 16 + j] >> (g / 2)) & 1;
+    return lo - ((hbit ^ 1) << 2);
+  } else if constexpr (T == KType::Q4_K) {
+    uint8_t const* qs = b + 16;
+    return (qs[(g / 2) * 32 + j] >> (4 * (g % 2))) & 0xF;
+  } else if constexpr (T == KType::Q5_K) {
+    uint8_t const* qh = b + 16;
+    uint8_t const* qs = b + 48;
+    int const lo = (qs[(g / 2) * 32 + j] >> (4 * (g % 2))) & 0xF;
+    return lo | (((qh[j] >> g) & 1) << 4);
+  } else {
+    uint8_t const* ql = b;
+    uint8_t const* qh = b + 128;
+    int const lo_byte = (g / 8) * 64 + (g % 4) * 16 + j;
+    int const hi_byte = (g / 8) * 32 + (g % 2) * 16 + j;
+    int const lo = (ql[lo_byte] >> (4 * ((g / 4) % 2))) & 0xF;
+    int const hi = (qh[hi_byte] >> (2 * ((g / 2) % 4))) & 3;
+    return (lo | (hi << 4)) - 32;
+  }
 }
 
 // The block multipliers and group codes are split so a cooperative consumer can load d/dmin once per block and
@@ -326,15 +372,18 @@ __global__ void vecdot_rows_kernel_serial(uint8_t const* blocks, int64_t block_b
   out[r] = acc;
 }
 
-// SUBGROUP-COOPERATIVE GEMV. A warp owns RowsPerWarp rows; each power-of-two lane subgroup walks one row's k axis.
-// Consecutive lanes therefore read consecutive code bytes, and the work is genuinely partitioned: each logical
-// element is decoded by exactly one lane. The subgroup leader alone decodes d/dmin and the group's packed scale
-// pair, after which a butterfly reduction supplies sum(q*x) and (for affine formats) sum(x).
+// SUBGROUP-COOPERATIVE GEMV. A warp owns RowsPerWarp rows, but lanes own WHOLE QUANT GROUPS rather than slices of
+// every group. The preferred configuration has eight lanes per row: for gs=16 lane L owns groups L and L+8, while
+// for gs=32 lane L owns exactly group L. Other sweep points use the same L, L+kLanesPerRow, ... mapping; with more
+// lanes than groups, the excess lanes contribute zero. Every group has one owner and every element is decoded once.
 //
-// This deliberately reassociates each group reduction relative to vecdot_block's scalar left fold. It introduces no
-// weight or activation quantisation (dp4a remains forbidden); correctness uses an explicit fp32 summation-order
-// tolerance. The outer block and group order remains unchanged so the only reassociation is inside a 16/32-element
-// group.
+// The reduction-heavy Q2/Q3/Q6 formats use this ownership. Each owner left-folds its contiguous 16-element group,
+// applies that group's own (dl,ml), and carries the result across blocks. Q3/Q6 use two independent element
+// accumulators; Q2 keeps one after it was consistently faster at both 131072 and 262144 rows (one tick cold at each,
+// and one tick warm at 262144). ONE butterfly at the end
+// combines the row, replacing 16 dependent chains per block (twice for Q2). Q4/Q5 keep slice ownership:
+// at rows=131072 their reduction shares were only 0.9%/7.7%, and whole-group ownership regressed cold time by
+// 13.0%/20.2%. Both paths add no quantisation; dp4a remains forbidden.
 template <int Width>
 __device__ __forceinline__ float vecdot_subgroup_sum(float v) {
   static_assert(Width >= 1 && Width <= 32 && (Width & (Width - 1)) == 0, "subgroup width must be a warp divisor");
@@ -343,12 +392,38 @@ __device__ __forceinline__ float vecdot_subgroup_sum(float v) {
   return v;
 }
 
-// The cold-data sweep at blocks_per_row={1,2,4,8} selected the same point at every k depth: the formats with a
-// separate high-bit plane and no affine min (Q3_K/Q6_K) prefer two rows, while Q2/Q4/Q5 amortise reductions best at
-// four. Keeping this format trait explicit makes a plain vecdot_rows_kernel<T> launch use the measured variant.
+// Measurement-only NOPs used by the rows=131072 cost probes. A constant nonzero code removes packed-code loads and
+// extraction while every lane still consumes x, scale and the final reduction. Unit scale/min codes remove the
+// packed per-group field loads and extraction while preserving header loads, both accumulators and every live lane.
+template <KType T>
+__device__ __forceinline__ int vecdot_kernel_code_at(uint8_t const* b, int g, int j) {
+#if defined(GGUF_VECDOT_CODE_NOP)
+  (void)b; (void)g; (void)j;
+  return 1;
+#else
+  return code_at_group<T>(b, g, j);
+#endif
+}
+
+template <KType T>
+__device__ __forceinline__ void vecdot_kernel_group_dl_ml(uint8_t const* b, int g, float d, float dmin,
+                                                          float& dl, float& ml) {
+#if defined(GGUF_VECDOT_SCALE_NOP)
+  (void)b; (void)g;
+  dl = d;
+  if constexpr (T == KType::Q2_K || T == KType::Q4_K || T == KType::Q5_K) ml = dmin;
+  else ml = 0.f;
+#else
+  group_dl_ml_from_base<T>(b, g, d, dmin, dl, ml);
+#endif
+}
+
+// Retuned after the ownership change at rows=131072, where final kernels last 59-129 event ticks rather than the old
+// 20-26. All five select four rows per warp. Thus eight lanes own a row: for gs=16, lane L owns groups L and L+8;
+// for gs=32, lane L owns exactly group L. A plain vecdot_rows_kernel<T> launch therefore uses that mapping.
 template <KType T>
 CUTLASS_HOST_DEVICE constexpr int vecdot_preferred_rows_per_warp() {
-  return (T == KType::Q3_K || T == KType::Q6_K) ? 2 : 4;
+  return 4;
 }
 
 template <KType T, int RowsPerWarp = vecdot_preferred_rows_per_warp<T>()>
@@ -367,21 +442,21 @@ __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, f
   constexpr int kGroups = (T == KType::Q4_K || T == KType::Q5_K) ? 8 : 16;
   constexpr int kGroupSize = group_size<T>();
   constexpr bool kHasMin = T == KType::Q2_K || T == KType::Q4_K || T == KType::Q5_K;
-  static_assert(kGroupSize % kLanesPerRow == 0 || kLanesPerRow % kGroupSize == 0,
-                "lane subgroup and quant group must divide one another");
+  static_assert(kGroups % kLanesPerRow == 0 || kLanesPerRow % kGroups == 0,
+                "lane subgroup and group count must divide one another");
 
-  // Grid-stride row ownership keeps an old launcher correct if it still uses the serial kernel's smaller grid.
-  // vecdot_grid_size supplies the measured one-pass grid; either way blockDim must be a warp multiple.
   int const warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
-  int const warp_stride = (gridDim.x * blockDim.x) >> 5;
   int const lane = threadIdx.x & 31;
   int const row_in_warp = lane / kLanesPerRow;
   int const row_lane = lane & (kLanesPerRow - 1);
-  for (int row0 = warp * RowsPerWarp; row0 < rows; row0 += warp_stride * RowsPerWarp) {
-    int const r = row0 + row_in_warp;
-    bool const active = r < rows;
-    float acc = 0.f;
+  int const r = warp * RowsPerWarp + row_in_warp;
+  bool const active = r < rows;
 
+  // Q4/Q5 are the measured negative result for whole-group ownership. Their eight groups still use one row's full
+  // eight-lane subgroup, but each lane owns a 4-element slice of every group. Keeping this as the production branch
+  // is 1.13x/1.20x faster than forcing the same ownership as the reduction-heavy formats.
+  if constexpr (T == KType::Q4_K || T == KType::Q5_K) {
+    float acc = 0.f;
     for (int block = 0; block < blocks_per_row; ++block) {
       uint8_t const* blk = active
           ? blocks + (int64_t(r) * blocks_per_row + block) * block_bytes
@@ -389,31 +464,82 @@ __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, f
       float d = 0.f, dmin = 0.f;
       if (active && row_lane == 0) block_d_dmin<T>(blk, d, dmin);
       float block_acc = 0.f;
-
       CUTLASS_PRAGMA_UNROLL
       for (int g = 0; g < kGroups; ++g) {
         float sumqx = 0.f, sumx = 0.f;
         if (active) {
           CUTLASS_PRAGMA_UNROLL
           for (int j = row_lane; j < kGroupSize; j += kLanesPerRow) {
-            int const i = g * kGroupSize + j;
-            float const xv = x[int64_t(block) * kQK + i];
-            sumqx += float(code_at<T>(blk, i)) * xv;
-            if constexpr (kHasMin) sumx += xv;
+            float const xv = x[int64_t(block) * kQK + g * kGroupSize + j];
+            sumqx += float(vecdot_kernel_code_at<T>(blk, g, j)) * xv;
+            sumx += xv;
           }
         }
         sumqx = vecdot_subgroup_sum<kLanesPerRow>(sumqx);
-        if constexpr (kHasMin) sumx = vecdot_subgroup_sum<kLanesPerRow>(sumx);
+        sumx = vecdot_subgroup_sum<kLanesPerRow>(sumx);
         if (active && row_lane == 0) {
           float dl, ml;
-          group_dl_ml_from_base<T>(blk, g, d, dmin, dl, ml);
+          vecdot_kernel_group_dl_ml<T>(blk, g, d, dmin, dl, ml);
           block_acc += apply_group({sumqx, sumx}, dl, ml);
         }
       }
       if (active && row_lane == 0) acc += block_acc;
     }
     if (active && row_lane == 0) out[r] = acc;
+    return;
   }
+
+  float lane_acc = 0.f;
+
+  for (int block = 0; block < blocks_per_row; ++block) {
+    uint8_t const* blk = active
+        ? blocks + (int64_t(r) * blocks_per_row + block) * block_bytes
+        : blocks;
+    float d = 0.f, dmin = 0.f;
+    bool const owns_group = row_lane < kGroups;
+    if (active && owns_group) block_d_dmin<T>(blk, d, dmin);
+
+    CUTLASS_PRAGMA_UNROLL
+    for (int g = row_lane; g < kGroups; g += kLanesPerRow) {
+      float dl, ml;
+      vecdot_kernel_group_dl_ml<T>(blk, g, d, dmin, dl, ml);
+      float sum0 = 0.f, sum1 = 0.f;
+#if !defined(GGUF_VECDOT_PER_ELEMENT_AFFINE)
+      float sumx0 = 0.f, sumx1 = 0.f;
+#endif
+      if (active) {
+        CUTLASS_PRAGMA_UNROLL
+        for (int j = 0; j < kGroupSize; j += (T == KType::Q2_K ? 1 : 2)) {
+          float const x0 = x[int64_t(block) * kQK + g * kGroupSize + j];
+          int const q0 = vecdot_kernel_code_at<T>(blk, g, j);
+#if defined(GGUF_VECDOT_PER_ELEMENT_AFFINE)
+          sum0 += (dl * float(q0) - ml) * x0;
+#else
+          sum0 += float(q0) * x0;
+          if constexpr (kHasMin) sumx0 += x0;
+#endif
+          if constexpr (T != KType::Q2_K) {
+            float const x1 = x[int64_t(block) * kQK + g * kGroupSize + j + 1];
+            int const q1 = vecdot_kernel_code_at<T>(blk, g, j + 1);
+#if defined(GGUF_VECDOT_PER_ELEMENT_AFFINE)
+            // Counterfactual: keep group ownership and one final reduction, but apply affine arithmetic per element.
+            sum1 += (dl * float(q1) - ml) * x1;
+#else
+            sum1 += float(q1) * x1;
+            if constexpr (kHasMin) sumx1 += x1;
+#endif
+          }
+        }
+      }
+#if defined(GGUF_VECDOT_PER_ELEMENT_AFFINE)
+      lane_acc += sum0 + sum1;
+#else
+      lane_acc += apply_group({sum0 + sum1, sumx0 + sumx1}, dl, ml);
+#endif
+    }
+  }
+  lane_acc = vecdot_subgroup_sum<kLanesPerRow>(lane_acc);
+  if (active && row_lane == 0) out[r] = lane_acc;
 }
 
 // ONE WARP PER 256 PHYSICAL DESTINATIONS. This is the shape that matters and the numbers say why:

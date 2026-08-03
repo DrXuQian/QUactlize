@@ -82,7 +82,7 @@ unmeasured, so the 5090 results are directional rather than a claim about the bo
 | `dequantize_kernel_warp` | 5090 | tuned | 779.4 → **58.4 µs**, 13.4×, 1.473 TB/s = **82.2% of peak**, bit-identical |
 | `dequantize_kernel_warp_logical` | 5090 | kept slow on purpose | 196.6 vs 65.5 µs on a nontrivial reorder — the general path for layouts `right_inverse` cannot take |
 | `prepass_kernel` (cooperative) | 5090 | tuned | speedup grows with size — 1.32× / 1.91× / 2.95× — the fixed-duration floor made visible |
-| `vecdot_rows_kernel` | 5090 | **2.4–8.2× faster, and at 12–29% of peak** | see below — the speedup is against a bad baseline, not against the machine |
+| `vecdot_rows_kernel` | 5090 | **4.0–13.5× faster, and at 37–57% of peak** | rows=131072; see below — the speedup is against the retained serial baseline |
 | packed collective | PPU | **tax undetermined** | see below |
 | `gemv_lowbit` | PPU | tuned earlier | 22.27 µs, and **ALU-bound, not bandwidth-bound** |
 
@@ -94,28 +94,47 @@ that does survive is `base − bdqnop = −11.1%`: the int4→fp16 dequant pipel
 of time, which is the ceiling for every dequant-side idea.
 
 The retained `vecdot_rows_kernel_serial` baseline has one output row per thread, so 32 lanes read addresses
-`blocks_per_row × block_bytes` apart — 1152 B for Q4_K. The tuned kernel partitions each row's k axis over a lane
-subgroup and lets only the subgroup leader decode each scale pair. Reassociation tolerance 2e-6, observed 1.44e-7.
+`blocks_per_row × block_bytes` apart — 1152 B for Q4_K. The tuned Q2/Q3/Q6 path gives each lane whole groups and
+reduces once per row; Q4/Q5 retain their faster per-group slice reduction. Reassociation tolerance is 2e-6,
+observed at 1.62e-7 across all five formats.
 
-**THE SPEEDUP AND THE ROOF DISAGREE, and the roof is the one that says what to do next.** Independently re-measured
-at 16384 rows × 8 blocks, sweeping rows-per-warp over {serial, 1, 2, 4, 8, 16}:
+**THE OLD INSTRUMENT COULD NOT RESOLVE THE OPTIMISATIONS.** `cudaEventElapsedTime` on this 5090 advances in 2.048 µs
+ticks. At 16384 rows the kernel took only 20–26 ticks, so the former one/two-tick rankings were below a 4–5% floor.
+Cold launches cannot be batched: only the first launch after an L2 flush is cold. The benchmark now treats rows<=0
+as rows=131072, and every A/B below uses 131072 rows × 8 blocks. Warm timings also use the larger problem.
 
-| | best rpw | cold µs | GB/s | % of 1.792 TB/s | cold/warm |
+| | best rpw | cold µs (% peak) | warm µs (% peak) | cold/warm | vs serial cold |
 |---|---|---|---|---|---|
-| Q2_K | 4 | 53.25 | 208 | **11.6%** | 1.37 |
-| Q3_K | 2 | 51.20 | 283 | **15.8%** | 1.02 |
-| Q4_K | 4 | 42.98 | 441 | **24.6%** | 1.21 |
-| Q5_K | 4 | 49.15 | 471 | **26.3%** | 1.07 |
-| Q6_K | 2 | 53.25 | 518 | **28.9%** | 1.16 |
+| Q2_K | 4 | 120.832 (**40.92%**) | 115.232 (**42.91%**) | 1.049 | 5.27× |
+| Q3_K | 4 | 174.080 (**37.15%**) | 168.992 (**38.26%**) | 1.030 | 13.45× |
+| Q4_K | 4 | 221.184 (**38.23%**) | 217.120 (**38.95%**) | 1.019 | 4.01× |
+| Q5_K | 4 | 264.192 (**39.09%**) | 256.896 (**40.20%**) | 1.028 | 10.37× |
+| Q6_K | 4 | 217.088 (**56.74%**) | 212.992 (**57.83%**) | 1.019 | 12.39× |
 
-`vecdot_preferred_rows_per_warp` returns 2 for Q3_K/Q6_K and 4 for the rest, and the sweep confirms every one.
+`vecdot_preferred_rows_per_warp` now returns 4 for all five. Eight lanes own a row: for gs=16 lane L owns groups
+L and L+8; for gs=32 lane L owns group L. The explicit `(group,j)` decoder gives every owner contiguous 16/32-byte
+runs and separately derives Q3/Q5/Q6 high-plane addresses. The CUDA golden validates all indices. Hardware sector
+counters were unavailable (`ERR_NVGPUCTRPERM`), so the coalescing evidence is the derived footprint plus timings.
 
-**This kernel is not bandwidth-bound and the two columns each say so independently.** It runs at a quarter of peak,
-and warming the data barely moves it — 1.02× for Q3_K against the dequantiser's 2.4× when that one *was* DRAM-bound
-at 82.2% of peak. So there is 3–4× left and **none of it is in the memory system**; the lever is operations per
-element, which is what PPU already measured for a decode GEMV (22.27 µs cuda-core against a 20.74 µs tensor-core
-GEMM, and int1 taking the same time as int4 while moving a quarter of the bytes). Q2_K is the worst at 11.6%, and
-it is the format with the most decode work per byte — 16 groups of 2-bit codes.
+The one-row reduction is a win exactly where its probe predicted: against the prior cooperative kernel Q2/Q3/Q6
+improve 1.81×/1.91×/1.42× cold. Whole-group ownership regressed Q4/Q5 by 13.0%/20.2%, consistent with their original
+reduction shares of only 0.9%/7.7%, so production retains slice ownership for those formats.
+
+Two NOP-style probes keep every lane live and price the remaining terms. `code_at` returns constant one; the scale
+probe uses the block base as unit scale/min. Negative scale shares mean the counterfactual was slower, not that the
+real unpack has negative cost. Probe `% peak` retains the production kernel's nominal byte count for normalization;
+the code NOP deliberately removes raw-code traffic, so an effective figure above 100% is not a physical HBM claim.
+
+| | code-NOP cold µs (% peak), share | code-NOP warm µs (% peak), share | scale-NOP cold µs (% peak), share | scale-NOP warm µs (% peak), share |
+|---|---|---|---|---|
+| Q2_K | 86.016 (57.49%), **28.8%** | 83.296 (59.37%), **27.7%** | 120.832 (40.92%), 0.0% | 116.000 (42.63%), -0.7% |
+| Q3_K | 81.920 (78.93%), **52.9%** | 82.304 (78.57%), **51.3%** | 176.128 (36.71%), -1.2% | 171.040 (37.81%), -1.2% |
+| Q4_K | 106.496 (79.40%), **51.9%** | 103.456 (81.73%), **52.4%** | 219.136 (38.59%), 0.9% | 217.088 (38.95%), 0.0% |
+| Q5_K | 106.496 (96.98%), **59.7%** | 103.424 (99.86%), **59.7%** | 231.456 (44.62%), **12.4%** | 230.464 (44.81%), **10.3%** |
+| Q6_K | 83.968 (146.70%), **61.3%** | 82.976 (148.45%), **61.0%** | 217.088 (56.74%), 0.0% | 212.992 (57.83%), 0.0% |
+
+Packed-code extraction is therefore the next target for every format, especially Q3–Q6. Scale/min unpack is a
+material target only for Q5. Warming changes the final kernels by just 1.9–4.9%, so decode arithmetic still dominates.
 
 The regime was never reported, only the speedup, and a speedup measured against a one-row-per-thread baseline says
 nothing about how much is left. Both halves are the same measurement run; only one of them is a target.
@@ -123,11 +142,10 @@ nothing about how much is left. Both halves are the same measurement run; only o
 **Every number above is a 5090 number, and not one GGUF kernel has run on PPU.** The ordering does not transfer:
 at gs=32 the 5090's ranking of GEMV configurations inverted against PPU's. Treat these as directional only.
 
-**The two dequantiser kernels' loss was the store pattern**, and the GEMV's baseline had the same shape on the load
+**The two dequantiser kernels' loss was the store pattern**, and the GEMV's serial baseline had the same shape on the load
 side. One thread per block puts a warp's lane addresses 512 bytes apart, so one instruction touches 32 separate
 32-byte sectors for 64 useful bytes: **6.25% sector utilisation, exactly 16× worse** than lanes touching consecutive
-elements. Partitioning fixes the sectors — and for the GEMV that only takes it to 25% of peak, because the sectors
-were never what it was short of.
+elements. Partitioning fixes the sectors; native packed-code extraction remains the dominant GEMV term afterward.
 
 **None of them run on PPU.** They compile under nvcc and run on a 5090; the PPU device path goes through
 `build.sh`/hgcc and the dlopen seam (`ppu_backend.{h,cpp}`), which is wired but has no `libquactlize_ppu.so` behind

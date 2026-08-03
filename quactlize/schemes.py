@@ -192,9 +192,12 @@ _add(Scheme.FULLY_QUANTIZED, Shape.GEMV, _KQUANTS, Impl(
         "core but not a cuda-core four-way int8 dot. THE HOST SIDE IS WIRED NOW -- routes.matmul_native_gemv "
         "assembles a full (1, n) product from the per-block op and agrees with the official gguf package to 1.4e-7, "
         "tighter than every other route because it never rounds the weight to fp16. It stays PARTIAL because that "
-        "assembly tiles the ACTIVATION k/256-fold on the host: correct, and useless as a timing. What is missing is "
-        "the kernel -- vecdot_rows_kernel gives one output row per thread, so 32 lanes read addresses "
-        "blocks_per_row*block_bytes apart, and it has never been timed at all")))
+        "assembly tiles the ACTIVATION k/256-fold on the host: correct, and useless as a timing. The native kernel "
+        "is now subgroup-cooperative and CUDA-validated for all five; at 131072x8 on a 5090 it is 4.01x..13.45x "
+        "faster than the retained one-thread-per-row baseline and reaches 37.2%..56.7% of peak HBM bandwidth. What "
+        "keeps this PARTIAL is device-library wiring: "
+        "libquactlize_ppu.so still needs to export a launcher for this kernel before the Python route is a PPU "
+        "inference path")))
 
 
 def get(scheme: Scheme, shape: Shape, fmt: QuantType) -> Impl:

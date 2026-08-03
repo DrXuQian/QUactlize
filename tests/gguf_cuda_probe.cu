@@ -19,6 +19,11 @@ using gguf_scale::KType;
 using gguf_scale::prepass::BlockDesc;
 using gguf_scale::prepass::PlaneDesc;
 
+// cudaEventElapsedTime is quantised at 2.048 us on the local 5090. At the former 16384-row size that was 4-5% of
+// the whole kernel and made one/two-tick A/B differences look decisive. Cold launches cannot be batched because only
+// the first launch after an L2 flush is cold, so callers can pass rows<=0 to select this problem-scaled default.
+constexpr int kDefaultVecdotBenchRows = 131072;
+
 int cuda_ok(cudaError_t e) { return e == cudaSuccess ? 0 : int(e); }
 
 __global__ void flush_l2_kernel(uint8_t const* p, size_t bytes, unsigned long long* sink) {
@@ -384,6 +389,7 @@ extern "C" int quactlize_cuda_vecdot(uint8_t const* blocks, float const* x, floa
 
 extern "C" int quactlize_cuda_vecdot_bench(int qtype, int rows, int blocks_per_row, int reps,
                                              float* cold_us, float* warm_us, double* bytes) {
+  if (rows <= 0) rows = kDefaultVecdotBenchRows;
 #define BENCH_VECDOT(TYPE) bench_vecdot<KType::TYPE>(rows, blocks_per_row, reps, cold_us, warm_us, bytes)
   switch (qtype) {
     case 10: return BENCH_VECDOT(Q2_K);
@@ -398,6 +404,7 @@ extern "C" int quactlize_cuda_vecdot_bench(int qtype, int rows, int blocks_per_r
 
 extern "C" int quactlize_cuda_vecdot_bench_config(int qtype, int rows_per_warp, int rows, int blocks_per_row,
                                                     int reps, float* cold_us, float* warm_us, double* bytes) {
+  if (rows <= 0) rows = kDefaultVecdotBenchRows;
 #define BENCH_CONFIG(TYPE) \
   bench_vecdot_config<KType::TYPE>(rows_per_warp, rows, blocks_per_row, reps, cold_us, warm_us, bytes)
   switch (qtype) {
