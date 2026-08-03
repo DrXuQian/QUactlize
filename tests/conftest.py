@@ -50,3 +50,41 @@ def pytest_runtest_setup(item):
         f"      QUACTLIZE_PPU_LIB=/nonexistent python -m pytest -m cpu_reference tests/\n"
         f"  benchmarks/run_batch.sh's pytest step already runs them as a separate pass.\n"
         f"  QUACTLIZE_PPU_LIB currently = {os.environ.get('QUACTLIZE_PPU_LIB', '<unset>')}")
+
+
+# ------------------------------------------------------------------------------------------------------------
+# A STALE EXTENSION MUST STOP THE SESSION, not produce results.
+#
+# This happened TWICE on ppu001 in one afternoon, the same way both times: codex commits C++, the box pulls,
+# somebody runs `pytest tests`, and the whole tier reports on a .so built before the change. The second run
+# produced "worst nan" on all five formats and a planted fault that went uncaught -- readings that look like
+# five real defects and are about code nobody was running.
+#
+# The guard already existed in tests/test_layouts.py, but only for tests taking its Q fixture, so it surfaced as
+# one ERROR among many AFTER everything else had already been measured. run_batch's pytest step rebuilds
+# automatically now, and that only helps whoever remembers to use run_batch.
+#
+# So it is a SESSION-LEVEL refusal: nothing runs, and the first thing on screen is the command to fix it.
+#
+# ABSENT IS NOT STALE. A machine that never built the extension is a legitimate state -- the individual tests
+# skip with their own reasons and that is correct. Only PRESENT-BUT-OLDER is always wrong, and that is the only
+# case this refuses.
+def pytest_sessionstart(session):
+    import pathlib as _pl
+    root = _pl.Path(__file__).resolve().parent.parent
+    so = sorted((root / "quactlize").glob("_C*.so"))
+    if not so:
+        return                                   # absent: let the per-test skips handle it
+    built = so[0].stat().st_mtime
+    newer = sorted(p.name for p in (root / "quactlize" / "csrc").rglob("*")
+                   if p.suffix in (".cpp", ".h", ".hpp") and p.stat().st_mtime > built)
+    if not newer:
+        return
+    raise pytest.UsageError(
+        "THE BUILT EXTENSION IS OLDER THAN ITS SOURCES -- refusing to run, because every result below would be "
+        "about code nobody is running.\n"
+        f"  newer than {so[0].name}: {', '.join(newer[:6])}{' ...' if len(newer) > 6 else ''}\n"
+        "  fix:  python3 setup.py build_ext --inplace\n"
+        "  or:   ./benchmarks/run_batch.sh pytest   (rebuilds by itself, and splits the cpu_reference pass)\n"
+        "  This has produced two full runs of plausible-looking garbage already -- 'worst nan' on all five "
+        "formats and a planted fault going uncaught, both from a .so predating the commit under test.")
