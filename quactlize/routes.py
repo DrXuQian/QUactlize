@@ -231,7 +231,7 @@ def _unpack_fq(artifact, where: str):
     return xs[0], xs[1], xs[2]
 
 
-def dequantize_scale_from_units(units: torch.Tensor, qtype: int, zmul: int = 0):
+def dequantize_scale_from_units(units: torch.Tensor, qtype: int, zmul: Optional[int] = None):
     """THE DERIVATION THAT MAKES B AND C ONE FORMAT: packed scale units -> fp16 (scale, zero) planes.
 
     Today's prepass goes raw GGUF -> fp16 planes, which is why SCALE_FIRST needed a stored arrangement of its
@@ -245,6 +245,12 @@ def dequantize_scale_from_units(units: torch.Tensor, qtype: int, zmul: int = 0):
     Accepts dense units [k_unit, n, unit_bytes] or grouped [E, k_unit, n, unit_bytes], and ALWAYS returns
     [E, k/group_size, n] for both -- a dense weight is one expert, so the consumer needs no second code path.
     """
+    # zmul DERIVED, not defaulted. It was `= 0` for one commit, which is right for Q2_K and silently wrong for
+    # the other four -- they would have returned plausible finite scales. codex caught it before it reached the
+    # box (088). An explicit value is still accepted, for probing a format against a correction it does not own.
+    if zmul is None:
+        from .formats import placed_code_zmul
+        zmul = placed_code_zmul(qtype)
     return _op("gguf_packed_scale_prepass")(units, int(qtype), int(zmul))
 
 

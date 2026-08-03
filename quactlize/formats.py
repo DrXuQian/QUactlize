@@ -222,6 +222,35 @@ def storage_growth(qtype: QuantType) -> Optional[float]:
     return NON_BLOCK_SCALE_GROWTH.get(qtype)
 
 
+# THE CODE CORRECTION OF THE PLACED DENSE ARRANGEMENT, per format. NOT a free parameter and NOT zero by default:
+# a placed weight's codes carry a per-format offset, and reading them back with the wrong one produces plausible
+# scales rather than an error. codex measured these against the stored planes (heartbeat 088) --
+#
+#     Q2_K 0    Q3_K -4    Q4_K 8    Q5_K 8    Q6_K -24
+#
+# -- and the prepass accepts {-32, -24, -4, 0, 8}. The first version of the derivation route defaulted to 0, which
+# is correct for exactly one of the five; four formats would have come back wrong-but-finite. Deriving it from the
+# qtype removes the chance to pass the wrong one, which is the only reason it is a table here rather than an
+# argument the caller remembers.
+PLACED_CODE_ZMUL = {
+    QuantType.Q2_K: 0,
+    QuantType.Q3_K: -4,
+    QuantType.Q4_K: 8,
+    QuantType.Q5_K: 8,
+    QuantType.Q6_K: -24,
+}
+
+
+def placed_code_zmul(qtype) -> int:
+    """The placed arrangement's code correction for this format. Raises rather than assuming zero."""
+    q = QuantType(qtype)
+    if q not in PLACED_CODE_ZMUL:
+        raise NotImplementedError(
+            f"{q.name} has no recorded placed-code correction. Defaulting to 0 would be right for Q2_K alone and "
+            f"silently wrong for the rest, so this refuses instead.")
+    return PLACED_CODE_ZMUL[q]
+
+
 def needs_native_scale(qtype: QuantType, budget: float = 0.0) -> bool:
     """Whether this format REQUIRES a native scale channel to be shippable under the storage constraint.
 
