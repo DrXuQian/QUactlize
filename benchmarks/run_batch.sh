@@ -544,9 +544,22 @@ do_pytest() {
   fi
 
   # 5. the suite
+  # `-q | tail -25` was WRONG and the box proved it: a run reporting "17 failed, 201 passed, 2 errors" showed
+  # none of the seventeen names, because the summary is the LAST thing pytest prints and the failure list is
+  # above it. tail keeps exactly the part that says how many and drops the part that says which.
+  # -rf prints the short failure summary AFTER the counts, so it survives a tail; the full output with
+  # tracebacks goes to a log for anything the summary does not settle.
   echo "-- pytest"
-  QUACTLIZE_PPU_LIB="$so" PYTHONPATH="$ROOT" python3 -m pytest "$ROOT/tests" -q 2>&1 | tail -25
-  local prc=${PIPESTATUS[0]}
+  local plog prc
+  plog="$OUT/pytest_full.log"
+  QUACTLIZE_PPU_LIB="$so" PYTHONPATH="$ROOT" python3 -m pytest "$ROOT/tests" -q -rf --tb=short \
+    >"$plog" 2>&1 && prc=0 || prc=$?
+  # counts, then every failed test id. sed -n keeps the summary block whole rather than guessing a line count.
+  grep -E "^[0-9]+ (passed|failed)|passed|failed|error" "$plog" | tail -3
+  if [ "$prc" -ne 0 ]; then
+    echo "   -- failed test ids (full tracebacks in $plog):"
+    sed -n '/^=* short test summary info/,$p' "$plog" | grep -E "^(FAILED|ERROR)" | sed 's/^/     /'
+  fi
 
   # 6. the table, labelled as what it is
   echo
