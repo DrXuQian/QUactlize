@@ -5,6 +5,18 @@ exactly what output settles the question, so a partial paste is still useful.
 
 ## OPEN
 
+0. **UNBLOCKS NINE MATRIX CELLS. One paste.** The run already happened and all five formats passed; codex is
+   holding the promotion because the condition was "read the logs yourself" and those files exist only on the
+   box. It is right to hold -- a relayed screenshot is weaker evidence than the file -- so the file is what is
+   needed.
+
+       cd /sim/eec/shared/junfu.qx/quactlize && tail -3 ~/ab/fully_quantized_*.log
+
+   WANTED: the summary line from each of the five. Expected shape per format: `2 passed, 8 skipped` with the
+   skips reading "this library is built for packed format N". If any says something else, the promotion is
+   withdrawn rather than adjusted.
+
+
 1. **THE ONLY THING BETWEEN 51/60 AND 60/60.** All five k-quants now have FULLY_QUANTIZED dense AND grouped
    implemented, local gates green on both sides. Nine cells sit at PARTIAL solely because no ppu001 oracle has
    run against them; there is no further code to write for those cells.
