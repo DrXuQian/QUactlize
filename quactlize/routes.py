@@ -248,6 +248,35 @@ def dequantize_scale_from_units(units: torch.Tensor, qtype: int, zmul: int = 0):
     return _op("gguf_packed_scale_prepass")(units, int(qtype), int(zmul))
 
 
+def matmul_bc_gemv(a: torch.Tensor, artifact, qtype: int) -> torch.Tensor:
+    """DECODE OFF THE MERGED FORM: the CUDA-core GEMV reading placed code planes plus packed units.
+
+    This is what removes raw GGUF from residency. Until it existed the decode path read raw blocks while the
+    tensor-core paths read the placed planes, so a deployment that wanted both had to keep two arrangements of
+    the same weight -- and weights exist once in HBM, which is the constraint the whole merge is about.
+
+    NOT YET A REPLACEMENT FOR matmul_native_gemv. The user's bar is PARITY with the raw path at the real layer
+    shape, not "no worse under one condition", and it has not been met: at N=K=2048 the measurement is a cold tie
+    and warm +11%. Both paths stay callable until it is.
+    """
+    low, high, units = _unpack_fq(artifact, "matmul_bc_gemv")
+    return _op("gguf_gemv_bc")(a, low, high, units, int(qtype))
+
+
+def matmul_bc_gemv_moe(a: torch.Tensor, artifact, qtype: int, num_experts: int,
+                       rows_per_expert: torch.Tensor) -> torch.Tensor:
+    """The MoE decode arm of the same thing. Rows are ragged and an expert may have none.
+
+    The route takes rows_per_expert and converts to offsets here, matching matmul_native_gemv_moe rather than the
+    op's row_offsets argument. One convention per layer: the alternative is a caller that has to remember which
+    side of the seam it is on, and the cumulative-offset form is the one that has an empty expert as a silent
+    special case.
+    """
+    low, high, units = _unpack_fq(artifact, "matmul_bc_gemv_moe")
+    offsets = _row_offsets(rows_per_expert, num_experts, a.shape[0])
+    return _op("gguf_gemv_bc_moe")(a, low, high, units, offsets, int(qtype))
+
+
 def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: int):
     """Offline artifact for FULLY_QUANTIZED/DENSE: the code plane plus the PACKED SCALE UNIT.
 

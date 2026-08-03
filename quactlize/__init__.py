@@ -124,6 +124,16 @@ def gguf_vecdot_moe(blocks, x, row_offsets, qtype: int):
     return _ops().gguf_vecdot_moe(blocks, x, row_offsets, qtype)
 
 
+def gguf_gemv_bc(a, low, high, units, qtype: int):
+    """CUDA-core GEMV over the merged form: placed code planes plus packed scale units. -> fp32 [1, N]."""
+    return _ops().gguf_gemv_bc(a, low, high, units, qtype)
+
+
+def gguf_gemv_bc_moe(a, low, high, units, row_offsets, qtype: int):
+    """The MoE arm; row_offsets is the cumulative form, so an empty expert is representable. -> fp32 [rows, N]."""
+    return _ops().gguf_gemv_bc_moe(a, low, high, units, row_offsets, qtype)
+
+
 def gguf_packed_scale_prepass(units, qtype: int, zmul: int = 0):
     """Packed scale units -> fp16 (scale, zero) planes. Dense [k_unit,n,ub] or grouped [E,k_unit,n,ub] in,
     always [E, k/group_size, n] out."""
