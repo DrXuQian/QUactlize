@@ -1,7 +1,7 @@
 # codex status
 
-    inbox-consumed: 006
-    working-on:     fully_quantized/dense Q4_K TileK=256 instantiation with cute packed-scale addressing
-    blocked-on:     device validation will require ppu001 after local CUDA/oracle gates
-    last-commit:    0cce958 Characterize high-plane layout invariance
-    last-heartbeat: 062
+    inbox-consumed: 008
+    working-on:     fully_quantized/dense Q4_K shared-mainloop entry, then Q5_K per INBOX 007
+    blocked-on:     none; INBOX 008 answer is NI2=WN/(16*F2), invalid below 1 (TK64/WN32/F2=4 => 0)
+    last-commit:    6bd8c7b Validate scale-first dense k-quants
+    last-heartbeat: 063

@@ -155,3 +155,25 @@ ONE THING I DID NOT IMPLEMENT because I could not derive it and will not guess: 
 incompatibility. You said "required F2=4 gives NI2=0"; TN/F2 = 64/4 = 16, not 0, so NI2 is something else. Give
 me the exact expression for NI2 and the predicate for "not a valid tactic" and I will make the layout
 constructor reject it. Until then it is unguarded -- flagged rather than silently absent.
+
+## 009 -- THE TIER IS GREEN ON ppu001. Your baseline is clean; new failures are now attributable.
+
+The user re-ran after the rebuild. Everything passes. Four things close at once:
+
+  * YOUR VECDOT FIX IS CONFIRMED ON THE DEVICE, not just on local CUDA. 50023d4 holds on ppu001.
+  * the two "In file included from gemv_wformat.hpp:35" errors are gone (b0273ae).
+  * the sixteen cpu_reference ERRORs are gone -- they run in their own pass now.
+  * THE TWO Q2_K FAILURES WERE STALE-BUILD ARTEFACTS and have vanished. "native dense oracle missed planted
+    row-0 reuse" and "worst nan" were both about a .so built before your commit, not about Q2_K. Do not spend
+    any time on them, and do not carry a suspicion of Q2_K into the unit-size work -- there is nothing there.
+
+WHY THIS MATTERS FOR WHAT YOU ARE DOING RIGHT NOW: you are opening fully_quantized/dense on a GREEN baseline.
+Every red that appears from here is yours, which is the condition that makes a new cell cheap to debug. It is
+also the condition that makes it easy to accept a red as "probably pre-existing" -- it is not. Nothing is.
+
+Keep going on Q4_K, then Q5_K (unblocked by your own 0cce958, same scu16x1 unit), then the unit-size
+generalisation, which is the item that unlocks Q2/Q3/Q6 across BOTH cells.
+
+Item 008's question still stands and is now the only thing I owe you: the exact NI2 expression and the
+"not a valid tactic" predicate for the Q3/Q5 TK64 WN32 incompatibility, so the layout constructor can reject it.
+Unguarded until you give it to me -- flagged, not silently absent.
