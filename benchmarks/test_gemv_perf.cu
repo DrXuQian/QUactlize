@@ -72,8 +72,11 @@ int main(int argc, char** argv) {
           std::printf("        %-12s %-34s %8.2f us  %5.1f%% HBM%s\n", gemv_group_names[g], bests[i][g].tag,
                       bests[i][g].us, bests[i][g].pct, g == ord[0] ? "  <-- fastest" : "");
     }
+    // argv[0], not "$BIN/...": a printed path that names a variable is only correct if the reader has set that
+    // variable, and the one doc that set it kept pointing at the pre-rename repo dir long after the rename. The
+    // binary is the only thing that always knows where the binary is.
     std::printf("\n  To profile one: GEMV_ONLY=\"<tag substring>\" GEMV_ACU=1 acu -o gemv.report --set full -f "
-                "$BIN/test_gemv_perf <shape index>\n");
+                "%s <shape index>\n", argv[0]);
   }
   std::printf("\n  launches refused: %d\n", gemv_fail_count());
   return 0;

@@ -69,10 +69,10 @@ int main(int argc, char** argv) {
                   "      so every number would be latency on an empty machine.\n\n"
                   "      In mode 3, `Rows` is the TOP-K (how many experts are ACTIVE), not rows per expert.\n"
                   "      You ran L=%d Rows=%d. The recorded decode band is:\n\n"
-                  "          $BIN/test_moe_splitk_bench 64 8 %d %d %d 3\n\n"
+                  "          %s 64 8 %d %d %d 3\n\n"
                   "      Expect active=8, roof ~7.6 us (21 MB), and cta 512 for 16x32:256 at S=1.\n"
                   "      To measure this geometry anyway: SPLITK_FORCE=1\n",
-                  bd.active, cta_best, bd.L, bd.Rows, bd.N, bd.K, bd.gs);
+                  bd.active, cta_best, bd.L, bd.Rows, argv[0], bd.N, bd.K, bd.gs);
       if (!std::getenv("SPLITK_FORCE")) return 2;
       std::printf("      SPLITK_FORCE=1 set -- proceeding. These numbers do not bound anything.\n\n");
     }
@@ -182,7 +182,7 @@ int main(int argc, char** argv) {
                   "                                 that means the 18 warps/CU ceiling was wrong)\n", sp);
     }
     std::printf("\n  To profile one: SPLITK_ONLY=\"<tag substring>\" SPLITK_ACU=1 acu -o splitk.report --set full -f "
-                "$BIN/test_moe_splitk_bench %d %d %d %d %d %d\n", bd.L, bd.Rows, bd.N, bd.K, bd.gs, bd.mode);
+                "%s %d %d %d %d %d %d\n", argv[0], bd.L, bd.Rows, bd.N, bd.K, bd.gs, bd.mode);
   }
   std::printf("\n  launches refused: %d\n", moe_grouped_ppu::moeg_fail_count());
   return 0;

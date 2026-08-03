@@ -10,10 +10,10 @@ survive the move. Numbers here are measured unless the line says otherwise.
 
 | | |
 |---|---|
-| this repo | `Kernels`, branch `ppu_dev`, 980 commits, 185 MB of git |
+| this repo | `quactlize`, branch `develop`, remote `git@github.com:DrXuQian/quactlize.git` (was `Kernels`/`ppu_dev` before the rename) |
 | the collective | `third_party/actlize`, branch `ppu-w4a16-dev` — **a PRIVATE submodule (`DrXuQian/actlize`)** |
 | the target hardware | T-Head PPU / ZW810, chip `ppu001`, **72 CUs**, 256 KB shared per CU, HBM peak ~2766 GB/s |
-| the box | `aiswu96`, `/sim/eec/shared/junfu.qx/Kernels` — no PPU SDK locally, so nothing here builds for the device off-box |
+| the box | `aiswu96`, `/sim/eec/shared/junfu.qx/quactlize` — no PPU SDK locally, so nothing here builds for the device off-box |
 
 **Most of the W4A16 work is inside actlize, not here.** `ppu_mma_aiu_multistage_mixed_input.hpp` is the mainloop;
 this repo holds the harnesses, the offline, the probes and the docs. A public repo that submodules a private one is

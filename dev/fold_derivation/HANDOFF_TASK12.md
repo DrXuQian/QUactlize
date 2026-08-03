@@ -124,7 +124,9 @@ the first**: any A/B must copy the binary aside in between. (An acu capture of "
 ~50% instead of 63.7% is what this footgun looks like.)
 
 ```
-BIN=/sim/eec/shared/junfu.qx/Kernels/third_party/actlize/build_w4a16_compare/examples/99_kernels_w4a16_compare
+# Derived, not hardcoded -- run from the repo root (where ./build.sh lives). The literal that used to be here
+# still said .../Kernels/... after the repo was renamed to quactlize, so every paste of it hit "No such file".
+BIN=$PWD/third_party/actlize/build_w4a16_compare/examples/99_kernels_w4a16_compare
 TARGET=test_q3_bconcat_real  ./build.sh && $BIN/test_q3_bconcat_real                 # numerics FIRST
 TARGET=test_q3_bconcat_bench ./build.sh && $BIN/test_q3_bconcat_bench 2048 4096 4096 16
 
