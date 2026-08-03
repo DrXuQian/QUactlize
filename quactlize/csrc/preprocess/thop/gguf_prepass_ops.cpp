@@ -312,7 +312,14 @@ std::vector<torch::Tensor> gguf_pack_unit(torch::Tensor scale_blocks, torch::Ten
     using U = gguf_scale::packed_unit::Unit<T>;
     TORCH_CHECK(scale_blocks.size(1) == Traits<T>::kBlockBytes, "scale_blocks second dim must be the SCALE block");
     TORCH_CHECK(!U::kHasMin || has_dmin, "this format has a min channel, so dmin is required");
-    torch::Tensor units = torch::empty({rows, int64_t(U::kUnitBytes)},
+    // A UNIT MAY CARRY MORE THAN ONE SUPERBLOCK, and for Q3_K and Q6_K it must: one superblock is 14 and 18 bytes,
+    // both 2 mod 4, and ppu.cp.async moves only 4, 8 or 16. Two of the SAME COLUMN are 28 and 36. Consecutive rows
+    // here are consecutive superblocks of one column, which is the axis that makes the pairing free -- a thread
+    // still owns exactly its own column.
+    TORCH_CHECK(rows % U::kSbPerUnit == 0, "this format packs ", U::kSbPerUnit,
+                " superblocks per unit, so the row count must be a multiple of that; got ", rows);
+    int64_t const n_units = rows / U::kSbPerUnit;
+    torch::Tensor units = torch::empty({n_units, int64_t(U::kUnitTotal)},
                                        torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCPU));
     auto* up = get_ptr<uint8_t>(units);
     auto const* dp = get_ptr<at::Half const>(d);
@@ -321,7 +328,9 @@ std::vector<torch::Tensor> gguf_pack_unit(torch::Tensor scale_blocks, torch::Ten
       cutlass::half_t dd, dm{0.f};
       std::memcpy(&dd, dp + r, sizeof(dd));
       if (mp) std::memcpy(&dm, mp + r, sizeof(dm));
-      gguf_scale::packed_unit::pack_unit<T>(bp + r * Traits<T>::kBlockBytes, dd, dm, up + r * U::kUnitBytes);
+      gguf_scale::packed_unit::pack_unit_sb<T>(bp + r * Traits<T>::kBlockBytes, dd, dm,
+                                               int(r % U::kSbPerUnit),
+                                               up + (r / U::kSbPerUnit) * U::kUnitTotal);
     }
     return {units};
   });
@@ -337,17 +346,21 @@ std::vector<torch::Tensor> gguf_unit_decode(torch::Tensor units, int64_t qtype, 
   return dispatch_ktype(qtype, [&](auto tag) -> std::vector<torch::Tensor> {
     constexpr KType T = decltype(tag)::value;
     using U = gguf_scale::packed_unit::Unit<T>;
-    TORCH_CHECK(units.size(1) == U::kUnitBytes, "this format's unit is ", U::kUnitBytes, " bytes, got ",
+    TORCH_CHECK(units.size(1) == U::kUnitTotal, "this format's unit is ", U::kUnitTotal, " bytes, got ",
                 units.size(1));
+    // One row of output per SUPERBLOCK, not per unit, so the caller sees the same shape whatever the packing is.
+    int64_t const n_sb = rows * U::kSbPerUnit;
     auto f16 = torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCPU);
-    torch::Tensor scale = torch::empty({rows, int64_t(U::kGroups)}, f16);
-    torch::Tensor zero = torch::empty({rows, int64_t(U::kGroups)}, f16);
+    torch::Tensor scale = torch::empty({n_sb, int64_t(U::kGroups)}, f16);
+    torch::Tensor zero = torch::empty({n_sb, int64_t(U::kGroups)}, f16);
     auto* sp = get_ptr<at::Half>(scale);
     auto* zp = get_ptr<at::Half>(zero);
-    for (int64_t r = 0; r < rows; ++r) {
+    for (int64_t r = 0; r < n_sb; ++r) {
+      uint8_t const* u = up + (r / U::kSbPerUnit) * U::kUnitTotal;
+      int const sb = int(r % U::kSbPerUnit);
       for (int g = 0; g < U::kGroups; ++g) {
-        auto sz = (zmul == 8) ? gguf_scale::packed_unit::unit_group<T, 8>(up + r * U::kUnitBytes, g)
-                              : gguf_scale::packed_unit::unit_group<T, 0>(up + r * U::kUnitBytes, g);
+        auto sz = (zmul == 8) ? gguf_scale::packed_unit::unit_group_sb<T, 8>(u, sb, g)
+                              : gguf_scale::packed_unit::unit_group_sb<T, 0>(u, sb, g);
         std::memcpy(sp + r * U::kGroups + g, &sz.scale, sizeof(sz.scale));
         std::memcpy(zp + r * U::kGroups + g, &sz.zero, sizeof(sz.zero));
       }

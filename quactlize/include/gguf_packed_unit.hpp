@@ -54,7 +54,18 @@ struct Unit {
                 "the reordered unit must not be larger than GGUF's own scale metadata -- an offline reorder is "
                 "permitted, an increase in stored bytes is not");
 
-  // THE BIT POSITION, one rule, no per-format shift arithmetic written anywhere else. Fields are laid out
+  // SUPERBLOCKS PER UNIT, which is what makes Q3_K and Q6_K movable at all. ppu.cp.async takes 4, 8 or 16 bytes;
+  // one superblock of Q3_K is 14 and of Q6_K 18, both 2 mod 4, so neither can be bulk-copied. TWO superblocks OF THE
+  // SAME COLUMN are 28 and 36, both divisible by 4, with no padding and no change to which column a thread owns.
+  //
+  // The axis matters and I had it wrong first: pairing along n -- two COLUMNS -- needs the staged tensor recast to
+  // (TN/2, 2*unit) and changes ownership, which is why that attempt was withdrawn. Pairing along k needs neither,
+  // because a thread still owns exactly its own column and simply covers two of its superblocks.
+  static constexpr int kSbPerUnit = ((kHeaderBytes + kCodeBits / 8) % 4 == 0) ? 1 : 2;
+  static constexpr int kSbBytes   = kHeaderBytes + kCodeBits / 8;      // one superblock's own share
+  static constexpr int kUnitTotal = kSbPerUnit * kSbBytes;             // what the copy actually moves
+
+  // THE BIT POSITION, one rule, no per-project shift arithmetic written anywhere else. Fields are laid out
   // group-major within a RUN of kRunGroups, and each run is self-contained so a k-tile covering part of a superblock
   // reads a contiguous byte range -- which is the entire reason the unit is reordered.
   //
@@ -68,6 +79,12 @@ struct Unit {
     return kHeaderBytes * 8 + (g / kRunGroups) * kRunBits
          + (g % kRunGroups) * kScaleBits + which * (kRunGroups * kScaleBits)
          + (which ? (g % kRunGroups) * (kMinBits - kScaleBits) : 0);
+  }
+  // The same position inside superblock `sb` of a multi-superblock unit. Each superblock keeps its OWN header, so a
+  // consumer that wants only one of them reads a contiguous kSbBytes run and needs nothing from the other -- which
+  // is the property that makes the pairing free rather than a coupling.
+  CUTLASS_HOST_DEVICE static constexpr int bit_of_sb(int sb, int g, int which) {
+    return sb * kSbBytes * 8 + bit_of(g, which);
   }
 };
 
@@ -99,6 +116,20 @@ CUTLASS_HOST_DEVICE void put_code(uint8_t* unit, int g, int which, int v) {
 
 // THE OFFLINE SIDE. Takes the codes a format's own layout yields -- scale_of/min_of on the GGUF scale block, which
 // is already checked against llama.cpp -- and writes the unit. Header first, verbatim.
+template <KType T>
+CUTLASS_HOST_DEVICE void pack_unit_sb(uint8_t const* gguf_scale_block, half_t d, half_t dmin, int sb, uint8_t* unit) {
+  uint8_t* p = unit + sb * Unit<T>::kSbBytes;
+  for (int i = 0; i < Unit<T>::kSbBytes; ++i) p[i] = 0;
+  uint16_t const db = d.raw();
+  p[0] = uint8_t(db & 0xFF); p[1] = uint8_t(db >> 8);
+  if constexpr (Unit<T>::kHasMin) { uint16_t const mb = dmin.raw(); p[2] = uint8_t(mb & 0xFF); p[3] = uint8_t(mb >> 8); }
+  for (int g = 0; g < Unit<T>::kGroups; ++g) {
+    int const sc = scale_of<T>(gguf_scale_block, g) & ((1 << Unit<T>::kScaleBits) - 1);
+    put_code<T>(p, g, 0, sc);
+    if constexpr (Unit<T>::kHasMin) put_code<T>(p, g, 1, min_of<T>(gguf_scale_block, g));
+  }
+}
+
 template <KType T>
 CUTLASS_HOST_DEVICE void pack_unit(uint8_t const* gguf_scale_block, half_t d, half_t dmin, uint8_t* unit) {
   for (int i = 0; i < Unit<T>::kUnitBytes; ++i) unit[i] = 0;
@@ -141,6 +172,14 @@ CUTLASS_HOST_DEVICE GroupScale unit_group(uint8_t const* unit, int g) {
   }
   if constexpr (ZMul != 0) out.zero = out.zero + half_t(float(ZMul)) * out.scale;
   return out;
+}
+
+// ONE SUPERBLOCK OF A MULTI-SUPERBLOCK UNIT. Each superblock carries its own header, so this is just an offset --
+// a consumer wanting only superblock sb reads a contiguous kSbBytes run and needs nothing from the other, which is
+// the property that makes pairing along k free rather than a coupling between two k-tiles.
+template <KType T, int ZMul>
+CUTLASS_HOST_DEVICE GroupScale unit_group_sb(uint8_t const* unit, int sb, int g) {
+  return unit_group<T, ZMul>(unit + sb * Unit<T>::kSbBytes, g);
 }
 
 }  // namespace packed_unit

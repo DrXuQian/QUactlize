@@ -501,7 +501,8 @@ def test_ppu_seam_reports_and_forwards(tmp_path):
 # Byte neutrality is the licence for the whole path -- an offline reorder is permitted, an increase in stored bytes is
 # not -- so it is asserted per format here as well as in the C++, because the two say it about different things: the
 # static_assert is about the trait, this is about what the op actually returns.
-UNIT_BYTES = {"Q2_K": 20, "Q3_K": 14, "Q4_K": 16, "Q5_K": 16, "Q6_K": 18}
+# The COPYABLE unit: Q3_K and Q6_K pair two superblocks of one column because 14 and 18 are 2 mod 4.
+UNIT_BYTES = {"Q2_K": 20, "Q3_K": 28, "Q4_K": 16, "Q5_K": 16, "Q6_K": 36}
 SCALE_BLOCK = {"Q2_K": (0, 16), "Q3_K": (96, 108), "Q4_K": (4, 16), "Q5_K": (4, 16), "Q6_K": (192, 208)}
 
 
@@ -531,9 +532,13 @@ def test_packed_unit_round_trips_bit_exactly(name, qtype, hdr, scales, codes, qm
     zmul = 8 if len(hdr) > 1 else 0
 
     units = quactlize.gguf_pack_unit(sb, d, dmin, int(qtype))
+    # A UNIT MAY CARRY TWO SUPERBLOCKS. Q3_K's one-superblock share is 14 bytes and Q6_K's 18, both 2 mod 4, and
+    # ppu.cp.async moves only 4, 8 or 16 -- so those two pack a PAIR of superblocks of the same column, 28 and 36.
+    # The expected size is therefore the format's own, not a constant 16.
     assert units.shape[1] == UNIT_BYTES[name], f"{name}: unit is {units.shape[1]} B, expected {UNIT_BYTES[name]}"
     # THE STORAGE CONSTRAINT, on the value the op returned rather than on the trait that computed it.
-    gguf_meta = (sb_hi - sb_lo) + 2 * len(hdr)
+    sb_per_unit = 2 if name in ("Q3_K", "Q6_K") else 1
+    gguf_meta = ((sb_hi - sb_lo) + 2 * len(hdr)) * sb_per_unit
     assert units.shape[1] <= gguf_meta, \
         f"{name}: the unit is {units.shape[1]} B against GGUF's {gguf_meta} B of scale metadata -- an offline " \
         f"reorder is permitted, an increase in stored bytes is not"
