@@ -65,6 +65,45 @@ class Impl(NamedTuple):
     launcher: str        # the file that would run it, or what exists instead
     flag: str = ""       # build flag it sits behind; "" means it is in the default build
     note: str = ""
+    # THE STORAGE FORMAT THIS CELL CONSUMES, which is not the same question as "which format is supported".
+    # A status says whether the path runs and is proven; this says WHAT BYTES it reads, and the two come apart:
+    # FULLY_QUANTIZED/gemv reads the checkpoint's own blocks, while SCALE_FIRST/gemv reads a DERIVED artifact that
+    # something had to produce. That distinction decides whether an external oracle exists at all -- the official
+    # gguf package can invert raw blocks, while derived formats need their own explicit dequant-all/dequant-scale.
+    # See format_of() below; "" means the cell is absent and consumes nothing.
+    consumes: str = ""
+
+
+# The consumed format, derived rather than written down a second time. CODE_PLANE already records each format's
+# code-plane decomposition and layouts.scale_unit() already mints the packed unit's name, so both are read from
+# there -- a name typed out again here is a name that can drift from the thing it describes.
+def format_of(scheme: "Scheme", shape: "Shape", fmt: QuantType) -> str:
+    plane = CODE_PLANE.get(fmt, "?")
+    if scheme is Scheme.DEQUANT_FIRST:
+        return "raw"                    # reads the checkpoint, materialises fp16; the INPUT is raw blocks
+    if scheme is Scheme.SCALE_FIRST:
+        kind = "dense" if shape is Shape.DENSE else "gemv" if shape in (Shape.GEMV, Shape.GEMV_MOE) else "grouped"
+        return f"sf-{kind}({plane})"    # each derived family has a named producer and inverse
+    if scheme is Scheme.FULLY_QUANTIZED:
+        if shape in (Shape.GEMV, Shape.GEMV_MOE):
+            return "raw"                # the native decode reads the checkpoint's own bytes
+        return _packed_unit_name(fmt)   # the collective reads the reordered scale unit
+    return ""
+
+
+def _packed_unit_name(fmt: QuantType) -> str:
+    """scu<bytes>x<superblocks>, minted by layouts.scale_unit so the vocabulary keeps one owner.
+
+    THE PAIRING RULE IS THE COPY WIDTH, not the group count. ppu.cp.async moves 4, 8 or 16 bytes and nothing
+    else, so a unit whose byte count is 2 mod 4 cannot be bulk-copied at all: Q3_K's 14 and Q6_K's 18 are paired
+    along k into 28 and 36, while Q2_K's 20 (= 16 + 4) and Q4_K/Q5_K's 16 are already copyable alone. Deriving it
+    from the byte count reproduces all five recorded names; deriving it from "16 groups" does not -- Q2_K has
+    sixteen groups and is still x1."""
+    from . import formats as _f, layouts as _l
+    meta = _f.BLOCKS[fmt].scale_meta_bytes
+    supers = 2 if meta % 4 else 1
+    groups = _f.BLOCKS[fmt].weights // _f.BLOCKS[fmt].group_size
+    return _l.scale_unit(meta * supers, supers, groups).token
 
 
 # The weight CODE plane, which is not the same axis as the format. Q4_K and GPTQ-int4 both carry 4-bit codes and
@@ -131,7 +170,10 @@ IMPL: Dict[Tuple[Scheme, Shape, QuantType], Impl] = {}
 
 def _add(scheme, shape, fmts, impl):
     for f in fmts:
-        IMPL[(scheme, shape, f)] = impl
+        # A non-running cell consumes no artifact. Once the path runs, record the exact derived/raw family beside
+        # its status so support and storage representation cannot be mistaken for the same axis.
+        IMPL[(scheme, shape, f)] = (impl._replace(consumes=format_of(scheme, shape, f))
+                                    if impl.status >= Status.IMPLEMENTED and not impl.consumes else impl)
 
 
 _KQUANTS = (QuantType.Q2_K, QuantType.Q3_K, QuantType.Q4_K, QuantType.Q5_K, QuantType.Q6_K)
@@ -173,14 +215,16 @@ _add(Scheme.DEQUANT_FIRST, Shape.GEMV, _KQUANTS, Impl(
         "decode: it materialises the whole weight in fp16 for ONE token, so its extra DRAM traffic is 16x the "
         "pre-pass's before the GEMM has read a byte. It is the fallback that proves the others are needed")))
 
-# --- SCALE_FIRST x DENSE for the k-quants: both halves exist and nobody has joined them ------------------------
+# --- SCALE_FIRST x DENSE for the k-quants -----------------------------------------------------------------------
 _add(Scheme.SCALE_FIRST, Shape.DENSE, _KQUANTS, Impl(
-    Status.PARTIAL, _DENSE, note=(
-        "the requested fpA_intB_ppu.cuh seam is not format-general: its public arguments and ElementB are hardcoded "
-        "cutlass::int4b_t. It has neither an int2 dense instantiation for Q2_K nor the PlaneB2 input/converter used "
-        "by Q3_K/Q5_K/Q6_K. Q4_K alone has the right code width, but the requested five-format cell therefore hides "
-        "new dense compute mechanisms rather than one join, so it was not started. Even a future Q4 join inherits "
-        "only test_fpA_intB_ppu's self-comparison and must stay IMPLEMENTED until it gains an independent oracle")))
+    Status.IMPLEMENTED, _DENSE, note=(
+        "raw GGUF now reaches gguf_prepare_dense -> fixed xplane placement -> the raw-pointer dense ABI -> "
+        "fpA_intB_ppu for uint2, uint2+uint1, int4, int4+uint1 and int4+uint2. Q2-Q5 use TK=256; the new xplane "
+        "inverse caught that Q6's high plane covers only half a TK=256 tile, so Q6 uses the already validated "
+        "TK=128 tactic. Both dense artifact inverses are Python-reachable: dequant-all matches official gguf and "
+        "dequant-scale returns the stored fp16 affine planes, with planted code/scale faults observed. "
+        "test_fpA_kquant_dense compares two fpA configurations and carries failures in its exit status, but that is still "
+        "a SELF oracle with shared constants; the honest cell status is IMPLEMENTED, not VALIDATED")))
 
 # --- FULLY_QUANTIZED x DENSE: structural, not unfinished -------------------------------------------------------
 _add(Scheme.FULLY_QUANTIZED, Shape.DENSE, _KQUANTS, Impl(
@@ -286,7 +330,7 @@ def capability(scheme: Scheme, *shapes: Shape, minimum: Status = Status.IMPLEMEN
 _CELL_PATH = {
     (Scheme.DEQUANT_FIRST, Shape.DENSE): "dequant_then_dense",
     (Scheme.DEQUANT_FIRST, Shape.GROUPED): "dequant_then_dense",
-    (Scheme.SCALE_FIRST, Shape.DENSE): "fused_fp16_scale",
+    (Scheme.SCALE_FIRST, Shape.DENSE): "scale_first_dense",
     (Scheme.SCALE_FIRST, Shape.GROUPED): "fused_fp16_scale",
     (Scheme.SCALE_FIRST, Shape.GEMV): "scale_first_gemv",
     (Scheme.FULLY_QUANTIZED, Shape.DENSE): "fused_native_scale",
@@ -380,7 +424,8 @@ def report(gaps_only: bool = False) -> str:
         # cell, so a note covering dense and grouped looked like a duplicated format list.
         cells = {}
         for (a, b, x), i in IMPL.items():
-            if i is impl:
+            # _add gives each runnable format its own `consumes` token, so identity no longer groups the shared note.
+            if (i.status, i.launcher, i.flag, i.note) == (impl.status, impl.launcher, impl.flag, impl.note):
                 cells.setdefault(f"{a.value}/{b.value}", set()).add(x.name)
         out.append(f"     [{_MARK[impl.status].strip()}] "
                    + "; ".join(f"{k}: {', '.join(sorted(v))}" for k, v in sorted(cells.items())))

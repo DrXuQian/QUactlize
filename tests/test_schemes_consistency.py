@@ -53,6 +53,17 @@ def test_capability_has_a_caller_now():
         "scale_first/grouped is the workhorse cell; an empty result means capability() itself is broken"
 
 
+def test_every_running_cell_names_the_artifact_it_consumes():
+    """Execution support and storage format are separate axes, but neither may be implicit once a cell runs."""
+    for (scheme, shape, fmt), impl in schemes.IMPL.items():
+        if impl.status >= Status.IMPLEMENTED:
+            assert impl.consumes == schemes.format_of(scheme, shape, fmt), \
+                f"{scheme.value}/{shape.value}/{fmt.name} runs but its consumed format is unnamed or stale"
+        else:
+            assert impl.consumes == "", \
+                f"{scheme.value}/{shape.value}/{fmt.name} does not run, so it cannot consume an artifact"
+
+
 def test_every_matrix_cell_maps_to_a_registry_path():
     """A VALIDATED cell whose (scheme, shape) has no path name would be approved by DEFAULT, because the lookup
     that should refuse it finds nothing to check and returns no problem. Absence is the dangerous direction."""

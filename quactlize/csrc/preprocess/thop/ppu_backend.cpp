@@ -45,6 +45,15 @@ State& state() {
     if (!sym("quactlize_ppu_dequantize", reinterpret_cast<void**>(&s.api.dequantize))) return;
     if (!sym("quactlize_ppu_prepass", reinterpret_cast<void**>(&s.api.prepass))) return;
     if (!sym("quactlize_ppu_gemv_lowbit", reinterpret_cast<void**>(&s.api.gemv_lowbit))) return;
+    // Dense tensor-core symbols are hgcc-only. Do not make their absence invalidate a plain-nvcc CUDA-core GEMV
+    // library; the dense op checks these pointers explicitly and refuses instead of falling back.
+    dlerror();
+    s.api.prepare_dense = reinterpret_cast<decltype(s.api.prepare_dense)>(dlsym(h, "quactlize_ppu_prepare_dense"));
+    dlerror();
+    s.api.recover_dense = reinterpret_cast<decltype(s.api.recover_dense)>(dlsym(h, "quactlize_ppu_recover_dense"));
+    dlerror();
+    s.api.dense_lowbit = reinterpret_cast<decltype(s.api.dense_lowbit)>(dlsym(h, "quactlize_ppu_dense_lowbit"));
+    dlerror();
     s.ok = true;
     s.why = std::string("loaded ") + path;
   });

@@ -40,6 +40,15 @@ struct Api {
                      uint16_t const* scale, uint16_t const* zero, uint16_t* out,
                      int total_rows, int n, int k, int group_size, int qtype,
                      int experts, int const* row_offsets, int max_rows);
+  // Optional hgcc-only dense half. prepare_dense is host-only but linked beside it so the artifact and launcher
+  // cannot silently disagree about the fixed xplane tactic. A plain-nvcc GEMV library legitimately leaves both null.
+  int (*prepare_dense)(uint8_t const* low_native, uint8_t const* high_native,
+                       uint8_t* low_layout, uint8_t* high_layout, int n, int k, int qtype);
+  int (*recover_dense)(uint8_t const* low_layout, uint8_t const* high_layout,
+                       uint8_t* low_native, uint8_t* high_native, int n, int k, int qtype);
+  int (*dense_lowbit)(uint16_t const* act, uint8_t const* low, uint8_t const* high,
+                      uint16_t const* scale, uint16_t const* zero, uint16_t* out,
+                      int m, int n, int k, int group_size, int qtype);
 };
 
 // Loads libquactlize_ppu.so once. QUACTLIZE_PPU_LIB overrides the path, which is what lets a stub stand in for the

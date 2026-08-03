@@ -138,6 +138,14 @@ ppu_w4a16_executable(
 )
 target_compile_options(test_fpA_intB_ppu PRIVATE -w)
 
+# All five k-quant code shapes through the dedicated dense launcher, compared only against another configuration.
+# The self oracle is intentional and keeps schemes.py at IMPLEMENTED until an independent PPU golden covers it.
+ppu_w4a16_executable(
+  test_fpA_kquant_dense
+  test_fpA_kquant_dense.cu
+)
+target_compile_options(test_fpA_kquant_dense PRIVATE -w)
+
 # Low-bit weight-only GEMV (gemv_lowbit/). The decode-band kernel: no shared memory in the main loop and K
 # split Threads ways, so the grid is ~2048 CTAs x 128 threads instead of the grouped GEMM's 512 x 64.
 # Build: TARGET=test_gemv_lowbit ./build.sh    Run: $BIN/test_gemv_lowbit  (add `quick` to skip the long tail)
@@ -149,8 +157,9 @@ target_compile_options(test_gemv_lowbit PRIVATE -w)
 
 # Python device backend: a shared C ABI with no torch dependency. The host extension dlopens this exact filename;
 # building it through actlize keeps hgcc, the PPU runtime libraries and every device include identical to the proven
-# harnesses. The source also builds as a plain nvcc .so for the local independent-oracle test.
-cutlass_add_library(quactlize_ppu SHARED ppu_backend.cu)
+# harnesses. The CUDA-core backend and host-only dense layout also build under plain nvcc for the local independent-
+# oracle test; ppu_dense_backend.cu is the intentionally hgcc-only tensor-core half.
+cutlass_add_library(quactlize_ppu SHARED ppu_backend.cu ppu_dense_layout.cu ppu_dense_backend.cu)
 target_link_libraries(quactlize_ppu PRIVATE CUTLASS cutlass_tools_util_includes ppu::driver)
 set_target_properties(quactlize_ppu PROPERTIES OUTPUT_NAME quactlize_ppu)
 

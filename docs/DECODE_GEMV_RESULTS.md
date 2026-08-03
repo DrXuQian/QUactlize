@@ -71,9 +71,14 @@ because the operand is L2-resident; they are cache rates, not claims about DRAM 
 | Q6_K | scale dense | 514.0 | 28.7% | 3.421 | 1225.9 | 68.5% |
 | Q6_K | scale MoE | 1367.1 | 76.4% | 12.040 | 2786.8 | 155.8% |
 
-## Deliberately not filled
+## Dense tensor-core follow-up
 
-`SCALE_FIRST × DENSE` remains PARTIAL. The named seam, `fpA_intB_ppu.cuh`, hardcodes `cutlass::int4b_t`; it has no
-int2 dense instantiation for Q2_K and no second-plane input/converter for Q3_K/Q5_K/Q6_K. That is a missing compute
-mechanism for four of five formats, not host wiring. Q4_K could fit the int4 representation, but its existing dense
-harness is a self-comparison and therefore could justify only IMPLEMENTED, not VALIDATED.
+`SCALE_FIRST × DENSE` is now IMPLEMENTED for all five k-quants. `fpA_intB_ppu.cuh` accepts the format's actual
+ElementB width and optional second plane, the raw-pointer backend launches it, and both derived artifact families
+have Python-reachable dequant-all/dequant-scale inverses. The semantic inverse matches official `gguf` for every
+format and rejects planted code faults; the scale inverse is a lossless storage-integrity check.
+
+The status is deliberately not VALIDATED. `test_fpA_kquant_dense` compares two fpA configurations over the same artifact,
+which catches launcher plumbing but is structurally blind to a wrong shared constant. Q2–Q5 use TK=256. The dense
+artifact inverse exposed that Q6's int2 high-plane map covers only half a TK=256 tile, so Q6 uses the already-tested
+TK=128 shape; all five artifacts then pass the independent semantic inverse.

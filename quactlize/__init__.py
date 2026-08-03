@@ -164,6 +164,35 @@ def gguf_prepare_gemv(blocks, n: int, k: int, qtype: int):
     return _ops().gguf_prepare_gemv(blocks, n, k, qtype)
 
 
+def gguf_prepare_dense(blocks, n: int, k: int, qtype: int):
+    """Build fpA_intB_ppu's resident SCALE_FIRST dense artifact.
+
+    The output is `(low, high, scale, zero)` with the same shapes as `gguf_prepare_gemv`, but the code planes are in
+    the format-selected fpA xplane layout (TK=256 for Q2-Q5, TK=128 for Q6). Preparation is offline/one-time.
+    """
+    return _ops().gguf_prepare_dense(blocks, n, k, qtype)
+
+
+def gguf_gemv_artifact_dequantize(low, high, scale, zero, qtype: int):
+    """Inverse of `gguf_prepare_gemv`: resident artifact -> fp16 `[experts,n,k]` weight."""
+    return _ops().gguf_gemv_artifact_dequantize(low, high, scale, zero, qtype)
+
+
+def gguf_gemv_artifact_dequantize_scale(scale, zero, qtype: int):
+    """Read GEMV artifact affine channels as stored fp16 `[experts,n,k/group_size]` planes."""
+    return _ops().gguf_gemv_artifact_dequantize_scale(scale, zero, qtype)
+
+
+def gguf_dense_artifact_dequantize(low, high, scale, zero, qtype: int):
+    """Inverse of `gguf_prepare_dense`: fpA xplane artifact -> fp16 `[1,n,k]` weight."""
+    return _ops().gguf_dense_artifact_dequantize(low, high, scale, zero, qtype)
+
+
+def gguf_dense_artifact_dequantize_scale(scale, zero, qtype: int):
+    """Read dense artifact affine channels as stored fp16 `[1,n,k/group_size]` planes."""
+    return _ops().gguf_dense_artifact_dequantize_scale(scale, zero, qtype)
+
+
 def gguf_gemv_scale_first(a, low, high, scale, zero, qtype: int):
     """Dense CUDA-core GEMV over a resident `gguf_prepare_gemv` artifact."""
     return _ops().gguf_gemv_scale_first(a, low, high, scale, zero, qtype)
@@ -172,6 +201,11 @@ def gguf_gemv_scale_first(a, low, high, scale, zero, qtype: int):
 def gguf_gemv_scale_first_moe(a, low, high, scale, zero, row_offsets, qtype: int):
     """Ragged MoE CUDA-core GEMV over a resident `gguf_prepare_gemv` artifact."""
     return _ops().gguf_gemv_scale_first_moe(a, low, high, scale, zero, row_offsets, qtype)
+
+
+def gguf_dense_scale_first(a, low, high, scale, zero, qtype: int):
+    """Dense mixed-input GEMM over a resident `gguf_prepare_dense` artifact."""
+    return _ops().gguf_dense_scale_first(a, low, high, scale, zero, qtype)
 
 
 def gguf_backend():
@@ -287,7 +321,8 @@ def _add_bias_and_interleave_int8s(w):
 
 
 # --------------------------------------------------------------------------------------------------------------
-# The GEMM. NOT BOUND YET.
+# Legacy GPTQ convenience GEMM. The GGUF SCALE_FIRST dense path is bound separately above because its artifact
+# includes format-specific low/high planes and affine corrections this three-tensor signature cannot express.
 
 def matmul_w4a16(a, b_packed, scales, zeros=None, group_size: int = 128,
                  fmt: Literal["gptq-sym", "gguf-q4k"] = "gptq-sym"):
@@ -299,6 +334,6 @@ def matmul_w4a16(a, b_packed, scales, zeros=None, group_size: int = 128,
 
 __all__ = [
     "preprocess_weights_to_layout", "symmetric_quantize", "symmetric_quantize_unprocessed",
-    "gguf_scale_prepass", "gguf_scale_block_shape", "gguf_vecdot", "gguf_vecdot_dense", "gguf_vecdot_moe", "gguf_dequantize", "gguf_unpack", "gguf_prepare_gemv", "gguf_gemv_scale_first", "gguf_gemv_scale_first_moe", "gguf_backend", "gguf_pack_unit", "gguf_unit_decode", "gguf_q4_artifact_dequantize",
+    "gguf_scale_prepass", "gguf_scale_block_shape", "gguf_vecdot", "gguf_vecdot_dense", "gguf_vecdot_moe", "gguf_dequantize", "gguf_unpack", "gguf_prepare_gemv", "gguf_prepare_dense", "gguf_gemv_artifact_dequantize", "gguf_gemv_artifact_dequantize_scale", "gguf_dense_artifact_dequantize", "gguf_dense_artifact_dequantize_scale", "gguf_gemv_scale_first", "gguf_gemv_scale_first_moe", "gguf_dense_scale_first", "gguf_backend", "gguf_pack_unit", "gguf_unit_decode", "gguf_q4_artifact_dequantize",
     "pack_int4", "unpack_int4", "pack_uint4", "unpack_uint4", "matmul_w4a16",
 ]

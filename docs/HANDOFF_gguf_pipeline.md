@@ -15,7 +15,7 @@ the whole basis for choosing between them.
 | **pre-pass** | `SCALE_FIRST` | raw GGUF | the fp16 scale/zero planes, in a workspace | write 0.52 + read 0.52 MB |
 | **packed** | `FULLY_QUANTIZED` | **`scu16x1` artifact** | nothing; the collective decodes the scale in-kernel | none, plus an UNDETERMINED tax (see §3) |
 | **native GEMV** | `FULLY_QUANTIZED` | raw GGUF | nothing; the scale pair is consumed in registers | none |
-| **resident GEMV** | `SCALE_FIRST` | **`sf(*)` artifact** | packed code planes plus resident fp16 scale/zero planes | format-dependent |
+| **resident GEMV** | `SCALE_FIRST` | **`sf-gemv(*)` artifact** | packed code planes plus resident fp16 scale/zero planes | format-dependent |
 
 **The third column is the integration axis, and it is not the same axis as the second.** A route that reads raw GGUF
 drops into llama.cpp with no offline step and no loader change; a route that reads a reordered artifact needs a named
@@ -361,29 +361,37 @@ column a thread owns — withdrawn. Pairing two *superblocks of the same column*
 padding, and a thread still owns exactly its own column. Each superblock keeps its own header, so a consumer wanting
 one reads a contiguous run.
 
-### 4a. The six offline formats, and what each still owes
+### 4a. The derived offline formats, and what each still owes
 
 **A weight's `wgt + scale + min` arrangement is one storage format.** Naming the kernel that consumes it is not the
 same as having the format, and this is the debt that separates "the kernels work" from "llama.cpp can load a file".
 
 | format | produced by | consumed by | on-disk repr | loader | dequant-all | dequant-scale |
 |---|---|---|---|---|---|---|
-| `sf(i2)` Q2_K | `routes.prepare_scale_first` | resident GEMV, `SCALE_FIRST` dense/grouped | ❌ | ❌ | 🔨 | 🔨 |
-| `sf(i2+i1)` Q3_K | ″ | ″ | ❌ | ❌ | 🔨 | 🔨 |
-| `sf(i4)` Q4_K | ″ | ″ | ❌ | ❌ | 🔨 | 🔨 |
-| `sf(i4+i1)` Q5_K | ″ | ″ | ❌ | ❌ | 🔨 | 🔨 |
-| `sf(i4+i2)` Q6_K | ″ | ″ | ❌ | ❌ | 🔨 | 🔨 |
+| `sf-gemv(i2)` Q2_K | `routes.prepare_scale_first` | resident GEMV dense/MoE | ❌ | ❌ | ✅ | ✅ |
+| `sf-gemv(i2+i1)` Q3_K | ″ | ″ | ❌ | ❌ | ✅ | ✅ |
+| `sf-gemv(i4)` Q4_K | ″ | ″ | ❌ | ❌ | ✅ | ✅ |
+| `sf-gemv(i4+i1)` Q5_K | ″ | ″ | ❌ | ❌ | ✅ | ✅ |
+| `sf-gemv(i4+i2)` Q6_K | ″ | ″ | ❌ | ❌ | ✅ | ✅ |
+| `sf-dense(i2)` Q2_K | `routes.prepare_scale_first_dense` | fpA dense, TK=256 | ❌ | ❌ | ✅ | ✅ |
+| `sf-dense(i2+i1)` Q3_K | ″ | fpA dense, TK=256 | ❌ | ❌ | ✅ | ✅ |
+| `sf-dense(i4)` Q4_K | ″ | fpA dense, TK=256 | ❌ | ❌ | ✅ | ✅ |
+| `sf-dense(i4+i1)` Q5_K | ″ | fpA dense, TK=256 | ❌ | ❌ | ✅ | ✅ |
+| `sf-dense(i4+i2)` Q6_K | ″ | fpA dense, TK=128 | ❌ | ❌ | ✅ | ✅ |
 | `scu16x1` etc. | `put_code` at **load time** (task #27) | packed collective | ❌ | ❌ | 🔨 | 🔨 |
 
-🔨 = in flight. The four Python-reachable ops landed 2026-08-03; the **semantic** oracle (not the round trip) is what
-gates them, and it immediately failed Q6 at conditioned err 8.76e-1 — see the distinction below.
+🔨 = in flight. The four Python-reachable inverse ops landed 2026-08-03. The **semantic** dense oracle (not the
+round trip) initially failed Q6 at conditioned err 8.76e-1 and exposed the cause: Q6's int2 high plane is complete
+at the already-box-validated TK=128 tactic, while TK=256 covers only half its logical K slots. Switching the Q6
+producer, inverse and launcher together to TK=128 gives all-five semantic errors 7.49e-5..4.32e-4.
 
 Two properties, and only one of them is an oracle:
 
 - **round trip** — `recover(prepare(x)) == x` bit-exactly. Proves *serialisation integrity*. It is a self-comparison,
   so a `prepare` that stores the wrong thing and a `recover` that reads it back faithfully both pass.
 - **semantic inverse** — dequantise the artifact, compare to `gguf.quants.dequantize` on the bytes it came from.
-  Proves the arrangement *means* what the source meant. **This is the one a matrix cell's OK may rest on.**
+  Proves the arrangement *means* what the source meant. This is independent evidence for the artifact component;
+  it is not independent evidence for the fpA launcher that consumes it.
 
 The repo has the failure on record: `test_fpA_intB_ppu` compares the launcher to another configuration of itself,
 which is why its cell reads IMPLEMENTED and not VALIDATED however green it runs.
@@ -409,9 +417,10 @@ its integration story, and it is why it is the byte-minimal decode route in §1 
 5. **The destination should be a cute Tensor/Layout, not a callable** — measured: partitioning physical output
    addresses and deriving logical source indices with `right_inverse` is **3× faster** than striping logical indices
    (65.5 vs 196.6 µs) on a non-affine layout.
-6. **SCALE_FIRST × DENSE hides a mechanism** — `fpA_intB_ppu.cuh` hardcodes int4 and has no second-plane input.
-   Q2_K needs an int2 dense instantiation; Q3_K/Q5_K/Q6_K need the separate plane joined in the dense converter.
-   It remains PARTIAL rather than pretending the scale-first GEMV binding also filled a tensor-core launcher.
+6. **SCALE_FIRST × DENSE is IMPLEMENTED, not VALIDATED** — ElementB and PlaneB2 are wired through the dense
+   launcher and all five artifacts have semantic inverses. The output harness still compares two configurations of
+   fpA itself, so a wrong shared constant moves both answers together; only an independent PPU output golden can
+   promote the cell.
 
 7. **The registry GEMV vocabulary is split now** — native/scale-first and dense/MoE have four distinct path names.
    The historical coarse `gemv` name remains for old harness reports, and `_CELL_PATH_IS_COARSE` remains as the

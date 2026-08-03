@@ -40,6 +40,11 @@ SCALE_GEMV_P = "scale_first_gemv"
 SCALE_GEMV_MOE_P = "scale_first_gemv_moe"
 NATIVE_GEMV_P = "native_gemv"
 NATIVE_GEMV_MOE_P = "native_gemv_moe"
+SCALE_DENSE_P = "scale_first_dense"
+# Component paths: these prove that derived bytes are independently readable, but deliberately do not approve a
+# launch cell. In particular the dense artifact inverse is not evidence that fpA's output is independently right.
+SCALE_ARTIFACT_P = "scale_first_artifact"
+SCALE_DENSE_ARTIFACT_P = "scale_first_dense_artifact"
 
 HARNESS_PATHS = {
     "test_moe_grouped_verify": [FP16_P], "test_moe_grouped_real": [FP16_P], "test_lowbit_grouped": [FP16_P],
@@ -47,14 +52,16 @@ HARNESS_PATHS = {
     "test_w2a16_real": [FP16_P], "test_q4k_packed_gemm": [NATIVE_P, FP16_P], "test_q4k_native_scale": ["scale_decode"],
     "test_ppu_f16x2_probe": ["probe"], "test_w1a16_grouped": [FP16_P], "test_w2a16_grouped": [FP16_P],
     "test_w1a16_diag": [FP16_P], "test_w2a16_diag": [FP16_P], "test_w4a16_diag": [FP16_P],
-    "test_fpA_intB_ppu": [FP16_P],
+    "test_fpA_intB_ppu": [FP16_P, SCALE_DENSE_P],
+    "test_fpA_kquant_dense": [SCALE_DENSE_P],
     "test_gemv_lowbit": [GEMV_P, SCALE_GEMV_P, SCALE_GEMV_MOE_P],
     "test_moe_gemm_ppu": [FP16_P],
     "test_moe_grouped_ppu": [FP16_P],
     # THE FIRST EVIDENCE FOR dequant_then_dense. Until this existed DENSE_P appeared in the path vocabulary and in
     # no harness at all, which is the honest state of a route whose host side was never wired -- and check_against_
     # formats() said nothing, because formats.DEQUANT_THEN_DENSE was empty too. Two empty sets agree.
-    "test_gguf_routes": [DENSE_P, SCALE_GEMV_P, SCALE_GEMV_MOE_P, NATIVE_GEMV_P, NATIVE_GEMV_MOE_P],
+    "test_gguf_routes": [DENSE_P, SCALE_GEMV_P, SCALE_GEMV_MOE_P, NATIVE_GEMV_P, NATIVE_GEMV_MOE_P,
+                         SCALE_ARTIFACT_P, SCALE_DENSE_ARTIFACT_P],
 }
 
 # harness -> (formats it covers, oracle kind, fixture it must read or None, note)
@@ -86,6 +93,8 @@ HARNESSES = {
     "test_w2a16_diag":          (["int2"],            "synthetic", None, "diagonal probe"),
     "test_w4a16_diag":          (["int4"],            "synthetic", None, "diagonal probe"),
     "test_fpA_intB_ppu":        (["int4"],            "self",      None, "dense launcher sweep"),
+    "test_fpA_kquant_dense":    (["gguf-q2k", "gguf-q3k", "gguf-q4k", "gguf-q5k", "gguf-q6k"], "self", None,
+        "two fpA dense configurations over each resident k-quant artifact; catches launcher plumbing but shares constants"),
     # Also declares gptq-int4-sym, and the reason is representational rather than a second harness: this sweep
     # instantiates a scale-only quant op with fp16 per-group scales over packed int4, which IS the GPTQ symmetric
     # representation -- same packing, same scale dtype, zero folded into the code range. What it does NOT cover is a
@@ -99,8 +108,9 @@ HARNESSES = {
     # spec over generated inputs, which is exactly this file's definition of synthetic. Real-checkpoint bytes reach
     # only Q4_K, through test_q4k_packed_gemm, and that is a different path.
     "test_gguf_routes":         (["gguf-q2k", "gguf-q3k", "gguf-q4k", "gguf-q5k", "gguf-q6k"], "synthetic", None,
-        "official gguf oracle over raw-block dense fallback plus production native and scale-first GEMV dense/MoE; "
-        "asymmetric n/k, ragged experts, and a launch-specific planted fault before every positive comparison"),
+        "official gguf oracle over raw-block dense fallback, production native/scale-first GEMV dense/MoE, and "
+        "dequant-all/dequant-scale inverses for both derived scale-first formats; asymmetric n/k, ragged experts, "
+        "and a path-specific planted fault before every positive comparison"),
 }
 
 # Formats we intend to ship, and what each one needs before it can be called supported.

@@ -264,6 +264,59 @@ inline void place_derived(int8_t* out, const std::vector<uint8_t>& q_kn, int N, 
   place_from_map<Bits, TM, TN, TK, WM, WN, F>(out, plane_map<Bits, TM, TN, TK, WM, WN, F>(), q_kn, N, K);
 }
 
+// THE INVERSE IS PART OF THE FORMAT. A producer-only xplane buffer can be checked only by feeding it to a GEMM,
+// which mixes placement and compute defects. Walk the exact physical coordinates used by place_from_map and recover
+// the canonical [K,N] codes, so an offline artifact can be dequantised without launching the consumer. This is a
+// mutual/round-trip witness for placement (not an independent convention oracle), while the resulting full fp16
+// weight is independently comparable with the official GGUF dequantiser.
+template <int Bits, int TM, int TN, int TK, int WM, int WN, int F>
+inline void recover_from_map(const int8_t* in, const std::vector<int>& m, std::vector<uint8_t>& q_kn, int N, int K) {
+  using namespace cute;
+  constexpr int CPW = 32 / Bits, R = TN / F, DL = (F * TK * Bits / 8) / 32;
+  constexpr int MASK = (1 << Bits) - 1;
+  const int W_ROW_OFF = 256 / CPW, RUNS = W_ROW_OFF / 8, nrow = N / F;
+  constexpr int kCon = 256, contig = F * TK * Bits / 8, AiuByte = contig > 128 ? 128 : contig;
+  constexpr int AiuElem = AiuByte * 8 / Bits, RPS = kCon / AiuElem;
+  const int NT = N / TN, KT = K / TK;
+  auto src_fold = make_layout(
+      make_shape (Int<CPW>{}, _8{}, Int<R>{}, NT, RUNS ? RUNS : 1, KT / (RUNS ? RUNS : 1)),
+      make_stride(_1{}, Int<CPW>{}, W_ROW_OFF * CPW, R * W_ROW_OFF * CPW, 8 * CPW, nrow * W_ROW_OFF * CPW));
+  auto src_flat = make_layout(
+      make_shape (Int<CPW>{}, _8{}, Int<DL>{}, RPS ? RPS : 1, Int<R>{}, NT, KT / (RPS ? RPS : 1)),
+      make_stride(_1{}, Int<CPW>{}, 8 * CPW, AiuElem, kCon, TN * kCon, N * kCon));
+  q_kn.assign(size_t(N) * K, uint8_t(0));
+  auto const* bytes = reinterpret_cast<uint8_t const*>(in);
+  for (int tn = 0; tn < NT; ++tn)
+    for (int ki = 0; ki < KT; ++ki)
+      for (int row = 0; row < R; ++row)
+        for (int dl = 0; dl < DL; ++dl)
+          for (int wd = 0; wd < 8; ++wd)
+            for (int j = 0; j < CPW; ++j) {
+              const int loc = m[(((size_t)row * DL + dl) * 8 + wd) * CPW + j];
+              if (loc < 0) continue;
+              const int n = tn * TN + loc / TK, k = ki * TK + loc % TK;
+              const size_t code = (F > 1)
+                  ? size_t(src_fold(j, wd, row, tn, ki % (RUNS ? RUNS : 1), ki / (RUNS ? RUNS : 1)))
+                  : size_t(src_flat(j, wd, dl, ki % (RPS ? RPS : 1), row, tn, ki / (RPS ? RPS : 1)));
+              const size_t bit0 = code * Bits;
+              uint8_t v = 0;
+              for (int b = 0; b < Bits; ++b) v |= uint8_t(((bytes[(bit0 + b) / 8] >> ((bit0 + b) % 8)) & 1) << b);
+              q_kn[size_t(k) * N + n] = v & MASK;
+            }
+}
+
+template <int Bits, int TM, int TN, int TK, int WM, int WN, int F>
+inline void recover_derived(const int8_t* in, std::vector<uint8_t>& q_kn, int N, int K) {
+  recover_from_map<Bits, TM, TN, TK, WM, WN, F>(
+      in, plane_map<Bits, TM, TN, TK, WM, WN, F>(), q_kn, N, K);
+}
+
+template <int LowBits, int HiBits, int TM, int TN, int TK, int WM, int WN, int F2, int F1 = 1>
+inline void recover_hi(const int8_t* in, std::vector<uint8_t>& high_kn, int N, int K) {
+  recover_from_map<HiBits, TM, TN, TK, WM, WN, F2>(
+      in, tile_map_hi<LowBits, HiBits, TM, TN, TK, WM, WN, F2, F1>(), high_kn, N, K);
+}
+
 // The high plane, from the CROSS-PLANE map, for any width pair.
 template <int LowBits, int HiBits, int TM, int TN, int TK, int WM, int WN, int F2, int F1 = 1>
 inline void place_hi(int8_t* out, const std::vector<uint8_t>& high_kn, int N, int K) {

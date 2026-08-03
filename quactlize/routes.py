@@ -26,8 +26,10 @@ from typing import Optional
 
 import torch
 
-from . import (gguf_dequantize, gguf_vecdot_dense, gguf_vecdot_moe, gguf_prepare_gemv,
-               gguf_gemv_scale_first, gguf_gemv_scale_first_moe)
+from . import (gguf_dequantize, gguf_vecdot_dense, gguf_vecdot_moe, gguf_prepare_gemv, gguf_prepare_dense,
+               gguf_gemv_artifact_dequantize, gguf_gemv_artifact_dequantize_scale,
+               gguf_dense_artifact_dequantize, gguf_dense_artifact_dequantize_scale,
+               gguf_gemv_scale_first, gguf_gemv_scale_first_moe, gguf_dense_scale_first)
 from .formats import QuantType
 
 
@@ -135,6 +137,16 @@ def prepare_scale_first(blocks: torch.Tensor, n: int, k: int, qtype: int):
     return gguf_prepare_gemv(blocks, n, k, int(qtype))
 
 
+def dequantize_scale_first(artifact, qtype: int) -> torch.Tensor:
+    """GEMV scale-first artifact -> fp16 `[experts,n,k]`, without running GEMV."""
+    return gguf_gemv_artifact_dequantize(*artifact, int(qtype))
+
+
+def dequantize_scale_first_scales(artifact, qtype: int):
+    """GEMV scale-first artifact -> consumer-ready `(scale, zero)` fp16 planes."""
+    return gguf_gemv_artifact_dequantize_scale(artifact[2], artifact[3], int(qtype))
+
+
 def matmul_scale_first_gemv(a: torch.Tensor, artifact, qtype: int) -> torch.Tensor:
     """SCALE_FIRST/GEMV over prebuilt `(low, high, scale, zero)` planes."""
     low, high, scale, zero = artifact
@@ -150,10 +162,33 @@ def matmul_scale_first_gemv_moe(a: torch.Tensor, artifact, qtype: int,
     return gguf_gemv_scale_first_moe(a, low, high, scale, zero, offsets, int(qtype))
 
 
+def prepare_scale_first_dense(blocks: torch.Tensor, n: int, k: int, qtype: int):
+    """Offline/resident artifact for SCALE_FIRST/DENSE's fixed fpA tactic."""
+    _check_shape(blocks, n, k, qtype)
+    return gguf_prepare_dense(blocks, n, k, int(qtype))
+
+
+def dequantize_scale_first_dense(artifact, qtype: int) -> torch.Tensor:
+    """Dense fpA scale-first artifact -> fp16 `[1,n,k]`, without running GEMM."""
+    return gguf_dense_artifact_dequantize(*artifact, int(qtype))
+
+
+def dequantize_scale_first_dense_scales(artifact, qtype: int):
+    """Dense fpA scale-first artifact -> consumer-ready `(scale, zero)` fp16 planes."""
+    return gguf_dense_artifact_dequantize_scale(artifact[2], artifact[3], int(qtype))
+
+
+def matmul_scale_first_dense(a: torch.Tensor, artifact, qtype: int) -> torch.Tensor:
+    """SCALE_FIRST/DENSE through fpA_intB_ppu.cuh; packed codes and resident fp16 planes."""
+    low, high, scale, zero = artifact
+    return gguf_dense_scale_first(a, low, high, scale, zero, int(qtype))
+
+
 ROUTES = {
     "dequant_first": matmul_dequant_first,
     "native_gemv": matmul_native_gemv,
     "native_gemv_moe": matmul_native_gemv_moe,
     "scale_first_gemv": matmul_scale_first_gemv,
     "scale_first_gemv_moe": matmul_scale_first_gemv_moe,
+    "scale_first_dense": matmul_scale_first_dense,
 }

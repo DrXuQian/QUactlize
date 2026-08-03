@@ -52,28 +52,33 @@ enum class QuantMode { PerColScaleOnly, FinegrainedScaleOnly, FinegrainedScaleZe
 constexpr bool is_finegrained(QuantMode q) { return q != QuantMode::PerColScaleOnly; }
 constexpr bool has_zero(QuantMode q) { return q == QuantMode::FinegrainedScaleZero; }
 
-// One instantiation: fp16 x int4, a given schedule / tile / scale-tile / stages / interleave. Mirrors the
-// official generic_mixed_gemm_kernelLauncher but pared to (A=half, B=int4, scale/zero=half, out=half).
+// One instantiation: fp16 x a packed 1/2/4-bit B plane, optionally with a second high plane. The ElementBInfo tuple
+// is the same seam moe_grouped_ppu uses: a fourth tuple element makes CollectiveBuilder select the already-existing
+// two-plane collective. There is no dense-specific second collective or converter to maintain here.
 template <QuantMode QuantOp, class KernelSchedule,
-          class TileShape, class ScaleTileShape, class WarpShape, int Stages, bool AiuInterleaved>
-void generic_launcher(const cutlass::half_t* A, const cutlass::int4b_t* B,
+          class TileShape, class ScaleTileShape, class WarpShape, int Stages, bool AiuInterleaved,
+          class ElementB = cutlass::int4b_t, class PlaneB2 = void>
+bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
                       const cutlass::half_t* scales, const cutlass::half_t* zeros, cutlass::half_t* D,
                       int m, int n, int k, int group_size, int split_k,
-                      char* workspace, size_t workspace_bytes, hggcStream_t stream) {
+                      char* workspace, size_t workspace_bytes, hggcStream_t stream,
+                      const PlaneB2* B2 = nullptr) {
   using ElementA = cutlass::half_t;
   using LayoutA  = cutlass::layout::RowMajor;
   constexpr int AlignmentA = 128 / cutlass::sizeof_bits<ElementA>::value;
 
-  using ElementB = cutlass::int4b_t;
   using LayoutB  = std::conditional_t<AiuInterleaved,
                      cutlass::layout::ColumnMajorInterleaved<256>, cutlass::layout::ColumnMajor>;
   constexpr int AlignmentB = 128 / cutlass::sizeof_bits<ElementB>::value;
 
   using ElementScale = cutlass::half_t;
   using ElementZero  = cutlass::half_t;
-  using PackedScale     = cute::tuple<ElementB, ElementScale>;
-  using PackedScaleZero = cute::tuple<ElementB, ElementScale, ElementZero>;
-  using ElementBInfo = std::conditional_t<has_zero(QuantOp), PackedScaleZero, PackedScale>;
+  using ElementBInfo = std::conditional_t<!std::is_void_v<PlaneB2>,
+      std::conditional_t<has_zero(QuantOp),
+          cute::tuple<ElementB, ElementScale, ElementZero, PlaneB2>,
+          cute::tuple<ElementB, ElementScale, cutlass::gemm::collective::detail::NoZero, PlaneB2>>,
+      std::conditional_t<has_zero(QuantOp), cute::tuple<ElementB, ElementScale, ElementZero>,
+                                            cute::tuple<ElementB, ElementScale>>>;
 
   using ElementC = cutlass::half_t;                     // [F2] could be void when no bias
   using LayoutC  = cutlass::layout::RowMajor;
@@ -124,22 +129,44 @@ void generic_launcher(const cutlass::half_t* A, const cutlass::int4b_t* B,
     { {ElementAccumulator(1.f), ElementAccumulator(beta)}, (ElementC*)nullptr, sC, D, sD },
     split_k
   };
+  if constexpr (!std::is_void_v<PlaneB2>) {
+    args.mainloop.ptr_B2 = B2;
+    // The active dense tactics use TK=256 for Q2-Q5 and TK=128 for Q6; every selected second plane has at least a
+    // full 32-byte run, so neither folds. Keep the override here nonetheless: it makes a future narrower tactic fail
+    // correctly instead of reading a second-plane buffer with the first plane's row pitch.
+    constexpr int P1_BITS = cutlass::sizeof_bits<ElementB>::value;
+    constexpr int P2_BITS = cutlass::sizeof_bits<PlaneB2>::value;
+    constexpr int TKv = int(cute::size<2>(TileShape{}));
+    constexpr int P1_RUN = TKv * P1_BITS / 8;
+    constexpr int P1_FOLD = P1_RUN >= 32 ? 1 : 32 / P1_RUN;
+    constexpr int P2_RUN_AFTER_P1 = P1_RUN * P2_BITS / P1_BITS;
+    constexpr int P2_FOLD = P2_RUN_AFTER_P1 >= 32 ? 1 : 32 / P2_RUN_AFTER_P1;
+    static_assert(P1_FOLD == 1,
+                  "fpA dense currently consumes unfolded low planes; choose TK large enough for a 32-byte run");
+    if constexpr (P2_FOLD > 1) {
+      args.mainloop.dB2 = cutlass::make_cute_packed_stride(
+          StrideB{}, cute::make_shape(n / P2_FOLD, k * P2_FOLD, 1));
+      args.mainloop.dB2_valid = true;
+    }
+  }
 
   Gemm gemm;
-  if (gemm.can_implement(args) != cutlass::Status::kSuccess) return;   // silently skip; sweep flags it via >peak TFLOP/s
-  if (gemm.get_workspace_size(args) > workspace_bytes) return;         // undersized workspace -> would no-op
-  if (gemm.initialize(args, workspace, stream) != cutlass::Status::kSuccess) return;
+  if (gemm.can_implement(args) != cutlass::Status::kSuccess) return false;
+  if (gemm.get_workspace_size(args) > workspace_bytes) return false;
+  if (gemm.initialize(args, workspace, stream) != cutlass::Status::kSuccess) return false;
   gemm.run(stream);
+  return true;
 }
 
 // group_size -> compile-time schedule + ScaleTileShape, with the official block_k >= group_size gate.
-template <QuantMode QuantOp, int TM, int TN, int TK, int WM, int WN, int Stages, bool AiuInterleaved>
-void dispatch_gs(const cutlass::half_t* A, const cutlass::int4b_t* B, const cutlass::half_t* scales,
+template <QuantMode QuantOp, int TM, int TN, int TK, int WM, int WN, int Stages, bool AiuInterleaved,
+          class ElementB = cutlass::int4b_t, class PlaneB2 = void>
+bool dispatch_gs(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* scales,
                  const cutlass::half_t* zeros, cutlass::half_t* D, int m, int n, int k, int group_size,
-                 int split_k, char* ws, size_t ws_bytes, hggcStream_t stream) {
+                 int split_k, char* ws, size_t ws_bytes, hggcStream_t stream, const PlaneB2* B2 = nullptr) {
   using TileShape = cute::Shape<cute::Int<TM>, cute::Int<TN>, cute::Int<TK>>;
   using WarpShape = cute::Shape<cute::Int<WM>, cute::Int<WN>, cute::Int<TK>>;
-  if (k % 64 || n % 64) { std::printf("[fpA_intB] n,k must be multiples of 64\n"); return; }
+  if (k % 64 || n % 64) { std::printf("[fpA_intB] n,k must be multiples of 64\n"); return false; }
 
   if constexpr (is_finegrained(QuantOp)) {
     // Official acext RETURNED here when block_k < group_size; we relaxed it to proceed (a group then spans
@@ -148,15 +175,15 @@ void dispatch_gs(const cutlass::half_t* A, const cutlass::int4b_t* B, const cutl
     switch (group_size) {
       case 128: {
         constexpr int CTA_SCALE_K = (TK + 127) / 128;
-        generic_launcher<QuantOp, cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs128,
-            TileShape, cute::Shape<cute::Int<TN>, cute::Int<CTA_SCALE_K>>, WarpShape, Stages, AiuInterleaved>(
-            A, B, scales, zeros, D, m, n, k, group_size, split_k, ws, ws_bytes, stream); break;
+        return generic_launcher<QuantOp, cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs128,
+            TileShape, cute::Shape<cute::Int<TN>, cute::Int<CTA_SCALE_K>>, WarpShape, Stages, AiuInterleaved,
+            ElementB, PlaneB2>(A, B, scales, zeros, D, m, n, k, group_size, split_k, ws, ws_bytes, stream, B2);
       }
       case 64: {
         constexpr int CTA_SCALE_K = (TK + 63) / 64;
-        generic_launcher<QuantOp, cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs64,
-            TileShape, cute::Shape<cute::Int<TN>, cute::Int<CTA_SCALE_K>>, WarpShape, Stages, AiuInterleaved>(
-            A, B, scales, zeros, D, m, n, k, group_size, split_k, ws, ws_bytes, stream); break;
+        return generic_launcher<QuantOp, cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs64,
+            TileShape, cute::Shape<cute::Int<TN>, cute::Int<CTA_SCALE_K>>, WarpShape, Stages, AiuInterleaved,
+            ElementB, PlaneB2>(A, B, scales, zeros, D, m, n, k, group_size, split_k, ws, ws_bytes, stream, B2);
       }
       case 32: {
         // gs=32 IS THE DECODE GROUP SIZE and it was not dispatched here, so the dense split-K path could not be
@@ -164,28 +191,40 @@ void dispatch_gs(const cutlass::half_t* A, const cutlass::int4b_t* B, const cutl
         // and its mainloop policy exposes `Schedule = KernelAiuMultistageMixedInput`, which is exactly what the
         // SplitKSerialScheduler specialization enable_ifs on -- so this reaches the split-K kernel unchanged.
         constexpr int CTA_SCALE_K = (TK + 31) / 32;
-        generic_launcher<QuantOp, cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
-            TileShape, cute::Shape<cute::Int<TN>, cute::Int<CTA_SCALE_K>>, WarpShape, Stages, AiuInterleaved>(
-            A, B, scales, zeros, D, m, n, k, group_size, split_k, ws, ws_bytes, stream); break;
+        return generic_launcher<QuantOp, cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
+            TileShape, cute::Shape<cute::Int<TN>, cute::Int<CTA_SCALE_K>>, WarpShape, Stages, AiuInterleaved,
+            ElementB, PlaneB2>(A, B, scales, zeros, D, m, n, k, group_size, split_k, ws, ws_bytes, stream, B2);
       }
-      default: std::printf("[fpA_intB] group_size %d unsupported (finegrained: 32/64/128)\n", group_size);
+      case 16: {
+        // Q2_K/Q3_K/Q6_K. The shared collective applies the fine scale per MMA atom; Gs32 is only the schedule tag,
+        // while ScaleTileShape carries the real eight groups in a TK=128 tile (sixteen in the production TK=256).
+        constexpr int CTA_SCALE_K = (TK + 15) / 16;
+        return generic_launcher<QuantOp, cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
+            TileShape, cute::Shape<cute::Int<TN>, cute::Int<CTA_SCALE_K>>, WarpShape, Stages, AiuInterleaved,
+            ElementB, PlaneB2>(A, B, scales, zeros, D, m, n, k, group_size, split_k, ws, ws_bytes, stream, B2);
+      }
+      default: std::printf("[fpA_intB] group_size %d unsupported (finegrained: 16/32/64/128)\n", group_size);
     }
   } else {  // per-column
-    generic_launcher<QuantOp, cutlass::gemm::KernelAiuMultistageMixedInputPerCol,
-        TileShape, cute::Shape<cute::Int<TN>, cute::_1>, WarpShape, Stages, AiuInterleaved>(
-        A, B, scales, zeros, D, m, n, k, k, split_k, ws, ws_bytes, stream);
+    return generic_launcher<QuantOp, cutlass::gemm::KernelAiuMultistageMixedInputPerCol,
+        TileShape, cute::Shape<cute::Int<TN>, cute::_1>, WarpShape, Stages, AiuInterleaved,
+        ElementB, PlaneB2>(A, B, scales, zeros, D, m, n, k, k, split_k, ws, ws_bytes, stream, B2);
   }
+  return false;
 }
 
 // AiuInterleaved from shape divisibility (official filter_and_run_mixed_gemm).
-template <QuantMode QuantOp, int TM, int TN, int TK, int WM, int WN, int Stages>
-void filter_and_run(const cutlass::half_t* A, const cutlass::int4b_t* B, const cutlass::half_t* scales,
+template <QuantMode QuantOp, int TM, int TN, int TK, int WM, int WN, int Stages,
+          class ElementB = cutlass::int4b_t, class PlaneB2 = void>
+bool filter_and_run(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* scales,
                     const cutlass::half_t* zeros, cutlass::half_t* D, int m, int n, int k, int group_size,
-                    int split_k, char* ws, size_t ws_bytes, hggcStream_t stream) {
+                    int split_k, char* ws, size_t ws_bytes, hggcStream_t stream, const PlaneB2* B2 = nullptr) {
   if (n % 256 == 0 && k % 256 == 0)
-    dispatch_gs<QuantOp, TM, TN, TK, WM, WN, Stages, true >(A,B,scales,zeros,D,m,n,k,group_size,split_k,ws,ws_bytes,stream);
+    return dispatch_gs<QuantOp, TM, TN, TK, WM, WN, Stages, true, ElementB, PlaneB2>(
+        A,B,scales,zeros,D,m,n,k,group_size,split_k,ws,ws_bytes,stream,B2);
   else
-    dispatch_gs<QuantOp, TM, TN, TK, WM, WN, Stages, false>(A,B,scales,zeros,D,m,n,k,group_size,split_k,ws,ws_bytes,stream);
+    return dispatch_gs<QuantOp, TM, TN, TK, WM, WN, Stages, false, ElementB, PlaneB2>(
+        A,B,scales,zeros,D,m,n,k,group_size,split_k,ws,ws_bytes,stream,B2);
 }
 
 } // namespace fpa_intb_ppu
