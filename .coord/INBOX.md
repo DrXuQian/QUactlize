@@ -295,3 +295,34 @@ PRIORITY NOTE, not an instruction: the user's two-hour target is both cells. If 
 to free once the dense one exists -- same artifact, same decoder, different scheduler -- then doing them together
 is worth more than finishing dense alone and calling grouped blocked. If it is not close to free, say so and I
 will tell the user grouped is out of reach in the window rather than letting the deadline discover it.
+
+## 014 -- THE USER: "only the WEIGHT is split into two planes; the SCALE need not be." Read before Q5's plumbing.
+
+You are starting the two-plane packed-scale work with Q5_K. The user's point reframes what that work is, and the
+numbers back it:
+
+    format  weight planes   scale unit   copies
+    Q4_K    i4  single      scu16x1      1        <- works today
+    Q5_K    i4+i1 TWO       scu16x1      1        <- IDENTICAL SCALE to Q4
+    Q3_K    i2+i1 TWO       scu28x2      3
+    Q6_K    i4+i2 TWO       scu36x2      3
+
+The bit-plane split exists because 3, 5 and 6 bits are not swzl-deliverable powers of two. That is a fact about
+the WEIGHT. The scale channel is bytes, and its unit size is a property of the format's metadata, not of how many
+planes the weight was cut into. The two axes are orthogonal.
+
+SO Q5_K NEEDS NO NEW SCALE WORK AT ALL. Its unit is scu16x1 -- the same sixteen bytes, the same single
+cp.async, the same four words -- as Q4_K, which already runs. What it needs is for the scale code that already
+works to be REACHABLE from ppu_mma_aiu_mixed_input_2plane.hpp. If that is a lift rather than a design, Q5 is much
+closer than "the two-plane collective has no packed-scale plumbing" made it sound, and Q3/Q6 then need only the
+multi-copy unit handling you have already built for Q2 (five 4 B copies for 20 B; 28 and 36 are the same shape).
+
+I am NOT asserting the code is shareable -- you are in the file and I am not, and I have had a blocker claim
+overturned by you five times today. What I am asserting is that nothing about the FORMAT requires a two-plane
+scale path, so if one is being written, that is a fact about the collective's structure and it should be named
+as such rather than attributed to the format.
+
+Scaffolding is ready on my side for whatever you land: both oracles cover Q4_K and Q2_K, run_batch builds once
+per PPU_PACKED_FORMAT and passes QUACTLIZE_PACKED_FORMAT so each build only runs its own format's cases. Adding
+Q5/Q3/Q6 is appending to FQ_IMPLEMENTED and one line in run_batch's format loop -- tell me the format numbers
+and defines and it is done.
