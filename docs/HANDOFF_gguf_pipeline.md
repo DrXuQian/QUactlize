@@ -24,8 +24,10 @@ measurement to set the thresholds with.
 
 **Two of these are callable from Python now** (`quactlize/routes.py`), which is what makes that measurement possible
 at all: `matmul_dequant_first` (dense and per-expert) and `matmul_native_gemv`. Both are checked against the official
-`gguf` package for all five k-quants — worst relative error 1.05e-3 and 1.4e-7 respectively, each its own arithmetic's
-floor — and the dense route is exercised on a CUDA tensor so its GEMM is the library rather than a CPU matmul.
+`gguf` package for all five k-quants. The CPU native-GEMV witness accumulates the fp16 input in fp32 and measures
+1.4e-7 relative error; the shipping CUDA kernel accumulates in half2, so its separate direct-device gate is conditioned by
+`sum(abs(w*x))` and measures 1.05e-4..2.02e-4. The dense route is exercised on a CUDA tensor so its GEMM is the
+library rather than a CPU matmul.
 
 The fallback sat at "a piece exists, the path does not" on a note saying the remainder was *host-side wiring*. The
 note was accurate and it functioned as a blocker anyway: the remainder was `a @ w.T`, and the cost of not writing it
@@ -57,12 +59,13 @@ Derived, never written down: `Q2 [0,3]`, `Q3 [-4,3]`, `Q4 [0,15]`, `Q5 [0,31]`, 
 ⚠ The integer assertion is **offset discovery, not proof of scale**: for Q2/Q4/Q5 `c_lo = 0` and is integral for any
 non-zero scale. The discriminator is the relative comparison that precedes it.
 
-### Coverage today (`tests/test_gguf_golden.py`, 44 tests)
+### Coverage today (`tests/test_gguf_golden.py`)
 
 | check | covers | tolerance and why |
 |---|---|---|
 | scale/zero vs official | all five | 4.9e-4 = 2⁻¹¹, the fp16 output's floor |
-| **vecdot as a DOT PRODUCT** | all five | 2e-5. Per-group tests cannot see element ORDER; a dot product can |
+| **vecdot as a DOT PRODUCT, CPU** | all five | 2e-5. Per-group tests cannot see element ORDER; a dot product can |
+| **CUDA fp16/half2 vecdot** | all five | conditioned error `< 2^-11` against official fp64 weights; observed 1.05e-4..2.02e-4 |
 | fp16 dequantise, elementwise | all five | 1e-3, fp16 rounding |
 | codes/scale/zero split reconstructs | all five | plus the code range asserted, not printed |
 | packed unit round trip | all five | **bit-exact** — same integers, same header, so any difference is a lost bit |
@@ -82,73 +85,107 @@ unmeasured, so the 5090 results are directional rather than a claim about the bo
 | `dequantize_kernel_warp` | 5090 | tuned | 779.4 → **58.4 µs**, 13.4×, 1.473 TB/s = **82.2% of peak**, bit-identical |
 | `dequantize_kernel_warp_logical` | 5090 | kept slow on purpose | 196.6 vs 65.5 µs on a nontrivial reorder — the general path for layouts `right_inverse` cannot take |
 | `prepass_kernel` (cooperative) | 5090 | tuned | speedup grows with size — 1.32× / 1.91× / 2.95× — the fixed-duration floor made visible |
-| `vecdot_rows_kernel` | 5090 | **1285–2621 Gelem/s cold, 44–64% of peak AT A SHAPE 64× LARGER THAN A REAL LAYER** | rows=131072; at N=K=2048 it is 5.0% — see §3a |
-| packed collective | PPU | **tax undetermined** | see below |
+| `vecdot_rows_kernel` | 5090 | **1659–3361 Gelem/s cold, 55–76% of peak AT A SHAPE 64× LARGER THAN A REAL LAYER** | rows=131072; runtime policy also covers N=K=2048 — see §3a |
+| packed collective | PPU | **+12.8% native-format tax in paired blocks** | 95% CI 1.118..1.139× base; see below |
 | `gemv_lowbit` | PPU | tuned earlier | 22.27 µs, and **ALU-bound, not bandwidth-bound** |
 
-**The packed path's tax is not a number yet.** `CHECKPOINT.md` records the same pinned configuration measuring
-`base` at 23.67 µs in one run and 20.11 µs in another — **17% apart, wider than `pack − base` itself**, which lands
-at +2.4% against one baseline and +12.9% against the other. Cross-run comparison is therefore void and any single
-figure quoted for it (this document said +11.6%) is a selection, not a measurement. The one term in that document
-that does survive is `base − bdqnop = −11.1%`: the int4→fp16 dequant pipeline, 43% of dynamic instructions and 11%
-of time, which is the ceiling for every dequant-side idea.
+**The packed path's tax is determined only by paired blocks, not cross-run medians.** The same pinned configuration
+drifted 17% between sessions, so old cross-run subtraction remains void. A ten-block interleaved run forms ratios
+within each block: packed is +12.8% with a 1.118..1.139 95% interval, while the int4→fp16 dequant NOP reproduces at
+−10.9% against the earlier −11.1%. `packfuse` removed 26.8% of `tsm.st`, 48.8% of `tsm.ld`, and 48.3% of conflicts
+yet cost +0.46%; it exchanged shared work for ALU on a kernel at Compute 38.99% / Memory 29.87%.
 
 The retained `vecdot_rows_kernel_serial` baseline has one output row per thread, so 32 lanes read addresses
 `blocks_per_row × block_bytes` apart — 1152 B for Q4_K. The tuned kernel gives every lane contiguous packed words:
-whole groups for Q2/Q3/Q6 and adjacent group pairs for Q4/Q5. Reassociation tolerance is 2e-6, observed at 2.16e-7
-across all five formats.
+whole groups for Q2/Q3/Q6 and adjacent group pairs for Q4/Q5. It consumes fp16 activation, converts four packed
+codes at once with actlize's shared converter, and keeps the cooperative products, sums, row accumulator and final
+butterfly in half2. Output widens to fp32 only after that reduction. The fixed correctness contract is conditioned
+error `< 2^-11` against official fp64 weights, not error divided by `abs(dot)`, which explodes under cancellation.
 
 **THE OLD INSTRUMENT COULD NOT RESOLVE THE OPTIMISATIONS.** `cudaEventElapsedTime` on this 5090 advances in 2.048 µs
 ticks. At 16384 rows the kernel took only 20–26 ticks, so the former one/two-tick rankings were below a 4–5% floor.
-Cold launches cannot be batched: only the first launch after an L2 flush is cold. The benchmark now treats rows<=0
-as rows=131072, and every A/B below uses 131072 rows × 8 blocks. Warm timings also use the larger problem.
+Cold launches cannot be batched: only the first launch after an L2 flush is cold. Warm launches are batched under
+one event pair and divided by the batch size, which resolves sub-tick differences without pretending they are cold.
+The benchmark now treats rows<=0 as rows=131072, and every large-shape A/B below uses 131072 rows × 8 blocks.
 
 ### 3a. Every GEMV number above is a LARGE-GRID number, and the shipping shape is not
 
 `rows` is the OUTPUT dimension N. At `bpr=8` the tuning shape is N=131072, K=2048 — **sixty-four times a real
-dense layer at decode**, which is N=K=2048, i.e. `rows=2048`. Q4_K, same shipped kernel, sweeping only size:
+dense layer at decode**, which is N=K=2048, i.e. `rows=2048`. Q4_K with the runtime rows/bpr policy, sweeping only
+size after the fp16 rewrite:
 
-| rows | CTAs | CTA/SM | cold µs | Gelem/s | % of peak |
-|---:|---:|---:|---:|---:|---:|
-| **2048** | **128** | **0.8** | 26.62 | 158 | **5.0%** |
-| 8192 | 512 | 3.0 | 26.62 | 630 | 19.9% |
-| 16384 | 1024 | 6.0 | 28.67 | 1170 | 36.9% |
-| 32768 | 2048 | 12.0 | 49.15 | 1365 | 43.0% |
-| 65536 | 4096 | 24.1 | 81.95 | 1638 | 51.6% |
-| 131072 | 8192 | 48.2 | 139.26 | 1928 | 60.7% |
-| 262144 | 16384 | 96.4 | 260.10 | 2064 | 65.0% |
+| rows | rpw | CTAs | CTA/SM | cold µs | Gelem/s | % of peak |
+|---:|---:|---:|---:|---:|---:|---:|
+| **2048** | **2** | **128** | **0.8** | 14.30 | 293 | **9.3%** |
+| 8192 | 8 | 128 | 0.8 | 16.35 | 1026 | 32.3% |
+| 16384 | 8 | 256 | 1.5 | 20.48 | 1638 | 51.6% |
+| 32768 | 8 | 512 | 3.0 | 36.90 | 1819 | 57.3% |
+| 65536 | 8 | 1024 | 6.0 | 71.71 | 1872 | 59.0% |
+| 131072 | 4 | 4096 | 24.1 | 129.02 | 2081 | 65.5% |
+| 262144 | 4 | 8192 | 48.2 | 245.76 | 2185 | 68.8% |
 
-2048 and 8192 rows take the **same 26.62 µs for four times the work**, so below roughly 1024 CTAs this kernel is
-launch/latency dominated, not throughput dominated. The instrument forced the large shape — at 2048 rows the
-measurement is 13 ticks of the 2.048 µs quantum, so nothing under ~8% is visible — but the consequence is real.
+The dispatcher deliberately keeps both 2048 and 8192 rows at **256** CTAs by moving Q4 from rpw2 to rpw8 — 128
+threads is four warps, so a CTA owns `4 x rpw` rows: 2048/8 and 8192/32 are both 256 — and four times the work
+costs only 1.14x. This is a launch/latency regime, not a throughput regime. The instrument forced the
+large shape for throughput A/Bs; at 2048 rows cold is seven 2.048-us ticks, so differences below ~14% are unresolved.
+Warm measurement batches up to 64 launches and can resolve the launch-policy crossover, while cold retains exactly
+one post-flush launch.
 
-**The per-format rows-per-warp defaults are wrong at the shipping shape, and two of them badly.** Best rpw at
-N=K=2048 against what is shipped: Q2_K wants 2 and ships 4 (12.3 vs 20.5 µs, **1.67× slower**); Q3_K wants 1 and
-ships 4 (18.4 vs 26.6, **1.45× slower**); Q5_K wants 2 and ships 8; Q6_K's 2 is right; Q4_K's three candidates
-are 11 ticks each and not separable. The fix is structural rather than a new constant — `RowsPerWarp` is already a
-template parameter, so the launcher should dispatch on `rows`, with the crossover measured rather than rounded.
+**The per-format rows-per-warp defect is fixed structurally.** `vecdot_rows_per_warp<T>(rows, blocks_per_row)` now
+dispatches the existing kernel instantiations instead of replacing one large-N constant with one small-N constant.
+Warm-batched size sweeps plus bpr=1/4/8/16 sensitivity set the boundaries: Q2/Q6 use 2; Q3 uses 2 below 65536 rows
+and 4 above when bpr<=8; Q4 uses 2 at rows<=2048, 8 in the middle, and 4 once `rows*bpr >= 786432`; Q5 uses 2 only
+at rows<=2048 with bpr>=8 and otherwise 8. Fixed-rpw entry points remain as measurement witnesses.
 
-**"Tuned at rows=131072" was nowhere in the source**, which is exactly how a 1.67× regression came to be recorded
-as an optimisation. Any performance claim in this document without a shape beside it should be read as suspect.
+Both the saturated defaults (`rows=131072`, bpr=8) and the runtime boundaries are now written beside the policy in
+the header. The omitted tuning shape was how a large-grid optimisation became a shipping-shape regression.
 
-**This also reframes the comparison against the PPU collective.** 128 CTAs is precisely the collective's grid at
-the pinned band (Waves Per CU 0.44 = 128 CTAs over 72 CU × 4 blocks/CU), and at 128 CTAs this SIMT kernel reads
-**5.0%** while the collective reads Memory 29.87% / Compute 38.99%. The SIMT-versus-collective comparison made
-earlier was saturated against unsaturated and flattered the SIMT side badly.
+**This also reframes the comparison against the PPU collective — but only if the WORK is matched, not the label.**
+The collective's grid at the pinned band is 128 CTAs (Waves Per CU 0.44 = 128 over 72 CU × 4 theoretical block
+slots), and it comes from eight active experts × `ceil(2048/128)` = 16 N tiles. The comparable SIMT shape is
+therefore NOT one dense layer: eight experts × 2048 output rows is **rows=16384**, and there the fp16 SIMT kernel
+reaches **51.6% cold and 68.1% warm** against the collective's Memory 29.87% / Compute 38.99%. At ONE dense layer
+(rows=2048, which the dispatcher runs at 256 CTAs) it reaches only **9.3%**.
+
+So "the SIMT kernel is worse at the real shape" is true for a single dense layer and false for the MoE decode band,
+and the gap between those two readings is 8× in work per launch. ⚠ The 51.6% carries no expert gather, no routing
+and no ragged rows — `vecdot_rows_kernel` is dense-only — so it BOUNDS what a real MoE GEMV could reach rather than
+predicting it. That kernel does not exist; see `FULLY_QUANTIZED × GEMV_MOE` in schemes.py. The earlier
+comparison was saturated SIMT against unsaturated collective and flattered SIMT badly. Grid supply explains most of
+that apparent advantage, not all absolute time: the two CTAs do different work and have different dependency and
+barrier chains.
+
+The collective's 0.44 is set first by **tile count**: at the pinned `16x128:256` shape, eight active experts times
+`ceil(2048/128)=16` N tiles is 128 CTAs. acu's four-block/CU capacity is shared-memory-limited (57,344 B per CTA in
+256 KB); registers admit that point, so neither register cutting nor smaller scale storage creates more work. TileN
+can move the grid — TN64 gives 256 CTAs and TN32 gives 512 — but that ladder was measured and TN128, the row with the
+fewest blocks and eight warps sharing each loaded B tile, won at 20.11 µs. Thus capacity is movable but is not the
+measured lever in this band. More stages, the scale-reload chain, or a genuine persistent schedule address the
+per-CTA dependency/fill cost; blindly adding CTAs repeats a losing experiment.
+
+What transfers from SIMT is narrower than “reuse its decoder.” Packed-word plane merge, the shared byte4→half
+converter, CUTE descriptions of the physical planes, and the conditioned fp16 error gate are reusable. Whole-group
+lane ownership is not: the AIU collective requires its fixed interleaved register fragment and `tsm.ld.swzl`
+delivery order. Feeding native GGUF words directly would need an explicit gather/shuffle into that fragment (or
+would abandon the AIU path), so the offline xplane/fragment relayout remains required unless that transpose is
+measured cheaper. CUTE can derive the required relayout; it cannot make the two ownership maps identical.
 
 | | rpw | cold µs | cold Gelem/s | cold % peak | warm µs | warm Gelem/s | warm % peak | cold/warm | vs `f18ec9e` cold |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Q2_K | 4 | 102.400 | **2621.4** | 48.29% | 91.360 | **2938.2** | 54.13% | 1.121 | 1.180× |
-| Q3_K | 4 | 147.456 | **1820.4** | 43.85% | 135.360 | **1983.1** | 47.77% | 1.089 | 1.181× |
-| Q4_K | 8 | 137.216 | **1956.3** | 61.62% | 134.688 | **1993.0** | 62.78% | 1.019 | 1.612× |
-| Q5_K | 8 | 161.792 | **1659.1** | 63.84% | 157.792 | **1701.2** | 65.45% | 1.025 | 1.633× |
-| Q6_K | 2 | 208.896 | **1285.0** | 58.97% | 203.680 | **1317.9** | 60.48% | 1.026 | 1.039× |
+| Q2_K | 2 | 79.872 | **3360.8** | 61.91% | 58.752 | **4569.0** | 84.16% | 1.359 | 1.513× |
+| Q3_K | 4 | 116.736 | **2299.5** | 55.39% | 110.048 | **2439.3** | 58.76% | 1.061 | 1.491× |
+| Q4_K | 4 | 129.024 | **2080.5** | 65.53% | 125.856 | **2132.9** | 67.18% | 1.025 | 1.714× |
+| Q5_K | 8 | 143.360 | **1872.5** | 72.04% | 142.688 | **1881.3** | 72.38% | 1.005 | 1.843× |
+| Q6_K | 2 | 161.792 | **1659.1** | 76.13% | 160.544 | **1672.0** | 76.72% | 1.008 | 1.342× |
 
 Element rate, not byte-density-derived `% peak`, selected the implementations. Q2 remains the fastest element
 kernel even though Q4/Q5 now report higher `% peak` because each of their elements carries more raw bytes.
+These are rows=131072, bpr=8, cold single-launch and warm-batched medians over 50 samples. Q3..Q6 operands exceed
+L2, so their near-one large-shape ratios mean both sides are DRAM-fed, not that memory is free. Q2's 88.6 MB
+footprint fits close enough to this GPU's L2 to show a real warm uplift. At rows=2048 every format fits and the
+meaningful cold/warm ratios are 1.75..2.24.
 
-**Q4/Q5 paired byte map.** At `rpw=8`, four lanes own a row and each lane consumes both nibbles of one complete
-32-byte run:
+**Q4/Q5 paired byte map.** Four owner lanes consume both nibbles of one complete 32-byte run:
 
 | lane | groups | low-plane bytes | use |
 |---:|---:|---|---|
@@ -157,14 +194,22 @@ kernel even though Q4/Q5 now report higher `% peak` because each of their elemen
 | 2 | 4, 5 | `qs[64..95]` | low nibble → g4, high nibble → g5 |
 | 3 | 6, 7 | `qs[96..127]` | low nibble → g6, high nibble → g7 |
 
-Q5 loads the matching `qh[0..31]` word once and selects the two group bits from it. Pairing alone moved Q4 from
-221.184 to 190.464 µs cold (1.161×); Q5 was within two event ticks of its slice optimum and slightly worse warm.
-The composition with four-code word extraction was decisive for both: production reaches 137.216/161.792 µs.
+At rpw8 those are the row's four lanes. At rpw4 the row subgroup has eight lanes and lanes 4..7 are inactive for
+that row; the four owners and byte map do not change. Q5 loads each matching `qh[0..31]` word once and selects the
+two group bits from it. On the fp32 predecessor, pairing alone moved Q4 from 221.184 to 190.464 µs cold (1.161×);
+Q5 was within two event ticks of its slice optimum and slightly worse warm. The composition with four-code word
+extraction was decisive for both, and the later half2 rewrite reaches 129.024/143.360 µs cold.
 
 **Four-code extraction.** Q2/Q4/Q5 block strides (84/144/176 B) preserve four-byte alignment. Q3/Q6 strides
 (110/210 B) make every odd block only two-byte aligned, so the loader checks the address: one `uint32_t` load when
 four-byte aligned, two `uint16_t` loads when only two-byte aligned, and byte assembly as the general fallback. Each
 word is masked/merged while four codes remain byte-packed; the group loop retains an explicit scalar tail.
+
+The code planes are described once as CUTE fields. `PackedField4` maps `(group, four-element word)` to its physical
+word coordinate; each `CodeTraits<T>` names independent low/high field layouts and offsets. Static assertions prove
+that every bit of each exact native plane is claimed once, including Q3/Q6's different high-plane shapes.
+Both scalar `code_at_group` and cooperative word extraction consume those traits, so a high plane cannot silently
+inherit a low plane's indexing rule.
 
 A benchmark-only padded device stride (Q3 110→112 B, Q6 210→212 B) was also measured three times in alternating
 order. It regressed Q3 from 1820–1846 to 1771–1795 Gelem/s, but improved Q6 from 1285 to 1473 Gelem/s cold. It is not
@@ -172,10 +217,35 @@ the shipped result: `ppu_backend::Api::vecdot` currently promises compact raw GG
 exists behind the Python seam. Two neighboring aligned 32-bit loads on compact odd blocks were also neutral. Padding
 Q6 is a worthwhile follow-up only together with an explicit device-layout/repack contract; the table keeps raw bytes.
 
-The `__byte_perm`/`ppu.prmt.b32` magic-u8-to-f32 variant was tested and rejected: Q2/Q3/Q5 cold times were unchanged,
-Q4 cost one 2.048 µs event tick, and Q6 warm time regressed. Production therefore uses ordinary exact conversions
-and does not duplicate actlize's selector/magic constants. Its shared converter emits fp16 GEMM operand fragments
-with PPU-only asm, while this common CUDA/hgcc GEMV needs fp32 codes immediately for fp32 activation products.
+The first `__byte_perm`/`ppu.prmt.b32` magic-u8-to-f32 variant was tested on the fp32 kernel and rejected:
+Q2/Q3/Q5 cold times were unchanged, Q4 cost one 2.048 µs event tick, and Q6 warm regressed. Once products moved to
+half2, the shared actlize operation became the right abstraction. `MixGemmByte4ToHalf<Bias,Interleave>` owns the
+selectors, exponent constant and value bias; native GGUF requests logical `[0,1,2,3]` order, while the historical
+int8 GEMM specialization preserves `[0,2,1,3]`. CUDA uses guarded `__byte_perm`; the new PPU arm is guarded by the
+device-pass `__HGGC_ARCH__`, with a runtime box probe for the selected arm. No private converter remains.
+
+**The public activation contract is fp16 on device and fp16/fp32 at the Python seam.** `VecdotActivation` defaults
+to `half_t`; `GGUF_VECDOT_FP32_ACTIVATION=1` is a measurement-only build. `gguf_vecdot` accepts either dtype so the
+CPU arm remains a tight fp32 oracle. A loaded PPU backend receives fp16, and `matmul_native_gemv` converts its one
+K-vector before fan-out. To avoid charging fp32 for an rpw policy tuned for fp16, the price comparison sweeps
+rpw1/2/4/8 independently for both dtypes and compares each one's best cold point at rows=131072, bpr=8:
+
+| | fp32 x, best cold µs (rpw) | native fp16 x, best cold µs (rpw) | speedup | speedup at rows=2048 |
+|---|---:|---:|---:|---:|
+| Q2_K | 102.400 (4) | 79.872 (2) | 1.282× | 1.204× |
+| Q3_K | 149.504 (4) | 116.736 (4) | 1.281× | 1.145× |
+| Q4_K | 137.216 (8) | 129.024 (4) | 1.063× | 1.430× |
+| Q5_K | 157.696 (8) | 143.360 (8) | 1.100× | 1.113× |
+| Q6_K | 212.992 (2) | 161.792 (2) | 1.316× | 1.286× |
+
+The 2048-row cold results are quantised, but the independently batched warm sweep agrees on the direction. The
+device ABI is therefore fp16 by measurement, not merely because the accumulator happens to be fp16.
+
+The direct CUDA golden dequantises official GGUF weights to fp64, multiplies the actual fp16 activation, and divides
+absolute dot error by `sum(abs(w*x))`. Observed conditioned errors are Q2 1.30e-4, Q3 1.65e-4, Q4 1.55e-4,
+Q5 2.02e-4 and Q6 1.05e-4, all below the fixed fp16 half-ULP floor `2^-11 = 4.88e-4`. Error divided by `abs(dot)`
+reaches 0.121 on the same fixture because centred codes cancel; that is conditioning, not twelve-percent decode
+error. The scalar CPU witness remains separate and tight rather than impersonating the arithmetic that ships.
 
 The pre-extraction `f18ec9e` NOP-style probes kept every lane live and priced the terms that motivated this round.
 `code_at` returns constant one; the scale
@@ -192,9 +262,21 @@ the code NOP deliberately removes raw-code traffic, so an effective figure above
 | Q6_K | 83.968 (146.70%), **61.3%** | 82.976 (148.45%), **61.0%** | 217.088 (56.74%), 0.0% | 212.992 (57.83%), 0.0% |
 
 Those probes identified packed-code extraction as the target; the production table above is the resulting rewrite.
+The NOP builds were repeated after the half2 rewrite to ensure the new packed pairs did not let dead lanes disappear;
+each owner still consumes activation, the other metadata plane, both half accumulators and the final butterfly:
+
+| | full cold/warm µs | code NOP cold/warm µs (cold share) | scale NOP cold/warm µs (cold share) |
+|---|---:|---:|---:|
+| Q2_K | 79.872 / 59.552 | 55.296 / 49.408 (30.8%) | 77.824 / 59.840 (2.6%) |
+| Q3_K | 116.736 / 110.656 | 51.200 / 48.160 (56.1%) | 139.264 / 132.096 (-19.3%) |
+| Q4_K | 127.008 / 126.912 | 104.448 / 103.840 (17.8%) | 120.832 / 120.576 (4.9%) |
+| Q5_K | 143.360 / 142.752 | 71.680 / 69.792 (50.0%) | 145.408 / 146.432 (-1.4%) |
+| Q6_K | 161.792 / 160.672 | 77.824 / 77.824 (51.9%) | 159.744 / 158.688 (1.3%) |
+
+As before, a negative scale share means that counterfactual compiled slower; it is not a claim of negative work.
 The old shares must not be read as a profile of the new kernel. Scale/min unpack was material only for Q5 in that
-baseline. Warming now changes the final kernels by 1.9–12.1%, with the larger Q2/Q3 shifts consistent with the packed
-versions becoming more memory-sensitive.
+baseline. Large-shape cold/warm is not a compute-vs-memory classifier when the operand exceeds L2; the 2048-row
+ratios are the cache-residency signal and show that memory still costs real time.
 
 The regime was never reported, only the speedup, and a speedup measured against a one-row-per-thread baseline says
 nothing about how much is left. Both halves are the same measurement run; only one of them is a target.
@@ -255,11 +337,12 @@ one reads a contiguous run.
 5. **The destination should be a cute Tensor/Layout, not a callable** — measured: partitioning physical output
    addresses and deriving logical source indices with `right_inverse` is **3× faster** than striping logical indices
    (65.5 vs 196.6 µs) on a non-affine layout.
-6. **The GEMV's PPU launcher, not its kernel** — the host side is done: `routes.matmul_native_gemv` assembles a full
-   `(1, n)` product and agrees with the oracle to 1.4e-7. It stays PARTIAL because that assembly tiles the
-   *activation* k/256-fold on the host — correct, and useless as a timing. `vecdot_rows_kernel` is tuned and
-   CUDA-validated now; `libquactlize_ppu.so` still needs the exported launch entry before Python reaches it on PPU.
-   `gemv_lowbit` remains the separate tuned `SCALE_FIRST` route, not a native-scale substitute.
+6. **The GEMV's PPU launcher, not its kernel** — the host side is done: the CPU-resolved
+   `routes.matmul_native_gemv` assembly agrees with the oracle to 1.4e-7, while the direct CUDA fp16 kernel has its
+   separate conditioned `2^-11` gate. The route stays PARTIAL because its Python assembly tiles the *activation*
+   k/256-fold on the host — correct, and useless as a timing. `vecdot_rows_kernel` is tuned and CUDA-validated now;
+   `libquactlize_ppu.so` still needs the exported launch entry before Python reaches it on PPU. `gemv_lowbit`
+   remains the separate tuned `SCALE_FIRST` route, not a native-scale substitute.
 
 7. **The registry's path vocabulary is coarser than the matrix** — four path names, nine cells. Two shares are
    wrong enough to matter: `fully_quantized/gemv` would be approved by the fp16-*plane* GEMV harness, and
