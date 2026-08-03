@@ -42,8 +42,15 @@ class Scheme(Enum):
 
 class Shape(Enum):
     DENSE = "dense"
-    GROUPED = "grouped"          # MoE: many experts, ragged rows, one launch
-    GEMV = "gemv"                # decode: one token, CUDA cores, no tensor-core tile
+    GROUPED = "grouped"          # MoE prefill/mid band: many experts, ragged rows, one tensor-core launch
+    GEMV = "gemv"                # DENSE decode: one token, CUDA cores, no tensor-core tile
+    # MoE AT DECODE, AND IT IS NOT EITHER OF THE OTHER TWO. GROUPED is the tensor-core mixed-input GEMM and
+    # assumes enough rows per expert to fill a tile; GEMV assumes ONE weight. MoE decode is top-k experts, one
+    # token each, gathered rows -- a different launch (experts on a grid dimension) and a different kernel.
+    # It had no cell, which hid two facts at once: that gemv_lowbit already serves it through its `Grouped`
+    # template parameter, and that the native-scale route does NOT. And it is the band the whole splitk bench
+    # pins (L=64, top-k 8, N=K=2048, gs=32), so it is not a corner -- it is where an MoE model spends decode.
+    GEMV_MOE = "gemv_moe"
 
 
 class Status(IntEnum):
@@ -155,6 +162,39 @@ _add(Scheme.SCALE_FIRST, Shape.DENSE, (QuantType.GPTQ_INT4_SYM,),
          "test_fpA_intB_ppu compares the launcher against ANOTHER CONFIGURATION OF ITSELF. That catches plumbing "
          "and is structurally blind to a wrong shared constant, since both sides move together")))
 
+# --- MoE AT DECODE. The column that did not exist, and what it exposes ---------------------------------------
+# gemv_lowbit ALREADY serves this: gemv_exec launches dim3(grid_m, n/CtaN, Grouped ? num_experts : 1), so experts
+# are a grid dimension, and test_gemv_lowbit drives it with num_experts/row_offsets/max_rows. That was invisible
+# while MoE decode shared a cell with dense decode.
+_add(Scheme.SCALE_FIRST, Shape.GEMV_MOE, (QuantType.GPTQ_INT4_SYM,), Impl(
+    Status.IMPLEMENTED, _GEMV, note=(
+        "the Grouped arm: experts on the grid's z dimension, ragged rows through row_offsets. IMPLEMENTED rather "
+        "than VALIDATED because ci/registry.py has ONE path name, 'gemv', for both MoE and dense decode -- so the "
+        "synthetic oracle that covers the dense arm would silently approve this one. schemes._CELL_PATH_IS_COARSE "
+        "names that, and a consistency test refuses to let this cell be called VALIDATED until the vocabulary is "
+        "split"))) 
+_add(Scheme.SCALE_FIRST, Shape.GEMV_MOE, _KQUANTS, Impl(
+    Status.PARTIAL, _GEMV, note=(
+        "same launcher, same blocker as the dense GEMV cell: it reads fp16 scale planes, which at decode must be "
+        "resident, and that is the stored-byte increase the constraint forbids")))
+
+# THE GAP THIS COLUMN EXISTS TO MAKE VISIBLE. The native-scale GEMV is DENSE-ONLY: vecdot_rows_kernel takes one
+# weight, one row range, no expert gather and no routing. Measured at MoE-sized WORK (16384 rows = 8 experts x
+# 2048) the dense kernel reaches 51.6% of peak cold and 68.1% warm against the tensor-core collective's 29.87%
+# Memory SoL at the same band -- but that number has no gather in it, so it is an UPPER BOUND on what a real MoE
+# GEMV would reach, not a result. This is the cell A3B's decode actually needs, and it is empty.
+_add(Scheme.FULLY_QUANTIZED, Shape.GEMV_MOE, _KQUANTS, Impl(
+    Status.ABSENT, "", note=(
+        "vecdot_rows_kernel is dense-only: one weight, no expert gather, no routing, no ragged rows. The band an "
+        "MoE model spends decode in -- top-k experts, one token each -- has no native-scale kernel. Recorded "
+        "elsewhere as 'A3B decode bulk unaccelerated, needs a separate MoE GEMV'")))
+
+_add(Scheme.DEQUANT_FIRST, Shape.GEMV_MOE, _KQUANTS, Impl(
+    Status.VALIDATED, _ROUTES, note=(
+        "routes.matmul_dequant_first_grouped is shape-agnostic in rows, so the decode band is one instance of what "
+        "the grouped test already covers with ragged rows including an empty expert. What it is NOT is efficient: "
+        "it materialises every selected expert's weight in fp16, which at decode is the whole point of not doing")))
+
 _add(Scheme.SCALE_FIRST, Shape.GEMV, (QuantType.GPTQ_INT4_SYM,),
      Impl(Status.VALIDATED, _GEMV, note=(
          "test_gemv_lowbit's scale-only int4 sweep IS the GPTQ symmetric representation -- same packing, same fp16 "
@@ -190,12 +230,14 @@ _add(Scheme.FULLY_QUANTIZED, Shape.GEMV, _KQUANTS, Impl(
         "right scales and the wrong element order passes those. dp4a is ruled out by decision: it quantises the "
         "activation and this band has no second chance at the error, and PPU is confirmed to have an int8 TENSOR "
         "core but not a cuda-core four-way int8 dot. THE HOST SIDE IS WIRED NOW -- routes.matmul_native_gemv "
-        "assembles a full (1, n) product from the per-block op and agrees with the official gguf package to 1.4e-7, "
-        "tighter than every other route because it never rounds the weight to fp16. It stays PARTIAL because that "
-        "assembly tiles the ACTIVATION k/256-fold on the host: correct, and useless as a timing. The native kernel "
-        "is now subgroup-cooperative and CUDA-validated for all five; at 131072x8 on a 5090 its cold element rate "
-        "is 1285..2621 Gelem/s and it reaches 43.9%..63.8% of peak HBM bandwidth. Adjacent Q4/Q5 groups share one "
-        "32-byte run per lane, and every format extracts four codes from each aligned word with checked fallbacks. What "
+        "assembles a full (1, n) product from the per-block op. Its CPU fp32 witness agrees with the official gguf "
+        "package to 1.4e-7; the direct CUDA fp16/half2 kernel has a separate conditioned-error gate at 2^-11 and "
+        "observes 1.05e-4..2.02e-4. It stays PARTIAL because that assembly tiles the ACTIVATION k/256-fold on the "
+        "host: correct, and useless as a timing. The native kernel is subgroup-cooperative and CUDA-validated for "
+        "all five; at rows=131072, bpr=8 on a 5090 its cold element rate is 1659..3361 Gelem/s and it reaches "
+        "55.4%..76.1% of peak HBM bandwidth. A runtime rows/bpr policy separately covers the 2048-row decode shape. "
+        "Adjacent Q4/Q5 groups share one 32-byte run per owner lane, and every format extracts four codes from each "
+        "aligned word with checked fallbacks and actlize's shared byte4-to-half converter. What "
         "keeps this PARTIAL is device-library wiring: "
         "libquactlize_ppu.so still needs to export a launcher for this kernel before the Python route is a PPU "
         "inference path")))
@@ -231,6 +273,9 @@ _CELL_PATH = {
     (Scheme.FULLY_QUANTIZED, Shape.GROUPED): "fused_native_scale",
     (Scheme.FULLY_QUANTIZED, Shape.GEMV): "gemv",
     (Scheme.DEQUANT_FIRST, Shape.GEMV): "dequant_then_dense",
+    (Scheme.SCALE_FIRST, Shape.GEMV_MOE): "gemv",
+    (Scheme.FULLY_QUANTIZED, Shape.GEMV_MOE): "gemv",
+    (Scheme.DEQUANT_FIRST, Shape.GEMV_MOE): "dequant_then_dense",
 }
 
 # WHERE THE PATH VOCABULARY IS COARSER THAN THE CELL. ci/registry.py has four path names and this table has nine
@@ -247,8 +292,19 @@ _CELL_PATH = {
 # asserts no cell in this set is VALIDATED, so the day one is, the vocabulary has to be split first.
 _CELL_PATH_IS_COARSE = frozenset({
     (Scheme.FULLY_QUANTIZED, Shape.GEMV),
-    (Scheme.DEQUANT_FIRST, Shape.GEMV),
+    # The registry's single "gemv" cannot tell MoE decode from dense decode either. gemv_lowbit's grouped arm is
+    # a different launch -- experts on the grid's z dimension, rows gathered through row_offsets -- and while
+    # test_gemv_lowbit does drive it, the registry records ONE path name for both, so evidence for either arm
+    # would silently approve the other.
+    (Scheme.SCALE_FIRST, Shape.GEMV_MOE),
+    (Scheme.FULLY_QUANTIZED, Shape.GEMV_MOE),
 })
+# THE DEQUANT_FIRST GEMV CELLS ARE NOT COARSE, and I had them here until this test refused a VALIDATED claim on
+# one. Under this scheme a GEMV is not a different kernel: the weight is materialised to fp16 and handed to the
+# same library call, so "GEMV" is that GEMM at m=1 and MoE decode is the grouped route at one row per expert.
+# test_gguf_routes.py runs m in (1, 7, 64) and drives the grouped route with ragged rows including an empty
+# expert, so the evidence is the same CODE, not a neighbouring one. Coarseness is about the kernel differing,
+# not about the cell label differing -- putting them here was a category error, and the gate caught it.
 
 
 def check_against_registry():
