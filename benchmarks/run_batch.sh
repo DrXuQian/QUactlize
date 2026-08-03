@@ -702,8 +702,8 @@ do_pytest() {
     #     "are not in this build yet"                  -> the ops are missing, which is the real absence
     if grep -qi "are not in this build yet" "$_fqlog"; then
       echo "   ($_label ops not built yet -- not counted; see .coord/INBOX.md 012/013)"
-    elif [ "$_r" -ne 0 ] || ! grep -Eq '(^| )3 passed' "$_fqlog"; then
-      echo "   !!! the $_label fully_quantized oracles did not run to THREE passes -- dense, grouped, and the packed-unit scale derivation (exit $_r)"
+    elif [ "$_r" -ne 0 ] || ! grep -Eq '(^| )5 passed' "$_fqlog"; then
+      echo "   !!! the $_label fully_quantized oracles did not run to FIVE passes -- dense, grouped, the merge premise, and both BC GEMV arms (exit $_r)"
       fqrc=1
     elif grep -qi "skipped" "$_fqlog" && ! grep -qi "built for packed format" "$_fqlog"; then
       echo "   !!! $_label skipped for a reason that is NOT the format gate -- read $_fqlog"

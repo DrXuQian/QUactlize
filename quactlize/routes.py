@@ -133,7 +133,18 @@ def matmul_native_gemv_moe(a: torch.Tensor, blocks: torch.Tensor, n: int, k: int
 
 
 def prepare_scale_first(blocks: torch.Tensor, n: int, k: int, qtype: int):
-    """Offline/resident artifact for both SCALE_FIRST decode shapes."""
+    """Offline artifact for both SCALE_FIRST decode shapes: (low, high, scale, zero).
+
+    "RESIDENT" IS NO LONGER THE RIGHT WORD and that is the whole point of the B/C merge. This produces the fp16
+    scale/zero planes FROM RAW, which is why SCALE_FIRST used to need a stored arrangement of its own -- a third
+    thing in HBM beside raw GGUF and the packed artifact. Since weights exist once, three arrangements is what
+    made runtime kernel switching impossible.
+
+    dequantize_scale_from_units derives the same planes from FULLY_QUANTIZED's packed units instead, so they can
+    live in a workspace. This function stays because the switch has not been made: the code planes and the derived
+    scales are both verified identical between the two producers
+    (test_packed_unit_scale_derivation_matches_the_scale_first_planes), but the last commit -- repointing this at
+    BC -- is held until that test has passed on ppu001 rather than only locally."""
     return gguf_prepare_gemv(blocks, n, k, int(qtype))
 
 
@@ -163,7 +174,10 @@ def matmul_scale_first_gemv_moe(a: torch.Tensor, artifact, qtype: int,
 
 
 def prepare_scale_first_dense(blocks: torch.Tensor, n: int, k: int, qtype: int):
-    """Offline/resident artifact for SCALE_FIRST/DENSE's fixed fpA tactic."""
+    """Offline artifact for SCALE_FIRST/DENSE's fixed fpA tactic: (low, high, scale, zero).
+
+    Same standing as prepare_scale_first: produced from raw today, derivable from the packed units after the
+    merge, and kept until that switch is made on device evidence rather than on local agreement."""
     _check_shape(blocks, n, k, qtype)
     return gguf_prepare_dense(blocks, n, k, int(qtype))
 

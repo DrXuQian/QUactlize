@@ -388,11 +388,17 @@ FQ_GROUPED_PRODUCER = "prepare_fully_quantized_grouped"
 @pytest.mark.fully_quantized_dense
 @pytest.mark.parametrize("name,gt,hdr,qtype", FQ_IMPLEMENTED)
 def test_packed_unit_scale_derivation_matches_the_scale_first_planes(name, gt, hdr, qtype, ppu_backend_dense):
-    """THE CHECK THE B/C MERGE RESTS ON, and it is available before the merge is switched on.
+    """BOTH HALVES OF THE B/C MERGE'S PREMISE, and it is available before the merge is switched on.
 
-    The merge's claim is that SCALE_FIRST's fp16 scale/zero planes need not be STORED, because they can be
-    derived from FULLY_QUANTIZED's packed units. That claim is only worth having if the derivation produces the
-    same planes the stored path produces. So: one set of raw blocks, two entirely different routes to fp16.
+    The merge's claim has TWO parts and only one of them was ever checked.
+
+      WEIGHT   B and C differ ONLY in the scale channel -- so the two producers must place the codes identically.
+               This was assumed for the whole design discussion and never tested. If it is false the merge is not
+               a scale-channel change, and every conclusion drawn from calling it one is unsupported.
+      SCALE    the fp16 planes need not be STORED because they can be DERIVED from the packed units. Worth having
+               only if the derivation gives the same planes the stored path gives.
+
+    Both are checked here from one set of raw blocks through two entirely different routes:
 
         raw -> prepare_scale_first_dense    -> dequantize_scale_first_dense_scales   (the stored path, today)
         raw -> prepare_fully_quantized_dense -> dequantize_scale_from_units          (the derivation, new)
@@ -415,9 +421,27 @@ def test_packed_unit_scale_derivation_matches_the_scale_first_planes(name, gt, h
     raw = _raw_blocks(gt, hdr, n * (k // 256), rng)
     blocks = torch.from_numpy(raw)
 
-    stored = routes.dequantize_scale_first_dense_scales(routes.prepare_scale_first_dense(blocks, n, k, qtype), qtype)
-    units = routes.prepare_fully_quantized_dense(blocks, n, k, qtype)[-1]
-    derived = routes.dequantize_scale_from_units(units, qtype)
+    stored = routes.dequantize_scale_first_dense_scales(sf, qtype)
+    derived = routes.dequantize_scale_from_units(fq[-1], qtype)
+
+    # THE OTHER HALF OF THE PREMISE, AND NOBODY HAD CHECKED IT. The merge's claim is that B and C differ ONLY in
+    # the scale channel -- which is a claim about the WEIGHT bytes as much as about the scale, and the weight half
+    # was assumed throughout. If the two producers place the codes differently then the merge is not a
+    # scale-channel change and every conclusion drawn from calling it one is unsupported.
+    fq = routes.prepare_fully_quantized_dense(blocks, n, k, qtype)
+    sf = routes.prepare_scale_first_dense(blocks, n, k, qtype)
+    for i, plane in enumerate(("low", "high")):
+        a_, b_ = sf[i], fq[i]
+        if a_.numel() == 0 and b_.numel() == 0:
+            continue                                   # single-plane format: both empty, nothing to compare
+        assert a_.numel() == b_.numel(), (
+            f"{name} {plane}: the two producers disagree on SHAPE -- scale-first {tuple(a_.shape)} vs "
+            f"fully-quantized {tuple(b_.shape)}. The merge assumes these are the same weight bytes.")
+        bad = int((a_.reshape(-1) != b_.reshape(-1)).sum())
+        assert bad == 0, (
+            f"{name} {plane}: the scale-first and fully-quantized producers place the codes DIFFERENTLY "
+            f"({bad} of {a_.numel()} bytes differ). The merge's premise is that they do not, so this is not a "
+            f"scale-channel change and the producer switch must not be made on that basis.")
 
     for i, what in enumerate(("scale", "zero")):
         a_, b_ = stored[i], derived[i]
@@ -432,6 +456,91 @@ def test_packed_unit_scale_derivation_matches_the_scale_first_planes(name, gt, h
             f"{name} {what}: the packed-unit derivation and the stored scale-first planes differ in {bad} of "
             f"{a_.numel()} elements. The merge's premise is that these are the same planes; they are not.")
     print(f"{name}: packed-unit derivation is bit-identical to the stored scale-first planes")
+
+
+@pytest.mark.fully_quantized_dense
+@pytest.mark.parametrize("name,gt,hdr,qtype", FQ_IMPLEMENTED)
+def test_bc_gemv_matches_dequant_first_and_rejects_fault(name, gt, hdr, qtype, ppu_backend_dense):
+    """THE DECODE ARM OF THE MERGED FORM, against an arm that shares no constant with it.
+
+    matmul_bc_gemv reads the placed code planes plus the packed units; matmul_dequant_first is handed the
+    OFFICIAL package's materialisation of the same raw bytes and multiplies with torch. They share the raw blocks
+    and nothing else -- not the placement, not the unit decoder, not the extraction.
+
+    This is the route that would let raw GGUF leave residency, so its evidence has to be independent from the
+    first day rather than retrofitted. The planted fault zeroes the LOW code plane and must be rejected before a
+    pass counts.
+    """
+    if not routes.has_op("gguf_gemv_bc"):
+        pytest.skip("the BC GEMV op is not in this build yet (INBOX 016)")
+    _require_packed_format(qtype, name)
+
+    n, k = 256, 512
+    rng = np.random.default_rng(37000 + qtype)
+    raw = _raw_blocks(gt, hdr, n * (k // 256), rng)
+    blocks = torch.from_numpy(raw)
+    artifact = routes.prepare_fully_quantized_dense(blocks, n, k, qtype)
+    official = gguf.quants.dequantize(raw.reshape(-1), gt).reshape(n, k).astype(np.float64)
+
+    a = (rng.standard_normal((1, k)) * .2).astype(np.float16)
+    at = torch.from_numpy(a)
+    independent = routes.matmul_dequant_first(
+        at, blocks, n, k, qtype, weight=torch.from_numpy(official.astype(np.float16))).numpy().astype(np.float64)
+    denom = np.abs(a.astype(np.float64)[:, None, :] * official[None, :, :]).sum(2)
+    cond = lambda out: float(np.max(np.abs(out.astype(np.float64) - independent)
+                                    / np.maximum(denom, np.finfo(np.float64).tiny)))
+
+    fault = [x.clone() for x in artifact]
+    fault[0] = torch.zeros_like(fault[0])
+    planted = cond(routes.matmul_bc_gemv(at, tuple(fault), qtype).numpy())
+    assert planted > 5e-3, f"{name}: the BC GEMV oracle missed a zeroed low code plane ({planted:.3e})"
+
+    err = cond(routes.matmul_bc_gemv(at, artifact, qtype).numpy())
+    assert err < 5e-3, f"{name}: BC GEMV disagrees with dequant-first ({err:.3e})"
+    print(f"{name} BC GEMV vs dequant-first: err={err:.3e} planted={planted:.3e}")
+
+
+@pytest.mark.fully_quantized_dense
+@pytest.mark.parametrize("name,gt,hdr,qtype", FQ_IMPLEMENTED)
+def test_bc_gemv_moe_matches_dequant_first_and_rejects_fault(name, gt, hdr, qtype, ppu_backend_dense):
+    """The MoE decode arm, with an EMPTY EXPERT in the fixture.
+
+    Zero rows is what a cumulative-offset mistake reads straight past and no uniform shape can reach, and the
+    planted fault makes every expert read expert 0 -- the ordering error a shape check cannot see.
+    """
+    if not routes.has_op("gguf_gemv_bc_moe"):
+        pytest.skip("the BC MoE GEMV op is not in this build yet (INBOX 016)")
+    _require_packed_format(qtype, name)
+
+    experts, n, k = 4, 256, 512
+    rows = np.array([2, 0, 3, 1], dtype=np.int32)
+    rng = np.random.default_rng(41000 + qtype)
+    raw = _raw_blocks(gt, hdr, experts * n * (k // 256), rng)
+    blocks = torch.from_numpy(raw)
+    artifact = routes.prepare_fully_quantized_grouped(blocks, n, k, qtype, experts)
+    official = gguf.quants.dequantize(raw.reshape(-1), gt).reshape(experts, n, k).astype(np.float64)
+
+    m = int(rows.sum())
+    a = (rng.standard_normal((m, k)) * .2).astype(np.float16)
+    at, rt = torch.from_numpy(a), torch.from_numpy(rows)
+    independent = routes.matmul_dequant_first_grouped(
+        at, blocks, n, k, qtype, experts, rt).numpy().astype(np.float64)
+    per_row = np.repeat(np.arange(experts), rows)
+    denom = np.stack([np.abs(a.astype(np.float64)[i][None, :] * official[per_row[i]]).sum(1) for i in range(m)])
+    cond = lambda out: float(np.max(np.abs(out.astype(np.float64) - independent)
+                                    / np.maximum(denom, np.finfo(np.float64).tiny)))
+
+    fault = [x.clone() for x in artifact]
+    for x in fault:
+        if x.ndim >= 3 and x.shape[0] == experts:
+            for e in range(1, experts):
+                x[e].copy_(x[0])
+    planted = cond(routes.matmul_bc_gemv_moe(at, tuple(fault), qtype, experts, rt).numpy())
+    assert planted > 5e-3, f"{name}: the BC MoE oracle missed every expert reading expert 0 ({planted:.3e})"
+
+    err = cond(routes.matmul_bc_gemv_moe(at, artifact, qtype, experts, rt).numpy())
+    assert err < 5e-3, f"{name}: BC MoE GEMV disagrees with dequant-first ({err:.3e})"
+    print(f"{name} BC MoE vs dequant-first: rows={list(rows)} err={err:.3e} planted={planted:.3e}")
 
 
 @pytest.mark.fully_quantized_dense
