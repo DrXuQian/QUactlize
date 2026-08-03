@@ -9,7 +9,7 @@ exactly what output settles the question, so a partial paste is still useful.
    numerical validation, which needs PPU_PACKED_SCALE=1 and therefore needs you. Nothing it does next can be
    called validated until this runs.
 
-       cd /sim/eec/shared/junfu.qx/quactlize && git pull && ./benchmarks/run_batch.sh pytest
+       cd /sim/eec/shared/junfu.qx/quactlize && git pull && PPU_DEFS=PPU_PACKED_SCALE=1 ./benchmarks/run_batch.sh pytest
 
    USE run_batch, NOT a bare `pytest tests`. Two of today's runs were against a stale extension and produced
    plausible garbage -- "worst nan" on all five formats and a planted fault going uncaught, both about a .so
@@ -17,8 +17,10 @@ exactly what output settles the question, so a partial paste is still useful.
    pytest REFUSES to run when the extension is stale rather than reporting, so the trap is closed either way.)
 
    WANTED: the two pass summaries, plus any FAILED/ERROR ids.
-   If codex has by then posted the packed-dense route names, the fully_quantized oracles stop skipping and this
-   same command validates the new cell.
+   PPU_DEFS is load-bearing: run_batch's pytest subcommand otherwise builds the DEFAULT device library, whose
+   fully-quantized symbol returns rc=34 by design. The flag-on library keeps the existing scale-first Q4 control at
+   TileK=128 (packed selection off) and instantiates the new fully-quantized Q4 entry at TileK=256 (selection on),
+   so the same run checks the green baseline and the new contract rather than substituting one for the other.
 
 
 

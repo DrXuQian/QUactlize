@@ -73,9 +73,10 @@ extern "C" int quactlize_ppu_dense_lowbit(uint16_t const* act, uint8_t const* lo
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 12
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
-    // This binary's Q4 TileK=256 instantiation consumes PACKED units. Refuse the scale-first ABI instead of
-    // silently treating its fp16 scale plane as bytes; the distinct entry point below names that contract.
-    case 12: return 34;
+    // TileK=256 selects packed units in this build, so the SCALE_FIRST contract must not use that instantiation.
+    // Its single low plane is tile-invariant; TileK=128 gives Scale_TileK=4, keeps kPackedScaleOn false, and lets one
+    // flagged library run the existing independent scale-first oracle beside the new TileK=256 packed entry below.
+    case 12: return group_size == 32 ? dense<cutlass::int4b_t,void,32,128>(act,low,high,scale,zero,out,m,n,k,group_size) : 32;
 #else
     case 12: return group_size == 32 ? dense<cutlass::int4b_t,void,32>(act,low,high,scale,zero,out,m,n,k,group_size) : 32;
 #endif
