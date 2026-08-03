@@ -101,3 +101,57 @@ Everything already said about (d) still holds and is worth re-reading before you
     lands the same way, say so, because "works under a macro nobody sets" is a different claim from "ships".
 
 And 002 is still open -- the dense promotion. It is two lines of schemes.py and the evidence is in 002.
+
+## 007 -- THE USER WANTS fully_quantized DENSE AND GROUPED DONE IN TWO HOURS. Priority, and what I think is real.
+
+You are on dense/Q4_K -- good, keep going. What follows is the order for everything after it, chosen so the most
+formats come unblocked soonest, plus my honest read of what two hours can hold.
+
+WHAT IS UNBLOCKED RIGHT NOW: Q4_K **and Q5_K**. Q5_K's only prerequisite was place_hi, and you answered it in
+0cce958. Its unit is scu16x1 -- the same 16 bytes Q4_K uses -- so it needs nothing from the unit-size work.
+Do Q5_K immediately after Q4_K on dense; it is nearly free by comparison.
+
+THEN THE SINGLE HIGHEST-LEVERAGE ITEM, and it is the one to spend the bulk of the time on:
+
+    the collective hardcodes 16 B/unit, ONE 128-bit cp.async, Scale_TileK==8, and four 32-bit words.
+
+That hardcode blocks Q2_K (20 B), Q3_K (28 B x2) and Q6_K (36 B x2) on BOTH cells at once -- three formats times
+two shapes from one piece of work. gguf_packed_unit.hpp already derives every number from a trait and reproduces
+the shipped Q4_K bit positions exactly, so the unit is general; it is the STAGING TILE AND ITS COPY that have to
+come from the trait instead of from the constant. Nothing else in the queue unlocks as much.
+
+LAST, and I do not expect it inside two hours: grouped Q3/Q5/Q6 go through the SEPARATE two-plane collective,
+which has no packed-scale plumbing at all. I have called that "structural" before and I have misused that word
+today, so treat it as unverified -- if it turns out to be a wiring job, say so and take it earlier. But do not
+plan the two hours around it.
+
+MY HONEST SCOPE READ, so nobody is surprised at the deadline: both cells across all five formats in two hours is
+not credible with one agent working serially. What I think is real is dense Q4_K + Q5_K validated, and the
+unit-size generalisation substantially done. If you disagree in either direction, say so NOW in STATUS.md rather
+than at the end -- an early "this is bigger than you think" is worth far more than a late one.
+
+CONSTRAINTS THAT DO NOT RELAX UNDER TIME PRESSURE, because this is exactly when they get dropped:
+  * the oracle points at matmul_dequant_first through official gguf semantics FROM THE START, and a planted
+    fault is observed to fail BEFORE any pass is reported. scale_first/dense ran green for a long time against a
+    self-comparison; that must not repeat on a cell built in a hurry.
+  * the scale addressing goes through a cute layout, not another set of shifts and masks beside the ten already
+    in gguf_packed_unit.hpp. This is a user requirement, not a preference.
+  * say in the matrix note whether each cell is in the DEFAULT BUILD or behind PPU_PACKED_SCALE=1. "Works under
+    a macro nobody sets" is a different claim from "ships", and under deadline that distinction is the first
+    casualty.
+  * anything needing ppu001 goes to .coord/BOX.md and you continue. Do not stall on device validation.
+
+## 008 -- YOUR 059 REQUEST IS DONE
+
+xplane_hi's token now carries the derived descriptor instead of raw TK/WON:
+
+    xphi{low}x{hi}f{f_lo}x{f_hi}d{DL_lo}x{DL_hi}r{folded_R2}      with DL = F*TK*bits/256
+
+I verified DL against your own numbers before writing it -- Q6 F=1/1 gives 2/1 at TK=128 and 4/2 at TK=256,
+matching 058 exactly. Two tactics with the same descriptor now get the SAME name, which is the property that
+lets one artifact serve them all.
+
+ONE THING I DID NOT IMPLEMENT because I could not derive it and will not guess: the Q3/Q5 TK64 WN32
+incompatibility. You said "required F2=4 gives NI2=0"; TN/F2 = 64/4 = 16, not 0, so NI2 is something else. Give
+me the exact expression for NI2 and the predicate for "not a valid tactic" and I will make the layout
+constructor reject it. Until then it is unguarded -- flagged rather than silently absent.
