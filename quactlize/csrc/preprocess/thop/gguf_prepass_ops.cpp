@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
+#include <algorithm>
 #include <vector>
 
 #include "gguf_scale_prepass.hpp"
@@ -227,6 +228,182 @@ torch::Tensor gguf_vecdot(torch::Tensor blocks, torch::Tensor x, int64_t qtype) 
   });
 }
 
+// Native dense GEMV is not the per-block gguf_vecdot operation above. It consumes ONE complete activation and
+// shares it across n output columns while accumulating bpr superblocks inside the kernel. Giving this shape its own
+// op prevents the host reference's [block,x-slice] interface from being mistaken for the production launch ABI.
+torch::Tensor gguf_vecdot_dense(torch::Tensor blocks, torch::Tensor x, int64_t n, int64_t k, int64_t qtype) {
+  CHECK_CPU(blocks); CHECK_CONTIGUOUS(blocks); CHECK_CPU(x); CHECK_CONTIGUOUS(x);
+  TORCH_CHECK(blocks.dtype() == torch::kUInt8 && blocks.dim() == 2,
+              "blocks must be uint8 [n*k/256,type_size]");
+  TORCH_CHECK((x.dtype() == torch::kFloat16 || x.dtype() == torch::kFloat32) && x.dim() == 2 &&
+              x.size(0) == 1 && x.size(1) == k, "x must be fp16/fp32 [1,k]");
+  TORCH_CHECK(n > 0 && k > 0 && k % 256 == 0, "n must be positive and k a positive multiple of 256");
+  int const bpr = int(k / 256);
+  TORCH_CHECK(blocks.size(0) == n * bpr, "blocks need n*k/256 rows; got ", blocks.size(0));
+  auto out = torch::empty({1, n}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+
+  return dispatch_ktype(qtype, [&](auto tag) -> torch::Tensor {
+    constexpr KType T = decltype(tag)::value;
+    constexpr int64_t kRaw = (T == KType::Q2_K) ? 84 : (T == KType::Q3_K) ? 110
+                           : (T == KType::Q4_K) ? 144 : (T == KType::Q5_K) ? 176 : 210;
+    TORCH_CHECK(blocks.size(1) == kRaw, "this format's raw GGUF block is ", kRaw, " bytes, got ", blocks.size(1));
+    auto const* bp = get_ptr<uint8_t const>(blocks);
+    auto* op = get_ptr<float>(out);
+    if (auto const* api = ppu_backend::load()) {
+      torch::Tensor x16 = x.dtype() == torch::kFloat16 ? x : x.to(torch::kFloat16);
+      TORCH_CHECK(api->vecdot(bp, kRaw, get_ptr<uint16_t const>(x16), op, int(n), bpr, int(qtype)) == 0,
+                  "PPU native dense GEMV failed");
+      return out;
+    }
+    TORCH_CHECK(n <= kCpuReferenceRowLimit || cpu_reference_allowed(),
+                "gguf_vecdot_dense has no device backend (", ppu_backend::resolved_backend(), ") and ", n,
+                " output rows exceeds the ", kCpuReferenceRowLimit, "-row CPU reference limit");
+    if (x.dtype() == torch::kFloat32) {
+      auto const* xp = get_ptr<float const>(x);
+      for (int64_t r = 0; r < n; ++r) {
+        float acc = 0.f;
+        for (int b = 0; b < bpr; ++b)
+          acc += gguf_scale::vecdot::vecdot_block<T>(bp + (r * bpr + b) * kRaw, xp + b * 256);
+        op[r] = acc;
+      }
+    } else {
+      auto const* xp = get_ptr<half_t const>(x);
+      for (int64_t r = 0; r < n; ++r) {
+        float acc = 0.f;
+        for (int b = 0; b < bpr; ++b)
+          acc += gguf_scale::vecdot::vecdot_block_input<T>(bp + (r * bpr + b) * kRaw, xp + b * 256);
+        op[r] = acc;
+      }
+    }
+    return out;
+  });
+}
+
+// Native-scale MoE decode through the real device library. Unlike gguf_vecdot's small CPU reference arm, this
+// operation has no host fallback: its purpose is the expert/routing launch, and a serial loop over experts would be
+// a different kernel that could silently approve a missing backend.
+torch::Tensor gguf_vecdot_moe(torch::Tensor blocks, torch::Tensor x, torch::Tensor row_offsets, int64_t qtype) {
+  CHECK_CPU(blocks); CHECK_CONTIGUOUS(blocks); CHECK_CPU(x); CHECK_CONTIGUOUS(x);
+  CHECK_CPU(row_offsets); CHECK_CONTIGUOUS(row_offsets);
+  TORCH_CHECK(blocks.dtype() == torch::kUInt8 && blocks.dim() == 3,
+              "blocks must be uint8 [experts,n*blocks_per_row,type_size]");
+  TORCH_CHECK((x.dtype() == torch::kFloat16 || x.dtype() == torch::kFloat32) && x.dim() == 2,
+              "x must be fp16/fp32 [total_rows,k]");
+  TORCH_CHECK(row_offsets.dtype() == torch::kInt32 && row_offsets.dim() == 1,
+              "row_offsets must be int32 [experts+1]");
+  int const experts = int(blocks.size(0));
+  TORCH_CHECK(row_offsets.numel() == experts + 1, "row_offsets needs experts+1 entries");
+  int const* off = get_ptr<int const>(row_offsets);
+  TORCH_CHECK(off[0] == 0, "row_offsets must start at zero");
+  int max_rows = 0;
+  for (int e = 0; e < experts; ++e) {
+    TORCH_CHECK(off[e + 1] >= off[e], "row_offsets must be nondecreasing");
+    max_rows = std::max(max_rows, off[e + 1] - off[e]);
+  }
+  int const total_rows = off[experts];
+  TORCH_CHECK(total_rows == x.size(0), "row_offsets end at ", total_rows, " but x has ", x.size(0), " rows");
+  int64_t const k = x.size(1);
+  TORCH_CHECK(k > 0 && k % 256 == 0, "x's k must be a positive multiple of 256");
+  int const bpr = int(k / 256);
+  TORCH_CHECK(blocks.size(1) % bpr == 0, "expert block count must be divisible by k/256");
+  int const n = int(blocks.size(1) / bpr);
+  TORCH_CHECK(qtype >= kGgmlQ2K && qtype <= kGgmlQ6K, "unsupported GGUF qtype ", qtype);
+  int const raw_bytes = qtype == kGgmlQ2K ? 84 : qtype == kGgmlQ3K ? 110 : qtype == kGgmlQ4K ? 144
+                      : qtype == kGgmlQ5K ? 176 : 210;
+  TORCH_CHECK(blocks.size(2) == raw_bytes, "this format's raw GGUF block is ", raw_bytes,
+              " bytes, got ", blocks.size(2));
+  torch::Tensor x16 = x.dtype() == torch::kFloat16 ? x : x.to(torch::kFloat16);
+  torch::Tensor out = torch::empty({total_rows, n}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+  auto const* api = ppu_backend::load();
+  TORCH_CHECK(api, "gguf_vecdot_moe requires libquactlize_ppu.so (", ppu_backend::resolved_backend(), ")");
+  if (total_rows == 0) return out;
+  TORCH_CHECK(api->vecdot_moe(get_ptr<uint8_t const>(blocks), blocks.size(2),
+                              reinterpret_cast<uint16_t const*>(get_ptr<at::Half const>(x16)), off,
+                              get_ptr<float>(out), n, bpr, experts, total_rows, max_rows, int(qtype)) == 0,
+              "PPU native MoE GEMV failed");
+  return out;
+}
+
+namespace {
+
+torch::Tensor gguf_gemv_scale_first_impl(torch::Tensor a, torch::Tensor low, torch::Tensor high,
+                                          torch::Tensor scale, torch::Tensor zero,
+                                          torch::Tensor row_offsets, int64_t qtype, bool grouped) {
+  CHECK_CPU(a); CHECK_CONTIGUOUS(a); CHECK_CPU(low); CHECK_CONTIGUOUS(low);
+  CHECK_CPU(scale); CHECK_CONTIGUOUS(scale); CHECK_CPU(zero); CHECK_CONTIGUOUS(zero);
+  TORCH_CHECK((a.dtype() == torch::kFloat16 || a.dtype() == torch::kFloat32) && a.dim() == 2,
+              "a must be fp16/fp32 [rows,k]");
+  TORCH_CHECK(low.dtype() == torch::kUInt8 && low.dim() == 3, "low must be uint8 [experts,n,bytes]");
+  TORCH_CHECK(scale.dtype() == torch::kFloat16 && zero.dtype() == torch::kFloat16 &&
+              scale.dim() == 3 && zero.sizes() == scale.sizes(),
+              "scale and zero must be fp16 [experts,k/group_size,n]");
+  int const lo_bits = (qtype == kGgmlQ2K || qtype == kGgmlQ3K) ? 2 : 4;
+  int const hi_bits = (qtype == kGgmlQ3K || qtype == kGgmlQ5K) ? 1 : qtype == kGgmlQ6K ? 2 : 0;
+  int const group_size = (qtype == kGgmlQ4K || qtype == kGgmlQ5K) ? 32 : 16;
+  int const artifact_experts = int(low.size(0)), n = int(low.size(1));
+  int64_t const k = a.size(1);
+  TORCH_CHECK(k > 0 && k % 256 == 0, "a's k must be a positive multiple of 256");
+  TORCH_CHECK(low.size(2) == k * lo_bits / 8, "low plane byte count disagrees with k/qtype");
+  TORCH_CHECK(scale.size(0) == artifact_experts && scale.size(1) == k / group_size && scale.size(2) == n,
+              "scale shape disagrees with weight artifact");
+  uint8_t const* hp = nullptr;
+  if (hi_bits) {
+    CHECK_CPU(high); CHECK_CONTIGUOUS(high);
+    TORCH_CHECK(high.dtype() == torch::kUInt8 && high.dim() == 3 && high.size(0) == artifact_experts &&
+                high.size(1) == n && high.size(2) == k * hi_bits / 8,
+                "high plane shape disagrees with qtype");
+    hp = get_ptr<uint8_t const>(high);
+  } else {
+    TORCH_CHECK(!high.defined() || high.numel() == 0, "single-plane format must have an empty high plane");
+  }
+
+  int experts = 0, max_rows = int(a.size(0));
+  int const* off = nullptr;
+  if (grouped) {
+    CHECK_CPU(row_offsets); CHECK_CONTIGUOUS(row_offsets);
+    TORCH_CHECK(row_offsets.dtype() == torch::kInt32 && row_offsets.dim() == 1,
+                "row_offsets must be int32 [experts+1]");
+    experts = artifact_experts;
+    TORCH_CHECK(row_offsets.numel() == experts + 1, "row_offsets needs experts+1 entries");
+    off = get_ptr<int const>(row_offsets);
+    TORCH_CHECK(off[0] == 0 && off[experts] == a.size(0), "row_offsets must span every activation row");
+    max_rows = 0;
+    for (int e = 0; e < experts; ++e) {
+      TORCH_CHECK(off[e + 1] >= off[e], "row_offsets must be nondecreasing");
+      max_rows = std::max(max_rows, off[e + 1] - off[e]);
+    }
+  } else {
+    TORCH_CHECK(artifact_experts == 1, "dense artifact must have one expert dimension");
+  }
+
+  torch::Tensor a16 = a.dtype() == torch::kFloat16 ? a : a.to(torch::kFloat16);
+  torch::Tensor out = torch::empty({a.size(0), n}, torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCPU));
+  auto const* api = ppu_backend::load();
+  TORCH_CHECK(api, "scale-first GEMV requires libquactlize_ppu.so (", ppu_backend::resolved_backend(), ")");
+  if (a.size(0) == 0) return out;
+  TORCH_CHECK(api->gemv_lowbit(reinterpret_cast<uint16_t const*>(get_ptr<at::Half const>(a16)),
+                               get_ptr<uint8_t const>(low), hp,
+                               reinterpret_cast<uint16_t const*>(get_ptr<at::Half const>(scale)),
+                               reinterpret_cast<uint16_t const*>(get_ptr<at::Half const>(zero)),
+                               reinterpret_cast<uint16_t*>(get_ptr<at::Half>(out)), int(a.size(0)), n, int(k),
+                               group_size, int(qtype), experts, off, max_rows) == 0,
+              "PPU scale-first GEMV failed");
+  return out;
+}
+
+}  // namespace
+
+torch::Tensor gguf_gemv_scale_first(torch::Tensor a, torch::Tensor low, torch::Tensor high,
+                                     torch::Tensor scale, torch::Tensor zero, int64_t qtype) {
+  return gguf_gemv_scale_first_impl(a, low, high, scale, zero, torch::Tensor(), qtype, false);
+}
+
+torch::Tensor gguf_gemv_scale_first_moe(torch::Tensor a, torch::Tensor low, torch::Tensor high,
+                                         torch::Tensor scale, torch::Tensor zero,
+                                         torch::Tensor row_offsets, int64_t qtype) {
+  return gguf_gemv_scale_first_impl(a, low, high, scale, zero, row_offsets, qtype, true);
+}
+
 // THE FALLBACK PATH'S MISSING LINK: raw GGUF blocks -> full fp16 weights, which is what cuBLAS and DeepGemm
 // multiply. dequantize_weight in unfused_weight_dequantize.hpp already covers the symmetric packed representations
 // (INT8/INT4/INT2/INT1 with fp16 scale planes); it cannot read a k-quant block, so a GGUF checkpoint had no route to
@@ -292,6 +469,88 @@ std::vector<torch::Tensor> gguf_unpack(torch::Tensor blocks, int64_t qtype) {
       }
     }
     return {codes, scale, zero};
+  });
+}
+
+// OFFLINE ARTIFACT FOR gemv_lowbit, all five k-quants. The raw checkpoint stays the independent source of truth;
+// this function only changes representation:
+//
+//   raw [E,N,K/256,type_size]
+//       -> low/high code planes in GEMV's affine Native [E,N,K] bit layout
+//       -> scale/zero planes [E,K/group_size,N]
+//
+// Q3_K and Q6_K expose signed logical codes from unpack_block. gemv_lowbit combines unsigned bit planes, so those
+// two use offset binary (c + 4 / c + 32) and subtract the same bias*scale from zero. This preserves
+// c*scale+zero exactly up to the fp16 plane's own rounding. No plane grows: the output is exactly 2/3/4/5/6 bits
+// per weight plus the explicitly requested fp16 scale workspace.
+std::vector<torch::Tensor> gguf_prepare_gemv(torch::Tensor blocks, int64_t n, int64_t k, int64_t qtype) {
+  CHECK_CPU(blocks); CHECK_CONTIGUOUS(blocks);
+  TORCH_CHECK(blocks.dtype() == torch::kUInt8 && (blocks.dim() == 2 || blocks.dim() == 3),
+              "blocks must be uint8 [N*K/256,type_size] or [E,N*K/256,type_size]");
+  TORCH_CHECK(n > 0 && k > 0 && k % 256 == 0, "n must be positive and k a positive multiple of 256");
+  int64_t const experts = blocks.dim() == 3 ? blocks.size(0) : 1;
+  int64_t const blocks_per_expert = blocks.dim() == 3 ? blocks.size(1) : blocks.size(0);
+  int64_t const bpr = k / 256;
+  TORCH_CHECK(blocks_per_expert == n * bpr, "each expert needs ", n * bpr,
+              " raw blocks for n=", n, " k=", k, "; got ", blocks_per_expert);
+  int64_t const raw_bytes = blocks.size(-1);
+  auto const* src = get_ptr<uint8_t const>(blocks);
+
+  return dispatch_ktype(qtype, [&](auto tag) -> std::vector<torch::Tensor> {
+    constexpr KType T = decltype(tag)::value;
+    using Tr = Traits<T>;
+    constexpr int kRaw = (T == KType::Q2_K) ? 84 : (T == KType::Q3_K) ? 110
+                         : (T == KType::Q4_K) ? 144 : (T == KType::Q5_K) ? 176 : 210;
+    constexpr int kLoBits = (T == KType::Q2_K || T == KType::Q3_K) ? 2 : 4;
+    constexpr int kHiBits = (T == KType::Q3_K || T == KType::Q5_K) ? 1
+                          : (T == KType::Q6_K) ? 2 : 0;
+    constexpr int kCodeBits = kLoBits + kHiBits;
+    constexpr int kCodeBias = T == KType::Q3_K ? 4 : T == KType::Q6_K ? 32 : 0;
+    TORCH_CHECK(raw_bytes == kRaw, "this format's raw GGUF block is ", kRaw, " bytes, got ", raw_bytes);
+
+    auto u8 = torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCPU);
+    auto f16 = torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCPU);
+    torch::Tensor low = torch::zeros({experts, n, k * kLoBits / 8}, u8);
+    torch::Tensor high = kHiBits ? torch::zeros({experts, n, k * kHiBits / 8}, u8)
+                                 : torch::empty({0}, u8);
+    int64_t const scale_k = k / Tr::kGroupSize;
+    torch::Tensor scale = torch::empty({experts, scale_k, n}, f16);
+    torch::Tensor zero = torch::empty_like(scale);
+    auto* lp = get_ptr<uint8_t>(low);
+    auto* hp = kHiBits ? get_ptr<uint8_t>(high) : nullptr;
+    auto* sp = get_ptr<at::Half>(scale);
+    auto* zp = get_ptr<at::Half>(zero);
+    std::vector<int8_t> codes(256);
+    std::vector<cutlass::half_t> ss(Tr::kGroups), zz(Tr::kGroups);
+
+    for (int64_t e = 0; e < experts; ++e) {
+      for (int64_t col = 0; col < n; ++col) {
+        for (int64_t b = 0; b < bpr; ++b) {
+          int64_t const raw_row = (e * blocks_per_expert + col * bpr + b);
+          gguf_scale::vecdot::unpack_block<T>(src + raw_row * raw_bytes, codes.data(), ss.data(), zz.data());
+          for (int j = 0; j < 256; ++j) {
+            int const q = int(codes[size_t(j)]) + kCodeBias;
+            TORCH_CHECK(q >= 0 && q < (1 << kCodeBits), "internal code outside ", kCodeBits,
+                        "-bit offset-binary range: ", q);
+            int64_t const kk = b * 256 + j;
+            int64_t const low_bit = ((e * n + col) * k + kk) * kLoBits;
+            lp[low_bit >> 3] |= uint8_t((q & ((1 << kLoBits) - 1)) << (low_bit & 7));
+            if constexpr (kHiBits != 0) {
+              int64_t const high_bit = ((e * n + col) * k + kk) * kHiBits;
+              hp[high_bit >> 3] |= uint8_t((q >> kLoBits) << (high_bit & 7));
+            }
+          }
+          for (int g = 0; g < Tr::kGroups; ++g) {
+            int64_t const kg = b * Tr::kGroups + g;
+            int64_t const dst = (e * scale_k + kg) * n + col;
+            cutlass::half_t z = cutlass::half_t(float(zz[size_t(g)]) - float(kCodeBias) * float(ss[size_t(g)]));
+            std::memcpy(sp + dst, &ss[size_t(g)], sizeof(cutlass::half_t));
+            std::memcpy(zp + dst, &z, sizeof(cutlass::half_t));
+          }
+        }
+      }
+    }
+    return {low, high, scale, zero};
   });
 }
 
@@ -530,10 +789,25 @@ static auto gguf_q4_artifact_dequantize_op = torch::RegisterOperators(
 
 static auto gguf_unpack_op = torch::RegisterOperators("quactlize::gguf_unpack", &torch_ext::gguf_unpack);
 
+static auto gguf_prepare_gemv_op =
+    torch::RegisterOperators("quactlize::gguf_prepare_gemv", &torch_ext::gguf_prepare_gemv);
+
 static auto gguf_dequantize_op =
     torch::RegisterOperators("quactlize::gguf_dequantize", &torch_ext::gguf_dequantize);
 
 static auto gguf_vecdot_op = torch::RegisterOperators("quactlize::gguf_vecdot", &torch_ext::gguf_vecdot);
+
+static auto gguf_vecdot_dense_op =
+    torch::RegisterOperators("quactlize::gguf_vecdot_dense", &torch_ext::gguf_vecdot_dense);
+
+static auto gguf_vecdot_moe_op =
+    torch::RegisterOperators("quactlize::gguf_vecdot_moe", &torch_ext::gguf_vecdot_moe);
+
+static auto gguf_gemv_scale_first_op =
+    torch::RegisterOperators("quactlize::gguf_gemv_scale_first", &torch_ext::gguf_gemv_scale_first);
+
+static auto gguf_gemv_scale_first_moe_op =
+    torch::RegisterOperators("quactlize::gguf_gemv_scale_first_moe", &torch_ext::gguf_gemv_scale_first_moe);
 
 static auto gguf_scale_block_shape_op =
     torch::RegisterOperators("quactlize::gguf_scale_block_shape", &torch_ext::gguf_scale_block_shape);

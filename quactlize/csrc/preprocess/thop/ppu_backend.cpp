@@ -41,8 +41,10 @@ State& state() {
       return true;
     };
     if (!sym("quactlize_ppu_vecdot", reinterpret_cast<void**>(&s.api.vecdot))) return;
+    if (!sym("quactlize_ppu_vecdot_moe", reinterpret_cast<void**>(&s.api.vecdot_moe))) return;
     if (!sym("quactlize_ppu_dequantize", reinterpret_cast<void**>(&s.api.dequantize))) return;
     if (!sym("quactlize_ppu_prepass", reinterpret_cast<void**>(&s.api.prepass))) return;
+    if (!sym("quactlize_ppu_gemv_lowbit", reinterpret_cast<void**>(&s.api.gemv_lowbit))) return;
     s.ok = true;
     s.why = std::string("loaded ") + path;
   });

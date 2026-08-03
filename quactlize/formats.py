@@ -130,11 +130,11 @@ NON_BLOCK_SCALE_GROWTH: Dict[QuantType, Optional[float]] = {
 # run -- at the storage cost computed above, which for Q2_K is +52% and therefore not shippable.
 # ---------------------------------------------------------------------------------------------------------------
 
-#: single-token decode, CUDA-core GEMV.
-#: Q4_K IS NOT HERE, though a Q4_K GEMV exists elsewhere in the wider tree. In quactlize the GEMV kernels read fp16
-#: scale planes, and for Q4_K at decode those planes would have to be resident -- exactly the stored-byte increase
-#: the constraint forbids. A Q4_K entry needs a GEMV that reads the native 16-byte scale unit, not a harness.
-GEMV: FrozenSet[QuantType] = frozenset({QuantType.GPTQ_INT4_SYM})
+#: single-token scale-first CUDA-core GEMV. The k-quants are technically reachable through a resident artifact;
+#: select_path still applies `fp16_planes` before choosing it, so capability does not silently waive storage policy.
+GEMV: FrozenSet[QuantType] = frozenset({
+    QuantType.GPTQ_INT4_SYM, QuantType.Q2_K, QuantType.Q3_K, QuantType.Q4_K, QuantType.Q5_K, QuantType.Q6_K,
+})
 
 #: the fused mixed-input tensor-core GEMM, fp16 scale planes
 FUSED_FP16_SCALE: FrozenSet[QuantType] = frozenset({
@@ -196,7 +196,7 @@ def select_path(qtype: QuantType, num_rows: int, native_scale_available: bool = 
 
     # The order is the same as vLLM's: try the fastest path the format is actually in, then fall back, then fail
     # loudly. Falling back is a real outcome; silently producing a wrong answer is not an option anywhere here.
-    if num_rows <= GEMV_MAX_ROWS and qtype in GEMV:
+    if num_rows <= GEMV_MAX_ROWS and qtype in GEMV and planes_ok:
         return "gemv"
     if num_rows >= DENSE_CROSSOVER_ROWS and qtype in DEQUANT_THEN_DENSE and planes_ok:
         return "dequant_then_dense"

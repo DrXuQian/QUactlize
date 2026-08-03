@@ -62,12 +62,11 @@ def test_every_matrix_cell_maps_to_a_registry_path():
 
 
 def test_no_cell_is_validated_on_borrowed_evidence():
-    """The cells where the registry's four path names are coarser than the nine matrix cells.
+    """The cells where a registry path name is coarser than the matrix.
 
-    Sharing a path name means sharing evidence, and for these two the shared evidence is about a different kernel:
-    fully_quantized/gemv would be approved by the fp16-PLANE GEMV harness, and dequant_first/gemv by a GEMM run at
-    m in (1, 7, 64). Both are mapped -- unmapped is approved by default -- and this is what refuses them. When one
-    of these genuinely becomes validated, split the vocabulary rather than deleting the entry here."""
+    Sharing a path name means sharing evidence. The set is empty after GEMV was split into native/scale-first and
+    dense/MoE, but the refusal mechanism remains: future coarse mappings belong here until their vocabulary and
+    harnesses are split. Unmapped cells are checked separately because an absent lookup would approve by default."""
     guilty = [f"{s.value}/{sh.value}/{f.name}"
               for (s, sh, f), impl in schemes.IMPL.items()
               if impl.status >= Status.VALIDATED and (s, sh) in schemes._CELL_PATH_IS_COARSE]

@@ -26,7 +26,8 @@ from typing import Optional
 
 import torch
 
-from . import gguf_dequantize, gguf_vecdot
+from . import (gguf_dequantize, gguf_vecdot_dense, gguf_vecdot_moe, gguf_prepare_gemv,
+               gguf_gemv_scale_first, gguf_gemv_scale_first_moe)
 from .formats import QuantType
 
 
@@ -90,27 +91,69 @@ def matmul_dequant_first_grouped(a: torch.Tensor, blocks: torch.Tensor, n: int, 
 def matmul_native_gemv(a: torch.Tensor, blocks: torch.Tensor, n: int, k: int, qtype: int) -> torch.Tensor:
     """FULLY_QUANTIZED, GEMV: nothing materialised. a is (1, k) fp16/fp32; returns (1, n) fp32.
 
-    REFERENCE SPEED, NOT A COMPETITOR. The bound op computes one dot product per (block, 256-element activation
-    slice) pair, so a full GEMV is assembled here by tiling the activation across a row's blocks and summing. That
-    tiling is a host-side k/256-fold expansion of the ACTIVATION -- irrelevant to correctness, fatal to a timing.
-    The kernel that does this properly is vecdot_rows_kernel, reached through the device library.
-
-    It will REFUSE rather than crawl on a CPU-resolved backend above the reference row limit. That refusal is the
-    point: a silent CPU fallback produces correct numbers slowly and reports nothing, which is indistinguishable
-    from the device path working."""
+    The dedicated dense host op forwards one complete activation to vecdot_rows_kernel, which shares it across n
+    output columns and accumulates k/256 raw GGUF blocks inside one launch. Without a device library it retains a
+    bounded scalar witness and refuses large rows rather than silently impersonating an inference path."""
     _check_shape(blocks, n, k, qtype)
     if a.shape[0] != 1:
         raise ValueError(f"the GEMV band is m=1; got m={a.shape[0]}")
+    # The device ABI is fp16. Apply that contract before the backend branch so the CPU witness and production launch
+    # differ only in accumulation order, not in which activation values they received.
+    return gguf_vecdot_dense(blocks, a.to(torch.float16).contiguous(), n, k, int(qtype))
+
+
+def _row_offsets(rows_per_expert: torch.Tensor, experts: int, total_rows: int) -> torch.Tensor:
+    if rows_per_expert.numel() != experts:
+        raise ValueError(f"rows_per_expert has {rows_per_expert.numel()} entries, expected {experts}")
+    rows = rows_per_expert.to(dtype=torch.int64, device="cpu")
+    if bool((rows < 0).any()):
+        raise ValueError("rows_per_expert must be nonnegative")
+    if int(rows.sum().item()) != total_rows:
+        raise ValueError(f"rows_per_expert sums to {int(rows.sum().item())}, activation has {total_rows} rows")
+    return torch.cat((torch.zeros(1, dtype=torch.int64), rows.cumsum(0))).to(torch.int32).contiguous()
+
+
+def matmul_native_gemv_moe(a: torch.Tensor, blocks: torch.Tensor, n: int, k: int, qtype: int,
+                            num_experts: int, rows_per_expert: torch.Tensor) -> torch.Tensor:
+    """FULLY_QUANTIZED/GEMV_MOE: native GGUF bytes, gathered rows, one CUDA-core launch."""
+    if a.dim() != 2 or a.shape[1] != k:
+        raise ValueError(f"activation must be [total_rows,{k}], got {tuple(a.shape)}")
     bpr = k // 256
-    # Convert ONCE per K slice here: converting inside every output row measured 1.01-1.32x slower cold. The CPU arm
-    # remains a tight fp32-accumulation oracle over these rounded inputs; the direct CUDA probe owns the separate
-    # fp16-accumulation tolerance.
-    x = a.reshape(bpr, 256).to(torch.float16)                  # one 256-slice per block position
-    x = x.unsqueeze(0).expand(n, bpr, 256).reshape(n * bpr, 256).contiguous()
-    return gguf_vecdot(blocks, x, int(qtype)).view(n, bpr).sum(dim=1).view(1, n)
+    want = n * bpr
+    if blocks.dim() == 2:
+        if blocks.shape[0] != num_experts * want:
+            raise ValueError(f"flat blocks need {num_experts * want} rows, got {blocks.shape[0]}")
+        blocks = blocks.view(num_experts, want, blocks.shape[1])
+    if blocks.dim() != 3 or blocks.shape[:2] != (num_experts, want):
+        raise ValueError(f"blocks must be [{num_experts},{want},type_size], got {tuple(blocks.shape)}")
+    offsets = _row_offsets(rows_per_expert, num_experts, a.shape[0])
+    return gguf_vecdot_moe(blocks.contiguous(), a, offsets, int(qtype))
+
+
+def prepare_scale_first(blocks: torch.Tensor, n: int, k: int, qtype: int):
+    """Offline/resident artifact for both SCALE_FIRST decode shapes."""
+    return gguf_prepare_gemv(blocks, n, k, int(qtype))
+
+
+def matmul_scale_first_gemv(a: torch.Tensor, artifact, qtype: int) -> torch.Tensor:
+    """SCALE_FIRST/GEMV over prebuilt `(low, high, scale, zero)` planes."""
+    low, high, scale, zero = artifact
+    return gguf_gemv_scale_first(a, low, high, scale, zero, int(qtype))
+
+
+def matmul_scale_first_gemv_moe(a: torch.Tensor, artifact, qtype: int,
+                                 rows_per_expert: torch.Tensor) -> torch.Tensor:
+    """SCALE_FIRST/GEMV_MOE over prebuilt planes and gathered/ragged rows."""
+    low, high, scale, zero = artifact
+    experts = int(low.shape[0])
+    offsets = _row_offsets(rows_per_expert, experts, a.shape[0])
+    return gguf_gemv_scale_first_moe(a, low, high, scale, zero, offsets, int(qtype))
 
 
 ROUTES = {
     "dequant_first": matmul_dequant_first,
     "native_gemv": matmul_native_gemv,
+    "native_gemv_moe": matmul_native_gemv_moe,
+    "scale_first_gemv": matmul_scale_first_gemv,
+    "scale_first_gemv_moe": matmul_scale_first_gemv_moe,
 }

@@ -21,6 +21,7 @@ A previous fixture in this project had every row identical and measured nothing 
 import numpy as np
 import pytest
 import torch
+from pathlib import Path
 
 gguf = pytest.importorskip("gguf", reason="the official gguf package is the oracle for every route")
 from gguf.constants import GGMLQuantizationType as GT
@@ -80,6 +81,125 @@ TOL = 5e-3
 # production fp16 activation and keeps its measured 1.43e-7 / 1e-6 gate. The direct gguf_cuda_probe test separately
 # runs the shipping fp16 accumulator and asserts conditioned error at the fixed 2^-11 floor.
 TOL_NATIVE = 1e-6
+
+
+@pytest.fixture(scope="module")
+def ppu_backend_cuda(tmp_path_factory):
+    """The production dlopen library, built by plain nvcc exactly as promised by its dual-toolchain contract."""
+    import shutil, subprocess
+    if shutil.which("nvcc") is None or not torch.cuda.is_available():
+        pytest.skip("CUDA backend oracle needs nvcc and a CUDA device")
+    root = Path(__file__).resolve().parent.parent
+    major, minor = torch.cuda.get_device_capability()
+    out = tmp_path_factory.mktemp("ppu_backend") / "libquactlize_ppu.so"
+    cmd = ["nvcc", "-std=c++17", "-O3", f"-arch=sm_{major}{minor}", "--expt-relaxed-constexpr",
+           "-shared", "-Xcompiler=-fPIC", f"-I{root / 'quactlize' / 'include'}",
+           f"-I{root / 'third_party' / 'cutlass' / 'include'}",
+           f"-I{root / 'third_party' / 'actlize' / 'include'}", "-o", str(out),
+           str(root / "quactlize" / "csrc" / "device" / "ppu_backend.cu")]
+    built = subprocess.run(cmd, capture_output=True, text=True)
+    assert built.returncode == 0, built.stdout + built.stderr
+    return out
+
+
+def test_device_decode_routes_match_official_oracle_and_reject_planted_faults(ppu_backend_cuda):
+    """All 20 decode cases: native dense/MoE plus scale-first dense/MoE, five formats each.
+
+    The subprocess is required because the dlopen decision is intentionally cached once per process. Every fixture
+    is asymmetric (n != k, activation varying along k, different expert bytes, ragged rows with an empty expert).
+    Each path first observes its oracle reject a planted addressing/code-plane fault, then accepts the real launch.
+    """
+    import os, subprocess, sys, textwrap
+    root = Path(__file__).resolve().parent.parent
+    code = textwrap.dedent(r'''
+        import numpy as np, torch, gguf, quactlize
+        from gguf.constants import GGMLQuantizationType as GT, GGML_QUANT_SIZES
+        from quactlize import routes
+
+        formats = [
+          ("Q2_K",GT.Q2_K,[(80,82),(82,84)],10), ("Q3_K",GT.Q3_K,[(108,110)],11),
+          ("Q4_K",GT.Q4_K,[(0,2),(2,4)],12), ("Q5_K",GT.Q5_K,[(0,2),(2,4)],13),
+          ("Q6_K",GT.Q6_K,[(208,210)],14)]
+        assert quactlize.gguf_backend().startswith("ppu"), quactlize.gguf_backend()
+        floor = 2.0 ** -11
+        summaries = []
+        for name, gt, hdr, qtype in formats:
+            rng = np.random.default_rng(900 + qtype)
+            experts, n, k = 4, 24, 2048             # n != k; eight superblocks exercise K assembly
+            rows = np.array([2, 0, 3, 1], np.int64) # empty expert + genuinely ragged gathered rows
+            offsets = np.cumsum(np.r_[0, rows])
+            total = int(rows.sum())
+            raw = rng.integers(0, 256, (experts, n * (k // 256), GGML_QUANT_SIZES[gt][1]), np.uint8)
+            for e in range(experts):
+                for lo, hi in hdr:
+                    v = (rng.random(n * (k // 256)) * .03 + .002 + e * .006).astype(np.float16)
+                    raw[e, :, lo:hi] = v.view(np.uint8).reshape(-1, 2)
+            a = (rng.standard_normal((total, k)) * .2).astype(np.float16)
+
+            ref = np.empty((total, n), np.float64)
+            sumabs = np.empty_like(ref)
+            for e, count in enumerate(rows):
+                if not count: continue
+                w = gguf.quants.dequantize(raw[e].reshape(-1), gt).reshape(n, k).astype(np.float64)
+                for r in range(int(offsets[e]), int(offsets[e+1])):
+                    terms = w * a[r].astype(np.float64)[None, :]
+                    ref[r] = terms.sum(1); sumabs[r] = np.abs(terms).sum(1)
+            denom = np.maximum(sumabs, np.finfo(np.float64).tiny)
+            err = lambda got, rr=ref, dd=denom: float(np.max(np.abs(got.astype(np.float64)-rr) / dd))
+
+            # FULLY_QUANTIZED/GEMV_MOE and exact expert-base negative control.
+            bad_raw = raw.copy(); bad_raw[-1] = raw[0]
+            bad_native = routes.matmul_native_gemv_moe(torch.from_numpy(a), torch.from_numpy(bad_raw),
+                n, k, qtype, experts, torch.from_numpy(rows)).numpy()
+            assert err(bad_native) > floor, f"{name}: native oracle missed planted expert-0 reuse"
+            native = routes.matmul_native_gemv_moe(torch.from_numpy(a), torch.from_numpy(raw),
+                n, k, qtype, experts, torch.from_numpy(rows)).numpy()
+            native_err = err(native); assert native_err < floor, (name, "native MoE", native_err)
+
+            # FULLY_QUANTIZED/GEMV uses the same production .so but a distinct dense launch. Copying row zero
+            # over the last row is a well-formed addressing fault, not malformed input the wrapper could reject.
+            dense_ref, dense_den = ref[:1], denom[:1]
+            dense_err = lambda got: float(np.max(np.abs(got.astype(np.float64)-dense_ref) / dense_den))
+            native_dense_raw = raw[0].copy()
+            bad_native_dense_raw = native_dense_raw.copy(); bad_native_dense_raw[-1] = native_dense_raw[0]
+            planted_native_dense = routes.matmul_native_gemv(torch.from_numpy(a[:1]),
+                torch.from_numpy(bad_native_dense_raw), n, k, qtype).numpy()
+
+            artifact = routes.prepare_scale_first(torch.from_numpy(raw), n, k, qtype)
+            dense_artifact = tuple(x[:1].contiguous() if x.ndim >= 3 else x for x in artifact)
+
+            assert dense_err(planted_native_dense) > floor, \
+                f"{name}: native dense oracle missed planted row-0 reuse"
+            native_dense = routes.matmul_native_gemv(torch.from_numpy(a[:1]),
+                torch.from_numpy(native_dense_raw), n, k, qtype).numpy()
+            native_dense_err = dense_err(native_dense)
+            assert native_dense_err < floor, (name, "native dense", native_dense_err)
+
+            # SCALE_FIRST/GEMV and a whole low-code-plane fault.
+            bad_dense = list(dense_artifact); bad_dense[0] = torch.zeros_like(bad_dense[0])
+            planted_dense = routes.matmul_scale_first_gemv(torch.from_numpy(a[:1]), tuple(bad_dense), qtype).numpy()
+            assert dense_err(planted_dense) > floor, f"{name}: dense oracle missed planted code-plane fault"
+            dense = routes.matmul_scale_first_gemv(torch.from_numpy(a[:1]), dense_artifact, qtype).numpy()
+            sf_dense_err = dense_err(dense); assert sf_dense_err < floor, (name, "scale dense", sf_dense_err)
+
+            # SCALE_FIRST/GEMV_MOE and the same expert-base fault across every resident plane.
+            bad_artifact = [x.clone() for x in artifact]
+            for x in bad_artifact:
+                if x.ndim >= 3: x[-1].copy_(x[0])
+            planted_moe = routes.matmul_scale_first_gemv_moe(torch.from_numpy(a), tuple(bad_artifact), qtype,
+                torch.from_numpy(rows)).numpy()
+            assert err(planted_moe) > floor, f"{name}: scale MoE oracle missed planted expert-0 reuse"
+            scale_moe = routes.matmul_scale_first_gemv_moe(torch.from_numpy(a), artifact, qtype,
+                torch.from_numpy(rows)).numpy()
+            sf_moe_err = err(scale_moe); assert sf_moe_err < floor, (name, "scale MoE", sf_moe_err)
+            summaries.append(f"{name}: native={native_dense_err:.2e}/{native_err:.2e} "
+                             f"scale={sf_dense_err:.2e}/{sf_moe_err:.2e}")
+        print("; ".join(summaries))
+    ''')
+    env = dict(os.environ, QUACTLIZE_PPU_LIB=str(ppu_backend_cuda))
+    run = subprocess.run([sys.executable, "-c", code], cwd=root, env=env, capture_output=True, text=True)
+    assert run.returncode == 0, run.stdout + run.stderr
+    print(run.stdout.strip())
 
 
 @pytest.mark.parametrize("name,gt,hdr,qtype", FORMATS)

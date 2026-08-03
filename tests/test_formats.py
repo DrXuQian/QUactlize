@@ -76,13 +76,17 @@ def test_every_kquant_needs_a_native_channel_and_gptq_does_not():
 # dispatch
 # ---------------------------------------------------------------------------------------------------------------
 
-def test_decode_uses_the_only_gemv_the_repo_has_evidence_for():
-    """GPTQ symmetric is the one format with a validated GEMV here. Q4_K is deliberately absent: a Q4_K GEMV exists
-    in the wider tree, but the ones in this repository read fp16 scale planes, which at decode would have to be
-    resident -- the stored-byte increase the constraint forbids."""
+def test_decode_gemv_capability_and_storage_policy_are_separate():
+    """All five k-quants can run the scale-first GEMV, but auto selection does not silently materialise planes.
+
+    A caller explicitly providing a plane workspace can select it; the default Q4_K route remains its native-scale
+    implementation. This keeps a product storage policy from being mistaken for missing technical support.
+    """
     assert select_path(QuantType.GPTQ_INT4_SYM, 1) == "gemv"
-    assert QuantType.Q4_K not in GEMV
+    assert {QuantType.Q2_K, QuantType.Q3_K, QuantType.Q4_K, QuantType.Q5_K, QuantType.Q6_K} <= GEMV
     assert select_path(QuantType.Q4_K, 1) == "fused_native_scale"
+    for q in (QuantType.Q2_K, QuantType.Q3_K, QuantType.Q4_K, QuantType.Q5_K, QuantType.Q6_K):
+        assert select_path(q, 1, fp16_planes="workspace") == "gemv"
 
 
 def test_the_middle_band_prefers_native_scale_when_it_exists():

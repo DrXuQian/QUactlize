@@ -48,7 +48,7 @@ ROOT = os.environ.get("QUACTLIZE_ROOT") or os.path.abspath(os.path.join(HERE, ".
 # merely parsed -- the previous check consulted this list only while iterating registrations its regex happened to
 # match, so a registration that failed to parse took its requirement with it and the summary still printed "3
 # required target(s) present", a constant rather than a measurement.
-REQUIRED = ("test_moe_splitk_bench", "test_q4k_packed_gemm", "test_moe_grouped_verify")
+REQUIRED = ("test_moe_splitk_bench", "test_q4k_packed_gemm", "test_moe_grouped_verify", "quactlize_ppu")
 
 STUB = r"""
 cmake_minimum_required(VERSION 3.16)
@@ -56,6 +56,13 @@ project(quactlize_overlay_check NONE)
 
 # actlize's example helper. Records the name so the caller can assert which targets exist.
 function(cutlass_example_add_executable NAME)
+  add_custom_target(${NAME})
+  file(APPEND "${CMAKE_BINARY_DIR}/created_targets.txt" "${NAME}\n")
+endfunction()
+
+# The production backend is a library rather than an example executable, but source presence and target creation
+# are the same invariant this SDK-free configure pass checks.
+function(cutlass_add_library NAME)
   add_custom_target(${NAME})
   file(APPEND "${CMAKE_BINARY_DIR}/created_targets.txt" "${NAME}\n")
 endfunction()

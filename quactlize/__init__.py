@@ -5,10 +5,10 @@ taken from TensorRT-LLM (preprocess_weights_for_mixed_gemm) and from IST-DASLab/
 scale-swizzle and blocking for the same reason: a format's byte arrangement is host knowledge, and putting it in the
 kernel is what makes "one kernel per format" happen.
 
-TWO HALVES, AND ONLY ONE IS BOUND. The preprocessing half is a torch operator library built by setup.py; it is pure
-host C++ and works anywhere torch is installed, including a machine with no PPU. The GEMM half is device code that
-only hgcc compiles, and it is still reached through the C++ harnesses in tests/ and benchmarks/. Functions below that
-call torch.ops work; matmul_w4a16 raises with the reason.
+TWO HALVES, JOINED BY A RAW-POINTER ABI. The preprocessing half is a torch operator library built by setup.py; it is
+pure host C++ and works anywhere torch is installed, including a machine with no PPU. The GEMV device half is built
+as libquactlize_ppu.so by nvcc or hgcc and dlopened by that extension without introducing torch into device code.
+The tensor-core GEMM family remains reached through its C++ harnesses; matmul_w4a16 raises with that narrower reason.
 
 WHY torch.ops.load_library AND NOT `import quactlize._C`. The .so registers operators and defines no python module
 initialiser, which is the shape torch documents for custom ops with no python-visible surface. Importing it as a
@@ -109,6 +109,21 @@ def gguf_vecdot(blocks, x, qtype: int):
     return _ops().gguf_vecdot(blocks, x, qtype)
 
 
+def gguf_vecdot_dense(blocks, x, n: int, k: int, qtype: int):
+    """FULLY_QUANTIZED dense GEMV: one complete activation, one production CUDA-core launch."""
+    return _ops().gguf_vecdot_dense(blocks, x, n, k, qtype)
+
+
+def gguf_vecdot_moe(blocks, x, row_offsets, qtype: int):
+    """FULLY_QUANTIZED MoE decode through the device library.
+
+    `blocks` is uint8 `[experts,n*k/256,type_size]`, `x` is gathered fp16/fp32 `[total_rows,k]`, and
+    `row_offsets` is int32 `[experts+1]`. Returns fp32 `[total_rows,n]`. There is deliberately no CPU fallback:
+    expert/ragged launch plumbing is the operation being requested.
+    """
+    return _ops().gguf_vecdot_moe(blocks, x, row_offsets, qtype)
+
+
 def gguf_dequantize(blocks, qtype: int):
     """RAW GGUF blocks -> full fp16 weights. THE FALLBACK PATH'S MISSING LINK.
 
@@ -136,6 +151,27 @@ def gguf_unpack(blocks, qtype: int):
     is a test that can fail. Codes are SIGNED for Q3_K (-4..3) and Q6_K (-32..31); int8 covers every format.
     """
     return _ops().gguf_unpack(blocks, qtype)
+
+
+def gguf_prepare_gemv(blocks, n: int, k: int, qtype: int):
+    """Build gemv_lowbit's resident SCALE_FIRST artifact from raw GGUF blocks.
+
+    `blocks` is `[n*k/256,type_size]` for dense or `[experts,n*k/256,type_size]` for MoE. Returns
+    `(low, high, scale, zero)`: native packed code planes `[experts,n,...]` and fp16 planes
+    `[experts,k/group_size,n]`. `high` is empty for single-plane formats. The extra expert dimension is retained
+    for dense (size one) so the artifact has one shape at the device-library boundary.
+    """
+    return _ops().gguf_prepare_gemv(blocks, n, k, qtype)
+
+
+def gguf_gemv_scale_first(a, low, high, scale, zero, qtype: int):
+    """Dense CUDA-core GEMV over a resident `gguf_prepare_gemv` artifact."""
+    return _ops().gguf_gemv_scale_first(a, low, high, scale, zero, qtype)
+
+
+def gguf_gemv_scale_first_moe(a, low, high, scale, zero, row_offsets, qtype: int):
+    """Ragged MoE CUDA-core GEMV over a resident `gguf_prepare_gemv` artifact."""
+    return _ops().gguf_gemv_scale_first_moe(a, low, high, scale, zero, row_offsets, qtype)
 
 
 def gguf_backend():
@@ -263,6 +299,6 @@ def matmul_w4a16(a, b_packed, scales, zeros=None, group_size: int = 128,
 
 __all__ = [
     "preprocess_weights_to_layout", "symmetric_quantize", "symmetric_quantize_unprocessed",
-    "gguf_scale_prepass", "gguf_scale_block_shape", "gguf_vecdot", "gguf_dequantize", "gguf_unpack", "gguf_backend", "gguf_pack_unit", "gguf_unit_decode", "gguf_q4_artifact_dequantize",
+    "gguf_scale_prepass", "gguf_scale_block_shape", "gguf_vecdot", "gguf_vecdot_dense", "gguf_vecdot_moe", "gguf_dequantize", "gguf_unpack", "gguf_prepare_gemv", "gguf_gemv_scale_first", "gguf_gemv_scale_first_moe", "gguf_backend", "gguf_pack_unit", "gguf_unit_decode", "gguf_q4_artifact_dequantize",
     "pack_int4", "unpack_int4", "pack_uint4", "unpack_uint4", "matmul_w4a16",
 ]

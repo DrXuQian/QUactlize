@@ -11,7 +11,7 @@ Q3_K, Q5_K and Q6_K — reached through **bit-plane decomposition** rather than 
 | **Mixed-input grouped GEMM** | MoE, one weight matrix per expert, per-group scale and zero. `quactlize/include/moe_grouped_ppu.cuh` |
 | **Dense mixed-input GEMM** | `fpA_intB_ppu.cuh` |
 | **Split-K grouped GEMM** | the slice on `gridDim.z`, a light reduce kernel after. `moe_splitk_ppu.cuh` |
-| **CUDA-core GEMV** | the decode band, no shared memory in the main loop. `quactlize/include/gemv_lowbit/` |
+| **CUDA-core GEMV** | native GGUF and resident scale-first, dense or ragged MoE. `gguf_vecdot.hpp`, `gemv_lowbit/` |
 | **Format definitions and the offline** | `gguf_scale_layout.hpp`, `xplane_offline.hpp`, `tools/` |
 
 ### Formats
@@ -53,6 +53,9 @@ without them. `build.sh` overlays a target into actlize's example tree and build
 git submodule update --init --recursive
 TARGET=test_moe_grouped_verify ./build.sh
 $BIN/test_moe_grouped_verify 8 1
+
+# Production raw-pointer device library loaded by the Python host extension
+TARGET=quactlize_ppu ./build.sh
 ```
 
 `PPU_DEFS=<space-separated defines>` reaches both the host and the device compile, and the build prints
@@ -64,6 +67,15 @@ and any A/B taken from that binary is comparing a build with itself.
 `benchmarks/run_batch.sh` builds a set of variants, keeps each binary before the next build deletes it, checks
 they are byte-distinct, runs the correctness gates, and only then times one pinned configuration. Same-config
 run-to-run spread on this part is around 13%, so numbers are only comparable within one invocation.
+
+The decode routes have a local nvcc benchmark at both the saturated and shipping shapes:
+
+```bash
+python benchmarks/decode_routes_bench.py --reps 9 --experts 8
+```
+
+It reports Gelem/s and percentage of the RTX 5090's 1.792 TB/s peak; exact results and the L2 caveat are in
+`docs/DECODE_GEMV_RESULTS.md`.
 
 ## Status
 

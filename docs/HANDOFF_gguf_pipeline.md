@@ -4,7 +4,7 @@ What exists, what is verified and by what, what is not, and the traps that cost 
 
 ---
 
-## 1. The four routes, and why there are four
+## 1. The execution routes
 
 A GGUF k-quant checkpoint can reach the hardware four ways. They differ in **what gets materialised**, and that is
 the whole basis for choosing between them.
@@ -14,7 +14,8 @@ the whole basis for choosing between them.
 | **fallback** | `DEQUANT_FIRST` | the whole weight as fp16, then cuBLAS / DeepGemm | write 8.39 + read 8.39 MB, and the GEMM then reads 8.39 instead of 2.36 |
 | **pre-pass** | `SCALE_FIRST` | the fp16 scale/zero planes, in a workspace | write 0.52 + read 0.52 MB |
 | **packed** | `FULLY_QUANTIZED` | nothing; the collective decodes the scale in-kernel | none, plus an UNDETERMINED tax (see §3) |
-| **GEMV** | `FULLY_QUANTIZED` | nothing; the scale pair is consumed in registers | none |
+| **native GEMV** | `FULLY_QUANTIZED` | nothing; the scale pair is consumed in registers | none |
+| **resident GEMV** | `SCALE_FIRST` | packed code planes plus resident fp16 scale/zero planes | format-dependent |
 
 The fallback's extra traffic is **16×** the pre-pass's and its GEMM reads **3.6×** more bytes, so the crossover is in
 **M**, not in implementation quality: at decode it is absurd, in the middle band the pre-pass's 1.05 MB constant
@@ -22,20 +23,17 @@ trades against the packed path's rate, and only at large M does reuse amortise t
 cuBLAS-grade efficiency to pay for the bytes. `formats.select_path` already takes `num_rows`; what it lacks is
 measurement to set the thresholds with.
 
-**Two of these are callable from Python now** (`quactlize/routes.py`), which is what makes that measurement possible
-at all: `matmul_dequant_first` (dense and per-expert) and `matmul_native_gemv`. Both are checked against the official
-`gguf` package for all five k-quants. The CPU native-GEMV witness accumulates the fp16 input in fp32 and measures
-1.4e-7 relative error; the shipping CUDA kernel accumulates in half2, so its separate direct-device gate is conditioned by
-`sum(abs(w*x))` and measures 1.05e-4..2.02e-4. The dense route is exercised on a CUDA tensor so its GEMM is the
-library rather than a CPU matmul.
+All four CUDA-core GEMV launches are callable from Python now (`native/scale-first × dense/MoE`). The production
+raw-pointer `.so` is tested against official gguf for all five k-quants, with a separate planted fault for each launch.
+See `docs/DECODE_GEMV_RESULTS.md` for the 20-case oracle and both required benchmark shapes.
 
 The fallback sat at "a piece exists, the path does not" on a note saying the remainder was *host-side wiring*. The
 note was accurate and it functioned as a blocker anyway: the remainder was `a @ w.T`, and the cost of not writing it
 was that **no two routes had ever produced the same number in the same process**.
 
-**The pre-pass removes the STORAGE objection, not the RESIDENCY one.** Materialising fp16 planes costs +9…52% stored
-bytes depending on format, which the project forbids; a workspace does not count. But at decode the planes would be
-rebuilt every token, so that band needs a native path — which is what the GEMV route is for.
+The resident scale-first artifact costs +9…52% depending on format. That remains a product/storage choice, not a
+technical support claim: the scale-first dense and MoE GEMV cells are now validated, while native GEMV remains the
+byte-minimal decode route.
 
 ---
 
@@ -132,9 +130,8 @@ the CTA supply and was still **7.4% slower**. The 5090 does not reproduce that o
 it: the result is L2-served, no 5090 collective was measured against it, and this project has a recorded case
 of configuration rankings inverting between the two machines at gs=32.
 
-⚠ Strictly `SCALE_FIRST`. `gemv_lowbit` reads pre-materialised fp16 scale and zero planes. What this scopes is
-the *structural* upside of `FULLY_QUANTIZED × GEMV_MOE` — still an empty cell in schemes.py — not its
-native-scale decode cost, which is the term that would actually be added.
+This earlier result is strictly `SCALE_FIRST`. The native GGUF MoE launch now exists separately and is measured with
+the same rows/expert convention in `docs/DECODE_GEMV_RESULTS.md`.
 
 Two things that did transfer, because they are properties of the binary rather than of the machine: the SASS
 contains **zero tensor-op mnemonics and 287,278 half2 arithmetic instructions**, so "CUDA cores only" is
@@ -188,9 +185,8 @@ explains a large part of the apparent saturated-SIMT advantage (65.5% at rows=13
 it: seven cold bandwidth-percentage points remain, and the CTAs still have different delivery, dependency and
 barrier chains. Warm SIMT is an L2-resident counterfactual at this size, not a PPU HBM comparison.
 
-⚠ Even the matched row has no expert gather, routing or ragged-row handling — `vecdot_rows_kernel` is dense-only —
-so it bounds a native-scale MoE GEMV rather than predicting one. That kernel does not exist; see
-`FULLY_QUANTIZED × GEMV_MOE` in schemes.py.
+The bound described here is historical. `vecdot_rows_kernel<Grouped=true>` now adds grid.z expert bases and ragged
+`row_offsets`; its direct native-MoE results supersede this dense extrapolation.
 
 The collective's 0.44 is set first by **tile count**: at the pinned `16x128:256` shape, eight active experts times
 `ceil(2048/128)=16` N tiles is 128 CTAs. acu's four-block/CU capacity is shared-memory-limited (57,344 B per CTA in
@@ -326,9 +322,8 @@ side. One thread per block puts a warp's lane addresses 512 bytes apart, so one 
 32-byte sectors for 64 useful bytes: **6.25% sector utilisation, exactly 16× worse** than lanes touching consecutive
 elements. Partitioning fixes the sectors; native packed-code extraction remains the dominant GEMV term afterward.
 
-**None of them run on PPU.** They compile under nvcc and run on a 5090; the PPU device path goes through
-`build.sh`/hgcc and the dlopen seam (`ppu_backend.{h,cpp}`), which is wired but has no `libquactlize_ppu.so` behind
-it yet.
+The production source now builds `libquactlize_ppu.so` and the dlopen seam resolves its five required symbols. It is
+compiled and run under nvcc in CI; `build.sh` registers the same source as an hgcc `cutlass_add_library` target.
 
 ---
 
@@ -374,18 +369,13 @@ one reads a contiguous run.
 5. **The destination should be a cute Tensor/Layout, not a callable** — measured: partitioning physical output
    addresses and deriving logical source indices with `right_inverse` is **3× faster** than striping logical indices
    (65.5 vs 196.6 µs) on a non-affine layout.
-6. **The GEMV's PPU launcher, not its kernel** — the host side is done: the CPU-resolved
-   `routes.matmul_native_gemv` assembly agrees with the oracle to 1.4e-7, while the direct CUDA fp16 kernel has its
-   separate conditioned `2^-11` gate. The route stays PARTIAL because its Python assembly tiles the *activation*
-   k/256-fold on the host — correct, and useless as a timing. `vecdot_rows_kernel` is tuned and CUDA-validated now;
-   `libquactlize_ppu.so` still needs the exported launch entry before Python reaches it on PPU. `gemv_lowbit`
-   remains the separate tuned `SCALE_FIRST` route, not a native-scale substitute.
+6. **SCALE_FIRST × DENSE hides a mechanism** — `fpA_intB_ppu.cuh` hardcodes int4 and has no second-plane input.
+   Q2_K needs an int2 dense instantiation; Q3_K/Q5_K/Q6_K need the separate plane joined in the dense converter.
+   It remains PARTIAL rather than pretending the scale-first GEMV binding also filled a tensor-core launcher.
 
-7. **The registry's path vocabulary is coarser than the matrix** — four path names, nine cells. Two shares are
-   wrong enough to matter: `fully_quantized/gemv` would be approved by the fp16-*plane* GEMV harness, and
-   `dequant_first/gemv` by a GEMM. Both are mapped anyway, because an *unmapped* cell is approved by default —
-   the lookup that should refuse it finds nothing to check — and a test now refuses any VALIDATED claim in them.
-   Splitting the vocabulary is the fix; it is a task, not a surprise.
+7. **The registry GEMV vocabulary is split now** — native/scale-first and dense/MoE have four distinct path names.
+   The historical coarse `gemv` name remains for old harness reports, and `_CELL_PATH_IS_COARSE` remains as the
+   refusal mechanism for any future neighbouring-kernel evidence share.
 
 8. **`ci/registry.py`'s completeness sweep is `.cu` only.** Every CUDA harness must be declared; a Python one need
    not be. Turning it on requires declaring every existing `tests/*.py`, and a sweep that goes red the moment it is

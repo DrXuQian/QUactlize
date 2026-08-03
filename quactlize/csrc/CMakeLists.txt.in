@@ -147,6 +147,13 @@ ppu_w4a16_executable(
 )
 target_compile_options(test_gemv_lowbit PRIVATE -w)
 
+# Python device backend: a shared C ABI with no torch dependency. The host extension dlopens this exact filename;
+# building it through actlize keeps hgcc, the PPU runtime libraries and every device include identical to the proven
+# harnesses. The source also builds as a plain nvcc .so for the local independent-oracle test.
+cutlass_add_library(quactlize_ppu SHARED ppu_backend.cu)
+target_link_libraries(quactlize_ppu PRIVATE CUTLASS cutlass_tools_util_includes ppu::driver)
+set_target_properties(quactlize_ppu PROPERTIES OUTPUT_NAME quactlize_ppu)
+
 # ---------------------------------------------------------------------------------------------------
 # Decode-band perf: the CUDA-core-only GEMV winner. ONE GENERATED .cu PER CONFIG, for the same reason the MoE
 # sweep is generated: one .cu is one compiler invocation, so a single-TU sweep compiles strictly serially no

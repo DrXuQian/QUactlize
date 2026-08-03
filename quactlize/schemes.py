@@ -11,7 +11,7 @@ BEFORE THE GEMM RUNS. There are three answers and they are different kernels, no
 
 Crossed with the GEMM shape -- dense, grouped (MoE), and the CUDA-core GEMV used at decode -- that is the grid a
 reader needs to see before asking "is format X supported". "Supported" alone is not a fact: Q4_K is validated on
-SCALE_FIRST/grouped, exists behind a build flag on FULLY_QUANTIZED/grouped, and has nothing at all on GEMV.
+both CUDA-core GEMV schemes, but only FULLY_QUANTIZED/grouped reads its native scale unit in the tensor-core band.
 
 THE FOUR CAPABILITY SETS IN formats.py ARE CROSS-CHECKED AGAINST THIS TABLE, not derived from it -- formats.py
 cannot import this module, because this one imports formats.py for QuantType. The distinction matters because the
@@ -176,12 +176,11 @@ _add(Scheme.DEQUANT_FIRST, Shape.GEMV, _KQUANTS, Impl(
 # --- SCALE_FIRST x DENSE for the k-quants: both halves exist and nobody has joined them ------------------------
 _add(Scheme.SCALE_FIRST, Shape.DENSE, _KQUANTS, Impl(
     Status.PARTIAL, _DENSE, note=(
-        "the pre-pass produces exactly what this launcher consumes -- fp16 scale and zero planes over packed "
-        "codes -- and fpA_intB_ppu.cuh consumes exactly that for GPTQ int4. What is missing is the join: no "
-        "caller hands a k-quant's pre-passed planes to the dense launcher, and no harness runs the pair. Note the "
-        "launcher's own GPTQ cell is only IMPLEMENTED, because its test compares the launcher against another "
-        "configuration of ITSELF -- so joining these would inherit an oracle that cannot see a wrong shared "
-        "constant, not gain one")))
+        "the requested fpA_intB_ppu.cuh seam is not format-general: its public arguments and ElementB are hardcoded "
+        "cutlass::int4b_t. It has neither an int2 dense instantiation for Q2_K nor the PlaneB2 input/converter used "
+        "by Q3_K/Q5_K/Q6_K. Q4_K alone has the right code width, but the requested five-format cell therefore hides "
+        "new dense compute mechanisms rather than one join, so it was not started. Even a future Q4 join inherits "
+        "only test_fpA_intB_ppu's self-comparison and must stay IMPLEMENTED until it gains an independent oracle")))
 
 # --- FULLY_QUANTIZED x DENSE: structural, not unfinished -------------------------------------------------------
 _add(Scheme.FULLY_QUANTIZED, Shape.DENSE, _KQUANTS, Impl(
@@ -208,26 +207,25 @@ _add(Scheme.SCALE_FIRST, Shape.GROUPED, (QuantType.GPTQ_INT4_ASYM, QuantType.AWQ
 # while MoE decode shared a cell with dense decode.
 _add(Scheme.SCALE_FIRST, Shape.GEMV_MOE, (QuantType.GPTQ_INT4_SYM,), Impl(
     Status.IMPLEMENTED, _GEMV, note=(
-        "the Grouped arm: experts on the grid's z dimension, ragged rows through row_offsets. IMPLEMENTED rather "
-        "than VALIDATED because ci/registry.py has ONE path name, 'gemv', for both MoE and dense decode -- so the "
-        "synthetic oracle that covers the dense arm would silently approve this one. schemes._CELL_PATH_IS_COARSE "
-        "names that, and a consistency test refuses to let this cell be called VALIDATED until the vocabulary is "
-        "split")))
+        "the Grouped arm: experts on the grid's z dimension, ragged rows through row_offsets. The registry path is "
+        "now distinct from dense decode. Kept at IMPLEMENTED because the new imported-GGUF oracle and its planted "
+        "expert-base fault cover the five k-quants, not a GPTQ checkpoint/importer")))
 _add(Scheme.SCALE_FIRST, Shape.GEMV_MOE, _KQUANTS, Impl(
-    Status.PARTIAL, _GEMV, note=(
-        "same launcher, same blocker as the dense GEMV cell: it reads fp16 scale planes, which at decode must be "
-        "resident, and that is the stored-byte increase the constraint forbids")))
+    Status.VALIDATED, _GEMV, note=(
+        "gguf_prepare_gemv builds resident low/high code planes plus fp16 scale/zero planes, and the production raw-"
+        "pointer backend reaches gemv_lowbit's Grouped arm with experts on grid.z and ragged row_offsets. "
+        "test_gguf_routes compares all five formats with the official gguf dequantiser at n=24, k=2048, four "
+        "different experts and rows [2,0,3,1], and first proves the oracle rejects an expert-0 base reuse fault")))
 
-# THE GAP THIS COLUMN EXISTS TO MAKE VISIBLE. The native-scale GEMV is DENSE-ONLY: vecdot_rows_kernel takes one
-# weight, one row range, no expert gather and no routing. Measured at MoE-sized WORK (16384 rows = 8 experts x
-# 2048) the dense kernel reaches 51.6% of peak cold and 68.1% warm against the tensor-core collective's 29.87%
-# Memory SoL at the same band -- but that number has no gather in it, so it is an UPPER BOUND on what a real MoE
-# GEMV would reach, not a result. This is the cell A3B's decode actually needs, and it is empty.
+# Native-scale MoE decode extends the dense subgroup kernel by exactly the missing launch dimensions: grid.z owns
+# the expert, grid.y owns a routed row within that expert, row_offsets gathers activation/output rows, and the raw
+# block base advances by the expert stride. The block decoder and CUDA-core dot loop remain shared with dense GEMV.
 _add(Scheme.FULLY_QUANTIZED, Shape.GEMV_MOE, _KQUANTS, Impl(
-    Status.ABSENT, "", note=(
-        "vecdot_rows_kernel is dense-only: one weight, no expert gather, no routing, no ragged rows. The band an "
-        "MoE model spends decode in -- top-k experts, one token each -- has no native-scale kernel. Recorded "
-        "elsewhere as 'A3B decode bulk unaccelerated, needs a separate MoE GEMV'")))
+    Status.VALIDATED, "quactlize/include/gguf_vecdot.hpp", note=(
+        "the production device library launches vecdot_rows_kernel<Grouped=true> over grid.z experts, gathers "
+        "ragged rows through row_offsets, and advances the native GGUF weight base per expert. test_gguf_routes "
+        "covers all five formats against official gguf with asymmetric n/k and different bytes per expert, after "
+        "requiring the oracle to reject an exact last-expert-reads-expert-0 planted fault")))
 
 _add(Scheme.DEQUANT_FIRST, Shape.GEMV_MOE, _KQUANTS, Impl(
     Status.VALIDATED, _ROUTES, note=(
@@ -240,17 +238,12 @@ _add(Scheme.SCALE_FIRST, Shape.GEMV, (QuantType.GPTQ_INT4_SYM,),
          "test_gemv_lowbit's scale-only int4 sweep IS the GPTQ symmetric representation -- same packing, same fp16 "
          "scale dtype, zero folded into the code range. Synthetic: no real checkpoint reaches the GEMV")))
 
-# Every k-quant is absent from GEMV, and for one reason: these GEMV kernels read fp16 scale planes, and at decode
-# those planes have to be resident, which is exactly the stored-byte increase the product constraint forbids.
 _add(Scheme.SCALE_FIRST, Shape.GEMV, _KQUANTS, Impl(
-    Status.PARTIAL, _GEMV, note=(
-        "the GEMV kernels read fp16 scale planes, which at decode must be resident -- the stored-byte increase the "
-        "constraint forbids. The PRE-PASS does not fix that: it removes the storage cost by building the planes in "
-        "a workspace, and at decode they would be rebuilt every token. What changed is that the offline chain now "
-        "reaches this launcher -- gguf_unpack then pack_int4 then preprocess_weights_to_layout, all validated ops -- "
-        "and the row permutation was MEASURED to stay inside its own 32-block for both int4 and int8, so a scale "
-        "plane indexed by k//gs is unaffected by the reorder. So this is wiring, not a kernel. The native-scale "
-        "answer for this band is the FULLY_QUANTIZED entry")))
+    Status.VALIDATED, _GEMV, note=(
+        "gguf_prepare_gemv makes the five k-quant code planes and resident fp16 scale/zero planes reachable from "
+        "Python, then libquactlize_ppu.so calls the CUDA-core gemv_lowbit launcher. test_gguf_routes checks the "
+        "production .so against official gguf at asymmetric n=24/k=2048 and first zeros the complete low-code "
+        "plane to demonstrate that this dense kernel's oracle fails on a well-formed planted fault")))
 
 # --- FULLY_QUANTIZED: one format, behind a flag -----------------------------------------------------------------
 _add(Scheme.FULLY_QUANTIZED, Shape.GROUPED, (QuantType.Q4_K,), Impl(
@@ -263,24 +256,11 @@ _add(Scheme.FULLY_QUANTIZED, Shape.GROUPED, (QuantType.Q4_K,), Impl(
 _add(Scheme.FULLY_QUANTIZED, Shape.GROUPED, (QuantType.Q2_K,), _NO_PACKED_TRAITS)
 _add(Scheme.FULLY_QUANTIZED, Shape.GROUPED, tuple(TWO_PLANE), _NO_PACKED_2PLANE)
 _add(Scheme.FULLY_QUANTIZED, Shape.GEMV, _KQUANTS, Impl(
-    Status.PARTIAL, "quactlize/include/gguf_vecdot.hpp", note=(
-        "the band with no M reuse, so the mid band's shared-memory publication buys nothing and the scale pair has "
-        "to be consumed where it is produced. The DECODE exists for all five and is checked as a DOT PRODUCT "
-        "against the official gguf package -- which the per-group scale tests cannot do, since a decoder with the "
-        "right scales and the wrong element order passes those. dp4a is ruled out by decision: it quantises the "
-        "activation and this band has no second chance at the error, and PPU is confirmed to have an int8 TENSOR "
-        "core but not a cuda-core four-way int8 dot. THE HOST SIDE IS WIRED NOW -- routes.matmul_native_gemv "
-        "assembles a full (1, n) product from the per-block op. Its CPU fp32 witness agrees with the official gguf "
-        "package to 1.4e-7; the direct CUDA fp16/half2 kernel has a separate conditioned-error gate at 2^-11 and "
-        "observes 1.05e-4..2.02e-4. It stays PARTIAL because that assembly tiles the ACTIVATION k/256-fold on the "
-        "host: correct, and useless as a timing. The native kernel is subgroup-cooperative and CUDA-validated for "
-        "all five; at rows=131072, bpr=8 on a 5090 its cold element rate is 1659..3361 Gelem/s and it reaches "
-        "55.4%..76.1% of peak HBM bandwidth. A runtime rows/bpr policy separately covers the 2048-row decode shape. "
-        "Adjacent Q4/Q5 groups share one 32-byte run per owner lane, and every format extracts four codes from each "
-        "aligned word with checked fallbacks and actlize's shared byte4-to-half converter. What "
-        "keeps this PARTIAL is device-library wiring: "
-        "libquactlize_ppu.so still needs to export a launcher for this kernel before the Python route is a PPU "
-        "inference path")))
+    Status.VALIDATED, "quactlize/include/gguf_vecdot.hpp", note=(
+        "libquactlize_ppu.so now exports the subgroup-cooperative native GGUF launcher, so the Python route is one "
+        "device GEMV rather than the old host k/256 assembly. test_gguf_routes runs that production ABI for all "
+        "five formats against official gguf at n=24/k=2048 and proves a copied first-to-last weight row is rejected "
+        "before accepting the real output. The kernel uses fp16/half2 CUDA-core arithmetic only: no MMA or dp4a")))
 
 
 def get(scheme: Scheme, shape: Shape, fmt: QuantType) -> Impl:
@@ -308,37 +288,20 @@ _CELL_PATH = {
     (Scheme.DEQUANT_FIRST, Shape.GROUPED): "dequant_then_dense",
     (Scheme.SCALE_FIRST, Shape.DENSE): "fused_fp16_scale",
     (Scheme.SCALE_FIRST, Shape.GROUPED): "fused_fp16_scale",
-    (Scheme.SCALE_FIRST, Shape.GEMV): "gemv",
+    (Scheme.SCALE_FIRST, Shape.GEMV): "scale_first_gemv",
     (Scheme.FULLY_QUANTIZED, Shape.DENSE): "fused_native_scale",
     (Scheme.FULLY_QUANTIZED, Shape.GROUPED): "fused_native_scale",
-    (Scheme.FULLY_QUANTIZED, Shape.GEMV): "gemv",
+    (Scheme.FULLY_QUANTIZED, Shape.GEMV): "native_gemv",
     (Scheme.DEQUANT_FIRST, Shape.GEMV): "dequant_then_dense",
-    (Scheme.SCALE_FIRST, Shape.GEMV_MOE): "gemv",
-    (Scheme.FULLY_QUANTIZED, Shape.GEMV_MOE): "gemv",
+    (Scheme.SCALE_FIRST, Shape.GEMV_MOE): "scale_first_gemv_moe",
+    (Scheme.FULLY_QUANTIZED, Shape.GEMV_MOE): "native_gemv_moe",
     (Scheme.DEQUANT_FIRST, Shape.GEMV_MOE): "dequant_then_dense",
 }
 
-# WHERE THE PATH VOCABULARY IS COARSER THAN THE CELL. ci/registry.py has four path names and this table has nine
-# cells, so some cells share a name -- and sharing a name means sharing EVIDENCE. Two of those shares are wrong
-# enough to matter:
-#
-#   fully_quantized/gemv  borrows "gemv", whose only harness is the fp16-PLANE GEMV. Native-scale and fp16-plane
-#                         GEMV are precisely the two routes the decode band must choose between.
-#   dequant_first/gemv    borrows "dequant_then_dense", whose harness runs a GEMM at m in (1, 7, 64). A materialise-
-#                         then-GEMV route shares the materialisation and nothing else.
-#
-# Left mapped rather than unmapped, because an UNMAPPED cell is approved by default: the lookup that should refuse
-# it finds nothing to check and returns no problem. Mapped-but-listed-here is refused instead -- a consistency test
-# asserts no cell in this set is VALIDATED, so the day one is, the vocabulary has to be split first.
-_CELL_PATH_IS_COARSE = frozenset({
-    (Scheme.FULLY_QUANTIZED, Shape.GEMV),
-    # The registry's single "gemv" cannot tell MoE decode from dense decode either. gemv_lowbit's grouped arm is
-    # a different launch -- experts on the grid's z dimension, rows gathered through row_offsets -- and while
-    # test_gemv_lowbit does drive it, the registry records ONE path name for both, so evidence for either arm
-    # would silently approve the other.
-    (Scheme.SCALE_FIRST, Shape.GEMV_MOE),
-    (Scheme.FULLY_QUANTIZED, Shape.GEMV_MOE),
-})
+# WHERE THE PATH VOCABULARY IS COARSER THAN THE CELL. Keep this refusal mechanism even when empty: adding a new
+# shared registry name must add the affected cells here until evidence is split. The former "gemv" collision is
+# now four paths (native/scale-first x dense/MoE), so none of those cells borrows a neighbouring launch's harness.
+_CELL_PATH_IS_COARSE = frozenset()
 # THE DEQUANT_FIRST GEMV CELLS ARE NOT COARSE, and I had them here until this test refused a VALIDATED claim on
 # one. Under this scheme a GEMV is not a different kernel: the weight is materialised to fp16 and handed to the
 # same library call, so "GEMV" is that GEMM at m=1 and MoE decode is the grouped route at one row per expert.

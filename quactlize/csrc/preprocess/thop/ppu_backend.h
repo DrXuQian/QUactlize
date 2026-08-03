@@ -26,11 +26,20 @@ struct Api {
   // blocks [rows*blocks_per_row, block_bytes], x fp16 [blocks_per_row*256], out fp32 [rows]
   int (*vecdot)(uint8_t const* blocks, int64_t block_bytes, uint16_t const* x, float* out,
                 int rows, int blocks_per_row, int qtype);
+  // blocks [E,n,bpr,block_bytes], gathered x [total_rows,bpr*256], offsets [E+1], out [total_rows,n]
+  int (*vecdot_moe)(uint8_t const* blocks, int64_t block_bytes, uint16_t const* x,
+                    int const* row_offsets, float* out, int n, int blocks_per_row, int experts,
+                    int total_rows, int max_rows, int qtype);
   // blocks [n_blocks, block_bytes] -> out fp16, dst_span elements per block
   int (*dequantize)(uint8_t const* blocks, int64_t block_bytes, uint16_t* out, int n_blocks, int qtype);
   // scale blocks + fp16 headers -> the two planes
   int (*prepass)(uint8_t const* blocks, int64_t block_bytes, uint16_t const* d, uint16_t const* dmin,
                  int n, uint16_t* scale, uint16_t* zero, int groups, int qtype, int zmul);
+  // Resident SCALE_FIRST artifact -> fp16 GEMV result. experts==0 is dense; otherwise offsets is [E+1].
+  int (*gemv_lowbit)(uint16_t const* act, uint8_t const* low, uint8_t const* high,
+                     uint16_t const* scale, uint16_t const* zero, uint16_t* out,
+                     int total_rows, int n, int k, int group_size, int qtype,
+                     int experts, int const* row_offsets, int max_rows);
 };
 
 // Loads libquactlize_ppu.so once. QUACTLIZE_PPU_LIB overrides the path, which is what lets a stub stand in for the

@@ -33,6 +33,13 @@ ROOT = Path(__file__).resolve().parent.parent
 # Path names match quactlize.formats' capability sets. "scale_decode" and "probe" are not GEMM paths -- they are
 # harnesses for a component -- and are named so they cannot be mistaken for evidence of a path.
 GEMV_P, NATIVE_P, FP16_P, DENSE_P = "gemv", "fused_native_scale", "fused_fp16_scale", "dequant_then_dense"
+# Keep the historical coarse name above: older harness reports and generated build targets use it. Matrix evidence
+# uses the four launch-specific names below, so a dense result can no longer approve a gathered expert kernel (or
+# an fp16-plane result approve the native-block decoder) just because all four are colloquially called GEMV.
+SCALE_GEMV_P = "scale_first_gemv"
+SCALE_GEMV_MOE_P = "scale_first_gemv_moe"
+NATIVE_GEMV_P = "native_gemv"
+NATIVE_GEMV_MOE_P = "native_gemv_moe"
 
 HARNESS_PATHS = {
     "test_moe_grouped_verify": [FP16_P], "test_moe_grouped_real": [FP16_P], "test_lowbit_grouped": [FP16_P],
@@ -40,12 +47,14 @@ HARNESS_PATHS = {
     "test_w2a16_real": [FP16_P], "test_q4k_packed_gemm": [NATIVE_P, FP16_P], "test_q4k_native_scale": ["scale_decode"],
     "test_ppu_f16x2_probe": ["probe"], "test_w1a16_grouped": [FP16_P], "test_w2a16_grouped": [FP16_P],
     "test_w1a16_diag": [FP16_P], "test_w2a16_diag": [FP16_P], "test_w4a16_diag": [FP16_P],
-    "test_fpA_intB_ppu": [FP16_P], "test_gemv_lowbit": [GEMV_P], "test_moe_gemm_ppu": [FP16_P],
+    "test_fpA_intB_ppu": [FP16_P],
+    "test_gemv_lowbit": [GEMV_P, SCALE_GEMV_P, SCALE_GEMV_MOE_P],
+    "test_moe_gemm_ppu": [FP16_P],
     "test_moe_grouped_ppu": [FP16_P],
     # THE FIRST EVIDENCE FOR dequant_then_dense. Until this existed DENSE_P appeared in the path vocabulary and in
     # no harness at all, which is the honest state of a route whose host side was never wired -- and check_against_
     # formats() said nothing, because formats.DEQUANT_THEN_DENSE was empty too. Two empty sets agree.
-    "test_gguf_routes": [DENSE_P],
+    "test_gguf_routes": [DENSE_P, SCALE_GEMV_P, SCALE_GEMV_MOE_P, NATIVE_GEMV_P, NATIVE_GEMV_MOE_P],
 }
 
 # harness -> (formats it covers, oracle kind, fixture it must read or None, note)
@@ -90,7 +99,8 @@ HARNESSES = {
     # spec over generated inputs, which is exactly this file's definition of synthetic. Real-checkpoint bytes reach
     # only Q4_K, through test_q4k_packed_gemm, and that is a different path.
     "test_gguf_routes":         (["gguf-q2k", "gguf-q3k", "gguf-q4k", "gguf-q5k", "gguf-q6k"], "synthetic", None,
-        "raw blocks -> fp16 weight -> torch's cuBLAS, dense and per-expert, against the official gguf package"),
+        "official gguf oracle over raw-block dense fallback plus production native and scale-first GEMV dense/MoE; "
+        "asymmetric n/k, ragged experts, and a launch-specific planted fault before every positive comparison"),
 }
 
 # Formats we intend to ship, and what each one needs before it can be called supported.
@@ -133,7 +143,7 @@ def check_against_formats():
     have = coverage_by_path()
     quant_to_format = {v: k for k, v in FORMAT_TO_QUANT_TYPE.items()}
     bad = []
-    for set_name, path in (("GEMV", GEMV_P), ("FUSED_NATIVE_SCALE", NATIVE_P),
+    for set_name, path in (("GEMV", SCALE_GEMV_P), ("FUSED_NATIVE_SCALE", NATIVE_P),
                            ("FUSED_FP16_SCALE", FP16_P), ("DEQUANT_THEN_DENSE", DENSE_P)):
         for q in sorted(getattr(formats, set_name), key=lambda x: x.name):
             fmt = quant_to_format.get(q.name)

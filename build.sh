@@ -22,7 +22,7 @@ ACTLIZE="$(cd "$HERE/third_party/actlize" && pwd)"
 # (45 files, 45 distinct names; the completeness check below is what keeps that true as files are added).
 # gemv_lowbit stays a real subdirectory because sources say #include "gemv_lowbit/gemv_launcher.hpp": the directory
 # name is load-bearing, so renaming it would have been churn for nothing.
-_src_dirs=(quactlize/include tests benchmarks)
+_src_dirs=(quactlize/include quactlize/csrc/device tests benchmarks)
 _subdir_src="quactlize/include/gemv_lowbit"
 EX_NAME="99_kernels_w4a16_compare"
 EX_DIR="$ACTLIZE/examples/$EX_NAME"
@@ -383,13 +383,19 @@ if [ -n "${PPU_DEFS:-}" ]; then
   fi
 fi
 
-BIN="$(find "$BUILD" -name "$TARGET" -type f -perm -u+x | head -1)"
+if [ "$TARGET" = quactlize_ppu ]; then
+  BIN="$(find "$BUILD" -name 'libquactlize_ppu.so' -type f | head -1)"
+else
+  BIN="$(find "$BUILD" -name "$TARGET" -type f -perm -u+x | head -1)"
+fi
 echo
 echo "built: $BIN"
 # Per-target run hint. The old line advertised --m=/--mode= for EVERY target, but only the compare example
 # parses that shape: on a positional-arg target each flag becomes atoi("--m=2048") == 0, so copying the hint
 # silently selects L=0 or Mb=0 and the test passes vacuously. One such copy already cost a box round.
 case "$TARGET" in
+  quactlize_ppu)
+    echo "load:  QUACTLIZE_PPU_LIB=$BIN python -c 'import quactlize; print(quactlize.gguf_backend())'" ;;
   test_moe_grouped_verify)
     echo "run:   $BIN [L] [Mb] [ragged?] [gs]      # POSITIONAL, no --flags"
     echo "       $BIN 8 1                          # Mmax==1, required by PPU_A_CUBE_H=1"

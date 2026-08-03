@@ -269,6 +269,57 @@ int run_vecdot(uint8_t const* blocks, gguf_scale::vecdot::VecdotActivation const
   return 0;
 }
 
+template <KType T, int RowsPerWarp>
+void launch_vecdot_moe_fixed(uint8_t const* blocks, gguf_scale::vecdot::VecdotActivation const* x, float* out,
+                             int const* row_offsets, int n, int blocks_per_row, int max_rows, int experts) {
+  constexpr int kThreads = 256;
+  dim3 const grid(gguf_scale::vecdot::vecdot_grid_size<T, RowsPerWarp>(n, kThreads), max_rows, experts);
+  gguf_scale::vecdot::vecdot_rows_kernel<T, RowsPerWarp, true><<<grid, kThreads>>>(
+      blocks, VecdotDevice<T>::kBlockBytes, x, out, n, blocks_per_row, row_offsets);
+}
+
+template <KType T>
+void launch_vecdot_moe(uint8_t const* blocks, gguf_scale::vecdot::VecdotActivation const* x, float* out,
+                       int const* row_offsets, int n, int blocks_per_row, int max_rows, int experts) {
+  switch (gguf_scale::vecdot::vecdot_rows_per_warp<T>(n, blocks_per_row)) {
+    case 1: launch_vecdot_moe_fixed<T, 1>(blocks, x, out, row_offsets, n, blocks_per_row, max_rows, experts); break;
+    case 2: launch_vecdot_moe_fixed<T, 2>(blocks, x, out, row_offsets, n, blocks_per_row, max_rows, experts); break;
+    case 4: launch_vecdot_moe_fixed<T, 4>(blocks, x, out, row_offsets, n, blocks_per_row, max_rows, experts); break;
+    case 8: launch_vecdot_moe_fixed<T, 8>(blocks, x, out, row_offsets, n, blocks_per_row, max_rows, experts); break;
+  }
+}
+
+template <KType T>
+int run_vecdot_moe(uint8_t const* blocks, gguf_scale::vecdot::VecdotActivation const* x,
+                   int const* row_offsets, float* out, int n, int blocks_per_row,
+                   int experts, int total_rows, int max_rows) {
+  uint8_t* db = nullptr;
+  gguf_scale::vecdot::VecdotActivation* dx = nullptr;
+  int* doff = nullptr;
+  float* dout = nullptr;
+  size_t const block_bytes = size_t(experts) * n * blocks_per_row * VecdotDevice<T>::kBlockBytes;
+  size_t const x_bytes = size_t(total_rows) * blocks_per_row * gguf_scale::vecdot::kQK * sizeof(*dx);
+  size_t const out_bytes = size_t(total_rows) * n * sizeof(*dout);
+  auto cleanup = [&] { cudaFree(db); cudaFree(dx); cudaFree(doff); cudaFree(dout); };
+  if (cuda_ok(cudaMalloc(&db, block_bytes)) || cuda_ok(cudaMalloc(&dx, x_bytes)) ||
+      cuda_ok(cudaMalloc(&doff, size_t(experts + 1) * sizeof(int))) || cuda_ok(cudaMalloc(&dout, out_bytes))) {
+    cleanup(); return 500;
+  }
+  if (cuda_ok(cudaMemcpy(db, blocks, block_bytes, cudaMemcpyHostToDevice)) ||
+      cuda_ok(cudaMemcpy(dx, x, x_bytes, cudaMemcpyHostToDevice)) ||
+      cuda_ok(cudaMemcpy(doff, row_offsets, size_t(experts + 1) * sizeof(int), cudaMemcpyHostToDevice)) ||
+      cuda_ok(cudaMemset(dout, 0xa5, out_bytes))) {
+    cleanup(); return 501;
+  }
+  launch_vecdot_moe<T>(db, dx, dout, doff, n, blocks_per_row, max_rows, experts);
+  if (cuda_ok(cudaGetLastError()) || cuda_ok(cudaDeviceSynchronize()) ||
+      cuda_ok(cudaMemcpy(out, dout, out_bytes, cudaMemcpyDeviceToHost))) {
+    cleanup(); return 502;
+  }
+  cleanup();
+  return 0;
+}
+
 template <KType T, bool Cold, int RowsPerWarp = -1,
           bool Serial = false>
 int bench_vecdot_variant(VecdotDevice<T> const& q, int rows, int blocks_per_row, int reps, float* usec) {
@@ -449,6 +500,24 @@ extern "C" int quactlize_cuda_vecdot(uint8_t const* blocks,
     default: return 490;
   }
 #undef RUN_VECDOT
+}
+
+extern "C" int quactlize_cuda_vecdot_moe(uint8_t const* blocks,
+                                           gguf_scale::vecdot::VecdotActivation const* x,
+                                           int const* row_offsets, float* out,
+                                           int n, int blocks_per_row, int experts,
+                                           int total_rows, int max_rows, int qtype) {
+#define RUN_VECDOT_MOE(TYPE) \
+  run_vecdot_moe<KType::TYPE>(blocks, x, row_offsets, out, n, blocks_per_row, experts, total_rows, max_rows)
+  switch (qtype) {
+    case 10: return RUN_VECDOT_MOE(Q2_K);
+    case 11: return RUN_VECDOT_MOE(Q3_K);
+    case 12: return RUN_VECDOT_MOE(Q4_K);
+    case 13: return RUN_VECDOT_MOE(Q5_K);
+    case 14: return RUN_VECDOT_MOE(Q6_K);
+    default: return 590;
+  }
+#undef RUN_VECDOT_MOE
 }
 
 extern "C" int quactlize_cuda_vecdot_bench(int qtype, int rows, int blocks_per_row, int reps,

@@ -339,6 +339,9 @@ def gguf_cuda_probe(tmp_path_factory):
     lib.quactlize_cuda_q4_layout_check.argtypes = [u8p, u16p, u16p]
     lib.quactlize_cuda_q4_layout_bench.argtypes = [ctypes.c_int, fp, fp]
     lib.quactlize_cuda_vecdot.argtypes = [u8p, u16p, fp, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+    lib.quactlize_cuda_vecdot_moe.argtypes = [u8p, u16p, ctypes.POINTER(ctypes.c_int), fp,
+                                               ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                               ctypes.c_int, ctypes.c_int, ctypes.c_int]
     lib.quactlize_cuda_vecdot_bench.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
                                                  fp, fp, dp]
     lib.quactlize_cuda_vecdot_bench_config.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
@@ -511,6 +514,67 @@ def test_cuda_vecdot_cooperative_matches_cpu_reference(gguf_cuda_probe):
     print("vecdot raw-code accumulator peaks: " + ", ".join(raw_accum))
 
 
+@pytest.mark.parametrize("name,qtype,hdr,scales,codes,qmax", FORMATS)
+def test_cuda_native_moe_gemv_matches_official_oracle_and_catches_wrong_expert(
+        gguf_cuda_probe, name, qtype, hdr, scales, codes, qmax):
+    """FULLY_QUANTIZED/GEMV_MOE: ragged gathered rows and distinct expert bytes against official gguf.
+
+    The negative arm plants the addressing fault this launch is vulnerable to: the last expert is made to read
+    expert zero's bytes. It must fail the same conditioned bound before the real launch is allowed to pass, so the
+    oracle has been observed rejecting a plausible neighbouring-kernel result rather than only accepting this one.
+    """
+    lib, ctypes = gguf_cuda_probe
+    u8p = ctypes.POINTER(ctypes.c_uint8)
+    u16p, ip, fp = (ctypes.POINTER(ctypes.c_uint16), ctypes.POINTER(ctypes.c_int),
+                    ctypes.POINTER(ctypes.c_float))
+    rng = np.random.default_rng(0x4D4F45 + int(qtype))
+    experts, n, k = 4, 24, 512              # n != k; two raw superblocks exercise the K loop
+    rows = [2, 0, 3, 1]                     # empty expert plus genuinely ragged routing
+    offsets = np.cumsum([0] + rows).astype(np.int32)
+    total_rows, bpr = int(offsets[-1]), k // 256
+    _block_size, block_bytes = GGML_QUANT_SIZES[qtype]
+
+    raw = rng.integers(0, 256, (experts, n * bpr, block_bytes), np.uint8)
+    for e in range(experts):
+        for lo, hi in hdr:
+            # Expert-dependent headers ensure even an accidental correlation in code bytes cannot hide e=0 reuse.
+            v = (rng.random(n * bpr) * .05 + .002 + e * .007).astype(np.float16)
+            raw[e, :, lo:hi] = v.view(np.uint8).reshape(-1, 2)
+    x = (rng.standard_normal((total_rows, k)).astype(np.float32) * .25).astype(np.float16)
+
+    ref = np.empty((total_rows, n), np.float64)
+    sumabs = np.empty_like(ref)
+    for e, count in enumerate(rows):
+        if not count:
+            continue
+        w = gguf.quants.dequantize(raw[e].reshape(-1), qtype).reshape(n, k).astype(np.float64)
+        for rr in range(int(offsets[e]), int(offsets[e + 1])):
+            terms = w * x[rr].astype(np.float64)[None, :]
+            ref[rr] = terms.sum(axis=1)
+            sumabs[rr] = np.abs(terms).sum(axis=1)
+    assert np.isfinite(ref).all() and np.isfinite(sumabs).all()
+
+    def run(weight_bytes):
+        got = np.empty((total_rows, n), np.float32)
+        rc = lib.quactlize_cuda_vecdot_moe(
+            np.ascontiguousarray(weight_bytes).ctypes.data_as(u8p), x.ctypes.data_as(u16p),
+            offsets.ctypes.data_as(ip), got.ctypes.data_as(fp), n, bpr, experts,
+            total_rows, max(rows), int(qtype))
+        assert rc == 0 and np.isfinite(got).all(), f"{name}: native MoE launch failed ({rc})"
+        return float(np.max(np.abs(got.astype(np.float64) - ref) /
+                            np.maximum(sumabs, np.finfo(np.float64).tiny)))
+
+    planted = raw.copy()
+    planted[-1] = raw[0]                    # exact expert-base fault; shapes and all pointers remain valid
+    planted_err = run(planted)
+    assert planted_err > 2.0 ** -11, \
+        f"{name}: official oracle did not reject planted expert-0 reuse ({planted_err:.3e})"
+
+    conditioned = run(raw)
+    assert conditioned < 2.0 ** -11, \
+        f"{name}: native MoE conditioned error {conditioned:.3e} exceeds fp16 output floor"
+
+
 # ===================================================================================================================
 # THE PURE CUDA-CORE DECODE, ALL FIVE FORMATS, THROUGH THE PYTHON ENTRY.
 #
@@ -602,6 +666,54 @@ def test_unpack_split_reconstructs(name, qtype, hdr, scales, codes, qmax):
     assert (c.min(), c.max()) == lo_hi, f"{name}: codes span {c.min()}..{c.max()}, expected {lo_hi}"
 
 
+@pytest.mark.parametrize("name,qtype,hdr,scales,codes,qmax", FORMATS)
+def test_scale_first_gemv_artifact_reconstructs_official_weights(name, qtype, hdr, scales, codes, qmax):
+    """The exact resident artifact passed to gemv_lowbit, including companion planes and expert stride."""
+    quactlize = pytest.importorskip("quactlize", reason="needs the built operator library")
+    torch = pytest.importorskip("torch")
+    rng = np.random.default_rng(0xA471 + int(qtype))
+    experts, n, k, bpr = 3, 24, 512, 2       # asymmetric and two blocks deep
+    _block_size, type_size = GGML_QUANT_SIZES[qtype]
+    raw = rng.integers(0, 256, (experts, n * bpr, type_size), np.uint8)
+    for e in range(experts):
+        for lo, hi in hdr:
+            v = (rng.random(n * bpr) * .05 + .002 + e * .009).astype(np.float16)
+            raw[e, :, lo:hi] = v.view(np.uint8).reshape(-1, 2)
+
+    low, high, scale, zero = quactlize.gguf_prepare_gemv(torch.from_numpy(raw), n, k, int(qtype))
+    lo_bits = 2 if name in ("Q2_K", "Q3_K") else 4
+    hi_bits = {"Q3_K": 1, "Q5_K": 1, "Q6_K": 2}.get(name, 0)
+    assert low.numel() == experts * n * k * lo_bits // 8
+    assert high.numel() == experts * n * k * hi_bits // 8
+
+    def unpack_plane(packed, bits):
+        if bits == 0:
+            return np.zeros((experts, n, k), np.int16)
+        p = packed.numpy().reshape(experts, n, -1)
+        q = np.empty((experts, n, k), np.int16)
+        mask = (1 << bits) - 1
+        for j in range(k):
+            q[:, :, j] = (p[:, :, (j * bits) // 8] >> ((j * bits) & 7)) & mask
+        return q
+
+    q = unpack_plane(low, lo_bits) + (unpack_plane(high, hi_bits) << lo_bits)
+    gs = k // scale.shape[1]
+    s = np.repeat(scale.numpy().astype(np.float64).transpose(0, 2, 1), gs, axis=2)
+    z = np.repeat(zero.numpy().astype(np.float64).transpose(0, 2, 1), gs, axis=2)
+    got = q.astype(np.float64) * s + z
+    ref = np.stack([gguf.quants.dequantize(raw[e].reshape(-1), qtype).reshape(n, k)
+                    for e in range(experts)]).astype(np.float64)
+    _assert_finite(ref, f"{name} scale-first artifact oracle")
+    rel = np.abs(got - ref).max() / max(np.abs(ref).max(), 1e-9)
+    assert rel < 2e-3, f"{name}: resident GEMV artifact disagrees with official weights, worst {rel:.3e}"
+
+    # Exact expert-base fault with well-formed bytes: the oracle must reject it before this test may pass.
+    planted = got.copy()
+    planted[-1] = got[0]
+    planted_rel = np.abs(planted - ref).max() / max(np.abs(ref).max(), 1e-9)
+    assert planted_rel > 2e-3, f"{name}: oracle did not catch planted expert-0 artifact reuse"
+
+
 def test_q4k_reaches_the_existing_layout_packers():
     """The chain a GGUF checkpoint has to walk to reach the kernels that already work.
 
@@ -654,11 +766,18 @@ def _build_stub(tmp_path):
         "#include <stdint.h>\n"
         "int quactlize_ppu_vecdot(uint8_t const* b,int64_t bb,uint16_t const* x,float* o,int r,int p,int q){"
         "(void)b;(void)bb;(void)x;(void)p;(void)q;for(int i=0;i<r;++i)o[i]=-12345.f;return 0;}\n"
+        "int quactlize_ppu_vecdot_moe(uint8_t const*b,int64_t bb,uint16_t const*x,int const*of,float*o,"
+        "int n,int p,int e,int tr,int mr,int q){(void)b;(void)bb;(void)x;(void)of;(void)p;(void)e;(void)mr;"
+        "(void)q;for(int i=0;i<tr*n;++i)o[i]=-12345.f;return 0;}\n"
         "int quactlize_ppu_dequantize(uint8_t const* b,int64_t bb,uint16_t* o,int n,int q){"
         "(void)b;(void)bb;(void)q;for(int i=0;i<n*256;++i)o[i]=0x3C00;return 0;}\n"
         "int quactlize_ppu_prepass(uint8_t const* b,int64_t bb,uint16_t const* d,uint16_t const* m,int n,"
         "uint16_t* s,uint16_t* z,int g,int q,int zm){(void)b;(void)bb;(void)d;(void)m;(void)q;(void)zm;"
-        "for(int i=0;i<n*g;++i){s[i]=0x3C00;z[i]=0;}return 0;}\n")
+        "for(int i=0;i<n*g;++i){s[i]=0x3C00;z[i]=0;}return 0;}\n"
+        "int quactlize_ppu_gemv_lowbit(uint16_t const*a,uint8_t const*l,uint8_t const*h,uint16_t const*s,"
+        "uint16_t const*z,uint16_t*o,int tr,int n,int k,int gs,int q,int e,int const*of,int mr){"
+        "(void)a;(void)l;(void)h;(void)s;(void)z;(void)k;(void)gs;(void)q;(void)e;(void)of;(void)mr;"
+        "for(int i=0;i<tr*n;++i)o[i]=0x3C00;return 0;}\n")
     so = tmp_path / "libquactlize_ppu_stub.so"
     subprocess.run(["gcc", "-shared", "-fPIC", "-o", str(so), str(src)], check=True)
     return so

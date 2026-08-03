@@ -595,9 +595,10 @@ CUTLASS_HOST_DEVICE constexpr int vecdot_grid_size(int rows, int threads) {
   return (warps + warps_per_cta - 1) / warps_per_cta;
 }
 
-template <KType T, int RowsPerWarp = vecdot_preferred_rows_per_warp<T>()>
+template <KType T, int RowsPerWarp = vecdot_preferred_rows_per_warp<T>(), bool Grouped = false>
 __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, VecdotActivation const* x,
-                                   float* out, int rows, int blocks_per_row) {
+                                   float* out, int rows, int blocks_per_row,
+                                   int const* row_offsets = nullptr) {
   static_assert(RowsPerWarp >= 1 && RowsPerWarp <= 32 && (RowsPerWarp & (RowsPerWarp - 1)) == 0,
                 "rows per warp must be a power of two");
   constexpr int kLanesPerRow = 32 / RowsPerWarp;
@@ -607,12 +608,27 @@ __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, V
   static_assert(kGroups % kLanesPerRow == 0 || kLanesPerRow % kGroups == 0,
                 "lane subgroup and group count must divide one another");
 
+  // Dense: grid.x spans output columns and one activation vector is shared by every column.
+  // MoE decode: grid.y selects a gathered activation row within expert blockIdx.z. The expert owns one contiguous
+  // [rows,blocks_per_row,block_bytes] weight and row_offsets maps its ragged rows into the gathered A/D tensors.
+  // Keeping the expert on grid.z matches gemv_lowbit's grouped launch and, importantly, keeps the subgroup's raw
+  // GGUF decode unchanged -- only the three tensor bases differ.
+  int const expert = Grouped ? int(blockIdx.z) : 0;
+  int const route_in_expert = Grouped ? int(blockIdx.y) : 0;
+  int const route_begin = Grouped ? row_offsets[expert] : 0;
+  int const route_rows = Grouped ? row_offsets[expert + 1] - route_begin : 1;
+  int const gathered_row = route_begin + route_in_expert;
+  int64_t const weight_expert_stride = int64_t(rows) * blocks_per_row * block_bytes;
+  uint8_t const* expert_blocks = blocks + (Grouped ? int64_t(expert) * weight_expert_stride : 0);
+  VecdotActivation const* row_x = x + (Grouped ? int64_t(gathered_row) * blocks_per_row * kQK : 0);
+  float* row_out = out + (Grouped ? int64_t(gathered_row) * rows : 0);
+
   int const warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
   int const lane = threadIdx.x & 31;
   int const row_in_warp = lane / kLanesPerRow;
   int const row_lane = lane & (kLanesPerRow - 1);
   int const r = warp * RowsPerWarp + row_in_warp;
-  bool const active = r < rows;
+  bool const active = r < rows && route_in_expert < route_rows;
 
   // Q4/Q5 pair adjacent groups so one lane owns both nibbles of each byte. At the intended RowsPerWarp=8 point,
   // four lanes own one row and lane L consumes groups (2L,2L+1): its low-plane run is qs[32L..32L+31], loaded
@@ -622,8 +638,8 @@ __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, V
     half2 lane_acc = vecdot_half2_zero();
     for (int block = 0; block < blocks_per_row; ++block) {
       uint8_t const* blk = active
-          ? blocks + (int64_t(r) * blocks_per_row + block) * block_bytes
-          : blocks;
+          ? expert_blocks + (int64_t(r) * blocks_per_row + block) * block_bytes
+          : expert_blocks;
       float d = 0.f, dmin = 0.f;
       bool const owns_pair = row_lane < kGroups / 2;
       if (active && owns_pair) block_d_dmin<T>(blk, d, dmin);
@@ -644,10 +660,10 @@ __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, V
             VecdotCodePair4 const q = vecdot_kernel_q45_pair4<T>(blk, pair, j);
             int64_t const x0 = int64_t(block) * kQK + g0 * kGroupSize + j;
             int64_t const x1 = int64_t(block) * kQK + g1 * kGroupSize + j;
-            half2 const hx00 = vecdot_load_activation2(x + x0);
-            half2 const hx02 = vecdot_load_activation2(x + x0 + 2);
-            half2 const hx10 = vecdot_load_activation2(x + x1);
-            half2 const hx12 = vecdot_load_activation2(x + x1 + 2);
+            half2 const hx00 = vecdot_load_activation2(row_x + x0);
+            half2 const hx02 = vecdot_load_activation2(row_x + x0 + 2);
+            half2 const hx10 = vecdot_load_activation2(row_x + x1);
+            half2 const hx12 = vecdot_load_activation2(row_x + x1 + 2);
             half2 const* q0 = reinterpret_cast<half2 const*>(&q.lo);
             half2 const* q1 = reinterpret_cast<half2 const*>(&q.hi);
             qx0 = __hfma2(q0[0], hx00, qx0); qx0 = __hfma2(q0[1], hx02, qx0);
@@ -657,8 +673,8 @@ __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, V
           }
           CUTLASS_PRAGMA_UNROLL
           for (; j < kGroupSize; ++j) {
-            half const x0 = vecdot_load_activation(x + int64_t(block) * kQK + g0 * kGroupSize + j);
-            half const x1 = vecdot_load_activation(x + int64_t(block) * kQK + g1 * kGroupSize + j);
+            half const x0 = vecdot_load_activation(row_x + int64_t(block) * kQK + g0 * kGroupSize + j);
+            half const x1 = vecdot_load_activation(row_x + int64_t(block) * kQK + g1 * kGroupSize + j);
             half2 const hx0 = vecdot_half2_from_halves(x0, __float2half(0.f));
             half2 const hx1 = vecdot_half2_from_halves(x1, __float2half(0.f));
             half2 const hq0 = vecdot_float2_to_half2(float(vecdot_kernel_code_at<T>(blk, g0, j)), 0.f);
@@ -673,7 +689,7 @@ __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, V
       }
     }
     lane_acc = vecdot_subgroup_sum_half2<kLanesPerRow>(lane_acc);
-    if (active && row_lane == 0) out[r] = __half2float(vecdot_half2_horizontal(lane_acc));
+    if (active && row_lane == 0) row_out[r] = __half2float(vecdot_half2_horizontal(lane_acc));
     return;
   }
 
@@ -681,8 +697,8 @@ __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, V
 
   for (int block = 0; block < blocks_per_row; ++block) {
     uint8_t const* blk = active
-        ? blocks + (int64_t(r) * blocks_per_row + block) * block_bytes
-        : blocks;
+        ? expert_blocks + (int64_t(r) * blocks_per_row + block) * block_bytes
+        : expert_blocks;
     float d = 0.f, dmin = 0.f;
     bool const owns_group = row_lane < kGroups;
     if (active && owns_group) block_d_dmin<T>(blk, d, dmin);
@@ -699,8 +715,8 @@ __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, V
         for (; j + 3 < kGroupSize; j += 4) {
           VecdotCode4 const q = vecdot_kernel_code4<T>(blk, g, j);
           int64_t const xi = int64_t(block) * kQK + g * kGroupSize + j;
-          half2 const hx0 = vecdot_load_activation2(x + xi);
-          half2 const hx1 = vecdot_load_activation2(x + xi + 2);
+          half2 const hx0 = vecdot_load_activation2(row_x + xi);
+          half2 const hx1 = vecdot_load_activation2(row_x + xi + 2);
           half2 const* q2 = reinterpret_cast<half2 const*>(&q);
           qx = __hfma2(q2[0], hx0, qx); qx = __hfma2(q2[1], hx1, qx);
           if constexpr (kHasMin) { sx = __hadd2(sx, hx0); sx = __hadd2(sx, hx1); }
@@ -709,7 +725,7 @@ __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, V
         // silently make a future odd group read past its plane.
         CUTLASS_PRAGMA_UNROLL
         for (; j < kGroupSize; ++j) {
-          half const xv = vecdot_load_activation(x + int64_t(block) * kQK + g * kGroupSize + j);
+          half const xv = vecdot_load_activation(row_x + int64_t(block) * kQK + g * kGroupSize + j);
           half2 const hx = vecdot_half2_from_halves(xv, __float2half(0.f));
           half2 const hq = vecdot_float2_to_half2(float(vecdot_kernel_code_at<T>(blk, g, j)), 0.f);
           qx = __hfma2(hq, hx, qx);
@@ -723,7 +739,7 @@ __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, V
     }
   }
   lane_acc = vecdot_subgroup_sum_half2<kLanesPerRow>(lane_acc);
-  if (active && row_lane == 0) out[r] = __half2float(vecdot_half2_horizontal(lane_acc));
+  if (active && row_lane == 0) row_out[r] = __half2float(vecdot_half2_horizontal(lane_acc));
 }
 
 // ONE WARP PER 256 PHYSICAL DESTINATIONS. This is the shape that matters and the numbers say why:
