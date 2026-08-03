@@ -146,16 +146,37 @@ def xplane_hi(low_bits: int, hi_bits: int, tn: int, tk: int, wn: int, f_hi: int,
     identical (bits=1, TN=64, TK=128, WN=32, F=2), Q5's high plane through place_hi<low=4, high=1> and a standalone
     1-bit placement through place_derived differ in 6114 of 8192 STORED BYTES. Both would have been named
     xp1w2k128f2: the token had nowhere to say low_bits=4, or that this is a cross-plane placement at all.
+
+    THE TOKEN NAMES A DERIVED DESCRIPTOR, NOT THE TILE, and that changed on 2026-08-03 when place_hi's actual
+    invariance was measured (dev/fold_derivation/l104_place_hi_invariance.cu, gate 773c29a).
+
+    The low plane is TILE-INVARIANT when unfolded -- byte-identical across 11 configurations spanning TM, TN, TK
+    and three warp shapes. The high plane is NOT, and fixing F does not rescue it: Q6 at F1=F2=1 produces two
+    different buffers, hash 39972e3c049686e0 at TK=128 and 813cb9214d2ec2e8 at TK=256. What separates them is the
+    DELIVERY COUNT, not the fold.
+
+        DL = F * TK * bits / 256      32-byte AIU deliveries per k-tile per plane
+                                      (reproduces the measured 2/1 at TK=128 and 4/2 at TK=256)
+
+    Every valid row groups EXACTLY by (F1, F2, DL1, DL2, folded_R2), so that tuple is what the name carries. The
+    old token carried raw TK and WON instead, which was OVERNAMING in the sense this file already warns about for
+    TN/WN: two tactics whose stored bytes are identical would have received different names, and the whole point of
+    naming the arrangement is that one artifact can serve every tactic that produces it. A name that splits an
+    equivalence class forces a repack that the bytes do not require -- and repacking at runtime is off the table.
     """
     for label, bits, f in (("high", hi_bits, f_hi), ("low", low_bits, f_lo)):
         if f * tk * bits < 256:
             raise ValueError(f"the {label} plane needs F*TK*bits >= 256 (the AIU's 32-byte delivery floor); "
                              f"{f}*{tk}*{bits} = {f * tk * bits}")
-    return Step(f"xphi{low_bits}x{hi_bits}w{_won(tn, wn)}k{tk}f{f_hi}lf{f_lo}", "aiu", "element",
+    dl_lo = f_lo * tk * low_bits // 256
+    dl_hi = f_hi * tk * hi_bits // 256
+    folded_r2 = (tn // f_hi) if f_hi > 1 else 0
+    return Step(f"xphi{low_bits}x{hi_bits}f{f_lo}x{f_hi}d{dl_lo}x{dl_hi}r{folded_r2}", "aiu", "element",
                 "xplane::place_hi", True,
-                f"places the {hi_bits}-bit high plane of a ({low_bits}+{hi_bits}) B-concat for a kernel with "
-                f"{_won(tn, wn)} warp-columns, TK={tk}, high fold {f_hi}, low fold {f_lo}. Distinct from a "
-                f"standalone {hi_bits}-bit placement at the same parameters: 6114 of 8192 stored bytes differ")
+                f"places the {hi_bits}-bit high plane of a ({low_bits}+{hi_bits}) B-concat. Folds {f_lo}/{f_hi}, "
+                f"deliveries {dl_lo}/{dl_hi} per k-tile, folded high rows {folded_r2}. Any tactic reaching this "
+                f"same descriptor shares this arrangement byte for byte; TK and the warp shape are NOT part of it. "
+                f"Distinct from a standalone {hi_bits}-bit placement at the same parameters: 6114/8192 bytes differ")
 
 
 def scale_unit(unit_bytes: int, superblocks: int, groups: int) -> Step:
