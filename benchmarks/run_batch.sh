@@ -560,7 +560,7 @@ do_pytest() {
   echo "-- pytest pass 1/2: the CPU reference arm (device dlopen deliberately broken)"
   plog="$OUT/pytest_cpu_arm.log"
   QUACTLIZE_PPU_LIB="/nonexistent-so-the-cpu-arm-runs" PYTHONPATH="$ROOT" \
-    python3 -m pytest "$ROOT/tests" -q -rf --tb=short -m cpu_reference >"$plog" 2>&1 && rc1=0 || rc1=$?
+    python3 -m pytest "$ROOT/tests" -q -rfE --tb=short -m cpu_reference >"$plog" 2>&1 && rc1=0 || rc1=$?
   tail -1 "$plog" | sed 's/^/   /'
   [ "$rc1" -eq 0 ] || { echo "   -- failed ids (full tracebacks in $plog):"
     sed -n '/^=* short test summary info/,$p' "$plog" | grep -E "^(FAILED|ERROR)" | sed 's/^/     /'; }
@@ -568,9 +568,9 @@ do_pytest() {
   echo "-- pytest pass 2/2: everything else, on the device"
   plog="$OUT/pytest_full.log"
   QUACTLIZE_PPU_LIB="$so" PYTHONPATH="$ROOT" \
-    python3 -m pytest "$ROOT/tests" -q -rf --tb=short -m "not cpu_reference" >"$plog" 2>&1 && rc2=0 || rc2=$?
+    python3 -m pytest "$ROOT/tests" -q -rfE --tb=short -m "not cpu_reference" >"$plog" 2>&1 && rc2=0 || rc2=$?
   tail -1 "$plog" | sed 's/^/   /'
-  [ "$rc2" -eq 0 ] || { echo "   -- failed ids (full tracebacks in $plog):"
+  [ "$rc2" -eq 0 ] || { echo "   -- failed and errored ids (full tracebacks in $plog):"
     sed -n '/^=* short test summary info/,$p' "$plog" | grep -E "^(FAILED|ERROR)" | sed 's/^/     /'; }
 
   # THE DEVICE-VS-CPU-ARM COMPARISON MUST NOT SKIP HERE. It skips honestly on a machine with no device, and this
