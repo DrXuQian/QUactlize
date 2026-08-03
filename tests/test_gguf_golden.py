@@ -613,3 +613,76 @@ def test_all_routes_agree_with_llama_cpp(name, qtype, hdr, scales, codes, qmax):
                             ("gemv(native)", dot_gemv, 2e-5)):
         rel = np.abs(got - ref_dot).max() / scale_ref
         assert rel < tol, f"{name}: route {label} disagrees with llama.cpp, worst relative error {rel:.3e}"
+
+
+# ===================================================================================================================
+# REAL GGUF SCALE BYTES, not synthetic ones, against the official implementation.
+#
+# EVERY OTHER TEST HERE STARTS FROM RANDOM BYTES, and there is a class of error random bytes cannot reach: one where
+# our reading of the on-disk RECORD is wrong in a way that is self-consistent. Both arms of a transform test start
+# from the same buffer, so a shared misunderstanding of what is stored cancels out and the test still passes.
+# tests/data/scale_blocks_q4k.bin is real Q4_K scale metadata pulled from a checkpoint, so it anchors the record.
+#
+# What is checked is the whole chain on those bytes: real scale block -> our packed unit -> decode, against the
+# official gguf dequantiser reading a block built around the SAME scale bytes. If our field map or the unit's bit
+# positions were wrong for real data, this is where it shows.
+def _read_gsb0(path):
+    import struct
+    with open(path, "rb") as fh:
+        blob = fh.read()
+    if blob[:4] != b"GSB0":
+        pytest.skip(f"{path} is not a GSB0 scale-block dump")
+    _v, nb, bb, ng = struct.unpack_from("<4I", blob, 4)
+    off = 20
+    rec = bb + 8 * ng                              # raw bytes, then ng int32 sc, then ng int32 mn
+    blocks = np.empty((nb, bb), np.uint8)
+    for i in range(nb):
+        blocks[i] = np.frombuffer(blob, np.uint8, bb, off + i * rec)
+    return blocks, int(ng)
+
+
+def test_real_gguf_scale_bytes_through_the_unit():
+    quactlize = pytest.importorskip("quactlize", reason="needs the built operator library")
+    torch = pytest.importorskip("torch")
+    import pathlib
+    path = pathlib.Path(__file__).resolve().parent / "data" / "scale_blocks_q4k.bin"
+    if not path.exists():
+        pytest.skip("no real Q4_K scale-block fixture")
+    sblocks, ng = _read_gsb0(str(path))
+    assert sblocks.shape[1] == 12 and ng == 8, f"expected Q4_K 12-byte scale blocks with 8 groups, got {sblocks.shape[1]}/{ng}"
+    n = min(256, sblocks.shape[0])
+    sb = np.ascontiguousarray(sblocks[:n])
+
+    # Build real Q4_K blocks: the REAL scale bytes, a normal header, and codes we control so the official
+    # dequantiser's output is affine in a way we can invert -- the same two-fill trick, now on real scales.
+    rng = np.random.default_rng(17)
+    raw = np.zeros((n, 144), np.uint8)
+    d = (rng.random(n) * 0.1 + 0.001).astype(np.float16)
+    raw[:, 0:2] = d.view(np.uint8).reshape(n, 2)
+    raw[:, 2:4] = 0                                 # dmin = 0 isolates the scale
+    raw[:, 4:16] = sb
+    w_lo = gguf.quants.dequantize(raw.reshape(-1), GT.Q4_K).reshape(n, 256).astype(np.float64)
+    raw[:, 16:144] = 0xFF
+    w_hi = gguf.quants.dequantize(raw.reshape(-1), GT.Q4_K).reshape(n, 256).astype(np.float64)
+    _assert_finite(w_lo, "real-scale golden 0x00")
+    _assert_finite(w_hi, "real-scale golden 0xFF")
+    scale_ref = (w_hi.reshape(n, 8, 32)[:, :, 0] - w_lo.reshape(n, 8, 32)[:, :, 0]) / 15
+
+    t_sb = torch.from_numpy(sb)
+    t_d = torch.from_numpy(d.copy())
+    t_dm = torch.zeros(n, dtype=torch.float16)
+    units = quactlize.gguf_pack_unit(t_sb, t_d, t_dm, 12)
+    s_unit, _z = quactlize.gguf_unit_decode(units, 12, 0)
+    s_unit = s_unit.numpy().astype(np.float64)
+
+    m = np.abs(scale_ref) > 1e-7
+    assert m.sum() > n, "almost every real scale is zero; the fixture says nothing"
+    rel = (np.abs(s_unit[m] - scale_ref[m]) / np.abs(scale_ref[m])).max()
+    assert rel < 2e-3, f"the packed unit disagrees with llama.cpp on REAL scale bytes, worst relative error {rel:.3e}"
+
+    # And the unit must agree with the GGUF-block decode on the same real bytes, bit for bit -- that is the
+    # reordering being byte-faithful rather than merely close.
+    s_ref, z_ref = quactlize.gguf_scale_prepass(t_sb, t_d, t_dm, 12, 0)
+    s_u2, z_u2 = quactlize.gguf_unit_decode(units, 12, 0)
+    assert torch.equal(s_u2, s_ref) and torch.equal(z_u2, z_ref), \
+        "on real bytes the unit and the GGUF block decode to different planes"
