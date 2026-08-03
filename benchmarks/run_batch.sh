@@ -549,17 +549,45 @@ do_pytest() {
   # above it. tail keeps exactly the part that says how many and drops the part that says which.
   # -rf prints the short failure summary AFTER the counts, so it survives a tail; the full output with
   # tracebacks goes to a log for anything the summary does not settle.
-  echo "-- pytest"
+  # TWO PASSES, BECAUSE THE ARM A TEST RUNS AGAINST IS PART OF WHAT IT TESTS. Sixteen of the first box run's
+  # seventeen failures were one cause: tests written to validate gguf_vecdot's CPU REFERENCE ARM were handed the
+  # device arm, because quactlize dlopens the library whenever it is available. They are marked cpu_reference now
+  # and run with the dlopen deliberately broken. Pointing QUACTLIZE_PPU_LIB at a nonexistent path is the
+  # mechanism: ppu_backend::load() makes ONE attempt and caches the outcome, so a bad path fails deterministically
+  # rather than depending on what is on the loader path.
   local plog prc
+  local -i rc1 rc2
+  echo "-- pytest pass 1/2: the CPU reference arm (device dlopen deliberately broken)"
+  plog="$OUT/pytest_cpu_arm.log"
+  QUACTLIZE_PPU_LIB="/nonexistent-so-the-cpu-arm-runs" PYTHONPATH="$ROOT" \
+    python3 -m pytest "$ROOT/tests" -q -rf --tb=short -m cpu_reference >"$plog" 2>&1 && rc1=0 || rc1=$?
+  tail -1 "$plog" | sed 's/^/   /'
+  [ "$rc1" -eq 0 ] || { echo "   -- failed ids (full tracebacks in $plog):"
+    sed -n '/^=* short test summary info/,$p' "$plog" | grep -E "^(FAILED|ERROR)" | sed 's/^/     /'; }
+
+  echo "-- pytest pass 2/2: everything else, on the device"
   plog="$OUT/pytest_full.log"
-  QUACTLIZE_PPU_LIB="$so" PYTHONPATH="$ROOT" python3 -m pytest "$ROOT/tests" -q -rf --tb=short \
-    >"$plog" 2>&1 && prc=0 || prc=$?
-  # counts, then every failed test id. sed -n keeps the summary block whole rather than guessing a line count.
-  grep -E "^[0-9]+ (passed|failed)|passed|failed|error" "$plog" | tail -3
-  if [ "$prc" -ne 0 ]; then
-    echo "   -- failed test ids (full tracebacks in $plog):"
-    sed -n '/^=* short test summary info/,$p' "$plog" | grep -E "^(FAILED|ERROR)" | sed 's/^/     /'
+  QUACTLIZE_PPU_LIB="$so" PYTHONPATH="$ROOT" \
+    python3 -m pytest "$ROOT/tests" -q -rf --tb=short -m "not cpu_reference" >"$plog" 2>&1 && rc2=0 || rc2=$?
+  tail -1 "$plog" | sed 's/^/   /'
+  [ "$rc2" -eq 0 ] || { echo "   -- failed ids (full tracebacks in $plog):"
+    sed -n '/^=* short test summary info/,$p' "$plog" | grep -E "^(FAILED|ERROR)" | sed 's/^/     /'; }
+
+  # THE DEVICE-VS-CPU-ARM COMPARISON MUST NOT SKIP HERE. It skips honestly on a machine with no device, and this
+  # is not one -- so a skip means the comparison it exists for did not happen, and pass 2 would go green having
+  # never checked that the device arm computes the same function as the reference it is documented to match.
+  echo "-- device vs its own CPU reference arm (a skip here is a failure)"
+  local dlog drc
+  dlog="$OUT/device_vs_cpu_arm.log"
+  QUACTLIZE_PPU_LIB="$so" PYTHONPATH="$ROOT" python3 -m pytest "$ROOT/tests" -q -rs -m device_vs_cpu_arm \
+    >"$dlog" 2>&1 && drc=0 || drc=$?
+  tail -3 "$dlog" | sed 's/^/   /'
+  if [ "$drc" -ne 0 ] || grep -qi "skipped" "$dlog" || ! grep -Eq '[1-9][0-9]* passed' "$dlog"; then
+    echo "   !!! the device-vs-CPU-arm comparison did not run to a pass (exit $drc)"
+    drc=1
   fi
+
+  prc=$(( rc1 | rc2 | drc ))
 
   # 6. the table, labelled as what it is
   echo

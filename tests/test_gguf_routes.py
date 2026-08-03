@@ -449,6 +449,7 @@ def test_grouped_route_reads_the_right_expert(name, gt, hdr, qtype):
 
 
 @pytest.mark.parametrize("name,gt,hdr,qtype", FORMATS)
+@pytest.mark.cpu_reference
 def test_native_gemv_matches_the_oracle(name, gt, hdr, qtype):
     """FULLY_QUANTIZED/GEMV against the oracle directly, not against another of our routes.
 
