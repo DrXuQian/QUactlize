@@ -387,6 +387,55 @@ FQ_GROUPED_PRODUCER = "prepare_fully_quantized_grouped"
 
 @pytest.mark.fully_quantized_dense
 @pytest.mark.parametrize("name,gt,hdr,qtype", FQ_IMPLEMENTED)
+def test_packed_unit_scale_derivation_matches_the_scale_first_planes(name, gt, hdr, qtype, ppu_backend_dense):
+    """THE CHECK THE B/C MERGE RESTS ON, and it is available before the merge is switched on.
+
+    The merge's claim is that SCALE_FIRST's fp16 scale/zero planes need not be STORED, because they can be
+    derived from FULLY_QUANTIZED's packed units. That claim is only worth having if the derivation produces the
+    same planes the stored path produces. So: one set of raw blocks, two entirely different routes to fp16.
+
+        raw -> prepare_scale_first_dense    -> dequantize_scale_first_dense_scales   (the stored path, today)
+        raw -> prepare_fully_quantized_dense -> dequantize_scale_from_units          (the derivation, new)
+
+    They share the raw bytes and nothing else -- different producers, different C++ decoders, different
+    intermediate arrangements. Agreement is therefore evidence about the derivation rather than about a shared
+    constant, which is the property test_fpA_kquant_dense lacked and why that cell sat at IMPLEMENTED.
+
+    THE BOUND IS BIT-EXACT ON PURPOSE. Both sides end in fp16 and both decode the same integers; a difference of
+    one ulp is a difference in the arithmetic, not in the format, and codex found exactly such a 1-ulp
+    CUDA/host mismatch while building this (ZMul had to become one float expression before the fp16 rounding).
+    A tolerance here would have hidden that.
+    """
+    if not routes.has_op("gguf_packed_scale_prepass"):
+        pytest.skip("the packed-unit scale derivation is not in this build yet (INBOX 016)")
+    _require_packed_format(qtype, name)
+
+    n, k = 256, 512
+    rng = np.random.default_rng(31000 + qtype)
+    raw = _raw_blocks(gt, hdr, n * (k // 256), rng)
+    blocks = torch.from_numpy(raw)
+
+    stored = routes.dequantize_scale_first_dense_scales(routes.prepare_scale_first_dense(blocks, n, k, qtype), qtype)
+    units = routes.prepare_fully_quantized_dense(blocks, n, k, qtype)[-1]
+    derived = routes.dequantize_scale_from_units(units, qtype)
+
+    for i, what in enumerate(("scale", "zero")):
+        a_, b_ = stored[i], derived[i]
+        # SHAPES FIRST, and named. The derivation always returns [E, k/gs, n] -- one expert for a dense weight --
+        # while the stored path has its own convention. A silent broadcast between two nearly-compatible shapes
+        # would compare something neither route computes.
+        assert a_.numel() == b_.numel(), (
+            f"{name} {what}: the two paths disagree on SHAPE, not values -- stored {tuple(a_.shape)} vs derived "
+            f"{tuple(b_.shape)}. Reconcile the convention before reading anything into the numbers.")
+        bad = int((a_.reshape(-1) != b_.reshape(-1)).sum())
+        assert bad == 0, (
+            f"{name} {what}: the packed-unit derivation and the stored scale-first planes differ in {bad} of "
+            f"{a_.numel()} elements. The merge's premise is that these are the same planes; they are not.")
+    print(f"{name}: packed-unit derivation is bit-identical to the stored scale-first planes")
+
+
+@pytest.mark.fully_quantized_dense
+@pytest.mark.parametrize("name,gt,hdr,qtype", FQ_IMPLEMENTED)
 def test_fully_quantized_grouped_matches_dequant_first_and_rejects_fault(name, gt, hdr, qtype, ppu_backend_dense):
     """FULLY_QUANTIZED/GROUPED -- the MoE GEMM -- against the same independent arm as the dense cell.
 
