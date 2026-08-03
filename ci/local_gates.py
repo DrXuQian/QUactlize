@@ -266,6 +266,52 @@ def syntax(src, defs):
     return ("PASS" if rc == 0 else "FAIL"), (last[-1] if last else ""), dt
 
 
+def lint_stale_repo_path():
+    """An absolute path naming a repo directory that is not this one.
+
+    THE FAILURE THIS COMES FROM. The benchmark binaries printed their profile hint as `$BIN/test_gemv_perf ...`,
+    and the single document that defined $BIN still read
+
+        BIN=/sim/eec/shared/junfu.qx/<the-pre-rename-repo-dir>/third_party/actlize/build_w4a16_compare/...
+
+    long after the repo was renamed to quactlize. Copying the printed hint therefore produced "No such file or
+    directory" on a path the operator never typed -- and the hint itself looked correct, because the stale half was
+    in a different file. Nothing could catch it: it is not code, it does not compile, and no test reads a doc.
+
+    The structural fix was to print argv[0] and derive BIN from $PWD, so this only has to refuse REINTRODUCTION.
+    It checks the shared-filesystem prefix rather than a list of old names, because the next rename will invent a
+    name this file has never heard of.
+    """
+    import re as _re
+    root_name = ROOT.name
+    # Two slots: /sim/eec/shared/<user>/<dir>. The model store sits at <AI_workspace>/<llm-models>, i.e. it
+    # occupies the USER slot -- an allowlist keyed only on the second component never fires for it.
+    pat = _re.compile(r"/sim/eec/shared/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)")
+    hits = []
+    for f in sorted(ROOT.rglob("*")):
+        if not f.is_file() or "third_party" in f.parts or ".git" in f.parts:
+            continue
+        if f.suffix not in (".md", ".sh", ".py", ".cu", ".cuh", ".hpp", ".h", ".cpp", ".txt", ".in"):
+            continue
+        try:
+            text = f.read_text(errors="ignore")
+        except OSError:
+            continue
+        for i, line in enumerate(text.splitlines(), 1):
+            for m in pat.finditer(line):
+                user, d = m.group(1), m.group(2)
+                # PPU_SDK and the shared model store are genuinely elsewhere on the box; only repo dirs are the
+                # hazard, because only a repo dir gets renamed out from under a written-down path.
+                if user == "AI_workspace" or d in (root_name, "PPU_SDK"):
+                    continue
+                hits.append(f"{f.relative_to(ROOT)}:{i} -> .../{d}/")
+    if hits:
+        return ("FAIL",
+                f"absolute path names a repo dir that is not '{root_name}' (a rename left it behind): "
+                + ", ".join(hits[:4]), 0.0)
+    return "PASS", f"no absolute path names a repo dir other than '{root_name}'", 0.0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", action="store_true")
@@ -287,6 +333,7 @@ def main():
                 ("pytest", "torch op tests", None),
                 ("lint", "duplicate unroll directives (hgcc-only error)", lint_unroll),
                 ("lint", "PPU asm uses device-pass architecture guard", lint_ppu_asm_device_guard),
+                ("lint", "absolute paths name this repo dir, not a renamed one", lint_stale_repo_path),
     ("registry", "declarations vs source", None)])
     items = [i for i in items if a.k in i[1]]
     if a.list:
