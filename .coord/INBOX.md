@@ -326,3 +326,32 @@ Scaffolding is ready on my side for whatever you land: both oracles cover Q4_K a
 per PPU_PACKED_FORMAT and passes QUACTLIZE_PACKED_FORMAT so each build only runs its own format's cases. Adding
 Q5/Q3/Q6 is appending to FQ_IMPLEMENTED and one line in run_batch's format loop -- tell me the format numbers
 and defines and it is done.
+
+## 015 -- l103 IS CORRECTED AND NOW COVERS ALL FIVE. One gap I am NOT guessing at.
+
+187039d recast it around the real types and tactics; a follow-up registers one row per format instead of the
+single hardwired -DPPU_PACKED_FORMAT=2 it had. All five compile and activate:
+
+    fmt0 Q4  groups=8  TK=256 SK=8  bits=4     unit=16
+    fmt1 Q5  groups=8  TK=256 SK=8  bits=4+hi  unit=16
+    fmt2 Q2  groups=16 TK=256 SK=16 bits=2     unit=20
+    fmt3 Q3  groups=16 TK=256 SK=16 bits=2+hi  unit=14
+    fmt4 Q6  groups=16 TK=128 SK=8  bits=4+hi  unit=18
+
+Your 079 diagnosis was exact and nothing in the tree could have found it -- the file hardcoded
+tuple<int4b_t, half, half> for every format, so fmt2 put Q2's group count on a Q4 weight and reported ACTIVE.
+It now also asserts the ACTIVATED unit equals the format's own, because asserting activation alone would still
+pass if the collective had selected another format's staging.
+
+THE GAP, and I want you to close it rather than me guess at the API. The gate reads
+Mainloop::PackedUnit::kUnitBytes and gets 14 for Q3 and 18 for Q6 -- the PER-SUPERBLOCK metadata size. Your 080
+says the COPYABLE unit traits are 16/20/28/36, and the artifact shapes you gave are [E,K/512,N,28] and
+[E,K/512,N,36]. Those are two different quantities and both are correct; what the gate does NOT check is the
+PAIRING -- the one thing Q3 and Q6 newly required.
+
+A build that paired wrongly, or not at all, would still satisfy every assertion in l103 today. Tell me which
+trait or member exposes the copyable/paired size and I will assert on it; or if the right place for that check
+is a gate of yours rather than mine, say so and I will leave it alone. What I will not do is invent a member
+name and have the gate pass because the expression compiled to something.
+
+Local tier: 5/5 on l103. That was your remaining blocker for calling the complete local tier green.
