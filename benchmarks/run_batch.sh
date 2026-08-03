@@ -454,6 +454,22 @@ do_check() {
 #    step prints it, and prints the registry cross-check that says each VALIDATED cell has a harness behind it --
 #    but a passing run does not promote a cell, and the header says so, because a table printed under a green
 #    test run reads as though the run produced it.
+# The extension-staleness verdict, in ONE place. It is asked twice -- before rebuilding and after -- and two
+# copies of this rule would be two chances for them to disagree about what "current" means.
+ext_staleness_verdict() {
+  PYTHONPATH="$ROOT" python3 - "$ROOT" <<'PYEOF'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+so = sorted((root / "quactlize").glob("_C*.so"))
+if not so:
+    print("ABSENT"); raise SystemExit
+built = so[0].stat().st_mtime
+newer = sorted(p.name for p in (root / "quactlize" / "csrc").rglob("*")
+               if p.suffix in (".cpp", ".h", ".hpp") and p.stat().st_mtime > built)
+print("STALE " + ", ".join(newer[:4]) if newer else "CURRENT")
+PYEOF
+}
+
 do_pytest() {
   local timeout_s="${BUILD_TIMEOUT:-900}"
   echo
@@ -534,18 +550,7 @@ do_pytest() {
   # which file is stale sends the reader to the wrong place. Nothing is discarded -- an earlier draft sent the
   # diagnostic to stderr and then captured with 2>/dev/null, which would have hidden the one useful line.
   local ext_verdict
-  ext_verdict=$(PYTHONPATH="$ROOT" python3 - "$ROOT" <<'PYEOF'
-import pathlib, sys
-root = pathlib.Path(sys.argv[1])
-so = sorted((root / "quactlize").glob("_C*.so"))
-if not so:
-    print("ABSENT"); raise SystemExit
-built = so[0].stat().st_mtime
-newer = sorted(p.name for p in (root / "quactlize" / "csrc").rglob("*")
-               if p.suffix in (".cpp", ".h", ".hpp") and p.stat().st_mtime > built)
-print("STALE " + ", ".join(newer[:4]) if newer else "CURRENT")
-PYEOF
-) || ext_verdict="ABSENT"
+  ext_verdict="$(ext_staleness_verdict)" || ext_verdict="ABSENT"
   case "$ext_verdict" in
     STALE*) echo "   ${ext_verdict#STALE } is newer than the built extension" ;;
   esac
@@ -559,6 +564,20 @@ PYEOF
     local hlog="$OUT/quactlize_host_ext.log"
     ( cd "$ROOT" && python3 setup.py build_ext --inplace ) >"$hlog" 2>&1 \
       || { echo "   !!! host extension build failed:"; tail -20 "$hlog" | sed 's/^/       /'; return 1; }
+
+    # ASKING FOR A REBUILD IS NOT THE SAME AS GETTING ONE. This step detected staleness and then trusted
+    # setuptools to act on it, and ppu001 ran an extension whose producer still returned the pre-073 two-tensor
+    # artifact -- ValueError: not enough values to unpack (expected 3, got 2) -- from a tree whose C++ had
+    # returned three for hours. Whatever the reason setuptools declined, the fix is to CHECK, then force.
+    if [ "$(ext_staleness_verdict)" != CURRENT ]; then
+      echo "   setuptools left it stale; removing the .so and rebuilding from scratch"
+      rm -f "$ROOT"/quactlize/_C*.so
+      ( cd "$ROOT" && python3 setup.py build_ext --inplace ) >>"$hlog" 2>&1 \
+        || { echo "   !!! forced rebuild failed:"; tail -20 "$hlog" | sed 's/^/       /'; return 1; }
+      [ "$(ext_staleness_verdict)" = CURRENT ] \
+        || { echo "   !!! STILL stale after a clean rebuild -- something outside setuptools is wrong. See $hlog"
+             return 1; }
+    fi
     PYTHONPATH="$ROOT" python3 -c 'import quactlize; quactlize._ops()' >/dev/null 2>&1 \
       || { echo "   !!! built, but still not importable -- see $hlog"; return 1; }
     echo "   ok"
