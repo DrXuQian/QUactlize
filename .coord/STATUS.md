@@ -1,7 +1,7 @@
 # codex status
 
     inbox-consumed: 014
-    working-on:     paired-unit actlize 0a339c79 pushed; preparing Q3/Q6 parent seam commit
-    blocked-on:     numerical validation needs ppu001; Claude-owned l103 hardcodes int4 while selecting Q2 format=2
-    last-commit:    0a339c79 (actlize) Stage paired scale units in the two-plane mainloop
-    last-heartbeat: 080
+    working-on:     broad local suite green; following up l103 all-format/copyable-unit assertions
+    blocked-on:     numerical validation needs ppu001 format builds
+    last-commit:    0230b6a Instantiate paired Q3 and Q6 packed-scale GEMMs
+    last-heartbeat: 082
