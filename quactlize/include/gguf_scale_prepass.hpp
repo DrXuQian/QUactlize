@@ -72,11 +72,12 @@ group_scale_zero(uint8_t const* block, int g, half_t d, half_t dmin) {
   // THE HOST AND DEVICE RESULTS DIFFER BY UP TO 1 ULP HERE, and only here. On the host this goes through float and
   // rounds once; on the device half_t arithmetic lowers to native fp16, so 8*scale is rounded before the add.
   // Measured on a 5090: Q3_K and Q6_K (ZMul = 0) are bit-identical, while Q2_K, Q4_K and Q5_K differ by 3.12e-2,
-  // which is exactly one fp16 ulp at magnitude 32. So the CPU op is NOT a bit-exact oracle for the device path on
-  // any format with a ZMul, and a device test comparing them must allow an ulp rather than equality -- otherwise it
-  // fails for the one reason that is not a bug.
+  // which is exactly one fp16 ulp at magnitude 32. Keep this expression explicitly in float on BOTH sides: leaving
+  // the operands as half_t makes CUDA lower it to native fp16 (round the product, then the sum), while the host does
+  // one float FMA-shaped expression and rounds once. A pre-pass produces a persistent artifact, so having its host
+  // and device builders disagree by a bit is a worse contract than saving two scalar conversions per group.
   if constexpr (ZMul != 0) {
-    out.zero = out.zero + half_t(float(ZMul)) * out.scale;
+    out.zero = half_t(float(out.zero) + float(ZMul) * float(out.scale));
   }
   return out;
 }
@@ -152,11 +153,11 @@ void prepass_host(BlockDesc const& src, PlaneDesc const& dst, int num_cols, int 
 }
 
 #if defined(__CUDACC__) || defined(__HGGCCC__)
-// ONE THREAD PER (column, superblock). That is the granularity the format itself has -- d and dmin are per
-// superblock and shared by all its groups -- so a finer split would re-read the header once per group, and a coarser
-// one would leave the k axis serial. It is a pure bandwidth kernel: kBlockBytes + 4 in, kGroups * (2 or 4) out.
+// THE OLD ONE-THREAD KERNEL, retained as the bit-exact device reference. It is intentionally not the production name:
+// one lane serialises 8 or 16 groups and, more importantly, a warp's stores are separated by a whole scale row. The
+// cooperative kernel below is checked against this one in the CUDA golden before either is timed.
 template <KType T, int ZMul>
-__global__ void prepass_kernel(BlockDesc src, PlaneDesc dst, int num_cols, int num_superblocks) {
+__global__ void prepass_kernel_serial(BlockDesc src, PlaneDesc dst, int num_cols, int num_superblocks) {
   constexpr int kG = Traits<T>::kGroups;
   int const tid   = blockIdx.x * blockDim.x + threadIdx.x;
   int const total = num_cols * num_superblocks;
@@ -171,6 +172,47 @@ __global__ void prepass_kernel(BlockDesc src, PlaneDesc dst, int num_cols, int n
 
   CUTLASS_PRAGMA_UNROLL
   for (int g = 0; g < kG; ++g) {
+    GroupScale const sz = group_scale_zero<T, ZMul>(blk, g, d, dmin);
+    int64_t const o = n * dst.stride_n + (int64_t(sb) * kG + g) * dst.stride_k;
+    dst.scale[o] = sz.scale;
+    if (dst.zero) dst.zero[o] = sz.zero;
+  }
+}
+
+// EIGHT LANES PER (column, superblock), FOUR SUPERBLOCKS PER WARP. A format has 8 or 16 groups, so every lane writes
+// one group (or two groups in two lane-coalesced passes). The old kernel made one lane write a whole row while the
+// next lane started a different row; this makes the group index lane-fast, which is the same store-side repair as the
+// warp dequantiser in gguf_vecdot.hpp at the scale channel's natural width.
+//
+// Launch `prepass_thread_count(num_cols, num_superblocks)` threads, with a block size divisible by 32. Stating the
+// geometry as code matters: reusing the serial kernel's `total`-thread launch would execute only one eighth of the
+// work and can look correct on an output buffer that was not poisoned first.
+static constexpr int kPrepassThreadsPerSuperblock = 8;
+CUTLASS_HOST_DEVICE constexpr int64_t prepass_thread_count(int num_cols, int num_superblocks) {
+  return int64_t(num_cols) * num_superblocks * kPrepassThreadsPerSuperblock;
+}
+CUTLASS_HOST_DEVICE constexpr int prepass_grid_size(int num_cols, int num_superblocks, int threads_per_cta) {
+  return int((prepass_thread_count(num_cols, num_superblocks) + threads_per_cta - 1) / threads_per_cta);
+}
+
+template <KType T, int ZMul>
+__global__ void prepass_kernel(BlockDesc src, PlaneDesc dst, int num_cols, int num_superblocks) {
+  constexpr int kG = Traits<T>::kGroups;
+  int const tid  = blockIdx.x * blockDim.x + threadIdx.x;
+  int const work = tid / kPrepassThreadsPerSuperblock;
+  int const lane = tid % kPrepassThreadsPerSuperblock;
+  int const total = num_cols * num_superblocks;
+  if (work >= total) return;
+  int const n  = work / num_superblocks;
+  int const sb = work - n * num_superblocks;
+
+  uint8_t const* blk = src.blocks + n * src.block_stride_n + sb * src.block_stride_sb;
+  int64_t const hi = n * src.hdr_stride_n + sb * src.hdr_stride_sb;
+  half_t const d = src.d[hi];
+  half_t const dmin = src.dmin ? src.dmin[hi] : half_t(0.f);
+
+  CUTLASS_PRAGMA_UNROLL
+  for (int g = lane; g < kG; g += kPrepassThreadsPerSuperblock) {
     GroupScale const sz = group_scale_zero<T, ZMul>(blk, g, d, dmin);
     int64_t const o = n * dst.stride_n + (int64_t(sb) * kG + g) * dst.stride_k;
     dst.scale[o] = sz.scale;

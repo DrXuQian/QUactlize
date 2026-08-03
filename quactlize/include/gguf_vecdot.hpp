@@ -47,6 +47,7 @@
 #include <cstdint>
 #include "cutlass/numeric_types.h"
 #include "gguf_scale_layout.hpp"   // brings cute/tensor.hpp, so cute::Layout is available as a destination
+#include "cute/atom/copy_atom.hpp"
 
 #ifndef CUTLASS_HOST_DEVICE
 #  define CUTLASS_HOST_DEVICE inline
@@ -73,8 +74,11 @@ CUTLASS_HOST_DEVICE float apply_group(GroupAcc a, float dl, float ml) { return d
 // Official ordering: qs.reshape(-1,1,32) >> [0,4] & 0xF -> (4 chunks, 2 halves, 32 bytes), flattened (-1,32).
 // So element i takes chunk i/64, nibble half (i%64)/32, byte i%32. Writing that out is the ONLY way the element
 // ORDER gets checked; a decoder that had the right scales and the wrong order would pass every per-group test.
+using Q4CodeShape = cute::Shape<cute::_32, cute::_2, cute::_4>;  // (byte-in-chunk, nibble, chunk)
+using Q4CodeByteLayout = cute::Layout<Q4CodeShape, cute::Stride<cute::_1, cute::_0, cute::_32>>;
+using Q4CodeShiftLayout = cute::Layout<Q4CodeShape, cute::Stride<cute::_0, cute::_4, cute::_0>>;
 CUTLASS_HOST_DEVICE int q4k_code(uint8_t const* qs, int i) {
-  return (qs[(i / 64) * 32 + (i % 32)] >> (4 * ((i % 64) / 32))) & 0xF;
+  return (qs[Q4CodeByteLayout{}(i)] >> Q4CodeShiftLayout{}(i)) & 0xF;
 }
 // Q5_K -- 176 B: d dmin scales[12] qh[32] qs[128]. Same low nibbles as Q4_K plus one high bit per element, and the
 // high plane has a SINGLE 32-byte chunk indexed by bit position, not by chunk.
@@ -104,9 +108,7 @@ CUTLASS_HOST_DEVICE int q3k_code(uint8_t const* qs, uint8_t const* hmask, int i)
 // [0,2,4,6] flattens to (4,4). So group g takes low nibble from byte g%8 at shift 4*(g/8) and high two bits from
 // byte 8 + g%4 at shift 2*(g/4). Centre is -32.
 CUTLASS_HOST_DEVICE int q3k_scale(uint8_t const* sc, int g) {
-  int const lo = (sc[g % 8] >> (4 * (g / 8))) & 0xF;
-  int const hi = (sc[8 + (g % 4)] >> (2 * (g / 4))) & 3;
-  return (lo | (hi << 4)) - 32;
+  return scale_of<KType::Q3_K>(sc, g) - Traits<KType::Q3_K>::kScaleBias;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -147,16 +149,17 @@ template <class F> CUTLASS_HOST_DEVICE void visit_q2k(uint8_t const* b, F f) {
   float const d = float(half_t::bitcast(uint16_t(b[80] | (b[81] << 8))));
   float const dmin = float(half_t::bitcast(uint16_t(b[82] | (b[83] << 8))));
   for (int g = 0; g < 16; ++g) {
-    float const dl = d * float(sc[g] & 0xF), ml = dmin * float(sc[g] >> 4);
+    float const dl = d * float(scale_of<KType::Q2_K>(sc, g));
+    float const ml = dmin * float(min_of<KType::Q2_K>(sc, g));
     for (int j = 0; j < 16; ++j) { int const i = g * 16 + j; f(i, g, q2k_code(qs, i), dl, ml); }
   }
 }
 template <class F> CUTLASS_HOST_DEVICE void visit_q6k(uint8_t const* b, F f) {
   uint8_t const* ql = b; uint8_t const* qh = b + 128;
-  int8_t const* sc = reinterpret_cast<int8_t const*>(b + 192);
+  uint8_t const* sc = b + 192;
   float const d = float(half_t::bitcast(uint16_t(b[208] | (b[209] << 8))));
   for (int g = 0; g < 16; ++g) {
-    float const dl = d * float(sc[g]);                    // no min channel; the centre rides in the code
+    float const dl = d * float(scale_of<KType::Q6_K>(sc, g)); // no min channel; the centre rides in the code
     for (int j = 0; j < 16; ++j) { int const i = g * 16 + j; f(i, g, q6k_code(ql, qh, i), dl, 0.f); }
   }
 }
@@ -195,14 +198,13 @@ CUTLASS_HOST_DEVICE void group_dl_ml(uint8_t const* b, int g, float& dl, float& 
   } else if constexpr (T == KType::Q2_K) {
     float const d = float(half_t::bitcast(uint16_t(b[80] | (b[81] << 8))));
     float const dmin = float(half_t::bitcast(uint16_t(b[82] | (b[83] << 8))));
-    dl = d * float(b[g] & 0xF);
-    ml = dmin * float(b[g] >> 4);
+    dl = d * float(scale_of<T>(b, g));
+    ml = dmin * float(min_of<T>(b, g));
   } else if constexpr (T == KType::Q3_K) {
     dl = float(half_t::bitcast(uint16_t(b[108] | (b[109] << 8)))) * float(q3k_scale(b + 96, g));
     ml = 0.f;
   } else {
-    dl = float(half_t::bitcast(uint16_t(b[208] | (b[209] << 8))))
-       * float(reinterpret_cast<int8_t const*>(b + 192)[g]);
+    dl = float(half_t::bitcast(uint16_t(b[208] | (b[209] << 8)))) * float(scale_of<T>(b + 192, g));
     ml = 0.f;
   }
 }
@@ -239,70 +241,21 @@ CUTLASS_HOST_DEVICE float vecdot_block(uint8_t const* b, float const* x) {
 // is the mixed-input CONVERTER's centre correction, and these are the actual weight values. Adding it would shift
 // every weight by 8*scale and still look entirely plausible, which is the failure mode that parameter exists for.
 //
-// THE DESTINATION IS A MAP, NOT AN INDEX. A superblock is 256 consecutive elements of ONE row of the weight, so
-// writing out[i] only produces the right thing when the caller wants those 256 contiguous -- which a library GEMM
-// does not: it wants element (n, k0 + i) of an (N, K) matrix, i.e. n*ld + k0 + i, and a MoE expert wants that again
-// offset per expert. Hardcoding out[i] would make this correct only for a single-row test and silently wrong for the
-// path it exists to feed.
+// THE DESTINATION IS A cute TENSOR, NOT A CALLABLE THAT HAPPENS TO LOOK LIKE A LAYOUT. The distinction is operational:
+// a copy partition can be applied to a tensor and to its coordinate tensor together, which lets the device kernel
+// assign consecutive PHYSICAL output addresses to consecutive lanes. Calling `layout(logical_i)` after lanes have
+// already striped logical indices loses that property on every nontrivial layout and measured 196.6 us versus 65.5.
 //
-// `dst` takes the block-local element index and returns the offset to write. Identity keeps the old behaviour, and
-// DstStrided covers the (N, K) case, which is what the fallback actually needs.
-struct DstIdentity { CUTLASS_HOST_DEVICE int64_t operator()(int64_t i) const { return i; } };
-
-// A LINEAR MAP, base + i*stride, because contiguous is not general enough. The pre-pass does not change any layout,
-// but the LIBRARY GEMMs this feeds want their own: cuBLAS takes a leading dimension and either orientation, and
-// DeepGemm wants its grouped per-expert arrangement. Row-major is stride 1 and column-major is stride ld, and the
-// first version of this offered only base + i -- i.e. row-major only -- which would have produced a transposed
-// weight for half the callers, silently and with every element individually correct.
-struct DstLinear {
-  int64_t base;                                   // n*ld + k0 for row-major, k0*ld + n for column-major
-  int64_t stride;                                 // 1 for row-major, ld for column-major
-  CUTLASS_HOST_DEVICE int64_t operator()(int64_t i) const { return base + i * stride; }
-};
-// Kept as the name the earlier commit introduced, now a special case rather than the only case.
-struct DstStrided {
-  int64_t base;
-  CUTLASS_HOST_DEVICE int64_t operator()(int64_t i) const { return base + i; }
-};
-
-// AND THE GENERAL CASE IS A cute::Layout, WHICH NEEDS NO NEW TYPE. `Dst` is any callable from the block-local index
-// to an offset, and a cute Layout is exactly that -- `layout(i)` is its offset -- so the arrangements this project
-// actually ships can be passed straight in. That matters because they are neither row- nor column-major: the offline
-// reorders here are hierarchical, tiled and interleaved, and an affine base + i*stride cannot express them. DstLinear
-// covers the library GEMMs' plain leading-dimension cases and nothing more.
-//
-// Composing with an offset is `[=](int i){ return base + int64_t(L(i)); }`, so a per-expert or per-tile origin does
-// not need a variant type either. Nothing here has to know which layout it was handed, which is the point: the
-// arrangement stays in the layout registry where every other reorder in this tree lives.
-template <class Layout>
-struct DstLayout {
-  Layout layout;
-  int64_t base = 0;
-  CUTLASS_HOST_DEVICE int64_t operator()(int64_t i) const { return base + int64_t(layout(i)); }
-};
-template <class Layout>
-CUTLASS_HOST_DEVICE DstLayout<Layout> dst_of(Layout const& l, int64_t base = 0) { return DstLayout<Layout>{l, base}; }
-
-// THE PER-BLOCK ORIGIN SHIFTS THE INPUT, NOT THE OUTPUT, and getting that backwards makes the whole-tensor kernel
-// wrong for every destination except a contiguous one. Block b holds elements b*256 .. b*256+255 of the logical
-// weight, so the destination of its element i is dst(b*256 + i). Writing base + dst(i) instead is only the same
-// thing when dst is the identity: for a column-major map the address is n + (b*256+i)*ld, and base + dst(i) gives
-// b*256 + n + i*ld, which is a different place. Hierarchical cute layouts fail the same way and more silently,
-// since their offsets are not arithmetic and the error does not look like a stride mistake.
-template <class Dst>
-struct DstAtBlock {
-  Dst inner;
-  int64_t first;                                     // the logical index of this block's element 0
-  CUTLASS_HOST_DEVICE int64_t operator()(int i) const { return inner(first + int64_t(i)); }
-};
-
-template <KType T, class Dst>
-CUTLASS_HOST_DEVICE void dequantize_block_to(uint8_t const* b, half_t* out, Dst dst) {
-  visit<T>(b, [&](int i, int, int q, float dl, float ml) { out[dst(i)] = half_t(dl * float(q) - ml); });
+// The block-level host primitive takes a tensor for the same reason the kernel does: shape, layout and storage remain
+// one object, and a caller cannot pass address arithmetic whose claimed layout is invisible to cute.
+template <KType T, class Engine, class Layout>
+CUTLASS_HOST_DEVICE void dequantize_block_to(uint8_t const* b, cute::Tensor<Engine, Layout> dst) {
+  visit<T>(b, [&](int i, int, int q, float dl, float ml) { dst(i) = half_t(dl * float(q) - ml); });
 }
 template <KType T>
 CUTLASS_HOST_DEVICE void dequantize_block(uint8_t const* b, half_t* out) {
-  dequantize_block_to<T>(b, out, DstIdentity{});
+  auto dst = cute::make_tensor(out, cute::make_layout(cute::make_shape(cute::Int<kQK>{})));
+  dequantize_block_to<T>(b, dst);
 }
 
 // THE SPLIT CONSUMER: codes, scale and zero as SEPARATE arrays, which is what every offline packer in this tree
@@ -387,7 +340,7 @@ __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, f
   out[r] = acc;
 }
 
-// ONE WARP PER BLOCK, LANE-FAST IN THE ELEMENT INDEX. This is the shape that matters and the numbers say why:
+// ONE WARP PER 256 PHYSICAL DESTINATIONS. This is the shape that matters and the numbers say why:
 // measured on a 5090 at 8 experts x 2048 columns x 8 superblocks, one thread per block runs 786.5 us and this runs
 // 61.4 us -- 12.8x, 1.399 TB/s, 78.1% of peak and 94.5% of a measured streaming-copy roof.
 //
@@ -397,40 +350,88 @@ __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, f
 // making its data warm in L2 moved it 2.3% -- while this version goes 61.4 us cold to 25.5 us warm, which is what
 // being bandwidth-bound looks like.
 //
-// element = lane + 32*v is deliberate beyond coalescing: at gs=32 the group is (lane + 32v)/32 = v, so every lane
-// in a step shares ONE group and its scale pair is uniform across the warp, with no shuffle and no divergence. At
-// gs=16 a step spans two groups and the pair is selected per lane; both fall out of the same index.
-template <KType T, class Dst>
+// THE OWNERSHIP IS DERIVED FROM THE DESTINATION. `dst_layout` maps logical (block,element) coordinates to physical
+// offsets. We partition a compact physical tensor and the matching identity-coordinate tensor with the SAME copy;
+// composing the coordinate tensor with right_inverse(dst_layout) then tells each physical owner which source block
+// and element it must decode. That is the measured 3x distinction: partition physical addresses first, derive source
+// coordinates second.
+//
+// right_inverse needs a static compact bijection. The separately named `_logical` kernel below is the general path
+// for dynamic, padded or aliased layouts; it stripes logical elements and costs 196.6 us against 65.5 us here on the
+// measured nontrivial reorder. Keeping the slow path explicit is preferable to treating right_inverse as meaningful
+// on holes, where it can return a coordinate for an address the layout never owns.
+template <KType T, class DstLayout>
 __global__ void dequantize_kernel_warp(uint8_t const* blocks, int64_t block_bytes, half_t* out,
-                                       int n_blocks, Dst dst) {
+                                       int n_blocks, DstLayout dst_layout) {
+  static_assert(cute::is_static_v<DstLayout>,
+                "the physical-partition path needs a static layout; use dequantize_kernel_warp_logical otherwise");
+  static_assert(cute::rank_v<decltype(cute::shape(DstLayout{}))> == 2,
+                "destination shape must be (source block, element in its 256-element superblock)");
+  static_assert(cute::size<1>(DstLayout{}) == kQK, "the destination's element mode must have extent 256");
+  static_assert(cute::cosize(DstLayout{}) == cute::size(DstLayout{}),
+                "the fast path needs a compact bijection; padded/aliased layouts use the logical fallback");
   int const warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
   int const lane = threadIdx.x & 31;
   if (warp >= n_blocks) return;
+
+  auto dst_physical = cute::make_tensor(cute::make_gmem_ptr(out),
+      cute::make_layout(cute::make_shape(cute::size(dst_layout))));
+  auto logical_id = cute::make_identity_tensor(cute::shape(dst_layout));
+  auto source_for_physical = cute::composition(logical_id, cute::right_inverse(dst_layout));
+  auto source_flat = cute::group_modes<0, cute::rank(source_for_physical)>(source_for_physical);
+  auto dst_tile = cute::local_tile(dst_physical, cute::make_shape(cute::Int<kQK>{}), warp);
+  auto source_tile = cute::local_tile(source_flat, cute::make_shape(cute::Int<kQK>{}), warp);
+
+  auto tiled_copy = cute::make_tiled_copy(
+      cute::Copy_Atom<cute::UniversalCopy<half_t>, half_t>{},
+      cute::Layout<cute::Shape<cute::_32>>{}, cute::Layout<cute::Shape<cute::_1>>{});
+  auto thr_copy = tiled_copy.get_thread_slice(lane);
+  auto thr_dst = thr_copy.partition_D(dst_tile);
+  auto thr_source = thr_copy.partition_D(source_tile);
+  constexpr int kGs = group_size<T>();
+  CUTLASS_PRAGMA_UNROLL
+  for (int v = 0; v < cute::size(thr_dst); ++v) {
+    auto const coord = thr_source(v);
+    int const b = int(cute::get<0>(coord));
+    int const i = int(cute::crd2idx(cute::get<1>(coord), cute::shape<1>(dst_layout)));
+    uint8_t const* blk = blocks + int64_t(b) * block_bytes;
+    float dl, ml;
+    group_dl_ml<T>(blk, i / kGs, dl, ml);
+    thr_dst(v) = half_t(dl * float(code_at<T>(blk, i)) - ml);
+  }
+}
+
+// GENERAL WARP FALLBACK. It is correct for any cute Layout, including a runtime shape, padding (cosize > size), and
+// aliasing. Logical striping means stores need not be coalesced; that cost is the reason this is not the default.
+template <KType T, class DstLayout>
+__global__ void dequantize_kernel_warp_logical(uint8_t const* blocks, int64_t block_bytes, half_t* out,
+                                               int n_blocks, DstLayout dst_layout) {
+  int const warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+  int const lane = threadIdx.x & 31;
+  if (warp >= n_blocks) return;
+  auto dst = cute::make_tensor(cute::make_gmem_ptr(out), dst_layout);
   uint8_t const* blk = blocks + int64_t(warp) * block_bytes;
-  int64_t const first = int64_t(warp) * kQK;
-  // The decode is per (group, element); this walks the block's own traversal and keeps only what this lane owns.
-  // It costs the whole traversal per lane, which is the price of not staging the block in shared memory -- and at
-  // 78.1% of peak the arithmetic is not what binds.
-  // ONE ELEMENT PER LANE PER STEP, lane-fast so consecutive lanes write consecutive addresses. At gs=32 the group
-  // is (lane + 32v)/32 = v, uniform across the warp, so its scale pair is loaded once per step with no divergence
-  // and no shuffle; at gs=16 a step spans two groups and the pair is selected per lane. Both fall out of the index.
   constexpr int kGs = group_size<T>();
   CUTLASS_PRAGMA_UNROLL
   for (int v = 0; v < kQK / 32; ++v) {
     int const i = lane + 32 * v;
     float dl, ml;
     group_dl_ml<T>(blk, i / kGs, dl, ml);
-    out[dst(first + int64_t(i))] = half_t(dl * float(code_at<T>(blk, i)) - ml);
+    dst(cute::make_coord(warp, cute::idx2crd(i, cute::shape<1>(dst_layout)))) =
+        half_t(dl * float(code_at<T>(blk, i)) - ml);
   }
 }
 
-// FALLBACK: one thread per block, writing through the destination map. The map is a template parameter rather than a
-// runtime pointer so a cute Layout stays a compile-time object and its offsets fold into the addressing.
-template <KType T, class Dst>
-__global__ void dequantize_kernel(uint8_t const* blocks, int64_t block_bytes, half_t* out, int n_blocks, Dst dst) {
+// SERIAL DEVICE REFERENCE, also expressed against a cute tensor rather than an opaque address callable.
+template <KType T, class DstLayout>
+__global__ void dequantize_kernel(uint8_t const* blocks, int64_t block_bytes, half_t* out,
+                                  int n_blocks, DstLayout dst_layout) {
   int const b = blockIdx.x * blockDim.x + threadIdx.x;
   if (b >= n_blocks) return;
-  dequantize_block_to<T>(blocks + int64_t(b) * block_bytes, out, DstAtBlock<Dst>{dst, int64_t(b) * kQK});
+  auto dst = cute::make_tensor(cute::make_gmem_ptr(out), dst_layout);
+  visit<T>(blocks + int64_t(b) * block_bytes, [&](int i, int, int q, float dl, float ml) {
+    dst(cute::make_coord(b, cute::idx2crd(i, cute::shape<1>(dst_layout)))) = half_t(dl * float(q) - ml);
+  });
 }
 
 #endif

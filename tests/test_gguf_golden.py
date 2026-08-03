@@ -35,6 +35,9 @@ and the reported mismatch count was zero. Hence assert_finite below, run on the 
 """
 import numpy as np
 import pytest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
 
 # NOT importorskip. This module IS the independent oracle for every k-quant constant in the tree, and a skip is
 # indistinguishable from a pass in a CI summary line -- the whole file would vanish and the run would still say
@@ -304,6 +307,104 @@ def test_prepass_zero_carries_the_affine_term(name, qtype, hdr, scales, codes, q
     lhs = zero8.numpy().astype(np.float64)
     rhs = zero0 + 8.0 * scale0.numpy().astype(np.float64)
     assert np.abs(lhs - rhs).max() < 5e-3 * denom, f"{name}: zero(zmul=8) != zero(0) + 8*scale"
+
+
+# ===================================================================================================================
+# CUDA-REPRESENTATIVE DEVICE CHECKS. The shared probe is deliberately torch-free: Python supplies the host operator
+# golden, and the probe supplies kernels plus CUDA-event timings. Allocation and copies occur before its event loop;
+# every repetition first streams at least 2x the reported L2 size, then records events immediately around the launch.
+@pytest.fixture(scope="module")
+def gguf_cuda_probe(tmp_path_factory):
+    import ctypes, shutil, subprocess
+    torch = pytest.importorskip("torch")
+    if shutil.which("nvcc") is None or not torch.cuda.is_available():
+        pytest.skip("CUDA golden needs nvcc and a CUDA device")
+    major, minor = torch.cuda.get_device_capability()
+    out = tmp_path_factory.mktemp("gguf_cuda") / "libgguf_cuda_probe.so"
+    cmd = ["nvcc", "-std=c++17", "-O3", f"-arch=sm_{major}{minor}", "-shared", "-Xcompiler=-fPIC",
+           f"-I{ROOT / 'quactlize' / 'include'}", f"-I{ROOT / 'third_party' / 'cutlass' / 'include'}",
+           "-o", str(out), str(ROOT / "tests" / "gguf_cuda_probe.cu")]
+    built = subprocess.run(cmd, capture_output=True, text=True)
+    assert built.returncode == 0, built.stdout + built.stderr
+    lib = ctypes.CDLL(str(out))
+    u8p, u16p = ctypes.POINTER(ctypes.c_uint8), ctypes.POINTER(ctypes.c_uint16)
+    fp, dp = ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_double)
+    lib.quactlize_cuda_q4_prepass.argtypes = [u8p, u16p, u16p, u16p, u16p,
+                                               ctypes.c_int, ctypes.c_int, ctypes.c_int]
+    lib.quactlize_cuda_q4_prepass_bench.argtypes = [ctypes.c_int, ctypes.c_int, fp, fp, dp]
+    lib.quactlize_cuda_q4_layout_check.argtypes = [u8p, u16p, u16p]
+    lib.quactlize_cuda_q4_layout_bench.argtypes = [ctypes.c_int, fp, fp]
+    return lib, ctypes
+
+
+def test_cuda_prepass_is_bit_exact_and_shows_the_fixed_duration_floor(gguf_cuda_probe):
+    """Old CUDA kernel == cooperative CUDA kernel == quactlize.gguf_scale_prepass, then launch-only timing.
+
+    ZMul=8 is intentional. The previous expression used native half arithmetic on device but float on host and could
+    differ by one ULP; an equality test at ZMul=0 would have hidden that contract split.
+    """
+    import torch, quactlize
+    lib, ctypes = gguf_cuda_probe
+    u8p, u16p = ctypes.POINTER(ctypes.c_uint8), ctypes.POINTER(ctypes.c_uint16)
+    rng = np.random.default_rng(1901)
+    cols, superblocks = 37, 8
+    total = cols * superblocks
+    blocks = rng.integers(0, 256, (total, 12), np.uint8)
+    d = (rng.random(total) * .1 + .001).astype(np.float16)
+    dmin = (rng.random(total) * .1 + .001).astype(np.float16)
+    hs, hz = quactlize.gguf_scale_prepass(torch.from_numpy(blocks), torch.from_numpy(d),
+                                          torch.from_numpy(dmin), 12, 8)
+    for cooperative in (0, 1):
+        scale = np.empty((total, 8), np.float16)
+        zero = np.empty_like(scale)
+        rc = lib.quactlize_cuda_q4_prepass(
+            blocks.ctypes.data_as(u8p), d.view(np.uint16).ctypes.data_as(u16p),
+            dmin.view(np.uint16).ctypes.data_as(u16p), scale.view(np.uint16).ctypes.data_as(u16p),
+            zero.view(np.uint16).ctypes.data_as(u16p), cols, superblocks, cooperative)
+        assert rc == 0
+        assert np.array_equal(scale, hs.numpy()), f"CUDA {'cooperative' if cooperative else 'serial'} scale differs"
+        assert np.array_equal(zero, hz.numpy()), f"CUDA {'cooperative' if cooperative else 'serial'} zero differs"
+
+    rows = []
+    for factor in (1, 4, 16):
+        old, new, traffic = ctypes.c_float(), ctypes.c_float(), ctypes.c_double()
+        rc = lib.quactlize_cuda_q4_prepass_bench(factor, 31, ctypes.byref(old), ctypes.byref(new),
+                                                 ctypes.byref(traffic))
+        assert rc == 0 and old.value > 0 and new.value > 0
+        assert int(traffic.value) == factor * 6 * 1024 * 1024
+        assert new.value < old.value, f"cooperative pre-pass regressed at {factor}x: {new.value} vs {old.value} us"
+        rows.append((factor, old.value, new.value, traffic.value / new.value / 1e6))
+    print("prepass CUDA: " + ", ".join(f"{f}x {old:.3f}->{new:.3f} us {bw:.3f} TB/s"
+                                        for f, old, new, bw in rows))
+
+
+def test_cuda_destination_partitions_physical_addresses_and_inverts_the_layout(gguf_cuda_probe):
+    """The fast and general paths write identical shuffled tensors; only their ownership differs."""
+    import torch, quactlize
+    lib, ctypes = gguf_cuda_probe
+    u8p, u16p = ctypes.POINTER(ctypes.c_uint8), ctypes.POINTER(ctypes.c_uint16)
+    rng = np.random.default_rng(7701)
+    n = 512
+    raw = rng.integers(0, 256, (n, 144), np.uint8)
+    for lo, hi in ((0, 2), (2, 4)):
+        v = (rng.random(n) * .1 + .001).astype(np.float16)
+        raw[:, lo:hi] = v.view(np.uint8).reshape(n, 2)
+    # Destination element layout is (lane,v)->lane*8+v. Form the expected PHYSICAL buffer from the host op.
+    host = quactlize.gguf_dequantize(torch.from_numpy(raw), 12).numpy()
+    expected = host.reshape(n, 8, 32).transpose(0, 2, 1).copy().reshape(-1)
+    physical, fallback = np.empty_like(expected), np.empty_like(expected)
+    rc = lib.quactlize_cuda_q4_layout_check(raw.ctypes.data_as(u8p),
+        physical.view(np.uint16).ctypes.data_as(u16p), fallback.view(np.uint16).ctypes.data_as(u16p))
+    assert rc == 0
+    assert np.array_equal(physical, expected), "physical partition + right_inverse wrote the wrong tensor"
+    assert np.array_equal(fallback, expected), "logical fallback wrote the wrong tensor"
+
+    fast, general = ctypes.c_float(), ctypes.c_float()
+    rc = lib.quactlize_cuda_q4_layout_bench(31, ctypes.byref(fast), ctypes.byref(general))
+    assert rc == 0 and fast.value > 0 and general.value > 0
+    assert fast.value < general.value, f"physical partition regressed: {fast.value} vs {general.value} us"
+    print(f"destination CUDA: physical {fast.value:.3f} us, general {general.value:.3f} us, "
+          f"{general.value / fast.value:.2f}x")
 
 
 # ===================================================================================================================

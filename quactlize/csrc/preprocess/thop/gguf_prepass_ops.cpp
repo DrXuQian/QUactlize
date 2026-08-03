@@ -22,6 +22,7 @@
 #include "gguf_scale_prepass.hpp"
 #include "gguf_vecdot.hpp"
 #include "gguf_packed_unit.hpp"
+#include "weight_layout.h"
 #include "thop/th_utils.h"
 #include "thop/ppu_backend.h"
 
@@ -302,35 +303,58 @@ std::string gguf_backend() {
 std::vector<torch::Tensor> gguf_pack_unit(torch::Tensor scale_blocks, torch::Tensor d, torch::Tensor dmin,
                                           int64_t qtype) {
   CHECK_CPU(scale_blocks); CHECK_CONTIGUOUS(scale_blocks);
-  TORCH_CHECK(scale_blocks.dtype() == torch::kUInt8 && scale_blocks.dim() == 2, "scale_blocks must be uint8 2-D");
+  CHECK_CPU(d); CHECK_CONTIGUOUS(d);
+  TORCH_CHECK(scale_blocks.dtype() == torch::kUInt8 && (scale_blocks.dim() == 2 || scale_blocks.dim() == 3),
+              "scale_blocks must be uint8 [rows,bytes] or [N,superblocks,bytes]");
   TORCH_CHECK(d.dtype() == torch::kFloat16, "d must be float16");
-  int64_t const rows = scale_blocks.size(0);
+  int64_t const rows = scale_blocks.numel() / scale_blocks.size(-1);
+  bool const artifact = scale_blocks.dim() == 3;
+  int64_t const ncols = artifact ? scale_blocks.size(0) : 0;
+  int64_t const nsb = artifact ? scale_blocks.size(1) : 0;
+  TORCH_CHECK(d.numel() == rows && ((!artifact && d.dim() == 1) ||
+              (artifact && d.dim() == 2 && d.size(0) == ncols && d.size(1) == nsb)),
+              "d must match scale_blocks' leading dimensions");
   bool const has_dmin = dmin.defined() && dmin.numel() > 0;
+  if (has_dmin) {
+    CHECK_CPU(dmin); CHECK_CONTIGUOUS(dmin);
+    TORCH_CHECK(dmin.dtype() == torch::kFloat16 && dmin.sizes() == d.sizes(),
+                "dmin must be float16 with the same shape as d");
+  }
   auto const* bp = get_ptr<uint8_t const>(scale_blocks);
   return dispatch_ktype(qtype, [&](auto tag) -> std::vector<torch::Tensor> {
     constexpr KType T = decltype(tag)::value;
     using U = gguf_scale::packed_unit::Unit<T>;
-    TORCH_CHECK(scale_blocks.size(1) == Traits<T>::kBlockBytes, "scale_blocks second dim must be the SCALE block");
+    TORCH_CHECK(scale_blocks.size(-1) == Traits<T>::kBlockBytes,
+                "scale_blocks last dim must be the SCALE block");
     TORCH_CHECK(!U::kHasMin || has_dmin, "this format has a min channel, so dmin is required");
     // A UNIT MAY CARRY MORE THAN ONE SUPERBLOCK, and for Q3_K and Q6_K it must: one superblock is 14 and 18 bytes,
     // both 2 mod 4, and ppu.cp.async moves only 4, 8 or 16. Two of the SAME COLUMN are 28 and 36. Consecutive rows
     // here are consecutive superblocks of one column, which is the axis that makes the pairing free -- a thread
     // still owns exactly its own column.
-    TORCH_CHECK(rows % U::kSbPerUnit == 0, "this format packs ", U::kSbPerUnit,
-                " superblocks per unit, so the row count must be a multiple of that; got ", rows);
+    TORCH_CHECK((artifact ? nsb : rows) % U::kSbPerUnit == 0, "this format packs ", U::kSbPerUnit,
+                " superblocks per unit, so the superblock count must be a multiple of that; got ",
+                artifact ? nsb : rows);
     int64_t const n_units = rows / U::kSbPerUnit;
-    torch::Tensor units = torch::empty({n_units, int64_t(U::kUnitTotal)},
+    // THE ARTIFACT'S OUTER REORDER IS PART OF THE OFFLINE FORMAT: GGUF stores [N,sb], while the collective copies
+    // [sb,N,unit]. The old flat op changed only bits inside each row, so no file produced what the kernel consumed;
+    // test_q4k_packed_gemm had to rebuild it at load time with put_code. A 3-D input now names the axes and emits the
+    // stored form. The 2-D reference form remains for per-row round-trip tests.
+    torch::Tensor units = torch::empty(artifact
+                                       ? std::vector<int64_t>{nsb / U::kSbPerUnit, ncols, U::kUnitTotal}
+                                       : std::vector<int64_t>{n_units, U::kUnitTotal},
                                        torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCPU));
     auto* up = get_ptr<uint8_t>(units);
     auto const* dp = get_ptr<at::Half const>(d);
     auto const* mp = has_dmin ? get_ptr<at::Half const>(dmin) : nullptr;
     for (int64_t r = 0; r < rows; ++r) {
+      int64_t const n = artifact ? r / nsb : 0;
+      int64_t const sb = artifact ? r - n * nsb : r;
+      int64_t const unit_row = artifact ? (sb / U::kSbPerUnit) * ncols + n : r / U::kSbPerUnit;
       cutlass::half_t dd, dm{0.f};
       std::memcpy(&dd, dp + r, sizeof(dd));
       if (mp) std::memcpy(&dm, mp + r, sizeof(dm));
       gguf_scale::packed_unit::pack_unit_sb<T>(bp + r * Traits<T>::kBlockBytes, dd, dm,
-                                               int(r % U::kSbPerUnit),
-                                               up + (r / U::kSbPerUnit) * U::kUnitTotal);
+                                               int(sb % U::kSbPerUnit), up + unit_row * U::kUnitTotal);
     }
     return {units};
   });
@@ -339,25 +363,35 @@ std::vector<torch::Tensor> gguf_pack_unit(torch::Tensor scale_blocks, torch::Ten
 // The decode side, so the round trip closes through Python rather than through a header nobody calls from a test.
 std::vector<torch::Tensor> gguf_unit_decode(torch::Tensor units, int64_t qtype, int64_t zmul) {
   CHECK_CPU(units); CHECK_CONTIGUOUS(units);
-  TORCH_CHECK(units.dtype() == torch::kUInt8 && units.dim() == 2, "units must be uint8 2-D");
+  TORCH_CHECK(units.dtype() == torch::kUInt8 && (units.dim() == 2 || units.dim() == 3),
+              "units must be uint8 [rows,unit] or artifact [unit_sb,N,unit]");
   TORCH_CHECK(zmul == 0 || zmul == 8, "zmul must be 0 or 8; it is the consumer's converter shift");
-  int64_t const rows = units.size(0);
+  bool const artifact = units.dim() == 3;
+  int64_t const unit_sb = units.size(0);
+  int64_t const ncols = artifact ? units.size(1) : 0;
+  int64_t const rows = artifact ? unit_sb * ncols : units.size(0);
   auto const* up = get_ptr<uint8_t const>(units);
   return dispatch_ktype(qtype, [&](auto tag) -> std::vector<torch::Tensor> {
     constexpr KType T = decltype(tag)::value;
     using U = gguf_scale::packed_unit::Unit<T>;
-    TORCH_CHECK(units.size(1) == U::kUnitTotal, "this format's unit is ", U::kUnitTotal, " bytes, got ",
-                units.size(1));
+    TORCH_CHECK(units.size(-1) == U::kUnitTotal, "this format's unit is ", U::kUnitTotal, " bytes, got ",
+                units.size(-1));
     // One row of output per SUPERBLOCK, not per unit, so the caller sees the same shape whatever the packing is.
     int64_t const n_sb = rows * U::kSbPerUnit;
     auto f16 = torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCPU);
-    torch::Tensor scale = torch::empty({n_sb, int64_t(U::kGroups)}, f16);
-    torch::Tensor zero = torch::empty({n_sb, int64_t(U::kGroups)}, f16);
+    torch::Tensor scale = torch::empty(artifact
+        ? std::vector<int64_t>{ncols, unit_sb * U::kSbPerUnit, U::kGroups}
+        : std::vector<int64_t>{n_sb, U::kGroups}, f16);
+    torch::Tensor zero = torch::empty_like(scale);
     auto* sp = get_ptr<at::Half>(scale);
     auto* zp = get_ptr<at::Half>(zero);
     for (int64_t r = 0; r < n_sb; ++r) {
-      uint8_t const* u = up + (r / U::kSbPerUnit) * U::kUnitTotal;
-      int const sb = int(r % U::kSbPerUnit);
+      int64_t const n = artifact ? r / (unit_sb * U::kSbPerUnit) : 0;
+      int64_t const sb_global = artifact ? r - n * unit_sb * U::kSbPerUnit : r;
+      int64_t const unit_row = artifact ? (sb_global / U::kSbPerUnit) * ncols + n
+                                        : r / U::kSbPerUnit;
+      uint8_t const* u = up + unit_row * U::kUnitTotal;
+      int const sb = int(sb_global % U::kSbPerUnit);
       for (int g = 0; g < U::kGroups; ++g) {
         auto sz = (zmul == 8) ? gguf_scale::packed_unit::unit_group_sb<T, 8>(u, sb, g)
                               : gguf_scale::packed_unit::unit_group_sb<T, 0>(u, sb, g);
@@ -367,6 +401,96 @@ std::vector<torch::Tensor> gguf_unit_decode(torch::Tensor units, int64_t qtype, 
     }
     return {scale, zero};
   });
+}
+
+namespace {
+
+int q4_nibble(uint8_t const* p, int64_t i) { return (p[i / 2] >> (4 * (i & 1))) & 0xf; }
+void q4_put_nibble(uint8_t* p, int64_t i, int v) {
+  uint8_t const mask = uint8_t(0xfu << (4 * (i & 1)));
+  p[i / 2] = uint8_t((p[i / 2] & ~mask) | ((v & 0xf) << (4 * (i & 1))));
+}
+
+// THE CONSUMER-SIDE INVERSE OF `mixed_gemm`, written as a read of the stored artifact rather than by calling the
+// forward preprocessor again. Its stages run in reverse: converter-word order, cache-line column interleave,
+// sub-byte transpose, then the MMA row permutation. The output values are Q4's UNSIGNED codes: the forward +8 has
+// already changed signed (q-8) nibbles back to q in the stored buffer.
+std::vector<uint8_t> restore_q4_mixed(uint8_t const* stored, int64_t K, int64_t N) {
+  int64_t const elements = K * N, bytes = elements / 2;
+  std::vector<uint8_t> word(size_t(bytes), 0), col(size_t(bytes), 0), perm(size_t(bytes), 0), logical(size_t(bytes), 0);
+
+  // Forward register layout: physical d receives logical 2d for d<4 and logical 2(d-4)+1 otherwise.
+  for (int64_t r = 0; r < elements / 8; ++r)
+    for (int d = 0; d < 8; ++d) {
+      int const src = d < 4 ? 2 * d : 2 * (d - 4) + 1;
+      q4_put_nibble(word.data(), r * 8 + src, q4_nibble(stored, r * 8 + d));
+    }
+
+  // ColumnMajorTileInterleave<64,4>, in 32-bit words (8 nibbles). Assign each original word from its stored offset.
+  int64_t const vec_rows = K / 8, vec_rows_per_tile = 64 / 8, interleave = 4;
+  for (int64_t n = 0; n < N; ++n)
+    for (int64_t kr = 0; kr < vec_rows; ++kr) {
+      int64_t const write_col = n / interleave;
+      int64_t const base = (kr / vec_rows_per_tile) * vec_rows_per_tile;
+      int64_t const write_row = interleave * base + vec_rows_per_tile * (n % interleave)
+                              + kr % vec_rows_per_tile;
+      int64_t const from = (write_col * vec_rows * interleave + write_row) * 4;
+      int64_t const to = (n * vec_rows + kr) * 4;
+      std::memcpy(col.data() + to, word.data() + from, 4);
+    }
+
+  // The sub-byte transpose stored [N,K]; recover the row-permuted [K,N] matrix nibble by nibble.
+  for (int64_t n = 0; n < N; ++n)
+    for (int64_t k = 0; k < K; ++k)
+      q4_put_nibble(perm.data(), k * N + n, q4_nibble(col.data(), n * K + k));
+
+  // Forward row w reads row r. Therefore the inverse writes the value at w back to r.
+  for (int64_t base = 0; base < K; base += 32)
+    for (int w = 0; w < 32; ++w) {
+      int const r = 8 * ((w % 8) / 2) + w % 2 + 2 * (w / 8);
+      for (int64_t n = 0; n < N; ++n)
+        q4_put_nibble(logical.data(), (base + r) * N + n, q4_nibble(perm.data(), (base + w) * N + n));
+    }
+  return logical;
+}
+
+}  // namespace
+
+// THE STORED-ARTIFACT ACCEPTANCE PATH, Q4_K. Both inputs have already crossed the offline boundary:
+//   * weight is pack_int4 -> preprocess_weights_to_layout(..., "mixed_gemm")
+//   * units are gguf_pack_unit([N,sb,...]) -> [sb,N,16]
+// No raw GGUF byte is accepted here. That is the point: a test cannot let a shared misunderstanding of the source
+// form cancel by quietly unpacking the raw block again in this arm.
+torch::Tensor gguf_q4_artifact_dequantize(torch::Tensor weight, torch::Tensor units, std::string layout) {
+  CHECK_CPU(weight); CHECK_CONTIGUOUS(weight); CHECK_CPU(units); CHECK_CONTIGUOUS(units);
+  TORCH_CHECK(weight.dtype() == torch::kInt8 && weight.dim() == 2,
+              "processed Q4 weight must be int8 [K,N/2]");
+  TORCH_CHECK(units.dtype() == torch::kUInt8 && units.dim() == 3 && units.size(2) == 16,
+              "Q4 artifact units must be uint8 [superblocks,N,16]");
+  quactlize::LayoutPlan plan; std::string err;
+  TORCH_CHECK(quactlize::resolve_layout(layout, &plan, &err), err);
+  TORCH_CHECK(plan.name == "mmarow32_tr_cl4_cvtword_bias",
+              "artifact consumer currently implements the mixed_gemm stored layout, got ", plan.name);
+  int64_t const K = weight.size(0), N = weight.size(1) * 2, nsb = units.size(0);
+  TORCH_CHECK(K % 256 == 0 && K / 256 == nsb, "weight K and unit superblocks disagree: K=", K, " nsb=", nsb);
+  TORCH_CHECK(units.size(1) == N, "weight N and unit N disagree: ", N, " vs ", units.size(1));
+  TORCH_CHECK(K % 64 == 0 && N % 64 == 0, "mixed_gemm Q4 artifact needs K and N multiples of 64");
+
+  auto logical = restore_q4_mixed(get_ptr<uint8_t const>(weight), K, N);
+  auto out = torch::empty({K, N}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+  float* op = get_ptr<float>(out);
+  uint8_t const* up = get_ptr<uint8_t const>(units);
+  for (int64_t k = 0; k < K; ++k) {
+    int64_t const sb = k / 256;
+    int const i = int(k % 256), g = i / 32;
+    for (int64_t n = 0; n < N; ++n) {
+      auto const sz = gguf_scale::packed_unit::unit_group<KType::Q4_K, 8>(
+          up + (sb * N + n) * 16, g);
+      int const centered = q4_nibble(logical.data(), k * N + n) - 8;
+      op[k * N + n] = float(centered) * float(sz.scale) + float(sz.zero);
+    }
+  }
+  return out;
 }
 
 // The format's own shape, so Python does not carry a second copy of it. quactlize.formats already has block byte
@@ -389,6 +513,8 @@ static auto gguf_backend_op = torch::RegisterOperators("quactlize::gguf_backend"
 
 static auto gguf_pack_unit_op = torch::RegisterOperators("quactlize::gguf_pack_unit", &torch_ext::gguf_pack_unit);
 static auto gguf_unit_decode_op = torch::RegisterOperators("quactlize::gguf_unit_decode", &torch_ext::gguf_unit_decode);
+static auto gguf_q4_artifact_dequantize_op = torch::RegisterOperators(
+    "quactlize::gguf_q4_artifact_dequantize", &torch_ext::gguf_q4_artifact_dequantize);
 
 static auto gguf_unpack_op = torch::RegisterOperators("quactlize::gguf_unpack", &torch_ext::gguf_unpack);
 

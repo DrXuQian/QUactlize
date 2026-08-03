@@ -160,6 +160,10 @@ def gguf_pack_unit(scale_blocks, d, dmin, qtype: int):
     the top two bits of bytes 0-3 -- so a k-tile covering half a superblock cannot read half a block. The unit makes
     each run of groups self-contained at no cost in stored bytes: 20, 14, 16, 16 and 18 bytes for Q2/Q3/Q4/Q5/Q6
     against GGUF's own 20, 14, 16, 16 and 18.
+
+    A 2-D input [rows,scale_bytes] returns the row-wise reference form. A real offline artifact is 3-D:
+    scale_blocks [N,superblocks,scale_bytes] and headers [N,superblocks] return [unit_superblocks,N,unit_bytes],
+    changing GGUF's column-major outer order into the collective's k-major copy order as well as rearranging bits.
     """
     return _ops().gguf_pack_unit(scale_blocks, d, dmin, qtype)[0]
 
@@ -167,6 +171,16 @@ def gguf_pack_unit(scale_blocks, d, dmin, qtype: int):
 def gguf_unit_decode(units, qtype: int, zmul: int):
     """The packed unit -> (scale, zero), the same decode the collective runs in the kernel."""
     return _ops().gguf_unit_decode(units, qtype, zmul)
+
+
+def gguf_q4_artifact_dequantize(weight, units, layout: str = "mixed_gemm"):
+    """Consume the two OFFLINE-SHUFFLED Q4_K artifacts, with no raw GGUF input in this arm.
+
+    `weight` is [K,N/2] after pack_int4 + preprocess_weights_to_layout. `units` is [K/256,N,16] from the 3-D
+    gguf_pack_unit form. Returns float32 [K,N], decoding the stored converter-word order and the packed unit with
+    ZMul=8, exactly the two forms the collective consumes. This is a correctness/reference consumer, not a GEMM.
+    """
+    return _ops().gguf_q4_artifact_dequantize(weight, units, layout)
 
 
 def gguf_scale_block_shape(qtype: int):
@@ -249,6 +263,6 @@ def matmul_w4a16(a, b_packed, scales, zeros=None, group_size: int = 128,
 
 __all__ = [
     "preprocess_weights_to_layout", "symmetric_quantize", "symmetric_quantize_unprocessed",
-    "gguf_scale_prepass", "gguf_scale_block_shape", "gguf_vecdot", "gguf_dequantize", "gguf_unpack", "gguf_backend", "gguf_pack_unit", "gguf_unit_decode",
+    "gguf_scale_prepass", "gguf_scale_block_shape", "gguf_vecdot", "gguf_dequantize", "gguf_unpack", "gguf_backend", "gguf_pack_unit", "gguf_unit_decode", "gguf_q4_artifact_dequantize",
     "pack_int4", "unpack_int4", "pack_uint4", "unpack_uint4", "matmul_w4a16",
 ]

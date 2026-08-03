@@ -169,6 +169,45 @@ GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
                                     "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_SCALE_FUSED=1"]}
 
 
+def lint_unroll():
+    """Two unroll directives on one loop. hgcc rejects it; nvcc does not.
+
+    WHY A LINT AND NOT A COMPILE. The syntax gate runs nvcc's front end, so it only catches what BOTH compilers
+    dislike -- and hgcc is stricter here: `error: duplicate directives '#pragma unroll' and '#pragma unroll'` at
+    ppu_mma_aiu_multistage_mixed_input.hpp, from an edit that added CUTLASS_PRAGMA_UNROLL above a loop that already
+    had one. Every local check passed and the box did not build.
+
+    The shape is why it survives reading: the two directives are separated by a COMMENT, so they are not adjacent
+    lines and a plain grep for repeats finds nothing. This skips comments the way the compiler does.
+
+    It does not close the general gap -- anything else where hgcc is stricter than nvcc is still invisible here --
+    but it closes this one, which has now cost a box round trip.
+    """
+    import pathlib
+    directives = {"CUTLASS_PRAGMA_UNROLL", "#pragma unroll", "CUTE_UNROLL", "CUTLASS_PRAGMA_NO_UNROLL"}
+    roots = [ROOT / "third_party/actlize/include", ROOT / "quactlize/include"]
+    hits = []
+    for root in roots:
+        if not root.exists():
+            continue
+        for f in list(root.rglob("*.h")) + list(root.rglob("*.hpp")) + list(root.rglob("*.cuh")):
+            try:
+                lines = f.read_text().split("\n")
+            except Exception:
+                continue
+            prev = False
+            for i, line in enumerate(lines, 1):
+                t = line.strip()
+                is_d = t in directives
+                if is_d and prev:
+                    hits.append(f"{f.relative_to(ROOT)}:{i}")
+                if t and not t.startswith("//"):
+                    prev = is_d
+    if hits:
+        return "FAIL", "two unroll directives on one loop (hgcc rejects this, nvcc does not): " + ", ".join(hits[:4]), 0.0
+    return "ok", "no duplicate unroll directives", 0.0
+
+
 def gate(name, args):
     src = DEV / f"{name}.cu"
     if not src.exists():
@@ -214,7 +253,8 @@ def main():
                  "test_q4k_packed_gemm PPU_PACKED_SCALE=1"),
                 ("asan", "preprocessing chain under ASAN", None),
                 ("pytest", "torch op tests", None),
-                ("registry", "declarations vs source", None)])
+                ("lint", "duplicate unroll directives (hgcc-only error)", lint_unroll),
+    ("registry", "declarations vs source", None)])
     items = [i for i in items if a.k in i[1]]
     if a.list:
         for kind, name, _ in items:
@@ -246,6 +286,8 @@ def main():
             rc, log, dt = run([sys.executable, str(ROOT / "dev/fold_derivation/overlay_targets_check.py")])
             last = [l for l in log.splitlines() if l.strip()]
             return {0: "PASS", 2: "SKIP"}.get(rc, "FAIL"), (last[-1].strip() if last else f"exit {rc}"), dt
+        if kind == "lint":
+            return payload()
         if kind == "asan":
             return asan()
         if kind == "pytest":
