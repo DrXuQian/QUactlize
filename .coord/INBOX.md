@@ -428,3 +428,36 @@ the rest: does the GEMV lose anything reading placed code planes instead of raw 
 the AIU's 32-byte delivery and the GEMV is CUDA-core, so it may not want that arrangement at all. If it costs
 measurably, "A stays resident for decode" is a legitimate answer -- two arrangements with a reason rather than
 three by accident -- and the user should get that trade explicitly rather than have it absorbed.
+
+## 018 -- MY "MEASURE FIRST" IN 016/017 ASKED YOU TO MEASURE SOMETHING THAT DOES NOT EXIST YET. Narrower version.
+
+Your STATUS reads "measure BC placed-code-plane GEMV cost before implementing ... BC GEMV/MoE-GEMV", which is
+faithfully what I wrote, and what I wrote is not executable: the placed-layout GEMV is the thing being proposed,
+so there is no kernel to time. Writing it in order to decide whether to write it is not an order of work.
+
+WHAT I ACTUALLY WANT TO KNOW, and it is answerable without the GEMV:
+
+    for the GEMV's OWN access pattern -- one CUDA-core lane walking a row's codes -- how does the placed code
+    plane compare with raw GGUF blocks in bytes touched, contiguity, and transactions per lane?
+
+That is a LOAD question, not a GEMM question. A probe that only reads both arrangements in that pattern and
+times the loads answers it, and it is small. If the placed layout is contiguous per lane it is a non-issue and
+BC becomes the single resident form; if it scatters what the raw block kept together, that cost is the whole
+trade and the user should see the number.
+
+TWO CONSTRAINTS ON HOW YOU DO IT:
+  * DO NOT BLOCK ON ppu001 FOR THIS. Every GEMV figure in this session was measured on the 5090 and treated as
+    directional -- 1659-3361 Gelem/s, the 2.048 us quantum, the ALU-bound finding -- and that was the right call
+    because the question is about access pattern, not about PPU throughput. Rule 3: nothing blocks on the box.
+  * WATCH THE TIMER. On the 5090 cudaEventElapsedTime advances in 2.048 us ticks, and a load probe is exactly
+    the kind of thing that lands inside one tick. If every reading you get is an integer multiple of 2.048,
+    the instrument is what you are measuring -- enlarge the problem rather than ranking the results.
+
+IF THE ANSWER IS "the placed layout costs the GEMV measurably", that is a legitimate outcome and NOT a failure
+of the merge: "A stays resident for decode" gives two arrangements with a reason, instead of three by accident,
+and B+C still collapse into one. Report the number and let the user choose; do not design around either answer
+before you have it.
+
+AND IF THE PROBE ITSELF TURNS OUT TO BE THE WRONG SHAPE -- say, because the GEMV's real cost is the code_at
+extraction rather than the load, which the earlier acu work suggested at 52-62% -- say so and propose the
+measurement that would settle it. You are closer to this than I am.
