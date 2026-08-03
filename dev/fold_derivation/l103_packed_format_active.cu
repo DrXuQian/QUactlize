@@ -39,26 +39,29 @@ using namespace cute;
 // 8.76e-1. A gate that assumed "one k-tile == one superblock" could not express that, and would have demanded the
 // wrong shape of the one format that must not have it.
 template <int F> struct FmtTraits;
-//                         weight       second plane (void = single)   TK    SK
-template <> struct FmtTraits<0> {        // Q4_K
+//   weight type / second plane (void = single) / TK / SK / the COPYABLE unit total.
+//   kExpectTotal is DERIVED from the pairing rule -- supers = 2 when the format's per-superblock metadata is not
+//   a multiple of 4 -- and not copied from anywhere, so a wrong pairing shows up here as a compile error rather
+//   than as agreement between two transcriptions of the same mistake.
+template <> struct FmtTraits<0> {        // Q4_K   meta 16, 16 % 4 == 0 -> one superblock
   using B = cutlass::int4b_t;  using B2 = void;
-  static constexpr int kTK = 256, kSK = 8;
+  static constexpr int kTK = 256, kSK = 8,  kExpectTotal = 16;
 };
-template <> struct FmtTraits<1> {        // Q5_K  int4 + 1-bit high
+template <> struct FmtTraits<1> {        // Q5_K   meta 16 -> one; two-plane WEIGHT, same scale unit as Q4_K
   using B = cutlass::int4b_t;  using B2 = cutlass::uint1b_t;
-  static constexpr int kTK = 256, kSK = 8;
+  static constexpr int kTK = 256, kSK = 8,  kExpectTotal = 16;
 };
-template <> struct FmtTraits<2> {        // Q2_K  uint2, gs=16
+template <> struct FmtTraits<2> {        // Q2_K   meta 20, 20 % 4 == 0 -> one superblock, staged as five 4 B copies
   using B = cutlass::uint2b_t; using B2 = void;
-  static constexpr int kTK = 256, kSK = 16;
+  static constexpr int kTK = 256, kSK = 16, kExpectTotal = 20;
 };
-template <> struct FmtTraits<3> {        // Q3_K  uint2 + 1-bit high, gs=16
+template <> struct FmtTraits<3> {        // Q3_K   meta 14 -> 2 mod 4, UNMOVABLE alone; paired = 28
   using B = cutlass::uint2b_t; using B2 = cutlass::uint1b_t;
-  static constexpr int kTK = 256, kSK = 16;
+  static constexpr int kTK = 256, kSK = 16, kExpectTotal = 28;
 };
-template <> struct FmtTraits<4> {        // Q6_K  int4 + 2-bit high; TK128 on purpose -- see above
+template <> struct FmtTraits<4> {        // Q6_K   meta 18 -> 2 mod 4, paired = 36; TK128 kept, see above
   using B = cutlass::int4b_t;  using B2 = cutlass::uint2b_t;
-  static constexpr int kTK = 128, kSK = 8;
+  static constexpr int kTK = 128, kSK = 8,  kExpectTotal = 36;
 };
 using Fmt = FmtTraits<PPU_PACKED_FORMAT>;
 static constexpr int kGroups = cutlass::gguf_packed::Unit<cutlass::gguf_packed::Fmt(PPU_PACKED_FORMAT)>::kGroups;
@@ -94,10 +97,24 @@ static_assert(Mainloop::PackedUnit::kUnitBytes
                   == cutlass::gguf_packed::Unit<cutlass::gguf_packed::Fmt(PPU_PACKED_FORMAT)>::kUnitBytes,
               "the collective activated a packed unit that is not this format's");
 
+// AND THE PAIRING, which is the one thing Q3_K and Q6_K newly required and the only thing the assertion above
+// cannot see. kUnitBytes is the PER-SUPERBLOCK metadata size (14 for Q3, 18 for Q6); kUnitTotal is what is
+// actually copied, and for the two formats whose metadata is 2 mod 4 that is TWO superblocks -- 28 and 36 --
+// because ppu.cp.async moves only 4, 8 or 16 bytes and 14 and 18 are movable at neither.
+//
+// The expected numbers are DERIVED from that rule here rather than copied from a message: supers = 2 when
+// meta % 4 != 0. A build that paired wrongly, or not at all, satisfied every other assertion in this file.
+static_assert(Mainloop::PackedUnit::kUnitTotal == Fmt::kExpectTotal,
+              "the activated unit's COPYABLE size is not this format's paired total -- the staging is not doing "
+              "the superblock pairing this format needs, or is doing it for a different format");
+
 int main() {
   printf("[l103] format %d: groups=%d TK=%d SK=%d bits=%d%s packed_scale=%d unit=%d bytes\n",
          PPU_PACKED_FORMAT, kGroups, Fmt::kTK, Fmt::kSK, int(cutlass::sizeof_bits<typename Fmt::B>::value),
          std::is_void_v<typename Fmt::B2> ? "" : "+hi",
          int(Mainloop::is_packed_scale), int(Mainloop::PackedUnit::kUnitBytes));
+  printf("[l103]   copyable unit total = %d (expected %d, paired = %d superblock(s))\n",
+         int(Mainloop::PackedUnit::kUnitTotal), Fmt::kExpectTotal,
+         Fmt::kExpectTotal / int(Mainloop::PackedUnit::kUnitBytes));
   return 0;
 }
