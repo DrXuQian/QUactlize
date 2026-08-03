@@ -57,3 +57,47 @@ the result so the reader sees the shape of what was actually covered.
   (b) DONE, 50023d4
   (c) place_hi tile-invariance -- in flight
   (d) fully_quantized/dense, Q4_K first, with the cute-scale requirement on gguf_packed_unit.hpp
+
+## 006 -- I ORDERED THE QUEUE WRONG. Q4_K of (d) never needed (c). SUPERSEDES 005.
+
+The user asked why fully_quantized has not started, and the answer is my mistake, not yours. I put the whole of
+(d) behind (c). But the prerequisite table I worked out myself says:
+
+    format  planes   unit       prerequisite for fully_quantized/dense
+    Q4_K    i4       scu16x1    ** NONE **
+    Q5_K    i4+i1    scu16x1    place_hi
+    Q2_K    i2       scu20x1    the collective's hardcoded 16 B/unit
+    Q3_K    i2+i1    scu28x2    both
+    Q6_K    i4+i2    scu36x2    both
+
+place_hi gates Q5/Q3/Q6. It has never gated Q4_K -- single plane, 16-byte unit, and what it needs is the
+TileK=256 instantiation and nothing else. Serialising Q4_K behind an unrelated question was my error.
+
+NEW ORDER:
+
+  1. Finish the l104 sweep you have compiling. It is nearly done and the result is needed either way -- it
+     decides whether the artifact header records (bits, F1, F2) or a whole tactic, and it unblocks Q5/Q3/Q6.
+     Do not abandon it mid-flight; that would waste the compile and leave the question half-answered.
+  2. THEN go straight to fully_quantized/dense for Q4_K. Do not wait for anything in (1) to be interpreted --
+     Q4_K's correctness does not depend on the answer.
+  3. Q5/Q3/Q6 of that cell after, gated on (1) and on the unit-size generalisation as applicable.
+
+Everything already said about (d) still holds and is worth re-reading before you start:
+
+  * the entry point is an INSTANTIATION at TileK=256 (gs=32 => Scale_TileK == kGroups == 8, what kPackedScaleOn
+    tests). dense and grouped come from the same CollectiveBuilder selected by KernelScheduleType, so packed
+    scale lives in the shared mainloop and is already reachable. COPY FROM THE GROUPED SIDE. My earlier claim
+    that this cell lacked a mechanism was wrong and I retracted it; do not resurrect it.
+  * USER REQUIREMENT: keep the scale cute-ified. quactlize/include/gguf_packed_unit.hpp has 0 cute references
+    and 10 hand-written index/bit expressions, and it is exactly what FULLY_QUANTIZED reads. New addressing goes
+    through a cute layout -- pass the layout, as the 2-plane converter was done under task #15 -- not another
+    set of shifts and masks. Do not expand this into rewriting the existing ten unless that is genuinely
+    cheaper; say which you did.
+  * point its oracle at matmul_dequant_first through official gguf semantics FROM THE START, and plant a fault
+    before reporting a pass. This cell must not repeat scale_first/dense's history of running green for a long
+    time against a self-comparison.
+  * state plainly in the matrix note whether the cell is in the DEFAULT BUILD or behind a flag.
+    fully_quantized/grouped/Q4_K currently sits behind PPU_PACKED_SCALE=1 and out of the default build; if dense
+    lands the same way, say so, because "works under a macro nobody sets" is a different claim from "ships".
+
+And 002 is still open -- the dense promotion. It is two lines of schemes.py and the evidence is in 002.
