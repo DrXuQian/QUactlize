@@ -158,6 +158,33 @@ def xplane_hi(low_bits: int, hi_bits: int, tn: int, tk: int, wn: int, f_hi: int,
                 f"standalone {hi_bits}-bit placement at the same parameters: 6114 of 8192 stored bytes differ")
 
 
+def scale_unit(unit_bytes: int, superblocks: int, groups: int) -> Step:
+    """The PACKED SCALE UNIT: how one column's scale metadata is arranged so a bulk copy can move it.
+
+    WHY THE SCALE NEEDS A NAMED STEP AT ALL, when the fp16 planes never did. A k-quant's scale is read natively by
+    the packed path, and GGUF's own packing is not half-separable -- Q4_K's get_scale_min_k4 takes groups 4..7 from
+    bytes 8-11 AND the top two bits of bytes 0-3 -- so a k-tile covering part of a superblock cannot read part of a
+    block. The reorder that fixes that is a permutation of stored bytes, which is exactly what this vocabulary
+    names, and leaving it unnamed is how two different arrangements end up with the same dtype, shape and byte count.
+
+    SUPERBLOCKS IS THE PARAMETER THAT MATTERS and it is in the name for the usual reason. ppu.cp.async moves 4, 8 or
+    16 bytes; Q3_K's one-superblock unit is 14 and Q6_K's 18, both 2 mod 4, so neither can be moved at all. TWO
+    superblocks of the same column are 28 and 36, both divisible by 4, with no padding and no change to which
+    column a thread owns -- so the same format has a movable arrangement and an unmovable one, and only the name
+    distinguishes them.
+
+    The consumer is `mem`: what this step answers to is the copy engine's element width, not the mma's lane map.
+    """
+    if unit_bytes % 4 not in (0,):
+        note = (f" -- {unit_bytes} B is {unit_bytes % 4} mod 4 and ppu.cp.async takes only 4, 8 or 16, so this "
+                f"arrangement cannot be bulk-copied at all")
+    else:
+        note = ""
+    return Step(f"scu{unit_bytes}x{superblocks}", "mem", "scale unit",
+                "gguf_packed_unit.hpp:pack_unit", True,
+                f"{groups} groups over {superblocks} superblock(s) in {unit_bytes} B per column{note}")
+
+
 def cvt_word_permute() -> Step:
     # Always accompanied by `bias`: one function, one condition. Two tokens because they are different KINDS of
     # transform -- this one moves bytes, bias changes values -- and byte-neutrality depends on telling them apart.
