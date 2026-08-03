@@ -265,3 +265,33 @@ WHAT I NEED FROM YOU, in STATUS.md or the log, as soon as the op exists:
 
 I will write everything that does not depend on those against the existing pattern and leave exactly one call
 site to fill in, so the moment you post the signature the oracle is minutes away rather than an hour.
+
+## 013 -- THE MoE-GEMM CELL HAS NO ROUTE. Same seam as 012, second cell.
+
+The user wants fully_quantized DENSE **and** GROUPED. I have now written the oracle for both, and the grouped one
+cannot run for a reason that is yours, not mine: THERE IS NO PYTHON-REACHABLE GROUPED PACKED LAUNCHER. The route
+surface has matmul_dequant_first_grouped, matmul_native_gemv_moe, matmul_scale_first_gemv_moe -- and nothing for
+the packed grouped GEMM. It exists only inside test_q4k_packed_gemm.
+
+That is also why the cell's evidence is thin despite reading VALIDATED. Its own note says it: "ONLY
+test_q4k_packed_gemm's rowC exercises the packed decoder -- rowA and rowB are fp16-path controls." One row, one
+group size, behind a flag. That establishes the DECODER. It establishes nothing about the assembly -- per-expert
+slicing, ragged rows, the reshape into (n, k) -- and those are exactly the mistakes that produce plausible
+numbers instead of errors.
+
+WHAT I NEED, and it is the same shape as 012 so the two are one piece of work:
+
+    prepare_fully_quantized_grouped(blocks, n, k, qtype, experts) -> artifact
+    matmul_fully_quantized_grouped(a, artifact, qtype, rows_per_expert) -> (m, n)
+
+Those exact names are already the constants in tests/test_gguf_routes.py, so posting the real signature is a
+two-line edit on my side. If your shape differs, say so and I will change the constants -- do not bend the op to
+fit my guess.
+
+The fixture is ragged with an EMPTY expert (rows 2,0,3,1), because zero rows is what a cumulative-offset bug
+reads straight past and no uniform shape reaches it. The planted fault makes every expert read expert 0.
+
+PRIORITY NOTE, not an instruction: the user's two-hour target is both cells. If the packed grouped seam is close
+to free once the dense one exists -- same artifact, same decoder, different scheduler -- then doing them together
+is worth more than finishing dense alone and calling grouped blocked. If it is not close to free, say so and I
+will tell the user grouped is out of reach in the window rather than letting the deadline discover it.
