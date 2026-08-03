@@ -178,6 +178,54 @@ def dequantize_scale_first_dense_scales(artifact, qtype: int):
     return gguf_dense_artifact_dequantize_scale(artifact[2], artifact[3], int(qtype))
 
 
+
+def _op(name: str):
+    """Resolve a torch op that may postdate this build, with a message instead of a NameError.
+
+    The module-level `from . import (...)` list cannot carry these: an op added after the installed extension was
+    built would make importing routes.py fail outright, taking the whole suite with it for a reason unrelated to
+    what anyone is running. Resolving at call time turns that into one clear error at one call site.
+    """
+    import quactlize as _q
+    fn = getattr(_q, name, None)
+    if fn is None:
+        raise RuntimeError(
+            f"quactlize.{name} is not in this build. Either the extension predates the op "
+            f"(python3 setup.py build_ext --inplace) or the device library was built without the feature.")
+    return fn
+
+
+def has_op(name: str) -> bool:
+    """Whether an op is in THIS build. Tests use it to tell 'not built yet' (a legitimate skip) from 'built and
+    wrong' (a failure); those are different states and a skip for the second one would hide a defect."""
+    import quactlize as _q
+    return getattr(_q, name, None) is not None
+
+
+def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: int):
+    """Offline artifact for FULLY_QUANTIZED/DENSE: the code plane plus the PACKED SCALE UNIT.
+
+    Unlike prepare_scale_first_dense, the scale is NOT expanded to fp16 planes -- it stays in the format's own
+    packed bytes, reordered into 16-byte units the collective can bulk-copy. That is the whole difference between
+    the two cells, and it is why the storage does not grow.
+
+    Returns (low, units): low uint8[1, n, k/2], units uint8[k/256, n, 16].
+    """
+    _check_shape(blocks, n, k)
+    return _op("gguf_prepare_fully_quantized_dense")(blocks, n, k, int(qtype))
+
+
+def matmul_fully_quantized_dense(a: torch.Tensor, artifact, qtype: int):
+    """a @ w.T with NOTHING expanded: the GEMM reads the format's own packed scale bytes.
+
+    Raises rather than falling back when the library was built without PPU_PACKED_SCALE=1 -- the device symbol
+    always exists and the launch returns rc=34, which surfaces here as an error naming the macro. A silent
+    fallback would make a build that cannot run this cell indistinguishable from one that can.
+    """
+    low, units = artifact
+    return _op("gguf_dense_fully_quantized")(a, low, units, int(qtype))
+
+
 def matmul_scale_first_dense(a: torch.Tensor, artifact, qtype: int) -> torch.Tensor:
     """SCALE_FIRST/DENSE through fpA_intB_ppu.cuh; packed codes and resident fp16 planes."""
     low, high, scale, zero = artifact

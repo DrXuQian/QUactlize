@@ -464,7 +464,11 @@ do_pytest() {
   echo "-- building libquactlize_ppu.so (timeout ${timeout_s}s)"
   local blog rc so
   blog="$OUT/quactlize_ppu.build.log"
-  timeout "$timeout_s" env TARGET=quactlize_ppu "$ROOT/build.sh" >"$blog" 2>&1 && rc=0 || rc=$?
+  # PPU_PACKED_SCALE=1 IS NOT OPTIONAL FOR THIS TIER. The device symbol always exists, but without the macro the
+  # packed-dense launch returns rc=34 -- so a library built without it makes the FULLY_QUANTIZED cell unrunnable
+  # while every other test still passes, which reads as "that cell is fine" rather than "that cell was not built".
+  timeout "$timeout_s" env PPU_DEFS="${PPU_DEFS:-PPU_PACKED_SCALE=1}" TARGET=quactlize_ppu "$ROOT/build.sh" \
+    >"$blog" 2>&1 && rc=0 || rc=$?
   if [ "$rc" -eq 124 ]; then
     echo "   !!! TIMED OUT after ${timeout_s}s -- it did not fail, it hung. Last lines:"
     tail -5 "$blog" | sed 's/^/       /'
@@ -600,6 +604,24 @@ PYEOF
   [ "$rc2" -eq 0 ] || { echo "   -- failed and errored ids (full tracebacks in $plog):"
     sed -n '/^=* short test summary info/,$p' "$plog" | grep -E "^(FAILED|ERROR)" | sed 's/^/     /'; }
 
+  # THE FULLY_QUANTIZED CELL MUST RUN, for the same reason as the dense oracle below: it skips honestly when the
+  # ops are not in the build, and on a box built with PPU_PACKED_SCALE=1 a skip means the cell was not exercised.
+  # This is the obligation the marker's own description records -- wiring the oracle up and NOT adding it here
+  # would let a skip read as a pass.
+  echo "-- fully_quantized cells (a skip here is a failure once the ops are built)"
+  local fqlog fqrc
+  fqlog="$OUT/fully_quantized.log"
+  QUACTLIZE_PPU_LIB="$so" PYTHONPATH="$ROOT" python3 -m pytest "$ROOT/tests" -q -rs -m fully_quantized_dense \
+    >"$fqlog" 2>&1 && fqrc=0 || fqrc=$?
+  tail -3 "$fqlog" | sed 's/^/   /'
+  if grep -qi "are not in this build yet" "$fqlog"; then
+    echo "   (ops not built yet -- not counted against this run; see .coord/INBOX.md 012/013)"
+    fqrc=0
+  elif [ "$fqrc" -ne 0 ] || grep -qi "skipped" "$fqlog" || ! grep -Eq '[1-9][0-9]* passed' "$fqlog"; then
+    echo "   !!! the fully_quantized oracle did not run to a pass (exit $fqrc)"
+    fqrc=1
+  fi
+
   # THE DEVICE-VS-CPU-ARM COMPARISON MUST NOT SKIP HERE. It skips honestly on a machine with no device, and this
   # is not one -- so a skip means the comparison it exists for did not happen, and pass 2 would go green having
   # never checked that the device arm computes the same function as the reference it is documented to match.
@@ -614,7 +636,7 @@ PYEOF
     drc=1
   fi
 
-  prc=$(( rc1 | rc2 | drc ))
+  prc=$(( rc1 | rc2 | drc | fqrc ))
 
   # 6. the table, labelled as what it is
   echo

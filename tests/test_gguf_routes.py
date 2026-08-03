@@ -435,8 +435,11 @@ def test_fully_quantized_grouped_matches_dequant_first_and_rejects_fault(name, g
     print(f"{name} packed grouped vs dequant-first: " + "; ".join(observed))
 
 
+# Q4_K ONLY until the other cells land, on codex's instruction (065): the other four need either the unit-size
+# generalisation (Q2/Q3/Q6) or PPU_PACKED_SCALE plumbing in the two-plane collective (Q5/Q3/Q6), so parametrising
+# over five today would report four failures that are absences rather than defects.
 @pytest.mark.fully_quantized_dense
-@pytest.mark.parametrize("name,gt,hdr,qtype", FORMATS)
+@pytest.mark.parametrize("name,gt,hdr,qtype", [f for f in FORMATS if f[0] == "Q4_K"])
 def test_fully_quantized_dense_matches_dequant_first_and_rejects_fault(name, gt, hdr, qtype, ppu_backend_dense):
     """FULLY_QUANTIZED/DENSE against an INDEPENDENT arm, from the cell's first day rather than after the fact.
 
@@ -452,12 +455,14 @@ def test_fully_quantized_dense_matches_dequant_first_and_rejects_fault(name, gt,
     deliberately corrupted artifact -- and the corruption is in the PACKED SCALE UNIT, not only the code plane,
     because the unit is what this cell adds over scale_first and a code-plane fault would not exercise it.
     """
-    prepare = getattr(routes, FQ_DENSE_PRODUCER, None)
-    launch = getattr(routes, FQ_DENSE_ROUTE, None)
-    if prepare is None or launch is None:
-        pytest.skip(f"routes.{FQ_DENSE_PRODUCER}/{FQ_DENSE_ROUTE} do not exist yet -- the packed-dense op is in "
-                    f"flight (see .coord/INBOX.md item 012). This test activates the moment they land, and "
-                    f"run_batch's required-not-to-skip list must be updated in the same change.")
+    # THE SKIP TESTS THE OP, NOT THE ROUTE. The route functions exist as soon as I write them, so keying on them
+    # would make this test fail on every build that predates the op -- an absence reported as a defect. The op's
+    # presence is the real question, and "built and wrong" then stays a failure rather than becoming a skip.
+    if not (routes.has_op("gguf_prepare_fully_quantized_dense") and routes.has_op("gguf_dense_fully_quantized")):
+        pytest.skip("the packed-dense ops are not in this build yet (INBOX 012). When they land, run_batch's "
+                    "required-not-to-skip list must be updated in the same change, or a skip on a device box "
+                    "reads as a pass.")
+    prepare, launch = routes.prepare_fully_quantized_dense, routes.matmul_fully_quantized_dense
 
     n, k = 256, 512
     rng = np.random.default_rng(23000 + qtype)
@@ -477,21 +482,18 @@ def test_fully_quantized_dense_matches_dequant_first_and_rejects_fault(name, gt,
         conditioned = lambda out: float(np.max(np.abs(out.astype(np.float64) - independent) /
                                                np.maximum(denom, np.finfo(np.float64).tiny)))
 
-        # Corrupt the SCALE UNIT. Which tensor that is depends on the artifact's shape, so it is found by
-        # elimination rather than by index: the unit is the one whose element count follows the group count
-        # rather than the weight's. If the artifact is a single tensor this degrades to zeroing it, which is
-        # still a fault the oracle must catch -- weaker, but never silently absent.
-        fault = [x.clone() for x in artifact] if isinstance(artifact, (tuple, list)) else [artifact.clone()]
-        groups = n * (k // 256) * (256 // _f_group_size(qtype))
-        target = next((i for i, x in enumerate(fault) if x.numel() % max(groups, 1) == 0 and x.numel() < n * k), 0)
-        fault[target] = torch.zeros_like(fault[target])
-        planted_in = tuple(fault) if isinstance(artifact, (tuple, list)) else fault[0]
+        # CORRUPT THE SCALE UNIT, index 1 of (low, units). Named rather than found: an earlier version located
+        # it by elimination on element count, and against the real shapes -- low uint8[1,n,k/2] and
+        # units uint8[k/256,n,16] -- that heuristic picks LOW, the code plane. It would have planted a fault the
+        # scale-first cell already catches and reported the packed unit as covered without ever touching it.
+        fault = [x.clone() for x in artifact]
+        fault[1] = torch.zeros_like(fault[1])
 
-        planted = launch(at, planted_in, qtype).numpy()
+        planted = launch(at, tuple(fault), qtype).numpy()
         planted_err = conditioned(planted)
         assert planted_err > bound, (
-            f"{name} m={m}: the packed-dense oracle MISSED a zeroed tensor {target} of the artifact "
-            f"({planted_err:.3e}). Until this fails, a pass below is not evidence.")
+            f"{name} m={m}: the packed-dense oracle MISSED a zeroed SCALE UNIT ({planted_err:.3e}). The unit is "
+            f"what this cell adds over scale_first; until this fails, a pass below is not evidence about it.")
 
         got = launch(at, artifact, qtype).numpy()
         err = conditioned(got)
