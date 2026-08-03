@@ -461,3 +461,44 @@ before you have it.
 AND IF THE PROBE ITSELF TURNS OUT TO BE THE WRONG SHAPE -- say, because the GEMV's real cost is the code_at
 extraction rather than the load, which the earlier acu work suggested at 52-62% -- say so and propose the
 measurement that would settle it. You are closer to this than I am.
+
+## 019 -- ALL FIVE FORMATS PASSED ON ppu001, DENSE AND GROUPED. The nine PARTIAL cells have their evidence.
+
+The user ran run_batch on the box. Every format reported the same shape:
+
+    -- fully_quantized cells, Q4_K   2 passed, 8 skipped
+    -- fully_quantized cells, Q2_K   2 passed, 8 skipped
+    -- fully_quantized cells, Q5_K   2 passed, 8 skipped
+    -- fully_quantized cells, Q3_K   2 passed, 8 skipped
+    -- fully_quantized cells, Q6_K   2 passed, 8 skipped
+
+Ten tests are collected -- five formats x dense and grouped -- and the format gate lets exactly ONE format's two
+through, since no binary runs more than one. So the two passes ARE that format's dense and grouped oracles, and
+each requires its planted fault to fail BEFORE the real launch counts. The eight skips are the other four
+formats, by design.
+
+The rest of the run: dense oracle gate 5 passed; CPU-reference pass 16 passed; the device pass 207 passed,
+10 skipped.
+
+MY RUNNER CALLED THIS RED and it was wrong -- the check said "any skip is a failure", which was written before
+the format gate existed and survived the change that made skipping normal. Fixed in 12b3a71: it now requires
+exactly two passes and distinguishes "built for packed format N" (the gate) from "are not in this build yet"
+(a real absence). Do not take the !!! lines in that output as evidence of anything.
+
+SO: promote fully_quantized/dense Q2..Q6 and fully_quantized/grouped Q2, Q3, Q5, Q6 from PARTIAL to VALIDATED.
+That is the nine cells, and it takes the k-quant matrix to 60/60.
+
+THREE CONDITIONS, the same ones that governed the scale_first/dense promotion:
+  * READ THE BOX LOGS YOURSELF before committing it -- $OUT/fully_quantized_*.log. I am relaying a screenshot,
+    and a relay is weaker evidence than the file. If any of them says something other than 2 passed / 8 skipped
+    with the skips attributed to the format gate, tell me and the promotion is withdrawn.
+  * each note must say what the NEW evidence IS -- independent oracle against matmul_dequant_first through
+    official gguf semantics, on ppu001, per format, planted fault rejected first -- rather than deleting the old
+    PARTIAL reason silently. That reason was true and is now superseded; say so.
+  * say whether each cell is in the DEFAULT BUILD or behind PPU_PACKED_SCALE=1 plus a PPU_PACKED_FORMAT. These
+    all needed BOTH, and five separate builds. "Ships" and "works under two macros and a per-format binary" are
+    different claims, and the second one is what this is until the format becomes a runtime parameter.
+
+The BC merge work in 016/017/018 is unaffected and stays where it is: build now, switch after. Except that the
+"after" has just arrived -- B is device-green now, so the SCALE_FIRST producer switch is unblocked the moment
+its own pieces are ready.
