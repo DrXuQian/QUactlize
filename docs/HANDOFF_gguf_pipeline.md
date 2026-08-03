@@ -74,15 +74,15 @@ non-zero scale. The discriminator is the relative comparison that precedes it.
 
 ## 3. Kernels
 
-**Correctness is at 5/5 on every check; SPEED IS AT ONE KERNEL.** That asymmetry is the honest summary of this
-section, and it is easy to miss because the coverage table above is full.
+**Correctness is at 5/5 on every check; the native decode kernel is now timed locally.** PPU performance remains
+unmeasured, so the 5090 results are directional rather than a claim about the box.
 
 | kernel | hw | state | measured |
 |---|---|---|---|
 | `dequantize_kernel_warp` | 5090 | tuned | 779.4 → **58.4 µs**, 13.4×, 1.473 TB/s = **82.2% of peak**, bit-identical |
 | `dequantize_kernel_warp_logical` | 5090 | kept slow on purpose | 196.6 vs 65.5 µs on a nontrivial reorder — the general path for layouts `right_inverse` cannot take |
 | `prepass_kernel` (cooperative) | 5090 | tuned | speedup grows with size — 1.32× / 1.91× / 2.95× — the fixed-duration floor made visible |
-| `vecdot_rows_kernel` | — | **never timed** | one thread per output row; see below |
+| `vecdot_rows_kernel` | 5090 | **2.4–8.2× faster, and at 12–29% of peak** | see below — the speedup is against a bad baseline, not against the machine |
 | packed collective | PPU | **tax undetermined** | see below |
 | `gemv_lowbit` | PPU | tuned earlier | 22.27 µs, and **ALU-bound, not bandwidth-bound** |
 
@@ -93,19 +93,45 @@ figure quoted for it (this document said +11.6%) is a selection, not a measureme
 that does survive is `base − bdqnop = −11.1%`: the int4→fp16 dequant pipeline, 43% of dynamic instructions and 11%
 of time, which is the ceiling for every dequant-side idea.
 
-**`vecdot_rows_kernel` has one output row per thread**, so 32 lanes read addresses `blocks_per_row × block_bytes`
-apart — 1152 B for Q4_K. That is the same sector pathology fixed on the STORE side below, now on the load side.
-It has never been timed, so the size of the loss is a prior, not a result.
+The retained `vecdot_rows_kernel_serial` baseline has one output row per thread, so 32 lanes read addresses
+`blocks_per_row × block_bytes` apart — 1152 B for Q4_K. The tuned kernel partitions each row's k axis over a lane
+subgroup and lets only the subgroup leader decode each scale pair. Reassociation tolerance 2e-6, observed 1.44e-7.
+
+**THE SPEEDUP AND THE ROOF DISAGREE, and the roof is the one that says what to do next.** Independently re-measured
+at 16384 rows × 8 blocks, sweeping rows-per-warp over {serial, 1, 2, 4, 8, 16}:
+
+| | best rpw | cold µs | GB/s | % of 1.792 TB/s | cold/warm |
+|---|---|---|---|---|---|
+| Q2_K | 4 | 53.25 | 208 | **11.6%** | 1.37 |
+| Q3_K | 2 | 51.20 | 283 | **15.8%** | 1.02 |
+| Q4_K | 4 | 42.98 | 441 | **24.6%** | 1.21 |
+| Q5_K | 4 | 49.15 | 471 | **26.3%** | 1.07 |
+| Q6_K | 2 | 53.25 | 518 | **28.9%** | 1.16 |
+
+`vecdot_preferred_rows_per_warp` returns 2 for Q3_K/Q6_K and 4 for the rest, and the sweep confirms every one.
+
+**This kernel is not bandwidth-bound and the two columns each say so independently.** It runs at a quarter of peak,
+and warming the data barely moves it — 1.02× for Q3_K against the dequantiser's 2.4× when that one *was* DRAM-bound
+at 82.2% of peak. So there is 3–4× left and **none of it is in the memory system**; the lever is operations per
+element, which is what PPU already measured for a decode GEMV (22.27 µs cuda-core against a 20.74 µs tensor-core
+GEMM, and int1 taking the same time as int4 while moving a quarter of the bytes). Q2_K is the worst at 11.6%, and
+it is the format with the most decode work per byte — 16 groups of 2-bit codes.
+
+The regime was never reported, only the speedup, and a speedup measured against a one-row-per-thread baseline says
+nothing about how much is left. Both halves are the same measurement run; only one of them is a target.
 
 **Every number above is a 5090 number, and not one GGUF kernel has run on PPU.** The ordering does not transfer:
 at gs=32 the 5090's ranking of GEMV configurations inverted against PPU's. Treat these as directional only.
 
-**The loss both removed was the store pattern.** One thread per block puts a warp's lane addresses 512 bytes apart,
-so one store instruction touches 32 separate 32-byte sectors for 64 useful bytes: **6.25% sector utilisation, exactly
-16× worse** than lanes writing consecutive elements.
+**The two dequantiser kernels' loss was the store pattern**, and the GEMV's baseline had the same shape on the load
+side. One thread per block puts a warp's lane addresses 512 bytes apart, so one instruction touches 32 separate
+32-byte sectors for 64 useful bytes: **6.25% sector utilisation, exactly 16× worse** than lanes touching consecutive
+elements. Partitioning fixes the sectors — and for the GEMV that only takes it to 25% of peak, because the sectors
+were never what it was short of.
 
-**Neither runs on PPU.** They compile under nvcc and run on a 5090; the PPU device path goes through `build.sh`/hgcc
-and the dlopen seam (`ppu_backend.{h,cpp}`), which is wired but has no `libquactlize_ppu.so` behind it yet.
+**None of them run on PPU.** They compile under nvcc and run on a 5090; the PPU device path goes through
+`build.sh`/hgcc and the dlopen seam (`ppu_backend.{h,cpp}`), which is wired but has no `libquactlize_ppu.so` behind
+it yet.
 
 ---
 
@@ -151,11 +177,11 @@ one reads a contiguous run.
 5. **The destination should be a cute Tensor/Layout, not a callable** — measured: partitioning physical output
    addresses and deriving logical source indices with `right_inverse` is **3× faster** than striping logical indices
    (65.5 vs 196.6 µs) on a non-affine layout.
-6. **The GEMV's kernel, not its wiring** — the host side is done: `routes.matmul_native_gemv` assembles a full
+6. **The GEMV's PPU launcher, not its kernel** — the host side is done: `routes.matmul_native_gemv` assembles a full
    `(1, n)` product and agrees with the oracle to 1.4e-7. It stays PARTIAL because that assembly tiles the
-   *activation* k/256-fold on the host — correct, and useless as a timing. `vecdot_rows_kernel` gives one output row
-   per thread, so 32 lanes read addresses `blocks_per_row × block_bytes` apart, and **it has never been timed**.
-   `gemv_lowbit` is the tuned alternative but produces `SCALE_FIRST` execution, not native-scale.
+   *activation* k/256-fold on the host — correct, and useless as a timing. `vecdot_rows_kernel` is tuned and
+   CUDA-validated now; `libquactlize_ppu.so` still needs the exported launch entry before Python reaches it on PPU.
+   `gemv_lowbit` remains the separate tuned `SCALE_FIRST` route, not a native-scale substitute.
 
 7. **The registry's path vocabulary is coarser than the matrix** — four path names, nine cells. Two shares are
    wrong enough to matter: `fully_quantized/gemv` would be approved by the fp16-*plane* GEMV harness, and

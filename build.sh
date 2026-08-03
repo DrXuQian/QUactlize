@@ -56,7 +56,13 @@ _emit_dir() {
   local e f
   shopt -s nullglob
   for e in "${exts[@]}"; do
-    for f in "$dir"/*."$e"; do printf '%s%s\n' "${dest:+$dest|}" "$f"; done
+    for f in "$dir"/*."$e"; do
+      # *_cuda_probe.* is a local host-CUDA harness by convention. It includes cuda_runtime.h and is compiled by
+      # pytest with nvcc; letting it into the PPU overlay sends NVIDIA runtime calls to hgcc. Keep this in lockstep
+      # with dev/fold_derivation/ppu_portability_check.py's identically named exclusion.
+      case "$(basename "$f")" in *_cuda_probe.*) continue ;; esac
+      printf '%s%s\n' "${dest:+$dest|}" "$f"
+    done
   done
   shopt -u nullglob
 }
@@ -210,6 +216,7 @@ if _tracked=$(git -C "$HERE" ls-files "${_src_dirs[@]}" 2>/dev/null) && [ -n "$_
     # Paths come back relative to the repository root now. Everything flattens to its basename in $EX_DIR except
     # the gemv_lowbit subdirectory, which keeps its name because the #includes say so.
     case "$_p" in
+      *_cuda_probe.*)    continue ;;                       # local nvcc harness; never part of the PPU overlay
       "$_subdir_src"/*) _b="gemv_lowbit/$(basename "$_p")" ;;
       */data/*)         continue ;;                       # fixtures are read at runtime, not compiled
       *)                _b="$(basename "$_p")" ;;

@@ -336,6 +336,11 @@ def gguf_cuda_probe(tmp_path_factory):
     lib.quactlize_cuda_q4_prepass_bench.argtypes = [ctypes.c_int, ctypes.c_int, fp, fp, dp]
     lib.quactlize_cuda_q4_layout_check.argtypes = [u8p, u16p, u16p]
     lib.quactlize_cuda_q4_layout_bench.argtypes = [ctypes.c_int, fp, fp]
+    lib.quactlize_cuda_vecdot.argtypes = [u8p, fp, fp, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+    lib.quactlize_cuda_vecdot_bench.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                                 fp, fp, dp]
+    lib.quactlize_cuda_vecdot_bench_config.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                                        ctypes.c_int, fp, fp, dp]
     return lib, ctypes
 
 
@@ -415,6 +420,49 @@ def test_cuda_destination_partitions_physical_addresses_and_inverts_the_layout(g
     assert fast.value < general.value, f"physical partition regressed: {fast.value} vs {general.value} us"
     print(f"destination CUDA: physical {fast.value:.3f} us, general {general.value:.3f} us, "
           f"{general.value / fast.value:.2f}x")
+
+
+def test_cuda_vecdot_cooperative_matches_cpu_reference(gguf_cuda_probe):
+    """All five cooperative kernels against the scalar CPU vecdot_block reference, including ragged rows.
+
+    The warp butterfly deliberately reassociates each 16/32-element group. The 2e-6 relative threshold is therefore
+    a summation-order tolerance, not a widened weight-decode tolerance; the observed worst case on the tuning seed is
+    1.5e-7. No activation quantisation is present on either side.
+    """
+    torch = pytest.importorskip("torch")
+    quactlize = pytest.importorskip("quactlize", reason="needs the built operator library")
+    lib, ctypes = gguf_cuda_probe
+    u8p, fp = ctypes.POINTER(ctypes.c_uint8), ctypes.POINTER(ctypes.c_float)
+    assert quactlize.gguf_backend().startswith("cpu"), "this comparison needs gguf_vecdot's CPU reference arm"
+    rng = np.random.default_rng(8675309)
+    rows, blocks_per_row = 37, 3
+    x = (rng.random((blocks_per_row, 256), dtype=np.float32) * 2 - 1).astype(np.float32)
+    checked = []
+    for name, qtype, hdr, _scales, _codes, _qmax in FORMATS:
+        _block_size, block_bytes = GGML_QUANT_SIZES[qtype]
+        raw = rng.integers(0, 256, (rows * blocks_per_row, block_bytes), np.uint8)
+        for lo, hi in hdr:
+            v = (rng.random(rows * blocks_per_row) * .1 + .001).astype(np.float16)
+            raw[:, lo:hi] = v.view(np.uint8).reshape(-1, 2)
+        got = np.empty(rows, np.float32)
+        rc = lib.quactlize_cuda_vecdot(raw.ctypes.data_as(u8p), x.ctypes.data_as(fp), got.ctypes.data_as(fp),
+                                       rows, blocks_per_row, int(qtype))
+        assert rc == 0 and np.isfinite(got).all(), f"{name}: CUDA vecdot failed ({rc})"
+
+        # The Python op invokes the scalar CPU vecdot_block once per raw block. Accumulate those block results in
+        # the same outer left-to-right order as vecdot_rows_kernel; only the within-group butterfly is allowed to
+        # differ.
+        x_per_block = np.tile(x, (rows, 1))
+        block_dot = quactlize.gguf_vecdot(torch.from_numpy(raw), torch.from_numpy(x_per_block),
+                                          int(qtype)).numpy().reshape(rows, blocks_per_row)
+        ref = np.zeros(rows, np.float32)
+        for b in range(blocks_per_row):
+            ref = np.float32(ref + block_dot[:, b])
+        scale = max(1e-9, float(np.abs(ref.astype(np.float64)).max()))
+        rel = float(np.abs(got.astype(np.float64) - ref.astype(np.float64)).max()) / scale
+        assert rel < 2e-6, f"{name}: cooperative CUDA vs CPU vecdot relative error {rel:.3e}"
+        checked.append(f"{name} {rel:.2e}")
+    print("vecdot CUDA summation-order check: " + ", ".join(checked))
 
 
 # ===================================================================================================================

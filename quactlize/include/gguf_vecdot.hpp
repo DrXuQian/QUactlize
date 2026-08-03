@@ -23,27 +23,11 @@
 // witness. tests/test_gguf_golden.py checks this file against the official dequantiser element by element, which
 // covers the ORDERING as well as the arithmetic; the pre-pass tests could not, because they only ever looked at
 // per-group scalars.
-// WHAT THIS IS NOT YET, AND IT MATTERS FOR BOTH CORRECTNESS AND PRECISION. These take the RAW GGUF block, in the
-// checkpoint's own element order. The shipping GEMV consumes the OFFLINE-REORDERED weight -- quactlize's layout
-// registry exists precisely because the kernel wants a different arrangement -- so two things follow that a
-// raw-order test cannot see:
-//
-//   * a decoder validated only in raw order is validated on a path nobody runs. The reorder is a permutation, so it
-//     preserves VALUES; what it changes is which element each lane owns, and an indexing mistake in the reordered
-//     decode is invisible here.
-//   * the accumulation ORDER changes with it. Each lane sums a different subset in a different sequence, so the fp32
-//     result differs in the last bits from this one BY CONSTRUCTION. The tolerance for the reordered path has to be
-//     a summation-order tolerance, not the ~1e-7 exactness the raw path reaches, and tightening it would produce a
-//     test that fails for the one reason that is not a bug.
-//
-// So this file is the reference decode -- the thing the reordered kernel must agree with after permuting the
-// reference the same way -- and not the kernel itself.
-//
-// THE SHIPPING GEMV'S SHAPE, decided and not yet built: express each format's REORDERED weight arrangement as a cute
-// Layout and index the decode through it, one layout per format. That keeps the arrangement in the same place every
-// other reorder in this tree lives -- the layout registry -- instead of as index arithmetic duplicated per kernel,
-// and it is the same discipline that made the sub-byte B path work (pi = frag.layout()^-1, derived rather than
-// written). The code extraction functions above stay as they are; only the element index they are handed changes.
+// THE SOURCE CONTRACT IS RAW GGUF. This route intentionally reads the checkpoint's native k-quant blocks in their
+// own element order and materialises neither weights nor fp16 scale/zero planes. The SCALE_FIRST route is different:
+// its packed code tensor can be reordered for gemv_lowbit/, but that representation is not an input to this kernel.
+// The cooperative reduction below changes only fp32 summation order inside each group, so its device golden uses an
+// explicit summation-order tolerance against this scalar traversal.
 #include <cstdint>
 #include "cutlass/numeric_types.h"
 #include "gguf_scale_layout.hpp"   // brings cute/tensor.hpp, so cute::Layout is available as a destination
@@ -187,26 +171,50 @@ CUTLASS_HOST_DEVICE int code_at(uint8_t const* b, int i) {
   else                                 return q6k_code(b, b + 128, i);
 }
 
-// The group's (dl, ml), read straight from the block's own header and scale field.
+// The block multipliers and group codes are split so a cooperative consumer can load d/dmin once per block and
+// decode one scale pair per group. The serial traversal naturally hoists the header loads; repeatedly calling the
+// former monolithic helper from every lane would have put that work back into the inner loop.
 template <KType T>
-CUTLASS_HOST_DEVICE void group_dl_ml(uint8_t const* b, int g, float& dl, float& ml) {
+CUTLASS_HOST_DEVICE void block_d_dmin(uint8_t const* b, float& d, float& dmin) {
   if constexpr (T == KType::Q4_K || T == KType::Q5_K) {
-    float const d = float(half_t::bitcast(uint16_t(b[0] | (b[1] << 8))));
-    float const dmin = float(half_t::bitcast(uint16_t(b[2] | (b[3] << 8))));
+    d = float(half_t::bitcast(uint16_t(b[0] | (b[1] << 8))));
+    dmin = float(half_t::bitcast(uint16_t(b[2] | (b[3] << 8))));
+  } else if constexpr (T == KType::Q2_K) {
+    d = float(half_t::bitcast(uint16_t(b[80] | (b[81] << 8))));
+    dmin = float(half_t::bitcast(uint16_t(b[82] | (b[83] << 8))));
+  } else if constexpr (T == KType::Q3_K) {
+    d = float(half_t::bitcast(uint16_t(b[108] | (b[109] << 8))));
+    dmin = 0.f;
+  } else {
+    d = float(half_t::bitcast(uint16_t(b[208] | (b[209] << 8))));
+    dmin = 0.f;
+  }
+}
+
+template <KType T>
+CUTLASS_HOST_DEVICE void group_dl_ml_from_base(uint8_t const* b, int g, float d, float dmin,
+                                                float& dl, float& ml) {
+  if constexpr (T == KType::Q4_K || T == KType::Q5_K) {
     dl = d * float(scale_of<T>(b + 4, g));
     ml = dmin * float(min_of<T>(b + 4, g));
   } else if constexpr (T == KType::Q2_K) {
-    float const d = float(half_t::bitcast(uint16_t(b[80] | (b[81] << 8))));
-    float const dmin = float(half_t::bitcast(uint16_t(b[82] | (b[83] << 8))));
     dl = d * float(scale_of<T>(b, g));
     ml = dmin * float(min_of<T>(b, g));
   } else if constexpr (T == KType::Q3_K) {
-    dl = float(half_t::bitcast(uint16_t(b[108] | (b[109] << 8)))) * float(q3k_scale(b + 96, g));
+    dl = d * float(q3k_scale(b + 96, g));
     ml = 0.f;
   } else {
-    dl = float(half_t::bitcast(uint16_t(b[208] | (b[209] << 8)))) * float(scale_of<T>(b + 192, g));
+    dl = d * float(scale_of<T>(b + 192, g));
     ml = 0.f;
   }
+}
+
+// The group's (dl, ml), read straight from the block's own header and scale field.
+template <KType T>
+CUTLASS_HOST_DEVICE void group_dl_ml(uint8_t const* b, int g, float& dl, float& ml) {
+  float d, dmin;
+  block_d_dmin<T>(b, d, dmin);
+  group_dl_ml_from_base<T>(b, g, d, dmin, dl, ml);
 }
 
 template <KType T>
@@ -274,16 +282,6 @@ CUTLASS_HOST_DEVICE void unpack_block(uint8_t const* b, int8_t* codes, half_t* s
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// THE SOURCE SIDE IS THE ONE STILL MISSING, and it is not the same problem. Everything above reads the block in the
-// CHECKPOINT's element order. One stored artifact has to serve all four routes -- packed, GEMV, pre-pass and this
-// fallback -- so if the low-bit weight is reordered offline for the kernels, these functions are reading a layout
-// that no longer exists on disk.
-//
-// What that needs is a per-format cute Layout mapping the logical (n, k) coordinate to its position in the stored
-// bytes, with the decode indexing through it instead of through the raw formula. That keeps the arrangement where
-// every other reorder in this tree already lives rather than as index arithmetic copied per kernel, and it is the
-// same discipline that made the sub-byte B path work: pi derived from frag.layout()^-1, not written down.
-//
 // DECIDED: NO dp4a. llama.cpp's MMVQ gets its speed by quantising the ACTIVATION to int8 per 32-block and
 // accumulating with __dp4a, which is a CUDA-core instruction doing four int8 products into an int32 in one issue.
 // That branch is NOT taken here, for two reasons that both stand on their own.
@@ -296,41 +294,29 @@ CUTLASS_HOST_DEVICE void unpack_block(uint8_t const* b, int8_t* codes, half_t* s
 // core (ppu.mma.m16n16k32.s32.s8.s8.s32) and is NOT confirmed to have a cuda-core four-way int8 dot at all. If it
 // does not, the MMVQ shape has no advantage to trade the error against.
 //
-// A consequence worth stating because it removes a constraint rather than adding one: dp4a is what would have forced
-// four codes into one 32-bit register lined up with four activation bytes, which raw GGUF order does not give and
-// which is why vecdotq.cuh shuffles on the fly. Without it, the offline reorder only has to serve the kernel's own
-// access pattern.
-//
-// It is deliberately NOT faked here. A synthetic permutation would test that indexing through a map works, which is
-// not in doubt, while saying nothing about whether the map matches the offline packer -- and that agreement is the
-// only thing that can actually be wrong. It needs the real layout, and then a golden test that permutes the
-// reference the same way, with a SUMMATION-ORDER tolerance for the vecdot consumer.
+// dp4a would also force four codes into one 32-bit register lined up with four quantised activation bytes. Keeping
+// fp32 activation loads and register-dequantised weights avoids both that packing constraint and its numerical error.
 
 #if defined(__CUDACC__) || defined(__HGGCCC__)
 // ---------------------------------------------------------------------------------------------------------------
-// THESE ARE A REFERENCE PATH, NOT THE INTENDED PPU KERNEL, and mistaking one for the other is why they nearly
-// became the device route. quactlize already HAS a validated weight-only GEMV -- quactlize/include/gemv_lowbit/,
-// the TRT-LLM-shaped launcher, recorded in schemes.py as VALIDATED for SCALE_FIRST x GEMV -- and it consumes exactly
-// what the offline chain built tonight produces: packed int4 through preprocess_weights_to_layout, fp16 scale and
-// zero planes, group size as a template parameter with gs=32 already tuned. So the GGUF GEMV is a WIRING problem,
-// not a kernel problem, and libquactlize_ppu.so should export entry points that call that launcher rather than
-// these, which are untuned and duplicate it.
+// THIS IS THE NATIVE-GGUF GEMV, distinct from gemv_lowbit/. That validated launcher consumes pre-materialised fp16
+// scale/zero planes (SCALE_FIRST); this path keeps raw k-quant blocks resident and decodes scale codes in registers
+// (FULLY_QUANTIZED). Both routes are useful and neither substitutes for the other at decode.
 //
-// What these are for: a portable path on hardware that is not PPU, and a device-side check of the shared arithmetic
-// that can run locally. Both are real and neither is the product.
+// The implementation stays in the CUDA/hgcc common subset so the same ownership and arithmetic can run on PPU and
+// in the local CUDA probe. The probe is host-CUDA-only; the kernel itself is not.
 //
 // THE DEVICE ENTRY POINTS. Everything above is CUTLASS_HOST_DEVICE, which in a host-only build degrades to `inline`
 // -- so until these existed there was no kernel at all, only arithmetic that COULD be compiled as device code. That
 // distinction is worth stating because the torch ops that validate all of this are CPU loops: they establish that
 // the arithmetic matches llama.cpp and nothing whatever about a device path.
 //
-// One block per (row, superblock) for the dequantiser and one thread per row for the GEMV. Neither is tuned; they
-// exist so the device path is compiled and can be measured, which is the step before tuning it.
-
-// GEMV: one output row per thread. `dst` is a callable, so the caller passes whichever cute Layout its weight is in.
+// The old GEMV is retained as a named timing baseline. One thread owns an entire output row, so a warp's raw-weight
+// loads are blocks_per_row*block_bytes apart (1152 B for Q4_K at eight superblocks). That is the source-side analogue
+// of dequantize_kernel_warp's measured store pathology below.
 template <KType T>
-__global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, float const* x,
-                                   float* out, int rows, int blocks_per_row) {
+__global__ void vecdot_rows_kernel_serial(uint8_t const* blocks, int64_t block_bytes, float const* x,
+                                          float* out, int rows, int blocks_per_row) {
   int const r = blockIdx.x * blockDim.x + threadIdx.x;
   if (r >= rows) return;
   float acc = 0.f;
@@ -338,6 +324,96 @@ __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, f
     acc += vecdot_block<T>(blocks + (int64_t(r) * blocks_per_row + b) * block_bytes, x + int64_t(b) * kQK);
   }
   out[r] = acc;
+}
+
+// SUBGROUP-COOPERATIVE GEMV. A warp owns RowsPerWarp rows; each power-of-two lane subgroup walks one row's k axis.
+// Consecutive lanes therefore read consecutive code bytes, and the work is genuinely partitioned: each logical
+// element is decoded by exactly one lane. The subgroup leader alone decodes d/dmin and the group's packed scale
+// pair, after which a butterfly reduction supplies sum(q*x) and (for affine formats) sum(x).
+//
+// This deliberately reassociates each group reduction relative to vecdot_block's scalar left fold. It introduces no
+// weight or activation quantisation (dp4a remains forbidden); correctness uses an explicit fp32 summation-order
+// tolerance. The outer block and group order remains unchanged so the only reassociation is inside a 16/32-element
+// group.
+template <int Width>
+__device__ __forceinline__ float vecdot_subgroup_sum(float v) {
+  static_assert(Width >= 1 && Width <= 32 && (Width & (Width - 1)) == 0, "subgroup width must be a warp divisor");
+  CUTLASS_PRAGMA_UNROLL
+  for (int off = Width / 2; off > 0; off >>= 1) v += __shfl_xor_sync(~0u, v, off);
+  return v;
+}
+
+// The cold-data sweep at blocks_per_row={1,2,4,8} selected the same point at every k depth: the formats with a
+// separate high-bit plane and no affine min (Q3_K/Q6_K) prefer two rows, while Q2/Q4/Q5 amortise reductions best at
+// four. Keeping this format trait explicit makes a plain vecdot_rows_kernel<T> launch use the measured variant.
+template <KType T>
+CUTLASS_HOST_DEVICE constexpr int vecdot_preferred_rows_per_warp() {
+  return (T == KType::Q3_K || T == KType::Q6_K) ? 2 : 4;
+}
+
+template <KType T, int RowsPerWarp = vecdot_preferred_rows_per_warp<T>()>
+CUTLASS_HOST_DEVICE constexpr int vecdot_grid_size(int rows, int threads) {
+  int const warps = (rows + RowsPerWarp - 1) / RowsPerWarp;
+  int const warps_per_cta = threads / 32;
+  return (warps + warps_per_cta - 1) / warps_per_cta;
+}
+
+template <KType T, int RowsPerWarp = vecdot_preferred_rows_per_warp<T>()>
+__global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, float const* x,
+                                   float* out, int rows, int blocks_per_row) {
+  static_assert(RowsPerWarp >= 1 && RowsPerWarp <= 32 && (RowsPerWarp & (RowsPerWarp - 1)) == 0,
+                "rows per warp must be a power of two");
+  constexpr int kLanesPerRow = 32 / RowsPerWarp;
+  constexpr int kGroups = (T == KType::Q4_K || T == KType::Q5_K) ? 8 : 16;
+  constexpr int kGroupSize = group_size<T>();
+  constexpr bool kHasMin = T == KType::Q2_K || T == KType::Q4_K || T == KType::Q5_K;
+  static_assert(kGroupSize % kLanesPerRow == 0 || kLanesPerRow % kGroupSize == 0,
+                "lane subgroup and quant group must divide one another");
+
+  // Grid-stride row ownership keeps an old launcher correct if it still uses the serial kernel's smaller grid.
+  // vecdot_grid_size supplies the measured one-pass grid; either way blockDim must be a warp multiple.
+  int const warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+  int const warp_stride = (gridDim.x * blockDim.x) >> 5;
+  int const lane = threadIdx.x & 31;
+  int const row_in_warp = lane / kLanesPerRow;
+  int const row_lane = lane & (kLanesPerRow - 1);
+  for (int row0 = warp * RowsPerWarp; row0 < rows; row0 += warp_stride * RowsPerWarp) {
+    int const r = row0 + row_in_warp;
+    bool const active = r < rows;
+    float acc = 0.f;
+
+    for (int block = 0; block < blocks_per_row; ++block) {
+      uint8_t const* blk = active
+          ? blocks + (int64_t(r) * blocks_per_row + block) * block_bytes
+          : blocks;
+      float d = 0.f, dmin = 0.f;
+      if (active && row_lane == 0) block_d_dmin<T>(blk, d, dmin);
+      float block_acc = 0.f;
+
+      CUTLASS_PRAGMA_UNROLL
+      for (int g = 0; g < kGroups; ++g) {
+        float sumqx = 0.f, sumx = 0.f;
+        if (active) {
+          CUTLASS_PRAGMA_UNROLL
+          for (int j = row_lane; j < kGroupSize; j += kLanesPerRow) {
+            int const i = g * kGroupSize + j;
+            float const xv = x[int64_t(block) * kQK + i];
+            sumqx += float(code_at<T>(blk, i)) * xv;
+            if constexpr (kHasMin) sumx += xv;
+          }
+        }
+        sumqx = vecdot_subgroup_sum<kLanesPerRow>(sumqx);
+        if constexpr (kHasMin) sumx = vecdot_subgroup_sum<kLanesPerRow>(sumx);
+        if (active && row_lane == 0) {
+          float dl, ml;
+          group_dl_ml_from_base<T>(blk, g, d, dmin, dl, ml);
+          block_acc += apply_group({sumqx, sumx}, dl, ml);
+        }
+      }
+      if (active && row_lane == 0) acc += block_acc;
+    }
+    if (active && row_lane == 0) out[r] = acc;
+  }
 }
 
 // ONE WARP PER 256 PHYSICAL DESTINATIONS. This is the shape that matters and the numbers say why:
