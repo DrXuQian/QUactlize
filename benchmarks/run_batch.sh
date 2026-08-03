@@ -504,12 +504,27 @@ do_pytest() {
        return 1 ;;
   esac
 
-  # 4. the suite
+  # 4. THE DENSE INDEPENDENT ORACLE, REQUIRED AND UNSKIPPABLE. The full suite legitimately skips this test on an
+  # NVIDIA development host, so "pytest passed" alone cannot prove the PPU GEMM was compared with anything. Select
+  # it first, require five passes and reject any skip before allowing the broad suite to run.
+  echo "-- dense PPU vs dequant-first oracle (all five formats; skips are failures here)"
+  local dlog drc
+  dlog="$OUT/dense_python_oracle.log"
+  QUACTLIZE_PPU_LIB="$so" PYTHONPATH="$ROOT" python3 -m pytest -q -rs -s \
+    "$ROOT/tests/test_gguf_routes.py::test_scale_first_dense_route_matches_dequant_first_and_rejects_fault" \
+    >"$dlog" 2>&1 && drc=0 || drc=$?
+  tail -15 "$dlog"
+  if [ "$drc" -ne 0 ] || grep -qi "skipped" "$dlog" || ! grep -Eq '[1-9][0-9]* passed' "$dlog"; then
+    echo "   !!! dense independent oracle did not execute five passing PPU cases (exit $drc)"
+    return 1
+  fi
+
+  # 5. the suite
   echo "-- pytest"
   QUACTLIZE_PPU_LIB="$so" PYTHONPATH="$ROOT" python3 -m pytest "$ROOT/tests" -q 2>&1 | tail -25
   local prc=${PIPESTATUS[0]}
 
-  # 5. the table, labelled as what it is
+  # 6. the table, labelled as what it is
   echo
   echo "== support matrix: DECLARED, not measured by the run above =="
   echo "   Every status below is a literal in quactlize/schemes.py that a person wrote. This run does not promote"

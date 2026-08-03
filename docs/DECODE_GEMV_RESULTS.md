@@ -81,4 +81,6 @@ format and rejects planted code faults; the scale inverse is a lossless storage-
 The status is deliberately not VALIDATED. `test_fpA_kquant_dense` compares two fpA configurations over the same artifact,
 which catches launcher plumbing but is structurally blind to a wrong shared constant. Q2–Q5 use TK=256. The dense
 artifact inverse exposed that Q6's int2 high-plane map covers only half a TK=256 tile, so Q6 uses the already-tested
-TK=128 shape; all five artifacts then pass the independent semantic inverse.
+TK=128 shape; all five artifacts then pass the independent semantic inverse. A device-only Python test now compares
+M=7 and M=65 fpA outputs with an official-gguf fp16 weight through the dequant-first library GEMM and rejects a
+zeroed-code artifact first; it must actually pass on an hgcc/PPU run before the matrix can be promoted.

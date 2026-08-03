@@ -149,11 +149,11 @@ _DEQUANT_GROUPED = Impl(
 
 _NO_PACKED_2PLANE = Impl(
     Status.ABSENT, "", note=(
-        "two-plane formats run through the SEPARATE two-plane collective, which has no packed-scale plumbing at "
-        "all. This is structural, not unfinished, and generalising the multistage collective does NOT reach it: "
-        "that work unlocks Q2_K only. The scale UNIT is format-general now (gguf_packed_unit.hpp, byte-neutral at "
-        "20/14/16/16/18 against GGUF's own, bit-exact round trip for all five in CI) -- the unit was the "
-        "prerequisite, not the feature"))
+        "the separate two-plane mainloop ppu_mma_aiu_mixed_input_2plane.hpp has only ptr_S/ptr_Z fp16 planes, a "
+        "uint128 fp16 scale copy and fp16 scale shared storage. The raw-unit tensor/storage/decode selected by "
+        "kPackedScaleOn exists only in ppu_mma_aiu_multistage_mixed_input.hpp. Q3_K/Q5_K/Q6_K therefore need that "
+        "packed-scale channel added to the two-plane mainloop; their byte-neutral 28/16/36-byte units and bit-exact "
+        "round trips are prerequisites, not evidence that this consumer exists"))
 
 _NO_PACKED_TRAITS = Impl(
     Status.ABSENT, "", note=(
@@ -223,15 +223,19 @@ _add(Scheme.SCALE_FIRST, Shape.DENSE, _KQUANTS, Impl(
         "inverse caught that Q6's high plane covers only half a TK=256 tile, so Q6 uses the already validated "
         "TK=128 tactic. Both dense artifact inverses are Python-reachable: dequant-all matches official gguf and "
         "dequant-scale returns the stored fp16 affine planes, with planted code/scale faults observed. "
-        "test_fpA_kquant_dense compares two fpA configurations and carries failures in its exit status, but that is still "
-        "a SELF oracle with shared constants; the honest cell status is IMPLEMENTED, not VALIDATED")))
+        "test_fpA_kquant_dense compares two fpA configurations and carries failures in its exit status, but that "
+        "is still a SELF oracle with shared constants. The independent dense-vs-official-dequant-first Python gate "
+        "is staged for the PPU device tier and deliberately skips without an hgcc library; it has not been observed "
+        "on this host, so the honest cell status remains IMPLEMENTED, not VALIDATED")))
 
-# --- FULLY_QUANTIZED x DENSE: structural, not unfinished -------------------------------------------------------
+# --- FULLY_QUANTIZED x DENSE: no dense instantiation yet -------------------------------------------------------
 _add(Scheme.FULLY_QUANTIZED, Shape.DENSE, _KQUANTS, Impl(
     Status.ABSENT, "", note=(
-        "the packed scale path lives in the GROUPED collective. The dense launcher has no staging for a native "
-        "scale unit at all -- not a missing wire, a missing mechanism -- and the mid-band case it would serve is "
-        "the one the pre-pass already covers with a workspace")))
+        "dense and grouped use the same CollectiveBuilder and the packed-scale path lives in their shared mainloop; "
+        "the dense-specific gap is an instantiation at TileK=256 (gs=32 gives Scale_TileK==kGroups==8, the existing "
+        "kPackedScaleOn condition), not a new staging mechanism. Format-level blockers still apply: Q2_K's "
+        "single-plane copy is hardcoded to the 16-byte Q4/Q5 unit, and the two-plane mainloop has no packed-scale "
+        "channel. Per the task boundary, this corrected reachability is recorded here before implementation")))
 
 # --- THE TWO FORMATS WITH NOTHING, and why that is a decision rather than an oversight -------------------------
 # GPTQ_INT4_ASYM and AWQ_INT4 are declared in QuantType and reachable by name, and every cell for them is empty.

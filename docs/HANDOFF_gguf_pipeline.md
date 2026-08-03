@@ -419,8 +419,9 @@ its integration story, and it is why it is the byte-minimal decode route in §1 
    (65.5 vs 196.6 µs) on a non-affine layout.
 6. **SCALE_FIRST × DENSE is IMPLEMENTED, not VALIDATED** — ElementB and PlaneB2 are wired through the dense
    launcher and all five artifacts have semantic inverses. The output harness still compares two configurations of
-   fpA itself, so a wrong shared constant moves both answers together; only an independent PPU output golden can
-   promote the cell.
+   fpA itself, so a wrong shared constant moves both answers together. The independent Python comparison (M=7/65,
+   official-gguf fp16 weight through the dequant-first library GEMM, planted code fault first) is wired into the
+   device tier and refuses skips; it has not run on this NVIDIA host, so promotion waits for that PPU result.
 
 7. **The registry GEMV vocabulary is split now** — native/scale-first and dense/MoE have four distinct path names.
    The historical coarse `gemv` name remains for old harness reports, and `_CELL_PATH_IS_COARSE` remains as the

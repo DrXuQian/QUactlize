@@ -323,6 +323,65 @@ def test_dense_artifact_affine_chain_matches_official_oracle_and_rejects_faults(
     print(run.stdout.strip())
 
 
+@pytest.fixture(scope="module")
+def ppu_backend_dense():
+    """An actual hgcc-built library, supplied by the device tier; never substitute the nvcc GEMV fixture."""
+    import ctypes, os
+    path = os.environ.get("QUACTLIZE_PPU_LIB")
+    if not path:
+        pytest.skip("dense end-to-end oracle needs QUACTLIZE_PPU_LIB from an actual PPU build")
+    path = Path(path)
+    assert path.is_file(), f"QUACTLIZE_PPU_LIB does not exist: {path}"
+    lib = ctypes.CDLL(str(path))
+    for symbol in ("quactlize_ppu_prepare_dense", "quactlize_ppu_recover_dense",
+                   "quactlize_ppu_dense_lowbit"):
+        assert getattr(lib, symbol, None) is not None, f"device library is missing dense symbol {symbol}"
+    assert quactlize.gguf_backend().startswith("ppu"), quactlize.gguf_backend()
+    return path
+
+
+@pytest.mark.parametrize("name,gt,hdr,qtype", FORMATS)
+def test_scale_first_dense_route_matches_dequant_first_and_rejects_fault(
+        name, gt, hdr, qtype, ppu_backend_dense):
+    """Independent PPU GEMM oracle: identical raw bytes through dense fpA and dequantise-then-library-GEMM.
+
+    M=7 and M=65 are both genuinely dense and both are tile tails. The low-plane fault is a well-formed resident
+    artifact, so the oracle must numerically reject it before the real launch can count as evidence. This test is
+    skipped locally by construction: a plain-nvcc GEMV library cannot stand in for the hgcc fpA kernel under test.
+    """
+    n, k = 256, 512
+    rng = np.random.default_rng(19000 + qtype)
+    raw = _raw_blocks(gt, hdr, n * (k // 256), rng)
+    blocks = torch.from_numpy(raw)
+    artifact = routes.prepare_scale_first_dense(blocks, n, k, qtype)
+    official = gguf.quants.dequantize(raw.reshape(-1), gt).reshape(n, k).astype(np.float64)
+    official_fp16 = torch.from_numpy(official.astype(np.float16))
+    bound, observed = 5e-3, []
+
+    for m in (7, 65):
+        a = (rng.standard_normal((m, k)) * .2).astype(np.float16)
+        at = torch.from_numpy(a)
+        # Supply the OFFICIAL package's materialisation explicitly. This still exercises the dequant-first library
+        # GEMM route, while sharing neither quactlize's block decoder nor its artifact importer with fpA.
+        independent = routes.matmul_dequant_first(
+            at, blocks, n, k, qtype, weight=official_fp16).numpy().astype(np.float64)
+        denom = np.abs(a.astype(np.float64)[:, None, :] * official[None, :, :]).sum(2)
+        conditioned = lambda out: float(np.max(np.abs(out.astype(np.float64) - independent) /
+                                                np.maximum(denom, np.finfo(np.float64).tiny)))
+
+        fault = list(artifact)
+        fault[0] = torch.zeros_like(fault[0])
+        planted = routes.matmul_scale_first_dense(at, tuple(fault), qtype).numpy()
+        planted_err = conditioned(planted)
+        assert planted_err > bound, f"{name} m={m}: dense oracle missed a zeroed low-code plane ({planted_err:.3e})"
+
+        got = routes.matmul_scale_first_dense(at, artifact, qtype).numpy()
+        err = conditioned(got)
+        assert err < bound, f"{name} m={m}: fpA dense disagrees with dequant-first ({err:.3e})"
+        observed.append(f"m={m} err={err:.3e} planted={planted_err:.3e}")
+    print(f"{name} dense PPU vs dequant-first: " + "; ".join(observed))
+
+
 @pytest.mark.parametrize("name,gt,hdr,qtype", FORMATS)
 def test_dequantised_weight_is_the_oracles(name, gt, hdr, qtype):
     """The materialisation alone, so a GEMM failure and a reshape failure are distinguishable."""
