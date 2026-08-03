@@ -136,6 +136,14 @@ inline std::vector<int> plane_map() {
 //     P2_DIV                  taken from the real fragments, and equal to LowBits/HiBits when both planes are unfolded
 // and the converter's pairing is the same closed form the converter itself uses, gated against Q3's shipped constants in
 // fold_derivation/l65. Q3's map is required to come out byte-identical (l67).
+//
+// UNLIKE plane_map's unfolded output, THIS CROSS-PLANE PLACEMENT IS NOT TILE-INVARIANT AT FIXED (F1,F2). The stored
+// byte sweep over l61's 11 tactics (l104) separates Q6 TK=128 from TK=256 even though both have F1=F2=1. Across all
+// three two-plane formats its agreeing sets are classified exactly by the derived layout descriptor
+//     (F1, F2, DL1, DL2, F2 > 1 ? TN/F2 : 0),
+// where DL1/DL2 are the per-plane delivery counts below and TN/F2 is the folded high plane's physical row count.
+// TM/WM/WN do not survive into the bytes in that grid. An artifact therefore records these derived quantities, not
+// merely the folds and not a whole tactic; reconstructing place_hi later from just (bits,F1,F2) is unsound.
 template <int LowBits, int HiBits, int TM, int TN, int TK, int WM, int WN, int F2, int F1 = 1>
 inline std::vector<int> tile_map_hi() {
   using namespace cute;
