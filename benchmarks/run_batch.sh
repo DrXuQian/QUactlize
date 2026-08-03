@@ -437,6 +437,98 @@ do_check() {
   fi
 }
 
+# THE PYTHON TIER, ON THE DEVICE. Everything above builds and runs C++ binaries; the routes, the artifact
+# inverses and the twenty CUDA-core launches are reachable only from Python, through the dlopen seam. Until this
+# step existed, NOTHING ran them on the box -- they were verified on a 5090 and asserted about ppu001.
+#
+# THREE TRAPS, one per step below.
+#
+#  * the build can HANG rather than fail. actlize's CMake FetchContent-clones googletest; two runs have sat at
+#    index-pack with zero output for 4+ and 9+ minutes and had to be killed. A hang is worse than a failure --
+#    the operator cannot tell "still compiling" from "stuck". BUILD_TIMEOUT converts it into a failure that says
+#    which external fetch it died in.
+#  * a GREEN RUN THAT TESTED NOTHING. quactlize falls back to a host backend when the library is absent, so the
+#    whole suite can pass having exercised no device code at all. The backend is asserted BEFORE pytest runs, so
+#    a fallback is a hard failure of this step and not a quiet 216/216.
+#  * "the matrix is green" IS NOT A RESULT. Every status in schemes.py is a LITERAL that a person wrote. This
+#    step prints it, and prints the registry cross-check that says each VALIDATED cell has a harness behind it --
+#    but a passing run does not promote a cell, and the header says so, because a table printed under a green
+#    test run reads as though the run produced it.
+do_pytest() {
+  local timeout_s="${BUILD_TIMEOUT:-900}"
+  echo
+  echo "== python tier on the device =="
+
+  # 1. the .so. build.sh prints "built: <path>"; parse that rather than re-deriving the build directory, which is
+  #    the pair of facts that drifted apart the last time a path was written down in two places.
+  echo "-- building libquactlize_ppu.so (timeout ${timeout_s}s)"
+  local blog rc so
+  blog="$OUT/quactlize_ppu.build.log"
+  timeout "$timeout_s" env TARGET=quactlize_ppu "$ROOT/build.sh" >"$blog" 2>&1 && rc=0 || rc=$?
+  if [ "$rc" -eq 124 ]; then
+    echo "   !!! TIMED OUT after ${timeout_s}s -- it did not fail, it hung. Last lines:"
+    tail -5 "$blog" | sed 's/^/       /'
+    echo "       If those name googletest/FetchContent, this is the known offline hole (task #31), not your change."
+    return 1
+  fi
+  [ "$rc" -eq 0 ] || { echo "   !!! build failed (exit $rc):"; tail -15 "$blog" | sed 's/^/       /'; return 1; }
+  so="$(grep -m1 '^built: ' "$blog" | cut -d' ' -f2-)"
+  [ -n "$so" ] && [ -f "$so" ] || { echo "   !!! build.sh reported no 'built:' path, or it does not exist: '$so'"; return 1; }
+  echo "   $so"
+
+  # 2. preconditions, named individually. A bare "pytest failed to import" sends the reader into the test files
+  #    when the answer is that this box has no torch.
+  local missing=""
+  for m in pytest torch gguf; do
+    python3 -c "import $m" 2>/dev/null || missing="$missing $m"
+  done
+  if [ -n "$missing" ]; then
+    echo "   !!! this box cannot run the python tier -- missing:$missing"
+    echo "       gguf is the ORACLE, not a convenience: without it the tests have nothing independent to compare"
+    echo "       against and would have to be skipped, which is the failure mode this step exists to prevent."
+    return 1
+  fi
+
+  # 3. THE BACKEND ASSERTION. Before any test runs. quactlize.gguf_backend() returns which implementation the
+  #    routes will actually call; if the library did not load, it returns a host fallback and every test below
+  #    would pass without touching the device.
+  local backend
+  backend="$(QUACTLIZE_PPU_LIB="$so" PYTHONPATH="$ROOT" python3 -c \
+      'import quactlize; print(quactlize.gguf_backend())' 2>&1)" || {
+    echo "   !!! could not query the backend: $backend"; return 1; }
+  echo "-- backend: $backend"
+  case "$backend" in
+    ppu*) ;;
+    *) echo "   !!! the library did not take: the routes would run on '$backend', not the device."
+       echo "       A pass from here would be a pass of the HOST path with the device untested. Refusing."
+       return 1 ;;
+  esac
+
+  # 4. the suite
+  echo "-- pytest"
+  QUACTLIZE_PPU_LIB="$so" PYTHONPATH="$ROOT" python3 -m pytest "$ROOT/tests" -q 2>&1 | tail -25
+  local prc=${PIPESTATUS[0]}
+
+  # 5. the table, labelled as what it is
+  echo
+  echo "== support matrix: DECLARED, not measured by the run above =="
+  echo "   Every status below is a literal in quactlize/schemes.py that a person wrote. This run does not promote"
+  echo "   or demote any cell. What it CAN falsify is the line after the table."
+  PYTHONPATH="$ROOT" python3 -m quactlize.schemes 2>&1 | sed 's/^/   /'
+  echo
+  echo "== registry cross-check: does every VALIDATED cell have a harness for THAT path =="
+  PYTHONPATH="$ROOT" python3 -c '
+import sys; sys.path.insert(0, "'"$ROOT"'")
+from quactlize import schemes
+p = schemes.check_against_registry()
+print("   every VALIDATED cell has a harness behind it" if not p else "   !!! claims with no harness:")
+[print("     " + x) for x in p]
+sys.exit(1 if p else 0)' || prc=${prc:-1}
+
+  [ "$prc" -eq 0 ] && echo && echo "== python tier passed on $backend ==" || echo && echo "== PYTHON TIER FAILED (pytest exit $prc) =="
+  return "$prc"
+}
+
 do_perf() {
   echo
   echo "== perf: $BLOCKS interleaved blocks, $CFG S=1, band '$BAND' =="
@@ -559,6 +651,9 @@ case "${1:-all}" in
   build) do_build ;;
   check) do_check ;;
   perf)  do_perf ;;
+  pytest) do_pytest ;;
+  # pytest is NOT in `all`: it builds a different target and needs torch, so a box without it would turn the
+  # whole run red for a reason unrelated to the kernels. Run it explicitly.
   all)   do_build && do_check && do_perf ;;
-  *)     echo "usage: $0 [build|check|perf|all]"; exit 2 ;;
+  *)     echo "usage: $0 [build|check|perf|pytest|all]"; exit 2 ;;
 esac
