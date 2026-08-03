@@ -489,6 +489,30 @@ do_pytest() {
     return 1
   fi
 
+  # 2b. THE SECOND LIBRARY. There are two, and the first version of this step only knew about one.
+  #       libquactlize_ppu.so        the DEVICE half, dlopened at run time -- what step 1 just built
+  #       quactlize's torch ext      the HOST half (preprocessing), built by setup.py -- needs no PPU
+  #     gguf_backend() goes through _ops(), which is the HOST extension, so with it absent the step cannot even
+  #     ask which backend it would use: the query in step 3 dies with quactlize's own "operator library is not
+  #     built" ImportError and QUACTLIZE_PPU_LIB never gets a chance to matter. Observed on the box exactly that
+  #     way, with the device .so sitting built at the path step 1 had just printed.
+  #     Built in place rather than installed: --inplace writes into this checkout and touches no site-packages,
+  #     which is the same blast radius build.sh already has. QUACTLIZE_NO_HOST_BUILD=1 turns it into a check.
+  if ! PYTHONPATH="$ROOT" python3 -c 'import quactlize; quactlize._ops()' >/dev/null 2>&1; then
+    if [ -n "${QUACTLIZE_NO_HOST_BUILD:-}" ]; then
+      echo "   !!! quactlize's host operator extension is not built, and QUACTLIZE_NO_HOST_BUILD is set."
+      echo "       Build it with:  cd $ROOT && python3 setup.py build_ext --inplace"
+      return 1
+    fi
+    echo "-- host operator extension absent; building it in place (needs no PPU)"
+    local hlog="$OUT/quactlize_host_ext.log"
+    ( cd "$ROOT" && python3 setup.py build_ext --inplace ) >"$hlog" 2>&1 \
+      || { echo "   !!! host extension build failed:"; tail -20 "$hlog" | sed 's/^/       /'; return 1; }
+    PYTHONPATH="$ROOT" python3 -c 'import quactlize; quactlize._ops()' >/dev/null 2>&1 \
+      || { echo "   !!! built, but still not importable -- see $hlog"; return 1; }
+    echo "   ok"
+  fi
+
   # 3. THE BACKEND ASSERTION. Before any test runs. quactlize.gguf_backend() returns which implementation the
   #    routes will actually call; if the library did not load, it returns a host fallback and every test below
   #    would pass without touching the device.
