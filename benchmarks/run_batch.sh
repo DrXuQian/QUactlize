@@ -248,7 +248,11 @@ do_build() {
     awk '{n=$2; sub(/.*__/,"",n); printf "        %-12s %s\n", n, substr($1,1,12)}'
   # AFTER the duplicate check, so a duplicate genuinely blocks check and perf instead of warning beside a stamp.
   if [ "$ok" -eq 1 ]; then
-    printf '%s\n' "$OVERLAY_STAMP" > "$OUT/build_stamp"; echo "  build stamp: $OVERLAY_STAMP"
+    printf '%s\n' "$OVERLAY_STAMP" > "$OUT/build_stamp"
+    # The listing the stamp was computed from, so a future mismatch can NAME the files instead of showing
+    # two hashes and advising a rebuild that may not be the fix.
+    stamp_files > "$OUT/build_stamp_files" 2>/dev/null
+    echo "  build stamp: $OVERLAY_STAMP"
   fi
   return $((1-ok))
 }
@@ -275,7 +279,9 @@ do_build() {
 # before a collective edit passed require_fresh_binaries, and the per-binary cache added later would have gone one
 # worse and printed [cached] instead of recompiling. Hash the submodule's HEAD and any modified tracked file beside
 # the overlay, which covers both a submodule bump and a local edit.
-build_stamp() {
+# ONE SOURCE OF TRUTH FOR THE STAMP: the LIST is computed here and the stamp is its hash. They were two
+# separate computations before, which is how a mismatch could be reported with nothing to show for it.
+stamp_files() {
   ( cd "$ROOT" && {
       ./build.sh --print-overlay | sed 's/.*|//' | sort | xargs md5sum 2>/dev/null
       git -C third_party/actlize rev-parse HEAD 2>/dev/null
@@ -285,11 +291,21 @@ build_stamp() {
       # the defines verified from the PREVIOUS build, and a local type gate compiles the NEW source and passes.
       # Everything agrees and the binary is old. `diff --name-only HEAD` covers staged and unstaged alike; untracked
       # files are included because a new header dropped into the submodule compiles just as hard as an edited one.
+      # BUILD OUTPUT IS NOT A SOURCE, and including it made this stamp SELF-INVALIDATING. build.sh compiles into
+      # third_party/actlize/build_w4a16_compare/ -- the submodule's .gitignore has `build/`, which does not match
+      # that name -- so every object file it produces is "untracked" and gets hashed. OVERLAY_STAMP is computed
+      # BEFORE any compile and written to disk AFTER, so `check` immediately afterwards recomputed it over the
+      # post-build tree and refused: "the compiled sources have changed since these binaries were built". Nothing
+      # had changed except the build's own output, and the advice the guard printed -- rebuild -- could never
+      # clear it, because rebuilding reproduces the condition.
       { git -C third_party/actlize diff --name-only HEAD 2>/dev/null
         git -C third_party/actlize ls-files -o --exclude-standard 2>/dev/null; } | sort -u |
+        grep -v -E '(^|/)build[^/]*/' |
         while IFS= read -r f; do md5sum "third_party/actlize/$f" 2>/dev/null; done
-    } | md5sum | cut -d' ' -f1 )
+    } )
 }
+
+build_stamp() { stamp_files | md5sum | cut -d' ' -f1; }
 
 require_fresh_binaries() {
   local missing=() b stamp
@@ -313,7 +329,24 @@ require_fresh_binaries() {
     echo "  !!! the compiled sources have changed since these binaries were built."
     echo "      stamp at build: $(cat "$OUT/build_stamp")"
     echo "      stamp now:      $stamp"
-    echo "      rebuild before reading anything below."
+    # NAME THE FILES. Two md5s and the word "rebuild" is not a diagnosis, and it was WRONG ADVICE for the first
+    # real failure this guard produced: the stamp was self-invalidating -- it hashed the build's own output -- so
+    # rebuilding reproduced the mismatch every time. A guard that cannot say what moved sends the reader in a
+    # circle. The per-file list is recomputed here rather than stored, so it says which inputs differ from the
+    # ones this checkout has NOW; if it is empty, the difference is in the file SET, not in any file's content.
+    echo "      files whose content differs from the build (recomputed against this checkout):"
+    if [ -f "$OUT/build_stamp_files" ]; then
+      stamp_files | diff - "$OUT/build_stamp_files" 2>/dev/null |
+        grep -E '^[<>]' | sed 's/^/        /' | head -20
+      local n; n=$(stamp_files | diff - "$OUT/build_stamp_files" 2>/dev/null | grep -cE '^[<>]')
+      [ "${n:-0}" -gt 20 ] && echo "        ... and $((n - 20)) more"
+      [ "${n:-0}" -eq 0 ] && echo "        (none -- the two stamps differ but every listed file matches; the stamp"
+      [ "${n:-0}" -eq 0 ] && echo "         computation itself is unstable, which is a bug in build_stamp)"
+    else
+      echo "        (no per-file record; it is written by builds from this version onward)"
+    fi
+    echo "      rebuild ONLY if a file above is one you edited. If the list is empty or shows build artefacts,"
+    echo "      the stamp is at fault and rebuilding will not clear it."
     return 1
   fi
   return 0
