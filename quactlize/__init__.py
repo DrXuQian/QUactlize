@@ -124,6 +124,12 @@ def gguf_vecdot_moe(blocks, x, row_offsets, qtype: int):
     return _ops().gguf_vecdot_moe(blocks, x, row_offsets, qtype)
 
 
+def gguf_packed_scale_prepass(units, qtype: int, zmul: int = 0):
+    """Packed scale units -> fp16 (scale, zero) planes. Dense [k_unit,n,ub] or grouped [E,k_unit,n,ub] in,
+    always [E, k/group_size, n] out."""
+    return _ops().gguf_packed_scale_prepass(units, qtype, zmul)
+
+
 def gguf_prepare_fully_quantized_dense(blocks, n: int, k: int, qtype: int):
     """FULLY_QUANTIZED/DENSE offline artifact: (low, high, units); high is empty unless the format is 2-plane."""
     return _ops().gguf_prepare_fully_quantized_dense(blocks, n, k, qtype)

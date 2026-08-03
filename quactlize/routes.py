@@ -231,6 +231,23 @@ def _unpack_fq(artifact, where: str):
     return xs[0], xs[1], xs[2]
 
 
+def dequantize_scale_from_units(units: torch.Tensor, qtype: int, zmul: int = 0):
+    """THE DERIVATION THAT MAKES B AND C ONE FORMAT: packed scale units -> fp16 (scale, zero) planes.
+
+    Today's prepass goes raw GGUF -> fp16 planes, which is why SCALE_FIRST needed a stored arrangement of its
+    own. This one starts from the PACKED UNIT, so the fp16 planes become a workspace derivation of the
+    FULLY_QUANTIZED artifact rather than a third thing to keep resident. That is the whole content of the merge:
+    the two schemes already share their weight bytes and differ only in the scale channel.
+
+    It is also this format's dequant-scale kernel in the sense of the standing entry rule -- a stored arrangement
+    without an inverse can only be checked end to end, which mixes a packing mistake with a computation mistake.
+
+    Accepts dense units [k_unit, n, unit_bytes] or grouped [E, k_unit, n, unit_bytes], and ALWAYS returns
+    [E, k/group_size, n] for both -- a dense weight is one expert, so the consumer needs no second code path.
+    """
+    return _op("gguf_packed_scale_prepass")(units, int(qtype), int(zmul))
+
+
 def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: int):
     """Offline artifact for FULLY_QUANTIZED/DENSE: the code plane plus the PACKED SCALE UNIT.
 
