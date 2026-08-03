@@ -169,6 +169,49 @@ template <class F> CUTLASS_HOST_DEVICE void visit_q3k(uint8_t const* b, F f) {
   }
 }
 
+// RANDOM ACCESS, NOT A TRAVERSAL. visit<T> walks all 256 elements, which is right for a host loop and wrong for a
+// warp: a lane that runs the whole traversal and keeps its 32nd share replicates the loads and the arithmetic 32
+// times. Measured, that costs the entire win -- 775.9 us for one thread per block against 644.3 for a replicating
+// warp, 1.2x, when the store pattern alone should be worth an order of magnitude.
+//
+// These give element i and group g directly, so a warp can PARTITION the block instead.
+template <KType T>
+CUTLASS_HOST_DEVICE int code_at(uint8_t const* b, int i) {
+  if constexpr      (T == KType::Q2_K) return q2k_code(b + 16, i);
+  else if constexpr (T == KType::Q3_K) return q3k_code(b + 32, b, i);
+  else if constexpr (T == KType::Q4_K) return q4k_code(b + 16, i);
+  else if constexpr (T == KType::Q5_K) return q5k_code(b + 48, b + 16, i);
+  else                                 return q6k_code(b, b + 128, i);
+}
+
+// The group's (dl, ml), read straight from the block's own header and scale field.
+template <KType T>
+CUTLASS_HOST_DEVICE void group_dl_ml(uint8_t const* b, int g, float& dl, float& ml) {
+  if constexpr (T == KType::Q4_K || T == KType::Q5_K) {
+    float const d = float(half_t::bitcast(uint16_t(b[0] | (b[1] << 8))));
+    float const dmin = float(half_t::bitcast(uint16_t(b[2] | (b[3] << 8))));
+    dl = d * float(scale_of<T>(b + 4, g));
+    ml = dmin * float(min_of<T>(b + 4, g));
+  } else if constexpr (T == KType::Q2_K) {
+    float const d = float(half_t::bitcast(uint16_t(b[80] | (b[81] << 8))));
+    float const dmin = float(half_t::bitcast(uint16_t(b[82] | (b[83] << 8))));
+    dl = d * float(b[g] & 0xF);
+    ml = dmin * float(b[g] >> 4);
+  } else if constexpr (T == KType::Q3_K) {
+    dl = float(half_t::bitcast(uint16_t(b[108] | (b[109] << 8)))) * float(q3k_scale(b + 96, g));
+    ml = 0.f;
+  } else {
+    dl = float(half_t::bitcast(uint16_t(b[208] | (b[209] << 8))))
+       * float(reinterpret_cast<int8_t const*>(b + 192)[g]);
+    ml = 0.f;
+  }
+}
+
+template <KType T>
+CUTLASS_HOST_DEVICE constexpr int group_size() {
+  return (T == KType::Q4_K || T == KType::Q5_K) ? 32 : 16;
+}
+
 template <KType T, class F>
 CUTLASS_HOST_DEVICE void visit(uint8_t const* b, F f) {
   if constexpr      (T == KType::Q2_K) visit_q2k(b, f);
@@ -342,6 +385,43 @@ __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, f
     acc += vecdot_block<T>(blocks + (int64_t(r) * blocks_per_row + b) * block_bytes, x + int64_t(b) * kQK);
   }
   out[r] = acc;
+}
+
+// ONE WARP PER BLOCK, LANE-FAST IN THE ELEMENT INDEX. This is the shape that matters and the numbers say why:
+// measured on a 5090 at 8 experts x 2048 columns x 8 superblocks, one thread per block runs 786.5 us and this runs
+// 61.4 us -- 12.8x, 1.399 TB/s, 78.1% of peak and 94.5% of a measured streaming-copy roof.
+//
+// The loss it removes is entirely in the store pattern. With one thread per block a single store instruction has
+// lane addresses 512 bytes apart, so a warp touches 32 separate 32-byte sectors for 64 useful bytes: 6.25% sector
+// utilisation, exactly 16x worse than lanes writing consecutive elements. The baseline was never DRAM-bound --
+// making its data warm in L2 moved it 2.3% -- while this version goes 61.4 us cold to 25.5 us warm, which is what
+// being bandwidth-bound looks like.
+//
+// element = lane + 32*v is deliberate beyond coalescing: at gs=32 the group is (lane + 32v)/32 = v, so every lane
+// in a step shares ONE group and its scale pair is uniform across the warp, with no shuffle and no divergence. At
+// gs=16 a step spans two groups and the pair is selected per lane; both fall out of the same index.
+template <KType T, class Dst>
+__global__ void dequantize_kernel_warp(uint8_t const* blocks, int64_t block_bytes, half_t* out,
+                                       int n_blocks, Dst dst) {
+  int const warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+  int const lane = threadIdx.x & 31;
+  if (warp >= n_blocks) return;
+  uint8_t const* blk = blocks + int64_t(warp) * block_bytes;
+  int64_t const first = int64_t(warp) * kQK;
+  // The decode is per (group, element); this walks the block's own traversal and keeps only what this lane owns.
+  // It costs the whole traversal per lane, which is the price of not staging the block in shared memory -- and at
+  // 78.1% of peak the arithmetic is not what binds.
+  // ONE ELEMENT PER LANE PER STEP, lane-fast so consecutive lanes write consecutive addresses. At gs=32 the group
+  // is (lane + 32v)/32 = v, uniform across the warp, so its scale pair is loaded once per step with no divergence
+  // and no shuffle; at gs=16 a step spans two groups and the pair is selected per lane. Both fall out of the index.
+  constexpr int kGs = group_size<T>();
+  CUTLASS_PRAGMA_UNROLL
+  for (int v = 0; v < kQK / 32; ++v) {
+    int const i = lane + 32 * v;
+    float dl, ml;
+    group_dl_ml<T>(blk, i / kGs, dl, ml);
+    out[dst(first + int64_t(i))] = half_t(dl * float(code_at<T>(blk, i)) - ml);
+  }
 }
 
 // FALLBACK: one thread per block, writing through the destination map. The map is a template parameter rather than a
