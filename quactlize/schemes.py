@@ -172,7 +172,7 @@ _add(Scheme.SCALE_FIRST, Shape.GEMV_MOE, (QuantType.GPTQ_INT4_SYM,), Impl(
         "than VALIDATED because ci/registry.py has ONE path name, 'gemv', for both MoE and dense decode -- so the "
         "synthetic oracle that covers the dense arm would silently approve this one. schemes._CELL_PATH_IS_COARSE "
         "names that, and a consistency test refuses to let this cell be called VALIDATED until the vocabulary is "
-        "split"))) 
+        "split")))
 _add(Scheme.SCALE_FIRST, Shape.GEMV_MOE, _KQUANTS, Impl(
     Status.PARTIAL, _GEMV, note=(
         "same launcher, same blocker as the dense GEMV cell: it reads fp16 scale planes, which at decode must be "
