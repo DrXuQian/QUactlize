@@ -361,6 +361,86 @@ def ppu_backend_dense():
     return path
 
 
+# THE PACKED-DENSE ROUTE'S NAMES, in one place. The op is being written by codex right now (INBOX 012); until it
+# lands these resolve to nothing and the test below skips with a reason that says so. Changing a name here is the
+# whole of wiring this oracle up -- deliberately, so the moment the signature is posted this is a one-line edit
+# rather than an hour of test writing under a deadline.
+FQ_DENSE_PRODUCER = "prepare_fully_quantized_dense"   # host-side, the analogue of prepare_scale_first_dense
+FQ_DENSE_ROUTE    = "matmul_fully_quantized_dense"    # the launch
+
+
+@pytest.mark.fully_quantized_dense
+@pytest.mark.parametrize("name,gt,hdr,qtype", FORMATS)
+def test_fully_quantized_dense_matches_dequant_first_and_rejects_fault(name, gt, hdr, qtype, ppu_backend_dense):
+    """FULLY_QUANTIZED/DENSE against an INDEPENDENT arm, from the cell's first day rather than after the fact.
+
+    scale_first/dense ran green for a long time against test_fpA_kquant_dense, which compares two fpA tactics --
+    shared constants move both sides together, so a wrong shared constant survives. That is why that cell sat at
+    IMPLEMENTED however green it looked, and it is the specific history this test exists to not repeat.
+
+    The independent arm is matmul_dequant_first fed the OFFICIAL package's materialisation: it shares neither
+    quactlize's block decoder nor its artifact importer with the packed path. M=7 and M=65 are both genuine dense
+    shapes and both are tile tails, so a tail-handling mistake cannot hide behind a round M.
+
+    THE PLANTED FAULT RUNS FIRST. A pass means nothing until the same comparison has been observed to fail on a
+    deliberately corrupted artifact -- and the corruption is in the PACKED SCALE UNIT, not only the code plane,
+    because the unit is what this cell adds over scale_first and a code-plane fault would not exercise it.
+    """
+    prepare = getattr(routes, FQ_DENSE_PRODUCER, None)
+    launch = getattr(routes, FQ_DENSE_ROUTE, None)
+    if prepare is None or launch is None:
+        pytest.skip(f"routes.{FQ_DENSE_PRODUCER}/{FQ_DENSE_ROUTE} do not exist yet -- the packed-dense op is in "
+                    f"flight (see .coord/INBOX.md item 012). This test activates the moment they land, and "
+                    f"run_batch's required-not-to-skip list must be updated in the same change.")
+
+    n, k = 256, 512
+    rng = np.random.default_rng(23000 + qtype)
+    raw = _raw_blocks(gt, hdr, n * (k // 256), rng)
+    blocks = torch.from_numpy(raw)
+    artifact = prepare(blocks, n, k, qtype)
+    official = gguf.quants.dequantize(raw.reshape(-1), gt).reshape(n, k).astype(np.float64)
+    official_fp16 = torch.from_numpy(official.astype(np.float16))
+    bound, observed = 5e-3, []
+
+    for m in (7, 65):
+        a = (rng.standard_normal((m, k)) * .2).astype(np.float16)
+        at = torch.from_numpy(a)
+        independent = routes.matmul_dequant_first(
+            at, blocks, n, k, qtype, weight=official_fp16).numpy().astype(np.float64)
+        denom = np.abs(a.astype(np.float64)[:, None, :] * official[None, :, :]).sum(2)
+        conditioned = lambda out: float(np.max(np.abs(out.astype(np.float64) - independent) /
+                                               np.maximum(denom, np.finfo(np.float64).tiny)))
+
+        # Corrupt the SCALE UNIT. Which tensor that is depends on the artifact's shape, so it is found by
+        # elimination rather than by index: the unit is the one whose element count follows the group count
+        # rather than the weight's. If the artifact is a single tensor this degrades to zeroing it, which is
+        # still a fault the oracle must catch -- weaker, but never silently absent.
+        fault = [x.clone() for x in artifact] if isinstance(artifact, (tuple, list)) else [artifact.clone()]
+        groups = n * (k // 256) * (256 // _f_group_size(qtype))
+        target = next((i for i, x in enumerate(fault) if x.numel() % max(groups, 1) == 0 and x.numel() < n * k), 0)
+        fault[target] = torch.zeros_like(fault[target])
+        planted_in = tuple(fault) if isinstance(artifact, (tuple, list)) else fault[0]
+
+        planted = launch(at, planted_in, qtype).numpy()
+        planted_err = conditioned(planted)
+        assert planted_err > bound, (
+            f"{name} m={m}: the packed-dense oracle MISSED a zeroed tensor {target} of the artifact "
+            f"({planted_err:.3e}). Until this fails, a pass below is not evidence.")
+
+        got = launch(at, artifact, qtype).numpy()
+        err = conditioned(got)
+        assert err < bound, f"{name} m={m}: packed dense disagrees with dequant-first ({err:.3e})"
+        observed.append(f"m={m} err={err:.3e} planted={planted_err:.3e}")
+    print(f"{name} packed dense vs dequant-first: " + "; ".join(observed))
+
+
+def _f_group_size(qtype):
+    """gs from the format table rather than a literal -- Q2/Q3/Q6 are 16 and Q4/Q5 are 32, and hardcoding 32
+    would put the planted-fault target on the wrong tensor for three of the five formats."""
+    from quactlize import formats as _fm
+    return _fm.BLOCKS[_fm.QuantType(qtype)].group_size
+
+
 @pytest.mark.parametrize("name,gt,hdr,qtype", FORMATS)
 def test_scale_first_dense_route_matches_dequant_first_and_rejects_fault(
         name, gt, hdr, qtype, ppu_backend_dense):
