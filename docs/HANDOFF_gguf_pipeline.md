@@ -82,7 +82,7 @@ unmeasured, so the 5090 results are directional rather than a claim about the bo
 | `dequantize_kernel_warp` | 5090 | tuned | 779.4 → **58.4 µs**, 13.4×, 1.473 TB/s = **82.2% of peak**, bit-identical |
 | `dequantize_kernel_warp_logical` | 5090 | kept slow on purpose | 196.6 vs 65.5 µs on a nontrivial reorder — the general path for layouts `right_inverse` cannot take |
 | `prepass_kernel` (cooperative) | 5090 | tuned | speedup grows with size — 1.32× / 1.91× / 2.95× — the fixed-duration floor made visible |
-| `vecdot_rows_kernel` | 5090 | **1285–2621 Gelem/s cold, at 44–64% of peak** | rows=131072; native bytes, CUDA cores only; see below |
+| `vecdot_rows_kernel` | 5090 | **1285–2621 Gelem/s cold, 44–64% of peak AT A SHAPE 64× LARGER THAN A REAL LAYER** | rows=131072; at N=K=2048 it is 5.0% — see §3a |
 | packed collective | PPU | **tax undetermined** | see below |
 | `gemv_lowbit` | PPU | tuned earlier | 22.27 µs, and **ALU-bound, not bandwidth-bound** |
 
@@ -102,6 +102,39 @@ across all five formats.
 ticks. At 16384 rows the kernel took only 20–26 ticks, so the former one/two-tick rankings were below a 4–5% floor.
 Cold launches cannot be batched: only the first launch after an L2 flush is cold. The benchmark now treats rows<=0
 as rows=131072, and every A/B below uses 131072 rows × 8 blocks. Warm timings also use the larger problem.
+
+### 3a. Every GEMV number above is a LARGE-GRID number, and the shipping shape is not
+
+`rows` is the OUTPUT dimension N. At `bpr=8` the tuning shape is N=131072, K=2048 — **sixty-four times a real
+dense layer at decode**, which is N=K=2048, i.e. `rows=2048`. Q4_K, same shipped kernel, sweeping only size:
+
+| rows | CTAs | CTA/SM | cold µs | Gelem/s | % of peak |
+|---:|---:|---:|---:|---:|---:|
+| **2048** | **128** | **0.8** | 26.62 | 158 | **5.0%** |
+| 8192 | 512 | 3.0 | 26.62 | 630 | 19.9% |
+| 16384 | 1024 | 6.0 | 28.67 | 1170 | 36.9% |
+| 32768 | 2048 | 12.0 | 49.15 | 1365 | 43.0% |
+| 65536 | 4096 | 24.1 | 81.95 | 1638 | 51.6% |
+| 131072 | 8192 | 48.2 | 139.26 | 1928 | 60.7% |
+| 262144 | 16384 | 96.4 | 260.10 | 2064 | 65.0% |
+
+2048 and 8192 rows take the **same 26.62 µs for four times the work**, so below roughly 1024 CTAs this kernel is
+launch/latency dominated, not throughput dominated. The instrument forced the large shape — at 2048 rows the
+measurement is 13 ticks of the 2.048 µs quantum, so nothing under ~8% is visible — but the consequence is real.
+
+**The per-format rows-per-warp defaults are wrong at the shipping shape, and two of them badly.** Best rpw at
+N=K=2048 against what is shipped: Q2_K wants 2 and ships 4 (12.3 vs 20.5 µs, **1.67× slower**); Q3_K wants 1 and
+ships 4 (18.4 vs 26.6, **1.45× slower**); Q5_K wants 2 and ships 8; Q6_K's 2 is right; Q4_K's three candidates
+are 11 ticks each and not separable. The fix is structural rather than a new constant — `RowsPerWarp` is already a
+template parameter, so the launcher should dispatch on `rows`, with the crossover measured rather than rounded.
+
+**"Tuned at rows=131072" was nowhere in the source**, which is exactly how a 1.67× regression came to be recorded
+as an optimisation. Any performance claim in this document without a shape beside it should be read as suspect.
+
+**This also reframes the comparison against the PPU collective.** 128 CTAs is precisely the collective's grid at
+the pinned band (Waves Per CU 0.44 = 128 CTAs over 72 CU × 4 blocks/CU), and at 128 CTAs this SIMT kernel reads
+**5.0%** while the collective reads Memory 29.87% / Compute 38.99%. The SIMT-versus-collective comparison made
+earlier was saturated against unsaturated and flattered the SIMT side badly.
 
 | | rpw | cold µs | cold Gelem/s | cold % peak | warm µs | warm Gelem/s | warm % peak | cold/warm | vs `f18ec9e` cold |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
