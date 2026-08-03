@@ -168,6 +168,22 @@ def xplane_hi(low_bits: int, hi_bits: int, tn: int, tk: int, wn: int, f_hi: int,
         if f * tk * bits < 256:
             raise ValueError(f"the {label} plane needs F*TK*bits >= 256 (the AIU's 32-byte delivery floor); "
                              f"{f}*{tk}*{bits} = {f * tk * bits}")
+    # NOT EVERY (TN, TK, WN, F) IS A TACTIC, and a name for one that cannot be built is worse than no name --
+    # it would be encoded in an artifact header and produce a wrong buffer rather than an error. The predicate is
+    # codex's, measured on l104 rather than derived here:
+    #
+    #     NI2 = (TN/F2) / ((TN/WN) * 16) = WN / (16 * F2)     high-plane N-iterations
+    #
+    # and the row is unbuildable when NI2 < 1. The l61 grid contains exactly one such row -- Q3/Q5 at TK=64,
+    # WN=32, where the delivery floor forces F2=4 and NI2 becomes 32/(16*4) = 0. codex recorded it rather than
+    # dropping it silently, which is why it is here instead of quietly missing from a sweep's coverage.
+    if tn % f_hi or tn % wn:
+        raise ValueError(f"the constituent tile divisions must be exact: TN={tn} must divide by both F2={f_hi} "
+                         f"and WN={wn}")
+    if wn < 16 * f_hi:
+        raise ValueError(f"NI2 = WN/(16*F2) = {wn}/(16*{f_hi}) < 1, so the high plane gets no N-iteration and this "
+                         f"is not a buildable tactic (the l61 grid's Q3/Q5 TK=64 WN=32 row is exactly this case). "
+                         f"Naming it would put an unbuildable arrangement into an artifact header.")
     dl_lo = f_lo * tk * low_bits // 256
     dl_hi = f_hi * tk * hi_bits // 256
     folded_r2 = (tn // f_hi) if f_hi > 1 else 0
