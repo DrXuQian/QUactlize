@@ -57,7 +57,7 @@ constexpr bool has_zero(QuantMode q) { return q == QuantMode::FinegrainedScaleZe
 // two-plane collective. There is no dense-specific second collective or converter to maintain here.
 template <QuantMode QuantOp, class KernelSchedule,
           class TileShape, class ScaleTileShape, class WarpShape, int Stages, bool AiuInterleaved,
-          class ElementB = cutlass::int4b_t, class PlaneB2 = void>
+          class ElementB = cutlass::int4b_t, class PlaneB2 = void, bool ExpectPackedScale = false>
 bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
                       const cutlass::half_t* scales, const cutlass::half_t* zeros, cutlass::half_t* D,
                       int m, int n, int k, int group_size, int split_k,
@@ -102,6 +102,16 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
       cutlass::arch::PPU0010, OperatorClass, ElementA, LayoutA, AlignmentA,
       ElementBInfo, LayoutB, AlignmentB, ElementAccumulator,
       cute::tuple<TileShape, ScaleTileShape>, ClusterShape, cute::Int<Stages>, KernelSchedule>::CollectiveOp;
+
+  // FULLY_QUANTIZED is an INSTANTIATION of the shared mainloop, not a dense-specific decoder. Make that selection
+  // compile-time observable at its call site: a flagged binary that accidentally falls back to fp16 scale planes
+  // must fail to build instead of accepting packed bytes through the half pointer and producing plausible garbage.
+  // The false/default arm deliberately does not name this member because the separate two-plane collective has no
+  // packed-scale channel yet and therefore does not expose is_packed_scale.
+  if constexpr (ExpectPackedScale) {
+    static_assert(CollectiveMainloop::is_packed_scale,
+                  "fully-quantized dense requires the shared packed-scale mainloop at this tile shape");
+  }
 
   using GemmKernel = cutlass::gemm::kernel::GemmUniversal<
       cute::Shape<int,int,int,int>, CollectiveMainloop, CollectiveEpilogue,

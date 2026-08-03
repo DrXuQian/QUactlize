@@ -58,6 +58,9 @@ State& state() {
     dlerror();
     s.api.dense_lowbit = reinterpret_cast<decltype(s.api.dense_lowbit)>(dlsym(h, "quactlize_ppu_dense_lowbit"));
     dlerror();
+    s.api.dense_fully_quantized = reinterpret_cast<decltype(s.api.dense_fully_quantized)>(
+        dlsym(h, "quactlize_ppu_dense_fully_quantized"));
+    dlerror();
     s.ok = true;
     s.why = std::string("loaded ") + path;
   });

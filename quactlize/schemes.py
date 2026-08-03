@@ -230,14 +230,23 @@ _add(Scheme.SCALE_FIRST, Shape.DENSE, _KQUANTS, Impl(
         "5 passed and zero skipped. This cell-specific evidence does not claim that the separate broad pytest pass "
         "was green")))
 
-# --- FULLY_QUANTIZED x DENSE: no dense instantiation yet -------------------------------------------------------
-_add(Scheme.FULLY_QUANTIZED, Shape.DENSE, _KQUANTS, Impl(
+# --- FULLY_QUANTIZED x DENSE ------------------------------------------------------------------------------------
+_add(Scheme.FULLY_QUANTIZED, Shape.DENSE, (QuantType.Q4_K,), Impl(
+    Status.PARTIAL, _DENSE, flag="PPU_PACKED_SCALE=1", note=(
+        "the Q4_K TileK=256 instantiation now reaches the SAME CollectiveBuilder packed-scale mainloop used by the "
+        "grouped path (gs=32 gives Scale_TileK==kGroups==8); there is no second decoder. The stored artifact is the "
+        "fixed dense int4 placement plus gguf_packed_unit's byte-neutral [k/256,n,16] units, whose new field "
+        "addressing is expressed by cute layouts. The host operator and both flag-off/flag-on device front ends "
+        "compile, but the independent ppu001 numerical oracle has not run yet, so this is deliberately PARTIAL, not "
+        "IMPLEMENTED or VALIDATED. This cell is NOT IN THE DEFAULT BUILD: it requires PPU_PACKED_SCALE=1, and the "
+        "always-present device symbol returns rc=34 explicitly without that flag")))
+_add(Scheme.FULLY_QUANTIZED, Shape.DENSE,
+     (QuantType.Q2_K, QuantType.Q3_K, QuantType.Q5_K, QuantType.Q6_K), Impl(
     Status.ABSENT, "", note=(
-        "dense and grouped use the same CollectiveBuilder and the packed-scale path lives in their shared mainloop; "
-        "the dense-specific gap is an instantiation at TileK=256 (gs=32 gives Scale_TileK==kGroups==8, the existing "
-        "kPackedScaleOn condition), not a new staging mechanism. Format-level blockers still apply: Q2_K's "
-        "single-plane copy is hardcoded to the 16-byte Q4/Q5 unit, and the two-plane mainloop has no packed-scale "
-        "channel. Per the task boundary, this corrected reachability is recorded here before implementation")))
+        "Q2_K still needs its 20-byte unit carried by the single-plane mainloop. Q3_K/Q5_K/Q6_K all route through "
+        "ppu_mma_aiu_mixed_input_2plane.hpp for dense as well as grouped, and that collective has no packed-scale "
+        "channel; Q3_K/Q6_K additionally need their 28/36-byte paired units carried. These are two shared-mainloop "
+        "changes, not per-shape implementations")))
 
 # --- THE TWO FORMATS WITH NOTHING, and why that is a decision rather than an oversight -------------------------
 # GPTQ_INT4_ASYM and AWQ_INT4 are declared in QuantType and reachable by name, and every cell for them is empty.

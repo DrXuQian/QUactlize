@@ -23,6 +23,7 @@
 // assumes away. Generalising the collective means the staging tile and its copy come from this trait; nothing here
 // commits to a transfer width, deliberately.
 #include <cstdint>
+#include "cute/tensor.hpp"
 #include "cutlass/numeric_types.h"
 #include "gguf_scale_layout.hpp"
 #include "gguf_scale_decode.hpp"
@@ -75,10 +76,26 @@ struct Unit {
   static constexpr int kRunBits   = kRunGroups * (kScaleBits + kMinBits);
   static_assert(kRunBits % 8 == 0, "a run must be whole bytes or it is not self-contained in memory");
 
+  // CUTE OWNS THE NEW ADDRESSING RULE. A scale and a min have different bit strides within a run, so forcing them
+  // into one affine layout would merely hide a conditional stride in arithmetic. Keep one layout per field and pass
+  // the selected layout to field_bit_of, exactly as the two-plane converter passes its logical layouts to both the
+  // offline and device sides. This replaces the old hand-expanded g/run expression; code_of/put_code retain only the
+  // unavoidable byte extraction after the layout has named the bit.
+  using RunShape = cute::Shape<cute::Int<kRunGroups>, cute::Int<kGroups / kRunGroups>>;
+  using ScaleBitLayout = cute::Layout<RunShape, cute::Stride<cute::Int<kScaleBits>, cute::Int<kRunBits>>>;
+  // MinBitLayout is never selected for scale-only formats. A zero stride is nonetheless the truthful type there and
+  // keeps the trait fully generic without inventing a dummy bit width.
+  using MinBitLayout = cute::Layout<RunShape, cute::Stride<cute::Int<kMinBits>, cute::Int<kRunBits>>>;
+
+  template <class BitLayout>
+  CUTLASS_HOST_DEVICE static constexpr int field_bit_of(int g, BitLayout const& layout) {
+    return int(layout(g % kRunGroups, g / kRunGroups));
+  }
+
   CUTLASS_HOST_DEVICE static constexpr int bit_of(int g, int which) {
-    return kHeaderBytes * 8 + (g / kRunGroups) * kRunBits
-         + (g % kRunGroups) * kScaleBits + which * (kRunGroups * kScaleBits)
-         + (which ? (g % kRunGroups) * (kMinBits - kScaleBits) : 0);
+    return kHeaderBytes * 8 + (which
+        ? kRunGroups * kScaleBits + field_bit_of(g, MinBitLayout{})
+        : field_bit_of(g, ScaleBitLayout{}));
   }
   // The same position inside superblock `sb` of a multi-superblock unit. Each superblock keeps its OWN header, so a
   // consumer that wants only one of them reads a contiguous kSbBytes run and needs nothing from the other -- which

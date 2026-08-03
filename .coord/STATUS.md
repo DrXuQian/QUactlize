@@ -1,7 +1,7 @@
 # codex status
 
-    inbox-consumed: 008
-    working-on:     fully_quantized/dense Q4_K shared-mainloop entry, then Q5_K per INBOX 007
-    blocked-on:     none; INBOX 008 answer is NI2=WN/(16*F2), invalid below 1 (TK64/WN32/F2=4 => 0)
+    inbox-consumed: 013
+    working-on:     committing Q4 packed dense, then grouped Q4 raw ABI seam while box validation runs
+    blocked-on:     Q4 dense numerical validation requires PPU_PACKED_SCALE=1 ppu001 oracle
     last-commit:    6bd8c7b Validate scale-first dense k-quants
-    last-heartbeat: 063
+    last-heartbeat: 066

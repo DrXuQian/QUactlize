@@ -53,6 +53,10 @@ struct Api {
   int (*dense_lowbit)(uint16_t const* act, uint8_t const* low, uint8_t const* high,
                       uint16_t const* scale, uint16_t const* zero, uint16_t* out,
                       int m, int n, int k, int group_size, int qtype);
+  // Optional Q4_K fully-quantized dense entry. `units` are the byte-neutral [k/256,n,16] reordered scale units;
+  // the symbol returns 34 when the library was built without PPU_PACKED_SCALE=1.
+  int (*dense_fully_quantized)(uint16_t const* act, uint8_t const* low, uint8_t const* units,
+                               uint16_t* out, int m, int n, int k, int qtype);
 };
 
 // Loads libquactlize_ppu.so once. QUACTLIZE_PPU_LIB overrides the path, which is what lets a stub stand in for the
