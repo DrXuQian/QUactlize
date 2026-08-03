@@ -25,6 +25,12 @@ DENY = re.compile(r'cuda_fp16\.h|cuda_bf16\.h|cuda_runtime\.h|cudaStream_t|cudaM
                   r'|__halves2half2|__halves2bfloat162|__nv_bfloat')
 # gemv_rt.hpp's whole job is to straddle the two runtimes, so it names both by design.
 ALLOW = {'gemv_rt.hpp'}
+# *_cuda_probe.* is a LOCAL CUDA harness by convention and is excluded from the overlay by build.sh, so it never
+# reaches hgcc. Skipping it here is not a weakening: the two rules have to agree, and if a probe loses the suffix it
+# starts being overlaid AND starts being reported here at the same moment.
+def _is_local_cuda_probe(path):
+    import re as _re
+    return _re.search(r'_cuda_probe\.[^.]+$', os.path.basename(path)) is not None
 # What the box defines. Anything guarded on something else is assumed live (conservative: reports more).
 DEFINED = {'__HGGCCC__'}
 UNDEFINED = {'ENABLE_BF16'}
@@ -85,10 +91,14 @@ def main():
     bad = 0
     for f in files:
         if os.path.basename(f) in ALLOW: continue
+        if _is_local_cuda_probe(f): continue
         for ln, text in live_lines(f):
             s = text.split('//')[0]
             if DENY.search(s):
-                print(f"  [FAIL] ppu_portability: {os.path.relpath(f, here)}:{ln} is NVIDIA-only in a branch "
+                # `root`, not `here` -- there is no `here`. This line is in the FAILURE path, which had never run,
+                # so a NameError sat in the one branch whose whole job is to report a problem: the check could only
+                # ever pass or crash. Verified below by making it fire on purpose.
+                print(f"  [FAIL] ppu_portability: {os.path.relpath(f, root)}:{ln} is NVIDIA-only in a branch "
                       f"the box compiles:\n           {text.strip()}")
                 bad = 1
 
