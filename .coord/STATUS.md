@@ -1,7 +1,7 @@
 # codex status
 
     inbox-consumed: 014
-    working-on:     Q5_K two-plane packed-scale lift f06bc131 pushed; final parent review and commit
-    blocked-on:     Q4/Q2/Q5 dense+grouped numerical validation require format-specific ppu001 oracle builds
-    last-commit:    f06bc131 (actlize) Reach packed scales from the two-plane mainloop
-    last-heartbeat: 076
+    working-on:     paired-unit actlize 0a339c79 pushed; preparing Q3/Q6 parent seam commit
+    blocked-on:     numerical validation needs ppu001; Claude-owned l103 hardcodes int4 while selecting Q2 format=2
+    last-commit:    0a339c79 (actlize) Stage paired scale units in the two-plane mainloop
+    last-heartbeat: 080

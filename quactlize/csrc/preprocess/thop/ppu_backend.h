@@ -53,7 +53,7 @@ struct Api {
   int (*dense_lowbit)(uint16_t const* act, uint8_t const* low, uint8_t const* high,
                       uint16_t const* scale, uint16_t const* zero, uint16_t* out,
                       int m, int n, int k, int group_size, int qtype);
-  // Flag-selected fully-quantized entries. high is null for Q4/Q2 and the resident second code plane for Q5+;
+  // Flag-selected fully-quantized entries. high is null for Q4/Q2 and the resident plane for two-plane formats;
   // units are the format's byte-neutral reordered metadata. rc=34 means PPU_PACKED_SCALE was not built in.
   int (*dense_fully_quantized)(uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
                                uint16_t* out, int m, int n, int k, int qtype);
