@@ -71,25 +71,50 @@ void launch_native(uint8_t const* w, VecdotActivation const* x, int const* offse
   }
 }
 
+// HOW MANY DISTINCT WEIGHTS THE COLD MEASUREMENT WALKS. See time_launch for why it needs more than one.
+// Bounded by a memory budget rather than fixed at 64, because 64 copies of a 151 MB operand is 9.7 GB -- and a
+// shape that large does not need the help anyway: one launch there already spans dozens of ticks.
+inline int cold_layer_count(size_t weight_bytes) {
+  size_t const budget = size_t(512) << 20;
+  if (!weight_bytes) return 1;
+  return std::max(1, std::min<int>(64, int(budget / weight_bytes)));
+}
+
 template <class Launch>
 int time_launch(Launch launch, uint8_t const* flush, size_t flush_bytes, unsigned long long* sink,
-                int rows, int reps, float* cold_us, float* warm_us) {
+                int rows, int reps, int cold_layers, float* cold_us, float* warm_us) {
   cudaEvent_t begin{}, end{};
   if (ok(cudaEventCreate(&begin)) || ok(cudaEventCreate(&end))) return 1;
   auto measure = [&](bool cold, float* result) -> int {
     std::vector<float> sample;
     sample.reserve(reps);
     if (!cold) {
-      for (int i = 0; i < 100; ++i) launch();
+      for (int i = 0; i < 100; ++i) launch(0);
       if (ok(cudaDeviceSynchronize())) return 2;
     }
-    // A single small launch is below the 2.048-us event quantum. Batch warm launches so N=2048 spans hundreds of
-    // ticks; a cold sample remains exactly one launch after a same-stream L2 flush.
-    int const batch = cold ? 1 : std::max(1, std::min(128, (131072 + rows - 1) / rows));
+    // THE COLD PROBLEM AND WHY IT IS NOT SOLVED BY A BIGGER SHAPE.
+    //
+    // Cold cannot be batched -- only the first launch after an L2 flush is cold -- so a cold reading used to be
+    // ONE launch, quantised by the 2.048 us event tick. At N=K=2048 that is about 7 ticks, and an 11% difference
+    // is 0.77 of one tick: INVISIBLE. A "tie" measured that way is not parity, it is a gap smaller than the
+    // instrument, and this project had already been bitten in the other direction when the same quantum nearly
+    // hid a real 24-31% effect.
+    //
+    // The obvious enlargement -- rows=131072 -- is WRONG here, and that is the point of this comment. It changes
+    // the memory regime: 151 MB never fits L2, so both sides become DRAM-fed and the comparison stops being
+    // about the shape anyone runs. It answers a different question.
+    //
+    // So the enlargement keeps the shape and multiplies the WORK: after ONE flush, launch over `cold_layers`
+    // DISTINCT weights, once each, inside a single event pair. Every launch is the real grid reading a
+    // never-before-touched operand -- still cold, individually -- while the accumulation divides the tick by
+    // that count. At 64 layers the 2.048 us quantum becomes 0.032 us/layer, and the 11% that used to be
+    // invisible is 49 of those.
+    int const batch = cold ? std::max(1, cold_layers)
+                           : std::max(1, std::min(128, (131072 + rows - 1) / rows));
     for (int r = 0; r < reps + 5; ++r) {
       if (cold) flush_l2<<<4096,256>>>(flush, flush_bytes, sink);
       cudaEventRecord(begin);
-      for (int i = 0; i < batch; ++i) launch();
+      for (int i = 0; i < batch; ++i) launch(cold ? i : 0);
       cudaEventRecord(end);
       if (ok(cudaGetLastError()) || ok(cudaEventSynchronize(end))) return 3;
       float ms = 0.f;
@@ -114,17 +139,20 @@ int bench_native(int n, int k, int experts, int reps, float* cold, float* warm, 
   size_t const ob = size_t(total_rows) * n * sizeof(float);
   cudaDeviceProp prop{}; int dev = 0; cudaGetDevice(&dev); cudaGetDeviceProperties(&prop, dev);
   size_t const fb = std::max<size_t>(size_t(prop.l2CacheSize) * 2, size_t(128) << 20);
-  Buf w(wb), x(xb), out(ob), offsets(Grouped ? size_t(experts+1)*4 : 0), flush(fb), sink(8);
+  int const layers = cold_layer_count(wb);
+  Buf w(wb * size_t(layers)), x(xb), out(ob), offsets(Grouped ? size_t(experts+1)*4 : 0), flush(fb), sink(8);
   if (!w.good() || !x.good() || !out.good() || !offsets.good() || !flush.good() || !sink.good()) return 10;
-  cudaMemset(w.p,1,wb); cudaMemset(x.p,0x3f,xb); cudaMemset(out.p,0,ob); cudaMemset(flush.p,1,fb); cudaMemset(sink.p,0,8);
+  cudaMemset(w.p,1,wb * size_t(layers)); cudaMemset(x.p,0x3f,xb); cudaMemset(out.p,0,ob);
+  cudaMemset(flush.p,1,fb); cudaMemset(sink.p,0,8);
   if constexpr (Grouped) {
     std::vector<int> h(experts+1); for (int i=0;i<=experts;++i) h[i]=i;
     cudaMemcpy(offsets.p,h.data(),h.size()*4,cudaMemcpyHostToDevice);
   }
-  auto launch = [&] { launch_native<T,Grouped>(w.as<uint8_t>(),x.as<VecdotActivation>(),offsets.as<int>(),
-                                               out.as<float>(),n,bpr,experts); };
-  launch(); if (ok(cudaGetLastError()) || ok(cudaDeviceSynchronize())) return 11;
-  int rc = time_launch(launch,flush.as<uint8_t>(),fb,sink.as<unsigned long long>(),n,reps,cold,warm);
+  auto launch = [&](int layer) {
+    launch_native<T,Grouped>(w.as<uint8_t>() + size_t(layer) * wb, x.as<VecdotActivation>(), offsets.as<int>(),
+                             out.as<float>(),n,bpr,experts); };
+  launch(0); if (ok(cudaGetLastError()) || ok(cudaDeviceSynchronize())) return 11;
+  int rc = time_launch(launch,flush.as<uint8_t>(),fb,sink.as<unsigned long long>(),n,reps,layers,cold,warm);
   *traffic = double(wb + xb + ob);
   return rc ? 20+rc : 0;
 }
@@ -140,9 +168,10 @@ int bench_scale(int n, int k, int experts, int reps, float* cold, float* warm, d
   size_t const sb=size_t(ecount)*scale_per*2, ob=size_t(total_rows)*n*2;
   cudaDeviceProp prop{}; int dev=0; cudaGetDevice(&dev); cudaGetDeviceProperties(&prop,dev);
   size_t const fb=std::max<size_t>(size_t(prop.l2CacheSize)*2,size_t(128)<<20);
-  Buf x(xb),lo(lob),hi(hib),scale(sb),zero(sb),out(ob),offsets(Grouped?size_t(experts+1)*4:0),flush(fb),sink(8);
+  int const layers = cold_layer_count(lob);
+  Buf x(xb),lo(lob*size_t(layers)),hi(hib),scale(sb),zero(sb),out(ob),offsets(Grouped?size_t(experts+1)*4:0),flush(fb),sink(8);
   if(!x.good()||!lo.good()||!hi.good()||!scale.good()||!zero.good()||!out.good()||!offsets.good()||!flush.good()||!sink.good()) return 30;
-  cudaMemset(x.p,0x3c,xb); cudaMemset(lo.p,0x55,lob); if(hib) cudaMemset(hi.p,0x55,hib);
+  cudaMemset(x.p,0x3c,xb); cudaMemset(lo.p,0x55,lob*size_t(layers)); if(hib) cudaMemset(hi.p,0x55,hib);
   cudaMemset(scale.p,0x3c,sb); cudaMemset(zero.p,0,sb); cudaMemset(out.p,0,ob); cudaMemset(flush.p,1,fb); cudaMemset(sink.p,0,8);
   if constexpr(Grouped){ std::vector<int> h(experts+1); for(int i=0;i<=experts;++i)h[i]=i;
     cudaMemcpy(offsets.p,h.data(),h.size()*4,cudaMemcpyHostToDevice); }
@@ -152,10 +181,13 @@ int bench_scale(int n, int k, int experts, int reps, float* cold, float* warm, d
   p.quant=ppu_gemv::QuantOp::FinegrainedScaleZero; p.layout=ppu_gemv::WLayout::Native;
   if constexpr(Grouped){ p.num_experts=experts; p.row_offsets=offsets.as<int>(); p.max_rows=1;
     p.w_bytes_per_expert=lo_per; p.w_hi_bytes_per_expert=hi_per; p.scale_elems_per_expert=scale_per; }
-  auto launch=[&]{ ppu_gemv::launch_gemv<D,8,2>(p,0); };
-  int before=ppu_gemv::gemv_fail_count(); launch();
+  // The low plane is the operand that has to be untouched per cold launch; the scale planes are small enough
+  // that a shared copy does not make the weight warm. Params is copied so the pointer swap cannot leak.
+  auto launch=[&](int layer){ ppu_gemv::Params q = p; q.weight = lo.p + size_t(layer) * lob;
+                              ppu_gemv::launch_gemv<D,8,2>(q,0); };
+  int before=ppu_gemv::gemv_fail_count(); launch(0);
   if(ppu_gemv::gemv_fail_count()!=before||ok(cudaGetLastError())||ok(cudaDeviceSynchronize())) return 31;
-  int rc=time_launch(launch,flush.as<uint8_t>(),fb,sink.as<unsigned long long>(),n,reps,cold,warm);
+  int rc=time_launch(launch,flush.as<uint8_t>(),fb,sink.as<unsigned long long>(),n,reps,layers,cold,warm);
   *traffic=double(xb+lob+hib+2*sb+ob);
   return rc?40+rc:0;
 }
