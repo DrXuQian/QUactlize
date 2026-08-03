@@ -77,6 +77,18 @@ PACKED_GATES=(
 PACKED_GATE_BINS=()
 for _pg in "${PACKED_GATES[@]}"; do PACKED_GATE_BINS+=("test_q4k_packed_gemm__gate_${_pg%%:*}"); done
 
+# THE BINARIES ONLY, never the cache sidecars. build_one writes "<target>__<name>.built" NEXT TO each binary to
+# record what it was compiled from, and it shares the prefix -- so the obvious glob returns 2N paths for N variants.
+# That is how the count guard came to report "expected 8 splitk binaries, found 16" on a build where all eight were
+# present and correct: a guard blocking a good run is the same failure as a guard passing a bad one, and it was MY
+# per-binary cache that broke it, added after the guard and never re-read against it.
+#
+# Filtered by SUFFIX rather than by -x: a failed link can leave a non-executable file behind, and that file must
+# still be counted so the mismatch is reported, not silently skipped into agreement.
+target_bins() {  # $1 target
+  ls "$OUT/$1"__* 2>/dev/null | grep -v '\.built$' || true
+}
+
 build_one() {  # $1 name  $2 defines  $3 target
   # SEPARATE STATEMENTS. `local a=$1 log=...$a...` fails under `set -u` in bash 5.1: local declares every name first
   # and only then assigns, so the self-reference is unbound. bash -n does not catch it -- only running does, which is
@@ -208,12 +220,12 @@ do_build() {
   # produced nothing, and this printed "all six splitk binaries differ" over an empty directory -- a gate reporting
   # success about files that do not exist, immediately below eleven FAILED lines.
   local want=${#VARIANTS[@]} have
-  have=$(ls "$OUT"/test_moe_splitk_bench__* 2>/dev/null | wc -l)
+  have=$(target_bins test_moe_splitk_bench | wc -l)
   if [ "$have" -ne "$want" ]; then
     echo "  !!! expected $want splitk binaries, found $have -- nothing below this can be compared"; ok=0
   else
     local dup
-    dup=$(md5sum "$OUT"/test_moe_splitk_bench__* | awk '{print $1}' | sort | uniq -d)
+    dup=$(target_bins test_moe_splitk_bench | xargs -r md5sum | awk '{print $1}' | sort | uniq -d)
     if [ -n "$dup" ]; then
       # NAME THE PAIR. "two binaries are identical" over eight files leaves the reader to diff md5s by eye, and the
       # thing they need to know is WHICH variant collapsed onto which -- that names the macro that did not apply.
@@ -221,7 +233,7 @@ do_build() {
       local h
       for h in $dup; do
         printf '        %s :' "${h:0:8}"
-        md5sum "$OUT"/test_moe_splitk_bench__* | awk -v H="$h" '$1==H {n=$2; sub(/.*__/,"",n); printf " %s", n}'
+        target_bins test_moe_splitk_bench | xargs -r md5sum | awk -v H="$h" '$1==H {n=$2; sub(/.*__/,"",n); printf " %s", n}'
         echo
       done
       ok=0
@@ -232,7 +244,7 @@ do_build() {
   # hash is the one observable that always moves when the code does, so it is printed whether or not anything is
   # wrong, and a reader comparing two rounds can see at a glance which variants actually changed.
   echo "  binary fingerprints:"
-  md5sum "$OUT"/test_moe_splitk_bench__* 2>/dev/null |
+  target_bins test_moe_splitk_bench | xargs -r md5sum |
     awk '{n=$2; sub(/.*__/,"",n); printf "        %-12s %s\n", n, substr($1,1,12)}'
   # AFTER the duplicate check, so a duplicate genuinely blocks check and perf instead of warning beside a stamp.
   if [ "$ok" -eq 1 ]; then
