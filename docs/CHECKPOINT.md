@@ -79,6 +79,51 @@ timed the hardware's denormal path. Fixed in the tree, not yet re-measured.
 configuration — 17% apart, wider than the ~13% spread on record. So `pack − base` is +2.4% here and +12.9% there, and
 the native-format tax is not determined.
 
+### 4a. The native-format tax IS determined now, and `packfuse` is answered — 2026-08-03
+
+A paired run, `BLOCKS=10`, ratios formed *within* each block so session drift cancels, on the same pinned row:
+
+| variant | median µs | vs base | 95% CI on the paired ratio |
+|---|---:|---:|---|
+| `bdqnop` | 19.94 | **−10.9%** | 0.885 .. 0.897 |
+| base | 22.38 | — | — |
+| `splitnop` | 23.80 | +6.4% | 1.057 .. 1.070 |
+| `swz` | 23.82 | +6.4% | 1.059 .. 1.070 |
+| `packnop` | 24.35 | +8.8% | 1.079 .. 1.097 |
+| `packfuse` | 25.17 | +12.5% | 1.118 .. 1.131 |
+| `pack` | 25.25 | **+12.8%** | 1.118 .. 1.139 |
+| `packsplit` | 25.49 | +13.9% | 1.132 .. 1.146 |
+
+So the **native-format tax is +12.8%**, with an interval, from one run. `bdqnop` reproduces at −10.9% against the
+−11.1% on record. `packfuse` and `pack` overlap almost entirely.
+
+**`packfuse` DID take effect, and it bought nothing. Both halves are now measured.** acu, `pack` against `packfuse`:
+
+| | change |
+|---|---|
+| `tsm.st` | 61,440 (**−26.83%**) |
+| `tsm.ld` | 141,824 (**−48.8%**) |
+| Shared Inst | 372.74 K (**−29.73%**) |
+| Shared bank conflicts, total | 186,368 (**−48.30%**) |
+| **Duration** | **22.92 µs (+0.46%)** |
+
+The store fused, the conflicts halved, and the time did not move. Speed-of-Light says why: **Compute 38.99%,
+Memory 29.87%** — neither pipe is near its roof, so the kernel is issue/latency-bound and the shared work removed
+was already issuing in something else's shadow. That is the same shape as `bdqnop`: 43% of dynamic instructions, 11%
+of time.
+
+And the fuse is not free. It trades shared traffic for ALU on the path that *is* limiting: `v.shrl.i` +63.61%,
+`v.or.i` +89.16%, `v.shll.i` +55.11%, `v.cnvt` +720% — the cost of packing and unpacking the interleaved
+`(scale, zero)` word. Saving in the shadow and paying in the light is why the net is zero.
+
+**Conclusion: `packfuse` does not ship, and the +73,728 store conflicts were never worth chasing.** That retires
+`swz`, `packfuse` and `packsplit` together — all three optimise a path at 30% of its roof. The 11.1% dequant
+pipeline remains the only measured term that is actually on the critical path.
+
+One loose end, which does not change the above: a bank-conflict counter went from 0 to **36,864 (+inf%)** — a new
+conflict class, and 36,864 is exactly the predicted store-instruction reduction. 32 lanes × 4 B is 128 B across 32
+banks and should be conflict-free unless the stride is not 1. Worth naming the counter; not worth acting on.
+
 ## 5. Every switch, and what it is for
 
 None of these belong on `main`. Recorded so the dev branch keeps their meaning.
