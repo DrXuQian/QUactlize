@@ -187,19 +187,30 @@ def _op(name: str):
     what anyone is running. Resolving at call time turns that into one clear error at one call site.
     """
     import quactlize as _q
-    fn = getattr(_q, name, None)
+    fn = getattr(_q._ops(), name, None)
     if fn is None:
         raise RuntimeError(
-            f"quactlize.{name} is not in this build. Either the extension predates the op "
+            f"quactlize::{name} is not registered in this build. Either the extension predates the op "
             f"(python3 setup.py build_ext --inplace) or the device library was built without the feature.")
     return fn
 
 
 def has_op(name: str) -> bool:
     """Whether an op is in THIS build. Tests use it to tell 'not built yet' (a legitimate skip) from 'built and
-    wrong' (a failure); those are different states and a skip for the second one would hide a defect."""
+    wrong' (a failure); those are different states and a skip for the second one would hide a defect.
+
+    IT ASKS THE OPERATOR REGISTRY, NOT THE MODULE NAMESPACE, and that distinction is the whole point. Every op
+    reaches quactlize/__init__.py through a HAND-WRITTEN wrapper, so a newly registered op is invisible as a
+    module attribute until somebody adds one. Keying on that would have made this test skip forever on a box
+    where the op was built, registered and working -- a green run that checked nothing, caught here only because
+    codex's commit registered gguf_dense_fully_quantized in C++ while __init__.py knew nothing about it.
+
+    torch.ops.quactlize is the source of truth: the op is there iff RegisterOperators ran."""
     import quactlize as _q
-    return getattr(_q, name, None) is not None
+    try:
+        return getattr(_q._ops(), name, None) is not None
+    except ImportError:
+        return False                     # extension not built at all -- absent, not stale
 
 
 def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: int):
@@ -211,7 +222,7 @@ def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: i
 
     Returns (low, units): low uint8[1, n, k/2], units uint8[k/256, n, 16].
     """
-    _check_shape(blocks, n, k)
+    _check_shape(blocks, n, k, int(qtype))
     return _op("gguf_prepare_fully_quantized_dense")(blocks, n, k, int(qtype))
 
 
@@ -224,6 +235,30 @@ def matmul_fully_quantized_dense(a: torch.Tensor, artifact, qtype: int):
     """
     low, units = artifact
     return _op("gguf_dense_fully_quantized")(a, low, units, int(qtype))
+
+
+def prepare_fully_quantized_grouped(blocks: torch.Tensor, n: int, k: int, qtype: int, experts: int):
+    """The MoE artifact: one (low, units) pair per expert, nothing expanded.
+
+    blocks is [E*n*(k/256), type_size] -- expert-major, so expert e's weight is a contiguous slice. Returns
+    (low uint8[E, n, k/2], units uint8[E, k/256, n, 16]).
+    """
+    want = experts * n * (k // 256)
+    if blocks.dim() != 2 or blocks.shape[0] != want:
+        raise ValueError(f"blocks should be [{want}, type_size] for {experts} experts of an ({n}, {k}) weight, "
+                         f"got {tuple(blocks.shape)}")
+    return _op("gguf_prepare_fully_quantized_grouped")(blocks, n, k, int(qtype), int(experts))
+
+
+def matmul_fully_quantized_grouped(a: torch.Tensor, artifact, qtype: int, rows_per_expert: torch.Tensor):
+    """The grouped GEMM with the format's own packed scale bytes. Rows are RAGGED and an expert may have none.
+
+    The argument order here is (a, artifact, qtype, rows) to match every other grouped route on this surface;
+    the C++ op takes (a, low, units, rows, qtype) and the reorder happens here rather than in the kernel. One
+    convention per layer -- the alternative is a caller that has to remember which side it is on.
+    """
+    low, units = artifact
+    return _op("gguf_grouped_fully_quantized")(a, low, units, rows_per_expert.to(torch.int32), int(qtype))
 
 
 def matmul_scale_first_dense(a: torch.Tensor, artifact, qtype: int) -> torch.Tensor:

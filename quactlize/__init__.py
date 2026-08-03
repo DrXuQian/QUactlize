@@ -124,6 +124,26 @@ def gguf_vecdot_moe(blocks, x, row_offsets, qtype: int):
     return _ops().gguf_vecdot_moe(blocks, x, row_offsets, qtype)
 
 
+def gguf_prepare_fully_quantized_dense(blocks, n: int, k: int, qtype: int):
+    """FULLY_QUANTIZED/DENSE offline artifact: (low uint8[1,n,k/2], units uint8[k/256,n,16])."""
+    return _ops().gguf_prepare_fully_quantized_dense(blocks, n, k, qtype)
+
+
+def gguf_dense_fully_quantized(a, low, units, qtype: int):
+    """Dense GEMM reading the format's own packed scale bytes. rc=34 without PPU_PACKED_SCALE=1."""
+    return _ops().gguf_dense_fully_quantized(a, low, units, qtype)
+
+
+def gguf_prepare_fully_quantized_grouped(blocks, n: int, k: int, qtype: int, experts: int):
+    """FULLY_QUANTIZED/GROUPED offline artifact: (low uint8[E,n,k/2], units uint8[E,k/256,n,16])."""
+    return _ops().gguf_prepare_fully_quantized_grouped(blocks, n, k, qtype, experts)
+
+
+def gguf_grouped_fully_quantized(a, low, units, rows_per_expert, qtype: int):
+    """Grouped (MoE) GEMM on packed scale bytes. Ragged rows; an expert may have none."""
+    return _ops().gguf_grouped_fully_quantized(a, low, units, rows_per_expert, qtype)
+
+
 def gguf_dequantize(blocks, qtype: int):
     """RAW GGUF blocks -> full fp16 weights. THE FALLBACK PATH'S MISSING LINK.
 

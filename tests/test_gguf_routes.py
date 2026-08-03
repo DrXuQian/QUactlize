@@ -374,7 +374,7 @@ FQ_GROUPED_PRODUCER = "prepare_fully_quantized_grouped"
 
 
 @pytest.mark.fully_quantized_dense
-@pytest.mark.parametrize("name,gt,hdr,qtype", FORMATS)
+@pytest.mark.parametrize("name,gt,hdr,qtype", [f for f in FORMATS if f[0] == "Q4_K"])   # Q4 only, as for dense
 def test_fully_quantized_grouped_matches_dequant_first_and_rejects_fault(name, gt, hdr, qtype, ppu_backend_dense):
     """FULLY_QUANTIZED/GROUPED -- the MoE GEMM -- against the same independent arm as the dense cell.
 
@@ -391,12 +391,10 @@ def test_fully_quantized_grouped_matches_dequant_first_and_rejects_fault(name, g
     The planted fault reuses expert 0's slice for every expert -- the specific mistake this fixture is built to
     catch, and the one a shape check cannot see.
     """
-    prepare = getattr(routes, FQ_GROUPED_PRODUCER, None)
-    launch = getattr(routes, FQ_GROUPED_ROUTE, None)
-    if prepare is None or launch is None:
-        pytest.skip(f"routes.{FQ_GROUPED_PRODUCER}/{FQ_GROUPED_ROUTE} do not exist yet. The grouped packed GEMM "
-                    f"is reachable ONLY from C++ today (test_q4k_packed_gemm), so this cell cannot be checked "
-                    f"from the route level at all -- see .coord/INBOX.md item 013.")
+    if not (routes.has_op("gguf_prepare_fully_quantized_grouped")
+            and routes.has_op("gguf_grouped_fully_quantized")):
+        pytest.skip("the grouped packed ops are not in this build yet (INBOX 013).")
+    prepare, launch = routes.prepare_fully_quantized_grouped, routes.matmul_fully_quantized_grouped
 
     experts, n, k = 4, 256, 512
     rows = np.array([2, 0, 3, 1], dtype=np.int32)      # an EMPTY expert, and no two alike
