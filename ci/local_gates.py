@@ -54,7 +54,9 @@ GATES = [
     ("l100_fused_active",     []),
     # One entry per format that CAN activate. A format added to the packed path without an entry here is a format
     # whose decoder nobody has instantiated.
-    ("l103_packed_format_active", []),
+    # ONE ROW PER FORMAT. 0=Q4_K 1=Q5_K 2=Q2_K 3=Q3_K 4=Q6_K. A single row hardwired to format 2 is what this
+    # gate had, which made the per-format activation check a one-format activation check.
+    *[(f"l103_packed_format_active@fmt{f}", []) for f in (0, 1, 2, 3, 4)],
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -164,8 +166,9 @@ GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               # THE MACROS ARE THE POINT. This gate asserts the fused path is ON, so it has to be built the way the
               # box builds packfuse -- without these two it would assert about a configuration nobody runs and pass
               # for the wrong reason, which is the failure it exists to catch.
-              "l103_packed_format_active": ["-D__HGGCCC__", "--expt-relaxed-constexpr",
-                                            "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_FORMAT=2"],
+              **{f"l103_packed_format_active@fmt{f}":
+                     ["-D__HGGCCC__", "--expt-relaxed-constexpr",
+                      "-DPPU_PACKED_SCALE=1", f"-DPPU_PACKED_FORMAT={f}"] for f in (0, 1, 2, 3, 4)},
               "l100_fused_active": ["-D__HGGCCC__", "--expt-relaxed-constexpr",
                                     "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_SCALE_FUSED=1"]}
 
@@ -242,11 +245,18 @@ def lint_ppu_asm_device_guard():
 
 
 def gate(name, args):
-    src = DEV / f"{name}.cu"
+    """`name` may carry an @variant suffix: one source, several configurations, distinct rows.
+
+    l103 asks whether a format's packed path is ACTIVE, and it was registered once, hardwired to format 2. So the
+    gate whose entire purpose is per-format activation covered one format -- the same shape as the bug it had just
+    been rewritten to catch. Five entries need five names, and five names for one file need this.
+    """
+    base = name.split("@", 1)[0]
+    src = DEV / f"{base}.cu"
     if not src.exists():
         return "MISSING", f"{src} not found", 0.0
     OUT.mkdir(parents=True, exist_ok=True)
-    exe = OUT / name
+    exe = OUT / name.replace("@", "_")
     rc, log, dt = run(NVCC + GATE_FLAGS.get(name, []) +
                       ["-I", str(STUB), "-I", str(ACT), "-I", str(ROOT / "quactlize/include"),
                        "-I", str(ROOT / "tests"), "-o", str(exe), str(src)])
