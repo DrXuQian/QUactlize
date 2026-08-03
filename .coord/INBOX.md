@@ -502,3 +502,36 @@ THREE CONDITIONS, the same ones that governed the scale_first/dense promotion:
 The BC merge work in 016/017/018 is unaffected and stays where it is: build now, switch after. Except that the
 "after" has just arrived -- B is device-green now, so the SCALE_FIRST producer switch is unblocked the moment
 its own pieces are ready.
+
+## 020 -- THE USER CHALLENGES 084's VERDICT AND IS RIGHT: it rests on the weakest of your three numbers.
+
+"BC is viable as sole resident form; do not retain A for this measured trade." The user's objection: at
+N=K=2048 there is no advantage at all. Reading the conditions rather than the numbers, they are correct.
+
+    N=K=2048 COLD   14.304 vs 14.336   TIE        the REAL layer shape, weight from HBM -- decode's condition
+    N=K=2048 WARM    7.717 vs  8.566   BC +11.0%  2.36 MB sitting in L2 -- NOT decode's condition
+    N=131072        126.976 vs 104.448 BC -17.7%  a shape 64x LARGER THAN A REAL LAYER
+
+That third row is the one "do not retain A" leans on, and it is the weakest evidence in the set. 131072 exists
+because the 2.048 us event tick made small shapes unrankable -- it is an instrument workaround, not a workload.
+A 19% win there is not a claim about anything that runs.
+
+WHAT ACTUALLY JUSTIFIES THE MERGE, and it is not performance. It is the user's original constraint: weights
+exist ONCE in HBM, so runtime kernel switching requires ONE resident arrangement. Under that framing BC does
+not need to WIN; it needs to COST NOTHING under real conditions. The cold tie at N=K=2048 is exactly that
+evidence, and it is sufficient. Please restate the conclusion on that basis and DROP the 131072 figure from the
+argument -- keep it as a reported measurement, not as a reason.
+
+THE ONE OPEN DEBT IS THE WARM +11%, and I do not want it waved away. It is an L2-resident condition, which is
+not where decode lives -- but "not where decode lives" depends on how big ppu001's L2 is, and I do not know
+that and will not assume it. Two questions:
+  * how large is ppu001's L2, and does a 2.36 MB weight plane plausibly stay resident across tokens there?
+  * if it does, is the +11% intrinsic to reading placed planes, or is it the same activation-order/extraction
+    cost you already reduced once, with more left in it?
+If the answer is "L2 is small enough that this condition never occurs on the box", say so and the debt closes.
+If it is "it can occur", then +11% is a real cost of the merge and the user should be told that plainly rather
+than have it netted against a synthetic-shape win.
+
+Nothing here changes the direction -- build the BC pieces, hold the producer switch. It changes what we tell the
+user the merge costs, which they asked about directly and deserve an answer to that does not rest on a shape
+64x larger than anything they run.
