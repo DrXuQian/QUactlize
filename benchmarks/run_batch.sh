@@ -636,7 +636,7 @@ PYEOF
   # The default build (already made above) is Q4_K. Each additional format gets its own build, and
   # QUACTLIZE_PACKED_FORMAT tells the oracles which one they are looking at so the other formats skip with a
   # reason instead of failing against a binary that was never meant to run them.
-  local fqrc=0 _fmt _fmtname _label _fmtdefs _fmtso _fqlog _r _b2 _d2
+  local fqrc=0 _fmt _fmtname _label _fmtdefs _fmtso _fqlog _r _b2 _d2 _LAST_FMT_BUILT=default
   # ggml type : label : extra defines.  The default build (no PPU_PACKED_FORMAT) is Q4_K.
   #   Q2_K single-plane, 20 B unit staged as five 4 B copies      PPU_PACKED_FORMAT=2
   #   Q5_K TWO-plane weight, scu16x1 -- the SAME scale unit as Q4  PPU_PACKED_FORMAT=1
@@ -657,10 +657,16 @@ PYEOF
         echo "   !!! -D$_d2 did NOT reach the $_label build"
         grep -E "PPU_DEFS|WARNING" "$_b2" | sed 's/^/       /' | head -6; fqrc=1
       done
+      _LAST_FMT_BUILT="$_label"
       _fmtso="$(grep -m1 '^built: ' "$_b2" | cut -d' ' -f2-)"
       [ -f "$_fmtso" ] || { echo "   !!! no library from the $_label build"; fqrc=1; continue; }
     fi
 
+    # ONLY the fully_quantized marker runs against a format-specific library, and that is not tidiness.
+    # A packed build cannot also serve scale_first for the same format -- the format-1 library's Q5 TileK=256
+    # type cannot accept fp16 scale-first metadata, and its scale-first ABI says so with rc=36 (codex, 075).
+    # Widening this selection would turn a build's deliberate scope into a wall of failures on cells that are
+    # VALIDATED and untouched.
     echo "-- fully_quantized cells, $_label (a skip here is a failure once the ops are built)"
     QUACTLIZE_PPU_LIB="$_fmtso" QUACTLIZE_PACKED_FORMAT="$_fmtname" PYTHONPATH="$ROOT" \
       python3 -m pytest "$ROOT/tests" -q -rs -m fully_quantized_dense >"$_fqlog" 2>&1 && _r=0 || _r=$?
@@ -672,6 +678,20 @@ PYEOF
       fqrc=1
     fi
   done
+
+  # RESTORE THE DEFAULT LIBRARY. build.sh writes the SAME path every time, so after the loop the .so on disk is
+  # the LAST format built -- format 1, which answers rc=36 to every scale-first call. Anyone running a bare
+  # pytest afterwards would watch a set of VALIDATED cells fail for a reason created by this script and gone
+  # from its output. The repo's own handover warns about this shape ("two builds write the same path, so the
+  # second overwrites the first"); it just had never applied to the python tier before.
+  if [ "${_LAST_FMT_BUILT:-}" != "default" ]; then
+    echo "-- restoring the default-format device library"
+    timeout "$timeout_s" env PPU_DEFS="PPU_PACKED_SCALE=1" TARGET=quactlize_ppu "$ROOT/build.sh" \
+      >"$OUT/quactlize_ppu.restore.log" 2>&1 \
+      || { echo "   !!! could not restore the default library -- the tree is left on a format-specific build."
+           echo "       Rebuild before trusting anything else: PPU_DEFS=PPU_PACKED_SCALE=1 TARGET=quactlize_ppu ./build.sh"
+           fqrc=1; }
+  fi
 
   # THE DEVICE-VS-CPU-ARM COMPARISON MUST NOT SKIP HERE. It skips honestly on a machine with no device, and this
   # is not one -- so a skip means the comparison it exists for did not happen, and pass 2 would go green having
