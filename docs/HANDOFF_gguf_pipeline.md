@@ -82,7 +82,7 @@ unmeasured, so the 5090 results are directional rather than a claim about the bo
 | `dequantize_kernel_warp` | 5090 | tuned | 779.4 → **58.4 µs**, 13.4×, 1.473 TB/s = **82.2% of peak**, bit-identical |
 | `dequantize_kernel_warp_logical` | 5090 | kept slow on purpose | 196.6 vs 65.5 µs on a nontrivial reorder — the general path for layouts `right_inverse` cannot take |
 | `prepass_kernel` (cooperative) | 5090 | tuned | speedup grows with size — 1.32× / 1.91× / 2.95× — the fixed-duration floor made visible |
-| `vecdot_rows_kernel` | 5090 | **4.0–13.5× faster, and at 37–57% of peak** | rows=131072; see below — the speedup is against the retained serial baseline |
+| `vecdot_rows_kernel` | 5090 | **1285–2621 Gelem/s cold, at 44–64% of peak** | rows=131072; native bytes, CUDA cores only; see below |
 | packed collective | PPU | **tax undetermined** | see below |
 | `gemv_lowbit` | PPU | tuned earlier | 22.27 µs, and **ALU-bound, not bandwidth-bound** |
 
@@ -94,33 +94,58 @@ that does survive is `base − bdqnop = −11.1%`: the int4→fp16 dequant pipel
 of time, which is the ceiling for every dequant-side idea.
 
 The retained `vecdot_rows_kernel_serial` baseline has one output row per thread, so 32 lanes read addresses
-`blocks_per_row × block_bytes` apart — 1152 B for Q4_K. The tuned Q2/Q3/Q6 path gives each lane whole groups and
-reduces once per row; Q4/Q5 retain their faster per-group slice reduction. Reassociation tolerance is 2e-6,
-observed at 1.62e-7 across all five formats.
+`blocks_per_row × block_bytes` apart — 1152 B for Q4_K. The tuned kernel gives every lane contiguous packed words:
+whole groups for Q2/Q3/Q6 and adjacent group pairs for Q4/Q5. Reassociation tolerance is 2e-6, observed at 2.16e-7
+across all five formats.
 
 **THE OLD INSTRUMENT COULD NOT RESOLVE THE OPTIMISATIONS.** `cudaEventElapsedTime` on this 5090 advances in 2.048 µs
 ticks. At 16384 rows the kernel took only 20–26 ticks, so the former one/two-tick rankings were below a 4–5% floor.
 Cold launches cannot be batched: only the first launch after an L2 flush is cold. The benchmark now treats rows<=0
 as rows=131072, and every A/B below uses 131072 rows × 8 blocks. Warm timings also use the larger problem.
 
-| | best rpw | cold µs (% peak) | warm µs (% peak) | cold/warm | vs serial cold |
-|---|---|---|---|---|---|
-| Q2_K | 4 | 120.832 (**40.92%**) | 115.232 (**42.91%**) | 1.049 | 5.27× |
-| Q3_K | 4 | 174.080 (**37.15%**) | 168.992 (**38.26%**) | 1.030 | 13.45× |
-| Q4_K | 4 | 221.184 (**38.23%**) | 217.120 (**38.95%**) | 1.019 | 4.01× |
-| Q5_K | 4 | 264.192 (**39.09%**) | 256.896 (**40.20%**) | 1.028 | 10.37× |
-| Q6_K | 4 | 217.088 (**56.74%**) | 212.992 (**57.83%**) | 1.019 | 12.39× |
+| | rpw | cold µs | cold Gelem/s | cold % peak | warm µs | warm Gelem/s | warm % peak | cold/warm | vs `f18ec9e` cold |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Q2_K | 4 | 102.400 | **2621.4** | 48.29% | 91.360 | **2938.2** | 54.13% | 1.121 | 1.180× |
+| Q3_K | 4 | 147.456 | **1820.4** | 43.85% | 135.360 | **1983.1** | 47.77% | 1.089 | 1.181× |
+| Q4_K | 8 | 137.216 | **1956.3** | 61.62% | 134.688 | **1993.0** | 62.78% | 1.019 | 1.612× |
+| Q5_K | 8 | 161.792 | **1659.1** | 63.84% | 157.792 | **1701.2** | 65.45% | 1.025 | 1.633× |
+| Q6_K | 2 | 208.896 | **1285.0** | 58.97% | 203.680 | **1317.9** | 60.48% | 1.026 | 1.039× |
 
-`vecdot_preferred_rows_per_warp` now returns 4 for all five. Eight lanes own a row: for gs=16 lane L owns groups
-L and L+8; for gs=32 lane L owns group L. The explicit `(group,j)` decoder gives every owner contiguous 16/32-byte
-runs and separately derives Q3/Q5/Q6 high-plane addresses. The CUDA golden validates all indices. Hardware sector
-counters were unavailable (`ERR_NVGPUCTRPERM`), so the coalescing evidence is the derived footprint plus timings.
+Element rate, not byte-density-derived `% peak`, selected the implementations. Q2 remains the fastest element
+kernel even though Q4/Q5 now report higher `% peak` because each of their elements carries more raw bytes.
 
-The one-row reduction is a win exactly where its probe predicted: against the prior cooperative kernel Q2/Q3/Q6
-improve 1.81×/1.91×/1.42× cold. Whole-group ownership regressed Q4/Q5 by 13.0%/20.2%, consistent with their original
-reduction shares of only 0.9%/7.7%, so production retains slice ownership for those formats.
+**Q4/Q5 paired byte map.** At `rpw=8`, four lanes own a row and each lane consumes both nibbles of one complete
+32-byte run:
 
-Two NOP-style probes keep every lane live and price the remaining terms. `code_at` returns constant one; the scale
+| lane | groups | low-plane bytes | use |
+|---:|---:|---|---|
+| 0 | 0, 1 | `qs[0..31]` | low nibble → g0, high nibble → g1 |
+| 1 | 2, 3 | `qs[32..63]` | low nibble → g2, high nibble → g3 |
+| 2 | 4, 5 | `qs[64..95]` | low nibble → g4, high nibble → g5 |
+| 3 | 6, 7 | `qs[96..127]` | low nibble → g6, high nibble → g7 |
+
+Q5 loads the matching `qh[0..31]` word once and selects the two group bits from it. Pairing alone moved Q4 from
+221.184 to 190.464 µs cold (1.161×); Q5 was within two event ticks of its slice optimum and slightly worse warm.
+The composition with four-code word extraction was decisive for both: production reaches 137.216/161.792 µs.
+
+**Four-code extraction.** Q2/Q4/Q5 block strides (84/144/176 B) preserve four-byte alignment. Q3/Q6 strides
+(110/210 B) make every odd block only two-byte aligned, so the loader checks the address: one `uint32_t` load when
+four-byte aligned, two `uint16_t` loads when only two-byte aligned, and byte assembly as the general fallback. Each
+word is masked/merged while four codes remain byte-packed; the group loop retains an explicit scalar tail.
+
+A benchmark-only padded device stride (Q3 110→112 B, Q6 210→212 B) was also measured three times in alternating
+order. It regressed Q3 from 1820–1846 to 1771–1795 Gelem/s, but improved Q6 from 1285 to 1473 Gelem/s cold. It is not
+the shipped result: `ppu_backend::Api::vecdot` currently promises compact raw GGUF blocks and no repack workspace
+exists behind the Python seam. Two neighboring aligned 32-bit loads on compact odd blocks were also neutral. Padding
+Q6 is a worthwhile follow-up only together with an explicit device-layout/repack contract; the table keeps raw bytes.
+
+The `__byte_perm`/`ppu.prmt.b32` magic-u8-to-f32 variant was tested and rejected: Q2/Q3/Q5 cold times were unchanged,
+Q4 cost one 2.048 µs event tick, and Q6 warm time regressed. Production therefore uses ordinary exact conversions
+and does not duplicate actlize's selector/magic constants. Its shared converter emits fp16 GEMM operand fragments
+with PPU-only asm, while this common CUDA/hgcc GEMV needs fp32 codes immediately for fp32 activation products.
+
+The pre-extraction `f18ec9e` NOP-style probes kept every lane live and priced the terms that motivated this round.
+`code_at` returns constant one; the scale
 probe uses the block base as unit scale/min. Negative scale shares mean the counterfactual was slower, not that the
 real unpack has negative cost. Probe `% peak` retains the production kernel's nominal byte count for normalization;
 the code NOP deliberately removes raw-code traffic, so an effective figure above 100% is not a physical HBM claim.
@@ -133,8 +158,10 @@ the code NOP deliberately removes raw-code traffic, so an effective figure above
 | Q5_K | 106.496 (96.98%), **59.7%** | 103.424 (99.86%), **59.7%** | 231.456 (44.62%), **12.4%** | 230.464 (44.81%), **10.3%** |
 | Q6_K | 83.968 (146.70%), **61.3%** | 82.976 (148.45%), **61.0%** | 217.088 (56.74%), 0.0% | 212.992 (57.83%), 0.0% |
 
-Packed-code extraction is therefore the next target for every format, especially Q3–Q6. Scale/min unpack is a
-material target only for Q5. Warming changes the final kernels by just 1.9–4.9%, so decode arithmetic still dominates.
+Those probes identified packed-code extraction as the target; the production table above is the resulting rewrite.
+The old shares must not be read as a profile of the new kernel. Scale/min unpack was material only for Q5 in that
+baseline. Warming now changes the final kernels by 1.9–12.1%, with the larger Q2/Q3 shifts consistent with the packed
+versions becoming more memory-sensitive.
 
 The regime was never reported, only the speedup, and a speedup measured against a one-row-per-thread baseline says
 nothing about how much is left. Both halves are the same measurement run; only one of them is a target.

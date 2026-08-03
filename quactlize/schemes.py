@@ -193,8 +193,9 @@ _add(Scheme.FULLY_QUANTIZED, Shape.GEMV, _KQUANTS, Impl(
         "assembles a full (1, n) product from the per-block op and agrees with the official gguf package to 1.4e-7, "
         "tighter than every other route because it never rounds the weight to fp16. It stays PARTIAL because that "
         "assembly tiles the ACTIVATION k/256-fold on the host: correct, and useless as a timing. The native kernel "
-        "is now subgroup-cooperative and CUDA-validated for all five; at 131072x8 on a 5090 it is 4.01x..13.45x "
-        "faster than the retained one-thread-per-row baseline and reaches 37.2%..56.7% of peak HBM bandwidth. What "
+        "is now subgroup-cooperative and CUDA-validated for all five; at 131072x8 on a 5090 its cold element rate "
+        "is 1285..2621 Gelem/s and it reaches 43.9%..63.8% of peak HBM bandwidth. Adjacent Q4/Q5 groups share one "
+        "32-byte run per lane, and every format extracts four codes from each aligned word with checked fallbacks. What "
         "keeps this PARTIAL is device-library wiring: "
         "libquactlize_ppu.so still needs to export a launcher for this kernel before the Python route is a PPU "
         "inference path")))

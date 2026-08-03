@@ -26,10 +26,30 @@ struct Field {
   static constexpr int kByteBase  = ByteBase_;
   static constexpr int kShiftBase = ShiftBase_;
   static constexpr int kWidth     = Width_;
-  CUTE_HOST_DEVICE static constexpr int byte_of (int g) { return kByteBase  + ByteL{}(g); }
-  CUTE_HOST_DEVICE static constexpr int shift_of(int g) { return kShiftBase + ShiftL{}(g); }
-  CUTE_HOST_DEVICE static constexpr int extract(uint8_t const* p, int g) {
-    return (p[byte_of(g)] >> shift_of(g)) & ((1 << kWidth) - 1);
+  template <class Coord>
+  CUTE_HOST_DEVICE static constexpr int byte_of (Coord const& c) { return kByteBase  + ByteL{}(c); }
+  template <class Coord>
+  CUTE_HOST_DEVICE static constexpr int shift_of(Coord const& c) { return kShiftBase + ShiftL{}(c); }
+  template <class Coord>
+  CUTE_HOST_DEVICE static constexpr int extract(uint8_t const* p, Coord const& c) {
+    return (p[byte_of(c)] >> shift_of(c)) & ((1 << kWidth) - 1);
+  }
+};
+
+// Four adjacent bytes carry four codes at the same within-byte shift. This is the code-plane counterpart of Field:
+// ByteL maps a (word-in-run, group-bits...) coordinate to the first byte of a 32-bit word, ShiftL maps it to the
+// shared shift, and extraction keeps the four fields byte-packed. The scalar accessor is the explicit tail path.
+template <class ByteL_, int ByteBase_, class ShiftL_, int ShiftBase_, int Width_>
+struct PackedField4 : Field<ByteL_, ByteBase_, ShiftL_, ShiftBase_, Width_> {
+  using Base = Field<ByteL_, ByteBase_, ShiftL_, ShiftBase_, Width_>;
+  template <class Coord>
+  CUTE_HOST_DEVICE static constexpr uint32_t extract_word(uint32_t word, Coord const& c) {
+    constexpr uint32_t kMask = uint32_t((1 << Width_) - 1) * 0x01010101u;
+    return (word >> Base::shift_of(c)) & kMask;
+  }
+  template <class Coord>
+  CUTE_HOST_DEVICE static constexpr int extract_byte(uint8_t const* p, Coord const& c, int byte_in_word) {
+    return (p[Base::byte_of(c) + byte_in_word] >> Base::shift_of(c)) & ((1 << Width_) - 1);
   }
 };
 
@@ -154,5 +174,98 @@ CUTE_HOST_DEVICE constexpr int min_of(uint8_t const* p, int g) {
   if constexpr (!cute::is_void_v<typename Tr::MnHi>) v |= Tr::MnHi::extract(p, g) << 4;
   return v;
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// K-quant CODE PLANES, using the same Field byte/shift abstraction as scale/min. The coordinate is word-fast:
+// `word_coord(g,w) = w + kWordsPerGroup*g`, and each format factors g into the bit coordinates its GGUF map uses.
+// Low/high are separate physical planes; Q3's inverted high-bit meaning is value semantics applied by its decoder,
+// not part of the address map.
+template <KType> struct CodeTraits;
+
+template <> struct CodeTraits<KType::Q2_K> {
+  static constexpr int kGroups = 16, kWordsPerGroup = 4, kLoOffset = 16, kLoBytes = 64;
+  static constexpr int kHiOffset = 0, kHiBytes = 0;
+  using CodeShape = cute::Shape<cute::_4, cute::_2, cute::_4, cute::_2>;  // (word, g%2, (g/2)%4, g/8)
+  using Lo = PackedField4<cute::Layout<CodeShape, cute::Stride<cute::_4, cute::_16, cute::_0, cute::_32>>, 0,
+                          cute::Layout<CodeShape, cute::Stride<cute::_0, cute::_0, cute::_2, cute::_0>>, 0, 2>;
+  using Hi = void;
+  CUTE_HOST_DEVICE static constexpr int word_coord(int g, int w) { return w + kWordsPerGroup * g; }
+};
+
+template <> struct CodeTraits<KType::Q3_K> {
+  static constexpr int kGroups = 16, kWordsPerGroup = 4, kLoOffset = 32, kLoBytes = 64;
+  static constexpr int kHiOffset = 0, kHiBytes = 32;
+  using CodeShape = cute::Shape<cute::_4, cute::_2, cute::_4, cute::_2>;  // (word, g%2, (g/2)%4, g/8)
+  using Lo = PackedField4<cute::Layout<CodeShape, cute::Stride<cute::_4, cute::_16, cute::_0, cute::_32>>, 0,
+                          cute::Layout<CodeShape, cute::Stride<cute::_0, cute::_0, cute::_2, cute::_0>>, 0, 2>;
+  using Hi = PackedField4<cute::Layout<CodeShape, cute::Stride<cute::_4, cute::_16, cute::_0, cute::_0>>, 0,
+                          cute::Layout<CodeShape, cute::Stride<cute::_0, cute::_0, cute::_1, cute::_4>>, 0, 1>;
+  CUTE_HOST_DEVICE static constexpr int word_coord(int g, int w) { return w + kWordsPerGroup * g; }
+};
+
+template <> struct CodeTraits<KType::Q4_K> {
+  static constexpr int kGroups = 8, kWordsPerGroup = 8, kLoOffset = 16, kLoBytes = 128;
+  static constexpr int kHiOffset = 0, kHiBytes = 0;
+  using CodeShape = cute::Shape<cute::_8, cute::_2, cute::_4>;  // (word, g%2, g/2)
+  using Lo = PackedField4<cute::Layout<CodeShape, cute::Stride<cute::_4, cute::_0, cute::_32>>, 0,
+                          cute::Layout<CodeShape, cute::Stride<cute::_0, cute::_4, cute::_0>>, 0, 4>;
+  using Hi = void;
+  CUTE_HOST_DEVICE static constexpr int word_coord(int g, int w) { return w + kWordsPerGroup * g; }
+};
+
+template <> struct CodeTraits<KType::Q5_K> {
+  static constexpr int kGroups = 8, kWordsPerGroup = 8, kLoOffset = 48, kLoBytes = 128;
+  static constexpr int kHiOffset = 16, kHiBytes = 32;
+  using CodeShape = cute::Shape<cute::_8, cute::_2, cute::_4>;  // (word, g%2, g/2)
+  using Lo = PackedField4<cute::Layout<CodeShape, cute::Stride<cute::_4, cute::_0, cute::_32>>, 0,
+                          cute::Layout<CodeShape, cute::Stride<cute::_0, cute::_4, cute::_0>>, 0, 4>;
+  using Hi = PackedField4<cute::Layout<CodeShape, cute::Stride<cute::_4, cute::_0, cute::_0>>, 0,
+                          cute::Layout<CodeShape, cute::Stride<cute::_0, cute::_1, cute::_2>>, 0, 1>;
+  CUTE_HOST_DEVICE static constexpr int word_coord(int g, int w) { return w + kWordsPerGroup * g; }
+};
+
+template <> struct CodeTraits<KType::Q6_K> {
+  static constexpr int kGroups = 16, kWordsPerGroup = 4, kLoOffset = 0, kLoBytes = 128;
+  static constexpr int kHiOffset = 128, kHiBytes = 64;
+  using CodeShape = cute::Shape<cute::_4, cute::_2, cute::_2, cute::_2, cute::_2>;  // (word,p,q,n,h), g=p+2q+4n+8h
+  using Lo = PackedField4<cute::Layout<CodeShape, cute::Stride<cute::_4, cute::_16, cute::_32, cute::_0, cute::_64>>, 0,
+                          cute::Layout<CodeShape, cute::Stride<cute::_0, cute::_0, cute::_0, cute::_4, cute::_0>>, 0, 4>;
+  using Hi = PackedField4<cute::Layout<CodeShape, cute::Stride<cute::_4, cute::_16, cute::_0, cute::_0, cute::_32>>, 0,
+                          cute::Layout<CodeShape, cute::Stride<cute::_0, cute::_0, cute::_2, cute::_4, cute::_0>>, 0, 2>;
+  CUTE_HOST_DEVICE static constexpr int word_coord(int g, int w) { return w + kWordsPerGroup * g; }
+};
+
+// Each field claims its width in every one of the word's four bytes. Exact tiling separately per physical plane is
+// stronger than injectivity: it catches both overlaps and holes in the actual words the GEMV loads.
+template <class F, int Bytes, class Tr>
+CUTE_HOST_DEVICE constexpr bool code_field_tiles_exactly() {
+  if constexpr (cute::is_void_v<F>) {
+    return Bytes == 0;
+  } else {
+    int used[Bytes * 8] = {};
+    for (int c = 0; c < Tr::kGroups * Tr::kWordsPerGroup; ++c) {
+      int const byte0 = F::byte_of(c);
+      int const shift = F::shift_of(c);
+      if (byte0 < 0 || byte0 + 3 >= Bytes || shift < 0 || shift + F::kWidth > 8) return false;
+      for (int lane = 0; lane < 4; ++lane)
+        for (int bit = 0; bit < F::kWidth; ++bit) ++used[(byte0 + lane) * 8 + shift + bit];
+    }
+    for (int bit = 0; bit < Bytes * 8; ++bit) if (used[bit] != 1) return false;
+    return true;
+  }
+}
+
+template <KType T>
+CUTE_HOST_DEVICE constexpr bool code_bits_tile_exactly() {
+  using Tr = CodeTraits<T>;
+  return code_field_tiles_exactly<typename Tr::Lo, Tr::kLoBytes, Tr>() &&
+         code_field_tiles_exactly<typename Tr::Hi, Tr::kHiBytes, Tr>();
+}
+
+static_assert(code_bits_tile_exactly<KType::Q2_K>(), "Q2_K code-plane map does not tile its words exactly");
+static_assert(code_bits_tile_exactly<KType::Q3_K>(), "Q3_K code-plane map does not tile its words exactly");
+static_assert(code_bits_tile_exactly<KType::Q4_K>(), "Q4_K code-plane map does not tile its words exactly");
+static_assert(code_bits_tile_exactly<KType::Q5_K>(), "Q5_K code-plane map does not tile its words exactly");
+static_assert(code_bits_tile_exactly<KType::Q6_K>(), "Q6_K code-plane map does not tile its words exactly");
 
 }  // namespace gguf_scale

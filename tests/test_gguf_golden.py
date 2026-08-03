@@ -425,9 +425,9 @@ def test_cuda_destination_partitions_physical_addresses_and_inverts_the_layout(g
 def test_cuda_vecdot_cooperative_matches_cpu_reference(gguf_cuda_probe):
     """All five cooperative kernels against the scalar CPU vecdot_block reference, including ragged rows.
 
-    Q4/Q5 butterflies reassociate within each group; Q2/Q3/Q6 give lanes whole groups and the final butterfly also
-    reassociates group and block contributions. The 2e-6 threshold is a summation-order tolerance, not a widened
-    weight-decode tolerance; the observed worst case on the tuning seed is 1.62e-7. Neither side quantises activation.
+    Every format gives lanes whole groups (an adjacent group pair for Q4/Q5) and the final butterfly reassociates
+    group and block contributions. The 2e-6 threshold is a summation-order tolerance, not a widened weight-decode
+    tolerance; the observed worst case on the tuning seed is 2.16e-7. Neither side quantises activation.
     """
     torch = pytest.importorskip("torch")
     quactlize = pytest.importorskip("quactlize", reason="needs the built operator library")
@@ -450,8 +450,8 @@ def test_cuda_vecdot_cooperative_matches_cpu_reference(gguf_cuda_probe):
                                        rows, blocks_per_row, int(qtype))
         assert rc == 0 and np.isfinite(got).all(), f"{name}: CUDA vecdot failed ({rc})"
 
-        # The Python op invokes scalar vecdot_block once per raw block and left-folds those blocks. Q4/Q5 preserve
-        # that outer order; whole-group Q2/Q3/Q6 deliberately reduce their group/block contributions at row end.
+        # The Python op invokes scalar vecdot_block once per raw block and left-folds those blocks. Every cooperative
+        # format deliberately reduces its group/block owners at row end.
         x_per_block = np.tile(x, (rows, 1))
         block_dot = quactlize.gguf_vecdot(torch.from_numpy(raw), torch.from_numpy(x_per_block),
                                           int(qtype)).numpy().reshape(rows, blocks_per_row)
