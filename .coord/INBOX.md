@@ -407,3 +407,24 @@ QUESTION I CANNOT ANSWER AND YOU CAN: does the GEMV lose anything reading placed
 blocks? The placement exists for the AIU's 32-byte delivery, and the GEMV is CUDA-core -- it may not want that
 arrangement at all. If it costs measurably, the honest outcome may be "A stays resident for decode", which is
 still two arrangements but with a reason instead of an accident. Measure before designing around either answer.
+
+## 017 -- 016 IS APPROVED BY THE USER. Build it now; SWITCH it later.
+
+The user has read the merge and said to go ahead. One refinement on 016's ordering, because "do not start" was
+stricter than it needed to be:
+
+  BUILD now  -- the dequant-scale-from-packed-unit kernel, and the BC GEMV / MoE-GEMV. Nothing about writing
+                those depends on ppu001 having signed off on B; they are new code with their own local gates.
+  SWITCH later -- do not repoint SCALE_FIRST's producer at BC until the five FULLY_QUANTIZED cells have passed
+                their ppu001 oracles. Until then B is unproven on the device, and moving C behind it would put
+                both schemes behind one unvalidated artifact: a later failure could not be attributed to the
+                merge or to the target it merged into.
+
+So the order is: build the pieces, gate them locally, and hold the last commit -- the one that makes
+prepare_scale_first derive from BC -- until B is green on the box.
+
+The measurement question in 016 stands and is the one I would do first, because it can invalidate the shape of
+the rest: does the GEMV lose anything reading placed code planes instead of raw blocks? The placement exists for
+the AIU's 32-byte delivery and the GEMV is CUDA-core, so it may not want that arrangement at all. If it costs
+measurably, "A stays resident for decode" is a legitimate answer -- two arrangements with a reason rather than
+three by accident -- and the user should get that trade explicitly rather than have it absorbed.
