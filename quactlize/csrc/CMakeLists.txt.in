@@ -159,7 +159,25 @@ target_compile_options(test_gemv_lowbit PRIVATE -w)
 # building it through actlize keeps hgcc, the PPU runtime libraries and every device include identical to the proven
 # harnesses. The CUDA-core backend and host-only dense layout also build under plain nvcc for the local independent-
 # oracle test; ppu_dense_backend.cu is the intentionally hgcc-only tensor-core half.
+# THE ONE TARGET THAT ESCAPED PPU_EXTRA_DEFS, and it escaped exactly the way the comment above predicted.
+# ppu_w4a16_executable applies _PPU_EXTRA_DEV/_PPU_EXTRA_HOST to everything that goes through it -- deliberately a
+# wrapper rather than a list of names, because a list is what made a define silently miss a target once already.
+# quactlize_ppu was added later with a DIFFERENT cmake function, cutlass_add_library, so it was never inside the
+# wrapper and no list needed to be wrong for it to be missed.
+#
+# The symptom on ppu001: cmake printed "PPU_EXTRA_DEFS -> device -DPPU_PACKED_SCALE=1 / host PPU_PACKED_SCALE=1",
+# build.sh printed "PPU_DEFS applied", and the library came out without the macro -- so both FULLY_QUANTIZED
+# oracles failed with rc=34, a build fact wearing a numerical failure's clothes.
+#
+# cutlass_add_library takes no DEV_COMPILE_FLAGS, and it builds the device objects BEFORE the target exists, so a
+# target property set afterwards is too late. CUTLASS_PPU_EXTRA_HGCC_FLAGS is what cutlass_build_dev_kernels
+# splices into every hgcc command, so that is the hook. Saved and restored around the call rather than left
+# appended: a directory-scope variable that grows is how the NEXT target inherits flags nobody gave it.
+set(_SAVED_HGCC_FLAGS "${CUTLASS_PPU_EXTRA_HGCC_FLAGS}")
+list(APPEND CUTLASS_PPU_EXTRA_HGCC_FLAGS ${_PPU_EXTRA_DEV})
 cutlass_add_library(quactlize_ppu SHARED ppu_backend.cu ppu_dense_layout.cu ppu_dense_backend.cu)
+set(CUTLASS_PPU_EXTRA_HGCC_FLAGS "${_SAVED_HGCC_FLAGS}")
+target_compile_definitions(quactlize_ppu PRIVATE ${_PPU_EXTRA_HOST})
 target_link_libraries(quactlize_ppu PRIVATE CUTLASS cutlass_tools_util_includes ppu::driver)
 set_target_properties(quactlize_ppu PROPERTIES OUTPUT_NAME quactlize_ppu)
 
