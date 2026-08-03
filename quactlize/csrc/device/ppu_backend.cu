@@ -29,27 +29,43 @@ template <KType T> constexpr int raw_block_bytes() {
        : T == KType::Q5_K ? 176 : 210;
 }
 
-template <KType T, int RowsPerWarp, bool Grouped>
+template <KType T, int RowsPerWarp, bool Grouped, bool PerRowActivation = false>
 void launch_native_fixed(uint8_t const* blocks, VecdotActivation const* x, float* out,
                          int rows, int blocks_per_row, int const* offsets,
                          int max_rows, int experts) {
   constexpr int kThreads = 256;
   dim3 const grid(gguf_scale::vecdot::vecdot_grid_size<T, RowsPerWarp>(rows, kThreads),
                   Grouped ? max_rows : 1, Grouped ? experts : 1);
-  gguf_scale::vecdot::vecdot_rows_kernel<T, RowsPerWarp, Grouped><<<grid, kThreads>>>(
+  gguf_scale::vecdot::vecdot_rows_kernel<T, RowsPerWarp, Grouped, PerRowActivation><<<grid, kThreads>>>(
       blocks, raw_block_bytes<T>(), x, out, rows, blocks_per_row, offsets);
 }
 
-template <KType T, bool Grouped>
+template <KType T, bool Grouped, bool PerRowActivation = false>
 void launch_native(uint8_t const* blocks, VecdotActivation const* x, float* out,
                    int rows, int blocks_per_row, int const* offsets,
                    int max_rows, int experts) {
   switch (gguf_scale::vecdot::vecdot_rows_per_warp<T>(rows, blocks_per_row)) {
-    case 1: launch_native_fixed<T, 1, Grouped>(blocks, x, out, rows, blocks_per_row, offsets, max_rows, experts); break;
-    case 2: launch_native_fixed<T, 2, Grouped>(blocks, x, out, rows, blocks_per_row, offsets, max_rows, experts); break;
-    case 4: launch_native_fixed<T, 4, Grouped>(blocks, x, out, rows, blocks_per_row, offsets, max_rows, experts); break;
-    case 8: launch_native_fixed<T, 8, Grouped>(blocks, x, out, rows, blocks_per_row, offsets, max_rows, experts); break;
+    case 1: launch_native_fixed<T, 1, Grouped, PerRowActivation>(blocks, x, out, rows, blocks_per_row, offsets, max_rows, experts); break;
+    case 2: launch_native_fixed<T, 2, Grouped, PerRowActivation>(blocks, x, out, rows, blocks_per_row, offsets, max_rows, experts); break;
+    case 4: launch_native_fixed<T, 4, Grouped, PerRowActivation>(blocks, x, out, rows, blocks_per_row, offsets, max_rows, experts); break;
+    case 8: launch_native_fixed<T, 8, Grouped, PerRowActivation>(blocks, x, out, rows, blocks_per_row, offsets, max_rows, experts); break;
   }
+}
+
+// gguf_vecdot's public block primitive pairs every raw block row with its own activation slice. This is not the
+// dense GEMV contract below, where all output rows share one activation. Keeping separate functions at the ABI
+// boundary makes the distinction impossible to erase with the coincidental blocks_per_row=1 shape.
+template <KType T>
+int native_rows(uint8_t const* blocks, uint16_t const* x, float* out, int rows, int bpr) {
+  DevBuf db(size_t(rows) * bpr * raw_block_bytes<T>());
+  DevBuf dx(size_t(rows) * bpr * 256 * sizeof(uint16_t));
+  DevBuf dout(size_t(rows) * sizeof(float));
+  db.from_host(blocks); dx.from_host(x);
+  launch_native<T, false, true>(db.as<uint8_t>(), dx.as<VecdotActivation>(), dout.as<float>(), rows, bpr,
+                                nullptr, 1, 1);
+  ppu_gemv::rt_sync("native GGUF block-row vecdot");
+  dout.to_host(out);
+  return 0;
 }
 
 template <KType T>
@@ -154,9 +170,18 @@ int lowbit(uint16_t const* act, uint8_t const* low, uint8_t const* high,
 extern "C" int quactlize_ppu_vecdot(uint8_t const* b, int64_t block_bytes, uint16_t const* x, float* out,
                                       int rows, int bpr, int qtype) {
 #define RUN(T) (block_bytes == raw_block_bytes<KType::T>() && rows > 0 && bpr > 0 \
-                ? native_dense<KType::T>(b, x, out, rows, bpr) : 10)
+                ? native_rows<KType::T>(b, x, out, rows, bpr) : 10)
   switch (qtype) { case 10: return RUN(Q2_K); case 11: return RUN(Q3_K); case 12: return RUN(Q4_K);
                    case 13: return RUN(Q5_K); case 14: return RUN(Q6_K); default: return 1; }
+#undef RUN
+}
+
+extern "C" int quactlize_ppu_vecdot_dense(uint8_t const* b, int64_t block_bytes, uint16_t const* x, float* out,
+                                            int rows, int bpr, int qtype) {
+#define RUN(T) (block_bytes == raw_block_bytes<KType::T>() && rows > 0 && bpr > 0 \
+                ? native_dense<KType::T>(b, x, out, rows, bpr) : 12)
+  switch (qtype) { case 10: return RUN(Q2_K); case 11: return RUN(Q3_K); case 12: return RUN(Q4_K);
+                   case 13: return RUN(Q5_K); case 14: return RUN(Q6_K); default: return 3; }
 #undef RUN
 }
 

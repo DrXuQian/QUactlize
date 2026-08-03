@@ -595,7 +595,8 @@ CUTLASS_HOST_DEVICE constexpr int vecdot_grid_size(int rows, int threads) {
   return (warps + warps_per_cta - 1) / warps_per_cta;
 }
 
-template <KType T, int RowsPerWarp = vecdot_preferred_rows_per_warp<T>(), bool Grouped = false>
+template <KType T, int RowsPerWarp = vecdot_preferred_rows_per_warp<T>(), bool Grouped = false,
+          bool PerRowActivation = false>
 __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, VecdotActivation const* x,
                                    float* out, int rows, int blocks_per_row,
                                    int const* row_offsets = nullptr) {
@@ -605,6 +606,8 @@ __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, V
   constexpr int kGroups = (T == KType::Q4_K || T == KType::Q5_K) ? 8 : 16;
   constexpr int kGroupSize = group_size<T>();
   constexpr bool kHasMin = T == KType::Q2_K || T == KType::Q4_K || T == KType::Q5_K;
+  static_assert(!(Grouped && PerRowActivation),
+                "grouped routing and one-activation-per-weight-row are distinct launch semantics");
   static_assert(kGroups % kLanesPerRow == 0 || kLanesPerRow % kGroups == 0,
                 "lane subgroup and group count must divide one another");
 
@@ -620,15 +623,23 @@ __global__ void vecdot_rows_kernel(uint8_t const* blocks, int64_t block_bytes, V
   int const gathered_row = route_begin + route_in_expert;
   int64_t const weight_expert_stride = int64_t(rows) * blocks_per_row * block_bytes;
   uint8_t const* expert_blocks = blocks + (Grouped ? int64_t(expert) * weight_expert_stride : 0);
-  VecdotActivation const* row_x = x + (Grouped ? int64_t(gathered_row) * blocks_per_row * kQK : 0);
-  float* row_out = out + (Grouped ? int64_t(gathered_row) * rows : 0);
-
   int const warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
   int const lane = threadIdx.x & 31;
   int const row_in_warp = lane / kLanesPerRow;
   int const row_lane = lane & (kLanesPerRow - 1);
   int const r = warp * RowsPerWarp + row_in_warp;
   bool const active = r < rows && route_in_expert < route_rows;
+  // THESE ARE THREE DIFFERENT TENSOR CONTRACTS, not interchangeable shapes:
+  //   dense       one x[bpr,256] shared by every output row;
+  //   grouped     one x[gathered_row,bpr,256] shared by an expert's output rows;
+  //   block rows  one x[row,bpr,256] paired with that same independent weight row.
+  // gguf_vecdot's host reference uses the third contract. It used to enter the first one with bpr=1, making every
+  // row after zero multiply by x[0] and producing order-one disagreement despite correct raw-block arithmetic.
+  // Select the activation base explicitly and keep inactive lanes at the allocation base so even forming the pointer
+  // cannot step beyond a ragged grouped/row tensor.
+  int const activation_row = active ? (Grouped ? gathered_row : (PerRowActivation ? r : 0)) : 0;
+  VecdotActivation const* row_x = x + int64_t(activation_row) * blocks_per_row * kQK;
+  float* row_out = out + (Grouped && active ? int64_t(gathered_row) * rows : 0);
 
   // Q4/Q5 pair adjacent groups so one lane owns both nibbles of each byte. At the intended RowsPerWarp=8 point,
   // four lanes own one row and lane L consumes groups (2L,2L+1): its low-plane run is qs[32L..32L+31], loaded

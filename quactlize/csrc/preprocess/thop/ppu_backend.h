@@ -23,9 +23,13 @@ namespace ppu_backend {
 // Every entry point the device .so must export, with C linkage. Raw pointers and shapes only -- no torch types, so
 // the .so can be built by a toolchain that has never heard of torch.
 struct Api {
-  // blocks [rows*blocks_per_row, block_bytes], x fp16 [blocks_per_row*256], out fp32 [rows]
+  // Independent block rows: blocks [rows*bpr,block_bytes], x fp16 [rows*bpr*256], out fp32 [rows].
   int (*vecdot)(uint8_t const* blocks, int64_t block_bytes, uint16_t const* x, float* out,
                 int rows, int blocks_per_row, int qtype);
+  // Dense GEMV: blocks [rows*bpr,block_bytes], one shared x fp16 [bpr*256], out fp32 [rows]. Optional so an older
+  // library/stub still loads, but gguf_vecdot_dense refuses explicitly if the distinct contract is unavailable.
+  int (*vecdot_dense)(uint8_t const* blocks, int64_t block_bytes, uint16_t const* x, float* out,
+                      int rows, int blocks_per_row, int qtype);
   // blocks [E,n,bpr,block_bytes], gathered x [total_rows,bpr*256], offsets [E+1], out [total_rows,n]
   int (*vecdot_moe)(uint8_t const* blocks, int64_t block_bytes, uint16_t const* x,
                     int const* row_offsets, float* out, int n, int blocks_per_row, int experts,

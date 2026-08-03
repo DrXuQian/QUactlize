@@ -187,8 +187,9 @@ torch::Tensor gguf_vecdot(torch::Tensor blocks, torch::Tensor x, int64_t qtype) 
   if (auto const* api = ppu_backend::load()) {
     torch::Tensor x16 = x.dtype() == torch::kFloat16 ? x : x.to(torch::kFloat16);
     auto const* xp16 = get_ptr<uint16_t const>(x16);
-    // rows blocks, one activation slice of 256 each -- the same shape the CPU arm below consumes, so the two are
-    // interchangeable and the golden tests apply to whichever one ran.
+    // Each raw block row is paired with its own activation slice, exactly as in the CPU loop below. This is a
+    // different ABI from dense GEMV, whose output rows all share one activation; conflating them made row r consume
+    // x[0] instead of x[r] and produced order-one disagreement on otherwise identical bytes.
     TORCH_CHECK(api->vecdot(bp, ts, xp16, op, int(rows), 1, int(qtype)) == 0, "PPU vecdot failed");
     return out;
   }
@@ -250,8 +251,10 @@ torch::Tensor gguf_vecdot_dense(torch::Tensor blocks, torch::Tensor x, int64_t n
     auto const* bp = get_ptr<uint8_t const>(blocks);
     auto* op = get_ptr<float>(out);
     if (auto const* api = ppu_backend::load()) {
+      TORCH_CHECK(api->vecdot_dense,
+                  "loaded PPU backend predates the separate dense-vecdot ABI; rebuild libquactlize_ppu.so");
       torch::Tensor x16 = x.dtype() == torch::kFloat16 ? x : x.to(torch::kFloat16);
-      TORCH_CHECK(api->vecdot(bp, kRaw, get_ptr<uint16_t const>(x16), op, int(n), bpr, int(qtype)) == 0,
+      TORCH_CHECK(api->vecdot_dense(bp, kRaw, get_ptr<uint16_t const>(x16), op, int(n), bpr, int(qtype)) == 0,
                   "PPU native dense GEMV failed");
       return out;
     }

@@ -41,6 +41,10 @@ State& state() {
       return true;
     };
     if (!sym("quactlize_ppu_vecdot", reinterpret_cast<void**>(&s.api.vecdot))) return;
+    dlerror();
+    s.api.vecdot_dense = reinterpret_cast<decltype(s.api.vecdot_dense)>(
+        dlsym(h, "quactlize_ppu_vecdot_dense"));
+    dlerror();
     if (!sym("quactlize_ppu_vecdot_moe", reinterpret_cast<void**>(&s.api.vecdot_moe))) return;
     if (!sym("quactlize_ppu_dequantize", reinterpret_cast<void**>(&s.api.dequantize))) return;
     if (!sym("quactlize_ppu_prepass", reinterpret_cast<void**>(&s.api.prepass))) return;
