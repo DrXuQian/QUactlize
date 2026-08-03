@@ -28,14 +28,16 @@ __global__ void flush_l2_kernel(uint8_t const* p, size_t bytes, unsigned long lo
   if (v) atomicAdd(sink, v);
 }
 
-struct Q4Device {
+template <KType T>
+struct PrepassDevice {
+  using Tr = gguf_scale::Traits<T>;
   uint8_t* blocks = nullptr;
   half_t *d = nullptr, *dmin = nullptr, *scale = nullptr, *zero = nullptr;
   uint8_t* flush = nullptr;
   unsigned long long* sink = nullptr;
   size_t total = 0, flush_bytes = 0;
 
-  ~Q4Device() {
+  ~PrepassDevice() {
     cudaFree(blocks); cudaFree(d); cudaFree(dmin); cudaFree(scale); cudaFree(zero); cudaFree(flush); cudaFree(sink);
   }
 
@@ -45,57 +47,62 @@ struct Q4Device {
     int dev = 0;
     if (cuda_ok(cudaGetDevice(&dev)) || cuda_ok(cudaGetDeviceProperties(&prop, dev))) return 1;
     flush_bytes = std::max<size_t>(size_t(prop.l2CacheSize) * 2, size_t(128) << 20);
-    if (cuda_ok(cudaMalloc(&blocks, total * 12)) || cuda_ok(cudaMalloc(&d, total * sizeof(half_t))) ||
-        cuda_ok(cudaMalloc(&dmin, total * sizeof(half_t))) || cuda_ok(cudaMalloc(&scale, total * 8 * sizeof(half_t))) ||
-        cuda_ok(cudaMalloc(&zero, total * 8 * sizeof(half_t))) || cuda_ok(cudaMalloc(&flush, flush_bytes)) ||
+    if (cuda_ok(cudaMalloc(&blocks, total * Tr::kBlockBytes)) || cuda_ok(cudaMalloc(&d, total * sizeof(half_t))) ||
+        cuda_ok(cudaMalloc(&dmin, total * sizeof(half_t))) ||
+        cuda_ok(cudaMalloc(&scale, total * Tr::kGroups * sizeof(half_t))) ||
+        cuda_ok(cudaMalloc(&zero, total * Tr::kGroups * sizeof(half_t))) || cuda_ok(cudaMalloc(&flush, flush_bytes)) ||
         cuda_ok(cudaMalloc(&sink, sizeof(*sink)))) return 2;
     if (cuda_ok(cudaMemset(flush, 1, flush_bytes)) || cuda_ok(cudaMemset(sink, 0, sizeof(*sink)))) return 3;
     return 0;
   }
 
   BlockDesc src(int superblocks) const {
-    return {blocks, d, dmin, int64_t(superblocks) * 12, 12, superblocks, 1};
+    return {blocks, d, Tr::kHasMin ? dmin : nullptr,
+            int64_t(superblocks) * Tr::kBlockBytes, Tr::kBlockBytes, superblocks, 1};
   }
-  PlaneDesc dst(int superblocks) const { return {scale, zero, int64_t(superblocks) * 8, 1}; }
+  PlaneDesc dst(int superblocks) const { return {scale, zero, int64_t(superblocks) * Tr::kGroups, 1}; }
   void flush_l2() const { flush_l2_kernel<<<4096, 256>>>(flush, flush_bytes, sink); }
 };
 
-template <bool Cooperative>
-void launch_q4(Q4Device const& q, int cols, int superblocks) {
+template <KType T, bool Cooperative>
+void launch_prepass(PrepassDevice<T> const& q, int cols, int superblocks) {
 #ifndef GGUF_PROBE_THREADS
 #define GGUF_PROBE_THREADS 256
 #endif
   constexpr int kThreads = GGUF_PROBE_THREADS;
   if constexpr (Cooperative) {
     int const grid = gguf_scale::prepass::prepass_grid_size(cols, superblocks, kThreads);
-    gguf_scale::prepass::prepass_kernel<KType::Q4_K, 8><<<grid, kThreads>>>(
+    gguf_scale::prepass::prepass_kernel<T, 8><<<grid, kThreads>>>(
         q.src(superblocks), q.dst(superblocks), cols, superblocks);
   } else {
     int const total = cols * superblocks;
-    gguf_scale::prepass::prepass_kernel_serial<KType::Q4_K, 8><<<(total + kThreads - 1) / kThreads, kThreads>>>(
+    gguf_scale::prepass::prepass_kernel_serial<T, 8><<<(total + kThreads - 1) / kThreads, kThreads>>>(
         q.src(superblocks), q.dst(superblocks), cols, superblocks);
   }
 }
 
-template <bool Cooperative>
-int run_q4(uint8_t const* blocks, uint16_t const* d, uint16_t const* dmin, uint16_t* scale, uint16_t* zero,
-           int cols, int superblocks) {
-  Q4Device q;
+template <KType T, bool Cooperative>
+int run_prepass(uint8_t const* blocks, uint16_t const* d, uint16_t const* dmin, uint16_t* scale, uint16_t* zero,
+                int cols, int superblocks) {
+  using Tr = gguf_scale::Traits<T>;
+  PrepassDevice<T> q;
   if (int e = q.allocate(cols, superblocks)) return 100 + e;
   size_t const total = q.total;
-  if (cuda_ok(cudaMemcpy(q.blocks, blocks, total * 12, cudaMemcpyHostToDevice)) ||
+  if (cuda_ok(cudaMemcpy(q.blocks, blocks, total * Tr::kBlockBytes, cudaMemcpyHostToDevice)) ||
       cuda_ok(cudaMemcpy(q.d, d, total * 2, cudaMemcpyHostToDevice)) ||
-      cuda_ok(cudaMemcpy(q.dmin, dmin, total * 2, cudaMemcpyHostToDevice))) return 110;
-  if constexpr (Cooperative) launch_q4<true>(q, cols, superblocks);
-  else                       launch_q4<false>(q, cols, superblocks);
+      (Tr::kHasMin && cuda_ok(cudaMemcpy(q.dmin, dmin, total * 2, cudaMemcpyHostToDevice))) ||
+      cuda_ok(cudaMemset(q.scale, 0xa5, total * Tr::kGroups * 2)) ||
+      cuda_ok(cudaMemset(q.zero, 0x5a, total * Tr::kGroups * 2))) return 110;
+  if constexpr (Cooperative) launch_prepass<T, true>(q, cols, superblocks);
+  else                       launch_prepass<T, false>(q, cols, superblocks);
   if (cuda_ok(cudaGetLastError()) || cuda_ok(cudaDeviceSynchronize())) return 111;
-  if (cuda_ok(cudaMemcpy(scale, q.scale, total * 8 * 2, cudaMemcpyDeviceToHost)) ||
-      cuda_ok(cudaMemcpy(zero, q.zero, total * 8 * 2, cudaMemcpyDeviceToHost))) return 112;
+  if (cuda_ok(cudaMemcpy(scale, q.scale, total * Tr::kGroups * 2, cudaMemcpyDeviceToHost)) ||
+      cuda_ok(cudaMemcpy(zero, q.zero, total * Tr::kGroups * 2, cudaMemcpyDeviceToHost))) return 112;
   return 0;
 }
 
 template <bool Cooperative>
-int bench_variant(Q4Device const& q, int cols, int superblocks, int reps, float* usec) {
+int bench_variant(PrepassDevice<KType::Q4_K> const& q, int cols, int superblocks, int reps, float* usec) {
   cudaEvent_t begin{}, end{};
   if (cuda_ok(cudaEventCreate(&begin)) || cuda_ok(cudaEventCreate(&end))) return 1;
   std::vector<float> samples;
@@ -103,7 +110,7 @@ int bench_variant(Q4Device const& q, int cols, int superblocks, int reps, float*
   for (int r = 0; r < reps + 5; ++r) {
     q.flush_l2();
     cudaEventRecord(begin);
-    launch_q4<Cooperative>(q, cols, superblocks);
+    launch_prepass<KType::Q4_K, Cooperative>(q, cols, superblocks);
     cudaEventRecord(end);
     if (cuda_ok(cudaEventSynchronize(end))) return 2;
     float ms = 0.f;
@@ -161,23 +168,40 @@ int bench_layout_variant(uint8_t const* blocks, half_t* out, uint8_t const* flus
 extern "C" int quactlize_cuda_q4_prepass(uint8_t const* blocks, uint16_t const* d, uint16_t const* dmin,
                                           uint16_t* scale, uint16_t* zero, int cols, int superblocks,
                                           int cooperative) {
-  return cooperative ? run_q4<true>(blocks, d, dmin, scale, zero, cols, superblocks)
-                     : run_q4<false>(blocks, d, dmin, scale, zero, cols, superblocks);
+  return cooperative ? run_prepass<KType::Q4_K, true>(blocks, d, dmin, scale, zero, cols, superblocks)
+                     : run_prepass<KType::Q4_K, false>(blocks, d, dmin, scale, zero, cols, superblocks);
+}
+
+extern "C" int quactlize_cuda_prepass(uint8_t const* blocks, uint16_t const* d, uint16_t const* dmin,
+                                       uint16_t* scale, uint16_t* zero, int cols, int superblocks,
+                                       int qtype, int cooperative) {
+#define RUN_PREPASS(TYPE) (cooperative \
+    ? run_prepass<KType::TYPE, true>(blocks, d, dmin, scale, zero, cols, superblocks) \
+    : run_prepass<KType::TYPE, false>(blocks, d, dmin, scale, zero, cols, superblocks))
+  switch (qtype) {
+    case 10: return RUN_PREPASS(Q2_K);
+    case 11: return RUN_PREPASS(Q3_K);
+    case 12: return RUN_PREPASS(Q4_K);
+    case 13: return RUN_PREPASS(Q5_K);
+    case 14: return RUN_PREPASS(Q6_K);
+    default: return 190;
+  }
+#undef RUN_PREPASS
 }
 
 extern "C" int quactlize_cuda_q4_prepass_bench(int scale_factor, int reps, float* serial_us, float* coop_us,
                                                 double* bytes) {
   int const cols = 8 * 2048 * scale_factor;
   int const superblocks = 8;
-  Q4Device q;
+  PrepassDevice<KType::Q4_K> q;
   if (int e = q.allocate(cols, superblocks)) return 200 + e;
 
   // Inputs are allocated and initialised before timing. Their particular values do not affect the access pattern;
   // correctness is a separate call supplied with non-degenerate data from the official Python golden.
   if (cuda_ok(cudaMemset(q.blocks, 0x5a, q.total * 12)) || cuda_ok(cudaMemset(q.d, 0x34, q.total * 2)) ||
       cuda_ok(cudaMemset(q.dmin, 0x30, q.total * 2))) return 210;
-  launch_q4<false>(q, cols, superblocks);
-  launch_q4<true>(q, cols, superblocks);
+  launch_prepass<KType::Q4_K, false>(q, cols, superblocks);
+  launch_prepass<KType::Q4_K, true>(q, cols, superblocks);
   if (cuda_ok(cudaDeviceSynchronize())) return 211;
   if (int e = bench_variant<false>(q, cols, superblocks, reps, serial_us)) return 220 + e;
   if (int e = bench_variant<true >(q, cols, superblocks, reps, coop_us)) return 230 + e;

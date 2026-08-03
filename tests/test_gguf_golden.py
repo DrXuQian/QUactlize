@@ -331,6 +331,8 @@ def gguf_cuda_probe(tmp_path_factory):
     fp, dp = ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_double)
     lib.quactlize_cuda_q4_prepass.argtypes = [u8p, u16p, u16p, u16p, u16p,
                                                ctypes.c_int, ctypes.c_int, ctypes.c_int]
+    lib.quactlize_cuda_prepass.argtypes = [u8p, u16p, u16p, u16p, u16p,
+                                            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
     lib.quactlize_cuda_q4_prepass_bench.argtypes = [ctypes.c_int, ctypes.c_int, fp, fp, dp]
     lib.quactlize_cuda_q4_layout_check.argtypes = [u8p, u16p, u16p]
     lib.quactlize_cuda_q4_layout_bench.argtypes = [ctypes.c_int, fp, fp]
@@ -338,7 +340,7 @@ def gguf_cuda_probe(tmp_path_factory):
 
 
 def test_cuda_prepass_is_bit_exact_and_shows_the_fixed_duration_floor(gguf_cuda_probe):
-    """Old CUDA kernel == cooperative CUDA kernel == quactlize.gguf_scale_prepass, then launch-only timing.
+    """All five formats: old CUDA == cooperative CUDA == host op; then Q4_K launch-only timing.
 
     ZMul=8 is intentional. The previous expression used native half arithmetic on device but float on host and could
     differ by one ULP; an equality test at ZMul=0 would have hidden that contract split.
@@ -347,23 +349,31 @@ def test_cuda_prepass_is_bit_exact_and_shows_the_fixed_duration_floor(gguf_cuda_
     lib, ctypes = gguf_cuda_probe
     u8p, u16p = ctypes.POINTER(ctypes.c_uint8), ctypes.POINTER(ctypes.c_uint16)
     rng = np.random.default_rng(1901)
-    cols, superblocks = 37, 8
+    # Eleven deliberately leaves a partial eight-superblock warp tile; poisoned outputs make skipped tail work fail.
+    cols, superblocks = 37, 11
     total = cols * superblocks
-    blocks = rng.integers(0, 256, (total, 12), np.uint8)
-    d = (rng.random(total) * .1 + .001).astype(np.float16)
-    dmin = (rng.random(total) * .1 + .001).astype(np.float16)
-    hs, hz = quactlize.gguf_scale_prepass(torch.from_numpy(blocks), torch.from_numpy(d),
-                                          torch.from_numpy(dmin), 12, 8)
-    for cooperative in (0, 1):
-        scale = np.empty((total, 8), np.float16)
-        zero = np.empty_like(scale)
-        rc = lib.quactlize_cuda_q4_prepass(
-            blocks.ctypes.data_as(u8p), d.view(np.uint16).ctypes.data_as(u16p),
-            dmin.view(np.uint16).ctypes.data_as(u16p), scale.view(np.uint16).ctypes.data_as(u16p),
-            zero.view(np.uint16).ctypes.data_as(u16p), cols, superblocks, cooperative)
-        assert rc == 0
-        assert np.array_equal(scale, hs.numpy()), f"CUDA {'cooperative' if cooperative else 'serial'} scale differs"
-        assert np.array_equal(zero, hz.numpy()), f"CUDA {'cooperative' if cooperative else 'serial'} zero differs"
+    checked = []
+    for name, qtype, *_ in FORMATS:
+        block_bytes, groups, _gsz, has_min, _bias, _signed = quactlize.gguf_scale_block_shape(int(qtype))
+        blocks = rng.integers(0, 256, (total, block_bytes), np.uint8)
+        d = (rng.random(total) * .1 + .001).astype(np.float16)
+        dmin = (rng.random(total) * .1 + .001).astype(np.float16)
+        host_dmin = torch.from_numpy(dmin) if has_min else torch.empty(0, dtype=torch.float16)
+        hs, hz = quactlize.gguf_scale_prepass(torch.from_numpy(blocks), torch.from_numpy(d),
+                                              host_dmin, int(qtype), 8)
+        for cooperative in (0, 1):
+            scale = np.empty((total, groups), np.float16)
+            zero = np.empty_like(scale)
+            rc = lib.quactlize_cuda_prepass(
+                blocks.ctypes.data_as(u8p), d.view(np.uint16).ctypes.data_as(u16p),
+                dmin.view(np.uint16).ctypes.data_as(u16p), scale.view(np.uint16).ctypes.data_as(u16p),
+                zero.view(np.uint16).ctypes.data_as(u16p), cols, superblocks, int(qtype), cooperative)
+            assert rc == 0
+            mode = "cooperative" if cooperative else "serial"
+            assert np.array_equal(scale, hs.numpy()), f"{name}: CUDA {mode} scale differs"
+            assert np.array_equal(zero, hz.numpy()), f"{name}: CUDA {mode} zero differs"
+        checked.append(name)
+    print("prepass CUDA bit-exact: " + ", ".join(checked))
 
     rows = []
     for factor in (1, 4, 16):

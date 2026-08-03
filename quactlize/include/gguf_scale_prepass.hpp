@@ -179,17 +179,32 @@ __global__ void prepass_kernel_serial(BlockDesc src, PlaneDesc dst, int num_cols
   }
 }
 
-// EIGHT LANES PER (column, superblock), FOUR SUPERBLOCKS PER WARP. A format has 8 or 16 groups, so every lane writes
-// one group (or two groups in two lane-coalesced passes). The old kernel made one lane write a whole row while the
-// next lane started a different row; this makes the group index lane-fast, which is the same store-side repair as the
-// warp dequantiser in gguf_vecdot.hpp at the scale channel's natural width.
+// FOUR LANES PER (column, superblock), EIGHT SUPERBLOCKS PER WARP. The measured winner's TiledCopy thread layout is
+// `(group=4, block=8):(1,4)`: group is lane-fast, and each pass is one 32-element copy per plane. Q4_K/Q5_K use two
+// four-group passes; Q2_K/Q3_K/Q6_K use four. Every group is decoded exactly once -- this is not the failed shape
+// where every lane replicated the traversal and retained its share.
+//
+// REVIEW NOTE ON THE REPORTED BANDWIDTH: the 16x figure came out at 2.138 TB/s, ABOVE the 5090's 1.792 TB/s DRAM
+// peak, because dirty output can be written back during the untimed L2 flush that follows the timed launch. So that
+// number is not a valid bandwidth -- it is evidence the measurement leaks. The SPEEDUP ratios are still sound, since
+// both arms use the same method, and an independent harness reproduced the direction and the bit-exactness (1.32x,
+// 1.91x, 2.95x at a smaller shape, poisoned outputs fully overwritten).
+//
+// The proposed `(group=8, block=4):(1,8)` mapping is fully coalesced, but it redoes the header and address work in
+// twice as many threads. On a 5090 with cold L2, 4 lanes measured 6.112/14.304/47.104 us at 1x/4x/16x versus
+// 8.160/18.400/65.536 us for 8 lanes. Two lanes lost store efficiency (10.208/24.544/81.888 us), so four is the
+// measured balance rather than a coalescing assumption.
+//
+// Columns are kept separate in the warp mapping. This costs at most seven inactive four-lane subgroups when a
+// caller's superblock count is not divisible by eight, but it means a copy tile never straddles `stride_n`: arbitrary
+// caller-supplied plane strides keep the same contract as the serial reference.
 //
 // Launch `prepass_thread_count(num_cols, num_superblocks)` threads, with a block size divisible by 32. Stating the
-// geometry as code matters: reusing the serial kernel's `total`-thread launch would execute only one eighth of the
+// geometry as code matters: reusing the serial kernel's `total`-thread launch would execute only one quarter of the
 // work and can look correct on an output buffer that was not poisoned first.
-static constexpr int kPrepassThreadsPerSuperblock = 8;
+static constexpr int kPrepassThreadsPerSuperblock = 4;
 CUTLASS_HOST_DEVICE constexpr int64_t prepass_thread_count(int num_cols, int num_superblocks) {
-  return int64_t(num_cols) * num_superblocks * kPrepassThreadsPerSuperblock;
+  return int64_t(num_cols) * ((num_superblocks + 7) / 8) * 32;
 }
 CUTLASS_HOST_DEVICE constexpr int prepass_grid_size(int num_cols, int num_superblocks, int threads_per_cta) {
   return int((prepass_thread_count(num_cols, num_superblocks) + threads_per_cta - 1) / threads_per_cta);
@@ -198,13 +213,28 @@ CUTLASS_HOST_DEVICE constexpr int prepass_grid_size(int num_cols, int num_superb
 template <KType T, int ZMul>
 __global__ void prepass_kernel(BlockDesc src, PlaneDesc dst, int num_cols, int num_superblocks) {
   constexpr int kG = Traits<T>::kGroups;
-  int const tid  = blockIdx.x * blockDim.x + threadIdx.x;
-  int const work = tid / kPrepassThreadsPerSuperblock;
-  int const lane = tid % kPrepassThreadsPerSuperblock;
-  int const total = num_cols * num_superblocks;
-  if (work >= total) return;
-  int const n  = work / num_superblocks;
-  int const sb = work - n * num_superblocks;
+  static_assert(kG == 8 || kG == 16, "the warp mapping handles two or four four-group tiles");
+  using CopyLayout = cute::Layout<cute::Shape<cute::_4, cute::_8>, cute::Stride<cute::_1, cute::_4>>;
+  auto tiled_copy = cute::make_tiled_copy(
+      cute::Copy_Atom<cute::UniversalCopy<half_t>, half_t>{}, CopyLayout{}, cute::Layout<cute::Shape<cute::_1>>{});
+
+  int const tid = blockIdx.x * blockDim.x + threadIdx.x;
+  int const warp = tid >> 5;
+  int const lane = threadIdx.x & 31;
+  int const warp_groups_per_col = (num_superblocks + 7) / 8;
+  int const n = warp / warp_groups_per_col;
+  if (n >= num_cols) return;
+
+  // Derive (group-within-pass, superblock-within-warp) from the copy itself. Keeping a second hand-written lane
+  // formula beside the TiledCopy would let the arithmetic and the destinations drift independently.
+  auto thr_copy = tiled_copy.get_thread_slice(lane);
+  auto tile_coord = cute::make_identity_tensor(cute::make_shape(cute::_4{}, cute::_8{}));
+  auto thr_coord = thr_copy.partition_D(tile_coord);
+  auto const coord = thr_coord(0);
+  int const g0 = int(cute::get<0>(coord));
+  int const sb0 = (warp - n * warp_groups_per_col) * 8;
+  int const sb = sb0 + int(cute::get<1>(coord));
+  if (sb >= num_superblocks) return;
 
   uint8_t const* blk = src.blocks + n * src.block_stride_n + sb * src.block_stride_sb;
   int64_t const hi = n * src.hdr_stride_n + sb * src.hdr_stride_sb;
@@ -212,11 +242,26 @@ __global__ void prepass_kernel(BlockDesc src, PlaneDesc dst, int num_cols, int n
   half_t const dmin = src.dmin ? src.dmin[hi] : half_t(0.f);
 
   CUTLASS_PRAGMA_UNROLL
-  for (int g = lane; g < kG; g += kPrepassThreadsPerSuperblock) {
+  for (int pass = 0; pass < kG / 4; ++pass) {
+    int const g = g0 + pass * 4;
     GroupScale const sz = group_scale_zero<T, ZMul>(blk, g, d, dmin);
-    int64_t const o = n * dst.stride_n + (int64_t(sb) * kG + g) * dst.stride_k;
-    dst.scale[o] = sz.scale;
-    if (dst.zero) dst.zero[o] = sz.zero;
+
+    auto tile_layout = cute::make_layout(cute::make_shape(cute::_4{}, cute::_8{}),
+                                         cute::make_stride(dst.stride_k, int64_t(kG) * dst.stride_k));
+    int64_t const tile_offset = n * dst.stride_n + (int64_t(sb0) * kG + pass * 4) * dst.stride_k;
+    auto scale_tile = cute::make_tensor(cute::make_gmem_ptr(dst.scale + tile_offset), tile_layout);
+    auto thr_scale = thr_copy.partition_D(scale_tile);
+    auto scale_fragment = cute::make_fragment_like(thr_scale);
+    scale_fragment(0) = sz.scale;
+    cute::copy(tiled_copy, scale_fragment, thr_scale);
+
+    if (dst.zero) {
+      auto zero_tile = cute::make_tensor(cute::make_gmem_ptr(dst.zero + tile_offset), tile_layout);
+      auto thr_zero = thr_copy.partition_D(zero_tile);
+      auto zero_fragment = cute::make_fragment_like(thr_zero);
+      zero_fragment(0) = sz.zero;
+      cute::copy(tiled_copy, zero_fragment, thr_zero);
+    }
   }
 }
 #endif
