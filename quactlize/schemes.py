@@ -217,16 +217,18 @@ _add(Scheme.DEQUANT_FIRST, Shape.GEMV, _KQUANTS, Impl(
 
 # --- SCALE_FIRST x DENSE for the k-quants -----------------------------------------------------------------------
 _add(Scheme.SCALE_FIRST, Shape.DENSE, _KQUANTS, Impl(
-    Status.IMPLEMENTED, _DENSE, note=(
+    Status.VALIDATED, _DENSE, note=(
         "raw GGUF now reaches gguf_prepare_dense -> fixed xplane placement -> the raw-pointer dense ABI -> "
         "fpA_intB_ppu for uint2, uint2+uint1, int4, int4+uint1 and int4+uint2. Q2-Q5 use TK=256; the new xplane "
         "inverse caught that Q6's high plane covers only half a TK=256 tile, so Q6 uses the already validated "
         "TK=128 tactic. Both dense artifact inverses are Python-reachable: dequant-all matches official gguf and "
         "dequant-scale returns the stored fp16 affine planes, with planted code/scale faults observed. "
-        "test_fpA_kquant_dense compares two fpA configurations and carries failures in its exit status, but that "
-        "is still a SELF oracle with shared constants. The independent dense-vs-official-dequant-first Python gate "
-        "is staged for the PPU device tier and deliberately skips without an hgcc library; it has not been observed "
-        "on this host, so the honest cell status remains IMPLEMENTED, not VALIDATED")))
+        "test_fpA_kquant_dense still compares two fpA configurations and is a SELF oracle with shared constants; "
+        "that formerly capped this cell at IMPLEMENTED. It is now superseded by the independent device gate on "
+        "ppu001: all five formats at M=7/65 (including a dense tail) agree with matmul_dequant_first through official "
+        "gguf semantics, and the oracle first rejects a planted low-plane fault. dense_python_oracle.log reports "
+        "5 passed and zero skipped. This cell-specific evidence does not claim that the separate broad pytest pass "
+        "was green")))
 
 # --- FULLY_QUANTIZED x DENSE: no dense instantiation yet -------------------------------------------------------
 _add(Scheme.FULLY_QUANTIZED, Shape.DENSE, _KQUANTS, Impl(
