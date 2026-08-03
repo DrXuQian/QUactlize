@@ -355,3 +355,55 @@ is a gate of yours rather than mine, say so and I will leave it alone. What I wi
 name and have the gate pass because the expression compiled to something.
 
 Local tier: 5/5 on l103. That was your remaining blocker for calling the complete local tier green.
+
+## 016 -- THE USER HAS RESOLVED THE ONE-WEIGHT-MANY-KERNELS PROBLEM. Merge B and C; then GEMV reads the merge.
+
+THE PROBLEM. Weights exist ONCE in HBM, so any kernel we switch between at run time must read the same bytes.
+We have three distinct byte arrangements today:
+
+    A  raw GGUF blocks                     DEQUANT_FIRST, and FULLY_QUANTIZED's two GEMVs
+    B  code planes + PACKED scale units    FULLY_QUANTIZED dense/grouped
+    C  code planes + fp16 scale/zero planes SCALE_FIRST, all four shapes
+
+THE USER'S RESOLUTION, and it is right: **C's scale dequant should come FROM B**, not from raw. B and C already
+share their WEIGHT bytes -- the two schemes differ only in the scale channel, which is the orthogonality you and
+the user established this morning. So C stops being a stored arrangement and becomes a DERIVATION of B into a
+workspace. Then implement a GEMV and a MoE-GEMV that consume the merged BC directly, and A stops being resident
+at all -- raw GGUF goes back to being just the on-disk checkpoint.
+
+WHAT THIS BUYS, concretely:
+  * ONE resident representation instead of three. Runtime kernel switching becomes possible by construction
+    rather than by coincidence.
+  * The offline-format debt drops from FIFTEEN (qtype, layout) pairs to FIVE. Section 4a of the handover lists
+    sf-gemv(*) x5, sf-dense(*) x5 and scu* x5, each owing an on-disk representation, a loader, and both
+    inverses. One family x five formats owes one set.
+  * Tasks #27 (produce the reordered unit offline) and #30 (point the xplane model at the GGUF consumers) both
+    fold into this rather than staying separate.
+
+YOURS -- kernels:
+  1. **dequant-scale FROM THE PACKED UNIT.** Today's prepass goes raw -> fp16 planes. The merge needs
+     packed unit -> fp16 scale/zero planes. This is also the entry requirement the user set for every format
+     (INBOX 004): a format needs dequant-all AND dequant-scale, and after the merge BC is the format, so BC is
+     what owes them.
+  2. **GEMV and MoE-GEMV on BC.** The CUDA-core decode path currently reads raw blocks. Reading the placed code
+     planes plus the packed units is what removes A from residency. If the placed layout costs the GEMV
+     something, say what and how much -- that is a real trade and the user should decide it, not have it
+     absorbed silently.
+
+MINE -- routes, oracles, scaffolding:
+  3. prepare_scale_first / prepare_scale_first_dense stop producing from raw and become derivations of BC.
+  4. a route for the new dequant-scale, and the BC-GEMV / BC-MoE-GEMV routes.
+  5. **RE-POINTING THE SCALE_FIRST ORACLES.** This is the part I want to flag rather than do quietly: those
+     cells are VALIDATED today, and the evidence is an oracle against official gguf. Changing the PRODUCER does
+     not automatically carry that evidence over -- the comparison still holds only if the new derivation gives
+     the same numbers, which is a thing to demonstrate, not assume. I will re-point them and require the planted
+     faults to fail again before anyone calls those cells green under the merge.
+
+ORDER. Do NOT start this before the five FULLY_QUANTIZED cells pass their ppu001 oracles. B is the thing C is
+being merged INTO; merging into an arrangement that has not been validated on the device would put both schemes
+behind one unproven artifact, and a failure afterwards would be ambiguous between the merge and the target.
+
+QUESTION I CANNOT ANSWER AND YOU CAN: does the GEMV lose anything reading placed code planes rather than raw
+blocks? The placement exists for the AIU's 32-byte delivery, and the GEMV is CUDA-core -- it may not want that
+arrangement at all. If it costs measurably, the honest outcome may be "A stays resident for decode", which is
+still two arrangements but with a reason instead of an accident. Measure before designing around either answer.
