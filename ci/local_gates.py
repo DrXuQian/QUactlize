@@ -306,9 +306,9 @@ def lint_selection_agrees():
     r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-rfE", str(ROOT / "tests" / "test_bench_selection.py")],
                        capture_output=True, text=True, cwd=ROOT)
     if r.returncode == 0:
-        return True, "C++ and Python verdicts match on the planted boundary fixture"
+        return "PASS", "C++ and Python verdicts match on the planted boundary fixture", 0.0
     tail = [l for l in (r.stdout + r.stderr).splitlines() if l.strip()][-3:]
-    return False, " | ".join(tail)
+    return "FAIL", " | ".join(tail), 0.0
 
 
 def lint_gguf_coverage():
@@ -324,13 +324,13 @@ def lint_gguf_coverage():
     cov = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cov)
     if not Path(cov.DEFAULT_GGML).is_file():
-        return None, f"no ggml.h at {cov.DEFAULT_GGML}"     # SKIP: the authority is absent, so nothing is known
+        return "SKIP", f"no ggml.h at {cov.DEFAULT_GGML}", 0.0   # the authority is absent, so nothing is known
     rows, unknown = cov.classify()
     if unknown:
-        return False, ("ggml.h has types nothing has classified: "
-                       + ", ".join(f"{n}={v}" for n, v in unknown)
-                       + " -- add them to tools/coverage.py FAMILY, even if the answer is out-of-scope")
-    return True, f"all {len(rows)} ggml types classified; {sum(1 for r in rows if r[2] == 'kquant')} supported"
+        return "FAIL", ("ggml.h has types nothing has classified: "
+                        + ", ".join(f"{n}={v}" for n, v in unknown)
+                        + " -- add them to tools/coverage.py FAMILY, even if the answer is out-of-scope"), 0.0
+    return "PASS", f"all {len(rows)} ggml types classified; {sum(1 for r in rows if r[2] == 'kquant')} supported", 0.0
 
 
 def lint_undefined_names():
@@ -431,8 +431,8 @@ def main():
                 ("lint", "PPU asm uses device-pass architecture guard", lint_ppu_asm_device_guard),
                 ("lint", "absolute paths name this repo dir, not a renamed one", lint_stale_repo_path),
                 ("lint", "names used before they exist (device-only tests get no other flow check)", lint_undefined_names),
-                ("coverage", "every ggml.h quant type is classified, in scope or out", lint_gguf_coverage),
-                ("select", "the C++ and Python selection procedures agree on planted data", lint_selection_agrees),
+                ("lint", "every ggml.h quant type is classified, in scope or out", lint_gguf_coverage),
+                ("lint", "the C++ and Python selection procedures agree on planted data", lint_selection_agrees),
     ("registry", "declarations vs source", None)])
     # MATCH THE KIND AS WELL AS THE NAME. `-k lint` matched NOTHING, because a lint's name is its description
     # ("duplicate unroll directives") and the word "lint" only appears in the kind. The run then printed
@@ -478,10 +478,17 @@ def main():
             return asan()
         if kind == "pytest":
             return pytests()
-        sys.path.insert(0, str(ROOT / "ci"))
-        import registry
-        probs = registry.check()
-        return ("PASS" if not probs else "FAIL"), (probs[0] if probs else "0 problems"), 0.0
+        if kind == "registry":
+            sys.path.insert(0, str(ROOT / "ci"))
+            import registry
+            probs = registry.check()
+            return ("PASS" if not probs else "FAIL"), (probs[0] if probs else "0 problems"), 0.0
+        # AN UNKNOWN KIND IS A FAILURE, NOT THE REGISTRY CHECK. This used to fall through to registry, so any
+        # row registered under a new kind silently ran a DIFFERENT check and reported its result -- two gates
+        # added on 2026-08-04 ("coverage", "select") passed for days' worth of runs without ever executing.
+        # A dispatch whose default is "run something else" cannot be caught by reading the output: it is green,
+        # it is fast, and it names the check that did not run.
+        return "FAIL", f"unknown check kind {kind!r} -- register it in run_one or use an existing kind", 0.0
 
     t0 = time.time()
     # NOT EVERYTHING IS INDEPENDENT. The boxdry checks each run the real build.sh, which REGISTERS our example in
