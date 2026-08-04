@@ -152,6 +152,84 @@ These are correctness and inspection, not tactic sweeps, so the hold above does 
    WANTED: the .jsonl (or analyse.py's output). The interesting line is not the leader -- it is whether
    anything TIES it. A tie is a guard that has to be expanded before the winner is a winner.
 
+5. **ONE-SHAPE MoE POLICY-COST DIFF (INBOX 039).** Worth one shape, and only one timing run. The current MoE
+   generator is the unpruned legal Cartesian product; partition its saved samples afterward so the full and
+   policy-pruned verdicts see IDENTICAL timings. This uses the 4096-token A3B expert-gate/up shape which reproduced
+   the historical 33% useful MFU and exposed the ratio-8, stage-6 winner.
+
+       cd /sim/eec/shared/junfu.qx/quactlize && git pull --recurse-submodules
+       MOE_FORMATS="i4" TARGET=test_lowbit_moe_bench ./build.sh
+       BIN=$(find build_ppu -type f -name test_lowbit_moe_bench -perm -u+x -print -quit)
+       test -n "$BIN"
+       POLICY_DIR=$(mktemp -d "$PWD/moe-policy-diff.XXXXXX")
+       test -n "$POLICY_DIR" && test -d "$POLICY_DIR"
+       export BENCH_JSONL="$POLICY_DIR/unpruned.jsonl"
+       "$BIN" 256 4096 512 2048 32 4 8 | tee "$POLICY_DIR/unpruned.stdout"
+
+       python3 - "$BENCH_JSONL" "$POLICY_DIR/pruned.jsonl" <<'PY'
+       import collections, json, pathlib, sys
+
+       src, dst = map(pathlib.Path, sys.argv[1:])
+       records = [json.loads(line) for line in src.read_text().splitlines() if line.strip()]
+       samples = [r for r in records if r.get("rec") == "s"]
+       if not samples:
+           raise SystemExit("no samples: BENCH_JSONL was not populated")
+
+       # Derive policy membership from the configurations which ACTUALLY RAN. Group by fixture as well as
+       # schema/TileK/stage so an unsupported row cannot influence another fixture's guard extrema.
+       fixture_fields = ("fixture", "dist", "n", "k", "gs", "experts", "rows", "mmax")
+       config_fields = ("schema", "tm", "tn", "tk", "wm", "wn", "st")
+       def fixture(r): return tuple(r[k] for k in fixture_fields)
+       def config(r): return tuple(r[k] for k in config_fields)
+       def dconfig(c): return dict(zip(config_fields, c))
+
+       by_fixture = collections.defaultdict(set)
+       for r in samples:
+           by_fixture[fixture(r)].add(config(r))
+
+       kept = set()
+       for fx, configs in by_fixture.items():
+           wms = collections.defaultdict(set)
+           by_stage = collections.defaultdict(set)
+           for c in configs:
+               q = dconfig(c)
+               base = (q["schema"], q["tk"], q["st"])
+               wms[(base, q["tm"], q["tn"], q["wn"])].add(q["wm"])
+               by_stage[base].add(c)
+
+           primary = set()
+           primary_tn = collections.defaultdict(set)
+           for c in configs:
+               q = dconfig(c); base = (q["schema"], q["tk"], q["st"])
+               ladder = sorted(wms[(base, q["tm"], q["tn"], q["wn"])])
+               if q["wm"] == ladder[-1] and q["tn"] == 2 * q["wn"]:
+                   primary.add(c); primary_tn[(base, q["tm"])].add(q["tn"])
+
+           for c in configs:
+               q = dconfig(c); base = (q["schema"], q["tk"], q["st"])
+               ladder = sorted(wms[(base, q["tm"], q["tn"], q["wn"])])
+               tms = [dconfig(x)["tm"] for x in by_stage[base]]
+               ptn = primary_tn[(base, q["tm"])]
+               h1 = (q["tn"] == 2 * q["wn"] and len(ladder) >= 2 and q["wm"] == ladder[-2]
+                     and ptn and q["tn"] in (min(ptn), max(ptn)))
+               n_guard = q["tm"] in (min(tms), max(tms)) and q["wm"] == ladder[-1]
+               if c in primary or h1 or n_guard:
+                   kept.add((fx, c))
+
+       out = [r for r in records if r.get("rec") != "s" or (fixture(r), config(r)) in kept]
+       dst.write_text("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in out))
+       all_cfg = {(fixture(r), config(r)) for r in samples}
+       print(f"policy partition: {len(all_cfg)} measured configs -> {len(kept)} retained", file=sys.stderr)
+       PY
+
+       python3 benchmarks/analyse.py "$POLICY_DIR/unpruned.jsonl" | tee "$POLICY_DIR/unpruned.verdict"
+       python3 benchmarks/analyse.py "$POLICY_DIR/pruned.jsonl"   | tee "$POLICY_DIR/pruned.verdict"
+       diff -u "$POLICY_DIR/pruned.verdict" "$POLICY_DIR/unpruned.verdict" || true
+       echo "artifacts: $POLICY_DIR"
+
+   WANTED: both verdicts, the `policy partition` count, and the diff. The cost is the pruned leader's median versus
+   the unpruned leader's median; different leaders with overlapping bands are unresolved, not a measured penalty.
+
 
 **WHEN SOMETHING IS RED, PASTE THIS.** No arguments, safe any time, output sized for a chat message:
 
