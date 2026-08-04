@@ -20,9 +20,11 @@
 // bits is the LOW plane width (1, 2 or 4); tile_k must match the binary's BENCH_TSK. Both are build-time
 // constants of bench_cutlass_w4a16, which is why the table is generated per binary rather than filtered at run
 // time: instantiating a config for the wrong TileK costs compile time and can never be selected.
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <set>
 #include <tuple>
 #include <vector>
@@ -40,23 +42,42 @@ constexpr int kStages[] = {2, 3, 4};
 
 using Row = std::tuple<int, int, int, int, int>;    // tm, tn, wm, wn, stages
 
-// codex's H1: the largest legal WarpM for each TileM is the primary row. Mechanism: converter work per mma is
-// 128/WM, WM16 is the measured throughput ceiling, and every recorded grouped-prefill winner uses the largest
-// legal WM. H2: TileN/WarpN == 2 is the primary N geometry.
-bool primary(Candidate const& c) {
-  return c.wm == (c.tm < 64 ? c.tm : 64) && c.tn == 2 * c.wn;
+// Do not spell "largest legal" as min(TM,64). It happens to agree in today's WN<=64 producer domain, but WN=128
+// can make WM64 fail the accumulator ceiling while WM32 remains legal. Derive both H1 rungs from the filtered set,
+// which is the claim the policy actually makes and remains correct if producer reachability expands.
+int largest_wm(std::vector<Candidate> const& legal, Candidate const& c, int below = 1 << 30) {
+  int best = -1;
+  for (auto const& q : legal)
+    if (q.tm == c.tm && q.tn == c.tn && q.wn == c.wn && q.wm < below && q.wm > best) best = q.wm;
+  return best;
 }
 
-// The guards that make those two falsifiable rather than assumed: the next-smaller WarpM, and the ratio-1 and
-// ratio-4 N geometries, at the TileM values that minimise and maximise A-smem. If one of these lands inside the
-// winner's confidence band the stratum must be expanded before anything is called a winner -- which is why they
-// are COMPILED IN rather than left as a note. A guard nobody built is not a guard.
-bool guard(Candidate const& c, int tm_lo, int tm_hi) {
+bool primary(std::vector<Candidate> const& legal, Candidate const& c) {
+  return c.wm == largest_wm(legal, c) && c.tn == 2 * c.wn;
+}
+
+// H1: for EVERY TileM, guard the next-smaller legal WM at its lightest and heaviest legal ratio-two N geometry.
+// The previous transcription restricted this to extreme TileM and kept every smaller WM at every N shape: it
+// omitted the interior-TileM guard where a recorded prefill winner lives, while compiling rows H1 never requested.
+bool h1_guard(std::vector<Candidate> const& legal, Candidate const& c) {
+  if (c.tn != 2 * c.wn) return false;
+  int const wm_max = largest_wm(legal, c);
+  if (c.wm != largest_wm(legal, c, wm_max)) return false;
+  int n_lo = std::numeric_limits<int>::max(), n_hi = 0;
+  for (auto const& q : legal)
+    if (q.tm == c.tm && primary(legal, q)) {
+      n_lo = std::min(n_lo, q.tn);
+      n_hi = std::max(n_hi, q.tn);
+    }
+  return c.tn == n_lo || c.tn == n_hi;
+}
+
+// H2: ratio-one/four N guards at the TileM values which minimise and maximise ordinary A-smem. Compute the extrema
+// per stage from reachable primary rows: a deeper stage may make the stage-2 maximum illegal, in which case the
+// maximum reachable A footprint is the next TileM down rather than "no high guard".
+bool h2_guard(std::vector<Candidate> const& legal, Candidate const& c, int tm_lo, int tm_hi) {
   if (c.tm != tm_lo && c.tm != tm_hi) return false;
-  const int wm_max = c.tm < 64 ? c.tm : 64;
-  if (c.tn == 2 * c.wn && c.wm < wm_max) return true;         // smaller WarpM
-  if (c.wm == wm_max && (c.tn == c.wn || c.tn == 4 * c.wn)) return true;   // ratio 1 and ratio 4
-  return false;
+  return c.wm == largest_wm(legal, c) && (c.tn == c.wn || c.tn == 4 * c.wn);
 }
 
 }  // namespace
@@ -84,16 +105,23 @@ int main(int argc, char** argv) {
         }
   if (ok.empty()) { std::fprintf(stderr, "no legal tactic at bits=%d tile_k=%d\n", bits, tk); return 1; }
 
-  int tm_lo = 1 << 30, tm_hi = 0;
-  for (auto const& c : ok) { if (c.tm < tm_lo) tm_lo = c.tm; if (c.tm > tm_hi) tm_hi = c.tm; }
-
   std::set<Row> rows;
   int n_prim = 0, n_guard = 0;
-  for (auto const& c : ok) {
-    const bool p = primary(c), g = guard(c, tm_lo, tm_hi);
-    if (!p && !g) continue;
-    for (int st : kStages) {
-      if (DenseSpace::topology_exclusion(c, st) != Exclusion::None) continue;
+  for (int st : kStages) {
+    std::vector<Candidate> legal;
+    for (auto const& c : ok)
+      if (DenseSpace::topology_exclusion(c, st) == Exclusion::None) legal.push_back(c);
+
+    int tm_lo = std::numeric_limits<int>::max(), tm_hi = 0;
+    for (auto const& c : legal)
+      if (primary(legal, c)) {
+        tm_lo = std::min(tm_lo, c.tm);
+        tm_hi = std::max(tm_hi, c.tm);
+      }
+    for (auto const& c : legal) {
+      bool const p = primary(legal, c);
+      bool const g = h1_guard(legal, c) || h2_guard(legal, c, tm_lo, tm_hi);
+      if (!p && !g) continue;
       if (rows.insert(Row{c.tm, c.tn, c.wm, c.wn, st}).second) { if (p) ++n_prim; else ++n_guard; }
     }
   }
