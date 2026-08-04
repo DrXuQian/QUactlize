@@ -122,6 +122,146 @@ def report(v: dict) -> str:
     return "\n".join(lines)
 
 
+# =============================================================================================================
+# COVERAGE -- A DIFFERENT QUESTION FROM RANKING, AND THE ONE THE 227-CONFIG SWEEP ACTUALLY ANSWERS.
+#
+# Everything above ranks candidates WITHIN one fixture and names a winner. That is the per-model tune's question,
+# asked often, against the handful of configs a shipped library contains.
+#
+# The big sweep asks something else. Reading TRT-LLM's fpA_intB (the complete tree, Kernels/general/w4a16_gemm/
+# fpA_intB_standalone/) settles what a library does: it COMPILES IN a small curated set -- five tile configs for
+# SM80 -- enumerates them at run time, and profiles among those. So the sweep over 227 candidates is not choosing
+# a tactic. It is choosing WHICH FEW TO COMPILE, once, for everyone. That is a set question:
+#
+#     ranking:  for THIS shape, which config is fastest?              -> one fixture, many configs
+#     coverage: which SET, shipped, is fast enough EVERYWHERE?        -> many fixtures, one set
+#
+# Ranking cannot answer it. The union of per-fixture winners is an upper bound on the set, not the set: a config
+# that wins one fixture by 1% while another already in the set is 1% behind everywhere is not worth an
+# instantiation, and a ranking report cannot see that because it never compares across fixtures.
+#
+# WHAT IS COMPUTED. For a set S and fixture f, the cost of shipping only S is the best S can do at f relative to
+# the best ANY measured candidate does at f:
+#
+#     regret(f, S) = min_{c in S, c measured at f} median(f, c) / min_c median(f, c)  -  1
+#
+# and a set that contains nothing measured at f does not cover f at all -- reported as uncovered, never as zero.
+# The greedy ladder then adds, at each step, the config that lowers the WORST regret the most, giving:
+#
+#     ship 1 config  -> worst case X% off the per-fixture best
+#     ship 2         -> Y%
+#     ...
+#
+# so the size/performance trade is read off measurements rather than argued. TRT-LLM chose five by hand and
+# labelled one of its prunes "purely to improve compilation speed"; this makes the same decision answerable.
+#
+# TWO REFUSALS, both because a coverage claim is stronger than a ranking claim and outlives it:
+#   * a fixture whose own sweep did not SEPARATE (ties inside the leader's band) has no trustworthy optimum, so
+#     regrets measured against it are noise. Those fixtures are listed and excluded from the worst-case, not
+#     quietly averaged in.
+#   * a config measured at only some fixtures cannot be credited at the others. Absence is not a zero.
+
+def coverage(samples, verdict_list):
+    """-> {ladder: [...], unresolved: [...], never_wins: [...], fixtures: n, configs: n}
+
+    Greedy set cover over fixtures, minimising worst-case regret. Deterministic: ties in the greedy step break on
+    mean regret and then on config name, so two runs over one file give one answer."""
+    med = collections.defaultdict(dict)            # fixture key -> config -> median us
+    by_fx = collections.defaultdict(lambda: collections.defaultdict(list))
+    for s in samples:
+        by_fx[tuple(s[k] for k in FIXTURE_KEYS)][config_name(s)].append(float(s["us"]))
+    for fk, cands in by_fx.items():
+        for c, v in cands.items():
+            med[fk][c] = statistics.median(v)
+
+    # A fixture that could not separate its own leader has no optimum to measure regret against.
+    unresolved = {tuple(v[k] for k in FIXTURE_KEYS) for v in verdict_list if v["ties"] or not v["ranked"]}
+    usable = [fk for fk in med if fk not in unresolved]
+    if not usable:
+        return dict(ladder=[], unresolved=sorted(str(u) for u in unresolved), never_wins=[],
+                    fixtures=0, configs=len({c for f in med.values() for c in f}))
+
+    best = {fk: min(med[fk].values()) for fk in usable}
+    all_cfgs = sorted({c for fk in usable for c in med[fk]})
+
+    def regrets(S):
+        """-> {fixture: regret or None-if-uncovered}"""
+        out = {}
+        for fk in usable:
+            have = [med[fk][c] for c in S if c in med[fk]]
+            out[fk] = (min(have) / best[fk] - 1.0) if have else None
+        return out
+
+    def score(S):
+        r = regrets(S)
+        if any(v is None for v in r.values()):
+            return (1, len([v for v in r.values() if v is None]), 0.0)   # uncovered dominates
+        return (0, max(r.values()), statistics.fmean(r.values()))
+
+    chosen, ladder = [], []
+    remaining = list(all_cfgs)
+    while remaining:
+        pick = min(remaining, key=lambda c: (score(chosen + [c]), c))
+        chosen.append(pick)
+        remaining.remove(pick)
+        r = regrets(chosen)
+        unc = [fk for fk, v in r.items() if v is None]
+        cov = [v for v in r.values() if v is not None]
+        worst_fk = max((fk for fk in r if r[fk] is not None), key=lambda fk: r[fk], default=None)
+        ladder.append(dict(
+            k=len(chosen), added=pick, set=list(chosen),
+            uncovered=len(unc),
+            worst=(max(cov) if cov else None),
+            mean=(statistics.fmean(cov) if cov else None),
+            worst_fixture=(dict(zip(FIXTURE_KEYS, worst_fk)) if worst_fk else None),
+        ))
+        if not unc and max(cov) <= 1e-12:
+            break                                   # every fixture has its own optimum in the set
+
+    winners = {min(med[fk], key=lambda c: med[fk][c]) for fk in usable}
+    never = [c for c in all_cfgs if c not in winners]
+    return dict(ladder=ladder, unresolved=sorted(str(u) for u in unresolved), never_wins=never,
+                fixtures=len(usable), configs=len(all_cfgs))
+
+
+def coverage_report(cov: dict) -> str:
+    if not cov["ladder"]:
+        return ("COVERAGE: nothing to cover. Every fixture in this file failed to separate its own leader, so\n"
+                "there is no optimum to measure a shipped set against. Widen the repeats before asking this.")
+    L = [f"COVERAGE over {cov['fixtures']} separated fixture(s), {cov['configs']} measured config(s)",
+         "  ship  worst-case  mean    added",
+         "  ----  ----------  ------  -----"]
+    for e in cov["ladder"]:
+        # A SET THAT DOES NOT COVER EVERY FIXTURE HAS NO WORST CASE -- IT HAS A HOLE. Printing the worst regret
+        # over the fixtures it does reach, next to a count of the ones it does not, reads as "0.00% -- no loss"
+        # when the truth is "this set cannot run one of the shapes at all". So the number is withheld until the
+        # hole is closed, and the reason takes its place.
+        if e["uncovered"]:
+            w, m = "no cover", "  --  "
+            note = f"   <- {e['uncovered']} shape(s) have NO config in this set; it cannot run them at all"
+        else:
+            w = f"{e['worst']*100:6.2f}%"
+            m = f"{e['mean']*100:5.2f}%"
+            note = ""
+        L.append(f"  {e['k']:>4}  {w:>10}  {m:>6}  {e['added']}{note}")
+    last = cov["ladder"][-1]
+    if last["worst"] is not None and last["worst"] <= 1e-12:
+        L.append(f"\n  {last['k']} config(s) reach EVERY fixture's own optimum. Shipping more cannot help;")
+        L.append("  shipping fewer costs the worst-case shown above.")
+    else:
+        L.append(f"\n  the ladder did not reach zero regret: worst remaining is at "
+                 f"{last['worst_fixture']}.")
+    if cov["unresolved"]:
+        L.append(f"\n  EXCLUDED, {len(cov['unresolved'])} fixture(s) did not separate their own leader, so a")
+        L.append("  regret measured against them would be noise:")
+        for u in cov["unresolved"][:6]:
+            L.append(f"      {u}")
+    if cov["never_wins"]:
+        L.append(f"\n  {len(cov['never_wins'])} config(s) win nowhere. That is a claim about THIS fixture set:")
+        L.append("  a config absent from a model's shapes has not been shown useless, only untested here.")
+    return "\n".join(L)
+
+
 SELF_TEST = """
 {"rec":"run","bench":"planted","build":"PPU_PACKED_FORMAT=0","reps":3}
 {"rec":"s","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":256,"rows":128,"mmax":420,"tm":64,"tn":128,"tk":64,"wm":64,"wn":64,"st":3,"pass":0,"us":100.0}
@@ -136,6 +276,36 @@ SELF_TEST = """
 not json at all
 {"rec":"s","fixture":"g","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":0,"rows":0,"mmax":0,"tm":64,"tn":128,"tk":64,"wm":64,"wn":64,"st":3,"pass":0,"us":50.0}
 """
+
+
+# COVERAGE PLANTED DATA. Deliberately NOT reusing SELF_TEST: every fixture there either ties or has one pass, so
+# coverage correctly refuses it -- which tests the refusal and nothing else. Here X wins at A, Y wins at B, and
+# neither wins the other, so no single config can serve both. That is the whole point of asking coverage rather
+# than reading a ranking: a per-fixture report would name two winners and say nothing about whether one suffices.
+def _s(fx, tm, tn, wm, wn, st, us, p):
+    return ('{"rec":"s","fixture":"%s","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":0,"rows":0,'
+            '"mmax":0,"tm":%d,"tn":%d,"tk":64,"wm":%d,"wn":%d,"st":%d,"pass":%d,"us":%.1f}' %
+            (fx, tm, tn, wm, wn, st, p, us))
+
+
+def _cov_data():
+    L = ['{"rec":"run","bench":"planted","build":"B","reps":3}']
+    # X = 64x128:64x64 s3     Y = 32x64:32x32 s3     Z = 16x32:16x16 s2 (measured at A only)
+    for p, jitter in enumerate((0.0, 0.5, 1.0)):
+        L += [_s("A", 64, 128, 64, 64, 3, 100 + jitter, p), _s("A", 32, 64, 32, 32, 3, 200 + jitter, p),
+              _s("A", 16, 32, 16, 16, 2, 500 + jitter, p),
+              _s("B", 64, 128, 64, 64, 3, 200 + jitter, p), _s("B", 32, 64, 32, 32, 3, 100 + jitter, p),
+              _s("C", 64, 128, 64, 64, 3, 100 + jitter, p), _s("C", 32, 64, 32, 32, 3, 105 + jitter, p)]
+    return "\n".join(L) + "\n"
+
+
+def _uncovered_data():
+    """One fixture measured ONLY by a config the other fixture never saw. Absence must read as uncovered."""
+    L = ['{"rec":"run","bench":"planted","build":"B","reps":3}']
+    for p, j in enumerate((0.0, 0.5, 1.0)):
+        L += [_s("A", 64, 128, 64, 64, 3, 100 + j, p), _s("A", 32, 64, 32, 32, 3, 300 + j, p),
+              _s("E", 16, 32, 16, 16, 2, 100 + j, p)]
+    return "\n".join(L) + "\n"
 
 
 def self_test() -> int:
@@ -158,6 +328,32 @@ def self_test() -> int:
     two = SELF_TEST + '{"rec":"run","bench":"planted","build":"PPU_PACKED_FORMAT=2","reps":3}\n'
     checks.append(("two build identities are refused", bool(incompatible(load(two)[0]))))
 
+    # ---- coverage ----------------------------------------------------------------------------------------
+    # Every fixture in SELF_TEST either ties or has one pass, so coverage must produce no ladder at all rather
+    # than a ladder over fixtures whose optima are not separated.
+    c0 = coverage(samples, verdicts(samples))
+    checks.append(("coverage refuses fixtures that did not separate", c0["ladder"] == [] and c0["fixtures"] == 0))
+
+    cs = load(_cov_data())[1]
+    c = coverage(cs, verdicts(cs))
+    checks.append(("coverage sees all three planted fixtures", c["fixtures"] == 3))
+    # THE LOAD-BEARING CHECK. X and Y each win one fixture the other loses badly, so one config cannot be
+    # enough -- and a per-fixture ranking, which is all this file could do before, cannot express that.
+    checks.append(("one config does NOT suffice when winners differ across fixtures",
+                   len(c["ladder"]) >= 2 and c["ladder"][0]["worst"] > 0.5))
+    checks.append(("two configs reach every fixture's own optimum",
+                   c["ladder"][1]["worst"] <= 1e-12 and len(c["ladder"]) == 2))
+    checks.append(("the ladder stops once regret is zero", c["ladder"][-1]["k"] == 2))
+    checks.append(("a config that wins nowhere is named", any("16x32" in n for n in c["never_wins"])))
+    # 5% at fixture C is real and must not be rounded away by the mean.
+    checks.append(("the first rung's worst case is the fixture it loses, not the average",
+                   c["ladder"][0]["worst_fixture"]["fixture"] in ("A", "B")))
+
+    us_ = load(_uncovered_data())[1]
+    u = coverage(us_, verdicts(us_))
+    checks.append(("a config absent from a fixture cannot cover it (absence is not zero regret)",
+                   u["ladder"][0]["uncovered"] == 1 and u["ladder"][0]["worst"] is not None))
+
     ok = True
     for name, passed in checks:
         print(f"  [{'ok ' if passed else 'FAIL'}] {name}")
@@ -170,6 +366,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("jsonl", nargs="?", help="a file written by BENCH_JSONL=")
     ap.add_argument("--json", action="store_true", help="emit the verdicts as JSON")
+    ap.add_argument("--coverage", action="store_true",
+                    help="which SET to compile into the library, not which config wins one shape")
     ap.add_argument("--self-test", action="store_true", help="planted data; proves each rule can fire")
     a = ap.parse_args()
 
@@ -197,6 +395,10 @@ def main() -> int:
         return 1
 
     vs = verdicts(samples)
+    if a.coverage:
+        cov = coverage(samples, vs)
+        print(json.dumps(cov, indent=2) if a.json else coverage_report(cov))
+        return 0
     if a.json:
         print(json.dumps(vs, indent=2))
     else:
