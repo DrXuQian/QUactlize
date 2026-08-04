@@ -28,7 +28,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"                      # this lives in benchmarks/ now; the repo root is one up
-EX="${EX:-$ROOT/build_w4a16_compare/examples/99_quactlize_w4a16_compare}"
+EX="${EX:-$ROOT/build_ppu/examples/99_quactlize_w4a16_compare}"
 OUT="${OUT:-$HOME/ab}"
 BAND="${BAND:-64 8 2048 2048 32 3}"                 # L=64, top-k 8, N=K=2048, gs=32, decode
 CFG="${CFG:-16x128:256 w16x16 s2}"                  # the pinned row; SPLITK_S below pins the slice count
@@ -292,7 +292,7 @@ stamp_files() {
       # Everything agrees and the binary is old. `diff --name-only HEAD` covers staged and unstaged alike; untracked
       # files are included because a new header dropped into the submodule compiles just as hard as an edited one.
       # BUILD OUTPUT IS NOT A SOURCE, and including it made this stamp SELF-INVALIDATING. build.sh compiles into
-      # build_w4a16_compare/ -- the submodule's .gitignore has `build/`, which does not match
+      # build_ppu/ -- the submodule's .gitignore has `build/`, which does not match
       # that name -- so every object file it produces is "untracked" and gets hashed. OVERLAY_STAMP is computed
       # BEFORE any compile and written to disk AFTER, so `check` immediately afterwards recomputed it over the
       # post-build tree and refused: "the compiled sources have changed since these binaries were built". Nothing

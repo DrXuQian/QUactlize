@@ -59,7 +59,7 @@ done
 rm -f "$_c"
 
 # --- the real build.sh, exactly as the box runs it, but writing NOWHERE the box would ------------------------------
-# PPU_BUILD_DIR keeps this out of build_w4a16_compare. Without it, "checking the build" DELETED
+# PPU_BUILD_DIR keeps this out of build_ppu. Without it, "checking the build" DELETED
 # the real build tree on every run -- on the box, someone's working build. JOBS=1 so the sentinel's contents are a
 # sequence rather than an interleaving.
 ( cd "$ROOT" && PPU_SDK="$SDK" PPU_BUILD_DIR="$BUILDDIR" JOBS=1 PPU_DEFS="$DEFS" TARGET="$TARGET" ./build.sh ) >"$LOG" 2>&1

@@ -330,12 +330,21 @@ echo "[build.sh] TILE=${TILE_M}x${TILE_N} WARP=${WARP_M}x${WARP_N} STAGES=${STAG
 # actlize example, and that is structural. The BUILD TREE never had to.
 #
 # .gitignore already covers build/ and build_*/, so nothing new is needed to keep it untracked.
-BUILD="${PPU_BUILD_DIR:-$HERE/build_w4a16_compare}"
+# build_ppu, NOT build/. setuptools owns build/ (build/lib.* and build/temp.*), and `setup.py clean --all`
+# removes it wholesale -- a Python rebuild would silently destroy the PPU tree. A sibling avoids that, and
+# .gitignore's existing `build_*/` already covers this name.
+#
+# The old name was build_w4a16_compare: an experiment this repo stopped being about. What is inside it --
+# examples/99_quactlize_w4a16_compare/ -- is CMake's own layout, because these targets ARE actlize examples;
+# that nesting is structural and stays.
+BUILD="${PPU_BUILD_DIR:-$HERE/build_ppu}"
 # An old tree has products in the submodule. Say so rather than leaving two candidates for `find` to pick from.
-if [ -d "$ACTLIZE/build_w4a16_compare" ] && [ "$BUILD" != "$ACTLIZE/build_w4a16_compare" ]; then
-  echo "[build.sh] removing the old in-submodule build tree $ACTLIZE/build_w4a16_compare"
-  rm -rf "$ACTLIZE/build_w4a16_compare"
-fi
+for _stale in "$ACTLIZE/build_w4a16_compare" "$HERE/build_w4a16_compare"; do
+  if [ -d "$_stale" ] && [ "$BUILD" != "$_stale" ]; then
+    echo "[build.sh] removing the stale build tree $_stale"
+    rm -rf "$_stale"
+  fi
+done
 # EXPLICIT SOURCE DIRECTORY. `cmake ..` only meant "the actlize root" while $BUILD was inside it; once the build
 # directory became overridable, `..` resolved to wherever that happened to be. Naming the source is both correct and
 # independent of where the build lands.

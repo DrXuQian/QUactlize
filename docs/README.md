@@ -96,7 +96,7 @@ if-chain) and selects one at **runtime** — no recompile to switch. Same model 
 
 ```bash
 ./build.sh    # one build with all configs baked in
-BIN=$(find "$PWD/../../../build_w4a16_compare" -name bench_cutlass_w4a16 -type f)
+BIN=$(find "$PWD/../../../build_ppu" -name bench_cutlass_w4a16 -type f)
 
 $BIN --list_configs                                                    # enumerate compiled tactics
 $BIN --m=2048 --n=4096 --k=4096 --g=128 --config=64x64:32x32:s4        # force one

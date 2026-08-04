@@ -138,7 +138,7 @@ New/changed files worth knowing:
 
 ```bash
 cd .../Kernels/general/w4a16_gemm/cutlass_w4a16
-EX=.../build_w4a16_compare/examples/99_quactlize_w4a16_compare
+EX=.../build_ppu/examples/99_quactlize_w4a16_compare
 ```
 
 **build.sh `rm -rf`s the same build dir every time**, so build a target and run it **immediately** — the previous
