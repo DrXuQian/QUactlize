@@ -1265,3 +1265,51 @@ ALSO FIXED BY ME, in case you touch these files (all in dev/, build.sh, tools/ -
     longer exists and the box fails to configure.
   * build.sh defaulted PPU_SDK to a personal home directory. This repo is published; that is both useless to
     anyone else and a leak. Unset now says so and exits.
+
+## 039 -- THE FIRST REAL SWEEP ROW FALSIFIES BOTH THE STAGE SCOPE AND H2. And it reproduces the recorded number.
+
+One MoE row came back from ppu001:
+
+    i4  64x128:64 w64x16 s6    423.96 us | 162.1 TF/s (32.4% MFU)   <-- fastest, separated
+
+BACK-TEST FIRST, because a harness that does not reproduce a known number cannot be used to overturn a rule.
+The recorded measurement (memory: ppu-moe-q4k-aiu, ppu-moe-w4a16-cutlass-vs-handwritten) is A3B FC1,
+N=1024 K=2048, 2048 tokens x top-8 over 128 experts = 16384 rows, avg 128/expert: 416 us, 165 TF/s, 33.0%
+useful MFU on the 500 TF/s fp16 peak, for BOTH the hand-written AIU kernel and cutlass on ragged.
+
+This run is N=512 K=2048, 4096 tokens x top-8 over 256 experts = 32768 rows, avg 128/expert. Different shape,
+IDENTICAL total work: 2*16384*1024*2048 == 2*32768*512*2048 == 68.72 GFLOP exactly. Time 416 -> 424 us (+1.9%),
+165 -> 162.1 TF/s, 33.0% -> 32.4%. The new harness reproduces the historical figure to within 2% on the same
+FLOP count with the rows and N redistributed. The band said "separated", so that is not a tie either.
+
+SO 32.4% IS NOT LOW, IT IS THE RECORDED RAGGED CEILING. The 49.2% in the same note is UNIFORM; the ~16-point
+gap is the masked-row structural tax, which that note measured as implementation-independent (cutlass
+ragged->uniform 16 points, hand-written useful->issued 13 points, DeepGemm pays it through padding). The 55-65%
+figures elsewhere in the record are DENSE, not MoE.
+
+NOW THE PART THAT IS ABOUT OUR RULES. The winning configuration is excluded by TWO decisions we made:
+
+  1. s6. The user's scope was "stage 大于4就没必要了" and I carried {2,3,4} into emit_dense_configs.cpp and
+     size_sweep.cpp. It never reached the MoE bench, whose own ladder is {2,3,4,6,8,12} -- and s6 won. Had the
+     scope been applied uniformly, as I was about to propose, this row would not have been built.
+
+  2. TileN/WarpN = 128/16 = 8. primary() is ratio 2; h1_guard is also ratio 2 (smaller WM); h2_guard is ratio
+     1 or 4. RATIO 8 IS IN NEITHER. I checked the generated table: X(64,128,64,16,...) is absent at every
+     stage. The pruned dense set would not have contained this geometry at any stage, s6 or otherwise.
+
+WHAT SURVIVES: H1. The winner's WM=64 IS the largest legal WarpM for TM=64, exactly as H1 predicts. The
+mechanism argument (converter work per mma = 128/WM) is intact; it is the N-geometry claim that is not.
+
+WHAT I AM NOT CLAIMING. This is ONE row, on GROUPED, at one shape. Your own rules say a winner is named per
+(operator, schema, M) and that dense does not transfer to grouped -- so this does not by itself refute H2 for
+dense. But H2's justification cited grouped evidence ("the common geometry of the recorded grouped prefill
+winners AND the final grouped decode winner"), so grouped is where it claimed to hold, and this is grouped.
+
+WHAT I THINK FOLLOWS, for you to agree or refuse:
+  * the stage axis is a per-operator question, not a global one. The MoE ladder should keep {2,3,4,6,8,12}
+    until something measures the deep stages losing, and the dense table's {2,3,4} needs the user's decision
+    re-examined rather than inherited.
+  * ratio 8 belongs in the guards at minimum. Better: state the N-geometry guard as "every legal ratio at the
+    extreme TileM" rather than an enumerated {1,2,4}, since the enumeration is what excluded the winner.
+  * before either, the honest move may be to sweep the MoE side WITHOUT the pruning policy at one shape and
+    compare against the pruned set, because that measures what the policy costs instead of arguing about it.
