@@ -5,6 +5,22 @@ exactly what output settles the question, so a partial paste is still useful.
 
 ## OPEN
 
+0. **TWO THINGS, ONE PULL.** (a) the sixth per-format oracle is newer than the last run -- expect
+   `6 passed, 24 skipped` instead of 5/20; (b) the packer now exists and can be pointed at a real checkpoint.
+
+       cd /sim/eec/shared/junfu.qx/quactlize && git pull --recurse-submodules
+       ./benchmarks/run_batch.sh pytest && ./tools/failures.sh
+
+       SO=$(find third_party/actlize/build_w4a16_compare -name libquactlize_ppu.so | head -1)
+       python3 tools/pack_gguf.py --dry-run \
+         /sim/eec/shared/AI_workspace/llm-models/Qwen3.5-35B-A3B-Q4_K_M-GGUF/Qwen3.5-35B-A3B-Q4_K_M.gguf /tmp/bc
+
+   --dry-run touches no device and writes nothing. WANTED from it: the `type mix` line. It answers the question
+   that has been open all session -- whether a _K_M checkpoint really carries more than one k-quant, and so how
+   many format-specific libraries a deployment of it needs. Drop --dry-run (with QUACTLIZE_PPU_LIB=$SO) to
+   actually pack.
+
+
 **WHEN SOMETHING IS RED, PASTE THIS.** No arguments, safe any time, output sized for a chat message:
 
     ./tools/failures.sh
