@@ -118,7 +118,7 @@ logical mma view, and a re-derived chunk gate (l41's `at_plain/4` is valid only 
 ## What to measure
 
 `build.sh` does `rm -rf` on its build dir and emits to
-`$ACTLIZE/build_w4a16_compare/examples/99_quactlize_w4a16_compare/<target>` — it is NOT in the source dir, and the
+`$HERE/build_w4a16_compare/examples/99_quactlize_w4a16_compare/<target>` — it is NOT in the source dir, and the
 script's closing `built: ...` line prints the full path. **Two builds write the same path, so the second overwrites
 the first**: any A/B must copy the binary aside in between. (An acu capture of "the best config" that came back at
 ~50% instead of 63.7% is what this footgun looks like.)
@@ -126,7 +126,7 @@ the first**: any A/B must copy the binary aside in between. (An acu capture of "
 ```
 # Derived, not hardcoded -- run from the repo root (where ./build.sh lives). The literal that used to be here
 # still said .../Kernels/... after the repo was renamed to quactlize, so every paste of it hit "No such file".
-BIN=$PWD/third_party/actlize/build_w4a16_compare/examples/99_quactlize_w4a16_compare
+BIN=$PWD/build_w4a16_compare/examples/99_quactlize_w4a16_compare
 TARGET=test_q3_bconcat_real  ./build.sh && $BIN/test_q3_bconcat_real                 # numerics FIRST
 TARGET=test_q3_bconcat_bench ./build.sh && $BIN/test_q3_bconcat_bench 2048 4096 4096 16
 

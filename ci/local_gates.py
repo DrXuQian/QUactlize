@@ -451,7 +451,7 @@ def lint_stale_repo_path():
     THE FAILURE THIS COMES FROM. The benchmark binaries printed their profile hint as `$BIN/test_gemv_perf ...`,
     and the single document that defined $BIN still read
 
-        BIN=/sim/eec/shared/junfu.qx/<the-pre-rename-repo-dir>/third_party/actlize/build_w4a16_compare/...
+        BIN=/sim/eec/shared/junfu.qx/<the-pre-rename-repo-dir>/build_w4a16_compare/...
 
     long after the repo was renamed to quactlize. Copying the printed hint therefore produced "No such file or
     directory" on a path the operator never typed -- and the hint itself looked correct, because the stale half was

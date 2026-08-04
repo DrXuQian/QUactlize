@@ -321,7 +321,21 @@ echo "[build.sh] TILE=${TILE_M}x${TILE_N} WARP=${WARP_M}x${WARP_N} STAGES=${STAG
 # OVERRIDABLE, because build.sh rm -rf's this and something that RUNS build.sh to check it must be able to point it
 # somewhere disposable. Without the override, ci/box_build_dryrun.sh destroyed the real build tree every time the
 # local tier ran -- on the box, that is someone's working build.
-BUILD="${PPU_BUILD_DIR:-$ACTLIZE/build_w4a16_compare}"
+# REPO-LOCAL, NOT INSIDE THE SUBMODULE. This defaulted to $ACTLIZE/build_w4a16_compare, i.e. build products in
+# third_party/actlize's worktree: it dirties the submodule's git status, `git submodule update` can destroy it,
+# and by convention third_party/ holds vendored SOURCE, not our outputs. It is also why every command in this
+# repo had to locate a binary with `find third_party/actlize/build_w4a16_compare ...`.
+#
+# The OVERLAY (examples/99_quactlize_w4a16_compare) genuinely must live inside actlize -- it is compiled as an
+# actlize example, and that is structural. The BUILD TREE never had to.
+#
+# .gitignore already covers build/ and build_*/, so nothing new is needed to keep it untracked.
+BUILD="${PPU_BUILD_DIR:-$HERE/build_w4a16_compare}"
+# An old tree has products in the submodule. Say so rather than leaving two candidates for `find` to pick from.
+if [ -d "$ACTLIZE/build_w4a16_compare" ] && [ "$BUILD" != "$ACTLIZE/build_w4a16_compare" ]; then
+  echo "[build.sh] removing the old in-submodule build tree $ACTLIZE/build_w4a16_compare"
+  rm -rf "$ACTLIZE/build_w4a16_compare"
+fi
 # EXPLICIT SOURCE DIRECTORY. `cmake ..` only meant "the actlize root" while $BUILD was inside it; once the build
 # directory became overridable, `..` resolved to wherever that happened to be. Naming the source is both correct and
 # independent of where the build lands.
@@ -377,6 +391,10 @@ fi
 # running all of them at once OOM-killed the front end locally -- an OOM kill looks like a compile failure with an empty
 # log, which is the least informative way for a build to fail. `JOBS=4 ./build.sh` when memory is tight.
 make -j"${JOBS:-$(nproc)}" "$TARGET" 2>&1 | tee make.log
+# PRINT THE BINARY. Every command in BOX.md and the docs opened with a `find ... -perm -u+x -print -quit`
+# because nothing said where the product landed; a find can also pick up a survivor of an earlier run, which is
+# how a "rebuilt" binary turns out to be the old one.
+_BIN_PATH=$(find "$BUILD" -type f -name "$TARGET" -perm -u+x -print -quit 2>/dev/null || true)
 
 # CMAKE RECEIVING THE DEFINES IS NOT THE SAME AS THIS TARGET GETTING THEM, and the difference is invisible in a perf
 # number. The defines used to be attached to three targets by hand, so
@@ -432,3 +450,10 @@ case "$TARGET" in
   *)
     echo "run:   $BIN --m=2048 --n=4096 --k=4096 --g=128 --mode=1 --iterations=100" ;;
 esac
+
+if [ -n "${_BIN_PATH:-}" ]; then
+  echo ""
+  echo "[build.sh] BINARY: $_BIN_PATH"
+  echo "           BIN=\$($0 --print-bin) is not a thing; copy the line above, or:"
+  echo "           BIN=$_BIN_PATH"
+fi

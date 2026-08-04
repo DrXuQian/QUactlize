@@ -12,7 +12,7 @@ set -Eeuo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACTLIZE="$(cd "$HERE/../../../third_party/actlize" && pwd)"
-BUILD="$ACTLIZE/build_w4a16_compare"
+BUILD="$HERE/build_w4a16_compare"
 
 M="${M:-2048}"; N="${N:-4096}"; K="${K:-4096}"; G="${G:-128}"; MODE="${MODE:-1}"
 ITERS_WARM="${ITERS_WARM:-30}"; ITERS_FINAL="${ITERS_FINAL:-200}"

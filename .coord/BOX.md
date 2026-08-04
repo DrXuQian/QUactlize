@@ -27,7 +27,7 @@ H1. **THE M-SWEEP (INBOX 025), and any other tactic sweep.** The user set the or
 
        cd /sim/eec/shared/junfu.qx/quactlize && git pull --recurse-submodules
        TARGET=test_fpA_intB_ppu ./build.sh
-       BIN=$(find third_party/actlize/build_w4a16_compare -type f -name test_fpA_intB_ppu -perm -u+x -print -quit)
+       BIN=$(find build_w4a16_compare -type f -name test_fpA_intB_ppu -perm -u+x -print -quit)
        test -n "$BIN"
        for M in 1 8 64 512 2048; do
          "$BIN" "$M" 4096 4096 32 | grep '^  WINNER m='
@@ -47,7 +47,7 @@ These are correctness and inspection, not tactic sweeps, so the hold above does 
        cd /sim/eec/shared/junfu.qx/quactlize && git pull --recurse-submodules
        ./benchmarks/run_batch.sh pytest && ./tools/failures.sh
 
-       SO=$(find third_party/actlize/build_w4a16_compare -name libquactlize_ppu.so | head -1)
+       SO=$(find build_w4a16_compare -name libquactlize_ppu.so | head -1)
        python3 tools/pack_gguf.py --dry-run \
          /sim/eec/shared/AI_workspace/llm-models/Qwen3.5-35B-A3B-Q4_K_M-GGUF/Qwen3.5-35B-A3B-Q4_K_M.gguf /tmp/bc
 
@@ -86,7 +86,7 @@ These are correctness and inspection, not tactic sweeps, so the hold above does 
 
        cd /sim/eec/shared/junfu.qx/quactlize && git pull --recurse-submodules
        MOE_FORMATS="i4" TARGET=test_lowbit_moe_bench ./build.sh
-       BIN=$(find third_party/actlize/build_w4a16_compare -type f -name test_lowbit_moe_bench -perm -u+x -print -quit)
+       BIN=$(find build_w4a16_compare -type f -name test_lowbit_moe_bench -perm -u+x -print -quit)
        test -n "$BIN"
 
        # PINNED ROUTER fixture; args: L(experts) TOKENS N K gs mode=4 top-k=8.
@@ -137,7 +137,7 @@ These are correctness and inspection, not tactic sweeps, so the hold above does 
    RUN ONE, THEN LOOK:
 
        MOE_FORMATS="i4" TARGET=test_lowbit_moe_bench ./build.sh
-       BIN=$(find third_party/actlize/build_w4a16_compare -type f -name test_lowbit_moe_bench -perm -u+x -print -quit)
+       BIN=$(find build_w4a16_compare -type f -name test_lowbit_moe_bench -perm -u+x -print -quit)
        export BENCH_JSONL=~/sweep.jsonl
        # ...one line from `--emit moe`, e.g. the 4096-token expert_gate shape...
        python3 benchmarks/analyse.py ~/sweep.jsonl
