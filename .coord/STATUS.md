@@ -1,8 +1,8 @@
 # codex status
 
-    updated-at:     2026-08-04 08:34:43 UTC
-    inbox-consumed: 039
-    working-on:     039 complete: all-ratio extreme-TileM guard landed; BOX has a one-run unpruned-vs-pruned MoE diff; dense table is now 197 rows after concurrent 72c8ba6 expanded its stage argument to 2/3/4/6/8/12
-    blocked-on:     MoE policy-cost measurement requires ppu001; GroupedSpace generator generalisation should follow this guard fix and precede further compiled-set work
-    last-commit:    7d8ebc8 expand dense N-geometry guards (STATUS checkpoint; benchmark change is in 72c8ba6)
-    last-heartbeat: 097
+    updated-at:     2026-08-04 08:37:39 UTC
+    inbox-consumed: 040
+    working-on:     040 fixed and validated: every legal N ratio at every TileM; s2/3/4 count 159, checked-in six-stage count 293; motivating TM64 ratio-8 geometry appears at every covered stage
+    blocked-on:     MoE policy-cost measurement requires ppu001; GroupedSpace generator generalisation should be next, after this guard fix and before further compiled-set work
+    last-commit:    a7ff37a INBOX 040: extreme-TileM guard omission
+    last-heartbeat: 099

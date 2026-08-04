@@ -77,14 +77,13 @@ bool h1_guard(std::vector<Candidate> const& legal, Candidate const& c) {
   return c.tn == n_lo || c.tn == n_hi;
 }
 
-// N-geometry guard: retain EVERY legal TileN/WarpN ratio at the TileM values which minimise and maximise ordinary
-// A-smem. An enumerated {1,4} guard had no mechanism for excluding ratio 8, and the first separated grouped winner
-// was exactly ratio 8. That grouped row does not decide dense's primary geometry, so ratio 2 remains the primary
-// hypothesis above; it does mean a guard justified from grouped winners must not silently omit another legal ratio.
-// Compute the extrema per stage from all reachable rows: a deeper stage may make the stage-2 maximum illegal, in
-// which case the maximum reachable A footprint is the next TileM down rather than "no high guard".
-bool n_geometry_guard(std::vector<Candidate> const& legal, Candidate const& c, int tm_lo, int tm_hi) {
-  if (c.tm != tm_lo && c.tm != tm_hi) return false;
+// N-geometry guard: retain EVERY legal TileN/WarpN ratio at EVERY TileM. An enumerated {1,4} guard had no mechanism
+// for excluding ratio 8, and restricting the expanded guard to extreme TileM still omitted the motivating winner:
+// grouped i4 64x128:64 w64x16 s6 is ratio 8 at interior TileM=64. That grouped row does not select dense's winner,
+// but it falsifies the grouped evidence used to prune N geometry. Until dense measurements support a replacement,
+// there is no justified N-ratio exclusion. H1 still prunes WarpM: each N geometry keeps its largest legal WarpM,
+// while the next-smaller-WarpM guards above test H1 at the lightest and heaviest ratio-two shapes for every TileM.
+bool n_geometry_guard(std::vector<Candidate> const& legal, Candidate const& c) {
   return c.wm == largest_wm(legal, c);
 }
 
@@ -124,14 +123,9 @@ int main(int argc, char** argv) {
     for (auto const& c : ok)
       if (DenseSpace::topology_exclusion(c, st) == Exclusion::None) legal.push_back(c);
 
-    int tm_lo = std::numeric_limits<int>::max(), tm_hi = 0;
-    for (auto const& c : legal) {
-      tm_lo = std::min(tm_lo, c.tm);
-      tm_hi = std::max(tm_hi, c.tm);
-    }
     for (auto const& c : legal) {
       bool const p = primary(legal, c);
-      bool const g = h1_guard(legal, c) || n_geometry_guard(legal, c, tm_lo, tm_hi);
+      bool const g = h1_guard(legal, c) || n_geometry_guard(legal, c);
       if (!p && !g) continue;
       if (rows.insert(Row{c.tm, c.tn, c.wm, c.wn, st}).second) { if (p) ++n_prim; else ++n_guard; }
     }

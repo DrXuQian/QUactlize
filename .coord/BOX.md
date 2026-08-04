@@ -190,12 +190,10 @@ These are correctness and inspection, not tactic sweeps, so the hold above does 
        kept = set()
        for fx, configs in by_fixture.items():
            wms = collections.defaultdict(set)
-           by_stage = collections.defaultdict(set)
            for c in configs:
                q = dconfig(c)
                base = (q["schema"], q["tk"], q["st"])
                wms[(base, q["tm"], q["tn"], q["wn"])].add(q["wm"])
-               by_stage[base].add(c)
 
            primary = set()
            primary_tn = collections.defaultdict(set)
@@ -208,11 +206,10 @@ These are correctness and inspection, not tactic sweeps, so the hold above does 
            for c in configs:
                q = dconfig(c); base = (q["schema"], q["tk"], q["st"])
                ladder = sorted(wms[(base, q["tm"], q["tn"], q["wn"])])
-               tms = [dconfig(x)["tm"] for x in by_stage[base]]
                ptn = primary_tn[(base, q["tm"])]
                h1 = (q["tn"] == 2 * q["wn"] and len(ladder) >= 2 and q["wm"] == ladder[-2]
                      and ptn and q["tn"] in (min(ptn), max(ptn)))
-               n_guard = q["tm"] in (min(tms), max(tms)) and q["wm"] == ladder[-1]
+               n_guard = q["wm"] == ladder[-1]  # every legal N ratio at every TileM; H1 still prunes WarpM
                if c in primary or h1 or n_guard:
                    kept.add((fx, c))
 
