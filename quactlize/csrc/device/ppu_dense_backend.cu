@@ -33,15 +33,9 @@ enum class DenseConfigId {
 #undef QUACTLIZE_PPU_DENSE_CONFIG_ID
 };
 
-struct DenseConfig {
-  DenseConfigId id;
-  char const* name;
-  int tile_m, tile_n, warp_m, warp_n, stages;
-};
-
-constexpr DenseConfig kDenseConfigs[] = {
+constexpr quactlize_ppu_config_v1 kDenseConfigs[] = {
 #define QUACTLIZE_PPU_DENSE_CONFIG_ROW(ID, NAME, TM, TN, WM, WN, STAGES) \
-  {DenseConfigId::ID, NAME, TM, TN, WM, WN, STAGES},
+  {false, NAME, TM, TN, WM, WN, STAGES},
   QUACTLIZE_PPU_DENSE_CONFIGS(QUACTLIZE_PPU_DENSE_CONFIG_ROW)
 #undef QUACTLIZE_PPU_DENSE_CONFIG_ROW
 };
@@ -214,6 +208,11 @@ int dense(uint16_t const* act, uint8_t const* low, uint8_t const* high,
 }
 
 }  // namespace
+
+extern "C" int32_t quactlize_ppu_list_configs(quactlize_ppu_config_v1 const** configs) {
+  if (configs) *configs = kDenseConfigs;
+  return int32_t(sizeof(kDenseConfigs) / sizeof(kDenseConfigs[0]));
+}
 
 extern "C" int quactlize_ppu_dense_lowbit(uint16_t const* act, uint8_t const* low, uint8_t const* high,
                                             uint16_t const* scale, uint16_t const* zero, uint16_t* out,

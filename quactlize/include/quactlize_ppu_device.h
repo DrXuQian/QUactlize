@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#include "quactlize_ppu_config.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
