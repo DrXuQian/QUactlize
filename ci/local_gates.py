@@ -343,6 +343,65 @@ def lint_fixture_flags():
     return "PASS", f"all {len(fx.DENSE_FLAGS)} emitted dense options are parsed by the bench", 0.0
 
 
+def lint_config_abi_matches_header():
+    """THE ctypes MIRROR OF quactlize_ppu_config_v1 MUST MATCH THE HEADER, FIELD FOR FIELD, IN ORDER.
+
+    tools/list_shipped.py reads the library's config inventory through ctypes. That Structure is a SECOND COPY of
+    a layout defined in quactlize/include/quactlize_ppu_config.h, and the two going out of step does not fail
+    loudly: ctypes reads whatever bytes are at the offsets it believes in and returns plausible integers. A
+    reordered or inserted field yields a shipped-config list that is wrong in a way no downstream check can see,
+    because every value still looks like a tile dimension.
+
+    So this parses the header's struct body and compares names, order and type class against the ctypes
+    _fields_. The header is the definition; the mirror follows it.
+    """
+    import re as _re
+    hdr = ROOT / "quactlize" / "include" / "quactlize_ppu_config.h"
+    tool = ROOT / "tools" / "list_shipped.py"
+    if not hdr.is_file():
+        return "SKIP", "quactlize_ppu_config.h not present yet", 0.0
+    if not tool.is_file():
+        return "FAIL", "tools/list_shipped.py is missing but the header it mirrors exists", 0.0
+
+    body = _re.search(r"typedef\s+struct\s+quactlize_ppu_config_v1\s*\{(.*?)\}", hdr.read_text(), _re.S)
+    if not body:
+        return "FAIL", "could not find the quactlize_ppu_config_v1 struct body in the header", 0.0
+    C_TO_CLASS = {"bool": "bool", "char const*": "str", "const char*": "str",
+                  "int32_t": "int", "int64_t": "int", "uint32_t": "int", "float": "float"}
+    hdr_fields = []
+    for line in body.group(1).splitlines():
+        line = _re.sub(r"//.*$", "", line).strip().rstrip(";")
+        if not line or line.startswith("/*") or line.startswith("*"):
+            continue
+        m = _re.match(r"^(.*?)\s*\*?\s*(\w+)$", line)
+        if not m:
+            continue
+        ctype, name = m.group(1).strip(), m.group(2)
+        if "char" in ctype:
+            ctype = "char const*"
+        hdr_fields.append((name, C_TO_CLASS.get(ctype, ctype)))
+    if not hdr_fields:
+        return "FAIL", "parsed the struct body but found no fields; the parser, not the header, is wrong", 0.0
+
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ls", tool)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    import ctypes as _c
+    PY_TO_CLASS = {_c.c_bool: "bool", _c.c_char_p: "str", _c.c_int32: "int",
+                   _c.c_int64: "int", _c.c_uint32: "int", _c.c_float: "float"}
+    py_fields = [(n, PY_TO_CLASS.get(t, str(t))) for n, t in mod.Config._fields_]
+
+    if py_fields != hdr_fields:
+        n = min(len(py_fields), len(hdr_fields))
+        first = next((i for i in range(n) if py_fields[i] != hdr_fields[i]), n)
+        return "FAIL", (f"ctypes mirror and header disagree at field {first}: header has "
+                        f"{hdr_fields[first] if first < len(hdr_fields) else '<end>'}, list_shipped.py has "
+                        f"{py_fields[first] if first < len(py_fields) else '<end>'}. ctypes will read the wrong "
+                        f"offsets and return plausible numbers rather than fail"), 0.0
+    return "PASS", f"ctypes mirror matches the header's {len(hdr_fields)} fields in order and type class", 0.0
+
+
 def lint_tactic_spaces_agree():
     """DENSE AND GROUPED MUST SEARCH THE SAME SET, or a comparison between them measures the sets.
 
@@ -582,6 +641,7 @@ def main():
                 ("lint", "emitted bench flags are ones the bench parses", lint_fixture_flags),
                 ("lint", "every INBOX item is consumed, or is explained by a call in flight", lint_inbox_delivered),
                 ("lint", "dense and grouped tactic spaces agree, and the comparator fires", lint_tactic_spaces_agree),
+                ("lint", "the ctypes config mirror matches its C header field for field", lint_config_abi_matches_header),
     ("registry", "declarations vs source", None)])
     # MATCH THE KIND AS WELL AS THE NAME. `-k lint` matched NOTHING, because a lint's name is its description
     # ("duplicate unroll directives") and the word "lint" only appears in the kind. The run then printed
