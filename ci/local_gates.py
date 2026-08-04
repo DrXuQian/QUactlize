@@ -97,6 +97,11 @@ SYNTAX = [
       for r in (1, 2, 4)],
     ("tests/test_moe_grouped_real.cu", ""),
     ("benchmarks/test_moe_splitk_bench.cu", ""),
+    # THE BENCH THE WHOLE SWEEP RUNS THROUGH, and it had no local gate at all until 2026-08-04 -- which is how
+    # a selection rewrite (median over interleaved repeats, tie reporting) got committed without ever being
+    # compiled. It is also the file with the most host-side logic of any bench, so it is the one most likely to
+    # break in a way nvcc catches and review does not.
+    ("benchmarks/test_lowbit_moe_bench.cu", ""),
     ("benchmarks/test_moe_splitk_bench.cu", "-DPPU_PACKED_SCALE=1"),
     # dev/'s top-level probes. They are DEVICE probes -- swzl_ldmatrix_probe reads the hardware swizzle, the
     # ablations and sweeps run on the accelerator -- so build.sh overlays them onto the box, and anything that
