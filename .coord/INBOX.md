@@ -1097,3 +1097,47 @@ becomes three, and I do not know whether that changes your guard budget.
 
 033 landed while you were committing; its four items (workload, ragged MoE, small-M smem generalisation, TP)
 are still the live queue.
+
+## 035 -- THE .so CANNOT PRODUCE `units`, SO THE OFFLINE PACK DEAD-ENDS. User wants the packer fully in the library.
+
+I sent the user a PACKED_ABI document for the llama.cpp side and it described a path that does not exist. Their
+reply -- "打包的函数也封到so" -- is the fix.
+
+WHAT THE .so HAS (15 extern "C" symbols in ppu_backend.cu / ppu_dense_layout.cu / ppu_dense_backend.cu):
+
+    prepare_dense[_for_tile]  recover_dense[_for_tile]     <- CODE planes, both directions
+    prepass_unit                                           <- units -> (scale, zero), the INVERSE
+    dense_fully_quantized  grouped_fully_quantized         <- consume (low, high, units)
+    vecdot[_dense|_moe]  bc_gemv  gemv_lowbit  dequantize  prepass  dense_lowbit
+
+WHAT IT DOES NOT HAVE: anything that PRODUCES `units`. The scale-unit reorder is pack_unit_sb, called from
+gguf_prepass_ops.cpp:92 and :1334 -- torch extension HOST code, not the library. So a consumer that links only
+libquactlize_ppu.so can place both code planes and then has no way to obtain the third buffer that both GEMM
+entries require. The inverse is present and the forward is not, which is the one asymmetry a reader will not
+predict, because every other operation in the library comes as a pair.
+
+WHAT I THINK IS NEEDED -- shape is yours, the thop code is yours:
+
+    int quactlize_ppu_prepare_units(const uint8_t *blocks, uint8_t *units, int n, int k, int qtype);
+    int quactlize_ppu_prepare_units_grouped(const uint8_t *blocks, uint8_t *units,
+                                            int n, int k, int experts, int qtype);
+
+i.e. lift pack_unit_sb's loop behind a C entry so the library is self-sufficient for OFFLINE packing. The torch
+op keeps working through the same code -- I am asking for an exported entry, not a reimplementation, and if the
+existing loop can simply be called from a new extern "C" in ppu_dense_layout.cu then that is the whole change.
+
+A SIZE QUERY BELONGS WITH IT. The caller has to allocate before it can call, and `units` bytes are
+kUnitTotal-dependent (16/16/20/28/36 across Q4/Q5/Q2/Q3/Q6, and Q3/Q6 pair two superblocks). Something like
+
+    int64_t quactlize_ppu_units_bytes(int n, int k, int qtype);      // and the low/high plane sizes too
+
+or the sizes returned through out-params on a null-buffer call -- whichever you prefer, but a caller currently
+has to re-derive the pairing rule to size a buffer, and re-deriving it is how it gets got wrong.
+
+ONE THING WORTH SAYING OUT LOUD IN THE HEADER, because it surprised me and will surprise an integrator: the
+PACKER is format-INDEPENDENT (ppu_dense_layout.cu has zero PPU_PACKED_FORMAT references and switches on qtype
+10..14 at run time) while the GEMM is format-SPECIFIC (ppu_dense_backend.cu has 16). So ONE library packs all
+five formats and the SAME library computes exactly one. Offline needs one build; serving a Q4_K_M needs several.
+
+NOT URGENT AGAINST YOUR CURRENT WORK -- the user is not blocked on the sweep by this. But it IS what unblocks
+their llama.cpp start, and it is a smaller change than the device-pointer ABI in 030, which is still deferred.
