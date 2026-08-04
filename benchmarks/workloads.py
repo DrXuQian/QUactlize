@@ -153,29 +153,31 @@ def rows_per_expert(m: int, experts: int, topk: int) -> float:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--check", action="store_true", help="report what is missing and the command that supplies it")
+    ap.add_argument("--confirm", action="store_true",
+                    help="print the box commands that confirm these shapes against the actual checkpoints")
     a = ap.parse_args()
 
-    print(f"n-token axis: {N_TOKENS}")
-    print("  M=1 is the GEMV kernel, not this sweep. M=2 and M=4 are the hole described in the docstring:")
-    for m in (2, 4, 64):
-        print(f"    M={m:<5} smallest tile is TileM=16 -> {100*(1-m/16):.0f}% of the tile's rows are discarded"
-              if m < 16 else f"    M={m:<5} fills at least one 16-row tile")
+    print(f"n-token axis: {N_TOKENS}\n")
+    for name, cfg in MODELS.items():
+        print(f"== {name}  ({cfg['kind']}, tp={cfg['tp']}) ==")
+        for nm, n, k, split in projections(cfg):
+            print(f"     {nm:<12} n={n:<6} k={k:<6} {split}-parallel")
+        if cfg["kind"] == "moe":
+            # THE LINE THAT REFRAMES THE SWEEP. At M<=4 no expert gets two rows: the kernel visits a SUBSET of
+            # experts and does one row in each. That is not a small-M GEMM, it is the Mmax==1 shape.
+            print(f"     rows/expert = M*{cfg['topk']}/{cfg['experts']} = M/{cfg['experts']//cfg['topk']}:")
+            for m in N_TOKENS:
+                r = rows_per_expert(m, cfg["experts"], cfg["topk"])
+                note = f"  <- only {m*cfg['topk']} experts touched, ONE row each" if r < 1 else ""
+                print(f"        M={m:<5} {r:>7.2f}{note}")
+        print()
 
-    missing = [n for n, v in MODELS.items() if v["shapes"] is None]
-    if not a.check:
-        print(f"\nshapes pending for: {', '.join(missing)}")
-        return 0
-
-    print("\n== what is missing ==")
-    for name in missing:
-        kind, path = CHECKPOINTS[name]
-        print(f"  {name}  ({MODELS[name]['kind']}, tp={MODELS[name]['tp']})")
-        print(f"      python3 tools/inspect_models.py {kind} {path}")
-    print("\n  WANTED per model: hidden_size, intermediate_size, moe_intermediate_size, num_experts,\n"
-          "  num_experts_per_tok, and the per-layer (n, k) of each distinct projection. For the 122B also the\n"
-          "  serving TP convention -- which axis the 2-card split halves -- because both exist and the sweep\n"
-          "  tunes the wrong GEMM if it is assumed.")
+    if a.confirm:
+        print("== confirm against the checkpoints (config.json is not what we load) ==")
+        for name, (kind, path) in CHECKPOINTS.items():
+            print(f"  {name}\n      python3 tools/inspect_models.py {kind} {path}")
+        print("\n  A disagreement between these and the config.json values above is the checkpoint's win:\n"
+              "  a quantised repo can differ, and the GGUF's tensor shapes are what the kernel sees.")
     return 0
 
 

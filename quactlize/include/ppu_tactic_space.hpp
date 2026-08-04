@@ -54,6 +54,8 @@ enum class Exclusion {
   LowDelivery,
   HighDelivery,
   MinimumStageSmem,
+  CompactAUnavailable,
+  CompactARowExtent,
   ProducerWarpN,
   ProducerMap,
 };
@@ -69,7 +71,9 @@ constexpr char const* exclusion_clause(Exclusion e) {
     case Exclusion::HighFoldDoesNotDivideTileN: return "the derived high-plane fold does not divide TileN";
     case Exclusion::LowDelivery: return "the low plane over-delivers the warp fragment";
     case Exclusion::HighDelivery: return "the high plane over-delivers the warp fragment";
-    case Exclusion::MinimumStageSmem: return "the conservative gs16 scale+zero footprint exceeds 256KB even at stage 2";
+    case Exclusion::MinimumStageSmem: return "the conservative gs16 scale+zero footprint exceeds the 256KB block limit";
+    case Exclusion::CompactAUnavailable: return "the selected folded or two-plane collective has no compact-A reader";
+    case Exclusion::CompactARowExtent: return "compact-A rows must be one of the built small-M capacities 1, 2, or 4 and divide TileM";
     case Exclusion::ProducerWarpN: return "the offline producer exposes only consumer-validated WarpN values through 64";
     case Exclusion::ProducerMap: return "the Q6 two-plane inverse at TileK=256 is incomplete";
   }
@@ -103,27 +107,67 @@ constexpr Exclusion common_kernel_exclusion(Candidate c) {
   return Exclusion::None;
 }
 
-constexpr Exclusion common_topology_exclusion(Candidate c, int stages = 2) {
+constexpr Exclusion common_non_smem_exclusion(Candidate c) {
   if (auto const e = common_kernel_exclusion(c); e != Exclusion::None) return e;
   if ((c.wm * c.wn) / 32 > 192)
     return Exclusion::AccumulatorRegisters;
-
-  // Match moe_ok's conservative stage-2 existence test exactly. Fold cancels from B bytes; scale+zero is sized for
-  // the smallest runtime group (16), because a too-loose filter produces a fake winner when initialize fails.
-  int64_t const per_stage = int64_t(c.tm) * c.tk * 2
-                          + int64_t(c.tn) * c.tk * (c.spec.low_bits + c.spec.high_bits) / 8
-                          + int64_t(c.tn) * (c.tk / 16) * 2 * 2;
-  if (per_stage * stages > 262144) return Exclusion::MinimumStageSmem;
   return Exclusion::None;
 }
 
-constexpr Exclusion common_sweep_exclusion(Candidate c) {
-  if (auto const e = common_topology_exclusion(c, 2); e != Exclusion::None) return e;
+constexpr int64_t common_per_stage_smem(Candidate c, int a_rows) {
+  return int64_t(a_rows) * c.tk * 2
+       + int64_t(c.tn) * c.tk * (c.spec.low_bits + c.spec.high_bits) / 8
+       + int64_t(c.tn) * (c.tk / 16) * 2 * 2;
+}
+
+constexpr Exclusion common_topology_exclusion_with_a_rows(Candidate c, int stages, int a_rows) {
+  if (auto const e = common_non_smem_exclusion(c); e != Exclusion::None) return e;
+
+  // Match moe_ok's conservative stage-2 existence test exactly. Fold cancels from B bytes; scale+zero is sized for
+  // the smallest runtime group (16), because a too-loose filter produces a fake winner when initialize fails. A is
+  // parameterised separately: ordinary kernels pass TileM, compact small-M specialisations pass their row capacity.
+  if (common_per_stage_smem(c, a_rows) * stages > 262144) return Exclusion::MinimumStageSmem;
+  return Exclusion::None;
+}
+
+constexpr Exclusion common_topology_exclusion(Candidate c, int stages = 2) {
+  return common_topology_exclusion_with_a_rows(c, stages, c.tm);
+}
+
+// PPU_A_CPASYNC currently exists in the ordinary, unfolded, one-plane collective. Folded low planes and every
+// two-plane format select different collective types; their type-level witness is zero and their launcher rejects a
+// compact build. Keep that reachability fact next to the footprint equation so the host inventory cannot claim that
+// m*TK*2 is available for a collective that still allocates TileM*TK*2.
+constexpr bool common_compact_a_supported(Candidate c) {
+  return c.spec.high_bits == 0 && fold_for(c.spec.low_bits, c.tk) == 1;
+}
+
+constexpr Exclusion common_compact_a_topology_exclusion(Candidate c, int stages, int problem_m) {
+  if (auto const e = common_non_smem_exclusion(c); e != Exclusion::None) return e;
+  if (!common_compact_a_supported(c)) return Exclusion::CompactAUnavailable;
+  if (!((problem_m == 1 || problem_m == 2 || problem_m == 4) && problem_m <= c.tm && c.tm % problem_m == 0))
+    return Exclusion::CompactARowExtent;
+  return common_topology_exclusion_with_a_rows(c, stages, problem_m);
+}
+
+constexpr Exclusion common_producer_exclusion(Candidate c) {
   // The sweep packer places each exact candidate geometry; it is not restricted to ppu_dense_layout's canonical
   // artifact shape. WN=128 remains outside the producer's validated domain, and Q6/TK256 is the one known bad map.
   if (c.wn > 64) return Exclusion::ProducerWarpN;
   if (c.spec.format == Format::Q6_K && c.tk == 256) return Exclusion::ProducerMap;
   return Exclusion::None;
+}
+
+// Everything that determines whether some topology for the candidate may be built, except the M- and stage-dependent
+// shared footprint. size_sweep.cpp uses this before asking both the ordinary and compact topology predicates.
+constexpr Exclusion common_static_sweep_exclusion(Candidate c) {
+  if (auto const e = common_non_smem_exclusion(c); e != Exclusion::None) return e;
+  return common_producer_exclusion(c);
+}
+
+constexpr Exclusion common_sweep_exclusion(Candidate c) {
+  if (auto const e = common_topology_exclusion(c, 2); e != Exclusion::None) return e;
+  return common_producer_exclusion(c);
 }
 
 // Separate wrappers are intentional.  The emitter asks each launcher for its own answer and a comparator checks them;
@@ -133,6 +177,11 @@ struct DenseSpace {
   static constexpr Exclusion topology_exclusion(Candidate c, int stages = 2) {
     return common_topology_exclusion(c, stages);
   }
+  static constexpr bool compact_a_supported(Candidate c) { return common_compact_a_supported(c); }
+  static constexpr Exclusion compact_a_topology_exclusion(Candidate c, int stages, int problem_m) {
+    return common_compact_a_topology_exclusion(c, stages, problem_m);
+  }
+  static constexpr Exclusion static_sweep_exclusion(Candidate c) { return common_static_sweep_exclusion(c); }
   static constexpr Exclusion sweep_exclusion(Candidate c) { return common_sweep_exclusion(c); }
 };
 struct GroupedSpace {
@@ -140,6 +189,11 @@ struct GroupedSpace {
   static constexpr Exclusion topology_exclusion(Candidate c, int stages = 2) {
     return common_topology_exclusion(c, stages);
   }
+  static constexpr bool compact_a_supported(Candidate c) { return common_compact_a_supported(c); }
+  static constexpr Exclusion compact_a_topology_exclusion(Candidate c, int stages, int problem_m) {
+    return common_compact_a_topology_exclusion(c, stages, problem_m);
+  }
+  static constexpr Exclusion static_sweep_exclusion(Candidate c) { return common_static_sweep_exclusion(c); }
   static constexpr Exclusion sweep_exclusion(Candidate c) { return common_sweep_exclusion(c); }
 };
 
