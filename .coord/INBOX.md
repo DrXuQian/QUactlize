@@ -1685,3 +1685,58 @@ one that wins at M=1. I will handle the analyser; you own the library side.
 ONE BEHAVIOUR I WILL ASK FOR EXPLICITLY: an unknown config name must DECLINE to the compiled default and say
 so, not abort. The tactic table is an artifact that can outlive a .so rebuild, and LOWBIT_DENSE_DISPATCH's
 exit(1) is the wrong model for a library.
+
+## 049 -- COPY TRT-LLM'S THREE-LAYER METHOD, NOT ITS FIVE SHAPES. Read from source at /tmp/trtllm-source.5wQw0R.
+
+Extends 048. The user asked to look at how TRT-LLM curates, then said to copy it. Having read
+cutlass_heuristic.cpp and fpA_intB_gemm_template.h, the transferable part is the METHOD and the specific tile
+list is the one thing that would hurt us.
+
+WHAT THEY HAVE, THREE LAYERS, ALL OF WHICH WE LACK IN THE .so:
+
+ 1. A HAND-CURATED CANDIDATE LIST, per (arch, gemm kind), not a generated product.
+    get_candidate_tiles_sm90 returns different sets for grouped vs dense and for weight-only vs not:
+        grouped+weight-only  64x{16,32,64,128}   128x{16,32,64,128}
+        grouped              128x{16,32,64,128,256}  256x128
+        dense                64x{16..256}  128x{16..256}
+    The SM80 fpA_intB switch instantiates FIVE, and they are one-dimensional: WarpM == TileM, TileN in
+    {128,256}, TileK fixed, TN/WN always 4, only TileM varies. TileM is the M bucket.
+
+ 2. A RUNTIME ENUMERATION, getConfigs() -> get_candidate_configs(...), so the profiler asks the library what it
+    has rather than assuming.
+
+ 3. A RUNTIME-ENUM-TO-COMPILE-TIME SWITCH, `case CutlassTileConfig::CtaShape...:` -> a template instantiation.
+
+AND A FOURTH THING THAT IS THE REAL ANSWER TO "WHY BOTH A RULE AND A TACTIC":
+    estimate_best_config_from_occupancies (cutlass_heuristic.cpp:706) is a HEURISTIC used when no profile
+    exists. It models exactly three things: measured occupancy, CTA count, and WAVE QUANTISATION --
+    score = num_waves_total - num_waves_fractional, plus a hand-written "keep small tile sizes when possible".
+    It does not model load hiding, converter amortisation, bank conflicts, masked rows or stage depth.
+    The tactic OVERRIDES it with measurement. Two paths, and the rule is the floor rather than the answer.
+
+WHAT TO COPY:
+  * both paths. The .so needs a rule that picks a usable config with NO table, because the table WILL be
+    absent -- new model, new shape, stale artifact. Today the absence-case is the hardcoded 64x64:32x32:s3,
+    which is some other shape's winner frozen in.
+  * separate curated lists per operator. We already concluded dense and grouped differ; they implement it.
+  * label which prunes are for BUILD TIME. cutlass_heuristic.cpp:269 says outright "This is purely to improve
+    compilation speed" about one of its restrictions. Our 227 does not distinguish "excluded because slow"
+    from "excluded because expensive to build", and those want different treatment when someone later asks
+    whether to widen.
+  * a FAST_BUILD-equivalent single-config mode. They have `#ifdef FAST_BUILD -> return one tile`.
+
+WHAT NOT TO COPY, and this is measured rather than argued:
+    their TN/WN is always 4;  our only separated grouped winner is TN/WN = 8.
+    their WarpM == TileM;     our kWarpM caps at 64, so TM=128/256 cannot satisfy it.
+    their TileK is fixed;     our record has TileK REVERSING the winner between prefill and decode
+                              (grouped i4: +12.4% TK64->TK32 at prefill, +21% the other way at decode).
+Of our 227 rows, only 55 have TN/WN == 4 and 123 have WarpM == min(TileM,64). Curating to their shape would
+delete the one winner we have actually measured.
+
+NOTE ON THE HEURISTIC'S FIT TO US, because it is worse than its fit to them: a pure wave-quantisation model
+cannot see the three things our measurements turned on -- the N geometry inside a warp (their model has no such
+term), stage depth (no term either), or a TileK preference that reverses direction. So the rule is a floor for
+us in a stronger sense than for them, and the tactic carries correspondingly more.
+
+ORDER: 048's ①②③ first (the .so cannot select anything until it has a set, an enumeration and a switch). The
+heuristic is only useful once there is a set for it to choose from.
