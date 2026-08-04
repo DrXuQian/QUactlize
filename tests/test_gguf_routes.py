@@ -494,6 +494,45 @@ def test_packed_unit_scale_derivation_matches_the_scale_first_planes(name, gt, h
 
 @pytest.mark.fully_quantized_dense
 @pytest.mark.parametrize("name,gt,hdr,qtype", FQ_IMPLEMENTED)
+def test_bc_dequant_all_matches_official_gguf(name, gt, hdr, qtype, ppu_backend_dense):
+    """BC's DEQUANT-ALL against the official package -- the inverse the entry rule requires, made falsifiable.
+
+    Without this, BC could only be checked end to end, and an end-to-end check mixes a PACKING mistake with a
+    COMPUTATION mistake: a wrong number tells you the pair is wrong and not which half. This compares the
+    artifact's own meaning, elementwise, against what gguf.quants.dequantize says the source bytes mean.
+
+    THE ROUTE IS A COMPOSITION -- derive the scale planes from the units, then run the existing scale-first
+    dequant-all -- so this test is also a check on the merge's premise from a third direction. If B and C did not
+    really share their weight bytes, the composition would disagree here rather than agreeing with itself.
+
+    The planted fault zeroes the code plane: an inverse that still returns the right weight from a blanked code
+    plane is reading something other than the codes.
+    """
+    if not routes.has_op("gguf_packed_scale_prepass"):
+        pytest.skip("the packed-unit scale derivation is not in this build yet (INBOX 016)")
+    _require_packed_format(qtype, name)
+
+    n, k = 256, 512
+    rng = np.random.default_rng(43000 + qtype)
+    raw = _raw_blocks(gt, hdr, n * (k // 256), rng)
+    artifact = routes.prepare_fully_quantized_dense(torch.from_numpy(raw), n, k, qtype)
+    official = gguf.quants.dequantize(raw.reshape(-1), gt).reshape(n, k).astype(np.float64)
+    rel = lambda w: float(np.max(np.abs(w.astype(np.float64) - official)) / max(np.max(np.abs(official)), 1e-9))
+
+    fault = [x.clone() for x in artifact]
+    fault[0] = torch.zeros_like(fault[0])
+    planted = rel(routes.dequantize_fully_quantized(tuple(fault), qtype).numpy()[0])
+    assert planted > 1e-3, (
+        f"{name}: the BC inverse returned the right weight from a ZEROED code plane ({planted:.3e}) -- it is "
+        f"reading something other than the codes, so a pass below would not be about the artifact")
+
+    err = rel(routes.dequantize_fully_quantized(artifact, qtype).numpy()[0])
+    assert err < 1e-3, f"{name}: BC dequant-all disagrees with official gguf ({err:.3e})"
+    print(f"{name} BC dequant-all vs official: {err:.3e} (planted {planted:.3e})")
+
+
+@pytest.mark.fully_quantized_dense
+@pytest.mark.parametrize("name,gt,hdr,qtype", FQ_IMPLEMENTED)
 def test_bc_gemv_matches_dequant_first_and_rejects_fault(name, gt, hdr, qtype, ppu_backend_dense):
     """THE DECODE ARM OF THE MERGED FORM, against an arm that shares no constant with it.
 

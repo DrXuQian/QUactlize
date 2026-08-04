@@ -312,6 +312,35 @@ def matmul_bc_gemv_moe(a: torch.Tensor, artifact, qtype: int, num_experts: int,
     return _op("gguf_gemv_bc_moe")(a, low, high, units, offsets, int(qtype))
 
 
+def dequantize_fully_quantized(artifact, qtype: int, grouped: bool = False) -> torch.Tensor:
+    """BC's DEQUANT-ALL: (low, high, units) -> the fp16 weight. The other half of this format's inverse.
+
+    THE ENTRY RULE THIS SATISFIES. A stored arrangement needs dequant-all AND dequant-scale, because without them
+    the only way to check it is end to end -- and that mixes a PACKING mistake with a COMPUTATION mistake.
+    dequantize_scale_from_units gave BC the second; this is the first, and until it existed BC was the one format
+    in the tree carrying only half its inverse while the rule that requires both is the user's own.
+
+    IT IS A COMPOSITION, NOT A REIMPLEMENTATION, and that is the point rather than a shortcut:
+
+        (low, high, units) --dequantize_scale_from_units--> (low, high, scale, zero) --existing dequant-all--> w
+
+    The merge's whole claim is that B and C share their weight bytes and differ only in the scale channel. If
+    that holds, BC's dequant-all IS the scale-first dequant-all with the scale derived instead of stored, and
+    writing a second decoder would create a third thing to keep correct. If it does not hold, this composition
+    gives the wrong answer against official gguf -- which is a better outcome than a private decoder that agrees
+    with itself.
+    """
+    low, high, units = _unpack_fq(artifact, "dequantize_fully_quantized")
+    scale, zero = dequantize_scale_from_units(units, qtype)
+    op = "gguf_grouped_artifact_dequantize" if grouped else "gguf_dense_artifact_dequantize"
+    if grouped and not has_op(op):
+        raise NotImplementedError(
+            "the grouped artifact dequant-all op is not in this build; the dense one composes because the dense "
+            "artifact is one expert. A grouped weight needs the per-expert form -- request it rather than "
+            "looping here, since a python loop over experts would not exercise the same addressing.")
+    return _op(op)(low, high, scale, zero, int(qtype))
+
+
 def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: int):
     """Offline artifact for FULLY_QUANTIZED/DENSE: the code plane plus the PACKED SCALE UNIT.
 
