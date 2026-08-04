@@ -133,6 +133,7 @@ struct Band {
 
 #include "bench_select.hpp"
 #include "bench_samples.hpp"
+#include "bench_floor.cuh"
 
 
 // ---- sample emission (docs/BENCH_DESIGN.md) --------------------------------------------------------------

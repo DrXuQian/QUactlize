@@ -284,6 +284,7 @@ struct TileCfg { char const* name; int tm, tn, wm, wn, st; };
 // set of tactics this binary cannot select.
 #include "bench_select.hpp"
 #include "bench_samples.hpp"
+#include "bench_floor.cuh"
 #include "w4a16_configs.inc"
 static_assert(cutlass::sizeof_bits<QuantType>::value == W4A16_CFG_BITS && TileShapeK == W4A16_CFG_TILEK,
               "w4a16_configs.inc was generated for a different (bits, TileK) than this binary. Regenerate: "
@@ -1004,6 +1005,7 @@ int main(int argc, char const **args) {
     const int reps = [] { char const* e = std::getenv("BENCH_REPS"); int r = e ? std::atoi(e) : 5; return r < 1 ? 1 : r; }();
     char build[128];
     std::snprintf(build, sizeof build, "bits=%d TSK=%d", int(cutlass::sizeof_bits<QuantType>::value), TileShapeK);
+    bench_floor::banner();
     bench_samples::run_header("cutlass_w4a16", build, reps);
 
     std::printf("%-18s %-10s %s\n", "CONFIG", "TFLOP/s", "status");
@@ -1049,6 +1051,10 @@ int main(int argc, char const **args) {
     else
       std::printf("\n==== UNRESOLVED: %s leads at %.1f TFLOP/s, %d candidate(s) tie it ====\n",
                   best.tag, best_tf, ties);
+    if (bench_floor::launch_bound(best.us))
+      std::printf("     [LAUNCH-BOUND] the leader is within 3x the empty-launch floor (%.2f us): this shape is\n"
+                  "     too small for the loop to be measuring the kernel rather than the launch rate.\n",
+                  bench_floor::us());
     run_config(options, find_config(best.tag));
     return 0;
   }

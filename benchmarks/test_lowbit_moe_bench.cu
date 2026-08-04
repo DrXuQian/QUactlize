@@ -171,6 +171,7 @@ int main(int argc, char** argv) {
   // lowbit_moe_bench.hpp: drift is time-correlated, so interleaving is what keeps it from landing on one
   // candidate. MOE_REPS=1 is allowed and is explicitly not a ranking.
   const int reps = moe_acu() ? 1 : moe_reps();
+  bench_floor::banner();
   bench_samples::run_header("lowbit_moe", PPU_CHUNK_STR " " LOWBIT_QMODE_STR, reps);
   for (int r = 0; r < reps; ++r) {
     moe_pass() = r;
@@ -212,6 +213,9 @@ int main(int argc, char** argv) {
     // "fastest" ONLY WHEN NOTHING TIES IT. With ties, naming a winner is the claim the samples do not support,
     // and it is the claim someone would otherwise carry into a tactic table and never revisit.
     const int nt = ties[ord[i]];
+    // LAUNCH-BOUND IS SAID ON THE ROW, not left in the banner. A reader comparing two decode rows will not go
+    // back and divide by the floor; the row has to carry it.
+    char const* lb = bench_floor::launch_bound(e.us) ? "  [LAUNCH-BOUND]" : "";
     char verdict[96] = "";
     if (i == 0 && !moe_acu()) {
       if (reps < 2)      std::snprintf(verdict, sizeof verdict, "   <-- lowest (ONE pass: not a ranking)");
@@ -221,6 +225,7 @@ int main(int argc, char** argv) {
     }
     std::printf("  %-4s %-30s %8.2f us | %6.1f TF/s (%4.1f%% MFU)%s\n", moe_fmt_names[ord[i]], e.tag, e.us, tf,
                 100.0 * tf * 1e12 / PEAK, verdict);
+    if (*lb) std::printf("       %s this row is within 3x the empty-launch floor (%.2f us)\n", lb, bench_floor::us());
   }
   // THE TIES ARE THE OUTPUT, not a footnote. codex's H1/H2 pruning rules keep guards precisely so that a guard
   // landing inside the leader's band triggers expanding that stratum; without this list that rule has no input.
