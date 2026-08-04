@@ -383,14 +383,31 @@ def lint_config_abi_matches_header():
     if not hdr_fields:
         return "FAIL", "parsed the struct body but found no fields; the parser, not the header, is wrong", 0.0
 
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("ls", tool)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    import ctypes as _c
-    PY_TO_CLASS = {_c.c_bool: "bool", _c.c_char_p: "str", _c.c_int32: "int",
-                   _c.c_int64: "int", _c.c_uint32: "int", _c.c_float: "float"}
-    py_fields = [(n, PY_TO_CLASS.get(t, str(t))) for n, t in mod.Config._fields_]
+    # PARSED, NOT IMPORTED, and this is not a style preference. The first version imported list_shipped.py via
+    # importlib and read Config._fields_ -- and reported on code that was NOT on disk. A .pyc is revalidated on
+    # the source's mtime at ONE-SECOND resolution plus its byte SIZE, and the change that was being tested
+    # (swapping two adjacent field lines) leaves the size identical; the restore landed in the same second. Both
+    # validity checks passed and the loader served the stale bytecode. A gate that can report on code that does
+    # not exist is worse than no gate, and nothing about its output said which code it read.
+    #
+    # ast.parse reads the file every time and has no cache to be stale.
+    import ast as _ast
+    PY_TO_CLASS = {"c_bool": "bool", "c_char_p": "str", "c_int32": "int",
+                   "c_int64": "int", "c_uint32": "int", "c_float": "float"}
+    tree = _ast.parse(tool.read_text())
+    fields_node = None
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.Assign) and any(
+                getattr(t, "id", None) == "_fields_" for t in node.targets):
+            fields_node = node.value
+            break
+    if fields_node is None:
+        return "FAIL", "no _fields_ assignment found in list_shipped.py; the mirror cannot be checked", 0.0
+    py_fields = []
+    for elt in fields_node.elts:
+        name = elt.elts[0].value
+        ctype = elt.elts[1].attr if isinstance(elt.elts[1], _ast.Attribute) else getattr(elt.elts[1], "id", "?")
+        py_fields.append((name, PY_TO_CLASS.get(ctype, ctype)))
 
     if py_fields != hdr_fields:
         n = min(len(py_fields), len(hdr_fields))
