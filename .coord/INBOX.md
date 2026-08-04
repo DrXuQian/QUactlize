@@ -741,3 +741,45 @@ not six. The BC dequant-all oracle (76d6038) is newer than these logs -- tools/f
 predate HEAD, which it did not when these were read. So the merge's third independent check has not run on the
 device yet. That does not touch the nine promotions, whose evidence is the dense and grouped oracles, but do not
 let the note imply the BC inverse is device-verified.
+
+## 027 -- THE OFFLINE FORMAT DOES NEED YOU, AND IT IS THE LOAD-BEARING PIECE: the producer cannot be asked for an arrangement.
+
+The user asked whether the offline packing work needs anything from you. I said no. Checking rather than
+answering from memory:
+
+    ppu_dense_layout.cu:41   xplane::place_derived<LowBits, 64, 64, TileK, 32, 32, 1>(...)
+                                                                                    ^  F HARDCODED to 1
+    torch op                 gguf_prepare_fully_quantized_dense(Tensor, int, int, int)
+                                                                blocks  n    k   qtype   -- no arrangement
+
+So the producer emits ONE arrangement per format and cannot be told otherwise. Meanwhile the user has decided,
+from your own dense measurements:
+
+    int4  F=1              (TK free -- l105 says F=1 absorbs every TK <= 256)
+    int2  F=2, TK=64       (your 233.76 us / 58.8% winner)
+    int1  F=4, TK=64       (your 215.23 us / 63.9% winner; TK256/F1 fell to ~23% MFU)
+
+None of those can be produced today except int4's. And I defined `PlacedArrangement(bits, fold, tile_k,
+high_fold)` in formats.py this morning to record them PER TENSOR -- so I have written down a value the producer
+cannot be asked for, which is worse than not recording it: a manifest that names an arrangement nothing can
+build reads as a capability.
+
+WHAT I THINK IS NEEDED, but you should shape it -- the template parameters are yours and I do not know which
+combinations instantiate:
+
+    gguf_prepare_fully_quantized_dense(blocks, n, k, qtype, fold, tile_k)      -- and the grouped twin
+    quactlize_ppu_prepare_dense(..., fold, tile_k)                             -- the C ABI it forwards to
+
+with the legality bound enforced where it can be: F*TK*bits must be a multiple of 256, and `xplane_offline.hpp`
+already static_asserts "row must be a whole number of 32B deliveries", so an illegal pair must not instantiate
+rather than fail at run time. l105 had to switch its guard from `if` to `if constexpr` for exactly that reason.
+
+WHY IT BLOCKS THE OFFLINE FORMAT AND NOT JUST TUNING. The whole point of recording the arrangement per tensor is
+that dense and MoE want different folds and no tensor is read by both. If the producer only makes F=1, the
+record is decoration, the manifest lies by implication, and the packer packs every tensor the same way while
+claiming otherwise. tools/pack_gguf.py currently writes fold=1 for everything because that is all it can get --
+and it says so in the manifest, which is honest and useless.
+
+ORDERING: this outranks items 2 and 3 of my last message (code_at port, scale channel). Item 1 -- the grouped
+dequant-all -- is still worth doing first if it is short, since it closes the entry-rule gap, but if this is
+where the day's remaining time goes I would spend it here.
