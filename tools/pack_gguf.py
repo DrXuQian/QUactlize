@@ -115,10 +115,14 @@ def main() -> int:
         _write(tmp, low, high, units)
         tmp.rename(out / stem)                          # a directory that exists is a directory that finished
 
-        arr = F.PlacedArrangement(bits=_low_bits(qtype), fold=1, tile_k=_tile_k(qtype),
-                                  high_fold=1)
+        # THE ARRANGEMENT IS NOT A CHOICE THIS TOOL MAKES. tile_k comes from the format, F follows from tile_k
+        # and the width by the same expression the consumer uses (formats.fold_for). Until the producer accepts
+        # a tile_k -- see .coord/INBOX.md 027/028 -- the only tile_k reachable is the one _tile_k returns, so
+        # this records what was actually built rather than what was wanted.
+        arr = F.PlacedArrangement(bits=_low_bits(qtype), tile_k=_tile_k(qtype), high_bits=_high_bits(qtype))
         manifest.append({"name": t.name, "dir": stem, "ggml_type": qtype, "type_name": t.tensor_type.name,
                          "n": n, "k": k, "arrangement": arr._asdict(),
+                         "fold": [arr.fold, arr.high_fold],  # derived, printed for a human; readers re-derive
                          "shapes": {"low": list(low.shape), "high": list(high.shape), "units": list(units.shape)}})
         if (i + 1) % 25 == 0 or i + 1 == len(todo):
             print(f"  packed {i+1}/{len(todo)}  ({time.time()-t0:.1f}s)")
@@ -134,6 +138,14 @@ def _low_bits(qtype: int) -> int:
     from quactlize import schemes
     from quactlize.formats import QuantType
     return {"i2": 2, "i2+i1": 2, "i4": 4, "i4+i1": 4, "i4+i2": 4}[schemes.CODE_PLANE[QuantType(qtype)]]
+
+
+def _high_bits(qtype: int) -> int:
+    """0 for a single-plane format. The high plane folds independently -- Q3's int1 plane at TK=64 needs F2=4
+    while its int2 low plane needs 2 -- so it cannot be inferred from the low width."""
+    from quactlize import schemes
+    from quactlize.formats import QuantType
+    return {"i2": 0, "i2+i1": 1, "i4": 0, "i4+i1": 1, "i4+i2": 2}[schemes.CODE_PLANE[QuantType(qtype)]]
 
 
 def _tile_k(qtype: int) -> int:

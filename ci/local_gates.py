@@ -57,6 +57,9 @@ GATES = [
     # ONE ROW PER FORMAT. 0=Q4_K 1=Q5_K 2=Q2_K 3=Q3_K 4=Q6_K. A single row hardwired to format 2 is what this
     # gate had, which made the per-format activation check a one-format activation check.
     *[(f"l103_packed_format_active@fmt{f}", []) for f in (0, 1, 2, 3, 4)],
+    # Does a different configuration actually give a different LOW-plane layout? Answers a contradiction
+    # between layouts.py xplane() and l61, and produces the prune table.
+    ("l105_low_plane_config_classes", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that

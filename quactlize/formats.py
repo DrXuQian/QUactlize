@@ -247,12 +247,55 @@ def storage_growth(qtype: QuantType) -> Optional[float]:
 # THE TK <= 256 BOUND IS REAL AND WAS FOUND BY LOOKING FOR IT: int4 at TM64/TN64/TK512 w32x32 F=1 compiles and
 # produces DIFFERENT bytes, so "F=1 is tile-invariant" holds within the unfolded interleave-256 domain and not
 # beyond it. An unbounded claim would have been wrong in exactly one corner nobody was sweeping.
+def fold_for(bits: int, tile_k: int) -> int:
+    """F, DERIVED -- never passed. The one expression, transcribed from the consumer that already computes it.
+
+    moe_grouped_ppu.cuh:363 is the original:
+
+        MOEG_RUN_B = TK * MOEG_BITS / 8                        # contiguous bytes at this TK
+        MOEG_FOLD  = MOEG_RUN_B >= 32 ? 1 : (32 / MOEG_RUN_B)  # fold factor needed
+        // "Requires the weight to have been preprocessed with the matching FoldTK=TK."
+
+    THE REASON THIS IS A FUNCTION AND NOT A FIELD. The consumer derives F from (bits, TK) at compile time and
+    cannot be told otherwise. A producer that ACCEPTS an F therefore introduces a second source for one value,
+    and the two disagreeing is not a crash -- the weight is placed for one fold and read at another, which
+    returns finite wrong numbers. So there is one expression and everything asks it.
+
+    The arrangement the user pinned is what this returns, which is the point: nobody chose those folds, the
+    32-byte AIU floor did.
+
+        int4 TK=256 -> run 128 B -> F=1     int2 TK=64 -> 16 B -> F=2     int1 TK=64 -> 8 B -> F=4
+    """
+    run_bytes = tile_k * bits // 8
+    if run_bytes >= 32:
+        return 1
+    if run_bytes == 0:
+        # A sub-byte run has no fold that fixes it: folding multiplies whole rows, so it can never reach 32 B
+        # from nothing. Caught here because the // 8 above makes this a ZeroDivisionError two lines down, and a
+        # ZeroDivisionError names the arithmetic instead of the configuration.
+        raise ValueError(f"bits={bits} tile_k={tile_k}: the k-run is under one byte")
+    if 32 % run_bytes:
+        raise ValueError(f"bits={bits} tile_k={tile_k}: a {run_bytes}B run does not divide the 32B floor")
+    return 32 // run_bytes
+
+
 class PlacedArrangement(NamedTuple):
-    """What an artifact must record so a reader can decode it without guessing what the packer did."""
+    """What an artifact must record so a reader can decode it without guessing what the packer did.
+
+    fold is NOT stored. It is a function of (bits, tile_k) -- see fold_for -- and storing a derived value is
+    how a manifest comes to disagree with the kernel that reads it.
+    """
     bits: int          # the low plane's width; the format supplies the high plane's
-    fold: int          # F. 1 means the layout absorbs every tile shape with TK <= 256
-    tile_k: int        # pinned when fold > 1, since the same fold at another TK is a different arrangement
-    high_fold: int = 1  # F2 for a two-plane format; 1 for single-plane
+    tile_k: int        # the whole of the arrangement: F follows from it and the width
+    high_bits: int = 0  # the high plane's width for a two-plane format; 0 for single-plane
+
+    @property
+    def fold(self) -> int:
+        return fold_for(self.bits, self.tile_k)
+
+    @property
+    def high_fold(self) -> int:
+        return fold_for(self.high_bits, self.tile_k) if self.high_bits else 1
 
     def layout_is_tile_free(self) -> bool:
         """True when this arrangement's bytes do not depend on the tile, so any TK <= 256 reads it."""
