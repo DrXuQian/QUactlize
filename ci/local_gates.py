@@ -295,6 +295,41 @@ def syntax(src, defs):
     return ("PASS" if rc == 0 else "FAIL"), (last[-1] if last else ""), dt
 
 
+def lint_inbox_delivered():
+    """AN UNREAD INBOX ITEM IS AN UNDELIVERED ONE, and writing the file is not sending it.
+
+    codex is REQUEST/RESPONSE: its process exists only for the duration of a call. The collaboration protocol's
+    rule 1 -- reread INBOX at every checkpoint -- covers what is appended WHILE it runs. Anything appended after
+    its turn ends sits in a file that nothing will open until the next call is made.
+
+    On 2026-08-04 four items (035-038) were written and reported to the user as dispatched when only the file
+    had changed. That is not a protocol gap, it is a category error about what the channel is: the channel is
+    the call, and INBOX is the durable record the call refers to. This check makes the gap visible instead of
+    relying on remembering, by comparing the highest INBOX number against STATUS's inbox-consumed.
+
+    It cannot be a hard failure -- a gap is NORMAL for a few minutes while codex works -- so it reports the
+    number of undelivered items and only fails when there is no call in flight to explain them. It has no way
+    to see the call, so it states the gap and leaves the judgement visible rather than silently passing.
+    """
+    inbox = ROOT / ".coord" / "INBOX.md"
+    status = ROOT / ".coord" / "STATUS.md"
+    if not inbox.is_file() or not status.is_file():
+        return "SKIP", "no .coord/{INBOX,STATUS}.md", 0.0
+    nums = [int(m.group(1)) for m in re.finditer(r"^##\s+(\d{3})\s", inbox.read_text(), re.M)]
+    if not nums:
+        return "SKIP", "no numbered INBOX items", 0.0
+    m = re.search(r"inbox-consumed:\s*(\d+)", status.read_text())
+    if not m:
+        return "FAIL", "STATUS.md has no inbox-consumed line -- 'has it read this' becomes a guess again", 0.0
+    top, seen = max(nums), int(m.group(1))
+    if seen >= top:
+        return "PASS", f"INBOX {top:03d} consumed through {seen:03d}: nothing undelivered", 0.0
+    gap = [n for n in sorted(nums) if n > seen]
+    return "FAIL", (f"{len(gap)} INBOX item(s) NOT consumed: {', '.join(f'{n:03d}' for n in gap)} "
+                    f"(STATUS says {seen:03d}). If no codex call is in flight, these were written and not sent "
+                    f"-- writing the file is not dispatching it."), 0.0
+
+
 def lint_selection_agrees():
     """THE PRECONDITION FOR DELETING THE C++ SELECTION (docs/BENCH_DESIGN.md step 3).
 
@@ -433,6 +468,7 @@ def main():
                 ("lint", "names used before they exist (device-only tests get no other flow check)", lint_undefined_names),
                 ("lint", "every ggml.h quant type is classified, in scope or out", lint_gguf_coverage),
                 ("lint", "the C++ and Python selection procedures agree on planted data", lint_selection_agrees),
+                ("lint", "every INBOX item is consumed, or is explained by a call in flight", lint_inbox_delivered),
     ("registry", "declarations vs source", None)])
     # MATCH THE KIND AS WELL AS THE NAME. `-k lint` matched NOTHING, because a lint's name is its description
     # ("duplicate unroll directives") and the word "lint" only appears in the kind. The run then printed
