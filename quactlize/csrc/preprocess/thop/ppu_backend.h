@@ -74,6 +74,15 @@ struct Api {
 // Loads libquactlize_ppu.so once. QUACTLIZE_PPU_LIB overrides the path, which is what lets a stub stand in for the
 // real thing in a test -- the seam is checkable without the SDK, the same way box_build_dryrun checks build.sh.
 // Returns nullptr when the library is absent or a symbol is missing, with `why` set.
+// PER-FORMAT LOADING. PPU_PACKED_FORMAT is a compile-time macro, so one library serves one packed format --
+// and a Q4_K_M checkpoint is MIXED, carrying Q4_K tensors beside Q6_K ones, so one handle cannot serve a real
+// model. Each format gets its own dlopen, its own cached failure, and its own message. RTLD_LOCAL (already used)
+// is what keeps several loaded at once from answering for each other's identically-named symbols.
+//
+// Path: QUACTLIZE_PPU_LIB_FMT<k>, else QUACTLIZE_PPU_LIB with _fmt<k> spliced before .so, else
+// libquactlize_ppu_fmt<k>.so. load() without a format keeps its exact previous behaviour.
+Api const* load_format(int fmt, std::string* why = nullptr);
+
 Api const* load(std::string* why = nullptr);
 
 // "ppu" when every symbol resolved, otherwise "cpu". Exposed as an op so a caller can assert on it instead of
