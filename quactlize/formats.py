@@ -222,6 +222,38 @@ def storage_growth(qtype: QuantType) -> Optional[float]:
     return NON_BLOCK_SCALE_GROWTH.get(qtype)
 
 
+# THE PLACED ARRANGEMENT IS A PROPERTY OF THE TENSOR, NOT OF THE FORMAT. This started as a search for one
+# optimal F per k-quant, which would have made the layout a function of the format and left the artifact header
+# with nothing to say. Measurement killed that: dense and MoE want different folds --
+#
+#     dense int1  TK64/F4  215.23 us / 63.9%      MoE int4  TK32/F2  317.26 us   vs TK64/F1 362.14  (-12.4%)
+#     dense int2  TK64/F2  233.76 us / 58.8%      MoE int2  TK32/F4  295.08 us   vs TK64/F2 300.26
+#
+# -- and requiring F=1 everywhere would delete measured winners. What dissolves the conflict is that a dense
+# layer's weight and an expert's weight are DIFFERENT TENSORS: no tensor is read by both paths, so each can be
+# arranged for the operator that reads it. The header therefore carries three small integers per tensor, which
+# GGUF is already shaped for, instead of the format implying them.
+#
+# WHAT A RECORDED ARRANGEMENT BINDS. The online tactic search is bounded by the tensor's LAYOUT CLASS, not by its
+# F. At F=1 the class absorbs every TK <= 256 and every tile and warp shape measured, so the search is wide. At
+# F>1 the same F at a different TK is a DIFFERENT class, so TK is pinned too and the search is narrower. Treating
+# "same F" as "same layout" is the specific mistake to avoid; codex flagged it after l105 was corrected.
+#
+# THE TK <= 256 BOUND IS REAL AND WAS FOUND BY LOOKING FOR IT: int4 at TM64/TN64/TK512 w32x32 F=1 compiles and
+# produces DIFFERENT bytes, so "F=1 is tile-invariant" holds within the unfolded interleave-256 domain and not
+# beyond it. An unbounded claim would have been wrong in exactly one corner nobody was sweeping.
+class PlacedArrangement(NamedTuple):
+    """What an artifact must record so a reader can decode it without guessing what the packer did."""
+    bits: int          # the low plane's width; the format supplies the high plane's
+    fold: int          # F. 1 means the layout absorbs every tile shape with TK <= 256
+    tile_k: int        # pinned when fold > 1, since the same fold at another TK is a different arrangement
+    high_fold: int = 1  # F2 for a two-plane format; 1 for single-plane
+
+    def layout_is_tile_free(self) -> bool:
+        """True when this arrangement's bytes do not depend on the tile, so any TK <= 256 reads it."""
+        return self.fold == 1 and self.high_fold == 1
+
+
 # THE CODE CORRECTION OF THE PLACED DENSE ARRANGEMENT, per format. NOT a free parameter and NOT zero by default:
 # a placed weight's codes carry a per-format offset, and reading them back with the wrong one produces plausible
 # scales rather than an error. codex measured these against the stored planes (heartbeat 088) --
