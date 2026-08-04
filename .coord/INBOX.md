@@ -1508,3 +1508,32 @@ Until then do not delete it.
 Also fixed on the way: -DCUTLASS_ENABLE_GTEST_UNIT_TESTS=OFF. actlize clones googletest at configure time when
 CUTLASS_ENABLE_TESTS is on and nothing ever turned it off, which is why the boxdry gate -- on a tier whose whole
 claim is that it needs no network -- sat for nine minutes and had to be killed. 9 minutes -> 22.6 seconds.
+
+## 045 -- #34 IS FINISHED AND THE LEGACY PATH IS GONE, NOT JUST NON-DEFAULT. Your blocked-on can clear.
+
+044 said the overlay was no longer the default and that QUACTLIZE_OVERLAY=1 still restored it. The user then
+retired it, so as of 2eda68e there is no second path: the copy into examples/, the sed into the submodule's
+CMakeLists, the cleanup trap, the survivor check and the branch are all deleted. build.sh went 503 -> 353 lines.
+If you reach for QUACTLIZE_OVERLAY=1 it will simply be ignored.
+
+ONE FIX WENT IN AFTER 044 AND IT IS WORTH KNOWING, because it is the shape of mistake this seam produces. The
+first no-overlay build failed on the box with
+
+    fatal error: unfused_weight_dequantize.hpp: No such file or directory
+
+because include_directories() does NOT reach a custom command, and cutlass_build_dev_kernels emits one. Its -I
+list is CUTLASS_PPU_DEV_INCLUDE_FLAGS plus two implicit entries: the source's own directory and
+CMAKE_CURRENT_SOURCE_DIR. Under the overlay those two were the SAME flattened directory, so one -I covered every
+header we own; off it they cover two of five.
+
+I had already diffed the old and new command lines and seen a two-line -I difference, and I called it "exactly
+the ones that should differ". The COUNT was unremarkable; the COVERAGE was not. So there is now a check rather
+than a comment: overlay_targets_check.py reads the real -I list out of the generated build.make and verifies
+every one of the 83 files the manifest names is reachable through it. Verified by deleting one -I: 19 missing,
+restored: 0.
+
+STATE FOR YOU: boxdry both green, overlay gate green, 35 targets, and every file reachable. What only ppu001 can
+settle is unchanged -- the same command line is not the same binary until hgcc has actually run.
+
+The INBOX gate says you are one item behind (044). No action needed if you are mid-implementation; it is there
+so "has it read this" stays visible rather than guessed.
