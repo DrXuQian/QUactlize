@@ -182,3 +182,45 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+# ---------------------------------------------------------------------------------------------------------
+def check_device_include_coverage(build_dir: str) -> list:
+    """EVERY FILE THE OVERLAY USED TO SUPPLY MUST BE REACHABLE THROUGH THE DEVICE -I LIST.
+
+    include_directories() does not reach a custom command, and cutlass_build_dev_kernels emits one. Its -I list
+    is CUTLASS_PPU_DEV_INCLUDE_FLAGS plus two implicit entries: the source's own directory and
+    CMAKE_CURRENT_SOURCE_DIR. Under the overlay those two were the same FLATTENED directory and so covered
+    every header we own; off it they cover two of five, and the rest have to be added explicitly.
+
+    WHY THIS IS A CHECK AND NOT A COMMENT. Diffing the old and new command lines showed a two-line -I
+    difference, which I read as "exactly the ones that should differ". The count was unremarkable and the
+    COVERAGE was not -- one -I over a flattened tree is not two -I over two of its directories. It reached the
+    box as `fatal error: unfused_weight_dequantize.hpp: No such file or directory`. A count is not a coverage
+    check, and only a coverage check catches this.
+    """
+    import subprocess, os
+    bm = None
+    for root, _, files in os.walk(build_dir):
+        if "build.make" in files and "bench_cutlass_w4a16.dir" in root:
+            bm = os.path.join(root, "build.make")
+            break
+    if not bm:
+        return ["no bench_cutlass_w4a16 build.make under " + build_dir]
+    cmd = ""
+    with open(bm) as fh:
+        lines = fh.readlines()
+    for i, l in enumerate(lines):
+        if "[hgcc]" in l and i + 1 < len(lines):
+            cmd = lines[i + 1]
+            break
+    incs = [tok[2:] for tok in cmd.split() if tok.startswith("-I")]
+    man = subprocess.run(["./build.sh", "--print-overlay"], capture_output=True, text=True).stdout
+    missing = []
+    for line in man.splitlines():
+        src = line.split("|", 1)[1] if "|" in line else line
+        if not src.strip():
+            continue
+        base = os.path.basename(src)
+        if not any(os.path.isfile(os.path.join(d, base)) for d in incs):
+            missing.append(f"{base} (from {os.path.dirname(src)}) is on no -I of the device command")
+    return missing

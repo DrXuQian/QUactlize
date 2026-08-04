@@ -76,6 +76,26 @@ if(_QZ_ACTLIZE_CXX)
   set(CMAKE_CXX_FLAGS "${_QZ_ACTLIZE_CXX}")
 endif()
 
+# ---------------------------------------------------------------------------------------------------------
+# AND THE DEVICE INCLUDE PATH, which include_directories() does NOT reach.
+#
+# cutlass_build_dev_kernels emits an add_custom_command; a custom command takes no directory properties. Its -I
+# list is exactly ${CUTLASS_PPU_DEV_INCLUDE_FLAGS} plus two implicit entries -- the source file's own directory
+# and CMAKE_CURRENT_SOURCE_DIR. Under the overlay those two were the SAME flattened directory and therefore
+# covered every header we own. Here they are benchmarks/ and csrc/, and nothing else of ours is on the line.
+#
+# I MISREAD THIS ONCE AND SHOULD NOT HAVE. Diffing the two command lines showed a two-line -I difference and I
+# called it "exactly the ones that should differ". The COUNT was unremarkable; the COVERAGE was not -- one -I
+# over a flattened tree is not two -I over two of its five directories. The first thing to notice was
+# `fatal error: unfused_weight_dequantize.hpp: No such file or directory` on the box.
+list(APPEND CUTLASS_PPU_DEV_INCLUDE_FLAGS
+    "-I${QZ_ROOT}/quactlize/include"
+    "-I${QZ_ROOT}/quactlize/include/gemv_lowbit"
+    "-I${QZ_ROOT}/tests"
+    "-I${QZ_ROOT}/benchmarks"
+    "-I${QZ_ROOT}/dev"
+    "-I${CMAKE_CURRENT_SOURCE_DIR}/device")
+
 if(NOT PPU_DEVICE_HGCC_REAL)
   message(FATAL_ERROR
     "PPU_DEVICE_HGCC_REAL is empty after including PPUToolchain.cmake. Without it every device rule expands to "
