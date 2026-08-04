@@ -6,13 +6,18 @@
 // that give each plane a complete 32-byte delivery; the printed DL1/DL2 values are the resulting per-row delivery
 // counts. Comparing rows with the same F pair but different DL pair is the experiment this file exists to make.
 //
-// RESULT. place_hi is NOT invariant at fixed (F1,F2). Across every compatible row, stored-byte equality is exactly
-// classified by the derived tuple
+// CORRECTED RESULT. The original run called every NI-compatible row valid and used Q6 TK128-vs-TK256 as the only
+// evidence that delivery counts split a fixed (F1,F2) pair. The artifact inverse later proved that Q6/TK256's map
+// covers only half its logical K slots. Bytes emitted through an incomplete map are not a layout class. This gate now
+// requires tile_map_hi to be a complete bijection before grouping its bytes.
+//
+// Across the COMPLETE rows, stored-byte equality is classified by the conservative tuple
 //     (F1, F2, DL1, DL2, F2 > 1 ? TN/F2 : 0).
 // DL1/DL2 are the low/high deliveries per physical row. TN/F2 is the folded high plane's physical row count; it is
 // deliberately zeroed when F2==1 because the unfolded writer cancels TN and is invariant to it. TM, WM and WN do not
-// survive into the bytes anywhere in this grid. Thus an artifact needs more than (bits,F1,F2), but not a whole tactic:
-// the two delivery counts plus the folded high-row count describe every observed split, including Q6 TK128 vs TK256.
+// survive into the bytes anywhere in this grid. Folded high planes still split at fixed folds when TN/F2 changes.
+// What this grid NO LONGER establishes is a delivery-count split with F1=F2=1: Q6/TK256 was the only such row and is
+// incomplete. The tuple remains a safe descriptor, but its delivery fields are not proven minimal by this sweep.
 //
 // BUILD/RUN (host-side cute layouts; no device required):
 //   nvcc -std=c++17 -x cu -arch=sm_80 -w -I stub_inc -I ../../include \
@@ -94,8 +99,21 @@ Result run(char const* config, std::vector<uint8_t> const& q) {
     // gives fewer than one high-plane N instance. No other F2 both fills 32 bytes and makes the instance complete.
     return {config, TM, TN, TK, WM, WN, F1, F2, DL1, DL2, NI1, NI2, false, 0, {}};
   } else {
+    // NI>0 is necessary and not sufficient. Q6/TK256 passes it while reaching only half the logical tile; l104's
+    // original fixed-fold split was therefore a comparison against an invalid tactic. Require the same bijection
+    // property l67 uses before bytes are allowed into an equivalence class.
+    auto map = xplane::tile_map_hi<LowBits, HiBits, TM, TN, TK, WM, WN, F2, F1>();
+    std::vector<int> seen(size_t(TN) * TK, 0);
+    bool map_ok = map.size() == size_t(TN) * TK;
+    for (int e : map) {
+      if (e < 0 || e >= TN * TK) { map_ok = false; continue; }
+      ++seen[size_t(e)];
+    }
+    for (int n : seen) map_ok &= n == 1;
+    if (!map_ok)
+      return {config, TM, TN, TK, WM, WN, F1, F2, DL1, DL2, NI1, NI2, false, 0, {}};
     std::vector<int8_t> out(size_t(N) * K * HiBits / 8);
-    xplane::place_hi<LowBits, HiBits, TM, TN, TK, WM, WN, F2, F1>(out.data(), q, N, K);
+    xplane::place_from_map<HiBits, TM, TN, TK, WM, WN, F2>(out.data(), map, q, N, K);
     return {config, TM, TN, TK, WM, WN, F1, F2, DL1, DL2, NI1, NI2, true, hash_bytes(out), std::move(out)};
   }
 }
@@ -136,7 +154,7 @@ bool report(char const* format) {
   std::map<uint64_t, std::vector<std::string>> groups;
   for (Result const& x : r) {
     if (!x.valid) {
-      std::printf("%s config=%s tile=%dx%dx%d_w%dx%d F=%d/%d DL=%d/%d NI=%d/%d INCOMPATIBLE\n",
+      std::printf("%s config=%s tile=%dx%dx%d_w%dx%d F=%d/%d DL=%d/%d NI=%d/%d INCOMPATIBLE/INCOMPLETE\n",
                   format, x.config, x.tm, x.tn, x.tk, x.wm, x.wn, x.f1, x.f2, x.dl1, x.dl2, x.ni1, x.ni2);
       continue;
     }
@@ -167,7 +185,7 @@ bool report(char const* format) {
         };
         descriptor_exact &= (descriptor(r[i]) == descriptor(r[j])) == same_bytes;
       }
-  std::printf("%s derived descriptor (F1,F2,DL1,DL2,folded_R2) %s classifies stored-byte equality\n",
+  std::printf("%s conservative descriptor (F1,F2,DL1,DL2,folded_R2) %s classifies COMPLETE stored-byte equality\n",
               format, descriptor_exact ? "EXACTLY" : "DOES NOT");
   honest &= descriptor_exact;
   return honest;

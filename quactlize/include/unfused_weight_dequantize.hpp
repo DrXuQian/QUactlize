@@ -234,12 +234,13 @@ int get_bits_in_quant_type(QuantTypeClass quant_type)
 //     int1 apply no bias -- their own comments say so explicitly.
 //   * the row-major / column-major input convention, resolved while unpacking.
 //
-// A REPRESENTATIVE TILE. plane_map needs a kernel tile; this function is not told one. That is sound because the
-// unfolded placement is TILE-INVARIANT, verified byte-identical to the deleted pipeline across 11 configurations
-// (TM 32/64/128, TN 64/128/256, TK 64/128/256, w32x32 / w32x64 / w64x64) and all three live widths in
-// fold_derivation/l61. Any (TN, TK) dividing (N, K) within the delivery bound gives the same buffer, so TN=64 w32x32
-// and the narrowest legal TK are used. The bound is DL >= 1 (TK*Bits >= 256) and RPS >= 1 (the 32 B run must fit the
-// 256-element interleave), which pins int1 to TK=256 exactly and allows int2 128 and int4 64.
+// A REPRESENTATIVE TILE. plane_map needs a kernel tile; this function is not told one. That is sound inside the
+// supported UNFOLDED INTERLEAVE-256 domain, verified byte-identical to the deleted pipeline across l61's original
+// 11 configurations and l105's atom-sized/non-square expansion (TM/TN down to 16, WN=16, TK 64/128/256) for all
+// three live widths. Any complete tactic in that domain with TN/TK dividing N/K gives the same buffer, so TN=64
+// w32x32 and the narrowest legal TK are used. This statement does NOT extend beyond TK=256: l105's explicit int4
+// TK=512 boundary currently instantiates and produces different bytes. A bits-only artifact must reject that tactic
+// rather than infer from F=1 that it shares this representative placement.
 //
 // Anything outside that is a HARD ERROR rather than a silent fallback: int8 is unreachable (no QuantType in the tree
 // is 8-bit) and MixGemmEmit covers 1/2/4 only, so a fallback would only hide a new caller's mistake.

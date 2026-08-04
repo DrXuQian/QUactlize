@@ -137,13 +137,18 @@ inline std::vector<int> plane_map() {
 // and the converter's pairing is the same closed form the converter itself uses, gated against Q3's shipped constants in
 // fold_derivation/l65. Q3's map is required to come out byte-identical (l67).
 //
-// UNLIKE plane_map's unfolded output, THIS CROSS-PLANE PLACEMENT IS NOT TILE-INVARIANT AT FIXED (F1,F2). The stored
-// byte sweep over l61's 11 tactics (l104) separates Q6 TK=128 from TK=256 even though both have F1=F2=1. Across all
-// three two-plane formats its agreeing sets are classified exactly by the derived layout descriptor
+// THE CROSS-PLANE PLACEMENT IS NOT GENERALLY TILE-INVARIANT AT FIXED (F1,F2): when the high plane folds, l104's
+// complete rows split with its physical row count TN/F2 (for example Q3/Q5 at TK=128, fixed F1/F2=1/2, TN=64 vs
+// TN=128). Across all complete rows its agreeing sets are classified by the conservative layout descriptor
 //     (F1, F2, DL1, DL2, F2 > 1 ? TN/F2 : 0),
 // where DL1/DL2 are the per-plane delivery counts below and TN/F2 is the folded high plane's physical row count.
-// TM/WM/WN do not survive into the bytes in that grid. An artifact therefore records these derived quantities, not
-// merely the folds and not a whole tactic; reconstructing place_hi later from just (bits,F1,F2) is unsound.
+// TM/WM/WN do not otherwise survive into the bytes in that grid.
+//
+// A CORRECTION TO THE ORIGINAL l104 VERDICT. Its claimed unfolded split was Q6 TK=128 vs TK=256 at F1=F2=1, but
+// the artifact inverse later proved TK=256 covers only half the logical high-plane tile. l104 now rejects it as an
+// incomplete map before grouping bytes. Every COMPLETE F1=F2=1 Q6 row in that grid is byte-identical at TK=128, so
+// the delivery counts remain a safe descriptor but are not proven necessary for the both-unfolded case. What IS
+// established is that folds alone are insufficient once the high plane folds, because TN/F2 still changes bytes.
 template <int LowBits, int HiBits, int TM, int TN, int TK, int WM, int WN, int F2, int F1 = 1>
 inline std::vector<int> tile_map_hi() {
   using namespace cute;
