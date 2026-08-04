@@ -440,32 +440,17 @@ def test_packed_unit_scale_derivation_matches_the_scale_first_planes(name, gt, h
             f"({bad} of {a_.numel()} bytes differ). The merge's premise is that they do not, so this is not a "
             f"scale-channel change and the producer switch must not be made on that basis.")
 
-    stored = routes.dequantize_scale_first_dense_scales(sf, qtype)
+    # COMPARE WHAT SHIPS, NOT A READING VIEW OF IT. sf[2] and sf[3] ARE the stored fp16 planes, in the layout
+    # the kernel reads -- StrideScale = Stride<Int<1>, ...> with shape (n, scale_k, 1) puts n at stride 1, so
+    # memory is [scale_k][n], i.e. [E, k/gs, n]. The derivation emits the same. Nothing needs transposing.
+    #
+    # An earlier version went through dequantize_scale_first_dense_scales and then transposed to compensate.
+    # That accessor is a PURE TRANSPOSE and says so -- it asserts [experts, k/group_size, n] on input, allocates
+    # [experts, n, scale_k] on output, and its own comment calls the transpose common. It is a deliberate reading
+    # view, not a defect. But putting it in the middle of this comparison meant bending the new code's output to
+    # match a view, and then explaining the bend; comparing the stored planes directly removes both.
+    stored = (sf[2], sf[3])
     derived = routes.dequantize_scale_from_units(fq[-1], qtype)
-
-    # THE ACCESSOR IS THE TRANSPOSED ONE, NOT THE DERIVATION. Measured on ppu001: the values agree as a MULTISET
-    # while 4078 of 4096 positions differ, shapes (1, 256, 16) and (1, 16, 256). Reading the stride settles which
-    # side is the outlier, and it is not the new code:
-    #
-    #     StrideScale = Stride<Int<1>, int64_t, int64_t>   with shape (n, scale_k, 1)
-    #         -> n has stride 1, so memory is [scale_k][n], i.e. [E, k/gs, n]
-    #
-    #     what the KERNEL reads                     [E, k/gs, n]
-    #     what the derivation emits                 [E, k/gs, n]   <- agrees with the kernel
-    #     what gguf_prepass_ops.cpp:217 stores      [E, k/gs, n]   <- agrees with the kernel
-    #     what dequantize_scale_first_dense_scales
-    #       RETURNS                                 [E, n, k/gs]   <- the odd one out
-    #
-    # So the transpose below compensates for the ACCESSOR's convention, not for a defect in the derivation, and
-    # the producer switch needs NO transpose -- the derivation already emits what the consumer wants. An earlier
-    # version of this comment said the storage was [E, n, k/gs]; that was inferred from the accessor's output
-    # rather than read off the stride, and it was wrong.
-    #
-    # APPLIED, NOT SORTED AWAY. Sorting in the comparison would have made this pass -- and would equally have made
-    # a WRONG derivation pass, which is the case this test exists for. Naming the transpose keeps the bit-exact
-    # bound: if the real mapping is some other permutation, the multiset still agrees and this still fails.
-    derived = tuple(d.transpose(-1, -2).contiguous() for d in derived)
-
     for i, what in enumerate(("scale", "zero")):
         a_, b_ = stored[i], derived[i]
         # SHAPES FIRST, and named. The derivation always returns [E, k/gs, n] -- one expert for a dense weight --
