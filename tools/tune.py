@@ -155,14 +155,22 @@ def main() -> int:
             print(f"no such shipped-config list: {p}", file=sys.stderr)
             return 2
         raw = [l.strip() for l in p.read_text().splitlines() if l.strip() and not l.startswith("#")]
-        bad = [r for r in raw if canonical(r) is None]
-        if bad:
-            print(f"{p}: {len(bad)} line(s) are not config names, e.g. {bad[0]!r}. A list that silently drops\n"
-                  f"unparseable rows would tune against a SMALLER shipped set than the library has.",
-                  file=sys.stderr)
-            return 2
+        # A NAME THAT IS NOT A TILE IS NOT AN ERROR. The library's config record leads with a family
+        # discriminator, and an entry in the CUDA-core family has no tile geometry at all -- canonical() returns
+        # None for it BY DESIGN, so that it can never be matched against a tile config. Rejecting the list on
+        # that basis would refuse exactly the encoding 051 asked for. So: parseable names compare as tuples (which
+        # bridges the bench's spelling and analyse.py's), and anything else compares as an opaque exact string.
+        #
+        # A TYPO IS STILL LOUD, without a check for it. A mistyped tile name becomes an opaque name that matches
+        # nothing, so every shape comes back "not in the shipped set" and the table is empty with a reason on
+        # every row. That is more visible than a warning nobody reads, and it needs no rule that could itself be
+        # wrong about what a valid name looks like.
         shipped = raw
-        shipped_keys = {canonical(r) for r in raw}
+        shipped_keys = {canonical(r) or r for r in raw}
+        opaque = [r for r in raw if canonical(r) is None]
+        if opaque:
+            print(f"  {len(opaque)} shipped entr(ies) carry no tile geometry (e.g. {opaque[0]!r}); they match by "
+                  f"name only")
         if not shipped:
             print(f"{p} lists no configs. An empty shipped set cannot be tuned against -- it would rank nothing "
                   f"and write a table of defaults.", file=sys.stderr)
@@ -183,7 +191,7 @@ def main() -> int:
             conf, tf, note = bench_run(str(binary), n, k, a.gs, m, a.reps, jsonl)
             # A winner outside the shipped set is not a tactic. Recording it would produce a lookup that always
             # misses; recording nothing leaves an entry that gets regenerated. The second is recoverable.
-            if conf and shipped is not None and canonical(conf) not in shipped_keys:
+            if conf and shipped is not None and (canonical(conf) or conf) not in shipped_keys:
                 note = f"winner {conf!r} is not in the shipped set"
                 conf = None
             state = conf if conf else f"-- {note}"
