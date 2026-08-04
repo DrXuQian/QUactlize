@@ -295,6 +295,22 @@ def syntax(src, defs):
     return ("PASS" if rc == 0 else "FAIL"), (last[-1] if last else ""), dt
 
 
+def lint_selection_agrees():
+    """THE PRECONDITION FOR DELETING THE C++ SELECTION (docs/BENCH_DESIGN.md step 3).
+
+    benchmarks/bench_select.hpp decides inside the bench; benchmarks/analyse.py decides outside it. Until they
+    are shown to agree on data that exercises the boundary -- a candidate whose band just overlaps the leader's
+    and whose MEDIAN is worse -- removing either one replaces an unverified procedure with another unverified
+    one. Needs no device: both halves are host code.
+    """
+    r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-rfE", str(ROOT / "tests" / "test_bench_selection.py")],
+                       capture_output=True, text=True, cwd=ROOT)
+    if r.returncode == 0:
+        return True, "C++ and Python verdicts match on the planted boundary fixture"
+    tail = [l for l in (r.stdout + r.stderr).splitlines() if l.strip()][-3:]
+    return False, " | ".join(tail)
+
+
 def lint_gguf_coverage():
     """A GGUF TYPE THAT NOTHING HAS CLASSIFIED IS THE DEFECT -- not an unsupported one.
 
@@ -416,6 +432,7 @@ def main():
                 ("lint", "absolute paths name this repo dir, not a renamed one", lint_stale_repo_path),
                 ("lint", "names used before they exist (device-only tests get no other flow check)", lint_undefined_names),
                 ("coverage", "every ggml.h quant type is classified, in scope or out", lint_gguf_coverage),
+                ("select", "the C++ and Python selection procedures agree on planted data", lint_selection_agrees),
     ("registry", "declarations vs source", None)])
     # MATCH THE KIND AS WELL AS THE NAME. `-k lint` matched NOTHING, because a lint's name is its description
     # ("duplicate unroll directives") and the word "lint" only appears in the kind. The run then printed
