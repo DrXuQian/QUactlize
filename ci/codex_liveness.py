@@ -24,7 +24,11 @@ The states this reports:
      WAITING     CPU frozen this window, but a connection has queued bytes or an armed timer -- OR every window
                  looked frozen while cumulative CPU still moved across them
      IDLE        no established connection: between calls, not mid-request
-     HUNG        CPU has not moved AT ALL across `confirm` windows, and every connection is idle and untimered
+     STALLED     CPU has not moved AT ALL across `confirm` windows, and every connection is idle and untimered.
+                 This says codex IS NOT WORKING. It does NOT say why, and the distinction cost a wrong
+                 diagnosis on the day this was written: an unapproved MCP call blocks on the CLIENT, so codex
+                 sits idle having received nothing, and looks EXACTLY like a session whose reply was lost.
+                 mcp__codex__* missing from the permission allow list produces this every time.
 
 AND THE CORRECTION THAT MATTERS MOST HERE. The first version of this file called HUNG on ONE frozen window, and
 that is wrong: the codex mcp-server was measured accumulating ~4.5 seconds of CPU across twenty minutes of a
@@ -42,8 +46,8 @@ stop long codex calls being killed at the 30-minute default. The cost is that a 
 reaped either: 0 does not mean "be patient", it means "no detector". A bounded value longer than the longest
 legitimate silence keeps the patience and restores the detector.
 
-    python3 ci/codex_liveness.py                    # one verdict; exit 3 on HUNG
-    python3 ci/codex_liveness.py --confirm 5        # stricter: five frozen windows before HUNG
+    python3 ci/codex_liveness.py                    # one verdict; exit 3 on STALLED
+    python3 ci/codex_liveness.py --confirm 5        # stricter: five frozen windows before STALLED
     python3 ci/codex_liveness.py --watch            # sample until the state changes
 """
 import argparse
@@ -152,7 +156,7 @@ def _snapshot(watched, sample_seconds):
 
 
 def verdict(sample_seconds=6.0, confirm=3):
-    """HUNG REQUIRES PERSISTENCE, and this is the correction that matters most in this file.
+    """STALLED REQUIRES PERSISTENCE, and this is the correction that matters most in this file.
 
     A single frozen sample does NOT mean hung. Measured on 2026-08-04: the codex mcp-server accumulated ~4.5
     seconds of CPU across twenty minutes of a live call -- it wakes to process each streamed chunk and sleeps
@@ -160,7 +164,7 @@ def verdict(sample_seconds=6.0, confirm=3):
     indistinguishable from death at that timescale. The first version of this file said HUNG on exactly that
     evidence and would have had me killing healthy sessions.
 
-    So HUNG is only reported when the frozen-and-untimered state holds across `confirm` separate windows AND the
+    So STALLED is only reported when the frozen-and-untimered state holds across `confirm` separate windows AND the
     process's cumulative CPU has not moved at all between the first and last -- the second condition being the
     one a between-chunks gap cannot satisfy, because the next chunk lands inside the span."""
     pids = codex_pids()
@@ -188,9 +192,13 @@ def verdict(sample_seconds=6.0, confirm=3):
     if span > 0:
         return "WAITING", (f"every window looked frozen, but cumulative CPU moved {span} ticks across them -- "
                            f"this is a process waking between streamed chunks, not a dead one"), detail
-    return "HUNG", (f"CPU has not moved at all across {confirm} windows of {sample_seconds:.0f}s, and all "
-                    f"{len(idle)} established connection(s) are idle with no timer armed. Nothing will wake the "
-                    f"reader"), detail
+    return "STALLED", (
+        f"CPU has not moved at all across {confirm} windows of {sample_seconds:.0f}s, and all {len(idle)} "
+        f"established connection(s) are idle with no timer armed. codex is NOT WORKING -- but this evidence "
+        f"does not say why. Two causes produce it identically: a reply that will never arrive, and a request "
+        f"that was never delivered (an unapproved MCP call blocks on the CLIENT side, so codex is simply idle "
+        f"and has received nothing). Check whether mcp__codex__* is in the permission allow list before "
+        f"concluding the session died"), detail
 
 
 def main() -> int:
@@ -216,9 +224,9 @@ def main() -> int:
             if s2 != st:
                 print(f"CHANGED: {st} -> {s2}: {w2}")
                 st = s2
-                if s2 in ("HUNG", "ABSENT", "IDLE"):
+                if s2 in ("STALLED", "ABSENT", "IDLE"):
                     break
-    return 3 if st == "HUNG" else 0
+    return 3 if st == "STALLED" else 0
 
 
 if __name__ == "__main__":
