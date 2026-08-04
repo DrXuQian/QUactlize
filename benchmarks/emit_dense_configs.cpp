@@ -112,6 +112,19 @@ int main(int argc, char** argv) {
         for (int wn : kWarpN) {
           Candidate const c{*spec, tm, tn, tk, wm, wn};
           if (DenseSpace::sweep_exclusion(c) != Exclusion::None) continue;
+          // FEWER THAN FOUR WARPS PER CTA ABORTS ON THE DEVICE. Measured on ppu001 2026-08-04: every config
+          // with (TM/WM)*(TN/WN) < 4 hit an unconditional assert and core-dumped, and every config with 4 or
+          // more ran. 126 of the 293 rows in the generated table were in that set, so a sweep lost all 293
+          // measurements to the first one -- a device assert poisons the context and cannot be caught, so the
+          // only defence is not launching it.
+          //
+          // THIS BELONGS IN ppu_tactic_space.hpp, NOT HERE. It is a LEGALITY constraint -- the collective
+          // cannot execute these -- and the predicate is what both operators consult, so the MoE sweep will
+          // walk into the same wall. It is here because it unblocks the dense sweep today; INBOX 047 asks for
+          // it to move, together with the actual mechanism, which is not yet known. The empirical boundary is
+          // between 2 and 4 warps; no 3-warp configuration exists, so nothing distinguishes ">= 4" from
+          // ">= 3" in the evidence.
+          if ((tm / wm) * (tn / wn) < 4) continue;
           ok.push_back(c);
         }
   if (ok.empty()) { std::fprintf(stderr, "no legal tactic at bits=%d tile_k=%d\n", bits, tk); return 1; }
