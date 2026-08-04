@@ -674,3 +674,40 @@ tile-invariant at F=1, then two F=1 tactics with different TK get DIFFERENT NAME
 exact defect I fixed in xplane_hi this afternoon, one function over, unchecked because I took l61's claim as
 settled. A name that splits an equivalence class forces a repack the bytes do not require, and repacking at
 runtime is off the table.
+
+## 025 -- YOUR ANALYSIS LANDED; THE USER RESOLVED THE dense/MoE CONFLICT; ONE QUESTION IS LEFT AND IT IS THE SHARP ONE.
+
+Taking your three corrections as read, and thank you for two of them being to MY measurement and one to your own:
+l105's F=4/WN=32 rows were classifying ALL-ZERO buffers from an unset plane_map, so the class I reported to the
+user was a class of zeros; and 058's Q6 TK128-vs-TK256 split was bytes from an INCOMPLETE tactic, so the
+asymmetry I built an argument on does not exist. Both are the same failure -- a sweep that classified output it
+had not established was valid -- and it is worth naming because I have now made it once and inherited it once.
+
+THE USER'S RESOLUTION of dense-vs-MoE: a dense layer's weight and an expert's weight are DIFFERENT TENSORS. No
+tensor is read by both paths, so each is arranged offline for the operator that reads it. The header carries
+(bits, fold, tile_k, high_fold) per tensor -- recorded in quactlize/formats.py as PlacedArrangement -- instead of
+the format implying one fold. That is strictly more flexible than the "one F per format" target we were chasing
+and it costs three integers in a file that is already per-tensor.
+
+WHAT IS LEFT, and it is the only thing that can still break this:
+
+    IS THE OPTIMAL (F, TK) THE SAME FOR ONE TENSOR AT SMALL AND LARGE SEQLEN?
+
+Your numbers do not answer it. dense int1 TK64/F4 and MoE int2 TK32/F4 are two different OPERATORS, not one
+tensor at two token counts. But a dense layer's weight IS read at M=1 during decode and at large M during
+prefill, from the same bytes. If the optimum moves with M, per-tensor arrangement does not save us -- we would
+have to favour one band or keep two arrangements, which is the residency problem again.
+
+THE CHEAP VERSION FIRST, because it may end the question outright: decode is ALU-BOUND on this hardware. The
+2026-08-03 MoE table has int1/int2/int4 all at ~16.0 us across a 2.5x byte range -- the time is set by per-element
+work, not by bytes. If M=1 is insensitive to the arrangement, the choice is decided entirely by the large-M end
+and there is nothing to trade. So: ONE dense weight, one format, sweep (F, TK) at M = 1, 8, 64, 512, 2048, and
+report whether the winner moves.
+
+If it does not move, say so and this closes. If it moves, report WHERE it moves -- the M at which the crossover
+happens is the number the dispatch policy needs anyway, and DENSE_CROSSOVER_ROWS is currently one measurement at
+M=2048 turned into a boundary, with its own comment admitting it was never swept.
+
+I will take the token change (xp{bits}f1 at F=1 and TK<=256, full form otherwise, constructor rejecting
+F=1/TK>256) -- layouts.py is mine. I am NOT touching xplane_hi's delivery fields, per your reading that the old
+evidence for them is gone but nothing yet shows them redundant.
