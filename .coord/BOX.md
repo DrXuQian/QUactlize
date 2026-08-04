@@ -56,6 +56,20 @@ These are correctness and inspection, not tactic sweeps, so the hold above does 
    many format-specific libraries a deployment of it needs. Drop --dry-run (with QUACTLIZE_PPU_LIB=$SO) to
    actually pack.
 
+2. **THE SWEEP'S PROBLEM SHAPES. Everything measured so far was N=K=4096, which is none of the three targets.**
+   The user fixed the workload on 2026-08-04: Qwen3-32B (dense), Qwen3.5-35B-A3B (MoE), Qwen3.5-122B-A10B
+   (MoE, 2-card TP), at n-token in {1,2,4,64,2048,4096}. Shapes are deliberately NOT written into
+   benchmarks/workloads.py until they come off the checkpoints -- a plausible 5120 in a file reads like a record.
+
+       cd /sim/eec/shared/junfu.qx/quactlize && git pull --recurse-submodules
+       python3 tools/inspect_models.py gguf /sim/eec/shared/AI_workspace/llm-models/Qwen3.5-35B-A3B-Q4_K_M-GGUF/Qwen3.5-35B-A3B-Q4_K_M.gguf
+       python3 tools/inspect_models.py gptq /sim/eec/shared/AI_workspace/llm-models/Qwen3.5-122B-A10B-GPTQ-Int4/ow7_224_ca
+       ls /sim/eec/shared/AI_workspace/llm-models/ | grep -i 32b    # Qwen3-32B not yet located
+
+   WANTED per model: hidden_size, intermediate_size, moe_intermediate_size, num_experts, num_experts_per_tok,
+   and the distinct per-layer (n, k). For the 122B ALSO the serving TP convention -- which axis the 2-card split
+   halves -- because both conventions exist and assuming one tunes a GEMM that never runs.
+
 
 **WHEN SOMETHING IS RED, PASTE THIS.** No arguments, safe any time, output sized for a chat message:
 
