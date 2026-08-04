@@ -66,35 +66,40 @@ ASSERTION TEXT. That last part is what has been missing -- twice today a ppu001 
 a message that was already in the log, once three lines above where anyone looked.
 
 
-0. **UNBLOCKS NINE MATRIX CELLS. One paste.** The run already happened and all five formats passed; codex is
-   holding the promotion because the condition was "read the logs yourself" and those files exist only on the
-   box. It is right to hold -- a relayed screenshot is weaker evidence than the file -- so the file is what is
-   needed.
-
-       cd /sim/eec/shared/junfu.qx/quactlize && tail -3 ~/ab/fully_quantized_*.log
-
-   WANTED: the summary line from each of the five. Expected shape per format: `2 passed, 8 skipped` with the
-   skips reading "this library is built for packed format N". If any says something else, the promotion is
-   withdrawn rather than adjusted.
-
-
-1. **THE ONLY THING BETWEEN 51/60 AND 60/60.** All five k-quants now have FULLY_QUANTIZED dense AND grouped
-   implemented, local gates green on both sides. Nine cells sit at PARTIAL solely because no ppu001 oracle has
-   run against them; there is no further code to write for those cells.
-
-       cd /sim/eec/shared/junfu.qx/quactlize && git pull --recurse-submodules && ./benchmarks/run_batch.sh pytest
-
-   It builds the device library FIVE TIMES -- once per PPU_PACKED_FORMAT, because no binary runs more than one
-   format -- runs each format's dense and grouped oracle against official gguf with a planted fault required to
-   fail FIRST, and restores the default-format library at the end.
-
-   USE run_batch, NOT a bare `pytest tests`. Three runs today produced plausible garbage from a stale host
-   extension; a bare pytest now refuses rather than reporting, but only run_batch rebuilds the DEVICE library and
-   passes PPU_PACKED_SCALE=1, without which the whole cell answers rc=34.
-
-   WANTED: the per-format summary lines, plus any FAILED/ERROR ids (named now, -rfE).
-
 ## SETTLED
+
+- **The two entries below were answered by the 60/60 run and are kept only so the ask is not re-issued.**
+  All five formats passed and the nine PARTIAL cells were promoted on that evidence (`f52cc82`). An OPEN list
+  that still contains answered items is an OPEN list nobody trusts, which is how a real request gets skipped.
+
+  0. **UNBLOCKS NINE MATRIX CELLS. One paste.** The run already happened and all five formats passed; codex is
+     holding the promotion because the condition was "read the logs yourself" and those files exist only on the
+     box. It is right to hold -- a relayed screenshot is weaker evidence than the file -- so the file is what is
+     needed.
+
+         cd /sim/eec/shared/junfu.qx/quactlize && tail -3 ~/ab/fully_quantized_*.log
+
+     WANTED: the summary line from each of the five. Expected shape per format: `2 passed, 8 skipped` with the
+     skips reading "this library is built for packed format N". If any says something else, the promotion is
+     withdrawn rather than adjusted.
+
+
+  1. **THE ONLY THING BETWEEN 51/60 AND 60/60.** All five k-quants now have FULLY_QUANTIZED dense AND grouped
+     implemented, local gates green on both sides. Nine cells sit at PARTIAL solely because no ppu001 oracle has
+     run against them; there is no further code to write for those cells.
+
+         cd /sim/eec/shared/junfu.qx/quactlize && git pull --recurse-submodules && ./benchmarks/run_batch.sh pytest
+
+     It builds the device library FIVE TIMES -- once per PPU_PACKED_FORMAT, because no binary runs more than one
+     format -- runs each format's dense and grouped oracle against official gguf with a planted fault required to
+     fail FIRST, and restores the default-format library at the end.
+
+     USE run_batch, NOT a bare `pytest tests`. Three runs today produced plausible garbage from a stale host
+     extension; a bare pytest now refuses rather than reporting, but only run_batch rebuilds the DEVICE library and
+     passes PPU_PACKED_SCALE=1, without which the whole cell answers rc=34.
+
+     WANTED: the per-format summary lines, plus any FAILED/ERROR ids (named now, -rfE).
+
 
 - **The whole python tier was green on ppu001 once today**, which closed four things at once: codex's vecdot
   activation-contract fix confirmed ON THE DEVICE, the two stock-CUTLASS stand-in build errors gone, the sixteen
