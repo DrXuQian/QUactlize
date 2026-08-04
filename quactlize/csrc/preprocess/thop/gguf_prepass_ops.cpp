@@ -1042,7 +1042,7 @@ std::vector<torch::Tensor> gguf_prepare_fully_quantized_grouped(
 // identifies the affine half without involving any code-plane consumer. "Consumer-ready" matters: Q3/Q6 store the
 // offset-binary correction in zero, and dense int4-family planes store the converter's low-8 correction. Returning
 // those stored fp16 values is a bit-exact inverse; attempting to undo a rounded fp16 correction would be lossy.
-template <bool Dense>
+template <bool Placed>
 std::vector<torch::Tensor> gguf_artifact_dequantize_scale_impl(torch::Tensor scale, torch::Tensor zero,
                                                                int64_t qtype) {
   CHECK_CPU(scale); CHECK_CONTIGUOUS(scale); CHECK_CPU(zero); CHECK_CONTIGUOUS(zero);
@@ -1077,21 +1077,21 @@ inline uint8_t artifact_code(uint8_t const* p, int64_t logical, int bits) {
   return uint8_t((p[bit >> 3] >> (bit & 7)) & ((1 << bits) - 1));
 }
 
-template <bool Dense>
+template <bool Placed>
 torch::Tensor gguf_artifact_dequantize_impl(torch::Tensor low, torch::Tensor high,
                                             torch::Tensor scale, torch::Tensor zero, int64_t qtype) {
   CHECK_CPU(low); CHECK_CONTIGUOUS(low); CHECK_CPU(high); CHECK_CONTIGUOUS(high);
   TORCH_CHECK(low.dtype() == torch::kUInt8 && high.dtype() == torch::kUInt8,
               "artifact code planes must be uint8");
   TORCH_CHECK(low.dim() == 3, "artifact low plane must be [experts,n,packed_k]");
-  auto stored = gguf_artifact_dequantize_scale_impl<Dense>(scale, zero, qtype);
+  auto stored = gguf_artifact_dequantize_scale_impl<Placed>(scale, zero, qtype);
   return dispatch_ktype(qtype, [&](auto tag) -> torch::Tensor {
     constexpr KType T = decltype(tag)::value;
     using Tr = Traits<T>;
     constexpr int kLoBits = (T == KType::Q2_K || T == KType::Q3_K) ? 2 : 4;
     constexpr int kHiBits = (T == KType::Q3_K || T == KType::Q5_K) ? 1
                           : (T == KType::Q6_K) ? 2 : 0;
-    constexpr int kDenseShift = Dense && kLoBits == 4 ? 8 : 0;
+    constexpr int kPlacedShift = Placed && kLoBits == 4 ? 8 : 0;
     int64_t const experts = scale.size(0), scale_k = scale.size(1), n = scale.size(2);
     int64_t const k = scale_k * Tr::kGroupSize;
     TORCH_CHECK(low.size(0) == experts && low.size(1) == n && low.size(2) == k * kLoBits / 8,
@@ -1103,22 +1103,37 @@ torch::Tensor gguf_artifact_dequantize_impl(torch::Tensor low, torch::Tensor hig
       TORCH_CHECK(high.numel() == 0, "single-plane artifact must have an empty high plane");
     }
 
-    // Dense's physical xplane buffer is first recovered to the exact Native packed representation. Keeping this C
+    // A placed physical xplane buffer is first recovered to the exact Native packed representation. Keeping this C
     // seam host-only lets the Python oracle run under nvcc without pulling PPU device headers into the torch module.
+    //
+    // GROUPED MUST LIVE HERE rather than as a Python loop over dense slices. Per-expert base arithmetic is part of
+    // the artifact contract: recovering each expert through this one op makes a copied/reused expert base visible to
+    // the grouped oracle. The device-library inverse itself remains the same per-tensor primitive; this loop owns the
+    // grouped tensor's byte strides and therefore exercises the addressing that a Python loop would pre-solve.
     torch::Tensor native_low = low, native_high = high;
-    if constexpr (Dense) {
-      TORCH_CHECK(experts == 1 && n % 256 == 0 && k % 256 == 0,
-                  "dense artifact inverse needs one expert and n/k multiples of 256");
+    if constexpr (Placed) {
+      TORCH_CHECK(n % 256 == 0 && k % 256 == 0,
+                  "placed artifact inverse needs n/k multiples of 256");
       native_low = torch::empty_like(low);
       native_high = high.numel() ? torch::empty_like(high) : torch::empty_like(high);
       auto const* api = ppu_backend::load();
       TORCH_CHECK(api && api->recover_dense,
-                  "dense artifact dequant requires libquactlize_ppu.so's xplane inverse symbol");
-      TORCH_CHECK(api->recover_dense(get_ptr<uint8_t const>(low), high.numel() ? get_ptr<uint8_t const>(high) : nullptr,
-                                     get_ptr<uint8_t>(native_low),
-                                     native_high.numel() ? get_ptr<uint8_t>(native_high) : nullptr,
-                                     int(n), int(k), int(qtype)) == 0,
-                  "PPU dense xplane inverse failed");
+                  "placed artifact dequant requires libquactlize_ppu.so's xplane inverse symbol");
+      size_t const low_expert_bytes = size_t(n) * size_t(k) * kLoBits / 8;
+      size_t const high_expert_bytes = size_t(n) * size_t(k) * kHiBits / 8;
+      auto const* placed_low = get_ptr<uint8_t const>(low);
+      auto const* placed_high = kHiBits ? get_ptr<uint8_t const>(high) : nullptr;
+      auto* recovered_low = get_ptr<uint8_t>(native_low);
+      auto* recovered_high = kHiBits ? get_ptr<uint8_t>(native_high) : nullptr;
+      for (int64_t e = 0; e < experts; ++e) {
+        TORCH_CHECK(api->recover_dense(
+                        placed_low + size_t(e) * low_expert_bytes,
+                        kHiBits ? placed_high + size_t(e) * high_expert_bytes : nullptr,
+                        recovered_low + size_t(e) * low_expert_bytes,
+                        kHiBits ? recovered_high + size_t(e) * high_expert_bytes : nullptr,
+                        int(n), int(k), int(qtype)) == 0,
+                    "PPU placed xplane inverse failed for expert ", e);
+      }
     }
     auto const* lp = get_ptr<uint8_t const>(native_low);
     auto const* hp = kHiBits ? get_ptr<uint8_t const>(native_high) : nullptr;
@@ -1134,7 +1149,7 @@ torch::Tensor gguf_artifact_dequantize_impl(torch::Tensor low, torch::Tensor hig
           int q = artifact_code(lp, logical, kLoBits);
           if constexpr (kHiBits != 0) q += int(artifact_code(hp, logical, kHiBits)) << kLoBits;
           int64_t const affine = (e * n + col) * scale_k + kk / Tr::kGroupSize;
-          op[logical] = at::Half(float(q - kDenseShift) * float(sp[affine]) + float(zp[affine]));
+          op[logical] = at::Half(float(q - kPlacedShift) * float(sp[affine]) + float(zp[affine]));
         }
     return out;
   });
@@ -1154,6 +1169,10 @@ torch::Tensor gguf_gemv_artifact_dequantize(torch::Tensor low, torch::Tensor hig
 }
 torch::Tensor gguf_dense_artifact_dequantize(torch::Tensor low, torch::Tensor high, torch::Tensor scale,
                                              torch::Tensor zero, int64_t qtype) {
+  return gguf_artifact_dequantize_impl<true>(low, high, scale, zero, qtype);
+}
+torch::Tensor gguf_grouped_artifact_dequantize(torch::Tensor low, torch::Tensor high, torch::Tensor scale,
+                                               torch::Tensor zero, int64_t qtype) {
   return gguf_artifact_dequantize_impl<true>(low, high, scale, zero, qtype);
 }
 
@@ -1417,6 +1436,8 @@ static auto gguf_gemv_artifact_dequantize_scale_op = torch::RegisterOperators(
     "quactlize::gguf_gemv_artifact_dequantize_scale", &torch_ext::gguf_gemv_artifact_dequantize_scale);
 static auto gguf_dense_artifact_dequantize_op = torch::RegisterOperators(
     "quactlize::gguf_dense_artifact_dequantize", &torch_ext::gguf_dense_artifact_dequantize);
+static auto gguf_grouped_artifact_dequantize_op = torch::RegisterOperators(
+    "quactlize::gguf_grouped_artifact_dequantize", &torch_ext::gguf_grouped_artifact_dequantize);
 static auto gguf_dense_artifact_dequantize_scale_op = torch::RegisterOperators(
     "quactlize::gguf_dense_artifact_dequantize_scale", &torch_ext::gguf_dense_artifact_dequantize_scale);
 
