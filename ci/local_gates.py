@@ -379,7 +379,14 @@ def main():
                 ("lint", "absolute paths name this repo dir, not a renamed one", lint_stale_repo_path),
                 ("lint", "names used before they exist (device-only tests get no other flow check)", lint_undefined_names),
     ("registry", "declarations vs source", None)])
-    items = [i for i in items if a.k in i[1]]
+    # MATCH THE KIND AS WELL AS THE NAME. `-k lint` matched NOTHING, because a lint's name is its description
+    # ("duplicate unroll directives") and the word "lint" only appears in the kind. The run then printed
+    # "0 checks ... 0/0 passed" and exited zero -- a green result that establishes nothing, which is the exact
+    # failure shape this file exists to catch elsewhere. So: match either field, and refuse an empty selection.
+    items = [i for i in items if a.k in i[1] or a.k in i[0]]
+    if a.k and not items:
+        print(f"-k {a.k!r} selected NO checks. Nothing ran; this is a failure, not a pass. --list shows the names.")
+        return 2
     if a.list:
         for kind, name, _ in items:
             print(f"  {kind:<9} {name}")
