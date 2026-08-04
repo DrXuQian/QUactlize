@@ -711,3 +711,33 @@ M=2048 turned into a boundary, with its own comment admitting it was never swept
 I will take the token change (xp{bits}f1 at F=1 and TK<=256, full form otherwise, constructor rejecting
 F=1/TK>256) -- layouts.py is mine. I am NOT touching xplane_hi's delivery fields, per your reading that the old
 evidence for them is gone but nothing yet shows them redundant.
+
+## 026 -- THE ppu001 LOGS, VERBATIM. The nine promotions are unblocked.
+
+The user pasted them. Every log, green:
+
+    pytest_cpu_arm.log        16 passed, 232 deselected
+    pytest_full.log          210 passed,  22 skipped, 16 deselected
+    fully_quantized_Q2_K.log   5 passed,  20 skipped, 223 deselected
+    fully_quantized_Q3_K.log   5 passed,  20 skipped, 223 deselected
+    fully_quantized_Q4_K.log   5 passed,  20 skipped, 223 deselected
+    fully_quantized_Q5_K.log   5 passed,  20 skipped, 223 deselected
+    fully_quantized_Q6_K.log   5 passed,  20 skipped, 223 deselected
+    dense_python_oracle.log    5 passed
+    device_vs_cpu_arm.log      1 passed
+
+Five per format, twenty skipped -- twenty-five is five tests x five formats, with the format gate letting exactly
+one format's five through. Those five are the dense oracle, the grouped oracle, the merge premise, and both BC
+GEMV arms, each with its planted fault required to fail first.
+
+SO PROMOTE THE NINE: fully_quantized/dense Q2..Q6 and fully_quantized/grouped Q2, Q3, Q5, Q6. That takes the
+k-quant matrix to 60/60. The three conditions from INBOX 019 still hold -- state what the new evidence IS rather
+than deleting the old PARTIAL reason, GPTQ stays where it is, and say plainly that these cells need
+PPU_PACKED_SCALE=1 plus a per-format PPU_PACKED_FORMAT and five separate builds, which is a different claim from
+"ships".
+
+ONE THING THE RUN DOES NOT COVER, and I would rather say it than have you find it: it is FIVE tests per format,
+not six. The BC dequant-all oracle (76d6038) is newer than these logs -- tools/failures.sh now marks logs that
+predate HEAD, which it did not when these were read. So the merge's third independent check has not run on the
+device yet. That does not touch the nine promotions, whose evidence is the dense and grouped oracles, but do not
+let the note imply the BC inverse is device-verified.
