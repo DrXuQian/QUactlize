@@ -58,43 +58,49 @@ void launch_native(uint8_t const* blocks, VecdotActivation const* x, float* out,
 // boundary makes the distinction impossible to erase with the coincidental blocks_per_row=1 shape.
 template <KType T>
 int native_rows(uint8_t const* blocks, uint16_t const* x, float* out, int rows, int bpr) {
+  ppu_gemv::rt_clear_error();
   DevBuf db(size_t(rows) * bpr * raw_block_bytes<T>());
   DevBuf dx(size_t(rows) * bpr * 256 * sizeof(uint16_t));
   DevBuf dout(size_t(rows) * sizeof(float));
   db.from_host(blocks); dx.from_host(x);
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
   launch_native<T, false, true>(db.as<uint8_t>(), dx.as<VecdotActivation>(), dout.as<float>(), rows, bpr,
                                 nullptr, 1, 1);
   ppu_gemv::rt_sync("native GGUF block-row vecdot");
-  dout.to_host(out);
-  return 0;
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
+  return ppu_gemv::rt_copy_output(dout, out, size_t(rows));
 }
 
 template <KType T>
 int native_dense(uint8_t const* blocks, uint16_t const* x, float* out, int rows, int bpr) {
+  ppu_gemv::rt_clear_error();
   DevBuf db(size_t(rows) * bpr * raw_block_bytes<T>());
   DevBuf dx(size_t(bpr) * 256 * sizeof(uint16_t));
   DevBuf dout(size_t(rows) * sizeof(float));
   db.from_host(blocks); dx.from_host(x);
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
   launch_native<T, false>(db.as<uint8_t>(), dx.as<VecdotActivation>(), dout.as<float>(), rows, bpr,
                           nullptr, 1, 1);
   ppu_gemv::rt_sync("native dense GEMV");
-  dout.to_host(out);
-  return 0;
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
+  return ppu_gemv::rt_copy_output(dout, out, size_t(rows));
 }
 
 template <KType T>
 int native_moe(uint8_t const* blocks, uint16_t const* x, int const* offsets, float* out,
                int n, int bpr, int experts, int total_rows, int max_rows) {
+  ppu_gemv::rt_clear_error();
   DevBuf db(size_t(experts) * n * bpr * raw_block_bytes<T>());
   DevBuf dx(size_t(total_rows) * bpr * 256 * sizeof(uint16_t));
   DevBuf doff(size_t(experts + 1) * sizeof(int));
   DevBuf dout(size_t(total_rows) * n * sizeof(float));
   db.from_host(blocks); dx.from_host(x); doff.from_host(offsets);
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
   launch_native<T, true>(db.as<uint8_t>(), dx.as<VecdotActivation>(), dout.as<float>(), n, bpr,
                          doff.as<int>(), max_rows, experts);
   ppu_gemv::rt_sync("native MoE GEMV");
-  dout.to_host(out);
-  return 0;
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
+  return ppu_gemv::rt_copy_output(dout, out, size_t(total_rows) * n);
 }
 
 // The merged BC resident artifact: xplane-placed low/high codes plus byte-neutral packed scale units. The CUDA-core
@@ -103,6 +109,7 @@ int native_moe(uint8_t const* blocks, uint16_t const* x, int const* offsets, flo
 template <KType T>
 int bc_gemv(uint16_t const* x, uint8_t const* low, uint8_t const* high, uint8_t const* units,
             int const* offsets, float* out, int total_rows, int n, int k, int experts, int max_rows) {
+  ppu_gemv::rt_clear_error();
   using U = gguf_scale::packed_unit::Unit<T>;
   using BT = gguf_scale::bc_vecdot::Traits<T>;
   int const weight_experts = experts > 0 ? experts : 1;
@@ -116,6 +123,7 @@ int bc_gemv(uint16_t const* x, uint8_t const* low, uint8_t const* high, uint8_t 
          dout(size_t(total_rows) * n * sizeof(float));
   dx.from_host(x); dl.from_host(low); if constexpr (BT::Hi != 0) dh.from_host(high); du.from_host(units);
   if (experts > 0) doff.from_host(offsets);
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
   if (experts > 0) {
     gguf_scale::bc_vecdot::launch<T, true>(dl.as<uint8_t>(), dh.as<uint8_t>(), du.as<uint8_t>(),
         dx.as<VecdotActivation>(), doff.as<int>(), dout.as<float>(), n, bpr, experts, max_rows);
@@ -124,8 +132,8 @@ int bc_gemv(uint16_t const* x, uint8_t const* low, uint8_t const* high, uint8_t 
         dx.as<VecdotActivation>(), nullptr, dout.as<float>(), n, bpr, 1, 1);
   }
   ppu_gemv::rt_sync(experts > 0 ? "BC MoE GEMV" : "BC dense GEMV");
-  dout.to_host(out);
-  return 0;
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
+  return ppu_gemv::rt_copy_output(dout, out, size_t(total_rows) * n);
 }
 
 template <KType T>
@@ -136,36 +144,41 @@ __global__ void dequant_kernel(uint8_t const* blocks, cutlass::half_t* out, int 
 
 template <KType T>
 int dequant(uint8_t const* blocks, uint16_t* out, int count) {
+  ppu_gemv::rt_clear_error();
   DevBuf db(size_t(count) * raw_block_bytes<T>());
   DevBuf dout(size_t(count) * 256 * sizeof(uint16_t));
   db.from_host(blocks);
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
   dequant_kernel<T><<<(count + 127) / 128, 128>>>(db.as<uint8_t>(), dout.as<cutlass::half_t>(), count);
   ppu_gemv::rt_sync("GGUF dequantize");
-  dout.to_host(out);
-  return 0;
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
+  return ppu_gemv::rt_copy_output(dout, out, size_t(count) * 256);
 }
 
 template <KType T, int ZMul>
 int prepass(uint8_t const* blocks, uint16_t const* d, uint16_t const* dmin,
             int count, uint16_t* scale, uint16_t* zero) {
+  ppu_gemv::rt_clear_error();
   using Tr = gguf_scale::Traits<T>;
   DevBuf db(size_t(count) * Tr::kBlockBytes), dd(size_t(count) * 2),
          dm(Tr::kHasMin ? size_t(count) * 2 : 0), ds(size_t(count) * Tr::kGroups * 2),
          dz(size_t(count) * Tr::kGroups * 2);
   db.from_host(blocks); dd.from_host(d); if constexpr (Tr::kHasMin) dm.from_host(dmin);
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
   gguf_scale::prepass::BlockDesc src{db.as<uint8_t>(), dd.as<cutlass::half_t>(),
       Tr::kHasMin ? dm.as<cutlass::half_t>() : nullptr, Tr::kBlockBytes, 0, 1, 0};
   gguf_scale::prepass::PlaneDesc dst{ds.as<cutlass::half_t>(), dz.as<cutlass::half_t>(), Tr::kGroups, 1};
   int const grid = gguf_scale::prepass::prepass_grid_size(count, 1, 256);
   gguf_scale::prepass::prepass_kernel<T, ZMul><<<grid, 256>>>(src, dst, count, 1);
   ppu_gemv::rt_sync("GGUF scale prepass");
-  ds.to_host(scale); dz.to_host(zero);
-  return 0;
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
+  return ppu_gemv::rt_copy_two_outputs(ds, scale, dz, zero, size_t(count) * Tr::kGroups);
 }
 
 template <KType T, int ZMul>
 int prepass_unit(uint8_t const* units, uint16_t* scale, uint16_t* zero,
                  int n, int k, int experts) {
+  ppu_gemv::rt_clear_error();
   using U = gguf_scale::packed_unit::Unit<T>;
   int const num_superblocks = k / 256;
   if (num_superblocks % U::kSbPerUnit) return 6;
@@ -174,6 +187,7 @@ int prepass_unit(uint8_t const* units, uint16_t* scale, uint16_t* zero,
   size_t const unit_bytes = size_t(experts) * num_units * n * U::kUnitTotal;
   DevBuf du(unit_bytes), ds(size_t(plane_elems) * 2), dz(size_t(plane_elems) * 2);
   du.from_host(units);
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
   int64_t const expert_stride = int64_t(num_superblocks) * U::kGroups * n;
   gguf_scale::prepass::UnitPlaneDesc dst{
       ds.as<cutlass::half_t>(), dz.as<cutlass::half_t>(), expert_stride, n, 1};
@@ -181,8 +195,8 @@ int prepass_unit(uint8_t const* units, uint16_t* scale, uint16_t* zero,
   gguf_scale::prepass::prepass_unit_kernel<T, ZMul><<<grid, 256>>>(
       du.as<uint8_t>(), dst, experts, n, num_superblocks);
   ppu_gemv::rt_sync("packed-unit scale prepass");
-  ds.to_host(scale); dz.to_host(zero);
-  return 0;
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
+  return ppu_gemv::rt_copy_two_outputs(ds, scale, dz, zero, size_t(plane_elems));
 }
 
 template <ppu_gemv::WFormat F, int StepK, int Threads>
@@ -190,6 +204,7 @@ int lowbit(uint16_t const* act, uint8_t const* low, uint8_t const* high,
            uint16_t const* scale, uint16_t const* zero, uint16_t* out,
            int total_rows, int n, int k, int group_size, int experts,
            int const* offsets, int max_rows) {
+  ppu_gemv::rt_clear_error();
   using D = ppu_gemv::KernelDetails<ppu_gemv::FP16DetailsA, F, ppu_gemv::WLayout::Native, StepK, Threads>;
   constexpr int LoBits = D::kLoBits, HiBits = D::kHiBits;
   int const weight_experts = experts > 0 ? experts : 1;
@@ -202,6 +217,7 @@ int lowbit(uint16_t const* act, uint8_t const* low, uint8_t const* high,
          doff(experts > 0 ? size_t(experts + 1) * sizeof(int) : 0);
   da.from_host(act); dl.from_host(low); if constexpr (HiBits != 0) dh.from_host(high);
   ds.from_host(scale); dz.from_host(zero); if (experts > 0) doff.from_host(offsets);
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
 
   ppu_gemv::Params p;
   p.act = da.p; p.weight = dl.p; p.weight_hi = dh.p; p.scales = ds.p; p.zeros = dz.p; p.out = dout.p;
@@ -215,8 +231,8 @@ int lowbit(uint16_t const* act, uint8_t const* low, uint8_t const* high,
   bool const launched = ppu_gemv::launch_gemv<D, 8, 2>(p, 0);
   if (!launched || ppu_gemv::gemv_fail_count() != before) return 40;
   ppu_gemv::rt_sync("scale-first GEMV");
-  dout.to_host(out);
-  return 0;
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
+  return ppu_gemv::rt_copy_output(dout, out, size_t(total_rows) * n);
 }
 
 }  // namespace

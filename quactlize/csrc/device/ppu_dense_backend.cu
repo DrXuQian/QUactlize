@@ -27,6 +27,7 @@ template <class Low, class High = void, int GroupSize = 16, int TileK = 256, boo
 int dense(uint16_t const* act, uint8_t const* low, uint8_t const* high,
           void const* scale, uint16_t const* zero, uint16_t* out,
           int m, int n, int k, int group_size) {
+  ppu_gemv::rt_clear_error();
   constexpr int LowBits = cutlass::sizeof_bits<Low>::value;
   constexpr int HighBits = std::is_void_v<High> ? 0 : cutlass::sizeof_bits<High>::value;
   size_t const low_bytes = size_t(n) * k * LowBits / 8;
@@ -47,6 +48,7 @@ int dense(uint16_t const* act, uint8_t const* low, uint8_t const* high,
   da.from_host(act); dl.from_host(low); ds.from_host(scale);
   if constexpr (!PackedScale) dz.from_host(zero);
   if constexpr (HighBits != 0) dh.from_host(high);
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
 
   using Tile = cute::Shape<cute::_64, cute::_64, cute::C<TileK>>;
   using Warp = cute::Shape<cute::_32, cute::_32, cute::C<TileK>>;
@@ -65,8 +67,8 @@ int dense(uint16_t const* act, uint8_t const* low, uint8_t const* high,
           }());
   if (!launched) return 31;
   ppu_gemv::rt_sync(PackedScale ? "fully-quantized dense GEMM" : "scale-first dense GEMM");
-  dout.to_host(out);
-  return 0;
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
+  return ppu_gemv::rt_copy_output(dout, out, size_t(m) * n);
 }
 
 }  // namespace
@@ -171,6 +173,7 @@ template <class Low, class High, int GroupSize, int TileK = 256>
 int grouped_fully_quantized(uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
                             int const* rows_per_expert, uint16_t* out,
                             int total_rows, int n, int k, int experts) {
+  ppu_gemv::rt_clear_error();
   using GS = moe_grouped_ppu::GroupShape;
   using DS = moe_grouped_ppu::DStride;
   constexpr int LowBits = cutlass::sizeof_bits<Low>::value;
@@ -201,6 +204,7 @@ int grouped_fully_quantized(uint16_t const* act, uint8_t const* low, uint8_t con
     if (!high) return 33;
     dh.from_host(high);
   }
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
 
   std::vector<GS> shapes(static_cast<size_t>(experts));
   std::vector<half_t*> out_ptrs(static_cast<size_t>(experts));
@@ -216,6 +220,7 @@ int grouped_fully_quantized(uint16_t const* act, uint8_t const* low, uint8_t con
          d_offsets(sizeof(int) * size_t(experts));
   d_shapes.from_host(shapes.data()); d_out_ptrs.from_host(out_ptrs.data());
   d_out_strides.from_host(out_strides.data()); d_rows.from_host(rows.data()); d_offsets.from_host(offsets.data());
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
 
   size_t const ws_bytes = size_t(cutlass::ceil_div(max_rows, 16)) * cutlass::ceil_div(n, 64)
                         * size_t(experts) * 64;
@@ -238,8 +243,8 @@ int grouped_fully_quantized(uint16_t const* act, uint8_t const* low, uint8_t con
       }(), k, false, 1, false);
   if (moe_grouped_ppu::moeg_fail_count() != failures) return 31;
   ppu_gemv::rt_sync("fully-quantized grouped GEMM");
-  dout.to_host(out);
-  return 0;
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
+  return ppu_gemv::rt_copy_output(dout, out, size_t(total_rows) * n);
 }
 
 }  // namespace

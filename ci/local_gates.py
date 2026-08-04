@@ -62,6 +62,8 @@ GATES = [
     ("l105_low_plane_config_classes", []),
     ("l106_compact_a_rows", []),
     ("l107_moe_router_fixture", []),
+    ("l108_rt_error_contract", []),
+    ("l109_rt_hggc_parse", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -182,6 +184,7 @@ def run(cmd, **kw):
 
 
 GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
+              "l109_rt_hggc_parse": ["-D__HGGCCC__"],
               # THE MACROS ARE THE POINT. This gate asserts the fused path is ON, so it has to be built the way the
               # box builds packfuse -- without these two it would assert about a configuration nobody runs and pass
               # for the wrong reason, which is the failure it exists to catch.

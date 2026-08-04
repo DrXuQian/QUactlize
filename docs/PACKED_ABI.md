@@ -148,9 +148,14 @@ int quactlize_ppu_grouped_fully_quantized(const uint16_t *act,
 | **33** | **`qtype` is not the format this library was built for** — see §2 |
 | 34 | built without `PPU_PACKED_SCALE=1` |
 | 36 | scale-first requested from a packed-format build |
+| **41** | **device allocation, H2D/D2H copy, synchronize, or host output-staging failure** |
 
 On any non-zero return **`out` has not been written**. Abort; do not fall through to another kernel, or the model
 consumes uninitialised memory.
+
+Device-runtime failures return 41; the library never calls `exit` for them. The output D2H is staged through a
+private host buffer and committed only after the copy succeeds, so this rule includes a failed output copy rather
+than merely the failures which occur before launch.
 
 ### The pointer domain, which is not what ggml wants
 
