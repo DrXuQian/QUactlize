@@ -1041,7 +1041,21 @@ int main(int argc, char const **args) {
     if (best.tag[0] == '\0') { std::fprintf(stderr, "no config passed\n"); return 1; }
     const int ties = settle(best);
     const double best_tf = 2.0 * double(options.m) * options.n * options.k / (best.us * 1e-6) / 1e12;
-    if (!options.save_tactic_file.empty()) save_tactic(options.save_tactic_file, options, best.tag, best_tf);
+    // WRITE A TACTIC ONLY FROM A RESOLVED SWEEP. The comment below says an unresolved one is "a wrong answer
+    // that never gets revisited", and for one commit the line above it saved unconditionally anyway -- the
+    // property was documented and not implemented, which is worse than neither, because the comment is what a
+    // reader trusts. Declining is loud: a tactic that is absent gets regenerated, a tactic that is wrong does
+    // not.
+    if (!options.save_tactic_file.empty()) {
+      if (reps < 2) {
+        std::printf("  [tactic] NOT saved: one pass cannot rank. Re-run with BENCH_REPS>=2.\n");
+      } else if (ties != 0) {
+        std::printf("  [tactic] NOT saved: %d candidate(s) tie the leader, so there is no winner to record.\n"
+                    "           Expand the tied stratum, or accept a wider table -- but do not cache this.\n", ties);
+      } else {
+        save_tactic(options.save_tactic_file, options, best.tag, best_tf);
+      }
+    }
     // NAMED A WINNER ONLY WHEN NOTHING TIES IT. With ties this prints the leader and says it is unresolved,
     // because a tactic cache written from an unresolved sweep is a wrong answer that never gets revisited.
     if (reps < 2)

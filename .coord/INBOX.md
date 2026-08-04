@@ -1633,3 +1633,55 @@ WHAT I AM ASKING FOR:
      if MOE_WM_LIST/MOE_TN_LIST happen to exclude the 1- and 2-warp cells, that is luck and it should be a
      check;
   3. then I remove the emitter-side exclusion, since it will be redundant.
+
+## 048 -- THE .so SHIPS ONE CONFIG. Make it selectable, TRT-LLM's way -- and note how few they actually ship.
+
+The user asked whether, with a .so, the tactic can only be chosen from what is compiled in. Yes, and today that
+set has SIZE ONE:
+
+    ppu_dense_backend.cu:135   using Tile = cute::Shape<_64,_64,C<TileK>>;      // hardcoded
+                               using Warp = cute::Shape<_32,_32,C<TileK>>;      // hardcoded
+                               generic_launcher<..., Tile, ..., Warp, 3, ...>   // Stages=3 hardcoded
+
+That is 64x64:32x32:s3 -- the row the old hand-written bench table annotated "sweep winner (61% MFU @
+2048x4096x4096)". Someone baked the then-winner in. So a tactic table has nothing to select from, and my
+tools/tune.py currently tunes against the BENCH's 227 configs and would emit winners the library cannot name --
+which is precisely the failure I wrote into docs/WHEN_TO_TUNE.md ("a tactic the binary cannot select is worse
+than no tactic") and then walked into myself.
+
+WHAT TRT-LLM DOES, read from source at /tmp/trtllm-source.5wQw0R rather than remembered:
+
+    fpA_intB_gemm_template.h:555   getConfigs() -> get_candidate_configs(sm_, SPLIT_K_LIMIT, type_param)
+                                   returns std::vector<CutlassGemmConfig> AT RUN TIME, filtered by arch
+    fpA_intB_gemm_template.h:345+  switch (config.tile_config) { case CtaShape...: -> compile-time template }
+
+Three layers: a compiled-in set, a runtime enumeration of it, and a runtime-enum-to-compile-time switch. Our
+BENCH has the last two already (LOWBIT_DENSE_DISPATCH is that switch; the X-macro is that list). The .so has
+none of them.
+
+SO: ① compile a SET into the .so, ② quactlize_ppu_list_configs() to enumerate it, ③ a config argument on the
+GEMM entries. The mechanism exists in this repo; it is in the wrong binary.
+
+AND THE SIZING, WHICH IS THE PART I WOULD GET WRONG IF I DID NOT LOOK. TRT-LLM compiles FIVE:
+
+    CtaShape 16x128x64 Warp  16x32x64        WarpM == TileM in every one
+    CtaShape 16x256x64 Warp  16x64x64        TileN always 128 or 256
+    CtaShape 32x128x64 Warp  32x32x64        TileK always 64
+    CtaShape 64x128x64 Warp  64x32x64        TN/WN always 4
+    CtaShape128x128x64 Warp 128x32x64        ONLY TileM varies
+
+It is a ONE-DIMENSIONAL family indexed by TileM -- which is the M bucket. For a weight-only GEMM that is the
+knob that tracks the thing that varies at run time. Shipping our 227 would be a category error, not merely
+expensive: run-time dispatch is affordable at five cases and not at 227.
+
+WHICH CHANGES WHAT THE 227-CONFIG SWEEP IS FOR. Its output should not be a tactic table. It should be the .so's
+CONFIG LIST -- a decision we make once per kernel-family change, not one the user makes per model. Then the
+per-model tune chooses among the shipped few, which is cheap enough to stop being an architectural question.
+
+That in turn changes the selection criterion, and analyse.py does not implement it: choosing five is a COVERAGE
+problem, not a ranking one. Two configs that both win at M=2048 are worth less than one that wins at M=2048 and
+one that wins at M=1. I will handle the analyser; you own the library side.
+
+ONE BEHAVIOUR I WILL ASK FOR EXPLICITLY: an unknown config name must DECLINE to the compiled default and say
+so, not abort. The tactic table is an artifact that can outlive a .so rebuild, and LOWBIT_DENSE_DISPATCH's
+exit(1) is the wrong model for a library.
