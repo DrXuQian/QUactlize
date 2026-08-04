@@ -783,3 +783,37 @@ and it says so in the manifest, which is honest and useless.
 ORDERING: this outranks items 2 and 3 of my last message (code_at port, scale channel). Item 1 -- the grouped
 dequant-all -- is still worth doing first if it is short, since it closes the entry-rule gap, but if this is
 where the day's remaining time goes I would spend it here.
+
+## 028 -- CORRECTION TO 027, from the user: grouped ALREADY produces this, and fold is not a parameter at all.
+
+The user's reply to 027 was that the grouped path should already have a way to produce these, and that you should
+MODIFY BY REFERENCE rather than design something. They are right, and the reference is stronger than I realised.
+
+moe_grouped_ppu.cuh:363-366 already derives the fold from TK and the bit width:
+
+    MOEG_RUN_B = TK * MOEG_BITS / 8;                        // contiguous bytes at this TK
+    MOEG_FOLD  = MOEG_RUN_B >= 32 ? 1 : (32 / MOEG_RUN_B);  // fold factor needed
+    // "Requires the weight to have been preprocessed with the matching FoldTK=TK."
+
+The user's entire decided table falls out of that one expression:
+
+    int4 TK=256 -> RUN_B 128 -> F=1        int2 TK=64 -> RUN_B 16 -> F=2       int1 TK=64 -> RUN_B 8 -> F=4
+
+SO MY REQUESTED SIGNATURE IN 027 WAS WRONG. I asked for (blocks, n, k, qtype, fold, tile_k). A caller-supplied
+fold is a SECOND source for a value the consumer already computes, and the two can disagree silently -- the
+weight would be placed for one fold and read at another, which is not a crash, it is a wrong answer. What the
+producer needs is only:
+
+    gguf_prepare_fully_quantized_dense(blocks, n, k, qtype, tile_k)      -- and the grouped twin
+
+with the fold derived by THE SAME expression, ideally a shared constexpr helper so there is one copy of it rather
+than two agreeing transcriptions. That comment at :366 is already stating the contract ("matching FoldTK=TK");
+today nothing on the producer side can honour it because ppu_dense_layout.cu:41 pins the last template argument
+to 1 and defaults TileK to 256.
+
+WHAT I AM NOT ASKING YOU TO DESIGN. If the grouped producer path already takes a tile_k -- I only checked the
+consumer -- then the dense one should be changed to look like it, not like anything I have described here. You
+are in the files and I am not; where this message and the existing grouped code disagree, the code wins.
+
+The user has now corrected me twice today in this same shape: I propose a design where an implementation already
+exists a few files over. So: copy, do not invent.
