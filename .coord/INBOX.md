@@ -1785,3 +1785,67 @@ WHAT I WOULD ASK FOR REGARDLESS OF THE ENCODING:
 
 ORDERING against 048/049: this changes what ② enumerates and what ③ switches on, so it is cheaper to design in
 than to retrofit. If you are already mid-way through 048, say so and I will not push it into that change.
+
+## 051 -- CORRECTION TO 050, AND THE ENCODING IS DECIDED BY SOURCE RATHER THAN BY US.
+
+050 opens by saying I could not verify how TRT-LLM chooses between its CUDA-core GEMV and its tensor-core GEMM,
+and concludes it "goes BEYOND TRT-LLM, so it is ours to design". BOTH ARE WRONG. The tree I read was a partial
+checkout; the user pointed at the COMPLETE one, already in this workspace:
+
+    Kernels/general/w4a16_gemm/fpA_intB_standalone/     <- full, includes kernels/weightOnlyBatchedGemv/
+    Kernels/moe_ffn/w4a16/trtllm/moe_w4a16_standalone/  <- the grouped counterpart
+
+TRT-LLM DOES EXACTLY WHAT 050 ASKS FOR, and the encoding question I handed you is already answered:
+
+ 1. IT IS A BOOLEAN FIELD ON THE SAME STRUCT, not a tagged union and not two lists.
+        cutlass_extensions/include/cutlass_extensions/gemm_configs.h:381
+            bool enableCudaKernel = false;
+    So ignore 050's paragraph about union-vs-enum-vs-two-lists. One flag on CutlassGemmConfig.
+
+ 2. IT IS IN THE SAME CANDIDATE VECTOR. cutlass_heuristic.cpp appends it inside get_candidate_configs at three
+    sites (:364, :501, :624 -- one per arch family), so the enumeration from 048 ② returns it with no change of
+    type or of caller.
+
+ 3. ONE PROFILING LOOP, ONE COMPARISON. fpA_intB_gemm_sm80_wrappers.cu, run_once inside profile_tactic:
+            if (config.enableCudaKernel) { weight_only::Params ...; select_gs<...>(params, stream); }
+            else                         { get_runner().gemm(..., config, ...); }
+    and the caller is a plain `if (time < best_time) { best = cfg; }` over the whole vector. The GEMV competes
+    on the same measurement as the tiles. This is the property 050 asked for and it costs them one if.
+
+ 4. IDENTITY IS DISCRIMINATED FIRST, and the tile fields are then IGNORED rather than compared:
+            bool same_config(a, b) {
+                if (a.enableCudaKernel != b.enableCudaKernel) return false;
+                ...
+                if (a.enableCudaKernel) return true;   // "CUDA fallback is a single config for an SM family"
+                ... tile_config comparisons ...
+            }
+    That is a cleaner answer than 050's "identity must say which family": the family flag is compared first, and
+    when set, the tile fields are not merely unequal-safe, they are MEANINGLESS and skipped. Our tactic reader
+    should do the same, or a GEMV entry will be matched against tile fields that were never populated.
+
+ 5. THE FAMILY CAN BE DISABLED WHOLESALE, by filtering rather than by a second enumeration:
+        get_candidate_configs_cached(bool enable_cuda_fallback) keeps two static vectors, the second built by
+        copying the first minus every cfg.enableCudaKernel.
+
+ 6. AND THE M RULE SURVIVES -- BUT ONLY AS A PROFILING-COST PRUNE, WHICH IS THE POINT:
+            if (cfg.enableCudaKernel && m >= 16) { continue; }     // skip TIMING it
+    It does not decide the winner at m < 16; it declines to spend a measurement at m >= 16 where the GEMV is
+    known to lose. This is exactly 049's "label which prunes are for BUILD TIME" -- the prune saves tuning time,
+    not inference time, and it is reversible by deleting one line.
+
+WHAT THIS CHANGES FOR US, and it is a bigger gap than 050 implied:
+
+    theirs:  the GEMV is PROFILED for every m < 16 and can win at any of them
+    ours:    the GEMV is taken when experts == 0 && total_rows == 1, a hard branch at M == 1
+
+Our queued sweep has M in {1, 2, 4, 64, 2048, 4096}. TRT-LLM would profile its CUDA kernel at 1, 2 AND 4. We
+currently cannot select it at 2 or 4 at all -- so two of the six token counts sit in a range their design
+measures and ours forecloses. That is the concrete thing to fix, and 16 is THEIR threshold on THEIR kernel;
+ours should come from our own measurement, with a prune of the same shape once we know where it stops winning.
+
+ALSO WORTH LIFTING FROM THIS TREE, since it is the same file: their profiler catches per-config exceptions and
+continues (`catch (std::exception&)` around profile_tactic) rather than aborting the sweep, and warmup=5 /
+runs=10 are their repeat counts. Our bench uses BENCH_REPS=5 interleaved passes with a median, which is stronger
+-- theirs takes a single mean per config -- so keep ours; I mention it only so the comparison is on record.
+
+Supersedes 050's encoding paragraph. 050's ORDERING note still holds: this shapes what 048 ② enumerates.
