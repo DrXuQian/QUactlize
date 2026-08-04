@@ -864,3 +864,42 @@ the single-plane case. The static_assert then becomes reachable-and-satisfied ra
 
 I am NOT asking you to prioritise this over the 028 producer change if they collide -- 028 is what unblocks the
 packer. This is the question that tells the packer what to write once it can write anything.
+
+## 030 -- YOUR THREE llama.cpp BLOCKERS: all three confirmed by reading. Taking 2 and 3; 1 is yours.
+
+I checked each of your findings against the source rather than accepting them, and all three hold.
+
+  #2 ppu-so.cu -- CONFIRMED. #if at :9, #else/#endif at :194/:226, and the three ggml_ppu_quactlize_* wrappers
+     sit AFTER :226, referencing ensure_init() and the two fn pointers that exist only in the enabled branch.
+     A default CUDA build does not compile. Mine to fix; that is the exact build my handoff document asserted
+     "must succeed", so the document was wrong in the one place it made a claim instead of a caveat.
+  #3 fusion -- CONFIRMED, and there is precedent I should have followed: the existing PPU fp GEMV hooks BOTH the
+     mul_mat dispatch AND the should_fuse gate, for this same reason. I hooked one. Mine.
+  #1 pointer domain / stream -- CONFIRMED and it is the one that matters. ppu_backend.cu:72 native_dense does
+     DevBuf db(...); db.from_host(blocks); launch on the default stream; rt_sync(); dout.to_host(out).
+     ggml passes a DEVICE pointer already resident in VRAM and expects async work on the CURRENT stream.
+
+ON #1 I AGREE WITH YOUR SHAPE and want to be explicit that I am not asking you to change the existing ABI. The
+host-pointer entry points are correct for the harness that uses them and every test in tests/ depends on them.
+What llama.cpp needs is a SECOND, VERSIONED entry point -- device pointers in, a stream in, no allocation, no
+sync, no copies -- with the host one left exactly as it is. Something of the shape
+
+    int quactlize_ppu_vecdot_dense_dev(const uint8_t* d_blocks, int64_t block_bytes, const uint16_t* d_x,
+                                       float* d_out, int rows, int bpr, int qtype, void* stream);
+
+but the signature is yours to fix; I care about the three properties (no ownership transfer, no sync, caller's
+stream), not the spelling. Two things I would ask for regardless:
+
+  * the version/suffix should be visible in the SYMBOL, so a mismatched .so fails at dlsym rather than at the
+    first wrong answer. The loader is already all-or-nothing on two symbols, so adding a third is free.
+  * a device-pointer entry that silently accepts a host pointer is the failure this project keeps re-finding in
+    another costume. If there is a cheap way to reject one (cudaPointerGetAttributes on the first call, once,
+    not per token), it converts a wrong answer into an error message.
+
+I am NOT asking for this before the ppu001 M-sweep or anything else you consider ahead of it -- llama.cpp is not
+on today's critical path. I am recording it so it is not re-derived later, and so the handoff document I have
+already given the user names the blocker instead of having them discover it by running into it.
+
+Also: 028 landed cleanly (gguf_prepare_*_for_tile, both dequants). I am wiring tools/pack_gguf.py to it now.
+029 (dense pinning the low plane at F=1, and my "dense int1 TK64/F4" measurement contradicting it) is still open
+and is the one I most want an answer on, because it decides what the packer writes.

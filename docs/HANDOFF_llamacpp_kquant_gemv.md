@@ -2,8 +2,43 @@
 
 **For:** a Claude with no context on this project.
 **Patch:** `/root/quactlize-kquant-gemv.patch` (183 lines).
-**Status:** written and reviewed against the .so's real ABI. **NEVER COMPILED.** Assume it does not build until
-you have built it. Everything below that is a claim rather than a check is marked.
+
+## STATUS: DO NOT APPLY-AND-RUN. Three defects found by review, all three confirmed by reading the code.
+
+An earlier version of this document told you to apply the patch and build it. That was wrong: the patch does not
+compile, and if it did, the call it makes would be against the wrong pointer contract. Fix these first.
+
+| # | defect | where | who |
+|---|---|---|---|
+| 1 | **the .so ABI takes HOST pointers; ggml passes DEVICE pointers** | `quactlize/csrc/device/ppu_backend.cu:72` | quactlize (kernel author) — **blocks end-to-end** |
+| 2 | **does not compile with `GGML_PPU_SO` off** | `ggml/src/ggml-cuda/ppu-so.cu:228` | you |
+| 3 | **fused MMVQ bypasses the hook entirely** | `ggml/src/ggml-cuda/ggml-cuda.cu:2519` | you |
+
+**#1 in detail, because it is the one that cannot be fixed here.** `native_dense` does
+`DevBuf db(...); db.from_host(blocks); launch(...); rt_sync(); dout.to_host(out);` — it allocates device memory,
+copies the weight in from what it assumes is host memory, launches on the **default stream**, **synchronises the
+whole device**, and copies back. llama.cpp's `src0->data` is already in VRAM and ggml expects asynchronous work
+on the **current stream**. So the call is wrong in three independent ways (pointer domain, per-token re-copy of
+the entire weight, stream discipline), and the first of those is not a slowdown — it is an invalid copy. That
+ABI was written for a host-side test harness and is correct there; what is needed is a **second, versioned,
+device-pointer entry point that takes a stream**, leaving the existing one untouched. That work is queued with
+the kernel author (`.coord/INBOX.md` 030). **Until it lands, nothing here can be validated end to end.**
+
+**#2 in detail, because it is yours and it is small.** `ppu-so.cu` has `#if defined(GGML_PPU_SO)` at line 9 and
+`#else … #endif` at 194/226. The three `ggml_ppu_quactlize_*` wrappers were placed **after** the `#endif`, so
+they compile in both branches — but `ensure_init()` and the two function pointers they reference exist only
+inside the enabled branch. A default CUDA build therefore fails to compile. The fix is the shape the rest of the
+file already uses: real wrappers **inside** the enabled branch, inert stubs **inside** the disabled one. The file
+is also missing the include that supplies the fixed-width types.
+
+**#3 in detail.** `ggml_cuda_should_fuse_mul_mat_vec_q` (`ggml-cuda.cu:2519`) can fuse a quantised FFN, and the
+fused path launches MMVQ directly without passing through the `ggml_cuda_mul_mat` dispatch chain where the hook
+at 2643 sits. So for a fused FFN the route never fires and — because a declining route and an absent route look
+identical — you would see nothing in the log and conclude it was never compiled in. This project's existing PPU
+fp GEMV already had to hook **two** places for exactly this reason (dispatch + the fusion gate); this patch only
+does one. Copy what the fp GEMV does rather than inventing a third arrangement.
+
+Sections 3–6 below are still accurate as instructions; they are just not runnable until #1 and #2 are fixed.
 
 ---
 
@@ -152,6 +187,7 @@ outcome of a wrong answer.
 
 ## 7. What is NOT done — do not report these as finished
 
+0. **The three defects at the top.** #2 and #3 are yours; #1 blocks any end-to-end claim.
 1. **Never compiled.** Neither build in §4 has been run. Expect ordinary first-compile errors.
 2. **The MoE arm is wired but unexercised.** `ggml_ppu_quactlize_vecdot_moe` is loaded and forwarded, but the
    ggml side only calls the **dense** path today; nothing constructs the `offsets` array from a
