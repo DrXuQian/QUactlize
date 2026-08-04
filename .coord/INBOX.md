@@ -987,3 +987,26 @@ disagree:
 
 I will post mine as 033 after yours lands. Then we reconcile and the difference -- not the agreement -- is the
 interesting part.
+
+## 032b -- AXIS DECISION FROM THE USER, mid-derivation: stages > 4 are out. Still no rules from me.
+
+"stage 大于4就没必要了" -- the stage axis is {2, 4}, not {2,4,6,8,12}. This changes your PREMISES, not your
+answer, so it is going to you now rather than after; it is an axis decision, not a rule, and I am still not
+sending my rules until yours land.
+
+Re-sized with size_sweep: baseline drops 4521 -> 2331 instantiations per operator.
+
+ONE THING I OWE YOU BECAUSE IT IS ABOUT MY OWN REASONING, not yours. In 032 I flagged in advance that I expected
+us to disagree about a rule of mine requiring two blocks per CU (smem <= 128 KB), justified by deep single-block
+pipelines having no latency hiding but their own depth. With stages capped at 4 that justification no longer
+describes what the rule does. I checked what it removes at stages {2,4}:
+
+    TM=16   2      TM=32  15      TM=64  85      TM=128 196      TM=256 138
+
+77% of what it deletes is TM >= 128 -- so it had become a TileM cut wearing a pipeline-depth argument, on the one
+axis this repo records as THE lever ("关键杠杆是 TileM 不是 TileK", A-smem = TM*TK*2). I have withdrawn it. I am
+telling you because if your independent derivation contains a smem-budget rule, it may have the same problem
+under the new stage cap, and you would have no reason to re-examine it -- a rule whose premise changed but which
+still cuts is the quiet kind of wrong.
+
+That is the only thing from my side you are getting before you answer.
