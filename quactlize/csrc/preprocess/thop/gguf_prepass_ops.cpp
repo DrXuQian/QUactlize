@@ -23,6 +23,7 @@
 #include "gguf_scale_prepass.hpp"
 #include "gguf_vecdot.hpp"
 #include "gguf_packed_unit.hpp"
+#include "gguf_unit_pack.hpp"
 #include "weight_layout.h"
 #include "thop/th_utils.h"
 #include "thop/ppu_backend.h"
@@ -62,35 +63,7 @@ auto dispatch_ktype(int64_t qtype, F&& f) {
   }
 }
 
-// Raw GGUF locations needed by the fully-quantized producers. Field placement inside the REORDERED
-// unit remains owned by gguf_packed_unit's cute layouts; these traits only name the byte-aligned record slices the
-// official formats publish. Adding two scattered offset ladders to dense and grouped would recreate the relation.
-template <KType T> struct PackedRaw;
-template <> struct PackedRaw<KType::Q4_K> {
-  static constexpr int kRawBytes=144, kScaleOffset=4, kDOffset=0, kDminOffset=2;
-};
-template <> struct PackedRaw<KType::Q2_K> {
-  static constexpr int kRawBytes=84, kScaleOffset=0, kDOffset=80, kDminOffset=82;
-};
-template <> struct PackedRaw<KType::Q3_K> {
-  static constexpr int kRawBytes=110, kScaleOffset=96, kDOffset=108, kDminOffset=-1;
-};
-template <> struct PackedRaw<KType::Q5_K> {
-  static constexpr int kRawBytes=176, kScaleOffset=4, kDOffset=0, kDminOffset=2;
-};
-template <> struct PackedRaw<KType::Q6_K> {
-  static constexpr int kRawBytes=210, kScaleOffset=192, kDOffset=208, kDminOffset=-1;
-};
-
-template <KType T>
-void pack_raw_unit_sb(uint8_t const* block, int sb, uint8_t* unit) {
-  using R = PackedRaw<T>;
-  using U = gguf_scale::packed_unit::Unit<T>;
-  cutlass::half_t d, dmin{0.f};
-  std::memcpy(&d, block + R::kDOffset, sizeof(d));
-  if constexpr (U::kHasMin) std::memcpy(&dmin, block + R::kDminOffset, sizeof(dmin));
-  gguf_scale::packed_unit::pack_unit_sb<T>(block + R::kScaleOffset, d, dmin, sb, unit);
-}
+template <KType T> using PackedRaw = gguf_scale::unit_pack::Raw<T>;
 
 }  // namespace
 
@@ -976,21 +949,22 @@ std::vector<torch::Tensor> gguf_prepare_fully_quantized_dense_impl(
       int64_t const nsb = k / 256;
       TORCH_CHECK(nsb % U::kSbPerUnit == 0, "this format needs ", U::kSbPerUnit,
                   " superblocks per copyable unit");
-      TORCH_CHECK(blocks.dtype() == torch::kUInt8 && blocks.dim() == 2 && blocks.size(1) == R::kRawBytes,
-                  "blocks must be uint8 [n*k/256,", R::kRawBytes, "] for this format");
+      TORCH_CHECK(blocks.dtype() == torch::kUInt8 && blocks.dim() == 2 && blocks.size(1) == R::kBytes,
+                  "blocks must be uint8 [n*k/256,", R::kBytes, "] for this format");
       TORCH_CHECK(blocks.size(0) == n * nsb, "dense weight needs n*k/256 blocks");
 
       auto dense = gguf_prepare_dense_impl(
           blocks, n, k, qtype, for_tile, tile_k);
       torch::Tensor units = torch::empty({nsb / U::kSbPerUnit, n, U::kUnitTotal},
           torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCPU));
-      uint8_t const* src = get_ptr<uint8_t const>(blocks);
-      uint8_t* dst = get_ptr<uint8_t>(units);
-      for (int64_t col = 0; col < n; ++col)
-        for (int64_t unit = 0; unit < nsb / U::kSbPerUnit; ++unit)
-          for (int sb = 0; sb < U::kSbPerUnit; ++sb)
-            pack_raw_unit_sb<T>(src + (col * nsb + unit * U::kSbPerUnit + sb) * R::kRawBytes, sb,
-                                dst + (unit * n + col) * U::kUnitTotal);
+      auto const* api = ppu_backend::load();
+      TORCH_CHECK(api && api->units_bytes && api->prepare_units,
+                  "fully-quantized preparation requires the library's forward packed-unit producer");
+      TORCH_CHECK(api->units_bytes(int(n), int(k), int(qtype)) == units.numel(),
+                  "library packed-unit size query disagrees with the artifact shape");
+      int const unit_rc = api->prepare_units(get_ptr<uint8_t const>(blocks), get_ptr<uint8_t>(units),
+                                             int(n), int(k), int(qtype));
+      TORCH_CHECK(unit_rc == 0, "PPU packed-unit preparation failed (rc=", unit_rc, ")");
       return {dense[0], dense[1], units};
     } else {
       TORCH_CHECK(false, "unreachable fully-quantized dense format");
@@ -1029,12 +1003,12 @@ std::vector<torch::Tensor> gguf_prepare_fully_quantized_grouped_impl(
       int64_t const nsb = k / 256, blocks_per_expert = n * nsb;
       TORCH_CHECK(nsb % U::kSbPerUnit == 0, "this format needs ", U::kSbPerUnit,
                   " superblocks per copyable unit");
-      TORCH_CHECK(blocks.dtype() == torch::kUInt8 && blocks.dim() == 2 && blocks.size(1) == R::kRawBytes &&
+      TORCH_CHECK(blocks.dtype() == torch::kUInt8 && blocks.dim() == 2 && blocks.size(1) == R::kBytes &&
                   blocks.size(0) == experts * blocks_per_expert,
-                  "grouped blocks must be uint8 [experts*n*k/256,", R::kRawBytes, "] for this format");
+                  "grouped blocks must be uint8 [experts*n*k/256,", R::kBytes, "] for this format");
 
       auto raw = gguf_prepare_gemv(
-          blocks.view({experts, blocks_per_expert, int64_t(R::kRawBytes)}), n, k, qtype);
+          blocks.view({experts, blocks_per_expert, int64_t(R::kBytes)}), n, k, qtype);
       torch::Tensor low = torch::empty_like(raw[0]);
       torch::Tensor high = torch::empty_like(raw[1]);
       auto const* api = ppu_backend::load();
@@ -1072,15 +1046,13 @@ std::vector<torch::Tensor> gguf_prepare_fully_quantized_grouped_impl(
 
       torch::Tensor units = torch::empty({experts, nsb / U::kSbPerUnit, n, U::kUnitTotal},
           torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCPU));
-      uint8_t const* src = get_ptr<uint8_t const>(blocks);
-      uint8_t* dst = get_ptr<uint8_t>(units);
-      for (int64_t e = 0; e < experts; ++e)
-        for (int64_t col = 0; col < n; ++col)
-          for (int64_t unit = 0; unit < nsb / U::kSbPerUnit; ++unit)
-            for (int sb = 0; sb < U::kSbPerUnit; ++sb)
-              pack_raw_unit_sb<T>(
-                  src + ((e * n + col) * nsb + unit * U::kSbPerUnit + sb) * R::kRawBytes, sb,
-                  dst + ((e * (nsb / U::kSbPerUnit) + unit) * n + col) * U::kUnitTotal);
+      TORCH_CHECK(api->units_bytes && api->prepare_units_grouped,
+                  "fully-quantized grouped preparation requires the library's forward packed-unit producer");
+      TORCH_CHECK(api->units_bytes(int(n), int(k), int(qtype)) * experts == units.numel(),
+                  "library packed-unit size query disagrees with the grouped artifact shape");
+      int const unit_rc = api->prepare_units_grouped(
+          get_ptr<uint8_t const>(blocks), get_ptr<uint8_t>(units), int(n), int(k), int(experts), int(qtype));
+      TORCH_CHECK(unit_rc == 0, "PPU grouped packed-unit preparation failed (rc=", unit_rc, ")");
       return {low, high, units};
     } else {
       TORCH_CHECK(false, "unreachable fully-quantized grouped format");

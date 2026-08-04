@@ -64,6 +64,7 @@ GATES = [
     ("l107_moe_router_fixture", []),
     ("l108_rt_error_contract", []),
     ("l109_rt_hggc_parse", []),
+    ("l110_unit_pack_abi", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -300,6 +301,26 @@ def syntax(src, defs):
     return ("PASS" if rc == 0 else "FAIL"), (last[-1] if last else ""), dt
 
 
+def lint_ppu_portability():
+    """THE BOX-BUILT SOURCES MUST BE IN THE PORTABLE SUBSET -- checked here, not only inside build.sh.
+
+    dev/fold_derivation/ppu_portability_check.py already existed and runs in under a second, but it was only
+    invoked from build.sh (line 138). The local tier reaches build.sh solely through the `boxdry` gate, and that
+    gate hangs on a googletest clone -- so in practice this check was unreachable from the tier whose entire
+    purpose is catching box failures before the box.
+
+    On 2026-08-04 that cost a round trip: benchmarks/bench_floor.cuh used cudaMalloc/cudaSuccess, the local
+    syntax gate compiled it happily (nvcc accepts the NVIDIA runtime by definition), and the box rejected it.
+    The check that would have caught it in zero seconds was sitting one directory away.
+    """
+    script = ROOT / "dev" / "fold_derivation" / "ppu_portability_check.py"
+    if not script.is_file():
+        return "SKIP", "no ppu_portability_check.py", 0.0
+    r = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, cwd=ROOT)
+    line = next((l.strip() for l in (r.stdout + r.stderr).splitlines() if l.strip()), f"exit {r.returncode}")
+    return ("PASS" if r.returncode == 0 else "FAIL"), line, 0.0
+
+
 def lint_fixture_flags():
     """THE EMITTED INVOCATIONS MUST NAME OPTIONS THE BENCH ACTUALLY PARSES.
 
@@ -495,6 +516,7 @@ def main():
                 ("lint", "names used before they exist (device-only tests get no other flow check)", lint_undefined_names),
                 ("lint", "every ggml.h quant type is classified, in scope or out", lint_gguf_coverage),
                 ("lint", "the C++ and Python selection procedures agree on planted data", lint_selection_agrees),
+                ("lint", "box-built sources stay in the PPU-portable subset", lint_ppu_portability),
                 ("lint", "emitted bench flags are ones the bench parses", lint_fixture_flags),
                 ("lint", "every INBOX item is consumed, or is explained by a call in flight", lint_inbox_delivered),
     ("registry", "declarations vs source", None)])

@@ -118,7 +118,8 @@ def ppu_backend_cuda(tmp_path_factory):
     root = Path(__file__).resolve().parent.parent
     major, minor = torch.cuda.get_device_capability()
     tmp = tmp_path_factory.mktemp("ppu_backend")
-    out, backend_o, layout_o = tmp / "libquactlize_ppu.so", tmp / "backend.o", tmp / "dense_layout.o"
+    out, backend_o, layout_o, unit_o = (tmp / "libquactlize_ppu.so", tmp / "backend.o", tmp / "dense_layout.o",
+                                        tmp / "unit_pack.o")
     common = ["nvcc", "-std=c++17", "-O3", f"-arch=sm_{major}{minor}", "--expt-relaxed-constexpr",
               "-Xcompiler=-fPIC", f"-I{root / 'quactlize' / 'include'}"]
     commands = [
@@ -129,7 +130,12 @@ def ppu_backend_cuda(tmp_path_factory):
                 f"-I{root / 'third_party' / 'actlize' / 'include'}",
                 f"-I{root / 'third_party' / 'cutlass' / 'include'}", "-o", str(layout_o),
                 str(root / "quactlize" / "csrc" / "device" / "ppu_dense_layout.cu")],
-      ["nvcc", "-shared", f"-arch=sm_{major}{minor}", "-o", str(out), str(backend_o), str(layout_o)],
+      common + ["-c", f"-I{root / 'dev' / 'fold_derivation' / 'stub_inc'}",
+                f"-I{root / 'third_party' / 'actlize' / 'include'}",
+                f"-I{root / 'third_party' / 'cutlass' / 'include'}", "-o", str(unit_o),
+                str(root / "quactlize" / "csrc" / "device" / "ppu_unit_pack.cpp")],
+      ["nvcc", "-shared", f"-arch=sm_{major}{minor}", "-o", str(out),
+       str(backend_o), str(layout_o), str(unit_o)],
     ]
     for cmd in commands:
         built = subprocess.run(cmd, capture_output=True, text=True)

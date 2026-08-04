@@ -175,7 +175,7 @@ target_compile_options(test_gemv_lowbit PRIVATE -w)
 # appended: a directory-scope variable that grows is how the NEXT target inherits flags nobody gave it.
 set(_SAVED_HGCC_FLAGS "${CUTLASS_PPU_EXTRA_HGCC_FLAGS}")
 list(APPEND CUTLASS_PPU_EXTRA_HGCC_FLAGS ${_PPU_EXTRA_DEV})
-cutlass_add_library(quactlize_ppu SHARED ppu_backend.cu ppu_dense_layout.cu ppu_dense_backend.cu)
+cutlass_add_library(quactlize_ppu SHARED ppu_backend.cu ppu_dense_layout.cu ppu_unit_pack.cpp ppu_dense_backend.cu)
 set(CUTLASS_PPU_EXTRA_HGCC_FLAGS "${_SAVED_HGCC_FLAGS}")
 target_compile_definitions(quactlize_ppu PRIVATE ${_PPU_EXTRA_HOST})
 target_link_libraries(quactlize_ppu PRIVATE CUTLASS cutlass_tools_util_includes ppu::driver)

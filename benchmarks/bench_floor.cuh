@@ -22,6 +22,7 @@
 // be flagged rather than believed.
 #pragma once
 #include <chrono>
+#include "cutlass/util/device_memory.h"
 
 namespace bench_floor {
 
@@ -32,16 +33,19 @@ __global__ void bench_floor_nop(int* sink) { if (threadIdx.x == 0 && blockIdx.x 
 
 // Same loop shape as time_it: one warm launch, then `iters` queued launches and a single sync. Returns
 // microseconds per launch. Anything the sweep measures at or near this is a launch-rate reading.
+// hggc* AND cutlass::DeviceAllocation, NOT cudaMalloc. The box compiles this header, and the first version
+// used the NVIDIA runtime directly -- caught by the repo's ppu_portability gate, which is exactly the class of
+// error that gate exists for: it compiles here and nowhere else, and "it built on my machine" is not evidence
+// about the target. DeviceAllocation is the allocation the rest of the benches use and is portable to both.
 inline double probe(int iters = 200) {
-  int* sink = nullptr;
-  if (cudaMalloc(&sink, sizeof(int)) != cudaSuccess) return 0.0;   // 0 == "not measured", reported as such
-  bench_floor_nop<<<1, 32>>>(sink);
-  cudaDeviceSynchronize();
+  cutlass::DeviceAllocation<int> sink(1);
+  if (sink.get() == nullptr) return 0.0;                  // 0 == "not measured", and it is reported as such
+  bench_floor_nop<<<1, 32>>>(sink.get());
+  if (hggcDeviceSynchronize() != hggcSuccess) return 0.0;
   auto t0 = std::chrono::high_resolution_clock::now();
-  for (int i = 0; i < iters; ++i) bench_floor_nop<<<1, 32>>>(sink);
-  cudaDeviceSynchronize();
+  for (int i = 0; i < iters; ++i) bench_floor_nop<<<1, 32>>>(sink.get());
+  if (hggcDeviceSynchronize() != hggcSuccess) return 0.0;
   auto t1 = std::chrono::high_resolution_clock::now();
-  cudaFree(sink);
   return std::chrono::duration<double, std::micro>(t1 - t0).count() / iters;
 }
 
@@ -57,7 +61,7 @@ inline bool launch_bound(double row_us) { const double f = us(); return f > 0.0 
 inline void banner() {
   const double f = us();
   if (f <= 0.0) {
-    std::printf("             launch floor: NOT MEASURED (cudaMalloc failed) -- short rows cannot be flagged\n");
+    std::printf("             launch floor: NOT MEASURED (device allocation failed) -- short rows cannot be flagged\n");
     return;
   }
   std::printf("             launch floor: %.2f us per empty launch. A row under %.2f us is within 3x of it and\n"

@@ -43,6 +43,12 @@ struct Api {
   // device library can still serve the established raw prepass; a BC route must check this pointer and refuse.
   int (*prepass_unit)(uint8_t const* units, uint16_t* scale, uint16_t* zero,
                       int n, int k, int experts, int qtype, int zmul);
+  // Official raw GGUF blocks -> byte-neutral [E,K-unit,N,unit-byte] metadata. The size query is dense bytes;
+  // grouped callers multiply by experts. Optional only so an older library can still serve non-packed routes.
+  int64_t (*units_bytes)(int n, int k, int qtype);
+  int (*prepare_units)(uint8_t const* blocks, uint8_t* units, int n, int k, int qtype);
+  int (*prepare_units_grouped)(uint8_t const* blocks, uint8_t* units,
+                               int n, int k, int experts, int qtype);
   // Merged BC artifact -> CUDA-core fp16-activation/fp32-output GEMV. experts==0 is exactly one dense decode row;
   // otherwise offsets is [E+1] and out is [total_rows,n]. Optional while older device libraries remain loadable.
   int (*bc_gemv)(uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,

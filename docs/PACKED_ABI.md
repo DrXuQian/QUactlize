@@ -4,9 +4,8 @@ For the llama.cpp side. `quactlize_ppu_vecdot_dense` / `_moe` read **raw GGUF bl
 different input and is a different entry point. Everything below is a symbol **in the shared library** — nothing
 here asks you to compile a source file.
 
-An earlier version of this document pointed at source paths for the packing half. That was wrong in a way worth
-stating, because it hid the gap in §3: the library places the code planes but **cannot currently produce the
-third buffer both GEMM entries require**.
+The shared library produces all three resident buffers: code-plane placement and the byte-neutral metadata reorder
+are both host-pointer APIs, while the GEMM entries consume their results.
 
 ---
 
@@ -20,8 +19,10 @@ Everything `extern "C"` in the library today. Grouped by what it is for, so a mi
 | `quactlize_ppu_prepare_dense_for_tile` | ″ | takes `tile_k` |
 | `quactlize_ppu_recover_dense` | placed → native | the inverse |
 | `quactlize_ppu_recover_dense_for_tile` | ″ | takes `tile_k` |
-| **(missing)** | **blocks → `units`** | **see §3 — this is the gap** |
-| `quactlize_ppu_prepass_unit` | `units` → (scale, zero) | the inverse of the missing one |
+| `quactlize_ppu_units_bytes` | query | dense `units` allocation size |
+| `quactlize_ppu_prepare_units` | blocks → `units` | dense forward metadata producer |
+| `quactlize_ppu_prepare_units_grouped` | blocks → `units` | expert-major forward producer |
+| `quactlize_ppu_prepass_unit` | `units` → (scale, zero) | metadata inverse |
 | `quactlize_ppu_dense_fully_quantized` | consume | packed dense GEMM |
 | `quactlize_ppu_grouped_fully_quantized` | consume | packed MoE GEMM |
 | `quactlize_ppu_vecdot`, `_dense`, `_moe` | consume RAW blocks | the other path, not this one |
@@ -32,8 +33,8 @@ Everything `extern "C"` in the library today. Grouped by what it is for, so a mi
 
 **The packer is format-INDEPENDENT; the GEMM is format-SPECIFIC.**
 
-`ppu_dense_layout.cu` contains **zero** `PPU_PACKED_FORMAT` references and switches on `qtype` 10..14 at run
-time. `ppu_dense_backend.cu` contains **sixteen** — `PPU_PACKED_FORMAT` is a compile-time macro
+`ppu_dense_layout.cu` and `ppu_unit_pack.cpp` contain **zero** `PPU_PACKED_FORMAT` references and switch on `qtype`
+10..14 at run time. `ppu_dense_backend.cu` contains **sixteen** — `PPU_PACKED_FORMAT` is a compile-time macro
 (`0=Q4_K, 1=Q5_K, 2=Q2_K, 3=Q3_K, 4=Q6_K`).
 
 So **one build packs all five formats, and that same build computes exactly one.** Offline packing needs a
@@ -46,18 +47,10 @@ Every build must define `PPU_PACKED_SCALE=1` or every packed call returns **34**
 
 ---
 
-## 3. THE GAP: the library has the `units` inverse but not the forward
+## 3. Producing the `units` channel
 
-Both GEMM entries take **(low, high, units)**. The library can produce `low` and `high`. It cannot produce
-`units` — the scale-unit reorder is `pack_unit_sb`, called from `gguf_prepass_ops.cpp` in the **torch extension's
-host code**, which is not in the shared library. `quactlize_ppu_prepass_unit` goes the other way
-(`units` → scale, zero) and is present, which is what makes the omission easy to miss: every other operation
-here comes as a pair.
-
-**Consequence for you: linking only the .so, you can place both code planes and then dead-end.** Until this
-lands, `units` must come from the Python path in §6.
-
-Requested as `.coord/INBOX.md` 035, roughly:
+Both GEMM entries take **(low, high, units)**. These exported host functions provide the third buffer directly
+from official GGUF blocks:
 
 ```c
 int     quactlize_ppu_prepare_units(const uint8_t *blocks, uint8_t *units, int n, int k, int qtype);
@@ -66,7 +59,17 @@ int     quactlize_ppu_prepare_units_grouped(const uint8_t *blocks, uint8_t *unit
 int64_t quactlize_ppu_units_bytes(int n, int k, int qtype);        // so a caller can allocate
 ```
 
-Exact spelling is the kernel author's call. Build against §4 and §5 now; expect these to appear.
+`quactlize_ppu_units_bytes` returns the dense byte count, or `-1` for an invalid shape/qtype. A grouped allocation
+is `experts * quactlize_ppu_units_bytes(...)`. Q3_K and Q6_K pair two adjacent K-superblocks from the same column;
+the query owns that rule, so the caller must not reproduce it.
+
+The dense source is `[N,K/256,raw_block_bytes]` and destination is `[K-unit,N,unit_bytes]`. Grouped adds an
+expert-major outer axis to both. `n` and `k` must be positive multiples of 256; Q3_K/Q6_K additionally require
+`k % 512 == 0`. Producer returns are 0 on success, 20 for invalid pointers/extents, 22 for unknown qtype, and 24
+when the format's superblocks cannot form a complete unit.
+
+The torch producer calls these same symbols. `gguf_unit_pack.hpp` owns the single expert-aware packing loop used by
+both dense and grouped, so the exported implementation is not a second reorder which can drift from Python.
 
 ---
 
@@ -173,9 +176,9 @@ allocation, no sync, no copies — are queued and deferred.
 
 ---
 
-## 6. The Python path, which is complete today
+## 6. The Python path
 
-This is how to obtain `units` until §3 lands, and how `tools/pack_gguf.py` works.
+This is the higher-level wrapper over the §3 producer, and how `tools/pack_gguf.py` works.
 
 ```python
 from quactlize import routes, formats
@@ -208,5 +211,5 @@ manifest comes to disagree with the kernel that reads it.
    closes the producer with no GEMM and no golden involved, and it is the check that separates a packing bug
    from a compute bug later.
 2. **Wire the §5 call site**, with `rc != 0` as an abort.
-3. **Get `units` from §6** until §3 lands.
+3. **Produce `units` with §3** (or use the §6 wrapper), and run `prepass_unit` as its independent inverse.
 4. **Do not benchmark** until the device-pointer variants exist.

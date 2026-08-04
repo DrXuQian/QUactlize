@@ -94,6 +94,15 @@ State& state(int fmt) {
     s.api.prepass_unit = reinterpret_cast<decltype(s.api.prepass_unit)>(
         dlsym(h, "quactlize_ppu_prepass_unit"));
     dlerror();
+    s.api.units_bytes = reinterpret_cast<decltype(s.api.units_bytes)>(
+        dlsym(h, "quactlize_ppu_units_bytes"));
+    dlerror();
+    s.api.prepare_units = reinterpret_cast<decltype(s.api.prepare_units)>(
+        dlsym(h, "quactlize_ppu_prepare_units"));
+    dlerror();
+    s.api.prepare_units_grouped = reinterpret_cast<decltype(s.api.prepare_units_grouped)>(
+        dlsym(h, "quactlize_ppu_prepare_units_grouped"));
+    dlerror();
     s.api.bc_gemv = reinterpret_cast<decltype(s.api.bc_gemv)>(dlsym(h, "quactlize_ppu_bc_gemv"));
     dlerror();
     if (!sym("quactlize_ppu_gemv_lowbit", reinterpret_cast<void**>(&s.api.gemv_lowbit))) return s;
