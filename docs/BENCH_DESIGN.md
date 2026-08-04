@@ -66,6 +66,27 @@ letting the MoE side consume the list -- CMake's job shrinking from "loop over f
 "compile the generated list, N configs per translation unit", with `MOE_*_LIST` becoming a filter over the
 generated set rather than a second, weaker way to define it.
 
+**MEASURED BEFORE DOING IT, 2026-08-05: the two sets are already compatible, and the remaining work is a
+compile-time saving rather than a coverage fix.** The worry behind "the grouped and dense search spaces should
+be similar" is that the MoE sweep might not contain the shapes the dense policy wants. For the TileK=64 slice at
+i4 it does, entirely:
+
+```
+CMake's i4 product, after warp-divides-tile      108 shapes
+the emitter's grouped set                         43 shapes
+  intersection                                    43        <- the emitter's set is a strict SUBSET
+  only in CMake (the policy would prune these)    65
+  only in the emitter (CMake cannot reach)         0        <- the number that mattered
+```
+
+So the MoE sweep cannot miss a shape the pruning policy would have chosen; it compiles 65 extra it would have
+dropped. Switching the MoE side to consume `lowbit_grouped_configs.inc` is therefore worth ~60% of that sweep's
+compile (108 -> 43 units) at zero coverage cost -- not a correctness repair.
+
+SCOPE OF THAT CLAIM: TileK=64 and the i4 format row only. The MoE product also spans TileK 128/256 (the 304-row
+half), which this has not compared. The i4 row's WarpN axis is {16,32,64}; the emitter's kWarpN includes 128 but
+`common_producer_exclusion` rejects WarpN>64, so the axes agree there by construction rather than by luck.
+
 **AND `--space=compare`, which is the part worth keeping even after that lands.** The header deliberately keeps
 `DenseSpace` and `GroupedSpace` as separate wrappers over one implementation so future divergence stays visible,
 and explicitly says the emitter should ask each and have a comparator check them. That comparator did not exist,
