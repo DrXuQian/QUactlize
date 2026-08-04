@@ -70,8 +70,16 @@ These are correctness and inspection, not tactic sweeps, so the hold above does 
    and the distinct per-layer (n, k). For the 122B ALSO the serving TP convention -- which axis the 2-card split
    halves -- because both conventions exist and assuming one tunes a GEMM that never runs.
 
-3. **FIRST FEEL OF THE SWEEP -- i4 (Q4_K) MoE, real Qwen shapes, one compile wave (~20 s).** The user asked for
-   the single-schema slice to get a feel. This is the MoE half; the dense half is not ready (see the caveat).
+3. **HELD AT THE USER'S REQUEST (2026-08-04): "还是等你完全支持之后我一个一个跑吧".** They would rather wait
+   for the complete thing than spend a round on a half-ready one, which is the right call -- the two gaps below
+   are exactly the kind that make a first look misleading rather than merely incomplete. Kept here because the
+   command is correct and only the harness underneath it is not; when the two gaps close this moves to OPEN and
+   is run one shape at a time.
+
+   TWO GAPS, BOTH MINE: (a) the winner is chosen by a single timing against a 13% cross-run spread; (b) the
+   dense half has 17 hand-written configs where the pruned set needs 110.
+
+   i4 (Q4_K) MoE, real Qwen shapes, one compile wave (~20 s):
 
        cd /sim/eec/shared/junfu.qx/quactlize && git pull --recurse-submodules
        MOE_FORMATS="i4" TARGET=test_lowbit_moe_bench ./build.sh

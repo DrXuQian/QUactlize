@@ -130,8 +130,82 @@ struct Band {
   char*     ws;   size_t   wsb;
 };
 
-struct Best { char tag[64]; double us; };
-inline void upd(Best& b, const char* t, double u) { if (u < b.us) { b.us = u; std::snprintf(b.tag, 64, "%s", t); } }
+// ================= SELECTION ==================================================================================
+// A WINNER PICKED FROM ONE TIMING IS PICKED FROM NOISE. The recorded cross-run spread for one configuration on
+// this machine is 13%, and the old rule here was `if (u < b.us)` over a single measurement per candidate -- so any
+// two configurations within 13% of each other were being ordered by whichever happened to run in a good moment.
+// The sweep exists to separate configurations that differ by less than that.
+//
+// THREE CHOICES, EACH LOAD-BEARING:
+//
+//  * REPEAT THE WHOLE CANDIDATE LIST, do not repeat each candidate in place. Clock drift, thermal state and
+//    another process arriving are all time-correlated: if candidate A is measured five times in a row and then B
+//    is, a drift between them lands entirely on one of the two. Interleaving spreads it over both. This is why
+//    the repetition belongs in the caller's loop around moe_run_all() and not inside time_it().
+//  * MEDIAN, not mean or min. One stall inflates a mean; a min is the best moment rather than the expected one,
+//    and taking a min over more repeats makes every candidate look better without making the comparison better.
+//  * REPORT A BAND AND REFUSE TO SEPARATE OVERLAPPING ONES. With a handful of repeats a quantile confidence
+//    interval is arithmetic theatre, so the band is [min, max] over the repeats -- conservative, and it cannot
+//    claim a separation the samples do not show. Candidates whose band overlaps the leader's are reported AS a
+//    tie, which is also what makes codex's guard rule (H1/H2) operable: a guard inside the leader's band means
+//    expand the stratum, and that test needs a band to exist.
+struct Sample { char tag[64]; std::vector<double> us; };
+
+struct Best {
+  char tag[64];
+  double us;                       // median of the leader
+  std::vector<Sample> seen;        // every candidate, every repeat
+  int reps_seen = 0;
+};
+
+inline double median_of(std::vector<double> v) {
+  if (v.empty()) return 1e18;
+  std::sort(v.begin(), v.end());
+  const size_t n = v.size();
+  return n % 2 ? v[n/2] : 0.5 * (v[n/2 - 1] + v[n/2]);
+}
+
+// Called by every generated unit for every kernel it runs. Accumulates rather than compares: the comparison
+// cannot be made until all repeats are in, and doing it here is what made the old version single-shot.
+inline void upd(Best& b, const char* t, double u) {
+  for (auto& s : b.seen)
+    if (std::strncmp(s.tag, t, 64) == 0) { s.us.push_back(u); return; }
+  b.seen.push_back(Sample{});
+  std::snprintf(b.seen.back().tag, 64, "%s", t);
+  b.seen.back().us.push_back(u);
+}
+
+// Resolve after every repeat has run. Returns the number of candidates that TIE with the leader -- 0 means the
+// leader is separated, and anything above 0 is the honest statement that this sweep did not resolve them.
+inline int settle(Best& b) {
+  b.us = 1e18; b.tag[0] = '\0';
+  for (auto& s : b.seen) {
+    const double m = median_of(s.us);
+    if (m < b.us) { b.us = m; std::snprintf(b.tag, 64, "%s", s.tag); }
+  }
+  int ties = 0;
+  double lo = 1e18, hi = -1e18;
+  for (auto& s : b.seen)
+    if (std::strncmp(s.tag, b.tag, 64) == 0) {
+      lo = *std::min_element(s.us.begin(), s.us.end());
+      hi = *std::max_element(s.us.begin(), s.us.end());
+    }
+  for (auto& s : b.seen) {
+    if (std::strncmp(s.tag, b.tag, 64) == 0) continue;
+    const double slo = *std::min_element(s.us.begin(), s.us.end());
+    if (slo <= hi) ++ties;                       // its band reaches into the leader's: not separated
+  }
+  (void)lo;
+  return ties;
+}
+
+// How many times the whole list is run. One repeat is legal and is NOT a ranking -- the banner says so, because
+// a run that cannot rank must not print something that reads like a ranking.
+inline int moe_reps() {
+  const char* e = std::getenv("MOE_REPS");
+  const int r = e ? std::atoi(e) : 5;
+  return r < 1 ? 1 : r;
+}
 
 // iters == 0 means EXACTLY ONE launch and no warmup: acu attributes counters to the whole process, so a warmup would
 // double-count and 20 iterations would make the report meaningless.

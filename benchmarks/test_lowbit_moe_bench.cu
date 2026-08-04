@@ -133,7 +133,17 @@ int main(int argc, char** argv) {
   // own best entirely once i2 started winning the shared slot.
   Best b[MOE_FMT_COUNT];
   for (int i = 0; i < MOE_FMT_COUNT; ++i) { b[i].tag[0] = '\0'; b[i].us = 1e18; }
-  moe_run_all(bd, b);
+
+  // THE WHOLE LIST, REPEATED -- not each candidate repeated in place. See the comment on Best in
+  // lowbit_moe_bench.hpp: drift is time-correlated, so interleaving is what keeps it from landing on one
+  // candidate. MOE_REPS=1 is allowed and is explicitly not a ranking.
+  const int reps = moe_acu() ? 1 : moe_reps();
+  for (int r = 0; r < reps; ++r) {
+    if (reps > 1) std::printf("\n  --- pass %d/%d ---\n", r + 1, reps);
+    moe_run_all(bd, b);
+  }
+  int ties[MOE_FMT_COUNT];
+  for (int i = 0; i < MOE_FMT_COUNT; ++i) { ties[i] = settle(b[i]); b[i].reps_seen = reps; }
 
   // THE ROOFLINE, STATED. Arithmetic intensity against the machine's ridge point decides which roof applies, and saying it
   // outright stops `%HBM` from having to be argued about: at decode AI is ~3 FLOP/B against a ridge of PEAK/HBM = 181, so the
@@ -149,7 +159,12 @@ int main(int argc, char** argv) {
   }
   std::printf("\n  ================= %s =================\n",
               moe_acu() ? "MOE_ACU=1: single cold launches, NOT a ranking"
-                        : "VERDICT: best config per format");
+                        : reps < 2 ? "MOE_REPS=1: ONE timing per candidate -- NOT a ranking"
+                                   : "VERDICT: best config per format");
+  if (reps > 1)
+    std::printf("  %d passes, median per candidate, band = [min,max] over passes. A candidate whose band reaches\n"
+                "  into the leader's is reported as a TIE, not beaten: at the recorded 13%% cross-run spread that\n"
+                "  is the honest statement. Ties are the guards to expand, not noise to round away.\n", reps);
   int ord[MOE_FMT_COUNT];
   for (int i = 0; i < MOE_FMT_COUNT; ++i) ord[i] = i;
   for (int i = 1; i < MOE_FMT_COUNT; ++i)                    // insertion sort: 5 entries, fastest first
@@ -158,8 +173,36 @@ int main(int argc, char** argv) {
     const Best& e = b[ord[i]];
     if (e.us > 1e17) { std::printf("  %-4s no legal row ran (filtered, or MOE_ONLY excluded it)\n", moe_fmt_names[ord[i]]); continue; }
     const double tf = 2.0 * double(bd.total) * double(bd.N) * double(bd.K) / (e.us * 1e-6) / 1e12;
+    // "fastest" ONLY WHEN NOTHING TIES IT. With ties, naming a winner is the claim the samples do not support,
+    // and it is the claim someone would otherwise carry into a tactic table and never revisit.
+    const int nt = ties[ord[i]];
+    char verdict[96] = "";
+    if (i == 0 && !moe_acu()) {
+      if (reps < 2)      std::snprintf(verdict, sizeof verdict, "   <-- lowest (ONE pass: not a ranking)");
+      else if (nt == 0)  std::snprintf(verdict, sizeof verdict, "   <-- fastest, separated");
+      else               std::snprintf(verdict, sizeof verdict,
+                                       "   <-- lowest median, but %d candidate(s) TIE it -- unresolved", nt);
+    }
     std::printf("  %-4s %-30s %8.2f us | %6.1f TF/s (%4.1f%% MFU)%s\n", moe_fmt_names[ord[i]], e.tag, e.us, tf,
-                100.0 * tf * 1e12 / PEAK, (i == 0 && !moe_acu()) ? "   <-- fastest" : "");
+                100.0 * tf * 1e12 / PEAK, verdict);
+  }
+  // THE TIES ARE THE OUTPUT, not a footnote. codex's H1/H2 pruning rules keep guards precisely so that a guard
+  // landing inside the leader's band triggers expanding that stratum; without this list that rule has no input.
+  if (reps > 1) {
+    for (int i = 0; i < MOE_FMT_COUNT; ++i) {
+      const Best& e = b[i];
+      if (e.us > 1e17 || ties[i] == 0) continue;
+      std::printf("  %-4s ties with the leader (expand these strata before calling anything a winner):\n",
+                  moe_fmt_names[i]);
+      double hi = 0;
+      for (const auto& s : e.seen)
+        if (std::strncmp(s.tag, e.tag, 64) == 0) hi = *std::max_element(s.us.begin(), s.us.end());
+      for (const auto& s : e.seen) {
+        if (std::strncmp(s.tag, e.tag, 64) == 0) continue;
+        const double slo = *std::min_element(s.us.begin(), s.us.end());
+        if (slo <= hi) std::printf("         %-30s median %8.2f  min %8.2f\n", s.tag, median_of(s.us), slo);
+      }
+    }
   }
   std::printf("  HBM is the COMPULSORY traffic: padded A (mt*TM*K*2) + one read of each ACTIVE expert's weights and scales\n");
   std::printf("  + D. At decode mt == active, so B and S are EXACT, not bounds -- the traffic is LOCKED, and HBM%% is the\n");
