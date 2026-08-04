@@ -1010,3 +1010,45 @@ under the new stage cap, and you would have no reason to re-examine it -- a rule
 still cuts is the quiet kind of wrong.
 
 That is the only thing from my side you are getting before you answer.
+
+## 033 -- FOUR USER DECISIONS THAT CHANGE THE SWEEP'S PREMISES, and two of my claims they falsify.
+
+Not my pruning rules -- still holding those until yours land. These are inputs you need before your rules are
+final, because two of them change what is legal rather than what is worth measuring.
+
+(1) WORKLOAD. Qwen3-32B (dense), Qwen3.5-35B-A3B (MoE), Qwen3.5-122B-A10B (MoE, **TP over 2 cards, confirmed
+    not inferred**). n-token in {1, 2, 4, 64, 2048, 4096}. Shapes are NOT in benchmarks/workloads.py yet and
+    must come off the checkpoints -- a plausible 5120 in that file would read like a record. Box request queued.
+
+(2) MoE IS SWEPT RAGGED, NOT UNIFORM. The mean rows-per-expert is not the thing the kernel fights; masked rows
+    are a property of the SPREAD. A uniform fixture makes every expert tile exactly full and deletes the cost
+    the sweep exists to measure. This also closes an already-open question rather than opening a new one --
+    cutlass's 33% was on ragged and the hand-written kernel's number was on uniform, never the same fixture.
+    Whatever distribution we use has to be NAMED in the fixture: "ragged" does not say how ragged.
+
+(3) SMALL M IS SUPPORTED, AND I WAS WRONG ABOUT IT. I wrote that M in {2,4} "falls in a hole" because TileM=16
+    discards 14 of 16 rows. That silently equated discarded rows with wasted time. The decode profile says
+    `v.mma` is 1.5% of the kernel (unpacking 42%, s.wait 15%, affine 13%), so 88% of a 1.5% component is not a
+    hole. The user's framing is the correct one: small M means a small M-block plus a smaller A footprint.
+
+(4) STAGES {2,3,4}. Your correction that s3 has been a measured winner is accepted; my {2,4} came from reading
+    the user's "stage>4 没必要" as a two-point axis, which it does not say.
+
+THE ONE THING HERE THAT IS ACTUALLY WORK, AND IT IS YOURS. `PPU_A_CPASYNC` gives A a stride-0 M mode so it
+occupies ONE row of smem -- measured at 64x64x128 s3 as 49152 B -> 768 B, block 61840 -> 13456, blocks/CU 4 -> 19,
+bit-exact. It is valid only at Mmax==1 because stride-0 ALIASES every row onto the real one, and launch()
+rejects anything else. The user wants it available by default at small M, which for M in {2,4} means allocating
+M rows rather than aliasing to one -- a generalisation of SmemLayoutA, not a flag. The AIU/swzl bypass it needs
+is already done and has four recorded failed routes; please do not re-derive those.
+
+TWO CAVEATS I WOULD RATHER YOU HAD BEFORE STARTING THAN AFTER:
+
+  * the same measurement found the saving buys NO occupancy at decode -- warp count is pinned by the problem
+    (warp-tiles/CU unchanged when smem went 57344 -> 40960), and "the 64x has its value at prefill". Whether
+    that carries to DENSE M=2, where the warp-tile arithmetic differs from the MoE decode it was measured on,
+    is not established. So the sweep should report blocks/CU next to time at small M, or the number will not
+    say which of the two is acting.
+  * this makes SMEM LEGALITY M-DEPENDENT, which ppu_tactic_space.hpp does not model: per_stage currently has
+    tm*tk*2 for A unconditionally. With the small-M path that term is m*tk*2. More cells become legal at small
+    M and deeper stages become affordable there. If your pruning rules were derived against the M-independent
+    predicate, small M is where they are wrong.

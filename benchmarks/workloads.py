@@ -19,12 +19,26 @@ nobody checked, in a file that reads like a record.
 
 THREE STRUCTURAL FACTS THAT DO NOT NEED THE SHAPES, and that change what the sweep should even ask:
 
-1.  M IN {2, 4} FALLS IN A HOLE. The smallest TileM in the tactic space is 16, so a batch of 2 discards 14 of 16
-    rows and a batch of 4 discards 12 -- before any tactic is chosen. The GEMV kernel that covers the other end
-    is single-token: quactlize's mmvf path is 2D/bf16/one-token only. So M=2 and M=4 are served by neither a
-    tensor-core tile nor the vector kernel, and the sweep will faithfully report that every tactic is bad there.
-    That is a real answer, but the useful follow-up is "extend the GEMV to M<=4", not "which 16-row tile wins".
-    Flagged before the sweep runs so the result is not mistaken for a tuning failure.
+1.  SMALL M IS A TILE-AND-SMEM SETTING, NOT A HOLE. An earlier version of this file said M in {2,4} was served
+    by neither the tensor-core path nor the vector one, on the grounds that TileM=16 discards 14 of 16 rows. That
+    reasoning quietly equated DISCARDED ROWS with WASTED TIME, and the measurement says otherwise: in the decode
+    profile `v.mma` is 1.5% of the kernel, against unpacking 42%, s.wait 15% and affine 13%. Eighty-eight percent
+    of a 1.5% component is not a hole. The tensor-core path runs at M=2; what it needs is a small M-block and a
+    smaller A footprint, not a different kernel.
+
+    THE SMEM OPTION ALREADY EXISTS AND IS NOT YET GENERAL. `PPU_A_CPASYNC` keeps A in smem occupying ONE row --
+    measured on 64x64x128 s3 as A 49152 B -> 768 B (64x), block 61840 -> 13456 B, blocks/CU 4 -> 19, bit-exact
+    against a separate build. It works by giving SmemLayoutA a stride-0 M mode, which ALIASES every row onto the
+    real one, so it is valid only at Mmax==1 and `launch()` rejects anything else. Covering M in {2,4} means
+    allocating M rows instead of aliasing to one -- a generalisation of that layout, not a flag flip. It also
+    requires bypassing the AIU/swzl read for A, whose instruction has a hard 16-row minimum with no stride
+    operand; that part is already done and must not be re-litigated (four failed routes are recorded).
+
+    AND THE PAYOFF MAY NOT BE WHERE IT LOOKS. The same measurement found that at DECODE the saving buys no
+    occupancy: the warp count is pinned by the problem size (total warp-tiles / CU was unchanged when smem went
+    57344 -> 40960), so the 64x has its value at PREFILL. Whether that carries to dense M=2 -- where the
+    warp-tile arithmetic differs from the MoE decode it was measured on -- is not established. The sweep should
+    therefore report blocks/CU alongside time at small M, or the result will not say which of the two is acting.
 
 2.  FOR THE TWO MoE MODELS THE GLOBAL M IS NOT THE TILE'S M. Rows per expert is roughly
 
@@ -35,10 +49,25 @@ THREE STRUCTURAL FACTS THAT DO NOT NEED THE SHAPES, and that change what the swe
     n-token values map onto it through that ratio. Sweeping MoE at M=2048 as if it were a dense GEMM measures a
     shape that never occurs.
 
-3.  THE 122B IS TENSOR-PARALLEL OVER 2 CARDS, so its per-card shapes are NOT the checkpoint's. Column-parallel
-    projections (q/k/v, gate, up) have N halved; row-parallel ones (o, down) have K halved. A sweep against the
-    unsplit shape would tune for a GEMM that never runs. Which axis is halved has to be read off the serving
-    configuration, not assumed -- both conventions exist.
+    AND IT MUST BE RAGGED, NOT UNIFORM (user, 2026-08-04). That average is the mean of a distribution the router
+    produces, and the thing the MoE kernel is actually fighting -- masked rows -- is a property of the SPREAD, not
+    of the mean. A uniform M/expert fixture makes every expert's tile exactly full and so deletes the cost the
+    sweep exists to measure; it would rank tactics by how well they do the one case that never happens. This is
+    also a question already open in the repo rather than a new one: cutlass measured 33% MFU on ragged against
+    the hand-written kernel on uniform, and the two were never put on the same fixture. The sweep is the place to
+    close that, so the ragged distribution must be part of the fixture definition and stated with it -- an
+    unnamed distribution is not reproducible, and "ragged" alone does not say how ragged.
+
+3.  THE 122B IS TENSOR-PARALLEL OVER 2 CARDS -- confirmed by the user, not inferred from the card count. Its
+    per-card shapes are therefore NOT the checkpoint's: column-parallel projections (q/k/v, gate, up) have N
+    halved and row-parallel ones (o, down) have K halved. A sweep against the unsplit shape tunes for a GEMM
+    that never runs. TP=2 is settled; what is still open is which projections the serving stack splits which
+    way, and that has to be read off its configuration rather than assumed -- both conventions exist, and for an
+    MoE the expert FFN may be split differently from the attention block.
+
+    NOTE FOR THE MoE MODELS: TP interacts with fact 2. Halving the expert FFN's N does not change rows per
+    expert, but halving K does change the K-loop count, and both change which (TileN, TileK) are even legal.
+    So the ragged rows-per-expert distribution and the TP split have to be applied together, not in sequence.
 """
 import argparse
 import sys
