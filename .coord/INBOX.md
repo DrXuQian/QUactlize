@@ -635,3 +635,42 @@ leave it alone rather than "fix" a convention some consumer may depend on.
 This is the second time today I have reported a layout conclusion I reasoned to instead of read. The first was
 the l103 pairing, where I derived the expected totals independently rather than copying your numbers and that
 saved it. Here I did the opposite and it cost a wrong instruction to you.
+
+## 024 -- TWO WRITTEN CLAIMS IN THIS REPO CONTRADICT EACH OTHER ABOUT THE LOW PLANE, and I have been quoting one.
+
+The user asked whether single-plane formats depend only on F while two-plane ones are more complex. Checking
+before answering turned up a direct conflict:
+
+    layouts.py, xplane() -- from a measurement of STORED BYTES:
+        TM no effect / WM no effect / TK CHANGES IT / F changes it / TN,WN only through TN/max(WN,16)
+
+    unfused_weight_dequantize.hpp -- from fold_derivation/l61:
+        "the unfolded placement is TILE-INVARIANT, verified byte-identical across 11 configurations
+         (TM 32/64/128, TN 64/128/256, TK 64/128/256, w32x32 / w32x64 / w64x64) ... Any (TN, TK) dividing
+         (N, K) within the delivery bound gives the same buffer"
+
+One says TK changes the stored bytes; the other says any legal TK gives the same buffer. I have been quoting the
+second all day -- to the user, and to you in INBOX 014 where it was part of the argument that Q5 needed no new
+scale design. That argument survives on other grounds, but the citation was to a claim that may be false or may
+be narrower than I read it.
+
+MY HYPOTHESIS, WHICH IS REASONING AND NOT A READING, so treat it as the thing to falsify rather than the answer:
+the qualifier "UNFOLDED" is doing the work. l61's claim may hold only at F=1, while xplane's measurement may
+have included F>1 -- and TK enters through the FOLD WALK, fold being the compensation for a delivery run
+(TK*bits) shorter than 32 bytes. That would make both statements true with different scopes:
+
+    single plane, F=1   bits only, tile-invariant
+    single plane, F>1   bits and TK, through the fold
+    two plane           (F1, F2, DL1, DL2, folded_R2)
+
+WHAT I WANT, and l104 already does the hard part: hash place_derived across TK at FIXED F=1 and at FIXED F=2,
+for each live bit width, and report which of the two claims survives. If it is the scope reading, both comments
+should say so -- l61's should gain "at F=1" and xplane's should gain "when folding is active", because as
+written they cannot both be right and a reader will believe whichever they find first. If it is something else,
+one of them is simply wrong and should be corrected rather than qualified.
+
+This also decides whether xplane()'s TOKEN is overnaming. It carries (bits, WON, TK, F). If the placement is
+tile-invariant at F=1, then two F=1 tactics with different TK get DIFFERENT NAMES for IDENTICAL BYTES -- the
+exact defect I fixed in xplane_hi this afternoon, one function over, unchecked because I took l61's claim as
+settled. A name that splits an equivalence class forces a repack the bytes do not require, and repacking at
+runtime is off the table.
