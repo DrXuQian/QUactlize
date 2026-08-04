@@ -27,9 +27,14 @@
 
 namespace {
 
-// User-set scope (INBOX 032b): stages above 4 are out, and the sweep axis is exactly {2,4}.  Stage 3 has historical
-// measured wins, so this is a declared scope decision -- not a claim that s3 is performance-dominated.
-constexpr int kStages[] = {2, 4};
+// User scope: "stage 大于4就没必要了" -- stages ABOVE 4 are out.  That is 2, 3 and 4.
+//
+// IT WAS {2,4} HERE FOR ONE ROUND AND THAT WAS MY TRANSCRIPTION ERROR, not the user's decision. INBOX 032b
+// relayed the scope as a two-point axis; the user's sentence excludes >4 and says nothing about 3. codex flagged
+// in the same round that s2, s3 and s4 have EACH been the measured winner for some format/shape, so dropping s3
+// would have started the pruning exercise from a truncated space -- the exact defect the whole exercise is meant
+// to avoid, introduced by the person writing the guard against it.
+constexpr int kStages[] = {2, 3, 4};
 
 template <class Space>
 void size_one(char const* op) {
