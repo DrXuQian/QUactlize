@@ -2,6 +2,8 @@
 // reorder lives in ppu_dense_layout.cu so the resident artifact crosses this ABI already in the kernel's layout.
 #include <cstdint>
 #include <algorithm>
+#include <cstdio>
+#include <cstring>
 #include <vector>
 
 #include "fpA_intB_ppu.cuh"
@@ -53,6 +55,17 @@ constexpr int minimum_dense_tile_n() {
   int value = kDenseConfigs[0].tile_n;
   for (auto const& config : kDenseConfigs) value = std::min(value, config.tile_n);
   return value;
+}
+
+DenseConfigId resolve_dense_config(char const* name) {
+  if (!name || !name[0]) return kDefaultDenseConfig;
+#define QUACTLIZE_PPU_DENSE_CONFIG_MATCH(ID, NAME, TM, TN, WM, WN, STAGES) \
+  if (std::strcmp(name, NAME) == 0) return DenseConfigId::ID;
+  QUACTLIZE_PPU_DENSE_CONFIGS(QUACTLIZE_PPU_DENSE_CONFIG_MATCH)
+#undef QUACTLIZE_PPU_DENSE_CONFIG_MATCH
+  std::fprintf(stderr, "[quactlize_ppu] dense config '%s' is not compiled in; declining to default '%s'\n",
+               name, kDenseConfigs[0].name);
+  return kDefaultDenseConfig;
 }
 
 constexpr size_t align16(size_t value) { return (value + 15) & ~size_t(15); }
@@ -214,18 +227,20 @@ extern "C" int32_t quactlize_ppu_list_configs(quactlize_ppu_config_v1 const** co
   return int32_t(sizeof(kDenseConfigs) / sizeof(kDenseConfigs[0]));
 }
 
-extern "C" int quactlize_ppu_dense_lowbit(uint16_t const* act, uint8_t const* low, uint8_t const* high,
-                                            uint16_t const* scale, uint16_t const* zero, uint16_t* out,
-                                            int m, int n, int k, int group_size, int qtype) {
+extern "C" int quactlize_ppu_dense_lowbit_config_v1(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high,
+    uint16_t const* scale, uint16_t const* zero, uint16_t* out,
+    int m, int n, int k, int group_size, int qtype, char const* config_name) {
   if (!act || !low || !scale || !zero || !out || m <= 0 || n <= 0 || k <= 0 || n % 256 || k % 256) return 30;
+  DenseConfigId const config = resolve_dense_config(config_name);
   switch (qtype) {
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 10
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 2
     // The selected Q2 unit has 16 groups, so TileK=256 would reinterpret this ABI's fp16 scale plane as raw units.
     // Its single unfolded code plane is tile-invariant; TileK=128 keeps the established scale-first contract live.
-    case 10: return group_size == 16 ? dense<cutlass::uint2b_t,void,16,128>(act,low,high,scale,zero,out,m,n,k,group_size) : 32;
+    case 10: return group_size == 16 ? dense<cutlass::uint2b_t,void,16,128>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
 #else
-    case 10: return group_size == 16 ? dense<cutlass::uint2b_t,void,16>(act,low,high,scale,zero,out,m,n,k,group_size) : 32;
+    case 10: return group_size == 16 ? dense<cutlass::uint2b_t,void,16>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
 #endif
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 11
@@ -233,7 +248,7 @@ extern "C" int quactlize_ppu_dense_lowbit(uint16_t const* act, uint8_t const* lo
     // Q3's fixed TK256 high-plane descriptor is also the packed type in a format-3 library.
     case 11: return 36;
 #else
-    case 11: return group_size == 16 ? dense<cutlass::uint2b_t,cutlass::uint1b_t,16>(act,low,high,scale,zero,out,m,n,k,group_size) : 32;
+    case 11: return group_size == 16 ? dense<cutlass::uint2b_t,cutlass::uint1b_t,16>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
 #endif
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 12
@@ -241,9 +256,9 @@ extern "C" int quactlize_ppu_dense_lowbit(uint16_t const* act, uint8_t const* lo
     // TileK=256 selects packed units in this build, so the SCALE_FIRST contract must not use that instantiation.
     // Its single low plane is tile-invariant; TileK=128 gives Scale_TileK=4, keeps kPackedScaleOn false, and lets one
     // flagged library run the existing independent scale-first oracle beside the new TileK=256 packed entry below.
-    case 12: return group_size == 32 ? dense<cutlass::int4b_t,void,32,128>(act,low,high,scale,zero,out,m,n,k,group_size) : 32;
+    case 12: return group_size == 32 ? dense<cutlass::int4b_t,void,32,128>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
 #else
-    case 12: return group_size == 32 ? dense<cutlass::int4b_t,void,32>(act,low,high,scale,zero,out,m,n,k,group_size) : 32;
+    case 12: return group_size == 32 ? dense<cutlass::int4b_t,void,32>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
 #endif
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 13
@@ -253,7 +268,7 @@ extern "C" int quactlize_ppu_dense_lowbit(uint16_t const* act, uint8_t const* lo
     // as units; the default build and every differently selected packed-format build retain the established path.
     case 13: return 36;
 #else
-    case 13: return group_size == 32 ? dense<cutlass::int4b_t,cutlass::uint1b_t,32>(act,low,high,scale,zero,out,m,n,k,group_size) : 32;
+    case 13: return group_size == 32 ? dense<cutlass::int4b_t,cutlass::uint1b_t,32>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
 #endif
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 14
@@ -261,11 +276,18 @@ extern "C" int quactlize_ppu_dense_lowbit(uint16_t const* act, uint8_t const* lo
     // Q6 must retain TK128; in a format-4 library that exact type consumes paired raw units, not fp16 planes.
     case 14: return 36;
 #else
-    case 14: return group_size == 16 ? dense<cutlass::int4b_t,cutlass::uint2b_t,16,128>(act,low,high,scale,zero,out,m,n,k,group_size) : 32;
+    case 14: return group_size == 16 ? dense<cutlass::int4b_t,cutlass::uint2b_t,16,128>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
 #endif
 #endif
     default: return 33;
   }
+}
+
+extern "C" int quactlize_ppu_dense_lowbit(uint16_t const* act, uint8_t const* low, uint8_t const* high,
+                                            uint16_t const* scale, uint16_t const* zero, uint16_t* out,
+                                            int m, int n, int k, int group_size, int qtype) {
+  return quactlize_ppu_dense_lowbit_config_v1(
+      act, low, high, scale, zero, out, m, n, k, group_size, qtype, nullptr);
 }
 
 // FULLY_QUANTIZED x DENSE, format-selected k-quants. This is only a second ABI contract: it instantiates the SAME
@@ -273,39 +295,48 @@ extern "C" int quactlize_ppu_dense_lowbit(uint16_t const* act, uint8_t const* lo
 // high-plane placement and selects one of two group runs from each superblock. The two-plane collective's scale
 // channel calls the same packed helpers and stages paired units without changing weight-plane placement.
 // Builds without PPU_PACKED_SCALE retain the symbol but return 34.
-extern "C" int quactlize_ppu_dense_fully_quantized(uint16_t const* act, uint8_t const* low,
-                                                     uint8_t const* high, uint8_t const* units, uint16_t* out,
-                                                     int m, int n, int k, int qtype) {
+extern "C" int quactlize_ppu_dense_fully_quantized_config_v1(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
+    int m, int n, int k, int qtype, char const* config_name) {
   if (!act || !low || !units || !out || m <= 0 || n <= 0 || k <= 0 || n % 256 || k % 256) return 30;
+  DenseConfigId const config = resolve_dense_config(config_name);
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
   if (qtype != 12) return 33;
   return dense<cutlass::int4b_t, void, 32, 256, true>(
-      act, low, nullptr, units, nullptr, out, m, n, k, 32);
+      act, low, nullptr, units, nullptr, out, m, n, k, 32, config);
 #elif PPU_PACKED_FORMAT == 2
   if (qtype != 10) return 33;
   return dense<cutlass::uint2b_t, void, 16, 256, true>(
-      act, low, nullptr, units, nullptr, out, m, n, k, 16);
+      act, low, nullptr, units, nullptr, out, m, n, k, 16, config);
 #elif PPU_PACKED_FORMAT == 1
   if (qtype != 13 || !high) return 33;
   return dense<cutlass::int4b_t, cutlass::uint1b_t, 32, 256, true>(
-      act, low, high, units, nullptr, out, m, n, k, 32);
+      act, low, high, units, nullptr, out, m, n, k, 32, config);
 #elif PPU_PACKED_FORMAT == 3
   if (qtype != 11 || !high || k % 512) return 33;
   return dense<cutlass::uint2b_t, cutlass::uint1b_t, 16, 256, true>(
-      act, low, high, units, nullptr, out, m, n, k, 16);
+      act, low, high, units, nullptr, out, m, n, k, 16, config);
 #elif PPU_PACKED_FORMAT == 4
   if (qtype != 14 || !high || k % 512) return 33;
   return dense<cutlass::int4b_t, cutlass::uint2b_t, 16, 128, true>(
-      act, low, high, units, nullptr, out, m, n, k, 16);
+      act, low, high, units, nullptr, out, m, n, k, 16, config);
 #else
   (void)qtype;
   return 35;  // this binary's packed-scale format has no entry here yet
 #endif
 #else
+  (void)config;
   (void)qtype;
   return 34;
 #endif
+}
+
+extern "C" int quactlize_ppu_dense_fully_quantized(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
+    int m, int n, int k, int qtype) {
+  return quactlize_ppu_dense_fully_quantized_config_v1(
+      act, low, high, units, out, m, n, k, qtype, nullptr);
 }
 
 extern "C" int64_t quactlize_ppu_dense_fully_quantized_workspace_bytes_v1(
@@ -314,44 +345,53 @@ extern "C" int64_t quactlize_ppu_dense_fully_quantized_workspace_bytes_v1(
   return int64_t(dense_workspace_bytes(m, n));
 }
 
-extern "C" int quactlize_ppu_dense_fully_quantized_dev_v1(
+extern "C" int quactlize_ppu_dense_fully_quantized_dev_v2(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
-    int m, int n, int k, int qtype, void* workspace, int64_t workspace_bytes, void* stream) {
+    int m, int n, int k, int qtype, void* workspace, int64_t workspace_bytes, void* stream,
+    char const* config_name) {
   int64_t const need = quactlize_ppu_dense_fully_quantized_workspace_bytes_v1(m, n, k, qtype);
   if (!act || !low || !units || !out || !workspace || need < 0 || workspace_bytes < need) return 30;
   ppu_gemv::rt_clear_error();
   hggcStream_t const s = static_cast<hggcStream_t>(stream);
+  DenseConfigId const config = resolve_dense_config(config_name);
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
   return dense_fully_quantized_device<cutlass::int4b_t, void, 32, 256>(
-      act, low, nullptr, units, out, m, n, k, kDefaultDenseConfig,
+      act, low, nullptr, units, out, m, n, k, config,
       workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 2
   return dense_fully_quantized_device<cutlass::uint2b_t, void, 16, 256>(
-      act, low, nullptr, units, out, m, n, k, kDefaultDenseConfig,
+      act, low, nullptr, units, out, m, n, k, config,
       workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 1
   if (!high) return 33;
   return dense_fully_quantized_device<cutlass::int4b_t, cutlass::uint1b_t, 32, 256>(
-      act, low, high, units, out, m, n, k, kDefaultDenseConfig,
+      act, low, high, units, out, m, n, k, config,
       workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 3
   if (!high) return 33;
   return dense_fully_quantized_device<cutlass::uint2b_t, cutlass::uint1b_t, 16, 256>(
-      act, low, high, units, out, m, n, k, kDefaultDenseConfig,
+      act, low, high, units, out, m, n, k, config,
       workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 4
   if (!high) return 33;
   return dense_fully_quantized_device<cutlass::int4b_t, cutlass::uint2b_t, 16, 128>(
-      act, low, high, units, out, m, n, k, kDefaultDenseConfig,
+      act, low, high, units, out, m, n, k, config,
       workspace, size_t(workspace_bytes), s);
 #else
   return 35;
 #endif
 #else
-  (void)high; (void)stream;
+  (void)high; (void)stream; (void)config;
   return 34;
 #endif
+}
+
+extern "C" int quactlize_ppu_dense_fully_quantized_dev_v1(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
+    int m, int n, int k, int qtype, void* workspace, int64_t workspace_bytes, void* stream) {
+  return quactlize_ppu_dense_fully_quantized_dev_v2(
+      act, low, high, units, out, m, n, k, qtype, workspace, workspace_bytes, stream, nullptr);
 }
 
 namespace {

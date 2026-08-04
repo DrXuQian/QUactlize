@@ -31,6 +31,11 @@ int64_t quactlize_ppu_dense_fully_quantized_workspace_bytes_v1(
 int quactlize_ppu_dense_fully_quantized_dev_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
     int m, int n, int k, int qtype, void* workspace, int64_t workspace_bytes, void* stream);
+// Config-selecting successor. The v1 entry remains ABI-compatible and delegates with a null/default name.
+int quactlize_ppu_dense_fully_quantized_dev_v2(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
+    int m, int n, int k, int qtype, void* workspace, int64_t workspace_bytes, void* stream,
+    char const* config_name);
 
 // Grouped activations/output are concatenated in expert order. offsets is a cumulative device int[experts+1]
 // with offsets[0]=0 and offsets[experts]=total_rows; max_rows is an upper bound on every expert row count.

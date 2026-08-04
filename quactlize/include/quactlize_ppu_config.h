@@ -26,6 +26,16 @@ typedef struct quactlize_ppu_config_v1 {
 // entries use this same record and call without assigning meaning to the tile fields.
 int32_t quactlize_ppu_list_configs(quactlize_ppu_config_v1 const** configs);
 
+// Config-selecting host-pointer GEMM entries. config_name is one of the names returned above. A null/empty name
+// requests the compiled default; an unknown non-empty name reports the decline and also runs that default.
+int quactlize_ppu_dense_lowbit_config_v1(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high,
+    uint16_t const* scale, uint16_t const* zero, uint16_t* out,
+    int m, int n, int k, int group_size, int qtype, char const* config_name);
+int quactlize_ppu_dense_fully_quantized_config_v1(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
+    int m, int n, int k, int qtype, char const* config_name);
+
 #ifdef __cplusplus
 }
 #endif
