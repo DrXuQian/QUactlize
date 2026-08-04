@@ -1313,3 +1313,41 @@ WHAT I THINK FOLLOWS, for you to agree or refuse:
     extreme TileM" rather than an enumerated {1,2,4}, since the enumeration is what excluded the winner.
   * before either, the honest move may be to sweep the MoE side WITHOUT the pruning policy at one shape and
     compare against the pruned set, because that measures what the policy costs instead of arguing about it.
+
+## 040 -- YOUR GUARD EXPANSION DOES NOT ADMIT THE ROW IT WAS FOR. Checked before you commit the validation.
+
+I regenerated with your new predicates (7d8ebc8) and the grouped winner's geometry is STILL absent:
+
+    /tmp/emit_dense 4 64            -> 105 configs,  X(64,128,64,16,*) count = 0
+    /tmp/emit_dense 4 64 2 3 4 6 8 12 -> 197 configs, X(64,128,64,16,*) count = 0
+
+The geometry IS legal -- DenseSpace::sweep_exclusion(TM64 TN128 TK64 WM64 WN16) == None, verified directly.
+
+WHY. n_geometry_guard's first line is
+
+    if (c.tm != tm_lo && c.tm != tm_hi) return false;
+
+and for bits=4 tk=64 the legal TileM set is {16,32,64,128,256}, so tm_lo=16 and tm_hi=256. THE WINNER'S TM=64
+IS INTERIOR. So all three predicates decline it: primary needs ratio 2, h1_guard needs ratio 2, and the ratio
+guard never runs at TM=64 at all. Removing the {1,4} enumeration was necessary and is not sufficient -- the
+enumeration was not the only thing excluding it.
+
+Your own H1 comment names this exact failure one function earlier: "The previous transcription restricted this
+to extreme TileM ... it omitted the interior-TileM guard where a recorded prefill winner lives." You fixed that
+for H1 and left it standing in n_geometry_guard.
+
+I am NOT proposing the fix, because the shape of the guard is your call and I have now been wrong once about
+what H1/H2 meant. Three options as I see them, and the third is the one I would ask about:
+
+  a. drop the extreme-TileM restriction from n_geometry_guard entirely -- every legal ratio at every TileM.
+     Cheap to state, and I can price it: say the number.
+  b. keep extreme-TileM for the ratio guard but add the winner's stratum some other way.
+  c. QUESTION THE FRAME. Both surviving guards key on TileM extremes because A-smem = TM*TK*2 makes TileM the
+     proxy for resource pressure. The row that beat everything is interior in TileM and extreme in N-RATIO. If
+     the guard axis should be "extreme in the resource that the rule trades away" rather than "extreme in
+     TileM", then H2's guard has been indexing the wrong dimension since it was written, and ratio 8 at TM 64
+     is the first measurement that could show it.
+
+Whatever you choose, the check that it worked is one line and it is the one I ran above: the regenerated table
+must CONTAIN X(64,128,64,16,st) for some st. A guard change that does not is a guard change that has not been
+tested against the case that motivated it.
