@@ -341,7 +341,7 @@ def dequantize_fully_quantized(artifact, qtype: int, grouped: bool = False) -> t
     return _op(op)(low, high, scale, zero, int(qtype))
 
 
-def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: int):
+def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: int, tile_k: int | None = None):
     """Offline artifact for FULLY_QUANTIZED/DENSE: the code plane plus the PACKED SCALE UNIT.
 
     Unlike prepare_scale_first_dense, the scale is NOT expanded to fp16 planes -- it stays in the format's own
@@ -351,9 +351,17 @@ def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: i
     Returns (low, high, units). `high` is the second weight plane -- EMPTY for a single-plane format and
     uint8[1, n, k/8] for Q5_K's 1-bit plane -- so the tuple's shape does not change with the format and `units`
     is always the LAST element. That is the property both oracles plant their fault on.
+
+    tile_k SELECTS THE PLACEMENT, and F follows from it -- see formats.fold_for. Passing None keeps the
+    format's default placement, which is what every existing caller wants and what the oracles compare against.
+    An explicit tile_k routes to the *_for_tile op, which is the only way to obtain a folded artifact: the
+    default producer pins the fold at 1, so before this existed, `PlacedArrangement` could record arrangements
+    nothing could build.
     """
     _check_shape(blocks, n, k, int(qtype))
-    return _op("gguf_prepare_fully_quantized_dense")(blocks, n, k, int(qtype))
+    if tile_k is None:
+        return _op("gguf_prepare_fully_quantized_dense")(blocks, n, k, int(qtype))
+    return _op("gguf_prepare_fully_quantized_dense_for_tile")(blocks, n, k, int(qtype), int(tile_k))
 
 
 def matmul_fully_quantized_dense(a: torch.Tensor, artifact, qtype: int):

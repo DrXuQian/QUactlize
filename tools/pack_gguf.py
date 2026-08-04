@@ -107,7 +107,7 @@ def main() -> int:
         n, k = int(t.shape[1]), int(t.shape[0])         # gguf reports (k, n); the routes want (n, k)
         qtype = int(t.tensor_type)
         blocks = torch.from_numpy(t.data.reshape(n * (k // 256), -1).copy())
-        low, high, units = routes.prepare_fully_quantized_dense(blocks, n, k, qtype)
+        low, high, units = routes.prepare_fully_quantized_dense(blocks, n, k, qtype, tile_k=_tile_k(qtype))
 
         stem = t.name.replace("/", "_").replace(".", "_")
         tmp = out / (stem + ".partial")
@@ -116,9 +116,10 @@ def main() -> int:
         tmp.rename(out / stem)                          # a directory that exists is a directory that finished
 
         # THE ARRANGEMENT IS NOT A CHOICE THIS TOOL MAKES. tile_k comes from the format, F follows from tile_k
-        # and the width by the same expression the consumer uses (formats.fold_for). Until the producer accepts
-        # a tile_k -- see .coord/INBOX.md 027/028 -- the only tile_k reachable is the one _tile_k returns, so
-        # this records what was actually built rather than what was wanted.
+        # and the width by the same expression the consumer uses (formats.fold_for). The SAME _tile_k value is
+        # passed to the producer above, so the manifest describes bytes that were actually built -- which was
+        # not true before the *_for_tile ops existed (INBOX 027/028): the producer pinned F=1 whatever this
+        # recorded, and a manifest naming an unbuildable arrangement reads as a capability.
         arr = F.PlacedArrangement(bits=_low_bits(qtype), tile_k=_tile_k(qtype), high_bits=_high_bits(qtype))
         manifest.append({"name": t.name, "dir": stem, "ggml_type": qtype, "type_name": t.tensor_type.name,
                          "n": n, "k": k, "arrangement": arr._asdict(),
