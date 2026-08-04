@@ -106,4 +106,40 @@ endif()
 # The target definitions are UNCHANGED and still live in CMakeLists.txt.in. Including rather than copying keeps
 # one definition of the target set: a second copy is a second place for a target to be added and forgotten,
 # which is the defect this whole refactor is about at the level of files.
+# ---------------------------------------------------------------------------------------------------------
+# THE PPU RUNTIME, LINKED HERE. actlize does it with a DIRECTORY-SCOPED link_libraries(ppu::runtime) at its
+# CMakeLists.txt:284, which reaches its own subdirectories and not ours -- the same scope boundary as the
+# toolchain variables and the device -I list, hit for the third time in this refactor.
+#
+# ppu::driver is NOT enough and the difference is easy to miss: it carries only PPU_HG_WRAPPER_LIB, while
+# ppu::runtime carries hg_wrapper + hggc_wrapper + hggcrt1 + hggc. The example wrapper linked ppu::driver and
+# got the rest from the directory, so copying that wrapper's link list is exactly how you end up with
+# `undefined reference to hggcGetDevice` at the link and nothing wrong anywhere earlier.
+#
+# link_directories matters too: actlize adds PPU_SDK_LIB at :140, also directory-scoped.
+# ---------------------------------------------------------------------------------------------------------
+# EVERYTHING ELSE actlize SETS AT DIRECTORY SCOPE, READ AS PROPERTIES RATHER THAN ENUMERATED.
+#
+# I hit this boundary three times enumerating one item at a time -- the toolchain variables, then the device -I
+# list, then ppu::runtime -- and each time the missing thing failed in a different and later way: an empty
+# COMMAND, a missing header, an undefined symbol. Enumerating a fourth would have missed CMakeLists.txt:410,
+# whose link_libraries() adds the rpath flags and ${CMAKE_DL_LIBS}; that one does not fail at build time at all,
+# it fails at LOAD time when a co-located library is not found.
+#
+# LINK_LIBRARIES, LINK_DIRECTORIES and INCLUDE_DIRECTORIES are DIRECTORY PROPERTIES. Reading them takes whatever
+# actlize accumulated, in order, including anything added later that nobody tells us about. A list here would be
+# a second copy that goes stale silently -- the same defect as the config table with two hand-maintained halves.
+foreach(_prop LINK_LIBRARIES LINK_DIRECTORIES INCLUDE_DIRECTORIES)
+  get_directory_property(_qz_${_prop} DIRECTORY ${QZ_ROOT}/third_party/actlize ${_prop})
+  if(_qz_${_prop})
+    set_property(DIRECTORY APPEND PROPERTY ${_prop} ${_qz_${_prop}})
+  endif()
+endforeach()
+# The linker flags are a plain variable, not a property, so they still need the DEFINITION form.
+get_directory_property(_QZ_EXE_LDFLAGS
+    DIRECTORY ${QZ_ROOT}/third_party/actlize DEFINITION CMAKE_EXE_LINKER_FLAGS)
+if(_QZ_EXE_LDFLAGS)
+  set(CMAKE_EXE_LINKER_FLAGS "${_QZ_EXE_LDFLAGS}")
+endif()
+
 include(${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt.in)
