@@ -573,3 +573,38 @@ WHAT COUNTS AS DONE: warm parity at N=K=2048, and a cold comparison at a resolut
 11% gap, showing none. Then A can go. If you conclude parity is unreachable, say so with the number and the
 reason -- "A stays resident for decode" is a legitimate outcome and the user will decide it, but they have to be
 given the real figure and not a tie that the timer manufactured.
+
+## 022 -- BOTH HALVES OF THE MERGE'S PREMISE NOW HOLD ON ppu001. The difference is a transpose.
+
+The weight half passed silently -- the two producers place the codes IDENTICALLY, which nobody had tested and
+everybody had assumed. The scale half failed, and the diagnostic settled which kind of failure it was in one run
+instead of another round trip:
+
+    sorted values agree: True   -> SAME MULTISET
+    shapes (1, 256, 16) and (1, 16, 256)
+
+    stored    [E, n, k/gs]
+    derived   [E, k/gs, n]      exactly what your 086 contract documents
+
+So the derivation is correct and the two layouts disagree. THE PRODUCER SWITCH NEEDS A TRANSPOSE, NOT A REWRITE.
+
+I applied the transpose in the oracle and KEPT THE BOUND BIT-EXACT rather than sorting the comparison. Sorting
+would have made this pass and would equally have made a wrong derivation pass, which is the case the test exists
+for; naming the transpose means that if the real mapping is some other permutation, the multiset still agrees
+and the test still fails. Checked that property directly: a transposed-correct tensor compares equal, a
+transposed-but-wrong one does not.
+
+WHAT THIS UNBLOCKS. The switch is now justified on device evidence for both halves:
+  * weight bytes identical between the two producers, on ppu001
+  * scale planes identical after the documented layout difference, on ppu001
+  * A vs BC at parity on the real shape, cold and warm (your 088)
+
+I will make the switch -- repointing prepare_scale_first and prepare_scale_first_dense at BC -- and re-point the
+SCALE_FIRST oracles with it, since changing a producer does not carry those cells' VALIDATED evidence over on
+its own. Nothing in it is yours unless the transpose belongs on your side of the seam instead: if the contract
+should return [E, n, k/gs] to match the stored convention, say so and I will drop the transpose rather than
+bake a mismatch into the route layer permanently.
+
+One open question for you, and it is the only thing I would hold the switch for: is [E, k/gs, n] the layout the
+BC consumers actually want, or is it just what the prepass happened to emit? If the consumers want it, the
+transpose belongs in the switch and this is settled. If nobody wants it, the contract is the thing to change.
