@@ -173,13 +173,28 @@ def matmul_scale_first_gemv_moe(a: torch.Tensor, artifact, qtype: int,
     return gguf_gemv_scale_first_moe(a, low, high, scale, zero, offsets, int(qtype))
 
 
-def prepare_scale_first_dense(blocks: torch.Tensor, n: int, k: int, qtype: int):
+def prepare_scale_first_dense(blocks: torch.Tensor, n: int, k: int, qtype: int,
+                              derive_from_bc: bool = True):
     """Offline artifact for SCALE_FIRST/DENSE's fixed fpA tactic: (low, high, scale, zero).
 
-    Same standing as prepare_scale_first: produced from raw today, derivable from the packed units after the
-    merge, and kept until that switch is made on device evidence rather than on local agreement."""
+    DERIVED FROM BC BY DEFAULT since the merge. derive_from_bc=False keeps the original raw producer reachable --
+    not as a fallback but as the INDEPENDENT ARM the oracle compares against: once the derivation is the only
+    path, a test that compares it to itself proves nothing, and this cell's whole history is of a green
+    self-comparison (test_fpA_kquant_dense) that could not see a wrong shared constant."""
     _check_shape(blocks, n, k, qtype)
-    return gguf_prepare_dense(blocks, n, k, int(qtype))
+    if not derive_from_bc:
+        return gguf_prepare_dense(blocks, n, k, int(qtype))
+    # THE MERGE, MADE STRUCTURAL. One producer, one placement, one scale channel: the fp16 planes come out of the
+    # PACKED UNITS rather than out of a second pass over raw. Both halves are verified bit-exact against the old
+    # path on ppu001 -- the code planes, and the scale planes after the accessor's documented transpose is taken
+    # out of the comparison -- so this is the same artifact by a shorter route, not a new one.
+    #
+    # WHY IT MATTERS BEYOND TIDINESS. While this produced from raw, C was a THIRD arrangement that a deployment
+    # had to keep beside raw GGUF and the packed artifact, and weights exist once in HBM. Deriving instead is what
+    # lets the fp16 planes live in a workspace, which is the whole reason the merge was worth doing.
+    low, high, units = _op("gguf_prepare_fully_quantized_dense")(blocks, n, k, int(qtype))
+    scale, zero = dequantize_scale_from_units(units, qtype)
+    return low, high, scale, zero
 
 
 def dequantize_scale_first_dense(artifact, qtype: int) -> torch.Tensor:

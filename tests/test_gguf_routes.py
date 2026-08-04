@@ -426,7 +426,12 @@ def test_packed_unit_scale_derivation_matches_the_scale_first_planes(name, gt, h
     # was assumed throughout. If the two producers place the codes differently then the merge is not a
     # scale-channel change and every conclusion drawn from calling it one is unsupported.
     fq = routes.prepare_fully_quantized_dense(blocks, n, k, qtype)
-    sf = routes.prepare_scale_first_dense(blocks, n, k, qtype)
+    # derive_from_bc=FALSE, AND THIS IS THE POINT OF THE TEST AFTER THE SWITCH. prepare_scale_first_dense now
+    # derives from BC by default, so calling it plainly would compare the derivation against itself -- green,
+    # and evidence of nothing. The raw producer is kept reachable precisely to remain an independent arm, and
+    # this cell's history is exactly why: test_fpA_kquant_dense ran green for a long time comparing the launcher
+    # to another configuration of itself, which is structurally blind to a wrong shared constant.
+    sf = routes.prepare_scale_first_dense(blocks, n, k, qtype, derive_from_bc=False)
     for i, plane in enumerate(("low", "high")):
         a_, b_ = sf[i], fq[i]
         if a_.numel() == 0 and b_.numel() == 0:
