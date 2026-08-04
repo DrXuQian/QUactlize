@@ -79,7 +79,7 @@ void size_one(char const* op) {
             }
 
   std::printf("\n== %s ==\n", op);
-  std::printf("  static-reachable cells (before stage/M smem): %d\n", static_reachable);
+  std::printf("  static-reachable cells (before stage/A-row smem): %d\n", static_reachable);
   std::printf("  ordinary reachable cells at stage 2:         %d\n", ordinary_reachable);
   int ordinary_total = 0;
   std::printf("\n  ordinary TileM-row builds (used at large matrix/expert M and by compact-ineligible collectives)\n");

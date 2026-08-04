@@ -84,7 +84,7 @@ M is runtime-only for the ordinary TileM-row collective. Compact **row capacity*
 per-expert Mmax, not global tokens: the same capacity-1 build serves all three decode points M=1/2/4, and the named
 distribution determines whether capacity 2 or 4 can serve later points.
 
-### L4. Make shared-memory legality path- and M-specific -- **EXACT IMPLEMENTATION FACT**
+### L4. Make shared-memory legality path- and row-capacity-specific -- **EXACT IMPLEMENTATION FACT**
 
 For the ordinary path, A-smem remains `TileM*TileK*2` per stage. For a compact build it is
 `capacity*TileK*2`. Never use the ordinary footprint to exclude a compact cell, and never use the compact footprint
@@ -114,8 +114,8 @@ endpoint, while decode moved to TM16. TileM also trades masked rows and CTA coun
 
 Compact A changes only the small-M premise: there A-smem is `capacity*TK*2`, so TileM is no longer the A-footprint lever.
 That does not authorize pruning TileM. CTA/grid geometry and masked-row work still vary with TileM, and dense M=2
-has not been measured. Thus the repository's TileM record applies directly at M>=64 and remains a warning rather
-than a dominance proof at M<=4. Every TileM stays protected in both regimes.
+has not been measured. Thus the repository's TileM record applies directly wherever the ordinary path is selected
+and remains a warning rather than a dominance proof on compact rows. Every TileM stays protected in both regimes.
 
 The later decode result that TK moved more than all tile knobs does not invalidate this rule.  It applies to one
 decode band, and even there TM16 bought 7.8%; it does not prove that TM is inert at M=64..4096.  Therefore no hard
@@ -179,9 +179,9 @@ shallow path. All three depths are therefore crossed everywhere; none is inferre
 
 For every compact-row timing, record the compiled shared-storage bytes and derived blocks/CU beside time. The
 measured compact-A reduction from 61,840 to 13,456 bytes raised the static limit from 4 to 19 blocks/CU but bought
-no occupancy in one grouped-decode case because the grid/warp tiles were the active limit. Dense M=2 is unknown. Reporting both values
-separates “compact storage made this topology legal” from “compact storage filled the machine”; it is not itself an
-exclusion rule.
+no occupancy in one grouped-decode case because the grid/warp tiles were the active limit. Dense M=2 is unknown.
+Reporting both values separates “compact storage made this topology legal” from “compact storage filled the
+machine”; it is not itself an exclusion rule.
 
 ### H4. Make pruning adaptive, not a one-shot truncated grid -- **BELIEVED process rule**
 
