@@ -1740,3 +1740,48 @@ us in a stronger sense than for them, and the tactic carries correspondingly mor
 
 ORDER: 048's ①②③ first (the .so cannot select anything until it has a set, an enumeration and a switch). The
 heuristic is only useful once there is a set for it to choose from.
+
+## 050 -- THE SIMT GEMV BELONGS IN THE CANDIDATE LIST TOO. This one goes BEYOND TRT-LLM, so it is ours to design.
+
+User's addition to 048/049. And a caveat first, because it changes who decides: I CANNOT verify how TRT-LLM
+selects between its CUDA-core GEMV and its tensor-core GEMM. The local tree at /tmp/trtllm-source.5wQw0R is a
+partial checkout -- cutlass_extensions and kernels/cutlass_kernels only -- and weightOnlyBatchedGemv is not in
+it. What I CAN see is that cutlass_heuristic.cpp's candidate list contains ONLY CUTLASS tile configs. Within
+the code I can read, their tactic system covers the tensor-core half and the GEMV sits outside it, chosen by
+something else. So this is not a copy; it is a design decision we are making, and I am not going to dress it up
+as following a reference.
+
+WHY IT MATTERS MORE FOR US THAN IT WOULD FOR THEM. Our path selection is hard boundaries:
+
+    bc_gemv is taken when  experts == 0 && total_rows == 1     -- an M == 1 rule
+    the record's three-way split is GEMV / split-affine (M 64..256) / dequant+dense (M >= 512)
+
+Both boundaries are ASSERTIONS. Nobody measured where the GEMV stops winning; someone wrote down where they
+believed it does. And the sweep about to run covers M in {1, 2, 4, 64, 2048, 4096}, which straddles both of
+them -- so the measurement that would settle it is already queued and currently cannot be used, because the
+GEMV is not a thing the sweep can select.
+
+This is the same shape as three corrections already made today: a stage scope carried from a sentence rather
+than a measurement, an enumerated guard set with no argument for its members, and bucket edges chosen before
+the data. In each case the fix was to let the thing be measured instead of asserted.
+
+THE STRUCTURAL COMPLICATION, and the reason I am handing it to you rather than proposing an encoding: the
+candidate list stops being homogeneous. A tile config is (TileM, TileN, WarpM, WarpN, Stages); the GEMV has
+different knobs entirely -- rows-per-warp is one (quactlize_cuda_vecdot_rows_per_warp exists), and it has no
+TileN or Stages at all. TRT-LLM's CutlassGemmConfig is a struct around a tile_config enum and would not hold
+this. So the enumeration from 048 ② needs to return something that can describe BOTH, and the switch in ③ needs
+a GEMV arm. Whether that is a tagged union, an enum whose first N values are GEMV variants, or two lists the
+profiler concatenates, is yours -- you know what the launcher can carry.
+
+WHAT I WOULD ASK FOR REGARDLESS OF THE ENCODING:
+
+  * the GEMV entries must be enumerable and selectable by the SAME call as the tile configs, or the tuner ends
+    up with two selection procedures and a hand-written boundary between them -- which is what we are removing.
+  * a config's identity must say which family it is, so a tactic table naming a GEMV variant cannot be read as
+    a tile and silently matched to the wrong arm.
+  * the M-based fallback rule stays as the heuristic floor (049), because a table can be absent. But it should
+    be the FLOOR, not the decision, and the moment a table exists it should be overridden -- including at
+    M == 1, where the current rule is not a preference but a hard branch.
+
+ORDERING against 048/049: this changes what ② enumerates and what ③ switches on, so it is cheaper to design in
+than to retrofit. If you are already mid-way through 048, say so and I will not push it into that change.
