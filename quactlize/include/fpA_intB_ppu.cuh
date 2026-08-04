@@ -106,6 +106,21 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
       ElementBInfo, LayoutB, AlignmentB, ElementAccumulator,
       cute::tuple<TileShape, ScaleTileShape>, ClusterShape, cute::Int<Stages>, KernelSchedule>::CollectiveOp;
 
+  if constexpr (CollectiveMainloop::compact_a_rows > 0) {
+    if (m > CollectiveMainloop::compact_a_rows) {
+      std::printf("[fpA_intB] compact A holds %d rows, got M=%d; select the ordinary A path or a wider compact build\n",
+                  CollectiveMainloop::compact_a_rows, m);
+      return false;
+    }
+  }
+#if defined(PPU_A_CPASYNC) && (PPU_A_CPASYNC != 0)
+  if constexpr (CollectiveMainloop::compact_a_rows == 0) {
+    std::printf("[fpA_intB] PPU_A_CPASYNC=%d is unavailable for this selected collective; A remains TileM rows\n",
+                int(PPU_A_CPASYNC));
+    return false;
+  }
+#endif
+
   // FULLY_QUANTIZED is an INSTANTIATION of the shared mainloop, not a dense-specific decoder. Make that selection
   // compile-time observable at its call site: a flagged binary that accidentally falls back to fp16 scale planes
   // must fail to build instead of accepting packed bytes through the half pointer and producing plausible garbage.

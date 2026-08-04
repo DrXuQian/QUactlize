@@ -183,12 +183,13 @@ void launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
                   100.0 * a_bytes / double(GemmKernel::SharedStorageSize),
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
                   "A in smem, PACKED cubes, cp.async row0 + swzl read"
-#elif defined(PPU_A_CPASYNC) && (PPU_A_CPASYNC != 0)
-                  "A in smem, ONE row, plain cp.async + DefaultCopy"
 #else
-                  "A in smem via AIU + swzl"
+                  CollectiveMainloop::compact_a_rows > 0
+                    ? "A in compact smem rows, plain cp.async + DefaultCopy"
+                    : "A in smem via AIU + swzl"
 #endif
       );
+      std::printf("[moe_grouped]   compact A row capacity = %d\n", CollectiveMainloop::compact_a_rows);
       std::printf("[moe_grouped]   blocks/CU at 256 KB = %d\n", 262144 / int(GemmKernel::SharedStorageSize));
     }
   }
@@ -236,8 +237,6 @@ void launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   // STRIDES FROM k_full, SHAPES FROM k -- see the k_full parameter. Getting this backwards makes every
   // slice after the first walk gmem with a shrunken row pitch and read the wrong rows entirely.
   StrideA sA = cutlass::make_cute_packed_stride(StrideA{}, cute::make_shape(m, k_full, L));
-  // PPU_A_CPASYNC needs Mmax == 1: A's SMEM tile has a stride-0 M mode there, so every row of the tile aliases onto
-  // the one real row. At M_e > 1 rows 1..M_e-1 are real and would read row 0's data instead.
   // PPU_A_PACK: A's cubes overlap in smem and only row 0 of each carries data, so rows 1..TileM-1 read a
   // neighbour's bytes. Sound only where those rows are discarded, i.e. Mmax == 1.
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
@@ -247,9 +246,20 @@ void launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
     return;
   }
 #endif
+  if constexpr (CollectiveMainloop::compact_a_rows > 0) {
+    if (m > CollectiveMainloop::compact_a_rows) {
+      std::printf("[moe_grouped] compact A holds %d rows, got Mmax=%d; select the ordinary A path or a wider compact build\n",
+                  CollectiveMainloop::compact_a_rows, m);
+      ++moeg_fail_count();
+      return;
+    }
+  }
 #if defined(PPU_A_CPASYNC) && (PPU_A_CPASYNC != 0)
-  if (m > 1) {
-    std::printf("[moe_grouped] PPU_A_CPASYNC requires Mmax <= 1, got %d (A's smem tile is one row, aliased in M)\n", m);
+  if constexpr (CollectiveMainloop::compact_a_rows == 0) {
+    // Folded and two-plane collectives do not yet implement the compact A reader. Make the inactive macro visible
+    // instead of letting a build claim an M-dependent footprint it did not instantiate.
+    std::printf("[moe_grouped] PPU_A_CPASYNC=%d is unavailable for this selected collective; A remains TileM rows\n",
+                int(PPU_A_CPASYNC));
     ++moeg_fail_count();
     return;
   }

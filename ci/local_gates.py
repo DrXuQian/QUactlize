@@ -60,6 +60,7 @@ GATES = [
     # Does a different configuration actually give a different LOW-plane layout? Answers a contradiction
     # between layouts.py xplane() and l61, and produces the prune table.
     ("l105_low_plane_config_classes", []),
+    ("l106_compact_a_rows", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -89,6 +90,10 @@ SYNTAX = [
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_SCALE_PAD=8"),
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_B_DEQUANT_NOP=1"),
     ("tests/test_moe_grouped_verify.cu", ""),
+    # The VALUE is the compact A row capacity. All three small-M specialisations must instantiate the full
+    # collective; testing only the historical boolean value 1 would leave the new hierarchical layout dead.
+    *[("tests/test_moe_grouped_verify.cu", f"-DPPU_A_CPASYNC={r}") for r in (1, 2, 4)],
+    ("tests/test_fpA_intB_ppu.cu", "-DPPU_A_CPASYNC=4"),
     ("tests/test_moe_grouped_real.cu", ""),
     ("benchmarks/test_moe_splitk_bench.cu", ""),
     ("benchmarks/test_moe_splitk_bench.cu", "-DPPU_PACKED_SCALE=1"),
