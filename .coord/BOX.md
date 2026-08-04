@@ -70,7 +70,10 @@ These are correctness and inspection, not tactic sweeps, so the hold above does 
    and the distinct per-layer (n, k). For the 122B ALSO the serving TP convention -- which axis the 2-card split
    halves -- because both conventions exist and assuming one tunes a GEMM that never runs.
 
-3. **HELD AT THE USER'S REQUEST (2026-08-04): "还是等你完全支持之后我一个一个跑吧".** They would rather wait
+3. **SUPERSEDED BY ENTRY 4 -- the two gaps named here are closed.** Kept for the reasoning only.
+   (was: HELD at the user's request, "还是等你完全支持之后我一个一个跑吧")
+
+   ORIGINAL NOTE: They would rather wait
    for the complete thing than spend a round on a half-ready one, which is the right call -- the two gaps below
    are exactly the kind that make a first look misleading rather than merely incomplete. Kept here because the
    command is correct and only the harness underneath it is not; when the two gaps close this moves to OPEN and
@@ -113,6 +116,41 @@ These are correctness and inspection, not tactic sweeps, so the hold above does 
    THE DENSE HALF IS NOT READY. bench_cutlass_w4a16.cu carries 17 hand-written configs plus a hand-written
    dispatch macro with one line per config; the pruned i4 set is 110 shapes. Generating that list is the next
    piece of work and it is mine, not codex's.
+
+4. **THE SWEEP. Ready to run one shape at a time, as the user asked.** Everything the earlier HELD note was
+   waiting for has landed: the ragged distribution is pinned (mode 4, `token-topk-hot16x4-wor-sm64-s44-v1`, with
+   Mmax derived by the router rather than asserted -- ladder 1/2/3/12/239/447 across the six token counts, so
+   compact A capacities 1/2/4 cover exactly the three decode points); both benches select by MEDIAN over
+   interleaved repeats with a [min,max] band and report TIES instead of naming a winner inside the noise; the
+   dense config table is generated from the shared tactic rules rather than 17 hand-written rows.
+
+   DO NOT TYPE THE SHAPES. They are derived from the three target models and the standard TP split:
+
+       cd /sim/eec/shared/junfu.qx/quactlize && git pull --recurse-submodules
+       python3 benchmarks/fixtures.py                     # the table: which shapes and why
+       python3 benchmarks/fixtures.py --emit moe          # 24 runnable lines
+       python3 benchmarks/fixtures.py --emit dense        # 66 runnable lines
+
+   SHAPES FIRST, and this is codex's stated blocker: the numbers above come from each model's config.json, not
+   from the checkpoints we load. Confirm them before spending a sweep on them (entry 2 above).
+
+   RUN ONE, THEN LOOK:
+
+       MOE_FORMATS="i4" TARGET=test_lowbit_moe_bench ./build.sh
+       BIN=$(find third_party/actlize/build_w4a16_compare -type f -name test_lowbit_moe_bench -perm -u+x -print -quit)
+       export BENCH_JSONL=~/sweep.jsonl
+       # ...one line from `--emit moe`, e.g. the 4096-token expert_gate shape...
+       python3 benchmarks/analyse.py ~/sweep.jsonl
+
+   BENCH_JSONL is what makes the run analysable: the bench emits one sample per (fixture, config, pass) and
+   analyse.py decides. Without it the run still prints a table, and the 13% cross-run spread is consumed rather
+   than left on disk -- so "was that separation real?" would need a new run instead of a second look at a file.
+
+   MOE_REPS / BENCH_REPS default to 5. Setting either to 1 is allowed and the banner then says the output is
+   NOT a ranking, because it cannot be.
+
+   WANTED: the .jsonl (or analyse.py's output). The interesting line is not the leader -- it is whether
+   anything TIES it. A tie is a guard that has to be expanded before the winner is a winner.
 
 
 **WHEN SOMETHING IS RED, PASTE THIS.** No arguments, safe any time, output sized for a chat message:
