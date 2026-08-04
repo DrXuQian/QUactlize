@@ -110,12 +110,27 @@ def test_transient_planes_are_allowed_because_a_workspace_is_not_storage():
     The row counts are BELOW DENSE_CROSSOVER_ROWS on purpose. At 2048 this used to read fused_fp16_scale and now
     reads dequant_then_dense, because populating that capability set activated a branch that had always been there
     -- so the original 2048 would have kept passing while testing a different claim. The claim here is about
-    planes_ok, and it needs a row count where the plane-consuming path is the one under test."""
-    assert select_path(QuantType.Q3_K, 256, fp16_planes="workspace") == "fused_fp16_scale"
+    planes_ok, and it needs a row count where the plane-consuming path is the one under test.
+
+    AND IT HAPPENED A SECOND TIME, to this test, for the same reason. Q3_K used to reach fused_fp16_scale here
+    because it was not in FUSED_NATIVE_SCALE; the nine ppu001 promotions put all five k-quants in that set, so it
+    now routes native -- correctly, since native materialises NOTHING and this test's whole subject is the cost
+    of materialising. The old line would have gone on passing only while Q3_K stayed unsupported, which is a
+    strange thing for a test to depend on.
+
+    So the case that carries the claim is now the one BELOW: a format whose native channel is unavailable, which
+    is the only remaining way to need transient planes. Populating a capability set is a DISPATCH CHANGE, and
+    this file has now recorded two of them."""
+    assert select_path(QuantType.Q3_K, 256, fp16_planes="workspace") == "fused_native_scale"
     assert select_path(QuantType.Q4_K, 128, native_scale_available=False,
                        fp16_planes="workspace") == "fused_fp16_scale"
+    # THE REFUSAL, and its premise moved for the same reason as the line above. This used to be
+    # select_path(Q3_K, 2048, fp16_planes="never") -- it raised because Q3_K had no native channel, so "never
+    # materialise" left nothing. With all five k-quants native it no longer raises, CORRECTLY: native
+    # materialises nothing, so the request is satisfiable. The property is still worth pinning, so it is pinned
+    # where it can still be false -- native unavailable, planes forbidden, and no path left.
     with pytest.raises(NotImplementedError):
-        select_path(QuantType.Q3_K, 2048, fp16_planes="never")
+        select_path(QuantType.Q3_K, 2048, native_scale_available=False, fp16_planes="never")
 
 
 def test_a_format_whose_scales_are_already_fp16_needs_no_special_pleading():

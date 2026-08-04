@@ -60,8 +60,12 @@ HARNESS_PATHS = {
     # THE FIRST EVIDENCE FOR dequant_then_dense. Until this existed DENSE_P appeared in the path vocabulary and in
     # no harness at all, which is the honest state of a route whose host side was never wired -- and check_against_
     # formats() said nothing, because formats.DEQUANT_THEN_DENSE was empty too. Two empty sets agree.
+    # NATIVE_P joined when the packed dense and grouped GEMMs gained oracles in this same file --
+    # test_fully_quantized_dense/grouped_matches_dequant_first_and_rejects_fault, each comparing against
+    # matmul_dequant_first through official gguf semantics, with a planted SCALE-UNIT fault required to fail
+    # first. Declaring it is what lets nine newly VALIDATED cells rest on something rather than on nothing.
     "test_gguf_routes": [DENSE_P, SCALE_GEMV_P, SCALE_GEMV_MOE_P, NATIVE_GEMV_P, NATIVE_GEMV_MOE_P,
-                         SCALE_ARTIFACT_P, SCALE_DENSE_ARTIFACT_P],
+                         SCALE_ARTIFACT_P, SCALE_DENSE_ARTIFACT_P, NATIVE_P],
 }
 
 # harness -> (formats it covers, oracle kind, fixture it must read or None, note)

@@ -142,7 +142,12 @@ FUSED_FP16_SCALE: FrozenSet[QuantType] = frozenset({
 })
 
 #: the fused GEMM reading the format's OWN scale bytes, no fp16 planes
-FUSED_NATIVE_SCALE: FrozenSet[QuantType] = frozenset({QuantType.Q4_K})
+# ALL FIVE SINCE 2026-08-04. This was Q4_K alone while the packed collective had only a Q4_K unit; the other
+# four reached VALIDATED on ppu001 for dense AND grouped, so the DISPATCHER may route them. The set says what
+# may be routed, not what is proven -- ci/registry.py answers the second question, and conflating them would
+# either bar a working path from use or let an unproven one look proven.
+FUSED_NATIVE_SCALE: FrozenSet[QuantType] = frozenset({
+    QuantType.Q2_K, QuantType.Q3_K, QuantType.Q4_K, QuantType.Q5_K, QuantType.Q6_K})
 
 #: dequantise to fp16 then a dense GEMM. Wins above roughly M=512, where the weight read stops dominating.
 #:
