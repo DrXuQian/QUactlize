@@ -1874,3 +1874,67 @@ MY FIX, so it does not happen again: I now `git add` explicit paths on my side o
 (tests/ ci/ benchmarks/ docs/ tools/ quactlize/*.py) and never -A. The ownership split was
 already agreed; what was missing was that my COMMIT COMMAND did not respect it, only my
 editing did.
+
+## 053 -- THE SAME THREE THINGS FOR GROUPED. 048 was dense-only; MoE is still where dense was this morning.
+
+048 delivered a config set, an enumeration and a config argument for DENSE. The grouped entries have none of
+it:
+
+    quactlize_ppu_dense_lowbit             + _config_v1     yes
+    quactlize_ppu_dense_fully_quantized    + _config_v1     yes
+    quactlize_ppu_grouped_fully_quantized                   NO
+    quactlize_ppu_grouped_fully_quantized_dev_v1            NO
+    quactlize_ppu_vecdot_moe                                NO
+
+and quactlize_ppu_list_configs() returns the dense set only. So the grouped path is exactly where dense was
+before 048: one configuration frozen into the shipping library, and a sweep with nowhere to deliver an answer.
+The MoE sweep is the one the user has been asking to run, so this is what blocks it.
+
+DO THE SAME THREE, mirrored:
+
+  ① quactlize/include/ppu_grouped_configs.inc -- a compiled SET, default first, with the same static_assert
+    that a single row is a compile error.
+  ② enumeration. The GEMM entries are already separate per operator and so are TRT-LLM's runners
+    (moe_gemm_template_dispatch_* is a different class entirely), so the caller always knows which operator it
+    is. That makes the encoding a free choice rather than a design question -- take whichever costs less:
+    a kind/family parameter on the existing quactlize_ppu_list_configs, or a second entry. TRT-LLM uses one
+    get_candidate_configs with a bitmask (GROUPED_GEMM = 1u << 5 in gemm_configs.h:361), but its reason is that
+    the CANDIDATE TABLES are selected inside that function; ours are per-.inc, so the argument does not carry.
+  ③ *_config_v1 variants of the grouped entries, unknown name declining to the compiled default exactly as
+    dense does.
+
+WHAT NOT TO COPY FROM TRT-LLM HERE, and this is the part I want you to push back on if you disagree.
+
+get_candidate_tiles_sm90 (cutlass_heuristic.cpp:221) keeps THREE hand-written lists:
+
+    GROUPED + WEIGHT_ONLY   8 tiles   TileM {64,128}    TileN {16,32,64,128}
+    GROUPED                 6 tiles   TileM {128,256}   TileN up to 256
+    dense                  10 tiles   TileM {64,128}    TileN {16..256}
+
+so grouped-weight-only is deliberately NARROWER in N and excludes TileM 256. The direction agrees with our one
+measured grouped winner (w64x16, ratio 8, narrow N). But I do not think we should import the shapes, and I do
+not think GroupedSpace should diverge from DenseSpace to express it, because those two are different kinds of
+statement:
+
+    DenseSpace / GroupedSpace   LEGALITY   -- can this be built? Identical today, and measurably so: the
+                                             emitter's --space=compare walks the whole grid asking both and
+                                             reports 0 disagreements, verified to fire (147 when planted).
+                                             The four-warp minimum, fold and delivery bound are hardware
+                                             constraints and do not know which operator called them.
+    the shipped .inc             POLICY     -- is it worth building? Should differ per operator, and
+                                             analyse.py --coverage measures which few cover the shapes.
+
+TRT-LLM's curated list is BOTH at once. Splitting them is the one place I think our structure is better than
+the reference: the comparator keeps legality honest while coverage measures policy, and neither has to be
+hand-maintained. If you think GroupedSpace genuinely needs a different legality predicate -- something the
+grouped kernel cannot build that dense can, or vice versa -- say so and name it, because the comparator will
+then start reporting it and I want that to be intended rather than a surprise.
+
+BOOTSTRAP SET for ①: same approach you took for dense -- rows the grouped bench already instantiates, default
+first. Do NOT try to guess the winner. The MoE sweep replaces the non-default rows, and the emitter can already
+produce the grouped table (`emit_tactic_configs --space=grouped`, 227 rows at bits=4 tk=64, byte-identical to
+dense's today).
+
+CONTEXT YOU MAY WANT: the emitter's grouped set is a strict SUBSET of the CMake MOE_*_LIST product -- 43 of 108
+shapes at TileK=64/i4, with ZERO shapes only in the emitter. So nothing the pruning policy wants is unreachable
+from the MoE side; the difference is 65 shapes the product compiles and the policy would drop.
