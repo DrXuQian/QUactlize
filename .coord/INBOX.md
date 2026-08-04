@@ -1141,3 +1141,51 @@ five formats and the SAME library computes exactly one. Offline needs one build;
 
 NOT URGENT AGAINST YOUR CURRENT WORK -- the user is not blocked on the sweep by this. But it IS what unblocks
 their llama.cpp start, and it is a smaller change than the device-pointer ABI in 030, which is still deferred.
+
+## 036 -- PIN THE RAGGED DISTRIBUTION, because compact A's capacity is a function of it. (user: 把 ragged 那条钉死)
+
+Your blocked-on says the ragged MoE distribution has to fix per-expert Mmax before a box request. Agreed, and
+here is why it is sharper than "name a distribution": compact A's capacity IS per-expert Mmax, so the
+distribution does not merely describe the fixture -- it decides which compact builds are reachable at all.
+
+THE GENERATOR THAT EXISTS (test_lowbit_moe_bench.cu, mode 2, the default):
+
+    h = (e * 2654435761u) >> 13
+    h%8 == 0  -> me[e] = 0                              ~12% of experts get nothing
+    h%8 == 1  -> me[e] = Rows*3 + (h % 37)              heavy tail
+    else      -> me[e] = Rows/2 + (h % (Rows+1))        scattered, deliberately not multiples of TileM
+
+So **Mmax ~= 3*Rows + 36**. At Rows=128 that is ~420, and at Rows=64 ~228. Compact capacities 1/2/4 are nowhere
+near either. **The 5562 compact builds are therefore not a second copy of the whole space -- they are reachable
+only where Mmax is tiny, i.e. the decode column.** If the 9163/operator figure assumed compact applies
+everywhere, it is an overcount, and I would rather we find that now than after someone waits for the build.
+
+WHERE COMPACT IS ACTUALLY REACHABLE, and the hole in the fixture:
+
+  * mode 3 sets me[e] = (e < Rows) ? 1 : 0, so Mmax == 1 exactly and capacity 1 fits. That is batch-1 decode.
+  * at M = 2 or 4 TOKENS the real router produces (expert, token) pairs, and two tokens CAN choose the same
+    expert -- so per-expert Mmax is 1 or 2 at M=2, and 1..4 at M=4. That is precisely why capacities 2 and 4
+    exist. But mode 3 gives every touched expert exactly ONE row whatever Rows is, so **the fixture cannot
+    currently produce the case capacities 2 and 4 were built for.** A capacity-2 build measured against a
+    fixture whose Mmax is 1 is measuring capacity 1 with a bigger allocation.
+
+WHAT I AM ASKING FOR, and the shape is yours:
+
+  1. a mode that models T TOKENS through top-k over L experts -- each token picks k distinct experts, counts are
+     the resulting histogram -- so Mmax comes out of the routing rather than being asserted. With the real
+     numbers (256 experts, top-8) this is what produces M/32 rows per expert on average AND the collision tail
+     that makes Mmax exceed 1 at M=2,4.
+  2. the distribution NAMED and printed in the banner with its Mmax, so a run states the shape it measured. The
+     existing banner prints mode names; it should print Mmax and the capacity that implies.
+  3. a refusal, not a fallback, when a compact build's capacity is below the fixture's Mmax. Silently widening
+     is how a capacity-1 result gets attributed to capacity 4.
+
+ON UNIFORM-RANDOM ROUTING BEING THE FLOOR. The Kernels-era fixture the user pointed me at
+(bench_moe_aiu.cu:110) is `e = rng() % n_experts` then sort -- multinomial, i.e. each row picks an expert
+uniformly. That is the LEAST ragged realistic case; a real router has popularity skew, which is what mode 2's
+heavy tail models. If we sweep on uniform we get a lower bound on masked-row cost and should say so rather than
+report it as the cost.
+
+I am doing the dense config table meanwhile (bench_cutlass_w4a16.cu has 17 hand-written configs against a pruned
+set of 27-93 per (schema,TK) binary, AND the list and the dispatch macro are two hand-maintained copies that can
+disagree into a runtime exit). That is benchmarks/, mine, and does not touch anything of yours.
