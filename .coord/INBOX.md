@@ -1537,3 +1537,50 @@ settle is unchanged -- the same command line is not the same binary until hgcc h
 
 The INBOX gate says you are one item behind (044). No action needed if you are mid-implementation; it is there
 so "has it read this" stays visible rather than guessed.
+
+## 046 -- THE DELIVERED HARNESS MUST CALL THE SHIPPING PATH: fully-quantized prefill, not dequant+cuBLAS. Plus CUDA graphs.
+
+The user's direction after reading the patch: correctness is validated, so the version we deliver should be the
+call path we actually intend, not the one that was convenient to validate with.
+
+  * DECODE stays exactly as you built it -- BC GEMV on ggml's device pointer and stream. Unchanged.
+  * PREFILL must use the FULLY-QUANTIZED quantized matmul, not recover -> dequantize -> F16 cuBLAS. That is
+    quactlize_ppu_dense_fully_quantized / _grouped_fully_quantized reading (low, high, units) directly.
+  * CUDA graphs must work, rather than being disabled.
+
+ONE ABI GAP FIRST, because it blocks the prefill change. quactlize_ppu_device.h exports _dev_v1 for
+vecdot_dense and bc_gemv only -- the GEMV side. The two fully-quantized GEMM entries are still the HOST-pointer,
+allocating, synchronising ones (ppu_dense_backend.cu:41-68). They need the same treatment you gave the GEMV
+path: device pointers in, caller's stream, no allocation, no sync, no copies.
+
+AND THE HONESTY REQUIREMENT, which matters more than either. The fully-quantized GEMM is the PPU TENSOR-CORE
+path; the user said at the outset it cannot be validated on the local CUDA machine because PPU PTX does not run
+there. So on CUDA the prefill branch WILL NOT EXECUTE. It must therefore SAY SO -- print the reason and decline
+-- and must NOT silently fall back to dequant+cuBLAS. A silent fallback would leave the harness reporting a
+successful run of a path that never ran, and "validated" would then be false for exactly the branch we ship.
+Keep the recover/dequantize code if you like it as a cross-check, but behind an explicit switch that names
+itself in the log, never as the automatic degradation.
+
+CUDA GRAPHS. Everything non-capturable is in two places and the steady state is already clean:
+  * the cache-miss fill (D2H, cudaStreamSynchronize, cudaMalloc, H2D) -- runs ONCE per weight;
+  * cudaStreamWaitEvent(entry->ready) on the HIT path, which is illegal during capture because the event was
+    recorded outside the graph.
+Three changes, and the third is not optional:
+  1. the fill happens during PREFILL, which llama.cpp does not capture, and prefill touches every layer's
+     weights (mul_mat_id touches every expert). By the time decode starts capturing, every entry is warm.
+  2. drop the event wait once an entry is ready -- after the fill's own synchronise it adds nothing, and it is
+     the one thing on the hit path a capture rejects.
+  3. GUARD WITH cudaStreamIsCapturing. If a stream is capturing and the entry is cold, DECLINE (return false,
+     fall through to stock) rather than filling. A synchronous copy and a cudaMalloc inside a capture are not
+     an error -- they are UNDEFINED BEHAVIOUR, and the plausible outcome is a captured graph missing operations
+     that then replays wrong numbers on every decode. Wrong-but-not-crashing is the one failure this harness
+     must not be able to produce.
+
+FOR THE RECORD, your current choice was not laziness and I said so to the user: disabling graphs is the right
+call for a harness whose whole purpose is correctness. This request changes it because the deliverable is now
+the shipping shape, and it reintroduces exactly the class of risk you avoided -- which is what (3) is for.
+
+WHAT ONLY ppu001 CAN SETTLE, and it should be stated in the harness's own banner rather than discovered: the
+fully-quantized prefill branch is unvalidatable on CUDA. Everything you have already shown -- byte-exact round
+trips for Q2_K..Q6_K, the real Qwen2.5-3B greedy first token matching stock, the synthetic grouped comparisons
+-- covers the shuffle, the recovery and the GEMV. It does not cover the branch this change makes primary.
