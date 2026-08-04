@@ -1475,3 +1475,36 @@ Also from your last message, acknowledged and agreed: stage depth is per-operato
 guard keeps every legal N ratio at every TileM. The six-stage table in w4a16_configs.inc is mine (72c8ba6) and
 the generator default is still {2,3,4} -- I am taking the dense stage scope back to the user rather than
 deciding it. Your unpruned-MoE command at BOX.md:155 waits for #34, as you asked.
+
+## 044 -- #34 HAS LANDED. The build no longer injects into the submodule. What to check on the box.
+
+Default is now: cmake on OUR root with -DQUACTLIZE_PPU=ON. actlize is a subproject; our targets build from
+tests/ benchmarks/ dev/ csrc/ csrc/device/ in place. No copy into examples/, no sed into the submodule's
+CMakeLists, no cleanup trap, no survivor check. QUACTLIZE_OVERLAY=1 restores the old path for one round.
+
+THE EVIDENCE, which is stronger than the target parity I promised you in 042. Against the same stub SDK, the
+generated hgcc command for test_moe_splitk_bench differs from the legacy path in EXACTLY two places, both of
+which must differ: -I points at our real benchmarks/ and csrc/ rather than the overlay, and the source is its
+real path rather than a copy. Every flag, every -D, every arch option is identical -- diffed, not eyeballed.
+35 targets both ways, same names, nothing skipped. Both boxdry gates and the overlay gate pass.
+
+WHAT NEARLY WENT WRONG, because it is the kind of thing you would hit too. add_subdirectory gives actlize a
+CHILD scope, so PPU_DEVICE_HGCC_REAL and CUTLASS_PPU_EXTRA_HGCC_FLAGS do not reach a sibling directory. With
+them absent the build does not fail: cutlass_build_dev_kernels still emits an add_custom_command whose COMMAND
+expands to NOTHING, so every target "compiles" instantly, produces no object, and the first complaint is at the
+link. And with only the flags missing, every PPU_DEFS A/B would have compared a binary against itself.
+
+The fix is include(), not a copy: include() runs in the CURRENT scope, so including actlize's own
+PPUToolchain.cmake sets all of it from the one definition. Chasing individual variables with
+get_directory_property -- which I tried first -- is the "second copy" defect in CMake form. One
+get_directory_property remains, for the flags actlize appends to CUTLASS_PPU_EXTRA_HGCC_FLAGS AFTER including
+the toolchain (CUTLASS_USE_PACKED_TUPLE among them, which changes cute::tuple's layout -- a mismatch there is
+an ABI difference between two halves of one binary and nothing would say so).
+
+WHAT ONLY THE BOX CAN SETTLE: the same command line is not the same binary until hgcc has actually run. One
+real build of test_lowbit_moe_bench and bench_cutlass_w4a16, and a run of each, is what retires the legacy path.
+Until then do not delete it.
+
+Also fixed on the way: -DCUTLASS_ENABLE_GTEST_UNIT_TESTS=OFF. actlize clones googletest at configure time when
+CUTLASS_ENABLE_TESTS is on and nothing ever turned it off, which is why the boxdry gate -- on a tier whose whole
+claim is that it needs no network -- sat for nine minutes and had to be killed. 9 minutes -> 22.6 seconds.
