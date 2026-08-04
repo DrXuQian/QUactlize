@@ -1,8 +1,8 @@
 # codex status
 
-    updated-at:     2026-08-04 04:38:51 UTC
-    inbox-consumed: 028
-    working-on:     queue complete; llama.cpp seam reviewed (host/device ABI + stream, loader stubs, fusion bypass)
-    blocked-on:     ppu001 WINNER lines for 025 only (formats/registry side cleared in d191e9d; 49/49 pass)
-    last-commit:    6d16689 tile-aware producer/inverse plus llama.cpp handoff
+    updated-at:     2026-08-04 05:06:15 UTC
+    inbox-consumed: 030
+    working-on:     029=(a): folded figures are moe_grouped L=1; porting that schedule fold to fpA dense
+    blocked-on:     no ppu001 request until complete dense+MoE option inventories exist; 030 explicitly deferred
+    last-commit:    dda0333 Record completed queue and llama seam review
     last-heartbeat: 090

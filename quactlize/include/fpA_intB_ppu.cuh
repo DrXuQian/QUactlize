@@ -37,6 +37,7 @@
 #include "cutlass/gemm/device/gemm_universal_adapter.h"
 #include "cutlass/gemm/kernel/gemm_universal.hpp"
 #include "cutlass/util/packed_stride.hpp"
+#include "fold_traits.hpp"
 
 #include "ppu_include.hpp"
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
@@ -124,9 +125,29 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
   using StrideD = typename GemmKernel::StrideD;
   using StrideS = typename CollectiveMainloop::StrideScale;
 
+  // The same minimum-delivery fold the grouped consumer uses. A folded resident B is physically
+  // (N/F, F*K), so both the schedule selected by dispatch_gs() and this gmem stride must name F. Before this
+  // existed the so-called dense int1/int2 folded measurements were actually grouped launches at L=1.
+  constexpr int P1_BITS = cutlass::sizeof_bits<ElementB>::value;
+  constexpr int TKv = int(cute::size<2>(TileShape{}));
+  constexpr int P1_RUN = TKv * P1_BITS / 8;
+  constexpr int P1_FOLD = fold::delivery_fold_v<P1_BITS, TKv>;
+  static_assert(fold::warp_shape_ok<int(cute::size<0>(TileShape{})), int(cute::size<1>(TileShape{})),
+                                    int(cute::size<0>(WarpShape{})), int(cute::size<1>(WarpShape{}))>,
+                "fpA dense: warp tile must divide the block tile and use at most 16 warps");
+  static_assert(fold::CheckDelivery<P1_BITS, cute::size<1>(TileShape{}), cute::size<2>(TileShape{}),
+                                    cute::size<0>(WarpShape{}), cute::size<1>(WarpShape{})>::ok,
+                "fpA dense low plane: swzl over-delivers at this warp shape");
+  static_assert(fold::CheckDelivery<(std::is_void_v<PlaneB2> ? 0 : cutlass::sizeof_bits<
+                                        std::conditional_t<std::is_void_v<PlaneB2>, cutlass::half_t, PlaneB2>>::value),
+                                    cute::size<1>(TileShape{}), cute::size<2>(TileShape{}),
+                                    cute::size<0>(WarpShape{}), cute::size<1>(WarpShape{})>::ok,
+                "fpA dense high plane: swzl over-delivers at this warp shape");
+
   const int scale_k = (k + group_size - 1) / group_size;
   StrideA sA = cutlass::make_cute_packed_stride(StrideA{}, cute::make_shape(m, k, 1));
-  StrideB sB = cutlass::make_cute_packed_stride(StrideB{}, cute::make_shape(n, k, 1));
+  StrideB sB = cutlass::make_cute_packed_stride(
+      StrideB{}, cute::make_shape(n / P1_FOLD, k * P1_FOLD, 1));
   StrideD sD = cutlass::make_cute_packed_stride(StrideD{}, cute::make_shape(m, n, 1));
   StrideC sC = cutlass::make_cute_packed_stride(StrideC{}, cute::make_shape(m, n, 1));   // [F3]
   StrideS sS = cutlass::make_cute_packed_stride(StrideS{}, cute::make_shape(n, scale_k, 1));
@@ -141,18 +162,14 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
   };
   if constexpr (!std::is_void_v<PlaneB2>) {
     args.mainloop.ptr_B2 = B2;
-    // The active dense tactics use TK=256 for Q2-Q5 and TK=128 for Q6; every selected second plane has at least a
-    // full 32-byte run, so neither folds. Keep the override here nonetheless: it makes a future narrower tactic fail
-    // correctly instead of reading a second-plane buffer with the first plane's row pitch.
-    constexpr int P1_BITS = cutlass::sizeof_bits<ElementB>::value;
+    // Plane 2 derives its OWN minimum fold from (bits,TK), just as grouped does. This is a stride reinterpretation
+    // in addition to the scheduler-level LOW-plane fold: they are separate mechanisms even when both values are
+    // called F. Reusing dB is correct only when the two planes have the same physical row pitch.
     constexpr int P2_BITS = cutlass::sizeof_bits<PlaneB2>::value;
-    constexpr int TKv = int(cute::size<2>(TileShape{}));
-    constexpr int P1_RUN = TKv * P1_BITS / 8;
-    constexpr int P1_FOLD = P1_RUN >= 32 ? 1 : 32 / P1_RUN;
-    constexpr int P2_RUN_AFTER_P1 = P1_RUN * P2_BITS / P1_BITS;
-    constexpr int P2_FOLD = P2_RUN_AFTER_P1 >= 32 ? 1 : 32 / P2_RUN_AFTER_P1;
-    static_assert(P1_FOLD == 1,
-                  "fpA dense currently consumes unfolded low planes; choose TK large enough for a 32-byte run");
+    constexpr int P2_RUN = TKv * P2_BITS / 8;
+    constexpr int P2_FOLD = fold::delivery_fold_v<P2_BITS, TKv>;
+    static_assert(P2_RUN * P2_FOLD >= 32,
+                  "fpA dense high plane: derived fold must reach one 32-byte AIU delivery");
     if constexpr (P2_FOLD > 1) {
       args.mainloop.dB2 = cutlass::make_cute_packed_stride(
           StrideB{}, cute::make_shape(n / P2_FOLD, k * P2_FOLD, 1));
@@ -176,6 +193,11 @@ bool dispatch_gs(const cutlass::half_t* A, const ElementB* B, const cutlass::hal
                  int split_k, char* ws, size_t ws_bytes, hggcStream_t stream, const PlaneB2* B2 = nullptr) {
   using TileShape = cute::Shape<cute::Int<TM>, cute::Int<TN>, cute::Int<TK>>;
   using WarpShape = cute::Shape<cute::Int<WM>, cute::Int<WN>, cute::Int<TK>>;
+  static constexpr int FPA_BITS = cutlass::sizeof_bits<ElementB>::value;
+  static constexpr int FPA_RUN_B = TK * FPA_BITS / 8;
+  static constexpr int FPA_FOLD = fold::delivery_fold_v<FPA_BITS, TK>;
+  #define FPA_SCHED(SCH) std::conditional_t<(FPA_FOLD > 1), \
+      cutlass::gemm::KernelAiuFold<(FPA_FOLD > 1 ? FPA_FOLD : 2), SCH>, SCH>
   if (k % 64 || n % 64) { std::printf("[fpA_intB] n,k must be multiples of 64\n"); return false; }
 
   if constexpr (is_finegrained(QuantOp)) {
@@ -185,13 +207,13 @@ bool dispatch_gs(const cutlass::half_t* A, const ElementB* B, const cutlass::hal
     switch (group_size) {
       case 128: {
         constexpr int CTA_SCALE_K = (TK + 127) / 128;
-        return generic_launcher<QuantOp, cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs128,
+        return generic_launcher<QuantOp, FPA_SCHED(cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs128),
             TileShape, cute::Shape<cute::Int<TN>, cute::Int<CTA_SCALE_K>>, WarpShape, Stages, AiuInterleaved,
             ElementB, PlaneB2>(A, B, scales, zeros, D, m, n, k, group_size, split_k, ws, ws_bytes, stream, B2);
       }
       case 64: {
         constexpr int CTA_SCALE_K = (TK + 63) / 64;
-        return generic_launcher<QuantOp, cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs64,
+        return generic_launcher<QuantOp, FPA_SCHED(cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs64),
             TileShape, cute::Shape<cute::Int<TN>, cute::Int<CTA_SCALE_K>>, WarpShape, Stages, AiuInterleaved,
             ElementB, PlaneB2>(A, B, scales, zeros, D, m, n, k, group_size, split_k, ws, ws_bytes, stream, B2);
       }
@@ -201,7 +223,7 @@ bool dispatch_gs(const cutlass::half_t* A, const ElementB* B, const cutlass::hal
         // and its mainloop policy exposes `Schedule = KernelAiuMultistageMixedInput`, which is exactly what the
         // SplitKSerialScheduler specialization enable_ifs on -- so this reaches the split-K kernel unchanged.
         constexpr int CTA_SCALE_K = (TK + 31) / 32;
-        return generic_launcher<QuantOp, cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
+        return generic_launcher<QuantOp, FPA_SCHED(cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32),
             TileShape, cute::Shape<cute::Int<TN>, cute::Int<CTA_SCALE_K>>, WarpShape, Stages, AiuInterleaved,
             ElementB, PlaneB2>(A, B, scales, zeros, D, m, n, k, group_size, split_k, ws, ws_bytes, stream, B2);
       }
@@ -209,17 +231,18 @@ bool dispatch_gs(const cutlass::half_t* A, const ElementB* B, const cutlass::hal
         // Q2_K/Q3_K/Q6_K. The shared collective applies the fine scale per MMA atom; Gs32 is only the schedule tag,
         // while ScaleTileShape carries the real eight groups in a TK=128 tile (sixteen in the production TK=256).
         constexpr int CTA_SCALE_K = (TK + 15) / 16;
-        return generic_launcher<QuantOp, cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
+        return generic_launcher<QuantOp, FPA_SCHED(cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32),
             TileShape, cute::Shape<cute::Int<TN>, cute::Int<CTA_SCALE_K>>, WarpShape, Stages, AiuInterleaved,
             ElementB, PlaneB2>(A, B, scales, zeros, D, m, n, k, group_size, split_k, ws, ws_bytes, stream, B2);
       }
       default: std::printf("[fpA_intB] group_size %d unsupported (finegrained: 16/32/64/128)\n", group_size);
     }
   } else {  // per-column
-    return generic_launcher<QuantOp, cutlass::gemm::KernelAiuMultistageMixedInputPerCol,
+    return generic_launcher<QuantOp, FPA_SCHED(cutlass::gemm::KernelAiuMultistageMixedInputPerCol),
         TileShape, cute::Shape<cute::Int<TN>, cute::_1>, WarpShape, Stages, AiuInterleaved,
         ElementB, PlaneB2>(A, B, scales, zeros, D, m, n, k, k, split_k, ws, ws_bytes, stream, B2);
   }
+  #undef FPA_SCHED
   return false;
 }
 

@@ -903,3 +903,42 @@ already given the user names the blocker instead of having them discover it by r
 Also: 028 landed cleanly (gguf_prepare_*_for_tile, both dequants). I am wiring tools/pack_gguf.py to it now.
 029 (dense pinning the low plane at F=1, and my "dense int1 TK64/F4" measurement contradicting it) is still open
 and is the one I most want an answer on, because it decides what the packer writes.
+
+## 031 -- THE TWO SEARCH SPACES MUST COINCIDE, and that has to be CHECKED, not intended. (user, mid-029)
+
+Your 029 answer is (a) and I accept it: the folded figures were moe_grouped at L=1 and I had been labelling them
+"dense". That is my error, not a discovery about dense, and it is the second time today I attributed a property
+to a file I had not opened.
+
+The user's constraint, given while you were porting: **the final search space for dense and for grouped must be
+the same shape.** Your port is exactly that, so this is not a redirection -- it is a statement about what "done"
+means for it, and one thing I am asking you to make possible.
+
+WHY IT IS NOT ENOUGH FOR THEM TO COINCIDE TODAY. If the two spaces are equal because both were written from the
+same intent, they will drift the first time one side gains a tile shape or a width. Nothing would fail; the
+sweep would simply cover a space that is no longer the union, and report a winner over it. That is the truncated
+-space defect again, arriving later and quieter.
+
+So I want the sets EMITTED and COMPARED. I will write the comparator (ci/, mine). What I need from you is that
+each launcher can be ASKED for its own legal set, rather than me transcribing it from the source -- a
+transcription is a third copy that can disagree with both. Concretely, something that prints one line per legal
+configuration:
+
+    dense    bits=2 tk=128 f=1 tile=64x128x128 warp=32x32   reachable
+    grouped  bits=2 tk=64  f=2 tile=64x128x64  warp=32x64   reachable
+    dense    bits=1 tk=64  f=4 tile=...        warp=...     excluded: <one clause>
+
+Shape and mechanism are yours -- a small host-side enumerator, a --list-tactics flag on an existing bench,
+whatever costs least. Two properties I do care about:
+
+  * it must come from the SAME constants the launcher dispatches on. An enumerator with its own copy of the
+    table is exactly the failure it is meant to prevent.
+  * an EXCLUDED row must be printed with its reason, not omitted. Omission is what makes a truncated space look
+    complete; I would rather the file be long.
+
+Then the comparator is trivial and mechanical: dense-set == grouped-set, and any asymmetry is either justified
+by a printed reason on both sides or it is a bug. I will wire it into ci/local_gates.py so it runs with no
+device, and into the box command's preamble so the sweep states its own coverage before it runs.
+
+NOT ASKING FOR: any change to what is legal. If dense genuinely cannot reach a cell that grouped can, that is a
+row with a reason, and the comparator passes. The property is "the difference is stated", not "there is none".

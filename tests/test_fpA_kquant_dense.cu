@@ -22,7 +22,8 @@
 using half_t = cutlass::half_t;
 using QM = fpa_intb_ppu::QuantMode;
 
-template <int LowBits, int HighBits, class Low, class High = void, int GroupSize = 16, int TileK = 256>
+template <int LowBits, int HighBits, class Low, class High = void, int GroupSize = 16, int TileK = 256,
+          int TileM = 64, int TileN = 64, int WarpM = 32, int WarpN = 32>
 int run_format(char const* name) {
   constexpr int M = 32, N = 256, K = 256, SK = K / GroupSize;
   std::vector<half_t> a(size_t(M) * K), scale(size_t(SK) * N), zero(size_t(SK) * N);
@@ -39,15 +40,17 @@ int run_format(char const* name) {
     if constexpr (HighBits != 0) hi[i] = uint8_t(q >> LowBits);
   }
   std::vector<int8_t> blo(size_t(K) * N * LowBits / 8), bhi(size_t(K) * N * HighBits / 8);
-  xplane::place_derived<LowBits, 64, 64, TileK, 32, 32, 1>(blo.data(), lo, N, K);
+  constexpr int LowFold = fold::delivery_fold_v<LowBits, TileK>;
+  xplane::place_derived<LowBits, TileM, TileN, TileK, WarpM, WarpN, LowFold>(blo.data(), lo, N, K);
   if constexpr (HighBits != 0)
-    xplane::place_hi<LowBits, HighBits, 64, 64, TileK, 32, 32, 1, 1>(bhi.data(), hi, N, K);
+    xplane::place_hi<LowBits, HighBits, TileM, TileN, TileK, WarpM, WarpN,
+                     fold::delivery_fold_v<HighBits, TileK>, LowFold>(bhi.data(), hi, N, K);
 
   cutlass::DeviceAllocation<half_t> da(size_t(M) * K), ds(size_t(SK) * N), dz(size_t(SK) * N),
                                       d0(size_t(M) * N), d1(size_t(M) * N);
   cutlass::DeviceAllocation<Low> db(size_t(K) * N);
   cutlass::DeviceAllocation<uint8_t> db2(std::max<size_t>(bhi.size(), 1));
-  cutlass::DeviceAllocation<char> ws(2 * size_t(cutlass::ceil_div(M, 32)) * cutlass::ceil_div(N, 64) * sizeof(int));
+  cutlass::DeviceAllocation<char> ws(2 * size_t(cutlass::ceil_div(M, TileM)) * cutlass::ceil_div(N, TileN) * sizeof(int));
   da.copy_from_host(a.data()); ds.copy_from_host(scale.data()); dz.copy_from_host(zero.data());
   db.copy_from_host(reinterpret_cast<Low const*>(blo.data()));
   if constexpr (HighBits != 0) db2.copy_from_host(reinterpret_cast<uint8_t const*>(bhi.data()));
@@ -56,18 +59,14 @@ int run_format(char const* name) {
     else return reinterpret_cast<High const*>(db2.get());
   };
 
-  using Tile0 = cute::Shape<cute::_64, cute::_64, cute::C<TileK>>;
-  using Warp0 = cute::Shape<cute::_32, cute::_32, cute::C<TileK>>;
-  using Tile1 = Tile0;
-  using Warp1 = Warp0;
-  using ScaleTile = cute::Shape<cute::_64, cute::C<TileK / GroupSize>>;
-  using Schedule = cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32;
-  bool const ok0 = fpa_intb_ppu::generic_launcher<QM::FinegrainedScaleZero, Schedule,
-      Tile0, ScaleTile, Warp0, 3, true, Low, High>(
+  // Go through filter_and_run rather than naming the base schedule here: this test must exercise the production
+  // schedule wrapper that turns a sub-32B low-plane run into KernelAiuFold. Stage 3 vs 2 remains the self oracle.
+  bool const ok0 = fpa_intb_ppu::filter_and_run<QM::FinegrainedScaleZero,
+      TileM, TileN, TileK, WarpM, WarpN, 3, Low, High>(
           da.get(), db.get(), ds.get(), dz.get(), d0.get(), M, N, K, GroupSize, 1,
           ws.get(), ws.capacity, nullptr, b2());
-  bool const ok1 = fpa_intb_ppu::generic_launcher<QM::FinegrainedScaleZero, Schedule,
-      Tile1, ScaleTile, Warp1, 2, true, Low, High>(
+  bool const ok1 = fpa_intb_ppu::filter_and_run<QM::FinegrainedScaleZero,
+      TileM, TileN, TileK, WarpM, WarpN, 2, Low, High>(
           da.get(), db.get(), ds.get(), dz.get(), d1.get(), M, N, K, GroupSize, 1,
           ws.get(), ws.capacity, nullptr, b2());
   CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
@@ -90,18 +89,23 @@ int main() {
   int fail = 0;
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 10
   fail += run_format<2,0,cutlass::uint2b_t,void,16>("Q2_K");
+  fail += run_format<2,0,cutlass::uint2b_t,void,16,64>("Q2f");
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 11
   fail += run_format<2,1,cutlass::uint2b_t,cutlass::uint1b_t,16>("Q3_K");
+  fail += run_format<2,1,cutlass::uint2b_t,cutlass::uint1b_t,16,64,64,128,64,64>("Q3f");
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 12
   fail += run_format<4,0,cutlass::int4b_t,void,32>("Q4_K");
+  fail += run_format<4,0,cutlass::int4b_t,void,32,32>("Q4f");
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 13
   fail += run_format<4,1,cutlass::int4b_t,cutlass::uint1b_t,32>("Q5_K");
+  fail += run_format<4,1,cutlass::int4b_t,cutlass::uint1b_t,32,64,64,128,64,64>("Q5f");
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 14
   fail += run_format<4,2,cutlass::int4b_t,cutlass::uint2b_t,16,128>("Q6_K");
+  fail += run_format<4,2,cutlass::int4b_t,cutlass::uint2b_t,16,32,64,128,64,64>("Q6f");
 #endif
   return fail ? 1 : 0;
 }
