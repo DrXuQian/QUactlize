@@ -62,7 +62,7 @@ template <QuantMode QuantOp, class KernelSchedule,
           class ElementB = cutlass::int4b_t,   // default W4A16; pass cutlass::uint2b_t for W2A16
           class PlaneB2 = void,                // bit-plane concat: 2nd (high) B plane; void = single plane
           bool ExpectPackedScale = false>
-void launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* scales,
+bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* scales,
             const cutlass::half_t* zeros,
             cutlass::half_t** ptr_D,        // device [L] per-expert output base pointers (contiguous: D+offs[e]*N)
             DStride* stride_D,              // device [L] per-expert output strides ({M_e,N,1} row-major)
@@ -243,7 +243,7 @@ void launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   if (m > 1) {
     std::printf("[moe_grouped] PPU_A_PACK requires Mmax <= 1, got %d (packed cubes: only row 0 is real)\n", m);
     ++moeg_fail_count();
-    return;
+    return false;
   }
 #endif
   if constexpr (CollectiveMainloop::compact_a_rows > 0) {
@@ -251,7 +251,7 @@ void launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
       std::printf("[moe_grouped] compact A holds %d rows, got Mmax=%d; select the ordinary A path or a wider compact build\n",
                   CollectiveMainloop::compact_a_rows, m);
       ++moeg_fail_count();
-      return;
+      return false;
     }
   }
 #if defined(PPU_A_CPASYNC) && (PPU_A_CPASYNC != 0)
@@ -261,7 +261,7 @@ void launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
     std::printf("[moe_grouped] PPU_A_CPASYNC=%d is unavailable for this selected collective; A remains TileM rows\n",
                 int(PPU_A_CPASYNC));
     ++moeg_fail_count();
-    return;
+    return false;
   }
 #endif
   // A's GMEM m-stride is NEVER zeroed here, and the parameter that used to do it is gone. It looked like a way to say
@@ -328,7 +328,7 @@ void launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
       std::printf("[moe_grouped] splitk=%d does not divide the k-tile count %d (K=%d, Block_K=%d)\n",
                   splitk, kt, k, TKv);
       ++moeg_fail_count();
-      return;
+      return false;
     }
   }
   args.splitk = splitk;
@@ -356,10 +356,10 @@ void launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
 
   Gemm gemm;
   auto st = gemm.can_implement(args);
-  if (st != cutlass::Status::kSuccess) { std::printf("[moe_grouped] can_implement: %s\n", cutlassGetStatusString(st)); ++moeg_fail_count(); return; }
+  if (st != cutlass::Status::kSuccess) { std::printf("[moe_grouped] can_implement: %s\n", cutlassGetStatusString(st)); ++moeg_fail_count(); return false; }
   size_t need = gemm.get_workspace_size(args);
-  if (need > workspace_bytes) { std::printf("[moe_grouped] workspace %zu > %zu\n", need, workspace_bytes); ++moeg_fail_count(); return; }
-  if (gemm.initialize(args, workspace, stream) != cutlass::Status::kSuccess) { std::printf("[moe_grouped] init failed\n"); ++moeg_fail_count(); return; }
+  if (need > workspace_bytes) { std::printf("[moe_grouped] workspace %zu > %zu\n", need, workspace_bytes); ++moeg_fail_count(); return false; }
+  if (gemm.initialize(args, workspace, stream) != cutlass::Status::kSuccess) { std::printf("[moe_grouped] init failed\n"); ++moeg_fail_count(); return false; }
   // Ragged O(log L) decode: write the m-tile prefix [L+1] into the workspace (the non-persistent kernel does
   // NOT use the scheduler workspace, so it's free). AFTER initialize (no clobber), BEFORE run. Uniform path
   // (mtiles_uniform>0) uses blockIdx.z and ignores this. Blocking copy -> ordered before run; L+1 ints, tiny.
@@ -373,6 +373,7 @@ void launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
     }
   }
   gemm.run(stream);
+  return true;
 }
 
 template <QuantMode QuantOp, int TM, int TN, int TK, int WM, int WN, int Stages,

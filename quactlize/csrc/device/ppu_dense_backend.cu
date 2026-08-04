@@ -330,8 +330,7 @@ int grouped_fully_quantized_device(
   using GTile = cute::Shape<cute::_16, cute::_128, cute::C<TileK>>;
   using GScale = cute::Shape<cute::_128, cute::C<ScaleGroups>>;
   using GWarp = cute::Shape<cute::_16, cute::_16, cute::C<TileK>>;
-  int const failures = moe_grouped_ppu::moeg_fail_count();
-  moe_grouped_ppu::launch<GQM::FinegrainedScaleZero,
+  bool const launched = moe_grouped_ppu::launch<GQM::FinegrainedScaleZero,
                           cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
                           GTile, GScale, GWarp, 2, true, Low, High, true>(
       reinterpret_cast<half_t const*>(act), reinterpret_cast<Low const*>(low),
@@ -342,7 +341,7 @@ int grouped_fully_quantized_device(
         if constexpr (std::is_void_v<High>) return static_cast<High const*>(nullptr);
         else return reinterpret_cast<High const*>(high);
       }(), k, false, 1, false);
-  if (moe_grouped_ppu::moeg_fail_count() != failures) return 31;
+  if (!launched) return 31;
   return ppu_gemv::rt_check_launch("fully-quantized grouped GEMM enqueue")
       ? 0 : ppu_gemv::kRuntimeError;
 }
@@ -403,13 +402,12 @@ int grouped_fully_quantized(uint16_t const* act, uint8_t const* low, uint8_t con
   size_t const ws_bytes = size_t(cutlass::ceil_div(max_rows, 16)) * cutlass::ceil_div(n, 64)
                         * size_t(experts) * 64;
   DevBuf ws(ws_bytes);
-  int const failures = moe_grouped_ppu::moeg_fail_count();
   using GTile = cute::Shape<cute::_16, cute::_128, cute::C<TileK>>;
   using GScale = cute::Shape<cute::_128, cute::C<ScaleGroups>>;
   using GWarp = cute::Shape<cute::_16, cute::_16, cute::C<TileK>>;
   // Call the fixed group-size instantiation directly. filter_and_run's runtime ladder instantiates several SK values
   // together, so asserting packed selection there would correctly fail on its non-selected control branches.
-  moe_grouped_ppu::launch<GQM::FinegrainedScaleZero,
+  bool const launched = moe_grouped_ppu::launch<GQM::FinegrainedScaleZero,
                           cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
                           GTile, GScale, GWarp, 2, true, Low, High, true>(
       da.as<half_t>(), dl.as<Low>(), reinterpret_cast<half_t const*>(du.p), nullptr,
@@ -419,7 +417,7 @@ int grouped_fully_quantized(uint16_t const* act, uint8_t const* low, uint8_t con
         if constexpr (std::is_void_v<High>) return static_cast<High const*>(nullptr);
         else return dh.as<High>();
       }(), k, false, 1, false);
-  if (moe_grouped_ppu::moeg_fail_count() != failures) return 31;
+  if (!launched) return 31;
   ppu_gemv::rt_sync("fully-quantized grouped GEMM");
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
   return ppu_gemv::rt_copy_output(dout, out, size_t(total_rows) * n);

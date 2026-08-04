@@ -227,6 +227,41 @@ These are correctness and inspection, not tactic sweeps, so the hold above does 
    WANTED: both verdicts, the `policy partition` count, and the diff. The cost is the pruned leader's median versus
    the unpruned leader's median; different leaders with overlapping bands are unresolved, not a measured penalty.
 
+6. **SHIPPING-PREFILL DEVICE ABI BUILD GATE (INBOX 046).** This is the ppu001-only compile/export half of the
+   llama validation. It deliberately does not claim numerical coverage of the new primary branch; that requires
+   the user's regenerated llama patch and a real-model run, which cannot be named here until that patch exists.
+
+       cd /sim/eec/shared/junfu.qx/quactlize && git pull --recurse-submodules
+       PPU_DEFS="PPU_PACKED_SCALE=1" TARGET=quactlize_ppu ./build.sh
+       SO=$(find build_ppu -type f -name libquactlize_ppu.so -print -quit)
+       test -n "$SO" && test -f "$SO"
+       for SYM in \
+         quactlize_ppu_dense_fully_quantized_workspace_bytes_v1 \
+         quactlize_ppu_dense_fully_quantized_dev_v1 \
+         quactlize_ppu_grouped_fully_quantized_workspace_bytes_v1 \
+         quactlize_ppu_grouped_fully_quantized_dev_v1; do
+         nm -D --defined-only "$SO" | grep -q " $SYM$" || { echo "MISSING $SYM"; exit 1; }
+         echo "exported $SYM"
+       done
+       python3 - "$SO" <<'PY'
+       import ctypes, sys
+       lib = ctypes.CDLL(sys.argv[1])
+       dense = lib.quactlize_ppu_dense_fully_quantized_workspace_bytes_v1
+       dense.argtypes = [ctypes.c_int] * 4
+       dense.restype = ctypes.c_int64
+       grouped = lib.quactlize_ppu_grouped_fully_quantized_workspace_bytes_v1
+       grouped.argtypes = [ctypes.c_int] * 5
+       grouped.restype = ctypes.c_int64
+       d = dense(7, 256, 512, 12)
+       g = grouped(6, 256, 512, 4, 12)
+       assert d > 0 and g > 0, (d, g)
+       assert dense(7, 256, 512, 10) == -1
+       print(f"Q4 device workspaces: dense={d} grouped={g} bytes; wrong-format query declined")
+       PY
+
+   WANTED: four `exported` lines and the workspace line. A successful build means hgcc instantiated both new
+   device-pointer entries; it does not replace the later llama numerical run through those entries.
+
 
 **WHEN SOMETHING IS RED, PASTE THIS.** No arguments, safe any time, output sized for a chat message:
 
