@@ -28,8 +28,6 @@ _subdir_src="quactlize/include/gemv_lowbit"
 # path that names a repo nobody has is the same defect the operator already reported once for /Kernels/.
 EX_NAME="99_quactlize_w4a16_compare"
 EX_NAME_STALE="99_kernels_w4a16_compare"   # renamed 2026-08-04; cleaned up below so an old box converges
-EX_DIR="$ACTLIZE/examples/$EX_NAME"
-EX_LIST="$ACTLIZE/examples/CMakeLists.txt"
 ARCH="${PPU_ARCHS:-ppu0010}"
 # Default to this box's SDK location; override with PPU_SDK=<path> (or PPU_HOME) if it moves.
 
@@ -169,154 +167,14 @@ if [ ! -x "$PPU_SDK_ROOT/bin/hgcc" ]; then
 fi
 export PATH="$PPU_SDK_ROOT/bin:$PATH"
 
-cleanup() {
-  # Restore ONLY the example-list registration + remove the overlay. The actlize W4A16 changes now live as real
-  # commits on the DrXuQian/actlize fork (submodule branch ppu-w4a16-dev), NOT as build-time patches, so we must
-  # NOT `git checkout --` the include/ files here (that would wipe uncommitted collective WIP during iteration).
-  # RESTORE THE EXACT BYTES WE SAVED, not whatever git holds. `git checkout --` discards any UNCOMMITTED edit
-  # someone had in that file, which is not this script's to throw away -- and on the box that file belongs to a
-  # submodule someone may be working in.
-  if [ -f "${_EX_LIST_BACKUP:-}" ]; then cp "$_EX_LIST_BACKUP" "$EX_LIST"; rm -f "$_EX_LIST_BACKUP"; fi
-  rm -rf "$EX_DIR"
-}
-trap cleanup EXIT
+# NO CLEANUP TRAP. There is nothing to restore: this build copies nothing into the submodule and edits none of
+# its files. The trap that used to be here put back actlize's examples/CMakeLists.txt and rm -rf'd the overlay,
+# and existed only because the build mutated a checkout it did not own.
 echo "[build.sh] CUTLASS_PPU_ARCHS=$ARCH"
 
 # NOTE: the former MoE/gs32 *.patch files are now baked into the submodule (fork ppu-w4a16-dev). No patch step.
 
 
-# --- overlay our example into the actlize example tree (LEGACY PATH ONLY) ---
-if [ "${QUACTLIZE_NO_OVERLAY:-0}" != "1" ]; then
-mkdir -p "$EX_DIR"
-# nullglob so patterns that match nothing (e.g. no *.cpp right now) vanish instead of aborting under set -e.
-# *.inc is in the list because the MoE sweep's generated units all #include moe_bench_unit.inc, and this glob is an
-# EXTENSION WHITELIST: leaving it out did not fail here, it failed 100+ lines into hgcc as
-# `fatal error: moe_bench_unit.inc: No such file or directory` repeated once per generated unit.
-# ONE PRODUCER, ONE CONSUMER. Every path below comes from overlay_manifest above; nothing here re-enumerates.
-_n_overlaid=0 _n_dev=0
-while IFS= read -r _line; do
-  case "$_line" in
-    *"|"*) _dest="${_line%%|*}"; _src="${_line#*|}"
-           case "$_dest" in
-             */) mkdir -p "$EX_DIR/$_dest"; cp "$_src" "$EX_DIR/$_dest" ;;
-             *)  cp "$_src" "$EX_DIR/$_dest" ;;
-           esac ;;
-    *)     cp "$_line" "$EX_DIR/"
-           case "$_line" in "$HERE/dev/"*) _n_dev=$((_n_dev+1)) ;; esac ;;
-  esac
-  _n_overlaid=$((_n_overlaid+1))
-done < <(overlay_manifest)
-[ "$_n_dev" -gt 0 ] && echo "  overlaying $_n_dev dev/ probe source(s)"
-echo "  overlay: $_n_overlaid file(s)"
-
-# ...and then ASSERT THE WHITELIST IS COMPLETE. The criterion is GIT TRACKING, and the two earlier attempts show why it
-# has to be something this specific:
-#
-#   * scanning the #includes of the overlaid files could not catch the bug it was written for -- the file that includes
-#     moe_bench_unit.inc is a GENERATED unit, created later by cmake in the build tree, so it is not in the scan set at
-#     overlay time. It passed on the real tree while the real build was broken.
-#   * "every regular file here must be copied unless its extension is ignored" then failed the build on this box for
-#     *.acurep -- acu reports, an untracked artifact of previous runs that does not exist in a fresh checkout, so the
-#     ignore list could not have been written correctly from a clean tree.
-#
-# Tracked-ness is the right criterion because the box builds from COMMITTED state: what the build can possibly need is
-# exactly what is committed. Artifacts (acu reports, logs, binaries, dumped weights) are untracked and skip themselves, and
-# a newly added .def or .tpp is tracked the moment it is `git add`ed, which is also the moment it could reach the box.
-_ignored='sh|md|py|log|bin|json|patch|pyc|txt'
-_missing=""
-if _tracked=$(git -C "$HERE" ls-files "${_src_dirs[@]}" 2>/dev/null) && [ -n "$_tracked" ]; then
-  while IFS= read -r _p; do
-    # Paths come back relative to the repository root now. Everything flattens to its basename in $EX_DIR except
-    # the gemv_lowbit subdirectory, which keeps its name because the #includes say so.
-    case "$_p" in
-      *_cuda_probe.*)    continue ;;                       # local nvcc harness; never part of the PPU overlay
-      "$_subdir_src"/*) _b="gemv_lowbit/$(basename "$_p")" ;;
-      */data/*)         continue ;;                       # fixtures are read at runtime, not compiled
-      *)                _b="$(basename "$_p")" ;;
-    esac
-    echo "$_b" | grep -qE "\.($_ignored)\$" && continue
-    [ -f "$EX_DIR/$_b" ] || _missing="$_missing $_b"
-  done <<< "$_tracked"
-else
-  echo "  NOTE: not a git checkout, skipping the overlay completeness check"
-fi
-if [ -n "$_missing" ]; then
-  echo "  ERROR: the overlay is an extension whitelist and it dropped tracked source:$_missing"
-  echo "         add the extension to _OVERLAY_EXTS above, or to _ignored if it is genuinely not needed to build."
-  exit 1
-fi
-
-# AND PROVE THE OVERLAY IS THE CHECKOUT, not a survivor of an earlier run. cleanup() rm -rf's $EX_DIR on exit, so a
-# stale copy should be impossible -- but a build once failed with a macro expansion from the PRE-fix header while the
-# checkout had the fixed one, and from outside the box there was no way to tell "built an older commit" from "overlay
-# was stale". cmp is cheap and turns that into a one-line answer.
-#
-# IT WALKS THE MANIFEST, not the overlay directory. The previous version took each overlaid file's BASENAME and
-# searched _src_dirs for a match -- a third re-derivation of the source-to-destination mapping the manifest already
-# holds exactly. It searched the wrong set: dev/ was not in _src_dirs, so the eight device probes were never
-# compared at all, and the gemv_lowbit subdirectory matched only by coincidence of path shape. A check that silently
-# covers less than it claims is the failure this one exists to prevent.
-_stale=""
-while IFS= read -r _line; do
-  case "$_line" in
-    *"|"*) _dest="${_line%%|*}"; _src="${_line#*|}"
-           case "$_dest" in
-             */) _dst="$EX_DIR/$_dest$(basename "$_src")" ;;
-             *)  _dst="$EX_DIR/$_dest" ;;
-           esac ;;
-    *)     _src="$_line"; _dst="$EX_DIR/$(basename "$_line")" ;;
-  esac
-  if [ ! -f "$_dst" ]; then
-    _stale="$_stale
-    MISSING  $_dst  (from $_src)"
-  elif ! cmp -s "$_dst" "$_src"; then
-    _stale="$_stale
-    DIFFERS  $_dst  vs  $_src"
-  fi
-done < <(overlay_manifest)
-if [ -n "$_stale" ]; then
-  echo "  ERROR: the overlay does not match the checkout -- the build would not compile your tree:$_stale"
-  exit 1
-fi
-
-
-# REGISTER THE EXAMPLE IN actlize's foreach LIST. Without this the overlay is copied, cmake runs, and our
-# CMakeLists is never add_subdirectory'd -- so no target is created and no message from it appears. The symptom is
-# "No rule to make target test_moe_splitk_bench" together with "cmake did not report PPU_EXTRA_DEFS", which reads
-# like a macro-plumbing problem and is not one.
-#
-# This step existed with its own verification and I DELETED IT while collapsing the overlay into one manifest
-# function -- the splice that replaced the copy path took the registration with it. cleanup() restores the file on
-# exit, so the edit is not persistent.
-#
-# dev/fold_derivation/overlay_targets_check.py cannot catch this: it runs cmake on the overlay DIRECTLY, which
-# proves the CMakeLists configures and says nothing about whether anything reaches it. The grep below is the only
-# check of that, which is why it is a hard failure and not a warning.
-_EX_LIST_BACKUP="$(mktemp)"; cp "$EX_LIST" "$_EX_LIST_BACKUP"
-# EXACT LIST ENTRY, not a substring anywhere in the file. The name appearing in a comment, or outside the foreach
-# block, would satisfy a bare grep and register nothing.
-# A RENAME LEAVES TWO WRECKS BEHIND, and both break the box rather than this machine. The submodule's example
-# list keeps the OLD entry, so cmake looks for a directory that no longer exists and fails to configure; and the
-# old overlay directory keeps its sources, so a stale binary stays findable by `find`. Remove both, every time,
-# so a box that predates the rename converges on the next build instead of needing a manual fix.
-if grep -qE "^[[:space:]]*$EX_NAME_STALE[[:space:]]*$" "$EX_LIST"; then
-  echo "[build.sh] removing the stale example entry '$EX_NAME_STALE' from $EX_LIST"
-  sed -i "/^[[:space:]]*$EX_NAME_STALE[[:space:]]*$/d" "$EX_LIST"
-fi
-if [ -d "$ACTLIZE/examples/$EX_NAME_STALE" ]; then
-  echo "[build.sh] removing the stale overlay dir $ACTLIZE/examples/$EX_NAME_STALE"
-  rm -rf "$ACTLIZE/examples/$EX_NAME_STALE"
-fi
-if ! grep -qE "^[[:space:]]*$EX_NAME[[:space:]]*$" "$EX_LIST"; then
-  # insert just before the closing paren of the foreach(EXAMPLE ... ) block that ends with 16_ppu_mixed_dtype_gemm
-  sed -i "s|^\( *16_ppu_mixed_dtype_gemm\)\$|\1\n  $EX_NAME|" "$EX_LIST"
-fi
-grep -qE "^[[:space:]]*$EX_NAME[[:space:]]*$" "$EX_LIST" || { echo "ERROR: failed to register example as a list entry in $EX_LIST" >&2; exit 1; }
-
-fi   # QUACTLIZE_NO_OVERLAY. EVERYTHING ABOVE EXISTS ONLY FOR THE LEGACY EXAMPLE-INJECTION PATH: the copy, the
-     # example-list registration, and this completeness check -- whose whole premise is that an overlay
-     # DIRECTORY exists to compare against. Off the overlay it reported every tracked source as "dropped",
-     # which is the correct behaviour for a guard whose subject has gone away, and the reason it is in here.
 
 # --- tile/warp/stages tuning: forward from the environment (defaults match the stock example) ---
 TILE_M="${TILE_M:-32}"; TILE_N="${TILE_N:-32}"; WARP_M="${WARP_M:-16}"; WARP_N="${WARP_N:-16}"; STAGES="${STAGES:-3}"
@@ -369,27 +227,19 @@ done
 # index-pack with zero output for nine minutes and had to be killed twice. We build no gtest unit tests, so this
 # is not a capability being given up; it is a download nobody wanted.
 # WHICH SOURCE TREE. Default is OUR root with -DQUACTLIZE_PPU=ON: actlize becomes a subproject and our targets
-# build from our own directories. QUACTLIZE_OVERLAY=1 restores the old path -- copy 83 files into the submodule,
-# sed a line into its examples/CMakeLists.txt, build there -- and it is kept for exactly one round, until a box
-# build confirms the new one produces the same BINARIES. Local evidence so far is target PARITY: 35 targets in
-# both, the same names, nothing skipped. That is necessary and not sufficient, which is why the old path is
-# still reachable rather than deleted.
-# DEFAULT: build from THIS tree. QUACTLIZE_OVERLAY=1 restores the legacy example injection.
+# build from our own directories. The legacy example-injection path is GONE -- it was kept for one round and
+# the user retired it. Local evidence before removal: 35 targets both ways with the same names and nothing
+# skipped, and an hgcc command line identical bar the -I set and the source path, with every file the overlay
+# used to supply verified reachable through the new device include list.
+# BUILD FROM THIS TREE. There is no other path.
 #
 # EVIDENCE FOR THE SWITCH, and it is stronger than the target parity I first settled for. Against the same stub
 # SDK, the generated hgcc command line for test_moe_splitk_bench differs from the legacy path in EXACTLY two
 # places, both of which must differ: the include directories are our real benchmarks/ and csrc/ instead of the
 # overlay, and the source is its real path instead of a copy. Every flag, every -D (including the ones actlize
 # appends after its toolchain: CUTLASS_USE_PACKED_TUPLE and friends), and every arch option are identical.
-#
-# The legacy path is kept for one round rather than deleted, because "the same command line" is not "the same
-# binary" until hgcc has actually run, and hgcc is on the box.
-if [ "${QUACTLIZE_OVERLAY:-0}" = "1" ]; then
-  _CMAKE_SRC="$ACTLIZE"; _CMAKE_EXTRA=()
-  echo "[build.sh] QUACTLIZE_OVERLAY=1 -- legacy example-injection path"
-else
-  _CMAKE_SRC="$HERE"; _CMAKE_EXTRA=(-DQUACTLIZE_PPU=ON)
-fi
+
+_CMAKE_SRC="$HERE"; _CMAKE_EXTRA=(-DQUACTLIZE_PPU=ON)
 cmake "$_CMAKE_SRC" "${_CMAKE_EXTRA[@]}" -DPPU_SDK_ROOT="$PPU_SDK_ROOT" -DCUTLASS_PPU_ARCHS="$ARCH" \
   -DCUTLASS_ENABLE_TESTS=OFF -DCUTLASS_ENABLE_GTEST_UNIT_TESTS=OFF \
   -DTILE_M="$TILE_M" -DTILE_N="$TILE_N" -DWARP_M="$WARP_M" -DWARP_N="$WARP_N" -DSTAGES="$STAGES" -DBENCH_QUANT="$QUANT" -DTSK="$TSK" \
