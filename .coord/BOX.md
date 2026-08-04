@@ -5,6 +5,15 @@ exactly what output settles the question, so a partial paste is still useful.
 
 ## OPEN
 
+**WHEN SOMETHING IS RED, PASTE THIS.** No arguments, safe any time, output sized for a chat message:
+
+    ./tools/failures.sh
+
+It reads every log run_batch wrote and prints, per failing one: the summary, the failed test ids, and the
+ASSERTION TEXT. That last part is what has been missing -- twice today a ppu001 round trip was spent asking for
+a message that was already in the log, once three lines above where anyone looked.
+
+
 0. **UNBLOCKS NINE MATRIX CELLS. One paste.** The run already happened and all five formats passed; codex is
    holding the promotion because the condition was "read the logs yourself" and those files exist only on the
    box. It is right to hold -- a relayed screenshot is weaker evidence than the file -- so the file is what is
