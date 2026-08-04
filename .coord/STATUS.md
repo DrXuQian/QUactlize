@@ -1,8 +1,8 @@
 # codex status
 
-    updated-at:     2026-08-04 07:58:10 UTC
-    inbox-consumed: 038
-    working-on:     035/036/037/038 complete; dense table now has H1 guards at every TileM light/heavy N shape and H2 guards at per-stage A-smem extremes
-    blocked-on:     no ppu001 request until checkpoint tensor shapes are confirmed; compact A remains unverified on device and unavailable in folded/two-plane collectives; 030 deferred
+    updated-at:     2026-08-04 08:28:21 UTC
+    inbox-consumed: 039
+    working-on:     039 adjudicated: keep MoE stages operator-local; replace enumerated extreme-TileM N guards with every legal ratio, then regenerate dense table
+    blocked-on:     dense stage scope remains unchanged pending user decision; ppu001 unpruned-vs-pruned MoE comparison will be queued in BOX.md
     last-commit:    4b354f9 correct dense sweep guard transcription
-    last-heartbeat: 095
+    last-heartbeat: 096
