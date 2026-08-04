@@ -20,7 +20,20 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-DEFAULT_GGML = "/root/llama.cpp/ggml/include/ggml.h"
+# SEARCHED, NOT HARDCODED. The first version of this file pinned /root/llama.cpp, which exists on exactly one
+# machine -- so on any other the gate would SKIP forever and report a green tier that had checked nothing.
+def _find_ggml() -> str:
+    import os
+    if os.environ.get("GGML_H"):
+        return os.environ["GGML_H"]
+    for base in ("llama.cpp", "../llama.cpp", "/root/llama.cpp", os.path.expanduser("~/llama.cpp")):
+        p = pathlib.Path(base) / "ggml" / "include" / "ggml.h"
+        if p.is_file():
+            return str(p)
+    return "llama.cpp/ggml/include/ggml.h"      # reported as missing rather than silently absent
+
+
+DEFAULT_GGML = _find_ggml()
 
 # WHY A ROW IS NOT SUPPORTED, and whether the pipeline could take it. These are CLASSIFICATIONS, not excuses:
 # each says what the format IS, because "unsupported" alone does not tell you whether it is a week or a rewrite.

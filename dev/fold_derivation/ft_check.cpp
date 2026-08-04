@@ -1,6 +1,9 @@
 // Compile-test FoldTraits against every box reference point: the 7 good ones must instantiate, the 2 bad ones
 // must be rejected (checked by SFINAE-style probing of the static_asserts via a separate TU, see ft_neg below).
-#include "/root/marlin_ppu/Kernels/general/w4a16_gemm/cutlass_w4a16/fold_traits.hpp"
+// THIS USED TO BE AN ABSOLUTE PATH INTO THE OLD `Kernels` COPY, and the two files DIFFER -- so this
+// compile-test asserted FoldTraits' behaviour for a header this repo does not ship, and any drift between the
+// two was invisible to it. Build with -I quactlize/include.
+#include "fold_traits.hpp"
 #include <cstdio>
 using namespace fold;
 template<class T> void show(const char* tag){

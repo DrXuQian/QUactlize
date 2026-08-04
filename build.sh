@@ -24,12 +24,23 @@ ACTLIZE="$(cd "$HERE/third_party/actlize" && pwd)"
 # name is load-bearing, so renaming it would have been churn for nothing.
 _src_dirs=(quactlize/include quactlize/csrc/device tests benchmarks)
 _subdir_src="quactlize/include/gemv_lowbit"
-EX_NAME="99_kernels_w4a16_compare"
+# THE OVERLAY DIRECTORY NAME. "kernels" was this repo's old name; it is quactlize now, and a build product
+# path that names a repo nobody has is the same defect the operator already reported once for /Kernels/.
+EX_NAME="99_quactlize_w4a16_compare"
+EX_NAME_STALE="99_kernels_w4a16_compare"   # renamed 2026-08-04; cleaned up below so an old box converges
 EX_DIR="$ACTLIZE/examples/$EX_NAME"
 EX_LIST="$ACTLIZE/examples/CMakeLists.txt"
 ARCH="${PPU_ARCHS:-ppu0010}"
 # Default to this box's SDK location; override with PPU_SDK=<path> (or PPU_HOME) if it moves.
-PPU_SDK_ROOT="${PPU_SDK:-${PPU_HOME:-/sim/eec/shared/junfu.qx/PPU_SDK}}"
+# NO PERSONAL PATH AS A DEFAULT. This repo is published as github.com/DrXuQian/quactlize; a stranger's home
+# directory baked in as the fallback is both useless to anyone else and a leak. The site-specific location goes
+# in the environment (or PPU_SDK_SITE_DEFAULT for a shared machine's profile), and an unset SDK says so.
+PPU_SDK_ROOT="${PPU_SDK:-${PPU_HOME:-${PPU_SDK_SITE_DEFAULT:-}}}"
+if [ -z "$PPU_SDK_ROOT" ]; then
+  echo "[build.sh] PPU_SDK is not set and there is no site default." >&2
+  echo "            export PPU_SDK=/path/to/PPU_SDK   (or PPU_HOME, or PPU_SDK_SITE_DEFAULT in the shell profile)" >&2
+  exit 1
+fi
 
 # THE OVERLAY MANIFEST, PRODUCED ONCE. Everything that copies files, and everything that checks what would be
 # copied, reads this function -- there is no second enumeration of the globs.
@@ -282,6 +293,18 @@ fi
 _EX_LIST_BACKUP="$(mktemp)"; cp "$EX_LIST" "$_EX_LIST_BACKUP"
 # EXACT LIST ENTRY, not a substring anywhere in the file. The name appearing in a comment, or outside the foreach
 # block, would satisfy a bare grep and register nothing.
+# A RENAME LEAVES TWO WRECKS BEHIND, and both break the box rather than this machine. The submodule's example
+# list keeps the OLD entry, so cmake looks for a directory that no longer exists and fails to configure; and the
+# old overlay directory keeps its sources, so a stale binary stays findable by `find`. Remove both, every time,
+# so a box that predates the rename converges on the next build instead of needing a manual fix.
+if grep -qE "^[[:space:]]*$EX_NAME_STALE[[:space:]]*$" "$EX_LIST"; then
+  echo "[build.sh] removing the stale example entry '$EX_NAME_STALE' from $EX_LIST"
+  sed -i "/^[[:space:]]*$EX_NAME_STALE[[:space:]]*$/d" "$EX_LIST"
+fi
+if [ -d "$ACTLIZE/examples/$EX_NAME_STALE" ]; then
+  echo "[build.sh] removing the stale overlay dir $ACTLIZE/examples/$EX_NAME_STALE"
+  rm -rf "$ACTLIZE/examples/$EX_NAME_STALE"
+fi
 if ! grep -qE "^[[:space:]]*$EX_NAME[[:space:]]*$" "$EX_LIST"; then
   # insert just before the closing paren of the foreach(EXAMPLE ... ) block that ends with 16_ppu_mixed_dtype_gemm
   sed -i "s|^\( *16_ppu_mixed_dtype_gemm\)\$|\1\n  $EX_NAME|" "$EX_LIST"

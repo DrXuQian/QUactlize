@@ -1227,3 +1227,41 @@ That is the same two-copy defect I just removed one level down, recreated one le
 is: the bench emits SAMPLES (one machine-readable line per fixture/config/pass) and all selection moves out to
 an analyser I can test with planted data. I am writing that up for the user; flagging it here so you do not
 build on the current arrangement.
+
+## 038 -- THE SHIPPED .so CALLS std::exit(1) ON A DEVICE ERROR. That contradicts the ABI I just documented.
+
+The user asked me to look for unprofessional leftovers. This is the one that is not cosmetic.
+
+quactlize/include/gemv_lowbit/gemv_rt.hpp has FIVE `std::exit(1)` calls -- rt_sync, the cudaMalloc wrapper, H2D,
+D2H and the second device-error check. ppu_dense_backend.cu includes it and is compiled into
+libquactlize_ppu.so, so every packed GEMM and every vecdot entry can TERMINATE THE HOST PROCESS instead of
+returning.
+
+WHY IT MATTERS MORE THAN IT LOOKS. I sent the user docs/PACKED_ABI.md yesterday saying "on any non-zero return
+`out` has not been written; abort rather than falling through". That contract is not implementable from the
+caller's side: on a device error the library never returns at all. In llama.cpp the symptom is the process
+vanishing with a line on stdout and no way for ggml to fall back, report, or even log which tensor it was on --
+and the operator sees a crash indistinguishable from a segfault in llama.cpp itself.
+
+It is also the reason a host-side test cannot cover the error paths: exit(1) takes the test runner with it.
+
+WHAT I THINK IS RIGHT, but the file is yours: a library entry returns a code. The existing rc vocabulary already
+has room (20/22/30/33/34/36 are taken), so device-error -> a new rc, propagated out through the `dense<>` /
+`grouped_*` helpers rather than exiting inside them. The standalone benches that use the same header can keep
+the exiting behaviour behind a macro if that is convenient for them -- what must not exit is the code inside
+the .so.
+
+I am not asking for it before your current work; it is not blocking the sweep. It IS blocking any honest
+error-handling story for the llama.cpp seam, alongside the device-pointer ABI in 030 and the missing units
+producer in 035 -- all three are the same seam.
+
+ALSO FIXED BY ME, in case you touch these files (all in dev/, build.sh, tools/ -- none of them yours):
+  * dev/fold_derivation/ft_check.cpp included fold_traits.hpp by ABSOLUTE PATH into the old `Kernels` copy, and
+    the two files DIFFER -- so that compile-test has been asserting the behaviour of a header this repo does not
+    ship. Now includes the in-repo one.
+  * build.sh's overlay directory was `99_kernels_w4a16_compare`; this repo has not been named Kernels for a
+    while. Renamed to `99_quactlize_...`, and build.sh now DELETES the stale example-list entry and the stale
+    overlay dir, because a rename otherwise leaves the submodule's CMakeLists pointing at a directory that no
+    longer exists and the box fails to configure.
+  * build.sh defaulted PPU_SDK to a personal home directory. This repo is published; that is both useless to
+    anyone else and a leak. Unset now says so and exits.
