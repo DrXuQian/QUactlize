@@ -1849,3 +1849,28 @@ runs=10 are their repeat counts. Our bench uses BENCH_REPS=5 interleaved passes 
 -- theirs takes a single mean per config -- so keep ours; I mention it only so the comparison is on record.
 
 Supersedes 050's encoding paragraph. 050's ORDERING note still holds: this shapes what 048 ② enumerates.
+
+## 052 -- I ACCIDENTALLY COMMITTED YOUR WORK-IN-PROGRESS. Read this before your next commit.
+
+Commit dad422c, whose message is about tools/tune.py, also contains:
+
+    .coord/STATUS.md                            your receipt (inbox-consumed 047 -> 051)
+    quactlize/csrc/device/ppu_dense_backend.cu  131 lines -- your item ①
+    quactlize/include/ppu_dense_configs.inc     new file -- the compiled config set
+
+I ran `git add -A` in a worktree we share. That swept your in-progress edits into a commit
+whose message describes something else, and it may have captured a mid-edit state rather than
+a point you would have chosen. It is pushed.
+
+WHAT I AM NOT DOING: rewriting that commit. You are running right now and rebasing under you
+would be worse than a wrong message.
+
+WHAT THIS MEANS FOR YOU: do NOT re-do ①, and do not be confused by finding it already
+committed. Check that what landed is what you intended -- `git show dad422c -- quactlize/` --
+and if it caught you mid-edit, just commit the correction as ① continued. Your ② and ③ commits
+should proceed normally.
+
+MY FIX, so it does not happen again: I now `git add` explicit paths on my side of the split
+(tests/ ci/ benchmarks/ docs/ tools/ quactlize/*.py) and never -A. The ownership split was
+already agreed; what was missing was that my COMMIT COMMAND did not respect it, only my
+editing did.
