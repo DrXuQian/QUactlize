@@ -19,6 +19,7 @@
 #include "cutlass/gemm/device/gemm_universal_adapter.h"
 #include "cutlass/gemm/kernel/gemm_universal.hpp"
 #include "fold_traits.hpp"
+#include "ppu_tactic_space.hpp"
 #include "cutlass/util/packed_stride.hpp"
 
 #include "ppu_include.hpp"
@@ -34,6 +35,7 @@
 
 namespace moe_grouped_ppu {
 using namespace cute;
+using TacticSpace = ppu_tactics::GroupedSpace;
 
 // Public per-expert output-stride element type for the ptr-array (contiguous) epilogue. RowMajor D, and the
 // BATCH stride is static _0 (the epilogue indexes ptr_D[l] per expert, so the batch/L stride is unused) --
@@ -203,6 +205,13 @@ void launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   static constexpr int MOEG_BITS  = cutlass::sizeof_bits<ElementB>::value;
   static constexpr int MOEG_RUN_B = cute::size<2>(TileShape{}) * MOEG_BITS / 8;
   static constexpr int MOEG_FOLD  = fold::delivery_fold_v<MOEG_BITS, int(cute::size<2>(TileShape{}))>;
+  static constexpr int MOEG_P2_BITS = std::is_void_v<PlaneB2> ? 0 : cutlass::sizeof_bits<
+      std::conditional_t<std::is_void_v<PlaneB2>, cutlass::half_t, PlaneB2>>::value;
+  constexpr ppu_tactics::Candidate tactic{{ppu_tactics::Format::I2, "kernel", MOEG_BITS, MOEG_P2_BITS},
+      int(cute::size<0>(TileShape{})), int(cute::size<1>(TileShape{})), int(cute::size<2>(TileShape{})),
+      int(cute::size<0>(WarpShape{})), int(cute::size<1>(WarpShape{}))};
+  static_assert(TacticSpace::kernel_exclusion(tactic) == ppu_tactics::Exclusion::None,
+                "grouped: tactic violates the emitted kernel search-space rules");
   // Make the fold invariants actually FIRE. Until this line, fold_traits.hpp was included by nobody and its
   // static_asserts were inert commentary -- which is precisely how the perf harness came to launch int1 at the
   // forbidden (64,128,64) with nothing to stop it. Sub-byte B only: fp16/int8 B never folds. A bare alias would

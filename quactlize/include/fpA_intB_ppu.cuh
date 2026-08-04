@@ -38,6 +38,7 @@
 #include "cutlass/gemm/kernel/gemm_universal.hpp"
 #include "cutlass/util/packed_stride.hpp"
 #include "fold_traits.hpp"
+#include "ppu_tactic_space.hpp"
 
 #include "ppu_include.hpp"
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
@@ -45,6 +46,7 @@
 
 namespace fpa_intb_ppu {
 using namespace cute;
+using TacticSpace = ppu_tactics::DenseSpace;
 
 // actlize v1.0.0 does NOT expose cutlass::WeightOnlyQuantOp / isFinegrained / hasZero (those are acext-private).
 // The format axis is instead carried by the schedule (FinegrainedGs* vs PerCol) plus whether the ElementBInfo
@@ -129,12 +131,15 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
   // (N/F, F*K), so both the schedule selected by dispatch_gs() and this gmem stride must name F. Before this
   // existed the so-called dense int1/int2 folded measurements were actually grouped launches at L=1.
   constexpr int P1_BITS = cutlass::sizeof_bits<ElementB>::value;
+  constexpr int P2_BITS = std::is_void_v<PlaneB2> ? 0 : cutlass::sizeof_bits<
+      std::conditional_t<std::is_void_v<PlaneB2>, cutlass::half_t, PlaneB2>>::value;
   constexpr int TKv = int(cute::size<2>(TileShape{}));
-  constexpr int P1_RUN = TKv * P1_BITS / 8;
   constexpr int P1_FOLD = fold::delivery_fold_v<P1_BITS, TKv>;
-  static_assert(fold::warp_shape_ok<int(cute::size<0>(TileShape{})), int(cute::size<1>(TileShape{})),
-                                    int(cute::size<0>(WarpShape{})), int(cute::size<1>(WarpShape{}))>,
-                "fpA dense: warp tile must divide the block tile and use at most 16 warps");
+  constexpr ppu_tactics::Candidate tactic{{ppu_tactics::Format::I2, "kernel", P1_BITS, P2_BITS},
+      int(cute::size<0>(TileShape{})), int(cute::size<1>(TileShape{})), TKv,
+      int(cute::size<0>(WarpShape{})), int(cute::size<1>(WarpShape{}))};
+  static_assert(TacticSpace::kernel_exclusion(tactic) == ppu_tactics::Exclusion::None,
+                "fpA dense: tactic violates the emitted kernel search-space rules");
   static_assert(fold::CheckDelivery<P1_BITS, cute::size<1>(TileShape{}), cute::size<2>(TileShape{}),
                                     cute::size<0>(WarpShape{}), cute::size<1>(WarpShape{})>::ok,
                 "fpA dense low plane: swzl over-delivers at this warp shape");
@@ -165,7 +170,6 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
     // Plane 2 derives its OWN minimum fold from (bits,TK), just as grouped does. This is a stride reinterpretation
     // in addition to the scheduler-level LOW-plane fold: they are separate mechanisms even when both values are
     // called F. Reusing dB is correct only when the two planes have the same physical row pitch.
-    constexpr int P2_BITS = cutlass::sizeof_bits<PlaneB2>::value;
     constexpr int P2_RUN = TKv * P2_BITS / 8;
     constexpr int P2_FOLD = fold::delivery_fold_v<P2_BITS, TKv>;
     static_assert(P2_RUN * P2_FOLD >= 32,
@@ -194,7 +198,6 @@ bool dispatch_gs(const cutlass::half_t* A, const ElementB* B, const cutlass::hal
   using TileShape = cute::Shape<cute::Int<TM>, cute::Int<TN>, cute::Int<TK>>;
   using WarpShape = cute::Shape<cute::Int<WM>, cute::Int<WN>, cute::Int<TK>>;
   static constexpr int FPA_BITS = cutlass::sizeof_bits<ElementB>::value;
-  static constexpr int FPA_RUN_B = TK * FPA_BITS / 8;
   static constexpr int FPA_FOLD = fold::delivery_fold_v<FPA_BITS, TK>;
   #define FPA_SCHED(SCH) std::conditional_t<(FPA_FOLD > 1), \
       cutlass::gemm::KernelAiuFold<(FPA_FOLD > 1 ? FPA_FOLD : 2), SCH>, SCH>

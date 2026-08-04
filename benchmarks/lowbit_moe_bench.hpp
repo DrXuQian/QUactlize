@@ -293,25 +293,11 @@ inline bool moe_row_ran(const Band& bd, const char* tag, double us, int fail0, i
 // B is simply TN*TK*bits_total/8 whatever the folding does. 256 KB per CU is a hard cap (not configurable higher).
 template <int TM, int TN, int TK, int WM, int WN, int Stages, int BitsLo, int BitsHi = 0>
 constexpr bool moe_ok() {
-  constexpr int bits_total = BitsLo + BitsHi;
-  constexpr int bmin = BitsHi ? (BitsLo < BitsHi ? BitsLo : BitsHi) : BitsLo;
-  return WM <= TM && WN <= TN && TM % WM == 0 && TN % WN == 0
-      && (TM / WM) * (TN / WN) <= 32                                   // <= 1024 threads per block
-      // ACCUMULATOR REGISTERS. The fp32 C fragment is WM*WN elements over 32 lanes, so WM*WN/32 registers per thread
-      // against a hard ceiling of 256 (see the occupancy notes for CC 8.0). w64x128 hits exactly 256 -- the accumulator
-      // alone would consume the entire budget -- so it must be REJECTED here rather than left to fail deep in the
-      // collective. This matters the moment TileK shrinks: at TK=32 an int1 plane needs WN >= 4096/32 = 128, which is
-      // precisely that dead config, so the bound is what makes "int1 cannot reach TK=32" a filter instead of a build break.
-      && (WM * WN) / 32 <= 192
-      && (long long)WN * TK * bmin >= 4096                             // swzl delivery <= fragment slots, per plane
-      // SMEM MUST INCLUDE THE SCALE AND ZERO TILES. Leaving them out let q5 (128,128,256) s3 through at a computed 252 KB
-      // when the real figure is 264 KB, and the launch then failed at runtime with "[moe_grouped] init failed" -- which the
-      // bench timed as 3.17 us and reported as its FASTEST config. fold_traits.hpp already had the complete expression
-      // (TM*TK*2 + TN*TK*Bits/8 + TN*(TK/Gs)*2*(Zero?2:1)); this one was written again, and short.
-      // gs is a RUNTIME argument, so size for the smallest gs supported (16) and stay conservative: a filter that is too
-      // tight loses a config, one that is too loose produces a fake winner.
-      && ((long long)TM * TK * 2 + (long long)TN * TK * bits_total / 8
-          + (long long)TN * (TK / 16) * 2 * 2) * Stages <= 262144;
+  // The old arithmetic lived here and the host-side tactic emitter copied it. That would let the two disagree while
+  // both still compiled. The launcher, this gate and the emitter now ask GroupedSpace for the same answer.
+  constexpr ppu_tactics::Candidate c{{ppu_tactics::Format::I2, "synthetic", BitsLo, BitsHi},
+                                      TM, TN, TK, WM, WN};
+  return ppu_tactics::GroupedSpace::topology_exclusion(c, Stages) == ppu_tactics::Exclusion::None;
 }
 
 // (The hand-written (TileM, WarpM) grid that used to sit here is gone. One unit fixes one shape, so TileM and WarpM are
