@@ -5,6 +5,23 @@ exactly what output settles the question, so a partial paste is still useful.
 
 ## OPEN
 
+0. **ONE DENSE TENSOR ACROSS SEQLEN (INBOX 025).** This is the cheap decisive version: one int4 scale-only
+   dense weight at fixed N=K=4096, swept at the requested M values. Every candidate TileK is 64, 128 or 256 and
+   therefore consumes the SAME `xp4f1` bytes; a moving tactic winner would not imply a moving resident
+   arrangement. One build runs all five shapes.
+
+       cd /sim/eec/shared/junfu.qx/quactlize && git pull --recurse-submodules
+       TARGET=test_fpA_intB_ppu ./build.sh
+       BIN=$(find third_party/actlize/build_w4a16_compare -type f -name test_fpA_intB_ppu -perm -u+x -print -quit)
+       test -n "$BIN"
+       for M in 1 8 64 512 2048; do
+         "$BIN" "$M" 4096 4096 32 | grep '^  WINNER m='
+       done
+
+   WANTED: the five `WINNER` lines. The config name contains TileK. If it changes, the first M with the new
+   winner is the measured tactic crossover; regardless, all candidates remain one F=1/TK<=256 layout class, so
+   no repack or duplicate tensor follows from the change.
+
 0. **TWO THINGS, ONE PULL.** (a) the sixth per-format oracle is newer than the last run -- expect
    `6 passed, 24 skipped` instead of 5/20; (b) the packer now exists and can be pointed at a real checkpoint.
 
