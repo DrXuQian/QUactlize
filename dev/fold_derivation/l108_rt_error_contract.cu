@@ -29,6 +29,10 @@ int main() {
   bad += ppu_gemv::rt_sync("injected") || ppu_gemv::rt_status() != RtStatus::Synchronize;
 
   ppu_gemv::rt_clear_error();
+  ppu_gemv::rt_test_fail_next(RtStatus::Launch);
+  bad += ppu_gemv::rt_check_launch("injected") || ppu_gemv::rt_status() != RtStatus::Launch;
+
+  ppu_gemv::rt_clear_error();
   std::array<unsigned char, 16> out;
   out.fill(0xa5);
   ppu_gemv::rt_test_fail_next(RtStatus::DeviceToHost);

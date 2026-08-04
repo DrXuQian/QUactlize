@@ -1,8 +1,8 @@
 # codex status
 
-    updated-at:     2026-08-04 08:38:27 UTC
-    inbox-consumed: 040
-    working-on:     039/040 complete and pushed: every legal N ratio at every TileM; s2/3/4 count 159, checked-in six-stage count 293; motivating TM64 ratio-8 geometry appears at every covered stage
-    blocked-on:     MoE policy-cost measurement requires ppu001; GroupedSpace generator generalisation should be next, after this guard fix and before further compiled-set work
-    last-commit:    974c55a keep every legal dense N geometry
-    last-heartbeat: 100
+    updated-at:     2026-08-04 08:39:48 UTC
+    inbox-consumed: 041
+    working-on:     041 split revised by llama.cpp AGENTS.md: no autonomous edits to /root/llama-validate; reloading 030 to implement the device-pointer ABI inside quactlize only
+    blocked-on:     llama.cpp patch must remain human-authored per its repository policy; MoE policy-cost measurement and PPU ABI execution require ppu001
+    last-commit:    d479999 checkpoint completion of inbox 040
+    last-heartbeat: 102

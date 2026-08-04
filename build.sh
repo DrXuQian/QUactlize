@@ -32,15 +32,6 @@ EX_DIR="$ACTLIZE/examples/$EX_NAME"
 EX_LIST="$ACTLIZE/examples/CMakeLists.txt"
 ARCH="${PPU_ARCHS:-ppu0010}"
 # Default to this box's SDK location; override with PPU_SDK=<path> (or PPU_HOME) if it moves.
-# NO PERSONAL PATH AS A DEFAULT. This repo is published as github.com/DrXuQian/quactlize; a stranger's home
-# directory baked in as the fallback is both useless to anyone else and a leak. The site-specific location goes
-# in the environment (or PPU_SDK_SITE_DEFAULT for a shared machine's profile), and an unset SDK says so.
-PPU_SDK_ROOT="${PPU_SDK:-${PPU_HOME:-${PPU_SDK_SITE_DEFAULT:-}}}"
-if [ -z "$PPU_SDK_ROOT" ]; then
-  echo "[build.sh] PPU_SDK is not set and there is no site default." >&2
-  echo "            export PPU_SDK=/path/to/PPU_SDK   (or PPU_HOME, or PPU_SDK_SITE_DEFAULT in the shell profile)" >&2
-  exit 1
-fi
 
 # THE OVERLAY MANIFEST, PRODUCED ONCE. Everything that copies files, and everything that checks what would be
 # copied, reads this function -- there is no second enumeration of the globs.
@@ -107,6 +98,16 @@ overlay_manifest() {
 if [ "${1:-}" = "--print-overlay" ]; then
   overlay_manifest
   exit 0
+fi
+
+# NO PERSONAL PATH AS A DEFAULT. This repo is published as github.com/DrXuQian/quactlize; a stranger's home
+# directory baked in as the fallback is both useless to anyone else and a leak. The site-specific location goes
+# in the environment (or PPU_SDK_SITE_DEFAULT for a shared machine's profile), and an unset SDK says so.
+PPU_SDK_ROOT="${PPU_SDK:-${PPU_HOME:-${PPU_SDK_SITE_DEFAULT:-}}}"
+if [ -z "$PPU_SDK_ROOT" ]; then
+  echo "[build.sh] PPU_SDK is not set and there is no site default." >&2
+  echo "            export PPU_SDK=/path/to/PPU_SDK   (or PPU_HOME, or PPU_SDK_SITE_DEFAULT in the shell profile)" >&2
+  exit 1
 fi
 
 # CHEAP LOCAL CHECKS FIRST -- and BEFORE THE SDK GATE, which is the only thing that makes "first" true. They used to

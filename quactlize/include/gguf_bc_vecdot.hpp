@@ -14,6 +14,7 @@
 #include <cstdint>
 #include "gguf_vecdot.hpp"
 #include "gguf_packed_unit.hpp"
+#include "gemv_lowbit/gemv_common.hpp"
 
 namespace gguf_scale {
 namespace bc_vecdot {
@@ -228,24 +229,24 @@ __global__ void rows_kernel(uint8_t const* low, uint8_t const* high, uint8_t con
 template <KType T, int RowsPerWarp, bool Grouped>
 void launch_fixed(uint8_t const* low,uint8_t const* high,uint8_t const* units,
                   vecdot::VecdotActivation const* x,int const* offsets,float* out,
-                  int n,int bpr,int experts,int max_rows){
+                  int n,int bpr,int experts,int max_rows,gemv_stream_t stream=nullptr){
   // At the real Q4 decode shape RPW=4 halves the lanes spent only on subgroup padding. Four-warp CTAs then expose
   // enough independent blocks to saturate cold delivery; eight-warp CTAs measured 5.2-5.7% behind raw over 64
   // distinct cold 2048x2048 layers. Threads=128 removed that gap while also taking warm BC 0.9-1.4% ahead of raw.
   constexpr int Threads=(T==KType::Q4_K&&RowsPerWarp==4)?128:256;
   dim3 grid(vecdot::vecdot_grid_size<T,RowsPerWarp>(n,Threads),Grouped?max_rows:1,Grouped?experts:1);
-  rows_kernel<T,RowsPerWarp,Grouped><<<grid,Threads>>>(low,high,units,x,out,n,bpr,offsets);
+  rows_kernel<T,RowsPerWarp,Grouped><<<grid,Threads,0,stream>>>(low,high,units,x,out,n,bpr,offsets);
 }
 
 template <KType T, bool Grouped>
 void launch(uint8_t const* low,uint8_t const* high,uint8_t const* units,
             vecdot::VecdotActivation const* x,int const* offsets,float* out,
-            int n,int bpr,int experts,int max_rows){
+            int n,int bpr,int experts,int max_rows,gemv_stream_t stream=nullptr){
   switch(rows_per_warp<T>(n,bpr)){
-    case 1:launch_fixed<T,1,Grouped>(low,high,units,x,offsets,out,n,bpr,experts,max_rows);break;
-    case 2:launch_fixed<T,2,Grouped>(low,high,units,x,offsets,out,n,bpr,experts,max_rows);break;
-    case 4:launch_fixed<T,4,Grouped>(low,high,units,x,offsets,out,n,bpr,experts,max_rows);break;
-    case 8:launch_fixed<T,8,Grouped>(low,high,units,x,offsets,out,n,bpr,experts,max_rows);break;
+    case 1:launch_fixed<T,1,Grouped>(low,high,units,x,offsets,out,n,bpr,experts,max_rows,stream);break;
+    case 2:launch_fixed<T,2,Grouped>(low,high,units,x,offsets,out,n,bpr,experts,max_rows,stream);break;
+    case 4:launch_fixed<T,4,Grouped>(low,high,units,x,offsets,out,n,bpr,experts,max_rows,stream);break;
+    case 8:launch_fixed<T,8,Grouped>(low,high,units,x,offsets,out,n,bpr,experts,max_rows,stream);break;
   }
 }
 

@@ -28,6 +28,7 @@ enum class RtStatus : int {
   DeviceToHost = 3,
   Synchronize = 4,
   HostAllocation = 5,
+  Launch = 6,
 };
 
 // Each public entry is synchronous and owns all of its temporary buffers.  Thread-local state keeps two callers on
@@ -83,6 +84,11 @@ inline bool rt_sync(char const*) {
     return rt_record(RtStatus::Synchronize, "synchronize", "injected failure");
   return true;
 }
+inline bool rt_check_launch(char const*) {
+  if (rt_test_should_fail(RtStatus::Launch))
+    return rt_record(RtStatus::Launch, "launch", "injected failure");
+  return true;
+}
 
 #elif defined(__HGGCCC__)
 
@@ -107,6 +113,10 @@ inline bool rt_d2h(void* dst, void const* src, size_t bytes) {
 inline bool rt_sync(char const* where) {
   hggcError_t const e = hggcDeviceSynchronize();
   return e == hggcSuccess || rt_record(RtStatus::Synchronize, where, hggcGetErrorString(e));
+}
+inline bool rt_check_launch(char const* where) {
+  hggcError_t const e = hggcPeekAtLastError();
+  return e == hggcSuccess || rt_record(RtStatus::Launch, where, hggcGetErrorString(e));
 }
 
 #else
@@ -133,6 +143,10 @@ inline bool rt_sync(char const* where) {
   cudaError_t e = cudaDeviceSynchronize();
   if (e == cudaSuccess) e = cudaGetLastError();
   return e == cudaSuccess || rt_record(RtStatus::Synchronize, where, cudaGetErrorString(e));
+}
+inline bool rt_check_launch(char const* where) {
+  cudaError_t const e = cudaPeekAtLastError();
+  return e == cudaSuccess || rt_record(RtStatus::Launch, where, cudaGetErrorString(e));
 }
 
 #endif
