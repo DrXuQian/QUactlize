@@ -278,7 +278,8 @@ def gate(name, args):
     exe = OUT / name.replace("@", "_")
     rc, log, dt = run(NVCC + GATE_FLAGS.get(name, []) +
                       ["-I", str(STUB), "-I", str(ACT), "-I", str(ROOT / "quactlize/include"),
-                       "-I", str(ROOT / "tests"), "-o", str(exe), str(src)])
+                       "-I", str(ROOT / "tests"), "-I", str(ROOT / "benchmarks"),
+                       "-o", str(exe), str(src)])
     if rc != 0:
         return "BUILD", log.strip().splitlines()[0] if log.strip() else "nvcc failed", dt
     rc, log, dt2 = run([str(exe)] + [str(ROOT / a) for a in args])

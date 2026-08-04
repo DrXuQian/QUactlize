@@ -2,13 +2,15 @@
 // translation unit so `make -j` compiles them concurrently -- see moe_splitk_bench_common.hpp.
 //
 // Build: TARGET=test_moe_splitk_bench ./build.sh
-// Run:   $BIN/test_moe_splitk_bench [L] [Rows] [N] [K] [gs] [mode]
+// Run:   $BIN/test_moe_splitk_bench [L] [Rows-or-Tokens] [N] [K] [gs] [mode] [top-k]
 //          mode 3 = DECODE batch=1 (default), 2 = skewed prefill band, 0 = uniform
+//          mode 4 = pinned token->top-k router
 //   SPLITK_ONLY=<substring>  run only rows whose tag contains this
 //   SPLITK_ACU=1             ONE COLD launch per row (a capture, not a timing)
 #include <cstring>
 #include "cutlass/gguf_packed_scale.h"
 #include "moe_splitk_bench_common.hpp"
+#include "moe_router_fixture.hpp"
 #include "moe_splitk_units.inc"     // GENERATED: unit declarations + splitk_run_all()
 
 int main(int argc, char** argv) {
@@ -19,9 +21,19 @@ int main(int argc, char** argv) {
   bd.K    = argc > 4 ? atoi(argv[4]) : 2048;
   bd.gs   = argc > 5 ? atoi(argv[5]) : 32;
   bd.mode = argc > 6 ? atoi(argv[6]) : 3;     // decode batch=1 by default: that is the band in question
+  bd.topk = argc > 7 ? atoi(argv[7]) : 8;
   bd.scale_k = bd.K / bd.gs;
 
   bd.me.resize(bd.L); bd.offs.resize(bd.L);
+  if (bd.mode == 4) {
+    moe_router_fixture::Rows routed;
+    char why[128] = "";
+    if (!moe_router_fixture::route(bd.Rows, bd.topk, bd.L, routed, why, sizeof why)) {
+      std::printf("mode 4 router fixture refused: %s\n", why);
+      return 1;
+    }
+    bd.me = routed.per_expert;
+  }
   bd.total = 0; bd.Mmax = 0; bd.active = 0;
   for (int e = 0; e < bd.L; ++e) {
     if (bd.mode == 0)      bd.me[e] = bd.Rows;
@@ -29,12 +41,12 @@ int main(int argc, char** argv) {
     // trap that produced a 1-expert measurement: `8 1 ...` reads like "8 experts, 1 row each" and means "8
     // experts, 1 of them active". The recorded decode band is L=64 with top-k=8, i.e. `64 8 ...`.
     else if (bd.mode == 3) bd.me[e] = (e < bd.Rows) ? 1 : 0;
-    else {
+    else if (bd.mode == 2) {
       unsigned h = (unsigned)e * 2654435761u >> 13;
       if ((h % 8) == 0)      bd.me[e] = 0;
       else if ((h % 8) == 1) bd.me[e] = int(bd.Rows * 3 + (h % 37));
       else                   bd.me[e] = int(bd.Rows / 2 + (h % (unsigned)(bd.Rows + 1)));
-    }
+    } else if (bd.mode != 4) { std::printf("unknown mode %d (expected 0,2,3,4)\n", bd.mode); return 1; }
     if (bd.me[e]) ++bd.active;
     bd.offs[e] = bd.total; bd.total += bd.me[e]; bd.Mmax = std::max(bd.Mmax, bd.me[e]);
   }
@@ -43,9 +55,23 @@ int main(int argc, char** argv) {
     std::printf("mode 3: top-k=%d exceeds L=%d\n", bd.Rows, bd.L); return 1;
   }
 
+#if defined(PPU_A_CPASYNC) && (PPU_A_CPASYNC != 0)
+  constexpr int compiled_capacity = PPU_A_CPASYNC;
+#else
+  constexpr int compiled_capacity = 0;
+#endif
+  if (!moe_router_fixture::compact_build_accepts(compiled_capacity, bd.Mmax)) {
+    std::printf("REFUSED: compact build capacity %d is below fixture Mmax %d; no widening/fallback\n",
+                compiled_capacity, bd.Mmax);
+    return 2;
+  }
+
   std::printf("== grouped mixed-input GEMM: splitk=1 vs splitk>1 ==\n");
-  std::printf("   L=%d rows=%d mode=%d N=%d K=%d gs=%d | total=%d Mmax=%d active=%d | HBM %.0f GB/s\n",
-              bd.L, bd.Rows, bd.mode, bd.N, bd.K, bd.gs, bd.total, bd.Mmax, bd.active, HBM_GBS);
+  std::printf("   L=%d input=%d topk=%d mode=%d%s N=%d K=%d gs=%d | total=%d Mmax=%d active=%d "
+              "compact-cap=%d | HBM %.0f GB/s\n",
+              bd.L, bd.Rows, bd.topk, bd.mode,
+              bd.mode == 4 ? " token-topk-hot16x4-wor-sm64-s44-v1" : "",
+              bd.N, bd.K, bd.gs, bd.total, bd.Mmax, bd.active, compiled_capacity, HBM_GBS);
   if (sk_only()) std::printf("   SPLITK_ONLY=\"%s\"\n", sk_only());
   if (std::getenv("SPLITK_CFG")) std::printf("   SPLITK_CFG=\"%s\"\n", std::getenv("SPLITK_CFG"));
   if (std::getenv("SPLITK_S"))   std::printf("   SPLITK_S=\"%s\"\n", std::getenv("SPLITK_S"));

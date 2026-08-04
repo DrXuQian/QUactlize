@@ -424,8 +424,8 @@ case "$TARGET" in
     echo "       $BIN 8 1                          # Mmax==1, required by PPU_A_CUBE_H=1"
     echo "       MOEG_SMEM=1 MOEG_DUMP=/tmp/d.bin $BIN 8 1     # then MOEG_CHECK=/tmp/d.bin on the other build" ;;
   test_moe_splitk_bench|test_lowbit_moe_bench)
-    echo "run:   $BIN <L> <rows> <N> <K> <gs> <mode>   # POSITIONAL; mode 3 => rows is top-k"
-    echo "       $BIN 64 8 2048 2048 32 3"
+    echo "run:   $BIN <L> <rows-or-tokens> <N> <K> <gs> <mode> [top-k]"
+    echo "       $BIN 256 4 512 2048 32 4 8       # pinned token->top-k router; prints Mmax/capacity"
     echo "       SPLITK_CFG='16x128:256 w16x16 s2' SPLITK_S=1 $BIN 64 8 2048 2048 32 3   # select one acu row" ;;
   test_gemv_perf)
     echo "run:   $BIN [shape]                      # GEMV_FMT=/GEMV_CFG= select rows" ;;

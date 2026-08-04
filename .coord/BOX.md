@@ -86,21 +86,19 @@ These are correctness and inspection, not tactic sweeps, so the hold above does 
        BIN=$(find third_party/actlize/build_w4a16_compare -type f -name test_lowbit_moe_bench -perm -u+x -print -quit)
        test -n "$BIN"
 
-       # Qwen3.5-35B-A3B expert FFN, gs=32, ragged (mode 2 is the default and IS the skewed generator).
-       # args: L(experts) Rows(avg rows/expert) N K gs mode
+       # PINNED ROUTER fixture; args: L(experts) TOKENS N K gs mode=4 top-k=8.
+       # The banner prints its versioned name, active experts, Mmax, and required compact capacity.
        echo "== 35B-A3B expert_gate/up  n=512 k=2048 =="
-       for R in 128 64 2; do "$BIN" 256 $R 512 2048 32 2 | tail -20; done
+       for T in 1 2 4 64 2048 4096; do "$BIN" 256 $T 512 2048 32 4 8 | tail -20; done
        echo "== 35B-A3B expert_down     n=2048 k=512 =="
-       for R in 128 64 2; do "$BIN" 256 $R 2048 512 32 2 | tail -20; done
+       for T in 1 2 4 64 2048 4096; do "$BIN" 256 $T 2048 512 32 4 8 | tail -20; done
        echo "== 122B-A10B after TP=2    n=512 k=3072 / n=3072 k=512 =="
-       for R in 128 64 2; do "$BIN" 256 $R 512 3072 32 2 | tail -20; done
-       for R in 128 64 2; do "$BIN" 256 $R 3072 512 32 2 | tail -20; done
-       echo "== DECODE: only M*8 experts are touched, ONE row each =="
-       for E in 8 16 32; do "$BIN" $E 1 512 2048 32 2 | tail -20; done
+       for T in 1 2 4 64 2048 4096; do "$BIN" 256 $T 512 3072 32 4 8 | tail -20; done
+       for T in 1 2 4 64 2048 4096; do "$BIN" 256 $T 3072 512 32 4 8 | tail -20; done
 
-   Rows comes from n-token: rows/expert = M*topk/experts = M/32 for both models, so R=128 is M=4096, R=64 is
-   M=2048, R=2 is M=64. M in {1,2,4} does not reduce Rows below 1 -- it reduces the number of experts TOUCHED,
-   which is why the last loop varies L instead.
+   The old command asserted rows/expert and special-cased decode by shrinking L. This one keeps all 256 experts and
+   routes T tokens through top-8. The pinned collision tail gives Mmax 1/2/3 at T=1/2/4 (compact capacities 1/2/4)
+   and 12/239/447 at T=64/2048/4096 (ordinary A only). A compact binary below Mmax refuses the fixture.
 
    180 units, one compile wave at MOE_CORES=192; the file's own measurement is 14-19 s wall clock, and codegen
    is 5.6% of it. Stage counts are inside a unit, so they cost nothing extra.

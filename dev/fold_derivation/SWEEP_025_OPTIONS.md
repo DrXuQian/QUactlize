@@ -59,8 +59,10 @@ Small-M compact A makes reachability depend on A-row capacity. The complete n-to
 `{1,2,4,64,2048,4096}`. Ordinary builds allocate `TileM*TileK*2` A bytes per stage. Compact capacities 1, 2, and 4
 allocate `capacity*TileK*2` and are three different collective types, not three timings of one binary. For dense,
 capacity equals M at 1/2/4. For grouped it is per-expert Mmax, not global tokens: both target MoE models have 256
-experts/top-8, so all three decode points touch 8/16/32 experts with one row each and use the capacity-1 type. A
-named ragged distribution determines which capacity can serve global M=64 (mean two rows/expert).
+experts/top-8. The pinned `token-topk-hot16x4-wor-sm64-s44-v1` router produces Mmax 1/2/3 at global tokens 1/2/4,
+so those points require compact capacities 1/2/4. It produces Mmax 12/239/447 at tokens 64/2048/4096, so all three
+prefill points require the ordinary path. The benchmark prints this decision and refuses a compact build whose
+capacity is below fixture Mmax; it never widens or falls back silently.
 
 At this checkpoint compact A is reachable only for unfolded one-plane formats:
 
@@ -134,7 +136,9 @@ That emitter describes the ordinary arrangement/tactic domain. `benchmarks/size_
 build axes from the same predicate. It reports **3,601 ordinary builds** plus **618 compact builds per stage per
 row capacity 1/2/4**, hence **5,562 compact and 9,163 total builds per operator before performance pruning**. For
 grouped this is the complete legal kernel inventory, not a claim that every capacity maps one-to-one to a global
-n-token point. The number is a sizing warning, not a box request; the guarded rules in
+n-token point: the three compact types serve only the pinned T=1/2/4 columns, while one ordinary build serves
+T>=64. Thus 9,163 is the unique-build count for the full six-point workload, not a per-column count and not an
+overcount. The number is a sizing warning, not a box request; the guarded rules in
 `SWEEP_032_PRUNING_CODEX.md` must reduce it first.
 
 No ppu001 sweep should use the old `test_fpA_intB_ppu` command as a completeness claim: that binary remains an int4,

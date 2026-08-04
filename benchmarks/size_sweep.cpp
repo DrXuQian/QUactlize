@@ -27,6 +27,7 @@
 #include <map>
 #include <vector>
 
+#include "moe_router_fixture.hpp"
 #include "ppu_tactic_space.hpp"
 
 namespace {
@@ -119,7 +120,18 @@ int main() {
               "Legality is ppu_tactic_space.hpp's own ordinary/compact topology predicate; nothing is restated here.\n");
   size_one<ppu_tactics::DenseSpace>("dense");
   size_one<ppu_tactics::GroupedSpace>("grouped");
+  std::printf("\nPinned grouped routing (%s, L=256, top-k=8):\n", moe_router_fixture::kName);
+  for (int tokens : {1, 2, 4, 64, 2048, 4096}) {
+    moe_router_fixture::Rows r;
+    moe_router_fixture::route(tokens, 8, 256, r);
+    int const cap = moe_router_fixture::minimum_compact_capacity(r.max);
+    std::printf("  tokens=%-4d active=%-3d Mmax=%-3d -> %s",
+                tokens, r.active, r.max, cap ? "compact capacity " : "ordinary A path");
+    if (cap) std::printf("%d", cap);
+    std::printf("\n");
+  }
   std::printf("\nCompact A rows 1/2/4 are distinct types. They equal dense M, but grouped capacity is per-expert Mmax,\n"
-              "not global tokens. Arrangement-equivalent tactics remain distinct: same bytes != same TileK.\n");
+              "not global tokens. All three are used only by the pinned decode fixtures; tokens>=64 use ordinary A.\n"
+              "Arrangement-equivalent tactics remain distinct: same bytes != same TileK.\n");
   return 0;
 }

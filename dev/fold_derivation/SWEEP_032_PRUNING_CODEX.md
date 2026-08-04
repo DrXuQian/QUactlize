@@ -69,10 +69,13 @@ format may prune another because format-dependent stage winners and dense/groupe
 ### L3. Never prune M -- **EXACT**
 
 Run every candidate at the user-set n-token values 1, 2, 4, 64, 2048, and 4096. For dense, this is the weight's M
-axis. For both MoE models there are 256 experts and top-8 routing, so mean rows/expert is M/32: global M<=4 touches
-8, 16, or 32 experts with exactly one row each; M=64, 2048, and 4096 have means 2, 64, and 128. The fixture must use
-a **named ragged expert-row distribution**; it must not replace that distribution with a uniform per-expert M or
-with the mean. Dropping a point saves timing but can hide the crossover the experiment exists to find.
+axis. For both MoE models there are 256 experts and top-8 routing, so mean rows/expert is M/32. The pinned fixture is
+`token-topk-hot16x4-wor-sm64-s44-v1`: each token selects eight distinct experts, sixteen experts have popularity
+weight four, all others weight one, and a fixed SplitMix64 stream drives the weighted draws. Its
+`(active experts, Mmax)` ladder at tokens `{1,2,4,64,2048,4096}` is `{(8,1),(15,2),(30,3),(212,12),
+(256,239),(256,447)}`. The name, Mmax, and required compact capacity are printed by the bench. This distribution
+must not be replaced by a uniform per-expert M or by the mean. Dropping a point saves timing but can hide the
+crossover the experiment exists to find.
 
 The workload strata are Qwen3-32B dense, Qwen3.5-35B-A3B MoE, and Qwen3.5-122B-A10B MoE with confirmed TP=2.
 `benchmarks/workloads.py` now records config.json-derived per-card projections and the standard TP split. The box
@@ -81,8 +84,9 @@ This is an **EXACT provenance rule**, not performance pruning.
 
 M is runtime-only for the ordinary TileM-row collective. Compact **row capacity** is a build axis because capacities
 1, 2, and 4 change `SmemLayoutA` and therefore the kernel type. For dense, capacity equals M at 1/2/4. For MoE it is
-per-expert Mmax, not global tokens: the same capacity-1 build serves all three decode points M=1/2/4, and the named
-distribution determines whether capacity 2 or 4 can serve later points.
+per-expert Mmax, not global tokens: the pinned T=1/2/4 fixtures require capacities 1/2/4 respectively (T=4 has
+Mmax=3); T>=64 exceeds capacity 4 and uses the ordinary path. A compact build below the fixture's Mmax is refused,
+never widened or silently rerouted.
 
 ### L4. Make shared-memory legality path- and row-capacity-specific -- **EXACT IMPLEMENTATION FACT**
 

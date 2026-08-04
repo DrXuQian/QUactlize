@@ -24,6 +24,7 @@
 #include "xplane_offline.hpp"
 #include "fold_traits.hpp"   // warps_per_cu_chunked: the occupancy model WITH the register term
 #include "moe_grouped_ppu.cuh"
+#include "moe_router_fixture.hpp"
 
 using half_t  = cutlass::half_t;
 // THE QUANT MODE, and it used to be hardcoded ScaleZero at BOTH launch sites -- so every low-bit number this harness
@@ -121,7 +122,7 @@ inline bool moe_shape_selected(const char* shape) {
 // Everything a sweep needs about the band. Passed by const reference so the per-format translation units share ONE
 // set of device buffers instead of each allocating its own.
 struct Band {
-  int L, N, K, gs, Rows, mode;
+  int L, N, K, gs, Rows, mode, topk;
   int total, Mmax, scale_k, active;
   std::vector<int>   me, offs;
   std::vector<GS>    rsh;                 // host-side; filter_and_run takes a host pointer for this one
@@ -151,6 +152,7 @@ inline char const* moe_dist_name(int mode) {
     case 0:  return "uniform-v1";
     case 1:  return "ragged-coarse-v1";      // multiples of TileM: never enters the masked path
     case 3:  return "decode-topk-1row-v1";
+    case 4:  return moe_router_fixture::kName;
     default: return "skew-h8-v1";            // ~12% empty, 1-in-8 heavy tail, rest scattered off TileM
   }
 }
@@ -162,7 +164,8 @@ inline void moe_sample(const Band& bd, char const* schema,
   // The fixture is identified by its SHAPE and distribution rather than a hand-typed label: two runs of the
   // same shape must land in the same group, and a typo in a label would silently split them into two verdicts.
   static char name[96];
-  std::snprintf(name, sizeof name, "moe-n%d-k%d-gs%d-L%d-r%d", bd.N, bd.K, bd.gs, bd.L, bd.Rows);
+  std::snprintf(name, sizeof name, "moe-n%d-k%d-gs%d-L%d-r%d-topk%d",
+                bd.N, bd.K, bd.gs, bd.L, bd.Rows, bd.topk);
   s.fixture = name;  s.dist = moe_dist_name(bd.mode);  s.schema = schema;
   s.n = bd.N; s.k = bd.K; s.gs = bd.gs;
   s.experts = bd.L; s.rows = bd.Rows; s.mmax = bd.Mmax;

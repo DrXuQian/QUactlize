@@ -50,20 +50,20 @@ THREE STRUCTURAL FACTS THAT DO NOT NEED THE SHAPES, and that change what the swe
 
     and with the real numbers -- 256 experts, top-8, for BOTH MoE models -- that is exactly M/32:
 
-        M=1     0.03 rows/expert     only 8 experts are touched at all, one row each
-        M=2     0.06                 16 experts, one row each
-        M=4     0.12                 32 experts, one row each
+        M=1     0.03 rows/expert
+        M=2     0.06
+        M=4     0.12
         M=64    2.00
         M=2048 64.00
         M=4096 128.0                 the band #17b recorded, where masked rows dominate
 
-    SO THE MoE DECODE POINTS ARE NOT SMALL-M GEMMs, THEY ARE ONE-ROW GEMMs OVER A SUBSET OF EXPERTS. At M<=4 no
-    expert receives two rows; the kernel's job is to visit 8-32 experts and do a single row in each. That is the
-    Mmax==1 case the PPU_A_CPASYNC stride-0 path was built for and measured on -- it is the shipping shape here,
-    not a corner. It also means the "ragged" distribution at decode is degenerate: every touched expert has
-    exactly one row, and the raggedness is in WHICH experts, not how many rows. The MoE sweep must be swept on ROWS PER EXPERT, and the
-    n-token values map onto it through that ratio. Sweeping MoE at M=2048 as if it were a dense GEMM measures a
-    shape that never occurs.
+    THE MEAN DOES NOT DETERMINE THE KERNEL SHAPE. The pinned
+    `token-topk-hot16x4-wor-sm64-s44-v1` fixture routes each token to eight distinct experts, with sixteen experts
+    carrying popularity weight four. At M=1/2/4 it produces (active,Mmax)=(8,1),(15,2),(30,3), so compact
+    capacities 1/2/4 are each exercised by a real routing histogram rather than by asserting an expert row count.
+    At M=64/2048/4096 its Mmax is 12/239/447, beyond every compact build. The fixture implementation and its
+    deterministic ladder are gated in `moe_router_fixture.hpp`; sweeping MoE at global M as if it were dense still
+    measures a shape that never occurs.
 
     AND IT MUST BE RAGGED, NOT UNIFORM (user, 2026-08-04). That average is the mean of a distribution the router
     produces, and the thing the MoE kernel is actually fighting -- masked rows -- is a property of the SPREAD, not
@@ -164,13 +164,12 @@ def main() -> int:
         for nm, n, k, split in projections(cfg):
             print(f"     {nm:<12} n={n:<6} k={k:<6} {split}-parallel")
         if cfg["kind"] == "moe":
-            # THE LINE THAT REFRAMES THE SWEEP. At M<=4 no expert gets two rows: the kernel visits a SUBSET of
-            # experts and does one row in each. That is not a small-M GEMM, it is the Mmax==1 shape.
+            # This is the MEAN only. The pinned token->top-k fixture prints the collision tail and Mmax itself;
+            # capacities are selected from that histogram, never from this quotient.
             print(f"     rows/expert = M*{cfg['topk']}/{cfg['experts']} = M/{cfg['experts']//cfg['topk']}:")
             for m in N_TOKENS:
                 r = rows_per_expert(m, cfg["experts"], cfg["topk"])
-                note = f"  <- only {m*cfg['topk']} experts touched, ONE row each" if r < 1 else ""
-                print(f"        M={m:<5} {r:>7.2f}{note}")
+                print(f"        M={m:<5} {r:>7.2f}")
         print()
 
     if a.confirm:

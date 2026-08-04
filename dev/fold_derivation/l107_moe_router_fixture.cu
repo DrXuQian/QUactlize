@@ -18,6 +18,12 @@ int main() {
     std::printf("T=%-4d total=%-5d active=%-3d Mmax=%-3d compact=%d%s\n",
                 tokens[i], r.total, r.active, r.max, cap, ok ? "" : why);
   }
+  bad += !moe_router_fixture::compact_build_accepts(0, 447);  // ordinary path is not capacity-limited
+  bad += !moe_router_fixture::compact_build_accepts(1, 1);
+  bad +=  moe_router_fixture::compact_build_accepts(1, 2);    // compact undersize MUST refuse
+  bad += !moe_router_fixture::compact_build_accepts(2, 2);
+  bad +=  moe_router_fixture::compact_build_accepts(2, 3);
+  bad += !moe_router_fixture::compact_build_accepts(4, 3);
   std::printf("%s bad=%d\n", moe_router_fixture::kName, bad);
   return bad ? 1 : 0;
 }
