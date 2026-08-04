@@ -296,6 +296,9 @@ void launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
     { {}, (ElementC const**)nullptr, StrideC{}, ptr_D, stride_D },
     hw
   };
+  args.representative_m = m;
+  args.representative_n = n;
+  args.representative_k = k;
   if constexpr (!std::is_void_v<PlaneB2>) {
     args.mainloop.ptr_B2 = B2;
     // PER-PLANE N-FOLD. Plane 2 is the SPARSER plane, so at the same Block_K its contiguous run is 2x/4x smaller and
@@ -333,15 +336,22 @@ void launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   // MOEG_FORCE3D (diagnostic): force the 3D Mmax grid + blockIdx.z decode even for ragged (small experts idle)
   // to isolate whether the ragged gap is the O(L) scan (jumps -> yes) or load-imbalance (unchanged -> no).
   { int const TMv = int(cute::size<0>(TileShape{}));
-    int const mt0 = int(cute::ceil_div(int(cute::get<0>(group_shapes_host[0])), TMv));
-    int mt_max = mt0; bool uni = true;
-    for (int e = 1; e < L; ++e) {
-      int const m = int(cute::ceil_div(int(cute::get<0>(group_shapes_host[e])), TMv));
-      if (m > mt_max) mt_max = m;
-      if (m != mt0) uni = false;
+    if (group_shapes_host != nullptr) {
+      int const mt0 = int(cute::ceil_div(int(cute::get<0>(group_shapes_host[0])), TMv));
+      int mt_max = mt0; bool uni = true;
+      for (int e = 1; e < L; ++e) {
+        int const me = int(cute::ceil_div(int(cute::get<0>(group_shapes_host[e])), TMv));
+        if (me > mt_max) mt_max = me;
+        if (me != mt0) uni = false;
+      }
+      bool const force3d = std::getenv("MOEG_FORCE3D") != nullptr;
+      args.mtiles_uniform = uni ? mt0 : (force3d ? mt_max : 0);
+    } else {
+      // A device-only caller cannot read the ragged tile sum without synchronising. Use the caller's M upper
+      // bound for a conservative 3D grid; the kernel already rejects tiles beyond each device-resident M_e.
+      args.mtiles_uniform = int(cute::ceil_div(m, TMv));
     }
-    bool const force3d = std::getenv("MOEG_FORCE3D") != nullptr;
-    args.mtiles_uniform = uni ? mt0 : (force3d ? mt_max : 0); }
+  }
   if (const char* e = std::getenv("MOEG_PROBE")) args.probe = std::atoi(e);   // routing probe (test_moe_grouped_probe)
 
   Gemm gemm;
@@ -354,10 +364,13 @@ void launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   // NOT use the scheduler workspace, so it's free). AFTER initialize (no clobber), BEFORE run. Uniform path
   // (mtiles_uniform>0) uses blockIdx.z and ignores this. Blocking copy -> ordered before run; L+1 ints, tiny.
   if (args.mtiles_uniform == 0 && workspace != nullptr && !prefix_ready) {
-    std::vector<int> pfx(L + 1); pfx[0] = 0;
     int const TMv = int(cute::size<0>(TileShape{}));
-    for (int e = 0; e < L; ++e) pfx[e + 1] = pfx[e] + int(cute::ceil_div(int(cute::get<0>(group_shapes_host[e])), TMv));
-    hggcMemcpy(workspace, pfx.data(), sizeof(int) * (L + 1), hggcMemcpyHostToDevice);
+    if (group_shapes_host != nullptr) {
+      std::vector<int> pfx(L + 1); pfx[0] = 0;
+      for (int e = 0; e < L; ++e)
+        pfx[e + 1] = pfx[e] + int(cute::ceil_div(int(cute::get<0>(group_shapes_host[e])), TMv));
+      hggcMemcpy(workspace, pfx.data(), sizeof(int) * (L + 1), hggcMemcpyHostToDevice);
+    }
   }
   gemm.run(stream);
 }

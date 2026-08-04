@@ -111,7 +111,12 @@ public:
     TileSchedulerArguments scheduler{};
     int probe = 0;   // debug: 0=normal; 1=ROUTING probe (skip GEMM, write expert+1 to every output element)
     int const* group_M = nullptr;   // device [L] per-expert M_e; O(L) decode of blockIdx.x -> (expert,m_tile)
-    int mtiles_uniform = 0;         // >0: all experts have this many m-tiles -> O(1) decode; 0: ragged, scan group_M
+    int mtiles_uniform = 0;         // >0: 3D grid's per-expert M-tile bound; 0: flat ragged grid, scan group_M
+    // Mainloop/epilogue need one representative shape for their uniform N/K strides. Device-only grouped callers
+    // deliberately omit host_problem_shapes, so carry that shape independently of the scheduler's host fast path.
+    int representative_m = 0;
+    int representative_n = 0;
+    int representative_k = 0;
     // IN-KERNEL SPLIT-K. >1 slices the K loop across gridDim.z so all S slices' CTAs are resident in ONE launch.
     // Doing it on the host instead -- S launches on a stream -- serialises them and raises no occupancy at all:
     // measured 23.49 / 44.51 / 69.70 / 121.37 us for S = 1,2,4,8, i.e. linear in S.
@@ -135,6 +140,7 @@ public:
     int probe = 0;
     int const* group_M = nullptr;
     int mtiles_uniform = 0;
+    int representative_n = 0;
     int splitk = 1;
   };
 
@@ -158,14 +164,17 @@ public:
     // to compute scale_k=K/gs, the (N,scale_k,L) scale layout, and the L-strided D. Build a representative
     // rank-4 shape from the group shapes so those L-strided planes span all experts.
     auto host0 = problem_shapes.get_host_problem_shape(0);
-    auto rep_mnkl = cute::make_shape(int(get<0>(host0)), int(get<1>(host0)), int(get<2>(host0)), problem_shapes.groups());
+    int const rep_m = args.representative_m > 0 ? args.representative_m : int(get<0>(host0));
+    int const rep_n = args.representative_n > 0 ? args.representative_n : int(get<1>(host0));
+    int const rep_k = args.representative_k > 0 ? args.representative_k : int(get<2>(host0));
+    auto rep_mnkl = cute::make_shape(rep_m, rep_n, rep_k, problem_shapes.groups());
 
     return {
       args.mode,
       problem_shapes,
       CollectiveMainloop::to_underlying_arguments(rep_mnkl, args.mainloop, /*workspace=*/nullptr),
       CollectiveEpilogue::to_underlying_arguments(rep_mnkl, args.epilogue, /*workspace=*/nullptr),
-      hw_info, scheduler, workspace, args.probe, args.group_M, args.mtiles_uniform,
+      hw_info, scheduler, workspace, args.probe, args.group_M, args.mtiles_uniform, rep_n,
       args.splitk < 1 ? 1 : args.splitk
     };
   }
@@ -195,6 +204,10 @@ public:
   static dim3 get_grid_shape(Params const& params) {
     int const L = params.problem_shape.groups();
     int const TM = cute::size<0>(TileShape{}), TN = cute::size<1>(TileShape{});
+    int const S = params.splitk < 1 ? 1 : params.splitk;
+    if (params.mtiles_uniform > 0) {
+      return dim3(params.mtiles_uniform, int(cute::ceil_div(params.representative_n, TN)), L * S);
+    }
     int total_m_tiles = 0, N = 1, mt0 = -1, mt_max = 0; bool uni = true;
     for (int e = 0; e < L; ++e) {
       auto ps = params.problem_shape.get_host_problem_shape(e);
@@ -206,7 +219,6 @@ public:
     bool const force3d = std::getenv("MOEG_FORCE3D") != nullptr;   // diagnostic: force 3D Mmax grid for ragged
     // UNIFORM (or forced): 3D grid (mt_max, N_tiles, L), blockIdx.z=expert, O(1) decode. small experts' extra
     // m-tiles early-exit (idle). RAGGED default: flat grid (total,N,1), no idle blocks but O(L) decode scan.
-    int const S = params.splitk < 1 ? 1 : params.splitk;
     // THE SLICE LIVES ON z. The ragged (flat) path leaves z unused, so it is free there; the uniform path already
     // spends z on the expert, so the two are packed as z = expert*S + slice -- the same packing
     // ppu_aiu_gemm_parallel.hpp uses for (l, slice).
@@ -238,8 +250,8 @@ public:
     int flat = int(blockIdx.x), n_idx = int(blockIdx.y);
     int expert = -1, m_idx = 0, slice = 0;
     if (params.mtiles_uniform > 0) {
-      // UNIFORM: 3D grid (mt0, N_tiles, L) -> expert = blockIdx.z (O(1)), m_idx = blockIdx.x (local m-tile).
-      // Same grid/raster as the old fast path; recovers the ~5% the flat grid lost on the balanced case.
+      // 3D grid (M-tile bound, N_tiles, L) -> expert = blockIdx.z (O(1)), m_idx = blockIdx.x. The normal host
+      // path selects it for uniform shapes; device-only callers may supply Mmax and let the guard below trim it.
       // z = expert*S + slice
       expert = int(blockIdx.z) / S;  slice = int(blockIdx.z) % S;  m_idx = flat;
     } else {

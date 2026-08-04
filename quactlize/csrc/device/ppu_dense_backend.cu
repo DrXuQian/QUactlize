@@ -7,6 +7,7 @@
 #include "fpA_intB_ppu.cuh"
 #include "moe_grouped_ppu.cuh"
 #include "gemv_lowbit/gemv_rt.hpp"
+#include "quactlize_ppu_device.h"
 
 namespace {
 
@@ -14,6 +15,8 @@ using ppu_gemv::DevBuf;
 using half_t = cutlass::half_t;
 using QM = fpa_intb_ppu::QuantMode;
 using GQM = moe_grouped_ppu::QuantMode;
+using GS = moe_grouped_ppu::GroupShape;
+using DS = moe_grouped_ppu::DStride;
 using Q4PackedUnit = cutlass::gguf_packed::Unit<cutlass::gguf_packed::Fmt::Q4K>;
 static_assert(Q4PackedUnit::kUnitBytes == 16, "Q4_K's byte-neutral packed unit is the shipped 16-byte unit");
 #if defined(PPU_PACKED_FORMAT)
@@ -22,6 +25,81 @@ static constexpr auto kSelectedPackedFmt = cutlass::gguf_packed::Fmt(PPU_PACKED_
 static constexpr auto kSelectedPackedFmt = cutlass::gguf_packed::Fmt::Q4K;
 #endif
 using SelectedPackedUnit = cutlass::gguf_packed::Unit<kSelectedPackedFmt>;
+
+constexpr size_t align16(size_t value) { return (value + 15) & ~size_t(15); }
+
+bool selected_fully_quantized_qtype(int qtype, int k) {
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
+#if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
+  return qtype == 12;
+#elif PPU_PACKED_FORMAT == 2
+  return qtype == 10;
+#elif PPU_PACKED_FORMAT == 1
+  return qtype == 13;
+#elif PPU_PACKED_FORMAT == 3
+  return qtype == 11 && k % 512 == 0;
+#elif PPU_PACKED_FORMAT == 4
+  return qtype == 14 && k % 512 == 0;
+#else
+  return false;
+#endif
+#else
+  (void)qtype; (void)k;
+  return false;
+#endif
+}
+
+size_t dense_workspace_bytes(int m, int n) {
+  return size_t(cutlass::ceil_div(m, 64)) * cutlass::ceil_div(n, 64) * sizeof(int);
+}
+
+struct GroupedWorkspaceLayout {
+  size_t shapes;
+  size_t out_ptrs;
+  size_t out_strides;
+  size_t rows;
+  size_t kernel;
+  size_t kernel_bytes;
+  size_t total;
+};
+
+GroupedWorkspaceLayout grouped_workspace_layout(int max_rows, int n, int experts) {
+  GroupedWorkspaceLayout layout{};
+  size_t cursor = 0;
+  layout.shapes = cursor; cursor = align16(cursor + sizeof(GS) * size_t(experts));
+  layout.out_ptrs = cursor; cursor = align16(cursor + sizeof(half_t*) * size_t(experts));
+  layout.out_strides = cursor; cursor = align16(cursor + sizeof(DS) * size_t(experts));
+  layout.rows = cursor; cursor = align16(cursor + sizeof(int) * size_t(experts));
+  layout.kernel = cursor;
+  layout.kernel_bytes = size_t(cutlass::ceil_div(max_rows, 16)) * cutlass::ceil_div(n, 64)
+                      * size_t(experts) * 64;
+  layout.total = layout.kernel + layout.kernel_bytes;
+  return layout;
+}
+
+template <class Low, class High = void, int GroupSize = 16, int TileK = 256>
+int dense_fully_quantized_device(uint16_t const* act, uint8_t const* low, uint8_t const* high,
+                                 uint8_t const* units, uint16_t* out, int m, int n, int k,
+                                 void* workspace, size_t workspace_bytes, hggcStream_t stream) {
+  size_t const need = dense_workspace_bytes(m, n);
+  if (!workspace || workspace_bytes < need) return 37;
+  constexpr int ScaleGroups = TileK / GroupSize;
+  using Tile = cute::Shape<cute::_64, cute::_64, cute::C<TileK>>;
+  using Warp = cute::Shape<cute::_32, cute::_32, cute::C<TileK>>;
+  bool const launched = fpa_intb_ppu::generic_launcher<QM::FinegrainedScaleZero,
+      cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
+      Tile, cute::Shape<cute::_64, cute::C<ScaleGroups>>, Warp, 3, true, Low, High, true>(
+          reinterpret_cast<half_t const*>(act), reinterpret_cast<Low const*>(low),
+          reinterpret_cast<half_t const*>(units), nullptr, reinterpret_cast<half_t*>(out),
+          m, n, k, GroupSize, 1, static_cast<char*>(workspace), workspace_bytes, stream,
+          [&]() {
+            if constexpr (std::is_void_v<High>) return static_cast<High const*>(nullptr);
+            else return reinterpret_cast<High const*>(high);
+          }());
+  if (!launched) return 31;
+  return ppu_gemv::rt_check_launch("fully-quantized dense GEMM enqueue")
+      ? 0 : ppu_gemv::kRuntimeError;
+}
 
 template <class Low, class High = void, int GroupSize = 16, int TileK = 256, bool PackedScale = false>
 int dense(uint16_t const* act, uint8_t const* low, uint8_t const* high,
@@ -50,22 +128,28 @@ int dense(uint16_t const* act, uint8_t const* low, uint8_t const* high,
   if constexpr (HighBits != 0) dh.from_host(high);
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
 
-  using Tile = cute::Shape<cute::_64, cute::_64, cute::C<TileK>>;
-  using Warp = cute::Shape<cute::_32, cute::_32, cute::C<TileK>>;
-  // n/k are 256-aligned at the ABI, so the artifact's xplane interleave and LayoutB are compile-time facts. Both
-  // live k-quant group sizes reuse Gs32; ScaleTileShape carries the real 16 or 8 groups in this K tile.
-  constexpr int ScaleGroups = TileK / GroupSize;
-  bool const launched = fpa_intb_ppu::generic_launcher<QM::FinegrainedScaleZero,
-      cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
-      Tile, cute::Shape<cute::_64, cute::C<ScaleGroups>>, Warp, 3, true, Low, High, PackedScale>(
-          da.as<half_t>(), dl.as<Low>(), ds.as<half_t>(),
-          PackedScale ? nullptr : dz.as<half_t>(), dout.as<half_t>(),
-          m, n, k, GroupSize, 1, ws.as<char>(), ws_bytes, nullptr,
-          [&]() {
-            if constexpr (std::is_void_v<High>) return static_cast<High const*>(nullptr);
-            else return dh.as<High>();
-          }());
-  if (!launched) return 31;
+  int launch_rc = 0;
+  if constexpr (PackedScale) {
+    launch_rc = dense_fully_quantized_device<Low, High, GroupSize, TileK>(
+        reinterpret_cast<uint16_t const*>(da.p), reinterpret_cast<uint8_t const*>(dl.p),
+        reinterpret_cast<uint8_t const*>(dh.p), reinterpret_cast<uint8_t const*>(ds.p),
+        reinterpret_cast<uint16_t*>(dout.p), m, n, k, ws.p, ws_bytes, nullptr);
+  } else {
+    using Tile = cute::Shape<cute::_64, cute::_64, cute::C<TileK>>;
+    using Warp = cute::Shape<cute::_32, cute::_32, cute::C<TileK>>;
+    constexpr int ScaleGroups = TileK / GroupSize;
+    bool const launched = fpa_intb_ppu::generic_launcher<QM::FinegrainedScaleZero,
+        cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
+        Tile, cute::Shape<cute::_64, cute::C<ScaleGroups>>, Warp, 3, true, Low, High, false>(
+            da.as<half_t>(), dl.as<Low>(), ds.as<half_t>(), dz.as<half_t>(), dout.as<half_t>(),
+            m, n, k, GroupSize, 1, ws.as<char>(), ws_bytes, nullptr,
+            [&]() {
+              if constexpr (std::is_void_v<High>) return static_cast<High const*>(nullptr);
+              else return dh.as<High>();
+            }());
+    launch_rc = launched ? 0 : 31;
+  }
+  if (launch_rc) return launch_rc;
   ppu_gemv::rt_sync(PackedScale ? "fully-quantized dense GEMM" : "scale-first dense GEMM");
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
   return ppu_gemv::rt_copy_output(dout, out, size_t(m) * n);
@@ -167,7 +251,101 @@ extern "C" int quactlize_ppu_dense_fully_quantized(uint16_t const* act, uint8_t 
 #endif
 }
 
+extern "C" int64_t quactlize_ppu_dense_fully_quantized_workspace_bytes_v1(
+    int m, int n, int k, int qtype) {
+  if (m <= 0 || n <= 0 || n % 256 || k <= 0 || k % 256 || !selected_fully_quantized_qtype(qtype, k)) return -1;
+  return int64_t(dense_workspace_bytes(m, n));
+}
+
+extern "C" int quactlize_ppu_dense_fully_quantized_dev_v1(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
+    int m, int n, int k, int qtype, void* workspace, int64_t workspace_bytes, void* stream) {
+  int64_t const need = quactlize_ppu_dense_fully_quantized_workspace_bytes_v1(m, n, k, qtype);
+  if (!act || !low || !units || !out || !workspace || need < 0 || workspace_bytes < need) return 30;
+  ppu_gemv::rt_clear_error();
+  hggcStream_t const s = static_cast<hggcStream_t>(stream);
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
+#if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
+  return dense_fully_quantized_device<cutlass::int4b_t, void, 32, 256>(
+      act, low, nullptr, units, out, m, n, k, workspace, size_t(workspace_bytes), s);
+#elif PPU_PACKED_FORMAT == 2
+  return dense_fully_quantized_device<cutlass::uint2b_t, void, 16, 256>(
+      act, low, nullptr, units, out, m, n, k, workspace, size_t(workspace_bytes), s);
+#elif PPU_PACKED_FORMAT == 1
+  if (!high) return 33;
+  return dense_fully_quantized_device<cutlass::int4b_t, cutlass::uint1b_t, 32, 256>(
+      act, low, high, units, out, m, n, k, workspace, size_t(workspace_bytes), s);
+#elif PPU_PACKED_FORMAT == 3
+  if (!high) return 33;
+  return dense_fully_quantized_device<cutlass::uint2b_t, cutlass::uint1b_t, 16, 256>(
+      act, low, high, units, out, m, n, k, workspace, size_t(workspace_bytes), s);
+#elif PPU_PACKED_FORMAT == 4
+  if (!high) return 33;
+  return dense_fully_quantized_device<cutlass::int4b_t, cutlass::uint2b_t, 16, 128>(
+      act, low, high, units, out, m, n, k, workspace, size_t(workspace_bytes), s);
+#else
+  return 35;
+#endif
+#else
+  (void)high; (void)stream;
+  return 34;
+#endif
+}
+
 namespace {
+
+static __global__ void grouped_fully_quantized_metadata(
+    int const* offsets, half_t* out, GS* shapes, half_t** out_ptrs, DS* out_strides, int* rows,
+    int n, int k, int experts) {
+  int const e = blockIdx.x * blockDim.x + threadIdx.x;
+  if (e >= experts) return;
+  int const begin = offsets[e];
+  int const count = offsets[e + 1] - begin;
+  rows[e] = count;
+  shapes[e] = cute::make_shape(count, n, k);
+  out_ptrs[e] = out + int64_t(begin) * n;
+  out_strides[e] = cutlass::make_cute_packed_stride(DS{}, cute::make_shape(count, n, 1));
+}
+
+template <class Low, class High, int GroupSize, int TileK = 256>
+int grouped_fully_quantized_device(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
+    int const* offsets, uint16_t* out, int total_rows, int n, int k, int experts, int max_rows,
+    void* workspace, size_t workspace_bytes, hggcStream_t stream) {
+  GroupedWorkspaceLayout const layout = grouped_workspace_layout(max_rows, n, experts);
+  if (!workspace || workspace_bytes < layout.total) return 37;
+  auto* base = static_cast<uint8_t*>(workspace);
+  auto* shapes = reinterpret_cast<GS*>(base + layout.shapes);
+  auto* out_ptrs = reinterpret_cast<half_t**>(base + layout.out_ptrs);
+  auto* out_strides = reinterpret_cast<DS*>(base + layout.out_strides);
+  auto* rows = reinterpret_cast<int*>(base + layout.rows);
+  auto* kernel_workspace = reinterpret_cast<char*>(base + layout.kernel);
+  auto* out_half = reinterpret_cast<half_t*>(out);
+
+  grouped_fully_quantized_metadata<<<(experts + 127) / 128, 128, 0, stream>>>(
+      offsets, out_half, shapes, out_ptrs, out_strides, rows, n, k, experts);
+  if (!ppu_gemv::rt_check_launch("fully-quantized grouped metadata enqueue")) return ppu_gemv::kRuntimeError;
+
+  constexpr int ScaleGroups = TileK / GroupSize;
+  using GTile = cute::Shape<cute::_16, cute::_128, cute::C<TileK>>;
+  using GScale = cute::Shape<cute::_128, cute::C<ScaleGroups>>;
+  using GWarp = cute::Shape<cute::_16, cute::_16, cute::C<TileK>>;
+  int const failures = moe_grouped_ppu::moeg_fail_count();
+  moe_grouped_ppu::launch<GQM::FinegrainedScaleZero,
+                          cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
+                          GTile, GScale, GWarp, 2, true, Low, High, true>(
+      reinterpret_cast<half_t const*>(act), reinterpret_cast<Low const*>(low),
+      reinterpret_cast<half_t const*>(units), nullptr,
+      out_ptrs, out_strides, rows, max_rows, n, k, experts, GroupSize,
+      shapes, nullptr, offsets, kernel_workspace, layout.kernel_bytes, stream,
+      [&]() {
+        if constexpr (std::is_void_v<High>) return static_cast<High const*>(nullptr);
+        else return reinterpret_cast<High const*>(high);
+      }(), k, false, 1, false);
+  if (moe_grouped_ppu::moeg_fail_count() != failures) return 31;
+  return ppu_gemv::rt_check_launch("fully-quantized grouped GEMM enqueue")
+      ? 0 : ppu_gemv::kRuntimeError;
+}
 
 template <class Low, class High, int GroupSize, int TileK = 256>
 int grouped_fully_quantized(uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
@@ -287,6 +465,57 @@ extern "C" int quactlize_ppu_grouped_fully_quantized(
 #endif
 #else
   (void)qtype;
+  return 34;
+#endif
+}
+
+extern "C" int64_t quactlize_ppu_grouped_fully_quantized_workspace_bytes_v1(
+    int max_rows, int n, int k, int experts, int qtype) {
+  if (max_rows <= 0 || n <= 0 || n % 256 || k <= 0 || k % 256 || experts <= 0 ||
+      !selected_fully_quantized_qtype(qtype, k)) return -1;
+  return int64_t(grouped_workspace_layout(max_rows, n, experts).total);
+}
+
+extern "C" int quactlize_ppu_grouped_fully_quantized_dev_v1(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
+    int const* offsets, uint16_t* out,
+    int total_rows, int n, int k, int experts, int max_rows, int qtype,
+    void* workspace, int64_t workspace_bytes, void* stream) {
+  int64_t const need = quactlize_ppu_grouped_fully_quantized_workspace_bytes_v1(
+      max_rows, n, k, experts, qtype);
+  if (!act || !low || !units || !offsets || !out || !workspace || total_rows <= 0 ||
+      need < 0 || workspace_bytes < need) return 30;
+  ppu_gemv::rt_clear_error();
+  hggcStream_t const s = static_cast<hggcStream_t>(stream);
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
+#if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
+  return grouped_fully_quantized_device<cutlass::int4b_t, void, 32>(
+      act, low, nullptr, units, offsets, out, total_rows, n, k, experts, max_rows,
+      workspace, size_t(workspace_bytes), s);
+#elif PPU_PACKED_FORMAT == 2
+  return grouped_fully_quantized_device<cutlass::uint2b_t, void, 16>(
+      act, low, nullptr, units, offsets, out, total_rows, n, k, experts, max_rows,
+      workspace, size_t(workspace_bytes), s);
+#elif PPU_PACKED_FORMAT == 1
+  if (!high) return 33;
+  return grouped_fully_quantized_device<cutlass::int4b_t, cutlass::uint1b_t, 32>(
+      act, low, high, units, offsets, out, total_rows, n, k, experts, max_rows,
+      workspace, size_t(workspace_bytes), s);
+#elif PPU_PACKED_FORMAT == 3
+  if (!high) return 33;
+  return grouped_fully_quantized_device<cutlass::uint2b_t, cutlass::uint1b_t, 16, 256>(
+      act, low, high, units, offsets, out, total_rows, n, k, experts, max_rows,
+      workspace, size_t(workspace_bytes), s);
+#elif PPU_PACKED_FORMAT == 4
+  if (!high) return 33;
+  return grouped_fully_quantized_device<cutlass::int4b_t, cutlass::uint2b_t, 16, 128>(
+      act, low, high, units, offsets, out, total_rows, n, k, experts, max_rows,
+      workspace, size_t(workspace_bytes), s);
+#else
+  return 35;
+#endif
+#else
+  (void)high; (void)stream;
   return 34;
 #endif
 }
