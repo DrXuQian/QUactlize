@@ -18,6 +18,7 @@
 #include "gguf_vecdot.hpp"
 #include "gemv_lowbit/gemv_launcher.hpp"
 #include "gemv_lowbit/gemv_rt.hpp"
+#include "quactlize_ppu_device.h"
 
 namespace {
 
@@ -33,23 +34,23 @@ template <KType T> constexpr int raw_block_bytes() {
 template <KType T, int RowsPerWarp, bool Grouped, bool PerRowActivation = false>
 void launch_native_fixed(uint8_t const* blocks, VecdotActivation const* x, float* out,
                          int rows, int blocks_per_row, int const* offsets,
-                         int max_rows, int experts) {
+                         int max_rows, int experts, gemv_stream_t stream = nullptr) {
   constexpr int kThreads = 256;
   dim3 const grid(gguf_scale::vecdot::vecdot_grid_size<T, RowsPerWarp>(rows, kThreads),
                   Grouped ? max_rows : 1, Grouped ? experts : 1);
-  gguf_scale::vecdot::vecdot_rows_kernel<T, RowsPerWarp, Grouped, PerRowActivation><<<grid, kThreads>>>(
+  gguf_scale::vecdot::vecdot_rows_kernel<T, RowsPerWarp, Grouped, PerRowActivation><<<grid, kThreads, 0, stream>>>(
       blocks, raw_block_bytes<T>(), x, out, rows, blocks_per_row, offsets);
 }
 
 template <KType T, bool Grouped, bool PerRowActivation = false>
 void launch_native(uint8_t const* blocks, VecdotActivation const* x, float* out,
                    int rows, int blocks_per_row, int const* offsets,
-                   int max_rows, int experts) {
+                   int max_rows, int experts, gemv_stream_t stream = nullptr) {
   switch (gguf_scale::vecdot::vecdot_rows_per_warp<T>(rows, blocks_per_row)) {
-    case 1: launch_native_fixed<T, 1, Grouped, PerRowActivation>(blocks, x, out, rows, blocks_per_row, offsets, max_rows, experts); break;
-    case 2: launch_native_fixed<T, 2, Grouped, PerRowActivation>(blocks, x, out, rows, blocks_per_row, offsets, max_rows, experts); break;
-    case 4: launch_native_fixed<T, 4, Grouped, PerRowActivation>(blocks, x, out, rows, blocks_per_row, offsets, max_rows, experts); break;
-    case 8: launch_native_fixed<T, 8, Grouped, PerRowActivation>(blocks, x, out, rows, blocks_per_row, offsets, max_rows, experts); break;
+    case 1: launch_native_fixed<T, 1, Grouped, PerRowActivation>(blocks, x, out, rows, blocks_per_row, offsets, max_rows, experts, stream); break;
+    case 2: launch_native_fixed<T, 2, Grouped, PerRowActivation>(blocks, x, out, rows, blocks_per_row, offsets, max_rows, experts, stream); break;
+    case 4: launch_native_fixed<T, 4, Grouped, PerRowActivation>(blocks, x, out, rows, blocks_per_row, offsets, max_rows, experts, stream); break;
+    case 8: launch_native_fixed<T, 8, Grouped, PerRowActivation>(blocks, x, out, rows, blocks_per_row, offsets, max_rows, experts, stream); break;
   }
 }
 
@@ -87,6 +88,14 @@ int native_dense(uint8_t const* blocks, uint16_t const* x, float* out, int rows,
 }
 
 template <KType T>
+int native_dense_device(uint8_t const* blocks, uint16_t const* x, float* out,
+                        int rows, int bpr, gemv_stream_t stream) {
+  launch_native<T, false>(blocks, reinterpret_cast<VecdotActivation const*>(x), out,
+                          rows, bpr, nullptr, 1, 1, stream);
+  return ppu_gemv::rt_check_launch("native dense GEMV enqueue") ? 0 : ppu_gemv::kRuntimeError;
+}
+
+template <KType T>
 int native_moe(uint8_t const* blocks, uint16_t const* x, int const* offsets, float* out,
                int n, int bpr, int experts, int total_rows, int max_rows) {
   ppu_gemv::rt_clear_error();
@@ -107,6 +116,22 @@ int native_moe(uint8_t const* blocks, uint16_t const* x, int const* offsets, flo
 // decode path consumes those exact bytes; unlike SCALE_FIRST it neither materialises nor reads fp16 affine planes.
 // experts==0 is one dense decode row. Grouped mode uses the same gathered-row/offset contract as native_moe.
 template <KType T>
+int bc_gemv_device(uint16_t const* x, uint8_t const* low, uint8_t const* high, uint8_t const* units,
+                   int const* offsets, float* out, int total_rows, int n, int k, int experts, int max_rows,
+                   gemv_stream_t stream) {
+  int const bpr = k / 256;
+  if (experts > 0) {
+    gguf_scale::bc_vecdot::launch<T, true>(low, high, units, reinterpret_cast<VecdotActivation const*>(x),
+                                           offsets, out, n, bpr, experts, max_rows, stream);
+  } else {
+    gguf_scale::bc_vecdot::launch<T, false>(low, high, units, reinterpret_cast<VecdotActivation const*>(x),
+                                            nullptr, out, n, bpr, 1, 1, stream);
+  }
+  return ppu_gemv::rt_check_launch(experts > 0 ? "BC MoE GEMV enqueue" : "BC dense GEMV enqueue")
+      ? 0 : ppu_gemv::kRuntimeError;
+}
+
+template <KType T>
 int bc_gemv(uint16_t const* x, uint8_t const* low, uint8_t const* high, uint8_t const* units,
             int const* offsets, float* out, int total_rows, int n, int k, int experts, int max_rows) {
   ppu_gemv::rt_clear_error();
@@ -124,13 +149,9 @@ int bc_gemv(uint16_t const* x, uint8_t const* low, uint8_t const* high, uint8_t 
   dx.from_host(x); dl.from_host(low); if constexpr (BT::Hi != 0) dh.from_host(high); du.from_host(units);
   if (experts > 0) doff.from_host(offsets);
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
-  if (experts > 0) {
-    gguf_scale::bc_vecdot::launch<T, true>(dl.as<uint8_t>(), dh.as<uint8_t>(), du.as<uint8_t>(),
-        dx.as<VecdotActivation>(), doff.as<int>(), dout.as<float>(), n, bpr, experts, max_rows);
-  } else {
-    gguf_scale::bc_vecdot::launch<T, false>(dl.as<uint8_t>(), dh.as<uint8_t>(), du.as<uint8_t>(),
-        dx.as<VecdotActivation>(), nullptr, dout.as<float>(), n, bpr, 1, 1);
-  }
+  int const launch_rc = bc_gemv_device<T>(dx.as<uint16_t>(), dl.as<uint8_t>(), dh.as<uint8_t>(), du.as<uint8_t>(),
+      doff.as<int>(), dout.as<float>(), total_rows, n, k, experts, max_rows, nullptr);
+  if (launch_rc) return launch_rc;
   ppu_gemv::rt_sync(experts > 0 ? "BC MoE GEMV" : "BC dense GEMV");
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
   return ppu_gemv::rt_copy_output(dout, out, size_t(total_rows) * n);
@@ -255,6 +276,19 @@ extern "C" int quactlize_ppu_vecdot_dense(uint8_t const* b, int64_t block_bytes,
 #undef RUN
 }
 
+extern "C" int quactlize_ppu_vecdot_dense_dev_v1(uint8_t const* b, int64_t block_bytes,
+                                                    uint16_t const* x, float* out,
+                                                    int rows, int bpr, int qtype, void* stream) {
+  if (!b || !x || !out || rows <= 0 || bpr <= 0) return 12;
+  ppu_gemv::rt_clear_error();
+  gemv_stream_t const s = static_cast<gemv_stream_t>(stream);
+#define RUN(T) (block_bytes == raw_block_bytes<KType::T>() \
+                ? native_dense_device<KType::T>(b, x, out, rows, bpr, s) : 12)
+  switch (qtype) { case 10: return RUN(Q2_K); case 11: return RUN(Q3_K); case 12: return RUN(Q4_K);
+                   case 13: return RUN(Q5_K); case 14: return RUN(Q6_K); default: return 3; }
+#undef RUN
+}
+
 extern "C" int quactlize_ppu_vecdot_moe(uint8_t const* b, int64_t block_bytes, uint16_t const* x,
                                           int const* offsets, float* out, int n, int bpr, int experts,
                                           int total_rows, int max_rows, int qtype) {
@@ -274,6 +308,23 @@ extern "C" int quactlize_ppu_bc_gemv(uint16_t const* x, uint8_t const* low, uint
 #define RUN(T) (gguf_scale::bc_vecdot::Traits<KType::T>::Hi && !high ? 14 : \
                 ((k / 256) % gguf_scale::packed_unit::Unit<KType::T>::kSbPerUnit ? 15 : \
                  bc_gemv<KType::T>(x,low,high,units,offsets,out,total_rows,n,k,experts,max_rows)))
+  switch (qtype) { case 10: return RUN(Q2_K); case 11: return RUN(Q3_K); case 12: return RUN(Q4_K);
+                   case 13: return RUN(Q5_K); case 14: return RUN(Q6_K); default: return 16; }
+#undef RUN
+}
+
+extern "C" int quactlize_ppu_bc_gemv_dev_v1(uint16_t const* x,
+                                               uint8_t const* low, uint8_t const* high, uint8_t const* units,
+                                               int const* offsets, float* out,
+                                               int total_rows, int n, int k, int experts, int max_rows, int qtype,
+                                               void* stream) {
+  if (!x || !low || !units || !out || total_rows <= 0 || n <= 0 || n % 256 || k <= 0 || k % 256 ||
+      experts < 0 || (experts > 0 && (!offsets || max_rows <= 0)) || (experts == 0 && total_rows != 1)) return 13;
+  ppu_gemv::rt_clear_error();
+  gemv_stream_t const s = static_cast<gemv_stream_t>(stream);
+#define RUN(T) (gguf_scale::bc_vecdot::Traits<KType::T>::Hi && !high ? 14 : \
+                ((k / 256) % gguf_scale::packed_unit::Unit<KType::T>::kSbPerUnit ? 15 : \
+                 bc_gemv_device<KType::T>(x,low,high,units,offsets,out,total_rows,n,k,experts,max_rows,s)))
   switch (qtype) { case 10: return RUN(Q2_K); case 11: return RUN(Q3_K); case 12: return RUN(Q4_K);
                    case 13: return RUN(Q5_K); case 14: return RUN(Q6_K); default: return 16; }
 #undef RUN
