@@ -1,76 +1,89 @@
-# The packed (FULLY_QUANTIZED) format: how to produce it, and how to consume it
+# `libquactlize_ppu.so` — the packed (FULLY_QUANTIZED) path, producer and consumer
 
-For the llama.cpp side. `quactlize_ppu_vecdot_dense` / `_moe` read **raw GGUF blocks**; the packed GEMM is a
-different entry point with a different input, and this file is both halves.
+For the llama.cpp side. `quactlize_ppu_vecdot_dense` / `_moe` read **raw GGUF blocks**; the packed GEMM takes a
+different input and is a different entry point. Everything below is a symbol **in the shared library** — nothing
+here asks you to compile a source file.
 
----
-
-## 0. Read this first: the consumer ABI is HOST-pointer, the producer ABI is correctly host-pointer
-
-`ppu_dense_backend.cu:41-68` — every packed GEMM entry does
-`DevBuf d(...); d.from_host(ptr); launch on the default stream; rt_sync(); dout.to_host(out);`
-
-For the **producer** that is right: packing is offline, the caller has host buffers, and a copy per tensor once
-is free. For the **consumer** it is the same defect already recorded against the vecdot path
-(`.coord/INBOX.md` 030): ggml hands you a device pointer that is already resident, and this ABI would treat it
-as host memory and re-copy the whole weight on every token, on the default stream, with a full device sync.
-
-So: **the packer below is usable today. The GEMM symbols below are the right names and shapes to build the call
-site against, but a working integration needs device-pointer variants** — same signature plus a stream, no
-allocation, no sync, no copies. That work is queued with the kernel author, deferred at the user's direction.
-Build against these names; expect a `_dev` suffix or a version bump when they land.
+An earlier version of this document pointed at source paths for the packing half. That was wrong in a way worth
+stating, because it hid the gap in §3: the library places the code planes but **cannot currently produce the
+third buffer both GEMM entries require**.
 
 ---
 
-## 1. The artifact: three buffers per tensor
+## 1. The whole symbol table
 
-`prepare` turns one GGUF tensor into **(low, high, units)**:
+Everything `extern "C"` in the library today. Grouped by what it is for, so a missing pair is visible.
 
-| buffer | what | absent when |
+| symbol | direction | note |
 |---|---|---|
-| `low` | the low code plane, placed for the AIU | never |
-| `high` | the second code plane | single-plane formats (Q2_K, Q4_K) — pass `nullptr` |
-| `units` | the format's own scale metadata, reordered into bulk-copyable units | never |
+| `quactlize_ppu_prepare_dense` | native → placed code planes | fixed per-format arrangement |
+| `quactlize_ppu_prepare_dense_for_tile` | ″ | takes `tile_k` |
+| `quactlize_ppu_recover_dense` | placed → native | the inverse |
+| `quactlize_ppu_recover_dense_for_tile` | ″ | takes `tile_k` |
+| **(missing)** | **blocks → `units`** | **see §3 — this is the gap** |
+| `quactlize_ppu_prepass_unit` | `units` → (scale, zero) | the inverse of the missing one |
+| `quactlize_ppu_dense_fully_quantized` | consume | packed dense GEMM |
+| `quactlize_ppu_grouped_fully_quantized` | consume | packed MoE GEMM |
+| `quactlize_ppu_vecdot`, `_dense`, `_moe` | consume RAW blocks | the other path, not this one |
+| `quactlize_ppu_bc_gemv`, `_gemv_lowbit`, `_dense_lowbit` | consume | GEMV / low-bit variants |
+| `quactlize_ppu_dequantize`, `_prepass` | consume RAW | dequant and online scale prepass |
 
-`units` is **byte-neutral**: the scale is not expanded to fp16 planes, it stays in the format's own bytes. That
-is the whole difference from the SCALE_FIRST cell and why storage does not grow.
+## 2. The asymmetry that decides how many libraries you build
 
-Per format:
+**The packer is format-INDEPENDENT; the GEMM is format-SPECIFIC.**
 
-| qtype | format | planes | code | TileK | scale unit (copyable) |
-|---|---|---|---|---|---|
-| 10 | Q2_K | 1 | i2 | 256 | 20 B |
-| 11 | Q3_K | 2 | i2 + i1 | 256 | 28 B (two superblocks paired) |
-| 12 | Q4_K | 1 | i4 | 256 | 16 B |
-| 13 | Q5_K | 2 | i4 + i1 | 256 | 16 B |
-| 14 | Q6_K | 2 | i4 + i2 | **128** | 36 B (paired) |
+`ppu_dense_layout.cu` contains **zero** `PPU_PACKED_FORMAT` references and switches on `qtype` 10..14 at run
+time. `ppu_dense_backend.cu` contains **sixteen** — `PPU_PACKED_FORMAT` is a compile-time macro
+(`0=Q4_K, 1=Q5_K, 2=Q2_K, 3=Q3_K, 4=Q6_K`).
 
-Q6_K's TileK is 128 and not a preference: at TK=256 the two-plane high map covers only half the logical K slots
-and produces conditioned error 8.76e-1. The inverse caught it. Do not "fix" it to 256.
+So **one build packs all five formats, and that same build computes exactly one.** Offline packing needs a
+single library, whichever format it was built for. Serving a `Q4_K_M` checkpoint — mixed by construction — needs
+one library per format present in the file, loaded side by side. `ppu_backend.cpp` already models that: it keys
+its loader state on the format and resolves `QUACTLIZE_PPU_LIB_FMT<k>` before falling back to a `_fmt<k>` splice
+of `QUACTLIZE_PPU_LIB`.
 
-The pairing rule for the unit size is `supers = 2 if per_superblock_meta_bytes % 4 else 1`, because `ppu.cp.async`
-moves only 4, 8 or 16 bytes and Q3's 14 and Q6's 18 are movable at none of them.
+Every build must define `PPU_PACKED_SCALE=1` or every packed call returns **34**.
 
 ---
 
-## 2. Producing it — C ABI (`quactlize/csrc/device/ppu_dense_layout.cu`)
+## 3. THE GAP: the library has the `units` inverse but not the forward
+
+Both GEMM entries take **(low, high, units)**. The library can produce `low` and `high`. It cannot produce
+`units` — the scale-unit reorder is `pack_unit_sb`, called from `gguf_prepass_ops.cpp` in the **torch extension's
+host code**, which is not in the shared library. `quactlize_ppu_prepass_unit` goes the other way
+(`units` → scale, zero) and is present, which is what makes the omission easy to miss: every other operation
+here comes as a pair.
+
+**Consequence for you: linking only the .so, you can place both code planes and then dead-end.** Until this
+lands, `units` must come from the Python path in §6.
+
+Requested as `.coord/INBOX.md` 035, roughly:
 
 ```c
-// Fixed per-format arrangement. qtype is the ggml enum (10..14).
+int     quactlize_ppu_prepare_units(const uint8_t *blocks, uint8_t *units, int n, int k, int qtype);
+int     quactlize_ppu_prepare_units_grouped(const uint8_t *blocks, uint8_t *units,
+                                            int n, int k, int experts, int qtype);
+int64_t quactlize_ppu_units_bytes(int n, int k, int qtype);        // so a caller can allocate
+```
+
+Exact spelling is the kernel author's call. Build against §4 and §5 now; expect these to appear.
+
+---
+
+## 4. Producing the code planes
+
+```c
+// qtype is the ggml enum: 10=Q2_K 11=Q3_K 12=Q4_K 13=Q5_K 14=Q6_K.
 int quactlize_ppu_prepare_dense(const uint8_t *low_native, const uint8_t *high_native,
                                 uint8_t *low_layout, uint8_t *high_layout,
                                 int n, int k, int qtype);
 
-// Inverse. Exists so a packing error and a compute error can be told apart -- without it the only test is
-// end-to-end and the two failure modes are indistinguishable.
 int quactlize_ppu_recover_dense(const uint8_t *low_layout, const uint8_t *high_layout,
                                 uint8_t *low_native, uint8_t *high_native,
                                 int n, int k, int qtype);
 
-// Tile-aware. SEPARATE SYMBOLS ON PURPOSE: an extension built against the old library cannot pass the extra
-// integer to it and get silence. Fold is deliberately NOT a parameter -- producer and consumer both derive it
-// from (bits, tile_k) by one expression, and a caller-supplied fold is a second source that can disagree
-// without crashing (the weight is placed for one fold and read at another: finite, wrong numbers).
+// Tile-aware. SEPARATE SYMBOLS ON PURPOSE: an extension built against the older library cannot pass the extra
+// integer to it and get silence.
 int quactlize_ppu_prepare_dense_for_tile(const uint8_t *low_native, const uint8_t *high_native,
                                          uint8_t *low_layout, uint8_t *high_layout,
                                          int n, int k, int qtype, int tile_k);
@@ -79,20 +92,85 @@ int quactlize_ppu_recover_dense_for_tile(const uint8_t *low_layout, const uint8_
                                          int n, int k, int qtype, int tile_k);
 ```
 
-Constraints: `n % 256 == 0 && k % 256 == 0`, else rc=20. Unknown qtype → rc=22.
+`n % 256 == 0 && k % 256 == 0`, else **rc=20**. Unknown qtype → **rc=22**.
 
-**The fold, which you never pass:**
+Per format:
+
+| qtype | format | planes | code | TileK | `units` unit, copyable |
+|---|---|---|---|---|---|
+| 10 | Q2_K | 1 | i2 | 256 | 20 B |
+| 11 | Q3_K | 2 | i2 + i1 | 256 | 28 B (two superblocks paired) |
+| 12 | Q4_K | 1 | i4 | 256 | 16 B |
+| 13 | Q5_K | 2 | i4 + i1 | 256 | 16 B |
+| 14 | Q6_K | 2 | i4 + i2 | **128** | 36 B (paired) |
+
+`high_native` / `high_layout` are `nullptr` for the single-plane formats.
+
+**Q6_K's 128 is not a preference.** At TK=256 the two-plane high map covers only half the logical K slots and
+produces conditioned error 8.76e-1; the inverse is what caught it. Do not "fix" it to 256.
+
+The pairing rule behind the unit size is `supers = 2 if per_superblock_meta % 4 else 1`, because `ppu.cp.async`
+moves only 4, 8 or 16 bytes and Q3's 14 and Q6's 18 are movable at none of them.
+
+**The fold is never a parameter.** Both consumers derive it, identically, from `(bits, tile_k)`:
 
 ```
 run_bytes = tile_k * bits / 8
-F         = run_bytes >= 32 ? 1 : 32 / run_bytes
+F         = run_bytes >= 32 ? 1 : 32 / run_bytes        // 32 = the AIU contiguous-delivery floor
 ```
 
-32 is the AIU's contiguous-delivery floor. Both consumers compute this identically
-(`moe_grouped_ppu.cuh:363`, `fpA_intB_ppu.cuh:151`) and `quactlize/formats.py:fold_for` is the third copy for
-the Python side; if you need it in llama.cpp, transcribe it from one of those, not from here.
+A caller-supplied fold would be a second source for a value the kernel already computes, and disagreement is not
+a crash — the weight is placed for one fold and read at another, giving finite wrong numbers.
+(`moe_grouped_ppu.cuh:363`, `fpA_intB_ppu.cuh:151`, `quactlize/formats.py:fold_for`.)
 
-## 3. Producing it — Python (`quactlize/routes.py`)
+## 5. Consuming it
+
+```c
+// DENSE. act is fp16 carried in uint16_t*; out is fp16.
+int quactlize_ppu_dense_fully_quantized(const uint16_t *act,
+                                        const uint8_t *low, const uint8_t *high, const uint8_t *units,
+                                        uint16_t *out,
+                                        int m, int n, int k, int qtype);
+
+// GROUPED (MoE). Experts lie back to back in low/high/units; rows_per_expert is int[experts] and total_rows is
+// their sum; act rows are grouped by expert in the same order.
+int quactlize_ppu_grouped_fully_quantized(const uint16_t *act,
+                                          const uint8_t *low, const uint8_t *high, const uint8_t *units,
+                                          const int *rows_per_expert,
+                                          uint16_t *out,
+                                          int total_rows, int n, int k, int experts, int qtype);
+```
+
+| rc | meaning |
+|---|---|
+| 0 | ok |
+| 30 | null pointer, non-positive extent, or `n % 256` / `k % 256` |
+| **33** | **`qtype` is not the format this library was built for** — see §2 |
+| 34 | built without `PPU_PACKED_SCALE=1` |
+| 36 | scale-first requested from a packed-format build |
+
+On any non-zero return **`out` has not been written**. Abort; do not fall through to another kernel, or the model
+consumes uninitialised memory.
+
+### The pointer domain, which is not what ggml wants
+
+`ppu_dense_backend.cu:41-68`: every packed GEMM does
+`DevBuf d(...); d.from_host(ptr); launch on the DEFAULT stream; rt_sync(); dout.to_host(out);`
+
+For the **producer** that is correct — packing is offline and the caller has host buffers. For the **consumer**
+it is the defect already recorded against the vecdot path (`.coord/INBOX.md` 030): ggml hands you a device
+pointer that is already resident, and this ABI treats it as host memory, re-copies the entire weight per call,
+runs on the default stream and synchronises the device.
+
+**Build the call site against these signatures; do not benchmark through them.** Any number you get is a
+measurement of the seam, not of the kernel. Device-pointer variants — same arguments plus a stream, no
+allocation, no sync, no copies — are queued and deferred.
+
+---
+
+## 6. The Python path, which is complete today
+
+This is how to obtain `units` until §3 lands, and how `tools/pack_gguf.py` works.
 
 ```python
 from quactlize import routes, formats
@@ -101,66 +179,29 @@ low, high, units = routes.prepare_fully_quantized_dense(blocks, n, k, qtype)    
 low, high, units = routes.prepare_fully_quantized_dense(blocks, n, k, qtype, tile_k=128)     # tile-aware
 low, high, units = routes.prepare_fully_quantized_grouped(blocks, n, k, qtype, num_experts)  # MoE
 
-# inverses, for telling a packing bug from a compute bug
-native            = routes.dequantize_fully_quantized(low, high, units, n, k, qtype)
-scale, zero       = routes.dequantize_scale_from_units(units, qtype)
+native      = routes.dequantize_fully_quantized(low, high, units, n, k, qtype)   # inverses, for telling a
+scale, zero = routes.dequantize_scale_from_units(units, qtype)                   # packing bug from a compute bug
 ```
 
 `blocks` is the raw GGUF tensor viewed as `[n * k/256, block_bytes]`, CPU, contiguous.
-The tuple's shape does not change with format: `high` is EMPTY for a single-plane one, so `units` is always the
-LAST element. Anything that indexes it positionally should use `[-1]`.
 
-Whole-model driver: `tools/pack_gguf.py` (`--dry-run` reports the type mix without touching the device).
+The returned tuple's **shape does not vary with format**: `high` is EMPTY for a single-plane one, so `units` is
+always the LAST element. Index it as `[-1]`, never as `[1]` or `[2]`.
 
-**The arrangement is recorded per tensor, not per format** — `formats.PlacedArrangement(bits, tile_k, high_bits)`,
-with `fold`/`high_fold` as derived properties. It stores `tile_k`, never `fold`: storing a derived value is how a
+Whole-model driver: `python3 tools/pack_gguf.py MODEL.gguf OUT_DIR [--dry-run]`. `--dry-run` reports the type mix
+— i.e. how many format-specific libraries a deployment of that file needs — without touching the device.
+
+The arrangement is recorded **per tensor**: `formats.PlacedArrangement(bits, tile_k, high_bits)`, with `fold` and
+`high_fold` as derived properties. It stores `tile_k` and never `fold`, because storing a derived value is how a
 manifest comes to disagree with the kernel that reads it.
 
 ---
 
-## 4. Consuming it — the GEMM symbols
+## 7. Order to build in
 
-```c
-// DENSE. act is fp16 in a uint16_t*. out is fp16.
-int quactlize_ppu_dense_fully_quantized(const uint16_t *act,
-                                        const uint8_t *low, const uint8_t *high, const uint8_t *units,
-                                        uint16_t *out,
-                                        int m, int n, int k, int qtype);
-
-// GROUPED (MoE). Experts are back to back in `low`/`high`/`units`; `rows_per_expert` is int[experts] and
-// `total_rows` is their sum. act rows are grouped by expert in the same order.
-int quactlize_ppu_grouped_fully_quantized(const uint16_t *act,
-                                          const uint8_t *low, const uint8_t *high, const uint8_t *units,
-                                          const int *rows_per_expert,
-                                          uint16_t *out,
-                                          int total_rows, int n, int k, int experts, int qtype);
-```
-
-Return codes worth handling by name:
-
-| rc | meaning |
-|---|---|
-| 0 | ok |
-| 30 | a null pointer, a non-positive extent, or `n % 256` / `k % 256` |
-| 33 | **`qtype` is not the format this library was built for** |
-| 34 | the library was built without `PPU_PACKED_SCALE=1` |
-| 36 | scale-first was requested from a packed-format build |
-
-**rc=33 is the one that will bite.** `PPU_PACKED_FORMAT` is a **compile-time** macro — `0=Q4_K, 1=Q5_K, 2=Q2_K,
-3=Q3_K, 4=Q6_K` — so **one shared library serves exactly one k-quant**, and a `Q4_K_M` checkpoint is mixed by
-construction. A deployment needs one library per format present in the file, loaded side by side. The host-side
-loader already models this: `ppu_backend.cpp` keys its state on the format and resolves
-`QUACTLIZE_PPU_LIB_FMT<k>` before falling back to a `_fmt<k>` splice of `QUACTLIZE_PPU_LIB`.
-
-Any build must define `PPU_PACKED_SCALE=1` or every call returns 34.
-
----
-
-## 5. What to build first
-
-1. Pack one tensor with `prepare_dense_for_tile`, recover it with `recover_dense_for_tile`, compare to the input.
-   That closes the producer with no device GEMM involved and no golden needed.
-2. Wire the GEMM call site against the section-4 signatures, and make `rc != 0` an abort rather than a fallback:
-   on a non-zero return `out` has not been written, so falling through feeds the model uninitialised memory.
-3. Do not benchmark until the device-pointer variants land — the current ABI's per-call weight copy would
-   dominate anything you measure, and the number would be an artifact of the seam, not of the kernel.
+1. **Round-trip one tensor**: `prepare_dense_for_tile` → `recover_dense_for_tile` → compare with the input. That
+   closes the producer with no GEMM and no golden involved, and it is the check that separates a packing bug
+   from a compute bug later.
+2. **Wire the §5 call site**, with `rc != 0` as an abort.
+3. **Get `units` from §6** until §3 lands.
+4. **Do not benchmark** until the device-pointer variants exist.
