@@ -280,6 +280,28 @@ def syntax(src, defs):
     return ("PASS" if rc == 0 else "FAIL"), (last[-1] if last else ""), dt
 
 
+def lint_gguf_coverage():
+    """A GGUF TYPE THAT NOTHING HAS CLASSIFIED IS THE DEFECT -- not an unsupported one.
+
+    formats.py can only report on the types it enumerates, so the nine IQ types were not "unsupported", they
+    were invisible; the user found that by asking and nothing here would have. tools/coverage.py takes the
+    universe from ggml.h, so this gate fires when upstream adds a format and we have not even decided it is out
+    of scope. Deciding "no" is fine; not noticing is not.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("cov", ROOT / "tools" / "coverage.py")
+    cov = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cov)
+    if not Path(cov.DEFAULT_GGML).is_file():
+        return None, f"no ggml.h at {cov.DEFAULT_GGML}"     # SKIP: the authority is absent, so nothing is known
+    rows, unknown = cov.classify()
+    if unknown:
+        return False, ("ggml.h has types nothing has classified: "
+                       + ", ".join(f"{n}={v}" for n, v in unknown)
+                       + " -- add them to tools/coverage.py FAMILY, even if the answer is out-of-scope")
+    return True, f"all {len(rows)} ggml types classified; {sum(1 for r in rows if r[2] == 'kquant')} supported"
+
+
 def lint_undefined_names():
     """Names used before they exist. THE ONLY CLASS OF PYFLAKES FINDING THIS ASSERTS ON, and deliberately.
 
@@ -378,6 +400,7 @@ def main():
                 ("lint", "PPU asm uses device-pass architecture guard", lint_ppu_asm_device_guard),
                 ("lint", "absolute paths name this repo dir, not a renamed one", lint_stale_repo_path),
                 ("lint", "names used before they exist (device-only tests get no other flow check)", lint_undefined_names),
+                ("coverage", "every ggml.h quant type is classified, in scope or out", lint_gguf_coverage),
     ("registry", "declarations vs source", None)])
     # MATCH THE KIND AS WELL AS THE NAME. `-k lint` matched NOTHING, because a lint's name is its description
     # ("duplicate unroll directives") and the word "lint" only appears in the kind. The run then printed
