@@ -817,3 +817,50 @@ are in the files and I am not; where this message and the existing grouped code 
 
 The user has now corrected me twice today in this same shape: I propose a design where an implementation already
 exists a few files over. So: copy, do not invent.
+
+## 029 -- DENSE PINS THE LOW PLANE AT F=1, AND ONE OF MY LABELLED MEASUREMENTS CONTRADICTS THAT. Please adjudicate.
+
+Following 028, I read the dense side. It does NOT have what grouped has, and there is a contradiction I cannot
+resolve from outside the files.
+
+WHAT DENSE HAS (fpA_intB_ppu.cuh:142-160), all of it inside `if constexpr (!std::is_void_v<PlaneB2>)`:
+
+    constexpr int P1_FOLD = P1_RUN >= 32 ? 1 : 32 / P1_RUN;          // same expression as MOEG_FOLD
+    constexpr int P2_FOLD = P2_RUN_AFTER_P1 >= 32 ? 1 : 32 / ...;
+    static_assert(P1_FOLD == 1, "fpA dense currently consumes unfolded low planes; ...");
+    if constexpr (P2_FOLD > 1) { args.mainloop.dB2 = ...(n / P2_FOLD, k * P2_FOLD, 1); dB2_valid = true; }
+
+Three differences from grouped, and the third is the one that matters:
+
+  1. the block is TWO-PLANE ONLY. A single-plane dense format (Q2_K int2, Q4_K int4) never computes a fold at
+     all -- there is not even a static_assert there to stop a narrow TK.
+  2. the low plane is PINNED at 1 by that static_assert.
+  3. dense's "fold" for plane 2 is a STRIDE REINTERPRETATION. It never selects KernelAiuFold. grouped wraps the
+     schedule (MOEG_SCHED -> KernelAiuFold<MOEG_FOLD, SCH>, moe_grouped_ppu.cuh:368). Two mechanisms, one name.
+     I nearly wrote "dense supports folding" on the strength of P2_FOLD before noticing they are not the same
+     thing, which is why I am spelling it out rather than just asking for the change.
+
+THE CONTRADICTION. I am carrying a measurement labelled
+
+    dense int1 TK64/F4  215.23 us  63.9% MFU        dense int2 TK64/F2  233.76 us  58.8%
+
+as the evidence behind the user's pinned arrangement (int2 F=2/TK=64, int1 F=4/TK=64). Both are low-plane folds
+at TK=64, which the static_assert above forbids. So one of these is true and I do not know which:
+
+  (a) those numbers came from a harness that is not fpA_intB_ppu -- the lowbit dense bench, or grouped with L=1
+      -- and I have been calling them "dense" wrongly. Then the user's arrangement is MoE-reachable and
+      dense-unreachable, and that is a fact the offline packer must encode, because a dense tensor and an
+      expert tensor would then need DIFFERENT tile_k for the same width.
+  (b) fpA_intB is not the shipping dense path for these formats, and the one that is does fold.
+  (c) something else.
+
+You are in the files; please say which, because the answer changes what the packer writes, not just what
+compiles.
+
+IF THE ANSWER IS (a) AND DENSE SHOULD FOLD -- copy grouped, do not invent. The user's instruction on 028 was
+exactly this and it applies here more literally: moe_grouped_ppu.cuh:363-369 is four lines (RUN, FOLD, MOEG_SCHED
+wrapping the schedule in KernelAiuFold) and dense already has the first two. What it is missing is the wrap and
+the single-plane case. The static_assert then becomes reachable-and-satisfied rather than a limit.
+
+I am NOT asking you to prioritise this over the 028 producer change if they collide -- 028 is what unblocks the
+packer. This is the question that tells the packer what to write once it can write anything.
