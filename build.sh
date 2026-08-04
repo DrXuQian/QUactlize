@@ -185,7 +185,8 @@ echo "[build.sh] CUTLASS_PPU_ARCHS=$ARCH"
 # NOTE: the former MoE/gs32 *.patch files are now baked into the submodule (fork ppu-w4a16-dev). No patch step.
 
 
-# --- overlay our example into the actlize example tree ---
+# --- overlay our example into the actlize example tree (LEGACY PATH ONLY) ---
+if [ "${QUACTLIZE_NO_OVERLAY:-0}" != "1" ]; then
 mkdir -p "$EX_DIR"
 # nullglob so patterns that match nothing (e.g. no *.cpp right now) vanish instead of aborting under set -e.
 # *.inc is in the list because the MoE sweep's generated units all #include moe_bench_unit.inc, and this glob is an
@@ -312,6 +313,11 @@ if ! grep -qE "^[[:space:]]*$EX_NAME[[:space:]]*$" "$EX_LIST"; then
 fi
 grep -qE "^[[:space:]]*$EX_NAME[[:space:]]*$" "$EX_LIST" || { echo "ERROR: failed to register example as a list entry in $EX_LIST" >&2; exit 1; }
 
+fi   # QUACTLIZE_NO_OVERLAY. EVERYTHING ABOVE EXISTS ONLY FOR THE LEGACY EXAMPLE-INJECTION PATH: the copy, the
+     # example-list registration, and this completeness check -- whose whole premise is that an overlay
+     # DIRECTORY exists to compare against. Off the overlay it reported every tracked source as "dropped",
+     # which is the correct behaviour for a guard whose subject has gone away, and the reason it is in here.
+
 # --- tile/warp/stages tuning: forward from the environment (defaults match the stock example) ---
 TILE_M="${TILE_M:-32}"; TILE_N="${TILE_N:-32}"; WARP_M="${WARP_M:-16}"; WARP_N="${WARP_N:-16}"; STAGES="${STAGES:-3}"
 QUANT="${QUANT:-int4}"   # int4 (default) or uint2 -> bench_cutlass_w4a16's QuantType (W4A16 vs W2A16 perf)
@@ -362,7 +368,32 @@ done
 # turned off. That is why ci/local_gates.py's boxdry step, whose whole tier claims to need no network, sat at
 # index-pack with zero output for nine minutes and had to be killed twice. We build no gtest unit tests, so this
 # is not a capability being given up; it is a download nobody wanted.
-cmake "$ACTLIZE" -DPPU_SDK_ROOT="$PPU_SDK_ROOT" -DCUTLASS_PPU_ARCHS="$ARCH" \
+# WHICH SOURCE TREE. Default is OUR root with -DQUACTLIZE_PPU=ON: actlize becomes a subproject and our targets
+# build from our own directories. QUACTLIZE_OVERLAY=1 restores the old path -- copy 83 files into the submodule,
+# sed a line into its examples/CMakeLists.txt, build there -- and it is kept for exactly one round, until a box
+# build confirms the new one produces the same BINARIES. Local evidence so far is target PARITY: 35 targets in
+# both, the same names, nothing skipped. That is necessary and not sufficient, which is why the old path is
+# still reachable rather than deleted.
+# DEFAULT IS THE OVERLAY, DELIBERATELY, until the no-overlay path carries the compile flags.
+#
+# The no-overlay path (QUACTLIZE_NO_OVERLAY=1) configures, produces the SAME 35 targets under the same names
+# with nothing skipped, and resolves every source from this tree. What it does NOT yet do is inherit actlize's
+# directory-scope compile flags: CUTLASS_PPU_EXTRA_HGCC_FLAGS and CMAKE_CXX_FLAGS are plain variables set in
+# actlize's CMakeLists, and add_subdirectory gives it a CHILD scope, so a sibling directory under our root sees
+# neither. Being inside examples/ inherited them for free, and that is the one thing being an example actually
+# bought.
+#
+# THE FAILURE MODE IS WHY THIS IS NOT THE DEFAULT YET. Nothing errors. Every target builds. The compile command
+# simply carries NO -D -- not CUTLASS's and not PPU_DEFS -- so every A/B would compare a binary against itself
+# and report "no change", which is indistinguishable from "the change does nothing". That exact confusion is
+# already recorded in CMakeLists.txt.in for a different cause.
+if [ "${QUACTLIZE_NO_OVERLAY:-0}" = "1" ]; then
+  _CMAKE_SRC="$HERE"; _CMAKE_EXTRA=(-DQUACTLIZE_PPU=ON)
+  echo "[build.sh] QUACTLIZE_NO_OVERLAY=1 -- building from this tree (WIP: compile flags not yet inherited)"
+else
+  _CMAKE_SRC="$ACTLIZE"; _CMAKE_EXTRA=()
+fi
+cmake "$_CMAKE_SRC" "${_CMAKE_EXTRA[@]}" -DPPU_SDK_ROOT="$PPU_SDK_ROOT" -DCUTLASS_PPU_ARCHS="$ARCH" \
   -DCUTLASS_ENABLE_TESTS=OFF -DCUTLASS_ENABLE_GTEST_UNIT_TESTS=OFF \
   -DTILE_M="$TILE_M" -DTILE_N="$TILE_N" -DWARP_M="$WARP_M" -DWARP_N="$WARP_N" -DSTAGES="$STAGES" -DBENCH_QUANT="$QUANT" -DTSK="$TSK" \
   -DPPU_EXTRA_DEFS="${PPU_DEFS:-}" "${_MOE_VARS[@]+"${_MOE_VARS[@]}"}" \

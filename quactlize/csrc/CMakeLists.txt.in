@@ -30,6 +30,36 @@ set(_PPU_OPTIONAL_TARGETS
   swzl_ldmatrix_probe test_fold_int2 test_int1_sweep test_moe_grouped_dataslice
   test_moe_grouped_probe test_q3_bconcat_ablate test_q3_bconcat_probe test_width_acu)
 
+# Resolve a bare source name across QZ_SRC_DIRS. Needed by BOTH wrappers: ppu_w4a16_executable below and the
+# cutlass_add_library call for quactlize_ppu, whose sources live in csrc/device/ and which does not go through
+# any wrapper of ours. The first version resolved only the executables, so the library was the one target that
+# still required the overlay -- a refactor that leaves one caller behind is a refactor that has not happened.
+function(qz_resolve_sources OUT)
+  set(_out "")
+  foreach(_s ${ARGN})
+    if(IS_ABSOLUTE "${_s}" OR NOT QZ_SRC_DIRS)
+      list(APPEND _out "${_s}")
+    else()
+      set(_hit "")
+      foreach(_d IN LISTS QZ_SRC_DIRS)
+        if(EXISTS "${_d}/${_s}")
+          list(APPEND _hit "${_d}/${_s}")
+        endif()
+      endforeach()
+      list(LENGTH _hit _n)
+      if(_n GREATER 1)
+        message(FATAL_ERROR "qz_resolve_sources: '${_s}' exists in more than one directory: ${_hit}")
+      elseif(_n EQUAL 1)
+        list(GET _hit 0 _one)
+        list(APPEND _out "${_one}")
+      else()
+        list(APPEND _out "${_s}")
+      endif()
+    endif()
+  endforeach()
+  set(${OUT} "${_out}" PARENT_SCOPE)
+endfunction()
+
 function(ppu_w4a16_executable NAME)
   cmake_parse_arguments(A "" "" "DEV_COMPILE_FLAGS" ${ARGN})
 
@@ -47,6 +77,33 @@ function(ppu_w4a16_executable NAME)
     endif()
     if(IS_ABSOLUTE "${_src}")
       set(_full "${_src}")
+    elseif(QZ_SRC_DIRS)
+      # NO OVERLAY: resolve the bare name across the directories the overlay used to FLATTEN into one. The names
+      # here stayed bare precisely because build.sh copied five directories into a single one; searching those
+      # five reproduces that namespace without copying anything.
+      #
+      # AND THE FLATTENING COULD ALWAYS HAVE COLLIDED. Two files of the same name in different directories would
+      # have been copied over each other and one silently kept -- nothing checked. There is no collision today
+      # (verified over tests/ benchmarks/ dev/ csrc/ csrc/device/ include/), and this makes a future one an
+      # error instead of a coin flip.
+      set(_hits "")
+      foreach(_d IN LISTS QZ_SRC_DIRS)
+        if(EXISTS "${_d}/${_src}")
+          list(APPEND _hits "${_d}/${_src}")
+        endif()
+      endforeach()
+      list(LENGTH _hits _nhit)
+      if(_nhit GREATER 1)
+        message(FATAL_ERROR
+          "ppu_w4a16_executable(${NAME}): '${_src}' exists in more than one source directory: ${_hits}\n"
+          "  The old overlay flattened these into one directory and would have kept whichever was copied last.\n"
+          "  Rename one, or qualify the reference.")
+      endif()
+      list(GET _hits 0 _full)
+      if(_nhit EQUAL 0)
+        set(_full "${CMAKE_CURRENT_SOURCE_DIR}/${_src}")   # so the message below names something concrete
+      endif()
+      set(_QZ_RESOLVED_${_src} "${_full}")   # LOCAL, not PARENT_SCOPE: it is read in this same function
     else()
       set(_full "${CMAKE_CURRENT_SOURCE_DIR}/${_src}")
     endif()
@@ -72,8 +129,26 @@ function(ppu_w4a16_executable NAME)
     return()
   endif()
 
-  cutlass_example_add_executable(${NAME} ${A_UNPARSED_ARGUMENTS}
-      DEV_COMPILE_FLAGS ${A_DEV_COMPILE_FLAGS} ${_PPU_EXTRA_DEV})
+  # WHICH HELPER, and why it is a choice rather than a detail. cutlass_example_add_executable lives in actlize's
+  # examples/CMakeLists.txt and its only substance is cutlass_add_executable plus three link libraries and two
+  # include dirs -- none of which requires our sources to LIVE in examples/. Off the overlay we call
+  # cutlass_add_executable directly and state those ourselves; that is the whole of "stop being an example".
+  set(_qz_srcs "")
+  foreach(_src ${A_UNPARSED_ARGUMENTS})
+    if(NOT IS_ABSOLUTE "${_src}" AND QZ_SRC_DIRS AND DEFINED _QZ_RESOLVED_${_src})
+      list(APPEND _qz_srcs "${_QZ_RESOLVED_${_src}}")
+    else()
+      list(APPEND _qz_srcs "${_src}")
+    endif()
+  endforeach()
+  if(QZ_SRC_DIRS)
+    cutlass_add_executable(${NAME} ${_qz_srcs}
+        DEV_COMPILE_FLAGS ${A_DEV_COMPILE_FLAGS} ${_PPU_EXTRA_DEV})
+    target_link_libraries(${NAME} PRIVATE CUTLASS cutlass_tools_util_includes ppu::driver)
+  else()
+    cutlass_example_add_executable(${NAME} ${A_UNPARSED_ARGUMENTS}
+        DEV_COMPILE_FLAGS ${A_DEV_COMPILE_FLAGS} ${_PPU_EXTRA_DEV})
+  endif()
   target_compile_definitions(${NAME} PRIVATE ${_PPU_EXTRA_HOST})
 endfunction()
 
@@ -175,7 +250,12 @@ target_compile_options(test_gemv_lowbit PRIVATE -w)
 # appended: a directory-scope variable that grows is how the NEXT target inherits flags nobody gave it.
 set(_SAVED_HGCC_FLAGS "${CUTLASS_PPU_EXTRA_HGCC_FLAGS}")
 list(APPEND CUTLASS_PPU_EXTRA_HGCC_FLAGS ${_PPU_EXTRA_DEV})
-cutlass_add_library(quactlize_ppu SHARED ppu_backend.cu ppu_dense_layout.cu ppu_unit_pack.cpp ppu_dense_backend.cu)
+# THE LIBRARY'S SOURCES NEED RESOLVING TOO. They live in csrc/device/ and this call goes straight to actlize's
+# cutlass_add_library, so it never passed through ppu_w4a16_executable. Off the overlay the bare names do not
+# resolve, and the failure is a plain "Cannot find source file" that looks like a missing file rather than a
+# missing resolution.
+qz_resolve_sources(_QZ_LIB_SRCS ppu_backend.cu ppu_dense_layout.cu ppu_unit_pack.cpp ppu_dense_backend.cu)
+cutlass_add_library(quactlize_ppu SHARED ${_QZ_LIB_SRCS})
 set(CUTLASS_PPU_EXTRA_HGCC_FLAGS "${_SAVED_HGCC_FLAGS}")
 target_compile_definitions(quactlize_ppu PRIVATE ${_PPU_EXTRA_HOST})
 target_link_libraries(quactlize_ppu PRIVATE CUTLASS cutlass_tools_util_includes ppu::driver)
