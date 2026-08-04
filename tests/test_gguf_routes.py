@@ -421,9 +421,6 @@ def test_packed_unit_scale_derivation_matches_the_scale_first_planes(name, gt, h
     raw = _raw_blocks(gt, hdr, n * (k // 256), rng)
     blocks = torch.from_numpy(raw)
 
-    stored = routes.dequantize_scale_first_dense_scales(sf, qtype)
-    derived = routes.dequantize_scale_from_units(fq[-1], qtype)
-
     # THE OTHER HALF OF THE PREMISE, AND NOBODY HAD CHECKED IT. The merge's claim is that B and C differ ONLY in
     # the scale channel -- which is a claim about the WEIGHT bytes as much as about the scale, and the weight half
     # was assumed throughout. If the two producers place the codes differently then the merge is not a
@@ -443,6 +440,8 @@ def test_packed_unit_scale_derivation_matches_the_scale_first_planes(name, gt, h
             f"({bad} of {a_.numel()} bytes differ). The merge's premise is that they do not, so this is not a "
             f"scale-channel change and the producer switch must not be made on that basis.")
 
+    stored = routes.dequantize_scale_first_dense_scales(sf, qtype)
+    derived = routes.dequantize_scale_from_units(fq[-1], qtype)
     for i, what in enumerate(("scale", "zero")):
         a_, b_ = stored[i], derived[i]
         # SHAPES FIRST, and named. The derivation always returns [E, k/gs, n] -- one expert for a dense weight --

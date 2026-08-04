@@ -277,6 +277,35 @@ def syntax(src, defs):
     return ("PASS" if rc == 0 else "FAIL"), (last[-1] if last else ""), dt
 
 
+def lint_undefined_names():
+    """Names used before they exist. THE ONLY CLASS OF PYFLAKES FINDING THIS ASSERTS ON, and deliberately.
+
+    THE FAILURE THIS COMES FROM. tests/test_gguf_routes.py's merge-premise oracle used `sf` two lines above the
+    assignment that creates it. Trivial, and it cost a full ppu001 round trip -- because that test SKIPS without a
+    device, so its first execution anywhere was on the box. Device-only tests get zero local runs by construction,
+    which makes them the one place where an ordering mistake survives to the slowest possible feedback loop.
+
+    Scoped to undefined names because that class is never a style opinion: if pyflakes says a name is undefined,
+    the code raises when it reaches that line. Unused imports and the rest are left alone -- a lint that also
+    reports taste is one people learn to skim, and this needs to be read.
+
+    pyflakes on the planted bug: "undefined name 'sf'". On the tree as it stands: nothing.
+    """
+    try:
+        import pyflakes  # noqa: F401
+    except ImportError:
+        return "SKIP", "pyflakes not installed (pip install pyflakes) -- device-only tests get no other flow check", 0.0
+    rc, log, dt = run([sys.executable, "-m", "pyflakes",
+                       str(ROOT / "tests"), str(ROOT / "quactlize"), str(ROOT / "ci"), str(ROOT / "benchmarks")])
+    del rc
+    hits = [l for l in log.splitlines()
+            if "undefined name" in l or "referenced before assignment" in l]
+    if hits:
+        return "FAIL", ("names used before they exist -- these RAISE when reached: "
+                        + "; ".join(h.strip() for h in hits[:3])), dt
+    return "PASS", "no undefined names", dt
+
+
 def lint_stale_repo_path():
     """An absolute path naming a repo directory that is not this one.
 
@@ -345,6 +374,7 @@ def main():
                 ("lint", "duplicate unroll directives (hgcc-only error)", lint_unroll),
                 ("lint", "PPU asm uses device-pass architecture guard", lint_ppu_asm_device_guard),
                 ("lint", "absolute paths name this repo dir, not a renamed one", lint_stale_repo_path),
+                ("lint", "names used before they exist (device-only tests get no other flow check)", lint_undefined_names),
     ("registry", "declarations vs source", None)])
     items = [i for i in items if a.k in i[1]]
     if a.list:
