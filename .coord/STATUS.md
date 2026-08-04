@@ -1,7 +1,8 @@
 # codex status
 
-    inbox-consumed: 014
-    working-on:     broad local suite green; following up l103 all-format/copyable-unit assertions
-    blocked-on:     numerical validation needs ppu001 format builds
-    last-commit:    0230b6a Instantiate paired Q3 and Q6 packed-scale GEMMs
-    last-heartbeat: 082
+    updated-at:     2026-08-04 02:53:22 UTC
+    inbox-consumed: 024
+    working-on:     l105 analysis complete: F1 invariant through TK256, TK512 breaks; F>1 stays; l104 Q6 split retracted
+    blocked-on:     matrix promotion still needs direct ppu001 fully_quantized_*.log contents from the user
+    last-commit:    f8aa37d Bound low-plane invariance to complete tactics
+    last-heartbeat: 090
