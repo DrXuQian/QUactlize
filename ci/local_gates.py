@@ -297,6 +297,28 @@ def syntax(src, defs):
     return ("PASS" if rc == 0 else "FAIL"), (last[-1] if last else ""), dt
 
 
+def lint_fixture_flags():
+    """THE EMITTED INVOCATIONS MUST NAME OPTIONS THE BENCH ACTUALLY PARSES.
+
+    benchmarks/fixtures.py exists so nobody types `"$BIN" 256 128 512 2048 32 2` by hand. That removes one class
+    of error and introduces another: cutlass' CommandLine does not complain about an unknown --flag, so a
+    renamed option turns into a silently ignored argument and the bench runs its DEFAULT shape while the log
+    header says otherwise. Grep the parser for each name the emitter uses.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fx", ROOT / "benchmarks" / "fixtures.py")
+    fx = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fx)
+    src = (ROOT / "benchmarks" / "bench_cutlass_w4a16.cu").read_text()
+    missing = [f for f in fx.DENSE_FLAGS
+               if f'get_cmd_line_argument("{f}"' not in src and f'check_cmd_line_flag("{f}"' not in src]
+    if missing:
+        return "FAIL", ("fixtures.py emits --" + ", --".join(missing)
+                        + " but bench_cutlass_w4a16.cu does not parse them; an unknown flag is IGNORED, so the "
+                          "bench would run its default shape and the log would not say so"), 0.0
+    return "PASS", f"all {len(fx.DENSE_FLAGS)} emitted dense options are parsed by the bench", 0.0
+
+
 def lint_inbox_delivered():
     """AN UNREAD INBOX ITEM IS AN UNDELIVERED ONE, and writing the file is not sending it.
 
@@ -470,6 +492,7 @@ def main():
                 ("lint", "names used before they exist (device-only tests get no other flow check)", lint_undefined_names),
                 ("lint", "every ggml.h quant type is classified, in scope or out", lint_gguf_coverage),
                 ("lint", "the C++ and Python selection procedures agree on planted data", lint_selection_agrees),
+                ("lint", "emitted bench flags are ones the bench parses", lint_fixture_flags),
                 ("lint", "every INBOX item is consumed, or is explained by a call in flight", lint_inbox_delivered),
     ("registry", "declarations vs source", None)])
     # MATCH THE KIND AS WELL AS THE NAME. `-k lint` matched NOTHING, because a lint's name is its description
