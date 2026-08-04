@@ -7,6 +7,7 @@
 #include "fpA_intB_ppu.cuh"
 #include "moe_grouped_ppu.cuh"
 #include "gemv_lowbit/gemv_rt.hpp"
+#include "ppu_dense_configs.inc"
 #include "quactlize_ppu_device.h"
 
 namespace {
@@ -25,6 +26,40 @@ static constexpr auto kSelectedPackedFmt = cutlass::gguf_packed::Fmt(PPU_PACKED_
 static constexpr auto kSelectedPackedFmt = cutlass::gguf_packed::Fmt::Q4K;
 #endif
 using SelectedPackedUnit = cutlass::gguf_packed::Unit<kSelectedPackedFmt>;
+
+enum class DenseConfigId {
+#define QUACTLIZE_PPU_DENSE_CONFIG_ID(ID, NAME, TM, TN, WM, WN, STAGES) ID,
+  QUACTLIZE_PPU_DENSE_CONFIGS(QUACTLIZE_PPU_DENSE_CONFIG_ID)
+#undef QUACTLIZE_PPU_DENSE_CONFIG_ID
+};
+
+struct DenseConfig {
+  DenseConfigId id;
+  char const* name;
+  int tile_m, tile_n, warp_m, warp_n, stages;
+};
+
+constexpr DenseConfig kDenseConfigs[] = {
+#define QUACTLIZE_PPU_DENSE_CONFIG_ROW(ID, NAME, TM, TN, WM, WN, STAGES) \
+  {DenseConfigId::ID, NAME, TM, TN, WM, WN, STAGES},
+  QUACTLIZE_PPU_DENSE_CONFIGS(QUACTLIZE_PPU_DENSE_CONFIG_ROW)
+#undef QUACTLIZE_PPU_DENSE_CONFIG_ROW
+};
+constexpr DenseConfigId kDefaultDenseConfig = DenseConfigId::Default;
+static_assert(sizeof(kDenseConfigs) / sizeof(kDenseConfigs[0]) > 1,
+              "libquactlize_ppu must compile a config set, not one frozen tactic");
+
+constexpr int minimum_dense_tile_m() {
+  int value = kDenseConfigs[0].tile_m;
+  for (auto const& config : kDenseConfigs) value = std::min(value, config.tile_m);
+  return value;
+}
+
+constexpr int minimum_dense_tile_n() {
+  int value = kDenseConfigs[0].tile_n;
+  for (auto const& config : kDenseConfigs) value = std::min(value, config.tile_n);
+  return value;
+}
 
 constexpr size_t align16(size_t value) { return (value + 15) & ~size_t(15); }
 
@@ -50,7 +85,9 @@ bool selected_fully_quantized_qtype(int qtype, int k) {
 }
 
 size_t dense_workspace_bytes(int m, int n) {
-  return size_t(cutlass::ceil_div(m, 64)) * cutlass::ceil_div(n, 64) * sizeof(int);
+  // One query serves every compiled tactic, so size for the largest possible CTA grid rather than for the default.
+  return size_t(cutlass::ceil_div(m, minimum_dense_tile_m()))
+       * cutlass::ceil_div(n, minimum_dense_tile_n()) * sizeof(int);
 }
 
 struct GroupedWorkspaceLayout {
@@ -77,26 +114,56 @@ GroupedWorkspaceLayout grouped_workspace_layout(int max_rows, int n, int experts
   return layout;
 }
 
-template <class Low, class High = void, int GroupSize = 16, int TileK = 256>
-int dense_fully_quantized_device(uint16_t const* act, uint8_t const* low, uint8_t const* high,
-                                 uint8_t const* units, uint16_t* out, int m, int n, int k,
-                                 void* workspace, size_t workspace_bytes, hggcStream_t stream) {
-  size_t const need = dense_workspace_bytes(m, n);
-  if (!workspace || workspace_bytes < need) return 37;
+template <class Low, class High, int GroupSize, int TileK, bool PackedScale,
+          int TileM, int TileN, int WarpM, int WarpN, int Stages>
+int launch_dense_tactic(uint16_t const* act, uint8_t const* low, uint8_t const* high,
+                        void const* scale, uint16_t const* zero, uint16_t* out,
+                        int m, int n, int k, void* workspace, size_t workspace_bytes,
+                        hggcStream_t stream) {
   constexpr int ScaleGroups = TileK / GroupSize;
-  using Tile = cute::Shape<cute::_64, cute::_64, cute::C<TileK>>;
-  using Warp = cute::Shape<cute::_32, cute::_32, cute::C<TileK>>;
+  using Tile = cute::Shape<cute::C<TileM>, cute::C<TileN>, cute::C<TileK>>;
+  using Warp = cute::Shape<cute::C<WarpM>, cute::C<WarpN>, cute::C<TileK>>;
   bool const launched = fpa_intb_ppu::generic_launcher<QM::FinegrainedScaleZero,
       cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
-      Tile, cute::Shape<cute::_64, cute::C<ScaleGroups>>, Warp, 3, true, Low, High, true>(
+      Tile, cute::Shape<cute::C<TileN>, cute::C<ScaleGroups>>, Warp, Stages, true,
+      Low, High, PackedScale>(
           reinterpret_cast<half_t const*>(act), reinterpret_cast<Low const*>(low),
-          reinterpret_cast<half_t const*>(units), nullptr, reinterpret_cast<half_t*>(out),
+          reinterpret_cast<half_t const*>(scale), reinterpret_cast<half_t const*>(zero),
+          reinterpret_cast<half_t*>(out),
           m, n, k, GroupSize, 1, static_cast<char*>(workspace), workspace_bytes, stream,
           [&]() {
             if constexpr (std::is_void_v<High>) return static_cast<High const*>(nullptr);
             else return reinterpret_cast<High const*>(high);
           }());
-  if (!launched) return 31;
+  return launched ? 0 : 31;
+}
+
+template <class Low, class High, int GroupSize, int TileK, bool PackedScale>
+int launch_dense_config(DenseConfigId config, uint16_t const* act, uint8_t const* low, uint8_t const* high,
+                        void const* scale, uint16_t const* zero, uint16_t* out,
+                        int m, int n, int k, void* workspace, size_t workspace_bytes,
+                        hggcStream_t stream) {
+  switch (config) {
+#define QUACTLIZE_PPU_DENSE_CONFIG_CASE(ID, NAME, TM, TN, WM, WN, STAGES) \
+    case DenseConfigId::ID: \
+      return launch_dense_tactic<Low, High, GroupSize, TileK, PackedScale, TM, TN, WM, WN, STAGES>( \
+          act, low, high, scale, zero, out, m, n, k, workspace, workspace_bytes, stream);
+    QUACTLIZE_PPU_DENSE_CONFIGS(QUACTLIZE_PPU_DENSE_CONFIG_CASE)
+#undef QUACTLIZE_PPU_DENSE_CONFIG_CASE
+  }
+  return 31;
+}
+
+template <class Low, class High = void, int GroupSize = 16, int TileK = 256>
+int dense_fully_quantized_device(uint16_t const* act, uint8_t const* low, uint8_t const* high,
+                                 uint8_t const* units, uint16_t* out, int m, int n, int k,
+                                 DenseConfigId config, void* workspace, size_t workspace_bytes,
+                                 hggcStream_t stream) {
+  size_t const need = dense_workspace_bytes(m, n);
+  if (!workspace || workspace_bytes < need) return 37;
+  int const launch_rc = launch_dense_config<Low, High, GroupSize, TileK, true>(
+      config, act, low, high, units, nullptr, out, m, n, k, workspace, workspace_bytes, stream);
+  if (launch_rc) return launch_rc;
   return ppu_gemv::rt_check_launch("fully-quantized dense GEMM enqueue")
       ? 0 : ppu_gemv::kRuntimeError;
 }
@@ -104,7 +171,7 @@ int dense_fully_quantized_device(uint16_t const* act, uint8_t const* low, uint8_
 template <class Low, class High = void, int GroupSize = 16, int TileK = 256, bool PackedScale = false>
 int dense(uint16_t const* act, uint8_t const* low, uint8_t const* high,
           void const* scale, uint16_t const* zero, uint16_t* out,
-          int m, int n, int k, int group_size) {
+          int m, int n, int k, int group_size, DenseConfigId config = kDefaultDenseConfig) {
   ppu_gemv::rt_clear_error();
   constexpr int LowBits = cutlass::sizeof_bits<Low>::value;
   constexpr int HighBits = std::is_void_v<High> ? 0 : cutlass::sizeof_bits<High>::value;
@@ -120,8 +187,8 @@ int dense(uint16_t const* act, uint8_t const* low, uint8_t const* high,
   DevBuf da(size_t(m) * k * 2), dl(low_bytes), dh(high_bytes), ds(scale_bytes),
          dz(PackedScale ? 0 : plane_elems * 2),
          dout(size_t(m) * n * 2);
-  // SplitKSerial's semaphore workspace is one int per output CTA for split_k=1. Size it from the actual fixed tile.
-  size_t const ws_bytes = size_t(cutlass::ceil_div(m, 64)) * cutlass::ceil_div(n, 64) * sizeof(int);
+  // SplitKSerial's semaphore workspace is one int per output CTA. The shared query covers every compiled config.
+  size_t const ws_bytes = dense_workspace_bytes(m, n);
   DevBuf ws(ws_bytes);
   da.from_host(act); dl.from_host(low); ds.from_host(scale);
   if constexpr (!PackedScale) dz.from_host(zero);
@@ -133,21 +200,12 @@ int dense(uint16_t const* act, uint8_t const* low, uint8_t const* high,
     launch_rc = dense_fully_quantized_device<Low, High, GroupSize, TileK>(
         reinterpret_cast<uint16_t const*>(da.p), reinterpret_cast<uint8_t const*>(dl.p),
         reinterpret_cast<uint8_t const*>(dh.p), reinterpret_cast<uint8_t const*>(ds.p),
-        reinterpret_cast<uint16_t*>(dout.p), m, n, k, ws.p, ws_bytes, nullptr);
+        reinterpret_cast<uint16_t*>(dout.p), m, n, k, config, ws.p, ws_bytes, nullptr);
   } else {
-    using Tile = cute::Shape<cute::_64, cute::_64, cute::C<TileK>>;
-    using Warp = cute::Shape<cute::_32, cute::_32, cute::C<TileK>>;
-    constexpr int ScaleGroups = TileK / GroupSize;
-    bool const launched = fpa_intb_ppu::generic_launcher<QM::FinegrainedScaleZero,
-        cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
-        Tile, cute::Shape<cute::_64, cute::C<ScaleGroups>>, Warp, 3, true, Low, High, false>(
-            da.as<half_t>(), dl.as<Low>(), ds.as<half_t>(), dz.as<half_t>(), dout.as<half_t>(),
-            m, n, k, GroupSize, 1, ws.as<char>(), ws_bytes, nullptr,
-            [&]() {
-              if constexpr (std::is_void_v<High>) return static_cast<High const*>(nullptr);
-              else return dh.as<High>();
-            }());
-    launch_rc = launched ? 0 : 31;
+    launch_rc = launch_dense_config<Low, High, GroupSize, TileK, false>(
+        config, reinterpret_cast<uint16_t const*>(da.p), reinterpret_cast<uint8_t const*>(dl.p),
+        reinterpret_cast<uint8_t const*>(dh.p), ds.p, reinterpret_cast<uint16_t const*>(dz.p),
+        reinterpret_cast<uint16_t*>(dout.p), m, n, k, ws.p, ws_bytes, nullptr);
   }
   if (launch_rc) return launch_rc;
   ppu_gemv::rt_sync(PackedScale ? "fully-quantized dense GEMM" : "scale-first dense GEMM");
@@ -267,22 +325,27 @@ extern "C" int quactlize_ppu_dense_fully_quantized_dev_v1(
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
   return dense_fully_quantized_device<cutlass::int4b_t, void, 32, 256>(
-      act, low, nullptr, units, out, m, n, k, workspace, size_t(workspace_bytes), s);
+      act, low, nullptr, units, out, m, n, k, kDefaultDenseConfig,
+      workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 2
   return dense_fully_quantized_device<cutlass::uint2b_t, void, 16, 256>(
-      act, low, nullptr, units, out, m, n, k, workspace, size_t(workspace_bytes), s);
+      act, low, nullptr, units, out, m, n, k, kDefaultDenseConfig,
+      workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 1
   if (!high) return 33;
   return dense_fully_quantized_device<cutlass::int4b_t, cutlass::uint1b_t, 32, 256>(
-      act, low, high, units, out, m, n, k, workspace, size_t(workspace_bytes), s);
+      act, low, high, units, out, m, n, k, kDefaultDenseConfig,
+      workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 3
   if (!high) return 33;
   return dense_fully_quantized_device<cutlass::uint2b_t, cutlass::uint1b_t, 16, 256>(
-      act, low, high, units, out, m, n, k, workspace, size_t(workspace_bytes), s);
+      act, low, high, units, out, m, n, k, kDefaultDenseConfig,
+      workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 4
   if (!high) return 33;
   return dense_fully_quantized_device<cutlass::int4b_t, cutlass::uint2b_t, 16, 128>(
-      act, low, high, units, out, m, n, k, workspace, size_t(workspace_bytes), s);
+      act, low, high, units, out, m, n, k, kDefaultDenseConfig,
+      workspace, size_t(workspace_bytes), s);
 #else
   return 35;
 #endif

@@ -1,8 +1,8 @@
 # codex status
 
-    updated-at:     2026-08-04 13:24:00 UTC
-    inbox-consumed: 047
-    working-on:     none; 047 delivered: shared four-warp legality protects dense+grouped and dev/fold_derivation/SWEEP_STATE.md is the one agreed evidence-labelled sweep statement
-    blocked-on:     nothing for 047; exact assert site, dense stage scope, policy-cost timing, checkpoint shapes and compact-specific enumeration remain explicit follow-ups in SWEEP_STATE.md
+    updated-at:     2026-08-04 23:18:46 UTC
+    inbox-consumed: 051
+    working-on:     048 only: 1/3 compile a dense config set into the .so; then enumeration shaped for 051's same-record CUDA-family flag; then selectable GEMM entries with decline-to-default
+    blocked-on:     nothing
     last-commit:    c6bc01e Record agreed sweep state after warp gate
     last-heartbeat: 114

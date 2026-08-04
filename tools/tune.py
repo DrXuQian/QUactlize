@@ -13,6 +13,22 @@ looked homeless. We have the step already; this rides along.
 
     python3 tools/tune.py --model Qwen3.5-35B-A3B --bin build_ppu/.../test_lowbit_dense_bench -o tactics.json
 
+TWO LAYERS, AND THIS TOOL SERVES THE SECOND. Reading the complete TRT-LLM fpA_intB source settles what a
+library actually does: it COMPILES IN a small curated set (five tile configs for SM80), enumerates them at run
+time, and profiles among those. So there are two separate questions, asked at different rates by different
+people:
+
+    COVERAGE   which few configs should the library COMPILE?     227 candidates, all shapes at once,
+                                                                 run rarely, by us -> analyse.py --coverage
+    TACTIC     for THIS model's shapes, which shipped config?    a handful of candidates, run per model
+                                                                 -> this file
+
+Conflating them produces a specific, quiet failure: a tactic table naming a config the library does not contain.
+Every lookup misses, every miss falls back to the compiled default, and the artifact looks fine. So --shipped
+takes the list the library actually contains and restricts the search to it, and a table produced WITHOUT it is
+stamped as a coverage sweep rather than a tactic -- because that is what it is, and the two are not
+interchangeable however similar the file looks.
+
 WHAT IT WILL NOT DO, and each refusal is a mistake this project has already made once:
 
   * it does not invent M buckets. TRT-LLM picks powers of two before profiling because it has no reason to
@@ -33,6 +49,22 @@ import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+
+
+def canonical(name: str):
+    """-> (tm, tn, wm, wn, st), or None if this is not a config name.
+
+    ONE CONFIG, TWO SPELLINGS, IN ONE PIPELINE. The bench's stdout names it from an X-macro stringification --
+    `64x128:64x64:s3`, no schema and no TileK. analyse.py names the same thing from the sample's fields --
+    `i4 64x128x64:64x64:s3`, with both. So a shipped list produced from `analyse.py --coverage` and fed to this
+    tool would match NOTHING, silently: every winner would be reported as unshipped and the table would come out
+    empty but well-formed. Comparing tuples rather than strings makes the spelling irrelevant.
+
+    TileK and schema are deliberately dropped rather than compared. They are build-time constants of the binary
+    (QUANT= and BENCH_TSK=), already guarded by the .inc's static_assert, and a config differing only in them is
+    not a different tactic -- it is a different binary."""
+    m = re.match(r"^\s*(?:\w+\s+)?(\d+)x(\d+)(?:x\d+)?:(\d+)x(\d+):s(\d+)\s*$", name)
+    return tuple(int(g) for g in m.groups()) if m else None
 
 
 def bench_run(binary: str, n: int, k: int, gs: int, m: int, reps: int, jsonl: str):
@@ -83,6 +115,11 @@ def main() -> int:
     ap.add_argument("--gs", type=int, default=32)
     ap.add_argument("--reps", type=int, default=5, help="passes per candidate; 1 cannot rank and is refused")
     ap.add_argument("--jsonl", default="", help="keep the raw samples here too")
+    ap.add_argument("--shipped", default="",
+                    help="file listing the config names the LIBRARY contains, one per line. Without it this is "
+                         "a coverage sweep over the bench's whole compiled set, not a tactic table, and the "
+                         "output says so. Once quactlize_ppu_list_configs() exists this should read from the "
+                         ".so directly rather than from a file somebody maintained by hand.")
     a = ap.parse_args()
 
     if a.reps < 2:
@@ -107,6 +144,35 @@ def main() -> int:
     header = [l.strip("/ \n") for l in inc.read_text().splitlines()[:4] if "configs" in l or "stages" in l] \
         if inc.is_file() else ["config table not found"]
 
+    # THE SHIPPED SET, and what its absence means. A tactic naming a config the library does not contain misses
+    # on every lookup, falls back to the compiled default, and leaves an artifact that looks correct -- the same
+    # failure shape as `a tactic the binary cannot select is worse than no tactic`, one level up. So the two
+    # products are named differently in the output rather than distinguished by whoever reads it later.
+    shipped = None
+    if a.shipped:
+        p = pathlib.Path(a.shipped)
+        if not p.is_file():
+            print(f"no such shipped-config list: {p}", file=sys.stderr)
+            return 2
+        raw = [l.strip() for l in p.read_text().splitlines() if l.strip() and not l.startswith("#")]
+        bad = [r for r in raw if canonical(r) is None]
+        if bad:
+            print(f"{p}: {len(bad)} line(s) are not config names, e.g. {bad[0]!r}. A list that silently drops\n"
+                  f"unparseable rows would tune against a SMALLER shipped set than the library has.",
+                  file=sys.stderr)
+            return 2
+        shipped = raw
+        shipped_keys = {canonical(r) for r in raw}
+        if not shipped:
+            print(f"{p} lists no configs. An empty shipped set cannot be tuned against -- it would rank nothing "
+                  f"and write a table of defaults.", file=sys.stderr)
+            return 2
+        print(f"tuning against the {len(shipped)} config(s) the library ships")
+    else:
+        print("no --shipped list: this is a COVERAGE sweep over the bench's whole compiled set, not a tactic\n"
+              "table. Feed the samples to `analyse.py --coverage` to choose what the library should compile;\n"
+              "a winner here may name a config the library does not contain.")
+
     shapes = sorted({(n, k) for _, n, k, _ in projections(cfg)})
     jsonl = a.jsonl or "/dev/null"
     table, skipped = [], []
@@ -115,6 +181,11 @@ def main() -> int:
         by_m = {}
         for m in N_TOKENS:
             conf, tf, note = bench_run(str(binary), n, k, a.gs, m, a.reps, jsonl)
+            # A winner outside the shipped set is not a tactic. Recording it would produce a lookup that always
+            # misses; recording nothing leaves an entry that gets regenerated. The second is recoverable.
+            if conf and shipped is not None and canonical(conf) not in shipped_keys:
+                note = f"winner {conf!r} is not in the shipped set"
+                conf = None
             state = conf if conf else f"-- {note}"
             print(f"  n={n:<6} k={k:<6} m={m:<5} {state}")
             if conf:
@@ -125,6 +196,10 @@ def main() -> int:
             table.append(dict(n=n, k=k, gs=a.gs, buckets=collapse(by_m)))
 
     doc = dict(model=a.model, gs=a.gs, reps=a.reps,
+               # WHAT THIS FILE IS, stated in the file. Two artifacts with identical structure and incompatible
+               # meanings is how one gets used as the other.
+               kind=("tactic" if shipped is not None else "coverage-sweep"),
+               shipped_configs=(shipped if shipped is not None else None),
                config_set=header, tuned_seconds=round(time.time() - t0, 1),
                shapes=table, unresolved=skipped)
     pathlib.Path(a.out).write_text(json.dumps(doc, indent=2) + "\n")
