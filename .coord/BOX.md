@@ -70,6 +70,44 @@ These are correctness and inspection, not tactic sweeps, so the hold above does 
    and the distinct per-layer (n, k). For the 122B ALSO the serving TP convention -- which axis the 2-card split
    halves -- because both conventions exist and assuming one tunes a GEMM that never runs.
 
+3. **FIRST FEEL OF THE SWEEP -- i4 (Q4_K) MoE, real Qwen shapes, one compile wave (~20 s).** The user asked for
+   the single-schema slice to get a feel. This is the MoE half; the dense half is not ready (see the caveat).
+
+       cd /sim/eec/shared/junfu.qx/quactlize && git pull --recurse-submodules
+       MOE_FORMATS="i4" TARGET=test_lowbit_moe_bench ./build.sh
+       BIN=$(find third_party/actlize/build_w4a16_compare -type f -name test_lowbit_moe_bench -perm -u+x -print -quit)
+       test -n "$BIN"
+
+       # Qwen3.5-35B-A3B expert FFN, gs=32, ragged (mode 2 is the default and IS the skewed generator).
+       # args: L(experts) Rows(avg rows/expert) N K gs mode
+       echo "== 35B-A3B expert_gate/up  n=512 k=2048 =="
+       for R in 128 64 2; do "$BIN" 256 $R 512 2048 32 2 | tail -20; done
+       echo "== 35B-A3B expert_down     n=2048 k=512 =="
+       for R in 128 64 2; do "$BIN" 256 $R 2048 512 32 2 | tail -20; done
+       echo "== 122B-A10B after TP=2    n=512 k=3072 / n=3072 k=512 =="
+       for R in 128 64 2; do "$BIN" 256 $R 512 3072 32 2 | tail -20; done
+       for R in 128 64 2; do "$BIN" 256 $R 3072 512 32 2 | tail -20; done
+       echo "== DECODE: only M*8 experts are touched, ONE row each =="
+       for E in 8 16 32; do "$BIN" $E 1 512 2048 32 2 | tail -20; done
+
+   Rows comes from n-token: rows/expert = M*topk/experts = M/32 for both models, so R=128 is M=4096, R=64 is
+   M=2048, R=2 is M=64. M in {1,2,4} does not reduce Rows below 1 -- it reduces the number of experts TOUCHED,
+   which is why the last loop varies L instead.
+
+   180 units, one compile wave at MOE_CORES=192; the file's own measurement is 14-19 s wall clock, and codegen
+   is 5.6% of it. Stage counts are inside a unit, so they cost nothing extra.
+
+   WANTED: the per-format best lines. **AND READ THEM AS A LANDSCAPE, NOT A VERDICT** -- see the caveat below.
+
+   CAVEAT, and it is the reason this is "a feel" and not the sweep: the winner is still selected by a SINGLE
+   timing (`if (tf > best_tf)`), and the recorded cross-run spread is 13%. Any two configs within 13% of each
+   other are being ordered by noise. Use this run to see the shape of the landscape and whether anything is
+   grossly off; do not quote a winner from it. The repeat/confidence-band harness is in progress.
+
+   THE DENSE HALF IS NOT READY. bench_cutlass_w4a16.cu carries 17 hand-written configs plus a hand-written
+   dispatch macro with one line per config; the pruned i4 set is 110 shapes. Generating that list is the next
+   piece of work and it is mine, not codex's.
+
 
 **WHEN SOMETHING IS RED, PASTE THIS.** No arguments, safe any time, output sized for a chat message:
 

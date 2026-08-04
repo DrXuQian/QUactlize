@@ -26,16 +26,17 @@ THREE STRUCTURAL FACTS THAT DO NOT NEED THE SHAPES, and that change what the swe
     by neither the tensor-core path nor the vector one, on the grounds that TileM=16 discards 14 of 16 rows. That
     reasoning quietly equated DISCARDED ROWS with WASTED TIME, and the measurement says otherwise: in the decode
     profile `v.mma` is 1.5% of the kernel, against unpacking 42%, s.wait 15% and affine 13%. Eighty-eight percent
-    of a 1.5% component is not a hole. The tensor-core path runs at M=2; what it needs is a small M-block and a
-    smaller A footprint, not a different kernel.
+    of a 1.5% component is not a hole. The tensor-core path runs at M=2; what it needs is a compact A footprint
+    inside the logical TileM, not a different compute path.
 
-    THE SMEM OPTION ALREADY EXISTS AND IS NOT YET GENERAL. `PPU_A_CPASYNC` keeps A in smem occupying ONE row --
-    measured on 64x64x128 s3 as A 49152 B -> 768 B (64x), block 61840 -> 13456 B, blocks/CU 4 -> 19, bit-exact
-    against a separate build. It works by giving SmemLayoutA a stride-0 M mode, which ALIASES every row onto the
-    real one, so it is valid only at Mmax==1 and `launch()` rejects anything else. Covering M in {2,4} means
-    allocating M rows instead of aliasing to one -- a generalisation of that layout, not a flag flip. It also
-    requires bypassing the AIU/swzl read for A, whose instruction has a hard 16-row minimum with no stride
-    operand; that part is already done and must not be re-litigated (four failed routes are recorded).
+    THE SMEM OPTION NOW HAS COMPILE-TIME ROW CAPACITIES 1, 2, AND 4. `PPU_A_CPASYNC=N` keeps N physical A rows in
+    smem while preserving logical TileM and aliases only padding rows modulo N. Capacity 1 is measured on
+    64x64x128 s3 as A 49152 B -> 768 B (64x), block 61840 -> 13456 B, blocks/CU 4 -> 19, bit-exact against a
+    separate build. Capacities 2 and 4 pass the hierarchical-layout gate and full dense/grouped front-end
+    instantiation; they are not device-verified yet. The implementation bypasses the AIU/swzl read for A, whose
+    instruction has a hard 16-row minimum with no stride operand; that part is already done and must not be
+    re-litigated (four failed routes are recorded). The compact reader currently exists only in the unfolded
+    one-plane collective; folded and two-plane cells remain ordinary TileM-row builds with an explicit exclusion.
 
     AND THE PAYOFF MAY NOT BE WHERE IT LOOKS. The same measurement found that at DECODE the saving buys no
     occupancy: the warp count is pinned by the problem size (total warp-tiles / CU was unchanged when smem went

@@ -50,9 +50,31 @@ and each plane of a two-plane format derives its own value:
 Over-folds are not emitted. They can be constructed offline, but neither launcher selects them because both derive the
 minimum F from `(bits,TK)`.
 
-Stage and split-K are not stored-arrangement fields and therefore are not in the requested tuple. Stage 2 is the
-existence test: if the conservative gs16 scale+zero footprint cannot fit at the shallowest supported pipeline, no deeper
-stage can make the topology legal. A timing command must still enumerate its stage and dense split-K axes explicitly.
+Stage is not a stored-arrangement field. The user-set timing axis is `{2,3,4}`; split-K stays out. Stage 2 remains the
+ordinary-path existence test in the arrangement emitter: if the conservative footprint cannot fit at the shallowest
+supported pipeline, no deeper stage can make that ordinary topology legal. A timing command must enumerate all three
+stage values explicitly.
+
+Small-M compact A makes reachability depend on A-row capacity. The complete n-token axis is
+`{1,2,4,64,2048,4096}`. Ordinary builds allocate `TileM*TileK*2` A bytes per stage. Compact capacities 1, 2, and 4
+allocate `capacity*TileK*2` and are three different collective types, not three timings of one binary. For dense,
+capacity equals M at 1/2/4. For grouped it is per-expert Mmax, not global tokens: both target MoE models have 256
+experts/top-8, so all three decode points touch 8/16/32 experts with one row each and use the capacity-1 type. A
+named ragged distribution determines which capacity can serve global M=64 (mean two rows/expert).
+
+At this checkpoint compact A is reachable only for unfolded one-plane formats:
+
+| schema | compact-reachable TileK |
+|---|---|
+| i1 | `256/F1` |
+| i2 | `128/F1`, `256/F1` |
+| i4 | `64/F1`, `128/F1`, `256/F1` |
+| Q3_K, Q5_K, Q6_K | none: the two-plane collective has no compact-A reader |
+
+Folded i1/i2/i4 cells likewise remain ordinary-only because the fold collective has no compact-A reader. Defining
+`PPU_A_CPASYNC` is not reachability: every collective exposes a type-level row-capacity witness, and the launcher
+rejects folded/two-plane builds whose witness is zero. This is a current implementation exclusion, not a claim that
+the port is impossible.
 
 ## One source of legality
 
@@ -75,6 +97,10 @@ The ordered exclusion predicate is:
 7. conservative gs16 scale+zero shared memory fits at stage 2;
 8. offline producer uses a consumer-validated `WN <= 64`;
 9. Q6/TK256 is excluded because its two-plane inverse is incomplete.
+
+For the compact inventory, item 7 is recomputed at each stage using the compact row capacity where the selected
+collective supports it. Otherwise the ordinary TileM footprint remains in force, with the one-clause reason
+“selected folded or two-plane collective has no compact-A reader.”
 
 “Reachable” means the consumer can select the derived schedule, an exact-geometry offline placement is available in the
 current tree, and the cell clears those checks. It does **not** mean every cell was device-verified, nor that an arbitrary
@@ -103,6 +129,13 @@ Both sides currently emit:
 Totals per operator: **5,760 emitted, 1,286 reachable, 4,474 excluded with a clause**. After replacing only the
 operator prefix, dense and grouped output is byte-identical at this checkpoint; `ci/tactic_space.py` reports
 `dense 5760 configs, grouped 5760 -> COINCIDE`.
+
+That emitter describes the ordinary arrangement/tactic domain. `benchmarks/size_sweep.cpp` adds the stage and compact
+build axes from the same predicate. It reports **3,601 ordinary builds** plus **618 compact builds per stage per
+row capacity 1/2/4**, hence **5,562 compact and 9,163 total builds per operator before performance pruning**. For
+grouped this is the complete legal kernel inventory, not a claim that every capacity maps one-to-one to a global
+n-token point. The number is a sizing warning, not a box request; the guarded rules in
+`SWEEP_032_PRUNING_CODEX.md` must reduce it first.
 
 No ppu001 sweep should use the old `test_fpA_intB_ppu` command as a completeness claim: that binary remains an int4,
 hand-curated tactic list. The emitted inventory is the coverage contract the eventual box command must name and compare

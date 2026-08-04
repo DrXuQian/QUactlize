@@ -12,7 +12,11 @@
 //
 //   c++ -std=c++17 -Iquactlize/include benchmarks/size_sweep.cpp -o /tmp/size_sweep && /tmp/size_sweep
 //
-// Prints, per operator, the cells legal at each stage depth and the resulting instantiation count.
+// Prints, per operator, the cells legal at each stage depth and the resulting instantiation count. Compact A is not
+// build-free: exact rows*TK*2 A-smem requires separate row-capacity specialisations for 1,2,4. For dense those map
+// directly to M=1,2,4. For grouped they map to the maximum rows in one expert, NOT global n-token; the named ragged
+// distribution decides which capacity serves a workload. Ordinary builds are still required at large M, and
+// folded/two-plane collectives use them at every M.
 //
 // DO NOT DEDUPLICATE TileK merely because two tactics read the same resident bytes.  That collapses arrangement
 // equivalence into kernel equivalence: an unfolded F=1 artifact can be read at several TileK values, but those
@@ -35,12 +39,16 @@ namespace {
 // would have started the pruning exercise from a truncated space -- the exact defect the whole exercise is meant
 // to avoid, introduced by the person writing the guard against it.
 constexpr int kStages[] = {2, 3, 4};
+constexpr int kCompactRows[] = {1, 2, 4};
 
 template <class Space>
 void size_one(char const* op) {
   using namespace ppu_tactics;
-  std::map<int, int> legal;
-  int reachable = 0;
+  std::map<int, int> ordinary;
+  std::map<int, std::map<int, int>> selected_compact_rows;
+  std::map<int, std::map<int, int>> compact_builds;
+  int ordinary_reachable = 0;
+  int static_reachable = 0;
 
   for (auto const& spec : kFormats)
     for (int tk : kTileK)
@@ -49,34 +57,69 @@ void size_one(char const* op) {
           for (int wm : kWarpM)
             for (int wn : kWarpN) {
               Candidate const c{spec, tm, tn, tk, wm, wn};
-              if (Space::sweep_exclusion(c) != Exclusion::None) continue;
-              ++reachable;
+              if (Space::static_sweep_exclusion(c) != Exclusion::None) continue;
+              ++static_reachable;
+              if (Space::sweep_exclusion(c) == Exclusion::None) ++ordinary_reachable;
               for (int st : kStages) {
-                if (Space::topology_exclusion(c, st) != Exclusion::None) continue;
-                ++legal[st];
+                bool const ordinary_ok = Space::topology_exclusion(c, st) == Exclusion::None;
+                if (ordinary_ok) ++ordinary[st];
+                for (int rows : kCompactRows) {
+                  if (Space::compact_a_supported(c)) {
+                    if (Space::compact_a_topology_exclusion(c, st, rows) == Exclusion::None) {
+                      ++selected_compact_rows[rows][st];
+                      ++compact_builds[rows][st];
+                    }
+                  } else if (ordinary_ok) {
+                    // The folded/two-plane collective has no compact reader yet. Its ordinary build is already
+                    // counted above and is the only reachable configuration for this cell at a small expert M.
+                    ++selected_compact_rows[rows][st];
+                  }
+                }
               }
             }
 
-  std::printf("\n== %s ==\n  reachable cells: %d\n", op, reachable);
-  int total = 0;
+  std::printf("\n== %s ==\n", op);
+  std::printf("  static-reachable cells (before stage/M smem): %d\n", static_reachable);
+  std::printf("  ordinary reachable cells at stage 2:         %d\n", ordinary_reachable);
+  int ordinary_total = 0;
+  std::printf("\n  ordinary TileM-row builds (used at large matrix/expert M and by compact-ineligible collectives)\n");
   std::printf("  %-8s %10s\n", "stages", "legal");
   for (int st : kStages) {
-    std::printf("  %-8d %10d\n", st, legal[st]);
-    total += legal[st];
+    std::printf("  %-8d %10d\n", st, ordinary[st]);
+    ordinary_total += ordinary[st];
   }
-  // THE NUMBER THAT DECIDES WHETHER THIS IS A SWEEP OR A PROJECT. Each (cell, stage) pair is a distinct kernel
-  // instantiation, i.e. a compile -- M is a runtime loop and costs nothing extra to build.
-  std::printf("  -> %d instantiations to build\n", total);
+  std::printf("  -> %d ordinary instantiations\n", ordinary_total);
+
+  int compact_total = 0;
+  std::printf("\n  selected legal cells by A-row capacity (compact where implemented, ordinary otherwise)\n");
+  std::printf("  %-8s %10s %10s %10s %10s\n", "A rows", "s2", "s3", "s4", "compact builds");
+  for (int rows : kCompactRows) {
+    int compact_rows_total = 0;
+    for (int st : kStages) compact_rows_total += compact_builds[rows][st];
+    compact_total += compact_rows_total;
+    std::printf("  %-8d %10d %10d %10d %10d\n", rows,
+                selected_compact_rows[rows][2], selected_compact_rows[rows][3],
+                selected_compact_rows[rows][4], compact_rows_total);
+  }
+  std::printf("\n  new compact build specialisations (subset of the selected small-M cells)\n");
+  std::printf("  %-8s %10s %10s %10s\n", "A rows", "s2", "s3", "s4");
+  for (int rows : kCompactRows)
+    std::printf("  %-8d %10d %10d %10d\n", rows,
+                compact_builds[rows][2], compact_builds[rows][3], compact_builds[rows][4]);
+  // Exact-capacity shared storage makes each compact row count a different collective type. The compact rows are
+  // therefore extra builds, not extra runtime timings of the ordinary binary.
+  std::printf("  -> %d compact instantiations + %d ordinary = %d unique builds before performance pruning\n",
+              compact_total, ordinary_total, compact_total + ordinary_total);
 }
 
 }  // namespace
 
 int main() {
   std::printf("Sweep size with STAGES as an axis and split-K excluded (user, 2026-08-04).\n"
-              "Legality is ppu_tactic_space.hpp's own topology_exclusion(c, stages); nothing is restated here.\n");
+              "Legality is ppu_tactic_space.hpp's own ordinary/compact topology predicate; nothing is restated here.\n");
   size_one<ppu_tactics::DenseSpace>("dense");
   size_one<ppu_tactics::GroupedSpace>("grouped");
-  std::printf("\nM is a RUNTIME loop, so it multiplies timings, not compiles.  Arrangement-equivalent tactics\n"
-              "remain distinct kernel instantiations: same stored bytes does not imply the same TileK schedule.\n");
+  std::printf("\nCompact A rows 1/2/4 are distinct types. They equal dense M, but grouped capacity is per-expert Mmax,\n"
+              "not global tokens. Arrangement-equivalent tactics remain distinct: same bytes != same TileK.\n");
   return 0;
 }

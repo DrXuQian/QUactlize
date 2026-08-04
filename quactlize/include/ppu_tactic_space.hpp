@@ -142,12 +142,13 @@ constexpr bool common_compact_a_supported(Candidate c) {
   return c.spec.high_bits == 0 && fold_for(c.spec.low_bits, c.tk) == 1;
 }
 
-constexpr Exclusion common_compact_a_topology_exclusion(Candidate c, int stages, int problem_m) {
+constexpr Exclusion common_compact_a_topology_exclusion(Candidate c, int stages, int compact_rows) {
   if (auto const e = common_non_smem_exclusion(c); e != Exclusion::None) return e;
   if (!common_compact_a_supported(c)) return Exclusion::CompactAUnavailable;
-  if (!((problem_m == 1 || problem_m == 2 || problem_m == 4) && problem_m <= c.tm && c.tm % problem_m == 0))
+  if (!((compact_rows == 1 || compact_rows == 2 || compact_rows == 4) &&
+        compact_rows <= c.tm && c.tm % compact_rows == 0))
     return Exclusion::CompactARowExtent;
-  return common_topology_exclusion_with_a_rows(c, stages, problem_m);
+  return common_topology_exclusion_with_a_rows(c, stages, compact_rows);
 }
 
 constexpr Exclusion common_producer_exclusion(Candidate c) {
@@ -178,8 +179,8 @@ struct DenseSpace {
     return common_topology_exclusion(c, stages);
   }
   static constexpr bool compact_a_supported(Candidate c) { return common_compact_a_supported(c); }
-  static constexpr Exclusion compact_a_topology_exclusion(Candidate c, int stages, int problem_m) {
-    return common_compact_a_topology_exclusion(c, stages, problem_m);
+  static constexpr Exclusion compact_a_topology_exclusion(Candidate c, int stages, int compact_rows) {
+    return common_compact_a_topology_exclusion(c, stages, compact_rows);
   }
   static constexpr Exclusion static_sweep_exclusion(Candidate c) { return common_static_sweep_exclusion(c); }
   static constexpr Exclusion sweep_exclusion(Candidate c) { return common_sweep_exclusion(c); }
@@ -190,8 +191,8 @@ struct GroupedSpace {
     return common_topology_exclusion(c, stages);
   }
   static constexpr bool compact_a_supported(Candidate c) { return common_compact_a_supported(c); }
-  static constexpr Exclusion compact_a_topology_exclusion(Candidate c, int stages, int problem_m) {
-    return common_compact_a_topology_exclusion(c, stages, problem_m);
+  static constexpr Exclusion compact_a_topology_exclusion(Candidate c, int stages, int compact_rows) {
+    return common_compact_a_topology_exclusion(c, stages, compact_rows);
   }
   static constexpr Exclusion static_sweep_exclusion(Candidate c) { return common_static_sweep_exclusion(c); }
   static constexpr Exclusion sweep_exclusion(Candidate c) { return common_sweep_exclusion(c); }
