@@ -343,6 +343,68 @@ def lint_fixture_flags():
     return "PASS", f"all {len(fx.DENSE_FLAGS)} emitted dense options are parsed by the bench", 0.0
 
 
+def lint_tactic_spaces_agree():
+    """DENSE AND GROUPED MUST SEARCH THE SAME SET, or a comparison between them measures the sets.
+
+    ppu_tactic_space.hpp keeps DenseSpace and GroupedSpace as separate wrappers over one implementation and says
+    why at its line 185 -- so that future divergence stays visible instead of being hidden by sharing. It names
+    the mechanism that makes that work: "The emitter asks each launcher for its own answer and a comparator
+    checks them." The comparator is emit_tactic_configs.cpp --space=compare, and this runs it.
+
+    WHAT MAKES THIS A CHECK RATHER THAN A RITUAL. It is asserted to FIRE, not merely to pass: the same source is
+    compiled a second time against a header copy whose GroupedSpace demands eight warps instead of four, and a
+    run that does not then report a disagreement fails this gate. A comparator that has only ever agreed cannot
+    be distinguished from one that compares nothing -- and this repo has shipped that shape before (a selection
+    test whose planted JSON never parsed, so the C++ read zero samples and "agreed").
+
+    The divergence being reported is not itself a defect. The two operators may legitimately differ one day; the
+    property this defends is that the difference is announced rather than absorbed into a table.
+    """
+    import subprocess, tempfile
+    src = ROOT / "benchmarks" / "emit_tactic_configs.cpp"
+    hdr = ROOT / "quactlize" / "include" / "ppu_tactic_space.hpp"
+    if not src.is_file() or not hdr.is_file():
+        return "FAIL", f"missing {src.name if not src.is_file() else hdr.name}", 0.0
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        real = td / "emit_real"
+        cc = ["c++", "-std=c++17", f"-I{ROOT/'quactlize'/'include'}", str(src), "-o"]
+        r = subprocess.run(cc + [str(real)], capture_output=True, text=True)
+        if r.returncode != 0:
+            return "FAIL", f"emitter does not compile: {r.stderr.strip().splitlines()[-1][:120]}", 0.0
+        args = ["4", "64", "--space=compare", "2", "3", "4", "6", "8", "12"]
+        got = subprocess.run([str(real)] + args, capture_output=True, text=True)
+        if got.returncode != 0:
+            tail = [l for l in got.stdout.splitlines() if "disagreement" in l]
+            return "FAIL", ("DenseSpace and GroupedSpace disagree: " + (tail[-1] if tail else "see --space=compare")
+                            + " -- if intended, the emitter's consumers must be told which space they use"), 0.0
+
+        # THE PLANTED DIVERGENCE. Patch only the SECOND wrapper (GroupedSpace); assert two were found first, so a
+        # header refactor that collapses them cannot turn this into a silent no-op.
+        text = hdr.read_text()
+        old = "  static constexpr Exclusion kernel_exclusion(Candidate c) { return common_kernel_exclusion(c); }"
+        i = text.find(old)
+        j = text.find(old, i + 1) if i >= 0 else -1
+        if j <= i:
+            return "FAIL", ("could not find two identical kernel_exclusion wrappers to plant a divergence into; "
+                            "the probe would be a no-op and the real run's PASS would prove nothing"), 0.0
+        new = ("  static constexpr Exclusion kernel_exclusion(Candidate c) { "
+               "if ((c.tm/c.wm)*(c.tn/c.wn) < 8) return Exclusion::PpuWarpGroupThreads; "
+               "return common_kernel_exclusion(c); }")
+        (td / "ppu_tactic_space.hpp").write_text(text[:j] + new + text[j + len(old):])
+        probe = td / "emit_probe"
+        r = subprocess.run(["c++", "-std=c++17", f"-I{td}", f"-I{ROOT/'quactlize'/'include'}", str(src),
+                            "-o", str(probe)], capture_output=True, text=True)
+        if r.returncode != 0:
+            return "FAIL", f"planted-divergence build failed: {r.stderr.strip().splitlines()[-1][:120]}", 0.0
+        bad = subprocess.run([str(probe)] + args, capture_output=True, text=True)
+        if bad.returncode == 0:
+            return "FAIL", ("the comparator reported NO disagreement against a GroupedSpace whose warp minimum "
+                            "was raised to eight -- it is not comparing what it claims to"), 0.0
+    n = next((l for l in bad.stdout.splitlines() if "disagreement" in l), "?")
+    return "PASS", f"spaces agree, and the comparator fires when they do not ({n.strip()} when planted)", 0.0
+
+
 def lint_inbox_delivered():
     """AN UNREAD INBOX ITEM IS AN UNDELIVERED ONE, and writing the file is not sending it.
 
@@ -519,6 +581,7 @@ def main():
                 ("lint", "box-built sources stay in the PPU-portable subset", lint_ppu_portability),
                 ("lint", "emitted bench flags are ones the bench parses", lint_fixture_flags),
                 ("lint", "every INBOX item is consumed, or is explained by a call in flight", lint_inbox_delivered),
+                ("lint", "dense and grouped tactic spaces agree, and the comparator fires", lint_tactic_spaces_agree),
     ("registry", "declarations vs source", None)])
     # MATCH THE KIND AS WELL AS THE NAME. `-k lint` matched NOTHING, because a lint's name is its description
     # ("duplicate unroll directives") and the word "lint" only appears in the kind. The run then printed

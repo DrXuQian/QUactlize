@@ -13,8 +13,14 @@ The list comes first because the design is only justified by it.
 
 2. **Two benches, two unrelated ways to say "which configs to compile".** MoE: CMake generates one `.cu` per
    shape and takes Cartesian axes through `MOE_*_LIST` env vars. Dense: one `.cu` with a table, now emitted by
-   `emit_dense_configs.cpp`. Neither can express the other's pruned set, and the MoE side cannot express an
+   `emit_tactic_configs.cpp`. Neither can express the other's pruned set, and the MoE side cannot express an
    arbitrary set at all -- only a product.
+
+   **HALF-FIXED 2026-08-04.** The generator now takes `--space=dense|grouped` and emits the same table for
+   either operator, so one pruning policy serves both and an arbitrary set is expressible for the MoE side.
+   What remains is the *consumer*: the MoE bench still builds from `MOE_*_LIST`, so nothing yet reads
+   `lowbit_grouped_configs.inc`. Until it does, the two operators still search sets defined two ways -- they
+   are merely now provably the same set.
 
 3. **Neither bench had a compile check.** Both syntax gates were added today. The gap is why a selection
    rewrite was committed without ever being compiled, and it was invisible because `-k lowbit` matched nothing
@@ -53,11 +59,23 @@ question ("was that separation real?") is answerable without re-running.
 
 ### B. One config-table generator for both operators
 
-`emit_dense_configs.cpp` already reads `ppu_tactic_space.hpp` and emits an X-macro list. Generalise it to emit
-for either `DenseSpace` or `GroupedSpace`, and let the MoE side consume the same list -- CMake's job shrinks
-from "loop over four axes and write 180 files" to "compile the generated list, N configs per translation unit".
-The pruning policy then has exactly one implementation, and the `MOE_*_LIST` env vars become a filter over the
+`emit_tactic_configs.cpp` reads `ppu_tactic_space.hpp` and emits an X-macro list. **The generator half is done**
+(2026-08-04): `--space=dense|grouped` emits for either, with a per-space macro prefix so a grouped table
+included where a dense one is expected is an undefined macro rather than a silent substitution. What remains is
+letting the MoE side consume the list -- CMake's job shrinking from "loop over four axes and write 180 files" to
+"compile the generated list, N configs per translation unit", with `MOE_*_LIST` becoming a filter over the
 generated set rather than a second, weaker way to define it.
+
+**AND `--space=compare`, which is the part worth keeping even after that lands.** The header deliberately keeps
+`DenseSpace` and `GroupedSpace` as separate wrappers over one implementation so future divergence stays visible,
+and explicitly says the emitter should ask each and have a comparator check them. That comparator did not exist,
+so "the two are identical" was a property of the source that nobody re-established. It now walks the grid asking
+both spaces every predicate the emitter uses -- kernel, sweep, static-sweep, per-stage topology, compact-A
+support and the 1/2/4 compact capacities -- and exits non-zero on any disagreement.
+
+Verified to FIRE, not merely to pass: with the four-warp minimum raised to eight in `GroupedSpace` only, it
+reported 147 disagreements and rc=1; unmodified it reports 0 and rc=0. A comparator that has only ever agreed is
+indistinguishable from one that compares nothing.
 
 The `static_assert` tying a generated table to its binary's `(bits, TileK)` is the pattern to keep: a stale
 table becomes a compile error rather than a sweep over tactics the binary cannot select.

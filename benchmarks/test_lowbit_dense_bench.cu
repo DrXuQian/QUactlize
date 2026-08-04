@@ -279,7 +279,7 @@ struct Cfg {
 
 struct TileCfg { char const* name; int tm, tn, wm, wn, st; };
 
-// The generated table. Regenerate with benchmarks/emit_dense_configs.cpp when the binary's (QUANT, BENCH_TSK)
+// The generated table. Regenerate with benchmarks/emit_tactic_configs.cpp when the binary's (QUANT, BENCH_TSK)
 // changes -- the static_assert below is what turns forgetting into a compile error rather than a sweep over a
 // set of tactics this binary cannot select.
 #include "bench_select.hpp"
@@ -288,15 +288,15 @@ struct TileCfg { char const* name; int tm, tn, wm, wn, st; };
 #include "lowbit_dense_configs.inc"
 static_assert(cutlass::sizeof_bits<QuantType>::value == LOWBIT_DENSE_CFG_BITS && TileShapeK == LOWBIT_DENSE_CFG_TILEK,
               "lowbit_dense_configs.inc was generated for a different (bits, TileK) than this binary. Regenerate: "
-              "c++ -std=c++17 -Iquactlize/include benchmarks/emit_dense_configs.cpp -o /tmp/emit_dense && "
-              "/tmp/emit_dense <bits> <tile_k> > benchmarks/lowbit_dense_configs.inc");
+              "c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic && "
+              "/tmp/emit_tactic <bits> <tile_k> > benchmarks/lowbit_dense_configs.inc");
 
 // The compiled set. Every entry here is a distinct template instantiation baked into the binary; add one and
 // it costs compile time, not a rebuild at search time. Keep WM|TM, WN|TN, and both multiples of the 16x16 atom.
 inline std::vector<TileCfg> supported_configs() {
   // GENERATED, not hand-written. The 17 rows this replaced were a fifth of the legal-and-pruned set for one
   // (schema, TileK) binary, and nothing in the file said so -- a sweep that searches a fifth of its space still
-  // prints a winner. See benchmarks/emit_dense_configs.cpp for the policy and the regeneration command.
+  // prints a winner. See benchmarks/emit_tactic_configs.cpp for the policy and the regeneration command.
   std::vector<TileCfg> v;
 #define LOWBIT_DENSE_ROW(TM,TN,WM,WN,ST,_UNUSED) \
   v.push_back(TileCfg{#TM "x" #TN ":" #WM "x" #WN ":s" #ST, TM, TN, WM, WN, ST});
