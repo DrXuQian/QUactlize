@@ -1,29 +1,41 @@
 #!/usr/bin/env bash
-# WHAT TO PASTE WHEN SOMETHING IS RED. One command, no arguments, safe to run any time.
+# WHAT TO PASTE AFTER A BOX RUN, red or green. No arguments, safe any time.
 #
-# run_batch writes one log per pass and per format under $OUT (default ~/ab). Reading them by hand means
-# remembering which file, then which grep -- and today that cost two ppu001 round trips: once for an
-# UnboundLocalError whose text was three lines above where anyone looked, and once for an assertion whose
-# message was in the log all along.
+# It prints, for EVERY log run_batch wrote: the summary line, and -- when there are failures -- the failed ids
+# and every assertion line.
 #
-# It prints, per log that has a failure: the summary line, the failed test ids, and every assertion line.
-# Output is capped so the whole thing pastes into a chat.
+# TWO REASONS IT PRINTS THE GREEN ONES TOO.
+#   * "no failures" and "no logs" are different states, and the first version of this script said the same thing
+#     for both: it printed a single line and left the reader to wonder whether the run had even reached that
+#     stage. Listing what it FOUND makes the distinction visible instead of hinted at.
+#   * a green run is not the end of the story here. codex holds nine matrix promotions on reading the per-format
+#     pass summaries, so the numbers are the deliverable whether or not anything is red.
 set -uo pipefail
 OUT="${OUT:-$HOME/ab}"
-found=0
-for log in "$OUT"/pytest_cpu_arm.log "$OUT"/pytest_full.log "$OUT"/fully_quantized_*.log \
-           "$OUT"/dense_python_oracle.log "$OUT"/device_vs_cpu_arm.log; do
+logs=("$OUT"/pytest_cpu_arm.log "$OUT"/pytest_full.log "$OUT"/fully_quantized_*.log \
+      "$OUT"/dense_python_oracle.log "$OUT"/device_vs_cpu_arm.log)
+seen=0 red=0
+for log in "${logs[@]}"; do
   [ -f "$log" ] || continue
-  # the summary is pytest's last non-empty line
+  seen=$((seen+1))
   summary=$(grep -E '[0-9]+ (passed|failed|error|skipped)' "$log" | tail -1)
   fails=$(sed -n '/^=* short test summary info/,$p' "$log" | grep -E '^(FAILED|ERROR)' | head -8)
-  [ -n "$fails" ] || continue
-  found=1
-  echo "=== $(basename "$log")"
-  echo "    $summary"
-  echo "$fails" | sed 's/^/    /'
-  # the assertion text itself: pytest prefixes it with "E ". Dedupe, since parametrised cases repeat it.
-  grep -E '^E ' "$log" | sed 's/^E *//' | awk '!seen[$0]++' | head -12 | sed 's/^/      | /'
+  if [ -n "$fails" ]; then
+    red=$((red+1))
+    echo "=== $(basename "$log")   [FAILURES]"
+    echo "    ${summary:-<no summary line>}"
+    echo "$fails" | sed 's/^/    /'
+    grep -E '^E ' "$log" | sed 's/^E *//' | awk '!seen[$0]++' | head -12 | sed 's/^/      | /'
+  else
+    echo "=== $(basename "$log")"
+    echo "    ${summary:-<no summary line -- the run may not have reached this stage>}"
+  fi
   echo
 done
-[ "$found" = 1 ] || echo "no failures in $OUT -- if you expected some, the run may not have reached that stage"
+if [ "$seen" = 0 ]; then
+  echo "NO LOGS FOUND under $OUT."
+  echo "  That is not the same as 'nothing failed' -- it means run_batch has not written here."
+  echo "  Check OUT (currently $OUT), or that ./benchmarks/run_batch.sh pytest actually ran."
+else
+  echo "$seen log(s) read, $red with failures."
+fi
