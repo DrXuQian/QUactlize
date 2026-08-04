@@ -374,24 +374,21 @@ done
 # build confirms the new one produces the same BINARIES. Local evidence so far is target PARITY: 35 targets in
 # both, the same names, nothing skipped. That is necessary and not sufficient, which is why the old path is
 # still reachable rather than deleted.
-# DEFAULT IS THE OVERLAY, DELIBERATELY, until the no-overlay path carries the compile flags.
+# DEFAULT: build from THIS tree. QUACTLIZE_OVERLAY=1 restores the legacy example injection.
 #
-# The no-overlay path (QUACTLIZE_NO_OVERLAY=1) configures, produces the SAME 35 targets under the same names
-# with nothing skipped, and resolves every source from this tree. What it does NOT yet do is inherit actlize's
-# directory-scope compile flags: CUTLASS_PPU_EXTRA_HGCC_FLAGS and CMAKE_CXX_FLAGS are plain variables set in
-# actlize's CMakeLists, and add_subdirectory gives it a CHILD scope, so a sibling directory under our root sees
-# neither. Being inside examples/ inherited them for free, and that is the one thing being an example actually
-# bought.
+# EVIDENCE FOR THE SWITCH, and it is stronger than the target parity I first settled for. Against the same stub
+# SDK, the generated hgcc command line for test_moe_splitk_bench differs from the legacy path in EXACTLY two
+# places, both of which must differ: the include directories are our real benchmarks/ and csrc/ instead of the
+# overlay, and the source is its real path instead of a copy. Every flag, every -D (including the ones actlize
+# appends after its toolchain: CUTLASS_USE_PACKED_TUPLE and friends), and every arch option are identical.
 #
-# THE FAILURE MODE IS WHY THIS IS NOT THE DEFAULT YET. Nothing errors. Every target builds. The compile command
-# simply carries NO -D -- not CUTLASS's and not PPU_DEFS -- so every A/B would compare a binary against itself
-# and report "no change", which is indistinguishable from "the change does nothing". That exact confusion is
-# already recorded in CMakeLists.txt.in for a different cause.
-if [ "${QUACTLIZE_NO_OVERLAY:-0}" = "1" ]; then
-  _CMAKE_SRC="$HERE"; _CMAKE_EXTRA=(-DQUACTLIZE_PPU=ON)
-  echo "[build.sh] QUACTLIZE_NO_OVERLAY=1 -- building from this tree (WIP: compile flags not yet inherited)"
-else
+# The legacy path is kept for one round rather than deleted, because "the same command line" is not "the same
+# binary" until hgcc has actually run, and hgcc is on the box.
+if [ "${QUACTLIZE_OVERLAY:-0}" = "1" ]; then
   _CMAKE_SRC="$ACTLIZE"; _CMAKE_EXTRA=()
+  echo "[build.sh] QUACTLIZE_OVERLAY=1 -- legacy example-injection path"
+else
+  _CMAKE_SRC="$HERE"; _CMAKE_EXTRA=(-DQUACTLIZE_PPU=ON)
 fi
 cmake "$_CMAKE_SRC" "${_CMAKE_EXTRA[@]}" -DPPU_SDK_ROOT="$PPU_SDK_ROOT" -DCUTLASS_PPU_ARCHS="$ARCH" \
   -DCUTLASS_ENABLE_TESTS=OFF -DCUTLASS_ENABLE_GTEST_UNIT_TESTS=OFF \

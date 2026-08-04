@@ -42,33 +42,46 @@ include_directories(
     ${QZ_ROOT}/third_party/actlize/tools/util/include)
 
 # ---------------------------------------------------------------------------------------------------------
-# THE COMPILE FLAGS COME FROM actlize's DIRECTORY, ASKED FOR RATHER THAN RESTATED.
+# THE TOOLCHAIN IS INCLUDED HERE, IN OUR SCOPE. This is the whole of what being an actlize example bought.
 #
-# add_subdirectory creates a CHILD scope: variables set inside actlize's CMakeLists do not propagate back to the
-# parent, so a sibling directory under OUR root does not see them. Inside examples/ they were inherited for free,
-# which is the one thing being an example genuinely bought and the one thing that is not obvious.
+# add_subdirectory gives actlize a CHILD scope, and everything PPUToolchain.cmake sets -- the hgcc path
+# (PPU_DEVICE_HGCC_REAL), the extra device flags (CUTLASS_PPU_EXTRA_HGCC_FLAGS), the arch flags, CMAKE_CXX_FLAGS
+# -- stays there. A sibling directory under our root inherits NONE of it.
 #
-# The symptom, if this is missing, is not a build failure. The targets all configure, the target set matches
-# exactly (35 == 35, verified), and the compile command carries NO -D at all -- not the CUTLASS ones and not
-# PPU_DEFS. Every A/B through PPU_DEFS would then compare a binary against itself and report "no change", which
-# is indistinguishable from "the change does nothing". That failure is already recorded in CMakeLists.txt.in for
-# a different cause; this would have reintroduced it through the build system instead of the macro plumbing.
+# THE SYMPTOM IS SILENT AND IT IS WORSE THAN A MISSING FLAG. With the variables absent, cutlass_build_dev_kernels
+# still emits an add_custom_command whose COMMAND expands to nothing: the generated build.make declares the
+# object, prints "[hgcc] <source>", and runs NOTHING. Every target "builds", instantly, producing no objects. The
+# first thing that noticed was the link.
 #
-# get_directory_property(... DEFINITION ...) READS the variable as actlize set it. Copying the flag list here
-# instead would be a second definition that drifts the first time actlize's changes -- the same defect as the
-# config table that had two hand-maintained copies.
-get_directory_property(_QZ_HGCC_FLAGS
+# Chasing the variables one at a time with get_directory_property is what I tried first, and it is the "second
+# copy" defect: a list of names here that has to track a 381-line file nobody will diff. include() executes in
+# the CURRENT scope, so including actlize's own toolchain file sets all of it, once, from the one definition.
+# Re-including is safe -- it defines functions and sets variables, and CMake permits redefinition.
+include(${QZ_ROOT}/third_party/actlize/cmake/PPUToolchain.cmake)
+# AND THEN actlize's OWN APPENDS, which happen in its top-level CMakeLists AFTER it includes the toolchain --
+# CUTLASS_USE_PACKED_TUPLE / CUTE_USE_PACKED_TUPLE and the CUTLASS_TEST_* set. include() above gives us the
+# toolchain's value; only the directory holds the appended one.
+#
+# THIS IS NOT COSMETIC. CUTLASS_USE_PACKED_TUPLE=1 changes cute::tuple to the standard-layout implementation.
+# Compiling our translation units without it while actlize's headers were configured with it is an ABI
+# mismatch between two halves of the same binary, and nothing would say so.
+get_directory_property(_QZ_ACTLIZE_HGCC
     DIRECTORY ${QZ_ROOT}/third_party/actlize DEFINITION CUTLASS_PPU_EXTRA_HGCC_FLAGS)
-get_directory_property(_QZ_CXX_FLAGS
-    DIRECTORY ${QZ_ROOT}/third_party/actlize DEFINITION CMAKE_CXX_FLAGS)
-if(NOT _QZ_HGCC_FLAGS)
-  message(FATAL_ERROR
-    "CUTLASS_PPU_EXTRA_HGCC_FLAGS is empty as read from actlize's directory. Either add_subdirectory(actlize) "
-    "did not run before this, or the variable was renamed there. Building on without it produces targets whose "
-    "compile command has no -D at all, which looks like success.")
+if(_QZ_ACTLIZE_HGCC)
+  set(CUTLASS_PPU_EXTRA_HGCC_FLAGS ${_QZ_ACTLIZE_HGCC})
 endif()
-set(CUTLASS_PPU_EXTRA_HGCC_FLAGS ${_QZ_HGCC_FLAGS})
-set(CMAKE_CXX_FLAGS "${_QZ_CXX_FLAGS}")
+get_directory_property(_QZ_ACTLIZE_CXX
+    DIRECTORY ${QZ_ROOT}/third_party/actlize DEFINITION CMAKE_CXX_FLAGS)
+if(_QZ_ACTLIZE_CXX)
+  set(CMAKE_CXX_FLAGS "${_QZ_ACTLIZE_CXX}")
+endif()
+
+if(NOT PPU_DEVICE_HGCC_REAL)
+  message(FATAL_ERROR
+    "PPU_DEVICE_HGCC_REAL is empty after including PPUToolchain.cmake. Without it every device rule expands to "
+    "an EMPTY command: the build prints [hgcc] per source, produces no objects, and fails at the link -- which "
+    "reads as a link problem and is not one.")
+endif()
 
 # The target definitions are UNCHANGED and still live in CMakeLists.txt.in. Including rather than copying keeps
 # one definition of the target set: a second copy is a second place for a target to be added and forgotten,
