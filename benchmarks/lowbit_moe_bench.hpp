@@ -131,6 +131,45 @@ struct Band {
 };
 
 #include "bench_select.hpp"
+#include "bench_samples.hpp"
+
+
+// ---- sample emission (docs/BENCH_DESIGN.md) --------------------------------------------------------------
+// The bench emits what it ran and what it measured; benchmarks/analyse.py decides. This is additive: with
+// BENCH_JSONL unset nothing is written and every existing behaviour is unchanged.
+//
+// THE PASS INDEX IS A GLOBAL because the repetition happens in main's loop around moe_run_all() -- the whole
+// candidate list is repeated rather than each candidate in place, so that drift lands on every candidate
+// instead of on whichever ran during it. The macros that time a row are several frames below that loop and
+// have no other way to know which pass they are in.
+inline int& moe_pass() { static int p = 0; return p; }
+
+// The distribution NAMED and VERSIONED. "ragged" is not reproducible and does not say how ragged; a name that
+// changes when the generator changes is what stops an old log from being reinterpreted under new rules.
+inline char const* moe_dist_name(int mode) {
+  switch (mode) {
+    case 0:  return "uniform-v1";
+    case 1:  return "ragged-coarse-v1";      // multiples of TileM: never enters the masked path
+    case 3:  return "decode-topk-1row-v1";
+    default: return "skew-h8-v1";            // ~12% empty, 1-in-8 heavy tail, rest scattered off TileM
+  }
+}
+
+inline void moe_sample(const Band& bd, char const* schema,
+                       int tm, int tn, int tk, int wm, int wn, int st, double us) {
+  if (!bench_samples::enabled()) return;
+  bench_samples::Sample s{};
+  // The fixture is identified by its SHAPE and distribution rather than a hand-typed label: two runs of the
+  // same shape must land in the same group, and a typo in a label would silently split them into two verdicts.
+  static char name[96];
+  std::snprintf(name, sizeof name, "moe-n%d-k%d-gs%d-L%d-r%d", bd.N, bd.K, bd.gs, bd.L, bd.Rows);
+  s.fixture = name;  s.dist = moe_dist_name(bd.mode);  s.schema = schema;
+  s.n = bd.N; s.k = bd.K; s.gs = bd.gs;
+  s.experts = bd.L; s.rows = bd.Rows; s.mmax = bd.Mmax;
+  s.tm = tm; s.tn = tn; s.tk = tk; s.wm = wm; s.wn = wn; s.st = st;
+  s.pass = moe_pass(); s.us = us;
+  bench_samples::emit(s);
+}
 
 // iters == 0 means EXACTLY ONE launch and no warmup: acu attributes counters to the whole process, so a warmup would
 // double-count and 20 iterations would make the report meaningless.
@@ -378,7 +417,7 @@ constexpr bool moe_ok() {
       double u; const int _f0 = moe_grouped_ppu::moeg_fail_count();                                                \
       if (moe_acu()) { u = time_it(_go, 0); std::printf("  [acu] ONE COLD launch (not a timing): %s\n", _t); }                         \
       else             u = time_it(_go, 20);                                                                       \
-      if (moe_row_ran(BD, _t, u, _f0, (LOB)+(HIB))) { report(BD,_t,u,TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),fold::warps_per_cu_chunked<TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),32,true>);  upd(BEST, _t, u); } \
+      if (moe_row_ran(BD, _t, u, _f0, (LOB)+(HIB))) { report(BD,_t,u,TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),fold::warps_per_cu_chunked<TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),32,true>);  upd(BEST, _t, u); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, u); } \
     }                                                                                                              \
   }
 
@@ -423,7 +462,7 @@ constexpr bool moe_ok() {
       double u; const int _f0 = moe_grouped_ppu::moeg_fail_count();                                                \
       if (moe_acu()) { u = time_it(_go, 0); std::printf("  [acu] ONE COLD launch (not a timing): %s\n", _t); }                         \
       else             u = time_it(_go, 20);                                                                       \
-      if (moe_row_ran(BD, _t, u, _f0, (BITS))) { report(BD,_t,u,TMv,TNv,TKv,WMv,WNv,Sv,(BITS),fold::warps_per_cu_chunked<TMv,TNv,TKv,WMv,WNv,Sv,(BITS),32,true>);  upd(BEST, _t, u); } \
+      if (moe_row_ran(BD, _t, u, _f0, (BITS))) { report(BD,_t,u,TMv,TNv,TKv,WMv,WNv,Sv,(BITS),fold::warps_per_cu_chunked<TMv,TNv,TKv,WMv,WNv,Sv,(BITS),32,true>);  upd(BEST, _t, u); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, u); } \
     }                                                                                                              \
   }
 

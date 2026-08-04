@@ -61,6 +61,7 @@ GATES = [
     # between layouts.py xplane() and l61, and produces the prune table.
     ("l105_low_plane_config_classes", []),
     ("l106_compact_a_rows", []),
+    ("l107_moe_router_fixture", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that

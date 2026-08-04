@@ -282,6 +282,8 @@ struct TileCfg { char const* name; int tm, tn, wm, wn, st; };
 // The generated table. Regenerate with benchmarks/emit_dense_configs.cpp when the binary's (QUANT, BENCH_TSK)
 // changes -- the static_assert below is what turns forgetting into a compile error rather than a sweep over a
 // set of tactics this binary cannot select.
+#include "bench_select.hpp"
+#include "bench_samples.hpp"
 #include "w4a16_configs.inc"
 static_assert(cutlass::sizeof_bits<QuantType>::value == W4A16_CFG_BITS && TileShapeK == W4A16_CFG_TILEK,
               "w4a16_configs.inc was generated for a different (bits, TileK) than this binary. Regenerate: "
@@ -994,19 +996,60 @@ int main(int argc, char const **args) {
   // --search_configs: time every compiled config (in-process, no recompile), keep the best that PASSED,
   // print a table, optionally persist to a tactic cache, then run the winner once.
   if (options.search_configs) {
+    // THE WHOLE LIST, REPEATED -- and the winner is a median with a band, not one timing. `if (tf > best_tf)`
+    // over a single measurement was ordering candidates inside the recorded 13% cross-run spread by whichever
+    // happened to run in a good moment. Repeating the LIST rather than each candidate is what keeps clock and
+    // thermal drift from landing on one of them; the same reasoning and the same procedure as the MoE bench,
+    // which is why both call bench_select.hpp rather than each carrying a copy.
+    const int reps = [] { char const* e = std::getenv("BENCH_REPS"); int r = e ? std::atoi(e) : 5; return r < 1 ? 1 : r; }();
+    char build[128];
+    std::snprintf(build, sizeof build, "bits=%d TSK=%d", int(cutlass::sizeof_bits<QuantType>::value), TileShapeK);
+    bench_samples::run_header("cutlass_w4a16", build, reps);
+
     std::printf("%-18s %-10s %s\n", "CONFIG", "TFLOP/s", "status");
-    std::string best_name; double best_tf = 0.0;
-    for (auto const& c : supported_configs()) {
-      Result r = run_config(options, c);
-      if (!r.passed) { std::printf("%-18s %-10s %s\n", c.name, "-", "skipped (unsupported/failed)"); continue; }
-      double tf = r.gflops / 1e3;
-      std::printf("%-18s %-10.1f ok\n", c.name, tf);
-      if (tf > best_tf) { best_tf = tf; best_name = c.name; }
+    Best best; best.tag[0] = '\0'; best.us = 1e18;
+    for (int rep = 0; rep < reps; ++rep) {
+      if (reps > 1) std::printf("\n  --- pass %d/%d ---\n", rep + 1, reps);
+      for (auto const& c : supported_configs()) {
+        Result r = run_config(options, c);
+        if (!r.passed) { if (!rep) std::printf("%-18s %-10s %s\n", c.name, "-", "skipped (unsupported/failed)"); continue; }
+        const double tf = r.gflops / 1e3;
+        // SECONDS, NOT TFLOP/s, IS WHAT GETS COMPARED. The selection works on a time, so converting once here
+        // keeps one definition of "better" rather than a maximised rate in one bench and a minimised time in
+        // the other -- two orderings that agree until a shape makes the FLOP count differ between candidates.
+        const double us = (tf > 0.0) ? (2.0 * double(options.m) * options.n * options.k / (tf * 1e12) * 1e6) : 1e18;
+        std::printf("%-18s %-10.1f ok\n", c.name, tf);
+        upd(best, c.name, us);
+        if (bench_samples::enabled()) {
+          bench_samples::Sample s{};
+          static char fx[96];
+          std::snprintf(fx, sizeof fx, "dense-m%d-n%d-k%d-gs%d", options.m, options.n, options.k, options.g);
+          s.fixture = fx; s.dist = "dense-v1";
+          s.schema = cutlass::sizeof_bits<QuantType>::value == 4 ? "i4"
+                   : cutlass::sizeof_bits<QuantType>::value == 2 ? "i2" : "i1";
+          s.n = options.n; s.k = options.k; s.gs = options.g;
+          s.experts = 0; s.rows = options.m; s.mmax = options.m;
+          s.tm = c.tm; s.tn = c.tn; s.tk = TileShapeK; s.wm = c.wm; s.wn = c.wn; s.st = c.st;
+          s.pass = rep; s.us = us;
+          bench_samples::emit(s);
+        }
+      }
     }
-    if (best_name.empty()) { std::fprintf(stderr, "no config passed\n"); return 1; }
-    if (!options.save_tactic_file.empty()) save_tactic(options.save_tactic_file, options, best_name, best_tf);
-    std::printf("\n==== WINNER: %s at %.1f TFLOP/s ====\n", best_name.c_str(), best_tf);
-    run_config(options, find_config(best_name));
+    bench_samples::flush();
+    if (best.tag[0] == '\0') { std::fprintf(stderr, "no config passed\n"); return 1; }
+    const int ties = settle(best);
+    const double best_tf = 2.0 * double(options.m) * options.n * options.k / (best.us * 1e-6) / 1e12;
+    if (!options.save_tactic_file.empty()) save_tactic(options.save_tactic_file, options, best.tag, best_tf);
+    // NAMED A WINNER ONLY WHEN NOTHING TIES IT. With ties this prints the leader and says it is unresolved,
+    // because a tactic cache written from an unresolved sweep is a wrong answer that never gets revisited.
+    if (reps < 2)
+      std::printf("\n==== LOWEST: %s at %.1f TFLOP/s (ONE pass -- NOT a ranking) ====\n", best.tag, best_tf);
+    else if (ties == 0)
+      std::printf("\n==== WINNER: %s at %.1f TFLOP/s (separated) ====\n", best.tag, best_tf);
+    else
+      std::printf("\n==== UNRESOLVED: %s leads at %.1f TFLOP/s, %d candidate(s) tie it ====\n",
+                  best.tag, best_tf, ties);
+    run_config(options, find_config(best.tag));
     return 0;
   }
 

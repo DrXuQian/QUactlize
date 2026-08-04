@@ -129,3 +129,66 @@ def test_one_pass_is_not_a_ranking(tmp_path):
                  + _sample("f", LEADER, 0, 100.0) + "\n"
                  + _sample("f", OVERLAP, 0, 200.0) + "\n")
     assert _py_verdict(p)["ranked"] is False
+
+
+# ---------------------------------------------------------------------------------------------------------
+# THE FORMAT CONTRACT between bench_samples.hpp and analyse.py. The tests above plant JSON from Python, so they
+# check the DECISION and not the WIRE. That gap already bit once: json.dumps' default `": "` produced a file the
+# C++ cross-checker silently read as zero samples. So this one writes with the real emitter and reads with the
+# real analyser -- nothing between them is hand-written.
+
+EMITTER = r'''
+#include "bench_samples.hpp"
+int main() {
+  bench_samples::run_header("roundtrip", "bits=4 TSK=64", 3);
+  const struct { int tm, tn, wm, wn, st; double base; } cs[] = {{64,128,64,64,3,100.0},{32,64,32,32,3,101.5}};
+  for (int p = 0; p < 3; ++p) for (auto& c : cs) {
+    bench_samples::Sample s{};
+    s.fixture = "rt"; s.dist = "dense-v1"; s.schema = "i4";
+    s.n = 4096; s.k = 4096; s.gs = 128; s.experts = 0; s.rows = 2048; s.mmax = 2048;
+    s.tm = c.tm; s.tn = c.tn; s.tk = 64; s.wm = c.wm; s.wn = c.wn; s.st = c.st;
+    s.pass = p; s.us = c.base + p * 1.2;
+    bench_samples::emit(s);
+  }
+  bench_samples::flush();
+}
+'''
+
+
+def test_emitter_output_is_readable_by_the_analyser(tmp_path):
+    cxx = shutil.which("c++") or shutil.which("g++")
+    if not cxx:
+        pytest.skip("no host C++ compiler")
+    src = tmp_path / "emit.cpp"
+    src.write_text(EMITTER)
+    exe = tmp_path / "emit"
+    r = subprocess.run([cxx, "-std=c++17", "-I", str(ROOT / "benchmarks"), str(src), "-o", str(exe)],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, f"bench_samples.hpp does not compile standalone:\n{r.stderr}"
+
+    out = tmp_path / "run.jsonl"
+    subprocess.run([str(exe)], env={"BENCH_JSONL": str(out), "PATH": "/usr/bin:/bin"}, check=True)
+    assert out.is_file() and out.read_text().count("\n") == 7, "expected a run header and six samples"
+
+    v = _py_verdict(out)
+    assert v["passes"] == 3
+    assert v["candidates"] == 2
+    assert v["leader"].startswith("i4 64x128"), "the analyser must read the emitter's field names"
+    # The two candidates were planted to overlap, so a round trip that reports SEPARATED means the analyser is
+    # reading numbers it did not get from this file.
+    assert len(v["ties"]) == 1
+
+
+def test_unset_bench_jsonl_writes_nothing(tmp_path):
+    """The emission is additive: with BENCH_JSONL unset the bench must behave exactly as before. A header that
+    wrote to a default path would change every existing run's side effects."""
+    cxx = shutil.which("c++") or shutil.which("g++")
+    if not cxx:
+        pytest.skip("no host C++ compiler")
+    src = tmp_path / "emit.cpp"
+    src.write_text(EMITTER)
+    exe = tmp_path / "emit"
+    subprocess.run([cxx, "-std=c++17", "-I", str(ROOT / "benchmarks"), str(src), "-o", str(exe)], check=True)
+    before = set(p.name for p in tmp_path.iterdir())
+    subprocess.run([str(exe)], cwd=tmp_path, env={"PATH": "/usr/bin:/bin"}, check=True)
+    assert set(p.name for p in tmp_path.iterdir()) == before, "something was written with BENCH_JSONL unset"

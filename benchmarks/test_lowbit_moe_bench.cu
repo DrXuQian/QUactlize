@@ -138,10 +138,13 @@ int main(int argc, char** argv) {
   // lowbit_moe_bench.hpp: drift is time-correlated, so interleaving is what keeps it from landing on one
   // candidate. MOE_REPS=1 is allowed and is explicitly not a ranking.
   const int reps = moe_acu() ? 1 : moe_reps();
+  bench_samples::run_header("lowbit_moe", PPU_CHUNK_STR " " LOWBIT_QMODE_STR, reps);
   for (int r = 0; r < reps; ++r) {
+    moe_pass() = r;
     if (reps > 1) std::printf("\n  --- pass %d/%d ---\n", r + 1, reps);
     moe_run_all(bd, b);
   }
+  bench_samples::flush();
   int ties[MOE_FMT_COUNT];
   for (int i = 0; i < MOE_FMT_COUNT; ++i) { ties[i] = settle(b[i]); b[i].reps_seen = reps; }
 
