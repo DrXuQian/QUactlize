@@ -279,56 +279,44 @@ struct Cfg {
 
 struct TileCfg { char const* name; int tm, tn, wm, wn, st; };
 
+// The generated table. Regenerate with benchmarks/emit_dense_configs.cpp when the binary's (QUANT, BENCH_TSK)
+// changes -- the static_assert below is what turns forgetting into a compile error rather than a sweep over a
+// set of tactics this binary cannot select.
+#include "w4a16_configs.inc"
+static_assert(cutlass::sizeof_bits<QuantType>::value == W4A16_CFG_BITS && TileShapeK == W4A16_CFG_TILEK,
+              "w4a16_configs.inc was generated for a different (bits, TileK) than this binary. Regenerate: "
+              "c++ -std=c++17 -Iquactlize/include benchmarks/emit_dense_configs.cpp -o /tmp/emit_dense && "
+              "/tmp/emit_dense <bits> <tile_k> > benchmarks/w4a16_configs.inc");
+
 // The compiled set. Every entry here is a distinct template instantiation baked into the binary; add one and
 // it costs compile time, not a rebuild at search time. Keep WM|TM, WN|TN, and both multiples of the 16x16 atom.
 inline std::vector<TileCfg> supported_configs() {
-  return {
-    {"64x64:32x32:s4",   64,  64, 32, 32, 4},   // sweep winner (61% MFU @ 2048x4096x4096)
-    {"64x64:32x32:s3",   64,  64, 32, 32, 3},
-    {"64x64:32x32:s5",   64,  64, 32, 32, 5},
-    {"32x32:16x16:s3",   32,  32, 16, 16, 3},   // stock example default
-    {"64x32:32x16:s3",   64,  32, 32, 16, 3},   // small asymmetric (good for int1/int2: occupancy-limited by big TK)
-    {"32x64:16x32:s3",   32,  64, 16, 32, 3},
-    {"64x32:32x16:s4",   64,  32, 32, 16, 4},
-    {"32x64:16x32:s4",   32,  64, 16, 32, 4},
-    // small-M + WIDE-N (for the sub-byte formats whose forced big TK makes A-smem = TileM*TK the limiter):
-    // A-smem depends only on TileM, total A traffic ~ (N/TileN), total B convert ~ (M/TileM). So shrink M for
-    // smem/occupancy, widen N for free (B is 1-2 bit). All 4 warps (1 x 4).
-    {"32x128:32x32:s3",  32, 128, 32, 32, 3},
-    {"32x256:32x64:s3",  32, 256, 32, 64, 3},
-    {"16x128:16x32:s3",  16, 128, 16, 32, 3},
-    {"16x256:16x64:s3",  16, 256, 16, 64, 3},
-    {"128x64:64x32:s4", 128,  64, 64, 32, 4},
-    {"64x128:32x64:s4",  64, 128, 32, 64, 4},
-    {"128x128:64x64:s3",128, 128, 64, 64, 3},
-    {"128x256:64x64:s3",128, 256, 64, 64, 3},
-    {"256x128:64x64:s3",256, 128, 64, 64, 3},
-  };
+  // GENERATED, not hand-written. The 17 rows this replaced were a fifth of the legal-and-pruned set for one
+  // (schema, TileK) binary, and nothing in the file said so -- a sweep that searches a fifth of its space still
+  // prints a winner. See benchmarks/emit_dense_configs.cpp for the policy and the regeneration command.
+  std::vector<TileCfg> v;
+#define W4A16_ROW(TM,TN,WM,WN,ST,_UNUSED) \
+  v.push_back(TileCfg{#TM "x" #TN ":" #WM "x" #WN ":s" #ST, TM, TN, WM, WN, ST});
+  W4A16_CFG_LIST(W4A16_ROW, )
+#undef W4A16_ROW
+  return v;
 }
 
 // Map a runtime TileCfg to its compiled Cfg<>::Gemm and run BODY with `using G = ...;` in scope. Mirrors
 // machete's CUTLASS55_DISPATCH_CONFIG if-chain. Any config not listed here is a runtime error.
+// ONE ROW PER CONFIG, EXPANDED FROM THE SAME LIST supported_configs() USES. Previously these were two
+// hand-maintained copies: a row present in the list and absent from this chain reached
+// `config %s not compiled in` and exit(1) -- at run time, on the box, mid-sweep. That failure is now not
+// expressible, because there is one list. The BODY travels through the list as X's second argument; a macro
+// cannot define another macro, so passing it down is what makes a single list serve both expansions.
+#define W4A16_TRY(TM,TN,WM,WN,ST,BODY)                                                               \
+  if (!_matched && _try(TM,TN,WM,WN,ST)) { using G = Cfg<TM,TN,WM,WN,ST>::Gemm; _matched=true; BODY; }
+
 #define W4A16_DISPATCH(cfg, BODY)                                                                    \
   do {                                                                                               \
     bool _matched = false;                                                                           \
     auto _try = [&](int tm,int tn,int wm,int wn,int st){ return (cfg).tm==tm&&(cfg).tn==tn&&(cfg).wm==wm&&(cfg).wn==wn&&(cfg).st==st; }; \
-    if (_try(64,64,32,32,4))   { using G = Cfg<64,64,32,32,4>::Gemm;   _matched=true; BODY; }        \
-    if (_try(64,64,32,32,3))   { using G = Cfg<64,64,32,32,3>::Gemm;   _matched=true; BODY; }        \
-    if (_try(64,64,32,32,5))   { using G = Cfg<64,64,32,32,5>::Gemm;   _matched=true; BODY; }        \
-    if (_try(32,32,16,16,3))   { using G = Cfg<32,32,16,16,3>::Gemm;   _matched=true; BODY; }        \
-    if (_try(64,32,32,16,3))   { using G = Cfg<64,32,32,16,3>::Gemm;   _matched=true; BODY; }        \
-    if (_try(32,64,16,32,3))   { using G = Cfg<32,64,16,32,3>::Gemm;   _matched=true; BODY; }        \
-    if (_try(64,32,32,16,4))   { using G = Cfg<64,32,32,16,4>::Gemm;   _matched=true; BODY; }        \
-    if (_try(32,64,16,32,4))   { using G = Cfg<32,64,16,32,4>::Gemm;   _matched=true; BODY; }        \
-    if (_try(32,128,32,32,3))  { using G = Cfg<32,128,32,32,3>::Gemm;  _matched=true; BODY; }        \
-    if (_try(32,256,32,64,3))  { using G = Cfg<32,256,32,64,3>::Gemm;  _matched=true; BODY; }        \
-    if (_try(16,128,16,32,3))  { using G = Cfg<16,128,16,32,3>::Gemm;  _matched=true; BODY; }        \
-    if (_try(16,256,16,64,3))  { using G = Cfg<16,256,16,64,3>::Gemm;  _matched=true; BODY; }        \
-    if (_try(128,64,64,32,4))  { using G = Cfg<128,64,64,32,4>::Gemm;  _matched=true; BODY; }        \
-    if (_try(64,128,32,64,4))  { using G = Cfg<64,128,32,64,4>::Gemm;  _matched=true; BODY; }        \
-    if (_try(128,128,64,64,3)) { using G = Cfg<128,128,64,64,3>::Gemm; _matched=true; BODY; }        \
-    if (_try(128,256,64,64,3)) { using G = Cfg<128,256,64,64,3>::Gemm; _matched=true; BODY; }        \
-    if (_try(256,128,64,64,3)) { using G = Cfg<256,128,64,64,3>::Gemm; _matched=true; BODY; }        \
+    W4A16_CFG_LIST(W4A16_TRY, BODY)                                                                  \
     if (!_matched) { std::fprintf(stderr, "config %s not compiled in (see supported_configs)\n", (cfg).name); std::exit(1); } \
   } while (0)
 // =================================================================================================================
