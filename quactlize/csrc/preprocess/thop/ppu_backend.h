@@ -59,6 +59,14 @@ struct Api {
                        uint8_t* low_layout, uint8_t* high_layout, int n, int k, int qtype);
   int (*recover_dense)(uint8_t const* low_layout, uint8_t const* high_layout,
                        uint8_t* low_native, uint8_t* high_native, int n, int k, int qtype);
+  // Optional tile-aware successors. Fold is derived inside the library from each plane's width and TileK, exactly
+  // as the consumer derives it; callers cannot supply a contradictory arrangement.
+  int (*prepare_dense_for_tile)(uint8_t const* low_native, uint8_t const* high_native,
+                                uint8_t* low_layout, uint8_t* high_layout,
+                                int n, int k, int qtype, int tile_k);
+  int (*recover_dense_for_tile)(uint8_t const* low_layout, uint8_t const* high_layout,
+                                uint8_t* low_native, uint8_t* high_native,
+                                int n, int k, int qtype, int tile_k);
   int (*dense_lowbit)(uint16_t const* act, uint8_t const* low, uint8_t const* high,
                       uint16_t const* scale, uint16_t const* zero, uint16_t* out,
                       int m, int n, int k, int group_size, int qtype);

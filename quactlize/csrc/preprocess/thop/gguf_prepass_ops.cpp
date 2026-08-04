@@ -908,7 +908,8 @@ std::vector<torch::Tensor> gguf_prepare_gemv(torch::Tensor blocks, int64_t n, in
 // device library's host-only layout entry point to place them for the fixed dense tactic. This keeps the PPU-specific
 // xplane types out of the portable torch extension while still making layout preparation a one-time operation rather
 // than hidden work inside every GEMM launch.
-std::vector<torch::Tensor> gguf_prepare_dense(torch::Tensor blocks, int64_t n, int64_t k, int64_t qtype) {
+std::vector<torch::Tensor> gguf_prepare_dense_impl(torch::Tensor blocks, int64_t n, int64_t k, int64_t qtype,
+                                                   bool for_tile, int64_t tile_k) {
   TORCH_CHECK(blocks.dim() == 2, "dense preparation takes one [n*k/256,type_size] weight");
   TORCH_CHECK(n % 256 == 0 && k % 256 == 0, "dense fpA tactic needs n and k multiples of 256");
   auto raw = gguf_prepare_gemv(blocks, n, k, qtype);
@@ -917,11 +918,23 @@ std::vector<torch::Tensor> gguf_prepare_dense(torch::Tensor blocks, int64_t n, i
   auto const* api = ppu_backend::load();
   TORCH_CHECK(api && api->prepare_dense,
               "gguf_prepare_dense requires an hgcc libquactlize_ppu.so with the dense layout symbol");
-  TORCH_CHECK(api->prepare_dense(get_ptr<uint8_t const>(raw[0]),
-                                 raw[1].numel() ? get_ptr<uint8_t const>(raw[1]) : nullptr,
-                                 get_ptr<uint8_t>(low), high.numel() ? get_ptr<uint8_t>(high) : nullptr,
-                                 int(n), int(k), int(qtype)) == 0,
-              "PPU dense offline layout preparation failed");
+  int rc = 0;
+  if (for_tile) {
+    TORCH_CHECK(api->prepare_dense_for_tile,
+                "this device library has only the fixed dense producer; rebuild it with the arrangement-aware "
+                "quactlize_ppu_prepare_dense_for_tile symbol rather than recording bytes it did not produce");
+    rc = api->prepare_dense_for_tile(
+        get_ptr<uint8_t const>(raw[0]), raw[1].numel() ? get_ptr<uint8_t const>(raw[1]) : nullptr,
+        get_ptr<uint8_t>(low), high.numel() ? get_ptr<uint8_t>(high) : nullptr,
+        int(n), int(k), int(qtype), int(tile_k));
+  } else {
+    rc = api->prepare_dense(
+        get_ptr<uint8_t const>(raw[0]), raw[1].numel() ? get_ptr<uint8_t const>(raw[1]) : nullptr,
+        get_ptr<uint8_t>(low), high.numel() ? get_ptr<uint8_t>(high) : nullptr,
+        int(n), int(k), int(qtype));
+  }
+  TORCH_CHECK(rc == 0, "PPU dense offline layout preparation failed (rc=", rc,
+              for_tile ? ", requested TileK" : ", fixed arrangement", ")");
 
   // The int4 low-plane converter emits (low - 8). Q4/Q5's logical codes start at zero; Q6 was already shifted to
   // offset binary by gguf_prepare_gemv. In all three cases +8*scale in the affine channel preserves the official
@@ -935,12 +948,22 @@ std::vector<torch::Tensor> gguf_prepare_dense(torch::Tensor blocks, int64_t n, i
   return {low, high, raw[2], zero};
 }
 
+std::vector<torch::Tensor> gguf_prepare_dense(torch::Tensor blocks, int64_t n, int64_t k, int64_t qtype) {
+  return gguf_prepare_dense_impl(blocks, n, k, qtype, false, 256);
+}
+
+std::vector<torch::Tensor> gguf_prepare_dense_for_tile(torch::Tensor blocks, int64_t n, int64_t k, int64_t qtype,
+                                                       int64_t tile_k) {
+  return gguf_prepare_dense_impl(blocks, n, k, qtype, true, tile_k);
+}
+
 // THE FORMAT-SELECTED FULLY-QUANTIZED DENSE ARTIFACT. Weight placement is exactly gguf_prepare_dense's existing path;
 // both code planes are retained (high is empty for Q4/Q2). Scale metadata is reordered from each official block into
 // byte-neutral [copyable-unit,N,bytes] objects; Q3/Q6 pair two superblocks of the same column. pack_unit_sb owns the
 // field addressing through Unit::ScaleBitLayout/MinBitLayout; PackedRaw names only official byte-aligned slices.
-std::vector<torch::Tensor> gguf_prepare_fully_quantized_dense(torch::Tensor blocks, int64_t n, int64_t k,
-                                                              int64_t qtype) {
+std::vector<torch::Tensor> gguf_prepare_fully_quantized_dense_impl(
+    torch::Tensor blocks, int64_t n, int64_t k, int64_t qtype,
+    bool for_tile, int64_t tile_k) {
   CHECK_CPU(blocks); CHECK_CONTIGUOUS(blocks);
   TORCH_CHECK(n > 0 && n % 256 == 0 && k > 0 && k % 256 == 0,
               "fully-quantized dense preparation needs n and k multiples of 256");
@@ -957,7 +980,8 @@ std::vector<torch::Tensor> gguf_prepare_fully_quantized_dense(torch::Tensor bloc
                   "blocks must be uint8 [n*k/256,", R::kRawBytes, "] for this format");
       TORCH_CHECK(blocks.size(0) == n * nsb, "dense weight needs n*k/256 blocks");
 
-      auto dense = gguf_prepare_dense(blocks, n, k, qtype);
+      auto dense = gguf_prepare_dense_impl(
+          blocks, n, k, qtype, for_tile, tile_k);
       torch::Tensor units = torch::empty({nsb / U::kSbPerUnit, n, U::kUnitTotal},
           torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCPU));
       uint8_t const* src = get_ptr<uint8_t const>(blocks);
@@ -975,8 +999,21 @@ std::vector<torch::Tensor> gguf_prepare_fully_quantized_dense(torch::Tensor bloc
   });
 }
 
-std::vector<torch::Tensor> gguf_prepare_fully_quantized_grouped(
-    torch::Tensor blocks, int64_t n, int64_t k, int64_t qtype, int64_t experts) {
+std::vector<torch::Tensor> gguf_prepare_fully_quantized_dense(torch::Tensor blocks, int64_t n, int64_t k,
+                                                              int64_t qtype) {
+  return gguf_prepare_fully_quantized_dense_impl(blocks, n, k, qtype, false, 256);
+}
+
+std::vector<torch::Tensor> gguf_prepare_fully_quantized_dense_for_tile(
+    torch::Tensor blocks, int64_t n, int64_t k, int64_t qtype,
+    int64_t tile_k) {
+  return gguf_prepare_fully_quantized_dense_impl(
+      blocks, n, k, qtype, true, tile_k);
+}
+
+std::vector<torch::Tensor> gguf_prepare_fully_quantized_grouped_impl(
+    torch::Tensor blocks, int64_t n, int64_t k, int64_t qtype, int64_t experts,
+    bool for_tile, int64_t tile_k) {
   CHECK_CPU(blocks); CHECK_CONTIGUOUS(blocks);
   TORCH_CHECK(experts > 0 && n > 0 && n % 256 == 0 && k > 0 && k % 256 == 0,
               "fully-quantized grouped preparation needs positive experts and n/k multiples of 256");
@@ -1010,12 +1047,27 @@ std::vector<torch::Tensor> gguf_prepare_fully_quantized_grouped(
       auto* placed_low = get_ptr<uint8_t>(low);
       auto* placed_high = kHighBits ? get_ptr<uint8_t>(high) : nullptr;
       for (int64_t e = 0; e < experts; ++e) {
-        TORCH_CHECK(api->prepare_dense(native_low + size_t(e) * low_expert_bytes,
-                                       kHighBits ? native_high + size_t(e) * high_expert_bytes : nullptr,
-                                       placed_low + size_t(e) * low_expert_bytes,
-                                       kHighBits ? placed_high + size_t(e) * high_expert_bytes : nullptr,
-                                       int(n), int(k), int(qtype)) == 0,
-                    "PPU grouped dense placement failed for expert ", e);
+        int rc = 0;
+        if (for_tile) {
+          TORCH_CHECK(api->prepare_dense_for_tile,
+                      "this device library has only the fixed dense producer; rebuild it with the arrangement-aware "
+                      "quactlize_ppu_prepare_dense_for_tile symbol rather than recording bytes it did not produce");
+          rc = api->prepare_dense_for_tile(
+              native_low + size_t(e) * low_expert_bytes,
+              kHighBits ? native_high + size_t(e) * high_expert_bytes : nullptr,
+              placed_low + size_t(e) * low_expert_bytes,
+              kHighBits ? placed_high + size_t(e) * high_expert_bytes : nullptr,
+              int(n), int(k), int(qtype), int(tile_k));
+        } else {
+          rc = api->prepare_dense(
+              native_low + size_t(e) * low_expert_bytes,
+              kHighBits ? native_high + size_t(e) * high_expert_bytes : nullptr,
+              placed_low + size_t(e) * low_expert_bytes,
+              kHighBits ? placed_high + size_t(e) * high_expert_bytes : nullptr,
+              int(n), int(k), int(qtype));
+        }
+        TORCH_CHECK(rc == 0, "PPU grouped dense placement failed for expert ", e, " (rc=", rc,
+                    for_tile ? ", requested TileK" : ", fixed arrangement", ")");
       }
 
       torch::Tensor units = torch::empty({experts, nsb / U::kSbPerUnit, n, U::kUnitTotal},
@@ -1035,6 +1087,19 @@ std::vector<torch::Tensor> gguf_prepare_fully_quantized_grouped(
       return {};
     }
   });
+}
+
+std::vector<torch::Tensor> gguf_prepare_fully_quantized_grouped(
+    torch::Tensor blocks, int64_t n, int64_t k, int64_t qtype, int64_t experts) {
+  return gguf_prepare_fully_quantized_grouped_impl(
+      blocks, n, k, qtype, experts, false, 256);
+}
+
+std::vector<torch::Tensor> gguf_prepare_fully_quantized_grouped_for_tile(
+    torch::Tensor blocks, int64_t n, int64_t k, int64_t qtype, int64_t experts,
+    int64_t tile_k) {
+  return gguf_prepare_fully_quantized_grouped_impl(
+      blocks, n, k, qtype, experts, true, tile_k);
 }
 
 // BOTH RESIDENT ARTIFACTS HAVE AN INVERSE. Returning consumer-ready [E,N,K/gs] scale/zero planes separately is
@@ -1079,7 +1144,8 @@ inline uint8_t artifact_code(uint8_t const* p, int64_t logical, int bits) {
 
 template <bool Placed>
 torch::Tensor gguf_artifact_dequantize_impl(torch::Tensor low, torch::Tensor high,
-                                            torch::Tensor scale, torch::Tensor zero, int64_t qtype) {
+                                            torch::Tensor scale, torch::Tensor zero, int64_t qtype,
+                                            int64_t tile_k = 0) {
   CHECK_CPU(low); CHECK_CONTIGUOUS(low); CHECK_CPU(high); CHECK_CONTIGUOUS(high);
   TORCH_CHECK(low.dtype() == torch::kUInt8 && high.dtype() == torch::kUInt8,
               "artifact code planes must be uint8");
@@ -1117,8 +1183,17 @@ torch::Tensor gguf_artifact_dequantize_impl(torch::Tensor low, torch::Tensor hig
       native_low = torch::empty_like(low);
       native_high = high.numel() ? torch::empty_like(high) : torch::empty_like(high);
       auto const* api = ppu_backend::load();
-      TORCH_CHECK(api && api->recover_dense,
-                  "placed artifact dequant requires libquactlize_ppu.so's xplane inverse symbol");
+      TORCH_CHECK(api, "placed artifact dequant requires libquactlize_ppu.so's xplane inverse symbol");
+      if (tile_k) {
+        TORCH_CHECK(tile_k > 0 && k % tile_k == 0,
+                    "placed artifact TileK must be positive and divide k");
+        TORCH_CHECK(api->recover_dense_for_tile,
+                    "this artifact records TileK but the device library has only the fixed xplane inverse; rebuild "
+                    "with quactlize_ppu_recover_dense_for_tile");
+      } else {
+        TORCH_CHECK(api->recover_dense,
+                    "placed artifact dequant requires libquactlize_ppu.so's fixed xplane inverse symbol");
+      }
       size_t const low_expert_bytes = size_t(n) * size_t(k) * kLoBits / 8;
       size_t const high_expert_bytes = size_t(n) * size_t(k) * kHiBits / 8;
       auto const* placed_low = get_ptr<uint8_t const>(low);
@@ -1126,13 +1201,15 @@ torch::Tensor gguf_artifact_dequantize_impl(torch::Tensor low, torch::Tensor hig
       auto* recovered_low = get_ptr<uint8_t>(native_low);
       auto* recovered_high = kHiBits ? get_ptr<uint8_t>(native_high) : nullptr;
       for (int64_t e = 0; e < experts; ++e) {
-        TORCH_CHECK(api->recover_dense(
-                        placed_low + size_t(e) * low_expert_bytes,
-                        kHiBits ? placed_high + size_t(e) * high_expert_bytes : nullptr,
-                        recovered_low + size_t(e) * low_expert_bytes,
-                        kHiBits ? recovered_high + size_t(e) * high_expert_bytes : nullptr,
-                        int(n), int(k), int(qtype)) == 0,
-                    "PPU placed xplane inverse failed for expert ", e);
+        auto const* src_lo = placed_low + size_t(e) * low_expert_bytes;
+        auto const* src_hi = kHiBits ? placed_high + size_t(e) * high_expert_bytes : nullptr;
+        auto* dst_lo = recovered_low + size_t(e) * low_expert_bytes;
+        auto* dst_hi = kHiBits ? recovered_high + size_t(e) * high_expert_bytes : nullptr;
+        int const rc = tile_k
+            ? api->recover_dense_for_tile(src_lo, src_hi, dst_lo, dst_hi,
+                                          int(n), int(k), int(qtype), int(tile_k))
+            : api->recover_dense(src_lo, src_hi, dst_lo, dst_hi, int(n), int(k), int(qtype));
+        TORCH_CHECK(rc == 0, "PPU placed xplane inverse failed for expert ", e, " (rc=", rc, ")");
       }
     }
     auto const* lp = get_ptr<uint8_t const>(native_low);
@@ -1171,9 +1248,17 @@ torch::Tensor gguf_dense_artifact_dequantize(torch::Tensor low, torch::Tensor hi
                                              torch::Tensor zero, int64_t qtype) {
   return gguf_artifact_dequantize_impl<true>(low, high, scale, zero, qtype);
 }
+torch::Tensor gguf_dense_artifact_dequantize_for_tile(torch::Tensor low, torch::Tensor high, torch::Tensor scale,
+                                                      torch::Tensor zero, int64_t qtype, int64_t tile_k) {
+  return gguf_artifact_dequantize_impl<true>(low, high, scale, zero, qtype, tile_k);
+}
 torch::Tensor gguf_grouped_artifact_dequantize(torch::Tensor low, torch::Tensor high, torch::Tensor scale,
                                                torch::Tensor zero, int64_t qtype) {
   return gguf_artifact_dequantize_impl<true>(low, high, scale, zero, qtype);
+}
+torch::Tensor gguf_grouped_artifact_dequantize_for_tile(torch::Tensor low, torch::Tensor high, torch::Tensor scale,
+                                                        torch::Tensor zero, int64_t qtype, int64_t tile_k) {
+  return gguf_artifact_dequantize_impl<true>(low, high, scale, zero, qtype, tile_k);
 }
 
 // WHICH BACKEND THE OPS WILL USE, as a value rather than something inferred from a timing. A device path that
@@ -1423,12 +1508,20 @@ static auto gguf_prepare_gemv_op =
 
 static auto gguf_prepare_dense_op =
     torch::RegisterOperators("quactlize::gguf_prepare_dense", &torch_ext::gguf_prepare_dense);
+static auto gguf_prepare_dense_for_tile_op = torch::RegisterOperators(
+    "quactlize::gguf_prepare_dense_for_tile", &torch_ext::gguf_prepare_dense_for_tile);
 
 static auto gguf_prepare_fully_quantized_dense_op = torch::RegisterOperators(
     "quactlize::gguf_prepare_fully_quantized_dense", &torch_ext::gguf_prepare_fully_quantized_dense);
+static auto gguf_prepare_fully_quantized_dense_for_tile_op = torch::RegisterOperators(
+    "quactlize::gguf_prepare_fully_quantized_dense_for_tile",
+    &torch_ext::gguf_prepare_fully_quantized_dense_for_tile);
 
 static auto gguf_prepare_fully_quantized_grouped_op = torch::RegisterOperators(
     "quactlize::gguf_prepare_fully_quantized_grouped", &torch_ext::gguf_prepare_fully_quantized_grouped);
+static auto gguf_prepare_fully_quantized_grouped_for_tile_op = torch::RegisterOperators(
+    "quactlize::gguf_prepare_fully_quantized_grouped_for_tile",
+    &torch_ext::gguf_prepare_fully_quantized_grouped_for_tile);
 
 static auto gguf_gemv_artifact_dequantize_op = torch::RegisterOperators(
     "quactlize::gguf_gemv_artifact_dequantize", &torch_ext::gguf_gemv_artifact_dequantize);
@@ -1436,8 +1529,14 @@ static auto gguf_gemv_artifact_dequantize_scale_op = torch::RegisterOperators(
     "quactlize::gguf_gemv_artifact_dequantize_scale", &torch_ext::gguf_gemv_artifact_dequantize_scale);
 static auto gguf_dense_artifact_dequantize_op = torch::RegisterOperators(
     "quactlize::gguf_dense_artifact_dequantize", &torch_ext::gguf_dense_artifact_dequantize);
+static auto gguf_dense_artifact_dequantize_for_tile_op = torch::RegisterOperators(
+    "quactlize::gguf_dense_artifact_dequantize_for_tile",
+    &torch_ext::gguf_dense_artifact_dequantize_for_tile);
 static auto gguf_grouped_artifact_dequantize_op = torch::RegisterOperators(
     "quactlize::gguf_grouped_artifact_dequantize", &torch_ext::gguf_grouped_artifact_dequantize);
+static auto gguf_grouped_artifact_dequantize_for_tile_op = torch::RegisterOperators(
+    "quactlize::gguf_grouped_artifact_dequantize_for_tile",
+    &torch_ext::gguf_grouped_artifact_dequantize_for_tile);
 static auto gguf_dense_artifact_dequantize_scale_op = torch::RegisterOperators(
     "quactlize::gguf_dense_artifact_dequantize_scale", &torch_ext::gguf_dense_artifact_dequantize_scale);
 

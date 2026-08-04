@@ -104,6 +104,12 @@ State& state(int fmt) {
     dlerror();
     s.api.recover_dense = reinterpret_cast<decltype(s.api.recover_dense)>(dlsym(h, "quactlize_ppu_recover_dense"));
     dlerror();
+    s.api.prepare_dense_for_tile = reinterpret_cast<decltype(s.api.prepare_dense_for_tile)>(
+        dlsym(h, "quactlize_ppu_prepare_dense_for_tile"));
+    dlerror();
+    s.api.recover_dense_for_tile = reinterpret_cast<decltype(s.api.recover_dense_for_tile)>(
+        dlsym(h, "quactlize_ppu_recover_dense_for_tile"));
+    dlerror();
     s.api.dense_lowbit = reinterpret_cast<decltype(s.api.dense_lowbit)>(dlsym(h, "quactlize_ppu_dense_lowbit"));
     dlerror();
     s.api.dense_fully_quantized = reinterpret_cast<decltype(s.api.dense_fully_quantized)>(

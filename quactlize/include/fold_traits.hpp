@@ -43,6 +43,22 @@
 
 namespace fold {
 
+// ONE SOURCE FOR THE MINIMUM N-FOLD. The grouped consumer originally owned this expression; the offline producer
+// now needs it too, and accepting F from a caller would let the stored bytes disagree with the consumer without a
+// type or shape error. Keep the legality checks in the template so an invalid row never instantiates a placement.
+template <int Bits, int TileK>
+struct DeliveryFold {
+  static_assert(Bits > 0 && TileK > 0, "fold: bit width and TileK must be positive");
+  static constexpr int contig_bytes = TileK * Bits / 8;
+  static_assert(contig_bytes > 0, "fold: the K run must contain at least one byte");
+  static_assert(contig_bytes >= 32 || 32 % contig_bytes == 0,
+                "fold: a sub-32B K run must divide the AIU's 32B delivery");
+  static constexpr int value = contig_bytes >= 32 ? 1 : 32 / contig_bytes;
+};
+
+template <int Bits, int TileK>
+inline constexpr int delivery_fold_v = DeliveryFold<Bits, TileK>::value;
+
 // WM/WN default to the common 32x32 warp tile. They only feed the occupancy estimate -- pass the real ones when
 // analysing a config that uses something else (the Q3 B-concat sweep runs 16x32 warps at TM=16, which divides by
 // zero under a hardcoded /32).
@@ -50,7 +66,7 @@ template <int Bits, int TM, int TN, int TK, int Stages = 3, int WM = 32, int WN 
 struct FoldTraits {
   // ---- fold geometry ----
   static constexpr int contig_bytes = TK * Bits / 8;              // bytes one N-column contributes along K
-  static constexpr int F            = contig_bytes >= 32 ? 1 : 32 / contig_bytes;   // N-columns folded into a 32B run
+  static constexpr int F            = delivery_fold_v<Bits, TK>;    // N-columns folded into a 32B run
   static constexpr int Ng           = TN / F;                     // physical rows per tile
   static constexpr int run_codes    = F * TK;                     // codes in one 32B contiguous run
   static constexpr int codes_per_word = 32 / Bits;

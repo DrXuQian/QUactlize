@@ -202,7 +202,7 @@ void launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   // same fold factor rule as filter_and_run (AIU needs a >=32B contiguous-K run: TK*bits/8 >= 32)
   static constexpr int MOEG_BITS  = cutlass::sizeof_bits<ElementB>::value;
   static constexpr int MOEG_RUN_B = cute::size<2>(TileShape{}) * MOEG_BITS / 8;
-  static constexpr int MOEG_FOLD  = MOEG_RUN_B >= 32 ? 1 : (32 / MOEG_RUN_B);
+  static constexpr int MOEG_FOLD  = fold::delivery_fold_v<MOEG_BITS, int(cute::size<2>(TileShape{}))>;
   // Make the fold invariants actually FIRE. Until this line, fold_traits.hpp was included by nobody and its
   // static_asserts were inert commentary -- which is precisely how the perf harness came to launch int1 at the
   // forbidden (64,128,64) with nothing to stop it. Sub-byte B only: fp16/int8 B never folds. A bare alias would
@@ -286,8 +286,10 @@ void launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
     // plane 1's. Reusing dB here is correct only when P2Fold == 1, which is why dB2 is flagged rather than always set.
     constexpr int P2_BITS   = cutlass::sizeof_bits<std::conditional_t<std::is_void_v<PlaneB2>,
                                                                      cutlass::half_t, PlaneB2>>::value;
-    constexpr int P2_CONTIG = MOEG_RUN_B * P2_BITS / MOEG_BITS;      // bytes after plane 1's fold
-    constexpr int P2_FOLD   = P2_CONTIG >= 32 ? 1 : 32 / P2_CONTIG;
+    constexpr int P2_CONTIG = MOEG_RUN_B * P2_BITS / MOEG_BITS;      // bytes before plane 2's own fold
+    constexpr int P2_FOLD   = fold::delivery_fold_v<P2_BITS, int(cute::size<2>(TileShape{}))>;
+    static_assert(P2_CONTIG * P2_FOLD >= 32,
+                  "the shared fold derivation must make plane 2 a legal AIU delivery");
     if constexpr (P2_FOLD > 1) {
       args.mainloop.dB2 = cutlass::make_cute_packed_stride(
           StrideB{}, cute::make_shape(n / P2_FOLD, k_full * P2_FOLD, L));
@@ -362,7 +364,7 @@ void filter_and_run(const cutlass::half_t* A, const ElementB* B, const cutlass::
   // existing callers unaffected). Requires the weight to have been preprocessed with the matching FoldTK=TK.
   static constexpr int MOEG_BITS     = cutlass::sizeof_bits<ElementB>::value;
   static constexpr int MOEG_RUN_B    = TK * MOEG_BITS / 8;                       // contiguous bytes at this TK
-  static constexpr int MOEG_FOLD     = MOEG_RUN_B >= 32 ? 1 : (32 / MOEG_RUN_B); // fold factor needed
+  static constexpr int MOEG_FOLD     = fold::delivery_fold_v<MOEG_BITS, TK>; // fold factor needed
   #define MOEG_SCHED(SCH) std::conditional_t<(MOEG_FOLD > 1), \
       cutlass::gemm::KernelAiuFold<(MOEG_FOLD > 1 ? MOEG_FOLD : 2), SCH>, SCH>
   #define MOEG_CALL(SCH, STK, IL) launch<QuantOp, MOEG_SCHED(SCH), TileShape, cute::Shape<cute::Int<TN>, STK>, WarpShape, Stages, IL, ElementB, PlaneB2, ExpectPackedScale>( \
