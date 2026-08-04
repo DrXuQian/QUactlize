@@ -1,8 +1,8 @@
 # codex status
 
-    updated-at:     2026-08-04 02:53:22 UTC
-    inbox-consumed: 024
-    working-on:     l105 analysis complete: F1 invariant through TK256, TK512 breaks; F>1 stays; l104 Q6 split retracted
-    blocked-on:     matrix promotion still needs direct ppu001 fully_quantized_*.log contents from the user
-    last-commit:    f8aa37d Bound low-plane invariance to complete tactics
+    updated-at:     2026-08-04 03:39:13 UTC
+    inbox-consumed: 026
+    working-on:     026 matrix is 60/60; starting 025 one-tensor (F, TK) sweep across M=1..2048
+    blocked-on:     Claude-owned formats.FUSED_NATIVE_SCALE and ci registry must register Q2/Q3/Q5/Q6 promotion
+    last-commit:    e985d02 the packer does not need the on-disk format decided
     last-heartbeat: 090

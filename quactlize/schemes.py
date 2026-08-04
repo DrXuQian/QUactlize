@@ -214,51 +214,71 @@ _add(Scheme.SCALE_FIRST, Shape.DENSE, _KQUANTS, Impl(
         "was green")))
 
 # --- FULLY_QUANTIZED x DENSE ------------------------------------------------------------------------------------
+# THE PROMOTION EVIDENCE IS FIVE FORMAT-SPECIFIC DEVICE RUNS, not one multi-format binary. Each
+# fully_quantized_Q*_K.log reports 5 passed and 20 skips: the format gate admits one format's dense oracle,
+# grouped oracle, merge-premise check and two BC GEMV arms, and skips the other four formats' copies. The nine
+# promotions below rest on the dense/grouped oracles specifically. The later BC dequant-all inverse was not in
+# these runs and is NOT device-verified by them. Every packed tensor-core cell remains outside the default build:
+# it needs PPU_PACKED_SCALE=1 and its own PPU_PACKED_FORMAT, hence five separate device-library builds.
 _add(Scheme.FULLY_QUANTIZED, Shape.DENSE, (QuantType.Q4_K,), Impl(
-    Status.PARTIAL, _DENSE, flag="PPU_PACKED_SCALE=1", note=(
+    Status.VALIDATED, _DENSE, flag="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=0", note=(
         "the Q4_K TileK=256 instantiation now reaches the SAME CollectiveBuilder packed-scale mainloop used by the "
         "grouped path (gs=32 gives Scale_TileK==kGroups==8); there is no second decoder. The stored artifact is the "
         "fixed dense int4 placement plus an empty high tensor and gguf_packed_unit's byte-neutral [k/256,n,16] "
         "units, whose new field "
         "addressing is expressed by cute layouts. The host operator and both flag-off/flag-on device front ends "
-        "compile, but the independent ppu001 numerical oracle has not run yet, so this is deliberately PARTIAL, not "
-        "IMPLEMENTED or VALIDATED. This cell is NOT IN THE DEFAULT BUILD: it requires PPU_PACKED_SCALE=1, and the "
-        "always-present device symbol returns rc=34 explicitly without that flag")))
+        "compiled, but this stayed PARTIAL while the independent ppu001 numerical oracle had not run. New evidence "
+        "supersedes that limit: fully_quantized_Q4_K.log reports 5 passed and 20 format-gated skips; its dense test "
+        "matches matmul_dequant_first through official gguf semantics at M=7/65 and first rejects a zeroed packed "
+        "scale unit. This cell is NOT IN THE DEFAULT BUILD: it requires PPU_PACKED_SCALE=1 and "
+        "PPU_PACKED_FORMAT=0 in the Q4-specific one of five builds; the always-present device symbol returns rc=34 "
+        "without packed scale")))
 _add(Scheme.FULLY_QUANTIZED, Shape.DENSE, (QuantType.Q2_K,), Impl(
-    Status.PARTIAL, _DENSE, flag="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=2", note=(
+    Status.VALIDATED, _DENSE, flag="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=2", note=(
         "Q2_K now instantiates the SAME single-plane CollectiveBuilder path at TileK=256, where gs=16 gives "
         "Scale_TileK==kGroups==16. Its trait-derived 20-byte unit is staged as five legal 4-byte cp.async copies; "
         "the device mainloop contains no Q2-specific addressing or decoder. The raw producer uses the same cute-"
         "addressed packed-unit writer as Q4 and emits low [1,n,k/4], an empty high tensor, and units [k/256,n,20]. "
-        "Host compilation, the "
-        "complete forced device front end, packed-unit round trips, and a planted multi-expert producer/hash gate "
-        "pass locally, but no real-PPU numerical oracle has run, so the cell remains PARTIAL. It is NOT IN THE "
-        "DEFAULT BUILD and also needs PPU_PACKED_FORMAT=2; a Q4-selected packed binary intentionally rejects Q2")))
+        "Host compilation, the complete forced device front end, packed-unit round trips, and a planted multi-"
+        "expert producer/hash gate passed locally, but the cell stayed PARTIAL while no real-PPU numerical oracle "
+        "had run. New evidence supersedes that limit: fully_quantized_Q2_K.log reports 5 passed and 20 format-gated "
+        "skips; its dense test matches matmul_dequant_first through official gguf semantics at M=7/65 and first "
+        "rejects a zeroed packed scale unit. It is NOT IN THE DEFAULT BUILD and requires PPU_PACKED_SCALE=1 plus "
+        "PPU_PACKED_FORMAT=2 in the Q2-specific one of five builds; a Q4-selected packed binary rejects Q2")))
 _add(Scheme.FULLY_QUANTIZED, Shape.DENSE, (QuantType.Q5_K,), Impl(
-    Status.PARTIAL, _DENSE, flag="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=1", note=(
+    Status.VALIDATED, _DENSE, flag="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=1", note=(
         "Q5's scale is NOT split with its i4+i1 weight: it is the same scu16x1 shape as Q4, and the existing packed "
         "decode is now reachable from ppu_mma_aiu_mixed_input_2plane.hpp. That one collective is selected by "
         "CollectiveBuilder for both shapes; no Q5-specific scale decoder or second dense implementation was added. "
         "The artifact is low [1,n,k/2], high [1,n,k/8], units [k/256,n,16]. Host compilation, the forced full "
-        "device front end and planted producer/hash gates pass, but no real-PPU numerical oracle has run, so the cell "
-        "is PARTIAL. It is NOT IN THE DEFAULT BUILD and requires PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=1. That "
-        "format-1 binary explicitly refuses Q5's fp16 scale-first ABI because the fixed TileK=256 type has raw-unit "
-        "semantics there; the default scale-first build is unchanged")))
+        "device front end and planted producer/hash gates passed, but the cell stayed PARTIAL while no real-PPU "
+        "numerical oracle had run. New evidence supersedes that limit: fully_quantized_Q5_K.log reports 5 passed "
+        "and 20 format-gated skips; its dense test matches matmul_dequant_first through official gguf semantics at "
+        "M=7/65 and first rejects a zeroed packed scale unit. It is NOT IN THE DEFAULT BUILD and requires "
+        "PPU_PACKED_SCALE=1 plus PPU_PACKED_FORMAT=1 in the Q5-specific one of five builds. That format-1 binary "
+        "refuses Q5's fp16 scale-first ABI because the fixed TileK=256 type has raw-unit semantics there; the "
+        "default scale-first build is unchanged")))
 _add(Scheme.FULLY_QUANTIZED, Shape.DENSE, (QuantType.Q3_K,), Impl(
-    Status.PARTIAL, _DENSE, flag="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=3", note=(
+    Status.VALIDATED, _DENSE, flag="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=3", note=(
         "Q3 retains its established i2+i1 TileK=256 weight placement. Each 14-byte superblock metadata share is 2 "
         "mod 4, so the cute-staged copy unit is two consecutive superblocks of the SAME column: byte-neutral scu28x2 "
         "as seven legal 4-byte cp.async copies, with one tile selecting each share. The artifact is low [1,n,k/4], "
-        "high [1,n,k/8], units [k/512,n,28]. Local producer/compile gates pass but no real-PPU official dequant-first "
-        "oracle has run, so this is PARTIAL. It is NOT IN THE DEFAULT BUILD and requires PPU_PACKED_SCALE=1 "
-        "PPU_PACKED_FORMAT=3; that binary refuses the incompatible fp16 scale-first metadata contract")))
+        "high [1,n,k/8], units [k/512,n,28]. Local producer/compile gates passed, but this stayed PARTIAL while no "
+        "real-PPU official dequant-first oracle had run. New evidence supersedes that limit: "
+        "fully_quantized_Q3_K.log reports 5 passed and 20 format-gated skips; its dense test matches "
+        "matmul_dequant_first through official gguf semantics at M=7/65 and first rejects a zeroed packed scale "
+        "unit. It is NOT IN THE DEFAULT BUILD and requires PPU_PACKED_SCALE=1 plus PPU_PACKED_FORMAT=3 in the "
+        "Q3-specific one of five builds; that binary refuses the incompatible fp16 scale-first metadata contract")))
 _add(Scheme.FULLY_QUANTIZED, Shape.DENSE, (QuantType.Q6_K,), Impl(
-    Status.PARTIAL, _DENSE, flag="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=4", note=(
+    Status.VALIDATED, _DENSE, flag="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=4", note=(
         "Q6 deliberately keeps the box-validated TileK=128 i4+i2 placement; TileK=256 is semantically wrong for its "
         "high plane. The byte-neutral scu36x2 unit pairs two 18-byte superblocks of one column and spans four derived "
         "delivery tiles (two 8-group runs per superblock), staged as nine legal 4-byte copies. The artifact is low "
-        "[1,n,k/2], high [1,n,k/4], units [k/512,n,36]. Local gates pass but the ppu001 official oracle has not run, "
-        "so this is PARTIAL. It is NOT IN THE DEFAULT BUILD and requires PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=4")))
+        "[1,n,k/2], high [1,n,k/4], units [k/512,n,36]. Local gates passed, but this stayed PARTIAL while the ppu001 "
+        "official oracle had not run. New evidence supersedes that limit: fully_quantized_Q6_K.log reports 5 passed "
+        "and 20 format-gated skips; its dense test matches matmul_dequant_first through official gguf semantics at "
+        "M=7/65 and first rejects a zeroed packed scale unit. It is NOT IN THE DEFAULT BUILD and requires "
+        "PPU_PACKED_SCALE=1 plus PPU_PACKED_FORMAT=4 in the Q6-specific one of five builds")))
 
 # --- THE TWO FORMATS WITH NOTHING, and why that is a decision rather than an oversight -------------------------
 # GPTQ_INT4_ASYM and AWQ_INT4 are declared in QuantType and reachable by name, and every cell for them is empty.
@@ -318,41 +338,56 @@ _add(Scheme.SCALE_FIRST, Shape.GEMV, _KQUANTS, Impl(
 
 # --- FULLY_QUANTIZED: packed tensor-core paths, behind format-selecting flags ------------------------------------
 _add(Scheme.FULLY_QUANTIZED, Shape.GROUPED, (QuantType.Q4_K,), Impl(
-    Status.VALIDATED, _GROUPED, flag="PPU_PACKED_SCALE=1", note=(
+    Status.VALIDATED, _GROUPED, flag="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=0", note=(
         "numerically validated on real Q4_K checkpoint bytes, but ONLY test_q4k_packed_gemm's rowC exercises the "
         "packed decoder -- rowA and rowB are fp16-path controls. Consumes native scale CODES in a reordered 16-byte "
         "unit, not GGUF's on-disk 12-byte packing, which is not half-separable; the reorder is byte-neutral. "
         "PERFORMANCE IS UNMEASURED: every figure recorded before commit 80dfeec came from a bench whose two paths "
-        "computed different numbers. This cell is NOT IN THE DEFAULT BUILD and requires PPU_PACKED_SCALE=1")))
+        "computed different numbers. The newer fully_quantized_Q4_K.log adds the cell-level ragged grouped oracle "
+        "against matmul_dequant_first through official gguf semantics, after rejecting an all-experts-read-expert-0 "
+        "fault; it reports 5 passed and 20 format-gated skips. This cell is NOT IN THE DEFAULT BUILD and requires "
+        "PPU_PACKED_SCALE=1 plus PPU_PACKED_FORMAT=0 in the Q4-specific one of five builds")))
 _add(Scheme.FULLY_QUANTIZED, Shape.GROUPED, (QuantType.Q2_K,), Impl(
-    Status.PARTIAL, _GROUPED, flag="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=2", note=(
+    Status.VALIDATED, _GROUPED, flag="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=2", note=(
         "the existing grouped scheduler now reaches the same Q2_K TileK=256 packed collective as dense; only the "
         "ragged expert pointer/shape assembly differs. The artifact is low [E,n,k/4] plus byte-neutral units "
         "[E,k/256,n,20]. Four independently produced dense expert slices are byte-identical to the grouped producer, "
         "and a planted all-experts-read-expert-0 input changes both artifact hashes. The full flag-on device front "
-        "end compiles, but the independent official dequant-first numerical oracle has not run on ppu001, so this is "
-        "PARTIAL. It is NOT IN THE DEFAULT BUILD and requires BOTH PPU_PACKED_SCALE=1 and PPU_PACKED_FORMAT=2")))
+        "end compiled, but this stayed PARTIAL while the independent official dequant-first numerical oracle had not "
+        "run on ppu001. New evidence supersedes that limit: fully_quantized_Q2_K.log reports 5 passed and 20 format-"
+        "gated skips; its ragged grouped test matches matmul_dequant_first through official gguf semantics and first "
+        "rejects an all-experts-read-expert-0 fault. It is NOT IN THE DEFAULT BUILD and requires "
+        "PPU_PACKED_SCALE=1 plus PPU_PACKED_FORMAT=2 in the Q2-specific one of five builds")))
 _add(Scheme.FULLY_QUANTIZED, Shape.GROUPED, (QuantType.Q5_K,), Impl(
-    Status.PARTIAL, _GROUPED, flag="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=1", note=(
+    Status.VALIDATED, _GROUPED, flag="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=1", note=(
         "the same Q5 two-plane packed collective serves the ragged grouped scheduler; this cell adds only the "
         "expert pointer/shape assembly around it. The artifact is low [E,n,k/2], high [E,n,k/8], units "
         "[E,k/256,n,16]. Four independently produced dense slices are byte-identical to the grouped artifact, and "
-        "an all-experts-read-expert-0 plant moves all three hashes. The forced device front end compiles, but the "
-        "official dequant-first ppu001 oracle has not run, so this remains PARTIAL. It is NOT IN THE DEFAULT BUILD "
-        "and requires PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=1; that format-specific library is a fully-quantized Q5 "
-        "artifact contract, not a second scale-first tactic")))
+        "an all-experts-read-expert-0 plant moves all three hashes. The forced device front end compiled, but this "
+        "stayed PARTIAL while the official dequant-first ppu001 oracle had not run. New evidence supersedes that "
+        "limit: fully_quantized_Q5_K.log reports 5 passed and 20 format-gated skips; its ragged grouped test matches "
+        "matmul_dequant_first through official gguf semantics and first rejects an all-experts-read-expert-0 fault. "
+        "It is NOT IN THE DEFAULT BUILD and requires PPU_PACKED_SCALE=1 plus PPU_PACKED_FORMAT=1 in the Q5-specific "
+        "one of five builds; that format-specific library is a fully-quantized Q5 artifact contract, not a second "
+        "scale-first tactic")))
 _add(Scheme.FULLY_QUANTIZED, Shape.GROUPED, (QuantType.Q3_K,), Impl(
-    Status.PARTIAL, _GROUPED, flag="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=3", note=(
+    Status.VALIDATED, _GROUPED, flag="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=3", note=(
         "the same Q3 scu28x2 two-plane collective serves the grouped scheduler; only expert pointer/shape assembly "
         "differs. The artifact is low [E,n,k/4], high [E,n,k/8], units [E,k/512,n,28]. Local planted producer and "
-        "forced-front-end gates pass, but the ragged official dequant-first oracle has not run on ppu001. This is "
-        "PARTIAL, NOT IN THE DEFAULT BUILD, and requires PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=3")))
+        "forced-front-end gates passed, but this stayed PARTIAL while the ragged official dequant-first oracle had "
+        "not run on ppu001. New evidence supersedes that limit: fully_quantized_Q3_K.log reports 5 passed and 20 "
+        "format-gated skips; its ragged grouped test matches matmul_dequant_first through official gguf semantics and "
+        "first rejects an all-experts-read-expert-0 fault. It is NOT IN THE DEFAULT BUILD and requires "
+        "PPU_PACKED_SCALE=1 plus PPU_PACKED_FORMAT=3 in the Q3-specific one of five builds")))
 _add(Scheme.FULLY_QUANTIZED, Shape.GROUPED, (QuantType.Q6_K,), Impl(
-    Status.PARTIAL, _GROUPED, flag="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=4", note=(
+    Status.VALIDATED, _GROUPED, flag="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=4", note=(
         "grouped Q6 reuses the same paired-unit decoder and the required TileK=128 weight tactic as dense. Its "
         "artifact is low [E,n,k/2], high [E,n,k/4], units [E,k/512,n,36]; no second grouped decoder exists. Local "
-        "producer/compile gates pass, but the ragged ppu001 official oracle is pending, so this is PARTIAL. It is NOT "
-        "IN THE DEFAULT BUILD and requires PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=4")))
+        "producer/compile gates passed, but this stayed PARTIAL while the ragged ppu001 official oracle was pending. "
+        "New evidence supersedes that limit: fully_quantized_Q6_K.log reports 5 passed and 20 format-gated skips; its "
+        "ragged grouped test matches matmul_dequant_first through official gguf semantics and first rejects an all-"
+        "experts-read-expert-0 fault. It is NOT IN THE DEFAULT BUILD and requires PPU_PACKED_SCALE=1 plus "
+        "PPU_PACKED_FORMAT=4 in the Q6-specific one of five builds")))
 _add(Scheme.FULLY_QUANTIZED, Shape.GEMV, _KQUANTS, Impl(
     Status.VALIDATED, "quactlize/include/gguf_vecdot.hpp", note=(
         "libquactlize_ppu.so now exports the subgroup-cooperative native GGUF launcher, so the Python route is one "
