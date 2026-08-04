@@ -357,7 +357,13 @@ _MOE_VARS=()
 for _v in MOE_TM_LIST MOE_TN_LIST MOE_WM_LIST MOE_FORMATS MOE_CORES; do
   if [ -n "${!_v:-}" ]; then _MOE_VARS+=("-D$_v=${!_v}"); echo "[build.sh] $_v=${!_v}"; fi
 done
+# NO GOOGLETEST CLONE. actlize's CMakeLists.txt:423 clones github.com/google/googletest when
+# CUTLASS_ENABLE_GTEST_UNIT_TESTS is on, and :108 defaults it to CUTLASS_ENABLE_TESTS -- which nothing here ever
+# turned off. That is why ci/local_gates.py's boxdry step, whose whole tier claims to need no network, sat at
+# index-pack with zero output for nine minutes and had to be killed twice. We build no gtest unit tests, so this
+# is not a capability being given up; it is a download nobody wanted.
 cmake "$ACTLIZE" -DPPU_SDK_ROOT="$PPU_SDK_ROOT" -DCUTLASS_PPU_ARCHS="$ARCH" \
+  -DCUTLASS_ENABLE_TESTS=OFF -DCUTLASS_ENABLE_GTEST_UNIT_TESTS=OFF \
   -DTILE_M="$TILE_M" -DTILE_N="$TILE_N" -DWARP_M="$WARP_M" -DWARP_N="$WARP_N" -DSTAGES="$STAGES" -DBENCH_QUANT="$QUANT" -DTSK="$TSK" \
   -DPPU_EXTRA_DEFS="${PPU_DEFS:-}" "${_MOE_VARS[@]+"${_MOE_VARS[@]}"}" \
   >cmake.log 2>&1 || { tail -40 cmake.log; exit 1; }
