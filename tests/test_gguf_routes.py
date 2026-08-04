@@ -450,10 +450,31 @@ def test_packed_unit_scale_derivation_matches_the_scale_first_planes(name, gt, h
         assert a_.numel() == b_.numel(), (
             f"{name} {what}: the two paths disagree on SHAPE, not values -- stored {tuple(a_.shape)} vs derived "
             f"{tuple(b_.shape)}. Reconcile the convention before reading anything into the numbers.")
-        bad = int((a_.reshape(-1) != b_.reshape(-1)).sum())
-        assert bad == 0, (
-            f"{name} {what}: the packed-unit derivation and the stored scale-first planes differ in {bad} of "
-            f"{a_.numel()} elements. The merge's premise is that these are the same planes; they are not.")
+        fa, fb = a_.reshape(-1), b_.reshape(-1)
+        bad = int((fa != fb).sum())
+        if bad:
+            # WHICH KIND OF DIFFERENCE, decided here rather than in another box round trip. "4078 of 4096 differ"
+            # is the same count for two completely different problems, and they have opposite fixes:
+            #
+            #   SAME MULTISET  -> the two paths produce the same numbers in a DIFFERENT LAYOUT. The derivation is
+            #                     right and a convention differs; the switch needs a reshape, not a rewrite. Do
+            #                     NOT "fix" this by sorting in the comparison -- that would also hide the case
+            #                     below, which is the one this test exists for.
+            #   DIFFERENT      -> the derivation computes something else. The merge's premise fails on the scale
+            #                     half and the producer switch must not be made.
+            sa = torch.sort(fa.to(torch.float32))[0]
+            sb = torch.sort(fb.to(torch.float32))[0]
+            permutation = bool(torch.equal(sa, sb))
+            worst = float((fa.to(torch.float32) - fb.to(torch.float32)).abs().max())
+            assert False, (
+                f"{name} {what}: the packed-unit derivation and the stored scale-first planes differ in {bad} of "
+                f"{a_.numel()} elements.\n"
+                f"  sorted values agree: {permutation}  -> "
+                + ("SAME MULTISET, so this is a LAYOUT convention difference, not a wrong derivation; the two "
+                   "shapes are " + f"{tuple(a_.shape)} and {tuple(b_.shape)}"
+                   if permutation else
+                   f"DIFFERENT VALUES (worst |delta| {worst:.3e}), so the derivation is not computing the stored "
+                   f"planes and the merge's scale half fails"))
     print(f"{name}: packed-unit derivation is bit-identical to the stored scale-first planes")
 
 
