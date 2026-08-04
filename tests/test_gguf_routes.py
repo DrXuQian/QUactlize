@@ -443,12 +443,23 @@ def test_packed_unit_scale_derivation_matches_the_scale_first_planes(name, gt, h
     stored = routes.dequantize_scale_first_dense_scales(sf, qtype)
     derived = routes.dequantize_scale_from_units(fq[-1], qtype)
 
-    # THE TWO CONVENTIONS ARE TRANSPOSED, and that is the whole of the difference. Measured on ppu001: the values
-    # agree as a MULTISET while 4078 of 4096 positions differ, with shapes (1, 256, 16) and (1, 16, 256) --
-    #     stored     [E, n, k/gs]
-    #     derived    [E, k/gs, n]      which is exactly what codex's contract documents
-    # so the derivation is right and the layouts disagree. The producer switch therefore needs this transpose; it
-    # does not need a rewrite, and that distinction is what the diagnostic was added to establish.
+    # THE ACCESSOR IS THE TRANSPOSED ONE, NOT THE DERIVATION. Measured on ppu001: the values agree as a MULTISET
+    # while 4078 of 4096 positions differ, shapes (1, 256, 16) and (1, 16, 256). Reading the stride settles which
+    # side is the outlier, and it is not the new code:
+    #
+    #     StrideScale = Stride<Int<1>, int64_t, int64_t>   with shape (n, scale_k, 1)
+    #         -> n has stride 1, so memory is [scale_k][n], i.e. [E, k/gs, n]
+    #
+    #     what the KERNEL reads                     [E, k/gs, n]
+    #     what the derivation emits                 [E, k/gs, n]   <- agrees with the kernel
+    #     what gguf_prepass_ops.cpp:217 stores      [E, k/gs, n]   <- agrees with the kernel
+    #     what dequantize_scale_first_dense_scales
+    #       RETURNS                                 [E, n, k/gs]   <- the odd one out
+    #
+    # So the transpose below compensates for the ACCESSOR's convention, not for a defect in the derivation, and
+    # the producer switch needs NO transpose -- the derivation already emits what the consumer wants. An earlier
+    # version of this comment said the storage was [E, n, k/gs]; that was inferred from the accessor's output
+    # rather than read off the stride, and it was wrong.
     #
     # APPLIED, NOT SORTED AWAY. Sorting in the comparison would have made this pass -- and would equally have made
     # a WRONG derivation pass, which is the case this test exists for. Naming the transpose keeps the bit-exact

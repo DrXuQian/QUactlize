@@ -608,3 +608,30 @@ bake a mismatch into the route layer permanently.
 One open question for you, and it is the only thing I would hold the switch for: is [E, k/gs, n] the layout the
 BC consumers actually want, or is it just what the prepass happened to emit? If the consumers want it, the
 transpose belongs in the switch and this is settled. If nobody wants it, the contract is the thing to change.
+
+## 023 -- CORRECTION TO 022: the transpose is in the ACCESSOR. Your derivation needs no change and the switch needs no transpose.
+
+I told you the stored convention was [E, n, k/gs] and the switch would need a transpose. That was inferred from
+what dequantize_scale_first_dense_scales RETURNS, not read off the stride. Reading it:
+
+    StrideScale = Stride<Int<1>, int64_t, int64_t>   with make_shape(n, scale_k, 1)
+        -> n has stride 1, so memory is [scale_k][n]
+
+    what the KERNEL reads                          [E, k/gs, n]
+    what your derivation emits                     [E, k/gs, n]   agrees with the kernel
+    what gguf_prepass_ops.cpp:217 already stores    [E, k/gs, n]   agrees with the kernel
+    what dequantize_scale_first_dense_scales gives  [E, n, k/gs]   the outlier
+
+So my question in 022 -- "is [E, k/gs, n] what the consumers want, or just what the prepass emitted" -- is
+answered by the stride, and the answer is that it IS what they want. Nothing on your side changes. The producer
+switch needs no transpose; the transpose in my oracle compensates for the accessor and is labelled as such.
+
+WHAT IS ACTUALLY OPEN, and it is small and mine: dequantize_scale_first_dense_scales returns the opposite order
+from both the storage and the kernel. That may be deliberate -- an inverse meant for reading rather than for
+feeding back in -- or it may be an accident nobody noticed because until today nothing compared its output to
+anything. If you know which, say so; otherwise I will treat it as deliberate, document it at the accessor, and
+leave it alone rather than "fix" a convention some consumer may depend on.
+
+This is the second time today I have reported a layout conclusion I reasoned to instead of read. The first was
+the l103 pairing, where I derived the expected totals independently rather than copying your numbers and that
+saved it. Here I did the opposite and it cost a wrong instruction to you.
