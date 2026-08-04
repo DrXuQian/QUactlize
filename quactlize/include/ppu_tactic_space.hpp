@@ -47,6 +47,7 @@ enum class Exclusion {
   None,
   AtomAlignment,
   WarpDoesNotDivideTile,
+  PpuWarpGroupThreads,
   TooManyWarps,
   AccumulatorRegisters,
   LowFoldDoesNotDivideTileN,
@@ -65,6 +66,7 @@ constexpr char const* exclusion_clause(Exclusion e) {
     case Exclusion::None: return "";
     case Exclusion::AtomAlignment: return "tile and warp extents must be multiples of the 16x16x16 MMA atom";
     case Exclusion::WarpDoesNotDivideTile: return "warp shape must divide tile shape";
+    case Exclusion::PpuWarpGroupThreads: return "the PPU collective requires at least one 128-thread (four-warp) group";
     case Exclusion::TooManyWarps: return "tile needs more than the 32-warp block limit";
     case Exclusion::AccumulatorRegisters: return "the fp32 accumulator alone exceeds the 192-register sweep ceiling";
     case Exclusion::LowFoldDoesNotDivideTileN: return "the derived low-plane fold does not divide TileN";
@@ -93,7 +95,16 @@ constexpr Exclusion common_kernel_exclusion(Candidate c) {
     return Exclusion::AtomAlignment;
   if (c.wm > c.tm || c.wn > c.tn || c.tm % c.wm || c.tn % c.wn)
     return Exclusion::WarpDoesNotDivideTile;
-  if ((c.tm / c.wm) * (c.tn / c.wn) > 32)
+  int const cta_warps = (c.tm / c.wm) * (c.tn / c.wn);
+  // DEVICE LEGALITY, not sweep pruning.  On ppu001 (2026-08-04), every emitted dense instantiation below four
+  // 32-thread warps aborted in the device and every instantiation at four or above ran.  The actlize
+  // GemmUniversalAdapter independently models TiledMma with a minimum of four warps (one 128-thread PPU warp group),
+  // while the kernel launches cute::size(TiledMma{}) actual threads.  The toolchain trace does not expose the exact
+  // assertion site, so do not weaken this to a guessed three-warp minimum: the finite domain contains no three-warp
+  // CTA and therefore has supplied no evidence for it.  This shared kernel gate protects both dense and grouped.
+  if (cta_warps < 4)
+    return Exclusion::PpuWarpGroupThreads;
+  if (cta_warps > 32)
     return Exclusion::TooManyWarps;
 
   int const flo = fold_for(c.spec.low_bits, c.tk);
