@@ -3,6 +3,10 @@
 This is the independent answer requested by INBOX 032.  It was written before INBOX 033 existed and deliberately
 does not try to anticipate the other rule set.
 
+INBOX 032b arrived while this answer was being committed and was applied only after the independent record landed.
+It carries a user scope decision, not the other rule set: the stage axis is exactly `{2,4}` and stages above 4 are
+out.  The rules below reflect that scope.
+
 The winner must be named per `(operator, stored schema, M)`.  A format is not a tactic for another format, and a
 dense result is not a grouped result.  Rules below marked **EXACT** cannot remove the winner under their stated
 scope.  **MEASURED** means the repository has direct device evidence but not a proof over this whole space.
@@ -29,12 +33,11 @@ TK tactic.  For either case, compare the actual byte descriptor, not just `(F_lo
 depends on warp-columns-per-tile, and `xplane_hi` records deliveries and folded high rows.  This is lossless because
 it removes only consumers that cannot read the one resident buffer; it does not select among consumers that can.
 
-### Stage 3 is part of the starting space -- **MEASURED**
+### The stage axis is `{2,4}` -- **USER SCOPE DECISION**
 
-The first sizing program listed `{2,4,6,8,12}`, but the harness exposes stage 3 and the recorded product sweep has
-stage-3 winners.  Stages 2, 3 and 4 have each won for some format/shape; omitting 3 is already performance pruning,
-not sizing arithmetic.  The corrected unpruned count is 5791 instantiations per operator, including stage 3 and
-without the invalid TileK de-duplication.
+032b sets the axis to stages 2 and 4 and removes every stage above 4.  Stage 3 has historical measured winners, so
+its omission must be described as scope, not as measured dominance.  Under the user-defined axis and without the
+invalid TileK de-duplication, the unpruned count is 2331 instantiations per operator.
 
 ## Lossless rules
 
@@ -122,41 +125,28 @@ A-smem.  If a guard enters the confidence set at any M, expand all legal TN/WN p
 must not be used to redefine the artifact silently: a folded guard with a different descriptor is a separately
 labelled arrangement candidate.
 
-### H3. Fully cross stages 2, 3 and 4; probe 6, 8 and 12 with sentinels -- **MEASURED + BELIEVED**
+### H3. Fully cross both allowed stages; make no shared-memory cut -- **EXACT for the user-defined axis**
 
-Stages 2/3/4 stay on every primary geometry because each has a measured win and one fixed stage gave a 1.54x spread
-on a single shape.  Deep stages do not get a full shape cross-product initially.  For each
-`(operator,schema,TK)` stratum, compile stages 6/8/12 at:
+Stages 2 and 4 stay on every primary geometry.  There is no deep-stage sampling rule because stages above 4 are
+outside the requested space, and there is no `smem <= 128KB` or minimum-blocks rule.  Such a rule under `{2,4}`
+would mostly remove large TileM rows and would therefore violate P2 while pretending to prune pipeline depth.
 
-- the legal geometry with the smallest per-stage shared footprint, where depth has the best chance to fit without
-  reducing resident blocks; and
-- the stage-4 primary winner's geometry, where the comparison changes only depth.
-
-Why deep-only is specifically rejected: whenever shared memory binds,
-`resident_blocks * stages` is approximately invariant.  The grouped decode example is 76 in-flight loads at s4
-versus 72 at s12, so depth concentrates roughly the same loads into fewer CTAs and fewer warps.  Deep stages also
-lost in the measured decode ladder.
-
-The d128 FA result is a measured cross-kernel warning, not proof about GEMM: FA already sits at four blocks/25%
-occupancy, and adding shared storage dropped it to three blocks and made it slower even after halving a memory
-stall.  It rules out the argument that deeper is automatically safer; it does not rule out deep stages on a tiny,
-register- or grid-limited GEMM tile.  That is why the minimum-footprint sentinel exists.
-
-If any deep sentinel enters the winner's confidence set at any M, expand that stage over the corresponding
-resource bucket first, then over the whole stratum if the gain survives.  The belief being tested is that the
-geometry most able to retain occupancy is also the geometry most able to expose a deep-pipeline win.  A
-shape-specific stage interaction could violate it, so a negative sentinel is evidence-backed pruning, not a proof.
+Keeping s2 explicitly addresses the occupancy caveat.  The d128 FA result is a measured cross-kernel warning:
+FA's 64KB block is already limited to four blocks/25% occupancy, and adding shared storage dropped it to three
+blocks and made it slower even after halving a memory stall.  It does not prove s4 loses on GEMM, but it rules out
+keeping only the deeper allowed stage.  Both s2 and s4 are therefore crossed everywhere; neither is inferred from
+the other.
 
 ### H4. Make pruning adaptive, not a one-shot truncated grid -- **BELIEVED process rule**
 
-Build the primary rows from H1/H2 with all protected TileM, compatible TileK and stages 2/3/4, plus every guard and
-deep sentinel.  Run all M.  Expand the affected stratum whenever a guard is competitive; do not merely annotate the
-missing cells after choosing a winner.
+Build the primary rows from H1/H2 with all protected TileM, compatible TileK and both stages, plus every guard.  Run
+all M.  Expand the affected stratum whenever a guard is competitive; do not merely annotate the missing cells
+after choosing a winner.
 
 This cannot give a mathematical guarantee against an arbitrary high-order interaction.  Its argument is that each
 excluded mechanism has an explicit falsifier in the same binary, and expansion happens before the result is called
 a winner.  The claim should therefore state which guards were negative.  If the user requires an unconditional
-winner over the original Cartesian product, no performance pruning rule is honest: all 5791 kernels per operator
+winner over the user-defined Cartesian product, no performance pruning rule is honest: all 2331 kernels per operator
 must be built.
 
 ### H5. Use confidence-set elimination, not one timing -- **MEASURED**
@@ -169,9 +159,8 @@ from becoming silent pruning predicates.
 
 ## Bottom line
 
-The exact cuts are legality, actual resident-byte compatibility, and the one-schema scope of question 025.  They do
-not include TileK de-duplication.  The primary performance cuts are maximum WarpM, ratio-two N geometry and sentinel-
-only deep stages; all three are explicitly measured beliefs with expansion guards.  TileM remains untouched, and
-stages 2/3/4 remain fully represented.  A deep-only sweep is rejected because both this kernel's in-flight-load
-arithmetic and the FA occupancy cliff show how it can preserve only the configurations least able to fill the
-machine.
+The exact cuts are legality, actual resident-byte compatibility, the one-schema scope of question 025, and the
+user-set stage domain.  They do not include TileK de-duplication.  The performance cuts are maximum WarpM and
+ratio-two N geometry; both are explicitly measured beliefs with expansion guards.  TileM remains untouched, and
+both allowed stages remain fully represented.  A deeper-only sweep is rejected because the FA occupancy cliff is
+direct evidence that extra per-block shared storage can remove the warps needed to hide latency.

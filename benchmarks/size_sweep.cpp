@@ -27,9 +27,9 @@
 
 namespace {
 
-// All stage depths the harness exposes.  Stage 3 is not optional bookkeeping: s2, s3 and s4 have each been the
-// measured winner for some format/shape.  Omitting s3 would start the pruning exercise from a truncated space.
-constexpr int kStages[] = {2, 3, 4, 6, 8, 12};
+// User-set scope (INBOX 032b): stages above 4 are out, and the sweep axis is exactly {2,4}.  Stage 3 has historical
+// measured wins, so this is a declared scope decision -- not a claim that s3 is performance-dominated.
+constexpr int kStages[] = {2, 4};
 
 template <class Space>
 void size_one(char const* op) {
