@@ -1584,3 +1584,52 @@ WHAT ONLY ppu001 CAN SETTLE, and it should be stated in the harness's own banner
 fully-quantized prefill branch is unvalidatable on CUDA. Everything you have already shown -- byte-exact round
 trips for Q2_K..Q6_K, the real Qwen2.5-3B greedy first token matching stock, the synthetic grouped comparisons
 -- covers the shuffle, the recovery and the GEMV. It does not cover the branch this change makes primary.
+
+## 047 -- FEWER THAN FOUR WARPS PER CTA ABORTS ON DEVICE, AND THE PREDICATE SAYS IT IS LEGAL. Move it, and name it.
+
+Measured on ppu001 today, dense i4/TK64, one config at a time through --config:
+
+        tile            warps   DenseSpace::sweep_exclusion
+    16x16 :16x16          1              None      <- aborted
+    16x32 :16x16          2              None      <- aborted
+    16x32 :16x32          1              None      <- aborted
+    16x128:16x32          4              None      <- ran
+    16x256:16x64          4              None      <- ran
+    32x32 :16x16          4              None      <- ran
+    64x64 :32x32          4              None      <- ran
+
+Every configuration with (TM/WM)*(TN/WN) < 4 aborted; every one with 4 or more ran. The failure is an
+unconditional device assert followed by `Failed to query occupancy` -- the second is a consequence, the assert
+poisons the context. 126 of the 293 generated rows were in that set, and because the table is sorted the FIRST
+row is 16x16, so a --search_configs run lost all 293 measurements to it. A device assert cannot be caught, so
+the only defence is not launching.
+
+I have excluded it in benchmarks/emit_dense_configs.cpp so the user can sweep today (293 -> 227, winner
+geometry 64x128:64x16 retained). THAT IS THE WRONG PLACE and I want it moved:
+
+  * it is a LEGALITY constraint, not a pruning policy. The collective cannot execute these; the emitter's job
+    is choosing among executable ones.
+  * ppu_tactic_space.hpp is what BOTH operators consult, so the MoE sweep will walk into the same wall -- its
+    Cartesian product contains the same 1- and 2-warp geometries and nothing there excludes them either.
+
+WHAT I CANNOT ESTABLISH AND YOU CAN. The mechanism. I read all six assert(false) in ppu_mma_aiu_fold.hpp and
+every one is an `if constexpr` else-branch, unreachable at run time for a valid conversion mode -- so the assert
+that fires is elsewhere and the trace carries only a template signature, no file:line. The empirical boundary is
+between 2 and 4 warps, and since warp count is always a product of powers of two THERE IS NO 3-WARP
+CONFIGURATION -- nothing in the evidence distinguishes ">= 4" from ">= 3". Encoding 4 without knowing why is
+exactly the kind of number that later gets "optimised" back down by someone who cannot see the reason.
+
+AND A CORRECTION I OWE YOU, because it changes how you should weigh my rules. My original pruning rule 2 was
+"keep only 4..16 warps per CTA", and I marked the LOWER bound explicitly as a BELIEF: "under 4 warps a CTA
+cannot hide its own load latency -- and I have no measurement for it". You did not adopt it, correctly, since a
+performance belief without measurement is not a rule. It turns out to be a LEGALITY constraint. I drew the right
+line for the wrong reason and filed it under the wrong heading, and that is why it was dropped rather than
+argued with. Had I written "I do not know whether this is legal below 4 warps" it would have been checked
+instead of discarded.
+
+WHAT I AM ASKING FOR:
+  1. the constraint in ppu_tactic_space.hpp with the real mechanism in its comment, so both operators get it;
+  2. tell me whether the MoE side has been shielded from this by its own axis lists rather than by a check --
+     if MOE_WM_LIST/MOE_TN_LIST happen to exclude the 1- and 2-warp cells, that is luck and it should be a
+     check;
+  3. then I remove the emitter-side exclusion, since it will be redundant.
