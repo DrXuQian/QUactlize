@@ -3,7 +3,22 @@
 Neither Claude nor codex can reach the box. Everything here is for the user to run in one go; each entry says
 exactly what output settles the question, so a partial paste is still useful.
 
-## OPEN
+## HELD -- do not run yet
+
+H1. **THE M-SWEEP (INBOX 025), and any other tactic sweep.** The user set the ordering on 2026-08-04: **no box
+    sweep is requested until the dense AND MoE option sets are BOTH ready and written down.** The reason is not
+    politeness about box time. The command below covers **int4 dense only**, and a sweep that covers the options
+    which happen to compile today reports a winner over a truncated space -- which reads exactly like a winner
+    over the whole space. That is the defect that produced the incomplete Q6 tactic and my own l105 rows that
+    classified all-zero buffers.
+
+    WHAT UNBLOCKS IT: codex answering INBOX 029 (dense pins the low plane at F=1 via
+    `static_assert(P1_FOLD == 1)`, while a measurement I labelled "dense int1 TK64/F4" says otherwise -- one of
+    the two is wrong), and then enumerating the complete legal (bits, TK, tile, warp) set for dense and MoE
+    separately, marking what is reachable today. Dispatched. When it lands, this becomes one batched command
+    that names its own coverage, and any excluded cell carries its reason in a clause.
+
+    Kept verbatim below so it can be merged rather than rewritten:
 
 0. **ONE DENSE TENSOR ACROSS SEQLEN (INBOX 025).** This is the cheap decisive version: one int4 scale-only
    dense weight at fixed N=K=4096, swept at the requested M values. Every candidate TileK is 64, 128 or 256 and
@@ -22,7 +37,11 @@ exactly what output settles the question, so a partial paste is still useful.
    winner is the measured tactic crossover; regardless, all candidates remain one F=1/TK<=256 layout class, so
    no repack or duplicate tensor follows from the change.
 
-0. **TWO THINGS, ONE PULL.** (a) the sixth per-format oracle is newer than the last run -- expect
+## OPEN -- runnable now
+
+These are correctness and inspection, not tactic sweeps, so the hold above does not apply to them.
+
+1. **TWO THINGS, ONE PULL.** (a) the sixth per-format oracle is newer than the last run -- expect
    `6 passed, 24 skipped` instead of 5/20; (b) the packer now exists and can be pointed at a real checkpoint.
 
        cd /sim/eec/shared/junfu.qx/quactlize && git pull --recurse-submodules
