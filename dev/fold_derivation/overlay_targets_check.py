@@ -201,11 +201,11 @@ def check_device_include_coverage(build_dir: str) -> list:
     import subprocess, os
     bm = None
     for root, _, files in os.walk(build_dir):
-        if "build.make" in files and "bench_cutlass_w4a16.dir" in root:
+        if "build.make" in files and "test_lowbit_dense_bench.dir" in root:
             bm = os.path.join(root, "build.make")
             break
     if not bm:
-        return ["no bench_cutlass_w4a16 build.make under " + build_dir]
+        return ["no test_lowbit_dense_bench build.make under " + build_dir]
     cmd = ""
     with open(bm) as fh:
         lines = fh.readlines()

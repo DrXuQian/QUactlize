@@ -30,7 +30,7 @@ mkdir -p "$OUT"
   echo "set(CMAKE_CURRENT_BINARY_DIR \"$OUT\")"
   echo 'file(REMOVE_RECURSE "${CMAKE_CURRENT_BINARY_DIR}/moe_units")'
   # the slice: from the format table to just before the executable that consumes the generated sources
-  awk '/^set\(_MOE_FORMATS/{p=1} /^ppu_w4a16_executable\(/{if(p)exit} p' "$CML" \
+  awk '/^set\(_MOE_FORMATS/{p=1} /^quactlize_ppu_executable\(/{if(p)exit} p' "$CML" \
     | { if [ -n "${BAD:-}" ]; then sed 's/4|2|32,64/4|2|32;64/'; else cat; fi; }
   cat <<'ASSERT'
 # DERIVE every expectation from the same lists the slice defines -- writing 128 in here went stale the moment TileN gained

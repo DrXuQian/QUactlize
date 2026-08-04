@@ -17,7 +17,7 @@ OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 
 # The slice: the group table through the generated-inc write, stopping before the executable that consumes it.
-awk '/^set\(_GEMV_GROUPS/{p=1} /^ppu_w4a16_executable\(/{if(p)exit} p' "$CML" > "$OUT/slice.cmake"
+awk '/^set\(_GEMV_GROUPS/{p=1} /^quactlize_ppu_executable\(/{if(p)exit} p' "$CML" > "$OUT/slice.cmake"
 [ -s "$OUT/slice.cmake" ] || { echo "  [FAIL] gen_gemv_units_check: empty slice -- the anchors moved"; exit 1; }
 
 if [ "${BAD:-0}" = 1 ]; then

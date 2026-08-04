@@ -28,7 +28,11 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"                      # this lives in benchmarks/ now; the repo root is one up
-EX="${EX:-$ROOT/build_ppu/examples/99_quactlize_w4a16_compare}"
+# WHERE THE TARGETS LAND. This said examples/99_quactlize_w4a16_compare, which was the overlay directory
+# inside the actlize submodule. #34 removed the overlay entirely and the targets now build under ppu_targets/;
+# the old path simply does not exist, so this script found nothing and would have reported it as a missing
+# library rather than as a stale path.
+EX="${EX:-$ROOT/build_ppu/ppu_targets}"
 OUT="${OUT:-$HOME/ab}"
 BAND="${BAND:-64 8 2048 2048 32 3}"                 # L=64, top-k 8, N=K=2048, gs=32, decode
 CFG="${CFG:-16x128:256 w16x16 s2}"                  # the pinned row; SPLITK_S below pins the slice count

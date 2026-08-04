@@ -285,11 +285,11 @@ struct TileCfg { char const* name; int tm, tn, wm, wn, st; };
 #include "bench_select.hpp"
 #include "bench_samples.hpp"
 #include "bench_floor.cuh"
-#include "w4a16_configs.inc"
-static_assert(cutlass::sizeof_bits<QuantType>::value == W4A16_CFG_BITS && TileShapeK == W4A16_CFG_TILEK,
-              "w4a16_configs.inc was generated for a different (bits, TileK) than this binary. Regenerate: "
+#include "lowbit_dense_configs.inc"
+static_assert(cutlass::sizeof_bits<QuantType>::value == LOWBIT_DENSE_CFG_BITS && TileShapeK == LOWBIT_DENSE_CFG_TILEK,
+              "lowbit_dense_configs.inc was generated for a different (bits, TileK) than this binary. Regenerate: "
               "c++ -std=c++17 -Iquactlize/include benchmarks/emit_dense_configs.cpp -o /tmp/emit_dense && "
-              "/tmp/emit_dense <bits> <tile_k> > benchmarks/w4a16_configs.inc");
+              "/tmp/emit_dense <bits> <tile_k> > benchmarks/lowbit_dense_configs.inc");
 
 // The compiled set. Every entry here is a distinct template instantiation baked into the binary; add one and
 // it costs compile time, not a rebuild at search time. Keep WM|TM, WN|TN, and both multiples of the 16x16 atom.
@@ -298,10 +298,10 @@ inline std::vector<TileCfg> supported_configs() {
   // (schema, TileK) binary, and nothing in the file said so -- a sweep that searches a fifth of its space still
   // prints a winner. See benchmarks/emit_dense_configs.cpp for the policy and the regeneration command.
   std::vector<TileCfg> v;
-#define W4A16_ROW(TM,TN,WM,WN,ST,_UNUSED) \
+#define LOWBIT_DENSE_ROW(TM,TN,WM,WN,ST,_UNUSED) \
   v.push_back(TileCfg{#TM "x" #TN ":" #WM "x" #WN ":s" #ST, TM, TN, WM, WN, ST});
-  W4A16_CFG_LIST(W4A16_ROW, )
-#undef W4A16_ROW
+  LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_ROW, )
+#undef LOWBIT_DENSE_ROW
   return v;
 }
 
@@ -312,14 +312,14 @@ inline std::vector<TileCfg> supported_configs() {
 // `config %s not compiled in` and exit(1) -- at run time, on the box, mid-sweep. That failure is now not
 // expressible, because there is one list. The BODY travels through the list as X's second argument; a macro
 // cannot define another macro, so passing it down is what makes a single list serve both expansions.
-#define W4A16_TRY(TM,TN,WM,WN,ST,BODY)                                                               \
+#define LOWBIT_DENSE_TRY(TM,TN,WM,WN,ST,BODY)                                                               \
   if (!_matched && _try(TM,TN,WM,WN,ST)) { using G = Cfg<TM,TN,WM,WN,ST>::Gemm; _matched=true; BODY; }
 
-#define W4A16_DISPATCH(cfg, BODY)                                                                    \
+#define LOWBIT_DENSE_DISPATCH(cfg, BODY)                                                                    \
   do {                                                                                               \
     bool _matched = false;                                                                           \
     auto _try = [&](int tm,int tn,int wm,int wn,int st){ return (cfg).tm==tm&&(cfg).tn==tn&&(cfg).wm==wm&&(cfg).wn==wn&&(cfg).st==st; }; \
-    W4A16_CFG_LIST(W4A16_TRY, BODY)                                                                  \
+    LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_TRY, BODY)                                                                  \
     if (!_matched) { std::fprintf(stderr, "config %s not compiled in (see supported_configs)\n", (cfg).name); std::exit(1); } \
   } while (0)
 // =================================================================================================================
@@ -821,7 +821,7 @@ Result run(Options &options, char const* label = "default")
 // Run one named/descriptor config through the compiled dispatch. Returns its Result.
 Result run_config(Options& options, TileCfg const& cfg) {
   Result r;
-  W4A16_DISPATCH(cfg, { r = run<G>(options, cfg.name); });
+  LOWBIT_DENSE_DISPATCH(cfg, { r = run<G>(options, cfg.name); });
   return r;
 }
 

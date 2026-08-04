@@ -35,7 +35,7 @@ git submodule update --init third_party/actlize
 ./build.sh
 ```
 
-`build.sh` (1) overlays `bench_cutlass_w4a16.cu` into actlize's `examples/` as a new example; (2) builds just
+`build.sh` (1) overlays `test_lowbit_dense_bench.cu` into actlize's `examples/` as a new example; (2) builds just
 that target through actlize's proven example machinery (`CUTLASS_PPU_ARCHS=ppu0010`, override with
 `PPU_ARCHS=`); (3) restores the submodule (example list, overlay) on exit, so the pinned submodule content
 stays clean.
@@ -44,7 +44,7 @@ stays clean.
 
 ```bash
 # actlize side (this dir, after build.sh):
-<build>/bench_cutlass_w4a16 --m=2048 --n=4096 --k=4096 --g=128 --mode=1 --iterations=100
+<build>/test_lowbit_dense_bench --m=2048 --n=4096 --k=4096 --g=128 --mode=1 --iterations=100
 
 # marlin side (built by the marlin Makefile, bare nvcc). It sweeps gs {128,32} x aff {false,true} itself:
 cd ../marlin_ppu && make bench_marlin_gguf && ./bench_marlin_gguf 2048 4096 4096
@@ -77,7 +77,7 @@ stages help 64x64 but collapse 128x128 (24%, shared/occupancy). 64x64/s4 is now 
 
 ## Tuning the actlize tile
 
-`bench_cutlass_w4a16.cu` exposes `TILE_M / TILE_N / WARP_M / WARP_N / STAGES` (defaults = the stock
+`test_lowbit_dense_bench.cu` exposes `TILE_M / TILE_N / WARP_M / WARP_N / STAGES` (defaults = the stock
 32/32/16/16/3). build.sh forwards them from the environment to both the host and device compiles:
 
 ```bash
@@ -90,13 +90,13 @@ on the mixed-input AIU mainloop — keep WARP a divisor of TILE and a multiple o
 
 ### Autotune — in-binary tactics (machete / fpA_intB style)
 
-The binary now compiles a **fixed set of tile configs** (see `supported_configs()` / the `W4A16_DISPATCH`
+The binary now compiles a **fixed set of tile configs** (see `supported_configs()` / the `LOWBIT_DENSE_DISPATCH`
 if-chain) and selects one at **runtime** — no recompile to switch. Same model as `../machete_standalone` and
 `../fpA_intB_standalone`. Build once, then:
 
 ```bash
 ./build.sh    # one build with all configs baked in
-BIN=$(find "$PWD/../../../build_ppu" -name bench_cutlass_w4a16 -type f)
+BIN=$(find "$PWD/../../../build_ppu" -name test_lowbit_dense_bench -type f)
 
 $BIN --list_configs                                                    # enumerate compiled tactics
 $BIN --m=2048 --n=4096 --k=4096 --g=128 --config=64x64:32x32:s4        # force one
@@ -108,7 +108,7 @@ $BIN --m=2048 --n=4096 --k=4096 --g=128 --tactic=tactics_ppu001.cache  # load be
 `--search_configs` times every compiled config in-process (skips any that don't verify), prints a table,
 optionally writes the shape-keyed cache, and runs the winner. The cache is exact-match text
 `m,n,k,g|config=<name>,tflops=<x>` — add a shape by searching it, load it by `--tactic`. To add/remove
-candidate tiles, edit `supported_configs()` **and** the `W4A16_DISPATCH` arms (each arm is a compiled
+candidate tiles, edit `supported_configs()` **and** the `LOWBIT_DENSE_DISPATCH` arms (each arm is a compiled
 instantiation), then rebuild once.
 
 `sweep.sh` (build-time recompile-per-config) is kept as a fallback for exploring tiles not compiled into the
@@ -116,7 +116,7 @@ binary; the in-binary `--search_configs` is preferred for anything in `supported
 
 ## Entry file
 
-`bench_cutlass_w4a16.cu` is example 16 (`16_ppu_mixed_dtype_gemm`) **verbatim**, with exactly two changes,
+`test_lowbit_dense_bench.cu` is example 16 (`16_ppu_mixed_dtype_gemm`) **verbatim**, with exactly two changes,
 both marked in-file: `MmaType` bf16 → **half_t** (our W4A16 is fp16), and the `Options` defaults
 (mode=1, g=128, iterations=100, qwen35moe-ish shape). Staying this close to the shipped example is
 deliberate — the number is only trustworthy if the actlize side is known-good code.

@@ -15,7 +15,7 @@
 // A SECOND CASE, not currently live but one launch away. If a tactic ever issues MORE than one kernel per call
 // (split-K adds a reduction; a prepass adds a pass), the gap between them lands inside the same wall clock and
 // cannot be separated from either kernel's time. The swept configs are single-launch today -- dense at
-// bench_cutlass_w4a16.cu:773, grouped at moe_grouped_ppu.cuh:362, with split-K excluded from the sweep -- so
+// test_lowbit_dense_bench.cu:773, grouped at moe_grouped_ppu.cuh:362, with split-K excluded from the sweep -- so
 // this is a floor report, not a decomposition. If split-K returns, this comment is where to start.
 //
 // So: measure the floor with the SAME loop shape, print it, and put it in the sample stream so a row near it can

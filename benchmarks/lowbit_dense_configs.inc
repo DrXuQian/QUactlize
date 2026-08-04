@@ -4,15 +4,15 @@
 //
 // Regenerate after changing ppu_tactic_space.hpp or the pruning policy:
 //   c++ -std=c++17 -Iquactlize/include benchmarks/emit_dense_configs.cpp -o /tmp/emit_dense &&\
-//   /tmp/emit_dense 4 64 > benchmarks/w4a16_configs.inc
+//   /tmp/emit_dense 4 64 > benchmarks/lowbit_dense_configs.inc
 //
 // The second X argument carries the dispatch BODY through the list; supported_configs() passes
 // nothing for it. That is what lets ONE list feed both the runtime table and the compile-time
 // if-chain, so a row cannot exist in one and not the other.
-#define W4A16_CFG_BITS  4
-#define W4A16_CFG_TILEK 64
+#define LOWBIT_DENSE_CFG_BITS  4
+#define LOWBIT_DENSE_CFG_TILEK 64
 
-#define W4A16_CFG_LIST(X, B) \
+#define LOWBIT_DENSE_CFG_LIST(X, B) \
   X(16,16,16,16,2,B) \
   X(16,16,16,16,3,B) \
   X(16,16,16,16,4,B) \

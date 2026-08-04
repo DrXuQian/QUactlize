@@ -24,10 +24,6 @@ ACTLIZE="$(cd "$HERE/third_party/actlize" && pwd)"
 # name is load-bearing, so renaming it would have been churn for nothing.
 _src_dirs=(quactlize/include quactlize/csrc/device tests benchmarks)
 _subdir_src="quactlize/include/gemv_lowbit"
-# THE OVERLAY DIRECTORY NAME. "kernels" was this repo's old name; it is quactlize now, and a build product
-# path that names a repo nobody has is the same defect the operator already reported once for /Kernels/.
-EX_NAME="99_quactlize_w4a16_compare"
-EX_NAME_STALE="99_kernels_w4a16_compare"   # renamed 2026-08-04; cleaned up below so an old box converges
 ARCH="${PPU_ARCHS:-ppu0010}"
 # Default to this box's SDK location; override with PPU_SDK=<path> (or PPU_HOME) if it moves.
 
@@ -178,7 +174,7 @@ echo "[build.sh] CUTLASS_PPU_ARCHS=$ARCH"
 
 # --- tile/warp/stages tuning: forward from the environment (defaults match the stock example) ---
 TILE_M="${TILE_M:-32}"; TILE_N="${TILE_N:-32}"; WARP_M="${WARP_M:-16}"; WARP_N="${WARP_N:-16}"; STAGES="${STAGES:-3}"
-QUANT="${QUANT:-int4}"   # int4 (default) or uint2 -> bench_cutlass_w4a16's QuantType (W4A16 vs W2A16 perf)
+QUANT="${QUANT:-int4}"   # int4 (default) or uint2 -> test_lowbit_dense_bench's QuantType (W4A16 vs W2A16 perf)
 TSK="${TSK:-}"           # TileShapeK override (empty = per-quant default: int2->128, int4->64). Set to force, e.g. TSK=128
 echo "[build.sh] TILE=${TILE_M}x${TILE_N} WARP=${WARP_M}x${WARP_N} STAGES=${STAGES} QUANT=${QUANT} TSK=${TSK}"
 
@@ -191,17 +187,16 @@ echo "[build.sh] TILE=${TILE_M}x${TILE_N} WARP=${WARP_M}x${WARP_N} STAGES=${STAG
 # and by convention third_party/ holds vendored SOURCE, not our outputs. It is also why every command in this
 # repo had to locate a binary with `find third_party/actlize/build_w4a16_compare ...`.
 #
-# The OVERLAY (examples/99_quactlize_w4a16_compare) genuinely must live inside actlize -- it is compiled as an
-# actlize example, and that is structural. The BUILD TREE never had to.
+# (Historical: there used to be an OVERLAY under examples/99_quactlize_w4a16_compare, copied into the submodule
+# and compiled as an actlize example. #34 removed it -- the targets build from this tree now.)
 #
 # .gitignore already covers build/ and build_*/, so nothing new is needed to keep it untracked.
 # build_ppu, NOT build/. setuptools owns build/ (build/lib.* and build/temp.*), and `setup.py clean --all`
 # removes it wholesale -- a Python rebuild would silently destroy the PPU tree. A sibling avoids that, and
 # .gitignore's existing `build_*/` already covers this name.
 #
-# The old name was build_w4a16_compare: an experiment this repo stopped being about. What is inside it --
-# examples/99_quactlize_w4a16_compare/ -- is CMake's own layout, because these targets ARE actlize examples;
-# that nesting is structural and stays.
+# The old name was build_w4a16_compare, after an experiment this repo stopped being about; targets now land
+# under ppu_targets/ with no examples/ nesting, because they are no longer actlize examples.
 BUILD="${PPU_BUILD_DIR:-$HERE/build_ppu}"
 # An old tree has products in the submodule. Say so rather than leaving two candidates for `find` to pick from.
 for _stale in "$ACTLIZE/build_w4a16_compare" "$HERE/build_w4a16_compare"; do
@@ -252,7 +247,7 @@ if [ -n "${PPU_DEFS:-}" ]; then
   echo "PPU_DEFS applied: $PPU_DEFS"
   grep -F "PPU_EXTRA_DEFS ->" cmake.log || echo "  WARNING: cmake did not report PPU_EXTRA_DEFS -- the defines did NOT reach the build"
 fi
-TARGET="${TARGET:-bench_cutlass_w4a16}"
+TARGET="${TARGET:-test_lowbit_dense_bench}"
 
 # #13: NO SHIPPING TARGET MAY REACH THE LEGACY PACKERS. fold_derivation/legacy_pipeline.hpp still holds
 # nfold_regroup_gmem and nfold_place_bits_int1_tk64, on purpose -- they are the INDEPENDENT reference the l58/l61/l64

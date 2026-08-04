@@ -731,7 +731,7 @@ kPackedScaleOn is false and they stay on the fp16 path even in the packed build.
 leaking into units it should not touch.
 
 **A second result, independent of this work:** rowB is the first check of the single-plane int4 AFFINE path against an
-external golden on hardware. Everything validated before it was ScaleOnly (`bench_cutlass_w4a16::xcheck_grouped` passes
+external golden on hardware. Everything validated before it was ScaleOnly (`test_lowbit_dense_bench::xcheck_grouped` passes
 zeros=nullptr), and the plan file recorded test_moe_grouped_real's Q4_K fixture as box-pending. The affine path is correct.
 
 **Not yet explained:** rowC's max_rel is 1.457 against rowB's 0.348 on the same math. bad=0 because the tolerance has an

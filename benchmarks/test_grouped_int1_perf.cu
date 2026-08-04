@@ -1,6 +1,6 @@
 // GROUPED single-plane int1 (and int2 reference) PERFORMANCE verification [box-only].
 //
-// Why: the recorded int1 285.9us is from the DENSE path (bench_cutlass_w4a16 / fpA_intB); the GROUPED path
+// Why: the recorded int1 285.9us is from the DENSE path (test_lowbit_dense_bench / fpA_intB); the GROUPED path
 // (moe_grouped_ppu, what B-concat uses) has NEVER been perf-verified for int1. The sweep bench showed grouped int1
 // ~3052us at N=K=4096 -- 10x the dense record and 6x slower than B-concat, despite int1's 32x128 tile having BETTER
 // occupancy than B-concat. This isolates grouped int1 in the CLEANEST possible setup so acu can say why.

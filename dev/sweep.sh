@@ -48,7 +48,7 @@ for cfg in "${CONFIGS[@]}"; do
         "$HERE/build.sh" >"$LOGDIR/build_${label//\//_}.log" 2>&1; then
     printf '%-22s %-10s %s\n' "$label" "-" "build FAILED (see $LOGDIR)"; continue
   fi
-  BIN="$(find "$BUILD" -name bench_cutlass_w4a16 -type f -perm -u+x | head -1)"
+  BIN="$(find "$BUILD" -name test_lowbit_dense_bench -type f -perm -u+x | head -1)"
   out="$("$BIN" $RUN_ARGS --iterations=$ITERS_WARM 2>&1 || true)"
   if ! grep -q "Disposition: *Passed" <<<"$out"; then
     printf '%-22s %-10s %s\n' "$label" "-" "run FAILED / not Passed"; continue
@@ -92,6 +92,6 @@ echo "[sweep] wrote tactic cache $CACHE and table $MD"
 echo "[sweep] best = $best_line at $best_tflops TFLOP/s. Rebuilding and running once at $ITERS_FINAL iters."
 read -r TILE_M TILE_N WARP_M WARP_N STAGES <<<"$best_cfg"
 TILE_M=$TILE_M TILE_N=$TILE_N WARP_M=$WARP_M WARP_N=$WARP_N STAGES=$STAGES "$HERE/build.sh" >/dev/null 2>&1
-BIN="$(find "$BUILD" -name bench_cutlass_w4a16 -type f -perm -u+x | head -1)"
+BIN="$(find "$BUILD" -name test_lowbit_dense_bench -type f -perm -u+x | head -1)"
 echo "=========================== WINNER: $best_line ==========================="
 "$BIN" $RUN_ARGS --iterations=$ITERS_FINAL

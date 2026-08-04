@@ -1,4 +1,4 @@
-// EMIT bench_cutlass_w4a16's compiled config table from the shared tactic rules.
+// EMIT test_lowbit_dense_bench's compiled config table from the shared tactic rules.
 //
 // TWO PROBLEMS THIS REPLACES, and the second is worse than the first.
 //
@@ -6,7 +6,7 @@
 //     codex's H1/H2 primary geometry plus its guards, so the sweep was searching a fifth of its own space and
 //     nothing said so.
 //  2. THE LIST AND THE DISPATCH WERE TWO HAND-MAINTAINED COPIES. supported_configs() returned rows; the
-//     W4A16_DISPATCH if-chain instantiated them; nothing checked that the two agreed. A row present in the list
+//     LOWBIT_DENSE_DISPATCH if-chain instantiated them; nothing checked that the two agreed. A row present in the list
 //     and absent from the chain reaches `config %s not compiled in` and exit(1) at run time -- after the build,
 //     on the box, in the middle of a sweep. Both now expand from ONE X-macro list, so the failure is not
 //     expressible.
@@ -15,10 +15,10 @@
 // program has no copy of the legality predicate, only of the pruning policy it is asked to apply.
 //
 //   c++ -std=c++17 -Iquactlize/include benchmarks/emit_dense_configs.cpp -o /tmp/emit_dense
-//   /tmp/emit_dense <bits> <tile_k> > benchmarks/w4a16_configs.inc
+//   /tmp/emit_dense <bits> <tile_k> > benchmarks/lowbit_dense_configs.inc
 //
 // bits is the LOW plane width (1, 2 or 4); tile_k must match the binary's BENCH_TSK. Both are build-time
-// constants of bench_cutlass_w4a16, which is why the table is generated per binary rather than filtered at run
+// constants of test_lowbit_dense_bench, which is why the table is generated per binary rather than filtered at run
 // time: instantiating a config for the wrong TileK costs compile time and can never be selected.
 #include <algorithm>
 #include <cstdio>
@@ -140,7 +140,7 @@ int main(int argc, char** argv) {
   std::printf("//\n");
   std::printf("// Regenerate after changing ppu_tactic_space.hpp or the pruning policy:\n");
   std::printf("//   c++ -std=c++17 -Iquactlize/include benchmarks/emit_dense_configs.cpp -o /tmp/emit_dense &&\\\n");
-  std::printf("//   /tmp/emit_dense %d %d > benchmarks/w4a16_configs.inc\n", bits, tk);
+  std::printf("//   /tmp/emit_dense %d %d > benchmarks/lowbit_dense_configs.inc\n", bits, tk);
   std::printf("//\n");
   std::printf("// The second X argument carries the dispatch BODY through the list; supported_configs() passes\n");
   std::printf("// nothing for it. That is what lets ONE list feed both the runtime table and the compile-time\n");
@@ -149,9 +149,9 @@ int main(int argc, char** argv) {
   // (QUANT= and BENCH_TSK=), and a table generated for another pair is not merely suboptimal -- every row in it
   // is a tactic this binary cannot select, so the sweep would search an empty set and report whatever the
   // fallback does. Emitting the pair here lets the consumer static_assert it.
-  std::printf("#define W4A16_CFG_BITS  %d\n", bits);
-  std::printf("#define W4A16_CFG_TILEK %d\n\n", tk);
-  std::printf("#define W4A16_CFG_LIST(X, B) \\\n");
+  std::printf("#define LOWBIT_DENSE_CFG_BITS  %d\n", bits);
+  std::printf("#define LOWBIT_DENSE_CFG_TILEK %d\n\n", tk);
+  std::printf("#define LOWBIT_DENSE_CFG_LIST(X, B) \\\n");
   size_t i = 0;
   for (auto const& r : rows) {
     std::printf("  X(%d,%d,%d,%d,%d,B)%s\n", std::get<0>(r), std::get<1>(r), std::get<2>(r),

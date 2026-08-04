@@ -113,7 +113,7 @@ These are correctness and inspection, not tactic sweeps, so the hold above does 
    other are being ordered by noise. Use this run to see the shape of the landscape and whether anything is
    grossly off; do not quote a winner from it. The repeat/confidence-band harness is in progress.
 
-   THE DENSE HALF IS NOT READY. bench_cutlass_w4a16.cu carries 17 hand-written configs plus a hand-written
+   THE DENSE HALF IS NOT READY. test_lowbit_dense_bench.cu carries 17 hand-written configs plus a hand-written
    dispatch macro with one line per config; the pruned i4 set is 110 shapes. Generating that list is the next
    piece of work and it is mine, not codex's.
 

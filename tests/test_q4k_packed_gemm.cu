@@ -124,7 +124,7 @@ int main(int argc, char** argv) {
   // ---- HOST GOLDENS, so the kernel is compared against a model this file can defend --------------------------
   // hAff must agree with the fixture's own golden; if it does not, the disagreement is in this file's understanding of
   // the fixture and nothing about the kernel is implicated. hSco is the SAME data with the zero forced to 0, which is the
-  // only configuration the grouped int4 path has ever been validated in (bench_cutlass_w4a16's xcheck_grouped runs
+  // only configuration the grouped int4 path has ever been validated in (test_lowbit_dense_bench's xcheck_grouped runs
   // ScaleOnly with zeros=nullptr). Having both separates "affine is broken" from "my layout is wrong".
   std::vector<float> hAff((size_t)total * N, 0.f), hSco((size_t)total * N, 0.f);
   for (int e = 0; e < L; ++e)
@@ -241,7 +241,7 @@ int main(int argc, char** argv) {
   };
 
   int fail = 0;
-  // rowA is bench_cutlass_w4a16::xcheck_grouped's configuration EXACTLY -- ScaleOnly, zeros=nullptr, offsets=nullptr,
+  // rowA is test_lowbit_dense_bench::xcheck_grouped's configuration EXACTLY -- ScaleOnly, zeros=nullptr, offsets=nullptr,
   // 64x64:128 w32x32 s3 -- the only single-plane int4 setup ever checked against an external golden. Compared against
   // the host's scale-only model. If rowA fails, the fault is in A/B/scale layout and has nothing to do with the zero.
   fail += run_and_check("rowA scale-only 64x64:128", hSco.data(), [&]{

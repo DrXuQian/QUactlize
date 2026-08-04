@@ -17,7 +17,7 @@
 # THE ONE THING THAT IS NOT FREE. The sources #include EACH OTHER BY BARE FILENAME, because the overlay
 # flattened five directories into one. Rewriting those includes would be a large and pointless diff, so the same
 # flat namespace is reproduced here with include_directories over the same five. The bare filenames in the
-# target list below resolve the same way, through QZ_SRC_DIRS in ppu_w4a16_executable -- which additionally
+# target list below resolve the same way, through QZ_SRC_DIRS in quactlize_ppu_executable -- which additionally
 # ERRORS on a name that exists in two of them. The overlay would have copied one over the other and kept
 # whichever went last, silently; there is no such collision today and now there cannot be one unnoticed.
 

@@ -2,7 +2,7 @@
 # Every PROJECT-LOCAL cmake helper called in CMakeLists.txt must be defined in CMakeLists.txt.
 #
 # WHY THIS EXISTS. Three target registrations were written against `cutlass_w4a16_example`, a name that does
-# not exist -- the real helper is `ppu_w4a16_executable`. Nothing local catches that: it is not a C++ error, the
+# not exist -- the real helper is `quactlize_ppu_executable`. Nothing local catches that: it is not a C++ error, the
 # syntax check never reads CMakeLists.txt, and cmake only complains at CONFIGURE time, which on this project
 # means a full pull-and-build on the box before the mistake is visible. The name was written down from memory
 # instead of read off the file, which is this codebase's most expensive recurring failure.
@@ -31,8 +31,8 @@ for c in $called; do
 done
 
 # The check must be able to FAIL, or it proves nothing: confirm it sees the real helper as defined.
-echo "$defined" | grep -qx "ppu_w4a16_executable" \
-  || { echo "  [FAIL] cmake_calls_check: ppu_w4a16_executable is not defined -- the check itself is looking in the wrong place"; exit 1; }
+echo "$defined" | grep -qx "quactlize_ppu_executable" \
+  || { echo "  [FAIL] cmake_calls_check: quactlize_ppu_executable is not defined -- the check itself is looking in the wrong place"; exit 1; }
 
 if [ -n "$bad" ]; then
   echo "  [FAIL] CMakeLists.txt calls project helpers that are not defined in it:$bad"

@@ -109,7 +109,7 @@ SYNTAX = [
     # The DENSE bench, likewise ungated until 2026-08-04. It now carries a generated config table and a
     # static_assert tying that table to the binary's (bits, TileK); this row is what makes a stale table fail
     # here instead of producing a sweep over tactics the binary cannot select.
-    ("benchmarks/bench_cutlass_w4a16.cu", ""),
+    ("benchmarks/test_lowbit_dense_bench.cu", ""),
     ("benchmarks/test_moe_splitk_bench.cu", "-DPPU_PACKED_SCALE=1"),
     # dev/'s top-level probes. They are DEVICE probes -- swzl_ldmatrix_probe reads the hardware swizzle, the
     # ablations and sweeps run on the accelerator -- so build.sh overlays them onto the box, and anything that
@@ -333,12 +333,12 @@ def lint_fixture_flags():
     spec = importlib.util.spec_from_file_location("fx", ROOT / "benchmarks" / "fixtures.py")
     fx = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fx)
-    src = (ROOT / "benchmarks" / "bench_cutlass_w4a16.cu").read_text()
+    src = (ROOT / "benchmarks" / "test_lowbit_dense_bench.cu").read_text()
     missing = [f for f in fx.DENSE_FLAGS
                if f'get_cmd_line_argument("{f}"' not in src and f'check_cmd_line_flag("{f}"' not in src]
     if missing:
         return "FAIL", ("fixtures.py emits --" + ", --".join(missing)
-                        + " but bench_cutlass_w4a16.cu does not parse them; an unknown flag is IGNORED, so the "
+                        + " but test_lowbit_dense_bench.cu does not parse them; an unknown flag is IGNORED, so the "
                           "bench would run its default shape and the log would not say so"), 0.0
     return "PASS", f"all {len(fx.DENSE_FLAGS)} emitted dense options are parsed by the bench", 0.0
 

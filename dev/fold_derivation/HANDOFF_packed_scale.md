@@ -19,7 +19,7 @@ Feed the mixed-input grouped GEMM the scale/zero **in the form the gguf actually
 |---|---|
 | **Q3_K / Q6_K drop the zero channel entirely** | `test_q3_bconcat_real` rungs 6–7 MATCH incl. `last rung vs native Q3_K golden bad=0/32768`; `test_q65_bconcat_real` two Q6 `ScaleOnly bias 32` rows + one Q5 `bias 16` row MATCH, `0 failing configuration(s)` |
 | **the gguf's native scale/zero runs end to end** | `test_q4k_packed_gemm` rowA/rowB/**rowC** all MATCH with `PPU_PACKED_SCALE=1`, on real `blk.11.ffn_down.weight` |
-| **the single-plane int4 AFFINE path is correct** | `test_q4k_packed_gemm` rowB — the FIRST external-golden check of it; everything validated before was ScaleOnly (`bench_cutlass_w4a16::xcheck_grouped` passes `zeros=nullptr`) |
+| **the single-plane int4 AFFINE path is correct** | `test_q4k_packed_gemm` rowB — the FIRST external-golden check of it; everything validated before was ScaleOnly (`test_lowbit_dense_bench::xcheck_grouped` passes `zeros=nullptr`) |
 | **the bit maps** | `l91` over 4096 real superblocks × 8 groups vs `get_scale_min_k4`, 0 bad |
 | **the decode's arithmetic** | `l93`: 32768 real Q4_K groups, `(scale,zero)` **bit-identical** to the host's fp32-then-round |
 | **the converter bias mechanism** | `l92`: `x*mul + add == c − Bias` over the full concatenated range for Q3 (W=3, bias 4), Q6 (W=6, 32), Q5 (W=5, 16), 0 bad; defaults unchanged |

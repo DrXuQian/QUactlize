@@ -2,7 +2,7 @@
 
 Reference architecture is the PPU-official acext fpA_intB wrapper (dense W4A16/W8A16): a void* `RunnerInterface`
 + templated `Runner<T,WeightType,QuantOp>` + `dispatchGemmToCutlass` (`ENABLE_CUTLASS3` + `if constexpr
-(uint4b_t)` → `dispatchGemmToCutlass3`) + heuristic/LUT config selection. Our `bench_cutlass_w4a16.cu` is the
+(uint4b_t)` → `dispatchGemmToCutlass3`) + heuristic/LUT config selection. Our `test_lowbit_dense_bench.cu` is the
 same GEMM (actlize mixed-input) minus the runner/LUT wrapper.
 
 ## The format axis = QuantOp
@@ -58,7 +58,7 @@ what our bench has:
 - **LUT config selection**: `get_gemm_lut<T,WeightType>(device_info)` keyed by `{m,n,k}` → a `GemmLoopHelper`
   compile-time loop over `TypeCfgArray` configs, with `dispatchGemmConfig` heuristic as fallback. Validity gate
   `!(isFinegrained(QuantOp) && block_k < group_size)`. This is the grown-up form of our shape-keyed tactic
-  cache + `W4A16_DISPATCH`.
+  cache + `LOWBIT_DENSE_DISPATCH`.
 - **arg layout is NOT swapped** (passes A,B at {m,n,k} directly, `stride_C = make_shape(m,0,1)` broadcast
   bias); example 16 (and our bench) use the swap-and-transpose formulation instead. Both work; ours is the
   one that compiled green.
@@ -68,5 +68,5 @@ what our bench has:
 
 Mirror acext: a `RunnerInterface` (void* ABI, stable across dtypes/QuantOps) + `Runner<T,WeightType,QuantOp>`
 templated impl + explicit-instantiation .cu per {fp16,bf16}×{int4}×{per_col,fg_scaleonly,fg_scalebias}. Our
-current in-binary tactic registry (`supported_configs()` + `W4A16_DISPATCH`) becomes the config-selection
+current in-binary tactic registry (`supported_configs()` + `LOWBIT_DENSE_DISPATCH`) becomes the config-selection
 layer; the shape-keyed tactic cache is the poor-man's version of acext's per-device LUT `.ini` files.

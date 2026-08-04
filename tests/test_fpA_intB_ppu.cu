@@ -2,7 +2,7 @@
 // v1.0.0). It does NOT verify correctness or report a real number yet -- B is not run through
 // preprocess_weights_for_mixed_gemm here, so results are garbage-by-design. The point is to surface the
 // [F1]-[F4] compile fixes flagged in fpA_intB_ppu.cuh and confirm the finegrained Gs128 path builds/launches
-// on the box. Once green, route this through bench_cutlass_w4a16.cu's data+verify harness for a real number.
+// on the box. Once green, route this through test_lowbit_dense_bench.cu's data+verify harness for a real number.
 //
 // Official finegrained path needs block_k >= group_size, so gs=128 uses TK=128 (NOT the generic path's 64).
 #include <cstdio>

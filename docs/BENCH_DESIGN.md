@@ -8,7 +8,7 @@ The list comes first because the design is only justified by it.
 1. **Selection logic lives in C++, inside the bench, untested.** I moved the MoE bench from
    `if (u < b.us)` to median-over-interleaved-repeats with a `[min,max]` band and tie reporting. The fix is
    right and its *placement* is wrong: it sits in `lowbit_moe_bench.hpp`, has no unit test, and the dense bench
-   will need a second copy. That is the same two-copy defect I removed from `bench_cutlass_w4a16.cu` this
+   will need a second copy. That is the same two-copy defect I removed from `test_lowbit_dense_bench.cu` this
    morning, recreated one level up, by me, hours later.
 
 2. **Two benches, two unrelated ways to say "which configs to compile".** MoE: CMake generates one `.cu` per
