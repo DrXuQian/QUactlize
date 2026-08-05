@@ -98,6 +98,30 @@ fi
 # directory baked in as the fallback is both useless to anyone else and a leak. The site-specific location goes
 # in the environment (or PPU_SDK_SITE_DEFAULT for a shared machine's profile), and an unset SDK says so.
 PPU_SDK_ROOT="${PPU_SDK:-${PPU_HOME:-${PPU_SDK_SITE_DEFAULT:-}}}"
+# FAIL BEFORE HGCC, PART TWO: THE SUBMODULE MUST BE THE ONE THIS TREE RECORDS.
+#
+# `git pull` updates the gitlink and does NOT check out the submodule. So a machine that pulls a commit which
+# moved actlize forward keeps compiling the OLD actlize headers against the NEW parent sources, and the failure
+# surfaces as `no type named 'PipelineDriver' in CollectiveMma<...>` several template frames deep -- which reads
+# as a kernel defect, not as a checkout that never happened. That is exactly what it cost on 2026-08-05: the box
+# had actlize at 46a2b851 while the tree recorded f42db663, and the resulting errors were forwarded as a dense
+# regression.
+#
+# One `git diff --submodule` would have said so, and nobody runs it before a build. So the build runs it.
+if command -v git >/dev/null 2>&1 && [ -e "$HERE/.git" ]; then
+  _want="$(git -C "$HERE" ls-tree HEAD third_party/actlize 2>/dev/null | awk '{print $3}')"
+  _have="$(git -C "$HERE/third_party/actlize" rev-parse HEAD 2>/dev/null || true)"
+  if [ -n "$_want" ] && [ "$_want" != "$_have" ]; then
+    echo "[build.sh] third_party/actlize is not the commit this tree records." >&2
+    echo "             recorded  ${_want}" >&2
+    echo "             checked out ${_have:-<none: submodule not initialised>}" >&2
+    echo "           Compiling anyway mixes new parent sources with old submodule headers, which fails deep in" >&2
+    echo "           template instantiation and looks like a kernel bug. Fix the checkout:" >&2
+    echo "             git -C $HERE submodule update --init --recursive" >&2
+    exit 1
+  fi
+fi
+
 TARGET="${TARGET:-test_lowbit_dense_bench}"
 if [ "$TARGET" = "test_lowbit_dense_bench" ]; then
   # FAIL BEFORE HGCC. A stale generated table otherwise presents as an unrelated CollectiveMma/GemmUniversal
