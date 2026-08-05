@@ -2,18 +2,19 @@
 // which need only units do not inherit xplane templates, and so this ABI can be tested with an ordinary host build.
 #include "gguf_unit_pack.hpp"
 #include "gguf_vecdot.hpp"
+#include "ppu_format_config.hpp"
 #include "quactlize_ppu_packed.h"
 
 #include <algorithm>
 #include <cstring>
 #include <vector>
 
-extern "C" int quactlize_ppu_prepare_dense(uint8_t const* low_native, uint8_t const* high_native,
-                                             uint8_t* low_layout, uint8_t* high_layout,
-                                             int n, int k, int qtype);
-extern "C" int quactlize_ppu_recover_dense(uint8_t const* low_layout, uint8_t const* high_layout,
-                                             uint8_t* low_native, uint8_t* high_native,
-                                             int n, int k, int qtype);
+extern "C" int quactlize_ppu_prepare_dense_for_tile(
+    uint8_t const* low_native, uint8_t const* high_native,
+    uint8_t* low_layout, uint8_t* high_layout, int n, int k, int qtype, int tile_k);
+extern "C" int quactlize_ppu_recover_dense_for_tile(
+    uint8_t const* low_layout, uint8_t const* high_layout,
+    uint8_t* low_native, uint8_t* high_native, int n, int k, int qtype, int tile_k);
 
 namespace {
 
@@ -102,12 +103,12 @@ int prepare_fully_quantized(uint8_t const* blocks, uint8_t* low_layout, uint8_t*
   }
 
   for (int e = 0; e < experts; ++e) {
-    int const rc = quactlize_ppu_prepare_dense(
+    int const rc = quactlize_ppu_prepare_dense_for_tile(
         low_native.data() + size_t(e) * low_per_expert,
         HighBits ? high_native.data() + size_t(e) * high_per_expert : nullptr,
         low_layout + size_t(e) * low_per_expert,
         HighBits ? high_layout + size_t(e) * high_per_expert : nullptr,
-        n, k, qtype);
+        n, k, qtype, ppu_formats::for_qtype(qtype).fully_quantized_tile_k);
     if (rc) return rc;
   }
   gguf_scale::unit_pack::pack<T>(blocks, units, n, k, experts);
@@ -130,12 +131,12 @@ int recover_fully_quantized(uint8_t const* low_layout, uint8_t const* high_layou
   std::vector<uint8_t> high_native(size_t(experts) * high_per_expert);
 
   for (int e = 0; e < experts; ++e) {
-    int const rc = quactlize_ppu_recover_dense(
+    int const rc = quactlize_ppu_recover_dense_for_tile(
         low_layout + size_t(e) * low_per_expert,
         HighBits ? high_layout + size_t(e) * high_per_expert : nullptr,
         low_native.data() + size_t(e) * low_per_expert,
         HighBits ? high_native.data() + size_t(e) * high_per_expert : nullptr,
-        n, k, qtype);
+        n, k, qtype, ppu_formats::for_qtype(qtype).fully_quantized_tile_k);
     if (rc) return rc;
   }
 

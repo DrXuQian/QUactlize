@@ -8,6 +8,8 @@
 #include <array>
 #include <cstdint>
 
+#include "ppu_format_config.hpp"
+
 namespace ppu_tactics {
 
 // ppu001 exposes 256 KiB of shared storage to one block. Runtime tactic validation and the host sweep use the
@@ -31,9 +33,12 @@ inline constexpr std::array<FormatSpec, 6> kFormats{{
     {Format::I1, "i1", 1, 0},
     {Format::I2, "i2", 2, 0},
     {Format::I4, "i4", 4, 0},
-    {Format::Q3_K, "Q3_K", 2, 1},
-    {Format::Q5_K, "Q5_K", 4, 1},
-    {Format::Q6_K, "Q6_K", 4, 2},
+    {Format::Q3_K, ppu_formats::for_qtype(11).name,
+                   ppu_formats::for_qtype(11).low_bits, ppu_formats::for_qtype(11).high_bits},
+    {Format::Q5_K, ppu_formats::for_qtype(13).name,
+                   ppu_formats::for_qtype(13).low_bits, ppu_formats::for_qtype(13).high_bits},
+    {Format::Q6_K, ppu_formats::for_qtype(14).name,
+                   ppu_formats::for_qtype(14).low_bits, ppu_formats::for_qtype(14).high_bits},
 }};
 inline constexpr std::array<int, 4> kTileK{{32, 64, 128, 256}};
 inline constexpr std::array<int, 5> kTileM{{16, 32, 64, 128, 256}};

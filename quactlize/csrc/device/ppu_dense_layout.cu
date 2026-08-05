@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "fold_traits.hpp"
+#include "ppu_format_config.hpp"
 #include "xplane_offline.hpp"
 
 namespace {
@@ -154,13 +155,16 @@ extern "C" int quactlize_ppu_prepare_dense(uint8_t const* low_native, uint8_t co
                                              int n, int k, int qtype) {
   if (!low_native || !low_layout || n <= 0 || k <= 0 || n % 256 || k % 256) return 20;
   switch (qtype) {
-    case 10: return prepare<2, 0>(low_native, high_native, low_layout, high_layout, n, k);
-    case 11: return prepare<2, 1>(low_native, high_native, low_layout, high_layout, n, k);
-    case 12: return prepare<4, 0>(low_native, high_native, low_layout, high_layout, n, k);
-    case 13: return prepare<4, 1>(low_native, high_native, low_layout, high_layout, n, k);
-    // Q6's int2 high-plane delivery is complete at TK=128. TK=256 covers only half the logical K slots in the
-    // two-plane map (the new inverse caught this); use the already box-validated Q6 tactic instead.
-    case 14: return prepare<4, 2, 128>(low_native, high_native, low_layout, high_layout, n, k);
+    case 10: return prepare<2, 0, ppu_formats::for_qtype(10).scale_first_tile_k>(
+        low_native, high_native, low_layout, high_layout, n, k);
+    case 11: return prepare<2, 1, ppu_formats::for_qtype(11).scale_first_tile_k>(
+        low_native, high_native, low_layout, high_layout, n, k);
+    case 12: return prepare<4, 0, ppu_formats::for_qtype(12).scale_first_tile_k>(
+        low_native, high_native, low_layout, high_layout, n, k);
+    case 13: return prepare<4, 1, ppu_formats::for_qtype(13).scale_first_tile_k>(
+        low_native, high_native, low_layout, high_layout, n, k);
+    case 14: return prepare<4, 2, ppu_formats::for_qtype(14).scale_first_tile_k>(
+        low_native, high_native, low_layout, high_layout, n, k);
     default: return 22;
   }
 }
@@ -170,11 +174,16 @@ extern "C" int quactlize_ppu_recover_dense(uint8_t const* low_layout, uint8_t co
                                              int n, int k, int qtype) {
   if (!low_layout || !low_native || n <= 0 || k <= 0 || n % 256 || k % 256) return 20;
   switch (qtype) {
-    case 10: return recover<2, 0>(low_layout, high_layout, low_native, high_native, n, k);
-    case 11: return recover<2, 1>(low_layout, high_layout, low_native, high_native, n, k);
-    case 12: return recover<4, 0>(low_layout, high_layout, low_native, high_native, n, k);
-    case 13: return recover<4, 1>(low_layout, high_layout, low_native, high_native, n, k);
-    case 14: return recover<4, 2, 128>(low_layout, high_layout, low_native, high_native, n, k);
+    case 10: return recover<2, 0, ppu_formats::for_qtype(10).scale_first_tile_k>(
+        low_layout, high_layout, low_native, high_native, n, k);
+    case 11: return recover<2, 1, ppu_formats::for_qtype(11).scale_first_tile_k>(
+        low_layout, high_layout, low_native, high_native, n, k);
+    case 12: return recover<4, 0, ppu_formats::for_qtype(12).scale_first_tile_k>(
+        low_layout, high_layout, low_native, high_native, n, k);
+    case 13: return recover<4, 1, ppu_formats::for_qtype(13).scale_first_tile_k>(
+        low_layout, high_layout, low_native, high_native, n, k);
+    case 14: return recover<4, 2, ppu_formats::for_qtype(14).scale_first_tile_k>(
+        low_layout, high_layout, low_native, high_native, n, k);
     default: return 22;
   }
 }

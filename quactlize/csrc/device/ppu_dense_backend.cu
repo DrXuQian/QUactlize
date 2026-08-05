@@ -10,6 +10,7 @@
 #include "moe_grouped_ppu.cuh"
 #include "gemv_lowbit/gemv_rt.hpp"
 #include "ppu_dense_configs.inc"
+#include "ppu_format_config.hpp"
 #include "ppu_grouped_configs.inc"
 #include "quactlize_ppu_device.h"
 
@@ -25,9 +26,13 @@ using Q4PackedUnit = cutlass::gguf_packed::Unit<cutlass::gguf_packed::Fmt::Q4K>;
 static_assert(Q4PackedUnit::kUnitBytes == 16, "Q4_K's byte-neutral packed unit is the shipped 16-byte unit");
 #if defined(PPU_PACKED_FORMAT)
 static constexpr auto kSelectedPackedFmt = cutlass::gguf_packed::Fmt(PPU_PACKED_FORMAT);
+static constexpr int kSelectedPackedFormatId = PPU_PACKED_FORMAT;
 #else
 static constexpr auto kSelectedPackedFmt = cutlass::gguf_packed::Fmt::Q4K;
+static constexpr int kSelectedPackedFormatId = 0;
 #endif
+static constexpr auto kSelectedFormat = ppu_formats::for_packed_format(kSelectedPackedFormatId);
+static_assert(kSelectedFormat.qtype >= 0, "PPU_PACKED_FORMAT must name a row in ppu_format_config.inc");
 using SelectedPackedUnit = cutlass::gguf_packed::Unit<kSelectedPackedFmt>;
 
 enum class DenseConfigId {
@@ -118,19 +123,8 @@ constexpr size_t align16(size_t value) { return (value + 15) & ~size_t(15); }
 
 bool selected_fully_quantized_qtype(int qtype, int k) {
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
-#if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
-  return qtype == 12;
-#elif PPU_PACKED_FORMAT == 2
-  return qtype == 10;
-#elif PPU_PACKED_FORMAT == 1
-  return qtype == 13;
-#elif PPU_PACKED_FORMAT == 3
-  return qtype == 11 && k % 512 == 0;
-#elif PPU_PACKED_FORMAT == 4
-  return qtype == 14 && k % 512 == 0;
-#else
-  return false;
-#endif
+  bool const paired_unit = kSelectedPackedFormatId == 3 || kSelectedPackedFormatId == 4;
+  return qtype == kSelectedFormat.qtype && (!paired_unit || k % 512 == 0);
 #else
   (void)qtype; (void)k;
   return false;
@@ -257,8 +251,7 @@ int launch_dense_config(DenseConfigId config, uint16_t const* act, uint8_t const
 }
 
 constexpr int qtype_group_size(int qtype) {
-  return (qtype == 10 || qtype == 11 || qtype == 14) ? 16
-       : (qtype == 12 || qtype == 13) ? 32 : 0;
+  return ppu_formats::for_qtype(qtype).group_size;
 }
 
 bool tensor_problem_domain(int m, int n, int k, int group_size, int qtype) {
@@ -289,37 +282,44 @@ bool dense_lowbit_config_valid(
   switch (qtype) {
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 10
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 2
-    case 10: return dense_config_type_valid<cutlass::uint2b_t, void, 16, 128, false>(config, m, n, k);
+    case 10: return dense_config_type_valid<cutlass::uint2b_t, void, 16,
+        ppu_formats::for_qtype(10).scale_first_tile_k, false>(config, m, n, k);
 #else
-    case 10: return dense_config_type_valid<cutlass::uint2b_t, void, 16, 256, false>(config, m, n, k);
+    case 10: return dense_config_type_valid<cutlass::uint2b_t, void, 16,
+        ppu_formats::for_qtype(10).scale_first_tile_k, false>(config, m, n, k);
 #endif
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 11
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 3
     case 11: return false;
 #else
-    case 11: return dense_config_type_valid<cutlass::uint2b_t, cutlass::uint1b_t, 16, 256, false>(config, m, n, k);
+    case 11: return dense_config_type_valid<cutlass::uint2b_t, cutlass::uint1b_t, 16,
+        ppu_formats::for_qtype(11).scale_first_tile_k, false>(config, m, n, k);
 #endif
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 12
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
-    case 12: return dense_config_type_valid<cutlass::int4b_t, void, 32, 128, false>(config, m, n, k);
+    case 12: return dense_config_type_valid<cutlass::int4b_t, void, 32,
+        ppu_formats::for_qtype(12).scale_first_tile_k, false>(config, m, n, k);
 #else
-    case 12: return dense_config_type_valid<cutlass::int4b_t, void, 32, 256, false>(config, m, n, k);
+    case 12: return dense_config_type_valid<cutlass::int4b_t, void, 32,
+        ppu_formats::for_qtype(12).scale_first_tile_k, false>(config, m, n, k);
 #endif
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 13
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 1
     case 13: return false;
 #else
-    case 13: return dense_config_type_valid<cutlass::int4b_t, cutlass::uint1b_t, 32, 256, false>(config, m, n, k);
+    case 13: return dense_config_type_valid<cutlass::int4b_t, cutlass::uint1b_t, 32,
+        ppu_formats::for_qtype(13).scale_first_tile_k, false>(config, m, n, k);
 #endif
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 14
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 4
     case 14: return false;
 #else
-    case 14: return dense_config_type_valid<cutlass::int4b_t, cutlass::uint2b_t, 16, 128, false>(config, m, n, k);
+    case 14: return dense_config_type_valid<cutlass::int4b_t, cutlass::uint2b_t, 16,
+        ppu_formats::for_qtype(14).scale_first_tile_k, false>(config, m, n, k);
 #endif
 #endif
     default: return false;
@@ -332,15 +332,20 @@ bool dense_fully_quantized_config_valid(
       !selected_fully_quantized_qtype(qtype, k)) return false;
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
-  return dense_config_type_valid<cutlass::int4b_t, void, 32, 256, true>(config, m, n, k);
+  return dense_config_type_valid<cutlass::int4b_t, void, 32,
+      ppu_formats::for_qtype(12).fully_quantized_tile_k, true>(config, m, n, k);
 #elif PPU_PACKED_FORMAT == 2
-  return dense_config_type_valid<cutlass::uint2b_t, void, 16, 256, true>(config, m, n, k);
+  return dense_config_type_valid<cutlass::uint2b_t, void, 16,
+      ppu_formats::for_qtype(10).fully_quantized_tile_k, true>(config, m, n, k);
 #elif PPU_PACKED_FORMAT == 1
-  return dense_config_type_valid<cutlass::int4b_t, cutlass::uint1b_t, 32, 256, true>(config, m, n, k);
+  return dense_config_type_valid<cutlass::int4b_t, cutlass::uint1b_t, 32,
+      ppu_formats::for_qtype(13).fully_quantized_tile_k, true>(config, m, n, k);
 #elif PPU_PACKED_FORMAT == 3
-  return dense_config_type_valid<cutlass::uint2b_t, cutlass::uint1b_t, 16, 256, true>(config, m, n, k);
+  return dense_config_type_valid<cutlass::uint2b_t, cutlass::uint1b_t, 16,
+      ppu_formats::for_qtype(11).fully_quantized_tile_k, true>(config, m, n, k);
 #elif PPU_PACKED_FORMAT == 4
-  return dense_config_type_valid<cutlass::int4b_t, cutlass::uint2b_t, 16, 128, true>(config, m, n, k);
+  return dense_config_type_valid<cutlass::int4b_t, cutlass::uint2b_t, 16,
+      ppu_formats::for_qtype(14).fully_quantized_tile_k, true>(config, m, n, k);
 #else
   return false;
 #endif
@@ -358,15 +363,20 @@ bool grouped_fully_quantized_config_valid(
       !selected_fully_quantized_qtype(qtype, k)) return false;
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
-  return grouped_config_type_valid<cutlass::int4b_t, void, 32, 256>(config, max_rows, n, k, experts);
+  return grouped_config_type_valid<cutlass::int4b_t, void, 32,
+      ppu_formats::for_qtype(12).fully_quantized_tile_k>(config, max_rows, n, k, experts);
 #elif PPU_PACKED_FORMAT == 2
-  return grouped_config_type_valid<cutlass::uint2b_t, void, 16, 256>(config, max_rows, n, k, experts);
+  return grouped_config_type_valid<cutlass::uint2b_t, void, 16,
+      ppu_formats::for_qtype(10).fully_quantized_tile_k>(config, max_rows, n, k, experts);
 #elif PPU_PACKED_FORMAT == 1
-  return grouped_config_type_valid<cutlass::int4b_t, cutlass::uint1b_t, 32, 256>(config, max_rows, n, k, experts);
+  return grouped_config_type_valid<cutlass::int4b_t, cutlass::uint1b_t, 32,
+      ppu_formats::for_qtype(13).fully_quantized_tile_k>(config, max_rows, n, k, experts);
 #elif PPU_PACKED_FORMAT == 3
-  return grouped_config_type_valid<cutlass::uint2b_t, cutlass::uint1b_t, 16, 256>(config, max_rows, n, k, experts);
+  return grouped_config_type_valid<cutlass::uint2b_t, cutlass::uint1b_t, 16,
+      ppu_formats::for_qtype(11).fully_quantized_tile_k>(config, max_rows, n, k, experts);
 #elif PPU_PACKED_FORMAT == 4
-  return grouped_config_type_valid<cutlass::int4b_t, cutlass::uint2b_t, 16, 128>(config, max_rows, n, k, experts);
+  return grouped_config_type_valid<cutlass::int4b_t, cutlass::uint2b_t, 16,
+      ppu_formats::for_qtype(14).fully_quantized_tile_k>(config, max_rows, n, k, experts);
 #else
   return false;
 #endif
@@ -481,9 +491,11 @@ extern "C" int quactlize_ppu_dense_lowbit_config_v1(
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 2
     // The selected Q2 unit has 16 groups, so TileK=256 would reinterpret this ABI's fp16 scale plane as raw units.
     // Its single unfolded code plane is tile-invariant; TileK=128 keeps the established scale-first contract live.
-    case 10: return group_size == 16 ? dense<cutlass::uint2b_t,void,16,128>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
+    case 10: return group_size == 16 ? dense<cutlass::uint2b_t,void,16,
+        ppu_formats::for_qtype(10).scale_first_tile_k>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
 #else
-    case 10: return group_size == 16 ? dense<cutlass::uint2b_t,void,16>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
+    case 10: return group_size == 16 ? dense<cutlass::uint2b_t,void,16,
+        ppu_formats::for_qtype(10).scale_first_tile_k>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
 #endif
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 11
@@ -491,7 +503,8 @@ extern "C" int quactlize_ppu_dense_lowbit_config_v1(
     // Q3's fixed TK256 high-plane descriptor is also the packed type in a format-3 library.
     case 11: return 36;
 #else
-    case 11: return group_size == 16 ? dense<cutlass::uint2b_t,cutlass::uint1b_t,16>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
+    case 11: return group_size == 16 ? dense<cutlass::uint2b_t,cutlass::uint1b_t,16,
+        ppu_formats::for_qtype(11).scale_first_tile_k>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
 #endif
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 12
@@ -499,9 +512,11 @@ extern "C" int quactlize_ppu_dense_lowbit_config_v1(
     // TileK=256 selects packed units in this build, so the SCALE_FIRST contract must not use that instantiation.
     // Its single low plane is tile-invariant; TileK=128 gives Scale_TileK=4, keeps kPackedScaleOn false, and lets one
     // flagged library run the existing independent scale-first oracle beside the new TileK=256 packed entry below.
-    case 12: return group_size == 32 ? dense<cutlass::int4b_t,void,32,128>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
+    case 12: return group_size == 32 ? dense<cutlass::int4b_t,void,32,
+        ppu_formats::for_qtype(12).scale_first_tile_k>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
 #else
-    case 12: return group_size == 32 ? dense<cutlass::int4b_t,void,32>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
+    case 12: return group_size == 32 ? dense<cutlass::int4b_t,void,32,
+        ppu_formats::for_qtype(12).scale_first_tile_k>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
 #endif
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 13
@@ -511,7 +526,8 @@ extern "C" int quactlize_ppu_dense_lowbit_config_v1(
     // as units; the default build and every differently selected packed-format build retain the established path.
     case 13: return 36;
 #else
-    case 13: return group_size == 32 ? dense<cutlass::int4b_t,cutlass::uint1b_t,32>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
+    case 13: return group_size == 32 ? dense<cutlass::int4b_t,cutlass::uint1b_t,32,
+        ppu_formats::for_qtype(13).scale_first_tile_k>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
 #endif
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 14
@@ -519,7 +535,8 @@ extern "C" int quactlize_ppu_dense_lowbit_config_v1(
     // Q6 must retain TK128; in a format-4 library that exact type consumes paired raw units, not fp16 planes.
     case 14: return 36;
 #else
-    case 14: return group_size == 16 ? dense<cutlass::int4b_t,cutlass::uint2b_t,16,128>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
+    case 14: return group_size == 16 ? dense<cutlass::int4b_t,cutlass::uint2b_t,16,
+        ppu_formats::for_qtype(14).scale_first_tile_k>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
 #endif
 #endif
     default: return 33;
@@ -546,23 +563,26 @@ extern "C" int quactlize_ppu_dense_fully_quantized_config_v1(
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
   if (qtype != 12) return 33;
-  return dense<cutlass::int4b_t, void, 32, 256, true>(
+  return dense<cutlass::int4b_t, void, 32, ppu_formats::for_qtype(12).fully_quantized_tile_k, true>(
       act, low, nullptr, units, nullptr, out, m, n, k, 32, config);
 #elif PPU_PACKED_FORMAT == 2
   if (qtype != 10) return 33;
-  return dense<cutlass::uint2b_t, void, 16, 256, true>(
+  return dense<cutlass::uint2b_t, void, 16, ppu_formats::for_qtype(10).fully_quantized_tile_k, true>(
       act, low, nullptr, units, nullptr, out, m, n, k, 16, config);
 #elif PPU_PACKED_FORMAT == 1
   if (qtype != 13 || !high) return 33;
-  return dense<cutlass::int4b_t, cutlass::uint1b_t, 32, 256, true>(
+  return dense<cutlass::int4b_t, cutlass::uint1b_t, 32,
+               ppu_formats::for_qtype(13).fully_quantized_tile_k, true>(
       act, low, high, units, nullptr, out, m, n, k, 32, config);
 #elif PPU_PACKED_FORMAT == 3
   if (qtype != 11 || !high || k % 512) return 33;
-  return dense<cutlass::uint2b_t, cutlass::uint1b_t, 16, 256, true>(
+  return dense<cutlass::uint2b_t, cutlass::uint1b_t, 16,
+               ppu_formats::for_qtype(11).fully_quantized_tile_k, true>(
       act, low, high, units, nullptr, out, m, n, k, 16, config);
 #elif PPU_PACKED_FORMAT == 4
   if (qtype != 14 || !high || k % 512) return 33;
-  return dense<cutlass::int4b_t, cutlass::uint2b_t, 16, 128, true>(
+  return dense<cutlass::int4b_t, cutlass::uint2b_t, 16,
+               ppu_formats::for_qtype(14).fully_quantized_tile_k, true>(
       act, low, high, units, nullptr, out, m, n, k, 16, config);
 #else
   (void)qtype;
@@ -599,26 +619,31 @@ extern "C" int quactlize_ppu_dense_fully_quantized_dev_v2(
   DenseConfigId const config = resolve_dense_config(config_name);
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
-  return dense_fully_quantized_device<cutlass::int4b_t, void, 32, 256>(
+  return dense_fully_quantized_device<cutlass::int4b_t, void, 32,
+      ppu_formats::for_qtype(12).fully_quantized_tile_k>(
       act, low, nullptr, units, out, m, n, k, config,
       workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 2
-  return dense_fully_quantized_device<cutlass::uint2b_t, void, 16, 256>(
+  return dense_fully_quantized_device<cutlass::uint2b_t, void, 16,
+      ppu_formats::for_qtype(10).fully_quantized_tile_k>(
       act, low, nullptr, units, out, m, n, k, config,
       workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 1
   if (!high) return 33;
-  return dense_fully_quantized_device<cutlass::int4b_t, cutlass::uint1b_t, 32, 256>(
+  return dense_fully_quantized_device<cutlass::int4b_t, cutlass::uint1b_t, 32,
+      ppu_formats::for_qtype(13).fully_quantized_tile_k>(
       act, low, high, units, out, m, n, k, config,
       workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 3
   if (!high) return 33;
-  return dense_fully_quantized_device<cutlass::uint2b_t, cutlass::uint1b_t, 16, 256>(
+  return dense_fully_quantized_device<cutlass::uint2b_t, cutlass::uint1b_t, 16,
+      ppu_formats::for_qtype(11).fully_quantized_tile_k>(
       act, low, high, units, out, m, n, k, config,
       workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 4
   if (!high) return 33;
-  return dense_fully_quantized_device<cutlass::int4b_t, cutlass::uint2b_t, 16, 128>(
+  return dense_fully_quantized_device<cutlass::int4b_t, cutlass::uint2b_t, 16,
+      ppu_formats::for_qtype(14).fully_quantized_tile_k>(
       act, low, high, units, out, m, n, k, config,
       workspace, size_t(workspace_bytes), s);
 #else
