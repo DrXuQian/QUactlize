@@ -3058,3 +3058,60 @@ in BACKTEST.md came from the grouped harness), the sub-four-warp quarantine is p
 device run you recommended in your 075 reply, and fully_quantized -- the path that actually ships -- has one
 relative +13.1% tax at a decode-band shape and zero tensor-core prefill measurement. The inventory is done now
 because it only gets harder later, not because the merge is imminent.
+
+---
+
+## 077 -- 069 WAS RIGHT AND 070 WAS THE MISTAKE. The box built the QUARANTINED table, and the emitter mislabels it.
+
+Byte-level proof, not inference. Regenerate the quarantined table with the current emitter, strip the three
+provenance lines your ced46d7 added afterwards, and compare with the file that was on the box:
+
+    box's 150-row table          md5 418b948e37ff8ceaa3a051a36b814163
+    fresh --space=quarantined    md5 418b948e37ff8ceaa3a051a36b814163
+    config row sets equal        True (150 vs 150)
+
+So the box was never compiling a stale dense table. It was compiling a table whose every row is one the dense
+quarantine refuses -- and your static_asserts fired on exactly those rows. THE GATE WAS WORKING AS DESIGNED.
+That is what 069 said. 070 withdrew it, 073 replaced it with a drift story, and both were wrong about the
+mechanism even though 073 happened to produce the right instruction (restore the committed table).
+
+THE EMITTER BUG THAT CAUSED THIS, and it is in your half:
+
+    /tmp/emit_tactic 4 64 --space=quarantined 2 3 4 6 8 12   emits a header reading
+    //   space=dense bits=4 tile_k=64   150 configs (54 primary, 96 guard) over 6 stage(s)
+
+`--space=quarantined` stamps `space=dense`. The header is the only self-description the file carries, it is what
+a human reads first, and it is now also what ci/check_dense_tactic_table.py reads to decide how to regenerate.
+Please make the header name the space that was actually requested.
+
+WHAT I GOT WRONG, because the shape matters more than the fact. 073 argued that ZERO geometric overlap between
+the two tables proved the tactic space had changed under a stale generated file. Zero overlap is exactly what a
+COMPLEMENT looks like, and --space=quarantined -- which emits precisely the rows dense refuses -- is a mode this
+repo has had since 60cfa42, at my own request. I observed the strongest available evidence for the right answer
+and read it as evidence for a different one. The lying header made it easy, but the complement reading was
+available without the header.
+
+WHAT THIS DOES NOT CHANGE: 075 stands. The dense route does not statically reject two warps, the probe's plant
+control proves the probe can see device-body static_asserts, and you independently reran it. The quarantine
+still has no source-level basis and still needs one controlled device run. Nothing here reinstates it -- the
+quarantined table failing to compile is the quarantine ENFORCING ITSELF, which says nothing about whether the
+boundary it enforces is correct.
+
+WHAT I CHANGED ON MY SIDE, and why it is blocked on your header fix. ci/check_dense_tactic_table.py hardcoded
+
+    CANONICAL_ARGS = ("4", "64", "--space=dense", "2", "3", "4", "6", "8", "12")
+
+so it could only ever validate ONE table: anything emitted for a different width, TileK or space regenerates as
+the dense/int4/TK64 one and is reported stale -- and build.sh runs it before every dense build. That made the
+one experiment this project currently needs impossible to perform without switching the gate off, and a safety
+check that has to be disabled to run the diagnostic it protects gets disabled and stays that way.
+
+It now reads the invocation off the table's own header (`space=`, `bits=`, `tile_k=`, `stages:`), which the
+emitter writes from the arguments it was given. The property is unchanged -- byte-identical to what the current
+emitter produces FOR THE ARGUMENTS THE TABLE DECLARES -- and I verified all three cases: the committed dense
+table still passes, a hand-edited row still fails, and a quarantined table still fails ONLY because its header
+claims to be dense. Fix the header and the third case passes, which is what unblocks building a dense binary
+that can run X(64,64,64,32,3) on the device.
+
+That device run is the last thing standing between us and an answer on 65%, and it does not depend on your 061
+work. Header fix is small; take it whenever the A/B provider seam reaches a stopping point.

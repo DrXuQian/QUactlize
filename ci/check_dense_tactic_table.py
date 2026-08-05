@@ -15,7 +15,37 @@ ROOT = Path(__file__).resolve().parent.parent
 SPACE = ROOT / "quactlize" / "include" / "ppu_tactic_space.hpp"
 EMITTER = ROOT / "benchmarks" / "emit_tactic_configs.cpp"
 DEFAULT_TABLE = ROOT / "benchmarks" / "lowbit_dense_configs.inc"
-CANONICAL_ARGS = ("4", "64", "--space=dense", "2", "3", "4", "6", "8", "12")
+# THE INVOCATION IS READ OFF THE TABLE'S OWN HEADER, not restated here. The header's first lines are
+#   //   space=dense bits=4 tile_k=64   227 configs (...) over 6 stage(s)
+#   //   stages: 2 3 4 6 8 12
+# and the emitter writes them from the arguments it was actually given, so they ARE the invocation.
+#
+# THIS IS NOT A CONVENIENCE. With the arguments hardcoded, the gate could only ever validate one table: a table
+# emitted for a different width, TileK or SPACE regenerates as the dense/int4/TK64 one and is reported stale, and
+# build.sh runs this before every dense build. That made the one experiment the project currently needs --
+# building `--space=quarantined` to run a controlled two-warp row on the device, which is what INBOX 075/076 and
+# codex's own recommendation come down to -- impossible to perform without disabling the gate. A safety check
+# that has to be switched off to run the diagnostic it exists to protect gets switched off and stays off.
+#
+# The property is unchanged: the table must be byte-identical to what the current emitter produces FOR THE
+# ARGUMENTS THE TABLE ITSELF DECLARES. A header claiming a space the emitter does not accept fails, and a header
+# edited to match hand-edited rows fails on the next line, because the rows are compared too.
+HEADER_RE = re.compile(r"^//\s+space=(\w+)\s+bits=(\d+)\s+tile_k=(\d+)", re.M)
+STAGES_RE = re.compile(r"^//\s+stages:\s+([\d ]+?)\s+<", re.M)
+
+
+def declared_args(text: str):
+    """-> (argv, description) for the emitter, or (None, why) if the header does not declare them."""
+    h = HEADER_RE.search(text)
+    if not h:
+        return None, "header does not declare `space=... bits=... tile_k=...`"
+    s = STAGES_RE.search(text)
+    if not s:
+        return None, "header does not declare a `stages:` line"
+    space, bits, tile_k = h.group(1), h.group(2), h.group(3)
+    stages = s.group(1).split()
+    return ([bits, tile_k, f"--space={space}", *stages],
+            f"space={space} bits={bits} tile_k={tile_k} stages={' '.join(stages)}")
 
 
 def fnv1a64(data: bytes) -> str:
@@ -31,11 +61,15 @@ def macro(text: str, name: str):
     return next((value for value in match.groups() if value is not None), None) if match else None
 
 
-def fail(message: str) -> int:
+def fail(message: str, argv=None, table=None) -> int:
+    # The hint quotes the arguments THIS table declares. Printing a fixed dense/int4/TK64 line next to a failure
+    # about some other table is how an operator regenerates the wrong file and reports the gate as broken.
+    args = " ".join(argv) if argv else "4 64 --space=dense 2 3 4 6 8 12"
+    out = table or "benchmarks/lowbit_dense_configs.inc"
     print(f"[dense-table] ERROR: {message}")
     print("[dense-table] regenerate from the repository root:")
     print("  c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic && \\")
-    print("  /tmp/emit_tactic 4 64 --space=dense 2 3 4 6 8 12 > benchmarks/lowbit_dense_configs.inc")
+    print(f"  /tmp/emit_tactic {args} > {out}")
     return 1
 
 
@@ -61,6 +95,10 @@ def main() -> int:
 
     actual = table.read_bytes()
     text = actual.decode()
+    argv, declared = declared_args(text)
+    if argv is None:
+        return fail(f"{table}: {declared}; the gate regenerates using the arguments the table declares, "
+                    f"so a table that declares none cannot be checked")
     stamped_rows = macro(text, "LOWBIT_DENSE_CFG_ROWS")
     stamped_space = macro(text, "LOWBIT_DENSE_CFG_SPACE_FNV1A64")
     stamped_emitter = macro(text, "LOWBIT_DENSE_CFG_EMITTER_FNV1A64")
@@ -89,10 +127,11 @@ def main() -> int:
         if built.returncode:
             detail = built.stderr.strip().splitlines()
             return fail(f"current emitter does not compile with {compiler}: {detail[-1] if detail else 'no diagnostic'}")
-        emitted = subprocess.run([str(binary), *CANONICAL_ARGS], cwd=ROOT, capture_output=True)
+        emitted = subprocess.run([str(binary), *argv], cwd=ROOT, capture_output=True)
         if emitted.returncode:
             detail = emitted.stderr.decode(errors="replace").strip().splitlines()
-            return fail(f"current emitter failed: {detail[-1] if detail else 'no diagnostic'}")
+            return fail(f"current emitter rejected the table's own declared arguments "
+                        f"({' '.join(argv)}): {detail[-1] if detail else 'no diagnostic'}")
         expected = emitted.stdout
 
     if actual != expected:
@@ -100,7 +139,7 @@ def main() -> int:
             f"{table} does not exactly match a freshly built emitter; {first_difference(expected, actual)}; "
             f"expected md5={hashlib.md5(expected).hexdigest()}, found md5={hashlib.md5(actual).hexdigest()}")
 
-    print(f"[dense-table] verified rows={listed_rows} space_fnv1a64={current_space} "
+    print(f"[dense-table] verified {declared} rows={listed_rows} space_fnv1a64={current_space} "
           f"emitter_fnv1a64={current_emitter}; exact regeneration matches")
     return 0
 
