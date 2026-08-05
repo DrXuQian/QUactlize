@@ -569,9 +569,9 @@ extern "C" int quactlize_ppu_dense_lowbit_config_v1(
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 12
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
-    // TileK=256 selects packed units in this build, so the SCALE_FIRST contract must not use that instantiation.
-    // Its single low plane is tile-invariant; TileK=128 gives Scale_TileK=4, keeps kPackedScaleOn false, and lets one
-    // flagged library run the existing independent scale-first oracle beside the new TileK=256 packed entry below.
+    // The fully-quantized TileK selects packed units in this build, so the SCALE_FIRST contract must use its own
+    // registry value. Its single low plane is tile-invariant; the smaller scale-first run keeps kPackedScaleOn false
+    // and lets one flagged library run the independent scale-first oracle beside the packed entry below.
     case 12: return group_size == 32 ? dense<cutlass::int4b_t,void,32,
         ppu_formats::for_qtype(12).scale_first_tile_k>(act,low,high,scale,zero,out,m,n,k,group_size,config) : 32;
 #else
@@ -737,7 +737,7 @@ static __global__ void grouped_fully_quantized_metadata(
   out_strides[e] = cutlass::make_cute_packed_stride(DS{}, cute::make_shape(count, n, 1));
 }
 
-template <class Low, class High, int GroupSize, int TileK = 256>
+template <class Low, class High, int GroupSize, int TileK>
 int grouped_fully_quantized_device(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
     int const* offsets, uint16_t* out, int total_rows, int n, int k, int experts, int max_rows,
@@ -764,7 +764,7 @@ int grouped_fully_quantized_device(
       ? 0 : ppu_gemv::kRuntimeError;
 }
 
-template <class Low, class High, int GroupSize, int TileK = 256>
+template <class Low, class High, int GroupSize, int TileK>
 int grouped_fully_quantized(uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
                             int const* rows_per_expert, uint16_t* out,
                             int total_rows, int n, int k, int experts,
@@ -851,23 +851,28 @@ extern "C" int quactlize_ppu_grouped_fully_quantized_config_v1(
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
   if (qtype != 12) return 33;
-  return grouped_fully_quantized<cutlass::int4b_t, void, 32>(
+  return grouped_fully_quantized<cutlass::int4b_t, void, 32,
+      ppu_formats::for_qtype(12).fully_quantized_tile_k>(
       act, low, nullptr, units, rows_per_expert, out, total_rows, n, k, experts, config);
 #elif PPU_PACKED_FORMAT == 2
   if (qtype != 10) return 33;
-  return grouped_fully_quantized<cutlass::uint2b_t, void, 16>(
+  return grouped_fully_quantized<cutlass::uint2b_t, void, 16,
+      ppu_formats::for_qtype(10).fully_quantized_tile_k>(
       act, low, nullptr, units, rows_per_expert, out, total_rows, n, k, experts, config);
 #elif PPU_PACKED_FORMAT == 1
   if (qtype != 13 || !high) return 33;
-  return grouped_fully_quantized<cutlass::int4b_t, cutlass::uint1b_t, 32>(
+  return grouped_fully_quantized<cutlass::int4b_t, cutlass::uint1b_t, 32,
+      ppu_formats::for_qtype(13).fully_quantized_tile_k>(
       act, low, high, units, rows_per_expert, out, total_rows, n, k, experts, config);
 #elif PPU_PACKED_FORMAT == 3
   if (qtype != 11 || !high || k % 512) return 33;
-  return grouped_fully_quantized<cutlass::uint2b_t, cutlass::uint1b_t, 16, 256>(
+  return grouped_fully_quantized<cutlass::uint2b_t, cutlass::uint1b_t, 16,
+      ppu_formats::for_qtype(11).fully_quantized_tile_k>(
       act, low, high, units, rows_per_expert, out, total_rows, n, k, experts, config);
 #elif PPU_PACKED_FORMAT == 4
   if (qtype != 14 || !high || k % 512) return 33;
-  return grouped_fully_quantized<cutlass::int4b_t, cutlass::uint2b_t, 16, 128>(
+  return grouped_fully_quantized<cutlass::int4b_t, cutlass::uint2b_t, 16,
+      ppu_formats::for_qtype(14).fully_quantized_tile_k>(
       act, low, high, units, rows_per_expert, out, total_rows, n, k, experts, config);
 #else
   (void)qtype;
@@ -909,26 +914,31 @@ extern "C" int quactlize_ppu_grouped_fully_quantized_dev_v2(
   GroupedConfigId const config = resolve_grouped_config(config_name);
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
-  return grouped_fully_quantized_device<cutlass::int4b_t, void, 32>(
+  return grouped_fully_quantized_device<cutlass::int4b_t, void, 32,
+      ppu_formats::for_qtype(12).fully_quantized_tile_k>(
       act, low, nullptr, units, offsets, out, total_rows, n, k, experts, max_rows,
       config, workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 2
-  return grouped_fully_quantized_device<cutlass::uint2b_t, void, 16>(
+  return grouped_fully_quantized_device<cutlass::uint2b_t, void, 16,
+      ppu_formats::for_qtype(10).fully_quantized_tile_k>(
       act, low, nullptr, units, offsets, out, total_rows, n, k, experts, max_rows,
       config, workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 1
   if (!high) return 33;
-  return grouped_fully_quantized_device<cutlass::int4b_t, cutlass::uint1b_t, 32>(
+  return grouped_fully_quantized_device<cutlass::int4b_t, cutlass::uint1b_t, 32,
+      ppu_formats::for_qtype(13).fully_quantized_tile_k>(
       act, low, high, units, offsets, out, total_rows, n, k, experts, max_rows,
       config, workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 3
   if (!high) return 33;
-  return grouped_fully_quantized_device<cutlass::uint2b_t, cutlass::uint1b_t, 16, 256>(
+  return grouped_fully_quantized_device<cutlass::uint2b_t, cutlass::uint1b_t, 16,
+      ppu_formats::for_qtype(11).fully_quantized_tile_k>(
       act, low, high, units, offsets, out, total_rows, n, k, experts, max_rows,
       config, workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 4
   if (!high) return 33;
-  return grouped_fully_quantized_device<cutlass::int4b_t, cutlass::uint2b_t, 16, 128>(
+  return grouped_fully_quantized_device<cutlass::int4b_t, cutlass::uint2b_t, 16,
+      ppu_formats::for_qtype(14).fully_quantized_tile_k>(
       act, low, high, units, offsets, out, total_rows, n, k, experts, max_rows,
       config, workspace, size_t(workspace_bytes), s);
 #else
