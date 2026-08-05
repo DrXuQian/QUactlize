@@ -60,7 +60,8 @@ constexpr bool has_zero(QuantMode q) { return q == QuantMode::FinegrainedScaleZe
 // two-plane collective. There is no dense-specific second collective or converter to maintain here.
 template <QuantMode QuantOp, class KernelSchedule,
           class TileShape, class ScaleTileShape, class WarpShape, int Stages, bool AiuInterleaved,
-          class ElementB = cutlass::int4b_t, class PlaneB2 = void, bool ExpectPackedScale = false>
+          class ElementB = cutlass::int4b_t, class PlaneB2 = void, bool ExpectPackedScale = false,
+          bool QueryOnly = false>
 bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
                       const cutlass::half_t* scales, const cutlass::half_t* zeros, cutlass::half_t* D,
                       int m, int n, int k, int group_size, int split_k,
@@ -108,15 +109,17 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
 
   if constexpr (CollectiveMainloop::compact_a_rows > 0) {
     if (m > CollectiveMainloop::compact_a_rows) {
-      std::printf("[fpA_intB] compact A holds %d rows, got M=%d; select the ordinary A path or a wider compact build\n",
-                  CollectiveMainloop::compact_a_rows, m);
+      if constexpr (!QueryOnly)
+        std::printf("[fpA_intB] compact A holds %d rows, got M=%d; select the ordinary A path or a wider compact build\n",
+                    CollectiveMainloop::compact_a_rows, m);
       return false;
     }
   }
 #if defined(PPU_A_CPASYNC) && (PPU_A_CPASYNC != 0)
   if constexpr (CollectiveMainloop::compact_a_rows == 0) {
-    std::printf("[fpA_intB] PPU_A_CPASYNC=%d is unavailable for this selected collective; A remains TileM rows\n",
-                int(PPU_A_CPASYNC));
+    if constexpr (!QueryOnly)
+      std::printf("[fpA_intB] PPU_A_CPASYNC=%d is unavailable for this selected collective; A remains TileM rows\n",
+                  int(PPU_A_CPASYNC));
     return false;
   }
 #endif
@@ -135,6 +138,13 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
       cute::Shape<int,int,int,int>, CollectiveMainloop, CollectiveEpilogue,
       cutlass::gemm::SplitKSerialScheduler>;
   using Gemm = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
+
+  // This is the exact compiled type, including packed-unit staging, scale padding/swizzles and experimental A
+  // layouts. The host arithmetic in ppu_tactic_space.hpp deliberately remains useful for emitting a broad finite
+  // domain, but the runtime answer must not guess sizeof(SharedStorage) from tile coordinates. QueryOnly returns
+  // before pointer/stride construction and requires no PPU context; the ordinary launch takes the same guard.
+  if constexpr (GemmKernel::SharedStorageSize > ppu_tactics::kBlockSmemBytes) return false;
+  if constexpr (QueryOnly) return true;
 
   using StrideA = typename GemmKernel::StrideA;
   using StrideB = typename GemmKernel::StrideB;

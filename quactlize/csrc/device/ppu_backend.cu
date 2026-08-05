@@ -291,6 +291,17 @@ extern "C" int quactlize_ppu_vecdot_dense_dev_v1(uint8_t const* b, int64_t block
 #undef RUN
 }
 
+extern "C" int32_t quactlize_ppu_vecdot_moe_config_valid_v1(
+    int total_rows, int n, int k, int group_size, int experts, int max_rows,
+    int qtype, char const* config_name) {
+  int const expected_group = (qtype == 10 || qtype == 11 || qtype == 14) ? 16
+                           : (qtype == 12 || qtype == 13) ? 32 : 0;
+  bool const compiled_name = !config_name || !config_name[0] ||
+                             std::strcmp(config_name, QUACTLIZE_PPU_GROUPED_CUDA_CONFIG_NAME) == 0;
+  return compiled_name && total_rows > 0 && n > 0 && k > 0 && k % 256 == 0 &&
+         experts > 0 && max_rows > 0 && group_size == expected_group;
+}
+
 extern "C" int quactlize_ppu_vecdot_moe_config_v1(
     uint8_t const* b, int64_t block_bytes, uint16_t const* x,
     int const* offsets, float* out, int n, int bpr, int experts,

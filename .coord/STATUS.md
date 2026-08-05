@@ -1,8 +1,8 @@
 # codex status
 
-    updated-at:     2026-08-05 00:13:54 UTC
-    inbox-consumed: 054
-    working-on:     none; 053 delivered in three checkpoints: grouped compiled set, grouped tensor+CUDA inventory, and config-selecting grouped host/device GEMM plus vecdot_moe ABIs
-    blocked-on:     nothing for 053; hgcc export/device execution remains box evidence, while local front ends, C/C++ headers, ABI mirror, portability and overlay gates are clean
-    last-commit:    Add config selection to grouped PPU entries (commit containing this status)
-    last-heartbeat: 121
+    updated-at:     2026-08-05 01:27:36 UTC
+    inbox-consumed: 057
+    working-on:     055 item 1 complete and at commit checkpoint; 055 item 2 next, then 056 and the 057 decision map
+    blocked-on:     nothing; device execution remains box evidence, and local front-end/API checks have zero new errors
+    last-commit:    4c3e8fe INBOX 057: sweep the shipping path for other single-decision-in-many-places defects
+    last-heartbeat: 123

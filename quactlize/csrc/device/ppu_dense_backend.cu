@@ -58,12 +58,18 @@ constexpr int minimum_dense_tile_n() {
   return value;
 }
 
-DenseConfigId resolve_dense_config(char const* name) {
-  if (!name || !name[0]) return kDefaultDenseConfig;
+bool find_dense_config(char const* name, DenseConfigId& config) {
+  if (!name || !name[0]) { config = kDefaultDenseConfig; return true; }
 #define QUACTLIZE_PPU_DENSE_CONFIG_MATCH(ID, NAME, TM, TN, WM, WN, STAGES) \
-  if (std::strcmp(name, NAME) == 0) return DenseConfigId::ID;
+  if (std::strcmp(name, NAME) == 0) { config = DenseConfigId::ID; return true; }
   QUACTLIZE_PPU_DENSE_CONFIGS(QUACTLIZE_PPU_DENSE_CONFIG_MATCH)
 #undef QUACTLIZE_PPU_DENSE_CONFIG_MATCH
+  return false;
+}
+
+DenseConfigId resolve_dense_config(char const* name) {
+  DenseConfigId config{};
+  if (find_dense_config(name, config)) return config;
   std::fprintf(stderr, "[quactlize_ppu] dense config '%s' is not compiled in; declining to default '%s'\n",
                name, kDenseConfigs[0].name);
   return kDefaultDenseConfig;
@@ -90,12 +96,18 @@ static_assert(int(GroupedConfigId::Count) > 1,
 static_assert(sizeof(kGroupedConfigs) / sizeof(kGroupedConfigs[0]) == size_t(GroupedConfigId::Count) + 1,
               "the grouped inventory must contain every tensor-core config followed by its one CUDA tactic");
 
-GroupedConfigId resolve_grouped_config(char const* name) {
-  if (!name || !name[0]) return kDefaultGroupedConfig;
+bool find_grouped_tensor_config(char const* name, GroupedConfigId& config) {
+  if (!name || !name[0]) { config = kDefaultGroupedConfig; return true; }
 #define QUACTLIZE_PPU_GROUPED_CONFIG_MATCH(ID, NAME, TM, TN, WM, WN, STAGES) \
-  if (std::strcmp(name, NAME) == 0) return GroupedConfigId::ID;
+  if (std::strcmp(name, NAME) == 0) { config = GroupedConfigId::ID; return true; }
   QUACTLIZE_PPU_GROUPED_CONFIGS(QUACTLIZE_PPU_GROUPED_CONFIG_MATCH)
 #undef QUACTLIZE_PPU_GROUPED_CONFIG_MATCH
+  return false;
+}
+
+GroupedConfigId resolve_grouped_config(char const* name) {
+  GroupedConfigId config{};
+  if (find_grouped_tensor_config(name, config)) return config;
   std::fprintf(stderr,
                "[quactlize_ppu] grouped tensor config '%s' is not compiled in; declining to default '%s'\n",
                name, kGroupedConfigs[0].name);
@@ -156,7 +168,7 @@ GroupedWorkspaceLayout grouped_workspace_layout(int max_rows, int n, int experts
 }
 
 template <class Low, class High, int GroupSize, int TileK,
-          int TileM, int TileN, int WarpM, int WarpN, int Stages>
+          int TileM, int TileN, int WarpM, int WarpN, int Stages, bool QueryOnly = false>
 int launch_grouped_tactic(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
     half_t** out_ptrs, DS* out_strides, int const* rows,
@@ -168,7 +180,7 @@ int launch_grouped_tactic(
   using Warp = cute::Shape<cute::C<WarpM>, cute::C<WarpN>, cute::C<TileK>>;
   bool const launched = moe_grouped_ppu::launch<GQM::FinegrainedScaleZero,
                           cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
-                          Tile, Scale, Warp, Stages, true, Low, High, true>(
+                          Tile, Scale, Warp, Stages, true, Low, High, true, QueryOnly>(
       reinterpret_cast<half_t const*>(act), reinterpret_cast<Low const*>(low),
       reinterpret_cast<half_t const*>(units), nullptr,
       out_ptrs, out_strides, rows, max_rows, n, k, experts, GroupSize,
@@ -180,7 +192,7 @@ int launch_grouped_tactic(
   return launched ? 0 : 31;
 }
 
-template <class Low, class High, int GroupSize, int TileK>
+template <class Low, class High, int GroupSize, int TileK, bool QueryOnly = false>
 int launch_grouped_config(
     GroupedConfigId config,
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
@@ -190,7 +202,7 @@ int launch_grouped_config(
   switch (config) {
 #define QUACTLIZE_PPU_GROUPED_CONFIG_CASE(ID, NAME, TM, TN, WM, WN, STAGES) \
     case GroupedConfigId::ID: \
-      return launch_grouped_tactic<Low, High, GroupSize, TileK, TM, TN, WM, WN, STAGES>( \
+      return launch_grouped_tactic<Low, High, GroupSize, TileK, TM, TN, WM, WN, STAGES, QueryOnly>( \
           act, low, high, units, out_ptrs, out_strides, rows, max_rows, n, k, experts, \
           shapes, shapes_host, offsets, workspace, workspace_bytes, stream);
     QUACTLIZE_PPU_GROUPED_CONFIGS(QUACTLIZE_PPU_GROUPED_CONFIG_CASE)
@@ -200,7 +212,7 @@ int launch_grouped_config(
 }
 
 template <class Low, class High, int GroupSize, int TileK, bool PackedScale,
-          int TileM, int TileN, int WarpM, int WarpN, int Stages>
+          int TileM, int TileN, int WarpM, int WarpN, int Stages, bool QueryOnly = false>
 int launch_dense_tactic(uint16_t const* act, uint8_t const* low, uint8_t const* high,
                         void const* scale, uint16_t const* zero, uint16_t* out,
                         int m, int n, int k, void* workspace, size_t workspace_bytes,
@@ -211,7 +223,7 @@ int launch_dense_tactic(uint16_t const* act, uint8_t const* low, uint8_t const* 
   bool const launched = fpa_intb_ppu::generic_launcher<QM::FinegrainedScaleZero,
       cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
       Tile, cute::Shape<cute::C<TileN>, cute::C<ScaleGroups>>, Warp, Stages, true,
-      Low, High, PackedScale>(
+      Low, High, PackedScale, QueryOnly>(
           reinterpret_cast<half_t const*>(act), reinterpret_cast<Low const*>(low),
           reinterpret_cast<half_t const*>(scale), reinterpret_cast<half_t const*>(zero),
           reinterpret_cast<half_t*>(out),
@@ -223,7 +235,7 @@ int launch_dense_tactic(uint16_t const* act, uint8_t const* low, uint8_t const* 
   return launched ? 0 : 31;
 }
 
-template <class Low, class High, int GroupSize, int TileK, bool PackedScale>
+template <class Low, class High, int GroupSize, int TileK, bool PackedScale, bool QueryOnly = false>
 int launch_dense_config(DenseConfigId config, uint16_t const* act, uint8_t const* low, uint8_t const* high,
                         void const* scale, uint16_t const* zero, uint16_t* out,
                         int m, int n, int k, void* workspace, size_t workspace_bytes,
@@ -231,12 +243,132 @@ int launch_dense_config(DenseConfigId config, uint16_t const* act, uint8_t const
   switch (config) {
 #define QUACTLIZE_PPU_DENSE_CONFIG_CASE(ID, NAME, TM, TN, WM, WN, STAGES) \
     case DenseConfigId::ID: \
-      return launch_dense_tactic<Low, High, GroupSize, TileK, PackedScale, TM, TN, WM, WN, STAGES>( \
+      return launch_dense_tactic<Low, High, GroupSize, TileK, PackedScale, TM, TN, WM, WN, STAGES, QueryOnly>( \
           act, low, high, scale, zero, out, m, n, k, workspace, workspace_bytes, stream);
     QUACTLIZE_PPU_DENSE_CONFIGS(QUACTLIZE_PPU_DENSE_CONFIG_CASE)
 #undef QUACTLIZE_PPU_DENSE_CONFIG_CASE
   }
   return 31;
+}
+
+constexpr int qtype_group_size(int qtype) {
+  return (qtype == 10 || qtype == 11 || qtype == 14) ? 16
+       : (qtype == 12 || qtype == 13) ? 32 : 0;
+}
+
+bool tensor_problem_domain(int m, int n, int k, int group_size, int qtype) {
+  // These are the public entries' resident-artifact constraints, not tile-size constraints. M/N tails are
+  // predicated by both kernels, so a TileN larger than N is legal; the current producer/consumer ABI nevertheless
+  // admits only the interleaved artifact selected by N,K multiples of 256.
+  return m > 0 && n > 0 && k > 0 && n % 256 == 0 && k % 256 == 0 &&
+         group_size == qtype_group_size(qtype);
+}
+
+template <class Low, class High, int GroupSize, int TileK, bool PackedScale>
+bool dense_config_type_valid(DenseConfigId config, int m, int n, int k) {
+  return launch_dense_config<Low, High, GroupSize, TileK, PackedScale, true>(
+      config, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      m, n, k, nullptr, 0, nullptr) == 0;
+}
+
+template <class Low, class High, int GroupSize, int TileK>
+bool grouped_config_type_valid(GroupedConfigId config, int max_rows, int n, int k, int experts) {
+  return launch_grouped_config<Low, High, GroupSize, TileK, true>(
+      config, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      max_rows, n, k, experts, nullptr, nullptr, nullptr, nullptr, 0, nullptr) == 0;
+}
+
+bool dense_lowbit_config_valid(
+    DenseConfigId config, int m, int n, int k, int group_size, int qtype) {
+  if (!tensor_problem_domain(m, n, k, group_size, qtype)) return false;
+  switch (qtype) {
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 10
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 2
+    case 10: return dense_config_type_valid<cutlass::uint2b_t, void, 16, 128, false>(config, m, n, k);
+#else
+    case 10: return dense_config_type_valid<cutlass::uint2b_t, void, 16, 256, false>(config, m, n, k);
+#endif
+#endif
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 11
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 3
+    case 11: return false;
+#else
+    case 11: return dense_config_type_valid<cutlass::uint2b_t, cutlass::uint1b_t, 16, 256, false>(config, m, n, k);
+#endif
+#endif
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 12
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
+    case 12: return dense_config_type_valid<cutlass::int4b_t, void, 32, 128, false>(config, m, n, k);
+#else
+    case 12: return dense_config_type_valid<cutlass::int4b_t, void, 32, 256, false>(config, m, n, k);
+#endif
+#endif
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 13
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 1
+    case 13: return false;
+#else
+    case 13: return dense_config_type_valid<cutlass::int4b_t, cutlass::uint1b_t, 32, 256, false>(config, m, n, k);
+#endif
+#endif
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 14
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 4
+    case 14: return false;
+#else
+    case 14: return dense_config_type_valid<cutlass::int4b_t, cutlass::uint2b_t, 16, 128, false>(config, m, n, k);
+#endif
+#endif
+    default: return false;
+  }
+}
+
+bool dense_fully_quantized_config_valid(
+    DenseConfigId config, int m, int n, int k, int group_size, int qtype) {
+  if (!tensor_problem_domain(m, n, k, group_size, qtype) ||
+      !selected_fully_quantized_qtype(qtype, k)) return false;
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
+#if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
+  return dense_config_type_valid<cutlass::int4b_t, void, 32, 256, true>(config, m, n, k);
+#elif PPU_PACKED_FORMAT == 2
+  return dense_config_type_valid<cutlass::uint2b_t, void, 16, 256, true>(config, m, n, k);
+#elif PPU_PACKED_FORMAT == 1
+  return dense_config_type_valid<cutlass::int4b_t, cutlass::uint1b_t, 32, 256, true>(config, m, n, k);
+#elif PPU_PACKED_FORMAT == 3
+  return dense_config_type_valid<cutlass::uint2b_t, cutlass::uint1b_t, 16, 256, true>(config, m, n, k);
+#elif PPU_PACKED_FORMAT == 4
+  return dense_config_type_valid<cutlass::int4b_t, cutlass::uint2b_t, 16, 128, true>(config, m, n, k);
+#else
+  return false;
+#endif
+#else
+  (void)config;
+  return false;
+#endif
+}
+
+bool grouped_fully_quantized_config_valid(
+    GroupedConfigId config, int total_rows, int n, int k, int group_size,
+    int experts, int max_rows, int qtype) {
+  if (experts <= 0 || max_rows <= 0 ||
+      !tensor_problem_domain(total_rows, n, k, group_size, qtype) ||
+      !selected_fully_quantized_qtype(qtype, k)) return false;
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
+#if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
+  return grouped_config_type_valid<cutlass::int4b_t, void, 32, 256>(config, max_rows, n, k, experts);
+#elif PPU_PACKED_FORMAT == 2
+  return grouped_config_type_valid<cutlass::uint2b_t, void, 16, 256>(config, max_rows, n, k, experts);
+#elif PPU_PACKED_FORMAT == 1
+  return grouped_config_type_valid<cutlass::int4b_t, cutlass::uint1b_t, 32, 256>(config, max_rows, n, k, experts);
+#elif PPU_PACKED_FORMAT == 3
+  return grouped_config_type_valid<cutlass::uint2b_t, cutlass::uint1b_t, 16, 256>(config, max_rows, n, k, experts);
+#elif PPU_PACKED_FORMAT == 4
+  return grouped_config_type_valid<cutlass::int4b_t, cutlass::uint2b_t, 16, 128>(config, max_rows, n, k, experts);
+#else
+  return false;
+#endif
+#else
+  (void)config;
+  return false;
+#endif
 }
 
 template <class Low, class High = void, int GroupSize = 16, int TileK = 256>
@@ -308,6 +440,29 @@ extern "C" int32_t quactlize_ppu_list_configs(quactlize_ppu_config_v1 const** co
 extern "C" int32_t quactlize_ppu_list_grouped_configs(quactlize_ppu_config_v1 const** configs) {
   if (configs) *configs = kGroupedConfigs;
   return int32_t(sizeof(kGroupedConfigs) / sizeof(kGroupedConfigs[0]));
+}
+
+extern "C" int32_t quactlize_ppu_dense_lowbit_config_valid_v1(
+    int m, int n, int k, int group_size, int qtype, char const* config_name) {
+  DenseConfigId config{};
+  return find_dense_config(config_name, config) &&
+         dense_lowbit_config_valid(config, m, n, k, group_size, qtype);
+}
+
+extern "C" int32_t quactlize_ppu_dense_fully_quantized_config_valid_v1(
+    int m, int n, int k, int group_size, int qtype, char const* config_name) {
+  DenseConfigId config{};
+  return find_dense_config(config_name, config) &&
+         dense_fully_quantized_config_valid(config, m, n, k, group_size, qtype);
+}
+
+extern "C" int32_t quactlize_ppu_grouped_fully_quantized_config_valid_v1(
+    int total_rows, int n, int k, int group_size, int experts, int max_rows,
+    int qtype, char const* config_name) {
+  GroupedConfigId config{};
+  return find_grouped_tensor_config(config_name, config) &&
+         grouped_fully_quantized_config_valid(
+             config, total_rows, n, k, group_size, experts, max_rows, qtype);
 }
 
 extern "C" int quactlize_ppu_dense_lowbit_config_v1(

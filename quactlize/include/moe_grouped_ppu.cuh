@@ -61,7 +61,8 @@ template <QuantMode QuantOp, class KernelSchedule,
           class TileShape, class ScaleTileShape, class WarpShape, int Stages, bool AiuInterleaved,
           class ElementB = cutlass::int4b_t,   // default W4A16; pass cutlass::uint2b_t for W2A16
           class PlaneB2 = void,                // bit-plane concat: 2nd (high) B plane; void = single plane
-          bool ExpectPackedScale = false>
+          bool ExpectPackedScale = false,
+          bool QueryOnly = false>
 bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* scales,
             const cutlass::half_t* zeros,
             cutlass::half_t** ptr_D,        // device [L] per-expert output base pointers (contiguous: D+offs[e]*N)
@@ -152,6 +153,10 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   // GroupProblemShape -> hits ppu_aiu_gemm_mixed_input_group.hpp's specialization.
   using GemmKernel = cutlass::gemm::kernel::GemmUniversal<GroupProblemShape, CollectiveMainloop, CollectiveEpilogue>;
   using Gemm = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
+  // Query the exact instantiated type rather than reconstructing its storage from the public tile coordinates.
+  // Packed-unit staging and optional A/scale layouts all contribute to this value. The normal launch shares the
+  // same guard, so a caller that forgot to query still cannot poison the context with an oversized block.
+  if constexpr (GemmKernel::SharedStorageSize > ppu_tactics::kBlockSmemBytes) return false;
   // PPU_FORCE_INSTANTIATE: odr-use the kernel's operator() so the WHOLE collective -- mainloop included -- is
   // instantiated by the front end. Without this the local nvcc gate parses the collective but never instantiates it,
   // so every template-DEPENDENT error in the mainloop is invisible: a deliberate undefined symbol there is caught
@@ -241,16 +246,20 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   // neighbour's bytes. Sound only where those rows are discarded, i.e. Mmax == 1.
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
   if (m > 1) {
-    std::printf("[moe_grouped] PPU_A_PACK requires Mmax <= 1, got %d (packed cubes: only row 0 is real)\n", m);
-    ++moeg_fail_count();
+    if constexpr (!QueryOnly) {
+      std::printf("[moe_grouped] PPU_A_PACK requires Mmax <= 1, got %d (packed cubes: only row 0 is real)\n", m);
+      ++moeg_fail_count();
+    }
     return false;
   }
 #endif
   if constexpr (CollectiveMainloop::compact_a_rows > 0) {
     if (m > CollectiveMainloop::compact_a_rows) {
-      std::printf("[moe_grouped] compact A holds %d rows, got Mmax=%d; select the ordinary A path or a wider compact build\n",
-                  CollectiveMainloop::compact_a_rows, m);
-      ++moeg_fail_count();
+      if constexpr (!QueryOnly) {
+        std::printf("[moe_grouped] compact A holds %d rows, got Mmax=%d; select the ordinary A path or a wider compact build\n",
+                    CollectiveMainloop::compact_a_rows, m);
+        ++moeg_fail_count();
+      }
       return false;
     }
   }
@@ -258,12 +267,18 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   if constexpr (CollectiveMainloop::compact_a_rows == 0) {
     // Folded and two-plane collectives do not yet implement the compact A reader. Make the inactive macro visible
     // instead of letting a build claim an M-dependent footprint it did not instantiate.
-    std::printf("[moe_grouped] PPU_A_CPASYNC=%d is unavailable for this selected collective; A remains TileM rows\n",
-                int(PPU_A_CPASYNC));
-    ++moeg_fail_count();
+    if constexpr (!QueryOnly) {
+      std::printf("[moe_grouped] PPU_A_CPASYNC=%d is unavailable for this selected collective; A remains TileM rows\n",
+                  int(PPU_A_CPASYNC));
+      ++moeg_fail_count();
+    }
     return false;
   }
 #endif
+  // All remaining work constructs strides/arguments or touches the runtime. The checks above are the only
+  // M-dependent properties of the compiled type; N/K/operator-domain checks live in the exported query beside the
+  // corresponding ABI guards. Thus this path is host-only and does not need valid device pointers or a PPU context.
+  if constexpr (QueryOnly) return true;
   // A's GMEM m-stride is NEVER zeroed here, and the parameter that used to do it is gone. It looked like a way to say
   // 'read one row of A' at decode, where TileM >= 16 against one row per expert makes 15/16 of the tile padding --
   // but AiuDesc::init (cute/arch/copy_aiu_base.hpp) takes dim_w, the row PITCH, from exactly that stride, while

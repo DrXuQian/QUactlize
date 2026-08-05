@@ -10,6 +10,11 @@
 
 namespace ppu_tactics {
 
+// ppu001 exposes 256 KiB of shared storage to one block. Runtime tactic validation and the host sweep use the
+// same named limit; a literal in either place is exactly how an emitted "legal" tactic can become an unlaunchable
+// compiled tactic.
+inline constexpr int64_t kBlockSmemBytes = 262144;
+
 enum class Format { I1, I2, I4, Q3_K, Q5_K, Q6_K };
 
 struct FormatSpec {
@@ -137,7 +142,7 @@ constexpr Exclusion common_topology_exclusion_with_a_rows(Candidate c, int stage
   // Match moe_ok's conservative stage-2 existence test exactly. Fold cancels from B bytes; scale+zero is sized for
   // the smallest runtime group (16), because a too-loose filter produces a fake winner when initialize fails. A is
   // parameterised separately: ordinary kernels pass TileM, compact small-M specialisations pass their row capacity.
-  if (common_per_stage_smem(c, a_rows) * stages > 262144) return Exclusion::MinimumStageSmem;
+  if (common_per_stage_smem(c, a_rows) * stages > kBlockSmemBytes) return Exclusion::MinimumStageSmem;
   return Exclusion::None;
 }
 
