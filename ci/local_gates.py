@@ -528,7 +528,7 @@ def lint_config_abi_matches_header():
 
 
 def lint_tactic_spaces_agree():
-    """DENSE AND GROUPED MUST SEARCH THE SAME SET, or a comparison between them measures the sets.
+    """DENSE AND GROUPED SPACE DIFFERENCES MUST BE DECLARED, or a comparison silently measures the sets.
 
     ppu_tactic_space.hpp keeps DenseSpace and GroupedSpace as separate wrappers over one implementation and says
     why at its line 185 -- so that future divergence stays visible instead of being hidden by sharing. It names
@@ -541,8 +541,9 @@ def lint_tactic_spaces_agree():
     be distinguished from one that compares nothing -- and this repo has shipped that shape before (a selection
     test whose planted JSON never parsed, so the C++ read zero samples and "agreed").
 
-    The divergence being reported is not itself a defect. The two operators may legitimately differ one day; the
-    property this defends is that the difference is announced rather than absorbed into a table.
+    The dense SplitKSerial sub-four-warp abort is now a declared operator difference, backed by both the dense aborts
+    and grouped measurements. The property this defends is that only named differences pass; a newly planted grouped
+    eight-warp boundary must still fail.
     """
     import subprocess, tempfile
     src = ROOT / "benchmarks" / "emit_tactic_configs.cpp"
@@ -559,23 +560,22 @@ def lint_tactic_spaces_agree():
         args = ["4", "64", "--space=compare", "2", "3", "4", "6", "8", "12"]
         got = subprocess.run([str(real)] + args, capture_output=True, text=True)
         if got.returncode != 0:
-            tail = [l for l in got.stdout.splitlines() if "disagreement" in l]
-            return "FAIL", ("DenseSpace and GroupedSpace disagree: " + (tail[-1] if tail else "see --space=compare")
-                            + " -- if intended, the emitter's consumers must be told which space they use"), 0.0
+            tail = [l for l in got.stdout.splitlines() if "unexpected disagreement" in l]
+            return "FAIL", ("DenseSpace and GroupedSpace have an undeclared difference: "
+                            + (tail[-1] if tail else "see --space=compare")), 0.0
 
-        # THE PLANTED DIVERGENCE. Patch only the SECOND wrapper (GroupedSpace); assert two were found first, so a
-        # header refactor that collapses them cannot turn this into a silent no-op.
+        # THE PLANTED DIVERGENCE. Raise GroupedSpace's boundary to eight warps. Rows at four warps do not carry the
+        # dense-only exclusion, so this must be classified as unexpected rather than being swallowed by the declared
+        # sub-four-warp difference.
         text = hdr.read_text()
         old = "  static constexpr Exclusion kernel_exclusion(Candidate c) { return common_kernel_exclusion(c); }"
-        i = text.find(old)
-        j = text.find(old, i + 1) if i >= 0 else -1
-        if j <= i:
-            return "FAIL", ("could not find two identical kernel_exclusion wrappers to plant a divergence into; "
-                            "the probe would be a no-op and the real run's PASS would prove nothing"), 0.0
+        if text.count(old) != 1:
+            return "FAIL", ("could not identify the one GroupedSpace kernel_exclusion wrapper; "
+                            "the planted probe would not establish what it claims"), 0.0
         new = ("  static constexpr Exclusion kernel_exclusion(Candidate c) { "
-               "if ((c.tm/c.wm)*(c.tn/c.wn) < 8) return Exclusion::PpuWarpGroupThreads; "
+               "if (cta_warps(c) < 8) return Exclusion::TooManyWarps; "
                "return common_kernel_exclusion(c); }")
-        (td / "ppu_tactic_space.hpp").write_text(text[:j] + new + text[j + len(old):])
+        (td / "ppu_tactic_space.hpp").write_text(text.replace(old, new))
         probe = td / "emit_probe"
         r = subprocess.run(["c++", "-std=c++17", f"-I{td}", f"-I{ROOT/'quactlize'/'include'}", str(src),
                             "-o", str(probe)], capture_output=True, text=True)
@@ -585,8 +585,10 @@ def lint_tactic_spaces_agree():
         if bad.returncode == 0:
             return "FAIL", ("the comparator reported NO disagreement against a GroupedSpace whose warp minimum "
                             "was raised to eight -- it is not comparing what it claims to"), 0.0
-    n = next((l for l in bad.stdout.splitlines() if "disagreement" in l), "?")
-    return "PASS", f"spaces agree, and the comparator fires when they do not ({n.strip()} when planted)", 0.0
+    declared = next((l for l in got.stdout.splitlines() if "declared difference" in l), "?")
+    planted = next((l for l in bad.stdout.splitlines() if "unexpected disagreement" in l), "?")
+    return "PASS", (f"declared asymmetry accepted ({declared.strip()}); comparator still fires on planted drift "
+                    f"({planted.strip()})"), 0.0
 
 
 def lint_inbox_delivered():
@@ -765,7 +767,7 @@ def main():
                 ("lint", "box-built sources stay in the PPU-portable subset", lint_ppu_portability),
                 ("lint", "emitted bench flags are ones the bench parses", lint_fixture_flags),
                 ("lint", "every INBOX item is consumed, or is explained by a call in flight", lint_inbox_delivered),
-                ("lint", "dense and grouped tactic spaces agree, and the comparator fires", lint_tactic_spaces_agree),
+                ("lint", "dense/grouped tactic differences are declared, and unexpected drift fires", lint_tactic_spaces_agree),
                 ("lint", "the ctypes config mirror matches its C header field for field", lint_config_abi_matches_header),
                 ("lint", "no tactic choice can change the offline layout", lint_tactic_cannot_change_offline_layout),
     ("registry", "declarations vs source", None)])
