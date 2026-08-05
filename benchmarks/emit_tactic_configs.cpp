@@ -12,8 +12,18 @@
 // today without making future drift invisible." The comparator it refers to did not exist. Without it, the two
 // being identical was a fact about the source that nobody re-established, so the first divergence would have
 // been absorbed rather than reported -- and this program would have kept emitting one operator's answer for
-// both. `--space=compare` walks the full grid and prints every candidate where the two disagree; today it must
-// print none, and that "none" is a measurement rather than a reading of the header.
+// both. `--space=compare` walks the full grid and prints every candidate where the two disagree.
+//
+// IT NO LONGER DEMANDS THAT THEY BE IDENTICAL, and the change is the whole point of having built the check.
+// INBOX 064 (codex, commit 44052c7) split the four-warp rule after the two facts collided: the sub-four-warp
+// device abort measured on ppu001 is a DENSE-ROUTE quarantine, while the grouped kernel has POSITIVELY MEASURED
+// two-warp rows through the same mainloop -- (64,128,64) w64x64 is the recorded int1 61.2% winner. Requiring
+// identity would have deleted a measured optimum.
+//
+// So the comparator now classifies rather than counts: a disagreement is DECLARED when dense's own verdict is
+// the quarantine, DRIFT otherwise, and only DRIFT exits non-zero. Today that is 891 declared and 0 drift. The
+// value of the check is unchanged -- it is still the only thing that would report an UNintended divergence --
+// but its verdict is "no drift", not "no difference".
 //
 // TWO PROBLEMS THIS REPLACES, and the second is worse than the first.
 //
