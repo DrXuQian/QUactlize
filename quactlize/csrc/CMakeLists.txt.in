@@ -18,9 +18,9 @@ endif()
 
 # EVERY target gets them, via a wrapper -- NOT by listing targets. The previous code attached _PPU_EXTRA_DEV to three
 # targets by hand while the comment above claimed "every target defined below", and the two are not the same thing:
-#   PPU_DEFS=PPU_B_CHUNK=1 TARGET=test_q3_bconcat_bench ./build.sh
+#   PPU_DEFS=PPU_B_CHUNK=1 TARGET=test_scalefirst_bench ./build.sh
 # configured cleanly, printed "PPU_DEFS applied: PPU_B_CHUNK=1", printed no warning (cmake DID receive it), and built a
-# binary without the macro -- because test_q3_bconcat_bench was not one of the three. The perf run that followed
+# binary without the macro -- because test_scalefirst_bench was not one of the three. The perf run that followed
 # compared a binary against ITSELF and reported "no change", which is indistinguishable from "the change does nothing".
 # Enumerating call sites is what made that possible, so the fix must not enumerate.
 # Targets whose sources are OPTIONAL, and the only ones a missing source may silently skip. They live in dev/,
@@ -932,12 +932,12 @@ if(TARGET test_q3_bconcat_ablate)
 endif()
 
 # Q3_K B-CONCAT vs A-CONCAT speed: synthetic large shape, interleaved same-session A/B timing (us/MFU/HBM).
-#   Build: TARGET=test_q3_bconcat_bench ./build.sh ; run: ./<bin> [M] [N] [K]
+#   Build: TARGET=test_scalefirst_bench ./build.sh ; run: ./<bin> [M] [N] [K]
 quactlize_ppu_executable(
-  test_q3_bconcat_bench
-  test_q3_bconcat_bench.cu
+  test_scalefirst_bench
+  test_scalefirst_bench.cu
 )
-target_compile_options(test_q3_bconcat_bench PRIVATE -w)
+target_compile_options(test_scalefirst_bench PRIVATE -w)
 
 # GROUPED int1 (vs int2 ref) single-plane PERF verification: matches the validated test_w1a16_grouped call
 # (FinegrainedScaleOnly, PACKED_INT1, 32x128:256:s3) but timed + acu-able. Isolates whether grouped int1 is genuinely

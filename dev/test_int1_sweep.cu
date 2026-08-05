@@ -104,7 +104,7 @@ template <QM Q, int TM, int TN, int TK, int WM, int WN, int ST>
 static void run_cfg(Buf& b, int gs, const char* note) {
   // warpOnM = TM/WM and warpOnN = TN/WN must both be >= 1, or get_tiled_mma degenerates and the collective builder
   // returns `int` -- which surfaces as "CollectiveEpilogue (aka int) cannot be used prior to ::" deep in
-  // gemm_universal_adapter.h. TM=16 therefore needs WM=16, which is what test_q3_bconcat_bench.cu uses and what I
+  // gemm_universal_adapter.h. TM=16 therefore needs WM=16, which is what test_scalefirst_bench.cu uses and what I
   // got wrong here by copying WM=32 across.
   static_assert(fold::warp_shape_ok<TM, TN, WM, WN>,
                 "run_cfg: warp tile must divide the block tile (TM=16 needs WM=16, not WM=32)");

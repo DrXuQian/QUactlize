@@ -287,7 +287,7 @@ int main() {
   printf("\n  == is the shipped offline tied to one run length per width? (mismatch EXPECTED, and it is a finding)\n");
   compare<4, 64,  64, 128, 32, 32>("int4 TK=128 (64 B run) vs shipped", 512, 1024);
   printf("     => it is. The five steps produce the 32 B-run buffer only, so int4 at TK=128 -- which\n");
-  printf("        test_q3_bconcat_bench's I4(64,64,128,...) row actually launches -- runs on a buffer laid out for a\n");
+  printf("        test_scalefirst_bench's I4(64,64,128,...) row actually launches -- runs on a buffer laid out for a\n");
   printf("        DIFFERENT run length. Harmless for a timing-only row, wrong for any numeric test at that shape.\n");
   printf("        So taking the run length as an explicit parameter is not a loss of generality; it makes an existing\n");
   printf("        implicit assumption visible.\n");

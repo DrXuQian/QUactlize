@@ -19,7 +19,7 @@
 // not. Use gen_guard_check.sh, which extracts the instantiations from the sources mechanically instead of
 // restating what I believe they are. Section 1 stays only as a fast smoke test.
 // Every distinct (Bits, TK) reachable from the tree. Sources:
-//   test_q3_bconcat_bench.cu   BC/I1 @ TK=256 (uint2+uint1), I2 @ TK=128, I4 @ TK=64 and 128
+//   test_scalefirst_bench.cu   BC/I1 @ TK=256 (uint2+uint1), I2 @ TK=128, I4 @ TK=64 and 128
 //   test_q3_bconcat_real.cu    (uint2b_t, uint1b_t) @ TK=256
 //   test_fold_int2.cu          int1 @ TK=128, int2 @ TK=64 and 128, int4 @ TK=64 and 128
 //   moe_grouped_ppu.cuh users  int4 (default ElementB) @ TK=64 and 128
@@ -50,7 +50,7 @@ void add(const char* src) {
 }
 
 int main() {
-  // --- test_q3_bconcat_bench.cu : BC() is two-plane, so BOTH widths are checked at the same tile
+  // --- test_scalefirst_bench.cu : BC() is two-plane, so BOTH widths are checked at the same tile
   #define BC(TM,TN,TK,WM,WN,S) add<2,TM,TN,TK,S,WM,WN>("BC lo int2"); add<1,TM,TN,TK,S,WM,WN>("BC hi int1")
   BC(16, 64,256,16,32,3); BC(16,128,256,16,32,3); BC(16,256,256,16,32,3);
   BC(32, 32,256,32,32,3); BC(32, 64,256,32,32,3); BC(32, 64,256,32,32,2);

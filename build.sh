@@ -287,7 +287,7 @@ _BIN_PATH=$(find "$BUILD" -type f -name "$TARGET" -perm -u+x -print -quit 2>/dev
 
 # CMAKE RECEIVING THE DEFINES IS NOT THE SAME AS THIS TARGET GETTING THEM, and the difference is invisible in a perf
 # number. The defines used to be attached to three targets by hand, so
-#   PPU_DEFS=PPU_B_CHUNK=1 TARGET=test_q3_bconcat_bench ./build.sh
+#   PPU_DEFS=PPU_B_CHUNK=1 TARGET=test_scalefirst_bench ./build.sh
 # configured cleanly, printed "PPU_DEFS applied", printed no warning, and produced a binary WITHOUT the macro. The run
 # that followed compared a binary against itself and read as "the change does nothing".
 #

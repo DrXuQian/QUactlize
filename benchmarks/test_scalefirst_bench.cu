@@ -1,3 +1,21 @@
+// SCALE-FIRST PERF BENCH: every code width and bit-plane format at one dense shape, on the scale_first path.
+//
+// WAS test_q3_bconcat_bench, named for the one row it was written to answer. It now sweeps int4 / int2 / int1
+// single-plane AND Q3 (int2+int1) / Q5 (int4+int1) / Q6 (int4+int2) two-plane, and it is the ONLY harness whose
+// numbers have been validated on ppu001 -- every figure in docs/BACKTEST.md section A came from here, including
+// int4 211.33 us / 65.0% at gs=32 and int1 224.73 us / 61.2% at gs=16. test_lowbit_dense_bench has never
+// produced a validated number.
+//
+// THE NAME NOW CARRIES THE DISTINCTION THAT COST A DAY. There are two consumers of the same collective:
+// scale_first (a pre-pass produces separate scale/zero planes; TileK = 256/bits) and fully_quantized (the GEMM
+// consumes the packed GGUF metadata unit natively; TileK 256 for Q2/Q4). THE .so SHIPS fully_quantized, and it
+// has no tensor-core prefill measurement at all. This bench measures the other one. A companion
+// test_fullyquant_bench is the next step; until it exists, no figure here says anything about what ships.
+//
+// Older records cite this file as test_q3_bconcat_bench: dev/fold_derivation/HANDOFF_TASK12.md,
+// SWEEP_025_OPTIONS.md, two actlize collective comments and the INBOX. Those name the binary that was run at the
+// time and are left alone.
+//
 // Q3_K B-CONCAT vs A-CONCAT speed + CONFIG SWEEP [box-only]. Numerics settled (test_q3_bconcat_real bad=0); this
 // times. acu on the 64x64:256:s3 B-concat showed Duration=1.04ms == wall-clock, occupancy 12.5% LIMITED BY SHARED
 // MEMORY (2 blocks/CU), Memory-Dependency-bound -- so absolute wall-clock IS the kernel time (host overhead ~0), and
