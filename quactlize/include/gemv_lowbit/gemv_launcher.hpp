@@ -18,9 +18,28 @@ namespace ppu_gemv {
 #define GEMV_GS_LIST(EMIT) EMIT(0) EMIT(16) EMIT(32) EMIT(64) EMIT(128)
 #endif
 
-// Rows per CTA. The activation tile is CtaM*StepK halfs in registers, which is what caps this.
+// Dense rows per CTA. TRT-LLM's CUDA-core tactic uses one exact CtaM specialization for every M in [1,15]:
+// the quantized weight load/conversion is then shared by every activation row in that small-M launch. Keep M=1
+// as its own specialization -- it is the measured decode winner, not a tail of a larger fixed-register kernel.
+// Larger dense problems remain legal and tile this maximum; the tuner owns TRT-LLM's profiling-cost prune at M>=16.
 #ifndef GEMV_CTAM_MAX
-#define GEMV_CTAM_MAX 4
+#define GEMV_CTAM_MAX 15
+#endif
+static_assert(GEMV_CTAM_MAX >= 1 && GEMV_CTAM_MAX <= 15,
+              "GEMV_CTAM_MAX must select a compiled TRT-style CtaM specialization in [1,15]");
+
+// Grouped routing gets its parallelism from grid.z and retains the proven four-row tile. This is a compile-volume
+// boundary as well as a policy: extending dense M must not instantiate eleven unused grouped variants per format.
+#ifndef GEMV_GROUPED_CTAM_MAX
+#define GEMV_GROUPED_CTAM_MAX 4
+#endif
+static_assert(GEMV_GROUPED_CTAM_MAX >= 1 && GEMV_GROUPED_CTAM_MAX <= GEMV_CTAM_MAX,
+              "grouped CtaM maximum must name one of the compiled dense specializations");
+
+// The shipping scale-first ABI has no bias pointer. Correctness sweeps leave this enabled to cover the generic
+// library; a narrow shipping/perf translation unit may define it to zero and avoid dead bias instantiations.
+#ifndef GEMV_ENABLE_BIAS
+#define GEMV_ENABLE_BIAS 1
 #endif
 
 // Which quant ops get instantiated, for the same reason as GEMV_GS_LIST: every entry is a full set of kernels
@@ -41,6 +60,40 @@ constexpr bool gemv_combo_ok() {
   else return gs_step_ok<GS, Details::kStepK, Details::kCtaK>();
 }
 
+template <typename Details>
+bool gemv_quant_compiled(Params const& p) {
+#define GEMV_MATCH_QGS(QO, G)                                                                    \
+  if (p.quant == (QO) && p.groupsize == (G)) return gemv_combo_ok<Details, (G), (QO)>();
+#define GEMV_MATCH_GS(G) GEMV_QUANT_LIST(GEMV_MATCH_QGS, G)
+  GEMV_GS_LIST(GEMV_MATCH_GS)
+#undef GEMV_MATCH_GS
+#undef GEMV_MATCH_QGS
+  return false;
+}
+
+// Host-only dry run used by the public config-valid ABI. Keeping these checks here means the query asks the same
+// template instantiation that launches; it does not transcribe CtaK, CtaN, the compiled GS list, or the row ceiling.
+template <typename Details, int CtaN>
+char const* gemv_config_invalid_reason(Params const& p) {
+  if (p.format != Details::kFormat) return "format mismatch";
+  if (p.layout != Details::kLayout) return "layout mismatch";
+  if (p.is_bf16 != Details::ADetails::kIsBF16) return "A type mismatch";
+  if (p.act_scale) return "act_scale is not instantiated";
+  if (!GEMV_ENABLE_BIAS && p.bias) return "bias is not instantiated";
+  if (p.n % CtaN) return "n must be a multiple of CtaN";
+  if (p.k % Details::kCtaK) return "k must be a multiple of StepK*Threads";
+  if (is_two_plane(Details::kFormat) && !p.weight_hi) return "two-plane format needs weight_hi";
+  if (has_zero(p.quant) && !p.zeros) return "ScaleZero needs zeros";
+  if (!gemv_quant_compiled<Details>(p)) return "quant/group-size combination is not compiled";
+
+  int const rows_max = p.num_experts > 0 ? p.max_rows : p.m;
+  if (p.num_experts > 0 && !p.row_offsets) return "grouped needs row_offsets";
+  if (rows_max <= 0) return "no rows";
+  int const max_cta_m = p.num_experts > 0 ? GEMV_GROUPED_CTAM_MAX : GEMV_CTAM_MAX;
+  if (rows_max > max_cta_m * 4096) return "rows out of range";
+  return nullptr;
+}
+
 template <typename Details, int CtaM, int CtaN, int Chunk, int GS, QuantOp QOp, bool EnableBias, bool Grouped>
 void gemv_exec(Params const& p, KernelArgs const& args, int grid_m, gemv_stream_t s) {
   dim3 const grid(grid_m, p.n / CtaN, Grouped ? p.num_experts : 1);
@@ -52,12 +105,15 @@ void gemv_exec(Params const& p, KernelArgs const& args, int grid_m, gemv_stream_
 // ---- CtaM ----
 template <typename Details, int CtaN, int Chunk, int GS, QuantOp QOp, bool EnableBias, bool Grouped>
 bool gemv_dispatch_ctam(Params const& p, KernelArgs const& args, int rows_max, gemv_stream_t s) {
+#define GEMV_DISPATCH_MAX (Grouped ? GEMV_GROUPED_CTAM_MAX : GEMV_CTAM_MAX)
 #define GEMV_TRY_CTAM(CM)                                                                        \
-  if (rows_max <= (CM) || (CM) == GEMV_CTAM_MAX) {                                                 \
-    constexpr int _cm = (CM);                                                                      \
-    int const gm = (rows_max + _cm - 1) / _cm;                                                     \
-    gemv_exec<Details, _cm, CtaN, Chunk, GS, QOp, EnableBias, Grouped>(p, args, gm, s);             \
-    return true;                                                                                   \
+  if constexpr ((CM) <= GEMV_DISPATCH_MAX) {                                                       \
+    if (rows_max <= (CM) || (CM) == GEMV_DISPATCH_MAX) {                                           \
+      constexpr int _cm = (CM);                                                                    \
+      int const gm = (rows_max + _cm - 1) / _cm;                                                   \
+      gemv_exec<Details, _cm, CtaN, Chunk, GS, QOp, EnableBias, Grouped>(p, args, gm, s);           \
+      return true;                                                                                 \
+    }                                                                                              \
   }
   GEMV_TRY_CTAM(1)
 #if GEMV_CTAM_MAX >= 2
@@ -69,14 +125,50 @@ bool gemv_dispatch_ctam(Params const& p, KernelArgs const& args, int rows_max, g
 #if GEMV_CTAM_MAX >= 4
   GEMV_TRY_CTAM(4)
 #endif
+#if GEMV_CTAM_MAX >= 5
+  GEMV_TRY_CTAM(5)
+#endif
+#if GEMV_CTAM_MAX >= 6
+  GEMV_TRY_CTAM(6)
+#endif
+#if GEMV_CTAM_MAX >= 7
+  GEMV_TRY_CTAM(7)
+#endif
+#if GEMV_CTAM_MAX >= 8
+  GEMV_TRY_CTAM(8)
+#endif
+#if GEMV_CTAM_MAX >= 9
+  GEMV_TRY_CTAM(9)
+#endif
+#if GEMV_CTAM_MAX >= 10
+  GEMV_TRY_CTAM(10)
+#endif
+#if GEMV_CTAM_MAX >= 11
+  GEMV_TRY_CTAM(11)
+#endif
+#if GEMV_CTAM_MAX >= 12
+  GEMV_TRY_CTAM(12)
+#endif
+#if GEMV_CTAM_MAX >= 13
+  GEMV_TRY_CTAM(13)
+#endif
+#if GEMV_CTAM_MAX >= 14
+  GEMV_TRY_CTAM(14)
+#endif
+#if GEMV_CTAM_MAX >= 15
+  GEMV_TRY_CTAM(15)
+#endif
 #undef GEMV_TRY_CTAM
+#undef GEMV_DISPATCH_MAX
   return false;
 }
 
 // ---- bias ----
 template <typename Details, int CtaN, int Chunk, int GS, QuantOp QOp, bool Grouped>
 bool gemv_dispatch_bias(Params const& p, KernelArgs const& args, int rows_max, gemv_stream_t s) {
+#if GEMV_ENABLE_BIAS
   if (p.bias) return gemv_dispatch_ctam<Details, CtaN, Chunk, GS, QOp, true, Grouped>(p, args, rows_max, s);
+#endif
   return gemv_dispatch_ctam<Details, CtaN, Chunk, GS, QOp, false, Grouped>(p, args, rows_max, s);
 }
 
@@ -121,30 +213,11 @@ bool launch_gemv(Params const& p, gemv_stream_t s) {
       return false;
     }
   }
-  if (p.format != Details::kFormat) { gemv_refuse("format mismatch"); return false; }
-  if (p.layout != Details::kLayout) { gemv_refuse("layout mismatch"); return false; }
-  if (p.is_bf16 != Details::ADetails::kIsBF16) { gemv_refuse("A type mismatch"); return false; }
-  if (p.act_scale) { gemv_refuse("act_scale is not instantiated"); return false; }
-  // n % CtaN also carries the ALIGNMENT the vectorised scale load needs: a group row starts at row*n + n0 with
-  // n0 a multiple of CtaN, so row*n being a multiple of CtaN makes the whole index CtaN-aligned.
-  if (p.n % CtaN) { gemv_refuse("n must be a multiple of CtaN"); return false; }
-  if (p.k % Details::kCtaK) {
-    // CtaK = StepK*Threads. GGUF guarantees k % 256 == 0, so this only bites for a deliberately odd shape.
-    gemv_refuse("k must be a multiple of StepK*Threads");
+  if (char const* why = gemv_config_invalid_reason<Details, CtaN>(p)) {
+    gemv_refuse(why);
     return false;
   }
-  if (is_two_plane(Details::kFormat) && !p.weight_hi) { gemv_refuse("two-plane format needs weight_hi"); return false; }
-  if (has_zero(p.quant) && !p.zeros) { gemv_refuse("ScaleZero needs zeros"); return false; }
-
-  int rows_max = 0;
-  if (p.num_experts > 0) {
-    if (!p.row_offsets) { gemv_refuse("grouped needs row_offsets"); return false; }
-    rows_max = p.max_rows;
-  } else {
-    rows_max = p.m;
-  }
-  if (rows_max <= 0) { gemv_refuse("no rows"); return false; }
-  if (rows_max > GEMV_CTAM_MAX * 4096) { gemv_refuse("rows out of range"); return false; }
+  int const rows_max = p.num_experts > 0 ? p.max_rows : p.m;
 
   KernelArgs args{};
   args.act = p.act;  args.act_scale = p.act_scale;

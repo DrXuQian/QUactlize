@@ -21,8 +21,8 @@
 #include <random>
 #include <algorithm>
 
-// ITERATION COST. The full matrix instantiates GS{0,16,32,64,128} x 3 quant ops x CtaM 1-4 x bias x grouped
-// for every (format, layout, CtaN, Chunk) row, which is a ~10 minute nvcc build. That is the right cost before
+// ITERATION COST. The full matrix instantiates GS{0,16,32,64,128} x 3 quant ops x dense CtaM 1-15 x bias,
+// while grouped retains CtaM 1-4, for every (format, layout, CtaN, Chunk) row. That is the right cost before
 // a commit and the wrong one while iterating, so GEMV_GATE_FAST narrows the group-size axis to the two that
 // carry most of the coverage. Build the FULL matrix before trusting a result.
 #if defined(GEMV_GATE_FAST)
@@ -505,6 +505,9 @@ int main(int argc, char** argv) {
     run_case<D, 8, 2>({2, 64, 2048, QuantOp::FinegrainedScaleOnly, 32, 0, false, true, true}, 7);
     run_case<D, 8, 2>({3, 64, 2048, QuantOp::FinegrainedScaleZero, 32, 0, false, true, true}, 8);
     run_case<D, 8, 2>({4, 64, 2048, QuantOp::FinegrainedScaleOnly, 32, 0, false, true, false}, 9);
+    // TRT-LLM's upper exact small-M specialization: proves the weight-sharing tile does not silently become
+    // four-row grid tiling again above the M=1/2/4 workload buckets.
+    run_case<D, 8, 2>({15, 64, 2048, QuantOp::FinegrainedScaleZero, 32, 0, false, true, false}, 91);
     run_case<D, 8, 2>({1, 64, 2048, QuantOp::FinegrainedScaleZero, 32, 0, false, false, true}, 10);
     run_case<D, 8, 2>({1, 64, 2048, QuantOp::FinegrainedScaleOnly, 32, 0, false, false, false}, 10);
     run_case<D, 8, 2>({4, 64, 2048, QuantOp::FinegrainedScaleOnly, 32, 8, false, false, false}, 10);

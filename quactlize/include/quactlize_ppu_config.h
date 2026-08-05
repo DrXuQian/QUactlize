@@ -38,14 +38,14 @@ typedef struct quactlize_ppu_config_v2 {
 
 // Stores a static config-array address in *configs when configs is non-null and returns its element count.
 // No CUDA/PPU context is required. Dense and grouped are separate operators and therefore separate inventories;
-// the grouped array also contains its CUDA-core GEMV tactic, discriminated before its meaningless tile fields.
+// each array also contains its CUDA-core GEMV tactic, discriminated before its meaningless tile fields.
 int32_t quactlize_ppu_list_configs(quactlize_ppu_config_v1 const** configs);
 int32_t quactlize_ppu_list_grouped_configs(quactlize_ppu_config_v1 const** configs);
 
 // Writes up to capacity valid records and returns the full valid-record count, so a caller may first pass
 // (NULL, 0), allocate exactly that many records, and query again. A negative capacity writes nothing. These are
 // host-only queries and require no CUDA/PPU context. Dense/grouped tensor records report the scheme-specific TileK
-// selected by ppu_format_config.inc; the vecdot record reports the CUDA family with zero/meaningless tile fields.
+// selected by ppu_format_config.inc; CUDA records report their family with zero/meaningless tile fields.
 int32_t quactlize_ppu_list_valid_dense_lowbit_configs_v2(
     quactlize_ppu_config_v2* configs, int32_t capacity,
     int m, int n, int k, int group_size, int qtype);
@@ -64,9 +64,9 @@ int32_t quactlize_ppu_list_valid_vecdot_moe_configs_v2(
 // asks about that entry's compiled default. No CUDA/PPU context is required, and the launch entries enforce the same
 // exact-type shared-memory/compact-A checks even when a caller neglects to query first.
 //
-// The grouped inventory contains tensor-core and CUDA-core families. Call the predicate matching
-// enable_cuda_kernel; using a family with the other predicate returns 0. max_rows is the largest expert extent (the
-// only distribution property that can affect a compiled kernel); total_rows and experts validate the grouped domain.
+// Both inventories contain tensor-core and CUDA-core families. Call the predicate matching enable_cuda_kernel;
+// using a family with the other predicate returns 0. max_rows is the largest expert extent (the only distribution
+// property that can affect a compiled kernel); total_rows and experts validate the grouped domain.
 //
 // "Any shape" for the compiled tensor fallback means every positive M (or every positive total_rows/experts/max_rows
 // grouped problem) with N and K positive multiples of 256, the qtype's GGUF group size (16 for Q2/Q3/Q6, 32 for
@@ -75,6 +75,8 @@ int32_t quactlize_ppu_list_valid_vecdot_moe_configs_v2(
 // resident-artifact ABI, not rejected because a default TileN is wider. Fully-quantized entries are outside the
 // default build and return invalid unless PPU_PACKED_SCALE and that qtype's PPU_PACKED_FORMAT were compiled.
 int32_t quactlize_ppu_dense_lowbit_config_valid_v1(
+    int m, int n, int k, int group_size, int qtype, char const* config_name);
+int32_t quactlize_ppu_gemv_lowbit_config_valid_v1(
     int m, int n, int k, int group_size, int qtype, char const* config_name);
 int32_t quactlize_ppu_dense_fully_quantized_config_valid_v1(
     int m, int n, int k, int group_size, int qtype, char const* config_name);
@@ -90,6 +92,10 @@ int32_t quactlize_ppu_vecdot_moe_config_valid_v1(
 // the decline and also runs that default. Each tensor default is instantiated with compile-time assertions that its
 // exact shared storage fits ppu001 and that it uses the unrestricted ordinary-A path throughout the admitted domain.
 int quactlize_ppu_dense_lowbit_config_v1(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high,
+    uint16_t const* scale, uint16_t const* zero, uint16_t* out,
+    int m, int n, int k, int group_size, int qtype, char const* config_name);
+int quactlize_ppu_gemv_lowbit_config_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high,
     uint16_t const* scale, uint16_t const* zero, uint16_t* out,
     int m, int n, int k, int group_size, int qtype, char const* config_name);

@@ -39,6 +39,7 @@ enum class DenseConfigId {
 #define QUACTLIZE_PPU_DENSE_CONFIG_ID(ID, NAME, TM, TN, WM, WN, STAGES) ID,
   QUACTLIZE_PPU_DENSE_CONFIGS(QUACTLIZE_PPU_DENSE_CONFIG_ID)
 #undef QUACTLIZE_PPU_DENSE_CONFIG_ID
+  Count,
 };
 
 constexpr quactlize_ppu_config_v1 kDenseConfigs[] = {
@@ -46,20 +47,24 @@ constexpr quactlize_ppu_config_v1 kDenseConfigs[] = {
   {false, NAME, TM, TN, WM, WN, STAGES},
   QUACTLIZE_PPU_DENSE_CONFIGS(QUACTLIZE_PPU_DENSE_CONFIG_ROW)
 #undef QUACTLIZE_PPU_DENSE_CONFIG_ROW
+  // The scale-first CUDA-core family consumes the same logical planes but has no tensor tile geometry.
+  {true, QUACTLIZE_PPU_DENSE_CUDA_CONFIG_NAME, 0, 0, 0, 0, 0},
 };
 constexpr DenseConfigId kDefaultDenseConfig = DenseConfigId::Default;
 static_assert(sizeof(kDenseConfigs) / sizeof(kDenseConfigs[0]) > 1,
               "libquactlize_ppu must compile a config set, not one frozen tactic");
+static_assert(sizeof(kDenseConfigs) / sizeof(kDenseConfigs[0]) == size_t(DenseConfigId::Count) + 1,
+              "the dense inventory must contain every tensor-core config followed by its one CUDA tactic");
 
 constexpr int minimum_dense_tile_m() {
   int value = kDenseConfigs[0].tile_m;
-  for (auto const& config : kDenseConfigs) value = std::min(value, config.tile_m);
+  for (int i = 0; i < int(DenseConfigId::Count); ++i) value = std::min(value, kDenseConfigs[i].tile_m);
   return value;
 }
 
 constexpr int minimum_dense_tile_n() {
   int value = kDenseConfigs[0].tile_n;
-  for (auto const& config : kDenseConfigs) value = std::min(value, config.tile_n);
+  for (int i = 0; i < int(DenseConfigId::Count); ++i) value = std::min(value, kDenseConfigs[i].tile_n);
   return value;
 }
 
@@ -397,13 +402,20 @@ int32_t list_valid_dense_configs_v2(
   auto const& format = ppu_formats::for_qtype(qtype);
   int const tile_k = fully_quantized ? format.fully_quantized_tile_k : format.scale_first_tile_k;
   int32_t count = 0;
-  for (size_t i = 0; i < sizeof(kDenseConfigs) / sizeof(kDenseConfigs[0]); ++i) {
+  for (int i = 0; i < int(DenseConfigId::Count); ++i) {
     auto const id = static_cast<DenseConfigId>(i);
     bool const valid = fully_quantized
         ? dense_fully_quantized_config_valid(id, m, n, k, group_size, qtype)
         : dense_lowbit_config_valid(id, m, n, k, group_size, qtype);
     if (!valid) continue;
     if (configs && count < capacity) configs[count] = config_v2(kDenseConfigs[i], tile_k);
+    ++count;
+  }
+  if (!fully_quantized && quactlize_ppu_gemv_lowbit_config_valid_v1(
+          m, n, k, group_size, qtype, QUACTLIZE_PPU_DENSE_CUDA_CONFIG_NAME)) {
+    if (configs && count < capacity) {
+      configs[count] = {true, QUACTLIZE_PPU_DENSE_CUDA_CONFIG_NAME, 0, 0, 0, 0, 0, 0};
+    }
     ++count;
   }
   return count;

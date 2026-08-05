@@ -736,6 +736,77 @@ def lint_dense_tactic_table_current():
     return "PASS", f"{summary}; planted row drift rejected", 0.0
 
 
+def lint_tactic_buckets_do_not_extrapolate():
+    """The offline writer stores only measured power-of-two buckets; it never opens the final range."""
+    import importlib.util
+    source = ROOT / "tools" / "tune.py"
+    spec = importlib.util.spec_from_file_location("quactlize_tune_bucket_check", source)
+    if spec is None or spec.loader is None:
+        return "FAIL", "cannot load tools/tune.py", 0.0
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    expected = {1: 1, 2: 2, 3: 2, 4: 4, 63: 32, 64: 64, 4097: 4096}
+    got = {m: module.m_bucket(m) for m in expected}
+    if got != expected:
+        return "FAIL", f"power-of-two bucket mapping drifted: {got}", 0.0
+    rows = module.measured_buckets({1: "a", 2: "b", 4: "c", 64: "d", 2048: "e", 4096: "f"})
+    keys = [row.get("m_bucket") for row in rows]
+    if keys != [1, 2, 4, 64, 2048, 4096] or any("m_max" in row for row in rows):
+        return "FAIL", f"writer extrapolated or changed measured buckets: {rows}", 0.0
+    if any(row.get("m_bucket") == 8 for row in rows):
+        return "FAIL", "writer invented an unmeasured M=8 bucket", 0.0
+    if module.fnv_hex(module.BUCKET_POLICY.encode()) != "96fb357ad3662e26" or \
+            module.fnv_hex(module.ROUTE_SCHEMA.encode()) != "7de8d445e897107c":
+        return "FAIL", "runtime-cache policy hashes drifted from the ggml reader contract", 0.0
+
+    import tempfile
+    from benchmarks.workloads import MODELS
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        fake_so = td / "libquactlize_ppu.so"
+        fake_so.write_bytes(b"loaded-ELF-provenance-control")
+        cache = td / "tactics.cache"
+        inventory = [dict(enable_cuda_kernel=False, name="64x64:64x32:s3",
+                          tile_m=64, tile_n=64, warp_m=64, warp_n=32, stages=3)]
+        table = [dict(n=8192, k=5120, gs=32,
+                      buckets=[dict(m_bucket=4, measured_m=4, config="64x64:64x32:s3")])]
+
+        class Admit:
+            def __call__(self, *_args):
+                return 1
+
+        class ValidityLib:
+            quactlize_ppu_dense_lowbit_config_valid_v1 = Admit()
+            quactlize_ppu_gemv_lowbit_config_valid_v1 = Admit()
+            quactlize_ppu_dense_fully_quantized_config_valid_v1 = Admit()
+            quactlize_ppu_grouped_fully_quantized_config_valid_v1 = Admit()
+            quactlize_ppu_vecdot_moe_config_valid_v1 = Admit()
+
+        module.write_runtime_cache(cache, fake_so, "ppu001-test", "Qwen3-32B", MODELS["Qwen3-32B"],
+                                   "dense_lowbit", 12, 32, table, inventory, "0123456789abcdef", ValidityLib())
+        text = cache.read_text()
+        required = ("schema=quactlize-ppu-tactic-cache-v1", "workload=Qwen3-32B",
+                    "m_bucket=4", "op=attn_q", "config=64x64:64x32:s3")
+        if any(field not in text for field in required) or "m_max" in text or "unresolved" in text:
+            return "FAIL", "strict runtime cache omitted provenance or included non-winner state", 0.0
+
+        class Decline(Admit):
+            def __call__(self, *_args):
+                return 0
+
+        declined = ValidityLib()
+        declined.quactlize_ppu_dense_lowbit_config_valid_v1 = Decline()
+        try:
+            module.write_runtime_cache(td / "invalid.cache", fake_so, "ppu001-test", "Qwen3-32B",
+                                       MODELS["Qwen3-32B"], "dense_lowbit", 12, 32, table, inventory,
+                                       "0123456789abcdef", declined)
+        except ValueError:
+            pass
+        else:
+            return "FAIL", "runtime-cache writer accepted a winner rejected by the library validity query", 0.0
+    return "PASS", "measured buckets and winner-only runtime cache; unmeasured M=8 stays absent", 0.0
+
+
 def lint_inbox_delivered():
     """AN UNREAD INBOX ITEM IS AN UNDELIVERED ONE, and writing the file is not sending it.
 
@@ -916,6 +987,7 @@ def main():
                 ("lint", "dense/grouped mixed policy descriptor parity fires on planted drift", lint_mixed_policy_parity_fires),
                 ("lint", "all mixed collectives use one stage-ring driver", lint_mixed_pipeline_shared),
                 ("lint", "the committed dense tactic table exactly regenerates from its stamped sources", lint_dense_tactic_table_current),
+                ("lint", "offline tactic buckets never extrapolate beyond measured M", lint_tactic_buckets_do_not_extrapolate),
                 ("lint", "the sample writer and the sample reader agree on the bytes", lint_attempt_record_roundtrip),
                 ("lint", "the dense route admits the geometries we claim, and its controls still fail", lint_route_admits),
                 ("lint", "the ctypes config mirror matches its C header field for field", lint_config_abi_matches_header),

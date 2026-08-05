@@ -16,6 +16,13 @@ int quactlize_ppu_vecdot_dense_dev_v1(uint8_t const* blocks, int64_t block_bytes
                                       uint16_t const* x, float* out,
                                       int rows, int blocks_per_row, int qtype, void* stream);
 
+// Scale-first CUDA-core tactic over the same fp16 affine planes as dense_lowbit. This entry owns no workspace and
+// only enqueues; config_name must come from the dense inventory's enable_cuda_kernel record (or be null for it).
+int quactlize_ppu_gemv_lowbit_dev_v1(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high,
+    uint16_t const* scale, uint16_t const* zero, uint16_t* out,
+    int m, int n, int k, int group_size, int qtype, void* stream, char const* config_name);
+
 // The placed low/high planes and packed units are the same artifact consumed by quactlize_ppu_bc_gemv.
 // experts==0 selects dense and requires total_rows==1. Grouped offsets are cumulative int[experts+1].
 int quactlize_ppu_bc_gemv_dev_v1(uint16_t const* x,

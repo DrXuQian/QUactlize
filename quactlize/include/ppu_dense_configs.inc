@@ -11,3 +11,7 @@
   X(ShortWide,   "16x128:16x32:s3",   16, 128, 16, 32, 3) \
   X(MidWide,     "32x128:32x32:s3",   32, 128, 32, 32, 3) \
   X(Tall,        "128x64:64x32:s2",  128,  64, 64, 32, 2)
+
+// One CUDA-core family competes with the tensor-core tiles above. Its fields are deliberately meaningless: callers
+// compare enable_cuda_kernel first and ask quactlize_ppu_gemv_lowbit_config_valid_v1 about the actual problem.
+#define QUACTLIZE_PPU_DENSE_CUDA_CONFIG_NAME "gemv_lowbit"

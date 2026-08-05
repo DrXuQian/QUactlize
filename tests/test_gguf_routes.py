@@ -242,6 +242,27 @@ def test_device_decode_routes_match_official_oracle_and_reject_planted_faults(pp
     assert run.returncode == 0, run.stdout + run.stderr
 
 
+def test_dense_cuda_tactic_range_is_reported_by_the_kernel_library(ppu_backend_cuda):
+    """The tuner asks this predicate; it does not carry a second M/K/group-size legality table."""
+    import ctypes
+
+    lib = ctypes.CDLL(str(ppu_backend_cuda))
+    valid = lib.quactlize_ppu_gemv_lowbit_config_valid_v1
+    valid.argtypes = [ctypes.c_int] * 5 + [ctypes.c_char_p]
+    valid.restype = ctypes.c_int32
+
+    for m in (1, 2, 4, 15, 16):
+        assert valid(m, 256, 2048, 32, 12, b"gemv_lowbit") == 1, m
+    controls = [
+        (0, 256, 2048, 32, 12, b"gemv_lowbit"),
+        (4, 256, 256, 32, 12, b"gemv_lowbit"),
+        (4, 256, 2048, 16, 12, b"gemv_lowbit"),
+        (4, 256, 2048, 32, 12, b"not-compiled"),
+        (4, 256, 2048, 32, 99, b"gemv_lowbit"),
+    ]
+    assert all(valid(*args) == 0 for args in controls)
+
+
 @pytest.mark.parametrize("name,gt,hdr,qtype", FORMATS)
 def test_scale_first_artifact_has_full_and_scale_inverses(name, gt, hdr, qtype):
     """The GEMV artifact is independently readable without asking GEMV to consume it.
@@ -365,6 +386,43 @@ def ppu_backend_dense():
         assert getattr(lib, symbol, None) is not None, f"device library is missing dense symbol {symbol}"
     assert quactlize.gguf_backend().startswith("ppu"), quactlize.gguf_backend()
     return path
+
+
+def test_dense_inventory_contains_one_queryable_cuda_family(ppu_backend_dense):
+    """The common candidate array carries CUDA once; scheme filters decide whether it is legal for a problem."""
+    import ctypes
+
+    class ConfigV1(ctypes.Structure):
+        _fields_ = [("enable_cuda_kernel", ctypes.c_bool), ("name", ctypes.c_char_p),
+                    ("tile_m", ctypes.c_int32), ("tile_n", ctypes.c_int32),
+                    ("warp_m", ctypes.c_int32), ("warp_n", ctypes.c_int32),
+                    ("stages", ctypes.c_int32)]
+
+    class ConfigV2(ctypes.Structure):
+        _fields_ = [("enable_cuda_kernel", ctypes.c_bool), ("name", ctypes.c_char_p),
+                    ("tile_m", ctypes.c_int32), ("tile_n", ctypes.c_int32),
+                    ("tile_k", ctypes.c_int32), ("warp_m", ctypes.c_int32),
+                    ("warp_n", ctypes.c_int32), ("stages", ctypes.c_int32)]
+
+    lib = ctypes.CDLL(str(ppu_backend_dense))
+    listed = lib.quactlize_ppu_list_configs
+    listed.argtypes = [ctypes.POINTER(ctypes.POINTER(ConfigV1))]
+    listed.restype = ctypes.c_int32
+    ptr = ctypes.POINTER(ConfigV1)()
+    count = listed(ctypes.byref(ptr))
+    cuda = [ptr[i] for i in range(count) if ptr[i].enable_cuda_kernel]
+    assert len(cuda) == 1 and cuda[0].name == b"gemv_lowbit"
+    assert all((row.tile_m, row.tile_n, row.warp_m, row.warp_n, row.stages) == (0, 0, 0, 0, 0)
+               for row in cuda)
+
+    filtered = lib.quactlize_ppu_list_valid_dense_lowbit_configs_v2
+    filtered.argtypes = [ctypes.POINTER(ConfigV2), ctypes.c_int32] + [ctypes.c_int] * 5
+    filtered.restype = ctypes.c_int32
+    valid_count = filtered(None, 0, 4, 256, 2048, 32, 12)
+    rows = (ConfigV2 * valid_count)()
+    assert filtered(rows, valid_count, 4, 256, 2048, 32, 12) == valid_count
+    valid_cuda = [rows[i] for i in range(valid_count) if rows[i].enable_cuda_kernel]
+    assert len(valid_cuda) == 1 and valid_cuda[0].name == b"gemv_lowbit"
 
 
 # THE PACKED-DENSE ROUTE'S NAMES, in one place. The op is being written by codex right now (INBOX 012); until it

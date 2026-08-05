@@ -26,6 +26,7 @@
 #define GEMV_GS_LIST(EMIT) EMIT(32) EMIT(128)
 #define GEMV_QUANT_LIST(EMIT, G) \
   EMIT(QuantOp::FinegrainedScaleOnly, G) EMIT(QuantOp::FinegrainedScaleZero, G)
+#define GEMV_ENABLE_BIAS 0
 #include "gemv_lowbit/gemv_launcher.hpp"
 #include "gemv_lowbit/gemv_rt.hpp"
 
@@ -202,4 +203,3 @@ inline void run_row(Shape const& sh, Bufs const& b, Best& best) {
 }
 
 // ---------------------------------------------------------------------------------------------------
-

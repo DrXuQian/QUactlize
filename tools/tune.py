@@ -31,9 +31,9 @@ interchangeable however similar the file looks.
 
 WHAT IT WILL NOT DO, and each refusal is a mistake this project has already made once:
 
-  * it does not invent M buckets. TRT-LLM picks powers of two before profiling because it has no reason to
-    prefer anything else; we measure every token count the user fixed and put a boundary ONLY where the winner
-    actually changed. A bucket edge nobody measured is a number nobody revisits.
+  * it does not extend an observation beyond the bucket that was measured. M maps to its last positive power of
+    two, as in TRT-LLM, and only bucket values with a resolved run are written. A request mapping to any other
+    bucket misses and takes the compiled fallback; the last measured winner is never made open-ended.
   * it does not record a winner from an unresolved sweep. The bench declines to save one when candidates tie or
     when a single pass cannot rank; this reads that refusal and leaves the entry ABSENT. An absent tactic gets
     regenerated; a wrong one does not.
@@ -41,14 +41,176 @@ WHAT IT WILL NOT DO, and each refusal is a mistake this project has already made
     from 227 generated ones are not comparable, and a table recording only the winner cannot tell them apart.
 """
 import argparse
+import ctypes
 import json
+import os
 import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+
+CACHE_SCHEMA = "quactlize-ppu-tactic-cache-v1"
+BUCKET_POLICY = "last-positive-power-of-two(raw-total-tokens);store-only-profiled-buckets;v1"
+ROUTE_SCHEMA = "route+normalized-op+qtype+n+k+group-size+m-bucket+experts+top-k;v1"
+FNV_OFFSET = 14695981039346656037
+FNV_PRIME = 1099511628211
+
+
+class ConfigV1(ctypes.Structure):
+    _fields_ = [("enable_cuda_kernel", ctypes.c_bool),
+                ("name", ctypes.c_char_p),
+                ("tile_m", ctypes.c_int32),
+                ("tile_n", ctypes.c_int32),
+                ("warp_m", ctypes.c_int32),
+                ("warp_n", ctypes.c_int32),
+                ("stages", ctypes.c_int32)]
+
+
+def fnv1a64(data: bytes, value: int = FNV_OFFSET) -> int:
+    for byte in data:
+        value ^= byte
+        value = (value * FNV_PRIME) & ((1 << 64) - 1)
+    return value
+
+
+def fnv_hex(data: bytes) -> str:
+    return f"{fnv1a64(data):016x}"
+
+
+def hash_field(value: int, text: str) -> int:
+    return fnv1a64(text.encode() + b"\0", value)
+
+
+def load_inventory(so_path: pathlib.Path):
+    """Return (dense, grouped, canonical inventory hash) from the library the cache will name."""
+    lib = ctypes.CDLL(str(so_path))
+
+    def read(symbol: str):
+        fn = getattr(lib, symbol)
+        fn.argtypes = [ctypes.POINTER(ctypes.POINTER(ConfigV1))]
+        fn.restype = ctypes.c_int32
+        ptr = ctypes.POINTER(ConfigV1)()
+        count = fn(ctypes.byref(ptr))
+        if count < 0 or (count and not ptr):
+            raise RuntimeError(f"{symbol} returned an invalid inventory")
+        out = []
+        for i in range(count):
+            row = ptr[i]
+            if not row.name:
+                raise RuntimeError(f"{symbol} config {i} has no name")
+            out.append(dict(enable_cuda_kernel=bool(row.enable_cuda_kernel), name=row.name.decode(),
+                            tile_m=row.tile_m, tile_n=row.tile_n, warp_m=row.warp_m,
+                            warp_n=row.warp_n, stages=row.stages))
+        return out
+
+    dense = read("quactlize_ppu_list_configs")
+    grouped = read("quactlize_ppu_list_grouped_configs")
+    value = FNV_OFFSET
+    for family, rows in (("dense", dense), ("grouped", grouped)):
+        value = hash_field(value, family)
+        value = hash_field(value, str(len(rows)))
+        for row in rows:
+            value = hash_field(value, "cuda" if row["enable_cuda_kernel"] else "tensor")
+            for field in ("name", "tile_m", "tile_n", "warp_m", "warp_n", "stages"):
+                value = hash_field(value, str(row[field]))
+    return dense, grouped, f"{value:016x}"
+
+
+def projection_op(name: str) -> str:
+    return {"q": "attn_q", "k": "attn_k", "v": "attn_v", "o": "attn_o",
+            "gate": "ffn_gate", "up": "ffn_up", "down": "ffn_down",
+            "expert_gate": "ffn_moe_gate", "expert_up": "ffn_moe_up",
+            "expert_down": "ffn_moe_down"}[name]
+
+
+def write_runtime_cache(path: pathlib.Path, so_path: pathlib.Path, device: str, model: str, cfg: dict,
+                        route: str, qtype: int, gs: int, table: list, inventory: list, config_hash: str,
+                        validity_lib=None):
+    """Write only resolved winners. Raw attempts and unresolved rows remain in the separate JSON artifact."""
+    if any(ch in device for ch in "|=\r\n") or any(ch in model for ch in "|=\r\n"):
+        raise ValueError("device/model provenance contains a cache delimiter")
+    by_shape = {}
+    from benchmarks.workloads import projections
+    for name, n, k, _ in projections(cfg):
+        by_shape.setdefault((n, k), set()).add(projection_op(name))
+
+    inventory_by_key = {}
+    for row in inventory:
+        inventory_by_key[canonical(row["name"]) or row["name"]] = row
+
+    # Inventory membership says a family was compiled, not that it admits this route and problem. Ask the same
+    # exported predicates inference uses before persisting a winner; this prevents (for example) the dense CUDA
+    # record from leaking into a fully-quantized cache merely because both routes share the dense inventory.
+    lib = validity_lib if validity_lib is not None else ctypes.CDLL(str(so_path))
+    dense_args = [ctypes.c_int] * 5 + [ctypes.c_char_p]
+    grouped_args = [ctypes.c_int] * 7 + [ctypes.c_char_p]
+
+    def ask(name: str, argtypes: list, *args) -> bool:
+        fn = getattr(lib, name)
+        fn.argtypes = argtypes
+        fn.restype = ctypes.c_int32
+        return bool(fn(*args))
+
+    def winner_valid(compiled: dict, measured_m: int, n: int, k: int) -> bool:
+        name = compiled["name"].encode()
+        if route == "dense_lowbit":
+            symbol_name = ("quactlize_ppu_gemv_lowbit_config_valid_v1" if compiled["enable_cuda_kernel"]
+                           else "quactlize_ppu_dense_lowbit_config_valid_v1")
+            return ask(symbol_name, dense_args, measured_m, n, k, gs, qtype, name)
+        if route == "dense_fully_quantized":
+            return not compiled["enable_cuda_kernel"] and ask(
+                "quactlize_ppu_dense_fully_quantized_config_valid_v1", dense_args,
+                measured_m, n, k, gs, qtype, name)
+        assignments = measured_m * cfg["topk"]
+        symbol_name = ("quactlize_ppu_vecdot_moe_config_valid_v1" if compiled["enable_cuda_kernel"]
+                       else "quactlize_ppu_grouped_fully_quantized_config_valid_v1")
+        # max_rows=total_rows is the conservative distribution: if the compiled family admits this, every
+        # histogram with the same total token bucket does. Runtime still re-asks with its actual histogram.
+        return ask(symbol_name, grouped_args, assignments, n, k, gs, cfg["experts"], assignments, qtype, name)
+
+    entries = []
+    for shape in table:
+        for bucket in shape["buckets"]:
+            key = canonical(bucket["config"]) or bucket["config"]
+            compiled = inventory_by_key.get(key)
+            if compiled is None:
+                raise ValueError(f"winner {bucket['config']!r} is absent from the loaded library")
+            if not winner_valid(compiled, bucket["measured_m"], shape["n"], shape["k"]):
+                raise ValueError(
+                    f"winner {compiled['name']!r} is not valid for route={route}, "
+                    f"M={bucket['measured_m']} N={shape['n']} K={shape['k']} gs={gs} qtype={qtype}")
+            for op in sorted(by_shape.get((shape["n"], shape["k"]), ())):
+                experts = cfg["experts"] if route == "grouped_fully_quantized" else 0
+                top_k = cfg["topk"] if route == "grouped_fully_quantized" else 0
+                entries.append(
+                    f"entry|route={route}|op={op}|qtype={qtype}|n={shape['n']}|k={shape['k']}|gs={gs}|"
+                    f"m_bucket={bucket['m_bucket']}|experts={experts}|top_k={top_k}|"
+                    f"cuda={int(compiled['enable_cuda_kernel'])}|config={compiled['name']}")
+
+    elf_hash = fnv_hex(so_path.read_bytes())
+    lines = [f"schema={CACHE_SCHEMA}", f"bucket_policy={BUCKET_POLICY}",
+             f"bucket_policy_fnv1a64={fnv_hex(BUCKET_POLICY.encode())}",
+             f"route_schema_fnv1a64={fnv_hex(ROUTE_SCHEMA.encode())}",
+             f"loaded_elf_fnv1a64={elf_hash}", f"config_space_fnv1a64={config_hash}",
+             f"device={device}", f"workload={model}", *entries]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as out:
+            out.write("\n".join(lines) + "\n")
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(temp_name, path)
+    except Exception:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def canonical(name: str):
@@ -88,23 +250,21 @@ def bench_run(binary: str, n: int, k: int, gs: int, m: int, reps: int, jsonl: st
     return m_.group(1), float(m_.group(2)), "separated"
 
 
-def collapse(by_m: dict) -> list:
-    """Turn {m: config} into buckets, PUTTING A BOUNDARY ONLY WHERE THE WINNER CHANGED.
+def m_bucket(m: int) -> int:
+    """TRT-LLM's round rule: the last positive power of two, with no bucket for non-positive M."""
+    return 0 if m <= 0 else 1 << (m.bit_length() - 1)
 
-    [{'m_max': 4, 'config': X}, {'m_max': None, 'config': Y}] means X up to and including 4, Y above.
-    A single entry with m_max None means M does not move the winner and a reader needs no bucket logic.
-    """
-    ms = sorted(by_m)
-    out = []
-    for m in ms:
-        c = by_m[m]
-        if out and out[-1]["config"] == c:
-            out[-1]["m_max"] = m           # extend the run
-        else:
-            out.append({"m_max": m, "config": c})
-    if out:
-        out[-1]["m_max"] = None            # the last bucket is open-ended
-    return out
+
+def measured_buckets(by_m: dict) -> list:
+    """Turn resolved measurements into exact bucket winners without extrapolating past the evidence."""
+    by_bucket = {}
+    for m in sorted(by_m):
+        bucket = m_bucket(m)
+        previous = by_bucket.get(bucket)
+        if previous and previous["config"] != by_m[m]:
+            raise ValueError(f"M={previous['measured_m']} and M={m} map to bucket {bucket} but disagree")
+        by_bucket[bucket] = {"m_bucket": bucket, "measured_m": m, "config": by_m[m]}
+    return [by_bucket[b] for b in sorted(by_bucket)]
 
 
 def main() -> int:
@@ -120,6 +280,13 @@ def main() -> int:
                          "a coverage sweep over the bench's whole compiled set, not a tactic table, and the "
                          "output says so. Once quactlize_ppu_list_configs() exists this should read from the "
                          ".so directly rather than from a file somebody maintained by hand.")
+    ap.add_argument("--runtime-cache", default="",
+                    help="also write the strict winner-only cache consumed by llama's ggml backend")
+    ap.add_argument("--so", default="", help="libquactlize_ppu.so used to derive runtime-cache provenance")
+    ap.add_argument("--device-id", default="", help="stable target-device identity stamped into --runtime-cache")
+    ap.add_argument("--route", choices=("dense_lowbit", "dense_fully_quantized", "grouped_fully_quantized"),
+                    default="dense_lowbit")
+    ap.add_argument("--qtype", type=int, default=12, help="GGUF qtype recorded in --runtime-cache")
     a = ap.parse_args()
 
     if a.reps < 2:
@@ -149,7 +316,26 @@ def main() -> int:
     # failure shape as `a tactic the binary cannot select is worse than no tactic`, one level up. So the two
     # products are named differently in the output rather than distinguished by whoever reads it later.
     shipped = None
-    if a.shipped:
+    runtime_inventory = None
+    config_hash = ""
+    so_path = pathlib.Path(a.so) if a.so else None
+    if a.runtime_cache:
+        if a.shipped:
+            print("--runtime-cache derives the shipped set from --so; do not also pass --shipped", file=sys.stderr)
+            return 2
+        if not so_path or not so_path.is_file() or not a.device_id:
+            print("--runtime-cache requires an existing --so and non-empty --device-id", file=sys.stderr)
+            return 2
+        try:
+            dense_inventory, grouped_inventory, config_hash = load_inventory(so_path)
+        except (AttributeError, OSError, RuntimeError, UnicodeError) as e:
+            print(f"cannot read tactic inventory from {so_path}: {e}", file=sys.stderr)
+            return 2
+        runtime_inventory = grouped_inventory if a.route == "grouped_fully_quantized" else dense_inventory
+        shipped = [row["name"] for row in runtime_inventory]
+        shipped_keys = {canonical(r) or r for r in shipped}
+        print(f"tuning against the {len(shipped)} config(s) exported by {so_path}")
+    elif a.shipped:
         p = pathlib.Path(a.shipped)
         if not p.is_file():
             print(f"no such shipped-config list: {p}", file=sys.stderr)
@@ -201,7 +387,7 @@ def main() -> int:
             else:
                 skipped.append(dict(n=n, k=k, m=m, why=note))
         if by_m:
-            table.append(dict(n=n, k=k, gs=a.gs, buckets=collapse(by_m)))
+            table.append(dict(n=n, k=k, gs=a.gs, buckets=measured_buckets(by_m)))
 
     doc = dict(model=a.model, gs=a.gs, reps=a.reps,
                # WHAT THIS FILE IS, stated in the file. Two artifacts with identical structure and incompatible
@@ -212,12 +398,21 @@ def main() -> int:
                shapes=table, unresolved=skipped)
     pathlib.Path(a.out).write_text(json.dumps(doc, indent=2) + "\n")
 
+    if a.runtime_cache:
+        try:
+            write_runtime_cache(pathlib.Path(a.runtime_cache), so_path, a.device_id, a.model, cfg,
+                                a.route, a.qtype, a.gs, table, runtime_inventory, config_hash)
+        except (AttributeError, OSError, ValueError) as e:
+            print(f"cannot write runtime cache: {e}", file=sys.stderr)
+            return 2
+        print(f"wrote runtime cache {a.runtime_cache}: {sum(len(s['buckets']) for s in table)} measured "
+              "shape bucket(s), winners only")
+
     n_b = sum(len(s["buckets"]) for s in table)
     print(f"\nwrote {a.out}: {len(table)} shape(s), {n_b} bucket(s), {len(skipped)} unresolved")
     if n_b == len(table):
-        print("  every shape has ONE bucket -- M does not move the winner here, so a reader needs no bucket\n"
-              "  logic at all. That is a smaller and stronger artifact than a bucketed one, and it is a\n"
-              "  measurement rather than an assumption.")
+        print("  every shape has ONE measured bucket. Other M buckets remain absent and visibly fall back;\n"
+              "  this file does not assert that the winner extends past the measurement.")
     if skipped:
         print(f"  {len(skipped)} (shape, M) did not resolve and are ABSENT rather than guessed; a lookup that\n"
               f"  misses them must fall back to the compiled default and say so.")
