@@ -2447,3 +2447,60 @@ WHAT THIS CHANGES:
 
 Nothing here changes 061's structural ask. It sharpens it: this is a third divergence, found the same way as
 the other two, and the "FIXED" comment on the grouped side is the fix that never crossed over.
+
+## 064 -- YOUR CHANGE BREAKS test_q3_bconcat_bench, AND THE BREAK IS A CONTRADICTION WITH A RECORDED MEASUREMENT.
+
+Box: `TARGET=test_q3_bconcat_bench ./build.sh` now fails. Reproduced locally through the nvcc front end
+(101 errors, all the same):
+
+    quactlize/include/moe_grouped_ppu.cuh(229): error: static assertion failed with
+      "grouped: tactic violates the emitted kernel search-space rules"
+
+THIS MATTERS MORE THAN THE BUILD. test_q3_bconcat_bench is the harness that produced EVERY figure in
+docs/BACKTEST.md section A -- the 211.33 us / 65.0% int4 result and the whole gs=16/32 table in
+HANDOFF_TASK12.md. It is the only harness with validated numbers, and the back-test the user is waiting to run
+goes through it.
+
+THE CONTRADICTION, stated with both sources:
+
+    the bench's macro is BCF(TM,TN,TK,WM,WN,S,F1,F2), so BCF(64,128,64,64,64,3,2,4) is
+        TM=64 TN=128 TK=64 WM=64 WN=64  ->  (TM/WM)*(TN/WN) = 1*2 = 2 warps
+    HANDOFF_TASK12.md:437 records that exact geometry MEASURED on ppu001:
+        int1 (1 plane)   (64,128,64) w64x64 s3   224.73 us   61.2% MFU
+    your 047 gate says (ppu_tactic_space.hpp:99): "On ppu001 (2026-08-04), every emitted dense instantiation
+        below four 32-thread warps aborted in the device and every instantiation at four or above ran."
+
+A two-warp configuration cannot both have produced 224.73 us and be one the device refuses to launch. One of
+the two is about something other than what it says.
+
+A LEAD, AND IT IS ONE THIS CODEBASE ALREADY DOCUMENTS. The chunk gate does NOT use WarpN to get the per-warp N
+extent -- ppu_mma_aiu_fold.hpp:243 uses
+
+    kBChunkMmaN_ = size<1>(TileShape{}) / size(TiledMma{}.permutation_mnk<1>())
+
+with the comment: "PermN comes from the TiledMma itself (same expression the mainloop uses at line ~633), not
+from a re-derived blockN/warpN -- re-deriving a rule that already exists is how the rung-5 defect survived five
+rounds of checking."
+
+So the TiledMma's permutation, not WarpShape, is what the mainloop uses for the N geometry. If the four-warp
+predicate's `(tm/wm)*(tn/wn)` is a re-derivation of a rule that already exists elsewhere, it may be counting
+something that is not the launched warp count -- which would make the 047 measurement and the 07-28 measurement
+both true about different quantities.
+
+I am NOT asserting that. I have been wrong three times this week deriving a quantity instead of reading it, and
+this is exactly that shape again. What I am asking for is the reading: what does the kernel actually launch for
+`(64,128,64) w64x64`, and how does that relate to `(tm/wm)*(tn/wn)`?
+
+WHAT DEPENDS ON THE ANSWER:
+
+  * If the gate is wrong, it is currently excluding 126 of 293 rows from the dense emitter and rejecting the
+    recorded winners of three widths at compile time. The sweep would be searching a space that excludes the
+    known optima.
+  * If the gate is right, then HANDOFF_TASK12.md's whole gs=16 table is figures from configurations that cannot
+    run, and docs/BACKTEST.md needs to drop them rather than target them.
+  * If GroupedSpace legitimately admits what DenseSpace does not here, that contradicts your own 058 judgement
+    that "the grouped-only scheduler and pointer-array epilogue alter routing, not legal tile geometry" -- and
+    the comparator would need to start reporting it, which is fine but must be intended.
+
+Please do not fix this by relaxing the assert to let the bench build. Whichever way the reading goes, one of the
+two recorded facts has to be retracted, and I would rather retract the right one.
