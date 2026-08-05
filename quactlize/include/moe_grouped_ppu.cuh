@@ -50,9 +50,11 @@ using ppu_mixed_policy::has_zero;
 using ppu_mixed_policy::is_finegrained;
 
 template <QuantMode QuantOp, class BaseSchedule, class TileShape, class ScaleTileShape, class WarpShape,
-          int Stages, bool AiuInterleaved, class ElementB = cutlass::int4b_t, class PlaneB2 = void>
+          int Stages, bool AiuInterleaved, class ElementB = cutlass::int4b_t, class PlaneB2 = void,
+          int ArtifactTileK = 0>
 using MixedMainloopPolicy = ppu_mixed_policy::MainloopPolicy<QuantOp, BaseSchedule, TileShape, ScaleTileShape,
-                                                             WarpShape, Stages, AiuInterleaved, ElementB, PlaneB2>;
+                                                             WarpShape, Stages, AiuInterleaved, ElementB, PlaneB2,
+                                                             ArtifactTileK>;
 
 using GroupShape = cute::Shape<int,int,int>;                            // per-expert [M,N,K]
 using GroupProblemShape = cutlass::gemm::GroupProblemShape<GroupShape>;
@@ -69,7 +71,8 @@ template <QuantMode QuantOp, class BaseSchedule,
           class ElementB = cutlass::int4b_t,   // default W4A16; pass cutlass::uint2b_t for W2A16
           class PlaneB2 = void,                // bit-plane concat: 2nd (high) B plane; void = single plane
           bool ExpectPackedScale = false,
-          bool QueryOnly = false, bool RequireUniversalFallback = false>
+          bool QueryOnly = false, bool RequireUniversalFallback = false,
+          int ArtifactTileK = 0>
 bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* scales,
             const cutlass::half_t* zeros,
             cutlass::half_t** ptr_D,        // device [L] per-expert output base pointers (contiguous: D+offs[e]*N)
@@ -112,7 +115,7 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
             // change to the collective's copy, not to a stride, so it is not done here.
             bool /*unused, was a_row_broadcast*/ = false) {
   using MainloopPolicy = MixedMainloopPolicy<QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
-                                              Stages, AiuInterleaved, ElementB, PlaneB2>;
+                                              Stages, AiuInterleaved, ElementB, PlaneB2, ArtifactTileK>;
   using ElementA = typename MainloopPolicy::ElementA;
   using ElementC = cutlass::half_t;  using LayoutC = cutlass::layout::RowMajor;
   using ElementD = cutlass::half_t;  using LayoutD = cutlass::layout::RowMajor;
@@ -208,7 +211,7 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   // same fold factor rule as filter_and_run (AIU needs a >=32B contiguous-K run: TK*bits/8 >= 32)
   static constexpr int MOEG_BITS  = MainloopPolicy::LowBits;
   static constexpr int MOEG_RUN_B = cute::size<2>(TileShape{}) * MOEG_BITS / 8;
-  static constexpr int MOEG_FOLD  = MainloopPolicy::LowFold;
+  static constexpr int MOEG_FOLD  = MainloopPolicy::ArtifactLowFold;
   static_assert(ppu_mixed_policy::kernel_policy_valid_v<TacticSpace, MainloopPolicy>);
   if (k_full <= 0) k_full = k;
   if (splitk < 1) splitk = 1;
@@ -291,20 +294,12 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   args.representative_k = k;
   if constexpr (!std::is_void_v<PlaneB2>) {
     args.mainloop.ptr_B2 = B2;
-    // PER-PLANE N-FOLD. Plane 2 is the SPARSER plane, so at the same Block_K its contiguous run is 2x/4x smaller and
-    // may fall under the AIU's 32 B minimum -- that, not anything about the mma, is what pinned the 2-plane path to
-    // Block_K >= 256 (the only K where int2 and int1 both reach 32 B unfolded). The builder folds plane 2 the extra
-    // amount it needs; the matching PHYSICAL gmem walk is (N/P2Fold) rows x (K*P2Fold) codes, so its row pitch is NOT
-    // plane 1's. Reusing dB here is correct only when P2Fold == 1, which is why dB2 is flagged rather than always set.
-    constexpr int P2_BITS   = cutlass::sizeof_bits<std::conditional_t<std::is_void_v<PlaneB2>,
-                                                                     cutlass::half_t, PlaneB2>>::value;
-    constexpr int P2_CONTIG = MOEG_RUN_B * P2_BITS / MOEG_BITS;      // bytes before plane 2's own fold
-    constexpr int P2_FOLD   = fold::delivery_fold_v<P2_BITS, int(cute::size<2>(TileShape{}))>;
-    static_assert(P2_CONTIG * P2_FOLD >= 32,
-                  "the shared fold derivation must make plane 2 a legal AIU delivery");
-    if constexpr (P2_FOLD > 1) {
+    // The high-plane stride belongs to the resident artifact and must not be re-derived from TacticTileK. Only reuse
+    // dB when the two artifact planes genuinely have the same physical row pitch.
+    constexpr int ARTIFACT_HIGH_FOLD = MainloopPolicy::ArtifactHighFold;
+    if constexpr (ARTIFACT_HIGH_FOLD != MOEG_FOLD) {
       args.mainloop.dB2 = cutlass::make_cute_packed_stride(
-          StrideB{}, cute::make_shape(n / P2_FOLD, k_full * P2_FOLD, L));
+          StrideB{}, cute::make_shape(n / ARTIFACT_HIGH_FOLD, k_full * ARTIFACT_HIGH_FOLD, L));
       args.mainloop.dB2_valid = true;
     }
   }
@@ -369,7 +364,7 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
 template <QuantMode QuantOp, int TM, int TN, int TK, int WM, int WN, int Stages,
           class ElementB = cutlass::int4b_t,   // default W4A16; pass cutlass::uint2b_t for W2A16
           class PlaneB2 = void,                // bit-plane concat: 2nd (high) B plane; void = single plane
-          bool ExpectPackedScale = false>
+          bool ExpectPackedScale = false, int ArtifactTileK = TK>
 void filter_and_run(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* scales,
                     const cutlass::half_t* zeros,
                     cutlass::half_t** ptr_D, DStride* stride_D, int const* group_M,
@@ -381,11 +376,9 @@ void filter_and_run(const cutlass::half_t* A, const ElementB* B, const cutlass::
   using TileShape = cute::Shape<cute::Int<TM>, cute::Int<TN>, cute::Int<TK>>;
   using WarpShape = cute::Shape<cute::Int<WM>, cute::Int<WN>, cute::Int<TK>>;
   const bool il = (n % 256 == 0 && k % 256 == 0);
-  // N-FOLD auto-selection: the AIU needs a >=32B CONTIGUOUS-K run, i.e. TK*bits/8 >= 32. When the requested TK is
-  // below that (e.g. int2 at TK=64 -> 16B), fold FoldNeed adjacent N-columns into the run so the load stays legal
-  // while TileShape.K (and hence A-smem = TileM*TK*2) stays small. FoldNeed==1 -> no fold, schedule unchanged (all
-  // existing callers unaffected). Requires the weight to have been preprocessed with the matching FoldTK=TK.
-  #define MOEG_CALL(SCH, STK, IL) launch<QuantOp, SCH, TileShape, cute::Shape<cute::Int<TN>, STK>, WarpShape, Stages, IL, ElementB, PlaneB2, ExpectPackedScale>( \
+  // Artifact folds come from ArtifactTileK; TK here is TacticTileK and changes only the consumer geometry. A larger
+  // tactic keeps the resident physical (N/F, F*K) descriptors instead of re-deriving F and switching providers.
+  #define MOEG_CALL(SCH, STK, IL) launch<QuantOp, SCH, TileShape, cute::Shape<cute::Int<TN>, STK>, WarpShape, Stages, IL, ElementB, PlaneB2, ExpectPackedScale, false, false, ArtifactTileK>( \
       A,B,scales,zeros,ptr_D,stride_D,group_M,m,n,k,L,group_size,gsd,gsh,group_row_offsets,ws,ws_bytes,stream,B2,k_full,prefix_ready,splitk,false)
   // COLLECTIVE CONSTRAINT (SK = Scale_TileK = ceil(TK/gs) = #scale groups per K-tile):
   //   Scale_TileK <= mma_K_atoms (= TK/16), i.e. gs >= 16, so each scale group covers >=1 mma atom. The collective

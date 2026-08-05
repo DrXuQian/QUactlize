@@ -26,9 +26,9 @@ struct FormatSpec {
   int high_bits;
 };
 
-// The finite domain for the 025 sweep.  F is intentionally absent: it is derived from (bits, TK), never selected.
-// Stage and split-K are tactic axes but do not change stored bytes; Stage=2 is used below as the existence test because
-// it is the shallowest supported pipeline.  A topology that cannot fit at s2 cannot fit at any supported depth.
+// The finite domain for the 025 sweep. Artifact folds are derived from (bits, ArtifactTileK), never selected. The
+// consumer's TacticTileK is independent: it changes kernel geometry without changing stored bytes. Stage and split-K
+// are tactic axes too; Stage=2 is used below as the existence test because it is the shallowest supported pipeline.
 inline constexpr std::array<FormatSpec, 6> kFormats{{
     {Format::I1, "i1", 1, 0},
     {Format::I2, "i2", 2, 0},
@@ -50,6 +50,7 @@ inline constexpr std::array<int, 4> kWarpN{{16, 32, 64, 128}};
 
 constexpr int fold_for(int bits, int tile_k) {
   int const run = tile_k * bits / 8;
+  if (run <= 0 || (run < 32 && 32 % run)) return 0;
   return run >= 32 ? 1 : 32 / run;
 }
 
@@ -59,6 +60,9 @@ enum class Exclusion {
   WarpDoesNotDivideTile,
   TooManyWarps,
   AccumulatorRegisters,
+  ArtifactTileKDoesNotTileTacticK,
+  ArtifactLowRun,
+  ArtifactHighRun,
   LowFoldDoesNotDivideTileN,
   HighFoldDoesNotDivideTileN,
   LowDelivery,
@@ -77,8 +81,11 @@ constexpr char const* exclusion_clause(Exclusion e) {
     case Exclusion::WarpDoesNotDivideTile: return "warp shape must divide tile shape";
     case Exclusion::TooManyWarps: return "tile needs more than the 32-warp block limit";
     case Exclusion::AccumulatorRegisters: return "the fp32 accumulator alone exceeds the 192-register sweep ceiling";
-    case Exclusion::LowFoldDoesNotDivideTileN: return "the derived low-plane fold does not divide TileN";
-    case Exclusion::HighFoldDoesNotDivideTileN: return "the derived high-plane fold does not divide TileN";
+    case Exclusion::ArtifactTileKDoesNotTileTacticK: return "ArtifactTileK must be atom-aligned and completely tile TacticTileK";
+    case Exclusion::ArtifactLowRun: return "ArtifactLowFold must form whole 32-byte AIU runs";
+    case Exclusion::ArtifactHighRun: return "ArtifactHighFold must form whole 32-byte AIU runs";
+    case Exclusion::LowFoldDoesNotDivideTileN: return "ArtifactLowFold does not divide TacticTileN";
+    case Exclusion::HighFoldDoesNotDivideTileN: return "ArtifactHighFold does not divide TacticTileN";
     case Exclusion::LowDelivery: return "the low plane over-delivers the warp fragment";
     case Exclusion::HighDelivery: return "the high plane over-delivers the warp fragment";
     case Exclusion::MinimumStageSmem: return "the conservative gs16 scale+zero footprint exceeds the 256KB block limit";
@@ -92,8 +99,32 @@ constexpr char const* exclusion_clause(Exclusion e) {
 
 struct Candidate {
   FormatSpec spec;
-  int tm, tn, tk, wm, wn;
+  int tm, tn;
+  // `tk` is a temporary source-compatibility alias for the existing emitter. New code must spell the distinction:
+  // TacticTileK is per row; ArtifactTileK identifies the one resident byte layout shared by those rows.
+  union { int tactic_tile_k; int tk; };
+  int wm, wn;
+  int artifact_tile_k;
+
+  constexpr Candidate(FormatSpec spec_, int tm_, int tn_, int tactic_tile_k_, int wm_, int wn_,
+                      int artifact_tile_k_ = 0)
+      : spec(spec_), tm(tm_), tn(tn_), tactic_tile_k(tactic_tile_k_), wm(wm_), wn(wn_),
+        artifact_tile_k(artifact_tile_k_ > 0 ? artifact_tile_k_ : tactic_tile_k_) {}
 };
+
+constexpr int artifact_low_fold(Candidate c) {
+  return fold_for(c.spec.low_bits, c.artifact_tile_k);
+}
+
+constexpr int artifact_high_fold(Candidate c) {
+  return c.spec.high_bits ? fold_for(c.spec.high_bits, c.artifact_tile_k) : 1;
+}
+
+constexpr bool artifact_run_is_exact(int bits, int artifact_tile_k) {
+  if (bits <= 0 || artifact_tile_k <= 0 || (int64_t(bits) * artifact_tile_k) % 8) return false;
+  int64_t const bytes = int64_t(bits) * artifact_tile_k / 8;
+  return bytes >= 32 || (bytes > 0 && 32 % bytes == 0);
+}
 
 // This is the actual CTA warp count for the current PPU0010 builder, not a performance proxy. get_tiled_mma tiles one
 // 32-thread MMA atom by Layout<Shape<TileM/WarpM, TileN/WarpN, _1>>, and both dense and grouped kernels launch
@@ -107,20 +138,27 @@ constexpr int cta_warps(Candidate c) {
 // from artifact reachability: a template may be a legal consumer while the shipping *_for_tile producer cannot yet
 // make bytes for it.
 constexpr Exclusion common_kernel_exclusion(Candidate c) {
-  if (c.tm % 16 || c.tn % 16 || c.tk % 16 || c.wm % 16 || c.wn % 16)
+  if (c.tm % 16 || c.tn % 16 || c.tactic_tile_k % 16 || c.wm % 16 || c.wn % 16)
     return Exclusion::AtomAlignment;
   if (c.wm > c.tm || c.wn > c.tn || c.tm % c.wm || c.tn % c.wn)
     return Exclusion::WarpDoesNotDivideTile;
   if (cta_warps(c) > 32)
     return Exclusion::TooManyWarps;
 
-  int const flo = fold_for(c.spec.low_bits, c.tk);
-  int const fhi = c.spec.high_bits ? fold_for(c.spec.high_bits, c.tk) : 1;
+  if (c.artifact_tile_k <= 0 || c.artifact_tile_k % 16 || c.artifact_tile_k > c.tactic_tile_k ||
+      c.tactic_tile_k % c.artifact_tile_k)
+    return Exclusion::ArtifactTileKDoesNotTileTacticK;
+  if (!artifact_run_is_exact(c.spec.low_bits, c.artifact_tile_k)) return Exclusion::ArtifactLowRun;
+  if (c.spec.high_bits && !artifact_run_is_exact(c.spec.high_bits, c.artifact_tile_k))
+    return Exclusion::ArtifactHighRun;
+
+  int const flo = artifact_low_fold(c);
+  int const fhi = artifact_high_fold(c);
   if (c.tn % flo) return Exclusion::LowFoldDoesNotDivideTileN;
   if (c.spec.high_bits && c.tn % fhi) return Exclusion::HighFoldDoesNotDivideTileN;
   // CheckDelivery's measured predicate: one 16-byte swzl delivery must fit the B fragment slots.
-  if (int64_t(c.wn) * c.tk * c.spec.low_bits < 4096) return Exclusion::LowDelivery;
-  if (c.spec.high_bits && int64_t(c.wn) * c.tk * c.spec.high_bits < 4096)
+  if (int64_t(c.wn) * c.tactic_tile_k * c.spec.low_bits < 4096) return Exclusion::LowDelivery;
+  if (c.spec.high_bits && int64_t(c.wn) * c.tactic_tile_k * c.spec.high_bits < 4096)
     return Exclusion::HighDelivery;
   return Exclusion::None;
 }
@@ -165,9 +203,9 @@ constexpr Exclusion dense_non_smem_exclusion(Candidate c) {
 }
 
 constexpr int64_t common_per_stage_smem(Candidate c, int a_rows) {
-  return int64_t(a_rows) * c.tk * 2
-       + int64_t(c.tn) * c.tk * (c.spec.low_bits + c.spec.high_bits) / 8
-       + int64_t(c.tn) * (c.tk / 16) * 2 * 2;
+  return int64_t(a_rows) * c.tactic_tile_k * 2
+       + int64_t(c.tn) * c.tactic_tile_k * (c.spec.low_bits + c.spec.high_bits) / 8
+       + int64_t(c.tn) * (c.tactic_tile_k / 16) * 2 * 2;
 }
 
 constexpr Exclusion common_topology_exclusion_with_a_rows(Candidate c, int stages, int a_rows) {
@@ -199,7 +237,7 @@ constexpr Exclusion dense_topology_exclusion(Candidate c, int stages = 2) {
 // compact build. Keep that reachability fact next to the footprint equation so the host inventory cannot claim that
 // m*TK*2 is available for a collective that still allocates TileM*TK*2.
 constexpr bool common_compact_a_supported(Candidate c) {
-  return c.spec.high_bits == 0 && fold_for(c.spec.low_bits, c.tk) == 1;
+  return c.spec.high_bits == 0 && artifact_low_fold(c) == 1;
 }
 
 constexpr Exclusion common_compact_a_topology_exclusion(Candidate c, int stages, int compact_rows) {
@@ -221,12 +259,31 @@ constexpr Exclusion dense_compact_a_topology_exclusion(Candidate c, int stages, 
 }
 
 constexpr Exclusion common_producer_exclusion(Candidate c) {
-  // The sweep packer places each exact candidate geometry; it is not restricted to ppu_dense_layout's canonical
-  // artifact shape. WN=128 remains outside the producer's validated domain, and Q6/TK256 is the one known bad map.
+  // Artifact reachability is about the producer's layout, not the tactic that later consumes it. WN=128 remains
+  // outside the producer's validated domain, and Q6/ArtifactTileK=256 is the one known bad inverse map.
   if (c.wn > 64) return Exclusion::ProducerWarpN;
-  if (c.spec.format == Format::Q6_K && c.tk == 256) return Exclusion::ProducerMap;
+  if (c.spec.format == Format::Q6_K && c.artifact_tile_k == 256) return Exclusion::ProducerMap;
   return Exclusion::None;
 }
+
+// Compile-time controls for the distinction this header owns. A fixed TK64 artifact is legal under larger tactics,
+// including Q3's independent (low,high)=(2,4) folds; a tactic that cannot be partitioned into whole artifact K-blocks
+// is refused before it can instantiate a provider with a partial physical row.
+inline constexpr FormatSpec kArtifactFoldControlI2{Format::I2, "artifact-fold-control-i2", 2, 0};
+inline constexpr FormatSpec kArtifactFoldControlQ3{Format::Q3_K, "artifact-fold-control-q3", 2, 1};
+inline constexpr Candidate kArtifactFoldControlI2Large{kArtifactFoldControlI2, 64, 64, 256, 64, 32, 64};
+inline constexpr Candidate kArtifactFoldControlQ3Large{kArtifactFoldControlQ3, 64, 128, 256, 64, 64, 64};
+static_assert(artifact_low_fold(kArtifactFoldControlI2Large) == 2);
+static_assert(artifact_low_fold(kArtifactFoldControlQ3Large) == 2 &&
+              artifact_high_fold(kArtifactFoldControlQ3Large) == 4);
+static_assert(common_kernel_exclusion(kArtifactFoldControlI2Large) == Exclusion::None);
+static_assert(common_kernel_exclusion(kArtifactFoldControlQ3Large) == Exclusion::None);
+static_assert(common_kernel_exclusion(
+                  Candidate{kArtifactFoldControlI2, 64, 64, 96, 64, 32, 64}) ==
+              Exclusion::ArtifactTileKDoesNotTileTacticK);
+static_assert(common_kernel_exclusion(
+                  Candidate{kArtifactFoldControlI2, 64, 64, 96, 64, 32, 48}) ==
+              Exclusion::ArtifactLowRun);
 
 // Everything that determines whether some topology for the candidate may be built, except the M- and stage-dependent
 // shared footprint. size_sweep.cpp uses this before asking both the ordinary and compact topology predicates.

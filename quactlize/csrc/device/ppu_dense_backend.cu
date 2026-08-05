@@ -182,7 +182,7 @@ int launch_grouped_tactic(
   bool const launched = moe_grouped_ppu::launch<QuantOp,
                           ppu_group_schedule::FinegrainedSchedule<GroupSize>,
                           Tile, Scale, Warp, Stages, true, Low, High, PackedScale,
-                          QueryOnly, RequireUniversalFallback>(
+                          QueryOnly, RequireUniversalFallback, TileK>(
       reinterpret_cast<half_t const*>(act), reinterpret_cast<Low const*>(low),
       reinterpret_cast<half_t const*>(scale), reinterpret_cast<half_t const*>(zero),
       out_ptrs, out_strides, rows, max_rows, n, k, experts, GroupSize,
@@ -230,7 +230,7 @@ int launch_dense_tactic(uint16_t const* act, uint8_t const* low, uint8_t const* 
   bool const launched = fpa_intb_ppu::generic_launcher<QM::FinegrainedScaleZero,
       ppu_group_schedule::FinegrainedSchedule<GroupSize>,
       Tile, cute::Shape<cute::C<TileN>, cute::C<ScaleGroups>>, Warp, Stages, true,
-      Low, High, PackedScale, QueryOnly, RequireUniversalFallback>(
+      Low, High, PackedScale, QueryOnly, RequireUniversalFallback, TileK>(
           reinterpret_cast<half_t const*>(act), reinterpret_cast<Low const*>(low),
           reinterpret_cast<half_t const*>(scale), reinterpret_cast<half_t const*>(zero),
           reinterpret_cast<half_t*>(out),

@@ -43,21 +43,21 @@
 
 namespace fold {
 
-// ONE SOURCE FOR THE MINIMUM N-FOLD. The grouped consumer originally owned this expression; the offline producer
-// now needs it too, and accepting F from a caller would let the stored bytes disagree with the consumer without a
-// type or shape error. Keep the legality checks in the template so an invalid row never instantiates a placement.
-template <int Bits, int TileK>
+// ONE SOURCE FOR THE ARTIFACT N-FOLD. The grouped consumer originally owned this expression; the offline producer
+// now needs it too. The input is ArtifactTileK, never a tactic row's TileK: accepting the latter would let one kernel
+// reinterpret the resident bytes. Keep the legality checks in the template so an invalid artifact never instantiates.
+template <int Bits, int ArtifactTileK>
 struct DeliveryFold {
-  static_assert(Bits > 0 && TileK > 0, "fold: bit width and TileK must be positive");
-  static constexpr int contig_bytes = TileK * Bits / 8;
+  static_assert(Bits > 0 && ArtifactTileK > 0, "fold: bit width and ArtifactTileK must be positive");
+  static constexpr int contig_bytes = ArtifactTileK * Bits / 8;
   static_assert(contig_bytes > 0, "fold: the K run must contain at least one byte");
   static_assert(contig_bytes >= 32 || 32 % contig_bytes == 0,
                 "fold: a sub-32B K run must divide the AIU's 32B delivery");
   static constexpr int value = contig_bytes >= 32 ? 1 : 32 / contig_bytes;
 };
 
-template <int Bits, int TileK>
-inline constexpr int delivery_fold_v = DeliveryFold<Bits, TileK>::value;
+template <int Bits, int ArtifactTileK>
+inline constexpr int delivery_fold_v = DeliveryFold<Bits, ArtifactTileK>::value;
 
 // WM/WN default to the common 32x32 warp tile. They only feed the occupancy estimate -- pass the real ones when
 // analysing a config that uses something else (the Q3 B-concat sweep runs 16x32 warps at TM=16, which divides by

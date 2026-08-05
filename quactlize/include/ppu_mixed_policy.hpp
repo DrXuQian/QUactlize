@@ -35,15 +35,15 @@ struct ElementBits<Element, true> : std::integral_constant<int, 0> {};
 template <class Element>
 inline constexpr int element_bits_v = ElementBits<Element>::value;
 
-template <class Element, int TileK, bool = std::is_void_v<Element>>
+template <class Element, int ArtifactTileK, bool = std::is_void_v<Element>>
 struct ElementFold;
 
-template <class Element, int TileK>
-struct ElementFold<Element, TileK, false>
-    : std::integral_constant<int, fold::delivery_fold_v<element_bits_v<Element>, TileK>> {};
+template <class Element, int ArtifactTileK>
+struct ElementFold<Element, ArtifactTileK, false>
+    : std::integral_constant<int, fold::delivery_fold_v<element_bits_v<Element>, ArtifactTileK>> {};
 
-template <class Element, int TileK>
-struct ElementFold<Element, TileK, true> : std::integral_constant<int, 1> {};
+template <class Element, int ArtifactTileK>
+struct ElementFold<Element, ArtifactTileK, true> : std::integral_constant<int, 1> {};
 
 template <QuantMode Mode, class ElementB, class PlaneB2 = void,
           class ElementScale = cutlass::half_t, class ElementZero = cutlass::half_t>
@@ -56,13 +56,12 @@ struct OperandInfo {
                                          cute::tuple<ElementB, ElementScale>>>;
 };
 
-template <class ElementB, class TileShape, class BaseSchedule>
-struct FoldedSchedule {
-  static constexpr int kBits = element_bits_v<ElementB>;
-  static constexpr int kTileK = int(cute::size<2>(TileShape{}));
-  static constexpr int kFold = fold::delivery_fold_v<kBits, kTileK>;
-  using Type = std::conditional_t<(kFold > 1),
-      cutlass::gemm::KernelAiuFold<(kFold > 1 ? kFold : 2), BaseSchedule>, BaseSchedule>;
+template <int ArtifactLowFold, int ArtifactHighFold, class BaseSchedule>
+struct ArtifactFoldedSchedule {
+  // The wrapper is also required when only the high plane folds: it is the type-level ABI carrying the resident
+  // provider's two independent physical layouts into CollectiveBuilder.
+  using Type = std::conditional_t<(ArtifactLowFold > 1 || ArtifactHighFold > 1),
+      cutlass::gemm::KernelAiuFold<ArtifactLowFold, BaseSchedule, ArtifactHighFold>, BaseSchedule>;
 };
 
 struct AiuAProvider {};
@@ -91,7 +90,8 @@ struct AtomAtATimeConversion<Collective, std::void_t<decltype(Collective::kBChun
 template <class Collective, class BaseSchedule, class KernelSchedule, class ElementBInfo,
           class LayoutA, class LayoutB, class TileShape, class ScaleTileShape, class WarpShape,
           class AProvider, class BProvider, QuantMode Mode, int LowBits, int HighBits,
-          int LowFold, int HighFold, int Stages, bool Interleaved>
+          int TacticTileK, int ArtifactTileK, int ArtifactLowFold, int ArtifactHighFold,
+          int Stages, bool Interleaved>
 struct MixedPolicyDescriptor {
   using CollectiveMainloop = Collective;
   using BaseScheduleType = BaseSchedule;
@@ -112,9 +112,15 @@ struct MixedPolicyDescriptor {
   static constexpr QuantMode quant_mode = Mode;
   static constexpr int low_bits = LowBits;
   static constexpr int high_bits = HighBits;
-  static constexpr int low_fold = LowFold;
-  static constexpr int high_fold = HighFold;
+  static constexpr int tactic_tile_k = TacticTileK;
+  static constexpr int artifact_tile_k = ArtifactTileK;
+  static constexpr int artifact_low_fold = ArtifactLowFold;
+  static constexpr int artifact_high_fold = ArtifactHighFold;
+  static constexpr int low_fold = ArtifactLowFold;    // compatibility with existing descriptor consumers
+  static constexpr int high_fold = ArtifactHighFold;
   static constexpr int stages = Stages;
+  // ScaleTileShape is only the consumer window (ceil(TacticTileK/group_size)). Scale/zero remain logical
+  // (N,K/group_size) planes, so unlike B they have no TileK-dependent physical fold and need no artifact TileK field.
   static constexpr int scale_tile_k = int(cute::size<1>(ScaleTileShape{}));
   static constexpr int compact_a_rows = Collective::compact_a_rows;
   static constexpr bool interleaved = Interleaved;
@@ -123,7 +129,8 @@ struct MixedPolicyDescriptor {
 };
 
 template <QuantMode Mode, class BaseSchedule, class TileShape, class ScaleTileShape, class WarpShape,
-          int Stages, bool AiuInterleaved, class ElementB = cutlass::int4b_t, class PlaneB2 = void>
+          int Stages, bool AiuInterleaved, class ElementB = cutlass::int4b_t, class PlaneB2 = void,
+          int ArtifactTileK_ = 0>
 struct MainloopPolicy {
   using ElementA = cutlass::half_t;
   using ElementScale = cutlass::half_t;
@@ -135,11 +142,28 @@ struct MainloopPolicy {
   static constexpr int AlignmentB = 128 / cutlass::sizeof_bits<ElementB>::value;
   static constexpr int LowBits = element_bits_v<ElementB>;
   static constexpr int HighBits = element_bits_v<PlaneB2>;
-  static constexpr int TileK = int(cute::size<2>(TileShape{}));
-  static constexpr int LowFold = fold::delivery_fold_v<LowBits, TileK>;
-  static constexpr int HighFold = ElementFold<PlaneB2, TileK>::value;
+  static constexpr int TacticTileK = int(cute::size<2>(TileShape{}));
+  // Zero is the source-compatible spelling for callers predating the split; it means this tactic also defines the
+  // artifact. New multi-TileK callers pass the artifact value explicitly.
+  static constexpr int ArtifactTileK = ArtifactTileK_ > 0 ? ArtifactTileK_ : TacticTileK;
+  static_assert(ArtifactTileK > 0 && ArtifactTileK <= TacticTileK && TacticTileK % ArtifactTileK == 0,
+                "ArtifactTileK must completely tile TacticTileK");
+  static constexpr int ArtifactLowFold = fold::delivery_fold_v<LowBits, ArtifactTileK>;
+  static constexpr int ArtifactHighFold = ElementFold<PlaneB2, ArtifactTileK>::value;
+  static_assert(int(cute::size<1>(TileShape{})) % ArtifactLowFold == 0,
+                "ArtifactLowFold must divide the tactic's TileN");
+  static_assert(HighBits == 0 || int(cute::size<1>(TileShape{})) % ArtifactHighFold == 0,
+                "ArtifactHighFold must divide the tactic's TileN");
+  static_assert((ArtifactLowFold * TacticTileK * LowBits) % 256 == 0,
+                "ArtifactLowFold must completely cover the tactic in whole 32-byte AIU runs");
+  static_assert(HighBits == 0 || (ArtifactHighFold * TacticTileK * HighBits) % 256 == 0,
+                "ArtifactHighFold must completely cover the tactic in whole 32-byte AIU runs");
+  // Compatibility spellings. These values now unambiguously describe the artifact, never the tactic.
+  static constexpr int TileK = TacticTileK;
+  static constexpr int LowFold = ArtifactLowFold;
+  static constexpr int HighFold = ArtifactHighFold;
 
-  using KernelSchedule = typename FoldedSchedule<ElementB, TileShape, BaseSchedule>::Type;
+  using KernelSchedule = typename ArtifactFoldedSchedule<ArtifactLowFold, ArtifactHighFold, BaseSchedule>::Type;
   using ElementBInfo = typename OperandInfo<Mode, ElementB, PlaneB2, ElementScale, ElementZero>::Type;
   using CollectiveOp = typename cutlass::gemm::collective::CollectiveBuilder<
       cutlass::arch::PPU0010, cutlass::arch::OpClassTensorOp,
@@ -147,18 +171,19 @@ struct MainloopPolicy {
       cute::tuple<TileShape, ScaleTileShape>, WarpShape, cute::Int<Stages>, KernelSchedule>::CollectiveOp;
 
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
-  static constexpr bool PackedRowA = LowFold == 1 && HighBits == 0;
+  static constexpr bool PackedRowA = ArtifactLowFold == 1 && HighBits == 0;
 #else
   static constexpr bool PackedRowA = false;
 #endif
   using AProvider = std::conditional_t<PackedRowA, PackedRowAProvider,
       std::conditional_t<(CollectiveOp::compact_a_rows > 0), CompactAProvider<CollectiveOp::compact_a_rows>,
                          AiuAProvider>>;
-  using BProvider = std::conditional_t<(HighBits > 0), TwoPlaneBProvider<LowFold, HighFold>,
-      std::conditional_t<(LowFold > 1), FoldedBProvider<LowFold>, OrdinaryBProvider>>;
+  using BProvider = std::conditional_t<(HighBits > 0), TwoPlaneBProvider<ArtifactLowFold, ArtifactHighFold>,
+      std::conditional_t<(ArtifactLowFold > 1), FoldedBProvider<ArtifactLowFold>, OrdinaryBProvider>>;
   using Descriptor = MixedPolicyDescriptor<CollectiveOp, BaseSchedule, KernelSchedule, ElementBInfo,
       LayoutA, LayoutB, TileShape, ScaleTileShape, WarpShape, AProvider, BProvider,
-      Mode, LowBits, HighBits, LowFold, HighFold, Stages, AiuInterleaved>;
+      Mode, LowBits, HighBits, TacticTileK, ArtifactTileK, ArtifactLowFold, ArtifactHighFold,
+      Stages, AiuInterleaved>;
 };
 
 // One guard for every adapter. TacticSpace is the only operator-specific input: it preserves the declared dense-only
@@ -170,7 +195,8 @@ struct KernelPolicyGuard {
   using WarpShape = typename Policy::Descriptor::WarpShapeType;
   static constexpr ppu_tactics::Candidate tactic{{ppu_tactics::Format::I2, "mixed-policy",
       Policy::LowBits, Policy::HighBits}, int(cute::size<0>(TileShape{})), int(cute::size<1>(TileShape{})),
-      int(cute::size<2>(TileShape{})), int(cute::size<0>(WarpShape{})), int(cute::size<1>(WarpShape{}))};
+      Policy::TacticTileK, int(cute::size<0>(WarpShape{})), int(cute::size<1>(WarpShape{})),
+      Policy::ArtifactTileK};
   using TiledMma = typename Mainloop::TiledMma;
 
   static_assert(int(cute::size(TiledMma{})) == 32 * ppu_tactics::cta_warps(tactic),
@@ -179,10 +205,10 @@ struct KernelPolicyGuard {
                 "mixed policy: scale copy must cover every slot with the instantiated CTA threads");
   static_assert(TacticSpace::kernel_exclusion(tactic) == ppu_tactics::Exclusion::None,
                 "mixed policy: tactic violates this operator's emitted kernel search-space rules");
-  static_assert(fold::CheckDelivery<Policy::LowBits, cute::size<1>(TileShape{}), cute::size<2>(TileShape{}),
+  static_assert(fold::CheckDelivery<Policy::LowBits, cute::size<1>(TileShape{}), Policy::TacticTileK,
                                     cute::size<0>(WarpShape{}), cute::size<1>(WarpShape{})>::ok,
                 "mixed policy low plane: swzl over-delivers at this warp shape");
-  static_assert(fold::CheckDelivery<Policy::HighBits, cute::size<1>(TileShape{}), cute::size<2>(TileShape{}),
+  static_assert(fold::CheckDelivery<Policy::HighBits, cute::size<1>(TileShape{}), Policy::TacticTileK,
                                     cute::size<0>(WarpShape{}), cute::size<1>(WarpShape{})>::ok,
                 "mixed policy high plane: swzl over-delivers at this warp shape");
   static constexpr bool value = true;
