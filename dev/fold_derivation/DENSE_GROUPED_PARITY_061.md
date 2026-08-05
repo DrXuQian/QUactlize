@@ -194,5 +194,24 @@ different defaults/rows are visible data, not hidden policy booleans. Artifact-c
 remain separate scheme registrations. Everything else in the descriptor is either shared by construction or rejected
 at compile time.
 
-This map deliberately stops before step 1 so its classification can be reviewed without a refactor obscuring the
-current evidence.
+## Extraction checkpoint
+
+Step 1 is now implemented in `ppu_mixed_policy.hpp`. Dense, grouped, and the dense sweep no longer construct their
+own operand tuple, low-plane fold wrapper, A/B layouts, alignments, or mixed-input `CollectiveBuilder` argument list.
+They pass their common policy inputs to `MainloopPolicy`; only their problem scheduler and epilogue remain local.
+The public namespace-local aliases preserve existing caller spelling while making both adapters name the same type.
+
+`MixedPolicyDescriptor` records the selected collective, base and folded schedules, operand tuple, A/B providers,
+tile/warp/scale shapes, plane widths/folds, quant mode, compact-A capacity, packed-metadata activation, and whether
+atom-at-a-time conversion is active. `KernelPolicyGuard` is the one launch-site guard for instantiated thread count,
+scale-copy coverage, operator tactic legality, and both delivery checks. The dense-only quarantine remains explicit
+as the `TacticSpace` argument; it is not smuggled into the otherwise common descriptor.
+
+`l112_mixed_policy_parity.cu` compares dense and grouped descriptors over ordinary, folded, two-plane, ScaleOnly,
+and ScaleZero instantiations. The local tier also compiles a planted grouped-only B-layout change and requires that
+the descriptor equality assertion reject it. This is the step-1/launcher-boundary guard; it does not claim that the
+three collective bodies are shared yet.
+
+The next extraction remains step 2 above: move the already compile-time-guarded scale-copy construction and the
+COARSE/FINE reload/apply rule behind one metadata policy, without changing the ring or B-provider lifetime rules in
+the same patch.

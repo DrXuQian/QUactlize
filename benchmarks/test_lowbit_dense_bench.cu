@@ -76,6 +76,7 @@
 
 #include "ppu_include.hpp"
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
+#include "ppu_mixed_policy.hpp"
 
 // Cross-check hook: pull in the grouped mixed-input launcher so we can run it (L=1) on THIS file's own verified
 // data via a runtime --xcheck flag. Always included (no compile-time guard): the two-stage PPU host/device
@@ -226,22 +227,18 @@ struct GroupKernels {
   using Schedule = ppu_group_schedule::FinegrainedSchedule<GroupSize>;
   static constexpr int ScaleK = ppu_group_schedule::scale_groups_v<TileShapeK, GroupSize>;
   using ScaleTile = Shape<cute::Int<TILE_N>, cute::Int<ScaleK>>;
-  using ScaleOnlyMainloop = typename cutlass::gemm::collective::CollectiveBuilder<
-      ArchTag, OperatorClass,
-      ElementA, LayoutA, AlignmentA,
-      cute::tuple<ElementB, ElementScale>, LayoutB_opt, AlignmentB,
-      ElementAccumulator, cute::tuple<TileShape, ScaleTile>, WarpShape,
-      Int<STAGES>, Schedule>::CollectiveOp;
+  using ScaleOnlyPolicy = ppu_mixed_policy::MainloopPolicy<
+      ppu_mixed_policy::QuantMode::FinegrainedScaleOnly, Schedule, TileShape, ScaleTile, WarpShape,
+      STAGES, true, ElementB>;
+  using ScaleOnlyMainloop = typename ScaleOnlyPolicy::CollectiveOp;
   using ScaleOnlyKernel = cutlass::gemm::kernel::GemmUniversal<
       Shape<int,int,int,int>, ScaleOnlyMainloop, CollectiveEpilogue>;
   using ScaleOnly = cutlass::gemm::device::GemmUniversalAdapter<ScaleOnlyKernel>;
 
-  using ScaleZeroMainloop = typename cutlass::gemm::collective::CollectiveBuilder<
-      ArchTag, OperatorClass,
-      ElementA, LayoutA, AlignmentA,
-      cute::tuple<ElementB, ElementScale, ElementZero>, LayoutB_opt, AlignmentB,
-      ElementAccumulator, cute::tuple<TileShape, ScaleTile>, WarpShape,
-      Int<STAGES>, Schedule>::CollectiveOp;
+  using ScaleZeroPolicy = ppu_mixed_policy::MainloopPolicy<
+      ppu_mixed_policy::QuantMode::FinegrainedScaleZero, Schedule, TileShape, ScaleTile, WarpShape,
+      STAGES, true, ElementB>;
+  using ScaleZeroMainloop = typename ScaleZeroPolicy::CollectiveOp;
   using ScaleZeroKernel = cutlass::gemm::kernel::GemmUniversal<
       Shape<int,int,int,int>, ScaleZeroMainloop, CollectiveEpilogue>;
   using ScaleZero = cutlass::gemm::device::GemmUniversalAdapter<ScaleZeroKernel>;
@@ -264,11 +261,12 @@ struct Cfg {
       ArchTag, OperatorClass, CfgTile, CfgWarp, EpilogueTileType,
       ElementAccumulator, ElementAccumulator, ElementC, LayoutC, AlignmentC,
       ElementD, LayoutD, AlignmentD, EpilogueSchedule>::CollectiveOp;
-  using Main = typename cutlass::gemm::collective::CollectiveBuilder<
-      ArchTag, OperatorClass, ElementA, LayoutA, AlignmentA,
-      cute::tuple<ElementB, ElementScale>, LayoutB_opt, AlignmentB,
-      ElementAccumulator, cute::tuple<CfgTile, CfgScale>, CfgWarp, Int<St>,
-      ppu_group_schedule::FinegrainedSchedule<GroupSize>>::CollectiveOp;
+  using Policy = ppu_mixed_policy::MainloopPolicy<
+      ppu_mixed_policy::QuantMode::FinegrainedScaleOnly,
+      ppu_group_schedule::FinegrainedSchedule<GroupSize>, CfgTile, CfgScale, CfgWarp,
+      St, true, ElementB>;
+  using Main = typename Policy::CollectiveOp;
+  static_assert(ppu_mixed_policy::kernel_policy_valid_v<ppu_tactics::DenseSpace, Policy>);
   using Kernel = cutlass::gemm::kernel::GemmUniversal<Shape<int,int,int,int>, Main, Epi>;
   using Gemm = cutlass::gemm::device::GemmUniversalAdapter<Kernel>;
 };

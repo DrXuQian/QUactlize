@@ -25,6 +25,7 @@
 
 #include "ppu_include.hpp"
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
+#include "ppu_mixed_policy.hpp"
 #include "cutlass/epilogue/collective/builders/ppu_builder.inl"
 #include "ppu_aiu_gemm_mixed_input_group.hpp"   // the new grouped mixed-input GemmUniversal specialization
 
@@ -44,9 +45,14 @@ using TacticSpace = ppu_tactics::GroupedSpace;
 // DeviceAllocation<DStride> of L entries, one make_cute_packed_stride(DStride{}, {M_e,N,1}) each.
 using DStride = cute::Stride<int64_t, cute::Int<1>, cute::Int<0>>;
 
-enum class QuantMode { PerColScaleOnly, FinegrainedScaleOnly, FinegrainedScaleZero };
-constexpr bool is_finegrained(QuantMode q) { return q != QuantMode::PerColScaleOnly; }
-constexpr bool has_zero(QuantMode q) { return q == QuantMode::FinegrainedScaleZero; }
+using QuantMode = ppu_mixed_policy::QuantMode;
+using ppu_mixed_policy::has_zero;
+using ppu_mixed_policy::is_finegrained;
+
+template <QuantMode QuantOp, class BaseSchedule, class TileShape, class ScaleTileShape, class WarpShape,
+          int Stages, bool AiuInterleaved, class ElementB = cutlass::int4b_t, class PlaneB2 = void>
+using MixedMainloopPolicy = ppu_mixed_policy::MainloopPolicy<QuantOp, BaseSchedule, TileShape, ScaleTileShape,
+                                                             WarpShape, Stages, AiuInterleaved, ElementB, PlaneB2>;
 
 using GroupShape = cute::Shape<int,int,int>;                            // per-expert [M,N,K]
 using GroupProblemShape = cutlass::gemm::GroupProblemShape<GroupShape>;
@@ -58,7 +64,7 @@ using GroupProblemShape = cutlass::gemm::GroupProblemShape<GroupShape>;
 inline int& moeg_fail_count() { static int c = 0; return c; }
 
 // group_shapes_dev/host: L entries of [M_e,N,K]. A/B/scales single L-strided bases (2a uniform). L=num_experts.
-template <QuantMode QuantOp, class KernelSchedule,
+template <QuantMode QuantOp, class BaseSchedule,
           class TileShape, class ScaleTileShape, class WarpShape, int Stages, bool AiuInterleaved,
           class ElementB = cutlass::int4b_t,   // default W4A16; pass cutlass::uint2b_t for W2A16
           class PlaneB2 = void,                // bit-plane concat: 2nd (high) B plane; void = single plane
@@ -105,24 +111,9 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
             // padded by TileM rows, which buys a uniform fully-vectorised copy for every expert shape. That is a
             // change to the collective's copy, not to a stride, so it is not done here.
             bool /*unused, was a_row_broadcast*/ = false) {
-  using ElementA = cutlass::half_t;  using LayoutA = cutlass::layout::RowMajor;
-  constexpr int AlignmentA = 128 / cutlass::sizeof_bits<ElementA>::value;
-  // ElementB is now a template param (default int4b_t; uint2b_t for W2A16). AlignmentB below auto-adjusts.
-  // NOTE(box): ColumnMajorInterleaved<256> is the int4 offline interleave (RowsPerTile=256). For uint2b_t the
-  // interleave width may need revisiting alongside the offline pack; kept 256 for the first W2A16 cut.
-  using LayoutB  = std::conditional_t<AiuInterleaved, cutlass::layout::ColumnMajorInterleaved<256>, cutlass::layout::ColumnMajor>;
-  constexpr int AlignmentB = 128 / cutlass::sizeof_bits<ElementB>::value;
-  using ElementScale = cutlass::half_t;  using ElementZero = cutlass::half_t;
-  // THE 2-PLANE BRANCH USED TO IGNORE QuantOp. It built the 4-tuple unconditionally, so
-  // QuantMode::FinegrainedScaleOnly on a 2-plane format silently ran as ScaleZero -- for as long as the path has
-  // existed, including every bench row labelled "(ScaleOnly)". The second plane is deduced positionally at index 3 and
-  // cute::tuple cannot hold `void`, so "no zero" is said with detail::NoZero in slot 2 (see that type's comment).
-  using ElementBInfo = std::conditional_t<!std::is_void_v<PlaneB2>,
-      std::conditional_t<has_zero(QuantOp),
-          cute::tuple<ElementB, ElementScale, ElementZero, PlaneB2>,
-          cute::tuple<ElementB, ElementScale, cutlass::gemm::collective::detail::NoZero, PlaneB2>>,
-      std::conditional_t<has_zero(QuantOp),
-          cute::tuple<ElementB, ElementScale, ElementZero>, cute::tuple<ElementB, ElementScale>>>;
+  using MainloopPolicy = MixedMainloopPolicy<QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
+                                              Stages, AiuInterleaved, ElementB, PlaneB2>;
+  using ElementA = typename MainloopPolicy::ElementA;
   using ElementC = cutlass::half_t;  using LayoutC = cutlass::layout::RowMajor;
   using ElementD = cutlass::half_t;  using LayoutD = cutlass::layout::RowMajor;
   constexpr int AlignmentC = 128 / cutlass::sizeof_bits<ElementC>::value;
@@ -142,10 +133,7 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
       ElementD, LayoutD*, AlignmentD,
       EpilogueSchedule,
       cutlass::epilogue::fusion::LinearCombination<ElementC, ElementAccumulator>>::CollectiveOp;
-  using CollectiveMainloop = typename cutlass::gemm::collective::CollectiveBuilder<
-      cutlass::arch::PPU0010, OperatorClass, ElementA, LayoutA, AlignmentA,
-      ElementBInfo, LayoutB, AlignmentB, ElementAccumulator,
-      cute::tuple<TileShape, ScaleTileShape>, ClusterShape, cute::Int<Stages>, KernelSchedule>::CollectiveOp;
+  using CollectiveMainloop = typename MainloopPolicy::CollectiveOp;
   if constexpr (ExpectPackedScale) {
     static_assert(CollectiveMainloop::is_packed_scale,
                   "fully-quantized grouped requires the shared packed-scale mainloop at this tile shape");
@@ -218,39 +206,10 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
                 "caller DStride must match CollectiveEpilogue::StrideD element type");
 
   // same fold factor rule as filter_and_run (AIU needs a >=32B contiguous-K run: TK*bits/8 >= 32)
-  static constexpr int MOEG_BITS  = cutlass::sizeof_bits<ElementB>::value;
+  static constexpr int MOEG_BITS  = MainloopPolicy::LowBits;
   static constexpr int MOEG_RUN_B = cute::size<2>(TileShape{}) * MOEG_BITS / 8;
-  static constexpr int MOEG_FOLD  = fold::delivery_fold_v<MOEG_BITS, int(cute::size<2>(TileShape{}))>;
-  static constexpr int MOEG_P2_BITS = std::is_void_v<PlaneB2> ? 0 : cutlass::sizeof_bits<
-      std::conditional_t<std::is_void_v<PlaneB2>, cutlass::half_t, PlaneB2>>::value;
-  constexpr ppu_tactics::Candidate tactic{{ppu_tactics::Format::I2, "kernel", MOEG_BITS, MOEG_P2_BITS},
-      int(cute::size<0>(TileShape{})), int(cute::size<1>(TileShape{})), int(cute::size<2>(TileShape{})),
-      int(cute::size<0>(WarpShape{})), int(cute::size<1>(WarpShape{}))};
-  using TiledMma = typename CollectiveMainloop::TiledMma;
-  static_assert(int(cute::size(TiledMma{})) == 32 * ppu_tactics::cta_warps(tactic),
-                "grouped: tactic warp count must equal the instantiated TiledMma launch size");
-  static_assert(CollectiveMainloop::scale_copy_thread_coverage,
-                "grouped: scale copy must cover every slot with the instantiated CTA threads");
-  static_assert(TacticSpace::kernel_exclusion(tactic) == ppu_tactics::Exclusion::None,
-                "grouped: tactic violates the emitted kernel search-space rules");
-  // Make the fold invariants actually FIRE. Until this line, fold_traits.hpp was included by nobody and its
-  // static_asserts were inert commentary, so the perf harness could instantiate sub-byte shapes without an active
-  // delivery guard. The recorded int1 (64,128,64) w64x64 row is valid exactly at the delivery boundary; it is not a
-  // sub-four-warp exclusion. Sub-byte B only: fp16/int8 B never folds. A bare alias would NOT do: naming a
-  // specialization as a template argument does not instantiate it, so the asserts would stay asleep. fold::Check<>
-  // below reads a member, which requires completeness and therefore fires them.
-  // The one fold constraint that is real AND measured against cute: a thread cannot use more codes than its mma
-  // fragment has slots, because the surplus is never fetched. slots = WN*TK/32, validated on the builder's real
-  // TiledMma across twelve configs (fold_derivation/l5_slots.cu) -- it does NOT depend on TN, since B is split
-  // across the warps in N. Over-delivery alone separates all nine ppu001 reference points.
-  static_assert(fold::CheckDelivery<MOEG_BITS, cute::size<1>(TileShape{}), cute::size<2>(TileShape{}),
-                                    cute::size<0>(WarpShape{}), cute::size<1>(WarpShape{})>::ok,
-                "B plane: swzl over-delivers -- the fragment has fewer slots than one delivery carries");
-  static_assert(fold::CheckDelivery<(std::is_void_v<PlaneB2> ? 0 : cutlass::sizeof_bits<
-                                        std::conditional_t<std::is_void_v<PlaneB2>, cutlass::half_t, PlaneB2>>::value),
-                                    cute::size<1>(TileShape{}), cute::size<2>(TileShape{}),
-                                    cute::size<0>(WarpShape{}), cute::size<1>(WarpShape{})>::ok,
-                "second B plane: swzl over-delivers at this TileShape");
+  static constexpr int MOEG_FOLD  = MainloopPolicy::LowFold;
+  static_assert(ppu_mixed_policy::kernel_policy_valid_v<TacticSpace, MainloopPolicy>);
   if (k_full <= 0) k_full = k;
   if (splitk < 1) splitk = 1;
   const int scale_k      = (k + group_size - 1) / group_size;        // this slice
@@ -426,12 +385,7 @@ void filter_and_run(const cutlass::half_t* A, const ElementB* B, const cutlass::
   // below that (e.g. int2 at TK=64 -> 16B), fold FoldNeed adjacent N-columns into the run so the load stays legal
   // while TileShape.K (and hence A-smem = TileM*TK*2) stays small. FoldNeed==1 -> no fold, schedule unchanged (all
   // existing callers unaffected). Requires the weight to have been preprocessed with the matching FoldTK=TK.
-  static constexpr int MOEG_BITS     = cutlass::sizeof_bits<ElementB>::value;
-  static constexpr int MOEG_RUN_B    = TK * MOEG_BITS / 8;                       // contiguous bytes at this TK
-  static constexpr int MOEG_FOLD     = fold::delivery_fold_v<MOEG_BITS, TK>; // fold factor needed
-  #define MOEG_SCHED(SCH) std::conditional_t<(MOEG_FOLD > 1), \
-      cutlass::gemm::KernelAiuFold<(MOEG_FOLD > 1 ? MOEG_FOLD : 2), SCH>, SCH>
-  #define MOEG_CALL(SCH, STK, IL) launch<QuantOp, MOEG_SCHED(SCH), TileShape, cute::Shape<cute::Int<TN>, STK>, WarpShape, Stages, IL, ElementB, PlaneB2, ExpectPackedScale>( \
+  #define MOEG_CALL(SCH, STK, IL) launch<QuantOp, SCH, TileShape, cute::Shape<cute::Int<TN>, STK>, WarpShape, Stages, IL, ElementB, PlaneB2, ExpectPackedScale>( \
       A,B,scales,zeros,ptr_D,stride_D,group_M,m,n,k,L,group_size,gsd,gsh,group_row_offsets,ws,ws_bytes,stream,B2,k_full,prefix_ready,splitk,false)
   // COLLECTIVE CONSTRAINT (SK = Scale_TileK = ceil(TK/gs) = #scale groups per K-tile):
   //   Scale_TileK <= mma_K_atoms (= TK/16), i.e. gs >= 16, so each scale group covers >=1 mma atom. The collective

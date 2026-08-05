@@ -34,6 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DEV = ROOT / "dev" / "fold_derivation"
 STUB = DEV / "stub_inc"
 ACT = ROOT / "third_party" / "actlize" / "include"
+ACT_UTIL = ROOT / "third_party" / "actlize" / "tools" / "util" / "include"
 OUT = Path(os.environ.get("QUACTLIZE_CI_OUT", "/tmp/quactlize_ci"))
 
 # l9x gates. `args` is passed to the built binary; a fixture path is given relative to the repo root so a gate that
@@ -65,6 +66,7 @@ GATES = [
     ("l108_rt_error_contract", []),
     ("l109_rt_hggc_parse", []),
     ("l110_unit_pack_abi", []),
+    ("l112_mixed_policy_parity", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -185,6 +187,7 @@ def run(cmd, **kw):
 
 
 GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
+              "l112_mixed_policy_parity": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               "l109_rt_hggc_parse": ["-D__HGGCCC__"],
               # THE MACROS ARE THE POINT. This gate asserts the fused path is ON, so it has to be built the way the
               # box builds packfuse -- without these two it would assert about a configuration nobody runs and pass
@@ -194,6 +197,28 @@ GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
                       "-DPPU_PACKED_SCALE=1", f"-DPPU_PACKED_FORMAT={f}"] for f in (0, 1, 2, 3, 4)},
               "l100_fused_active": ["-D__HGGCCC__", "--expt-relaxed-constexpr",
                                     "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_SCALE_FUSED=1"]}
+
+
+def lint_mixed_policy_parity_fires():
+    """The descriptor equality witness must reject an operator-local mainloop change."""
+    src = DEV / "l112_mixed_policy_parity.cu"
+    if not src.is_file():
+        return "FAIL", f"missing {src.name}", 0.0
+    OUT.mkdir(parents=True, exist_ok=True)
+    planted = OUT / "l112_mixed_policy_parity_planted"
+    rc, log, dt = run(NVCC + ["-D__HGGCCC__", "--expt-relaxed-constexpr",
+                              "-DPPU_PLANT_MIXED_POLICY_DRIFT=1",
+                              "-I", str(STUB), "-I", str(ACT), "-I", str(ACT_UTIL),
+                              "-I", str(ROOT / "quactlize/include"),
+                              "-I", str(ROOT / "tests"), "-I", str(ROOT / "benchmarks"),
+                              "-o", str(planted), str(src)])
+    expected = "dense/grouped mixed policy descriptors diverged"
+    if rc == 0:
+        return "FAIL", "mixed-policy parity accepted a planted grouped-only B-layout change", dt
+    if expected not in log:
+        first = next((line for line in log.splitlines() if "error:" in line), "no compiler diagnostic")
+        return "FAIL", f"planted build failed for the wrong reason: {first[:140]}", dt
+    return "PASS", "descriptor parity rejects a planted grouped-only B-layout change", dt
 
 
 def lint_unroll():
@@ -281,7 +306,8 @@ def gate(name, args):
     OUT.mkdir(parents=True, exist_ok=True)
     exe = OUT / name.replace("@", "_")
     rc, log, dt = run(NVCC + GATE_FLAGS.get(name, []) +
-                      ["-I", str(STUB), "-I", str(ACT), "-I", str(ROOT / "quactlize/include"),
+                      ["-I", str(STUB), "-I", str(ACT), "-I", str(ACT_UTIL),
+                       "-I", str(ROOT / "quactlize/include"),
                        "-I", str(ROOT / "tests"), "-I", str(ROOT / "benchmarks"),
                        "-o", str(exe), str(src)])
     if rc != 0:
@@ -797,6 +823,7 @@ def main():
                 ("lint", "emitted bench flags are ones the bench parses", lint_fixture_flags),
                 ("lint", "every INBOX item is consumed, or is explained by a call in flight", lint_inbox_delivered),
                 ("lint", "dense/grouped tactic differences are declared, and unexpected drift fires", lint_tactic_spaces_agree),
+                ("lint", "dense/grouped mixed policy descriptor parity fires on planted drift", lint_mixed_policy_parity_fires),
                 ("lint", "the committed dense tactic table exactly regenerates from its stamped sources", lint_dense_tactic_table_current),
                 ("lint", "the ctypes config mirror matches its C header field for field", lint_config_abi_matches_header),
                 ("lint", "no tactic choice can change the offline layout", lint_tactic_cannot_change_offline_layout),
