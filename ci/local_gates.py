@@ -67,6 +67,7 @@ GATES = [
     ("l109_rt_hggc_parse", []),
     ("l110_unit_pack_abi", []),
     ("l112_mixed_policy_parity", []),
+    ("l113_mixed_metadata_policy", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -188,6 +189,7 @@ def run(cmd, **kw):
 
 GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               "l112_mixed_policy_parity": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
+              "l113_mixed_metadata_policy": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               "l109_rt_hggc_parse": ["-D__HGGCCC__"],
               # THE MACROS ARE THE POINT. This gate asserts the fused path is ON, so it has to be built the way the
               # box builds packfuse -- without these two it would assert about a configuration nobody runs and pass

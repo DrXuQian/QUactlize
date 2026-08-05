@@ -18,6 +18,9 @@ struct SamePolicy {
                 "dense/grouped mixed CollectiveMainloop types diverged");
   static_assert(std::is_same_v<typename Dense::Descriptor, typename Grouped::Descriptor>,
                 "dense/grouped mixed policy descriptors diverged");
+  static_assert(std::is_same_v<typename Dense::Descriptor::MetadataPolicyType,
+                               typename Grouped::Descriptor::MetadataPolicyType>,
+                "dense/grouped mixed metadata policies diverged");
   static_assert(Dense::Descriptor::low_bits == Grouped::Descriptor::low_bits);
   static_assert(Dense::Descriptor::high_bits == Grouped::Descriptor::high_bits);
   static_assert(Dense::Descriptor::low_fold == Grouped::Descriptor::low_fold);

@@ -104,6 +104,7 @@ struct MixedPolicyDescriptor {
   using WarpShapeType = WarpShape;
   using AProviderType = AProvider;
   using BProviderType = BProvider;
+  using MetadataPolicyType = typename Collective::MetadataPolicy;
   using MetadataProviderType = MetadataProvider<PackedMetadata<Collective>::value, has_zero(Mode)>;
   using ConversionProviderType = ConversionProvider<AtomAtATimeConversion<Collective>::value>;
 

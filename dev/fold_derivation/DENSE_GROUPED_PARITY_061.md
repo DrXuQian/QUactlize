@@ -115,7 +115,7 @@ compile-time failure rather than a context-poisoning device assert.
 | Per-column and groupwise schedules | yes | yes | yes | **Unified tags**, but each collective still reimplements the reload arithmetic. |
 | COARSE/FINE predicate and application | local implementation, now completed and compile-time guarded | second implementation | third implementation | **Correctness-critical drift.** The live unconditional assert existed only in ordinary; fold/two-plane happened to handle their supported modes. Extract before performance work. |
 | Scale-copy thread coverage | uncapped original construction | uncapped original construction | caps slots to CTA threads and asserts coverage | **Correctness drift.** A formerly admitted two-warp shape loaded only half its groups until the two-plane copy was fixed. The current tactic gate masks that exact row; changing the candidate set can revive it. |
-| Scale fragment construction/layout witness | local copy | local copy (`PPU_SCALE_FRAGMENT_API` is an otherwise unread macro) | local copy | **Unifiable.** The macro is dead version-marker debris, not a capability. |
+| Scale fragment construction/layout witness | shared `MixedMetadataPolicy` | shared | shared | **Unified.** `PPU_SCALE_FRAGMENT_API` remains a harness stale-submodule gate and now lives beside the one implementation. |
 | Packed GGUF unit source | yes | no | yes | **Provider drift.** Packed metadata is orthogonal to folded B; fold's absence is artificial. This changes the artifact/schema, so it is a scheme capability rather than a tactic bit. |
 | Packed-unit format selection | `PPU_PACKED_FORMAT` trait | n/a | same trait | **Unified trait where present.** Five format-specific builds are a deliberate artifact contract, not five decoders. |
 | Scale shared-memory swizzle | yes | no | no | **Performance-only drift.** No offline-layout change; make a metadata-policy tactic field or retire from measurements. |
@@ -212,6 +212,17 @@ and ScaleZero instantiations. The local tier also compiles a planted grouped-onl
 the descriptor equality assertion reject it. This is the step-1/launcher-boundary guard; it does not claim that the
 three collective bodies are shared yet.
 
-The next extraction remains step 2 above: move the already compile-time-guarded scale-copy construction and the
-COARSE/FINE reload/apply rule behind one metadata policy, without changing the ring or B-provider lifetime rules in
-the same patch.
+Step 2's common metadata rules are now implemented in
+`cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp`. Every collective publishes one `MetadataPolicy` type.
+That type owns the scale-copy coverage assertion, scale-fragment construction/layout, the COARSE/FINE predicate and
+divisibility invariants, the group-boundary/index split, flat-versus-`(group,stage)` addressing, and the positional
+scale/zero reload contract. Fold and two-plane also use its common scale/zero application primitive for both eager
+and atom-at-a-time conversion. Ordinary's packed-scale prefetch and deliberately-wrong dequant timing ablation remain
+local conversion-provider behavior; they consume the shared FINE policy and reload contract rather than redefining
+either.
+
+No prologue, stage-ring, barrier, B-provider lifetime, or global-to-shared publication cadence moved in this slice.
+`l113_mixed_metadata_policy.cu` pins COARSE/FINE boundary/index behavior and both storage-address policy types.
+`MixedPolicyDescriptor::MetadataPolicyType` plus l112 extends the operator parity guard through this new seam. The
+next structural extraction is step 3: A/B providers behind the logical atom contract, before moving the ring into one
+driver.
