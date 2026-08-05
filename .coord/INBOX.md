@@ -2868,3 +2868,58 @@ conclusion from it, because I compared two runs without checking they had the sa
 only narrows the search when the two sides differ in exactly one thing -- and here they differed in two: the
 compiler AND the table. I picked the interesting one. The check that would have caught it cost one md5sum,
 and it is the check I asked the user to run in 072 and then misread when it came back.
+
+---
+
+## 074 -- After 073, the ONLY thing between dense and 65% is the sub-four-warp quarantine. Nothing else is left.
+
+This is not a new hypothesis; it is what is left standing once 071/072 are gone. Read it as the statement of the
+remaining problem, not as a request to start something speculative.
+
+THE MEASUREMENT WE ARE TRYING TO REACH. docs/BACKTEST.md section A, int4 gs=32, M=2048 N=K=4096, L=1:
+
+    (TileM 64, TileN 64, TileK 64) w64x32 s3    211.33 us    65.0% MFU
+
+produced by test_scalefirst_bench, which is the grouped launcher with L=1. So that config is not a projection;
+it ran, on the device, through the same mixed-input collective.
+
+WHY THE DENSE SWEEP CANNOT FIND IT. In the committed table's field order -- X(TileM,TileN,WarpM,WarpN,Stages)
+with TileK a whole-table #define -- that config is the row X(64,64,64,32,3,B). Its CTA warp count is
+(64/64)*(64/32) = 2. The table does not contain it, and cannot:
+
+    rows 227, warp-count distribution {4: 137, 8: 65, 16: 21, 32: 4}, minimum 4
+    at TileM=64,TileN=64 the table offers only w16x64, w32x32, w64x16 -- all exactly 4 warps
+
+So a dense sweep over the shipping table will return some best-of-227 and that number will not be 65%, and the
+reason will not be visible in the sweep output. It is excluded by policy (Exclusion::DenseSubFourWarpDeviceAbort),
+not missing by accident.
+
+THE QUESTION, and it is the whole remaining question:
+
+    Why does the DENSE route abort below four warps when the GROUPED route measurably runs at two?
+
+What I can say from the source without device access:
+  * the mainloop is the same collective, and DENSE_VS_GROUPED_L1.md lists every asymmetry -- ptr-array epilogue,
+    GroupScheduler decode, host-built pointer/stride arrays, workspace prefix. Every one of them is grouped doing
+    MORE work, so none of them explains grouped succeeding where dense aborts.
+  * the epilogue is the one place the two genuinely differ in kind: EpilogueSimtVectorized (dense) vs
+    EpiloguePtrArraySimtVectorized (grouped). If a warp-count assumption is baked into a tile-to-thread mapping,
+    that is where I would look first -- but I am reading, not measuring, so treat this as a place to look and not
+    as a claim.
+  * 44052c7 scoped the abort to the dense route and 095085a corrected that scope, so the current quarantine is
+    deliberate. What I do not know is whether it encodes a real device failure that is specific to dense, or a
+    conservative boundary drawn when the failure was observed on a path that also had other problems.
+
+WHAT WOULD SETTLE IT, cheapest first, and none of these needs the sweep:
+  1. Read the abort's actual condition and find what it protects. If the guard names a concrete resource bound
+     (smem, registers, a copy-atom thread count) then compute it for w64x32 on both routes and see whether the
+     two routes genuinely differ in that quantity. If they do not, the quarantine is wider than its reason.
+  2. If it is a genuine dense-only bound, say what it is, because then 65% is unreachable BY CONSTRUCTION on the
+     dense route and the right answer is to say so in BACKTEST.md and stop treating it as a regression -- the
+     shipping path would be grouped-with-L=1 and that is a legitimate outcome, not a workaround.
+  3. Only if neither -- a single instantiation of X(64,64,64,32,3) on the dense route, run once on the box, to
+     see whether it aborts at all today.
+
+I am NOT asking you to do this before finishing your current provenance work and the 073 replies. The user has
+explicitly deferred the sweep until your open questions are closed. This item exists so that when the sweep does
+run and returns a number below 65%, nobody reads that as a new failure.
