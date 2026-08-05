@@ -784,10 +784,19 @@ Result run(Options &options, char const* label = "default")
     //   cmp   = achieved TFLOP/s vs the 500 TFLOP/s fp16 peak (compute utilization).
     //   min   = the ALGORITHMIC minimum traffic (A + B + D each touched once) vs HBM peak. This is what a perfect
     //           kernel would move from HBM; at prefill M it is tiny (few % of HBM), which is why MFU is the headline.
-    //   tile  = the TILE-LEVEL traffic actually generated: A is re-read once per N-tile (N/TileN times) and B once
-    //           per M-tile (M/TileM times). With a narrow TileN this explodes and becomes the real ceiling -- e.g.
-    //           int1 32x128 at M=2048,N=K=4096 moves 656MB in 286us = 2295 GB/s = 83% of HBM, i.e. it is
-    //           BANDWIDTH-bound on the A re-reads even though cmp is only 48%. Widening TileN is what cuts it.
+    //   tile  = the TILE-LEVEL traffic REQUESTED: A once per N-tile (N/TileN times), B once per M-tile. Reported
+    //           as GB/s and as a REUSE FACTOR over min, NOT as a percentage of HBM.
+    //
+    //   WHY NOT AGAINST HBM, corrected 2026-08-05 after a box run printed "195.2% HBM". Tile traffic is what the
+    //   kernel ASKS FOR; L2 serves the re-reads, so measuring it against the DRAM peak is a category error and any
+    //   value above 100% is proof of that rather than of a bandwidth problem. The figure is still worth printing --
+    //   a large reuse factor is what a narrow TileN costs -- but whether it binds depends on L2, which this bench
+    //   does not measure.
+    //
+    //   THE OLD COMMENT HERE DREW A CAUSAL CONCLUSION FROM IT, and that is the reason for the rewrite: it said
+    //   int1 32x128 at 2295 GB/s "= 83% of HBM, i.e. it is BANDWIDTH-bound on the A re-reads even though cmp is
+    //   only 48%". 83% of tile-level traffic does not establish DRAM-bound either; the same L2 objection applies,
+    //   and that claim should be treated as unproven until something measures actual DRAM traffic (acu can).
     const double us = result.avg_runtime_ms * 1e3;
     const double tflops = result.gflops / 1e3;
     int tm = 0, tn = 0;
@@ -803,9 +812,14 @@ Result run(Options &options, char const* label = "default")
     const double gbs_tile = tile_bytes / (us * 1e-6) / 1e9;
     // NOTE: the w%d tag (w4/w2/w1) is essential -- the cfg label alone is identical across quant builds and the
     // numbers are easy to mix up between them (int4/int2/int1 all have a "64x64:32x32:s3").
-    std::printf("  [CUTLASS w%d gs=%d cfg=%s] M=%d %7.2f us | %6.1f TFLOP/s | cmp %5.1f%% | tile %6.0f GB/s (%5.1f%% HBM) | min %5.0f GB/s (%4.1f%%)\n",
+    // min IS the only figure with a legitimate HBM denominator: it counts every byte once, which is what DRAM
+    // must actually deliver. tile carries a reuse factor instead, and a marker when it exceeds the DRAM peak --
+    // which says the re-reads are cache-served, not that the kernel is bandwidth-bound.
+    double const reuse = tile_bytes / min_bytes;
+    std::printf("  [CUTLASS w%d gs=%d cfg=%s] M=%d %7.2f us | %6.1f TFLOP/s | cmp %5.1f%% | tile %6.0f GB/s "
+                "(%.1fx min%s) | min %5.0f GB/s (%4.1f%% HBM)\n",
                 int(sizeof_bits<QuantType>::value), options.g, label, options.m, us, tflops, 100.0 * tflops / 500.0,
-                gbs_tile, 100.0 * gbs_tile / HBM_GBS, gbs_min, 100.0 * gbs_min / HBM_GBS);
+                gbs_tile, reuse, gbs_tile > HBM_GBS ? ", L2-served" : "", gbs_min, 100.0 * gbs_min / HBM_GBS);
   }
 
   return result;
