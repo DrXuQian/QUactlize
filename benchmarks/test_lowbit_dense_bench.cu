@@ -905,6 +905,22 @@ Result run_scale_zero(Options& options, char const* label = "default") {
   }
 }
 
+// THE SAMPLE'S IDENTITY FIELDS, in one place. They are built twice per candidate -- once for the attempt record
+// written before the launch, once for the sample written after -- and two spellings of "which run is this" that
+// can disagree is the defect the attempt record exists to avoid in the first place.
+inline char const* dense_schema() {
+  return cutlass::sizeof_bits<QuantType>::value == 4 ? "i4"
+       : cutlass::sizeof_bits<QuantType>::value == 2 ? "i2" : "i1";
+}
+
+inline char const* dense_fixture(Options const& o) {
+  // Static, because Sample holds a `char const*` and does not own its strings; the shape does not change within
+  // a process, so one buffer is correct and a per-call one would dangle.
+  static char fx[96];
+  std::snprintf(fx, sizeof fx, "dense-m%d-n%d-k%d-gs%d", o.m, o.n, o.k, o.g);
+  return fx;
+}
+
 // Run one named/descriptor config through the compiled dispatch. Returns its Result.
 template <int GroupSize>
 Result run_config_for_group(Options& options, TileCfg const& cfg) {
@@ -1115,28 +1131,33 @@ int main(int argc, char const **args) {
     for (int rep = 0; rep < reps; ++rep) {
       if (reps > 1) std::printf("\n  --- pass %d/%d ---\n", rep + 1, reps);
       for (auto const& c : supported_configs()) {
+        // NAME THE CANDIDATE BEFORE LAUNCHING IT. A device assert takes the whole process, and every other
+        // report of which config ran happens AFTER run_config() returns -- so without this, the row that killed
+        // a sweep is not named anywhere and "reproduce it by name" has nothing to work from. Both channels get
+        // it: the sample file (an `a` record with no matching `s` is where it stopped) and stdout, flushed
+        // because stdout to a file is block-buffered and would lose its tail with the process.
+        bench_samples::Sample _a{};
+        _a.fixture = dense_fixture(options); _a.dist = "dense-v1"; _a.schema = dense_schema();
+        _a.n = options.n; _a.k = options.k; _a.gs = options.g;
+        _a.experts = 0; _a.rows = options.m; _a.mmax = options.m;
+        _a.tm = c.tm; _a.tn = c.tn; _a.tk = TileShapeK; _a.wm = c.wm; _a.wn = c.wn; _a.st = c.st;
+        _a.pass = rep;
+        bench_samples::attempt(_a);
+        std::printf("%-18s ", c.name);
+        std::fflush(stdout);
+
         Result r = run_config(options, c);
-        if (!r.passed) { if (!rep) std::printf("%-18s %-10s %s\n", c.name, "-", "skipped (unsupported/failed)"); continue; }
+        if (!r.passed) { if (!rep) std::printf("%-10s %s\n", "-", "skipped (unsupported/failed)"); else std::printf("\n"); continue; }
         const double tf = r.gflops / 1e3;
         // SECONDS, NOT TFLOP/s, IS WHAT GETS COMPARED. The selection works on a time, so converting once here
         // keeps one definition of "better" rather than a maximised rate in one bench and a minimised time in
         // the other -- two orderings that agree until a shape makes the FLOP count differ between candidates.
         const double us = (tf > 0.0) ? (2.0 * double(options.m) * options.n * options.k / (tf * 1e12) * 1e6) : 1e18;
-        std::printf("%-18s %-10.1f ok\n", c.name, tf);
+        std::printf("%-10.1f ok\n", tf);
         upd(best, c.name, us);
-        if (bench_samples::enabled()) {
-          bench_samples::Sample s{};
-          static char fx[96];
-          std::snprintf(fx, sizeof fx, "dense-m%d-n%d-k%d-gs%d", options.m, options.n, options.k, options.g);
-          s.fixture = fx; s.dist = "dense-v1";
-          s.schema = cutlass::sizeof_bits<QuantType>::value == 4 ? "i4"
-                   : cutlass::sizeof_bits<QuantType>::value == 2 ? "i2" : "i1";
-          s.n = options.n; s.k = options.k; s.gs = options.g;
-          s.experts = 0; s.rows = options.m; s.mmax = options.m;
-          s.tm = c.tm; s.tn = c.tn; s.tk = TileShapeK; s.wm = c.wm; s.wn = c.wn; s.st = c.st;
-          s.pass = rep; s.us = us;
-          bench_samples::emit(s);
-        }
+        // THE SAME RECORD THE ATTEMPT CARRIED, plus the measurement. Rebuilding the identity fields here was
+        // how an attempt and its sample could disagree about what ran; now `us` is the only field that differs.
+        if (bench_samples::enabled()) { bench_samples::Sample s = _a; s.us = us; bench_samples::emit(s); }
       }
     }
     bench_samples::flush();

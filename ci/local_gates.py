@@ -671,6 +671,42 @@ def lint_tactic_spaces_agree():
                     f"({planted.strip()})"), 0.0
 
 
+def lint_attempt_record_roundtrip():
+    """The C++ that writes attempt/sample records and the Python that reads them must agree, byte for byte.
+
+    Both sides have self-tests and neither can catch a drift between them: analyse.py's fixtures are JSON strings
+    written by hand in analyse.py, so they check the reader against its author's belief about the writer. This
+    compiles bench_samples.hpp for real, runs it, and parses its actual output -- and it is registered HERE
+    rather than only existing as a script, because codex pointed out that calling something a gate while nothing
+    invokes it is worse than not having it.
+    """
+    checker = ROOT / "ci" / "check_attempt_roundtrip.py"
+    if not checker.is_file():
+        return "FAIL", "ci/check_attempt_roundtrip.py is missing", 0.0
+    r = subprocess.run([sys.executable, str(checker)], cwd=ROOT, capture_output=True, text=True)
+    line = next((l.strip() for l in (r.stdout + r.stderr).splitlines() if l.strip()), f"exit {r.returncode}")
+    return ("PASS" if r.returncode == 0 else "FAIL"), line, 0.0
+
+
+def lint_route_admits():
+    """Ask the compiler whether the dense route admits the geometries we claim, with controls that must fail.
+
+    REGISTERED BECAUSE IT WAS NOT. ci/check_route_admits.py was written, described as a gate, cited as evidence
+    for deleting the sub-four-warp exclusion -- and never invoked by anything. codex caught that: "either
+    register it or stop calling it a tier gate". Its own three controls (two configurations that must be
+    rejected, one static_assert planted inside the mainloop's device body that must fire) are what make a green
+    verdict here mean anything.
+    """
+    checker = ROOT / "ci" / "check_route_admits.py"
+    if not checker.is_file():
+        return "FAIL", "ci/check_route_admits.py is missing", 0.0
+    r = subprocess.run([sys.executable, str(checker)], cwd=ROOT, capture_output=True, text=True)
+    out = (r.stdout + r.stderr).strip().splitlines()
+    if r.returncode == 0:
+        return "PASS", next((l.strip() for l in reversed(out) if l.strip()), "passed"), 0.0
+    return "FAIL", next((l.strip() for l in out if "FAIL" in l or "!!" in l), "\n".join(out[-2:])), 0.0
+
+
 def lint_dense_tactic_table_current():
     """The committed dense X-macro must be exact output from the current space and current emitter."""
     checker = ROOT / "ci" / "check_dense_tactic_table.py"
@@ -880,6 +916,8 @@ def main():
                 ("lint", "dense/grouped mixed policy descriptor parity fires on planted drift", lint_mixed_policy_parity_fires),
                 ("lint", "all mixed collectives use one stage-ring driver", lint_mixed_pipeline_shared),
                 ("lint", "the committed dense tactic table exactly regenerates from its stamped sources", lint_dense_tactic_table_current),
+                ("lint", "the sample writer and the sample reader agree on the bytes", lint_attempt_record_roundtrip),
+                ("lint", "the dense route admits the geometries we claim, and its controls still fail", lint_route_admits),
                 ("lint", "the ctypes config mirror matches its C header field for field", lint_config_abi_matches_header),
                 ("lint", "no tactic choice can change the offline layout", lint_tactic_cannot_change_offline_layout),
     ("registry", "declarations vs source", None)])

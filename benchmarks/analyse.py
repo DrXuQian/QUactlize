@@ -39,7 +39,7 @@ def config_name(s: dict) -> str:
 def load(text: str):
     """-> (runs, samples, complaints). A malformed line is a complaint and never a skip: an analyser that
     ignores what it cannot parse reports a verdict over a subset it never mentions."""
-    runs, samples, bad = [], [], []
+    runs, samples, attempts, bad = [], [], [], []
     for n, line in enumerate(text.splitlines(), 1):
         line = line.strip()
         if not line:
@@ -52,6 +52,20 @@ def load(text: str):
         kind = r.get("rec")
         if kind == "run":
             runs.append(r)
+        elif kind == "a":
+            # WHAT LAUNCHED. Written and flushed by the bench BEFORE the kernel, so that a device assert -- which
+            # takes the whole process -- still leaves the failing candidate named. Carries no `us`: there is
+            # nothing measured yet, and unfinished() below is what turns these into a verdict.
+            #
+            # VALIDATED LIKE A SAMPLE, minus `us`. An attempt missing an identity key cannot match its own sample,
+            # so the candidate reads as having died when it completed -- a false alarm on a healthy sweep, which
+            # is how a warning stops being read. Checked here so it is reported at the LINE rather than surfacing
+            # later as an inexplicable count.
+            missing = [k for k in CONFIG_KEYS + FIXTURE_KEYS + ("pass",) if k not in r]
+            if missing:
+                bad.append(f"line {n}: attempt missing {','.join(missing)}")
+            else:
+                attempts.append(r)
         elif kind == "s":
             missing = [k for k in CONFIG_KEYS + FIXTURE_KEYS + ("pass", "us") if k not in r]
             if missing:
@@ -60,7 +74,23 @@ def load(text: str):
                 samples.append(r)
         else:
             bad.append(f"line {n}: unknown rec {kind!r}")
-    return runs, samples, bad
+    return runs, samples, attempts, bad
+
+
+def unfinished(samples, attempts) -> list:
+    """-> the attempts that never produced a sample, i.e. where the sweep died.
+
+    THE READER'S HALF OF THE ATTEMPT RECORD. Writing `a` lines and never checking them would be the same defect
+    as a gate that is never registered: the durability exists in the file and not in anyone's hands. One line of
+    rule -- AN ATTEMPT WITH NO MATCHING SAMPLE IS WHERE IT STOPPED -- and it is the only way to name the config
+    that killed a run, because the bench's own report of which candidate ran happens after the launch returns.
+
+    Matched on the full identity plus `pass`, so a candidate that dies on its third repetition is reported at
+    that repetition rather than being masked by its two successes.
+    """
+    key = lambda r: tuple(r.get(k) for k in CONFIG_KEYS + FIXTURE_KEYS + ("pass",))
+    done = {key(s) for s in samples}
+    return [a for a in attempts if key(a) not in done]
 
 
 def incompatible(runs) -> list:
@@ -377,10 +407,26 @@ def _uncovered_data():
 
 
 def self_test() -> int:
-    runs, samples, bad = load(SELF_TEST)
+    runs, samples, attempts, bad = load(SELF_TEST)
     vs = {v["fixture"]: v for v in verdicts(samples)}
     checks = []
     checks.append(("a malformed line is reported, not skipped", len(bad) == 1 and "not JSON" in bad[0]))
+
+    # THE ATTEMPT RECORD'S READER, PLANTED BOTH WAYS. An `a` with a matching `s` must NOT be reported (or every
+    # healthy sweep cries wolf and the warning stops being read), and an `a` without one MUST be.
+    _a = ('{"rec":"a","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":0,"rows":128,'
+          '"mmax":128,"tm":64,"tn":64,"tk":64,"wm":64,"wn":32,"st":3,"pass":0}')
+    _s_done = _a.replace('"rec":"a"', '"rec":"s"')[:-1] + ',"us":209.27}'
+    _r, _sm, _at, _bd = load(_a + "\n" + _s_done + "\n")
+    checks.append(("an attempt that produced a sample is not reported as unfinished",
+                   _bd == [] and unfinished(_sm, _at) == []))
+    _r, _sm, _at, _bd = load(_a + "\n")
+    checks.append(("an attempt with no sample IS reported as unfinished",
+                   _bd == [] and len(unfinished(_sm, _at)) == 1))
+    # And a DIFFERENT pass must not satisfy it: a config that dies on its third repetition is still a death.
+    _r, _sm, _at, _bd = load(_a + "\n" + _s_done.replace('"pass":0', '"pass":1') + "\n")
+    checks.append(("a sample from another pass does not mask an unfinished attempt",
+                   len(unfinished(_sm, _at)) == 1))
     f = vs["f"]
     # The 32x64 candidate's band starts at 101.5, inside the leader's [100,102] -> a tie, NOT a loss, even
     # though its median (103.0) is worse. This is the rule the old `if (u < b.us)` could not express.
@@ -476,9 +522,25 @@ def main() -> int:
             return 2
         text += p.read_text()
 
-    runs, samples, bad = load(text)
+    runs, samples, attempts, bad = load(text)
     for b in bad:
         print(f"  MALFORMED {b}", file=sys.stderr)
+    # BEFORE ANYTHING IS RANKED. A sweep that died leaves a ranking over its PREFIX, which reads as a complete
+    # answer -- the leader of the configs that happened to run before the crash is not the leader of the space.
+    # So this is loud, it is first, and it names the row so it can be reproduced.
+    stopped = unfinished(samples, attempts)
+    if stopped:
+        print(f"  ⚠ {len(stopped)} candidate(s) LAUNCHED AND PRODUCED NO SAMPLE -- the run did not finish.",
+              file=sys.stderr)
+        for s in stopped[:8]:
+            print(f"      {s.get('schema')} {s.get('tm')}x{s.get('tn')}:{s.get('wm')}x{s.get('wn')}:s{s.get('st')}"
+                  f" tk={s.get('tk')} gs={s.get('gs')} pass={s.get('pass')}  fixture={s.get('fixture')}",
+                  file=sys.stderr)
+        if len(stopped) > 8:
+            print(f"      ... and {len(stopped) - 8} more", file=sys.stderr)
+        print("    Any ranking below covers only the candidates that completed. Reproduce a named row with"
+              " --config before treating the leader as the winner.", file=sys.stderr)
+
     if not samples:
         print("no samples in this file -- nothing to rank. (Was BENCH_JSONL set for the run?)", file=sys.stderr)
         return 1

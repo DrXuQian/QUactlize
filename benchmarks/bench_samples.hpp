@@ -63,22 +63,54 @@ inline void run_header(char const* bench, char const* build_defines, int reps) {
   std::fflush(f);
 }
 
+// No JSON library and no escaping beyond this: every string field is an identifier chosen in this repo, so a
+// quote in one is a bug in the caller rather than data to be escaped. Refuse instead of silently mangling.
+inline bool plain_names(Sample const& s) {
+  auto plain = [](char const* p) { return p && !std::strchr(p, '"') && !std::strchr(p, '\\'); };
+  if (plain(s.fixture) && plain(s.dist) && plain(s.schema)) return true;
+  std::fprintf(stderr, "[bench_samples] refusing to write a record with a quote in a name field\n");
+  return false;
+}
+
+// WHICH CANDIDATE IS ABOUT TO RUN, written and FLUSHED BEFORE THE LAUNCH.
+//
+// A DEVICE ASSERT TAKES THE WHOLE PROCESS, so a sweep can end at any candidate with no further output. Flushing
+// completed samples preserves the successful prefix, which is necessary and not sufficient: it says which
+// candidates SUCCEEDED and leaves the reader to infer the next one from a config list they must reconstruct.
+// Worse in this bench specifically, the candidate name reaches stdout only after run_config() RETURNS, so a
+// launch that dies is not named anywhere at all -- and "reproduce the failing row by name" is the whole recovery
+// procedure. (Raised by codex reviewing the 293-row sweep plan; the first version of this change flushed samples
+// and stopped there, which would have left exactly that hole.)
+//
+// So the file gets one `a` record per launch. The reader's rule is one line: AN ATTEMPT WITH NO MATCHING SAMPLE
+// IS WHERE IT STOPPED. `us` is not written here -- there is nothing to write yet, and a placeholder would be a
+// measurement-shaped value in a measurement file.
+inline void attempt(Sample const& s) {
+  std::FILE* f = stream();
+  if (!f || !plain_names(s)) return;
+  std::fprintf(f,
+      "{\"rec\":\"a\",\"fixture\":\"%s\",\"dist\":\"%s\",\"schema\":\"%s\","
+      "\"n\":%d,\"k\":%d,\"gs\":%d,\"experts\":%d,\"rows\":%d,\"mmax\":%d,"
+      "\"tm\":%d,\"tn\":%d,\"tk\":%d,\"wm\":%d,\"wn\":%d,\"st\":%d,\"pass\":%d}\n",
+      s.fixture, s.dist, s.schema, s.n, s.k, s.gs, s.experts, s.rows, s.mmax,
+      s.tm, s.tn, s.tk, s.wm, s.wn, s.st, s.pass);
+  std::fflush(f);
+}
+
 inline void emit(Sample const& s) {
   std::FILE* f = stream();
-  if (!f) return;
-  // No JSON library and no escaping beyond this: every string field is an identifier chosen in this repo, so a
-  // quote in one is a bug in the caller rather than data to be escaped. Assert it instead of silently mangling.
-  auto plain = [](char const* p) { return p && !std::strchr(p, '"') && !std::strchr(p, '\\'); };
-  if (!plain(s.fixture) || !plain(s.dist) || !plain(s.schema)) {
-    std::fprintf(stderr, "[bench_samples] refusing to write a sample with a quote in a name field\n");
-    return;
-  }
+  if (!f || !plain_names(s)) return;
   std::fprintf(f,
       "{\"rec\":\"s\",\"fixture\":\"%s\",\"dist\":\"%s\",\"schema\":\"%s\","
       "\"n\":%d,\"k\":%d,\"gs\":%d,\"experts\":%d,\"rows\":%d,\"mmax\":%d,"
       "\"tm\":%d,\"tn\":%d,\"tk\":%d,\"wm\":%d,\"wn\":%d,\"st\":%d,\"pass\":%d,\"us\":%.6f}\n",
       s.fixture, s.dist, s.schema, s.n, s.k, s.gs, s.experts, s.rows, s.mmax,
       s.tm, s.tn, s.tk, s.wm, s.wn, s.st, s.pass, s.us);
+  // FLUSHED PER SAMPLE, not once at the end. run_header() already flushed; emit() did not, and the benches call
+  // flush() only after every pass and candidate -- so an abort discarded every buffered sample, which is the
+  // entire content of the file. Per-sample flushing cannot make the SUCCESSORS run (a poisoned context needs the
+  // process restarted) but it does make the prefix durable, and that is what a resume would consume.
+  std::fflush(f);
 }
 
 inline void flush() { if (std::FILE* f = stream()) std::fflush(f); }
