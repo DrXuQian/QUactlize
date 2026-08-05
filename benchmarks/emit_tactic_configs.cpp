@@ -131,12 +131,33 @@ std::vector<Candidate> legal_grid(FormatSpec const& spec, int tk) {
 // and every stage in scope, asked of both spaces. Reports disagreements rather than asserting: a divergence is
 // news about the two operators, not necessarily a defect, and the emitter cannot know which. Returns the count
 // so a gate can require zero while a human reads what differs.
+// THE ONE DECLARED ASYMMETRY. codex's 064 resolution (ppu_tactic_space.hpp at 44052c7): the sub-four-warp device
+// abort observed on ppu001 is a DENSE-ROUTE QUARANTINE, not PPU collective legality. The grouped kernel has
+// POSITIVELY MEASURED two-warp rows through the same mainloop -- (64,64,64) w64x32 and (64,128,64) w64x64, the
+// latter being the recorded int1 61.2% winner -- and GemmUniversalAdapter's max(4,...) is only legacy WarpCount
+// metadata while kThreadCount and both kernels' block shapes remain size(TiledMma). So the dense evidence cannot
+// exclude grouped rows, and requiring the two spaces to agree would delete a measured optimum.
+//
+// A DISAGREEMENT IS ACCEPTED ONLY WHEN DENSE'S OWN VERDICT IS THAT ONE. Dense short-circuits at the warp check, so
+// grouped may report anything downstream -- None, or a later exclusion dense never reached. What must not happen
+// is the two disagreeing for any OTHER reason, and that is what still exits non-zero. Adding a second entry here
+// is a deliberate act and should carry the same kind of citation.
+constexpr Exclusion kDeclaredDenseOnly[] = { Exclusion::DenseSubFourWarpDeviceAbort };
+
+bool is_declared(int dense_verdict) {
+  for (Exclusion e : kDeclaredDenseOnly)
+    if (int(e) == dense_verdict) return true;
+  return false;
+}
+
 int compare_spaces(FormatSpec const& spec, int tk) {
-  int diffs = 0;
+  int diffs = 0, declared_n = 0;
   auto say = [&](Candidate const& c, char const* what, int a, int b, int st) {
-    std::printf("  %-22s tm=%-4d tn=%-4d wm=%-3d wn=%-4d st=%-3d  dense=%-38s grouped=%s\n",
-                what, c.tm, c.tn, c.wm, c.wn, st, exclusion_clause(Exclusion(a)), exclusion_clause(Exclusion(b)));
-    ++diffs;
+    bool const ok = is_declared(a);
+    std::printf("  %-9s %-22s tm=%-4d tn=%-4d wm=%-3d wn=%-4d st=%-3d  dense=%-38s grouped=%s\n",
+                ok ? "DECLARED" : "DRIFT", what, c.tm, c.tn, c.wm, c.wn, st,
+                exclusion_clause(Exclusion(a)), exclusion_clause(Exclusion(b)));
+    if (ok) ++declared_n; else ++diffs;
   };
   for (int tm : kTileM)
     for (int tn : kTileN)
@@ -165,6 +186,7 @@ int compare_spaces(FormatSpec const& spec, int tk) {
             }
           }
         }
+  std::printf("%d declared difference(s), %d unexpected disagreement(s)\n", declared_n, diffs);
   return diffs;
 }
 
@@ -260,7 +282,6 @@ int main(int argc, char** argv) {
     // A disagreement is NEWS, not a failure of this program -- but it must not be exit 0, or a gate that runs
     // this to establish "the two spaces still agree" would pass while they diverge, which is the exact shape of
     // check this repo has been bitten by before.
-    std::printf("%d disagreement(s)\n", d);
     return d == 0 ? 0 : 1;
   }
   std::fprintf(stderr, "unknown --space=%s (want dense, grouped or compare)\n", space);
