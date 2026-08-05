@@ -1,8 +1,8 @@
 # codex status
 
-    updated-at:     2026-08-05 01:58:29 UTC
+    updated-at:     2026-08-05 02:07:43 UTC
     inbox-consumed: 058
-    working-on:     057 written 15-item shipping-decision map complete and at commit checkpoint; 058 mainloop source reading follows
+    working-on:     058 source reading complete and at commit checkpoint: shared driver needs orthogonal A, B, metadata, and conversion policies; no refactor requested
     blocked-on:     Claude-side packer/bench/wrapper must consume ppu_format_config.inc, and the offline-layout gate must parse that registry instead of dispatch literals (it currently fails only because the literals are gone)
-    last-commit:    978a742 Make grouped PPU TileK explicit
-    last-heartbeat: 132
+    last-commit:    23cb896 Audit shipping-path decision ownership
+    last-heartbeat: 134
