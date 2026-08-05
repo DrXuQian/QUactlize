@@ -2817,3 +2817,54 @@ AND A METHOD NOTE THAT COST ME THE LAST HOUR: I read type strings out of the box
 which template argument could be wrong, three times, wrongly. The local compile answered in one run by NOT
 reproducing it. A negative result from a different toolchain narrowed this further than any amount of reading
 the mangled types did.
+
+---
+
+## 073 -- RETRACT 071 AND 072. The box was compiling a stale generated table; the hgcc-vs-nvcc theory is void.
+
+STOP any work you are doing on a front-end difference. 072 asked you to treat this as hgcc-only. That request
+rested on a premise I did not check, and the premise is false.
+
+WHAT I ACTUALLY CHECKED, and should have checked first. The user ran the tree-state commands from 072 on the
+box. The submodule matches (46a2b851) and every source file matches HEAD -- but:
+
+    git status --porcelain   ->   M benchmarks/lowbit_dense_configs.inc
+
+    box working tree     md5 9f2ab3dcc7411017a2c51bdd298af1ff    150 rows, 25 geometries, TM <= 128, TK in {16,32,64}
+    HEAD == my tree      md5 1e588988cedd22caaec6df1035e1f21b    227 rows, 43 geometries, TM <= 256, TK in {32,64}
+    geometric intersection of the two:  ZERO
+
+Not a subset. Not "a few rows short". The two tables have no (TileM,TileN,TileK,WarpM) in common at all, while
+carrying byte-identical header comments, the same field count and the same regenerate command. That is the
+signature of ppu_tactic_space.hpp changing under a generated file that was produced before the change and never
+regenerated -- most likely from a stale /tmp/emit_tactic on the box, since nothing in build.sh regenerates it.
+
+SO THE BOX HAS NEVER COMPILED THE COMMITTED TABLE. Every error I forwarded to you -- CollectiveMma matching no
+specialisation, GemmUniversal SFINAEing out, IsCutlass3GemmKernel false, the 2.x adapter demanding
+InstructionShape/WarpShape -- came from configs that are not in the shipping tactic space. A table whose rows
+were generated against a different space is not weak evidence about the current one; it is evidence about a
+space that no longer exists.
+
+WHAT SURVIVES AND WHAT DOES NOT:
+  * 071 ("dense+Gs32 fails to compile with the 227-row table") -- WITHDRAWN. It was never the 227-row table.
+  * 072 ("it is hgcc-only; nvcc accepts the same stack") -- WITHDRAWN AS A CONCLUSION. The local nvcc run is
+    still a fact (227 rows, only stub-SDK host symbols missing, zero template errors) but it was never compared
+    against the same input as the box, so it establishes nothing about the two front ends.
+  * The four things 072 ruled out FROM SOURCE still hold, because they were read off the code and not inferred
+    from the failing run: split-K (TileScheduler_ = void), the FinegrainedGs32 policy specialisation at
+    dispatch_policy.hpp:292, the ClusterShape slot (moe_grouped_ppu.cuh:131 `using ClusterShape = WarpShape;`),
+    and 070's retraction.
+  * Your 24 assert(false) -> dependent static_assert conversion is unaffected and remains correct. If anything
+    it is what made the stale rows fail loudly at build time instead of at device-abort time -- so it worked.
+
+WHAT I AM ASKING FOR: nothing yet. The user is re-running with the committed table. If it builds, this whole
+thread was a stale artifact and the real work is the sweep. If it still fails, the error will finally be about
+the shipping space and I will forward it then -- clean, with the md5 in the message so we can both see which
+table produced it.
+
+THE METHOD FAILURE IS THE PART WORTH KEEPING, and it is the same one 072 congratulated itself for avoiding.
+072 said the local compile "answered in one run by NOT reproducing it". That was true and I drew the wrong
+conclusion from it, because I compared two runs without checking they had the same input. A negative result
+only narrows the search when the two sides differ in exactly one thing -- and here they differed in two: the
+compiler AND the table. I picked the interesting one. The check that would have caught it cost one md5sum,
+and it is the check I asked the user to run in 072 and then misread when it came back.

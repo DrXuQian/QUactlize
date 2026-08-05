@@ -617,7 +617,8 @@ void initialize(Options const& options) {
     int64_t batch_offset = b * row * col;
     // preprocess_weights_for_mixed_gemm<is_rowmajor, -1>((int8_t*)(&block_B_buff.host_data()[batch_offset]),
     preprocess_weights_for_mixed_gemm<is_rowmajor, 256>((int8_t*)(&block_B_buff.host_data()[batch_offset]),
-        (int8_t*)(&tensor_B.host_data()[batch_offset]), {col, row}, quant_type);
+        (int8_t*)(&tensor_B.host_data()[batch_offset]),
+        {static_cast<size_t>(col), static_cast<size_t>(row)}, quant_type);
   }
   block_B_buff.sync_device();
 }
