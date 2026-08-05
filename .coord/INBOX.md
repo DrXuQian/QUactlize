@@ -2723,3 +2723,57 @@ evidence about the kernel.
 The open question is unchanged and is still the one in 066 ①: whether a two-warp dense row still aborts NOW that
 the ordinary COARSE assert is gone. That needs a build whose table does NOT contain quarantined rows plus a
 fixed TILE/WARP instantiation, which is what the box is doing next.
+
+## 071 -- DENSE + FinegrainedGs32 DOES NOT COMPILE, WITH THE 227-ROW TABLE. Narrowed but not closed; it is yours.
+
+This is NOT 069 (which I retracted -- that was my quarantined table failing the guard as designed). The box
+restored the 227-row table, which contains no sub-four-warp rows, and the build still fails:
+
+    gemm_universal_adapter.h:556:49: error: no type named 'InstructionShape' in
+      '::cutlass::gemm::kernel::GemmUniversal< ::cute::packed_tuple<int,int,int,int>,
+         ::cutlass::gemm::collective::CollectiveMma< ::cutlass::arch::PPU0010,
+           ::cutlass::gemm::MainloopPPUAiuMixedInput<(int)6, ::cute::C<(int)256>,
+             ::cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32>, ... >'
+
+and an earlier row gave the sibling error
+
+    ppu_aiu_gemm_mixed_input.hpp:109:66: error: no type named 'SharedStorage' in
+      'CollectiveMma<PPU0010, MainloopPPUAiuMixedInput<12, C<256>, FinegrainedGs32>, TileShape(64,128,64), ...>'
+
+THE CHAIN, as far as I could take it:
+
+    CollectiveMma has no matching specialisation -> its members are ill-formed
+    -> GemmUniversal's 3.x specialisation SFINAEs out (its enable_if reads CollectiveMainloop_::DispatchPolicy)
+    -> the primary template has no ProblemShape
+    -> IsCutlass3GemmKernel is false (gemm.h:123 tests exactly that member)
+    -> GemmUniversalAdapter picks its 2.x specialisation (line 542)
+    -> which requires Mma::Shape / WarpShape / InstructionShape, none of which exist
+
+So both errors have ONE root: CollectiveMma does not match for that DispatchPolicy + TileShape. Everything
+after is cascade, and the adapter error is the most visible rather than the most informative.
+
+WHAT I RULED OUT, so you do not repeat it:
+
+  * NOT split-K. GemmUniversal's TileScheduler_ defaults to void (gemm_universal_decl.h:56) and the dense bench
+    instantiates GemmUniversal<Shape<int,int,int,int>, Mainloop, Epilogue> with three arguments, so
+    ppu_aiu_gemm_mixed_input.hpp:61's `!is_same_v<TileScheduler_, SplitKSerialScheduler>` passes. The user asked
+    directly and the answer is no -- and the recorded 65% winner came through moe_grouped_ppu::filter_and_run
+    with no split axis either.
+  * NOT a missing policy specialisation. MainloopPPUAiuMixedInput<Stages_, kContinous_, FinegrainedGs32> exists
+    at dispatch_policy.hpp:292, and it sets Schedule = KernelAiuMultistageMixedInput, so
+    ppu_aiu_gemm_mixed_input.hpp:60's `is_base_of_v<KernelAiuMultistageMixedInput, DispatchPolicy::Schedule>`
+    passes as well. Both of that specialisation's conditions look satisfied.
+  * NOT the quarantined table. This is the 227-row dense table, four-warp minimum.
+
+WHAT I COULD NOT DETERMINE: why CollectiveMma fails to match. The collective's specialisation head
+(ppu_mma_aiu_multistage_mixed_input.hpp:108-123) looks generic over the schedule. Candidates I cannot rank --
+the TileShapePair_ form the dense bench passes (cute::tuple<TileShape, ScaleTileShape> with
+ScaleTileShape = Shape<Int<TN>, Int<scale_groups_v<TileShapeK, GroupSize>>>), a competing more-specialised
+CollectiveMma, or an argument whose type differs between the dense and grouped instantiation paths.
+
+THE COMPARISON THAT SHOULD SETTLE IT: grouped instantiates the same tag and the same tile through
+moe_grouped_ppu and it builds. Diff the two CollectiveMma argument lists -- that is a purely textual exercise
+with both type strings available, and it needs no hardware.
+
+BLOCKING: the box cannot build test_lowbit_dense_bench at all right now, so 066 ① (does a two-warp dense row
+still abort) cannot be tested, and neither can the plain sweep.
