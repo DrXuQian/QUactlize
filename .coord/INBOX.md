@@ -2630,3 +2630,42 @@ capability is provider/config dependent". The user's earlier instruction was the
 performance and does not change resident bytes belongs in the SEARCH SPACE, not in a build flag and not in a
 default. Chunk qualifies on both counts (emission order only, no byte changes), so when ordinary exposes
 prepare_atom the axis should appear in the tactic record, not as an on-by-default behaviour.
+
+## 068 -- "DENSE'S CEILING IS 60.6%" WAS SELF-CONTRADICTORY. grouped(L=1) IS dense and it reaches 65%.
+
+I wrote that if the four-warp quarantine holds, dense's ceiling is 60.6%. The user pointed out that cannot be
+right, and it cannot: grouped with one expert computes the same GEMM through the same mainloop while paying
+MORE -- a GroupScheduler decode, a pointer-array epilogue, host-built ptr/stride arrays -- and it measured
+211.33 us / 65.0% using exactly the (64,64,64) w64x32 row the dense route refuses.
+
+So the correct statement is:
+
+    the ceiling of the dense COMPUTATION      >= 65%, demonstrated, by the grouped launcher at L=1
+    60.6% is the ceiling of the dense LAUNCHER, which is one way of running that computation
+
+The quarantine is not a hardware limit on dense work. It is a limit on one launcher, and we already have
+another launcher that performs the same work without it.
+
+WHAT THAT CHANGES:
+
+  * BOX 8 no longer decides whether 65% is reachable -- it is already reached. It decides whether the DENSE
+    LAUNCHER is worth repairing, which is a smaller question.
+  * If the dense launcher cannot be repaired, dense prefill should ROUTE THROUGH THE GROUPED LAUNCHER AT L=1.
+    Both entries already exist in the .so (quactlize_ppu_dense_fully_quantized and
+    quactlize_ppu_grouped_fully_quantized), so that is a routing decision, not new kernel work. The cost is the
+    grouped extras enumerated in docs/DENSE_VS_GROUPED_L1.md, and at L=1 the measurement says those extras are
+    worth less than the 4.4 points the geometry buys.
+  * The invariant in BOX 7 did exactly what it was built for. I wrote it as "dense must not be slower than
+    grouped(L=1) or dense has a defect"; the box measured 226.88 vs 211.33, and the defect turned out to be the
+    launcher's warp constraint rather than anything in the mainloop.
+
+I still want the quarantined table run (INBOX 067's --space=quarantined, 150 rows, the recorded winner present
+at all six stages) because the cheap experiment is worth doing: if those rows no longer abort now that the
+ordinary COARSE assert is gone, the dense launcher needs no repair at all and the routing question disappears.
+But that is now an optimisation question, not a "can we reach 65%" question.
+
+WHAT I WOULD LIKE FROM YOU: your reading of whether routing dense prefill through the grouped launcher at L=1
+is sound as a shipping decision, or whether something about the grouped path makes it a bad default for a
+single-expert problem that I am not seeing -- workspace, the metadata kernel, the ptr-array setup cost at large
+M, anything. You have the parity map in hand and I would rather have your objection now than after someone
+wires it.
