@@ -10,17 +10,21 @@ get 65%" becomes an unfalsifiable claim. Each row below carries what it needs to
 
 **PEAK is 500 TFLOP/s** (fp16). MFU = TF/s ÷ 500. Where a record gives only µs, the FLOP is `2·M·N·K`.
 
-> ## ⚠ EVERY FIGURE IN SECTIONS A, B AND C IS THE **scale_first** PATH.
+> ## ⚠ SECTIONS A, B AND C ARE THE **scale_first** PATH — AND SO IS DENSE PREFILL AS SHIPPED.
 >
 > The registry gives each format two TileKs because they are two different consumers:
 > `scale_first` (a pre-pass produces separate scale/zero planes; TileK = 256/bits, so 64 for int4) and
 > `fully_quantized` (the GEMM consumes the packed GGUF metadata unit natively; TileK = 256 for Q2/Q4).
 >
-> **The `.so` ships `fully_quantized`** — `quactlize_ppu_dense_fully_quantized*` and
-> `quactlize_ppu_grouped_fully_quantized*` are the shipping entries — and **it has no tensor-core prefill
-> performance measurement at all.** Section E is everything that exists.
+> **THE `.so` SHIPS BOTH, and an earlier version of this block claimed otherwise.** The exported entries are
+> `quactlize_ppu_dense_lowbit*` (scale_first, dense) alongside `quactlize_ppu_dense_fully_quantized*` and
+> `quactlize_ppu_grouped_fully_quantized*`. So section A is not merely a harness check — for dense prefill it is
+> a measurement of a path that ships. The earlier wording ("reproduce 65% says nothing about what will ship")
+> was wrong and would have mis-ranked the whole back-test.
 >
-> So "reproduce 65%" validates the harness and the collective. It says nothing about what will ship.
+> What remains true is narrower and still matters: **`fully_quantized` has no tensor-core prefill measurement on
+> either operator**, and section E is everything that exists for it. That gap belongs to the packed-metadata
+> consumer -- decode, and the grouped/MoE side, where there is no `*_grouped_lowbit` entry at all.
 
 ---
 
@@ -76,17 +80,24 @@ run settles it. (A recollection of "60+% at gs=16" exists and is not what the ar
 
 ## B. DENSE — other shapes and group sizes
 
-> **⚠ EVERY ROW IN THIS SECTION IS gs=128 AND NONE OF THEM IS REPRODUCIBLE ON THE CURRENT COLLECTIVE.**
-> Measured on the box 2026-08-05: `--g=128` hits an unconditional `assert(false)` in
-> `ppu_mma_aiu_multistage_mixed_input.hpp:1968`. The COARSE scale path (`Scale_TileK <= K_BLOCK_MAX`) copies the
-> scale and then executes `if constexpr (false) {} else { assert(false); }`, whose else branch always runs. gs=16
-> and gs=32 take the FINE path at every TileK and are unaffected; gs>=64 always takes COARSE. At TileK=64 it is
-> worse still -- `Scale_TileK = 64/128 = 0` makes `GroupK` a division by zero.
+> **⚠ EVERY ROW IN THIS SECTION IS gs=128, AND NONE HAS BEEN RE-RUN SINCE THE PATH THAT BROKE THEM WAS FIXED.**
 >
-> Nobody noticed because **gs=128 is not a GGUF k-quant group size**: the shipping registry has only 16 (Q2/Q3/Q6)
-> and 32 (Q4/Q5), so no shipping path reaches COARSE. These rows were measured in July through the older
-> `Kernels/general/w4a16_gemm/cutlass_w4a16` bench. They stay recorded as history and are NOT back-test targets
-> until the path is fixed (INBOX 059).
+> This block used to say gs=128 was unreproducible, and that is no longer true. On 2026-08-05 `--g=128` hit an
+> unconditional `assert(false)` in `ppu_mma_aiu_multistage_mixed_input.hpp` -- the COARSE scale path
+> (`Scale_TileK <= K_BLOCK_MAX`) copied the scale and then ran `if constexpr (false) {} else { assert(false); }`,
+> whose else branch always executes. actlize `a7a8ea91` ("Finish mixed-input coarse scale path") implemented it.
+> That file now has 45 `assert(` sites of which 45 are `static_assert`: **zero runtime asserts**. The dense bench
+> builds all four group sizes including 128, and the full 293-row table compiles clean through the local syntax
+> gate.
+>
+> So these rows are back-test CANDIDATES again. What is still missing is a RUN: nothing has executed gs=128 since
+> the fix, so there is no confirmation of numerical correctness on the COARSE path, only that it instantiates.
+> Verify correctness before quoting any timing from this section.
+>
+> Note for prioritisation, not as a reason to skip it: **gs=128 is not a GGUF k-quant group size.** The shipping
+> registry has only 16 (Q2/Q3/Q6) and 32 (Q4/Q5), so no shipping path reaches COARSE. These figures were measured
+> in July through the older `Kernels/general/w4a16_gemm/cutlass_w4a16` bench, and their value is as a comparison
+> against that bench rather than as a product claim.
 
 
 | # | shape | gs | config | figure | recorded | source |
