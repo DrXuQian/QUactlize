@@ -52,6 +52,11 @@ inline hggcError_t hggcSetDevice(int) { return hggcSuccess; }
 typedef int hggcDeviceAttr_t;
 enum { hggcDevAttrMultiProcessorCount = 1 };
 inline hggcError_t hggcDeviceGetAttribute(int* v, hggcDeviceAttr_t, int) { if (v) *v = 64; return hggcSuccess; }
+struct hggcDeviceProp { int major = 8; int minor = 0; };
+inline hggcError_t hggcGetDeviceProperties(hggcDeviceProp* p, int) {
+  if (p) { p->major = 8; p->minor = 0; }
+  return hggcSuccess;
+}
 
 // -- enough of the launch/attribute API that cutlass/util and gemm_universal_* parse. Without these the front end
 //    emits a large, file-independent noise set, and a noise-pattern filter then has to be so loose that it hides real
@@ -63,6 +68,13 @@ inline hggcError_t hggcFuncSetAttribute(const void*, int, int) { return hggcSucc
 inline hggcError_t hggcDeviceSetLimit(int, size_t) { return hggcSuccess; }
 inline hggcError_t hggcOccupancyMaxActiveBlocksPerMultiprocessor(int* n, const void*, int, size_t) {
   if (n) *n = 1; return hggcSuccess; }
+template <class Kernel>
+inline hggcError_t hggcOccupancyMaxPotentialBlockSize(
+    int* min_grid_size, int* block_size, Kernel, size_t = 0, int = 0) {
+  if (min_grid_size) *min_grid_size = 1;
+  if (block_size) *block_size = 128;
+  return hggcSuccess;
+}
 enum { HGGC_SUCCESS = 0 };
 // VARIADIC on purpose. Fixed arity here silently amputates the local check: the real signatures take (id, threads[, x]),
 // so a 2- or 3-argument call failed with "too many arguments", the collective it lives in never instantiated, and
