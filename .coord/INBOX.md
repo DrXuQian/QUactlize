@@ -2254,3 +2254,46 @@ does the shipping collective support" is answerable only by deriving it from two
 
 This also revises docs/BACKTEST.md: its whole section B (gs=128, including the 61% and the 25-27% control) is
 not reproducible on the current collective, and is now marked as history rather than as a target.
+
+## 060 -- 059 IS NOT A BENCH ARTEFACT: gs=128 IS GPTQ, AND THE CAPABILITY EXISTS ON THE GROUPED SIDE ONLY.
+
+I filed 059 saying the COARSE assert was unreachable from any shipping path because the GGUF registry has only
+gs 16 and 32. The user pointed out what that misses: **GPTQ uses gs=128.** It is a named target --
+`Qwen/Qwen3.5-35B-A3B-GPTQ-Int4`, bits=4 / gs=128 / sym, and quactlize/real_weight already extracts it. So the
+COARSE path is not dead code nobody reaches; it is the GPTQ path.
+
+AND THE CAPABILITY ALREADY EXISTS, on one side:
+
+    moe_grouped_ppu.cuh:447   dispatches on group_size to a per-gs kernel tag
+        gs=128 -> KernelAiuMultistageMixedInputFinegrainedGs128     <- GPTQ works here
+        gs=64  -> ...FinegrainedGs64
+        gs=32  -> ...FinegrainedGs32
+        gs=16  -> reuses the Gs32 tag with SK = ceil(TK/16)
+
+    test_lowbit_dense_bench.cu:181   ONE hardcoded schedule, no group_size dispatch at all
+        KernelSchedule = KernelTmaWarpSpecializedCooperativeMixedInput
+        -> the generic mixed-input collective -> COARSE branch -> assert(false)
+
+That is why the real-weight GPTQ harness passed: it runs through test_moe_grouped_real and therefore through
+the grouped ladder. The dense path never grew one.
+
+SO THIS IS 058's SECOND CASUALTY, and the user's framing holds again: if the two paths shared one implementation,
+a per-gs specialisation added to one would be in the other by construction. PPU_B_CHUNK was the first symptom
+and I found it by accident; this one is worse because it is a supported checkpoint format that cannot run dense
+at all, and because it fails as a device assert that surfaces later as "Failed to query occupancy" -- naming
+neither the group size nor the collective.
+
+WHAT I AM ASKING, revised from 059:
+
+  * gs=128 must work on the dense path. Whether that is the dense bench and the .so selecting the same
+    Finegrained ladder the grouped side uses, or the generic collective's COARSE branch being finished, is
+    yours -- but "reject it in the validity query" is now the WRONG answer, because GPTQ needs it to run rather
+    than to be diagnosed.
+  * gs=64 is in the same ladder and presumably in the same state; say whether it works dense.
+  * The `if constexpr (false) {} else { assert(false); }` should go regardless. Even once the path works, a
+    device assert as the not-handled marker is what turned a clear "group size unsupported" into an occupancy
+    query failure three call frames later.
+
+DOWNGRADE 059's claim: its "no shipping path reaches COARSE" line is wrong and this supersedes it. The
+docs/BACKTEST.md note that section B is unreachable stays TRUE for now, but the reason is narrower than stated
+-- those figures are unreachable because the DENSE path lacks the gs ladder, not because gs=128 is out of scope.
