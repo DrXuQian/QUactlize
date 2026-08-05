@@ -46,6 +46,22 @@ int quactlize_ppu_dense_fully_quantized_dev_v2(
 
 // Grouped activations/output are concatenated in expert order. offsets is a cumulative device int[experts+1]
 // with offsets[0]=0 and offsets[experts]=total_rows; max_rows is an upper bound on every expert row count.
+// grouped_lowbit consumes the scale-first artifact selected offline: low/high code planes plus fp16 scales and no
+// zero plane (FinegrainedScaleOnly). Its workspace holds the same ptr/stride arrays and m-tile prefix as the packed
+// grouped route; neither device entry allocates or synchronizes.
+int64_t quactlize_ppu_grouped_lowbit_workspace_bytes_v1(
+    int max_rows, int n, int k, int group_size, int experts, int qtype);
+int quactlize_ppu_grouped_lowbit_dev_v1(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint16_t const* scale,
+    int const* offsets, uint16_t* out,
+    int total_rows, int n, int k, int group_size, int experts, int max_rows, int qtype,
+    void* workspace, int64_t workspace_bytes, void* stream);
+int quactlize_ppu_grouped_lowbit_dev_v2(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint16_t const* scale,
+    int const* offsets, uint16_t* out,
+    int total_rows, int n, int k, int group_size, int experts, int max_rows, int qtype,
+    void* workspace, int64_t workspace_bytes, void* stream, char const* config_name);
+
 int64_t quactlize_ppu_grouped_fully_quantized_workspace_bytes_v1(
     int max_rows, int n, int k, int experts, int qtype);
 int quactlize_ppu_grouped_fully_quantized_dev_v1(

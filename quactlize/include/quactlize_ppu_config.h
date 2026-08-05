@@ -80,6 +80,9 @@ int32_t quactlize_ppu_gemv_lowbit_config_valid_v1(
     int m, int n, int k, int group_size, int qtype, char const* config_name);
 int32_t quactlize_ppu_dense_fully_quantized_config_valid_v1(
     int m, int n, int k, int group_size, int qtype, char const* config_name);
+int32_t quactlize_ppu_grouped_lowbit_config_valid_v1(
+    int total_rows, int n, int k, int group_size, int experts, int max_rows,
+    int qtype, char const* config_name);
 int32_t quactlize_ppu_grouped_fully_quantized_config_valid_v1(
     int total_rows, int n, int k, int group_size, int experts, int max_rows,
     int qtype, char const* config_name);
@@ -102,6 +105,10 @@ int quactlize_ppu_gemv_lowbit_config_v1(
 int quactlize_ppu_dense_fully_quantized_config_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
     int m, int n, int k, int qtype, char const* config_name);
+int quactlize_ppu_grouped_lowbit_config_v1(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint16_t const* scale,
+    int const* rows_per_expert, uint16_t* out,
+    int total_rows, int n, int k, int group_size, int experts, int qtype, char const* config_name);
 int quactlize_ppu_grouped_fully_quantized_config_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
     int const* rows_per_expert, uint16_t* out,

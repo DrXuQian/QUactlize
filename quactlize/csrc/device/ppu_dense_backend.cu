@@ -166,11 +166,12 @@ GroupedWorkspaceLayout grouped_workspace_layout(int max_rows, int n, int experts
   return layout;
 }
 
-template <class Low, class High, int GroupSize, int TileK,
+template <GQM QuantOp, bool PackedScale, class Low, class High, int GroupSize, int TileK,
           int TileM, int TileN, int WarpM, int WarpN, int Stages,
           bool QueryOnly = false, bool RequireUniversalFallback = false>
 int launch_grouped_tactic(
-    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
+    uint16_t const* act, uint8_t const* low, uint8_t const* high,
+    void const* scale, uint16_t const* zero,
     half_t** out_ptrs, DS* out_strides, int const* rows,
     int max_rows, int n, int k, int experts, GS* shapes, GS const* shapes_host, int const* offsets,
     char* workspace, size_t workspace_bytes, hggcStream_t stream) {
@@ -178,12 +179,12 @@ int launch_grouped_tactic(
   using Tile = cute::Shape<cute::C<TileM>, cute::C<TileN>, cute::C<TileK>>;
   using Scale = cute::Shape<cute::C<TileN>, cute::C<ScaleGroups>>;
   using Warp = cute::Shape<cute::C<WarpM>, cute::C<WarpN>, cute::C<TileK>>;
-  bool const launched = moe_grouped_ppu::launch<GQM::FinegrainedScaleZero,
+  bool const launched = moe_grouped_ppu::launch<QuantOp,
                           ppu_group_schedule::FinegrainedSchedule<GroupSize>,
-                          Tile, Scale, Warp, Stages, true, Low, High, true,
+                          Tile, Scale, Warp, Stages, true, Low, High, PackedScale,
                           QueryOnly, RequireUniversalFallback>(
       reinterpret_cast<half_t const*>(act), reinterpret_cast<Low const*>(low),
-      reinterpret_cast<half_t const*>(units), nullptr,
+      reinterpret_cast<half_t const*>(scale), reinterpret_cast<half_t const*>(zero),
       out_ptrs, out_strides, rows, max_rows, n, k, experts, GroupSize,
       shapes, shapes_host, offsets, workspace, workspace_bytes, stream,
       [&]() {
@@ -193,19 +194,22 @@ int launch_grouped_tactic(
   return launched ? 0 : 31;
 }
 
-template <class Low, class High, int GroupSize, int TileK, bool QueryOnly = false>
+template <GQM QuantOp, bool PackedScale, class Low, class High, int GroupSize, int TileK,
+          bool QueryOnly = false>
 int launch_grouped_config(
     GroupedConfigId config,
-    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
+    uint16_t const* act, uint8_t const* low, uint8_t const* high,
+    void const* scale, uint16_t const* zero,
     half_t** out_ptrs, DS* out_strides, int const* rows,
     int max_rows, int n, int k, int experts, GS* shapes, GS const* shapes_host, int const* offsets,
     char* workspace, size_t workspace_bytes, hggcStream_t stream) {
   switch (config) {
 #define QUACTLIZE_PPU_GROUPED_CONFIG_CASE(ID, NAME, TM, TN, WM, WN, STAGES) \
     case GroupedConfigId::ID: \
-      return launch_grouped_tactic<Low, High, GroupSize, TileK, TM, TN, WM, WN, STAGES, QueryOnly, \
+      return launch_grouped_tactic<QuantOp, PackedScale, Low, High, GroupSize, TileK, \
+                                   TM, TN, WM, WN, STAGES, QueryOnly, \
                                    GroupedConfigId::ID == kDefaultGroupedConfig>( \
-          act, low, high, units, out_ptrs, out_strides, rows, max_rows, n, k, experts, \
+          act, low, high, scale, zero, out_ptrs, out_strides, rows, max_rows, n, k, experts, \
           shapes, shapes_host, offsets, workspace, workspace_bytes, stream);
     QUACTLIZE_PPU_GROUPED_CONFIGS(QUACTLIZE_PPU_GROUPED_CONFIG_CASE)
 #undef QUACTLIZE_PPU_GROUPED_CONFIG_CASE
@@ -274,10 +278,10 @@ bool dense_config_type_valid(DenseConfigId config, int m, int n, int k) {
       m, n, k, nullptr, 0, nullptr) == 0;
 }
 
-template <class Low, class High, int GroupSize, int TileK>
+template <GQM QuantOp, bool PackedScale, class Low, class High, int GroupSize, int TileK>
 bool grouped_config_type_valid(GroupedConfigId config, int max_rows, int n, int k, int experts) {
-  return launch_grouped_config<Low, High, GroupSize, TileK, true>(
-      config, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+  return launch_grouped_config<QuantOp, PackedScale, Low, High, GroupSize, TileK, true>(
+      config, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
       max_rows, n, k, experts, nullptr, nullptr, nullptr, nullptr, 0, nullptr) == 0;
 }
 
@@ -360,6 +364,57 @@ bool dense_fully_quantized_config_valid(
 #endif
 }
 
+bool grouped_lowbit_config_valid(
+    GroupedConfigId config, int total_rows, int n, int k, int group_size,
+    int experts, int max_rows, int qtype) {
+  if (experts <= 0 || max_rows <= 0 ||
+      !tensor_problem_domain(total_rows, n, k, group_size, qtype)) return false;
+  switch (qtype) {
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 10
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 2
+    case 10: return false;
+#else
+    case 10: return grouped_config_type_valid<GQM::FinegrainedScaleOnly, false,
+        cutlass::uint2b_t, void, 16, ppu_formats::for_qtype(10).scale_first_tile_k>(
+            config, max_rows, n, k, experts);
+#endif
+#endif
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 11
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 3
+    case 11: return false;
+#else
+    case 11: return grouped_config_type_valid<GQM::FinegrainedScaleOnly, false,
+        cutlass::uint2b_t, cutlass::uint1b_t, 16, ppu_formats::for_qtype(11).scale_first_tile_k>(
+            config, max_rows, n, k, experts);
+#endif
+#endif
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 12
+    case 12: return grouped_config_type_valid<GQM::FinegrainedScaleOnly, false,
+        cutlass::int4b_t, void, 32, ppu_formats::for_qtype(12).scale_first_tile_k>(
+            config, max_rows, n, k, experts);
+#endif
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 13
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 1
+    case 13: return false;
+#else
+    case 13: return grouped_config_type_valid<GQM::FinegrainedScaleOnly, false,
+        cutlass::int4b_t, cutlass::uint1b_t, 32, ppu_formats::for_qtype(13).scale_first_tile_k>(
+            config, max_rows, n, k, experts);
+#endif
+#endif
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 14
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 4
+    case 14: return false;
+#else
+    case 14: return grouped_config_type_valid<GQM::FinegrainedScaleOnly, false,
+        cutlass::int4b_t, cutlass::uint2b_t, 16, ppu_formats::for_qtype(14).scale_first_tile_k>(
+            config, max_rows, n, k, experts);
+#endif
+#endif
+    default: return false;
+  }
+}
+
 bool grouped_fully_quantized_config_valid(
     GroupedConfigId config, int total_rows, int n, int k, int group_size,
     int experts, int max_rows, int qtype) {
@@ -368,19 +423,22 @@ bool grouped_fully_quantized_config_valid(
       !selected_fully_quantized_qtype(qtype, k)) return false;
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
-  return grouped_config_type_valid<cutlass::int4b_t, void, 32,
+  return grouped_config_type_valid<GQM::FinegrainedScaleZero, true, cutlass::int4b_t, void, 32,
       ppu_formats::for_qtype(12).fully_quantized_tile_k>(config, max_rows, n, k, experts);
 #elif PPU_PACKED_FORMAT == 2
-  return grouped_config_type_valid<cutlass::uint2b_t, void, 16,
+  return grouped_config_type_valid<GQM::FinegrainedScaleZero, true, cutlass::uint2b_t, void, 16,
       ppu_formats::for_qtype(10).fully_quantized_tile_k>(config, max_rows, n, k, experts);
 #elif PPU_PACKED_FORMAT == 1
-  return grouped_config_type_valid<cutlass::int4b_t, cutlass::uint1b_t, 32,
+  return grouped_config_type_valid<GQM::FinegrainedScaleZero, true,
+      cutlass::int4b_t, cutlass::uint1b_t, 32,
       ppu_formats::for_qtype(13).fully_quantized_tile_k>(config, max_rows, n, k, experts);
 #elif PPU_PACKED_FORMAT == 3
-  return grouped_config_type_valid<cutlass::uint2b_t, cutlass::uint1b_t, 16,
+  return grouped_config_type_valid<GQM::FinegrainedScaleZero, true,
+      cutlass::uint2b_t, cutlass::uint1b_t, 16,
       ppu_formats::for_qtype(11).fully_quantized_tile_k>(config, max_rows, n, k, experts);
 #elif PPU_PACKED_FORMAT == 4
-  return grouped_config_type_valid<cutlass::int4b_t, cutlass::uint2b_t, 16,
+  return grouped_config_type_valid<GQM::FinegrainedScaleZero, true,
+      cutlass::int4b_t, cutlass::uint2b_t, 16,
       ppu_formats::for_qtype(14).fully_quantized_tile_k>(config, max_rows, n, k, experts);
 #else
   return false;
@@ -520,6 +578,15 @@ extern "C" int32_t quactlize_ppu_dense_fully_quantized_config_valid_v1(
   DenseConfigId config{};
   return find_dense_config(config_name, config) &&
          dense_fully_quantized_config_valid(config, m, n, k, group_size, qtype);
+}
+
+extern "C" int32_t quactlize_ppu_grouped_lowbit_config_valid_v1(
+    int total_rows, int n, int k, int group_size, int experts, int max_rows,
+    int qtype, char const* config_name) {
+  GroupedConfigId config{};
+  return find_grouped_tensor_config(config_name, config) &&
+         grouped_lowbit_config_valid(
+             config, total_rows, n, k, group_size, experts, max_rows, qtype);
 }
 
 extern "C" int32_t quactlize_ppu_grouped_fully_quantized_config_valid_v1(
@@ -736,7 +803,7 @@ extern "C" int quactlize_ppu_dense_fully_quantized_dev_v1(
 
 namespace {
 
-static __global__ void grouped_fully_quantized_metadata(
+static __global__ void grouped_metadata(
     int const* offsets, half_t* out, GS* shapes, half_t** out_ptrs, DS* out_strides, int* rows,
     int n, int k, int experts) {
   int const e = blockIdx.x * blockDim.x + threadIdx.x;
@@ -749,9 +816,9 @@ static __global__ void grouped_fully_quantized_metadata(
   out_strides[e] = cutlass::make_cute_packed_stride(DS{}, cute::make_shape(count, n, 1));
 }
 
-template <class Low, class High, int GroupSize, int TileK>
-int grouped_fully_quantized_device(
-    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
+template <GQM QuantOp, bool PackedScale, class Low, class High, int GroupSize, int TileK>
+int grouped_device(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, void const* scale,
     int const* offsets, uint16_t* out, int total_rows, int n, int k, int experts, int max_rows,
     GroupedConfigId config, void* workspace, size_t workspace_bytes, hggcStream_t stream) {
   GroupedWorkspaceLayout const layout = grouped_workspace_layout(max_rows, n, experts);
@@ -764,31 +831,37 @@ int grouped_fully_quantized_device(
   auto* kernel_workspace = reinterpret_cast<char*>(base + layout.kernel);
   auto* out_half = reinterpret_cast<half_t*>(out);
 
-  grouped_fully_quantized_metadata<<<(experts + 127) / 128, 128, 0, stream>>>(
+  grouped_metadata<<<(experts + 127) / 128, 128, 0, stream>>>(
       offsets, out_half, shapes, out_ptrs, out_strides, rows, n, k, experts);
-  if (!ppu_gemv::rt_check_launch("fully-quantized grouped metadata enqueue")) return ppu_gemv::kRuntimeError;
+  if (!ppu_gemv::rt_check_launch(PackedScale ? "fully-quantized grouped metadata enqueue"
+                                             : "scale-first grouped metadata enqueue"))
+    return ppu_gemv::kRuntimeError;
 
-  int const launch_rc = launch_grouped_config<Low, High, GroupSize, TileK>(
-      config, act, low, high, units, out_ptrs, out_strides, rows, max_rows, n, k, experts,
+  int const launch_rc = launch_grouped_config<QuantOp, PackedScale,
+      Low, High, GroupSize, TileK>(
+      config, act, low, high, scale, nullptr, out_ptrs, out_strides, rows, max_rows, n, k, experts,
       shapes, nullptr, offsets, kernel_workspace, layout.kernel_bytes, stream);
   if (launch_rc) return launch_rc;
-  return ppu_gemv::rt_check_launch("fully-quantized grouped GEMM enqueue")
+  return ppu_gemv::rt_check_launch(PackedScale ? "fully-quantized grouped GEMM enqueue"
+                                               : "scale-first grouped GEMM enqueue")
       ? 0 : ppu_gemv::kRuntimeError;
 }
 
-template <class Low, class High, int GroupSize, int TileK>
-int grouped_fully_quantized(uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
-                            int const* rows_per_expert, uint16_t* out,
-                            int total_rows, int n, int k, int experts,
-                            GroupedConfigId config = kDefaultGroupedConfig) {
+template <GQM QuantOp, bool PackedScale, class Low, class High, int GroupSize, int TileK>
+int grouped(uint16_t const* act, uint8_t const* low, uint8_t const* high, void const* scale,
+            int const* rows_per_expert, uint16_t* out,
+            int total_rows, int n, int k, int experts,
+            GroupedConfigId config = kDefaultGroupedConfig) {
   ppu_gemv::rt_clear_error();
   using GS = moe_grouped_ppu::GroupShape;
   using DS = moe_grouped_ppu::DStride;
   constexpr int LowBits = cutlass::sizeof_bits<Low>::value;
   constexpr int HighBits = std::is_void_v<High> ? 0 : cutlass::sizeof_bits<High>::value;
   constexpr int ScaleGroups = ppu_group_schedule::scale_groups_v<TileK, GroupSize>;
-  static_assert(SelectedPackedUnit::kGroups % ScaleGroups == 0,
-                "the fixed grouped TileK must cover an integral group run of its packed superblock");
+  if constexpr (PackedScale) {
+    static_assert(SelectedPackedUnit::kGroups % ScaleGroups == 0,
+                  "the fixed grouped TileK must cover an integral group run of its packed superblock");
+  }
 
   std::vector<int> rows(static_cast<size_t>(experts)), offsets(static_cast<size_t>(experts));
   int sum = 0, max_rows = 0;
@@ -802,12 +875,13 @@ int grouped_fully_quantized(uint16_t const* act, uint8_t const* low, uint8_t con
   if (sum != total_rows || max_rows <= 0) return 36;
 
   size_t const low_bytes = size_t(experts) * n * k * LowBits / 8;
-  size_t const unit_bytes = size_t(experts) * (k / (256 * SelectedPackedUnit::kSbPerUnit)) * n *
-                            SelectedPackedUnit::kUnitTotal;
+  size_t const scale_bytes = PackedScale
+      ? size_t(experts) * (k / (256 * SelectedPackedUnit::kSbPerUnit)) * n * SelectedPackedUnit::kUnitTotal
+      : size_t(experts) * (k / GroupSize) * n * sizeof(half_t);
   size_t const high_bytes = size_t(experts) * n * k * HighBits / 8;
-  DevBuf da(size_t(total_rows) * k * 2), dl(low_bytes), dh(high_bytes), du(unit_bytes),
+  DevBuf da(size_t(total_rows) * k * 2), dl(low_bytes), dh(high_bytes), ds(scale_bytes),
          dout(size_t(total_rows) * n * 2);
-  da.from_host(act); dl.from_host(low); du.from_host(units);
+  da.from_host(act); dl.from_host(low); ds.from_host(scale);
   if constexpr (HighBits != 0) {
     if (!high) return 33;
     dh.from_host(high);
@@ -835,18 +909,178 @@ int grouped_fully_quantized(uint16_t const* act, uint8_t const* low, uint8_t con
   DevBuf ws(ws_bytes);
   // Call the fixed group-size instantiations directly. filter_and_run's runtime ladder instantiates several SK values
   // together, so asserting packed selection there would correctly fail on its non-selected control branches.
-  int const launch_rc = launch_grouped_config<Low, High, GroupSize, TileK>(
+  int const launch_rc = launch_grouped_config<QuantOp, PackedScale,
+      Low, High, GroupSize, TileK>(
       config, reinterpret_cast<uint16_t const*>(da.p), reinterpret_cast<uint8_t const*>(dl.p),
-      reinterpret_cast<uint8_t const*>(dh.p), reinterpret_cast<uint8_t const*>(du.p),
+      reinterpret_cast<uint8_t const*>(dh.p), ds.p, nullptr,
       d_out_ptrs.as<half_t*>(), d_out_strides.as<DS>(), d_rows.as<int>(), max_rows, n, k, experts,
       d_shapes.as<GS>(), shapes.data(), d_offsets.as<int>(), ws.as<char>(), ws_bytes, nullptr);
   if (launch_rc) return launch_rc;
-  ppu_gemv::rt_sync("fully-quantized grouped GEMM");
+  ppu_gemv::rt_sync(PackedScale ? "fully-quantized grouped GEMM" : "scale-first grouped GEMM");
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
   return ppu_gemv::rt_copy_output(dout, out, size_t(total_rows) * n);
 }
 
 }  // namespace
+
+// SCALE_FIRST x GROUPED. The resident artifact is the placed low/high code planes plus one fp16 scale plane;
+// there is deliberately no zero pointer because this ABI names the already validated FinegrainedScaleOnly
+// collective used by test_scalefirst_bench. Provider selection happened when the artifact was packed. Tactics
+// selected here may change tile geometry, never reinterpret that artifact as fully-quantized packed units.
+extern "C" int quactlize_ppu_grouped_lowbit_config_v1(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint16_t const* scale,
+    int const* rows_per_expert, uint16_t* out,
+    int total_rows, int n, int k, int group_size, int experts, int qtype, char const* config_name) {
+  if (!act || !low || !scale || !rows_per_expert || !out || total_rows <= 0 || n <= 0 || k <= 0 ||
+      experts <= 0 || n % 256 || k % 256) return 30;
+  GroupedConfigId const config = resolve_grouped_config(config_name);
+  switch (qtype) {
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 10
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 2
+    // This format-selected builder redirects the grouped type to packed metadata; its scale copy does not cover
+    // every slot at the scale-first TileK. Refuse the fp16 provider instead of compiling a truncated copy.
+    case 10: return 36;
+#else
+    case 10: return group_size == 16
+        ? grouped<GQM::FinegrainedScaleOnly, false, cutlass::uint2b_t, void, 16,
+                  ppu_formats::for_qtype(10).scale_first_tile_k>(
+              act, low, nullptr, scale, rows_per_expert, out, total_rows, n, k, experts, config)
+        : 32;
+#endif
+#endif
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 11
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 3
+    case 11: return 36;
+#else
+    case 11: return group_size == 16 && high
+        ? grouped<GQM::FinegrainedScaleOnly, false, cutlass::uint2b_t, cutlass::uint1b_t, 16,
+                  ppu_formats::for_qtype(11).scale_first_tile_k>(
+              act, low, high, scale, rows_per_expert, out, total_rows, n, k, experts, config)
+        : 32;
+#endif
+#endif
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 12
+    case 12: return group_size == 32
+        ? grouped<GQM::FinegrainedScaleOnly, false, cutlass::int4b_t, void, 32,
+                  ppu_formats::for_qtype(12).scale_first_tile_k>(
+              act, low, nullptr, scale, rows_per_expert, out, total_rows, n, k, experts, config)
+        : 32;
+#endif
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 13
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 1
+    case 13: return 36;
+#else
+    case 13: return group_size == 32 && high
+        ? grouped<GQM::FinegrainedScaleOnly, false, cutlass::int4b_t, cutlass::uint1b_t, 32,
+                  ppu_formats::for_qtype(13).scale_first_tile_k>(
+              act, low, high, scale, rows_per_expert, out, total_rows, n, k, experts, config)
+        : 32;
+#endif
+#endif
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 14
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 4
+    case 14: return 36;
+#else
+    case 14: return group_size == 16 && high
+        ? grouped<GQM::FinegrainedScaleOnly, false, cutlass::int4b_t, cutlass::uint2b_t, 16,
+                  ppu_formats::for_qtype(14).scale_first_tile_k>(
+              act, low, high, scale, rows_per_expert, out, total_rows, n, k, experts, config)
+        : 32;
+#endif
+#endif
+    default: return 33;
+  }
+}
+
+extern "C" int quactlize_ppu_grouped_lowbit(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint16_t const* scale,
+    int const* rows_per_expert, uint16_t* out,
+    int total_rows, int n, int k, int group_size, int experts, int qtype) {
+  return quactlize_ppu_grouped_lowbit_config_v1(
+      act, low, high, scale, rows_per_expert, out,
+      total_rows, n, k, group_size, experts, qtype, nullptr);
+}
+
+extern "C" int64_t quactlize_ppu_grouped_lowbit_workspace_bytes_v1(
+    int max_rows, int n, int k, int group_size, int experts, int qtype) {
+  if (!grouped_lowbit_config_valid(kDefaultGroupedConfig, max_rows, n, k, group_size,
+                                   experts, max_rows, qtype)) return -1;
+  return int64_t(grouped_workspace_layout(max_rows, n, experts).total);
+}
+
+extern "C" int quactlize_ppu_grouped_lowbit_dev_v2(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint16_t const* scale,
+    int const* offsets, uint16_t* out,
+    int total_rows, int n, int k, int group_size, int experts, int max_rows, int qtype,
+    void* workspace, int64_t workspace_bytes, void* stream, char const* config_name) {
+  GroupedConfigId const config = resolve_grouped_config(config_name);
+  int64_t const need = quactlize_ppu_grouped_lowbit_workspace_bytes_v1(
+      max_rows, n, k, group_size, experts, qtype);
+  if (!act || !low || !scale || !offsets || !out || !workspace || total_rows <= 0 ||
+      need < 0 || workspace_bytes < need ||
+      !grouped_lowbit_config_valid(config, total_rows, n, k, group_size, experts, max_rows, qtype)) return 30;
+  ppu_gemv::rt_clear_error();
+  hggcStream_t const s = static_cast<hggcStream_t>(stream);
+  switch (qtype) {
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 10
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 2
+    case 10: return 36;
+#else
+    case 10: return grouped_device<GQM::FinegrainedScaleOnly, false,
+        cutlass::uint2b_t, void, 16, ppu_formats::for_qtype(10).scale_first_tile_k>(
+            act, low, nullptr, scale, offsets, out, total_rows, n, k, experts, max_rows,
+            config, workspace, size_t(workspace_bytes), s);
+#endif
+#endif
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 11
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 3
+    case 11: return 36;
+#else
+    case 11: return high ? grouped_device<GQM::FinegrainedScaleOnly, false,
+        cutlass::uint2b_t, cutlass::uint1b_t, 16, ppu_formats::for_qtype(11).scale_first_tile_k>(
+            act, low, high, scale, offsets, out, total_rows, n, k, experts, max_rows,
+            config, workspace, size_t(workspace_bytes), s) : 33;
+#endif
+#endif
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 12
+    case 12: return grouped_device<GQM::FinegrainedScaleOnly, false,
+        cutlass::int4b_t, void, 32, ppu_formats::for_qtype(12).scale_first_tile_k>(
+            act, low, nullptr, scale, offsets, out, total_rows, n, k, experts, max_rows,
+            config, workspace, size_t(workspace_bytes), s);
+#endif
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 13
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 1
+    case 13: return 36;
+#else
+    case 13: return high ? grouped_device<GQM::FinegrainedScaleOnly, false,
+        cutlass::int4b_t, cutlass::uint1b_t, 32, ppu_formats::for_qtype(13).scale_first_tile_k>(
+            act, low, high, scale, offsets, out, total_rows, n, k, experts, max_rows,
+            config, workspace, size_t(workspace_bytes), s) : 33;
+#endif
+#endif
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 14
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 4
+    case 14: return 36;
+#else
+    case 14: return high ? grouped_device<GQM::FinegrainedScaleOnly, false,
+        cutlass::int4b_t, cutlass::uint2b_t, 16, ppu_formats::for_qtype(14).scale_first_tile_k>(
+            act, low, high, scale, offsets, out, total_rows, n, k, experts, max_rows,
+            config, workspace, size_t(workspace_bytes), s) : 33;
+#endif
+#endif
+    default: return 33;
+  }
+}
+
+extern "C" int quactlize_ppu_grouped_lowbit_dev_v1(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint16_t const* scale,
+    int const* offsets, uint16_t* out,
+    int total_rows, int n, int k, int group_size, int experts, int max_rows, int qtype,
+    void* workspace, int64_t workspace_bytes, void* stream) {
+  return quactlize_ppu_grouped_lowbit_dev_v2(
+      act, low, high, scale, offsets, out, total_rows, n, k, group_size, experts, max_rows, qtype,
+      workspace, workspace_bytes, stream, nullptr);
+}
 
 // FULLY_QUANTIZED x GROUPED. The artifact is low codes, an optional high code plane, and format-shaped paired units;
 // activations and
@@ -863,27 +1097,27 @@ extern "C" int quactlize_ppu_grouped_fully_quantized_config_v1(
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
   if (qtype != 12) return 33;
-  return grouped_fully_quantized<cutlass::int4b_t, void, 32,
+  return grouped<GQM::FinegrainedScaleZero, true, cutlass::int4b_t, void, 32,
       ppu_formats::for_qtype(12).fully_quantized_tile_k>(
       act, low, nullptr, units, rows_per_expert, out, total_rows, n, k, experts, config);
 #elif PPU_PACKED_FORMAT == 2
   if (qtype != 10) return 33;
-  return grouped_fully_quantized<cutlass::uint2b_t, void, 16,
+  return grouped<GQM::FinegrainedScaleZero, true, cutlass::uint2b_t, void, 16,
       ppu_formats::for_qtype(10).fully_quantized_tile_k>(
       act, low, nullptr, units, rows_per_expert, out, total_rows, n, k, experts, config);
 #elif PPU_PACKED_FORMAT == 1
   if (qtype != 13 || !high) return 33;
-  return grouped_fully_quantized<cutlass::int4b_t, cutlass::uint1b_t, 32,
+  return grouped<GQM::FinegrainedScaleZero, true, cutlass::int4b_t, cutlass::uint1b_t, 32,
       ppu_formats::for_qtype(13).fully_quantized_tile_k>(
       act, low, high, units, rows_per_expert, out, total_rows, n, k, experts, config);
 #elif PPU_PACKED_FORMAT == 3
   if (qtype != 11 || !high || k % 512) return 33;
-  return grouped_fully_quantized<cutlass::uint2b_t, cutlass::uint1b_t, 16,
+  return grouped<GQM::FinegrainedScaleZero, true, cutlass::uint2b_t, cutlass::uint1b_t, 16,
       ppu_formats::for_qtype(11).fully_quantized_tile_k>(
       act, low, high, units, rows_per_expert, out, total_rows, n, k, experts, config);
 #elif PPU_PACKED_FORMAT == 4
   if (qtype != 14 || !high || k % 512) return 33;
-  return grouped_fully_quantized<cutlass::int4b_t, cutlass::uint2b_t, 16,
+  return grouped<GQM::FinegrainedScaleZero, true, cutlass::int4b_t, cutlass::uint2b_t, 16,
       ppu_formats::for_qtype(14).fully_quantized_tile_k>(
       act, low, high, units, rows_per_expert, out, total_rows, n, k, experts, config);
 #else
@@ -926,30 +1160,30 @@ extern "C" int quactlize_ppu_grouped_fully_quantized_dev_v2(
   GroupedConfigId const config = resolve_grouped_config(config_name);
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
-  return grouped_fully_quantized_device<cutlass::int4b_t, void, 32,
+  return grouped_device<GQM::FinegrainedScaleZero, true, cutlass::int4b_t, void, 32,
       ppu_formats::for_qtype(12).fully_quantized_tile_k>(
       act, low, nullptr, units, offsets, out, total_rows, n, k, experts, max_rows,
       config, workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 2
-  return grouped_fully_quantized_device<cutlass::uint2b_t, void, 16,
+  return grouped_device<GQM::FinegrainedScaleZero, true, cutlass::uint2b_t, void, 16,
       ppu_formats::for_qtype(10).fully_quantized_tile_k>(
       act, low, nullptr, units, offsets, out, total_rows, n, k, experts, max_rows,
       config, workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 1
   if (!high) return 33;
-  return grouped_fully_quantized_device<cutlass::int4b_t, cutlass::uint1b_t, 32,
+  return grouped_device<GQM::FinegrainedScaleZero, true, cutlass::int4b_t, cutlass::uint1b_t, 32,
       ppu_formats::for_qtype(13).fully_quantized_tile_k>(
       act, low, high, units, offsets, out, total_rows, n, k, experts, max_rows,
       config, workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 3
   if (!high) return 33;
-  return grouped_fully_quantized_device<cutlass::uint2b_t, cutlass::uint1b_t, 16,
+  return grouped_device<GQM::FinegrainedScaleZero, true, cutlass::uint2b_t, cutlass::uint1b_t, 16,
       ppu_formats::for_qtype(11).fully_quantized_tile_k>(
       act, low, high, units, offsets, out, total_rows, n, k, experts, max_rows,
       config, workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 4
   if (!high) return 33;
-  return grouped_fully_quantized_device<cutlass::int4b_t, cutlass::uint2b_t, 16,
+  return grouped_device<GQM::FinegrainedScaleZero, true, cutlass::int4b_t, cutlass::uint2b_t, 16,
       ppu_formats::for_qtype(14).fully_quantized_tile_k>(
       act, low, high, units, offsets, out, total_rows, n, k, experts, max_rows,
       config, workspace, size_t(workspace_bytes), s);

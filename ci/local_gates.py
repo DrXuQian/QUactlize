@@ -113,6 +113,9 @@ SYNTAX = [
     # static_assert tying that table to the binary's (bits, TileK); this row is what makes a stale table fail
     # here instead of producing a sweep over tactics the binary cannot select.
     ("benchmarks/test_lowbit_dense_bench.cu", ""),
+    # THE SHIPPING .so BOUNDARY. The benches compiled the grouped collective for years while the product wrapper
+    # did not expose it; compiling this translation unit is what covers the six-entry ABI and every qtype dispatch.
+    ("quactlize/csrc/device/ppu_dense_backend.cu", ""),
     ("benchmarks/test_moe_splitk_bench.cu", "-DPPU_PACKED_SCALE=1"),
     # dev/'s top-level probes. They are DEVICE probes -- swzl_ldmatrix_probe reads the hardware swizzle, the
     # ablations and sweeps run on the accelerator -- so build.sh overlays them onto the box, and anything that
@@ -756,7 +759,7 @@ def lint_tactic_buckets_do_not_extrapolate():
     if any(row.get("m_bucket") == 8 for row in rows):
         return "FAIL", "writer invented an unmeasured M=8 bucket", 0.0
     if module.fnv_hex(module.BUCKET_POLICY.encode()) != "96fb357ad3662e26" or \
-            module.fnv_hex(module.ROUTE_SCHEMA.encode()) != "7de8d445e897107c":
+            module.fnv_hex(module.ROUTE_SCHEMA.encode()) != "7de8d745e8971595":
         return "FAIL", "runtime-cache policy hashes drifted from the ggml reader contract", 0.0
 
     import tempfile
@@ -779,6 +782,7 @@ def lint_tactic_buckets_do_not_extrapolate():
             quactlize_ppu_dense_lowbit_config_valid_v1 = Admit()
             quactlize_ppu_gemv_lowbit_config_valid_v1 = Admit()
             quactlize_ppu_dense_fully_quantized_config_valid_v1 = Admit()
+            quactlize_ppu_grouped_lowbit_config_valid_v1 = Admit()
             quactlize_ppu_grouped_fully_quantized_config_valid_v1 = Admit()
             quactlize_ppu_vecdot_moe_config_valid_v1 = Admit()
 
@@ -789,6 +793,19 @@ def lint_tactic_buckets_do_not_extrapolate():
                     "m_bucket=4", "op=attn_q", "config=64x64:64x32:s3")
         if any(field not in text for field in required) or "m_max" in text or "unresolved" in text:
             return "FAIL", "strict runtime cache omitted provenance or included non-winner state", 0.0
+
+        moe_model = "Qwen3.5-35B-A3B"
+        moe_table = [dict(n=512, k=2048, gs=32,
+                          buckets=[dict(m_bucket=4, measured_m=4, config="64x64:64x32:s3")])]
+        moe_cache = td / "grouped-lowbit.cache"
+        module.write_runtime_cache(
+            moe_cache, fake_so, "ppu001-test", moe_model, MODELS[moe_model], "grouped_lowbit",
+            12, 32, moe_table, inventory, "0123456789abcdef", ValidityLib())
+        moe_text = moe_cache.read_text()
+        moe_required = ("route=grouped_lowbit", "op=ffn_moe_gate", "experts=256", "top_k=8",
+                        "cuda=0", "config=64x64:64x32:s3")
+        if any(field not in moe_text for field in moe_required):
+            return "FAIL", "grouped-lowbit cache branch omitted its route or MoE key axes", 0.0
 
         class Decline(Admit):
             def __call__(self, *_args):

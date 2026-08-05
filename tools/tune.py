@@ -55,7 +55,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 CACHE_SCHEMA = "quactlize-ppu-tactic-cache-v1"
 BUCKET_POLICY = "last-positive-power-of-two(raw-total-tokens);store-only-profiled-buckets;v1"
-ROUTE_SCHEMA = "route+normalized-op+qtype+n+k+group-size+m-bucket+experts+top-k;v1"
+ROUTE_SCHEMA = "route+normalized-op+qtype+n+k+group-size+m-bucket+experts+top-k;v2"
 FNV_OFFSET = 14695981039346656037
 FNV_PRIME = 1099511628211
 
@@ -166,6 +166,10 @@ def write_runtime_cache(path: pathlib.Path, so_path: pathlib.Path, device: str, 
                 "quactlize_ppu_dense_fully_quantized_config_valid_v1", dense_args,
                 measured_m, n, k, gs, qtype, name)
         assignments = measured_m * cfg["topk"]
+        if route == "grouped_lowbit":
+            return not compiled["enable_cuda_kernel"] and ask(
+                "quactlize_ppu_grouped_lowbit_config_valid_v1", grouped_args,
+                assignments, n, k, gs, cfg["experts"], assignments, qtype, name)
         symbol_name = ("quactlize_ppu_vecdot_moe_config_valid_v1" if compiled["enable_cuda_kernel"]
                        else "quactlize_ppu_grouped_fully_quantized_config_valid_v1")
         # max_rows=total_rows is the conservative distribution: if the compiled family admits this, every
@@ -184,8 +188,9 @@ def write_runtime_cache(path: pathlib.Path, so_path: pathlib.Path, device: str, 
                     f"winner {compiled['name']!r} is not valid for route={route}, "
                     f"M={bucket['measured_m']} N={shape['n']} K={shape['k']} gs={gs} qtype={qtype}")
             for op in sorted(by_shape.get((shape["n"], shape["k"]), ())):
-                experts = cfg["experts"] if route == "grouped_fully_quantized" else 0
-                top_k = cfg["topk"] if route == "grouped_fully_quantized" else 0
+                grouped_route = route in ("grouped_lowbit", "grouped_fully_quantized")
+                experts = cfg["experts"] if grouped_route else 0
+                top_k = cfg["topk"] if grouped_route else 0
                 entries.append(
                     f"entry|route={route}|op={op}|qtype={qtype}|n={shape['n']}|k={shape['k']}|gs={gs}|"
                     f"m_bucket={bucket['m_bucket']}|experts={experts}|top_k={top_k}|"
@@ -284,7 +289,8 @@ def main() -> int:
                     help="also write the strict winner-only cache consumed by llama's ggml backend")
     ap.add_argument("--so", default="", help="libquactlize_ppu.so used to derive runtime-cache provenance")
     ap.add_argument("--device-id", default="", help="stable target-device identity stamped into --runtime-cache")
-    ap.add_argument("--route", choices=("dense_lowbit", "dense_fully_quantized", "grouped_fully_quantized"),
+    ap.add_argument("--route", choices=("dense_lowbit", "dense_fully_quantized", "grouped_lowbit",
+                                        "grouped_fully_quantized"),
                     default="dense_lowbit")
     ap.add_argument("--qtype", type=int, default=12, help="GGUF qtype recorded in --runtime-cache")
     a = ap.parse_args()
@@ -331,7 +337,9 @@ def main() -> int:
         except (AttributeError, OSError, RuntimeError, UnicodeError) as e:
             print(f"cannot read tactic inventory from {so_path}: {e}", file=sys.stderr)
             return 2
-        runtime_inventory = grouped_inventory if a.route == "grouped_fully_quantized" else dense_inventory
+        runtime_inventory = (grouped_inventory
+                             if a.route in ("grouped_lowbit", "grouped_fully_quantized")
+                             else dense_inventory)
         shipped = [row["name"] for row in runtime_inventory]
         shipped_keys = {canonical(r) or r for r in shipped}
         print(f"tuning against the {len(shipped)} config(s) exported by {so_path}")
