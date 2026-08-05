@@ -29,6 +29,8 @@ get 65%" becomes an unfalsifiable claim. Each row below carries what it needs to
 ---
 
 ## A. DENSE — M=2048, N=K=4096, L=1
+<!-- route: dense_lowbit -->
+
 
 68.72 GFLOP per call (`2·2048·4096·4096`). "L=1" means the grouped kernel with one expert, which IS dense; the
 records use both harnesses and they are the same measurement.
@@ -79,6 +81,8 @@ of 65.0% therefore means the warp shape is missing again, not that the kernel re
 run settles it. (A recollection of "60+% at gs=16" exists and is not what the arithmetic gives.)
 
 ## B. DENSE — other shapes and group sizes
+<!-- route: dense_lowbit -->
+
 
 > **⚠ EVERY ROW IN THIS SECTION IS gs=128, AND NONE HAS BEEN RE-RUN SINCE THE PATH THAT BROKE THEM WAS FIXED.**
 >
@@ -114,6 +118,8 @@ run settles it. (A recollection of "60+% at gs=16" exists and is not what the ar
 measured now is not the thing measured then, and every other comparison is against the wrong baseline.
 
 ## C. MoE — grouped, ragged vs uniform
+<!-- route: grouped_lowbit -->
+
 
 | # | fixture | rows/expert | gs | config | figure | recorded | source |
 |---|---|---|---|---|---|---|---|
@@ -138,6 +144,8 @@ the structural masked-row tax and is implementation-independent (the hand-writte
 at 33% on the same ragged shape).
 
 ## D. Decode — GEMV, CUDA cores
+<!-- route: gemv_lowbit -->
+
 
 Bandwidth-referenced, not MFU. Shape is the decode band; see `ppu-gemv-alu-bound-not-bandwidth`.
 
@@ -153,6 +161,8 @@ Bandwidth-referenced, not MFU. Shape is the decode band; see `ppu-gemv-alu-bound
 bandwidth-bound, so int4 is effectively free relative to int1.
 
 ## E. fully_quantized — the SHIPPING path, and the only data that exists
+<!-- route: dense_fully_quantized, grouped_fully_quantized -->
+
 
 | # | what | figure | conditions | source |
 |---|---|---|---|---|
@@ -186,6 +196,8 @@ anywhere from 57% to much worse, and nothing measured has narrowed that.
 ---
 
 ## The order to back-test
+<!-- route: none -- prose about which rows to reproduce; it quotes no figure of its own -->
+
 
 One at a time, each against its own row, because a failure means different things at different rows.
 
@@ -198,6 +210,8 @@ One at a time, each against its own row, because a failure means different thing
 6. **C1** — the MoE ragged figure, whose harness was already back-tested to within 1.9% on 2026-08-04.
 
 ## What would invalidate a comparison
+<!-- route: none -- prose about comparison hygiene; it quotes no figure of its own -->
+
 
 * **A different `w64x32` presence.** The single largest recorded config effect (+8.6 points int4, +7.2 int2).
 * **A different TileK.** `scale_first` is 256/bits — 64 for int4 — and the bench's default matches. A run with
