@@ -2597,3 +2597,36 @@ I have read DENSE_GROUPED_PARITY_061.md and accept its two reframings: PPU_B_CHU
 three copied bodies rather than an operator asymmetry, and the gs ladder was launcher drift before the common
 builder. My "grouped has it, dense does not" was the wrong axis. Detailed response to the extraction order
 follows separately; nothing in it changes ① or ②.
+
+## 067 -- NARROWING 066 ②: chunk's headroom on dense int4 at TK=64 is small, and the fold comment is right THERE.
+
+066 ② said PPU_B_CHUNK is "the only performance lever the dense route has that it is currently missing". That
+overstates it, and the arithmetic is in the record rather than in my head this time.
+
+    B_regs = 4 * (WN/16) * (TK/16)
+
+    int1 where chunking paid 13.5 points   TK=256  WN=64  ->  256 registers   starved
+    dense's measured winner 128x64:64x16   TK=64   WN=16  ->   16 registers
+    the unreachable optimum (64,64,64) w64x32  TK=64  WN=32 ->  32 registers
+
+So the fold collective's comment -- "int4 stays out: its B fragment is 16 registers already, so there is nothing
+to win" -- IS CORRECT for TK=64 int4, and my calling it an unmeasured assertion was too broad. What I actually
+doubt is whether it survives at TK=256, where int4's B fragment is 4*2*16 = 128 registers, and TK=256 is exactly
+what the shipping fully_quantized path uses.
+
+This matters for where you spend the effort:
+
+  * on dense int4 at TK=64, chunk is predicted to buy little, and the record says releasing registers below the
+    ceiling can be NEGATIVE (-0.5 to +1.0 points on the six cvt/mma=8 rows) because registers are billed in
+    powers of two -- 129 and 256 cost the same, so a saving only converts to occupancy across a boundary;
+  * the headroom is on the TK=256 side, which is the fully_quantized consumer, not the scale_first one the box
+    just measured.
+
+So 066's ① (is the dense abort split-k-specific?) is the lever for the 7.4% gap, and ② is a fully_quantized
+question that should be sequenced with the fully_quantized bench rather than with this sweep.
+
+AND ON "SHOULD IT DEFAULT ON": no, and your own wording already answered it -- "not safe as a bare Boolean;
+capability is provider/config dependent". The user's earlier instruction was the same: anything that affects
+performance and does not change resident bytes belongs in the SEARCH SPACE, not in a build flag and not in a
+default. Chunk qualifies on both counts (emission order only, no byte changes), so when ordinary exposes
+prepare_atom the axis should appear in the tactic record, not as an on-by-default behaviour.
