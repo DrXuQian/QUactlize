@@ -31,6 +31,7 @@ records use both harnesses and they are the same measurement.
 
 | # | width | gs | config | µs | MFU | recorded | source |
 |---|---|---|---|---|---|---|---|
+| A0 | **int4** | **32** | `64x64:64x32:s3` — **the DENSE bench, its first validated number** | **209.27** | **65.7%** | 2026-08-05 | box, `test_lowbit_dense_bench` |
 | A1 | **int4** | **32** | after adding `w64x32` | **211.33** | **65.0%** | 2026-07-28 | `ppu-q3-bconcat-tuned` |
 | A2 | int1 | 32 | after `w64x32`, `PPU_B_CHUNK=1` | 215.23 | 63.9% | 2026-07-28 | same |
 | A3 | int1 | 32 | `(64,128,64) w64x64 s2`, `PPU_B_CHUNK=1`, ScaleOnly | — | 63.7% | 2026-07-27 | `ppu-b-chunk-int1-637` |
@@ -41,6 +42,23 @@ records use both harnesses and they are the same measurement.
 | A8 | int1 | 32 | `32,128,128` F=2 | — | 54.3% | 2026-07-25 | same |
 | A9 | int2 | 32 | `64,64,64` F=2 | — | 53.2% | 2026-07-25 | same |
 | A10 | Q3 B-concat | 32 | before the four levers | 822.60 | 16.7% | 2026-07-28 | `ppu-q3-bconcat-tuned` |
+
+**A0 SETTLES THREE THINGS AT ONCE, and it is the first number this bench has ever produced.** Until 2026-08-05
+`test_lowbit_dense_bench` asserted on its first gs=32 config, so every dense figure below came from the grouped
+harness at L=1. A0 is the same geometry as A1, run through the dense kernel — plain `ProblemShape`,
+`EpilogueSimtVectorized`, no pointer arrays, no GroupScheduler.
+
+1. **The sub-four-warp quarantine was wrong, and now on hardware rather than in the compiler.** `w64x32` is two
+   warps. `ppu_tactic_space.hpp` excluded it from the dense space on a device abort observed 2026-08-04; it does
+   not abort. The exclusion was deleted the same day it was refuted, and this is the run that refutes it.
+2. **`dense <= grouped(L=1)` holds, in the predicted direction and magnitude.** 209.27 against 211.33 — dense is
+   ~1% faster, and `DENSE_VS_GROUPED_L1.md` lists exactly why: every structural asymmetry is grouped doing MORE
+   (one pointer indirection per output tile, per-CTA m-tile prefix decode, host-built ptr/stride arrays, a
+   workspace). A0 < A1 is what the source predicts; A0 > A1 would have been the finding.
+3. **The quarantine cost 5.1 points.** Dense's best reachable row under it measured 60.6%.
+
+**A1 IS STILL THE ONE TO REPRODUCE** for the grouped harness, and A0 for the dense one; they are the same
+computation and should stay within ~1% of each other with dense on the low side.
 
 **A1 IS THE ONE TO REPRODUCE.** A6 and A7 are the same width at the same shape and are *superseded*: their sweep
 grid did not contain `w64x32`, which the record measures at **+8.6 points for int4**. Reproducing 55.8% instead
