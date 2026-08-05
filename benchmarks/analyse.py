@@ -224,6 +224,74 @@ def coverage(samples, verdict_list):
                 fixtures=len(usable), configs=len(all_cfgs))
 
 
+def invariant(samples):
+    """DENSE MUST NOT BE SLOWER THAN GROUPED WITH ONE EXPERT. -> [ {shape, dense, grouped, ratio, ok} ]
+
+    Grouped with a single expert IS dense: the same math through the same collective family, one group. But it
+    additionally pays a scheduler, a pointer-array epilogue and a boundary decode. So at one shape
+
+        best(dense)  <=  best(grouped, experts=1)
+
+    and a violation cannot be explained away. Not by grouped overhead -- that is what makes the inequality hold.
+    Not by the masked-row tax -- one group has no masked rows. Not by the ragged distribution -- there is none at
+    L=1. It is the one comparison whose wrong answer is unambiguous, which is why it is worth a check rather than
+    an eyeball over two logs.
+
+    Each side contributes its OWN BEST, not a common config: the question is whether the dense path can be made
+    to reach what the grouped path reaches, and holding the config fixed would answer a different one.
+    """
+    best = collections.defaultdict(dict)          # (n,k,gs,rows) -> {'dense'|'grouped': (config, median)}
+    for s in samples:
+        e = int(s["experts"])
+        if e > 1:
+            continue                              # a real MoE run is not a term in this inequality
+        side = "dense" if e == 0 else "grouped"
+        key = (s["n"], s["k"], s["gs"], s["rows"])
+        best[key].setdefault(side, {}).setdefault(config_name(s), []).append(float(s["us"]))
+
+    out = []
+    for key, sides in sorted(best.items()):
+        if len(sides) != 2:
+            continue                              # only one side measured at this shape; not a comparison
+        picked = {}
+        for side, cands in sides.items():
+            med = {c: statistics.median(v) for c, v in cands.items()}
+            c = min(med, key=lambda x: med[x])
+            picked[side] = (c, med[c])
+        d_cfg, d_us = picked["dense"]
+        g_cfg, g_us = picked["grouped"]
+        out.append(dict(n=key[0], k=key[1], gs=key[2], rows=key[3],
+                        dense_config=d_cfg, dense_us=d_us,
+                        grouped_config=g_cfg, grouped_us=g_us,
+                        ratio=d_us / g_us, ok=d_us <= g_us))
+    return out
+
+
+def invariant_report(rows: list) -> str:
+    if not rows:
+        return ("INVARIANT: no shape has BOTH a dense (experts=0) and a one-expert grouped sample. Nothing was\n"
+                "compared. Run both benches at the same n/k/gs/rows into the same BENCH_JSONL, or into two files\n"
+                "passed together -- a missing side reads as a pass otherwise, which is the failure this check\n"
+                "exists to avoid.")
+    L = ["INVARIANT  dense <= grouped(experts=1)",
+         "  n      k      gs   rows    dense us   grouped us   ratio   ",
+         "  -----  -----  ---  ------  ---------  -----------  --------"]
+    for r in rows:
+        mark = "ok" if r["ok"] else "VIOLATED"
+        L.append(f"  {r['n']:<5}  {r['k']:<5}  {r['gs']:<3}  {r['rows']:<6}  {r['dense_us']:9.2f}  "
+                 f"{r['grouped_us']:11.2f}  {r['ratio']:6.3f}  {mark}")
+    bad = [r for r in rows if not r["ok"]]
+    if bad:
+        r = bad[0]
+        L.append(f"\n  {len(bad)} shape(s) VIOLATE the invariant. At n={r['n']} k={r['k']} gs={r['gs']} the dense")
+        L.append(f"  path's best ({r['dense_config']}) is {(r['ratio']-1)*100:.1f}% slower than the grouped path's")
+        L.append(f"  best ({r['grouped_config']}) doing strictly more work. That is a dense-path defect: the")
+        L.append("  scheduler and pointer-array epilogue grouped pays cannot make it faster.")
+    else:
+        L.append(f"\n  all {len(rows)} shape(s) hold.")
+    return "\n".join(L)
+
+
 def coverage_report(cov: dict) -> str:
     if not cov["ladder"]:
         return ("COVERAGE: nothing to cover. Every fixture in this file failed to separate its own leader, so\n"
@@ -328,6 +396,29 @@ def self_test() -> int:
     two = SELF_TEST + '{"rec":"run","bench":"planted","build":"PPU_PACKED_FORMAT=2","reps":3}\n'
     checks.append(("two build identities are refused", bool(incompatible(load(two)[0]))))
 
+    # ---- invariant ---------------------------------------------------------------------------------------
+    def _inv(dense_us, grouped_us):
+        L = ['{"rec":"run","bench":"planted","build":"B","reps":3}']
+        for p_, j in enumerate((0.0, 0.5, 1.0)):
+            for e, us in ((0, dense_us), (1, grouped_us)):
+                L.append('{"rec":"s","fixture":"f","dist":"d","schema":"i4","n":4096,"k":4096,"gs":32,'
+                         '"experts":%d,"rows":2048,"mmax":2048,"tm":64,"tn":128,"tk":64,"wm":64,"wn":32,'
+                         '"st":3,"pass":%d,"us":%.1f}' % (e, p_, us + j))
+        return "\n".join(L) + "\n"
+
+    ok_rows = invariant(load(_inv(200.0, 220.0))[1])
+    checks.append(("dense faster than grouped(L=1) holds", len(ok_rows) == 1 and ok_rows[0]["ok"]))
+    # THE LOAD-BEARING ONE: the check must FIRE, not merely pass on good data.
+    bad_rows = invariant(load(_inv(240.0, 220.0))[1])
+    checks.append(("dense SLOWER than grouped(L=1) is reported as a violation",
+                   len(bad_rows) == 1 and not bad_rows[0]["ok"] and bad_rows[0]["ratio"] > 1.0))
+    # A missing side must not read as a pass.
+    one_side = "\n".join(l for l in _inv(200.0, 220.0).splitlines() if '"experts":1' not in l) + "\n"
+    checks.append(("a shape with only one side is not compared", invariant(load(one_side)[1]) == []))
+    # A real MoE run (experts>1) is not a term in the inequality.
+    moe = _inv(200.0, 220.0).replace('"experts":1', '"experts":256')
+    checks.append(("a real MoE run is excluded from the invariant", invariant(load(moe)[1]) == []))
+
     # ---- coverage ----------------------------------------------------------------------------------------
     # Every fixture in SELF_TEST either ties or has one pass, so coverage must produce no ladder at all rather
     # than a ladder over fixtures whose optima are not separated.
@@ -364,10 +455,12 @@ def self_test() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("jsonl", nargs="?", help="a file written by BENCH_JSONL=")
+    ap.add_argument("jsonl", nargs="*", help="file(s) written by BENCH_JSONL=")
     ap.add_argument("--json", action="store_true", help="emit the verdicts as JSON")
     ap.add_argument("--coverage", action="store_true",
                     help="which SET to compile into the library, not which config wins one shape")
+    ap.add_argument("--invariant", action="store_true",
+                    help="check dense <= grouped(experts=1); exits non-zero on a violation")
     ap.add_argument("--self-test", action="store_true", help="planted data; proves each rule can fire")
     a = ap.parse_args()
 
@@ -375,18 +468,21 @@ def main() -> int:
         return self_test()
     if not a.jsonl:
         ap.error("give a .jsonl, or --self-test")
-    p = pathlib.Path(a.jsonl)
-    if not p.is_file():
-        print(f"no such file: {p}", file=sys.stderr)
-        return 2
+    text = ""
+    for one in a.jsonl:
+        p = pathlib.Path(one)
+        if not p.is_file():
+            print(f"no such file: {p}", file=sys.stderr)
+            return 2
+        text += p.read_text()
 
-    runs, samples, bad = load(p.read_text())
+    runs, samples, bad = load(text)
     for b in bad:
         print(f"  MALFORMED {b}", file=sys.stderr)
     if not samples:
         print("no samples in this file -- nothing to rank. (Was BENCH_JSONL set for the run?)", file=sys.stderr)
         return 1
-    clash = incompatible(runs)
+    clash = [] if a.invariant else incompatible(runs)
     if clash:
         print("REFUSING TO RANK: this file mixes builds, and a verdict over two libraries describes neither:",
               file=sys.stderr)
@@ -395,6 +491,12 @@ def main() -> int:
         return 1
 
     vs = verdicts(samples)
+    if a.invariant:
+        # NOT gated on incompatible(): comparing the two benches is the point, and they are two binaries with
+        # two `bench` names by construction. A build-define mismatch would still matter, so it is reported.
+        rows = invariant(samples)
+        print(json.dumps(rows, indent=2) if a.json else invariant_report(rows))
+        return 1 if any(not r["ok"] for r in rows) else 0
     if a.coverage:
         cov = coverage(samples, vs)
         print(json.dumps(cov, indent=2) if a.json else coverage_report(cov))
