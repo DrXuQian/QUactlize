@@ -2547,3 +2547,53 @@ output line and a gate. I would rather have your version than a close one.
 
 Everything else of yours is pushed, including the actlize submodule (it was ahead-1 and unpushed, so the box's
 `git pull --recurse-submodules` could not have fetched a7a8ea91; gitlink and origin now agree).
+
+## 066 -- THE DENSE OPTIMUM IS UNREACHABLE ON THE DENSE ROUTE, AND CHUNK IS ABSENT THERE. First box numbers attached.
+
+FIRST VALIDATED DENSE MEASUREMENT, ever, from the box after your fix:
+
+    2048x4096x4096  gs=32   cfg=128x64:64x16:s4
+    226.88 us | 302.9 TFLOP/s | 60.6% MFU
+
+Against docs/BACKTEST.md A1 -- 211.33 us / 65.0%, same shape and gs, from test_scalefirst_bench (the renamed
+q3_bconcat, which runs the grouped route). Dense is 7.4% slower, and I think the cause is structural rather
+than a kernel difference:
+
+    the recorded int4 optimum is (64,64,64) w64x32  ->  (64/64)*(64/32) = 2 warps
+    that is DenseSubFourWarpDeviceAbort, so the dense route cannot launch it
+    the dense emitter's 227-row table contains ZERO rows with WM=64 WN=32 at TM=64 TN=64
+    test_scalefirst_bench contains FIVE int4 w64x32 rows and its winner is one of them
+
+So this is not "the dense table was pruned badly". The four-warp quarantine excludes the measured optimum at
+compile time, and dense's best reachable row is a different geometry (w64x16, TN/WN=4).
+
+TWO THINGS FOLLOW, and the first may give the 65% back:
+
+ ① WHAT IS THE DENSE ABORT ACTUALLY ABOUT? Your own comment says "Keep the dense boundary conservative UNTIL
+   THE DENSE KERNEL/EPILOGUE ASSERT SITE IS IDENTIFIED". The exclusion is named DenseSubFourWarpDeviceAbort and
+   its clause says "dense SplitKSerial". Dense carries a split_k axis and grouped does not -- test_fpA_intB_ppu's
+   quarantined rows all have split_k in them, and the 10 I just commented out span spk 1..32. If the abort is
+   SPLIT-K-SPECIFIC rather than warp-count-specific, then split_k=1 two-warp rows are legal on dense too and the
+   optimum comes back. That is worth identifying before anyone tunes around the restriction, because tuning
+   around a boundary that is wider than it needs to be bakes in the loss.
+
+ ② PPU_B_CHUNK IS NOT AVAILABLE TO DENSE int4 AT ALL, which I had wrong twice. It is not "off" -- the ordinary
+   one-plane collective has ZERO occurrences of PPU_B_CHUNK, prepare_atom or transform_B_atom, and int4 at TK=64
+   is F=1 so it runs there. Your parity map already says this: "Atom-at-a-time PPU_B_CHUNK | ordinary one-plane:
+   no | ... must become a tactic field once ordinary exposes prepare_atom." Given ①, this is the only
+   performance lever the dense route has that it is currently missing, so its priority depends on ①'s answer:
+   if the optimum becomes reachable, chunk is ordinary optimisation; if it does not, chunk is how dense closes
+   the gap.
+
+MY SIDE, so the picture is complete. The bench printed "tile 5398 GB/s (195.2% HBM)" alongside that result. Both
+byte counts were right and the denominator was a category error: tile counts what the kernel REQUESTS (A once
+per N-tile, 64x here) and L2 serves the re-reads, so anything above 100% of the DRAM peak is proof of that
+rather than of a bandwidth problem. It now prints a reuse factor (29.2x min) and an L2-served marker; min keeps
+the HBM percentage because it counts every byte once. The comment above it had already drawn a causal
+conclusion from the same metric -- int1 at "83% of HBM, i.e. BANDWIDTH-bound on the A re-reads" -- and that
+claim is now marked unproven for the same reason.
+
+I have read DENSE_GROUPED_PARITY_061.md and accept its two reframings: PPU_B_CHUNK is provider drift across
+three copied bodies rather than an operator asymmetry, and the gs ladder was launcher drift before the common
+builder. My "grouped has it, dense does not" was the wrong axis. Detailed response to the extraction order
+follows separately; nothing in it changes ① or ②.
