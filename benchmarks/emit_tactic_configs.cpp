@@ -74,6 +74,11 @@ namespace {
 // decision nobody re-examines; passing it in makes "what did this table cover" answerable from the command.
 std::vector<int> g_stages{2, 3, 4};
 
+// The CONSUMER TileKs to emit rows for. Empty means "just the artifact's", which reproduces every table this
+// program produced before TacticTileK became a row field -- so adding the axis does not silently change what an
+// existing regenerate command emits.
+std::vector<int> g_tactic_tks;
+
 // THERE WAS A --space=quarantined HERE, AND ITS REMOVAL IS THE POINT. It emitted the COMPLEMENT of the dense
 // space -- only the rows dense refused -- so that the sub-four-warp geometry holding the measured int4 optimum
 // could be built as its own binary without touching the exclusion that banned it.
@@ -112,7 +117,12 @@ std::uint64_t fnv1a64_file(char const* path, bool& ok) {
   return hash;
 }
 
-using Row = std::tuple<int, int, int, int, int>;    // tm, tn, wm, wn, stages
+// tm, tn, TACTIC tile_k, wm, wn, stages. TacticTileK joined the row on 2026-08-05: it is a consumer choice --
+// how the kernel reads the bytes -- and no longer implies a layout, because the artifact carries its own fold.
+// ArtifactTileK is NOT here and must never be: it identifies the resident bytes, one per weight file, and a
+// tactic that could change it would invalidate every artifact on disk. That distinction is the whole point of
+// the split, and putting both in a row under one name is how it would be lost.
+using Row = std::tuple<int, int, int, int, int, int>;
 
 // Do not spell "largest legal" as min(TM,64). It happens to agree in today's WN<=64 producer domain, but WN=128
 // can make WM64 fail the accumulator ceiling while WM32 remains legal. Derive both H1 rungs from the filtered set,
@@ -163,7 +173,7 @@ bool n_geometry_guard(std::vector<Candidate> const& legal, Candidate const& c) {
 // and no row is below it. Both halves are needed -- unchanged output would also be the symptom of a constraint
 // that neither copy was applying.
 template <class Space>
-std::vector<Candidate> legal_grid(FormatSpec const& spec, int tk) {
+std::vector<Candidate> legal_grid(FormatSpec const& spec, int tactic_tk, int artifact_tk) {
   // Legality FIRST and from the shared header, so the pruning policy only ever removes rows that could have
   // been built. A policy applied to an unfiltered grid would emit configurations that fail to compile.
   std::vector<Candidate> ok;
@@ -171,7 +181,7 @@ std::vector<Candidate> legal_grid(FormatSpec const& spec, int tk) {
     for (int tn : kTileN)
       for (int wm : kWarpM)
         for (int wn : kWarpN) {
-          Candidate const c{spec, tm, tn, tk, wm, wn};
+          Candidate const c{spec, tm, tn, tactic_tk, wm, wn, artifact_tk};
           if (Space::sweep_exclusion(c) != Exclusion::None) continue;
           ok.push_back(c);
         }
@@ -204,6 +214,9 @@ bool is_declared(int dense_verdict) {
 }
 
 int compare_spaces(FormatSpec const& spec, int tk) {
+  // artifact == tactic here on purpose: this asks whether the two SPACES disagree at one geometry,
+  // not whether a shared artifact is readable. Feeding a split pair would change the question.
+  int const tactic_tk = tk, artifact_tk = tk;
   int diffs = 0, declared_n = 0;
   auto say = [&](Candidate const& c, char const* what, int a, int b, int st) {
     bool const ok = is_declared(a);
@@ -216,7 +229,7 @@ int compare_spaces(FormatSpec const& spec, int tk) {
     for (int tn : kTileN)
       for (int wm : kWarpM)
         for (int wn : kWarpN) {
-          Candidate const c{spec, tm, tn, tk, wm, wn};
+          Candidate const c{spec, tm, tn, tactic_tk, wm, wn, artifact_tk};
           int const kd = int(DenseSpace::kernel_exclusion(c)), kg = int(GroupedSpace::kernel_exclusion(c));
           if (kd != kg) say(c, "kernel_exclusion", kd, kg, 0);
           int const sd = int(DenseSpace::sweep_exclusion(c)), sg = int(GroupedSpace::sweep_exclusion(c));
@@ -246,7 +259,10 @@ int compare_spaces(FormatSpec const& spec, int tk) {
 }  // namespace
 
 template <class Space>
-static int emit(FormatSpec const& spec, int bits, int tk, char const* space_name, char const* macro_prefix) {
+// artifact_tk identifies the resident bytes; tactic_tks are the consumer choices emitted as rows. Passing one
+// tactic_tk equal to artifact_tk reproduces the pre-2026-08-05 table exactly, plus its new TileK column.
+static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<int> const& tactic_tks,
+                char const* space_name, char const* macro_prefix) {
   bool space_ok = true, emitter_ok = true;
   std::uint64_t const space_hash = fnv1a64_file(kSpaceSource, space_ok);
   std::uint64_t const emitter_hash = fnv1a64_file(kEmitterSource, emitter_ok);
@@ -257,11 +273,18 @@ static int emit(FormatSpec const& spec, int bits, int tk, char const* space_name
     return 1;
   }
 
-  std::vector<Candidate> const ok = legal_grid<Space>(spec, tk);
-  if (ok.empty()) { std::fprintf(stderr, "no legal tactic at bits=%d tile_k=%d\n", bits, tk); return 1; }
-
   std::set<Row> rows;
   int n_prim = 0, n_guard = 0;
+  // PRIMARY/GUARD ARE DECIDED WITHIN ONE TacticTileK, not across them. primary() and the guards compare a
+  // candidate against the OTHER legal candidates of the same grid; pooling two TileKs would let a row at one
+  // TileK suppress a row at another, which is a pruning decision nobody made.
+  for (int tactic_tk : tactic_tks) {
+    std::vector<Candidate> const ok = legal_grid<Space>(spec, tactic_tk, artifact_tk);
+    if (ok.empty()) {
+      std::fprintf(stderr, "no legal tactic at bits=%d artifact_tk=%d tactic_tk=%d\n",
+                   bits, artifact_tk, tactic_tk);
+      return 1;
+    }
   for (int st : g_stages) {
     std::vector<Candidate> legal;
     for (auto const& c : ok)
@@ -272,13 +295,18 @@ static int emit(FormatSpec const& spec, int bits, int tk, char const* space_name
       bool const p = primary(legal, c);
       bool const g = h1_guard(legal, c) || n_geometry_guard(legal, c);
       if (!p && !g) continue;
-      if (rows.insert(Row{c.tm, c.tn, c.wm, c.wn, st}).second) { if (p) ++n_prim; else ++n_guard; }
+      if (rows.insert(Row{c.tm, c.tn, c.tactic_tile_k, c.wm, c.wn, st}).second) { if (p) ++n_prim; else ++n_guard; }
     }
+  }
   }
 
   std::printf("// GENERATED by benchmarks/emit_tactic_configs.cpp -- do not edit.\n");
-  std::printf("//   space=%s bits=%d tile_k=%d   %zu configs (%d primary, %d guard) over %zu stage(s)\n",
-              space_name, bits, tk, rows.size(), n_prim, n_guard, g_stages.size());
+  std::printf("//   space=%s bits=%d artifact_tile_k=%d   %zu configs (%d primary, %d guard) over %zu stage(s)\n",
+              space_name, bits, artifact_tk, rows.size(), n_prim, n_guard, g_stages.size());
+  std::printf("//   tactic_tile_k:");
+  for (int k : tactic_tks) std::printf(" %d", k);
+  std::printf("   <- the CONSUMER choices in this table. artifact_tile_k=%d is the resident layout and is NOT a\n"
+              "//                     row field: one weight file, many readers.\n", artifact_tk);
   std::printf("//   stages:");
   for (int st : g_stages) std::printf(" %d", st);
   std::printf("   <- what this table COVERS; a winner outside it cannot be found by a sweep using it\n");
@@ -288,7 +316,8 @@ static int emit(FormatSpec const& spec, int bits, int tk, char const* space_name
   std::printf("//\n");
   std::printf("// Regenerate after changing ppu_tactic_space.hpp or the pruning policy:\n");
   std::printf("//   c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic &&\\\n");
-  std::printf("//   /tmp/emit_tactic %d %d --space=%s", bits, tk, space_name);
+  std::printf("//   /tmp/emit_tactic %d %d --space=%s --tactic-tk=", bits, artifact_tk, space_name);
+  for (size_t j = 0; j < tactic_tks.size(); ++j) std::printf("%s%d", j ? "," : "", tactic_tks[j]);
   for (int st : g_stages) std::printf(" %d", st);
   std::printf(" > benchmarks/lowbit_%s_configs.inc\n", space_name);
   std::printf("//\n");
@@ -304,7 +333,10 @@ static int emit(FormatSpec const& spec, int bits, int tk, char const* space_name
   // satisfy every static_assert about bits and TileK and still be the wrong operator's set. Distinct macro
   // names make that a redefinition or an undefined macro rather than a silent substitution.
   std::printf("#define %s_CFG_BITS  %d\n", macro_prefix, bits);
-  std::printf("#define %s_CFG_TILEK %d\n", macro_prefix, tk);
+  // RENAMED FROM _CFG_TILEK. It was the only TileK there was; now it names the RESIDENT layout, and a row
+  // carries the consumer's own. Keeping the old spelling would leave two different quantities under one name --
+  // the exact shape that made a quarantined table read as a dense one earlier today.
+  std::printf("#define %s_CFG_ARTIFACT_TILEK %d\n", macro_prefix, artifact_tk);
   std::printf("#define %s_CFG_ROWS  %zu\n", macro_prefix, rows.size());
   std::printf("#define %s_CFG_SPACE_FNV1A64   \"%016llx\"\n", macro_prefix,
               static_cast<unsigned long long>(space_hash));
@@ -313,8 +345,11 @@ static int emit(FormatSpec const& spec, int bits, int tk, char const* space_name
   std::printf("#define %s_CFG_LIST(X, B) \\\n", macro_prefix);
   size_t i = 0;
   for (auto const& r : rows) {
-    std::printf("  X(%d,%d,%d,%d,%d,B)%s\n", std::get<0>(r), std::get<1>(r), std::get<2>(r),
-                std::get<3>(r), std::get<4>(r), ++i == rows.size() ? "" : " \\");
+    // tm, tn, TacticTileK, wm, wn, stages -- in Row's order. An earlier edit added the %d and repeated
+    // get<3> instead of shifting the tail, which emitted stages=wm and dropped stages entirely. It was visible
+    // only because the printed row carried a stage value (16) that is not in the stage list.
+    std::printf("  X(%d,%d,%d,%d,%d,%d,B)%s\n", std::get<0>(r), std::get<1>(r), std::get<2>(r),
+                std::get<3>(r), std::get<4>(r), std::get<5>(r), ++i == rows.size() ? "" : " \\");
   }
   return 0;
 }
@@ -335,6 +370,15 @@ int main(int argc, char** argv) {
   std::vector<int> stages;
   for (int i = 3; i < argc; ++i) {
     if (std::strncmp(argv[i], "--space=", 8) == 0) { space = argv[i] + 8; continue; }
+    if (std::strncmp(argv[i], "--tactic-tk=", 12) == 0) {
+      g_tactic_tks.clear();
+      for (char const* s = argv[i] + 12; *s;) {
+        g_tactic_tks.push_back(std::atoi(s));
+        while (*s && *s != ',') ++s;
+        if (*s == ',') ++s;
+      }
+      continue;
+    }
     stages.push_back(std::atoi(argv[i]));
   }
   if (!stages.empty()) g_stages = stages;
@@ -344,8 +388,10 @@ int main(int argc, char** argv) {
     if (s.low_bits == bits && s.high_bits == 0) spec = &s;
   if (!spec) { std::fprintf(stderr, "no single-plane format with low_bits=%d in kFormats\n", bits); return 2; }
 
-  if (std::strcmp(space, "dense") == 0)   return emit<DenseSpace>(*spec, bits, tk, "dense", "LOWBIT_DENSE");
-  if (std::strcmp(space, "grouped") == 0) return emit<GroupedSpace>(*spec, bits, tk, "grouped", "LOWBIT_GROUPED");
+  if (g_tactic_tks.empty()) g_tactic_tks.push_back(tk);   // no --tactic-tk: the artifact's own, as before
+
+  if (std::strcmp(space, "dense") == 0)   return emit<DenseSpace>(*spec, bits, tk, g_tactic_tks, "dense", "LOWBIT_DENSE");
+  if (std::strcmp(space, "grouped") == 0) return emit<GroupedSpace>(*spec, bits, tk, g_tactic_tks, "grouped", "LOWBIT_GROUPED");
   if (std::strcmp(space, "compare") == 0) {
     std::printf("comparing DenseSpace vs GroupedSpace: bits=%d tile_k=%d stages", bits, tk);
     for (int st : g_stages) std::printf(" %d", st);

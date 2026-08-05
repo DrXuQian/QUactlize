@@ -251,12 +251,17 @@ struct GroupKernels {
 // fpA_intB (../fpA_intB_standalone) do it. Cfg<> rebuilds the ScaleOnly (mode-1) type stack with a given
 // tile/warp/stages; TileCfg is the runtime descriptor; supported_configs() is the registry; the dispatch macro
 // below maps a runtime TileCfg to the matching compiled Cfg<>. This replaces the recompile-per-config sweep.sh.
-template <int GroupSize, int TM, int TN, int WM, int WN, int St>
+template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int St>
 struct Cfg {
-  using CfgTile = Shape<cute::Int<TM>, cute::Int<TN>, cute::Int<TileShapeK>>;
+  // TK IS THE ROW'S TacticTileK, not the binary's. Until 2026-08-05 these three used the global TileShapeK,
+  // because TileK was a build-time constant that also determined the bytes on disk. It no longer does: the artifact
+  // carries its own fold, so a consumer may read the same weights at a different TileK, and the sweep searches
+  // it. The ARTIFACT's TileK stays a whole-table constant (LOWBIT_DENSE_CFG_ARTIFACT_TILEK) and is asserted
+  // against the binary below -- one weight file, many readers.
+  using CfgTile = Shape<cute::Int<TM>, cute::Int<TN>, cute::Int<TK>>;
   using CfgScale = Shape<cute::Int<TN>,
-      cute::Int<ppu_group_schedule::scale_groups_v<TileShapeK, GroupSize>>>;
-  using CfgWarp = Shape<cute::Int<WM>, cute::Int<WN>, cute::Int<TileShapeK>>;
+      cute::Int<ppu_group_schedule::scale_groups_v<TK, GroupSize>>>;
+  using CfgWarp = Shape<cute::Int<WM>, cute::Int<WN>, cute::Int<TK>>;
   using Epi = typename cutlass::epilogue::collective::CollectiveBuilder<
       ArchTag, OperatorClass, CfgTile, CfgWarp, EpilogueTileType,
       ElementAccumulator, ElementAccumulator, ElementC, LayoutC, AlignmentC,
@@ -271,7 +276,7 @@ struct Cfg {
   using Gemm = cutlass::gemm::device::GemmUniversalAdapter<Kernel>;
 };
 
-struct TileCfg { char const* name; int tm, tn, wm, wn, st; };
+struct TileCfg { char const* name; int tm, tn, tk, wm, wn, st; };
 
 // The generated table. Regenerate with benchmarks/emit_tactic_configs.cpp when the binary's (QUANT, BENCH_TSK)
 // changes -- the static_assert below is what turns forgetting into a compile error rather than a sweep over a
@@ -280,11 +285,11 @@ struct TileCfg { char const* name; int tm, tn, wm, wn, st; };
 #include "bench_samples.hpp"
 #include "bench_floor.cuh"
 #include "lowbit_dense_configs.inc"
-static_assert(cutlass::sizeof_bits<QuantType>::value == LOWBIT_DENSE_CFG_BITS && TileShapeK == LOWBIT_DENSE_CFG_TILEK,
+static_assert(cutlass::sizeof_bits<QuantType>::value == LOWBIT_DENSE_CFG_BITS && TileShapeK == LOWBIT_DENSE_CFG_ARTIFACT_TILEK,
               "lowbit_dense_configs.inc was generated for a different (bits, TileK) than this binary. Regenerate: "
               "c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic && "
               "/tmp/emit_tactic <bits> <tile_k> > benchmarks/lowbit_dense_configs.inc");
-#define LOWBIT_DENSE_COUNT_ROW(TM,TN,WM,WN,ST,_UNUSED) + 1
+#define LOWBIT_DENSE_COUNT_ROW(TM,TN,TK,WM,WN,ST,_UNUSED) + 1
 inline constexpr int kLowbitDenseConfigRows = 0 LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_COUNT_ROW, );
 #undef LOWBIT_DENSE_COUNT_ROW
 static_assert(kLowbitDenseConfigRows == LOWBIT_DENSE_CFG_ROWS,
@@ -302,8 +307,8 @@ inline std::vector<TileCfg> supported_configs() {
   // (schema, TileK) binary, and nothing in the file said so -- a sweep that searches a fifth of its space still
   // prints a winner. See benchmarks/emit_tactic_configs.cpp for the policy and the regeneration command.
   std::vector<TileCfg> v;
-#define LOWBIT_DENSE_ROW(TM,TN,WM,WN,ST,_UNUSED) \
-  v.push_back(TileCfg{#TM "x" #TN ":" #WM "x" #WN ":s" #ST, TM, TN, WM, WN, ST});
+#define LOWBIT_DENSE_ROW(TM,TN,TK,WM,WN,ST,_UNUSED) \
+  v.push_back(TileCfg{#TM "x" #TN "x" #TK ":" #WM "x" #WN ":s" #ST, TM, TN, TK, WM, WN, ST});
   LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_ROW, )
 #undef LOWBIT_DENSE_ROW
   return v;
@@ -316,13 +321,13 @@ inline std::vector<TileCfg> supported_configs() {
 // `config %s not compiled in` and exit(1) -- at run time, on the box, mid-sweep. That failure is now not
 // expressible, because there is one list. The BODY travels through the list as X's second argument; a macro
 // cannot define another macro, so passing it down is what makes a single list serve both expansions.
-#define LOWBIT_DENSE_TRY(TM,TN,WM,WN,ST,BODY)                                                               \
-  if (!_matched && _try(TM,TN,WM,WN,ST)) { using G = typename Cfg<GroupSize,TM,TN,WM,WN,ST>::Gemm; _matched=true; BODY; }
+#define LOWBIT_DENSE_TRY(TM,TN,TK,WM,WN,ST,BODY)                                                            \
+  if (!_matched && _try(TM,TN,TK,WM,WN,ST)) { using G = typename Cfg<GroupSize,TM,TN,TK,WM,WN,ST>::Gemm; _matched=true; BODY; }
 
 #define LOWBIT_DENSE_DISPATCH(cfg, BODY)                                                                    \
   do {                                                                                               \
     bool _matched = false;                                                                           \
-    auto _try = [&](int tm,int tn,int wm,int wn,int st){ return (cfg).tm==tm&&(cfg).tn==tn&&(cfg).wm==wm&&(cfg).wn==wn&&(cfg).st==st; }; \
+    auto _try = [&](int tm,int tn,int tk,int wm,int wn,int st){ return (cfg).tm==tm&&(cfg).tn==tn&&(cfg).tk==tk&&(cfg).wm==wm&&(cfg).wn==wn&&(cfg).st==st; }; \
     LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_TRY, BODY)                                                                  \
     if (!_matched) { std::fprintf(stderr, "config %s not compiled in (see supported_configs)\n", (cfg).name); std::exit(1); } \
   } while (0)
@@ -1084,7 +1089,8 @@ int main(int argc, char const **args) {
   if (options.list_configs) {
     std::printf("compiled CUTLASS W4A16 tile configs (group sizes 16, 32, 64, 128):\n");
     for (auto const& c : supported_configs())
-      std::printf("  %-18s  tile %dx%d  warp %dx%d  stages %d\n", c.name, c.tm, c.tn, c.wm, c.wn, c.st);
+      std::printf("  %-22s  tile %dx%dx%d  warp %dx%d  stages %d\n",
+                  c.name, c.tm, c.tn, c.tk, c.wm, c.wn, c.st);
     return 0;
   }
 
@@ -1140,7 +1146,7 @@ int main(int argc, char const **args) {
         _a.fixture = dense_fixture(options); _a.dist = "dense-v1"; _a.schema = dense_schema();
         _a.n = options.n; _a.k = options.k; _a.gs = options.g;
         _a.experts = 0; _a.rows = options.m; _a.mmax = options.m;
-        _a.tm = c.tm; _a.tn = c.tn; _a.tk = TileShapeK; _a.wm = c.wm; _a.wn = c.wn; _a.st = c.st;
+        _a.tm = c.tm; _a.tn = c.tn; _a.tk = c.tk; _a.wm = c.wm; _a.wn = c.wn; _a.st = c.st;
         _a.pass = rep;
         bench_samples::attempt(_a);
         std::printf("%-18s ", c.name);
