@@ -21,10 +21,11 @@ typedef struct quactlize_ppu_config_v1 {
   int32_t stages;
 } quactlize_ppu_config_v1;
 
-// Stores the static config-array address in *configs when configs is non-null and returns its element count.
-// No CUDA/PPU context is required. The current list contains dense tensor-core configurations; later CUDA-core
-// entries use this same record and call without assigning meaning to the tile fields.
+// Stores a static config-array address in *configs when configs is non-null and returns its element count.
+// No CUDA/PPU context is required. Dense and grouped are separate operators and therefore separate inventories;
+// the grouped array also contains its CUDA-core GEMV tactic, discriminated before its meaningless tile fields.
 int32_t quactlize_ppu_list_configs(quactlize_ppu_config_v1 const** configs);
+int32_t quactlize_ppu_list_grouped_configs(quactlize_ppu_config_v1 const** configs);
 
 // Config-selecting host-pointer GEMM entries. config_name is one of the names returned above. A null/empty name
 // requests the compiled default; an unknown non-empty name reports the decline and also runs that default.

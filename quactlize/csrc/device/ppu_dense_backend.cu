@@ -73,23 +73,22 @@ enum class GroupedConfigId {
 #define QUACTLIZE_PPU_GROUPED_CONFIG_ID(ID, NAME, TM, TN, WM, WN, STAGES) ID,
   QUACTLIZE_PPU_GROUPED_CONFIGS(QUACTLIZE_PPU_GROUPED_CONFIG_ID)
 #undef QUACTLIZE_PPU_GROUPED_CONFIG_ID
+  Count,
 };
 
-struct GroupedConfig {
-  GroupedConfigId id;
-  char const* name;
-  int tile_m, tile_n, warp_m, warp_n, stages;
-};
-
-constexpr GroupedConfig kGroupedConfigs[] = {
+constexpr quactlize_ppu_config_v1 kGroupedConfigs[] = {
 #define QUACTLIZE_PPU_GROUPED_CONFIG_ROW(ID, NAME, TM, TN, WM, WN, STAGES) \
-  {GroupedConfigId::ID, NAME, TM, TN, WM, WN, STAGES},
+  {false, NAME, TM, TN, WM, WN, STAGES},
   QUACTLIZE_PPU_GROUPED_CONFIGS(QUACTLIZE_PPU_GROUPED_CONFIG_ROW)
 #undef QUACTLIZE_PPU_GROUPED_CONFIG_ROW
+  // The CUDA-core MoE GEMV is one family-level tactic. Its tile fields deliberately carry no meaning.
+  {true, "vecdot_moe", 0, 0, 0, 0, 0},
 };
 constexpr GroupedConfigId kDefaultGroupedConfig = GroupedConfigId::Default;
-static_assert(sizeof(kGroupedConfigs) / sizeof(kGroupedConfigs[0]) > 1,
+static_assert(int(GroupedConfigId::Count) > 1,
               "libquactlize_ppu must compile a grouped config set, not one frozen tactic");
+static_assert(sizeof(kGroupedConfigs) / sizeof(kGroupedConfigs[0]) == size_t(GroupedConfigId::Count) + 1,
+              "the grouped inventory must contain every tensor-core config followed by its one CUDA tactic");
 
 constexpr size_t align16(size_t value) { return (value + 15) & ~size_t(15); }
 
@@ -292,6 +291,11 @@ int dense(uint16_t const* act, uint8_t const* low, uint8_t const* high,
 extern "C" int32_t quactlize_ppu_list_configs(quactlize_ppu_config_v1 const** configs) {
   if (configs) *configs = kDenseConfigs;
   return int32_t(sizeof(kDenseConfigs) / sizeof(kDenseConfigs[0]));
+}
+
+extern "C" int32_t quactlize_ppu_list_grouped_configs(quactlize_ppu_config_v1 const** configs) {
+  if (configs) *configs = kGroupedConfigs;
+  return int32_t(sizeof(kGroupedConfigs) / sizeof(kGroupedConfigs[0]));
 }
 
 extern "C" int quactlize_ppu_dense_lowbit_config_v1(
