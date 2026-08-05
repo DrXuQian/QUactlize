@@ -1147,7 +1147,13 @@ int main(int argc, char const **args) {
         std::fflush(stdout);
 
         Result r = run_config(options, c);
-        if (!r.passed) { if (!rep) std::printf("%-10s %s\n", "-", "skipped (unsupported/failed)"); else std::printf("\n"); continue; }
+        if (!r.passed) {
+          // RECORDED, NOT JUST PRINTED. "tried and rejected" is evidence for pruning and is distinguishable
+          // from a crash only if it lands in the file; without it, unfinished() reports this as a dead run.
+          bench_samples::excluded(_a, "bench reported not-passed (unsupported for this shape, or failed)");
+          if (!rep) std::printf("%-10s %s\n", "-", "skipped (unsupported/failed)"); else std::printf("\n");
+          continue;
+        }
         const double tf = r.gflops / 1e3;
         // SECONDS, NOT TFLOP/s, IS WHAT GETS COMPARED. The selection works on a time, so converting once here
         // keeps one definition of "better" rather than a maximised rate in one bench and a minimised time in
