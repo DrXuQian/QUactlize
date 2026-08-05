@@ -39,7 +39,7 @@ def config_name(s: dict) -> str:
 def load(text: str):
     """-> (runs, samples, complaints). A malformed line is a complaint and never a skip: an analyser that
     ignores what it cannot parse reports a verdict over a subset it never mentions."""
-    runs, samples, attempts, bad = [], [], [], []
+    runs, samples, attempts, excludeds, bad = [], [], [], [], []
     for n, line in enumerate(text.splitlines(), 1):
         line = line.strip()
         if not line:
@@ -66,6 +66,14 @@ def load(text: str):
                 bad.append(f"line {n}: attempt missing {','.join(missing)}")
             else:
                 attempts.append(r)
+        elif kind == "x":
+            # TRIED AND EXCLUDED. Carries `why`, and it is the only record that says an option was reachable and
+            # rejected -- which is what a pruning decision needs and what absence cannot supply.
+            missing = [k for k in CONFIG_KEYS + FIXTURE_KEYS + ("pass", "why") if k not in r]
+            if missing:
+                bad.append(f"line {n}: exclusion missing {','.join(missing)}")
+            else:
+                excludeds.append(r)
         elif kind == "s":
             missing = [k for k in CONFIG_KEYS + FIXTURE_KEYS + ("pass", "us") if k not in r]
             if missing:
@@ -74,10 +82,10 @@ def load(text: str):
                 samples.append(r)
         else:
             bad.append(f"line {n}: unknown rec {kind!r}")
-    return runs, samples, attempts, bad
+    return runs, samples, attempts, excludeds, bad
 
 
-def unfinished(samples, attempts) -> list:
+def unfinished(samples, attempts, excludeds=()) -> list:
     """-> the attempts that never produced a sample, i.e. where the sweep died.
 
     THE READER'S HALF OF THE ATTEMPT RECORD. Writing `a` lines and never checking them would be the same defect
@@ -89,8 +97,86 @@ def unfinished(samples, attempts) -> list:
     that repetition rather than being masked by its two successes.
     """
     key = lambda r: tuple(r.get(k) for k in CONFIG_KEYS + FIXTURE_KEYS + ("pass",))
-    done = {key(s) for s in samples}
+    # An EXCLUSION resolves an attempt just as a sample does. The candidate was tried and the bench said no --
+    # that is an outcome, not a disappearance, and reporting it as "the run did not finish" would cry wolf on
+    # every healthy sweep that contains one unsupported config.
+    done = {key(s) for s in samples} | {key(x) for x in excludeds}
     return [a for a in attempts if key(a) not in done]
+
+
+def prune_report(samples, excludeds, tol=0.05):
+    """-> (axis_rows, heuristic_rows). What the sweep says can be DROPPED, and whether a rule could replace it.
+
+    TWO QUESTIONS, AND THEY ARE NOT THE SAME ONE.
+
+    (a) CAN THE COMPILED SET SHRINK? Each row is 293 template instantiations x 4 group sizes; every value on
+        every axis costs build time forever. An axis value that never wins anywhere, and whose removal costs no
+        fixture more than `tol`, is dead weight. REGRET, not win count, is the criterion: a value that wins
+        nothing but is always within 1% is free to drop, while one that wins once by 30% is not.
+
+    (b) IS A HEURISTIC VIABLE AT ALL? The alternative to a tactic cache is a rule -- "M<=4 takes this, M>=512
+        takes that". That is only honest if, inside each M bucket, ONE config is within `tol` of the best for
+        EVERY fixture in it. If no single config covers a bucket, a rule over M cannot reproduce the sweep and
+        the cache is doing work a heuristic cannot.
+
+    Buckets are floor-power-of-two over `rows`, matching the tactic cache's own bucketing -- comparing a
+    heuristic against a differently-bucketed cache would be measuring the bucketing, not the heuristic.
+
+    EXCLUSIONS COUNT SEPARATELY. A config that was tried and rejected everywhere is prunable for a different
+    reason -- it is not slow, it is unbuildable for those shapes -- and merging the two would hide which.
+    """
+    vs = verdicts(samples)
+    if not vs:
+        return [], []
+    # best[fixture][config] = median us, from the same statistics verdicts() uses
+    per_fix = collections.defaultdict(dict)
+    for s in samples:
+        per_fix[tuple(s[k] for k in FIXTURE_KEYS)].setdefault(config_name(s), []).append(float(s["us"]))
+    per_fix = {f: {c: statistics.median(v) for c, v in d.items()} for f, d in per_fix.items()}
+    best = {f: min(d.values()) for f, d in per_fix.items()}
+
+    def regret_without(pred):
+        """The worst fixture's loss, as a ratio, if every config satisfying `pred` were dropped. inf when a
+        fixture would be left with NO config at all -- which is not a large regret, it is no answer."""
+        worst = 0.0
+        for f, d in per_fix.items():
+            kept = [us for c, us in d.items() if not pred(c)]
+            if not kept:
+                return float("inf")
+            worst = max(worst, kept and (min(kept) / best[f] - 1.0))
+        return worst
+
+    cfg_fields = {}
+    for s in samples:
+        cfg_fields[config_name(s)] = {k: s[k] for k in ("tm", "tn", "tk", "wm", "wn", "st")}
+    winners = {min(d, key=d.get) for d in per_fix.values()}
+
+    axis_rows = []
+    for axis in ("tm", "tn", "wm", "wn", "st"):
+        for val in sorted({f[axis] for f in cfg_fields.values()}):
+            hit = lambda c, a=axis, v=val: cfg_fields[c][a] == v
+            wins = sum(1 for w in winners if hit(w))
+            axis_rows.append({"axis": axis, "value": val, "wins": wins,
+                              "configs": sum(1 for c in cfg_fields if hit(c)),
+                              "regret_if_dropped": regret_without(hit)})
+
+    # (b) one config per M bucket, within tol of the best for every fixture in the bucket
+    buckets = collections.defaultdict(list)
+    for f in per_fix:
+        rows = dict(zip(FIXTURE_KEYS, f))["rows"]
+        b = 1 << max(0, int(rows).bit_length() - 1) if rows else 0
+        buckets[b].append(f)
+    heur = []
+    for b in sorted(buckets):
+        fs = buckets[b]
+        common = set.intersection(*(set(per_fix[f]) for f in fs))
+        ok = [(c, max(per_fix[f][c] / best[f] - 1.0 for f in fs)) for c in common]
+        ok.sort(key=lambda x: x[1])
+        heur.append({"bucket": b, "fixtures": len(fs),
+                     "best_single": ok[0][0] if ok else None,
+                     "worst_regret": ok[0][1] if ok else float("inf"),
+                     "viable": bool(ok) and ok[0][1] <= tol})
+    return axis_rows, heur
 
 
 def incompatible(runs) -> list:
@@ -407,7 +493,7 @@ def _uncovered_data():
 
 
 def self_test() -> int:
-    runs, samples, attempts, bad = load(SELF_TEST)
+    runs, samples, attempts, excludeds, bad = load(SELF_TEST)
     vs = {v["fixture"]: v for v in verdicts(samples)}
     checks = []
     checks.append(("a malformed line is reported, not skipped", len(bad) == 1 and "not JSON" in bad[0]))
@@ -417,14 +503,45 @@ def self_test() -> int:
     _a = ('{"rec":"a","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":0,"rows":128,'
           '"mmax":128,"tm":64,"tn":64,"tk":64,"wm":64,"wn":32,"st":3,"pass":0}')
     _s_done = _a.replace('"rec":"a"', '"rec":"s"')[:-1] + ',"us":209.27}'
-    _r, _sm, _at, _bd = load(_a + "\n" + _s_done + "\n")
+    _r, _sm, _at, _ex, _bd = load(_a + "\n" + _s_done + "\n")
     checks.append(("an attempt that produced a sample is not reported as unfinished",
                    _bd == [] and unfinished(_sm, _at) == []))
-    _r, _sm, _at, _bd = load(_a + "\n")
+    _r, _sm, _at, _ex, _bd = load(_a + "\n")
     checks.append(("an attempt with no sample IS reported as unfinished",
                    _bd == [] and len(unfinished(_sm, _at)) == 1))
     # And a DIFFERENT pass must not satisfy it: a config that dies on its third repetition is still a death.
-    _r, _sm, _at, _bd = load(_a + "\n" + _s_done.replace('"pass":0', '"pass":1') + "\n")
+    _r, _sm, _at, _ex, _bd = load(_a + "\n" + _s_done.replace('"pass":0', '"pass":1') + "\n")
+    # --prune, PLANTED BOTH WAYS. A report that can only ever say "prunable" is as useless as one that can only
+    # say "keep": each direction gets a fixture set constructed to force it.
+    def _p(fix, rows, tm, st, us):
+        return ('{"rec":"s","fixture":"%s","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":0,'
+                '"rows":%d,"mmax":%d,"tm":%d,"tn":64,"tk":64,"wm":32,"wn":32,"st":%d,"pass":0,"us":%.1f}'
+                % (fix, rows, rows, tm, st, us))
+    # st=2 is never a winner and never more than 1% behind -> DEAD, droppable.
+    dead = "\n".join([_p("A", 8, 64, 3, 100.0), _p("A", 8, 64, 2, 100.5),
+                      _p("B", 8, 64, 3, 200.0), _p("B", 8, 64, 2, 201.0)]) + "\n"
+    ax, _h = prune_report(load(dead)[1], [], 0.05)
+    st2 = next(r for r in ax if r["axis"] == "st" and r["value"] == 2)
+    checks.append(("an axis value that never wins and costs nothing is reported droppable",
+                   st2["wins"] == 0 and st2["regret_if_dropped"] <= 0.05))
+    # AND THE OTHER DIRECTION, which needs DIFFERENT data. In `dead` the runner-up is 0.5% behind, so dropping
+    # the WINNER also costs 0.5% and the report calls it droppable -- correctly: when two configs are within
+    # half a percent, either one is expendable and "it wins" is not by itself a reason to keep it. Regret is the
+    # criterion, and that is the point. To show the report can refuse, the winner has to actually be worth
+    # something.
+    lead = "\n".join([_p("A", 8, 64, 3, 100.0), _p("A", 8, 64, 2, 200.0),
+                      _p("B", 8, 64, 3, 100.0), _p("B", 8, 64, 2, 200.0)]) + "\n"
+    ax2, _h3 = prune_report(load(lead)[1], [], 0.05)
+    lead3 = next(r for r in ax2 if r["axis"] == "st" and r["value"] == 3)
+    checks.append(("an axis value whose removal costs the worst fixture dearly is NOT reported droppable",
+                   lead3["wins"] > 0 and lead3["regret_if_dropped"] > 0.05))
+    # Two fixtures in ONE bucket whose winners disagree by a lot -> no rule over M can cover it.
+    split = "\n".join([_p("C", 8, 64, 3, 100.0), _p("C", 8, 16, 3, 300.0),
+                       _p("D", 8, 64, 3, 300.0), _p("D", 8, 16, 3, 100.0)]) + "\n"
+    _a2, h2 = prune_report(load(split)[1], [], 0.05)
+    checks.append(("a bucket whose fixtures want different configs is reported NOT coverable by a rule",
+                   len(h2) == 1 and not h2[0]["viable"]))
+
     checks.append(("a sample from another pass does not mask an unfinished attempt",
                    len(unfinished(_sm, _at)) == 1))
     f = vs["f"]
@@ -507,6 +624,11 @@ def main() -> int:
                     help="which SET to compile into the library, not which config wins one shape")
     ap.add_argument("--invariant", action="store_true",
                     help="check dense <= grouped(experts=1); exits non-zero on a violation")
+    ap.add_argument("--prune", action="store_true",
+                    help="which config axes never earn their place, and whether one config per M bucket could "
+                         "replace the cache")
+    ap.add_argument("--tol", type=float, default=0.05,
+                    help="how much regret counts as free, for --prune (default 0.05 = 5%%)")
     ap.add_argument("--self-test", action="store_true", help="planted data; proves each rule can fire")
     a = ap.parse_args()
 
@@ -522,13 +644,13 @@ def main() -> int:
             return 2
         text += p.read_text()
 
-    runs, samples, attempts, bad = load(text)
+    runs, samples, attempts, excludeds, bad = load(text)
     for b in bad:
         print(f"  MALFORMED {b}", file=sys.stderr)
     # BEFORE ANYTHING IS RANKED. A sweep that died leaves a ranking over its PREFIX, which reads as a complete
     # answer -- the leader of the configs that happened to run before the crash is not the leader of the space.
     # So this is loud, it is first, and it names the row so it can be reproduced.
-    stopped = unfinished(samples, attempts)
+    stopped = unfinished(samples, attempts, excludeds)
     if stopped:
         print(f"  ⚠ {len(stopped)} candidate(s) LAUNCHED AND PRODUCED NO SAMPLE -- the run did not finish.",
               file=sys.stderr)
@@ -559,6 +681,39 @@ def main() -> int:
         rows = invariant(samples)
         print(json.dumps(rows, indent=2) if a.json else invariant_report(rows))
         return 1 if any(not r["ok"] for r in rows) else 0
+    if a.prune:
+        axis_rows, heur = prune_report(samples, excludeds, a.tol)
+        if a.json:
+            print(json.dumps({"axes": axis_rows, "buckets": heur}, indent=2))
+            return 0
+        print(f"AXIS VALUES, and what dropping each would cost the WORST fixture (tol {a.tol:.0%})")
+        print(f"  {'axis':<5} {'value':>6} {'wins':>5} {'configs':>8} {'regret if dropped':>18}")
+        for r in sorted(axis_rows, key=lambda r: (r["axis"], r["value"])):
+            g = r["regret_if_dropped"]
+            mark = "  <- DEAD, drop it" if r["wins"] == 0 and g <= a.tol else (
+                   "  <- sole cover" if g == float("inf") else "")
+            print(f"  {r['axis']:<5} {r['value']:>6} {r['wins']:>5} {r['configs']:>8} "
+                  f"{('never viable' if g == float('inf') else f'{g:+.1%}'):>18}{mark}")
+        if excludeds:
+            byw = collections.Counter(x.get("why", "?") for x in excludeds)
+            print(f"\n  {len(excludeds)} exclusion(s) -- tried and refused, prunable at the EMITTER not by speed:")
+            for why, n in byw.most_common(5):
+                print(f"    {n:>6}  {why}")
+        print(f"\nCOULD ONE CONFIG PER M BUCKET REPLACE THE CACHE? (bucket = floor power of two of rows)")
+        print(f"  {'bucket':>7} {'fixtures':>9} {'worst regret':>13}  best single config")
+        for h in heur:
+            g = h["worst_regret"]
+            print(f"  {h['bucket']:>7} {h['fixtures']:>9} "
+                  f"{('no common config' if g == float('inf') else f'{g:+.1%}'):>13}  "
+                  f"{h['best_single'] or '-'}{'' if h['viable'] else '   <- a rule cannot cover this bucket'}")
+        if all(h["viable"] for h in heur):
+            print(f"\n  Every bucket has one config within {a.tol:.0%} of best everywhere in it: a heuristic over M")
+            print("  reproduces this sweep, and the cache is not buying anything these shapes can show.")
+        else:
+            bad = [h["bucket"] for h in heur if not h["viable"]]
+            print(f"\n  Bucket(s) {bad} have no single config within {a.tol:.0%} of best for every fixture in them.")
+            print("  A rule over M alone cannot reproduce the sweep there -- the winner depends on N/K too.")
+        return 0
     if a.coverage:
         cov = coverage(samples, vs)
         print(json.dumps(cov, indent=2) if a.json else coverage_report(cov))

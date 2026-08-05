@@ -40,6 +40,12 @@ int main() {
   bench_samples::Sample d = s;
   d.tm = 16; d.tn = 16; d.wm = 16; d.wn = 16; d.st = 2; d.us = 0.0;
   bench_samples::attempt(d);
+  // And the THIRD outcome: tried, and the bench said no. It must resolve its attempt exactly as a sample does,
+  // or a healthy sweep containing one unsupported config reports a dead run.
+  bench_samples::Sample e = s;
+  e.tm = 32; e.tn = 32; e.wm = 32; e.wn = 32; e.st = 4; e.us = 0.0;
+  bench_samples::attempt(e);
+  bench_samples::excluded(e, "planted: unsupported for this shape");
   return 0;
 }
 '''
@@ -69,19 +75,21 @@ def main() -> int:
             return fail(f"probe did not write {out} (rc={run.returncode})")
 
         text = out.read_text()
-        runs, samples, attempts, bad = analyse.load(text)
+        runs, samples, attempts, excludeds, bad = analyse.load(text)
 
         # THE PARSER MUST NOT REJECT ITS OWN WRITER'S OUTPUT. This is the check that a renamed field trips.
         if bad:
             return fail("the reader rejected lines the writer produced -- the two have drifted apart:\n"
                         + "\n".join(f"    {b}" for b in bad)
                         + f"\n  raw:\n" + "".join(f"    {l}\n" for l in text.splitlines()))
-        if len(attempts) != 2 or len(samples) != 1:
-            return fail(f"expected 2 attempts and 1 sample, parsed {len(attempts)} and {len(samples)}")
+        if (len(attempts), len(samples), len(excludeds)) != (3, 1, 1):
+            return fail(f"expected 3 attempts, 1 sample, 1 exclusion; parsed "
+                        f"{len(attempts)}, {len(samples)}, {len(excludeds)}")
 
-        stopped = analyse.unfinished(samples, attempts)
+        stopped = analyse.unfinished(samples, attempts, excludeds)
         if len(stopped) != 1:
-            return fail(f"expected exactly 1 unfinished attempt, got {len(stopped)}: {stopped}")
+            return fail(f"expected exactly 1 unfinished attempt (the excluded one must NOT count), "
+                        f"got {len(stopped)}: {stopped}")
         # And it must be the RIGHT one: matching must key on the identity, not merely count.
         if (stopped[0].get("tm"), stopped[0].get("st")) != (16, 2):
             return fail(f"the wrong attempt was reported as unfinished: {stopped[0]}")

@@ -113,6 +113,30 @@ inline void emit(Sample const& s) {
   std::fflush(f);
 }
 
+// TRIED AND EXCLUDED, with a reason. Not the same as a crash and not the same as never having been tried, and
+// a log that cannot tell those three apart cannot support pruning.
+//
+// WITHOUT THIS the three collapse into one: a config the bench rejects (unsupported for the shape, failed its
+// correctness check, over a resource bound) emits an `a` and then nothing, which is byte-identical to a device
+// assert -- so unfinished() reports a false alarm on a healthy run, and the pruning question "which options are
+// never viable anywhere" has no evidence at all, only absence. Absence is what a config that was never in the
+// table also looks like.
+//
+// `us` is absent for the same reason it is absent from an attempt: nothing was measured.
+inline void excluded(Sample const& s, char const* why) {
+  std::FILE* f = stream();
+  if (!f || !plain_names(s)) return;
+  auto plain = [](char const* p) { return p && !std::strchr(p, '"') && !std::strchr(p, '\\'); };
+  char const* reason = plain(why) ? why : "unprintable";
+  std::fprintf(f,
+      "{\"rec\":\"x\",\"fixture\":\"%s\",\"dist\":\"%s\",\"schema\":\"%s\","
+      "\"n\":%d,\"k\":%d,\"gs\":%d,\"experts\":%d,\"rows\":%d,\"mmax\":%d,"
+      "\"tm\":%d,\"tn\":%d,\"tk\":%d,\"wm\":%d,\"wn\":%d,\"st\":%d,\"pass\":%d,\"why\":\"%s\"}\n",
+      s.fixture, s.dist, s.schema, s.n, s.k, s.gs, s.experts, s.rows, s.mmax,
+      s.tm, s.tn, s.tk, s.wm, s.wn, s.st, s.pass, reason);
+  std::fflush(f);
+}
+
 inline void flush() { if (std::FILE* f = stream()) std::fflush(f); }
 
 }  // namespace bench_samples
