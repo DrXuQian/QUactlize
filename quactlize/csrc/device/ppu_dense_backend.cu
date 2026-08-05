@@ -386,6 +386,45 @@ bool grouped_fully_quantized_config_valid(
 #endif
 }
 
+quactlize_ppu_config_v2 config_v2(quactlize_ppu_config_v1 const& config, int tile_k) {
+  return {config.enable_cuda_kernel, config.name, config.tile_m, config.tile_n, tile_k,
+          config.warp_m, config.warp_n, config.stages};
+}
+
+int32_t list_valid_dense_configs_v2(
+    quactlize_ppu_config_v2* configs, int32_t capacity,
+    int m, int n, int k, int group_size, int qtype, bool fully_quantized) {
+  auto const& format = ppu_formats::for_qtype(qtype);
+  int const tile_k = fully_quantized ? format.fully_quantized_tile_k : format.scale_first_tile_k;
+  int32_t count = 0;
+  for (size_t i = 0; i < sizeof(kDenseConfigs) / sizeof(kDenseConfigs[0]); ++i) {
+    auto const id = static_cast<DenseConfigId>(i);
+    bool const valid = fully_quantized
+        ? dense_fully_quantized_config_valid(id, m, n, k, group_size, qtype)
+        : dense_lowbit_config_valid(id, m, n, k, group_size, qtype);
+    if (!valid) continue;
+    if (configs && count < capacity) configs[count] = config_v2(kDenseConfigs[i], tile_k);
+    ++count;
+  }
+  return count;
+}
+
+int32_t list_valid_grouped_configs_v2(
+    quactlize_ppu_config_v2* configs, int32_t capacity,
+    int total_rows, int n, int k, int group_size, int experts, int max_rows, int qtype) {
+  int const tile_k = ppu_formats::for_qtype(qtype).fully_quantized_tile_k;
+  int32_t count = 0;
+  for (int i = 0; i < int(GroupedConfigId::Count); ++i) {
+    auto const id = static_cast<GroupedConfigId>(i);
+    if (!grouped_fully_quantized_config_valid(
+            id, total_rows, n, k, group_size, experts, max_rows, qtype))
+      continue;
+    if (configs && count < capacity) configs[count] = config_v2(kGroupedConfigs[i], tile_k);
+    ++count;
+  }
+  return count;
+}
+
 template <class Low, class High = void, int GroupSize = 16, int TileK = 256>
 int dense_fully_quantized_device(uint16_t const* act, uint8_t const* low, uint8_t const* high,
                                  uint8_t const* units, uint16_t* out, int m, int n, int k,
@@ -478,6 +517,27 @@ extern "C" int32_t quactlize_ppu_grouped_fully_quantized_config_valid_v1(
   return find_grouped_tensor_config(config_name, config) &&
          grouped_fully_quantized_config_valid(
              config, total_rows, n, k, group_size, experts, max_rows, qtype);
+}
+
+extern "C" int32_t quactlize_ppu_list_valid_dense_lowbit_configs_v2(
+    quactlize_ppu_config_v2* configs, int32_t capacity,
+    int m, int n, int k, int group_size, int qtype) {
+  return list_valid_dense_configs_v2(
+      configs, capacity, m, n, k, group_size, qtype, false);
+}
+
+extern "C" int32_t quactlize_ppu_list_valid_dense_fully_quantized_configs_v2(
+    quactlize_ppu_config_v2* configs, int32_t capacity,
+    int m, int n, int k, int group_size, int qtype) {
+  return list_valid_dense_configs_v2(
+      configs, capacity, m, n, k, group_size, qtype, true);
+}
+
+extern "C" int32_t quactlize_ppu_list_valid_grouped_fully_quantized_configs_v2(
+    quactlize_ppu_config_v2* configs, int32_t capacity,
+    int total_rows, int n, int k, int group_size, int experts, int max_rows, int qtype) {
+  return list_valid_grouped_configs_v2(
+      configs, capacity, total_rows, n, k, group_size, experts, max_rows, qtype);
 }
 
 extern "C" int quactlize_ppu_dense_lowbit_config_v1(

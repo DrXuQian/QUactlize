@@ -19,6 +19,7 @@
 #include "gguf_vecdot.hpp"
 #include "gemv_lowbit/gemv_launcher.hpp"
 #include "gemv_lowbit/gemv_rt.hpp"
+#include "ppu_format_config.hpp"
 #include "ppu_grouped_configs.inc"
 #include "quactlize_ppu_device.h"
 
@@ -294,12 +295,23 @@ extern "C" int quactlize_ppu_vecdot_dense_dev_v1(uint8_t const* b, int64_t block
 extern "C" int32_t quactlize_ppu_vecdot_moe_config_valid_v1(
     int total_rows, int n, int k, int group_size, int experts, int max_rows,
     int qtype, char const* config_name) {
-  int const expected_group = (qtype == 10 || qtype == 11 || qtype == 14) ? 16
-                           : (qtype == 12 || qtype == 13) ? 32 : 0;
+  int const expected_group = ppu_formats::for_qtype(qtype).group_size;
   bool const compiled_name = !config_name || !config_name[0] ||
                              std::strcmp(config_name, QUACTLIZE_PPU_GROUPED_CUDA_CONFIG_NAME) == 0;
   return compiled_name && total_rows > 0 && n > 0 && k > 0 && k % 256 == 0 &&
          experts > 0 && max_rows > 0 && group_size == expected_group;
+}
+
+extern "C" int32_t quactlize_ppu_list_valid_vecdot_moe_configs_v2(
+    quactlize_ppu_config_v2* configs, int32_t capacity,
+    int total_rows, int n, int k, int group_size, int experts, int max_rows, int qtype) {
+  bool const valid = quactlize_ppu_vecdot_moe_config_valid_v1(
+      total_rows, n, k, group_size, experts, max_rows, qtype,
+      QUACTLIZE_PPU_GROUPED_CUDA_CONFIG_NAME);
+  if (valid && configs && capacity > 0) {
+    configs[0] = {true, QUACTLIZE_PPU_GROUPED_CUDA_CONFIG_NAME, 0, 0, 0, 0, 0, 0};
+  }
+  return valid ? 1 : 0;
 }
 
 extern "C" int quactlize_ppu_vecdot_moe_config_v1(

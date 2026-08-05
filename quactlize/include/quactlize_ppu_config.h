@@ -21,11 +21,43 @@ typedef struct quactlize_ppu_config_v1 {
   int32_t stages;
 } quactlize_ppu_config_v1;
 
+// Per-problem tactic description. Unlike the legacy geometry-only v1 inventory, this record carries TileK: TileK
+// selects the resident weight arrangement and therefore must agree with the offline artifact. The scheme-specific
+// filtered queries below are the authoritative inventory for new tuners. name has static lifetime. As in v1, every
+// tile field (including tile_k) is meaningless and zero for a CUDA-core family record.
+typedef struct quactlize_ppu_config_v2 {
+  bool enable_cuda_kernel;
+  char const* name;
+  int32_t tile_m;
+  int32_t tile_n;
+  int32_t tile_k;
+  int32_t warp_m;
+  int32_t warp_n;
+  int32_t stages;
+} quactlize_ppu_config_v2;
+
 // Stores a static config-array address in *configs when configs is non-null and returns its element count.
 // No CUDA/PPU context is required. Dense and grouped are separate operators and therefore separate inventories;
 // the grouped array also contains its CUDA-core GEMV tactic, discriminated before its meaningless tile fields.
 int32_t quactlize_ppu_list_configs(quactlize_ppu_config_v1 const** configs);
 int32_t quactlize_ppu_list_grouped_configs(quactlize_ppu_config_v1 const** configs);
+
+// Writes up to capacity valid records and returns the full valid-record count, so a caller may first pass
+// (NULL, 0), allocate exactly that many records, and query again. A negative capacity writes nothing. These are
+// host-only queries and require no CUDA/PPU context. Dense/grouped tensor records report the scheme-specific TileK
+// selected by ppu_format_config.inc; the vecdot record reports the CUDA family with zero/meaningless tile fields.
+int32_t quactlize_ppu_list_valid_dense_lowbit_configs_v2(
+    quactlize_ppu_config_v2* configs, int32_t capacity,
+    int m, int n, int k, int group_size, int qtype);
+int32_t quactlize_ppu_list_valid_dense_fully_quantized_configs_v2(
+    quactlize_ppu_config_v2* configs, int32_t capacity,
+    int m, int n, int k, int group_size, int qtype);
+int32_t quactlize_ppu_list_valid_grouped_fully_quantized_configs_v2(
+    quactlize_ppu_config_v2* configs, int32_t capacity,
+    int total_rows, int n, int k, int group_size, int experts, int max_rows, int qtype);
+int32_t quactlize_ppu_list_valid_vecdot_moe_configs_v2(
+    quactlize_ppu_config_v2* configs, int32_t capacity,
+    int total_rows, int n, int k, int group_size, int experts, int max_rows, int qtype);
 
 // Host-only per-problem validity predicates for the inventories above. They return 1 only when config_name names a
 // compiled tactic that the corresponding shipping entry can run for this problem, and 0 otherwise. A null/empty name
