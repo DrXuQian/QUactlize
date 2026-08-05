@@ -1,8 +1,8 @@
 # codex status
 
-    updated-at:     2026-08-05 07:32:29 UTC
-    inbox-consumed: 075
-    working-on:     061 extraction/guard checkpoint: shared launcher and metadata policies are green; next seam is A/B providers before the shared stage-ring driver
-    blocked-on:     nothing; 075 has no source-level objection, but the dense two-warp claim still needs one controlled device run
-    last-commit:    3ffaa5bc Share mixed-input metadata policy (actlize)
-    last-heartbeat: 147
+    updated-at:     2026-08-05 08:13:54 UTC
+    inbox-consumed: 077
+    working-on:     061 complete: shared launcher, metadata policy and provider-hook stage-ring driver; compile-time descriptor parity plus planted bypass guards are green
+    blocked-on:     nothing; the dense two-warp claim still needs the one controlled device run agreed in 075
+    last-commit:    f42db663 Share mixed-input pipeline driver (actlize)
+    last-heartbeat: 148

@@ -105,6 +105,7 @@ struct MixedPolicyDescriptor {
   using AProviderType = AProvider;
   using BProviderType = BProvider;
   using MetadataPolicyType = typename Collective::MetadataPolicy;
+  using PipelineDriverType = typename Collective::PipelineDriver;
   using MetadataProviderType = MetadataProvider<PackedMetadata<Collective>::value, has_zero(Mode)>;
   using ConversionProviderType = ConversionProvider<AtomAtATimeConversion<Collective>::value>;
 

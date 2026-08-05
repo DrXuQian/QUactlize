@@ -221,8 +221,29 @@ and atom-at-a-time conversion. Ordinary's packed-scale prefetch and deliberately
 local conversion-provider behavior; they consume the shared FINE policy and reload contract rather than redefining
 either.
 
-No prologue, stage-ring, barrier, B-provider lifetime, or global-to-shared publication cadence moved in this slice.
 `l113_mixed_metadata_policy.cu` pins COARSE/FINE boundary/index behavior and both storage-address policy types.
-`MixedPolicyDescriptor::MetadataPolicyType` plus l112 extends the operator parity guard through this new seam. The
-next structural extraction is step 3: A/B providers behind the logical atom contract, before moving the ring into one
-driver.
+`MixedPolicyDescriptor::MetadataPolicyType` plus l112 extends the operator parity guard through that seam.
+
+Steps 3 and 4 are now implemented as one hook-based provider boundary in
+`cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp`. The ordinary, folded and two-plane collectives supply five
+storage-specific operations: bind a read-stage view, publish completed asynchronous data, prepare the next logical
+A/B delivery, prefetch the next physical tile, and consume the prepared atom(s). Those hooks are the provider policy
+parameters; the shared driver owns the one-time register prime, wait/barrier placement, static K-block traversal,
+global-to-shared issue point, fence, iterator advance, ring advance, immutable pre-advance consume-stage token and
+final drain. The prime bit passed to `prepare` preserves the two-plane chunk provider's original one-time plane-2
+load while allowing its steady-state consume-time reread.
+
+Physical B shapes/descriptors, fold mapping, plane-slot mapping and numeric conversion remain in their provider
+collective, as do ordinary/compact/packed A loads. They are deliberately not restated in the driver. What used to be
+three complete pipeline bodies is now three provider hook packs around one cadence body (162 net lines removed from
+the collectives in this extraction).
+
+`MixedPolicyDescriptor::PipelineDriverType` makes the driver part of the dense/grouped compile-time policy witness.
+The local-tier shared-pipeline lint additionally requires exactly one delegation from each shipping mixed collective,
+forbids local stage counters/waits/K-tile loops, and demonstrates the check by rejecting a planted bypass. Together
+with l112's planted adapter-policy drift, this closes 061's guard: adding an operator-local mainloop policy either
+changes the shared descriptor and fails compilation, or bypasses the shared cadence and fails the local tier.
+
+The performance-only macro-to-tactic-field work in step 5 remains a tuning-interface cleanup, not an operator parity
+hole: today those switches select behavior inside a collective that both adapters instantiate through the same
+`MainloopPolicy`. They should still move into typed tactic fields before being admitted to a searched inventory.

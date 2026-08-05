@@ -223,6 +223,58 @@ def lint_mixed_policy_parity_fires():
     return "PASS", "descriptor parity rejects a planted grouped-only B-layout change", dt
 
 
+def lint_mixed_pipeline_shared():
+    """Every shipping mixed collective must delegate its stage ring to the one shared driver.
+
+    The descriptor witness makes dense/grouped policy drift a compile error, but a collective could otherwise keep
+    that witness while copying the cadence back into its operator(). Refuse both ways to bypass the seam: omitting
+    the driver call, or reintroducing the stage counters/waits in a provider body.
+    """
+    rels = [
+        "ppu_mma_aiu_multistage_mixed_input.hpp",
+        "ppu_mma_aiu_fold.hpp",
+        "ppu_mma_aiu_mixed_input_2plane.hpp",
+    ]
+    base = ACT / "cutlass" / "gemm" / "collective"
+    sources = {}
+    for rel in rels:
+        path = base / rel
+        if not path.is_file():
+            return "FAIL", f"missing mixed collective {rel}", 0.0
+        sources[rel] = path.read_text()
+
+    def violations(texts):
+        hits = []
+        for rel, text in texts.items():
+            if text.count('#include "cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"') != 1:
+                hits.append(f"{rel}: shared-driver include count != 1")
+            if text.count("using PipelineDriver = detail::MixedPipelineDriver;") != 1:
+                hits.append(f"{rel}: pipeline type witness count != 1")
+            if text.count("detail::run_mixed_pipeline<") != 1:
+                hits.append(f"{rel}: shared-driver call count != 1")
+            for local in ("smem_pipe_read", "smem_pipe_write"):
+                if local in text:
+                    hits.append(f"{rel}: reintroduced local stage state {local}")
+            if "cp_async_wait<" in text:
+                hits.append(f"{rel}: reintroduced local pipeline wait")
+            if re.search(r"for\s*\(\s*;\s*k_tile_count\s*>", text):
+                hits.append(f"{rel}: reintroduced local K-tile pipeline loop")
+        return hits
+
+    hits = violations(sources)
+    if hits:
+        return "FAIL", "; ".join(hits[:4]), 0.0
+
+    # Prove the gate observes an actual bypass rather than merely seeing the three files. This plant exists only in
+    # memory: delete one delegation call and require the same inspection above to reject it.
+    planted = dict(sources)
+    victim = rels[0]
+    planted[victim] = planted[victim].replace("detail::run_mixed_pipeline<", "detail::local_mixed_pipeline<", 1)
+    if not violations(planted):
+        return "FAIL", "shared-pipeline guard accepted a planted collective-local bypass", 0.0
+    return "PASS", "three collectives use one stage-ring driver; planted local bypass rejected", 0.0
+
+
 def lint_unroll():
     """Two unroll directives on one loop. hgcc rejects it; nvcc does not.
 
@@ -826,6 +878,7 @@ def main():
                 ("lint", "every INBOX item is consumed, or is explained by a call in flight", lint_inbox_delivered),
                 ("lint", "dense/grouped tactic differences are declared, and unexpected drift fires", lint_tactic_spaces_agree),
                 ("lint", "dense/grouped mixed policy descriptor parity fires on planted drift", lint_mixed_policy_parity_fires),
+                ("lint", "all mixed collectives use one stage-ring driver", lint_mixed_pipeline_shared),
                 ("lint", "the committed dense tactic table exactly regenerates from its stamped sources", lint_dense_tactic_table_current),
                 ("lint", "the ctypes config mirror matches its C header field for field", lint_config_abi_matches_header),
                 ("lint", "no tactic choice can change the offline layout", lint_tactic_cannot_change_offline_layout),

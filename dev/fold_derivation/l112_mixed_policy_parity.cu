@@ -21,6 +21,9 @@ struct SamePolicy {
   static_assert(std::is_same_v<typename Dense::Descriptor::MetadataPolicyType,
                                typename Grouped::Descriptor::MetadataPolicyType>,
                 "dense/grouped mixed metadata policies diverged");
+  static_assert(std::is_same_v<typename Dense::Descriptor::PipelineDriverType,
+                               typename Grouped::Descriptor::PipelineDriverType>,
+                "dense/grouped mixed pipeline drivers diverged");
   static_assert(Dense::Descriptor::low_bits == Grouped::Descriptor::low_bits);
   static_assert(Dense::Descriptor::high_bits == Grouped::Descriptor::high_bits);
   static_assert(Dense::Descriptor::low_fold == Grouped::Descriptor::low_fold);
