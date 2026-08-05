@@ -343,6 +343,89 @@ def lint_fixture_flags():
     return "PASS", f"all {len(fx.DENSE_FLAGS)} emitted dense options are parsed by the bench", 0.0
 
 
+def lint_tactic_cannot_change_offline_layout():
+    """SELECTING A TACTIC MUST NOT CHANGE THE BYTES ON DISK. Two independent halves, both silent when wrong.
+
+    The offline packer arranges weights for a specific (qtype, TileK) -- prepare_dense_for_tile's own signature
+    is (low, high, out_low, out_high, n, k, qtype, tile_k), and formats.py derives the fold from (bits, tile_k).
+    The weights are written ONCE. So no runtime choice may imply a different TileK, or the library reads bytes
+    that were laid out for something else -- and that failure produces numbers, not an error.
+
+    HALF ONE: the compiled config rows must not carry TileK. Today they are (ID, NAME, TM, TN, WM, WN, STAGES)
+    and TileK comes from the enclosing template, so no config CAN change the layout. That is a property of the
+    current structure rather than an enforced invariant, and the emitter is already parameterised on tile_k
+    (`emit_tactic_configs <bits> <tile_k>`), so a sixth numeric field would be an easy and invisible way to
+    break it.
+
+    HALF TWO: the packer and the library each decide TileK per format, INDEPENDENTLY, in two languages.
+        tools/pack_gguf.py:_tile_k(qtype)      -> 128 for Q6_K, else 256
+        ppu_dense_backend.cu's extern "C"      -> dense<..., GroupSize, TileK, ...> per PPU_PACKED_FORMAT
+    Nothing checks that they agree. If they diverge, the packer writes bytes for one arrangement and the kernel
+    reads them as another: no assert fires, no return code changes, the output is simply wrong.
+
+    This is the gate for the constraint that a search must not move the offline layout. It checks the root of
+    that property rather than the sweep's output, because the sweep cannot violate it if the root holds.
+    """
+    import ast as _ast, re as _re
+    cu = ROOT / "quactlize" / "csrc" / "device" / "ppu_dense_backend.cu"
+    pk = ROOT / "tools" / "pack_gguf.py"
+    for p in (cu, pk):
+        if not p.is_file():
+            return "FAIL", f"{p.name} is missing", 0.0
+
+    # HALF ONE -- every X(...) row in every compiled config table has exactly seven arguments.
+    bad_rows = []
+    for inc in sorted((ROOT / "quactlize" / "include").glob("ppu_*_configs.inc")):
+        for line in inc.read_text().splitlines():
+            m = _re.match(r"\s*X\((.*?)\)\s*\\?\s*$", line)
+            if not m:
+                continue
+            n_args = len([a for a in m.group(1).split(",")])
+            if n_args != 7:
+                bad_rows.append(f"{inc.name}: {line.strip()[:70]} has {n_args} args, expected 7")
+    if bad_rows:
+        return "FAIL", ("a compiled config row has an unexpected arity, which is how a TileK field would enter "
+                        "the per-config axis and let a tactic choice change the offline layout: "
+                        + bad_rows[0]), 0.0
+
+    # HALF TWO -- the library's per-qtype TileK, read from the dispatch.
+    src = cu.read_text()
+    lib = {}
+    for m in _re.finditer(r"if\s*\(qtype\s*!=\s*(\d+)[^)]*\)\s*return\s*33;\s*"
+                          r"return\s+dense<[^>]*?,\s*(\d+),\s*(\d+),", src, _re.S):
+        lib[int(m.group(1))] = int(m.group(3))
+    if not lib:
+        return "FAIL", ("could not read any per-qtype TileK from the dispatch in ppu_dense_backend.cu; the "
+                        "parser is wrong, not the source, and a silent empty map would pass this gate"), 0.0
+
+    # The packer's, obtained by EXECUTING ITS SOURCE TEXT rather than importing it -- a stale .pyc is
+    # revalidated on one-second mtime plus byte size and has already made one gate in this file report on code
+    # that was not on disk.
+    tree = _ast.parse(pk.read_text())
+    fn = next((n for n in tree.body if isinstance(n, _ast.FunctionDef) and n.name == "_tile_k"), None)
+    if fn is None:
+        return "FAIL", ("tools/pack_gguf.py has no _tile_k; the packer's arrangement choice moved and this "
+                        "gate no longer reads it"), 0.0
+    ns = {}
+    exec(compile(_ast.Module(body=[fn], type_ignores=[]), str(pk), "exec"), ns)
+    packer = {}
+    for q in lib:
+        try:
+            packer[q] = ns["_tile_k"](q)
+        except Exception as e:                       # noqa: BLE001 -- report, do not mask
+            return "FAIL", (f"_tile_k({q}) raised {e!r}; the packer cannot state an arrangement for a "
+                            f"format the library dispatches"), 0.0
+
+    mismatch = {q: (packer[q], lib[q]) for q in lib if packer[q] != lib[q]}
+    if mismatch:
+        q, (p, l) = next(iter(mismatch.items()))
+        return "FAIL", (f"qtype {q}: the packer writes bytes for TileK={p} and the library runs TileK={l}. "
+                        f"No assert fires on this -- the kernel reads a layout it was not given and the output "
+                        f"is wrong rather than absent"), 0.0
+    return "PASS", (f"no config row carries TileK, and packer/library agree on TileK for all {len(lib)} "
+                    f"dispatched qtypes {sorted(lib)}"), 0.0
+
+
 def lint_config_abi_matches_header():
     """THE ctypes MIRROR OF quactlize_ppu_config_v1 MUST MATCH THE HEADER, FIELD FOR FIELD, IN ORDER.
 
@@ -659,6 +742,7 @@ def main():
                 ("lint", "every INBOX item is consumed, or is explained by a call in flight", lint_inbox_delivered),
                 ("lint", "dense and grouped tactic spaces agree, and the comparator fires", lint_tactic_spaces_agree),
                 ("lint", "the ctypes config mirror matches its C header field for field", lint_config_abi_matches_header),
+                ("lint", "no tactic choice can change the offline layout", lint_tactic_cannot_change_offline_layout),
     ("registry", "declarations vs source", None)])
     # MATCH THE KIND AS WELL AS THE NAME. `-k lint` matched NOTHING, because a lint's name is its description
     # ("duplicate unroll directives") and the word "lint" only appears in the kind. The run then printed
