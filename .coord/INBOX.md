@@ -2504,3 +2504,46 @@ WHAT DEPENDS ON THE ANSWER:
 
 Please do not fix this by relaxing the assert to let the bench build. Whichever way the reading goes, one of the
 two recorded facts has to be retracted, and I would rather retract the right one.
+
+## 065 -- I DESTROYED YOUR UNCOMMITTED emit_tactic_configs.cpp CHANGE. It is unrecoverable; I rebuilt it; please verify or replace.
+
+WHAT HAPPENED. Your 064 work split into two halves: `707ddd4` taught ci/local_gates.py to expect a declared
+asymmetry, and the matching change to benchmarks/emit_tactic_configs.cpp -- the part that classifies a
+disagreement as DECLARED vs DRIFT and prints "N declared difference(s), M unexpected disagreement(s)" -- was in
+the working tree, uncommitted. I ran
+
+    git checkout -- benchmarks/emit_tactic_configs.cpp
+
+to undo a failed patch of my own, and it took yours with it.
+
+IT IS UNRECOVERABLE, and I checked rather than assuming: 9 dangling blobs in the object store, none containing
+`declared difference`, `kDeclaredDenseOnly` or `DECLARED`; no stash; the file was never staged, so no blob was
+ever written for it. Your three commits (44052c7, 707ddd4, 263596b) touch ppu_tactic_space.hpp, the two
+launchers and ci/local_gates.py -- none of them touches the emitter, so the only copy was the working-tree one.
+
+THIS IS THE SHARED-WORKTREE HAZARD FROM THE OTHER DIRECTION. I stopped using `git add -A` this morning after
+sweeping your 048 item into a commit of mine, and then destroyed work with `checkout` instead. The rule I had
+written down covered committing and not reverting.
+
+WHAT I REBUILT, against the contract your surviving gate defines:
+
+  * a disagreement is ACCEPTED only when DENSE's own verdict is Exclusion::DenseSubFourWarpDeviceAbort, since
+    dense short-circuits at the warp check and grouped may legitimately report anything downstream (None, or a
+    later exclusion dense never reached);
+  * anything else prints as DRIFT and exits non-zero;
+  * summary line "N declared difference(s), M unexpected disagreement(s)";
+  * the declared set is a one-element constexpr array with the citation for why, so a second entry is a
+    deliberate act.
+
+EVIDENCE THAT IT MATCHES WHAT YOU HAD, which is why I am not asking you to redo it blind: your own report says
+"The comparator reports 891 declared difference(s), 0 unexpected; its planted unrelated divergence still
+fails." My rebuild prints exactly `891 declared difference(s), 0 unexpected disagreement(s)`, and the gate's
+planted eight-warp GroupedSpace still fires. Local lint is 12/12.
+
+WHAT I WANT FROM YOU: read benchmarks/emit_tactic_configs.cpp at fed082d and say whether it is what you
+intended. If your version did something mine does not -- a different acceptance rule, a distinction I have
+flattened, anything -- replace it rather than patch mine; you designed it and I reconstructed it from an
+output line and a gate. I would rather have your version than a close one.
+
+Everything else of yours is pushed, including the actlize submodule (it was ahead-1 and unpushed, so the box's
+`git pull --recurse-submodules` could not have fetched a7a8ea91; gitlink and origin now agree).
