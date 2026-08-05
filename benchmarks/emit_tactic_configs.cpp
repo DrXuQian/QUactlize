@@ -71,6 +71,21 @@ namespace {
 // decision nobody re-examines; passing it in makes "what did this table cover" answerable from the command.
 std::vector<int> g_stages{2, 3, 4};
 
+// --space=quarantined EMITS ONLY WHAT DENSE REFUSES, and it exists because the refusal is a QUARANTINE rather
+// than a proof. ppu_tactic_space.hpp's DenseSubFourWarpDeviceAbort records that on 2026-08-04 every tested dense
+// sub-four-warp instantiation aborted -- but INBOX 066 established that the aborting kernel had no split-K axis,
+// and codex then completed the ordinary COARSE scale path, which is where the only known unconditional
+// assert(false) on that route lived. So the observed aborts may simply HAVE BEEN that assert, in which case the
+// quarantine costs us the measured optimum: (64,64,64) w64x32 is 2 warps and is the recorded int4 65.0% winner,
+// while dense's best reachable row measured 60.6%.
+//
+// WHY A SEPARATE TABLE RATHER THAN ADDING THE ROWS BACK. A device assert poisons the context: one abort takes the
+// whole process, so a 227-row table with a live abort in it loses every measurement including the four passes
+// that would have followed. Emitting the quarantined rows as their own binary bounds the loss to that binary --
+// if they still abort we learn it and nothing else is destroyed, and if they run we have their numbers and can
+// merge them.
+bool g_quarantined_only = false;
+
 using Row = std::tuple<int, int, int, int, int>;    // tm, tn, wm, wn, stages
 
 // Do not spell "largest legal" as min(TM,64). It happens to agree in today's WN<=64 producer domain, but WN=128
@@ -131,7 +146,15 @@ std::vector<Candidate> legal_grid(FormatSpec const& spec, int tk) {
       for (int wm : kWarpM)
         for (int wn : kWarpN) {
           Candidate const c{spec, tm, tn, tk, wm, wn};
-          if (Space::sweep_exclusion(c) != Exclusion::None) continue;
+          Exclusion const e = Space::sweep_exclusion(c);
+          if (g_quarantined_only) {
+            // ONLY the rows whose sole objection is the quarantine. A candidate excluded for any other reason --
+            // atom alignment, warps>32, delivery, producer domain -- stays out, so this table cannot smuggle in
+            // something that is illegal for an independent reason and then blame the quarantine for the crash.
+            if (e != Exclusion::DenseSubFourWarpDeviceAbort) continue;
+          } else if (e != Exclusion::None) {
+            continue;
+          }
           ok.push_back(c);
         }
   return ok;
@@ -212,7 +235,9 @@ static int emit(FormatSpec const& spec, int bits, int tk, char const* space_name
   for (int st : g_stages) {
     std::vector<Candidate> legal;
     for (auto const& c : ok)
-      if (Space::topology_exclusion(c, st) == Exclusion::None) legal.push_back(c);
+      if (Space::topology_exclusion(c, st) == Exclusion::None ||
+          (g_quarantined_only && Space::topology_exclusion(c, st) == Exclusion::DenseSubFourWarpDeviceAbort))
+        legal.push_back(c);
 
     for (auto const& c : legal) {
       bool const p = primary(legal, c);
@@ -260,7 +285,7 @@ static int emit(FormatSpec const& spec, int bits, int tk, char const* space_name
 int main(int argc, char** argv) {
   if (argc < 3) {
     std::fprintf(stderr,
-                 "usage: emit_tactic_configs <bits:1|2|4> <tile_k> [--space=dense|grouped|compare] [stage ...]\n"
+                 "usage: emit_tactic_configs <bits:1|2|4> <tile_k> [--space=dense|grouped|compare|quarantined] [stage ...]\n"
                  "  --space defaults to dense.  stages default to 2 3 4.\n"
                  "  --space=compare emits no table: it walks the grid asking BOTH spaces every predicate the\n"
                  "  emitter uses and prints the disagreements, exiting non-zero if there are any.\n");
@@ -283,6 +308,10 @@ int main(int argc, char** argv) {
   if (!spec) { std::fprintf(stderr, "no single-plane format with low_bits=%d in kFormats\n", bits); return 2; }
 
   if (std::strcmp(space, "dense") == 0)   return emit<DenseSpace>(*spec, bits, tk, "dense", "LOWBIT_DENSE");
+  if (std::strcmp(space, "quarantined") == 0) {
+    g_quarantined_only = true;
+    return emit<DenseSpace>(*spec, bits, tk, "dense", "LOWBIT_DENSE");   // same macro names: it is a drop-in table
+  }
   if (std::strcmp(space, "grouped") == 0) return emit<GroupedSpace>(*spec, bits, tk, "grouped", "LOWBIT_GROUPED");
   if (std::strcmp(space, "compare") == 0) {
     std::printf("comparing DenseSpace vs GroupedSpace: bits=%d tile_k=%d stages", bits, tk);
