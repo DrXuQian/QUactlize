@@ -2095,3 +2095,51 @@ MY SIDE: ci/local_gates.py's "no tactic choice can change the offline layout" cu
 packer and the library agree. It passed while both were wrong. I will extend it to compare against the bench's
 per-width value once ① exists, because until there is one source the gate cannot say which of four numbers is
 the reference.
+
+## 057 -- SWEEP THE WHOLE SHIPPING PATH FOR THE SAME DEFECT. Outside tests, one decision may have only one home.
+
+User's instruction, and it generalises 056 rather than repeating it: in the real engineering paths -- not test
+fixtures, where a second spelling is often the point -- a value that both sides must agree on may NOT be
+decided in more than one place. 056 found TileK decided four times, with the two copies that agreed being the
+two that were wrong. That is not a TileK problem; it is a shape, and I want to know where else it holds.
+
+WHY THE FAILURE IS WORSE THAN AN ORDINARY DUPLICATE. When two copies of a decision disagree, the symptom is
+usually a crash or a mismatch. Here it was neither: the packer wrote bytes for TileK 256, the library read them
+as TileK 256, and both were 4x the value every measurement used. Nothing failed. The check I added compared
+exactly those two copies and PASSED. So the detection rule cannot be "do the copies agree" -- it has to be
+"is there one place that decides".
+
+WHAT TO SWEEP FOR, with the ones I already know as calibration:
+
+  * TileK                        bench per-width defaults / pack_gguf.py _tile_k / dense dispatch /
+                                 grouped template default / emit_tactic_configs argument     -- 056
+  * GroupSize                    the dispatch passes 32 for int4 and 16 for uint2 alongside TileK; is that
+                                 derived from the format anywhere, or written per call site?
+  * the qtype -> (Low, High) map  PPU_PACKED_FORMAT 0..4 vs QuantType vs CODE_PLANE in schemes.py -- three
+                                 spellings of "which planes does this format have"
+  * fold                          formats.py fold_for, moe_grouped_ppu.cuh:363, fpA_intB_ppu.cuh:151 -- the
+                                 record says THREE independent copies of one derivation exist
+  * the config-name spelling      the bench's X-macro stringification vs analyse.py's field-built name; I have
+                                 bridged this in tune.py with canonical(), which is a workaround for two
+                                 spellings, not a fix
+  * anything else you find
+
+FOR EACH, THE QUESTION IS NOT "do they agree today". It is:
+  1. Which one is the DEFINITION, and can the others be derived from it at build time or read from it at run
+     time rather than restated?
+  2. If they cannot be unified, what makes a divergence LOUD? A static_assert, a generated header, an ABI field
+     that carries the value so the receiver can check -- something that fails, not something that would have to
+     be noticed.
+  3. Is the current value the one anything measured? That is the question 056 turned on and no consistency
+     check would have asked.
+
+TESTS ARE EXPLICITLY OUT OF SCOPE. A test that recomputes a value independently is doing its job; that is the
+one place a second implementation is the point. The scope is the shipping path: the .so, the packer, the
+manifest, the tactic table, and the headers they share.
+
+DELIVERABLE: a written list with a verdict per item -- unified, unifiable (and how), or irreducibly separate
+(and what makes divergence loud). Not necessarily the fixes; I would rather see the map first and decide the
+order together, because some of these will be cheap and some will touch the collectives.
+
+Do this AFTER 055 and 056. Note that 056 was dispatched while you were still running 055 -- that was my error,
+two sessions in one worktree, and I stopped the second one. 056's INBOX text stands and is unread by you.
