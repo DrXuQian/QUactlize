@@ -243,7 +243,12 @@ def test_device_decode_routes_match_official_oracle_and_reject_planted_faults(pp
 
 
 def test_dense_cuda_tactic_range_is_reported_by_the_kernel_library(ppu_backend_cuda):
-    """The tuner asks this predicate; it does not carry a second M/K/group-size legality table."""
+    """The tuner asks this predicate; it does not carry a second M/K/group-size legality table.
+
+    The positive Ks are the four formerly unreachable values in the target-model inventory. K=257 is the
+    boundary control: widening the query to the resident-artifact granularity must not admit a partial packed
+    superblock that the caller cannot provide.
+    """
     import ctypes
 
     lib = ctypes.CDLL(str(ppu_backend_cuda))
@@ -251,16 +256,66 @@ def test_dense_cuda_tactic_range_is_reported_by_the_kernel_library(ppu_backend_c
     valid.argtypes = [ctypes.c_int] * 5 + [ctypes.c_char_p]
     valid.restype = ctypes.c_int32
 
-    for m in (1, 2, 4, 15, 16):
-        assert valid(m, 256, 2048, 32, 12, b"gemv_lowbit") == 1, m
+    for qtype, group_size in ((10, 16), (11, 16), (12, 32), (13, 32), (14, 16)):
+        for k in (512, 3072, 5120, 25600):
+            for m in (1, 15):
+                assert valid(m, 256, k, group_size, qtype, b"gemv_lowbit") == 1, (qtype, k, m)
     controls = [
         (0, 256, 2048, 32, 12, b"gemv_lowbit"),
-        (4, 256, 256, 32, 12, b"gemv_lowbit"),
+        (4, 256, 257, 32, 12, b"gemv_lowbit"),
         (4, 256, 2048, 16, 12, b"gemv_lowbit"),
         (4, 256, 2048, 32, 12, b"not-compiled"),
         (4, 256, 2048, 32, 99, b"gemv_lowbit"),
     ]
     assert all(valid(*args) == 0 for args in controls)
+
+
+def test_dense_cuda_real_shape_k_tails_are_exact_for_every_qtype(ppu_backend_cuda):
+    """The production host entry computes every real K tail at M=1 and M>1 for all five resident formats.
+
+    Every packed element has the same low/high code and each activation row has a distinct sign/magnitude. The
+    exact powers-of-two affine therefore make both the answer and fp16 rounding deterministic: a lane omitted by
+    the K predicate, a high plane read at the wrong tail address, or an M row aliased to row zero changes a bit.
+    """
+    import ctypes
+
+    lib = ctypes.CDLL(str(ppu_backend_cuda))
+    run = lib.quactlize_ppu_gemv_lowbit_config_v1
+    run.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 5 + [ctypes.c_char_p]
+    run.restype = ctypes.c_int
+
+    n = 256
+    # qtype, group size, low bits/code, high bits/code, scale. Single-plane formats encode 1 directly. Split
+    # formats encode only high=1 and scale by 2**-low_bits, also producing exactly 1; the high-plane tail is then
+    # observable without a non-power-of-two fp16 accumulation obscuring a one-lane addressing error.
+    formats = ((10, 16, 2, 1, 0, 0, 1.0), (11, 16, 2, 0, 1, 1, 1 / 4),
+               (12, 32, 4, 1, 0, 0, 1.0), (13, 32, 4, 0, 1, 1, 1 / 16),
+               (14, 16, 4, 0, 2, 1, 1 / 16))
+    shapes = ((512, 15), (3072, 2), (5120, 4), (25600, 2))
+
+    def constant_plane(elements, bits, value):
+        byte = sum(value << shift for shift in range(0, 8, bits))
+        return np.full(elements * bits // 8, byte, dtype=np.uint8)
+
+    for qtype, group_size, low_bits, low_code, high_bits, high_code, affine_scale in formats:
+        for k, multi_m in shapes:
+            for m in (1, multi_m):
+                row_value = np.where(np.arange(m) % 2, -0.5, 1.0).astype(np.float16)
+                act = np.repeat(row_value[:, None], k, axis=1)
+                low = constant_plane(n * k, low_bits, low_code)
+                high = constant_plane(n * k, high_bits, high_code) if high_bits else None
+                scale = np.full((k // group_size, n), affine_scale, dtype=np.float16)
+                zero = np.zeros_like(scale)
+                out = np.empty((m, n), dtype=np.float16)
+
+                rc = run(act.ctypes.data, low.ctypes.data, high.ctypes.data if high is not None else None,
+                         scale.ctypes.data, zero.ctypes.data, out.ctypes.data,
+                         m, n, k, group_size, qtype, b"gemv_lowbit")
+                assert rc == 0, (qtype, k, m, rc)
+                expected = (row_value * np.float16(k))[:, None]
+                expected = np.broadcast_to(expected, out.shape)
+                assert np.array_equal(out, expected), (
+                    qtype, k, m, np.max(np.abs(out.astype(np.float32) - expected.astype(np.float32))))
 
 
 @pytest.mark.parametrize("name,gt,hdr,qtype", FORMATS)

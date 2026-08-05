@@ -81,7 +81,11 @@ char const* gemv_config_invalid_reason(Params const& p) {
   if (p.act_scale) return "act_scale is not instantiated";
   if (!GEMV_ENABLE_BIAS && p.bias) return "bias is not instantiated";
   if (p.n % CtaN) return "n must be a multiple of CtaN";
-  if (p.k % Details::kCtaK) return "k must be a multiple of StepK*Threads";
+  if (p.k <= 0 || p.k % Details::kStepK) return "k must contain whole per-thread StepK accesses";
+  if (p.groupsize > 0 && p.k % p.groupsize) return "k must contain whole quantization groups";
+  if constexpr (Details::kLayout == WLayout::TileK) {
+    if (p.k % Details::kTileSizeK) return "k must contain whole TileK layout tiles";
+  }
   if (is_two_plane(Details::kFormat) && !p.weight_hi) return "two-plane format needs weight_hi";
   if (has_zero(p.quant) && !p.zeros) return "ScaleZero needs zeros";
   if (!gemv_quant_compiled<Details>(p)) return "quant/group-size combination is not compiled";
@@ -98,8 +102,14 @@ template <typename Details, int CtaM, int CtaN, int Chunk, int GS, QuantOp QOp, 
 void gemv_exec(Params const& p, KernelArgs const& args, int grid_m, gemv_stream_t s) {
   dim3 const grid(grid_m, p.n / CtaN, Grouped ? p.num_experts : 1);
   dim3 const block(Details::kThreads);
-  gemv_kernel<Details, CtaM, CtaN, Chunk, GS, QOp, /*EnableActScale=*/false, EnableBias,
-              /*ApplyAlphaInAdvance=*/false, Grouped><<<grid, block, 0, s>>>(args);
+  if (p.k % Details::kCtaK) {
+    gemv_kernel<Details, CtaM, CtaN, Chunk, GS, QOp, /*EnableActScale=*/false, EnableBias,
+                /*ApplyAlphaInAdvance=*/false, /*PredicatedKTail=*/true, Grouped><<<grid, block, 0, s>>>(args);
+  } else {
+    // Keep the measured M=1/divisible-K specialization free of tail predicates and their loop branch.
+    gemv_kernel<Details, CtaM, CtaN, Chunk, GS, QOp, /*EnableActScale=*/false, EnableBias,
+                /*ApplyAlphaInAdvance=*/false, /*PredicatedKTail=*/false, Grouped><<<grid, block, 0, s>>>(args);
+  }
 }
 
 // ---- CtaM ----

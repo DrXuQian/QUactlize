@@ -348,13 +348,15 @@ static void gate_layout(const char* tag) {
   int first_n = -1, first_tid = -1, first_iter = -1, first_col = -1;
   int64_t got0 = 0, want0 = 0;
   for (int N : {64, 128, 2048})
-    for (int K : {Threads * StepK, Threads * StepK * 4}) {
+    for (int K : {512, 3072, 5120, 25600}) {
       int const CtaK = Threads * StepK;
       WStrides const w = Tr::strides(N, K);
       for (int n0 = 0; n0 + 8 <= N; n0 += std::max(1, N / 5))
-        for (int tid = 0; tid < Threads; tid += std::max(1, Threads / 8))
-          for (int iter = 0; iter < K / CtaK; ++iter)
+        for (int tid = 0; tid < Threads; ++tid)
+          for (int iter = 0; iter < (K + CtaK - 1) / CtaK; ++iter)
             for (int col = 0; col < 8; ++col) {
+              int const k = iter * CtaK + tid * StepK;
+              if (k >= K) continue;  // the predicated-tail specialization does not issue this load
               // exactly the address the kernel forms
               int64_t const got = int64_t(n0) * w.col
                                 + int64_t(tid / TPT) * w.thr_major
@@ -362,7 +364,6 @@ static void gate_layout(const char* tag) {
                                 + int64_t(iter) * w.iter
                                 + int64_t(col) * w.col;
               // what the format means, written out independently
-              int const k = iter * CtaK + tid * StepK;
               int64_t want;
               if constexpr (Lay == WLayout::Native)
                 want = (int64_t(n0 + col) * K + k) * Bits / 8;
@@ -543,6 +544,29 @@ int main(int argc, char** argv) {
     FMT_CASE(WFormat::Q3_21)
 #undef FMT_CASE
   }
+
+  // THE DOMAIN-WIDENING GATE. These are exactly the K values excluded in the three real-model inventories:
+  // K=512 is smaller than one CtaK, while 3072/5120/25600 end in a partial CTA iteration. Every format runs
+  // M=1 plus a multi-row case, so a tail that accidentally re-reads only activation row zero cannot pass.
+  std::printf("\n== real-shape predicated K tails, every GGUF qtype ==\n");
+#define KTAIL_MATRIX(F, GS, SEED)                                                                    \
+  {                                                                                                  \
+    using D = Pick<WFormat::F, WLayout::Native>::D;                                                  \
+    run_case<D, 8, 2>({ 1, 256,   512, QuantOp::FinegrainedScaleZero, GS, 0, false, true, false}, SEED + 0); \
+    run_case<D, 8, 2>({15, 256,   512, QuantOp::FinegrainedScaleZero, GS, 0, false, true, false}, SEED + 1); \
+    run_case<D, 8, 2>({ 1, 256,  3072, QuantOp::FinegrainedScaleZero, GS, 0, false, true, false}, SEED + 2); \
+    run_case<D, 8, 2>({ 2, 256,  3072, QuantOp::FinegrainedScaleZero, GS, 0, false, true, false}, SEED + 3); \
+    run_case<D, 8, 2>({ 1, 256,  5120, QuantOp::FinegrainedScaleZero, GS, 0, false, true, false}, SEED + 4); \
+    run_case<D, 8, 2>({ 4, 256,  5120, QuantOp::FinegrainedScaleZero, GS, 0, false, true, false}, SEED + 5); \
+    run_case<D, 8, 2>({ 1, 256, 25600, QuantOp::FinegrainedScaleZero, GS, 0, false, true, false}, SEED + 6); \
+    run_case<D, 8, 2>({ 2, 256, 25600, QuantOp::FinegrainedScaleZero, GS, 0, false, true, false}, SEED + 7); \
+  }
+  KTAIL_MATRIX(Int2,  16, 200)
+  KTAIL_MATRIX(Q3_21, 16, 220)
+  KTAIL_MATRIX(Int4,  32, 240)
+  KTAIL_MATRIX(Q5_41, 32, 260)
+  KTAIL_MATRIX(Q6_42, 16, 280)
+#undef KTAIL_MATRIX
 
 #if defined(GEMV_GATE_FAST)
   std::printf("\n  *** GEMV_GATE_FAST: only gs {0,32} instantiated; %d rows SKIPPED (not passed). Build without\n"

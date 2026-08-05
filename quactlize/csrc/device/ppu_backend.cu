@@ -333,7 +333,10 @@ extern "C" int32_t quactlize_ppu_gemv_lowbit_config_valid_v1(
   // N%256 keeps this family inside the dense route whose compiled tensor default can serve a cache miss. M>=16 is
   // deliberately not rejected here: TRT-LLM's cutoff is a profiling-cost prune, while this predicate answers only
   // legality. The launcher tiles its largest exact specialization for those larger problems.
-  if (!compiled_name || format.qtype != qtype || n <= 0 || n % 256 != 0 ||
+  // K%256 is the resident GGUF artifact's packed-superblock contract, not a GEMV scheduling restriction. The
+  // predicated specialization below it accepts a final partial CtaK; the unpredicated specialization remains the
+  // exact path when K fills every CTA iteration.
+  if (!compiled_name || format.qtype != qtype || n <= 0 || n % 256 != 0 || k <= 0 || k % 256 != 0 ||
       group_size != format.group_size) return 0;
   switch (qtype) {
     case 10: return lowbit_dense_config_valid<ppu_gemv::WFormat::Int2,  16, 128>(m,n,k,group_size);

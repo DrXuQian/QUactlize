@@ -42,7 +42,7 @@ PPU_GEMV_HD constexpr bool gs_step_ok() {
 // epilogue reduces across the CTA. There is no partial buffer, no semaphore and no second kernel -- which is
 // why this covers the decode band without the grouped tensor-core path's split-K machinery.
 template <typename Details, int CtaM, int CtaN, int Chunk, int GS, QuantOp QOp,
-          bool EnableActScale, bool EnableBias, bool ApplyAlphaInAdvance, bool Grouped>
+          bool EnableActScale, bool EnableBias, bool ApplyAlphaInAdvance, bool PredicatedKTail, bool Grouped>
 __global__ void gemv_kernel(KernelArgs args) {
   using ADetails = typename Details::ADetails;
   using M  = MathWrapper<ADetails>;
@@ -89,6 +89,9 @@ __global__ void gemv_kernel(KernelArgs args) {
 
   int const n0 = int(blockIdx.y) * CtaN;
   int const n  = args.n, k = args.k;
+  // For K<CtaK, threads whose first StepK begins beyond K never load. Give those lanes an in-range base anyway:
+  // forming an out-of-allocation pointer is unnecessary even when the subsequent predicated load would not dereference it.
+  int const base_tid = PredicatedKTail && tid * StepK >= k ? 0 : tid;
 
   uint8_t const* w_lo = reinterpret_cast<uint8_t const*>(args.w_lo)
                       + (Grouped ? int64_t(e) * args.w_lo_stride_e : 0);
@@ -107,11 +110,11 @@ __global__ void gemv_kernel(KernelArgs args) {
     int const r  = offset_m + i;
     bool const ok = r < rows;
     row_mask |= unsigned(ok) << i;
-    a_rows[i] = reinterpret_cast<T const*>(args.act) + int64_t(row_begin + (ok ? r : 0)) * k + tid * StepK;
+    a_rows[i] = reinterpret_cast<T const*>(args.act) + int64_t(row_begin + (ok ? r : 0)) * k + base_tid * StepK;
   }
   T* out_ptr = reinterpret_cast<T*>(args.out) + int64_t(row_begin + offset_m) * n + n0;
   T const* bias = reinterpret_cast<T const*>(args.bias) + n0;
-  T const* act_scale = reinterpret_cast<T const*>(args.act_scale) + tid * StepK;
+  T const* act_scale = reinterpret_cast<T const*>(args.act_scale) + base_tid * StepK;
 
   // The format is entirely carried by four host-computed byte strides: the address of (column n0+col,
   // thread tid, iteration iter) is n0*col + (tid/TPT)*thr_major + (tid%TPT)*thr_minor + iter*iter. TPT is a
@@ -119,20 +122,26 @@ __global__ void gemv_kernel(KernelArgs args) {
   constexpr int TPT_LO = Details::LoLayout::kTPT;
   constexpr int TPT_HI = Details::HiLayout::kTPT;
   int64_t const off_lo = int64_t(n0) * args.lo_s.col
-                       + int64_t(tid / TPT_LO) * args.lo_s.thr_major
-                       + int64_t(tid % TPT_LO) * args.lo_s.thr_minor;
+                       + int64_t(base_tid / TPT_LO) * args.lo_s.thr_major
+                       + int64_t(base_tid % TPT_LO) * args.lo_s.thr_minor;
   int64_t const off_hi = int64_t(n0) * args.hi_s.col
-                       + int64_t(tid / TPT_HI) * args.hi_s.thr_major
-                       + int64_t(tid % TPT_HI) * args.hi_s.thr_minor;
+                       + int64_t(base_tid / TPT_HI) * args.hi_s.thr_major
+                       + int64_t(base_tid % TPT_HI) * args.hi_s.thr_minor;
   ByteIterator<true, typename LoAcc::Vec, LoAcc::kCount> it_lo(w_lo, off_lo, args.lo_s.iter, args.lo_s.col);
   ByteIterator<TwoPlane, typename HiAcc::Vec, HiAcc::kCount> it_hi(w_hi, off_hi, args.hi_s.iter, args.hi_s.col);
 
   T2 acc[CtaM * Pairs];
   fill<CtaM * Pairs>(acc, M::to_vec2(M::from_float(0.f)));
 
-  int const iters = k / CtaK;
+  int const iters = PredicatedKTail ? (k + CtaK - 1) / CtaK : k / CtaK;
 
   for (int iter = 0; iter < iters; ++iter) {
+    if constexpr (PredicatedKTail) {
+      // TRT-LLM uses this same thread-dependent K loop: a lane whose next full StepK starts past K contributes
+      // zero. THERE MUST BE NO BARRIER IN THIS LOOP. Divergent iteration counts are safe only because every lane
+      // rejoins before epilogue(), whose CTA barrier then reduces the active lanes plus the inactive zero partials.
+      if (iter * CtaK + tid * StepK >= k) continue;
+    }
     // ---- scales / zeros for this step ----
     //
     // ONE VECTOR LOAD PER GROUP ROW, NOT CtaN SCALAR LOADS. acu on the decode winner put the scale/zero channel
