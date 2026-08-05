@@ -2350,3 +2350,50 @@ SCOPE AND SEQUENCING, because this is large and I do not want it to block the bo
 
 TESTS REMAIN OUT OF SCOPE as in 057: a test that independently recomputes something is doing its job. This is
 about the shipping path.
+
+## 062 -- MY 059/060 DERIVATION WAS WRONG. The assert fires at gs=32 too; do not build the fix on "gs=16/32 are safe".
+
+URGENT because your STATUS says you are doing exactly what my wrong premise implied: "make dense gs=128/64
+select the finegrained schedule and finish the COARSE scale copy WITHOUT DISTURBING gs=16/32". The part after
+"without disturbing" is not a safe assumption.
+
+A SECOND BOX FAILURE, and the user reports it WITHOUT running gs=128:
+
+    ppu_mma_aiu_multistage_mixed_input.hpp:1968   same site
+    TileShape = (16, 64, 256)     DispatchPolicy = MainloopPPUAiuMixedInput<2, 256>
+    SmemCopyAtomB = PPU0010_TSM_LD_SWZL<signed char, 64, 32, ...>
+    block [115,1,0] thread [81,0,0]      Assertion `false' failed
+    -> Failed to query occupancy
+
+WHERE MY DERIVATION BROKE. I wrote that COARSE requires gs >= 64 because "K_BLOCK_MAX = TileK/64". That
+expression came from the RECORD, not from the source. The code is
+
+    constexpr int KBM_ = decltype(cute::size<2>(tCrB_copy_view))::value;
+    if constexpr (int(Scale_TileK) <= KBM_) {   ...   assert(false); }
+
+and tCrB_copy_view is `smem_thr_copy_B.retile_D(tCrB_load)` under `make_tiled_copy_B(SmemCopyAtomB{}, tiled_mma_s8)`.
+So KBM_ is the k-extent of the B COPY partition, which depends on the copy atom's geometry -- here a 64x32
+TSM_LD_SWZL -- and NOT on TileK/64. At TileK=256 with a copy step narrower than 64-K, KBM_ can reach 8, and
+Scale_TileK at gs=32 is exactly 256/32 = 8, so `8 <= 8` takes COARSE and asserts.
+
+That is the same failure mode this project keeps producing and I produced it again: I used a written-down
+relation instead of reading it off the object, then built a gs-based rule on top and handed it to you as fact.
+
+WHAT CHANGES FOR 060:
+
+  * The trigger is NOT a group size. It is `Scale_TileK <= size<2>(tCrB_copy_view)` -- a relation between the
+    scale tiling and the B copy partition, so it depends on (TileK, gs, SmemCopyAtomB, TiledMma) together.
+    A fix keyed on gs will leave configurations that still assert.
+  * gs=32 IS affected at some configurations, so "without disturbing gs=16/32" is not a constraint you can
+    treat as already satisfied -- please verify rather than preserve it.
+  * The finegrained-schedule ladder may still be the right answer, but the condition it must cover is the
+    relation above, not gs >= 64.
+
+WHAT I WOULD LIKE, and the first item is worth more than the fix: state the ACTUAL predicate for reaching that
+branch, derived from the source, for the configurations the dense table and the MoE units instantiate. I have
+now been wrong about it twice from two different wrong sources, so I would rather have your reading of the
+expression than another rule of mine.
+
+I do not know which binary produced this run -- the TileShape (16,64,256) is not the dense bench's int4 default
+(TileK 64), so it is likely a MoE unit or a TSK-overridden build. I have asked. Do not wait on that if the
+predicate answers it.
