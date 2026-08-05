@@ -1,9 +1,10 @@
 // Does the DENSE route actually reject a two-warp CTA?
 //
-// The quarantine (ppu_tactic_space.hpp: DenseSubFourWarpDeviceAbort) says every tested dense sub-four-warp
-// instantiation aborted on device, and its own comment says to keep it "until the non-grouped kernel/epilogue
-// assert site is identified". Nobody has identified it. This TU is the identification attempt: instantiate the
-// dense mixed-input kernel at the RECORDED WINNER's geometry and force the whole mainloop into existence.
+// A four-warp minimum on the dense route (ppu_tactic_space.hpp) said every tested sub-four-warp instantiation
+// aborted on device, and its own comment said to keep it "until the non-grouped kernel/epilogue assert site is
+// identified". Nobody had identified it. This TU was the identification attempt -- instantiate the dense
+// mixed-input kernel at the RECORDED WINNER's geometry and force the whole mainloop into existence -- and it
+// found nothing, which is why that exclusion was deleted on 2026-08-05. It stays as the standing check.
 //
 //   PROBE_WM=64 PROBE_WN=32  ->  (64/64)*(64/32) = 2 warps   <- docs/BACKTEST.md A1, 211.33 us / 65.0% on grouped
 //   PROBE_WM=32 PROBE_WN=32  ->  (64/32)*(64/32) = 4 warps   <- the control, known-good on dense

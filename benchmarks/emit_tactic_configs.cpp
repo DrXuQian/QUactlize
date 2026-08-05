@@ -14,16 +14,17 @@
 // been absorbed rather than reported -- and this program would have kept emitting one operator's answer for
 // both. `--space=compare` walks the full grid and prints every candidate where the two disagree.
 //
-// IT NO LONGER DEMANDS THAT THEY BE IDENTICAL, and the change is the whole point of having built the check.
-// INBOX 064 (codex, commit 44052c7) split the four-warp rule after the two facts collided: the sub-four-warp
-// device abort measured on ppu001 is a DENSE-ROUTE quarantine, while the grouped kernel has POSITIVELY MEASURED
-// two-warp rows through the same mainloop -- (64,128,64) w64x64 is the recorded int1 61.2% winner. Requiring
-// identity would have deleted a measured optimum.
+// THE TWO SPACES AGREE AGAIN, AND THE COMPARATOR SHOULD REPORT ZERO. For a day they did not: a four-warp
+// minimum sat on the dense side recording a device abort observed once on ppu001, while the grouped kernel had
+// POSITIVELY MEASURED two-warp rows through the same mainloop -- (64,64,64) w64x32 is the recorded int4 65.0%
+// winner and (64,128,64) w64x64 the int1 61.2% one. The comparator was taught to classify that difference as
+// DECLARED and exit zero on 891 of them.
 //
-// So the comparator now classifies rather than counts: a disagreement is DECLARED when dense's own verdict is
-// the quarantine, DRIFT otherwise, and only DRIFT exits non-zero. Today that is 891 declared and 0 drift. The
-// value of the check is unchanged -- it is still the only thing that would report an UNintended divergence --
-// but its verdict is "no drift", not "no difference".
+// That was the wrong repair. The difference was not between the two OPERATORS; it was a remembered observation
+// living in the file that defines what is legal, and the right fix was to delete it rather than to teach the
+// checker to expect it (2026-08-05, see ppu_tactic_space.hpp's dense_kernel_exclusion). The classification
+// machinery stays because a real asymmetry could appear later and should have a visible home -- but its list is
+// now empty, so "declared" and "drift" both being zero is the expected reading.
 //
 // TWO PROBLEMS THIS REPLACES, and the second is worse than the first.
 //
@@ -73,20 +74,19 @@ namespace {
 // decision nobody re-examines; passing it in makes "what did this table cover" answerable from the command.
 std::vector<int> g_stages{2, 3, 4};
 
-// --space=quarantined EMITS ONLY WHAT DENSE REFUSES, and it exists because the refusal is a QUARANTINE rather
-// than a proof. ppu_tactic_space.hpp's DenseSubFourWarpDeviceAbort records that on 2026-08-04 every tested dense
-// sub-four-warp instantiation aborted -- but INBOX 066 established that the aborting kernel had no split-K axis,
-// and codex then completed the ordinary COARSE scale path, which is where the only known unconditional
-// assert(false) on that route lived. So the observed aborts may simply HAVE BEEN that assert, in which case the
-// quarantine costs us the measured optimum: (64,64,64) w64x32 is 2 warps and is the recorded int4 65.0% winner,
-// while dense's best reachable row measured 60.6%.
+// THERE WAS A --space=quarantined HERE, AND ITS REMOVAL IS THE POINT. It emitted the COMPLEMENT of the dense
+// space -- only the rows dense refused -- so that the sub-four-warp geometry holding the measured int4 optimum
+// could be built as its own binary without touching the exclusion that banned it.
 //
-// WHY A SEPARATE TABLE RATHER THAN ADDING THE ROWS BACK. A device assert poisons the context: one abort takes the
-// whole process, so a 227-row table with a live abort in it loses every measurement including the four passes
-// that would have followed. Emitting the quarantined rows as their own binary bounds the loss to that binary --
-// if they still abort we learn it and nothing else is destroyed, and if they run we have their numbers and can
-// merge them.
-bool g_quarantined_only = false;
+// That is a mechanism invented to work around another mechanism, and the outer one should not have existed:
+// ppu_tactic_space.hpp was recording a device abort somebody saw once, in the file that defines what is legal.
+// With that exclusion deleted (2026-08-05) the rows are simply in the dense table, where they belong, and this
+// mode has nothing left to emit. It also cost more than it gave: it stamped `space=dense` into its own header,
+// so a quarantined table on the box was indistinguishable from the shipping one, and its by-design compile
+// failure was read as a dense regression across INBOX 069/070/071/072/073/077.
+//
+// If a sweep ever needs to bound the blast radius of a config that aborts, that is a property of the HARNESS --
+// flush results as they are produced instead of at the end -- not a reason to carve the search space.
 
 // PROVENANCE IS PART OF THE GENERATED INTERFACE. A stale table used to carry the same header prose and the same
 // regeneration command as the current one, so neither a build log nor a failed template instantiation identified
@@ -172,15 +172,7 @@ std::vector<Candidate> legal_grid(FormatSpec const& spec, int tk) {
       for (int wm : kWarpM)
         for (int wn : kWarpN) {
           Candidate const c{spec, tm, tn, tk, wm, wn};
-          Exclusion const e = Space::sweep_exclusion(c);
-          if (g_quarantined_only) {
-            // ONLY the rows whose sole objection is the quarantine. A candidate excluded for any other reason --
-            // atom alignment, warps>32, delivery, producer domain -- stays out, so this table cannot smuggle in
-            // something that is illegal for an independent reason and then blame the quarantine for the crash.
-            if (e != Exclusion::DenseSubFourWarpDeviceAbort) continue;
-          } else if (e != Exclusion::None) {
-            continue;
-          }
+          if (Space::sweep_exclusion(c) != Exclusion::None) continue;
           ok.push_back(c);
         }
   return ok;
@@ -190,18 +182,20 @@ std::vector<Candidate> legal_grid(FormatSpec const& spec, int tk) {
 // and every stage in scope, asked of both spaces. Reports disagreements rather than asserting: a divergence is
 // news about the two operators, not necessarily a defect, and the emitter cannot know which. Returns the count
 // so a gate can require zero while a human reads what differs.
-// THE ONE DECLARED ASYMMETRY. codex's 064 resolution (ppu_tactic_space.hpp at 44052c7): the sub-four-warp device
-// abort observed on ppu001 is a DENSE-ROUTE QUARANTINE, not PPU collective legality. The grouped kernel has
-// POSITIVELY MEASURED two-warp rows through the same mainloop -- (64,64,64) w64x32 and (64,128,64) w64x64, the
-// latter being the recorded int1 61.2% winner -- and GemmUniversalAdapter's max(4,...) is only legacy WarpCount
-// metadata while kThreadCount and both kernels' block shapes remain size(TiledMma). So the dense evidence cannot
-// exclude grouped rows, and requiring the two spaces to agree would delete a measured optimum.
+// THERE ARE NO DECLARED ASYMMETRIES LEFT, and the list stays here so that adding one is a deliberate act with a
+// visible home rather than an `if` buried in a predicate.
 //
-// A DISAGREEMENT IS ACCEPTED ONLY WHEN DENSE'S OWN VERDICT IS THAT ONE. Dense short-circuits at the warp check, so
-// grouped may report anything downstream -- None, or a later exclusion dense never reached. What must not happen
-// is the two disagreeing for any OTHER reason, and that is what still exits non-zero. Adding a second entry here
-// is a deliberate act and should carry the same kind of citation.
-constexpr Exclusion kDeclaredDenseOnly[] = { Exclusion::DenseSubFourWarpDeviceAbort };
+// It had exactly one entry, DenseSubFourWarpDeviceAbort, until 2026-08-05. That entry did not describe a
+// difference between the two operators; it described a device abort somebody once saw on the dense route, and
+// keeping it meant the dense space could never search the geometry that holds the measured int4 optimum. It was
+// deleted at the source -- see ppu_tactic_space.hpp's dense_kernel_exclusion -- so the two spaces now agree on
+// every kernel-level predicate and this comparator should report ZERO differences. If it reports any, that is
+// news either way: a genuine divergence, or somebody reintroducing a remembered observation as a rule.
+//
+// A future entry must be a real asymmetry between the dense and grouped ROUTES -- something one kernel can do
+// that the other structurally cannot -- and must cite where in the source that difference lives. "We measured a
+// failure once" is not such a citation.
+constexpr Exclusion kDeclaredDenseOnly[] = {};
 
 bool is_declared(int dense_verdict) {
   for (Exclusion e : kDeclaredDenseOnly)
@@ -271,8 +265,7 @@ static int emit(FormatSpec const& spec, int bits, int tk, char const* space_name
   for (int st : g_stages) {
     std::vector<Candidate> legal;
     for (auto const& c : ok)
-      if (Space::topology_exclusion(c, st) == Exclusion::None ||
-          (g_quarantined_only && Space::topology_exclusion(c, st) == Exclusion::DenseSubFourWarpDeviceAbort))
+      if (Space::topology_exclusion(c, st) == Exclusion::None)
         legal.push_back(c);
 
     for (auto const& c : legal) {
@@ -329,7 +322,7 @@ static int emit(FormatSpec const& spec, int bits, int tk, char const* space_name
 int main(int argc, char** argv) {
   if (argc < 3) {
     std::fprintf(stderr,
-                 "usage: emit_tactic_configs <bits:1|2|4> <tile_k> [--space=dense|grouped|compare|quarantined] [stage ...]\n"
+                 "usage: emit_tactic_configs <bits:1|2|4> <tile_k> [--space=dense|grouped|compare] [stage ...]\n"
                  "  --space defaults to dense.  stages default to 2 3 4.\n"
                  "  --space=compare emits no table: it walks the grid asking BOTH spaces every predicate the\n"
                  "  emitter uses and prints the disagreements, exiting non-zero if there are any.\n");
@@ -352,22 +345,6 @@ int main(int argc, char** argv) {
   if (!spec) { std::fprintf(stderr, "no single-plane format with low_bits=%d in kFormats\n", bits); return 2; }
 
   if (std::strcmp(space, "dense") == 0)   return emit<DenseSpace>(*spec, bits, tk, "dense", "LOWBIT_DENSE");
-  if (std::strcmp(space, "quarantined") == 0) {
-    g_quarantined_only = true;
-    // THE MACRO PREFIX AND THE SPACE NAME ARE NOT THE SAME DECISION, and conflating them cost hours twice.
-    // LOWBIT_DENSE stays because this must be a DROP-IN table -- the bench expands the same macro names either
-    // way, which is the whole point of being able to build a binary over the quarantined rows.
-    // The space NAME must tell the truth. It used to say "dense", so a quarantined table was indistinguishable
-    // from a dense one in the only self-description the file carries: its header. That header is what a human
-    // reads first and what ci/check_dense_tactic_table.py now regenerates from. INBOX 069/070/073/077 is the
-    // record -- a quarantined table sitting on the box read as a dense table, its (correct, by-design) compile
-    // failure read as a dense regression, and the zero geometric overlap with the real dense table read as
-    // generator drift rather than as what it was: a COMPLEMENT.
-    // The regenerate hint below follows space_name too, so it now points at lowbit_quarantined_configs.inc
-    // instead of telling the reader to overwrite the shipping dense table -- which is how the box got into that
-    // state to begin with.
-    return emit<DenseSpace>(*spec, bits, tk, "quarantined", "LOWBIT_DENSE");
-  }
   if (std::strcmp(space, "grouped") == 0) return emit<GroupedSpace>(*spec, bits, tk, "grouped", "LOWBIT_GROUPED");
   if (std::strcmp(space, "compare") == 0) {
     std::printf("comparing DenseSpace vs GroupedSpace: bits=%d tile_k=%d stages", bits, tk);
@@ -379,6 +356,6 @@ int main(int argc, char** argv) {
     // check this repo has been bitten by before.
     return d == 0 ? 0 : 1;
   }
-  std::fprintf(stderr, "unknown --space=%s (want dense, grouped, compare or quarantined)\n", space);
+  std::fprintf(stderr, "unknown --space=%s (want dense, grouped or compare)\n", space);
   return 2;
 }

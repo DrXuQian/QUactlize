@@ -57,7 +57,6 @@ enum class Exclusion {
   None,
   AtomAlignment,
   WarpDoesNotDivideTile,
-  DenseSubFourWarpDeviceAbort,
   TooManyWarps,
   AccumulatorRegisters,
   LowFoldDoesNotDivideTileN,
@@ -76,7 +75,6 @@ constexpr char const* exclusion_clause(Exclusion e) {
     case Exclusion::None: return "";
     case Exclusion::AtomAlignment: return "tile and warp extents must be multiples of the 16x16x16 MMA atom";
     case Exclusion::WarpDoesNotDivideTile: return "warp shape must divide tile shape";
-    case Exclusion::DenseSubFourWarpDeviceAbort: return "dense/non-grouped kernel route: sub-four-warp tactics are quarantined after the observed device abort";
     case Exclusion::TooManyWarps: return "tile needs more than the 32-warp block limit";
     case Exclusion::AccumulatorRegisters: return "the fp32 accumulator alone exceeds the 192-register sweep ceiling";
     case Exclusion::LowFoldDoesNotDivideTileN: return "the derived low-plane fold does not divide TileN";
@@ -127,23 +125,29 @@ constexpr Exclusion common_kernel_exclusion(Candidate c) {
   return Exclusion::None;
 }
 
-// DENSE-ONLY QUARANTINE, not PPU collective legality. On ppu001 (2026-08-04), the tested dense i4/TK64
-// instantiations below four warps aborted and every tested row at four or above ran. Those observations came from
-// test_lowbit_dense_bench's Cfg::Kernel, which was a plain GemmUniversal<Problem,Main,Epi> with NO
-// SplitKSerialScheduler template argument and no split-K axis. Therefore the observed boundary cannot be attributed
-// to split-K, and split_k=1 in the shipping dense adapter is not an evidence-backed exception. The grouped kernel has
-// positively measured two-warp rows through the same mainloop: ordinary one-plane i4
-// (64,64,64) w64x32 and folded one-plane int1 (64,128,64) w64x64. The GemmUniversalAdapter's max(4,...) is only
-// legacy WarpCount/WarpShape metadata; kThreadCount and both kernels' block shapes remain size(TiledMma). Therefore
-// the dense evidence cannot exclude grouped rows, and it does not establish a 128-thread collective requirement.
-// Keep the dense boundary conservative until the non-grouped kernel/epilogue assert site is identified or the exact
-// two-warp dense row passes a fresh device probe: the measured grid has no three-warp CTA, so it still does not
-// distinguish >=3 from >=4.
+// THE DENSE AND GROUPED KERNEL PREDICATES ARE THE SAME PREDICATE, and this function exists only so the two
+// routes keep separate names at the call sites.
+//
+// It used to carry one extra clause -- `if (cta_warps(c) < 4) return DenseSubFourWarpDeviceAbort;` -- recording
+// that on 2026-08-04 the tested dense sub-four-warp instantiations aborted on ppu001. That clause was a
+// CATEGORY ERROR and it was removed on 2026-08-05: it stated a MEMORY OF AN OBSERVATION inside the file that
+// defines what is LEGAL. A constraint the kernel can express belongs in the kernel as a static_assert, where the
+// compiler can refute it; a host-side list of things that once failed is a second source of truth that outlives
+// the code it was drawn from, and this one did. What it excluded was the measured optimum: (64,64,64) w64x32 is
+// two warps and is the recorded int4 65.0% winner, against 60.6% for the best row the clause left reachable.
+//
+// The evidence that retired it: the dense route now has 61 assert( sites of which 61 are static_assert, so the
+// observed `Assertion 'false' failed` is unreachable in today's code; ci/check_route_admits.py compiles the
+// two-warp row with a planted device-body static_assert as its control and finds no error; and codex reran that
+// probe independently and reported no source-level basis for keeping the clause. The likely mechanism of the
+// original aborts was the then-unimplemented ordinary COARSE scale path, whose selection
+// (ppu_mma_aiu_multistage_mixed_input.hpp: "COARSE is a relation between the scale tile and the ACTUAL retiled B
+// copy view") turns on fragment geometry and so co-varies with warp shape -- a correlation, not a warp-count law.
+//
+// If a two-warp row does fail on hardware, express the real condition as a static_assert with a name. Do not
+// reinstate a remembered observation.
 constexpr Exclusion dense_kernel_exclusion(Candidate c) {
-  Exclusion const common = common_kernel_exclusion(c);
-  if (common == Exclusion::AtomAlignment || common == Exclusion::WarpDoesNotDivideTile) return common;
-  if (cta_warps(c) < 4) return Exclusion::DenseSubFourWarpDeviceAbort;
-  return common;
+  return common_kernel_exclusion(c);
 }
 
 constexpr Exclusion common_non_smem_exclusion(Candidate c) {

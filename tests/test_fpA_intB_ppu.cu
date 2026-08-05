@@ -115,15 +115,17 @@ int main(int argc, char** argv) {
   // So: measure whether raising grid warps/CU past 14.2 keeps buying time, on dense, before building grouped split-K.
   // split_k <= K/TileK, so TileK=64 reaches spk=32 (56.9 warps/CU) while TileK=256 stops at spk=8 (14.2).
   // Run it at the decode shape: <bin> 8 2048 2048 32
-  // QUARANTINED, 2026-08-05 (INBOX 064, ppu_tactic_space.hpp's DenseSubFourWarpDeviceAbort). Every row below is
-  // TM=16 TN=32 w16x16 -> (16/16)*(32/16) = 2 warps, and codex measured that every tested dense i4/TK64
-  // SplitKSerial instantiation below four warps ABORTS on ppu001. This ladder was sweeping configurations the
-  // device refuses to launch, which is most likely how the abort was found in the first place.
+  // COMMENTED OUT ON 2026-08-05 UNDER A RULE THAT NO LONGER EXISTS, and left commented pending one device run.
+  // Every row below is TM=16 TN=32 w16x16 -> (16/16)*(32/16) = 2 warps, and they were disabled because
+  // ppu_tactic_space.hpp then held a four-warp minimum on the dense route recording an abort observed on ppu001.
+  // That exclusion was deleted the same day: it stated a memory of an observation rather than a constraint, the
+  // dense route has no runtime assert left that could produce it, and the two-warp geometry compiles cleanly
+  // through a probe whose control is a planted device-body static_assert (ci/check_route_admits.py).
   //
-  // KEPT AS COMMENTS RATHER THAN DELETED. What was tried is part of the record: a later reader asking "was the
-  // 16x32 decode geometry ever considered" should find that it was, and why it is gone. The GROUPED path admits
-  // two-warp rows -- the quarantine is dense-route-only -- so if this geometry is wanted at decode it belongs in
-  // a grouped harness, not here.
+  // They stay commented for a different and much narrower reason: NOBODY HAS RUN A TWO-WARP DENSE ROW ON THE
+  // DEVICE SINCE. Re-enable them together with, or after, that run -- not before, and not because this comment
+  // says the old rule was wrong. If they do abort, the condition that fires belongs in the kernel as a named
+  // static_assert.
   // TIME(16, 32, 64,  16, 16, 2, 1);  TIME(16, 32, 64,  16, 16, 2, 2);  TIME(16, 32, 64,  16, 16, 2, 4);
   // TIME(16, 32, 64,  16, 16, 2, 8);  TIME(16, 32, 64,  16, 16, 2, 16); TIME(16, 32, 64,  16, 16, 2, 32);
   // TIME(16, 32, 256, 16, 16, 2, 1);  TIME(16, 32, 256, 16, 16, 2, 2);  TIME(16, 32, 256, 16, 16, 2, 4);

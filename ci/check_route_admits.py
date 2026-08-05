@@ -51,12 +51,13 @@ ERROR = re.compile(r": (error|fatal error|catastrophic error): ")
 # (label, -D defines, expectation). The two rejects are not decoration; see the module docstring.
 CASES = [
     # THE SUBJECT: docs/BACKTEST.md A1's geometry, (64,64,64) w64x32 s3 -- 2 warps, 211.33 us / 65.0% measured on
-    # the GROUPED route. ppu_tactic_space.hpp's DenseSubFourWarpDeviceAbort excludes it from the dense table.
+    # the GROUPED route. A four-warp minimum kept it out of the dense table until 2026-08-05; this case is what
+    # established the route admits it, and it stays as the regression guard for that.
     ("dense w64x32 (2 warps, the recorded int4 winner)",
      ["-DPROBE_WM=64", "-DPROBE_WN=32"], "admits"),
     # THE CONTROL FOR THE SUBJECT: same everything, four warps. If this ever stops compiling the probe has drifted
     # away from what the dense bench builds and the subject's verdict means nothing.
-    ("dense w32x32 (4 warps, inside the quarantine)",
+    ("dense w32x32 (4 warps, the always-allowed control)",
      ["-DPROBE_WM=32", "-DPROBE_WN=32"], "admits"),
     # POSITIVE CONTROL 1 -- WarpM > TileM makes warpOnM zero and the builder divides by it. Fires in
     # gemm_operands.hpp and ppu_builder.inl, i.e. deep inside the instantiation rather than at parse time.
