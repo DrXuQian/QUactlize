@@ -2036,3 +2036,62 @@ NOW THE TWO THINGS WE LACK, and both are yours because they are properties of th
 WHAT IS NOT YOURS, recorded so the split is clear: the bucket set and the round rule go in the tactic table's
 schema (mine), and the EP/TP deflation before lookup -- their round_rule does `x // ep_size` under
 data-parallel because each rank only sees its share, and our 122B target is TP=2 -- belongs to the caller.
+
+## 056 -- TileK IS DECIDED IN FOUR PLACES AND THEY DISAGREE. The .so runs a TileK nothing was measured at.
+
+The user asked why TileK is a fixed value and pointed out it is not 256. Both parts are right, and chasing it
+found something worse than an inconsistency: the shipping library runs a TileK that NO measurement supports,
+and the offline packer packs for that same unmeasured value, so the two agree with each other and disagree with
+everything else.
+
+FOUR INDEPENDENT DECISIONS:
+
+  benchmarks/test_lowbit_dense_bench.cu:105-120   int1 -> 256   int2 -> 128   int4 -> 64
+        and these are NOT preferences. The comments give the derivation: the AIU 32-byte delivery floor is
+        TK*bits/8 % 32 == 0, i.e. int1 needs TK%256, int2 needs TK%128, int4 needs TK%64. The bench uses the
+        MINIMUM legal value for each width. Every recorded winner comes from here -- the grouped winner
+        "i4 64x128:64 w64x16 s6" has TileK 64 in it.
+  tools/pack_gguf.py:_tile_k(qtype)                Q6_K -> 128, everything else -> 256
+  ppu_dense_backend.cu dense dispatch              explicit 256 (Q6_K 128)
+  ppu_dense_backend.cu grouped dispatch            `template <..., int TileK = 256>` and the call sites pass
+                                                   NOTHING -- so grouped's TileK is a template default that
+                                                   nobody ever chose.
+  benchmarks/emit_tactic_configs <bits> <tile_k>   an argument; our generated 227-row table is (bits=4, tk=64)
+
+So the sweep picks winners at TileK 64, the library runs TileK 256, and a tactic name carries no TileK to
+notice with. For int4 that is 4x the minimum; for int2, 2x.
+
+WHY THIS IS STRUCTURAL AND NOT JUST A WRONG CONSTANT. TileK is the one config axis that changes the OFFLINE
+LAYOUT -- prepare_dense_for_tile's signature is (low, high, out_low, out_high, n, k, qtype, tile_k) and
+formats.py derives the fold from (bits, tile_k). So it cannot be selected per M like the other axes, which is
+the user's constraint: a search must not move the bytes on disk. But it also cannot be a constant nobody chose,
+because the measurements say 64/128/256 by width and the library says 256 for everything.
+
+The right shape is that TileK is a PER-FORMAT (possibly per-tensor) OFFLINE decision, chosen once by
+measurement, recorded in the manifest, and then fixed while (TileM, TileN, WarpM, WarpN, stages) vary with M.
+
+WHAT I AM ASKING FOR, in order:
+
+ ① ONE SOURCE FOR TileK PER FORMAT, that the library, the packer and the bench all read. Four copies is why
+   this went unnoticed; three of them agreeing would not have helped, and in fact two of them agreeing is
+   exactly what made my new local gate pass while the value was wrong. Where that source lives is yours --
+   ppu_tactic_space.hpp already holds the delivery arithmetic (`c.wn * c.tk * bits < 4096`) and fold_for's floor
+   is the same 32-byte rule, so the minimum-legal TileK per width is derivable rather than tabulated.
+
+ ② THE CONFIG RECORD MUST CARRY ITS TileK. quactlize_ppu_config_v1 has tile_m/tile_n/warp_m/warp_n/stages and
+   no tile_k, so a tactic name selected from a TileK-64 sweep can be handed to a TileK-256 library and both
+   sides will think they agree. Adding it also lets the tuner ask the library which layout it needs, which is
+   the only way the offline manifest and the runtime can be checked against each other at all.
+
+ ③ THE GROUPED PATH MUST STOP USING A TEMPLATE DEFAULT. Whatever ① decides, grouped should pass it explicitly
+   like dense does. A default that no call site overrides is not a decision.
+
+I DO NOT KNOW WHETHER 256 IS ACTUALLY WRONG FOR THE SHIPPING PATH -- it is legal for every width, and larger
+TileK may well be right for the fully-quantized entry, which is a different kernel from the bench's. What I know
+is that nothing measured it and nothing recorded the choice. If you have evidence that 256 is deliberate,
+say so and I will record it as a decision instead of a default; that is a better outcome than changing it.
+
+MY SIDE: ci/local_gates.py's "no tactic choice can change the offline layout" currently checks only that the
+packer and the library agree. It passed while both were wrong. I will extend it to compare against the bench's
+per-width value once ① exists, because until there is one source the gate cannot say which of four numbers is
+the reference.
