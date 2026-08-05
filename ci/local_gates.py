@@ -591,6 +591,35 @@ def lint_tactic_spaces_agree():
                     f"({planted.strip()})"), 0.0
 
 
+def lint_dense_tactic_table_current():
+    """The committed dense X-macro must be exact output from the current space and current emitter."""
+    checker = ROOT / "ci" / "check_dense_tactic_table.py"
+    if not checker.is_file():
+        return "FAIL", "ci/check_dense_tactic_table.py is missing", 0.0
+    checked = subprocess.run([sys.executable, str(checker)], cwd=ROOT, capture_output=True, text=True)
+    if checked.returncode:
+        detail = next((line for line in checked.stdout.splitlines() if "ERROR:" in line), checked.stdout.strip())
+        return "FAIL", detail or checked.stderr.strip(), 0.0
+
+    # Assert that exact comparison, rather than only the self-reported metadata, is live. Keep all provenance
+    # unchanged and mutate one row: a metadata-only checker would accept this, while regeneration must reject it.
+    import tempfile
+    source = ROOT / "benchmarks" / "lowbit_dense_configs.inc"
+    with tempfile.TemporaryDirectory() as td:
+        planted = Path(td) / source.name
+        text = source.read_text()
+        old = "  X(16,64,16,16,2,B)"
+        if text.count(old) != 1:
+            return "FAIL", "cannot plant the dense-table drift probe: anchor row changed", 0.0
+        planted.write_text(text.replace(old, "  X(16,64,16,16,99,B)"))
+        rejected = subprocess.run([sys.executable, str(checker), "--table", str(planted)], cwd=ROOT,
+                                  capture_output=True, text=True)
+        if rejected.returncode == 0:
+            return "FAIL", "checker accepted a table whose first tactic row was changed without changing provenance", 0.0
+    summary = checked.stdout.strip().removeprefix("[dense-table] ")
+    return "PASS", f"{summary}; planted row drift rejected", 0.0
+
+
 def lint_inbox_delivered():
     """AN UNREAD INBOX ITEM IS AN UNDELIVERED ONE, and writing the file is not sending it.
 
@@ -768,6 +797,7 @@ def main():
                 ("lint", "emitted bench flags are ones the bench parses", lint_fixture_flags),
                 ("lint", "every INBOX item is consumed, or is explained by a call in flight", lint_inbox_delivered),
                 ("lint", "dense/grouped tactic differences are declared, and unexpected drift fires", lint_tactic_spaces_agree),
+                ("lint", "the committed dense tactic table exactly regenerates from its stamped sources", lint_dense_tactic_table_current),
                 ("lint", "the ctypes config mirror matches its C header field for field", lint_config_abi_matches_header),
                 ("lint", "no tactic choice can change the offline layout", lint_tactic_cannot_change_offline_layout),
     ("registry", "declarations vs source", None)])

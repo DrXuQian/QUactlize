@@ -47,9 +47,11 @@
 // constants of the bench, which is why the table is generated per binary rather than filtered at run time:
 // instantiating a config for the wrong TileK costs compile time and can never be selected.
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <limits>
 #include <set>
 #include <tuple>
@@ -85,6 +87,30 @@ std::vector<int> g_stages{2, 3, 4};
 // if they still abort we learn it and nothing else is destroyed, and if they run we have their numbers and can
 // merge them.
 bool g_quarantined_only = false;
+
+// PROVENANCE IS PART OF THE GENERATED INTERFACE. A stale table used to carry the same header prose and the same
+// regeneration command as the current one, so neither a build log nor a failed template instantiation identified
+// which tactic space had produced it. Hash the two source inputs whose semantics determine the emitted rows. The
+// exact-regeneration gate separately rebuilds this emitter before comparing output; these hashes are identifiers,
+// not a claim that a previously compiled /tmp/emit_tactic is current.
+constexpr char kSpaceSource[] = "quactlize/include/ppu_tactic_space.hpp";
+constexpr char kEmitterSource[] = "benchmarks/emit_tactic_configs.cpp";
+
+std::uint64_t fnv1a64_file(char const* path, bool& ok) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) { ok = false; return 0; }
+  std::uint64_t hash = UINT64_C(14695981039346656037);
+  char bytes[4096];
+  while (in) {
+    in.read(bytes, sizeof bytes);
+    for (std::streamsize i = 0; i < in.gcount(); ++i) {
+      hash ^= static_cast<unsigned char>(bytes[i]);
+      hash *= UINT64_C(1099511628211);
+    }
+  }
+  ok = in.eof();
+  return hash;
+}
 
 using Row = std::tuple<int, int, int, int, int>;    // tm, tn, wm, wn, stages
 
@@ -227,6 +253,16 @@ int compare_spaces(FormatSpec const& spec, int tk) {
 
 template <class Space>
 static int emit(FormatSpec const& spec, int bits, int tk, char const* space_name, char const* macro_prefix) {
+  bool space_ok = true, emitter_ok = true;
+  std::uint64_t const space_hash = fnv1a64_file(kSpaceSource, space_ok);
+  std::uint64_t const emitter_hash = fnv1a64_file(kEmitterSource, emitter_ok);
+  if (!space_ok || !emitter_ok) {
+    std::fprintf(stderr,
+                 "cannot hash generated-table source '%s'; run emit_tactic_configs from the repository root\n",
+                 !space_ok ? kSpaceSource : kEmitterSource);
+    return 1;
+  }
+
   std::vector<Candidate> const ok = legal_grid<Space>(spec, tk);
   if (ok.empty()) { std::fprintf(stderr, "no legal tactic at bits=%d tile_k=%d\n", bits, tk); return 1; }
 
@@ -253,6 +289,9 @@ static int emit(FormatSpec const& spec, int bits, int tk, char const* space_name
   std::printf("//   stages:");
   for (int st : g_stages) std::printf(" %d", st);
   std::printf("   <- what this table COVERS; a winner outside it cannot be found by a sweep using it\n");
+  std::printf("//   provenance: rows=%zu space_fnv1a64=%016llx emitter_fnv1a64=%016llx\n",
+              rows.size(), static_cast<unsigned long long>(space_hash),
+              static_cast<unsigned long long>(emitter_hash));
   std::printf("//\n");
   std::printf("// Regenerate after changing ppu_tactic_space.hpp or the pruning policy:\n");
   std::printf("//   c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic &&\\\n");
@@ -272,7 +311,12 @@ static int emit(FormatSpec const& spec, int bits, int tk, char const* space_name
   // satisfy every static_assert about bits and TileK and still be the wrong operator's set. Distinct macro
   // names make that a redefinition or an undefined macro rather than a silent substitution.
   std::printf("#define %s_CFG_BITS  %d\n", macro_prefix, bits);
-  std::printf("#define %s_CFG_TILEK %d\n\n", macro_prefix, tk);
+  std::printf("#define %s_CFG_TILEK %d\n", macro_prefix, tk);
+  std::printf("#define %s_CFG_ROWS  %zu\n", macro_prefix, rows.size());
+  std::printf("#define %s_CFG_SPACE_FNV1A64   \"%016llx\"\n", macro_prefix,
+              static_cast<unsigned long long>(space_hash));
+  std::printf("#define %s_CFG_EMITTER_FNV1A64 \"%016llx\"\n\n", macro_prefix,
+              static_cast<unsigned long long>(emitter_hash));
   std::printf("#define %s_CFG_LIST(X, B) \\\n", macro_prefix);
   size_t i = 0;
   for (auto const& r : rows) {

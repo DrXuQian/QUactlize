@@ -98,6 +98,14 @@ fi
 # directory baked in as the fallback is both useless to anyone else and a leak. The site-specific location goes
 # in the environment (or PPU_SDK_SITE_DEFAULT for a shared machine's profile), and an unset SDK says so.
 PPU_SDK_ROOT="${PPU_SDK:-${PPU_HOME:-${PPU_SDK_SITE_DEFAULT:-}}}"
+TARGET="${TARGET:-test_lowbit_dense_bench}"
+if [ "$TARGET" = "test_lowbit_dense_bench" ]; then
+  # FAIL BEFORE HGCC. A stale generated table otherwise presents as an unrelated CollectiveMma/GemmUniversal
+  # template failure, and a bench-side startup banner cannot help because no binary was produced. Rebuild the
+  # emitter in a temporary directory and compare its exact output; this validates without making generation a
+  # compile-order dependency or maintaining a second runtime/dispatch list.
+  python3 "$HERE/ci/check_dense_tactic_table.py" || exit 1
+fi
 if [ -z "$PPU_SDK_ROOT" ]; then
   echo "[build.sh] PPU_SDK is not set and there is no site default." >&2
   echo "            export PPU_SDK=/path/to/PPU_SDK   (or PPU_HOME, or PPU_SDK_SITE_DEFAULT in the shell profile)" >&2
@@ -247,8 +255,6 @@ if [ -n "${PPU_DEFS:-}" ]; then
   echo "PPU_DEFS applied: $PPU_DEFS"
   grep -F "PPU_EXTRA_DEFS ->" cmake.log || echo "  WARNING: cmake did not report PPU_EXTRA_DEFS -- the defines did NOT reach the build"
 fi
-TARGET="${TARGET:-test_lowbit_dense_bench}"
-
 # #13: NO SHIPPING TARGET MAY REACH THE LEGACY PACKERS. fold_derivation/legacy_pipeline.hpp still holds
 # nfold_regroup_gmem and nfold_place_bits_int1_tk64, on purpose -- they are the INDEPENDENT reference the l58/l61/l64
 # gates diff xplane::place_derived against, and deleting them would turn those gates into "the derived walk equals the

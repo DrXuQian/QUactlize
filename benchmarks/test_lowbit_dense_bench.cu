@@ -286,6 +286,16 @@ static_assert(cutlass::sizeof_bits<QuantType>::value == LOWBIT_DENSE_CFG_BITS &&
               "lowbit_dense_configs.inc was generated for a different (bits, TileK) than this binary. Regenerate: "
               "c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic && "
               "/tmp/emit_tactic <bits> <tile_k> > benchmarks/lowbit_dense_configs.inc");
+#define LOWBIT_DENSE_COUNT_ROW(TM,TN,WM,WN,ST,_UNUSED) + 1
+inline constexpr int kLowbitDenseConfigRows = 0 LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_COUNT_ROW, );
+#undef LOWBIT_DENSE_COUNT_ROW
+static_assert(kLowbitDenseConfigRows == LOWBIT_DENSE_CFG_ROWS,
+              "lowbit_dense_configs.inc row-count provenance does not match its X-macro list; regenerate it");
+
+inline void print_dense_table_provenance() {
+  std::printf("[dense-table] rows=%d space_fnv1a64=%s emitter_fnv1a64=%s\n",
+              kLowbitDenseConfigRows, LOWBIT_DENSE_CFG_SPACE_FNV1A64, LOWBIT_DENSE_CFG_EMITTER_FNV1A64);
+}
 
 // The compiled set. Every entry here is a distinct template instantiation baked into the binary; add one and
 // it costs compile time, not a rebuild at search time. Keep WM|TM, WN|TN, and both multiples of the 16x16 atom.
@@ -999,6 +1009,7 @@ int main(int argc, char const **args) {
   //
   Options options;
   options.parse(argc, args);
+  print_dense_table_provenance();
 
   if (options.help) {
     options.print_usage(std::cout) << std::endl;
