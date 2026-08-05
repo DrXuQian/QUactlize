@@ -190,6 +190,14 @@ def run(cmd, **kw):
     return p.returncode, (p.stdout + p.stderr), time.time() - t
 
 
+# EXTRA TRANSLATION UNITS a probe must LINK, not merely include. A probe that calls an exported op needs its
+# definition; without this l110_unit_pack_abi built and then failed at link, so the registered row reported BUILD
+# while the check itself was correct -- a gate red for a reason that has nothing to do with what it tests, which
+# is the fastest way to teach people to ignore it. Sources, not flags, because the missing thing is a definition.
+GATE_SRCS = {
+    "l110_unit_pack_abi": ["quactlize/csrc/device/ppu_dense_layout.cu"],
+}
+
 GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               "l112_mixed_policy_parity": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               "l113_mixed_metadata_policy": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
@@ -366,7 +374,8 @@ def gate(name, args):
                       ["-I", str(STUB), "-I", str(ACT), "-I", str(ACT_UTIL),
                        "-I", str(ROOT / "quactlize/include"),
                        "-I", str(ROOT / "tests"), "-I", str(ROOT / "benchmarks"),
-                       "-o", str(exe), str(src)])
+                       "-o", str(exe), str(src)] +
+                      [str(ROOT / s) for s in GATE_SRCS.get(name, GATE_SRCS.get(base, []))])
     if rc != 0:
         return "BUILD", log.strip().splitlines()[0] if log.strip() else "nvcc failed", dt
     rc, log, dt2 = run([str(exe)] + [str(ROOT / a) for a in args])
@@ -727,10 +736,28 @@ def lint_dense_tactic_table_current():
     with tempfile.TemporaryDirectory() as td:
         planted = Path(td) / source.name
         text = source.read_text()
-        old = "  X(16,64,16,16,2,B)"
+        # THE ANCHOR IS FOUND, NOT HARDCODED. It was the literal "  X(16,64,16,16,2,B)" until TacticTileK became a
+        # row field and rows grew a seventh argument -- at which point this control could not plant and the gate
+        # said so rather than passing, which is what it should do. But a probe that breaks whenever the row FORMAT
+        # changes is a probe that gets edited under time pressure, so take the first row and mutate its last
+        # numeric field instead of naming one.
+        rows = re.findall(r"^  X\([^)]*\)", text, re.M)
+        if not rows:
+            return "FAIL", "cannot plant the dense-table drift probe: no X( rows in the table", 0.0
+        old = rows[0]
         if text.count(old) != 1:
-            return "FAIL", "cannot plant the dense-table drift probe: anchor row changed", 0.0
-        planted.write_text(text.replace(old, "  X(16,64,16,16,99,B)"))
+            return "FAIL", f"cannot plant the dense-table drift probe: {old} is not unique", 0.0
+        # Mutate the LAST numeric field (stages) to a value no table emits, derived from the row rather than
+        # typed: a literal replacement row has to be edited every time the row format changes, and the version
+        # that was there emitted a 6-field row into a 7-field table -- which the checker would have rejected for
+        # the wrong reason, reporting drift where the probe itself was malformed.
+        # The row ends `,B)` -- B is the dispatch-body placeholder, not a field -- so the last NUMERIC field is
+        # the one before it. Anchoring on `,B)` rather than on `)` is the difference between mutating stages and
+        # matching nothing, which is what the first version of this did.
+        mutated = re.sub(r"(\d+)(,B\)$)", r"99\2", old)
+        if mutated == old:
+            return "FAIL", f"cannot plant the dense-table drift probe: no numeric field in {old}", 0.0
+        planted.write_text(text.replace(old, mutated))
         rejected = subprocess.run([sys.executable, str(checker), "--table", str(planted)], cwd=ROOT,
                                   capture_output=True, text=True)
         if rejected.returncode == 0:

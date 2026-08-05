@@ -123,6 +123,14 @@ constexpr int TileShapeK = 128 * 8 / sizeof_bits<MmaType>::value;   // 64 (defau
 #endif
 #endif
 
+// THE ARTIFACT'S TileK, named. TileShapeK is the binary's build-time constant (BENCH_TSK) and, since the
+// 2026-08-05 split, that is precisely the ARTIFACT's TileK -- the one that fixes the fold and therefore the bytes
+// on disk. Rows carry their own TacticTileK. Spelling it out here because `TileShapeK` now reads like the tactic
+// quantity, and two different things under one name is what made a quarantined table read as a dense one.
+// The static_assert further down ties this to the generated table's LOWBIT_DENSE_CFG_ARTIFACT_TILEK; it cannot
+// be used inside Cfg<> because the .inc is included after that template.
+constexpr int kArtifactTileK = TileShapeK;
+
 // A matrix configuration
 using         ElementA    = MmaType;                                        // Element type for A matrix operand
 using         LayoutA     = cutlass::layout::RowMajor;                      // Layout type for A matrix operand
@@ -256,7 +264,7 @@ struct Cfg {
   // TK IS THE ROW'S TacticTileK, not the binary's. Until 2026-08-05 these three used the global TileShapeK,
   // because TileK was a build-time constant that also determined the bytes on disk. It no longer does: the artifact
   // carries its own fold, so a consumer may read the same weights at a different TileK, and the sweep searches
-  // it. The ARTIFACT's TileK stays a whole-table constant (LOWBIT_DENSE_CFG_ARTIFACT_TILEK) and is asserted
+  // it. The ARTIFACT's TileK stays a whole-table constant (kArtifactTileK) and is asserted
   // against the binary below -- one weight file, many readers.
   using CfgTile = Shape<cute::Int<TM>, cute::Int<TN>, cute::Int<TK>>;
   using CfgScale = Shape<cute::Int<TN>,
@@ -266,10 +274,15 @@ struct Cfg {
       ArchTag, OperatorClass, CfgTile, CfgWarp, EpilogueTileType,
       ElementAccumulator, ElementAccumulator, ElementC, LayoutC, AlignmentC,
       ElementD, LayoutD, AlignmentD, EpilogueSchedule>::CollectiveOp;
+  // THE ARTIFACT'S TileK IS PASSED EXPLICITLY, and this line is the one that makes a multi-TileK table correct
+  // rather than merely compilable. MainloopPolicy defaults ArtifactTileK_ to 0, meaning "this tactic also
+  // defines the artifact" -- true while TileK was one build-time constant, and silently WRONG once rows carry
+  // their own: a TacticTileK=256 row would derive fold_for(bits,256)=1 and read an F=2 artifact as unfolded.
+  // The bytes would be there and the pairing would be there, and the numbers would be wrong.
   using Policy = ppu_mixed_policy::MainloopPolicy<
       ppu_mixed_policy::QuantMode::FinegrainedScaleOnly,
       ppu_group_schedule::FinegrainedSchedule<GroupSize>, CfgTile, CfgScale, CfgWarp,
-      St, true, ElementB>;
+      St, true, ElementB, void, kArtifactTileK>;
   using Main = typename Policy::CollectiveOp;
   static_assert(ppu_mixed_policy::kernel_policy_valid_v<ppu_tactics::DenseSpace, Policy>);
   using Kernel = cutlass::gemm::kernel::GemmUniversal<Shape<int,int,int,int>, Main, Epi>;
