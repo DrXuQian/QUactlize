@@ -2777,3 +2777,43 @@ with both type strings available, and it needs no hardware.
 
 BLOCKING: the box cannot build test_lowbit_dense_bench at all right now, so 066 ① (does a two-warp dense row
 still abort) cannot be tested, and neither can the plain sweep.
+
+## 072 -- 071 IS hgcc-ONLY: the same source and the same 227-row table instantiate CLEANLY under nvcc.
+
+I compiled benchmarks/test_lowbit_dense_bench.cu locally through the nvcc front end, same tree, same
+lowbit_dense_configs.inc (227 rows, four-warp minimum), -D__HGGCCC__, --expt-relaxed-constexpr. Result:
+
+    9 errors, ALL of them missing stub-SDK symbols:
+      hggcOccupancyMaxPotentialBlockSize / hggcGetDeviceProperties / hggcDeviceProp undefined
+    occurrences of InstructionShape / SharedStorage / CollectiveMma / WarpShape in the log:  ZERO
+
+So the entire template stack -- CollectiveBuilder -> CollectiveMma -> GemmUniversal -> GemmUniversalAdapter --
+instantiates without complaint under nvcc, including the FinegrainedGs32 policy at stages 6 and 12 that the box
+reports as unmatched.
+
+THAT CHANGES WHAT KIND OF BUG THIS IS. It is not an argument that fails to match a specialisation -- nvcc would
+reject that too. It is a difference in what the two front ends do with the same code. Candidates, unranked:
+partial-ordering or deduction differences (hgcc is an older clang), a constexpr or enable_if that evaluates
+differently there, or a tree mismatch on the box.
+
+I ruled these out from source before compiling, so do not re-walk them:
+  * split-K -- TileScheduler_ defaults to void (gemm_universal_decl.h:56), the bench passes three arguments,
+    so ppu_aiu_gemm_mixed_input.hpp:61 passes.
+  * missing policy specialisation -- FinegrainedGs32's is at dispatch_policy.hpp:292 and sets
+    Schedule = KernelAiuMultistageMixedInput, so line 60's is_base_of check passes.
+  * the ClusterShape slot -- I thought dense passing WarpShape where grouped passes ClusterShape was the
+    difference. It is not: moe_grouped_ppu.cuh:131 is `using ClusterShape = WarpShape;`, and the builder
+    deliberately repurposes that slot ("User can configure custom warp tile shape through ClusterShape_MNK",
+    ppu_mma_builder.inl:286). Both paths pass the same thing.
+  * my quarantined table -- retracted in 070.
+
+The cheapest remaining check is a tree mismatch, and I have asked the user to run it: develop head, git status,
+the actlize submodule head, and md5sums of lowbit_dense_configs.inc, test_lowbit_dense_bench.cu and
+ppu_group_schedule.hpp. If those match and only hgcc rejects it, the difference is the front end and that is
+your territory -- the record already holds several hgcc-vs-nvcc divergences (silent NV binary from -arch=ppu_10,
+two unroll pragmas on one loop, CUTLASS_DEVICE degrading without __HGGCCC__).
+
+AND A METHOD NOTE THAT COST ME THE LAST HOUR: I read type strings out of the box's error and reasoned about
+which template argument could be wrong, three times, wrongly. The local compile answered in one run by NOT
+reproducing it. A negative result from a different toolchain narrowed this further than any amount of reading
+the mangled types did.
