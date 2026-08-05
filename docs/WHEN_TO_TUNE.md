@@ -124,7 +124,43 @@ TWO PROPERTIES TO HOLD, both learned the hard way this week:
 
 ## Is llama.cpp's warmup the place?
 
-No, and the reason is structural rather than about the seconds.
+**The section below overstates its case, and the real TRT-LLM shows where.** It argues warmup is
+*structurally* the wrong place. It is not: TRT-LLM's own engine warmup is exactly where its tactics are filled.
+`ModelEngine.warmup()` (`_torch/pyexecutor/model_engine.py:1151`) runs, in this order:
+
+```
+AutoTuner.get()                      # in EAGER context: "Otherwise the first get() can happen inside
+                                     # torch.compile tracing and trigger non-traceable code
+                                     # (time.time(), torch.cuda.*) in the cache."
+_run_attention_warmup(...)
+with self.no_cuda_graph():           # "Currently graph has not been captured, disable cuda graph"
+    _general_warmup(...)             # specialise torch.compile across the key input shapes first
+    MoERunner.clear_all_workspaces() # "so the autotuner can reclaim the memory"
+    gc.collect(); torch.cuda.empty_cache()   # "autotuner may use additional memory"
+_run_autotuner_warmup(...)           # <- the tactics are filled HERE, with context-only requests
+                                     #    CUDA graph capture happens after
+```
+
+Three orderings are load-bearing and each is justified in the source: the tuning happens BEFORE capture (so a
+search never runs inside one — the concern below is right, their structure is the answer to it), AFTER the
+general warmup (so compiled graphs are already specialised), and with memory explicitly released for it.
+
+**What makes warmup viable for them and not for us is not the seconds — it is `cache_path`.** Their tuning runs
+at warmup and `save_cache`s the result; the next process `load_cache`s it. The cost is paid once per (model,
+machine), not once per process. The objection below about paying repeatedly is answered by persistence, not by
+moving the work.
+
+So the honest conclusion is narrower than what the section originally claimed:
+
+  * "warmup is the wrong place" — WRONG in general. It is where the reference does it.
+  * "warmup is the wrong place FOR US" — still right, but for one reason only: we have no persistence layer
+    at that point in llama.cpp, so a warmup tune would be re-paid every process, and `--no-warmup` exists and
+    gets used. Give llama.cpp a cache file and the objection dissolves.
+
+Our shape therefore stays: tune offline beside the pack, load the table at startup, fall back to the compiled
+default with a warning when it is absent. That is TRT-LLM's flow with the *tuning* half already done.
+
+The original argument follows, with its overreach now marked.
 
 WHAT WARMUP IS. `--warmup` is documented in common/arg.cpp:1727 as "perform warmup with an empty run" -- one
 eval, to fault pages in. It is on by default and users turn it off when they want load-to-ready to be fast.
