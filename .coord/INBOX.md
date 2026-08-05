@@ -2143,3 +2143,59 @@ order together, because some of these will be cheap and some will touch the coll
 
 Do this AFTER 055 and 056. Note that 056 was dispatched while you were still running 055 -- that was my error,
 two sessions in one worktree, and I stopped the second one. 056's INBOX text stands and is unread by you.
+
+## 058 -- THREE MAINLOOPS IS THE DEFECT. PPU_B_CHUNK's absence from dense is only the symptom.
+
+The user's framing, and it reframes what I was about to ask for: "if the code logic is copied, or the same,
+PPU_B_CHUNK would never come up -- the dense path should have it automatically." That is right, and it means the
+question is not "should we port chunking to dense". NEEDING TO PORT IT IS THE FINDING.
+
+    ppu_mma_aiu_multistage_mixed_input.hpp   2265 lines   <- dense int4 runs here
+    ppu_mma_aiu_mixed_input_2plane.hpp       1828 lines   <- has PPU_B_CHUNK
+    ppu_mma_aiu_fold.hpp                     1365 lines   <- has PPU_B_CHUNK
+                                             5458 total, and all three carry their own load_init_B and
+                                             transform_B_kblock
+
+This is the same shape as everything else found today, at the top of the stack rather than the bottom:
+
+    TileK      decided in four places      (056)
+    fold       three independent copies of one derivation
+    config name two spellings in one pipeline
+    THE MAINLOOP  three implementations    <- the other three are downstream of this one
+
+AND THE CHUNK GATE IS ALREADY A DOCUMENTED CASUALTY OF IT. ppu_mma_aiu_fold.hpp:220 spends eight lines
+explaining that the gate USED to be `sizeof_bits == 1` and that BOTH of its original justifications went stale --
+one because the emitter was unified so there is no int1-specific emitter left to protect, one because per-plane
+fold reached Block_K=64 and int2 became a four-chunk case. So a hand-maintained width whitelist inside one of
+three copies has ALREADY been wrong once and was fixed by hand. Its current form is
+
+    kBChunk = (mode != 0) && (bits == 1 || bits == 2) && (8*MMA_N*MMA_K == 4*(32/bits))
+    // "int4 stays out: its B fragment is 16 registers already, so there is nothing to win."
+
+That comment is an UNMEASURED PERFORMANCE ASSERTION compiled into a predicate, which is the exact category this
+project has spent the day removing. And it is now questionable on its own terms: 16 registers holds at
+TileK=64/WarpN=16, while the shipping .so runs TileK=256, where int4's B fragment is 4*MMA_N*MMA_K = 128
+registers -- the regime where chunking paid int1 13.5 points. The comment was written when that combination did
+not exist.
+
+WHAT I AM ASKING FOR IS A READING, NOT A REFACTOR. Unifying 5458 lines of collective is not a call I should
+make for you, and the split may be load-bearing. So:
+
+  ① WHAT IS GENUINELY DIFFERENT between the three, and what is COPIED? My reading is that the real differences
+    are in the B loader and converter -- fold's F>1 regrouping, the two-plane composition -- while the pipeline,
+    the mma issue order, the scale application and the accumulate ought to be one body. If that is right, the
+    shape is one mainloop plus three B-provider policies. If it is wrong, say where.
+
+  ② WHICH OPTIMISATIONS EXIST IN SOME COPIES AND NOT OTHERS, today. PPU_B_CHUNK is the one I found by accident
+    while answering an unrelated question. I have no reason to think it is the only one, and every other
+    instance has the same property: nobody will notice, because each collective compiles and runs.
+
+  ③ IS THE SPLIT COSTING CORRECTNESS AS WELL AS PERFORMANCE? Three copies of transform_B_kblock means three
+    places the scale rule can drift. The record already contains one scale bug that took a kernel-side debug
+    print to locate.
+
+RELATED, AND THE REASON THIS CAME UP: the user's requirement is that anything which affects performance and
+does NOT change the offline layout must be a SEARCH AXIS rather than a build flag. PPU_B_CHUNK qualifies -- it
+changes only emission order, not the bytes ("delivery wastes no code, mma count unchanged, converter total work
+unchanged"). It cannot become a search axis while it is a #define consulted inside two of three collectives.
+So ① is a prerequisite for that, not a separate cleanup.
