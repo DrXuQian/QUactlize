@@ -1,58 +1,77 @@
-// DOES THE B-FRAGMENT (value)->(n,k) MAP AT A LARGE TileK EXTEND THE SMALL-TileK MAP, OR REORDER IT?
+// AT A FIXED ARTIFACT FOLD, DOES THE B-FRAGMENT (n,k) MAP AT A LARGE TacticTileK EXTEND THE SMALL ONE?
 //
-// THE DECISION THIS SETTLES. The offline artifact's byte order is pi = frag.layout()^-1, and the fold F exists
-// only because the AIU needs a >=32-byte contiguous-K run: F = 32/run, so F*run = 32 exactly and at TileK=64
-// every width's folded row is exactly 32 bytes (int4 1x32, int2 2x16, int1 4x8). The proposal on the table is to
-// make the SMALL-TileK folded layout canonical and let larger TileK read the same bytes through a different cute
-// layout -- one weight file for every TileK, which is what the M-routes need since GEMV / split-affine / dense
-// all read the same tensor.
+// THE DECISION. The proposal is to make the SMALLEST TileK's folded layout canonical and let every larger TileK
+// read the same bytes -- one weight file, which is what the M-routes need since GEMV / split-affine / dense all
+// read the same tensor. The algebra is unconditional (frag_big.layout() o pi_small is a composition of cute
+// layouts, and cute is closed under composition). What is NOT unconditional is whether the big map EXTENDS the
+// small one along K, or reorders it.
 //
-// The algebra is unconditional: frag_256.layout() o pi_64 is a composition of cute layouts, and cute is closed
-// under composition and inversion, so that layout ALWAYS exists. What is not unconditional is whether the map at
-// TileK=256 is the map at TileK=64 EXTENDED along MMA_K with a uniform stride. If it is, a large-TileK read is a
-// stride and the AIU takes it. If the K extent reorders, it is a different permutation and needs the converter
-// to emit differently -- a genuinely separate artifact.
+// WHAT THE FIRST VERSION OF THIS FILE GOT WRONG, because it is the whole reason the answer looked easy. It built
+//     TiledMMA<MMA_Atom<...>, Layout<Shape<WarpOnM, WarpOnN, _1>>>
+// which is get_tiled_mma's PermutionK_ = void branch. The real builder takes the OTHER branch
+// (ppu_mma_builder.inl:647) and supplies Tile<WOM*16, WON*16, MmaPermK>, and the offline generator does the same
+// (xplane_offline.hpp:92). So it compared two maps that were both missing the permutation, got YES everywhere,
+// and proved only that the ATOM repeats -- not that the folded consumer mapping does. codex caught it.
 //
-// THAT DISTINCTION IS EXACTLY THE KIND THIS PROJECT GETS WRONG BY REASONING. "The k-atom map covers 16 K
-// elements and repeats, so raising TileK only extends MMA_K" is a written-down relation. This prints the one
-// read off the object.
+// AND THE PERMUTATION IS FOLD-DEPENDENT, which is exactly why omitting it hid the question:
+//     MixGemmMmaPermK<Bits, BlockK, FoldF>::value = (FoldF > 1) ? BlockK : (32 * 8 / Bits)
+// Unfolded it is a constant independent of TileK. FOLDED IT IS TileK ITSELF -- so at a fixed artifact fold the
+// permutation at TileK=64 and TileK=256 are different numbers, and whether the maps still line up is a real
+// question rather than a formality.
 //
-//   nvcc -std=c++17 -arch=sm_80 --expt-relaxed-constexpr -I<stub_inc> -I<actlize/include> \
+// SO THE COMPARISON HERE FIXES (Bits, F) AT THE ARTIFACT'S VALUES AND VARIES ONLY TacticTileK. That is the
+// actual proposal: one artifact folded for the smallest TileK, consumed at several.
+//
+//   nvcc -std=c++17 -arch=sm_80 --expt-relaxed-constexpr -w -I<stub_inc> -I<actlize/include> \
 //        -x cu dev/fold_derivation/tilek_fragment_map.cu -o /tmp/tkmap && /tmp/tkmap
 //
-// TWO TRAPS, both paid for once already (memory/ppu-w2a16-aiu-cube-width-bug):
-//   * do NOT define __HGGCCC__ -- CUTLASS_DEVICE then becomes __host__ __device__ and the PPU asm bodies get
-//     compiled for the host.
-//   * do NOT include collective_builder.hpp -- it drags in the mainloop's operator() and __syncthreads reaches
-//     host code.
+// TWO TRAPS (memory/ppu-w2a16-aiu-cube-width-bug): do NOT define __HGGCCC__ (CUTLASS_DEVICE becomes
+// __host__ __device__ and the PPU asm bodies host-compile), do NOT include collective_builder.hpp.
 #include <cstdio>
-#include <map>
+#include <utility>
 #include <vector>
 
 #include "cute/tensor.hpp"
 #include "cute/atom/mma_atom.hpp"
 #include "cute/atom/mma_traits_ppu0010.hpp"
+#include "cutlass/fast_numeric_conversion_for_mix_gemm.h"
 
 using namespace cute;
 
-// The TiledMma exactly as cutlass/gemm/collective/builders/ppu_mma_builder.inl:279 get_tiled_mma builds it:
-// MMA_Atom tiled by Layout<Shape<TileM/WarpM, TileN/WarpN, _1>>. Reproduced here rather than included because
-// the builder header pulls the collective in with it, and the thing under test is the atom's own map.
-template <int TileM, int TileN, int WarpM, int WarpN>
-using BuilderTiledMma = TiledMMA<MMA_Atom<PPU0010_16x16x16_F32F16F16F32_TN>,
-                                 Layout<Shape<Int<TileM / WarpM>, Int<TileN / WarpN>, _1>>>;
+// EXACTLY xplane_offline.hpp:86-100's construction. Reproduced rather than included because that header pulls
+// the offline generators with it, and MmaPermK comes from the SHARED rule -- its own comment records that
+// restating it "silently broke a folded plane: at Block_K=64 with F=2 the composition covered 4160 of 8192
+// elements".
+template <int Bits, int F, int TM, int TN, int TK, int WM, int WN>
+struct OfflineMma {
+  static constexpr int InstM = 16, InstN = 16;
+  static constexpr int warpM = (WM > InstM) ? WM : InstM, warpN = (WN > InstN) ? WN : InstN;
+  static constexpr int WOM = TM / warpM, WON = TN / warpN;
+  static constexpr int MmaPermK = cutlass::MixGemmMmaPermK<Bits, TK, F>::value;
+  using type = TiledMMA<MMA_Atom<PPU0010_16x16x16_F32F16F16F32_TN>,
+                        Layout<Shape<Int<WOM>, Int<WON>, _1>>,
+                        Tile<Int<WOM * 16>, Int<WON * 16>, Int<MmaPermK>>>;
+};
 
-// -> for thread `tid`, the ordered list of (n, k) its B-fragment slots address, over a (TileN, TileK) tile.
-// make_identity_tensor + partition_B is the same route the earlier fragment derivation used: the tensor's
-// VALUES are its coordinates, so partitioning it reports where each slot came from instead of what it holds.
-template <int TileM, int TileN, int TileK, int WarpM, int WarpN>
-std::vector<std::pair<int, int>> frag_map(int tid) {
-  using TM = BuilderTiledMma<TileM, TileN, WarpM, WarpN>;
-  TM tiled_mma;
-  auto thr = tiled_mma.get_slice(tid);
-  auto ident = make_identity_tensor(make_shape(Int<TileN>{}, Int<TileK>{}));
-  auto part = thr.partition_B(ident);
-  std::vector<std::pair<int, int>> out;
+// ONE gmem TENSOR, PARTITIONED TWO WAYS. This is the whole point and the previous draft got it wrong: it built a
+// separate (TN, TK) tensor per TileK, so the two consumers were reading DIFFERENT tensors -- different shape,
+// different N-stride -- and any agreement between them said nothing about sharing one artifact. The proposal is
+// one weight file; the probe must be one tensor.
+//
+// So: a single (TN, KFULL) identity tensor stands for the artifact. The TileK=64 consumer takes the k-slice
+// [koff, koff+64) of it, the TileK=256 consumer takes the whole thing, and because both report coordinates in
+// the SAME frame there is no shift arithmetic to get wrong -- the k values are directly comparable.
+template <int Bits, int F, int TM, int TN, int TK, int WM, int WN, int KFULL>
+std::vector<std::pair<int,int>> frag_map(int tid, int koff) {
+  typename OfflineMma<Bits, F, TM, TN, TK, WM, WN>::type mma;
+  auto artifact = make_identity_tensor(make_shape(Int<TN>{}, Int<KFULL>{}));
+  // The k-tile this consumer sees, cut out of the one artifact. An identity tensor's VALUES are its absolute
+  // coordinates and local_tile preserves them, so the slice already reports the artifact's frame -- an earlier
+  // draft added domain_offset on top and double-counted the offset, which showed up immediately as a k beyond
+  // the artifact's own extent. Reading the number rather than the verdict is what caught it.
+  auto tile = local_tile(artifact, make_shape(Int<TN>{}, Int<TK>{}), make_coord(0, koff / TK));
+  auto part = mma.get_thread_slice(tid).partition_B(tile);
+  std::vector<std::pair<int,int>> out;
   for (int i = 0; i < int(size(part)); ++i) {
     auto c = part(i);
     out.emplace_back(int(get<0>(c)), int(get<1>(c)));
@@ -60,80 +79,81 @@ std::vector<std::pair<int, int>> frag_map(int tid) {
   return out;
 }
 
-// THE PROPERTY. Let A be the map at TileK=Ka and B the map at TileK=Kb (Kb = r*Ka). B EXTENDS A iff B, read in
-// slot order, is A's (n,k) list repeated r times with k shifted by a constant multiple of Ka each repetition.
-// Anything else -- a different slot order, a different n for the same slot, a non-uniform k step -- is a
-// reorder, and then the artifact cannot be shared.
-static bool extends(std::vector<std::pair<int, int>> const& a,
-                    std::vector<std::pair<int, int>> const& b, int Ka, int r, char const* tag) {
-  if (int(b.size()) != int(a.size()) * r) {
-    std::printf("  %-22s NO  -- slot count %zu is not %d x %zu\n", tag, b.size(), r, a.size());
+// SAME COORDINATES, SAME ORDER. Both sides now report (n,k) in the ARTIFACT's frame, so this is a direct
+// equality -- no shift arithmetic, which removes the last place a wrong assumption could hide. `small` is the
+// concatenation of what the consecutive small-TileK tiles read; `big` is what one large-TileK tile reads.
+static bool same(std::vector<std::pair<int,int>> const& small, std::vector<std::pair<int,int>> const& big,
+                 char const* tag) {
+  if (small.size() != big.size()) {
+    std::printf("    %-26s NO  %zu slots vs %zu\n", tag, small.size(), big.size());
     return false;
   }
-  for (int rep = 0; rep < r; ++rep) {
-    for (size_t i = 0; i < a.size(); ++i) {
-      auto const& want = a[i];
-      auto const& got = b[rep * a.size() + i];
-      if (got.first != want.first || got.second != want.second + rep * Ka) {
-        std::printf("  %-22s NO  -- rep %d slot %zu: expected (n%d,k%d), got (n%d,k%d)\n",
-                    tag, rep, i, want.first, want.second + rep * Ka, got.first, got.second);
-        return false;
-      }
+  for (size_t i = 0; i < small.size(); ++i)
+    if (small[i] != big[i]) {
+      std::printf("    %-26s NO  slot %zu: small reads (n%d,k%d), large reads (n%d,k%d)\n",
+                  tag, i, small[i].first, small[i].second, big[i].first, big[i].second);
+      return false;
     }
-  }
-  std::printf("  %-22s YES -- %zu slots repeat %d times, k advancing by exactly %d\n",
-              tag, a.size(), r, Ka);
+  std::printf("    %-26s YES all %zu slots identical\n", tag, small.size());
   return true;
 }
 
-template <int TileM, int TileN, int WarpM, int WarpN>
-void report(char const* geom) {
-  std::printf("\n%s   (TiledMma launches %d threads = %d warp(s))\n",
-              geom, int(size(BuilderTiledMma<TileM, TileN, WarpM, WarpN>{})),
-              int(size(BuilderTiledMma<TileM, TileN, WarpM, WarpN>{})) / 32);
-  auto a64  = frag_map<TileM, TileN, 64, WarpM, WarpN>(0);
-  auto a128 = frag_map<TileM, TileN, 128, WarpM, WarpN>(0);
-  auto a256 = frag_map<TileM, TileN, 256, WarpM, WarpN>(0);
-  std::printf("  thread 0, TileK=64 slots: ");
-  for (size_t i = 0; i < a64.size() && i < 12; ++i) std::printf("(%d,%d) ", a64[i].first, a64[i].second);
-  std::printf("%s\n", a64.size() > 12 ? "..." : "");
-  extends(a64, a128, 64, 2, "TK64 -> TK128");
-  extends(a64, a256, 64, 4, "TK64 -> TK256");
-  // A SECOND THREAD, because a property that holds only for thread 0 is a property of thread 0. Thread 33 is in
-  // the second warp when there is one, so it also exercises the WarpOnN tiling rather than just the atom.
-  auto b64  = frag_map<TileM, TileN, 64, WarpM, WarpN>(33);
-  auto b256 = frag_map<TileM, TileN, 256, WarpM, WarpN>(33);
-  extends(b64, b256, 64, 4, "TK64 -> TK256 (t33)");
+// One artifact: (Bits, F) fixed at what the SMALLEST TileK forces. Read at 64 (r tiles) and at 64*r (one tile).
+template <int Bits, int F, int TM, int TN, int WM, int WN, int KFULL>
+std::vector<std::pair<int,int>> small_tiles(int tid) {
+  std::vector<std::pair<int,int>> out;
+  for (int koff = 0; koff < KFULL; koff += 64) {
+    auto one = frag_map<Bits, F, TM, TN, 64, WM, WN, KFULL>(tid, koff);
+    out.insert(out.end(), one.begin(), one.end());
+  }
+  return out;
 }
 
-// NEGATIVE CONTROLS. Everything below reported YES on its first run, which is the shape this project has been
-// bitten by all week: a check that has only ever passed has not been shown to be a check. These two MUST print
-// NO, and if either stops doing so the YES rows above it mean nothing.
+template <int Bits, int F, int TM, int TN, int WM, int WN>
+void artifact(char const* tag) {
+  std::printf("\n  %s   PermK: TK64=%d TK128=%d TK256=%d\n", tag,
+              cutlass::MixGemmMmaPermK<Bits, 64, F>::value,
+              cutlass::MixGemmMmaPermK<Bits, 128, F>::value,
+              cutlass::MixGemmMmaPermK<Bits, 256, F>::value);
+  same(small_tiles<Bits, F, TM, TN, WM, WN, 128>(0),
+       frag_map<Bits, F, TM, TN, 128, WM, WN, 128>(0, 0), "2x TK64  vs  TK128");
+  same(small_tiles<Bits, F, TM, TN, WM, WN, 256>(0),
+       frag_map<Bits, F, TM, TN, 256, WM, WN, 256>(0, 0), "4x TK64  vs  TK256");
+  same(small_tiles<Bits, F, TM, TN, WM, WN, 256>(33),
+       frag_map<Bits, F, TM, TN, 256, WM, WN, 256>(33, 0), "4x TK64  vs  TK256 (t33)");
+}
+
+// MUST FAIL. The previous version of this file said YES everywhere and was wrong; a check that has only ever
+// passed has not been shown to be a check.
 static int controls() {
   std::printf("negative controls -- both must say NO:\n");
   int bad = 0;
-  auto a64  = frag_map<64, 64, 64, 64, 32>(0);
-  auto a256 = frag_map<64, 64, 256, 64, 32>(0);
-  // (1) WRONG STRIDE. Same maps, but claim k advances by 32 per repetition instead of 64. If `extends` ignored
-  //     the k arithmetic and only counted slots, this would pass.
-  if (extends(a64, a256, 32, 4, "wrong k stride (32)")) { std::printf("  ^^ CONTROL PASSED\n"); ++bad; }
-  // (2) DIFFERENT WARP SHAPE. w64x16 partitions N differently, so its slots address different n. If `extends`
-  //     compared only shapes and not coordinates, this would pass.
-  auto other = frag_map<64, 64, 256, 64, 16>(0);
-  if (extends(a64, other, 64, 4, "different warp shape")) { std::printf("  ^^ CONTROL PASSED\n"); ++bad; }
-  std::printf("%s\n", bad ? "  *** A CONTROL PASSED -- the comparison is blind, ignore every YES below ***"
-                           : "  both controls fired: a YES below carries information\n");
+  auto s = small_tiles<4, 1, 64, 64, 64, 32, 256>(0);
+  // (1) A DIFFERENT THREAD's large-tile map. Same shapes, different slots, so a comparison that only checked
+  //     sizes would pass this.
+  if (same(s, frag_map<4, 1, 64, 64, 256, 64, 32, 256>(1, 0), "vs another thread")) ++bad;
+  // (2) A DIFFERENT WARP SHAPE partitions N differently.
+  if (same(s, frag_map<4, 1, 64, 64, 256, 64, 16, 256>(0, 0), "vs different warp shape")) ++bad;
+  std::printf(bad ? "  *** A CONTROL PASSED: the comparison is blind, every YES below is void ***\n"
+                  : "  both fired: a YES below carries information\n");
   return bad;
 }
 
 int main() {
-  std::printf("B-fragment (n,k) map vs TileK. YES on every row means one artifact can serve every TileK and\n"
-              "the only thing standing in the way is that fold is DERIVED from (bits, TileK) rather than\n"
-              "carried with the artifact (ppu_dense_layout.cu:192).\n\n");
+  std::printf("Fixed ARTIFACT (Bits, F); only TacticTileK varies. YES on every row means one weight file serves\n"
+              "every TileK, and the remaining blocker is that fold is DERIVED from (bits, TileK) rather than\n"
+              "carried (ppu_dense_layout.cu:192).\n\n");
   int const blind = controls();
-  report<64, 64, 64, 32>("(TileM 64, TileN 64) w64x32   <- BACKTEST A0/A1's winner, 2 warps");
-  report<64, 64, 32, 32>("(TileM 64, TileN 64) w32x32   <- 4 warps");
-  report<16, 32, 16, 16>("(TileM 16, TileN 32) w16x16   <- BACKTEST D4's geometry, decode band");
-  report<64, 128, 64, 64>("(TileM 64, TileN 128) w64x64  <- the recorded int1 winner");
+
+  std::printf("\nint4, artifact folded at TileK=64 -> F=1 (run is already 32B, nothing to fold)\n");
+  artifact<4, 1, 64, 64, 64, 32>("(64,64) w64x32  [A0/A1 winner]");
+  artifact<4, 1, 16, 32, 16, 16>("(16,32) w16x16  [D4 decode band]");
+
+  std::printf("\nint2, artifact folded at TileK=64 -> F=2   <- the case the atom-only probe could not see\n");
+  artifact<2, 2, 64, 64, 64, 32>("(64,64) w64x32");
+  artifact<2, 2, 64, 128, 64, 64>("(64,128) w64x64");
+
+  std::printf("\nint1, artifact folded at TileK=64 -> F=4\n");
+  artifact<1, 4, 64, 128, 64, 64>("(64,128) w64x64 [int1 winner]");
   return blind ? 2 : 0;
 }
