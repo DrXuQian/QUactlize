@@ -365,8 +365,15 @@ a message that was already in the log, once three lines above where anyone looke
        #      L  Rows   N     K    gs  mode
        "$MOE" 1  2048  4096  4096  32   2
 
-   WANTED BACK: every `==== WINNER:` line in full (tile AND warp AND stages), the grouped L=1 figure, and the
-   readings for the `32x32` rows.
+   Then let the analyser state the verdict rather than reading it off two logs:
+
+       cd /sim/eec/shared/junfu.qx/quactlize
+       python3 benchmarks/analyse.py --invariant /tmp/sweep/dense_g32.jsonl /tmp/sweep/grouped_L1.jsonl
+       # exits non-zero and names both configs if dense is the slower side
+       python3 benchmarks/analyse.py /tmp/sweep/dense_g32.jsonl        # leader, band, ties per fixture
+
+   WANTED BACK: every `==== WINNER:` line in full (tile AND warp AND stages), the --invariant table, the
+   grouped L=1 figure, and the readings for the `32x32` rows.
 
    THREE THINGS TO CHECK, in order of what they would overturn:
 
