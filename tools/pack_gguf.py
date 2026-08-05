@@ -28,6 +28,7 @@ Needs the device library (the placement lives there), so it runs on the box:
 import argparse
 import json
 import pathlib
+import re
 import sys
 import time
 from collections import Counter
@@ -135,25 +136,61 @@ def main() -> int:
     return 0
 
 
+# THE PLANE WIDTHS COME FROM THE REGISTRY TOO. These used to decode schemes.CODE_PLANE's string tags through a
+# dict written here -- correct, and a third spelling of "which planes does this format have" alongside the .inc
+# and PPU_PACKED_FORMAT. The high plane folds independently of the low one (Q3's int1 plane at TK=64 needs F2=4
+# while its int2 low plane needs 2), which is why it is a stored column rather than something derived from the
+# low width.
 def _low_bits(qtype: int) -> int:
-    from quactlize import schemes
-    from quactlize.formats import QuantType
-    return {"i2": 2, "i2+i1": 2, "i4": 4, "i4+i1": 4, "i4+i2": 4}[schemes.CODE_PLANE[QuantType(qtype)]]
+    return format_registry()[int(qtype)]["low_bits"]
 
 
 def _high_bits(qtype: int) -> int:
-    """0 for a single-plane format. The high plane folds independently -- Q3's int1 plane at TK=64 needs F2=4
-    while its int2 low plane needs 2 -- so it cannot be inferred from the low width."""
-    from quactlize import schemes
-    from quactlize.formats import QuantType
-    return {"i2": 0, "i2+i1": 1, "i4": 0, "i4+i1": 1, "i4+i2": 2}[schemes.CODE_PLANE[QuantType(qtype)]]
+    return format_registry()[int(qtype)]["high_bits"]
+
+
+def format_registry() -> dict:
+    """-> {qtype: {name, low_bits, high_bits, group_size, scale_first_tile_k, fully_quantized_tile_k,
+    packed_format}} parsed from quactlize/include/ppu_format_config.inc.
+
+    PARSED, NOT MIRRORED. The .inc is an X-macro precisely so that C++ can include it and Python can read the
+    same bytes; a Python dict repeating the rows would be the fifth copy of the decision this file exists to
+    stop making. A row whose arity changed raises rather than silently yielding fewer fields -- a partial parse
+    that still produces a plausible TileK is the exact failure mode that started this.
+    """
+    inc = pathlib.Path(__file__).resolve().parent.parent / "quactlize" / "include" / "ppu_format_config.inc"
+    if not inc.is_file():
+        raise FileNotFoundError(f"the shipping format registry is missing: {inc}")
+    fields = ("name", "qtype", "low_bits", "high_bits", "group_size",
+              "scale_first_tile_k", "fully_quantized_tile_k", "packed_format")
+    out = {}
+    for m in re.finditer(r"^\s*X\((.*?)\)\s*\\?\s*$", inc.read_text(), re.M):
+        args = [a.strip().strip('"') for a in m.group(1).split(",")]
+        if len(args) != 1 + len(fields):
+            raise ValueError(f"{inc.name}: row has {len(args)} args, expected {1+len(fields)}: {m.group(1)!r}")
+        row = dict(zip(fields, args[1:]))
+        for k in fields[1:]:
+            row[k] = int(row[k])
+        out[row["qtype"]] = row
+    if not out:
+        raise ValueError(f"{inc.name}: no X(...) rows parsed; the parser is wrong, not the registry")
+    return out
 
 
 def _tile_k(qtype: int) -> int:
-    """Q6_K keeps TK=128; the rest use 256. Not a preference -- TK=256's high-plane map for Q6 is incomplete,
-    which is what produced conditioned error 8.76e-1 before it was caught."""
-    from quactlize.formats import QuantType
-    return 128 if QuantType(qtype) is QuantType.Q6_K else 256
+    """The FULLY_QUANTIZED TileK for this format, READ FROM THE SHIPPING REGISTRY rather than restated here.
+
+    This used to be `128 if Q6_K else 256`, written out in Python. The value was right and the fork was not:
+    TileK was being decided in four places -- this function, the library's dispatch, the bench's per-width
+    default, and the emitter's argument -- and two of them agreeing is what let a wrong value pass a
+    consistency check. quactlize/include/ppu_format_config.inc is now the one source, and its own header says
+    the offline packer should parse it; this is that.
+
+    THE REASON THE VALUE IS WHAT IT IS still belongs somewhere, and it is in the .inc: the packed metadata unit
+    covers a whole 256-code superblock and one k-tile consuming it measured best, while Q6_K keeps 128 because
+    its 256-K high-plane inverse is incomplete -- which produced conditioned error 8.76e-1 before it was caught.
+    """
+    return format_registry()[int(qtype)]["fully_quantized_tile_k"]
 
 
 def _write(d: pathlib.Path, low, high, units) -> None:

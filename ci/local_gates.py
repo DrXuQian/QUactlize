@@ -344,86 +344,111 @@ def lint_fixture_flags():
 
 
 def lint_tactic_cannot_change_offline_layout():
-    """SELECTING A TACTIC MUST NOT CHANGE THE BYTES ON DISK. Two independent halves, both silent when wrong.
+    """SELECTING A TACTIC MUST NOT CHANGE THE BYTES ON DISK, and ONE registry must decide what they are.
 
-    The offline packer arranges weights for a specific (qtype, TileK) -- prepare_dense_for_tile's own signature
-    is (low, high, out_low, out_high, n, k, qtype, tile_k), and formats.py derives the fold from (bits, tile_k).
-    The weights are written ONCE. So no runtime choice may imply a different TileK, or the library reads bytes
-    that were laid out for something else -- and that failure produces numbers, not an error.
+    The offline packer arranges weights for a specific (qtype, TileK); the weights are written once. So no
+    runtime choice may imply a different TileK, or the kernel reads bytes laid out for something else -- a
+    failure that produces numbers, not an error.
 
-    HALF ONE: the compiled config rows must not carry TileK. Today they are (ID, NAME, TM, TN, WM, WN, STAGES)
-    and TileK comes from the enclosing template, so no config CAN change the layout. That is a property of the
-    current structure rather than an enforced invariant, and the emitter is already parameterised on tile_k
-    (`emit_tactic_configs <bits> <tile_k>`), so a sixth numeric field would be an easy and invisible way to
-    break it.
+    THIS GATE'S OWN HISTORY IS THE ARGUMENT FOR ITS CURRENT SHAPE. Its first version compared the packer's
+    hardcoded _tile_k against the library's hardcoded dispatch and PASSED -- while both said 256 and every
+    measurement said 64 for int4. Two copies agreeing is not a reference. quactlize/include/ppu_format_config.inc
+    is now the one source (INBOX 056), so the checks below are "does each consumer READ it" and "does it obey the
+    rule it states", not "do the copies agree".
 
-    HALF TWO: the packer and the library each decide TileK per format, INDEPENDENTLY, in two languages.
-        tools/pack_gguf.py:_tile_k(qtype)      -> 128 for Q6_K, else 256
-        ppu_dense_backend.cu's extern "C"      -> dense<..., GroupSize, TileK, ...> per PPU_PACKED_FORMAT
-    Nothing checks that they agree. If they diverge, the packer writes bytes for one arrangement and the kernel
-    reads them as another: no assert fires, no return code changes, the output is simply wrong.
-
-    This is the gate for the constraint that a search must not move the offline layout. It checks the root of
-    that property rather than the sweep's output, because the sweep cannot violate it if the root holds.
+    FOUR CHECKS:
+      1. No compiled config row carries TileK. Rows are (ID, NAME, TM, TN, WM, WN, STAGES); TileK comes from the
+         enclosing template, so no config CAN move the layout. The emitter is parameterised on tile_k, so a sixth
+         numeric field would be an easy and invisible way to break that.
+      2. The registry obeys its own stated rule. Its header says SCALE_FIRST TileK is "the canonical minimum
+         32-byte run for the narrowest code plane: 256/bits", using the high plane for two-plane formats. A rule
+         written in a comment beside rows that violate it is worse than no rule.
+      3. The bench's per-width TileK defaults equal that same 256/bits. This is the comparison the first version
+         could not make and the one that would have caught the wrong value.
+      4. The packer READS the registry rather than restating it, and schemes.CODE_PLANE agrees with the
+         registry's plane widths -- that was a third spelling of "which planes does this format have".
     """
     import ast as _ast, re as _re
-    cu = ROOT / "quactlize" / "csrc" / "device" / "ppu_dense_backend.cu"
+    inc = ROOT / "quactlize" / "include" / "ppu_format_config.inc"
+    bench = ROOT / "benchmarks" / "test_lowbit_dense_bench.cu"
     pk = ROOT / "tools" / "pack_gguf.py"
-    for p in (cu, pk):
-        if not p.is_file():
-            return "FAIL", f"{p.name} is missing", 0.0
+    for f in (inc, bench, pk):
+        if not f.is_file():
+            return "FAIL", f"{f.name} is missing", 0.0
 
-    # HALF ONE -- every X(...) row in every compiled config table has exactly seven arguments.
-    bad_rows = []
-    for inc in sorted((ROOT / "quactlize" / "include").glob("ppu_*_configs.inc")):
-        for line in inc.read_text().splitlines():
+    # 1 -- config rows carry no TileK.
+    for cfg in sorted((ROOT / "quactlize" / "include").glob("ppu_*_configs.inc")):
+        for line in cfg.read_text().splitlines():
             m = _re.match(r"\s*X\((.*?)\)\s*\\?\s*$", line)
-            if not m:
-                continue
-            n_args = len([a for a in m.group(1).split(",")])
-            if n_args != 7:
-                bad_rows.append(f"{inc.name}: {line.strip()[:70]} has {n_args} args, expected 7")
-    if bad_rows:
-        return "FAIL", ("a compiled config row has an unexpected arity, which is how a TileK field would enter "
-                        "the per-config axis and let a tactic choice change the offline layout: "
-                        + bad_rows[0]), 0.0
+            if m and len(m.group(1).split(",")) != 7:
+                return "FAIL", (f"{cfg.name}: '{line.strip()[:60]}' has {len(m.group(1).split(','))} args, "
+                                f"expected 7. A TileK field here would let a tactic choice move the offline "
+                                f"layout"), 0.0
 
-    # HALF TWO -- the library's per-qtype TileK, read from the dispatch.
-    src = cu.read_text()
-    lib = {}
-    for m in _re.finditer(r"if\s*\(qtype\s*!=\s*(\d+)[^)]*\)\s*return\s*33;\s*"
-                          r"return\s+dense<[^>]*?,\s*(\d+),\s*(\d+),", src, _re.S):
-        lib[int(m.group(1))] = int(m.group(3))
-    if not lib:
-        return "FAIL", ("could not read any per-qtype TileK from the dispatch in ppu_dense_backend.cu; the "
-                        "parser is wrong, not the source, and a silent empty map would pass this gate"), 0.0
+    # 2 -- the registry against the rule its own header states.
+    rows = []
+    for m in _re.finditer(r"^\s*X\((.*?)\)\s*\\?\s*$", inc.read_text(), _re.M):
+        a = [x.strip().strip('"') for x in m.group(1).split(",")]
+        if len(a) != 9:
+            return "FAIL", f"{inc.name}: row has {len(a)} args, expected 9: {m.group(1)[:60]}", 0.0
+        rows.append(dict(name=a[1], qtype=int(a[2]), low=int(a[3]), high=int(a[4]),
+                         gs=int(a[5]), scale_first=int(a[6]), fq=int(a[7])))
+    if not rows:
+        return "FAIL", f"{inc.name}: no rows parsed; the parser is wrong, not the registry", 0.0
+    for r in rows:
+        narrowest = r["high"] if r["high"] else r["low"]
+        want = 256 // narrowest
+        if r["scale_first"] != want:
+            return "FAIL", (f"{inc.name}: {r['name']} declares scale_first_tile_k={r['scale_first']} but its own "
+                            f"header's rule -- 256/bits over the narrowest plane ({narrowest}) -- gives {want}"), 0.0
 
-    # The packer's, obtained by EXECUTING ITS SOURCE TEXT rather than importing it -- a stale .pyc is
-    # revalidated on one-second mtime plus byte size and has already made one gate in this file report on code
-    # that was not on disk.
+    # 3 -- the bench's per-width defaults against the same rule.
+    src = bench.read_text()
+    want_bench = {1: 256, 2: 128, 4: 64}
+    got = {}
+    m1 = _re.search(r"BENCH_UINT1.*?#define BENCH_TSK (\d+)", src, _re.S)
+    m2 = _re.search(r"BENCH_UINT2.*?#define BENCH_TSK (\d+)", src, _re.S)
+    m4 = _re.search(r"constexpr int TileShapeK = 128 \* 8 / sizeof_bits<MmaType>::value", src)
+    if m1: got[1] = int(m1.group(1))
+    if m2: got[2] = int(m2.group(1))
+    if m4: got[4] = 128 * 8 // 16          # the expression, evaluated: MmaType is half_t
+    if set(got) != {1, 2, 4}:
+        return "FAIL", (f"could not read the bench's per-width TileK defaults (found {sorted(got)}); the parser "
+                        f"is wrong, not the bench, and a partial read would compare fewer widths silently"), 0.0
+    for bits, v in sorted(got.items()):
+        if v != want_bench[bits]:
+            return "FAIL", (f"the bench's int{bits} TileK default is {v}; the registry's rule (256/bits) gives "
+                            f"{want_bench[bits]}. This is the comparison that would have caught the wrong "
+                            f"shipping value"), 0.0
+
+    # 4 -- the packer reads rather than restates, and CODE_PLANE agrees.
     tree = _ast.parse(pk.read_text())
-    fn = next((n for n in tree.body if isinstance(n, _ast.FunctionDef) and n.name == "_tile_k"), None)
-    if fn is None:
-        return "FAIL", ("tools/pack_gguf.py has no _tile_k; the packer's arrangement choice moved and this "
-                        "gate no longer reads it"), 0.0
-    ns = {}
-    exec(compile(_ast.Module(body=[fn], type_ignores=[]), str(pk), "exec"), ns)
-    packer = {}
-    for q in lib:
-        try:
-            packer[q] = ns["_tile_k"](q)
-        except Exception as e:                       # noqa: BLE001 -- report, do not mask
-            return "FAIL", (f"_tile_k({q}) raised {e!r}; the packer cannot state an arrangement for a "
-                            f"format the library dispatches"), 0.0
+    for fn_name in ("_tile_k", "_low_bits", "_high_bits"):
+        fn = next((n for n in tree.body if isinstance(n, _ast.FunctionDef) and n.name == fn_name), None)
+        if fn is None:
+            return "FAIL", f"tools/pack_gguf.py has no {fn_name}; the packer's arrangement source moved", 0.0
+        literals = [n.value for n in _ast.walk(fn) if isinstance(n, _ast.Constant) and isinstance(n.value, int)]
+        if literals:
+            return "FAIL", (f"{fn_name} contains integer literal(s) {literals} -- it should READ "
+                            f"ppu_format_config.inc, not restate it. That restatement is what made the packer "
+                            f"and the library agree on a value nothing measured"), 0.0
+    import importlib
+    sys.path.insert(0, str(ROOT))
+    try:
+        schemes = importlib.import_module("quactlize.schemes")
+        QuantType = importlib.import_module("quactlize.formats").QuantType
+    except Exception as e:                                          # noqa: BLE001
+        return "SKIP", f"quactlize not importable ({e}); the CODE_PLANE cross-check needs it", 0.0
+    LO = {"i2": 2, "i2+i1": 2, "i4": 4, "i4+i1": 4, "i4+i2": 4}
+    HI = {"i2": 0, "i2+i1": 1, "i4": 0, "i4+i1": 1, "i4+i2": 2}
+    for r in rows:
+        cp = schemes.CODE_PLANE[QuantType(r["qtype"])]
+        if (LO[cp], HI[cp]) != (r["low"], r["high"]):
+            return "FAIL", (f"{r['name']}: schemes.CODE_PLANE says {cp} = ({LO[cp]},{HI[cp]}) bits, the registry "
+                            f"says ({r['low']},{r['high']}). Two spellings of which planes a format has"), 0.0
 
-    mismatch = {q: (packer[q], lib[q]) for q in lib if packer[q] != lib[q]}
-    if mismatch:
-        q, (p, l) = next(iter(mismatch.items()))
-        return "FAIL", (f"qtype {q}: the packer writes bytes for TileK={p} and the library runs TileK={l}. "
-                        f"No assert fires on this -- the kernel reads a layout it was not given and the output "
-                        f"is wrong rather than absent"), 0.0
-    return "PASS", (f"no config row carries TileK, and packer/library agree on TileK for all {len(lib)} "
-                    f"dispatched qtypes {sorted(lib)}"), 0.0
+    return "PASS", (f"no config row carries TileK; all {len(rows)} registry rows obey 256/narrowest-plane; the "
+                    f"bench's int1/2/4 defaults match it; the packer reads the registry and CODE_PLANE agrees"), 0.0
 
 
 def lint_config_abi_matches_header():
