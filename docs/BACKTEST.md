@@ -51,14 +51,20 @@ harness at L=1. A0 is the same geometry as A1, run through the dense kernel — 
 1. **The sub-four-warp quarantine was wrong, and now on hardware rather than in the compiler.** `w64x32` is two
    warps. `ppu_tactic_space.hpp` excluded it from the dense space on a device abort observed 2026-08-04; it does
    not abort. The exclusion was deleted the same day it was refuted, and this is the run that refutes it.
-2. **`dense <= grouped(L=1)` holds, in the predicted direction and magnitude.** 209.27 against 211.33 — dense is
-   ~1% faster, and `DENSE_VS_GROUPED_L1.md` lists exactly why: every structural asymmetry is grouped doing MORE
-   (one pointer indirection per output tile, per-CTA m-tile prefix decode, host-built ptr/stride arrays, a
-   workspace). A0 < A1 is what the source predicts; A0 > A1 would have been the finding.
+2. **`dense <= grouped(L=1)` is not violated, and the sign agrees with the source.** 209.27 against 211.33.
+   ⚠ **THAT IS PARITY, NOT AN ADVANTAGE, AND THIS ROW MUST NOT BE CITED AS ONE.** 0.98% between two runs on
+   different dates is far inside the cross-run spread this file's own selection procedure exists to defeat
+   (13%, which is why the sweep takes a median over repeated passes). What A0 establishes is that dense reaches
+   the same place grouped does. `DENSE_VS_GROUPED_L1.md` predicts dense should be the faster of the two — every
+   structural asymmetry is grouped doing MORE (a pointer indirection per output tile, per-CTA m-tile prefix
+   decode, host-built ptr/stride arrays, a workspace) — and the sign is consistent with that, which is worth
+   something and is not a measurement of the gap. **Attributing the difference to grouped overhead needs a
+   same-run, interleaved, higher-repetition A/B.** Until that exists, quote parity.
 3. **The quarantine cost 5.1 points.** Dense's best reachable row under it measured 60.6%.
 
-**A1 IS STILL THE ONE TO REPRODUCE** for the grouped harness, and A0 for the dense one; they are the same
-computation and should stay within ~1% of each other with dense on the low side.
+**A1 IS STILL THE ONE TO REPRODUCE** for the grouped harness, and A0 for the dense one. They are the same
+computation; expect them within noise of each other, and treat a gap in EITHER direction as needing the same-run
+comparison before it means anything.
 
 **A1 IS THE ONE TO REPRODUCE.** A6 and A7 are the same width at the same shape and are *superseded*: their sweep
 grid did not contain `w64x32`, which the record measures at **+8.6 points for int4**. Reproducing 55.8% instead
