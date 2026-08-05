@@ -357,6 +357,7 @@ a message that was already in the log, once three lines above where anyone looke
        TARGET=test_lowbit_dense_bench ./build.sh
        BIN=$(find build_ppu -type f -name test_lowbit_dense_bench -print -quit)
        "$BIN" --m=2048 --n=4096 --k=4096 --g=32  --search_configs
+       "$BIN" --m=2048 --n=4096 --k=4096 --g=64  --search_configs
        "$BIN" --m=2048 --n=4096 --k=4096 --g=16  --search_configs
        "$BIN" --m=2048 --n=4096 --k=4096 --g=128 --search_configs
 
