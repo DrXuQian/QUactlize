@@ -1,8 +1,8 @@
 # codex status
 
-    updated-at:     2026-08-05 03:17:03 UTC
-    inbox-consumed: 063
-    working-on:     061 parity map is committed for review; extraction intentionally has not started before that review
-    blocked-on:     BOX entry 7 queues exact dense --g=32/64/128 device runs; all four schedule variants and the 227-row dense dispatch pass the local nvcc front end
+    updated-at:     2026-08-05 03:35:56 UTC
+    inbox-consumed: 064
+    working-on:     resolved 064: exact TiledMma launch is 64 threads/2 warps; dense keeps its measured abort quarantine, grouped recovers measured sub-four-warp rows
+    blocked-on:     Claude-owned benchmark/CI comparator must accept this declared operator asymmetry; it currently reports 891 expected predicate-level differences and makes the tactic parity lint red
     last-commit:    85976ac Map dense and grouped mixed-input parity
-    last-heartbeat: 139
+    last-heartbeat: 140

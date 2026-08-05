@@ -57,7 +57,7 @@ enum class Exclusion {
   None,
   AtomAlignment,
   WarpDoesNotDivideTile,
-  PpuWarpGroupThreads,
+  DenseSubFourWarpDeviceAbort,
   TooManyWarps,
   AccumulatorRegisters,
   LowFoldDoesNotDivideTileN,
@@ -76,7 +76,7 @@ constexpr char const* exclusion_clause(Exclusion e) {
     case Exclusion::None: return "";
     case Exclusion::AtomAlignment: return "tile and warp extents must be multiples of the 16x16x16 MMA atom";
     case Exclusion::WarpDoesNotDivideTile: return "warp shape must divide tile shape";
-    case Exclusion::PpuWarpGroupThreads: return "the PPU collective requires at least one 128-thread (four-warp) group";
+    case Exclusion::DenseSubFourWarpDeviceAbort: return "dense SplitKSerial: sub-four-warp tactics are quarantined after the observed device abort";
     case Exclusion::TooManyWarps: return "tile needs more than the 32-warp block limit";
     case Exclusion::AccumulatorRegisters: return "the fp32 accumulator alone exceeds the 192-register sweep ceiling";
     case Exclusion::LowFoldDoesNotDivideTileN: return "the derived low-plane fold does not divide TileN";
@@ -97,6 +97,14 @@ struct Candidate {
   int tm, tn, tk, wm, wn;
 };
 
+// This is the actual CTA warp count for the current PPU0010 builder, not a performance proxy. get_tiled_mma tiles one
+// 32-thread MMA atom by Layout<Shape<TileM/WarpM, TileN/WarpN, _1>>, and both dense and grouped kernels launch
+// cute::size(TiledMma{}) threads. Each launcher static-asserts this expression against its instantiated TiledMma so a
+// future builder change cannot turn the host predicate into another unchecked re-derivation.
+constexpr int cta_warps(Candidate c) {
+  return (c.tm / c.wm) * (c.tn / c.wn);
+}
+
 // These are kernel constraints, shared by the two launcher static_asserts and the host emitter.  They are kept apart
 // from artifact reachability: a template may be a legal consumer while the shipping *_for_tile producer cannot yet
 // make bytes for it.
@@ -105,16 +113,7 @@ constexpr Exclusion common_kernel_exclusion(Candidate c) {
     return Exclusion::AtomAlignment;
   if (c.wm > c.tm || c.wn > c.tn || c.tm % c.wm || c.tn % c.wn)
     return Exclusion::WarpDoesNotDivideTile;
-  int const cta_warps = (c.tm / c.wm) * (c.tn / c.wn);
-  // DEVICE LEGALITY, not sweep pruning.  On ppu001 (2026-08-04), every emitted dense instantiation below four
-  // 32-thread warps aborted in the device and every instantiation at four or above ran.  The actlize
-  // GemmUniversalAdapter independently models TiledMma with a minimum of four warps (one 128-thread PPU warp group),
-  // while the kernel launches cute::size(TiledMma{}) actual threads.  The toolchain trace does not expose the exact
-  // assertion site, so do not weaken this to a guessed three-warp minimum: the finite domain contains no three-warp
-  // CTA and therefore has supplied no evidence for it.  This shared kernel gate protects both dense and grouped.
-  if (cta_warps < 4)
-    return Exclusion::PpuWarpGroupThreads;
-  if (cta_warps > 32)
+  if (cta_warps(c) > 32)
     return Exclusion::TooManyWarps;
 
   int const flo = fold_for(c.spec.low_bits, c.tk);
@@ -128,8 +127,30 @@ constexpr Exclusion common_kernel_exclusion(Candidate c) {
   return Exclusion::None;
 }
 
+// DENSE-ONLY QUARANTINE, not PPU collective legality. On ppu001 (2026-08-04), the tested dense i4/TK64
+// SplitKSerial instantiations below four warps aborted and every tested row at four or above ran. But the grouped
+// kernel has positively measured two-warp rows through the same mainloop: ordinary one-plane i4
+// (64,64,64) w64x32 and folded one-plane int1 (64,128,64) w64x64. The GemmUniversalAdapter's max(4,...) is only
+// legacy WarpCount/WarpShape metadata; kThreadCount and both kernels' block shapes remain size(TiledMma). Therefore
+// the dense evidence cannot exclude grouped rows, and it does not establish a 128-thread collective requirement.
+// Keep the dense boundary conservative until the dense kernel/epilogue assert site is identified: the measured grid
+// has no three-warp CTA, so it still does not distinguish >=3 from >=4.
+constexpr Exclusion dense_kernel_exclusion(Candidate c) {
+  Exclusion const common = common_kernel_exclusion(c);
+  if (common == Exclusion::AtomAlignment || common == Exclusion::WarpDoesNotDivideTile) return common;
+  if (cta_warps(c) < 4) return Exclusion::DenseSubFourWarpDeviceAbort;
+  return common;
+}
+
 constexpr Exclusion common_non_smem_exclusion(Candidate c) {
   if (auto const e = common_kernel_exclusion(c); e != Exclusion::None) return e;
+  if ((c.wm * c.wn) / 32 > 192)
+    return Exclusion::AccumulatorRegisters;
+  return Exclusion::None;
+}
+
+constexpr Exclusion dense_non_smem_exclusion(Candidate c) {
+  if (auto const e = dense_kernel_exclusion(c); e != Exclusion::None) return e;
   if ((c.wm * c.wn) / 32 > 192)
     return Exclusion::AccumulatorRegisters;
   return Exclusion::None;
@@ -155,6 +176,16 @@ constexpr Exclusion common_topology_exclusion(Candidate c, int stages = 2) {
   return common_topology_exclusion_with_a_rows(c, stages, c.tm);
 }
 
+constexpr Exclusion dense_topology_exclusion_with_a_rows(Candidate c, int stages, int a_rows) {
+  if (auto const e = dense_non_smem_exclusion(c); e != Exclusion::None) return e;
+  if (common_per_stage_smem(c, a_rows) * stages > kBlockSmemBytes) return Exclusion::MinimumStageSmem;
+  return Exclusion::None;
+}
+
+constexpr Exclusion dense_topology_exclusion(Candidate c, int stages = 2) {
+  return dense_topology_exclusion_with_a_rows(c, stages, c.tm);
+}
+
 // PPU_A_CPASYNC currently exists in the ordinary, unfolded, one-plane collective. Folded low planes and every
 // two-plane format select different collective types; their type-level witness is zero and their launcher rejects a
 // compact build. Keep that reachability fact next to the footprint equation so the host inventory cannot claim that
@@ -172,6 +203,15 @@ constexpr Exclusion common_compact_a_topology_exclusion(Candidate c, int stages,
   return common_topology_exclusion_with_a_rows(c, stages, compact_rows);
 }
 
+constexpr Exclusion dense_compact_a_topology_exclusion(Candidate c, int stages, int compact_rows) {
+  if (auto const e = dense_non_smem_exclusion(c); e != Exclusion::None) return e;
+  if (!common_compact_a_supported(c)) return Exclusion::CompactAUnavailable;
+  if (!((compact_rows == 1 || compact_rows == 2 || compact_rows == 4) &&
+        compact_rows <= c.tm && c.tm % compact_rows == 0))
+    return Exclusion::CompactARowExtent;
+  return dense_topology_exclusion_with_a_rows(c, stages, compact_rows);
+}
+
 constexpr Exclusion common_producer_exclusion(Candidate c) {
   // The sweep packer places each exact candidate geometry; it is not restricted to ppu_dense_layout's canonical
   // artifact shape. WN=128 remains outside the producer's validated domain, and Q6/TK256 is the one known bad map.
@@ -187,24 +227,34 @@ constexpr Exclusion common_static_sweep_exclusion(Candidate c) {
   return common_producer_exclusion(c);
 }
 
+constexpr Exclusion dense_static_sweep_exclusion(Candidate c) {
+  if (auto const e = dense_non_smem_exclusion(c); e != Exclusion::None) return e;
+  return common_producer_exclusion(c);
+}
+
 constexpr Exclusion common_sweep_exclusion(Candidate c) {
   if (auto const e = common_topology_exclusion(c, 2); e != Exclusion::None) return e;
   return common_producer_exclusion(c);
 }
 
-// Separate wrappers are intentional.  The emitter asks each launcher for its own answer and a comparator checks them;
-// sharing only the current implementation makes equality explicit today without making future drift invisible.
+constexpr Exclusion dense_sweep_exclusion(Candidate c) {
+  if (auto const e = dense_topology_exclusion(c, 2); e != Exclusion::None) return e;
+  return common_producer_exclusion(c);
+}
+
+// Separate wrappers are intentional. The emitter asks each launcher for its own answer and the comparator reports
+// their declared dense-only abort boundary; every other rule remains shared so an additional drift stays visible.
 struct DenseSpace {
-  static constexpr Exclusion kernel_exclusion(Candidate c) { return common_kernel_exclusion(c); }
+  static constexpr Exclusion kernel_exclusion(Candidate c) { return dense_kernel_exclusion(c); }
   static constexpr Exclusion topology_exclusion(Candidate c, int stages = 2) {
-    return common_topology_exclusion(c, stages);
+    return dense_topology_exclusion(c, stages);
   }
   static constexpr bool compact_a_supported(Candidate c) { return common_compact_a_supported(c); }
   static constexpr Exclusion compact_a_topology_exclusion(Candidate c, int stages, int compact_rows) {
-    return common_compact_a_topology_exclusion(c, stages, compact_rows);
+    return dense_compact_a_topology_exclusion(c, stages, compact_rows);
   }
-  static constexpr Exclusion static_sweep_exclusion(Candidate c) { return common_static_sweep_exclusion(c); }
-  static constexpr Exclusion sweep_exclusion(Candidate c) { return common_sweep_exclusion(c); }
+  static constexpr Exclusion static_sweep_exclusion(Candidate c) { return dense_static_sweep_exclusion(c); }
+  static constexpr Exclusion sweep_exclusion(Candidate c) { return dense_sweep_exclusion(c); }
 };
 struct GroupedSpace {
   static constexpr Exclusion kernel_exclusion(Candidate c) { return common_kernel_exclusion(c); }
