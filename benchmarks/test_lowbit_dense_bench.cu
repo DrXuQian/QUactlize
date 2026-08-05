@@ -837,16 +837,50 @@ Result run(Options &options, char const* label = "default")
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Tactic dispatch + shape-keyed cache (exact-match text, like machete's cutlass55_tactics.cache).
 
+// BENCH_GS: BUILD ONE GROUP SIZE INSTEAD OF FOUR. The dispatch below switches on a RUNTIME --g, so every arm is
+// instantiated whether or not it can be selected -- and each arm expands the whole config table. At 293 rows that
+// is 1172 kernel instantiations to run a sweep that uses exactly one of them.
+//
+// HOW MUCH BUILD TIME THAT SAVES IS NOT ESTABLISHED, and the first version of this comment claimed 4x. Measured
+// on the local nvcc FRONT END: 194s for all four, 136s for BENCH_GS=32 -- 1.43x, because much of a front-end pass
+// is fixed cost in the headers. But the front end stops before codegen, and per-kernel code generation is exactly
+// where a 4x instantiation count would show, so that measurement neither confirms nor refutes the saving on the
+// box; it only bounds the front-end part. Nobody has timed hgcc with and without it. The instantiation count IS
+// four times smaller -- that is read off the dispatch, not timed -- so this is strictly less work, by an unknown
+// amount.
+//
+// It is a build-time restriction and NOT a default: leaving it unset keeps the one-binary --g contract that
+// everything else in this repo assumes. An unsupported --g still reports itself at run time rather than
+// mis-selecting, so a binary built for one group size cannot silently answer for another:
+//   BENCH_GS=32 ./build.sh
+#if defined(BENCH_GS)
+#define DENSE_GS_ARM(gs) ((gs) == BENCH_GS)
+#else
+#define DENSE_GS_ARM(gs) 1
+#endif
+
 bool supported_group_size(int group_size) {
+#if defined(BENCH_GS)
+  return group_size == BENCH_GS;
+#else
   return group_size == 16 || group_size == 32 || group_size == 64 || group_size == 128;
+#endif
 }
 
 Result run_scale_only(Options& options, char const* label = "default") {
   switch (options.g) {
+#if DENSE_GS_ARM(16)
     case 16:  return run<typename GroupKernels<16>::ScaleOnly>(options, label);
+#endif
+#if DENSE_GS_ARM(32)
     case 32:  return run<typename GroupKernels<32>::ScaleOnly>(options, label);
+#endif
+#if DENSE_GS_ARM(64)
     case 64:  return run<typename GroupKernels<64>::ScaleOnly>(options, label);
+#endif
+#if DENSE_GS_ARM(128)
     case 128: return run<typename GroupKernels<128>::ScaleOnly>(options, label);
+#endif
     default:  std::fprintf(stderr, "unsupported dense group size %d (supported: 16, 32, 64, 128)\n", options.g);
               return {};
   }
@@ -854,10 +888,18 @@ Result run_scale_only(Options& options, char const* label = "default") {
 
 Result run_scale_zero(Options& options, char const* label = "default") {
   switch (options.g) {
+#if DENSE_GS_ARM(16)
     case 16:  return run<typename GroupKernels<16>::ScaleZero>(options, label);
+#endif
+#if DENSE_GS_ARM(32)
     case 32:  return run<typename GroupKernels<32>::ScaleZero>(options, label);
+#endif
+#if DENSE_GS_ARM(64)
     case 64:  return run<typename GroupKernels<64>::ScaleZero>(options, label);
+#endif
+#if DENSE_GS_ARM(128)
     case 128: return run<typename GroupKernels<128>::ScaleZero>(options, label);
+#endif
     default:  std::fprintf(stderr, "unsupported dense group size %d (supported: 16, 32, 64, 128)\n", options.g);
               return {};
   }
@@ -873,10 +915,18 @@ Result run_config_for_group(Options& options, TileCfg const& cfg) {
 
 Result run_config(Options& options, TileCfg const& cfg) {
   switch (options.g) {
+#if DENSE_GS_ARM(16)
     case 16:  return run_config_for_group<16>(options, cfg);
+#endif
+#if DENSE_GS_ARM(32)
     case 32:  return run_config_for_group<32>(options, cfg);
+#endif
+#if DENSE_GS_ARM(64)
     case 64:  return run_config_for_group<64>(options, cfg);
+#endif
+#if DENSE_GS_ARM(128)
     case 128: return run_config_for_group<128>(options, cfg);
+#endif
     default:  std::fprintf(stderr, "unsupported dense group size %d (supported: 16, 32, 64, 128)\n", options.g);
               return {};
   }

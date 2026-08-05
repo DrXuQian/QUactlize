@@ -208,7 +208,13 @@ echo "[build.sh] CUTLASS_PPU_ARCHS=$ARCH"
 TILE_M="${TILE_M:-32}"; TILE_N="${TILE_N:-32}"; WARP_M="${WARP_M:-16}"; WARP_N="${WARP_N:-16}"; STAGES="${STAGES:-3}"
 QUANT="${QUANT:-int4}"   # int4 (default) or uint2 -> test_lowbit_dense_bench's QuantType (W4A16 vs W2A16 perf)
 TSK="${TSK:-}"           # TileShapeK override (empty = per-quant default: int2->128, int4->64). Set to force, e.g. TSK=128
-echo "[build.sh] TILE=${TILE_M}x${TILE_N} WARP=${WARP_M}x${WARP_N} STAGES=${STAGES} QUANT=${QUANT} TSK=${TSK}"
+BENCH_GS="${BENCH_GS:-}"  # build ONE dense group size instead of all four. The dispatch instantiates every arm
+                         # whether or not --g can select it, and each arm expands the whole config table, so a
+                         # 293-row table costs 1172 instantiations to run a sweep that uses one group size. How much
+                         # hgcc time that saves is UNMEASURED; nvcc's front end goes 194s -> 136s, but codegen is
+                         # where the instantiation count would tell and the front end never reaches it.
+                         # Unset keeps the one-binary --g contract. e.g. BENCH_GS=32 ./build.sh
+echo "[build.sh] TILE=${TILE_M}x${TILE_N} WARP=${WARP_M}x${WARP_N} STAGES=${STAGES} QUANT=${QUANT} TSK=${TSK} BENCH_GS=${BENCH_GS:-all}"
 
 # --- configure & build just our target ---
 # OVERRIDABLE, because build.sh rm -rf's this and something that RUNS build.sh to check it must be able to point it
@@ -269,7 +275,7 @@ done
 _CMAKE_SRC="$HERE"; _CMAKE_EXTRA=(-DQUACTLIZE_PPU=ON)
 cmake "$_CMAKE_SRC" "${_CMAKE_EXTRA[@]}" -DPPU_SDK_ROOT="$PPU_SDK_ROOT" -DCUTLASS_PPU_ARCHS="$ARCH" \
   -DCUTLASS_ENABLE_TESTS=OFF -DCUTLASS_ENABLE_GTEST_UNIT_TESTS=OFF \
-  -DTILE_M="$TILE_M" -DTILE_N="$TILE_N" -DWARP_M="$WARP_M" -DWARP_N="$WARP_N" -DSTAGES="$STAGES" -DBENCH_QUANT="$QUANT" -DTSK="$TSK" \
+  -DTILE_M="$TILE_M" -DTILE_N="$TILE_N" -DWARP_M="$WARP_M" -DWARP_N="$WARP_N" -DSTAGES="$STAGES" -DBENCH_QUANT="$QUANT" -DTSK="$TSK" -DBENCH_GS="$BENCH_GS" \
   -DPPU_EXTRA_DEFS="${PPU_DEFS:-}" "${_MOE_VARS[@]+"${_MOE_VARS[@]}"}" \
   >cmake.log 2>&1 || { tail -40 cmake.log; exit 1; }
 # cmake's stdout is redirected above, so its message(STATUS ...) never reaches the terminal. Surface the extra
