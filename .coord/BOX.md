@@ -337,3 +337,60 @@ a message that was already in the log, once three lines above where anyone looke
 - The FULLY_QUANTIZED build needs PPU_PACKED_SCALE=1 to reach the compile command, and for a while it did not:
   quactlize_ppu was built by cutlass_add_library and so sat outside the wrapper that applies PPU_EXTRA_DEFS.
   Fixed; run_batch now asserts the define reached the compile before running anything.
+
+7. **DENSE vs GROUPED(L=1): AN INVARIANT, NOT A COMPARISON.** The user's acceptance criterion, and it is
+   sharper than a target number because it needs no reference figure to be believed.
+
+   **grouped with one expert IS dense.** Same math, same collective family, one group -- but it additionally
+   pays a scheduler, a pointer-array epilogue, and (on the ragged path) a boundary decode. So:
+
+       time(dense)  <=  time(grouped, L=1)      always, at the same shape
+
+   If dense is SLOWER, dense has a defect. That direction cannot be explained by grouped overhead, by the
+   masked-row tax (one group has no masked rows), or by the ragged distribution (there is none at L=1). It is
+   the one comparison whose wrong answer is unambiguous.
+
+   Run both in ONE session, one build, one machine:
+
+       cd /sim/eec/shared/junfu.qx/quactlize && git pull --recurse-submodules
+
+       TARGET=test_lowbit_dense_bench ./build.sh
+       BIN=$(find build_ppu -type f -name test_lowbit_dense_bench -print -quit)
+       "$BIN" --m=2048 --n=4096 --k=4096 --g=32  --search_configs
+       "$BIN" --m=2048 --n=4096 --k=4096 --g=16  --search_configs
+       "$BIN" --m=2048 --n=4096 --k=4096 --g=128 --search_configs
+
+       TARGET=test_lowbit_moe_bench ./build.sh
+       MOE=$(find build_ppu -type f -name test_lowbit_moe_bench -print -quit)
+       #      L  Rows   N     K    gs  mode
+       "$MOE" 1  2048  4096  4096  32   2
+
+   WANTED BACK: every `==== WINNER:` line in full (tile AND warp AND stages), the grouped L=1 figure, and the
+   readings for the `32x32` rows.
+
+   THREE THINGS TO CHECK, in order of what they would overturn:
+
+   a. **dense <= grouped(L=1).** Violated => a dense-path defect. INBOX 058 names the most likely shape of one:
+      three separately-maintained mainloops, with at least one optimisation (PPU_B_CHUNK) present in two of them
+      and absent from the one dense runs.
+
+   b. **The winner carries `w64x32`.** The record says that warp shape was missed by an entire earlier sweep and
+      is worth +8.6 points for int4. Our table has 29 rows with it, on tiles 64x128 and 128x64 -- `64x64` with
+      `w64x32` is only two warps and the four-warp legality gate excludes it. If the measured winner IS
+      `64x64:64x32`, then that gate is wrong and that matters more than the sweep result, because the same gate
+      protects grouped.
+
+   c. **`32x32` reads about 25%.** The record's own control. If it does not, the thing being measured now is not
+      the thing measured then, and (a) and (b) are being read against the wrong baseline.
+
+   RECORDED TARGETS, with their conditions, because three different numbers exist and they are not comparable:
+
+       M=2048 N=K=4096  gs=32   int4  211.33 us / 65.0%    after adding w64x32
+       M=2048 N=K=4096  gs=32   int4  55.8% (64x64:64 s4)  BEFORE w64x32 was in the grid
+       M=2048 N=K=4096  gs=16   int4  53.1% (64x64:64 s3)  BEFORE w64x32
+       2048x4096x4096   gs=128  int4  305 TF/s / 61%       a different sweep, 64x64/32x32/s4
+       4096^3           gs=128  dense L=1  62%
+
+   The gs=32 65.0% is the one to reproduce. The user recalls a 60+% figure at gs=16 as well; the record's own
+   arithmetic gives 58.7% (65.0% divided by the recorded 10.8% int4 cost of moving to gs=16), so gs=16 is run
+   here to settle that rather than to confirm it.
