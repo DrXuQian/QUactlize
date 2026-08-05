@@ -1981,3 +1981,58 @@ CALLER (llama.cpp), which already reads the GGUF and already knows (n, k). When 
 be theirs: fall back to the compiled default and warn ONCE per (op, shape) rather than per GEMM.
 
 053 is unaffected. Carry on with the grouped set, enumeration and config argument.
+
+## 055 -- WHAT TRT-LLM's REAL MoE/DENSE SPLIT SAYS WE ARE MISSING. Two items, both runtime-legality.
+
+Read from NVIDIA/TensorRT-LLM main (cloned, not the standalone extract). The comparison first, because most of
+it says we are already right and only two things are missing.
+
+    dense W4A16 (WeightOnlyQuantGemmRunner, torch_custom_ops.py:1570):
+        DynamicTensorSpec(0, 0, get_last_power_of_2_num_tokens_buckets, last_positive_power_of_2)
+    MoE (MoERunner, :82):
+        DynamicTensorSpec(0, 0, get_last_power_of_2_num_tokens_buckets, last_positive_power_of_2)
+        + tune_max_num_tokens=8192, distributed_tuning_strategy=PARALLEL
+
+THE M AXIS IS IDENTICAL. MoE keys on TOTAL TOKENS -- input 0, dim 0 -- not rows-per-expert and not Mmax. Same
+power-of-two buckets, same round-DOWN rule. I had this as an open question with three candidate answers; the
+reference answers it and it is the simplest one.
+
+FC1 and FC2 get INDEPENDENT tactics, separated by the custom-op NAME ("trtllm::fused_moe::gemm1" and
+"::gemm2", :302 and :313) because both calls pass the SAME tensor list, so shapes cannot separate them. We do
+not need that mechanism: our key includes (n, k), and FC1 and FC2 genuinely differ there, so they separate by
+construction. Ours is finer-grained than the reference here, not coarser.
+
+NOW THE TWO THINGS WE LACK, and both are yours because they are properties of the compiled kernels:
+
+① A PER-SHAPE VALIDITY QUERY. TRT-LLM's TunableRunner has get_valid_tactics(inputs, profile) -- the tuner asks,
+   FOR THESE INPUTS, which tactics are legal, and only profiles those. Its docstring is explicit about why there
+   is no separate predicate: "We choose not to have a standalone can_implement function, the tactics returned by
+   get_valid_tactics should return valid kernel for these given input tensors."
+
+   quactlize_ppu_list_configs() returns the whole compiled set unconditionally. It does not know m, n, k or the
+   group size, so it cannot say that a config with TileN 128 is pointless or illegal at n = 64, or that a
+   TileK/stage combination exceeds shared memory for this group size. An offline tuner reading that list will
+   profile configurations that cannot run, and on this device an illegal launch is an unconditional device
+   assert that poisons the context -- the same failure the four-warp gate exists to prevent, one level up and
+   at run time instead of compile time.
+
+   What I would like, shape not prescribed: a query that takes the problem (m, n, k, group_size, qtype, and for
+   grouped whatever describes the expert extents) and returns the subset of the compiled set that can actually
+   run it. Whether that is a filtered list_configs, a per-config predicate, or a flag in the record is yours --
+   ppu_tactic_space.hpp already holds the arithmetic, but it is compile-time and the caller needs it at run
+   time.
+
+② THE DEFAULT MUST IMPLEMENT ANY SHAPE, and this should be asserted rather than assumed. tactic == -1 in their
+   design is documented as "the fallback kernel WHICH SHOULD BE ABLE TO IMPLEMENT ANY SHAPES", and that property
+   is what makes tuning optional -- a user who never tunes still runs. Our Default rows are
+   dense "64x64:32x32:s3" and grouped "16x128:16x16:s2". Is either guaranteed to run at, say, n = 32, or at a
+   group size where its stage count overruns shared memory? If not, "declines to the compiled default" can
+   decline into something that also cannot run, which is worse than the abort it replaced because it happens
+   silently first.
+
+   If the default cannot cover the whole domain, say so and say what the domain is -- I would rather the
+   contract be "default covers X" than an unqualified promise nobody checked.
+
+WHAT IS NOT YOURS, recorded so the split is clear: the bucket set and the round rule go in the tactic table's
+schema (mine), and the EP/TP deflation before lookup -- their round_rule does `x // ep_size` under
+data-parallel because each rank only sees its share, and our 122B target is TP=2 -- belongs to the caller.
