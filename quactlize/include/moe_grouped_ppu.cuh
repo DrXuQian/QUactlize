@@ -232,10 +232,11 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   static_assert(TacticSpace::kernel_exclusion(tactic) == ppu_tactics::Exclusion::None,
                 "grouped: tactic violates the emitted kernel search-space rules");
   // Make the fold invariants actually FIRE. Until this line, fold_traits.hpp was included by nobody and its
-  // static_asserts were inert commentary -- which is precisely how the perf harness came to launch int1 at the
-  // forbidden (64,128,64) with nothing to stop it. Sub-byte B only: fp16/int8 B never folds. A bare alias would
-  // NOT do: naming a specialization as a template argument does not instantiate it, so the asserts would stay
-  // asleep. fold::Check<> below reads a member, which requires completeness and therefore fires them.
+  // static_asserts were inert commentary, so the perf harness could instantiate sub-byte shapes without an active
+  // delivery guard. The recorded int1 (64,128,64) w64x64 row is valid exactly at the delivery boundary; it is not a
+  // sub-four-warp exclusion. Sub-byte B only: fp16/int8 B never folds. A bare alias would NOT do: naming a
+  // specialization as a template argument does not instantiate it, so the asserts would stay asleep. fold::Check<>
+  // below reads a member, which requires completeness and therefore fires them.
   // The one fold constraint that is real AND measured against cute: a thread cannot use more codes than its mma
   // fragment has slots, because the surplus is never fetched. slots = WN*TK/32, validated on the builder's real
   // TiledMma across twelve configs (fold_derivation/l5_slots.cu) -- it does NOT depend on TN, since B is split
