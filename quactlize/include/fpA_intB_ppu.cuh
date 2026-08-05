@@ -38,6 +38,7 @@
 #include "cutlass/gemm/kernel/gemm_universal.hpp"
 #include "cutlass/util/packed_stride.hpp"
 #include "fold_traits.hpp"
+#include "ppu_group_schedule.hpp"
 #include "ppu_tactic_space.hpp"
 
 #include "ppu_include.hpp"
@@ -243,14 +244,14 @@ bool dispatch_gs(const cutlass::half_t* A, const ElementB* B, const cutlass::hal
     // sweep. Timing stays valid; the bench-harness verify catches any correctness issue from block_k < gs.
     switch (group_size) {
       case 128: {
-        constexpr int CTA_SCALE_K = (TK + 127) / 128;
-        return generic_launcher<QuantOp, FPA_SCHED(cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs128),
+        constexpr int CTA_SCALE_K = ppu_group_schedule::scale_groups_v<TK, 128>;
+        return generic_launcher<QuantOp, FPA_SCHED(ppu_group_schedule::FinegrainedSchedule<128>),
             TileShape, cute::Shape<cute::Int<TN>, cute::Int<CTA_SCALE_K>>, WarpShape, Stages, AiuInterleaved,
             ElementB, PlaneB2>(A, B, scales, zeros, D, m, n, k, group_size, split_k, ws, ws_bytes, stream, B2);
       }
       case 64: {
-        constexpr int CTA_SCALE_K = (TK + 63) / 64;
-        return generic_launcher<QuantOp, FPA_SCHED(cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs64),
+        constexpr int CTA_SCALE_K = ppu_group_schedule::scale_groups_v<TK, 64>;
+        return generic_launcher<QuantOp, FPA_SCHED(ppu_group_schedule::FinegrainedSchedule<64>),
             TileShape, cute::Shape<cute::Int<TN>, cute::Int<CTA_SCALE_K>>, WarpShape, Stages, AiuInterleaved,
             ElementB, PlaneB2>(A, B, scales, zeros, D, m, n, k, group_size, split_k, ws, ws_bytes, stream, B2);
       }
@@ -259,16 +260,16 @@ bool dispatch_gs(const cutlass::half_t* A, const ElementB* B, const cutlass::hal
         // measured at the shape the grouped kernel actually runs. The Gs32 schedule exists in dispatch_policy.hpp
         // and its mainloop policy exposes `Schedule = KernelAiuMultistageMixedInput`, which is exactly what the
         // SplitKSerialScheduler specialization enable_ifs on -- so this reaches the split-K kernel unchanged.
-        constexpr int CTA_SCALE_K = (TK + 31) / 32;
-        return generic_launcher<QuantOp, FPA_SCHED(cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32),
+        constexpr int CTA_SCALE_K = ppu_group_schedule::scale_groups_v<TK, 32>;
+        return generic_launcher<QuantOp, FPA_SCHED(ppu_group_schedule::FinegrainedSchedule<32>),
             TileShape, cute::Shape<cute::Int<TN>, cute::Int<CTA_SCALE_K>>, WarpShape, Stages, AiuInterleaved,
             ElementB, PlaneB2>(A, B, scales, zeros, D, m, n, k, group_size, split_k, ws, ws_bytes, stream, B2);
       }
       case 16: {
         // Q2_K/Q3_K/Q6_K. The shared collective applies the fine scale per MMA atom; Gs32 is only the schedule tag,
         // while ScaleTileShape carries the real eight groups in a TK=128 tile (sixteen in the production TK=256).
-        constexpr int CTA_SCALE_K = (TK + 15) / 16;
-        return generic_launcher<QuantOp, FPA_SCHED(cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32),
+        constexpr int CTA_SCALE_K = ppu_group_schedule::scale_groups_v<TK, 16>;
+        return generic_launcher<QuantOp, FPA_SCHED(ppu_group_schedule::FinegrainedSchedule<16>),
             TileShape, cute::Shape<cute::Int<TN>, cute::Int<CTA_SCALE_K>>, WarpShape, Stages, AiuInterleaved,
             ElementB, PlaneB2>(A, B, scales, zeros, D, m, n, k, group_size, split_k, ws, ws_bytes, stream, B2);
       }

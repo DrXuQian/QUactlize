@@ -71,6 +71,7 @@
 #include "cutlass/util/reference/device/tensor_compare.h"
 
 #include "helper.h"
+#include "ppu_group_schedule.hpp"
 #include "unfused_weight_dequantize.hpp"
 
 #include "ppu_include.hpp"
@@ -97,8 +98,8 @@ enum GemmMode {
 /////////////////////////////////////////////////////////////////////////////////////////////////
 // CHANGED from the stock example: MmaType is half_t, not bfloat16_t. Our W4A16 kernel (marlin_gguf_ppu.cuh)
 // is fp16 x int4, so the comparison must be fp16 x int4 too. The example explicitly supports this (it was the
-// commented alternative). Everything else in this file is example 16 verbatim -- the point is to compare
-// against KNOWN-GOOD actlize code, so deviations are kept to this one line plus the Options defaults below.
+// commented alternative). The dense harness additionally uses the same group-size schedule selector as the
+// shipping dense and grouped launchers, so runtime --g selects a matching compile-time scale tile and policy.
 using MmaType = cutlass::half_t;
 #ifdef BENCH_UINT1
 using QuantType = cutlass::uint1b_t;                 // W1A16 perf bench (build: QUANT=uint1 ... ./build.sh)
@@ -178,9 +179,9 @@ using OperatorClass       = cutlass::arch::OpClassTensorOp;                 // O
 using TileShape           = Shape<cute::Int<TILE_M>,cute::Int<TILE_N>,cute::Int<TileShapeK>>;  // Threadblock tile
 using WarpShape           = Shape<cute::Int<WARP_M>,cute::Int<WARP_N>,cute::Int<TileShapeK>>;  // Warp tile
 
-using KernelSchedule      = cutlass::gemm::KernelTmaWarpSpecializedCooperativeMixedInput;  // Kernel to launch based on the default setting in the Collective Builder
 using EpilogueSchedule    = cutlass::epilogue::EpilogueSimtVectorized;
 using EpilogueTileType    = cutlass::epilogue::collective::EpilogueTileAuto;
+using ConvertKernelSchedule = cutlass::gemm::KernelTmaWarpSpecializedCooperativeMixedInput;
 
 using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
     ArchTag, OperatorClass,
@@ -202,7 +203,7 @@ using CollectiveMainloopConvertOnly = typename cutlass::gemm::collective::Collec
     ElementAccumulator,
     cute::tuple<TileShape>, WarpShape,
     Int<STAGES>,
-    KernelSchedule
+    ConvertKernelSchedule
   >::CollectiveOp;
 
 using GemmKernelConvertOnly = cutlass::gemm::kernel::GemmUniversal<
@@ -216,43 +217,35 @@ using GemmConvertOnly = cutlass::gemm::device::GemmUniversalAdapter<GemmKernelCo
 // =========================================================== MIXED INPUT WITH SCALES ===========================================================================
 // The Scale information must get paired with the operand that will be scaled. In this example, B is scaled so we make a tuple of B's information and the scale information.
 
-using CollectiveMainloopScaleOnly = typename cutlass::gemm::collective::CollectiveBuilder<
-    ArchTag, OperatorClass,
-    ElementA, LayoutA, AlignmentA,
-    cute::tuple<ElementB, ElementScale>, LayoutB_opt, AlignmentB,
-    ElementAccumulator,
-    cute::tuple<TileShape>, WarpShape,
-    Int<STAGES>,
-    KernelSchedule
-  >::CollectiveOp;
-
-using GemmKernelScaleOnly = cutlass::gemm::kernel::GemmUniversal<
-    Shape<int,int,int,int>, // Indicates ProblemShape
-    CollectiveMainloopScaleOnly,
-    CollectiveEpilogue
->;
-
-using GemmScaleOnly = cutlass::gemm::device::GemmUniversalAdapter<GemmKernelScaleOnly>;
-
 // =========================================================== MIXED INPUT WITH SCALES AND ZEROS ==================================================================
-// We specify scale + zero elements to indicate that we require both. Scales and biases have the same format.
-using CollectiveMainloopScaleWithZeroPoint = typename cutlass::gemm::collective::CollectiveBuilder<
-    ArchTag, OperatorClass,
-    ElementA, LayoutA, AlignmentA,
-    cute::tuple<ElementB, ElementScale, ElementZero>, LayoutB_opt, AlignmentB,
-    ElementAccumulator,
-    cute::tuple<TileShape>, WarpShape,
-    Int<STAGES>,
-    KernelSchedule
-  >::CollectiveOp;
+// The group size is a runtime option, but it changes the compile-time scale tile and dispatch policy. Instantiate
+// the four supported variants once and select them at the host boundary; this preserves the bench's one-binary
+// --g contract while making it consume the same schedule ladder as the shipping launchers.
+template <int GroupSize>
+struct GroupKernels {
+  using Schedule = ppu_group_schedule::FinegrainedSchedule<GroupSize>;
+  static constexpr int ScaleK = ppu_group_schedule::scale_groups_v<TileShapeK, GroupSize>;
+  using ScaleTile = Shape<cute::Int<TILE_N>, cute::Int<ScaleK>>;
+  using ScaleOnlyMainloop = typename cutlass::gemm::collective::CollectiveBuilder<
+      ArchTag, OperatorClass,
+      ElementA, LayoutA, AlignmentA,
+      cute::tuple<ElementB, ElementScale>, LayoutB_opt, AlignmentB,
+      ElementAccumulator, cute::tuple<TileShape, ScaleTile>, WarpShape,
+      Int<STAGES>, Schedule>::CollectiveOp;
+  using ScaleOnlyKernel = cutlass::gemm::kernel::GemmUniversal<
+      Shape<int,int,int,int>, ScaleOnlyMainloop, CollectiveEpilogue>;
+  using ScaleOnly = cutlass::gemm::device::GemmUniversalAdapter<ScaleOnlyKernel>;
 
-using GemmKernelScaleWithZeroPoint = cutlass::gemm::kernel::GemmUniversal<
-    Shape<int,int,int,int>, // Indicates ProblemShape
-    CollectiveMainloopScaleWithZeroPoint,
-    CollectiveEpilogue
->;
-
-using GemmScaleWithZeroPoint = cutlass::gemm::device::GemmUniversalAdapter<GemmKernelScaleWithZeroPoint>;
+  using ScaleZeroMainloop = typename cutlass::gemm::collective::CollectiveBuilder<
+      ArchTag, OperatorClass,
+      ElementA, LayoutA, AlignmentA,
+      cute::tuple<ElementB, ElementScale, ElementZero>, LayoutB_opt, AlignmentB,
+      ElementAccumulator, cute::tuple<TileShape, ScaleTile>, WarpShape,
+      Int<STAGES>, Schedule>::CollectiveOp;
+  using ScaleZeroKernel = cutlass::gemm::kernel::GemmUniversal<
+      Shape<int,int,int,int>, ScaleZeroMainloop, CollectiveEpilogue>;
+  using ScaleZero = cutlass::gemm::device::GemmUniversalAdapter<ScaleZeroKernel>;
+};
 // =================================================================================================================================================================
 
 // ================================ TACTIC REGISTRY (machete / fpA_intB style) =====================================
@@ -261,9 +254,11 @@ using GemmScaleWithZeroPoint = cutlass::gemm::device::GemmUniversalAdapter<GemmK
 // fpA_intB (../fpA_intB_standalone) do it. Cfg<> rebuilds the ScaleOnly (mode-1) type stack with a given
 // tile/warp/stages; TileCfg is the runtime descriptor; supported_configs() is the registry; the dispatch macro
 // below maps a runtime TileCfg to the matching compiled Cfg<>. This replaces the recompile-per-config sweep.sh.
-template <int TM, int TN, int WM, int WN, int St>
+template <int GroupSize, int TM, int TN, int WM, int WN, int St>
 struct Cfg {
   using CfgTile = Shape<cute::Int<TM>, cute::Int<TN>, cute::Int<TileShapeK>>;
+  using CfgScale = Shape<cute::Int<TN>,
+      cute::Int<ppu_group_schedule::scale_groups_v<TileShapeK, GroupSize>>>;
   using CfgWarp = Shape<cute::Int<WM>, cute::Int<WN>, cute::Int<TileShapeK>>;
   using Epi = typename cutlass::epilogue::collective::CollectiveBuilder<
       ArchTag, OperatorClass, CfgTile, CfgWarp, EpilogueTileType,
@@ -272,7 +267,8 @@ struct Cfg {
   using Main = typename cutlass::gemm::collective::CollectiveBuilder<
       ArchTag, OperatorClass, ElementA, LayoutA, AlignmentA,
       cute::tuple<ElementB, ElementScale>, LayoutB_opt, AlignmentB,
-      ElementAccumulator, cute::tuple<CfgTile>, CfgWarp, Int<St>, KernelSchedule>::CollectiveOp;
+      ElementAccumulator, cute::tuple<CfgTile, CfgScale>, CfgWarp, Int<St>,
+      ppu_group_schedule::FinegrainedSchedule<GroupSize>>::CollectiveOp;
   using Kernel = cutlass::gemm::kernel::GemmUniversal<Shape<int,int,int,int>, Main, Epi>;
   using Gemm = cutlass::gemm::device::GemmUniversalAdapter<Kernel>;
 };
@@ -313,7 +309,7 @@ inline std::vector<TileCfg> supported_configs() {
 // expressible, because there is one list. The BODY travels through the list as X's second argument; a macro
 // cannot define another macro, so passing it down is what makes a single list serve both expansions.
 #define LOWBIT_DENSE_TRY(TM,TN,WM,WN,ST,BODY)                                                               \
-  if (!_matched && _try(TM,TN,WM,WN,ST)) { using G = Cfg<TM,TN,WM,WN,ST>::Gemm; _matched=true; BODY; }
+  if (!_matched && _try(TM,TN,WM,WN,ST)) { using G = typename Cfg<GroupSize,TM,TN,WM,WN,ST>::Gemm; _matched=true; BODY; }
 
 #define LOWBIT_DENSE_DISPATCH(cfg, BODY)                                                                    \
   do {                                                                                               \
@@ -346,7 +342,7 @@ StrideD_ref stride_D_ref;
 uint64_t seed;
 
 // Scale and Zero share a stride since the layout and shapes must be the same.
-using StrideS = typename CollectiveMainloopScaleWithZeroPoint::StrideScale;
+using StrideS = cute::Stride<cute::_1, int64_t, int64_t>;
 using StrideS_ref = cutlass::detail::TagToStrideB_t<LayoutScale>;
 StrideS stride_S;
 StrideS_ref stride_S_ref;
@@ -373,8 +369,8 @@ struct Options {
   bool help = false;
 
   // CHANGED defaults: mode=1 (scale-only == symmetric dense W4A16, what marlin_gguf gs=128 computes; mode=2
-  // adds a zero-point, which is the affine path we compare separately), g=128 (the group size under test),
-  // iterations=100 for a real timing, and the qwen35moe dense shapes at a representative prefill M.
+  // adds a zero-point, which is the affine path we compare separately), g=128, iterations=100 for a real timing,
+  // and the qwen35moe dense shapes at a representative prefill M. --g also supports 16, 32 and 64 at runtime.
   float alpha = 1.0f;
   float beta = 0.0f;
   int iterations = 100;
@@ -427,7 +423,7 @@ struct Options {
       << "  --n=<int>                   Sets the N extent of the GEMM\n"
       << "  --k=<int>                   Sets the K extent of the GEMM\n"
       << "  --l=<int>                   The number of independent gemm problems with mnk shape\n"
-      << "  --g=<int>                   The size of each group for the scales and zeros. To broadcast a vector of scales or zeros, set the group size to K.\n"
+      << "  --g=<int>                   Scale/zero group size (mixed modes support 16, 32, 64 or 128).\n"
       << "  --mode=<int>                The mode to run the gemm. 0 does (A @ B), 1 means A @ (scale * B), 2 means A @ (scale * B + zero-point).\n"
       << "  --alpha=<f32>               Epilogue scalar alpha\n"
       << "  --beta=<f32>                Epilogue scalar beta\n\n"
@@ -818,11 +814,49 @@ Result run(Options &options, char const* label = "default")
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Tactic dispatch + shape-keyed cache (exact-match text, like machete's cutlass55_tactics.cache).
 
+bool supported_group_size(int group_size) {
+  return group_size == 16 || group_size == 32 || group_size == 64 || group_size == 128;
+}
+
+Result run_scale_only(Options& options, char const* label = "default") {
+  switch (options.g) {
+    case 16:  return run<typename GroupKernels<16>::ScaleOnly>(options, label);
+    case 32:  return run<typename GroupKernels<32>::ScaleOnly>(options, label);
+    case 64:  return run<typename GroupKernels<64>::ScaleOnly>(options, label);
+    case 128: return run<typename GroupKernels<128>::ScaleOnly>(options, label);
+    default:  std::fprintf(stderr, "unsupported dense group size %d (supported: 16, 32, 64, 128)\n", options.g);
+              return {};
+  }
+}
+
+Result run_scale_zero(Options& options, char const* label = "default") {
+  switch (options.g) {
+    case 16:  return run<typename GroupKernels<16>::ScaleZero>(options, label);
+    case 32:  return run<typename GroupKernels<32>::ScaleZero>(options, label);
+    case 64:  return run<typename GroupKernels<64>::ScaleZero>(options, label);
+    case 128: return run<typename GroupKernels<128>::ScaleZero>(options, label);
+    default:  std::fprintf(stderr, "unsupported dense group size %d (supported: 16, 32, 64, 128)\n", options.g);
+              return {};
+  }
+}
+
 // Run one named/descriptor config through the compiled dispatch. Returns its Result.
-Result run_config(Options& options, TileCfg const& cfg) {
+template <int GroupSize>
+Result run_config_for_group(Options& options, TileCfg const& cfg) {
   Result r;
   LOWBIT_DENSE_DISPATCH(cfg, { r = run<G>(options, cfg.name); });
   return r;
+}
+
+Result run_config(Options& options, TileCfg const& cfg) {
+  switch (options.g) {
+    case 16:  return run_config_for_group<16>(options, cfg);
+    case 32:  return run_config_for_group<32>(options, cfg);
+    case 64:  return run_config_for_group<64>(options, cfg);
+    case 128: return run_config_for_group<128>(options, cfg);
+    default:  std::fprintf(stderr, "unsupported dense group size %d (supported: 16, 32, 64, 128)\n", options.g);
+              return {};
+  }
 }
 
 TileCfg find_config(std::string const& name) {
@@ -897,10 +931,9 @@ void xcheck_grouped(Options const& options) {
   cutlass::DeviceAllocation<int>     gm(L); gm.copy_from_host(gmh.data());
   std::vector<ElementD> hr((size_t)m * n); block_ref_D.copy_to_host(hr.data());   // dequant golden
 
-  // Fixed TK=128 (matches the perf-sweep configs in test_moe_grouped_ppu, so this gate validates the SAME shape
-  // the perf run uses). gs=32 -> SK=ceil(128/32)=4 -> FINE per-mma-atom scale (Scale_TileK=4 > K_BLOCK_MAX=2);
-  // gs=64 -> SK=2; gs=128 -> SK=1. (A) vs dequant golden is the truth. gs<64: block_D (stock non-grouped example)
-  // is itself wrong for gs<64, so its (B) mismatch is expected -- only (A) matters there.
+  // Fixed TK=128 (matches the perf-sweep configs in test_moe_grouped_ppu, so this gate validates the SAME shape).
+  // The dense binary and grouped launch now select the same group-size tag and ceil(TK/gs) scale tile, so both
+  // comparisons are valid for every compiled group size (16/32/64/128).
   moe_grouped_ppu::filter_and_run<moe_grouped_ppu::QuantMode::FinegrainedScaleOnly, 64, 64, 128, 32, 32, 3>(
       block_A.get(), block_B_buff.device_data(), block_scale.get(), /*zeros=*/nullptr,
       pd.get(), sd.get(), gm.get(),
@@ -910,11 +943,7 @@ void xcheck_grouped(Options const& options) {
 
   // (A) grp vs block_ref_D -- the fp16 dequant->GemmRef reference (algorithm-independent golden). This is the
   //     TRUTH and is always reported.
-  // (B) grp vs block_D -- the stock (non-grouped) mixed example's own output. Only a VALID cross-check when the
-  //     stock example itself is correct, i.e. gs>=64. For gs<64 the stock non-grouped path mis-handles the scale
-  //     grouping (it predates the per-mma-atom FINE fix, which only the grouped collective carries), so block_D is
-  //     wrong there and (B) would MISMATCH spuriously -- skip it and rely on (A).
-  bool const bValid = (g >= 64);
+  // (B) grp vs block_D -- the dense mixed kernel's own output, now on the same per-gs schedule ladder.
   std::vector<ElementD> hk((size_t)m * n), hg((size_t)m * n);   // hr (dequant golden) already copied above
   block_D.copy_to_host(hk.data()); Dgrp.copy_to_host(hg.data());
   double maxrelR = 0, maxrelK = 0; int badR = 0, badK = 0;
@@ -922,20 +951,17 @@ void xcheck_grouped(Options const& options) {
     double r = float(hr[i]), gt = float(hg[i]);
     double relR = std::abs(gt - r) / (std::abs(r) + 1e-3);
     if (relR > maxrelR) maxrelR = relR;  if (relR > 5e-2) ++badR;
-    if (bValid) { double kk = float(hk[i]); double relK = std::abs(gt - kk) / (std::abs(kk) + 1e-3);
-                  if (relK > maxrelK) maxrelK = relK;  if (relK > 5e-2) ++badK; }
+    double kk = float(hk[i]); double relK = std::abs(gt - kk) / (std::abs(kk) + 1e-3);
+    if (relK > maxrelK) maxrelK = relK;  if (relK > 5e-2) ++badK;
   }
   std::printf("\n[xcheck grouped L=1] m=%d n=%d k=%d g=%d\n", m, n, k, g);
   std::printf("  (A) grp vs ref_D (dequant golden): max_rel=%.3e bad=%d/%zu -> %s\n",
               maxrelR, badR, (size_t)m * n, badR == 0 ? "MATCH" : "MISMATCH");
-  if (bValid)
-    std::printf("  (B) grp vs block_D (stock non-grouped kernel): max_rel=%.3e bad=%d/%zu -> %s\n",
-                maxrelK, badK, (size_t)m * n, badK == 0 ? "MATCH" : "MISMATCH");
-  else
-    std::printf("  (B) grp vs block_D: SKIPPED (gs<64: stock non-grouped example mis-handles gs<64; (A) is the truth)\n");
+  std::printf("  (B) grp vs block_D (dense kernel): max_rel=%.3e bad=%d/%zu -> %s\n",
+              maxrelK, badK, (size_t)m * n, badK == 0 ? "MATCH" : "MISMATCH");
   std::printf("  ref_D[0..5]  ="); for (int i = 0; i < 6; ++i) std::printf(" %8.3f", float(hr[i]));
   std::printf("\n  grp_D[0..5]  ="); for (int i = 0; i < 6; ++i) std::printf(" %8.3f", float(hg[i]));
-  if (bValid) { std::printf("\n  blkD[0..5]  ="); for (int i = 0; i < 6; ++i) std::printf(" %8.3f", float(hk[i])); }
+  std::printf("\n  blkD[0..5]  ="); for (int i = 0; i < 6; ++i) std::printf(" %8.3f", float(hk[i]));
   std::printf("\n");
   }   // end if constexpr (sizeof_bits<QT> >= 2)
 }
@@ -966,16 +992,21 @@ int main(int argc, char const **args) {
 
   // --list_configs: enumerate the compiled tactics and exit.
   if (options.list_configs) {
-    std::printf("compiled CUTLASS W4A16 tile configs:\n");
+    std::printf("compiled CUTLASS W4A16 tile configs (group sizes 16, 32, 64, 128):\n");
     for (auto const& c : supported_configs())
       std::printf("  %-18s  tile %dx%d  warp %dx%d  stages %d\n", c.name, c.tm, c.tn, c.wm, c.wn, c.st);
     return 0;
   }
 
+  if (options.mode != GemmMode::ConvertOnly && !supported_group_size(options.g)) {
+    std::fprintf(stderr, "unsupported dense group size %d (supported: 16, 32, 64, 128)\n", options.g);
+    return 1;
+  }
+
   // The tactic path is ScaleOnly (mode 1). Modes 0/2 keep the original fixed-config run.
   if (options.mode != GemmMode::ScaleOnly) {
     if (options.mode == GemmMode::ConvertOnly) { std::cout << "PPU1.0 no-scale mode.\n";  run<GemmConvertOnly>(options); }
-    else                                       { std::cout << "PPU1.0 scale+zero mode.\n"; run<GemmScaleWithZeroPoint>(options); }
+    else                                       { std::cout << "PPU1.0 scale+zero mode.\n"; run_scale_zero(options); }
     return 0;
   }
   std::cout << (options.g == options.k ? "PPU1.0 per-column scale mode.\n" : "PPU1.0 group scale mode.\n");
@@ -984,12 +1015,8 @@ int main(int argc, char const **args) {
   // shuffled block_B_buff), then run the grouped kernel L=1 on that exact data and compare. Bypasses tactics.
   if (options.xcheck) {
     std::cout << "[xcheck] stock (non-grouped) mixed kernel -> reference, then grouped L=1 on the SAME data\n";
-    if (options.g < 64)
-      std::cout << "  NOTE: the stock non-grouped kernel below mis-handles gs<64, so its 'Disposition: Failed' is\n"
-                   "        EXPECTED and NOT a regression. The gs<64 fix lives in the GROUPED collective -- judge it\n"
-                   "        by '(A) grp vs ref_D (dequant golden)' further down, which is the algorithm-independent truth.\n";
     Options o = options; o.iterations = 0;   // correctness only, skip timing
-    run<GemmScaleOnly>(o);                    // fills block_A / block_B_buff / block_scale / block_ref_D
+    run_scale_only(o);                        // fills block_A / block_B_buff / block_scale / block_ref_D
     xcheck_grouped(o);
     return 0;
   }
@@ -1004,7 +1031,8 @@ int main(int argc, char const **args) {
     // which is why both call bench_select.hpp rather than each carrying a copy.
     const int reps = [] { char const* e = std::getenv("BENCH_REPS"); int r = e ? std::atoi(e) : 5; return r < 1 ? 1 : r; }();
     char build[128];
-    std::snprintf(build, sizeof build, "bits=%d TSK=%d", int(cutlass::sizeof_bits<QuantType>::value), TileShapeK);
+    std::snprintf(build, sizeof build, "bits=%d TSK=%d gs=%d",
+                  int(cutlass::sizeof_bits<QuantType>::value), TileShapeK, options.g);
     bench_floor::banner();
     bench_samples::run_header("cutlass_w4a16", build, reps);
 

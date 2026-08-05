@@ -19,6 +19,7 @@
 #include "cutlass/gemm/device/gemm_universal_adapter.h"
 #include "cutlass/gemm/kernel/gemm_universal.hpp"
 #include "fold_traits.hpp"
+#include "ppu_group_schedule.hpp"
 #include "ppu_tactic_space.hpp"
 #include "cutlass/util/packed_stride.hpp"
 
@@ -444,10 +445,10 @@ void filter_and_run(const cutlass::half_t* A, const ElementB* B, const cutlass::
       else std::printf("[moe_grouped] gs=%d + TK=%d -> SK=%d > TK/16=%d UNSUPPORTED (gs<16); use dequant->bf16\n", group_size, TK, (SK), TK/16); \
     } while (0)
   if constexpr (is_finegrained(QuantOp)) {
-    if (group_size == 128)     { constexpr int SK=(TK+127)/128; MOEG_FG(cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs128, SK); }
-    else if (group_size == 64) { constexpr int SK=(TK+63)/64;   MOEG_FG(cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs64,  SK); }
-    else if (group_size == 32) { constexpr int SK=(TK+31)/32;    MOEG_FG(cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,  SK); }  // FIXED (per-mma-atom FINE scale)
-    else if (group_size == 16) { constexpr int SK=(TK+15)/16;    MOEG_FG(cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,  SK); }  // gs=16 (Q2_K/Q3_K/Q6_K) reuses the Gs32 tag; real grouping via SK=ceil(TK/16)+FINE. Needs TK=128 (SK=8=TK/16 cap).
+    if (group_size == 128)     { constexpr int SK=ppu_group_schedule::scale_groups_v<TK,128>; MOEG_FG(ppu_group_schedule::FinegrainedSchedule<128>, SK); }
+    else if (group_size == 64) { constexpr int SK=ppu_group_schedule::scale_groups_v<TK,64>;  MOEG_FG(ppu_group_schedule::FinegrainedSchedule<64>,  SK); }
+    else if (group_size == 32) { constexpr int SK=ppu_group_schedule::scale_groups_v<TK,32>;  MOEG_FG(ppu_group_schedule::FinegrainedSchedule<32>,  SK); }  // FIXED (per-mma-atom FINE scale)
+    else if (group_size == 16) { constexpr int SK=ppu_group_schedule::scale_groups_v<TK,16>;  MOEG_FG(ppu_group_schedule::FinegrainedSchedule<16>,  SK); }  // gs=16 (Q2_K/Q3_K/Q6_K) reuses the Gs32 tag; real grouping via SK=ceil(TK/16)+FINE. Needs TK=128 (SK=8=TK/16 cap).
     else std::printf("[moe_grouped] gs %d unsupported\n", group_size);
   } else {
     if (il) MOEG_CALL(cutlass::gemm::KernelAiuMultistageMixedInputPerCol, cute::_1, true);

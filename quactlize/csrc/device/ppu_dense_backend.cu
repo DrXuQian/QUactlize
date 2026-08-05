@@ -169,12 +169,12 @@ int launch_grouped_tactic(
     half_t** out_ptrs, DS* out_strides, int const* rows,
     int max_rows, int n, int k, int experts, GS* shapes, GS const* shapes_host, int const* offsets,
     char* workspace, size_t workspace_bytes, hggcStream_t stream) {
-  constexpr int ScaleGroups = TileK / GroupSize;
+  constexpr int ScaleGroups = ppu_group_schedule::scale_groups_v<TileK, GroupSize>;
   using Tile = cute::Shape<cute::C<TileM>, cute::C<TileN>, cute::C<TileK>>;
   using Scale = cute::Shape<cute::C<TileN>, cute::C<ScaleGroups>>;
   using Warp = cute::Shape<cute::C<WarpM>, cute::C<WarpN>, cute::C<TileK>>;
   bool const launched = moe_grouped_ppu::launch<GQM::FinegrainedScaleZero,
-                          cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
+                          ppu_group_schedule::FinegrainedSchedule<GroupSize>,
                           Tile, Scale, Warp, Stages, true, Low, High, true,
                           QueryOnly, RequireUniversalFallback>(
       reinterpret_cast<half_t const*>(act), reinterpret_cast<Low const*>(low),
@@ -215,11 +215,11 @@ int launch_dense_tactic(uint16_t const* act, uint8_t const* low, uint8_t const* 
                         void const* scale, uint16_t const* zero, uint16_t* out,
                         int m, int n, int k, void* workspace, size_t workspace_bytes,
                         hggcStream_t stream) {
-  constexpr int ScaleGroups = TileK / GroupSize;
+  constexpr int ScaleGroups = ppu_group_schedule::scale_groups_v<TileK, GroupSize>;
   using Tile = cute::Shape<cute::C<TileM>, cute::C<TileN>, cute::C<TileK>>;
   using Warp = cute::Shape<cute::C<WarpM>, cute::C<WarpN>, cute::C<TileK>>;
   bool const launched = fpa_intb_ppu::generic_launcher<QM::FinegrainedScaleZero,
-      cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
+      ppu_group_schedule::FinegrainedSchedule<GroupSize>,
       Tile, cute::Shape<cute::C<TileN>, cute::C<ScaleGroups>>, Warp, Stages, true,
       Low, High, PackedScale, QueryOnly, RequireUniversalFallback>(
           reinterpret_cast<half_t const*>(act), reinterpret_cast<Low const*>(low),
@@ -774,7 +774,7 @@ int grouped_fully_quantized(uint16_t const* act, uint8_t const* low, uint8_t con
   using DS = moe_grouped_ppu::DStride;
   constexpr int LowBits = cutlass::sizeof_bits<Low>::value;
   constexpr int HighBits = std::is_void_v<High> ? 0 : cutlass::sizeof_bits<High>::value;
-  constexpr int ScaleGroups = TileK / GroupSize;
+  constexpr int ScaleGroups = ppu_group_schedule::scale_groups_v<TileK, GroupSize>;
   static_assert(SelectedPackedUnit::kGroups % ScaleGroups == 0,
                 "the fixed grouped TileK must cover an integral group run of its packed superblock");
 

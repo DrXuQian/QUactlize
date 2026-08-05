@@ -28,6 +28,7 @@
 #include "cutlass/gemm/device/gemm_universal_adapter.h"
 #include "cutlass/gemm/kernel/gemm_universal.hpp"
 #include "cutlass/util/packed_stride.hpp"
+#include "ppu_group_schedule.hpp"
 
 #include "ppu_include.hpp"
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
@@ -130,12 +131,12 @@ void dispatch_gs(const cutlass::half_t* A, const cutlass::int4b_t* B, const cutl
 
   if constexpr (is_finegrained(QuantOp)) {
     switch (group_size) {
-      case 128: { constexpr int SK = (TK + 127) / 128;
-        generic_launcher<QuantOp, cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs128,
+      case 128: { constexpr int SK = ppu_group_schedule::scale_groups_v<TK, 128>;
+        generic_launcher<QuantOp, ppu_group_schedule::FinegrainedSchedule<128>,
             TileShape, cute::Shape<cute::Int<TN>, cute::Int<SK>>, WarpShape, Stages, AiuInterleaved>(
             A, B, scales, zeros, D, m, n, k, L, group_size, ws, ws_bytes, stream); break; }
-      case 64: { constexpr int SK = (TK + 63) / 64;
-        generic_launcher<QuantOp, cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs64,
+      case 64: { constexpr int SK = ppu_group_schedule::scale_groups_v<TK, 64>;
+        generic_launcher<QuantOp, ppu_group_schedule::FinegrainedSchedule<64>,
             TileShape, cute::Shape<cute::Int<TN>, cute::Int<SK>>, WarpShape, Stages, AiuInterleaved>(
             A, B, scales, zeros, D, m, n, k, L, group_size, ws, ws_bytes, stream); break; }
       default: std::printf("[moe_gemm] gs %d unsupported (finegrained: 64/128)\n", group_size);
