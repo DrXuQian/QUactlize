@@ -354,7 +354,19 @@ int main(int argc, char** argv) {
   if (std::strcmp(space, "dense") == 0)   return emit<DenseSpace>(*spec, bits, tk, "dense", "LOWBIT_DENSE");
   if (std::strcmp(space, "quarantined") == 0) {
     g_quarantined_only = true;
-    return emit<DenseSpace>(*spec, bits, tk, "dense", "LOWBIT_DENSE");   // same macro names: it is a drop-in table
+    // THE MACRO PREFIX AND THE SPACE NAME ARE NOT THE SAME DECISION, and conflating them cost hours twice.
+    // LOWBIT_DENSE stays because this must be a DROP-IN table -- the bench expands the same macro names either
+    // way, which is the whole point of being able to build a binary over the quarantined rows.
+    // The space NAME must tell the truth. It used to say "dense", so a quarantined table was indistinguishable
+    // from a dense one in the only self-description the file carries: its header. That header is what a human
+    // reads first and what ci/check_dense_tactic_table.py now regenerates from. INBOX 069/070/073/077 is the
+    // record -- a quarantined table sitting on the box read as a dense table, its (correct, by-design) compile
+    // failure read as a dense regression, and the zero geometric overlap with the real dense table read as
+    // generator drift rather than as what it was: a COMPLEMENT.
+    // The regenerate hint below follows space_name too, so it now points at lowbit_quarantined_configs.inc
+    // instead of telling the reader to overwrite the shipping dense table -- which is how the box got into that
+    // state to begin with.
+    return emit<DenseSpace>(*spec, bits, tk, "quarantined", "LOWBIT_DENSE");
   }
   if (std::strcmp(space, "grouped") == 0) return emit<GroupedSpace>(*spec, bits, tk, "grouped", "LOWBIT_GROUPED");
   if (std::strcmp(space, "compare") == 0) {
@@ -367,6 +379,6 @@ int main(int argc, char** argv) {
     // check this repo has been bitten by before.
     return d == 0 ? 0 : 1;
   }
-  std::fprintf(stderr, "unknown --space=%s (want dense, grouped or compare)\n", space);
+  std::fprintf(stderr, "unknown --space=%s (want dense, grouped, compare or quarantined)\n", space);
   return 2;
 }
