@@ -10,6 +10,18 @@ get 65%" becomes an unfalsifiable claim. Each row below carries what it needs to
 
 **PEAK is 500 TFLOP/s** (fp16). MFU = TF/s ÷ 500. Where a record gives only µs, the FLOP is `2·M·N·K`.
 
+> ## ⚠ EVERY FIGURE IN SECTIONS A, B AND C IS THE **scale_first** PATH.
+>
+> The registry gives each format two TileKs because they are two different consumers:
+> `scale_first` (a pre-pass produces separate scale/zero planes; TileK = 256/bits, so 64 for int4) and
+> `fully_quantized` (the GEMM consumes the packed GGUF metadata unit natively; TileK = 256 for Q2/Q4).
+>
+> **The `.so` ships `fully_quantized`** — `quactlize_ppu_dense_fully_quantized*` and
+> `quactlize_ppu_grouped_fully_quantized*` are the shipping entries — and **it has no tensor-core prefill
+> performance measurement at all.** Section E is everything that exists.
+>
+> So "reproduce 65%" validates the harness and the collective. It says nothing about what will ship.
+
 ---
 
 ## A. DENSE — M=2048, N=K=4096, L=1
@@ -104,6 +116,37 @@ Bandwidth-referenced, not MFU. Shape is the decode band; see `ppu-gemv-alu-bound
 
 **D1–D3 within 1.1% of each other across a 2.5× byte range** is the finding: decode is ALU-bound, not
 bandwidth-bound, so int4 is effectively free relative to int1.
+
+## E. fully_quantized — the SHIPPING path, and the only data that exists
+
+| # | what | figure | conditions | source |
+|---|---|---|---|---|
+| E1 | packed/native scale tax vs `scale_first` | **+13.1%** (95% CI 1.111–1.150) | 21.52 vs 22.54 µs — a **small-M / decode-band** shape | `ppu-q4k-native-perf-bc` |
+| E2 | of which transfer + store + barrier | +9.2% (1.076–1.109) | same | same |
+| E3 | of which the arithmetic itself | +3.5% (1.025–1.045) | same | same |
+
+That is one paired A/B (20 interleaved ABBA blocks, paired log-ratio, six intervals all excluding 1.0) run by
+`tests/test_q4k_native_scale.cu`. **It is the only performance number the fully-quantized path has, and it is
+relative, not absolute.**
+
+**IT CANNOT BE EXTRAPOLATED TO PREFILL, and the record says so in its own words:**
+
+> ⚠ 不能跨 M 外推:prepass 字节数与 M 无关,pack 的解码按 `Σ ceil(M_e/TileM)` 重复。M ≤ TileM 时 pack 无冗余;
+> M=2048/TM=128 时重复 16 次。
+
+The pre-pass cost is independent of M; the packed decode is repeated once per m-tile. At M ≤ TileM the packed
+path has no redundancy at all, and at M=2048 with TileM=128 it repeats **16×**. So the mechanism predicts the
+tax GROWS with M, and +13.1% is its value where the repetition factor is smallest.
+
+**WHAT DOES NOT EXIST:** any fully-quantized figure at prefill M, on either operator. `tests/test_q4k_packed_gemm.cu`
+exercises the path but has no timing; the `.so`'s `*_fully_quantized` entries are consumed only by
+`tests/test_gguf_routes.py`, which is a correctness test. So there is no bench to run — building one is work,
+not a command.
+
+**WHY THIS MATTERS MORE THAN THE SECTION-A TARGETS.** Section A tells us the collective and the harness are
+healthy. The shipping path is a different consumer of that collective with a different TileK and a decode whose
+cost scales with the m-tile count. A 65% scale_first result is compatible with a fully-quantized result
+anywhere from 57% to much worse, and nothing measured has narrowed that.
 
 ---
 
