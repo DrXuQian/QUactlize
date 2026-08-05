@@ -5,7 +5,37 @@ carries it. TRT-LLM is the reference because it is the only one of these systems
 as a build artifact rather than a runtime search, and because we already borrowed its neighbour (machete /
 fpA_intB's "compile every config in, search at run time, cache by shape").
 
-## What TRT-LLM actually does
+## CORRECTION, 2026-08-05: the section below describes a TRT-LLM that no longer exists
+
+Everything from here to "Where we are" was written from a **standalone extract**. The real repository was then
+cloned and read (NVIDIA/TensorRT-LLM main), and the TensorRT-plugin path that owned `GemmPluginProfiler` **is
+gone** — there is no `gemmPluginProfiler.{h,cpp}` in the tree at all. It is kept below because the shape it
+describes is still the right one and it is what our design was built against, but it is history, not the
+reference.
+
+**What main does now** (`tensorrt_llm/_torch/autotuner.py`) is *closer to what we already built*:
+
+  * tuning is an **explicit mode**, `with autotune(cache_path=...)`, which profiles and then `save_cache` /
+    `load_cache` by path. Nothing tunes implicitly.
+  * at inference (`is_tuning_mode == False`) it is a **pure lookup**: `search_cache` hit → that tactic; miss →
+    `fallback_entry()` = `(runner 0, tactic -1)` plus a `warning_once`. **It never profiles and never traverses
+    candidates at inference.**
+  * `tactic == -1` is documented as "the fallback kernel **which should be able to implement any shapes**",
+    needed both for a cache miss and so that "the autotuning process [is] an optional process, such that user
+    can opt out".
+  * the source comment at the miss branch reads **"Expect no cache miss in inference."**
+
+Two consequences for us, both simplifying:
+
+  * **Option A below is what the reference now does.** An explicit step producing a portable artifact, with
+    load-and-go preserved because the artifact is optional. That was the option this document could not choose
+    between; the reference has since chosen it.
+  * **There is no heuristic on that path.** `cutlass_heuristic.cpp`'s `estimate_best_config_from_occupancies`
+    (wave quantisation) is still in the tree but belongs to the C++ kernel-selection side. Our floor should be
+    what theirs is — the compiled default plus a deduplicated warning — not a model. INBOX 054 withdraws the
+    heuristic that 049 asked for on this basis.
+
+## What TRT-LLM used to do (TensorRT plugin path, removed)
 
 `GemmPluginProfiler`, at **engine build time**:
 
@@ -134,6 +164,15 @@ spread over a session, which is worse than asking for A once.
 
 Deciding between them before that sweep would be choosing the ergonomics before knowing the size, which is the
 same error as picking bucket boundaries before measuring where the winner changes.
+
+**2026-08-05: A is now also what the reference does**, and for a reason the sweep cannot overturn. TRT-LLM main's
+`autotune(cache_path=...)` is exactly shape A -- an explicit mode, an artifact, a path -- and the property that
+makes it work is the one B gives up: *the tuning process is optional and the fallback implements any shape*, so
+a user who never tunes still runs. B makes the first occurrence of every bucket pay, which is a cost that
+appears in the middle of somebody's first conversation and cannot be opted out of.
+
+The sweep still decides the table's SIZE, and the size still decides whether A is a small ask or a large one.
+It no longer decides the SHAPE.
 
 ## What this does not decide
 
