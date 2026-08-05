@@ -35,6 +35,13 @@ int32_t quactlize_ppu_list_grouped_configs(quactlize_ppu_config_v1 const** confi
 // The grouped inventory contains tensor-core and CUDA-core families. Call the predicate matching
 // enable_cuda_kernel; using a family with the other predicate returns 0. max_rows is the largest expert extent (the
 // only distribution property that can affect a compiled kernel); total_rows and experts validate the grouped domain.
+//
+// "Any shape" for the compiled tensor fallback means every positive M (or every positive total_rows/experts/max_rows
+// grouped problem) with N and K positive multiples of 256, the qtype's GGUF group size (16 for Q2/Q3/Q6, 32 for
+// Q4/Q5), and any extra format-selected constraint reported by this binary (currently K%512 for paired Q3/Q6 packed
+// units). Tile extents do not narrow that domain: M/N tails are predicated. In particular N=32 is outside the current
+// resident-artifact ABI, not rejected because a default TileN is wider. Fully-quantized entries are outside the
+// default build and return invalid unless PPU_PACKED_SCALE and that qtype's PPU_PACKED_FORMAT were compiled.
 int32_t quactlize_ppu_dense_lowbit_config_valid_v1(
     int m, int n, int k, int group_size, int qtype, char const* config_name);
 int32_t quactlize_ppu_dense_fully_quantized_config_valid_v1(
@@ -48,7 +55,8 @@ int32_t quactlize_ppu_vecdot_moe_config_valid_v1(
 
 // Config-selecting host-pointer operator entries. config_name comes from the corresponding dense or grouped
 // inventory above. A null/empty name requests that entry's compiled default; an unknown non-empty name reports
-// the decline and also runs that default.
+// the decline and also runs that default. Each tensor default is instantiated with compile-time assertions that its
+// exact shared storage fits ppu001 and that it uses the unrestricted ordinary-A path throughout the admitted domain.
 int quactlize_ppu_dense_lowbit_config_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high,
     uint16_t const* scale, uint16_t const* zero, uint16_t* out,

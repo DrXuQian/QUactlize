@@ -168,7 +168,8 @@ GroupedWorkspaceLayout grouped_workspace_layout(int max_rows, int n, int experts
 }
 
 template <class Low, class High, int GroupSize, int TileK,
-          int TileM, int TileN, int WarpM, int WarpN, int Stages, bool QueryOnly = false>
+          int TileM, int TileN, int WarpM, int WarpN, int Stages,
+          bool QueryOnly = false, bool RequireUniversalFallback = false>
 int launch_grouped_tactic(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
     half_t** out_ptrs, DS* out_strides, int const* rows,
@@ -180,7 +181,8 @@ int launch_grouped_tactic(
   using Warp = cute::Shape<cute::C<WarpM>, cute::C<WarpN>, cute::C<TileK>>;
   bool const launched = moe_grouped_ppu::launch<GQM::FinegrainedScaleZero,
                           cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
-                          Tile, Scale, Warp, Stages, true, Low, High, true, QueryOnly>(
+                          Tile, Scale, Warp, Stages, true, Low, High, true,
+                          QueryOnly, RequireUniversalFallback>(
       reinterpret_cast<half_t const*>(act), reinterpret_cast<Low const*>(low),
       reinterpret_cast<half_t const*>(units), nullptr,
       out_ptrs, out_strides, rows, max_rows, n, k, experts, GroupSize,
@@ -202,7 +204,8 @@ int launch_grouped_config(
   switch (config) {
 #define QUACTLIZE_PPU_GROUPED_CONFIG_CASE(ID, NAME, TM, TN, WM, WN, STAGES) \
     case GroupedConfigId::ID: \
-      return launch_grouped_tactic<Low, High, GroupSize, TileK, TM, TN, WM, WN, STAGES, QueryOnly>( \
+      return launch_grouped_tactic<Low, High, GroupSize, TileK, TM, TN, WM, WN, STAGES, QueryOnly, \
+                                   GroupedConfigId::ID == kDefaultGroupedConfig>( \
           act, low, high, units, out_ptrs, out_strides, rows, max_rows, n, k, experts, \
           shapes, shapes_host, offsets, workspace, workspace_bytes, stream);
     QUACTLIZE_PPU_GROUPED_CONFIGS(QUACTLIZE_PPU_GROUPED_CONFIG_CASE)
@@ -212,7 +215,8 @@ int launch_grouped_config(
 }
 
 template <class Low, class High, int GroupSize, int TileK, bool PackedScale,
-          int TileM, int TileN, int WarpM, int WarpN, int Stages, bool QueryOnly = false>
+          int TileM, int TileN, int WarpM, int WarpN, int Stages,
+          bool QueryOnly = false, bool RequireUniversalFallback = false>
 int launch_dense_tactic(uint16_t const* act, uint8_t const* low, uint8_t const* high,
                         void const* scale, uint16_t const* zero, uint16_t* out,
                         int m, int n, int k, void* workspace, size_t workspace_bytes,
@@ -223,7 +227,7 @@ int launch_dense_tactic(uint16_t const* act, uint8_t const* low, uint8_t const* 
   bool const launched = fpa_intb_ppu::generic_launcher<QM::FinegrainedScaleZero,
       cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
       Tile, cute::Shape<cute::C<TileN>, cute::C<ScaleGroups>>, Warp, Stages, true,
-      Low, High, PackedScale, QueryOnly>(
+      Low, High, PackedScale, QueryOnly, RequireUniversalFallback>(
           reinterpret_cast<half_t const*>(act), reinterpret_cast<Low const*>(low),
           reinterpret_cast<half_t const*>(scale), reinterpret_cast<half_t const*>(zero),
           reinterpret_cast<half_t*>(out),
@@ -243,7 +247,8 @@ int launch_dense_config(DenseConfigId config, uint16_t const* act, uint8_t const
   switch (config) {
 #define QUACTLIZE_PPU_DENSE_CONFIG_CASE(ID, NAME, TM, TN, WM, WN, STAGES) \
     case DenseConfigId::ID: \
-      return launch_dense_tactic<Low, High, GroupSize, TileK, PackedScale, TM, TN, WM, WN, STAGES, QueryOnly>( \
+      return launch_dense_tactic<Low, High, GroupSize, TileK, PackedScale, TM, TN, WM, WN, STAGES, QueryOnly, \
+                                 DenseConfigId::ID == kDefaultDenseConfig>( \
           act, low, high, scale, zero, out, m, n, k, workspace, workspace_bytes, stream);
     QUACTLIZE_PPU_DENSE_CONFIGS(QUACTLIZE_PPU_DENSE_CONFIG_CASE)
 #undef QUACTLIZE_PPU_DENSE_CONFIG_CASE

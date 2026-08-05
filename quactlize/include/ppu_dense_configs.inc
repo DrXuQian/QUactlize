@@ -1,5 +1,7 @@
 // The dense tactics compiled into libquactlize_ppu.so. Keep the current shipping tactic first: it is the default
-// used by ABI entries that do not select a config, and it remains the fallback for stale/unknown names.
+// used by ABI entries that do not select a config, and it remains the fallback for stale/unknown names. The backend
+// identifies ID==Default at template instantiation and proves its exact SharedStorageSize and unrestricted-A path;
+// renaming or replacing this row cannot silently weaken the fallback contract.
 //
 // These rows are a bootstrap SET drawn from configurations the dense benchmark already instantiated. The coverage
 // sweep can replace the non-default rows without changing the dispatcher, enumeration ABI, or GEMM callers.

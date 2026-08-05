@@ -62,7 +62,7 @@ template <QuantMode QuantOp, class KernelSchedule,
           class ElementB = cutlass::int4b_t,   // default W4A16; pass cutlass::uint2b_t for W2A16
           class PlaneB2 = void,                // bit-plane concat: 2nd (high) B plane; void = single plane
           bool ExpectPackedScale = false,
-          bool QueryOnly = false>
+          bool QueryOnly = false, bool RequireUniversalFallback = false>
 bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* scales,
             const cutlass::half_t* zeros,
             cutlass::half_t** ptr_D,        // device [L] per-expert output base pointers (contiguous: D+offs[e]*N)
@@ -156,6 +156,15 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   // Query the exact instantiated type rather than reconstructing its storage from the public tile coordinates.
   // Packed-unit staging and optional A/scale layouts all contribute to this value. The normal launch shares the
   // same guard, so a caller that forgot to query still cannot poison the context with an oversized block.
+  static_assert(!RequireUniversalFallback ||
+                    GemmKernel::SharedStorageSize <= ppu_tactics::kBlockSmemBytes,
+                "the compiled grouped default must fit one ppu001 block for every admitted shape");
+  static_assert(!RequireUniversalFallback || CollectiveMainloop::compact_a_rows == 0,
+                "the compiled grouped default must use the unrestricted ordinary-A path");
+#if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
+  static_assert(!RequireUniversalFallback,
+                "PPU_A_PACK is a one-row experiment and cannot be the universal grouped fallback");
+#endif
   if constexpr (GemmKernel::SharedStorageSize > ppu_tactics::kBlockSmemBytes) return false;
   // PPU_FORCE_INSTANTIATE: odr-use the kernel's operator() so the WHOLE collective -- mainloop included -- is
   // instantiated by the front end. Without this the local nvcc gate parses the collective but never instantiates it,

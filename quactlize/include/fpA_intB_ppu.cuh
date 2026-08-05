@@ -61,7 +61,7 @@ constexpr bool has_zero(QuantMode q) { return q == QuantMode::FinegrainedScaleZe
 template <QuantMode QuantOp, class KernelSchedule,
           class TileShape, class ScaleTileShape, class WarpShape, int Stages, bool AiuInterleaved,
           class ElementB = cutlass::int4b_t, class PlaneB2 = void, bool ExpectPackedScale = false,
-          bool QueryOnly = false>
+          bool QueryOnly = false, bool RequireUniversalFallback = false>
 bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
                       const cutlass::half_t* scales, const cutlass::half_t* zeros, cutlass::half_t* D,
                       int m, int n, int k, int group_size, int split_k,
@@ -143,6 +143,15 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
   // layouts. The host arithmetic in ppu_tactic_space.hpp deliberately remains useful for emitting a broad finite
   // domain, but the runtime answer must not guess sizeof(SharedStorage) from tile coordinates. QueryOnly returns
   // before pointer/stride construction and requires no PPU context; the ordinary launch takes the same guard.
+  static_assert(!RequireUniversalFallback ||
+                    GemmKernel::SharedStorageSize <= ppu_tactics::kBlockSmemBytes,
+                "the compiled dense default must fit one ppu001 block for every admitted shape");
+  static_assert(!RequireUniversalFallback || CollectiveMainloop::compact_a_rows == 0,
+                "the compiled dense default must use the unrestricted ordinary-A path");
+#if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
+  static_assert(!RequireUniversalFallback,
+                "PPU_A_PACK is a one-row experiment and cannot be the universal dense fallback");
+#endif
   if constexpr (GemmKernel::SharedStorageSize > ppu_tactics::kBlockSmemBytes) return false;
   if constexpr (QueryOnly) return true;
 
