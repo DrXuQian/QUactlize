@@ -40,6 +40,19 @@ run settles it. (A recollection of "60+% at gs=16" exists and is not what the ar
 
 ## B. DENSE — other shapes and group sizes
 
+> **⚠ EVERY ROW IN THIS SECTION IS gs=128 AND NONE OF THEM IS REPRODUCIBLE ON THE CURRENT COLLECTIVE.**
+> Measured on the box 2026-08-05: `--g=128` hits an unconditional `assert(false)` in
+> `ppu_mma_aiu_multistage_mixed_input.hpp:1968`. The COARSE scale path (`Scale_TileK <= K_BLOCK_MAX`) copies the
+> scale and then executes `if constexpr (false) {} else { assert(false); }`, whose else branch always runs. gs=16
+> and gs=32 take the FINE path at every TileK and are unaffected; gs>=64 always takes COARSE. At TileK=64 it is
+> worse still -- `Scale_TileK = 64/128 = 0` makes `GroupK` a division by zero.
+>
+> Nobody noticed because **gs=128 is not a GGUF k-quant group size**: the shipping registry has only 16 (Q2/Q3/Q6)
+> and 32 (Q4/Q5), so no shipping path reaches COARSE. These rows were measured in July through the older
+> `Kernels/general/w4a16_gemm/cutlass_w4a16` bench. They stay recorded as history and are NOT back-test targets
+> until the path is fixed (INBOX 059).
+
+
 | # | shape | gs | config | figure | recorded | source |
 |---|---|---|---|---|---|---|
 | B1 | 2048×4096×4096 | 128 | `64×64 / 32×32 / s4` | **305 TF/s = 61%** | 2026-07-22 | `ppu-cutlass-w4a16-actlize` |

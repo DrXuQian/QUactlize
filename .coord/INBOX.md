@@ -2199,3 +2199,58 @@ does NOT change the offline layout must be a SEARCH AXIS rather than a build fla
 changes only emission order, not the bytes ("delivery wastes no code, mma count unchanged, converter total work
 unchanged"). It cannot become a search axis while it is a #define consulted inside two of three collectives.
 So ① is a prerequisite for that, not a separate cleanup.
+
+## 059 -- THE COARSE SCALE PATH IS DEAD CODE THAT ASSERTS. Found on the box, gs=128, any TileK.
+
+Box run 2026-08-05, dense bench at `--g=128`:
+
+    ppu_mma_aiu_multistage_mixed_input.hpp:1968  copy_B_and_extra_info
+    TileShape = (16, 64, 256)   block [72,2,0] thread [112,0,0]   Assertion `false' failed
+    -> std::runtime_error: Failed to query occupancy      (the context was already poisoned)
+
+THE SITE, and it is not a legality problem -- it is unfinished code:
+
+    if constexpr (int(Scale_TileK) <= KBM_) {          // COARSE
+      auto GroupK = size<2>(tCrB_copy_view) / Scale_TileK;
+      if (k_block % GroupK == 0) {
+        if constexpr (DirectConvert) { }
+        else if constexpr (ModeHasScales) {
+          ... the scale IS copied, correctly ...
+          if constexpr (false) {} else { assert(false); }     // <- else always runs
+        }
+        else { assert(false); }
+      }
+    }
+
+`if constexpr (false) {} else {...}` executes the else unconditionally. So every COARSE-with-scales execution
+asserts, AFTER doing its copy. The commented-out `static_assert(dependent_false<KernelSchedule>, "Conversion mode
+not handled in A -> RF path.")` above it says what it was: a not-handled marker that was demoted to a runtime
+assert and then reached.
+
+WHICH CONFIGURATIONS REACH IT, derived rather than guessed (Scale_TileK = TileK/gs, K_BLOCK_MAX = max(TileK/64,1)):
+
+    gs=16    Scale_TileK 4 / 8 / 16   > KBM at TileK 64/128/256   -> FINE, unaffected
+    gs=32    Scale_TileK 2 / 4 /  8   > KBM                       -> FINE, unaffected
+    gs=128   Scale_TileK 0 / 1 /  2  <= KBM at every TileK        -> COARSE -> assert
+             and at TileK=64, Scale_TileK is 0, so GroupK is a division by zero as well
+
+WHY IT ROTTED UNNOTICED, which is the part worth keeping: **gs=128 is not a GGUF k-quant group size.** The
+shipping registry has 16 (Q2/Q3/Q6) and 32 (Q4/Q5) only, so no shipping path has ever taken COARSE. It is
+reachable exclusively from bench invocations at gs>=64 -- which is how every historical gs=128 figure in
+docs/BACKTEST.md section B was produced, on the older Kernels bench.
+
+WHAT I AM ASKING, and the choice matters more than the fix:
+
+  * If the COARSE path is supposed to work, finish it -- the scale copy above it looks complete and only the
+    dispatch tail is missing.
+  * If it is NOT supposed to work, it must be rejected where the caller can act on it, not asserted on the
+    device. A device assert poisons the context, so the failure surfaces as "Failed to query occupancy" in an
+    unrelated later call -- which is exactly what the operator saw, and it names neither gs nor the collective.
+    ppu_tactic_space.hpp already computes Scale_TileK-adjacent quantities, and 055's validity query is the
+    natural place for `gs >= 64 is not supported by this collective`.
+
+Either way I would like the CONDITION stated somewhere a caller can read, because right now "which group sizes
+does the shipping collective support" is answerable only by deriving it from two constants inside a header.
+
+This also revises docs/BACKTEST.md: its whole section B (gs=128, including the 61% and the 25-27% control) is
+not reproducible on the current collective, and is now marked as history rather than as a target.
