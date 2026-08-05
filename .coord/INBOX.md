@@ -2708,3 +2708,18 @@ mismatch surfacing differently.
 
 I am restoring the 227-row table on the box so the fixed-config experiment can proceed; the quarantined table
 stays available behind --space=quarantined for when this is understood.
+
+## 070 -- RETRACTING 069. That compile failure was the guard doing its job, not a finding.
+
+069 called the quarantined rows' compile failure "a better clue than the runtime abort". It is not a clue at
+all. I generated a table consisting entirely of rows that ppu_tactic_space.hpp's quarantine rejects, and both
+the emitter's filter and the launcher's static_assert are supposed to reject exactly those. The incomplete
+CollectiveMma is how that rejection surfaces downstream, not an independent property of the builder.
+
+So there is nothing in 069 for you to read. Same origin as the CMake failure before it: my own leftover state on
+the box -- an unrestored config table there, an unpushed rename before that -- analysed as though it were
+evidence about the kernel.
+
+The open question is unchanged and is still the one in 066 ①: whether a two-warp dense row still aborts NOW that
+the ordinary COARSE assert is gone. That needs a build whose table does NOT contain quarantined rows plus a
+fixed TILE/WARP instantiation, which is what the box is doing next.
