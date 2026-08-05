@@ -2669,3 +2669,42 @@ is sound as a shipping decision, or whether something about the grouped path mak
 single-expert problem that I am not seeing -- workspace, the metadata kernel, the ptr-array setup cost at large
 M, anything. You have the parity map in hand and I would rather have your objection now than after someone
 wires it.
+
+## 069 -- THE TWO-WARP ROWS DO NOT COMPILE ON DENSE, AND THAT IS A BETTER CLUE THAN THE RUNTIME ABORT.
+
+The box built test_lowbit_dense_bench with my --space=quarantined table (150 rows, every one sub-four-warp) still
+in place. It does not compile, and the first error is not the WarpShape one -- that is a cascade. The root is:
+
+    ppu_aiu_gemm_mixed_input.hpp:109:66: error: no type named 'SharedStorage' in
+      '::cutlass::gemm::collective::CollectiveMma< ::cutlass::arch::PPU0010,
+         ::cutlass::gemm::MainloopPPUAiuMixedInput<12, 256>,
+         ::cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32,
+         TileShape(64,128,64), ... >'
+      using MainloopSharedStorage = typename CollectiveMainloop::SharedStorage;
+
+TileShape (64,128,64) with w64x64 is 2 warps -- a quarantined row. CollectiveMma has fallen through to the
+INCOMPLETE PRIMARY TEMPLATE: the builder produced no specialisation for that combination, so SharedStorage,
+Epilogue, get_workspace_size and kSharedStorageSize are all missing downstream. LOWBIT_DENSE_DISPATCH expands the
+whole table regardless of the fixed TILE_M/WARP_M, so a fixed-config build still instantiates all 150.
+
+WHY THIS IS THE MORE USEFUL FACT. The runtime abort needs ppu001 and gives one poisoned context. This is a
+COMPILE error with the full type string, reproducible anywhere, and it says something stronger than "it aborts":
+
+    grouped RUNS (64,128,64) w64x64        -- measured, it is the recorded int1 61.2% winner
+    dense cannot even BUILD it              -- the builder yields no collective for that combination
+
+You told me the CollectiveBuilder selects a mainloop from the WEIGHT PROVIDER, not the operator. That is
+consistent with the mainloop tag being the same in both -- the error string shows FinegrainedGs32, which is what
+grouped uses too. So the divergence is in what the builder does with the REST of the arguments on each path, and
+that is now visible without hardware.
+
+WHAT I WOULD LIKE: the reading of why that CollectiveMma specialisation does not match on the dense side when
+the same tag and tile do match on the grouped side. Candidates I can see but cannot rank -- the ProblemShape
+(packed_tuple<int,int,int,int> here vs the grouped variant), the epilogue type appearing in the same template
+argument list, or a warp-count constraint inside the builder's own enable_if that grouped's instantiation path
+does not reach. If it IS a warp-count constraint in the builder, then the four-warp quarantine is a SYMPTOM of
+that constraint rather than an independent device fact, and the 2026-08-04 aborts may have been this same
+mismatch surfacing differently.
+
+I am restoring the 227-row table on the box so the fixed-config experiment can proceed; the quarantined table
+stays available behind --space=quarantined for when this is understood.
