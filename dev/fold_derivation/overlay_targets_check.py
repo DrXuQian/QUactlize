@@ -151,8 +151,30 @@ def main():
         skipped = [l for l in r.stdout.splitlines() if "ppu_w4a16: skipping" in l]
         if r.returncode != 0:
             print("  [FAIL] overlay_targets: cmake could not configure the overlay:")
-            for l in [x for x in (r.stdout + r.stderr).splitlines() if "Error" in x or "error" in x][:6]:
-                print(f"           {l.strip()}")
+            # PRINT THE REASON, NOT JUST THE HEADLINE. This used to filter to lines containing "Error", which
+            # drops the only part that says what went wrong: CMake writes
+            #     CMake Error at CMakeLists.txt:158 (message):
+            #       <the actual reason, indented, containing no such word>
+            # so three separate box failures were reported to me as a bare file:line with no cause, and I could
+            # not reproduce them locally. A rejection that filters out its own reason is worse than silence,
+            # because it looks like it explained itself.
+            lines = (r.stdout + r.stderr).splitlines()
+            shown = 0
+            for i, l in enumerate(lines):
+                if "CMake Error" not in l and "CMake Warning (dev)" not in l:
+                    continue
+                for j in range(i, min(i + 12, len(lines))):
+                    if j > i and lines[j].strip() and not lines[j].startswith((" ", "\t")):
+                        break                      # the indented block after the headline IS the message
+                    print(f"           {lines[j].rstrip()}")
+                    shown += 1
+                print("           --")
+                if shown > 40:
+                    print("           (truncated; full text is in the build log)")
+                    break
+            if shown == 0:                          # no CMake-shaped error: show the tail rather than nothing
+                for l in lines[-15:]:
+                    print(f"           {l.rstrip()}")
             for l in skipped[:4]:
                 print(f"           {l.strip()}")
             return 1
