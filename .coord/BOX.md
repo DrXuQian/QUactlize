@@ -282,6 +282,38 @@ These are correctness and inspection, not tactic sweeps, so the hold above does 
    instantiated both device-pointer families and exported the grouped selection layer; it does not replace the later
    llama numerical run through those entries.
 
+8. **FRESH SUB-FOUR DENSE DIAGNOSIS AFTER INBOX 066. This is two correctness launches, not a tactic sweep.** The
+   historical 047 aborts cannot have been split-K-specific: the exact `Cfg::Kernel` that produced them was a plain
+   `GemmUniversal<Problem,Main,Epi>` with no `SplitKSerialScheduler` template argument and no split axis. What remains
+   unknown is whether that non-grouped two-warp failure still exists after the ordinary COARSE path was completed.
+
+   Use the bench's fixed ScaleZero path so TILE/WARP environment values instantiate the requested kernel directly;
+   the generated ScaleOnly tactic inventory deliberately quarantines the two-warp row and is not modified here.
+   Build/run the four-warp control first, then the two-warp cell in its own process:
+
+       cd /sim/eec/shared/junfu.qx/quactlize && git pull --recurse-submodules
+
+       TILE_M=64 TILE_N=64 WARP_M=32 WARP_N=32 STAGES=3 TARGET=test_lowbit_dense_bench ./build.sh
+       BIN=$(find build_ppu -type f -name test_lowbit_dense_bench -perm -u+x -print -quit)
+       test -n "$BIN"
+       set +e
+       "$BIN" --m=2048 --n=4096 --k=4096 --g=32 --mode=2 --iterations=1 2>&1 | tee /tmp/dense_4warp_control.log
+       echo "four-warp rc=${PIPESTATUS[0]}"
+       set -e
+
+       TILE_M=64 TILE_N=64 WARP_M=64 WARP_N=32 STAGES=3 TARGET=test_lowbit_dense_bench ./build.sh
+       BIN=$(find build_ppu -type f -name test_lowbit_dense_bench -perm -u+x -print -quit)
+       test -n "$BIN"
+       set +e
+       "$BIN" --m=2048 --n=4096 --k=4096 --g=32 --mode=2 --iterations=1 2>&1 | tee /tmp/dense_2warp_probe.log
+       echo "two-warp rc=${PIPESTATUS[0]}"
+       set -e
+
+   WANTED: both rc lines and the last 20 lines of each log, including the assertion text if present. Control pass plus
+   two-warp abort proves the current failure is on the non-split dense kernel/epilogue route. Both passing means the
+   old quarantine may be stale or ScaleOnly-specific; it still must not be lifted until the exact ScaleOnly winner is
+   probed. Both aborting means this ScaleZero diagnosis hit a separate unsupported path and says nothing about warps.
+
 
 **WHEN SOMETHING IS RED, PASTE THIS.** No arguments, safe any time, output sized for a chat message:
 

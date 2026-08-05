@@ -76,7 +76,7 @@ constexpr char const* exclusion_clause(Exclusion e) {
     case Exclusion::None: return "";
     case Exclusion::AtomAlignment: return "tile and warp extents must be multiples of the 16x16x16 MMA atom";
     case Exclusion::WarpDoesNotDivideTile: return "warp shape must divide tile shape";
-    case Exclusion::DenseSubFourWarpDeviceAbort: return "dense SplitKSerial: sub-four-warp tactics are quarantined after the observed device abort";
+    case Exclusion::DenseSubFourWarpDeviceAbort: return "dense/non-grouped kernel route: sub-four-warp tactics are quarantined after the observed device abort";
     case Exclusion::TooManyWarps: return "tile needs more than the 32-warp block limit";
     case Exclusion::AccumulatorRegisters: return "the fp32 accumulator alone exceeds the 192-register sweep ceiling";
     case Exclusion::LowFoldDoesNotDivideTileN: return "the derived low-plane fold does not divide TileN";
@@ -128,13 +128,17 @@ constexpr Exclusion common_kernel_exclusion(Candidate c) {
 }
 
 // DENSE-ONLY QUARANTINE, not PPU collective legality. On ppu001 (2026-08-04), the tested dense i4/TK64
-// SplitKSerial instantiations below four warps aborted and every tested row at four or above ran. But the grouped
-// kernel has positively measured two-warp rows through the same mainloop: ordinary one-plane i4
+// instantiations below four warps aborted and every tested row at four or above ran. Those observations came from
+// test_lowbit_dense_bench's Cfg::Kernel, which was a plain GemmUniversal<Problem,Main,Epi> with NO
+// SplitKSerialScheduler template argument and no split-K axis. Therefore the observed boundary cannot be attributed
+// to split-K, and split_k=1 in the shipping dense adapter is not an evidence-backed exception. The grouped kernel has
+// positively measured two-warp rows through the same mainloop: ordinary one-plane i4
 // (64,64,64) w64x32 and folded one-plane int1 (64,128,64) w64x64. The GemmUniversalAdapter's max(4,...) is only
 // legacy WarpCount/WarpShape metadata; kThreadCount and both kernels' block shapes remain size(TiledMma). Therefore
 // the dense evidence cannot exclude grouped rows, and it does not establish a 128-thread collective requirement.
-// Keep the dense boundary conservative until the dense kernel/epilogue assert site is identified: the measured grid
-// has no three-warp CTA, so it still does not distinguish >=3 from >=4.
+// Keep the dense boundary conservative until the non-grouped kernel/epilogue assert site is identified or the exact
+// two-warp dense row passes a fresh device probe: the measured grid has no three-warp CTA, so it still does not
+// distinguish >=3 from >=4.
 constexpr Exclusion dense_kernel_exclusion(Candidate c) {
   Exclusion const common = common_kernel_exclusion(c);
   if (common == Exclusion::AtomAlignment || common == Exclusion::WarpDoesNotDivideTile) return common;
