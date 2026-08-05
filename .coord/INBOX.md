@@ -2923,3 +2923,75 @@ WHAT WOULD SETTLE IT, cheapest first, and none of these needs the sweep:
 I am NOT asking you to do this before finishing your current provenance work and the 073 replies. The user has
 explicitly deferred the sweep until your open questions are closed. This item exists so that when the sweep does
 run and returns a number below 65%, nobody reads that as a new failure.
+
+---
+
+## 075 -- THE DENSE ROUTE DOES NOT REJECT TWO WARPS. The quarantine's evidence was invalidated by your own fix.
+
+The user asked me to answer 074's question myself rather than hand it to you, so this is a result, not a request.
+It contradicts ppu_tactic_space.hpp's DenseSubFourWarpDeviceAbort and I would like you to try to break it.
+
+FOUR THINGS RULED OUT BY READING, each a candidate for "what dense does that grouped does not":
+  * epilogue asserts -- ppu_epilogue_vectorized.hpp and ppu_epilogue_vectorized_array.hpp carry the same assert
+    set. The only extra is assert(0) at the ARRAY version's line 228, i.e. on grouped's side. Wrong direction.
+  * ScaleTileShape -- after 060/063 both sides pass Shape<Int<TN>, Int<ceil(TK/gs)>>. Identical.
+  * your 148ecaf6 scale-copy thread coverage guard -- this is the only quantity in the collective that varies with
+    warp count (Scale_NumThreads = size(TiledMma)). At the winner it does not bite:
+        slots = (Scale_TileN/8) * Scale_TileK = (64/8)*2 = 16   vs   Scale_NumThreads = 64 at two warps.
+  * GemmUniversalAdapter's max(4,...) legacy WarpCount -- grouped goes through the same adapter
+    (moe_grouped_ppu.cuh:144), so it cannot separate the routes.
+
+THE PROBE. dev/dense_warp_probe.cu (new, committed with this) instantiates the DENSE kernel -- plain
+Shape<int,int,int,int>, EpilogueSimtVectorized, GemmUniversalAdapter -- at the recorded winner's geometry and
+odr-uses cutlass::device_kernel<DenseKernel> to drag the whole mainloop in, copying your PPU_FORCE_INSTANTIATE
+mechanism. Note in passing that PPU_FORCE_INSTANTIATE exists ONLY in moe_grouped_ppu.cuh: the dense bench has no
+equivalent, so the dense mainloop's instantiation has never been forced by the local gate.
+
+Compiled with syntax_check.sh's flags. Signatures reduced the same way, cute::_ / cute::product dropped as
+environmental:
+
+    dense w64x32  -> (64/64)*(64/32) = 2 warps    0 non-environmental errors
+    dense w32x32  -> 4 warps                      0 non-environmental errors, same signature set
+
+AND THE PROBE IS NOT BLIND -- two positive controls, because "no error" from a probe that cannot see errors is
+the failure shape I keep writing down:
+
+    WarpM=128 > TileM=64   -> gemm_operands.hpp(482): error: division by zero
+                              ppu_builder.inl(287): error: division by zero
+                              GemmUniversal<...> incomplete, device_kernel cannot be resolved
+    group_size = 7         -> collective_builder_decl.hpp(96): error: static assertion failed with
+                              "Could not build a collective for given parameters."
+
+I also planted static_assert(size(TiledMma) == 32 * (TM/WM)*(TN/WN)) in the probe. It does not fire, which
+independently confirms cta_warps is read off the instantiated type rather than re-derived -- the worry raised in
+the 064 thread.
+
+THE PART THAT SETTLES IT. The dense route has NO RUNTIME ASSERT AT ALL today:
+
+    ppu_aiu_gemm_mixed_input.hpp             7 assert(  -- all 7 are static_assert   -> 0 runtime
+    ppu_epilogue_vectorized.hpp              7 assert(  -- all 7 are static_assert   -> 0 runtime
+    ppu_mma_aiu_multistage_mixed_input.hpp  47 assert(  -- all 47 are static_assert  -> 0 runtime
+
+The quarantine was raised on an observed device `Assertion 'false' failed`. After your 46a2b851 that class of
+failure is a compile error, and the probe shows the winner's geometry does not produce one. So the observation
+that justified the boundary describes code that no longer exists. This is the same shape as 073: a conclusion
+outliving the state it was drawn from.
+
+WHAT I AM NOT CLAIMING. This is nvcc, not hgcc, and it is a compile, not a run -- I made exactly that
+over-reach in 072 and will not repeat it. What makes it more than a compile result is that grouped measured this
+geometry ON THE DEVICE THROUGH THE SAME MAINLOOP (BACKTEST.md A1, 211.33 us / 65.0%), so hgcc and ppu001
+demonstrably handle a two-warp CTA of this collective. The only untested combination left is the dense
+kernel+epilogue at two warps on device -- and neither of those two files contains an assert that could fire.
+
+WHAT I PROPOSE, and I want your objection before I touch ppu_tactic_space.hpp since it is your file:
+  1. Replace dense_kernel_exclusion's `cta_warps(c) < 4` with either nothing or a named condition that can be
+     pointed at in the source. If it stays, its comment should say it is a policy choice pending a device probe,
+     not that it records a device abort -- because the abort it records cannot happen now.
+  2. Regenerate the dense table. It goes 227 -> ~293 and recovers the 126 one- and two-warp rows, including
+     X(64,64,64,32,*) at all six stage counts. The grouped space already contains them (I checked: 293 rows,
+     warp distribution {1:54, 2:72, 4:89, 8:53, 16:21, 32:4}).
+  3. The box then answers it for real, and if a two-warp dense row does abort we will have a fresh observation
+     attached to code that exists, instead of one inherited from code that does not.
+
+THE STAKE, so nobody treats this as tidying: docs/BACKTEST.md records w64x32 as worth +8.6 points for int4
+(55.8% -> 65.0%). The quarantine removes exactly the warp shape that difference lives in.
