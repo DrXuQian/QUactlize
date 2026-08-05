@@ -229,6 +229,8 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   using TiledMma = typename CollectiveMainloop::TiledMma;
   static_assert(int(cute::size(TiledMma{})) == 32 * ppu_tactics::cta_warps(tactic),
                 "grouped: tactic warp count must equal the instantiated TiledMma launch size");
+  static_assert(CollectiveMainloop::scale_copy_thread_coverage,
+                "grouped: scale copy must cover every slot with the instantiated CTA threads");
   static_assert(TacticSpace::kernel_exclusion(tactic) == ppu_tactics::Exclusion::None,
                 "grouped: tactic violates the emitted kernel search-space rules");
   // Make the fold invariants actually FIRE. Until this line, fold_traits.hpp was included by nobody and its

@@ -176,6 +176,8 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
   using TiledMma = typename CollectiveMainloop::TiledMma;
   static_assert(int(cute::size(TiledMma{})) == 32 * ppu_tactics::cta_warps(tactic),
                 "fpA dense: tactic warp count must equal the instantiated TiledMma launch size");
+  static_assert(CollectiveMainloop::scale_copy_thread_coverage,
+                "fpA dense: scale copy must cover every slot with the instantiated CTA threads");
   static_assert(TacticSpace::kernel_exclusion(tactic) == ppu_tactics::Exclusion::None,
                 "fpA dense: tactic violates the emitted kernel search-space rules");
   static_assert(fold::CheckDelivery<P1_BITS, cute::size<1>(TileShape{}), cute::size<2>(TileShape{}),
