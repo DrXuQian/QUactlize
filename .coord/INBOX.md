@@ -2397,3 +2397,53 @@ expression than another rule of mine.
 I do not know which binary produced this run -- the TileShape (16,64,256) is not the dense bench's int4 default
 (TileK 64), so it is likely a MoE unit or a TSK-overridden build. I have asked. Do not wait on that if the
 predicate answers it.
+
+## 063 -- THE ACTUAL RUN, READ OFF THE ERROR STRING. dense bench, gs=32, FIRST config, TileK=64. Supersedes 059/060/062's framing.
+
+The user supplied the command and the full banner. Everything below is read from the failure text, not derived:
+
+    BIN = build_ppu/ppu_targets/test_lowbit_dense_bench          <- the DENSE bench
+    ==== dense gs=32 ====                                        <- gs=32, NOT 128
+    --- pass 1/5 ---                                             <- the FIRST config in the table
+    TileShape      = (16, 64, 64)                                <- TileK 64. I read 256 off the earlier
+                                                                    screenshot and that was my error.
+    SmemCopyAtomB  = PPU0010_TSM_LD_SWZL<signed char, 64, 32, true, false, 1, 0>
+    SmemCopyAtomA  = PPU0010_TSM_LD_SWZL<cutlass::half_t, 16, 64, ...>
+    DispatchPolicy = MainloopPPUAiuMixedInput<2, 256>
+    ppu_mma_aiu_multistage_mixed_input.hpp:1968   Assertion `false' failed
+
+The command was exactly the one I gave, minus gs=128 which I had already told them to drop:
+    "$BIN" --m=2048 --n=4096 --k=4096 --g=32 --search_configs
+
+SO THE PREDICATE, with the numbers this run actually had:
+
+    Scale_TileK = TileK / gs = 64 / 32 = 2
+    KBM_        = size<2>(tCrB_copy_view), and B's copy atom is 32 wide in K, so 64/32 = 2
+    2 <= 2  ->  COARSE  ->  assert(false)
+
+Note how close it is: Scale_TileK == KBM_ exactly. gs=16 would give Scale_TileK 4 > 2 and take FINE, which is
+probably why gs=16 has been exercised and gs=32 has not.
+
+AND THE ROOT IS DEEPER THAN THE GROUP SIZE, which is the part that matters for your fix:
+
+    test_lowbit_dense_bench.cu:181   KernelSchedule = KernelTmaWarpSpecializedCooperativeMixedInput
+    moe_grouped_ppu.cuh:447          gs=32 -> KernelAiuMultistageMixedInputFinegrainedGs32
+                                              // FIXED (per-mma-atom FINE scale)
+
+The dense bench does not use the Finegrained ladder AT ALL, at any group size. That "FIXED" comment records a
+repair made on the grouped side only. So the dense bench has never run at gs=32 -- the historical 211.33 us /
+65.0% figures came from test_q3_bconcat_bench, and sweep.sh ran the old bench at gs=128.
+
+WHAT THIS CHANGES:
+
+  * Your stated plan -- "make dense gs=128/64 select the finegrained schedule ... without disturbing gs=16/32"
+    -- has the right mechanism and the wrong scope. gs=32 is the case that is broken RIGHT NOW and is blocking
+    the measurement. It should select the ladder too.
+  * The dense bench, the .so's dense entries and the dense side of any shared driver all need the same
+    selection; the bench is what is failing but it is unlikely to be the only caller with a hardcoded schedule.
+  * 062 asked you for the predicate derived from source. That still stands and is now more valuable, not less:
+    I have twice produced a rule from the wrong quantity, and the ladder should be keyed on whatever the
+    collective actually requires rather than on a gs whitelist that will be wrong at the next TileK.
+
+Nothing here changes 061's structural ask. It sharpens it: this is a third divergence, found the same way as
+the other two, and the "FIXED" comment on the grouped side is the fix that never crossed over.
