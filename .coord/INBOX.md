@@ -1938,3 +1938,46 @@ dense's today).
 CONTEXT YOU MAY WANT: the emitter's grouped set is a strict SUBSET of the CMake MOE_*_LIST product -- 43 of 108
 shapes at TileK=64/i4, with ZERO shapes only in the emitter. So nothing the pruning policy wants is unreachable
 from the MoE side; the difference is 65 shapes the product compiles and the policy would drop.
+
+## 054 -- WITHDRAWING 049's HEURISTIC. Current TRT-LLM does not have one on this path; its floor is a fallback tactic.
+
+049 asked you to build a wave-quantisation heuristic (estimate_best_config_from_occupancies) as the floor for
+when no tactic table exists, on the grounds that TRT-LLM does that. THAT WAS BASED ON A STANDALONE EXTRACT.
+The real repository was cloned and read (NVIDIA/TensorRT-LLM main): the TensorRT-plugin path that owned
+GemmPluginProfiler NO LONGER EXISTS -- there is no gemmPluginProfiler.{h,cpp} in the tree at all. Selection now
+lives in tensorrt_llm/_torch/autotuner.py, and it does not use a heuristic.
+
+WHAT IT ACTUALLY DOES, at inference (autotuner.py:1141):
+
+    # Early return if it's not tuning, use cache found one or fallback one
+    if not self.is_tuning_mode:
+        # Log the cache miss. Expect no cache miss in inference.
+        if not is_cache_hit:
+            logger.warning_once(f"[AutoTuner] {custom_op} using the fallback tactic, "
+                                f"due to cache miss on input shapes={input_shapes}")
+        return (best_runner, best_tactic)
+
+  * hit  -> the cached (runner, tactic)
+  * miss -> fallback_entry() == (runner_id 0, tactic -1), plus a DEDUPLICATED warning
+  * it never profiles and never traverses candidates at inference
+
+and tactic == -1 is documented (autotuner.py:206) as "the fallback kernel WHICH SHOULD BE ABLE TO IMPLEMENT ANY
+SHAPES", needed both for a cache miss and so that "the autotuning process [is] an optional process, such that
+user can opt out". Profiling happens only inside `with autotune(cache_path=...)`, an explicit mode that fills the
+cache and save_cache/load_cache it by path.
+
+cutlass_heuristic.cpp and estimate_best_config_from_occupancies are still in the tree, but they belong to the
+C++ kernel-selection side, not to this path. Citing them as "what TRT-LLM does at selection time" was wrong.
+
+SO: DO NOT BUILD THE HEURISTIC. Our floor already is what theirs is -- your ③ takes an unknown config name,
+declines, logs, and runs the compiled default. That is exactly tactic -1 plus the warning. A wave-quantisation
+model would be a third thing neither we nor the reference has, and 049 itself argued it fits us WORSE than it
+fits them (no term for warp-internal N geometry, none for stage depth, cannot express a TileK preference that
+reverses between prefill and decode).
+
+WHAT IS STILL MISSING IS ON MY SIDE, recorded here so the shape is agreed: nothing reads the tactic table at
+inference. The .so takes a config NAME; tune.py writes a JSON table; the lookup between them belongs to the
+CALLER (llama.cpp), which already reads the GGUF and already knows (n, k). When I build it, the miss path will
+be theirs: fall back to the compiled default and warn ONCE per (op, shape) rather than per GEMM.
+
+053 is unaffected. Carry on with the grouped set, enumeration and config argument.
