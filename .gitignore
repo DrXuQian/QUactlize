@@ -21,3 +21,19 @@ build/
 # to overwrite untracked files with tracked ones, so a checkout aborted listing hundreds of generated units.
 dev/fold_derivation/.moe_units_check/
 dev/fold_derivation/.moe_units_check_bad/
+
+# COMPILED PROBE BINARIES. The derivation harnesses build as `nvcc l19_multislice.cu -o l19` and
+# `g++ ft_check.cpp -o ftchk` (dev/fold_derivation/README.md), so their outputs are EXTENSIONLESS while every
+# source carries an extension. 63 of them were committed -- 166 MB, which was essentially the entire 161 MB .git
+# -- and because a merge or rebase of that history makes every blob permanently reachable, they also decided how
+# this repo can reach main at all (only a squash carries just the final tree).
+#
+# Ignore-everything-then-un-ignore-anything-with-a-dot is what expresses "no extension" in gitignore, which has
+# no such pattern. The trailing `*/` re-admits stub_inc/, syntax_baseline/ and gen_stub/, which are inputs.
+dev/fold_derivation/*
+!dev/fold_derivation/*.*
+!dev/fold_derivation/*/
+#
+# dev/low_bit/ is NOT repeated here: it already has its own .gitignore naming w2a16_swzl_probe. That file was
+# committed anyway, which is the lesson worth keeping -- .gitignore does not touch what is already TRACKED, so
+# the rule alone never stopped it and only `git rm --cached` does.
