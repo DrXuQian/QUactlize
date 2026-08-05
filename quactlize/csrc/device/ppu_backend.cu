@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -18,6 +19,7 @@
 #include "gguf_vecdot.hpp"
 #include "gemv_lowbit/gemv_launcher.hpp"
 #include "gemv_lowbit/gemv_rt.hpp"
+#include "ppu_grouped_configs.inc"
 #include "quactlize_ppu_device.h"
 
 namespace {
@@ -289,15 +291,29 @@ extern "C" int quactlize_ppu_vecdot_dense_dev_v1(uint8_t const* b, int64_t block
 #undef RUN
 }
 
-extern "C" int quactlize_ppu_vecdot_moe(uint8_t const* b, int64_t block_bytes, uint16_t const* x,
-                                          int const* offsets, float* out, int n, int bpr, int experts,
-                                          int total_rows, int max_rows, int qtype) {
+extern "C" int quactlize_ppu_vecdot_moe_config_v1(
+    uint8_t const* b, int64_t block_bytes, uint16_t const* x,
+    int const* offsets, float* out, int n, int bpr, int experts,
+    int total_rows, int max_rows, int qtype, char const* config_name) {
+  if (config_name && config_name[0] &&
+      std::strcmp(config_name, QUACTLIZE_PPU_GROUPED_CUDA_CONFIG_NAME) != 0) {
+    std::fprintf(stderr,
+                 "[quactlize_ppu] grouped CUDA config '%s' is not compiled in; declining to default '%s'\n",
+                 config_name, QUACTLIZE_PPU_GROUPED_CUDA_CONFIG_NAME);
+  }
 #define RUN(T) (block_bytes == raw_block_bytes<KType::T>() && n > 0 && bpr > 0 && experts > 0 && \
                 total_rows > 0 && max_rows > 0 \
                 ? native_moe<KType::T>(b, x, offsets, out, n, bpr, experts, total_rows, max_rows) : 11)
   switch (qtype) { case 10: return RUN(Q2_K); case 11: return RUN(Q3_K); case 12: return RUN(Q4_K);
                    case 13: return RUN(Q5_K); case 14: return RUN(Q6_K); default: return 2; }
 #undef RUN
+}
+
+extern "C" int quactlize_ppu_vecdot_moe(uint8_t const* b, int64_t block_bytes, uint16_t const* x,
+                                          int const* offsets, float* out, int n, int bpr, int experts,
+                                          int total_rows, int max_rows, int qtype) {
+  return quactlize_ppu_vecdot_moe_config_v1(
+      b, block_bytes, x, offsets, out, n, bpr, experts, total_rows, max_rows, qtype, nullptr);
 }
 
 extern "C" int quactlize_ppu_bc_gemv(uint16_t const* x, uint8_t const* low, uint8_t const* high,

@@ -46,6 +46,12 @@ int quactlize_ppu_grouped_fully_quantized_dev_v1(
     int const* offsets, uint16_t* out,
     int total_rows, int n, int k, int experts, int max_rows, int qtype,
     void* workspace, int64_t workspace_bytes, void* stream);
+// Config-selecting successor. The v1 entry remains ABI-compatible and delegates with a null/default name.
+int quactlize_ppu_grouped_fully_quantized_dev_v2(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
+    int const* offsets, uint16_t* out,
+    int total_rows, int n, int k, int experts, int max_rows, int qtype,
+    void* workspace, int64_t workspace_bytes, void* stream, char const* config_name);
 
 #ifdef __cplusplus
 }

@@ -9,3 +9,7 @@
   X(ShortWide,   "16x128:16x32:s3",    16, 128, 16, 32, 3) \
   X(MidWide,     "32x128:32x32:s3",    32, 128, 32, 32, 3) \
   X(Tall,        "128x64:64x32:s2",   128,  64, 64, 32, 2)
+
+// The grouped CUDA-core family has one tactic. Keep its opaque identity next to the tensor-core inventory so the
+// enumeration and the config-selecting vecdot entry cannot acquire two spellings.
+#define QUACTLIZE_PPU_GROUPED_CUDA_CONFIG_NAME "vecdot_moe"

@@ -227,7 +227,7 @@ These are correctness and inspection, not tactic sweeps, so the hold above does 
    WANTED: both verdicts, the `policy partition` count, and the diff. The cost is the pruned leader's median versus
    the unpruned leader's median; different leaders with overlapping bands are unresolved, not a measured penalty.
 
-6. **SHIPPING-PREFILL DEVICE ABI BUILD GATE (INBOX 046).** This is the ppu001-only compile/export half of the
+6. **SHIPPING-PREFILL DEVICE ABI BUILD GATE (INBOX 046 + 053).** This is the ppu001-only compile/export half of the
    llama validation. It deliberately does not claim numerical coverage of the new primary branch; that requires
    the user's regenerated llama patch and a real-model run, which cannot be named here until that patch exists.
 
@@ -239,13 +239,22 @@ These are correctness and inspection, not tactic sweeps, so the hold above does 
          quactlize_ppu_dense_fully_quantized_workspace_bytes_v1 \
          quactlize_ppu_dense_fully_quantized_dev_v1 \
          quactlize_ppu_grouped_fully_quantized_workspace_bytes_v1 \
-         quactlize_ppu_grouped_fully_quantized_dev_v1; do
+         quactlize_ppu_grouped_fully_quantized_dev_v1 \
+         quactlize_ppu_list_grouped_configs \
+         quactlize_ppu_grouped_fully_quantized_config_v1 \
+         quactlize_ppu_grouped_fully_quantized_dev_v2 \
+         quactlize_ppu_vecdot_moe_config_v1; do
          nm -D --defined-only "$SO" | grep -q " $SYM$" || { echo "MISSING $SYM"; exit 1; }
          echo "exported $SYM"
        done
        python3 - "$SO" <<'PY'
        import ctypes, sys
        lib = ctypes.CDLL(sys.argv[1])
+       class Config(ctypes.Structure):
+           _fields_ = [("enable_cuda_kernel", ctypes.c_bool), ("name", ctypes.c_char_p),
+                       ("tile_m", ctypes.c_int32), ("tile_n", ctypes.c_int32),
+                       ("warp_m", ctypes.c_int32), ("warp_n", ctypes.c_int32),
+                       ("stages", ctypes.c_int32)]
        dense = lib.quactlize_ppu_dense_fully_quantized_workspace_bytes_v1
        dense.argtypes = [ctypes.c_int] * 4
        dense.restype = ctypes.c_int64
@@ -257,10 +266,21 @@ These are correctness and inspection, not tactic sweeps, so the hold above does 
        assert d > 0 and g > 0, (d, g)
        assert dense(7, 256, 512, 10) == -1
        print(f"Q4 device workspaces: dense={d} grouped={g} bytes; wrong-format query declined")
+       inventory = lib.quactlize_ppu_list_grouped_configs
+       inventory.argtypes = [ctypes.POINTER(ctypes.POINTER(Config))]
+       inventory.restype = ctypes.c_int32
+       configs = ctypes.POINTER(Config)()
+       count = inventory(ctypes.byref(configs))
+       names = [configs[i].name.decode() for i in range(count)]
+       assert count == 6 and names[0] == "16x128:16x16:s2", (count, names)
+       assert not any(configs[i].enable_cuda_kernel for i in range(count - 1)), names
+       assert configs[count - 1].enable_cuda_kernel and names[-1] == "vecdot_moe", names
+       print(f"grouped inventory: {count - 1} tensor configs + CUDA {names[-1]}; default={names[0]}")
        PY
 
-   WANTED: four `exported` lines and the workspace line. A successful build means hgcc instantiated both new
-   device-pointer entries; it does not replace the later llama numerical run through those entries.
+   WANTED: eight `exported` lines, the workspace line and the grouped-inventory line. A successful build means hgcc
+   instantiated both device-pointer families and exported the grouped selection layer; it does not replace the later
+   llama numerical run through those entries.
 
 
 **WHEN SOMETHING IS RED, PASTE THIS.** No arguments, safe any time, output sized for a chat message:

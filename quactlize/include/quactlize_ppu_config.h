@@ -27,8 +27,9 @@ typedef struct quactlize_ppu_config_v1 {
 int32_t quactlize_ppu_list_configs(quactlize_ppu_config_v1 const** configs);
 int32_t quactlize_ppu_list_grouped_configs(quactlize_ppu_config_v1 const** configs);
 
-// Config-selecting host-pointer GEMM entries. config_name is one of the names returned above. A null/empty name
-// requests the compiled default; an unknown non-empty name reports the decline and also runs that default.
+// Config-selecting host-pointer operator entries. config_name comes from the corresponding dense or grouped
+// inventory above. A null/empty name requests that entry's compiled default; an unknown non-empty name reports
+// the decline and also runs that default.
 int quactlize_ppu_dense_lowbit_config_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high,
     uint16_t const* scale, uint16_t const* zero, uint16_t* out,
@@ -36,6 +37,14 @@ int quactlize_ppu_dense_lowbit_config_v1(
 int quactlize_ppu_dense_fully_quantized_config_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
     int m, int n, int k, int qtype, char const* config_name);
+int quactlize_ppu_grouped_fully_quantized_config_v1(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
+    int const* rows_per_expert, uint16_t* out,
+    int total_rows, int n, int k, int experts, int qtype, char const* config_name);
+int quactlize_ppu_vecdot_moe_config_v1(
+    uint8_t const* blocks, int64_t block_bytes, uint16_t const* x,
+    int const* offsets, float* out, int n, int blocks_per_row, int experts,
+    int total_rows, int max_rows, int qtype, char const* config_name);
 
 #ifdef __cplusplus
 }

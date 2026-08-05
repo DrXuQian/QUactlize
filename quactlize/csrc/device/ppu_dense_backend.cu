@@ -82,13 +82,25 @@ constexpr quactlize_ppu_config_v1 kGroupedConfigs[] = {
   QUACTLIZE_PPU_GROUPED_CONFIGS(QUACTLIZE_PPU_GROUPED_CONFIG_ROW)
 #undef QUACTLIZE_PPU_GROUPED_CONFIG_ROW
   // The CUDA-core MoE GEMV is one family-level tactic. Its tile fields deliberately carry no meaning.
-  {true, "vecdot_moe", 0, 0, 0, 0, 0},
+  {true, QUACTLIZE_PPU_GROUPED_CUDA_CONFIG_NAME, 0, 0, 0, 0, 0},
 };
 constexpr GroupedConfigId kDefaultGroupedConfig = GroupedConfigId::Default;
 static_assert(int(GroupedConfigId::Count) > 1,
               "libquactlize_ppu must compile a grouped config set, not one frozen tactic");
 static_assert(sizeof(kGroupedConfigs) / sizeof(kGroupedConfigs[0]) == size_t(GroupedConfigId::Count) + 1,
               "the grouped inventory must contain every tensor-core config followed by its one CUDA tactic");
+
+GroupedConfigId resolve_grouped_config(char const* name) {
+  if (!name || !name[0]) return kDefaultGroupedConfig;
+#define QUACTLIZE_PPU_GROUPED_CONFIG_MATCH(ID, NAME, TM, TN, WM, WN, STAGES) \
+  if (std::strcmp(name, NAME) == 0) return GroupedConfigId::ID;
+  QUACTLIZE_PPU_GROUPED_CONFIGS(QUACTLIZE_PPU_GROUPED_CONFIG_MATCH)
+#undef QUACTLIZE_PPU_GROUPED_CONFIG_MATCH
+  std::fprintf(stderr,
+               "[quactlize_ppu] grouped tensor config '%s' is not compiled in; declining to default '%s'\n",
+               name, kGroupedConfigs[0].name);
+  return kDefaultGroupedConfig;
+}
 
 constexpr size_t align16(size_t value) { return (value + 15) & ~size_t(15); }
 
@@ -584,41 +596,51 @@ int grouped_fully_quantized(uint16_t const* act, uint8_t const* low, uint8_t con
 // output are concatenated in expert order and rows_per_expert supplies the ragged boundaries. All tensor-core work
 // remains in moe_grouped_ppu's existing grouped scheduler and shared packed-scale collective. This wrapper only
 // materialises the raw-pointer arrays that the grouped CUTLASS interface requires.
-extern "C" int quactlize_ppu_grouped_fully_quantized(
+extern "C" int quactlize_ppu_grouped_fully_quantized_config_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
     int const* rows_per_expert,
-    uint16_t* out, int total_rows, int n, int k, int experts, int qtype) {
+    uint16_t* out, int total_rows, int n, int k, int experts, int qtype, char const* config_name) {
   if (!act || !low || !units || !rows_per_expert || !out || total_rows <= 0 || n <= 0 || k <= 0 ||
       experts <= 0 || n % 256 || k % 256) return 30;
+  GroupedConfigId const config = resolve_grouped_config(config_name);
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
   if (qtype != 12) return 33;
   return grouped_fully_quantized<cutlass::int4b_t, void, 32>(
-      act, low, nullptr, units, rows_per_expert, out, total_rows, n, k, experts);
+      act, low, nullptr, units, rows_per_expert, out, total_rows, n, k, experts, config);
 #elif PPU_PACKED_FORMAT == 2
   if (qtype != 10) return 33;
   return grouped_fully_quantized<cutlass::uint2b_t, void, 16>(
-      act, low, nullptr, units, rows_per_expert, out, total_rows, n, k, experts);
+      act, low, nullptr, units, rows_per_expert, out, total_rows, n, k, experts, config);
 #elif PPU_PACKED_FORMAT == 1
   if (qtype != 13 || !high) return 33;
   return grouped_fully_quantized<cutlass::int4b_t, cutlass::uint1b_t, 32>(
-      act, low, high, units, rows_per_expert, out, total_rows, n, k, experts);
+      act, low, high, units, rows_per_expert, out, total_rows, n, k, experts, config);
 #elif PPU_PACKED_FORMAT == 3
   if (qtype != 11 || !high || k % 512) return 33;
   return grouped_fully_quantized<cutlass::uint2b_t, cutlass::uint1b_t, 16, 256>(
-      act, low, high, units, rows_per_expert, out, total_rows, n, k, experts);
+      act, low, high, units, rows_per_expert, out, total_rows, n, k, experts, config);
 #elif PPU_PACKED_FORMAT == 4
   if (qtype != 14 || !high || k % 512) return 33;
   return grouped_fully_quantized<cutlass::int4b_t, cutlass::uint2b_t, 16, 128>(
-      act, low, high, units, rows_per_expert, out, total_rows, n, k, experts);
+      act, low, high, units, rows_per_expert, out, total_rows, n, k, experts, config);
 #else
   (void)qtype;
   return 35;
 #endif
 #else
+  (void)config;
   (void)qtype;
   return 34;
 #endif
+}
+
+extern "C" int quactlize_ppu_grouped_fully_quantized(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
+    int const* rows_per_expert,
+    uint16_t* out, int total_rows, int n, int k, int experts, int qtype) {
+  return quactlize_ppu_grouped_fully_quantized_config_v1(
+      act, low, high, units, rows_per_expert, out, total_rows, n, k, experts, qtype, nullptr);
 }
 
 extern "C" int64_t quactlize_ppu_grouped_fully_quantized_workspace_bytes_v1(
@@ -628,46 +650,57 @@ extern "C" int64_t quactlize_ppu_grouped_fully_quantized_workspace_bytes_v1(
   return int64_t(grouped_workspace_layout(max_rows, n, experts).total);
 }
 
-extern "C" int quactlize_ppu_grouped_fully_quantized_dev_v1(
+extern "C" int quactlize_ppu_grouped_fully_quantized_dev_v2(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
     int const* offsets, uint16_t* out,
     int total_rows, int n, int k, int experts, int max_rows, int qtype,
-    void* workspace, int64_t workspace_bytes, void* stream) {
+    void* workspace, int64_t workspace_bytes, void* stream, char const* config_name) {
   int64_t const need = quactlize_ppu_grouped_fully_quantized_workspace_bytes_v1(
       max_rows, n, k, experts, qtype);
   if (!act || !low || !units || !offsets || !out || !workspace || total_rows <= 0 ||
       need < 0 || workspace_bytes < need) return 30;
   ppu_gemv::rt_clear_error();
   hggcStream_t const s = static_cast<hggcStream_t>(stream);
+  GroupedConfigId const config = resolve_grouped_config(config_name);
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
   return grouped_fully_quantized_device<cutlass::int4b_t, void, 32>(
       act, low, nullptr, units, offsets, out, total_rows, n, k, experts, max_rows,
-      kDefaultGroupedConfig, workspace, size_t(workspace_bytes), s);
+      config, workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 2
   return grouped_fully_quantized_device<cutlass::uint2b_t, void, 16>(
       act, low, nullptr, units, offsets, out, total_rows, n, k, experts, max_rows,
-      kDefaultGroupedConfig, workspace, size_t(workspace_bytes), s);
+      config, workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 1
   if (!high) return 33;
   return grouped_fully_quantized_device<cutlass::int4b_t, cutlass::uint1b_t, 32>(
       act, low, high, units, offsets, out, total_rows, n, k, experts, max_rows,
-      kDefaultGroupedConfig, workspace, size_t(workspace_bytes), s);
+      config, workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 3
   if (!high) return 33;
   return grouped_fully_quantized_device<cutlass::uint2b_t, cutlass::uint1b_t, 16, 256>(
       act, low, high, units, offsets, out, total_rows, n, k, experts, max_rows,
-      kDefaultGroupedConfig, workspace, size_t(workspace_bytes), s);
+      config, workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 4
   if (!high) return 33;
   return grouped_fully_quantized_device<cutlass::int4b_t, cutlass::uint2b_t, 16, 128>(
       act, low, high, units, offsets, out, total_rows, n, k, experts, max_rows,
-      kDefaultGroupedConfig, workspace, size_t(workspace_bytes), s);
+      config, workspace, size_t(workspace_bytes), s);
 #else
   return 35;
 #endif
 #else
-  (void)high; (void)stream;
+  (void)high; (void)stream; (void)config;
   return 34;
 #endif
+}
+
+extern "C" int quactlize_ppu_grouped_fully_quantized_dev_v1(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
+    int const* offsets, uint16_t* out,
+    int total_rows, int n, int k, int experts, int max_rows, int qtype,
+    void* workspace, int64_t workspace_bytes, void* stream) {
+  return quactlize_ppu_grouped_fully_quantized_dev_v2(
+      act, low, high, units, offsets, out, total_rows, n, k, experts, max_rows, qtype,
+      workspace, workspace_bytes, stream, nullptr);
 }
