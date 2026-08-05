@@ -2297,3 +2297,56 @@ WHAT I AM ASKING, revised from 059:
 DOWNGRADE 059's claim: its "no shipping path reaches COARSE" line is wrong and this supersedes it. The
 docs/BACKTEST.md note that section B is unreachable stays TRUE for now, but the reason is narrower than stated
 -- those figures are unreachable because the DENSE path lacks the gs ladder, not because gs=128 is out of scope.
+
+## 061 -- DO IT ONCE. Everything grouped has, dense gets; the shared body is extracted, not copied.
+
+User's instruction, and it widens 060 from a fix into the structural job: **whatever exists on the grouped path
+must be supported on the dense path, and the identical code should be lifted into something shared.** Treat
+059/060 as one symptom of that rather than as the task.
+
+WHY ONE SWEEP RATHER THAN ONE FIX AT A TIME. Two divergences have surfaced in two days, both by accident:
+
+    PPU_B_CHUNK   present in the fold and 2-plane collectives, absent from the single-plane one dense runs.
+                  Found while answering an unrelated question (058).
+    the per-gs tag ladder   moe_grouped_ppu.cuh:447 dispatches gs 128/64/32/16 to Finegrained kernel tags;
+                  test_lowbit_dense_bench.cu:181 has ONE hardcoded schedule and no dispatch. Found only
+                  because a box run at gs=128 asserted (060), and gs=128 is GPTQ.
+
+Neither was noticed by any check, because each collective compiles and runs. A third will exist. Fixing them
+one at a time means finding them one at a time, by accident, in production.
+
+THE DELIVERABLE IS NOT "gs=128 WORKS ON DENSE". It is that the NEXT capability cannot diverge. Concretely, I
+would like to be able to say afterwards: adding a policy to one operator lands in the other by construction, or
+fails to compile. If the end state still permits a feature to exist in one path and not the other, this will
+recur and the work will have bought a fix rather than the property.
+
+THREE STEPS, and the first is the one I would not skip:
+
+ ① A PARITY LIST. Every capability, policy, specialisation and tuning flag that exists on one side and not the
+   other. PPU_B_CHUNK and the gs ladder are the two I know; your 058 reading already names four orthogonal
+   policy axes (A loading, B layout/lifetime, metadata sourcing, eager-vs-chunked conversion), so the list
+   should be organised by those rather than by file. For each: which side has it, why the other does not
+   (deliberate or drift), and what breaks today because of the gap.
+
+ ② THE EXTRACTION. You said in 058 that one shared pipeline driver is correct but three B-provider policies are
+   insufficient because the four axes are orthogonal. I accept that reading -- it is yours and you are in the
+   files. So the shape is yours to choose; what I care about is that the shared part is SHARED rather than
+   kept in sync, and that the axes that genuinely differ are expressed as policy parameters rather than as
+   three bodies that happen to agree today.
+
+ ③ THE GUARD. Whatever makes divergence loud afterwards. A static_assert that both operators instantiate the
+   same policy set, a generated table both consume, a gate that enumerates capabilities per path and compares
+   -- your call, but without it ① becomes a document that goes stale and we are back here.
+
+SCOPE AND SEQUENCING, because this is large and I do not want it to block the box:
+
+  * 060's gs=128 fix is the one thing that blocks a measurement, so land it first and separately if that is
+    cleaner than waiting for the extraction.
+  * ① before ②. A list I can read and argue with is worth more to me right now than a refactor I have to review
+    blind, and it lets us split ② if it turns out to be several independent pieces.
+  * You said in 058 that this split has ALREADY caused correctness drift -- scale-copy coverage and two-plane
+    consume-stage hazards. If ① turns up more of that kind, say so loudly and separately from the performance
+    gaps; a correctness divergence outranks everything else here including the sweep.
+
+TESTS REMAIN OUT OF SCOPE as in 057: a test that independently recomputes something is doing its job. This is
+about the shipping path.
