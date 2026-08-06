@@ -169,7 +169,13 @@ enum class QuantTypeClass {
     PACKED_INT1_WEIGHT_ONLY   // W1A16 (8 uint1/byte); Q3/Q5 high plane; mirrors PACKED_INT2 with ELTS_PER_BYTE=8
 };
 
-int get_bits_in_quant_type(QuantTypeClass quant_type)
+// inline BECAUSE THIS HEADER IS NOW INCLUDED BY 291 TRANSLATION UNITS. It is the only non-template function defined
+// at namespace scope in here -- dequantize_weight and preprocess_weights_for_mixed_gemm are both templates, so they
+// were already emitted weak -- and while test_lowbit_dense_bench.cu was ONE TU nothing could notice. Sharding the
+// dense sweep into one .cu per config batch made every unit #include the bench source, and the build died at the
+// LINK with `multiple definition of get_bits_in_quant_type` once per unit pair. The defect was always here; what
+// changed is the number of times it is compiled.
+inline int get_bits_in_quant_type(QuantTypeClass quant_type)
 {
     switch (quant_type) {
         case QuantTypeClass::INT8_WEIGHT_ONLY:
