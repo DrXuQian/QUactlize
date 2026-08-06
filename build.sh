@@ -274,9 +274,35 @@ done
 # overlay, and the source is its real path instead of a copy. Every flag, every -D (including the ones actlize
 # appends after its toolchain: CUTLASS_USE_PACKED_TUPLE and friends), and every arch option are identical.
 
+# NOTHING IN THIS BUILD MAY REACH THE NETWORK. Two mechanisms, and only one of them is on this command line.
+#
+# THE WANT is removed by CMakeLists.txt:31, `set(CUTLASS_ENABLE_GTEST_UNIT_TESTS OFF CACHE BOOL "" FORCE)`, which
+# runs before add_subdirectory(actlize) -- actlize's cmake/googletest.cmake FetchContent_Declares googletest behind
+# that option. NOT by the -DCUTLASS_ENABLE_GTEST_UNIT_TESTS=OFF below: FORCE overwrites the cache, so the
+# command-line value never decides anything. Both flags here are inert and are kept only because they document the
+# intent at the point someone reads this invocation. Established by flipping them: changing the -D to ON changes
+# nothing at all, changing CMakeLists.txt:31 to ON breaks the configure. I spent a negative control believing the
+# -D was the mechanism, and it passed for the wrong reason.
+#
+# THE ABILITY is removed by FETCHCONTENT_FULLY_DISCONNECTED=ON, and that is the half the offline claim needs.
+# ci/local_gates.py's first line says it "runs every check that can falsify something without a PPU", and the local
+# tier reaches this script through boxdry -- so "the local tier is green" is establishable offline only while that
+# one option stays off and no second FetchContent_Declare appears anywhere in a submodule we do not control. A flag
+# is a want; wants get flipped. With this set, a populate cannot silently become a clone.
+#
+# VERIFIED, by forcing CMakeLists.txt:31 to ON and reading the diagnostic rather than the exit code:
+#     CMake Error at third_party/actlize/cmake/googletest.cmake:49 (add_subdirectory):
+#       add_subdirectory given source "/tmp/.../_deps/googletest-src"
+# FetchContent_Populate left the directory empty instead of cloning, so the configure died in seconds naming the
+# dependency, where the original symptom was nine minutes at index-pack with zero output. A hang is worse than a
+# failure: the operator cannot tell "still compiling" from "stuck".
+#
+# Everything this build needs is a submodule. If something ever legitimately needs fetching, the loud error is the
+# correct first outcome -- it forces the choice to be vendored deliberately rather than acquired by a clone.
 _CMAKE_SRC="$HERE"; _CMAKE_EXTRA=(-DQUACTLIZE_PPU=ON)
 cmake "$_CMAKE_SRC" "${_CMAKE_EXTRA[@]}" -DPPU_SDK_ROOT="$PPU_SDK_ROOT" -DCUTLASS_PPU_ARCHS="$ARCH" \
   -DCUTLASS_ENABLE_TESTS=OFF -DCUTLASS_ENABLE_GTEST_UNIT_TESTS=OFF \
+  -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
   -DTILE_M="$TILE_M" -DTILE_N="$TILE_N" -DWARP_M="$WARP_M" -DWARP_N="$WARP_N" -DSTAGES="$STAGES" -DBENCH_QUANT="$QUANT" -DTSK="$TSK" -DBENCH_GS="$BENCH_GS" \
   -DLOWBIT_DENSE_CONFIGS_PER_UNIT="$LOWBIT_DENSE_CONFIGS_PER_UNIT" \
   -DPPU_EXTRA_DEFS="${PPU_DEFS:-}" "${_MOE_VARS[@]+"${_MOE_VARS[@]}"}" \
