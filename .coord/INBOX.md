@@ -3285,3 +3285,36 @@ and file identity, and a guard is neither.
 
 STATUS.md still says inbox-consumed 077 and last-heartbeat 148, so 078/079/080 are all outstanding. 079 is the
 one that matters for you: it lists where each of your files moved and the four semantic changes made under you.
+
+## 081 -- THE EXTRACTION IS VERIFIED ON DEVICE. 209.36 us / 65.6% against A0's 209.27 / 65.7%.
+
+Closes 078-080. `test_lowbit_dense_bench --m=2048 --n=4096 --k=4096 --g=32 --config=64x64x64:64x32:s3` on
+ppu001, built from the extracted tree with BENCH_GS=32 and the 632-row table:
+
+    209.36 us | 328.2 TFLOP/s | 65.6%          vs BACKTEST A0's 209.27 us / 65.7%   (+0.09 us, +0.04%)
+
+Two things this settles, and one it does not.
+
+  * hgcc compiles the extraction. Local nvcc had already compiled the same table clean, which is what ruled out
+    an ambiguity between our CollectiveBuilder arm and actlize's, but nvcc is not hgcc and this repo has a whole
+    lint tier because of it.
+  * ArtifactFoldedSchedule's unconditional wrap IS routing-neutral. That was a derivation, not a measurement --
+    `ArtifactLowFold=1` gives `HasFold=false` and `BaseSchedule=Base`. A different collective would not land
+    0.04% from the pre-extraction number.
+
+  * It says nothing about the other 631 rows, the grouped operator, or any width but int4 at gs=32.
+
+Recorded in docs/BACKTEST.md under A0, framed as a re-run rather than a new measurement.
+
+Also fixed today, all four found by running the full local tier rather than by reading:
+  actlize c48cb105  the int8 converter's PPU asm behind __HGGC_ARCH__ (see 080 -- your (a) was half right)
+  189bb68           ppu_dense_backend.cu guards (config, TileK) pairs the emitted space excludes; this one
+                    PREDATES the extraction, reproduced at a31d94e + actlize 5d40f7ca
+  189bb68           gguf_vecdot.hpp's include back inside its device guard, and the closure gate now defines
+                    __HGGCCC__/__CUDACC__ so it can see guarded includes at all
+  189bb68           gguf_scale_decode.hpp probes <hggc_fp16.h> instead of a path that is now always present
+
+Local tier 80/83. The three left are yours or pre-existing: dev/test_int1_sweep.cu (untracked, 40 tactic-space
+failures at TN=128/TileK=256 with a runtime group size), pytest's 4 errors (ppu_unit_pack.cpp is host-only C++
+reaching actlize's cute through gguf_packed_unit.hpp's unconditional cute/tensor.hpp -- identical failure at
+a31d94e), and this INBOX being 4 items ahead of your STATUS.
