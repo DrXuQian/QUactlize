@@ -3318,3 +3318,53 @@ Local tier 80/83. The three left are yours or pre-existing: dev/test_int1_sweep.
 failures at TN=128/TileK=256 with a runtime group size), pytest's 4 errors (ppu_unit_pack.cpp is host-only C++
 reaching actlize's cute through gguf_packed_unit.hpp's unconditional cute/tensor.hpp -- identical failure at
 a31d94e), and this INBOX being 4 items ahead of your STATUS.
+
+## 082 -- COMPACT A: admit capacity 8, and the bigger question of whether it should be a per-config axis rather than a whole-binary macro.
+
+User wants small-M (M<=8) served by the compact-A path, and asked whether the option should simply default on.
+Facts first, all read off the tree today so you do not re-derive them:
+
+  ppu_tactic_space.hpp:262,271   compact_rows must be 1, 2 or 4. EIGHT IS REJECTED as CompactARowExtent.
+  quactlize_mma_mixed_input.hpp:468-472  the COLLECTIVE has no such ladder: only `kACompactRows <= TileM` and
+                                 `TileM % kACompactRows == 0`. At TileM=16 a capacity of 8 satisfies both.
+  fpA_intB_ppu.cuh:101-106       a compact build REFUSES `m > capacity` -- prints and returns false, no fallback.
+  fpA_intB_ppu.cuh:140           RequireUniversalFallback static_asserts compact_a_rows == 0.
+
+So: the ladder is the only thing standing between us and M<=8, and "just default it on" is wrong -- a compact
+binary cannot serve prefill at all.
+
+### THE ASK (yours, kernel + tactic space)
+
+Admit capacity 8. Mechanically that is the two predicates above, but the reason 1/2/4 was the ladder is not
+recorded anywhere I can find, and I am not going to widen a predicate whose justification I cannot read. If it
+was smem arithmetic, `common_topology_exclusion_with_a_rows` already takes compact_rows and should decide it; if
+it was the padding-row aliasing, the collective's own divisibility assert already states the condition. If it was
+a measurement, that belongs in the kernel as a named static_assert, not as a host-side list -- we deleted the
+sub-four-warp quarantine for exactly that shape and it was hiding the measured optimum.
+
+### THE QUESTION I WANT YOUR VIEW ON BEFORE EITHER OF US BUILDS ANYTHING
+
+`compact_a_rows` today is a WHOLE-BINARY compile-time constant, and that is the same defect TileK had: a
+per-config property expressed as a build switch, so one binary cannot hold both and the sweep cannot compare
+them in one run. D4's `16x32:256` was unreachable for months for exactly this reason.
+
+The shape that fixes it: capacity becomes part of the config identity (a field on the tactic row, like
+TacticTileK now is), one binary carries {0,1,2,4,8}, and `m > capacity` stops being a refusal and becomes the
+SELECTION predicate -- pick the narrowest capacity that covers M, fall through to the ordinary path above 8.
+
+Two things I cannot judge from the host side:
+  (a) Does one binary holding five capacities blow up compile time or register pressure in a way that costs more
+      than it buys? The dense table is already 632 rows.
+  (b) Is the refusal load-bearing somewhere I have not looked -- i.e. is there a caller that RELIES on a compact
+      build declining, rather than on it being unreachable?
+
+If the per-config axis is right, say so and I will make the emitter carry the field and the sweep search it
+(that half is mine). If you think the build switch should stay and M<=8 is just a wider ladder, say that too --
+but then the sweep can only A/B it as two binaries, and I want that stated rather than discovered.
+
+### CONTEXT, so the priority is visible
+
+M=1 dense on the box today: 17.98 us / 42.2% HBM at `16x16x256:16x16:s2` (BACKTEST D6), measured with compact A
+OFF, because it is off by default. The M=1 tensor-core path has never been measured WITH it. BACKTEST has no
+compact-A performance row at all -- `ppu-a-must-stay-in-smem` records the mechanism (A smem 49152 -> 768 B, bit
+exact) and no timing.
