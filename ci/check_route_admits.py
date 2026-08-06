@@ -71,13 +71,13 @@ CASES = [
 ]
 
 
-def compile_case(defs, extra_flags, include_root=None):
+def compile_case(defs, extra_flags, include_root=None, quactlize_root=None):
     cmd = ["nvcc", "-std=c++17", "-arch=sm_80", "--expt-relaxed-constexpr",
            "-D__HGGCCC__", "-DPPU_FORCE_INSTANTIATE=1", *defs, *extra_flags,
            "-I" + str(STUB), "-I" + str(include_root or (ACT / "include")),
            "-I" + str(ACT / "tools" / "util" / "include"),
            "-I" + str(ROOT / "tests"), "-I" + str(ROOT / "benchmarks"),
-           "-I" + str(ROOT / "quactlize" / "include"), "-I" + str(ROOT / "dev"),
+           "-I" + str(quactlize_root or (ROOT / "quactlize" / "include")), "-I" + str(ROOT / "dev"),
            "-cuda", "-o", "/dev/null", "-x", "cu", str(PROBE), "-Wno-deprecated-gpu-targets"]
     p = subprocess.run(cmd, capture_output=True, text=True)
     out = p.stdout + p.stderr
@@ -85,7 +85,11 @@ def compile_case(defs, extra_flags, include_root=None):
     return real, out
 
 
-MAINLOOP = "cutlass/gemm/collective/ppu_mma_aiu_multistage_mixed_input.hpp"
+# THE MAINLOOP THE DENSE ROUTE ACTUALLY INSTANTIATES, which moved out of actlize on 2026-08-06. Planting into
+# actlize's copy after that date fires zero times and reads as "device bodies are not instantiated" -- the exact
+# false conclusion this control exists to prevent, now reachable by the control itself being stale. It is relative
+# to quactlize/include, not actlize/include, and the mirror below follows.
+MAINLOOP = "quactlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp"
 PLANT_MSG = "PLANTED-IN-DEVICE-BODY"
 
 
@@ -95,8 +99,8 @@ def plant_control(tmp):
     -> (ok, detail). This is the only control that speaks to function-body visibility; the other two are
     satisfied by type completeness alone, which is a weaker property than the one this gate's verdicts rest on.
 
-    The symlink mirror is load-bearing, not tidiness: ppu_include.hpp includes the mainloop with quotes from its
-    own directory, so a -I ahead of actlize/include is never consulted and a plain overlay silently compiles the
+    The symlink mirror is load-bearing, not tidiness: the umbrella includes the mainloop by a path that resolves
+    inside quactlize/include, so a -I ahead of it is never consulted and a plain overlay silently compiles the
     ORIGINAL header. That produced a clean zero firings and read as "device bodies are not instantiated".
     """
     mirror = tmp / "mirror"
@@ -104,12 +108,13 @@ def plant_control(tmp):
         subprocess.run(["rm", "-rf", str(mirror)], check=True)
     mirror.mkdir(parents=True)
     # cp -rs: symlink every file, materialise the directories, so one header can be swapped for pennies.
-    if subprocess.run(["cp", "-rs", str(ACT / "include") + "/.", str(mirror)],
+    QINC = ROOT / "quactlize" / "include"
+    if subprocess.run(["cp", "-rs", str(QINC) + "/.", str(mirror)],
                       capture_output=True).returncode != 0:
-        return None, "could not mirror actlize/include (cp -rs unavailable?)"
+        return None, "could not mirror quactlize/include (cp -rs unavailable?)"
     target = mirror / MAINLOOP
     target.unlink(missing_ok=True)
-    lines = (ACT / "include" / MAINLOOP).read_text().splitlines(True)
+    lines = (QINC / MAINLOOP).read_text().splitlines(True)
     # The device entry point, found by its signature rather than by a line number that drifts with every edit.
     i = next((n for n, l in enumerate(lines) if "CUTLASS_DEVICE void" in l), None)
     if i is None:
@@ -119,7 +124,7 @@ def plant_control(tmp):
     lines.insert(i + 1, f'    static_assert(sizeof(FrgTensorC) == 0, "{PLANT_MSG}");\n')
     target.write_text("".join(lines))
 
-    _, out = compile_case(["-DPROBE_WM=64", "-DPROBE_WN=32"], [], include_root=mirror)
+    _, out = compile_case(["-DPROBE_WM=64", "-DPROBE_WN=32"], [], quactlize_root=mirror)
     n = out.count(PLANT_MSG)
     return (n > 0), f"planted device-body static_assert fired {n} time(s)"
 

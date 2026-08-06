@@ -242,11 +242,14 @@ def lint_mixed_pipeline_shared():
     the driver call, or reintroducing the stage counters/waits in a provider body.
     """
     rels = [
-        "ppu_mma_aiu_multistage_mixed_input.hpp",
+        "quactlize_mma_mixed_input.hpp",
         "ppu_mma_aiu_fold.hpp",
         "ppu_mma_aiu_mixed_input_2plane.hpp",
     ]
-    base = ACT / "cutlass" / "gemm" / "collective"
+    # THE COLLECTIVES LEFT actlize ON 2026-08-06. This used to read them out of the submodule, where two of the
+    # three no longer exist and the third is upstream's, which has no shared driver at all. It failed loudly
+    # rather than passing, but a gate pointed at the wrong tree tests nothing either way.
+    base = ROOT / "quactlize" / "include" / "quactlize_extensions" / "cutlass" / "gemm" / "collective"
     sources = {}
     for rel in rels:
         path = base / rel
@@ -257,7 +260,7 @@ def lint_mixed_pipeline_shared():
     def violations(texts):
         hits = []
         for rel, text in texts.items():
-            if text.count('#include "cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"') != 1:
+            if text.count('#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"') != 1:
                 hits.append(f"{rel}: shared-driver include count != 1")
             if text.count("using PipelineDriver = detail::MixedPipelineDriver;") != 1:
                 hits.append(f"{rel}: pipeline type witness count != 1")
@@ -337,7 +340,9 @@ def lint_ppu_asm_device_guard():
     # This existing arm is box-proven: test_q4k_packed_gemm rowC passed 5/5 on ppu001 and necessarily traverses
     # ppu_f16x2_sub/fma. Replacing its working compiler guard with an architecture guard cannot be falsified without
     # hgcc and could silently select the slower scalar fallback, so only NEW uses are rejected locally.
-    proven_exemptions = {"third_party/actlize/include/cutlass/gguf_packed_scale.h"}
+    # The file moved out of actlize on 2026-08-06; the exemption follows it, or its one box-proven arm reads as
+    # a new violation.
+    proven_exemptions = {"quactlize/include/quactlize_extensions/cutlass/gguf_packed_scale.h"}
     compiler_only = re.compile(r"^\s*#(?:if|elif).*__HGGCCC__.*!\s*defined\s*\(\s*__NVCC__\s*\)")
     for root in roots:
         if not root.exists():

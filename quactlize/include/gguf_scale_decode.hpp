@@ -130,8 +130,9 @@ CUTLASS_HOST_DEVICE constexpr float bytes_per_group_per_col_fp16() {
 }
 
 
-// THE PACKED UNIT AND ITS DECODE NOW LIVE IN actlize: cutlass/gguf_packed_scale.h, because the mainloop needs them and
-// the mainloop is there. This header re-exports them so existing callers (fold_derivation/l94, the offline harnesses) are
+// THE PACKED UNIT AND ITS DECODE LIVE IN quactlize_extensions/cutlass/gguf_packed_scale.h, next to the mainloop
+// that needs them. (They were inside the actlize submodule until 2026-08-06, when quactlize's kernels moved out of
+// the fork.) This header re-exports them so existing callers (fold_derivation/l94, the offline harnesses) are
 // unchanged, and so there is exactly ONE definition of the bit map -- copying it here is the failure this work keeps
 // recording. The Q4_K parameters are named where they are used, not baked into the re-export.
 #if defined(GGUF_SCALE_HAVE_PACKED)

@@ -213,7 +213,8 @@ the descriptor equality assertion reject it. This is the step-1/launcher-boundar
 three collective bodies are shared yet.
 
 Step 2's common metadata rules are now implemented in
-`cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp`. Every collective publishes one `MetadataPolicy` type.
+`quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp`. Every collective publishes one
+`MetadataPolicy` type.
 That type owns the scale-copy coverage assertion, scale-fragment construction/layout, the COARSE/FINE predicate and
 divisibility invariants, the group-boundary/index split, flat-versus-`(group,stage)` addressing, and the positional
 scale/zero reload contract. Fold and two-plane also use its common scale/zero application primitive for both eager
@@ -225,7 +226,8 @@ either.
 `MixedPolicyDescriptor::MetadataPolicyType` plus l112 extends the operator parity guard through that seam.
 
 Steps 3 and 4 are now implemented as one hook-based provider boundary in
-`cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp`. The ordinary, folded and two-plane collectives supply five
+`quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp`. The ordinary, folded and two-plane
+collectives supply five
 storage-specific operations: bind a read-stage view, publish completed asynchronous data, prepare the next logical
 A/B delivery, prefetch the next physical tile, and consume the prepared atom(s). Those hooks are the provider policy
 parameters; the shared driver owns the one-time register prime, wait/barrier placement, static K-block traversal,
