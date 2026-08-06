@@ -23,7 +23,7 @@
 #include "cutlass/gemm/collective/collective_builder.hpp"
 
 #include "ppu_group_schedule.hpp"
-#include "ppu_include.hpp"
+#include "quactlize_actlize.hpp"
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
 #include "ppu_mixed_policy.hpp"
 

@@ -30,7 +30,7 @@
 #include "cutlass/util/packed_stride.hpp"
 #include "ppu_group_schedule.hpp"
 
-#include "ppu_include.hpp"
+#include "quactlize_actlize.hpp"
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
 #include "cutlass/epilogue/collective/builders/ppu_builder.inl"
 

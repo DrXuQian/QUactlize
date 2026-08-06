@@ -32,7 +32,7 @@
 #include <vector>
 #include "cutlass/half.h"
 #include "cutlass/util/device_memory.h"
-#include "ppu_include.hpp"
+#include "quactlize_actlize.hpp"
 #include "helper.h"
 #include "cutlass/fast_numeric_conversion_for_mix_gemm.h"
 #include "cutlass/gguf_packed_scale.h"

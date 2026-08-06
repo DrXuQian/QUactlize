@@ -74,7 +74,7 @@
 #include "ppu_group_schedule.hpp"
 #include "unfused_weight_dequantize.hpp"
 
-#include "ppu_include.hpp"
+#include "quactlize_actlize.hpp"
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
 #include "ppu_mixed_policy.hpp"
 

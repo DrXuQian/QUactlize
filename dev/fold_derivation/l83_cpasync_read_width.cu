@@ -8,7 +8,7 @@
 #include "cutlass/numeric_types.h"
 #include "cutlass/gemm/dispatch_policy.hpp"
 #include "cutlass/gemm/collective/collective_builder.hpp"
-#include "ppu_include.hpp"
+#include "quactlize_actlize.hpp"
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
 using namespace cute;
 

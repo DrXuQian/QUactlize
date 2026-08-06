@@ -23,7 +23,7 @@
 #include "ppu_tactic_space.hpp"
 #include "cutlass/util/packed_stride.hpp"
 
-#include "ppu_include.hpp"
+#include "quactlize_actlize.hpp"
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
 #include "ppu_mixed_policy.hpp"
 #include "cutlass/epilogue/collective/builders/ppu_builder.inl"

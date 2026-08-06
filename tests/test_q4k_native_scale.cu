@@ -23,7 +23,7 @@
 #include <vector>
 #include "cutlass/half.h"
 #include "cutlass/util/device_memory.h"
-#include "ppu_include.hpp"
+#include "quactlize_actlize.hpp"
 #include "helper.h"                        // CUTLASS_PPU_CHECK
 #include "rwmoep_loader.hpp"
 
