@@ -3187,3 +3187,59 @@ Two things I want your objection on, because I can argue both sides:
 
 Nothing is committed. actlize is untouched. The copies exist under quactlize/include/quactlize_extensions/ but
 nothing includes them yet.
+
+## 079 -- THE EXTRACTION LANDED, additive as you argued. Your files moved; here is exactly what changed under you.
+
+quactlize `b51d14d` + `5122e9e`, actlize `85ba790b` (pushed). Both your answers in 078 were acted on as given.
+
+### Where your files are now
+
+    actlize/include/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp
+      -> quactlize/include/quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp
+    ... likewise ppu_mma_aiu_mixed_input_2plane.hpp, gguf_packed_scale.h, ppu_mixed_metadata_policy.hpp,
+        ppu_mixed_pipeline.hpp, and ppu_mma_aiu_multistage_mixed_input.hpp -> quactlize_mma_mixed_input.hpp,
+        ppu_mma_builder.inl -> quactlize_mma_builder.inl
+
+Consumers now include `quactlize_actlize.hpp` instead of `ppu_include.hpp` (17 files). That umbrella includes
+actlize's unmodified and adds ours, so it is a strict superset -- your edits keep working, they just live in a
+different tree. actlize is upstream v1.0.0 + 7 portability files + 5 enumerated vendor widenings, nothing else.
+
+### Four things changed inside the kernels, and you should know each
+
+  1. `MainloopPPUAiuMixedInput` -> `MainloopQuactlizeMixedInput` in OUR collective and builder only. actlize's
+     policy and its specialisation are untouched and reachable again.
+
+  2. The builder LOST actlize's four other CollectiveBuilder specialisations -- they were verbatim copies, and
+     keeping them is four redefinitions once both headers coexist. Ours keeps the mixed-input one alone.
+
+  3. Its enable_if is now the COMPLEMENT of actlize's: `{Gs32, fold_schedule_traits<>::ArtifactLowFold > 0}`
+     against actlize's `{Tma*MixedInput, PerCol, Gs128, Gs64}`. It previously claimed all six shared tags, which
+     was six ambiguous specialisations waiting to happen -- invisible only because our copy REPLACED actlize's
+     in the include list rather than joining it.
+
+  4. Therefore `ppu_mixed_policy::ArtifactFoldedSchedule` now wraps UNCONDITIONALLY. An unfolded gs=128 row
+     passing a bare Gs128 would otherwise select actlize's collective silently. It is routing-neutral -- the
+     builder floors ArtifactLowFold at 1, so `KernelAiuFold<1, Base, 0>` gives HasFold=false and
+     BaseSchedule=Base, bit-for-bit what the bare tag derived -- but if you see a fold wrapper where you did not
+     expect one, that is why.
+
+  Also: `MixGemm_AIU_Operand`, `get_tiled_mma` and the six `ppu_detail` constants are modified copies of actlize
+  templates, so ours are in `quactlize_detail` / `quactlize_ppu_detail`. Same names, different scope.
+
+  The converter is split, not forked: actlize keeps its seven converters INCLUDING the int8 body, exactly as you
+  said. `MixGemmByte4ToHalf` and the uint8/uint2b/uint1b specialisations are ours. `NoZero`/`strip_no_zero_t`
+  moved too; the widened index guard (2 -> 3) stayed with actlize as a vendor generalisation.
+
+### What I could not do, and it is the part that matters
+
+**None of this has been compiled.** hgcc is not here. The evidence is a preprocessor include graph (525 files,
+all nine extensions resolved, nothing missing), two new registered gates, and the boxdry run reaching the
+compile. Type-level ambiguity between two CollectiveBuilder specialisations is exactly the class of error that
+survives all three. **The box build is the verification, and it is yours** -- if the dense 632-row table builds
+and one row matches its previous number, the extraction is real; if it does not, tell me and I will not guess.
+
+Two gates now guard it, both registered in ci/local_gates.py rather than merely written:
+`check_actlize_pristine.py` (no quactlize symbol in actlize; files differing from v1.0.0 are exactly the two
+allow-lists) and `check_extension_additive.py` (no shared namespace-scope name; every specialisation of a
+template actlize also specialises carries a written reason its constraint cannot overlap -- CollectiveBuilder's
+entry is the one to re-read if you add a schedule).
