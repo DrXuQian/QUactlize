@@ -49,6 +49,19 @@ records use both harnesses and they are the same measurement.
 | A9 | int2 | 32 | `64,64,64` F=2 | — | 53.2% | 2026-07-25 | same |
 | A10 | Q3 B-concat | 32 | before the four levers | 822.60 | 16.7% | 2026-07-28 | `ppu-q3-bconcat-tuned` |
 
+**A0 WAS RE-RUN ON 2026-08-06 TO VALIDATE THE actlize EXTRACTION, and it is the only evidence that the move is
+sound.** 209.36 µs / 65.6% against A0's 209.27 / 65.7% -- +0.09 µs, +0.04%, noise. Same box, same geometry; the
+config string gained a TileK segment (`64x64:64x32:s3` -> `64x64x64:64x32:s3`) when TileK became a row field.
+
+It is worth saying what this re-run does and does not establish, because it was the ONLY device evidence for a
+change that moved every collective out of the actlize fork. It establishes that hgcc compiles the extracted tree
+and that the kernel reached is the same one: `ppu_mixed_policy::ArtifactFoldedSchedule` now wraps
+UNCONDITIONALLY (so an unfolded row lands on quactlize's collective rather than silently selecting actlize's),
+and that wrapper is routing-neutral only by derivation -- `ArtifactLowFold=1` gives `HasFold=false` and
+`BaseSchedule=Base`. A number 0.04% from the pre-extraction one is what routing-neutral looks like; a different
+kernel would not land there. It establishes nothing about the other 631 rows, the grouped operator, or any
+width but int4 at gs=32.
+
 **A0 SETTLES THREE THINGS AT ONCE, and it is the first number this bench has ever produced.** Until 2026-08-05
 `test_lowbit_dense_bench` asserted on its first gs=32 config, so every dense figure below came from the grouped
 harness at L=1. A0 is the same geometry as A1, run through the dense kernel — plain `ProblemShape`,
