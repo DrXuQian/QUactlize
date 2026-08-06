@@ -40,14 +40,25 @@
 //
 // It is the same rule that made a static_assert fire from inside a discarded branch earlier in this work, so the evidence
 // for it was already in hand; only the consequence was missed.
+// TileK COMES FROM THE ROW, NOT FROM THE BUILD KNOB. It used to be MOE_TK (64 by default), while the shapes come from
+// the emitted grouped tables whose tactic TileK is 256 for Q3/Q5, 128 for Q6/i2 and 64 only for i4. moe_ok<> takes TK,
+// so four formats out of five were asking a legality question about a TileK their shape did not come from: the
+// `if constexpr` discarded the body and 312 of 415 units compiled to EMPTY FUNCTIONS -- a sweep that looks covered and
+// measures nothing. The tell is compile time, since an empty unit still parses the headers: 5.4 s for a discarded q3
+// unit against 30.4 s for a live i4 one.
+//
+// MOE_TK REMAINS for the non-sharded callers of this header, and this file no longer reads it.
+#ifndef UNIT_TK
+#error "UNIT_TK is not defined -- the generator must supply the row's TileK. Falling back to MOE_TK is what silently emptied the sweep."
+#endif
 template <int Dummy>
 static void unit_body(const Band& bd, Best& best) {
 #if UNIT_2PLANE
   MOE2(bd, best, UNIT_STR_(UNIT_NAME), UNIT_LOELEM, UNIT_HIELEM, UNIT_LOB, UNIT_HIB,
-       UNIT_TM, UNIT_TN, MOE_TK, UNIT_WM, UNIT_WN);
+       UNIT_TM, UNIT_TN, UNIT_TK, UNIT_WM, UNIT_WN);
 #else
   MOE1(bd, best, UNIT_STR_(UNIT_NAME), UNIT_LOELEM, UNIT_LOB,
-       UNIT_TM, UNIT_TN, MOE_TK, UNIT_WM, UNIT_WN);
+       UNIT_TM, UNIT_TN, UNIT_TK, UNIT_WM, UNIT_WN);
 #endif
 }
 void UNIT_FN(const Band& bd, Best& best) { unit_body<0>(bd, best); }

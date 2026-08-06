@@ -923,23 +923,36 @@ foreach(_row IN LISTS _MOE_FORMATS)
     FILE "${_MOE_TABLE}"
     LIST_MACRO LOWBIT_GROUPED_${_nm_uc}_CFG_LIST
     COUNT_MACRO LOWBIT_GROUPED_${_nm_uc}_CFG_ROWS)
+  # TileK IS FIELD 2 AND IT IS PART OF THE SHAPE. The first version of this projection dropped it and let the unit
+  # compile at the MOE_TK build knob (64), which is not the TileK the rows were emitted for: Q3/Q5 are tactic_tile_k
+  # 256, Q6/i2 are 128, only i4 is 64. moe_ok<TM,TN,TK,WM,WN,S,LOB,HIB> takes TK, so 312 of the 415 units were asking
+  # a legality question about a TileK their shape did not come from, `if constexpr` discarded the body, and they
+  # compiled to EMPTY FUNCTIONS. Measured, not inferred: an i4 unit (TK matches) takes 30.4 s through the front end
+  # and a q3 unit took 5.4 s, which is the bare header-parse cost. A silently empty sweep unit is indistinguishable
+  # from a covered one in the output, which is what makes this worth a paragraph.
+  #
+  # Unit count does not change: each emitted table carries exactly ONE tactic TileK today, so TK is constant within a
+  # format and adding it to the key splits nothing. It is in the key anyway, because "one table, one TileK" is a
+  # property of how they are emitted right now and not something this loop should assume.
   set(_MOE_SHAPES "")
   foreach(_r IN LISTS _MOE_ROWS)
     string(REPLACE "," ";" _rf "${_r}")
     list(GET _rf 0 _r_tm)
     list(GET _rf 1 _r_tn)
+    list(GET _rf 2 _r_tk)
     list(GET _rf 3 _r_wm)
     list(GET _rf 4 _r_wn)
-    list(APPEND _MOE_SHAPES "${_r_tm}:${_r_tn}:${_r_wm}:${_r_wn}")
+    list(APPEND _MOE_SHAPES "${_r_tm}:${_r_tn}:${_r_tk}:${_r_wm}:${_r_wn}")
   endforeach()
   list(REMOVE_DUPLICATES _MOE_SHAPES)
   foreach(_shape IN LISTS _MOE_SHAPES)
     string(REPLACE ":" ";" _sf "${_shape}")
     list(GET _sf 0 _tm)
     list(GET _sf 1 _tn)
-    list(GET _sf 2 _wm)
-    list(GET _sf 3 _wn)
-          set(_fn "moe_unit_${_nm}_tn${_tn}_wn${_wn}_tm${_tm}_wm${_wm}")
+    list(GET _sf 2 _tk)
+    list(GET _sf 3 _wm)
+    list(GET _sf 4 _wn)
+          set(_fn "moe_unit_${_nm}_tn${_tn}_wn${_wn}_tm${_tm}_wm${_wm}_tk${_tk}")
           set(_src "${_MOE_GEN_DIR}/${_fn}.cu")
           # CONFIGURE_DEPENDS is not needed: the content is a pure function of this loop, so a changed table means a
           # re-configure, and file(WRITE) leaves the timestamp alone when the bytes are identical... it does not, so
@@ -955,6 +968,7 @@ foreach(_row IN LISTS _MOE_FORMATS)
             "#define UNIT_HIB     ${_hib}\n"
             "#define UNIT_TM      ${_tm}\n"
             "#define UNIT_TN      ${_tn}\n"
+            "#define UNIT_TK      ${_tk}\n"
             "#define UNIT_WM      ${_wm}\n"
             "#define UNIT_WN      ${_wn}\n"
             "#include \"moe_bench_unit.inc\"\n")
