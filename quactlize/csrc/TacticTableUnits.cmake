@@ -3,6 +3,13 @@ include_guard(GLOBAL)
 # Parse an emitted tactic X-macro without evaluating it. Rows are returned as
 # comma-separated integer tuples so callers can generate operator-specific units.
 function(qz_parse_tactic_xmacro OUT_ROWS)
+  # THIS FUNCTION INDEXES PHYSICAL LINES, so it needs CMP0007 NEW -- under OLD, list() drops empty elements and every
+  # blank line in the table shifts the indices, which shows up as "parsed 201 rows, declares 202" and NOT as anything
+  # pointing at a policy. The real configure has it (the project requires 3.19) and never noticed; a `cmake -P` slice
+  # of the generator does not, which is how dev/fold_derivation/gen_moe_units_check.sh found it. Set it HERE rather
+  # than asking callers to: a helper whose answer depends on the ambient policy of whoever called it is one that can
+  # be right in the build and wrong in the gate that checks the build.
+  cmake_policy(SET CMP0007 NEW)
   cmake_parse_arguments(PARSE "" "FILE;LIST_MACRO;COUNT_MACRO" "" ${ARGN})
   foreach(_arg FILE LIST_MACRO COUNT_MACRO)
     if(NOT PARSE_${_arg})

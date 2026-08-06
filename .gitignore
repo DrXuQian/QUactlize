@@ -14,14 +14,6 @@ quactlize/_C*.so
 build/
 *.egg-info/
 
-# GENERATED CHECK OUTPUT, not fixtures. gen_moe_units_check.sh does `OUT="$HERE/.moe_units_check${BAD:+_bad}"` and
-# mkdir -p's it; the _bad variant is just where the negative-control run writes. 1473 of these files were committed
-# by the migration's `cp -r fold_derivation/`, and the copies still carried gen.cmake files naming an absolute path
-# in the PRE-migration tree. They also broke `git switch` for anyone who had run the check themselves: git refuses
-# to overwrite untracked files with tracked ones, so a checkout aborted listing hundreds of generated units.
-dev/fold_derivation/.moe_units_check/
-dev/fold_derivation/.moe_units_check_bad/
-
 # COMPILED PROBE BINARIES. The derivation harnesses build as `nvcc l19_multislice.cu -o l19` and
 # `g++ ft_check.cpp -o ftchk` (dev/fold_derivation/README.md), so their outputs are EXTENSIONLESS while every
 # source carries an extension. 63 of them were committed -- 166 MB, which was essentially the entire 161 MB .git
@@ -33,6 +25,22 @@ dev/fold_derivation/.moe_units_check_bad/
 dev/fold_derivation/*
 !dev/fold_derivation/*.*
 !dev/fold_derivation/*/
+
+# GENERATED CHECK OUTPUT, not fixtures. gen_moe_units_check.sh does `OUT="$HERE/.moe_units_check${BAD:+_bad$BAD}"` and
+# mkdir -p's it; the _bad<N> variants are where each negative-control run writes. 1473 of these files were committed
+# by the migration's `cp -r fold_derivation/`, and the copies still carried gen.cmake files naming an absolute path
+# in the PRE-migration tree. They also broke `git switch` for anyone who had run the check themselves: git refuses
+# to overwrite untracked files with tracked ones, so a checkout aborted listing hundreds of generated units.
+#
+# BELOW THE `!*/` ABOVE, AND THAT IS THE WHOLE POINT. This rule was two exact names sitting ABOVE it, where the
+# un-ignore of every directory overrode them -- so from the day it was written until 2026-08-06 it matched nothing
+# and the check output was untracked-but-not-ignored, exactly as if the rule were absent. Verified by running
+# `git check-ignore -v` on both orderings in a throwaway repo, not by reading. A .gitignore entry that reads as
+# protective and is not is the same defect as a test that only ever passes.
+#
+# A PREFIX PATTERN, not one line per variant: the names come from a shell expansion, and the day a SECOND negative
+# control arrived `_bad` became `_bad1`/`_bad2` and an enumerated list would have gone stale again.
+dev/fold_derivation/.moe_units_check*/
 #
 # dev/low_bit/ is NOT repeated here: it already has its own .gitignore naming w2a16_swzl_probe. That file was
 # committed anyway, which is the lesson worth keeping -- .gitignore does not touch what is already TRACKED, so

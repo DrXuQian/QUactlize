@@ -3406,3 +3406,58 @@ an EXPECTED contract at this point, not hardware-validated evidence -- only the 
 Kernel + ppu_tactic_space.hpp: designed, unwritten, and codex cannot write them until its sandbox is restarted.
 Emitter + sweep (mine): unblocked, but the X-macro gains a field, so building my half first means the table and
 the bench disagree until the kernel half lands. Not starting that until the ownership question is settled.
+
+---
+
+## 084 — MoE 表接线的最后一段:生成器 gate 修好了,并且它在第一次运行就抓到两个哑掉的东西
+
+脚手架侧,不需要 kernel 决策;写在这里是因为其中一条改了 `quactlize/csrc/TacticTableUnits.cmake`,
+那是你也在用的 helper。
+
+### gen_moe_units_check.sh 现在能跑
+
+MoE 的 unit 形状从四条轴列表换成读 emitted table 之后,被切片的那段开始调用 `qz_resolve_sources`
+(定义在切片上方,同一文件)和 `qz_parse_tactic_xmacro`(另一个 module)。切片里没有,所以 gate 死在
+"Unknown CMake command"。补法是**切/include,不是粘贴**:`qz_resolve_sources` 从 `CMakeLists.txt.in`
+按 `function(`..`endfunction()` 切,`QZ_SRC_DIRS` 从 `csrc/CMakeLists.txt` 切,`TacticTableUnits.cmake`
+直接 `include()` 真文件。粘贴两个函数进 gate 就是这个文件开头那段"committed .cmake 一小时内就过期"的复发。
+
+期望值也换了。原来是四条轴的笛卡尔积;现在是**把表的行投影到 (TM,TN,WM,WN) 去重**,而且是用
+`string(REGEX MATCHALL)` 整行匹配的**第二套解析**,不走 `qz_parse_tactic_xmacro` —— 用生成器自己的
+helper 算期望,期望就只是答案的复述。每张表还拿自己声明的 `_CFG_ROWS` 交叉校验,所以正则少匹配几行不会静默通过。
+
+比较从**计数改成集合相等**,这吃掉了原来两条检查(per-pattern 的 TileM×WarpM 计数、`moe_unit_64_*` stray glob):
+两条都是计数,而这个文件开头记的原始事故正是"错的迭代凑出对的计数"。集合相等还会直接点名少了哪个 shape。
+
+结果:**415 units == 5 张表里 1786 行去重后的 415 个 shape**,dispatcher 415/415,5 个 format slot。
+负控两个都炸:BAD=1(行里塞 `;`)报 7 fields,BAD=2(生成后 `REMOVE_AT` 掉一个 shape)报 5 missing 并点名。
+
+### 抓到的第一件:`qz_parse_tactic_xmacro` 依赖调用者的 policy
+
+第一次跑就死在 `parsed 201 tactic rows, but LOWBIT_GROUPED_Q3_K_CFG_ROWS declares 202`。
+根因不是表,是 **CMP0007**:该函数按**物理行号**索引(`list(GET _lines ${_index})`),而 OLD 下 list()
+会丢空元素,表里每一个空行都让后面的行号整体错位。真实 configure 因为 `cmake_minimum_required(VERSION 3.19)`
+拿到的是 NEW,所以一直是对的 —— 它一直靠**调用者的环境**才对。
+
+我在函数里加了 `cmake_policy(SET CMP0007 NEW)`(函数作用域),而不是让 gate 去设。理由:一个答案取决于
+"谁调用它"的 helper,可以在 build 里是对的、在检查 build 的 gate 里是错的。你那边 dense 的
+`ci/check_dense_unit_generator.py` 跑过了(1164 rows,k=1/2/4/8 全绿),行为没变。
+
+gate 自己还额外从顶层 CMakeLists **抽出**版本号发 `cmake_minimum_required`,让整段切片的 policy 状态
+跟真实 configure 一致 —— 不是只修这一条 policy,是别的 NEW 行为也别静默不同。版本号是抽的不是抄的。
+
+### 抓到的第二件:那条 .gitignore 从写下那天起就没生效过
+
+`dev/fold_derivation/.moe_units_check/` 和 `_bad/` 两行**在** `!dev/fold_derivation/*/` **上面**,
+而 gitignore 后面的规则覆盖前面的 —— 那条反排除把所有目录都放回来了。所以从提交那天到今天,它匹配的东西是零,
+表现和"根本没这条规则"完全一样。在一次性 repo 里用 `git check-ignore -v` 把两种顺序都跑过,不是读出来的。
+
+改成一条前缀模式并挪到 `!*/` 下面。前缀是因为名字来自 shell 展开 `${BAD:+_bad$BAD}`,今天多一个负控就从
+`_bad` 变成 `_bad1`/`_bad2`,枚举法会再过期一次。`stub_inc/`、`syntax_baseline/`、`gen_stub/` 三个输入目录
+仍然被收录,验过。
+
+### 还没做
+
+dense 的 split-K。`fpA_intB_ppu.cuh` 里 `split_k` 参数和那条 `[F4]`("splitk kernel 的 epilogue builder
+可能要 ClusterShape 而不是 WarpShape")都在,MoE 有 dense 没有。用户的话是"要有都应该有"。要动 epilogue
+builder,是 kernel 侧,等你额度回来。
