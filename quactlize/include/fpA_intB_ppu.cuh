@@ -56,10 +56,10 @@ using ppu_mixed_policy::is_finegrained;
 
 template <QuantMode QuantOp, class BaseSchedule, class TileShape, class ScaleTileShape, class WarpShape,
           int Stages, bool AiuInterleaved, class ElementB = cutlass::int4b_t, class PlaneB2 = void,
-          int ArtifactTileK = 0>
+          int ArtifactTileK = 0, int ACompactRows = cutlass::gemm::kDefaultACompactRows>
 using MixedMainloopPolicy = ppu_mixed_policy::MainloopPolicy<QuantOp, BaseSchedule, TileShape, ScaleTileShape,
                                                              WarpShape, Stages, AiuInterleaved, ElementB, PlaneB2,
-                                                             ArtifactTileK>;
+                                                             ArtifactTileK, ACompactRows>;
 
 // One instantiation: fp16 x a packed 1/2/4-bit B plane, optionally with a second high plane. The ElementBInfo tuple
 // is the same seam moe_grouped_ppu uses: a fourth tuple element makes CollectiveBuilder select the already-existing
@@ -68,14 +68,15 @@ template <QuantMode QuantOp, class BaseSchedule,
           class TileShape, class ScaleTileShape, class WarpShape, int Stages, bool AiuInterleaved,
           class ElementB = cutlass::int4b_t, class PlaneB2 = void, bool ExpectPackedScale = false,
           bool QueryOnly = false, bool RequireUniversalFallback = false,
-          int ArtifactTileK = 0>
+          int ArtifactTileK = 0, int ACompactRows = cutlass::gemm::kDefaultACompactRows>
 bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
                       const cutlass::half_t* scales, const cutlass::half_t* zeros, cutlass::half_t* D,
                       int m, int n, int k, int group_size, int split_k,
                       char* workspace, size_t workspace_bytes, hggcStream_t stream,
                       const PlaneB2* B2 = nullptr) {
   using MainloopPolicy = MixedMainloopPolicy<QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
-                                              Stages, AiuInterleaved, ElementB, PlaneB2, ArtifactTileK>;
+                                              Stages, AiuInterleaved, ElementB, PlaneB2,
+                                              ArtifactTileK, ACompactRows>;
   using ElementA = typename MainloopPolicy::ElementA;
 
   using ElementC = cutlass::half_t;                     // [F2] could be void when no bias
@@ -106,14 +107,12 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
       return false;
     }
   }
-#if defined(PPU_A_CPASYNC) && (PPU_A_CPASYNC != 0)
-  if constexpr (CollectiveMainloop::compact_a_rows == 0) {
+  if constexpr (MainloopPolicy::ACompactRows > 0 && CollectiveMainloop::compact_a_rows == 0) {
     if constexpr (!QueryOnly)
-      std::printf("[fpA_intB] PPU_A_CPASYNC=%d is unavailable for this selected collective; A remains TileM rows\n",
-                  int(PPU_A_CPASYNC));
+      std::printf("[fpA_intB] compact A capacity %d is unavailable for this selected collective; A remains TileM rows\n",
+                  MainloopPolicy::ACompactRows);
     return false;
   }
-#endif
 
   // FULLY_QUANTIZED is an INSTANTIATION of the shared mainloop, not a dense-specific decoder. Make that selection
   // compile-time observable at its call site: a flagged binary that accidentally falls back to fp16 scale planes
@@ -196,7 +195,8 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
 
 // group_size -> compile-time schedule + ScaleTileShape, with the official block_k >= group_size gate.
 template <QuantMode QuantOp, int TM, int TN, int TK, int WM, int WN, int Stages, bool AiuInterleaved,
-          class ElementB = cutlass::int4b_t, class PlaneB2 = void, int ArtifactTileK = TK>
+          class ElementB = cutlass::int4b_t, class PlaneB2 = void, int ArtifactTileK = TK,
+          int ACompactRows = cutlass::gemm::kDefaultACompactRows>
 bool dispatch_gs(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* scales,
                  const cutlass::half_t* zeros, cutlass::half_t* D, int m, int n, int k, int group_size,
                  int split_k, char* ws, size_t ws_bytes, hggcStream_t stream, const PlaneB2* B2 = nullptr) {
@@ -213,14 +213,14 @@ bool dispatch_gs(const cutlass::half_t* A, const ElementB* B, const cutlass::hal
         constexpr int CTA_SCALE_K = ppu_group_schedule::scale_groups_v<TK, 128>;
         return generic_launcher<QuantOp, ppu_group_schedule::FinegrainedSchedule<128>,
             TileShape, cute::Shape<cute::Int<TN>, cute::Int<CTA_SCALE_K>>, WarpShape, Stages, AiuInterleaved,
-            ElementB, PlaneB2, false, false, false, ArtifactTileK>(
+            ElementB, PlaneB2, false, false, false, ArtifactTileK, ACompactRows>(
                 A, B, scales, zeros, D, m, n, k, group_size, split_k, ws, ws_bytes, stream, B2);
       }
       case 64: {
         constexpr int CTA_SCALE_K = ppu_group_schedule::scale_groups_v<TK, 64>;
         return generic_launcher<QuantOp, ppu_group_schedule::FinegrainedSchedule<64>,
             TileShape, cute::Shape<cute::Int<TN>, cute::Int<CTA_SCALE_K>>, WarpShape, Stages, AiuInterleaved,
-            ElementB, PlaneB2, false, false, false, ArtifactTileK>(
+            ElementB, PlaneB2, false, false, false, ArtifactTileK, ACompactRows>(
                 A, B, scales, zeros, D, m, n, k, group_size, split_k, ws, ws_bytes, stream, B2);
       }
       case 32: {
@@ -231,7 +231,7 @@ bool dispatch_gs(const cutlass::half_t* A, const ElementB* B, const cutlass::hal
         constexpr int CTA_SCALE_K = ppu_group_schedule::scale_groups_v<TK, 32>;
         return generic_launcher<QuantOp, ppu_group_schedule::FinegrainedSchedule<32>,
             TileShape, cute::Shape<cute::Int<TN>, cute::Int<CTA_SCALE_K>>, WarpShape, Stages, AiuInterleaved,
-            ElementB, PlaneB2, false, false, false, ArtifactTileK>(
+            ElementB, PlaneB2, false, false, false, ArtifactTileK, ACompactRows>(
                 A, B, scales, zeros, D, m, n, k, group_size, split_k, ws, ws_bytes, stream, B2);
       }
       case 16: {
@@ -240,7 +240,7 @@ bool dispatch_gs(const cutlass::half_t* A, const ElementB* B, const cutlass::hal
         constexpr int CTA_SCALE_K = ppu_group_schedule::scale_groups_v<TK, 16>;
         return generic_launcher<QuantOp, ppu_group_schedule::FinegrainedSchedule<16>,
             TileShape, cute::Shape<cute::Int<TN>, cute::Int<CTA_SCALE_K>>, WarpShape, Stages, AiuInterleaved,
-            ElementB, PlaneB2, false, false, false, ArtifactTileK>(
+            ElementB, PlaneB2, false, false, false, ArtifactTileK, ACompactRows>(
                 A, B, scales, zeros, D, m, n, k, group_size, split_k, ws, ws_bytes, stream, B2);
       }
       default: std::printf("[fpA_intB] group_size %d unsupported (finegrained: 16/32/64/128)\n", group_size);
@@ -248,7 +248,7 @@ bool dispatch_gs(const cutlass::half_t* A, const ElementB* B, const cutlass::hal
   } else {  // per-column
     return generic_launcher<QuantOp, cutlass::gemm::KernelAiuMultistageMixedInputPerCol,
         TileShape, cute::Shape<cute::Int<TN>, cute::_1>, WarpShape, Stages, AiuInterleaved,
-        ElementB, PlaneB2, false, false, false, ArtifactTileK>(
+        ElementB, PlaneB2, false, false, false, ArtifactTileK, ACompactRows>(
             A, B, scales, zeros, D, m, n, k, k, split_k, ws, ws_bytes, stream, B2);
   }
   return false;
@@ -256,15 +256,18 @@ bool dispatch_gs(const cutlass::half_t* A, const ElementB* B, const cutlass::hal
 
 // AiuInterleaved from shape divisibility (official filter_and_run_mixed_gemm).
 template <QuantMode QuantOp, int TM, int TN, int TK, int WM, int WN, int Stages,
-          class ElementB = cutlass::int4b_t, class PlaneB2 = void, int ArtifactTileK = TK>
+          class ElementB = cutlass::int4b_t, class PlaneB2 = void, int ArtifactTileK = TK,
+          int ACompactRows = cutlass::gemm::kDefaultACompactRows>
 bool filter_and_run(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* scales,
                     const cutlass::half_t* zeros, cutlass::half_t* D, int m, int n, int k, int group_size,
                     int split_k, char* ws, size_t ws_bytes, hggcStream_t stream, const PlaneB2* B2 = nullptr) {
   if (n % 256 == 0 && k % 256 == 0)
-    return dispatch_gs<QuantOp, TM, TN, TK, WM, WN, Stages, true, ElementB, PlaneB2, ArtifactTileK>(
+    return dispatch_gs<QuantOp, TM, TN, TK, WM, WN, Stages, true, ElementB, PlaneB2,
+                       ArtifactTileK, ACompactRows>(
         A,B,scales,zeros,D,m,n,k,group_size,split_k,ws,ws_bytes,stream,B2);
   else
-    return dispatch_gs<QuantOp, TM, TN, TK, WM, WN, Stages, false, ElementB, PlaneB2, ArtifactTileK>(
+    return dispatch_gs<QuantOp, TM, TN, TK, WM, WN, Stages, false, ElementB, PlaneB2,
+                       ArtifactTileK, ACompactRows>(
         A,B,scales,zeros,D,m,n,k,group_size,split_k,ws,ws_bytes,stream,B2);
 }
 

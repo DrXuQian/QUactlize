@@ -423,6 +423,8 @@ public:
           ? fold_schedule_traits<KernelScheduleType>::ArtifactLowFold : 1;
   static constexpr int ExplicitArtifactHighFold =
       fold_schedule_traits<KernelScheduleType>::ArtifactHighFold;
+  static constexpr int ACompactRows =
+      fold_schedule_traits<KernelScheduleType>::ACompactRows;
   static constexpr int MmaPermK =
       cutlass::MixGemmMmaPermK<sizeof_bits<RealInternalElementB>::value,
                                cute::get<2>(TileShape_MNK{}),
@@ -467,7 +469,7 @@ public:
       MainloopPPUAiuMixedInput2Plane<PipelineStages, kContinous, BaseSchedule>,
       cute::conditional_t<HasFold,
           MainloopPPUAiuFold<PipelineStages, kContinous, (HasFold ? FoldF : 2), BaseSchedule>,
-          MainloopQuactlizeMixedInput<PipelineStages, kContinous, BaseSchedule>>>;
+          MainloopQuactlizeMixedInput<PipelineStages, kContinous, BaseSchedule, ACompactRows>>>;
 
   using GmemLayoutA = cutlass::layout::RowMajor;
   using GmemLayoutB = cutlass::layout::ColumnMajor;

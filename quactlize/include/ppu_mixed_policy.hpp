@@ -56,7 +56,7 @@ struct OperandInfo {
                                          cute::tuple<ElementB, ElementScale>>>;
 };
 
-template <int ArtifactLowFold, int ArtifactHighFold, class BaseSchedule>
+template <int ArtifactLowFold, int ArtifactHighFold, int ACompactRows, class BaseSchedule>
 struct ArtifactFoldedSchedule {
   // The wrapper is also required when only the high plane folds: it is the type-level ABI carrying the resident
   // provider's two independent physical layouts into CollectiveBuilder.
@@ -68,10 +68,10 @@ struct ArtifactFoldedSchedule {
   // compiles, it runs, and it is not the kernel this project measured. Wrapping at F=1 keeps it on ours.
   //
   // ROUTING-NEUTRAL, not merely harmless: the builder reads ArtifactLowFold back through fold_schedule_traits and
-  // floors it at 1, so KernelAiuFold<1, Base, 0> yields HasFold = (1 > 1) = false and BaseSchedule = Base --
+  // floors it at 1, so KernelAiuFold<1, Base, 0, ACompactRows> yields HasFold = (1 > 1) = false and BaseSchedule = Base --
   // bit-for-bit the derivation the bare tag produced. Only the specialisation that MATCHES changes.
   using Type = cutlass::gemm::KernelAiuFold<(ArtifactLowFold > 1 ? ArtifactLowFold : 1),
-                                            BaseSchedule, ArtifactHighFold>;
+                                            BaseSchedule, ArtifactHighFold, ACompactRows>;
 };
 
 struct AiuAProvider {};
@@ -140,7 +140,7 @@ struct MixedPolicyDescriptor {
 
 template <QuantMode Mode, class BaseSchedule, class TileShape, class ScaleTileShape, class WarpShape,
           int Stages, bool AiuInterleaved, class ElementB = cutlass::int4b_t, class PlaneB2 = void,
-          int ArtifactTileK_ = 0>
+          int ArtifactTileK_ = 0, int ACompactRows_ = cutlass::gemm::kDefaultACompactRows>
 struct MainloopPolicy {
   using ElementA = cutlass::half_t;
   using ElementScale = cutlass::half_t;
@@ -156,6 +156,8 @@ struct MainloopPolicy {
   // Zero is the source-compatible spelling for callers predating the split; it means this tactic also defines the
   // artifact. New multi-TileK callers pass the artifact value explicitly.
   static constexpr int ArtifactTileK = ArtifactTileK_ > 0 ? ArtifactTileK_ : TacticTileK;
+  static constexpr int ACompactRows = ACompactRows_;
+  static_assert(ACompactRows >= 0, "ACompactRows must be zero (ordinary A) or a positive row capacity");
   static_assert(ArtifactTileK > 0 && ArtifactTileK <= TacticTileK && TacticTileK % ArtifactTileK == 0,
                 "ArtifactTileK must completely tile TacticTileK");
   static constexpr int ArtifactLowFold = fold::delivery_fold_v<LowBits, ArtifactTileK>;
@@ -173,7 +175,8 @@ struct MainloopPolicy {
   static constexpr int LowFold = ArtifactLowFold;
   static constexpr int HighFold = ArtifactHighFold;
 
-  using KernelSchedule = typename ArtifactFoldedSchedule<ArtifactLowFold, ArtifactHighFold, BaseSchedule>::Type;
+  using KernelSchedule = typename ArtifactFoldedSchedule<ArtifactLowFold, ArtifactHighFold,
+                                                          ACompactRows, BaseSchedule>::Type;
   using ElementBInfo = typename OperandInfo<Mode, ElementB, PlaneB2, ElementScale, ElementZero>::Type;
   using CollectiveOp = typename cutlass::gemm::collective::CollectiveBuilder<
       cutlass::arch::PPU0010, cutlass::arch::OpClassTensorOp,
