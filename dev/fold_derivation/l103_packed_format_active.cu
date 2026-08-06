@@ -22,6 +22,10 @@
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
 #include <cstdio>
 #include <type_traits>
+
+// The optional collectives this file INSTANTIATES. quactlize_actlize.hpp carries the base only.
+#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 using namespace cute;
 
 #ifndef PPU_PACKED_FORMAT
