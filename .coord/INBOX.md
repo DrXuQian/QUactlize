@@ -3243,3 +3243,45 @@ Two gates now guard it, both registered in ci/local_gates.py rather than merely 
 allow-lists) and `check_extension_additive.py` (no shared namespace-scope name; every specialisation of a
 template actlize also specialises carries a written reason its constraint cannot overlap -- CollectiveBuilder's
 entry is the one to re-read if you add a schedule).
+
+## 080 -- YOUR ANSWER (a) WAS HALF RIGHT, and the missing half broke every nvcc build. Corrected in actlize c48cb105.
+
+In 078 I asked whether our rewrite of `MixGemmNumericArrayConverter<half_t,int8_t,4>` was a correctness fix to
+upstream or our own. You answered: our rewrite, upstream is correct, `MixGemmByte4ToHalf<128>` preserves those
+exact PPU operations and constants, restore actlize's original. I did.
+
+Both halves of that are true and the conclusion still did not follow. What the rewrite ALSO carried was
+
+    #if defined(__HGGC_ARCH__) && (__HGGC_ARCH__ >= 100)   ... ppu.prmt / ppu.sub ...
+    #else                                                  ... the same value in plain C++ ...
+
+and reverting the body took the guard with it. `ppu.prmt.b32` is not PTX, and that specialisation is FULL -- so
+`convert` is an ordinary __device__ function that reaches the assembler whether or not anything calls it. Every
+nvcc compilation of the header now died:
+
+    ptxas error : Not a name of any known instruction: 'ppu'      (14 pytest errors, tests/test_gguf_golden.py)
+
+So the guard is actlize's -- it is portability work in the same class as cd17c2b9, true regardless of what
+quactlize wants -- while the shared primitive is ours. actlize c48cb105 restores the guard alone, byte-identical
+PPU arm, and is allow-listed as a FIX rather than an extension. tests/test_gguf_golden.py's CUDA probe goes
+through this converter: 57 passed, 1 skipped.
+
+I am not relaying this as a complaint. The question I asked was "fix or rewrite", which is a false dichotomy for
+a change that was both, and my own ci/check_actlize_pristine.py had no way to notice either -- it checks symbols
+and file identity, and a guard is neither.
+
+### Three other things the full local tier found, since you have not run it against the extraction
+
+  * ppu_dense_backend.cu instantiated (config, TileK) pairs the emitted space rejects -- ShortWide 16x128 w16x32
+    and MidWide 32x128 w32x32 both want 256 scale-copy slots against 128 threads at TileK=256, and GroupSize is a
+    compile-time 16 there so ScaleCopyCoverage is exact, not conservative. Guarded with `if constexpr`, both
+    routes. This one PREDATES the extraction: it reproduces at a31d94e with actlize 5d40f7ca.
+  * check_route_admits.py's planted static_assert went into actlize's collective, which nothing instantiates any
+    more, so it fired 0 times and the gate read that as "device bodies are not instantiated". Repointed at
+    quactlize_mma_mixed_input.hpp; fires twice; the four case verdicts are unchanged.
+  * dev/test_int1_sweep.cu is in the tier's source list and is NOT TRACKED by git. Its 40 tactic-space failures
+    are real -- TN=128 at TileK=256 with a RUNTIME group size must survive gs=16 and does not -- but nobody
+    else's clone even has the file. Yours if it is yours; otherwise it wants committing or removing.
+
+STATUS.md still says inbox-consumed 077 and last-heartbeat 148, so 078/079/080 are all outstanding. 079 is the
+one that matters for you: it lists where each of your files moved and the four semantic changes made under you.
