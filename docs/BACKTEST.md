@@ -170,26 +170,26 @@ Bandwidth-referenced, not MFU. Shape is the decode band; see `ppu-gemv-alu-bound
 | D4 | grouped tensor-core GEMM at the same band | 20.74 µs | — | 37.5% | `i4 16x32:256 w16x16 s2` | — |
 | D5 | best GEMV before the 2026-08-03 retune | 22.27 µs | — | 34.1% | `int4 native s16/t128 CtaN2 Chunk2` | — |
 | D6 | **tensor-core at M=1 once TileK entered the search** | **17.98 µs** | 1168 | **42.2%** | `16x16x256:16x16:s2` | 2026-08-06 |
-| D7 | D6's row with compact A, capacity 1 | 26.09 µs | 805 | 29.1% | same tile, `--compact-rows=1` | 2026-08-06 |
+| D7 | ⚠ **UNATTRIBUTED** — same tile as D6, 45% slower, cause unknown | 26.09 µs | 805 | 29.1% | `16x16x256:16x16:s2`, capacity NOT witnessed | 2026-08-06 |
 
-**D7 REFUTES THE ARGUMENT FOR COMPACT A AT SMALL TILES, mine included.** Same shape, same tile, same config
-string; only the capacity differs, and capacity 1 is 45% SLOWER. The reasoning it kills went: compact A shrinks
-A's shared footprint 49152 -> 768 B, dense is shared-limited to four blocks per CU, so the saving buys occupancy;
-and A's whole chain is 0.6% of the instruction stream, so swapping the AIU read for cp.async is free.
+**D7 IS NOT ATTRIBUTED TO ANYTHING, AND WAS FILED AS IF IT WERE.** It was recorded as "compact A at capacity 1
+is 45% slower", and the run may not have been a compact build at all. Nothing in the output could settle it: the
+compact-A capacity is a table field, config NAMES do not carry it, so a capacity-0 and a capacity-1 binary print
+result lines that are identical apart from the timing. The reading rested on remembering which binary had run.
 
-The 49152 is a LARGE TILE's number. This row is TileM=16, where A holds 16*256*2 = 8 KB per stage to begin with,
-so the saving is small -- while the cost of the different load is whatever it is regardless. Benefit scales with
-TileM; cost does not.
+TWO HYPOTHESES, and they are not close together:
 
-AND THE TWO PULL OPPOSITE WAYS, which is the part worth carrying forward. Compact A is eligible only when
-M <= capacity, i.e. at small M -- and small M selects a small TileM, which is exactly where the saving is least.
-The configuration where the mechanism should pay, a WIDE tile at small M, is the one case still untested: TileM
-128 at capacity 8. codex refused a prune that would have removed precisely that combination on the grounds that
-it "may benefit most from compacting"; D7 is the measurement that turns that from a plausible objection into the
-only remaining hypothesis.
+  * capacity 1 really is slower on this tile. The saving is smem, and at TileM=16 A holds 16*256*2 = 8 KB per
+    stage to begin with, so there is little to save while the different load costs whatever it costs. That
+    explains a few percent. It does not explain 8.1 µs.
+  * THE BASE PATH REGRESSED between D6 and this run. Landing in between: the umbrella split, codex's compact-A
+    kernel ABI (219 lines of quactlize_mma_mixed_input.hpp), the new tactic space and a regenerated table. A
+    45% step is the shape of a changed kernel, not of a slightly costlier A load.
 
-⚠ D7 IS ONE TILE. It does not say compact A is useless, and nothing here licenses deleting the axis. It says the
-small-TileM case is settled and negative.
+THE CHECK THAT SEPARATES THEM is one run: rebuild at capacity 0 and compare against D6's 17.98 µs. Equal means
+the first hypothesis and the compact axis owns its cost; 26 µs at capacity 0 means the base regressed and compact
+A has not been measured at all yet. The bench now prints the capacity as `a%d` on the result line so the next
+pair cannot be ambiguous the same way.
 
 **D6 IS WHAT THE TileK SPLIT WAS FOR, and it is NOT a like-for-like beat of D4.** Different shape: D6 is
 Qwen3-32B's q projection (M=1, N=8192, K=5120) while D4 is this section's decode band, so the comparable figure

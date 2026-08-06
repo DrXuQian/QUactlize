@@ -855,9 +855,15 @@ Result run(Options &options, char const* label = "default")
     // must actually deliver. tile carries a reuse factor instead, and a marker when it exceeds the DRAM peak --
     // which says the re-reads are cache-served, not that the kernel is bandwidth-bound.
     double const reuse = tile_bytes / min_bytes;
-    std::printf("  [CUTLASS w%d gs=%d cfg=%s] M=%d %7.2f us | %6.1f TFLOP/s | cmp %5.1f%% | tile %6.0f GB/s "
+    // THE COMPACT-A CAPACITY IS PRINTED BECAUSE IT IS NOT IN THE LABEL. Capacity is a table field and config
+    // names do not carry it, so two binaries built with --compact-rows=0 and --compact-rows=1 produce result
+    // lines that are IDENTICAL apart from the timing. On 2026-08-06 that made a 45% regression unattributable
+    // from the output alone: the reading "capacity 1 is slower" rested on remembering which binary had been run.
+    // A measurement whose conditions are not in the record is not a measurement.
+    std::printf("  [CUTLASS w%d gs=%d cfg=%s a%d] M=%d %7.2f us | %6.1f TFLOP/s | cmp %5.1f%% | tile %6.0f GB/s "
                 "(%.1fx min%s) | min %5.0f GB/s (%4.1f%% HBM)\n",
-                int(sizeof_bits<QuantType>::value), options.g, label, options.m, us, tflops, 100.0 * tflops / 500.0,
+                int(sizeof_bits<QuantType>::value), options.g, label, Main::compact_a_rows,
+                options.m, us, tflops, 100.0 * tflops / 500.0,
                 gbs_tile, reuse, gbs_tile > HBM_GBS ? ", L2-served" : "", gbs_min, 100.0 * gbs_min / HBM_GBS);
   }
 
