@@ -768,6 +768,15 @@ def lint_owned_symbol_includes():
     return _run_ci_script("check_owned_symbol_includes.py", "owned types reach their defining header")
 
 
+def lint_format_table_buildable():
+    """A listed format must have the collective its own row implies, so a feature revert cannot leave a claim.
+
+    ppu_format_config.inc and formats.py are cross-checked against EACH OTHER; neither is checked against what
+    the tree can build. Remove the two-plane collective and both still agree that Q3/Q5/Q6 exist.
+    """
+    return _run_ci_script("check_format_table_buildable.py", "listed formats have their collectives")
+
+
 def lint_dense_tactic_table_current():
     """The committed dense X-macro must be exact output from the current space and current emitter."""
     checker = ROOT / "ci" / "check_dense_tactic_table.py"
@@ -1088,6 +1097,7 @@ def main():
                 ("lint", "actlize carries no quactlize symbol and no unlisted file change", lint_actlize_pristine),
                 ("lint", "quactlize_extensions adds to actlize rather than redefining it", lint_extension_additive),
                 ("lint", "every file naming a quactlize type reaches its defining header", lint_owned_symbol_includes),
+                ("lint", "every listed GGUF format has the collective its row implies", lint_format_table_buildable),
     ("registry", "declarations vs source", None)])
     # MATCH THE KIND AS WELL AS THE NAME. `-k lint` matched NOTHING, because a lint's name is its description
     # ("duplicate unroll directives") and the word "lint" only appears in the kind. The run then printed
