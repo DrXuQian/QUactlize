@@ -768,6 +768,16 @@ def lint_owned_symbol_includes():
     return _run_ci_script("check_owned_symbol_includes.py", "owned types reach their defining header")
 
 
+def lint_generated_include_edges():
+    """An #include the CMake generator writes into a generated source must resolve.
+
+    The closure tools read what a compiler reads; this build generates sources in between, so no closure over
+    the repository can see `#include "moe_splitk_unit.inc"` -- the file carrying it does not exist until cmake
+    runs. Assembling main on 2026-08-06 lost moe_bench_unit.inc and gemv_perf_unit.inc that way, twice.
+    """
+    return _run_ci_script("check_generated_include_edges.py", "generated includes resolve")
+
+
 def lint_format_table_buildable():
     """A listed format must have the collective its own row implies, so a feature revert cannot leave a claim.
 
@@ -1098,6 +1108,7 @@ def main():
                 ("lint", "quactlize_extensions adds to actlize rather than redefining it", lint_extension_additive),
                 ("lint", "every file naming a quactlize type reaches its defining header", lint_owned_symbol_includes),
                 ("lint", "every listed GGUF format has the collective its row implies", lint_format_table_buildable),
+                ("lint", "includes the CMake generator writes into generated sources resolve", lint_generated_include_edges),
     ("registry", "declarations vs source", None)])
     # MATCH THE KIND AS WELL AS THE NAME. `-k lint` matched NOTHING, because a lint's name is its description
     # ("duplicate unroll directives") and the word "lint" only appears in the kind. The run then printed
