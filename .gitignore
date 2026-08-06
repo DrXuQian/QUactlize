@@ -37,3 +37,17 @@ dev/fold_derivation/*
 # dev/low_bit/ is NOT repeated here: it already has its own .gitignore naming w2a16_swzl_probe. That file was
 # committed anyway, which is the lesson worth keeping -- .gitignore does not touch what is already TRACKED, so
 # the rule alone never stopped it and only `git rm --cached` does.
+
+# The extensionless probe EXECUTABLES that do not follow the lNN naming, missed when the lNN pattern was written:
+# ft_check/ftchk (the float-trait check, built by hand per fold_derivation/README.md), l2l3, l5s, leg1/leg3/leg5,
+# sweep, and low_bit/w2a16_swzl_probe. 4.5 MB, all rebuildable from the .cpp/.cu beside them. The rule below
+# cannot be "ignore every extensionless file" because dev/ also holds directories, so these are named.
+dev/fold_derivation/ft_check
+dev/fold_derivation/ftchk
+dev/fold_derivation/l2l3
+dev/fold_derivation/l5s
+dev/fold_derivation/leg1
+dev/fold_derivation/leg3
+dev/fold_derivation/leg5
+dev/fold_derivation/sweep
+dev/low_bit/w2a16_swzl_probe
