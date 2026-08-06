@@ -82,7 +82,9 @@
 // data via a runtime --xcheck flag. Always included (no compile-time guard): the two-stage PPU host/device
 // build made -DMOEG_XCHECK unreliable to propagate to host main(), so we gate at runtime instead.
 // ppu_mma_builder.inl is #pragma once, so re-inclusion via moe_grouped_ppu.cuh is safe.
+#if !defined(LOWBIT_DENSE_UNIT_BUILD)
 #include "moe_grouped_ppu.cuh"
+#endif
 
 using namespace cute;
 
@@ -257,8 +259,8 @@ struct GroupKernels {
 // The tile is a compile-time template argument, so autotuning it means compiling a FIXED SET of instantiations
 // into ONE binary and dispatching at runtime -- exactly how vLLM Machete (../machete_standalone) and TRT-LLM
 // fpA_intB (../fpA_intB_standalone) do it. Cfg<> rebuilds the ScaleOnly (mode-1) type stack with a given
-// tile/warp/stages; TileCfg is the runtime descriptor; supported_configs() is the registry; the dispatch macro
-// below maps a runtime TileCfg to the matching compiled Cfg<>. This replaces the recompile-per-config sweep.sh.
+// tile/warp/stages. Generated translation units instantiate the configs behind exported wrappers, and TileCfg
+// stores the matching wrapper pointer for runtime selection. This replaces the recompile-per-config sweep.sh.
 template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int St, int ACompactRows = 0>
 struct Cfg {
   // TK IS THE ROW'S TacticTileK, not the binary's. Until 2026-08-05 these three used the global TileShapeK,
@@ -295,21 +297,26 @@ struct Cfg {
 // acr is the compact-A capacity: 0 is ordinary unrestricted A. It is NOT in `name` today, because only capacity
 // 0 is emitted and two rows would otherwise be free to share one. The moment the emitted set widens, the name has
 // to grow a segment in the same change -- find_config() matches on the name alone.
-struct TileCfg { char const* name; int tm, tn, tk, wm, wn, st, acr; };
+struct Options;
+struct Result;
+struct TileCfg;
+using LowbitDenseWrapper = Result (*)(Options&, TileCfg const&);
+struct TileCfg { char const* name; int tm, tn, tk, wm, wn, st, acr; LowbitDenseWrapper wrapper; };
 
 // The generated table. Regenerate with benchmarks/emit_tactic_configs.cpp when the binary's (QUANT, BENCH_TSK)
 // changes -- the static_assert below is what turns forgetting into a compile error rather than a sweep over a
 // set of tactics this binary cannot select.
-#include "bench_select.hpp"
-#include "bench_samples.hpp"
-#include "bench_floor.cuh"
-#include "lowbit_dense_configs.inc"
-
 // The optional collectives this file INSTANTIATES. quactlize_actlize.hpp carries the base only, so a
 // consumer names the specialisation it needs; omitting it makes CollectiveMma incomplete, which the
 // compiler reports by naming the exact instantiation.
 #include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
+
+#if !defined(LOWBIT_DENSE_UNIT_BUILD)
+#include "bench_select.hpp"
+#include "bench_samples.hpp"
+#include "bench_floor.cuh"
+#include "lowbit_dense_configs.inc"
 static_assert(cutlass::sizeof_bits<QuantType>::value == LOWBIT_DENSE_CFG_BITS && TileShapeK == LOWBIT_DENSE_CFG_ARTIFACT_TILEK,
               "lowbit_dense_configs.inc was generated for a different (bits, TileK) than this binary. Regenerate: "
               "c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic && "
@@ -324,38 +331,7 @@ inline void print_dense_table_provenance() {
   std::printf("[dense-table] rows=%d space_fnv1a64=%s emitter_fnv1a64=%s\n",
               kLowbitDenseConfigRows, LOWBIT_DENSE_CFG_SPACE_FNV1A64, LOWBIT_DENSE_CFG_EMITTER_FNV1A64);
 }
-
-// The compiled set. Every entry here is a distinct template instantiation baked into the binary; add one and
-// it costs compile time, not a rebuild at search time. Keep WM|TM, WN|TN, and both multiples of the 16x16 atom.
-inline std::vector<TileCfg> supported_configs() {
-  // GENERATED, not hand-written. The 17 rows this replaced were a fifth of the legal-and-pruned set for one
-  // (schema, TileK) binary, and nothing in the file said so -- a sweep that searches a fifth of its space still
-  // prints a winner. See benchmarks/emit_tactic_configs.cpp for the policy and the regeneration command.
-  std::vector<TileCfg> v;
-#define LOWBIT_DENSE_ROW(TM,TN,TK,WM,WN,ST,ACR,_UNUSED) \
-  v.push_back(TileCfg{#TM "x" #TN "x" #TK ":" #WM "x" #WN ":s" #ST, TM, TN, TK, WM, WN, ST, ACR});
-  LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_ROW, )
-#undef LOWBIT_DENSE_ROW
-  return v;
-}
-
-// Map a runtime TileCfg to its compiled Cfg<>::Gemm and run BODY with `using G = ...;` in scope. Mirrors
-// machete's CUTLASS55_DISPATCH_CONFIG if-chain. Any config not listed here is a runtime error.
-// ONE ROW PER CONFIG, EXPANDED FROM THE SAME LIST supported_configs() USES. Previously these were two
-// hand-maintained copies: a row present in the list and absent from this chain reached
-// `config %s not compiled in` and exit(1) -- at run time, on the box, mid-sweep. That failure is now not
-// expressible, because there is one list. The BODY travels through the list as X's second argument; a macro
-// cannot define another macro, so passing it down is what makes a single list serve both expansions.
-#define LOWBIT_DENSE_TRY(TM,TN,TK,WM,WN,ST,ACR,BODY)                                                        \
-  if (!_matched && _try(TM,TN,TK,WM,WN,ST,ACR)) { using G = typename Cfg<GroupSize,TM,TN,TK,WM,WN,ST,ACR>::Gemm; _matched=true; BODY; }
-
-#define LOWBIT_DENSE_DISPATCH(cfg, BODY)                                                                    \
-  do {                                                                                               \
-    bool _matched = false;                                                                           \
-    auto _try = [&](int tm,int tn,int tk,int wm,int wn,int st,int acr){ return (cfg).tm==tm&&(cfg).tn==tn&&(cfg).tk==tk&&(cfg).wm==wm&&(cfg).wn==wn&&(cfg).st==st&&(cfg).acr==acr; }; \
-    LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_TRY, BODY)                                                                  \
-    if (!_matched) { std::fprintf(stderr, "config %s not compiled in (see supported_configs)\n", (cfg).name); std::exit(1); } \
-  } while (0)
+#endif
 // =================================================================================================================
 
 using StrideA = cutlass::detail::TagToStrideA_t<LayoutA>;
@@ -371,6 +347,31 @@ using StrideD_ref = cutlass::detail::TagToStrideC_t<LayoutD>;
 //
 
 /// Initialization
+// Scale and Zero share a stride since the layout and shapes must be the same.
+using StrideS = cute::Stride<cute::_1, int64_t, int64_t>;
+using StrideS_ref = cutlass::detail::TagToStrideB_t<LayoutScale>;
+
+#if defined(LOWBIT_DENSE_UNIT_BUILD)
+extern StrideA stride_A;
+extern StrideB stride_B;
+extern StrideC stride_C;
+extern StrideC_ref stride_C_ref;
+extern StrideD stride_D;
+extern StrideD_ref stride_D_ref;
+extern uint64_t seed;
+extern StrideS stride_S;
+extern StrideS_ref stride_S_ref;
+extern cutlass::DeviceAllocation<ElementA> block_A;
+extern cutlass::DeviceAllocation<ElementB> block_B;
+extern cutlass::HostTensor<QuantType, LayoutB> tensor_B;
+extern cutlass::HostTensor<QuantType, LayoutB> block_B_buff;
+extern cutlass::DeviceAllocation<ElementA> block_B_dq;
+extern cutlass::DeviceAllocation<ElementScale> block_scale;
+extern cutlass::DeviceAllocation<ElementZero> block_zero;
+extern cutlass::DeviceAllocation<ElementC> block_C;
+extern cutlass::DeviceAllocation<typename GemmConvertOnly::EpilogueOutputOp::ElementOutput> block_D;
+extern cutlass::DeviceAllocation<typename GemmConvertOnly::EpilogueOutputOp::ElementOutput> block_ref_D;
+#else
 StrideA stride_A;
 StrideB stride_B;
 StrideC stride_C;
@@ -378,13 +379,8 @@ StrideC_ref stride_C_ref;
 StrideD stride_D;
 StrideD_ref stride_D_ref;
 uint64_t seed;
-
-// Scale and Zero share a stride since the layout and shapes must be the same.
-using StrideS = cute::Stride<cute::_1, int64_t, int64_t>;
-using StrideS_ref = cutlass::detail::TagToStrideB_t<LayoutScale>;
 StrideS stride_S;
 StrideS_ref stride_S_ref;
-
 cutlass::DeviceAllocation<ElementA> block_A;
 cutlass::DeviceAllocation<ElementB> block_B;
 cutlass::HostTensor<QuantType, LayoutB> tensor_B;
@@ -395,6 +391,7 @@ cutlass::DeviceAllocation<ElementZero> block_zero;
 cutlass::DeviceAllocation<ElementC> block_C;
 cutlass::DeviceAllocation<typename GemmConvertOnly::EpilogueOutputOp::ElementOutput> block_D;
 cutlass::DeviceAllocation<typename GemmConvertOnly::EpilogueOutputOp::ElementOutput> block_ref_D;
+#endif
 
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -495,11 +492,48 @@ struct Result
 
 };
 
+// BENCH_GS optionally restricts every generated wrapper to one group-size instantiation. Unset preserves the
+// one-binary --g contract. The same preprocessor decision is compiled into the main TU and every unit TU.
+#if defined(BENCH_GS)
+#define DENSE_GS_ARM(gs) ((gs) == BENCH_GS)
+#else
+#define DENSE_GS_ARM(gs) 1
+#endif
+
+#if !defined(LOWBIT_DENSE_UNIT_BUILD)
+// Main names only exported wrappers. Cfg<>::Gemm appears in lowbit_dense_unit.inc, so expanding this 632-row
+// registry does not serialize template instantiation in the main translation unit. Every field participates in
+// the external symbol even though the user-facing name omits compact-A capacity today.
+#define LOWBIT_DENSE_SYMBOL_I(TM,TN,TK,WM,WN,ST,ACR) \
+  lowbit_dense_cfg_tm##TM##_tn##TN##_tk##TK##_wm##WM##_wn##WN##_st##ST##_acr##ACR
+#define LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,ACR) LOWBIT_DENSE_SYMBOL_I(TM,TN,TK,WM,WN,ST,ACR)
+#define LOWBIT_DENSE_DECLARE(TM,TN,TK,WM,WN,ST,ACR,_UNUSED) \
+  Result LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,ACR)(Options&, TileCfg const&);
+LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_DECLARE, )
+#undef LOWBIT_DENSE_DECLARE
+
+inline std::vector<TileCfg> const& supported_configs() {
+  static std::vector<TileCfg> const configs = {
+#define LOWBIT_DENSE_REGISTRY_ROW(TM,TN,TK,WM,WN,ST,ACR,_UNUSED) \
+    TileCfg{#TM "x" #TN "x" #TK ":" #WM "x" #WN ":s" #ST, TM, TN, TK, WM, WN, ST, ACR, \
+            &LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,ACR)},
+    LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_REGISTRY_ROW, )
+#undef LOWBIT_DENSE_REGISTRY_ROW
+  };
+  return configs;
+}
+#undef LOWBIT_DENSE_SYMBOL
+#undef LOWBIT_DENSE_SYMBOL_I
+#endif
+
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 /// GEMM setup and evaluation
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
+void initialize(Options const& options);
+
+#if !defined(LOWBIT_DENSE_UNIT_BUILD)
 /// Helper to initialize a block of device data
 template <class Element>
 bool initialize_tensor(
@@ -660,6 +694,7 @@ void initialize(Options const& options) {
   }
   block_B_buff.sync_device();
 }
+#endif
 
 /// Populates a Gemm::Arguments structure from the given commandline options
 template <typename Args>
@@ -695,6 +730,9 @@ Args args_from_options(Options const& options)
   }
 }
 
+bool verify(const Options &options);
+
+#if !defined(LOWBIT_DENSE_UNIT_BUILD)
 bool verify(const Options &options) {
   //
   // Compute reference output
@@ -758,6 +796,7 @@ bool verify(const Options &options) {
   bool passed = cutlass::reference::device::BlockCompareRelativelyEqual(block_ref_D.get(), block_D.get(), block_D.size(), epsilon, non_zero_floor);
   return passed;
 }
+#endif
 
 /// Execute a given example GEMM computation. Returns the Result (does not exit on failure, so the tactic
 /// search can skip a config that does not verify and move on). `label` is printed on the comparable line.
@@ -873,12 +912,13 @@ Result run(Options &options, char const* label = "default", int acr = -1)
   return result;
 }
 
+#if !defined(LOWBIT_DENSE_UNIT_BUILD)
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Tactic dispatch + shape-keyed cache (exact-match text, like machete's cutlass55_tactics.cache).
 
-// BENCH_GS: BUILD ONE GROUP SIZE INSTEAD OF FOUR. The dispatch below switches on a RUNTIME --g, so every arm is
-// instantiated whether or not it can be selected -- and each arm expands the whole config table. At 293 rows that
-// is 1172 kernel instantiations to run a sweep that uses exactly one of them.
+// BENCH_GS: BUILD ONE GROUP SIZE INSTEAD OF FOUR. Each generated wrapper switches on a RUNTIME --g, so every arm
+// is instantiated whether or not it can be selected. Restricting it makes each wrapper instantiate one kernel
+// instead of four.
 //
 // HOW MUCH BUILD TIME THAT SAVES IS NOT ESTABLISHED, and the first version of this comment claimed 4x. Measured
 // on the local nvcc FRONT END: 194s for all four, 136s for BENCH_GS=32 -- 1.43x, because much of a front-end pass
@@ -892,11 +932,6 @@ Result run(Options &options, char const* label = "default", int acr = -1)
 // everything else in this repo assumes. An unsupported --g still reports itself at run time rather than
 // mis-selecting, so a binary built for one group size cannot silently answer for another:
 //   BENCH_GS=32 ./build.sh
-#if defined(BENCH_GS)
-#define DENSE_GS_ARM(gs) ((gs) == BENCH_GS)
-#else
-#define DENSE_GS_ARM(gs) 1
-#endif
 
 bool supported_group_size(int group_size) {
 #if defined(BENCH_GS)
@@ -960,31 +995,8 @@ inline char const* dense_fixture(Options const& o) {
   return fx;
 }
 
-// Run one named/descriptor config through the compiled dispatch. Returns its Result.
-template <int GroupSize>
-Result run_config_for_group(Options& options, TileCfg const& cfg) {
-  Result r;
-  LOWBIT_DENSE_DISPATCH(cfg, { r = run<G>(options, cfg.name, cfg.acr); });
-  return r;
-}
-
 Result run_config(Options& options, TileCfg const& cfg) {
-  switch (options.g) {
-#if DENSE_GS_ARM(16)
-    case 16:  return run_config_for_group<16>(options, cfg);
-#endif
-#if DENSE_GS_ARM(32)
-    case 32:  return run_config_for_group<32>(options, cfg);
-#endif
-#if DENSE_GS_ARM(64)
-    case 64:  return run_config_for_group<64>(options, cfg);
-#endif
-#if DENSE_GS_ARM(128)
-    case 128: return run_config_for_group<128>(options, cfg);
-#endif
-    default:  std::fprintf(stderr, "unsupported dense group size %d (supported: 16, 32, 64, 128)\n", options.g);
-              return {};
-  }
+  return cfg.wrapper(options, cfg);
 }
 
 TileCfg find_config(std::string const& name) {
@@ -1254,3 +1266,4 @@ int main(int argc, char const **args) {
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
+#endif

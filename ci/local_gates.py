@@ -778,6 +778,11 @@ def lint_generated_include_edges():
     return _run_ci_script("check_generated_include_edges.py", "generated includes resolve")
 
 
+def lint_dense_unit_generator():
+    """The dense CMake parser must batch the committed table and reject every ambiguous input shape."""
+    return _run_ci_script("check_dense_unit_generator.py", "dense table parser and batcher fail closed")
+
+
 def lint_format_table_buildable():
     """A listed format must have the collective its own row implies, so a feature revert cannot leave a claim.
 
@@ -1109,6 +1114,7 @@ def main():
                 ("lint", "every file naming a quactlize type reaches its defining header", lint_owned_symbol_includes),
                 ("lint", "every listed GGUF format has the collective its row implies", lint_format_table_buildable),
                 ("lint", "includes the CMake generator writes into generated sources resolve", lint_generated_include_edges),
+                ("lint", "dense table parser batches the committed rows and fails closed", lint_dense_unit_generator),
     ("registry", "declarations vs source", None)])
     # MATCH THE KIND AS WELL AS THE NAME. `-k lint` matched NOTHING, because a lint's name is its description
     # ("duplicate unroll directives") and the word "lint" only appears in the kind. The run then printed

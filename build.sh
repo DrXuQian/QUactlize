@@ -42,7 +42,7 @@ ARCH="${PPU_ARCHS:-ppu0010}"
 # *.inc is in the whitelist because the MoE sweep's generated units all #include moe_bench_unit.inc. Leaving it out
 # did not fail here: it failed 100+ lines into hgcc as "fatal error: moe_bench_unit.inc: No such file or directory",
 # once per generated unit.
-_OVERLAY_EXTS=(cu cpp cuh hpp h inc)
+_OVERLAY_EXTS=(cu cpp cuh hpp h inc cmake)
 
 # $1 = directory (absolute), $2 = optional "dest/" prefix, $3.. = extensions to use (defaults to _OVERLAY_EXTS)
 _emit_dir() {
@@ -78,6 +78,7 @@ overlay_manifest() {
   # A library split across a subdirectory has to come whole; most subdirectories (fold_derivation/, low_bit/) are
   # host-only harnesses that must NOT reach the box, which is why this is one named path and not a recursive walk.
   _emit_dir "$HERE/$_subdir_src" "gemv_lowbit/"
+  _emit_dir "$HERE/quactlize/csrc" "" cmake
   printf 'CMakeLists.txt|%s\n' "$HERE/quactlize/csrc/CMakeLists.txt.in"
 }
 
@@ -208,13 +209,14 @@ echo "[build.sh] CUTLASS_PPU_ARCHS=$ARCH"
 TILE_M="${TILE_M:-32}"; TILE_N="${TILE_N:-32}"; WARP_M="${WARP_M:-16}"; WARP_N="${WARP_N:-16}"; STAGES="${STAGES:-3}"
 QUANT="${QUANT:-int4}"   # int4 (default) or uint2 -> test_lowbit_dense_bench's QuantType (W4A16 vs W2A16 perf)
 TSK="${TSK:-}"           # TileShapeK override (empty = per-quant default: int2->128, int4->64). Set to force, e.g. TSK=128
-BENCH_GS="${BENCH_GS:-}"  # build ONE dense group size instead of all four. The dispatch instantiates every arm
-                         # whether or not --g can select it, and each arm expands the whole config table, so a
-                         # 293-row table costs 1172 instantiations to run a sweep that uses one group size. How much
+BENCH_GS="${BENCH_GS:-}"  # build ONE dense group size instead of all four. Every generated config wrapper instantiates
+                         # each group-size arm whether or not --g can select it, so restricting the group size divides
+                         # the tactic kernel count by four. How much
                          # hgcc time that saves is UNMEASURED; nvcc's front end goes 194s -> 136s, but codegen is
                          # where the instantiation count would tell and the front end never reaches it.
                          # Unset keeps the one-binary --g contract. e.g. BENCH_GS=32 ./build.sh
-echo "[build.sh] TILE=${TILE_M}x${TILE_N} WARP=${WARP_M}x${WARP_N} STAGES=${STAGES} QUANT=${QUANT} TSK=${TSK} BENCH_GS=${BENCH_GS:-all}"
+LOWBIT_DENSE_CONFIGS_PER_UNIT="${LOWBIT_DENSE_CONFIGS_PER_UNIT:-4}"
+echo "[build.sh] TILE=${TILE_M}x${TILE_N} WARP=${WARP_M}x${WARP_N} STAGES=${STAGES} QUANT=${QUANT} TSK=${TSK} BENCH_GS=${BENCH_GS:-all} DENSE_CONFIGS_PER_UNIT=$LOWBIT_DENSE_CONFIGS_PER_UNIT"
 
 # --- configure & build just our target ---
 # OVERRIDABLE, because build.sh rm -rf's this and something that RUNS build.sh to check it must be able to point it
@@ -276,6 +278,7 @@ _CMAKE_SRC="$HERE"; _CMAKE_EXTRA=(-DQUACTLIZE_PPU=ON)
 cmake "$_CMAKE_SRC" "${_CMAKE_EXTRA[@]}" -DPPU_SDK_ROOT="$PPU_SDK_ROOT" -DCUTLASS_PPU_ARCHS="$ARCH" \
   -DCUTLASS_ENABLE_TESTS=OFF -DCUTLASS_ENABLE_GTEST_UNIT_TESTS=OFF \
   -DTILE_M="$TILE_M" -DTILE_N="$TILE_N" -DWARP_M="$WARP_M" -DWARP_N="$WARP_N" -DSTAGES="$STAGES" -DBENCH_QUANT="$QUANT" -DTSK="$TSK" -DBENCH_GS="$BENCH_GS" \
+  -DLOWBIT_DENSE_CONFIGS_PER_UNIT="$LOWBIT_DENSE_CONFIGS_PER_UNIT" \
   -DPPU_EXTRA_DEFS="${PPU_DEFS:-}" "${_MOE_VARS[@]+"${_MOE_VARS[@]}"}" \
   >cmake.log 2>&1 || { tail -40 cmake.log; exit 1; }
 # cmake's stdout is redirected above, so its message(STATUS ...) never reaches the terminal. Surface the extra
