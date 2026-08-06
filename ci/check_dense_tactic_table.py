@@ -43,6 +43,10 @@ TACTIC_RE = re.compile(r"^//\s+tactic_tile_k:\s+([\d ]+?)\s+<", re.M)
 # summary field: today only 0 is emitted, so there is nothing for a reader to be told. The gate still needs them
 # to reproduce the file, and reading them off the command the file prints keeps this from being a second copy.
 COMPACT_RE = re.compile(r"--compact-rows=([\d,]+)", re.M)
+# Pruning is opt-in as of 2026-08-06. Read it off the regeneration line for the same reason as the
+# capacities: a table emitted with --prune=primary-guard is not reproducible without it, and the
+# default silently reproducing a DIFFERENT file is the failure this gate exists to prevent.
+PRUNE_RE = re.compile(r"--prune=([a-z-]+)", re.M)
 
 
 def declared_args(text: str):
@@ -62,8 +66,11 @@ def declared_args(text: str):
     c = COMPACT_RE.search(text)
     if not c:
         return None, "header does not declare `--compact-rows=` in its regeneration line"
+    pr = PRUNE_RE.search(text)
+    if not pr:
+        return None, "header does not declare `--prune=` in its regeneration line"
     return ([bits, artifact_tk, f"--space={space}", "--tactic-tk=" + ",".join(tactic),
-             f"--compact-rows={c.group(1)}", *stages],
+             f"--compact-rows={c.group(1)}", f"--prune={pr.group(1)}", *stages],
             f"space={space} bits={bits} artifact_tile_k={artifact_tk} "
             f"tactic_tile_k={' '.join(tactic)} compact_rows={c.group(1)} stages={' '.join(stages)}")
 
