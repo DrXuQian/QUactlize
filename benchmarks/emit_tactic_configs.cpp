@@ -82,6 +82,8 @@ std::vector<int> g_tactic_tks;
 std::vector<int> g_compact_rows;
 // Off by default: emit every LEGAL row. --prune=primary-guard narrows to the heuristic's choice.
 bool g_prune = false;
+// Selected by --format=<name>; null means the positional single-plane lookup.
+char const* g_format = nullptr;
 
 // THERE WAS A --space=quarantined HERE, AND ITS REMOVAL IS THE POINT. It emitted the COMPLEMENT of the dense
 // space -- only the rows dense refused -- so that the sub-four-warp geometry holding the measured int4 optimum
@@ -344,6 +346,7 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
   std::printf(" --compact-rows=");
   for (size_t j = 0; j < g_compact_rows.size(); ++j) std::printf("%s%d", j ? "," : "", g_compact_rows[j]);
   std::printf(" --prune=%s", g_prune ? "primary-guard" : "none");
+  if (g_format) std::printf(" --format=%s", g_format);
   for (int st : g_stages) std::printf(" %d", st);
   std::printf(" > benchmarks/lowbit_%s_configs.inc\n", space_name);
   std::printf("//\n");
@@ -390,13 +393,14 @@ int main(int argc, char** argv) {
                  "  emitter uses and prints the disagreements, exiting non-zero if there are any.\n");
     return 2;
   }
-  const int bits = std::atoi(argv[1]);
+  int bits = std::atoi(argv[1]);
   const int tk   = std::atoi(argv[2]);
 
   char const* space = "dense";
   std::vector<int> stages;
   for (int i = 3; i < argc; ++i) {
     if (std::strncmp(argv[i], "--space=", 8) == 0) { space = argv[i] + 8; continue; }
+    if (std::strncmp(argv[i], "--format=", 9) == 0) { g_format = argv[i] + 9; continue; }
     if (std::strcmp(argv[i], "--prune=primary-guard") == 0) { g_prune = true; continue; }
     if (std::strcmp(argv[i], "--prune=none") == 0) { g_prune = false; continue; }
     if (std::strncmp(argv[i], "--compact-rows=", 15) == 0) {
@@ -421,10 +425,35 @@ int main(int argc, char** argv) {
   }
   if (!stages.empty()) g_stages = stages;
 
+  // FORMAT SELECTION IS BY NAME, because a bit width is not a format's identity. kFormats holds six entries and
+  // low_bits=2 is BOTH i2 and Q3_K (2+1); the old lookup disambiguated with `&& high_bits == 0`, which picked i2
+  // and, as a side effect, made every TWO-PLANE format unreachable from this tool. That is why q3/q5/q6 have
+  // never had a generated table on either operator, and why ArtifactHighRun, HighFoldDoesNotDivideTileN and
+  // HighDelivery -- three exclusions written for the high plane -- have never been exercised by an emission.
+  //
+  // The old positional form still works and still means "the single-plane format with these bits". What is gone
+  // is the silent part: asking for bits=2 while meaning Q3_K used to produce i2's table with a plausible row
+  // count and no diagnostic.
   FormatSpec const* spec = nullptr;
-  for (auto const& s : kFormats)
-    if (s.low_bits == bits && s.high_bits == 0) spec = &s;
-  if (!spec) { std::fprintf(stderr, "no single-plane format with low_bits=%d in kFormats\n", bits); return 2; }
+  if (g_format) {
+    for (auto const& s : kFormats)
+      if (std::strcmp(s.name, g_format) == 0) spec = &s;
+    if (!spec) {
+      std::fprintf(stderr, "no format named '%s' in kFormats. Known:", g_format);
+      for (auto const& s : kFormats) std::fprintf(stderr, " %s", s.name);
+      std::fprintf(stderr, "\n");
+      return 2;
+    }
+    bits = spec->low_bits;
+  } else {
+    for (auto const& s : kFormats)
+      if (s.low_bits == bits && s.high_bits == 0) spec = &s;
+    if (!spec) {
+      std::fprintf(stderr, "no single-plane format with low_bits=%d in kFormats; for a two-plane format pass "
+                           "--format=<name>\n", bits);
+      return 2;
+    }
+  }
 
   if (g_tactic_tks.empty()) g_tactic_tks.push_back(tk);   // no --tactic-tk: the artifact's own, as before
   // No --compact-rows: capacity 0, ordinary unrestricted A. The DEFAULT IS THE OLD BEHAVIOUR ON PURPOSE -- the
@@ -433,7 +462,19 @@ int main(int argc, char** argv) {
   if (g_compact_rows.empty()) g_compact_rows.push_back(0);
 
   if (std::strcmp(space, "dense") == 0)   return emit<DenseSpace>(*spec, bits, tk, g_tactic_tks, "dense", "LOWBIT_DENSE");
-  if (std::strcmp(space, "grouped") == 0) return emit<GroupedSpace>(*spec, bits, tk, g_tactic_tks, "grouped", "LOWBIT_GROUPED");
+  if (std::strcmp(space, "grouped") == 0) {
+    // ONE MACRO PREFIX PER FORMAT. Five grouped tables in one build all defining LOWBIT_GROUPED_CFG_LIST would
+    // silently take whichever was included last -- and every one of them looks well-formed on its own, so the
+    // collision has no diagnostic. The prefix carries the format when a format was named.
+    static char pfx[64];
+    if (g_format) {
+      std::snprintf(pfx, sizeof pfx, "LOWBIT_GROUPED_%s", g_format);
+      for (char* q = pfx; *q; ++q) *q = (*q >= 'a' && *q <= 'z') ? char(*q - 'a' + 'A') : *q;
+    } else {
+      std::snprintf(pfx, sizeof pfx, "LOWBIT_GROUPED");
+    }
+    return emit<GroupedSpace>(*spec, bits, tk, g_tactic_tks, "grouped", pfx);
+  }
   if (std::strcmp(space, "compare") == 0) {
     std::printf("comparing DenseSpace vs GroupedSpace: bits=%d tile_k=%d stages", bits, tk);
     for (int st : g_stages) std::printf(" %d", st);
