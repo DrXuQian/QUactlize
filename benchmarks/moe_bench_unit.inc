@@ -15,6 +15,19 @@
 // The (TileM, WarpM) L-shape is NOT enumerated anywhere: moe_ok's WM <= TM rejects the illegal corner, so a unit for
 // (TM=32, WM=64) simply compiles to an empty function. One less relation written down by hand.
 #include "lowbit_moe_bench.hpp"
+// THE OPTIONAL COLLECTIVES, BECAUSE THIS FILE IS WHERE THE KERNELS ARE INSTANTIATED. quactlize_actlize.hpp carries the
+// base and deliberately leaves these two out so a consumer names what it builds; test_lowbit_moe_bench.cu was given
+// them and this file was not, which is the wrong way round -- the bench TU only DECLARES the unit functions (through
+// the generated moe_bench_units.inc) while every actual CollectiveMma comes from here. The build died at
+// collective_mma_decl.hpp:61 with "Could not find a mainloop specialization" for MainloopPPUAiuFold, which is exactly
+// the loud incomplete-type failure the umbrella's design predicts: no silent fallback, but no protection either.
+//
+// BOTH, unconditionally, matching the sibling bench. UNIT_2PLANE selects between MOE1 and MOE2 so the plane count is
+// known here, but FOLD is not a property of the format -- it comes out of the tactic (ArtifactLowFold), which this
+// file cannot see. Picking one header per unit would need the fold predicate at preprocessor level; the sweep builds
+// every shape anyway, so there is nothing to save.
+#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 
 #define UNIT_STR2_(x) #x
 #define UNIT_STR_(x)  UNIT_STR2_(x)

@@ -5,6 +5,12 @@
 // an illegal (TileM, WarpM) pair would otherwise trip gemm_operands.hpp's division by zero in a unit that
 // never runs. The MoE sweep's unit body records the same trap.
 #include "moe_splitk_bench_common.hpp"
+// Same reason as moe_bench_unit.inc: the kernels are instantiated HERE, not in test_moe_splitk_bench.cu, which only
+// carries the generated declarations. That bench was given the two optional collectives and this file was not, so
+// this target has the same latent "Could not find a mainloop specialization" waiting in it -- unfired only because
+// nothing has built it since the umbrella split.
+#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 
 template <int Dummy>
 static void unit_body(Band const& bd, SkCtx const& cx, SkBest& b1, SkBest& bS) {
