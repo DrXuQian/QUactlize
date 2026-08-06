@@ -101,17 +101,11 @@ namespace cutlass::gemm::collective {
 // template parameters, because CollectiveMma's parameter list is fixed by its primary template.
 // A dedicated wrapper is required -- do NOT use cute::is_tuple: a cute Layout (which SmemLayoutAtomB_ is) is
 // itself tuple-like, so is_tuple would be a false positive.
-template <class T0, class T1>
-struct BPlanes {};
-
-namespace bplane_detail {
-  template <class T> struct first  { using type = T; };
-  template <class T0, class T1> struct first<BPlanes<T0, T1>>  { using type = T0; };
-  template <class T> struct second { using type = void; };
-  template <class T0, class T1> struct second<BPlanes<T0, T1>> { using type = T1; };
-}
-template <class T> using bplane_first_t  = typename bplane_detail::first<T>::type;
-template <class T> using bplane_second_t = typename bplane_detail::second<T>::type;
+// BPlanes MOVED to quactlize_extensions/cutlass/detail/quactlize_mixed_dtype.hpp on 2026-08-06. It is the ABI
+// between the builder and this collective, not part of this collective: quactlize_mma_builder.inl NAMES it while
+// selecting atoms, so leaving it here made the builder -- which every consumer needs -- depend on the two-plane
+// header, which only Q3/Q5/Q6 consumers need. Found by the compiler the moment the umbrella stopped listing this
+// file unconditionally; a grep for the mainloop tags had missed it.
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 

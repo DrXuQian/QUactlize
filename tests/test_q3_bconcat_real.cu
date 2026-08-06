@@ -23,6 +23,12 @@
 #include "xplane_offline.hpp"
 #include "moe_grouped_ppu.cuh"
 
+// The optional collectives this file INSTANTIATES. quactlize_actlize.hpp carries the base only, so a
+// consumer names the specialisation it needs; omitting it makes CollectiveMma incomplete, which the
+// compiler reports by naming the exact instantiation.
+#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
+
 using half_t  = cutlass::half_t;
 using uint2_t = cutlass::uint2b_t;
 using uint1_t = cutlass::uint1b_t;

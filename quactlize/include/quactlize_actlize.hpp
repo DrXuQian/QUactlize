@@ -38,6 +38,22 @@
 #include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/builders/quactlize_mma_builder.inl"
+
+// THE TWO OPTIONAL COLLECTIVES ARE NOT HERE, and their absence is the point.
+//
+//     quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp                (N-fold)
+//     quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp  (Q3/Q5/Q6)
+//
+// A consumer that instantiates a folded or two-plane config includes the one it needs. Listing both here made
+// every consumer carry both, which is fine for a repository that always builds everything and wrong for one
+// whose features are meant to land and revert as separate commits: dropping the fold commit would leave this
+// umbrella naming a file that no longer exists, and the base would stop compiling for a reason that has nothing
+// to do with it.
+//
+// NOTHING IN THE BASE NEEDS THEIR DEFINITIONS. quactlize_dispatch_policy.hpp declares MainloopPPUAiuFold and
+// MainloopPPUAiuMixedInput2Plane -- cheap tag declarations -- and the builder only NAMES those tags inside a
+// conditional_t. The CollectiveMma specialisations are what live in the two headers, and a specialisation is
+// only needed once something instantiates it. Omit the header and instantiate anyway and the primary template is
+// selected: an incomplete type, which is a compiler error naming the missing specialisation, not a silent
+// fallback to a different kernel.

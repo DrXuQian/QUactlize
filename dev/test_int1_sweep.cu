@@ -53,6 +53,11 @@
 #include "xplane_offline.hpp"
 #include "moe_grouped_ppu.cuh"
 
+// The optional collectives this file INSTANTIATES. quactlize_actlize.hpp carries the base only, so a
+// consumer names the specialisation it needs; omitting it makes CollectiveMma incomplete, which the
+// compiler reports by naming the exact instantiation.
+#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+
 // If this fails, the actlize SUBMODULE on the box is stale: the Kernels gitlink moved but `git submodule update` did
 // not run, so the build would silently produce a binary identical to the previous one. That ambiguity is what made an
 // "every acu counter is identical" A/B uninterpretable -- so it is a compile error, not a runtime surprise.

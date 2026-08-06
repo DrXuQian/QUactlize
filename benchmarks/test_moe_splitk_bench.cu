@@ -13,6 +13,12 @@
 #include "moe_router_fixture.hpp"
 #include "moe_splitk_units.inc"     // GENERATED: unit declarations + splitk_run_all()
 
+// The optional collectives this file INSTANTIATES. quactlize_actlize.hpp carries the base only, so a
+// consumer names the specialisation it needs; omitting it makes CollectiveMma incomplete, which the
+// compiler reports by naming the exact instantiation.
+#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
+
 int main(int argc, char** argv) {
   Band bd{};
   bd.L    = argc > 1 ? atoi(argv[1]) : 8;

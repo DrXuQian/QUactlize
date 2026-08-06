@@ -27,7 +27,8 @@ int check() {
 }
 
 int main() {
-  int const bad = check<1,16,256,2>() + check<2,16,128,3>() + check<4,64,64,4>();
-  std::printf("compact A rows: logical TileM preserved, physical rows 1/2/4, bad=%d\n", bad);
+  int const bad = check<1,16,256,2>() + check<2,16,128,3>() +
+                  check<4,64,64,4>() + check<8,128,64,3>();
+  std::printf("compact A rows: logical TileM preserved, physical rows 1/2/4/8, bad=%d\n", bad);
   return bad ? 1 : 0;
 }

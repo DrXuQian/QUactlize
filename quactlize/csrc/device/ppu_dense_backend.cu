@@ -14,6 +14,11 @@
 #include "ppu_grouped_configs.inc"
 #include "quactlize_ppu_device.h"
 
+// The optional collectives this backend INSTANTIATES: it ships Q3_K (uint2+uint1, two planes) and folded
+// artifacts alongside the single-plane path. quactlize_actlize.hpp carries the base only.
+#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
+
 namespace {
 
 using ppu_gemv::DevBuf;
