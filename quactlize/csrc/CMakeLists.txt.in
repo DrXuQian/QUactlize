@@ -805,11 +805,11 @@ target_compile_options(test_lowbit_grouped PRIVATE -w)
 # answer for the wrong reason. Hence the field-count check below: a malformed row must stop the configure, not produce a
 # plausible number.
 set(_MOE_FORMATS
-  "q3|1|uint2_t|uint1_t|2|1|64"
-  "q5|1|int4_t|uint1_t|4|1|64"
-  "q6|1|int4_t|uint2_t|4|2|32,64"
-  "i2|0|uint2_t|half_t|2|0|16,32,64"
-  "i4|0|int4_t|half_t|4|0|16,32,64"
+  "q3|1|uint2_t|uint1_t|2|1|64|Q3_K"
+  "q5|1|int4_t|uint1_t|4|1|64|Q5_K"
+  "q6|1|int4_t|uint2_t|4|2|32,64|Q6_K"
+  "i2|0|uint2_t|half_t|2|0|16,32,64|i2"
+  "i4|0|int4_t|half_t|4|0|16,32,64|i4"
 )
 # 16 IS THE HARDWARE FLOOR, and it was missing. Every MMA atom in cute/atom/mma_traits_ppu0015.hpp has M = 16
 # (Shape_MNK = Shape<_16,...>, all eight of them), so TileM must be a multiple of 16 and TileM=8 is not reachable with these
@@ -887,9 +887,10 @@ file(MAKE_DIRECTORY "${_MOE_GEN_DIR}")
 foreach(_row IN LISTS _MOE_FORMATS)
   string(REPLACE "|" ";" _f "${_row}")
   list(LENGTH _f _nf)
-  if(NOT _nf EQUAL 7)
-    message(FATAL_ERROR "_MOE_FORMATS row '${_row}' has ${_nf} fields, expected 7 "
-                        "(name|2plane|lo_elem|hi_elem|lo_bits|hi_bits|WarpN,list). A ';' anywhere in a row splits it.")
+  if(NOT _nf EQUAL 8)
+    message(FATAL_ERROR "_MOE_FORMATS row '${_row}' has ${_nf} fields, expected 8 "
+                        "(name|2plane|lo_elem|hi_elem|lo_bits|hi_bits|WarpN,list|emitter_format). "
+                        "A ';' anywhere in a row splits it.")
   endif()
   list(GET _f 0 _nm)
   list(GET _f 1 _2p)
@@ -897,12 +898,47 @@ foreach(_row IN LISTS _MOE_FORMATS)
   list(GET _f 3 _hi)
   list(GET _f 4 _lob)
   list(GET _f 5 _hib)
+  # _wns IS NO LONGER USED: the shapes come from the emitted table. It stays parsed so the row shape and its
+  # field-count check are unchanged, and so the stale hand-written subset sits next to the note saying it is
+  # stale -- the predicates admit WarpN 16/32/64 for all three two-plane formats, and this column claims fewer.
   list(GET _f 6 _wns)
-  string(REPLACE "," ";" _wns "${_wns}")   # comma -> real CMake list, only now that the row is safely split
-  foreach(_wn IN LISTS _wns)
-    foreach(_tn IN LISTS _MOE_TN_LIST)
-      foreach(_wm IN LISTS _MOE_WM_LIST)
-        foreach(_tm IN LISTS _MOE_TM_LIST)
+  # THE EMITTER'S FORMAT NAME, which is the join key to the generated table and is NOT derivable from
+  # the short name: this row says "q3" and kFormats says "Q3_K". A rule ("q* uppercases and gains _K")
+  # would be one I invented; the field-count check below is what keeps this honest instead.
+  list(GET _f 7 _emitname)
+  # THE SHAPES COME FROM THE EMITTED TABLE, not from axis lists here. Until 2026-08-06 this loop was
+  # _wns x _MOE_TN_LIST x _MOE_WM_LIST x _MOE_TM_LIST -- 3600 units, of which moe_ok<> rejected most and the
+  # compiler turned them into empty functions. moe_ok<> asks GroupedSpace for its answer and so does the emitter,
+  # so the table IS that filter applied ahead of generation instead of after compilation. Measured: 415 units
+  # instead of 3600, and 552 rows the hand-written WarpN subsets were excluding come back.
+  #
+  # STAGE IS NOT PART OF A UNIT'S IDENTITY HERE, unlike the dense side: one sweep unit is one shape and loops
+  # every stage count at runtime. So the table's rows are projected onto (TM,TN,WM,WN) and de-duplicated;
+  # generating one unit per ROW would produce 1786 units that mostly differ in a number the unit does not take.
+  string(TOUPPER "${_emitname}" _nm_uc)
+  qz_resolve_sources(_MOE_TABLE lowbit_grouped_${_emitname}_configs.inc)
+  list(GET _MOE_TABLE 0 _MOE_TABLE)
+  get_filename_component(_MOE_TABLE "${_MOE_TABLE}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+  qz_parse_tactic_xmacro(_MOE_ROWS
+    FILE "${_MOE_TABLE}"
+    LIST_MACRO LOWBIT_GROUPED_${_nm_uc}_CFG_LIST
+    COUNT_MACRO LOWBIT_GROUPED_${_nm_uc}_CFG_ROWS)
+  set(_MOE_SHAPES "")
+  foreach(_r IN LISTS _MOE_ROWS)
+    string(REPLACE "," ";" _rf "${_r}")
+    list(GET _rf 0 _r_tm)
+    list(GET _rf 1 _r_tn)
+    list(GET _rf 3 _r_wm)
+    list(GET _rf 4 _r_wn)
+    list(APPEND _MOE_SHAPES "${_r_tm}:${_r_tn}:${_r_wm}:${_r_wn}")
+  endforeach()
+  list(REMOVE_DUPLICATES _MOE_SHAPES)
+  foreach(_shape IN LISTS _MOE_SHAPES)
+    string(REPLACE ":" ";" _sf "${_shape}")
+    list(GET _sf 0 _tm)
+    list(GET _sf 1 _tn)
+    list(GET _sf 2 _wm)
+    list(GET _sf 3 _wn)
           set(_fn "moe_unit_${_nm}_tn${_tn}_wn${_wn}_tm${_tm}_wm${_wm}")
           set(_src "${_MOE_GEN_DIR}/${_fn}.cu")
           # CONFIGURE_DEPENDS is not needed: the content is a pure function of this loop, so a changed table means a
@@ -937,9 +973,6 @@ foreach(_row IN LISTS _MOE_FORMATS)
             list(APPEND _MOE_FMT_NAMES "${_nm}")
           endif()
           set(_MOE_UNIT_CALLS "${_MOE_UNIT_CALLS}  ${_fn}(bd, b[${_MOE_FMT_IDX}]);\n")
-        endforeach()
-      endforeach()
-    endforeach()
   endforeach()
 endforeach()
 list(LENGTH _MOE_UNIT_SRCS _MOE_UNIT_N)
