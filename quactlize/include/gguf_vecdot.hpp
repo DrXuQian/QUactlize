@@ -31,12 +31,17 @@
 // meaningful for centred formats even when cancellation makes error/abs(dot) arbitrarily large.
 #include <cstdint>
 #include "cutlass/numeric_types.h"
+// DEVICE-COMPILER ONLY, and the guard is the reason this header is usable from the portable host build at all:
+// the converter reaches actlize's cutlass, whose half.h pulls <hggc_fp16.h> from the PPU SDK, while the torch
+// extension compiles against stock cutlass with no SDK present. Every use of MixGemmByte4ToHalf below sits inside
+// the same guard. Moving this include out of it -- which I did on 2026-08-06, following a closure check that
+// preprocesses without __HGGCCC__ and so could not see a guarded include at all -- breaks `setup.py build_ext`
+// outright.
 #if defined(__CUDACC__) || defined(__HGGCCC__)
-#include "cutlass/fast_numeric_conversion_for_mix_gemm.h"
+#include "quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
 #endif
 #include "gguf_scale_layout.hpp"   // brings cute/tensor.hpp, so cute::Layout is available as a destination
 #include "cute/atom/copy_atom.hpp"
-#include "quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
 
 #ifndef CUTLASS_HOST_DEVICE
 #  define CUTLASS_HOST_DEVICE inline

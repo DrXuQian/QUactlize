@@ -80,6 +80,9 @@ FIXES = {
         "cd17c2b9: trailing commas in template argument lists",
     "include/cutlass/gemm/kernel/ppu_tile_scheduler_stream_k.hpp":
         "cd17c2b9: trailing commas in template argument lists",
+    "include/cutlass/fast_numeric_conversion_for_mix_gemm.h":
+        "c48cb105: the int8 converter's ppu.prmt/ppu.sub behind __HGGC_ARCH__, with a plain-C++ arm. It is a FULL "
+        "specialisation, so the body reaches ptxas whether or not it is called, and nvcc cannot assemble `ppu`",
 }
 
 # EXTENSIONS widen a vendor facility that quactlize needs and that cannot be reached from outside the file. Each

@@ -33,13 +33,18 @@
 // scale_of / min_of / make_group_scale are pure arithmetic over the format's own bytes. Only the re-exports at the
 // bottom of this file need the packed unit, so they follow the same condition.
 //
-// THE PROBE AND THE INCLUDE MUST NAME THE SAME PATH. The header moved to quactlize_extensions/ on 2026-08-06 and
-// for one commit the probe still asked for the old actlize path while the include used the new one -- so
-// __has_include was false everywhere, GGUF_SCALE_HAVE_PACKED never got defined, and the packed re-exports simply
-// vanished. Nothing fails in that state: the file compiles, and every caller of the re-exports is behind the same
-// macro. A feature that silently stops existing is the worst shape a #if can take.
+// THE PROBE ASKS FOR THE SDK HEADER, NOT FOR OUR OWN. It used to ask for `cutlass/gguf_packed_scale.h`, which
+// worked as a proxy only because that path existed solely inside actlize: finding it meant actlize's cutlass was
+// on the include path, and actlize's cutlass is what needs the SDK. The header moved into quactlize_extensions/
+// on 2026-08-06, where it is ALWAYS findable -- so probing for it answers "yes" on a host build with no SDK,
+// pulls actlize's cutlass in, and the host compile dies on `int4`/`uint4` from <vector_types.h>. Asking for
+// <hggc_fp16.h> states the real condition instead of a proxy that stopped being one.
+//
+// Both directions of getting this wrong are silent-ish and neither is acceptable: probing a path that never
+// exists leaves GGUF_SCALE_HAVE_PACKED undefined and the packed re-exports simply vanish, with nothing failing
+// because every caller is behind the same macro.
 #if defined(__has_include)
-#  if __has_include("quactlize_extensions/cutlass/gguf_packed_scale.h")
+#  if __has_include(<hggc_fp16.h>)
 #    define GGUF_SCALE_HAVE_PACKED 1
 #    include "quactlize_extensions/cutlass/gguf_packed_scale.h"
 #  endif

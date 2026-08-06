@@ -115,7 +115,12 @@ def closure(path: pathlib.Path, stub: str) -> set:
         tf.write(f'#include "{path}"\n')
         tmp = tf.name
     try:
-        r = subprocess.run(["gcc", "-std=c++17", "-x", "c++", "-M", "-MG", *incs, tmp],
+        # DEFINE THE DEVICE-COMPILER MACROS. Without them a `#if defined(__HGGCCC__)` include is invisible to the
+        # preprocessor, so a header that correctly reaches its definition only on the device pass reads as missing
+        # -- and "fixing" it by hoisting the include out of the guard is how gguf_vecdot.hpp stopped building
+        # against stock cutlass on 2026-08-06. A closure that cannot see the guarded arm cannot judge it.
+        r = subprocess.run(["gcc", "-std=c++17", "-x", "c++", "-M", "-MG",
+                            "-D__HGGCCC__", "-D__CUDACC__", *incs, tmp],
                            capture_output=True, text=True)
     finally:
         os.unlink(tmp)
