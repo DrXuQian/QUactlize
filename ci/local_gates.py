@@ -752,6 +752,17 @@ def lint_extension_additive():
     return _run_ci_script("check_extension_additive.py", "quactlize_extensions adds rather than redefines")
 
 
+def lint_owned_symbol_includes():
+    """A file naming a quactlize_extensions type must reach its defining header, per a real include closure.
+
+    WRITTEN AFTER THE BOX CAUGHT IT, which is the whole point. The extraction repointed the 17 files that
+    included actlize's umbrella and missed the ones reaching the same types through DIRECT includes of specific
+    cutlass headers. Those kept compiling until actlize stopped defining the type, and the box then reported two
+    of ten -- because a compiler stops at the first. Ten round trips at minutes each is the cost this replaces.
+    """
+    return _run_ci_script("check_owned_symbol_includes.py", "owned types reach their defining header")
+
+
 def lint_dense_tactic_table_current():
     """The committed dense X-macro must be exact output from the current space and current emitter."""
     checker = ROOT / "ci" / "check_dense_tactic_table.py"
@@ -1071,6 +1082,7 @@ def main():
                 ("lint", "no tactic choice can change the offline layout", lint_tactic_cannot_change_offline_layout),
                 ("lint", "actlize carries no quactlize symbol and no unlisted file change", lint_actlize_pristine),
                 ("lint", "quactlize_extensions adds to actlize rather than redefining it", lint_extension_additive),
+                ("lint", "every file naming a quactlize type reaches its defining header", lint_owned_symbol_includes),
     ("registry", "declarations vs source", None)])
     # MATCH THE KIND AS WELL AS THE NAME. `-k lint` matched NOTHING, because a lint's name is its description
     # ("duplicate unroll directives") and the word "lint" only appears in the kind. The run then printed

@@ -11,6 +11,7 @@
 
 #include "gguf_scale_prepass.hpp"
 #include "gguf_vecdot.hpp"
+#include "quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
 
 namespace {
 

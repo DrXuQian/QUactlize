@@ -36,6 +36,7 @@
 #endif
 #include "gguf_scale_layout.hpp"   // brings cute/tensor.hpp, so cute::Layout is available as a destination
 #include "cute/atom/copy_atom.hpp"
+#include "quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
 
 #ifndef CUTLASS_HOST_DEVICE
 #  define CUTLASS_HOST_DEVICE inline

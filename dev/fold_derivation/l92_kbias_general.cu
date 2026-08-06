@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cmath>
 #include "cutlass/fast_numeric_conversion_for_mix_gemm.h"
+#include "quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
 using cutlass::MixGemmChunkEmit;
 
 static double h2d(uint16_t h) {                       // fp16 bits -> double, normals and zero only (all we emit)

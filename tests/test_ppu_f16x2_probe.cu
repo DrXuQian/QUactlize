@@ -35,7 +35,7 @@
 #include "quactlize_actlize.hpp"
 #include "helper.h"
 #include "cutlass/fast_numeric_conversion_for_mix_gemm.h"
-#include "cutlass/gguf_packed_scale.h"
+#include "quactlize_extensions/cutlass/gguf_packed_scale.h"
 #include "rwmoep_loader.hpp"
 
 using cutlass::half_t;

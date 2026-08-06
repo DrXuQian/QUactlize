@@ -15,7 +15,7 @@
 //   nvcc -std=c++17 -x cu -arch=sm_80 -w -I stub_inc -I <actlize>/include -o /tmp/l99 l99_bench_like_for_like.cu
 #include <cstdio>
 #include <cstring>
-#include "cutlass/gguf_packed_scale.h"
+#include "quactlize_extensions/cutlass/gguf_packed_scale.h"
 using cutlass::half_t; namespace gp = cutlass::gguf_packed;
 int main() {
   half_t const x(0.0625f);

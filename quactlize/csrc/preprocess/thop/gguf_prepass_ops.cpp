@@ -7,8 +7,8 @@
 // gguf_scale_layout.hpp was read off our own numpy parser, so without an independent oracle the C++ and the Python
 // would agree by construction and prove nothing -- Q3_K's kScaleBias = 32 has no other witness in the tree.
 //
-// IT IS HOST-ONLY AND PORTABLE ON PURPOSE. gguf_scale_decode.hpp's packed-unit re-exports live in the actlize
-// submodule, whose cutlass/half.h pulls <hggc_fp16.h> from the PPU SDK; they are now behind __has_include, so this
+// IT IS HOST-ONLY AND PORTABLE ON PURPOSE. gguf_scale_decode.hpp's packed-unit re-exports reach cutlass/half.h,
+// which pulls <hggc_fp16.h> from the PPU SDK; they are behind __has_include, so this
 // translation unit builds against stock cutlass on a machine with no PPU and no SDK. That is the difference between
 // a test anyone can run and a test only the box can run.
 #include <torch/extension.h>

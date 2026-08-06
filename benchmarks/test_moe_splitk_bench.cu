@@ -8,7 +8,7 @@
 //   SPLITK_ONLY=<substring>  run only rows whose tag contains this
 //   SPLITK_ACU=1             ONE COLD launch per row (a capture, not a timing)
 #include <cstring>
-#include "cutlass/gguf_packed_scale.h"
+#include "quactlize_extensions/cutlass/gguf_packed_scale.h"
 #include "moe_splitk_bench_common.hpp"
 #include "moe_router_fixture.hpp"
 #include "moe_splitk_units.inc"     // GENERATED: unit declarations + splitk_run_all()

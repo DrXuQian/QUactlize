@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <vector>
 #include <cmath>
+#include "quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
 using namespace cute;
 using namespace cutlass;
 

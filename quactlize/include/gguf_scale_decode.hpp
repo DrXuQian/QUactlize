@@ -27,15 +27,21 @@
 #include "cutlass/half.h"
 #include "gguf_scale_layout.hpp"
 // THE PACKED-UNIT HELPERS ARE OPTIONAL, and that is what makes this header usable from the portable host side.
-// cutlass/gguf_packed_scale.h lives in the actlize submodule, whose cutlass/half.h includes <hggc_fp16.h> from the
-// PPU SDK -- so pulling it in unconditionally means the plain decode cannot be built against stock cutlass, and the
-// torch extension that exposes this to Python could only be built on a machine with the SDK. The PLAIN decode needs
-// none of it: scale_of / min_of / make_group_scale are pure arithmetic over the format's own bytes. Only the
-// re-exports at the bottom of this file need the packed unit, so they follow the same condition.
+// gguf_packed_scale.h reaches cutlass/half.h, which includes <hggc_fp16.h> from the PPU SDK -- so pulling it in
+// unconditionally means the plain decode cannot be built against stock cutlass, and the torch extension that
+// exposes this to Python could only be built on a machine with the SDK. The PLAIN decode needs none of it:
+// scale_of / min_of / make_group_scale are pure arithmetic over the format's own bytes. Only the re-exports at the
+// bottom of this file need the packed unit, so they follow the same condition.
+//
+// THE PROBE AND THE INCLUDE MUST NAME THE SAME PATH. The header moved to quactlize_extensions/ on 2026-08-06 and
+// for one commit the probe still asked for the old actlize path while the include used the new one -- so
+// __has_include was false everywhere, GGUF_SCALE_HAVE_PACKED never got defined, and the packed re-exports simply
+// vanished. Nothing fails in that state: the file compiles, and every caller of the re-exports is behind the same
+// macro. A feature that silently stops existing is the worst shape a #if can take.
 #if defined(__has_include)
-#  if __has_include("cutlass/gguf_packed_scale.h")
+#  if __has_include("quactlize_extensions/cutlass/gguf_packed_scale.h")
 #    define GGUF_SCALE_HAVE_PACKED 1
-#    include "cutlass/gguf_packed_scale.h"
+#    include "quactlize_extensions/cutlass/gguf_packed_scale.h"
 #  endif
 #endif
 
