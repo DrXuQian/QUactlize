@@ -719,6 +719,39 @@ def lint_route_admits():
     return "FAIL", next((l.strip() for l in out if "FAIL" in l or "!!" in l), "\n".join(out[-2:])), 0.0
 
 
+def _run_ci_script(name: str, label: str):
+    """Shared shim for the ci/ checkers that are complete programs already; report their last meaningful line."""
+    checker = ROOT / "ci" / name
+    if not checker.is_file():
+        return "FAIL", f"ci/{name} is missing", 0.0
+    r = subprocess.run([sys.executable, str(checker)], cwd=ROOT, capture_output=True, text=True)
+    out = [l.strip() for l in (r.stdout + r.stderr).splitlines() if l.strip()]
+    if r.returncode == 0:
+        return "PASS", " | ".join(out[-2:]) if out else label, 0.0
+    return "FAIL", next((l for l in out if "FAIL" in l or "ERROR" in l), "\n".join(out[-2:])), 0.0
+
+
+def lint_actlize_pristine():
+    """actlize must carry none of quactlize's work: no owned symbol, no file changed outside the allow-list.
+
+    REGISTERED WITH THE CHECK, not after it. The extraction on 2026-08-06 moved five whole files, a dispatch
+    policy block and a converter's worth of specialisations out of the vendor fork; nothing but this notices when
+    one drifts back, and a leak back into actlize is invisible precisely because it keeps building.
+    """
+    return _run_ci_script("check_actlize_pristine.py", "actlize carries no quactlize work")
+
+
+def lint_extension_additive():
+    """quactlize_extensions must ADD to actlize, never redefine it or overlap its specialisations.
+
+    The dangerous half is the overlap: a partial specialisation whose constraint intersects a vendor one is
+    ambiguous only for the argument lists a build instantiates, so a table that never reaches the overlap
+    compiles green. quactlize's builder claimed six of actlize's schedule tags for months without a diagnostic,
+    because its copy REPLACED actlize's in the include list rather than joining it.
+    """
+    return _run_ci_script("check_extension_additive.py", "quactlize_extensions adds rather than redefines")
+
+
 def lint_dense_tactic_table_current():
     """The committed dense X-macro must be exact output from the current space and current emitter."""
     checker = ROOT / "ci" / "check_dense_tactic_table.py"
@@ -1036,6 +1069,8 @@ def main():
                 ("lint", "the dense route admits the geometries we claim, and its controls still fail", lint_route_admits),
                 ("lint", "the ctypes config mirror matches its C header field for field", lint_config_abi_matches_header),
                 ("lint", "no tactic choice can change the offline layout", lint_tactic_cannot_change_offline_layout),
+                ("lint", "actlize carries no quactlize symbol and no unlisted file change", lint_actlize_pristine),
+                ("lint", "quactlize_extensions adds to actlize rather than redefining it", lint_extension_additive),
     ("registry", "declarations vs source", None)])
     # MATCH THE KIND AS WELL AS THE NAME. `-k lint` matched NOTHING, because a lint's name is its description
     # ("duplicate unroll directives") and the word "lint" only appears in the kind. The run then printed

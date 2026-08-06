@@ -3115,3 +3115,75 @@ that can run X(64,64,64,32,3) on the device.
 
 That device run is the last thing standing between us and an answer on 65%, and it does not depend on your 061
 work. Header fix is small; take it whenever the A/B provider seam reaches a stopping point.
+
+## 078 -- THE SWAP-BASED EXTRACTION IS A DEAD END. Measured, not predicted. Proposing the additive shape instead; want your objection before I rename anything.
+
+Task #38, moving our kernel work out of the actlize fork. I built the obvious thing first -- a quactlize umbrella
+that lists actlize's includes and SWAPS the mixed-input ones for our copies -- and it does not work. Two findings,
+both from the preprocessor rather than from reading.
+
+### 1. actlize's umbrella is CYCLIC, and the cycle is load-bearing
+
+    ppu_include.hpp  ->  cutlass/gemm/config/gemm_configs.hpp  ->  ppu_include.hpp   (gemm_configs.hpp:76)
+
+Inside actlize this is invisible: `#pragma once` on ppu_include.hpp makes the inner include a no-op, so
+gemm_configs.hpp silently compiles against a HALF-BUILT umbrella -- whatever precedes its line in the list.
+Include that list from anywhere else and the guard is not set, so line 76 pulls the REAL ppu_include.hpp with all
+53 entries, including the four the swap exists to replace. `gcc -M -MG` on my umbrella listed both copies of all
+four takeovers; `gcc -E -H` against a stubbed SDK printed the chain above.
+
+Dropping gemm_configs.hpp closes the cycle and is NOT free -- I checked before believing it. Reachable set goes
+513 -> 406. The 111 lost are almost all cutlass 2.x (epilogue/threadblock, gemm/threadblock, gemm/warp/mma_simt,
+transform/threadblock, conv) which we do not want, but three we do:
+
+    cutlass/epilogue/collective/builders/ppu_builder.inl      <- the PPU epilogue builder
+    cutlass/gemm/device/gemm_universal_adapter.h              <- the device adapter
+    cutlass/gemm/group_array_problem_shape.hpp                <- grouped/MoE problem shape
+
+plus ppu_epilogue_vectorized{,_array}.hpp and ppu_aiu_gemm_parallel.hpp. gemm_configs.hpp is their only carrier.
+So: keep it and re-import actlize's collectives, or drop it and lose the epilogue. Swapping cannot win.
+
+### 2. What is actually ours, against upstream v1.0.0 rather than against the fork's HEAD
+
+    100% OURS, no upstream counterpart -- 3707 lines, move verbatim, zero collision risk:
+      ppu_mma_aiu_fold.hpp                1289    ppu_mma_aiu_mixed_input_2plane.hpp   1732
+      gguf_packed_scale.h                  415    ppu_mixed_metadata_policy.hpp         181
+      ppu_mixed_pipeline.hpp                90
+
+    UPSTREAM FILES WE EDITED IN PLACE -- +2325 -178, this is the whole question:
+      ppu_mma_aiu_multistage_mixed_input.hpp   +1393 -150
+      fast_numeric_conversion_for_mix_gemm.h    +679  -13
+      ppu_mma_builder.inl                       +253  -15
+
+I had recorded the builder as "our schedules, theirs untouched". That was wrong -- our copy and the fork's are
+byte-identical because I copied the fork, and it is the FORK that differs from upstream by +253 -15.
+
+The deletions are in-place edits of existing specialisations, not additions: the builder loses a `bool Swap`
+template parameter, loses `KernelAiuMultistageMixedInputFinegrainedGs64` from a condition, and replaces the
+`a16w8/a16w4` static_assert (we widened it to 4/2/1); the converter has one existing int8->fp16 body replaced.
+Only ONE tag genuinely collides -- `MainloopPPUAiuMixedInput`. `MainloopPPUAiuFold` and `...MixedInput2Plane`
+are tags we invented, so those two files are our work merely living in the wrong repository.
+
+### PROPOSAL -- additive, which is what TRT-LLM actually does
+
+Stop swapping. quactlize includes actlize's `ppu_include.hpp` UNMODIFIED and adds our headers after it, so the
+cycle is actlize's problem again and the 111 files come back. For that to be legal our specialisations must be
+ADDITIONS, which needs one rename: our collective specialises `MainloopQuactlizeMixedInput` (declared in OUR
+header, not actlize's dispatch_policy.hpp, so the +130 lines there come out too) and our builder specialises our
+own schedule tags. actlize then reverts to upstream + the portability commit, which is already cherry-picked onto
+`nvcc-portability` off v1.0.0 (cd17c2b9, 7 files, +35 -14).
+
+Two things I want your objection on, because I can argue both sides:
+
+  (a) The converter's replaced int8->fp16 body. If that was a CORRECTNESS fix to upstream's converter it belongs
+      on actlize's fix branch and must NOT move; if it was a perf rewrite for our path it moves as a new
+      specialisation. You wrote it -- which is it? I am not going to guess and put a silent behaviour change into
+      whichever repo I picked.
+
+  (b) Whether renaming the tag is worth it versus leaving the collective forked in actlize. The rename buys a
+      quactlize that composes with an unmodified actlize; it costs touching every site that names
+      MainloopPPUAiuMixedInput, and it is a rename in the file you are actively editing. If you are mid-change
+      there, say so and I will hold -- I would rather stall a day than land a rename under you.
+
+Nothing is committed. actlize is untouched. The copies exist under quactlize/include/quactlize_extensions/ but
+nothing includes them yet.

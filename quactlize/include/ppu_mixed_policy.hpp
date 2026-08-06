@@ -60,8 +60,18 @@ template <int ArtifactLowFold, int ArtifactHighFold, class BaseSchedule>
 struct ArtifactFoldedSchedule {
   // The wrapper is also required when only the high plane folds: it is the type-level ABI carrying the resident
   // provider's two independent physical layouts into CollectiveBuilder.
-  using Type = std::conditional_t<(ArtifactLowFold > 1 || ArtifactHighFold > 1),
-      cutlass::gemm::KernelAiuFold<ArtifactLowFold, BaseSchedule, ArtifactHighFold>, BaseSchedule>;
+  //
+  // IT IS NOW UNCONDITIONAL, and the reason is dispatch rather than folding. quactlize's CollectiveBuilder arm is
+  // the COMPLEMENT of actlize's -- it claims KernelAiuFold<...> and Gs32, and leaves PerCol/Gs128/Gs64 to the
+  // vendor, because claiming those as well made the two specialisations ambiguous. So an unfolded gs=128 row that
+  // passed a bare KernelAiuMultistageMixedInputFinegrainedGs128 would silently select ACTLIZE's collective: it
+  // compiles, it runs, and it is not the kernel this project measured. Wrapping at F=1 keeps it on ours.
+  //
+  // ROUTING-NEUTRAL, not merely harmless: the builder reads ArtifactLowFold back through fold_schedule_traits and
+  // floors it at 1, so KernelAiuFold<1, Base, 0> yields HasFold = (1 > 1) = false and BaseSchedule = Base --
+  // bit-for-bit the derivation the bare tag produced. Only the specialisation that MATCHES changes.
+  using Type = cutlass::gemm::KernelAiuFold<(ArtifactLowFold > 1 ? ArtifactLowFold : 1),
+                                            BaseSchedule, ArtifactHighFold>;
 };
 
 struct AiuAProvider {};
