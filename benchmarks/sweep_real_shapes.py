@@ -12,8 +12,9 @@ WHY A DRIVER AND NOT A SHELL LOOP OVER `fixtures.py --emit`.
      sample flushing "cannot make successors run -- a poisoned context still requires restarting the process. An
      external per-candidate process driver can complete the remainder." This is that driver. One shape dying
      costs that shape.
-  2. RESUME, because the dense list alone is 66 invocations x 293 compiled configs ~ 19,000 timings, and nobody
-     restarts that from zero to recover one crash.
+  2. RESUME, because the dense list alone is 66 invocations x 632 compiled configs ~ 42,000 timings, and nobody
+     restarts that from zero to recover one crash. (293 was the TileK=64-only table; TileK became a row field on
+     2026-08-05 and the count is read off benchmarks/lowbit_dense_configs.inc, not remembered.)
   3. The shapes are IMPORTED from fixtures.py, which derives them from workloads.py, which read them off the
      models' config.json. Nothing here transcribes a number -- a second spelling of a model shape is a second
      thing to be wrong, and this repo has paid for that pattern twice this week already.
