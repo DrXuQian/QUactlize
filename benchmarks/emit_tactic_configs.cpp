@@ -78,6 +78,8 @@ std::vector<int> g_stages{2, 3, 4};
 // program produced before TacticTileK became a row field -- so adding the axis does not silently change what an
 // existing regenerate command emits.
 std::vector<int> g_tactic_tks;
+// The compact-A capacities this table offers. See Row's comment for why only {0} today.
+std::vector<int> g_compact_rows;
 
 // THERE WAS A --space=quarantined HERE, AND ITS REMOVAL IS THE POINT. It emitted the COMPLEMENT of the dense
 // space -- only the rows dense refused -- so that the sub-four-warp geometry holding the measured int4 optimum
@@ -122,7 +124,19 @@ std::uint64_t fnv1a64_file(char const* path, bool& ok) {
 // ArtifactTileK is NOT here and must never be: it identifies the resident bytes, one per weight file, and a
 // tactic that could change it would invalidate every artifact on disk. That distinction is the whole point of
 // the split, and putting both in a row under one name is how it would be lost.
-using Row = std::tuple<int, int, int, int, int, int>;
+// tm, tn, TacticTileK, wm, wn, stages, A_COMPACT_ROWS.
+//
+// THE SEVENTH FIELD IS THE COMPACT-A CAPACITY, and it is here rather than a build switch for the reason TileK
+// is: capacity changes SmemLayoutA and therefore SharedStorageSize and therefore the instantiated collective.
+// As PPU_A_CPASYNC it was one number for the whole binary, so a compact build REFUSED every launch above its
+// capacity instead of falling through to a wider row.
+//
+// ONLY ZERO IS EMITTED TODAY, deliberately. Zero is ordinary unrestricted A, so this table is byte-identical to
+// the previous one apart from the extra field and every config NAME is unchanged -- which matters because those
+// names are what the box's --config strings say. Widening the emitted set is a separate change, and it needs one
+// more thing this does not: two rows differing only in capacity would share a name, so the name has to grow a
+// segment at the same moment the set does.
+using Row = std::tuple<int, int, int, int, int, int, int>;
 
 // Do not spell "largest legal" as min(TM,64). It happens to agree in today's WN<=64 producer domain, but WN=128
 // can make WM64 fail the accumulator ceiling while WM32 remains legal. Derive both H1 rungs from the filtered set,
@@ -295,7 +309,9 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
       bool const p = primary(legal, c);
       bool const g = h1_guard(legal, c) || n_geometry_guard(legal, c);
       if (!p && !g) continue;
-      if (rows.insert(Row{c.tm, c.tn, c.tactic_tile_k, c.wm, c.wn, st}).second) { if (p) ++n_prim; else ++n_guard; }
+      for (int acr : g_compact_rows) {
+        if (rows.insert(Row{c.tm, c.tn, c.tactic_tile_k, c.wm, c.wn, st, acr}).second) { if (p) ++n_prim; else ++n_guard; }
+      }
     }
   }
   }
@@ -318,6 +334,8 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
   std::printf("//   c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic &&\\\n");
   std::printf("//   /tmp/emit_tactic %d %d --space=%s --tactic-tk=", bits, artifact_tk, space_name);
   for (size_t j = 0; j < tactic_tks.size(); ++j) std::printf("%s%d", j ? "," : "", tactic_tks[j]);
+  std::printf(" --compact-rows=");
+  for (size_t j = 0; j < g_compact_rows.size(); ++j) std::printf("%s%d", j ? "," : "", g_compact_rows[j]);
   for (int st : g_stages) std::printf(" %d", st);
   std::printf(" > benchmarks/lowbit_%s_configs.inc\n", space_name);
   std::printf("//\n");
@@ -348,8 +366,9 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
     // tm, tn, TacticTileK, wm, wn, stages -- in Row's order. An earlier edit added the %d and repeated
     // get<3> instead of shifting the tail, which emitted stages=wm and dropped stages entirely. It was visible
     // only because the printed row carried a stage value (16) that is not in the stage list.
-    std::printf("  X(%d,%d,%d,%d,%d,%d,B)%s\n", std::get<0>(r), std::get<1>(r), std::get<2>(r),
-                std::get<3>(r), std::get<4>(r), std::get<5>(r), ++i == rows.size() ? "" : " \\");
+    std::printf("  X(%d,%d,%d,%d,%d,%d,%d,B)%s\n", std::get<0>(r), std::get<1>(r), std::get<2>(r),
+                std::get<3>(r), std::get<4>(r), std::get<5>(r), std::get<6>(r),
+                ++i == rows.size() ? "" : " \\");
   }
   return 0;
 }
@@ -370,6 +389,15 @@ int main(int argc, char** argv) {
   std::vector<int> stages;
   for (int i = 3; i < argc; ++i) {
     if (std::strncmp(argv[i], "--space=", 8) == 0) { space = argv[i] + 8; continue; }
+    if (std::strncmp(argv[i], "--compact-rows=", 15) == 0) {
+      g_compact_rows.clear();
+      for (char const* s = argv[i] + 15; *s;) {
+        g_compact_rows.push_back(std::atoi(s));
+        while (*s && *s != ',') ++s;
+        if (*s == ',') ++s;
+      }
+      continue;
+    }
     if (std::strncmp(argv[i], "--tactic-tk=", 12) == 0) {
       g_tactic_tks.clear();
       for (char const* s = argv[i] + 12; *s;) {
@@ -389,6 +417,10 @@ int main(int argc, char** argv) {
   if (!spec) { std::fprintf(stderr, "no single-plane format with low_bits=%d in kFormats\n", bits); return 2; }
 
   if (g_tactic_tks.empty()) g_tactic_tks.push_back(tk);   // no --tactic-tk: the artifact's own, as before
+  // No --compact-rows: capacity 0, ordinary unrestricted A. The DEFAULT IS THE OLD BEHAVIOUR ON PURPOSE -- the
+  // axis exists in the table before anything searches it, so this table stays byte-identical to the previous one
+  // apart from the field, and every config name the box already uses keeps working.
+  if (g_compact_rows.empty()) g_compact_rows.push_back(0);
 
   if (std::strcmp(space, "dense") == 0)   return emit<DenseSpace>(*spec, bits, tk, g_tactic_tks, "dense", "LOWBIT_DENSE");
   if (std::strcmp(space, "grouped") == 0) return emit<GroupedSpace>(*spec, bits, tk, g_tactic_tks, "grouped", "LOWBIT_GROUPED");

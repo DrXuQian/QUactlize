@@ -259,7 +259,7 @@ struct GroupKernels {
 // fpA_intB (../fpA_intB_standalone) do it. Cfg<> rebuilds the ScaleOnly (mode-1) type stack with a given
 // tile/warp/stages; TileCfg is the runtime descriptor; supported_configs() is the registry; the dispatch macro
 // below maps a runtime TileCfg to the matching compiled Cfg<>. This replaces the recompile-per-config sweep.sh.
-template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int St>
+template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int St, int ACompactRows = 0>
 struct Cfg {
   // TK IS THE ROW'S TacticTileK, not the binary's. Until 2026-08-05 these three used the global TileShapeK,
   // because TileK was a build-time constant that also determined the bytes on disk. It no longer does: the artifact
@@ -282,14 +282,20 @@ struct Cfg {
   using Policy = ppu_mixed_policy::MainloopPolicy<
       ppu_mixed_policy::QuantMode::FinegrainedScaleOnly,
       ppu_group_schedule::FinegrainedSchedule<GroupSize>, CfgTile, CfgScale, CfgWarp,
-      St, true, ElementB, void, kArtifactTileK>;
+      St, true, ElementB, void, kArtifactTileK, ACompactRows>;
+  // ACompactRows IS THE ROW'S, not the binary's. The eleventh MainloopPolicy parameter defaults to
+  // kDefaultACompactRows (PPU_A_CPASYNC), which is what an unconverted caller still gets; passing the row's value
+  // explicitly -- INCLUDING zero -- is what stops that macro from reaching a table that has its own opinion.
   using Main = typename Policy::CollectiveOp;
   static_assert(ppu_mixed_policy::kernel_policy_valid_v<ppu_tactics::DenseSpace, Policy>);
   using Kernel = cutlass::gemm::kernel::GemmUniversal<Shape<int,int,int,int>, Main, Epi>;
   using Gemm = cutlass::gemm::device::GemmUniversalAdapter<Kernel>;
 };
 
-struct TileCfg { char const* name; int tm, tn, tk, wm, wn, st; };
+// acr is the compact-A capacity: 0 is ordinary unrestricted A. It is NOT in `name` today, because only capacity
+// 0 is emitted and two rows would otherwise be free to share one. The moment the emitted set widens, the name has
+// to grow a segment in the same change -- find_config() matches on the name alone.
+struct TileCfg { char const* name; int tm, tn, tk, wm, wn, st, acr; };
 
 // The generated table. Regenerate with benchmarks/emit_tactic_configs.cpp when the binary's (QUANT, BENCH_TSK)
 // changes -- the static_assert below is what turns forgetting into a compile error rather than a sweep over a
@@ -308,7 +314,7 @@ static_assert(cutlass::sizeof_bits<QuantType>::value == LOWBIT_DENSE_CFG_BITS &&
               "lowbit_dense_configs.inc was generated for a different (bits, TileK) than this binary. Regenerate: "
               "c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic && "
               "/tmp/emit_tactic <bits> <tile_k> > benchmarks/lowbit_dense_configs.inc");
-#define LOWBIT_DENSE_COUNT_ROW(TM,TN,TK,WM,WN,ST,_UNUSED) + 1
+#define LOWBIT_DENSE_COUNT_ROW(TM,TN,TK,WM,WN,ST,ACR,_UNUSED) + 1
 inline constexpr int kLowbitDenseConfigRows = 0 LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_COUNT_ROW, );
 #undef LOWBIT_DENSE_COUNT_ROW
 static_assert(kLowbitDenseConfigRows == LOWBIT_DENSE_CFG_ROWS,
@@ -326,8 +332,8 @@ inline std::vector<TileCfg> supported_configs() {
   // (schema, TileK) binary, and nothing in the file said so -- a sweep that searches a fifth of its space still
   // prints a winner. See benchmarks/emit_tactic_configs.cpp for the policy and the regeneration command.
   std::vector<TileCfg> v;
-#define LOWBIT_DENSE_ROW(TM,TN,TK,WM,WN,ST,_UNUSED) \
-  v.push_back(TileCfg{#TM "x" #TN "x" #TK ":" #WM "x" #WN ":s" #ST, TM, TN, TK, WM, WN, ST});
+#define LOWBIT_DENSE_ROW(TM,TN,TK,WM,WN,ST,ACR,_UNUSED) \
+  v.push_back(TileCfg{#TM "x" #TN "x" #TK ":" #WM "x" #WN ":s" #ST, TM, TN, TK, WM, WN, ST, ACR});
   LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_ROW, )
 #undef LOWBIT_DENSE_ROW
   return v;
@@ -340,13 +346,13 @@ inline std::vector<TileCfg> supported_configs() {
 // `config %s not compiled in` and exit(1) -- at run time, on the box, mid-sweep. That failure is now not
 // expressible, because there is one list. The BODY travels through the list as X's second argument; a macro
 // cannot define another macro, so passing it down is what makes a single list serve both expansions.
-#define LOWBIT_DENSE_TRY(TM,TN,TK,WM,WN,ST,BODY)                                                            \
-  if (!_matched && _try(TM,TN,TK,WM,WN,ST)) { using G = typename Cfg<GroupSize,TM,TN,TK,WM,WN,ST>::Gemm; _matched=true; BODY; }
+#define LOWBIT_DENSE_TRY(TM,TN,TK,WM,WN,ST,ACR,BODY)                                                        \
+  if (!_matched && _try(TM,TN,TK,WM,WN,ST,ACR)) { using G = typename Cfg<GroupSize,TM,TN,TK,WM,WN,ST,ACR>::Gemm; _matched=true; BODY; }
 
 #define LOWBIT_DENSE_DISPATCH(cfg, BODY)                                                                    \
   do {                                                                                               \
     bool _matched = false;                                                                           \
-    auto _try = [&](int tm,int tn,int tk,int wm,int wn,int st){ return (cfg).tm==tm&&(cfg).tn==tn&&(cfg).tk==tk&&(cfg).wm==wm&&(cfg).wn==wn&&(cfg).st==st; }; \
+    auto _try = [&](int tm,int tn,int tk,int wm,int wn,int st,int acr){ return (cfg).tm==tm&&(cfg).tn==tn&&(cfg).tk==tk&&(cfg).wm==wm&&(cfg).wn==wn&&(cfg).st==st&&(cfg).acr==acr; }; \
     LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_TRY, BODY)                                                                  \
     if (!_matched) { std::fprintf(stderr, "config %s not compiled in (see supported_configs)\n", (cfg).name); std::exit(1); } \
   } while (0)

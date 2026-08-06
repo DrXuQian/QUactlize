@@ -95,7 +95,7 @@ constexpr char const* exclusion_clause(Exclusion e) {
     case Exclusion::ScaleCopyCoverage: return "the conservative gs16 scale copy needs more thread slots than the CTA has";
     case Exclusion::MinimumStageSmem: return "the conservative gs16 scale+zero footprint exceeds the 256KB block limit";
     case Exclusion::CompactAUnavailable: return "the selected folded or two-plane collective has no compact-A reader";
-    case Exclusion::CompactARowExtent: return "compact-A rows must be one of the built small-M capacities 1, 2, or 4 and divide TileM";
+    case Exclusion::CompactARowExtent: return "compact-A capacity must be positive, no larger than TileM, and divide TileM";
     case Exclusion::ProducerWarpN: return "the offline producer exposes only consumer-validated WarpN values through 64";
     case Exclusion::ProducerMap: return "the Q6 two-plane inverse at TileK=256 is incomplete";
   }
@@ -248,10 +248,10 @@ constexpr Exclusion dense_topology_exclusion(Candidate c, int stages = 2) {
   return dense_topology_exclusion_with_a_rows(c, stages, c.tm);
 }
 
-// PPU_A_CPASYNC currently exists in the ordinary, unfolded, one-plane collective. Folded low planes and every
+// The compact-A reader currently exists in the ordinary, unfolded, one-plane collective. Folded low planes and every
 // two-plane format select different collective types; their type-level witness is zero and their launcher rejects a
-// compact build. Keep that reachability fact next to the footprint equation so the host inventory cannot claim that
-// m*TK*2 is available for a collective that still allocates TileM*TK*2.
+// compact row. Keep that reachability fact next to the footprint equation so the host inventory cannot claim that
+// capacity*TK*2 is available for a collective that still allocates TileM*TK*2.
 constexpr bool common_compact_a_supported(Candidate c) {
   return c.spec.high_bits == 0 && artifact_low_fold(c) == 1;
 }
@@ -259,8 +259,7 @@ constexpr bool common_compact_a_supported(Candidate c) {
 constexpr Exclusion common_compact_a_topology_exclusion(Candidate c, int stages, int compact_rows) {
   if (auto const e = common_non_smem_exclusion(c); e != Exclusion::None) return e;
   if (!common_compact_a_supported(c)) return Exclusion::CompactAUnavailable;
-  if (!((compact_rows == 1 || compact_rows == 2 || compact_rows == 4) &&
-        compact_rows <= c.tm && c.tm % compact_rows == 0))
+  if (!(compact_rows > 0 && compact_rows <= c.tm && c.tm % compact_rows == 0))
     return Exclusion::CompactARowExtent;
   return common_topology_exclusion_with_a_rows(c, stages, compact_rows);
 }
@@ -268,8 +267,7 @@ constexpr Exclusion common_compact_a_topology_exclusion(Candidate c, int stages,
 constexpr Exclusion dense_compact_a_topology_exclusion(Candidate c, int stages, int compact_rows) {
   if (auto const e = dense_non_smem_exclusion(c); e != Exclusion::None) return e;
   if (!common_compact_a_supported(c)) return Exclusion::CompactAUnavailable;
-  if (!((compact_rows == 1 || compact_rows == 2 || compact_rows == 4) &&
-        compact_rows <= c.tm && c.tm % compact_rows == 0))
+  if (!(compact_rows > 0 && compact_rows <= c.tm && c.tm % compact_rows == 0))
     return Exclusion::CompactARowExtent;
   return dense_topology_exclusion_with_a_rows(c, stages, compact_rows);
 }
@@ -305,12 +303,20 @@ inline constexpr Candidate kScaleCoverageBoundary{
     kScaleCoverageControlI4, 16, 128, 64, 16, 64, 64};
 inline constexpr Candidate kScaleCoverageOverflow{
     kScaleCoverageControlI4, 16, 128, 256, 16, 32, 64};
+inline constexpr Candidate kCompactEightControl{
+    kScaleCoverageControlI4, 128, 64, 64, 64, 32, 64};
 static_assert(scale_copy_thread_slots(kScaleCoverageBoundary) == 64 && cta_warps(kScaleCoverageBoundary) == 2);
 static_assert(common_kernel_exclusion(kScaleCoverageBoundary) == Exclusion::None);
 static_assert(scale_copy_thread_slots(kScaleCoverageOverflow) == 256 && cta_warps(kScaleCoverageOverflow) == 4);
 static_assert(scale_copy_thread_slots(kScaleCoverageOverflow, 32) == 128 &&
               scale_copy_thread_coverage(kScaleCoverageOverflow, 32));
 static_assert(common_kernel_exclusion(kScaleCoverageOverflow) == Exclusion::ScaleCopyCoverage);
+static_assert(common_compact_a_topology_exclusion(kCompactEightControl, 2, 8) == Exclusion::None);
+static_assert(dense_compact_a_topology_exclusion(kCompactEightControl, 2, 8) == Exclusion::None);
+static_assert(common_compact_a_topology_exclusion(kCompactEightControl, 2, 0) ==
+              Exclusion::CompactARowExtent);
+static_assert(common_compact_a_topology_exclusion(kCompactEightControl, 2, 3) ==
+              Exclusion::CompactARowExtent);
 
 // Everything that determines whether some topology for the candidate may be built, except the M- and stage-dependent
 // shared footprint. size_sweep.cpp uses this before asking both the ordinary and compact topology predicates.
