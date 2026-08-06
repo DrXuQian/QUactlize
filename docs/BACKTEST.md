@@ -169,6 +169,19 @@ Bandwidth-referenced, not MFU. Shape is the decode band; see `ppu-gemv-alu-bound
 | D3 | int1 | 15.88 µs | 532.4 | 19.2% | `native s32/t64 N8 C2` | 2026-08-03 |
 | D4 | grouped tensor-core GEMM at the same band | 20.74 µs | — | 37.5% | `i4 16x32:256 w16x16 s2` | — |
 | D5 | best GEMV before the 2026-08-03 retune | 22.27 µs | — | 34.1% | `int4 native s16/t128 CtaN2 Chunk2` | — |
+| D6 | **tensor-core at M=1 once TileK entered the search** | **17.98 µs** | 1168 | **42.2%** | `16x16x256:16x16:s2` | 2026-08-06 |
+
+**D6 IS WHAT THE TileK SPLIT WAS FOR, and it is NOT a like-for-like beat of D4.** Different shape: D6 is
+Qwen3-32B's q projection (M=1, N=8192, K=5120) while D4 is this section's decode band, so the comparable figure
+is the normalised one -- 42.2% against 37.5% -- and not the microseconds. What it does establish is that the
+M=1 tensor-core path was search-space-limited rather than kernel-limited: with TileK pinned at 64 the best
+reachable row sat near 20%, D4's `16x32:256` was unreachable by construction, and the row that actually wins is
+neither of those but `16x16x256` -- TileN=16, which no previously recorded number names.
+
+⚠ **ONE MANUAL RUN OF ONE CONFIG, not a search verdict.** `benchmarks/sweep_real_shapes.py` over the 66 dense
+fixtures is what decides whether 16x16x256:16x16:s2 is the optimum at this shape or merely better than the two
+configs anyone had tried. Until that lands, this row is evidence that the ceiling moved, not that it has been
+found.
 
 **D1–D3 within 1.1% of each other across a 2.5× byte range** is the finding: decode is ALU-bound, not
 bandwidth-bound, so int4 is effectively free relative to int1.
