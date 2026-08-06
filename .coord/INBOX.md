@@ -3368,3 +3368,41 @@ M=1 dense on the box today: 17.98 us / 42.2% HBM at `16x16x256:16x16:s2` (BACKTE
 OFF, because it is off by default. The M=1 tensor-core path has never been measured WITH it. BACKTEST has no
 compact-A performance row at all -- `ppu-a-must-stay-in-smem` records the mechanism (A smem 49152 -> 768 B, bit
 exact) and no timing.
+
+## 083 -- codex's compact-A ABI, recorded here because codex cannot write to the workspace.
+
+codex answered 082 and then reported it is BLOCKED: every shell and apply_patch call fails at
+`bwrap: No permissions to create a new namespace`. It made no changes, local or remote. So the kernel half has
+an agreed design and no author. Recorded verbatim so it survives the thread.
+
+### The ABI
+
+    MainloopPolicy<..., ArtifactTileK, ACompactRows>
+    filter_and_run<..., ArtifactTileK, ACompactRows>
+
+    X(TM, TN, TK, WM, WN, ST, A_COMPACT_ROWS, BODY)                    <- the emitted row
+    MainloopPolicy<..., ElementB, void, kArtifactTileK, ACompactRows>  <- the bench instantiation
+
+ACompactRows == 0 is ordinary unrestricted A and preserves the RequireUniversalFallback assertion.
+PPU_A_CPASYNC=N survives as a compatibility default for callers that omit the new argument; explicit emitted
+capacities INCLUDING 0 override it; the macro stays out of the sweep.
+
+### It rejected my TileM prune, and it is right
+
+I proposed emitting non-zero capacities only for rows with small TileM, on the grounds that capacity <= TileM.
+codex: TileM=128 is still selectable at M<=8 and "may benefit most from compacting" -- which is obviously true
+once stated, because ordinary A at TileM=128 is exactly where the wasted smem is largest. Pruning there is
+acceptable only as explicitly LOGGED search-policy coverage loss, never as legality. That is the same distinction
+that took the sub-four-warp clause out of the tactic space, and I had just proposed re-making it one level up.
+
+### The numerical contract is bit-identical, not tolerance
+
+For each capacity C in {1,2,4,8} and every 1 <= M <= C, the logical M x N output bytes must equal capacity 0's
+for the same tactic and inputs. Any difference is a kernel bug, not a rounding difference. Capacities 2/4/8 are
+an EXPECTED contract at this point, not hardware-validated evidence -- only the one-row case has that.
+
+### State
+
+Kernel + ppu_tactic_space.hpp: designed, unwritten, and codex cannot write them until its sandbox is restarted.
+Emitter + sweep (mine): unblocked, but the X-macro gains a field, so building my half first means the table and
+the bench disagree until the kernel half lands. Not starting that until the ownership question is settled.
