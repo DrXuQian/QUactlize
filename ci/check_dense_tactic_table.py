@@ -91,7 +91,13 @@ def macro(text: str, name: str):
 def fail(message: str, argv=None, table=None) -> int:
     # The hint quotes the arguments THIS table declares. Printing a fixed dense/int4/TK64 line next to a failure
     # about some other table is how an operator regenerates the wrong file and reports the gate as broken.
-    args = " ".join(argv) if argv else "4 64 --space=dense 2 3 4 6 8 12"
+    #
+    # AND THE FALLBACK MUST NOT LOOK RUNNABLE. It used to be the literal `4 64 --space=dense 2 3 4 6 8 12`, which
+    # omits --tactic-tk, --compact-rows and --prune -- so it emits a DIFFERENT table from the one it is offered as
+    # the repair for. Three call sites below had argv in scope and did not pass it, so on 2026-08-06 an emitter-hash
+    # failure printed that line and it was one paste away from silently replacing 1164 rows with a narrower set. A
+    # wrong command that looks right is worse than no command.
+    args = " ".join(argv) if argv else "<the table declares no arguments -- see its provenance header>"
     out = table or "benchmarks/lowbit_dense_configs.inc"
     print(f"[dense-table] ERROR: {message}")
     print("[dense-table] regenerate from the repository root:")
@@ -132,18 +138,18 @@ def main() -> int:
     missing = [name for name, value in (("row count", stamped_rows), ("space hash", stamped_space),
                                         ("emitter hash", stamped_emitter)) if value is None]
     if missing:
-        return fail(f"{table} has no {', '.join(missing)} provenance; it predates the durability guard")
+        return fail(f"{table} has no {', '.join(missing)} provenance; it predates the durability guard", argv, table)
 
     listed_rows = len(re.findall(rb'^\s*X\(', actual, re.M))
     if int(stamped_rows) != listed_rows:
-        return fail(f"{table} stamps {stamped_rows} rows but its X-macro contains {listed_rows}")
+        return fail(f"{table} stamps {stamped_rows} rows but its X-macro contains {listed_rows}", argv, table)
 
     current_space = fnv1a64(SPACE.read_bytes())
     current_emitter = fnv1a64(EMITTER.read_bytes())
     if stamped_space != current_space:
-        return fail(f"{table} space hash is {stamped_space}, current ppu_tactic_space.hpp is {current_space}")
+        return fail(f"{table} space hash is {stamped_space}, current ppu_tactic_space.hpp is {current_space}", argv, table)
     if stamped_emitter != current_emitter:
-        return fail(f"{table} emitter hash is {stamped_emitter}, current emit_tactic_configs.cpp is {current_emitter}")
+        return fail(f"{table} emitter hash is {stamped_emitter}, current emit_tactic_configs.cpp is {current_emitter}", argv, table)
 
     compiler = os.environ.get("CXX", "c++")
     with tempfile.TemporaryDirectory(prefix="quactlize-dense-table-") as temp_dir:
@@ -153,18 +159,19 @@ def main() -> int:
             cwd=ROOT, capture_output=True, text=True)
         if built.returncode:
             detail = built.stderr.strip().splitlines()
-            return fail(f"current emitter does not compile with {compiler}: {detail[-1] if detail else 'no diagnostic'}")
+            return fail(f"current emitter does not compile with {compiler}: {detail[-1] if detail else 'no diagnostic'}", argv, table)
         emitted = subprocess.run([str(binary), *argv], cwd=ROOT, capture_output=True)
         if emitted.returncode:
             detail = emitted.stderr.decode(errors="replace").strip().splitlines()
             return fail(f"current emitter rejected the table's own declared arguments "
-                        f"({' '.join(argv)}): {detail[-1] if detail else 'no diagnostic'}")
+                        f"({' '.join(argv)}): {detail[-1] if detail else 'no diagnostic'}", argv, table)
         expected = emitted.stdout
 
     if actual != expected:
         return fail(
             f"{table} does not exactly match a freshly built emitter; {first_difference(expected, actual)}; "
-            f"expected md5={hashlib.md5(expected).hexdigest()}, found md5={hashlib.md5(actual).hexdigest()}")
+            f"expected md5={hashlib.md5(expected).hexdigest()}, found md5={hashlib.md5(actual).hexdigest()}",
+            argv, table)
 
     print(f"[dense-table] verified {declared} rows={listed_rows} space_fnv1a64={current_space} "
           f"emitter_fnv1a64={current_emitter}; exact regeneration matches")
