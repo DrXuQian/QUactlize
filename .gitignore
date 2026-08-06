@@ -1,0 +1,53 @@
+__pycache__/
+*.pyc
+build/
+build_*/
+*.o
+*.so
+*.report
+*.ncu-rep
+.cache/
+compile_commands.json
+
+# built extension and setuptools scratch
+quactlize/_C*.so
+build/
+*.egg-info/
+
+# GENERATED CHECK OUTPUT, not fixtures. gen_moe_units_check.sh does `OUT="$HERE/.moe_units_check${BAD:+_bad}"` and
+# mkdir -p's it; the _bad variant is just where the negative-control run writes. 1473 of these files were committed
+# by the migration's `cp -r fold_derivation/`, and the copies still carried gen.cmake files naming an absolute path
+# in the PRE-migration tree. They also broke `git switch` for anyone who had run the check themselves: git refuses
+# to overwrite untracked files with tracked ones, so a checkout aborted listing hundreds of generated units.
+dev/fold_derivation/.moe_units_check/
+dev/fold_derivation/.moe_units_check_bad/
+
+# COMPILED PROBE BINARIES. The derivation harnesses build as `nvcc l19_multislice.cu -o l19` and
+# `g++ ft_check.cpp -o ftchk` (dev/fold_derivation/README.md), so their outputs are EXTENSIONLESS while every
+# source carries an extension. 63 of them were committed -- 166 MB, which was essentially the entire 161 MB .git
+# -- and because a merge or rebase of that history makes every blob permanently reachable, they also decided how
+# this repo can reach main at all (only a squash carries just the final tree).
+#
+# Ignore-everything-then-un-ignore-anything-with-a-dot is what expresses "no extension" in gitignore, which has
+# no such pattern. The trailing `*/` re-admits stub_inc/, syntax_baseline/ and gen_stub/, which are inputs.
+dev/fold_derivation/*
+!dev/fold_derivation/*.*
+!dev/fold_derivation/*/
+#
+# dev/low_bit/ is NOT repeated here: it already has its own .gitignore naming w2a16_swzl_probe. That file was
+# committed anyway, which is the lesson worth keeping -- .gitignore does not touch what is already TRACKED, so
+# the rule alone never stopped it and only `git rm --cached` does.
+
+# The extensionless probe EXECUTABLES that do not follow the lNN naming, missed when the lNN pattern was written:
+# ft_check/ftchk (the float-trait check, built by hand per fold_derivation/README.md), l2l3, l5s, leg1/leg3/leg5,
+# sweep, and low_bit/w2a16_swzl_probe. 4.5 MB, all rebuildable from the .cpp/.cu beside them. The rule below
+# cannot be "ignore every extensionless file" because dev/ also holds directories, so these are named.
+dev/fold_derivation/ft_check
+dev/fold_derivation/ftchk
+dev/fold_derivation/l2l3
+dev/fold_derivation/l5s
+dev/fold_derivation/leg1
+dev/fold_derivation/leg3
+dev/fold_derivation/leg5
+dev/fold_derivation/sweep
+dev/low_bit/w2a16_swzl_probe

@@ -1,0 +1,535 @@
+/*
+ * Copyright (c) 2020-2023, NVIDIA CORPORATION.  All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "cutlass_kernels/cutlass_preprocessors.h"
+#include "thop/th_utils.h"
+#include "weight_layout.h"
+
+#if defined(TORCH_VERSION_MAJOR)                                                                                       \
+    && ((TORCH_VERSION_MAJOR > 1) || ((TORCH_VERSION_MAJOR == 1) && (TORCH_VERSION_MINOR >= 9)))
+#define TORCH_IS_AT_LEAST_v190
+#endif
+
+namespace torch_ext {
+using namespace acext::kernels::cutlass_kernels;
+using torch::Tensor;
+
+void check_quant_type_allowed(torch::ScalarType quant_type)
+{
+#ifdef TORCH_IS_AT_LEAST_v190
+    TORCH_CHECK(quant_type == torch::kInt8 || quant_type == at::ScalarType::QUInt4x2,
+                "Must be int4 or int8 quantization");
+#else
+    TORCH_CHECK(quant_type == torch::kInt8, "Must be int8 quantization");
+#endif
+}
+
+QuantType get_quant_type(torch::ScalarType quant_type)
+{
+    if (quant_type == torch::kInt8) {
+        return QuantType::INT8_WEIGHT_ONLY;
+    }
+#ifdef TORCH_IS_AT_LEAST_v190
+    else if (quant_type == at::ScalarType::QUInt4x2) {
+        return QuantType::PACKED_INT4_WEIGHT_ONLY;
+    }
+#endif
+    else {
+        TORCH_CHECK(false, "Invalid quantization type");
+    }
+}
+
+// Permutes the rows of B for Turing and Ampere. Throws an error for other architectures.
+Tensor permute_B_rows_for_mixed_gemm(Tensor quantized_tensor, torch::ScalarType quant_type, const int64_t arch_version)
+{
+    auto _st = quantized_tensor.scalar_type();
+    CHECK_CPU(quantized_tensor);
+    CHECK_CONTIGUOUS(quantized_tensor);
+    TORCH_CHECK(_st == torch::kInt8, "Quantized tensor must be int8 dtype");
+    check_quant_type_allowed(quant_type);
+    TORCH_CHECK(quantized_tensor.dim() == 2 || quantized_tensor.dim() == 3,
+                "Invalid dim. The dim of weight should be 2 or 3");
+
+    QuantType ac_quant_type  = get_quant_type(quant_type);
+    const size_t  bits_in_quant_type = get_bits_in_quant_type(ac_quant_type);
+
+    const size_t num_experts = quantized_tensor.dim() == 2 ? 1 : quantized_tensor.size(0);
+    const size_t num_rows    = quantized_tensor.size(-2);
+    const size_t num_cols    = (8 / bits_in_quant_type) * quantized_tensor.size(-1);
+
+    Tensor transformed_tensor = torch::empty_like(quantized_tensor);
+
+    int8_t* input_byte_ptr  = get_ptr<int8_t>(quantized_tensor);
+    int8_t* output_byte_ptr = get_ptr<int8_t>(transformed_tensor);
+
+    permute_B_rows_for_mixed_gemm(
+        output_byte_ptr, input_byte_ptr, {num_experts, num_rows, num_cols}, ac_quant_type, arch_version);
+
+    return transformed_tensor;
+}
+
+// We need to use this transpose to correctly handle packed int4 and int8 data
+Tensor subbyte_transpose(Tensor quantized_tensor, torch::ScalarType quant_type)
+{
+
+    auto _st = quantized_tensor.scalar_type();
+    CHECK_CPU(quantized_tensor);
+    CHECK_CONTIGUOUS(quantized_tensor);
+    TORCH_CHECK(_st == torch::kInt8, "Quantized tensor must be int8 dtype");
+    check_quant_type_allowed(quant_type);
+    TORCH_CHECK(quantized_tensor.dim() == 2 || quantized_tensor.dim() == 3,
+                "Invalid dim. The dim of weight should be 2 or 3");
+
+    QuantType ac_quant_type  = get_quant_type(quant_type);
+    const size_t  bits_in_quant_type = get_bits_in_quant_type(ac_quant_type);
+
+    const size_t num_experts = quantized_tensor.dim() == 2 ? 1 : quantized_tensor.size(0);
+    const size_t num_rows    = quantized_tensor.size(-2);
+    const size_t num_cols    = (8 / bits_in_quant_type) * quantized_tensor.size(-1);
+
+    Tensor transposed_tensor = torch::empty_like(quantized_tensor);
+
+    int8_t* input_byte_ptr  = get_ptr<int8_t>(quantized_tensor);
+    int8_t* output_byte_ptr = get_ptr<int8_t>(transposed_tensor);
+
+    subbyte_transpose(output_byte_ptr, input_byte_ptr, {num_experts, num_rows, num_cols}, ac_quant_type);
+    return transposed_tensor;
+}
+
+// THE NAMED ENTRY POINT. Takes the arrangement's NAME instead of two booleans; see weight_layout.h for why. The
+// boolean form below stays as the implementation and is still reachable as an op for the step-level unit tests, but
+// a caller that stores a weight should name what it is storing, because the name is the only thing that will
+// distinguish it afterwards.
+Tensor preprocess_weights_for_mixed_gemm(Tensor row_major_quantized_weight, torch::ScalarType quant_type,
+    bool is_int8_mma, bool use_aiu_interleaved);
+
+Tensor preprocess_weights_to_layout(Tensor row_major_quantized_weight, torch::ScalarType quant_type,
+                                    std::string layout)
+{
+    quactlize::LayoutPlan plan;
+    std::string err;
+    TORCH_CHECK(quactlize::resolve_layout(layout, &plan, &err), err);
+
+    if (plan.name == "logical") {
+        // Naming the un-reordered arrangement is not a no-op worth optimising away: it is how a caller says "this
+        // weight has been through nothing", which is a claim the type system cannot make.
+        return row_major_quantized_weight.clone();
+    }
+
+    QuantType const requested = get_quant_type(quant_type);
+    TORCH_CHECK(int(get_bits_in_quant_type(requested)) == plan.bits,
+                "layout '", plan.name, "' is for ", plan.bits, "-bit weights, but the quant type given is ",
+                get_bits_in_quant_type(requested), "-bit. Layouts are per element width because the step parameters "
+                "are: cl4 for 4-bit, cl2 for 8-bit, cl8 for 2-bit.");
+
+    if (plan.requires_multiple > 0) {
+        size_t const bits = get_bits_in_quant_type(requested);
+        size_t const rows = row_major_quantized_weight.size(-2);
+        size_t const cols = (8 / bits) * row_major_quantized_weight.size(-1);
+        TORCH_CHECK(rows % plan.requires_multiple == 0 && cols % plan.requires_multiple == 0,
+                    "layout '", plan.name, "' needs k and n both multiples of ", plan.requires_multiple,
+                    "; got k=", rows, " n=", cols, ". A shape that misses this does not get the arrangement the "
+                    "name promises -- the step is skipped downstream and the result is a different layout.");
+    }
+
+    return preprocess_weights_for_mixed_gemm(row_major_quantized_weight, quant_type,
+                                             plan.is_int8_mma, plan.use_aiu_interleave);
+}
+
+Tensor preprocess_weights_for_mixed_gemm(Tensor row_major_quantized_weight, torch::ScalarType quant_type,
+    bool is_int8_mma = false, bool use_aiu_interleaved = false)
+{
+    auto _st = row_major_quantized_weight.scalar_type();
+    CHECK_CPU(row_major_quantized_weight);
+    CHECK_CONTIGUOUS(row_major_quantized_weight);
+    TORCH_CHECK(_st == torch::kInt8, "Quantized tensor must be int8 dtype");
+    check_quant_type_allowed(quant_type);
+    TORCH_CHECK(row_major_quantized_weight.dim() == 2 || row_major_quantized_weight.dim() == 3,
+                "Invalid dim. The dim of weight should be 2 or 3");
+
+    QuantType ac_quant_type  = get_quant_type(quant_type);
+    const size_t  bits_in_quant_type = get_bits_in_quant_type(ac_quant_type);
+
+    const size_t num_experts = row_major_quantized_weight.dim() == 2 ? 1 : row_major_quantized_weight.size(0);
+    const size_t num_rows    = row_major_quantized_weight.size(-2);
+    const size_t num_cols    = (8 / bits_in_quant_type) * row_major_quantized_weight.size(-1);
+
+    // REFUSE AN AIU REQUEST THAT CANNOT BE HONOURED. Two conditions downstream silently skip the AIU interleave and
+    // return the ordinary layout: the whole branch is compiled out unless USE_AIU is defined, and even then it applies
+    // only to PACKED_INT4 with both k and n divisible by 256. A caller that asked for the AIU layout and got the other
+    // one back has a tensor whose bytes are in the wrong physical order, and NOTHING about its dtype or shape says so
+    // -- the first symptom is wrong numbers from a kernel, far from here. This was not hypothetical: the first call
+    // through this op with use_aiu_interleaved=true returned bytes identical to the false case, on both counts at once.
+    if (use_aiu_interleaved)
+    {
+#if !defined(USE_AIU)
+        TORCH_CHECK(false, "use_aiu_interleaved=true, but this library was built without USE_AIU, so the AIU column "
+                           "interleave does not exist in it. Rebuild with -DUSE_AIU or pass false.");
+#endif
+        TORCH_CHECK(ac_quant_type == QuantType::PACKED_INT4_WEIGHT_ONLY,
+                    "use_aiu_interleaved=true is only implemented for packed int4 weights");
+        TORCH_CHECK(num_rows % 256 == 0 && num_cols % 256 == 0,
+                    "use_aiu_interleaved=true needs k and n both divisible by 256 (the AIU column tile); got k=",
+                    num_rows, " n=", num_cols, ", which would silently fall back to the non-AIU layout");
+    }
+
+    Tensor  processed_tensor = torch::zeros_like(row_major_quantized_weight);
+    int8_t* input_byte_ptr   = get_ptr<int8_t>(row_major_quantized_weight);
+    int8_t* output_byte_ptr  = get_ptr<int8_t>(processed_tensor);
+
+    preprocess_weights_for_mixed_gemm(
+        output_byte_ptr, input_byte_ptr, {num_experts, num_rows, num_cols}, ac_quant_type, is_int8_mma, use_aiu_interleaved);
+
+    return processed_tensor;
+}
+
+std::vector<Tensor>
+symmetric_quantize_helper(Tensor weight, torch::ScalarType quant_type, bool return_unprocessed_quantized_tensor, const int arch)
+{
+    CHECK_CPU(weight);
+    CHECK_CONTIGUOUS(weight);
+    TORCH_CHECK(weight.numel() != 0, "weight should not be empty tensor");
+    TORCH_CHECK(weight.dim() == 2 || weight.dim() == 3, "Invalid dim. The dim of weight should be 2 or 3");
+
+    auto _st = weight.scalar_type();
+    TORCH_CHECK(_st == torch::kFloat32 || _st == torch::kFloat16 || _st == torch::kBFloat16,
+                "Invalid datatype. Weight must be FP16 or BF16");
+    check_quant_type_allowed(quant_type);
+    QuantType ac_quant_type = get_quant_type(quant_type);
+
+    const size_t num_experts = weight.dim() == 2 ? 1 : weight.size(0);
+    const size_t num_rows    = weight.size(-2);
+    const size_t num_cols    = weight.size(-1);
+
+    const size_t bits_in_type      = get_bits_in_quant_type(ac_quant_type);
+    const size_t bytes_per_out_col = num_cols * bits_in_type / 8;
+
+    std::vector<long int> quantized_weight_shape;
+    std::vector<long int> scale_shape;
+    if (weight.dim() == 2) {
+        quantized_weight_shape = {long(num_rows), long(bytes_per_out_col)};
+        scale_shape            = {long(num_cols)};
+    }
+    else if (weight.dim() == 3) {
+        quantized_weight_shape = {long(num_experts), long(num_rows), long(bytes_per_out_col)};
+        scale_shape            = {long(num_experts), long(num_cols)};
+    }
+    else {
+        TORCH_CHECK(false, "Invalid weight dimension. Weight must have dim 2 or 3");
+    }
+
+    Tensor unprocessed_quantized_weight =
+        torch::empty(quantized_weight_shape, torch::dtype(torch::kInt8).device(torch::kCPU).requires_grad(false));
+
+    Tensor processed_quantized_weight = torch::empty_like(unprocessed_quantized_weight);
+
+    Tensor scales = torch::empty(scale_shape, torch::dtype(weight.dtype()).device(torch::kCPU).requires_grad(false));
+
+    int8_t* unprocessed_quantized_weight_ptr = get_ptr<int8_t>(unprocessed_quantized_weight);
+    int8_t* processed_quantized_weight_ptr   = get_ptr<int8_t>(processed_quantized_weight);
+
+    if (weight.scalar_type() == at::ScalarType::Float) {
+        symmetric_quantize<float, float>(processed_quantized_weight_ptr,
+                                            unprocessed_quantized_weight_ptr,
+                                            get_ptr<float>(scales),
+                                            get_ptr<const float>(weight),
+                                            {num_experts, num_rows, num_cols},
+                                            ac_quant_type,
+                                            arch);
+    }
+    else if (weight.scalar_type() == at::ScalarType::Half) {
+        symmetric_quantize<half, half>(processed_quantized_weight_ptr,
+                                           unprocessed_quantized_weight_ptr,
+                                           get_ptr<half>(scales),
+                                           get_ptr<const half>(weight),
+                                           {num_experts, num_rows, num_cols},
+                                           ac_quant_type,
+                                           arch);
+    }
+#ifdef ENABLE_BF16
+    else if (weight.scalar_type() == at::ScalarType::BFloat16) {
+        symmetric_quantize<__nv_bfloat16, __nv_bfloat16>(processed_quantized_weight_ptr,
+                                                             unprocessed_quantized_weight_ptr,
+                                                             get_ptr<__nv_bfloat16>(scales),
+                                                             get_ptr<const __nv_bfloat16>(weight),
+                                                             {num_experts, num_rows, num_cols},
+                                                             ac_quant_type,
+                                                             arch);
+    }
+#endif
+    else {
+        TORCH_CHECK(false, "Invalid datatype. Weight must be BF16/FP16");
+    }
+
+    if (return_unprocessed_quantized_tensor) {
+        return std::vector<Tensor>{unprocessed_quantized_weight, processed_quantized_weight, scales};
+    }
+
+    return std::vector<Tensor>{processed_quantized_weight, scales};
+}
+
+std::vector<Tensor> symmetric_quantize_last_axis_of_batched_matrix(Tensor weight, torch::ScalarType quant_type, const int64_t arch)
+{
+    return symmetric_quantize_helper(weight, quant_type, false, arch);
+}
+
+// Same as symmetric_quantize_last_axis_of_batched_matrix but returns a tuple of:
+// (unprocessed_quantized_weights, preprocessed_quantized_weights, scales)
+// Exposed mainly for testing, so that the unprocessed weights can be passed to torch functions.
+std::vector<Tensor> _symmetric_quantize_last_axis_of_batched_matrix(Tensor weight, torch::ScalarType quant_type, const int64_t arch)
+{
+    return symmetric_quantize_helper(weight, quant_type, true, arch);
+}
+
+Tensor add_bias_and_interleave_int4s(Tensor weight)
+{
+    CHECK_CPU(weight);
+    CHECK_CONTIGUOUS(weight);
+    TORCH_CHECK(weight.numel() != 0, "weight should not be empty tensor");
+    TORCH_CHECK(weight.dtype() == torch::kInt8, "Weight must be a packed int8 tensor");
+    Tensor output = weight.clone().detach();
+
+    int8_t*      int4_tensor_ptr = get_ptr<int8_t>(output);
+    const size_t num_bytes       = output.numel();
+    const size_t num_elts        = 2 * num_bytes;
+    add_bias_and_interleave_quantized_tensor_inplace(int4_tensor_ptr, num_elts, QuantType::PACKED_INT4_WEIGHT_ONLY);
+
+    return output;
+}
+
+Tensor add_bias_and_interleave_int8s(Tensor weight)
+{
+    CHECK_CPU(weight);
+    CHECK_CONTIGUOUS(weight);
+    TORCH_CHECK(weight.numel() != 0, "weight should not be empty tensor");
+    TORCH_CHECK(weight.dtype() == torch::kInt8, "Weight must be an int8 tensor");
+    Tensor output = weight.clone().detach();
+
+    int8_t*      int8_tensor_ptr = get_ptr<int8_t>(output);
+    const size_t num_elts        = output.numel();
+    add_bias_and_interleave_quantized_tensor_inplace(int8_tensor_ptr, num_elts, QuantType::INT8_WEIGHT_ONLY);
+
+    return output;
+}
+
+Tensor unpack_int4_packed_tensor_to_int8(Tensor weight)
+{
+    CHECK_CPU(weight);
+    CHECK_CONTIGUOUS(weight);
+    TORCH_CHECK(weight.numel() != 0, "weight should not be empty tensor");
+    TORCH_CHECK(weight.dtype() == torch::kInt8, "Weight must be a packed int8 tensor");
+
+    std::vector<long int> int8_tensor_size(weight.dim());
+    for (int i = 0; i < weight.dim(); ++i) {
+        int8_tensor_size[i] = weight.size(i);
+    }
+    int8_tensor_size[weight.dim() - 1] *= 2;
+
+    Tensor unpacked_weight =
+        torch::zeros(int8_tensor_size, torch::dtype(torch::kInt8).device(torch::kCPU).requires_grad(false));
+
+    int8_t* packed_ptr   = get_ptr<int8_t>(weight);
+    int8_t* unpacked_ptr = get_ptr<int8_t>(unpacked_weight);
+
+    for (int packed_idx = 0; packed_idx < weight.numel(); ++packed_idx) {
+        int8_t packed_data = packed_ptr[packed_idx];
+
+        int8_t elt_0 = (int8_t(packed_data << 4) >> 4);  // The double shift here is to ensure sign extension
+        int8_t elt_1 = packed_data >> 4;
+
+        unpacked_ptr[2 * packed_idx + 0] = elt_0;
+        unpacked_ptr[2 * packed_idx + 1] = elt_1;
+    }
+
+    return unpacked_weight;
+}
+
+Tensor pack_int8_tensor_to_packed_int4(Tensor weight)
+{
+    CHECK_CPU(weight);
+    CHECK_CONTIGUOUS(weight);
+    TORCH_CHECK(weight.numel() != 0, "weight should not be empty tensor");
+    TORCH_CHECK(weight.dtype() == torch::kInt8, "Weight must be a int8 tensor");
+
+        // THE LAST DIMENSION MUST BE EVEN. The loop below is FLAT -- it reads unpacked_ptr[2*i] and [2*i+1] over the whole
+    // buffer -- so an odd last dimension breaks in three ways at once, and only the third is loud:
+    //   * the output is sized ceil(n/2), so the final iteration reads one element past the tensor;
+    //   * every row after the first is packed against the wrong partner: with shape (2,3), elements 3 and 4 -- the
+    //     last of row 0 and the first of row 1 -- land in the same byte;
+    //   * unpacking doubles the last dimension, so the round trip cannot even return the original shape.
+    // Padding would hide all three. Rejecting is the honest answer: a caller with an odd dimension has to decide what
+    // the padding means, and that is not a decision this function can make for them.
+    TORCH_CHECK(weight.size(weight.dim() - 1) % 2 == 0,
+                "the last dimension must be even to pack two int4 per byte; got ", weight.size(weight.dim() - 1),
+                ". Pad or reshape at the call site, where what the padding means is known.");
+
+std::vector<long int> packed_tensor_size(weight.dim());
+    for (int i = 0; i < weight.dim(); ++i) {
+        packed_tensor_size[i] = weight.size(i);
+    }
+    packed_tensor_size[weight.dim() - 1] = (packed_tensor_size[weight.dim() - 1] + 1) / 2;
+
+    Tensor packed_weight =
+        torch::zeros(packed_tensor_size, torch::dtype(torch::kInt8).device(torch::kCPU).requires_grad(false));
+
+    int8_t* unpacked_ptr = get_ptr<int8_t>(weight);
+    int8_t* packed_ptr   = get_ptr<int8_t>(packed_weight);
+
+    for (size_t packed_idx = 0; packed_idx < packed_weight.numel(); ++packed_idx) {
+        int8_t packed_int4s = 0;
+        int8_t elt_0        = unpacked_ptr[2 * packed_idx + 0];
+        int8_t elt_1        = unpacked_ptr[2 * packed_idx + 1];
+
+        TORCH_CHECK(elt_0 >= -8 && elt_0 <= 7, "Value in unpacked tensor not in int4 range");
+        TORCH_CHECK(elt_1 >= -8 && elt_1 <= 7, "Value in unpacked tensor not in int4 range");
+
+        packed_int4s |= ((elt_0 & 0x0F));
+        packed_int4s |= int8_t(elt_1 << 4);
+
+        packed_ptr[packed_idx] = packed_int4s;
+    }
+    return packed_weight;
+}
+
+Tensor pack_uint8_tensor_to_packed_uint4(Tensor weight)
+{
+    CHECK_CPU(weight);
+    CHECK_CONTIGUOUS(weight);
+    TORCH_CHECK(weight.numel() != 0, "weight should not be empty tensor");
+    TORCH_CHECK(weight.dtype() == torch::kInt8, "Weight must be a int8 tensor");
+
+        // THE LAST DIMENSION MUST BE EVEN. The loop below is FLAT -- it reads unpacked_ptr[2*i] and [2*i+1] over the whole
+    // buffer -- so an odd last dimension breaks in three ways at once, and only the third is loud:
+    //   * the output is sized ceil(n/2), so the final iteration reads one element past the tensor;
+    //   * every row after the first is packed against the wrong partner: with shape (2,3), elements 3 and 4 -- the
+    //     last of row 0 and the first of row 1 -- land in the same byte;
+    //   * unpacking doubles the last dimension, so the round trip cannot even return the original shape.
+    // Padding would hide all three. Rejecting is the honest answer: a caller with an odd dimension has to decide what
+    // the padding means, and that is not a decision this function can make for them.
+    TORCH_CHECK(weight.size(weight.dim() - 1) % 2 == 0,
+                "the last dimension must be even to pack two int4 per byte; got ", weight.size(weight.dim() - 1),
+                ". Pad or reshape at the call site, where what the padding means is known.");
+
+std::vector<long int> packed_tensor_size(weight.dim());
+    for (int i = 0; i < weight.dim(); ++i) {
+        packed_tensor_size[i] = weight.size(i);
+    }
+    packed_tensor_size[weight.dim() - 1] = (packed_tensor_size[weight.dim() - 1] + 1) / 2;
+
+    Tensor packed_weight =
+        torch::zeros(packed_tensor_size, torch::dtype(torch::kInt8).device(torch::kCPU).requires_grad(false));
+
+    uint8_t* unpacked_ptr = get_ptr<uint8_t>(weight);
+    uint8_t* packed_ptr   = get_ptr<uint8_t>(packed_weight);
+
+    for (int packed_idx = 0; packed_idx < packed_weight.numel(); ++packed_idx) {
+        uint8_t packed_int4s = 0;
+        uint8_t elt_0        = unpacked_ptr[2 * packed_idx + 0];
+        uint8_t elt_1        = unpacked_ptr[2 * packed_idx + 1];
+
+        TORCH_CHECK(elt_0 >= 0 && elt_0 <= 15, "Value in unpacked tensor not in uint4 range");
+        TORCH_CHECK(elt_1 >= 0 && elt_1 <= 15, "Value in unpacked tensor not in uint4 range");
+
+        packed_int4s |= ((elt_0 & 0x0F));
+        packed_int4s |= uint8_t(elt_1 << 4);
+
+        packed_ptr[packed_idx] = packed_int4s;
+    }
+    return packed_weight;
+}
+
+Tensor unpack_uint4_packed_tensor_to_uint8(Tensor weight)
+{
+    CHECK_CPU(weight);
+    CHECK_CONTIGUOUS(weight);
+    TORCH_CHECK(weight.numel() != 0, "weight should not be empty tensor");
+    TORCH_CHECK(weight.dtype() == torch::kInt8, "Weight must be a packed int8 tensor");
+
+    std::vector<long int> int8_tensor_size(weight.dim());
+    for (int i = 0; i < weight.dim(); ++i) {
+        int8_tensor_size[i] = weight.size(i);
+    }
+    int8_tensor_size[weight.dim() - 1] *= 2;
+
+    Tensor unpacked_weight =
+        torch::zeros(int8_tensor_size, torch::dtype(torch::kInt8).device(torch::kCPU).requires_grad(false));
+
+    uint8_t* packed_ptr   = get_ptr<uint8_t>(weight);
+    uint8_t* unpacked_ptr = get_ptr<uint8_t>(unpacked_weight);
+
+    for (int packed_idx = 0; packed_idx < weight.numel(); ++packed_idx) {
+        uint8_t packed_data = packed_ptr[packed_idx];
+
+        uint8_t elt_0 = (uint8_t(packed_data << 4) >> 4);
+        uint8_t elt_1 = packed_data >> 4;
+
+        unpacked_ptr[2 * packed_idx + 0] = elt_0;
+        unpacked_ptr[2 * packed_idx + 1] = elt_1;
+    }
+
+    return unpacked_weight;
+}
+
+
+
+}  // namespace torch_ext
+
+// REGISTERED UNDER quactlize::, NOT THE VENDOR PREFIX. These names arrived from a vendor TRT-LLM port that spells its
+// namespace `acext::` -- the same `ac` that names actlize and the acu counters. If the PPU box's own torch package
+// registers that namespace, a second registration of the same qualified name aborts at library-load time, before any
+// Python code can catch it. A project-specific namespace is also what torch.library documents. Compatibility aliases
+// are deliberately NOT provided: an alias would reintroduce exactly the collision this avoids, and nothing outside
+// this repo calls these yet.
+static auto symmetric_quantize_last_axis_of_batched_matrix =
+    torch::RegisterOperators("quactlize::symmetric_quantize_last_axis_of_batched_matrix",
+                             &torch_ext::symmetric_quantize_last_axis_of_batched_matrix);
+
+static auto preprocess_weights_to_layout = torch::RegisterOperators(
+    "quactlize::preprocess_weights_to_layout", &torch_ext::preprocess_weights_to_layout);
+
+// The boolean form stays registered for the step-level tests. Underscored: naming a layout is the supported way to
+// produce one, and a caller reaching for two flags is a caller who will not be able to say what they produced.
+static auto preprocess_weights_for_mixed_gemm = torch::RegisterOperators(
+    "quactlize::_preprocess_weights_for_mixed_gemm", &torch_ext::preprocess_weights_for_mixed_gemm);
+
+static auto unpack_int4_packed_tensor_to_int8 = torch::RegisterOperators(
+    "quactlize::unpack_int4_packed_tensor_to_int8", &torch_ext::unpack_int4_packed_tensor_to_int8);
+
+static auto pack_int8_tensor_to_packed_int4 = torch::RegisterOperators(
+    "quactlize::pack_int8_tensor_to_packed_int4", &torch_ext::pack_int8_tensor_to_packed_int4);
+
+static auto pack_uint8_tensor_to_packed_uint4 = torch::RegisterOperators(
+    "quactlize::pack_uint8_tensor_to_packed_uint4", &torch_ext::pack_uint8_tensor_to_packed_uint4);
+
+static auto unpack_uint4_packed_tensor_to_uint8 = torch::RegisterOperators(
+    "quactlize::unpack_uint4_packed_tensor_to_uint8", &torch_ext::unpack_uint4_packed_tensor_to_uint8);
+
+// Utility methods exposed purely for unit tests in torch.
+static auto _symmetric_quantize_last_axis_of_batched_matrix =
+    torch::RegisterOperators("quactlize::_symmetric_quantize_last_axis_of_batched_matrix",
+                             &torch_ext::_symmetric_quantize_last_axis_of_batched_matrix);
+
+static auto add_bias_and_interleave_int4s = torch::RegisterOperators(
+    "quactlize::_add_bias_and_interleave_int4s", &torch_ext::add_bias_and_interleave_int4s);
+
+static auto add_bias_and_interleave_int8s = torch::RegisterOperators(
+    "quactlize::_add_bias_and_interleave_int8s", &torch_ext::add_bias_and_interleave_int8s);
+
+static auto permute_B_rows_for_mixed_gemm = torch::RegisterOperators(
+    "quactlize::_permute_B_rows_for_mixed_gemm", &torch_ext::permute_B_rows_for_mixed_gemm);
+
+static auto subbyte_transpose =
+    torch::RegisterOperators("quactlize::_subbyte_transpose", &torch_ext::subbyte_transpose);
