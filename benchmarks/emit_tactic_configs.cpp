@@ -385,7 +385,8 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
   if (g_m_max > 0) std::printf(" --m-max=%d", g_m_max);
   if (g_format) std::printf(" --format=%s", g_format);
   for (int st : g_stages) std::printf(" %d", st);
-  std::printf(" > benchmarks/lowbit_%s_configs.inc\n", space_name);
+  if (g_format) std::printf(" > benchmarks/lowbit_%s_%s_configs.inc\n", space_name, g_format);
+  else          std::printf(" > benchmarks/lowbit_%s_configs.inc\n", space_name);
   std::printf("//\n");
   std::printf("// The second X argument carries the dispatch BODY through the list; supported_configs() passes\n");
   std::printf("// nothing for it. That is what lets ONE list feed both the runtime table and the compile-time\n");
@@ -486,19 +487,20 @@ int main(int argc, char** argv) {
 
   if (g_tactic_tks.empty()) g_tactic_tks.push_back(tk);   // no --tactic-tk: the artifact's own, as before
 
-  if (std::strcmp(space, "dense") == 0)   return emit<DenseSpace>(*spec, bits, tk, g_tactic_tks, "dense", "LOWBIT_DENSE");
+  // ONE MACRO PREFIX PER (SPACE, FORMAT). Several tables can be consumed by one build system, and every one is
+  // well-formed in isolation, so sharing LOWBIT_DENSE_CFG_LIST or LOWBIT_GROUPED_CFG_LIST would silently let the
+  // last include win. Keep the legacy generic dense prefix only for its sole i4 table; named formats carry a suffix.
+  static char pfx[64];
+  auto prefix = [&](char const* base) {
+    if (g_format) std::snprintf(pfx, sizeof pfx, "%s_%s", base, g_format);
+    else          std::snprintf(pfx, sizeof pfx, "%s", base);
+    for (char* q = pfx; *q; ++q) *q = (*q >= 'a' && *q <= 'z') ? char(*q - 'a' + 'A') : *q;
+    return pfx;
+  };
+  if (std::strcmp(space, "dense") == 0)
+    return emit<DenseSpace>(*spec, bits, tk, g_tactic_tks, "dense", prefix("LOWBIT_DENSE"));
   if (std::strcmp(space, "grouped") == 0) {
-    // ONE MACRO PREFIX PER FORMAT. Five grouped tables in one build all defining LOWBIT_GROUPED_CFG_LIST would
-    // silently take whichever was included last -- and every one of them looks well-formed on its own, so the
-    // collision has no diagnostic. The prefix carries the format when a format was named.
-    static char pfx[64];
-    if (g_format) {
-      std::snprintf(pfx, sizeof pfx, "LOWBIT_GROUPED_%s", g_format);
-      for (char* q = pfx; *q; ++q) *q = (*q >= 'a' && *q <= 'z') ? char(*q - 'a' + 'A') : *q;
-    } else {
-      std::snprintf(pfx, sizeof pfx, "LOWBIT_GROUPED");
-    }
-    return emit<GroupedSpace>(*spec, bits, tk, g_tactic_tks, "grouped", pfx);
+    return emit<GroupedSpace>(*spec, bits, tk, g_tactic_tks, "grouped", prefix("LOWBIT_GROUPED"));
   }
   if (std::strcmp(space, "compare") == 0) {
     std::printf("comparing DenseSpace vs GroupedSpace: bits=%d tile_k=%d stages", bits, tk);

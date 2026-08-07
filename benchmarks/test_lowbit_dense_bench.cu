@@ -205,12 +205,15 @@ using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBui
   >::CollectiveOp;
 
 // ============================================================ MIXED INPUT NO SCALES ============================================================================
-// The collective will infer that the narrow type should be upcasted to the wide type.
-// We swap A and B operands to the builder here
+// The vendor's no-scale collective supports int4/int8 only. Keep its original int4 control available in the i4
+// binary, and use that valid type merely to own the common C/D stride/output aliases in i1/i2 binaries; main rejects
+// mode 0 there before instantiating run<GemmConvertOnly>. The per-format tactic path below uses the real ElementB.
+using ConvertElementB = cutlass::int4b_t;
+constexpr int ConvertAlignmentB = 128 / cutlass::sizeof_bits<ConvertElementB>::value;
 using CollectiveMainloopConvertOnly = typename cutlass::gemm::collective::CollectiveBuilder<
     ArchTag, OperatorClass,
     ElementA, LayoutA, AlignmentA,
-    ElementB, LayoutB_opt, AlignmentB,
+    ConvertElementB, LayoutB_opt, ConvertAlignmentB,
     ElementAccumulator,
     cute::tuple<TileShape>, WarpShape,
     Int<STAGES>,
@@ -310,21 +313,49 @@ struct TileCfg { char const* name; int tm, tn, tk, wm, wn, st, b_chunk; LowbitDe
 #include "bench_select.hpp"
 #include "bench_samples.hpp"
 #include "bench_floor.cuh"
+#if defined(BENCH_UINT1)
+#include "lowbit_dense_i1_configs.inc"
+#define LOWBIT_DENSE_TABLE_FILE                 "lowbit_dense_i1_configs.inc"
+#define LOWBIT_DENSE_TABLE_CFG_BITS             LOWBIT_DENSE_I1_CFG_BITS
+#define LOWBIT_DENSE_TABLE_CFG_ARTIFACT_TILEK   LOWBIT_DENSE_I1_CFG_ARTIFACT_TILEK
+#define LOWBIT_DENSE_TABLE_CFG_ROWS             LOWBIT_DENSE_I1_CFG_ROWS
+#define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    LOWBIT_DENSE_I1_CFG_SPACE_FNV1A64
+#define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  LOWBIT_DENSE_I1_CFG_EMITTER_FNV1A64
+#define LOWBIT_DENSE_TABLE_CFG_LIST             LOWBIT_DENSE_I1_CFG_LIST
+#elif defined(BENCH_UINT2)
+#include "lowbit_dense_i2_configs.inc"
+#define LOWBIT_DENSE_TABLE_FILE                 "lowbit_dense_i2_configs.inc"
+#define LOWBIT_DENSE_TABLE_CFG_BITS             LOWBIT_DENSE_I2_CFG_BITS
+#define LOWBIT_DENSE_TABLE_CFG_ARTIFACT_TILEK   LOWBIT_DENSE_I2_CFG_ARTIFACT_TILEK
+#define LOWBIT_DENSE_TABLE_CFG_ROWS             LOWBIT_DENSE_I2_CFG_ROWS
+#define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    LOWBIT_DENSE_I2_CFG_SPACE_FNV1A64
+#define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  LOWBIT_DENSE_I2_CFG_EMITTER_FNV1A64
+#define LOWBIT_DENSE_TABLE_CFG_LIST             LOWBIT_DENSE_I2_CFG_LIST
+#else
 #include "lowbit_dense_configs.inc"
+#define LOWBIT_DENSE_TABLE_FILE                 "lowbit_dense_configs.inc"
+#define LOWBIT_DENSE_TABLE_CFG_BITS             LOWBIT_DENSE_CFG_BITS
+#define LOWBIT_DENSE_TABLE_CFG_ARTIFACT_TILEK   LOWBIT_DENSE_CFG_ARTIFACT_TILEK
+#define LOWBIT_DENSE_TABLE_CFG_ROWS             LOWBIT_DENSE_CFG_ROWS
+#define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    LOWBIT_DENSE_CFG_SPACE_FNV1A64
+#define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  LOWBIT_DENSE_CFG_EMITTER_FNV1A64
+#define LOWBIT_DENSE_TABLE_CFG_LIST             LOWBIT_DENSE_CFG_LIST
+#endif
 #include "bench_device.hpp"
-static_assert(cutlass::sizeof_bits<QuantType>::value == LOWBIT_DENSE_CFG_BITS && TileShapeK == LOWBIT_DENSE_CFG_ARTIFACT_TILEK,
-              "lowbit_dense_configs.inc was generated for a different (bits, TileK) than this binary. Regenerate: "
-              "c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic && "
-              "/tmp/emit_tactic <bits> <tile_k> > benchmarks/lowbit_dense_configs.inc");
+static_assert(cutlass::sizeof_bits<QuantType>::value == LOWBIT_DENSE_TABLE_CFG_BITS &&
+              TileShapeK == LOWBIT_DENSE_TABLE_CFG_ARTIFACT_TILEK,
+              "the selected dense config table was generated for a different (bits, TileK) than this binary. Regenerate "
+              LOWBIT_DENSE_TABLE_FILE " with the exact command stamped in its provenance header");
 #define LOWBIT_DENSE_COUNT_ROW(TM,TN,TK,WM,WN,ST,BC,_UNUSED) + 1
-inline constexpr int kLowbitDenseConfigRows = 0 LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_COUNT_ROW, );
+inline constexpr int kLowbitDenseConfigRows = 0 LOWBIT_DENSE_TABLE_CFG_LIST(LOWBIT_DENSE_COUNT_ROW, );
 #undef LOWBIT_DENSE_COUNT_ROW
-static_assert(kLowbitDenseConfigRows == LOWBIT_DENSE_CFG_ROWS,
-              "lowbit_dense_configs.inc row-count provenance does not match its X-macro list; regenerate it");
+static_assert(kLowbitDenseConfigRows == LOWBIT_DENSE_TABLE_CFG_ROWS,
+              "the selected dense config table's row-count provenance does not match its X-macro list; regenerate it");
 
 inline void print_dense_table_provenance() {
-  std::printf("[dense-table] rows=%d space_fnv1a64=%s emitter_fnv1a64=%s\n",
-              kLowbitDenseConfigRows, LOWBIT_DENSE_CFG_SPACE_FNV1A64, LOWBIT_DENSE_CFG_EMITTER_FNV1A64);
+  std::printf("[dense-table] file=%s rows=%d space_fnv1a64=%s emitter_fnv1a64=%s\n",
+              LOWBIT_DENSE_TABLE_FILE, kLowbitDenseConfigRows,
+              LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64, LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64);
 }
 #endif
 // =================================================================================================================
@@ -507,7 +538,7 @@ struct Result
 #define LOWBIT_DENSE_DECLARE(TM,TN,TK,WM,WN,ST,BC,_UNUSED) \
   Result LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(Options&, TileCfg const&); \
   char const* LOWBIT_DENSE_TAG_SYMBOL(TM,TN,TK,WM,WN,ST,BC)();
-LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_DECLARE, )
+LOWBIT_DENSE_TABLE_CFG_LIST(LOWBIT_DENSE_DECLARE, )
 #undef LOWBIT_DENSE_DECLARE
 
 inline std::vector<TileCfg> const& supported_configs() {
@@ -515,7 +546,7 @@ inline std::vector<TileCfg> const& supported_configs() {
 #define LOWBIT_DENSE_REGISTRY_ROW(TM,TN,TK,WM,WN,ST,BC,_UNUSED) \
     TileCfg{LOWBIT_DENSE_TAG_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(), TM, TN, TK, WM, WN, ST, BC, \
             &LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,BC)},
-    LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_REGISTRY_ROW, )
+    LOWBIT_DENSE_TABLE_CFG_LIST(LOWBIT_DENSE_REGISTRY_ROW, )
 #undef LOWBIT_DENSE_REGISTRY_ROW
   };
   return configs;
@@ -750,7 +781,7 @@ bool verify(const Options &options) {
   using CollectiveMainloopRef = typename cutlass::gemm::collective::CollectiveBuilder<
       ArchTag, OperatorClass,
       MmaType, LayoutA, AlignmentA,
-      MmaType, LayoutB, AlignmentB,
+      MmaType, LayoutB, AlignmentA,
       ElementAccumulator,
       TileShape, WarpShape,
       cutlass::gemm::collective::StageCountAuto,
@@ -1141,7 +1172,8 @@ int main(int argc, char const **args) {
 
   // --list_configs: enumerate the compiled tactics and exit.
   if (options.list_configs) {
-    std::printf("compiled CUTLASS W4A16 tile configs (group sizes 16, 32, 64, 128):\n");
+    std::printf("compiled CUTLASS W%dA16 tile configs (group sizes 16, 32, 64, 128):\n",
+                int(cutlass::sizeof_bits<QuantType>::value));
     for (auto const& c : supported_configs())
       std::printf("  %-22s  tile %dx%dx%d  warp %dx%d  stages %d\n",
                   c.name, c.tm, c.tn, c.tk, c.wm, c.wn, c.st);
@@ -1155,7 +1187,16 @@ int main(int argc, char const **args) {
 
   // The tactic path is ScaleOnly (mode 1). Modes 0/2 keep the original fixed-config run.
   if (options.mode != GemmMode::ScaleOnly) {
-    if (options.mode == GemmMode::ConvertOnly) { std::cout << "PPU1.0 no-scale mode.\n";  run<GemmConvertOnly>(options); }
+    if (options.mode == GemmMode::ConvertOnly) {
+#if defined(BENCH_UINT1) || defined(BENCH_UINT2)
+      std::fprintf(stderr, "mode 0 (no-scale convert) is available only in the int4 dense binary; "
+                           "this W%d binary searches scale-only tactics\n",
+                   int(cutlass::sizeof_bits<QuantType>::value));
+      return 1;
+#else
+      std::cout << "PPU1.0 no-scale mode.\n"; run<GemmConvertOnly>(options);
+#endif
+    }
     else                                       { std::cout << "PPU1.0 scale+zero mode.\n"; run_scale_zero(options); }
     return 0;
   }

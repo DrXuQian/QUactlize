@@ -207,8 +207,8 @@ echo "[build.sh] CUTLASS_PPU_ARCHS=$ARCH"
 
 # --- tile/warp/stages tuning: forward from the environment (defaults match the stock example) ---
 TILE_M="${TILE_M:-32}"; TILE_N="${TILE_N:-32}"; WARP_M="${WARP_M:-16}"; WARP_N="${WARP_N:-16}"; STAGES="${STAGES:-3}"
-QUANT="${QUANT:-int4}"   # int4 (default) or uint2 -> test_lowbit_dense_bench's QuantType (W4A16 vs W2A16 perf)
-TSK="${TSK:-}"           # TileShapeK override (empty = per-quant default: int2->128, int4->64). Set to force, e.g. TSK=128
+QUANT="${QUANT:-int4}"   # int4 (default), uint2, or uint1 -> test_lowbit_dense_bench's W4/W2/W1 QuantType
+TSK="${TSK:-}"           # TileShapeK override (empty: int1->256, int2->128, int4->64). Set only with a matching table
 BENCH_GS="${BENCH_GS:-}"  # build ONE dense group size instead of all four. Every generated config wrapper instantiates
                          # each group-size arm whether or not --g can select it, so restricting the group size divides
                          # the tactic kernel count by four. How much

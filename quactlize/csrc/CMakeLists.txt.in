@@ -173,13 +173,15 @@ set(WARP_M  "32" CACHE STRING "warp tile M")
 set(WARP_N  "32" CACHE STRING "warp tile N")
 set(STAGES  "4"  CACHE STRING "pipeline stages")
 
-set(BENCH_QUANT "int4" CACHE STRING "bench QuantType: int4 (W4A16) or uint2 (W2A16)")
-set(TSK "" CACHE STRING "TileShapeK override (empty=default int2->128/int4->64; set e.g. 128 to force, incl. int4 for apples-to-apples)")
+set(BENCH_QUANT "int4" CACHE STRING "bench QuantType: int4 (W4A16), uint2 (W2A16), or uint1 (W1A16)")
+set(TSK "" CACHE STRING "TileShapeK override (empty=int1->256/int2->128/int4->64; an override requires a matching table)")
 set(_QUANT_DEFS)
 if(BENCH_QUANT STREQUAL "uint2")
   set(_QUANT_DEFS -DBENCH_UINT2)
 elseif(BENCH_QUANT STREQUAL "uint1")
   set(_QUANT_DEFS -DBENCH_UINT1)
+elseif(NOT BENCH_QUANT STREQUAL "int4")
+  message(FATAL_ERROR "BENCH_QUANT='${BENCH_QUANT}' is unknown; expected int4, uint2, or uint1")
 endif()
 if(NOT TSK STREQUAL "")
   list(APPEND _QUANT_DEFS -DBENCH_TSK=${TSK})
@@ -200,14 +202,30 @@ set(LOWBIT_DENSE_CONFIGS_PER_UNIT "4" CACHE STRING
     "dense tactic wrappers per generated translation unit (time 1, 2, 4, and 8 with fixed JOBS)")
 set_property(CACHE LOWBIT_DENSE_CONFIGS_PER_UNIT PROPERTY STRINGS 1 2 4 8)
 
-qz_resolve_sources(_LOWBIT_DENSE_TABLE lowbit_dense_configs.inc)
+if(BENCH_QUANT STREQUAL "uint1")
+  set(_LOWBIT_DENSE_TABLE_NAME lowbit_dense_i1_configs.inc)
+  set(_LOWBIT_DENSE_LIST_MACRO LOWBIT_DENSE_I1_CFG_LIST)
+  set(_LOWBIT_DENSE_COUNT_MACRO LOWBIT_DENSE_I1_CFG_ROWS)
+elseif(BENCH_QUANT STREQUAL "uint2")
+  set(_LOWBIT_DENSE_TABLE_NAME lowbit_dense_i2_configs.inc)
+  set(_LOWBIT_DENSE_LIST_MACRO LOWBIT_DENSE_I2_CFG_LIST)
+  set(_LOWBIT_DENSE_COUNT_MACRO LOWBIT_DENSE_I2_CFG_ROWS)
+else()
+  # Keep the existing generic file as the one and only i4 table; a second byte-identical i4 file would create
+  # two provenance identities for one search space, which is the drift this per-format split is meant to remove.
+  set(_LOWBIT_DENSE_TABLE_NAME lowbit_dense_configs.inc)
+  set(_LOWBIT_DENSE_LIST_MACRO LOWBIT_DENSE_CFG_LIST)
+  set(_LOWBIT_DENSE_COUNT_MACRO LOWBIT_DENSE_CFG_ROWS)
+endif()
+
+qz_resolve_sources(_LOWBIT_DENSE_TABLE ${_LOWBIT_DENSE_TABLE_NAME})
 list(GET _LOWBIT_DENSE_TABLE 0 _LOWBIT_DENSE_TABLE)
 get_filename_component(_LOWBIT_DENSE_TABLE "${_LOWBIT_DENSE_TABLE}" ABSOLUTE
                        BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 qz_parse_tactic_xmacro(_LOWBIT_DENSE_ROWS
   FILE "${_LOWBIT_DENSE_TABLE}"
-  LIST_MACRO LOWBIT_DENSE_CFG_LIST
-  COUNT_MACRO LOWBIT_DENSE_CFG_ROWS)
+  LIST_MACRO ${_LOWBIT_DENSE_LIST_MACRO}
+  COUNT_MACRO ${_LOWBIT_DENSE_COUNT_MACRO})
 
 # One translation unit has one preprocessor value. Partition before batching: Row is sorted with BC last, so
 # batching the raw list would put bc0 and bc1 versions of the same geometry in one TU and whichever #define won
@@ -294,7 +312,7 @@ if(NOT _LOWBIT_DENSE_GENERATED_ROWS EQUAL _LOWBIT_DENSE_ROW_COUNT)
 endif()
 list(LENGTH _LOWBIT_DENSE_UNIT_SRCS _LOWBIT_DENSE_UNIT_COUNT)
 message(STATUS
-  "Dense tactic sweep: ${_LOWBIT_DENSE_ROW_COUNT} wrappers in ${_LOWBIT_DENSE_UNIT_COUNT} generated units "
+  "Dense tactic sweep (${_LOWBIT_DENSE_TABLE_NAME}): ${_LOWBIT_DENSE_ROW_COUNT} wrappers in ${_LOWBIT_DENSE_UNIT_COUNT} generated units "
   "(${LOWBIT_DENSE_CONFIGS_PER_UNIT} configs/unit)")
 
 quactlize_ppu_executable(

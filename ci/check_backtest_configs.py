@@ -30,11 +30,10 @@ RECORD = ROOT / "docs" / "BACKTEST.md"
 TABLES = ROOT / "benchmarks"
 
 # A record row names a width in prose ("int4", "Q3 (int2+int1 B-concat)") and a sweep searches a per-format table.
-# int1 is deliberately present with no table: that is a FINDING, not an omission here -- see report_missing_table.
 WIDTH_TO_FORMAT = {
     "int4": "i4",
     "int2": "i2",
-    "int1": "i1",     # no table exists; reported, not skipped
+    "int1": "i1",
     "q3": "Q3_K",
     "q5": "Q5_K",
     "q6": "Q6_K",
@@ -109,7 +108,7 @@ def parse_config(s: str):
 
 
 def matches(row: tuple[int, ...], want: list) -> bool:
-    return all(w is None or w == r for r, w in zip(row, want))
+    return len(row) == len(want) and all(w is None or w == r for r, w in zip(row, want))
 
 
 def main() -> int:
@@ -119,10 +118,21 @@ def main() -> int:
 
     tables = {}
     for p in sorted(TABLES.glob("lowbit_*_configs.inc")):
-        key = "dense" if "dense" in p.name else p.name.split("lowbit_grouped_")[1].split("_configs")[0]
+        if p.name == "lowbit_dense_configs.inc":
+            key = ("dense", "i4")       # the one legacy generic name remains the sole i4 table
+        elif p.name.startswith("lowbit_dense_"):
+            key = ("dense", p.name.removeprefix("lowbit_dense_").removesuffix("_configs.inc"))
+        elif p.name.startswith("lowbit_grouped_"):
+            key = ("grouped", p.name.removeprefix("lowbit_grouped_").removesuffix("_configs.inc"))
+        else:
+            continue
+        if key in tables:
+            print(f"[backtest-configs] ERROR: {p.name} and {tables[key][0]} both claim {key}; "
+                  "one format/space must have one table identity")
+            return 1
         tables[key] = (p.name, load_table(p))
-    if "dense" not in tables:
-        print("[backtest-configs] ERROR: no dense table found")
+    if not any(space == "dense" for space, _ in tables):
+        print("[backtest-configs] ERROR: no dense tables found")
         return 1
 
     text = RECORD.read_text()
@@ -166,17 +176,18 @@ def main() -> int:
             continue
 
         tick, want, kind = cfg
+        # PPU_B_CHUNK became the seventh row field after these records were written. A2/A3 name the requested
+        # mode explicitly, so ignoring it would let a bc0 row "reproduce" a bc1 winner. Absence means unknown,
+        # as with an omitted warp or stage; a bare B_CHUNK spelling is the historical spelling for mode 1.
+        bc_m = re.search(r"\b(?:PPU_)?B_CHUNK\b(?:\s*=\s*(\d+))?", row_text)
+        want = [*want, int(bc_m.group(1)) if bc_m and bc_m.group(1) else (1 if bc_m else None)]
         if width is None:
             unparsed.append((rid, f"{tick} (no width named in the row)"))
             continue
         fmt = WIDTH_TO_FORMAT[width]
-        tkey = "dense" if space == "dense" else fmt
-        if space == "dense" and fmt != "i4":
-            na.append((rid, tick, width,
-                       "the dense table is emitted at bits=4 only, so this record has NO table to be found in"))
-            continue
+        tkey = (space, fmt)
         if tkey not in tables:
-            na.append((rid, tick, width, f"no {fmt} table exists"))
+            na.append((rid, tick, width, f"no {space} {fmt} table exists"))
             continue
 
         name, rows = tables[tkey]

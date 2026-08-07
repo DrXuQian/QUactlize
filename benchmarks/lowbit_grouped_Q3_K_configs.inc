@@ -5,11 +5,11 @@
 //                     row field: one weight file, many readers.
 //   stages: 2 3 4 6 8 12   <- what this table COVERS; a winner outside it cannot be found by a sweep using it
 //   ppu_b_chunk: 0 1   <- requested mode; each bench tag reports requested->actually effective
-//   provenance: rows=404 space_fnv1a64=bed3e6526e0dd64e emitter_fnv1a64=2b426d0386e9a726
+//   provenance: rows=404 space_fnv1a64=bed3e6526e0dd64e emitter_fnv1a64=7234c78d1182c82e
 //
 // Regenerate after changing ppu_tactic_space.hpp or the pruning policy:
 //   c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic &&\
-//   /tmp/emit_tactic 2 256 --space=grouped --tactic-tk=32,64,128,256 --prune=none --format=Q3_K 2 3 4 6 8 12 > benchmarks/lowbit_grouped_configs.inc
+//   /tmp/emit_tactic 2 256 --space=grouped --tactic-tk=32,64,128,256 --prune=none --format=Q3_K 2 3 4 6 8 12 > benchmarks/lowbit_grouped_Q3_K_configs.inc
 //
 // The second X argument carries the dispatch BODY through the list; supported_configs() passes
 // nothing for it. That is what lets ONE list feed both the runtime table and the compile-time
@@ -18,7 +18,7 @@
 #define LOWBIT_GROUPED_Q3_K_CFG_ARTIFACT_TILEK 256
 #define LOWBIT_GROUPED_Q3_K_CFG_ROWS  404
 #define LOWBIT_GROUPED_Q3_K_CFG_SPACE_FNV1A64   "bed3e6526e0dd64e"
-#define LOWBIT_GROUPED_Q3_K_CFG_EMITTER_FNV1A64 "2b426d0386e9a726"
+#define LOWBIT_GROUPED_Q3_K_CFG_EMITTER_FNV1A64 "7234c78d1182c82e"
 
 #define LOWBIT_GROUPED_Q3_K_CFG_LIST(X, B) \
   X(16,16,256,16,16,2,0,B) \

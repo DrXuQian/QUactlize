@@ -110,6 +110,8 @@ SYNTAX = [
     # static_assert tying that table to the binary's (bits, TileK); this row is what makes a stale table fail
     # here instead of producing a sweep over tactics the binary cannot select.
     ("benchmarks/test_lowbit_dense_bench.cu", ""),
+    ("benchmarks/test_lowbit_dense_bench.cu", "-DBENCH_UINT2"),
+    ("benchmarks/test_lowbit_dense_bench.cu", "-DBENCH_UINT1"),
     # THE SHIPPING .so BOUNDARY. The benches compiled the grouped collective for years while the product wrapper
     # did not expose it; compiling this translation unit is what covers the six-entry ABI and every qtype dispatch.
     ("quactlize/csrc/device/ppu_dense_backend.cu", ""),
@@ -651,12 +653,23 @@ def lint_tactic_spaces_agree():
         r = subprocess.run(cc + [str(real)], capture_output=True, text=True)
         if r.returncode != 0:
             return "FAIL", f"emitter does not compile: {r.stderr.strip().splitlines()[-1][:120]}", 0.0
-        args = ["4", "64", "--space=compare", "2", "3", "4", "6", "8", "12"]
-        got = subprocess.run([str(real)] + args, capture_output=True, text=True)
-        if got.returncode != 0:
-            tail = [l for l in got.stdout.splitlines() if "unexpected disagreement" in l]
-            return "FAIL", ("DenseSpace and GroupedSpace have an undeclared difference: "
-                            + (tail[-1] if tail else "see --space=compare")), 0.0
+        cases = [
+            ("i4", ["4", "64"]),
+            ("i2", ["2", "128", "--format=i2"]),
+            ("i1", ["1", "256", "--format=i1"]),
+        ]
+        base = ["--space=compare", "--tactic-tk=32,64,128,256", "2", "3", "4", "6", "8", "12"]
+        got = None
+        for fmt, head in cases:
+            args = head + base
+            got = subprocess.run([str(real)] + args, capture_output=True, text=True)
+            if got.returncode != 0:
+                tail = [l for l in got.stdout.splitlines() if "unexpected disagreement" in l]
+                return "FAIL", (f"DenseSpace and GroupedSpace have an undeclared {fmt} difference: "
+                                + (tail[-1] if tail else "see --space=compare")), 0.0
+
+        # Use i4 for the negative control below; the planted topology difference is format-independent.
+        args = cases[0][1] + base
 
         # THE PLANTED DIVERGENCE. Raise GroupedSpace's boundary to eight warps. Rows at four warps do not carry the
         # dense-only exclusion, so this must be classified as unexpected rather than being swallowed by the declared
@@ -681,7 +694,7 @@ def lint_tactic_spaces_agree():
                             "was raised to eight -- it is not comparing what it claims to"), 0.0
     declared = next((l for l in got.stdout.splitlines() if "declared difference" in l), "?")
     planted = next((l for l in bad.stdout.splitlines() if "unexpected disagreement" in l), "?")
-    return "PASS", (f"declared asymmetry accepted ({declared.strip()}); comparator still fires on planted drift "
+    return "PASS", (f"i1/i2/i4 spaces agree ({declared.strip()}); comparator still fires on planted drift "
                     f"({planted.strip()})"), 0.0
 
 
@@ -806,7 +819,7 @@ def lint_format_table_buildable():
 
 
 def lint_dense_tactic_table_current():
-    """EVERY committed X-macro -- dense and all five grouped -- must be exact output from the current emitter.
+    """EVERY committed dense/grouped X-macro must be exact output from the current emitter.
 
     THIS GATE COVERED ONE TABLE OUT OF SIX until 2026-08-07, and the five it skipped are the ones that drifted:
     each grouped table had been emitted with a SINGLE --tactic-tk while dense carried three, so grouped i4 searched
@@ -851,7 +864,7 @@ def lint_dense_tactic_table_current():
         old = rows[0]
         if text.count(old) != 1:
             return "FAIL", f"cannot plant the dense-table drift probe: {old} is not unique", 0.0
-        # Mutate the LAST numeric field (stages) to a value no table emits, derived from the row rather than
+        # Mutate the LAST numeric field (PPU_B_CHUNK) to a value no table emits, derived from the row rather than
         # typed: a literal replacement row has to be edited every time the row format changes, and the version
         # that was there emitted a 6-field row into a 7-field table -- which the checker would have rejected for
         # the wrong reason, reporting drift where the probe itself was malformed.
