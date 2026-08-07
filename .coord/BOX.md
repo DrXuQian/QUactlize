@@ -487,3 +487,35 @@ rowC wrong, errors dominated by scale, partial rather than total because each ou
 For each: the build's exit status, and the `rowC` disposition line verbatim. `$BIN` is what build.sh prints.
 Do NOT read a MATCH as "fixed" without saying which of the three produced it — that is the D7 mistake, where a
 number was filed against a mechanism nobody had witnessed.
+
+---
+
+## INBOX 088 — PPU_B_CHUNK row axis and the Mmax=3 decode artifact
+
+Local generation/front-end gates pass, but this workspace has no PPU SDK or device. The shortest device proof is Q3,
+stage 2 only, on the eight-unit decode artifact:
+
+    cd /sim/eec/shared/junfu.qx/quactlize && git pull --ff-only origin develop
+    MOE_FORMATS=q3 PPU_DEFS=MOE_STAGES_2 TARGET=test_lowbit_moe_decode_bench ./build.sh
+    D=$(find build_ppu -type f -name test_lowbit_moe_decode_bench -perm -u+x -print -quit)
+    "$D" 256 4 512 2048 32 4 8 | tee /tmp/088_decode_t4.log
+
+The first line must say `table_band=decode table_mmax=3 actual_mmax=3`. Report one `bc0->...` row and its otherwise
+identical `bc1->...` row verbatim; the right side is read from the instantiated collective, so `bc1->0` is a real
+negative result rather than a missing build switch. Also report their timings so the old low-bit numbers can be
+classified as lower bounds or not.
+
+The guard is part of the artifact contract. This command must print `actual routed Mmax=12` and exit 2 before any pack,
+allocation-sized output, or `-> <row>` launch line:
+
+    "$D" 256 64 512 2048 32 4 8; test $? -eq 2
+
+Finally prove prefill still has the unpruned table. This is a separate build because linking both unit sets into one
+binary would save no compile time:
+
+    MOE_FORMATS=q3 PPU_DEFS=MOE_STAGES_2 TARGET=test_lowbit_moe_bench ./build.sh
+    F=$(find build_ppu -type f -name test_lowbit_moe_bench -perm -u+x -print -quit)
+    "$F" 256 64 512 2048 32 4 8 | tee /tmp/088_full_t64.log
+
+Its first line must say `table_band=full table_mmax=0 actual_mmax=12`, and it must reach row launches. Wanted back:
+both build exit codes, the two first banner lines, the decode refusal line+exit code, and one matched bc0/bc1 timing pair.

@@ -1,8 +1,8 @@
 # codex status
 
-    updated-at:     2026-08-07 08:01:18 UTC
-    inbox-consumed: 088
-    working-on:     INBOX 088 item ① complete locally; item ② decode-band tables are next
-    blocked-on:     PPU_SDK/device validation is unavailable in this workspace; host generation and syntax gates pass
-    last-commit:    cd7390e Bound packed-A launchers by R rows
-    last-heartbeat: 150
+    updated-at:     2026-08-07 11:10:39 UTC
+    inbox-consumed: 094
+    working-on:     INBOX 094 complete; pushing the cache-independent D-write witness before reporting INBOX 095
+    blocked-on:     PPU SDK/device validation is unavailable; default/ScaleOnly and a real generated unit parse clean
+    last-commit:    dc32052 Reject no-op MoE benchmark rows
+    last-heartbeat: 153
