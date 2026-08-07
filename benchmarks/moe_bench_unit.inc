@@ -1,5 +1,6 @@
-// ONE SWEEP UNIT = ONE SHAPE, all of its stage counts. Included by the generated moe_units/*.cu stubs, each of which
-// #defines the UNIT_* macros below and nothing else.
+// ONE RUNTIME SWEEP UNIT = ONE SHAPE, all of its stage counts. A generated moe_units/*.cu now includes this file for
+// several shapes with the same PPU_B_CHUNK policy, so every helper and static-init object below must be keyed by UNIT_FN
+// and every per-shape macro must be cleared at the end of the inclusion.
 //
 // WHY THE UNIT IS A SHAPE AND NOT A FORMAT. Splitting by translation unit is the only way to make the sweep compile in
 // parallel (cutlass_build_dev_kernels emits one add_custom_command per .cu), and the granularity is chosen by MEASUREMENT
@@ -29,8 +30,16 @@
 #include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 
-#define UNIT_STR2_(x) #x
-#define UNIT_STR_(x)  UNIT_STR2_(x)
+#define MOE_UNIT_STR2_(x) #x
+#define MOE_UNIT_STR_(x)  MOE_UNIT_STR2_(x)
+#define MOE_UNIT_CAT2_(a, b) a##b
+#define MOE_UNIT_CAT_(a, b) MOE_UNIT_CAT2_(a, b)
+
+#if !defined(UNIT_NAME) || !defined(UNIT_FN) || !defined(UNIT_B_CHUNK) || !defined(UNIT_2PLANE) || \
+    !defined(UNIT_LOELEM) || !defined(UNIT_HIELEM) || !defined(UNIT_LOB) || !defined(UNIT_HIB) || \
+    !defined(UNIT_TM) || !defined(UNIT_TN) || !defined(UNIT_TK) || !defined(UNIT_WM) || !defined(UNIT_WN)
+#error "the MoE generator must define every UNIT_* field before including moe_bench_unit.inc"
+#endif
 
 // THE BODY MUST BE A TEMPLATE, and this is not stylistic. `if constexpr (false)` suppresses instantiation of the
 // discarded branch ONLY inside a templated entity; in a plain function the branch is still instantiated, so moe_ok
@@ -52,16 +61,36 @@
 #error "UNIT_TK is not defined -- the generator must supply the row's TileK. Falling back to MOE_TK is what silently emptied the sweep."
 #endif
 template <int Dummy>
-static void unit_body(const Band& bd, Best& best) {
+static void MOE_UNIT_CAT_(UNIT_FN, _body)(const Band& bd, Best& best) {
 #if UNIT_2PLANE
-  MOE2(bd, best, UNIT_STR_(UNIT_NAME), UNIT_LOELEM, UNIT_HIELEM, UNIT_LOB, UNIT_HIB,
+  MOE2(bd, best, MOE_UNIT_STR_(UNIT_NAME), UNIT_LOELEM, UNIT_HIELEM, UNIT_LOB, UNIT_HIB,
        UNIT_TM, UNIT_TN, UNIT_TK, UNIT_WM, UNIT_WN);
 #else
-  MOE1(bd, best, UNIT_STR_(UNIT_NAME), UNIT_LOELEM, UNIT_LOB,
+  MOE1(bd, best, MOE_UNIT_STR_(UNIT_NAME), UNIT_LOELEM, UNIT_LOB,
        UNIT_TM, UNIT_TN, UNIT_TK, UNIT_WM, UNIT_WN);
 #endif
 }
-void UNIT_FN(const Band& bd, Best& best) { unit_body<0>(bd, best); }
+void UNIT_FN(const Band& bd, Best& best) { MOE_UNIT_CAT_(UNIT_FN, _body)<0>(bd, best); }
 
 // Static-init tally of the requested row axis; effectiveness is reported from Policy::Descriptor in every row tag.
-namespace { const struct MoeUnitVote { MoeUnitVote() { moe_chunk_vote(UNIT_B_CHUNK); } } _moe_unit_vote; }
+namespace {
+const int MOE_UNIT_CAT_(UNIT_FN, _vote) = (moe_chunk_vote(UNIT_B_CHUNK), 0);
+}
+
+#undef MOE_UNIT_CAT_
+#undef MOE_UNIT_CAT2_
+#undef MOE_UNIT_STR_
+#undef MOE_UNIT_STR2_
+#undef UNIT_WN
+#undef UNIT_WM
+#undef UNIT_TK
+#undef UNIT_TN
+#undef UNIT_TM
+#undef UNIT_HIB
+#undef UNIT_LOB
+#undef UNIT_HIELEM
+#undef UNIT_LOELEM
+#undef UNIT_2PLANE
+#undef UNIT_B_CHUNK
+#undef UNIT_FN
+#undef UNIT_NAME

@@ -2,8 +2,9 @@
 # ONE RUN FOR EVERY OPEN QUESTION. Six binaries, built once, kept, then measured on one pinned configuration.
 #
 # WHY A SCRIPT AND NOT A COMMAND BLOCK. Every trap this task has hit is a step that is easy to drop by hand:
-#   * build.sh `rm -rf`s the SAME output directory, so a binary must be copied out BEFORE the next build starts;
-#     forget it and you compare a binary with itself, which is indistinguishable from "the change does nothing"
+#   * every variant needs its OWN build tree: build.sh starts by clearing that tree, and sharing one serializes the
+#     whole matrix (or, under background jobs, lets one variant erase another's objects). The product is copied out
+#     of the exact path that variant's build.sh reports.
 #   * a macro that never reached the device compile produces the same "no change"; build.sh prints
 #     "PPU_DEFS verified on <target>'s compile command" and this script FAILS if that line is missing
 #   * SPLITK_ONLY matches the whole tag, so "16x128:256" keeps every warp shape, every Stages and every slice count --
@@ -32,8 +33,13 @@ ROOT="$(cd "$HERE/.." && pwd)"                      # this lives in benchmarks/ 
 # inside the actlize submodule. #34 removed the overlay entirely and the targets now build under ppu_targets/;
 # the old path simply does not exist, so this script found nothing and would have reported it as a missing
 # library rather than as a stale path.
-EX="${EX:-$ROOT/build_ppu/ppu_targets}"
 OUT="${OUT:-$HOME/ab}"
+VARIANT_BUILD_ROOT="${VARIANT_BUILD_ROOT:-$OUT/.build}"
+# Fifteen independent targets can compile concurrently, but each hgcc front end can consume gigabytes. One make job per
+# outer worker makes the cap real instead of spawning BUILD_PARALLEL*nproc compilers. Override both knobs explicitly on
+# a smaller-memory machine; BUILD_PARALLEL=1 preserves the former serial behavior.
+BUILD_PARALLEL="${BUILD_PARALLEL:-15}"
+BUILD_INNER_JOBS="${BUILD_INNER_JOBS:-1}"
 BAND="${BAND:-64 8 2048 2048 32 3}"                 # L=64, top-k 8, N=K=2048, gs=32, decode
 CFG="${CFG:-16x128:256 w16x16 s2}"                  # the pinned row; SPLITK_S below pins the slice count
 BLOCKS="${BLOCKS:-10}"                               # interleaved measurement blocks; see do_perf
@@ -100,8 +106,6 @@ build_one() {  # $1 name  $2 defines  $3 target
   local name="$1" defs="$2" tgt="$3"
   local log="$OUT/build_$name.log"
   local out="$OUT/${tgt}__$name" side="$OUT/${tgt}__$name.built"
-  ALL_BINS+=("$name|$defs|$tgt")
-
   # DON'T RECOMPILE WHAT CANNOT HAVE CHANGED. A binary is current iff it was produced from the same overlay CONTENT,
   # the same defines and the same target -- the same content question require_fresh_binaries already asks, asked per
   # binary instead of once for the set. Eight compiles for a change that touches one variant is most of the iteration
@@ -127,8 +131,10 @@ build_one() {  # $1 name  $2 defines  $3 target
   # beside it is current -- that would be the mtime guard's bug in a new place.
   rm -f "$side"
   printf '  %-14s %s\n' "$name" "${defs:-<no defines>}"
-  local rc=0
-  ( cd "$ROOT" && PPU_DEFS="$defs" TARGET="$tgt" ./build.sh ) >"$log" 2>&1 || rc=$?
+  local rc=0 build_dir="$VARIANT_BUILD_ROOT/${tgt}__${name}"
+  mkdir -p "$VARIANT_BUILD_ROOT"
+  ( cd "$ROOT" && PPU_BUILD_DIR="$build_dir" JOBS="$BUILD_INNER_JOBS" PPU_DEFS="$defs" TARGET="$tgt" ./build.sh ) \
+    >"$log" 2>&1 || rc=$?
 
   # THE BUILD'S OWN EXIT CODE FIRST. This used to jump straight to the grep below, so a build that failed at cmake or
   # at hgcc -- exiting non-zero, producing no binary -- was reported as "the macro did not reach the device compile".
@@ -163,8 +169,13 @@ build_one() {  # $1 name  $2 defines  $3 target
       return 1
     fi
   fi
-  [ -x "$EX/$tgt" ] || { echo "    FAILED: $EX/$tgt not built (see $log)"; return 1; }
-  cp "$EX/$tgt" "$out"                               # BEFORE the next build deletes it
+  # USE THIS JOB'S REPORTED PRODUCT, not a reconstructed default path. Each worker has a private PPU_BUILD_DIR, so
+  # looking under build_ppu/ would copy an old serial build (or another worker's product) while this build succeeded.
+  local built
+  built="$(grep -m1 '^built: ' "$log" | cut -d' ' -f2-)"
+  [ -n "$built" ] && [ -x "$built" ] || {
+    echo "    FAILED: build.sh reported no executable product for $tgt (got '$built'; see $log)"; return 1; }
+  cp "$built" "$out"
   local now; now="$(md5sum < "$out" | cut -d" " -f1)"
   # WORTH SAYING OUT LOUD. A rebuild that reproduces the previous bytes proves the edit was inert for THIS variant --
   # which is the fact a "only build what changed" cache would have had to assume in advance and could not.
@@ -178,25 +189,58 @@ do_build() {
   # would run it a dozen times to answer the same question.
   OVERLAY_STAMP="$(build_stamp)"
   ALL_BINS=()
+  if ! [[ "$BUILD_PARALLEL" =~ ^[1-9][0-9]*$ && "$BUILD_INNER_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "  !!! BUILD_PARALLEL and BUILD_INNER_JOBS must be positive integers (got $BUILD_PARALLEL / $BUILD_INNER_JOBS)"
+    return 1
+  fi
   [ -n "${ONLY:-}" ] && echo "  ONLY=$ONLY -- every other variant is left alone; the stamp below is written only if"
   [ -n "${ONLY:-}" ] && echo "  they are all still current, so a stale one blocks the run rather than passing quietly"
   [ -n "${FORCE:-}" ] && echo "  FORCE=1 -- ignoring the per-binary cache"
-  local ok=1
-  for v in "${VARIANTS[@]}"; do build_one "${v%%:*}" "${v#*:}" test_moe_splitk_bench || ok=0; done
-  # the correctness gate needs its own target, packed on, plus the two variants that change the packed path
-  local pg
-  for pg in "${PACKED_GATES[@]}"; do
-    build_one "gate_${pg%%:*}" "${pg#*:}" test_q4k_packed_gemm || ok=0
+  local ok=1 v pg
+  local -a build_names=() build_defs=() build_targets=()
+  for v in "${VARIANTS[@]}"; do
+    build_names+=("${v%%:*}"); build_defs+=("${v#*:}"); build_targets+=(test_moe_splitk_bench)
   done
-  build_one gate_swz_fp16 "PPU_SCALE_SWIZZLE=1"                        test_q4k_packed_gemm || ok=0
-  build_one gate_swz_only "PPU_SCALE_SWIZZLE=1"                        test_moe_grouped_verify || ok=0
+  # The correctness gate needs its own target, packed on, plus the two variants that change the packed path.
+  for pg in "${PACKED_GATES[@]}"; do
+    build_names+=("gate_${pg%%:*}"); build_defs+=("${pg#*:}"); build_targets+=(test_q4k_packed_gemm)
+  done
+  build_names+=(gate_swz_fp16); build_defs+=("PPU_SCALE_SWIZZLE=1"); build_targets+=(test_q4k_packed_gemm)
+  build_names+=(gate_swz_only); build_defs+=("PPU_SCALE_SWIZZLE=1"); build_targets+=(test_moe_grouped_verify)
   # THE CONTROL THAT WAS MISSING. test_moe_grouped_verify died with a device assert under PPU_SCALE_SWIZZLE=1 and I
   # read that as the swizzle's doing -- but the verifier hardcodes Stages = 3 and the swizzle is gated on a power of
   # two, so it was never active in that launch. The assert sits on the COARSE scale path, reached when
   # ceil(TileK/gs) <= TileK/64, which the verifier's default gs=128 satisfies and the bench's gs=32 never does. If
   # this default build dies identically the flag is exonerated; if only the swizzle build dies, something is
   # macro-sensitive and neither explanation stands.
-  build_one verify_default ""                                          test_moe_grouped_verify || ok=0
+  build_names+=(verify_default); build_defs+=(""); build_targets+=(test_moe_grouped_verify)
+
+  # Register the complete responsibility set in the parent shell BEFORE workers fork. Array writes in a background
+  # subshell do not come back, which otherwise makes the freshness pass bless only whichever jobs happened to be cached.
+  local i
+  for ((i=0; i<${#build_names[@]}; ++i)); do
+    ALL_BINS+=("${build_names[i]}|${build_defs[i]}|${build_targets[i]}")
+  done
+  echo "  ${#build_names[@]} variants, up to $BUILD_PARALLEL concurrent build(s), $BUILD_INNER_JOBS make job(s) each"
+
+  # Bounded waves keep this compatible with the bash version already required by the script without relying on wait -n.
+  # The default is one 15-job wave; a memory-constrained override trades a little tail utilization for a hard cap.
+  local start end j status
+  local -a pids=() statuses=()
+  for ((start=0; start<${#build_names[@]}; start+=BUILD_PARALLEL)); do
+    end=$((start + BUILD_PARALLEL)); [ "$end" -gt "${#build_names[@]}" ] && end=${#build_names[@]}
+    pids=(); statuses=()
+    for ((i=start; i<end; ++i)); do
+      status="$OUT/build_${build_names[i]}.status"
+      statuses+=("$status")
+      build_one "${build_names[i]}" "${build_defs[i]}" "${build_targets[i]}" >"$status" 2>&1 &
+      pids+=("$!")
+    done
+    for ((j=0; j<${#pids[@]}; ++j)); do
+      wait "${pids[j]}" || ok=0
+      sed 's/^/  /' "${statuses[j]}"
+    done
+  done
   # THE STAMP MEANS "EVERY BINARY THIS RUN IS RESPONSIBLE FOR IS CURRENT", and with ONLY= that is no longer implied
   # by "every build_one succeeded" -- the skipped ones were never looked at. So check them all, by the same content
   # question, and refuse the stamp if any is stale. Without this, ONLY= would let do_check and do_perf run against a

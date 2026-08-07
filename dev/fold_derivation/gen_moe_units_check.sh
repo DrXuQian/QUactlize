@@ -14,10 +14,11 @@
 #   ./gen_moe_units_check.sh                 assert the generator is sane (expectations DERIVED from the emitted tables)
 #   BAD=1 ./gen_moe_units_check.sh           negative control: put a ';' back in a row, must FATAL
 #   BAD=2 ./gen_moe_units_check.sh           negative control: drop one shape per format, must FATAL
+#   BAD=3 ./gen_moe_units_check.sh           negative control: drop one and duplicate another, same raw count, must FATAL
+#   BAD=4 ./gen_moe_units_check.sh           negative control: mix a bc0 wrapper into a bc1 compile policy, must FATAL
 #
-# The negative controls get their OWN output directory. The script starts with REMOVE_RECURSE, so running a broken variant
-# into the shared dir wipes the good tree and dies partway, and the wreckage reads exactly like a real failure -- I
-# diagnosed "q6 is missing WarpN=64" from the corpse of my own negative control once.
+# Every invocation gets its OWN temporary output directory. build.sh is intentionally safe to run concurrently now;
+# a fixed .moe_units_check directory let one variant remove another variant's generated sources midway through this gate.
 set -Eeuo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Told by build.sh; the fallback is the repo layout, for running this by hand. It used to be "one directory up",
@@ -25,9 +26,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # because nothing CALLED this script -- it was wired into neither build.sh nor ci/local_gates.py. It is now.
 CML="${QUACTLIZE_CMAKE:-$HERE/../../quactlize/csrc/CMakeLists.txt.in}"
 CSRC="$(cd "$(dirname "$CML")" && pwd)"
-OUT="$HERE/.moe_units_check${BAD:+_bad$BAD}"
+OUT="$(mktemp -d "${TMPDIR:-/tmp}/quactlize-moe-units-check.XXXXXX")"
+cleanup() { rm -rf -- "$OUT"; }
+trap cleanup EXIT
 GEN="$OUT/gen.cmake"
-mkdir -p "$OUT"
+MOE_CHECK_CORES="${MOE_CHECK_CORES:-192}"
 
 # THE SLICE NOW HAS DEPENDENCIES, and they are sliced/included too rather than transcribed. The generator stopped being
 # self-contained on 2026-08-06, when the unit shapes moved from four axis lists to the emitted tactic tables: it now calls
@@ -63,6 +66,7 @@ CMIN="$(grep -m1 -oE '^cmake_minimum_required\(VERSION [0-9.]+' "$QZ_ROOT/CMakeL
   echo "set(CMAKE_CURRENT_BINARY_DIR \"$OUT\")"
   # The generator resolves table paths relative to this, so it must be csrc/ and not wherever cmake -P was started.
   echo "set(CMAKE_CURRENT_SOURCE_DIR \"$CSRC\")"
+  echo "set(MOE_CORES \"$MOE_CHECK_CORES\")"
   cat "$OUT/srcdirs.cmake"
   cat "$OUT/resolve.cmake"
   echo "include(\"$CSRC/TacticTableUnits.cmake\")"
@@ -74,130 +78,247 @@ CMIN="$(grep -m1 -oE '^cmake_minimum_required\(VERSION [0-9.]+' "$QZ_ROOT/CMakeL
           # Drop one shape per format AFTER the generator has read the table: the table is untouched, so the derived
           # expectation below still says the shape should exist and the set comparison is what has to notice.
           2) sed 's/^  list(REMOVE_DUPLICATES _MOE_SHAPES)$/&\n  list(REMOVE_AT _MOE_SHAPES 0)/' ;;
+          # Preserve the raw count while changing the multiset. A count-only gate and a set-only gate each miss half
+          # of this plant; raw==unique==expected is the required invariant.
+          3) sed 's/^  list(REMOVE_DUPLICATES _MOE_SHAPES)$/&\n  list(GET _MOE_SHAPES 1 _planted_dup)\n  list(REMOVE_AT _MOE_SHAPES 0)\n  list(APPEND _MOE_SHAPES "${_planted_dup}")/' ;;
+          # The collective reads PPU_B_CHUNK once per TU. Make every per-shape request say 1 while the bc0 TU policy
+          # remains 0; the content gate must reject it before a compile can silently instantiate the wrong policy.
+          4) sed 's/"#define UNIT_B_CHUNK ${_bc}\\n"/"#define UNIT_B_CHUNK 1\\n"/' ;;
           *) cat ;;
         esac; }
   cat <<'ASSERT'
-# THE EXPECTATION IS DERIVED FROM THE TABLES, BY A SECOND PARSE. Until 2026-08-06 it was the product of the axis lists,
-# which is no longer what the generator enumerates -- it projects the emitted rows onto (TileM,TileN,WarpM,WarpN) and
-# de-duplicates, because one sweep unit is one shape and loops every stage count at runtime. Restating 415 here would be
-# the hand-maintained expectation this gate has already been burned by twice.
-#
-# NOT via qz_parse_tactic_xmacro. That helper is what the generator uses; calling it here would make the expectation a
-# restatement of the answer. string(REGEX MATCHALL) over whole X(...) rows is a genuinely different parse -- no line
-# splitting, no continuation handling -- and it cross-checks against the count each table declares about itself, so a
-# regex that silently matches too few rows cannot pass.
-set(_exp_names "")
-set(_exp_rows 0)
-foreach(_row IN LISTS _MOE_FORMATS)
-  string(REPLACE "|" ";" _f "${_row}")
-  list(GET _f 0 _nm)
-  list(GET _f 7 _emit)
-  # Resolved WITHOUT qz_resolve_sources, for the same reason: which file the generator opened is part of what is checked.
-  set(_hit "")
-  foreach(_d IN LISTS QZ_SRC_DIRS)
-    if(EXISTS "${_d}/lowbit_grouped_${_emit}_configs.inc")
-      list(APPEND _hit "${_d}/lowbit_grouped_${_emit}_configs.inc")
+# Compare an actual NAME multiset to an expected unique set. Checking raw length before de-duplicating is what rejects
+# "drop one + duplicate another", which a plain set comparison cannot see.
+function(qz_assert_exact_names LABEL EXPECTED_VAR ACTUAL_VAR)
+  set(_expected "${${EXPECTED_VAR}}")
+  set(_actual "${${ACTUAL_VAR}}")
+  list(LENGTH _expected _ne)
+  list(LENGTH _actual _na)
+  set(_unique "${_actual}")
+  list(REMOVE_DUPLICATES _unique)
+  list(LENGTH _unique _nu)
+  set(_missing "${_expected}")
+  if(_unique)
+    list(REMOVE_ITEM _missing ${_unique})
+  endif()
+  set(_extra "${_unique}")
+  if(_expected)
+    list(REMOVE_ITEM _extra ${_expected})
+  endif()
+  if(NOT _na EQUAL _ne OR NOT _nu EQUAL _ne OR _missing OR _extra)
+    list(LENGTH _missing _nmiss)
+    list(LENGTH _extra _nextra)
+    set(_first_missing "<none>")
+    set(_first_extra "<none>")
+    if(_missing)
+      list(GET _missing 0 _first_missing)
     endif()
-  endforeach()
-  list(LENGTH _hit _nhit)
-  if(NOT _nhit EQUAL 1)
-    message(FATAL_ERROR "table for ${_nm}: lowbit_grouped_${_emit}_configs.inc has ${_nhit} candidates in QZ_SRC_DIRS, expected 1")
+    if(_extra)
+      list(GET _extra 0 _first_extra)
+    endif()
+    message(FATAL_ERROR "${LABEL}: expected ${_ne} unique shapes, got ${_na} rows / ${_nu} unique; ${_nmiss} missing (${_first_missing}), ${_nextra} extra (${_first_extra})")
   endif()
-  list(GET _hit 0 _t)
-  file(READ "${_t}" _txt)
-  # ARITY-AGNOSTIC. This used to spell six [0-9]+ groups; PPU_B_CHUNK became a seventh row field on 2026-08-07 and
-  # the gate matched ZERO rows -- which the count cross-check below caught, but as "matched 0, declares 404", a
-  # message about the table rather than about this regex. A gate whose expectation has to be edited every time the
-  # row gains a field is one that reads as a table failure whenever the row changes. [0-9,]+ cannot cross a line or
-  # a paren, so it still cannot over-match, and the declared-count check still catches under-matching.
-  string(REGEX MATCHALL "X\\([0-9,]+,B\\)" _hits "${_txt}")
-  list(LENGTH _hits _nrows)
-  string(TOUPPER "${_emit}" _uc)
-  if(NOT _txt MATCHES "#define[ \t]+LOWBIT_GROUPED_${_uc}_CFG_ROWS[ \t]+([0-9]+)")
-    message(FATAL_ERROR "${_t}: no LOWBIT_GROUPED_${_uc}_CFG_ROWS to check the parse against")
-  endif()
-  if(NOT _nrows EQUAL CMAKE_MATCH_1)
-    message(FATAL_ERROR "${_t}: this gate matched ${_nrows} rows, the table declares ${CMAKE_MATCH_1}")
-  endif()
-  math(EXPR _exp_rows "${_exp_rows} + ${_nrows}")
-  foreach(_h IN LISTS _hits)
-    string(REGEX REPLACE "^X\\(|,B\\)$" "" _h "${_h}")
-    string(REPLACE "," ";" _hf "${_h}")
-    list(GET _hf 0 _tm)
-    list(GET _hf 1 _tn)
-    list(GET _hf 2 _tk)
-    list(GET _hf 3 _wm)
-    list(GET _hf 4 _wn)
-    # bc is field 6 (tm,tn,tk,wm,wn,st,bc) and it IS in the unit name, so leaving it out of the expectation would
-    # collapse the bc=0/bc=1 pair onto one name and under-count by exactly the number of chunkable rows.
-    list(LENGTH _hf _nf)
-    if(_nf GREATER 6)
+endfunction()
+
+# Derive one band's shape set from its tracked tables by a parser independent of qz_parse_tactic_xmacro, then inspect
+# the generated batch CONTENT. A .cu basename is now a physical TU, not a shape identity.
+function(qz_assert_moe_band LABEL TABLE_SUFFIX GEN_DIR GEN_TU_N GEN_SRCS EXPECT_MMAX EXPECT_DECODE EXPECT_BAND EXPECT_BENCH)
+  set(_exp_names "")
+  set(_exp_rows 0)
+  foreach(_row IN LISTS _MOE_FORMATS)
+    string(REPLACE "|" ";" _f "${_row}")
+    list(GET _f 0 _nm)
+    list(GET _f 7 _emit)
+    set(_hit "")
+    foreach(_d IN LISTS QZ_SRC_DIRS)
+      if(EXISTS "${_d}/lowbit_grouped_${_emit}${TABLE_SUFFIX}_configs.inc")
+        list(APPEND _hit "${_d}/lowbit_grouped_${_emit}${TABLE_SUFFIX}_configs.inc")
+      endif()
+    endforeach()
+    list(LENGTH _hit _nhit)
+    if(NOT _nhit EQUAL 1)
+      message(FATAL_ERROR "${LABEL} table for ${_nm}: lowbit_grouped_${_emit}${TABLE_SUFFIX}_configs.inc has ${_nhit} candidates, expected 1")
+    endif()
+    list(GET _hit 0 _t)
+    file(READ "${_t}" _txt)
+    string(REGEX MATCHALL "X\\([0-9,]+,B\\)" _hits "${_txt}")
+    list(LENGTH _hits _nrows)
+    string(TOUPPER "${_emit}" _uc)
+    if(NOT _txt MATCHES "#define[ \t]+LOWBIT_GROUPED_${_uc}_CFG_ROWS[ \t]+([0-9]+)")
+      message(FATAL_ERROR "${_t}: no declared row count")
+    endif()
+    if(NOT _nrows EQUAL CMAKE_MATCH_1)
+      message(FATAL_ERROR "${_t}: independent parser matched ${_nrows} rows, table declares ${CMAKE_MATCH_1}")
+    endif()
+    math(EXPR _exp_rows "${_exp_rows} + ${_nrows}")
+    foreach(_h IN LISTS _hits)
+      string(REGEX REPLACE "^X\\(|,B\\)$" "" _h "${_h}")
+      string(REPLACE "," ";" _hf "${_h}")
+      list(GET _hf 0 _tm)
+      list(GET _hf 1 _tn)
+      list(GET _hf 2 _tk)
+      list(GET _hf 3 _wm)
+      list(GET _hf 4 _wn)
       list(GET _hf 6 _bc)
+      list(APPEND _exp_names "moe_unit_${_nm}_tn${_tn}_wn${_wn}_tm${_tm}_wm${_wm}_tk${_tk}_bc${_bc}")
+    endforeach()
+  endforeach()
+  list(REMOVE_DUPLICATES _exp_names)
+  list(LENGTH _exp_names _exp)
+  list(LENGTH _MOE_FORMATS _nfmt)
+  set(_exp_bc0 0)
+  set(_exp_bc1 0)
+  foreach(_name IN LISTS _exp_names)
+    if(_name MATCHES "_bc0$")
+      math(EXPR _exp_bc0 "${_exp_bc0} + 1")
+    elseif(_name MATCHES "_bc1$")
+      math(EXPR _exp_bc1 "${_exp_bc1} + 1")
     else()
-      set(_bc 0)
+      message(FATAL_ERROR "${LABEL}: expected name has no boolean BC suffix: ${_name}")
     endif()
-    list(APPEND _exp_names "moe_unit_${_nm}_tn${_tn}_wn${_wn}_tm${_tm}_wm${_wm}_tk${_tk}_bc${_bc}")
   endforeach()
-endforeach()
-list(REMOVE_DUPLICATES _exp_names)
-list(LENGTH _exp_names _exp)
-list(LENGTH _MOE_FORMATS _nfmt)
 
-file(GLOB _gen "${_MOE_GEN_DIR}/*.cu")
-set(_got_names "")
-foreach(_g IN LISTS _gen)
-  get_filename_component(_b "${_g}" NAME_WE)
-  list(APPEND _got_names "${_b}")
-endforeach()
-list(LENGTH _got_names _ngen)
-message(STATUS "generated .cu on disk: ${_ngen} (expected ${_exp} distinct shapes over ${_exp_rows} table rows; generator said ${_MOE_UNIT_N})")
-
-# SET EQUALITY, NOT COUNT EQUALITY -- and this replaces two checks rather than adding a third. It subsumes the old
-# per-pattern count (`moe_unit_q6_tn64_wn64_*` must appear TileM x WarpM times, written to catch a dropped WarpN) and the
-# old stray-name glob (`moe_unit_64_*`, written to catch the ';' bug), both of which were counts and both of which the
-# opening paragraph's failure -- the right count from the wrong iterations -- goes straight through. Naming the units
-# that differ is also the only form that says WHICH shape went missing.
-set(_missing "${_exp_names}")
-if(_got_names)
-  list(REMOVE_ITEM _missing ${_got_names})
-endif()
-set(_extra "${_got_names}")
-if(_exp_names)
-  list(REMOVE_ITEM _extra ${_exp_names})
-endif()
-if(_missing OR _extra)
-  list(LENGTH _missing _nmiss)
-  list(LENGTH _extra _nextra)
-  set(_show "")
-  foreach(_x IN LISTS _missing)
-    set(_show "${_show}\n    MISSING  ${_x}")
-  endforeach()
-  foreach(_x IN LISTS _extra)
-    set(_show "${_show}\n    EXTRA    ${_x}")
-  endforeach()
-  message(FATAL_ERROR "generated units do not match the shapes in the tables: ${_nmiss} missing, ${_nextra} extra${_show}")
-endif()
-# The generator's own list length, against the files that reached the disk. Independent of everything above: it catches a
-# file(WRITE) that failed, which leaves the name in _MOE_UNIT_SRCS and nothing on disk.
-if(NOT _ngen EQUAL _MOE_UNIT_N)
-  message(FATAL_ERROR "generator listed ${_MOE_UNIT_N} sources but ${_ngen} are on disk")
-endif()
-# the dispatcher must declare and call every unit, and name one Best slot per FORMAT
-file(READ "${_MOE_GEN_DIR}/moe_bench_units.inc" _d)
-string(REGEX MATCHALL "\nvoid moe_unit_" _dc "${_d}")
-list(LENGTH _dc _ndc)
-string(REGEX MATCHALL "\n  moe_unit_" _cc "${_d}")
-list(LENGTH _cc _ncc)
-if(NOT _ndc EQUAL _exp OR NOT _ncc EQUAL _exp)
-  message(FATAL_ERROR "dispatcher has ${_ndc} declarations and ${_ncc} calls, expected ${_exp} of each")
-endif()
-foreach(_need "MOE_UNIT_COUNT ${_exp}" "MOE_FMT_COUNT ${_nfmt}" "moe_fmt_names")
-  string(FIND "${_d}" "${_need}" _f)
-  if(_f EQUAL -1)
-    message(FATAL_ERROR "dispatcher is missing '${_need}' -- main will not compile against it")
+  # Independently recompute the smallest legal batch. For cores below the number of non-empty BC buckets, the minimum
+  # remains one TU per bucket and therefore takes more than one wave.
+  set(_batch 1)
+  set(_max_bucket ${_exp_bc0})
+  if(_exp_bc1 GREATER _max_bucket)
+    set(_max_bucket ${_exp_bc1})
   endif()
-endforeach()
-message(STATUS "OK: ${_exp} units == the distinct shapes in ${_nfmt} emitted tables (${_exp_rows} rows), dispatcher ${_exp}/${_exp} with ${_nfmt} format slots")
+  while(TRUE)
+    math(EXPR _exp_tus "(${_exp_bc0} + ${_batch} - 1) / ${_batch} + (${_exp_bc1} + ${_batch} - 1) / ${_batch}")
+    if(_exp_tus LESS_EQUAL MOE_CORES OR _batch EQUAL _max_bucket)
+      break()
+    endif()
+    math(EXPR _batch "${_batch} + 1")
+  endwhile()
+
+  file(GLOB _gen "${GEN_DIR}/moe_batch_bc*.cu")
+  list(SORT _gen)
+  list(LENGTH _gen _ngen)
+  set(_listed_sources "${GEN_SRCS}")
+  qz_assert_exact_names("${LABEL} returned source list" _gen _listed_sources)
+  set(_got_names "")
+  set(_got_bc0 0)
+  set(_got_bc1 0)
+  set(_got_tus_bc0 0)
+  set(_got_tus_bc1 0)
+  set(_partial_bc0 0)
+  set(_partial_bc1 0)
+  set(_cross_format FALSE)
+  foreach(_g IN LISTS _gen)
+    file(READ "${_g}" _src)
+    string(REGEX MATCHALL "#define[ \t]+PPU_B_CHUNK[ \t]+[01]" _policy_defs "${_src}")
+    list(LENGTH _policy_defs _npolicy)
+    if(NOT _npolicy EQUAL 1)
+      message(FATAL_ERROR "${LABEL}: ${_g} has ${_npolicy} TU-level PPU_B_CHUNK definitions, expected one")
+    endif()
+    string(REGEX REPLACE ".*[ \t]([01])$" "\\1" _tu_bc "${_policy_defs}")
+    string(REGEX MATCHALL "#define[ \t]+UNIT_FN[ \t]+moe_unit_[A-Za-z0-9_]+" _fn_defs "${_src}")
+    string(REGEX MATCHALL "#define[ \t]+UNIT_B_CHUNK[ \t]+[01]" _unit_bc_defs "${_src}")
+    string(REGEX MATCHALL "#include[ \t]+\"moe_bench_unit.inc\"" _unit_includes "${_src}")
+    string(REGEX MATCHALL "#include[ \t]+\"moe_bench_band.inc\"" _band_includes "${_src}")
+    list(LENGTH _fn_defs _nfns)
+    list(LENGTH _unit_bc_defs _nubc)
+    list(LENGTH _unit_includes _ninc)
+    list(LENGTH _band_includes _nband)
+    if(_nfns LESS 1 OR _nfns GREATER _batch OR NOT _nubc EQUAL _nfns OR NOT _ninc EQUAL _nfns OR NOT _nband EQUAL 1)
+      message(FATAL_ERROR "${LABEL}: ${_g} has shapes=${_nfns}, UNIT_B_CHUNK=${_nubc}, unit includes=${_ninc}, band includes=${_nband}; expected 1..${_batch} and one field/include per shape")
+    endif()
+    set(_unit_formats "")
+    string(REGEX MATCHALL "#define[ \t]+UNIT_NAME[ \t]+[A-Za-z0-9_]+" _name_defs "${_src}")
+    foreach(_line IN LISTS _name_defs)
+      string(REGEX REPLACE ".*[ \t]" "" _fmt "${_line}")
+      list(APPEND _unit_formats "${_fmt}")
+    endforeach()
+    list(REMOVE_DUPLICATES _unit_formats)
+    list(LENGTH _unit_formats _nunit_formats)
+    if(_nunit_formats GREATER 1)
+      set(_cross_format TRUE)
+    endif()
+    foreach(_line IN LISTS _fn_defs)
+      string(REGEX REPLACE ".*[ \t]" "" _name "${_line}")
+      list(APPEND _got_names "${_name}")
+    endforeach()
+    foreach(_line IN LISTS _unit_bc_defs)
+      string(REGEX REPLACE ".*[ \t]" "" _shape_bc "${_line}")
+      if(NOT _shape_bc STREQUAL _tu_bc)
+        message(FATAL_ERROR "${LABEL}: ${_g} mixes UNIT_B_CHUNK=${_shape_bc} into PPU_B_CHUNK=${_tu_bc}")
+      endif()
+    endforeach()
+    if(_tu_bc EQUAL 0)
+      math(EXPR _got_bc0 "${_got_bc0} + ${_nfns}")
+      math(EXPR _got_tus_bc0 "${_got_tus_bc0} + 1")
+      if(_nfns LESS _batch)
+        math(EXPR _partial_bc0 "${_partial_bc0} + 1")
+      endif()
+    else()
+      math(EXPR _got_bc1 "${_got_bc1} + ${_nfns}")
+      math(EXPR _got_tus_bc1 "${_got_tus_bc1} + 1")
+      if(_nfns LESS _batch)
+        math(EXPR _partial_bc1 "${_partial_bc1} + 1")
+      endif()
+    endif()
+  endforeach()
+
+  qz_assert_exact_names("${LABEL} generated wrappers" _exp_names _got_names)
+  math(EXPR _exp_tus_bc0 "(${_exp_bc0} + ${_batch} - 1) / ${_batch}")
+  math(EXPR _exp_tus_bc1 "(${_exp_bc1} + ${_batch} - 1) / ${_batch}")
+  math(EXPR _rem_bc0 "${_exp_bc0} % ${_batch}")
+  math(EXPR _rem_bc1 "${_exp_bc1} % ${_batch}")
+  set(_exp_partial_bc0 0)
+  set(_exp_partial_bc1 0)
+  if(_rem_bc0 GREATER 0)
+    set(_exp_partial_bc0 1)
+  endif()
+  if(_rem_bc1 GREATER 0)
+    set(_exp_partial_bc1 1)
+  endif()
+  if(NOT _ngen EQUAL _exp_tus OR NOT GEN_TU_N EQUAL _exp_tus OR
+     NOT _got_bc0 EQUAL _exp_bc0 OR NOT _got_bc1 EQUAL _exp_bc1 OR
+     NOT _got_tus_bc0 EQUAL _exp_tus_bc0 OR NOT _got_tus_bc1 EQUAL _exp_tus_bc1 OR
+     NOT _partial_bc0 EQUAL _exp_partial_bc0 OR NOT _partial_bc1 EQUAL _exp_partial_bc1)
+    message(FATAL_ERROR "${LABEL}: expected shapes bc=${_exp_bc0}/${_exp_bc1}, TUs=${_exp_tus_bc0}/${_exp_tus_bc1}; got shapes ${_got_bc0}/${_got_bc1}, disk TUs ${_got_tus_bc0}/${_got_tus_bc1}, generator said ${GEN_TU_N}")
+  endif()
+  if(_batch GREATER 1 AND NOT _cross_format)
+    message(FATAL_ERROR "${LABEL}: no batch crosses a format boundary; per-format rounding silently costs extra TUs")
+  endif()
+
+  file(READ "${GEN_DIR}/moe_bench_units.inc" _d)
+  string(REGEX MATCHALL "\nvoid[ \t]+moe_unit_[A-Za-z0-9_]+" _decl_lines "${_d}")
+  set(_decl_names "")
+  foreach(_line IN LISTS _decl_lines)
+    string(REGEX REPLACE ".*[ \t]" "" _name "${_line}")
+    list(APPEND _decl_names "${_name}")
+  endforeach()
+  string(REGEX MATCHALL "\n[ ][ ]moe_unit_[A-Za-z0-9_]+\\(bd" _call_lines "${_d}")
+  set(_call_names "")
+  foreach(_line IN LISTS _call_lines)
+    string(REGEX REPLACE "^\n[ ]+" "" _name "${_line}")
+    string(REGEX REPLACE "\\(bd$" "" _name "${_name}")
+    list(APPEND _call_names "${_name}")
+  endforeach()
+  qz_assert_exact_names("${LABEL} dispatcher declarations" _exp_names _decl_names)
+  qz_assert_exact_names("${LABEL} dispatcher calls" _exp_names _call_names)
+  foreach(_need "MOE_UNIT_COUNT ${_exp}" "MOE_TU_COUNT ${_exp_tus}" "MOE_FMT_COUNT ${_nfmt}" "moe_fmt_names")
+    string(FIND "${_d}" "${_need}" _found)
+    if(_found EQUAL -1)
+      message(FATAL_ERROR "${LABEL}: dispatcher is missing '${_need}'")
+    endif()
+  endforeach()
+
+  file(READ "${GEN_DIR}/moe_bench_band.inc" _band)
+  foreach(_need "MOE_TABLE_DECODE ${EXPECT_DECODE}" "MOE_TABLE_M_MAX ${EXPECT_MMAX}" "MOE_TABLE_BAND_STR \"${EXPECT_BAND}\"" "MOE_TABLE_BENCH_STR \"${EXPECT_BENCH}\"")
+    string(FIND "${_band}" "${_need}" _found)
+    if(_found EQUAL -1)
+      message(FATAL_ERROR "${LABEL}: band metadata is missing '${_need}'")
+    endif()
+  endforeach()
+  message(STATUS "OK ${LABEL}: ${_exp} shapes (bc0=${_exp_bc0}, bc1=${_exp_bc1}) from ${_exp_rows} rows -> ${_ngen} TUs at batch=${_batch}; dispatcher exact")
+endfunction()
+
+qz_assert_moe_band(full "" "${_MOE_GEN_DIR}" "${_MOE_UNIT_N}" "${_MOE_UNIT_SRCS}" 0 0 full lowbit_moe)
+qz_assert_moe_band(decode _decode "${_MOE_DECODE_GEN_DIR}" "${_MOE_DECODE_UNIT_N}" "${_MOE_DECODE_UNIT_SRCS}" 3 1 decode lowbit_moe_decode)
 ASSERT
 } > "$GEN"
 
@@ -205,7 +326,7 @@ log="$OUT/log"
 if ! cmake -P "$GEN" > "$log" 2>&1; then
   if [ -n "${BAD:-}" ]; then
     echo "  [ok]   gen_moe_units_check (negative control BAD=$BAD): the generator was REJECTED"
-    grep -m1 -E "fields, expected|do not match the shapes" "$log" | sed 's/^/           /'
+    grep -m1 -E "fields, expected|expected .* unique shapes|generated wrappers|mixes UNIT_B_CHUNK" "$log" | sed 's/^/           /' || true
     exit 0
   fi
   echo "  [FAIL] gen_moe_units_check: the generator errored"; sed 's/^/           /' "$log"; exit 1
@@ -215,3 +336,31 @@ if [ -n "${BAD:-}" ]; then
   sed 's/^/           /' "$log"; exit 1
 fi
 sed 's/^/           /' "$log"
+
+# Compile REAL generated multi-include sources against a tiny host stub. The ordinary local syntax gate uses a zero-unit
+# dispatcher and therefore cannot see helper-name collisions or a UNIT_* macro leaking from one shape into the next.
+fixture="$OUT/reentrant"
+mkdir -p "$fixture/quactlize_extensions/cutlass/gemm/collective"
+cp "$HERE/../../benchmarks/moe_bench_unit.inc" "$fixture/moe_bench_unit.inc"
+touch "$fixture/quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+touch "$fixture/quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
+cat >"$fixture/lowbit_moe_bench.hpp" <<'STUB'
+#pragma once
+struct Band {};
+struct Best {};
+inline void moe_chunk_vote(int) {}
+#define MOE1(...) do {} while (0)
+#define MOE2(...) do {} while (0)
+STUB
+cross=""
+bc1=""
+for src in "$OUT"/moe_units/moe_batch_bc0_*.cu; do
+  [ "$(awk '/^#define UNIT_NAME/{print $3}' "$src" | sort -u | wc -l)" -gt 1 ] && { cross="$src"; break; }
+done
+for src in "$OUT"/moe_units/moe_batch_bc1_*.cu; do bc1="$src"; break; done
+[ -n "$cross" ] && [ -n "$bc1" ] || { echo "  [FAIL] no cross-format bc0 batch or bc1 batch to compile"; exit 1; }
+for src in "$cross" "$bc1"; do
+  c++ -std=c++17 -x c++ -I"$fixture" -c "$src" -o "$fixture/$(basename "$src").o" || {
+    echo "  [FAIL] generated multi-shape TU does not compile with the re-entrant unit fixture: $src"; exit 1; }
+done
+echo "           -- re-entrant generated TU compile: cross-format bc0 + bc1 OK"
