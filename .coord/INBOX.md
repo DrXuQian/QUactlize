@@ -3889,3 +3889,63 @@ dispatch policy:`MainloopPPUAiuPersistentOverlapPrologue`、`MainloopPPUAiuBatch
 `ppu_tactic_space.hpp:199` 的 `dense_kernel_exclusion(c) { return common_kernel_exclusion(c); }` 是纯转发,`dense_non_smem_exclusion` / `dense_topology_exclusion` 与 `common_` 那两个**逐字节相同**。你在 089 里也确认了两者没分叉。**趁没分叉合掉最便宜** —— 分叉之后再合就要判谁对。合完 `DenseSpace` 和 `GroupedSpace` 应该只差 space 名和 emitter 入口。
 
 做完 ① 可以先回报,那条解锁全格式扫。
+
+## 097 — #46:ScaleCopyCoverage 把 Q3/Q5 的 w64x64 剪成 0 行,而它不是硬件限制(**做完 096 再开**)
+
+我已经把机制和修法在本地证死了,包括**证明那条断言守的是真缺陷**,所以不要简单删掉它。下面每个数字都是用真实头文件/真实 cute 跑出来的,不是推的。
+
+### 根因不是 artifact_tile_k
+
+是 `ppu_tactic_space.hpp:186`,藏在 `common_kernel_exclusion` 里:
+
+    scale_copy_thread_slots = (TN/8) * ceil(TK/gs)      gs = kMinimumRuntimeGroupSize = 16
+    coverage:  slots <= 32 * cta_warps = 32 * (TM/WM)*(TN/WN)
+
+它自相矛盾:**WarpN 越大 -> warp 越少 -> 能搬 scale 的线程越少**。而 `w64x64` 的全部意义就是大 WarpN,于是它被自己的收益杀死。BACKTEST **A3(int1 63.7%,最高的 int1 记录)用的正是 w64x64**。
+
+### 它守的是真缺陷 —— 用真实 cute 证的,别直接删
+
+Q3_K TM=64 TN=128 WM=64 WN=64 TK=128 gs=16 -> Scale_TileN=128 Scale_TileK=8,CTA=64 线程:
+
+    current H=16 W=8  val8    in-range  512/1024  oob=0   *** TRUNCATED ***   <- 一半 scale 永远不被加载
+    capped  H=8  W=8  val16   in-range 1024/1024  oob=0   FULL
+    capped  H=16 W=4  val8    in-range 1024/1024  oob=0   FULL
+
+探针:`make_tiled_copy(Copy_Atom<DefaultCopy,half_t>, Layout<Shape<H,W>>, Layout<Shape<VN,_1>>)`,对 `make_identity_tensor((TN,TK))` 逐线程 `partition_S`,统计命中的 (n,k),**越界单独计数**(第一版没分开,对照行报出 1032/1024,我修了才可信)。
+
+### 修法:封顶线程布局,不是放宽断言
+
+线程布局封到 <= CTA 线程数、value 布局相应加宽,cute 的 `partition_S` 自动多出一个迭代模,现有的 `copy()` 会全部走完。**约束消失,不是被绕过。**
+
+落点(三个 collective,同一处):
+
+    ppu_mma_aiu_fold.hpp:189-190          Scale_GmemCopyThrLayoutH = Int<Scale_TileN/8>
+                                          Scale_GmemCopyThrLayoutW = Int<Scale_TileK>
+    quactlize_mma_mixed_input.hpp:~187    同上
+    ppu_mma_aiu_mixed_input_2plane.hpp    Scale_Slots 那一路
+
+外加:删 `ppu_tactic_space.hpp:186`,以及三个 `constexpr static bool scale_copy_thread_coverage` 与
+`ppu_mixed_policy.hpp:211` 的 static_assert 跟着走。`ScaleCopyCoverage` 这个 witness 本身**保留**但改成断言"封顶后的布局确实覆盖满",否则我们只是把一个会静默截断的洞从编译期挪到运行时。
+
+**两条封顶方式我都证了能满覆盖,选哪条你定** —— H 减半+val 加宽,和 W 减半+val 不变。H 那条改的是 N 方向的线程数(每线程搬 16 个 fp16 = 32B,超过一个 uint128 原子),W 那条改的是 K 方向(每线程多迭代几组,原子不变)。**我倾向 W**,因为它不动 `PPU_CP_ASYNC_CACHEGLOBAL<uint128_t>` 的向量宽度;但这是你更熟的地方,有理由就顶回来。
+
+### 收益:当前 artifact,离线格式一字节不动
+
+legal 行数(config x stage,未计 bc),以及 w64x64:
+
+    Q3_K  atk=256(现在)   202 ->  382 (+89%)      w64x64   0 -> 24
+    Q3_K  atk=128          429 ->  681 (+58%)      w64x64  12 -> 48
+    Q5_K  atk=256(现在)   181 ->  361 (+99%)      w64x64   0 -> 24
+    Q6_K  atk=256            0 ->  180             w64x64   0 -> 24
+
+### 不在本条范围内
+
+`artifact_tile_k` 256->128->64(Q3 从 202 到 429 到 561)是**可叠加的第二个杠杆**,但它改驻留字节、要重排权重,而且最稀疏平面的 fold 会到 F=4 —— **F=2 数值已验证(2-plane per-plane fold,bad=0),F=4 未验证**(曾被判死、判死又被撤回,所以是未知而不是不行)。那半归 #37,一次做完,别分两次重排权重。
+
+**delivery 判据不是问题**,我先前说错了:`WN*TK*bits >= 4096` 在 WN=64 上每个 TileK 都通过,它只在 WN<=32 且 TileK 小的时候咬人。
+
+### 验收
+
+- 本地:三个 collective 各编一次 0 非-asm 错误;新的覆盖 witness 在**封顶前的布局**上必须 static_assert 失败(负控)。
+- 表:重生成后 `ci/check_dense_tactic_table.py --table <每一张>` 全绿,并报出 Q3/Q5 的 w64x64 行数不再是 0。
+- box:数值必须重验 —— 这条改的是 scale 的加载路径,**只看编译过是不够的**。Q3/Q5 各跑一次正确性,再跑一次 `w64x64` 的 perf 对比 A3/A5。
