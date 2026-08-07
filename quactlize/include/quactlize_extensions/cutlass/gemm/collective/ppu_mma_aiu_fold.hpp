@@ -54,8 +54,6 @@
 
 #pragma once
 
-#include "quactlize_extensions/cutlass/gemm/collective/detail/compact_a_smem.hpp"
-
 #include "cutlass/cutlass.h"
 #include "cutlass/gemm/dispatch_policy.hpp"
 // quactlize's mainloop policies; this collective specialises CollectiveMma on one of them.
@@ -285,12 +283,9 @@ public:
   static_assert((size<0>(TileShape{}) % size<0>(SmemLayoutAtomScale{})) == 0, "SmemLayoutAtomScale must equal the tile shape.");
   static_assert((size<2>(TileShape{}) % size<1>(SmemLayoutAtomScale{})) == 0, "SmemLayoutAtomScale must evenly divide tile k shape.");
 
-  // Same shared type as the other two collectives. The capacity is 0 here until this collective's LOAD path
-  // grows the residue clamp and the plain cp.async copy -- see compact_a_rows below and ci/check_compact_a_reach.py,
-  // which fails if this witness and the tactic clause ever disagree.
-  using ASmem = quactlize::collective::detail::CompactASmem<
-      TileShape, DispatchPolicy::Stages, InternalSmemLayoutAtomA, /*Capacity=*/0>;
-  using SmemLayoutA = typename ASmem::Layout;
+  using SmemLayoutA = decltype(tile_to_shape(
+      InternalSmemLayoutAtomA{},
+      make_shape(shape<0>(TileShape{}), shape<2>(TileShape{}), Int<DispatchPolicy::Stages>{})));
   // N-FOLD defining change = a FOLD-IN-N smem layout (verified in scratchpad/cute_nfold3.cu). The physical folded
   // run is [n_a's TK][n_b's TK]...(FoldF cols) = FoldF*TK contiguous. Instead of presenting this as (N, FoldF*TK)
   // [which would put the fold in MMA_K -> need a 2-pass mainloop + a 2xN interleaved epilogue], present it as a
@@ -378,9 +373,6 @@ private:
   }
 
 public:
-  // The compact plain-copy A path currently lives in the ordinary one-plane collective. Expose zero explicitly so
-  // launchers can distinguish "macro present" from "this selected collective actually compacted A".
-  static constexpr int compact_a_rows = 0;
 
   struct SharedStorage
   {

@@ -86,15 +86,4 @@ inline bool route(int tokens, int topk, int experts, Rows& out, char* why = null
   return out.max > 0;
 }
 
-// Zero means no compact build can hold this fixture; use the ordinary TileM-row path.
-inline constexpr int minimum_compact_capacity(int mmax) {
-  return mmax <= 1 ? 1 : mmax <= 2 ? 2 : mmax <= 4 ? 4 : 0;
-}
-
-// Capacity zero is the ordinary TileM-row build. A positive compact build is exact about its allocation and must
-// refuse a fixture it cannot hold; callers must not widen or fall back after a benchmark was labelled compact.
-inline constexpr bool compact_build_accepts(int compiled_capacity, int mmax) {
-  return compiled_capacity == 0 || compiled_capacity >= mmax;
-}
-
 }  // namespace moe_router_fixture

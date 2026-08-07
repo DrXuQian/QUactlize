@@ -64,23 +64,13 @@ int main(int argc, char** argv) {
     std::printf("mode 3: top-k=%d exceeds L=%d\n", bd.Rows, bd.L); return 1;
   }
 
-#if defined(PPU_A_CPASYNC) && (PPU_A_CPASYNC != 0)
-  constexpr int compiled_capacity = PPU_A_CPASYNC;
-#else
-  constexpr int compiled_capacity = 0;
-#endif
-  if (!moe_router_fixture::compact_build_accepts(compiled_capacity, bd.Mmax)) {
-    std::printf("REFUSED: compact build capacity %d is below fixture Mmax %d; no widening/fallback\n",
-                compiled_capacity, bd.Mmax);
-    return 2;
-  }
 
   std::printf("== grouped mixed-input GEMM: splitk=1 vs splitk>1 ==\n");
   std::printf("   L=%d input=%d topk=%d mode=%d%s N=%d K=%d gs=%d | total=%d Mmax=%d active=%d "
-              "compact-cap=%d | HBM %.0f GB/s\n",
+              "HBM %.0f GB/s\n",
               bd.L, bd.Rows, bd.topk, bd.mode,
               bd.mode == 4 ? " token-topk-hot16x4-wor-sm64-s44-v1" : "",
-              bd.N, bd.K, bd.gs, bd.total, bd.Mmax, bd.active, compiled_capacity, HBM_GBS);
+              bd.N, bd.K, bd.gs, bd.total, bd.Mmax, bd.active, HBM_GBS);
   if (sk_only()) std::printf("   SPLITK_ONLY=\"%s\"\n", sk_only());
   if (std::getenv("SPLITK_CFG")) std::printf("   SPLITK_CFG=\"%s\"\n", std::getenv("SPLITK_CFG"));
   if (std::getenv("SPLITK_S"))   std::printf("   SPLITK_S=\"%s\"\n", std::getenv("SPLITK_S"));

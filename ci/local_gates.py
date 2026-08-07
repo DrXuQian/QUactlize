@@ -726,7 +726,8 @@ def lint_switch_macros():
     planted unsettable switch must be reported, and wiring one must make it disappear.
 
     Motivated by a real cost rather than tidiness. Three macros in this tree mean "shrink A's padding at small M"
-    -- PPU_A_PACK, PPU_A_CPASYNC and the tactic table's ACR column -- and on 2026-08-06 a measurement was filed
+    -- PPU_A_PACK, PPU_A_CPASYNC and the tactic table's ACR column (the last two DELETED 2026-08-07 with the
+    feature) -- and on 2026-08-06 a measurement was filed
     as "compact A at capacity 1 is 45% slower" that could not afterwards be attributed to any of them. Two of the
     three are gone with the feature (task #42); PPU_A_PACK is a different, still-unreachable A path.
     """

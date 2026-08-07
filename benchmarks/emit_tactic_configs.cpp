@@ -146,14 +146,6 @@ std::uint64_t fnv1a64_file(char const* path, bool& ok) {
 //
 // THE SEVENTH FIELD IS THE COMPACT-A CAPACITY, and it is here rather than a build switch for the reason TileK
 // is: capacity changes SmemLayoutA and therefore SharedStorageSize and therefore the instantiated collective.
-// As PPU_A_CPASYNC it was one number for the whole binary, so a compact build REFUSED every launch above its
-// capacity instead of falling through to a wider row.
-//
-// ONLY ZERO IS EMITTED TODAY, deliberately. Zero is ordinary unrestricted A, so this table is byte-identical to
-// the previous one apart from the extra field and every config NAME is unchanged -- which matters because those
-// names are what the box's --config strings say. Widening the emitted set is a separate change, and it needs one
-// more thing this does not: two rows differing only in capacity would share a name, so the name has to grow a
-// segment at the same moment the set does.
 using Row = std::tuple<int, int, int, int, int, int>;
 
 // Do not spell "largest legal" as min(TM,64). It happens to agree in today's WN<=64 producer domain, but WN=128
@@ -309,21 +301,6 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
       return 1;
     }
   for (int st : g_stages) {
-  // LEGALITY IS PER CAPACITY, because capacity is an input to it. Until 2026-08-07 this loop asked
-  // topology_exclusion(c, st) -- which passes a_rows = TileM -- ONCE, and then cross-multiplied the survivors by
-  // g_compact_rows. ppu_tactic_space.hpp has compact_a_topology_exclusion(c, stages, compact_rows) with its own
-  // static_asserts, and the emitter called it only from the --space=compare diagnostic. Emission never did.
-  //
-  // BOTH DIRECTIONS WERE WRONG, and the one that matters is the first:
-  //   * A row that is illegal at a_rows=TileM can be LEGAL at a_rows=1, because per_stage_smem is
-  //     a_rows*TileK*2 + ... and A is the dominant term (8192 of 11264 B at 16x16x256). Those rows were never
-  //     emitted -- and they are exactly the extra reach compact A exists to buy at small M.
-  //   * CompactAUnavailable was never applied. The compact-A reader lives only in the ordinary unfolded
-  //     one-plane collective, so a grouped/two-plane table asked for capacities would have carried rows whose
-  //     own collective rejects them.
-  //
-  // primary/guard still rank WITHIN one (stage, capacity) grid, for the reason stated above about TileK: a row
-  // at one capacity must not suppress a row at another, which would be a pruning decision nobody made.
   {
     std::vector<Candidate> legal;
     for (auto const& c : ok)

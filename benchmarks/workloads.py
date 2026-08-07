@@ -29,14 +29,6 @@ THREE STRUCTURAL FACTS THAT DO NOT NEED THE SHAPES, and that change what the swe
     of a 1.5% component is not a hole. The tensor-core path runs at M=2; what it needs is a compact A footprint
     inside the logical TileM, not a different compute path.
 
-    THE SMEM OPTION NOW HAS COMPILE-TIME ROW CAPACITIES 1, 2, AND 4. `PPU_A_CPASYNC=N` keeps N physical A rows in
-    smem while preserving logical TileM and aliases only padding rows modulo N. Capacity 1 is measured on
-    64x64x128 s3 as A 49152 B -> 768 B (64x), block 61840 -> 13456 B, blocks/CU 4 -> 19, bit-exact against a
-    separate build. Capacities 2 and 4 pass the hierarchical-layout gate and full dense/grouped front-end
-    instantiation; they are not device-verified yet. The implementation bypasses the AIU/swzl read for A, whose
-    instruction has a hard 16-row minimum with no stride operand; that part is already done and must not be
-    re-litigated (four failed routes are recorded). The compact reader currently exists only in the unfolded
-    one-plane collective; folded and two-plane cells remain ordinary TileM-row builds with an explicit exclusion.
 
     AND THE PAYOFF MAY NOT BE WHERE IT LOOKS. The same measurement found that at DECODE the saving buys no
     occupancy: the warp count is pinned by the problem size (total warp-tiles / CU was unchanged when smem went

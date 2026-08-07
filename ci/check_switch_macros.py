@@ -5,7 +5,7 @@
     python3 ci/check_switch_macros.py --list     the whole inventory, live ones included
 
 WHAT THIS COST, and it is not hypothetical. Three macros in this tree mean "shrink A's 15/16 padding at small M":
-PPU_A_PACK (a binary-wide #if that WINS over everything downstream), PPU_A_CPASYNC (a policy default that an
+PPU_A_PACK (a binary-wide #if that WINS over everything downstream; the only survivor), PPU_A_CPASYNC (a policy default that an
 explicit per-row value silently overrides), and the ACR column of the tactic table. docs/CHECKPOINT.md lists the
 first two on one line as if they were one thing. On 2026-08-06 a measurement was filed as "compact A at capacity 1
 is 45% slower" and could not be attributed afterwards, because the run's A provider was never witnessed and two of

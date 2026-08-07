@@ -51,10 +51,10 @@ using ppu_mixed_policy::is_finegrained;
 
 template <QuantMode QuantOp, class BaseSchedule, class TileShape, class ScaleTileShape, class WarpShape,
           int Stages, bool AiuInterleaved, class ElementB = cutlass::int4b_t, class PlaneB2 = void,
-          int ArtifactTileK = 0, int ACompactRows = cutlass::gemm::kDefaultACompactRows>
+          int ArtifactTileK = 0>
 using MixedMainloopPolicy = ppu_mixed_policy::MainloopPolicy<QuantOp, BaseSchedule, TileShape, ScaleTileShape,
                                                              WarpShape, Stages, AiuInterleaved, ElementB, PlaneB2,
-                                                             ArtifactTileK, ACompactRows>;
+                                                             ArtifactTileK>;
 
 using GroupShape = cute::Shape<int,int,int>;                            // per-expert [M,N,K]
 using GroupProblemShape = cutlass::gemm::GroupProblemShape<GroupShape>;
@@ -72,7 +72,7 @@ template <QuantMode QuantOp, class BaseSchedule,
           class PlaneB2 = void,                // bit-plane concat: 2nd (high) B plane; void = single plane
           bool ExpectPackedScale = false,
           bool QueryOnly = false, bool RequireUniversalFallback = false,
-          int ArtifactTileK = 0, int ACompactRows = cutlass::gemm::kDefaultACompactRows>
+          int ArtifactTileK = 0>
 bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* scales,
             const cutlass::half_t* zeros,
             cutlass::half_t** ptr_D,        // device [L] per-expert output base pointers (contiguous: D+offs[e]*N)
@@ -116,7 +116,7 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
             bool /*unused, was a_row_broadcast*/ = false) {
   using MainloopPolicy = MixedMainloopPolicy<QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
                                               Stages, AiuInterleaved, ElementB, PlaneB2,
-                                              ArtifactTileK, ACompactRows>;
+                                              ArtifactTileK>;
   using ElementA = typename MainloopPolicy::ElementA;
   using ElementC = cutlass::half_t;  using LayoutC = cutlass::layout::RowMajor;
   using ElementD = cutlass::half_t;  using LayoutD = cutlass::layout::RowMajor;
@@ -152,8 +152,6 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   static_assert(!RequireUniversalFallback ||
                     GemmKernel::SharedStorageSize <= ppu_tactics::kBlockSmemBytes,
                 "the compiled grouped default must fit one ppu001 block for every admitted shape");
-  static_assert(!RequireUniversalFallback || CollectiveMainloop::compact_a_rows == 0,
-                "the compiled grouped default must use the unrestricted ordinary-A path");
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
   static_assert(!RequireUniversalFallback,
                 "PPU_A_PACK is a one-row experiment and cannot be the universal grouped fallback");
@@ -191,12 +189,9 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
                   "A in smem, PACKED cubes, cp.async row0 + swzl read"
 #else
-                  CollectiveMainloop::compact_a_rows > 0
-                    ? "A in compact smem rows, plain cp.async + DefaultCopy"
-                    : "A in smem via AIU + swzl"
+                  "A in smem via AIU + swzl"
 #endif
       );
-      std::printf("[moe_grouped]   compact A row capacity = %d\n", CollectiveMainloop::compact_a_rows);
       std::printf("[moe_grouped]   blocks/CU at 256 KB = %d\n", 262144 / int(GemmKernel::SharedStorageSize));
     }
   }
@@ -232,26 +227,6 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
     return false;
   }
 #endif
-  if constexpr (CollectiveMainloop::compact_a_rows > 0) {
-    if (m > CollectiveMainloop::compact_a_rows) {
-      if constexpr (!QueryOnly) {
-        std::printf("[moe_grouped] compact A holds %d rows, got Mmax=%d; select the ordinary A path or a wider compact build\n",
-                    CollectiveMainloop::compact_a_rows, m);
-        ++moeg_fail_count();
-      }
-      return false;
-    }
-  }
-  if constexpr (MainloopPolicy::ACompactRows > 0 && CollectiveMainloop::compact_a_rows == 0) {
-    // Folded and two-plane collectives do not yet implement the compact A reader. Make the unavailable requested
-    // provider visible instead of letting a row claim an M-dependent footprint it did not instantiate.
-    if constexpr (!QueryOnly) {
-      std::printf("[moe_grouped] compact A capacity %d is unavailable for this selected collective; A remains TileM rows\n",
-                  MainloopPolicy::ACompactRows);
-      ++moeg_fail_count();
-    }
-    return false;
-  }
   // All remaining work constructs strides/arguments or touches the runtime. The checks above are the only
   // M-dependent properties of the compiled type; N/K/operator-domain checks live in the exported query beside the
   // corresponding ABI guards. Thus this path is host-only and does not need valid device pointers or a PPU context.
@@ -363,8 +338,7 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
 template <QuantMode QuantOp, int TM, int TN, int TK, int WM, int WN, int Stages,
           class ElementB = cutlass::int4b_t,   // default W4A16; pass cutlass::uint2b_t for W2A16
           class PlaneB2 = void,                // bit-plane concat: 2nd (high) B plane; void = single plane
-          bool ExpectPackedScale = false, int ArtifactTileK = TK,
-          int ACompactRows = cutlass::gemm::kDefaultACompactRows>
+          bool ExpectPackedScale = false, int ArtifactTileK = TK>
 void filter_and_run(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* scales,
                     const cutlass::half_t* zeros,
                     cutlass::half_t** ptr_D, DStride* stride_D, int const* group_M,
@@ -378,7 +352,7 @@ void filter_and_run(const cutlass::half_t* A, const ElementB* B, const cutlass::
   const bool il = (n % 256 == 0 && k % 256 == 0);
   // Artifact folds come from ArtifactTileK; TK here is TacticTileK and changes only the consumer geometry. A larger
   // tactic keeps the resident physical (N/F, F*K) descriptors instead of re-deriving F and switching providers.
-  #define MOEG_CALL(SCH, STK, IL) launch<QuantOp, SCH, TileShape, cute::Shape<cute::Int<TN>, STK>, WarpShape, Stages, IL, ElementB, PlaneB2, ExpectPackedScale, false, false, ArtifactTileK, ACompactRows>( \
+  #define MOEG_CALL(SCH, STK, IL) launch<QuantOp, SCH, TileShape, cute::Shape<cute::Int<TN>, STK>, WarpShape, Stages, IL, ElementB, PlaneB2, ExpectPackedScale, false, false, ArtifactTileK>( \
       A,B,scales,zeros,ptr_D,stride_D,group_M,m,n,k,L,group_size,gsd,gsh,group_row_offsets,ws,ws_bytes,stream,B2,k_full,prefix_ready,splitk,false)
   // COLLECTIVE CONSTRAINT (SK = Scale_TileK = ceil(TK/gs) = #scale groups per K-tile):
   //   Scale_TileK <= mma_K_atoms (= TK/16), i.e. gs >= 16, so each scale group covers >=1 mma atom. The collective

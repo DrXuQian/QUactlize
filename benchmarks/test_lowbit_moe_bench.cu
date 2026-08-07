@@ -107,23 +107,6 @@ int main(int argc, char** argv) {
               bd.N, bd.K, bd.gs);
   std::printf("             total=%d Mmax=%d Mmin=%d zero-row experts=%d active=%d  PEAK=%.0f TFLOP/s\n",
               bd.total, bd.Mmax, mn, zeros, bd.active, PEAK / 1e12);
-  int const required_capacity = moe_router_fixture::minimum_compact_capacity(bd.Mmax);
-#if defined(PPU_A_CPASYNC) && (PPU_A_CPASYNC != 0)
-  constexpr int compiled_capacity = PPU_A_CPASYNC;
-#else
-  constexpr int compiled_capacity = 0;
-#endif
-  if (required_capacity)
-    std::printf("             compact A: fixture requires capacity >= %d; this build capacity=%d%s\n",
-                required_capacity, compiled_capacity, compiled_capacity ? "" : " (ordinary A path)");
-  else
-    std::printf("             compact A: Mmax=%d exceeds capacity 4; ordinary A path required (this build capacity=%d)\n",
-                bd.Mmax, compiled_capacity);
-  if (!moe_router_fixture::compact_build_accepts(compiled_capacity, bd.Mmax)) {
-    std::printf("             REFUSED: compact build capacity %d is below fixture Mmax %d; no widening/fallback\n",
-                compiled_capacity, bd.Mmax);
-    return 2;
-  }
   std::printf("             MFU is on the REAL rows (2*total*N*K), so wasting rows cannot buy MFU.\n");
   // A LOG THAT DOES NOT DESCRIBE ITS OWN RUN. MOE_ACU and MOE_ONLY are exported for an acu capture and then stay exported in
   // the shell, so the next plain run silently measures ONE COLD LAUNCH of ONE row and reports it as the winner -- which came

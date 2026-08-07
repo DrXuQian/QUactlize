@@ -36,26 +36,16 @@ namespace cutlass::gemm {
 
 struct KernelAiuMultistageMixedInputFinegrainedGs32 { };  // gs=32 (Q4_0/Q4_1/Q4_K-as-AWQ)
 
-// Compatibility default for callers that have not made compact A a tactic field yet. New per-config callers pass
-// an explicit value (including zero), so PPU_A_CPASYNC never overrides a row that names its own A provider.
-#if defined(PPU_A_CPASYNC) && (PPU_A_CPASYNC != 0)
-inline constexpr int kDefaultACompactRows = PPU_A_CPASYNC;
-#else
-inline constexpr int kDefaultACompactRows = 0;
-#endif
-
 // Artifact-fold schedule wrapper. The folds describe the resident B planes, not the consumer TileShape.K: a tactic
 // with a larger TileK may read the same bytes, but it must keep both physical (N/F, F*K) descriptors. The low fold
 // selects the ordinary-vs-folded collective; the independent high fold sizes the second plane. Keep BaseSchedule_ in
-// the middle so existing KernelAiuFold<F, Base> spellings remain source compatible. ACompactRows_ is a consumer
-// tactic property: zero selects ordinary unrestricted A, and positive values request that many physical A rows.
+// the middle so existing KernelAiuFold<F, Base> spellings remain source compatible.
 template<int ArtifactLowFold_, class BaseSchedule_ = KernelAiuMultistageMixedInputFinegrainedGs32,
-         int ArtifactHighFold_ = 0, int ACompactRows_ = kDefaultACompactRows>
+         int ArtifactHighFold_ = 0>
 struct KernelAiuFold {
   static constexpr int FoldF = ArtifactLowFold_;  // compatibility for downstream users of the old name
   static constexpr int ArtifactLowFold = ArtifactLowFold_;
   static constexpr int ArtifactHighFold = ArtifactHighFold_;
-  static constexpr int ACompactRows = ACompactRows_;
   using BaseSchedule = BaseSchedule_;
 };
 // A zero fold means that no artifact contract was supplied. The builder retains its legacy derivation only for such
@@ -64,15 +54,13 @@ template<class T> struct fold_schedule_traits {
   static constexpr int FoldF = 0;
   static constexpr int ArtifactLowFold = 0;
   static constexpr int ArtifactHighFold = 0;
-  static constexpr int ACompactRows = kDefaultACompactRows;
   using Base = T;
 };
-template<int LowFold, class B, int HighFold, int ACompactRows_>
-struct fold_schedule_traits<KernelAiuFold<LowFold, B, HighFold, ACompactRows_>> {
+template<int LowFold, class B, int HighFold>
+struct fold_schedule_traits<KernelAiuFold<LowFold, B, HighFold>> {
   static constexpr int FoldF = LowFold;
   static constexpr int ArtifactLowFold = LowFold;
   static constexpr int ArtifactHighFold = HighFold;
-  static constexpr int ACompactRows = ACompactRows_;
   using Base = B;
 };
 
@@ -84,52 +72,46 @@ struct fold_schedule_traits<KernelAiuFold<LowFold, B, HighFold, ACompactRows_>> 
 // other value is the static group. quactlize's collective branches on it, so an arm that is merely absent selects
 // the primary and silently runs the runtime-group path.
 
-template<int Stages_, class kContinous_, typename Schedule_ = KernelAiuMultistageMixedInput,
-         int ACompactRows_ = kDefaultACompactRows>
+template<int Stages_, class kContinous_, typename Schedule_ = KernelAiuMultistageMixedInput>
 struct MainloopQuactlizeMixedInput {
   constexpr static int Stages = Stages_;
   constexpr static int StaticGroupSize = 0;  // default value
-  constexpr static int ACompactRows = ACompactRows_;
   using kContinous = kContinous_;
   using Schedule = KernelAiuMultistageMixedInput;
   using ClusterShape = Shape<_1,_1,_1>;
 };
 
-template<int Stages_, class kContinous_, int ACompactRows_>
-struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuMultistageMixedInputPerCol, ACompactRows_> {
+template<int Stages_, class kContinous_>
+struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuMultistageMixedInputPerCol> {
   constexpr static int Stages = Stages_;
   constexpr static int StaticGroupSize = -1;
-  constexpr static int ACompactRows = ACompactRows_;
   using kContinous = kContinous_;
   using Schedule = KernelAiuMultistageMixedInput;
   using ClusterShape = Shape<_1,_1,_1>;
 };
 
-template<int Stages_, class kContinous_, int ACompactRows_>
-struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs128, ACompactRows_> {
+template<int Stages_, class kContinous_>
+struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs128> {
   constexpr static int Stages = Stages_;
   constexpr static int StaticGroupSize = 128;
-  constexpr static int ACompactRows = ACompactRows_;
   using kContinous = kContinous_;
   using Schedule = KernelAiuMultistageMixedInput;
   using ClusterShape = Shape<_1,_1,_1>;
 };
 
-template<int Stages_, class kContinous_, int ACompactRows_>
-struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs64, ACompactRows_> {
+template<int Stages_, class kContinous_>
+struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs64> {
   constexpr static int Stages = Stages_;
   constexpr static int StaticGroupSize = 64;
-  constexpr static int ACompactRows = ACompactRows_;
   using kContinous = kContinous_;
   using Schedule = KernelAiuMultistageMixedInput;
   using ClusterShape = Shape<_1,_1,_1>;
 };
 
-template<int Stages_, class kContinous_, int ACompactRows_>
-struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs32, ACompactRows_> {
+template<int Stages_, class kContinous_>
+struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs32> {
   constexpr static int Stages = Stages_;
   constexpr static int StaticGroupSize = 32;
-  constexpr static int ACompactRows = ACompactRows_;
   using kContinous = kContinous_;
   using Schedule = KernelAiuMultistageMixedInput;
   using ClusterShape = Shape<_1,_1,_1>;
