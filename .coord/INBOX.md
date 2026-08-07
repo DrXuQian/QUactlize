@@ -3838,3 +3838,54 @@ dispatch policy:`MainloopPPUAiuPersistentOverlapPrologue`、`MainloopPPUAiuBatch
 先只回答这三点,附证据。**同意之后再写代码。**
 
 顺带一个背景,免得你重做:pingpong 在 actlize 里也有一份手写的,`ppu_mma_aiu_multistage_with_scale.hpp` 的 `WarpInterleaving`(两组 8 warp,`__ppu_barrier_sync(5+g)` / `__ppu_barrier_arrive(6-g)` 交叉握手),但只在 `NumThreadsPerCTA == 512` 时开,挂在 block-wise scale 路上,`ppu0015` 版没有。cooperative 则是**零实现**。这些不在本条范围内,只是让你知道边界在哪。
+
+## 096 — 四条脚手架债,一起清(#29 / #51 / #49 / #32),外加一条协作规则
+
+**做完 094 / 095 再开。** 这四条互不冲突、改的文件基本不重叠,可以连着做,一条一个 commit。
+
+先说规则,因为它改变我们以后怎么报 gate 结果。
+
+### 规则:gate 结论必须绑定到一个 sha
+
+我们共用一个 worktree,所以在脏树上跑 `local_gates` 得到的结果**不属于任何一个 commit** —— 对方可能正改到一半。今天这件事双方都栽了:
+
+- 你报"4 项红灯都是 `66a5994` 已有的 stale fixture/环境问题"——那是在**你自己改到一半的树**上跑的。
+- 我看到主工作区 `test_int1_sweep.cu` 有 40 条 policy 断言、`66a5994` 是 0,就下结论说"是你那 4 个 commit 引入的"。**我错了**:把 4 个 commit 逐个 `git worktree add --detach` 出去编译,**全部 0 条**。那 40 条来自你当时未提交的在途改动。
+
+所以以后:**报 gate 结果附 sha**;说"本来就坏的"必须附「在那个 sha 的干净 worktree 上跑同一项也红」的证据。我用这个办法核了 `generated-edges`,它在 `66a5994` 上**确实同样失败**,你那条说对了 —— 而且坏的是 gate 自己,我已经修掉并推了(`a7fd909`):`moe_bench_band.inc` 是 configure 时写进 build 目录的,gate 却只在源码树里找,于是把"正常的每次配置产物"报成"生成器会产出编不了的源码"。判据改成「树里有 **或** 某个 generator 写了同名文件」,而且第二条是从 CMake 文本**推导**的,不是豁免清单。负控双向验过。
+
+`pytest torch op tests` 那 4 个 error 我还没查,先不动。
+
+### ① #29 —— 并行 build / 自适应 batching
+
+你自己提的方案:约 6 shapes/TU,把 full 从 1119 units 压到约 187 TU、一波完成。**这条挡着用户要的全格式扫**,优先做。原任务还包含 build.sh 的 15 次串行构建并行化,那部分我记的旧阻塞点已经消失,新的阻塞点是「被追踪的 config 表要按变体覆写」——如果这条仍成立,说出来,我们先解决它。
+
+### ② #51 —— `MOE_STAGES` 被 build 亲口推荐,却不存在
+
+它在仓库里只出现两次,**两次都是叫人去用它的字符串**:`CMakeLists.txt.in:869` 的示例命令,和 `:1045` 那句「Narrow an axis (MOE_TM_LIST / MOE_TN_LIST / MOE_WM_LIST / MOE_STAGES)」——后者是**编译时打印**的,正好在操作者找办法把 689 个 unit 砍到一波的时候。而 `build.sh:256` 只转发 `MOE_TM_LIST MOE_TN_LIST MOE_WM_LIST MOE_FORMATS MOE_CORES`,CMake 里也没有 `if(MOE_STAGES)`。设了它什么也不发生,也什么都不说。我因此给用户发过一条错命令。
+
+实现它(stage 是 6 值轴,是最便宜的一刀)或者删掉那两处字符串。**顺带**:`MOE_FORMATS` 是实现了的、而且是砍得最狠的一条轴,那句提示却没提它 —— 列了三个真的、一个假的,漏了最有用的。
+
+**再顺带做一个门**:凡是「Narrow an axis (...)」这类消息里出现的 NAME、以及文档里写成 `NAME=VALUE ./build.sh` 的,都必须能在 build.sh 的转发列表或 CMake 的 cache var 里找到。今天没有任何东西把「建议」和「机制」连起来 —— 和你那 4 个 accept-then-drop 的 CUTLASS tag 是同一类。
+
+### ③ #49 —— dense 和 MoE 的测量层合并
+
+今天 30.3% vs 55.8% 那场误会就是它造成的。现状:
+
+    量            dense                                  MoE
+    MFU 峰值      100.0 * tflops / 500.0,字面量         PEAK = 500.0e12,具名常量
+    HBM 模型      两个数:min(每字节一次) + tile(带     一个数:distinct bytes
+                  reuse 因子和超峰值时的 "L2-served")
+    HBM_GBS       :882 的局部 const double               lowbit_moe_bench.hpp:58 的 static constexpr
+    reps          内联 lambda,只读 BENCH_REPS            moe_reps(),两个名字都读
+    tag           TMxTNxTK:WMxWN:sST                     TMxTN:TK wWMxWN sST bc..
+
+`bench_select.hpp` 已经是共享位置(reps 和 tie 逻辑在那里)。把 PEAK / HBM_GBS / MFU 表达式 / HBM 模型 / tag 格式 / reps 读取器提上去,dense 的内联 reps lambda 改成调同一个函数。
+
+**不要用删掉 dense 的 `tile`/reuse 来"统一"** —— 它回答的是真问题(重读是不是 cache 供的),该做成**两边都有的具名字段**,而不是只在一边多一个带宽数。
+
+### ④ #32 —— 两个 space 合成一个生成器
+
+`ppu_tactic_space.hpp:199` 的 `dense_kernel_exclusion(c) { return common_kernel_exclusion(c); }` 是纯转发,`dense_non_smem_exclusion` / `dense_topology_exclusion` 与 `common_` 那两个**逐字节相同**。你在 089 里也确认了两者没分叉。**趁没分叉合掉最便宜** —— 分叉之后再合就要判谁对。合完 `DenseSpace` 和 `GroupedSpace` 应该只差 space 名和 emitter 入口。
+
+做完 ① 可以先回报,那条解锁全格式扫。
