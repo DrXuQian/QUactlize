@@ -222,11 +222,12 @@ int main(int argc, char** argv) {
     int w_tm = 0;
     const double msk = (std::sscanf(e.tag, "%dx", &w_tm) == 1 && w_tm > 0)
                          ? masked_fraction(bd, w_tm) : 0.0;
-    std::printf("  %-4s %-30s %8.2f us | %6.1f TF/s (%4.1f%% MFU on real rows | %4.1f%% of machine, msk=%.0f%%)%s\n",
-                moe_fmt_names[ord[i]], e.tag, e.us, tf,
-                100.0 * tf * 1e12 / PEAK,
-                msk < 1.0 ? 100.0 * tf * 1e12 / PEAK / (1.0 - msk) : 0.0,
-                100.0 * msk, verdict);
+    // ONE MFU, and it counts REAL work only. The numerator is 2*total*N*K -- what the model requires. Rows the
+    // kernel padded out to TileM are the kernel's own overhead, not work, and they must count AGAINST it: an MFU
+    // that forgave padding would be silent on exactly the defect it should expose (an oversized TileM at decode).
+    // msk is printed beside it as a DIAGNOSTIC -- it says where the missing fraction went, it does not rescale it.
+    std::printf("  %-4s %-30s %8.2f us | %6.1f TF/s (%4.1f%% MFU) msk=%.0f%%%s\n",
+                moe_fmt_names[ord[i]], e.tag, e.us, tf, 100.0 * tf * 1e12 / PEAK, 100.0 * msk, verdict);
     if (*lb) std::printf("       %s this row is within 3x the empty-launch floor (%.2f us)\n", lb, bench_floor::us());
   }
   // THE TIES ARE THE OUTPUT, not a footnote. codex's H1/H2 pruning rules keep guards precisely so that a guard

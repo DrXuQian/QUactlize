@@ -301,7 +301,18 @@ inline void report(const Band& bd, const char* tag, double us, int TM, int TN, i
   // 1 MB shared inside one wave. Calling that a bandwidth question is not defensible, so it is no longer folded into a
   // bracket: the floor is reported as THE number and A's reuse factor is printed beside it as `Ax`.
   const double a_pad  = double(mt) * double(TM) * double(bd.K) * 2.0;
-  const double dfl    = a_pad + double(bd.active) * (wb + sb) + double(bd.total) * double(bd.N) * 2.0;
+  // HBM% IS DISTINCT BYTES OVER TIME. Nothing else. The previous version put `a_pad` -- mt*TM*K, the PADDED row
+  // count -- in the numerator, so a config with a bigger TileM "moved more data" and printed a HIGHER bandwidth
+  // while reading the same rows. That is how a 1-row-per-expert decode band reported more HBM traffic at TileM=128
+  // than at TileM=16 off identical input. Padding rows are not in DRAM: they are either out of bounds and never
+  // issued, or they are the same cache lines again. Either way the bus does not carry them.
+  //
+  //   A = total*K*2       every REAL row, once
+  //   B = active*wb       every ACTIVE expert's weights, once
+  //   S = active*sb       its scales+zeros, once
+  //   C = total*N*2       the output rows that exist
+  const double a_dram = double(bd.total) * double(bd.K) * 2.0;
+  const double dfl    = a_dram + double(bd.active) * (wb + sb) + double(bd.total) * double(bd.N) * 2.0;
   const double dce    = ntile * a_pad + double(mt) * (wb + sb) + double(bd.total) * double(bd.N) * 2.0;
   const double gbs = dfl / (us * 1e-6) / 1e9;
   const double tf  = 2.0 * double(bd.total) * double(bd.N) * double(bd.K) / (us * 1e-6) / 1e12;
@@ -333,9 +344,9 @@ inline void report(const Band& bd, const char* tag, double us, int TM, int TN, i
   const double gwarps = double(mt) * double(bd.N) * double(TM) / (double(WM) * double(WN));
   const double wcu_grid = gwarps / 72.0;
   std::printf("    %-30s %8.2f us | %6.1f TF/s (%4.1f%% MFU) | mt=%-5lld msk=%4.1f%% skw=%.1fx |"
-              " HBM %4.1f%% S=%4.1f%% | blk %-2d wrp/CU %-3d grid_wrp/CU %5.1f cta=%-5ld wav=%4.2f run=%-3dB kit=%-3ld%s\n",
+              " %6.0f GB/s (HBM %4.1f%%) S=%4.1f%% | blk %-2d wrp/CU %-3d grid_wrp/CU %5.1f cta=%-5ld wav=%4.2f run=%-3dB kit=%-3ld%s\n",
               tag, us, tf, 100.0 * tf * 1e12 / PEAK, mt, 100.0 * masked, skew,
-              100.0 * gbs / HBM_GBS, 100.0 * s_share,
+              gbs, 100.0 * gbs / HBM_GBS, 100.0 * s_share,
               blk, blk * warps, wcu_grid, ctas, waves, run_b, kit,
               gbs_c < 0.9 * HBM_GBS ? "  NOT-BW" : "");
 }

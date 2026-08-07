@@ -293,12 +293,23 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
   // PRIMARY/GUARD ARE DECIDED WITHIN ONE TacticTileK, not across them. primary() and the guards compare a
   // candidate against the OTHER legal candidates of the same grid; pooling two TileKs would let a row at one
   // TileK suppress a row at another, which is a pruning decision nobody made.
+  std::vector<int> n_tkdrop;
   for (int tactic_tk : tactic_tks) {
     std::vector<Candidate> const ok = legal_grid<Space>(spec, tactic_tk, artifact_tk);
+    // A LIST EMITS ITS LEGAL SUBSET. This used to `return 1` on the first member with no legal grid, which killed
+    // the whole run and produced ZERO rows -- so `--tactic-tk=32,64,128,256` on an artifact_tk=64 format emitted
+    // nothing at all rather than the 64/128/256 rows it obviously should. That is why no grouped table was ever
+    // generated with a list: the one command anyone would try silently returns an empty file. Dense escaped it only
+    // because someone happened to hand it a pre-filtered list (64,128,256).
+    //
+    // ArtifactTileK must tile TacticTileK, so which members are legal is a FUNCTION of the artifact, not something
+    // the caller should have to know. Skipping is right; skipping SILENTLY is not -- a table that searched less has
+    // to say so, same rule as --m-max.
     if (ok.empty()) {
-      std::fprintf(stderr, "no legal tactic at bits=%d artifact_tk=%d tactic_tk=%d\n",
-                   bits, artifact_tk, tactic_tk);
-      return 1;
+      std::fprintf(stderr, "note: tactic_tk=%d has no legal grid at bits=%d artifact_tk=%d -- skipped\n",
+                   tactic_tk, bits, artifact_tk);
+      n_tkdrop.push_back(tactic_tk);
+      continue;
     }
   for (int st : g_stages) {
   {
@@ -339,8 +350,19 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
     std::printf("//   TileM prune dropped %d row(s) whose TileM exceeds the smallest that covers this table's M\n"
                 "//                     bound (a capacity row's bound IS its capacity; --m-max sets it otherwise).\n"
                 "//                     These are LEGAL rows a sweep using this table cannot find.\n", n_mdrop);
+  // EVERY member illegal is still an error: an empty table is not a smaller search, it is no search.
+  if (!n_tkdrop.empty() && n_tkdrop.size() == tactic_tks.size()) {
+    std::fprintf(stderr, "no legal tactic_tk at all for bits=%d artifact_tk=%d -- refusing to emit an empty table\n",
+                 bits, artifact_tk);
+    return 1;
+  }
+  if (!n_tkdrop.empty()) {
+    std::printf("//   tactic_tk SKIPPED (ArtifactTileK must tile TacticTileK):");
+    for (int k : n_tkdrop) std::printf(" %d", k);
+    std::printf("\n");
+  }
   std::printf("//   tactic_tile_k:");
-  for (int k : tactic_tks) std::printf(" %d", k);
+  for (int k : tactic_tks) if (std::find(n_tkdrop.begin(), n_tkdrop.end(), k) == n_tkdrop.end()) std::printf(" %d", k);
   std::printf("   <- the CONSUMER choices in this table. artifact_tile_k=%d is the resident layout and is NOT a\n"
               "//                     row field: one weight file, many readers.\n", artifact_tk);
   std::printf("//   stages:");
