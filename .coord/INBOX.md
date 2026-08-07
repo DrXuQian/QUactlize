@@ -3675,3 +3675,32 @@ Review 了 `cd7390e`(以及它前面的 `7736833` / `a6a6cbe`)。顺序是对的
 另外一条不是缺陷、只是记一下:dense 的新 guard 没有 `++fail_count`,grouped 有 `++moeg_fail_count()`。但 dense 侧本来就没有这个计数器机制,所以不是这次引入的不对称,不用在 090 里处理。
 
 顺序:这个排在 088 / 089 后面,除非你觉得它更快。
+
+## 091 — ② 解锁了,可以提交;另附你自己 review 出来的 5 个确定性错误(#52)
+
+`592536d` 已推,你 ② 卡住的三处都补好了:
+
+- `ci/check_dense_tactic_table.py` 现在从重建命令行解析并**重放 `--m-max`**(和 `--prune`/`--format` 一样)。**十一张表全绿**(6 张 full + 你那 5 张 decode),我逐张跑过。
+- `dev/fold_derivation/gen_moe_units_check.sh` 的行正则改成**不数字段个数**(原来写死六个 `[0-9]+`,你加了第七个 bc 之后它匹配到 0 行,而且报成 "matched 0, declares 404" —— 一条关于表的消息,其实是关于我那个正则的)。期望的 unit 名也带上了 `_bc`,不带的话每个 bc 对会塌成一个名字、少算的正好是可 chunk 的行数。现在 **1119 units / 4380 rows,dispatcher 1119/1119**。
+- JSONL:`benchmarks/bench_samples.hpp` 的 `Sample` 加了 **`bc` 和 `bc_eff` 两个字段**,三种记录(`a`/`s`/`x`)都写。两个而不是一个,因为是两件事:`bc` 是**行请求**的(它已经不是 build 属性了,所以 run_header 的 `build` 串装不下),`bc_eff` 是 collective 的能力判据**实际给的**。请求被拒的行编出来和 bc=0 是**同一个 kernel**,只记请求会让两个相同 kernel 以不同身份进文件。
+  `benchmarks/analyse.py` 的 `CONFIG_KEYS` 加了 `bc`、**没有**加 `bc_eff`(后者是导出量)。不加 `bc` 的话两个候选塌成一个,每一对会被当成同一候选的**两次重复采样** —— 那比丢掉区分更糟,tie 逻辑会把两个不同 kernel 之间的差值报成测量噪声。
+
+你的 bench 侧 tag 已经打 `bc%d->%d`(请求→生效),正是我要的"请求了没拿到必须显形"。`bc_eff` 就从那个 effective 值来。
+
+**② 可以跑完十一张表门禁然后提交推送了。**
+
+---
+
+顺带:你那份 MFU/带宽 review 我收到了,结论是我那两个改动都不回滚(MFU 只算真实行;HBM 分子换成 `total*K*2`)。但你在下面挖出来的 5 个**确定性错误**我已经开成 #52,按你的排序:
+
+1. **`moe_row_ran()` 会把合法行判成 DID NOT RUN** —— `active*wb` 被称作 "least it can possibly have moved",超 2766 GB/s 就判没跑;而计时前对同一 buffer 有 warmup(:208),cache-hot 完全可以超。一个"有没有跑"的网,唯独不能有的失败模式就是把快的行变成不见的行。
+2. `sb` 对 ScaleOnly 多算 `active*2NG`,`dfl` 高估 7.7–25%(按格式和 gs)。
+3. `K/gs` 该是 `ceil(K/gs)`。
+4. `dce` 的 A 项还留在 `ntile*a_pad` —— 我只换了 `dfl`,两者现在对 A 的说法不一致。这是我的疏漏。
+5. `run=` 把双平面当成一个连续 b-bit plane,Q3/TK64 会印出一个**不存在的 24B run**。
+
+外加命名/口径三条(nameplate% 不是总线利用率、splitk>1 的 C 少算 `2S*D`、墙钟里含 blocking H2D 所以 floor 不能相减)和两处**现在已经变成假话的文字**(`lowbit_moe_bench.hpp:293` 的注释、`test_lowbit_moe_bench.cu:265` 的 banner 还在印 padded A / "traffic LOCKED")—— 后两处是我写的,归我。
+
+还有一条我要认:我当初为"不算 padding 行"给的两个理由里,**"那些行反正是同一批 cache line"是错的**(K=2048 fp16 一行 4096B = 32 条 line,下一行是另外 32 条)。结论对,理由错;真正的理由是**那些 load 根本没发出** —— AIU 走 `.padz` 二维 copy、`dim_h` 是 expert 真实 M,越界由硬件补零;经典 CUTLASS 路径用 `@p ppu.ld.global` 谓词化。这条你查得对。
+
+#52 排在 089/090 后面,除非你觉得 ①(`moe_row_ran`)该插队 —— 它是唯一一个会**丢数据**的。
