@@ -170,26 +170,44 @@ Bandwidth-referenced, not MFU. Shape is the decode band; see `ppu-gemv-alu-bound
 | D4 | grouped tensor-core GEMM at the same band | 20.74 µs | — | 37.5% | `i4 16x32:256 w16x16 s2` | — |
 | D5 | best GEMV before the 2026-08-03 retune | 22.27 µs | — | 34.1% | `int4 native s16/t128 CtaN2 Chunk2` | — |
 | D6 | **tensor-core at M=1 once TileK entered the search** | **17.98 µs** | 1168 | **42.2%** | `16x16x256:16x16:s2` | 2026-08-06 |
-| D7 | ⚠ **UNATTRIBUTED** — same tile as D6, 45% slower, cause unknown | 26.09 µs | 805 | 29.1% | `16x16x256:16x16:s2`, capacity NOT witnessed | 2026-08-06 |
+| D7 | compact-A capacity 1 — **CONFIRMED**, and the cause is known | 26.09 µs | 805 | 29.1% | `16x16x256:16x16:s2` | 2026-08-06 |
+| D8 | ordinary A, the A/B baseline for D9 | 16.97 µs | 1237 | 44.7% | `16x16x256:16x16:s2`, `[A path] ordinary AIU + swzl` | 2026-08-07 |
+| D9 | **PPU_A_PACK: +2.9% and numerically Passed at M=1** | 16.49 µs | 1273 | 46.0% | same, `[A path] PACKED cubes` | 2026-08-07 |
 
-**D7 IS NOT ATTRIBUTED TO ANYTHING, AND WAS FILED AS IF IT WERE.** It was recorded as "compact A at capacity 1
-is 45% slower", and the run may not have been a compact build at all. Nothing in the output could settle it: the
-compact-A capacity is a table field, config NAMES do not carry it, so a capacity-0 and a capacity-1 binary print
-result lines that are identical apart from the timing. The reading rested on remembering which binary had run.
+**D7 WAS RIGHT ALL ALONG; ONLY ITS EVIDENCE WAS MISSING.** It was filed as "compact A at capacity 1 is 45%
+slower" with nothing in the output naming the capacity, and was marked UNATTRIBUTED for a day. Reproduced
+2026-08-07 with the capacity printed on the result line (`a0`/`a1`): **26.31 µs / 28.9%** against **16.98 / 44.7%**
+— within 1% of D7. The chain of guesses in between was wrong at every link: I argued the run might have measured
+PPU_A_PACK, or nothing at all, because PPU_A_CPASYNC is inert against a table that passes an explicit ACR. That
+last fact is true and the conclusion drawn from it was not — the table's ACR field WAS the live entry point, and
+it existed on the day D7 ran.
 
-TWO HYPOTHESES, and they are not close together:
+**AND THE MECHANISM IS NOW KNOWN, which is what the row could never say.** `SmemLayoutACompact` was hand-built
+with `make_layout` and never composed `InternalSmemLayoutAtomA`, so the compact A tile carried no swizzle:
 
-  * capacity 1 really is slower on this tile. The saving is smem, and at TileM=16 A holds 16*256*2 = 8 KB per
-    stage to begin with, so there is little to save while the different load costs whatever it costs. That
-    explains a few percent. It does not explain 8.1 µs.
-  * THE BASE PATH REGRESSED between D6 and this run. Landing in between: the umbrella split, codex's compact-A
-    kernel ABI (219 lines of quactlize_mma_mixed_input.hpp), the new tactic space and a regenerated table. A
-    45% step is the shape of a changed kernel, not of a slightly costlier A load.
+    capacity 0   (_16,(_64,_4),_2):(_64,(_1,_1024),_4096)     K mode is the swizzle atom tiled
+    capacity 1   ((_1,_16),_256,_2):((_256,_0),_1,_256)       K mode is flat; the atom is gone
 
-THE CHECK THAT SEPARATES THEM is one run: rebuild at capacity 0 and compare against D6's 17.98 µs. Equal means
-the first hypothesis and the compact axis owns its cost; 26 µs at capacity 0 means the base regressed and compact
-A has not been measured at all yet. The bench now prints the capacity as `a%d` on the result line so the next
-pair cannot be ambiguous the same way.
+A therefore left the AIU/`tsm.ld.swzl` hardware path for plain addressed loads. acu, same tile, same grid
+(1,512,1) both ways: `tsm.ld` +640%, `v.shll.i` 176×, `v.cnvt` 241×, `v.or.i` 0 → 327,680, while `tsm.ld.swzl`
+and `vmem.aiu.ld.tsm` each fell 80% and the MMA count was **bit-identical** (163,840). Registers 94 → 132 are a
+symptom of the address arithmetic, not a cause. And the swizzle could not have been kept: `tile_to_shape` refuses
+to tile an 8-row atom onto a 1-row tile. Compact A was deleted on 2026-08-07 (task #42).
+
+**D8/D9 ARE THE SAME IDEA DONE ON THE OTHER SIDE.** PPU_A_PACK leaves the swzl read untouched and overlaps the
+cube allocations instead, so only row 0 is ever written: allocation −5.6×, A's gmem→smem traffic −16× at
+TileM=16, and the read instruction unchanged. That is worth +2.9% and `Disposition: Passed`, against compact A's
+−55%. One idea, two implementations, and the difference between them is entirely whether A stays on the delivery
+hardware.
+
+⚠ **D8/D9 ARE AN INTERNAL A/B AND NOT COMPARABLE TO D6's ABSOLUTE NUMBER.** Two builds from one commit, one
+command, both witnessing their A path. D6 read 17.98 µs / 42.2% for the same config and D8 reads 16.97 / 44.7%;
+what moved between them is not established here and must not be attributed to the compact-A deletion without a
+measurement.
+
+⚠ **ONE SHAPE, ONE CONFIG.** A's share of staged bytes is TileM·TileK·2 against TileN·TileK·bits/8 — 4× B at
+TileN=16, a third of B at TileN=128 — so the gain should be LARGEST at small TileN. That is falsifiable and the
+66-fixture sweep answers it. Do not generalise +2.9% before it does.
 
 **D6 IS WHAT THE TileK SPLIT WAS FOR, and it is NOT a like-for-like beat of D4.** Different shape: D6 is
 Qwen3-32B's q projection (M=1, N=8192, K=5120) while D4 is this section's decode band, so the comparable figure
