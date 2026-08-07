@@ -33,7 +33,6 @@ struct SamePolicy {
   static_assert(Dense::Descriptor::low_fold == Grouped::Descriptor::low_fold);
   static_assert(Dense::Descriptor::high_fold == Grouped::Descriptor::high_fold);
   static_assert(Dense::Descriptor::scale_tile_k == Grouped::Descriptor::scale_tile_k);
-  static_assert(Dense::Descriptor::compact_a_rows == Grouped::Descriptor::compact_a_rows);
   static_assert(Dense::Descriptor::packed_metadata == Grouped::Descriptor::packed_metadata);
   static_assert(Dense::Descriptor::atom_at_a_time == Grouped::Descriptor::atom_at_a_time);
   static constexpr bool value = true;
@@ -41,18 +40,18 @@ struct SamePolicy {
 
 template <Q Mode, int GroupSize, class Tile, class Scale, class Warp, int Stages,
           class Low, class High = void, bool Interleaved = true,
-          int ArtifactTileK = 0, int ACompactRows = cutlass::gemm::kDefaultACompactRows>
+          int ArtifactTileK = 0>
 struct AdapterPair {
   using Dense = fpa_intb_ppu::MixedMainloopPolicy<Mode, ppu_group_schedule::FinegrainedSchedule<GroupSize>,
-      Tile, Scale, Warp, Stages, Interleaved, Low, High, ArtifactTileK, ACompactRows>;
+      Tile, Scale, Warp, Stages, Interleaved, Low, High, ArtifactTileK>;
 #if defined(PPU_PLANT_MIXED_POLICY_DRIFT) && (PPU_PLANT_MIXED_POLICY_DRIFT != 0)
   // Keep every input but the physical B layout the same. The planted compile must fail SamePolicy below; this is
   // how the local tier proves that the parity assertion observes a policy difference instead of comparing nothing.
   using Grouped = moe_grouped_ppu::MixedMainloopPolicy<Mode, ppu_group_schedule::FinegrainedSchedule<GroupSize>,
-      Tile, Scale, Warp, Stages, false, Low, High, ArtifactTileK, ACompactRows>;
+      Tile, Scale, Warp, Stages, false, Low, High, ArtifactTileK>;
 #else
   using Grouped = moe_grouped_ppu::MixedMainloopPolicy<Mode, ppu_group_schedule::FinegrainedSchedule<GroupSize>,
-      Tile, Scale, Warp, Stages, Interleaved, Low, High, ArtifactTileK, ACompactRows>;
+      Tile, Scale, Warp, Stages, Interleaved, Low, High, ArtifactTileK>;
 #endif
   static constexpr bool value = SamePolicy<Dense, Grouped>::value;
 };
@@ -79,23 +78,7 @@ static_assert(AdapterPair<Q::FinegrainedScaleZero, 16, T64, S64Gs16, W32x32, 3,
 static_assert(AdapterPair<Q::FinegrainedScaleOnly, 32, T64, S64Gs32, W32x32, 3,
                           cutlass::int4b_t, cutlass::uint2b_t>::value);
 
-// Compact A is a per-policy axis. Explicit zero must remain ordinary even when PPU_A_CPASYNC supplies a nonzero
-// compatibility default, while an explicit positive capacity reaches only the collective that implements it.
-using ExplicitOrdinary = AdapterPair<Q::FinegrainedScaleOnly, 32, T64, S64Gs32, W64x32, 3,
-                                     cutlass::int4b_t, void, true, 64, 0>;
-using ExplicitCompact8 = AdapterPair<Q::FinegrainedScaleOnly, 32, T64, S64Gs32, W64x32, 3,
-                                     cutlass::int4b_t, void, true, 64, 8>;
-using UnsupportedFoldCompact8 = AdapterPair<Q::FinegrainedScaleZero, 16, T64, S64Gs16, W32x64, 3,
-                                            cutlass::uint2b_t, void, true, 64, 8>;
-static_assert(ExplicitOrdinary::Dense::ACompactRows == 0);
-static_assert(ExplicitOrdinary::Dense::Descriptor::compact_a_rows == 0);
-static_assert(ExplicitCompact8::Dense::ACompactRows == 8);
-static_assert(ExplicitCompact8::Dense::Descriptor::compact_a_rows == 8);
-static_assert(UnsupportedFoldCompact8::Dense::ACompactRows == 8);
-static_assert(UnsupportedFoldCompact8::Dense::Descriptor::compact_a_rows == 0,
-              "a requested compact capacity must not claim support in the folded collective");
-
 int main() {
-  std::printf("[l112] dense/grouped mixed policies match: ordinary, compact-8, folded and two-plane\n");
+  std::printf("[l112] dense/grouped mixed policies match: ordinary, folded and two-plane\n");
   return 0;
 }

@@ -61,7 +61,6 @@ GATES = [
     # Does a different configuration actually give a different LOW-plane layout? Answers a contradiction
     # between layouts.py xplane() and l61, and produces the prune table.
     ("l105_low_plane_config_classes", []),
-    ("l106_compact_a_rows", []),
     ("l107_moe_router_fixture", []),
     ("l108_rt_error_contract", []),
     ("l109_rt_hggc_parse", []),
@@ -97,11 +96,6 @@ SYNTAX = [
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_SCALE_PAD=8"),
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_B_DEQUANT_NOP=1"),
     ("tests/test_moe_grouped_verify.cu", ""),
-    # The VALUE is the compact A row capacity. All three small-M specialisations must instantiate the full
-    # collective; testing only the historical boolean value 1 would leave the new hierarchical layout dead.
-    *[(src, f"-DPPU_A_CPASYNC={r}")
-      for src in ("tests/test_moe_grouped_verify.cu", "tests/test_fpA_intB_ppu.cu")
-      for r in (1, 2, 4)],
     ("tests/test_moe_grouped_real.cu", ""),
     ("benchmarks/test_moe_splitk_bench.cu", ""),
     # THE BENCH THE WHOLE SWEEP RUNS THROUGH, and it had no local gate at all until 2026-08-04 -- which is how
@@ -732,23 +726,11 @@ def lint_switch_macros():
     planted unsettable switch must be reported, and wiring one must make it disappear.
 
     Motivated by a real cost rather than tidiness. Three macros in this tree mean "shrink A's padding at small M"
-    -- PPU_A_PACK (binary-wide, wins over everything), PPU_A_CPASYNC (a policy default an explicit row overrides),
-    and the tactic table's ACR column -- and on 2026-08-06 a measurement was filed as "compact A at capacity 1 is
-    45% slower" that could not afterwards be attributed to any of them.
+    -- PPU_A_PACK, PPU_A_CPASYNC and the tactic table's ACR column -- and on 2026-08-06 a measurement was filed
+    as "compact A at capacity 1 is 45% slower" that could not afterwards be attributed to any of them. Two of the
+    three are gone with the feature (task #42); PPU_A_PACK is a different, still-unreachable A path.
     """
     return _run_ci_script("check_switch_macros.py", "every owned build switch is reachable")
-
-
-def lint_compact_a_reach():
-    """The tactic space's compact-A clause and the three collectives' witnesses must say the same thing.
-
-    Compact A is A-side and A is fp16 activations, so nothing about it depends on the weight format. It is
-    restricted today only because the reader was written into ONE of the three collectives. Deleting the clause
-    before porting does not fail -- it emits rows labelled acr=1 whose collective ignores the field and allocates
-    TileM*TK*2, so the sweep times a capacity-0 kernel under a capacity-1 name. That is how D7 became
-    unattributable. This makes the ordering checkable in both directions instead of remembered.
-    """
-    return _run_ci_script("check_compact_a_reach.py", "compact-A clause matches the collectives")
 
 
 def _run_ci_script(name: str, label: str):
@@ -1138,7 +1120,6 @@ def main():
                 ("lint", "no tactic choice can change the offline layout", lint_tactic_cannot_change_offline_layout),
                 ("lint", "actlize carries no quactlize symbol and no unlisted file change", lint_actlize_pristine),
                 ("lint", "every build switch this repo owns can actually be turned on", lint_switch_macros),
-                ("lint", "the compact-A clause and the collectives' witnesses agree", lint_compact_a_reach),
                 ("lint", "quactlize_extensions adds to actlize rather than redefining it", lint_extension_additive),
                 ("lint", "every file naming a quactlize type reaches its defining header", lint_owned_symbol_includes),
                 ("lint", "every listed GGUF format has the collective its row implies", lint_format_table_buildable),
