@@ -215,8 +215,18 @@ int main(int argc, char** argv) {
       else               std::snprintf(verdict, sizeof verdict,
                                        "   <-- lowest median, but %d candidate(s) TIE it -- unresolved", nt);
     }
-    std::printf("  %-4s %-30s %8.2f us | %6.1f TF/s (%4.1f%% MFU)%s\n", moe_fmt_names[ord[i]], e.tag, e.us, tf,
-                100.0 * tf * 1e12 / PEAK, verdict);
+    // THE MASKED FRACTION IS ON THE ROW, because without it the MFU on the same row cannot be read. MFU's numerator
+    // is 2*bd.total*N*K -- REAL rows -- while the kernel fetches and multiplies TM*mt of them. On a ragged band those
+    // differ by ~2x, so a kernel running at 60% of the machine prints 30% here and reads as broken. TM is recovered
+    // from the tag because the tag IS the row identity ("TMxTN:TK wWMxWN sST"); it is not a second source of truth.
+    int w_tm = 0;
+    const double msk = (std::sscanf(e.tag, "%dx", &w_tm) == 1 && w_tm > 0)
+                         ? masked_fraction(bd, w_tm) : 0.0;
+    std::printf("  %-4s %-30s %8.2f us | %6.1f TF/s (%4.1f%% MFU on real rows | %4.1f%% of machine, msk=%.0f%%)%s\n",
+                moe_fmt_names[ord[i]], e.tag, e.us, tf,
+                100.0 * tf * 1e12 / PEAK,
+                msk < 1.0 ? 100.0 * tf * 1e12 / PEAK / (1.0 - msk) : 0.0,
+                100.0 * msk, verdict);
     if (*lb) std::printf("       %s this row is within 3x the empty-launch floor (%.2f us)\n", lb, bench_floor::us());
   }
   // THE TIES ARE THE OUTPUT, not a footnote. codex's H1/H2 pruning rules keep guards precisely so that a guard

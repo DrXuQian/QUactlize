@@ -263,13 +263,28 @@ template <int Bits> constexpr int moe_fold(int TK) { const int c = TK * Bits / 8
 // ways here, and the lever that actually raises the total is SHRINKING smem per stage: TileN=32 halves both the B and the
 // scale term (3328 -> 2688 B, ifl <= 97). Dropping the zero tile (#20 Phase 1) is only 128 B of 3328, i.e. 3.8%.
 // Which of depth-vs-width wins at a fixed total is exactly what the sweep is for.
-inline void report(const Band& bd, const char* tag, double us, int TM, int TN, int TK, int WM, int WN, int Stages,
-                   int bits_total, int wcu) {
+// THE PADDED ROW COUNT, factored out because the VERDICT needs it and only report() had it. A summary that prints
+// MFU without it is unreadable: MFU counts REAL rows (bd.total) while the kernel grinds TM*mt, so a fast kernel on a
+// ragged band prints a low number and looks broken. That is exactly how a 226.63 us / 30.3% MFU row -- FASTER than
+// the 246 us dense record that reads 55.8% -- came to look like a regression.
+inline long long padded_mtiles(const Band& bd, int TM, long long* mt_max_out = nullptr) {
   long long mt = 0, mt_max = 0;
   for (int e = 0; e < bd.L; ++e) {
     const long long t = (bd.me[e] + TM - 1) / TM; mt += t; mt_max = std::max(mt_max, t);
   }
-  const double masked = mt ? 1.0 - double(bd.total) / (double(TM) * double(mt)) : 0.0;
+  if (mt_max_out) *mt_max_out = mt_max;
+  return mt;
+}
+inline double masked_fraction(const Band& bd, int TM) {
+  const long long mt = padded_mtiles(bd, TM);
+  return mt ? 1.0 - double(bd.total) / (double(TM) * double(mt)) : 0.0;
+}
+
+inline void report(const Band& bd, const char* tag, double us, int TM, int TN, int TK, int WM, int WN, int Stages,
+                   int bits_total, int wcu) {
+  long long mt_max = 0;
+  const long long mt = padded_mtiles(bd, TM, &mt_max);
+  const double masked = masked_fraction(bd, TM);
   // skew = the heaviest expert's m-tile count against the mean. With a non-persistent scheduler this is what the
   // last-wave tail is made of, so it belongs next to the time rather than in a separate analysis.
   const double skew  = mt ? double(mt_max) / (double(mt) / double(bd.L)) : 0.0;
