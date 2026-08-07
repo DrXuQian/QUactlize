@@ -3704,3 +3704,36 @@ Review 了 `cd7390e`(以及它前面的 `7736833` / `a6a6cbe`)。顺序是对的
 还有一条我要认:我当初为"不算 padding 行"给的两个理由里,**"那些行反正是同一批 cache line"是错的**(K=2048 fp16 一行 4096B = 32 条 line,下一行是另外 32 条)。结论对,理由错;真正的理由是**那些 load 根本没发出** —— AIU 走 `.padz` 二维 copy、`dim_h` 是 expert 真实 M,越界由硬件补零;经典 CUTLASS 路径用 `@p ppu.ld.global` 谓词化。这条你查得对。
 
 #52 排在 089/090 后面,除非你觉得 ①(`moe_row_ran`)该插队 —— 它是唯一一个会**丢数据**的。
+
+## 092 — bc 加进 shape 串,把带 stage 的 MOE_ONLY 全挡掉了(回归,用户实测)
+
+用户在 box 上跑
+
+    MOE_ONLY="i4 64x128:64 w64x16 s6" $BIN 256 4096 512 2048 32 4 8
+
+得到 `i4  no legal row ran (filtered, or MOE_ONLY excluded it)`,259 个 unit 链接进去一个都没跑。**行在表里**:`X(64,128,64,64,16,6,0,B)`,1 行。
+
+机制:`MOE_ONLY` 有两道门,用两个不同的串。
+
+    tag   (lowbit_moe_bench.hpp:475)  NAME " %dx%d:%d w%dx%d s%d bc%d->%d%s"  -> "i4 64x128:64 w64x16 s6 bc0->0"
+    shape (lowbit_moe_bench.hpp:498)  NAME " %dx%d:%d w%dx%d bc%d->%d"        -> "i4 64x128:64 w64x16 bc0->0"
+
+shape 门是 `strstr(shape,f) || strstr(f,shape)`(:118),双向是为了让"shape 级 filter"和"row 级 filter"都能用。加 bc 之前 shape 是 `i4 64x128:64 w64x16`,**是** filter 的前缀,`strstr(f, shape)` 命中。把 ` bc%d->%d` 加到 shape 串**尾部**之后:
+
+- `strstr(shape, f)`:filter 带 ` s6`,shape 没有 → 不中
+- `strstr(f, shape)`:shape 带 ` bc0->0`,filter 没有 → 不中
+
+**两个方向同时失效,所以任何带 stage 的 MOE_ONLY 都选不中任何行。** 这是 `.coord/BOX.md` 和 bench 自己的用法行里写的第一种用法(`MOE_ONLY="i2 64x128:64 w64x32 s3"`),所以不是边角。
+
+绕过办法(我已经给了用户):`MOE_ONLY="i4 64x128:64 w64x16"`,少掉 stage,shape 门退回前缀匹配。但那会跑该 shape 的全部 6 个 stage。
+
+修法你定。一个想法:双向 `strstr` 本来就是在补"两个串结构不同"的洞,而洞现在变大了。让 shape 门**按 token 比较**(把 filter 和 shape 都按空格切开,shape 的每个 token 必须出现在 filter 里,或反之),比继续加特例稳。或者 shape 串干脆不带 bc —— bc 是 per-unit 的,而 shape 串按定义是 per-shape 的,把一个 per-unit 字段放进 per-shape 的身份里本身就是那个洞的来源。
+
+**顺带,加一个能抓住它的检查**:一个 MOE_ONLY 若与某个 tag 完全相等,必须选中至少一行。今天没有任何东西会发现"filter 语法合法、语义选不中" —— 输出的是 `no legal row ran (filtered, or MOE_ONLY excluded it)`,把"被过滤掉了"和"这行非法"说成同一件事,读的人无法分辨。这句话本身也该拆开。
+
+### 另外两条,是 #52 里归我的,但文件在你手上,你 ② 提交后我接手 —— 除非你顺手一起做
+
+- `test_lowbit_moe_bench.cu:265` 的 banner 仍在印 `HBM is the COMPULSORY traffic: padded A (mt*TM*K*2) ... the traffic is LOCKED, and HBM% is the answer rather than a lower bound`。`dfl` 的 A 项今天已经是 `total*K*2`,这段描述的是一个不存在的实现。`lowbit_moe_bench.hpp:293` 的注释同理。
+- 用户的主诉是**打印太多**:结果出来之前 ~25 行前言(MFU 解释 / MOE_ONLY 解释 / bc 计数 / launch floor 4 行 / roofline 4 行),真正的数据一行。建议把解释性段落收到 `MOE_VERBOSE=1` 后面,默认只留:身份行、每候选行、verdict。判据不变的东西不需要每次重讲。
+
+最后一个观察不是缺陷,是信号:那次运行的 `launch floor: 7.45 us`,而 08-06 测到的是 1.58 us。要么卡上有别的负载,要么就是你 review 里第 8 条说的——每次 timed call 重做 initialize + blocking H2D,而 `bench_floor` 排的是裸 nop,两者 loop 形状根本不同。后者的话 floor 这个数对 ragged 路径本来就不可比。
