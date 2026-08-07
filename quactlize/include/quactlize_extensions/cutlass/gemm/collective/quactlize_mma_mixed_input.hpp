@@ -49,6 +49,7 @@
 #include "cutlass/gemm/collective/collective_mma.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"
+#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_a_pack.hpp"
 #include "cutlass/detail/collective.hpp"
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -75,17 +76,6 @@ template <class Swz, class L> struct MaybeScaleSwizzle<true, Swz, L> {
   using type = decltype(cute::composition(Swz{}, L{}));
 };
 }  // namespace cutlass::gemm::collective::detail
-
-
-
-// ONE definition of the packed cube pitch, used by BOTH sides. The read's pitch is baked into A's atom by the
-// builder and the write's is computed in the collective; as two separate literals they diverged -- 16 against 64 --
-// and the kernel wrote at one spacing, read at another, and faulted with an invalid VA. 64 halfs = 128 B keeps every
-// cube base and the whole span 128-B aligned, which smem_b's AIU descriptor needs (its alignment used to hold only
-// because A's byte count happened to be a multiple of 32).
-#ifndef PPU_A_PACK_PITCH
-#define PPU_A_PACK_PITCH 64
-#endif
 
 namespace cutlass::gemm::collective {
 
@@ -329,31 +319,35 @@ public:
   // using InternalElementB = cute::conditional_t<!SwapAB, ConvertedElementB, ConvertedElementA>;
 
   using RealInternalElementA = cute::conditional_t<!SwapAB, ElementA, ElementB>;
-  // PPU_A_PACK geometry, all read off fold_derivation/l84-l86 rather than derived here:
-  //   row 0 of a 16x64 fp16 cube occupies 4 runs of 16 halfs at half-offsets {0, 288, 528, 816}
-  //   consecutive cube bases can sit 16 halfs apart with no collision (l85), the runs being 16 wide and aligned
-  //   the last cube is still READ to its full 1024-half span, so that is the tail of the allocation
+  // PPU_A_PACK=R geometry, all read off fold_derivation/l84-l86 rather than extrapolated from row 0. Every real row
+  // occupies four 16-half runs. l85 searches all R-row collisions across eight cubes/stages and selects the first
+  // 128-B-aligned clean pitch; l86 supplies the odd-cache-line half-run swap needed by the writer. The last cube is
+  // still READ to its full natural span, so that remains the allocation tail.
   static constexpr int kACubeH      = shape<0>(TileShape{});                  // CUBE_H = Block_MN = TileM for A
   static constexpr int kACubeW      = 64;                                    // AiuContElemSize for fp16
   static constexpr int kASlices     = kACubeW / 16;                          // 8 words per slice
-  // PITCH 64 HALFS = 128 B, not the minimum 16. The tight pack faulted on the box in B's AIU load
-  // (vmem.aiu.ld.tsm ... .b8) because smem_b FOLLOWS smem_a and cute::array_aligned only guarantees 16 B, while
-  // PPU0010's AIU needs 32 -- the old alignment held only because A's byte count happened to be a multiple of 32.
-  // At 64 halfs every cube base and the whole span are 128-B multiples, so the alignment is structural instead of
-  // arithmetic. Costs 2944 B against 2272 at pitch 16, still 5.6x under the unpacked 16,384.
-  static constexpr int kAPackPitch  = PPU_A_PACK_PITCH;                      // halfs; see PPU_A_PACK_PITCH
+#if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
+  static constexpr int kAPackRows   = PPU_A_PACK;
+#else
+  static constexpr int kAPackRows   = 1;                                    // keeps flag-off type arithmetic valid
+#endif
+  // Every selected pitch is a 64-half/128-B multiple. Besides aligning every cube base, that makes the whole A span
+  // a 128-B multiple so smem_b, which immediately follows it, retains the PPU0010 AIU load's required alignment.
+  // The old tight row-0 pitch made smem_b start at a merely 16-B-aligned address and faulted on the box.
+  static constexpr int kAPackPitch  = detail::aPackPitchForRows(kAPackRows); // halfs; model-derived R function
   static constexpr int kACubes      = shape<2>(TileShape{}) / kACubeW;       // cubes per stage = InstNum
   // Rounded up to 64 halfs so smem_b starts 128-B aligned whatever the cube geometry is.
   static constexpr int kAPackSpanRaw = kAPackPitch * (kACubes * DispatchPolicy::Stages - 1) + kACubeH * kACubeW;
   static constexpr int kAPackSpan    = ((kAPackSpanRaw + 63) / 64) * 64;
-  static constexpr int kAWrThreads  = kACubes * kASlices * 2;                // cube x run x (16 halfs / 8 per thread)
-  // Row 0's run offsets, derived from ppu_tsm_ld_swzl_sim rather than tabulated: row 0 means lane/4 == 0 and
-  // v/2 == 0, which leaves vreg_line_idx = 0 and vreg_vec_idx = v%2, so the run starts at the slice base plus
-  // swz2(v=0)*4 words and covers 8 words. A constexpr function, not a static array -- a static constexpr array
-  // member has no device definition.
-  CUTLASS_HOST_DEVICE static constexpr int aPackRunOff(int s) {
+  static constexpr int kAWrThreads   = kACubes * kAPackRows * kASlices * 2;  // cube x row x run x 2 half-runs
+  // One row's run offsets, derived directly from ppu_tsm_ld_swzl_sim. vreg_line_idx selects the 4-row cache line;
+  // vreg_vec_idx and slice_start_vec select one of its four 8-word runs. The odd-line XOR swaps the two 4-word
+  // half-runs but does not change their union's start; copy_A_packed_rows applies that swap to h separately.
+  CUTLASS_HOST_DEVICE static constexpr int aPackRunOff(int row, int s) {
     int const ssv = (((s & 1) << 1) + ((s & 2) >> 1)) * 2;                    // 0, 4, 2, 6
-    return 2 * (kACubeH * 8 * s + ssv * 4);                                  // halfs
+    int const line = row / 4;
+    int const run_vec = (2 * (row % 4) + ssv) % 8;
+    return 2 * (kACubeH * 8 * s + line * 32 + run_vec * 4);                  // halfs
   }
   // l85's collision check. Defined here, ASSERTED in mma(): a static_assert in the class body calls a member of an
   // incomplete class, which EDG accepts and hgcc rejects with "no type named 'SharedStorage'".
@@ -361,12 +355,14 @@ public:
     int const n = kACubes * DispatchPolicy::Stages;
     for (int i = 0; i < n; ++i)
       for (int j = i + 1; j < n; ++j)
-        for (int a = 0; a < kASlices; ++a)
-          for (int b = 0; b < kASlices; ++b) {
-            int const x = kAPackPitch * i + aPackRunOff(a);
-            int const y = kAPackPitch * j + aPackRunOff(b);
-            if (x < y + 16 && y < x + 16) return false;
-          }
+        for (int row_i = 0; row_i < kAPackRows; ++row_i)
+          for (int row_j = 0; row_j < kAPackRows; ++row_j)
+            for (int a = 0; a < kASlices; ++a)
+              for (int b = 0; b < kASlices; ++b) {
+                int const x = kAPackPitch * i + aPackRunOff(row_i, a);
+                int const y = kAPackPitch * j + aPackRunOff(row_j, b);
+                if (x < y + 16 && y < x + 16) return false;
+              }
     return true;
   }
   using RealInternalElementB = cute::conditional_t<!SwapAB, ElementB, ElementA>;
@@ -960,10 +956,15 @@ public:
     // l85's collision check, as a body-level assert. It CANNOT sit in the class body: it calls a member of the
     // same class, which is still incomplete there -- nvcc's EDG front end accepts that and hgcc rejects it with
     // "no type named 'SharedStorage'", which is how the local gate passed and the box build failed.
-    static_assert(aPackDisjoint(), "PPU_A_PACK: packed row-0 runs collide -- raise kAPackPitch");
+    static_assert(kAPackRows >= 1 && kAPackRows <= 16,
+                  "PPU_A_PACK=R requires 1 <= R <= the 16-row swzl instruction footprint");
+    static_assert(kAPackRows <= kACubeH, "PPU_A_PACK=R cannot exceed A's cube height");
+    static_assert(aPackDisjoint(), "PPU_A_PACK: packed first-R-row runs collide -- fix the derived pitch");
     static_assert(kACubeW == 64, "PPU_A_PACK: run offsets assume AiuContElemSize == 64 halfs");
-    // The read's pitch and the write's now come from the same macro (PPU_A_PACK_PITCH), so they cannot diverge
-    // the way they did when each side carried its own literal.
+    static_assert(kAPackPitch % 64 == 0 && kAPackSpan % 64 == 0,
+                  "PPU_A_PACK: every cube base and the complete A span must remain 128-B aligned");
+    // The read's pitch and the write's call the same detail::aPackPitchForRows(), so they cannot diverge the way
+    // they did when each side carried its own literal.
     static_assert(int(cute::size<0>(TileShape{})) == kACubeH, "PPU_A_PACK: CUBE_H must be TileM");
 #endif
     SharedStorage& storage = *reinterpret_cast<SharedStorage*>(smem_buf);
@@ -989,7 +990,8 @@ public:
     auto copy_A_and_B = [&] (auto k_tile, auto k_iter_crd, int pipe) {
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
       copy_aiu(gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd), tBsB(_,_,_,pipe), warp_idx);
-      copy_A_packed_row0(gA, storage.smem_a.begin(), k_tile, pipe, thread_idx);
+      copy_A_packed_rows<kAPackRows>(
+          gA, storage.smem_a.begin(), k_tile, pipe, thread_idx, gmem_tiled_copy_A.desc_.dim_h);
 #else
       {
         auto gmem_thr_copy_A = gmem_tiled_copy_A.get_slice(thread_idx);
@@ -1836,25 +1838,33 @@ private:
     }
   }
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
-  /// A's row 0 into the PACKED cube layout. Four contiguous 16-half runs per cube at the offsets l86 exported, and
-  /// inside a run the logical k advances with the physical word, so each run is a plain copy with no shuffle.
+  /// A's first R rows into the PACKED cube layout. Each row has four contiguous 16-half runs at the offsets l86
+  /// exported. Logical k advances inside each 8-half transfer; odd cache lines swap the two transfers in a run.
   /// cp.async and not the AIU: the AIU write is .padz and would write each cube's 15 zero rows over its packed
-  /// neighbour's row 0. One 128-bit transfer per thread, kAWrThreads threads, so one instruction on one warp.
-  template <class GA, class EA>
+  /// neighbour's real rows. kAWrThreads counts 128-bit transfers; threads stride that logical copy domain when R
+  /// needs more transfers than the CTA has threads. Rows between the problem's M and R are zero-filled just as the
+  /// ordinary .padz AIU write did -- reading them from GMEM would make an M<R launch walk past A.
+  template <int R, class GA, class EA>
   CUTLASS_DEVICE
-  void copy_A_packed_row0(GA const& gA, EA* smem_a, int k_tile, int pipe, int thread_idx) {
-    if (thread_idx >= kAWrThreads) return;
-    int const per = kASlices * 2;
-    int const c   = thread_idx / per;            // which cube in this stage
-    int const run = (thread_idx % per) / 2;      // which of row 0's runs
-    int const h   = thread_idx % 2;              // which 8-half half of the run
-    // The raw op, not a Copy_Atom: the atom's SrcLayout only matches when it is reached through a TiledCopy, and
-    // the thread -> (cube, run, half) map here is not a tiler. One 128-bit ppu.cp.async.cg per thread.
-    auto const& gsrc = *reinterpret_cast<cute::uint128_t const*>(
-        &gA(Int<0>{}, c * kACubeW + run * 16 + h * 8, k_tile));
-    auto&       sdst = *reinterpret_cast<cute::uint128_t*>(
-        smem_a + kAPackPitch * (c + kACubes * pipe) + aPackRunOff(run) + h * 8);
-    PPU_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>::copy(gsrc, sdst);
+  void copy_A_packed_rows(
+      GA const& gA, EA* smem_a, int k_tile, int pipe, int thread_idx, int valid_rows) {
+    static_assert(R == kAPackRows, "packed-A writer and allocation must use the same row count");
+    constexpr int kThreads = int(cute::size(TiledMma{}));
+    int const per_cube = R * kASlices * 2;
+    for (int logical_thread = thread_idx; logical_thread < kAWrThreads; logical_thread += kThreads) {
+      int const c   = logical_thread / per_cube;                    // which cube in this stage
+      int const row = (logical_thread % per_cube) / (kASlices * 2); // which row slot (real or zfill)
+      int const run = (logical_thread % (kASlices * 2)) / 2;        // which of this row's four runs
+      int const h   = logical_thread % 2;                            // which logical 8-half half of the run
+      int const physical_h = h ^ ((row / 4) & 1);                   // l86: odd lines swap the half-runs
+      // The raw op, not a Copy_Atom: the atom's SrcLayout only matches when reached through a TiledCopy, and this
+      // thread -> (cube,row,run,half) map is not a tiler. ZFILL preserves the AIU .padz contract for M < R.
+      auto const& gsrc = *reinterpret_cast<cute::uint128_t const*>(
+          &gA(row, c * kACubeW + run * 16 + h * 8, k_tile));
+      auto&       sdst = *reinterpret_cast<cute::uint128_t*>(
+          smem_a + kAPackPitch * (c + kACubes * pipe) + aPackRunOff(row, run) + physical_h * 8);
+      PPU_CP_ASYNC_CACHEGLOBAL_ZFILL<cute::uint128_t>::copy(gsrc, sdst, row < valid_rows);
+    }
   }
 #endif
 

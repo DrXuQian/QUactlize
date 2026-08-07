@@ -15,17 +15,9 @@
 // in the zero slot. Both were inside actlize headers until 2026-08-06.
 #include "quactlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp"
 #include "quactlize_extensions/cutlass/detail/quactlize_mixed_dtype.hpp"
+#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_a_pack.hpp"
 
 #define ENABLE_AIU 1
-
-// ONE definition of the packed cube pitch, used by BOTH sides. The read's pitch is baked into A's atom by the
-// builder and the write's is computed in the collective; as two separate literals they diverged -- 16 against 64 --
-// and the kernel wrote at one spacing, read at another, and faulted with an invalid VA. 64 halfs = 128 B keeps every
-// cube base and the whole span 128-B aligned, which smem_b's AIU descriptor needs (its alignment used to hold only
-// because A's byte count happened to be a multiple of 32).
-#ifndef PPU_A_PACK_PITCH
-#define PPU_A_PACK_PITCH 64
-#endif
 
 namespace cutlass::gemm::collective {
 
@@ -149,15 +141,14 @@ template <
   // InternalSmemCopyAtomA gives PPU0010_TSM_LD_SWZL<half_t, 16, 64, true, false, 4>, whose (Block_MN,
   // AiuContElemSize, InstNum) match here and not DefaultGemm_AIU_Operand's, which is why an override placed there
   // was inert.
-  // PPU_A_PACK: pack the cube BASES together. Row 0 owns only 32 of a cube's 512 words, in 4 runs of 8
-  // (fold_derivation/l84, l86), and when only row 0 carries data the bytes between the runs are read as garbage into
-  // accumulator rows the epilogue masks. l85 verifies an 8-word (16-half) pitch is collision-free. Geometry, and so
-  // the swizzle and the write/read pairing, are untouched -- only the distance between bases changes.
+  // PPU_A_PACK=R: pack the cube BASES together. Each of the first R rows owns 32 of a cube's 512 words, in four
+  // 8-word runs (fold_derivation/l84, l86); the bytes between those runs are read only into accumulator rows the
+  // epilogue masks. l85 derives the collision-free, 128-B-aligned pitch for R. Geometry, and therefore the swizzle
+  // and the write/read pairing, are untouched -- only the distance between bases changes.
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
-  // MUST EQUAL the collective's kAPackPitch -- the read's pitch comes from here and the write's from there, and a
-  // mismatch writes at one spacing and reads at another. That is exactly how the packed path faulted: this stayed
-  // at 16 when the collective moved to 64. The collective static_asserts the two against each other now.
-  static constexpr int kCubePitchA = PPU_A_PACK_PITCH;
+  // Both the read atom and collective writer call the same constexpr function. Separate literals once diverged
+  // (16 here, 64 there), making the kernel write at one spacing and read at another until the AIU load faulted.
+  static constexpr int kCubePitchA = detail::aPackPitchForRows(PPU_A_PACK);
 #else
   static constexpr int kCubePitchA = 0;    // 0 = natural CUBE_H * CUBE_W
 #endif
