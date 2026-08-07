@@ -158,7 +158,8 @@ inline char const* moe_dist_name(int mode) {
 }
 
 inline bench_samples::Sample moe_identity(const Band& bd, char const* schema,
-                                         int tm, int tn, int tk, int wm, int wn, int st) {
+                                         int tm, int tn, int tk, int wm, int wn, int st,
+                                         int bc, int bc_eff) {
   bench_samples::Sample s{};
   // The fixture is identified by its SHAPE and distribution rather than a hand-typed label: two runs of the
   // same shape must land in the same group, and a typo in a label would silently split them into two verdicts.
@@ -174,6 +175,7 @@ inline bench_samples::Sample moe_identity(const Band& bd, char const* schema,
   s.n = bd.N; s.k = bd.K; s.gs = bd.gs;
   s.experts = bd.L; s.rows = bd.Rows; s.mmax = bd.Mmax;
   s.tm = tm; s.tn = tn; s.tk = tk; s.wm = wm; s.wn = wn; s.st = st;
+  s.bc = bc; s.bc_eff = bc_eff;
   s.pass = moe_pass();
   return s;
 }
@@ -183,15 +185,16 @@ inline bench_samples::Sample moe_identity(const Band& bd, char const* schema,
 // row that killed a sweep is unnamed and analyse.py's unfinished() has nothing to find. `us` is deliberately
 // absent -- there is nothing measured yet.
 inline void moe_attempt(const Band& bd, char const* schema,
-                        int tm, int tn, int tk, int wm, int wn, int st) {
+                        int tm, int tn, int tk, int wm, int wn, int st, int bc, int bc_eff) {
   if (!bench_samples::enabled()) return;
-  bench_samples::attempt(moe_identity(bd, schema, tm, tn, tk, wm, wn, st));
+  bench_samples::attempt(moe_identity(bd, schema, tm, tn, tk, wm, wn, st, bc, bc_eff));
 }
 
 inline void moe_sample(const Band& bd, char const* schema,
-                       int tm, int tn, int tk, int wm, int wn, int st, double us) {
+                       int tm, int tn, int tk, int wm, int wn, int st,
+                       int bc, int bc_eff, double us) {
   if (!bench_samples::enabled()) return;
-  bench_samples::Sample s = moe_identity(bd, schema, tm, tn, tk, wm, wn, st);
+  bench_samples::Sample s = moe_identity(bd, schema, tm, tn, tk, wm, wn, st, bc, bc_eff);
   s.us = us;
   bench_samples::emit(s);
 }
@@ -482,14 +485,14 @@ constexpr bool moe_b_chunk_effective() {
             (BD).mode ? (BD).offdev : nullptr, (BD).ws, (BD).wsb, nullptr, _b2.get(),                                \
             /*k_full=*/-1, /*prefix_ready=*/false, /*splitk=*/1, moe_abcast()); };                                  \
       double u; const int _f0 = moe_grouped_ppu::moeg_fail_count();                                                \
-      moe_attempt(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv);                                                          \
+      moe_attempt(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc));                             \
       std::printf("  -> %s\n", _t); std::fflush(stdout);                                                           \
       if (moe_acu()) { u = time_it(_go, 0); std::printf("  [acu] ONE COLD launch (not a timing): %s\n", _t); }                         \
       else             u = time_it(_go, 20);                                                                       \
       constexpr int _wcu = _bc                                                                                     \
           ? fold::warps_per_cu_chunked<TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),32,true>                                 \
           : fold::warps_per_cu<TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),32,true>;                                        \
-      if (moe_row_ran(BD, _t, u, _f0, (LOB)+(HIB))) { report(BD,_t,u,TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),_wcu); upd(BEST, _t, u); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, u); } \
+      if (moe_row_ran(BD, _t, u, _f0, (LOB)+(HIB))) { report(BD,_t,u,TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),_wcu); upd(BEST, _t, u); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), u); } \
     }                                                                                                              \
   }
 
@@ -535,14 +538,14 @@ constexpr bool moe_b_chunk_effective() {
             (BD).mode ? (BD).offdev : nullptr, (BD).ws, (BD).wsb, nullptr,                                          \
             /*B2=*/nullptr, /*k_full=*/-1, /*prefix_ready=*/false, /*splitk=*/1, moe_abcast()); };                   \
       double u; const int _f0 = moe_grouped_ppu::moeg_fail_count();                                                \
-      moe_attempt(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv);                                                          \
+      moe_attempt(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc));                             \
       std::printf("  -> %s\n", _t); std::fflush(stdout);                                                           \
       if (moe_acu()) { u = time_it(_go, 0); std::printf("  [acu] ONE COLD launch (not a timing): %s\n", _t); }                         \
       else             u = time_it(_go, 20);                                                                       \
       constexpr int _wcu = _bc                                                                                     \
           ? fold::warps_per_cu_chunked<TMv,TNv,TKv,WMv,WNv,Sv,(BITS),32,true>                                      \
           : fold::warps_per_cu<TMv,TNv,TKv,WMv,WNv,Sv,(BITS),32,true>;                                             \
-      if (moe_row_ran(BD, _t, u, _f0, (BITS))) { report(BD,_t,u,TMv,TNv,TKv,WMv,WNv,Sv,(BITS),_wcu); upd(BEST, _t, u); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, u); } \
+      if (moe_row_ran(BD, _t, u, _f0, (BITS))) { report(BD,_t,u,TMv,TNv,TKv,WMv,WNv,Sv,(BITS),_wcu); upd(BEST, _t, u); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), u); } \
     }                                                                                                              \
   }
 

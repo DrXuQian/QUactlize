@@ -44,14 +44,14 @@ bool num_field(std::string const& l, char const* key, double& out) {
 
 std::string config_name(std::string const& l) {
   std::string schema;
-  double tm, tn, tk, wm, wn, st;
+  double tm, tn, tk, wm, wn, st, bc;
   if (!str_field(l, "schema", schema) || !num_field(l, "tm", tm) || !num_field(l, "tn", tn) ||
       !num_field(l, "tk", tk) || !num_field(l, "wm", wm) || !num_field(l, "wn", wn) ||
-      !num_field(l, "st", st))
+      !num_field(l, "st", st) || !num_field(l, "bc", bc))
     return "";
   char buf[96];
-  std::snprintf(buf, sizeof buf, "%s %dx%dx%d:%dx%d:s%d", schema.c_str(), int(tm), int(tn), int(tk),
-                int(wm), int(wn), int(st));
+  std::snprintf(buf, sizeof buf, "%s %dx%dx%d:%dx%d:s%d bc%d", schema.c_str(), int(tm), int(tn), int(tk),
+                int(wm), int(wn), int(st), int(bc));
   return buf;
 }
 

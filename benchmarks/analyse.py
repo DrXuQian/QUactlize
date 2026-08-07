@@ -34,16 +34,14 @@ import sys
 # tie logic would then report a spread between two different kernels as measurement noise.
 #
 # `bc_eff` is deliberately NOT a key: it is derived (the collective grants chunking only for bits in {1,2} with a
-# fragment that is exactly one delivery), so a refused request compiles to the same kernel as bc=0. It is validated
-# as present and surfaced in the name only when it disagrees with the request.
+# fragment that is exactly one delivery), so a refused request compiles to the same kernel as bc=0. It stays in the
+# exported record for diagnostics, but must not leak into config_name either -- that name is also used for grouping.
 CONFIG_KEYS = ("schema", "tm", "tn", "tk", "wm", "wn", "st", "bc")
 FIXTURE_KEYS = ("fixture", "dist", "n", "k", "gs", "experts", "rows", "mmax")
 
 
 def config_name(s: dict) -> str:
-    eff = s.get("bc_eff")
-    bc = f"bc{s['bc']}" + (f"->{eff}" if eff is not None and eff != s["bc"] else "")
-    return f"{s['schema']} {s['tm']}x{s['tn']}x{s['tk']}:{s['wm']}x{s['wn']}:s{s['st']} {bc}"
+    return f"{s['schema']} {s['tm']}x{s['tn']}x{s['tk']}:{s['wm']}x{s['wn']}:s{s['st']} bc{s['bc']}"
 
 
 def load(text: str):
@@ -458,17 +456,17 @@ def coverage_report(cov: dict) -> str:
 
 SELF_TEST = """
 {"rec":"run","bench":"planted","build":"PPU_PACKED_FORMAT=0","reps":3}
-{"rec":"s","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":256,"rows":128,"mmax":420,"tm":64,"tn":128,"tk":64,"wm":64,"wn":64,"st":3,"pass":0,"us":100.0}
-{"rec":"s","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":256,"rows":128,"mmax":420,"tm":64,"tn":128,"tk":64,"wm":64,"wn":64,"st":3,"pass":1,"us":101.0}
-{"rec":"s","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":256,"rows":128,"mmax":420,"tm":64,"tn":128,"tk":64,"wm":64,"wn":64,"st":3,"pass":2,"us":102.0}
-{"rec":"s","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":256,"rows":128,"mmax":420,"tm":32,"tn":64,"tk":64,"wm":32,"wn":32,"st":3,"pass":0,"us":101.5}
-{"rec":"s","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":256,"rows":128,"mmax":420,"tm":32,"tn":64,"tk":64,"wm":32,"wn":32,"st":3,"pass":1,"us":103.0}
-{"rec":"s","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":256,"rows":128,"mmax":420,"tm":32,"tn":64,"tk":64,"wm":32,"wn":32,"st":3,"pass":2,"us":104.0}
-{"rec":"s","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":256,"rows":128,"mmax":420,"tm":16,"tn":32,"tk":64,"wm":16,"wn":16,"st":2,"pass":0,"us":300.0}
-{"rec":"s","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":256,"rows":128,"mmax":420,"tm":16,"tn":32,"tk":64,"wm":16,"wn":16,"st":2,"pass":1,"us":301.0}
-{"rec":"s","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":256,"rows":128,"mmax":420,"tm":16,"tn":32,"tk":64,"wm":16,"wn":16,"st":2,"pass":2,"us":302.0}
+{"rec":"s","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":256,"rows":128,"mmax":420,"tm":64,"tn":128,"tk":64,"wm":64,"wn":64,"st":3,"bc":0,"bc_eff":0,"pass":0,"us":100.0}
+{"rec":"s","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":256,"rows":128,"mmax":420,"tm":64,"tn":128,"tk":64,"wm":64,"wn":64,"st":3,"bc":0,"bc_eff":0,"pass":1,"us":101.0}
+{"rec":"s","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":256,"rows":128,"mmax":420,"tm":64,"tn":128,"tk":64,"wm":64,"wn":64,"st":3,"bc":0,"bc_eff":0,"pass":2,"us":102.0}
+{"rec":"s","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":256,"rows":128,"mmax":420,"tm":32,"tn":64,"tk":64,"wm":32,"wn":32,"st":3,"bc":0,"bc_eff":0,"pass":0,"us":101.5}
+{"rec":"s","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":256,"rows":128,"mmax":420,"tm":32,"tn":64,"tk":64,"wm":32,"wn":32,"st":3,"bc":0,"bc_eff":0,"pass":1,"us":103.0}
+{"rec":"s","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":256,"rows":128,"mmax":420,"tm":32,"tn":64,"tk":64,"wm":32,"wn":32,"st":3,"bc":0,"bc_eff":0,"pass":2,"us":104.0}
+{"rec":"s","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":256,"rows":128,"mmax":420,"tm":16,"tn":32,"tk":64,"wm":16,"wn":16,"st":2,"bc":0,"bc_eff":0,"pass":0,"us":300.0}
+{"rec":"s","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":256,"rows":128,"mmax":420,"tm":16,"tn":32,"tk":64,"wm":16,"wn":16,"st":2,"bc":0,"bc_eff":0,"pass":1,"us":301.0}
+{"rec":"s","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":256,"rows":128,"mmax":420,"tm":16,"tn":32,"tk":64,"wm":16,"wn":16,"st":2,"bc":0,"bc_eff":0,"pass":2,"us":302.0}
 not json at all
-{"rec":"s","fixture":"g","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":0,"rows":0,"mmax":0,"tm":64,"tn":128,"tk":64,"wm":64,"wn":64,"st":3,"pass":0,"us":50.0}
+{"rec":"s","fixture":"g","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":0,"rows":0,"mmax":0,"tm":64,"tn":128,"tk":64,"wm":64,"wn":64,"st":3,"bc":0,"bc_eff":0,"pass":0,"us":50.0}
 """
 
 
@@ -478,7 +476,7 @@ not json at all
 # than reading a ranking: a per-fixture report would name two winners and say nothing about whether one suffices.
 def _s(fx, tm, tn, wm, wn, st, us, p):
     return ('{"rec":"s","fixture":"%s","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":0,"rows":0,'
-            '"mmax":0,"tm":%d,"tn":%d,"tk":64,"wm":%d,"wn":%d,"st":%d,"pass":%d,"us":%.1f}' %
+            '"mmax":0,"tm":%d,"tn":%d,"tk":64,"wm":%d,"wn":%d,"st":%d,"bc":0,"bc_eff":0,"pass":%d,"us":%.1f}' %
             (fx, tm, tn, wm, wn, st, p, us))
 
 
@@ -511,7 +509,7 @@ def self_test() -> int:
     # THE ATTEMPT RECORD'S READER, PLANTED BOTH WAYS. An `a` with a matching `s` must NOT be reported (or every
     # healthy sweep cries wolf and the warning stops being read), and an `a` without one MUST be.
     _a = ('{"rec":"a","fixture":"f","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":0,"rows":128,'
-          '"mmax":128,"tm":64,"tn":64,"tk":64,"wm":64,"wn":32,"st":3,"pass":0}')
+          '"mmax":128,"tm":64,"tn":64,"tk":64,"wm":64,"wn":32,"st":3,"bc":0,"bc_eff":0,"pass":0}')
     _s_done = _a.replace('"rec":"a"', '"rec":"s"')[:-1] + ',"us":209.27}'
     _r, _sm, _at, _ex, _bd = load(_a + "\n" + _s_done + "\n")
     checks.append(("an attempt that produced a sample is not reported as unfinished",
@@ -525,7 +523,7 @@ def self_test() -> int:
     # say "keep": each direction gets a fixture set constructed to force it.
     def _p(fix, rows, tm, st, us):
         return ('{"rec":"s","fixture":"%s","dist":"d","schema":"i4","n":512,"k":2048,"gs":32,"experts":0,'
-                '"rows":%d,"mmax":%d,"tm":%d,"tn":64,"tk":64,"wm":32,"wn":32,"st":%d,"pass":0,"us":%.1f}'
+                '"rows":%d,"mmax":%d,"tm":%d,"tn":64,"tk":64,"wm":32,"wn":32,"st":%d,"bc":0,"bc_eff":0,"pass":0,"us":%.1f}'
                 % (fix, rows, rows, tm, st, us))
     # st=2 is never a winner and never more than 1% behind -> DEAD, droppable.
     dead = "\n".join([_p("A", 8, 64, 3, 100.0), _p("A", 8, 64, 2, 100.5),
@@ -576,7 +574,7 @@ def self_test() -> int:
             for e, us in ((0, dense_us), (1, grouped_us)):
                 L.append('{"rec":"s","fixture":"f","dist":"d","schema":"i4","n":4096,"k":4096,"gs":32,'
                          '"experts":%d,"rows":2048,"mmax":2048,"tm":64,"tn":128,"tk":64,"wm":64,"wn":32,'
-                         '"st":3,"pass":%d,"us":%.1f}' % (e, p_, us + j))
+                         '"st":3,"bc":0,"bc_eff":0,"pass":%d,"us":%.1f}' % (e, p_, us + j))
         return "\n".join(L) + "\n"
 
     ok_rows = invariant(load(_inv(200.0, 220.0))[1])

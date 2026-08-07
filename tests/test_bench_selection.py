@@ -27,7 +27,7 @@ def _sample(fixture, cfg, pass_i, us, **over):
     tm, tn, tk, wm, wn, st = cfg
     rec = dict(rec="s", fixture=fixture, dist="planted-v1", schema="i4",
                n=512, k=2048, gs=32, experts=256, rows=128, mmax=420,
-               tm=tm, tn=tn, tk=tk, wm=wm, wn=wn, st=st)
+               tm=tm, tn=tn, tk=tk, wm=wm, wn=wn, st=st, bc=0, bc_eff=0)
     rec.update(over)
     rec["pass"] = pass_i
     rec["us"] = us
@@ -129,6 +129,23 @@ def test_one_pass_is_not_a_ranking(tmp_path):
                  + _sample("f", LEADER, 0, 100.0) + "\n"
                  + _sample("f", OVERLAP, 0, 200.0) + "\n")
     assert _py_verdict(p)["ranked"] is False
+
+
+def test_bc_request_is_a_config_axis_but_bc_eff_is_export_only(tmp_path, xcheck_bin):
+    """bc0/bc1 are different candidates even when the collective rejects bc1 and both execute the same kernel.
+
+    Conversely bc_eff describes what happened; it must not split repeated samples for one requested row.
+    """
+    lines = ['{"rec":"run","bench":"planted","build":"b","reps":3}']
+    for pass_i in range(3):
+        lines.append(_sample("f", LEADER, pass_i, 100.0 + pass_i, bc=0, bc_eff=0))
+        lines.append(_sample("f", LEADER, pass_i, 200.0 + pass_i, bc=1, bc_eff=pass_i % 2))
+    p = tmp_path / "bc.jsonl"
+    p.write_text("\n".join(lines) + "\n")
+    c, y = _cpp_verdict(xcheck_bin, p), _py_verdict(p)
+    assert y["candidates"] == 2, "bc requests collapsed together, or bc_eff incorrectly became a key"
+    assert c["leader"] == y["leader"]
+    assert y["leader"].endswith("bc0")
 
 
 # ---------------------------------------------------------------------------------------------------------
