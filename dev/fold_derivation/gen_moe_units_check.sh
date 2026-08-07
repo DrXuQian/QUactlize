@@ -105,7 +105,12 @@ foreach(_row IN LISTS _MOE_FORMATS)
   endif()
   list(GET _hit 0 _t)
   file(READ "${_t}" _txt)
-  string(REGEX MATCHALL "X\\([0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,B\\)" _hits "${_txt}")
+  # ARITY-AGNOSTIC. This used to spell six [0-9]+ groups; PPU_B_CHUNK became a seventh row field on 2026-08-07 and
+  # the gate matched ZERO rows -- which the count cross-check below caught, but as "matched 0, declares 404", a
+  # message about the table rather than about this regex. A gate whose expectation has to be edited every time the
+  # row gains a field is one that reads as a table failure whenever the row changes. [0-9,]+ cannot cross a line or
+  # a paren, so it still cannot over-match, and the declared-count check still catches under-matching.
+  string(REGEX MATCHALL "X\\([0-9,]+,B\\)" _hits "${_txt}")
   list(LENGTH _hits _nrows)
   string(TOUPPER "${_emit}" _uc)
   if(NOT _txt MATCHES "#define[ \t]+LOWBIT_GROUPED_${_uc}_CFG_ROWS[ \t]+([0-9]+)")
@@ -123,7 +128,15 @@ foreach(_row IN LISTS _MOE_FORMATS)
     list(GET _hf 2 _tk)
     list(GET _hf 3 _wm)
     list(GET _hf 4 _wn)
-    list(APPEND _exp_names "moe_unit_${_nm}_tn${_tn}_wn${_wn}_tm${_tm}_wm${_wm}_tk${_tk}")
+    # bc is field 6 (tm,tn,tk,wm,wn,st,bc) and it IS in the unit name, so leaving it out of the expectation would
+    # collapse the bc=0/bc=1 pair onto one name and under-count by exactly the number of chunkable rows.
+    list(LENGTH _hf _nf)
+    if(_nf GREATER 6)
+      list(GET _hf 6 _bc)
+    else()
+      set(_bc 0)
+    endif()
+    list(APPEND _exp_names "moe_unit_${_nm}_tn${_tn}_wn${_wn}_tm${_tm}_wm${_wm}_tk${_tk}_bc${_bc}")
   endforeach()
 endforeach()
 list(REMOVE_DUPLICATES _exp_names)

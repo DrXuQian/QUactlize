@@ -32,6 +32,13 @@ struct Sample {
   int n, k, gs;
   int experts, rows, mmax;  // MoE; mmax decides which compact-A capacities are reachable, so it is not optional
   int tm, tn, tk, wm, wn, st;
+  // PPU_B_CHUNK, AS TWO FIELDS, because it is two different facts. `bc` is what the ROW asked for -- it became a
+  // tactic row field on 2026-08-07 and is no longer a property of the build, so it cannot live in run_header's
+  // `build` string any more. `bc_eff` is what the collective's capability predicate actually granted: chunking
+  // needs bits in {1,2} AND a fragment that is exactly one delivery, and a row that asks and is refused compiles
+  // to the SAME kernel as bc=0. Recording only the request would put two identical kernels in the file under
+  // different identities and let an analyser "discover" a difference between them.
+  int bc, bc_eff;
   int pass;                 // which repetition of the WHOLE candidate list this came from
   double us;                // the measurement
 };
@@ -91,9 +98,10 @@ inline void attempt(Sample const& s) {
   std::fprintf(f,
       "{\"rec\":\"a\",\"fixture\":\"%s\",\"dist\":\"%s\",\"schema\":\"%s\","
       "\"n\":%d,\"k\":%d,\"gs\":%d,\"experts\":%d,\"rows\":%d,\"mmax\":%d,"
-      "\"tm\":%d,\"tn\":%d,\"tk\":%d,\"wm\":%d,\"wn\":%d,\"st\":%d,\"pass\":%d}\n",
+      "\"tm\":%d,\"tn\":%d,\"tk\":%d,\"wm\":%d,\"wn\":%d,\"st\":%d,"
+      "\"bc\":%d,\"bc_eff\":%d,\"pass\":%d}\n",
       s.fixture, s.dist, s.schema, s.n, s.k, s.gs, s.experts, s.rows, s.mmax,
-      s.tm, s.tn, s.tk, s.wm, s.wn, s.st, s.pass);
+      s.tm, s.tn, s.tk, s.wm, s.wn, s.st, s.bc, s.bc_eff, s.pass);
   std::fflush(f);
 }
 
@@ -103,9 +111,10 @@ inline void emit(Sample const& s) {
   std::fprintf(f,
       "{\"rec\":\"s\",\"fixture\":\"%s\",\"dist\":\"%s\",\"schema\":\"%s\","
       "\"n\":%d,\"k\":%d,\"gs\":%d,\"experts\":%d,\"rows\":%d,\"mmax\":%d,"
-      "\"tm\":%d,\"tn\":%d,\"tk\":%d,\"wm\":%d,\"wn\":%d,\"st\":%d,\"pass\":%d,\"us\":%.6f}\n",
+      "\"tm\":%d,\"tn\":%d,\"tk\":%d,\"wm\":%d,\"wn\":%d,\"st\":%d,"
+      "\"bc\":%d,\"bc_eff\":%d,\"pass\":%d,\"us\":%.6f}\n",
       s.fixture, s.dist, s.schema, s.n, s.k, s.gs, s.experts, s.rows, s.mmax,
-      s.tm, s.tn, s.tk, s.wm, s.wn, s.st, s.pass, s.us);
+      s.tm, s.tn, s.tk, s.wm, s.wn, s.st, s.bc, s.bc_eff, s.pass, s.us);
   // FLUSHED PER SAMPLE, not once at the end. run_header() already flushed; emit() did not, and the benches call
   // flush() only after every pass and candidate -- so an abort discarded every buffered sample, which is the
   // entire content of the file. Per-sample flushing cannot make the SUCCESSORS run (a poisoned context needs the
@@ -131,9 +140,10 @@ inline void excluded(Sample const& s, char const* why) {
   std::fprintf(f,
       "{\"rec\":\"x\",\"fixture\":\"%s\",\"dist\":\"%s\",\"schema\":\"%s\","
       "\"n\":%d,\"k\":%d,\"gs\":%d,\"experts\":%d,\"rows\":%d,\"mmax\":%d,"
-      "\"tm\":%d,\"tn\":%d,\"tk\":%d,\"wm\":%d,\"wn\":%d,\"st\":%d,\"pass\":%d,\"why\":\"%s\"}\n",
+      "\"tm\":%d,\"tn\":%d,\"tk\":%d,\"wm\":%d,\"wn\":%d,\"st\":%d,"
+      "\"bc\":%d,\"bc_eff\":%d,\"pass\":%d,\"why\":\"%s\"}\n",
       s.fixture, s.dist, s.schema, s.n, s.k, s.gs, s.experts, s.rows, s.mmax,
-      s.tm, s.tn, s.tk, s.wm, s.wn, s.st, s.pass, reason);
+      s.tm, s.tn, s.tk, s.wm, s.wn, s.st, s.bc, s.bc_eff, s.pass, reason);
   std::fflush(f);
 }
 

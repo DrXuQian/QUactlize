@@ -52,6 +52,12 @@ PRUNE_RE = re.compile(r"--prune=([a-z-]+)", re.M)
 # how five tables went ungated long enough to each be emitted with a single --tactic-tk while dense got three.
 # Read off the regeneration line, same as --prune: it is the only place it appears.
 FORMAT_RE = re.compile(r"--format=([A-Za-z0-9_]+)", re.M)
+# --m-max IS PART OF THE TABLE'S IDENTITY, not a preference. A decode table is the same space, same format, same
+# tactic list, pruned to the TileM a small band can fill -- so replaying its arguments WITHOUT --m-max rebuilds the
+# unpruned table and reports drift that is entirely this parser's. codex hit exactly that: a 46-row Q3 decode table
+# checked against a 404-row rebuild. Read off the regeneration line, same as --prune and --format; absent means
+# unpruned, which is what every table before 2026-08-07 was.
+M_MAX_RE = re.compile(r"--m-max=(\d+)", re.M)
 # WHAT WAS REQUESTED IS NOT WHAT WAS EMITTED, since 2026-08-07. A --tactic-tk list may name members with no legal
 # grid (ArtifactTileK must tile TacticTileK), and the emitter now emits the legal subset instead of dying. So the
 # header carries TWO lists and both are true of different things: `tactic_tile_k:` is what the table COVERS, and
@@ -82,10 +88,13 @@ def declared_args(text: str):
         return None, "header does not declare `--prune=` in its regeneration line"
     fmt = FORMAT_RE.search(text)
     fmt_arg = [f"--format={fmt.group(1)}"] if fmt else []
+    mm = M_MAX_RE.search(text)
+    mm_arg = [f"--m-max={mm.group(1)}"] if mm else []
     return ([bits, artifact_tk, f"--space={space}", "--tactic-tk=" + ",".join(requested),
-             f"--prune={pr.group(1)}", *fmt_arg, *stages],
+             f"--prune={pr.group(1)}", *fmt_arg, *mm_arg, *stages],
             f"space={space} bits={bits} artifact_tile_k={artifact_tk} "
             f"tactic_tile_k={' '.join(tactic)}"
+            + (f" m-max={mm.group(1)}" if mm else "")
             + (f" (requested {' '.join(requested)}, {len(requested) - len(tactic)} with no legal grid)"
                if len(requested) != len(tactic) else "")
             + f" stages={' '.join(stages)}")

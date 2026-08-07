@@ -28,12 +28,22 @@ import pathlib
 import statistics
 import sys
 
-CONFIG_KEYS = ("schema", "tm", "tn", "tk", "wm", "wn", "st")
+# `bc` IS PART OF THE CONFIG KEY. PPU_B_CHUNK became a tactic row field on 2026-08-07, so bc=0 and bc=1 are two
+# different candidates that a sweep runs separately. Leaving it out of the key collapses them onto one name and
+# every pair gets read as two REPEATS of one candidate -- which is worse than losing the distinction, because the
+# tie logic would then report a spread between two different kernels as measurement noise.
+#
+# `bc_eff` is deliberately NOT a key: it is derived (the collective grants chunking only for bits in {1,2} with a
+# fragment that is exactly one delivery), so a refused request compiles to the same kernel as bc=0. It is validated
+# as present and surfaced in the name only when it disagrees with the request.
+CONFIG_KEYS = ("schema", "tm", "tn", "tk", "wm", "wn", "st", "bc")
 FIXTURE_KEYS = ("fixture", "dist", "n", "k", "gs", "experts", "rows", "mmax")
 
 
 def config_name(s: dict) -> str:
-    return f"{s['schema']} {s['tm']}x{s['tn']}x{s['tk']}:{s['wm']}x{s['wn']}:s{s['st']}"
+    eff = s.get("bc_eff")
+    bc = f"bc{s['bc']}" + (f"->{eff}" if eff is not None and eff != s["bc"] else "")
+    return f"{s['schema']} {s['tm']}x{s['tn']}x{s['tk']}:{s['wm']}x{s['wn']}:s{s['st']} {bc}"
 
 
 def load(text: str):
