@@ -35,9 +35,12 @@
 #include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 
+#include "bench_device.hpp"
 // PPU_CHUNK_STR comes from lowbit_moe_bench.hpp, where every sweep TU also prints its own copy of it.
 
 int main(int argc, char** argv) {
+  // FIRST, before any allocation: a device switch after the context exists is not a switch.
+  bench_device::bind_from_env();
   Band bd{};
   bd.L    = argc > 1 ? atoi(argv[1]) : 64;
   bd.Rows = argc > 2 ? atoi(argv[2]) : 128;

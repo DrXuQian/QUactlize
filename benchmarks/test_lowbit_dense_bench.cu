@@ -317,6 +317,7 @@ struct TileCfg { char const* name; int tm, tn, tk, wm, wn, st, acr; LowbitDenseW
 #include "bench_samples.hpp"
 #include "bench_floor.cuh"
 #include "lowbit_dense_configs.inc"
+#include "bench_device.hpp"
 static_assert(cutlass::sizeof_bits<QuantType>::value == LOWBIT_DENSE_CFG_BITS && TileShapeK == LOWBIT_DENSE_CFG_ARTIFACT_TILEK,
               "lowbit_dense_configs.inc was generated for a different (bits, TileK) than this binary. Regenerate: "
               "c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic && "
@@ -1107,6 +1108,8 @@ void xcheck_grouped(Options const& options) {
 }
 
 int main(int argc, char const **args) {
+  // FIRST, before any allocation: a device switch after the context exists is not a switch.
+  bench_device::bind_from_env();
   hggcDeviceProp props;
   int current_device_id;
   CUTLASS_PPU_CHECK(hggcGetDevice(&current_device_id));
