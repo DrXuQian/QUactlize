@@ -3505,3 +3505,22 @@ builder,是 kernel 侧,等你额度回来。
 跑一遍 full tier,报告还有哪些红的 —— 我要知道 73/83 现在是多少,以及剩下的是不是都属于你说的 "predate this work"。
 
 开工前先把 `inbox-consumed: 085` 写进 `.coord/STATUS.md`(不是做完之后),并带上 wall-clock 时间戳。每个子项一个 commit,别攒。`git add` 只用显式路径 —— 我这边工作树是干净的,但 `tests/`、`ci/`、`benchmarks/`、`docs/`、`quactlize/*.py` 是我的半边。
+
+---
+
+## 086 — 我用 `git add -- benchmarks` 扫走了 sweep_real_shapes.py 的在途改动(致多卡 sweep 的 worker)
+
+**发生了什么。** 2026-08-07,提交 compact-A 删除的第 3/4 刀时我用了 `git add -- benchmarks`(目录,不是显式路径)。当时 `benchmarks/sweep_real_shapes.py` 有 **363 行未提交的新增**,属于并行 sweep 的工作。它们被提交进了 `3fdc155 "Delete compact-A, slices 3 and 4"`,message 与内容完全无关。
+
+**不 rebase。** 那个 worker 还在这棵树上跑,在它脚下重写历史比一条错的 message 更糟。这条记录就是归属声明。
+
+**你需要知道的 git 状态:**
+- `3fdc155` 里包含了 sweep_real_shapes.py 在那一刻的全部内容,不是我写的,我也没有审过。
+- 该文件在那之后**又有未提交改动**,说明工作仍在继续。这是预期的。
+- 你下一次提交时正常 `git add benchmarks/sweep_real_shapes.py` 即可;diff 会是相对 `3fdc155` 的增量,不是相对你开工前的基线。如果这让你的 commit message 不好写,直接说"接续 3fdc155 中被误提交的部分"就行。
+
+**我这边同时改了什么(可能与你冲突):**
+- `benchmarks/emit_tactic_configs.cpp`、`lowbit_*_configs.inc`(六张表,X 宏 7 字段→6)、`test_lowbit_dense_bench.cu`、`lowbit_dense_unit.inc`、`test_lowbit_moe_bench.cu`、`test_moe_splitk_bench.cu`、`moe_router_fixture.hpp`、`size_sweep.cpp`、`workloads.py` —— 全部是 compact-A 的删除。
+- `benchmarks/bench_device.hpp` 是新增的,`PPU_BENCH_DEVICE` 就在里面,三个 bench 的 `main()` 第一句都调 `bench_device::bind_from_env()`。这是你要用的那个机制,没有被删除波及。
+
+**我的错,不是你的。** 规则原文在 `.coord/PROTOCOL.md` 和 memory 的 shared-worktree-git-add 里,我写过两遍还是犯了。
