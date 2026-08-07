@@ -50,6 +50,10 @@ inline constexpr std::array<int, 3> kWarpM{{16, 32, 64}};
 // WN=128 is deliberate.  The current MoE generator omits it, but it is the delivery escape for an int1 plane at TK32;
 // whether the remaining constraints reject a row must be printed, not encoded by leaving the axis out.
 inline constexpr std::array<int, 4> kWarpN{{16, 32, 64, 128}};
+// PPU_B_CHUNK is a per-tactic compile-time axis.  The collective remains authoritative about whether a requested
+// mode is effective for one concrete TiledMma; this host-readable domain only avoids duplicating formats for which
+// no 1- or 2-bit plane can use the chunk emitter at all.
+inline constexpr std::array<int, 2> kBChunkModes{{0, 1}};
 
 constexpr int fold_for(int bits, int tile_k) {
   int const run = tile_k * bits / 8;
@@ -74,6 +78,7 @@ enum class Exclusion {
   MinimumStageSmem,
   ProducerWarpN,
   ProducerMap,
+  BChunkUnsupportedBits,
 };
 
 constexpr char const* exclusion_clause(Exclusion e) {
@@ -94,6 +99,7 @@ constexpr char const* exclusion_clause(Exclusion e) {
     case Exclusion::MinimumStageSmem: return "the conservative gs16 scale+zero footprint exceeds the 256KB block limit";
     case Exclusion::ProducerWarpN: return "the offline producer exposes only consumer-validated WarpN values through 64";
     case Exclusion::ProducerMap: return "the Q6 two-plane inverse at TileK=256 is incomplete";
+    case Exclusion::BChunkUnsupportedBits: return "single-plane PPU_B_CHUNK requires a 1- or 2-bit format";
   }
   return "unknown exclusion";
 }
@@ -106,11 +112,12 @@ struct Candidate {
   union { int tactic_tile_k; int tk; };
   int wm, wn;
   int artifact_tile_k;
+  int b_chunk;
 
   constexpr Candidate(FormatSpec spec_, int tm_, int tn_, int tactic_tile_k_, int wm_, int wn_,
-                      int artifact_tile_k_ = 0)
+                      int artifact_tile_k_ = 0, int b_chunk_ = 0)
       : spec(spec_), tm(tm_), tn(tn_), tactic_tile_k(tactic_tile_k_), wm(wm_), wn(wn_),
-        artifact_tile_k(artifact_tile_k_ > 0 ? artifact_tile_k_ : tactic_tile_k_) {}
+        artifact_tile_k(artifact_tile_k_ > 0 ? artifact_tile_k_ : tactic_tile_k_), b_chunk(b_chunk_) {}
 };
 
 constexpr int artifact_low_fold(Candidate c) {
@@ -147,6 +154,11 @@ constexpr bool scale_copy_thread_coverage(Candidate c, int group_size = kMinimum
 // from artifact reachability: a template may be a legal consumer while the shipping *_for_tile producer cannot yet
 // make bytes for it.
 constexpr Exclusion common_kernel_exclusion(Candidate c) {
+  // The two-plane collective owns its own mode gate and supports every registered pair.  For a single plane,
+  // only int1/int2 have a chunk emitter; keeping this coarse avoids doubling dense/grouped int4 without copying
+  // the collective's TiledMma-dependent effectiveness predicate into this host-only header.
+  if (c.b_chunk != 0 && c.spec.high_bits == 0 && c.spec.low_bits != 1 && c.spec.low_bits != 2)
+    return Exclusion::BChunkUnsupportedBits;
   if (c.tm % 16 || c.tn % 16 || c.tactic_tile_k % 16 || c.wm % 16 || c.wn % 16)
     return Exclusion::AtomAlignment;
   if (c.wm > c.tm || c.wn > c.tn || c.tm % c.wm || c.tn % c.wn)

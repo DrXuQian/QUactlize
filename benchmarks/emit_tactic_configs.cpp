@@ -142,11 +142,10 @@ std::uint64_t fnv1a64_file(char const* path, bool& ok) {
 // ArtifactTileK is NOT here and must never be: it identifies the resident bytes, one per weight file, and a
 // tactic that could change it would invalidate every artifact on disk. That distinction is the whole point of
 // the split, and putting both in a row under one name is how it would be lost.
-// tm, tn, TacticTileK, wm, wn, stages, A_COMPACT_ROWS.
-//
-// THE SEVENTH FIELD IS THE COMPACT-A CAPACITY, and it is here rather than a build switch for the reason TileK
-// is: capacity changes SmemLayoutA and therefore SharedStorageSize and therefore the instantiated collective.
-using Row = std::tuple<int, int, int, int, int, int>;
+// tm, tn, TacticTileK, wm, wn, stages, PPU_B_CHUNK request.  The request is a row field because it changes the
+// instantiated collective.  Whether it is effective remains a property of that collective's actual TiledMma and
+// is deliberately not re-derived by this host-only emitter.
+using Row = std::tuple<int, int, int, int, int, int, int>;
 
 // Do not spell "largest legal" as min(TM,64). It happens to agree in today's WN<=64 producer domain, but WN=128
 // can make WM64 fail the accumulator ceiling while WM32 remains legal. Derive both H1 rungs from the filtered set,
@@ -154,7 +153,8 @@ using Row = std::tuple<int, int, int, int, int, int>;
 int largest_wm(std::vector<Candidate> const& legal, Candidate const& c, int below = 1 << 30) {
   int best = -1;
   for (auto const& q : legal)
-    if (q.tm == c.tm && q.tn == c.tn && q.wn == c.wn && q.wm < below && q.wm > best) best = q.wm;
+    if (q.tm == c.tm && q.tn == c.tn && q.wn == c.wn && q.b_chunk == c.b_chunk &&
+        q.wm < below && q.wm > best) best = q.wm;
   return best;
 }
 
@@ -204,11 +204,12 @@ std::vector<Candidate> legal_grid(FormatSpec const& spec, int tactic_tk, int art
   for (int tm : kTileM)
     for (int tn : kTileN)
       for (int wm : kWarpM)
-        for (int wn : kWarpN) {
-          Candidate const c{spec, tm, tn, tactic_tk, wm, wn, artifact_tk};
-          if (Space::sweep_exclusion(c) != Exclusion::None) continue;
-          ok.push_back(c);
-        }
+        for (int wn : kWarpN)
+          for (int b_chunk : kBChunkModes) {
+            Candidate const c{spec, tm, tn, tactic_tk, wm, wn, artifact_tk, b_chunk};
+            if (Space::sweep_exclusion(c) != Exclusion::None) continue;
+            ok.push_back(c);
+          }
   return ok;
 }
 
@@ -244,16 +245,17 @@ int compare_spaces(FormatSpec const& spec, int tk) {
   int diffs = 0, declared_n = 0;
   auto say = [&](Candidate const& c, char const* what, int a, int b, int st) {
     bool const ok = is_declared(a);
-    std::printf("  %-9s %-22s tm=%-4d tn=%-4d wm=%-3d wn=%-4d st=%-3d  dense=%-38s grouped=%s\n",
-                ok ? "DECLARED" : "DRIFT", what, c.tm, c.tn, c.wm, c.wn, st,
+    std::printf("  %-9s %-22s tm=%-4d tn=%-4d wm=%-3d wn=%-4d st=%-3d bc=%d  dense=%-38s grouped=%s\n",
+                ok ? "DECLARED" : "DRIFT", what, c.tm, c.tn, c.wm, c.wn, st, c.b_chunk,
                 exclusion_clause(Exclusion(a)), exclusion_clause(Exclusion(b)));
     if (ok) ++declared_n; else ++diffs;
   };
   for (int tm : kTileM)
     for (int tn : kTileN)
       for (int wm : kWarpM)
-        for (int wn : kWarpN) {
-          Candidate const c{spec, tm, tn, tactic_tk, wm, wn, artifact_tk};
+        for (int wn : kWarpN)
+          for (int b_chunk : kBChunkModes) {
+          Candidate const c{spec, tm, tn, tactic_tk, wm, wn, artifact_tk, b_chunk};
           int const kd = int(DenseSpace::kernel_exclusion(c)), kg = int(GroupedSpace::kernel_exclusion(c));
           if (kd != kg) say(c, "kernel_exclusion", kd, kg, 0);
           int const sd = int(DenseSpace::sweep_exclusion(c)), sg = int(GroupedSpace::sweep_exclusion(c));
@@ -335,7 +337,9 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
         for (int tm : kTileM) if (tm >= m_max) { keep = tm; break; }
         if (c.tm > keep) { ++n_mdrop; continue; }
       }
-      if (rows.insert(Row{c.tm, c.tn, c.tactic_tile_k, c.wm, c.wn, st}).second) { if (p) ++n_prim; else if (g) ++n_guard; else ++n_other; }
+      if (rows.insert(Row{c.tm, c.tn, c.tactic_tile_k, c.wm, c.wn, st, c.b_chunk}).second) {
+        if (p) ++n_prim; else if (g) ++n_guard; else ++n_other;
+      }
     }
   }
   }
@@ -368,6 +372,7 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
   std::printf("//   stages:");
   for (int st : g_stages) std::printf(" %d", st);
   std::printf("   <- what this table COVERS; a winner outside it cannot be found by a sweep using it\n");
+  std::printf("//   ppu_b_chunk: 0 1   <- requested mode; each bench tag reports requested->actually effective\n");
   std::printf("//   provenance: rows=%zu space_fnv1a64=%016llx emitter_fnv1a64=%016llx\n",
               rows.size(), static_cast<unsigned long long>(space_hash),
               static_cast<unsigned long long>(emitter_hash));
@@ -406,11 +411,11 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
   std::printf("#define %s_CFG_LIST(X, B) \\\n", macro_prefix);
   size_t i = 0;
   for (auto const& r : rows) {
-    // tm, tn, TacticTileK, wm, wn, stages -- in Row's order. An earlier edit added the %d and repeated
+    // tm, tn, TacticTileK, wm, wn, stages, PPU_B_CHUNK -- in Row's order. An earlier edit added the %d and repeated
     // get<3> instead of shifting the tail, which emitted stages=wm and dropped stages entirely. It was visible
     // only because the printed row carried a stage value (16) that is not in the stage list.
-    std::printf("  X(%d,%d,%d,%d,%d,%d,B)%s\n", std::get<0>(r), std::get<1>(r), std::get<2>(r),
-                std::get<3>(r), std::get<4>(r), std::get<5>(r),
+    std::printf("  X(%d,%d,%d,%d,%d,%d,%d,B)%s\n", std::get<0>(r), std::get<1>(r), std::get<2>(r),
+                std::get<3>(r), std::get<4>(r), std::get<5>(r), std::get<6>(r),
                 ++i == rows.size() ? "" : " \\");
   }
   return 0;

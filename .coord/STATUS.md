@@ -1,8 +1,8 @@
 # codex status
 
-    updated-at:     2026-08-07 06:49:32 UTC
-    inbox-consumed: 087
-    working-on:     INBOX 087 complete locally: model, R-row provider, and dense/grouped M<=R bounds are committed
-    blocked-on:     ppu001 correctness/performance confirmation for the chosen R; local non-asm compile errors are zero
+    updated-at:     2026-08-07 08:01:18 UTC
+    inbox-consumed: 088
+    working-on:     INBOX 088 item ① complete locally; item ② decode-band tables are next
+    blocked-on:     PPU_SDK/device validation is unavailable in this workspace; host generation and syntax gates pass
     last-commit:    cd7390e Bound packed-A launchers by R rows
     last-heartbeat: 150

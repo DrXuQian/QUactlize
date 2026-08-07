@@ -61,8 +61,8 @@ static constexpr double HBM_GBS = 2766.0;
 // it, so a run can no longer be ambiguous about whether it used the fixed header -- a failed build showed a macro expansion
 // containing `fold::FoldTraits` while the checked-out tree had `moe_fold`, and there was no way to tell from here whether
 // the box had built an older commit or the overlay had a stale copy. That ambiguity has cost rounds twice in this work (the
-// per-unit PPU_B_CHUNK vote exists for the same reason), so it gets an invariant instead of a guess.
-#define LOWBIT_MOE_BENCH_REV 11
+// per-row PPU_B_CHUNK request/effective tag exists for the same reason), so it gets an invariant instead of a guess.
+#define LOWBIT_MOE_BENCH_REV 12
 
 // TileK is a BUILD knob, not a row: it changes the per-plane fold factor, so sweeping it at runtime would mean packing
 // every row twice. One extra build (PPU_DEFS=MOE_TK=128) covers it.
@@ -70,38 +70,20 @@ static constexpr double HBM_GBS = 2766.0;
 #define MOE_TK 64
 #endif
 
-// SELF-DESCRIBING RUN, NOW PER TRANSLATION UNIT. Whether PPU_B_CHUNK was active has been undeterminable from the build
-// output twice already (the device compiles are add_custom_command with a COMMENT, so make.log holds no compile line).
-// Splitting the sweep adds a NEW way for that to go wrong: if one moe_bench_*.cu misses the -D, it silently runs the
-// unchunked collective while main's banner -- compiled in a different TU -- still says chunked. So every sweep prints
-// its OWN state and a disagreement is visible in the log rather than buried in a perf number.
-// `#x` stringizes a macro PARAMETER only, so `#PPU_B_CHUNK` outside a function-like macro is ill-formed -- two levels.
-#define PPU_STR2_(x) #x
-#define PPU_STR1_(x) PPU_STR2_(x)
-#if defined(PPU_B_CHUNK)
-#define PPU_CHUNK_STR "PPU_B_CHUNK=" PPU_STR1_(PPU_B_CHUNK)
-#else
-#define PPU_CHUNK_STR "PPU_B_CHUNK=off"
-#endif
-
-// EVERY UNIT VOTES ON ITS OWN PPU_B_CHUNK. The 8 hand-written units each printed their state; 128 generated ones cannot
-// each print a line, but the check must survive, because a unit that misses the -D silently runs the UNCHUNKED collective
-// while main's banner -- a different translation unit -- still says chunked. Each unit registers its state at static-init
-// time and main reports the tally, so a split brain is one line in the log instead of a perf number nobody can explain.
+// PPU_B_CHUNK is now a row axis: every generated unit fixes one requested value and every row tag reports both that
+// request and the instantiated policy's effective atom-at-a-time conversion.  The tally verifies that both halves of
+// the requested axis were linked; it is no longer a global-build consistency vote.
 // DECODE A BROADCAST, as an A/B in ONE binary. A's m-stride goes to 0 so the TileM-1 padding rows read the
 // expert's real row instead of 15 other rows -- legal only because the epilogue's residue mask discards them,
 // and only when every expert has ONE row, which launch() enforces. Off by default: above Mmax == 1 it would be
 // refused, and a sweep that silently refused half its rows is worse than one that never tried.
 inline bool moe_abcast() { static int c = -1; if (c < 0) c = std::getenv("MOE_ABCAST") ? 1 : 0; return c != 0; }
 
-struct MoeChunkTally { int on = 0, off = 0; };
+struct MoeChunkTally { int requested_on = 0, requested_off = 0; };
 inline MoeChunkTally& moe_chunk_tally() { static MoeChunkTally t; return t; }
-inline void moe_chunk_vote(bool on) { if (on) ++moe_chunk_tally().on; else ++moe_chunk_tally().off; }
-#if defined(PPU_B_CHUNK)
-#define PPU_CHUNK_ON 1
-#else
-#define PPU_CHUNK_ON 0
-#endif
+inline void moe_chunk_vote(int request) {
+  if (request != 0) ++moe_chunk_tally().requested_on; else ++moe_chunk_tally().requested_off;
+}
 
 // ROW SELECTION, for acu and for cheap re-runs. acu needs EXACTLY ONE kernel launch in the process, and the sweep issues
 // 336 x 21 of them; there was no way to profile a single row without editing and rebuilding, which is how a cross-config
@@ -390,6 +372,21 @@ constexpr bool moe_ok() {
   return ppu_tactics::GroupedSpace::topology_exclusion(c, Stages) == ppu_tactics::Exclusion::None;
 }
 
+// The request macro is not the verdict. Ordinary collectives have no kBChunk member, folded collectives apply a
+// TiledMma-dependent gate, and the two-plane collective owns a third implementation. MainloopPolicy's descriptor
+// folds those cases into one witness without making this bench duplicate any of their predicates.
+template <int TM, int TN, int TK, int WM, int WN, int Stages, class ElementB, class PlaneB2 = void>
+constexpr bool moe_b_chunk_effective() {
+  using TileShape = cute::Shape<cute::Int<TM>, cute::Int<TN>, cute::Int<TK>>;
+  using ScaleShape = cute::Shape<cute::Int<TN>,
+      cute::Int<ppu_group_schedule::scale_groups_v<TK, 32>>>;
+  using WarpShape = cute::Shape<cute::Int<WM>, cute::Int<WN>, cute::Int<TK>>;
+  using Policy = moe_grouped_ppu::MixedMainloopPolicy<
+      LOWBIT_QMODE_SEL, ppu_group_schedule::FinegrainedSchedule<32>, TileShape, ScaleShape, WarpShape,
+      Stages, true, ElementB, PlaneB2, TK>;
+  return Policy::Descriptor::atom_at_a_time;
+}
+
 // (The hand-written (TileM, WarpM) grid that used to sit here is gone. One unit fixes one shape, so TileM and WarpM are
 // generated axes now, and moe_ok's WM <= TM rejects the illegal corner -- the L-shape is a CONSEQUENCE of the predicate
 // rather than a list someone maintains. The five points it used to enumerate were missing (128,32) and (256,32).)
@@ -457,8 +454,9 @@ constexpr bool moe_ok() {
 // sweep only became affordable at this size because of it.
 #define MOE2_TIME(BD,BEST,NAME,LOELEM,HIELEM,LOB,HIB,TMv,TNv,TKv,WMv,WNv,Sv)                                       \
   if constexpr (moe_ok<TMv,TNv,TKv,WMv,WNv,Sv,LOB,HIB>()) {                                                        \
-    char _t[64]; std::snprintf(_t, 64, NAME " %dx%d:%d w%dx%d s%d%s", TMv, TNv, TKv, WMv, WNv, Sv,                 \
-                              moe_abcast() ? " B" : "");                                                            \
+    constexpr bool _bc = moe_b_chunk_effective<TMv,TNv,TKv,WMv,WNv,Sv,LOELEM,HIELEM>();                            \
+    char _t[80]; std::snprintf(_t, 80, NAME " %dx%d:%d w%dx%d s%d bc%d->%d%s", TMv, TNv, TKv, WMv, WNv, Sv,        \
+                               int(UNIT_B_CHUNK), int(_bc), moe_abcast() ? " B" : "");                              \
     if (moe_row_selected(_t)) {                                                                                    \
       auto _go = [&]{                                                                                              \
         moe_grouped_ppu::filter_and_run<LOWBIT_QMODE_SEL,TMv,TNv,TKv,WMv,WNv,Sv,LOELEM,HIELEM>(            \
@@ -471,12 +469,17 @@ constexpr bool moe_ok() {
       std::printf("  -> %s\n", _t); std::fflush(stdout);                                                           \
       if (moe_acu()) { u = time_it(_go, 0); std::printf("  [acu] ONE COLD launch (not a timing): %s\n", _t); }                         \
       else             u = time_it(_go, 20);                                                                       \
-      if (moe_row_ran(BD, _t, u, _f0, (LOB)+(HIB))) { report(BD,_t,u,TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),fold::warps_per_cu_chunked<TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),32,true>);  upd(BEST, _t, u); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, u); } \
+      constexpr int _wcu = _bc                                                                                     \
+          ? fold::warps_per_cu_chunked<TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),32,true>                                 \
+          : fold::warps_per_cu<TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),32,true>;                                        \
+      if (moe_row_ran(BD, _t, u, _f0, (LOB)+(HIB))) { report(BD,_t,u,TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),_wcu); upd(BEST, _t, u); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, u); } \
     }                                                                                                              \
   }
 
 #define MOE2(BD,BEST,NAME,LOELEM,HIELEM,LOB,HIB,TMv,TNv,TKv,WMv,WNv) do {                                          \
-  char _sh[64]; std::snprintf(_sh, 64, NAME " %dx%d:%d w%dx%d", TMv, TNv, TKv, WMv, WNv);                           \
+  constexpr bool _bc = moe_b_chunk_effective<TMv,TNv,TKv,WMv,WNv,2,LOELEM,HIELEM>();                               \
+  char _sh[80]; std::snprintf(_sh, 80, NAME " %dx%d:%d w%dx%d bc%d->%d", TMv, TNv, TKv, WMv, WNv,                  \
+                              int(UNIT_B_CHUNK), int(_bc));                                                         \
   if constexpr (moe_ok<TMv,TNv,TKv,WMv,WNv,2,LOB,HIB>()) if (moe_shape_selected(_sh)) {                            \
     constexpr int _F1 = moe_fold<LOB>(TKv);                                                                        \
     constexpr int _F2 = moe_fold<HIB>(TKv);                                                                        \
@@ -501,8 +504,9 @@ constexpr bool moe_ok() {
 // ---- single plane, same structure.
 #define MOE1_TIME(BD,BEST,NAME,ELEM,BITS,TMv,TNv,TKv,WMv,WNv,Sv)                                                   \
   if constexpr (moe_ok<TMv,TNv,TKv,WMv,WNv,Sv,BITS>()) {                                                           \
-    char _t[64]; std::snprintf(_t, 64, NAME " %dx%d:%d w%dx%d s%d%s", TMv, TNv, TKv, WMv, WNv, Sv,                 \
-                              moe_abcast() ? " B" : "");                                                            \
+    constexpr bool _bc = moe_b_chunk_effective<TMv,TNv,TKv,WMv,WNv,Sv,ELEM>();                                     \
+    char _t[80]; std::snprintf(_t, 80, NAME " %dx%d:%d w%dx%d s%d bc%d->%d%s", TMv, TNv, TKv, WMv, WNv, Sv,        \
+                               int(UNIT_B_CHUNK), int(_bc), moe_abcast() ? " B" : "");                              \
     if (moe_row_selected(_t)) {                                                                                    \
       auto _go = [&]{                                                                                              \
         /* PlaneB2 is NAMED (void) on purpose: passing nullptr for B2 while letting PlaneB2 deduce makes the    \
@@ -518,12 +522,17 @@ constexpr bool moe_ok() {
       std::printf("  -> %s\n", _t); std::fflush(stdout);                                                           \
       if (moe_acu()) { u = time_it(_go, 0); std::printf("  [acu] ONE COLD launch (not a timing): %s\n", _t); }                         \
       else             u = time_it(_go, 20);                                                                       \
-      if (moe_row_ran(BD, _t, u, _f0, (BITS))) { report(BD,_t,u,TMv,TNv,TKv,WMv,WNv,Sv,(BITS),fold::warps_per_cu_chunked<TMv,TNv,TKv,WMv,WNv,Sv,(BITS),32,true>);  upd(BEST, _t, u); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, u); } \
+      constexpr int _wcu = _bc                                                                                     \
+          ? fold::warps_per_cu_chunked<TMv,TNv,TKv,WMv,WNv,Sv,(BITS),32,true>                                      \
+          : fold::warps_per_cu<TMv,TNv,TKv,WMv,WNv,Sv,(BITS),32,true>;                                             \
+      if (moe_row_ran(BD, _t, u, _f0, (BITS))) { report(BD,_t,u,TMv,TNv,TKv,WMv,WNv,Sv,(BITS),_wcu); upd(BEST, _t, u); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, u); } \
     }                                                                                                              \
   }
 
 #define MOE1(BD,BEST,NAME,ELEM,BITS,TMv,TNv,TKv,WMv,WNv) do {                                                      \
-  char _sh[64]; std::snprintf(_sh, 64, NAME " %dx%d:%d w%dx%d", TMv, TNv, TKv, WMv, WNv);                           \
+  constexpr bool _bc = moe_b_chunk_effective<TMv,TNv,TKv,WMv,WNv,2,ELEM>();                                        \
+  char _sh[80]; std::snprintf(_sh, 80, NAME " %dx%d:%d w%dx%d bc%d->%d", TMv, TNv, TKv, WMv, WNv,                 \
+                              int(UNIT_B_CHUNK), int(_bc));                                                         \
   if constexpr (moe_ok<TMv,TNv,TKv,WMv,WNv,2,BITS>()) if (moe_shape_selected(_sh)) {                               \
     constexpr int _F = moe_fold<BITS>(TKv);                                                                        \
     const size_t _per = (size_t)(BD).K*(BD).N*(BITS)/8;                                                            \

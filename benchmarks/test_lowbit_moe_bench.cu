@@ -36,7 +36,7 @@
 #include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 
 #include "bench_device.hpp"
-// PPU_CHUNK_STR comes from lowbit_moe_bench.hpp, where every sweep TU also prints its own copy of it.
+// PPU_B_CHUNK is a generated-unit row field. main owns no global mode; each result tag prints request->effective.
 
 int main(int argc, char** argv) {
   // FIRST, before any allocation: a device switch after the context exists is not a switch.
@@ -102,8 +102,8 @@ int main(int argc, char** argv) {
                     : bd.mode == 3 ? "DECODE batch=1 (top-k experts x 1 row, rest empty)"
                     : bd.mode == 4 ? moe_router_fixture::kName
                                    : "skewed(arbitrary counts + zero-row experts)";
-  std::printf("[lowbit-moe] %s  hdr_rev=%d  MOE_TK=%d  quant=%s  L=%d input=%d topk=%d mode=%s N=%d K=%d gs=%d\n",
-              PPU_CHUNK_STR, LOWBIT_MOE_BENCH_REV, MOE_TK, LOWBIT_QMODE_STR, bd.L, bd.Rows, bd.topk, mname,
+  std::printf("[lowbit-moe] PPU_B_CHUNK=row-axis  hdr_rev=%d  MOE_TK=%d  quant=%s  L=%d input=%d topk=%d mode=%s N=%d K=%d gs=%d\n",
+              LOWBIT_MOE_BENCH_REV, MOE_TK, LOWBIT_QMODE_STR, bd.L, bd.Rows, bd.topk, mname,
               bd.N, bd.K, bd.gs);
   std::printf("             total=%d Mmax=%d Mmin=%d zero-row experts=%d active=%d  PEAK=%.0f TFLOP/s\n",
               bd.total, bd.Mmax, mn, zeros, bd.active, PEAK / 1e12);
@@ -122,11 +122,8 @@ int main(int argc, char** argv) {
   // print no rows, which is why this can exceed the number of sections that appear below.
   std::printf("             linked against %d generated sweep units (one per shape; illegal shapes print nothing)\n",
               MOE_UNIT_COUNT);
-  if (moe_chunk_tally().off && moe_chunk_tally().on)
-    std::printf("             *** SPLIT BRAIN: %d units built chunked, %d NOT -- the rows are not comparable ***\n",
-                moe_chunk_tally().on, moe_chunk_tally().off);
-  else
-    std::printf("             all %d units agree: %s\n", moe_chunk_tally().on + moe_chunk_tally().off, PPU_CHUNK_STR);
+  std::printf("             PPU_B_CHUNK requests: bc0=%d unit(s), bc1=%d unit(s); tags show request->effective\n",
+              moe_chunk_tally().requested_off, moe_chunk_tally().requested_on);
 
   std::vector<half_t> hA((size_t)bd.total * bd.K), hSc((size_t)bd.L * bd.scale_k * bd.N),
                       hZr((size_t)bd.L * bd.scale_k * bd.N);
@@ -164,7 +161,7 @@ int main(int argc, char** argv) {
   // candidate. MOE_REPS=1 is allowed and is explicitly not a ranking.
   const int reps = moe_acu() ? 1 : moe_reps();
   bench_floor::banner();
-  bench_samples::run_header("lowbit_moe", PPU_CHUNK_STR " " LOWBIT_QMODE_STR, reps);
+  bench_samples::run_header("lowbit_moe", "PPU_B_CHUNK=row-axis " LOWBIT_QMODE_STR, reps);
   for (int r = 0; r < reps; ++r) {
     moe_pass() = r;
     if (reps > 1) std::printf("\n  --- pass %d/%d ---\n", r + 1, reps);

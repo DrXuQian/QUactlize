@@ -295,7 +295,7 @@ struct Options;
 struct Result;
 struct TileCfg;
 using LowbitDenseWrapper = Result (*)(Options&, TileCfg const&);
-struct TileCfg { char const* name; int tm, tn, tk, wm, wn, st; LowbitDenseWrapper wrapper; };
+struct TileCfg { char const* name; int tm, tn, tk, wm, wn, st, b_chunk; LowbitDenseWrapper wrapper; };
 
 // The generated table. Regenerate with benchmarks/emit_tactic_configs.cpp when the binary's (QUANT, BENCH_TSK)
 // changes -- the static_assert below is what turns forgetting into a compile error rather than a sweep over a
@@ -316,7 +316,7 @@ static_assert(cutlass::sizeof_bits<QuantType>::value == LOWBIT_DENSE_CFG_BITS &&
               "lowbit_dense_configs.inc was generated for a different (bits, TileK) than this binary. Regenerate: "
               "c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic && "
               "/tmp/emit_tactic <bits> <tile_k> > benchmarks/lowbit_dense_configs.inc");
-#define LOWBIT_DENSE_COUNT_ROW(TM,TN,TK,WM,WN,ST,_UNUSED) + 1
+#define LOWBIT_DENSE_COUNT_ROW(TM,TN,TK,WM,WN,ST,BC,_UNUSED) + 1
 inline constexpr int kLowbitDenseConfigRows = 0 LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_COUNT_ROW, );
 #undef LOWBIT_DENSE_COUNT_ROW
 static_assert(kLowbitDenseConfigRows == LOWBIT_DENSE_CFG_ROWS,
@@ -496,26 +496,32 @@ struct Result
 #endif
 
 #if !defined(LOWBIT_DENSE_UNIT_BUILD)
-// Main names only exported wrappers. Cfg<>::Gemm appears in lowbit_dense_unit.inc, so expanding this 632-row
+// Main names only exported wrappers. Cfg<>::Gemm appears in lowbit_dense_unit.inc, so expanding this table-driven
 // registry does not serialize template instantiation in the main translation unit. Every field participates in
-#define LOWBIT_DENSE_SYMBOL_I(TM,TN,TK,WM,WN,ST) \
-  lowbit_dense_cfg_tm##TM##_tn##TN##_tk##TK##_wm##WM##_wn##WN##_st##ST
-#define LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST) LOWBIT_DENSE_SYMBOL_I(TM,TN,TK,WM,WN,ST)
-#define LOWBIT_DENSE_DECLARE(TM,TN,TK,WM,WN,ST,_UNUSED) \
-  Result LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST)(Options&, TileCfg const&);
+#define LOWBIT_DENSE_SYMBOL_I(TM,TN,TK,WM,WN,ST,BC) \
+  lowbit_dense_cfg_tm##TM##_tn##TN##_tk##TK##_wm##WM##_wn##WN##_st##ST##_bc##BC
+#define LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,BC) LOWBIT_DENSE_SYMBOL_I(TM,TN,TK,WM,WN,ST,BC)
+#define LOWBIT_DENSE_TAG_SYMBOL_I(TM,TN,TK,WM,WN,ST,BC) \
+  lowbit_dense_cfg_tm##TM##_tn##TN##_tk##TK##_wm##WM##_wn##WN##_st##ST##_bc##BC##_tag
+#define LOWBIT_DENSE_TAG_SYMBOL(TM,TN,TK,WM,WN,ST,BC) LOWBIT_DENSE_TAG_SYMBOL_I(TM,TN,TK,WM,WN,ST,BC)
+#define LOWBIT_DENSE_DECLARE(TM,TN,TK,WM,WN,ST,BC,_UNUSED) \
+  Result LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(Options&, TileCfg const&); \
+  char const* LOWBIT_DENSE_TAG_SYMBOL(TM,TN,TK,WM,WN,ST,BC)();
 LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_DECLARE, )
 #undef LOWBIT_DENSE_DECLARE
 
 inline std::vector<TileCfg> const& supported_configs() {
   static std::vector<TileCfg> const configs = {
-#define LOWBIT_DENSE_REGISTRY_ROW(TM,TN,TK,WM,WN,ST,_UNUSED) \
-    TileCfg{#TM "x" #TN "x" #TK ":" #WM "x" #WN ":s" #ST, TM, TN, TK, WM, WN, ST, \
-            &LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST)},
+#define LOWBIT_DENSE_REGISTRY_ROW(TM,TN,TK,WM,WN,ST,BC,_UNUSED) \
+    TileCfg{LOWBIT_DENSE_TAG_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(), TM, TN, TK, WM, WN, ST, BC, \
+            &LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,BC)},
     LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_REGISTRY_ROW, )
 #undef LOWBIT_DENSE_REGISTRY_ROW
   };
   return configs;
 }
+#undef LOWBIT_DENSE_TAG_SYMBOL
+#undef LOWBIT_DENSE_TAG_SYMBOL_I
 #undef LOWBIT_DENSE_SYMBOL
 #undef LOWBIT_DENSE_SYMBOL_I
 #endif

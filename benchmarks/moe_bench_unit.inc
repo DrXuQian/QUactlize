@@ -63,5 +63,5 @@ static void unit_body(const Band& bd, Best& best) {
 }
 void UNIT_FN(const Band& bd, Best& best) { unit_body<0>(bd, best); }
 
-// Static-init vote so main can report whether all units agree on PPU_B_CHUNK -- see moe_chunk_tally() in the header.
-namespace { const struct MoeUnitVote { MoeUnitVote() { moe_chunk_vote(PPU_CHUNK_ON); } } _moe_unit_vote; }
+// Static-init tally of the requested row axis; effectiveness is reported from Policy::Descriptor in every row tag.
+namespace { const struct MoeUnitVote { MoeUnitVote() { moe_chunk_vote(UNIT_B_CHUNK); } } _moe_unit_vote; }
