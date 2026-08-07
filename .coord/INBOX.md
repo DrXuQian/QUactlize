@@ -3632,3 +3632,46 @@ dense 跟 grouped 对齐成**每格式一张表**:`benchmarks/lowbit_dense_<fmt>
 - `python3 ci/local_gates.py` 里的 table 门报出的表数从 6 变成新的总数
 
 一个 sub-item 一个 commit。`git add` 只用显式路径。
+
+## 090 — 退回 #44:`PPU_A_PACK=R` 声明的界是 16,实际可用上限是 8
+
+Review 了 `cd7390e`(以及它前面的 `7736833` / `a6a6cbe`)。顺序是对的:provider 先推广到 R 行,再放宽 launcher 的 guard,所以不存在"guard 放宽了但 writer 还只写 row 0"的静默算错。两边的 guard 也都在 `if constexpr (QueryOnly) return true;` 之前,能力查询会正确地报不可用。这两点没问题。
+
+**问题在 R 的界。** `quactlize_mma_mixed_input.hpp:959` 写着
+
+    static_assert(kAPackRows >= 1 && kAPackRows <= 16,
+                  "PPU_A_PACK=R requires 1 <= R <= the 16-row swzl instruction footprint");
+
+但我逐个 R 编了一遍(dense bench,本地 nvcc,164 条 vendor-asm 底线):
+
+    R=1   0 个非 asm 错误
+    R=2   0
+    R=4   0
+    R=8   0
+    R=12  16 个,全部撞 aPackDisjoint():"packed first-R-row runs collide -- fix the derived pitch"
+    R=14  16 个,同上
+    R=16  16 个,同上          <-- 这个值是断言自己声明为合法的
+    R=32  1 个,撞 R<=16 那条  <-- 这条工作正常
+
+复现:
+
+    D=dev/fold_derivation; A=third_party/actlize
+    for R in 1 2 4 8 12 14 16 32; do
+      nvcc -std=c++17 -arch=sm_80 --expt-relaxed-constexpr -D__HGGCCC__ -DPPU_FORCE_INSTANTIATE=1 -DPPU_A_PACK=$R \
+        -include $D/stub_inc/ppu_arch_shim.h -Xcudafe --error_limit=100000 \
+        -I$D/stub_inc -I$A/include -I$A/tools/util/include -Itests -Ibenchmarks -Iquactlize/include -Idev \
+        -cuda -o /tmp/x.cu.cpp -x cu benchmarks/test_lowbit_dense_bench.cu -Wno-deprecated-gpu-targets > /tmp/r$R.log 2>&1
+      echo "R=$R errors=$(grep ': error' /tmp/r$R.log | grep -vc 'asm operand type size')"
+    done
+
+**所以 `1 <= R <= 16` 承诺了一个达不到的数。** 两条路,选哪条你定,但**不要让这两条断言继续互相矛盾**:
+
+(a) 把 pitch 推导修到 R=16 真的 disjoint —— 你自己写的失败信息就是 "fix the derived pitch",说明你知道这条路没走完。如果 16 结构上就不可能(比如 cube 高度或 swzl 的 16 行 footprint 与 pitch 的最小步长冲突),那就是 (b)。
+
+(b) 让第一条断言说真话:界改成实际可达的上限(实测是 8),消息也别再提 16 —— 现在的消息把"swzl 指令覆盖 16 行"这个**硬件事实**说成了"R 可以到 16"这个**软件能力**,那是两回事,而且正是它误导了我第一次读的时候。
+
+无论哪条,加一个**本地 gate**:对每个合法 R 各编一次,对第一个非法 R 编一次并要求 rc≠0。现在没有任何东西会发现"声明合法的 R 编不过" —— 我是手工逐个试出来的,而 #44 的验收里没有这一项,这本身是验收条件写漏了。
+
+另外一条不是缺陷、只是记一下:dense 的新 guard 没有 `++fail_count`,grouped 有 `++moeg_fail_count()`。但 dense 侧本来就没有这个计数器机制,所以不是这次引入的不对称,不用在 090 里处理。
+
+顺序:这个排在 088 / 089 后面,除非你觉得它更快。
