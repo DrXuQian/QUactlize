@@ -780,7 +780,10 @@ target_compile_options(test_lowbit_grouped PRIVATE -w)
 # masked-row fraction NEXT TO the time, because the dense winner cannot be inherited: TN=128 won on dense by halving A's
 # re-read count (A traffic), while MoE is weight-bound and the recorded rule is to minimise the TOTAL m-tile count -- and
 # large TileM then wastes rows at ~128 rows per expert. The bench decides which effect dominates instead of assuming one.
-#   Build: TARGET=test_lowbit_moe_bench ./build.sh ; run: ./<bin> [L] [rows] [N] [K] [gs] [ragged]
+#   Build: TARGET=test_lowbit_moe_bench ./build.sh
+#   ScaleOnly instead of the default ScaleZero -- recorded HERE and not only in lowbit_moe_bench.hpp, because
+#   ci/check_switch_macros.py reads scripts, CMake and docs for invocations and sources only for #define:
+#     PPU_DEFS=LOWBIT_QMODE=1 TARGET=test_lowbit_moe_bench ./build.sh ; run: ./<bin> [L] [rows] [N] [K] [gs] [ragged]
 # ONE TRANSLATION UNIT PER SHAPE, GENERATED. cutlass_build_dev_kernels emits one add_custom_command per .cu, so a sweep
 # in a single file compiles strictly serially however large -j is. The granularity is set by MEASUREMENT, not taste:
 # locally the header alone parses in ~5 s and each two-plane kernel adds ~2.5 s, so a unit costs about 5 + 2.5*kernels.
