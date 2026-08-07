@@ -261,6 +261,25 @@ function(qz_assert_moe_band LABEL TABLE_SUFFIX GEN_DIR GEN_TU_N GEN_SRCS EXPECT_
     math(EXPR _batch "${_batch} + 1")
   endwhile()
 
+  # Crossing a format boundary is required only when independent per-format rounding would cost a TU. With a
+  # restricted axis, every format can end exactly on this batch size; then a correct global batcher has no boundary
+  # to cross. The old unconditional assertion called that case a failure even though its TU count was already the
+  # global ceil. Derive both counts from the independently parsed names and ask for a crossing only when they differ.
+  set(_per_format_tus 0)
+  foreach(_fmt IN LISTS _exp_formats)
+    set(_fmt_bc0 0)
+    set(_fmt_bc1 0)
+    foreach(_name IN LISTS _exp_names)
+      if(_name MATCHES "^moe_unit_${_fmt}_.*_bc0$")
+        math(EXPR _fmt_bc0 "${_fmt_bc0} + 1")
+      elseif(_name MATCHES "^moe_unit_${_fmt}_.*_bc1$")
+        math(EXPR _fmt_bc1 "${_fmt_bc1} + 1")
+      endif()
+    endforeach()
+    math(EXPR _per_format_tus
+         "${_per_format_tus} + (${_fmt_bc0} + ${_batch} - 1) / ${_batch} + (${_fmt_bc1} + ${_batch} - 1) / ${_batch}")
+  endforeach()
+
   file(GLOB _gen "${GEN_DIR}/moe_batch_bc*.cu")
   list(SORT _gen)
   list(LENGTH _gen _ngen)
@@ -348,7 +367,7 @@ function(qz_assert_moe_band LABEL TABLE_SUFFIX GEN_DIR GEN_TU_N GEN_SRCS EXPECT_
      NOT _partial_bc0 EQUAL _exp_partial_bc0 OR NOT _partial_bc1 EQUAL _exp_partial_bc1)
     message(FATAL_ERROR "${LABEL}: expected shapes bc=${_exp_bc0}/${_exp_bc1}, TUs=${_exp_tus_bc0}/${_exp_tus_bc1}; got shapes ${_got_bc0}/${_got_bc1}, disk TUs ${_got_tus_bc0}/${_got_tus_bc1}, generator said ${GEN_TU_N}")
   endif()
-  if(_nfmt GREATER 1 AND _batch GREATER 1 AND NOT _cross_format)
+  if(_nfmt GREATER 1 AND _batch GREATER 1 AND _per_format_tus GREATER _exp_tus AND NOT _cross_format)
     message(FATAL_ERROR "${LABEL}: no batch crosses a format boundary; per-format rounding silently costs extra TUs")
   endif()
 
