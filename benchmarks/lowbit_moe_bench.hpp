@@ -62,7 +62,19 @@ static constexpr double HBM_GBS = 2766.0;
 // containing `fold::FoldTraits` while the checked-out tree had `moe_fold`, and there was no way to tell from here whether
 // the box had built an older commit or the overlay had a stale copy. That ambiguity has cost rounds twice in this work (the
 // per-row PPU_B_CHUNK request/effective tag exists for the same reason), so it gets an invariant instead of a guess.
-#define LOWBIT_MOE_BENCH_REV 12
+#define LOWBIT_MOE_BENCH_REV 13
+
+// The table band is generated next to each target's dispatcher and included before this header. Other users of this
+// shared harness (the split-K probe) remain explicitly unbanded rather than accidentally inheriting lowbit-MoE metadata.
+#ifndef MOE_TABLE_BANDED
+#define MOE_TABLE_BANDED 0
+#define MOE_TABLE_DECODE 0
+#define MOE_TABLE_M_MAX 0
+#define MOE_TABLE_BAND_STR "unbanded"
+#define MOE_TABLE_BENCH_STR "lowbit_moe"
+#endif
+static_assert((MOE_TABLE_DECODE != 0) == (MOE_TABLE_M_MAX > 0),
+              "a decode table needs a positive Mmax and a full table must not carry one");
 
 // TileK is a BUILD knob, not a row: it changes the per-plane fold factor, so sweeping it at runtime would mean packing
 // every row twice. One extra build (PPU_DEFS=MOE_TK=128) covers it.
@@ -150,9 +162,14 @@ inline bench_samples::Sample moe_identity(const Band& bd, char const* schema,
   bench_samples::Sample s{};
   // The fixture is identified by its SHAPE and distribution rather than a hand-typed label: two runs of the
   // same shape must land in the same group, and a typo in a label would silently split them into two verdicts.
-  static char name[96];
+  static char name[128];
+#if MOE_TABLE_BANDED
+  std::snprintf(name, sizeof name, "moe-%s-m%d-n%d-k%d-gs%d-L%d-r%d-topk%d",
+                MOE_TABLE_BAND_STR, MOE_TABLE_M_MAX, bd.N, bd.K, bd.gs, bd.L, bd.Rows, bd.topk);
+#else
   std::snprintf(name, sizeof name, "moe-n%d-k%d-gs%d-L%d-r%d-topk%d",
                 bd.N, bd.K, bd.gs, bd.L, bd.Rows, bd.topk);
+#endif
   s.fixture = name;  s.dist = moe_dist_name(bd.mode);  s.schema = schema;
   s.n = bd.N; s.k = bd.K; s.gs = bd.gs;
   s.experts = bd.L; s.rows = bd.Rows; s.mmax = bd.Mmax;
