@@ -739,6 +739,18 @@ def lint_switch_macros():
     return _run_ci_script("check_switch_macros.py", "every owned build switch is reachable")
 
 
+def lint_compact_a_reach():
+    """The tactic space's compact-A clause and the three collectives' witnesses must say the same thing.
+
+    Compact A is A-side and A is fp16 activations, so nothing about it depends on the weight format. It is
+    restricted today only because the reader was written into ONE of the three collectives. Deleting the clause
+    before porting does not fail -- it emits rows labelled acr=1 whose collective ignores the field and allocates
+    TileM*TK*2, so the sweep times a capacity-0 kernel under a capacity-1 name. That is how D7 became
+    unattributable. This makes the ordering checkable in both directions instead of remembered.
+    """
+    return _run_ci_script("check_compact_a_reach.py", "compact-A clause matches the collectives")
+
+
 def _run_ci_script(name: str, label: str):
     """Shared shim for the ci/ checkers that are complete programs already; report their last meaningful line."""
     checker = ROOT / "ci" / name
@@ -1126,6 +1138,7 @@ def main():
                 ("lint", "no tactic choice can change the offline layout", lint_tactic_cannot_change_offline_layout),
                 ("lint", "actlize carries no quactlize symbol and no unlisted file change", lint_actlize_pristine),
                 ("lint", "every build switch this repo owns can actually be turned on", lint_switch_macros),
+                ("lint", "the compact-A clause and the collectives' witnesses agree", lint_compact_a_reach),
                 ("lint", "quactlize_extensions adds to actlize rather than redefining it", lint_extension_additive),
                 ("lint", "every file naming a quactlize type reaches its defining header", lint_owned_symbol_includes),
                 ("lint", "every listed GGUF format has the collective its row implies", lint_format_table_buildable),
