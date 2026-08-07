@@ -63,7 +63,7 @@ static constexpr double HBM_GBS = 2766.0;
 // containing `fold::FoldTraits` while the checked-out tree had `moe_fold`, and there was no way to tell from here whether
 // the box had built an older commit or the overlay had a stale copy. That ambiguity has cost rounds twice in this work (the
 // per-row PPU_B_CHUNK request/effective tag exists for the same reason), so it gets an invariant instead of a guess.
-#define LOWBIT_MOE_BENCH_REV 15
+#define LOWBIT_MOE_BENCH_REV 16
 
 // The table band is generated next to each target's dispatcher and included before this header. Other users of this
 // shared harness (the split-K probe) remain explicitly unbanded rather than accidentally inheriting lowbit-MoE metadata.
@@ -355,21 +355,22 @@ inline void report(const Band& bd, const char* tag, double us, int TM, int TN, i
               gbs_c < 0.9 * HBM_GBS ? "  NOT-BW" : "");
 }
 
-// DID THIS ROW ACTUALLY RUN? Two independent nets, because the first only catches causes we already know about.
-//   1. moeg_fail_count() grew  -> can_implement / workspace / initialize refused and launch() returned without a kernel.
-//   2. the compulsory weight traffic could not have crossed the bus in the measured time -> whatever the cause, nothing ran.
-// Net 2 is what would have caught this class immediately: the bench reported `q5 128x128:256 w32x64 s3` at 3.17 us as its
-// FASTEST config, which is 6.6 TB/s against a 2.77 TB/s peak. A win that violates the hardware is not a win, and a harness
-// that cannot say so will rank its own failures.
+// DID THIS ROW ACTUALLY RUN? Only a launch refusal excludes it: moeg_fail_count() grows when can_implement, workspace or
+// initialize refuses the launch, and that signal is independent of cache state. The old second net divided one expert's
+// weights by the per-iteration time and excluded a row above the HBM peak. time_it() warms the SAME buffers before timing,
+// so those bytes can be cache-hot; the derived rate is useful evidence of a suspicious timing, but not evidence that the
+// kernel did not run. Keep the warning and, critically, keep the row in report(), samples and the winner verdict.
 inline bool moe_row_ran(const Band& bd, const char* tag, double us, int fail0, int bits_total) {
-  const double wb  = double(bd.N) * double(bd.K) * double(bits_total) / 8.0;
-  const double gbs = (double(bd.active) * wb) / (us * 1e-6) / 1e9;   // weights alone: the least it can possibly have moved
-  const bool refused    = moe_grouped_ppu::moeg_fail_count() > fail0;
-  const bool impossible = gbs > HBM_GBS;
-  if (refused || impossible) {
-    std::printf("    %-30s %8.2f us | DID NOT RUN (%s) -- excluded from the verdict\n", tag, us,
-                refused ? "launch refused" : "implies > HBM peak");
+  const bool refused = moe_grouped_ppu::moeg_fail_count() > fail0;
+  if (refused) {
+    std::printf("    %-30s %8.2f us | DID NOT RUN (launch refused) -- excluded from the verdict\n", tag, us);
     return false;
+  }
+  const double wb  = double(bd.N) * double(bd.K) * double(bits_total) / 8.0;
+  const double gbs = (double(bd.active) * wb) / (us * 1e-6) / 1e9;
+  if (gbs > HBM_GBS) {
+    std::printf("    %-30s %8.2f us | WARNING cache-hot weight rate %.0f GB/s > HBM peak -- row retained\n",
+                tag, us, gbs);
   }
   return true;
 }
