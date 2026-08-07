@@ -304,10 +304,28 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
       return 1;
     }
   for (int st : g_stages) {
+  // LEGALITY IS PER CAPACITY, because capacity is an input to it. Until 2026-08-07 this loop asked
+  // topology_exclusion(c, st) -- which passes a_rows = TileM -- ONCE, and then cross-multiplied the survivors by
+  // g_compact_rows. ppu_tactic_space.hpp has compact_a_topology_exclusion(c, stages, compact_rows) with its own
+  // static_asserts, and the emitter called it only from the --space=compare diagnostic. Emission never did.
+  //
+  // BOTH DIRECTIONS WERE WRONG, and the one that matters is the first:
+  //   * A row that is illegal at a_rows=TileM can be LEGAL at a_rows=1, because per_stage_smem is
+  //     a_rows*TileK*2 + ... and A is the dominant term (8192 of 11264 B at 16x16x256). Those rows were never
+  //     emitted -- and they are exactly the extra reach compact A exists to buy at small M.
+  //   * CompactAUnavailable was never applied. The compact-A reader lives only in the ordinary unfolded
+  //     one-plane collective, so a grouped/two-plane table asked for capacities would have carried rows whose
+  //     own collective rejects them.
+  //
+  // primary/guard still rank WITHIN one (stage, capacity) grid, for the reason stated above about TileK: a row
+  // at one capacity must not suppress a row at another, which would be a pruning decision nobody made.
+  for (int acr : g_compact_rows) {
     std::vector<Candidate> legal;
     for (auto const& c : ok)
-      if (Space::topology_exclusion(c, st) == Exclusion::None)
+      if ((acr == 0 ? Space::topology_exclusion(c, st)
+                    : Space::compact_a_topology_exclusion(c, st, acr)) == Exclusion::None)
         legal.push_back(c);
+    if (legal.empty()) continue;   // a capacity this format cannot host at all; say so below, do not emit rows
 
     for (auto const& c : legal) {
       bool const p = primary(legal, c);
@@ -318,10 +336,9 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
       // simply never sees it. The sub-four-warp quarantine hid the 65.7% dense optimum that way, and the 1/2/4
       // compact-A whitelist hid capacity 8. Measured today: pruning removes 532 of 1164 rows, 46%.
       if (g_prune && !p && !g) continue;
-      for (int acr : g_compact_rows) {
-        if (rows.insert(Row{c.tm, c.tn, c.tactic_tile_k, c.wm, c.wn, st, acr}).second) { if (p) ++n_prim; else if (g) ++n_guard; else ++n_other; }
-      }
+      if (rows.insert(Row{c.tm, c.tn, c.tactic_tile_k, c.wm, c.wn, st, acr}).second) { if (p) ++n_prim; else if (g) ++n_guard; else ++n_other; }
     }
+  }
   }
   }
 

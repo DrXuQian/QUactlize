@@ -3,7 +3,7 @@
 //   tactic_tile_k: 128   <- the CONSUMER choices in this table. artifact_tile_k=128 is the resident layout and is NOT a
 //                     row field: one weight file, many readers.
 //   stages: 2 3 4 6 8 12   <- what this table COVERS; a winner outside it cannot be found by a sweep using it
-//   provenance: rows=409 space_fnv1a64=b1b121149c227974 emitter_fnv1a64=83d623c1ca0eefcf
+//   provenance: rows=409 space_fnv1a64=b1b121149c227974 emitter_fnv1a64=e574d1cdc0248860
 //
 // Regenerate after changing ppu_tactic_space.hpp or the pruning policy:
 //   c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic &&\
@@ -16,7 +16,7 @@
 #define LOWBIT_GROUPED_Q6_K_CFG_ARTIFACT_TILEK 128
 #define LOWBIT_GROUPED_Q6_K_CFG_ROWS  409
 #define LOWBIT_GROUPED_Q6_K_CFG_SPACE_FNV1A64   "b1b121149c227974"
-#define LOWBIT_GROUPED_Q6_K_CFG_EMITTER_FNV1A64 "83d623c1ca0eefcf"
+#define LOWBIT_GROUPED_Q6_K_CFG_EMITTER_FNV1A64 "e574d1cdc0248860"
 
 #define LOWBIT_GROUPED_Q6_K_CFG_LIST(X, B) \
   X(16,16,128,16,16,2,0,B) \

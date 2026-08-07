@@ -21,13 +21,12 @@
 #include <random>
 #include <algorithm>
 
-// ITERATION COST. The full matrix instantiates GS{0,16,32,64,128} x 3 quant ops x dense CtaM 1-15 x bias,
-// while grouped retains CtaM 1-4, for every (format, layout, CtaN, Chunk) row. That is the right cost before
-// a commit and the wrong one while iterating, so GEMV_GATE_FAST narrows the group-size axis to the two that
-// carry most of the coverage. Build the FULL matrix before trusting a result.
-#if defined(GEMV_GATE_FAST)
-#define GEMV_GS_LIST(EMIT) EMIT(0) EMIT(32)
-#endif
+// ITERATION COST. The full matrix instantiates GS{0,16,32,64,128} x 3 quant ops x dense CtaM 1-15 x bias, while
+// grouped retains CtaM 1-4, for every (format, layout, CtaN, Chunk) row. GEMV_GATE_FAST used to narrow the
+// group-size axis to {0,32} while iterating, and it is DELETED: nothing in the tree could define it, and its own
+// comment said "build the FULL matrix before trusting a result" -- a switch that shortens a run whose result you
+// are then told not to trust. Narrowing while iterating is still available and needs no macro: define
+// GEMV_GS_LIST on the command line, which is the axis this used to overwrite.
 #include "gemv_lowbit/gemv_launcher.hpp"
 #include "gemv_lowbit/gemv_rt.hpp"      // one source, both runtimes -- see the header for why
 
@@ -38,12 +37,16 @@ static int g_pass = 0, g_fail = 0, g_skip = 0;
 // Which group sizes this BUILD instantiated. A fast build must SKIP the rows it cannot serve, not let them be
 // refused and counted as failures: an output whose 26 red lines are all expected is one that gets misread the
 // first time it has a real one.
+// DERIVED FROM GEMV_GS_LIST, not written twice. This used to be a second hand-written copy of the same fact --
+// `#if defined(GEMV_GATE_FAST) return gs == 0 || gs == 32` -- which was only correct while the narrowing came from
+// that one macro with those two values. Anyone narrowing the axis the documented way, by defining GEMV_GS_LIST on
+// the command line, got a check that still claimed every group size was present, so the rows the build could not
+// serve were refused and counted as failures. Two spellings of "which group sizes exist" is one too many; this
+// asks the list itself.
 static bool gs_instantiated(int gs) {
-#if defined(GEMV_GATE_FAST)
-  return gs == 0 || gs == 32;
-#else
-  return true;
-#endif
+#define GEMV_GS_MATCH_(V) || (gs) == (V)
+  return false GEMV_GS_LIST(GEMV_GS_MATCH_);
+#undef GEMV_GS_MATCH_
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -568,10 +571,14 @@ int main(int argc, char** argv) {
   KTAIL_MATRIX(Q6_42, 16, 280)
 #undef KTAIL_MATRIX
 
-#if defined(GEMV_GATE_FAST)
-  std::printf("\n  *** GEMV_GATE_FAST: only gs {0,32} instantiated; %d rows SKIPPED (not passed). Build without\n"
-              "      it before trusting a clean result. ***\n", g_skip);
-#endif
+  // A NARROWED BUILD MUST SAY SO, and the condition is now the SKIP COUNT rather than a macro. The banner used to
+  // be `#if defined(GEMV_GATE_FAST)`, so it appeared only for that one way of narrowing -- a build narrowed by
+  // defining GEMV_GS_LIST skipped rows and printed a clean summary with no warning at all, which is the exact
+  // misreading the banner exists to prevent. g_skip > 0 is true however the axis was narrowed.
+  if (g_skip > 0) {
+    std::printf("\n  *** NARROWED BUILD: %d row(s) SKIPPED (not passed) because their group size is not in\n"
+                "      GEMV_GS_LIST. Build the full list before trusting a clean result. ***\n", g_skip);
+  }
   std::printf("\n== summary ==\n  %d passed, %d failed, %d skipped, %d launches refused\n",
               g_pass, g_fail, g_skip, gemv_fail_count());
   return g_fail == 0 ? 0 : 1;
