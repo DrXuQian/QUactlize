@@ -204,7 +204,8 @@ class WorkQueue:
 
     `status[i]` is the accounting, and it has four states because three of them get conflated:
         None      -- NEVER POPPED. Not attempted, not failed, still owed. A resume must run it.
-        INFLIGHT  -- popped, no result yet. At report time this means a worker died holding it.
+        INFLIGHT  -- popped, no final status. Reaching the REPORT in this state means the wait was cut short
+                     (a second interrupt) or a worker died outright; a normal exit leaves none.
         True      -- rc == 0 AND its own sample file grew.
         str       -- failed, and the string says how.
     """
@@ -236,8 +237,11 @@ class WorkQueue:
             self.stopping = True
 
 
-def run_worker(w, dev, q, binary, jsonl, progress, workers, reps, say):
-    """Pop, launch, judge, log -- until the queue is drained. One of these per card."""
+def run_worker(w, dev, q, binary, jsonl, progress, workers, reps, say, finished):
+    """Pop, launch, judge, log -- until the queue is drained. One of these per card.
+
+    `finished` is this worker's own "I am done" flag, set in the finally below. The interrupt path waits on
+    THAT and not on Thread.is_alive(); see the comment there for the run that made the difference visible."""
     sample = shard(jsonl, w, workers)
     plog_path = shard(progress, w, workers)
     env = dict(os.environ, BENCH_JSONL=str(sample), BENCH_REPS=str(reps))
@@ -284,9 +288,11 @@ def run_worker(w, dev, q, binary, jsonl, progress, workers, reps, say):
                                            "worker": w, "device": dev,
                                            "rc": rc, "grew": grew, "seconds": round(dt, 1)}) + "\n")
                     plog.flush()
-                    q.record(i, True if ok else (f"rc={rc}" if rc else "exited 0 but wrote no samples"))
+                    # ONE spelling of the reason, used for both the status and the console line. Two spellings
+                    # is how the summary and the message that scrolled past come to disagree.
+                    why = "" if ok else (f"rc={rc}" if rc else "exited 0 but wrote no samples")
+                    q.record(i, True if ok else why)
                     if not ok:
-                        why = f"rc={rc}" if rc else "exited 0 but wrote no samples"
                         msg = f"[sweep] ✗ {tag}{lbl}: {why} -- continuing; this shape is lost, the rest are not"
                         if child_out:
                             # The tail of what THIS child said, from the offset its own launch started at.
@@ -308,6 +314,9 @@ def run_worker(w, dev, q, binary, jsonl, progress, workers, reps, say):
     finally:
         if child_out:
             child_out.close()
+        # LAST, and after every q.record() this worker will ever make. That ordering is the whole guarantee the
+        # interrupt path leans on: flag set => this worker's items all have a final status.
+        finished.set()
 
 
 def main() -> int:
@@ -411,9 +420,10 @@ def main() -> int:
             sys.stdout.flush()
 
     sys.stdout.flush()          # the prologue above, ahead of anything a worker flushes
+    finished = [threading.Event() for _ in range(workers)]
     threads = [threading.Thread(target=run_worker,
                                 args=(w, devices[w] if devices else None, q, binary, jsonl, progress,
-                                      workers, a.reps, say),
+                                      workers, a.reps, say, finished[w]),
                                 name=f"w{w}", daemon=True)
                for w in range(workers)]
     for t in threads:
@@ -426,17 +436,19 @@ def main() -> int:
         # stay None and are reported as never attempted -- which is the state a resume needs them in.
         q.stop()
         say("\n[sweep] interrupted: no new invocations will start; waiting for the running ones")
-        # A LOOP, NOT `for t in threads: t.join()`. A join() that was interrupted by the signal can return with
-        # its thread STILL RUNNING, and the plain re-join inherits that: measured here 2026-08-07, one worker was
-        # still waiting on its child when the second join() came straight back, the child then finished and wrote
-        # its sample, and the summary called that item "in flight" when it had actually completed. Nothing was
-        # lost -- resume re-runs it, which is the safe direction -- but the report was wrong, and a report that
-        # is right by luck is the thing this file is most careful about. Loop until nothing is alive, so
-        # "in flight at exit" means what it says.
+        # WAIT ON THE WORKERS' OWN FLAGS, not on Thread.join()/is_alive(). Measured here 2026-08-07 over three
+        # interrupted runs: after the signal, `for t in threads: t.join()` returned -- and so did a follow-up
+        # `while any(t.is_alive()): t.join(timeout=1)` -- while one worker was still waiting on its child. Twice
+        # out of three the child then finished and wrote its sample, so the file held 23 samples while the
+        # summary said 22 completed and called the last one "in flight". Nothing was lost (it is not recorded
+        # done, so a resume re-runs it, which is the safe direction) but the REPORT was wrong, and this file's
+        # whole job is a report that can be trusted about what was measured. The flag is set by the worker
+        # itself, after its last q.record(), so it cannot be early. With it: six interrupted runs, six times
+        # `completed` equal to the number of samples on disk and nothing left in flight.
         try:
-            while any(t.is_alive() for t in threads):
-                for t in threads:
-                    t.join(timeout=1.0)
+            for e in finished:
+                while not e.wait(timeout=1.0):
+                    pass
         except KeyboardInterrupt:
             # A second interrupt is the reader saying they will not wait. Then the items ARE still running, the
             # report says so, and a resume re-runs them.
