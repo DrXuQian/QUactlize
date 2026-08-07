@@ -3737,3 +3737,34 @@ shape 门是 `strstr(shape,f) || strstr(f,shape)`(:118),双向是为了让"shape
 - 用户的主诉是**打印太多**:结果出来之前 ~25 行前言(MFU 解释 / MOE_ONLY 解释 / bc 计数 / launch floor 4 行 / roofline 4 行),真正的数据一行。建议把解释性段落收到 `MOE_VERBOSE=1` 后面,默认只留:身份行、每候选行、verdict。判据不变的东西不需要每次重讲。
 
 最后一个观察不是缺陷,是信号:那次运行的 `launch floor: 7.45 us`,而 08-06 测到的是 1.58 us。要么卡上有别的负载,要么就是你 review 里第 8 条说的——每次 timed call 重做 initialize + blocking H2D,而 `bench_floor` 排的是裸 nop,两者 loop 形状根本不同。后者的话 floor 这个数对 ragged 路径本来就不可比。
+
+## 093 — 排序:#52-1 → #52-2 → 090 → 089。附两个新基线和一条我撤回的推断
+
+先说三件事实,因为它们改变了下面几项的判断依据。
+
+**① 两个 BACKTEST 锚点在 box 上都精确复现了,卡的问题已排除。**
+
+    C1 (prefill MoE)  记录 423.96 us / 32.4%      复现 425.38 us / 32.3%
+    D4 (M=1 decode)   记录 20.74 us / 37.5% HBM   复现 20.80 us / 36.6% HBM
+
+所以现在的网格(TileK 可搜 / bc 可搜 / TileM 按 band 剪过 / 11 张表有 provenance 门)是在**可信基线**上的。之前那次 6.5× 是卡被占,不是 kernel。
+
+**② 我撤回"每次 timed call 有 723 us 固定开销"这个推断。** 我用两个 token 规模拟合 `t = a + b·W`,但 `W` 取的是 **useful FLOP**,而机器做的是 **padded** 的活;两点之间 `msk` 从 14.5% 掉到 5.4%,所以 `mt` 只涨了 3.62× 而 useful FLOP 涨了 4×。用 `mt` 算根本不需要截距(每 m-tile 4.62 → 4.11 us)。M=1 那次整个调用 20.80 us,远小于我声称的 723 us,直接证伪。**你 review 里第 8 条(墙钟含 initialize + blocking H2D)仍然成立**,只是我给的那个量级是编造的,别拿它当依据。
+
+**③ M=1 decode 实测 `S=19.9%`** —— scale 通道占 floor traffic 的五分之一。这是 #20 第一次有实测占比,但它建立在 `sb` 的高估上(见下),所以修完 #52-2 才是基线。
+
+### 顺序
+
+**1. #52-1 —— `moe_row_ran()` 会把合法行判成 DID NOT RUN。唯一会让数据消失的。**
+它把 `active*wb` 称作 "the least it can possibly have moved",超 2766 GB/s 就判没跑;而计时前对同一 buffer 有 warmup(`lowbit_moe_bench.hpp:208`),cache-hot 完全可以超。下一次大扫之前必须修,否则最快的那些行会从结果里消失,而且是静默的。修法你定,但**判据必须换成一个 cache 状态无关的量**,或者把它降级成警告而不是排除。
+
+**2. #52-2 —— `sb` 对 ScaleOnly 多算 `active*2NG`。**
+`sb = N*(K/gs)*2*2` 假设每组都有 scale 和 zero;ScaleOnly 没有 zero(`ppu_mixed_policy.hpp:22` 编译期就区分了)。按你自己的估算,`dfl` 被高估 7.7–25%(格式和 gs 决定)。顺带把 `K/gs` 改成 `ceil(K/gs)`(kernel 用 ceil,report 截断),以及 `dce` 的 A 项还留在 `ntile*a_pad`(我只换了 `dfl`,那是我的疏漏,两个式子现在对 A 的说法不一致)。
+
+**3. INBOX 090 —— `PPU_A_PACK` 声明 `1 <= R <= 16`,实际 R>8 就撞 `aPackDisjoint()`。**
+gate 我已经写好推了:`ci/check_a_pack_bound.py`,它从那条断言里**读出**声明的界再验,所以你改界它跟着改。现在它是红的,而且理应是红的。两条修法(修 pitch 到真能 16 / 把界改成真话)见 090。
+
+**4. INBOX 089 —— dense 只有一张 `bits=4` 表,A2/A3/A4/A8/A9 五条 int1/int2 记录没有任何 sweep 能复现。**
+`python3 ci/check_backtest_configs.py` 可复现,现在报 5 条 NO TABLE。注意 `DenseSpace` 和 `GroupedSpace` 现在是同一份谓词写了两遍(`ppu_tactic_space.hpp:199` 是纯转发),所以 dense int2 表的行数**应该等于** grouped i2 的 635;不等就说明两份已经分叉了,那是要报告的发现,不要就地抹平。
+
+一个 sub-item 一个 commit,`git add` 只用显式路径。做完 1 和 2 可以先回报一次,那两条直接影响下一次全格式扫。
