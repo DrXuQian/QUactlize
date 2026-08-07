@@ -434,3 +434,56 @@ a message that was already in the log, once three lines above where anyone looke
    The gs=32 65.0% is the one to reproduce. The user recalls a 60+% figure at gs=16 as well; the record's own
    arithmetic gives 58.7% (65.0% divided by the recorded 10.8% int4 cost of moving to gs=16), so gs=16 is run
    here to settle that rather than to confirm it.
+
+---
+
+## Three one-build experiments that have never been run, each with its decision rule already written
+
+Found 2026-08-07 by `ci/check_switch_macros.py`: eight build switches that nothing in the tree can turn on. Three
+of them are not knobs — they are **unrun experiments** whose comments already state what each outcome means. They
+were nearly deleted as dead code. Each is one build and one run of an existing target; none needs new code.
+
+All three point at the SAME open failure: `rowC` of `test_q4k_packed_gemm`, the only row where `kPackedScaleOn` is
+true. Run them in this order — the first that indicts something makes the rest cheaper to interpret.
+
+### E1 — is the rowC regression the packed-pair arithmetic, or the rest of that change?
+
+`quactlize_mma_mixed_input.hpp:1522` — "the two candidate causes cannot be separated by reading: (i) the f16x2
+asm, which has zero local coverage because the local gate compiles under nvcc where the scalar fallback is
+selected, and (ii) anything else the same commits touched."
+
+    PPU_DEFS="PPU_PACKED_SCALE=1 PPU_PACKED_PAIR=0" TARGET=test_q4k_packed_gemm ./build.sh && $BIN
+
+    rowC MATCH   -> INDICTS the packed arithmetic/asm. E2 and E3 then become the two candidate mechanisms.
+    rowC still bad -> EXONERATES it; the cause is elsewhere in the same commits, and E2/E3 are unrelated.
+
+### E2 — was `"=&r"` the fix, or did the failure merely go away?
+
+`gguf_packed_scale.h:285` — rowC went from bad=724/4096 to MATCH across FOUR commits and the earlyclobber
+constraint is only the most plausible of them. Note what is already ruled out: `test_ppu_f16x2_probe` section (4)
+forces dest == each input in turn and the hardware returns the same answer in 5 of 5 forms, so the instruction
+tolerates overlap. Whatever `"=r"` allowed happens in register allocation under the mainloop's pressure.
+
+    PPU_DEFS="PPU_PACKED_SCALE=1 PPU_F16X2_EARLYCLOBBER=0" TARGET=test_q4k_packed_gemm ./build.sh && $BIN
+
+    rowC bad     -> the constraint IS the fix; the attribution stops resting on plausibility.
+    rowC MATCH   -> it was not, and four commits' worth of candidates are still open.
+
+### E3 — does `ppu.fma.rtte.f16x2` flush its subnormal input?
+
+`gguf_packed_scale.h:263` — the ISA has an explicit `.noftz` on at least one f16x2 op
+(`ppu.atom.gpu.global.add.noftz.f16x2`), "which only makes sense if the DEFAULT flushes". If it does, the scale
+lane becomes 0 for ~80% of superblocks while the zero lane (normal dmin) survives — which is the observed shape:
+rowC wrong, errors dominated by scale, partial rather than total because each output sums over 19 superblocks.
+
+    PPU_DEFS="PPU_PACKED_SCALE=1 PPU_F16X2_NOFTZ=1" TARGET=test_q4k_packed_gemm ./build.sh && $BIN
+
+    build FAILS  -> the assembler does not take the qualified mnemonic; the hypothesis dies here, for free.
+    builds, rowC MATCH -> the default DOES flush, and this is a fix rather than a probe.
+    builds, rowC bad   -> flushing is not the mechanism; the `.noftz` reading was wrong.
+
+### Report
+
+For each: the build's exit status, and the `rowC` disposition line verbatim. `$BIN` is what build.sh prints.
+Do NOT read a MATCH as "fixed" without saying which of the three produced it — that is the D7 mistake, where a
+number was filed against a mechanism nobody had witnessed.
