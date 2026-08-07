@@ -3801,3 +3801,40 @@ gate 我已经写好推了:`ci/check_a_pack_bound.py`,它从那条断言里**读
 
 - 补完就把这一轮(4 个 commit + 新的这个)一起推。
 - 你说"local tier 4 项红灯都是 `66a5994` 已有的 stale fixture/环境问题"——**请把那 4 项的名字和判定依据写出来**(比如在 `66a5994` 上 checkout 跑同一项也红)。我这边 local_gates 还在跑,我会自己核。"本来就坏的"这句话没有证据就不能用。
+
+## 095 — persistent:机制在 actlize 里是成套现成的,我们这条路一行没接(#45)
+
+**做完 094 再开。** 这条不是"写一个 persistent kernel",是**接线**,所以先把我查到的读给你,别重新发明。
+
+### 已经存在的(我 grep 出来的,不是推断)
+
+kernel 层:
+
+    include/cutlass/gemm/kernel/ppu_aiu_gemm_persistent.hpp
+    include/cutlass/gemm/kernel/ppu_aiu_gemm_persistent_overlap_prologue.hpp
+    include/cutlass/gemm/kernel/ppu_aiu_gemm_array_persistent_overlap_prologue.hpp
+    include/cutlass/gemm/kernel/ppu_simt_gemm_persistent.hpp
+    include/cutlass/gemm/kernel/ppu_aiu_gemm_streamk.hpp
+
+scheduler:
+
+    include/cutlass/gemm/kernel/ppu_tile_scheduler.hpp
+    include/cutlass/gemm/kernel/ppu_tile_scheduler_group.hpp        <-- grouped,就是给 MoE 的
+    include/cutlass/gemm/kernel/ppu_tile_scheduler_stream_k.hpp
+    include/cutlass/gemm/kernel/ppu0015_tile_scheduler.hpp
+
+dispatch policy:`MainloopPPUAiuPersistentOverlapPrologue`、`MainloopPPUAiuBatchArrayPersistOverlapPrologue`。
+
+而且 `KernelAiuMultistagePersistent` 是 `ppu_mma_builder.inl:222-225` 那个 `conditional_t` 里**唯一没被塌掉的 tag** —— 其余(`KernelTmaWarpSpecialized*`、`KernelCpAsyncWarpSpecialized*`、所有 `Cooperative`)全部变成 `KernelAiuMultistage`,即 **builder 接受一个它不实现的请求且不报错**。这一点单独记一笔,不在这条任务范围里。
+
+我们这边:`quactlize_extensions/` 里 persistent 相关 0 处。mixed-input 走的是 `MainloopPPUAiuMixedInput` + `ppu_aiu_gemm_mixed_input.hpp`,非 persistent。
+
+### 要判断的事(先给我结论,再动手)
+
+1. **MoE 还是 dense 先做?** 我倾向 **MoE 先**:`ppu_tile_scheduler_group.hpp` 就是为它写的,而且手写 AIU 那条路已经用 persistent scheduler 打平过 DeepGemm(见 memory `ppu-moe-aiu-persist-matches-deepgemm`),所以收益是**验证过**的,不是猜的。dense 那边(#45)的动机是小 M 时跨 n-tile 摊 A,收益还没实测。
+2. **接线代价**:`ppu_aiu_gemm_persistent.hpp` 吃的是 `MainloopPPUAiu`,我们是 `MainloopPPUAiuMixedInput`。这两个 mainloop 的接口差多少?是 kernel 层换一个模板参数,还是要新写一个 `ppu_aiu_gemm_mixed_input_persistent.hpp`?**读出来告诉我,别推**。
+3. **和已有轴的冲突**:persistent 会改变 grid 形状,而 `report()` 里的 `blk`/`wav`/`cta`/`grid_wrp/CU` 全都建立在"grid = mt × ntile"上。这些诊断需要跟着改,否则 persistent 的行会打印一整排假数字 —— 这跟今天那段 padded-A banner 是同一类问题。
+
+先只回答这三点,附证据。**同意之后再写代码。**
+
+顺带一个背景,免得你重做:pingpong 在 actlize 里也有一份手写的,`ppu_mma_aiu_multistage_with_scale.hpp` 的 `WarpInterleaving`(两组 8 warp,`__ppu_barrier_sync(5+g)` / `__ppu_barrier_arrive(6-g)` 交叉握手),但只在 `NumThreadsPerCTA == 512` 时开,挂在 block-wise scale 路上,`ppu0015` 版没有。cooperative 则是**零实现**。这些不在本条范围内,只是让你知道边界在哪。
