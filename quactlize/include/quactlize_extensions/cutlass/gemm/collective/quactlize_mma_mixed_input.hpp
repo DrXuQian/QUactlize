@@ -32,6 +32,8 @@
 
 #pragma once
 
+#include "quactlize_extensions/cutlass/gemm/collective/detail/compact_a_smem.hpp"
+
 #include "cutlass/cutlass.h"
 #include "cutlass/gemm/dispatch_policy.hpp"
 // quactlize's mainloop policies; this collective specialises CollectiveMma on one of them.
@@ -461,31 +463,22 @@ public:
   // Nor is there gmem traffic left to save. AiuDesc::init takes dim_h from the problem's M -- per expert in the
   // grouped kernel -- and the instruction is ...padz..., so at one row per expert the AIU already fetches exactly
   // one row per k-tile and zero-fills the rest of the cube.
-  static_assert(kACompactRows >= 0, "compact A row capacity cannot be negative");
-  static_assert(kACompactRows == 0 || kACompactRows <= int(shape<0>(TileShape{})),
-                "compact A row capacity cannot exceed TileM");
-  static constexpr int kAStorageRows = kACompactRows > 0 ? kACompactRows : int(shape<0>(TileShape{}));
-  static_assert(int(shape<0>(TileShape{})) % kAStorageRows == 0,
-                "positive compact A row capacity must divide TileM so padding rows alias exactly");
+  // THE LAYOUTS COME FROM THE SHARED HEADER. They are a pure function of (TileShape, Stages, atom) with no
+  // reference to B, and all three collectives spelled the ordinary one identically -- so an A-side feature that
+  // lives in one of them is an accident of where it was typed, not a property of the format.
+  using ASmem = quactlize::collective::detail::CompactASmem<
+      TileShape, DispatchPolicy::Stages, InternalSmemLayoutAtomA, kACompactRows>;
+  static constexpr int kAStorageRows = ASmem::kStorageRows;
   // Keep rows [0,kACompactRows) distinct and alias every later MMA row modulo that prefix. The hierarchical M mode
   // has logical size TileM but physical strides (TK,0), so cosize_v is kACompactRows*TileK*Stages. At runtime only
   // min(M-residue,kACompactRows) rows are copied; the remaining physical rows are zeroed and all logical padding
   // rows still address valid shared memory.
-  using SmemLayoutACompact = decltype(make_layout(
-      make_shape(make_shape(Int<kAStorageRows>{},
-                            Int<int(shape<0>(TileShape{})) / kAStorageRows>{}),
-                 shape<2>(TileShape{}), Int<DispatchPolicy::Stages>{}),
-      make_stride(make_stride(shape<2>(TileShape{}), _0{}),
-                  _1{}, Int<kAStorageRows * int(shape<2>(TileShape{}))>{})));
-  using SmemLayoutAOrdinary = decltype(tile_to_shape(
-      InternalSmemLayoutAtomA{},
-      make_shape(shape<0>(TileShape{}), shape<2>(TileShape{}), Int<DispatchPolicy::Stages>{})));
-  using SmemLayoutA = cute::conditional_t<(kACompactRows > 0), SmemLayoutACompact, SmemLayoutAOrdinary>;
+  using SmemLayoutACompact  = typename ASmem::Compact;
+  using SmemLayoutAOrdinary = typename ASmem::Ordinary;
+  using SmemLayoutA         = typename ASmem::Layout;
   // A compact twin, never allocated, used only to shape the mma fragment: partition_fragment_A on the stride-0
   // layout would inherit the zero and allocate fewer registers than the mma reads.
-  using SmemLayoutAFrag = decltype(tile_to_shape(
-      InternalSmemLayoutAtomA{},
-      make_shape(shape<0>(TileShape{}), shape<2>(TileShape{}), Int<DispatchPolicy::Stages>{})));
+  using SmemLayoutAFrag = typename ASmem::FragLayout;
   using SmemLayoutB = decltype(tile_to_shape(
       InternalSmemLayoutAtomB{},
       make_shape(shape<1>(TileShape{}), shape<2>(TileShape{}), Int<DispatchPolicy::Stages>{})));

@@ -31,6 +31,8 @@
  **************************************************************************************************/
 
 #pragma once
+
+#include "quactlize_extensions/cutlass/gemm/collective/detail/compact_a_smem.hpp"
 // =============================================================================================================
 // TWO-B-PLANE mixed-input mainloop: B arrives as TWO bit planes that are combined in the converter so a GGUF
 // 3/5/6-bit weight runs as ONE GEMM (Q3 = int2 low + int1 high, Q5 = int4+int1, Q6 = int4+int2). This keeps the
@@ -384,9 +386,12 @@ public:
   static_assert((size<0>(TileShape{}) % size<0>(SmemLayoutAtomScale{})) == 0, "SmemLayoutAtomScale must equal the tile shape.");
   static_assert((size<2>(TileShape{}) % size<1>(SmemLayoutAtomScale{})) == 0, "SmemLayoutAtomScale must evenly divide tile k shape.");
 
-  using SmemLayoutA = decltype(tile_to_shape(
-      InternalSmemLayoutAtomA{},
-      make_shape(shape<0>(TileShape{}), shape<2>(TileShape{}), Int<DispatchPolicy::Stages>{})));
+  // Same shared type as the other two collectives. The capacity is 0 here until this collective's LOAD path
+  // grows the residue clamp and the plain cp.async copy -- see compact_a_rows below and ci/check_compact_a_reach.py,
+  // which fails if this witness and the tactic clause ever disagree.
+  using ASmem = quactlize::collective::detail::CompactASmem<
+      TileShape, DispatchPolicy::Stages, InternalSmemLayoutAtomA, /*Capacity=*/0>;
+  using SmemLayoutA = typename ASmem::Layout;
   // PER-PLANE N-FOLD, LOW plane. Its fold factor is read off its OWN atom, which the builder already sizes folded
   // (BFoldBlockK = FoldF * blockK) -- the same trick P2Fold uses, so no fold factor has to travel through the dispatch
   // policy. P1Fold == 1 reproduces the previous layout exactly.
