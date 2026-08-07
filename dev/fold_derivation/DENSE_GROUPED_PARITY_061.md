@@ -74,7 +74,7 @@ compile-time failure rather than a context-poisoning device assert.
 | Dense scheduling | rank-4 universal problem plus `SplitKSerialScheduler`, contiguous D | n/a | **Irreducible:** one problem, serial split-K reduction, non-EVT epilogue. Keep in a dense operator adapter. |
 | Grouped scheduling | n/a | `GroupProblemShape`, per-expert D pointers, ragged A offsets, uniform 3-D fast path, prefix-search ragged path | **Irreducible:** these are the operator. Keep in a grouped adapter; pass a consume-ready problem view to the shared mainloop. |
 | In-kernel grouped K slicing | dense scheduler owns its own serial split-K | grouped grid.z writes `L*splitk` output planes | **Irreducible implementations**, but one shared K-slice validity helper can state divisibility and full-stride rules. |
-| Tactic legality | `DenseSpace` wrapper over common rules | `GroupedSpace` wrapper over the same rules | **Unified with a guard.** The comparator enumerates both wrappers, and the local gate proves it fires by planting divergence. |
+| Tactic legality | `DenseSpace` alias of `TacticSpace` | `GroupedSpace` alias of the same type | **Unified structurally.** A type-identity assertion rejects a second implementation; the local gate also compares both table routes and proves both controls fire. |
 | Exact instantiated smem/compact validity | `QueryOnly` asks the actual kernel type | same | **Unified property, duplicated call glue.** Preserve exact-type queries; do not replace them with host arithmetic. |
 | Packed-metadata contract witness | `ExpectPackedScale` static-asserts `is_packed_scale` | same | **Unified property, duplicated call glue.** This is the right kind of loud scheme guard. |
 | Compiled tactic inventory | dense default `64x64:32x32:s3` plus four bootstrap rows | grouped default `16x128:16x16:s2` plus the same four bootstrap rows and CUDA vecdot | **Irreducible selection.** Different operator distributions measured different winners. Separate enumeration ABIs make the difference visible; equality would be wrong. |
@@ -185,9 +185,8 @@ chunk capability, packed-metadata capability
 ```
 
 For a common `(format, tile, group size, build policy)`, both operator adapters must instantiate that same descriptor;
-only scheduler, epilogue, problem view and output view may differ. Dense/grouped emitters should enumerate descriptors
-and compare them, extending the existing tactic-space comparator and using the same planted-divergence proof that
-already demonstrates the gate fires.
+only scheduler, epilogue, problem view and output view may differ. Tactic legality is shared by type identity; the
+separate mixed-policy parity gate still enumerates descriptors and uses its own planted-divergence proof.
 
 The compiled tactic inventories remain intentionally separate. Their public enumeration ABI is the loud mechanism:
 different defaults/rows are visible data, not hidden policy booleans. Artifact-changing metadata formats likewise

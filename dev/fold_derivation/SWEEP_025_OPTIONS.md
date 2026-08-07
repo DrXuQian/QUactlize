@@ -19,8 +19,9 @@ evidence; it is not a device result.
 
 ## Finite domain
 
-`emit_tactic_space.cpp` emits the Cartesian product below twice, once by asking `DenseSpace` and once by asking
-`GroupedSpace`. Every cell is printed as `reachable` or `excluded: <one clause>`.
+`emit_tactic_space.cpp` emits the Cartesian product below once from `TacticSpace`. `DenseSpace` and `GroupedSpace`
+are compatibility aliases of that type, so a second emitted copy would compare the generator with itself. Every cell
+is printed as `reachable` or `excluded: <one clause>`.
 
 | axis | complete values |
 |---|---|
@@ -82,11 +83,11 @@ the port is impossible.
 
 The host-readable rules and axes live in `quactlize/include/ppu_tactic_space.hpp`.
 
-- `fpA_intB_ppu.cuh` names `DenseSpace` and static-asserts its kernel constraints.
-- `moe_grouped_ppu.cuh` names `GroupedSpace` and static-asserts its kernel constraints.
-- `lowbit_moe_bench.hpp::moe_ok` asks `GroupedSpace` instead of carrying another copy of the predicate.
-- `emit_tactic_space.cpp` asks the two wrappers independently. A future difference therefore appears in emitted output
-  and can be justified or rejected; it cannot silently shrink a sweep.
+- `fpA_intB_ppu.cuh` names the public `DenseSpace` alias and static-asserts its kernel constraints.
+- `moe_grouped_ppu.cuh` names the public `GroupedSpace` alias and static-asserts its kernel constraints.
+- `lowbit_moe_bench.hpp::moe_ok` asks that same generator instead of carrying another predicate.
+- `DenseSpace` and `GroupedSpace` are type-identical by static assertion. The local gate rejects a planted independent
+  grouped type and compares both emitter routes over every argument set declared by the 13 shipping tables.
 
 The ordered exclusion predicate is:
 
@@ -115,31 +116,26 @@ Build and emit with no device SDK:
     c++ -std=c++17 -Iquactlize/include \
       dev/fold_derivation/emit_tactic_space.cpp -o /tmp/quactlize_emit_tactics
     /tmp/quactlize_emit_tactics > /tmp/quactlize_tactic_space.txt
-    python3 ci/tactic_space.py /tmp/quactlize_tactic_space.txt
 
-Both sides currently emit:
+The shared generator currently emits:
 
 | schema | reachable TK/F cells (number of tile/warp shapes) |
 |---|---|
-| i1 | `64/F4: 24`, `128/F2: 59`, `256/F1: 80`; `32/F8: 0` (needs WN128, producer cap is 64) |
-| i2 | `32/F4: 24`, `64/F2: 59`, `128/F1: 103`, `256/F1: 80` |
-| i4 | `32/F2: 59`, `64/F1: 103`, `128/F1: 103`, `256/F1: 80` |
-| Q3_K | `64/F2/F4: 24`, `128/F1/F2: 59`, `256/F1/F1: 80`; TK32 has no reachable int1-plane row |
-| Q5_K | `64/F1/F4: 24`, `128/F1/F2: 59`, `256/F1/F1: 80`; TK32 has no reachable int1-plane row |
-| Q6_K | `32/F2/F4: 24`, `64/F1/F2: 59`, `128/F1/F1: 103`; TK256 is the incomplete inverse |
+| i1 | `64/F4: 24`, `128/F2: 53`, `256/F1: 59`; `32/F8: 0` (needs WN128, producer cap is 64) |
+| i2 | `32/F4: 24`, `64/F2: 59`, `128/F1: 97`, `256/F1: 59` |
+| i4 | `32/F2: 59`, `64/F1: 103`, `128/F1: 97`, `256/F1: 59` |
+| Q3_K | `64/F2/F4: 24`, `128/F1/F2: 53`, `256/F1/F1: 59`; TK32 has no reachable int1-plane row |
+| Q5_K | `64/F1/F4: 24`, `128/F1/F2: 53`, `256/F1/F1: 59`; TK32 has no reachable int1-plane row |
+| Q6_K | `32/F2/F4: 24`, `64/F1/F2: 59`, `128/F1/F1: 97`; TK256 is the incomplete inverse |
 
-Totals per operator: **5,760 emitted, 1,286 reachable, 4,474 excluded with a clause**. After replacing only the
-operator prefix, dense and grouped output is byte-identical at this checkpoint; `ci/tactic_space.py` reports
-`dense 5760 configs, grouped 5760 -> COINCIDE`.
+Totals: **5,760 emitted, 1,145 reachable, 4,615 excluded with a clause**. Both table routes consume this one result;
+only the durable dense/grouped table label, macro prefix, and output filename differ.
 
 That emitter describes the ordinary arrangement/tactic domain. `benchmarks/size_sweep.cpp` adds the stage and compact
-build axes from the same predicate. It reports **3,601 ordinary builds** plus **618 compact builds per stage per
-row capacity 1/2/4**, hence **5,562 compact and 9,163 total builds per operator before performance pruning**. For
-grouped this is the complete legal kernel inventory, not a claim that every capacity maps one-to-one to a global
-n-token point: the three compact types serve only the pinned T=1/2/4 columns, while one ordinary build serves
-T>=64. Thus 9,163 is the unique-build count for the full six-point workload, not a per-column count and not an
-overcount. The number is a sizing warning, not a box request; the guarded rules in
-`SWEEP_032_PRUNING_CODEX.md` must reduce it first.
+build axis from the same predicate. Its current `{2,3,4}` scope reports **3,190 ordinary builds** (1,145 / 1,131 /
+914 by stage). Compact row-capacity specialisations are not enumerated by that host tool, so they must not be added
+to this number by multiplying an obsolete per-stage count. This is a sizing result, not a box request; the guarded
+rules in `SWEEP_032_PRUNING_CODEX.md` must reduce it first.
 
 No ppu001 sweep should use the old `test_fpA_intB_ppu` command as a completeness claim: that binary remains an int4,
 hand-curated tactic list. The emitted inventory is the coverage contract the eventual box command must name and compare

@@ -193,8 +193,9 @@ struct MainloopPolicy {
       Stages, AiuInterleaved>;
 };
 
-// One guard for every adapter. TacticSpace is the only operator-specific input: it preserves the declared dense-only
-// quarantine while the instantiated mainloop, delivery checks, and scale-copy coverage remain one shared contract.
+// One guard for every adapter. TacticSpace is a public route name (DenseSpace or GroupedSpace); both are aliases of
+// the one legality generator, while the instantiated mainloop, delivery checks, and scale-copy coverage remain one
+// shared contract.
 template <class TacticSpace, class Policy>
 struct KernelPolicyGuard {
   using Mainloop = typename Policy::CollectiveOp;

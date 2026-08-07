@@ -1084,7 +1084,7 @@ foreach(_row IN LISTS _MOE_FORMATS)
   list(GET _f 7 _emitname)
   # THE SHAPES COME FROM THE EMITTED TABLE, not from axis lists here. Until 2026-08-06 this loop was
   # _wns x _MOE_TN_LIST x _MOE_WM_LIST x _MOE_TM_LIST -- 3600 units, of which moe_ok<> rejected most and the
-  # compiler turned them into empty functions. moe_ok<> asks GroupedSpace for its answer and so does the emitter,
+  # compiler turned them into empty functions. moe_ok<> and both emitter routes ask the one TacticSpace generator,
   # so the table IS that filter applied ahead of generation instead of after compilation. Measured: 415 units
   # instead of 3600, and 552 rows the hand-written WarpN subsets were excluding come back.
   #

@@ -156,10 +156,9 @@ There is no remaining disagreement between the two collaborators in this documen
 3. **Cost of the performance policy.** One unpruned A3B shape will compare the full 402-row result with the 227-row
    policy partition using identical timing samples. Until it runs, the 175 omitted rows have an unknown cost. **PENDING
    ppu001 measurement.**
-4. **One generator for both operators.** Dense is emitted from `DenseSpace`; MoE still generates a separate Cartesian
-   CMake product and relies on `GroupedSpace` to compile illegal units empty. Generalising the generator to consume
-   `GroupedSpace` is now the next structural task: it will make counts and policy partitions products of the same
-   authority instead of two unrelated enumerations. **CHECKED implementation gap.**
+4. **One generator for both operators.** **DONE.** CMake consumes the emitted grouped tables rather than a Cartesian
+   product, and `DenseSpace` / `GroupedSpace` are now public aliases of one `TacticSpace` implementation. A structural
+   type guard and full emitter-route gate prevent a second legality chain from returning silently. **CHECKED.**
 5. **Checkpoint shape confirmation and compact-specific enumeration.** The source fixtures are reproducible, but the
    loaded quantized artifacts still need to confirm their shapes, and the generators do not yet enumerate the extra
    stage/topology cells made legal only by compact A's smaller footprint. **PENDING.**

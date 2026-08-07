@@ -1,30 +1,8 @@
 // EMIT A BENCH'S COMPILED CONFIG TABLE FROM THE SHARED TACTIC RULES -- for EITHER operator.
 //
-// WAS emit_dense_configs.cpp, which named the one operator it could serve. It now takes --space, because the
-// dense and grouped sweeps searching different sets is how "dense and grouped should be comparable" fails
-// silently: two tables, two pruning policies, and a difference that shows up as a performance claim rather than
-// as a diff. The MoE side still defines its set as a Cartesian product of MOE_*_LIST environment axes, which
-// cannot express an arbitrary set at all; this program can, and emits the same shape of table for both.
-//
-// --space=compare IS THE POINT, not a convenience. ppu_tactic_space.hpp keeps DenseSpace and GroupedSpace as
-// separate wrappers over one implementation, and says why at its line 185: "The emitter asks each launcher for
-// its own answer and a comparator checks them; sharing only the current implementation makes equality explicit
-// today without making future drift invisible." The comparator it refers to did not exist. Without it, the two
-// being identical was a fact about the source that nobody re-established, so the first divergence would have
-// been absorbed rather than reported -- and this program would have kept emitting one operator's answer for
-// both. `--space=compare` walks the full grid and prints every candidate where the two disagree.
-//
-// THE TWO SPACES AGREE AGAIN, AND THE COMPARATOR SHOULD REPORT ZERO. For a day they did not: a four-warp
-// minimum sat on the dense side recording a device abort observed once on ppu001, while the grouped kernel had
-// POSITIVELY MEASURED two-warp rows through the same mainloop -- (64,64,64) w64x32 is the recorded int4 65.0%
-// winner and (64,128,64) w64x64 the int1 61.2% one. The comparator was taught to classify that difference as
-// DECLARED and exit zero on 891 of them.
-//
-// That was the wrong repair. The difference was not between the two OPERATORS; it was a remembered observation
-// living in the file that defines what is legal, and the right fix was to delete it rather than to teach the
-// checker to expect it (2026-08-05, see ppu_tactic_space.hpp's dense_kernel_exclusion). The classification
-// machinery stays because a real asymmetry could appear later and should have a visible home -- but its list is
-// now empty, so "declared" and "drift" both being zero is the expected reading.
+// WAS emit_dense_configs.cpp, then two template entries over duplicated DenseSpace/GroupedSpace wrappers. The
+// legality generator is now one TacticSpace; --space selects only the durable table label and macro prefix. A route
+// cannot grow a private pruning rule here: it would first have to break the alias invariant in ppu_tactic_space.hpp.
 //
 // TWO PROBLEMS THIS REPLACES, and the second is worse than the first.
 //
@@ -41,7 +19,7 @@
 // program has no copy of the legality predicate, only of the pruning policy it is asked to apply.
 //
 //   c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic
-//   /tmp/emit_tactic <bits> <tile_k> [--space=dense|grouped|compare] [stage ...]
+//   /tmp/emit_tactic <bits> <tile_k> [--space=dense|grouped] [stage ...]
 //                                                        > benchmarks/lowbit_<space>_configs.inc
 //
 // bits is the LOW plane width (1, 2 or 4); tile_k must match the binary's BENCH_TSK. Both are build-time
@@ -196,7 +174,6 @@ bool n_geometry_guard(std::vector<Candidate> const& legal, Candidate const& c) {
 // property rather than merely be unchanged by its removal: min (TM/WM)*(TN/WN) over the 227 emitted rows is 4,
 // and no row is below it. Both halves are needed -- unchanged output would also be the symptom of a constraint
 // that neither copy was applying.
-template <class Space>
 std::vector<Candidate> legal_grid(FormatSpec const& spec, int tactic_tk, int artifact_tk) {
   // Legality FIRST and from the shared header, so the pruning policy only ever removes rows that could have
   // been built. A policy applied to an unfiltered grid would emit configurations that fail to compile.
@@ -207,75 +184,14 @@ std::vector<Candidate> legal_grid(FormatSpec const& spec, int tactic_tk, int art
         for (int wn : kWarpN)
           for (int b_chunk : kBChunkModes) {
             Candidate const c{spec, tm, tn, tactic_tk, wm, wn, artifact_tk, b_chunk};
-            if (Space::sweep_exclusion(c) != Exclusion::None) continue;
+            if (TacticSpace::sweep_exclusion(c) != Exclusion::None) continue;
             ok.push_back(c);
           }
   return ok;
 }
 
-// THE COMPARATOR ppu_tactic_space.hpp:185 ASKS FOR. Every predicate the emitter consults, over the whole grid
-// and every stage in scope, asked of both spaces. Reports disagreements rather than asserting: a divergence is
-// news about the two operators, not necessarily a defect, and the emitter cannot know which. Returns the count
-// so a gate can require zero while a human reads what differs.
-// THERE ARE NO DECLARED ASYMMETRIES LEFT, and the list stays here so that adding one is a deliberate act with a
-// visible home rather than an `if` buried in a predicate.
-//
-// It had exactly one entry, DenseSubFourWarpDeviceAbort, until 2026-08-05. That entry did not describe a
-// difference between the two operators; it described a device abort somebody once saw on the dense route, and
-// keeping it meant the dense space could never search the geometry that holds the measured int4 optimum. It was
-// deleted at the source -- see ppu_tactic_space.hpp's dense_kernel_exclusion -- so the two spaces now agree on
-// every kernel-level predicate and this comparator should report ZERO differences. If it reports any, that is
-// news either way: a genuine divergence, or somebody reintroducing a remembered observation as a rule.
-//
-// A future entry must be a real asymmetry between the dense and grouped ROUTES -- something one kernel can do
-// that the other structurally cannot -- and must cite where in the source that difference lives. "We measured a
-// failure once" is not such a citation.
-constexpr Exclusion kDeclaredDenseOnly[] = {};
-
-bool is_declared(int dense_verdict) {
-  for (Exclusion e : kDeclaredDenseOnly)
-    if (int(e) == dense_verdict) return true;
-  return false;
-}
-
-int compare_spaces(FormatSpec const& spec, int tk) {
-  // artifact == tactic here on purpose: this asks whether the two SPACES disagree at one geometry,
-  // not whether a shared artifact is readable. Feeding a split pair would change the question.
-  int const tactic_tk = tk, artifact_tk = tk;
-  int diffs = 0, declared_n = 0;
-  auto say = [&](Candidate const& c, char const* what, int a, int b, int st) {
-    bool const ok = is_declared(a);
-    std::printf("  %-9s %-22s tm=%-4d tn=%-4d wm=%-3d wn=%-4d st=%-3d bc=%d  dense=%-38s grouped=%s\n",
-                ok ? "DECLARED" : "DRIFT", what, c.tm, c.tn, c.wm, c.wn, st, c.b_chunk,
-                exclusion_clause(Exclusion(a)), exclusion_clause(Exclusion(b)));
-    if (ok) ++declared_n; else ++diffs;
-  };
-  for (int tm : kTileM)
-    for (int tn : kTileN)
-      for (int wm : kWarpM)
-        for (int wn : kWarpN)
-          for (int b_chunk : kBChunkModes) {
-          Candidate const c{spec, tm, tn, tactic_tk, wm, wn, artifact_tk, b_chunk};
-          int const kd = int(DenseSpace::kernel_exclusion(c)), kg = int(GroupedSpace::kernel_exclusion(c));
-          if (kd != kg) say(c, "kernel_exclusion", kd, kg, 0);
-          int const sd = int(DenseSpace::sweep_exclusion(c)), sg = int(GroupedSpace::sweep_exclusion(c));
-          if (sd != sg) say(c, "sweep_exclusion", sd, sg, 0);
-          int const ad = int(DenseSpace::static_sweep_exclusion(c)),
-                    ag = int(GroupedSpace::static_sweep_exclusion(c));
-          if (ad != ag) say(c, "static_sweep_exclusion", ad, ag, 0);
-          for (int st : g_stages) {
-            int const td = int(DenseSpace::topology_exclusion(c, st)),
-                      tg = int(GroupedSpace::topology_exclusion(c, st));
-            if (td != tg) say(c, "topology_exclusion", td, tg, st);
-          }
-        }
-  std::printf("%d declared difference(s), %d unexpected disagreement(s)\n", declared_n, diffs);
-  return diffs;
-}
-
 }  // namespace
 
-template <class Space>
 // artifact_tk identifies the resident bytes; tactic_tks are the consumer choices emitted as rows. Passing one
 // tactic_tk equal to artifact_tk reproduces the pre-2026-08-05 table exactly, plus its new TileK column.
 static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<int> const& tactic_tks,
@@ -297,7 +213,7 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
   // TileK suppress a row at another, which is a pruning decision nobody made.
   std::vector<int> n_tkdrop;
   for (int tactic_tk : tactic_tks) {
-    std::vector<Candidate> const ok = legal_grid<Space>(spec, tactic_tk, artifact_tk);
+    std::vector<Candidate> const ok = legal_grid(spec, tactic_tk, artifact_tk);
     // A LIST EMITS ITS LEGAL SUBSET. This used to `return 1` on the first member with no legal grid, which killed
     // the whole run and produced ZERO rows -- so `--tactic-tk=32,64,128,256` on an artifact_tk=64 format emitted
     // nothing at all rather than the 64/128/256 rows it obviously should. That is why no grouped table was ever
@@ -317,7 +233,7 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
   {
     std::vector<Candidate> legal;
     for (auto const& c : ok)
-      if (Space::topology_exclusion(c, st) == Exclusion::None)
+      if (TacticSpace::topology_exclusion(c, st) == Exclusion::None)
         legal.push_back(c);
 
     for (auto const& c : legal) {
@@ -425,10 +341,8 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
 int main(int argc, char** argv) {
   if (argc < 3) {
     std::fprintf(stderr,
-                 "usage: emit_tactic_configs <bits:1|2|4> <tile_k> [--space=dense|grouped|compare] [stage ...]\n"
-                 "  --space defaults to dense.  stages default to 2 3 4.\n"
-                 "  --space=compare emits no table: it walks the grid asking BOTH spaces every predicate the\n"
-                 "  emitter uses and prints the disagreements, exiting non-zero if there are any.\n");
+                 "usage: emit_tactic_configs <bits:1|2|4> <tile_k> [--space=dense|grouped] [stage ...]\n"
+                 "  --space defaults to dense and selects only the table label/prefix. stages default to 2 3 4.\n");
     return 2;
   }
   int bits = std::atoi(argv[1]);
@@ -498,20 +412,10 @@ int main(int argc, char** argv) {
     return pfx;
   };
   if (std::strcmp(space, "dense") == 0)
-    return emit<DenseSpace>(*spec, bits, tk, g_tactic_tks, "dense", prefix("LOWBIT_DENSE"));
+    return emit(*spec, bits, tk, g_tactic_tks, "dense", prefix("LOWBIT_DENSE"));
   if (std::strcmp(space, "grouped") == 0) {
-    return emit<GroupedSpace>(*spec, bits, tk, g_tactic_tks, "grouped", prefix("LOWBIT_GROUPED"));
+    return emit(*spec, bits, tk, g_tactic_tks, "grouped", prefix("LOWBIT_GROUPED"));
   }
-  if (std::strcmp(space, "compare") == 0) {
-    std::printf("comparing DenseSpace vs GroupedSpace: bits=%d tile_k=%d stages", bits, tk);
-    for (int st : g_stages) std::printf(" %d", st);
-    std::printf("\n");
-    int const d = compare_spaces(*spec, tk);
-    // A disagreement is NEWS, not a failure of this program -- but it must not be exit 0, or a gate that runs
-    // this to establish "the two spaces still agree" would pass while they diverge, which is the exact shape of
-    // check this repo has been bitten by before.
-    return d == 0 ? 0 : 1;
-  }
-  std::fprintf(stderr, "unknown --space=%s (want dense, grouped or compare)\n", space);
+  std::fprintf(stderr, "unknown --space=%s (want dense or grouped)\n", space);
   return 2;
 }

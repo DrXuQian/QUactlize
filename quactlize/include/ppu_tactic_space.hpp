@@ -1,12 +1,13 @@
 // Host-readable description of the finite arrangement/tactic search domain shared by fpA dense and grouped GEMM.
 //
 // Keep this header free of CUTLASS/HGGC includes: dev/fold_derivation/emit_tactic_space.cpp compiles it with the host
-// compiler and prints EVERY candidate, including exclusions.  The two launchers also name their own rule wrapper and
-// static-assert the kernel part, so the emitter is not a transcription of constraints hidden in device-only code.
+// compiler and prints EVERY candidate, including exclusions. The two launchers retain public route aliases of the
+// same TacticSpace and static-assert the kernel part, so the emitter is not a transcription of device-only constraints.
 #pragma once
 
 #include <array>
 #include <cstdint>
+#include <type_traits>
 
 #include "ppu_format_config.hpp"
 
@@ -187,40 +188,8 @@ constexpr Exclusion common_kernel_exclusion(Candidate c) {
   return Exclusion::None;
 }
 
-// THE DENSE AND GROUPED KERNEL PREDICATES ARE THE SAME PREDICATE, and this function exists only so the two
-// routes keep separate names at the call sites.
-//
-// It used to carry one extra clause -- `if (cta_warps(c) < 4) return DenseSubFourWarpDeviceAbort;` -- recording
-// that on 2026-08-04 the tested dense sub-four-warp instantiations aborted on ppu001. That clause was a
-// CATEGORY ERROR and it was removed on 2026-08-05: it stated a MEMORY OF AN OBSERVATION inside the file that
-// defines what is LEGAL. A constraint the kernel can express belongs in the kernel as a static_assert, where the
-// compiler can refute it; a host-side list of things that once failed is a second source of truth that outlives
-// the code it was drawn from, and this one did. What it excluded was the measured optimum: (64,64,64) w64x32 is
-// two warps and is the recorded int4 65.0% winner, against 60.6% for the best row the clause left reachable.
-//
-// The evidence that retired it: the dense route now has 61 assert( sites of which 61 are static_assert, so the
-// observed `Assertion 'false' failed` is unreachable in today's code; ci/check_route_admits.py compiles the
-// two-warp row with a planted device-body static_assert as its control and finds no error; and codex reran that
-// probe independently and reported no source-level basis for keeping the clause. The likely mechanism of the
-// original aborts was the then-unimplemented ordinary COARSE scale path, whose selection
-// (ppu_mma_aiu_multistage_mixed_input.hpp: "COARSE is a relation between the scale tile and the ACTUAL retiled B
-// copy view") turns on fragment geometry and so co-varies with warp shape -- a correlation, not a warp-count law.
-//
-// If a two-warp row does fail on hardware, express the real condition as a static_assert with a name. Do not
-// reinstate a remembered observation.
-constexpr Exclusion dense_kernel_exclusion(Candidate c) {
-  return common_kernel_exclusion(c);
-}
-
 constexpr Exclusion common_non_smem_exclusion(Candidate c) {
   if (auto const e = common_kernel_exclusion(c); e != Exclusion::None) return e;
-  if ((c.wm * c.wn) / 32 > 192)
-    return Exclusion::AccumulatorRegisters;
-  return Exclusion::None;
-}
-
-constexpr Exclusion dense_non_smem_exclusion(Candidate c) {
-  if (auto const e = dense_kernel_exclusion(c); e != Exclusion::None) return e;
   if ((c.wm * c.wn) / 32 > 192)
     return Exclusion::AccumulatorRegisters;
   return Exclusion::None;
@@ -237,12 +206,6 @@ constexpr Exclusion common_topology_exclusion(Candidate c, int stages = 2) {
 
   // Match moe_ok's conservative stage-2 existence test exactly. Fold cancels from B bytes; scale+zero is sized for
   // the smallest runtime group (16), because a too-loose filter produces a fake winner when initialize fails.
-  if (common_per_stage_smem(c, c.tm) * stages > kBlockSmemBytes) return Exclusion::MinimumStageSmem;
-  return Exclusion::None;
-}
-
-constexpr Exclusion dense_topology_exclusion(Candidate c, int stages = 2) {
-  if (auto const e = dense_non_smem_exclusion(c); e != Exclusion::None) return e;
   if (common_per_stage_smem(c, c.tm) * stages > kBlockSmemBytes) return Exclusion::MinimumStageSmem;
   return Exclusion::None;
 }
@@ -292,32 +255,16 @@ constexpr Exclusion common_static_sweep_exclusion(Candidate c) {
   return common_producer_exclusion(c);
 }
 
-constexpr Exclusion dense_static_sweep_exclusion(Candidate c) {
-  if (auto const e = dense_non_smem_exclusion(c); e != Exclusion::None) return e;
-  return common_producer_exclusion(c);
-}
-
 constexpr Exclusion common_sweep_exclusion(Candidate c) {
   if (auto const e = common_topology_exclusion(c, 2); e != Exclusion::None) return e;
   return common_producer_exclusion(c);
 }
 
-constexpr Exclusion dense_sweep_exclusion(Candidate c) {
-  if (auto const e = dense_topology_exclusion(c, 2); e != Exclusion::None) return e;
-  return common_producer_exclusion(c);
-}
-
-// Separate wrappers are intentional. The emitter asks each launcher for its own answer and the comparator reports
-// their declared dense-only abort boundary; every other rule remains shared so an additional drift stays visible.
-struct DenseSpace {
-  static constexpr Exclusion kernel_exclusion(Candidate c) { return dense_kernel_exclusion(c); }
-  static constexpr Exclusion topology_exclusion(Candidate c, int stages = 2) {
-    return dense_topology_exclusion(c, stages);
-  }
-  static constexpr Exclusion static_sweep_exclusion(Candidate c) { return dense_static_sweep_exclusion(c); }
-  static constexpr Exclusion sweep_exclusion(Candidate c) { return dense_sweep_exclusion(c); }
-};
-struct GroupedSpace {
+// ONE GENERATOR, TWO PUBLIC ROUTE NAMES. Dense and grouped currently have no legality asymmetry: the old dense_*
+// chain was a byte-for-byte copy of this common chain, and dense_kernel_exclusion was a pure forwarder. Keeping two
+// wrapper structs made future drift easy to express and then asked a comparator to notice it after the fact. Aliases
+// make the invariant structural while preserving every launcher/emitter call site.
+struct TacticSpace {
   static constexpr Exclusion kernel_exclusion(Candidate c) { return common_kernel_exclusion(c); }
   static constexpr Exclusion topology_exclusion(Candidate c, int stages = 2) {
     return common_topology_exclusion(c, stages);
@@ -325,5 +272,9 @@ struct GroupedSpace {
   static constexpr Exclusion static_sweep_exclusion(Candidate c) { return common_static_sweep_exclusion(c); }
   static constexpr Exclusion sweep_exclusion(Candidate c) { return common_sweep_exclusion(c); }
 };
+using DenseSpace = TacticSpace;
+using GroupedSpace = TacticSpace;
+static_assert(std::is_same_v<DenseSpace, GroupedSpace>,
+              "dense and grouped must remain aliases of one tactic-space generator");
 
 }  // namespace ppu_tactics

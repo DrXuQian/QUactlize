@@ -1,8 +1,8 @@
 # codex status
 
-    updated-at:     2026-08-07 13:31:14 UTC
+    updated-at:     2026-08-07 13:59:10 UTC
     inbox-consumed: 097
-    working-on:     INBOX 096 item ③: implementation reviewed; committing before SHA-bound clean gates
+    working-on:     INBOX 096 item ④: validated; committing one-generator refactor
     blocked-on:     none
-    last-commit:    3b5e678 Give the record back the width it needs to be back-tested
-    last-heartbeat: 161
+    last-commit:    8471179 Unify dense and MoE benchmark metrics
+    last-heartbeat: 165

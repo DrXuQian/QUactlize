@@ -632,78 +632,152 @@ def lint_config_abi_matches_header():
 
 
 def lint_tactic_spaces_agree():
-    """DENSE AND GROUPED SPACE DIFFERENCES MUST BE DECLARED, or a comparison silently measures the sets.
+    """DENSE AND GROUPED MUST BE TWO NAMES FOR ONE GENERATOR, with route-only emitter differences.
 
-    ppu_tactic_space.hpp keeps DenseSpace and GroupedSpace as separate wrappers over one implementation and says
-    why at its line 185 -- so that future divergence stays visible instead of being hidden by sharing. It names
-    the mechanism that makes that work: "The emitter asks each launcher for its own answer and a comparator
-    checks them." The comparator is emit_tactic_configs.cpp --space=compare, and this runs it.
+    A sampled comparison between two wrappers made divergence easy to express and merely hoped the sample would
+    notice later. The source invariant is stronger: exactly one TacticSpace implementation exists and DenseSpace /
+    GroupedSpace are aliases of that type. The two emitter entry points remain because table labels, filenames and
+    macro prefixes are distinct public ABIs; after normalising only those route names, their complete output must be
+    byte-identical for every argument set declared by the thirteen shipping tables.
 
-    WHAT MAKES THIS A CHECK RATHER THAN A RITUAL. It is asserted to FIRE, not merely to pass: the same source is
-    compiled a second time against a header copy whose GroupedSpace demands eight warps instead of four, and a
-    run that does not then report a disagreement fails this gate. A comparator that has only ever agreed cannot
-    be distinguished from one that compares nothing -- and this repo has shipped that shape before (a selection
-    test whose planted JSON never parsed, so the C++ read zero samples and "agreed").
-
-    The dense SplitKSerial sub-four-warp abort is now a declared operator difference, backed by both the dense aborts
-    and grouped measurements. The property this defends is that only named differences pass; a newly planted grouped
-    eight-warp boundary must still fail.
+    WHAT MAKES THIS A CHECK RATHER THAN A RITUAL. Two planted controls must fire. Replacing GroupedSpace with a
+    behaviour-identical derived type must fail the header's type-identity static_assert. Separately, changing only
+    the grouped emitter entry to retain stage 2 must make the full-output comparison disagree. Thus neither an alias
+    check that accepts two implementations nor an output comparison that compares nothing can report PASS.
     """
-    import subprocess, tempfile
+    import hashlib, importlib.util, subprocess, tempfile
     src = ROOT / "benchmarks" / "emit_tactic_configs.cpp"
     hdr = ROOT / "quactlize" / "include" / "ppu_tactic_space.hpp"
     if not src.is_file() or not hdr.is_file():
         return "FAIL", f"missing {src.name if not src.is_file() else hdr.name}", 0.0
+
+    header_text = hdr.read_text()
+    old_layers = ("dense_kernel_exclusion", "dense_non_smem_exclusion", "dense_topology_exclusion",
+                  "dense_static_sweep_exclusion", "dense_sweep_exclusion")
+    leftover = [name for name in old_layers
+                if re.search(rf"\bconstexpr\s+Exclusion\s+{name}\s*\(", header_text)]
+    if leftover:
+        return "FAIL", f"second dense tactic chain still exists: {', '.join(leftover)}", 0.0
+    structural = {
+        "one TacticSpace implementation": header_text.count("struct TacticSpace {") == 1,
+        "no DenseSpace implementation": "struct DenseSpace" not in header_text,
+        "no GroupedSpace implementation": "struct GroupedSpace" not in header_text,
+        "DenseSpace aliases TacticSpace": header_text.count("using DenseSpace = TacticSpace;") == 1,
+        "GroupedSpace aliases TacticSpace": header_text.count("using GroupedSpace = TacticSpace;") == 1,
+        "type identity is asserted": "std::is_same_v<DenseSpace, GroupedSpace>" in header_text,
+    }
+    missing = [claim for claim, ok in structural.items() if not ok]
+    if missing:
+        return "FAIL", "single-generator structure is absent: " + "; ".join(missing), 0.0
+
+    checker_path = ROOT / "ci" / "check_dense_tactic_table.py"
+    spec = importlib.util.spec_from_file_location("tactic_table_args", checker_path)
+    checker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(checker)
+    # Share the exact-regeneration gate's inventory rule. A literal thirteen-file list would make the fourteenth
+    # shipping table exact-regenerate elsewhere while silently escaping route parity here.
+    tables = sorted((ROOT / "benchmarks").glob("lowbit_*_configs.inc"))
+    if len(tables) < 13:
+        return "FAIL", f"expected at least the 13 shipping tactic tables, found {len(tables)}", 0.0
+    table_args = []
+    for table in tables:
+        name = table.name
+        argv, why = checker.declared_args(table.read_text())
+        if argv is None:
+            return "FAIL", f"cannot recover emitter arguments from {name}: {why}", 0.0
+        table_args.append((name, argv))
+
+    def routed(argv, route):
+        return [f"--space={route}" if arg.startswith("--space=") else arg for arg in argv]
+
+    def neutral(output):
+        # These are the ONLY intended route differences: durable table identity, not legality or row ordering.
+        for before, after in ((b"LOWBIT_DENSE", b"LOWBIT_ROUTE"),
+                              (b"LOWBIT_GROUPED", b"LOWBIT_ROUTE"),
+                              (b"lowbit_dense", b"lowbit_route"),
+                              (b"lowbit_grouped", b"lowbit_route"),
+                              (b"--space=dense", b"--space=route"),
+                              (b"--space=grouped", b"--space=route"),
+                              (b"space=dense", b"space=route"),
+                              (b"space=grouped", b"space=route")):
+            output = output.replace(before, after)
+        return output
+
+    def run_pair(binary, argv):
+        dense = subprocess.run([str(binary), *routed(argv, "dense")], cwd=ROOT, capture_output=True)
+        grouped = subprocess.run([str(binary), *routed(argv, "grouped")], cwd=ROOT, capture_output=True)
+        return dense, grouped
+
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         real = td / "emit_real"
         cc = ["c++", "-std=c++17", f"-I{ROOT/'quactlize'/'include'}", str(src), "-o"]
-        r = subprocess.run(cc + [str(real)], capture_output=True, text=True)
+        r = subprocess.run(cc + [str(real)], cwd=ROOT, capture_output=True, text=True)
         if r.returncode != 0:
             return "FAIL", f"emitter does not compile: {r.stderr.strip().splitlines()[-1][:120]}", 0.0
-        cases = [
-            ("i4", ["4", "64"]),
-            ("i2", ["2", "128", "--format=i2"]),
-            ("i1", ["1", "256", "--format=i1"]),
-        ]
-        base = ["--space=compare", "--tactic-tk=32,64,128,256", "2", "3", "4", "6", "8", "12"]
-        got = None
-        for fmt, head in cases:
-            args = head + base
-            got = subprocess.run([str(real)] + args, capture_output=True, text=True)
-            if got.returncode != 0:
-                tail = [l for l in got.stdout.splitlines() if "unexpected disagreement" in l]
-                return "FAIL", (f"DenseSpace and GroupedSpace have an undeclared {fmt} difference: "
-                                + (tail[-1] if tail else "see --space=compare")), 0.0
 
-        # Use i4 for the negative control below; the planted topology difference is format-independent.
-        args = cases[0][1] + base
+        row_total = 0
+        for name, argv in table_args:
+            dense, grouped = run_pair(real, argv)
+            if dense.returncode or grouped.returncode:
+                bad = dense if dense.returncode else grouped
+                detail = bad.stderr.decode(errors="replace").strip().splitlines()
+                return "FAIL", (f"emitter rejected {name}'s declared args on "
+                                f"{'dense' if dense.returncode else 'grouped'} route: "
+                                f"{detail[-1] if detail else f'exit {bad.returncode}'}"), 0.0
+            dnorm, gnorm = neutral(dense.stdout), neutral(grouped.stdout)
+            if dnorm != gnorm:
+                return "FAIL", (f"dense/grouped output differs for {name} after route-name normalisation: "
+                                f"dense={hashlib.sha256(dnorm).hexdigest()[:12]} "
+                                f"grouped={hashlib.sha256(gnorm).hexdigest()[:12]}"), 0.0
+            row_total += len(re.findall(rb"^\s*X\(", dense.stdout, re.M))
 
-        # THE PLANTED DIVERGENCE. Raise GroupedSpace's boundary to eight warps. Rows at four warps do not carry the
-        # dense-only exclusion, so this must be classified as unexpected rather than being swallowed by the declared
-        # sub-four-warp difference.
-        text = hdr.read_text()
-        old = "  static constexpr Exclusion kernel_exclusion(Candidate c) { return common_kernel_exclusion(c); }"
-        if text.count(old) != 1:
-            return "FAIL", ("could not identify the one GroupedSpace kernel_exclusion wrapper; "
-                            "the planted probe would not establish what it claims"), 0.0
-        new = ("  static constexpr Exclusion kernel_exclusion(Candidate c) { "
-               "if (cta_warps(c) < 8) return Exclusion::TooManyWarps; "
-               "return common_kernel_exclusion(c); }")
-        (td / "ppu_tactic_space.hpp").write_text(text.replace(old, new))
-        probe = td / "emit_probe"
-        r = subprocess.run(["c++", "-std=c++17", f"-I{td}", f"-I{ROOT/'quactlize'/'include'}", str(src),
-                            "-o", str(probe)], capture_output=True, text=True)
-        if r.returncode != 0:
-            return "FAIL", f"planted-divergence build failed: {r.stderr.strip().splitlines()[-1][:120]}", 0.0
-        bad = subprocess.run([str(probe)] + args, capture_output=True, text=True)
-        if bad.returncode == 0:
-            return "FAIL", ("the comparator reported NO disagreement against a GroupedSpace whose warp minimum "
-                            "was raised to eight -- it is not comparing what it claims to"), 0.0
-    declared = next((l for l in got.stdout.splitlines() if "declared difference" in l), "?")
-    planted = next((l for l in bad.stdout.splitlines() if "unexpected disagreement" in l), "?")
-    return "PASS", (f"i1/i2/i4 spaces agree ({declared.strip()}); comparator still fires on planted drift "
-                    f"({planted.strip()})"), 0.0
+        # PLANTED CONTROL 1: aliases with identical behaviour are still two implementation types and must be
+        # rejected structurally. The diagnostic is required so an unrelated compile failure cannot satisfy it.
+        alias_old = "using GroupedSpace = TacticSpace;"
+        alias_new = "struct PlantedGroupedSpace : TacticSpace {};\nusing GroupedSpace = PlantedGroupedSpace;"
+        if header_text.count(alias_old) != 1:
+            return "FAIL", "cannot plant the GroupedSpace type-identity control", 0.0
+        alias_dir = td / "alias_control"
+        alias_dir.mkdir()
+        (alias_dir / hdr.name).write_text(header_text.replace(alias_old, alias_new))
+        alias_probe = td / "emit_alias_probe"
+        planted_alias = subprocess.run(
+            ["c++", "-std=c++17", f"-I{alias_dir}", f"-I{ROOT/'quactlize'/'include'}", str(src),
+             "-o", str(alias_probe)], cwd=ROOT, capture_output=True, text=True)
+        identity_diag = "dense and grouped must remain aliases of one tactic-space generator"
+        if planted_alias.returncode == 0 or identity_diag not in planted_alias.stderr:
+            return "FAIL", ("planted independent GroupedSpace did not fail through the type-identity assertion; "
+                            "the single-generator guard is not proving its claim"), 0.0
+
+        # PLANTED CONTROL 2: keep only stage 2 at the grouped route. The normalised full-output check must see the
+        # missing rows/header coverage even though both routes still call the same generator implementation.
+        source_text = src.read_text()
+        route_old = ('  if (std::strcmp(space, "grouped") == 0) {\n'
+                     '    return emit(*spec, bits, tk, g_tactic_tks, "grouped", prefix("LOWBIT_GROUPED"));\n'
+                     '  }')
+        route_new = ('  if (std::strcmp(space, "grouped") == 0) {\n'
+                     '    g_stages.assign(1, 2);  // PLANTED gate control\n'
+                     '    return emit(*spec, bits, tk, g_tactic_tks, "grouped", prefix("LOWBIT_GROUPED"));\n'
+                     '  }')
+        if source_text.count(route_old) != 1:
+            return "FAIL", "cannot plant the grouped emitter-route control", 0.0
+        route_src = td / src.name
+        route_src.write_text(source_text.replace(route_old, route_new))
+        route_probe = td / "emit_route_probe"
+        planted_route = subprocess.run(
+            ["c++", "-std=c++17", f"-I{ROOT/'quactlize'/'include'}", str(route_src), "-o", str(route_probe)],
+            cwd=ROOT, capture_output=True, text=True)
+        if planted_route.returncode:
+            detail = planted_route.stderr.strip().splitlines()
+            return "FAIL", f"planted route-control build failed: {detail[-1] if detail else 'no diagnostic'}", 0.0
+        dense, grouped = run_pair(route_probe, table_args[0][1])
+        if dense.returncode or grouped.returncode or neutral(dense.stdout) == neutral(grouped.stdout):
+            return "FAIL", ("full-output comparison did not detect the planted grouped stage restriction; "
+                            "it is not comparing what it claims to"), 0.0
+
+    return "PASS", (f"one TacticSpace type; {len(table_args)} shipping argv sets / {row_total} rows agree after "
+                    "route-only names; alias and grouped-route controls both fire"), 0.0
 
 
 def lint_attempt_record_roundtrip():
@@ -1188,7 +1262,7 @@ def main():
                 ("lint", "box-built sources stay in the PPU-portable subset", lint_ppu_portability),
                 ("lint", "emitted bench flags are ones the bench parses", lint_fixture_flags),
                 ("lint", "every INBOX item is consumed, or is explained by a call in flight", lint_inbox_delivered),
-                ("lint", "dense/grouped tactic differences are declared, and unexpected drift fires", lint_tactic_spaces_agree),
+                ("lint", "dense/grouped tactic names alias one generator and route output agrees", lint_tactic_spaces_agree),
                 ("lint", "dense/grouped mixed policy descriptor parity fires on planted drift", lint_mixed_policy_parity_fires),
                 ("lint", "all mixed collectives use one stage-ring driver", lint_mixed_pipeline_shared),
                 ("lint", "the committed dense tactic table exactly regenerates from its stamped sources", lint_dense_tactic_table_current),

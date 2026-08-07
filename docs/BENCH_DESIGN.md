@@ -11,16 +11,10 @@ The list comes first because the design is only justified by it.
    will need a second copy. That is the same two-copy defect I removed from `test_lowbit_dense_bench.cu` this
    morning, recreated one level up, by me, hours later.
 
-2. **Two benches, two unrelated ways to say "which configs to compile".** MoE: CMake generates one `.cu` per
-   shape and takes Cartesian axes through `MOE_*_LIST` env vars. Dense: one `.cu` with a table, now emitted by
-   `emit_tactic_configs.cpp`. Neither can express the other's pruned set, and the MoE side cannot express an
-   arbitrary set at all -- only a product.
-
-   **HALF-FIXED 2026-08-04.** The generator now takes `--space=dense|grouped` and emits the same table for
-   either operator, so one pruning policy serves both and an arbitrary set is expressible for the MoE side.
-   What remains is the *consumer*: the MoE bench still builds from `MOE_*_LIST`, so nothing yet reads
-   `lowbit_grouped_configs.inc`. Until it does, the two operators still search sets defined two ways -- they
-   are merely now provably the same set.
+2. **Two benches once had two unrelated ways to say "which configs to compile".** Dense and MoE now both consume
+   tables from `emit_tactic_configs.cpp`; the MoE CMake path projects those rows into batched source units instead of
+   constructing a second Cartesian space. The route flag selects only the durable label/macro prefix, while legality
+   comes from one `TacticSpace` implementation.
 
 3. **Neither bench had a compile check.** Both syntax gates were added today. The gap is why a selection
    rewrite was committed without ever being compiled, and it was invisible because `-k lowbit` matched nothing
@@ -59,12 +53,10 @@ question ("was that separation real?") is answerable without re-running.
 
 ### B. One config-table generator for both operators
 
-`emit_tactic_configs.cpp` reads `ppu_tactic_space.hpp` and emits an X-macro list. **The generator half is done**
-(2026-08-04): `--space=dense|grouped` emits for either, with a per-space macro prefix so a grouped table
-included where a dense one is expected is an undefined macro rather than a silent substitution. What remains is
-letting the MoE side consume the list -- CMake's job shrinking from "loop over four axes and write 180 files" to
-"compile the generated list, N configs per translation unit", with `MOE_*_LIST` becoming a filter over the
-generated set rather than a second, weaker way to define it.
+`emit_tactic_configs.cpp` reads `ppu_tactic_space.hpp` and emits an X-macro list. `--space=dense|grouped` keeps a
+per-space macro prefix so a grouped table included where a dense one is expected is an undefined macro rather than a
+silent substitution. Both routes call the same generator, and MoE CMake consumes the grouped list in batched source
+units; no Cartesian legality product remains beside it.
 
 **MEASURED BEFORE DOING IT, 2026-08-05: the two sets are already compatible, and the remaining work is a
 compile-time saving rather than a coverage fix.** The worry behind "the grouped and dense search spaces should
@@ -87,16 +79,10 @@ SCOPE OF THAT CLAIM: TileK=64 and the i4 format row only. The MoE product also s
 half), which this has not compared. The i4 row's WarpN axis is {16,32,64}; the emitter's kWarpN includes 128 but
 `common_producer_exclusion` rejects WarpN>64, so the axes agree there by construction rather than by luck.
 
-**AND `--space=compare`, which is the part worth keeping even after that lands.** The header deliberately keeps
-`DenseSpace` and `GroupedSpace` as separate wrappers over one implementation so future divergence stays visible,
-and explicitly says the emitter should ask each and have a comparator check them. That comparator did not exist,
-so "the two are identical" was a property of the source that nobody re-established. It now walks the grid asking
-both spaces every predicate the emitter uses -- kernel, sweep, static-sweep, per-stage topology, compact-A
-support and the 1/2/4 compact capacities -- and exits non-zero on any disagreement.
-
-Verified to FIRE, not merely to pass: with the four-warp minimum raised to eight in `GroupedSpace` only, it
-reported 147 disagreements and rc=1; unmodified it reports 0 and rc=0. A comparator that has only ever agreed is
-indistinguishable from one that compares nothing.
+`DenseSpace` and `GroupedSpace` are now aliases of one `TacticSpace`, guarded by a type-identity static assertion.
+The local gate compiles both emitter routes for all 13 shipping-table argument sets and compares complete output after
+normalising only route label, filename, and macro prefix. It proves both halves fire: a planted independent grouped
+type fails compilation, and a planted grouped-only stage restriction fails output parity.
 
 The `static_assert` tying a generated table to its binary's `(bits, TileK)` is the pattern to keep: a stale
 table becomes a compile error rather than a sweep over tactics the binary cannot select.
@@ -136,7 +122,7 @@ analyser can refuse to merge two incompatible runs instead of averaging them.
    agreeing is the check that the move is faithful.
 3. **Delete the C++ selection** once the analyser reproduces it. Not before -- deleting first would leave a
    window with no verdict at all.
-4. **Generalise the emitter to GroupedSpace**, and reduce the CMake generator to consuming it.
+4. **Completed:** both route names use one emitter/generator, and CMake consumes the grouped tables.
 5. **Fixtures from `workloads.py`**, replacing positional argv.
 
 Steps 1-3 are the ones that matter; 4 and 5 are tidying that becomes easy once results are structured.

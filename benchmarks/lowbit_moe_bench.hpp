@@ -426,7 +426,7 @@ inline bool moe_row_ran(const Band& bd, const char* tag, double us, int fail0, i
 template <int TM, int TN, int TK, int WM, int WN, int Stages, int BitsLo, int BitsHi = 0>
 constexpr bool moe_ok() {
   // The old arithmetic lived here and the host-side tactic emitter copied it. That would let the two disagree while
-  // both still compiled. The launcher, this gate and the emitter now ask GroupedSpace for the same answer.
+  // both still compiled. The launcher, this gate and both emitter routes now ask the one TacticSpace generator.
   constexpr ppu_tactics::Candidate c{{ppu_tactics::Format::I2, "synthetic", BitsLo, BitsHi},
                                       TM, TN, TK, WM, WN};
   return ppu_tactics::GroupedSpace::topology_exclusion(c, Stages) == ppu_tactics::Exclusion::None;

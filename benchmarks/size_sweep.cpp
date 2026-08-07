@@ -12,7 +12,7 @@
 //
 //   c++ -std=c++17 -Iquactlize/include benchmarks/size_sweep.cpp -o /tmp/size_sweep && /tmp/size_sweep
 //
-// Prints, per operator, the cells legal at each stage depth and the resulting instantiation count. Split-K is not
+// Prints the shared cells legal at each stage depth and the resulting instantiation count. Split-K is not
 // build-free: exact rows*TK*2 A-smem requires separate row-capacity specialisations for 1,2,4. For dense those map
 // directly to M=1,2,4. For grouped they map to the maximum rows in one expert, NOT global n-token; the named ragged
 // distribution decides which capacity serves a workload. Ordinary builds are still required at large M, and
@@ -41,8 +41,7 @@ namespace {
 // to avoid, introduced by the person writing the guard against it.
 constexpr int kStages[] = {2, 3, 4};
 
-template <class Space>
-void size_one(char const* op) {
+void size_shared() {
   using namespace ppu_tactics;
   std::map<int, int> ordinary;
   int ordinary_reachable = 0;
@@ -55,14 +54,14 @@ void size_one(char const* op) {
           for (int wm : kWarpM)
             for (int wn : kWarpN) {
               Candidate const c{spec, tm, tn, tk, wm, wn};
-              if (Space::static_sweep_exclusion(c) != Exclusion::None) continue;
+              if (TacticSpace::static_sweep_exclusion(c) != Exclusion::None) continue;
               ++static_reachable;
-              if (Space::sweep_exclusion(c) == Exclusion::None) ++ordinary_reachable;
+              if (TacticSpace::sweep_exclusion(c) == Exclusion::None) ++ordinary_reachable;
               for (int st : kStages)
-                if (Space::topology_exclusion(c, st) == Exclusion::None) ++ordinary[st];
+                if (TacticSpace::topology_exclusion(c, st) == Exclusion::None) ++ordinary[st];
             }
 
-  std::printf("\n== %s ==\n", op);
+  std::printf("\n== shared dense/grouped tactic space ==\n");
   std::printf("  static-reachable cells (before stage/A-row smem): %d\n", static_reachable);
   std::printf("  ordinary reachable cells at stage 2:         %d\n", ordinary_reachable);
   int ordinary_total = 0;
@@ -80,8 +79,7 @@ void size_one(char const* op) {
 int main() {
   std::printf("Sweep size with STAGES as an axis and split-K excluded (user, 2026-08-04).\n"
               "Legality is ppu_tactic_space.hpp's own topology predicate; nothing is restated here.\n");
-  size_one<ppu_tactics::DenseSpace>("dense");
-  size_one<ppu_tactics::GroupedSpace>("grouped");
+  size_shared();
   std::printf("\nPinned grouped routing (%s, L=256, top-k=8):\n", moe_router_fixture::kName);
   for (int tokens : {1, 2, 4, 64, 2048, 4096}) {
     moe_router_fixture::Rows r;
