@@ -3538,3 +3538,54 @@ PPU_A_PACK 是同一个想法从**分配侧**做的:只重叠 cube 基址,swzl �
 细节、四个改动点、两条"不许猜"(pitch 从 ppu_tsm_ld_swzl_sim 算而不是外推;对齐要保持结构性,紧密 pitch 曾在 box 上 fault)都在这一轮的 prompt 里,和 task #44 一致。
 
 **你现在能本地编译了** —— dev/fold_derivation/stub_inc/ppu_arch_shim.h,164 个 asm-only 错误是 floor,非-asm 必须为 0。这是昨晚查 CUTE_INLINE_CONSTANT 键在 __HGGC_ARCH__ 上换来的;之前 5954 个错误让我一整天以为本地编不了。
+
+## 088 — 两个 tactic 轴:PPU_B_CHUNK 加进去(#47),TileM 剪掉(#48)
+
+请按顺序做,每个 sub-item 一个 commit。开始前先写 inbox-consumed: 088。
+
+背景(今天查出来的,都已 push 到 develop,`841ee08`):
+- 五张 grouped 表原来**每张只用了一个 `--tactic-tk`**,dense 用了三个。emitter 遇到列表里第一个非法成员会 `return 1` 整个死掉产出零行,所以没人传过列表。已修:发合法子集、跳过的成员印在表头、全非法仍 rc=1。
+- provenance gate 之前只盖 dense 一张,而且硬编 `LOWBIT_DENSE_CFG_` 前缀 + 不认 `--format`,所以指到 grouped 表上会报 "predates the durability guard"(一条关于文件的消息其实是关于解析器的)。已修,六张表全过,local_gates 全盖。
+- 六张表已重新生成:dense 1164 / i4 564→1164 / i2 430→635 / Q6_K 409→590 / Q3_K 202 / Q5_K 181。MoE unit 生成器实测 689 units / 2772 rows(之前 415 / 1786)。
+
+### ① #47 PPU_B_CHUNK 变成行字段
+
+现状:`ppu_mma_aiu_fold.hpp:238` 的 `kBChunkMode = PPU_B_CHUNK if defined else 0`。表、emitter、`ppu_tactic_space.hpp`、`sweep_real_shapes.py`、build.sh 默认值里**全都没有它** —— 只能手打 `PPU_DEFS=PPU_B_CHUNK=1`。它是编译期整 binary 一个值,所以一个 binary 编 N 个 config 的 sweep **结构上无法变动它**,于是从来没搜过。
+
+值多少:BACKTEST A3 int1 `(64,128,64) w64x64 s2` = 63.7% chunked;`dev/test_width_acu.cu:29` 自己的头记 plain 48.6%。约 +15 点,且 B fragment 从 `8*MMA_N*MMA_K` 降到 `4*MMA_N`,**收益随 TileK 增长**。帮的正好是读数低的 i2/Q3/Q5/Q6;int4 被判据明确排除。
+
+**不需要改 kernel。** unit 生成器把 `#define UNIT_TM/TN/TK/WM/WN` 直接写进生成的 .cu(`CMakeLists.txt.in:589-594`),所以 per-unit `#define PPU_B_CHUNK` 是现成的 —— 只要 batch 按该字段分组(一个 TU 一个宏值)。要动的:
+- `ppu_tactic_space.hpp`:`Candidate` 加字段 + 一条 Exclusion
+- `emit_tactic_configs.cpp`:X 行 6 → 7 个整数
+- `TacticTableUnits.cmake:67`:`_row_re` 6 → 7 个整数(注意 `_row` 的组数也要跟着加)
+- `CMakeLists.txt.in`:dense 和 MoE 两个 unit 生成器都要取第 7 个字段、写 `#define`、把它并进 batch key 和 unit 名
+- 两个 bench:tag 带上它
+
+**判据不要在 space 里重造。** collective 的 `kBChunk` 是 `mode≠0 && bits∈{1,2} && 8*MmaN*MmaK == 4*(32/bits)`,第三项要 cute 的 `permutation_mnk<1>()`,host 侧 space 算不出。space 只管 `low_bits∈{1,2}`(这条确知,且直接免掉 i4/dense 翻倍),collective 那条仍是唯一权威;bench 要打印**实际生效**的 `kBChunk`,请求了没拿到必须显形而不是静默变成重复行。
+
+行数代价(只有 i2/Q3/Q5/Q6 翻倍):MoE 2772 → 约 4380,units 689 → 约 1100。
+
+先做便宜的验证再动结构:`PPU_DEFS=PPU_B_CHUNK=1` 重编 MoE bench 跑一个 shape。如果 Q3/Q5/Q6/i2 动了,迄今所有低比特数字都是下界。
+
+### ② #48 TileM 在 MoE band 上剪掉
+
+`--m-max` 机制在 emitter 里(`g_m_max`, ~line 319),**没有一张表用了它**。2026-08-07 的 i4 赢家是 TileM=64、msk≈50% —— 一半的乘加打在不存在的行上。
+
+实测各 m-max 的存活行数(全合法 tactic-tk):
+
+    format   none   m<=128   m<=64   m<=32   m<=16
+    i4       1164     1026     741     377     119
+    i2        635      589     437     221      65
+    Q3_K      202      202     154      80      23
+    Q5_K      181      181     140      72      21
+    Q6_K      590      544     407     205      63
+
+判断题在这里:`--m-max` 是**表级**的,一张表服务所有 M。剪掉共享的 grouped 表会让 prefill 赢家找不到 —— 和单一 `--tactic-tk` 是同一类缺陷的反方向。两条路:(a) grouped 按 band 分表(decode 剪 / prefill 不剪),(b) 表保持完整、bench 按 band 跳过并记录条数。(a) 值钱得多,因为剪枝的主要收益在**编译时间**(119 units vs 1164 行),(b) 一点都拿不到。**dense 表绝对不要剪** —— BACKTEST A 段是 M=2048。
+
+m-max 取值**不要靠推**:band 的 rows-per-expert 就在 bench 已经建好的 `bd.me[e]` 里,从实际被扫的 shape 上读出分布再定。唯一已确立的是 TileM=128 填不满 decode band(TileM=64 时 msk 已经 ~50%)。
+
+emitter 已经会把 `TileM prune dropped N row(s)` 印在表头上,哪条路都要保住这个。
+
+### 交付
+
+每改一次表都要跑 `python3 ci/check_dense_tactic_table.py --table <每一张>` —— 六张全绿才算完。gate 现在从表自己的 `*_CFG_ROWS` 推宏前缀、认 `--format`、并把 `tactic_tile_k:`(覆盖了什么)和 `tactic_tk SKIPPED`(请求了什么被拒)取并集当重建参数,别把这两行合并。
