@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A BUILD SWITCH NOBODY CAN TURN ON IS NOT A SWITCH -- it is dead code wearing an option's clothes.
+"""A BUILD SWITCH WITH NO RECORDED WAY IN IS ONE NOBODY WILL USE.
 
     python3 ci/check_switch_macros.py            verdict
     python3 ci/check_switch_macros.py --list     the whole inventory, live ones included
@@ -12,8 +12,22 @@ is 45% slower" and could not be attributed afterwards, because the run's A provi
 the three spellings were reachable only by remembering which was passed. One idea, three spellings, and the cost
 landed on a number in BACKTEST rather than on a compile.
 
-WHAT IT CHECKS, and it is deliberately one narrow thing: every preprocessor switch this repository OWNS must be
-reachable -- something must be able to define it. Two ways count:
+WHAT IT CHECKS, AND WHAT IT DOES NOT. It reports every owned switch with no RECORDED way in. It does NOT report
+unreachable switches, and the first version of this file said it did -- which was wrong, and wrong in the
+direction this repository keeps paying for: I measured "no literal -DX or X= in any tracked file" and named the
+result "nobody can turn it on".
+
+build.sh forwards PPU_DEFS generically -- CMakeLists.txt.in:11 turns every NAME=VALUE into -DNAME=VALUE for the
+device compile -- so ANY macro in a file that goes through build.sh can be set today, with no code change:
+
+    PPU_DEFS=LOWBIT_QMODE=1 TARGET=test_lowbit_moe_bench ./build.sh
+
+Every one of the eight found on 2026-08-07 is reachable that way. What none of them had was a written-down
+invocation, and that is still worth failing on: an option nobody has recorded is one nobody will find, and
+BACKTEST's D7 is what that costs. Writing the command into a doc is a real fix, not a workaround -- the pattern
+below matches `PPU_DEFS=NAME=` because that IS the way in.
+
+Two ways count as recorded:
 
   DEFINER   a `#define X` in our own sources, including the `#ifndef X / #define X` self-default idiom.
   SETTER    a `-DX` or `X=` in a script, CMake file, or checked-in doc that drives a build.
@@ -21,9 +35,10 @@ reachable -- something must be able to define it. Two ways count:
 A switch with neither is reported. That is NOT automatically "delete it": the five found when this was written
 split into two kinds, and the distinction is the useful part --
 
-  * an unreachable FEATURE (PPU_MAXREG caps registers to raise occupancy; LOWBIT_QMODE selects ScaleOnly;
-    QUACTLIZE_DENSE_ONLY drops formats, and ci/check_format_table_buildable.py's docstring CITES it as a thing a
-    build can do). These are coverage gaps. Deleting them hides the gap instead of closing it.
+  * a FEATURE with no recorded invocation (PPU_MAXREG caps registers to raise occupancy; QUACTLIZE_DENSE_ONLY
+    drops formats, and ci/check_format_table_buildable.py's docstring CITES it as a thing a build can do). Write
+    the command down. LOWBIT_QMODE was in this bucket and left it that way on 2026-08-07 -- its header now
+    carries `PPU_DEFS=LOWBIT_QMODE=1 ...`, which is the whole fix.
   * an UNRUN EXPERIMENT whose comment already states what each outcome would mean (PPU_PACKED_PAIR=0,
     PPU_F16X2_EARLYCLOBBER=0, PPU_F16X2_NOFTZ=1 -- all three bisecting the same open rowC failure). Deleting one
     destroys a pending answer, and each is a single build. They are in .coord/BOX.md as E1/E2/E3.
@@ -69,10 +84,9 @@ INTERPOLATED = re.compile(r"-D([A-Z_]+)\$\{")
 ALLOWED = {
     # DATED DEBT, NOT ACCEPTED EXCEPTIONS. These eight were found the day this gate was written (2026-08-07) and
     # each is an open decision, not a justified switch -- they are here so the gate's job becomes "no NEW
-    # unreachable switch appears" while the existing set stays visible and owned. Task #40 tracks the merge.
+    # unrecorded switch appears" while the existing set stays visible and owned. Task #40 tracks the merge.
     # An entry may only leave this dict by being deleted or wired, never by being re-justified.
     "GEMV_GATE_FAST":         "claude  -- TOOL: narrows the gs axis while iterating; its own comment says build the FULL matrix before trusting a result. Needs a documented invocation, not deletion",
-    "LOWBIT_QMODE":           "claude  -- '=1 selects ScaleOnly'; a COVERAGE GAP, the MoE sweep cannot reach ScaleOnly",
     "QUACTLIZE_DENSE_ONLY":   "claude  -- ci/check_format_table_buildable.py's docstring cites it as a thing a build can do",
     "PPU_B_CHUNK_BISECT":     "codex   -- TOOL: exists BECAUSE PPU_B_CHUNK=2 shipped a debug mode inside the feature flag. Deleting it invites that back",
     "PPU_F16X2_EARLYCLOBBER": "codex   -- UNRUN EXPERIMENT E2 in .coord/BOX.md: was \"=&r\" the rowC fix, or did the failure merely go away across four commits?",
@@ -157,14 +171,14 @@ def main() -> int:
         return 1
 
     if unreachable:
-        print(f"[switch-macros] FAIL: {len(unreachable)} switch(es) that nothing can turn on:")
+        print(f"[switch-macros] FAIL: {len(unreachable)} owned switch(es) with no recorded way in "
+              f"(PPU_DEFS can set any of them; nothing writes the command down):")
         for n in unreachable:
             print(f"    {n}")
             for c in sorted(consumers[n]):
                 print(f"        used by {c}")
-        print("    Each is one of two things and they need opposite fixes: a debugging knob nobody wired (delete "
-              "it), or a FEATURE with no way in (wire it -- deleting hides the gap). Add it to ALLOWED with a "
-              "reachability reason only if it is genuinely neither.")
+        print("    Fix by RECORDING the invocation (PPU_DEFS=NAME=VALUE in the file's own header or a doc),")
+        print("    by deleting the switch, or by promoting it to a real option. Do not add to ALLOWED without a reason.")
         return 1
 
     print(f"[switch-macros] PASS: {len(consumers)} owned switch(es), every one reachable by a #define or a -D")

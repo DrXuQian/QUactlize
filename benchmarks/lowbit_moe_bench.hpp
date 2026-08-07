@@ -30,7 +30,12 @@ using half_t  = cutlass::half_t;
 // THE QUANT MODE, and it used to be hardcoded ScaleZero at BOTH launch sites -- so every low-bit number this harness
 // has ever produced, decode band included, was an affine run. That was invisible because the 2-plane driver ignored
 // QuantOp anyway (fixed: moe_grouped_ppu's NoZero slot), so asking for ScaleOnly changed nothing and nobody noticed.
-// Default is unchanged; LOWBIT_QMODE=1 selects ScaleOnly. The mode goes in the header line, because a row that cannot
+// Default is unchanged. TO SELECT ScaleOnly, and this line exists because the switch had no recorded
+// invocation anywhere and was therefore reported as a coverage gap it never was:
+//   PPU_DEFS=LOWBIT_QMODE=1 TARGET=test_lowbit_moe_bench ./build.sh
+// build.sh forwards PPU_DEFS to the DEVICE compile (CMakeLists.txt.in:11); target_compile_definitions alone
+// would reach only the host half, which is the trap that comment further up in build.sh is about.
+// LOWBIT_QMODE=1 selects ScaleOnly. The mode goes in the header line, because a row that cannot
 // be told apart from the other mode is how "(ScaleOnly)" ended up labelling affine runs for months.
 #if defined(LOWBIT_QMODE) && (LOWBIT_QMODE == 1)
 #  define LOWBIT_QMODE_SEL QM::FinegrainedScaleOnly
