@@ -117,15 +117,21 @@ run settles it. (A recollection of "60+% at gs=16" exists and is not what the ar
 > against that bench rather than as a product claim.
 
 
-| # | shape | gs | config | figure | recorded | source |
-|---|---|---|---|---|---|---|
-| B1 | 2048×4096×4096 | 128 | `64×64 / 32×32 / s4` | **305 TF/s = 61%** | 2026-07-22 | `ppu-cutlass-w4a16-actlize` |
-| B2 | 2048×4096×4096 | 128 | default `32×32` tile | **25%** | 2026-07-22 | same — **the control** |
-| B3 | 2048×4096×4096 | 128 | official finegrained, `64×64×128 / s3` | 56.6% | 2026-07-22 | same |
-| B4 | 2048×4096×4096 | 128 | hand-written Marlin | 215 TF/s = 43% | 2026-07-22 | same |
-| B5 | 4096³, dense L=1 | 128 | — | **62%** | 2026-07-22 | same |
-| B6 | dequant→fp16 + dense cuBLAS GEMM | — | not fused | **59–66%** | — | `ppu-w4a16-path-by-m`, `ppu-aiu-int4-viable` |
-| B7 | fused mixed-input, same shape | 32 | — | 40.6% | — | same — the 20–26 point fusion cost |
+**WIDTH IS DERIVED, NOT ASSUMED.** This section had no width column at all, so B1 and B3 named a config and
+no format and `ci/check_backtest_configs.py` reported them UNPARSED rather than guessing which table to look
+in. Every row here is the W4A16 path: the section is routed `dense_lowbit` and its source memory is
+`ppu-cutlass-w4a16-actlize`, i.e. 4-bit weights with fp16 activations. B6 is the only exception and is marked
+`—`: it is dequant-to-fp16 followed by a dense cuBLAS GEMM, so it has no low-bit tactic at all.
+
+| # | width | shape | gs | config | figure | recorded | source |
+|---|---|---|---|---|---|---|---|
+| B1 | int4 | 2048×4096×4096 | 128 | `64×64 / 32×32 / s4` | **305 TF/s = 61%** | 2026-07-22 | `ppu-cutlass-w4a16-actlize` |
+| B2 | int4 | 2048×4096×4096 | 128 | default `32×32` tile | **25%** | 2026-07-22 | same — **the control** |
+| B3 | int4 | 2048×4096×4096 | 128 | official finegrained, `64×64×128 / s3` | 56.6% | 2026-07-22 | same |
+| B4 | int4 | 2048×4096×4096 | 128 | hand-written Marlin | 215 TF/s = 43% | 2026-07-22 | same |
+| B5 | int4 | 4096³, dense L=1 | 128 | — | **62%** | 2026-07-22 | same |
+| B6 | — | dequant→fp16 + dense cuBLAS GEMM | — | not fused | **59–66%** | — | `ppu-w4a16-path-by-m`, `ppu-aiu-int4-viable` |
+| B7 | int4 | fused mixed-input, same shape | 32 | — | 40.6% | — | same — the 20–26 point fusion cost |
 
 **B2 is the control that matters most.** If a re-run's `32x32` rows do not read about 25%, the thing being
 measured now is not the thing measured then, and every other comparison is against the wrong baseline.
@@ -162,17 +168,25 @@ at 33% on the same ragged shape).
 
 Bandwidth-referenced, not MFU. Shape is the decode band; see `ppu-gemv-alu-bound-not-bandwidth`.
 
-| # | width | time | GB/s | %HBM | config | recorded |
-|---|---|---|---|---|---|---|
+**WIDTH IS A COLUMN AGAIN FOR D4-D9.** Those six rows used to put prose where the width goes, which made them
+unback-testable: `ci/check_backtest_configs.py` cannot map a config to a table without knowing which format's
+table to look in, and it reported them as UNPARSED rather than guessing. The width is DERIVED, not assumed:
+D4's config names it (`i4 ...`), D5's does too (`int4 native ...`), and D6-D9 are all the same dense-bench
+config (`16x16x256:16x16:s2`) measured when `lowbit_dense_configs.inc` was emitted at bits=4 and was the only
+dense table there was -- per-format dense tables did not exist until 2026-08-07 (`c776d98`). The displaced
+prose moved to a `note` column rather than being deleted.
+
+| # | width | time | GB/s | %HBM | config | recorded | note |
+|---|---|---|---|---|---|---|---|
 | D1 | int4 | 16.05 µs | 1310.7 | **47.4%** | `tileK s32/t64 N4 C2` | 2026-08-03 |
 | D2 | int2 | 15.86 µs | 797.8 | 28.8% | `native s16/t128 N8 C2` | 2026-08-03 |
 | D3 | int1 | 15.88 µs | 532.4 | 19.2% | `native s32/t64 N8 C2` | 2026-08-03 |
-| D4 | grouped tensor-core GEMM at the same band | 20.74 µs | — | 37.5% | `i4 16x32:256 w16x16 s2` | — |
-| D5 | best GEMV before the 2026-08-03 retune | 22.27 µs | — | 34.1% | `int4 native s16/t128 CtaN2 Chunk2` | — |
-| D6 | **tensor-core at M=1 once TileK entered the search** | **17.98 µs** | 1168 | **42.2%** | `16x16x256:16x16:s2` | 2026-08-06 |
-| D7 | compact-A capacity 1 — **CONFIRMED**, and the cause is known | 26.09 µs | 805 | 29.1% | `16x16x256:16x16:s2` | 2026-08-06 |
-| D8 | ordinary A, the A/B baseline for D9 | 16.97 µs | 1237 | 44.7% | `16x16x256:16x16:s2`, `[A path] ordinary AIU + swzl` | 2026-08-07 |
-| D9 | **PPU_A_PACK: +2.9% and numerically Passed at M=1** | 16.49 µs | 1273 | 46.0% | same, `[A path] PACKED cubes` | 2026-08-07 |
+| D4 | int4 | 20.74 µs | — | 37.5% | `i4 16x32:256 w16x16 s2` | — | grouped tensor-core GEMM at the same band |
+| D5 | int4 | 22.27 µs | — | 34.1% | `int4 native s16/t128 CtaN2 Chunk2` | — | best GEMV before the 2026-08-03 retune |
+| D6 | **int4** | **17.98 µs** | 1168 | **42.2%** | `16x16x256:16x16:s2` | 2026-08-06 | tensor-core at M=1 once TileK entered the search |
+| D7 | int4 | 26.09 µs | 805 | 29.1% | `16x16x256:16x16:s2` | 2026-08-06 | compact-A capacity 1 — CONFIRMED, and the cause is known |
+| D8 | int4 | 16.97 µs | 1237 | 44.7% | `16x16x256:16x16:s2`, `[A path] ordinary AIU + swzl` | 2026-08-07 | ordinary A, the A/B baseline for D9 |
+| D9 | **int4** | 16.49 µs | 1273 | 46.0% | same, `[A path] PACKED cubes` | 2026-08-07 | PPU_A_PACK: +2.9% and numerically Passed at M=1 |
 
 **D7 WAS RIGHT ALL ALONG; ONLY ITS EVIDENCE WAS MISSING.** It was filed as "compact A at capacity 1 is 45%
 slower" with nothing in the output naming the capacity, and was marked UNATTRIBUTED for a day. Reproduced
