@@ -106,6 +106,9 @@ SYNTAX = [
     # ScaleOnly selects a different compiled traffic-model branch and halves its metadata planes. Compile that mode
     # explicitly; the default ScaleZero row cannot validate the ScaleOnly macro path.
     ("benchmarks/test_lowbit_moe_bench.cu", "-DLOWBIT_QMODE=1"),
+    # MOE_STAGES turns six preprocessor arms into a selected subset. The CMake/box gates prove the flags arrive;
+    # this row proves a multi-value selection still parses the real bench header.
+    ("benchmarks/test_lowbit_moe_bench.cu", "-DMOE_STAGES_2 -DMOE_STAGES_12"),
     # The DENSE bench, likewise ungated until 2026-08-04. It now carries a generated config table and a
     # static_assert tying that table to the binary's (bits, TileK); this row is what makes a stale table fail
     # here instead of producing a sweep over tactics the binary cannot select.
@@ -750,6 +753,16 @@ def lint_switch_macros():
     return _run_ci_script("check_switch_macros.py", "every owned build switch is reachable")
 
 
+def lint_build_advice():
+    """Every NAME printed or written as a build input must have an implemented route through build.sh/CMake."""
+    return _run_ci_script("check_build_advice.py", "advertised build inputs are routed")
+
+
+def lint_moe_build_knobs():
+    """The MoE format/tile/stage restrictions must change real generated sources or compile flags."""
+    return _run_ci_script("check_moe_build_knobs.py", "MoE build restrictions affect the generator")
+
+
 def _run_ci_script(name: str, label: str):
     """Shared shim for the ci/ checkers that are complete programs already; report their last meaningful line."""
     checker = ROOT / "ci" / name
@@ -1149,6 +1162,9 @@ def main():
                 ("boxdry", "build.sh through actlize, stub SDK: test_moe_splitk_bench", "test_moe_splitk_bench"),
                 ("boxdry", "build.sh through actlize, stub SDK: test_q4k_packed_gemm",
                  "test_q4k_packed_gemm PPU_PACKED_SCALE=1"),
+                ("boxdry", "build.sh forwards restricted MoE axes and stage list",
+                 ("test_lowbit_moe_decode_bench", "SK_QUANT=2", "MOE_FORMATS=i4", "MOE_TM_LIST=16",
+                  "MOE_TN_LIST=16", "MOE_WM_LIST=16", "MOE_STAGES=2;12")),
                 ("asan", "preprocessing chain under ASAN", None),
                 ("pytest", "torch op tests", None),
                 ("lint", "duplicate unroll directives (hgcc-only error)", lint_unroll),
@@ -1172,6 +1188,8 @@ def main():
                 ("lint", "no tactic choice can change the offline layout", lint_tactic_cannot_change_offline_layout),
                 ("lint", "actlize carries no quactlize symbol and no unlisted file change", lint_actlize_pristine),
                 ("lint", "every build switch this repo owns can actually be turned on", lint_switch_macros),
+                ("lint", "advertised build inputs have a build.sh/CMake route", lint_build_advice),
+                ("lint", "advertised MoE restrictions change generated code", lint_moe_build_knobs),
                 ("lint", "quactlize_extensions adds to actlize rather than redefining it", lint_extension_additive),
                 ("lint", "every file naming a quactlize type reaches its defining header", lint_owned_symbol_includes),
                 ("lint", "every listed GGUF format has the collective its row implies", lint_format_table_buildable),
@@ -1204,9 +1222,12 @@ def main():
         if kind == "syntax":
             return syntax(*payload)
         if kind == "boxdry":
-            args = payload.split()
-            rc, log, dt = run(["bash", str(ROOT / "ci/box_build_dryrun.sh"), args[0]]
-                              + ([" ".join(args[1:])] if len(args) > 1 else []))
+            if isinstance(payload, tuple):
+                args = list(payload)
+            else:
+                legacy = payload.split()
+                args = [legacy[0]] + ([" ".join(legacy[1:])] if len(legacy) > 1 else [])
+            rc, log, dt = run(["bash", str(ROOT / "ci/box_build_dryrun.sh")] + args)
             last = [l for l in log.splitlines() if l.strip()]
             st = {0: "PASS", 2: "SKIP"}.get(rc, "FAIL")
             msg = next((l.strip() for l in last if "[ok]" in l or "[FAIL]" in l or "[SKIP]" in l),

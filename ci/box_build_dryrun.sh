@@ -22,14 +22,21 @@
 # registration, add_subdirectory, target creation, and the defines landing on the device compile command -- is
 # exactly what the box does.
 #
-#   ./ci/box_build_dryrun.sh [TARGET] [PPU_DEFS]
+#   ./ci/box_build_dryrun.sh [TARGET] [PPU_DEFS] [NAME=VALUE ...]
 #
 # Exit 0 = every pre-compile stage reached the box's own conclusion. Exit 1 = one of them did not. Exit 2 = the
 # stub could not be built here (no gcc), which is a skip, not a pass.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET="${1:-test_moe_splitk_bench}"
-DEFS="${2:-SK_QUANT=2}"
+if [ "$#" -gt 0 ]; then shift; fi
+DEFS="${1:-SK_QUANT=2}"
+if [ "$#" -gt 0 ]; then shift; fi
+BUILD_ENV=("$@")
+for _entry in "${BUILD_ENV[@]}"; do
+  [[ "$_entry" =~ ^[A-Z][A-Z0-9_]*= ]] || {
+    echo "  [FAIL] box_build_dryrun: extra build input is not NAME=VALUE: $_entry"; exit 1; }
+done
 # ALWAYS A PRIVATE TEMPORARY DIRECTORY. This used to accept BOX_DRYRUN_SDK from the caller and then rm -rf it --
 # pointed at a real SDK or at the repository, that deletes it. A fixed path also races between concurrent runs.
 SDK="$(mktemp -d)"
@@ -62,7 +69,7 @@ rm -f "$_c"
 # PPU_BUILD_DIR keeps this out of build_ppu. Without it, "checking the build" DELETED
 # the real build tree on every run -- on the box, someone's working build. JOBS=1 so the sentinel's contents are a
 # sequence rather than an interleaving.
-( cd "$ROOT" && PPU_SDK="$SDK" PPU_BUILD_DIR="$BUILDDIR" JOBS=1 PPU_DEFS="$DEFS" TARGET="$TARGET" ./build.sh ) >"$LOG" 2>&1
+( cd "$ROOT" && env "${BUILD_ENV[@]}" PPU_SDK="$SDK" PPU_BUILD_DIR="$BUILDDIR" JOBS=1 PPU_DEFS="$DEFS" TARGET="$TARGET" ./build.sh ) >"$LOG" 2>&1
 rc=$?
 
 fail() { echo "  [FAIL] box_build_dryrun: $1"; echo "         last lines of the build log:"; tail -12 "$LOG" | sed 's/^/           /'; exit 1; }
@@ -81,6 +88,24 @@ BM="$(find "$BUILDDIR" -path "*${TARGET}.dir/build.make" 2>/dev/null | head -1)"
 for _d in $DEFS; do
   _esc="$(printf '%s' "$_d" | sed 's/[][\.^$*+?(){}|]/\\&/g')"
   grep -qE -- "(^|[[:space:]])-D$_esc([[:space:]]|\$)" "$BM" || fail "-D$_d is not a whole argument on $TARGET's compile command"
+done
+
+# 3b. Forwarded MoE cache inputs must be acknowledged by build.sh, and MOE_STAGES must become exact device
+#     preprocessor arguments after surviving env -> shell array -> CMake list expansion.
+for _entry in "${BUILD_ENV[@]}"; do
+  _name="${_entry%%=*}"
+  _value="${_entry#*=}"
+  case "$_name" in
+    MOE_*) grep -qF "[build.sh] $_name=$_value" "$LOG" || fail "$_name was not forwarded by build.sh" ;;
+  esac
+  if [ "$_name" = MOE_STAGES ]; then
+    _old_ifs="$IFS"; IFS=';'
+    for _stage in $_value; do
+      _esc="MOE_STAGES_${_stage}"
+      grep -qE -- "(^|[[:space:]])-D${_esc}([[:space:]]|\$)" "$BM" || fail "-D$_esc is not a whole argument on $TARGET's compile command"
+    done
+    IFS="$_old_ifs"
+  fi
 done
 
 # 4. THE STUB hgcc MUST HAVE RUN. This is the only evidence that the graph was walked as far as compiling; a make

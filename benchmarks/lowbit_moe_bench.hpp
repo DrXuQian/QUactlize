@@ -463,7 +463,9 @@ constexpr bool moe_b_chunk_effective() {
 // A-smem is 8-32 KB/stage and they simply do not fit.
 // MOE_STAGES narrows this axis from the build, for the same reason the tile lists can be narrowed: the cost is entirely
 // front-end template instantiation at ~3.0 s per kernel, so halving the stage list halves the per-unit time.
-//   PPU_DEFS="PPU_B_CHUNK=1 MOE_STAGES_4 MOE_STAGES_8"   -- define the ones you want; none defined = all six
+//   MOE_STAGES="4;8" TARGET=test_lowbit_moe_bench ./build.sh   -- empty/unset means all six
+// Legacy PPU_DEFS="MOE_STAGES_4 MOE_STAGES_8" remains accepted when MOE_STAGES itself is unset; CMake rejects mixing
+// the two interfaces, because the preprocessor would otherwise take their union while the generated wrappers take one.
 #if defined(MOE_STAGES_2) || defined(MOE_STAGES_3) || defined(MOE_STAGES_4) || \
     defined(MOE_STAGES_6) || defined(MOE_STAGES_8) || defined(MOE_STAGES_12)
    // at least one was requested: leave the others undefined so only the requested stages are emitted

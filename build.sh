@@ -251,9 +251,10 @@ done
 rm -rf "$BUILD" && mkdir -p "$BUILD" && cd "$BUILD"
 # FORWARD THE SWEEP AXIS KNOBS. They were added to CMakeLists.txt and then not wired through here, so narrowing a sweep was
 # impossible from build.sh -- the knob existed and could not be reached, which is worse than no knob because it reads as
-# available. Any MOE_* variable in the environment is passed through as a cache var.
+# available. Keep this explicit list in lockstep with the cache variables advertised by CMake; the advice gate
+# below checks the link so a new printed knob cannot become another accepted-but-dropped environment variable.
 _MOE_VARS=()
-for _v in MOE_TM_LIST MOE_TN_LIST MOE_WM_LIST MOE_FORMATS MOE_CORES; do
+for _v in MOE_FORMATS MOE_TM_LIST MOE_TN_LIST MOE_WM_LIST MOE_STAGES MOE_CORES; do
   if [ -n "${!_v:-}" ]; then _MOE_VARS+=("-D$_v=${!_v}"); echo "[build.sh] $_v=${!_v}"; fi
 done
 # NO GOOGLETEST CLONE. actlize's CMakeLists.txt:423 clones github.com/google/googletest when
@@ -307,6 +308,14 @@ cmake "$_CMAKE_SRC" "${_CMAKE_EXTRA[@]}" -DPPU_SDK_ROOT="$PPU_SDK_ROOT" -DCUTLAS
   -DLOWBIT_DENSE_CONFIGS_PER_UNIT="$LOWBIT_DENSE_CONFIGS_PER_UNIT" \
   -DPPU_EXTRA_DEFS="${PPU_DEFS:-}" "${_MOE_VARS[@]+"${_MOE_VARS[@]}"}" \
   >cmake.log 2>&1 || { tail -40 cmake.log; exit 1; }
+# CMake owns the literal list and the advice gate checks every name in it. Surface that one source of truth for
+# the two sweep targets instead of copying the names into another shell message that can drift.
+case "$TARGET" in
+  test_lowbit_moe_bench|test_lowbit_moe_decode_bench)
+    grep -F "Narrow a MoE axis" cmake.log || {
+      echo "  WARNING: CMake did not report the MoE restriction controls" >&2; exit 1; }
+    ;;
+esac
 # cmake's stdout is redirected above, so its message(STATUS ...) never reaches the terminal. Surface the extra
 # defines here instead -- telling someone to "check that the line appeared" when it cannot appear is worse than
 # not printing it at all.

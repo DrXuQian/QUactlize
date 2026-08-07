@@ -175,6 +175,15 @@ set(STAGES  "4"  CACHE STRING "pipeline stages")
 
 set(BENCH_QUANT "int4" CACHE STRING "bench QuantType: int4 (W4A16), uint2 (W2A16), or uint1 (W1A16)")
 set(TSK "" CACHE STRING "TileShapeK override (empty=int1->256/int2->128/int4->64; an override requires a matching table)")
+
+# FIRST USE IS THE GEMV WAVE REPORT BELOW, before the MoE generator itself. Keep declaration and validation here:
+# accepting MOE_CORES=0 until a later check lets the earlier ceil-divide produce an ERROR-valued status message.
+# gen_moe_units_check.sh slices this exact block so its cmake -P path has the real validation rather than a copy.
+set(MOE_CORES "192" CACHE STRING "compiler processes available to the generated sweep batchers")
+if(NOT "${MOE_CORES}" MATCHES "^[1-9][0-9]*$")
+  message(FATAL_ERROR "MOE_CORES must be a positive integer, got '${MOE_CORES}'")
+endif()
+
 set(_QUANT_DEFS)
 if(BENCH_QUANT STREQUAL "uint2")
   set(_QUANT_DEFS -DBENCH_UINT2)
@@ -488,9 +497,6 @@ endforeach()
 list(LENGTH _GEMV_UNIT_SRCS _GEMV_UNIT_N)
 list(LENGTH _GEMV_GROUP_NAMES _GEMV_GROUP_N)
 message(STATUS "GEMV sweep: ${_GEMV_UNIT_N} generated units in ${_GEMV_GEN_DIR} (${_GEMV_GROUP_N} groups)")
-if(NOT DEFINED MOE_CORES OR "${MOE_CORES}" STREQUAL "")
-  set(MOE_CORES 192)
-endif()
 if(_GEMV_UNIT_N GREATER MOE_CORES)
   math(EXPR _w "(${_GEMV_UNIT_N} + ${MOE_CORES} - 1) / ${MOE_CORES}")
   message(STATUS "GEMV sweep: ${_GEMV_UNIT_N} units > MOE_CORES=${MOE_CORES} -> ${_w} compile waves. "
@@ -865,6 +871,7 @@ set(_MOE_FORMATS
   "i2|0|uint2_t|half_t|2|0|16,32,64|i2"
   "i4|0|int4_t|half_t|4|0|16,32,64|i4"
 )
+set(_MOE_ALL_FORMATS ${_MOE_FORMATS})
 # 16 IS THE HARDWARE FLOOR, and it was missing. Every MMA atom in cute/atom/mma_traits_ppu0015.hpp has M = 16
 # (Shape_MNK = Shape<_16,...>, all eight of them), so TileM must be a multiple of 16 and TileM=8 is not reachable with these
 # instructions -- the FA path's ppu.mma.m8n16 is raw asm in a different kernel family, not a cute atom here. TileM=16 IS
@@ -874,7 +881,7 @@ set(_MOE_FORMATS
 # At decode it is the largest smem term: A = TM*TK*2 is 2048 of 3328 B/stage at (32,64,32), so TM=16 takes ifl from 78 to 113
 # and TM=16 with TileN=32 to 157 -- roughly 2x the in-flight loads -- while the CTA count does NOT change, because at one row
 # per expert mt = ceil(1/TM) = 1 whatever TileM is.
-set(_MOE_TM_LIST 16 32 64 128 256)
+set(_MOE_TM_ALLOWED 16 32 64 128 256)
 # SCOPE A SWEEP TO ITS QUESTION. Measured cost of one unit (nvcc front end, local): 4.2 s of header parsing plus ~3.0 s per
 # kernel of template instantiation; CODEGEN IS 5.6% of the total, so this is entirely a front-end cost and nothing about the
 # backend or the link will move it. Wall clock is ceil(U/cores) * (4.2 + kernels_per_unit*3.0), which at 642 kernels gives
@@ -884,11 +891,73 @@ set(_MOE_TM_LIST 16 32 64 128 256)
 # Rather than re-tune the split, narrow the PRODUCT: a decode question does not need TileM 64/128/256 (at one row per expert
 # TileM only sets smem, so larger is strictly worse), and a prefill question does not need the deep stages. Override any axis
 # from build.sh, semicolon-separated:
-#   PPU_DEFS=... MOE_TM_LIST="16;32" MOE_STAGES="4;6;8;12" TARGET=test_lowbit_moe_bench ./build.sh
+#   MOE_FORMATS="i4" MOE_TM_LIST="16;32" MOE_STAGES="4;6;8;12" TARGET=test_lowbit_moe_bench ./build.sh
 # MOE_FORMATS keeps only the named formats (semicolon-separated, e.g. "i4" or "i4;i2"). This is the axis that cuts the most
 # when the question is about ONE format -- the decode work is all i4 right now, and carrying q3/q5/q6/i2 through it is 4/5 of
 # the compile for none of the answer.
-if(MOE_FORMATS)
+
+# PUBLIC BUILD INPUTS, all explicit cache variables even though build.sh also forwards them. A -D of an undeclared name
+# becomes an untyped cache entry and looks legitimate in CMakeCache.txt; declaring the interface here supplies validation,
+# help text, and a finite list for the advice gate to compare against. They scope both full and decode tables in this one
+# configure; a selection that leaves either registered target with zero legal shapes fails loudly instead of being dropped.
+set(MOE_FORMATS "" CACHE STRING "MoE formats to compile (semicolon-separated subset of q3;q5;q6;i2;i4; empty=all)")
+set(MOE_TM_LIST "" CACHE STRING "MoE TileM values to compile (semicolon-separated; empty=all)")
+set(MOE_TN_LIST "" CACHE STRING "MoE TileN values to compile (semicolon-separated; empty=all)")
+set(MOE_WM_LIST "" CACHE STRING "MoE WarpM values to compile (semicolon-separated; empty=all)")
+set(MOE_STAGES "" CACHE STRING "MoE pipeline stages to instantiate (semicolon-separated subset of 2;3;4;6;8;12; empty=all)")
+
+set(_MOE_TN_ALLOWED 16 32 64 128)
+set(_MOE_WM_ALLOWED 16 32 64)
+set(_MOE_STAGE_DEFINE_ROWS
+  "2|-DMOE_STAGES_2|MOE_STAGES_2"
+  "3|-DMOE_STAGES_3|MOE_STAGES_3"
+  "4|-DMOE_STAGES_4|MOE_STAGES_4"
+  "6|-DMOE_STAGES_6|MOE_STAGES_6"
+  "8|-DMOE_STAGES_8|MOE_STAGES_8"
+  "12|-DMOE_STAGES_12|MOE_STAGES_12")
+set(_MOE_STAGE_ALLOWED "")
+foreach(_define_row IN LISTS _MOE_STAGE_DEFINE_ROWS)
+  string(REPLACE "|" ";" _define_fields "${_define_row}")
+  list(GET _define_fields 0 _stage_key)
+  list(APPEND _MOE_STAGE_ALLOWED "${_stage_key}")
+endforeach()
+
+function(qz_validate_moe_subset NAME ALLOWED)
+  set(_seen "")
+  foreach(_value IN LISTS ${NAME})
+    list(FIND ALLOWED "${_value}" _idx)
+    if(_idx EQUAL -1)
+      string(REPLACE ";" " " _allowed_show "${ALLOWED}")
+      message(FATAL_ERROR "${NAME} contains '${_value}', expected a semicolon-separated subset of: ${_allowed_show}")
+    endif()
+    list(FIND _seen "${_value}" _dup)
+    if(NOT _dup EQUAL -1)
+      message(FATAL_ERROR "${NAME} repeats '${_value}'")
+    endif()
+    list(APPEND _seen "${_value}")
+  endforeach()
+endfunction()
+
+set(_MOE_FORMAT_NAMES "")
+foreach(_row IN LISTS _MOE_ALL_FORMATS)
+  string(REPLACE "|" ";" _f "${_row}")
+  list(GET _f 0 _nm)
+  list(APPEND _MOE_FORMAT_NAMES "${_nm}")
+endforeach()
+foreach(_spec
+    "MOE_FORMATS|_MOE_FORMAT_NAMES"
+    "MOE_TM_LIST|_MOE_TM_ALLOWED"
+    "MOE_TN_LIST|_MOE_TN_ALLOWED"
+    "MOE_WM_LIST|_MOE_WM_ALLOWED"
+    "MOE_STAGES|_MOE_STAGE_ALLOWED")
+  string(REPLACE "|" ";" _fields "${_spec}")
+  list(GET _fields 0 _name)
+  list(GET _fields 1 _allowed)
+  if(NOT "${${_name}}" STREQUAL "")
+    qz_validate_moe_subset(${_name} "${${_allowed}}")
+  endif()
+endforeach()
+if(NOT "${MOE_FORMATS}" STREQUAL "")
   set(_keep "")
   foreach(_row IN LISTS _MOE_FORMATS)
     string(REPLACE "|" ";" _f "${_row}")
@@ -909,10 +978,12 @@ if(MOE_FORMATS)
   set(_MOE_FORMATS ${_keep})
 endif()
 foreach(_ax TM TN WM)
-  if(MOE_${_ax}_LIST)
+  if(NOT "${MOE_${_ax}_LIST}" STREQUAL "")
     string(REPLACE ";" " " _show "${MOE_${_ax}_LIST}")
     message(STATUS "MoE sweep: MOE_${_ax}_LIST restricted to ${_show}")
     set(_MOE_${_ax}_LIST ${MOE_${_ax}_LIST})
+  else()
+    set(_MOE_${_ax}_LIST ${_MOE_${_ax}_ALLOWED})
   endif()
 endforeach()
 # 32 is here for DECODE. At batch 1 the grid is 8 m-tiles x (N/TN), so TileN is the only knob that adds CTAs, and the decode
@@ -924,11 +995,41 @@ endforeach()
 #   TN=64  36 KB/blk  7 blk/CU   256 CTAs   51% of capacity   <- the current winner
 #   TN=32  26 KB/blk  9 blk/CU   512 CTAs   79%
 #   TN=16  21 KB/blk  12 blk/CU  1024 CTAs  full (and register-limited from here)
-set(_MOE_TN_LIST 16 32 64 128)
 # WarpM=16 comes with it (TileM=16 admits no other), and is offered at every TileM rather than only at 16: cvt/mma = 128/WM
 # is 8 there, which the skill records as a ~13-point cliff on PREFILL -- but decode runs at 0.4% MFU where the converter is
 # not the bottleneck, so that cost is a prediction to test, not a reason to exclude the axis.
-set(_MOE_WM_LIST 16 32 64)
+if(NOT "${MOE_STAGES}" STREQUAL "")
+  foreach(_def IN LISTS _PPU_EXTRA_HOST)
+    if(_def MATCHES "^MOE_STAGES_(2|3|4|6|8|12)(=.*)?$")
+      message(FATAL_ERROR "MOE_STAGES and legacy PPU_DEFS=${_def} both select the stage axis; use one interface, not their union")
+    endif()
+  endforeach()
+  string(REPLACE ";" " " _show "${MOE_STAGES}")
+  message(STATUS "MoE sweep: MOE_STAGES restricted to ${_show}")
+  foreach(_stage IN LISTS MOE_STAGES)
+    set(_stage_mapped FALSE)
+    foreach(_define_row IN LISTS _MOE_STAGE_DEFINE_ROWS)
+      string(REPLACE "|" ";" _define_fields "${_define_row}")
+      list(GET _define_fields 0 _stage_key)
+      if(_stage_key STREQUAL _stage)
+        list(GET _define_fields 1 _stage_dev)
+        list(GET _define_fields 2 _stage_host)
+        list(APPEND _PPU_EXTRA_DEV "${_stage_dev}")
+        list(APPEND _PPU_EXTRA_HOST "${_stage_host}")
+        set(_stage_mapped TRUE)
+      endif()
+    endforeach()
+    if(NOT _stage_mapped)
+      message(FATAL_ERROR "internal MoE stage define map has no entry for validated stage ${_stage}")
+    endif()
+  endforeach()
+endif()
+foreach(_def IN LISTS _PPU_EXTRA_HOST)
+  if(_def MATCHES "^MOE_STAGES_" AND NOT _def MATCHES "^MOE_STAGES_(2|3|4|6|8|12)(=.*)?$")
+    message(FATAL_ERROR "PPU_DEFS contains unknown legacy stage selector '${_def}'; use MOE_STAGES with a subset of 2;3;4;6;8;12")
+  endif()
+endforeach()
+message(STATUS "Narrow a MoE axis (MOE_FORMATS / MOE_TM_LIST / MOE_TN_LIST / MOE_WM_LIST / MOE_STAGES); MOE_CORES changes MoE TU batching and GEMV wave reporting only")
 
 function(qz_generate_lowbit_moe_band OUT_SRCS OUT_GEN_DIR OUT_UNIT_N TABLE_SUFFIX GEN_SUBDIR BAND_NAME BENCH_NAME BAND_M_MAX BAND_DECODE)
 if(BAND_DECODE AND NOT BAND_M_MAX GREATER 0)
@@ -1017,7 +1118,27 @@ foreach(_row IN LISTS _MOE_FORMATS)
     list(GET _rf 2 _r_tk)
     list(GET _rf 3 _r_wm)
     list(GET _rf 4 _r_wn)
+    list(GET _rf 5 _r_stage)
     list(GET _rf 6 _r_bc)
+    # The emitted table is the legal superset; the cache axes are projections of it. Merely replacing the old
+    # hand-written lists above is an accept-then-drop bug unless every row is filtered here, before de-duplication.
+    set(_axis_selected TRUE)
+    foreach(_field TM TN WM)
+      string(TOLOWER "${_field}" _field_lc)
+      list(FIND _MOE_${_field}_LIST "${_r_${_field_lc}}" _axis_idx)
+      if(_axis_idx EQUAL -1)
+        set(_axis_selected FALSE)
+      endif()
+    endforeach()
+    if(NOT _axis_selected)
+      continue()
+    endif()
+    if(NOT "${MOE_STAGES}" STREQUAL "")
+      list(FIND MOE_STAGES "${_r_stage}" _stage_idx)
+      if(_stage_idx EQUAL -1)
+        continue()
+      endif()
+    endif()
     # PPU_B_CHUNK is part of the compile-time shape even when the collective later gates the request off. Keeping
     # it in the key is what gives each request its own TU/macro and lets the bench expose request->effective.
     list(APPEND _MOE_SHAPES "${_r_tm}:${_r_tn}:${_r_tk}:${_r_wm}:${_r_wn}:${_r_bc}")
@@ -1065,13 +1186,6 @@ math(EXPR _MOE_SHAPE_N "${_MOE_BC0_N} + ${_MOE_BC1_N}")
 if(_MOE_SHAPE_N EQUAL 0)
   message(FATAL_ERROR "MoE ${BAND_NAME} sweep produced no legal shapes")
 endif()
-if(NOT DEFINED MOE_CORES OR "${MOE_CORES}" STREQUAL "")
-  set(MOE_CORES 192)
-endif()
-if(NOT "${MOE_CORES}" MATCHES "^[1-9][0-9]*$")
-  message(FATAL_ERROR "MOE_CORES must be a positive integer, got '${MOE_CORES}'")
-endif()
-
 # TARGET ONE COMPILER WAVE WITHOUT CREATING A MONOLITH. A TU has a fixed PPU_B_CHUNK value, so its lower bound is
 # the number of non-empty BC buckets. Starting at one shape/TU and choosing the smallest batch that reaches the core
 # budget keeps the maximum per-TU front-end cost minimal. Full today is 689+430 shapes: k=5 gives 224 TUs, k=6 gives

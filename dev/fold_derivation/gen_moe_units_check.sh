@@ -16,6 +16,8 @@
 #   BAD=2 ./gen_moe_units_check.sh           negative control: drop one shape per format, must FATAL
 #   BAD=3 ./gen_moe_units_check.sh           negative control: drop one and duplicate another, same raw count, must FATAL
 #   BAD=4 ./gen_moe_units_check.sh           negative control: mix a bc0 wrapper into a bc1 compile policy, must FATAL
+#   BAD=5 MOE_TM_LIST=16 ...                  negative control: bypass an advertised tile filter, must FATAL
+#   BAD=6 MOE_STAGES=12 ...                   negative control: drop the device stage flag, must FATAL
 #
 # Every invocation gets its OWN temporary output directory. build.sh is intentionally safe to run concurrently now;
 # a fixed .moe_units_check directory let one variant remove another variant's generated sources midway through this gate.
@@ -31,6 +33,16 @@ cleanup() { rm -rf -- "$OUT"; }
 trap cleanup EXIT
 GEN="$OUT/gen.cmake"
 MOE_CHECK_CORES="${MOE_CHECK_CORES:-192}"
+MOE_CHECK_FORMATS="${MOE_FORMATS:-}"
+MOE_CHECK_TM_LIST="${MOE_TM_LIST:-}"
+MOE_CHECK_TN_LIST="${MOE_TN_LIST:-}"
+MOE_CHECK_WM_LIST="${MOE_WM_LIST:-}"
+MOE_CHECK_STAGES="${MOE_STAGES:-}"
+_safe_cache_list_re='^[A-Za-z0-9_;]*$'
+for _value in "$MOE_CHECK_FORMATS" "$MOE_CHECK_TM_LIST" "$MOE_CHECK_TN_LIST" "$MOE_CHECK_WM_LIST" "$MOE_CHECK_STAGES"; do
+  [[ "$_value" =~ $_safe_cache_list_re ]] || {
+    echo "  [FAIL] gen_moe_units_check: unsafe cache-list spelling '$_value'"; exit 1; }
+done
 
 # THE SLICE NOW HAS DEPENDENCIES, and they are sliced/included too rather than transcribed. The generator stopped being
 # self-contained on 2026-08-06, when the unit shapes moved from four axis lists to the emitted tactic tables: it now calls
@@ -51,6 +63,14 @@ grep -q '^set(QZ_SRC_DIRS' "$OUT/srcdirs.cmake" || {
   echo "  [FAIL] gen_moe_units_check: could not slice QZ_SRC_DIRS out of $CSRC/CMakeLists.txt -- the anchors moved"; exit 1; }
 [ -f "$CSRC/TacticTableUnits.cmake" ] || {
   echo "  [FAIL] gen_moe_units_check: $CSRC/TacticTableUnits.cmake is missing"; exit 1; }
+# The slice starts at _MOE_FORMATS, but two inputs it consumes are initialised earlier. Slice those real blocks too:
+# PPU_EXTRA_DEFS carries the legacy MOE_STAGES_N interface, and MOE_CORES is validated before its first GEMV use.
+awk '/^set\(_PPU_EXTRA_DEV\)/{p=1} p{print} p&&/^endif\(\)/{exit}' "$CML" > "$OUT/extra_defs.cmake"
+grep -q '^set(_PPU_EXTRA_HOST)' "$OUT/extra_defs.cmake" || {
+  echo "  [FAIL] gen_moe_units_check: could not slice PPU_EXTRA_DEFS handling out of $CML"; exit 1; }
+awk '/^set\(MOE_CORES .*CACHE STRING/{p=1} p{print} p&&/^endif\(\)/{exit}' "$CML" > "$OUT/moe_cores.cmake"
+grep -q 'MOE_CORES must be a positive integer' "$OUT/moe_cores.cmake" || {
+  echo "  [FAIL] gen_moe_units_check: could not slice early MOE_CORES validation out of $CML"; exit 1; }
 
 # THE POLICY STATE MUST BE THE REAL ONE. cmake -P starts every policy at OLD unless a minimum is declared, and the slice
 # is a slice of a file that runs under the project's. That is not hypothetical: the first run of this repaired gate died
@@ -66,7 +86,21 @@ CMIN="$(grep -m1 -oE '^cmake_minimum_required\(VERSION [0-9.]+' "$QZ_ROOT/CMakeL
   echo "set(CMAKE_CURRENT_BINARY_DIR \"$OUT\")"
   # The generator resolves table paths relative to this, so it must be csrc/ and not wherever cmake -P was started.
   echo "set(CMAKE_CURRENT_SOURCE_DIR \"$CSRC\")"
-  echo "set(MOE_CORES \"$MOE_CHECK_CORES\")"
+  echo "set(MOE_CORES \"$MOE_CHECK_CORES\" CACHE STRING \"\")"
+  cat "$OUT/moe_cores.cmake"
+  echo "set(MOE_FORMATS \"$MOE_CHECK_FORMATS\" CACHE STRING \"\")"
+  echo "set(MOE_TM_LIST \"$MOE_CHECK_TM_LIST\" CACHE STRING \"\")"
+  echo "set(MOE_TN_LIST \"$MOE_CHECK_TN_LIST\" CACHE STRING \"\")"
+  echo "set(MOE_WM_LIST \"$MOE_CHECK_WM_LIST\" CACHE STRING \"\")"
+  echo "set(MOE_STAGES \"$MOE_CHECK_STAGES\" CACHE STRING \"\")"
+  echo "set(_CHECK_MOE_FORMATS \"$MOE_CHECK_FORMATS\")"
+  echo "set(_CHECK_MOE_TM_LIST \"$MOE_CHECK_TM_LIST\")"
+  echo "set(_CHECK_MOE_TN_LIST \"$MOE_CHECK_TN_LIST\")"
+  echo "set(_CHECK_MOE_WM_LIST \"$MOE_CHECK_WM_LIST\")"
+  echo "set(_CHECK_MOE_STAGES \"$MOE_CHECK_STAGES\")"
+  echo 'set(PPU_EXTRA_DEFS "$ENV{PPU_DEFS}")'
+  echo 'set(_CHECK_PPU_EXTRA_DEFS "$ENV{PPU_DEFS}")'
+  cat "$OUT/extra_defs.cmake"
   cat "$OUT/srcdirs.cmake"
   cat "$OUT/resolve.cmake"
   echo "include(\"$CSRC/TacticTableUnits.cmake\")"
@@ -84,6 +118,12 @@ CMIN="$(grep -m1 -oE '^cmake_minimum_required\(VERSION [0-9.]+' "$QZ_ROOT/CMakeL
           # The collective reads PPU_B_CHUNK once per TU. Make every per-shape request say 1 while the bc0 TU policy
           # remains 0; the content gate must reject it before a compile can silently instantiate the wrong policy.
           4) sed 's/"#define UNIT_B_CHUNK ${_bc}\\n"/"#define UNIT_B_CHUNK 1\\n"/' ;;
+          # Accept the requested TM/TN/WM values but make their row predicate unconditional. The independent
+          # expected-name projection below must observe the extra wrappers.
+          5) sed 's/list(FIND _MOE_${_field}_LIST "${_r_${_field_lc}}" _axis_idx)/set(_axis_idx 0) # planted bypass/' ;;
+          # Keep the stage row projection but lose one half of the target compile contract. Shape counts alone
+          # cannot see this; the exact DEV/HOST flag assertion below must.
+          6) sed 's/list(APPEND _PPU_EXTRA_DEV "${_stage_dev}")/# planted missing device flag/' ;;
           *) cat ;;
         esac; }
   cat <<'ASSERT'
@@ -125,10 +165,18 @@ endfunction()
 function(qz_assert_moe_band LABEL TABLE_SUFFIX GEN_DIR GEN_TU_N GEN_SRCS EXPECT_MMAX EXPECT_DECODE EXPECT_BAND EXPECT_BENCH)
   set(_exp_names "")
   set(_exp_rows 0)
-  foreach(_row IN LISTS _MOE_FORMATS)
+  set(_exp_formats "")
+  foreach(_row IN LISTS _MOE_ALL_FORMATS)
     string(REPLACE "|" ";" _f "${_row}")
     list(GET _f 0 _nm)
     list(GET _f 7 _emit)
+    if(NOT "${_CHECK_MOE_FORMATS}" STREQUAL "")
+      list(FIND _CHECK_MOE_FORMATS "${_nm}" _fmt_idx)
+      if(_fmt_idx EQUAL -1)
+        continue()
+      endif()
+    endif()
+    list(APPEND _exp_formats "${_nm}")
     set(_hit "")
     foreach(_d IN LISTS QZ_SRC_DIRS)
       if(EXISTS "${_d}/lowbit_grouped_${_emit}${TABLE_SUFFIX}_configs.inc")
@@ -159,13 +207,33 @@ function(qz_assert_moe_band LABEL TABLE_SUFFIX GEN_DIR GEN_TU_N GEN_SRCS EXPECT_
       list(GET _hf 2 _tk)
       list(GET _hf 3 _wm)
       list(GET _hf 4 _wn)
+      list(GET _hf 5 _stage)
       list(GET _hf 6 _bc)
+      set(_selected TRUE)
+      foreach(_axis TM TN WM)
+        if(NOT "${_CHECK_MOE_${_axis}_LIST}" STREQUAL "")
+          string(TOLOWER "${_axis}" _axis_lc)
+          list(FIND _CHECK_MOE_${_axis}_LIST "${_${_axis_lc}}" _axis_idx)
+          if(_axis_idx EQUAL -1)
+            set(_selected FALSE)
+          endif()
+        endif()
+      endforeach()
+      if(NOT "${_CHECK_MOE_STAGES}" STREQUAL "")
+        list(FIND _CHECK_MOE_STAGES "${_stage}" _stage_idx)
+        if(_stage_idx EQUAL -1)
+          set(_selected FALSE)
+        endif()
+      endif()
+      if(NOT _selected)
+        continue()
+      endif()
       list(APPEND _exp_names "moe_unit_${_nm}_tn${_tn}_wn${_wn}_tm${_tm}_wm${_wm}_tk${_tk}_bc${_bc}")
     endforeach()
   endforeach()
   list(REMOVE_DUPLICATES _exp_names)
   list(LENGTH _exp_names _exp)
-  list(LENGTH _MOE_FORMATS _nfmt)
+  list(LENGTH _exp_formats _nfmt)
   set(_exp_bc0 0)
   set(_exp_bc1 0)
   foreach(_name IN LISTS _exp_names)
@@ -280,7 +348,7 @@ function(qz_assert_moe_band LABEL TABLE_SUFFIX GEN_DIR GEN_TU_N GEN_SRCS EXPECT_
      NOT _partial_bc0 EQUAL _exp_partial_bc0 OR NOT _partial_bc1 EQUAL _exp_partial_bc1)
     message(FATAL_ERROR "${LABEL}: expected shapes bc=${_exp_bc0}/${_exp_bc1}, TUs=${_exp_tus_bc0}/${_exp_tus_bc1}; got shapes ${_got_bc0}/${_got_bc1}, disk TUs ${_got_tus_bc0}/${_got_tus_bc1}, generator said ${GEN_TU_N}")
   endif()
-  if(_batch GREATER 1 AND NOT _cross_format)
+  if(_nfmt GREATER 1 AND _batch GREATER 1 AND NOT _cross_format)
     message(FATAL_ERROR "${LABEL}: no batch crosses a format boundary; per-format rounding silently costs extra TUs")
   endif()
 
@@ -317,6 +385,50 @@ function(qz_assert_moe_band LABEL TABLE_SUFFIX GEN_DIR GEN_TU_N GEN_SRCS EXPECT_
   message(STATUS "OK ${LABEL}: ${_exp} shapes (bc0=${_exp_bc0}, bc1=${_exp_bc1}) from ${_exp_rows} rows -> ${_ngen} TUs at batch=${_batch}; dispatcher exact")
 endfunction()
 
+# MOE_STAGES is not part of a wrapper name, so the exact generated-name comparison above cannot prove it had an
+# effect. Inspect the two flag channels the real target wrapper consumes. A missing device flag would compile all
+# stages under hgcc; a missing host flag would make the host and device halves disagree about the same header.
+set(_expected_stage_dev "")
+set(_expected_stage_host "")
+foreach(_stage IN LISTS _CHECK_MOE_STAGES)
+  string(CONCAT _expected_dev_flag "-D" "MOE_STAGES_${_stage}")
+  list(APPEND _expected_stage_dev "${_expected_dev_flag}")
+  list(APPEND _expected_stage_host "MOE_STAGES_${_stage}")
+endforeach()
+string(REPLACE " " ";" _legacy_stage_defs "${_CHECK_PPU_EXTRA_DEFS}")
+foreach(_legacy IN LISTS _legacy_stage_defs)
+  if(_legacy MATCHES "^MOE_STAGES_(2|3|4|6|8|12)(=.*)?$")
+    string(CONCAT _expected_legacy_dev "-D" "${_legacy}")
+    list(APPEND _expected_stage_dev "${_expected_legacy_dev}")
+    list(APPEND _expected_stage_host "${_legacy}")
+  endif()
+endforeach()
+set(_actual_stage_dev "")
+foreach(_flag IN LISTS _PPU_EXTRA_DEV)
+  if(_flag MATCHES "^-DMOE_STAGES_")
+    list(APPEND _actual_stage_dev "${_flag}")
+  endif()
+endforeach()
+set(_actual_stage_host "")
+foreach(_flag IN LISTS _PPU_EXTRA_HOST)
+  if(_flag MATCHES "^MOE_STAGES_")
+    list(APPEND _actual_stage_host "${_flag}")
+  endif()
+endforeach()
+foreach(_pair "_expected_stage_dev|_actual_stage_dev|device" "_expected_stage_host|_actual_stage_host|host")
+  string(REPLACE "|" ";" _fields "${_pair}")
+  list(GET _fields 0 _expected_var)
+  list(GET _fields 1 _actual_var)
+  list(GET _fields 2 _channel)
+  set(_expected "${${_expected_var}}")
+  set(_actual "${${_actual_var}}")
+  list(SORT _expected)
+  list(SORT _actual)
+  if(NOT "${_actual}" STREQUAL "${_expected}")
+    message(FATAL_ERROR "MOE_STAGES ${_channel} flags: expected '${_expected}', got '${_actual}'")
+  endif()
+endforeach()
+
 qz_assert_moe_band(full "" "${_MOE_GEN_DIR}" "${_MOE_UNIT_N}" "${_MOE_UNIT_SRCS}" 0 0 full lowbit_moe)
 qz_assert_moe_band(decode _decode "${_MOE_DECODE_GEN_DIR}" "${_MOE_DECODE_UNIT_N}" "${_MOE_DECODE_UNIT_SRCS}" 3 1 decode lowbit_moe_decode)
 ASSERT
@@ -325,8 +437,21 @@ ASSERT
 log="$OUT/log"
 if ! cmake -P "$GEN" > "$log" 2>&1; then
   if [ -n "${BAD:-}" ]; then
+    case "$BAD" in
+      1) _reason_re='_MOE_FORMATS row.*fields, expected' ;;
+      2|3) _reason_re='generated wrappers' ;;
+      5) _reason_re='one field/include per shape' ;;
+      4) _reason_re='mixes UNIT_B_CHUNK' ;;
+      6) _reason_re='MOE_STAGES device flags' ;;
+      *) _reason_re='a^' ;;
+    esac
+    if ! _reason="$(grep -m1 -E "$_reason_re" "$log")"; then
+      echo "  [FAIL] gen_moe_units_check (negative control BAD=$BAD): rejected for the wrong reason"
+      sed 's/^/           /' "$log"
+      exit 1
+    fi
     echo "  [ok]   gen_moe_units_check (negative control BAD=$BAD): the generator was REJECTED"
-    grep -m1 -E "fields, expected|expected .* unique shapes|generated wrappers|mixes UNIT_B_CHUNK" "$log" | sed 's/^/           /' || true
+    printf '           %s\n' "$_reason"
     exit 0
   fi
   echo "  [FAIL] gen_moe_units_check: the generator errored"; sed 's/^/           /' "$log"; exit 1
@@ -357,10 +482,25 @@ bc1=""
 for src in "$OUT"/moe_units/moe_batch_bc0_*.cu; do
   [ "$(awk '/^#define UNIT_NAME/{print $3}' "$src" | sort -u | wc -l)" -gt 1 ] && { cross="$src"; break; }
 done
-for src in "$OUT"/moe_units/moe_batch_bc1_*.cu; do bc1="$src"; break; done
-[ -n "$cross" ] && [ -n "$bc1" ] || { echo "  [FAIL] no cross-format bc0 batch or bc1 batch to compile"; exit 1; }
-for src in "$cross" "$bc1"; do
+for src in "$OUT"/moe_units/moe_batch_bc1_*.cu; do [ -f "$src" ] && { bc1="$src"; break; }; done
+compile_srcs=()
+if [ -z "$MOE_CHECK_FORMATS$MOE_CHECK_TM_LIST$MOE_CHECK_TN_LIST$MOE_CHECK_WM_LIST$MOE_CHECK_STAGES" ]; then
+  [ -n "$cross" ] && [ -n "$bc1" ] || { echo "  [FAIL] default sweep has no cross-format bc0 batch or bc1 batch to compile"; exit 1; }
+  compile_srcs=("$cross" "$bc1")
+else
+  for src in "$OUT"/moe_units/moe_batch_bc0_*.cu "$OUT"/moe_units/moe_batch_bc1_*.cu; do
+    [ -f "$src" ] || continue
+    compile_srcs+=("$src")
+    [ "${#compile_srcs[@]}" -eq 2 ] && break
+  done
+  [ "${#compile_srcs[@]}" -gt 0 ] || { echo "  [FAIL] restricted sweep emitted no TU to compile"; exit 1; }
+fi
+for src in "${compile_srcs[@]}"; do
   c++ -std=c++17 -x c++ -I"$fixture" -c "$src" -o "$fixture/$(basename "$src").o" || {
     echo "  [FAIL] generated multi-shape TU does not compile with the re-entrant unit fixture: $src"; exit 1; }
 done
-echo "           -- re-entrant generated TU compile: cross-format bc0 + bc1 OK"
+if [ -n "$cross" ] && [ -n "$bc1" ]; then
+  echo "           -- re-entrant generated TU compile: cross-format bc0 + bc1 OK"
+else
+  echo "           -- restricted generated TU compile: ${#compile_srcs[@]} selected batch(es) OK"
+fi
