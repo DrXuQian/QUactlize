@@ -123,9 +123,20 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
                 "the compiled dense default must fit one ppu001 block for every admitted shape");
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
   static_assert(!RequireUniversalFallback,
-                "PPU_A_PACK is a one-row experiment and cannot be the universal dense fallback");
+                "PPU_A_PACK=R is bounded to M<=R and cannot be the universal dense fallback");
 #endif
   if constexpr (GemmKernel::SharedStorageSize > ppu_tactics::kBlockSmemBytes) return false;
+#if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
+  // The packed writer materialises rows [0,R); all later accumulator rows are padding. Dense used to have no
+  // matching runtime guard at all, so the row-0 provider could silently launch at M>1 while grouped rejected it.
+  if (m > PPU_A_PACK) {
+    if constexpr (!QueryOnly) {
+      std::printf("[fpA_intB] PPU_A_PACK=%d requires M <= %d, got %d\n",
+                  int(PPU_A_PACK), int(PPU_A_PACK), m);
+    }
+    return false;
+  }
+#endif
   if constexpr (QueryOnly) return true;
 
   using StrideA = typename GemmKernel::StrideA;

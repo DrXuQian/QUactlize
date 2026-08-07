@@ -154,7 +154,7 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
                 "the compiled grouped default must fit one ppu001 block for every admitted shape");
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
   static_assert(!RequireUniversalFallback,
-                "PPU_A_PACK is a one-row experiment and cannot be the universal grouped fallback");
+                "PPU_A_PACK=R is bounded to Mmax<=R and cannot be the universal grouped fallback");
 #endif
   if constexpr (GemmKernel::SharedStorageSize > ppu_tactics::kBlockSmemBytes) return false;
   // PPU_FORCE_INSTANTIATE: odr-use the kernel's operator() so the WHOLE collective -- mainloop included -- is
@@ -187,7 +187,7 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
                   int(GemmKernel::SharedStorageSize), a_bytes, a_elems,
                   100.0 * a_bytes / double(GemmKernel::SharedStorageSize),
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
-                  "A in smem, PACKED cubes, cp.async row0 + swzl read"
+                  "A in smem, PACKED cubes, cp.async first R rows + swzl read"
 #else
                   "A in smem via AIU + swzl"
 #endif
@@ -216,12 +216,13 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   // STRIDES FROM k_full, SHAPES FROM k -- see the k_full parameter. Getting this backwards makes every
   // slice after the first walk gmem with a shrunken row pitch and read the wrong rows entirely.
   StrideA sA = cutlass::make_cute_packed_stride(StrideA{}, cute::make_shape(m, k_full, L));
-  // PPU_A_PACK: A's cubes overlap in smem and only row 0 of each carries data, so rows 1..TileM-1 read a
-  // neighbour's bytes. Sound only where those rows are discarded, i.e. Mmax == 1.
+  // PPU_A_PACK=R: A's cubes overlap in smem and only rows [0,R) of each carry data, so later rows read a
+  // neighbour's bytes. Sound only where those later accumulator rows are discarded, i.e. Mmax <= R.
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
-  if (m > 1) {
+  if (m > PPU_A_PACK) {
     if constexpr (!QueryOnly) {
-      std::printf("[moe_grouped] PPU_A_PACK requires Mmax <= 1, got %d (packed cubes: only row 0 is real)\n", m);
+      std::printf("[moe_grouped] PPU_A_PACK=%d requires Mmax <= %d, got %d\n",
+                  int(PPU_A_PACK), int(PPU_A_PACK), m);
       ++moeg_fail_count();
     }
     return false;
