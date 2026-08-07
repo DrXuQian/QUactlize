@@ -1,12 +1,12 @@
-// L85 -- CAN THE CUBES OVERLAP? Row 0 owns only 32 of a cube's 512 words (l84). The other 480 must be READABLE, not
-// A's. So pack the cubes by shrinking the BASE stride -- CUBE_H*CUBE_W (512 words) down to CUBE_W (32) -- while the
-// cube GEOMETRY stays 16x64 so the swizzle and the write/read pairing are untouched. That is the opposite of
-// PPU_A_CUBE_MN, which changed the geometry and corrupted everything.
+// L85 -- CAN EIGHT CUBES OVERLAP WHEN EACH CARRIES ITS FIRST R ROWS? The old proof checked row 0 only. This one
+// compares every row of cube i with every row of cube j, for R=1..16, using the exact word placement replayed from
+// ppu_tsm_ld_swzl_sim. Eight sub-tiles is the largest current packed-A consumer: int2 has two 64-half cubes per
+// stage and at most four stages. The in-kernel check repeats the comparison for the instantiated cube/stage count.
 //
-// Checks: do any two (cube, stage) row-0 runs collide, and what is the total span.
+// Pitches are searched, not extrapolated from R=1. The selected pitch is the smallest collision-free candidate whose
+// base is a 32-word/64-half/128-byte multiple, preserving both every cube base's alignment and smem_b's alignment.
 #include <cstdio>
 #include <set>
-#include <map>
 
 static int word_of(int lane, int v, int coord_h, int slice_idx, int CUBE_H, int* out_row) {
   int slice_word_base   = CUBE_H * 8 * slice_idx;
@@ -22,47 +22,67 @@ static int word_of(int lane, int v, int coord_h, int slice_idx, int CUBE_H, int*
   return slice_word_base + vreg_line_idx * 32 + vreg_vec_idx_swz2 * 4 + lane_col_idx;
 }
 
-// row-0 words of one cube, relative to its own base
-static std::set<int> row0_words(int CUBE_H, int SLICES) {
-  std::set<int> w;
+static std::set<int> row_words(int row_wanted, int CUBE_H, int SLICES) {
+  std::set<int> words;
   for (int lane = 0; lane < 32; ++lane)
     for (int v = 0; v < 4; ++v)
-      for (int s = 0; s < SLICES; ++s) { int r; int o = word_of(lane, v, 0, s, CUBE_H, &r); if (r == 0) w.insert(o); }
-  return w;
+      for (int s = 0; s < SLICES; ++s) {
+        int row;
+        int const word = word_of(lane, v, 0, s, CUBE_H, &row);
+        if (row == row_wanted) words.insert(word);
+      }
+  return words;
 }
-static int cube_span(int CUBE_H, int SLICES) {
-  int mx = 0;
-  for (int lane = 0; lane < 32; ++lane)
-    for (int v = 0; v < 4; ++v)
-      for (int s = 0; s < SLICES; ++s) { int r; int o = word_of(lane, v, 0, s, CUBE_H, &r); if (o > mx) mx = o; }
-  return mx + 1;
+
+static std::set<int> first_rows_words(int rows, int CUBE_H, int SLICES) {
+  std::set<int> words;
+  for (int row = 0; row < rows; ++row) {
+    auto const one_row = row_words(row, CUBE_H, SLICES);
+    words.insert(one_row.begin(), one_row.end());
+  }
+  return words;
+}
+
+// The union contains every one of the R rows exactly once (checked in main), so comparing the two unions is the
+// complete R x R comparison without rebuilding the same per-row sets in the pitch-search inner loop.
+static bool disjoint(int rows, int subtiles, int pitch_words, int CUBE_H, int SLICES) {
+  auto const words = first_rows_words(rows, CUBE_H, SLICES);
+  for (int i = 0; i < subtiles; ++i)
+    for (int j = i + 1; j < subtiles; ++j)
+      for (int word_i : words) {
+        int const word_j = i * pitch_words + word_i - j * pitch_words;
+        if (words.count(word_j)) return false;
+      }
+  return true;
+}
+
+static int first_clean_pitch(int rows, int subtiles, int step_words, int CUBE_H, int SLICES) {
+  for (int pitch = step_words; pitch <= CUBE_H * 32; pitch += step_words)
+    if (disjoint(rows, subtiles, pitch, CUBE_H, SLICES)) return pitch;
+  return 0;
 }
 
 int main() {
-  const int CUBE_H = 16, CUBE_W_HALFS = 64, SLICES = CUBE_W_HALFS * 16 / 32 / 8;   // 32 words/row / 8 = 4
-  auto r0 = row0_words(CUBE_H, SLICES);
-  int span = cube_span(CUBE_H, SLICES);
-  std::printf("one cube: span %d words (%d B), row0 owns %zu words (%d B) = 1/%.0f\n",
-              span, span * 4, r0.size(), int(r0.size()) * 4, double(span) / r0.size());
+  constexpr int CUBE_H = 16;
+  constexpr int CUBE_W_HALFS = 64;
+  constexpr int SLICES = CUBE_W_HALFS / 16;
+  constexpr int SUBTILES = 8;
+  constexpr int CUBE_WORDS = CUBE_H * CUBE_W_HALFS / 2;
+  constexpr int ALIGN_WORDS = 32;  // 64 halfs = 128 B
+  bool ok = true;
 
-  // pack N sub-tiles (cubes x stages) at BASE_STRIDE words apart; a collision means two of them need the same word
-  for (int nsub : {8, 6, 4}) {
-    for (int stride : {512, 128, 64, 32, 16, 8}) {
-      std::map<int,int> owner;  int clash = 0, hi = 0;
-      for (int i = 0; i < nsub; ++i)
-        for (int w : r0) {
-          int a = i * stride + w;
-          if (owner.count(a) && owner[a] != i) ++clash;
-          owner[a] = i;
-          if (a > hi) hi = a;
-        }
-      int total_span = hi + 1 + (span - 1 - *r0.rbegin());   // the last sub-tile still READS to its cube end
-      std::printf("  %d sub-tiles, base stride %3d words: %s  total read span %5d words (%6d B)%s\n",
-                  nsub, stride, clash ? "COLLIDE" : "clean  ", total_span, total_span * 4,
-                  clash ? "" : "  <-- usable");
-    }
-    std::printf("  (for reference, no overlap = %d x %d = %d words, %d B)\n\n",
-                nsub, span, nsub * span, nsub * span * 4);
+  std::printf("R  owned words  minimum 128-B-aligned clean pitch  total read span (%d sub-tiles)\n", SUBTILES);
+  for (int rows = 1; rows <= CUBE_H; ++rows) {
+    int const aligned = first_clean_pitch(rows, SUBTILES, ALIGN_WORDS, CUBE_H, SLICES);
+    int const span = (SUBTILES - 1) * aligned + CUBE_WORDS;
+    auto const owned = first_rows_words(rows, CUBE_H, SLICES);
+    std::printf("%2d %5zu words             %4d words/%4d halfs  %5d words/%6d halfs\n",
+                rows, owned.size(), aligned, aligned * 2, span, span * 2);
+    ok &= owned.size() == size_t(rows * 32) && aligned > 0;
+    ok &= disjoint(rows, SUBTILES, aligned, CUBE_H, SLICES);
+    ok &= (aligned % ALIGN_WORDS) == 0;
   }
-  return 0;
+
+  std::printf("R x R collision model and 128-B alignment: %s\n", ok ? "PASS" : "FAIL");
+  return ok ? 0 : 1;
 }
