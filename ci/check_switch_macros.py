@@ -21,13 +21,23 @@ reachable -- something must be able to define it. Two ways count:
 A switch with neither is reported. That is NOT automatically "delete it": the five found when this was written
 split into two kinds, and the distinction is the useful part --
 
-  * a debugging knob nobody wired (GEMV_GATE_FAST, PPU_B_CHUNK_BISECT): delete, or wire it and say where.
   * an unreachable FEATURE (PPU_MAXREG caps registers to raise occupancy; LOWBIT_QMODE selects ScaleOnly;
     QUACTLIZE_DENSE_ONLY drops formats, and ci/check_format_table_buildable.py's docstring CITES it as a thing a
     build can do). These are coverage gaps. Deleting them hides the gap instead of closing it.
+  * an UNRUN EXPERIMENT whose comment already states what each outcome would mean (PPU_PACKED_PAIR=0,
+    PPU_F16X2_EARLYCLOBBER=0, PPU_F16X2_NOFTZ=1 -- all three bisecting the same open rowC failure). Deleting one
+    destroys a pending answer, and each is a single build. They are in .coord/BOX.md as E1/E2/E3.
+  * a TOOL (GEMV_GATE_FAST narrows an axis while iterating and says "build the FULL matrix before trusting a
+    result"; PPU_B_CHUNK_BISECT exists BECAUSE PPU_B_CHUNK=2 once shipped a debug mode inside the flag that turns
+    the feature on). Deleting the second invites back the mistake that separating it fixed.
 
-So this prints the inventory and fails; a human decides which kind each is. What it removes is the ability for a
-switch to sit unreachable without anyone noticing.
+So this prints the inventory and fails; a human decides which kind each is.
+
+"NOBODY WIRED IT" IS A STATEMENT ABOUT THE BUILD, NOT ABOUT THE SWITCH -- and the first draft of this file got
+that wrong. It sorted the eight by reading their names and comments, put five in a "debugging knob -> delete"
+bucket, and three of those five turned out to be experiments carrying written decision rules for an unresolved
+numerical failure. The classification has to come from reading what the switch DOES and whether a measurement for
+it is on file, which is the same rule this repository applies to everything else and which a name cannot answer.
 
 WHAT IT DOES NOT DO. It cannot follow an interpolated define (`-DFOO_${x}=1`), so it looks for that pattern and
 reports it as a hole rather than pretending the scan was complete -- the same rule as
@@ -61,15 +71,15 @@ ALLOWED = {
     # each is an open decision, not a justified switch -- they are here so the gate's job becomes "no NEW
     # unreachable switch appears" while the existing set stays visible and owned. Task #40 tracks the merge.
     # An entry may only leave this dict by being deleted or wired, never by being re-justified.
-    "GEMV_GATE_FAST":         "claude  -- dev convenience in tests/test_gemv_lowbit.cu; delete or wire",
+    "GEMV_GATE_FAST":         "claude  -- TOOL: narrows the gs axis while iterating; its own comment says build the FULL matrix before trusting a result. Needs a documented invocation, not deletion",
     "LOWBIT_QMODE":           "claude  -- '=1 selects ScaleOnly'; a COVERAGE GAP, the MoE sweep cannot reach ScaleOnly",
     "QUACTLIZE_DENSE_ONLY":   "claude  -- ci/check_format_table_buildable.py's docstring cites it as a thing a build can do",
-    "PPU_B_CHUNK_BISECT":     "codex   -- bisection knob in ppu_mma_aiu_fold.hpp",
-    "PPU_F16X2_EARLYCLOBBER": "codex   -- named only in CHECKPOINT prose, never with a -D",
-    "PPU_F16X2_NOFTZ":        "codex   -- named only in PLAN_task20 prose, never with a -D",
+    "PPU_B_CHUNK_BISECT":     "codex   -- TOOL: exists BECAUSE PPU_B_CHUNK=2 shipped a debug mode inside the feature flag. Deleting it invites that back",
+    "PPU_F16X2_EARLYCLOBBER": "codex   -- UNRUN EXPERIMENT E2 in .coord/BOX.md: was \"=&r\" the rowC fix, or did the failure merely go away across four commits?",
+    "PPU_F16X2_NOFTZ":        "codex   -- UNRUN EXPERIMENT E3 in .coord/BOX.md: does ppu.fma.rtte.f16x2 flush its subnormal input? One build; a build failure kills the hypothesis for free",
     "PPU_MAXREG":             "codex   -- caps registers to raise occupancy; an unreachable OCCUPANCY LEVER, and "
                               "occupancy is exactly what the M=1 42.2% question turns on",
-    "PPU_PACKED_PAIR":        "codex   -- named only in CHECKPOINT/DENSE_GROUPED_PARITY prose",
+    "PPU_PACKED_PAIR":        "codex   -- UNRUN EXPERIMENT E1 in .coord/BOX.md: does PAIR=0 restore rowC? Indicts or exonerates the packed f16x2 arithmetic, which has zero local coverage",
 }
 
 
