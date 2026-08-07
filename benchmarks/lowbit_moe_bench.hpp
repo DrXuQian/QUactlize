@@ -63,7 +63,7 @@ static constexpr double HBM_GBS = 2766.0;
 // containing `fold::FoldTraits` while the checked-out tree had `moe_fold`, and there was no way to tell from here whether
 // the box had built an older commit or the overlay had a stale copy. That ambiguity has cost rounds twice in this work (the
 // per-row PPU_B_CHUNK request/effective tag exists for the same reason), so it gets an invariant instead of a guess.
-#define LOWBIT_MOE_BENCH_REV 14
+#define LOWBIT_MOE_BENCH_REV 15
 
 // The table band is generated next to each target's dispatcher and included before this header. Other users of this
 // shared harness (the split-K probe) remain explicitly unbanded rather than accidentally inheriting lowbit-MoE metadata.
@@ -104,12 +104,17 @@ inline void moe_chunk_vote(int request) {
 //
 //   MOE_ONLY=<substring>   run only rows whose tag contains it, e.g. MOE_ONLY="i2 64x128:64 w64x32 s3" or MOE_ONLY=i4
 //   MOE_ACU=1              with MOE_ONLY, issue ONE launch instead of 1 warmup + 20 timed
+//   MOE_VERBOSE=1          expand the default identity/candidate/verdict output with model and run explanations
 //
 // The shape-level test matches in BOTH directions on purpose: a full row tag ("i2 64x128:64 w64x32 s3") contains the shape
 // string, and a loose filter ("i4") is contained BY it. Getting this backwards would silently pack nothing and print an
 // empty sweep, which reads exactly like a broken build.
 inline const char* moe_only() { static const char* v = std::getenv("MOE_ONLY"); return v; }
 inline bool moe_acu() { static const bool v = std::getenv("MOE_ACU") != nullptr; return v; }
+inline bool moe_verbose() {
+  static const char* v = std::getenv("MOE_VERBOSE");
+  return v != nullptr && std::strcmp(v, "1") == 0;
+}
 inline bool moe_row_selected(const char* tag) {
   return moe_only_filter::row_selected(tag, moe_only());
 }
@@ -292,21 +297,19 @@ inline void report(const Band& bd, const char* tag, double us, int TM, int TN, i
   const double ntile = std::ceil(double(bd.N) / double(TN));
   const double wb    = double(bd.N) * double(bd.K) * double(bits_total) / 8.0;         // one expert's weights
   const double sb    = double(bd.N) * (double(bd.K) / double(bd.gs)) * 2.0 * 2.0;      // scale + zero, fp16
-  // A IS PADDED IN THE FLOOR. The kernel fetches TM rows whether or not they are real, so `mt*TM*K*2` is compulsory and
-  // `total*K*2` was an under-count -- at decode that is 1.05 MB against 32 KB of real rows.
+  // dfl IS THE DISTINCT-BYTE LOWER BOUND. Its A term is the real footprint `total*K*2`, not the padded compute area:
+  // padding loads do not issue. The AIU path uses a 2-D `.padz` copy whose dim_h is the expert's real M; classic CUTLASS
+  // predicates the out-of-bounds global load. Those rows are not alternate cache lines and are not bus traffic.
   //
-  // AND AT DECODE THE TRAFFIC IS LOCKED, NOT A BRACKET, which is the correction that produced this version: `mt == active`
-  // there, so B is exactly `active*wb` and S exactly `active*sb` -- each active expert's weights read once. The 2.6x
-  // "noreuse" the previous version printed came ENTIRELY from A's cross-n-tile term (33.5 MB of a 54.5 MB ceiling), and
-  // that term assumes 32 CTAs each re-fetch their m-tile's A from DRAM when the whole distinct A footprint is 8 x 128 KB =
-  // 1 MB shared inside one wave. Calling that a bandwidth question is not defensible, so it is no longer folded into a
-  // bracket: the floor is reported as THE number and A's reuse factor is printed beside it as `Ax`.
+  // At decode `mt == active` makes the B and S terms exact -- each active expert's weights and scale metadata are read
+  // once. It does NOT lock total traffic: A may be fetched again by separate n-tile CTAs, so dfl remains a lower bound.
+  // `a_pad` below belongs only to the deliberately loose ceiling-side model; it is not the numerator reported as HBM%.
   const double a_pad  = double(mt) * double(TM) * double(bd.K) * 2.0;
   // HBM% IS DISTINCT BYTES OVER TIME. Nothing else. The previous version put `a_pad` -- mt*TM*K, the PADDED row
   // count -- in the numerator, so a config with a bigger TileM "moved more data" and printed a HIGHER bandwidth
   // while reading the same rows. That is how a 1-row-per-expert decode band reported more HBM traffic at TileM=128
-  // than at TileM=16 off identical input. Padding rows are not in DRAM: they are either out of bounds and never
-  // issued, or they are the same cache lines again. Either way the bus does not carry them.
+  // than at TileM=16 off identical input. Padding rows are out of bounds and their loads are suppressed, so the bus
+  // does not carry them.
   //
   //   A = total*K*2       every REAL row, once
   //   B = active*wb       every ACTIVE expert's weights, once
@@ -487,7 +490,7 @@ constexpr bool moe_b_chunk_effective() {
       double u; const int _f0 = moe_grouped_ppu::moeg_fail_count();                                                \
       moe_attempt(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc));                             \
       std::printf("  -> %s\n", _t); std::fflush(stdout);                                                           \
-      if (moe_acu()) { u = time_it(_go, 0); std::printf("  [acu] ONE COLD launch (not a timing): %s\n", _t); }                         \
+      if (moe_acu()) { u = time_it(_go, 0); if (moe_verbose()) std::printf("  [acu] ONE COLD launch (not a timing): %s\n", _t); }       \
       else             u = time_it(_go, 20);                                                                       \
       constexpr int _wcu = _bc                                                                                     \
           ? fold::warps_per_cu_chunked<TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),32,true>                                 \
@@ -539,7 +542,7 @@ constexpr bool moe_b_chunk_effective() {
       double u; const int _f0 = moe_grouped_ppu::moeg_fail_count();                                                \
       moe_attempt(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc));                             \
       std::printf("  -> %s\n", _t); std::fflush(stdout);                                                           \
-      if (moe_acu()) { u = time_it(_go, 0); std::printf("  [acu] ONE COLD launch (not a timing): %s\n", _t); }                         \
+      if (moe_acu()) { u = time_it(_go, 0); if (moe_verbose()) std::printf("  [acu] ONE COLD launch (not a timing): %s\n", _t); }       \
       else             u = time_it(_go, 20);                                                                       \
       constexpr int _wcu = _bc                                                                                     \
           ? fold::warps_per_cu_chunked<TMv,TNv,TKv,WMv,WNv,Sv,(BITS),32,true>                                      \

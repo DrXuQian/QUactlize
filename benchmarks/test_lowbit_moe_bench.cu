@@ -118,25 +118,25 @@ int main(int argc, char** argv) {
               MOE_TABLE_BAND_STR, MOE_TABLE_M_MAX, bd.Mmax,
               LOWBIT_MOE_BENCH_REV, MOE_TK, LOWBIT_QMODE_STR, bd.L, bd.Rows, bd.topk, mname,
               bd.N, bd.K, bd.gs);
-  std::printf("             total=%d Mmax=%d Mmin=%d zero-row experts=%d active=%d  PEAK=%.0f TFLOP/s\n",
-              bd.total, bd.Mmax, mn, zeros, bd.active, PEAK / 1e12);
-  std::printf("             MFU is on the REAL rows (2*total*N*K), so wasting rows cannot buy MFU.\n");
-  // A LOG THAT DOES NOT DESCRIBE ITS OWN RUN. MOE_ACU and MOE_ONLY are exported for an acu capture and then stay exported in
-  // the shell, so the next plain run silently measures ONE COLD LAUNCH of ONE row and reports it as the winner -- which came
-  // back as 1179.86 us for a config that had just measured 23.54, i.e. 18 GB/s, not a slow kernel but an untimed one. Say it
-  // in the banner, and refuse to call anything "fastest" when the numbers are single-shot.
-  if (moe_only())  std::printf("             MOE_ONLY='%s' -- every other row is SKIPPED\n", moe_only());
-  if (moe_acu())   std::printf("             *** MOE_ACU=1: ONE COLD LAUNCH per row, no warmup. These are NOT timings. ***\n");
-  if (moe_abcast()) std::printf("             *** MOE_ABCAST=1: A's m-stride is 0, so the TileM-1 padding rows read the\n"
-                               "                 expert's real row. Legal ONLY at Mmax==1 -- launch() refuses it above\n"
-                               "                 that, so rows would be EXCLUDED rather than measured. ***\n");
-  // The unit count is compiled in from the generator, so a silently shrunk enumeration shows up here rather than as a
-  // quietly smaller sweep. Units whose shape is illegal (WarpM > TileM, or the delivery bound) compile to nothing and
-  // print no rows, which is why this can exceed the number of sections that appear below.
-  std::printf("             linked against %d generated sweep units (one per shape; illegal shapes print nothing)\n",
-              MOE_UNIT_COUNT);
-  std::printf("             PPU_B_CHUNK requests: bc0=%d unit(s), bc1=%d unit(s); tags show request->effective\n",
-              moe_chunk_tally().requested_off, moe_chunk_tally().requested_on);
+  if (moe_verbose()) {
+    std::printf("             total=%d Mmax=%d Mmin=%d zero-row experts=%d active=%d  PEAK=%.0f TFLOP/s\n",
+                bd.total, bd.Mmax, mn, zeros, bd.active, PEAK / 1e12);
+    std::printf("             MFU is on the REAL rows (2*total*N*K), so wasting rows cannot buy MFU.\n");
+    // A LOG THAT DOES NOT DESCRIBE ITS OWN RUN. MOE_ACU and MOE_ONLY are exported for an acu capture and then stay exported
+    // in the shell, so the next plain run silently measures ONE COLD LAUNCH of ONE row and reports it as the winner. Keep
+    // the explanation available without making it the default preamble; the verdict header still says NOT a ranking.
+    if (moe_only())  std::printf("             MOE_ONLY='%s' -- every other row is SKIPPED\n", moe_only());
+    if (moe_acu())   std::printf("             *** MOE_ACU=1: ONE COLD LAUNCH per row, no warmup. These are NOT timings. ***\n");
+    if (moe_abcast()) std::printf("             *** MOE_ABCAST=1: A's m-stride is 0, so the TileM-1 padding rows read the\n"
+                                 "                 expert's real row. Legal ONLY at Mmax==1 -- launch() refuses it above\n"
+                                 "                 that, so rows would be EXCLUDED rather than measured. ***\n");
+    // The unit count is compiled in from the generator, so a silently shrunk enumeration shows up here rather than as a
+    // quietly smaller sweep. Units whose shape is illegal compile to nothing and print no rows.
+    std::printf("             linked against %d generated sweep units (one per shape; illegal shapes print nothing)\n",
+                MOE_UNIT_COUNT);
+    std::printf("             PPU_B_CHUNK requests: bc0=%d unit(s), bc1=%d unit(s); tags show request->effective\n",
+                moe_chunk_tally().requested_off, moe_chunk_tally().requested_on);
+  }
 
   std::vector<half_t> hA((size_t)bd.total * bd.K), hSc((size_t)bd.L * bd.scale_k * bd.N),
                       hZr((size_t)bd.L * bd.scale_k * bd.N);
@@ -173,7 +173,8 @@ int main(int argc, char** argv) {
   // lowbit_moe_bench.hpp: drift is time-correlated, so interleaving is what keeps it from landing on one
   // candidate. MOE_REPS=1 is allowed and is explicitly not a ranking.
   const int reps = moe_acu() ? 1 : moe_reps();
-  bench_floor::banner();
+  (void)bench_floor::us();  // measure before the sweep even when its explanatory banner is hidden
+  if (moe_verbose()) bench_floor::banner();
   char build_identity[128];
   std::snprintf(build_identity, sizeof build_identity,
                 "PPU_B_CHUNK=row-axis %s table-band=%s table-m-max=%d",
@@ -191,7 +192,7 @@ int main(int argc, char** argv) {
   // THE ROOFLINE, STATED. Arithmetic intensity against the machine's ridge point decides which roof applies, and saying it
   // outright stops `%HBM` from having to be argued about: at decode AI is ~3 FLOP/B against a ridge of PEAK/HBM = 181, so the
   // memory roof is the only one in play and the measured time can be compared to it directly.
-  {
+  if (moe_verbose()) {
     const double fl   = 2.0 * double(bd.total) * double(bd.N) * double(bd.K);
     const double ridge = PEAK / (HBM_GBS * 1e9);
     std::printf("\n  roofline: ridge = PEAK/HBM = %.0f FLOP/B. This shape has %.0f MFLOP over the compulsory traffic below,\n",
@@ -204,7 +205,7 @@ int main(int argc, char** argv) {
               moe_acu() ? "MOE_ACU=1: single cold launches, NOT a ranking"
                         : reps < 2 ? "MOE_REPS=1: ONE timing per candidate -- NOT a ranking"
                                    : "VERDICT: best config per format");
-  if (reps > 1)
+  if (reps > 1 && moe_verbose())
     std::printf("  %d passes, median per candidate, band = [min,max] over passes. A candidate whose band reaches\n"
                 "  into the leader's is reported as a TIE, not beaten: at the recorded 13%% cross-run spread that\n"
                 "  is the honest statement. Ties are the guards to expand, not noise to round away.\n", reps);
@@ -249,9 +250,10 @@ int main(int argc, char** argv) {
     // kernel padded out to TileM are the kernel's own overhead, not work, and they must count AGAINST it: an MFU
     // that forgave padding would be silent on exactly the defect it should expose (an oversized TileM at decode).
     // msk is printed beside it as a DIAGNOSTIC -- it says where the missing fraction went, it does not rescale it.
-    std::printf("  %-4s %-30s %8.2f us | %6.1f TF/s (%4.1f%% MFU) msk=%.0f%%%s\n",
-                moe_fmt_names[ord[i]], e.tag, e.us, tf, 100.0 * tf * 1e12 / PEAK, 100.0 * msk, verdict);
-    if (*lb) std::printf("       %s this row is within 3x the empty-launch floor (%.2f us)\n", lb, bench_floor::us());
+    std::printf("  %-4s %-30s %8.2f us | %6.1f TF/s (%4.1f%% MFU) msk=%.0f%%%s%s\n",
+                moe_fmt_names[ord[i]], e.tag, e.us, tf, 100.0 * tf * 1e12 / PEAK, 100.0 * msk, lb, verdict);
+    if (*lb && moe_verbose())
+      std::printf("       %s this row is within 3x the empty-launch floor (%.2f us)\n", lb, bench_floor::us());
   }
   // THE TIES ARE THE OUTPUT, not a footnote. codex's H1/H2 pruning rules keep guards precisely so that a guard
   // landing inside the leader's band triggers expanding that stratum; without this list that rule has no input.
@@ -271,20 +273,19 @@ int main(int argc, char** argv) {
       }
     }
   }
-  std::printf("  HBM is the COMPULSORY traffic: padded A (mt*TM*K*2) + one read of each ACTIVE expert's weights and scales\n");
-  std::printf("  + D. At decode mt == active, so B and S are EXACT, not bounds -- the traffic is LOCKED, and HBM%% is the\n");
-  std::printf("  answer rather than a lower bound. Ax is the only uncertainty left: A may be re-fetched up to Ax times if\n");
-  std::printf("  L2 gives nothing across n-tiles. Judge that on its size -- at decode the whole distinct A footprint is\n");
-  std::printf("  ~1 MB shared inside one wave, so it is an L2 question, not a bandwidth one.\n");
-  std::printf("  blk/wrp come from fold::warps_per_cu_chunked (registers billed to a power of two), NOT from a smem+warps\n");
-  std::printf("  formula -- acu already showed that one to be register-limited and mis-ordering. wav = cta/(72*blk).\n");
-  std::printf("  Then read mt and msk: smallest mt winning => the weight-bound rule holds; least msk => the dense\n");
-  std::printf("  reasoning carries over; neither => the lever is occupancy and the next instrument is acu.\n");
-  if (bd.Mmax == 1) {
-    std::printf("\n  DECODE READING. Every active expert's weights are read exactly once (mt == active), so floor and ceiling\n");
-    std::printf("  coincide on the B and S terms and floor %%HBM is a TIGHT number here, not a bound. S%% is the scale\n");
-    std::printf("  channel's share of it -- that is the ceiling on what #20 can buy, before any reduction factor. With\n");
-    std::printf("  fp16 scale+zero, S/B = 32/(gs*bits), so S%% is large exactly where the format is low-bit.\n");
+  if (moe_verbose()) {
+    std::printf("  HBM%% uses the distinct-byte lower bound: real A (total*K*2) + one read of each ACTIVE expert's\n");
+    std::printf("  weights and scales + D. Padding loads do not issue. A may still be re-fetched across n-tiles, so\n");
+    std::printf("  total traffic is not LOCKED and HBM%% remains a lower bound. At decode, the B and S terms are exact.\n");
+    std::printf("  blk/wrp come from fold::warps_per_cu_chunked (registers billed to a power of two), NOT from a smem+warps\n");
+    std::printf("  formula -- acu already showed that one to be register-limited and mis-ordering. wav = cta/(72*blk).\n");
+    std::printf("  Then read mt and msk: smallest mt winning => the weight-bound rule holds; least msk => the dense\n");
+    std::printf("  reasoning carries over; neither => the lever is occupancy and the next instrument is acu.\n");
+    if (bd.Mmax == 1) {
+      std::printf("\n  DECODE READING. Every active expert's weights and scales are read once (mt == active), so the B and S\n");
+      std::printf("  terms are exact even though total traffic is still a lower bound. S%% is the scale channel's share\n");
+      std::printf("  of that floor -- the ceiling on what #20 can buy before any reduction factor.\n");
+    }
   }
   if (moe_only()) {
     bool any_selected = false;
