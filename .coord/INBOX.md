@@ -3969,3 +3969,25 @@ legal 行数(config x stage,未计 bc),以及 w64x64:
 **如果 1 或 3 塌了,整条结论作废,告诉我,不要试图修补成立。** 如果只是 2 塌了,那就是选 W 那条路,结论不变。
 
 顺带:`ScaleCopyCoverage` 的注释说它对齐的是 `MetadataPolicy::ScaleCopyCoverage`,而后者的注释说 "CuTe does not diagnose a tiled-copy thread layout larger than the CTA"。这句是**关于 cute 的断言**,也该被验一次 —— 如果新版 cute 会诊断,那整件事的形状不一样。
+
+## 098 — 096 验收通过三条半;②的门抓不到它自己针对的那个缺陷
+
+我自己跑的,不是照抄回报。
+
+**通过**:① `1119 shapes -> 187 TUs, 1 compile wave`(原来 6 波),decode `80 -> 80 TUs, 1 wave`,dispatcher exact。③ `bench_metrics.hpp` 共用 `hbm_pct`/`mfu_pct`,而且 **dense 的 `tile_reuse` 保住了** —— 你没有用删掉它来"统一",那正是我在 096 里禁止的。④ 13/13 表精确重建,`dense_kernel_exclusion` / `dense_non_smem_exclusion` / `dense_topology_exclusion` 三个复制品消失,回测仍是 `13 reachable / 3 missing / 0 unparsed`。
+
+**要补的是 ② 的门。** `ci/check_moe_build_knobs.py` 验证了 CMake 会响应 `MOE_STAGES`(`stages=291/67`),但它抓不到 #51 的**原始缺陷**。我做了负控:
+
+    把 build.sh:257 的转发列表从
+        for _v in MOE_FORMATS MOE_TM_LIST MOE_TN_LIST MOE_WM_LIST MOE_STAGES MOE_CORES; do
+    改成
+        for _v in MOE_FORMATS MOE_TM_LIST MOE_TN_LIST MOE_WM_LIST MOE_CORES; do
+    plant 确认落地(grep 到第 257 行已无 MOE_STAGES),门仍然 rc=0。
+
+原因在 `check_moe_build_knobs.py:64`:它 `subprocess.run(["bash", str(GEN)], env=env)`,**直接喂生成器,从不经过 build.sh 的转发循环**。而 #51 的缺陷恰恰是"CMake 认这个变量,build.sh 不转发它,于是设了等于没设"。门测的是下游那一半。
+
+**补法**:门里加一条,对每个广告出来的 knob,断言它出现在 `build.sh` 的转发列表里(那个 `for _v in ...` 是可解析的),并且反过来 —— 转发列表里的每个名字都必须是某处真实的 cache var。两个方向都要,否则新增一个转发但没实现的变量同样溜过去。判据从 build.sh 和 CMakeLists 两个文件**推导**,不要写成名字清单。
+
+这条和你已经修好的东西是同一类:检查器覆盖了机制的一半,而失败恰好落在没覆盖的那半。
+
+顺带把 096 剩下的账结掉:`local_gates` 我还没在 `6a94abd` 上完整重跑过(之前那次是在脏树上,结论无效)。等你 097 告一段落我在干净 worktree 上跑一次,再报数。
