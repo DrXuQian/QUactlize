@@ -724,6 +724,21 @@ def lint_route_admits():
     return "FAIL", next((l.strip() for l in out if "FAIL" in l or "!!" in l), "\n".join(out[-2:])), 0.0
 
 
+def lint_switch_macros():
+    """A BUILD SWITCH NOBODY CAN TURN ON IS NOT A SWITCH.
+
+    Registered the day it was written, because the last checker that was not (ci/check_route_admits.py) was cited
+    as evidence for deleting an exclusion while nothing invoked it. Its own two controls run inside itself: a
+    planted unsettable switch must be reported, and wiring one must make it disappear.
+
+    Motivated by a real cost rather than tidiness. Three macros in this tree mean "shrink A's padding at small M"
+    -- PPU_A_PACK (binary-wide, wins over everything), PPU_A_CPASYNC (a policy default an explicit row overrides),
+    and the tactic table's ACR column -- and on 2026-08-06 a measurement was filed as "compact A at capacity 1 is
+    45% slower" that could not afterwards be attributed to any of them.
+    """
+    return _run_ci_script("check_switch_macros.py", "every owned build switch is reachable")
+
+
 def _run_ci_script(name: str, label: str):
     """Shared shim for the ci/ checkers that are complete programs already; report their last meaningful line."""
     checker = ROOT / "ci" / name
@@ -1110,6 +1125,7 @@ def main():
                 ("lint", "the ctypes config mirror matches its C header field for field", lint_config_abi_matches_header),
                 ("lint", "no tactic choice can change the offline layout", lint_tactic_cannot_change_offline_layout),
                 ("lint", "actlize carries no quactlize symbol and no unlisted file change", lint_actlize_pristine),
+                ("lint", "every build switch this repo owns can actually be turned on", lint_switch_macros),
                 ("lint", "quactlize_extensions adds to actlize rather than redefining it", lint_extension_additive),
                 ("lint", "every file naming a quactlize type reaches its defining header", lint_owned_symbol_includes),
                 ("lint", "every listed GGUF format has the collective its row implies", lint_format_table_buildable),
