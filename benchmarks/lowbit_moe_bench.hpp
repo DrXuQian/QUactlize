@@ -24,6 +24,7 @@
 #include "xplane_offline.hpp"
 #include "fold_traits.hpp"   // warps_per_cu_chunked: the occupancy model WITH the register term
 #include "moe_grouped_ppu.cuh"
+#include "moe_only_filter.hpp"
 #include "moe_router_fixture.hpp"
 
 using half_t  = cutlass::half_t;
@@ -62,7 +63,7 @@ static constexpr double HBM_GBS = 2766.0;
 // containing `fold::FoldTraits` while the checked-out tree had `moe_fold`, and there was no way to tell from here whether
 // the box had built an older commit or the overlay had a stale copy. That ambiguity has cost rounds twice in this work (the
 // per-row PPU_B_CHUNK request/effective tag exists for the same reason), so it gets an invariant instead of a guess.
-#define LOWBIT_MOE_BENCH_REV 13
+#define LOWBIT_MOE_BENCH_REV 14
 
 // The table band is generated next to each target's dispatcher and included before this header. Other users of this
 // shared harness (the split-K probe) remain explicitly unbanded rather than accidentally inheriting lowbit-MoE metadata.
@@ -110,12 +111,10 @@ inline void moe_chunk_vote(int request) {
 inline const char* moe_only() { static const char* v = std::getenv("MOE_ONLY"); return v; }
 inline bool moe_acu() { static const bool v = std::getenv("MOE_ACU") != nullptr; return v; }
 inline bool moe_row_selected(const char* tag) {
-  const char* f = moe_only();
-  return !f || std::strstr(tag, f) != nullptr;
+  return moe_only_filter::row_selected(tag, moe_only());
 }
 inline bool moe_shape_selected(const char* shape) {
-  const char* f = moe_only();
-  return !f || std::strstr(shape, f) != nullptr || std::strstr(f, shape) != nullptr;
+  return moe_only_filter::shape_selected(shape, moe_only());
 }
 
 // Everything a sweep needs about the band. Passed by const reference so the per-format translation units share ONE
@@ -475,9 +474,10 @@ constexpr bool moe_b_chunk_effective() {
 #define MOE2_TIME(BD,BEST,NAME,LOELEM,HIELEM,LOB,HIB,TMv,TNv,TKv,WMv,WNv,Sv)                                       \
   if constexpr (moe_ok<TMv,TNv,TKv,WMv,WNv,Sv,LOB,HIB>()) {                                                        \
     constexpr bool _bc = moe_b_chunk_effective<TMv,TNv,TKv,WMv,WNv,Sv,LOELEM,HIELEM>();                            \
-    char _t[80]; std::snprintf(_t, 80, NAME " %dx%d:%d w%dx%d s%d bc%d->%d%s", TMv, TNv, TKv, WMv, WNv, Sv,        \
-                               int(UNIT_B_CHUNK), int(_bc), moe_abcast() ? " B" : "");                              \
+    char _t[80]; moe_only_filter::format_tag(_t, sizeof _t, NAME, TMv, TNv, TKv, WMv, WNv, Sv,                      \
+                                              int(UNIT_B_CHUNK), int(_bc), moe_abcast());                            \
     if (moe_row_selected(_t)) {                                                                                    \
+      (BEST).any_selected = true;                                                                                  \
       auto _go = [&]{                                                                                              \
         moe_grouped_ppu::filter_and_run<LOWBIT_QMODE_SEL,TMv,TNv,TKv,WMv,WNv,Sv,LOELEM,HIELEM>(            \
             (BD).dA, _b1.get(), (BD).dSc, (BD).dZr, (BD).pd, (BD).sd, (BD).gm,                                     \
@@ -497,9 +497,7 @@ constexpr bool moe_b_chunk_effective() {
   }
 
 #define MOE2(BD,BEST,NAME,LOELEM,HIELEM,LOB,HIB,TMv,TNv,TKv,WMv,WNv) do {                                          \
-  constexpr bool _bc = moe_b_chunk_effective<TMv,TNv,TKv,WMv,WNv,2,LOELEM,HIELEM>();                               \
-  char _sh[80]; std::snprintf(_sh, 80, NAME " %dx%d:%d w%dx%d bc%d->%d", TMv, TNv, TKv, WMv, WNv,                  \
-                              int(UNIT_B_CHUNK), int(_bc));                                                         \
+  char _sh[80]; moe_only_filter::format_shape(_sh, sizeof _sh, NAME, TMv, TNv, TKv, WMv, WNv);                     \
   if constexpr (moe_ok<TMv,TNv,TKv,WMv,WNv,2,LOB,HIB>()) if (moe_shape_selected(_sh)) {                            \
     constexpr int _F1 = moe_fold<LOB>(TKv);                                                                        \
     constexpr int _F2 = moe_fold<HIB>(TKv);                                                                        \
@@ -525,9 +523,10 @@ constexpr bool moe_b_chunk_effective() {
 #define MOE1_TIME(BD,BEST,NAME,ELEM,BITS,TMv,TNv,TKv,WMv,WNv,Sv)                                                   \
   if constexpr (moe_ok<TMv,TNv,TKv,WMv,WNv,Sv,BITS>()) {                                                           \
     constexpr bool _bc = moe_b_chunk_effective<TMv,TNv,TKv,WMv,WNv,Sv,ELEM>();                                     \
-    char _t[80]; std::snprintf(_t, 80, NAME " %dx%d:%d w%dx%d s%d bc%d->%d%s", TMv, TNv, TKv, WMv, WNv, Sv,        \
-                               int(UNIT_B_CHUNK), int(_bc), moe_abcast() ? " B" : "");                              \
+    char _t[80]; moe_only_filter::format_tag(_t, sizeof _t, NAME, TMv, TNv, TKv, WMv, WNv, Sv,                      \
+                                              int(UNIT_B_CHUNK), int(_bc), moe_abcast());                            \
     if (moe_row_selected(_t)) {                                                                                    \
+      (BEST).any_selected = true;                                                                                  \
       auto _go = [&]{                                                                                              \
         /* PlaneB2 is NAMED (void) on purpose: passing nullptr for B2 while letting PlaneB2 deduce makes the    \
            deduction fail on std::nullptr_t, and a failed deduction is NOT rescued by the default template       \
@@ -550,9 +549,7 @@ constexpr bool moe_b_chunk_effective() {
   }
 
 #define MOE1(BD,BEST,NAME,ELEM,BITS,TMv,TNv,TKv,WMv,WNv) do {                                                      \
-  constexpr bool _bc = moe_b_chunk_effective<TMv,TNv,TKv,WMv,WNv,2,ELEM>();                                        \
-  char _sh[80]; std::snprintf(_sh, 80, NAME " %dx%d:%d w%dx%d bc%d->%d", TMv, TNv, TKv, WMv, WNv,                 \
-                              int(UNIT_B_CHUNK), int(_bc));                                                         \
+  char _sh[80]; moe_only_filter::format_shape(_sh, sizeof _sh, NAME, TMv, TNv, TKv, WMv, WNv);                     \
   if constexpr (moe_ok<TMv,TNv,TKv,WMv,WNv,2,BITS>()) if (moe_shape_selected(_sh)) {                               \
     constexpr int _F = moe_fold<BITS>(TKv);                                                                        \
     const size_t _per = (size_t)(BD).K*(BD).N*(BITS)/8;                                                            \

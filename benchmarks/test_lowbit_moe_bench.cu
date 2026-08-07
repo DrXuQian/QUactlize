@@ -214,7 +214,16 @@ int main(int argc, char** argv) {
     for (int j = i; j > 0 && b[ord[j]].us < b[ord[j-1]].us; --j) { const int t = ord[j]; ord[j] = ord[j-1]; ord[j-1] = t; }
   for (int i = 0; i < MOE_FMT_COUNT; ++i) {
     const Best& e = b[ord[i]];
-    if (e.us > 1e17) { std::printf("  %-4s no legal row ran (filtered, or MOE_ONLY excluded it)\n", moe_fmt_names[ord[i]]); continue; }
+    if (e.us > 1e17) {
+      if (!e.any_selected && moe_only())
+        std::printf("  %-4s no row matched MOE_ONLY='%s'\n", moe_fmt_names[ord[i]], moe_only());
+      else if (!e.any_selected)
+        std::printf("  %-4s no legal row in this build/table\n", moe_fmt_names[ord[i]]);
+      else
+        std::printf("  %-4s selected row(s) did not run (launch rejected or timing implied > HBM peak)\n",
+                    moe_fmt_names[ord[i]]);
+      continue;
+    }
     const double tf = 2.0 * double(bd.total) * double(bd.N) * double(bd.K) / (e.us * 1e-6) / 1e12;
     // "fastest" ONLY WHEN NOTHING TIES IT. With ties, naming a winner is the claim the samples do not support,
     // and it is the claim someone would otherwise carry into a tactic table and never revisit.
@@ -276,6 +285,14 @@ int main(int argc, char** argv) {
     std::printf("  coincide on the B and S terms and floor %%HBM is a TIGHT number here, not a bound. S%% is the scale\n");
     std::printf("  channel's share of it -- that is the ceiling on what #20 can buy, before any reduction factor. With\n");
     std::printf("  fp16 scale+zero, S/B = 32/(gs*bits), so S%% is large exactly where the format is low-bit.\n");
+  }
+  if (moe_only()) {
+    bool any_selected = false;
+    for (int i = 0; i < MOE_FMT_COUNT; ++i) any_selected = any_selected || b[i].any_selected;
+    if (!any_selected) {
+      std::printf("[lowbit-moe] ERROR: MOE_ONLY='%s' matched no compiled legal row\n", moe_only());
+      return 3;
+    }
   }
   return 0;
 }

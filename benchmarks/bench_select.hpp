@@ -38,6 +38,7 @@ struct Best {
   double us;                       // median of the leader
   std::vector<Sample> seen;        // every candidate, every repeat
   int reps_seen = 0;
+  bool any_selected = false;       // passed MOE_ONLY and reached a launch attempt, including rejected rows
 };
 
 inline double median_of(std::vector<double> v) {
@@ -97,4 +98,3 @@ inline int moe_reps() {
   const int r = (e && *e) ? std::atoi(e) : 1;
   return r < 1 ? 1 : r;
 }
-

@@ -1003,6 +1003,22 @@ def lint_selection_agrees():
     return "FAIL", " | ".join(tail), 0.0
 
 
+def lint_moe_only_filter():
+    """A complete MOE_ONLY tag must cross the cheap shape gate and select its row.
+
+    This is deliberately separate from the winner-selection test above: the regression happens before timing and
+    leaves the selection procedure no samples to rank. The fixture compiles the production formatter/matcher and
+    includes the old bc-bearing shape as a negative control, so a green result proves it exercises that failure.
+    """
+    test = ROOT / "tests" / "test_moe_only_filter.py"
+    r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-rfE", str(test)],
+                       capture_output=True, text=True, cwd=ROOT)
+    if r.returncode == 0:
+        return "PASS", "exact and stage-bearing MOE_ONLY tags cross both production filter gates", 0.0
+    tail = [l for l in (r.stdout + r.stderr).splitlines() if l.strip()][-3:]
+    return "FAIL", " | ".join(tail), 0.0
+
+
 def lint_gguf_coverage():
     """A GGUF TYPE THAT NOTHING HAS CLASSIFIED IS THE DEFECT -- not an unsupported one.
 
@@ -1125,6 +1141,7 @@ def main():
                 ("lint", "names used before they exist (device-only tests get no other flow check)", lint_undefined_names),
                 ("lint", "every ggml.h quant type is classified, in scope or out", lint_gguf_coverage),
                 ("lint", "the C++ and Python selection procedures agree on planted data", lint_selection_agrees),
+                ("lint", "an exact MOE_ONLY tag crosses both shape and row filters", lint_moe_only_filter),
                 ("lint", "box-built sources stay in the PPU-portable subset", lint_ppu_portability),
                 ("lint", "emitted bench flags are ones the bench parses", lint_fixture_flags),
                 ("lint", "every INBOX item is consumed, or is explained by a call in flight", lint_inbox_delivered),
