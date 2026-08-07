@@ -3949,3 +3949,23 @@ legal 行数(config x stage,未计 bc),以及 w64x64:
 - 本地:三个 collective 各编一次 0 非-asm 错误;新的覆盖 witness 在**封顶前的布局**上必须 static_assert 失败(负控)。
 - 表:重生成后 `ci/check_dense_tactic_table.py --table <每一张>` 全绿,并报出 Q3/Q5 的 w64x64 行数不再是 0。
 - box:数值必须重验 —— 这条改的是 scale 的加载路径,**只看编译过是不够的**。Q3/Q5 各跑一次正确性,再跑一次 `w64x64` 的 perf 对比 A3/A5。
+
+### 097 附:**先攻击这个结论,再决定要不要实现**
+
+这一轮我在探针上错了两次(报 +0% 是因为探针第一行就撞上了要跳过的那条排除;第一版覆盖探针没分离越界坐标,对照行报出 1032/1024)。所以**不要拿上面的数字直接开工**,先打。我自己知道的薄弱点,按可能致命的顺序:
+
+1. **探针用的 atom 不是真的那个。** 我用 `Copy_Atom<DefaultCopy, half_t>`,真实是
+   `Copy_Atom<PPU_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>, NonVoidElementScale>`。原子不同,`partition_S` 的分块可能不同。
+   **如果分块不同,我的覆盖结论就是错的。** 这是第一个要验的。
+2. **"H 减半 + val 加宽到 16" 很可能根本非法**:16 个 half = 32 B,超过 `uint128_t` 原子的 16 B。
+   如果是这样,那条路直接出局,只剩 W 那条 —— 我在正文里说倾向 W,但理由不该是"我倾向",该是这个。
+3. **对照行 oob=1024。** CTA=256 那个**今天就合法**的形状,越界坐标有 1024 个。我没解释它。
+   如果越界在真实 kernel 里是正常的(被谓词吃掉),那我的"oob=0"判据就选错了,而 capped 那两行的 "FULL" 也要重新解读。
+   **这条不解释清楚,整个覆盖论证站不住。**
+4. **`Scale_TileK` 是不是 `ceil(TK/gs)`。** 我从 `ScaleTileShape` 推的,没核到定义处。如果它是别的,slots 公式就错了。
+5. **partition_S 用的是 identity tensor**,真实是带 layout/stride 的 gmem 张量。分块规则应该一样,但我没验。
+6. **+89% 那批行数**来自我自己写的枚举探针 —— 就是先前报错 +0% 的那个的修正版。修正后我只做了一次自洽检查(数值随 atk 单调),**没有第二个独立来源**。用 emitter 加一个临时开关重数一遍,是最便宜的交叉验证。
+
+**如果 1 或 3 塌了,整条结论作废,告诉我,不要试图修补成立。** 如果只是 2 塌了,那就是选 W 那条路,结论不变。
+
+顺带:`ScaleCopyCoverage` 的注释说它对齐的是 `MetadataPolicy::ScaleCopyCoverage`,而后者的注释说 "CuTe does not diagnose a tiled-copy thread layout larger than the CTA"。这句是**关于 cute 的断言**,也该被验一次 —— 如果新版 cute 会诊断,那整件事的形状不一样。
