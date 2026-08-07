@@ -1167,6 +1167,17 @@ int main(int argc, char const **args) {
     bench_samples::run_header("cutlass_w4a16", build, reps);
 
     std::printf("%-18s %-10s %s\n", "CONFIG", "TFLOP/s", "status");
+    // WITNESS THE A PROVIDER, because nothing else does. PPU_A_PACK is a binary-wide #if in ppu_mixed_policy.hpp
+    // that selects PackedRowAProvider and outranks everything downstream; the grouped launcher prints its A path
+    // but this bench builds its own Gemm and prints nothing. An unwitnessed provider is how BACKTEST's D7 became
+    // a number nobody could attribute -- 26.09 us filed against a mechanism no output named.
+    std::printf("  [A path] %s\n",
+#if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
+                "PACKED cubes (PPU_A_PACK), cp.async row0 + swzl read -- ONE-ROW EXPERIMENT, valid at M<=1 only"
+#else
+                "ordinary AIU + swzl"
+#endif
+    );
     Best best; best.tag[0] = '\0'; best.us = 1e18;
     for (int rep = 0; rep < reps; ++rep) {
       if (reps > 1) std::printf("\n  --- pass %d/%d ---\n", rep + 1, reps);
