@@ -70,7 +70,7 @@ static constexpr double HBM_GBS = 2766.0;
 // containing `fold::FoldTraits` while the checked-out tree had `moe_fold`, and there was no way to tell from here whether
 // the box had built an older commit or the overlay had a stale copy. That ambiguity has cost rounds twice in this work (the
 // per-row PPU_B_CHUNK request/effective tag exists for the same reason), so it gets an invariant instead of a guess.
-#define LOWBIT_MOE_BENCH_REV 17
+#define LOWBIT_MOE_BENCH_REV 18
 
 // The table band is generated next to each target's dispatcher and included before this header. Other users of this
 // shared harness (the split-K probe) remain explicitly unbanded rather than accidentally inheriting lowbit-MoE metadata.
@@ -138,6 +138,7 @@ struct Band {
   std::vector<GS>    rsh;                 // host-side; filter_and_run takes a host pointer for this one
   half_t*   dA;   half_t*  dSc;  half_t* dZr;
   half_t**  pd;   DStride* sd;   GS*     rdev;  int* gm;  int* offdev;
+  half_t*   dD;   size_t d_elems; unsigned int* d_output_witness;
   char*     ws;   size_t   wsb;
 };
 
@@ -226,6 +227,26 @@ template <class F> inline double time_it(F&& f, int iters) {
   auto t1 = std::chrono::high_resolution_clock::now();
   return std::chrono::duration<double, std::micro>(t1 - t0).count() / iters;
 }
+
+// A CHECKSUM BEFORE/AFTER IS NOT A WRITE WITNESS HERE. Every candidate sees the same inputs and a correct candidate
+// deterministically writes the same D as the preceding one, so checksum equality would reject the second and every
+// later valid row. Poison D before EACH ranked candidate instead, then scan every output word after timing. This
+// detects a launch that returned success but wrote nothing, and also a partial write; unlike a checksum it has no
+// cancellation collision. 0x7f7f is a half NaN and cannot be the result of this fixture's finite inputs.
+//
+// The poison, scan and two-word readback are outside time_it(). The scan is therefore cache-state independent and
+// does not turn output validation traffic into kernel time. Its definitions live in test_lowbit_moe_bench.cu ONCE;
+// defining the __global__ here would instantiate a redundant scan kernel in every generated sweep unit.
+// MOE_ACU is deliberately exempt: it is explicitly not a ranking and promises exactly one attributed kernel launch;
+// adding a scanner there would invalidate the instrument in order to guard a verdict that mode never reports.
+
+struct MoeOutputWitness {
+  bool fully_written;
+  bool any_nonzero;
+};
+
+void moe_poison_output(const Band& bd);
+MoeOutputWitness moe_output_witness(const Band& bd);
 
 // F WITHOUT INSTANTIATING FoldTraits, and that distinction is the whole point. FoldTraits carries static_asserts --
 // `delivery <= slots` among them -- so computing F from it fires those asserts for configurations moe_ok would have
@@ -364,15 +385,24 @@ inline void report(const Band& bd, const char* tag, double us, int TM, int TN, i
               gbs_c < 0.9 * HBM_GBS ? "  NOT-BW" : "");
 }
 
-// DID THIS ROW ACTUALLY RUN? Only a launch refusal excludes it: moeg_fail_count() grows when can_implement, workspace or
-// initialize refuses the launch, and that signal is independent of cache state. The old second net divided one expert's
-// weights by the per-iteration time and excluded a row above the HBM peak. time_it() warms the SAME buffers before timing,
-// so those bytes can be cache-hot; the derived rate is useful evidence of a suspicious timing, but not evidence that the
-// kernel did not run. Keep the warning and, critically, keep the row in report(), samples and the winner verdict.
-inline bool moe_row_ran(const Band& bd, const char* tag, double us, int fail0, int bits_total) {
+// DID THIS ROW ACTUALLY RUN? Two cache-independent nets exclude it: the launch-refusal counter, and the full-D poison
+// witness above. The old bandwidth net divided one expert's weights by the per-iteration time even though time_it()
+// warms the SAME buffers; cache-hot bytes can legitimately imply more than the HBM rate. Keep that rate as a warning,
+// but never let either a no-write launch or an all-zero result enter report(), samples or the winner verdict.
+inline bool moe_row_ran(const Band& bd, const char* tag, double us, int fail0, int bits_total,
+                        MoeOutputWitness output) {
   const bool refused = moe_grouped_ppu::moeg_fail_count() > fail0;
   if (refused) {
     std::printf("    %-30s %8.2f us | DID NOT RUN (launch refused) -- excluded from the verdict\n", tag, us);
+    return false;
+  }
+  if (!output.fully_written) {
+    std::printf("    %-30s %8.2f us | DID NOT RUN (D retained poison: no/partial write) -- excluded from the verdict\n",
+                tag, us);
+    return false;
+  }
+  if (!output.any_nonzero) {
+    std::printf("    %-30s %8.2f us | DID NOT RUN (D is all zero) -- excluded from the verdict\n", tag, us);
     return false;
   }
   const double wb  = double(bd.N) * double(bd.K) * double(bits_total) / 8.0;
@@ -498,14 +528,15 @@ constexpr bool moe_b_chunk_effective() {
             (BD).mode ? (BD).offdev : nullptr, (BD).ws, (BD).wsb, nullptr, _b2.get(),                                \
             /*k_full=*/-1, /*prefix_ready=*/false, /*splitk=*/1, moe_abcast()); };                                  \
       double u; const int _f0 = moe_grouped_ppu::moeg_fail_count();                                                \
+      MoeOutputWitness _ow{true, true};                                                                            \
       moe_attempt(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc));                             \
       std::printf("  -> %s\n", _t); std::fflush(stdout);                                                           \
       if (moe_acu()) { u = time_it(_go, 0); if (moe_verbose()) std::printf("  [acu] ONE COLD launch (not a timing): %s\n", _t); }       \
-      else             u = time_it(_go, 20);                                                                       \
+      else             { moe_poison_output(BD); u = time_it(_go, 20); _ow = moe_output_witness(BD); }              \
       constexpr int _wcu = _bc                                                                                     \
           ? fold::warps_per_cu_chunked<TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),32,true>                                 \
           : fold::warps_per_cu<TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),32,true>;                                        \
-      if (moe_row_ran(BD, _t, u, _f0, (LOB)+(HIB))) { report(BD,_t,u,TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),_wcu); upd(BEST, _t, u); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), u); } \
+      if (moe_row_ran(BD, _t, u, _f0, (LOB)+(HIB), _ow)) { report(BD,_t,u,TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),_wcu); upd(BEST, _t, u); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), u); } \
     }                                                                                                              \
   }
 
@@ -550,14 +581,15 @@ constexpr bool moe_b_chunk_effective() {
             (BD).mode ? (BD).offdev : nullptr, (BD).ws, (BD).wsb, nullptr,                                          \
             /*B2=*/nullptr, /*k_full=*/-1, /*prefix_ready=*/false, /*splitk=*/1, moe_abcast()); };                   \
       double u; const int _f0 = moe_grouped_ppu::moeg_fail_count();                                                \
+      MoeOutputWitness _ow{true, true};                                                                            \
       moe_attempt(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc));                             \
       std::printf("  -> %s\n", _t); std::fflush(stdout);                                                           \
       if (moe_acu()) { u = time_it(_go, 0); if (moe_verbose()) std::printf("  [acu] ONE COLD launch (not a timing): %s\n", _t); }       \
-      else             u = time_it(_go, 20);                                                                       \
+      else             { moe_poison_output(BD); u = time_it(_go, 20); _ow = moe_output_witness(BD); }              \
       constexpr int _wcu = _bc                                                                                     \
           ? fold::warps_per_cu_chunked<TMv,TNv,TKv,WMv,WNv,Sv,(BITS),32,true>                                      \
           : fold::warps_per_cu<TMv,TNv,TKv,WMv,WNv,Sv,(BITS),32,true>;                                             \
-      if (moe_row_ran(BD, _t, u, _f0, (BITS))) { report(BD,_t,u,TMv,TNv,TKv,WMv,WNv,Sv,(BITS),_wcu); upd(BEST, _t, u); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), u); } \
+      if (moe_row_ran(BD, _t, u, _f0, (BITS), _ow)) { report(BD,_t,u,TMv,TNv,TKv,WMv,WNv,Sv,(BITS),_wcu); upd(BEST, _t, u); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), u); } \
     }                                                                                                              \
   }
 

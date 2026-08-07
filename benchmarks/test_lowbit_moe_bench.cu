@@ -40,6 +40,47 @@
 #include "bench_device.hpp"
 // PPU_B_CHUNK is a generated-unit row field. main owns no global mode; each result tag prints request->effective.
 
+namespace {
+// ONE scanner for the whole sharded executable. Reduce the flags inside each block so a large prefill D performs at
+// most two global atomics per block rather than one per thread. Neither this launch nor its readback is timed.
+__global__ void moe_output_witness_scan(half_t const* d, size_t count, unsigned int* witness) {
+  size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+  size_t const stride = size_t(gridDim.x) * blockDim.x;
+  unsigned int flags = 0;
+  for (; i < count; i += stride) {
+    uint16_t const v = d[i].raw();
+    flags |= (v == uint16_t(0x7f7f)) ? 1u : 0u;
+    flags |= ((v & uint16_t(0x7fff)) != 0 && v != uint16_t(0x7f7f)) ? 2u : 0u;
+  }
+  __shared__ unsigned int block_flags[256];
+  block_flags[threadIdx.x] = flags;
+  __syncthreads();
+  for (int step = 128; step > 0; step >>= 1) {
+    if (threadIdx.x < step) block_flags[threadIdx.x] |= block_flags[threadIdx.x + step];
+    __syncthreads();
+  }
+  if (threadIdx.x == 0) {
+    if (block_flags[0] & 1u) atomicAdd(witness + 0, 1u);
+    if (block_flags[0] & 2u) atomicAdd(witness + 1, 1u);
+  }
+}
+}  // namespace
+
+void moe_poison_output(const Band& bd) {
+  CUTLASS_PPU_CHECK(hggcMemset(bd.dD, 0x7f, bd.d_elems * sizeof(half_t)));
+}
+
+MoeOutputWitness moe_output_witness(const Band& bd) {
+  if (bd.d_elems == 0 || bd.d_output_witness == nullptr) return {false, false};
+  CUTLASS_PPU_CHECK(hggcMemset(bd.d_output_witness, 0, 2 * sizeof(unsigned int)));
+  int const blocks = int(std::min<size_t>(256, (bd.d_elems + 255) / 256));
+  moe_output_witness_scan<<<blocks, 256>>>(bd.dD, bd.d_elems, bd.d_output_witness);
+  CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
+  unsigned int h[2] = {0, 0};
+  cutlass::device_memory::copy_to_host(h, bd.d_output_witness, 2);
+  return {h[0] == 0, h[1] != 0};
+}
+
 int main(int argc, char** argv) {
   // FIRST, before any allocation: a device switch after the context exists is not a switch.
   bench_device::bind_from_env();
@@ -144,6 +185,7 @@ int main(int argc, char** argv) {
   for (size_t i = 0; i < hSc.size(); ++i) { hSc[i] = half_t(0.0625f); hZr[i] = half_t(0.5f); }
   cutlass::DeviceAllocation<half_t> dA((size_t)bd.total * bd.K), dSc((size_t)bd.L * bd.scale_k * bd.N),
                                     dZr((size_t)bd.L * bd.scale_k * bd.N), dD((size_t)bd.total * bd.N);
+  cutlass::DeviceAllocation<unsigned int> d_output_witness(2);
   dA.copy_from_host(hA.data()); dSc.copy_from_host(hSc.data()); dZr.copy_from_host(hZr.data());
 
   bd.rsh.resize(bd.L);
@@ -160,6 +202,7 @@ int main(int argc, char** argv) {
   const size_t wsb = (size_t)cutlass::ceil_div(bd.Mmax,16)*cutlass::ceil_div(bd.N,64)*(size_t)bd.L*64;
   cutlass::DeviceAllocation<char> ws(wsb);
   bd.dA = dA.get(); bd.dSc = dSc.get(); bd.dZr = dZr.get();
+  bd.dD = dD.get(); bd.d_elems = (size_t)bd.total * bd.N; bd.d_output_witness = d_output_witness.get();
   bd.rdev = rdev.get(); bd.pd = pd.get(); bd.sd = sd.get(); bd.gm = gm.get(); bd.offdev = offdev.get();
   bd.ws = ws.get(); bd.wsb = wsb;
 
@@ -221,7 +264,7 @@ int main(int argc, char** argv) {
       else if (!e.any_selected)
         std::printf("  %-4s no legal row in this build/table\n", moe_fmt_names[ord[i]]);
       else
-        std::printf("  %-4s selected row(s) did not run (launch rejected or timing implied > HBM peak)\n",
+        std::printf("  %-4s selected row(s) did not run (launch rejected or D write witness failed)\n",
                     moe_fmt_names[ord[i]]);
       continue;
     }
