@@ -46,6 +46,19 @@ TACTIC_RE = re.compile(r"^//\s+tactic_tile_k:\s+([\d ]+?)\s+<", re.M)
 # capacities: a table emitted with --prune=primary-guard is not reproducible without it, and the
 # default silently reproducing a DIFFERENT file is the failure this gate exists to prevent.
 PRUNE_RE = re.compile(r"--prune=([a-z-]+)", re.M)
+# --format IS WHY THIS GATE WAS DENSE-ONLY. The five grouped tables carry full provenance and this parser simply
+# never learned the one argument that selects which of them to emit, so pointing it at lowbit_grouped_i4 rebuilt a
+# DIFFERENT table and failed -- and the easiest reading of that failure is "the gate does not do grouped", which is
+# how five tables went ungated long enough to each be emitted with a single --tactic-tk while dense got three.
+# Read off the regeneration line, same as --prune: it is the only place it appears.
+FORMAT_RE = re.compile(r"--format=([A-Za-z0-9_]+)", re.M)
+# WHAT WAS REQUESTED IS NOT WHAT WAS EMITTED, since 2026-08-07. A --tactic-tk list may name members with no legal
+# grid (ArtifactTileK must tile TacticTileK), and the emitter now emits the legal subset instead of dying. So the
+# header carries TWO lists and both are true of different things: `tactic_tile_k:` is what the table COVERS, and
+# this line is what was ASKED FOR and refused. Reproducing the file needs the UNION -- regenerating from the
+# surviving members alone produces a file with no SKIPPED line, i.e. a different file, which is exactly the
+# "declared args do not reproduce the table" failure this gate exists to catch. It caught it on itself.
+SKIPPED_RE = re.compile(r"^//\s+tactic_tk SKIPPED \(ArtifactTileK must tile TacticTileK\):\s+([\d ]+)\s*$", re.M)
 
 
 def declared_args(text: str):
@@ -62,13 +75,20 @@ def declared_args(text: str):
     if not k:
         return None, "header does not declare a `tactic_tile_k:` line"
     tactic = k.group(1).split()
+    sk = SKIPPED_RE.search(text)
+    requested = sorted(set(tactic) | set(sk.group(1).split() if sk else []), key=int)
     pr = PRUNE_RE.search(text)
     if not pr:
         return None, "header does not declare `--prune=` in its regeneration line"
-    return ([bits, artifact_tk, f"--space={space}", "--tactic-tk=" + ",".join(tactic),
-             f"--prune={pr.group(1)}", *stages],
+    fmt = FORMAT_RE.search(text)
+    fmt_arg = [f"--format={fmt.group(1)}"] if fmt else []
+    return ([bits, artifact_tk, f"--space={space}", "--tactic-tk=" + ",".join(requested),
+             f"--prune={pr.group(1)}", *fmt_arg, *stages],
             f"space={space} bits={bits} artifact_tile_k={artifact_tk} "
-            f"tactic_tile_k={' '.join(tactic)} stages={' '.join(stages)}")
+            f"tactic_tile_k={' '.join(tactic)}"
+            + (f" (requested {' '.join(requested)}, {len(requested) - len(tactic)} with no legal grid)"
+               if len(requested) != len(tactic) else "")
+            + f" stages={' '.join(stages)}")
 
 
 def fnv1a64(data: bytes) -> str:
@@ -128,9 +148,16 @@ def main() -> int:
     if argv is None:
         return fail(f"{table}: {declared}; the gate regenerates using the arguments the table declares, "
                     f"so a table that declares none cannot be checked")
-    stamped_rows = macro(text, "LOWBIT_DENSE_CFG_ROWS")
-    stamped_space = macro(text, "LOWBIT_DENSE_CFG_SPACE_FNV1A64")
-    stamped_emitter = macro(text, "LOWBIT_DENSE_CFG_EMITTER_FNV1A64")
+    # THE MACRO PREFIX IS THE TABLE'S, not a constant. Hardcoding LOWBIT_DENSE_CFG_ made every grouped table report
+    # "predates the durability guard" -- a message about the FILE that was actually about this parser -- so the five
+    # grouped tables read as ungateable rather than ungated. Derive it from the one macro every table defines.
+    prefix_m = re.search(r"^#define (LOWBIT_[A-Z0-9_]+_CFG)_ROWS\s", text, re.M)
+    if prefix_m is None:
+        return fail(f"{table} defines no *_CFG_ROWS macro; it predates the durability guard", argv, table)
+    prefix = prefix_m.group(1)
+    stamped_rows = macro(text, f"{prefix}_ROWS")
+    stamped_space = macro(text, f"{prefix}_SPACE_FNV1A64")
+    stamped_emitter = macro(text, f"{prefix}_EMITTER_FNV1A64")
     missing = [name for name, value in (("row count", stamped_rows), ("space hash", stamped_space),
                                         ("emitter hash", stamped_emitter)) if value is None]
     if missing:

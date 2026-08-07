@@ -803,10 +803,28 @@ def lint_format_table_buildable():
 
 
 def lint_dense_tactic_table_current():
-    """The committed dense X-macro must be exact output from the current space and current emitter."""
+    """EVERY committed X-macro -- dense and all five grouped -- must be exact output from the current emitter.
+
+    THIS GATE COVERED ONE TABLE OUT OF SIX until 2026-08-07, and the five it skipped are the ones that drifted:
+    each grouped table had been emitted with a SINGLE --tactic-tk while dense carried three, so grouped i4 searched
+    564 rows where the same space offers 1164. Nothing was wrong with the tables' provenance -- it was never read.
+    Discovering that took a user asking why a sweep winner looked wrong; a gate that runs on one member of a set is
+    not a gate on the set, and "the checker is named check_DENSE_tactic_table" is not a reason for it to be.
+    """
     checker = ROOT / "ci" / "check_dense_tactic_table.py"
     if not checker.is_file():
         return "FAIL", "ci/check_dense_tactic_table.py is missing", 0.0
+    tables = sorted((ROOT / "benchmarks").glob("lowbit_*_configs.inc"))
+    if len(tables) < 2:
+        return "FAIL", f"expected the dense table and the grouped set, found {len(tables)}", 0.0
+    verified = []
+    for tbl in tables:
+        r = subprocess.run([sys.executable, str(checker), "--table", str(tbl)], cwd=ROOT,
+                           capture_output=True, text=True)
+        if r.returncode:
+            detail = next((ln for ln in r.stdout.splitlines() if "ERROR:" in ln), r.stdout.strip())
+            return "FAIL", detail or r.stderr.strip(), 0.0
+        verified.append(tbl.name)
     checked = subprocess.run([sys.executable, str(checker)], cwd=ROOT, capture_output=True, text=True)
     if checked.returncode:
         detail = next((line for line in checked.stdout.splitlines() if "ERROR:" in line), checked.stdout.strip())
@@ -846,7 +864,7 @@ def lint_dense_tactic_table_current():
         if rejected.returncode == 0:
             return "FAIL", "checker accepted a table whose first tactic row was changed without changing provenance", 0.0
     summary = checked.stdout.strip().removeprefix("[dense-table] ")
-    return "PASS", f"{summary}; planted row drift rejected", 0.0
+    return "PASS", f"{len(verified)} table(s) exact: {', '.join(verified)}; planted row drift rejected", 0.0
 
 
 def lint_tactic_buckets_do_not_extrapolate():
