@@ -78,8 +78,6 @@ std::vector<int> g_stages{2, 3, 4};
 // program produced before TacticTileK became a row field -- so adding the axis does not silently change what an
 // existing regenerate command emits.
 std::vector<int> g_tactic_tks;
-// The compact-A capacities this table offers. See Row's comment for why only {0} today.
-std::vector<int> g_compact_rows;
 // Off by default: emit every LEGAL row. --prune=primary-guard narrows to the heuristic's choice.
 bool g_prune = false;
 // --m-max=N declares "this table is for problems with M <= N", which lets one PRUNE be stated: at M <= N every
@@ -156,7 +154,7 @@ std::uint64_t fnv1a64_file(char const* path, bool& ok) {
 // names are what the box's --config strings say. Widening the emitted set is a separate change, and it needs one
 // more thing this does not: two rows differing only in capacity would share a name, so the name has to grow a
 // segment at the same moment the set does.
-using Row = std::tuple<int, int, int, int, int, int, int>;
+using Row = std::tuple<int, int, int, int, int, int>;
 
 // Do not spell "largest legal" as min(TM,64). It happens to agree in today's WN<=64 producer domain, but WN=128
 // can make WM64 fail the accumulator ceiling while WM32 remains legal. Derive both H1 rungs from the filtered set,
@@ -271,19 +269,10 @@ int compare_spaces(FormatSpec const& spec, int tk) {
           int const ad = int(DenseSpace::static_sweep_exclusion(c)),
                     ag = int(GroupedSpace::static_sweep_exclusion(c));
           if (ad != ag) say(c, "static_sweep_exclusion", ad, ag, 0);
-          if (DenseSpace::compact_a_supported(c) != GroupedSpace::compact_a_supported(c))
-            say(c, "compact_a_supported", DenseSpace::compact_a_supported(c),
-                GroupedSpace::compact_a_supported(c), 0);
           for (int st : g_stages) {
             int const td = int(DenseSpace::topology_exclusion(c, st)),
                       tg = int(GroupedSpace::topology_exclusion(c, st));
             if (td != tg) say(c, "topology_exclusion", td, tg, st);
-            // Compact-A capacities are the ladder the launchers actually instantiate.
-            for (int rows : {1, 2, 4}) {
-              int const cd = int(DenseSpace::compact_a_topology_exclusion(c, st, rows)),
-                        cg = int(GroupedSpace::compact_a_topology_exclusion(c, st, rows));
-              if (cd != cg) say(c, "compact_a_topology", cd, cg, st);
-            }
           }
         }
   std::printf("%d declared difference(s), %d unexpected disagreement(s)\n", declared_n, diffs);
@@ -335,13 +324,11 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
   //
   // primary/guard still rank WITHIN one (stage, capacity) grid, for the reason stated above about TileK: a row
   // at one capacity must not suppress a row at another, which would be a pruning decision nobody made.
-  for (int acr : g_compact_rows) {
+  {
     std::vector<Candidate> legal;
     for (auto const& c : ok)
-      if ((acr == 0 ? Space::topology_exclusion(c, st)
-                    : Space::compact_a_topology_exclusion(c, st, acr)) == Exclusion::None)
+      if (Space::topology_exclusion(c, st) == Exclusion::None)
         legal.push_back(c);
-    if (legal.empty()) continue;   // a capacity this format cannot host at all; say so below, do not emit rows
 
     for (auto const& c : legal) {
       bool const p = primary(legal, c);
@@ -352,10 +339,7 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
       // simply never sees it. The sub-four-warp quarantine hid the 65.7% dense optimum that way, and the 1/2/4
       // compact-A whitelist hid capacity 8. Measured today: pruning removes 532 of 1164 rows, 46%.
       if (g_prune && !p && !g) continue;
-      // A CAPACITY ROW CARRIES ITS OWN m_max: capacity C stages C physical A rows, so the row is only defined for
-      // M <= C. Nothing has to pass --m-max for those, and nothing can forget to -- the bound is the capacity.
-      // --m-max stays for capacity-0 tables that a caller declares to be small-M anyway.
-      int const m_max = acr > 0 ? (g_m_max > 0 && g_m_max < acr ? g_m_max : acr) : g_m_max;
+      int const m_max = g_m_max;
       // The smallest TileM that still covers m_max in one tile; every larger one is the same grid with more
       // padding warps. Derived from kTileM rather than written as a number, so a new TileM is covered on arrival.
       if (m_max > 0) {
@@ -363,7 +347,7 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
         for (int tm : kTileM) if (tm >= m_max) { keep = tm; break; }
         if (c.tm > keep) { ++n_mdrop; continue; }
       }
-      if (rows.insert(Row{c.tm, c.tn, c.tactic_tile_k, c.wm, c.wn, st, acr}).second) { if (p) ++n_prim; else if (g) ++n_guard; else ++n_other; }
+      if (rows.insert(Row{c.tm, c.tn, c.tactic_tile_k, c.wm, c.wn, st}).second) { if (p) ++n_prim; else if (g) ++n_guard; else ++n_other; }
     }
   }
   }
@@ -393,8 +377,6 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
   std::printf("//   c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic &&\\\n");
   std::printf("//   /tmp/emit_tactic %d %d --space=%s --tactic-tk=", bits, artifact_tk, space_name);
   for (size_t j = 0; j < tactic_tks.size(); ++j) std::printf("%s%d", j ? "," : "", tactic_tks[j]);
-  std::printf(" --compact-rows=");
-  for (size_t j = 0; j < g_compact_rows.size(); ++j) std::printf("%s%d", j ? "," : "", g_compact_rows[j]);
   std::printf(" --prune=%s", g_prune ? "primary-guard" : "none");
   if (g_m_max > 0) std::printf(" --m-max=%d", g_m_max);
   if (g_format) std::printf(" --format=%s", g_format);
@@ -428,8 +410,8 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
     // tm, tn, TacticTileK, wm, wn, stages -- in Row's order. An earlier edit added the %d and repeated
     // get<3> instead of shifting the tail, which emitted stages=wm and dropped stages entirely. It was visible
     // only because the printed row carried a stage value (16) that is not in the stage list.
-    std::printf("  X(%d,%d,%d,%d,%d,%d,%d,B)%s\n", std::get<0>(r), std::get<1>(r), std::get<2>(r),
-                std::get<3>(r), std::get<4>(r), std::get<5>(r), std::get<6>(r),
+    std::printf("  X(%d,%d,%d,%d,%d,%d,B)%s\n", std::get<0>(r), std::get<1>(r), std::get<2>(r),
+                std::get<3>(r), std::get<4>(r), std::get<5>(r),
                 ++i == rows.size() ? "" : " \\");
   }
   return 0;
@@ -455,15 +437,6 @@ int main(int argc, char** argv) {
     if (std::strcmp(argv[i], "--prune=primary-guard") == 0) { g_prune = true; continue; }
     if (std::strcmp(argv[i], "--prune=none") == 0) { g_prune = false; continue; }
     if (std::strncmp(argv[i], "--m-max=", 8) == 0) { g_m_max = std::atoi(argv[i] + 8); continue; }
-    if (std::strncmp(argv[i], "--compact-rows=", 15) == 0) {
-      g_compact_rows.clear();
-      for (char const* s = argv[i] + 15; *s;) {
-        g_compact_rows.push_back(std::atoi(s));
-        while (*s && *s != ',') ++s;
-        if (*s == ',') ++s;
-      }
-      continue;
-    }
     if (std::strncmp(argv[i], "--tactic-tk=", 12) == 0) {
       g_tactic_tks.clear();
       for (char const* s = argv[i] + 12; *s;) {
@@ -508,10 +481,6 @@ int main(int argc, char** argv) {
   }
 
   if (g_tactic_tks.empty()) g_tactic_tks.push_back(tk);   // no --tactic-tk: the artifact's own, as before
-  // No --compact-rows: capacity 0, ordinary unrestricted A. The DEFAULT IS THE OLD BEHAVIOUR ON PURPOSE -- the
-  // axis exists in the table before anything searches it, so this table stays byte-identical to the previous one
-  // apart from the field, and every config name the box already uses keeps working.
-  if (g_compact_rows.empty()) g_compact_rows.push_back(0);
 
   if (std::strcmp(space, "dense") == 0)   return emit<DenseSpace>(*spec, bits, tk, g_tactic_tks, "dense", "LOWBIT_DENSE");
   if (std::strcmp(space, "grouped") == 0) {

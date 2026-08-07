@@ -62,9 +62,9 @@ function(qz_parse_tactic_xmacro OUT_ROWS)
     message(FATAL_ERROR "${_file}: found ${_count_defs} definitions of ${PARSE_COUNT_MACRO}, expected exactly one")
   endif()
 
-  # A row has seven decimal integer fields and the literal body placeholder B.
+  # A row has six decimal integer fields and the literal body placeholder B.
   # The continuation slash is mandatory except on the final row.
-  set(_row_re "^[ \t]*X\\(([0-9][0-9]*),([0-9][0-9]*),([0-9][0-9]*),([0-9][0-9]*),([0-9][0-9]*),([0-9][0-9]*),([0-9][0-9]*),B\\)[ \t]*$")
+  set(_row_re "^[ \t]*X\\(([0-9][0-9]*),([0-9][0-9]*),([0-9][0-9]*),([0-9][0-9]*),([0-9][0-9]*),([0-9][0-9]*),B\\)[ \t]*$")
   set(_rows "")
   set(_terminated FALSE)
   math(EXPR _first "${_decl_index} + 1")
@@ -86,10 +86,10 @@ function(qz_parse_tactic_xmacro OUT_ROWS)
     if(NOT _row_text MATCHES "${_row_re}")
       math(EXPR _line_no "${_index} + 1")
       message(FATAL_ERROR
-        "${_file}:${_line_no}: malformed tactic row; expected X(TM,TN,TK,WM,WN,ST,ACR,B) with seven decimal integers: '${_line}'")
+        "${_file}:${_line_no}: malformed tactic row; expected X(TM,TN,TK,WM,WN,ST,B) with six decimal integers: '${_line}'")
     endif()
 
-    set(_row "${CMAKE_MATCH_1},${CMAKE_MATCH_2},${CMAKE_MATCH_3},${CMAKE_MATCH_4},${CMAKE_MATCH_5},${CMAKE_MATCH_6},${CMAKE_MATCH_7}")
+    set(_row "${CMAKE_MATCH_1},${CMAKE_MATCH_2},${CMAKE_MATCH_3},${CMAKE_MATCH_4},${CMAKE_MATCH_5},${CMAKE_MATCH_6}")
     list(FIND _rows "${_row}" _duplicate)
     if(NOT _duplicate EQUAL -1)
       math(EXPR _line_no "${_index} + 1")

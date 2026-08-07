@@ -3,44 +3,44 @@
 #define LOWBIT_DENSE_UNIT_BUILD 1
 #include "test_lowbit_dense_bench.cu"
 
-template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int ST, int ACR>
+template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int ST>
 static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
-  using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST, ACR>::Gemm;
-  return run<G>(options, cfg.name, cfg.acr);
+  using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::Gemm;
+  return run<G>(options, cfg.name);
 }
 
 #if DENSE_GS_ARM(16)
-#define LOWBIT_DENSE_CASE_16(TM,TN,TK,WM,WN,ST,ACR) \
-  case 16: return lowbit_dense_run_config<16,TM,TN,TK,WM,WN,ST,ACR>(options, cfg);
+#define LOWBIT_DENSE_CASE_16(TM,TN,TK,WM,WN,ST) \
+  case 16: return lowbit_dense_run_config<16,TM,TN,TK,WM,WN,ST>(options, cfg);
 #else
-#define LOWBIT_DENSE_CASE_16(TM,TN,TK,WM,WN,ST,ACR)
+#define LOWBIT_DENSE_CASE_16(TM,TN,TK,WM,WN,ST)
 #endif
 #if DENSE_GS_ARM(32)
-#define LOWBIT_DENSE_CASE_32(TM,TN,TK,WM,WN,ST,ACR) \
-  case 32: return lowbit_dense_run_config<32,TM,TN,TK,WM,WN,ST,ACR>(options, cfg);
+#define LOWBIT_DENSE_CASE_32(TM,TN,TK,WM,WN,ST) \
+  case 32: return lowbit_dense_run_config<32,TM,TN,TK,WM,WN,ST>(options, cfg);
 #else
-#define LOWBIT_DENSE_CASE_32(TM,TN,TK,WM,WN,ST,ACR)
+#define LOWBIT_DENSE_CASE_32(TM,TN,TK,WM,WN,ST)
 #endif
 #if DENSE_GS_ARM(64)
-#define LOWBIT_DENSE_CASE_64(TM,TN,TK,WM,WN,ST,ACR) \
-  case 64: return lowbit_dense_run_config<64,TM,TN,TK,WM,WN,ST,ACR>(options, cfg);
+#define LOWBIT_DENSE_CASE_64(TM,TN,TK,WM,WN,ST) \
+  case 64: return lowbit_dense_run_config<64,TM,TN,TK,WM,WN,ST>(options, cfg);
 #else
-#define LOWBIT_DENSE_CASE_64(TM,TN,TK,WM,WN,ST,ACR)
+#define LOWBIT_DENSE_CASE_64(TM,TN,TK,WM,WN,ST)
 #endif
 #if DENSE_GS_ARM(128)
-#define LOWBIT_DENSE_CASE_128(TM,TN,TK,WM,WN,ST,ACR) \
-  case 128: return lowbit_dense_run_config<128,TM,TN,TK,WM,WN,ST,ACR>(options, cfg);
+#define LOWBIT_DENSE_CASE_128(TM,TN,TK,WM,WN,ST) \
+  case 128: return lowbit_dense_run_config<128,TM,TN,TK,WM,WN,ST>(options, cfg);
 #else
-#define LOWBIT_DENSE_CASE_128(TM,TN,TK,WM,WN,ST,ACR)
+#define LOWBIT_DENSE_CASE_128(TM,TN,TK,WM,WN,ST)
 #endif
 
-#define LOWBIT_DENSE_DEFINE_WRAPPER(FN,TM,TN,TK,WM,WN,ST,ACR) \
+#define LOWBIT_DENSE_DEFINE_WRAPPER(FN,TM,TN,TK,WM,WN,ST) \
   Result FN(Options& options, TileCfg const& cfg) { \
     switch (options.g) { \
-      LOWBIT_DENSE_CASE_16(TM,TN,TK,WM,WN,ST,ACR) \
-      LOWBIT_DENSE_CASE_32(TM,TN,TK,WM,WN,ST,ACR) \
-      LOWBIT_DENSE_CASE_64(TM,TN,TK,WM,WN,ST,ACR) \
-      LOWBIT_DENSE_CASE_128(TM,TN,TK,WM,WN,ST,ACR) \
+      LOWBIT_DENSE_CASE_16(TM,TN,TK,WM,WN,ST) \
+      LOWBIT_DENSE_CASE_32(TM,TN,TK,WM,WN,ST) \
+      LOWBIT_DENSE_CASE_64(TM,TN,TK,WM,WN,ST) \
+      LOWBIT_DENSE_CASE_128(TM,TN,TK,WM,WN,ST) \
       default: \
         std::fprintf(stderr, "unsupported dense group size %d (supported: 16, 32, 64, 128)\n", options.g); \
         return {}; \

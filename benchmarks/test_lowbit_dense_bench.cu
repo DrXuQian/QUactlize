@@ -261,7 +261,7 @@ struct GroupKernels {
 // fpA_intB (../fpA_intB_standalone) do it. Cfg<> rebuilds the ScaleOnly (mode-1) type stack with a given
 // tile/warp/stages. Generated translation units instantiate the configs behind exported wrappers, and TileCfg
 // stores the matching wrapper pointer for runtime selection. This replaces the recompile-per-config sweep.sh.
-template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int St, int ACompactRows = 0>
+template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int St>
 struct Cfg {
   // TK IS THE ROW'S TacticTileK, not the binary's. Until 2026-08-05 these three used the global TileShapeK,
   // because TileK was a build-time constant that also determined the bytes on disk. It no longer does: the artifact
@@ -284,24 +284,18 @@ struct Cfg {
   using Policy = ppu_mixed_policy::MainloopPolicy<
       ppu_mixed_policy::QuantMode::FinegrainedScaleOnly,
       ppu_group_schedule::FinegrainedSchedule<GroupSize>, CfgTile, CfgScale, CfgWarp,
-      St, true, ElementB, void, kArtifactTileK, ACompactRows>;
-  // ACompactRows IS THE ROW'S, not the binary's. The eleventh MainloopPolicy parameter defaults to
-  // kDefaultACompactRows (PPU_A_CPASYNC), which is what an unconverted caller still gets; passing the row's value
-  // explicitly -- INCLUDING zero -- is what stops that macro from reaching a table that has its own opinion.
+      St, true, ElementB, void, kArtifactTileK>;
   using Main = typename Policy::CollectiveOp;
   static_assert(ppu_mixed_policy::kernel_policy_valid_v<ppu_tactics::DenseSpace, Policy>);
   using Kernel = cutlass::gemm::kernel::GemmUniversal<Shape<int,int,int,int>, Main, Epi>;
   using Gemm = cutlass::gemm::device::GemmUniversalAdapter<Kernel>;
 };
 
-// acr is the compact-A capacity: 0 is ordinary unrestricted A. It is NOT in `name` today, because only capacity
-// 0 is emitted and two rows would otherwise be free to share one. The moment the emitted set widens, the name has
-// to grow a segment in the same change -- find_config() matches on the name alone.
 struct Options;
 struct Result;
 struct TileCfg;
 using LowbitDenseWrapper = Result (*)(Options&, TileCfg const&);
-struct TileCfg { char const* name; int tm, tn, tk, wm, wn, st, acr; LowbitDenseWrapper wrapper; };
+struct TileCfg { char const* name; int tm, tn, tk, wm, wn, st; LowbitDenseWrapper wrapper; };
 
 // The generated table. Regenerate with benchmarks/emit_tactic_configs.cpp when the binary's (QUANT, BENCH_TSK)
 // changes -- the static_assert below is what turns forgetting into a compile error rather than a sweep over a
@@ -322,7 +316,7 @@ static_assert(cutlass::sizeof_bits<QuantType>::value == LOWBIT_DENSE_CFG_BITS &&
               "lowbit_dense_configs.inc was generated for a different (bits, TileK) than this binary. Regenerate: "
               "c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic && "
               "/tmp/emit_tactic <bits> <tile_k> > benchmarks/lowbit_dense_configs.inc");
-#define LOWBIT_DENSE_COUNT_ROW(TM,TN,TK,WM,WN,ST,ACR,_UNUSED) + 1
+#define LOWBIT_DENSE_COUNT_ROW(TM,TN,TK,WM,WN,ST,_UNUSED) + 1
 inline constexpr int kLowbitDenseConfigRows = 0 LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_COUNT_ROW, );
 #undef LOWBIT_DENSE_COUNT_ROW
 static_assert(kLowbitDenseConfigRows == LOWBIT_DENSE_CFG_ROWS,
@@ -504,20 +498,19 @@ struct Result
 #if !defined(LOWBIT_DENSE_UNIT_BUILD)
 // Main names only exported wrappers. Cfg<>::Gemm appears in lowbit_dense_unit.inc, so expanding this 632-row
 // registry does not serialize template instantiation in the main translation unit. Every field participates in
-// the external symbol even though the user-facing name omits compact-A capacity today.
-#define LOWBIT_DENSE_SYMBOL_I(TM,TN,TK,WM,WN,ST,ACR) \
-  lowbit_dense_cfg_tm##TM##_tn##TN##_tk##TK##_wm##WM##_wn##WN##_st##ST##_acr##ACR
-#define LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,ACR) LOWBIT_DENSE_SYMBOL_I(TM,TN,TK,WM,WN,ST,ACR)
-#define LOWBIT_DENSE_DECLARE(TM,TN,TK,WM,WN,ST,ACR,_UNUSED) \
-  Result LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,ACR)(Options&, TileCfg const&);
+#define LOWBIT_DENSE_SYMBOL_I(TM,TN,TK,WM,WN,ST) \
+  lowbit_dense_cfg_tm##TM##_tn##TN##_tk##TK##_wm##WM##_wn##WN##_st##ST
+#define LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST) LOWBIT_DENSE_SYMBOL_I(TM,TN,TK,WM,WN,ST)
+#define LOWBIT_DENSE_DECLARE(TM,TN,TK,WM,WN,ST,_UNUSED) \
+  Result LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST)(Options&, TileCfg const&);
 LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_DECLARE, )
 #undef LOWBIT_DENSE_DECLARE
 
 inline std::vector<TileCfg> const& supported_configs() {
   static std::vector<TileCfg> const configs = {
-#define LOWBIT_DENSE_REGISTRY_ROW(TM,TN,TK,WM,WN,ST,ACR,_UNUSED) \
-    TileCfg{#TM "x" #TN "x" #TK ":" #WM "x" #WN ":s" #ST, TM, TN, TK, WM, WN, ST, ACR, \
-            &LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,ACR)},
+#define LOWBIT_DENSE_REGISTRY_ROW(TM,TN,TK,WM,WN,ST,_UNUSED) \
+    TileCfg{#TM "x" #TN "x" #TK ":" #WM "x" #WN ":s" #ST, TM, TN, TK, WM, WN, ST, \
+            &LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST)},
     LOWBIT_DENSE_CFG_LIST(LOWBIT_DENSE_REGISTRY_ROW, )
 #undef LOWBIT_DENSE_REGISTRY_ROW
   };
@@ -802,7 +795,7 @@ bool verify(const Options &options) {
 /// Execute a given example GEMM computation. Returns the Result (does not exit on failure, so the tactic
 /// search can skip a config that does not verify and move on). `label` is printed on the comparable line.
 template <typename Gemm>
-Result run(Options &options, char const* label = "default", int acr = -1)
+Result run(Options &options, char const* label = "default")
 {
   initialize(options);
 
@@ -895,17 +888,9 @@ Result run(Options &options, char const* label = "default", int acr = -1)
     // must actually deliver. tile carries a reuse factor instead, and a marker when it exceeds the DRAM peak --
     // which says the re-reads are cache-served, not that the kernel is bandwidth-bound.
     double const reuse = tile_bytes / min_bytes;
-    // acr IS THE DISPATCHED ROW'S FIELD, passed in, not read off the Gemm type: paths whose policy is
-    // actlize's own collective have no compact_a_rows at all, so reaching through the type does not
-    // even compile. -1 prints for a caller that did not come through the table.
-    // THE COMPACT-A CAPACITY IS PRINTED BECAUSE IT IS NOT IN THE LABEL. Capacity is a table field and config
-    // names do not carry it, so two binaries built with --compact-rows=0 and --compact-rows=1 produce result
-    // lines that are IDENTICAL apart from the timing. On 2026-08-06 that made a 45% regression unattributable
-    // from the output alone: the reading "capacity 1 is slower" rested on remembering which binary had been run.
-    // A measurement whose conditions are not in the record is not a measurement.
-    std::printf("  [CUTLASS w%d gs=%d cfg=%s a%d] M=%d %7.2f us | %6.1f TFLOP/s | cmp %5.1f%% | tile %6.0f GB/s "
+    std::printf("  [CUTLASS w%d gs=%d cfg=%s] M=%d %7.2f us | %6.1f TFLOP/s | cmp %5.1f%% | tile %6.0f GB/s "
                 "(%.1fx min%s) | min %5.0f GB/s (%4.1f%% HBM)\n",
-                int(sizeof_bits<QuantType>::value), options.g, label, acr,
+                int(sizeof_bits<QuantType>::value), options.g, label,
                 options.m, us, tflops, 100.0 * tflops / 500.0,
                 gbs_tile, reuse, gbs_tile > HBM_GBS ? ", L2-served" : "", gbs_min, 100.0 * gbs_min / HBM_GBS);
   }
@@ -1183,20 +1168,9 @@ int main(int argc, char const **args) {
 
     std::printf("%-18s %-10s %s\n", "CONFIG", "TFLOP/s", "status");
     Best best; best.tag[0] = '\0'; best.us = 1e18;
-    int n_cap_skipped = 0;
     for (int rep = 0; rep < reps; ++rep) {
       if (reps > 1) std::printf("\n  --- pass %d/%d ---\n", rep + 1, reps);
       for (auto const& c : supported_configs()) {
-        // A CAPACITY ROW IS ONLY DEFINED FOR M <= ITS CAPACITY, so skip it rather than run it. Compact A stages
-        // c.acr physical A rows; the grid is ceil(M/TileM) m-tiles and every one of them needs up to TileM rows,
-        // so any M above the capacity asks the kernel for rows it did not stage. That is a DEFINEDNESS rule, and
-        // it deliberately does not lean on verify(): run() prints "verify failed -- timing the kernel anyway for
-        // perf" and keeps going whenever iterations > 0, a carve-out that exists for a known-spurious int2
-        // mismatch and would swallow this one just as happily. A wrong row that still gets timed can win.
-        //
-        // COUNTED AND REPORTED, never silent -- a table emitted with capacities and run at m=2048 would otherwise
-        // print a clean sweep of the handful of rows that happened to be capacity 0.
-        if (c.acr > 0 && options.m > c.acr) { ++n_cap_skipped; continue; }
         // NAME THE CANDIDATE BEFORE LAUNCHING IT. A device assert takes the whole process, and every other
         // report of which config ran happens AFTER run_config() returns -- so without this, the row that killed
         // a sweep is not named anywhere and "reproduce it by name" has nothing to work from. Both channels get
@@ -1236,15 +1210,6 @@ int main(int argc, char const **args) {
     if (best.tag[0] == '\0') { std::fprintf(stderr, "no config passed\n"); return 1; }
     const int ties = settle(best);
     const double best_tf = 2.0 * double(options.m) * options.n * options.k / (best.us * 1e-6) / 1e12;
-    // WHAT THE SWEEP DID NOT LOOK AT. A table emitted with compact-A capacities and run above the smallest of
-    // them searches fewer rows than it lists, and every other line of this report would look like a normal sweep.
-    if (n_cap_skipped > 0) {
-      std::printf("\n  [compact-A] %d candidate(s) SKIPPED, not run: their capacity is below m=%d, so the kernel\n"
-                  "              would be asked for A rows it does not stage. Run a capacity table at m <= its\n"
-                  "              smallest capacity, or use a capacity-0 table for this shape.\n",
-                  n_cap_skipped / (reps > 0 ? reps : 1), options.m);
-    }
-
     // WRITE A TACTIC ONLY FROM A RESOLVED SWEEP. The comment below says an unresolved one is "a wrong answer
     // that never gets revisited", and for one commit the line above it saved unconditionally anyway -- the
     // property was documented and not implemented, which is worse than neither, because the comment is what a

@@ -54,7 +54,7 @@ def main() -> int:
 
     text = TABLE.read_text()
     stamped = re.search(r"^#define LOWBIT_DENSE_CFG_ROWS\s+(\d+)\s*$", text, re.M)
-    rows = re.findall(r"^  X\((\d+,\d+,\d+,\d+,\d+,\d+,\d+),B\)\s*\\?\s*$", text, re.M)
+    rows = re.findall(r"^  X\((\d+,\d+,\d+,\d+,\d+,\d+),B\)\s*\\?\s*$", text, re.M)
     if not stamped or len(rows) < 2:
         print("[dense-units] ERROR: cannot form controls from the table's own count and rows")
         return 1
