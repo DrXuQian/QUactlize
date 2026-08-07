@@ -37,8 +37,14 @@ static_assert(Flat2Zero::scale_groups == 2 && Flat2Zero::has_zero);
 static_assert(!Flat2Scale::has_zero);
 static_assert(std::is_same_v<typename Flat2Zero::AddressPolicy, md::FlatMetadataAddress>);
 static_assert(std::is_same_v<typename Split4Zero::AddressPolicy, md::SplitMetadataAddress>);
-static_assert(Flat2Zero::Coverage<64, 64>::value);
-static_assert(Split4Zero::Coverage<64, 128>::value);
+using FlatCap = Flat2Zero::ScaleCopy<128, 64>;
+using SplitCap = Split4Zero::ScaleCopy<128, 64>;
+using Q3Cap = md::ScaleCopyPlan<128, 8, 64>;
+static_assert(FlatCap::Coverage::value && SplitCap::Coverage::value);
+static_assert(Q3Cap::thread_layout_h == 8 && Q3Cap::thread_layout_w == 8);
+static_assert(Q3Cap::values_per_thread == 16 && Q3Cap::thread_slots == 64);
+static_assert(Q3Cap::Coverage::within_cta && Q3Cap::Coverage::atom_aligned &&
+              Q3Cap::Coverage::full_tile);
 
 int main() {
   std::printf("[l113] shared mixed metadata policy: COARSE/FINE grouping and storage policies agree\n");

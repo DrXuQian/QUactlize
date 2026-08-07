@@ -65,6 +65,7 @@ M_MAX_RE = re.compile(r"--m-max=(\d+)", re.M)
 # surviving members alone produces a file with no SKIPPED line, i.e. a different file, which is exactly the
 # "declared args do not reproduce the table" failure this gate exists to catch. It caught it on itself.
 SKIPPED_RE = re.compile(r"^//\s+tactic_tk SKIPPED \(ArtifactTileK must tile TacticTileK\):\s+([\d ]+)\s*$", re.M)
+OUTPUT_RE = re.compile(r"^//\s+/tmp/emit_tactic\b.*>\s+(\S+\.inc)\s*$", re.M)
 
 
 def declared_args(text: str):
@@ -153,6 +154,12 @@ def main() -> int:
 
     actual = table.read_bytes()
     text = actual.decode()
+    output = OUTPUT_RE.search(text)
+    if output is None:
+        return fail(f"{table}: regeneration command has no .inc output target", table=table)
+    expected_output = Path("benchmarks") / table.name
+    if Path(output.group(1)) != expected_output:
+        return fail(f"{table}: regeneration command writes {output.group(1)}, not {table.name}", table=table)
     argv, declared = declared_args(text)
     if argv is None:
         return fail(f"{table}: {declared}; the gate regenerates using the arguments the table declares, "

@@ -519,3 +519,55 @@ binary would save no compile time:
 
 Its first line must say `table_band=full table_mmax=0 actual_mmax=12`, and it must reach row launches. Wanted back:
 both build exit codes, the two first banner lines, the decode refusal line+exit code, and one matched bc0/bc1 timing pair.
+
+---
+
+## INBOX 097 — capped scale-copy numerics and newly reachable Q3/Q5 w64x64
+
+The local witness uses the real uint128 atom and proves complete coordinate coverage, but this change moves scale loads
+between threads. Device numerics are therefore a required gate. Pull the SHA named in the handoff, then run both
+independent goldens:
+
+    set -euo pipefail
+    cd /sim/eec/shared/junfu.qx/quactlize
+    git pull --ff-only origin develop
+
+    TARGET=test_q3_bconcat_real ./build.sh
+    Q3=$(find build_ppu -type f -name test_q3_bconcat_real -perm -u+x -print -quit)
+    test -n "$Q3"
+    "$Q3" real_weight/real_q3k_concat.bin | tee /tmp/097_q3_correct.log
+
+    TARGET=test_q65_bconcat_real ./build.sh
+    Q65=$(find build_ppu -type f -name test_q65_bconcat_real -perm -u+x -print -quit)
+    test -n "$Q65"
+    "$Q65" | tee /tmp/097_q5_correct.log
+
+Q3's process exit code is determined by its last rung, so that alone is not this gate. Wanted verbatim from
+`/tmp/097_q3_correct.log`: rung 4 `(64,128,128) w64x64` and rung 6 `w64x64 ScaleOnly` must each say `MATCH`, the ladder
+must say `all rungs MATCH`, and the final native golden must say `bad=0/... MATCH`. From `/tmp/097_q5_correct.log`, the
+new `(64,128,256) w64x64 s2 capped scale copy` row must say `bad=0/... MATCH`, and the summary must say
+`0 failing configuration(s)`.
+
+Measure the actual generated full-table rows at the A3/A5 problem shape. Configure generates full and decode together;
+the `16;64` TileM and WarpM sets are intentional, because decode retains only TileM16 and a `64`-only restriction makes
+configure fail with zero decode shapes. The exact `MOE_ONLY` strings below isolate one generated row apiece:
+
+    MOE_FORMATS='q3;q5' MOE_TM_LIST='16;64' MOE_TN_LIST=128 MOE_WM_LIST='16;64' MOE_STAGES=2 \
+      TARGET=test_lowbit_moe_bench ./build.sh
+    MOE=$(find build_ppu -type f -name test_lowbit_moe_bench -perm -u+x -print -quit)
+    test -n "$MOE"
+
+    MOE_REPS=5 MOE_VERBOSE=1 MOE_ONLY='q3 64x128:256 w64x64 s2 bc0->0' \
+      "$MOE" 1 2048 4096 4096 32 0 | tee /tmp/097_q3_w64_bc0.log
+    MOE_REPS=5 MOE_VERBOSE=1 MOE_ONLY='q3 64x128:256 w64x64 s2 bc1->1' \
+      "$MOE" 1 2048 4096 4096 32 0 | tee /tmp/097_q3_w64_bc1.log
+    MOE_REPS=5 MOE_VERBOSE=1 MOE_ONLY='q5 64x128:256 w64x64 s2 bc0->0' \
+      "$MOE" 1 2048 4096 4096 32 0 | tee /tmp/097_q5_w64_bc0.log
+    MOE_REPS=5 MOE_VERBOSE=1 MOE_ONLY='q5 64x128:256 w64x64 s2 bc1->1' \
+      "$MOE" 1 2048 4096 4096 32 0 | tee /tmp/097_q5_w64_bc1.log
+
+Every run must print its exact `->` tag, five samples, and one verdict row; `no row matched`, `did not run`, an output
+witness failure, or a device error is a failure. Wanted back: all four verdict rows with median/band, µs and MFU. Compare
+them explicitly with A3 (`int1`, same shape/gs, w64x64 s2 bc1, 63.7% MFU) and A5 (`Q3`, same shape/gs, 255.47 us /
+53.8% MFU). Those records used smaller consumer TileK, so the comparison is a regression/ceiling reference, not a claim
+that the new shipping `TK256` row must equal them.

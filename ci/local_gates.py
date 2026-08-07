@@ -67,6 +67,10 @@ GATES = [
     ("l110_unit_pack_abi", []),
     ("l112_mixed_policy_parity", []),
     ("l113_mixed_metadata_policy", []),
+    ("l114_scale_copy_coverage@host", []),
+    ("l114_scale_copy_coverage@ordinary", []),
+    ("l114_scale_copy_coverage@fold", []),
+    ("l114_scale_copy_coverage@two_plane", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -97,6 +101,11 @@ SYNTAX = [
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_B_DEQUANT_NOP=1"),
     ("tests/test_moe_grouped_verify.cu", ""),
     ("tests/test_moe_grouped_real.cu", ""),
+    # INBOX 097 changes scale-copy ownership, so its two independent-golden box targets must at least instantiate
+    # locally. Q65 once omitted the optional two-plane specialization include and otherwise reached the box with
+    # CollectiveMma's failing primary template; keeping the real source here makes that omission non-repeatable.
+    ("tests/test_q3_bconcat_real.cu", ""),
+    ("tests/test_q65_bconcat_real.cu", ""),
     ("benchmarks/test_moe_splitk_bench.cu", ""),
     # THE BENCH THE WHOLE SWEEP RUNS THROUGH, and it had no local gate at all until 2026-08-04 -- which is how
     # a selection rewrite (median over interleaved repeats, tie reporting) got committed without ever being
@@ -208,6 +217,12 @@ GATE_SRCS = {
 GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               "l112_mixed_policy_parity": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               "l113_mixed_metadata_policy": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
+              "l114_scale_copy_coverage@ordinary":
+                  ["-D__HGGCCC__", "--expt-relaxed-constexpr", "-DL114_PROVIDER=1"],
+              "l114_scale_copy_coverage@fold":
+                  ["-D__HGGCCC__", "--expt-relaxed-constexpr", "-DL114_PROVIDER=2"],
+              "l114_scale_copy_coverage@two_plane":
+                  ["-D__HGGCCC__", "--expt-relaxed-constexpr", "-DL114_PROVIDER=3"],
               "l109_rt_hggc_parse": ["-D__HGGCCC__"],
               # THE MACROS ARE THE POINT. This gate asserts the fused path is ON, so it has to be built the way the
               # box builds packfuse -- without these two it would assert about a configuration nobody runs and pass
@@ -239,6 +254,27 @@ def lint_mixed_policy_parity_fires():
         first = next((line for line in log.splitlines() if "error:" in line), "no compiler diagnostic")
         return "FAIL", f"planted build failed for the wrong reason: {first[:140]}", dt
     return "PASS", "descriptor parity rejects a planted grouped-only B-layout change", dt
+
+
+def lint_scale_copy_coverage_fires():
+    """The shared witness must reject the exact uncapped layout that truncated Q3/Q5 scale loads."""
+    src = DEV / "l114_scale_copy_coverage.cu"
+    if not src.is_file():
+        return "FAIL", f"missing {src.name}", 0.0
+    OUT.mkdir(parents=True, exist_ok=True)
+    planted = OUT / "l114_scale_copy_coverage_uncapped"
+    rc, log, dt = run(NVCC + ["-DL114_PROVIDER=0", "-DL114_PLANT_UNCAPPED_SCALE_COPY=1",
+                              "-I", str(STUB), "-I", str(ACT), "-I", str(ACT_UTIL),
+                              "-I", str(ROOT / "quactlize/include"),
+                              "-I", str(ROOT / "tests"), "-I", str(ROOT / "benchmarks"),
+                              "-o", str(planted), str(src)])
+    expected = "scale copy asks for more thread slots than the CTA has"
+    if rc == 0:
+        return "FAIL", "ScaleCopyCoverage accepted the planted uncapped 128-slot layout for a 64-thread CTA", dt
+    if expected not in log:
+        first = next((line for line in log.splitlines() if "error:" in line), "no compiler diagnostic")
+        return "FAIL", f"uncapped scale-copy build failed for the wrong reason: {first[:140]}", dt
+    return "PASS", "shared witness rejects the old uncapped Q3/Q5 scale-copy layout", dt
 
 
 def lint_mixed_pipeline_shared():
@@ -976,8 +1012,26 @@ def lint_dense_tactic_table_current():
                                   capture_output=True, text=True)
         if rejected.returncode == 0:
             return "FAIL", "checker accepted a table whose first tactic row was changed without changing provenance", 0.0
+        # A decode table used to advertise a command that overwrote its full table. Exact regeneration catches a
+        # hand edit, but would accept the bad target again after both emitter and tables were regenerated. Require
+        # the checker to bind the advertised sink to the file being checked, and require that exact diagnostic so
+        # an unrelated parse failure cannot make this negative control green.
+        decode = ROOT / "benchmarks" / "lowbit_grouped_Q3_K_decode_configs.inc"
+        decode_text = decode.read_text()
+        wrong_target = "benchmarks/lowbit_grouped_Q3_K_configs.inc"
+        right_target = "benchmarks/lowbit_grouped_Q3_K_decode_configs.inc"
+        if decode_text.count(right_target) != 1:
+            return "FAIL", "cannot plant decode output-target drift: expected one regeneration target", 0.0
+        planted_decode = Path(td) / decode.name
+        planted_decode.write_text(decode_text.replace(right_target, wrong_target))
+        rejected_target = subprocess.run([sys.executable, str(checker), "--table", str(planted_decode)], cwd=ROOT,
+                                         capture_output=True, text=True)
+        target_diagnostic = f"regeneration command writes {wrong_target}, not {decode.name}"
+        if rejected_target.returncode == 0 or target_diagnostic not in rejected_target.stdout:
+            return "FAIL", "checker did not reject a decode command that overwrites its full table", 0.0
     summary = checked.stdout.strip().removeprefix("[dense-table] ")
-    return "PASS", f"{len(verified)} table(s) exact: {', '.join(verified)}; planted row drift rejected", 0.0
+    return "PASS", (f"{len(verified)} table(s) exact: {', '.join(verified)}; "
+                    "planted row and decode-output drift rejected"), 0.0
 
 
 def lint_tactic_buckets_do_not_extrapolate():
@@ -1264,6 +1318,7 @@ def main():
                 ("lint", "every INBOX item is consumed, or is explained by a call in flight", lint_inbox_delivered),
                 ("lint", "dense/grouped tactic names alias one generator and route output agrees", lint_tactic_spaces_agree),
                 ("lint", "dense/grouped mixed policy descriptor parity fires on planted drift", lint_mixed_policy_parity_fires),
+                ("lint", "l114_scale_copy_coverage: uncapped layout fails the shared witness", lint_scale_copy_coverage_fires),
                 ("lint", "all mixed collectives use one stage-ring driver", lint_mixed_pipeline_shared),
                 ("lint", "the committed dense tactic table exactly regenerates from its stamped sources", lint_dense_tactic_table_current),
                 ("lint", "offline tactic buckets never extrapolate beyond measured M", lint_tactic_buckets_do_not_extrapolate),

@@ -27,9 +27,8 @@ normal and correct case for most consumers.
 TWO FILTERS, both of which it needed on its first run and neither of which is optional. COMMENTS are stripped
 before matching: fold_traits.hpp explains a failure mode "or get_tiled_mma degenerates", and xplane_offline.hpp
 notes "MixGemm_AIU_Operand's own arithmetic" -- neither uses the type. And a name the file DEFINES ITSELF is
-skipped: ppu_tactic_space.hpp has an `Exclusion::ScaleCopyCoverage` that has nothing to do with the metadata
-policy's, and demanding an include there would be wrong as well as noisy. Four of twelve first-run hits were one
-of these two, and a checker with a one-in-three false rate gets its output skimmed.
+skipped; demanding its separate owner include would be wrong as well as noisy. Four of twelve first-run hits were
+one of these two, and a checker with a one-in-three false rate gets its output skimmed.
 
 WHAT IT CANNOT DO. It has no PPU SDK, so missing SDK headers are stubbed and `-MG` treats anything still missing
 as generated rather than failing. Comment stripping is textual, so a name inside a string literal still counts.

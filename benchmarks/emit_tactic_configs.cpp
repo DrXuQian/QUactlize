@@ -301,8 +301,12 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
   if (g_m_max > 0) std::printf(" --m-max=%d", g_m_max);
   if (g_format) std::printf(" --format=%s", g_format);
   for (int st : g_stages) std::printf(" %d", st);
-  if (g_format) std::printf(" > benchmarks/lowbit_%s_%s_configs.inc\n", space_name, g_format);
-  else          std::printf(" > benchmarks/lowbit_%s_configs.inc\n", space_name);
+  // A bounded-M table is the decode table, not the full table.  This suffix is part of the generated
+  // maintenance contract: before it existed, every decode header printed a command that would overwrite the
+  // corresponding full table even though the emitted bytes were the decode payload.
+  char const* band_suffix = g_m_max > 0 ? "_decode" : "";
+  if (g_format) std::printf(" > benchmarks/lowbit_%s_%s%s_configs.inc\n", space_name, g_format, band_suffix);
+  else          std::printf(" > benchmarks/lowbit_%s%s_configs.inc\n", space_name, band_suffix);
   std::printf("//\n");
   std::printf("// The second X argument carries the dispatch BODY through the list; supported_configs() passes\n");
   std::printf("// nothing for it. That is what lets ONE list feed both the runtime table and the compile-time\n");

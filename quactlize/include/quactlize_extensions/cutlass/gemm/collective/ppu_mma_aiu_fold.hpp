@@ -178,24 +178,20 @@ public:
   using MetadataPolicy = detail::MixedMetadataPolicy<ElementScale, Scale_TileK,
       !cute::is_void_v<ElementZero>, detail::FlatMetadataAddress>;
   using PipelineDriver = detail::MixedPipelineDriver;
-  // partition_extra_inputs selects this copy with thread_idx modulo the copy's thread slots. If the copy asks for
-  // more slots than TiledMma launches, the missing slots are not diagnosed by CuTe: their scale groups are simply
-  // never loaded. Keep this as a public type witness as well as an assertion so both operator launchers bind the
-  // coverage invariant when they bind the instantiated mainloop.
+  // Cap the copy's N-thread extent to the CTA and give each remaining slot more fixed-width atom iterations. The
+  // shared plan asserts both slot capacity and complete-tile coverage; CuTe itself diagnoses neither truncation.
   constexpr static int Scale_NumThreads = size(TiledMma{});
-  constexpr static int Scale_CopyThreadSlots = (Scale_TileN / 8) * Scale_TileK;
-  using ScaleCoverage = typename MetadataPolicy::template Coverage<Scale_CopyThreadSlots, Scale_NumThreads>;
-  constexpr static bool scale_copy_thread_coverage = ScaleCoverage::value;
-  using Scale_GmemCopyThrLayoutH = Int<Scale_TileN / 8>;
-  using Scale_GmemCopyThrLayoutW = Int<Scale_TileK>;
+  using ScaleCopyPlan = typename MetadataPolicy::template ScaleCopy<Scale_TileN, Scale_NumThreads>;
+  using Scale_GmemCopyThrLayoutH = Int<ScaleCopyPlan::thread_layout_h>;
+  using Scale_GmemCopyThrLayoutW = Int<ScaleCopyPlan::thread_layout_w>;
   using GmemTiledCopyScale = decltype(
     make_tiled_copy(Copy_Atom<PPU_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>, NonVoidElementScale>{},
                     Layout<Shape <Scale_GmemCopyThrLayoutH, Scale_GmemCopyThrLayoutW>>{},
-                    Layout<Shape < _8,_1>>{}));
+                    Layout<Shape <Int<ScaleCopyPlan::values_per_thread>,_1>>{}));
   using GmemTiledCopyZero = decltype(
     make_tiled_copy(Copy_Atom<PPU_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>, NonVoidElementZero>{},
                     Layout<Shape <Scale_GmemCopyThrLayoutH, Scale_GmemCopyThrLayoutW>>{},
-                    Layout<Shape < _8,_1>>{}));
+                    Layout<Shape <Int<ScaleCopyPlan::values_per_thread>,_1>>{}));
 
   using SmemLayoutAtomA = SmemLayoutAtomA_;
   using SmemLayoutAtomB = SmemLayoutAtomB_;
@@ -444,14 +440,10 @@ public:
     p.group_row_offsets = args.group_row_offsets;
 
     if constexpr (ModeHasScales) {
-      p.gmem_tiled_copy_scale = make_tiled_copy(Copy_Atom<PPU_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>, NonVoidElementScale>{},
-                    Layout<Shape <Scale_GmemCopyThrLayoutH, Scale_GmemCopyThrLayoutW>>{},
-                    Layout<Shape < _8,_1>>{});
+      p.gmem_tiled_copy_scale = GmemTiledCopyScale{};
       p.ptr_S = reinterpret_cast<NonVoidElementScale const*>(args.ptr_S);
       if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) {
-        p.gmem_tiled_copy_zero = make_tiled_copy(Copy_Atom<PPU_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>, NonVoidElementZero>{},
-                    Layout<Shape <Scale_GmemCopyThrLayoutH, Scale_GmemCopyThrLayoutW>>{},
-                    Layout<Shape < _8,_1>>{});
+        p.gmem_tiled_copy_zero = GmemTiledCopyZero{};
         p.ptr_Z = reinterpret_cast<NonVoidElementZero const*>(args.ptr_Z);
       }
       p.group_size = args.group_size;

@@ -216,44 +216,26 @@ public:
   using MetadataPolicy = detail::MixedMetadataPolicy<ElementScale, Scale_TileK,
       !cute::is_void_v<ElementZero>, detail::SplitMetadataAddress>;
   using PipelineDriver = detail::MixedPipelineDriver;
-  // THE SCALE COPY MUST NOT ASK FOR MORE THREADS THAN THE CTA HAS. H used to be Scale_TileN/8 unconditionally, so the
-  // thread layout demanded (Scale_TileN/8) * Scale_TileK slots; the copy is then sliced by
-  // `thread_idx % (H*W)`, which silently truncates when the CTA is smaller. At (64,128,128) w64x64 gs=16 that is 16*8 =
-  // 128 slots against 64 threads (WOM = TM/WM = 1 halves the CTA), and the layout (16,8) maps t -> (t%16, t/16), so
-  // threads 0..63 cover only w in [0,4): FOUR OF EIGHT SCALE GROUPS ARE NEVER LOADED. Measured as bad=13358/32768,
-  // localised by the one-variable-per-rung ladder in test_q3_bconcat_real (rungs 1-3 MATCH, rung 4 = WM 32->64 fails).
-  //
-  // Fix: cap H at NumThreads/W and give each thread the remaining elements. ElemsPerThr stays a multiple of the atom's
-  // 8 half_t, so make_tiled_copy just issues several cp.async per thread. Every previously working configuration keeps
-  // its old H (there H*W was already <= NumThreads), so this is a no-op for them.
+  // The two-plane path first exposed the silent truncation at (64,128,128) w64x64 gs16: the old (16,8)x8 layout
+  // asked a 64-thread CTA for 128 logical slots and loaded only four of eight groups. All mixed collectives now use
+  // the same H-capped plan; a wider value layout is extra 16-byte atom iterations, not a wider cp.async instruction.
   constexpr static int Scale_NumThreads = size(TiledMma{});
-  constexpr static int Scale_ThrH = cute::min(Scale_TileN / 8, Scale_NumThreads / Scale_TileK);
-  static_assert(Scale_ThrH >= 1 && (Scale_TileN % (Scale_ThrH * 8)) == 0,
-      "scale copy: Scale_TileN must split into ThrH threads of a multiple of 8 elements");
-  // The durable guard. partition_extra_inputs slices this copy with `thread_idx % (ThrH*ThrW)`, so a layout that
-  // asks for more slots than the CTA has does not fail -- it silently drops every slot above the thread count.
-  // That is how the old (Scale_TileN/8, Scale_TileK) form survived until a config with WOM == 1 halved the CTA:
-  // (64,128,128) w64x64 gs=16 wanted 16*8 = 128 slots against 64 threads and loaded 4 of 8 scale groups.
-  static_assert(Scale_ThrH * Scale_TileK <= Scale_NumThreads,
-      "scale copy asks for more thread slots than the CTA has -- the modulo slice would silently truncate it");
-  constexpr static int Scale_ElemsPerThr = Scale_TileN / Scale_ThrH;
+  using ScaleCopyPlan = typename MetadataPolicy::template ScaleCopy<Scale_TileN, Scale_NumThreads>;
   // (j3) thread_idx -> thread slot, with the duplication explicit. Slots <= Scale_NumThreads is enforced above.
-  constexpr static int Scale_Slots = Scale_ThrH * Scale_TileK;
-  using ScaleCoverage = typename MetadataPolicy::template Coverage<Scale_Slots, Scale_NumThreads>;
-  constexpr static bool scale_copy_thread_coverage = ScaleCoverage::value;
+  constexpr static int Scale_Slots = ScaleCopyPlan::thread_slots;
   using ScaleThrDupL = cute::Layout<cute::Shape <cute::Int<Scale_Slots>,
                                                  cute::Int<(Scale_NumThreads + Scale_Slots - 1) / Scale_Slots>>,
                                     cute::Stride<cute::_1, cute::_0>>;
-  using Scale_GmemCopyThrLayoutH = Int<Scale_ThrH>;
-  using Scale_GmemCopyThrLayoutW = Int<Scale_TileK>;
+  using Scale_GmemCopyThrLayoutH = Int<ScaleCopyPlan::thread_layout_h>;
+  using Scale_GmemCopyThrLayoutW = Int<ScaleCopyPlan::thread_layout_w>;
   using GmemTiledCopyScale = decltype(
     make_tiled_copy(Copy_Atom<PPU_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>, NonVoidElementScale>{},
                     Layout<Shape <Scale_GmemCopyThrLayoutH, Scale_GmemCopyThrLayoutW>>{},
-                    Layout<Shape <Int<Scale_ElemsPerThr>,_1>>{}));
+                    Layout<Shape <Int<ScaleCopyPlan::values_per_thread>,_1>>{}));
   using GmemTiledCopyZero = decltype(
     make_tiled_copy(Copy_Atom<PPU_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>, NonVoidElementZero>{},
                     Layout<Shape <Scale_GmemCopyThrLayoutH, Scale_GmemCopyThrLayoutW>>{},
-                    Layout<Shape <Int<Scale_ElemsPerThr>,_1>>{}));
+                    Layout<Shape <Int<ScaleCopyPlan::values_per_thread>,_1>>{}));
 
   using SmemLayoutAtomA = SmemLayoutAtomA_;
   using SmemLayoutAtomB  = bplane_first_t<SmemLayoutAtomB_>;

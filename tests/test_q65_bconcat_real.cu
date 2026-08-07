@@ -30,6 +30,10 @@
 #include "xplane_offline.hpp"
 #include "moe_grouped_ppu.cuh"
 
+// This executable instantiates the optional two-plane collective directly. The base umbrella deliberately does not
+// include optional specializations, so naming only the launcher leaves CollectiveMma at its failing primary template.
+#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
+
 // SELF-DESCRIBING RUN. Whether PPU_B_CHUNK was active has now been undeterminable from the build output twice: the
 // device compiles are add_custom_command with a COMMENT so make.log holds no compile line, and the build.sh line that
 // does check scrolls away above a long result. The binary reports its own configuration instead -- a log that does not
@@ -177,6 +181,9 @@ int main(int argc, char** argv) {
   // Q5 = int4 + int1. int1's bound is WN >= 4096/TK, so TK=256 allows w32x32, TK=128 needs WN >= 32, TK=64 needs 64.
   run_format("Q5 = int4 + int1", 1, uint1_t{}, [&](auto& lo, auto& hi, auto& gold, auto& goldsym) {
     RUNG65("(64,128,256) w32x32 s3  F1=1 F2=1", 1, uint1_t, 64, 128, 256, 32, 32, 3, 1, QM::FinegrainedScaleZero, gold);
+    // INBOX 097's newly admitted shipping row. CTA64 caps the old H16xW16 scale copy to H4xW16 and gives each
+    // thread four real uint128 atom iterations; this CPU golden makes the box check exercise that path directly.
+    RUNG65("(64,128,256) w64x64 s2  capped scale copy", 1, uint1_t, 64, 128, 256, 64, 64, 2, 1, QM::FinegrainedScaleZero, gold);
     RUNG65("(64,128,128) w32x32 s3  F1=1 F2=2", 1, uint1_t, 64, 128, 128, 32, 32, 3, 2, QM::FinegrainedScaleZero, gold);
     RUNG65("(64,128,128) w64x32 s3  F1=1 F2=2", 1, uint1_t, 64, 128, 128, 64, 32, 3, 2, QM::FinegrainedScaleZero, gold);
     RUNG65("(64,128, 64) w64x64 s2  F1=1 F2=4", 1, uint1_t, 64, 128,  64, 64, 64, 2, 4, QM::FinegrainedScaleZero, gold);

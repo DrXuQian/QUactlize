@@ -18,7 +18,7 @@ namespace ppu_tactics {
 // compiled tactic.
 inline constexpr int64_t kBlockSmemBytes = 262144;
 // Every emitted kernel must serve every runtime group size in the shared dispatch ladder. Sixteen is the smallest
-// supported group and therefore the worst case for both metadata footprint and scale-copy thread coverage.
+// supported group and therefore the worst case for metadata footprint.
 inline constexpr int kMinimumRuntimeGroupSize = 16;
 
 enum class Format { I1, I2, I4, Q3_K, Q5_K, Q6_K };
@@ -75,7 +75,6 @@ enum class Exclusion {
   HighFoldDoesNotDivideTileN,
   LowDelivery,
   HighDelivery,
-  ScaleCopyCoverage,
   MinimumStageSmem,
   ProducerWarpN,
   ProducerMap,
@@ -96,7 +95,6 @@ constexpr char const* exclusion_clause(Exclusion e) {
     case Exclusion::HighFoldDoesNotDivideTileN: return "ArtifactHighFold does not divide TacticTileN";
     case Exclusion::LowDelivery: return "the low plane over-delivers the warp fragment";
     case Exclusion::HighDelivery: return "the high plane over-delivers the warp fragment";
-    case Exclusion::ScaleCopyCoverage: return "the conservative gs16 scale copy needs more thread slots than the CTA has";
     case Exclusion::MinimumStageSmem: return "the conservative gs16 scale+zero footprint exceeds the 256KB block limit";
     case Exclusion::ProducerWarpN: return "the offline producer exposes only consumer-validated WarpN values through 64";
     case Exclusion::ProducerMap: return "the Q6 two-plane inverse at TileK=256 is incomplete";
@@ -143,14 +141,6 @@ constexpr int cta_warps(Candidate c) {
   return (c.tm / c.wm) * (c.tn / c.wn);
 }
 
-constexpr int scale_copy_thread_slots(Candidate c, int group_size = kMinimumRuntimeGroupSize) {
-  return (c.tn / 8) * ((c.tactic_tile_k + group_size - 1) / group_size);
-}
-
-constexpr bool scale_copy_thread_coverage(Candidate c, int group_size = kMinimumRuntimeGroupSize) {
-  return int64_t(scale_copy_thread_slots(c, group_size)) <= int64_t(32) * cta_warps(c);
-}
-
 // These are kernel constraints, shared by the two launcher static_asserts and the host emitter.  They are kept apart
 // from artifact reachability: a template may be a legal consumer while the shipping *_for_tile producer cannot yet
 // make bytes for it.
@@ -182,9 +172,6 @@ constexpr Exclusion common_kernel_exclusion(Candidate c) {
   if (int64_t(c.wn) * c.tactic_tile_k * c.spec.low_bits < 4096) return Exclusion::LowDelivery;
   if (c.spec.high_bits && int64_t(c.wn) * c.tactic_tile_k * c.spec.high_bits < 4096)
     return Exclusion::HighDelivery;
-  // Match MetadataPolicy::ScaleCopyCoverage conservatively over the whole runtime group-size ladder. A row that
-  // only works at gs32/64/128 is not a legal compiled tactic because the same instantiation is reachable at gs16.
-  if (!scale_copy_thread_coverage(c)) return Exclusion::ScaleCopyCoverage;
   return Exclusion::None;
 }
 
@@ -222,7 +209,6 @@ constexpr Exclusion common_producer_exclusion(Candidate c) {
 // including Q3's independent (low,high)=(2,4) folds; a tactic that cannot be partitioned into whole artifact K-blocks
 // is refused before it can instantiate a provider with a partial physical row.
 inline constexpr FormatSpec kArtifactFoldControlI2{Format::I2, "artifact-fold-control-i2", 2, 0};
-inline constexpr FormatSpec kScaleCoverageControlI4{Format::I4, "scale-coverage-control-i4", 4, 0};
 inline constexpr FormatSpec kArtifactFoldControlQ3{Format::Q3_K, "artifact-fold-control-q3", 2, 1};
 inline constexpr Candidate kArtifactFoldControlI2Large{kArtifactFoldControlI2, 64, 64, 256, 32, 32, 64};
 inline constexpr Candidate kArtifactFoldControlQ3Large{kArtifactFoldControlQ3, 64, 128, 256, 32, 32, 64};
@@ -237,17 +223,6 @@ static_assert(common_kernel_exclusion(
 static_assert(common_kernel_exclusion(
                   Candidate{kArtifactFoldControlI2, 64, 64, 96, 64, 32, 48}) ==
               Exclusion::ArtifactLowRun);
-inline constexpr Candidate kScaleCoverageBoundary{
-    kScaleCoverageControlI4, 16, 128, 64, 16, 64, 64};
-inline constexpr Candidate kScaleCoverageOverflow{
-    kScaleCoverageControlI4, 16, 128, 256, 16, 32, 64};
-static_assert(scale_copy_thread_slots(kScaleCoverageBoundary) == 64 && cta_warps(kScaleCoverageBoundary) == 2);
-static_assert(common_kernel_exclusion(kScaleCoverageBoundary) == Exclusion::None);
-static_assert(scale_copy_thread_slots(kScaleCoverageOverflow) == 256 && cta_warps(kScaleCoverageOverflow) == 4);
-static_assert(scale_copy_thread_slots(kScaleCoverageOverflow, 32) == 128 &&
-              scale_copy_thread_coverage(kScaleCoverageOverflow, 32));
-static_assert(common_kernel_exclusion(kScaleCoverageOverflow) == Exclusion::ScaleCopyCoverage);
-
 // Everything that determines whether some topology for the candidate may be built, except the M- and stage-dependent
 // shared footprint. size_sweep.cpp uses this before asking the topology predicate.
 constexpr Exclusion common_static_sweep_exclusion(Candidate c) {

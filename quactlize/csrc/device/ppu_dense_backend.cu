@@ -180,10 +180,9 @@ int launch_grouped_tactic(
     half_t** out_ptrs, DS* out_strides, int const* rows,
     int max_rows, int n, int k, int experts, GS* shapes, GS const* shapes_host, int const* offsets,
     char* workspace, size_t workspace_bytes, hggcStream_t stream) {
-  // The dense side's guard, for the grouped config list. Same two rows are illegal at TileK=256 -- 16x128 w16x32
-  // and 32x128 w32x32 both want 256 scale-copy slots against 128 threads -- and for the same reason: GroupSize is
-  // a compile-time 16 here, so ScaleCopyCoverage is exact rather than conservative. Grouped's own Default
-  // (16x128 w16x16) survives at 8 warps: 256 slots against 256 threads, passing on equality.
+  // The dense side's shared legality guard, applied to the grouped config list before instantiating a collective.
+  // Scale-copy slot count is deliberately absent here: the collective caps its logical copy layout to the concrete
+  // CTA and statically proves full metadata coverage. Other kernel exclusions still fail closed through return 31.
   constexpr ppu_tactics::Candidate kTactic{
       {ppu_tactics::Format::I4, "grouped-backend",
        ppu_mixed_policy::element_bits_v<Low>, ppu_mixed_policy::element_bits_v<High>},
@@ -241,30 +240,16 @@ int launch_dense_tactic(uint16_t const* act, uint8_t const* low, uint8_t const* 
                         void const* scale, uint16_t const* zero, uint16_t* out,
                         int m, int n, int k, void* workspace, size_t workspace_bytes,
                         hggcStream_t stream) {
-  // A SHIPPED CONFIG IS NOT LEGAL AT EVERY TileK, and the cross product is what this switch instantiates.
-  //
-  // QUACTLIZE_PPU_DENSE_CONFIGS names five tile/warp shapes and says nothing about TileK, because it was written
-  // when TileK was one number for the whole binary. It is now a template parameter here, so each row is
-  // instantiated at every TileK the callers use -- and two of the five are illegal at 256:
-  //
-  //   ShortWide 16x128 w16x32   Scale_CopyThreadSlots = (128/8) * ceil(256/16) = 256  >  32 * 4 warps = 128
-  //   MidWide   32x128 w32x32   same arithmetic, same 256 > 128
-  //
-  // That is ScaleCopyCoverage, and here it is EXACT rather than conservative: GroupSize is a compile-time
-  // parameter of this instantiation and the callers pass 16, so gs=16 is not a hypothetical this row must also
-  // survive -- it is the row. ppu_mixed_policy's static_assert caught it as soon as the local tier was run in
-  // full, which is what the assert is for.
-  //
-  // GUARDING RATHER THAN DELETING THE ROWS: both are legal and useful at TileK 64 and 128, so removing them
-  // would cost coverage the sweep can use. Guarding costs a compile-time branch and makes the excluded pair
-  // report "did not launch", which dense_config_type_valid already surfaces as unsupported.
+  // QUACTLIZE_PPU_DENSE_CONFIGS is crossed with each TileK used by callers. Keep the shared legality guard here for
+  // constraints that genuinely make a kernel uninstantiable. Scale-copy capacity is no longer one of them: the
+  // mainloop caps its logical copy layout to the concrete CTA and proves full metadata coverage at compile time.
   constexpr ppu_tactics::Candidate kTactic{
       {ppu_tactics::Format::I4, "dense-backend",
        ppu_mixed_policy::element_bits_v<Low>, ppu_mixed_policy::element_bits_v<High>},
       TileM, TileN, TileK, WarpM, WarpN, TileK};
   if constexpr (ppu_tactics::DenseSpace::kernel_exclusion(kTactic) != ppu_tactics::Exclusion::None) {
-    // 31 is this file's existing "did not launch". A separate code would be more informative and would also be a
-    // new ABI meaning for every caller that only tests truthiness, so the distinction stays in this comment.
+    // 31 is this file's existing "did not launch". A separate code would be a new ABI meaning for callers that only
+    // test truthiness, so every remaining tactic-space exclusion keeps the established result.
     return 31;
   } else {
   constexpr int ScaleGroups = ppu_group_schedule::scale_groups_v<TileK, GroupSize>;

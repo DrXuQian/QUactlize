@@ -194,8 +194,8 @@ struct MainloopPolicy {
 };
 
 // One guard for every adapter. TacticSpace is a public route name (DenseSpace or GroupedSpace); both are aliases of
-// the one legality generator, while the instantiated mainloop, delivery checks, and scale-copy coverage remain one
-// shared contract.
+// the one legality generator, while the instantiated mainloop and delivery checks remain one shared contract. Scale
+// copy coverage is asserted by the mainloop's shared capped plan, where its concrete CTA and copy layout are known.
 template <class TacticSpace, class Policy>
 struct KernelPolicyGuard {
   using Mainloop = typename Policy::CollectiveOp;
@@ -209,8 +209,6 @@ struct KernelPolicyGuard {
 
   static_assert(int(cute::size(TiledMma{})) == 32 * ppu_tactics::cta_warps(tactic),
                 "mixed policy: tactic warp count must equal the instantiated TiledMma launch size");
-  static_assert(Mainloop::scale_copy_thread_coverage,
-                "mixed policy: scale copy must cover every slot with the instantiated CTA threads");
   static_assert(TacticSpace::kernel_exclusion(tactic) == ppu_tactics::Exclusion::None,
                 "mixed policy: tactic violates this operator's emitted kernel search-space rules");
   static_assert(fold::CheckDelivery<Policy::LowBits, cute::size<1>(TileShape{}), Policy::TacticTileK,

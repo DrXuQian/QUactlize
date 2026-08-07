@@ -20,13 +20,58 @@
 
 namespace cutlass::gemm::collective::detail {
 
-// CuTe does not diagnose a tiled-copy thread layout larger than the CTA. The thread slice wraps modulo the copy's
-// slots and silently leaves metadata behind, so every mixed-input collective publishes this same witness.
-template <int CopyThreadSlots, int CtaThreads>
+// CuTe does not diagnose a tiled-copy thread layout larger than the CTA. Callers wrap the physical thread index to
+// a logical copy slot, so an oversized layout silently leaves metadata behind. Keep the explicit layout parameters
+// in this witness: the negative gate instantiates the old uncapped (16,8)x8 layout and must fail here, while the
+// production plan below proves both that its capped slots fit and that those slots still cover the complete tile.
+template <int TileN, int TileK, int CtaThreads, int ThreadLayoutH, int ValuesPerThread,
+          int AtomValues = 8>
 struct ScaleCopyCoverage {
-  static constexpr bool value = CopyThreadSlots <= CtaThreads;
-  static_assert(value,
+  static_assert(TileN > 0 && TileK > 0 && CtaThreads > 0,
+                "scale copy needs positive tile and CTA extents");
+  static_assert(ThreadLayoutH > 0 && ValuesPerThread > 0 && AtomValues > 0,
+                "scale copy needs positive thread/value extents");
+  static constexpr int thread_layout_w = TileK;
+  static constexpr int thread_slots = ThreadLayoutH * thread_layout_w;
+  static constexpr int tile_values = TileN * TileK;
+  static constexpr int covered_values = thread_slots * ValuesPerThread;
+  static constexpr bool within_cta = thread_slots <= CtaThreads;
+  static constexpr bool atom_aligned = ValuesPerThread % AtomValues == 0;
+  static constexpr bool full_tile = covered_values == tile_values;
+  static constexpr bool value = within_cta && atom_aligned && full_tile;
+  static_assert(within_cta,
                 "scale copy asks for more thread slots than the CTA has -- the modulo slice would silently truncate it");
+  static_assert(atom_aligned,
+                "scale copy values per thread must contain complete copy atoms");
+  static_assert(full_tile,
+                "capped scale copy must cover every value in the metadata tile");
+};
+
+// Cap the N-direction thread extent and let each remaining thread issue more fixed-width atoms. ValuesPerThread can
+// therefore exceed AtomValues without widening the instruction: CuTe represents the extra values as a rest mode and
+// copy() iterates it. The two-plane collective shipped this exact construction first; all three collectives now bind
+// this one plan so host tactic generation no longer needs to reject otherwise legal large-WarpN shapes.
+template <int TileN, int TileK, int CtaThreads, int AtomValues = 8>
+struct ScaleCopyPlan {
+  static_assert(TileN > 0 && TileK > 0 && CtaThreads > 0,
+                "scale copy needs positive tile and CTA extents");
+  static_assert(TileN % AtomValues == 0,
+                "scale copy TileN must contain a whole number of copy atoms");
+  static_assert(CtaThreads / TileK >= 1,
+                "scale copy needs at least one CTA thread per metadata K group");
+
+  static constexpr int thread_layout_h_uncapped = TileN / AtomValues;
+  static constexpr int thread_layout_h =
+      thread_layout_h_uncapped < CtaThreads / TileK ? thread_layout_h_uncapped : CtaThreads / TileK;
+  static_assert(TileN % (thread_layout_h * AtomValues) == 0,
+                "scale copy TileN must split into capped threads of complete copy atoms");
+  static constexpr int thread_layout_w = TileK;
+  static constexpr int values_per_thread = TileN / thread_layout_h;
+  static constexpr int thread_slots = thread_layout_h * thread_layout_w;
+  using Coverage = ScaleCopyCoverage<TileN, TileK, CtaThreads, thread_layout_h,
+                                     values_per_thread, AtomValues>;
+  static_assert(Coverage::value,
+                "capped scale-copy plan must fit the CTA and cover the complete metadata tile");
 };
 
 // One source of truth for the two values formerly spelled as `% Per` and `/ Per` at every COARSE/FINE call site.
@@ -148,8 +193,8 @@ struct MixedMetadataPolicy {
   static constexpr bool has_zero = HasZero;
   using AddressPolicy = Address;
 
-  template <int CopyThreadSlots, int CtaThreads>
-  using Coverage = ScaleCopyCoverage<CopyThreadSlots, CtaThreads>;
+  template <int TileN, int CtaThreads>
+  using ScaleCopy = ScaleCopyPlan<TileN, ScaleGroups, CtaThreads>;
 
   template <int CopySteps>
   using Coarse = CoarseScalePolicy<ScaleGroups, CopySteps>;
