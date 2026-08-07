@@ -83,9 +83,18 @@ inline int settle(Best& b) {
 
 // How many times the whole list is run. One repeat is legal and is NOT a ranking -- the banner says so, because
 // a run that cannot rank must not print something that reads like a ranking.
+// TWO NAMES FOR ONE QUANTITY, and they never agreed. benchmarks/sweep_real_shapes.py sets BENCH_REPS (its
+// --reps), this read only MOE_REPS, and nothing compared them -- so a sweep asking for 3 passes silently got 5,
+// and the driver's own record of how many samples a candidate has disagreed with what the bench wrote. Read
+// BOTH, MOE_REPS winning when both are set so an explicit per-run override still beats the driver.
+//
+// DEFAULT IS 1, not 5. The user asked for one pass; five was the default and stayed. One repeat is legal and is
+// NOT a ranking -- the banner says so, because a run that cannot rank must not print something that reads like
+// one.
 inline int moe_reps() {
   const char* e = std::getenv("MOE_REPS");
-  const int r = e ? std::atoi(e) : 5;
+  if (e == nullptr || *e == '\0') e = std::getenv("BENCH_REPS");
+  const int r = (e && *e) ? std::atoi(e) : 1;
   return r < 1 ? 1 : r;
 }
 

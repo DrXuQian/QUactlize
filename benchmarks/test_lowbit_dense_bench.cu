@@ -1173,7 +1173,9 @@ int main(int argc, char const **args) {
     // happened to run in a good moment. Repeating the LIST rather than each candidate is what keeps clock and
     // thermal drift from landing on one of them; the same reasoning and the same procedure as the MoE bench,
     // which is why both call bench_select.hpp rather than each carrying a copy.
-    const int reps = [] { char const* e = std::getenv("BENCH_REPS"); int r = e ? std::atoi(e) : 5; return r < 1 ? 1 : r; }();
+    // DEFAULT 1, not 5. The user asked for one pass and five stayed the default. One repeat is legal and is
+    // explicitly NOT a ranking -- the verdict lines below say so rather than printing something that reads like one.
+    const int reps = [] { char const* e = std::getenv("BENCH_REPS"); int r = (e && *e) ? std::atoi(e) : 1; return r < 1 ? 1 : r; }();
     char build[128];
     std::snprintf(build, sizeof build, "bits=%d TSK=%d gs=%d",
                   int(cutlass::sizeof_bits<QuantType>::value), TileShapeK, options.g);
