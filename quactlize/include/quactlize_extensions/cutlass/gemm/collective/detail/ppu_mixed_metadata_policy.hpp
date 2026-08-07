@@ -20,10 +20,11 @@
 
 namespace cutlass::gemm::collective::detail {
 
-// CuTe does not diagnose a tiled-copy thread layout larger than the CTA. Callers wrap the physical thread index to
-// a logical copy slot, so an oversized layout silently leaves metadata behind. Keep the explicit layout parameters
-// in this witness: the negative gate instantiates the old uncapped (16,8)x8 layout and must fail here, while the
-// production plan below proves both that its capped slots fit and that those slots still cover the complete tile.
+// CuTe neither diagnoses a tiled-copy thread layout larger than the CTA nor wraps get_slice(t) when t exceeds the
+// logical layout. Callers wrap the physical thread index: slots > CTA would leave metadata behind, while slots < CTA
+// deliberately makes surplus threads repeat the same source/destination transfers. Keep the explicit layout
+// parameters in this witness: the negative gate instantiates the old uncapped (16,8)x8 layout and must fail here,
+// while the production plan proves that its slots fit, use whole atoms and still cover the complete tile.
 template <int TileN, int TileK, int CtaThreads, int ThreadLayoutH, int ValuesPerThread,
           int AtomValues = 8>
 struct ScaleCopyCoverage {

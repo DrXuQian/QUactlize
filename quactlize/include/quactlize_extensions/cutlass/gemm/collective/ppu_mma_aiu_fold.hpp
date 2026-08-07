@@ -552,7 +552,10 @@ public:
     Tensor sA = make_tensor(make_smem_ptr(storage.smem_a.begin()), SmemLayoutA{}); // (BLK_M,BLK_K,PIPE)
     Tensor sB = make_tensor(make_smem_ptr(storage.smem_b.begin()), SmemLayoutB{}); // (BLK_N,BLK_K,PIPE)
 
-    // get extra inputs
+    // A legal plan can have fewer logical copy slots than physical CTA threads; that behavior predates the H cap.
+    // Raw CuTe get_slice does not wrap, so map surplus threads back onto valid slots. Coverage's slots<=CTA,
+    // whole-atom and full-tile invariants make the repeated transfers idempotent instead of hiding a missing owner.
+    // L114 locks the CTA256 raw-oob/wrapped-duplicate distinction.
     auto extra_input_partitions = partition_extra_inputs(
         mainloop_params, load_inputs, storage, thread_idx % (Scale_GmemCopyThrLayoutH{} * Scale_GmemCopyThrLayoutW{}));
 
