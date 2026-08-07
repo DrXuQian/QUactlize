@@ -53,6 +53,13 @@ using GS      = moe_grouped_ppu::GroupShape;
 using DStride = moe_grouped_ppu::DStride;
 using QM      = moe_grouped_ppu::QuantMode;
 
+constexpr int moe_scale_groups(int k, int gs) { return (k + gs - 1) / gs; }
+constexpr int moe_metadata_planes(QM mode) { return moe_grouped_ppu::has_zero(mode) ? 2 : 1; }
+static_assert(moe_scale_groups(65, 32) == 3, "scale metadata covers a partial final group");
+static_assert(moe_metadata_planes(QM::FinegrainedScaleOnly) == 1 &&
+              moe_metadata_planes(QM::FinegrainedScaleZero) == 2,
+              "ScaleOnly has no zero metadata plane");
+
 static constexpr double PEAK    = 500.0e12;
 // HBM peak for ppu001 (see the ppu-ptx skill). Used to turn the traffic model into a percentage, which is the only form
 // in which "is this bandwidth-bound?" is answerable.
@@ -63,7 +70,7 @@ static constexpr double HBM_GBS = 2766.0;
 // containing `fold::FoldTraits` while the checked-out tree had `moe_fold`, and there was no way to tell from here whether
 // the box had built an older commit or the overlay had a stale copy. That ambiguity has cost rounds twice in this work (the
 // per-row PPU_B_CHUNK request/effective tag exists for the same reason), so it gets an invariant instead of a guess.
-#define LOWBIT_MOE_BENCH_REV 16
+#define LOWBIT_MOE_BENCH_REV 17
 
 // The table band is generated next to each target's dispatcher and included before this header. Other users of this
 // shared harness (the split-K probe) remain explicitly unbanded rather than accidentally inheriting lowbit-MoE metadata.
@@ -233,12 +240,12 @@ template <int Bits> constexpr int moe_fold(int TK) { const int c = TK * Bits / 8
 // unfalsifiable.
 //
 // AND IT MUST BE A LOWER BOUND. The first version printed only the DMA-issued upper bound and reported 116-181% of
-// HBM, which answers nothing: a bound looser than the hardware peak is not a measurement. The over-count is A --
-// 60% of the total on the worst row -- because `mt * (N/TN) * TM * K * 2` assumes every n-tile column re-reads all of
-// A from DRAM, when the CTAs sharing an m-tile read the IDENTICAL A tile (128 KB at TM=32) and will hit L2.
+// HBM, which answers nothing: a bound looser than the hardware peak is not a measurement. Its largest looseness is A:
+// `ceil(N/TN) * total * K * 2` assumes every n-tile column re-reads every REAL A row from DRAM, even though those CTAs
+// read identical A and may hit L2. Padded rows are absent from both bounds because their global loads never issue.
 //
 //   floor  every byte crosses the bus AT LEAST once:  A = total_rows*K*2, B+S once per ACTIVE expert, D = rows*N*2
-//   ceil   the DMA-issued bound above
+//   ceil   A once per n-tile, B+S once per m-tile, D once
 //   noreuse = ceil/floor -- how much reuse the L2 must be supplying. A ratio, deliberately not a percentage.
 //
 // WHICH END IS CONCLUSIVE, and I had this BACKWARDS in the first version of this comment and in three messages built on it.
@@ -296,15 +303,18 @@ inline void report(const Band& bd, const char* tag, double us, int TM, int TN, i
   const double skew  = mt ? double(mt_max) / (double(mt) / double(bd.L)) : 0.0;
   const double ntile = std::ceil(double(bd.N) / double(TN));
   const double wb    = double(bd.N) * double(bd.K) * double(bits_total) / 8.0;         // one expert's weights
-  const double sb    = double(bd.N) * (double(bd.K) / double(bd.gs)) * 2.0 * 2.0;      // scale + zero, fp16
+  const double scale_groups = double(moe_scale_groups(bd.K, bd.gs));
+  constexpr int metadata_planes = moe_metadata_planes(LOWBIT_QMODE_SEL);
+  const double sb = double(bd.N) * scale_groups * 2.0 * double(metadata_planes);       // fp16 scale [+ zero]
   // dfl IS THE DISTINCT-BYTE LOWER BOUND. Its A term is the real footprint `total*K*2`, not the padded compute area:
   // padding loads do not issue. The AIU path uses a 2-D `.padz` copy whose dim_h is the expert's real M; classic CUTLASS
   // predicates the out-of-bounds global load. Those rows are not alternate cache lines and are not bus traffic.
   //
   // At decode `mt == active` makes the B and S terms exact -- each active expert's weights and scale metadata are read
   // once. It does NOT lock total traffic: A may be fetched again by separate n-tile CTAs, so dfl remains a lower bound.
-  // `a_pad` below belongs only to the deliberately loose ceiling-side model; it is not the numerator reported as HBM%.
-  const double a_pad  = double(mt) * double(TM) * double(bd.K) * 2.0;
+  // The ceiling may therefore count `a_dram` once per n-tile, but it must not reintroduce padded rows: those loads do
+  // not issue regardless of how often the real A footprint misses cache.
+  const double a_dram = double(bd.total) * double(bd.K) * 2.0;
   // HBM% IS DISTINCT BYTES OVER TIME. Nothing else. The previous version put `a_pad` -- mt*TM*K, the PADDED row
   // count -- in the numerator, so a config with a bigger TileM "moved more data" and printed a HIGHER bandwidth
   // while reading the same rows. That is how a 1-row-per-expert decode band reported more HBM traffic at TileM=128
@@ -313,11 +323,10 @@ inline void report(const Band& bd, const char* tag, double us, int TM, int TN, i
   //
   //   A = total*K*2       every REAL row, once
   //   B = active*wb       every ACTIVE expert's weights, once
-  //   S = active*sb       its scales+zeros, once
+  //   S = active*sb       its scales, plus zeros only in ScaleZero mode, once
   //   C = total*N*2       the output rows that exist
-  const double a_dram = double(bd.total) * double(bd.K) * 2.0;
   const double dfl    = a_dram + double(bd.active) * (wb + sb) + double(bd.total) * double(bd.N) * 2.0;
-  const double dce    = ntile * a_pad + double(mt) * (wb + sb) + double(bd.total) * double(bd.N) * 2.0;
+  const double dce    = ntile * a_dram + double(mt) * (wb + sb) + double(bd.total) * double(bd.N) * 2.0;
   const double gbs = dfl / (us * 1e-6) / 1e9;
   const double tf  = 2.0 * double(bd.total) * double(bd.N) * double(bd.K) / (us * 1e-6) / 1e12;
   // S's SHARE OF THE FLOOR is what #20 can possibly buy, and without it the floor cannot answer that question. At decode

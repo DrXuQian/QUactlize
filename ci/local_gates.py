@@ -103,6 +103,9 @@ SYNTAX = [
     # compiled. It is also the file with the most host-side logic of any bench, so it is the one most likely to
     # break in a way nvcc catches and review does not.
     ("benchmarks/test_lowbit_moe_bench.cu", ""),
+    # ScaleOnly selects a different compiled traffic-model branch and halves its metadata planes. Compile that mode
+    # explicitly; the default ScaleZero row cannot validate the ScaleOnly macro path.
+    ("benchmarks/test_lowbit_moe_bench.cu", "-DLOWBIT_QMODE=1"),
     # The DENSE bench, likewise ungated until 2026-08-04. It now carries a generated config table and a
     # static_assert tying that table to the binary's (bits, TileK); this row is what makes a stale table fail
     # here instead of producing a sweep over tactics the binary cannot select.

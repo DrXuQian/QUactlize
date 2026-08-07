@@ -55,7 +55,7 @@ int main(int argc, char** argv) {
   // pointed at: its counts are all multiples of TileM, so it never enters the masked path at all.
   bd.mode = argc > 6 ? atoi(argv[6]) : (MOE_TABLE_DECODE ? 4 : 2);
   bd.topk = argc > 7 ? atoi(argv[7]) : 8;
-  bd.scale_k = bd.K / bd.gs;
+  bd.scale_k = moe_scale_groups(bd.K, bd.gs);
 
   // ROW-COUNT DISTRIBUTION. The first ragged generator was (Rows/2)*((e%4)+1) -- 64, 128, 192, 256. Every count a
   // multiple of 64, hence a multiple of every TileM being swept, hence **the masked path was never entered at all**.
