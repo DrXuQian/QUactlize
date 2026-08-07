@@ -41,6 +41,22 @@ EDGE = re.compile(r'#include\s+\\"([^"\\]+)\\"')
 # An interpolated include would defeat the extraction silently, so its presence is an error rather than a miss.
 INTERPOLATED = re.compile(r'#include\s+\\"[^"\\]*\$\{')
 SEARCH_DIRS = ["benchmarks", "quactlize/include", "quactlize/csrc", "tests", "dev/fold_derivation"]
+# A GENERATED INCLUDE MAY NAME A FILE THE GENERATOR ITSELF WRITES, into the BUILD directory. That is not a
+# missing file -- it is the normal case for per-band metadata:
+#
+#     file(WRITE "${_MOE_GEN_DIR}/moe_bench_band.inc.in" ...)
+#     execute_process(... copy_if_different "${_MOE_GEN_DIR}/moe_bench_band.inc.in"
+#                                           "${_MOE_GEN_DIR}/moe_bench_band.inc")
+#
+# The source tree will never contain moe_bench_band.inc, and it should not: it is per-configure output. This gate
+# reported it as "resolve to nothing" and told the reader "the generator will emit a source that cannot compile",
+# which is a claim about the code for a defect in the check -- the same shape as the units gate counting row
+# fields and the provenance gate covering one table of six. It has been failing since at least 66a5994.
+#
+# So an edge is satisfied by EITHER a file in the tree OR a write of that same name by a generator. The second
+# clause is derived from the CMake text, not a list of exemptions: adding a new generated .inc needs no edit here,
+# and deleting the file(WRITE) that produces one turns its edge red again.
+WRITTEN = re.compile(r'(?:file\s*\(\s*WRITE|copy_if_different)[^)]*?/([A-Za-z0-9_.\-]+\.inc)(?:\.in)?["\s)]')
 
 
 def main() -> int:
@@ -69,9 +85,15 @@ def main() -> int:
               "include a .inc; zero matches means the pattern stopped describing it, not that the edges are gone.")
         return 1
 
+    generated_names = set()
+    for g in present:
+        for m in WRITTEN.finditer(g.read_text(errors="replace")):
+            generated_names.add(m.group(1))
+
     missing = []
     for g, name in edges:
-        if not any((ROOT / d / name).is_file() for d in SEARCH_DIRS):
+        in_tree = any((ROOT / d / name).is_file() for d in SEARCH_DIRS)
+        if not in_tree and name not in generated_names:
             missing.append((g, name))
 
     if missing:
@@ -83,7 +105,8 @@ def main() -> int:
         print("    generator names it wrongly.")
         return 1
 
-    print(f"[generated-edges] PASS: {len(edges)} generated include(s) from {len(present)} generator(s), all resolve")
+    print(f"[generated-edges] PASS: {len(edges)} generated include(s) from {len(present)} generator(s), all resolve"
+          + (f" ({len(generated_names)} of them written by the generator into the build dir)" if generated_names else ""))
     return 0
 
 
