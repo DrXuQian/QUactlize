@@ -3589,3 +3589,46 @@ emitter 已经会把 `TileM prune dropped N row(s)` 印在表头上,哪条路都
 ### 交付
 
 每改一次表都要跑 `python3 ci/check_dense_tactic_table.py --table <每一张>` —— 六张全绿才算完。gate 现在从表自己的 `*_CFG_ROWS` 推宏前缀、认 `--format`、并把 `tactic_tile_k:`(覆盖了什么)和 `tactic_tk SKIPPED`(请求了什么被拒)取并集当重建参数,别把这两行合并。
+
+## 089 — dense 只有一张 bits=4 的表,五条 int1/int2 记录没有任何 sweep 能复现(**做完 088 再开**)
+
+088 的四个文件你正拿着(emit_tactic_configs.cpp / CMakeLists.txt.in / TacticTableUnits.cmake / ppu_tactic_space.hpp),089 动的是同一批,所以**必须排在 088 提交之后**,不要并行。我这边不碰这四个文件。
+
+### 事实(用 `python3 ci/check_backtest_configs.py` 复现,已在 develop 上)
+
+那个脚本从 `docs/BACKTEST.md` 解析每条记录的 config,映射到 sweep 会搜的表,查在不在。当前结果:
+
+    6 reachable   A0 A1 A6 A7(dense int4)、C1 D4(grouped int4)
+    0 missing
+    5 NO TABLE    A2 A3 A4 A8 A9
+    5 unparsed    B1 B3 D6 D7 D8(记录本身没写位宽,我来补,不是你的活)
+
+那 5 条是:
+
+    A2  int1  gs=32  w64x32 + PPU_B_CHUNK=1                     215.23 us  63.9%
+    A3  int1  gs=32  (64,128,64) w64x64 s2, B_CHUNK, ScaleOnly     —       63.7%
+    A4  int2  gs=32  w64x32                                     233.76 us  58.8%
+    A8  int1  gs=32  32,128,128 F=2                                —       54.3%
+    A9  int2  gs=32  64,64,64 F=2                                  —       53.2%
+
+原因很直接:**dense 只有一张表 `benchmarks/lowbit_dense_configs.inc`,表头是 `space=dense bits=4`**。grouped 侧是每格式一张(i4/i2/Q3_K/Q5_K/Q6_K 五张),dense 侧只有 int4 一张。所以这五个 53–64% 的实测赢家,今天没有任何 sweep 能找回来 —— 不是它们输了,是没人能再搜到它们。
+
+### 要做的
+
+dense 跟 grouped 对齐成**每格式一张表**:`benchmarks/lowbit_dense_<fmt>_configs.inc`。现有的 `lowbit_dense_configs.inc` 要么改名成 `lowbit_dense_i4_configs.inc`,要么保留作 i4 的别名 —— 你定,但**不要两个文件同时存在同一份 i4 行**,那正是今天六张表里五张漂移没人发现的那种形状。
+
+连带要动的:
+- `emit_tactic_configs.cpp`:dense 路径现在忽略 `--format`(grep 一下 `space == "dense"` 那个分支),要跟 grouped 一样按 format 走
+- `CMakeLists.txt.in` 的 dense unit 生成器:现在只认一张表,要按格式循环
+- `ci/check_dense_tactic_table.py`:已经会从表自己的 `*_CFG_ROWS` 推宏前缀、认 `--format`,应该不用改;但要确认新表的宏名不撞
+- `ci/local_gates.py`:已经扫 `benchmarks/lowbit_*_configs.inc` 全集,新表会自动进去
+
+**注意 DenseSpace 和 GroupedSpace 现在是同一份谓词写了两遍**:`ppu_tactic_space.hpp:199` 的 `dense_kernel_exclusion(c) { return common_kernel_exclusion(c); }` 是纯转发,`dense_non_smem_exclusion` / `dense_topology_exclusion` 与 `common_` 那两个逐字节相同。所以 dense 开出 int1/int2 表时**行数应该等于对应的 grouped 表**(i2 现在 635 行)。如果不等,说明这两份谓词已经悄悄分叉了,那本身是要报告的发现,不要就地"修"成一致 —— 先告诉我差在哪。任务 #32 是把它们合成一份。
+
+### 验收
+
+- `python3 ci/check_backtest_configs.py` 的 `NO TABLE` 从 5 降到 0(unparsed 那 5 条归我,不算你的)
+- 每张表(含新表)`python3 ci/check_dense_tactic_table.py --table <path>` rc=0
+- `python3 ci/local_gates.py` 里的 table 门报出的表数从 6 变成新的总数
+
+一个 sub-item 一个 commit。`git add` 只用显式路径。
