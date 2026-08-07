@@ -99,7 +99,7 @@ if-chain) and selects one at **runtime** — no recompile to switch. Same model 
 BIN=$(find "$PWD/../../../build_ppu" -name test_lowbit_dense_bench -type f)
 
 $BIN --list_configs                                                    # enumerate compiled tactics
-$BIN --m=2048 --n=4096 --k=4096 --g=128 --config=64x64:32x32:s4        # force one
+$BIN --m=2048 --n=4096 --k=4096 --g=128 --config="64x64:64 w32x32 s4 bc0->0"  # force one
 $BIN --m=2048 --n=4096 --k=4096 --g=128 --search_configs \             # in-process sweep, pick best, run it
      --save_tactic=tactics_ppu001.cache
 $BIN --m=2048 --n=4096 --k=4096 --g=128 --tactic=tactics_ppu001.cache  # load best for this shape from cache

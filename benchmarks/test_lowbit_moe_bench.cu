@@ -161,7 +161,8 @@ int main(int argc, char** argv) {
               bd.N, bd.K, bd.gs);
   if (moe_verbose()) {
     std::printf("             total=%d Mmax=%d Mmin=%d zero-row experts=%d active=%d  PEAK=%.0f TFLOP/s\n",
-                bd.total, bd.Mmax, mn, zeros, bd.active, PEAK / 1e12);
+                bd.total, bd.Mmax, mn, zeros, bd.active,
+                bench_measure::kPeakFlopsPerSecond / 1e12);
     std::printf("             MFU is on the REAL rows (2*total*N*K), so wasting rows cannot buy MFU.\n");
     // A LOG THAT DOES NOT DESCRIBE ITS OWN RUN. MOE_ACU and MOE_ONLY are exported for an acu capture and then stay exported
     // in the shell, so the next plain run silently measures ONE COLD LAUNCH of ONE row and reports it as the winner. Keep
@@ -215,7 +216,7 @@ int main(int argc, char** argv) {
   // THE WHOLE LIST, REPEATED -- not each candidate repeated in place. See the comment on Best in
   // lowbit_moe_bench.hpp: drift is time-correlated, so interleaving is what keeps it from landing on one
   // candidate. MOE_REPS=1 is allowed and is explicitly not a ranking.
-  const int reps = moe_acu() ? 1 : moe_reps();
+  const int reps = moe_acu() ? 1 : bench_measure::read_reps("MOE_REPS");
   (void)bench_floor::us();  // measure before the sweep even when its explanatory banner is hidden
   if (moe_verbose()) bench_floor::banner();
   char build_identity[128];
@@ -237,7 +238,7 @@ int main(int argc, char** argv) {
   // memory roof is the only one in play and the measured time can be compared to it directly.
   if (moe_verbose()) {
     const double fl   = 2.0 * double(bd.total) * double(bd.N) * double(bd.K);
-    const double ridge = PEAK / (HBM_GBS * 1e9);
+    const double ridge = bench_measure::ridge_flops_per_byte();
     std::printf("\n  roofline: ridge = PEAK/HBM = %.0f FLOP/B. This shape has %.0f MFLOP over the compulsory traffic below,\n",
                 ridge, fl / 1e6);
     std::printf("            so read HBM%%%% as \"%%%% of the memory roof\": 100%%%% means saturated, and the shortfall is\n");
@@ -284,17 +285,16 @@ int main(int argc, char** argv) {
     }
     // THE MASKED FRACTION IS ON THE ROW, because without it the MFU on the same row cannot be read. MFU's numerator
     // is 2*bd.total*N*K -- REAL rows -- while the kernel fetches and multiplies TM*mt of them. On a ragged band those
-    // differ by ~2x, so a kernel running at 60% of the machine prints 30% here and reads as broken. TM is recovered
-    // from the tag because the tag IS the row identity ("TMxTN:TK wWMxWN sST"); it is not a second source of truth.
-    int w_tm = 0;
-    const double msk = (std::sscanf(e.tag, "%dx", &w_tm) == 1 && w_tm > 0)
-                         ? masked_fraction(bd, w_tm) : 0.0;
+    // differ by ~2x, so a kernel running at 60% of the machine prints 30% here and reads as broken. The winning
+    // tactic stays structured through selection; parsing "%dx" from a tag beginning with "i4 " made every old
+    // summary silently print msk=0.
+    const double msk = (e.has_tactic && e.tactic.tm > 0) ? masked_fraction(bd, e.tactic.tm) : 0.0;
     // ONE MFU, and it counts REAL work only. The numerator is 2*total*N*K -- what the model requires. Rows the
     // kernel padded out to TileM are the kernel's own overhead, not work, and they must count AGAINST it: an MFU
     // that forgave padding would be silent on exactly the defect it should expose (an oversized TileM at decode).
     // msk is printed beside it as a DIAGNOSTIC -- it says where the missing fraction went, it does not rescale it.
     std::printf("  %-4s %-30s %8.2f us | %6.1f TF/s (%4.1f%% MFU) msk=%.0f%%%s%s\n",
-                moe_fmt_names[ord[i]], e.tag, e.us, tf, 100.0 * tf * 1e12 / PEAK, 100.0 * msk, lb, verdict);
+                moe_fmt_names[ord[i]], e.tag, e.us, tf, bench_measure::mfu_pct(tf), 100.0 * msk, lb, verdict);
     if (*lb && moe_verbose())
       std::printf("       %s this row is within 3x the empty-launch floor (%.2f us)\n", lb, bench_floor::us());
   }
@@ -308,18 +308,20 @@ int main(int argc, char** argv) {
                   moe_fmt_names[i]);
       double hi = 0;
       for (const auto& s : e.seen)
-        if (std::strncmp(s.tag, e.tag, 64) == 0) hi = *std::max_element(s.us.begin(), s.us.end());
+        if (std::strncmp(s.tag, e.tag, bench_measure::kTagBytes) == 0)
+          hi = *std::max_element(s.us.begin(), s.us.end());
       for (const auto& s : e.seen) {
-        if (std::strncmp(s.tag, e.tag, 64) == 0) continue;
+        if (std::strncmp(s.tag, e.tag, bench_measure::kTagBytes) == 0) continue;
         const double slo = *std::min_element(s.us.begin(), s.us.end());
         if (slo <= hi) std::printf("         %-30s median %8.2f  min %8.2f\n", s.tag, median_of(s.us), slo);
       }
     }
   }
   if (moe_verbose()) {
-    std::printf("  HBM%% uses the distinct-byte lower bound: real A (total*K*2) + one read of each ACTIVE expert's\n");
-    std::printf("  weights and scales + D. Padding loads do not issue. A may still be re-fetched across n-tiles, so\n");
-    std::printf("  total traffic is not LOCKED and HBM%% remains a lower bound. At decode, the B and S terms are exact.\n");
+    std::printf("  distinct HBM%% is the compulsory lower bound: real A (total*K*2) + one read of each ACTIVE\n");
+    std::printf("  expert's weights and scales + D. tile GB/s is the no-cache request model: A per n-tile and\n");
+    std::printf("  weights/scales per m-tile. Its ratio to distinct names the required cache reuse; above peak means\n");
+    std::printf("  the re-reads must be L2-served, not that DRAM exceeded 100%%. At decode, B and S are exact.\n");
     std::printf("  blk/wrp come from fold::warps_per_cu_chunked (registers billed to a power of two), NOT from a smem+warps\n");
     std::printf("  formula -- acu already showed that one to be register-limited and mis-ordering. wav = cta/(72*blk).\n");
     std::printf("  Then read mt and msk: smallest mt winning => the weight-bound rule holds; least msk => the dense\n");

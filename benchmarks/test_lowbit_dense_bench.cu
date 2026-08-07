@@ -77,6 +77,7 @@
 #include "quactlize_actlize.hpp"
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
 #include "ppu_mixed_policy.hpp"
+#include "bench_select.hpp"
 
 // Cross-check hook: pull in the grouped mixed-input launcher so we can run it (L=1) on THIS file's own verified
 // data via a runtime --xcheck flag. Always included (no compile-time guard): the two-stage PPU host/device
@@ -298,7 +299,36 @@ struct Options;
 struct Result;
 struct TileCfg;
 using LowbitDenseWrapper = Result (*)(Options&, TileCfg const&);
-struct TileCfg { char const* name; int tm, tn, tk, wm, wn, st, b_chunk; LowbitDenseWrapper wrapper; };
+struct TileCfg {
+  char const* name;
+  int tm, tn, tk, wm, wn, st, b_chunk, b_chunk_effective;
+  LowbitDenseWrapper wrapper;
+};
+
+inline bench_measure::Tactic dense_tactic(TileCfg const& c) {
+  return {nullptr, c.tm, c.tn, c.tk, c.wm, c.wn, c.st,
+          c.b_chunk, c.b_chunk_effective, false};
+}
+
+inline bench_measure::Tactic dense_convert_tactic() {
+  return {nullptr, TILE_M, TILE_N, TileShapeK, WARP_M, WARP_N, STAGES, 0, 0, false};
+}
+
+#if !defined(LOWBIT_DENSE_UNIT_BUILD)
+#if defined(PPU_B_CHUNK)
+inline constexpr int kDenseFixedBChunkRequest = PPU_B_CHUNK;
+#else
+inline constexpr int kDenseFixedBChunkRequest = 0;
+#endif
+
+// Fixed (non-generated) scale rows still compile a real Policy. Read its descriptor rather than claiming bc0->0:
+// PPU_DEFS=PPU_B_CHUNK=1 reaches this main TU, and the policy may accept or reject that request by format.
+template <class Policy>
+inline bench_measure::Tactic dense_fixed_tactic() {
+  return {nullptr, TILE_M, TILE_N, TileShapeK, WARP_M, WARP_N, STAGES,
+          kDenseFixedBChunkRequest, Policy::Descriptor::atom_at_a_time ? 1 : 0, false};
+}
+#endif
 
 // The generated table. Regenerate with benchmarks/emit_tactic_configs.cpp when the binary's (QUANT, BENCH_TSK)
 // changes -- the static_assert below is what turns forgetting into a compile error rather than a sweep over a
@@ -310,7 +340,6 @@ struct TileCfg { char const* name; int tm, tn, tk, wm, wn, st, b_chunk; LowbitDe
 #include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 
 #if !defined(LOWBIT_DENSE_UNIT_BUILD)
-#include "bench_select.hpp"
 #include "bench_samples.hpp"
 #include "bench_floor.cuh"
 #if defined(BENCH_UINT1)
@@ -535,9 +564,13 @@ struct Result
 #define LOWBIT_DENSE_TAG_SYMBOL_I(TM,TN,TK,WM,WN,ST,BC) \
   lowbit_dense_cfg_tm##TM##_tn##TN##_tk##TK##_wm##WM##_wn##WN##_st##ST##_bc##BC##_tag
 #define LOWBIT_DENSE_TAG_SYMBOL(TM,TN,TK,WM,WN,ST,BC) LOWBIT_DENSE_TAG_SYMBOL_I(TM,TN,TK,WM,WN,ST,BC)
+#define LOWBIT_DENSE_BC_EFF_SYMBOL_I(TM,TN,TK,WM,WN,ST,BC) \
+  lowbit_dense_cfg_tm##TM##_tn##TN##_tk##TK##_wm##WM##_wn##WN##_st##ST##_bc##BC##_effective
+#define LOWBIT_DENSE_BC_EFF_SYMBOL(TM,TN,TK,WM,WN,ST,BC) LOWBIT_DENSE_BC_EFF_SYMBOL_I(TM,TN,TK,WM,WN,ST,BC)
 #define LOWBIT_DENSE_DECLARE(TM,TN,TK,WM,WN,ST,BC,_UNUSED) \
   Result LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(Options&, TileCfg const&); \
-  char const* LOWBIT_DENSE_TAG_SYMBOL(TM,TN,TK,WM,WN,ST,BC)();
+  char const* LOWBIT_DENSE_TAG_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(); \
+  int LOWBIT_DENSE_BC_EFF_SYMBOL(TM,TN,TK,WM,WN,ST,BC)();
 LOWBIT_DENSE_TABLE_CFG_LIST(LOWBIT_DENSE_DECLARE, )
 #undef LOWBIT_DENSE_DECLARE
 
@@ -545,6 +578,7 @@ inline std::vector<TileCfg> const& supported_configs() {
   static std::vector<TileCfg> const configs = {
 #define LOWBIT_DENSE_REGISTRY_ROW(TM,TN,TK,WM,WN,ST,BC,_UNUSED) \
     TileCfg{LOWBIT_DENSE_TAG_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(), TM, TN, TK, WM, WN, ST, BC, \
+            LOWBIT_DENSE_BC_EFF_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(), \
             &LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,BC)},
     LOWBIT_DENSE_TABLE_CFG_LIST(LOWBIT_DENSE_REGISTRY_ROW, )
 #undef LOWBIT_DENSE_REGISTRY_ROW
@@ -553,6 +587,8 @@ inline std::vector<TileCfg> const& supported_configs() {
 }
 #undef LOWBIT_DENSE_TAG_SYMBOL
 #undef LOWBIT_DENSE_TAG_SYMBOL_I
+#undef LOWBIT_DENSE_BC_EFF_SYMBOL
+#undef LOWBIT_DENSE_BC_EFF_SYMBOL_I
 #undef LOWBIT_DENSE_SYMBOL
 #undef LOWBIT_DENSE_SYMBOL_I
 #endif
@@ -830,9 +866,10 @@ bool verify(const Options &options) {
 #endif
 
 /// Execute a given example GEMM computation. Returns the Result (does not exit on failure, so the tactic
-/// search can skip a config that does not verify and move on). `label` is printed on the comparable line.
+/// search can skip a config that does not verify and move on). The structured tactic drives both the display
+/// tag and the traffic model; neither is recovered by parsing the other.
 template <typename Gemm>
-Result run(Options &options, char const* label = "default")
+Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic())
 {
   initialize(options);
 
@@ -889,12 +926,11 @@ Result run(Options &options, char const* label = "default")
     std::cout << "  Avg runtime: " << result.avg_runtime_ms << " ms" << std::endl;
     std::cout << "  GFLOPS: " << result.gflops << std::endl;
 
-    // Report BOTH utilizations -- neither alone tells you what is binding:
-    //   cmp   = achieved TFLOP/s vs the 500 TFLOP/s fp16 peak (compute utilization).
-    //   min   = the ALGORITHMIC minimum traffic (A + B + D each touched once) vs HBM peak. This is what a perfect
-    //           kernel would move from HBM; at prefill M it is tiny (few % of HBM), which is why MFU is the headline.
-    //   tile  = the TILE-LEVEL traffic REQUESTED: A once per N-tile (N/TileN times), B once per M-tile. Reported
-    //           as GB/s and as a REUSE FACTOR over min, NOT as a percentage of HBM.
+    // Report BOTH traffic ends -- neither alone tells you what is binding:
+    //   distinct = the ALGORITHMIC minimum traffic (A + B + D each touched once) vs HBM peak. This is what a
+    //              perfect kernel would move from HBM; at prefill M it is tiny, which is why MFU is the headline.
+    //   tile     = the TILE-LEVEL traffic REQUESTED: A once per N-tile, B once per M-tile. It is GB/s plus a
+    //              REUSE FACTOR over distinct, NOT a percentage of HBM.
     //
     //   WHY NOT AGAINST HBM, corrected 2026-08-05 after a box run printed "195.2% HBM". Tile traffic is what the
     //   kernel ASKS FOR; L2 serves the re-reads, so measuring it against the DRAM peak is a category error and any
@@ -907,29 +943,27 @@ Result run(Options &options, char const* label = "default")
     //   only 48%". 83% of tile-level traffic does not establish DRAM-bound either; the same L2 objection applies,
     //   and that claim should be treated as unproven until something measures actual DRAM traffic (acu can).
     const double us = result.avg_runtime_ms * 1e3;
-    const double tflops = result.gflops / 1e3;
-    int tm = 0, tn = 0;
-    std::sscanf(label, "%dx%d", &tm, &tn);                       // label is "TMxTN:WMxWN:sS"
     const double Mm = options.m, Nn = options.n, Kk = options.k;
     const double bq = double(sizeof_bits<QuantType>::value) / 8.0;   // bytes per weight element
-    const double n_tiles = tn > 0 ? std::ceil(Nn / tn) : 1.0;
-    const double m_tiles = tm > 0 ? std::ceil(Mm / tm) : 1.0;
-    const double min_bytes  = Mm * Kk * 2.0 + Nn * Kk * bq + Mm * Nn * 2.0;
-    const double tile_bytes = Mm * Kk * 2.0 * n_tiles + Nn * Kk * bq * m_tiles + Mm * Nn * 2.0;
-    const double HBM_GBS = 2766.0;                               // ppu001 HBM peak
-    const double gbs_min  = min_bytes  / (us * 1e-6) / 1e9;
-    const double gbs_tile = tile_bytes / (us * 1e-6) / 1e9;
+    const double n_tiles = tactic.tn > 0 ? std::ceil(Nn / tactic.tn) : 1.0;
+    const double m_tiles = tactic.tm > 0 ? std::ceil(Mm / tactic.tm) : 1.0;
+    // Preserve the dense model's established byte terms in this consolidation commit: it did not count scale
+    // metadata or multiply traffic by batch L. Those are separate arithmetic changes, not refactoring licenses.
+    const auto traffic = bench_measure::make_traffic({
+        Mm * Kk * 2.0, Nn * Kk * bq, 0.0, Mm * Nn * 2.0,
+        1.0, n_tiles, m_tiles});
+    const auto metrics = bench_measure::measure(
+        us, 2.0 * Mm * Nn * Kk * double(options.l), traffic);
     // NOTE: the w%d tag (w4/w2/w1) is essential -- the cfg label alone is identical across quant builds and the
     // numbers are easy to mix up between them (int4/int2/int1 all have a "64x64:32x32:s3").
-    // min IS the only figure with a legitimate HBM denominator: it counts every byte once, which is what DRAM
+    // distinct IS the only figure with a legitimate HBM denominator: it counts every byte once, which is what DRAM
     // must actually deliver. tile carries a reuse factor instead, and a marker when it exceeds the DRAM peak --
     // which says the re-reads are cache-served, not that the kernel is bandwidth-bound.
-    double const reuse = tile_bytes / min_bytes;
-    std::printf("  [CUTLASS w%d gs=%d cfg=%s] M=%d %7.2f us | %6.1f TFLOP/s | cmp %5.1f%% | tile %6.0f GB/s "
-                "(%.1fx min%s) | min %5.0f GB/s (%4.1f%% HBM)\n",
-                int(sizeof_bits<QuantType>::value), options.g, label,
-                options.m, us, tflops, 100.0 * tflops / 500.0,
-                gbs_tile, reuse, gbs_tile > HBM_GBS ? ", L2-served" : "", gbs_min, 100.0 * gbs_min / HBM_GBS);
+    char tag[bench_measure::kTagBytes], core[256];
+    bench_measure::format_tag(tag, sizeof tag, tactic);
+    bench_measure::format_metrics(core, sizeof core, metrics);
+    std::printf("  [CUTLASS w%d gs=%d cfg=%s] M=%d %7.2f us | %s\n",
+                int(sizeof_bits<QuantType>::value), options.g, tag, options.m, us, core);
   }
 
   return result;
@@ -964,38 +998,46 @@ bool supported_group_size(int group_size) {
 #endif
 }
 
-Result run_scale_only(Options& options, char const* label = "default") {
+Result run_scale_only(Options& options) {
   switch (options.g) {
 #if DENSE_GS_ARM(16)
-    case 16:  return run<typename GroupKernels<16>::ScaleOnly>(options, label);
+    case 16:  return run<typename GroupKernels<16>::ScaleOnly>(
+        options, dense_fixed_tactic<typename GroupKernels<16>::ScaleOnlyPolicy>());
 #endif
 #if DENSE_GS_ARM(32)
-    case 32:  return run<typename GroupKernels<32>::ScaleOnly>(options, label);
+    case 32:  return run<typename GroupKernels<32>::ScaleOnly>(
+        options, dense_fixed_tactic<typename GroupKernels<32>::ScaleOnlyPolicy>());
 #endif
 #if DENSE_GS_ARM(64)
-    case 64:  return run<typename GroupKernels<64>::ScaleOnly>(options, label);
+    case 64:  return run<typename GroupKernels<64>::ScaleOnly>(
+        options, dense_fixed_tactic<typename GroupKernels<64>::ScaleOnlyPolicy>());
 #endif
 #if DENSE_GS_ARM(128)
-    case 128: return run<typename GroupKernels<128>::ScaleOnly>(options, label);
+    case 128: return run<typename GroupKernels<128>::ScaleOnly>(
+        options, dense_fixed_tactic<typename GroupKernels<128>::ScaleOnlyPolicy>());
 #endif
     default:  std::fprintf(stderr, "unsupported dense group size %d (supported: 16, 32, 64, 128)\n", options.g);
               return {};
   }
 }
 
-Result run_scale_zero(Options& options, char const* label = "default") {
+Result run_scale_zero(Options& options) {
   switch (options.g) {
 #if DENSE_GS_ARM(16)
-    case 16:  return run<typename GroupKernels<16>::ScaleZero>(options, label);
+    case 16:  return run<typename GroupKernels<16>::ScaleZero>(
+        options, dense_fixed_tactic<typename GroupKernels<16>::ScaleZeroPolicy>());
 #endif
 #if DENSE_GS_ARM(32)
-    case 32:  return run<typename GroupKernels<32>::ScaleZero>(options, label);
+    case 32:  return run<typename GroupKernels<32>::ScaleZero>(
+        options, dense_fixed_tactic<typename GroupKernels<32>::ScaleZeroPolicy>());
 #endif
 #if DENSE_GS_ARM(64)
-    case 64:  return run<typename GroupKernels<64>::ScaleZero>(options, label);
+    case 64:  return run<typename GroupKernels<64>::ScaleZero>(
+        options, dense_fixed_tactic<typename GroupKernels<64>::ScaleZeroPolicy>());
 #endif
 #if DENSE_GS_ARM(128)
-    case 128: return run<typename GroupKernels<128>::ScaleZero>(options, label);
+    case 128: return run<typename GroupKernels<128>::ScaleZero>(
+        options, dense_fixed_tactic<typename GroupKernels<128>::ScaleZeroPolicy>());
 #endif
     default:  std::fprintf(stderr, "unsupported dense group size %d (supported: 16, 32, 64, 128)\n", options.g);
               return {};
@@ -1023,7 +1065,16 @@ Result run_config(Options& options, TileCfg const& cfg) {
 }
 
 TileCfg find_config(std::string const& name) {
-  for (auto const& c : supported_configs()) if (name == c.name) return c;
+  for (auto const& c : supported_configs()) {
+    if (name == c.name) return c;
+    // Compatibility input only. Before dense and MoE shared one formatter, dense persisted this compact form in
+    // --tactic caches and accepted it through --config. New output uses the canonical tag, but old measurements
+    // remain reproducible rather than becoming unreadable overnight.
+    char legacy[bench_measure::kTagBytes];
+    std::snprintf(legacy, sizeof legacy, "%dx%dx%d:%dx%d:s%d:bc%d->%d",
+                  c.tm, c.tn, c.tk, c.wm, c.wn, c.st, c.b_chunk, c.b_chunk_effective);
+    if (name == legacy) return c;
+  }
   std::fprintf(stderr, "unknown config '%s'; use --list_configs\n", name.c_str());
   std::exit(1);
 }
@@ -1222,7 +1273,7 @@ int main(int argc, char const **args) {
     // which is why both call bench_select.hpp rather than each carrying a copy.
     // DEFAULT 1, not 5. The user asked for one pass and five stayed the default. One repeat is legal and is
     // explicitly NOT a ranking -- the verdict lines below say so rather than printing something that reads like one.
-    const int reps = [] { char const* e = std::getenv("BENCH_REPS"); int r = (e && *e) ? std::atoi(e) : 1; return r < 1 ? 1 : r; }();
+    const int reps = bench_measure::read_reps();
     char build[128];
     std::snprintf(build, sizeof build, "bits=%d TSK=%d gs=%d",
                   int(cutlass::sizeof_bits<QuantType>::value), TileShapeK, options.g);
@@ -1244,6 +1295,7 @@ int main(int argc, char const **args) {
         _a.n = options.n; _a.k = options.k; _a.gs = options.g;
         _a.experts = 0; _a.rows = options.m; _a.mmax = options.m;
         _a.tm = c.tm; _a.tn = c.tn; _a.tk = c.tk; _a.wm = c.wm; _a.wn = c.wn; _a.st = c.st;
+        _a.bc = c.b_chunk; _a.bc_eff = c.b_chunk_effective;
         _a.pass = rep;
         bench_samples::attempt(_a);
         std::printf("%-18s ", c.name);
@@ -1261,9 +1313,11 @@ int main(int argc, char const **args) {
         // SECONDS, NOT TFLOP/s, IS WHAT GETS COMPARED. The selection works on a time, so converting once here
         // keeps one definition of "better" rather than a maximised rate in one bench and a minimised time in
         // the other -- two orderings that agree until a shape makes the FLOP count differ between candidates.
-        const double us = (tf > 0.0) ? (2.0 * double(options.m) * options.n * options.k / (tf * 1e12) * 1e6) : 1e18;
+        // The timer is already the one measured quantity. Reconstructing it from TFLOP/s previously omitted L
+        // even though Options::gflops includes L, shrinking every batched sample and launch-floor comparison by L.
+        const double us = r.avg_runtime_ms > 0.0 ? r.avg_runtime_ms * 1e3 : 1e18;
         std::printf("%-10.1f ok\n", tf);
-        upd(best, c.name, us);
+        upd(best, dense_tactic(c), us);
         // THE SAME RECORD THE ATTEMPT CARRIED, plus the measurement. Rebuilding the identity fields here was
         // how an attempt and its sample could disagree about what ran; now `us` is the only field that differs.
         if (bench_samples::enabled()) { bench_samples::Sample s = _a; s.us = us; bench_samples::emit(s); }
@@ -1272,7 +1326,8 @@ int main(int argc, char const **args) {
     bench_samples::flush();
     if (best.tag[0] == '\0') { std::fprintf(stderr, "no config passed\n"); return 1; }
     const int ties = settle(best);
-    const double best_tf = 2.0 * double(options.m) * options.n * options.k / (best.us * 1e-6) / 1e12;
+    const double best_tf = 2.0 * double(options.m) * options.n * options.k * options.l /
+                           (best.us * 1e-6) / 1e12;
     // WRITE A TACTIC ONLY FROM A RESOLVED SWEEP. The comment below says an unresolved one is "a wrong answer
     // that never gets revisited", and for one commit the line above it saved unconditionally anyway -- the
     // property was documented and not implemented, which is worse than neither, because the comment is what a

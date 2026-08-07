@@ -115,6 +115,11 @@ SYNTAX = [
     ("benchmarks/test_lowbit_dense_bench.cu", ""),
     ("benchmarks/test_lowbit_dense_bench.cu", "-DBENCH_UINT2"),
     ("benchmarks/test_lowbit_dense_bench.cu", "-DBENCH_UINT1"),
+    ("benchmarks/test_lowbit_dense_bench.cu", "-DPPU_B_CHUNK=1"),
+    # Main mode only declares generated wrappers. This is one real unit-mode row, so shared tag/metric plumbing in
+    # lowbit_dense_unit.inc is instantiated locally instead of waiting for hgcc on the box.
+    ("dev/fold_derivation/test_lowbit_dense_unit.cu", ""),
+    ("dev/fold_derivation/test_lowbit_dense_unit.cu", "-DPPU_B_CHUNK=1"),
     # THE SHIPPING .so BOUNDARY. The benches compiled the grouped collective for years while the product wrapper
     # did not expose it; compiling this translation unit is what covers the six-entry ABI and every qtype dispatch.
     ("quactlize/csrc/device/ppu_dense_backend.cu", ""),
@@ -763,6 +768,11 @@ def lint_moe_build_knobs():
     return _run_ci_script("check_moe_build_knobs.py", "MoE build restrictions affect the generator")
 
 
+def lint_bench_measurement_shared():
+    """Dense and MoE must consume the same constants, tag, repetitions, MFU, and two-ended traffic model."""
+    return _run_ci_script("check_bench_measurement.py", "dense/MoE measurement fields share one implementation")
+
+
 def _run_ci_script(name: str, label: str):
     """Shared shim for the ci/ checkers that are complete programs already; report their last meaningful line."""
     checker = ROOT / "ci" / name
@@ -898,13 +908,14 @@ def lint_dense_tactic_table_current():
 
 def lint_tactic_buckets_do_not_extrapolate():
     """The offline writer stores only measured power-of-two buckets; it never opens the final range."""
-    import importlib.util
+    import types
     source = ROOT / "tools" / "tune.py"
-    spec = importlib.util.spec_from_file_location("quactlize_tune_bucket_check", source)
-    if spec is None or spec.loader is None:
+    try:
+        namespace = {"__file__": str(source), "__name__": "quactlize_tune_bucket_check"}
+        exec(compile(source.read_text(), str(source), "exec"), namespace)
+        module = types.SimpleNamespace(**namespace)
+    except (OSError, SyntaxError):
         return "FAIL", "cannot load tools/tune.py", 0.0
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
     expected = {1: 1, 2: 2, 3: 2, 4: 4, 63: 32, 64: 64, 4097: 4096}
     got = {m: module.m_bucket(m) for m in expected}
     if got != expected:
@@ -1190,6 +1201,7 @@ def main():
                 ("lint", "every build switch this repo owns can actually be turned on", lint_switch_macros),
                 ("lint", "advertised build inputs have a build.sh/CMake route", lint_build_advice),
                 ("lint", "advertised MoE restrictions change generated code", lint_moe_build_knobs),
+                ("lint", "dense and MoE consume one named measurement layer", lint_bench_measurement_shared),
                 ("lint", "quactlize_extensions adds to actlize rather than redefining it", lint_extension_additive),
                 ("lint", "every file naming a quactlize type reaches its defining header", lint_owned_symbol_includes),
                 ("lint", "every listed GGUF format has the collective its row implies", lint_format_table_buildable),

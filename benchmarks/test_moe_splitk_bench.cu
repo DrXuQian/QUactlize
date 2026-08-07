@@ -70,7 +70,8 @@ int main(int argc, char** argv) {
               "HBM %.0f GB/s\n",
               bd.L, bd.Rows, bd.topk, bd.mode,
               bd.mode == 4 ? " token-topk-hot16x4-wor-sm64-s44-v1" : "",
-              bd.N, bd.K, bd.gs, bd.total, bd.Mmax, bd.active, HBM_GBS);
+              bd.N, bd.K, bd.gs, bd.total, bd.Mmax, bd.active,
+              bench_measure::kHbmGBPerSecond);
   if (sk_only()) std::printf("   SPLITK_ONLY=\"%s\"\n", sk_only());
   if (std::getenv("SPLITK_CFG")) std::printf("   SPLITK_CFG=\"%s\"\n", std::getenv("SPLITK_CFG"));
   if (std::getenv("SPLITK_S"))   std::printf("   SPLITK_S=\"%s\"\n", std::getenv("SPLITK_S"));
@@ -106,7 +107,8 @@ int main(int argc, char** argv) {
   // int4 memory roof: weights + scale/zero once per active expert, plus A and D.
   double const roof = double(bd.active) * (double(bd.N) * bd.K * 4 / 8.0 + double(bd.scale_k) * bd.N * 4.0)
                     + double(bd.total) * bd.K * 2.0 + double(bd.total) * bd.N * 2.0;
-  std::printf("   int4 memory roof: %.2f us (%.2f MB)\n", roof / (HBM_GBS * 1e9) * 1e6, roof / 1e6);
+  std::printf("   int4 memory roof: %.2f us (%.2f MB)\n",
+              roof / (bench_measure::kHbmGBPerSecond * 1e9) * 1e6, roof / 1e6);
 
   std::vector<half_t> hA((size_t)bd.total * bd.K), hSc((size_t)bd.L * bd.scale_k * bd.N),
                       hZr((size_t)bd.L * bd.scale_k * bd.N);

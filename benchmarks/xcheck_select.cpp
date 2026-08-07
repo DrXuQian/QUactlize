@@ -101,7 +101,7 @@ int main(int argc, char** argv) {
     std::printf("  median %.6f\n", b.us);
     double lo = 0, hi = 0;
     for (auto const& s : b.seen)
-      if (std::strncmp(s.tag, b.tag, 64) == 0) {
+      if (std::strncmp(s.tag, b.tag, bench_measure::kTagBytes) == 0) {
         lo = *std::min_element(s.us.begin(), s.us.end());
         hi = *std::max_element(s.us.begin(), s.us.end());
       }
@@ -109,7 +109,7 @@ int main(int argc, char** argv) {
     std::printf("  ties %d\n", ties);
     std::vector<std::string> names;
     for (auto const& s : b.seen) {
-      if (std::strncmp(s.tag, b.tag, 64) == 0) continue;
+      if (std::strncmp(s.tag, b.tag, bench_measure::kTagBytes) == 0) continue;
       if (*std::min_element(s.us.begin(), s.us.end()) <= hi) names.push_back(s.tag);
     }
     std::sort(names.begin(), names.end());

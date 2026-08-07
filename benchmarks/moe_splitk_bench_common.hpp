@@ -35,7 +35,7 @@
 
 #pragma once
 
-#include "lowbit_moe_bench.hpp"     // Band, time_it, moe_ok, HBM_GBS, PEAK
+#include "lowbit_moe_bench.hpp"     // Band, time_it, moe_ok, shared bench_measure constants
 #include "moe_splitk_ppu.cuh"
 
 // SK_QUANT: which quantisation channel the row uses, so its cost can be measured by removing it.
@@ -66,7 +66,7 @@ inline bool sk_acu() { return std::getenv("SPLITK_ACU") != nullptr; }
 // for any expert with more than one row, and launch() refuses it above Mmax == 1.
 // SPLITK_ABCAST is gone with the a_row_broadcast parameter it drove: that zeroed the AIU descriptor's row PITCH
 // (dim_w) to request what dim_h already provides, and returned NaN. See moe_grouped_ppu.cuh.
-inline double pct_of(double gbs) { return 100.0 * gbs / HBM_GBS; }
+inline double pct_of(double gbs) { return bench_measure::hbm_pct(gbs); }
 // SPLITK_ONLY matches the whole tag, which means counting the spaces the format string pads out -- and that
 // already cost an acu run ("No kernels were profiled") after the abcast marker changed the spacing from two to
 // three. SPLITK_CFG and SPLITK_S match the two halves independently, so a capture never depends on whitespace.
@@ -223,8 +223,8 @@ inline void sk_row(Band const& bd, SkCtx const& cx, cutlass::DeviceAllocation<in
 
     std::printf("  %-34s %8.2f us | %7.1f GB/s | %5.1f%% HBM | cta/L %5lld tot %6lld | wkwrp/CU %5.1f%s\n",
                 tag, us, gbs, pct_of(gbs), (long long)cta_per_launch, (long long)cta_total, wkwrp_cu,
-                gbs > HBM_GBS ? "  <-- IMPLIES > HBM PEAK, excluded" : "");
-    if (gbs > HBM_GBS) return;
+                gbs > bench_measure::kHbmGBPerSecond ? "  <-- IMPLIES > HBM PEAK, excluded" : "");
+    if (gbs > bench_measure::kHbmGBPerSecond) return;
     sk_upd(slices == 1 ? b1 : bS, tag, us, slices);
   }
 }

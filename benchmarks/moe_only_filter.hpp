@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include "bench_select.hpp"
 
 namespace moe_only_filter {
 
@@ -19,9 +20,9 @@ inline void format_shape(char* out, std::size_t cap, const char* name,
 inline void format_tag(char* out, std::size_t cap, const char* name,
                        int tm, int tn, int tk, int wm, int wn, int stages,
                        int bc_requested, int bc_effective, bool abcast) {
-  std::snprintf(out, cap, "%s %dx%d:%d w%dx%d s%d bc%d->%d%s",
-                name, tm, tn, tk, wm, wn, stages, bc_requested, bc_effective,
-                abcast ? " B" : "");
+  bench_measure::format_tag(out, cap,
+      bench_measure::Tactic{name, tm, tn, tk, wm, wn, stages,
+                            bc_requested, bc_effective, abcast});
 }
 
 inline bool row_selected(const char* tag, const char* filter) {

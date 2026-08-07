@@ -138,9 +138,7 @@ def write_runtime_cache(path: pathlib.Path, so_path: pathlib.Path, device: str, 
     for name, n, k, _ in projections(cfg):
         by_shape.setdefault((n, k), set()).add(projection_op(name))
 
-    inventory_by_key = {}
-    for row in inventory:
-        inventory_by_key[canonical(row["name"]) or row["name"]] = row
+    inventory_index = config_index(inventory)
 
     # Inventory membership says a family was compiled, not that it admits this route and problem. Ask the same
     # exported predicates inference uses before persisting a winner; this prevents (for example) the dense CUDA
@@ -179,8 +177,7 @@ def write_runtime_cache(path: pathlib.Path, so_path: pathlib.Path, device: str, 
     entries = []
     for shape in table:
         for bucket in shape["buckets"]:
-            key = canonical(bucket["config"]) or bucket["config"]
-            compiled = inventory_by_key.get(key)
+            compiled = indexed_config(inventory_index, bucket["config"])
             if compiled is None:
                 raise ValueError(f"winner {bucket['config']!r} is absent from the loaded library")
             if not winner_valid(compiled, bucket["measured_m"], shape["n"], shape["k"]):
@@ -219,19 +216,80 @@ def write_runtime_cache(path: pathlib.Path, so_path: pathlib.Path, device: str, 
 
 
 def canonical(name: str):
-    """-> (tm, tn, wm, wn, st), or None if this is not a config name.
+    """-> (tm, tn, tk, wm, wn, st, bc_requested), or None when the identity is incomplete.
 
-    ONE CONFIG, TWO SPELLINGS, IN ONE PIPELINE. The bench's stdout names it from an X-macro stringification --
-    `64x128:64x64:s3`, no schema and no TileK. analyse.py names the same thing from the sample's fields --
-    `i4 64x128x64:64x64:s3`, with both. So a shipped list produced from `analyse.py --coverage` and fed to this
-    tool would match NOTHING, silently: every winner would be reported as unshipped and the table would come out
-    empty but well-formed. Comparing tuples rather than strings makes the spelling irrelevant.
+    ONE CONFIG, SEVERAL DURABLE SPELLINGS. New bench stdout uses the shared canonical tag
+    `64x128:64 w64x64 s3 bc0->0`; old dense tactic caches use `64x128x64:64x64:s3:bc0->0`, and analyse.py names
+    structured samples `i4 64x128x64:64x64:s3 bc0`. Comparing tuples rather than strings keeps old measurements
+    usable while every new C++ report has one formatter.
 
-    TileK and schema are deliberately dropped rather than compared. They are build-time constants of the binary
-    (QUANT= and BENCH_TSK=), already guarded by the .inc's static_assert, and a config differing only in them is
-    not a different tactic -- it is a different binary."""
-    m = re.match(r"^\s*(?:\w+\s+)?(\d+)x(\d+)(?:x\d+)?:(\d+)x(\d+):s(\d+)\s*$", name)
-    return tuple(int(g) for g in m.groups()) if m else None
+    TileK and requested B-chunk are row axes in the current dense binary, so dropping either silently aliases two
+    compiled tactics. Schema remains outside the key because the qtype/build is carried separately; bc_effective is
+    a derived witness and likewise is not an independent row identity."""
+    patterns = (
+        r"^\s*(?:\w+\s+)?(\d+)x(\d+):(\d+)\s+w(\d+)x(\d+)\s+s(\d+)"
+        r"\s+bc(\d+)(?:->\d+)?(?:\s+B)?\s*$",
+        r"^\s*(?:\w+\s+)?(\d+)x(\d+)x(\d+):(\d+)x(\d+):s(\d+)"
+        r"(?:(?::|\s+)bc(\d+)(?:->\d+)?)\s*$",
+    )
+    for pattern in patterns:
+        m = re.match(pattern, name)
+        if m:
+            return tuple(int(g) for g in m.groups())
+    return None
+
+
+def config_geometry(name: str):
+    """Return the legacy shipping identity (tm, tn, wm, wn, st), if present.
+
+    libquactlize_ppu's v1 inventory predates the TileK/B-chunk axes. Complete identities can be projected here for
+    diagnostics, but indexed_config never uses that projection to validate them against v1; only two genuinely
+    geometry-only legacy names may bridge. This keeps compatibility explicit without collapsing current rows."""
+    full = canonical(name)
+    if full is not None:
+        tm, tn, _tk, wm, wn, st, _bc = full
+        return tm, tn, wm, wn, st
+    # Only the historical five-field spelling is a geometry-only identity. A partial modern name that carries
+    # TileK but omits B-chunk (or vice versa) is not downgraded to geometry: doing so would alias TK64 and TK128
+    # before either side had supplied enough fields for canonical(). Such partial names remain opaque/exact.
+    match = re.match(r"^\s*(?:\w+\s+)?(\d+)x(\d+):(\d+)x(\d+):s(\d+)\s*$", name)
+    if match:
+        return tuple(int(group) for group in match.groups())
+    return None
+
+
+def config_index(rows: list[dict]):
+    """Index full identities exactly and legacy v1 names only by their intentionally incomplete geometry."""
+    full, legacy, opaque = {}, {}, {}
+    for row in rows:
+        name = row["name"]
+        identity = canonical(name)
+        if identity is not None:
+            target, key, kind = full, identity, "complete identity"
+        else:
+            geometry = config_geometry(name)
+            if geometry is not None:
+                target, key, kind = legacy, geometry, "legacy geometry"
+            else:
+                target, key, kind = opaque, name, "opaque name"
+        if key in target:
+            raise ValueError(f"duplicate {kind} in config inventory: {name!r}")
+        target[key] = row
+    return full, legacy, opaque
+
+
+def indexed_config(index, name: str):
+    """Resolve complete identities exactly; bridge geometry only when the winner is itself legacy/incomplete."""
+    full, legacy, opaque = index
+    identity = canonical(name)
+    if identity is not None:
+        # A v1 shipping row cannot prove which TileK/B-chunk it compiled. Treating it as a wildcard here would
+        # recreate the collision canonical() was tightened to remove, only one lookup later.
+        return full.get(identity)
+    geometry = config_geometry(name)
+    if geometry is not None and geometry in legacy:
+        return legacy[geometry]
+    return opaque.get(name)
 
 
 def bench_run(binary: str, n: int, k: int, gs: int, m: int, reps: int, jsonl: str):
@@ -248,7 +306,7 @@ def bench_run(binary: str, n: int, k: int, gs: int, m: int, reps: int, jsonl: st
     if "NOT saved" in out:
         why = next((l.strip() for l in out.splitlines() if "NOT saved" in l), "declined")
         return None, 0.0, why
-    m_ = re.search(r"====\s+WINNER:\s+(\S+)\s+at\s+([0-9.]+)\s+TFLOP/s\s+\(separated\)", out)
+    m_ = re.search(r"====\s+WINNER:\s+(.+?)\s+at\s+([0-9.]+)\s+TFLOP/s\s+\(separated\)", out)
     if not m_:
         lead = re.search(r"====\s+(UNRESOLVED|LOWEST):\s+(\S+)", out)
         return None, 0.0, f"no separated winner ({lead.group(1) if lead else 'no verdict line'})"
@@ -322,6 +380,7 @@ def main() -> int:
     # failure shape as `a tactic the binary cannot select is worse than no tactic`, one level up. So the two
     # products are named differently in the output rather than distinguished by whoever reads it later.
     shipped = None
+    shipped_index = None
     runtime_inventory = None
     config_hash = ""
     so_path = pathlib.Path(a.so) if a.so else None
@@ -341,7 +400,11 @@ def main() -> int:
                              if a.route in ("grouped_lowbit", "grouped_fully_quantized")
                              else dense_inventory)
         shipped = [row["name"] for row in runtime_inventory]
-        shipped_keys = {canonical(r) or r for r in shipped}
+        try:
+            shipped_index = config_index(runtime_inventory)
+        except ValueError as e:
+            print(f"invalid tactic inventory from {so_path}: {e}", file=sys.stderr)
+            return 2
         print(f"tuning against the {len(shipped)} config(s) exported by {so_path}")
     elif a.shipped:
         p = pathlib.Path(a.shipped)
@@ -353,15 +416,26 @@ def main() -> int:
         # discriminator, and an entry in the CUDA-core family has no tile geometry at all -- canonical() returns
         # None for it BY DESIGN, so that it can never be matched against a tile config. Rejecting the list on
         # that basis would refuse exactly the encoding 051 asked for. So: parseable names compare as tuples (which
-        # bridges the bench's spelling and analyse.py's), and anything else compares as an opaque exact string.
+        # bridges the bench's spelling and analyse.py's); v1 geometry-only rows can bridge only another legacy
+        # winner that also omits TileK/B-chunk; and anything else compares as an opaque exact string. A complete
+        # current winner is deliberately rejected against v1: the list does not contain enough identity to prove
+        # that it names the same compiled tactic.
         #
         # A TYPO IS STILL LOUD, without a check for it. A mistyped tile name becomes an opaque name that matches
         # nothing, so every shape comes back "not in the shipped set" and the table is empty with a reason on
         # every row. That is more visible than a warning nobody reads, and it needs no rule that could itself be
         # wrong about what a valid name looks like.
         shipped = raw
-        shipped_keys = {canonical(r) or r for r in raw}
-        opaque = [r for r in raw if canonical(r) is None]
+        try:
+            shipped_index = config_index([{"name": name} for name in raw])
+        except ValueError as e:
+            print(f"invalid shipped-config list {p}: {e}", file=sys.stderr)
+            return 2
+        legacy = [r for r in raw if canonical(r) is None and config_geometry(r) is not None]
+        opaque = [r for r in raw if config_geometry(r) is None]
+        if legacy:
+            print(f"  {len(legacy)} legacy shipped entr(ies) omit TileK/B-chunk (e.g. {legacy[0]!r}); "
+                  f"they cannot validate current complete winner tags")
         if opaque:
             print(f"  {len(opaque)} shipped entr(ies) carry no tile geometry (e.g. {opaque[0]!r}); they match by "
                   f"name only")
@@ -385,7 +459,7 @@ def main() -> int:
             conf, tf, note = bench_run(str(binary), n, k, a.gs, m, a.reps, jsonl)
             # A winner outside the shipped set is not a tactic. Recording it would produce a lookup that always
             # misses; recording nothing leaves an entry that gets regenerated. The second is recoverable.
-            if conf and shipped is not None and (canonical(conf) or conf) not in shipped_keys:
+            if conf and shipped is not None and indexed_config(shipped_index, conf) is None:
                 note = f"winner {conf!r} is not in the shipped set"
                 conf = None
             state = conf if conf else f"-- {note}"

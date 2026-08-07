@@ -24,6 +24,7 @@
 #include "xplane_offline.hpp"
 #include "fold_traits.hpp"   // warps_per_cu_chunked: the occupancy model WITH the register term
 #include "moe_grouped_ppu.cuh"
+#include "bench_select.hpp"
 #include "moe_only_filter.hpp"
 #include "moe_router_fixture.hpp"
 
@@ -60,17 +61,12 @@ static_assert(moe_metadata_planes(QM::FinegrainedScaleOnly) == 1 &&
               moe_metadata_planes(QM::FinegrainedScaleZero) == 2,
               "ScaleOnly has no zero metadata plane");
 
-static constexpr double PEAK    = 500.0e12;
-// HBM peak for ppu001 (see the ppu-ptx skill). Used to turn the traffic model into a percentage, which is the only form
-// in which "is this bandwidth-bound?" is answerable.
-static constexpr double HBM_GBS = 2766.0;
-
 // WHICH SOURCE DID THIS BINARY COMPILE AGAINST. Bump this whenever a macro in this header changes shape. The banner prints
 // it, so a run can no longer be ambiguous about whether it used the fixed header -- a failed build showed a macro expansion
 // containing `fold::FoldTraits` while the checked-out tree had `moe_fold`, and there was no way to tell from here whether
 // the box had built an older commit or the overlay had a stale copy. That ambiguity has cost rounds twice in this work (the
 // per-row PPU_B_CHUNK request/effective tag exists for the same reason), so it gets an invariant instead of a guess.
-#define LOWBIT_MOE_BENCH_REV 18
+#define LOWBIT_MOE_BENCH_REV 19
 
 // The table band is generated next to each target's dispatcher and included before this header. Other users of this
 // shared harness (the split-K probe) remain explicitly unbanded rather than accidentally inheriting lowbit-MoE metadata.
@@ -142,7 +138,6 @@ struct Band {
   char*     ws;   size_t   wsb;
 };
 
-#include "bench_select.hpp"
 #include "bench_samples.hpp"
 #include "bench_floor.cuh"
 
@@ -314,8 +309,10 @@ inline double masked_fraction(const Band& bd, int TM) {
   return mt ? 1.0 - double(bd.total) / (double(TM) * double(mt)) : 0.0;
 }
 
-inline void report(const Band& bd, const char* tag, double us, int TM, int TN, int TK, int WM, int WN, int Stages,
+inline void report(const Band& bd, const char* tag, double us, bench_measure::Tactic const& tactic,
                    int bits_total, int wcu) {
+  const int TM = tactic.tm, TN = tactic.tn, TK = tactic.tk;
+  const int WM = tactic.wm, WN = tactic.wn;
   long long mt_max = 0;
   const long long mt = padded_mtiles(bd, TM, &mt_max);
   const double masked = masked_fraction(bd, TM);
@@ -346,15 +343,15 @@ inline void report(const Band& bd, const char* tag, double us, int TM, int TN, i
   //   B = active*wb       every ACTIVE expert's weights, once
   //   S = active*sb       its scales, plus zeros only in ScaleZero mode, once
   //   C = total*N*2       the output rows that exist
-  const double dfl    = a_dram + double(bd.active) * (wb + sb) + double(bd.total) * double(bd.N) * 2.0;
-  const double dce    = ntile * a_dram + double(mt) * (wb + sb) + double(bd.total) * double(bd.N) * 2.0;
-  const double gbs = dfl / (us * 1e-6) / 1e9;
-  const double tf  = 2.0 * double(bd.total) * double(bd.N) * double(bd.K) / (us * 1e-6) / 1e12;
+  const auto traffic = bench_measure::make_traffic({
+      a_dram, wb, sb, double(bd.total) * double(bd.N) * 2.0,
+      double(bd.active), ntile, double(mt)});
+  const auto metrics = bench_measure::measure(
+      us, 2.0 * double(bd.total) * double(bd.N) * double(bd.K), traffic);
   // S's SHARE OF THE FLOOR is what #20 can possibly buy, and without it the floor cannot answer that question. At decode
   // (1 row per active expert) the weight term is read exactly once per active expert, so floor and ceiling coincide on B
   // and S and this share is a tight number rather than a bound.
-  const double s_share = dfl > 0 ? double(bd.active) * sb / dfl : 0.0;
-  const double gbs_c = dce / (us * 1e-6) / 1e9;
+  const double s_share = metrics.hbm.distinct_metadata_share;
   // THE TWO QUANTITIES TileK CONTROLS, both candidates for why a memory-bound kernel misses its own roofline.
   //   run  = F*TK*bits/8, the AIU CONTIGUOUS run in bytes. The fold targets the AIU's 32 B minimum, which is right on
   //          prefill (it shrinks A-smem) and may be exactly wrong at decode: 24.8% of peak is suspiciously close to
@@ -377,12 +374,13 @@ inline void report(const Band& bd, const char* tag, double us, int TM, int TN, i
   // shrinking the scale or zero tile raises a ceiling that is not being reached.
   const double gwarps = double(mt) * double(bd.N) * double(TM) / (double(WM) * double(WN));
   const double wcu_grid = gwarps / 72.0;
-  std::printf("    %-30s %8.2f us | %6.1f TF/s (%4.1f%% MFU) | mt=%-5lld msk=%4.1f%% skw=%.1fx |"
-              " %6.0f GB/s (HBM %4.1f%%) S=%4.1f%% | blk %-2d wrp/CU %-3d grid_wrp/CU %5.1f cta=%-5ld wav=%4.2f run=%-3dB kit=%-3ld%s\n",
-              tag, us, tf, 100.0 * tf * 1e12 / PEAK, mt, 100.0 * masked, skew,
-              gbs, 100.0 * gbs / HBM_GBS, 100.0 * s_share,
+  char core[256];
+  bench_measure::format_metrics(core, sizeof core, metrics);
+  std::printf("    %-30s %8.2f us | %s | mt=%-5lld msk=%4.1f%% skw=%.1fx S=%4.1f%% |"
+              " blk %-2d wrp/CU %-3d grid_wrp/CU %5.1f cta=%-5ld wav=%4.2f run=%-3dB kit=%-3ld%s\n",
+              tag, us, core, mt, 100.0 * masked, skew, 100.0 * s_share,
               blk, blk * warps, wcu_grid, ctas, waves, run_b, kit,
-              gbs_c < 0.9 * HBM_GBS ? "  NOT-BW" : "");
+              metrics.hbm.tile_gbs < 0.9 * bench_measure::kHbmGBPerSecond ? "  NOT-BW" : "");
 }
 
 // DID THIS ROW ACTUALLY RUN? Two cache-independent nets exclude it: the launch-refusal counter, and the full-D poison
@@ -406,8 +404,8 @@ inline bool moe_row_ran(const Band& bd, const char* tag, double us, int fail0, i
     return false;
   }
   const double wb  = double(bd.N) * double(bd.K) * double(bits_total) / 8.0;
-  const double gbs = (double(bd.active) * wb) / (us * 1e-6) / 1e9;
-  if (gbs > HBM_GBS) {
+  const double gbs = bench_measure::gbs(double(bd.active) * wb, us);
+  if (gbs > bench_measure::kHbmGBPerSecond) {
     std::printf("    %-30s %8.2f us | WARNING cache-hot weight rate %.0f GB/s > HBM peak -- row retained\n",
                 tag, us, gbs);
   }
@@ -519,8 +517,9 @@ constexpr bool moe_b_chunk_effective() {
 #define MOE2_TIME(BD,BEST,NAME,LOELEM,HIELEM,LOB,HIB,TMv,TNv,TKv,WMv,WNv,Sv)                                       \
   if constexpr (moe_ok<TMv,TNv,TKv,WMv,WNv,Sv,LOB,HIB>()) {                                                        \
     constexpr bool _bc = moe_b_chunk_effective<TMv,TNv,TKv,WMv,WNv,Sv,LOELEM,HIELEM>();                            \
-    char _t[80]; moe_only_filter::format_tag(_t, sizeof _t, NAME, TMv, TNv, TKv, WMv, WNv, Sv,                      \
-                                              int(UNIT_B_CHUNK), int(_bc), moe_abcast());                            \
+    const bench_measure::Tactic _cfg{NAME,TMv,TNv,TKv,WMv,WNv,Sv,                                                  \
+                                      int(UNIT_B_CHUNK),int(_bc),moe_abcast()};                                     \
+    char _t[bench_measure::kTagBytes]; bench_measure::format_tag(_t, sizeof _t, _cfg);                              \
     if (moe_row_selected(_t)) {                                                                                    \
       (BEST).any_selected = true;                                                                                  \
       auto _go = [&]{                                                                                              \
@@ -538,7 +537,7 @@ constexpr bool moe_b_chunk_effective() {
       constexpr int _wcu = _bc                                                                                     \
           ? fold::warps_per_cu_chunked<TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),32,true>                                 \
           : fold::warps_per_cu<TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),32,true>;                                        \
-      if (moe_row_ran(BD, _t, u, _f0, (LOB)+(HIB), _ow)) { report(BD,_t,u,TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),_wcu); upd(BEST, _t, u); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), u); } \
+      if (moe_row_ran(BD, _t, u, _f0, (LOB)+(HIB), _ow)) { report(BD,_t,u,_cfg,(LOB)+(HIB),_wcu); upd(BEST, _cfg, u); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), u); } \
     }                                                                                                              \
   }
 
@@ -569,8 +568,9 @@ constexpr bool moe_b_chunk_effective() {
 #define MOE1_TIME(BD,BEST,NAME,ELEM,BITS,TMv,TNv,TKv,WMv,WNv,Sv)                                                   \
   if constexpr (moe_ok<TMv,TNv,TKv,WMv,WNv,Sv,BITS>()) {                                                           \
     constexpr bool _bc = moe_b_chunk_effective<TMv,TNv,TKv,WMv,WNv,Sv,ELEM>();                                     \
-    char _t[80]; moe_only_filter::format_tag(_t, sizeof _t, NAME, TMv, TNv, TKv, WMv, WNv, Sv,                      \
-                                              int(UNIT_B_CHUNK), int(_bc), moe_abcast());                            \
+    const bench_measure::Tactic _cfg{NAME,TMv,TNv,TKv,WMv,WNv,Sv,                                                  \
+                                      int(UNIT_B_CHUNK),int(_bc),moe_abcast()};                                     \
+    char _t[bench_measure::kTagBytes]; bench_measure::format_tag(_t, sizeof _t, _cfg);                              \
     if (moe_row_selected(_t)) {                                                                                    \
       (BEST).any_selected = true;                                                                                  \
       auto _go = [&]{                                                                                              \
@@ -591,7 +591,7 @@ constexpr bool moe_b_chunk_effective() {
       constexpr int _wcu = _bc                                                                                     \
           ? fold::warps_per_cu_chunked<TMv,TNv,TKv,WMv,WNv,Sv,(BITS),32,true>                                      \
           : fold::warps_per_cu<TMv,TNv,TKv,WMv,WNv,Sv,(BITS),32,true>;                                             \
-      if (moe_row_ran(BD, _t, u, _f0, (BITS), _ow)) { report(BD,_t,u,TMv,TNv,TKv,WMv,WNv,Sv,(BITS),_wcu); upd(BEST, _t, u); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), u); } \
+      if (moe_row_ran(BD, _t, u, _f0, (BITS), _ow)) { report(BD,_t,u,_cfg,(BITS),_wcu); upd(BEST, _cfg, u); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), u); } \
     }                                                                                                              \
   }
 
