@@ -3,12 +3,12 @@
 //   TileM prune dropped 1124 row(s) whose TileM exceeds the smallest that covers this table's M
 //                     bound (a capacity row's bound IS its capacity; --m-max sets it otherwise).
 //                     These are LEGAL rows a sweep using this table cannot find.
-//   tactic_tk SKIPPED (ArtifactTileK must tile TacticTileK): 32
+//   tactic_tk SKIPPED (no legal grid under TacticSpace): 32
 //   tactic_tile_k: 64 128 256   <- the CONSUMER choices in this table. artifact_tile_k=64 is the resident layout and is NOT a
 //                     row field: one weight file, many readers.
 //   stages: 2 3 4 6 8 12   <- what this table COVERS; a winner outside it cannot be found by a sweep using it
 //   ppu_b_chunk: 0 1   <- requested mode; each bench tag reports requested->actually effective
-//   provenance: rows=159 space_fnv1a64=1cfe4a3f8c5f59ff emitter_fnv1a64=ede65287e33ea14e
+//   provenance: rows=159 space_fnv1a64=ac911818ca168578 emitter_fnv1a64=184b197bf3d2c23a
 //
 // Regenerate after changing ppu_tactic_space.hpp or the pruning policy:
 //   c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic &&\
@@ -20,8 +20,8 @@
 #define LOWBIT_GROUPED_I4_CFG_BITS  4
 #define LOWBIT_GROUPED_I4_CFG_ARTIFACT_TILEK 64
 #define LOWBIT_GROUPED_I4_CFG_ROWS  159
-#define LOWBIT_GROUPED_I4_CFG_SPACE_FNV1A64   "1cfe4a3f8c5f59ff"
-#define LOWBIT_GROUPED_I4_CFG_EMITTER_FNV1A64 "ede65287e33ea14e"
+#define LOWBIT_GROUPED_I4_CFG_SPACE_FNV1A64   "ac911818ca168578"
+#define LOWBIT_GROUPED_I4_CFG_EMITTER_FNV1A64 "184b197bf3d2c23a"
 
 #define LOWBIT_GROUPED_I4_CFG_LIST(X, B) \
   X(16,16,64,16,16,2,0,B) \

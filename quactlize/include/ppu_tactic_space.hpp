@@ -75,6 +75,7 @@ enum class Exclusion {
   HighFoldDoesNotDivideTileN,
   LowDelivery,
   HighDelivery,
+  ConsumerMap,
   MinimumStageSmem,
   ProducerWarpN,
   ProducerMap,
@@ -95,9 +96,10 @@ constexpr char const* exclusion_clause(Exclusion e) {
     case Exclusion::HighFoldDoesNotDivideTileN: return "ArtifactHighFold does not divide TacticTileN";
     case Exclusion::LowDelivery: return "the low plane over-delivers the warp fragment";
     case Exclusion::HighDelivery: return "the high plane over-delivers the warp fragment";
+    case Exclusion::ConsumerMap: return "the Q6 two-plane consumer map at TacticTileK=256 is incomplete";
     case Exclusion::MinimumStageSmem: return "the conservative gs16 scale+zero footprint exceeds the 256KB block limit";
     case Exclusion::ProducerWarpN: return "the offline producer exposes only consumer-validated WarpN values through 64";
-    case Exclusion::ProducerMap: return "the Q6 two-plane inverse at TileK=256 is incomplete";
+    case Exclusion::ProducerMap: return "the Q6 offline producer inverse at ArtifactTileK=256 is incomplete";
     case Exclusion::BChunkUnsupportedBits: return "single-plane PPU_B_CHUNK requires a 1- or 2-bit format";
   }
   return "unknown exclusion";
@@ -131,6 +133,21 @@ constexpr bool artifact_run_is_exact(int bits, int artifact_tile_k) {
   if (bits <= 0 || artifact_tile_k <= 0 || (int64_t(bits) * artifact_tile_k) % 8) return false;
   int64_t const bytes = int64_t(bits) * artifact_tile_k / 8;
   return bytes >= 32 || (bytes > 0 && 32 % bytes == 0);
+}
+
+// Q6 is the only registered 4+2-bit format. KernelPolicyGuard deliberately carries the physical plane tuple rather
+// than a GGUF qtype, so kernel exclusions must recognize this pair instead of trusting Candidate::spec.format.
+constexpr bool has_q6_plane_pair(Candidate c) {
+  return c.spec.low_bits == 4 && c.spec.high_bits == 2;
+}
+
+constexpr bool q6_consumer_map_is_known_incomplete(Candidate c) {
+  // l104's complete-bijection check rejects every shipping A128/F1xF1 Q6 TacticTileK=256 row it exercises: half of
+  // the logical high-plane slots are never reached. Replaying the same valid 64x128x256_w64x64 geometry with the
+  // other artifact-derived folds is not an escape: A64/F1xF2 misses 3/4 and A32/F2xF4 misses 7/8. ArtifactTileK
+  // selects those folds; the consumer's CubeTV/map geometry is selected by TacticTileK. Until that consumer map is
+  // repaired, no Q6 TacticTileK=256 candidate has a complete-map witness.
+  return has_q6_plane_pair(c) && c.tactic_tile_k == 256;
 }
 
 // This is the actual CTA warp count for the current PPU0010 builder, not a performance proxy. get_tiled_mma tiles one
@@ -172,6 +189,7 @@ constexpr Exclusion common_kernel_exclusion(Candidate c) {
   if (int64_t(c.wn) * c.tactic_tile_k * c.spec.low_bits < 4096) return Exclusion::LowDelivery;
   if (c.spec.high_bits && int64_t(c.wn) * c.tactic_tile_k * c.spec.high_bits < 4096)
     return Exclusion::HighDelivery;
+  if (q6_consumer_map_is_known_incomplete(c)) return Exclusion::ConsumerMap;
   return Exclusion::None;
 }
 
@@ -198,10 +216,11 @@ constexpr Exclusion common_topology_exclusion(Candidate c, int stages = 2) {
 }
 
 constexpr Exclusion common_producer_exclusion(Candidate c) {
-  // Artifact reachability is about the producer's layout, not the tactic that later consumes it. WN=128 remains
-  // outside the producer's validated domain, and Q6/ArtifactTileK=256 is the one known bad inverse map.
+  // These are independent producer limits. In particular, retaining the ArtifactTileK=256 condition matters even
+  // though the consumer gate above currently rejects every Q6 TacticTileK=256 row: the artifact-aware producer ABI
+  // names ArtifactTileK directly and its A256 inverse remains incomplete.
   if (c.wn > 64) return Exclusion::ProducerWarpN;
-  if (c.spec.format == Format::Q6_K && c.artifact_tile_k == 256) return Exclusion::ProducerMap;
+  if (has_q6_plane_pair(c) && c.artifact_tile_k == 256) return Exclusion::ProducerMap;
   return Exclusion::None;
 }
 
@@ -223,6 +242,26 @@ static_assert(common_kernel_exclusion(
 static_assert(common_kernel_exclusion(
                   Candidate{kArtifactFoldControlI2, 64, 64, 96, 64, 32, 48}) ==
               Exclusion::ArtifactLowRun);
+
+// Paired controls for the field-ownership regression. This is an emitted A128/T256 shape: its kernel geometry is
+// otherwise legal and the retired ArtifactTileK==256 predicate necessarily misses it, while the consumer-map gate
+// must reject it. The matching A128/T128 row stays admitted. A direct producer check pins the separate A256 ABI
+// constraint so fixing the consumer side cannot erase it by accident.
+inline constexpr FormatSpec kQ6MapControl{Format::Q6_K, "q6-map-control", 4, 2};
+inline constexpr Candidate kQ6MapBadConsumer{kQ6MapControl, 64, 128, 256, 64, 64, 128};
+inline constexpr Candidate kQ6MapGoodConsumer{kQ6MapControl, 64, 128, 128, 64, 64, 128};
+inline constexpr Candidate kQ6MapBadProducer{kQ6MapControl, 64, 128, 256, 64, 64, 256};
+static_assert(!(has_q6_plane_pair(kQ6MapBadConsumer) && kQ6MapBadConsumer.artifact_tile_k == 256),
+              "negative control: the retired artifact-bound consumer predicate must miss A128/T256");
+static_assert(common_kernel_exclusion(kQ6MapBadConsumer) == Exclusion::ConsumerMap,
+              "Q6 A128/T256 must be rejected by the consumer's TacticTileK map boundary");
+static_assert(common_producer_exclusion(kQ6MapBadConsumer) == Exclusion::None,
+              "negative control: A128/T256 is not rejected by the old producer-side predicate");
+static_assert(common_kernel_exclusion(kQ6MapGoodConsumer) == Exclusion::None &&
+              common_producer_exclusion(kQ6MapGoodConsumer) == Exclusion::None,
+              "Q6 A128/T128 is the complete-map positive control");
+static_assert(common_producer_exclusion(kQ6MapBadProducer) == Exclusion::ProducerMap,
+              "Q6 ArtifactTileK=256 remains outside the offline producer ABI");
 // Everything that determines whether some topology for the candidate may be built, except the M- and stage-dependent
 // shared footprint. size_sweep.cpp uses this before asking the topology predicate.
 constexpr Exclusion common_static_sweep_exclusion(Candidate c) {

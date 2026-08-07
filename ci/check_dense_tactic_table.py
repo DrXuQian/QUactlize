@@ -59,12 +59,14 @@ FORMAT_RE = re.compile(r"--format=([A-Za-z0-9_]+)", re.M)
 # unpruned, which is what every table before 2026-08-07 was.
 M_MAX_RE = re.compile(r"--m-max=(\d+)", re.M)
 # WHAT WAS REQUESTED IS NOT WHAT WAS EMITTED, since 2026-08-07. A --tactic-tk list may name members with no legal
-# grid (ArtifactTileK must tile TacticTileK), and the emitter now emits the legal subset instead of dying. So the
-# header carries TWO lists and both are true of different things: `tactic_tile_k:` is what the table COVERS, and
+# grid under TacticSpace, and the emitter now emits the legal subset instead of dying. Artifact tiling is one reason;
+# a consumer-map or producer-map boundary can remove a whole member too, so the header deliberately does not lie
+# about which one was decisive. The table therefore carries TWO lists and both are true of different things:
+# `tactic_tile_k:` is what the table COVERS, and
 # this line is what was ASKED FOR and refused. Reproducing the file needs the UNION -- regenerating from the
 # surviving members alone produces a file with no SKIPPED line, i.e. a different file, which is exactly the
 # "declared args do not reproduce the table" failure this gate exists to catch. It caught it on itself.
-SKIPPED_RE = re.compile(r"^//\s+tactic_tk SKIPPED \(ArtifactTileK must tile TacticTileK\):\s+([\d ]+)\s*$", re.M)
+SKIPPED_RE = re.compile(r"^//\s+tactic_tk SKIPPED \(no legal grid under TacticSpace\):\s+([\d ]+)\s*$", re.M)
 OUTPUT_RE = re.compile(r"^//\s+/tmp/emit_tactic\b.*>\s+(\S+\.inc)\s*$", re.M)
 
 

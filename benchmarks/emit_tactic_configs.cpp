@@ -277,7 +277,11 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
     return 1;
   }
   if (!n_tkdrop.empty()) {
-    std::printf("//   tactic_tk SKIPPED (ArtifactTileK must tile TacticTileK):");
+    // An empty member used to mean only ArtifactTileK did not tile TacticTileK. Consumer-map and producer-map gates
+    // can now empty a whole member too, so naming the old reason here would turn an honest coverage declaration into
+    // a false diagnosis. The exact exclusions remain printable by emit_tactic_space; this table only needs to retain
+    // the requested members so its provenance replay can reproduce the same legal subset.
+    std::printf("//   tactic_tk SKIPPED (no legal grid under TacticSpace):");
     for (int k : n_tkdrop) std::printf(" %d", k);
     std::printf("\n");
   }
