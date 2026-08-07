@@ -956,8 +956,8 @@ public:
     // l85's collision check, as a body-level assert. It CANNOT sit in the class body: it calls a member of the
     // same class, which is still incomplete there -- nvcc's EDG front end accepts that and hgcc rejects it with
     // "no type named 'SharedStorage'", which is how the local gate passed and the box build failed.
-    static_assert(kAPackRows >= 1 && kAPackRows <= 16,
-                  "PPU_A_PACK=R requires 1 <= R <= the 16-row swzl instruction footprint");
+    static_assert(kAPackRows >= 1 && kAPackRows <= 8,
+                  "PPU_A_PACK=R currently supports 1 <= R <= 8 across compiled TileM cube geometries");
     static_assert(kAPackRows <= kACubeH, "PPU_A_PACK=R cannot exceed A's cube height");
     static_assert(aPackDisjoint(), "PPU_A_PACK: packed first-R-row runs collide -- fix the derived pitch");
     static_assert(kACubeW == 64, "PPU_A_PACK: run offsets assume AiuContElemSize == 64 halfs");

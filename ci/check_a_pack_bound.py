@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """The R that PPU_A_PACK declares legal must actually compile.
 
-WHY THIS EXISTS. quactlize_mma_mixed_input.hpp declares
+WHY THIS EXISTS. quactlize_mma_mixed_input.hpp used to declare
 
     static_assert(kAPackRows >= 1 && kAPackRows <= 16,
                   "PPU_A_PACK=R requires 1 <= R <= the 16-row swzl instruction footprint")
 
-and R=16 does not build: a later static_assert, aPackDisjoint(), fires with "packed first-R-row runs collide --
-fix the derived pitch". Two asserts in the same class disagreeing about the same number, and nothing noticed,
-because the only way to find out was to compile at each R by hand. I did that on 2026-08-07 and the acceptance
-criteria for the change (#44) had no such step -- the hole was in what we agreed to check, not in the work.
+but R=16 did not build: a later static_assert, aPackDisjoint(), fired with "packed first-R-row runs collide --
+fix the derived pitch". The public ceiling was narrowed to the range proved across the compiled TileM geometries;
+this gate keeps the declaration and the implementation from drifting apart again. The contradiction went unnoticed
+because the only way to find it was to compile each R by hand, and #44's acceptance criteria omitted that step.
 
 WHAT IT CHECKS, and it is DERIVED so it follows the source rather than restating it:
 
     * read the declared ceiling out of the static_assert itself
     * R=1 must compile              -- the floor the same assert declares
-    * R=<declared> must compile     -- the claim under test; TODAY THIS FAILS, which is the point
+    * R=<declared> must compile     -- the claim under test
     * R=<declared>+1 must NOT       -- otherwise the ceiling is not a ceiling and the assert is decorative
 
 Three compiles, ~22 s each. Not in the default local tier: it is the slowest check in ci/ and it guards a switch
