@@ -1180,9 +1180,20 @@ int main(int argc, char const **args) {
 
     std::printf("%-18s %-10s %s\n", "CONFIG", "TFLOP/s", "status");
     Best best; best.tag[0] = '\0'; best.us = 1e18;
+    int n_cap_skipped = 0;
     for (int rep = 0; rep < reps; ++rep) {
       if (reps > 1) std::printf("\n  --- pass %d/%d ---\n", rep + 1, reps);
       for (auto const& c : supported_configs()) {
+        // A CAPACITY ROW IS ONLY DEFINED FOR M <= ITS CAPACITY, so skip it rather than run it. Compact A stages
+        // c.acr physical A rows; the grid is ceil(M/TileM) m-tiles and every one of them needs up to TileM rows,
+        // so any M above the capacity asks the kernel for rows it did not stage. That is a DEFINEDNESS rule, and
+        // it deliberately does not lean on verify(): run() prints "verify failed -- timing the kernel anyway for
+        // perf" and keeps going whenever iterations > 0, a carve-out that exists for a known-spurious int2
+        // mismatch and would swallow this one just as happily. A wrong row that still gets timed can win.
+        //
+        // COUNTED AND REPORTED, never silent -- a table emitted with capacities and run at m=2048 would otherwise
+        // print a clean sweep of the handful of rows that happened to be capacity 0.
+        if (c.acr > 0 && options.m > c.acr) { ++n_cap_skipped; continue; }
         // NAME THE CANDIDATE BEFORE LAUNCHING IT. A device assert takes the whole process, and every other
         // report of which config ran happens AFTER run_config() returns -- so without this, the row that killed
         // a sweep is not named anywhere and "reproduce it by name" has nothing to work from. Both channels get
@@ -1222,6 +1233,15 @@ int main(int argc, char const **args) {
     if (best.tag[0] == '\0') { std::fprintf(stderr, "no config passed\n"); return 1; }
     const int ties = settle(best);
     const double best_tf = 2.0 * double(options.m) * options.n * options.k / (best.us * 1e-6) / 1e12;
+    // WHAT THE SWEEP DID NOT LOOK AT. A table emitted with compact-A capacities and run above the smallest of
+    // them searches fewer rows than it lists, and every other line of this report would look like a normal sweep.
+    if (n_cap_skipped > 0) {
+      std::printf("\n  [compact-A] %d candidate(s) SKIPPED, not run: their capacity is below m=%d, so the kernel\n"
+                  "              would be asked for A rows it does not stage. Run a capacity table at m <= its\n"
+                  "              smallest capacity, or use a capacity-0 table for this shape.\n",
+                  n_cap_skipped / (reps > 0 ? reps : 1), options.m);
+    }
+
     // WRITE A TACTIC ONLY FROM A RESOLVED SWEEP. The comment below says an unresolved one is "a wrong answer
     // that never gets revisited", and for one commit the line above it saved unconditionally anyway -- the
     // property was documented and not implemented, which is worse than neither, because the comment is what a
