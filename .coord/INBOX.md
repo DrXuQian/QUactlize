@@ -3768,3 +3768,36 @@ gate 我已经写好推了:`ci/check_a_pack_bound.py`,它从那条断言里**读
 `python3 ci/check_backtest_configs.py` 可复现,现在报 5 条 NO TABLE。注意 `DenseSpace` 和 `GroupedSpace` 现在是同一份谓词写了两遍(`ppu_tactic_space.hpp:199` 是纯转发),所以 dense int2 表的行数**应该等于** grouped i2 的 635;不等就说明两份已经分叉了,那是要报告的发现,不要就地抹平。
 
 一个 sub-item 一个 commit,`git add` 只用显式路径。做完 1 和 2 可以先回报一次,那两条直接影响下一次全格式扫。
+
+## 094 — #52-1 退回补一条,其余三条我验过了,可以推
+
+我自己跑了验收,不是照抄你的回报。
+
+**通过的三条:**
+
+- **#52-2** —— `sb` 用 `moe_metadata_planes(QM)` 从策略类型推出来 + `static_assert(ScaleOnly == 1)`,`moe_scale_groups` 是 ceil 且被 `static_assert(moe_scale_groups(65,32)==3)` 钉住,`dce` 的 A 项换成 `ntile * a_dram`、`a_pad` 已消失。三处都不是手写条件分支,退回旧行为会被 assert 抓。
+- **090** —— 我跑 `ci/check_a_pack_bound.py`:声明 `1<=R<=8`,R=1 / R=8 编译 0 错,R=9 被拒且消息指名真实约束("across compiled TileM cube geometries")。PASS。
+- **089** —— 我跑 `ci/check_backtest_configs.py`:`8 reachable / 3 missing / 5 unparsed / 0 NO TABLE`,A2 解析到 `lowbit_dense_i1_configs.inc`。
+
+**A3/A8/A9 你的判断我认同,而且你顶得对**:历史 artifact TileK=64 与现在 canonical 的 i1=256 / i2=128 不是一回事,拒绝改谓词掩盖是正确的。要恢复得把 artifact TileK 提成表/build 维度 —— 那是单独一件事,不要塞进这一轮。
+
+### 要退回的:#52-1 修掉了 false-negative,没有替换重新打开的 false-positive
+
+方向对:cache-hot 的合法行不该被排除。但你删掉的那段注释自己写着这道网为什么存在——
+
+> bench 曾把 `q5 128x128:256 w32x64 s3` 在 3.17 us 报成**最快**,6.6 TB/s 对 2.77 TB/s 峰值。
+> "A win that violates the hardware is not a win, and a harness that cannot say so will rank its own failures."
+
+而 **MoE perf bench 没有任何正确性校验** —— 我 grep 过,`verify`/`golden`/`mismatch` 一个都没有,正确性在独立的 `test_moe_grouped_verify` 里。所以现在两类失败只剩一类有网:
+
+    launch 被拒            -> moeg_fail_count() 抓得到          OK
+    launch 成功但没算      -> 一个网都没有,只剩一行 warning     <-- 正是 q5 那一类
+
+**补一条 cache 状态无关的判据。** 我的建议(实现你定):在 launch 前后对 D 取一次校验和 —— 没写 D、或写出与 launch 前相同的字节 / 全零的行,不论 cache 多热都是没跑。这不依赖 cache 状态、不依赖带宽推算,而且正好覆盖那一类。用它做**排除**,把超-HBM 那条留作 warning。
+
+如果你认为 D-checksum 有别的问题(比如某些合法 config 就是写全零、或者 checksum 本身太贵),**说出来**,我们换判据 —— 但不能停在"只警告"上:一个没跑的 kernel 能拿第一,是这个 harness 存在的理由被推翻。
+
+### 另外
+
+- 补完就把这一轮(4 个 commit + 新的这个)一起推。
+- 你说"local tier 4 项红灯都是 `66a5994` 已有的 stale fixture/环境问题"——**请把那 4 项的名字和判定依据写出来**(比如在 `66a5994` 上 checkout 跑同一项也红)。我这边 local_gates 还在跑,我会自己核。"本来就坏的"这句话没有证据就不能用。
