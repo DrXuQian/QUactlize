@@ -3524,3 +3524,17 @@ builder,是 kernel 侧,等你额度回来。
 - `benchmarks/bench_device.hpp` 是新增的,`PPU_BENCH_DEVICE` 就在里面,三个 bench 的 `main()` 第一句都调 `bench_device::bind_from_env()`。这是你要用的那个机制,没有被删除波及。
 
 **我的错,不是你的。** 规则原文在 `.coord/PROTOCOL.md` 和 memory 的 shared-worktree-git-add 里,我写过两遍还是犯了。
+
+---
+
+## 087 — 把 copy_A_packed_row0 推广到 R 行(#44)
+
+compact-A 昨晚删干净了(四刀 + 一次漏网的 CMake 字段修复)。判死的依据:acu 说 grid 两边都是 (1,512,1),512 CTA 对 capacity-0 已经提供的 792 槽 —— **占用从来不是 M=1 的绑定量**;而它又必然掉出 AIU 通路,因为 SmemLayoutACompact 手搓 make_layout、从不 composite swizzle atom,`tile_to_shape` 也拒绝把 8 行 atom 铺到 1 行 tile 上。-55%。
+
+PPU_A_PACK 是同一个想法从**分配侧**做的:只重叠 cube 基址,swzl 读一字未动。**+2.9%,两边都有见证行,都 Passed**(BACKTEST D8/D9)。
+
+现在它只写 row 0 → 界 M ≤ 1。推广到 R 行 → 界 M ≤ R,它就是通用的小-M A provider,而且 saving 是 16/R。
+
+细节、四个改动点、两条"不许猜"(pitch 从 ppu_tsm_ld_swzl_sim 算而不是外推;对齐要保持结构性,紧密 pitch 曾在 box 上 fault)都在这一轮的 prompt 里,和 task #44 一致。
+
+**你现在能本地编译了** —— dev/fold_derivation/stub_inc/ppu_arch_shim.h,164 个 asm-only 错误是 floor,非-asm 必须为 0。这是昨晚查 CUTE_INLINE_CONSTANT 键在 __HGGC_ARCH__ 上换来的;之前 5954 个错误让我一整天以为本地编不了。
