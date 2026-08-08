@@ -7,7 +7,6 @@
 // experts without replacement by sequential weighted draws. The integer lottery and fixed SplitMix64 seed make the
 // fixture bit-reproducible across host compilers. The modest hot set models the popularity skew that uniform routing
 // omits: at L=256/top-k=8 its pinned Mmax ladder is 1,2,3,12,239,447 for T=1,2,4,64,2048,4096.
-// Capacity implications are therefore 1,2,4,ordinary,ordinary,ordinary.
 
 #include <algorithm>
 #include <cstdint>
