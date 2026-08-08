@@ -485,6 +485,28 @@ public:
   using PlaneB2 = detail::deduce_mixed_width_dtype_t<3, ElementPairB>;
   static constexpr bool HasPlane2 = !cute::is_void_v<PlaneB2>;
 
+  static constexpr int blockM = cute::get<0>(TileShape_MNK{});
+  static constexpr int blockN = cute::get<1>(TileShape_MNK{});
+  static constexpr int blockK = cute::get<2>(TileShape_MNK{});
+  static constexpr int EffectiveArtifactTileK = ArtifactTileK > 0 ? ArtifactTileK : blockK;
+  static_assert(EffectiveArtifactTileK > 0, "effective artifact TileK must be positive");
+  static_assert(blockK % EffectiveArtifactTileK == 0,
+                "ArtifactTileK must evenly tile the tactic TileK");
+
+  // The high fold is an artifact property too. Legacy direct-builder spellings carry A=0/high-fold=0, so their
+  // effective A is T and this reduces to the old tactic-derived fallback. Shipped policies bring both folds and A.
+  using P2Elem = cute::conditional_t<HasPlane2, PlaneB2, RealInternalElementB>;
+  static constexpr int P2ArtifactBytesBeforeExtraFold =
+      ArtifactLowFold * EffectiveArtifactTileK * cutlass::sizeof_bits<P2Elem>::value / 8;
+  static constexpr int LegacyP2ExtraFold =
+      P2ArtifactBytesBeforeExtraFold >= 32 ? 1 : 32 / P2ArtifactBytesBeforeExtraFold;
+  static constexpr int ArtifactHighFold = ExplicitArtifactHighFold > 0
+      ? ExplicitArtifactHighFold : ArtifactLowFold * LegacyP2ExtraFold;
+  static_assert(!HasPlane2 || ArtifactHighFold >= ArtifactLowFold,
+                "artifact high fold cannot be smaller than the low fold");
+  static_assert(!HasPlane2 || ArtifactHighFold % ArtifactLowFold == 0,
+                "artifact plane folds must form an integral physical-tiler ratio");
+
   // ArtifactLowFold comes from the resident byte layout. It must never be re-derived from blockK: blockK is the
   // tactic's TileK, and a larger-tile tactic deliberately reads the same folded artifact. A fold of one keeps the
   // ordinary low-plane collective even when an independently folded high plane supplied the wrapper.
@@ -498,7 +520,8 @@ public:
   // two layouts. BaseSchedule keeps the group-size schedule, while MmaPermK follows the low plane because that plane
   // owns the shared MMA fragment.
   using DispatchPolicy = cute::conditional_t<HasPlane2,
-      MainloopPPUAiuMixedInput2Plane<PipelineStages, kContinous, BaseSchedule>,
+      MainloopPPUAiuMixedInput2Plane<PipelineStages, kContinous, BaseSchedule,
+                                    ArtifactLowFold, ArtifactHighFold, EffectiveArtifactTileK>,
       cute::conditional_t<HasFold,
           MainloopPPUAiuFold<PipelineStages, kContinous, (HasFold ? FoldF : 2), BaseSchedule>,
           MainloopQuactlizeMixedInput<PipelineStages, kContinous, BaseSchedule>>>;
@@ -507,25 +530,15 @@ public:
   using GmemLayoutB = cutlass::layout::ColumnMajor;
 
 #if ENABLE_AIU
-  static constexpr int blockM = cute::get<0>(TileShape_MNK{});
-  static constexpr int blockN = cute::get<1>(TileShape_MNK{});
-  static constexpr int blockK = cute::get<2>(TileShape_MNK{});
-
   // TWO K SPANS, intentionally different when one resident artifact feeds a larger tactic:
   //   FullBlockK = F*T is the complete physical B extent consumed by this tactic tile.
   //   CopyBlockK = F*A is one resident artifact copy/swizzle quantum (32 B for the canonical folded artifacts).
   // Recomputing the second as F*T makes each delivery claim the entire tactic-wide cube. At T>A those deliveries
   // collide in the resident code-slot map instead of advancing through independent artifact cubes.
-  static constexpr int EffectiveArtifactTileK = ArtifactTileK > 0 ? ArtifactTileK : blockK;
-  static_assert(EffectiveArtifactTileK > 0, "effective artifact TileK must be positive");
-  static_assert(blockK % EffectiveArtifactTileK == 0,
-                "ArtifactTileK must evenly tile the tactic TileK");
   static constexpr int FullBlockK = ArtifactLowFold * blockK;
   static constexpr int CopyBlockK = ArtifactLowFold * EffectiveArtifactTileK;
   static_assert(FullBlockK % CopyBlockK == 0,
                 "artifact copy quantum must evenly tile the full folded tactic span");
-  // Compatibility name for the two-plane derivation below. That path remains tactic-derived until its P1/P2 folds,
-  // P2_DIV and scale/chunk quantities are reviewed together.
   static constexpr int BFoldBlockK = FullBlockK;
   // ...and the PHYSICAL row count halves/quarters correspondingly: folding FoldF N-columns into one contiguous run
   // means the B tile physically has blockN/FoldF rows of FoldF*blockK each (same total bytes). Folding only K while
@@ -537,12 +550,10 @@ public:
   //  i.e. B operand gets Block_MN=32 / Block_K=128 -> swzl CUBE <32,32> -> 1024B/stage, matching SmemLayoutB.)
   using DefaultOperandA = quactlize_detail::MixGemm_AIU_Operand<RealInternalElementA, false, Int<blockM>, Int<blockK>, true>;
   // ContigShape_ is the seam between the two spans: the operand keeps FullBlockK for its total extent and InstNum,
-  // while size(ArtifactContigShape) supplies CopyBlockK to the per-cube AIU/swizzle derivation. Keep the two-plane
-  // low operand on its previous void contract; changing that path also changes its fold ratios and is a separate step.
+  // while size(ArtifactContigShape) supplies CopyBlockK to the per-cube AIU/swizzle derivation.
   using ArtifactContigShape = Shape<Int<ArtifactLowFold>, Int<EffectiveArtifactTileK>>;
-  using BContigShape = cute::conditional_t<HasPlane2, void, ArtifactContigShape>;
   using DefaultOperandB = quactlize_detail::MixGemm_AIU_Operand<
-      RealInternalElementB, false, Int<BFoldBlockN>, Int<FullBlockK>, true, BContigShape>;
+      RealInternalElementB, false, Int<BFoldBlockN>, Int<FullBlockK>, true, ArtifactContigShape>;
 #elif 0 // async_cp not work now
   static_assert(false, "async_cp not work now");
   using DispatchPolicy = MainloopQuactlizeMixedInput<PipelineStages, kContinous, KernelScheduleType>;
@@ -571,23 +582,21 @@ public:
   // ratio ArtifactHighFold/ArtifactLowFold, independent of the tactic blockK. Re-deriving it from blockK made a
   // large-TileK consumer silently reinterpret a small-TileK artifact, and was already wrong for Q3 at artifact TK64
   // where the two physical planes are F_low=2 and F_high=4.
-  using P2Elem = cute::conditional_t<HasPlane2, PlaneB2, RealInternalElementB>;
-  static constexpr int P2Contig = BFoldBlockK * cutlass::sizeof_bits<P2Elem>::value / 8;  // bytes AFTER plane 1's fold
-  // Direct CollectiveBuilder users predating the shared policy carry no explicit high fold. Preserve their legacy
-  // tactic-derived result; every quactlize two-plane policy supplies the explicit artifact value.
-  static constexpr int LegacyP2Fold = P2Contig >= 32 ? 1 : 32 / P2Contig;
-  static constexpr int ArtifactHighFold = ExplicitArtifactHighFold > 0
-      ? ExplicitArtifactHighFold : ArtifactLowFold * LegacyP2Fold;
-  static_assert(!HasPlane2 || ArtifactHighFold >= ArtifactLowFold,
-                "artifact high fold cannot be smaller than the low fold");
-  static_assert(!HasPlane2 || ArtifactHighFold % ArtifactLowFold == 0,
-                "artifact plane folds must form an integral physical-tiler ratio");
   static constexpr int P2Fold = HasPlane2 ? ArtifactHighFold / ArtifactLowFold : 1;
-  static_assert(P2Contig * P2Fold >= 32 || !HasPlane2,
-      "artifact high fold cannot reach the AIU 32 B contiguous minimum at this tactic Block_K");
-  static_assert(BFoldBlockN % P2Fold == 0 || !HasPlane2, "plane 2's fold must divide Block_N");
+  // DefaultOperandB2 is instantiated as an unused fallback even for one-plane policies. In that case mirror the
+  // already-valid low operand; an absent high plane has no independent high-fold contract to satisfy.
+  static constexpr int OperandB2Fold = HasPlane2 ? ArtifactHighFold : ArtifactLowFold;
+  static constexpr int FullBlockK2 = OperandB2Fold * blockK;
+  static constexpr int CopyBlockK2 = OperandB2Fold * EffectiveArtifactTileK;
+  static_assert(!HasPlane2 || (CopyBlockK2 * cutlass::sizeof_bits<P2Elem>::value / 8) % 32 == 0,
+                "artifact high copy quantum must be an integral number of AIU 32 B deliveries");
+  static_assert(!HasPlane2 || FullBlockK2 % CopyBlockK2 == 0,
+                "artifact high copy quantum must evenly tile the full folded tactic span");
+  static_assert(blockN % ArtifactHighFold == 0 || !HasPlane2,
+                "artifact high fold must divide Block_N");
+  using ArtifactContigShape2 = Shape<Int<OperandB2Fold>, Int<EffectiveArtifactTileK>>;
   using DefaultOperandB2 = quactlize_detail::MixGemm_AIU_Operand<
-      P2Elem, false, Int<BFoldBlockN / P2Fold>, Int<BFoldBlockK * P2Fold>, true>;
+      P2Elem, false, Int<blockN / OperandB2Fold>, Int<FullBlockK2>, true, ArtifactContigShape2>;
 
   // Both planes' atoms ride the EXISTING single template params (CollectiveMma's parameter list is fixed by its
   // primary template). collective::BPlanes is the marker -- NOT cute::is_tuple, since a cute Layout is itself

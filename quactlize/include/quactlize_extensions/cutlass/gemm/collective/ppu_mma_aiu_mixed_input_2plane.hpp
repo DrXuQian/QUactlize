@@ -115,6 +115,9 @@ template <
   int Stages,
   class kContinous,
   class KernelSchedule,
+  int ArtifactLowFold_,
+  int ArtifactHighFold_,
+  int ArtifactTileK_,
   class TileShapePair_,
   class ElementAOptionalTuple,
   class StrideA_,
@@ -131,7 +134,8 @@ template <
   class TransformB_>
 struct CollectiveMma<
     Arch,
-    MainloopPPUAiuMixedInput2Plane<Stages, kContinous, KernelSchedule>,
+    MainloopPPUAiuMixedInput2Plane<Stages, kContinous, KernelSchedule,
+                                  ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_>,
     TileShapePair_,
     ElementAOptionalTuple,
     StrideA_,
@@ -163,7 +167,8 @@ public:
   //
   // Type Aliases
   //
-  using DispatchPolicy =  MainloopPPUAiuMixedInput2Plane<Stages, kContinous, KernelSchedule>;
+  using DispatchPolicy = MainloopPPUAiuMixedInput2Plane<Stages, kContinous, KernelSchedule,
+                                                       ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_>;
   using TileShape = detail::deduce_mixed_width_dtype_t<0, TileShapePair_>;
   using ScaleTileShape = cute::conditional_t<cute::is_void_v<TileShape_Scale>,
       decltype(make_shape(shape<1>(TileShape{}), Int<1>{})), TileShape_Scale>;
@@ -353,15 +358,24 @@ public:
   static_assert((size<2>(TileShape{}) % size<1>(InternalSmemLayoutAtomA{})) == 0, "SmemLayoutAtom must evenly divide tile shape.");
 
   static_assert(rank(InternalSmemLayoutAtomB{}) == 2, "SmemLayoutAtom must be rank 2 (M/N, K)");
-  // PER-PLANE N-FOLD: B's atom N is the PHYSICAL row count (TileShape.N / Fold) and its atom K is the FOLDED run
-  // (Fold * TileShape.K), so the unfolded "atom must divide the tile" relations do not hold -- the FOLDED ones do. The
-  // single-plane fold collective carries the same pair for the same reason. Both degenerate to the originals at
-  // Fold == 1. (P1Fold/P2Fold are defined below, next to the smem layouts they size.)
-  static_assert((size<1>(TileShape{}) % (size<0>(InternalSmemLayoutAtomB{})
-                * (size<1>(InternalSmemLayoutAtomB{}) / size<2>(TileShape{})))) == 0,
-                "fold: TileShape.N must be divisible by atomB.N * FoldF");
-  static_assert((size<1>(InternalSmemLayoutAtomB{}) % size<2>(TileShape{})) == 0,
-                "fold: B atom K must be an integer multiple of TileShape.K (that multiple IS the fold factor)");
+  static constexpr int P1Fold = DispatchPolicy::ArtifactLowFold;
+  static constexpr int P2Fold = DispatchPolicy::ArtifactHighFold;
+  static constexpr int ArtifactTileK = DispatchPolicy::ArtifactTileK;
+  static constexpr int P1ArtifactBytes = P1Fold * ArtifactTileK * kLowBits / 8;
+  static constexpr int P2ArtifactBytes = P2Fold * ArtifactTileK * kHiBits / 8;
+  static constexpr int P1ExpectedAtomK = (P1ArtifactBytes > 128 ? 128 : P1ArtifactBytes) * 8 / kLowBits;
+  static constexpr int P2ExpectedAtomK = (P2ArtifactBytes > 128 ? 128 : P2ArtifactBytes) * 8 / kHiBits;
+  static_assert(P1Fold >= 1 && P2Fold >= 1 && ArtifactTileK >= 1,
+                "two-plane artifact geometry must carry positive folds and TileK");
+  static_assert((size<1>(TileShape{}) % P1Fold) == 0 &&
+                (size<1>(TileShape{}) % P2Fold) == 0,
+                "each artifact fold must divide TileShape.N");
+  static_assert((size<1>(TileShape{}) % (P1Fold * size<0>(InternalSmemLayoutAtomB{}))) == 0,
+                "plane 1 copy atom must tile the folded physical N extent");
+  static_assert((P1Fold * size<2>(TileShape{})) % size<1>(InternalSmemLayoutAtomB{}) == 0,
+                "plane 1 artifact copy K must tile the full folded tactic K span");
+  static_assert(size<1>(InternalSmemLayoutAtomB{}) == P1ExpectedAtomK,
+                "plane 1 copy atom K must come from F1 * ArtifactTileK with the AIU 128-B cap");
 
   static_assert(rank(SmemLayoutAtomScale{}) == 2, "SmemLayoutAtomScale must be rank 2");
   static_assert((size<0>(TileShape{}) % size<0>(SmemLayoutAtomScale{})) == 0, "SmemLayoutAtomScale must equal the tile shape.");
@@ -370,13 +384,6 @@ public:
   using SmemLayoutA = decltype(tile_to_shape(
       InternalSmemLayoutAtomA{},
       make_shape(shape<0>(TileShape{}), shape<2>(TileShape{}), Int<DispatchPolicy::Stages>{})));
-  // PER-PLANE N-FOLD, LOW plane. Its fold factor is read off its OWN atom, which the builder already sizes folded
-  // (BFoldBlockK = FoldF * blockK) -- the same trick P2Fold uses, so no fold factor has to travel through the dispatch
-  // policy. P1Fold == 1 reproduces the previous layout exactly.
-  static constexpr int P1Fold = size<1>(InternalSmemLayoutAtomB{}) / size<2>(TileShape{});
-  static_assert(P1Fold >= 1 && (size<1>(InternalSmemLayoutAtomB{}) % size<2>(TileShape{})) == 0,
-      "plane 1's atom K must be an integer multiple of TileShape.K (that multiple IS its fold factor)");
-  static_assert((size<1>(TileShape{}) % P1Fold) == 0, "plane 1's fold must divide TileShape.N");
   using SmemLayoutB = decltype(tile_to_shape(
       InternalSmemLayoutAtomB{},
       make_shape(Int<size<1>(TileShape{}) / P1Fold>{}, Int<P1Fold * size<2>(TileShape{})>{},
@@ -388,22 +395,26 @@ public:
       make_shape (make_shape(Int<P1Fold>{}, Int<size<1>(TileShape{}) / P1Fold>{}), Int<size<2>(TileShape{})>{}),
       make_stride(make_stride(Int<size<2>(TileShape{})>{}, Int<P1Fold * size<2>(TileShape{})>{}), _1{})));
 
-  // PER-PLANE N-FOLD. Plane 2 covers the same LOGICAL (N,K) extent, but PHYSICALLY it may be folded harder than plane
-  // 1: the builder gave it (Block_N/P2Fold, P2Fold*Block_K) so its contiguous run reaches the AIU's 32 B minimum. The
-  // fold factor is read straight OFF THE ATOM rather than passed in again -- the builder already encoded it, and a
-  // second copy of the rule is where the next divergence comes from.
-  //
-  // Physical, not logical, exactly as the single-plane fold collective does: the AIU writes and the swzl atom reads
-  // the physical shape, and presenting a logical view to them is what produced "TSM out of range" there. Plane 2 never
-  // feeds the mma fragment (only plane 1 does, through tCrB_mma), so no logical view is needed for it at all.
-  static constexpr int P2Fold = size<1>(SmemLayoutAtomB2{}) / size<2>(TileShape{});
-  static_assert(P2Fold >= 1 && (size<1>(SmemLayoutAtomB2{}) % size<2>(TileShape{})) == 0,
-      "plane 2's atom K must be an integer multiple of TileShape.K (that multiple IS its fold factor)");
-  static_assert((size<1>(TileShape{}) % P2Fold) == 0, "plane 2's fold must divide TileShape.N");
+  // The atoms now describe one resident artifact cube, so atomK/T can be fractional and can also be hidden by the
+  // operand's 128-B cap. The dispatch policy is the source of truth; these assertions make the atom an independent
+  // witness instead of trying to reconstruct the policy from it.
+  static_assert((size<1>(TileShape{}) % (P2Fold * size<0>(SmemLayoutAtomB2{}))) == 0,
+                "plane 2 copy atom must tile the folded physical N extent");
+  static_assert((P2Fold * size<2>(TileShape{})) % size<1>(SmemLayoutAtomB2{}) == 0,
+                "plane 2 artifact copy K must tile the full folded tactic K span");
+  static_assert(size<1>(SmemLayoutAtomB2{}) == P2ExpectedAtomK,
+                "plane 2 copy atom K must come from F2 * ArtifactTileK with the AIU 128-B cap");
   using SmemLayoutB2 = decltype(tile_to_shape(
       SmemLayoutAtomB2{},
       make_shape(Int<size<1>(TileShape{}) / P2Fold>{}, Int<P2Fold * size<2>(TileShape{})>{},
                  Int<DispatchPolicy::Stages>{})));
+
+  static_assert((P1Fold * kLowBits) % (P2Fold * kHiBits) == 0,
+                "plane delivery ratio must be integral");
+  static constexpr int ArtifactP2Div =
+      (P1Fold * kLowBits) / (P2Fold * kHiBits);
+  static_assert(ArtifactP2Div >= 1,
+                "plane 2 must not need more copy steps than plane 1");
 
   // It is assumed that the scales and zero-points share the same smem layout
   using SmemLayoutScale = decltype(tile_to_shape(
@@ -863,13 +874,19 @@ public:
 
     // Size of the register pipeline
     auto K_BLOCK_MAX = size<2>(tCrB_copy_view);
+    CUTE_STATIC_ASSERT_V(size<2>(tCrB_mma) % size<2>(tCrB_copy_view) == _0{});
     auto K_ATOM_PER_COPY = size<2>(tCrB_mma) / size<2>(tCrB_copy_view);
+    CUTE_STATIC_ASSERT_V(K_BLOCK_MAX * K_ATOM_PER_COPY == size<2>(tCrB_mma));
     // ONE plane-2 k_block feeds P2_DIV plane-1 k_blocks: plane 2 is the DENSER plane (same BYTES per copy, 2x the
     // codes at half the bit width), so its CPY_K is P2_DIV times smaller. transform_B_kblock derives the same
     // ratio to pick which half of the plane-2 registers a given plane-1 k_block owns.
-    constexpr int P2_DIV = decltype(cute::size<2>(tCrB_copy_view))::value
-                         / decltype(cute::size<2>(tCrB2_copy_view))::value;
-    static_assert(P2_DIV >= 1, "plane 2's CPY_K must not exceed plane 1's");
+    static_assert(decltype(cute::size<2>(tCrB_copy_view))::value %
+                      decltype(cute::size<2>(tCrB2_copy_view))::value == 0,
+                  "plane copy-view ratio must be integral");
+    constexpr int P2_DIV = ArtifactP2Div;
+    static_assert(decltype(cute::size<2>(tCrB_copy_view))::value /
+                      decltype(cute::size<2>(tCrB2_copy_view))::value == P2_DIV,
+                  "copy views must preserve the artifact-derived P2_DIV");
     // The chunk gate splits ONE int2 delivery (16 B = 64 codes per n = 8 mma B atoms) into 8 chunks, so the collective
     // must agree that a copy step is 8 atoms. It is structurally so for int2 -- the delivery width fixes it, and l40
     // confirms 8 at both (64,64,256) and (32,128,256) -- but assert it rather than trust it: if K_ATOM_PER_COPY were
@@ -1471,9 +1488,13 @@ private:
     CopyViews const& tiled_copy_and_views,
     int const read_stage) {
 
-    constexpr int P2_DIV_ = decltype(cute::size<2>(tCrB_load))::value
-                          / decltype(cute::size<2>(tCrB2_load))::value;
-    static_assert(P2_DIV_ >= 1, "plane 2 must not have MORE K steps than plane 1 (it is the denser plane)");
+    static_assert(decltype(cute::size<2>(tCrB_load))::value %
+                      decltype(cute::size<2>(tCrB2_load))::value == 0,
+                  "plane copy-view ratio must be integral");
+    constexpr int P2_DIV_ = ArtifactP2Div;
+    static_assert(decltype(cute::size<2>(tCrB_load))::value /
+                      decltype(cute::size<2>(tCrB2_load))::value == P2_DIV_,
+                  "transform_B_kblock must use the artifact-derived P2_DIV");
 
     // ---- TWO-PLANE convert -------------------------------------------------------------------------------
     // Plane 2 is DENSER (more elements per uint32), so its copy view has FEWER K steps: one plane-2 step serves
@@ -1526,7 +1547,11 @@ private:
     }
 
     constexpr int MMA_KA_ = decltype(cute::size<2>(tCrB_mma))::value;   // total mma-K atoms in the tile
+    static_assert(MMA_KA_ % K_ATOM_PER_COPY == 0,
+                  "an artifact copy step must carry an integral number of MMA atoms");
     constexpr int KBM_    = MMA_KA_ / K_ATOM_PER_COPY;                  // K_BLOCK_MAX (copy steps)
+    static_assert(KBM_ * K_ATOM_PER_COPY == MMA_KA_,
+                  "copy steps and atoms per copy must cover the complete tactic tile");
     using FinePolicy = typename MetadataPolicy::template Fine<KBM_, MMA_KA_>;
     constexpr bool FINE = FinePolicy::active;
     constexpr int APG_  = FinePolicy::atoms_per_group;
@@ -1596,8 +1621,13 @@ private:
     CopyViews const& tiled_copy_and_views,
     int const read_stage) {
 
-    constexpr int P2_DIV_ = decltype(cute::size<2>(tCrB_load))::value
-                          / decltype(cute::size<2>(tCrB2_load))::value;
+    static_assert(decltype(cute::size<2>(tCrB_load))::value %
+                      decltype(cute::size<2>(tCrB2_load))::value == 0,
+                  "plane copy-view ratio must be integral");
+    constexpr int P2_DIV_ = ArtifactP2Div;
+    static_assert(decltype(cute::size<2>(tCrB_load))::value /
+                      decltype(cute::size<2>(tCrB2_load))::value == P2_DIV_,
+                  "transform_B_atom must use the artifact-derived P2_DIV");
     // raw_pointer_cast FIRST -- these are SUBBYTE tensors, so .data() is a cute::subbyte_iterator and
     // reinterpret_cast from that class type is ill-formed (exactly how the fold build failed on the box).
     Tensor cvt_in = recast<RealB>(tCrB_load(_, _, k_block));
@@ -1649,6 +1679,8 @@ private:
 
     constexpr int KBM_    = decltype(cute::size<2>(tCrB_load))::value;       // copy steps per k-tile
     constexpr int MMA_KA_ = NChunk * KBM_;                                   // total mma-K atoms in the tile
+    static_assert(MMA_KA_ % KBM_ == 0 && MMA_KA_ / KBM_ == NChunk,
+                  "chunk copy steps must cover every MMA atom exactly once");
     using FinePolicy = typename MetadataPolicy::template Fine<KBM_, MMA_KA_>;
     constexpr bool FINE = FinePolicy::active;
     constexpr int APG_  = FinePolicy::atoms_per_group;

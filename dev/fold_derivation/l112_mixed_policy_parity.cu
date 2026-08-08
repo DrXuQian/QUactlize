@@ -156,27 +156,36 @@ static_assert(sizeof(typename CrossI2Mainloop::SharedStorage) > 0 &&
               sizeof(typename CrossI1T256Mainloop::SharedStorage) > 0,
               "all three l115 rows must instantiate the folded collective body and storage contract");
 
-// The two-plane path is intentionally deferred: its P1/P2 fold recovery and P2_DIV must move as one reviewed step.
-// Pin that boundary with A!=T. The explicit A64 policy and the legacy A=0 builder have different schedule metadata,
-// but their CollectiveOp must remain exactly the same until that follow-up changes the two-plane copy contract.
+// TWO-PLANE ARTIFACT CONTRACT. Both operands keep F*T as their full tactic span but size their copy cubes from F*A.
+// The folds and A travel in the dispatch policy because atomK now describes a resident copy cube; atomK/T is no
+// longer an integer and cannot be used to reconstruct either fold. Q3 exercises F2/F4 and P2_DIV=1.
 using CrossTwo = AdapterPair<Q::FinegrainedScaleOnly, 32, T128, S128Gs32, W64x64T128, 4,
                             cutlass::uint2b_t, cutlass::uint1b_t, true, 64>;
 static_assert(CrossTwo::value);
 using CrossTwoDense = typename CrossTwo::Dense;
 static_assert(CrossTwoDense::ArtifactLowFold == 2 && CrossTwoDense::ArtifactHighFold == 4);
+using CrossTwoBuilder = typename CrossTwoDense::CollectiveBuilderType;
+using CrossTwoMainloop = typename CrossTwoDense::CollectiveOp;
+static_assert(CrossTwoBuilder::FullBlockK == 256 && CrossTwoBuilder::CopyBlockK == 128);
+static_assert(CrossTwoBuilder::FullBlockK2 == 512 && CrossTwoBuilder::CopyBlockK2 == 256);
+static_assert(CrossTwoBuilder::DefaultOperandB::InstNum == 2 &&
+              CrossTwoBuilder::DefaultOperandB2::InstNum == 2);
+static_assert(CrossTwoMainloop::P1Fold == 2 && CrossTwoMainloop::P2Fold == 4 &&
+              CrossTwoMainloop::ArtifactTileK == 64 && CrossTwoMainloop::ArtifactP2Div == 1);
 using LegacyCrossTwoSchedule = cutlass::gemm::KernelAiuFold<2, CrossBaseSchedule, 4>;
 using LegacyCrossTwoBuilder = cutlass::gemm::collective::CollectiveBuilder<
     cutlass::arch::PPU0010, cutlass::arch::OpClassTensorOp,
     typename CrossTwoDense::ElementA, typename CrossTwoDense::LayoutA, CrossTwoDense::AlignmentA,
     typename CrossTwoDense::ElementBInfo, typename CrossTwoDense::LayoutB, CrossTwoDense::AlignmentB, float,
     cute::tuple<T128, S128Gs32>, W64x64T128, cute::Int<4>, LegacyCrossTwoSchedule>;
-static_assert(std::is_same_v<typename CrossTwoDense::CollectiveOp,
-                             typename LegacyCrossTwoBuilder::CollectiveOp>,
-              "single-plane copy split must leave the A!=T two-plane CollectiveOp unchanged");
+static_assert(LegacyCrossTwoBuilder::CopyBlockK == LegacyCrossTwoBuilder::FullBlockK &&
+              LegacyCrossTwoBuilder::CopyBlockK2 == LegacyCrossTwoBuilder::FullBlockK2);
+static_assert(!std::is_same_v<typename CrossTwoDense::CollectiveOp,
+                              typename LegacyCrossTwoBuilder::CollectiveOp>,
+              "an explicit cross-T artifact must select artifact-sized cubes in both planes");
 
-// Guard the other two provider pairs as well. Q3 above covers i2+i1; Q5 and Q6 ensure the mechanical operand
-// specialisation edits cannot leak artifact-sized cubes into either i4+i1 or i4+i2 before the reviewed two-plane
-// derivation moves P1/P2Fold, P2_DIV and scale/chunk together.
+// Guard the other two fold pairs. Each has two resident-sized copies per full tactic span, and each artifact-sized
+// policy must differ from the A=T legacy fallback.
 using CrossQ5 = AdapterPair<Q::FinegrainedScaleOnly, 32, T128, S128Gs32, W64x64T128, 4,
                            cutlass::int4b_t, cutlass::uint1b_t, true, 64>;
 using CrossQ5Dense = typename CrossQ5::Dense;
@@ -186,9 +195,15 @@ using LegacyQ5Builder = cutlass::gemm::collective::CollectiveBuilder<
     typename CrossQ5Dense::ElementA, typename CrossQ5Dense::LayoutA, CrossQ5Dense::AlignmentA,
     typename CrossQ5Dense::ElementBInfo, typename CrossQ5Dense::LayoutB, CrossQ5Dense::AlignmentB, float,
     cute::tuple<T128, S128Gs32>, W64x64T128, cute::Int<4>, LegacyQ5Schedule>;
-static_assert(CrossQ5::value && std::is_same_v<typename CrossQ5Dense::CollectiveOp,
-                                               typename LegacyQ5Builder::CollectiveOp>,
-              "single-plane copy split must leave Q5 i4+i1 unchanged");
+using CrossQ5Builder = typename CrossQ5Dense::CollectiveBuilderType;
+using CrossQ5Mainloop = typename CrossQ5Dense::CollectiveOp;
+static_assert(CrossQ5::value && CrossQ5Builder::FullBlockK == 128 && CrossQ5Builder::CopyBlockK == 64 &&
+              CrossQ5Builder::FullBlockK2 == 512 && CrossQ5Builder::CopyBlockK2 == 256);
+static_assert(CrossQ5Mainloop::P1Fold == 1 && CrossQ5Mainloop::P2Fold == 4 &&
+              CrossQ5Mainloop::ArtifactP2Div == 1);
+static_assert(!std::is_same_v<typename CrossQ5Dense::CollectiveOp,
+                              typename LegacyQ5Builder::CollectiveOp>,
+              "Q5 cross-T must size both copy cubes from the artifact");
 
 using CrossQ6 = AdapterPair<Q::FinegrainedScaleOnly, 32, T128, S128Gs32, W64x64T128, 4,
                            cutlass::int4b_t, cutlass::uint2b_t, true, 64>;
@@ -199,11 +214,31 @@ using LegacyQ6Builder = cutlass::gemm::collective::CollectiveBuilder<
     typename CrossQ6Dense::ElementA, typename CrossQ6Dense::LayoutA, CrossQ6Dense::AlignmentA,
     typename CrossQ6Dense::ElementBInfo, typename CrossQ6Dense::LayoutB, CrossQ6Dense::AlignmentB, float,
     cute::tuple<T128, S128Gs32>, W64x64T128, cute::Int<4>, LegacyQ6Schedule>;
-static_assert(CrossQ6::value && std::is_same_v<typename CrossQ6Dense::CollectiveOp,
-                                               typename LegacyQ6Builder::CollectiveOp>,
-              "single-plane copy split must leave Q6 i4+i2 unchanged");
+using CrossQ6Builder = typename CrossQ6Dense::CollectiveBuilderType;
+using CrossQ6Mainloop = typename CrossQ6Dense::CollectiveOp;
+static_assert(CrossQ6::value && CrossQ6Builder::FullBlockK == 128 && CrossQ6Builder::CopyBlockK == 64 &&
+              CrossQ6Builder::FullBlockK2 == 256 && CrossQ6Builder::CopyBlockK2 == 128);
+static_assert(CrossQ6Mainloop::P1Fold == 1 && CrossQ6Mainloop::P2Fold == 2 &&
+              CrossQ6Mainloop::ArtifactP2Div == 1);
+static_assert(!std::is_same_v<typename CrossQ6Dense::CollectiveOp,
+                              typename LegacyQ6Builder::CollectiveOp>,
+              "Q6 cross-T must size both copy cubes from the artifact");
+
+// Exact shipping row that l115 uses to discharge ConsumerMap: Q6 A128/F1/F1 -> T256. P2_DIV remains two while
+// each plane gains two artifact copy steps, so this also pins the chunk/scale re-derivation boundary.
+using ShipQ6 = AdapterPair<Q::FinegrainedScaleOnly, 32, T256, S256Gs32, W64x64T256, 4,
+                          cutlass::int4b_t, cutlass::uint2b_t, true, 128>;
+static_assert(ShipQ6::value);
+using ShipQ6Builder = typename ShipQ6::Dense::CollectiveBuilderType;
+using ShipQ6Mainloop = typename ShipQ6::Dense::CollectiveOp;
+static_assert(ShipQ6Builder::FullBlockK == 256 && ShipQ6Builder::CopyBlockK == 128 &&
+              ShipQ6Builder::FullBlockK2 == 256 && ShipQ6Builder::CopyBlockK2 == 128);
+static_assert(ShipQ6Builder::DefaultOperandB::InstNum == 2 &&
+              ShipQ6Builder::DefaultOperandB2::InstNum == 2);
+static_assert(ShipQ6Mainloop::P1Fold == 1 && ShipQ6Mainloop::P2Fold == 1 &&
+              ShipQ6Mainloop::ArtifactTileK == 128 && ShipQ6Mainloop::ArtifactP2Div == 2);
 
 int main() {
-  std::printf("[l112] dense/grouped match; A sizes single-plane cubes; A!=T two-plane remains unchanged\n");
+  std::printf("[l112] dense/grouped match; A sizes both planes; folds/P2_DIV cross the dispatch policy\n");
   return 0;
 }

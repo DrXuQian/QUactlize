@@ -271,10 +271,11 @@ Observation high_map() {
   constexpr int LowFold = artifact_fold<LowBits, ArtifactTileK>();
   constexpr int HighFold = artifact_fold<HighBits, ArtifactTileK>();
   auto map = xplane::tile_map_hi<LowBits, HighBits, TM, TN, TacticTileK, WM, WN,
-                                  HighFold, LowFold>();
-  auto slots = materialize<HighBits, TN, TacticTileK, HighFold>(map);
+                                  HighFold, LowFold, ArtifactTileK>();
+  auto slots = materialize<HighBits, TN, TacticTileK, HighFold, ArtifactTileK>(map);
   return {slots, logical_stats(map, TN * TacticTileK),
-          production_writer_diff<HighBits, TM, TN, TacticTileK, WM, WN, HighFold>(map, slots)};
+          production_writer_diff<HighBits, TM, TN, TacticTileK, WM, WN,
+                                 HighFold, ArtifactTileK>(map, slots)};
 }
 
 void positive_and_single_plane_rows() {
@@ -330,28 +331,66 @@ void positive_and_single_plane_rows() {
 void q6_rows() {
   constexpr int TM = 64, TN = 128, T = 256, WM = 64, WN = 64;
 
+  auto q6_base128 = high_map<4, 2, 128, 128, TM, TN, WM, WN>();
   auto q6_a128 = high_map<4, 2, 128, T, TM, TN, WM, WN>();
+  int const q6_a128_diff = owner_diff(q6_base128.slots, q6_a128.slots);
   print_row("Q6_K", "high", 128, T, TM, TN, WM, WN, 1, 1,
-            q6_a128.slots, q6_a128.logical, -1, q6_a128.writer_diff);
-  expect(q6_a128.logical.unique == 16384 && q6_a128.logical.total == 32768,
-         "Q6 A128 F1/F1->T256 must miss 16384/32768 logical high-plane slots");
+            q6_a128.slots, q6_a128.logical, q6_a128_diff, q6_a128.writer_diff);
 
+  auto q6_base64 = high_map<4, 2, 64, 64, TM, TN, WM, WN>();
   auto q6_a64 = high_map<4, 2, 64, T, TM, TN, WM, WN>();
+  int const q6_a64_diff = owner_diff(q6_base64.slots, q6_a64.slots);
   print_row("Q6_K", "high", 64, T, TM, TN, WM, WN, 1, 2,
-            q6_a64.slots, q6_a64.logical, -1, q6_a64.writer_diff);
-  expect(q6_a64.logical.unique == 8192 && q6_a64.logical.total == 32768,
-         "Q6 A64 F1/F2->T256 must miss 24576/32768 logical high-plane slots");
+            q6_a64.slots, q6_a64.logical, q6_a64_diff, q6_a64.writer_diff);
 
+  auto q6_base32 = high_map<4, 2, 32, 32, TM, TN, WM, WN>();
   auto q6_a32 = high_map<4, 2, 32, T, TM, TN, WM, WN>();
+  int const q6_a32_diff = owner_diff(q6_base32.slots, q6_a32.slots);
   print_row("Q6_K", "high", 32, T, TM, TN, WM, WN, 2, 4,
-            q6_a32.slots, q6_a32.logical, -1, q6_a32.writer_diff);
-  expect(q6_a32.logical.unique == 4096 && q6_a32.logical.total == 32768,
-         "Q6 A32 F2/F4->T256 must miss 28672/32768 logical high-plane slots");
+            q6_a32.slots, q6_a32.logical, q6_a32_diff, q6_a32.writer_diff);
 
-  expect(q6_a128.logical.oob == 0 && q6_a64.logical.oob == 0 && q6_a32.logical.oob == 0,
-         "all Q6 logical maps must distinguish missing slots from out-of-range owners");
+  expect(complete(q6_a128.slots, q6_a128.logical) &&
+             complete(q6_a64.slots, q6_a64.logical) &&
+             complete(q6_a32.slots, q6_a32.logical),
+         "all three Q6 cross-T high-plane maps must be COMPLETE");
+  expect(q6_a128_diff == 0 && q6_a64_diff == 0 && q6_a32_diff == 0,
+         "all three Q6 cross-T maps must preserve their resident artifact owners");
   expect(q6_a128.writer_diff == 0 && q6_a64.writer_diff == 0 && q6_a32.writer_diff == 0,
-         "all Q6 slot replays must match the production place_from_map writer");
+         "all Q6 slot replays must match the artifact-aware production writer");
+}
+
+void q3_q5_rows() {
+  constexpr int TM = 64, TN = 128, T = 256, WM = 64, WN = 64;
+
+  // A64 exercises the three distinct folded pairs: Q3=F2/F4, Q5=F1/F4, Q6=F1/F2.
+  auto q3_base64 = high_map<2, 1, 64, 64, TM, TN, WM, WN>();
+  auto q3_a64 = high_map<2, 1, 64, T, TM, TN, WM, WN>();
+  int const q3_a64_diff = owner_diff(q3_base64.slots, q3_a64.slots);
+  print_row("Q3_K", "high", 64, T, TM, TN, WM, WN, 2, 4,
+            q3_a64.slots, q3_a64.logical, q3_a64_diff, q3_a64.writer_diff);
+
+  auto q5_base64 = high_map<4, 1, 64, 64, TM, TN, WM, WN>();
+  auto q5_a64 = high_map<4, 1, 64, T, TM, TN, WM, WN>();
+  int const q5_a64_diff = owner_diff(q5_base64.slots, q5_a64.slots);
+  print_row("Q5_K", "high", 64, T, TM, TN, WM, WN, 1, 4,
+            q5_a64.slots, q5_a64.logical, q5_a64_diff, q5_a64.writer_diff);
+
+  // These are the exact ArtifactTileK/TacticTileK pair carried by the generated Q3/Q5 shipping tables.
+  auto q3_a256 = high_map<2, 1, 256, T, TM, TN, WM, WN>();
+  print_row("Q3_K", "high", 256, T, TM, TN, WM, WN, 1, 1,
+            q3_a256.slots, q3_a256.logical, 0, q3_a256.writer_diff);
+  auto q5_a256 = high_map<4, 1, 256, T, TM, TN, WM, WN>();
+  print_row("Q5_K", "high", 256, T, TM, TN, WM, WN, 1, 1,
+            q5_a256.slots, q5_a256.logical, 0, q5_a256.writer_diff);
+
+  expect(complete(q3_a64.slots, q3_a64.logical) && q3_a64_diff == 0 && q3_a64.writer_diff == 0,
+         "Q3 A64 F2/F4->T256 must be COMPLETE with resident-owner and writer parity");
+  expect(complete(q5_a64.slots, q5_a64.logical) && q5_a64_diff == 0 && q5_a64.writer_diff == 0,
+         "Q5 A64 F1/F4->T256 must be COMPLETE with resident-owner and writer parity");
+  expect(complete(q3_a256.slots, q3_a256.logical) && q3_a256.writer_diff == 0,
+         "shipping Q3 A256/T256 must be COMPLETE with writer parity");
+  expect(complete(q5_a256.slots, q5_a256.logical) && q5_a256.writer_diff == 0,
+         "shipping Q5 A256/T256 must be COMPLETE with writer parity");
 }
 
 void planted_negative() {
@@ -385,6 +424,7 @@ int main() {
   std::printf("L115 artifact/tactic physical code-slot witness (current consumer contract)\n");
   positive_and_single_plane_rows();
   q6_rows();
+  q3_q5_rows();
   planted_negative();
   std::printf("RESULT %s failures=%d\n", failures == 0 ? "PASS" : "FAIL", failures);
   return failures == 0 ? 0 : 1;

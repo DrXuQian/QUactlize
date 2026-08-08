@@ -179,7 +179,8 @@ inline std::vector<int> plane_map() {
 // incomplete map before grouping bytes. Every COMPLETE F1=F2=1 Q6 row in that grid is byte-identical at TK=128, so
 // the delivery counts remain a safe descriptor but are not proven necessary for the both-unfolded case. What IS
 // established is that folds alone are insufficient once the high plane folds, because TN/F2 still changes bytes.
-template <int LowBits, int HiBits, int TM, int TN, int TK, int WM, int WN, int F2, int F1 = 1>
+template <int LowBits, int HiBits, int TM, int TN, int TK, int WM, int WN,
+          int F2, int F1 = 1, int ArtifactTileK = TK>
 inline std::vector<int> tile_map_hi() {
   using namespace cute;
   constexpr int InstM = 16, warpM = (WM > InstM) ? WM : InstM, warpN = (WN > 16) ? WN : 16;
@@ -196,7 +197,8 @@ inline std::vector<int> tile_map_hi() {
   //                           4*HiBits/LowBits of the high vregs and they sit VR apart. Drives v2 and j2.
   // The old int1-only body used DL1/DL2 for the first and a hardcoded 2 for the second -- and 2 is VR for Q3, which is
   // why it was right.
-  constexpr int PDcopy = (DL1 / DL2) ? (DL1 / DL2) : 1;
+  static_assert(DL1 % DL2 == 0, "low/high delivery counts must have an integral copy-step ratio");
+  constexpr int PDcopy = DL1 / DL2;
   constexpr int VR     = LowBits / HiBits;
   constexpr int kPairs = 16 / LowBits, hstride = 16 / HiBits;
   // (g) THE PAIRING COMES FROM THE CONVERTER, not from a second statement of it here. These used to be local Layouts
@@ -207,19 +209,22 @@ inline std::vector<int> tile_map_hi() {
   static_assert(Cvt::kPairs == kPairs && Cvt::kVregRatio == VR && Cvt::kHiStride == hstride,
                 "the offline and the converter must agree on the pairing shape");
 
-  using CTV1 = CubeTV<LowBits, TM, TN, TK, WM, WN, F1>;
-  using CTV2 = CubeTV<HiBits,  TM, TN, TK, WM, WN, F2>;
-  const auto m1 = plane_map<LowBits, TM, TN, TK, WM, WN, F1>();
+  using CTV1 = CubeTV<LowBits, TM, TN, TK, WM, WN, F1, ArtifactTileK>;
+  using CTV2 = CubeTV<HiBits,  TM, TN, TK, WM, WN, F2, ArtifactTileK>;
+  const auto m1 = plane_map<LowBits, TM, TN, TK, WM, WN, F1, ArtifactTileK>();
   std::vector<int> m((size_t)Ng2 * DL2 * 8 * CPW2, -1);
   for (int t = 0; t < 32 * WOM * WON; ++t) {
     const int lane = t % 32, w = t / 32;
     for (int ii = 0; ii < NI1; ++ii)
-      for (int kb = 0; kb < PDcopy; ++kb)
+      // kb enumerates every low-plane delivery in the complete tactic tile. PDcopy is only the number of those
+      // deliveries that share one high-plane copy step; using it as the loop bound wrote exactly 1/DL2 of Q6.
+      for (int kb = 0; kb < DL1; ++kb)
         for (int v = 0; v < 4; ++v)
           for (int lt = 0; lt < kPairs; ++lt)
             for (int half = 0; half < 2; ++half) {
               const int j1 = Cvt::lo_code(lt, half);
-              const int row1 = CTV1::base_row(w, ii) + CTV1::cube_row(lane, v), wd1 = CTV1::cube_wd(lane, v, kb % DL1);
+              const int row1 = CTV1::base_row(w, ii, kb / CTV1::SlicesPerInst) + CTV1::cube_row(lane, v),
+                        wd1 = CTV1::cube_wd(lane, v, kb);
               if (row1 >= Ng1) continue;
               const int e1 = m1[(((size_t)row1 * DL1 + kb % DL1) * 8 + wd1) * CPW1 + j1];
               if (e1 < 0) continue;
@@ -228,8 +233,10 @@ inline std::vector<int> tile_map_hi() {
               const int v2 = base + Cvt::hi_vreg(v), j2 = Cvt::hi_code(lt, v, half);
               if (v2 >= 4) continue;
               const int inst2 = (NI2 > 1) ? (ii % NI2) : 0;
-              const int row2 = CTV2::base_row(w, inst2) + CTV2::cube_row(lane, v2),
-                        wd2 = CTV2::cube_wd(lane, v2, (kb / PDcopy) % DL2);
+              const int high_dl = kb / PDcopy;
+              const int row2 = CTV2::base_row(w, inst2, high_dl / CTV2::SlicesPerInst) +
+                                   CTV2::cube_row(lane, v2),
+                        wd2 = CTV2::cube_wd(lane, v2, high_dl);
               if (row2 >= Ng2) continue;
               m[(((size_t)row2 * DL2 + (kb / PDcopy) % DL2) * 8 + wd2) * CPW2 + j2] = e1;
             }
@@ -238,8 +245,10 @@ inline std::vector<int> tile_map_hi() {
 }
 
 // Q3's name, so nothing downstream changes.
-template <int TM, int TN, int TK, int WM, int WN, int F2, int F1 = 1>
-inline std::vector<int> tile_map_int1() { return tile_map_hi<2, 1, TM, TN, TK, WM, WN, F2, F1>(); }
+template <int TM, int TN, int TK, int WM, int WN, int F2, int F1 = 1, int ArtifactTileK = TK>
+inline std::vector<int> tile_map_int1() {
+  return tile_map_hi<2, 1, TM, TN, TK, WM, WN, F2, F1, ArtifactTileK>();
+}
 
 // BIT-GRANULAR writer, shared by both planes. `q_kn` is the raw [K][N] plane, one code per byte, as the caller reads
 // it from the checkpoint -- NOT a preprocessed buffer. Destination addressing is l20's F>1 (plane-major) branch.
@@ -385,23 +394,25 @@ inline void recover_derived(const int8_t* in, std::vector<uint8_t>& q_kn, int N,
       in, plane_map<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>(), q_kn, N, K);
 }
 
-template <int LowBits, int HiBits, int TM, int TN, int TK, int WM, int WN, int F2, int F1 = 1>
+template <int LowBits, int HiBits, int TM, int TN, int TK, int WM, int WN,
+          int F2, int F1 = 1, int ArtifactTileK = TK>
 inline void recover_hi(const int8_t* in, std::vector<uint8_t>& high_kn, int N, int K) {
-  recover_from_map<HiBits, TM, TN, TK, WM, WN, F2>(
-      in, tile_map_hi<LowBits, HiBits, TM, TN, TK, WM, WN, F2, F1>(), high_kn, N, K);
+  recover_from_map<HiBits, TM, TN, TK, WM, WN, F2, ArtifactTileK>(
+      in, tile_map_hi<LowBits, HiBits, TM, TN, TK, WM, WN, F2, F1, ArtifactTileK>(), high_kn, N, K);
 }
 
 // The high plane, from the CROSS-PLANE map, for any width pair.
-template <int LowBits, int HiBits, int TM, int TN, int TK, int WM, int WN, int F2, int F1 = 1>
+template <int LowBits, int HiBits, int TM, int TN, int TK, int WM, int WN,
+          int F2, int F1 = 1, int ArtifactTileK = TK>
 inline void place_hi(int8_t* out, const std::vector<uint8_t>& high_kn, int N, int K) {
-  place_from_map<HiBits, TM, TN, TK, WM, WN, F2>(
-      out, tile_map_hi<LowBits, HiBits, TM, TN, TK, WM, WN, F2, F1>(), high_kn, N, K);
+  place_from_map<HiBits, TM, TN, TK, WM, WN, F2, ArtifactTileK>(
+      out, tile_map_hi<LowBits, HiBits, TM, TN, TK, WM, WN, F2, F1, ArtifactTileK>(), high_kn, N, K);
 }
 
 // Q3's name.
-template <int TM, int TN, int TK, int WM, int WN, int F2, int F1 = 1>
+template <int TM, int TN, int TK, int WM, int WN, int F2, int F1 = 1, int ArtifactTileK = TK>
 inline void place_int1(int8_t* out, const std::vector<uint8_t>& high_kn, int N, int K) {
-  place_hi<2, 1, TM, TN, TK, WM, WN, F2, F1>(out, high_kn, N, K);
+  place_hi<2, 1, TM, TN, TK, WM, WN, F2, F1, ArtifactTileK>(out, high_kn, N, K);
 }
 
 } // namespace xplane

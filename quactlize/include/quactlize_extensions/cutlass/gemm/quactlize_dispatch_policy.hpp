@@ -129,50 +129,48 @@ struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuMultistageMixe
 // one. Mirrors the single-plane policy exactly -- including every per-Schedule StaticGroupSize specialization --
 // because the 2-plane mainloop reuses the same scale/zero machinery (and the GGUF concats are gs=16, i.e. the
 // FINE per-mma-atom scale path).
-template<int Stages_, class kContinous_, typename Schedule_ = KernelAiuMultistageMixedInput>
-struct MainloopPPUAiuMixedInput2Plane {
+template<int Stages_, class kContinous_, int StaticGroupSize_,
+         int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_>
+struct MainloopPPUAiuMixedInput2PlaneBase {
   constexpr static int Stages = Stages_;
-  constexpr static int StaticGroupSize = 0;
+  constexpr static int StaticGroupSize = StaticGroupSize_;
+  constexpr static int ArtifactLowFold = ArtifactLowFold_;
+  constexpr static int ArtifactHighFold = ArtifactHighFold_;
+  constexpr static int ArtifactTileK = ArtifactTileK_;
   using kContinous = kContinous_;
   using Schedule = KernelAiuMultistageMixedInput;
   using ClusterShape = Shape<_1,_1,_1>;
 };
 
-template<int Stages_, class kContinous_>
-struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageMixedInputPerCol> {
-  constexpr static int Stages = Stages_;
-  constexpr static int StaticGroupSize = -1;
-  using kContinous = kContinous_;
-  using Schedule = KernelAiuMultistageMixedInput;
-  using ClusterShape = Shape<_1,_1,_1>;
-};
+template<int Stages_, class kContinous_, typename Schedule_ = KernelAiuMultistageMixedInput,
+         int ArtifactLowFold_ = 1, int ArtifactHighFold_ = 1, int ArtifactTileK_ = 0>
+struct MainloopPPUAiuMixedInput2Plane
+    : MainloopPPUAiuMixedInput2PlaneBase<Stages_, kContinous_, 0,
+                                        ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_> {};
 
-template<int Stages_, class kContinous_>
-struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs128> {
-  constexpr static int Stages = Stages_;
-  constexpr static int StaticGroupSize = 128;
-  using kContinous = kContinous_;
-  using Schedule = KernelAiuMultistageMixedInput;
-  using ClusterShape = Shape<_1,_1,_1>;
-};
+template<int Stages_, class kContinous_, int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_>
+struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageMixedInputPerCol,
+                                     ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_>
+    : MainloopPPUAiuMixedInput2PlaneBase<Stages_, kContinous_, -1,
+                                        ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_> {};
 
-template<int Stages_, class kContinous_>
-struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs64> {
-  constexpr static int Stages = Stages_;
-  constexpr static int StaticGroupSize = 64;
-  using kContinous = kContinous_;
-  using Schedule = KernelAiuMultistageMixedInput;
-  using ClusterShape = Shape<_1,_1,_1>;
-};
+template<int Stages_, class kContinous_, int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_>
+struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs128,
+                                     ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_>
+    : MainloopPPUAiuMixedInput2PlaneBase<Stages_, kContinous_, 128,
+                                        ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_> {};
 
-template<int Stages_, class kContinous_>
-struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs32> {
-  constexpr static int Stages = Stages_;
-  constexpr static int StaticGroupSize = 32;
-  using kContinous = kContinous_;
-  using Schedule = KernelAiuMultistageMixedInput;
-  using ClusterShape = Shape<_1,_1,_1>;
-};
+template<int Stages_, class kContinous_, int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_>
+struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs64,
+                                     ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_>
+    : MainloopPPUAiuMixedInput2PlaneBase<Stages_, kContinous_, 64,
+                                        ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_> {};
+
+template<int Stages_, class kContinous_, int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_>
+struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs32,
+                                     ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_>
+    : MainloopPPUAiuMixedInput2PlaneBase<Stages_, kContinous_, 32,
+                                        ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_> {};
 
 //////////////////////////////////////////////////////////////////////////////
 // N-FOLD (TK-freeing) mainloop policy
