@@ -22,7 +22,7 @@
 #   bash benchmarks/sweep_all_formats.sh                          # prefill band, the C1 shape
 #   bash benchmarks/sweep_all_formats.sh --decode                 # M=1 band, the D4 shape
 #   MOE_REPS=3 bash benchmarks/sweep_all_formats.sh               # 3 passes, so ties can be resolved
-#   FORMATS="Q3_K Q5_K" bash benchmarks/sweep_all_formats.sh      # a subset, when you mean to
+#   FORMATS="q3 q5" bash benchmarks/sweep_all_formats.sh          # a subset, when you mean to
 #
 # Samples from all formats append to ONE jsonl, so `python3 benchmarks/analyse.py <that file> --coverage` sees the
 # whole sweep. That works because bench_samples.hpp opens BENCH_JSONL in append mode and every record carries its
@@ -32,7 +32,10 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-FORMATS="${FORMATS:-i4 i2 Q3_K Q5_K Q6_K}"
+# These are the CMake MOE_FORMATS keys, not the JSON schema labels Q3_K/Q5_K/Q6_K.  Passing the latter gets as far
+# as configure and then (correctly) matches no format row; using the public keys here is what makes the default
+# command actually build all five shards.
+FORMATS="${FORMATS:-q3 q5 q6 i2 i4}"
 CORES="${MOE_CORES:-192}"
 JOBS="${JOBS:-$(nproc)}"
 OUT="${BENCH_JSONL:-$ROOT/sweep_all_formats.jsonl}"
@@ -64,7 +67,7 @@ for F in $FORMATS; do
     continue
   fi
 
-  BIN="$(find "$DIR" -name "$TARGET" -type f -perm -u+x | head -1)"
+  BIN="$(find "$DIR" -name "$TARGET" -type f -perm -u+x -print -quit)"
   if [ -z "$BIN" ]; then
     echo "[sweep-all] built but no $TARGET under $DIR -- treating as a failure rather than skipping quietly"
     failed+=("$F(missing-bin)")

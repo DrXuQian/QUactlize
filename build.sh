@@ -124,6 +124,43 @@ if command -v git >/dev/null 2>&1 && [ -e "$HERE/.git" ]; then
 fi
 
 TARGET="${TARGET:-test_lowbit_dense_bench}"
+
+# THE FIVE-FORMAT FULL BENCH IS NOT A VIABLE LINK UNIT.  Its generated hgcc objects are valid, but putting all of
+# their device payloads into one x86-64 executable stretches the final host ELF past the signed 32-bit relocations
+# used by crtbeginS.o and the host stubs.  The failure otherwise arrives only after every expensive device TU has
+# compiled.  Refuse the one combination we have measured to fail before even asking for the SDK; narrower, explicit
+# format subsets remain available for focused experiments and benchmarks/sweep_all_formats.sh is the full-coverage
+# path (five complete search spaces, five link units, one appended result stream).
+#
+# Empty MOE_FORMATS means all five in CMake.  Also catch the explicit full set in any order.  Unknown names and
+# duplicates remain CMake's validation job: they already fail at configure time rather than after compilation.
+if [ "$TARGET" = "test_lowbit_moe_bench" ] && [ "${MOE_ALLOW_ALL_FORMAT_MONOLITH:-0}" != 1 ]; then
+  _moe_all_selected=0
+  if [ -z "${MOE_FORMATS:-}" ]; then
+    _moe_all_selected=1
+  else
+    _moe_q3=0; _moe_q5=0; _moe_q6=0; _moe_i2=0; _moe_i4=0; _moe_unknown=0; _moe_count=0
+    IFS=';' read -r -a _moe_requested <<< "$MOE_FORMATS"
+    for _moe_fmt in "${_moe_requested[@]}"; do
+      _moe_count=$((_moe_count + 1))
+      case "$_moe_fmt" in
+        q3) _moe_q3=1 ;; q5) _moe_q5=1 ;; q6) _moe_q6=1 ;; i2) _moe_i2=1 ;; i4) _moe_i4=1 ;;
+        *) _moe_unknown=1 ;;
+      esac
+    done
+    if [ "$_moe_count" -eq 5 ] && [ "$_moe_unknown" -eq 0 ] &&
+       [ $((_moe_q3 + _moe_q5 + _moe_q6 + _moe_i2 + _moe_i4)) -eq 5 ]; then
+      _moe_all_selected=1
+    fi
+  fi
+  if [ "$_moe_all_selected" -eq 1 ]; then
+    echo "[build.sh] refusing the known-oversize five-format MoE link before hgcc starts." >&2
+    echo "           Run: bash benchmarks/sweep_all_formats.sh" >&2
+    echo "           That builds q3/q5/q6/i2/i4 separately and appends every result; coverage is unchanged." >&2
+    echo "           MOE_ALLOW_ALL_FORMAT_MONOLITH=1 is only for linker-layout diagnosis on the box." >&2
+    exit 2
+  fi
+fi
 if [ "$TARGET" = "test_lowbit_dense_bench" ]; then
   # FAIL BEFORE HGCC. A stale generated table otherwise presents as an unrelated CollectiveMma/GemmUniversal
   # template failure, and a bench-side startup banner cannot help because no binary was produced. Rebuild the
