@@ -5,7 +5,7 @@
 //                     row field: one weight file, many readers.
 //   stages: 2 3 4 6 8 12   <- what this table COVERS; a winner outside it cannot be found by a sweep using it
 //   ppu_b_chunk: 0 1   <- requested mode; each bench tag reports requested->actually effective
-//   provenance: rows=1526 space_fnv1a64=ac911818ca168578 emitter_fnv1a64=184b197bf3d2c23a
+//   provenance: rows=1526 space_fnv1a64=b97c2ab6ba690677 emitter_fnv1a64=184b197bf3d2c23a
 //
 // Regenerate after changing ppu_tactic_space.hpp or the pruning policy:
 //   c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic &&\
@@ -17,7 +17,7 @@
 #define LOWBIT_DENSE_I2_CFG_BITS  2
 #define LOWBIT_DENSE_I2_CFG_ARTIFACT_TILEK 128
 #define LOWBIT_DENSE_I2_CFG_ROWS  1526
-#define LOWBIT_DENSE_I2_CFG_SPACE_FNV1A64   "ac911818ca168578"
+#define LOWBIT_DENSE_I2_CFG_SPACE_FNV1A64   "b97c2ab6ba690677"
 #define LOWBIT_DENSE_I2_CFG_EMITTER_FNV1A64 "184b197bf3d2c23a"
 
 #define LOWBIT_DENSE_I2_CFG_LIST(X, B) \
