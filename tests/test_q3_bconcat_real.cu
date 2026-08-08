@@ -141,32 +141,35 @@ int main(int argc, char** argv) {
   // Every rung drives the high plane through xplane::place_int1, which is byte-identical to pack_plane's fold at
   // F1=1/F2=2 (l47, l53 at both K=512 and the box's K=256). So rung 1 is the known-MATCH configuration and also
   // double-checks that byte-identity on the box; if rung 1 breaks, place_int1 is the problem and nothing else matters.
-#define RUNG(TAG, TMv, TNv, TKv, WMv, WNv, Sv, F1v, F2v, QMODEv) do {                                        \
+#define RUNG_A(TAG, TMv, TNv, TKv, WMv, WNv, Sv, F1v, F2v, Av, QMODEv) do {                                 \
   /* PLANE 1: once cols_per_word > 1 (WN=64) the whole-word packer cannot express the fragment, and it also    \
      groups the folded columns strided while the kernel's MmaView groups them adjacent. So drive plane 1 off the  \
      SAME derived map plane 2 already uses. Byte-identical to the whole-word packer wherever that one is          \
      box-validated -- gated in fold_derivation/l61. */                                                           \
   std::vector<int8_t> blo_((size_t)K * N / 4);                                                        \
   if constexpr ((F1v) > 1) {                                                                          \
-    xplane::place_derived<2, TMv, TNv, TKv, WMv, WNv, F1v>(blo_.data(), low2, N, K);                  \
+    xplane::place_derived<2, TMv, TNv, TKv, WMv, WNv, F1v, Av>(blo_.data(), low2, N, K);              \
   } else {                                                                                            \
     blo_ = pack_plane<4, QuantTypeClass::PACKED_INT2_WEIGHT_ONLY, TNv, 0>(low2, K, N);                \
   }                                                                                                   \
   cutlass::DeviceAllocation<cutlass::uint2b_t> dblo_((size_t)K*N);                                   \
   dblo_.copy_from_host(reinterpret_cast<cutlass::uint2b_t const*>(blo_.data()));                     \
   std::vector<int8_t> bhi_((size_t)K * N / 8);                                                       \
-  xplane::place_int1<TMv, TNv, TKv, WMv, WNv, F2v, F1v>(bhi_.data(), high1, N, K);                   \
+  xplane::place_int1<TMv, TNv, TKv, WMv, WNv, F2v, F1v, Av>(bhi_.data(), high1, N, K);               \
   cutlass::DeviceAllocation<cutlass::uint1b_t> dbhi_((size_t)K*N);                                   \
   dbhi_.copy_from_host(reinterpret_cast<cutlass::uint1b_t const*>(bhi_.data()));                     \
   CUTLASS_PPU_CHECK(hggcMemset(dD.get(), 0, sizeof(half_t) * (size_t)M * N));                        \
   moe_grouped_ppu::filter_and_run<QMODEv, TMv, TNv, TKv, WMv, WNv, Sv,                                \
-                                  cutlass::uint2b_t, cutlass::uint1b_t>(                             \
+                                  cutlass::uint2b_t, cutlass::uint1b_t, false, Av>(                  \
       dA.get(), dblo_.get(), dSc.get(), dZr.get(), pd.get(), sd.get(), gm.get(),                     \
       M, N, K, L, gs, shpd.get(), shp.data(), offdev.get(), ws.get(), wsb, nullptr, dbhi_.get());    \
   CUTLASS_PPU_CHECK(hggcDeviceSynchronize());                                                        \
   if (!check(TAG)) { if (first_bad < 0) first_bad = rung_no; }                                       \
   ++rung_no;                                                                                         \
 } while (0)
+
+#define RUNG(TAG, TMv, TNv, TKv, WMv, WNv, Sv, F1v, F2v, QMODEv)                                    \
+  RUNG_A(TAG, TMv, TNv, TKv, WMv, WNv, Sv, F1v, F2v, TKv, QMODEv)
 
   // ---------------------------------------------------------------- CONTROLLED-INPUT PROBE
   // PROBE=hi / PROBE=lo reads the COLUMN PERMUTATION straight off the hardware, which is what is left once the ladder
@@ -230,7 +233,12 @@ int main(int argc, char** argv) {
        QM::FinegrainedScaleOnly);
   RUNG("7 (64,128, 64) w64x64   ScaleOnly + F1=2 F2=4      ", 64, 128, 64, 64, 64, 3, 2, 4,
        QM::FinegrainedScaleOnly);
+  // #37's Q3 cross-T witness. Unlike the same-T ladder above, both resident planes are packed in A64 quanta and the
+  // collective consumes them with T256 geometry; the final comparison remains the independent native GGUF golden.
+  RUNG_A("8 (64,128,256) w64x64   A64/F2/F4 -> T256", 64, 128, 256, 64, 64, 2, 2, 4, 64,
+         QM::FinegrainedScaleZero);
 #undef RUNG
+#undef RUNG_A
   std::printf("  => control %s; ladder: %s\n", ok256 ? "OK" : "BROKEN (look there first)",
               first_bad < 0 ? "all rungs MATCH" :
               first_bad == 1 ? "rung 1 already wrong -- place_int1 or the base config, not the ladder" :

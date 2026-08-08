@@ -147,22 +147,27 @@ int main(int argc, char** argv) {
     return bad == 0;
   };
 
-#define RUNG65(TAG, HIB, HIELEM, TMv, TNv, TKv, WMv, WNv, Sv, F2v, QMODEv, GOLDv) do {                              \
+#define RUNG65_A(TAG, HIB, HIELEM, TMv, TNv, TKv, WMv, WNv, Sv, F1v, F2v, Av, QMODEv, GOLDv) do {                  \
     std::vector<int8_t> blo((size_t)K * N / 2), bhi((size_t)K * N * (HIB) / 8);                       \
-    xplane::place_derived<4, TMv, TNv, TKv, WMv, WNv, 1>(blo.data(), lo, N, K);                       \
-    xplane::place_hi<4, HIB, TMv, TNv, TKv, WMv, WNv, F2v, 1>(bhi.data(), hi, N, K);                  \
+    xplane::place_derived<4, TMv, TNv, TKv, WMv, WNv, F1v, Av>(blo.data(), lo, N, K);                 \
+    xplane::place_hi<4, HIB, TMv, TNv, TKv, WMv, WNv, F2v, F1v, Av>(bhi.data(), hi, N, K);            \
     cutlass::DeviceAllocation<int4_t> dblo((size_t)K*N);                                              \
     dblo.copy_from_host(reinterpret_cast<int4_t const*>(blo.data()));                                 \
     cutlass::DeviceAllocation<HIELEM> dbhi((size_t)K*N);                                               \
     dbhi.copy_from_host(reinterpret_cast<HIELEM const*>(bhi.data()));                                 \
     CUTLASS_PPU_CHECK(hggcMemset(dD.get(), 0, sizeof(half_t) * (size_t)M * N));                       \
     moe_grouped_ppu::filter_and_run<QMODEv, TMv, TNv, TKv, WMv, WNv, Sv,                              \
-                                    int4_t, HIELEM>(                                                  \
+                                    int4_t, HIELEM, false, Av>(                                       \
         dA.get(), dblo.get(), dSc.get(), dZr.get(), pd.get(), sd.get(), gm.get(),                     \
         M, N, K, L, gs, shpd.get(), shp.data(), offdev.get(), ws.get(), wsb, nullptr, dbhi.get());    \
     CUTLASS_PPU_CHECK(hggcDeviceSynchronize());                                                       \
     check(TAG, GOLDv);                                                                                \
   } while (0)
+
+// Existing rungs consume bytes packed for their own tactic TileK.  Keep that ladder terse while making every new
+// cross-T row spell out both fold factors and the resident artifact TileK at the call site.
+#define RUNG65(TAG, HIB, HIELEM, TMv, TNv, TKv, WMv, WNv, Sv, F2v, QMODEv, GOLDv)                     \
+  RUNG65_A(TAG, HIB, HIELEM, TMv, TNv, TKv, WMv, WNv, Sv, 1, F2v, TKv, QMODEv, GOLDv)
 
   // Q6 = int4 + int2. int4's run is 32 B at TK=64 already, so the LOW plane never folds; int2 folds by 2 at TK=64.
   // int2's delivery bound is WN >= 2048/TK, so TK=64 needs WN >= 32 -- w64x32 IS legal, the shape that paid +7 to +9
@@ -176,6 +181,14 @@ int main(int argc, char** argv) {
     // PLAN #20 PHASE 1 GATE: no zero channel, bias 32 in the converter, checked against the SYMMETRIC golden.
     RUNG65("(64,128,128) w32x32 s3  ScaleOnly bias 32   ", 2, uint2_t, 64, 128, 128, 32, 32, 3, 1, QM::FinegrainedScaleOnly, goldsym);
     RUNG65("(64,128, 64) w64x64 s2  ScaleOnly bias 32   ", 2, uint2_t, 64, 128,  64, 64, 64, 2, 2, QM::FinegrainedScaleOnly, goldsym);
+    // #37: one resident Q6 artifact is consumed by a larger tactic. These are the three formerly never-written l115
+    // geometries, now checked against a CPU golden rather than only against their physical owner map.
+    RUNG65_A("A128/F1/F1 -> T256 w64x64 s2", 2, uint2_t, 64, 128, 256, 64, 64, 2, 1, 1, 128,
+             QM::FinegrainedScaleZero, gold);
+    RUNG65_A("A64/F1/F2 -> T256 w64x64 s2 ", 2, uint2_t, 64, 128, 256, 64, 64, 2, 1, 2, 64,
+             QM::FinegrainedScaleZero, gold);
+    RUNG65_A("A32/F2/F4 -> T256 w64x64 s2 ", 2, uint2_t, 64, 128, 256, 64, 64, 2, 2, 4, 32,
+             QM::FinegrainedScaleZero, gold);
   });
 
   // Q5 = int4 + int1. int1's bound is WN >= 4096/TK, so TK=256 allows w32x32, TK=128 needs WN >= 32, TK=64 needs 64.
@@ -190,7 +203,12 @@ int main(int argc, char** argv) {
     // Q5_K itself has a min channel and so never runs ScaleOnly in production; this rung gates the MECHANISM at the
     // third width, where kSymBias2Plane is 16, so a width-dependent mistake in the bias cannot hide.
     RUNG65("(64,128,128) w32x32 s3  ScaleOnly bias 16   ", 1, uint1_t, 64, 128, 128, 32, 32, 3, 2, QM::FinegrainedScaleOnly, goldsym);
+    RUNG65_A("A64/F1/F4 -> T256 w64x64 s2 ", 1, uint1_t, 64, 128, 256, 64, 64, 2, 1, 4, 64,
+             QM::FinegrainedScaleZero, gold);
   });
+
+#undef RUNG65
+#undef RUNG65_A
 
   std::printf("\n  => %d failing configuration(s)\n", fails);
   return fails ? 1 : 0;
