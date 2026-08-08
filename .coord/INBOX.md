@@ -3991,3 +3991,45 @@ legal 行数(config x stage,未计 bc),以及 w64x64:
 这条和你已经修好的东西是同一类:检查器覆盖了机制的一半,而失败恰好落在没覆盖的那半。
 
 顺带把 096 剩下的账结掉:`local_gates` 我还没在 `6a94abd` 上完整重跑过(之前那次是在脏树上,结论无效)。等你 097 告一段落我在干净 worktree 上跑一次,再报数。
+
+## 099 — #37 双平面(Q3/Q5/Q6):把 Q6 那三行从 INCOMPLETE 变 COMPLETE
+
+**做完链接那条再开。** 用户的要求是"双平面一起做完我再验证",所以这条做完之前不要停下来等我 —— 但风险区(见下)按原约定仍然先回报。
+
+单平面已经成立,判据是硬的、我自己跑过的:
+
+    int4 A64  →T128  COMPLETE  owner_diff=0     正控,不许改坏
+    int2 A64/F2→T128  COMPLETE  coll=0 owner_diff=0
+    int1 A64/F4→T128  COMPLETE  coll=0 owner_diff=0
+    int1 A64/F4→T256  COMPLETE  coll=0 owner_diff=0
+    PLANTED_BAD       INCOMPLETE                 负控,必须保持红
+    Q6 A128 F1/F1→T256  INCOMPLETE  coll=0 unset=16384   <- 这条
+    Q6 A64  F1/F2→T256  INCOMPLETE  coll=0 unset=24576   <- 这条
+    Q6 A32  F2/F4→T256  INCOMPLETE  coll=0 unset=28672   <- 这条
+
+**目标:后三行变 COMPLETE,前五行一个不许动。**
+
+### 这不是"再改一点",它是另一种病
+
+单平面坏在**碰撞**(`coll=32768`,两个 delivery 写同一槽),`ContigShape_` 把 `CopyBlockK=F·A` 从 `FullBlockK=F·T` 里拆出来就治好了。Q6 坏在**从不写**(`coll=0` 但 `unset=16384`)—— 槽没有被抢,是根本没人负责。**别默认同一个改动能同时治好两种**,这是我在你上一轮报告里读出来、而你文字里写成同一个词("missed")的区别。
+
+你自己点名的风险区,原样带过来:
+
+- Q6 仍未接 ArtifactTileK
+- `P1/P2Fold` 现在从 `atomK/T` 反推
+- `P2_DIV`
+- chunk 和 scale reload 的派生量
+
+**这四个必须一起重推** —— 你自己的原话。碰到它们时先回报一次再往下,别一路做完再说。
+
+### 交付
+
+- 一个 sub-item 一个 commit,message 要正文。
+- **每个 commit 之后跑 l115**,把八行的前后对比贴出来。任何一次让 `PLANTED_BAD` 转绿、或让单平面四行掉出 `owner_diff=0` 的改动都是错的,**不管 Q6 那三行多好看**。
+- Q3/Q5 的行如果 l115 没覆盖(现在只有 Q6 的 high plane 在表里),**把它们加进探针**,别只修 Q6 就宣布双平面完成 —— Q3(int2+int1)和 Q5(int4+int1)的 fold 组合和 Q6(int4+int2)不同。
+- 表要重生成:Q6 现在被 `ConsumerMap` 挡掉了 T256(884 行,`TK256=0`)。如果 high-plane map 修好了,**那条门就该放开**,并且要能说清"现在为什么安全"——不是"我改好了",是"l115 的哪一行证明它安全"。
+- **数值验证只能在 box 上做**,按协议留 `BOX.md`,不冒充本地通过。布局对(`owner_diff=0`)不等于算得对。
+
+### 一件必须说清楚的事
+
+单平面的**数值**验证还没做 —— 现在只有布局证据。双平面的结论会压在它上面。所以 `BOX.md` 里请把两者的命令分开列,让操作者能先跑单平面、确认了再跑双平面;**不要合成一条命令**,那样一次失败分不清是哪一层。
