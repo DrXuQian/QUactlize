@@ -18,6 +18,7 @@
 #   BAD=4 ./gen_moe_units_check.sh           negative control: mix a bc0 wrapper into a bc1 compile policy, must FATAL
 #   BAD=5 MOE_TM_LIST=16 ...                  negative control: bypass an advertised tile filter, must FATAL
 #   BAD=6 MOE_STAGES=12 ...                   negative control: drop the device stage flag, must FATAL
+#   BAD=7                                      negative control: corrupt every wrapper's ArtifactTileK, must FATAL
 #
 # Every invocation gets its OWN temporary output directory. build.sh is intentionally safe to run concurrently now;
 # a fixed .moe_units_check directory let one variant remove another variant's generated sources midway through this gate.
@@ -124,6 +125,9 @@ CMIN="$(grep -m1 -oE '^cmake_minimum_required\(VERSION [0-9.]+' "$QZ_ROOT/CMakeL
           # Keep the stage row projection but lose one half of the target compile contract. Shape counts alone
           # cannot see this; the exact DEV/HOST flag assertion below must.
           6) sed 's/list(APPEND _PPU_EXTRA_DEV "${_stage_dev}")/# planted missing device flag/' ;;
+          # A wrapper that falls back to T (or any other value) is a live kernel with the wrong resident layout.
+          # Keep the name's table-derived A intact and corrupt the compile macro so the content check must catch it.
+          7) sed 's/"#define UNIT_ARTIFACT_TILEK ${_artifact_tile_k}\\n"/"#define UNIT_ARTIFACT_TILEK 999\\n"/' ;;
           *) cat ;;
         esac; }
   cat <<'ASSERT'
@@ -192,6 +196,18 @@ function(qz_assert_moe_band LABEL TABLE_SUFFIX GEN_DIR GEN_TU_N GEN_SRCS EXPECT_
     string(REGEX MATCHALL "X\\([0-9,]+,B\\)" _hits "${_txt}")
     list(LENGTH _hits _nrows)
     string(TOUPPER "${_emit}" _uc)
+    file(STRINGS "${_t}" _artifact_defs
+         REGEX "^[ \t]*#define[ \t]+LOWBIT_GROUPED_${_uc}_CFG_ARTIFACT_TILEK([ \t]|$)")
+    list(LENGTH _artifact_defs _nartifact_defs)
+    if(NOT _nartifact_defs EQUAL 1)
+      message(FATAL_ERROR "${_t}: independently found ${_nartifact_defs} ArtifactTileK definitions, expected one")
+    endif()
+    list(GET _artifact_defs 0 _artifact_def)
+    if(NOT _artifact_def MATCHES
+       "^[ \t]*#define[ \t]+LOWBIT_GROUPED_${_uc}_CFG_ARTIFACT_TILEK[ \t]+([1-9][0-9]*)[ \t]*$")
+      message(FATAL_ERROR "${_t}: malformed independent ArtifactTileK definition '${_artifact_def}'")
+    endif()
+    set(_artifact_tile_k "${CMAKE_MATCH_1}")
     if(NOT _txt MATCHES "#define[ \t]+LOWBIT_GROUPED_${_uc}_CFG_ROWS[ \t]+([0-9]+)")
       message(FATAL_ERROR "${_t}: no declared row count")
     endif()
@@ -228,7 +244,8 @@ function(qz_assert_moe_band LABEL TABLE_SUFFIX GEN_DIR GEN_TU_N GEN_SRCS EXPECT_
       if(NOT _selected)
         continue()
       endif()
-      list(APPEND _exp_names "moe_unit_${_nm}_tn${_tn}_wn${_wn}_tm${_tm}_wm${_wm}_tk${_tk}_bc${_bc}")
+      list(APPEND _exp_names
+           "moe_unit_${_nm}_tn${_tn}_wn${_wn}_tm${_tm}_wm${_wm}_tk${_tk}_a${_artifact_tile_k}_bc${_bc}")
     endforeach()
   endforeach()
   list(REMOVE_DUPLICATES _exp_names)
@@ -303,14 +320,30 @@ function(qz_assert_moe_band LABEL TABLE_SUFFIX GEN_DIR GEN_TU_N GEN_SRCS EXPECT_
     string(REGEX REPLACE ".*[ \t]([01])$" "\\1" _tu_bc "${_policy_defs}")
     string(REGEX MATCHALL "#define[ \t]+UNIT_FN[ \t]+moe_unit_[A-Za-z0-9_]+" _fn_defs "${_src}")
     string(REGEX MATCHALL "#define[ \t]+UNIT_B_CHUNK[ \t]+[01]" _unit_bc_defs "${_src}")
+    string(REGEX MATCHALL "#define[ \t]+UNIT_ARTIFACT_TILEK[ \t]+[1-9][0-9]*" _unit_artifact_defs "${_src}")
     string(REGEX MATCHALL "#include[ \t]+\"moe_bench_unit.inc\"" _unit_includes "${_src}")
     string(REGEX MATCHALL "#include[ \t]+\"moe_bench_band.inc\"" _band_includes "${_src}")
     list(LENGTH _fn_defs _nfns)
     list(LENGTH _unit_bc_defs _nubc)
+    list(LENGTH _unit_artifact_defs _nua)
     list(LENGTH _unit_includes _ninc)
     list(LENGTH _band_includes _nband)
-    if(_nfns LESS 1 OR _nfns GREATER _batch OR NOT _nubc EQUAL _nfns OR NOT _ninc EQUAL _nfns OR NOT _nband EQUAL 1)
-      message(FATAL_ERROR "${LABEL}: ${_g} has shapes=${_nfns}, UNIT_B_CHUNK=${_nubc}, unit includes=${_ninc}, band includes=${_nband}; expected 1..${_batch} and one field/include per shape")
+    if(_nfns LESS 1 OR _nfns GREATER _batch OR NOT _nubc EQUAL _nfns OR NOT _nua EQUAL _nfns OR
+       NOT _ninc EQUAL _nfns OR NOT _nband EQUAL 1)
+      message(FATAL_ERROR "${LABEL}: ${_g} has shapes=${_nfns}, UNIT_B_CHUNK=${_nubc}, UNIT_ARTIFACT_TILEK=${_nua}, unit includes=${_ninc}, band includes=${_nband}; expected 1..${_batch} and one field/include per shape")
+    endif()
+    if(_nfns GREATER 0)
+      math(EXPR _last_unit "${_nfns} - 1")
+      foreach(_unit_idx RANGE 0 ${_last_unit})
+        list(GET _fn_defs ${_unit_idx} _fn_line)
+        list(GET _unit_artifact_defs ${_unit_idx} _artifact_line)
+        string(REGEX REPLACE ".*[ \t]" "" _unit_fn "${_fn_line}")
+        string(REGEX REPLACE ".*[ \t]" "" _unit_artifact "${_artifact_line}")
+        if(NOT _unit_fn MATCHES "_a${_unit_artifact}_bc[01]$")
+          message(FATAL_ERROR
+            "${LABEL}: ${_g} gives ${_unit_fn} UNIT_ARTIFACT_TILEK=${_unit_artifact}, which disagrees with its table-derived identity")
+        endif()
+      endforeach()
     endif()
     set(_unit_formats "")
     string(REGEX MATCHALL "#define[ \t]+UNIT_NAME[ \t]+[A-Za-z0-9_]+" _name_defs "${_src}")
@@ -462,6 +495,7 @@ if ! cmake -P "$GEN" > "$log" 2>&1; then
       5) _reason_re='one field/include per shape' ;;
       4) _reason_re='mixes UNIT_B_CHUNK' ;;
       6) _reason_re='MOE_STAGES device flags' ;;
+      7) _reason_re='UNIT_ARTIFACT_TILEK=.*disagrees' ;;
       *) _reason_re='a^' ;;
     esac
     if ! _reason="$(grep -m1 -E "$_reason_re" "$log")"; then

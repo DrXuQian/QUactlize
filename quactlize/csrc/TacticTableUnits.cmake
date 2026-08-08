@@ -1,5 +1,39 @@
 include_guard(GLOBAL)
 
+# Read one positive decimal scalar from a generated tactic table. This is intentionally separate from the X-macro
+# parser: ArtifactTileK is a property of the resident table, not a per-tactic row field, and copying it into every row
+# would turn one invariant into hundreds of opportunities to disagree.
+function(qz_parse_tactic_scalar OUT_VALUE)
+  cmake_parse_arguments(PARSE "" "FILE;MACRO" "" ${ARGN})
+  foreach(_arg FILE MACRO)
+    if(NOT PARSE_${_arg})
+      message(FATAL_ERROR "qz_parse_tactic_scalar: ${_arg} is required")
+    endif()
+  endforeach()
+  if(NOT PARSE_MACRO MATCHES "^[A-Za-z_][A-Za-z0-9_]*$")
+    message(FATAL_ERROR "qz_parse_tactic_scalar: invalid macro name '${PARSE_MACRO}'")
+  endif()
+
+  get_filename_component(_file "${PARSE_FILE}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+  if(NOT EXISTS "${_file}")
+    message(FATAL_ERROR "qz_parse_tactic_scalar: table does not exist: ${_file}")
+  endif()
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_file}")
+  file(STRINGS "${_file}" _definitions
+       REGEX "^[ \t]*#define[ \t]+${PARSE_MACRO}([ \t]|$)")
+  list(LENGTH _definitions _definition_count)
+  if(NOT _definition_count EQUAL 1)
+    message(FATAL_ERROR
+      "${_file}: found ${_definition_count} definitions of ${PARSE_MACRO}, expected exactly one")
+  endif()
+  list(GET _definitions 0 _definition)
+  if(NOT _definition MATCHES "^[ \t]*#define[ \t]+${PARSE_MACRO}[ \t]+([1-9][0-9]*)[ \t]*$")
+    message(FATAL_ERROR
+      "${_file}: malformed ${PARSE_MACRO} definition '${_definition}'; expected one positive decimal integer")
+  endif()
+  set(${OUT_VALUE} "${CMAKE_MATCH_1}" PARENT_SCOPE)
+endfunction()
+
 # Parse an emitted tactic X-macro without evaluating it. Rows are returned as
 # comma-separated integer tuples so callers can generate operator-specific units.
 function(qz_parse_tactic_xmacro OUT_ROWS)

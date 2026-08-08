@@ -12,6 +12,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 MODULE = ROOT / "quactlize" / "csrc" / "TacticTableUnits.cmake"
 TABLE_DIR = ROOT / "benchmarks"
 PREFIX_RE = re.compile(r"^#define (LOWBIT_DENSE(?:_[A-Z0-9]+)?)_CFG_ROWS\s+(\d+)\s*$", re.M)
+ARTIFACT_RE = re.compile(r"^#define (LOWBIT_DENSE(?:_[A-Z0-9]+)?)_CFG_ARTIFACT_TILEK\s+([1-9]\d*)\s*$", re.M)
 ROW_RE = re.compile(r"^  X\((\d+(?:,\d+){6}),B\)\s*\\?\s*$", re.M)
 
 
@@ -27,6 +28,8 @@ project(dense_unit_generator_check NONE)
 include("{MODULE}")
 qz_parse_tactic_xmacro(rows FILE "{table}"
   LIST_MACRO {prefix}_CFG_LIST COUNT_MACRO {prefix}_CFG_ROWS)
+qz_parse_tactic_scalar(artifact_tile_k FILE "{table}"
+  MACRO {prefix}_CFG_ARTIFACT_TILEK)
 set(batch_count 0)
 foreach(batch_bc IN ITEMS 0 1)
   set(rows_bc "")
@@ -48,7 +51,7 @@ foreach(batch_bc IN ITEMS 0 1)
   endif()
 endforeach()
 list(LENGTH rows row_count)
-file(WRITE "${{CMAKE_BINARY_DIR}}/summary.txt" "${{row_count}},${{batch_count}}\n")
+file(WRITE "${{CMAKE_BINARY_DIR}}/summary.txt" "${{row_count}},${{batch_count}},${{artifact_tile_k}}\n")
 """)
     result = subprocess.run(["cmake", "-S", src, "-B", build], capture_output=True, text=True)
     return work, table, build, result
@@ -69,10 +72,12 @@ def expect_rejected(table_name: str, text: str, prefix: str, fragment: str, labe
 def check_table(table: pathlib.Path) -> tuple[int, int]:
     text = table.read_text()
     stamped = PREFIX_RE.search(text)
+    artifact = ARTIFACT_RE.search(text)
     rows = ROW_RE.findall(text)
-    if not stamped or len(rows) < 2:
-        raise RuntimeError(f"{table.name}: cannot form controls from the table's own count and seven-field rows")
+    if not stamped or not artifact or artifact.group(1) != stamped.group(1) or len(rows) < 2:
+        raise RuntimeError(f"{table.name}: cannot form controls from the table's own count, ArtifactTileK and seven-field rows")
     prefix, stamped_count = stamped.group(1), int(stamped.group(2))
+    artifact_tile_k = int(artifact.group(2))
     row_count = len(rows)
     if row_count != stamped_count:
         raise RuntimeError(f"{table.name}: stamps {stamped_count} rows but contains {row_count}")
@@ -87,11 +92,14 @@ def check_table(table: pathlib.Path) -> tuple[int, int]:
         try:
             if result.returncode:
                 raise RuntimeError(f"{table.name}: {(result.stdout + result.stderr)[-1600:]}")
-            got_rows, got_batches = map(int, (build / "summary.txt").read_text().strip().split(","))
+            got_rows, got_batches, got_artifact_tile_k = map(
+                int, (build / "summary.txt").read_text().strip().split(","))
             expected_batches = sum((count + batch - 1) // batch for count in bc_counts.values())
-            if (got_rows, got_batches) != (row_count, expected_batches):
-                raise RuntimeError(f"{table.name}: k={batch}: parsed/batched {(got_rows, got_batches)}, "
-                                   f"expected {(row_count, expected_batches)} after bc partitioning")
+            if (got_rows, got_batches, got_artifact_tile_k) != (row_count, expected_batches, artifact_tile_k):
+                raise RuntimeError(
+                    f"{table.name}: k={batch}: parsed/batched/artifact "
+                    f"{(got_rows, got_batches, got_artifact_tile_k)}, expected "
+                    f"{(row_count, expected_batches, artifact_tile_k)} after bc partitioning")
             dependency_file = build / "CMakeFiles" / "Makefile.cmake"
             if not dependency_file.is_file() or str(copied_table) not in dependency_file.read_text(errors="replace"):
                 raise RuntimeError(f"{table.name}: the dense .inc is absent from CMAKE_CONFIGURE_DEPENDS")
@@ -114,6 +122,10 @@ def check_table(table: pathlib.Path) -> tuple[int, int]:
                     text.replace(f"#define {prefix}_CFG_LIST(X, B) \\",
                                  f"#define {prefix}_CFG_LIST(X,B) \\", 1), prefix,
                     f"malformed {prefix}_CFG_LIST declaration", "malformed list declaration")
+    expect_rejected(
+        table.name,
+        text.replace(artifact.group(0), f"#define {prefix}_CFG_ARTIFACT_TILEK 0 + {artifact_tile_k}", 1),
+        prefix, f"malformed {prefix}_CFG_ARTIFACT_TILEK definition", "non-integer ArtifactTileK")
     return row_count, units_at_four
 
 

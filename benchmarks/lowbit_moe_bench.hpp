@@ -66,7 +66,7 @@ static_assert(moe_metadata_planes(QM::FinegrainedScaleOnly) == 1 &&
 // containing `fold::FoldTraits` while the checked-out tree had `moe_fold`, and there was no way to tell from here whether
 // the box had built an older commit or the overlay had a stale copy. That ambiguity has cost rounds twice in this work (the
 // per-row PPU_B_CHUNK request/effective tag exists for the same reason), so it gets an invariant instead of a guess.
-#define LOWBIT_MOE_BENCH_REV 19
+#define LOWBIT_MOE_BENCH_REV 20
 
 // The table band is generated next to each target's dispatcher and included before this header. Other users of this
 // shared harness (the split-K probe) remain explicitly unbanded rather than accidentally inheriting lowbit-MoE metadata.
@@ -423,19 +423,21 @@ inline bool moe_row_ran(const Band& bd, const char* tag, double us, int fail0, i
 //
 // smem: A is TM*TK*2 per stage; each plane's B is Ng_p * (F_p*TK*bits_p/8) and Ng_p = TN/F_p, so the fold CANCELS and
 // B is simply TN*TK*bits_total/8 whatever the folding does. 256 KB per CU is a hard cap (not configurable higher).
-template <int TM, int TN, int TK, int WM, int WN, int Stages, int BitsLo, int BitsHi = 0>
+template <int TM, int TN, int TK, int WM, int WN, int Stages,
+          int BitsLo, int BitsHi = 0, int ArtifactTileK = TK>
 constexpr bool moe_ok() {
   // The old arithmetic lived here and the host-side tactic emitter copied it. That would let the two disagree while
   // both still compiled. The launcher, this gate and both emitter routes now ask the one TacticSpace generator.
   constexpr ppu_tactics::Candidate c{{ppu_tactics::Format::I2, "synthetic", BitsLo, BitsHi},
-                                      TM, TN, TK, WM, WN};
+                                      TM, TN, TK, WM, WN, ArtifactTileK};
   return ppu_tactics::GroupedSpace::topology_exclusion(c, Stages) == ppu_tactics::Exclusion::None;
 }
 
 // The request macro is not the verdict. Ordinary collectives have no kBChunk member, folded collectives apply a
 // TiledMma-dependent gate, and the two-plane collective owns a third implementation. MainloopPolicy's descriptor
 // folds those cases into one witness without making this bench duplicate any of their predicates.
-template <int TM, int TN, int TK, int WM, int WN, int Stages, class ElementB, class PlaneB2 = void>
+template <int TM, int TN, int TK, int WM, int WN, int Stages,
+          class ElementB, class PlaneB2 = void, int ArtifactTileK = TK>
 constexpr bool moe_b_chunk_effective() {
   using TileShape = cute::Shape<cute::Int<TM>, cute::Int<TN>, cute::Int<TK>>;
   using ScaleShape = cute::Shape<cute::Int<TN>,
@@ -443,7 +445,7 @@ constexpr bool moe_b_chunk_effective() {
   using WarpShape = cute::Shape<cute::Int<WM>, cute::Int<WN>, cute::Int<TK>>;
   using Policy = moe_grouped_ppu::MixedMainloopPolicy<
       LOWBIT_QMODE_SEL, ppu_group_schedule::FinegrainedSchedule<32>, TileShape, ScaleShape, WarpShape,
-      Stages, true, ElementB, PlaneB2, TK>;
+      Stages, true, ElementB, PlaneB2, ArtifactTileK>;
   return Policy::Descriptor::atom_at_a_time;
 }
 
@@ -514,16 +516,16 @@ constexpr bool moe_b_chunk_effective() {
 // The pack used to run per EXPERT, 64 times, on byte-identical input -- the weight pattern does not depend on e. At
 // N=K=2048 that is 268 M positions per row for one row's worth of information. Pack expert 0 and memcpy the rest; the
 // sweep only became affordable at this size because of it.
-#define MOE2_TIME(BD,BEST,NAME,LOELEM,HIELEM,LOB,HIB,TMv,TNv,TKv,WMv,WNv,Sv)                                       \
-  if constexpr (moe_ok<TMv,TNv,TKv,WMv,WNv,Sv,LOB,HIB>()) {                                                        \
-    constexpr bool _bc = moe_b_chunk_effective<TMv,TNv,TKv,WMv,WNv,Sv,LOELEM,HIELEM>();                            \
+#define MOE2_TIME(BD,BEST,NAME,LOELEM,HIELEM,LOB,HIB,TMv,TNv,TKv,Av,WMv,WNv,Sv)                                    \
+  if constexpr (moe_ok<TMv,TNv,TKv,WMv,WNv,Sv,LOB,HIB,Av>()) {                                                     \
+    constexpr bool _bc = moe_b_chunk_effective<TMv,TNv,TKv,WMv,WNv,Sv,LOELEM,HIELEM,Av>();                         \
     const bench_measure::Tactic _cfg{NAME,TMv,TNv,TKv,WMv,WNv,Sv,                                                  \
                                       int(UNIT_B_CHUNK),int(_bc),moe_abcast()};                                     \
     char _t[bench_measure::kTagBytes]; bench_measure::format_tag(_t, sizeof _t, _cfg);                              \
     if (moe_row_selected(_t)) {                                                                                    \
       (BEST).any_selected = true;                                                                                  \
       auto _go = [&]{                                                                                              \
-        moe_grouped_ppu::filter_and_run<LOWBIT_QMODE_SEL,TMv,TNv,TKv,WMv,WNv,Sv,LOELEM,HIELEM>(            \
+        moe_grouped_ppu::filter_and_run<LOWBIT_QMODE_SEL,TMv,TNv,TKv,WMv,WNv,Sv,LOELEM,HIELEM,false,Av>(           \
             (BD).dA, _b1.get(), (BD).dSc, (BD).dZr, (BD).pd, (BD).sd, (BD).gm,                                     \
             (BD).Mmax, (BD).N, (BD).K, (BD).L, (BD).gs, (BD).rdev, (BD).rsh.data(),                                \
             (BD).mode ? (BD).offdev : nullptr, (BD).ws, (BD).wsb, nullptr, _b2.get(),                                \
@@ -541,19 +543,19 @@ constexpr bool moe_b_chunk_effective() {
     }                                                                                                              \
   }
 
-#define MOE2(BD,BEST,NAME,LOELEM,HIELEM,LOB,HIB,TMv,TNv,TKv,WMv,WNv) do {                                          \
+#define MOE2(BD,BEST,NAME,LOELEM,HIELEM,LOB,HIB,TMv,TNv,TKv,Av,WMv,WNv) do {                                       \
   char _sh[80]; moe_only_filter::format_shape(_sh, sizeof _sh, NAME, TMv, TNv, TKv, WMv, WNv);                     \
-  if constexpr (moe_ok<TMv,TNv,TKv,WMv,WNv,2,LOB,HIB>()) if (moe_shape_selected(_sh)) {                            \
-    constexpr int _F1 = moe_fold<LOB>(TKv);                                                                        \
-    constexpr int _F2 = moe_fold<HIB>(TKv);                                                                        \
+  if constexpr (moe_ok<TMv,TNv,TKv,WMv,WNv,2,LOB,HIB,Av>()) if (moe_shape_selected(_sh)) {                         \
+    constexpr int _F1 = moe_fold<LOB>(Av);                                                                         \
+    constexpr int _F2 = moe_fold<HIB>(Av);                                                                         \
     const size_t _lo = (size_t)(BD).K*(BD).N*(LOB)/8, _hi = (size_t)(BD).K*(BD).N*(HIB)/8;                          \
     std::vector<int8_t> _blo((size_t)(BD).L*_lo), _bhi((size_t)(BD).L*_hi);                                        \
     { std::vector<uint8_t> _l((size_t)(BD).K*(BD).N), _h((size_t)(BD).K*(BD).N);                                    \
       for (size_t i = 0; i < _l.size(); ++i) {                                                                     \
         const int q = int((i * 2654435761u >> 5) % (unsigned)((1u<<(LOB))<<(HIB)));                                 \
         _l[i] = uint8_t(q & ((1u<<(LOB))-1u)); _h[i] = uint8_t(q >> (LOB)); }                                       \
-      xplane::place_derived<LOB,TMv,TNv,TKv,WMv,WNv,_F1>(_blo.data(), _l, (BD).N, (BD).K);                          \
-      xplane::place_hi<LOB,HIB,TMv,TNv,TKv,WMv,WNv,_F2,_F1>(_bhi.data(), _h, (BD).N, (BD).K);                       \
+      xplane::place_derived<LOB,TMv,TNv,TKv,WMv,WNv,_F1,Av>(_blo.data(), _l, (BD).N, (BD).K);                       \
+      xplane::place_hi<LOB,HIB,TMv,TNv,TKv,WMv,WNv,_F2,_F1,Av>(_bhi.data(), _h, (BD).N, (BD).K);                    \
       for (int e = 1; e < (BD).L; ++e) {                                                                           \
         std::memcpy(_blo.data() + (size_t)e*_lo, _blo.data(), _lo);                                                 \
         std::memcpy(_bhi.data() + (size_t)e*_hi, _bhi.data(), _hi); } }                                            \
@@ -561,13 +563,13 @@ constexpr bool moe_b_chunk_effective() {
     _b1.copy_from_host(reinterpret_cast<LOELEM const*>(_blo.data()));                                              \
     cutlass::DeviceAllocation<HIELEM> _b2((size_t)(BD).L*_hi);                                                     \
     _b2.copy_from_host(reinterpret_cast<HIELEM const*>(_bhi.data()));                                              \
-    MOE_STAGE_LIST(MOE2_TIME, BD,BEST,NAME,LOELEM,HIELEM,LOB,HIB,TMv,TNv,TKv,WMv,WNv)                              \
+    MOE_STAGE_LIST(MOE2_TIME, BD,BEST,NAME,LOELEM,HIELEM,LOB,HIB,TMv,TNv,TKv,Av,WMv,WNv)                           \
   } } while (0)
 
 // ---- single plane, same structure.
-#define MOE1_TIME(BD,BEST,NAME,ELEM,BITS,TMv,TNv,TKv,WMv,WNv,Sv)                                                   \
-  if constexpr (moe_ok<TMv,TNv,TKv,WMv,WNv,Sv,BITS>()) {                                                           \
-    constexpr bool _bc = moe_b_chunk_effective<TMv,TNv,TKv,WMv,WNv,Sv,ELEM>();                                     \
+#define MOE1_TIME(BD,BEST,NAME,ELEM,BITS,TMv,TNv,TKv,Av,WMv,WNv,Sv)                                                \
+  if constexpr (moe_ok<TMv,TNv,TKv,WMv,WNv,Sv,BITS,0,Av>()) {                                                      \
+    constexpr bool _bc = moe_b_chunk_effective<TMv,TNv,TKv,WMv,WNv,Sv,ELEM,void,Av>();                             \
     const bench_measure::Tactic _cfg{NAME,TMv,TNv,TKv,WMv,WNv,Sv,                                                  \
                                       int(UNIT_B_CHUNK),int(_bc),moe_abcast()};                                     \
     char _t[bench_measure::kTagBytes]; bench_measure::format_tag(_t, sizeof _t, _cfg);                              \
@@ -577,7 +579,7 @@ constexpr bool moe_b_chunk_effective() {
         /* PlaneB2 is NAMED (void) on purpose: passing nullptr for B2 while letting PlaneB2 deduce makes the    \
            deduction fail on std::nullptr_t, and a failed deduction is NOT rescued by the default template       \
            argument -- the call simply stops matching. */                                                        \
-        moe_grouped_ppu::filter_and_run<LOWBIT_QMODE_SEL,TMv,TNv,TKv,WMv,WNv,Sv,ELEM,void>(                \
+        moe_grouped_ppu::filter_and_run<LOWBIT_QMODE_SEL,TMv,TNv,TKv,WMv,WNv,Sv,ELEM,void,false,Av>(               \
             (BD).dA, _db.get(), (BD).dSc, (BD).dZr, (BD).pd, (BD).sd, (BD).gm,                                     \
             (BD).Mmax, (BD).N, (BD).K, (BD).L, (BD).gs, (BD).rdev, (BD).rsh.data(),                                \
             (BD).mode ? (BD).offdev : nullptr, (BD).ws, (BD).wsb, nullptr,                                          \
@@ -595,19 +597,19 @@ constexpr bool moe_b_chunk_effective() {
     }                                                                                                              \
   }
 
-#define MOE1(BD,BEST,NAME,ELEM,BITS,TMv,TNv,TKv,WMv,WNv) do {                                                      \
+#define MOE1(BD,BEST,NAME,ELEM,BITS,TMv,TNv,TKv,Av,WMv,WNv) do {                                                   \
   char _sh[80]; moe_only_filter::format_shape(_sh, sizeof _sh, NAME, TMv, TNv, TKv, WMv, WNv);                     \
-  if constexpr (moe_ok<TMv,TNv,TKv,WMv,WNv,2,BITS>()) if (moe_shape_selected(_sh)) {                               \
-    constexpr int _F = moe_fold<BITS>(TKv);                                                                        \
+  if constexpr (moe_ok<TMv,TNv,TKv,WMv,WNv,2,BITS,0,Av>()) if (moe_shape_selected(_sh)) {                          \
+    constexpr int _F = moe_fold<BITS>(Av);                                                                         \
     const size_t _per = (size_t)(BD).K*(BD).N*(BITS)/8;                                                            \
     std::vector<int8_t> _bb((size_t)(BD).L*_per);                                                                  \
     { std::vector<uint8_t> _q((size_t)(BD).K*(BD).N);                                                              \
       for (size_t i = 0; i < _q.size(); ++i) _q[i] = uint8_t((i * 2654435761u >> 5) & ((1u<<(BITS))-1u));           \
-      xplane::place_derived<BITS,TMv,TNv,TKv,WMv,WNv,_F>(_bb.data(), _q, (BD).N, (BD).K);                           \
+      xplane::place_derived<BITS,TMv,TNv,TKv,WMv,WNv,_F,Av>(_bb.data(), _q, (BD).N, (BD).K);                        \
       for (int e = 1; e < (BD).L; ++e) std::memcpy(_bb.data() + (size_t)e*_per, _bb.data(), _per); }                \
     cutlass::DeviceAllocation<ELEM> _db((size_t)(BD).L*_per);                                                      \
     _db.copy_from_host(reinterpret_cast<ELEM const*>(_bb.data()));                                                 \
-    MOE_STAGE_LIST(MOE1_TIME, BD,BEST,NAME,ELEM,BITS,TMv,TNv,TKv,WMv,WNv)                                          \
+    MOE_STAGE_LIST(MOE1_TIME, BD,BEST,NAME,ELEM,BITS,TMv,TNv,TKv,Av,WMv,WNv)                                       \
   } } while (0)
 
 // The unit entry points are DECLARED IN GENERATED CODE (moe_bench_units.inc, written by CMakeLists), one per shape.

@@ -1099,6 +1099,9 @@ foreach(_row IN LISTS _MOE_FORMATS)
     FILE "${_MOE_TABLE}"
     LIST_MACRO LOWBIT_GROUPED_${_nm_uc}_CFG_LIST
     COUNT_MACRO LOWBIT_GROUPED_${_nm_uc}_CFG_ROWS)
+  qz_parse_tactic_scalar(_artifact_tile_k
+    FILE "${_MOE_TABLE}"
+    MACRO LOWBIT_GROUPED_${_nm_uc}_CFG_ARTIFACT_TILEK)
   # TileK IS FIELD 2 AND IT IS PART OF THE SHAPE. The first version of this projection dropped it and let the unit
   # compile at the MOE_TK build knob (64), which is not the TileK the rows were emitted for: Q3/Q5 are tactic_tile_k
   # 256, Q6/i2 are 128, only i4 is 64. moe_ok<TM,TN,TK,WM,WN,S,LOB,HIB> takes TK, so 312 of the 415 units were asking
@@ -1141,7 +1144,8 @@ foreach(_row IN LISTS _MOE_FORMATS)
     endif()
     # PPU_B_CHUNK is part of the compile-time shape even when the collective later gates the request off. Keeping
     # it in the key is what gives each request its own TU/macro and lets the bench expose request->effective.
-    list(APPEND _MOE_SHAPES "${_r_tm}:${_r_tn}:${_r_tk}:${_r_wm}:${_r_wn}:${_r_bc}")
+    list(APPEND _MOE_SHAPES
+         "${_r_tm}:${_r_tn}:${_r_tk}:${_artifact_tile_k}:${_r_wm}:${_r_wn}:${_r_bc}")
   endforeach()
   list(REMOVE_DUPLICATES _MOE_SHAPES)
   foreach(_shape IN LISTS _MOE_SHAPES)
@@ -1149,15 +1153,16 @@ foreach(_row IN LISTS _MOE_FORMATS)
     list(GET _sf 0 _tm)
     list(GET _sf 1 _tn)
     list(GET _sf 2 _tk)
-    list(GET _sf 3 _wm)
-    list(GET _sf 4 _wn)
-    list(GET _sf 5 _bc)
-          set(_fn "moe_unit_${_nm}_tn${_tn}_wn${_wn}_tm${_tm}_wm${_wm}_tk${_tk}_bc${_bc}")
+    list(GET _sf 3 _artifact_tile_k)
+    list(GET _sf 4 _wm)
+    list(GET _sf 5 _wn)
+    list(GET _sf 6 _bc)
+          set(_fn "moe_unit_${_nm}_tn${_tn}_wn${_wn}_tm${_tm}_wm${_wm}_tk${_tk}_a${_artifact_tile_k}_bc${_bc}")
           # A SHAPE IS A RUNTIME/DISPATCH UNIT, NOT NECESSARILY A TRANSLATION UNIT. Keep every field needed to emit
           # its wrapper, then batch records only after every format has contributed. Batching inside this format loop
           # adds a rounding boundary per format (188 TUs today); the only compile-time identity that may not share a
           # TU is PPU_B_CHUNK, because the collective headers read it on their first include.
-          set(_record "${_fn}|${_nm}|${_2p}|${_lo}|${_hi}|${_lob}|${_hib}|${_tm}|${_tn}|${_tk}|${_wm}|${_wn}|${_bc}")
+          set(_record "${_fn}|${_nm}|${_2p}|${_lo}|${_hi}|${_lob}|${_hib}|${_tm}|${_tn}|${_tk}|${_artifact_tile_k}|${_wm}|${_wn}|${_bc}")
           if(_bc EQUAL 0)
             list(APPEND _MOE_SHAPE_RECORDS_BC0 "${_record}")
           elseif(_bc EQUAL 1)
@@ -1235,8 +1240,8 @@ foreach(_bc 0 1)
     endif()
     string(REPLACE "|" ";" _rf "${_record}")
     list(LENGTH _rf _nrf)
-    if(NOT _nrf EQUAL 13)
-      message(FATAL_ERROR "internal MoE batch record '${_record}' has ${_nrf} fields, expected 13")
+    if(NOT _nrf EQUAL 14)
+      message(FATAL_ERROR "internal MoE batch record '${_record}' has ${_nrf} fields, expected 14")
     endif()
     list(GET _rf 0 _fn)
     list(GET _rf 1 _nm)
@@ -1248,9 +1253,10 @@ foreach(_bc 0 1)
     list(GET _rf 7 _tm)
     list(GET _rf 8 _tn)
     list(GET _rf 9 _tk)
-    list(GET _rf 10 _wm)
-    list(GET _rf 11 _wn)
-    list(GET _rf 12 _record_bc)
+    list(GET _rf 10 _artifact_tile_k)
+    list(GET _rf 11 _wm)
+    list(GET _rf 12 _wn)
+    list(GET _rf 13 _record_bc)
     if(NOT _record_bc EQUAL _bc)
       message(FATAL_ERROR "internal MoE batch mixed bc${_record_bc} shape ${_fn} into bc${_bc} TU")
     endif()
@@ -1266,6 +1272,7 @@ foreach(_bc 0 1)
       "#define UNIT_TM      ${_tm}\n"
       "#define UNIT_TN      ${_tn}\n"
       "#define UNIT_TK      ${_tk}\n"
+      "#define UNIT_ARTIFACT_TILEK ${_artifact_tile_k}\n"
       "#define UNIT_WM      ${_wm}\n"
       "#define UNIT_WN      ${_wn}\n"
       "#include \"moe_bench_unit.inc\"\n")

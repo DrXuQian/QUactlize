@@ -37,7 +37,8 @@
 
 #if !defined(UNIT_NAME) || !defined(UNIT_FN) || !defined(UNIT_B_CHUNK) || !defined(UNIT_2PLANE) || \
     !defined(UNIT_LOELEM) || !defined(UNIT_HIELEM) || !defined(UNIT_LOB) || !defined(UNIT_HIB) || \
-    !defined(UNIT_TM) || !defined(UNIT_TN) || !defined(UNIT_TK) || !defined(UNIT_WM) || !defined(UNIT_WN)
+    !defined(UNIT_TM) || !defined(UNIT_TN) || !defined(UNIT_TK) || !defined(UNIT_ARTIFACT_TILEK) || \
+    !defined(UNIT_WM) || !defined(UNIT_WN)
 #error "the MoE generator must define every UNIT_* field before including moe_bench_unit.inc"
 #endif
 
@@ -64,10 +65,10 @@ template <int Dummy>
 static void MOE_UNIT_CAT_(UNIT_FN, _body)(const Band& bd, Best& best) {
 #if UNIT_2PLANE
   MOE2(bd, best, MOE_UNIT_STR_(UNIT_NAME), UNIT_LOELEM, UNIT_HIELEM, UNIT_LOB, UNIT_HIB,
-       UNIT_TM, UNIT_TN, UNIT_TK, UNIT_WM, UNIT_WN);
+       UNIT_TM, UNIT_TN, UNIT_TK, UNIT_ARTIFACT_TILEK, UNIT_WM, UNIT_WN);
 #else
   MOE1(bd, best, MOE_UNIT_STR_(UNIT_NAME), UNIT_LOELEM, UNIT_LOB,
-       UNIT_TM, UNIT_TN, UNIT_TK, UNIT_WM, UNIT_WN);
+       UNIT_TM, UNIT_TN, UNIT_TK, UNIT_ARTIFACT_TILEK, UNIT_WM, UNIT_WN);
 #endif
 }
 void UNIT_FN(const Band& bd, Best& best) { MOE_UNIT_CAT_(UNIT_FN, _body)<0>(bd, best); }
@@ -83,6 +84,7 @@ const int MOE_UNIT_CAT_(UNIT_FN, _vote) = (moe_chunk_vote(UNIT_B_CHUNK), 0);
 #undef MOE_UNIT_STR2_
 #undef UNIT_WN
 #undef UNIT_WM
+#undef UNIT_ARTIFACT_TILEK
 #undef UNIT_TK
 #undef UNIT_TN
 #undef UNIT_TM
