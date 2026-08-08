@@ -15,15 +15,40 @@
 #   * EXPLICIT filter_and_run<...> instantiations name their width and nothing gates them, so a rejected one is a
 #     hard failure -- the box build will not compile.
 set -u
-SRC="$(cd "$(dirname "$0")/.." && pwd)"
-FLAG=$(mktemp); GEN=$(mktemp --suffix=.cpp); BIN=$(mktemp)
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/../.." && pwd)"
+SRC="$ROOT/dev"
+TRAITS="$ROOT/quactlize/include/fold_traits.hpp"
+[ -f "$TRAITS" ] || {
+  echo "gen_guard_check: fold traits header is missing: $TRAITS" >&2
+  exit 2
+}
+CXX=${CXX:-g++}
+command -v "$CXX" >/dev/null 2>&1 || {
+  echo "gen_guard_check: C++ compiler is not available: $CXX" >&2
+  exit 2
+}
+FLAG=$(mktemp); GEN=$(mktemp --suffix=.cpp); BIN=$(mktemp); LOG=$(mktemp)
+cleanup() {
+  rm -f -- "$FLAG" "$FLAG.m" "$FLAG.e" "$FLAG.w" "$FLAG.s" "$GEN" "$BIN" "$LOG"
+}
+trap cleanup EXIT
 gated=$(grep -l 'if constexpr (fold::deliverable' "$SRC"/*.cu 2>/dev/null | wc -l)
+
+compile_probe() {
+  if ! "$CXX" -std=c++17 "$GEN" -o "$BIN" 2>"$LOG"; then
+    echo "gen_guard_check: probe compilation failed; this is not a rejected configuration:" >&2
+    sed -n '1,20p' "$LOG" >&2
+    exit 2
+  fi
+  PROBE_OK=$("$BIN")
+}
 
 emit_warp() {  # tm tn wm wn kind -- the warp tiling must divide the block tile
   printf '#include "%s/fold_traits.hpp"\n#include <cstdio>\nint main(){printf("%%d",fold::warp_shape_ok<%s,%s,%s,%s>?1:0);}\n' \
-    "$SRC" "$1" "$2" "$3" "$4" > "$GEN"
-  local ok=0
-  if g++ -std=c++17 "$GEN" -o "$BIN" 2>/dev/null; then ok=$("$BIN"); fi
+    "$(dirname "$TRAITS")" "$1" "$2" "$3" "$4" > "$GEN"
+  compile_probe
+  local ok=$PROBE_OK
   if [ "$ok" = 1 ]; then
     printf "  %-16s TM=%-4s TN=%-4s w%sx%-4s OK\n" "$5" "$1" "$2" "$3" "$4"
   else
@@ -34,9 +59,9 @@ emit_warp() {  # tm tn wm wn kind -- the warp tiling must divide the block tile
 
 emit() {  # bits tn tk wm wn kind
   printf '#include "%s/fold_traits.hpp"\n#include <cstdio>\nint main(){printf("%%d",fold::deliverable<%s,%s,%s,%s,%s>?1:0);}\n' \
-    "$SRC" "$1" "$2" "$3" "$4" "$5" > "$GEN"
-  local ok=0
-  if g++ -std=c++17 "$GEN" -o "$BIN" 2>/dev/null; then ok=$("$BIN"); fi
+    "$(dirname "$TRAITS")" "$1" "$2" "$3" "$4" "$5" > "$GEN"
+  compile_probe
+  local ok=$PROBE_OK
   local verdict
   if [ "$ok" = 1 ]; then verdict="OK"
   else
@@ -101,5 +126,4 @@ elif grep -q gatedbad "$FLAG" 2>/dev/null; then
 else
   echo "OK: every enumerated instantiation is deliverable."
 fi
-rm -f "$FLAG" "$FLAG.m" "$FLAG.e" "$FLAG.w" "$FLAG.s" "$GEN" "$BIN"
 exit $rc
