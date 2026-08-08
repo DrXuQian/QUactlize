@@ -1,8 +1,8 @@
 # codex status
 
-    updated-at:     2026-08-07 15:48:33 UTC
+    updated-at:     2026-08-08 11:50:25 UTC
     inbox-consumed: 098
-    working-on:     INBOX 098: A/F/C route and dynamic controls reviewed green; committing before clean-SHA gates
-    blocked-on:     none
-    last-commit:    1363610 Cap mixed metadata copies to CTA coverage
-    last-heartbeat: 172
+    working-on:     #37 single-plane A64 artifact reuse across T128/T256 committed and locally gated
+    blocked-on:     ppu001 numerical gate in BOX.md; two-plane copy/fold/scale/chunk derivation intentionally deferred
+    last-commit:    65930e5 Gate artifact reuse across tactic K (latest code)
+    last-heartbeat: 189

@@ -571,3 +571,47 @@ witness failure, or a device error is a failure. Wanted back: all four verdict r
 them explicitly with A3 (`int1`, same shape/gs, w64x64 s2 bc1, 63.7% MFU) and A5 (`Q3`, same shape/gs, 255.47 us /
 53.8% MFU). Those records used smaller consumer TileK, so the comparison is a regression/ceiling reference, not a claim
 that the new shipping `TK256` row must equal them.
+
+---
+
+## #37 — one A64 resident artifact consumed at larger single-plane TileK
+
+The local l115 gate proves the exact physical-slot owner map, and nvcc instantiates all three real collective bodies,
+but neither is a PPU numerical result. Build the dedicated A64 mode once; its table contains only the three cross-T
+rows, and both the offline packer and launcher print `ArtifactTileK=64`, so a same-T repack cannot masquerade as this
+gate. The first line binds every result to the checked-out SHA.
+
+    set -euo pipefail
+    cd /sim/eec/shared/junfu.qx/quactlize
+    git pull --ff-only origin develop
+    echo "gate-sha=$(git rev-parse HEAD)"
+
+    PPU_DEFS=FOLD_ARTIFACT_TILEK=64 TARGET=test_fold_int2 ./build.sh
+    X=$(find build_ppu -type f -name test_fold_int2 -perm -u+x -print -quit)
+    test -n "$X"
+
+    FOLD_BITS=2 FOLD_TM=64 FOLD_TN=64  FOLD_TK=128 FOLD_SVARY=1 \
+      "$X" 256 256 32 | tee /tmp/037_i2_a64_t128.log
+    FOLD_BITS=1 FOLD_TM=64 FOLD_TN=128 FOLD_TK=128 FOLD_SVARY=1 \
+      "$X" 256 256 32 | tee /tmp/037_i1_a64_t128.log
+    FOLD_BITS=1 FOLD_TM=64 FOLD_TN=128 FOLD_TK=256 FOLD_SVARY=1 \
+      "$X" 256 256 32 | tee /tmp/037_i1_a64_t256.log
+
+    set +e
+    NFOLD_STD=1 FOLD_BITS=2 FOLD_TM=64 FOLD_TN=64 FOLD_TK=128 FOLD_SVARY=1 \
+      "$X" 256 256 32 | tee /tmp/037_negative_unfolded_bytes.log
+    neg_rc=${PIPESTATUS[0]}
+    set -e
+    test "$neg_rc" -eq 1
+    echo "negative-control-exit=$neg_rc"
+
+Wanted back: `gate-sha=...`; each positive banner (all must name `ArtifactTileK=64`); and these three summary rows,
+each with `bad=0/65536 MATCH`:
+
+    fold int2 (64,64,128) w32x32 F=2
+    fold int1 (64,128,128) w32x64 F=4
+    fold int1 (64,128,256) w32x64 F=4
+
+The negative control must print `MISMATCH`, have a nonzero bad count, and end with
+`negative-control-exit=1`. A positive result is not accepted if its banner names any artifact TileK other than 64;
+that would test repacking, not resident-byte reuse.
