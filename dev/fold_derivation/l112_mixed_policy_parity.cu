@@ -63,6 +63,9 @@ using W32x64 = Shape<_32, _64, _64>;
 using S64Gs16 = Shape<_128, _4>;
 using S64Gs32 = Shape<_128, _2>;
 using S64Gs128 = Shape<_128, _1>;
+using T128 = Shape<_64, _128, _128>;
+using W64x64T128 = Shape<_64, _64, _128>;
+using S128Gs32 = Shape<_128, _4>;
 
 // Ordinary one-plane, both metadata modes.
 static_assert(AdapterPair<Q::FinegrainedScaleOnly, 32, T64, S64Gs32, W64x32, 3,
@@ -78,7 +81,39 @@ static_assert(AdapterPair<Q::FinegrainedScaleZero, 16, T64, S64Gs16, W32x32, 3,
 static_assert(AdapterPair<Q::FinegrainedScaleOnly, 32, T64, S64Gs32, W32x32, 3,
                           cutlass::int4b_t, cutlass::uint2b_t>::value);
 
+// ARTIFACT A MUST CROSS THE SCHEDULE SEAM EVEN WHEN F==1. A fold-only transport cannot distinguish int4 A64 from
+// A128/A256, while this tactic deliberately has T=128. Assert each named boundary separately so a future refactor
+// cannot leave the descriptor correct while silently reverting the builder to tactic-derived copy geometry.
+using CrossT = AdapterPair<Q::FinegrainedScaleOnly, 32, T128, S128Gs32, W64x64T128, 4,
+                           cutlass::int4b_t, void, true, 64>;
+static_assert(CrossT::value);
+using CrossDense = typename CrossT::Dense;
+using CrossScheduleTraits = cutlass::gemm::fold_schedule_traits<typename CrossDense::KernelSchedule>;
+static_assert(CrossDense::TacticTileK == 128 && CrossDense::ArtifactTileK == 64);
+static_assert(CrossDense::ArtifactLowFold == 1,
+              "F=1 is the case where ArtifactTileK cannot be reconstructed from the fold");
+static_assert(CrossDense::Descriptor::artifact_tile_k == 64);
+static_assert(CrossScheduleTraits::ArtifactTileK == 64);
+static_assert(CrossDense::CollectiveBuilderType::ArtifactTileK == 64);
+
+// Carrying A must not change copy behavior in this commit. Rebuild the same collective through the source-compatible
+// legacy schedule (A=0) and require an identical CollectiveOp; the next reviewed commit is where A becomes active.
+using CrossBaseSchedule = ppu_group_schedule::FinegrainedSchedule<32>;
+using LegacyCrossSchedule = cutlass::gemm::KernelAiuFold<1, CrossBaseSchedule, 1>;
+using LegacyCrossTraits = cutlass::gemm::fold_schedule_traits<LegacyCrossSchedule>;
+static_assert(LegacyCrossTraits::ArtifactTileK == 0,
+              "legacy KernelAiuFold spellings must retain their unspecified-artifact sentinel");
+using LegacyCrossBuilder = cutlass::gemm::collective::CollectiveBuilder<
+    cutlass::arch::PPU0010, cutlass::arch::OpClassTensorOp,
+    typename CrossDense::ElementA, typename CrossDense::LayoutA, CrossDense::AlignmentA,
+    typename CrossDense::ElementBInfo, typename CrossDense::LayoutB, CrossDense::AlignmentB, float,
+    cute::tuple<T128, S128Gs32>, W64x64T128, cute::Int<4>, LegacyCrossSchedule>;
+static_assert(LegacyCrossBuilder::ArtifactTileK == 0);
+static_assert(std::is_same_v<typename CrossDense::CollectiveOp,
+                             typename LegacyCrossBuilder::CollectiveOp>,
+              "carrying ArtifactTileK must not consume it or change the collective before the copy-contract commit");
+
 int main() {
-  std::printf("[l112] dense/grouped mixed policies match: ordinary, folded and two-plane\n");
+  std::printf("[l112] dense/grouped policies match; ArtifactTileK reaches builder without changing CollectiveOp\n");
   return 0;
 }

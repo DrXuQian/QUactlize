@@ -56,10 +56,11 @@ struct OperandInfo {
                                          cute::tuple<ElementB, ElementScale>>>;
 };
 
-template <int ArtifactLowFold, int ArtifactHighFold, class BaseSchedule>
+template <int ArtifactLowFold, int ArtifactHighFold, class BaseSchedule, int ArtifactTileK>
 struct ArtifactFoldedSchedule {
   // The wrapper is also required when only the high plane folds: it is the type-level ABI carrying the resident
-  // provider's two independent physical layouts into CollectiveBuilder.
+  // provider's two independent physical layouts AND delivery TileK into CollectiveBuilder. The folds alone lose A
+  // at F=1, where A64/A128/A256 all have the same fold but different resident copy quanta.
   //
   // IT IS NOW UNCONDITIONAL, and the reason is dispatch rather than folding. quactlize's CollectiveBuilder arm is
   // the COMPLEMENT of actlize's -- it claims KernelAiuFold<...> and Gs32, and leaves PerCol/Gs128/Gs64 to the
@@ -68,10 +69,10 @@ struct ArtifactFoldedSchedule {
   // compiles, it runs, and it is not the kernel this project measured. Wrapping at F=1 keeps it on ours.
   //
   // ROUTING-NEUTRAL, not merely harmless: the builder reads ArtifactLowFold back through fold_schedule_traits and
-  // floors it at 1, so KernelAiuFold<1, Base, 0> yields HasFold = (1 > 1) = false and BaseSchedule = Base --
+  // floors it at 1, so KernelAiuFold<1, Base, 0, A> yields HasFold = (1 > 1) = false and BaseSchedule = Base --
   // bit-for-bit the derivation the bare tag produced. Only the specialisation that MATCHES changes.
   using Type = cutlass::gemm::KernelAiuFold<(ArtifactLowFold > 1 ? ArtifactLowFold : 1),
-                                            BaseSchedule, ArtifactHighFold>;
+                                            BaseSchedule, ArtifactHighFold, ArtifactTileK>;
 };
 
 struct AiuAProvider {};
@@ -172,12 +173,15 @@ struct MainloopPolicy {
   static constexpr int HighFold = ArtifactHighFold;
 
   using KernelSchedule = typename ArtifactFoldedSchedule<ArtifactLowFold, ArtifactHighFold,
-                                                          BaseSchedule>::Type;
+                                                          BaseSchedule, ArtifactTileK>::Type;
   using ElementBInfo = typename OperandInfo<Mode, ElementB, PlaneB2, ElementScale, ElementZero>::Type;
-  using CollectiveOp = typename cutlass::gemm::collective::CollectiveBuilder<
+  using CollectiveBuilderType = cutlass::gemm::collective::CollectiveBuilder<
       cutlass::arch::PPU0010, cutlass::arch::OpClassTensorOp,
       ElementA, LayoutA, AlignmentA, ElementBInfo, LayoutB, AlignmentB, float,
-      cute::tuple<TileShape, ScaleTileShape>, WarpShape, cute::Int<Stages>, KernelSchedule>::CollectiveOp;
+      cute::tuple<TileShape, ScaleTileShape>, WarpShape, cute::Int<Stages>, KernelSchedule>;
+  static_assert(CollectiveBuilderType::ArtifactTileK == ArtifactTileK,
+                "ArtifactTileK must survive the shared policy/schedule boundary into CollectiveBuilder");
+  using CollectiveOp = typename CollectiveBuilderType::CollectiveOp;
 
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
   static constexpr bool PackedRowA = ArtifactLowFold == 1 && HighBits == 0;

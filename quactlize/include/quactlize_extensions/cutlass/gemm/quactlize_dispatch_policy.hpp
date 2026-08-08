@@ -38,14 +38,16 @@ struct KernelAiuMultistageMixedInputFinegrainedGs32 { };  // gs=32 (Q4_0/Q4_1/Q4
 
 // Artifact-fold schedule wrapper. The folds describe the resident B planes, not the consumer TileShape.K: a tactic
 // with a larger TileK may read the same bytes, but it must keep both physical (N/F, F*K) descriptors. The low fold
-// selects the ordinary-vs-folded collective; the independent high fold sizes the second plane. Keep BaseSchedule_ in
-// the middle so existing KernelAiuFold<F, Base> spellings remain source compatible.
+// selects the ordinary-vs-folded collective; the independent high fold sizes the second plane. ArtifactTileK is the
+// resident delivery width that cannot be recovered from F when F==1. Keep BaseSchedule_ in the middle and append the
+// new value with a zero default so existing KernelAiuFold<F[, Base[, HighFold]]> spellings remain source compatible.
 template<int ArtifactLowFold_, class BaseSchedule_ = KernelAiuMultistageMixedInputFinegrainedGs32,
-         int ArtifactHighFold_ = 0>
+         int ArtifactHighFold_ = 0, int ArtifactTileK_ = 0>
 struct KernelAiuFold {
   static constexpr int FoldF = ArtifactLowFold_;  // compatibility for downstream users of the old name
   static constexpr int ArtifactLowFold = ArtifactLowFold_;
   static constexpr int ArtifactHighFold = ArtifactHighFold_;
+  static constexpr int ArtifactTileK = ArtifactTileK_;
   using BaseSchedule = BaseSchedule_;
 };
 // A zero fold means that no artifact contract was supplied. The builder retains its legacy derivation only for such
@@ -54,13 +56,15 @@ template<class T> struct fold_schedule_traits {
   static constexpr int FoldF = 0;
   static constexpr int ArtifactLowFold = 0;
   static constexpr int ArtifactHighFold = 0;
+  static constexpr int ArtifactTileK = 0;
   using Base = T;
 };
-template<int LowFold, class B, int HighFold>
-struct fold_schedule_traits<KernelAiuFold<LowFold, B, HighFold>> {
+template<int LowFold, class B, int HighFold, int ArtifactTileK_>
+struct fold_schedule_traits<KernelAiuFold<LowFold, B, HighFold, ArtifactTileK_>> {
   static constexpr int FoldF = LowFold;
   static constexpr int ArtifactLowFold = LowFold;
   static constexpr int ArtifactHighFold = HighFold;
+  static constexpr int ArtifactTileK = ArtifactTileK_;
   using Base = B;
 };
 

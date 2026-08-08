@@ -414,6 +414,11 @@ public:
           ? fold_schedule_traits<KernelScheduleType>::ArtifactLowFold : 1;
   static constexpr int ExplicitArtifactHighFold =
       fold_schedule_traits<KernelScheduleType>::ArtifactHighFold;
+  // Carry-only in #37's first phase. ArtifactTileK is the resident delivery width; blockK below remains the tactic
+  // TileShape.K until FullBlockK and CopyBlockK are split in the next reviewed phase. A zero value preserves direct
+  // CollectiveBuilder callers whose legacy KernelAiuFold spelling predates an explicit artifact contract.
+  static constexpr int ArtifactTileK =
+      fold_schedule_traits<KernelScheduleType>::ArtifactTileK;
   static constexpr int MmaPermK =
       cutlass::MixGemmMmaPermK<sizeof_bits<RealInternalElementB>::value,
                                cute::get<2>(TileShape_MNK{}),
