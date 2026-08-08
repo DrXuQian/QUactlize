@@ -615,3 +615,65 @@ each with `bad=0/65536 MATCH`:
 The negative control must print `MISMATCH`, have a nonzero bad count, and end with
 `negative-control-exit=1`. A positive result is not accepted if its banner names any artifact TileK other than 64;
 that would test repacking, not resident-byte reuse.
+
+---
+
+## Five-format MoE host-link overflow: preserve and identify the payload section
+
+Do this inventory **before** running another default build in the failed build directory. `build.sh` recreates its
+build directory, and the failed object is evidence we cannot reconstruct locally. The relocation messages prove that
+the final x86-64 ELF layout exceeded signed PC-relative reach; they do not by themselves prove that
+`.hggcFatBinSegment` is the large payload rather than the small host-visible wrapper.
+
+    set -euo pipefail
+    cd /sim/eec/shared/junfu.qx/quactlize
+
+    # Point FAILED_BUILD at the preserved tree if it was not build_ppu.
+    FAILED_BUILD=${FAILED_BUILD:-build_ppu}
+    FAIL_OBJ=$(find "$FAILED_BUILD" -type f -name 'test_lowbit_moe_bench_4a7b0aff.o' -print -quit)
+    test -n "$FAIL_OBJ"
+    echo "failed-object=$FAIL_OBJ"
+    size -A "$FAIL_OBJ" | tee /tmp/moe_failed_object.size
+    readelf -SW -rW "$FAIL_OBJ" > /tmp/moe_failed_object.readelf
+    grep -Ei 'hggc|fatbin|tm_clone|GOTPCREL|PC32' /tmp/moe_failed_object.readelf \
+      | tee /tmp/moe_failed_object.relevant
+
+    # One object is not the full link payload: aggregate every PPU object by section name.
+    find "$FAILED_BUILD" -path '*/ppu_obj/*.o' -type f -print0 \
+      | xargs -0 size -A \
+      | awk '$2 ~ /^[0-9]+$/ {bytes[$1]+=$2} END {for (s in bytes) print bytes[s], s}' \
+      | sort -nr | tee /tmp/moe_failed_sections.total
+
+    # Ask the installed driver whether it has the SDK-authored equivalent of nvcc's gen-lcs facility. Do not infer
+    # support from nvcc-compatible spelling elsewhere in hgcc.
+    hgcc --help 2>&1 | grep -i -A4 -B2 'host-linker-script\|gen-lcs' \
+      | tee /tmp/hgcc_host_linker_script.help || true
+
+Now build a successful single-format control in a **different** directory, leaving the failed tree intact:
+
+    git pull --ff-only origin develop
+    PPU_BUILD_DIR="$PWD/build_moe_size_i4" MOE_FORMATS=i4 MOE_CORES=192 \
+      TARGET=test_lowbit_moe_bench ./build.sh
+    ONE=$(find build_moe_size_i4 -type f -name test_lowbit_moe_bench -perm -u+x -print -quit)
+    test -n "$ONE"
+    echo "single-format-binary=$ONE"
+    size -A "$ONE" | tee /tmp/moe_i4_binary.size
+    find build_moe_size_i4 -path '*/ppu_obj/*.o' -type f -print0 \
+      | xargs -0 size -A \
+      | awk '$2 ~ /^[0-9]+$/ {bytes[$1]+=$2} END {for (s in bytes) print bytes[s], s}' \
+      | sort -nr | tee /tmp/moe_i4_sections.total
+
+Wanted back: the total byte count and every `hggc`/`fatbin`-named row from both `*.size` files; the ten largest rows
+from each `*.total`; the relevant relocation lines; and whether hgcc advertises a host-linker-script generator. If
+the large payload is addressed through an absolute relocation while only a small wrapper is PC-relative, an
+SDK-generated linker script remains a possible later root fix. If hgcc lacks that facility, the per-format binaries
+are the formal solution; `-mcmodel=medium` and `--no-relax` do not repair the already-observed crt `PC32` relocation.
+
+The data-producing path is now:
+
+    BENCH_JSONL=/tmp/moe_all_formats.jsonl bash benchmarks/sweep_all_formats.sh
+
+It must report all five keys (`q3 q5 q6 i2 i4`) in `ran:` and no `FAILED:` line. The five binaries contain the five
+complete tactic grids; only the final link unit is split. Analyse the one appended result stream exactly once:
+
+    python3 benchmarks/analyse.py /tmp/moe_all_formats.jsonl --coverage

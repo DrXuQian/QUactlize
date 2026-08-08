@@ -1,8 +1,8 @@
 # codex status
 
-    updated-at:     2026-08-08 11:50:25 UTC
-    inbox-consumed: 098
-    working-on:     #37 single-plane A64 artifact reuse across T128/T256 committed and locally gated
-    blocked-on:     ppu001 numerical gate in BOX.md; two-plane copy/fold/scale/chunk derivation intentionally deferred
-    last-commit:    65930e5 Gate artifact reuse across tactic K (latest code)
-    last-heartbeat: 189
+    updated-at:     2026-08-08 12:46:03 UTC
+    inbox-consumed: 099
+    working-on:     five-format MoE link blocker resolved as five complete per-format link units plus a pre-hgcc refusal of the known-oversize monolith
+    blocked-on:     box section inventory and first sharded run; #37 two-plane copy/fold/scale/chunk derivation remains intentionally deferred
+    last-commit:    6fa444e Shard the known-oversize MoE link before hgcc (latest code)
+    last-heartbeat: 190
