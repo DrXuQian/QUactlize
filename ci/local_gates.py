@@ -140,6 +140,7 @@ SYNTAX = [
     # other: cmake failed on a missing source before any of them could fail to compile.
     ("dev/swzl_ldmatrix_probe.cu", ""),
     ("dev/test_fold_int2.cu", ""),
+    ("dev/test_fold_int2.cu", "-DFOLD_ARTIFACT_TILEK=64"),
     ("dev/test_int1_sweep.cu", ""),
     ("dev/test_moe_grouped_dataslice.cu", ""),
     ("dev/test_moe_grouped_probe.cu", ""),

@@ -6,8 +6,11 @@
 //
 //   slots    writes through place_from_map's exact physical address layouts; detects two deliveries owning one slot
 //   logical  walks plane_map/tile_map_hi itself; detects a consumer map that never reaches part of the logical tile
+//   owner_diff compares those physical slots with consecutive A-sized baseline tiles; zero is the actual "one
+//              resident artifact serves larger T" contract (bijective-but-differently-permuted is still wrong)
 //
-// Every number below is asserted.  The int4 row is the positive cross-T control.  The final row plants a duplicate
+// Every number below is asserted, including owner_diff=0 for all single-plane cross-T rows. The int4 row is the
+// positive cross-T control.  The final row plants a duplicate
 // logical owner into an otherwise complete int4 map; it MUST be classified INCOMPLETE even though every physical slot
 // is still occupied.  A checker that only counts output slots would miss that control.
 //
@@ -90,33 +93,44 @@ struct SlotStats {
 // Replay xplane::place_from_map's two destination layouts while retaining the logical owner instead of packed bits.
 // N=K=256 makes the requested single-plane counts directly comparable.  A Q6 row contains two TN=128 N tiles;
 // its `logical` report is one 128x256 local map while its `slots` report is the complete 256x256 fixture.
-template <int Bits, int TN, int TacticTileK, int Fold>
+template <int Bits, int TN, int TacticTileK, int Fold, int ArtifactTileK = TacticTileK>
 SlotStats materialize(std::vector<int> const& map, int N = kFixtureN, int K = kFixtureK) {
   constexpr int CPW = 32 / Bits;
   constexpr int PhysicalRows = TN / Fold;
   constexpr int Deliveries = (Fold * TacticTileK * Bits / 8) / 32;
+  constexpr int ArtifactDeliveries = (Fold * ArtifactTileK * Bits / 8) / 32;
+  constexpr int ArtifactTilesPerTactic = TacticTileK / ArtifactTileK;
+  static_assert(TacticTileK % ArtifactTileK == 0,
+                "artifact TileK must evenly tile tactic TileK");
+  static_assert((Fold * ArtifactTileK * Bits) % 256 == 0,
+                "an artifact row must contain whole 32 B deliveries");
   static_assert(Deliveries >= 1, "a physical row must contain a whole AIU delivery");
+  static_assert(ArtifactDeliveries >= 1 &&
+                    Deliveries == ArtifactTilesPerTactic * ArtifactDeliveries,
+                "artifact deliveries must tile the full tactic row exactly");
 
   int const word_row_offset = 256 / CPW;
   int const runs = word_row_offset / 8;
   int const physical_n = N / Fold;
   constexpr int kInterleave = 256;
-  constexpr int contig_bytes = Fold * TacticTileK * Bits / 8;
+  constexpr int contig_bytes = Fold * ArtifactTileK * Bits / 8;
   constexpr int aiu_bytes = contig_bytes > 128 ? 128 : contig_bytes;
   constexpr int aiu_elements = aiu_bytes * 8 / Bits;
   constexpr int runs_per_super = kInterleave / aiu_elements;
   int const n_tiles = N / TN;
   int const k_tiles = K / TacticTileK;
+  int const artifact_k_tiles = K / ArtifactTileK;
 
   auto dst_fold = make_layout(
       make_shape(Int<CPW>{}, _8{}, Int<PhysicalRows>{}, n_tiles, runs ? runs : 1,
-                 k_tiles / (runs ? runs : 1)),
+                 artifact_k_tiles / (runs ? runs : 1)),
       make_stride(_1{}, Int<CPW>{}, word_row_offset * CPW,
                   PhysicalRows * word_row_offset * CPW, 8 * CPW,
                   physical_n * word_row_offset * CPW));
   auto dst_flat = make_layout(
-      make_shape(Int<CPW>{}, _8{}, Int<Deliveries>{}, runs_per_super ? runs_per_super : 1,
-                 Int<PhysicalRows>{}, n_tiles, k_tiles / (runs_per_super ? runs_per_super : 1)),
+      make_shape(Int<CPW>{}, _8{}, Int<ArtifactDeliveries>{}, runs_per_super ? runs_per_super : 1,
+                 Int<PhysicalRows>{}, n_tiles,
+                 artifact_k_tiles / (runs_per_super ? runs_per_super : 1)),
       make_stride(_1{}, Int<CPW>{}, 8 * CPW, aiu_elements, kInterleave,
                   TN * kInterleave, N * kInterleave));
 
@@ -137,11 +151,14 @@ SlotStats materialize(std::vector<int> const& map, int N = kFixtureN, int K = kF
               if (local < 0 || local >= TN * TacticTileK) continue;
               int const n = tn * TN + local / TacticTileK;
               int const k = ki * TacticTileK + local % TacticTileK;
+              int const artifact_ki = ki * ArtifactTilesPerTactic + dl / ArtifactDeliveries;
+              int const artifact_dl = dl % ArtifactDeliveries;
               size_t const code = Fold > 1
-                  ? size_t(dst_fold(j, wd, row, tn, ki % (runs ? runs : 1),
-                                    ki / (runs ? runs : 1)))
-                  : size_t(dst_flat(j, wd, dl, ki % (runs_per_super ? runs_per_super : 1),
-                                    row, tn, ki / (runs_per_super ? runs_per_super : 1)));
+                  ? size_t(dst_fold(j, wd, row, tn, artifact_ki % (runs ? runs : 1),
+                                    artifact_ki / (runs ? runs : 1)))
+                  : size_t(dst_flat(j, wd, artifact_dl,
+                                    artifact_ki % (runs_per_super ? runs_per_super : 1), row, tn,
+                                    artifact_ki / (runs_per_super ? runs_per_super : 1)));
               if (code >= out.owner.size()) {
                 ++out.oob;
                 continue;
@@ -166,7 +183,8 @@ SlotStats materialize(std::vector<int> const& map, int N = kFixtureN, int K = kF
 // The slot walk above must not become a second, self-consistent writer.  Label every logical code by logical+1
 // (17 bits for a 256x256 fixture), feed those bits through the REAL production place_from_map writer, reconstruct
 // each physical slot's owner-OR, and compare it with the walk.  logical+1 distinguishes owner zero from unwritten.
-template <int Bits, int TM, int TN, int TacticTileK, int WM, int WN, int Fold>
+template <int Bits, int TM, int TN, int TacticTileK, int WM, int WN, int Fold,
+          int ArtifactTileK = TacticTileK>
 int production_writer_diff(std::vector<int> const& map, SlotStats const& replay,
                            int N = kFixtureN, int K = kFixtureK) {
   constexpr int LabelBits = 17;
@@ -179,7 +197,8 @@ int production_writer_diff(std::vector<int> const& map, SlotStats const& replay,
     int const shift = pass * Bits;
     for (int logical = 0; logical < N * K; ++logical)
       q[size_t(logical)] = uint8_t(((logical + 1) >> shift) & Mask);
-    xplane::place_from_map<Bits, TM, TN, TacticTileK, WM, WN, Fold>(bytes.data(), map, q, N, K);
+    xplane::place_from_map<Bits, TM, TN, TacticTileK, WM, WN, Fold, ArtifactTileK>(
+        bytes.data(), map, q, N, K);
     for (int code = 0; code < N * K; ++code) {
       size_t const bit0 = size_t(code) * Bits;
       uint32_t value = 0;
@@ -240,10 +259,10 @@ struct Observation {
 template <int Bits, int ArtifactTileK, int TacticTileK, int TM, int TN, int WM, int WN>
 Observation low_map() {
   constexpr int Fold = artifact_fold<Bits, ArtifactTileK>();
-  auto map = xplane::plane_map<Bits, TM, TN, TacticTileK, WM, WN, Fold>();
-  auto slots = materialize<Bits, TN, TacticTileK, Fold>(map);
+  auto map = xplane::plane_map<Bits, TM, TN, TacticTileK, WM, WN, Fold, ArtifactTileK>();
+  auto slots = materialize<Bits, TN, TacticTileK, Fold, ArtifactTileK>(map);
   return {slots, logical_stats(map, TN * TacticTileK),
-          production_writer_diff<Bits, TM, TN, TacticTileK, WM, WN, Fold>(map, slots)};
+          production_writer_diff<Bits, TM, TN, TacticTileK, WM, WN, Fold, ArtifactTileK>(map, slots)};
 }
 
 template <int LowBits, int HighBits, int ArtifactTileK, int TacticTileK,
@@ -278,31 +297,34 @@ void positive_and_single_plane_rows() {
   int const i2_diff = owner_diff(i2_a64.slots, i2_t128.slots);
   print_row("int2", "low", 64, 128, TM, TN, WM, WN, 2, 1,
             i2_t128.slots, i2_t128.logical, i2_diff, i2_t128.writer_diff);
-  expect(i2_t128.slots.unique == 32768 && i2_t128.slots.total == 65536 &&
-             i2_t128.slots.collisions == 32768,
-         "int2 A64/F2->T128 must expose 32768/65536 slots and 32768 collisions before the fix");
-  expect(i2_t128.slots.oob == 0 && i2_t128.writer_diff == 0,
-         "int2 A64/F2->T128 must have zero physical oob and match the production writer");
+  expect(i2_t128.slots.unique == 65536 && i2_t128.slots.total == 65536 &&
+             i2_t128.slots.collisions == 0,
+         "int2 A64/F2->T128 must cover the resident map without collisions");
+  expect(i2_diff == 0 && i2_t128.writer_diff == 0 && complete(i2_t128.slots, i2_t128.logical),
+         "int2 A64/F2->T128 must preserve resident owners, writer parity and COMPLETE coverage");
 
   constexpr int I1TN = 128, I1WN = 64;
   auto i1_a64 = low_map<1, 64, 64, TM, I1TN, WM, I1WN>();
   auto i1_t128 = low_map<1, 64, 128, TM, I1TN, WM, I1WN>();
   auto i1_t256 = low_map<1, 64, 256, TM, I1TN, WM, I1WN>();
+  int const i1_t128_diff = owner_diff(i1_a64.slots, i1_t128.slots);
+  int const i1_t256_diff = owner_diff(i1_a64.slots, i1_t256.slots);
   print_row("int1", "low", 64, 128, TM, I1TN, WM, I1WN, 4, 1,
-            i1_t128.slots, i1_t128.logical, owner_diff(i1_a64.slots, i1_t128.slots),
+            i1_t128.slots, i1_t128.logical, i1_t128_diff,
             i1_t128.writer_diff);
   print_row("int1", "low", 64, 256, TM, I1TN, WM, I1WN, 4, 1,
-            i1_t256.slots, i1_t256.logical, owner_diff(i1_a64.slots, i1_t256.slots),
+            i1_t256.slots, i1_t256.logical, i1_t256_diff,
             i1_t256.writer_diff);
-  expect(i1_t128.slots.unique == 32768 && i1_t128.slots.total == 65536 &&
-             i1_t128.slots.collisions == 32768,
-         "int1 A64/F4->T128 must expose half the physical slots before the fix");
-  expect(i1_t256.slots.unique == 16384 && i1_t256.slots.total == 65536 &&
-             i1_t256.slots.collisions == 49152,
-         "int1 A64/F4->T256 must expose one quarter of the physical slots before the fix");
-  expect(i1_t128.slots.oob == 0 && i1_t256.slots.oob == 0 &&
-             i1_t128.writer_diff == 0 && i1_t256.writer_diff == 0,
-         "int1 A64/F4 cross-T rows must have zero physical oob and match the production writer");
+  expect(i1_t128.slots.unique == 65536 && i1_t128.slots.total == 65536 &&
+             i1_t128.slots.collisions == 0,
+         "int1 A64/F4->T128 must cover the resident map without collisions");
+  expect(i1_t256.slots.unique == 65536 && i1_t256.slots.total == 65536 &&
+             i1_t256.slots.collisions == 0,
+         "int1 A64/F4->T256 must cover the resident map without collisions");
+  expect(i1_t128_diff == 0 && i1_t256_diff == 0 &&
+             i1_t128.writer_diff == 0 && i1_t256.writer_diff == 0 &&
+             complete(i1_t128.slots, i1_t128.logical) && complete(i1_t256.slots, i1_t256.logical),
+         "int1 A64/F4 cross-T must preserve resident owners, writer parity and COMPLETE coverage");
 }
 
 void q6_rows() {

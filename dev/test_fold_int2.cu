@@ -45,12 +45,31 @@
 // `if constexpr` guard that used to sit inside CORR_DISPATCH: an over-delivering shape is not a shape the table has,
 // so asking for one prints the table instead of silently dropping half the converted data (the 44.9%-random result).
 // int1 at TK=64 therefore appears only at WN=64 -- which is precisely why it used to need its own packer.
+#ifndef FOLD_ARTIFACT_TILEK
+#define FOLD_ARTIFACT_TILEK 0
+#endif
+#if FOLD_ARTIFACT_TILEK != 0 && FOLD_ARTIFACT_TILEK != 64
+#error "test_fold_int2 currently records the cross-T numerical contract for ArtifactTileK=64 only"
+#endif
+#define FOLD_A(TKV) (FOLD_ARTIFACT_TILEK != 0 ? FOLD_ARTIFACT_TILEK : (TKV))
+#define FOLD_STAGE(TKV) ((TKV) == 256 ? 2 : 3)
+
+#if FOLD_ARTIFACT_TILEK == 64
+// #37 device rows. Packing is fixed at A64 while the consumer varies T; these are exactly l115's three folded
+// owner-invariance rows. Keeping a separate compile mode prevents an ordinary T-derived table row from silently
+// repacking for T and turning the device test into a same-T control.
+#define FOLD_CONFIGS(EMIT)                  /* bits  TM   TN   T   WM  WN */                                       \
+  EMIT(2,  64,  64, 128, 32, 32)  /* A64/F2 -> T128 */                                                            \
+  EMIT(1,  64, 128, 128, 32, 64)  /* A64/F4 -> T128 */                                                            \
+  EMIT(1,  64, 128, 256, 32, 64)  /* A64/F4 -> T256 */
+#else
 #define FOLD_CONFIGS(EMIT)                  /* bits  TM   TN   TK  WM  WN */                                       \
   EMIT(2,  32, 128, 128, 32, 32)  /* slots 128 >= 64  */  EMIT(2,  32, 128,  64, 32, 32)  /* slots  64 >= 64 */    \
   EMIT(2,  64, 128, 128, 32, 32)  /* slots 128 >= 64  */  EMIT(2,  64, 128,  64, 32, 32)  /* slots  64 >= 64 */    \
   EMIT(2,  64,  64, 128, 32, 32)  /* slots 128 >= 64  */  EMIT(2,  64,  64,  64, 32, 32)  /* slots  64 >= 64 */    \
   EMIT(1,  32, 128, 128, 32, 32)  /* slots 128 >= 128 */  EMIT(1,  64, 128, 128, 32, 32)  /* slots 128 >= 128 */   \
   EMIT(1,  64,  64, 128, 32, 32)  /* slots 128 >= 128 */  EMIT(1,  64, 128,  64, 32, 64)  /* F=4, needs WN=64 */
+#endif
 #define FOLD_ELEM_1 uint1_t
 #define FOLD_ELEM_2 uint2_t
 #define FOLD_DBUF_1 dB1
@@ -107,24 +126,27 @@ int main(int argc, char** argv) {
   // F=4, keep F=2 and halve TM:
   //     int1 TM=32 TN=128 TK=128 F=2 -> A 8KB, 8 blk, 4 warps/blk, 50% warp occupancy, slots 256 > deliv 128
   //   which matches int4 (8 blk, 4 warps/blk, 50%, under-delivery) column for column, with a smaller B tile.
-  const int ftm = getenv("FOLD_TM") ? atoi(getenv("FOLD_TM")) : (bitpack_ ? 64 : fbits == 1 ? 32 : 64);
-  const int ftk = getenv("FOLD_TK") ? atoi(getenv("FOLD_TK")) : (bitpack_ ? 64 : fbits == 1 ? 128 : 64);
-  const int ftn = getenv("FOLD_TN") ? atoi(getenv("FOLD_TN")) : (bitpack_ ? 128 : fbits == 1 ? 128 : 64);
+  const int ftm = getenv("FOLD_TM") ? atoi(getenv("FOLD_TM"))
+                                     : (FOLD_ARTIFACT_TILEK ? 64 : bitpack_ ? 64 : fbits == 1 ? 32 : 64);
+  const int ftk = getenv("FOLD_TK") ? atoi(getenv("FOLD_TK"))
+                                     : (FOLD_ARTIFACT_TILEK ? 128 : bitpack_ ? 64 : fbits == 1 ? 128 : 64);
+  const int ftn = getenv("FOLD_TN") ? atoi(getenv("FOLD_TN"))
+                                     : (FOLD_ARTIFACT_TILEK ? (fbits == 1 ? 128 : 64)
+                                                            : bitpack_ ? 128 : fbits == 1 ? 128 : 64);
   // Resolve the requested shape against the table ONCE, and take the warp tile and FoldF FROM the row rather than
   // recomputing them here. FoldF's old inline form was (32*8/bits)/TK, which silently returns 0 for any unfolded shape.
   int fwm = 0, fwn = 0, ff = 0;
 #define FOLD_MATCH(BITS, TMV, TNV, TKV, WMV, WNV)                                                                  \
   if (fbits == (BITS) && ftm == (TMV) && ftn == (TNV) && ftk == (TKV))                                             \
-    { fwm = (WMV); fwn = (WNV); ff = fold::FoldTraits<BITS, TMV, TNV, TKV, 3, WMV, WNV>::F; }
+    { fwm = (WMV); fwn = (WNV); ff = fold::delivery_fold_v<BITS, FOLD_A(TKV)>; }
   FOLD_CONFIGS(FOLD_MATCH)
 #undef FOLD_MATCH
   if (!ff) {
     std::printf("  int%d (%d,%d,%d) is not a supported configuration. The table is:\n", fbits, ftm, ftn, ftk);
 #define FOLD_SHOW(BITS, TMV, TNV, TKV, WMV, WNV)                                                                   \
-    std::printf("    FOLD_BITS=%d FOLD_TM=%-3d FOLD_TN=%-3d FOLD_TK=%-3d  w%dx%-2d F=%d  slots=%d delivery=%d\n",  \
-                BITS, TMV, TNV, TKV, WMV, WNV, fold::FoldTraits<BITS, TMV, TNV, TKV, 3, WMV, WNV>::F,              \
-                fold::FoldTraits<BITS, TMV, TNV, TKV, 3, WMV, WNV>::slots,                                         \
-                fold::FoldTraits<BITS, TMV, TNV, TKV, 3, WMV, WNV>::delivery);
+    std::printf("    FOLD_BITS=%d FOLD_TM=%-3d FOLD_TN=%-3d FOLD_TK=%-3d A=%-3d w%dx%-2d F=%d  slots=%d delivery=%d\n", \
+                BITS, TMV, TNV, TKV, FOLD_A(TKV), WMV, WNV, fold::delivery_fold_v<BITS, FOLD_A(TKV)>,               \
+                WNV * TKV / 32, 128 / BITS);
     FOLD_CONFIGS(FOLD_SHOW)
 #undef FOLD_SHOW
     return 2;
@@ -143,8 +165,8 @@ int main(int argc, char** argv) {
   auto sc_at = [](int g, int n) { return 1.f + 0.0625f * (float)((5 * n + 3 * g) % 13); };
   // slots = WN*TK/32, MEASURED against partition_B on the builder's real TiledMma (fold_derivation/l5_slots.cu).
   // The old form here was 8*(TN/32)*(TK/16) = TN*TK/64, which is only right when TN == 2*WN.
-  std::printf("[fold] M=K=%d N=%d gs=%d bits=%d  TileShape=(%d,%d,%d) warp=%dx%d FoldF=%d | slots=%d delivery=%d%s%s\n",
-              M, N, gs, fbits, ftm, ftn, ftk, fwm, fwn, ff,
+  std::printf("[fold] M=K=%d N=%d gs=%d bits=%d  TileShape=(%d,%d,%d) ArtifactTileK=%d warp=%dx%d FoldF=%d | slots=%d delivery=%d%s%s\n",
+              M, N, gs, fbits, ftm, ftn, ftk, FOLD_ARTIFACT_TILEK ? FOLD_ARTIFACT_TILEK : ftk, fwm, fwn, ff,
               fwn * ftk / 32, 16 * 8 / fbits, bitpack_ ? "  [BITPACK]" : "",
               // FOLD_SVARY leaves no trace otherwise, and a log that cannot show which inputs were used is how a
               // round of int1 MFU numbers got invalidated. Say it either way, so "blind" is visible too.
@@ -200,7 +222,7 @@ int main(int argc, char** argv) {
 #define FOLD_PACK(BITS, TMV, TNV, TKV, WMV, WNV)                                                                   \
   if (fbits == (BITS) && ftm == (TMV) && ftn == (TNV) && ftk == (TKV))                                             \
     xplane::place_derived<BITS, TMV, TNV, TKV, WMV, WNV,                                                           \
-                          fold::FoldTraits<BITS, TMV, TNV, TKV, 3, WMV, WNV>::F>(dst, src, N, K);
+                          fold::delivery_fold_v<BITS, FOLD_A(TKV)>, FOLD_A(TKV)>(dst, src, N, K);
   auto pack_B = [&](std::vector<uint8_t> const& src, std::vector<int8_t>& into) {
     int8_t* dst = into.data();
     FOLD_CONFIGS(FOLD_PACK)
@@ -263,13 +285,33 @@ int main(int argc, char** argv) {
   } while (0)
 #define FOLD_RUN(BITS, TMV, TNV, TKV, WMV, WNV)                                                                    \
   if (fbits == (BITS) && ftm == (TMV) && ftn == (TNV) && ftk == (TKV))                                             \
-    moe_grouped_ppu::filter_and_run<QM::FinegrainedScaleZero, TMV, TNV, TKV, WMV, WNV, 3, FOLD_ELEM_##BITS>(       \
+    moe_grouped_ppu::filter_and_run<QM::FinegrainedScaleZero, TMV, TNV, TKV, WMV, WNV, FOLD_STAGE(TKV),            \
+                                    FOLD_ELEM_##BITS, void, false, FOLD_A(TKV)>(                                    \
         dA.get(), FOLD_DBUF_##BITS.get(), dSc.get(), dZr.get(), pd.get(), sd.get(), gm.get(),                      \
         M, N, K, 1, gs, shpd.get(), shp.data(), offdev.get(), ws.get(), wsb, nullptr);
   CORR_DISPATCH();
   if (false)
     moe_grouped_ppu::filter_and_run<QM::FinegrainedScaleZero, 64, 64, 64, 32, 32, 3, uint2_t>(
         dA.get(), dB.get(), dSc.get(), dZr.get(), pd.get(), sd.get(), gm.get(),
+        M, N, K, 1, gs, shpd.get(), shp.data(), offdev.get(), ws.get(), wsb, nullptr);
+  // FRONT-END WITNESSES FOR ARTIFACT A<T. These branches are intentionally unreachable at runtime: the durable
+  // numerical rows belong in BOX.md, while merely naming the three launch types here forces nvcc through the real
+  // grouped kernel and the folded scatter branch. l112 only instantiates the builder's type surface and cannot catch
+  // an error inside CollectiveMma::operator().
+  if (false)
+    moe_grouped_ppu::filter_and_run<QM::FinegrainedScaleZero, 64, 64, 128, 32, 32, 3,
+                                    uint2_t, void, false, 64>(
+        dA.get(), dB.get(), dSc.get(), dZr.get(), pd.get(), sd.get(), gm.get(),
+        M, N, K, 1, gs, shpd.get(), shp.data(), offdev.get(), ws.get(), wsb, nullptr);
+  if (false)
+    moe_grouped_ppu::filter_and_run<QM::FinegrainedScaleZero, 64, 128, 128, 32, 64, 3,
+                                    uint1_t, void, false, 64>(
+        dA.get(), dB1.get(), dSc.get(), dZr.get(), pd.get(), sd.get(), gm.get(),
+        M, N, K, 1, gs, shpd.get(), shp.data(), offdev.get(), ws.get(), wsb, nullptr);
+  if (false)
+    moe_grouped_ppu::filter_and_run<QM::FinegrainedScaleZero, 64, 128, 256, 32, 64, 2,
+                                    uint1_t, void, false, 64>(
+        dA.get(), dB1.get(), dSc.get(), dZr.get(), pd.get(), sd.get(), gm.get(),
         M, N, K, 1, gs, shpd.get(), shp.data(), offdev.get(), ws.get(), wsb, nullptr);
   CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
 
@@ -394,11 +436,13 @@ int main(int argc, char** argv) {
 #define PERF_PB_2 pB
 #define PERF_RUN(BITS, TMV, TNV, TKV, WMV, WNV)                                                                    \
       else if (!use_i4 && fbits == (BITS) && ftm == (TMV) && ftn == (TNV) && ftk == (TKV) && scale_only)            \
-        moe_grouped_ppu::filter_and_run<QM::FinegrainedScaleOnly, TMV, TNV, TKV, WMV, WNV, 3, FOLD_ELEM_##BITS>(    \
+        moe_grouped_ppu::filter_and_run<QM::FinegrainedScaleOnly, TMV, TNV, TKV, WMV, WNV, FOLD_STAGE(TKV),         \
+                                        FOLD_ELEM_##BITS, void, false, FOLD_A(TKV)>(                                \
             pA.get(), PERF_PB_##BITS.get(), pS.get(), nullptr, ppD.get(), psD.get(), pgM.get(),                     \
             PM, PN, PK, 1, gs, psd.get(), ps.data(), pOf.get(), pws.get(), pwsb, nullptr);                          \
       else if (!use_i4 && fbits == (BITS) && ftm == (TMV) && ftn == (TNV) && ftk == (TKV))                          \
-        moe_grouped_ppu::filter_and_run<QM::FinegrainedScaleZero, TMV, TNV, TKV, WMV, WNV, 3, FOLD_ELEM_##BITS>(    \
+        moe_grouped_ppu::filter_and_run<QM::FinegrainedScaleZero, TMV, TNV, TKV, WMV, WNV, FOLD_STAGE(TKV),         \
+                                        FOLD_ELEM_##BITS, void, false, FOLD_A(TKV)>(                                \
             pA.get(), PERF_PB_##BITS.get(), pS.get(), pZ.get(), ppD.get(), psD.get(), pgM.get(),                    \
             PM, PN, PK, 1, gs, psd.get(), ps.data(), pOf.get(), pws.get(), pwsb, nullptr);
     // The label was a FOURTH place the shape was decided, by nested ternaries that named tiles the launch no longer
