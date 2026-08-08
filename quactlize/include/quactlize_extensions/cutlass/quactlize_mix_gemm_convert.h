@@ -151,6 +151,57 @@ struct MixGemmEmit {
   static_assert(bijective(), "MixGemmEmit: emission map is not a permutation");
 };
 
+// Destination layout for one artifact-sized delivery inside a larger folded tactic fragment.
+//
+// A converter emits VEC fp16 values in F contiguous fold groups.  With DL resident deliveries in one tactic, K
+// advances inside each fold group; putting the whole delivery outside the group changes the logical owner of the
+// same resident code slot.  This layout is therefore (element-in-group, delivery, fold-group, N-instance):
+//
+//     shape   (Group, DL, F, NI)
+//     stride  (1, Group, DL*Group, DL*VEC)
+//
+// `EmitLayout` is the artifact-local (Group, 1, F) projection consumed by MixGemmChunkEmit: it selects one fold
+// group and rebases its half2 writes to [0, Group).  Both the device collective and xplane's offline inverse name
+// this object so the resident-byte contract cannot drift into two equivalent-looking formulas again.
+template <int Bits, int Fold, int Deliveries>
+struct MixGemmArtifactScatter {
+  static constexpr int VEC = MixGemmEmit<Bits>::kNumOutputs;
+  static_assert(Fold >= 1 && Deliveries >= 1 && VEC % Fold == 0,
+                "artifact scatter requires whole converter fold groups and deliveries");
+  static constexpr int Group = VEC / Fold;
+  static_assert(Group % 2 == 0, "artifact scatter must preserve complete half2 writes");
+
+  using EmitLayout = cute::Layout<
+      cute::Shape<cute::Int<Group>, cute::_1, cute::Int<Fold>>,
+      cute::Stride<cute::_1, cute::Int<Group>, cute::Int<Group>>>;
+
+  static constexpr int flat(int e, int delivery, int n_instance = 0) {
+    return n_instance * Deliveries * VEC
+         + (e / Group) * Deliveries * Group
+         + delivery * Group
+         + e % Group;
+  }
+  static constexpr int group_base(int fold_group, int delivery, int n_instance = 0) {
+    return n_instance * Deliveries * VEC
+         + fold_group * Deliveries * Group
+         + delivery * Group;
+  }
+
+  static constexpr bool bijective_and_half2_safe() {
+    bool seen[VEC * Deliveries] = {};
+    for (int d = 0; d < Deliveries; ++d)
+      for (int e = 0; e < VEC; ++e) {
+        int const dst = flat(e, d);
+        if (dst < 0 || dst >= VEC * Deliveries || seen[dst]) return false;
+        seen[dst] = true;
+        if ((e % 2) == 0 && (dst % 2 != 0 || flat(e + 1, d) != dst + 1)) return false;
+      }
+    return true;
+  }
+  static_assert(bijective_and_half2_safe(),
+                "artifact delivery scatter must be bijective and preserve half2 pairs");
+};
+
 // int4's wide converter does NOT use a flat table: it composes the base-8 converter's internal order, a vreg
 // permutation (result_ptr[0]=s0,[2]=s1,[1]=s2,[3]=s3) and a 4-element block swap (elt_b16 1<->2, 5<->6). Rewriting
 // that to be MixGemmEmit-driven is pure risk on the 55.9% production path, so it is PINNED instead: if anyone

@@ -8,16 +8,11 @@
 // puts the FoldF factor in MMA_N and MMA_K = TK/16. So the MMA accumulates over the REAL TK and emits FoldF*Ng output
 // columns NATURALLY. This DISSOLVES the 2-pass mainloop and the interleaved epilogue I first thought were needed --
 // mainloop, C accumulator, and epilogue are all STANDARD.
-// DONE (structural, isolated -- zero regression; fold header not #included anywhere yet):
-//   * matches MainloopPPUAiuFold<Stages,kContinous,FoldF,Schedule>;
-//   * SmemLayoutB = FOLD-IN-N layout ((FoldF,Ng),TK):((TK,FoldF*TK),1)  <-- the defining change;
-//   * lockstep-K assert UNCHANGED (fold-in-N keeps B's K-mode == TK == A's).
-// TODO (box-iterated; PPU device asm, cannot compile locally):
-//   * finalize the general FoldF/Ng SmemLayoutB form + verify the operand's swzl SmemCopyAtom (AiuContElemSize =
-//     FoldF*TK, REUSED from validated int2@TK128/int1@TK256) delivers into this fold-in-N layout;
-//   * gB / gmem-partition N-consistency (size<0>(gB)==size<0>(sB)=FoldF*Ng);
-//   * BUILDER: fold path selecting MainloopPPUAiuFold + B operand Block_K = FoldF*blockK.
-//   (mainloop + epilogue need NO fold-specific change -- standard, thanks to fold-in-N.)
+// CURRENT COPY CONTRACT:
+//   * the physical shared tile spans FoldF*TacticTileK and the logical MMA fragment remains N x TacticTileK;
+//   * one resident copy/swizzle atom spans FoldF*ArtifactTileK and tiles that full shared extent;
+//   * when T>A, delivery is an explicit destination dimension inside the converter's fold groups, so consecutive
+//     artifact bytes retain the same logical owners instead of overlapping a T-derived flat fragment slice.
 // NOT gated on int4 ceiling -- int2/int1-fold reaching int4 geometry is guaranteed; biggest win is int1 (4x occ).
 // =============================================================================================================
 /***************************************************************************************************
@@ -267,13 +262,14 @@ public:
   // N-FOLD: B's atom N is the PHYSICAL row count (TileShape.N / FoldF), so relate them via FoldF.
   static_assert((size<1>(TileShape{}) % (size<0>(InternalSmemLayoutAtomB{}) * FoldF)) == 0,
                 "fold: TileShape.N must be divisible by atomB.N * FoldF");
-  // N-FOLD: B's atom K is the FOLDED run (FoldF * TileShape.K), so the original
-  //   size<2>(TileShape) % size<1>(atomB) == 0  (i.e. 64 % 128) no longer holds by construction.
-  // The folded relation is what must divide: atom K == FoldF * TileShape.K.
-  static_assert((size<1>(InternalSmemLayoutAtomB{}) % size<2>(TileShape{})) == 0,
-                "fold: B atom K must be a multiple of TileShape.K");
-  static_assert(size<1>(InternalSmemLayoutAtomB{}) == FoldF * size<2>(TileShape{}),
-                "fold: B atom K must equal FoldF * TileShape.K (operand Block_K must be the folded one)");
+  // N-FOLD has two K spans. The physical tile remains FullBlockK=FoldF*T, while one B atom is the resident
+  // CopyBlockK=FoldF*A quantum. The latter must tile the former; requiring equality silently rebuilt the artifact
+  // cube from T and made multiple deliveries collide whenever T>A.
+  static constexpr int FullFoldedK = FoldF * size<2>(TileShape{});
+  static_assert(FullFoldedK % size<1>(InternalSmemLayoutAtomB{}) == 0,
+                "fold: B copy atom K must evenly tile the full folded tactic span");
+  static_assert(size<1>(InternalSmemLayoutAtomB{}) % FoldF == 0,
+                "fold: B copy atom must contain whole folded N groups");
 
   static_assert(rank(SmemLayoutAtomScale{}) == 2, "SmemLayoutAtomScale must be rank 2");
   static_assert((size<0>(TileShape{}) % size<0>(SmemLayoutAtomScale{})) == 0, "SmemLayoutAtomScale must equal the tile shape.");
@@ -291,17 +287,14 @@ public:
   // STANDARD mainloop + STANDARD epilogue. No 2-pass, no dual accumulator, no interleaved epilogue.
   //   Ng = shape<1>(TileShape)/FoldF (physical N-groups); output N = shape<1>(TileShape).
   // NOTE: the exact generalized layout below is the FoldF=2-verified shape; finalize/verify the FoldF/Ng general
-  // form (and its compatibility with the operand's swzl SmemCopyAtom, whose AiuContElemSize=FoldF*TK is reused from
-  // the validated int2@TK128 / int1@TK256 config) on the box.
+  // form (and its compatibility with an artifact-sized swzl SmemCopyAtom tiled across FullFoldedK) on the box.
   static constexpr int TKe = shape<2>(TileShape{});          // real TK (A / MMA K-depth)
   static constexpr int TNe = shape<1>(TileShape{});          // output N per tile
   static constexpr int Ng  = TNe / FoldF;                    // physical N-groups
-  // BUILD IT DIRECTLY -- do NOT use tile_to_shape here. Verified locally (scratchpad/cute_nfold4/5.cu):
-  // tile_to_shape COALESCES the fold interleave away (atom size == tile size, so ((2,32),64):((64,128),1) collapses
-  // to (64,64):(64,1) = plain row-major), which silently destroys the fold and then mismatches the operand's
-  // AiuContElemSize=FoldF*TKe atom -> the collective fails to instantiate (surfacing as bogus StrideB / "no matching
-  // make_cute_packed_stride" cascades at the launch site). Constructing all three modes explicitly keeps the
-  // interleave: phys offset of (n'=(f,g), k, s) = s*TNe*TKe + g*FoldF*TKe + f*TKe + k  (mapping bad=0/12288 locally).
+  // Keep this as a PHYSICAL (Ng, FoldF*TKe, PIPE) tile. tile_to_shape may tessellate it with several artifact-sized
+  // copy atoms; the fold-in-N LOGICAL view is constructed separately below. Applying tile_to_shape to that logical
+  // view instead would coalesce the interleave into plain row-major and mismatch the swzl atom (the resulting launch
+  // failure surfaces as bogus StrideB / "no matching make_cute_packed_stride" cascades).
   // PHYSICAL shape (Ng, FoldF*TKe, PIPE) -- this is what the AIU writes and the swzl atom reads, and it is what the
   // gB/sB consistency asserts compare. The fold-in-N LOGICAL view (TNe output-N x TKe real-K) is recovered where the
   // MMA consumes it (see the fold_logical_B() helper), NOT here: keeping smem physical avoids a mismatch between the
@@ -1151,14 +1144,46 @@ private:
     CopyViews const& tiled_copy_and_views,
     int const read_stage) {
 
-    Tensor cvt_in  = recast<RealInternalElementB>(tCrB_load(_, _, k_block));
-    Tensor cvt_out = make_tensor(tCrB_mma(_, _, k_block * K_ATOM_PER_COPY).data(), cvt_in.layout());
-
+    Tensor cvt_in = recast<RealInternalElementB>(tCrB_load(_, _, k_block));
     using CPY_VEC = Int<4 * 32 / sizeof_bits<RealInternalElementB>::value>;
-    convert_tensor(cvt_in, cvt_out, CPY_VEC{});
+    constexpr int KBM_ = decltype(cute::size<2>(tCrB_load))::value;    // K_BLOCK_MAX (32 B deliveries)
+
+    if constexpr (FoldF > 1 && KBM_ > 1) {
+      // At T>A a folded tactic has several resident deliveries.  One converter result is ordered as F contiguous
+      // fold groups, so delivery is a dimension INSIDE those groups -- not a contiguous VEC-sized append.  The old
+      // tCrB_mma(_,_,k_block*K_ATOM_PER_COPY) base advances by an MMA-atom stride (32 halfs in the first failing
+      // cases), then writes VEC=64/128 consecutive halfs; deliveries overlap and leave the tail unwritten.
+      //
+      // Emit each fold group directly into its disjoint destination run.  This is the same half2 emitter used by the
+      // wide converter, with no VEC-sized temporary register array.  MixGemmArtifactScatter is also the offline
+      // inverse's source of truth and statically proves the complete destination is bijective and half2-safe.
+      constexpr int Bits = sizeof_bits<RealInternalElementB>::value;
+      using Scatter = cutlass::MixGemmArtifactScatter<Bits, FoldF, KBM_>;
+      using EmitLayout = typename Scatter::EmitLayout;
+      constexpr int NumIterations = decltype(cute::size(cvt_in))::value / CPY_VEC::value;
+      static_assert(decltype(cute::size(cvt_in))::value % CPY_VEC::value == 0,
+                    "each N instance must contain a complete converter vector");
+      auto* dst = raw_pointer_cast(tCrB_mma.data());
+      CUTLASS_PRAGMA_UNROLL
+      for (int ii = 0; ii < NumIterations; ++ii) {
+        auto const* src = reinterpret_cast<uint32_t const*>(raw_pointer_cast(cvt_in(_, ii).data()));
+        cute::for_each(cute::make_int_sequence<FoldF>{}, [&] (auto fold_group) {
+          constexpr int FG = decltype(fold_group)::value;
+          auto* group_dst = reinterpret_cast<uint32_t*>(
+              dst + Scatter::group_base(FG, k_block, ii));
+          cutlass::MixGemmChunkEmit<Bits, FG, FoldF, true, EmitLayout>::emit(src, group_dst);
+        });
+      }
+    } else {
+      // Legacy folded tiles have one delivery; unfolded tiles already carry delivery in cvt_in's N-instance layout.
+      // Keep their generated converter/write path byte-for-byte unchanged.
+      Tensor cvt_out = make_tensor(tCrB_mma(_, _, k_block * K_ATOM_PER_COPY).data(), cvt_in.layout());
+      convert_tensor(cvt_in, cvt_out, CPY_VEC{});
+    }
 
     constexpr int MMA_KA_ = decltype(cute::size<2>(tCrB_mma))::value;   // total mma-K atoms in the tile
-    constexpr int KBM_    = MMA_KA_ / K_ATOM_PER_COPY;                  // K_BLOCK_MAX (copy steps)
+    static_assert(KBM_ == MMA_KA_ / K_ATOM_PER_COPY,
+                  "copy delivery count must agree with the MMA atom partition");
     using FinePolicy = typename MetadataPolicy::template Fine<KBM_, MMA_KA_>;
     constexpr bool FINE = FinePolicy::active;
     constexpr int APG_  = FinePolicy::atoms_per_group;

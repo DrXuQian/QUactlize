@@ -57,11 +57,12 @@ namespace quactlize_detail {
 
 ///////////////////////////////////////////////////////////////////////////////
 #if ENABLE_AIU
-// ContigShape_: describes WHAT MAKES UP the AIU's 32-byte contiguous run. void (default) = the run is pure K, i.e.
-// Shape<Block_K> -- byte-identical to the original derivation for every existing config (proved for int4 TK64/TK128,
-// int2 TK128/TK256, int1 TK256 x MN64/MN128). An N-FOLD instead passes Shape<Int<FoldF>, Int<TK>>, so the 32B rule is
-// satisfied by (FoldF N-columns x TK) and every derived quantity (AiuContElemSize, InstNum, bits_per_aiu, swzl CUBE_W)
-// follows automatically -- no manual Block_K/Block_MN doubling to keep in sync across four places.
+// Block_K is the FULL physical K span covered by the tactic. ContigShape_ independently describes one resident
+// artifact copy/swizzle quantum. void (default) keeps the historical rule CopyBlockK == FullBlockK. A folded artifact
+// passes Shape<Int<FoldF>, Int<ArtifactTileK>>, so size(ContigShape_) is F*A even when Block_K is F*T. The operand can
+// then tile the full tactic span with several identical artifact-sized cubes instead of silently rebuilding the cube
+// from T. Every per-cube quantity (AiuContElemSize, bits_per_aiu, swzl CUBE_W) follows the shape; InstNum follows the
+// full span divided by that quantum.
 template <
   typename Element,
   bool Trans,
@@ -85,19 +86,29 @@ template <
   typename Element,
   typename Block_MN,
   typename Block_K,
-  bool Swap
+  bool Swap,
+  typename ContigShape_
 > struct MixGemm_AIU_Operand<
   Element,
   false,
   Block_MN,
   Block_K,
-  Swap
+  Swap,
+  ContigShape_
 > {
-  static constexpr int BlockContSize = Block_K{} * sizeof_bits<Element>::value / 8;
+  static constexpr int CopyContigElems = aiu_detail::contig_elems<Block_K, ContigShape_>::value;
+  static_assert(CopyContigElems > 0 &&
+                    (CopyContigElems * sizeof_bits<Element>::value) % 8 == 0,
+                "artifact copy span must contain a positive whole-byte payload");
+  static_assert(Block_K{} % CopyContigElems == 0,
+                "artifact copy span must evenly tile the full tactic span");
+  static constexpr int BlockContSize = CopyContigElems * sizeof_bits<Element>::value / 8;
   static_assert(BlockContSize % 32 == 0, "aiu_trans: block contiguous size should be multiple of 32B");
   static_assert(BlockContSize > 128 ? (BlockContSize % 128 == 0) : (BlockContSize % 32 == 0), "aiu_trans: block contiguous size should be multiple of 128B or 32B");
   static constexpr int AiuContByteSize = BlockContSize > 128 ? 128 : BlockContSize;
   using AiuContElemSize = Int<AiuContByteSize / sizeof_bits<Element>::value * 8>;
+  static_assert(Block_K{} % AiuContElemSize{} == 0,
+                "AIU copy quantum must evenly tile the full tactic span");
   static constexpr int InstNum = Block_K{} / AiuContElemSize{};
 
   // THE AIU WRITE AND THE SWZL READ ARE ONE MATCHED TRIPLE, all three legs derived from Block_MN:
@@ -160,22 +171,29 @@ template <
 template <
   typename Block_MN,
   typename Block_K,
-  bool Swap
+  bool Swap,
+  typename ContigShape_
 > struct MixGemm_AIU_Operand<
   cutlass::int4b_t,
   false,
   Block_MN,
   Block_K,
-  Swap    // NO trailing comma: a trailing comma in a template-argument-list is ill-formed C++. clang (hence hgcc)
-          // accepts it as an extension; nvcc's EDG front end rejects it, which made this specialization -- and
-          // therefore CollectiveMma and EVERY collective downstream of it -- fail to instantiate under the local
-          // nvcc front-end gate. Two static errors reached the box behind that one character.
+  Swap,
+  ContigShape_
 > {
-  static constexpr int BlockContSize = Block_K{} * sizeof_bits<cutlass::int4b_t>::value / 8;
-  static_assert(BlockContSize % 32 == 0, "aiu_no_trans: block_k must be multiple of 32B");
+  static constexpr int CopyContigElems = aiu_detail::contig_elems<Block_K, ContigShape_>::value;
+  static_assert(CopyContigElems > 0 &&
+                    (CopyContigElems * sizeof_bits<cutlass::int4b_t>::value) % 8 == 0,
+                "int4 artifact copy span must contain a positive whole-byte payload");
+  static_assert(Block_K{} % CopyContigElems == 0,
+                "artifact copy span must evenly tile the full tactic span");
+  static constexpr int BlockContSize = CopyContigElems * sizeof_bits<cutlass::int4b_t>::value / 8;
+  static_assert(BlockContSize % 32 == 0, "aiu int4: artifact copy span must be a multiple of 32B");
   static_assert(BlockContSize > 128 ? (BlockContSize % 128 == 0) : (BlockContSize % 32 == 0), "aiu_trans: block contiguous size should be multiple of 128B or 32B");
   static constexpr int AiuContByteSize = BlockContSize > 128 ? 128 : BlockContSize;
   using AiuContElemSize = Int<AiuContByteSize / sizeof_bits<cutlass::int4b_t>::value * 8>;
+  static_assert(Block_K{} % AiuContElemSize{} == 0,
+                "AIU copy quantum must evenly tile the full tactic span");
   static constexpr int InstNum = Block_K{} / AiuContElemSize{};
 
   static constexpr int bits_per_aiu = Block_MN{} * AiuContByteSize * 8;
@@ -199,19 +217,29 @@ template <
 template <
   typename Block_MN,
   typename Block_K,
-  bool Swap
+  bool Swap,
+  typename ContigShape_
 > struct MixGemm_AIU_Operand<
   cutlass::uint2b_t,
   false,
   Block_MN,
   Block_K,
-  Swap
+  Swap,
+  ContigShape_
 > {
-  static constexpr int BlockContSize = Block_K{} * sizeof_bits<cutlass::uint2b_t>::value / 8;   // Block_K/4 bytes
-  static_assert(BlockContSize % 32 == 0, "aiu w2: block_k*2/8 must be multiple of 32B (block_k % 128 == 0)");
+  static constexpr int CopyContigElems = aiu_detail::contig_elems<Block_K, ContigShape_>::value;
+  static_assert(CopyContigElems > 0 &&
+                    (CopyContigElems * sizeof_bits<cutlass::uint2b_t>::value) % 8 == 0,
+                "int2 artifact copy span must contain a positive whole-byte payload");
+  static_assert(Block_K{} % CopyContigElems == 0,
+                "artifact copy span must evenly tile the full tactic span");
+  static constexpr int BlockContSize = CopyContigElems * sizeof_bits<cutlass::uint2b_t>::value / 8;
+  static_assert(BlockContSize % 32 == 0, "aiu int2: artifact copy span must be a multiple of 32B");
   static_assert(BlockContSize > 128 ? (BlockContSize % 128 == 0) : (BlockContSize % 32 == 0), "aiu w2: 128B or 32B");
   static constexpr int AiuContByteSize = BlockContSize > 128 ? 128 : BlockContSize;
   using AiuContElemSize = Int<AiuContByteSize / sizeof_bits<cutlass::uint2b_t>::value * 8>;      // AiuContByteSize*4
+  static_assert(Block_K{} % AiuContElemSize{} == 0,
+                "AIU copy quantum must evenly tile the full tactic span");
   static constexpr int InstNum = Block_K{} / AiuContElemSize{};
 
   static constexpr int bits_per_aiu = Block_MN{} * AiuContByteSize * 8;
@@ -229,23 +257,34 @@ template <
 };
 
 // W1A16 base plane: uint1b_t swzl operand. Mirrors uint2b_t; 8 int1/byte (int2 has 4/byte) -> the int8-typed
-// swzl element count is AiuContElemSize/8. Block_K*1/8 must be %32==0 -> Block_K % 256 == 0.
+// swzl element count is AiuContElemSize/8. The artifact copy span (not the full tactic span) must contain a whole
+// number of 32 B runs; several such runs may tile one larger tactic.
 template <
   typename Block_MN,
   typename Block_K,
-  bool Swap
+  bool Swap,
+  typename ContigShape_
 > struct MixGemm_AIU_Operand<
   cutlass::uint1b_t,
   false,
   Block_MN,
   Block_K,
-  Swap
+  Swap,
+  ContigShape_
 > {
-  static constexpr int BlockContSize = Block_K{} * sizeof_bits<cutlass::uint1b_t>::value / 8;   // Block_K/8 bytes
-  static_assert(BlockContSize % 32 == 0, "aiu w1: block_k*1/8 must be multiple of 32B (block_k % 256 == 0)");
+  static constexpr int CopyContigElems = aiu_detail::contig_elems<Block_K, ContigShape_>::value;
+  static_assert(CopyContigElems > 0 &&
+                    (CopyContigElems * sizeof_bits<cutlass::uint1b_t>::value) % 8 == 0,
+                "int1 artifact copy span must contain a positive whole-byte payload");
+  static_assert(Block_K{} % CopyContigElems == 0,
+                "artifact copy span must evenly tile the full tactic span");
+  static constexpr int BlockContSize = CopyContigElems * sizeof_bits<cutlass::uint1b_t>::value / 8;
+  static_assert(BlockContSize % 32 == 0, "aiu int1: artifact copy span must be a multiple of 32B");
   static_assert(BlockContSize > 128 ? (BlockContSize % 128 == 0) : (BlockContSize % 32 == 0), "aiu w1: 128B or 32B");
   static constexpr int AiuContByteSize = BlockContSize > 128 ? 128 : BlockContSize;
   using AiuContElemSize = Int<AiuContByteSize / sizeof_bits<cutlass::uint1b_t>::value * 8>;      // AiuContByteSize*8
+  static_assert(Block_K{} % AiuContElemSize{} == 0,
+                "AIU copy quantum must evenly tile the full tactic span");
   static constexpr int InstNum = Block_K{} / AiuContElemSize{};
 
   static constexpr int bits_per_aiu = Block_MN{} * AiuContByteSize * 8;
@@ -401,9 +440,9 @@ public:
   // using MmaElementA = ElementA; //cute::conditional_t<cute::is_same_v<ElementA, float>, tfloat32_t, ElementA>;
   // using MmaElementB = ElementB; //cute::conditional_t<cute::is_same_v<ElementB, float>, tfloat32_t, ElementB>;
 
-  // PermutionK = the K span one B swzl copy step delivers = 32B worth of the packed element (int4 64 / int2 128 /
-  // int1 256). Under an N-FOLD that 32B run is FoldF N-cols x blockK each, so the K span the MMA sees is only
-  // blockK -- using the unfolded value would exceed TileShape.K and index past the tile.
+  // PermutionK controls the COMPLETE logical MMA fragment, not one artifact copy. Under an N-FOLD one resident 32B
+  // run is FoldF N-cols x ArtifactTileK each, and a larger tactic concatenates T/ArtifactTileK such deliveries; the
+  // fragment still sees the tactic's full TileShape.K.
   // FOLD: the fragment must have ORDINARY N x K register semantics (the fold lives only in the load layer), so the
   // K-permutation is TileShape.K when folding -- NOT the 32B-run span, which would keep the fragment in the folded
   // (N/FoldF) x (FoldF*K) form and force a 2-pass mainloop.
@@ -414,9 +453,8 @@ public:
           ? fold_schedule_traits<KernelScheduleType>::ArtifactLowFold : 1;
   static constexpr int ExplicitArtifactHighFold =
       fold_schedule_traits<KernelScheduleType>::ArtifactHighFold;
-  // Carry-only in #37's first phase. ArtifactTileK is the resident delivery width; blockK below remains the tactic
-  // TileShape.K until FullBlockK and CopyBlockK are split in the next reviewed phase. A zero value preserves direct
-  // CollectiveBuilder callers whose legacy KernelAiuFold spelling predates an explicit artifact contract.
+  // ArtifactTileK is the resident delivery width. A zero value preserves direct CollectiveBuilder callers whose
+  // legacy KernelAiuFold spelling predates an explicit artifact contract; for those callers A falls back to T.
   static constexpr int ArtifactTileK =
       fold_schedule_traits<KernelScheduleType>::ArtifactTileK;
   static constexpr int MmaPermK =
@@ -473,10 +511,22 @@ public:
   static constexpr int blockN = cute::get<1>(TileShape_MNK{});
   static constexpr int blockK = cute::get<2>(TileShape_MNK{});
 
-  // N-FOLD: the B plane's AIU contiguous run folds FoldF adjacent N-cols x blockK each, so its operand Block_K =
-  // FoldF*blockK (=> AiuContElemSize = FoldF*blockK, reusing a validated config, e.g. int2 blockK=64 FoldF=2 => 128
-  // == int2@TK128). A stays blockK. The collective's fold-in-N SmemLayoutB then presents this as (FoldF*Ng, blockK).
-  static constexpr int BFoldBlockK = ArtifactLowFold * blockK;
+  // TWO K SPANS, intentionally different when one resident artifact feeds a larger tactic:
+  //   FullBlockK = F*T is the complete physical B extent consumed by this tactic tile.
+  //   CopyBlockK = F*A is one resident artifact copy/swizzle quantum (32 B for the canonical folded artifacts).
+  // Recomputing the second as F*T makes each delivery claim the entire tactic-wide cube. At T>A those deliveries
+  // collide in the resident code-slot map instead of advancing through independent artifact cubes.
+  static constexpr int EffectiveArtifactTileK = ArtifactTileK > 0 ? ArtifactTileK : blockK;
+  static_assert(EffectiveArtifactTileK > 0, "effective artifact TileK must be positive");
+  static_assert(blockK % EffectiveArtifactTileK == 0,
+                "ArtifactTileK must evenly tile the tactic TileK");
+  static constexpr int FullBlockK = ArtifactLowFold * blockK;
+  static constexpr int CopyBlockK = ArtifactLowFold * EffectiveArtifactTileK;
+  static_assert(FullBlockK % CopyBlockK == 0,
+                "artifact copy quantum must evenly tile the full folded tactic span");
+  // Compatibility name for the two-plane derivation below. That path remains tactic-derived until its P1/P2 folds,
+  // P2_DIV and scale/chunk quantities are reviewed together.
+  static constexpr int BFoldBlockK = FullBlockK;
   // ...and the PHYSICAL row count halves/quarters correspondingly: folding FoldF N-columns into one contiguous run
   // means the B tile physically has blockN/FoldF rows of FoldF*blockK each (same total bytes). Folding only K while
   // leaving Block_MN=blockN makes the swzl atom address a 2x-too-large tile per stage -> "TSM out of range" at
@@ -486,7 +536,13 @@ public:
   // (MOEG_FOLD_DEBUG dump removed -- it confirmed fold_dbg<64,64,64,2,32,128>: builder params are CORRECT,
   //  i.e. B operand gets Block_MN=32 / Block_K=128 -> swzl CUBE <32,32> -> 1024B/stage, matching SmemLayoutB.)
   using DefaultOperandA = quactlize_detail::MixGemm_AIU_Operand<RealInternalElementA, false, Int<blockM>, Int<blockK>, true>;
-  using DefaultOperandB = quactlize_detail::MixGemm_AIU_Operand<RealInternalElementB, false, Int<BFoldBlockN>, Int<BFoldBlockK>, true>;
+  // ContigShape_ is the seam between the two spans: the operand keeps FullBlockK for its total extent and InstNum,
+  // while size(ArtifactContigShape) supplies CopyBlockK to the per-cube AIU/swizzle derivation. Keep the two-plane
+  // low operand on its previous void contract; changing that path also changes its fold ratios and is a separate step.
+  using ArtifactContigShape = Shape<Int<ArtifactLowFold>, Int<EffectiveArtifactTileK>>;
+  using BContigShape = cute::conditional_t<HasPlane2, void, ArtifactContigShape>;
+  using DefaultOperandB = quactlize_detail::MixGemm_AIU_Operand<
+      RealInternalElementB, false, Int<BFoldBlockN>, Int<FullBlockK>, true, BContigShape>;
 #elif 0 // async_cp not work now
   static_assert(false, "async_cp not work now");
   using DispatchPolicy = MainloopQuactlizeMixedInput<PipelineStages, kContinous, KernelScheduleType>;

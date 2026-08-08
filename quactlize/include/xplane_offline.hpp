@@ -45,14 +45,25 @@ namespace xplane {
 //   within a cube   Copy_Traits<PPU0010_TSM_LD_SWZL>::LogicalTV, the atom's own descriptive map
 // Byte-identity with the previous formula is required by l52 / l58 / l61 / l64, all of which gate against shipped or
 // box-validated buffers.
-template <int Bits, int TM, int TN, int TK, int WM, int WN, int F>
+template <int Bits, int TM, int TN, int TK, int WM, int WN, int F, int ArtifactTileK = TK>
 struct CubeTV {
   static constexpr int warpM = (WM > 16) ? WM : 16, warpN = (WN > 16) ? WN : 16;
   static constexpr int WOM = TM / warpM, WON = TN / warpN;
-  static constexpr int BK = F * TK, Ng = TN / F, RowB = BK * Bits / 8;
-  static constexpr int AiuByte = RowB > 128 ? 128 : RowB;               // MixGemm_AIU_Operand's own arithmetic
+  static_assert(ArtifactTileK > 0 && TK % ArtifactTileK == 0,
+                "artifact TileK must evenly tile tactic TileK");
+  static constexpr int FullBK = F * TK, CopyBK = F * ArtifactTileK, Ng = TN / F;
+  static constexpr int FullRowB = FullBK * Bits / 8, CopyRowB = CopyBK * Bits / 8;
+  static constexpr int AiuByte = CopyRowB > 128 ? 128 : CopyRowB;       // MixGemm_AIU_Operand's own arithmetic
+  static_assert((FullBK * Bits) % 256 == 0 && (CopyBK * Bits) % 256 == 0,
+                "full and artifact rows must contain whole 32B deliveries");
+  static_assert(AiuByte % 32 == 0, "AIU copy quantum must contain whole 32B slices");
   static constexpr int AiuElem = AiuByte * 8 / Bits;
-  static constexpr int InstNum = BK / AiuElem;
+  static_assert(FullBK % AiuElem == 0, "artifact copy quantum must tile the full tactic span");
+  static constexpr int InstNum = FullBK / AiuElem;
+  static constexpr int SlicesPerInst = AiuByte / 32;
+  static constexpr int FullDL = FullRowB / 32;
+  static_assert(SlicesPerInst >= 1 && FullDL == InstNum * SlicesPerInst,
+                "copy instances and their 32B slices must cover the full tactic span exactly");
   using SInst = cute::PPU0015_16x16x32_S32S8S8S32_TN;
   using MmaS8 = cute::TiledMMA<cute::MMA_Atom<SInst>,
                                cute::Layout<cute::Shape<cute::Int<WOM>, cute::Int<WON>, cute::_1>>,
@@ -61,18 +72,25 @@ struct CubeTV {
   using Tr    = cute::Copy_Traits<Op>;
   static constexpr int WPR = Tr::LogicalWordsPerRow;                    // 32-bit words per cube row
 
-  static int base_row(int warp, int inst) {
-    auto id = cute::make_identity_tensor(cute::make_shape(cute::Int<Ng>{}, cute::Int<RowB>{}));
+  static int base_row(int warp, int inst, int cube = 0) {
+    // Partition the complete tactic tile. Shrinking this identity to CopyRowB would erase the extra copy instances
+    // whose bases the real smem tiled copy derives from the full physical extent.
+    auto id = cute::make_identity_tensor(cute::make_shape(cute::Int<Ng>{}, cute::Int<FullRowB>{}));
     auto ts = cute::make_tiled_copy_B(cute::Copy_Atom<Op, int8_t>{}, MmaS8{})
                   .get_thread_slice(warp * 32).partition_S(id);
-    return int(cute::get<0>(ts(0, inst, 0)));
+    return int(cute::get<0>(ts(0, inst, cube)));
   }
-  static int word(int lane, int v, int dl) {
+  static int word(int lane, int v, int slice) {
     return int(typename Tr::LogicalTV{}(cute::make_coord(cute::make_coord(lane % 4, lane / 4),
-                                                         cute::make_coord(v % 2, v / 2), dl)));
+                                                         cute::make_coord(v % 2, v / 2), slice)));
   }
   static int cube_row(int lane, int v)         { return word(lane, v, 0) / WPR; }
-  static int cube_wd (int lane, int v, int dl) { return word(lane, v, dl) % WPR - dl * 8; }
+  static int cube_wd (int lane, int v, int dl) {
+    // LogicalTV describes slices WITHIN one copy cube. dl spans the full tactic, so its quotient selects an
+    // InstNum cube and only the remainder belongs in LogicalTV.
+    int const slice = dl % SlicesPerInst;
+    return word(lane, v, slice) % WPR - slice * 8;
+  }
   static constexpr int insts() { return Ng / (WON * 16); }
 };
 
@@ -80,7 +98,7 @@ struct CubeTV {
 // > 1 is needed for int2 at Block_K=256, which is the configuration that serves as the GATE (it runs correctly on the
 // box, so the derivation must reproduce it). Order=1 -- N-instance outer, delivery inner -- is the chunk ordering that
 // satisfies that gate; it was resolved against the gate, not chosen.
-template <int Bits, int TM, int TN, int TK, int WM, int WN, int F>
+template <int Bits, int TM, int TN, int TK, int WM, int WN, int F, int ArtifactTileK = TK>
 inline std::vector<int> plane_map() {
   using namespace cute;
   using FInst = PPU0015_16x16x16_F32F16F16F32_TN;
@@ -101,16 +119,27 @@ inline std::vector<int> plane_map() {
   const int NS = int(size(frag));
   auto pi = right_inverse(frag.layout());
   std::vector<int> m((size_t)Ng * DL * 8 * CPW, -1);
-  using CTV = CubeTV<Bits, TM, TN, TK, WM, WN, F>;
+  using CTV = CubeTV<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>;
   for (int t = 0; t < 32 * WOM * WON; ++t) {
     const int lane = t % 32, w = t / 32;
     auto part = Mma{}.get_thread_slice(t).partition_B(make_identity_tensor(make_shape(Int<TN>{}, Int<TK>{})));
     for (int dl = 0; dl < DL; ++dl)
       for (int inst = 0; inst < Ng / RPI; ++inst)
         for (int v = 0; v < 4; ++v) {
-          const int row = CTV::base_row(w, inst) + CTV::cube_row(lane, v), wd = CTV::cube_wd(lane, v, dl);
+          const int row = CTV::base_row(w, inst, dl / CTV::SlicesPerInst) + CTV::cube_row(lane, v),
+                    wd = CTV::cube_wd(lane, v, dl);
           for (int j = 0; j < CPW; ++j) {
-            const int e = cutlass::MixGemmEmit<Bits>::index(j, v), flat = (inst * DL + dl) * VEC + e;
+            const int e = cutlass::MixGemmEmit<Bits>::index(j, v);
+            // A folded artifact's converter output has F contiguous groups.  Across a larger tactic each group owns
+            // the same logical N fold and consecutive deliveries advance K *inside* that group:
+            //
+            //   (element-within-group, delivery, fold-group, N-instance)
+            //       strides (1, Group, DL*Group, DL*VEC).
+            //
+            // The old `(inst*DL + dl)*VEC + e` put delivery outside the fold group.  At F>1, DL>1 that makes one
+            // resident artifact select different (n,k) owners even though every physical slot is occupied.
+            using Scatter = cutlass::MixGemmArtifactScatter<Bits, F, DL>;
+            const int flat = Scatter::flat(e, dl, inst);
             if (flat < 0 || flat >= NS) continue;
             auto c = part(pi(flat));
             m[(((size_t)row * DL + dl) * 8 + wd) * CPW + j] = int(get<0>(c)) * TK + int(get<1>(c));
@@ -228,28 +257,38 @@ inline std::vector<int> tile_map_int1() { return tile_map_hi<2, 1, TM, TN, TK, W
 // displacement is i += 32*K = 2^14; (M << 14) has 14 low zero bits, so it can neither change bits 5-6 nor carry into
 // them -- the misplaced codes are EQUAL and the buffers compare identical. A probe whose period aliases the
 // displacement proves nothing. l61 labels each element by the bits of its own index instead, which cannot alias.
-template <int Bits, int TM, int TN, int TK, int WM, int WN, int F>
+template <int Bits, int TM, int TN, int TK, int WM, int WN, int F, int ArtifactTileK = TK>
 inline void place_from_map(int8_t* out, const std::vector<int>& m, const std::vector<uint8_t>& q_kn, int N, int K) {
   using namespace cute;
   constexpr int CPW = 32 / Bits, R = TN / F, DL = (F * TK * Bits / 8) / 32, MASK = (1 << Bits) - 1;
+  static_assert(ArtifactTileK > 0 && TK % ArtifactTileK == 0,
+                "artifact TileK must evenly tile tactic TileK");
+  constexpr int ArtifactTilesPerTactic = TK / ArtifactTileK;
+  constexpr int ArtifactDL = (F * ArtifactTileK * Bits / 8) / 32;
   static_assert(DL >= 1, "a physical row must be a whole number of 32 B deliveries");
+  static_assert((F * ArtifactTileK * Bits) % 256 == 0,
+                "an artifact row must be a whole number of 32 B deliveries");
+  static_assert(ArtifactDL >= 1 && DL == ArtifactTilesPerTactic * ArtifactDL,
+                "artifact deliveries must tile the full tactic row exactly");
   // (b) THE DESTINATION IS A LAYOUT. l20's two branches used to be two hand-written address expressions inside the
   // innermost loop; they are now one cute layout each, built once, over the coordinate tuple the walk enumerates. The
   // F > 1 branch is plane-major -- super-tile kb becomes a separate plane of N/F rows -- and F == 1 is the
   // interleave-256 one, which is what the deleted five-step pipeline produced.
   const int W_ROW_OFF = 256 / CPW, RUNS = W_ROW_OFF / 8, nrow = N / F;                       // F > 1
-  constexpr int kCon = 256, contig = F * TK * Bits / 8, AiuByte = contig > 128 ? 128 : contig;
+  constexpr int kCon = 256, contig = F * ArtifactTileK * Bits / 8;
+  constexpr int AiuByte = contig > 128 ? 128 : contig;
   constexpr int AiuElem = AiuByte * 8 / Bits, RPS = kCon / AiuElem;                          // F == 1
   static_assert(F > 1 || RPS >= 1, "unfolded: a K-tile's 32B run exceeds the 256-element interleave -- no such config ships");
-  const int NT = N / TN, KT = K / TK;
+  const int NT = N / TN, KT = K / TK, ArtifactKT = K / ArtifactTileK;
   // (j, wd, row, tn, tt, kb) -> code index. N and K are runtime, so the strides are dynamic; the shape is not a
   // Layout-of-constants but it is still ONE object rather than an expression per call.
   auto dst_fold = make_layout(
-      make_shape (Int<CPW>{}, _8{}, Int<R>{}, NT, RUNS ? RUNS : 1, KT / (RUNS ? RUNS : 1)),
+      make_shape (Int<CPW>{}, _8{}, Int<R>{}, NT, RUNS ? RUNS : 1, ArtifactKT / (RUNS ? RUNS : 1)),
       make_stride(_1{}, Int<CPW>{}, W_ROW_OFF * CPW, R * W_ROW_OFF * CPW, 8 * CPW, nrow * W_ROW_OFF * CPW));
-  // (j, wd, dl, ki_lo, row, tn, ki_hi) -> code index, with ki = ki_hi*RPS + ki_lo
+  // (j, wd, artifact_dl, artifact_ki_lo, row, tn, artifact_ki_hi) -> resident code index.
   auto dst_flat = make_layout(
-      make_shape (Int<CPW>{}, _8{}, Int<DL>{}, RPS ? RPS : 1, Int<R>{}, NT, KT / (RPS ? RPS : 1)),
+      make_shape (Int<CPW>{}, _8{}, Int<ArtifactDL>{}, RPS ? RPS : 1, Int<R>{}, NT,
+                  ArtifactKT / (RPS ? RPS : 1)),
       make_stride(_1{}, Int<CPW>{}, 8 * CPW, AiuElem, kCon, TN * kCon, N * kCon));
   std::fill(out, out + (size_t)N * K * Bits / 8, int8_t(0));
   for (int tn = 0; tn < NT; ++tn)
@@ -263,9 +302,15 @@ inline void place_from_map(int8_t* out, const std::vector<int>& m, const std::ve
               const int n = tn * TN + loc / TK, k = ki * TK + loc % TK;
               const int v = q_kn[(size_t)k * N + n] & MASK;          // q_kn is [K][N]
               if (!v) continue;
+              // dl spans the full F*T tactic row. Resident bytes are grouped in F*A quanta, so split dl into the
+              // artifact tile selected inside T and the 32B delivery selected inside that artifact tile.
+              const int artifact_ki = ki * ArtifactTilesPerTactic + dl / ArtifactDL;
+              const int artifact_dl = dl % ArtifactDL;
               const size_t code = (F > 1)
-                  ? size_t(dst_fold(j, wd, row, tn, ki % (RUNS ? RUNS : 1), ki / (RUNS ? RUNS : 1)))
-                  : size_t(dst_flat(j, wd, dl, ki % (RPS ? RPS : 1), row, tn, ki / (RPS ? RPS : 1)));
+                  ? size_t(dst_fold(j, wd, row, tn, artifact_ki % (RUNS ? RUNS : 1),
+                                    artifact_ki / (RUNS ? RUNS : 1)))
+                  : size_t(dst_flat(j, wd, artifact_dl, artifact_ki % (RPS ? RPS : 1), row, tn,
+                                    artifact_ki / (RPS ? RPS : 1)));
               const size_t bit0 = code * Bits;
               for (int b = 0; b < Bits; ++b)
                 if ((v >> b) & 1) out[(bit0 + b) / 8] |= int8_t(1 << ((bit0 + b) % 8));
@@ -273,9 +318,10 @@ inline void place_from_map(int8_t* out, const std::vector<int>& m, const std::ve
 }
 
 // One plane on its own, from its own derived map. This is what plane 1 needs once cols_per_word > 1.
-template <int Bits, int TM, int TN, int TK, int WM, int WN, int F>
+template <int Bits, int TM, int TN, int TK, int WM, int WN, int F, int ArtifactTileK = TK>
 inline void place_derived(int8_t* out, const std::vector<uint8_t>& q_kn, int N, int K) {
-  place_from_map<Bits, TM, TN, TK, WM, WN, F>(out, plane_map<Bits, TM, TN, TK, WM, WN, F>(), q_kn, N, K);
+  place_from_map<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>(
+      out, plane_map<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>(), q_kn, N, K);
 }
 
 // THE INVERSE IS PART OF THE FORMAT. A producer-only xplane buffer can be checked only by feeding it to a GEMM,
@@ -283,20 +329,30 @@ inline void place_derived(int8_t* out, const std::vector<uint8_t>& q_kn, int N, 
 // the canonical [K,N] codes, so an offline artifact can be dequantised without launching the consumer. This is a
 // mutual/round-trip witness for placement (not an independent convention oracle), while the resulting full fp16
 // weight is independently comparable with the official GGUF dequantiser.
-template <int Bits, int TM, int TN, int TK, int WM, int WN, int F>
+template <int Bits, int TM, int TN, int TK, int WM, int WN, int F, int ArtifactTileK = TK>
 inline void recover_from_map(const int8_t* in, const std::vector<int>& m, std::vector<uint8_t>& q_kn, int N, int K) {
   using namespace cute;
   constexpr int CPW = 32 / Bits, R = TN / F, DL = (F * TK * Bits / 8) / 32;
   constexpr int MASK = (1 << Bits) - 1;
+  static_assert(ArtifactTileK > 0 && TK % ArtifactTileK == 0,
+                "artifact TileK must evenly tile tactic TileK");
+  constexpr int ArtifactTilesPerTactic = TK / ArtifactTileK;
+  constexpr int ArtifactDL = (F * ArtifactTileK * Bits / 8) / 32;
+  static_assert((F * ArtifactTileK * Bits) % 256 == 0,
+                "an artifact row must be a whole number of 32 B deliveries");
+  static_assert(ArtifactDL >= 1 && DL == ArtifactTilesPerTactic * ArtifactDL,
+                "artifact deliveries must tile the full tactic row exactly");
   const int W_ROW_OFF = 256 / CPW, RUNS = W_ROW_OFF / 8, nrow = N / F;
-  constexpr int kCon = 256, contig = F * TK * Bits / 8, AiuByte = contig > 128 ? 128 : contig;
+  constexpr int kCon = 256, contig = F * ArtifactTileK * Bits / 8;
+  constexpr int AiuByte = contig > 128 ? 128 : contig;
   constexpr int AiuElem = AiuByte * 8 / Bits, RPS = kCon / AiuElem;
-  const int NT = N / TN, KT = K / TK;
+  const int NT = N / TN, KT = K / TK, ArtifactKT = K / ArtifactTileK;
   auto src_fold = make_layout(
-      make_shape (Int<CPW>{}, _8{}, Int<R>{}, NT, RUNS ? RUNS : 1, KT / (RUNS ? RUNS : 1)),
+      make_shape (Int<CPW>{}, _8{}, Int<R>{}, NT, RUNS ? RUNS : 1, ArtifactKT / (RUNS ? RUNS : 1)),
       make_stride(_1{}, Int<CPW>{}, W_ROW_OFF * CPW, R * W_ROW_OFF * CPW, 8 * CPW, nrow * W_ROW_OFF * CPW));
   auto src_flat = make_layout(
-      make_shape (Int<CPW>{}, _8{}, Int<DL>{}, RPS ? RPS : 1, Int<R>{}, NT, KT / (RPS ? RPS : 1)),
+      make_shape (Int<CPW>{}, _8{}, Int<ArtifactDL>{}, RPS ? RPS : 1, Int<R>{}, NT,
+                  ArtifactKT / (RPS ? RPS : 1)),
       make_stride(_1{}, Int<CPW>{}, 8 * CPW, AiuElem, kCon, TN * kCon, N * kCon));
   q_kn.assign(size_t(N) * K, uint8_t(0));
   auto const* bytes = reinterpret_cast<uint8_t const*>(in);
@@ -309,9 +365,13 @@ inline void recover_from_map(const int8_t* in, const std::vector<int>& m, std::v
               const int loc = m[(((size_t)row * DL + dl) * 8 + wd) * CPW + j];
               if (loc < 0) continue;
               const int n = tn * TN + loc / TK, k = ki * TK + loc % TK;
+              const int artifact_ki = ki * ArtifactTilesPerTactic + dl / ArtifactDL;
+              const int artifact_dl = dl % ArtifactDL;
               const size_t code = (F > 1)
-                  ? size_t(src_fold(j, wd, row, tn, ki % (RUNS ? RUNS : 1), ki / (RUNS ? RUNS : 1)))
-                  : size_t(src_flat(j, wd, dl, ki % (RPS ? RPS : 1), row, tn, ki / (RPS ? RPS : 1)));
+                  ? size_t(src_fold(j, wd, row, tn, artifact_ki % (RUNS ? RUNS : 1),
+                                    artifact_ki / (RUNS ? RUNS : 1)))
+                  : size_t(src_flat(j, wd, artifact_dl, artifact_ki % (RPS ? RPS : 1), row, tn,
+                                    artifact_ki / (RPS ? RPS : 1)));
               const size_t bit0 = code * Bits;
               uint8_t v = 0;
               for (int b = 0; b < Bits; ++b) v |= uint8_t(((bytes[(bit0 + b) / 8] >> ((bit0 + b) % 8)) & 1) << b);
@@ -319,10 +379,10 @@ inline void recover_from_map(const int8_t* in, const std::vector<int>& m, std::v
             }
 }
 
-template <int Bits, int TM, int TN, int TK, int WM, int WN, int F>
+template <int Bits, int TM, int TN, int TK, int WM, int WN, int F, int ArtifactTileK = TK>
 inline void recover_derived(const int8_t* in, std::vector<uint8_t>& q_kn, int N, int K) {
-  recover_from_map<Bits, TM, TN, TK, WM, WN, F>(
-      in, plane_map<Bits, TM, TN, TK, WM, WN, F>(), q_kn, N, K);
+  recover_from_map<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>(
+      in, plane_map<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>(), q_kn, N, K);
 }
 
 template <int LowBits, int HiBits, int TM, int TN, int TK, int WM, int WN, int F2, int F1 = 1>
