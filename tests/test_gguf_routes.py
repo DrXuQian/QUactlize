@@ -130,7 +130,12 @@ def ppu_backend_cuda(tmp_path_factory):
                 f"-I{root / 'third_party' / 'actlize' / 'include'}",
                 f"-I{root / 'third_party' / 'cutlass' / 'include'}", "-o", str(layout_o),
                 str(root / "quactlize" / "csrc" / "device" / "ppu_dense_layout.cu")],
-      common + ["-c", f"-I{root / 'dev' / 'fold_derivation' / 'stub_inc'}",
+      # This translation unit has a .cpp suffix because hgcc builds its host ABI seam, but the NVIDIA stand-in still
+      # consumes actlize headers that name CUDA's builtin vector types (int4/uint4/float4). nvcc otherwise classifies
+      # .cpp as ordinary host C++ and never supplies those declarations, so all four users of this fixture error in
+      # setup before reaching a route assertion. Force CUDA language for this one fallback object, as the .cu objects
+      # above already get from their suffix.
+      common + ["-x", "cu", "-c", f"-I{root / 'dev' / 'fold_derivation' / 'stub_inc'}",
                 f"-I{root / 'third_party' / 'actlize' / 'include'}",
                 f"-I{root / 'third_party' / 'cutlass' / 'include'}", "-o", str(unit_o),
                 str(root / "quactlize" / "csrc" / "device" / "ppu_unit_pack.cpp")],
