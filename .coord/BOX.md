@@ -618,6 +618,45 @@ that would test repacking, not resident-byte reuse.
 
 ---
 
+## #37 — two-plane Q3/Q5/Q6 cross-T numerical gate
+
+Run this section only after the separate single-plane section above passes.  l115 proves that every logical code has
+the same resident physical owner, but it cannot prove the device converter, `P2_DIV`, scale reload, or chunk path.
+These two targets have independent numerical goldens and explicitly pass ArtifactTileK to both the offline writer and
+the grouped launch.  They therefore consume the resident A64/A128/A32 bytes with T256 collectives; they do not repack
+the fixture at T256.
+
+    set -euo pipefail
+    cd /sim/eec/shared/junfu.qx/quactlize
+    git pull --ff-only origin develop
+    echo "gate-sha=$(git rev-parse HEAD)"
+
+    TARGET=test_q3_bconcat_real ./build.sh
+    Q3=$(find build_ppu -type f -name test_q3_bconcat_real -perm -u+x -print -quit)
+    test -n "$Q3"
+    "$Q3" real_weight/real_q3k_concat.bin | tee /tmp/037_2plane_q3_cross_t.log
+
+    TARGET=test_q65_bconcat_real ./build.sh
+    Q65=$(find build_ppu -type f -name test_q65_bconcat_real -perm -u+x -print -quit)
+    test -n "$Q65"
+    "$Q65" | tee /tmp/037_2plane_q56_cross_t.log
+
+Wanted back from the Q3 log: rung 8, labelled `A64/F2/F4 -> T256`, with `bad=0/... MATCH`; `ladder: all rungs
+MATCH`; and `last rung (8) ... bad=0/... MATCH`.  Wanted back from the Q5/Q6 log: the first three labels under
+`--- Q6 = int4 + int2 ---` and the last under `--- Q5 = int4 + int1 ---`, all with `bad=0/32768 ... MATCH`, followed
+by `0 failing configuration(s)`:
+
+    A128/F1/F1 -> T256 w64x64 s2
+    A64/F1/F2  -> T256 w64x64 s2
+    A32/F2/F4  -> T256 w64x64 s2
+    A64/F1/F4  -> T256 w64x64 s2
+
+The Q3 and Q5 A64 rows cover the fold pairs absent from Q6.  The Q6 A128 row is also the exact geometry used to
+release the former `ConsumerMap` T256 exclusion; its local structural prerequisite is the l115 line
+`Q6_K A=128 T=256 ... logical=32768/32768 ... owner_diff=0 writer_diff=0 COMPLETE`.
+
+---
+
 ## Five-format MoE host-link overflow: preserve and identify the payload section
 
 Do this inventory **before** running another default build in the failed build directory. `build.sh` recreates its
