@@ -1,9 +1,10 @@
-// Grouped mixed-input Stream-K phase-1 mechanism gate [PPU box only].
+// Grouped mixed-input Stream-K phase-2 minimum-stripe gate [PPU box only].
 //
 // This target is deliberately isolated from production dispatch and the full
-// tactic sweep.  It proves the q-flattened scheduler/lock seam with one real
-// negative control (Kt==Min, no split possible) and one real positive control
-// (same CTA geometry, smaller TileK, four peers per output tile).
+// tactic sweep.  Phase 1 proved the q-flattened scheduler/lock seam at the
+// vendor-compatible Min=8 default.  This gate explicitly selects Min=2: the
+// decode Kt=8 arm must now create four peers per output tile, while the host
+// oracle retains Min=8 as the no-split negative baseline.
 //
 // Build: TARGET=test_moe_grouped_streamk ./build.sh
 // Run:   timeout 180s ./build/.../test_moe_grouped_streamk
@@ -43,6 +44,7 @@ constexpr int kWN = 64;
 constexpr int kStages = 3;
 constexpr int kArtifactTileK = 64;
 constexpr int kGs = 32;
+constexpr uint32_t kMinSkIters = 2;
 constexpr float kAlpha = 0.75f;
 constexpr float kBeta = 0.5f;
 
@@ -53,10 +55,13 @@ using Op = moe_grouped_streamk_ppu::Operation<
     cute::Shape<cute::Int<kTM>, cute::Int<kTN>, cute::Int<TK>>,
     cute::Shape<cute::Int<kTN>, cute::Int<TK / kGs>>,
     cute::Shape<cute::Int<kWM>, cute::Int<kWN>, cute::Int<TK>>,
-    kStages, true, int4_t, void, kArtifactTileK, 8u>;
+    kStages, true, int4_t, void, kArtifactTileK, kMinSkIters>;
 static_assert(Op<64>::ExpectedGroupSize == kGs &&
               Op<256>::ExpectedGroupSize == kGs,
               "CPU golden and both compiled schedules must share gs");
+static_assert(Op<64>::TileSchedulerParams::min_iters_per_sk_unit_ == 2 &&
+              Op<256>::TileSchedulerParams::min_iters_per_sk_unit_ == 2,
+              "phase 2 grouped Stream-K must explicitly select Min=2");
 
 struct Fixture {
   char const* name = nullptr;
@@ -305,7 +310,51 @@ struct ArmResult {
   uint64_t peer_excess = 0;
   uint32_t fixup_work_items = 0;
   uint32_t epilogue_work_items = 0;
+  bool expected_supported = false;
+  uint64_t expected_peer_excess = 0;
 };
+
+struct Phase2Expectation {
+  bool supported = false;
+  uint32_t sk_tiles = 0;
+  uint64_t sk_units = 0;
+  int split_tiles = 0;
+  uint64_t peer_excess = 0;
+  uint32_t fixup_work_items = 0;
+  uint32_t stripe_k_tiles = 0;
+  uint32_t peers_per_tile = 0;
+};
+
+// Independent arithmetic oracle for this gate's single-cluster, sub-wave
+// fixtures.  It intentionally does not call the vendor Params methods used by
+// lowering.  Forced Stream-K owns every q tile, and Min=2 caps the worker
+// population at floor(Q*Kt/2).  This first phase-2 device gate deliberately
+// accepts only an exactly uniform stripe: a non-divisor worker cap is reported
+// as unsupported instead of pretending that CTA count equals fixup work-item
+// count when a stripe crosses an output-tile boundary.
+Phase2Expectation phase2_expectation(int q, int kt, int workers) {
+  Phase2Expectation out;
+  if (q <= 0 || kt < int(kMinSkIters) || workers < 2 * q) return out;
+  uint64_t const total_k_tiles = uint64_t(q) * uint64_t(kt);
+  uint64_t const units_at_min_stripe = total_k_tiles / kMinSkIters;
+  uint64_t const units = std::min<uint64_t>(uint64_t(workers),
+                                            units_at_min_stripe);
+  if (units < 2ull * uint64_t(q) || units > uint64_t(UINT32_MAX)) return out;
+  if (total_k_tiles % units != 0) return out;
+  uint64_t const stripe_k_tiles = total_k_tiles / units;
+  if (stripe_k_tiles == 0 || uint64_t(kt) % stripe_k_tiles != 0) return out;
+  uint64_t const peers_per_tile = uint64_t(kt) / stripe_k_tiles;
+  if (peers_per_tile < 2 || peers_per_tile > uint64_t(UINT32_MAX)) return out;
+  out.supported = true;
+  out.sk_tiles = uint32_t(q);
+  out.sk_units = units;
+  out.split_tiles = q;
+  out.peer_excess = uint64_t(q) * (peers_per_tile - 1);
+  out.fixup_work_items = uint32_t(units);
+  out.stripe_k_tiles = uint32_t(stripe_k_tiles);
+  out.peers_per_tile = uint32_t(peers_per_tile);
+  return out;
+}
 
 template <int TK>
 ArmResult run_streamk_arm(Fixture const& f, DeviceFixture& d,
@@ -336,6 +385,10 @@ ArmResult run_streamk_arm(Fixture const& f, DeviceFixture& d,
   size_t const workspace_bytes = Gemm::get_workspace_size(args);
   cutlass::DeviceAllocation<uint8_t> workspace(workspace_bytes);
   result.plan = O::inspect(args, workspace.get());
+  Phase2Expectation const expected = phase2_expectation(
+      result.plan.q, result.plan.kt, result.plan.workers);
+  result.expected_supported = expected.supported;
+  result.expected_peer_excess = expected.peer_excess;
   dim3 const grid = Gemm::get_grid_shape(args, workspace.get());
   uint64_t const physical = uint64_t(grid.x) * grid.y * grid.z;
   size_t const expected_scheduler_workspace =
@@ -352,10 +405,10 @@ ArmResult run_streamk_arm(Fixture const& f, DeviceFixture& d,
                            result.plan.sk_units + result.plan.sk_tiles);
   std::printf("[grouped streamk decomposition] fixture=%s "
               "tactic=i4_%dx%dx%d_w%dx%d_s%d requested=StreamK "
-              "actual=%s Q=%d Kt=%d W=%d scheduler_workers=%d "
+              "Min=%u actual=%s Q=%d Kt=%d W=%d scheduler_workers=%d "
               "sk_tiles=%u sk_units=%llu workspace=%zu scheduler/reset=%zu/%zu "
               "grid=(%u,%u,%u) %s\n",
-              f.name, kTM, kTN, TK, kWM, kWN, kStages,
+              f.name, kTM, kTN, TK, kWM, kWN, kStages, kMinSkIters,
               result.plan.sk_tiles ? "StreamK" : "DataParallel",
               result.plan.q, result.plan.kt, real_cu * ctas_per_cu,
               result.plan.workers, result.plan.sk_tiles,
@@ -364,21 +417,18 @@ ArmResult run_streamk_arm(Fixture const& f, DeviceFixture& d,
               result.plan.scheduler_barrier_bytes, grid.x, grid.y, grid.z,
               plan_ok ? "PLAN-PASS" : "PLAN-FAIL");
   if (!plan_ok) ++result.errors;
-
-  if constexpr (TK == 256) {
-    auto heuristic = args;
-    heuristic.scheduler.decomposition_mode =
-        O::TileSchedulerParams::DecompositionMode::Heuristic;
-    auto hp = O::inspect(heuristic, workspace.get());
-    std::printf("[grouped streamk decomposition] fixture=%s "
-                "tactic=i4_%dx%dx%d_w%dx%d_s%d requested=Heuristic "
-                "actual=%s Q=%d Kt=%d W=%d sk_tiles=%u sk_units=%llu\n",
-                f.name, kTM, kTN, TK, kWM, kWN, kStages,
-                hp.sk_tiles ? "StreamK" : "DataParallel", hp.q, hp.kt,
-                hp.workers, hp.sk_tiles,
-                static_cast<unsigned long long>(hp.sk_units));
-    if (hp.sk_tiles != 0 || hp.sk_units != 0) ++result.errors;
+  if (!expected.supported) {
+    std::printf("[grouped streamk phase2 oracle] fixture=%s TK=%d Min=%u "
+                "Q=%d Kt=%d W=%d ORACLE-UNSUPPORTED/FAIL\n",
+                f.name, TK, kMinSkIters, result.plan.q, result.plan.kt,
+                result.plan.workers);
+    ++result.errors;
+    return result;
   }
+  std::printf("[grouped streamk phase2 oracle] fixture=%s TK=%d Min=%u "
+              "stripe_k_tiles=%u peers_per_tile=%u ORACLE-PASS\n",
+              f.name, TK, kMinSkIters, expected.stripe_k_tiles,
+              expected.peers_per_tile);
 
   cutlass::DeviceAllocation<uint32_t> peer(result.plan.q);
   cutlass::DeviceAllocation<uint32_t> visits(
@@ -432,12 +482,12 @@ ArmResult run_streamk_arm(Fixture const& f, DeviceFixture& d,
   result.peer_excess = peer_excess;
   result.fixup_work_items = ht[0];
   result.epilogue_work_items = ht[1];
-  std::printf("[grouped streamk census] fixture=%s TK=%d Q=%d Kt=%d "
+  std::printf("[grouped streamk census] fixture=%s TK=%d Min=%u Q=%d Kt=%d "
               "split_tiles=%d peer_excess=%llu requires_fixup=%u "
               "fixup_work_items=%u epilogue=%u separate=%u "
               "fixup_final=%u q_oob=%u "
               "empty_decode=%u holes=%d missing_k=%d duplicate_k=%d %s\n",
-              f.name, TK, result.plan.q, result.plan.kt, split_tiles,
+              f.name, TK, kMinSkIters, result.plan.q, result.plan.kt, split_tiles,
               static_cast<unsigned long long>(peer_excess), unsigned(ht[0] != 0),
               ht[0], ht[1], ht[2], ht[3], ht[4], ht[5], holes, missing_k,
               duplicate_k,
@@ -445,25 +495,25 @@ ArmResult run_streamk_arm(Fixture const& f, DeviceFixture& d,
   if (!census_identity) ++result.errors;
 
   int const expected_q = f.name == std::string("S068") ? 16 : 6;
-  int const expected_units = TK == 256 ? expected_q : expected_q * 4;
-  int const expected_split = TK == 256 ? 0 : expected_q;
-  int const expected_excess = TK == 256 ? 0 : expected_q * 3;
-  int const expected_fixup = TK == 256 ? 0 : expected_q * 4;
-  bool const exact = result.plan.q == expected_q &&
-                     int(result.plan.sk_tiles) == expected_q &&
-                     int(result.plan.sk_units) == expected_units &&
-                     split_tiles == expected_split &&
-                     int(peer_excess) == expected_excess &&
-                     int(ht[0]) == expected_fixup;
-  std::printf("[grouped streamk exact] fixture=%s TK=%d expected "
-              "Q/units/split/excess/fixup=%d/%d/%d/%d/%d %s\n",
-              f.name, TK, expected_q, expected_units, expected_split,
-              expected_excess, expected_fixup, exact ? "PASS" : "FAIL");
+  bool const exact = expected.supported && result.plan.q == expected_q &&
+                     result.plan.sk_tiles == expected.sk_tiles &&
+                     result.plan.sk_units == expected.sk_units &&
+                     split_tiles == expected.split_tiles &&
+                     peer_excess == expected.peer_excess &&
+                     ht[0] == expected.fixup_work_items;
+  std::printf("[grouped streamk exact] fixture=%s TK=%d Min=%u expected "
+              "Q/units/split/excess/fixup=%d/%llu/%d/%llu/%u %s\n",
+              f.name, TK, kMinSkIters, expected_q,
+              static_cast<unsigned long long>(expected.sk_units),
+              expected.split_tiles,
+              static_cast<unsigned long long>(expected.peer_excess),
+              expected.fixup_work_items, exact ? "PASS" : "FAIL");
   if (!exact) ++result.errors;
-  std::printf("[grouped streamk result] fixture=%s TK=%d Q=%d Kt=%d W=%d "
+  std::printf("[grouped streamk result] fixture=%s TK=%d Min=%u Q=%d Kt=%d W=%d "
               "sk_tiles=%u sk_units=%llu split_tiles=%d peer_excess=%llu "
               "requires_fixup=%u fixup_work_items=%u\n",
-              f.name, TK, result.plan.q, result.plan.kt, result.plan.workers,
+              f.name, TK, kMinSkIters, result.plan.q, result.plan.kt,
+              result.plan.workers,
               result.plan.sk_tiles,
               static_cast<unsigned long long>(result.plan.sk_units),
               split_tiles, static_cast<unsigned long long>(peer_excess),
@@ -482,8 +532,9 @@ ArmResult run_streamk_arm(Fixture const& f, DeviceFixture& d,
     return result;
   }
   CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
-  result.errors += verify_output(f, d, kAlpha, kBeta,
-                                 TK == 256 ? "streamk-TK256" : "streamk-TK64");
+  result.errors += verify_output(
+      f, d, kAlpha, kBeta,
+      TK == 256 ? "streamk-min2-TK256" : "streamk-min2-TK64");
 
   if (time_arm) {
     constexpr int kTimed = 20;
@@ -527,13 +578,13 @@ ArmResult run_streamk_arm(Fixture const& f, DeviceFixture& d,
         std::isfinite(mean) && std::isfinite(us.back()) &&
         std::isfinite(wall_us) && us.front() > 0.0 && median > 0.0 &&
         mean > 0.0 && us.back() > 0.0 && wall_us > 0.0;
-    std::printf("[grouped streamk kernel-span-upper] fixture=%s TK=%d n=20 "
+    std::printf("[grouped streamk kernel-span-upper] fixture=%s TK=%d Min=%u n=20 "
                 "median=%.3f us mean=%.3f us min=%.3f us max=%.3f us "
                 "spread=(max-min)/mean=%.2f%% wall=%.3f us "
                 "distinct-event-pairs=20 warmup-event-pairs=1 "
                 "barrier-reset-before-start=%zuB prefix-shape-copy-before-timing=1 "
                 "census-disabled=1 includes-launch-idle=1 %s\n",
-                f.name, TK, median, mean, us.front(), us.back(), spread,
+                f.name, TK, kMinSkIters, median, mean, us.front(), us.back(), spread,
                 wall_us, result.plan.scheduler_barrier_bytes,
                 timing_ok ? "TIMING-PASS" : "TIMING-FAIL");
     if (!timing_ok) ++result.errors;
@@ -541,9 +592,7 @@ ArmResult run_streamk_arm(Fixture const& f, DeviceFixture& d,
   return result;
 }
 
-bool print_c_traffic(Fixture const& f, ArmResult const& arm, int tile_k,
-                     uint64_t expected_production_beta0,
-                     uint64_t expected_gate_path) {
+bool print_c_traffic(Fixture const& f, ArmResult const& arm, int tile_k) {
   uint64_t const output_d = 2ull * f.total * f.n;
   uint64_t const accumulator_tile = uint64_t(kTM) * kTN * sizeof(float);
   uint64_t const production_beta0 =
@@ -553,13 +602,18 @@ bool print_c_traffic(Fixture const& f, ArmResult const& arm, int tile_k,
   // reads one fp16 C input plane of the same logical size as D.
   uint64_t const gate_c_input = kBeta == 0.0f ? 0ull : output_d;
   uint64_t const gate_path = production_beta0 + gate_c_input;
+  uint64_t const expected_production_beta0 =
+      output_d + 2ull * accumulator_tile * arm.expected_peer_excess;
+  uint64_t const expected_gate_path = expected_production_beta0 + gate_c_input;
   bool const traffic_ok = production_beta0 == expected_production_beta0 &&
-                          gate_path == expected_gate_path;
-  std::printf("[grouped streamk C-traffic] fixture=%s TK=%d "
+                          gate_path == expected_gate_path &&
+                          arm.expected_supported &&
+                          arm.peer_excess == arm.expected_peer_excess;
+  std::printf("[grouped streamk C-traffic] fixture=%s TK=%d Min=%u "
               "output_D=%llu accumulator_Wtile=%llu peer_excess=%llu "
               "production_beta0_C=%llu gate_beta=%.3g gate_C_read=%llu "
               "gate_C_path=%llu %s\n",
-              f.name, tile_k,
+              f.name, tile_k, kMinSkIters,
               static_cast<unsigned long long>(output_d),
               static_cast<unsigned long long>(accumulator_tile),
               static_cast<unsigned long long>(arm.peer_excess),
@@ -601,7 +655,7 @@ int main() {
   CUTLASS_PPU_CHECK(hggcGetDevice(&device_id));
   int const real_cu =
       cutlass::KernelHardwareInfo::query_device_multiprocessor_count(device_id);
-  std::printf("== grouped Stream-K phase 1: device=%d cu=%d ==\n", device_id,
+  std::printf("== grouped Stream-K phase 2 min2: device=%d cu=%d ==\n", device_id,
               real_cu);
 
   using P8 = cutlass::gemm::kernel::detail::
@@ -670,21 +724,21 @@ int main() {
 
   DeviceFixture ds068(s068);
   errors += run_legacy_control(s068, ds068);
-  auto neg = run_streamk_arm<256>(s068, ds068, device_id, real_cu, true);
-  auto pos = run_streamk_arm<64>(s068, ds068, device_id, real_cu, true);
-  errors += neg.errors + pos.errors;
+  auto tk256 = run_streamk_arm<256>(s068, ds068, device_id, real_cu, true);
+  auto tk64 = run_streamk_arm<64>(s068, ds068, device_id, real_cu, true);
+  errors += tk256.errors + tk64.errors;
 
-  errors += !print_c_traffic(s068, neg, 256, 8192, 16384);
-  errors += !print_c_traffic(s068, pos, 64, 1581056, 1589248);
+  errors += !print_c_traffic(s068, tk256, 256);
+  errors += !print_c_traffic(s068, tk64, 64);
 
   Fixture ragged = make_fixture("ragged-0,1,17,0,33", {0, 1, 17, 0, 33},
                                 256, 2048);
   DeviceFixture dragged(ragged);
   auto rag = run_streamk_arm<64>(ragged, dragged, device_id, real_cu, false);
   errors += rag.errors;
-  errors += !print_c_traffic(ragged, rag, 64, 615936, 642048);
+  errors += !print_c_traffic(ragged, rag, 64);
 
-  std::printf("== grouped Stream-K phase 1 %s: errors=%d ==\n",
+  std::printf("== grouped Stream-K phase 2 min2 %s: errors=%d ==\n",
               errors ? "FAIL" : "PASS", errors);
   return errors ? 1 : 0;
 }

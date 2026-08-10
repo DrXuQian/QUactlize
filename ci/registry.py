@@ -78,7 +78,7 @@ HARNESSES = {
     "test_lowbit_grouped":      (["int4", "int2", "int1"], "self", None,
         "L>1 grouped output vs per-expert L=1 runs of the same kernel; per-expert addressing only"),
     "test_moe_grouped_streamk": (["int4"],            "synthetic", None,
-        "isolated phase-1 grouped Stream-K: per-expert W/scale/zero/A and nonzero C against an independent CPU "
+        "isolated phase-2 min2 grouped Stream-K: per-expert W/scale/zero/A and nonzero C against an independent CPU "
         "golden, plus global-q lock/fixup and ragged expert decoding; not a production dispatch route"),
     "test_q3_concat_real":      (["gguf-q3k"],        "real",      "real_q3k_concat.bin",
         "A-concat: two GEMMs summed, same golden as the B-concat but 2x the mma"),

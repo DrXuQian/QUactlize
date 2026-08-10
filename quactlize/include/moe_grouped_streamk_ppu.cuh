@@ -90,7 +90,7 @@ struct Operation {
   using RawGemm = cutlass::gemm::device::GemmUniversalAdapter<Kernel>;
 
  public:
-  // This phase-1 handle deliberately exposes no update(): the generic adapter
+  // This isolated handle deliberately exposes no update(): the generic adapter
   // relowers Params without reinstalling the ragged prefix/shape mirror. A
   // private base prevents callers from upcasting around the deleted seam.
   class Gemm : private RawGemm {

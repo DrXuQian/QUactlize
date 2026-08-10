@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Device-free contract for grouped mixed-input Stream-K phase 1.
+"""Device-free contract for grouped mixed-input Stream-K phase 2 / Min=2.
 
 The dangerous regressions all compile into plausible kernels: host decomposition
 and launch can use different worker populations, an expert-local coordinate can
 alias a global lock, or the ragged prefix can overwrite reduction scratch.  This
 checker pins those seams, compiles two negative controls for the vendor policy
 type, and proves the owned handle rejects update() and raw Params launches; the
-PPU box remains responsible for numerical/fixup proof.
+The live isolated specialization must select Min=2 rather than silently falling
+back to the ABI-compatible Min=8 default.  The PPU box remains responsible for
+numerical/fixup proof.
 """
 
 from __future__ import annotations
@@ -86,6 +88,16 @@ def audit(wrapper: str, builder: str, test: str, cmake: str, build: str) -> list
         if hay.count(token) != 1:
             bad.append(f"expected exactly one {token!r}")
 
+    for token in (
+        "constexpr uint32_t kMinSkIters = 2;",
+        "kStages, true, int4_t, void, kArtifactTileK, kMinSkIters>;",
+        "Op<64>::TileSchedulerParams::min_iters_per_sk_unit_ == 2",
+        "Op<256>::TileSchedulerParams::min_iters_per_sk_unit_ == 2",
+        '"phase 2 grouped Stream-K must explicitly select Min=2"',
+    ):
+        if test_code.count(token) != 1:
+            bad.append(f"live phase-2 specialization missing exactly one {token!r}")
+
     try:
         geometry = section(wrapper_code, "  static HostGeometry host_geometry", "\n  static SchedulerProblemShape")
         scheduler_workspace = section(
@@ -109,6 +121,9 @@ def audit(wrapper: str, builder: str, test: str, cmake: str, build: str) -> list
         arm = section(test_code, "ArmResult run_streamk_arm", "\nbool print_c_traffic")
         verify = section(test_code, "int verify_output", "\ntemplate <class Params>")
         policy = section(test_code, "bool host_policy_line", "\nstruct ArmResult")
+        phase2_oracle = section(
+            test_code, "Phase2Expectation phase2_expectation",
+            "\ntemplate <int TK>\nArmResult run_streamk_arm")
         main = section(test_code, "int main()", "\n}")
     except ValueError as e:
         return bad + [str(e)]
@@ -323,7 +338,39 @@ def audit(wrapper: str, builder: str, test: str, cmake: str, build: str) -> list
     if device.count("TileScheduler::fixup(") != 1:
         bad.append("device path must have one live global-q fixup call")
     if "should_perform_separate_reduction" in wrapper_code:
-        bad.append("phase 1 must not wire the disabled separate-reduction path")
+        bad.append("isolated grouped Stream-K must not wire the disabled separate-reduction path")
+
+    phase2_oracle_flat = re.sub(r"\s+", " ", phase2_oracle)
+    for token in (
+        "workers < 2 * q",
+        "uint64_t const total_k_tiles = uint64_t(q) * uint64_t(kt);",
+        "uint64_t const units_at_min_stripe = total_k_tiles / kMinSkIters;",
+        "std::min<uint64_t>(uint64_t(workers), units_at_min_stripe)",
+        "units < 2ull * uint64_t(q)",
+        "total_k_tiles % units != 0",
+        "uint64_t const stripe_k_tiles = total_k_tiles / units;",
+        "uint64_t(kt) % stripe_k_tiles != 0",
+        "uint64_t const peers_per_tile = uint64_t(kt) / stripe_k_tiles;",
+        "out.sk_tiles = uint32_t(q);",
+        "out.peer_excess = uint64_t(q) * (peers_per_tile - 1);",
+        "out.fixup_work_items = uint32_t(units);",
+    ):
+        if token not in phase2_oracle_flat:
+            bad.append(f"independent phase-2 arithmetic oracle missing {token!r}")
+    if "get_num_sk_" in phase2_oracle or "TileSchedulerParams" in phase2_oracle:
+        bad.append("phase-2 expected decomposition mirrors the vendor policy instead of using an independent oracle")
+    arm_flat = re.sub(r"\s+", " ", arm)
+    for token in (
+        "result.expected_supported = expected.supported;",
+        "if (!expected.supported) {",
+        '"Q=%d Kt=%d W=%d ORACLE-UNSUPPORTED/FAIL\\n"',
+        "++result.errors; return result;",
+        '"stripe_k_tiles=%u peers_per_tile=%u ORACLE-PASS\\n"',
+    ):
+        if token not in arm_flat:
+            bad.append(f"phase-2 unsupported policy does not fail closed: missing {token!r}")
+    if "requested=Heuristic" in test_code or "O::inspect(heuristic" in test_code:
+        bad.append("box gate treats a Heuristic request rejected by can_implement as a lowered Params oracle")
 
     for token in (
         "args.scheduler.splits = 1;",
@@ -380,7 +427,6 @@ def audit(wrapper: str, builder: str, test: str, cmake: str, build: str) -> list
         "gemm.run()",
         "hggcEventRecord(events[size_t(i) + 1].stop, nullptr)",
     ), "per-launch reset/event protocol", bad)
-    arm_flat = re.sub(r"\s+", " ", arm)
     timed_body_flat = re.sub(r"\s+", " ", timed_body)
     reset_call = (
         "Kernel::reset_scheduler_workspace_after_prefix_install( "
@@ -411,7 +457,7 @@ def audit(wrapper: str, builder: str, test: str, cmake: str, build: str) -> list
         "split_tiles == int(ht[3])",
         "peer_excess == uint64_t(ht[0] - ht[3])",
         "missing_k == 0 && duplicate_k == 0",
-        "[grouped streamk result] fixture=%s TK=%d Q=%d Kt=%d W=%d",
+        "[grouped streamk result] fixture=%s TK=%d Min=%u Q=%d Kt=%d W=%d",
         "errors += !host_policy_line<P8>(\"min8\", 128, 8, 432, 0, 128, 128);",
         "errors += !host_policy_line<P2>(\"min2\", 128, 8, 432, 128, 128, 432);",
         "s068.active == expected_active",
@@ -440,6 +486,14 @@ def audit(wrapper: str, builder: str, test: str, cmake: str, build: str) -> list
     if c_traffic.count(
             "output_d + 2ull * accumulator_tile * arm.peer_excess") != 1:
         bad.append("C traffic is not derived from the measured per-tile peer excess")
+    if c_traffic.count(
+            "output_d + 2ull * accumulator_tile * arm.expected_peer_excess") != 1:
+        bad.append("C traffic has no independent expected-peer oracle")
+    if c_traffic.count(
+            "arm.peer_excess == arm.expected_peer_excess") != 1:
+        bad.append("C traffic does not compare measured and independently expected peers")
+    if c_traffic.count("arm.expected_supported") != 1:
+        bad.append("C traffic can pass after the phase-2 arithmetic oracle rejected its geometry")
     if c_traffic.count("gate_path = production_beta0 + gate_c_input") != 1:
         bad.append("nonzero-beta gate traffic does not distinguish its C input read")
     verify_flat = re.sub(r"\s+", " ", verify)
@@ -453,7 +507,7 @@ def audit(wrapper: str, builder: str, test: str, cmake: str, build: str) -> list
     for line in (
         "  if (!census_identity) ++result.errors;",
         "  if (!exact) ++result.errors;",
-        "  result.errors += verify_output(f, d, kAlpha, kBeta,",
+        "  result.errors += verify_output(",
         "    if (!timing_ok) ++result.errors;",
     ):
         if not re.search(r"^" + re.escape(line), arm, re.MULTILINE):
@@ -464,16 +518,16 @@ def audit(wrapper: str, builder: str, test: str, cmake: str, build: str) -> list
         "  errors += !host_policy_line<P8>(\"min8\", 128, 8, 432, 0, 128, 128);",
         "  errors += !host_policy_line<P2>(\"min2\", 128, 8, 432, 128, 128, 432);",
         "  errors += !router_ok;",
-        "  errors += !print_c_traffic(s068, neg, 256, 8192, 16384);",
-        "  errors += !print_c_traffic(s068, pos, 64, 1581056, 1589248);",
-        "  errors += !print_c_traffic(ragged, rag, 64, 615936, 642048);",
+        "  errors += !print_c_traffic(s068, tk256, 256);",
+        "  errors += !print_c_traffic(s068, tk64, 64);",
+        "  errors += !print_c_traffic(ragged, rag, 64);",
     ):
         if not re.search(r"^" + re.escape(line) + r"$", main, re.MULTILINE):
             bad.append(f"main verdict is not live at top level: {line.strip()!r}")
     for call in (
-        "print_c_traffic(s068, neg, 256, 8192, 16384)",
-        "print_c_traffic(s068, pos, 64, 1581056, 1589248)",
-        "print_c_traffic(ragged, rag, 64, 615936, 642048)",
+        "print_c_traffic(s068, tk256, 256)",
+        "print_c_traffic(s068, tk64, 64)",
+        "print_c_traffic(ragged, rag, 64)",
     ):
         if test_code.count(call) != 1:
             bad.append(f"missing independent C-traffic oracle {call!r}")
@@ -755,6 +809,22 @@ def main() -> int:
          "router oracle is permanently true"),
         (2, "bool const traffic_ok =", "bool const traffic_ok = true ||",
          "traffic oracle is permanently true"),
+        (2, "constexpr uint32_t kMinSkIters = 2;",
+         "constexpr uint32_t kMinSkIters = 8;",
+         "live grouped specialization falls back to Min=8"),
+        (2,
+         "kStages, true, int4_t, void, kArtifactTileK, kMinSkIters>;",
+         "kStages, true, int4_t, void, kArtifactTileK>;",
+         "live grouped specialization omits Min and takes the default"),
+        (2, "total_k_tiles / kMinSkIters",
+         "total_k_tiles / 8u",
+         "phase-2 oracle silently retains the phase-1 stripe"),
+        (2, "out.peer_excess = uint64_t(q) * (peers_per_tile - 1);",
+         "out.peer_excess = 0; (void)units;",
+         "phase-2 oracle erases the expected peer excess"),
+        (2, "arm.peer_excess == arm.expected_peer_excess",
+         "arm.peer_excess == arm.peer_excess",
+         "traffic oracle compares the census to itself"),
         (2, "if (!census_identity) ++result.errors;",
          "if (false && !census_identity) ++result.errors;",
          "census failure is moved into a dead branch"),
@@ -806,8 +876,9 @@ def main() -> int:
     if bad:
         print("[grouped-streamk-contract] FAIL: " + "; ".join(bad))
         return 1
-    print("[grouped-streamk-contract] PASS -- q lock identity, shared workers, "
-          "workspace/prefix separation, absolute K, 128-thread fixup; "
+    print("[grouped-streamk-contract] PASS -- explicit Min2, independent worker "
+          "oracle, q lock identity, shared workers, workspace/prefix separation, "
+          "absolute K, 128-thread fixup; "
           f"{len(plants)} semantic source plants + default-Params/Min1/"
           "deleted-update/no-Params-run compiled controls rejected; device body is "
           "covered separately by the registered SYNTAX target")

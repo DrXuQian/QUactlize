@@ -6,8 +6,8 @@
 // carries MinIters in both the Params and scheduler types, with the legacy spelling remaining exactly ParamsT<8>.
 //
 // This is a device-free host oracle.  S068's target geometry has Q=128 output tiles and Kt=8.  At Min=8 the
-// heuristic must decline Stream-K, while forced Stream-K can create at most one unit per output tile.  Min=2 is
-// deliberately only a type/mechanism witness here; grouped phase 1 still ships Min=8.
+// heuristic must decline Stream-K, while forced Stream-K can create at most one unit per output tile.  Grouped
+// phase 2 explicitly selects Min=2 while the vendor-compatible default and legacy payload remain exactly Min=8.
 #include <cstdint>
 #include <cstdio>
 #include <type_traits>
@@ -38,6 +38,7 @@ static_assert(!std::is_same_v<Params8, Params2>);
 static_assert(std::is_same_v<DefaultScheduler, Scheduler8>);
 static_assert(std::is_same_v<typename DefaultScheduler::Params, Params8>);
 static_assert(std::is_same_v<typename Scheduler2::Params, Params2>);
+static_assert(std::is_same_v<SelectedParams, Params2>);
 static_assert(DefaultScheduler::Params::min_iters_per_sk_unit_ == 8);
 static_assert(Scheduler2::Params::min_iters_per_sk_unit_ == 2);
 
