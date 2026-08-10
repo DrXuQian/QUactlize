@@ -4780,3 +4780,47 @@ m8n8 地址公式不符,`broke every m8n16 KQ until fixed`,**静默,不报错**)
 split-K 把 decode 从 17.3% 抬到约 25%;**剩下到 Marlin 43% 的那一段是 padding 和延迟的地盘**,那才是 m8n16
 (padding 16×→8×)兑现的地方。两条正交,都要做。**别拿 decode 的数去判 m8n16 的成败** —— 那一段是网格受限的,
 m8n16 不加 CTA;它主要兑现在 prefill(`wav=16.12`,机器满的,`msk=11.8%`)和中间段。
+
+## 116 — Marlin 的写法要不要接进 actlize:出决定,别默认移植就是好
+
+用户提的方向。**但今天的实测把这个问题的前提改了,先摆出来再论证。**
+
+### 反面证据:唯一一个干净的同 shape 对照上,我们已经比 Marlin 快
+
+    C1 (S088, gs32, 同 ragged fixture, 都是 kernel-only)
+      我们 i4 32x128:128 w32x32 s3   365.736 µs   187.9 TF/s   37.60% MFU(峰值 500)
+      Marlin MoE (5090)                            179.8 TF/s   42.89% MFU(峰值 419.2)
+      -> 绝对吞吐我们快 4.5%;MFU 落后 5.3 点纯粹因为 PPU 峰值高 19%
+
+**所以"整体移植 Marlin"不能建立在"它更快"上。** decode 上我们确实落后,但今天已经量出主要缺口有更便宜的补法
+(115:等功阶梯实测 split-K 值 **1.44×**,把 decode 从 17.3% 抬到约 25% MBU,而归约只占 1.4%)。
+
+### 已经有的东西(旧 Kernels 树,没进 quactlize)
+
+    Kernels/general/w4a16_gemm/marlin_ppu/
+        marlin_classic_ppu.cuh     marlin_gguf_ppu.cuh
+        marlin_moe_aiu_ppu.cuh     marlin_moe_gemv_ppu.cuh     marlin_moe_gguf_ppu.cuh
+
+记忆里还有两条:`marlin_gguf_ppu.cuh` 的 **Q4_K W4A16 在 ppu001 上数值全对**;另有一次 CuTe Marlin 移植做到
+「toolchain + MMA atom 已验证(mma_smoke MATCH)」,停在「完整 `marlin_cute_ppu.cuh`,核心是 n8→n16 的 mma 融合」。
+
+### 要你回答的
+
+1. **这五个文件里各是什么、当年跑到什么水平、有没有任何一个曾经打赢过 cutlass 那条路。** 如果有,是在哪个 band、
+   什么 shape。**这是决定的主要输入** —— 有实测赢过的部分才值得抢救。
+2. **Marlin 的机制逐条判"该不该进 actlize、以什么形态进"**,而不是整体移植:
+   - `m8n16k16` —— 111/112 正在做,**已在路上**
+   - K-striping —— 115 已测出 uniform split-K 就够(decode 上波形不主导:利用率 +33% 只换到 1.7%)
+   - LOP3 魔数反量化 —— actlize **已经有**(原生 `ppu.lop3.b32` + 完整序列)
+   - 小-M tile 启发式 —— tactic 空间**已有轴**
+   - A 的 XOR swizzle —— 我们是硬件固定的,`PPU_A_PACK` 已证明能写进 swizzle 槽位
+   - 多指针 B 打断依赖链 —— `PPU_B_CHUNK` 机制相近
+   **逐条给「已有 / 该进 / 不该进」,并说明理由。** 剩下真正没有的是哪几件?
+3. **两条路选一条并给理由:**
+   - (a) **增量**:继续把缺的件加进现有 mixed-input collective(= 111/112/115 这条路)
+   - (b) **独立 kernel**:在 actlize 里放一个 Marlin 形态的 kernel,和 collective 并列,按 M 分派
+   考虑可维护性、格式覆盖(我们要五种 GGUF 格式,Marlin 只有对称 int4)、以及**谁来吃 offline 格式**。
+4. **`marlin_moe_gemv_ppu.cuh` 单独看一眼** —— 那正好是我们 decode 缺的形态,而 108/109 正打算重做一遍。
+   **如果它已经能用,108/109 的范围要改。**
+
+**先出判断和证据,不要开始移植。** 这条的产出是一个有依据的决定,不是代码。
