@@ -1032,8 +1032,21 @@ This is the hard prerequisite for 112, not a performance run. One script builds 
 artifacts under a printed `/tmp/quactlize-m8n16-111.*` directory. The ppu001 side audits the generated **hgcc
 build.make** (not an ArchTag or configure message), requires its only device flag to be `-arch=ppu_10`, requires an
 `m8n16k16` symbol, then runs G1 and G2. G2 passes only if the physical-16-row AIU+x4 projection is bit-exact **and**
-the deliberately wrong NVIDIA-x2 address formula produces a nonzero mismatch. The ppu0015 side compiles only the raw
-atom, so an AIU diagnostic cannot hide the required `Cannot select ... m8n16k16` ISel failure.
+a 32-row guard control goes green at `(0,0)` but produces the expected mismatch when the **same x4-swzl helper on the
+same base** receives the NVIDIA m8n8 address coordinates. The guard height keeps every planted x4 access in range;
+using the production 16-row cube here would let an out-of-range read masquerade as the expected red. The ppu0015
+side compiles only the raw atom, so an AIU diagnostic cannot hide the required `Cannot select ... m8n16k16` ISel
+failure. “Nonzero mismatch” is not sufficient by itself: all 512 bad-arm halfwords must first equal the independent
+shifted-coordinate golden, then exactly 120/128 projected values must differ from the origin. Thus clamp/garbage or
+an invalid read cannot masquerade as the expected red; the box also decides whether the x4 interface really honors
+the NVIDIA formula's 16-byte column component rather than assuming it from the host model.
+
+Deferred vendor defect, deliberately not fixed by 114: ppu001's six plain-LDSM sites in `cute/arch/copy_ppu.hpp`
+and six in `cutlass/arch/memory_ppu.h` contain assembler-rejected `ppu.tc01.ex.ldmatrix` spellings. The working
+swizzled opcode does **not** establish the plain x1/x2/x4 N/T grammar, so guessing a replacement is forbidden. A
+separate actlize change must either prove all six forms with SDK compile + numerical gates, or make their use fail
+at the C++ call site; merely remaining uninstantiated is not support. G2 must not directly name the legacy header
+or instantiate/call those atoms (an unrelated actlize trait still includes that header transitively).
 
 The named symbol is the requested provenance marker, not opcode evidence by itself. The instruction identity is
 cross-checked by executing the raw-atom golden on ppu001 and by the isolated ppu0015 compiler naming the
@@ -1051,9 +1064,9 @@ Do not open 112 unless the final line is:
     [111] PASS: positive arch + G1 + G2 green/red + negative arch all proved
 
 Wanted back: `gate-sha`; the ppu001/ppu0015 unique-arch lines; the `m8n16k16` symbol line; G1's one-hot sweep and
-asymmetric-case summaries; `[G2-green]`; `[G2-negative]`; the ppu0015 `Cannot select` diagnostic; final PASS; and the
-printed artifact directory. A ppu0015 nonzero rc without both `Cannot select` and `m8n16k16` is a failure for the
-wrong reason, not G0 passing.
+asymmetric-case summaries; `[G2-control-path]`, `[G2-green-detail]`, `[G2-green]`, `[G2-negative-detail]`, and
+`[G2-negative]`; the ppu0015 `Cannot select` diagnostic; final PASS; and the printed artifact directory. A ppu0015
+nonzero rc without both `Cannot select` and `m8n16k16` is a failure for the wrong reason, not G0 passing.
 
 ---
 

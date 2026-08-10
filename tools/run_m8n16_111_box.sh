@@ -57,6 +57,10 @@ printf '[111] root-sha=%s\n' "$(git -C "$ROOT" rev-parse HEAD)"
 printf '[111] actlize-sha=%s\n' "$(git -C "$ROOT/third_party/actlize" rev-parse HEAD)"
 printf '[111] artifacts=%s\n' "$ARTIFACT_ROOT"
 
+if ! python3 "$ROOT/ci/check_m8n16_g2_contract.py"; then
+  fail 'G2 source contract failed before the box build'
+fi
+
 printf '\n== G0 positive arch audit + G1/G2 run: ppu001 ==\n'
 if ! env PPU_BUILD_DIR="$POS_BUILD" PPU_ARCHS=ppu0010 TARGET="$TARGET" \
     "$ROOT/build.sh" 2>&1 | tee "$POS_LOG"; then
@@ -86,10 +90,16 @@ if ! "$POS_BIN" 2>&1 | tee "$RUN_LOG"; then
 fi
 grep -q '^\[G1\] PASS: total_bad=0$' "$RUN_LOG" \
   || fail 'G1 did not report all atom outputs exact'
+grep -q '^\[G2-control-path\] same-op=PPU0010_TSM_LD_SWZL<m8n8.x4.swzl> cube=32x64 same-base=guard_swzl only-delta=coordinates$' "$RUN_LOG" \
+  || fail 'G2 did not report the one-op/one-base address-control path'
+grep -q '^\[G2-green-detail\] x4_values=512 x4_bad=0 projected_changed=0/128 lower_poison_changed=128/128 guard_x4_values=512 guard_x4_bad=0$' "$RUN_LOG" \
+  || fail 'G2 production poison checks or guard-good x4 map did not pass exactly'
 grep -q '^\[G2-green\] mismatches=0 PASS$' "$RUN_LOG" \
   || fail 'G2 physical-16-row x4 projection was not exactly green'
-grep -Eq '^\[G2-negative\] mismatches=[1-9][0-9]* EXPECTED_RED/PASS$' "$RUN_LOG" \
-  || fail 'G2 planted NVIDIA-x2 fault did not produce the required red mismatch'
+grep -q '^\[G2-negative-detail\] same_op=x4-swzl bad_map_values=512 bad_map_bad=0 zero_coord_lanes=2 zero_coord_bad=0 red_expected=120/128$' "$RUN_LOG" \
+  || fail 'G2 bad-coordinate arm did not return the exact shifted tags or failed its zero-coordinate lanes'
+grep -q '^\[G2-negative\] mismatches=120 EXPECTED_RED/PASS$' "$RUN_LOG" \
+  || fail 'G2 same-op planted NVIDIA address arithmetic did not produce the exact required red mismatch'
 grep -q '^== \[111\] PASS: G1=0 G2=0 ==$' "$RUN_LOG" \
   || fail 'aggregate G1/G2 PASS marker is absent'
 printf '[G0/G1/G2][ppu001] PASS\n'

@@ -857,7 +857,8 @@ target_compile_options(test_ppu_f16x2_probe PRIVATE -w)
 
 # #111: expose ppu001's m8n16k16 atom only after a two-direction numerical gate.  G1 invokes the raw atom from
 # ordinary registers; G2 uses the real AIU swizzle write/read and must show BOTH a green physical-16-row projection
-# and a red, deliberately wrong NVIDIA-x2 address control.  Keep this below the collective: a passing target proves
+# and a red control whose good/bad arms share one x4-swzl helper and differ only in NVIDIA-derived coordinates.
+# Keep this below the collective: a passing target proves
 # the instruction/register contract and that the detector sees the historical silent permutation, not TileM=8
 # collective plumbing (which belongs to #112).  Building this same target for ppu0015 is G0's required ISel-negative.
 set(_PPU_M8_GATE_SOURCES test_ppu_m8n16_gates.cpp test_ppu_m8n16_atom.cu)

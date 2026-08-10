@@ -93,6 +93,10 @@ FIXES = {
 # Anything expressible as an addition does NOT belong here. The four collectives, the dispatch policies, the
 # converter widths and the NoZero marker were all in this position on 2026-08-06 and all moved out.
 EXTENSIONS = {
+    "include/cute/arch/mma_ppu0010.hpp":
+        "30 added, 0 removed: one ppu001-only m8n16 raw atom; every existing atom is byte-for-byte unchanged",
+    "include/cute/atom/mma_traits_ppu0010.hpp":
+        "20 added, 0 removed: the additive register/layout traits for the new ppu001 m8n16 atom",
     "include/cute/arch/copy_aiu_base.hpp":
         "13 added, 0 removed: new AIU descriptor fields, purely additive",
     "include/cute/arch/copy_ppu0010_aiu.hpp":
@@ -106,6 +110,9 @@ EXTENSIONS = {
     "include/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input.hpp":
         "enable_if gains `&& !isGroupProblemShape_v<ProblemShape_>` so the grouped shape can select a different "
         "specialisation; narrows this arm only where another one now exists",
+    "include/cutlass/gemm/config/gemm_operands.hpp":
+        "adds a defaulted shape-aware selector alongside the existing type-only selector; only exact ppu001 "
+        "TileM=WarpM=8 chooses m8n16, so all existing shapes and every other architecture retain their old atom",
 }
 
 ALLOWED = {**FIXES, **EXTENSIONS}

@@ -11,13 +11,24 @@
 //   * v2/v3 do change, proving that the poison really traversed the same AIU
 //     write/read pair instead of being optimised away or left unwritten.
 //
-// The red control is intentionally a separate, linear shared tile.  It copies
-// the exact NVIDIA address expression formerly used by llama.cpp for
-// tile<8,8> and feeds that address to PPU's real plain m8n8.x2 instruction.
-// PPU x2 has a different register distribution, so comparing those two output
-// registers with the m8 ALayout MUST find mismatches.  A zero-mismatch red
-// control means this gate cannot see the historical silent-corruption shape;
-// in that case G2 fails even if the green path happens to pass.
+// The red control must not change the load instruction while claiming to test
+// an address bug.  A separate 32x64 guard cube therefore runs BOTH control
+// arms through one PPU0010_TSM_LD_SWZL helper: good passes (0,0), while bad
+// passes the exact NVIDIA tile<8,8> row/word formula as PPU coordinates.  The
+// 32-row height is load-bearing: x4 adds lane/4 + 8*(v/2), so the bad coord can
+// reach row 22; doing this on the 16-row production cube makes an out-of-range
+// read, and a red result would no longer isolate address arithmetic.  The host
+// checks every one of the bad arm's 512 halfwords against the shifted valid
+// tags before accepting its exact 120/128 mismatch against the origin.
+//
+// KNOWN PRE-EXISTING ACTLIZE DEFECT, DEFERRED FROM #114.  The six ppu001
+// plain-LDSM atoms in cute/arch/copy_ppu.hpp and the six counterparts in
+// cutlass/arch/memory_ppu.h contain assembler-rejected
+// `ppu.tc01.ex.ldmatrix` spellings.  Their correct non-swzl SDK grammar has
+// not been established, so G2 deliberately instantiates none of them.  Do not
+// substitute a plain x1/x2/x4 N/T atom until a separate SDK compile plus
+// numerical gate establishes every spelling; silently surviving only because
+// an asm-bearing function was never instantiated is not support.
 //
 // This source has no main.  The aggregate G0/G1/G2 target calls:
 //
@@ -34,7 +45,6 @@
 #include "cutlass/half.h"
 #include "cutlass/util/device_memory.h"
 #include "cute/ppu_tensor_mix.hpp"
-#include "cute/arch/copy_ppu.hpp"
 #include "cute/arch/copy_ppu0010_aiu.hpp"
 #include "cute/arch/mma_ppu0010.hpp"
 #include "cute/atom/copy_traits_ppu0010_aiu.hpp"
@@ -49,8 +59,10 @@ using Traits = cute::MMA_Traits<Atom>;
 
 constexpr int kCases = 2;
 constexpr int kCubeH = 16;
+constexpr int kGuardH = 32;
 constexpr int kCubeW = 64;
 constexpr int kCubeElements = kCubeH * kCubeW;
+constexpr int kGuardElements = kGuardH * kCubeW;
 constexpr int kWarp = 32;
 constexpr int kX4Registers = 4;
 constexpr int kM8Registers = 2;
@@ -67,39 +79,45 @@ static_assert(std::is_same_v<typename Traits::ALayout, ExpectedA>);
 static_assert(std::extent_v<Atom::ARegisters> == kM8Registers);
 
 // One b16 AIU operation writes the whole 16x64 physical cube (16384 bits).
-using AiuWrite = cute::PPU0010_AIU_LOAD<
+using ProdAiuWrite = cute::PPU0010_AIU_LOAD<
     cute::C<kCubeElements * 16>, half_t, false, true>;
-static_assert(std::is_same_v<typename cute::Copy_Traits<AiuWrite>::ThrID,
+using GuardAiuWrite = cute::PPU0010_AIU_LOAD<
+    cute::C<kGuardElements * 16>, half_t, false, true>;
+static_assert(std::is_same_v<typename cute::Copy_Traits<ProdAiuWrite>::ThrID,
                              cute::Layout<cute::_1>>);
-using SwzlRead = cute::PPU0010_TSM_LD_SWZL<
+static_assert(std::is_same_v<typename cute::Copy_Traits<GuardAiuWrite>::ThrID,
+                             cute::Layout<cute::_1>>);
+using ProdSwzlRead = cute::PPU0010_TSM_LD_SWZL<
     half_t, kCubeH, kCubeW, true, false, 1>;
+using GuardSwzlRead = cute::PPU0010_TSM_LD_SWZL<
+    half_t, kGuardH, kCubeW, true, false, 1>;
 
 struct alignas(32) SharedStorage {
   // AIU requires a 32-byte-aligned TSM destination on ppu001.
-  std::uint16_t swzl[kCubeElements];
-  // A distinct linear tile for the planted x2-address defect.  Keeping it
-  // separate prevents the red control from merely detecting "plain ldmatrix
-  // cannot decode AIU swizzle", which is not the bug this control promises.
-  std::uint16_t linear[8 * 16];
+  std::uint16_t prod_swzl[kCubeElements];
+  std::uint16_t guard_swzl[kGuardElements];
 };
 
-__global__ void g2_device(std::uint16_t const* input,
-                          std::uint32_t* x4_output,
-                          std::uint32_t* bad_x2_output) {
+// ONE lexical instruction seam for both guard arms.  The static #114 checker
+// rejects a second primitive or a second smem base; only coord_w/coord_h may
+// differ between good and bad.
+CUTE_DEVICE void g2_guard_swzl_x4(std::uint32_t* frag,
+                                  std::uint16_t* smem_base,
+                                  int coord_w, int coord_h) {
+  GuardSwzlRead::copy(frag, smem_base, coord_w, coord_h, 0, 0);
+}
+
+__global__ void g2_device(std::uint16_t const* prod_input,
+                          std::uint16_t const* guard_input,
+                          std::uint32_t* prod_x4_output,
+                          std::uint32_t* guard_good_output,
+                          std::uint32_t* guard_bad_output) {
   int const lane = int(threadIdx.x);
   int const test_case = int(blockIdx.x);
   if (lane >= kWarp || test_case >= kCases) return;
 
   __shared__ SharedStorage storage;
-  std::uint16_t const* src = input + test_case * kCubeElements;
-
-  // Populate the independent linear tile used only by the red control.
-  for (int i = lane; i < 8 * 16; i += kWarp) {
-    int const row = i / 16;
-    int const k = i % 16;
-    storage.linear[i] = src[row * kCubeW + k];
-  }
-  __syncthreads();
+  std::uint16_t const* prod_src = prod_input + test_case * kCubeElements;
 
   // Production-equivalent physical write: AIU is a single-thread bulk DMA,
   // matching Copy_Traits<PPU0010_AIU_LOAD>::ThrID == Layout<_1>.  Exactly lane
@@ -110,14 +128,23 @@ __global__ void g2_device(std::uint16_t const* input,
   // zeroes, while the opcode itself remains the real .padz.swzl form used by
   // the collective.
   cute::AiuDesc desc{};
-  desc.gmem_ptr = reinterpret_cast<std::uint8_t const*>(src);
+  desc.gmem_ptr = reinterpret_cast<std::uint8_t const*>(prod_src);
   desc.dim_h = kCubeH;
   desc.dim_w = kCubeW;
   desc.cube_h = kCubeH;
   desc.cube_w = kCubeW;
   desc.offset_w = 0;
+
+  cute::AiuDesc guard_desc{};
+  guard_desc.gmem_ptr = reinterpret_cast<std::uint8_t const*>(guard_input);
+  guard_desc.dim_h = kGuardH;
+  guard_desc.dim_w = kCubeW;
+  guard_desc.cube_h = kGuardH;
+  guard_desc.cube_w = kCubeW;
+  guard_desc.offset_w = 0;
   if (lane == 0) {
-    AiuWrite::copy(storage.swzl, src, desc, 0, 0, 0);
+    ProdAiuWrite::copy(storage.prod_swzl, prod_src, desc, 0, 0, 0);
+    GuardAiuWrite::copy(storage.guard_swzl, guard_input, guard_desc, 0, 0, 0);
   }
   cute::cp_async_fence();
   cute::cp_async_wait<0>();
@@ -127,33 +154,38 @@ __global__ void g2_device(std::uint16_t const* input,
   // host checks all four registers first, so this cannot pass by accidentally
   // manufacturing the projected values after a bad read.
   std::uint32_t x4[kX4Registers] = {};
-  SwzlRead::copy(x4, storage.swzl, 0, 0, 0, 0);
+  ProdSwzlRead::copy(x4, storage.prod_swzl, 0, 0, 0, 0);
 #pragma unroll
   for (int v = 0; v < kX4Registers; ++v) {
-    x4_output[(test_case * kWarp + lane) * kX4Registers + v] = x4[v];
+    prod_x4_output[(test_case * kWarp + lane) * kX4Registers + v] = x4[v];
   }
 
-  // Planted defect, copied algebraically from NVIDIA's tile<8,8> loader:
+  // SAME guard cube, SAME x4-swzl helper, SAME four-register delivery.  The
+  // only changed inputs are the address coordinates.  The planted formula is
+  // copied algebraically from NVIDIA's tile<8,8> loader:
   //
   //   row      = lane % I
   //   word_col = ((lane / I) * (J/2)) % J       I=J=8
   //
-  // The addresses are valid and 16-byte aligned; only the assumed register
-  // distribution is wrong for PPU.  This is the important failure shape:
-  // finite values at valid addresses, silently permuted.
+  // `nvidia_word` is in uint32 words and GuardSwzlRead's coord_w is in fp16
+  // elements, hence the explicit factor two.  The 32-row guard makes every x4
+  // access valid even after adding this per-lane row coordinate.
   constexpr int kI = 8;
   constexpr int kJ = 8;       // uint32 columns: 16 scalar fp16 columns
-  constexpr int kStride = 8;  // uint32 words per row
-  int const row = lane % kI;
-  int const word_col = ((lane / kI) * (kJ / 2)) % kJ;
-  auto const* linear_words = reinterpret_cast<std::uint32_t const*>(storage.linear);
-  auto const& nvidia_address = *reinterpret_cast<cute::uint128_t const*>(
-      linear_words + row * kStride + word_col);
+  int const nvidia_row = lane % kI;
+  int const nvidia_word = ((lane / kI) * (kJ / 2)) % kJ;
 
-  std::uint32_t wrong[2] = {};
-  cute::PPU_U32x2_LDSM_N::copy(nvidia_address, wrong[0], wrong[1]);
-  bad_x2_output[(test_case * kWarp + lane) * 2 + 0] = wrong[0];
-  bad_x2_output[(test_case * kWarp + lane) * 2 + 1] = wrong[1];
+  std::uint32_t guard_good[kX4Registers] = {};
+  std::uint32_t guard_bad[kX4Registers] = {};
+  g2_guard_swzl_x4(guard_good, storage.guard_swzl, 0, 0);
+  g2_guard_swzl_x4(
+      guard_bad, storage.guard_swzl, 2 * nvidia_word, nvidia_row);
+#pragma unroll
+  for (int v = 0; v < kX4Registers; ++v) {
+    int const out = (test_case * kWarp + lane) * kX4Registers + v;
+    guard_good_output[out] = guard_good[v];
+    guard_bad_output[out] = guard_bad[v];
+  }
 }
 
 constexpr std::uint16_t upper_tag(int row, int k) {
@@ -167,6 +199,12 @@ constexpr std::uint16_t lower_tag(int test_case, int row, int k) {
   return std::uint16_t(base + unsigned((row - 8) * kCubeW + k));
 }
 
+constexpr std::uint16_t guard_tag(int row, int k) {
+  // 0x2000..0x27ff: all 2048 guard values are unique and disjoint from
+  // production's upper tags and both poison sets.
+  return std::uint16_t(0x2000u + unsigned(row * kCubeW + k));
+}
+
 std::uint16_t halfword(std::uint32_t word, int h) {
   return std::uint16_t((word >> (16 * h)) & 0xffffu);
 }
@@ -174,37 +212,54 @@ std::uint16_t halfword(std::uint32_t word, int h) {
 }  // namespace
 
 int run_ppu_m8n16_g2() {
-  std::printf("== ppu001 m8n16 G2: AIU physical-cube delivery and planted x2 defect ==\n");
-  std::printf("[G2-path] write=ppu.cp.async.aiu...padz.swzl.2d.b16 cube=16x64 "
+  std::printf("== ppu001 m8n16 G2: AIU physical-cube delivery and planted address defect ==\n");
+  std::printf("[G2-path] production write=ppu.cp.async.aiu...padz.swzl.2d.b16 cube=16x64 "
               "read=ppu.tc01.ldmatrix...m8n8.x4.swzl.shared.b16 project=v0,v1\n");
+  std::printf("[G2-control-path] same-op=PPU0010_TSM_LD_SWZL<m8n8.x4.swzl> "
+              "cube=32x64 same-base=guard_swzl only-delta=coordinates\n");
 
-  std::vector<std::uint16_t> input(kCases * kCubeElements);
+  std::vector<std::uint16_t> prod_input(kCases * kCubeElements);
   for (int c = 0; c < kCases; ++c) {
     for (int row = 0; row < kCubeH; ++row) {
       for (int k = 0; k < kCubeW; ++k) {
-        input[(c * kCubeH + row) * kCubeW + k] =
+        prod_input[(c * kCubeH + row) * kCubeW + k] =
             row < 8 ? upper_tag(row, k) : lower_tag(c, row, k);
       }
     }
   }
+  std::vector<std::uint16_t> guard_input(kGuardElements);
+  for (int row = 0; row < kGuardH; ++row) {
+    for (int k = 0; k < kCubeW; ++k) {
+      guard_input[row * kCubeW + k] = guard_tag(row, k);
+    }
+  }
 
-  cutlass::DeviceAllocation<std::uint16_t> d_input(input.size());
-  cutlass::DeviceAllocation<std::uint32_t> d_x4(
+  cutlass::DeviceAllocation<std::uint16_t> d_prod_input(prod_input.size());
+  cutlass::DeviceAllocation<std::uint16_t> d_guard_input(guard_input.size());
+  cutlass::DeviceAllocation<std::uint32_t> d_prod_x4(
       kCases * kWarp * kX4Registers);
-  cutlass::DeviceAllocation<std::uint32_t> d_bad_x2(
-      kCases * kWarp * kM8Registers);
-  d_input.copy_from_host(input.data());
+  cutlass::DeviceAllocation<std::uint32_t> d_guard_good(
+      kCases * kWarp * kX4Registers);
+  cutlass::DeviceAllocation<std::uint32_t> d_guard_bad(
+      kCases * kWarp * kX4Registers);
+  d_prod_input.copy_from_host(prod_input.data());
+  d_guard_input.copy_from_host(guard_input.data());
 
-  g2_device<<<kCases, kWarp>>>(d_input.get(), d_x4.get(), d_bad_x2.get());
+  g2_device<<<kCases, kWarp>>>(d_prod_input.get(), d_guard_input.get(),
+      d_prod_x4.get(), d_guard_good.get(), d_guard_bad.get());
   CUTLASS_PPU_CHECK(hggcGetLastError());
   CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
 
-  std::vector<std::uint32_t> x4(kCases * kWarp * kX4Registers);
-  std::vector<std::uint32_t> bad_x2(kCases * kWarp * kM8Registers);
-  d_x4.copy_to_host(x4.data());
-  d_bad_x2.copy_to_host(bad_x2.data());
+  std::vector<std::uint32_t> prod_x4(kCases * kWarp * kX4Registers);
+  std::vector<std::uint32_t> guard_good(kCases * kWarp * kX4Registers);
+  std::vector<std::uint32_t> guard_bad(kCases * kWarp * kX4Registers);
+  d_prod_x4.copy_to_host(prod_x4.data());
+  d_guard_good.copy_to_host(guard_good.data());
+  d_guard_bad.copy_to_host(guard_bad.data());
 
   int x4_bad = 0;
+  int guard_x4_bad = 0;
+  int guard_bad_map_bad = 0;
   int projected_changed = 0;
   int lower_changed = 0;
   constexpr int kProjectedValues = kWarp * kM8Registers * kHalfsPerRegister;
@@ -217,12 +272,35 @@ int run_ppu_m8n16_g2() {
   for (int c = 0; c < kCases; ++c) {
     for (int lane = 0; lane < kWarp; ++lane) {
       for (int v = 0; v < kX4Registers; ++v) {
-        std::uint32_t const got = x4[(c * kWarp + lane) * kX4Registers + v];
+        std::uint32_t const got = prod_x4[(c * kWarp + lane) * kX4Registers + v];
         int const row = lane / 4 + 8 * (v / 2);
         int const word = lane % 4 + 4 * (v % 2);
         for (int h = 0; h < kHalfsPerRegister; ++h) {
-          std::uint16_t const want = input[(c * kCubeH + row) * kCubeW + 2 * word + h];
+          std::uint16_t const want =
+              prod_input[(c * kCubeH + row) * kCubeW + 2 * word + h];
           x4_bad += halfword(got, h) != want;
+
+          std::uint32_t const guard_got =
+              guard_good[(c * kWarp + lane) * kX4Registers + v];
+          std::uint16_t const guard_want =
+              guard_input[row * kCubeW + 2 * word + h];
+          guard_x4_bad += halfword(guard_got, h) != guard_want;
+
+          // Independent golden for the planted arm.  Unlike the origin
+          // comparison below, this proves that every nonzero coordinate
+          // returns the exact valid tag it names -- not clamp data, poison,
+          // or arbitrary bits that merely differ from the origin.  The
+          // direct logical map is the NVIDIA row/word offset applied to the
+          // already-validated x4 delivery map.
+          int const bad_row = (lane % 8) + row;
+          int const bad_k = 2 * (((lane / 8) * (8 / 2)) % 8) +
+              2 * word + h;
+          std::uint32_t const guard_bad_got =
+              guard_bad[(c * kWarp + lane) * kX4Registers + v];
+          std::uint16_t const guard_bad_want =
+              guard_input[bad_row * kCubeW + bad_k];
+          guard_bad_map_bad +=
+              halfword(guard_bad_got, h) != guard_bad_want;
         }
       }
     }
@@ -230,8 +308,8 @@ int run_ppu_m8n16_g2() {
 
   for (int lane = 0; lane < kWarp; ++lane) {
     for (int v = 0; v < kX4Registers; ++v) {
-      std::uint32_t const a = x4[(0 * kWarp + lane) * kX4Registers + v];
-      std::uint32_t const b = x4[(1 * kWarp + lane) * kX4Registers + v];
+      std::uint32_t const a = prod_x4[(0 * kWarp + lane) * kX4Registers + v];
+      std::uint32_t const b = prod_x4[(1 * kWarp + lane) * kX4Registers + v];
       for (int h = 0; h < kHalfsPerRegister; ++h) {
         if (v < kM8Registers) {
           projected_changed += halfword(a, h) != halfword(b, h);
@@ -242,34 +320,69 @@ int run_ppu_m8n16_g2() {
     }
   }
 
-  // Compare the deliberately wrong x2 result with the independently frozen
-  // m8 ALayout.  Only case 0 is needed: this is a planted-fault sensitivity
-  // check, not another implementation candidate.
+  // Compare the same-op/bad-coordinate result with the independently frozen
+  // m8 ALayout. Only case 0 is needed: this is a planted-fault sensitivity
+  // check, not another implementation candidate. Lanes 0 and 16 are a local
+  // guard: the NVIDIA formula gives both (coord_w,coord_h)=(0,0), so their
+  // complete x4 result must still equal the control-good arm. A broken bad arm
+  // cannot pass merely by returning arbitrary bits everywhere.
   int red_mismatches = 0;
+  int red_zero_coord_bad = 0;
+  int zero_coord_lanes = 0;
   for (int lane = 0; lane < kWarp; ++lane) {
+    int const nvidia_row = lane % 8;
+    int const nvidia_word = ((lane / 8) * (8 / 2)) % 8;
+    bool const zero_coord = nvidia_row == 0 && nvidia_word == 0;
+    zero_coord_lanes += zero_coord;
     for (int reg = 0; reg < kM8Registers; ++reg) {
-      std::uint32_t const got = bad_x2[lane * kM8Registers + reg];
+      std::uint32_t const got = guard_bad[lane * kX4Registers + reg];
       int const row = lane / 4;
       for (int h = 0; h < kHalfsPerRegister; ++h) {
         int const k = 2 * (lane % 4) + h + 8 * reg;
-        std::uint16_t const want = input[row * kCubeW + k];
+        std::uint16_t const want = guard_input[row * kCubeW + k];
         red_mismatches += halfword(got, h) != want;
+      }
+    }
+    if (zero_coord) {
+      for (int c = 0; c < kCases; ++c) {
+        for (int v = 0; v < kX4Registers; ++v) {
+          std::uint32_t const good =
+              guard_good[(c * kWarp + lane) * kX4Registers + v];
+          std::uint32_t const bad =
+              guard_bad[(c * kWarp + lane) * kX4Registers + v];
+          for (int h = 0; h < kHalfsPerRegister; ++h) {
+            red_zero_coord_bad += halfword(good, h) != halfword(bad, h);
+          }
+        }
       }
     }
   }
 
   int const green_mismatches =
-      x4_bad + projected_changed + (kLowerValues - lower_changed);
+      x4_bad + guard_x4_bad + projected_changed + (kLowerValues - lower_changed);
+  constexpr int kExpectedRedMismatches =
+      kProjectedValues - 2 * kM8Registers * kHalfsPerRegister;
   bool const green_pass = green_mismatches == 0;
-  bool const red_pass = red_mismatches > 0;
+  bool const red_pass =
+      red_mismatches == kExpectedRedMismatches &&
+      guard_bad_map_bad == 0 && zero_coord_lanes == 2 &&
+      red_zero_coord_bad == 0;
 
   std::printf("[G2-green-detail] x4_values=%d x4_bad=%d projected_changed=%d/%d "
-              "lower_poison_changed=%d/%d\n",
+              "lower_poison_changed=%d/%d guard_x4_values=%d guard_x4_bad=%d\n",
               kCases * kWarp * kX4Registers * kHalfsPerRegister,
               x4_bad, projected_changed, kProjectedValues,
-              lower_changed, kLowerValues);
+              lower_changed, kLowerValues,
+              kCases * kWarp * kX4Registers * kHalfsPerRegister,
+              guard_x4_bad);
   std::printf("[G2-green] mismatches=%d %s\n",
               green_mismatches, green_pass ? "PASS" : "FAIL");
+  std::printf("[G2-negative-detail] same_op=x4-swzl bad_map_values=%d "
+              "bad_map_bad=%d zero_coord_lanes=%d zero_coord_bad=%d "
+              "red_expected=%d/%d\n",
+              kCases * kWarp * kX4Registers * kHalfsPerRegister,
+              guard_bad_map_bad, zero_coord_lanes, red_zero_coord_bad,
+              kExpectedRedMismatches, kProjectedValues);
   std::printf("[G2-negative] mismatches=%d %s\n",
               red_mismatches, red_pass ? "EXPECTED_RED/PASS" : "UNEXPECTED_GREEN/FAIL");
 

@@ -106,6 +106,13 @@ HARNESSES = {
     "test_gemv_lowbit":         (["int4", "int2", "int1", "gptq-int4-sym"], "synthetic", None, "CUDA-core GEMV"),
     "test_moe_gemm_ppu":        (["int4"],            "self",      None, ""),
     "test_moe_grouped_ppu":     (["int4"],            "self",      None, ""),
+    # Component probes only: these establish the ppu001 m8 atom ABI and the
+    # AIU/x4-swzl delivery contract.  Empty format lists are deliberate; a
+    # register/layout probe is not evidence for any quantized launch path.
+    "test_ppu_m8n16_atom":      ([],                  "synthetic", None,
+        "component probe: raw ppu001 m8n16 atom vs independent CPU golden; no quant format path"),
+    "test_ppu_m8n16_aiu":       ([],                  "synthetic", None,
+        "component probe: AIU x4-swzl delivery plus same-op planted address fault; no quant format path"),
     # SYNTHETIC, and the reason is a property of the oracle rather than a shortcut: the official gguf package has no
     # k-quant QUANTISER, only dequantize(), so there is no way to ask it for the bytes of a given weight. The bytes
     # are synthesised and the official dequantiser defines what they mean -- an independent implementation of the
