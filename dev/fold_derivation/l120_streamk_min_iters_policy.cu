@@ -38,7 +38,8 @@ static_assert(!std::is_same_v<Params8, Params2>);
 static_assert(std::is_same_v<DefaultScheduler, Scheduler8>);
 static_assert(std::is_same_v<typename DefaultScheduler::Params, Params8>);
 static_assert(std::is_same_v<typename Scheduler2::Params, Params2>);
-static_assert(DefaultScheduler::MinIters == 8 && Scheduler2::MinIters == 2);
+static_assert(DefaultScheduler::Params::min_iters_per_sk_unit_ == 8);
+static_assert(Scheduler2::Params::min_iters_per_sk_unit_ == 2);
 
 // A policy specialization must not change the payload ABI.  Params travel from host lowering into device code;
 // a size/alignment change here would turn an apparently source-compatible default into a binary contract change.
