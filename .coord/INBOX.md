@@ -5056,3 +5056,65 @@ uniform split-K 降级为**权宜**:只在想早点拿到 decode 的数、而 10
 
 **在这条解决之前,112 的数值门不得宣称 A 交付路径已验证。** G3/G4/G5 全建在 G2 之上;一个不能证明自己看得见
 错误的检查,通过了也不构成证据。
+
+## 107b — dense StreamK 接线(范围由 116 定死,过夜项)
+
+**116 的结论是「接 actlize 现成的 StreamK,不移植 Marlin」,而 107b 就是执行它。** 107a 已完成并证明前提
+(smem union 在持久化下仍成立,没有 tile 因此被淘汰)。
+
+### 五项范围(116 给的,一项不能少)
+
+1. **建在 107a 的 mixed-input persistent kernel 上,不要复用 vendor wrapper。** vendor wrapper 调旧式 mainloop API;
+   我们的 collective **每个 work item 都要重新 `load_init`**。
+2. 接 scheduler workspace、barrier 初始化、**绝对 K start/count**、`fixup()`、final-only epilogue。
+3. **物理 worker 数必须统一。** 现成 StreamK 用 `cu_count` 算 `ctas_per_wave`,实际只发 1 CTA/CU
+   (`tile_scheduler_params.h:220`)。**必须把 107a 的 `CU × ctas_per_cu` 同时喂给 scheduler 分解和 launch grid** ——
+   只改 launch grid 会让两边对 worker 数的理解不一致。**这条会静默出错。**
+4. 首版固定 **deterministic、`splits=1`、separate reduction 关闭**,并**打印实际的 `sk_tiles/sk_units/decomposition`** ——
+   防止 heuristic 静默退回 DP/SplitK。
+5. **先过「四 warp」硬门。** `fixup()` 固定 `NamedBarrierManager<NumThreadsPerWarpGroup=128>`,vendor kernel 固定
+   `NumMmaWarpGroups=1`。首个 gate 严格限定 `size(TiledMma)==128`:**少于 128 线程可能等不到 barrier,
+   多于 128 会因 `%128` 让 workspace 地址重叠。** 完整 tactic sweep 前必须泛化归约 cohort。
+
+### 明确不要做的
+
+- **不要换 epilogue 类型。** `epilogue_base_streamk.h` **不是**当前 3.x PPU 路径的接缝实现;活跃路径是
+  mainloop → `TileScheduler::fixup()` → final-only 普通 epilogue。
+- **不要用 `is_separate_reduction`/`reduction_subtile_idx`。** 那描述的是额外的专用归约 CTA,
+  `should_perform_separate_reduction` 无条件 `return false`(注释:temporarily disabled, pending fixes)。
+  确定性路径是:非末段 `wait(lock==K_idx)` → FP32 partial 累入 workspace → `lock += k_tile_count`;
+  末段 `wait(lock==K_idx)` → workspace `load_add` → 唯一一次普通 epilogue。
+- **不要外推到 grouped/MoE。** `GroupScheduler::WorkTileInfo` 只有 `M_idx/N_idx/L_idx`,**没有 K**,永远从 K=0
+  做完整 K。ragged MoE 要另做组合 scheduler,那是独立的后续项。
+
+### 一个必须做对的点
+
+**K iterator 必须从 scheduler 给的绝对 `K_idx` 起步,不能仍从 0。** 这是 K 部分和可加的前提:
+
+    P_s = Σ(k∈slice s) A_k × dequant(q_k, scale_group(k), zero_group(k))
+    C   = FP32_sum_s(P_s)
+
+scale/zero 在 MMA 前就进了 B fragment(不在 epilogue),所以部分和可加 —— 但只有绝对 K 起点才能让每片取到正确的
+scale group。
+
+### 数值门(116 设计的,照做)
+
+- **`gs=128, TileK=64`,让接缝落在同一个 scale group 内** —— 这是最容易错的情形,不是最容易过的
+- **非零 C/β**,证明 epilogue 只执行一次
+- CPU FP32 golden
+- **必须确认 `requires_fixup=true`**。否则 heuristic 退回 DP 之后,每一项数值检查都会通过而什么都没测到 —— **假绿**
+
+### 定位:别用错的东西衡量它
+
+**107b 是 dense;我们今天量的每个数都是 grouped MoE**(C1=S088、S068)。**107b 落地后 C1 的 37.60% 和 decode 的
+17.2% 一个都不会动。** 而且它的理由本身长在 MoE 上(`TODO.md:650`:stream-K pays for us at **the prefill/MoE band's**
+~11% last-wave tail)—— **dense 的 107b 收不到那个数**。
+
+**它的价值是:在 dense 上把接线走通、把上面第 3 和第 5 两个静默坑趟平,作为 grouped StreamK 的前置。**
+不要拿 C1/S068 判它成败;它的 go/no-go 是 107a 那条 `persistent/nonpersistent < 1.125`,以及本项自己的数值门。
+
+### 一个潜伏但当前不阻塞的缺口
+
+`to_underlying_arguments()` 接收 `ktile_start_alignment_count` 却没转交 `Params::initialize()`
+(`ppu_tile_scheduler_stream_k.hpp:199`)。当前格式靠绝对 K metadata 可以处理组内切缝;**未来若离线格式声明
+K-tile 对齐要求,必须 fail-close 或补转交** —— 记一条,别现在改。
