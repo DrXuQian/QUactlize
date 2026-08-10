@@ -16,12 +16,18 @@ deployment will see, the route table saying which kernel reads it at which M, an
 THOSE TWO CONFLICT -- because a conflict means the tensor needs two artifacts, and that is a storage decision for
 the operator rather than one a script should quietly take.
 
-WHAT MAKES ONE ARTIFACT ENOUGH, when it is. A placed plane's stored bytes depend on (bits, WON, TileK, F); see
-quactlize/layouts.py:xplane, whose parameter list was measured on the stored bytes rather than assumed. When the
-fold F is 1 the placement stops depending on TileK -- that is PlacedArrangement.layout_is_tile_free -- and the
-registry's own rule ("the canonical minimum 32-byte run for the narrowest code plane: 256/bits") is exactly the
-rule that forces F=1. This tool CHECKS that rather than restating it: if a registry row ever stops being
-tile-free, the SCALE_FIRST and FULLY_QUANTIZED TileKs stop being servable by one file and the report says so.
+WHAT MAKES ONE ARTIFACT ENOUGH, when it is. dev/fold_derivation/l105_low_plane_config_classes.cu hashes the
+stored bytes per configuration and groups them into LAYOUT CLASSES. At F=1 with TileK <= 256 the class does not
+separate on WON (= TN/max(WN,16)) or on TileK: WON 1, 2 and 4 sit together, TK=128 and TK=256 sit together.
+F=2, F=4 and TK=512 each form their own class. So the fold is the discriminator and the tile geometry is not --
+quactlize/layouts.py:xplane's `w{WON}k{TK}` token OVERNAMES at F=1, which is the same defect xplane_hi was
+already corrected for, and overnaming refuses a weight the kernel could read.
+
+So ONE ARTIFACT IS ENOUGH exactly while every plane is at F=1, and the registry's own rule ("the canonical
+minimum 32-byte run for the narrowest code plane: 256/bits") is precisely the rule that forces F=1. This tool
+CHECKS that rather than restating it: if a registry row ever became folded, its SCALE_FIRST and FULLY_QUANTIZED
+TileKs would stop being servable by one file AND the read path could not say which fold it holds -- both of
+which the report then states.
 
 THE EVIDENCE UNDER THAT, because the predicate's own docstring used to have none:
 dev/fold_derivation/l115_artifact_tactic_code_slots.cu walks xplane::place_from_map's physical address layouts
@@ -93,10 +99,10 @@ PLANNABLE = ("Q2_K", "Q3_K", "Q4_K", "Q5_K", "Q6_K")
 def shipped_won() -> dict:
     """{table stem: {WON: count}} over the COMPILED-IN config tables.
 
-    WON = TN / max(WN, 16), the warp-column count. quactlize/layouts.py:xplane records that the stored bytes of a
-    placed plane change with this ratio -- measured on the stored bytes of place_derived, with (TN=64,WN=32) and
-    (TN=128,WN=64) byte-identical and WON=2 vs 4 differing over about half the buffer. So it is a property of the
-    ARTIFACT, and the number of distinct values reachable at run time is the number of artifacts a tensor needs.
+    WON = TN / max(WN, 16), the warp-column count. REPORTED, NOT USED AS A CONFLICT: l105 shows WON does not
+    separate layout classes at F=1/TileK<=256, so the count below is context for a folded artifact rather than a
+    number of artifacts a tensor needs. It is kept because a folded row would make it load-bearing again, and
+    because the retraction is easier to trust with the figures in front of it.
     """
     out = {}
     for f in sorted((ROOT / "quactlize" / "include").glob("ppu_*_configs.inc")):
@@ -157,16 +163,31 @@ def plan_tensor(t: Tensor, row: dict) -> dict:
                 "TWO ARTIFACTS: the schemes want different TileK and at least one arrangement is not "
                 "TileK-free, so the same bytes cannot serve both -- " + "; ".join(bad))
 
-    # CONFLICT 2 -- WON is a config-row field, it changes the stored bytes, and no manifest field carries it.
-    won = shipped_won()
-    tbl = "ppu_grouped_configs" if t.is_moe else "ppu_dense_configs"
-    reach = won.get(tbl, {})
-    if len(reach) > 1:
+    # CONFLICT 2 -- ONLY FOR A FOLDED ARTIFACT, and this is a RETRACTION of what stood here first.
+    #
+    # The original text reported that WON = TN/max(WN,16) is built from two per-row config fields, changes the
+    # stored bytes (layouts.py:xplane says so), and cannot be recorded by PlacedArrangement -- so every tensor was
+    # flagged. That is FALSE for everything the registry currently produces, and the object says so:
+    # dev/fold_derivation/l105_low_plane_config_classes.cu hashes the stored bytes per configuration and groups
+    # them into layout classes. At F=1 with TileK <= 256, WON = 1, 2 and 4 land in ONE class, and TK=128 and
+    # TK=256 land in it too -- e.g. bits=2 class 2 holds 16 configurations spanning both. F=2 and F=4 are separate
+    # classes, and TK=512 at F=1 is a separate class again, which is where the TileK <= 256 boundary comes from.
+    # So xplane's `w{WON}k{TK}` token OVERNAMES at F=1, exactly the defect xplane_hi was already corrected for.
+    #
+    # What survives is narrower and real: a FOLDED artifact (F > 1 on some plane) is readable only by a tactic
+    # with the same fold, and routes.matmul_fully_quantized_dense cannot carry that fact -- it unpacks
+    # (low, high, units) and calls the op without tile_k, while prepare_fully_quantized_dense(..., tile_k=X)
+    # can produce exactly such an artifact through the *_for_tile op. The registry emits no folded row today, so
+    # this cannot fire; it exists so that changing one would not be silent.
+    folded = [f"{lbl} TK={tk} F={fl[0]}/{fl[1]}"
+              for lbl, tk, fl in (("SCALE_FIRST", sf, f_sf), ("FULLY_QUANTIZED", fq, f_fq))
+              if fl and not fl[2]]
+    if folded:
         conflicts.append(
-            f"WON IS UNRECORDED AND NOT UNIQUE: {tbl} ships {len(reach)} distinct warp-column counts "
-            f"{reach} (WON = TN/max(WN,16)). layouts.xplane measured the stored bytes as WON-dependent, and "
-            f"PlacedArrangement carries only (bits, tile_k, high_bits), so an artifact cannot say which WON it "
-            f"was placed for and a reader cannot check. See the INVARIANTS section.")
+            "FOLDED ARTIFACT, AND THE READ PATH CANNOT SAY SO: " + "; ".join(folded) + ". A fold > 1 puts the "
+            "bytes in their own layout class (l105), so only a tactic with the same fold may read them -- but "
+            "routes.matmul_fully_quantized_dense takes (low, high, units) with no tile_k, so a folded artifact "
+            "would be read at the default fold: bytes present, pairing present, numbers wrong.")
 
     # The status of each cell, taken from the matrix rather than assumed.
     cells = {}
