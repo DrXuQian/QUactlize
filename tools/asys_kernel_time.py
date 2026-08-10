@@ -93,10 +93,30 @@ def find_kernel_table(con: sqlite3.Connection) -> tuple[str, str, str | None, st
         score = (2 if "kernel" in t.lower() else 0, n)
         if best is None or score > best[0]:
             best = (score, t, name_c, dur_c, st_c, en_c)
+    # AN EMPTY KERNEL TABLE IS THE ANSWER, NOT A REASON TO KEEP LOOKING. Observed 2026-08-10: a capture whose
+    # HGPTI_ACTIVITY_KIND_KERNEL held 0 rows because "can't find time calibration info for device id ..." had
+    # stopped the device activity buffer from committing, while HGPTI_ACTIVITY_KIND_RUNTIME held 33,529 host-API
+    # rows with a nameId and a start/end pair. Skipping the empty table and falling through to that one produces a
+    # perfectly plausible table of numbers that are host API durations. Refuse instead.
+    empty_kernel = [t for t in tables(con)
+                    if "kernel" in t.lower()
+                    and con.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0] == 0]
+    if empty_kernel and (best is None or "kernel" not in best[1].lower()):
+        raise SystemExit(
+            f"[asys] {', '.join(empty_kernel)} has 0 rows: this capture holds NO device kernel activities.\n"
+            f"[asys] Refusing to fall back to {best[1] if best else 'another table'} -- those are host-side\n"
+            f"[asys] durations and would look like a valid answer.\n"
+            f"[asys] Most likely cause: the 'can't find time calibration info for device id ...' errors during\n"
+            f"[asys] capture. Device activities are dropped when calibration fails, so the report can be large\n"
+            f"[asys] (runtime rows) and still contain no kernel timing. Re-capture with device/kernel tracing\n"
+            f"[asys] working; --table/--name-col/--dur-col can override this if you know better.")
     if best is None:
         raise SystemExit("[asys] no table with a name column and a duration (or start/end) pair; "
                          "run with --schema and pass --table/--name-col/--dur-col")
     _, t, name_c, dur_c, st_c, en_c = best
+    if "kernel" not in t.lower():
+        print(f"[asys] WARNING: '{t}' is the best candidate but its name does not say kernel. "
+              f"Check it is not a host-API table before trusting these numbers.", file=sys.stderr)
     return t, name_c, dur_c, f"{st_c}|{en_c}" if (st_c and en_c) else None
 
 
