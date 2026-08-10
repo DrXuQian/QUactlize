@@ -260,21 +260,13 @@ CUTLASS_HOST_DEVICE UnitHead head_of_words(uint32_t const (&u)[NWords]) {
 // this: the offline forms d*sc in fp32 and stores only the normal product, so no subnormal fp16 ever reaches an
 // instruction. The packed decode is the first thing to multiply BY d on the device.
 //
-// This ISA has an explicit `.noftz` qualifier on at least one f16x2 op (cutlass/functional.h:830,
-// ppu.atom.gpu.global.add.noftz.f16x2), which only makes sense if the DEFAULT flushes. If ppu.fma.rtte.f16x2 flushes
-// its subnormal input, the scale lane becomes 0 for 80% of superblocks while the zero lane (normal dmin) survives --
-// which is exactly the observed failure: rowC wrong, errors dominated by scale, partial rather than total because each
-// output sums over 19 superblocks and only the subnormal ones are lost.
-//
-// PPU_F16X2_NOFTZ=1 emits the qualified form. It is a PROBE first and a fix second: one build says whether the
-// assembler accepts the mnemonic at all, and test_ppu_f16x2_probe says whether it changes the answer.
-#if defined(PPU_F16X2_NOFTZ) && (PPU_F16X2_NOFTZ != 0)
-#  define CUTLASS_PPU_F16X2_SUB "ppu.sub.noftz.f16x2 %0, %1, %2;\n"
-#  define CUTLASS_PPU_F16X2_FMA "ppu.fma.rtte.noftz.f16x2 %0, %1, %2, %3;\n"
-#else
-#  define CUTLASS_PPU_F16X2_SUB "ppu.sub.f16x2 %0, %1, %2;\n"
-#  define CUTLASS_PPU_F16X2_FMA "ppu.fma.rtte.f16x2 %0, %1, %2, %3;\n"
-#endif
+// The old PPU_F16X2_NOFTZ experiment guessed two unproved arithmetic spellings from an atomic-add mnemonic.
+// It is retired: a fresh ppu001 build ran rowC (the only packed/f16x2 path) against its independent host golden
+// five times with bad=0/4096, while flushing this fixture's subnormal d values predicts 3626/4096 bad outputs.
+// That excludes input flushing on the Q4_K range this path actually consumes; accepting or rejecting a guessed
+// `.noftz` grammar would not have established that physical fact.
+#define CUTLASS_PPU_F16X2_SUB "ppu.sub.f16x2 %0, %1, %2;\n"
+#define CUTLASS_PPU_F16X2_FMA "ppu.fma.rtte.f16x2 %0, %1, %2, %3;\n"
 
 CUTLASS_HOST_DEVICE uint32_t pack_h2(half_t lo, half_t hi) {
   return uint32_t(lo.raw()) | (uint32_t(hi.raw()) << 16);
@@ -282,26 +274,17 @@ CUTLASS_HOST_DEVICE uint32_t pack_h2(half_t lo, half_t hi) {
 CUTLASS_HOST_DEVICE half_t lo_h2(uint32_t a) { return half_t::bitcast(uint16_t(a & 0xFFFFu)); }
 CUTLASS_HOST_DEVICE half_t hi_h2(uint32_t a) { return half_t::bitcast(uint16_t(a >> 16)); }
 
-// PPU_F16X2_EARLYCLOBBER=0 PUTS "=r" BACK, and it exists to turn a coincidence into a cause. rowC went from
-// bad=724/4096 to MATCH across four commits, of which "=&r" is only the most plausible; one build with this at 0 says
-// whether that line was the fix or whether the failure merely went away. Note what the constraint does NOT explain:
-// test_ppu_f16x2_probe section (4) forces dest == each input in turn and the hardware returns the SAME answer in 5 of
-// 5 forms, so the instruction tolerates overlap. Whatever "=r" allowed happens in register allocation under the
-// mainloop's pressure -- where m2 is live across eight unrolled groups -- and is invisible with three live values.
-// Pinning it further needs the emitted assembly, which this session did not have.
-#if defined(PPU_F16X2_EARLYCLOBBER) && (PPU_F16X2_EARLYCLOBBER == 0)
-#  define CUTLASS_PPU_F16X2_OUT "=r"
-#else
-#  define CUTLASS_PPU_F16X2_OUT "=&r"
-#endif
+// Keep the conservative earlyclobber constraint. The old PPU_F16X2_EARLYCLOBBER=0 attribution experiment was
+// already run in the pressured rowC mainloop and still passed, so it did not explain the intermittent failure.
+// There is no remaining experiment for a build switch to represent.
+#define CUTLASS_PPU_F16X2_OUT "=&r"
 
 CUTLASS_HOST_DEVICE uint32_t sub_f16x2(uint32_t a, uint32_t b) {
 #if CUTLASS_GGUF_PACKED_F16X2_ASM
   uint32_t d;
-  // "=&r" (EARLYCLOBBER), not "=r". With "=r" the compiler may allocate the destination to the same register as an
-  // input, which is legal and is what the reference uses in fast_numeric_conversion_for_mix_gemm.h -- but there the
-  // output IS an input by construction. Here the operands are distinct, so aliasing would depend on register
-  // allocation, which differs per unrolled group, which is exactly the shape of a PARTIAL failure.
+  // Keep the output distinct from every still-live input. The hardware accepted the isolated overlap cases, and a
+  // pressured "=r" rebuild did not reproduce the old rowC failure, so this is a conservative asm contract rather
+  // than an attribution for that intermittent failure.
   asm volatile(CUTLASS_PPU_F16X2_SUB : CUTLASS_PPU_F16X2_OUT(d) : "r"(a), "r"(b));
   return d;
 #else

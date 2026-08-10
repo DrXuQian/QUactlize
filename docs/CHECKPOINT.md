@@ -159,7 +159,6 @@ None of these belong on `main`. Recorded so the dev branch keeps their meaning.
 | `PPU_PACKED_SCALE` | consume the gguf's own 16 B scale unit instead of two pre-multiplied fp16 planes |
 | `PPU_PACKED_SCALE_NOP` | timing-only: keep the transport and stores, drop the decode arithmetic |
 | `PPU_PACKED_PAIR=0` | bisect: force the scalar per-group decode instead of the f16x2 one |
-| `PPU_F16X2_EARLYCLOBBER=0` | bisect: restore `"=r"` on the two f16x2 asm operands |
 | `PPU_PACKED_SPLIT_GROUPS` | eight warps decode four groups each instead of four decoding eight |
 | `PPU_B_DEQUANT_NOP` | timing-only: drop the baseline int4→fp16 conversion and affine chain |
 | `PPU_SCALE_SWIZZLE` | XOR the scale tile's address to take the read from 4-way to 1-way conflicted |

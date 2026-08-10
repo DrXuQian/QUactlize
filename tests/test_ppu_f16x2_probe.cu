@@ -1,5 +1,5 @@
-// DO THE TWO f16x2 ASM INSTRUCTIONS DO WHAT THE SCALAR FALLBACK DOES? Nothing has ever asked, and that is why this
-// file exists.
+// DEVICE REGRESSION COVERAGE FOR THE TWO f16x2 ASM INSTRUCTIONS. This file was added because the existing host
+// coverage compiled with nvcc and therefore selected the scalar fallback instead of asking the PPU instructions.
 //
 // gguf_packed_scale.h's group_pair_of_words decodes both 6-bit fields of a Q4_K group in one 32-bit lane pair, using
 //     ppu.sub.f16x2      %0, %1, %2
@@ -7,12 +7,13 @@
 // under the guard CUTLASS_GGUF_PACKED_F16X2_ASM == (__HGGCCC__ && !__NVCC__). The host gate l96_packed_pair.cu
 // compares that function against the scalar group_of_words over 32768 REAL Q4_K groups and reports 0 bad -- but it
 // compiles with nvcc, where the guard picks the SCALAR FALLBACK. So l96 proves the arithmetic and proves NOTHING about
-// the two instructions the device actually executes. That gap is not theoretical: with the packed decode on, rowC of
-// test_q4k_packed_gemm mismatches, and a bisect (PPU_PACKED_PAIR=0) puts the fault inside group_pair_of_words while
-// everything around it -- the native transport, the shared stores, the loop -- stays correct.
+// the two instructions the device actually executes. An intermittent rowC failure originally motivated this probe,
+// but it was never assigned to these instructions: PPU_PACKED_PAIR=0 also changes pressure and scheduling, and later
+// rowC runs passed with both output constraints. Keep this as direct instruction/guard/layout coverage, not as a
+// root-cause claim.
 //
 // This harness is deliberately NOT a GEMM. It runs one tiny kernel, no shared memory, no cp.async, no mma, so a
-// failure here cannot be confused with tile or fragment plumbing. Three sections, narrowing:
+// failure here cannot be confused with tile or fragment plumbing. Four sections, narrowing:
 //
 //   (1) the two instructions in isolation, against the scalar operations they claim to equal, over operands chosen to
 //       hit the cases an ISA is most likely to differ on: signed zeros (fma(x, m, -0) == x*m is load-bearing), the
@@ -25,7 +26,7 @@
 //       else -- that is worth one printf.
 //
 //   build: TARGET=test_ppu_f16x2_probe ./build.sh
-//   run:   $BIN/test_ppu_f16x2_probe [real_weight/q4k_packed.bin]
+//   run:   $(find build_ppu -type f -name test_ppu_f16x2_probe -perm -u+x -print -quit) [tests/data/q4k_packed.bin]
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -47,7 +48,9 @@ __global__ void probe_mix_byte4_guard(int* out) {
 
 // ---------------------------------------------------------------------------------------------------------------
 // (1) the instructions, alone. `want` is computed on the DEVICE with scalar half ops, so this compares two device
-// code paths rather than device against host -- host fp16 emulation would be a third thing to doubt.
+// code paths rather than device against host. It catches lane/layout/arithmetic disagreement, but it is not an
+// independent FTZ oracle: both paths may lower to instructions with the same subnormal policy. The separate rowC
+// comparison to its host golden, plus the simulated-FTZ damage count, is the end-to-end evidence for that question.
 struct OpCase { uint32_t a, b, c; };
 
 __global__ void probe_ops(OpCase const* in, int n, uint32_t* sub_got, uint32_t* sub_want,
@@ -93,15 +96,14 @@ __global__ void probe_groups(uint32_t const* units, int nunits, half_t* s_pair, 
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// (4) IS THE DESTINATION ALLOWED TO ALIAS AN INPUT? This is the leading hypothesis for rowC's PARTIAL failure, and it
-// is the one thing "=r" versus "=&r" changes. In packed_decode_stage the multiplier m2 is live across all eight
-// unrolled groups and dies at the last one, so an allocator may pick dest == m2 for the FINAL fma only -- which
-// corrupts some groups and not others, and can differ between builds. That is the observed shape (bad=128 in one
-// build, 724 in another) and nothing else on the list predicts it.
+// (4) HISTORICAL ALIAS HYPOTHESIS. "=r" versus "=&r" changes whether the allocator may overlap the destination with
+// an input. The isolated instruction accepted every forced overlap tested here, and the pressured rowC mainloop also
+// passed after restoring "=r". That did not explain the intermittent failure. Retain the arm as an ISA regression,
+// not as evidence that either output constraint caused or fixed rowC.
 //
 // No hardcoded expected values: each op is run once with a separate destination and once with the destination tied to
-// each input in turn, and the results are compared to each other. If any aliased form differs, "=r" was never safe
-// here, whatever the reference uses in fast_numeric_conversion_for_mix_gemm.h happen to get away with.
+// each input in turn, and the results are compared to each other. If any aliased form differs in a future toolchain,
+// the conservative earlyclobber constraint remains required regardless of what the reference happens to accept.
 __global__ void probe_alias(uint32_t const* in3, uint32_t* out) {
   uint32_t const x = in3[0], m = in3[1], z = in3[2];
   uint32_t r;
@@ -180,8 +182,9 @@ int main(int argc, char** argv) {
   cs.push_back({P(-1152.f, 1152.f), P(1.f, 1.f),        gp::kNegZeroX2});
   // SUBNORMALS, IN THE EXACT SHAPE Q4_K PRODUCES. On the real fixture d spans 1.585e-05 to 9.484e-04 against fp16's
   // smallest normal 6.104e-05, so 3914 of 4864 superblock d values are SUBNORMAL while dmin (1.1e-04 to 1.1e-02) is
-  // not -- and the PRODUCTS d*sc are not either, which is why the fp16-plane baseline never meets this. If the f16x2
-  // ops flush a subnormal INPUT, the scale lane dies and the zero lane lives. That asymmetry is the signature.
+  // not -- and the PRODUCTS d*sc are not either, which is why the fp16-plane baseline never meets this. If only the
+  // f16x2 op flushes a subnormal INPUT, the scale lane dies and the zero lane lives. If scalar half ops share that
+  // policy, section (1) cannot distinguish it; the independent rowC golden can.
   cs.push_back({P(50.f, 40.f),   P(1.585e-05f, 1.096e-04f), gp::kNegZeroX2});   // smallest d, normal dmin
   cs.push_back({P(63.f, 63.f),   P(3.0e-05f,  9.484e-04f),  gp::kNegZeroX2});   // mid subnormal d, largest dmin
   cs.push_back({P(1.f, 1.f),     P(6.0e-05f,  6.2e-05f),    gp::kNegZeroX2});   // straddling the normal threshold
@@ -206,7 +209,7 @@ int main(int argc, char** argv) {
   report_ops("fma.f16x2", cs, fg, fw);
 
   // ---- (2) the whole decode, on real units if a fixture is there, else synthetic ones covering every code.
-  char const* path = argc > 1 ? argv[1] : "real_weight/q4k_packed.bin";
+  char const* path = argc > 1 ? argv[1] : "tests/data/q4k_packed.bin";
   std::vector<uint32_t> units;
   rwmoep::File f;
   if (f.load(path) && f.mode == 1) {

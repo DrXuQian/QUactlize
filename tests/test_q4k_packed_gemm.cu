@@ -15,9 +15,9 @@
 // fp16 path, so this harness pins the one shape that exercises the new code.
 //
 //   fixture: python3 real_weight/dump_packed_scale.py <file.gguf> --tensor blk.11.ffn_down.weight --ncols 128 --m 16 \
-//                       --out real_weight/q4k_packed.bin
+//                       --out tests/data/q4k_packed.bin
 //   build:   PPU_DEFS=PPU_PACKED_SCALE=1 TARGET=test_q4k_packed_gemm ./build.sh
-//   run:     $BIN real_weight/q4k_packed.bin
+//   run:     $(find build_ppu -type f -name test_q4k_packed_gemm -perm -u+x -print -quit) tests/data/q4k_packed.bin
 //
 // Built WITHOUT the macro it must still MATCH -- the fp16 planes are then rebuilt on the host from the same codes, so a
 // failure there is the fixture or this file, not the packed channel. That A/B is the point: same data, same golden, two
@@ -43,7 +43,7 @@ using GS      = moe_grouped_ppu::GroupShape;
 int main(int argc, char** argv) {
   std::printf("[guard] CUTLASS_GGUF_PACKED_F16X2_ASM=%d (expected 1 on ppu001)\n",
               CUTLASS_GGUF_PACKED_F16X2_ASM);
-  char const* path = argc > 1 ? argv[1] : "real_weight/q4k_packed.bin";
+  char const* path = argc > 1 ? argv[1] : "tests/data/q4k_packed.bin";
   rwmoep::File f;
   if (!f.load(path)) return 64;
   if (f.mode != 1 || f.ktype != 4) { std::printf("expected a Q4_K scale+zero fixture\n"); return 64; }

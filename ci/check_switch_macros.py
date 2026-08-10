@@ -39,9 +39,9 @@ split into two kinds, and the distinction is the useful part --
     drops formats, and ci/check_format_table_buildable.py's docstring CITES it as a thing a build can do). Write
     the command down. LOWBIT_QMODE was in this bucket and left it that way on 2026-08-07 -- its header now
     carries `PPU_DEFS=LOWBIT_QMODE=1 ...`, which is the whole fix.
-  * an UNRUN EXPERIMENT whose comment already states what each outcome would mean (PPU_PACKED_PAIR=0,
-    PPU_F16X2_EARLYCLOBBER=0, PPU_F16X2_NOFTZ=1 -- all three bisecting the same open rowC failure). Deleting one
-    destroys a pending answer, and each is a single build. They are in .coord/BOX.md as E1/E2/E3.
+  * a RECORDED DIAGNOSTIC. PPU_PACKED_PAIR=0 is the surviving example: it has a build command and a historical
+    rowC result, so it needs no ALLOWED exemption. The earlyclobber experiment was already run and retired; the
+    guessed arithmetic `.noftz` switch was deleted after independent end-to-end evidence excluded its FTZ theory.
   * a TOOL. PPU_B_CHUNK_BISECT exists BECAUSE PPU_B_CHUNK=2 once shipped a debug mode inside the flag that turns
     the feature on, so deleting it invites back the mistake that separating it fixed. GEMV_GATE_FAST was the
     other example here and is now the counter-example: it narrowed an axis while telling you to "build the FULL
@@ -86,19 +86,14 @@ INTERPOLATED = re.compile(r"-D([A-Z_]+)\$\{")
 # Intentional exceptions. Each needs a reason, and the reason has to be about REACHABILITY -- "we might want it
 # later" is what produced the list this gate exists to shorten.
 ALLOWED = {
-    # DATED DEBT, NOT ACCEPTED EXCEPTIONS. Eight were found the day this gate was written (2026-08-07);
-    # two have since left: GEMV_GATE_FAST by being DELETED (tests/test_gemv_lowbit.cu:25 records why) and
-    # QUACTLIZE_DENSE_ONLY by being WIRED (its owning file's header now carries the PPU_DEFS command, which
-    # the scan accepts as of 2026-08-11). Those are the two permitted exits. Each remaining one
-    # is an open decision, not a justified switch -- they are here so the gate's job becomes "no NEW
-    # unrecorded switch appears" while the existing set stays visible and owned. Task #40 tracks the merge.
+    # DATED DEBT, NOT ACCEPTED EXCEPTIONS. Items leave by deletion or by acquiring a recorded build route.
+    # E1/E2 were incorrectly labelled UNRUN after their results were already recorded; E1 is wired as a recurrence
+    # diagnostic and E2 was retired. E3's guessed `.noftz` grammar was deleted because end-to-end rowC evidence,
+    # not assembler acceptance, answered the relevant physical question. Only unresolved debt stays here.
     # An entry may only leave this dict by being deleted or wired, never by being re-justified.
     "PPU_B_CHUNK_BISECT":     "codex   -- TOOL: exists BECAUSE PPU_B_CHUNK=2 shipped a debug mode inside the feature flag. Deleting it invites that back",
-    "PPU_F16X2_EARLYCLOBBER": "codex   -- UNRUN EXPERIMENT E2 in .coord/BOX.md: was \"=&r\" the rowC fix, or did the failure merely go away across four commits?",
-    "PPU_F16X2_NOFTZ":        "codex   -- UNRUN EXPERIMENT E3 in .coord/BOX.md: does ppu.fma.rtte.f16x2 flush its subnormal input? One build; a build failure kills the hypothesis for free",
     "PPU_MAXREG":             "codex   -- caps registers to raise occupancy; an unreachable OCCUPANCY LEVER, and "
                               "occupancy is exactly what the M=1 42.2% question turns on",
-    "PPU_PACKED_PAIR":        "codex   -- UNRUN EXPERIMENT E1 in .coord/BOX.md: does PAIR=0 restore rowC? Indicts or exonerates the packed f16x2 arithmetic, which has zero local coverage",
 }
 
 
