@@ -48,6 +48,16 @@ def load(text: str):
     """-> (runs, samples, complaints). A malformed line is a complaint and never a skip: an analyser that
     ignores what it cannot parse reports a verdict over a subset it never mentions."""
     runs, samples, attempts, excludeds, bad = [], [], [], [], []
+    # WHICH BUILD EACH SAMPLE BELONGS TO. The association is positional -- a record belongs to the most recent
+    # `run` header above it -- and this loop used to throw that away, keeping `runs` and `samples` in separate
+    # lists with nothing joining them. The cost showed up the first time it mattered: BENCH_JSONL APPENDS, so a
+    # path reused across days accumulates several builds, incompatible() correctly refuses to rank the mixture,
+    # and there was no way to recover the run you actually wanted short of re-running it. Stamping it here makes
+    # --build possible and costs one assignment per line.
+    #
+    # Records before any `run` header get "" -- that is a real state (a file whose header was lost, or written by
+    # a bench too old to emit one) and it must be selectable rather than silently folded into the first build.
+    current_build = ""
     for n, line in enumerate(text.splitlines(), 1):
         line = line.strip()
         if not line:
@@ -60,6 +70,7 @@ def load(text: str):
         kind = r.get("rec")
         if kind == "run":
             runs.append(r)
+            current_build = r.get("build", "")
         elif kind == "a":
             # WHAT LAUNCHED. Written and flushed by the bench BEFORE the kernel, so that a device assert -- which
             # takes the whole process -- still leaves the failing candidate named. Carries no `us`: there is
@@ -73,6 +84,7 @@ def load(text: str):
             if missing:
                 bad.append(f"line {n}: attempt missing {','.join(missing)}")
             else:
+                r["_build"] = current_build
                 attempts.append(r)
         elif kind == "x":
             # TRIED AND EXCLUDED. Carries `why`, and it is the only record that says an option was reachable and
@@ -81,12 +93,14 @@ def load(text: str):
             if missing:
                 bad.append(f"line {n}: exclusion missing {','.join(missing)}")
             else:
+                r["_build"] = current_build
                 excludeds.append(r)
         elif kind == "s":
             missing = [k for k in CONFIG_KEYS + FIXTURE_KEYS + ("pass", "us") if k not in r]
             if missing:
                 bad.append(f"line {n}: sample missing {','.join(missing)}")
             else:
+                r["_build"] = current_build
                 samples.append(r)
         else:
             bad.append(f"line {n}: unknown rec {kind!r}")

@@ -23,10 +23,25 @@
 #   bash benchmarks/sweep_all_formats.sh --decode                 # M=1 band, the D4 shape
 #   MOE_REPS=3 bash benchmarks/sweep_all_formats.sh               # 3 passes, so ties can be resolved
 #   FORMATS="q3 q5" bash benchmarks/sweep_all_formats.sh          # a subset, when you mean to
+#   SWEEP_DIR=/tmp/sweep bash benchmarks/sweep_all_formats.sh     # somewhere other than ./sweep
 #
-# Samples from all formats append to ONE jsonl, so `python3 benchmarks/analyse.py <that file> --coverage` sees the
-# whole sweep. That works because bench_samples.hpp opens BENCH_JSONL in append mode and every record carries its
-# own schema field -- the merge needs no post-processing.
+# THE OUTPUT FILE IS FRESH AND SELF-DESCRIBING, and both halves of that are load-bearing.
+#
+# FRESH, because bench_samples.hpp opens BENCH_JSONL in APPEND mode. Reusing one path across days accumulates
+# several builds in one file; analyse.py then correctly refuses to rank it ("a verdict over two libraries
+# describes neither") and an hour of sweep is unreadable. Observed 2026-08-09 on a file holding four MoE builds
+# and a dense one, plus records from before `bc` was a row field. So each run gets its own file and this script
+# refuses to write into one that exists.
+#
+# SELF-DESCRIBING, because the name is derived from the ARGUMENTS rather than typed. The same run was being
+# written to `/tmp/sweep/grouped_L1.jsonl` -- a name from a different experiment (BOX.md`s L=1 grouped-as-dense
+# control) while the run was actually L=256 ragged. Nothing caught it: the records carry their own fixture
+# identity so analyse.py grouped them correctly, but every human reading the path was told the wrong thing, and
+# BOX.md has an --invariant command that pairs that exact filename against a dense run. A name that cannot
+# contradict the run is the only version of this that stays true.
+#
+# All formats of ONE run share ONE file -- that merge is intended and needs no post-processing, because every
+# record carries its own schema field.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -38,8 +53,6 @@ cd "$ROOT"
 FORMATS="${FORMATS:-q3 q5 q6 i2 i4}"
 CORES="${MOE_CORES:-192}"
 JOBS="${JOBS:-$(nproc)}"
-OUT="${BENCH_JSONL:-$ROOT/sweep_all_formats.jsonl}"
-
 TARGET=test_lowbit_moe_bench
 ARGS=(256 4096 512 2048 32 4 8)          # C1: 256 experts, 4096 tokens, N=512 K=2048, gs=32, pinned router, top-8
 BAND=prefill
@@ -50,8 +63,32 @@ if [ "${1:-}" = "--decode" ]; then
   shift
 fi
 
+# NAME DERIVED FROM ARGS, never typed. ARGS is [L rows N K gs mode topk], so the path states the run.
+OUT_DIR="${SWEEP_DIR:-$ROOT/sweep}"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+RUN_ID="${BAND}_L${ARGS[0]}_r${ARGS[1]}_n${ARGS[2]}_k${ARGS[3]}_gs${ARGS[4]}_${STAMP}"
+OUT="${BENCH_JSONL:-$OUT_DIR/$RUN_ID.jsonl}"
+mkdir -p "$(dirname "$OUT")"
+
+# REFUSE TO APPEND. bench_samples.hpp opens in append mode, so an existing file would silently gain a second
+# build and analyse.py would then refuse to rank the whole thing -- after the sweep, not before it.
+if [ -e "$OUT" ]; then
+  echo "[sweep-all] $OUT already exists. This script never appends: a file holding two builds cannot be ranked." >&2
+  echo "[sweep-all] Move it aside, or pass a different BENCH_JSONL." >&2
+  exit 2
+fi
+
 echo "[sweep-all] band=$BAND target=$TARGET formats: $FORMATS"
-echo "[sweep-all] samples -> $OUT   (appended; delete it first for a clean run)"
+echo "[sweep-all] args: L=${ARGS[0]} rows=${ARGS[1]} N=${ARGS[2]} K=${ARGS[3]} gs=${ARGS[4]} mode=${ARGS[5]} topk=${ARGS[6]:-}"
+echo "[sweep-all] samples -> $OUT   (fresh; this run only)"
+
+# AN EMPTY FORMAT LIST IS A MISTAKE, NOT A NO-OP. Without this the loop runs zero times, prints "ran: none" and
+# exits 0 -- a sweep that measured nothing reporting success, which is the exact shape this script exists to stop
+# on the other side (partial data must not read as a whole sweep).
+if [ -z "${FORMATS// }" ]; then
+  echo "[sweep-all] FORMATS is empty -- nothing to sweep. Unset it for all five, or name the ones you mean." >&2
+  exit 2
+fi
 
 ok=(); failed=()
 for F in $FORMATS; do
