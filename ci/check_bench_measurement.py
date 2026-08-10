@@ -56,6 +56,13 @@ CONSUMERS = {
     "benchmarks/test_moe_splitk_bench.cu": (
         "bench_measure::kHbmGBPerSecond",
     ),
+    # THE GEMV BENCH, added 2026-08-11. It cannot include bench_select.hpp -- both define `Best` at global scope
+    # and the generator emits that name into every GEMV unit signature -- so its nameplate is a MIRROR, and the
+    # mirror is checked numerically below rather than asserted in a comment. Listed here so the file is READ
+    # (texts is built from CONSUMERS) and so its own constant name cannot quietly disappear.
+    "benchmarks/gemv_perf_common.hpp": (
+        "HBM_GBS",
+    ),
 }
 
 # These expressions are the old two-copy implementation. Comments are stripped before matching so an explanation
@@ -114,6 +121,22 @@ def audit(texts: dict[str, str]) -> list[str]:
         for pattern in patterns:
             if re.search(pattern, body):
                 problems.append(f"{rel}: private measurement expression returned: {pattern}")
+    # THE MIRRORED NAMEPLATE MUST EQUAL THE SHARED ONE. gemv_perf_common.hpp keeps its own literal because it
+    # cannot include bench_select.hpp (a global `Best` in both, and the CMake generator emits that name into
+    # every GEMV unit signature). A mirror is only acceptable while something compares it, so: parse both and
+    # require equality. This is NOT "two copies agreeing is a reference" -- bench_select.hpp remains the source
+    # and this fails the moment the mirror drifts from it.
+    shared = re.search(r"kHbmGBPerSecond\s*=\s*([0-9.eE+-]+)", HEADER.read_text())
+    mirror = re.search(r"HBM_GBS\s*=\s*([0-9.eE+-]+)",
+                       uncomment(texts.get("benchmarks/gemv_perf_common.hpp", "")))
+    if not shared or not mirror:
+        problems.append("cannot read the nameplate from bench_select.hpp and/or gemv_perf_common.hpp; the "
+                        "mirror check cannot run, which is a failure and not a skip")
+    elif float(shared.group(1)) != float(mirror.group(1)):
+        problems.append(f"gemv_perf_common.hpp mirrors the nameplate as {mirror.group(1)} while "
+                        f"bench_select.hpp says {shared.group(1)}: the GEMV bench's percentages are against a "
+                        f"different machine than the dense and MoE ones")
+
     dense = texts.get("benchmarks/test_lowbit_dense_bench.cu", "")
     if not under_preprocessor_guard(
             dense, "kDenseFixedBChunkRequest", "!defined(LOWBIT_DENSE_UNIT_BUILD)"):

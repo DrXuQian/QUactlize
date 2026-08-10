@@ -34,7 +34,16 @@ using namespace ppu_gemv;
 
 #define GEMV_PERF_REV 1
 
-// ppu001. Same constants the MoE bench uses, so the percentages are comparable across the three winners.
+// ppu001. A CHECKED MIRROR OF bench_select.hpp's kHbmGBPerSecond, not a second source. The comment here used to
+// read "same constants the MoE bench uses, so the percentages are comparable" -- an assertion a copy cannot make
+// good on, and this file was absent from ci/check_bench_measurement.py's list while the dense and MoE benches
+// were on it. It is now checked: that gate parses this literal and fails if it differs from the shared one.
+//
+// WHY NOT JUST INCLUDE bench_select.hpp, which was tried and reverted: it defines `Best` at global scope and so
+// does this file, and the clash reaches further than either -- quactlize/csrc/CMakeLists.txt.in emits
+// `void <fn>(const Shape&, const Bufs&, Best&)` for every generated GEMV unit, so the rename would have to
+// travel through the generator. And bench_select.hpp's `Best` is the LEGACY selection machinery its own header
+// says is scheduled for deletion; dragging it into a third bench is the wrong direction regardless.
 static constexpr double HBM_GBS = 2766.0;
 static constexpr int    CU      = 72;
 
@@ -196,10 +205,18 @@ inline void run_row(Shape const& sh, Bufs const& b, Best& best) {
   // a LOWER bound on the wave count (real occupancy is below 64, so real waves are more).
   double const wkwrp_cu = double(ctas) * (Threads / 32.0) / CU;
 
-  std::printf("  %-34s %8.2f us | %7.1f GB/s | %5.1f%% HBM | cta %6lld | wkwrp/CU %6.1f | wave>=%5.1f%s\n",
-              tag, us, gbs, pct, (long long)ctas, wkwrp_cu, wkwrp_cu / 64.0,
-              gbs > HBM_GBS ? "  <-- IMPLIES > HBM PEAK, excluded" : "");
-  if (gbs <= HBM_GBS) upd(best, tag, us, pct);
+  // A ROW OVER THE NAMEPLATE INDICTS THE TRAFFIC MODEL, NOT THE MEASUREMENT -- and this used to DROP it from
+  // the winner. The comment above already says why the rate can exceed 2766: the model charges the weight once
+  // per grid_m and assumes L2 serves the n-tiles, so a run where that assumption holds better than modelled
+  // reads high. Excluding those rows removed exactly the FASTEST configurations from `best`, which is worse
+  // than the MoE bench's version of this bug (#52 item 1) -- there it mislabelled a row, here it deleted the
+  // winner. The row is now retained and the MODEL is flagged.
+  std::printf("  %-34s %8.2f us | %7.1f GB/s | %5.1f%% of %.0f nameplate | cta %6lld | wkwrp/CU %6.1f | "
+              "wave>=%5.1f%s\n",
+              tag, us, gbs, pct, HBM_GBS, (long long)ctas, wkwrp_cu, wkwrp_cu / 64.0,
+              gbs > HBM_GBS ? "  <-- MODEL BROKE: over nameplate, so the once-per-grid_m weight charge is "
+                              "wrong here; row RETAINED" : "");
+  upd(best, tag, us, pct);
 }
 
 // ---------------------------------------------------------------------------------------------------
