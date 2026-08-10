@@ -724,3 +724,263 @@ human reading the path was told the wrong experiment. Use SWEEP_DIR to choose th
 choice. Then analyse that one file (the script prints its exact name):
 
     python3 benchmarks/analyse.py /tmp/sweep/prefill_L256_r4096_n512_k2048_gs32_*.jsonl --coverage
+
+---
+
+## INBOX 104 — kernel-only C1/decode capture (asys timeline, not process wall time)
+
+> **SUPERSEDED as a MEASUREMENT PROTOCOL by "104b — one capture, every config" below.** The shapes, the argv, the
+> build lines and the distinct-byte cross-checks in this section are still correct and still wanted. What is
+> replaced is the per-config `MOE_ONLY` / 21-launch / drop-one / mean-of-20 procedure: that reconstructs a kernel
+> time from host wall-clock, and one asys capture gives it directly for every config at once.
+>
+> **One correction to rule 5 before anyone runs it.** The expected S068 total of 4,759,552 B is the **ScaleOnly**
+> figure. A build in ScaleZero carries a second metadata plane and totals **5,283,840 B**; the run already observed
+> reports 256 GB/s at 20.62 us, which is exactly that. Rule 5 says a mismatch invalidates the row, so as written it
+> would throw away a correct measurement. Report which mode the binary was built in and check against that number.
+
+This gate deliberately does not ask the operator to run `test_gemv_perf` for S068--S071.  That harness hard-codes
+uniform `L=8 x 1 row` shapes and cannot represent the real `E=256, active=8, empty=248` histogram; its grouped grid
+also launches `grid.z=num_experts`, so substituting the synthetic case would hide 31/32 of the scheduler work.  There
+is no truthful same-shape GEMV command until that benchmark entry point accepts the real histogram.  Do not use its
+`N=K=2048` row as S068, and do not reduce `E` from 256 to 8.
+
+Build the exact ScaleOnly/gs32 C1 row and the TileK=128 decode table in separate directories.  Keep both binaries:
+
+    set -euo pipefail
+    cd /sim/eec/shared/junfu.qx/quactlize
+    git pull --ff-only origin develop
+    echo "gate-sha=$(git rev-parse HEAD)"
+
+    PPU_BUILD_DIR="$PWD/build_104_c1" MOE_FORMATS=i4 \
+      PPU_DEFS='MOE_TK=128 LOWBIT_QMODE=1' TARGET=test_lowbit_moe_bench ./build.sh
+    C1=$(find build_104_c1 -type f -name test_lowbit_moe_bench -perm -u+x -print -quit)
+    test -n "$C1"
+
+    PPU_BUILD_DIR="$PWD/build_104_decode" MOE_FORMATS=i4 \
+      PPU_DEFS='MOE_TK=128 LOWBIT_QMODE=1' TARGET=test_lowbit_moe_decode_bench ./build.sh
+    DEC=$(find build_104_decode -type f -name test_lowbit_moe_decode_bench -perm -u+x -print -quit)
+    test -n "$DEC"
+
+The argv below are the processes to place under the box's **asys per-kernel timeline/activity capture**.  The asys
+front-end spelling is installation-specific and is not present in this checkout, so it is intentionally not guessed
+here.  Capture each argv as one pass; a process-total attribution is not an acceptable substitute.
+
+First C1, isolating the previously reported wall-clock champion.  `MOE_REPS=1` still produces exactly 21 target
+launches: one warm-up followed by 20 timed launches.  `MOE_ACU` must be absent because it changes that to one cold
+launch.
+
+    unset MOE_ACU BENCH_JSONL
+    MOE_REPS=1 MOE_VERBOSE=1 \
+      MOE_ONLY='i4 32x128:128 w32x32 s3 bc0->0' \
+      "$C1" 256 4096 512 2048 32 4 8 | tee /tmp/104_c1_wall_and_identity.log
+
+Then the four real tokens=1 shapes.  These runs must retain the whole decode table; in particular, do not filter out
+any of the 18 compiled `16x128:128` rows before profiling.
+
+    unset MOE_ACU MOE_ONLY BENCH_JSONL
+    MOE_REPS=1 MOE_VERBOSE=1 "$DEC" 256 8  512 2048 32 3 8 | tee /tmp/104_S068_decode.log
+    MOE_REPS=1 MOE_VERBOSE=1 "$DEC" 256 8  512 3072 32 3 8 | tee /tmp/104_S069_decode.log
+    MOE_REPS=1 MOE_VERBOSE=1 "$DEC" 256 8 2048  512 32 3 8 | tee /tmp/104_S070_decode.log
+    MOE_REPS=1 MOE_VERBOSE=1 "$DEC" 256 8 3072  512 32 3 8 | tee /tmp/104_S071_decode.log
+
+Extraction protocol, identically for every pass:
+
+1. Group timeline activities by the exact generated grouped-GEMM kernel identity/config; do not use whole-process
+   elapsed time or whole-process device attribution.
+2. Each selected config must have exactly 21 target-kernel activities.  Drop activity 1 (warm-up), average activities
+   2--21, and report that mean in microseconds.  A different count invalidates the row.
+3. Exclude `bench_floor_nop`, allocation/H2D/memcpy, `initialize`, host launcher/setup, output poison/witness, and all
+   synchronization/idle gaps.  None of those names or durations may enter the 20-launch sum.
+4. For C1, the exact selected tag must appear and no second grouped-GEMM config may appear.  Report kernel-only time
+   beside the existing 399.74 us host-wall value; do not replace or silently mix the two.
+5. For S068--S071, return every `16x128:128` config's exact tag and 20-launch mean, plus the fastest legal row per
+   shape.  Compute ScaleOnly distinct bytes as `A + active*(W+S) + C`, with 8 real rows and 8 active experts; padded
+   TileM rows do not enter MBU.  The independent expected totals are S068=4,759,552 B, S069=7,135,232 B,
+   S070=4,759,552 B, and S071=7,135,232 B; a mismatch invalidates the row.  Report absolute time and MBU against
+   2766 GB/s.
+
+If this asys installation exposes only a process aggregate, stop rather than reporting it as kernel-only.  The usable
+fallback is a per-launch device-activity timeline (or CUDA-equivalent events around only the generated kernel); the
+current host `time_it` value is not a fallback because it includes launch and final synchronization.
+
+Wanted back: `gate-sha`; both build exit codes and binary paths; the C1 exact tag, 21 raw target durations and mean of
+the last 20; for each S068--S071, the banner proving `E=256, active=8, zero-row=248`, the count of `16x128:128` rows,
+and the fastest row's exact tag, 21 raw durations, 20-launch mean, distinct bytes and MBU.  Also state explicitly that
+the real-histogram grouped-GEMV half remains unmeasured rather than filling that cell with the synthetic `L=8` result.
+
+---
+
+## INBOX 107a — dense persistent scheduler, same-binary kernel-event A/B
+
+This is the device half of 107a.  The implementation is deliberately a one-row target: it does not compile the full
+1571-row dense table, does not touch the grouped scheduler, and does not route shipping `fpA_intB` through the new
+kernel.  Each binary contains the same geometry twice: the existing flat non-persistent kernel and the serial
+persistent work loop selected by `--persistent`.
+
+Two accounting corrections are already closed locally and must not be reinterpreted from the timing:
+
+1. Plain persistence keeps the mainloop/epilogue union.  They execute serially per tile, so real shared bytes are
+   `max(main,epi)`, not `main+epi`.  The binary prints the sum only as `overlap-sum-counterfactual`.
+2. Static persistence schedules the same full output tiles and therefore cannot remove #10's tail.  The ~11.1% is an
+   ACU-measured wave geometry on the same A0 shape through grouped-L=1, not an already measured persistent speedup and
+   not a plain-dense ACU capture.  107a is the mechanism/overhead gate for StreamK.
+
+Build BACKTEST A0 and the exact #10/ACU rung in separate directories.  Both are tiny builds:
+
+    set -euo pipefail
+    cd /sim/eec/shared/junfu.qx/quactlize
+    git pull --ff-only origin develop
+    git submodule update --init --recursive
+    echo "gate-sha=$(git rev-parse HEAD)"
+
+    PPU_BUILD_DIR="$PWD/build_107a_a0" BENCH_GS=32 QUANT=int4 \
+      TILE_M=64 TILE_N=64 WARP_M=64 WARP_N=32 STAGES=3 \
+      TARGET=test_lowbit_dense_persistent_ab ./build.sh
+    A0=$(find build_107a_a0 -type f -name test_lowbit_dense_persistent_ab -perm -u+x -print -quit)
+    test -n "$A0"
+    "$A0" --list_configs | tee /tmp/107a_a0_config.log
+
+    PPU_BUILD_DIR="$PWD/build_107a_rung3" BENCH_GS=32 QUANT=int4 \
+      TILE_M=64 TILE_N=128 WARP_M=32 WARP_N=32 STAGES=2 \
+      TARGET=test_lowbit_dense_persistent_ab ./build.sh
+    R3=$(find build_107a_rung3 -type f -name test_lowbit_dense_persistent_ab -perm -u+x -print -quit)
+    test -n "$R3"
+    "$R3" --list_configs | tee /tmp/107a_rung3_config.log
+
+First prove scheduler coverage on a residue and on rank-4 `L=2`.  `D` is poisoned to half NaNs before the target
+launch, outside timing, so a missed tile cannot inherit a plausible value.  Every log must contain exactly one
+`Disposition: Passed`; process rc alone is not this gate.
+
+    "$A0" --m=2051 --n=4096 --k=4096 --l=1 --g=32 --mode=1 --iterations=0 \
+      | tee /tmp/107a_residue_np.log
+    "$A0" --m=2051 --n=4096 --k=4096 --l=1 --g=32 --mode=1 --iterations=0 --persistent \
+      | tee /tmp/107a_residue_p.log
+    "$A0" --m=257 --n=4096 --k=4096 --l=2 --g=32 --mode=1 --iterations=0 \
+      | tee /tmp/107a_l2_np.log
+    "$A0" --m=257 --n=4096 --k=4096 --l=2 --g=32 --mode=1 --iterations=0 --persistent \
+      | tee /tmp/107a_l2_p.log
+    for f in /tmp/107a_residue_np.log /tmp/107a_residue_p.log /tmp/107a_l2_np.log /tmp/107a_l2_p.log; do
+      test "$(grep -c 'Disposition: Passed' "$f")" -eq 1
+    done
+
+Then run five interleaved passes per geometry.  `PpuTimer` places device events around exactly 100 `gemm.run()` calls;
+allocation, pack, the one target warm-up, the independent reference GEMM, verification, launcher setup and final host
+reporting are outside those events.  This is the existing dense kernel-event protocol, not process wall time.
+
+    run_107a_variant() {
+      local bin="$1" label="$2" side="$3" out="/tmp/107a_${label}_${side}.log"
+      if [ "$side" = p ]; then
+        "$bin" --m=2048 --n=4096 --k=4096 --l=1 --g=32 --mode=1 --iterations=100 --persistent | tee -a "$out"
+      else
+        "$bin" --m=2048 --n=4096 --k=4096 --l=1 --g=32 --mode=1 --iterations=100 | tee -a "$out"
+      fi
+    }
+    for label in a0 rung3; do : >"/tmp/107a_${label}_np.log"; : >"/tmp/107a_${label}_p.log"; done
+    for pass in 1 2 3 4 5; do
+      if [ $((pass % 2)) -eq 1 ]; then order="np p"; else order="p np"; fi
+      for side in $order; do run_107a_variant "$A0" a0 "$side"; done
+      for side in $order; do run_107a_variant "$R3" rung3 "$side"; done
+    done
+
+Parse only the scheduler-labelled metric rows; do not combine them with `Avg runtime` or any profiler process total:
+
+    python3 - <<'PY'
+    import pathlib, re, statistics
+    pat = re.compile(r'\[CUTLASS .* scheduler=(non-persistent|persistent)\].*? ([0-9.]+) us')
+    rows = {}
+    for label in ('a0', 'rung3'):
+        for side, want in (('np', 'non-persistent'), ('p', 'persistent')):
+            text = pathlib.Path(f'/tmp/107a_{label}_{side}.log').read_text()
+            vals = [float(us) for sched, us in pat.findall(text) if sched == want]
+            assert len(vals) == 5, (label, side, vals)
+            rows[label, side] = vals
+            med = statistics.median(vals)
+            tf = 2*2048*4096*4096/(med*1e-6)/1e12
+            print(f'{label:5s} {side:2s}: raw={vals} median={med:.3f} us '
+                  f'band=[{min(vals):.3f},{max(vals):.3f}] TF/s={tf:.3f} MFU={tf/500*100:.3f}%')
+        ratios = [a/b for a, b in zip(rows[label,'np'], rows[label,'p'])]
+        print(f'{label:5s} paired speedup NP/P={ratios}; median={statistics.median(ratios):.5f}x')
+    PY
+
+The diagnostic lines are part of the gate, not decoration:
+
+- A0 must print `main=31488 epi=4112 union=31488 overlap-sum-counterfactual=35600`.
+- rung3 must print `main=25600 epi=16400 union=25600 overlap-sum-counterfactual=42000`.
+- Non-persistent physical CTA must equal logical CTA: A0 2048, rung3 1024.
+- Persistent physical CTA must equal `min(logical_cta, cu * occupancy_api)`, and must be greater than one CTA/CU
+  for these shapes.  A repeated `grid=72`/one-CTA-per-CU result means the old failure remains.
+- Report `occupancy_api`, warps/CTA and resident warps/CU for BOTH symbols; the persistent loop can change register
+  billing even though its shared bytes do not change.
+
+Go/no-go for 107b: correctness, grid and occupancy must all pass.  On exact rung3, the measured static-persistent
+overhead must also leave room for the tail: `tP/tNP < 1/(1-0.111) = 1.125` is a necessary, not sufficient, condition.
+If it exceeds 1.125, even an impossible zero-cost StreamK that recovers the entire 11.1% cannot beat the current
+kernel, so 107b is not justified by #10.  Also compare the fastest persistent result against same-session A0 NP;
+winning only against its slower same-tile control is not a shipping win.
+
+Wanted back: gate SHA; both binary paths/build rc; both `--list_configs` rows; four correctness disposition lines;
+one representative scheduler+smem diagnostic for each of the four symbols; all 20 raw event means; the parser output;
+and any device/compiler error verbatim.  There is no acceptable wall-clock substitution.
+
+---
+
+## 104b — ONE capture, every config: kernel-only time from the asys sqlite
+
+**This replaces the per-config `MOE_ONLY` / 21-launch / drop-one / mean-of-20 procedure.** That procedure exists to
+reconstruct a kernel time out of host wall-clock by repeating until the launch overhead averages out. It does not
+average out: `time_it` wraps the launch and `hggcDeviceSynchronize` in the host clock, and the grouped path runs
+`initialize` plus a blocking prefix H2D on **every** iteration, so the overhead sits inside each of the 20 timed
+samples rather than being amortised across them.
+
+The error is not small. On S068 the whole decode table's winner reads **20.62 us** of wall-clock while moving
+**5.28 MB**; the same binary at N=K=2048 moves **21.0 MB** in **20.74 us**. Four times the work, the same time.
+
+**And the ranking is the point, not the winner's timestamp.** With roughly 13 us of fixed cost sitting on a ~7 us
+kernel, two configs whose kernel times differ by 2 us read 20.6 against 22.6 at the host -- inside this harness's
+recorded 13% cross-run spread. Every ranking ever taken through that timer is a ranking of noise plus a constant.
+Re-reading the same runs from the timeline can change which row is called the winner, and that is the finding.
+
+### Run
+
+One capture per shape. **Do not pass `MOE_ONLY`** -- the whole table is wanted, since one capture times all of it.
+
+    cd /sim/eec/shared/junfu.qx/quactlize && git pull --ff-only origin develop
+    echo "gate-sha=$(git rev-parse HEAD)"
+    # build exactly as the (superseded) section above specifies; keep both binaries
+
+    unset MOE_ACU MOE_ONLY BENCH_JSONL
+    for S in "512 2048 S068" "512 3072 S069" "2048 512 S070" "3072 512 S071"; do
+      set -- $S
+      asys profile -t hggc,acdnn,acblas -o /tmp/104b_$3 \
+        env MOE_REPS=1 MOE_VERBOSE=1 "$DEC" 256 8 $1 $2 32 3 8 | tee /tmp/104b_$3.log
+    done
+    # and C1 the same way, full table, no MOE_ONLY:
+    asys profile -t hggc,acdnn,acblas -o /tmp/104b_C1 \
+      env MOE_REPS=1 MOE_VERBOSE=1 "$C1" 256 4096 512 2048 32 4 8 | tee /tmp/104b_C1.log
+
+`asys profile -t hggc,acdnn,acblas` is the capture spelling recorded from an earlier session and is **not verified
+against this installation**. Check `asys --help` first; if the front end differs, only the wrapper changes -- what
+104b needs is a per-kernel activity timeline exported to sqlite, by whatever name this build gives it.
+
+### Read
+
+    python3 tools/asys_kernel_time.py --schema /tmp/104b_S068.sqlite      # once, to see the schema
+    python3 tools/asys_kernel_time.py /tmp/104b_S068.sqlite --log /tmp/104b_S068.log
+
+The reader detects the kernel table, the name column (resolving a strings table when names are ids) and either a
+duration column or a start/end pair; `--table/--name-col/--dur-col` override it and the choice is always printed.
+It excludes `bench_floor_nop`, memcpy and memset **and prints what it excluded with counts**, splits the timeline
+into contiguous per-config runs, drops the warm-up launch of each, and prints mean/median/min/max/spread ranked by
+kernel-only time. Verified locally against a synthetic capture in the hardest shape (ids + start/end + a decoy
+table), including three failure paths: a tag/segment count mismatch warns loudly and falls back to kernel names
+rather than mislabelling, and a database with no kernel table errors with rc=1 instead of printing an empty table.
+
+### Wanted back
+
+`gate-sha`; for each shape the `[asys] table=... name=... time=...` line (so the reader's choice is auditable), the
+exclusion list, and the ranked table. **Also state whether the binary was built ScaleOnly or ScaleZero**, because
+the distinct-byte cross-check differs (S068: 4,759,552 B against 5,283,840 B).
+
+If this asys build only exposes a process aggregate, stop and say so rather than reporting it as kernel-only. The
+host `time_it` value is not a fallback -- it is the thing 104b exists to replace.
