@@ -221,10 +221,27 @@ inline void sk_row(Band const& bd, SkCtx const& cx, cutlass::DeviceAllocation<in
     int64_t const cta_total = cta_per_launch;
     double const wkwrp_cu = double(cta_per_launch) * (double(TM / WM) * (TN / WN)) / 72.0;
 
-    std::printf("  %-34s %8.2f us | %7.1f GB/s | %5.1f%% HBM | cta/L %5lld tot %6lld | wkwrp/CU %5.1f%s\n",
-                tag, us, gbs, pct_of(gbs), (long long)cta_per_launch, (long long)cta_total, wkwrp_cu,
-                gbs > bench_measure::kHbmGBPerSecond ? "  <-- IMPLIES > HBM PEAK, excluded" : "");
-    if (gbs > bench_measure::kHbmGBPerSecond) return;
+    // THE EXCLUSION USED TO SKIP THE REST OF THIS FUNCTION, AND IT SELECTED AGAINST THE THING BEING MEASURED.
+    // `if (gbs > peak) return;` sat here, so an over-nameplate row never reached sk_upd and dropped out of BOTH
+    // the S=1 and S>1 verdicts. That is #52 item 1 for the third time (the MoE bench mislabelled a row, the
+    // GEMV bench deleted it from the winner, this one skipped the rest of the row's handling) -- but here the
+    // bias has a direction, which is what makes it worse than the other two:
+    //
+    //   bytes charges pb = 2*slices*total*N*2 for the partial write and read-back, so the MODELLED bytes GROW
+    //   with S; and a split that works lowers `us`. gbs = bytes/us therefore rises on both counts with S, so
+    //   the rows most likely to trip the threshold are the SUCCESSFUL high-S rows -- in the one bench whose
+    //   entire purpose is the split-K ladder.
+    //
+    // Over the nameplate indicts the traffic model, not the measurement: pb assumes every partial round trip
+    // reaches DRAM, and an L2-served reduction makes that charge too large. So flag the model, keep the row.
+    std::printf("  %-34s %8.2f us | %7.1f GB/s | %5.1f%% of %.0f nameplate | cta/L %5lld tot %6lld | "
+                "wkwrp/CU %5.1f%s\n",
+                tag, us, gbs, pct_of(gbs), bench_measure::kHbmGBPerSecond,
+                (long long)cta_per_launch, (long long)cta_total, wkwrp_cu,
+                gbs > bench_measure::kHbmGBPerSecond
+                    ? "  <-- MODEL BROKE: over nameplate, so the pb partial-round-trip charge is too large "
+                      "here; row RETAINED"
+                    : "");
     sk_upd(slices == 1 ? b1 : bS, tag, us, slices);
   }
 }

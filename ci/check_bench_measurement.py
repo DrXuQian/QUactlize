@@ -109,6 +109,54 @@ def under_preprocessor_guard(text: str, needle: str, guard: str) -> bool:
     return found
 
 
+# EVERY BENCH IN THE TREE, for the one check below that is about a SHAPE rather than a symbol.
+ALL_BENCH_SOURCES = (
+    "benchmarks/bench_select.hpp",
+    "benchmarks/lowbit_moe_bench.hpp",
+    "benchmarks/gemv_perf_common.hpp",
+    "benchmarks/moe_splitk_bench_common.hpp",
+    "benchmarks/test_lowbit_dense_bench.cu",
+    "benchmarks/test_lowbit_moe_bench.cu",
+    "benchmarks/test_gemv_perf.cu",
+    "benchmarks/test_moe_splitk_bench.cu",
+)
+
+# `gbs > nameplate` on the same line as a control-transfer, or immediately followed by one.
+_OVER_PEAK = re.compile(r">\s*(?:bench_measure::kHbmGBPerSecond|HBM_GBS)\b")
+_ESCAPE = re.compile(r"\b(?:return|continue|break)\b\s*;")
+
+
+def over_peak_must_not_drop_the_row(texts: dict[str, str]) -> list[str]:
+    """A ROW OVER THE NAMEPLATE MUST BE KEPT. Found three times in three benches, each worse than the last:
+
+        lowbit_moe_bench.hpp        printed DID NOT RUN and excluded the row from the verdict
+        gemv_perf_common.hpp        `if (gbs <= HBM_GBS) upd(best, ...)` -- deleted the FASTEST rows from the winner
+        moe_splitk_bench_common.hpp `if (gbs > peak) return;` -- skipped the rest of the row's handling, and with
+                                    a DIRECTION: its pb term charges 2*slices*total*N*2, so modelled bytes grow
+                                    with S while a working split lowers us, and gbs rises on both counts. The
+                                    rows most likely to trip it were the SUCCESSFUL high-S rows, in the bench
+                                    whose whole purpose is the split-K ladder.
+
+    Exceeding the nameplate indicts the TRAFFIC MODEL -- a weight charged once per grid_m, an L2-served
+    reduction charged to DRAM -- not the measurement. Flag the model; keep the row. This bans the shape rather
+    than the three instances, because the instances were written independently and a fourth bench would write
+    it again.
+    """
+    problems = []
+    for rel in ALL_BENCH_SOURCES:
+        lines = uncomment(texts.get(rel, "")).splitlines()
+        for i, line in enumerate(lines):
+            if not _OVER_PEAK.search(line):
+                continue
+            window = " ".join(lines[i:i + 3])
+            if _ESCAPE.search(window):
+                problems.append(
+                    f"{rel}:{i+1}: a row over the nameplate is dropped (return/continue/break within 3 lines of "
+                    f"the comparison). Over the nameplate indicts the traffic model, not the measurement -- "
+                    f"flag the model and KEEP the row: {line.strip()[:70]}")
+    return problems
+
+
 def audit(texts: dict[str, str]) -> list[str]:
     problems: list[str] = []
     for rel, needles in CONSUMERS.items():
@@ -136,6 +184,8 @@ def audit(texts: dict[str, str]) -> list[str]:
         problems.append(f"gemv_perf_common.hpp mirrors the nameplate as {mirror.group(1)} while "
                         f"bench_select.hpp says {shared.group(1)}: the GEMV bench's percentages are against a "
                         f"different machine than the dense and MoE ones")
+
+    problems += over_peak_must_not_drop_the_row(texts)
 
     dense = texts.get("benchmarks/test_lowbit_dense_bench.cu", "")
     if not under_preprocessor_guard(
@@ -345,7 +395,7 @@ def main() -> int:
     if not HEADER.is_file():
         print("[bench-measurement] FAIL: benchmarks/bench_select.hpp is missing")
         return 1
-    texts = {rel: (ROOT / rel).read_text() for rel in CONSUMERS}
+    texts = {rel: (ROOT / rel).read_text() for rel in set(CONSUMERS) | set(ALL_BENCH_SOURCES)}
     problems = audit(texts)
     if problems:
         print("[bench-measurement] FAIL: " + problems[0])
