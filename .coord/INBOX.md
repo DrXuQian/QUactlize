@@ -4659,3 +4659,41 @@ G3(B/dequant)、G4(单 CTA 全链,M={1,2,3,7,8},D 预填 NaN + 两侧 canary)、
 非连续 expert id/ragged M/每 expert 不同 A/W/S/Z)按你 110 的设计。**G5 依赖 108 的真实 harness**,所以 112 的完成
 定义里要写清楚哪一部分被 108 卡住,不要用现有 `test_lowbit_grouped.cu` 的 L=1 自比冒充 —— 你自己说了它抓不到
 atom/A-fragment/epilogue 共有的结构化排列错。
+
+## 113 — 把计时区间修对,别再依赖 profiler(**插到 112 前面**)
+
+**asys 在这台机器上取不到设备活动,而且不是我们能修的。** 证据:四次运行报四个不同的 device id
+(`0xD6944610` / `0xC4C64100` / `0xC32F1400` / `0x46520000`,**全部 64KB 对齐**,像被截断的句柄而不是枚举号);
+导出的 sqlite 里 `HGPTI_ACTIVITY_KIND_KERNEL` / MEMCPY / MEMSET **全 0 行**,只有 `..._RUNTIME` 有 33,529 行;
+`source PPU_SDK/envsetup.sh` 之后依旧;`which asys` 已经是 SDK 自带那份(版本错位的假设已排除)。
+**这是 profiler 与驱动之间的事,交给管机器的人。**
+
+### 但真正的问题不是"没有 profiler"
+
+`time_it`(`lowbit_moe_bench.hpp:211`)把 launch + `hggcDeviceSynchronize` 全包进主机时钟,而
+`filter_and_run`(`moe_grouped_ppu.cuh:317`)**每次迭代都做 `initialize`,ragged 还做一次 blocking 前缀 H2D**。
+所以它测的区间里有两块固定成本,**必须靠外部 profiler 才能剥掉**。把区间修对,这个依赖就永久消失。
+
+实测后果(不需要新测量就能看到):**同一个二进制,21.0 MB 用 20.74 µs,5.28 MB 用 20.62 µs** —— 工作量四倍,时间一样。
+
+### 做
+
+在 **`initialize` 之后、blocking H2D 之后、`gemm.run()` 两侧**放设备 event,只围住 kernel 那一段。
+
+- **两个数并列输出,不要替换**:新的 kernel-span 和现有的 host wall-clock 都打出来,让这次改动本身可被审计
+- 仍然 1 warmup + 20 timed,对 20 发求均值;**顺带把每发的离散度也打出来** —— 我们一直不知道多大的差距才算真差距
+- 设备 event 仍会算进 launch 延迟和 idle gap,**所以它是 kernel-only 的上界,不是等价物**。打印时要注明,别让它冒充 asys 的数
+
+### 验收判据(用暴露问题的那个观察当测试)
+
+修好之后,**同一个二进制在 N=K=2048(21.0 MB)和 N=512(5.28 MB)上必须给出明显不同的时间**。
+现在两者都是 ~20.7 µs;如果修完还是一样,说明 event 放错了位置,**这条本身就是这次改动的 gate**。
+
+另外把 C1 冠军(`i4 32x128:128 w32x32 s3`)和 decode 冠军(`i4 16x32:256 w16x16 s3`)的新旧两个数都贴出来 ——
+它们是我们所有对标结论的锚,现在锚是墙钟。
+
+### 为什么插到 112 前面
+
+112(m8 collective 接线)的收益要靠测量判定,而现在的测量分辨不出 2 µs 的差别(约 13 µs 固定成本 +
+harness 历史 13% 跨运行离散度)。**先有能分辨的尺子,再去改被它衡量的东西。**
+111 的 box gate 不受影响,它是数值不是性能。
