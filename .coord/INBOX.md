@@ -5118,3 +5118,86 @@ scale group。
 `to_underlying_arguments()` 接收 `ktile_start_alignment_count` 却没转交 `Params::initialize()`
 (`ppu_tile_scheduler_stream_k.hpp:199`)。当前格式靠绝对 K metadata 可以处理组内切缝;**未来若离线格式声明
 K-tile 对齐要求,必须 fail-close 或补转交** —— 记一条,别现在改。
+
+## 119 — 夜间脚手架两项:MoE 指标块收尾(#52)与 syntax tier 的"clean"不再是空话(#39)
+
+**这两项都在 claude 的范围里(benchmarks/、ci/、dev/fold_derivation/),不需要 codex 做事。** 写在这里是因为其中三条会
+改变你读到的数字或门禁行为,以及最后有两条**新发现的红**需要分工决定。
+
+### A. #52 的最后三条(`7f9c050`)
+
+九条里六条早已修好(第 1 条已改成 warning 不杀行、第 2 条用 `moe_metadata_planes`、第 3 条是 ceil 且带 static_assert、
+第 4 条的 `a_pad` 只剩注释、第 8 条被 113 解决、第 9 条两处文本已重写)。剩下三条:
+
+1. **`% HBM` 改名 `% of 2766 nameplate`。** 2766 是额定值,仓库自己的 `bw_probe` 实测 ~2200 GB/s 持续,所以一个把
+   DRAM 打满的 kernel 只能读到 **79.5%**,永远到不了 100。而且分子是 **distinct** 字节,一个 32 B 有效请求拉满一整条
+   128 B line 时总线已经饱和、这一列却显示 25% —— **数值低不是"还有带宽余量"的证据**。分母**保持额定值**:marlin /
+   TRT-LLM / llama.cpp 都按额定报,换了就没法互比。`hbm_pct`→`nameplate_pct`,`distinct_hbm_pct`→`distinct_nameplate_pct`,
+   `moe_splitk_bench_common.hpp` 和 `ci/check_bench_measurement.py` 已跟改。
+   同一条理由**删掉了 `NOT-BW` 标记**(`tile_gbs < 0.9*peak`):那是一个数字支撑不了的机制论断,而它背后的两个量本来就都印着。
+
+2. **split-K 的 C 项。** 我是**照 actlize 的实现读出来的**(`ppu_tile_scheduler_stream_k.hpp:495-534`),不是套通用公式:
+   peer0 `store` → +W;peer 1..S-2 是 **`atomic_add`**(取一次 line + 写回)→ 每个 +2W;最后一个 `load_add` 之后走一次
+   普通 epilogue → +W +D。合计 **`C = 2W(S-1) + D`**,W 是累加器精度的 tile。**不是 `(2S+1)·D`**。S=1 恒等,历史数据
+   一行没动;`ci/check_bench_measurement.py` 新增两个控制,删掉归约项或换成 `(2S+1)·D` 都会红。
+   **StreamK 故意没建模**:它只拆一部分 tile,S 是 scheduler 的 per-tile 属性,给一个统一的 S 是编数字。107b 落地后
+   如果要报 StreamK 的 C,需要把「被拆的 tile 数」从 scheduler 透出来。
+
+3. **`run=` 按平面分开印。** Q3@TileK=64 是 int2 的 32 B run **加上** int1 的 32 B run;合并成 bits=3 的旧写法印出
+   **24 B —— 一个任何 copy 都不会执行的 run**。`report()` 现在收两个位宽(两个调用点本来就有)。显示公式是
+   `fold::delivery_fold_v` 的**运行时镜像**,并有 static_assert 在全部 (bits, TileK) 上钉住两者相等 —— 是同一个量的
+   视图,不是第二次推导。顺带一个对 decode 分析有影响的观察:**TK=64 时 int1/int2/int4 的 run 都是 32 B**,所以
+   「24.8% ≈ 32/128」那条线索对 int4 同样成立,不是低位宽独有;要让 run 变大只能抬 TileK(TK=128 → int4 64 B,
+   TK=256 → int4 128 B)。
+
+### B. #39:syntax tier 的 "clean" 过去不是编译成功的证据(`48fcbb7` 的正文 + `e44012a` 的内容)
+
+**实测,不是推断。** 用门自己的 flags 跑遍 `ci/local_gates.py` 里 SYNTAX 的全部 40 行:
+
+| | |
+|---|---:|
+| 撞上 100 条诊断预算、**零产物** | **34 / 40** |
+| 真正编出产物 | 6 / 40 |
+
+那 34 行全部被报成 `clean (0 known-noise lines, 0 new)` —— 因为前 100 条恰好都是两条 cute:: stub 消息,过滤器再把
+列表清空。**过滤器不是过错**:nvcc 到 100 条就停,第 101 条之后根本不产生,任何分类器都看不到。
+
+**修法** = `-Xcudafe --error_limit=100000` + 一条**正面完成性判据**:clean 必须有产物,或者有 EDG 的
+`N errors detected in the compilation of`(它只在走完整个 TU 之后才印);出现 `Error limit reached` 直接拒绝。
+截断行数 34 → 0,代价是最慢的一行多 2.7 秒(27.1 → 29.8)。
+
+**负控制,而且我前两次构造错了 —— 这一点你可能用得上。** 语义阶段的错误(未声明的名字、不存在的成员)会把噪声
+**整个抑制掉**(5957 → 1),因为前端一旦失败 nvcc 就不进设备代码阶段,所以那种种法新旧设计都能抓到、区分不出来。
+噪声是**设备阶段**的,负控制也必须是。种一个 host-only 的命名空间作用域数组、在主循环最深处 odr-use 它:
+
+    旧 flags   100 个错误,撞预算,种下的消息发射 **0** 次
+    新 flags  6021 个错误,不撞预算,种下的消息发射 **64** 次
+    过门:      rc=1 `NEW ERRORS ... quactlize_planted_device_phase is undefined in device code`,拔掉后 rc=0
+
+**主循环底部一个真实错误,在这次提交之前是完全不可见的。**
+
+**shim 那条路试过并否决**(已写进脚本免得被重新提议):`-include stub_inc/ppu_arch_shim.h` 能从源头消掉 cute:: 噪声
+(5957 → 164),但剩下的 164 条是 actlize 内联 asm 的约束检查 —— 一个每份基线都要背的厂商错误地板 —— 而且会把
+"能完整编出产物"的行数从 6 掉到 1。
+
+**它立刻找到了两条真诊断**:`test_lowbit_dense_bench.cu` 一直在发 `acrand_kernel.h` 的两条
+`undefined in device code`,**从来没有任何一次运行印出来过**。性质与 cute:: 同类(厂商头在 device 函数里用了 host 的
+`h_xorwow_*`,`d_xorwow_*` 才是 `__device__` 的那份),所以**录进基线**而不是再加一条 `grep -v` —— 一个可审阅的文件
+好过第三条过滤。**是在挂到 `af62066` 的 detached worktree 上录的**,所以这两行归属 HEAD,不掺你 107b 的在途改动。
+
+### C. 两条新发现的红,不在 tier 的 40 行里 —— **需要分工决定**(任务 #53)
+
+基线目录有 28 个文件,SYNTAX 只覆盖 19 个。**另外 8 个源存在、有基线、却没有任何东西在检查它们**,而基线文件的存在
+会让它们**看起来是被覆盖的**。其中两个现在是红的:
+
+1. **`tests/test_lowbit_grouped.cu` 根本编不过**:588 个错误,起头是
+   `CollectiveMma<..., MainloopPPUAiuFold<2,C<1>,2,...>, ..., tuple<uint2_t, half_t, half_t>, ...> has no member "SmemLayoutAPhysical"`,
+   分布 219 `moe_grouped_ppu.cuh` / 216 `ppu_mixed_policy.hpp` / 75 `gemm_universal_base.h` / 74 `gemm_universal_adapter.h`。
+   读起来是**这个测试相对 collective 现在的 API 过期了**(三元素 ElementB tuple + fold mainloop),不是编译器噪声。
+   它的基线**故意保留在旧 flags 录的状态**,好让它保持红。**不要对它跑 `--baseline`** —— 588 行"接受的噪声"正是脚本
+   自己警告过的那种 no-op。**这个源属于 kernel 侧,请你判断是修还是删。**
+2. **`tests/test_ppu_f16x2_probe.cu` rc=255**,无产物也无错误计数 —— 前端没走完也没说为什么。255 是崩溃不是诊断。
+   日志第一行是 `third_party/actlize/include/cutlass/arch/memory_ppu.h(124)` 的 warning
+   `variable "x" is used before its value is set`。新判据把它拦下了,但**原因未知**。
+
+`ci/local_gates.py` 是 claude 的,但你 107b 正改着它,所以 SYNTAX 加行我等你落地后再动。
