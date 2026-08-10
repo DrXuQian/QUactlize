@@ -4417,7 +4417,31 @@ grouped 表的 TileN 只有 {16,32,64,128}。而:
 
 **不要写代码,给排序清单。** 每条注明是"机制已确认"还是"待测"。
 
-## 107 — P2':StreamK 先在 dense 上试,不碰 group scheduler
+## 107 — P2':**先持久化,再 StreamK**,都只在 dense 上,不碰 group scheduler
+
+**顺序改了(用户提的,查证后成立):StreamK 是持久化的超集,不是它的替代。**
+`PersistentTileSchedulerPPUStreamK` 名字里就带 Persistent —— 它是持久化工作循环 + K 切分 + 接缝归约。
+**跑不通持久化就跑不通 StreamK。**
+
+而两条路今天都是"挂持久化型 scheduler、发非持久化网格":
+
+    dense    ppu_aiu_gemm_mixed_input.hpp:87   static_assert(is_void or PersistentScheduler)
+                                        :107   "Mainloop and epilogue don't use smem concurrently
+                                                since kernel is NON-PERSISTENT, so we can use a union"
+    grouped  ppu_aiu_gemm_mixed_input_group.hpp:73  用 GroupScheduler
+                                              :196  get_grid_shape 却返回平铺非持久化网格
+
+### 107a 先做:dense 持久化,并且先算 smem 账
+
+**当年放弃持久化的记录是 `grid=(72,1,1)`=1 block/CU、tile 串行 → 3.1% occupancy。那是配错的网格。**
+但**可能还有第二个原因,必须先算**:非持久化时 mainloop 和 epilogue 的 smem 走 union 复用(见上面 :107 那行注释);
+持久化后两者共存 ⟹ **每 CTA smem 变大**。而你 104 刚测出 C1 的 `32×128×128 s3` 已经用 52,224 B、
+shared-only 上限只有 5 CTA/CU。**所以持久化在我们这儿可能要付 occupancy,这笔账要在改代码之前先算出来。**
+
+交付:(1) 拆掉 union 之后每 CTA 的 smem 是多少、CTA/CU 上限变成几;(2) 若掉得厉害,持久化在哪些 tile 配置下
+仍然划算;(3) 再改网格为 #CU × blocks/CU 并实测,和现有非持久化并列。**先给账,再动代码。**
+
+### 107b 只在 107a 划算时做:dense StreamK
 
 **用户明确 scoping:先 dense,不需要 group scheduler。** 这砍掉了最难的一半。
 
