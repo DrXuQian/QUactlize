@@ -4539,3 +4539,54 @@ box 上的取数归用户,你把命令按 `BOX.md` 格式写好。
 - 落地后跑一次现有 gate,证明行为没变(默认值不变 ⟹ 输出应逐位相同)
 
 **顺序:109 可以先落地(零行为变化),108 的数出来之后再填表。** 两步都可回退,中间任何一步失败都不会让生产变慢。
+
+## 110 — **更正 104:`m8n16k16` 在 ppu001 上存在。Marlin 的 m8 不是抄不了,是没包装。**
+
+用户指出的,我查证成立。**这推翻了 104 的一条前提,并且把 decode 的分析整个打开。**
+
+### 证据
+
+    SKILL.md:23   ppu001 是 nvcc 默认 device target,full ISA:swzl ldmatrix + m8n16k16 mma
+    SKILL.md:36   llc 的 ISel:m16n16k16 两颗芯片都有,m8n16k16 **只有 ppu001**
+    SKILL.md:66   m8n16k16(query 放 M=8)用于 ncols==8(小 batch / GQA decode)
+                  —— "halves wasted work vs m16n16 there"
+
+**而且 FA2 移植已经用过它,收益是实测的**:`mma_tile_sizes` 在 `ncols==8` 走 m8n16、更大走 m16n16,
+结果 **median 0.90→1.01 vs NV、worst 0.54→0.80、GQA-decode 小 kv 反超 NV**。用途和 Marlin 的 m8 完全同构。
+
+### 你 104 为什么漏了
+
+`actlize/include/cute/arch/mma_ppu0010.hpp` 里确实只有 `m16n16k16`(f16/bf16)、`m16n16k8`(tf32)、
+`m16n16k32`(int8 四种)。**所以"actlize 的 cute API 只有 16×16×16"是对的** —— 但由此推出"m8 抄不了"是错的:
+**ISA 有,cute atom 没包。这是没接线,不是缺机制。**(判据见 `blocker-mechanism-vs-wiring`:「不能调用」≠「不存在」。)
+另外名字轴序也可能误导:PPU 是 **`m8n16`**,你按 NVIDIA 的 `m16n8` 去找。
+
+### 而且我们的形状比 Marlin 的更顺
+
+Marlin 必须用 `mma_trans` **对调 A/B**,因为 NVIDIA 的是 `m16n8` —— 它要把问题的 M 塞进指令的 **N=8**。
+**PPU 的是 `m8n16`,问题的 M 直接落在指令的 M=8,不需要对调。**
+
+### 因此要重开的结论
+
+- ~~"16× padding 是结构下限、调不掉"~~ —— **不成立**。m8n16 把它降到 8×,正是 Marlin 那一半优势。
+- codex 104 算过:按发出的工作量算 Marlin 与 TRT 吞吐只差 1.0%,**2× 全部来自"少做一半"**。
+  那一半现在对我们**开放**了。
+- 上一条我写的"TC 路上限是 TRT 的 21.7%"随之作废 —— 有了 m8n16,上限回到 Marlin 那一档。
+
+### 两个雷,都会静默出错
+
+1. **build target 必须是 ppu001**:`CMAKE_CUDA_ARCHITECTURES=OFF`,**不能钉 `sm_XX`** —— 钉了会经 compat 表落到
+   ppu0015,报 `Cannot select: intrinsic llvm.ppu.mma.*.m8n16k16`。`asm volatile` **挡不住** intrinsic lowering。
+   `quactlize` 的 `build.sh`/CMakeLists 里我没找到显式设置,**请确认它实际落在 ppu001**。
+2. **`ppu.ldmatrix.m8n8.x2` 的寄存器分布和 NVIDIA 的 m8n8 地址公式不一致**,`tile<8,8>` / `tile<16,4>` 必须
+   **逐元素 load**(`get_i`/`get_j`)。记忆原话:「getting this wrong **silently corrupts the operand** — it broke
+   every m8n16 KQ until fixed」。**这是静默数值错误,不是编译错误**,所以数值 gate 必须先于性能测量。
+
+### 要你做的
+
+1. 先确认上面两条:build 实际 target、以及我们 A 操作数的 load 路径会不会踩 ldmatrix 那条。
+2. 给出**在 actlize 里加一个 `m8n16k16` MMA atom** 的形状和代价 —— 那里已经有三个同构的 atom(m16n16k16 /
+   m16n16k8 / m16n16k32),照着包一个应该是有界的工作。
+3. 判断我们的 grouped collective 吃不吃得下 `TileM=8` 的 MMA(fragment 布局、swzl 的 16 行约束、
+   TileM 轴要不要加 8)。
+4. **不要顺手改。** 这一条先出判断,数值 gate 的设计要一起给出来 —— 见雷 2。
