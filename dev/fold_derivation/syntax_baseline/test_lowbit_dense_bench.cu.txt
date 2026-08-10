@@ -1,0 +1,2 @@
+1 acrand_kernel.h(): error: identifier "h_xorwow_jump_matrices" is undefined in device code
+1 acrand_kernel.h(): error: identifier "h_xorwow_sequence_jump_matrices" is undefined in device code

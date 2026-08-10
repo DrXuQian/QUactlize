@@ -130,7 +130,7 @@ blocked it — this container has no profiling-counter permission.
 
 The grid mechanism is real and measured: `1 × 256 × 8 = 2048` CTAs, exactly **16×** the collective's 128,
 because the tilings differ for the same problem. And PPU has already run this comparison at parity of memory
-level: **grouped GEMM 20.74 µs / 37.5% HBM against `gemv_lowbit` 22.27 µs / 34.1%** — the SIMT GEMV had 16×
+level: **grouped GEMM 20.74 µs / 37.5% of nameplate against `gemv_lowbit` 22.27 µs / 34.1%** — the SIMT GEMV had 16×
 the CTA supply and was still **7.4% slower**. The 5090 does not reproduce that ordering, and cannot settle
 it: the result is L2-served, no 5090 collective was measured against it, and this project has a recorded case
 of configuration rankings inverting between the two machines at gs=32.

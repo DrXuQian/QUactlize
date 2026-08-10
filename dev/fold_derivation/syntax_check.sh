@@ -86,14 +86,44 @@ for f in $FILES; do
   # Emit to a real file, not /dev/null: the file is the PROOF the compiler ran. With -o /dev/null there is no
   # artifact, so "no errors" and "no compiler" produce identical output.
   _raw="$(mktemp)"; _out="$(mktemp -u)".cu.cpp
+  # --error_limit=100000  NVCC STOPS AT 100 DIAGNOSTICS AND THAT SILENTLY BROKE THIS GATE. Measured 2026-08-10
+  # over all 40 rows of the tier's SYNTAX list with the old flags: 34 hit the limit, produced NO artifact, and
+  # were reported "clean (0 known-noise lines, 0 new)" -- because the first 100 diagnostics were all cute:: noise
+  # and the filter below then emptied the list. A budget cannot be beaten by a better filter: every diagnostic
+  # after the 100th is NEVER PRODUCED, so anything past it is invisible however the remainder is classified.
+  # Raising the limit costs 2.7 s on the slowest row (27.1 -> 29.8 s) and takes the truncated count to 0/40.
+  #
+  # THE SHIM WAS TRIED AND IS WORSE, so that it does not get re-proposed: -include stub_inc/ppu_arch_shim.h
+  # removes the cute:: noise at its source (5957 -> 164 errors) but the 164 that remain are actlize's inline-asm
+  # constraint checks, which would all have to enter the baselines, AND it takes the rows that currently compile
+  # to a full artifact from 6 to 1. Removing noise is not worth acquiring a vendor error floor.
   nvcc -std=c++17 -arch=sm_80 --expt-relaxed-constexpr -D__HGGCCC__ -DPPU_FORCE_INSTANTIATE=1 $EXTRA_DEFS $_gen_flag \
+        -Xcudafe --error_limit=100000 \
         -I"$STUB" -I"$ACT/include" -I"$ACT/tools/util/include" -I"$SRC" -I"$ROOT/benchmarks" -I"$ROOT/quactlize/include" -I"$ROOT/dev" \
         -cuda -o "$_out" -x cu "$f" -Wno-deprecated-gpu-targets >"$_raw" 2>&1
   _rc=$?
-  if [ ! -s "$_out" ] && [ "$_rc" -eq 0 ]; then
-    echo "syntax_check: nvcc exited 0 but produced no output for $f -- it did not compile anything" >&2
-    rm -f "$_raw" "$_out"; exit 2
+  # A CLEAN VERDICT MUST BE EVIDENCE THAT THE FRONT END REACHED THE END OF THE FILE. Two forms of that evidence,
+  # and one of them has to be present:
+  #   the artifact          nvcc wrote the .cu.cpp, so it got all the way through;
+  #   "N errors detected"   EDG prints this only after finishing the translation unit and counting.
+  # "Error limit reached. Compilation terminated." is the opposite: it says diagnostics were DISCARDED, so no
+  # baseline diff taken afterwards means anything. That was the old failure and it is now a refusal.
+  if grep -q "Error limit reached" "$_raw"; then
+    echo "$base: REFUSING -- nvcc hit its diagnostic budget, so an unknown number of errors were never emitted."
+    echo "        A baseline diff over a truncated list cannot show anything NEW. Raise --error_limit."
+    rm -f "$_raw" "$_out"; rc=1; continue
   fi
+  if [ ! -s "$_out" ] && ! grep -qE "[0-9]+ errors? detected in the compilation of" "$_raw"; then
+    echo "$base: REFUSING -- no artifact and no error count: there is no evidence the front end ran to the end."
+    echo "        rc=$_rc. Absence of errors is not evidence of compilation."
+    sed -n '1,3p' "$_raw" | sed 's/^/          /'
+    rm -f "$_raw" "$_out"; rc=1; continue
+  fi
+  # THE TWO ENVIRONMENTAL SIGNATURES STAY DROPPED, and only now is that defensible. The header above argues they
+  # cannot mask a real error because a real one has a different message; that was true of masking by SIMILARITY
+  # and false of masking by BUDGET, which is what was actually happening. With the limit raised the filter no
+  # longer decides what gets EMITTED, only what gets COUNTED -- so the argument holds as originally written.
+  # Measured on the worst row: 5957 errors, of which 5957 are these two and 0 are anything else.
   sig=$(cat "$_raw" \
         | grep -E ": (error|fatal error|catastrophic error):" | grep -v 'identifier "cute::_" is undefined in device code' \
                          | grep -v 'identifier "cute::product" is undefined in device code' \
