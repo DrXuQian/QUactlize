@@ -4961,3 +4961,49 @@ uniform split-K 降级为**权宜**:只在想早点拿到 decode 的数、而 10
 
 **115 的实测结论不受影响**:等功阶梯量出的 1.44×(11.020→7.432)是"把 CTA 从 128 加到 1024"的收益,与用什么
 机制去加无关。它证明的是**并行度是 decode 的主因**,这一条仍然成立,而且现在指向 StreamK 而不是 split-K。
+
+## 117 — 116 的三条更正落盘,以及 107b 够不到它自己的理由
+
+116 纠正了我三处,都会影响后面每一个读到 StreamK 的人,记在这里免得重推。
+
+### 我错的三处
+
+1. **`slice_count`/`slice_idx` 不对应 `is_separate_reduction`/`reduction_subtile_idx`。** 后两者描述的是**额外的
+   专用归约 CTA**,而且那条路径**当前被禁用**(`tile_scheduler_params.h` 的 `should_perform_separate_reduction`
+   无条件 `return false`,注释写着 "temporarily disabled, pending fixes")。actlize 的确定性路径是:
+
+       非末段: wait(lock == K_idx) -> FP32 partial 累入 workspace -> lock += k_tile_count
+       末段:   wait(lock == K_idx) -> workspace load_add -> 唯一一次普通 epilogue
+
+   **排序按累计 K 进度 `K_idx`,不是独立的 rank 字段。**
+
+2. **`epilogue_base_streamk.h` 不是当前 3.x PPU 路径的接缝实现。** 活跃路径是 mainloop → `TileScheduler::fixup()`
+   → final-only 普通 epilogue。**107b 不该换 epilogue 类型** —— 我先前说要用它,错。
+
+3. **「一个机制两个 band」在算法层成立,代码层不成立。** `GroupScheduler::WorkTileInfo` 只有 `M_idx/N_idx/L_idx`,
+   **没有 `K_idx` 也没有 `k_tile_count`**,永远从 K=0 做完整 K。grouped 要另做:**expert-ragged 输出 tile 前缀 +
+   K-stripe + 全局 tile lock ID** 的组合 scheduler。
+
+### 由此一个必须先说清的错配
+
+**107a / 107b 全是 dense;而我们今天量的每一个数都是 grouped MoE**(C1=S088 是 `test_lowbit_moe_bench`、mt=1161、
+256 experts;S068 decode 同样)。**所以 107b 落地之后,C1 的 37.60% MFU 和 decode 的 17.2% MBU 一个都不会动。**
+
+更要紧的是,**107b 的理由本身长在 MoE 上**:`dev/fold_derivation/TODO.md:650` 原话是
+「Where stream-K actually pays for us is #10 — **the prefill/MoE band's** ~11% last-wave tail」。
+**dense 的 107b 收不到这个数。**
+
+**107b 的正确定位:在 dense 上把接线走通、把两个会静默出错的坑趟平**(worker 数必须同时喂给分解和 launch grid;
+`fixup()` 钉死 128 线程,少了等不到 barrier、多了 `%128` 让 workspace 地址重叠),**作为 grouped StreamK 的前置。
+它本身不产生我们关心的数字** —— 别拿 C1/S068 去衡量它的成败。
+
+### 一个待澄清的数,在引用 107b 收益前要定
+
+「~11% last-wave tail」有两个来源且对不上:
+
+    dev/fold_derivation/README.md:371   "~11%, uniform across every config measured"
+    memory ppu-cutlass-w4a16-actlize    ragged MoE 的 last-wave tail **~5%**,
+                                        另有 ~11-13% 是 residue/masked 行(**另一回事**)
+
+**这两个是不是同一个量、各自量在哪条 band 上,要在报 107b/grouped StreamK 收益之前定下来。** 否则会拿 residue 的
+数去承诺 tail 的收益 —— 而 residue 是 masked 行烧 mma,StreamK 治不了(DeepGemm 也付,靠 pad 到 block-M)。
