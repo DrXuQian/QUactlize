@@ -710,9 +710,17 @@ are the formal solution; `-mcmodel=medium` and `--no-relax` do not repair the al
 
 The data-producing path is now:
 
-    BENCH_JSONL=/tmp/moe_all_formats.jsonl bash benchmarks/sweep_all_formats.sh
+    SWEEP_DIR=/tmp/sweep bash benchmarks/sweep_all_formats.sh
 
 It must report all five keys (`q3 q5 q6 i2 i4`) in `ran:` and no `FAILED:` line. The five binaries contain the five
-complete tactic grids; only the final link unit is split. Analyse the one appended result stream exactly once:
+complete tactic grids; only the final link unit is split.
 
-    python3 benchmarks/analyse.py /tmp/moe_all_formats.jsonl --coverage
+DO NOT pass or export BENCH_JSONL here. The script derives the file name from its own arguments and prints both the
+path and the exact analyse command as its last line; an inherited BENCH_JSONL is now reported and ignored. This
+paragraph used to set it, and on 2026-08-10 a complete five-format run was filed under `grouped_L1.jsonl` -- the
+name of the L=1 grouped-as-dense control -- because a stale `export` from an earlier step was still live in the
+shell. Nothing detected it: the records carry their own fixture identity, so the analysis was correct while every
+human reading the path was told the wrong experiment. Use SWEEP_DIR to choose the directory; the basename is not a
+choice. Then analyse that one file (the script prints its exact name):
+
+    python3 benchmarks/analyse.py /tmp/sweep/prefill_L256_r4096_n512_k2048_gs32_*.jsonl --coverage

@@ -69,10 +69,29 @@ if [ "${1:-}" = "--decode" ]; then
 fi
 
 # NAME DERIVED FROM ARGS, never typed. ARGS is [L rows N K gs mode topk], so the path states the run.
+#
+# THE DIRECTORY IS A CHOICE; THE BASENAME IS NOT. This line used to read `OUT="${BENCH_JSONL:-...}"`, which handed
+# the entire guarantee back to an environment variable -- and BOX.md teaches THREE ways to set that variable, one of
+# them an `export` that survives for the rest of the shell, and one of them naming this very script. Observed
+# 2026-08-10: a complete five-format run still printed `next: ... /tmp/sweep/grouped_L1.jsonl` -- the name of the
+# L=1 grouped-as-dense control -- because an export from some earlier command was still live in that shell. The
+# comment block at the top of this file argues at length that a name must not be able to contradict its run, and
+# then left a documented bypass pointing straight at it. SWEEP_DIR covers every legitimate need (write it
+# somewhere else); renaming the file to something the run is not was never one of them.
 OUT_DIR="${SWEEP_DIR:-$ROOT/sweep}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 RUN_ID="${BAND}_L${ARGS[0]}_r${ARGS[1]}_n${ARGS[2]}_k${ARGS[3]}_gs${ARGS[4]}_${STAMP}"
-OUT="${BENCH_JSONL:-$OUT_DIR/$RUN_ID.jsonl}"
+OUT="$OUT_DIR/$RUN_ID.jsonl"
+
+# AND SAY SO. Silently ignoring an inherited BENCH_JSONL is its own trap, and a quieter one: the operator follows
+# the runbook, sets the variable, and believes the samples went where they asked. Unset it too, so nothing further
+# down (build.sh, the bench itself) can pick it up behind our back -- line 121 passes the real path explicitly.
+if [ -n "${BENCH_JSONL:-}" ]; then
+  echo "[sweep-all] ignoring inherited BENCH_JSONL=$BENCH_JSONL" >&2
+  echo "[sweep-all]   this script derives the file name from its arguments so the name cannot contradict the run." >&2
+  echo "[sweep-all]   to choose WHERE it lands, use SWEEP_DIR=<dir>." >&2
+  unset BENCH_JSONL
+fi
 mkdir -p "$(dirname "$OUT")"
 
 # REFUSE TO APPEND. bench_samples.hpp opens in append mode, so an existing file would silently gain a second
