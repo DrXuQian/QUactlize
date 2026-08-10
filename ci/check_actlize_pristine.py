@@ -121,7 +121,26 @@ EXTENSIONS = {
         "TileM=WarpM=8 chooses m8n16, so all existing shapes and every other architecture retain their old atom",
 }
 
-ALLOWED = {**FIXES, **EXTENSIONS}
+# A FILE CAN BE BOTH, and until 2026-08-11 saying so lost information silently. `{**FIXES, **EXTENSIONS}` is a
+# merge: a key present in both keeps only the EXTENSIONS note and the FIX's reason disappears, with no error and
+# no change in the count. The two dicts answer to different standards -- a fix has to be right about actlize, an
+# extension has to be harmless to it -- so a file carrying both owes BOTH justifications, not the later one.
+#
+# MIXED is where such a file goes, and its note has to name both halves. The first case is arriving now:
+# ppu_tile_scheduler_stream_k.hpp already holds a trailing-comma FIX and is about to gain a defaulted template
+# parameter (the Stream-K minimum k-stripe), which is an extension. Landing that by leaning on the file's
+# existing FIXES entry would hide a new change behind an old allowance -- which is the same shape as a stale
+# ALLOWED entry in ci/check_switch_macros.py exempting a name rather than a decision.
+MIXED: dict = {}
+
+_collisions = sorted((set(FIXES) & set(EXTENSIONS)) | (set(MIXED) & (set(FIXES) | set(EXTENSIONS))))
+if _collisions:
+    raise SystemExit(
+        "[actlize-pristine] FAIL: these paths appear in more than one allow-list, and the merge below would "
+        "silently keep one reason and drop the other:\n    " + "\n    ".join(_collisions) +
+        "\nA file that is both a fix and an extension belongs in MIXED, with a note naming both halves.")
+
+ALLOWED = {**FIXES, **EXTENSIONS, **MIXED}
 
 SOURCE_SUFFIXES = (".h", ".hpp", ".inl", ".cu", ".cuh", ".cc", ".cpp")
 
@@ -201,8 +220,14 @@ def main() -> int:
             for p in missing:
                 print(f"    {p}")
         if not unexpected:
-            print(f"[actlize-pristine] PASS files: {len(FIXES)} fix(es) + {len(EXTENSIONS)} vendor extension(s) "
-                  f"differ from {BASELINE}, all allow-listed")
+            # THE TALLY HAS TO ADD UP TO len(ALLOWED), or a category can be added and not counted -- the same
+            # silent under-report the merge itself used to produce. The assert is here rather than in a test
+            # because this line is the only place a reader sees the number.
+            assert len(FIXES) + len(EXTENSIONS) + len(MIXED) == len(ALLOWED), \
+                "a category is missing from the tally, so the printed count understates the vendor delta"
+            mixed = f" + {len(MIXED)} both" if MIXED else ""
+            print(f"[actlize-pristine] PASS files: {len(FIXES)} fix(es) + {len(EXTENSIONS)} vendor extension(s)"
+                  f"{mixed} = {len(ALLOWED)} file(s) differing from {BASELINE}, all allow-listed")
 
     return 1 if failed else 0
 
