@@ -938,19 +938,19 @@ def lint_route_admits():
 
 
 def lint_switch_macros():
-    """A BUILD SWITCH NOBODY CAN TURN ON IS NOT A SWITCH.
+    """A BUILD SWITCH WITH NO RECORDED WAY IN IS NOT A USABLE SWITCH.
 
     Registered the day it was written, because the last checker that was not (ci/check_route_admits.py) was cited
-    as evidence for deleting an exclusion while nothing invoked it. Its own two controls run inside itself: a
-    planted unsettable switch must be reported, and wiring one must make it disappear.
+    as evidence for deleting an exclusion while nothing invoked it. Its six in-memory classifier controls cover
+    unresolved, temporarily allowed, newly wired, deleted, setter-resolved, and definer-resolved states.
 
     Motivated by a real cost rather than tidiness. Three macros in this tree mean "shrink A's padding at small M"
     -- PPU_A_PACK, PPU_A_CPASYNC and the tactic table's ACR column (the last two DELETED 2026-08-07 with the
     feature) -- and on 2026-08-06 a measurement was filed
     as "compact A at capacity 1 is 45% slower" that could not afterwards be attributed to any of them. Two of the
-    three are gone with the feature (task #42); PPU_A_PACK is a different, still-unreachable A path.
+    three are gone with the feature (task #42); PPU_A_PACK is a different, separately controlled A path.
     """
-    return _run_ci_script("check_switch_macros.py", "every owned build switch is reachable")
+    return _run_ci_script("check_switch_macros.py", "every owned build switch has a recorded route")
 
 
 def lint_build_advice():
@@ -1453,7 +1453,7 @@ def main():
                 ("lint", "the ctypes config mirror matches its C header field for field", lint_config_abi_matches_header),
                 ("lint", "no tactic choice can change the offline layout", lint_tactic_cannot_change_offline_layout),
                 ("lint", "actlize carries no quactlize symbol and no unlisted file change", lint_actlize_pristine),
-                ("lint", "every build switch this repo owns can actually be turned on", lint_switch_macros),
+                ("lint", "every owned build switch has a recorded build route", lint_switch_macros),
                 ("lint", "advertised build inputs have a build.sh/CMake route", lint_build_advice),
                 ("lint", "advertised MoE restrictions change generated code", lint_moe_build_knobs),
                 ("lint", "dense and MoE consume one named measurement layer", lint_bench_measurement_shared),

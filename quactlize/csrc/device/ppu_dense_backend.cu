@@ -9,9 +9,9 @@
 //
 //     PPU_DEFS=QUACTLIZE_DENSE_ONLY=12 TARGET=ppu_dense_backend ./build.sh      # Q4_K only
 //
-// THE INVOCATION IS WRITTEN DOWN BECAUSE IT WAS NOT, and ci/check_switch_macros.py holds this macro in its
-// ALLOWED dict for exactly that reason: ci/check_format_table_buildable.py's docstring CITES the switch as a
-// thing a build can do, so a gate documented a capability nobody could invoke. Measured 2026-08-11 with the
+// THE INVOCATION IS WRITTEN DOWN BECAUSE IT WAS NOT. It discharged this macro from check_switch_macros.py's
+// temporary ALLOWED debt: ci/check_format_table_buildable.py's docstring had cited a capability nobody could
+// invoke. Measured 2026-08-11 with the
 // syntax gate's own flags on this file, which is the evidence that the guards actually drop work rather than
 // merely compiling: 10368 diagnostics with no defs against 2232 with QUACTLIZE_DENSE_ONLY=12, a ratio of 4.6
 // against the 5 formats it selects between. (Neither run produces an artifact -- the stub's cute:: noise

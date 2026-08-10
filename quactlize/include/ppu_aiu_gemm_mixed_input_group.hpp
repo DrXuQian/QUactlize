@@ -84,6 +84,9 @@ public:
   };
   static constexpr int SharedStorageSize = sizeof(SharedStorage);
   static constexpr uint32_t MaxThreadsPerBlock = cute::size(TiledMma{});
+  // Reproduce the recorded occupancy arm: PPU_DEFS=PPU_MAXREG=100 TARGET=test_w4a16_diag ./build.sh
+  // 100 is load-bearing: the measured default was 106 regs/thread. At 128 threads, 100 asks for 10 blocks and a
+  // nominal <=102 regs/thread, while writing 106 would still ask for only 9 blocks and impose no new constraint.
   // PPU_MAXREG: cap registers per thread by asking __launch_bounds__ for more resident blocks. device_kernel.h
   // passes MinBlocksPerMultiprocessor straight into __launch_bounds__, so the compiler must fit
   // 131072 / (blocks * threads) registers. Expressed as a REGISTER target and converted here, because the block

@@ -14,6 +14,13 @@
 //   * when T>A, delivery is an explicit destination dimension inside the converter's fold groups, so consecutive
 //     artifact bytes retain the same logical owners instead of overlapping a T-derived flat fragment slice.
 // NOT gated on int4 ceiling -- int2/int1-fold reaching int4 geometry is guaranteed; biggest win is int1 (4x occ).
+// FULL-FRAGMENT BISECTION (diagnostic, not a tactic). Both defines are load-bearing; FOLD_SVARY prevents an all-one
+// scale fixture from hiding a scale-register error. Build the ordinary chunk arm as the control, then the bisection:
+//   PPU_BUILD_DIR="$PWD/build_bchunk_control" PPU_DEFS=PPU_B_CHUNK=1 TARGET=test_fold_int2 ./build.sh
+//   PPU_BUILD_DIR="$PWD/build_bchunk_bisect" PPU_DEFS=PPU_B_CHUNK_BISECT=1\ PPU_B_CHUNK=1 TARGET=test_fold_int2 ./build.sh
+//   BC=$(find build_bchunk_control -type f -name test_fold_int2 -perm -u+x -print -quit); test -n "$BC"
+//   BB=$(find build_bchunk_bisect -type f -name test_fold_int2 -perm -u+x -print -quit); test -n "$BB"
+//   FOLD_SVARY=1 "$BC" 256 256 32; FOLD_SVARY=1 "$BB" 256 256 32
 // =============================================================================================================
 /***************************************************************************************************
  * Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD. All rights reserved.

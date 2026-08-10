@@ -32,23 +32,18 @@ Two ways count as recorded:
   DEFINER   a `#define X` in our own sources, including the `#ifndef X / #define X` self-default idiom.
   SETTER    a `-DX` or `X=` in a script, CMake file, or checked-in doc that drives a build.
 
-A switch with neither is reported. That is NOT automatically "delete it": the five found when this was written
-split into two kinds, and the distinction is the useful part --
+A switch with neither is reported. That is NOT automatically "delete it": the initially exempted switches split
+into three kinds, and the distinction is the useful part --
 
-  * a FEATURE with no recorded invocation (PPU_MAXREG caps registers to raise occupancy; QUACTLIZE_DENSE_ONLY
-    drops formats, and ci/check_format_table_buildable.py's docstring CITES it as a thing a build can do). Write
-    the command down. LOWBIT_QMODE was in this bucket and left it that way on 2026-08-07 -- its header now
-    carries `PPU_DEFS=LOWBIT_QMODE=1 ...`, which is the whole fix.
+  * a FEATURE with no recorded invocation. PPU_MAXREG and QUACTLIZE_DENSE_ONLY were in this bucket; their owning
+    files now carry the exact `PPU_DEFS=... TARGET=... ./build.sh` command, which is the whole reachability fix.
   * a RECORDED DIAGNOSTIC. PPU_PACKED_PAIR=0 is the surviving example: it has a build command and a historical
     rowC result, so it needs no ALLOWED exemption. The earlyclobber experiment was already run and retired; the
     guessed arithmetic `.noftz` switch was deleted after independent end-to-end evidence excluded its FTZ theory.
   * a TOOL. PPU_B_CHUNK_BISECT exists BECAUSE PPU_B_CHUNK=2 once shipped a debug mode inside the flag that turns
-    the feature on, so deleting it invites back the mistake that separating it fixed. GEMV_GATE_FAST was the
-    other example here and is now the counter-example: it narrowed an axis while telling you to "build the FULL
-    matrix before trusting a result" -- a switch that shortens a run whose result you are then told not to trust
-    -- and it was DELETED (tests/test_gemv_lowbit.cu:25). Narrowing that axis needs no macro; GEMV_GS_LIST on the
-    command line is the documented way. So "a tool" is a reason to keep a switch only when the tool is one
-    somebody would actually reach for.
+    the feature on, so deleting it invites back the mistake that separating it fixed. Its owning collective now
+    records BOTH required defines and an input that can see scale-register errors. GEMV_GATE_FAST was the
+    counter-example: it shortened a run whose own comment required the full matrix, so it was deleted.
 
 So this prints the inventory and fails; a human decides which kind each is.
 
@@ -83,18 +78,9 @@ COND = re.compile(
     r"|^\s*#\s*(?:if|elif)\s+\(?\s*([A-Z_][A-Z0-9_]*)\s*[!=<>]", re.M)
 INTERPOLATED = re.compile(r"-D([A-Z_]+)\$\{")
 
-# Intentional exceptions. Each needs a reason, and the reason has to be about REACHABILITY -- "we might want it
-# later" is what produced the list this gate exists to shorten.
-ALLOWED = {
-    # DATED DEBT, NOT ACCEPTED EXCEPTIONS. Items leave by deletion or by acquiring a recorded build route.
-    # E1/E2 were incorrectly labelled UNRUN after their results were already recorded; E1 is wired as a recurrence
-    # diagnostic and E2 was retired. E3's guessed `.noftz` grammar was deleted because end-to-end rowC evidence,
-    # not assembler acceptance, answered the relevant physical question. Only unresolved debt stays here.
-    # An entry may only leave this dict by being deleted or wired, never by being re-justified.
-    "PPU_B_CHUNK_BISECT":     "codex   -- TOOL: exists BECAUSE PPU_B_CHUNK=2 shipped a debug mode inside the feature flag. Deleting it invites that back",
-    "PPU_MAXREG":             "codex   -- caps registers to raise occupancy; an unreachable OCCUPANCY LEVER, and "
-                              "occupancy is exactly what the M=1 42.2% question turns on",
-}
+# Temporary reachability debt only. This is intentionally empty. The stale check below rejects both permitted exits
+# if their entry is forgotten: a deleted switch and a switch that has acquired a real definer/setter.
+ALLOWED = {}
 
 
 def sources():
@@ -116,6 +102,16 @@ def setter_files():
             continue
         if f.suffix in SETTER_EXT or f.name == "build.sh":
             yield f
+
+
+def unresolved_switches(consumers, definers, setters, allowed):
+    return sorted(n for n in consumers if n not in definers and n not in setters and n not in allowed)
+
+
+def stale_allowed(consumers, definers, setters, allowed):
+    deleted = sorted(n for n in allowed if n not in consumers)
+    resolved = sorted(n for n in allowed if n in consumers and (n in definers or n in setters))
+    return deleted, resolved
 
 
 def main() -> int:
@@ -168,11 +164,43 @@ def main() -> int:
             if f"PPU_DEFS={name}=" in text:
                 setters.setdefault(name, set()).add(str(f.relative_to(ROOT)) + " (header invocation)")
 
-    unreachable = sorted(n for n in consumers
-                         if n not in definers and n not in setters and n not in ALLOWED)
+    unreachable = unresolved_switches(consumers, definers, setters, ALLOWED)
+
+    # In-memory classifier controls. ALLOWED debt is valid only while its consumer exists AND remains unresolved;
+    # exercise that legal state plus every transition out of it. Definer- and setter-resolved controls are distinct
+    # so dropping either half of stale_allowed's OR cannot hide behind a tree-selected name that has both routes.
+    control = "PPU_SWITCH_GATE_CONTROL"
+    planted_consumers = dict(consumers)
+    planted_consumers[control] = {"<planted-consumer>"}
+    if control not in unresolved_switches(planted_consumers, definers, setters, ALLOWED):
+        print("[switch-macros] ERROR: the planted unwired consumer was not reported")
+        return 1
+    planted_allowed = {control: "open unresolved control"}
+    if control in unresolved_switches(planted_consumers, definers, setters, planted_allowed) or \
+       stale_allowed(planted_consumers, definers, setters, planted_allowed) != ([], []):
+        print("[switch-macros] ERROR: a live unresolved ALLOWED entry was not accepted as temporary debt")
+        return 1
+    planted_setters = dict(setters)
+    planted_setters[control] = {"<planted-setter>"}
+    if control in unresolved_switches(planted_consumers, definers, planted_setters, ALLOWED):
+        print("[switch-macros] ERROR: the planted consumer stayed unreachable after wiring")
+        return 1
+    if stale_allowed(consumers, definers, setters, {control: "deleted control"}) != ([control], []):
+        print("[switch-macros] ERROR: the deleted-switch ALLOWED control did not become stale")
+        return 1
+    defined_control = next((n for n in sorted(consumers) if n in definers and n not in setters), None)
+    setter_control = next((n for n in sorted(consumers) if n in setters and n not in definers), None)
+    if defined_control is None or \
+       stale_allowed(consumers, definers, setters, {defined_control: "defined control"}) != ([], [defined_control]):
+        print("[switch-macros] ERROR: the definer-resolved ALLOWED control did not become stale")
+        return 1
+    if setter_control is None or \
+       stale_allowed(consumers, definers, setters, {setter_control: "setter control"}) != ([], [setter_control]):
+        print("[switch-macros] ERROR: the setter-resolved ALLOWED control did not become stale")
+        return 1
 
     if args.list:
-        print(f"{'switch':<28} {'uses':>5}  reachable via")
+        print(f"{'switch':<28} {'uses':>5}  recorded via")
         for n in sorted(consumers):
             via = sorted(definers.get(n, set()) | setters.get(n, set()))
             short = ", ".join(pathlib.Path(v).name for v in via)[:60] or "*** NOTHING ***"
@@ -186,23 +214,17 @@ def main() -> int:
         print("    Extracting the name statically is the whole mechanism. Not reporting a verdict.")
         return 1
 
-    # A STALE EXEMPTION IS INVISIBLE DEBT, and until 2026-08-11 nothing could see one. ALLOWED was consumed at
-    # exactly one place -- as a negative filter in `unreachable` above -- so an entry whose switch had since been
-    # DELETED stayed in the dict forever, and the dict's own rule ("an entry may only leave by being deleted or
-    # wired") could be satisfied without anyone noticing the entry had not left. GEMV_GATE_FAST was in exactly
-    # that state: tests/test_gemv_lowbit.cu:25 says "it is DELETED: nothing in the tree could define it" while
-    # the dict still carried it as open debt owned by claude.
-    #
-    # The worse case is the one this prevents: a future switch reusing a name that is already exempted would be
-    # waved through on the strength of a note about something else.
-    stale = sorted(n for n in ALLOWED if n not in consumers)
-    if stale:
-        print(f"[switch-macros] FAIL: {len(stale)} ALLOWED entr(ies) name a switch that no longer exists:")
-        for n in stale:
-            print(f"    {n}    -- recorded as: {ALLOWED[n].strip()[:90]}")
-        print("    The switch left by being DELETED, which the dict's own rule permits -- but the ENTRY has to")
-        print("    leave with it. Delete these lines. Keeping them exempts a name, not a decision, so the next")
-        print("    switch to reuse the name inherits an exemption written about something else.")
+    # An exemption can go stale in BOTH permitted ways. The original check covered deletion only; wiring a macro
+    # still left its old debt entry silently alive. In either case the entry now exempts a NAME, not an open decision,
+    # so a future switch reusing that name would inherit somebody else's exception.
+    stale_deleted, stale_resolved = stale_allowed(consumers, definers, setters, ALLOWED)
+    if stale_deleted or stale_resolved:
+        print(f"[switch-macros] FAIL: {len(stale_deleted) + len(stale_resolved)} stale ALLOWED entr(ies):")
+        for n in stale_deleted:
+            print(f"    {n}    -- switch was deleted; recorded as: {ALLOWED[n].strip()[:90]}")
+        for n in stale_resolved:
+            print(f"    {n}    -- switch now has a definer/setter; recorded as: {ALLOWED[n].strip()[:90]}")
+        print("    Delete each entry together with the switch or when its invocation is recorded.")
         return 1
 
     if unreachable:
@@ -216,7 +238,8 @@ def main() -> int:
         print("    by deleting the switch, or by promoting it to a real option. Do not add to ALLOWED without a reason.")
         return 1
 
-    print(f"[switch-macros] PASS: {len(consumers)} owned switch(es), every one reachable by a #define or a -D")
+    print(f"[switch-macros] PASS: {len(consumers)} owned switch(es), every one has a recorded #define/-D route; "
+          "six classifier controls passed")
     return 0
 
 
