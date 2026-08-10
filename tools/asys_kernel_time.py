@@ -13,9 +13,15 @@ wall-clock while moving 5.28 MB; the same binary at N=K=2048 moves 21.0 MB in 20
 same time. A number that barely moves when the work quadruples is not measuring the work.
 
 WHAT THIS DOES INSTEAD. asys exports a per-kernel activity timeline. Each launch is already a row with its own
-device duration, and launcher, H2D, synchronisation and idle gaps are simply not in it. So one capture of a full
-sweep yields the kernel-only time of EVERY row in the table, and repetition becomes a question about variance
-rather than a mechanism for removing bias.
+device duration, and launcher, H2D, synchronisation and idle gaps are simply not in it. So repetition becomes a
+question about variance rather than a mechanism for removing bias.
+
+HOW MANY CONFIGS PER CAPTURE IS THE BOX'S CALL, NOT THIS TOOL'S. An earlier version of this text claimed one
+capture of a full sweep would time every row at once. On aiswu96 that is false: a whole-table run produced an
+18 MB report whose kernel table held ZERO rows, while `MOE_ONLY` on a single config produced 223 -- 201
+bench_floor_nop launches plus the config's 21. Batching several configs failed too. So capture per config (or in
+whatever batch that box tolerates) and check the kernel row count before reading anything. The reading method is
+what matters here and it is unchanged; only the number of configs per capture was over-claimed.
 
 THE POINT IS THE RANKING, NOT THE WINNER'S TIMESTAMP. With roughly 13 us of fixed cost on a 7 us kernel, two
 configs whose kernel times differ by 2 us are 20.6 us against 22.6 us at the host -- inside this harness's recorded

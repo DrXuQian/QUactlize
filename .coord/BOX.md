@@ -943,7 +943,18 @@ Re-reading the same runs from the timeline can change which row is called the wi
 
 ### Run
 
-One capture per shape. **Do not pass `MOE_ONLY`** -- the whole table is wanted, since one capture times all of it.
+**Capture ONE CONFIG at a time.** The original instruction here said to omit `MOE_ONLY` and take the whole table
+in one capture. On this box that produces a report with **zero** kernel activities; batching a few configs by
+prefix fails the same way. A single config works and yields 223 kernel rows -- 201 `bench_floor_nop` launches plus
+the config's 21 -- so the limit is on activities per capture, not on the profiler.
+
+Two configs carry every current conclusion, so take those first and treat a full-table sweep as optional:
+
+    C1 prefill winner : MOE_ONLY='i4 32x128:128 w32x32 s3 bc0->0'   against "$C1" 256 4096 512 2048 32 4 8
+    decode winner     : MOE_ONLY='i4 16x32:256 w16x16 s3 bc0->0'    against "$DEC" 256 8 512 2048 32 3 8
+
+**Check `SELECT COUNT(*) FROM HGPTI_ACTIVITY_KIND_KERNEL` after every export, before reading anything.** An empty
+kernel table is what a failed capture looks like, and it looks exactly like a successful one from the outside.
 
     cd /sim/eec/shared/junfu.qx/quactlize && git pull --ff-only origin develop
     echo "gate-sha=$(git rev-parse HEAD)"
