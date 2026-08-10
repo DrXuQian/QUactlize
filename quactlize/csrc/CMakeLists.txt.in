@@ -873,6 +873,20 @@ if(CUTLASS_PPU_ARCHS STREQUAL "ppu0015")
 endif()
 target_compile_options(test_ppu_m8n16_gates PRIVATE -w)
 
+# #112: after G0/G1/G2 establish the raw ppu001 atom and the physical-16-row
+# AIU delivery, exercise that atom through the mixed-input collective. G3
+# stops before the formal epilogue and checks the raw FP32 accumulator against
+# an independent affine-int4 oracle. G4 runs the full grouped mainloop plus
+# ptr-array epilogue at M={1,2,3,7,8}, with qNaN output initialisation,
+# bilateral canaries and an exact m16 control on the same canonical inputs.
+# G5 does NOT belong to this L=1 target: it remains blocked on #108's real
+# E=256/active=8 non-contiguous/ragged harness.
+quactlize_ppu_executable(
+  test_ppu_m8n16_collective
+  test_ppu_m8n16_collective.cu
+)
+target_compile_options(test_ppu_m8n16_collective PRIVATE -w)
+
 # Q3_K B-CONCAT: ONE GEMM with TWO B bit planes (dedicated 2-plane mainloop), vs the native Q3_K golden.
 #   Build: TARGET=test_q3_bconcat_real ./build.sh ; run: ./<bin> real_weight/real_q3k_concat.bin
 quactlize_ppu_executable(
@@ -944,16 +958,13 @@ set(_MOE_FORMATS
   "i4|0|int4_t|half_t|4|0|16,32,64|i4"
 )
 set(_MOE_ALL_FORMATS ${_MOE_FORMATS})
-# 16 IS THE HARDWARE FLOOR, and it was missing. Every MMA atom in cute/atom/mma_traits_ppu0015.hpp has M = 16
-# (Shape_MNK = Shape<_16,...>, all eight of them), so TileM must be a multiple of 16 and TileM=8 is not reachable with these
-# instructions -- the FA path's ppu.mma.m8n16 is raw asm in a different kernel family, not a cute atom here. TileM=16 IS
-# reachable and this project has run it (the Q3 B-concat sweep used 16x32 warps at TM=16, which fold_traits.hpp still notes),
-# but the list started at 32 so the whole row was absent from every sweep.
+# EIGHT IS A SEPARATE ATOM FAMILY, not a new alignment for every existing shape. #111 wrapped PPU0010 m8n16k16 and
+# GetMmaInstForShape selects it only for TileM=8/WarpM=8; every cross-family pair remains an m16 request and is rejected
+# by ppu_tactic_space.hpp. TileM=16 remains the minimum m16 control and has already run in the Q3 B-concat sweep.
 #
-# At decode it is the largest smem term: A = TM*TK*2 is 2048 of 3328 B/stage at (32,64,32), so TM=16 takes ifl from 78 to 113
-# and TM=16 with TileN=32 to 157 -- roughly 2x the in-flight loads -- while the CTA count does NOT change, because at one row
-# per expert mt = ceil(1/TM) = 1 whatever TileM is.
-set(_MOE_TM_ALLOWED 16 32 64 128 256)
+# TM8 does NOT halve A shared memory: its logical eight rows use a physical 16-row AIU cube with .padz. Its purpose is to
+# halve issued m-work, and decode generation retains both TM8 and TM16 so that claim always has an A/B control.
+set(_MOE_TM_ALLOWED 8 16 32 64 128 256)
 # SCOPE A SWEEP TO ITS QUESTION. Measured cost of one unit (nvcc front end, local): 4.2 s of header parsing plus ~3.0 s per
 # kernel of template instantiation; CODEGEN IS 5.6% of the total, so this is entirely a front-end cost and nothing about the
 # backend or the link will move it. Wall clock is ceil(U/cores) * (4.2 + kernels_per_unit*3.0), which at 642 kernels gives
@@ -963,7 +974,10 @@ set(_MOE_TM_ALLOWED 16 32 64 128 256)
 # Rather than re-tune the split, narrow the PRODUCT: a decode question does not need TileM 64/128/256 (at one row per expert
 # TileM only sets smem, so larger is strictly worse), and a prefill question does not need the deep stages. Override any axis
 # from build.sh, semicolon-separated:
-#   MOE_FORMATS="i4" MOE_TM_LIST="16;32" MOE_STAGES="4;6;8;12" TARGET=test_lowbit_moe_bench ./build.sh
+#   MOE_FORMATS="i4" MOE_TM_LIST="8;16" MOE_WM_LIST="8;16" MOE_STAGES="4;6;8;12" TARGET=test_lowbit_moe_bench ./build.sh
+# The decode example deliberately keeps BOTH atom families. Asking for only TM8/WM8 (or only TM16/WM16) destroys
+# the same-input A/B that #112's bounded-M generator is designed to preserve; add 32 explicitly only when that wider
+# family is part of the question.
 # MOE_FORMATS keeps only the named formats (semicolon-separated, e.g. "i4" or "i4;i2"). This is the axis that cuts the most
 # when the question is about ONE format -- the decode work is all i4 right now, and carrying q3/q5/q6/i2 through it is 4/5 of
 # the compile for none of the answer.
@@ -979,7 +993,7 @@ set(MOE_WM_LIST "" CACHE STRING "MoE WarpM values to compile (semicolon-separate
 set(MOE_STAGES "" CACHE STRING "MoE pipeline stages to instantiate (semicolon-separated subset of 2;3;4;6;8;12; empty=all)")
 
 set(_MOE_TN_ALLOWED 16 32 64 128 256)
-set(_MOE_WM_ALLOWED 16 32 64)
+set(_MOE_WM_ALLOWED 8 16 32 64)
 set(_MOE_STAGE_DEFINE_ROWS
   "2|-DMOE_STAGES_2|MOE_STAGES_2"
   "3|-DMOE_STAGES_3|MOE_STAGES_3"

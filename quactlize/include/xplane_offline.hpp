@@ -33,6 +33,25 @@
 
 namespace xplane {
 
+// B is loaded through a fixed m16 int8 shadow MMA even when the compute MMA is m8.  Keep the two M axes separate:
+// MainWarpCount is derived from the compute atom family, while ShadowPermutationM is the virtual M extent required
+// by that fixed m16 loader.  The exact (TM,WM)=(8,8) pair is the only m8 family exposed by the selector; every legacy
+// family remains on m16, for which this reduces byte-for-byte to the old max(WM,16) arithmetic.
+template <int TM, int WM>
+struct BShadowMShape {
+  static constexpr bool MainIsM8 = TM == 8 && WM == 8;
+  static_assert(MainIsM8 || WM >= 16,
+                "WarpM below 16 is valid only for the exact TileM=8/WarpM=8 m8 family");
+  static constexpr int MainInstM = MainIsM8 ? 8 : 16;
+  static constexpr int MainWarpM = WM > MainInstM ? WM : MainInstM;
+  static_assert(TM >= MainWarpM && TM % MainWarpM == 0,
+                "TileM must contain a whole number of compute-MMA warp tiles");
+  static constexpr int MainWarpCount = TM / MainWarpM;
+  static constexpr int ShadowPermutationM = MainWarpCount * 16;
+  static_assert(MainWarpCount > 0 && ShadowPermutationM % 16 == 0,
+                "the fixed m16 B shadow loader needs at least one complete virtual-M atom");
+};
+
 // (a) THE swzl DELIVERY POSITION, FROM THE REAL OBJECTS. This was the one link in the whole chain that was never a cute
 // layout: l20 and plane_map both hand-wrote
 //     row = inst*RPI + 16*warp_n + (v/2)*8 + lane/4      wd = (v%2)*4 + lane%4      RPI = WON*16
@@ -47,8 +66,9 @@ namespace xplane {
 // box-validated buffers.
 template <int Bits, int TM, int TN, int TK, int WM, int WN, int F, int ArtifactTileK = TK>
 struct CubeTV {
-  static constexpr int warpM = (WM > 16) ? WM : 16, warpN = (WN > 16) ? WN : 16;
-  static constexpr int WOM = TM / warpM, WON = TN / warpN;
+  using ShadowM = BShadowMShape<TM, WM>;
+  static constexpr int warpN = (WN > 16) ? WN : 16;
+  static constexpr int WOM = ShadowM::MainWarpCount, WON = TN / warpN;
   static_assert(ArtifactTileK > 0 && TK % ArtifactTileK == 0,
                 "artifact TileK must evenly tile tactic TileK");
   static constexpr int FullBK = F * TK, CopyBK = F * ArtifactTileK, Ng = TN / F;
@@ -67,7 +87,8 @@ struct CubeTV {
   using SInst = cute::PPU0015_16x16x32_S32S8S8S32_TN;
   using MmaS8 = cute::TiledMMA<cute::MMA_Atom<SInst>,
                                cute::Layout<cute::Shape<cute::Int<WOM>, cute::Int<WON>, cute::_1>>,
-                               cute::Tile<cute::Int<WOM*16>, cute::Int<WON*16>, cute::_32>>;
+                               cute::Tile<cute::Int<ShadowM::ShadowPermutationM>,
+                                          cute::Int<WON*16>, cute::_32>>;
   using Op    = cute::PPU0010_TSM_LD_SWZL<int8_t, Ng, AiuElem * Bits / 8, true, false, InstNum>;
   using Tr    = cute::Copy_Traits<Op>;
   static constexpr int WPR = Tr::LogicalWordsPerRow;                    // 32-bit words per cube row
@@ -102,9 +123,10 @@ template <int Bits, int TM, int TN, int TK, int WM, int WN, int F, int ArtifactT
 inline std::vector<int> plane_map() {
   using namespace cute;
   using FInst = PPU0015_16x16x16_F32F16F16F32_TN;
-  constexpr int InstM = 16, InstN = 16;
-  constexpr int warpM = (WM > InstM) ? WM : InstM, warpN = (WN > InstN) ? WN : InstN;
-  constexpr int WOM = TM / warpM, WON = TN / warpN;
+  using ShadowM = BShadowMShape<TM, WM>;
+  constexpr int InstN = 16;
+  constexpr int warpN = (WN > InstN) ? WN : InstN;
+  constexpr int WOM = ShadowM::MainWarpCount, WON = TN / warpN;
   constexpr int CPW = 32 / Bits, Ng = TN / F, RPI = WON * 16, VEC = 4 * 32 / Bits;
   constexpr int DL = (F * TK * Bits / 8) / 32;
   static_assert(DL >= 1 && DL * 8 * CPW == F * TK, "row must be a whole number of 32B deliveries");
@@ -112,7 +134,7 @@ inline std::vector<int> plane_map() {
   // silently broke a folded plane: at Block_K=64 with F=2 the composition covered 4160 of 8192 elements.
   constexpr int MmaPermK = cutlass::MixGemmMmaPermK<Bits, TK, F>::value;
   using Mma = TiledMMA<MMA_Atom<FInst>, Layout<Shape<Int<WOM>, Int<WON>, _1>>,
-                       Tile<Int<WOM*16>, Int<WON*16>, Int<MmaPermK>>>;
+                       Tile<Int<ShadowM::ShadowPermutationM>, Int<WON*16>, Int<MmaPermK>>>;
   auto sB = make_tensor(make_smem_ptr((cutlass::half_t*)nullptr),
                         make_layout(Shape<Int<TN>, Int<TK>>{}, Stride<Int<TK>, _1>{}));
   auto frag = Mma{}.get_thread_slice(0).partition_fragment_B(sB);
@@ -183,8 +205,9 @@ template <int LowBits, int HiBits, int TM, int TN, int TK, int WM, int WN,
           int F2, int F1 = 1, int ArtifactTileK = TK>
 inline std::vector<int> tile_map_hi() {
   using namespace cute;
-  constexpr int InstM = 16, warpM = (WM > InstM) ? WM : InstM, warpN = (WN > 16) ? WN : 16;
-  constexpr int WOM = TM / warpM, WON = TN / warpN, RPI = WON * 16;
+  using ShadowM = BShadowMShape<TM, WM>;
+  constexpr int warpN = (WN > 16) ? WN : 16;
+  constexpr int WOM = ShadowM::MainWarpCount, WON = TN / warpN, RPI = WON * 16;
   constexpr int CPW1 = 32 / LowBits, CPW2 = 32 / HiBits, Ng1 = TN / F1, Ng2 = TN / F2;
   constexpr int DL1 = (F1 * TK * LowBits / 8) / 32, DL2 = (F2 * TK * HiBits / 8) / 32;
   constexpr int NI1 = Ng1 / RPI, NI2 = Ng2 / RPI;

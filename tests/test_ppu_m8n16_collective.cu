@@ -1,0 +1,476 @@
+// #112 G3/G4 numerical gate for the ppu001 m8n16 mixed-input collective.
+//
+// This target deliberately has two layers:
+//
+//   G3  invokes the real ScaleZero int4 collective mainloop directly, then
+//       scatters its FP32 accumulator fragment with the TiledMma coordinate
+//       tensor.  There is no formal epilogue in this arm.  Eight one-hot A
+//       rows select K coordinates on both sides of the gs=32 boundary, so a
+//       failure is in A delivery, B delivery/dequant, metadata selection, or
+//       the m8 atom -- not in the output epilogue.
+//
+//   G4  runs the production grouped kernel and formal ptr-array epilogue for
+//       M={1,2,3,7,8}.  Every logical D element starts as a qNaN and the D
+//       allocation has distinct bit-exact canaries on both sides.  Each m8
+//       result is checked against an independent host dequant/GEMM oracle and
+//       against an exact m16-control launch on the same canonical A/Q/S/Z.
+//
+// G5 is intentionally NOT represented here.  Its E=256/active=8,
+// non-contiguous active IDs and genuinely ragged route require #108's real
+// harness; an L=1 self-comparison cannot detect a shared structured
+// atom/A-fragment/epilogue permutation and must not be presented as G5.
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <limits>
+#include <type_traits>
+#include <vector>
+
+#include "cutlass/util/device_memory.h"
+#include "cutlass/util/packed_stride.hpp"
+#include "helper.h"
+#include "moe_grouped_ppu.cuh"
+#include "ppu_group_schedule.hpp"
+#include "ppu_mixed_policy.hpp"
+#include "xplane_offline.hpp"
+
+namespace {
+
+using half_t = cutlass::half_t;
+using int4_t = cutlass::int4b_t;
+using QM = moe_grouped_ppu::QuantMode;
+using GS = moe_grouped_ppu::GroupShape;
+using DStride = moe_grouped_ppu::DStride;
+
+constexpr int kN = 32;
+constexpr int kK = 64;
+constexpr int kGs = 32;
+constexpr int kScaleK = kK / kGs;
+constexpr int kStages = 3;
+constexpr int kGuard = 64;
+constexpr std::uint16_t kLeftCanary = 0x3555u;
+constexpr std::uint16_t kRightCanary = 0xb555u;
+constexpr std::uint16_t kOutputNaN = 0x7e01u;
+
+using BaseSchedule = ppu_group_schedule::FinegrainedSchedule<kGs>;
+using M8Tile = cute::Shape<cute::_8, cute::_32, cute::_64>;
+using M8Warp = cute::Shape<cute::_8, cute::_32, cute::_64>;
+using ScaleTile = cute::Shape<cute::_32, cute::_2>;
+using M8Policy = ppu_mixed_policy::MainloopPolicy<
+    QM::FinegrainedScaleZero, BaseSchedule, M8Tile, ScaleTile, M8Warp,
+    kStages, false, int4_t>;
+using M8Mainloop = typename M8Policy::CollectiveOp;
+
+static_assert(cute::size<0>(typename M8Mainloop::TiledMma::AtomShape_MNK{}) == 8,
+              "G3/G4 m8 arm must instantiate the ppu001 m8n16 atom");
+static_assert(cute::size(typename M8Mainloop::TiledMma{}) == 32,
+              "G3 is deliberately one warp / one CTA");
+static_assert(cute::size<0>(typename M8Mainloop::SmemLayoutA{}) == 8,
+              "m8 mainloop must expose eight logical A rows");
+static_assert(cute::size<0>(typename M8Mainloop::SmemLayoutAPhysical{}) == 16,
+              "m8 mainloop must retain the physical 16-row AIU cube");
+
+half_t hbits(std::uint16_t bits) { return half_t::bitcast(bits); }
+
+std::vector<std::uint8_t> make_codes() {
+  std::vector<std::uint8_t> q(std::size_t(kK) * kN);
+  for (int k = 0; k < kK; ++k) {
+    for (int n = 0; n < kN; ++n) {
+      // All 16 codes occur in every K neighbourhood, and neither K nor N is
+      // a symmetry of the pattern.
+      q[std::size_t(k) * kN + n] =
+          std::uint8_t((11 * k + 7 * n + 3 * (k / kGs) + (k ^ n)) & 15);
+    }
+  }
+  return q;
+}
+
+std::vector<half_t> make_scales() {
+  std::vector<half_t> s(std::size_t(kScaleK) * kN);
+  for (int g = 0; g < kScaleK; ++g) {
+    for (int n = 0; n < kN; ++n) {
+      // Positive dyadics keep the CPU oracle independent but exactly
+      // representable through the device's fp16 multiply.
+      s[std::size_t(g) * kN + n] = half_t(float(1 + ((5 * g + 3 * n) & 7)) / 32.0f);
+    }
+  }
+  return s;
+}
+
+std::vector<half_t> make_zeros(std::vector<half_t> const& scales) {
+  std::vector<half_t> z(scales.size());
+  for (int g = 0; g < kScaleK; ++g) {
+    for (int n = 0; n < kN; ++n) {
+      // The int4 converter emits q-8.  8*scale cancels that representation
+      // bias; a distinct signed dyadic offset keeps the zero plane
+      // independently load-bearing instead of reducing the test to ScaleOnly.
+      float const offset = float(((13 * n + 5 * g) % 7) - 3) / 16.0f;
+      z[std::size_t(g) * kN + n] =
+          half_t(8.0f * float(scales[std::size_t(g) * kN + n]) + offset);
+    }
+  }
+  return z;
+}
+
+std::vector<half_t> make_dense_a() {
+  std::vector<half_t> a(std::size_t(8) * kK);
+  for (int m = 0; m < 8; ++m) {
+    for (int k = 0; k < kK; ++k) {
+      a[std::size_t(m) * kK + k] =
+          half_t(float(((17 * m + 9 * k + (m ^ k)) % 15) - 7) / 16.0f);
+    }
+  }
+  return a;
+}
+
+std::vector<half_t> make_onehot_a() {
+  constexpr int selected[8] = {0, 7, 15, 31, 32, 39, 47, 63};
+  std::vector<half_t> a(std::size_t(8) * kK, half_t(0.0f));
+  for (int m = 0; m < 8; ++m) {
+    a[std::size_t(m) * kK + selected[m]] = half_t(float(m + 1) / 8.0f);
+  }
+  return a;
+}
+
+// Reproduce the device's three fp16 steps independently: int4 -> fp16 q-8,
+// fp16 multiply by scale, then fp16 add zero.  Keeping each rounding point
+// prevents a host float FMA from becoming a self-invented oracle.
+half_t dequant_one(std::uint8_t q, half_t scale, half_t zero) {
+  half_t const centered(float(int(q) - 8));
+  half_t const scaled(float(centered) * float(scale));
+  return half_t(float(scaled) + float(zero));
+}
+
+std::vector<float> golden_fp32(
+    std::vector<half_t> const& a, int M,
+    std::vector<std::uint8_t> const& q,
+    std::vector<half_t> const& scales,
+    std::vector<half_t> const& zeros) {
+  std::vector<float> d(std::size_t(M) * kN, 0.0f);
+  for (int m = 0; m < M; ++m) {
+    for (int n = 0; n < kN; ++n) {
+      float acc = 0.0f;
+      for (int k = 0; k < kK; ++k) {
+        half_t const w = dequant_one(
+            q[std::size_t(k) * kN + n],
+            scales[std::size_t(k / kGs) * kN + n],
+            zeros[std::size_t(k / kGs) * kN + n]);
+        acc += float(a[std::size_t(m) * kK + k]) * float(w);
+      }
+      d[std::size_t(m) * kN + n] = acc;
+    }
+  }
+  return d;
+}
+
+template <class Mainloop>
+__global__ void g3_mainloop_only(
+    typename Mainloop::Params params, float* output) {
+  extern __shared__ char smem[];
+  int const tid = int(threadIdx.x);
+  if (blockIdx.x != 0 || blockIdx.y != 0 || blockIdx.z != 0 ||
+      tid >= int(cute::size(typename Mainloop::TiledMma{}))) return;
+
+  auto problem = cute::make_shape(8, kN, kK, 1);
+  auto block = cute::make_coord(0, 0, cute::_, 0);
+  Mainloop mainloop;
+  auto inputs = mainloop.load_init(problem, block, params);
+
+  typename Mainloop::TiledMma tiled_mma;
+  auto accum = cute::make_fragment_like<float>(
+      cute::partition_fragment_C(tiled_mma, cute::take<0, 2>(typename Mainloop::TileShape{})));
+  cute::clear(accum);
+  auto gA = cute::get<0>(inputs);
+  auto k_iter = cute::make_coord_iterator(cute::shape<2>(gA));
+  mainloop(params, inputs, accum, k_iter, int(cute::size<2>(gA)), tid, smem);
+
+  // This is the mainloop's own accumulator-coordinate map, not a second
+  // transcription of the m8 register ABI (G1 already gates that ABI).
+  auto cC = cute::make_identity_tensor(cute::make_shape(cute::_8{}, cute::_32{}));
+  auto thr_mma = tiled_mma.get_thread_slice(tid);
+  auto tCcC = thr_mma.partition_C(cC);
+  CUTE_STATIC_ASSERT_V(cute::size(tCcC) == cute::size(accum));
+  CUTLASS_PRAGMA_UNROLL
+  for (int i = 0; i < int(cute::size(accum)); ++i) {
+    auto coord = tCcC(i);
+    output[int(cute::get<0>(coord)) * kN + int(cute::get<1>(coord))] = accum(i);
+  }
+}
+
+int check_float_output(char const* tag, std::vector<float> const& got,
+                       std::vector<float> const& want, float atol) {
+  int bad = 0;
+  float max_abs = 0.0f;
+  for (std::size_t i = 0; i < got.size(); ++i) {
+    float const err = std::abs(got[i] - want[i]);
+    max_abs = std::max(max_abs, err);
+    if (!std::isfinite(got[i]) || err > atol) {
+      if (bad < 6) {
+        std::printf("    %s[%zu] got=%g want=%g err=%g\n",
+                    tag, i, double(got[i]), double(want[i]), double(err));
+      }
+      ++bad;
+    }
+  }
+  std::printf("  %-24s bad=%d/%zu max_abs=%.3e %s\n",
+              tag, bad, got.size(), double(max_abs), bad ? "MISMATCH" : "MATCH");
+  return bad;
+}
+
+int run_g3(
+    cutlass::DeviceAllocation<int4_t>& dB,
+    cutlass::DeviceAllocation<half_t>& dScale,
+    cutlass::DeviceAllocation<half_t>& dZero,
+    std::vector<std::uint8_t> const& q,
+    std::vector<half_t> const& scales,
+    std::vector<half_t> const& zeros) {
+  auto a = make_onehot_a();
+  auto golden = golden_fp32(a, 8, q, scales, zeros);
+  cutlass::DeviceAllocation<half_t> dA(a.size());
+  cutlass::DeviceAllocation<float> dOut(golden.size());
+  dA.copy_from_host(a.data());
+  std::vector<float> init(golden.size(), std::numeric_limits<float>::quiet_NaN());
+  dOut.copy_from_host(init.data());
+
+  using StrideA = typename M8Mainloop::StrideA;
+  using StrideB = typename M8Mainloop::StrideB;
+  using StrideS = typename M8Mainloop::StrideScale;
+  StrideA dA_stride = cutlass::make_cute_packed_stride(
+      StrideA{}, cute::make_shape(8, kK, 1));
+  StrideB dB_stride = cutlass::make_cute_packed_stride(
+      StrideB{}, cute::make_shape(kN, kK, 1));
+  StrideS dS_stride = cutlass::make_cute_packed_stride(
+      StrideS{}, cute::make_shape(kN, kScaleK, 1));
+  typename M8Mainloop::Arguments args{
+      dA.get(), dA_stride, dB.get(), dB_stride,
+      dScale.get(), dS_stride, kGs, dZero.get(), nullptr};
+  auto params = M8Mainloop::to_underlying_arguments(
+      cute::make_shape(8, kN, kK, 1), args, nullptr);
+
+  g3_mainloop_only<M8Mainloop><<<
+      1, int(cute::size(typename M8Mainloop::TiledMma{})),
+      sizeof(typename M8Mainloop::SharedStorage)>>>(params, dOut.get());
+  CUTLASS_PPU_CHECK(hggcGetLastError());
+  CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
+  std::vector<float> got(golden.size());
+  dOut.copy_to_host(got.data());
+  return check_float_output("G3 raw FP32 accum", got, golden, 1.0e-5f);
+}
+
+template <int TM, int WM>
+bool launch_g4(
+    half_t const* A, int4_t const* B, half_t const* scales, half_t const* zeros,
+    half_t* D, int M, char* workspace, std::size_t workspace_bytes) {
+  using Tile = cute::Shape<cute::Int<TM>, cute::_32, cute::_64>;
+  using Warp = cute::Shape<cute::Int<WM>, cute::_32, cute::_64>;
+  using Scale = cute::Shape<cute::_32, cute::_2>;
+
+  std::vector<GS> shapes{cute::make_shape(M, kN, kK)};
+  cutlass::DeviceAllocation<GS> dShapes(1);
+  dShapes.copy_from_host(shapes.data());
+  auto stride = cutlass::make_cute_packed_stride(
+      DStride{}, cute::make_shape(M, kN, 1));
+  std::vector<half_t*> ptrs{D};
+  std::vector<DStride> strides{stride};
+  std::vector<int> group_m{M};
+  cutlass::DeviceAllocation<half_t*> dPtrs(1);
+  cutlass::DeviceAllocation<DStride> dStrides(1);
+  cutlass::DeviceAllocation<int> dGroupM(1);
+  dPtrs.copy_from_host(ptrs.data());
+  dStrides.copy_from_host(strides.data());
+  dGroupM.copy_from_host(group_m.data());
+
+  bool const launched = moe_grouped_ppu::launch<
+      QM::FinegrainedScaleZero, BaseSchedule, Tile, Scale, Warp,
+      kStages, false, int4_t>(
+          A, B, scales, zeros, dPtrs.get(), dStrides.get(), dGroupM.get(),
+          M, kN, kK, 1, kGs, dShapes.get(), shapes.data(), nullptr,
+          workspace, workspace_bytes, nullptr);
+  // The pointer/stride/problem arrays above own the asynchronous launch's
+  // arguments.  Do not let their RAII allocations go out of scope until the
+  // kernel has consumed them.
+  CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
+  return launched;
+}
+
+struct G4Result {
+  std::vector<half_t> logical;
+  int errors = 0;
+};
+
+template <int TM, int WM>
+G4Result run_g4_arm(
+    char const* family, int M, half_t const* dA, int4_t const* dB,
+    half_t const* dScale, half_t const* dZero) {
+  std::size_t const logical_count = std::size_t(M) * kN;
+  std::vector<half_t> host(kGuard + logical_count + kGuard);
+  std::fill(host.begin(), host.begin() + kGuard, hbits(kLeftCanary));
+  std::fill(host.begin() + kGuard, host.begin() + kGuard + logical_count,
+            hbits(kOutputNaN));
+  std::fill(host.begin() + kGuard + logical_count, host.end(),
+            hbits(kRightCanary));
+
+  cutlass::DeviceAllocation<half_t> dStorage(host.size());
+  // One CTA needs only a tiny scheduler workspace; overallocate deliberately
+  // so this test does not duplicate scheduler-internal byte arithmetic.
+  cutlass::DeviceAllocation<char> workspace(4096);
+  dStorage.copy_from_host(host.data());
+  int const fail_before = moe_grouped_ppu::moeg_fail_count();
+  bool const launched = launch_g4<TM, WM>(
+      dA, dB, dScale, dZero, dStorage.get() + kGuard, M,
+      workspace.get(), workspace.capacity);
+  CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
+  int const launch_failures = moe_grouped_ppu::moeg_fail_count() - fail_before;
+  dStorage.copy_to_host(host.data());
+
+  G4Result result;
+  if (!launched || launch_failures != 0) {
+    std::printf("    %s M=%d launch failed: returned=%d fail_delta=%d\n",
+                family, M, int(launched), launch_failures);
+    ++result.errors;
+  }
+  for (int i = 0; i < kGuard; ++i) {
+    if (host[i].raw() != kLeftCanary) ++result.errors;
+  }
+  for (int i = 0; i < kGuard; ++i) {
+    if (host[kGuard + logical_count + i].raw() != kRightCanary) ++result.errors;
+  }
+  result.logical.assign(host.begin() + kGuard,
+                        host.begin() + kGuard + logical_count);
+  for (half_t v : result.logical) {
+    if (std::isnan(float(v)) || !std::isfinite(float(v))) ++result.errors;
+  }
+  if (result.errors) {
+    std::printf("    %s M=%d canary/overwrite errors=%d\n",
+                family, M, result.errors);
+  }
+  return result;
+}
+
+int check_g4_values(
+    char const* family, int M, std::vector<half_t> const& got,
+    std::vector<float> const& golden) {
+  int bad = 0;
+  float max_abs = 0.0f;
+  for (std::size_t i = 0; i < got.size(); ++i) {
+    // The formal epilogue converts FP32 accumulator to fp16.
+    half_t const want_h(golden[i]);
+    float const err = std::abs(float(got[i]) - float(want_h));
+    max_abs = std::max(max_abs, err);
+    if (!std::isfinite(float(got[i])) || err > 1.0e-3f) {
+      if (bad < 4) {
+        std::printf("    %s M=%d i=%zu got=%g want=%g err=%g\n",
+                    family, M, i, double(float(got[i])),
+                    double(float(want_h)), double(err));
+      }
+      ++bad;
+    }
+  }
+  std::printf("  G4 %-5s M=%d golden bad=%d/%zu max_abs=%.3e %s\n",
+              family, M, bad, got.size(), double(max_abs),
+              bad ? "MISMATCH" : "MATCH");
+  return bad;
+}
+
+int check_m8_m16(int M, std::vector<half_t> const& m8,
+                 std::vector<half_t> const& m16) {
+  int bad = 0;
+  for (std::size_t i = 0; i < m8.size(); ++i) {
+    if (m8[i].raw() != m16[i].raw()) {
+      if (bad < 4) {
+        std::printf("    G4 A/B M=%d i=%zu m8=%g(0x%04x) m16=%g(0x%04x)\n",
+                    M, i, double(float(m8[i])), unsigned(m8[i].raw()),
+                    double(float(m16[i])), unsigned(m16[i].raw()));
+      }
+      ++bad;
+    }
+  }
+  std::printf("  G4 m8-vs-m16 M=%d bitdiff=%d/%zu %s\n",
+              M, bad, m8.size(), bad ? "MISMATCH" : "MATCH");
+  return bad;
+}
+
+}  // namespace
+
+int main() {
+  std::printf("== [112] ppu001 m8n16 collective G3/G4 ==\n");
+  std::printf("[G5] BLOCKED on #108 real E=256/active=8 ragged harness; L=1 is not substituted\n");
+
+  auto q = make_codes();
+  auto scales = make_scales();
+  auto zeros = make_zeros(scales);
+  auto dense_a = make_dense_a();
+
+  std::size_t const logical_bbytes = std::size_t(kK) * kN * 4 / 8;
+  // This intentionally tiny one-CTA N has fewer rows than one 256-code
+  // resident flat-layout quantum.  xplane's F=1/TK=64 artifact therefore
+  // has four physical run slots (RPS=256/64) even though only one slot per
+  // logical row is populated.  This synthetic gate allocates the physical
+  // domain explicitly; sizing it as logical int4 bytes makes the offline
+  // producer write past the buffer before the kernel is even launched.  The
+  // local recover_derived round trip checks all 2048 canonical codes through
+  // this 4096-byte artifact.
+  constexpr int kResidentRunSlots = 4;
+  std::size_t const artifact_bbytes = logical_bbytes * kResidentRunSlots;
+  std::vector<std::int8_t> b8(artifact_bbytes, 0), b16(artifact_bbytes, 0);
+  xplane::place_derived<4, 8, 32, 64, 8, 32, 1>(
+      b8.data(), q, kN, kK);
+  xplane::place_derived<4, 16, 32, 64, 16, 32, 1>(
+      b16.data(), q, kN, kK);
+  int errors = 0;
+  if (b8 != b16) {
+    int diff = 0;
+    for (std::size_t i = 0; i < artifact_bbytes; ++i) diff += b8[i] != b16[i];
+    std::printf("[offline] m8/m16 B artifacts differ at %d/%zu bytes -- FAIL\n",
+                diff, artifact_bbytes);
+    return 1;
+  }
+  std::vector<std::uint8_t> recovered;
+  xplane::recover_derived<4, 8, 32, 64, 8, 32, 1>(
+      b8.data(), recovered, kN, kK);
+  int recovery_bad = 0;
+  for (std::size_t i = 0; i < q.size(); ++i) recovery_bad += recovered[i] != q[i];
+  if (recovery_bad != 0) {
+    std::printf("[offline] m8 artifact round trip bad=%d/%zu -- FAIL\n",
+                recovery_bad, q.size());
+    return 1;
+  }
+  std::printf("[offline] m8/m16 B artifacts byte-identical: %zu physical bytes "
+              "(%zu logical); roundtrip=0/%zu\n",
+              artifact_bbytes, logical_bbytes, q.size());
+
+  cutlass::DeviceAllocation<int4_t> dB(artifact_bbytes);
+  cutlass::DeviceAllocation<half_t> dScale(scales.size());
+  cutlass::DeviceAllocation<half_t> dZero(zeros.size());
+  cutlass::DeviceAllocation<half_t> dDenseA(dense_a.size());
+  // DeviceAllocation allocates sub-byte wrapper storage with sizeof(T), but
+  // copy_from_host counts sizeof_bits<T>.  This allocation is intentionally
+  // byte-sized, so use an explicitly byte-sized copy; otherwise only half of
+  // an int4 artifact is transferred and the second K group stays uninitialised.
+  CUTLASS_PPU_CHECK(hggcMemcpy(
+      dB.get(), b8.data(), artifact_bbytes, hggcMemcpyHostToDevice));
+  dScale.copy_from_host(scales.data());
+  dZero.copy_from_host(zeros.data());
+  dDenseA.copy_from_host(dense_a.data());
+
+  errors += run_g3(dB, dScale, dZero, q, scales, zeros);
+
+  constexpr int Ms[] = {1, 2, 3, 7, 8};
+  for (int M : Ms) {
+    auto golden = golden_fp32(dense_a, M, q, scales, zeros);
+    auto m16 = run_g4_arm<16, 16>(
+        "m16", M, dDenseA.get(), dB.get(), dScale.get(), dZero.get());
+    auto m8 = run_g4_arm<8, 8>(
+        "m8", M, dDenseA.get(), dB.get(), dScale.get(), dZero.get());
+    errors += m8.errors + m16.errors;
+    errors += check_g4_values("m8", M, m8.logical, golden);
+    errors += check_g4_values("m16", M, m16.logical, golden);
+    errors += check_m8_m16(M, m8.logical, m16.logical);
+  }
+
+  std::printf("== [112] %s: errors=%d (G3/G4; G5 blocked on #108) ==\n",
+              errors ? "FAIL" : "PASS", errors);
+  return errors ? 1 : 0;
+}

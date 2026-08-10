@@ -101,6 +101,10 @@ SYNTAX = [
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_B_DEQUANT_NOP=1"),
     ("tests/test_moe_grouped_verify.cu", ""),
     ("tests/test_moe_grouped_real.cu", ""),
+    # #112's collective gate is a new device path, not merely a host harness:
+    # compile the raw-mainloop G3 arm and both TM8/TM16 production G4 arms
+    # locally so a dependent-template error cannot wait for the ppu001 box.
+    ("tests/test_ppu_m8n16_collective.cu", ""),
     # INBOX 097 changes scale-copy ownership, so its two independent-golden box targets must at least instantiate
     # locally. Q65 once omitted the optional two-plane specialization include and otherwise reached the box with
     # CollectiveMma's failing primary template; keeping the real source here makes that omission non-repeatable.

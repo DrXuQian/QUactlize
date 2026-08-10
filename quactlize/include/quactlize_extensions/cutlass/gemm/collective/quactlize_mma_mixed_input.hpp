@@ -388,8 +388,8 @@ public:
   // A's SMEM CANNOT BE MADE STRIDE-0 IN M -- TRIED, IT FAULTS. Recorded because the arithmetic is compelling
   // and someone (me) will otherwise try it again.
   //
-  // The motivation: at decode every expert has ONE row while TileM >= 16 (every MMA atom is Shape<_16,...>), so
-  // 15/16 of this tile is padding whose results the epilogue's residue mask discards. SharedStorage sizes smem_a
+  // The motivation: at decode every expert has ONE row while the original path used TileM=16, so 15/16 of that
+  // tile was padding whose results the epilogue's residue mask discarded. SharedStorage sizes smem_a
   // by cosize_v<SmemLayoutA>, so a stride-0 M mode shrinks the allocation with no change there: 16,384 B ->
   // 1,024 B at (16,32,256) with 2 stages, block total 26,624 -> 11,264, 9 blocks/CU -> 23, 18 warps/CU -> 46,
   // theoretical occupancy 28% -> 72%.
@@ -418,8 +418,8 @@ public:
   // warps/block 2 -> 8 at fixed total work and bought 1.066x within a single run (22.68 -> 21.28 us), so
   // occupancy is a weak lever for this kernel. 2.6x of theoretical occupancy would not be expected to behave
   // differently from 1.78x of it.
-  // A's shared-memory tile. Its footprint is TileM x TileK x Stages and TileM >= 16 is forced by the MMA atom
-  // shape, so at one row per expert 15/16 of it is padding -- but it cannot be shrunk HERE. Two box faults and one
+  // A's shared-memory tile retains a physical 16 x TileK x Stages floor even when the logical MMA tile is m8.
+  // Thus the m8 path reduces issued work but does not halve A-smem. Two box faults and one
   // silent-NaN round established why: the allocation is sized by cosize_v<SmemLayoutA>, so a stride-0 M mode does
   // collapse it, but the swzl read is addressed by COORDINATE (fold_derivation/l74) and by its cube geometry, not
   // by these strides, so the instruction keeps sourcing TileM rows and reads out of bounds. Shrinking the cube to
@@ -435,9 +435,37 @@ public:
   // THE LAYOUTS COME FROM THE SHARED HEADER. They are a pure function of (TileShape, Stages, atom) with no
   // reference to B, and all three collectives spelled the ordinary one identically -- so an A-side feature that
   // lives in one of them is an accident of where it was typed, not a property of the format.
-  using SmemLayoutA = decltype(tile_to_shape(
+  // m8 is a LOGICAL MMA tile over a PHYSICAL 16-row AIU cube.  Keep two views of the same storage:
+  //   * SmemLayoutAPhysical owns/writes 16 x K x stages, so the raw x4 swzl read never crosses the allocation;
+  //   * SmemLayoutA exposes only TileM rows to partition_fragment_A and the projected A2 copy atom.
+  // The logical view's stage stride is the PHYSICAL stage span.  A compact 8-row staged layout would put stage i+1
+  // halfway through stage i's cube -- a silent cross-stage alias even though its shape and cosize look plausible.
+  static constexpr int LogicalTileM = int(size<0>(TileShape{}));
+  static constexpr int PhysicalATileM = LogicalTileM < 16 ? 16 : LogicalTileM;
+  using SmemLayoutACompact = decltype(tile_to_shape(
       InternalSmemLayoutAtomA{},
       make_shape(shape<0>(TileShape{}), shape<2>(TileShape{}), Int<DispatchPolicy::Stages>{})));
+  using SmemLayoutAPhysicalStage = decltype(tile_to_shape(
+      InternalSmemLayoutAtomA{},
+      make_shape(Int<PhysicalATileM>{}, shape<2>(TileShape{}))));
+  using SmemLayoutAPhysical = decltype(tile_to_shape(
+      InternalSmemLayoutAtomA{},
+      make_shape(Int<PhysicalATileM>{}, shape<2>(TileShape{}), Int<DispatchPolicy::Stages>{})));
+  using SmemLayoutALogicalStage = decltype(tile_to_shape(
+      InternalSmemLayoutAtomA{},
+      make_shape(shape<0>(TileShape{}), shape<2>(TileShape{}))));
+  using SmemLayoutALogicalPitched = decltype(append(
+      SmemLayoutALogicalStage{},
+      make_layout(Int<DispatchPolicy::Stages>{}, Int<cute::cosize_v<SmemLayoutAPhysicalStage>>{})));
+  using SmemLayoutA = cute::conditional_t<LogicalTileM == PhysicalATileM,
+      SmemLayoutACompact, SmemLayoutALogicalPitched>;
+  static_assert(size<0>(SmemLayoutA{}) == LogicalTileM,
+                "A MMA view must expose exactly the logical TileM");
+  static_assert(size<0>(SmemLayoutAPhysical{}) == PhysicalATileM,
+                "A physical AIU view must retain the 16-row cube floor");
+  static_assert(LogicalTileM != 8 ||
+                    cute::cosize_v<SmemLayoutAPhysical> >= 16 * int(size<2>(TileShape{})) * DispatchPolicy::Stages,
+                "TM8 must pay for complete 16-row A cubes in every stage");
   using SmemLayoutB = decltype(tile_to_shape(
       InternalSmemLayoutAtomB{},
       make_shape(shape<1>(TileShape{}), shape<2>(TileShape{}), Int<DispatchPolicy::Stages>{})));
@@ -712,7 +740,7 @@ public:
     // Packed: the cubes overlap, so the allocation is the packed span, not cosize of the logical tile.
     cute::ArrayEngine<RealInternalElementA, kAPackSpan> smem_a;
 #else
-    cute::ArrayEngine<RealInternalElementA, cute::cosize_v<SmemLayoutA>> smem_a;
+    cute::ArrayEngine<RealInternalElementA, cute::cosize_v<SmemLayoutAPhysical>> smem_a;
 #endif
     // If this member is ever resized or removed, note that smem_b follows it directly and array_aligned defaults
     // to 16-B alignment: at the full size (cosize*2 B, a multiple of 32) smem_b happens to land 32-B aligned,
@@ -849,7 +877,7 @@ public:
                                                           : int64_t(l_coord) * int64_t(M);
     Tensor mA_mkl = make_tensor(make_gmem_ptr(mainloop_params.ptr_A + a_row_off * K),
                                 make_shape(M,K,cute::Int<1>{}), mainloop_params.dA);                            // (m,k,1)
-    auto gA = [&] {
+    auto gA_logical = [&] {
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
       constexpr bool plain_a_copy = true;
 #else
@@ -865,6 +893,17 @@ public:
         return local_tile(mA_mk, TileShape{}, take<0,3>(blk_coord_mnkl), Step<_1, X,_1>{});
       }
     }();                                                                                                      // (BLK_M,BLK_K,k)
+    auto gA = [&] {
+      if constexpr (LogicalTileM == PhysicalATileM) {
+        return gA_logical;
+      } else {
+        // Preserve local_tile's base coordinate m_coord*TileM, but widen only its in-tile M extent.  Cutting a
+        // physical-16 local_tile directly would advance the second logical tile to row 16 and silently skip rows
+        // 8..15.  The descriptor still carries the real problem M, so `.padz` zero-fills the widened tail.
+        auto physical_m = make_layout(Int<PhysicalATileM>{}, stride<0>(gA_logical.layout()));
+        return make_tensor(gA_logical.data(), replace<0>(gA_logical.layout(), physical_m));
+      }
+    }();                                                                                                      // (A_PHYS_M,BLK_K,k)
 
     // B init (include init aiu desc)
     auto mB_nk = load_init_B(mainloop_params, N, K, L, l_coord);                                                // (n,k)
@@ -960,7 +999,9 @@ public:
     static_assert(int(cute::size<0>(TileShape{})) == kACubeH, "PPU_A_PACK: CUBE_H must be TileM");
 #endif
     SharedStorage& storage = *reinterpret_cast<SharedStorage*>(smem_buf);
-    Tensor sA = make_tensor(make_smem_ptr(storage.smem_a.begin()), SmemLayoutA{}); // (BLK_M,BLK_K,PIPE)
+    Tensor sA = make_tensor(make_smem_ptr(storage.smem_a.begin()), SmemLayoutA{}); // (BLK_M_LOGICAL,BLK_K,PIPE)
+    Tensor sA_physical = make_tensor(
+        make_smem_ptr(storage.smem_a.begin()), SmemLayoutAPhysical{});              // (BLK_M_PHYSICAL,BLK_K,PIPE)
     Tensor sB = make_tensor(make_smem_ptr(storage.smem_b.begin()), SmemLayoutB{}); // (BLK_N,BLK_K,PIPE)
 
     // A legal plan can have fewer logical copy slots than physical CTA threads; that behavior predates the H cap.
@@ -970,12 +1011,14 @@ public:
     auto extra_input_partitions = partition_extra_inputs(
         mainloop_params, load_inputs, storage, thread_idx % (Scale_GmemCopyThrLayoutH{} * Scale_GmemCopyThrLayoutW{}));
 
-    CUTE_STATIC_ASSERT_V(size<0>(gA) == size<0>(sA));                          // BLK_M
-    CUTE_STATIC_ASSERT_V(size<1>(gA) == size<1>(sA));                          // BLK_K
+    CUTE_STATIC_ASSERT_V(size<0>(gA) == size<0>(sA_physical));                 // BLK_M_PHYSICAL
+    CUTE_STATIC_ASSERT_V(size<1>(gA) == size<1>(sA_physical));                 // BLK_K
+    CUTE_STATIC_ASSERT_V(size<0>(sA) == size<0>(TileShape{}));                 // BLK_M_LOGICAL
     CUTE_STATIC_ASSERT_V(size<0>(gB) == size<0>(sB));                          // BLK_N
     CUTE_STATIC_ASSERT_V(size<1>(gB) == size<1>(sB));                          // BLK_K
     CUTE_STATIC_ASSERT_V(size<1>(sA) == size<1>(sB));                          // BLK_K
     CUTE_STATIC_ASSERT_V(Int<DispatchPolicy::Stages>{} == size<2>(sA));        // PIPE
+    CUTE_STATIC_ASSERT_V(Int<DispatchPolicy::Stages>{} == size<2>(sA_physical)); // PIPE
     CUTE_STATIC_ASSERT_V(Int<DispatchPolicy::Stages>{} == size<2>(sB));        // PIPE
 
     // Partition the copying of A and B tiles across the threads
@@ -991,7 +1034,7 @@ public:
       {
         auto gmem_thr_copy_A = gmem_tiled_copy_A.get_slice(thread_idx);
         Tensor tAgA = gmem_thr_copy_A.partition_S(gA);                         // (ACPY,ACPY_M,ACPY_K,k)
-        Tensor tAsA = gmem_thr_copy_A.partition_D(sA);                         // (ACPY,ACPY_M,ACPY_K,PIPE)
+        Tensor tAsA = gmem_thr_copy_A.partition_D(sA_physical);                // (ACPY,ACPY_M_PHYS,ACPY_K,PIPE)
         copy_aiu(
           gmem_tiled_copy_A, tAgA(_,_,_,k_tile), tAsA(_,_,_,pipe),
           gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd), tBsB(_,_,_,pipe),
@@ -1042,6 +1085,15 @@ public:
     using PermutationM = decltype(tiled_mma.template permutation_mnk<0>());
     using PermutationN = decltype(tiled_mma.template permutation_mnk<1>());
 
+    // B's swzl loader is described by a fixed m16 int8 shadow MMA.  Its M permutation counts the same compute-MMA
+    // warps as the main TiledMma, but each shadow warp covers 16 rows.  Reusing PermutationM is correct for the legacy
+    // m16 family and silently becomes 8 rows for m8, which is not a legal permutation for the shadow atom.
+    static constexpr int MainInstM = size<0>(typename TiledMma::AtomShape_MNK{});
+    static_assert(MainInstM == 8 || MainInstM == 16, "the B shadow loader only supports the m8 and m16 families");
+    static_assert(PermutationM{} == warpOnM{} * Int<MainInstM>{},
+                  "main-M permutation must cover one compute atom per M warp");
+    using ShadowPermutationM = Int<warpOnM() * 16>;
+
     using TiledMma_S8 = TiledMMA<
 #if defined(__HGGC_ARCH__) && __HGGC_ARCH__ == 100
         MMA_Atom<PPU0010_16x16x32_S32S8S8S32_TN>,
@@ -1049,7 +1101,7 @@ public:
         MMA_Atom<PPU0015_16x16x32_S32S8S8S32_TN>,
 #endif
         Layout<Shape<warpOnM, warpOnN,_1>>,
-        Tile<PermutationM, PermutationN, _32>>;
+        Tile<ShadowPermutationM, PermutationN, _32>>;
 
     TiledMma_S8 tiled_mma_s8;
     auto thr_mma_s8 = tiled_mma_s8.get_thread_slice(thread_idx);

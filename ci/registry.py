@@ -57,6 +57,7 @@ HARNESS_PATHS = {
     "test_gemv_lowbit": [GEMV_P, SCALE_GEMV_P, SCALE_GEMV_MOE_P],
     "test_moe_gemm_ppu": [FP16_P],
     "test_moe_grouped_ppu": [FP16_P],
+    "test_ppu_m8n16_collective": [FP16_P],
     # THE FIRST EVIDENCE FOR dequant_then_dense. Until this existed DENSE_P appeared in the path vocabulary and in
     # no harness at all, which is the honest state of a route whose host side was never wired -- and check_against_
     # formats() said nothing, because formats.DEQUANT_THEN_DENSE was empty too. Two empty sets agree.
@@ -106,6 +107,9 @@ HARNESSES = {
     "test_gemv_lowbit":         (["int4", "int2", "int1", "gptq-int4-sym"], "synthetic", None, "CUDA-core GEMV"),
     "test_moe_gemm_ppu":        (["int4"],            "self",      None, ""),
     "test_moe_grouped_ppu":     (["int4"],            "self",      None, ""),
+    "test_ppu_m8n16_collective":(["int4"],            "synthetic", None,
+        "ppu001 m8 collective gate: raw FP32 mainloop plus grouped ptr-array epilogue at M=1/2/3/7/8, "
+        "each against an independent CPU golden and an exact same-input m16 control; G5 remains blocked on #108"),
     # Component probes only: these establish the ppu001 m8 atom ABI and the
     # AIU/x4-swzl delivery contract.  Empty format lists are deliberate; a
     # register/layout probe is not evidence for any quantized launch path.

@@ -86,6 +86,11 @@ void generic_launcher(const cutlass::half_t* A, const cutlass::int4b_t* B,
       cutlass::arch::PPU0010, OperatorClass, ElementA, LayoutA, AlignmentA,
       ElementBInfo, LayoutB, AlignmentB, ElementAccumulator,
       cute::tuple<TileShape, ScaleTileShape>, ClusterShape, cute::Int<Stages>, KernelSchedule>::CollectiveOp;
+  static_assert(
+      cute::size<0>(typename CollectiveEpilogue::SmemLayout{}) ==
+          cute::size<0>(typename CollectiveMainloop::TiledMma::AtomShape_MNK{}) *
+              cute::size<1>(typename CollectiveMainloop::TiledMma::ThrLayoutVMNK{}),
+      "batched epilogue M layout must match the mainloop's selected MMA instruction and M-warps");
 
   // rank-4 problem shape [M,N,K,L]; NO SplitKSerialScheduler -> the batched mixed-input kernel path.
   using GemmKernel = cutlass::gemm::kernel::GemmUniversal<

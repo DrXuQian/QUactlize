@@ -59,12 +59,23 @@ struct DeliveryFold {
 template <int Bits, int ArtifactTileK>
 inline constexpr int delivery_fold_v = DeliveryFold<Bits, ArtifactTileK>::value;
 
+// Keep the host model on the same first-version selector as GetMmaInstForShape: only the exact TM8/WM8 family uses
+// m8n16k16.  Its logical tile is eight rows, but the AIU staging cube remains physically 16 rows high.
+template <int TM, int WM>
+inline constexpr int selected_inst_m = (TM == 8 && WM == 8) ? 8 : 16;
+template <int WM>
+inline constexpr int selected_inst_m_for_warp = WM == 8 ? 8 : 16;
+template <int TM>
+inline constexpr int physical_a_rows = TM < 16 ? 16 : TM;
+
 // WM/WN default to the common 32x32 warp tile. They only feed the occupancy estimate -- pass the real ones when
 // analysing a config that uses something else (the Q3 B-concat sweep runs 16x32 warps at TM=16, which divides by
 // zero under a hardcoded /32).
-template <int Bits, int TM, int TN, int TK, int Stages = 3, int WM = 32, int WN = 32>
+template <int Bits, int TM, int TN, int TK, int Stages = 3, int WM = 32, int WN = 32,
+          int InstM = selected_inst_m<TM, WM>>
 struct FoldTraits {
   // ---- fold geometry ----
+  static constexpr int instruction_m = InstM;
   static constexpr int contig_bytes = TK * Bits / 8;              // bytes one N-column contributes along K
   static constexpr int F            = delivery_fold_v<Bits, TK>;    // N-columns folded into a 32B run
   static constexpr int Ng           = TN / F;                     // physical rows per tile
@@ -76,9 +87,11 @@ struct FoldTraits {
   // MEASURED against partition_B on the builder's real TiledMma over 12 configs (fold_derivation/l5_slots.cu).
   // Independent of TN: B is split across the warps in N, so a wider tile is more work, not a bigger fragment.
   static constexpr int slots    = WN * TK / 32;                   // fp16 B-fragment slots per thread
+  static constexpr int b_m_reuse = WM / InstM;                    // M-direction mma uses per converted B element
+  static constexpr int cvt_elems_per_mma = 8 * InstM / WM;
 
   // ---- occupancy ----
-  static constexpr int a_smem   = TM * TK * 2;                    // fp16 A tile per stage
+  static constexpr int a_smem   = physical_a_rows<TM> * TK * 2;  // physical fp16 A cube per stage
   static constexpr int b_smem   = Ng * (F * TK * Bits / 8);
   static constexpr int smem     = (a_smem + b_smem) * Stages;
   static constexpr int warps    = ((TM + WM - 1) / WM) * ((TN + WN - 1) / WN);
@@ -97,9 +110,13 @@ struct FoldTraits {
       "(this is int1 F=4 at TN=64). Raise TN or TK, or lower F.");
   // Structural sanity, not fold theory.
   static_assert(TN % F == 0, "fold: TileN must divide into F groups");
-  // The mma atom is 16x16x16, so 16 -- not 32 -- is the real granularity. TM=16 is a shipped shape (the Q3
-  // B-concat sweep's small-M configs) and must not be rejected.
-  static_assert(TK % 16 == 0 && TN % 16 == 0 && TM % 16 == 0, "fold: tile must be mma-atom aligned");
+  // N/K remain 16-wide for both atoms. M follows the selected instruction: the exact TM8/WM8 family is m8, while
+  // every established family remains m16. The physical A cube is intentionally independent of this logical extent.
+  static_assert(InstM == selected_inst_m<TM, WM>,
+                "fold: InstM must match GetMmaInstForShape's exact TM8/WM8 selection");
+  static_assert((InstM == 8 || InstM == 16) && TK % 16 == 0 && TN % 16 == 0 &&
+                TM % InstM == 0 && WM % InstM == 0,
+                "fold: tile and warp must align to the selected mma atom");
   static_assert(contig_bytes * F == 32 || F == 1, "fold: the folded run must be exactly 32B");
   // DERIVED, not asserted: how many logical columns the offline must fit into ONE 32-bit word. 1 means the
   // simple whole-word packer works; >1 means it must interleave columns at bit granularity. int1 at TK=64
@@ -232,7 +249,8 @@ inline constexpr int warps_per_cu = [] {
   // in this work that a template named in a discarded statement was instantiated anyway, so the rule is: make the
   // template TOTAL, do not rely on the guard. 0 warps is the honest answer for a shape with no legal warp tiling.
   if constexpr (warps < 1) { return 0; } else {
-  constexpr int smem  = (TM * TK * 2 + TN * TK * Bits / 8 + TN * (TK / Gs) * 2 * (Zero ? 2 : 1)) * Stages;
+  constexpr int smem  = (physical_a_rows<TM> * TK * 2 + TN * TK * Bits / 8 +
+                         TN * (TK / Gs) * 2 * (Zero ? 2 : 1)) * Stages;
   constexpr int blk_s = 262144 / smem;
   constexpr int blk_w = 64 / warps;
   constexpr int blk_r = regs_per_cu
@@ -260,7 +278,8 @@ inline constexpr int warps_per_cu_chunked = [] {
   // in this work that a template named in a discarded statement was instantiated anyway, so the rule is: make the
   // template TOTAL, do not rely on the guard. 0 warps is the honest answer for a shape with no legal warp tiling.
   if constexpr (warps < 1) { return 0; } else {
-  constexpr int smem  = (TM * TK * 2 + TN * TK * Bits / 8 + TN * (TK / Gs) * 2 * (Zero ? 2 : 1)) * Stages;
+  constexpr int smem  = (physical_a_rows<TM> * TK * 2 + TN * TK * Bits / 8 +
+                         TN * (TK / Gs) * 2 * (Zero ? 2 : 1)) * Stages;
   constexpr int blk_r = regs_per_cu
       / (regs_billed<regs_per_thread_chunked<TM, TN, TK, WM, WN, Zero> + regs_measured_offset> * warps * 32);
   constexpr int blk_s = 262144 / smem, blk_w = 64 / warps;
@@ -304,11 +323,11 @@ inline constexpr int warps_per_cu_chunked = [] {
 // THE MECHANISM (counted from cute in fold_derivation/l26_convert_amort.cu, not argued). In a mixed-input GEMM
 // every B fragment element must be converted (lop3 + fma) and scaled before it can enter an mma. Per thread per
 // k-tile:
-//     mma instructions  = (WM/16)*(WN/16)*(TK/16)
+//     mma instructions  = (WM/InstM)*(WN/16)*(TK/16)
 //     B elems to cvt    = 8*(WN/16)*(TK/16)
-//     cvt elems per mma = 128/WM                    <- WN and TK cancel EXACTLY; only WM survives
-// Each B fragment feeds WM/16 mma instructions down the M direction, so WM/16 is the amortisation factor. WM=16
-// means every converted element feeds exactly one mma and the converter cost per unit of math doubles. This is the
+//     cvt elems per mma = 8*InstM/WM                <- WN and TK cancel EXACTLY
+// Each B fragment feeds WM/InstM mma instructions down the M direction. Thus the new WM8/InstM8 family has the same
+// reuse=1 and cvt/mma=8 as WM16/InstM16; changing the instruction height does not make conversion free. This is the
 // quantised-B analogue of arithmetic intensity, at the register file rather than at HBM -- and it is why a
 // prescription that bought registers by cutting WM was exactly backwards.
 //
@@ -338,10 +357,16 @@ inline constexpr int warps_per_cu_chunked = [] {
 // to gain either -- do not spend a box run on it.
 
 
-template <int WM>
-inline constexpr int amort = WM / 16;                 // mma instructions each B fragment element feeds
-template <int WM>
-inline constexpr int cvt_per_mma = 128 / WM;          // B elements converted per mma instruction issued
+// WM8 cannot occur in an m16 family under the tactic contract, so the one-argument form remains safe for callers
+// that only carry a warp shape (the existing diagnostic probes do exactly that).
+template <int WM, int InstM = selected_inst_m_for_warp<WM>>
+inline constexpr int amort = WM / InstM;              // M-direction mma reuse of each B fragment element
+template <int WM, int InstM = selected_inst_m_for_warp<WM>>
+inline constexpr int cvt_per_mma = 8 * InstM / WM;    // B elements converted per mma instruction issued
+static_assert(selected_inst_m<8, 8> == 8 && selected_inst_m<16, 16> == 16 && selected_inst_m<16, 8> == 16,
+              "host atom selection must match GetMmaInstForShape's exact TM8/WM8 refinement");
+static_assert(amort<8, 8> == 1 && cvt_per_mma<8, 8> == 8,
+              "m8's B fragment is reused across WM/8 mma instructions");
 // Below this the B convert path stops being the constraint; above it, occupancy cannot compensate.
 inline constexpr int cvt_per_mma_target = 4;
 

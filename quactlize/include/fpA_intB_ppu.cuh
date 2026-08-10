@@ -98,6 +98,11 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
       ElementD, LayoutD, AlignmentD, EpilogueSchedule>::CollectiveOp;
 
   using CollectiveMainloop = typename MainloopPolicy::CollectiveOp;
+  static_assert(
+      cute::size<0>(typename CollectiveEpilogue::SmemLayout{}) ==
+          cute::size<0>(typename CollectiveMainloop::TiledMma::AtomShape_MNK{}) *
+              cute::size<1>(typename CollectiveMainloop::TiledMma::ThrLayoutVMNK{}),
+      "dense epilogue M layout must match the mainloop's selected MMA instruction and M-warps");
 
   // FULLY_QUANTIZED is an INSTANTIATION of the shared mainloop, not a dense-specific decoder. Make that selection
   // compile-time observable at its call site: a flagged binary that accidentally falls back to fp16 scale planes

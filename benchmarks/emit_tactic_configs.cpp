@@ -61,7 +61,9 @@ bool g_prune = false;
 // --m-max=N declares "this table is for problems with M <= N", which lets one PRUNE be stated: at M <= N every
 // TileM covers the whole problem in ONE m-tile (grid = ceil(M/TileM) * ceil(N/TileN), and ceil(M/TileM) is 1 for
 // every TileM >= N), so a TileM larger than the smallest one that covers N buys no CTAs and only puts more warps
-// on padding rows. kTileM starts at 16 because every MMA atom has M = 16.
+// on padding rows. The m8 path adds one deliberate exception to that prune: when TileM=8 is the smallest covering
+// tile, TileM=16 is retained as the minimum m16-family control. Without it the act of adding m8 would erase the A/B
+// row needed to tell whether m8 helped.
 //
 // A PRUNE, NOT AN EXCLUSION, and the distinction is the one this file already argues for below: these rows COMPILE
 // AND RUN. codex rejected an earlier version of exactly this idea on the grounds that TileM=128 "may benefit most
@@ -247,10 +249,12 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
       if (g_prune && !p && !g) continue;
       int const m_max = g_m_max;
       // The smallest TileM that still covers m_max in one tile; every larger one is the same grid with more
-      // padding warps. Derived from kTileM rather than written as a number, so a new TileM is covered on arrival.
+      // padding warps. When that minimum is the m8 family, retain TM16 too as the minimum m16 control. Derived from
+      // kTileM except for that named cross-atom A/B contract, so adding a larger TileM remains covered on arrival.
       if (m_max > 0) {
         int keep = kTileM.back();
         for (int tm : kTileM) if (tm >= m_max) { keep = tm; break; }
+        if (keep == 8) keep = 16;
         if (c.tm > keep) { ++n_mdrop; continue; }
       }
       if (rows.insert(Row{c.tm, c.tn, c.tactic_tile_k, c.wm, c.wn, st, c.b_chunk}).second) {
@@ -267,8 +271,9 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
   // COVERAGE LOSS IS NEVER SILENT. --m-max drops rows that compile and run; a table that searched less has to say
   // so on its own face, because the reader of a sweep result has no other way to know the winner was excluded.
   if (n_mdrop > 0)
-    std::printf("//   TileM prune dropped %d row(s) whose TileM exceeds the smallest that covers this table's M\n"
-                "//                     bound (a capacity row's bound IS its capacity; --m-max sets it otherwise).\n"
+    std::printf("//   TileM prune dropped %d row(s) above the bounded-M retention limit\n"
+                "//                     (smallest covering TileM, plus the TM16 control when TM8 is selected).\n"
+                "//                     A capacity row's bound IS its capacity; --m-max sets it otherwise.\n"
                 "//                     These are LEGAL rows a sweep using this table cannot find.\n", n_mdrop);
   // EVERY member illegal is still an error: an empty table is not a smaller search, it is no search.
   if (!n_tkdrop.empty() && n_tkdrop.size() == tactic_tks.size()) {

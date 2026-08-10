@@ -165,6 +165,12 @@ template <
 #endif
   using SmemCopyOp = PPU0010_TSM_LD_SWZL<Element, Block_MN{}, AiuContElemSize{}, Swap, false, InstNum, kCubePitchA>;
   using SmemCopyAtom = Copy_Atom<SmemCopyOp, Element>;
+  // m8's A fragment has two registers per lane, but the physical swzl instruction always produces x4.  The
+  // projected atom contains x4 in a private temporary and publishes v0/v1; selecting the ordinary atom for m8
+  // would write two registers past the fragment even though the physical cube geometry is otherwise correct.
+  using SmemCopyOpM8 = PPU0010_TSM_LD_SWZL_M8<
+      Element, Block_MN{}, AiuContElemSize{}, Swap, false, InstNum, kCubePitchA>;
+  using SmemCopyAtomM8 = Copy_Atom<SmemCopyOpM8, Element>;
   using SmemLayoutAtom = Layout<Shape<_8, AiuContElemSize>, Stride<AiuContElemSize, _1>>;
 };
 
@@ -312,8 +318,6 @@ template <typename Arch,
           typename PermutionK_ = void
           >
 struct get_tiled_mma {
-  using MmaInst = typename config::GetMmaInst<Arch, ElementA, ElementB, ElementAccumulator>::type;
-
   static constexpr int blockM = cute::get<0>(TileShape_MNK{});
   static constexpr int blockN = cute::get<1>(TileShape_MNK{});
   static constexpr int blockK = cute::get<2>(TileShape_MNK{});
@@ -323,13 +327,32 @@ struct get_tiled_mma {
                                           cute::get<1>(ClusterShape_MNK{}) != 1 ||
                                           cute::get<2>(ClusterShape_MNK{}) != 1;
   static constexpr auto WarpShapeStage = MapBlockShapeToWarpShapeStage<Arch, ElementA, blockM, blockN, blockK>();
+  static constexpr int requestedWarpM = CustomWarpShape
+      ? cute::get<0>(ClusterShape_MNK{}) : cute::get<0>(WarpShapeStage);
+  static constexpr int requestedWarpN = CustomWarpShape
+      ? cute::get<1>(ClusterShape_MNK{}) : cute::get<1>(WarpShapeStage);
+
+  // The m8 atom is a SHAPE refinement, not a dtype-wide replacement.  Resolve the requested warp before selecting
+  // the instruction so the exact PPU0010 TM8/WM8 family can reach m8n16k16 while every established family remains
+  // on m16n16k16.  This is the shipping CollectiveBuilder seam; #111 deliberately left it unwired while G0-G2
+  // validated the raw atom and its physical x4 delivery.
+  using MmaInst = typename config::GetMmaInstForShape<
+      Arch, ElementA, ElementB, ElementAccumulator, blockM, requestedWarpM>::type;
 
   static constexpr int InstM = cute::get<0>(typename MMA_Traits<MmaInst>::Shape_MNK{});
   static constexpr int InstN = cute::get<1>(typename MMA_Traits<MmaInst>::Shape_MNK{});
   static constexpr int InstK = cute::get<2>(typename MMA_Traits<MmaInst>::Shape_MNK{});
 
-  static constexpr int warpM = max(Int<InstM>{}, CustomWarpShape ? cute::get<0>(ClusterShape_MNK{}) : cute::get<0>(WarpShapeStage));
-  static constexpr int warpN = max(Int<InstN>{}, CustomWarpShape ? cute::get<1>(ClusterShape_MNK{}) : cute::get<1>(WarpShapeStage));
+  // Do not silently clamp an illegal WM8/m16 request to WM16.  The epilogue sees the requested WarpShape directly;
+  // accepting different effective geometries on the two sides is a compile-success / wrong-result failure mode.
+  static_assert(requestedWarpM >= InstM && requestedWarpM % InstM == 0,
+                "requested WarpM must contain whole selected MMA atoms");
+  static_assert(requestedWarpN >= InstN && requestedWarpN % InstN == 0,
+                "requested WarpN must contain whole selected MMA atoms");
+  static_assert(blockM % requestedWarpM == 0 && blockN % requestedWarpN == 0,
+                "requested warp shape must evenly divide the CTA tile");
+  static constexpr int warpM = requestedWarpM;
+  static constexpr int warpN = requestedWarpN;
 
   using WarpOnM = Int<blockM / warpM>;
   using WarpOnN = Int<blockN / warpN>;
@@ -457,6 +480,10 @@ public:
   // legacy KernelAiuFold spelling predates an explicit artifact contract; for those callers A falls back to T.
   static constexpr int ArtifactTileK =
       fold_schedule_traits<KernelScheduleType>::ArtifactTileK;
+  static constexpr int blockM = cute::get<0>(TileShape_MNK{});
+  static constexpr int blockN = cute::get<1>(TileShape_MNK{});
+  static constexpr int blockK = cute::get<2>(TileShape_MNK{});
+  static constexpr int physicalBlockM = blockM < 16 ? 16 : blockM;
   static constexpr int MmaPermK =
       cutlass::MixGemmMmaPermK<sizeof_bits<RealInternalElementB>::value,
                                cute::get<2>(TileShape_MNK{}),
@@ -464,9 +491,19 @@ public:
   using TiledMma = typename quactlize_detail::get_tiled_mma<
         Arch, ElementMma, ElementMma, ElementAccumulator, TileShape_MNK, ClusterShape_MNK,
         Int<MmaPermK>>::TiledMma;
+  static constexpr int MmaInstM = size<0>(typename TiledMma::AtomShape_MNK{});
+  static_assert(MmaInstM == 8 || MmaInstM == 16,
+                "quactlize mixed-input builder supports only the ppu001 m8/m16 fp16 atom families");
+  static_assert(MmaInstM != 8 || physicalBlockM == 16,
+                "m8 must retain the physical 16-row A write/read cube");
+#if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
+  static_assert(MmaInstM != 8,
+                "PPU_A_PACK is disabled for m8: logical TileM=8 does not equal the physical 16-row A cube");
+#endif
 
+  using PhysicalATileShape_MNK = Shape<Int<physicalBlockM>, Int<blockN>, Int<blockK>>;
   static constexpr int PipelineStages = quactlize_ppu_detail::compute_stage_count_or_override<quactlize_ppu_detail::ppu10000_smem_capacity_bytes,
-      ElementMma, ElementMma, TileShape_MNK>(StageCountType{});
+      ElementMma, ElementMma, PhysicalATileShape_MNK>(StageCountType{});
 
   // currently only support k-major
   static_assert(cute::is_same_v<GmemLayoutA_, cutlass::layout::RowMajor> || cute::is_same_v<GmemLayoutA_, cutlass::layout::RowMajorInterleaved<256>>,
@@ -485,9 +522,6 @@ public:
   using PlaneB2 = detail::deduce_mixed_width_dtype_t<3, ElementPairB>;
   static constexpr bool HasPlane2 = !cute::is_void_v<PlaneB2>;
 
-  static constexpr int blockM = cute::get<0>(TileShape_MNK{});
-  static constexpr int blockN = cute::get<1>(TileShape_MNK{});
-  static constexpr int blockK = cute::get<2>(TileShape_MNK{});
   static constexpr int EffectiveArtifactTileK = ArtifactTileK > 0 ? ArtifactTileK : blockK;
   static_assert(EffectiveArtifactTileK > 0, "effective artifact TileK must be positive");
   static_assert(blockK % EffectiveArtifactTileK == 0,
@@ -548,7 +582,11 @@ public:
   static constexpr int BFoldBlockN = blockN / ArtifactLowFold;
   // (MOEG_FOLD_DEBUG dump removed -- it confirmed fold_dbg<64,64,64,2,32,128>: builder params are CORRECT,
   //  i.e. B operand gets Block_MN=32 / Block_K=128 -> swzl CUBE <32,32> -> 1024B/stage, matching SmemLayoutB.)
-  using DefaultOperandA = quactlize_detail::MixGemm_AIU_Operand<RealInternalElementA, false, Int<blockM>, Int<blockK>, true>;
+  // m8 is LOGICAL only.  PPU0010's AIU write and swzl read still operate on a physical 16-row cube; `.padz` fills
+  // rows outside the real problem.  The collective exposes only the first logical eight rows to the MMA fragment,
+  // but the descriptor, write payload and shared allocation all follow this physical operand.
+  using DefaultOperandA = quactlize_detail::MixGemm_AIU_Operand<
+      RealInternalElementA, false, Int<physicalBlockM>, Int<blockK>, true>;
   // ContigShape_ is the seam between the two spans: the operand keeps FullBlockK for its total extent and InstNum,
   // while size(ArtifactContigShape) supplies CopyBlockK to the per-cube AIU/swizzle derivation.
   using ArtifactContigShape = Shape<Int<ArtifactLowFold>, Int<EffectiveArtifactTileK>>;
@@ -563,7 +601,8 @@ public:
     RealInternalElementB, GmemLayoutB, cute::conditional_t<IsATransformed, AlignmentB, AlignmentA>, 32>;
 #endif
   using SmemLayoutAtomA = typename DefaultOperandA::SmemLayoutAtom; // M, K
-  using SmemCopyAtomA = typename DefaultOperandA::SmemCopyAtom;
+  using SmemCopyAtomA = cute::conditional_t<MmaInstM == 8,
+      typename DefaultOperandA::SmemCopyAtomM8, typename DefaultOperandA::SmemCopyAtom>;
   using GmemTiledCopyA = typename DefaultOperandA::GmemTiledCopy;
 
   // B plane 0 = the LOW plane

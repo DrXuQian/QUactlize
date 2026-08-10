@@ -106,11 +106,11 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
             // IN-KERNEL SPLIT-K: slice the K loop across gridDim.z so all S slices are resident in ONE launch.
             // ptr_D/stride_D must then hold L*splitk entries (slice z of expert e writes plane e + z*L).
             int splitk = 1,
-            // DECODE A BROADCAST. When every expert has at most ONE row, the A tile's 15 padding rows exist only
-            // because TileM >= 16 (every MMA atom is Shape<_16,...>), and their results are discarded by the
-            // epilogue's residue mask -- so what they READ is irrelevant. Setting A's m-stride to 0 maps all TM
-            // rows of the tile onto the expert's real row: the copy still writes TM*TK elements into shared
-            // memory, but reads only TK of them from global, so the other 15 reads hit L1. Same trick as the
+            // DECODE A BROADCAST (retired argument, retained for ABI stability). The original m16 path had 15
+            // padding rows per one-row expert; m8 reduces the logical excess to seven but still stages a physical
+            // 16-row AIU cube. The experiment mapped those padding rows onto the expert's real row, but the
+            // collective now ignores this argument because the coordinate-addressed swizzle made the trick unsafe.
+            // Same historical idea as the
             // stride-0 scale broadcast this codebase already uses.
             //
             // ONLY LEGAL WHEN Mmax == 1, and the distinction matters because the FREEDOM is more general than
@@ -151,6 +151,11 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
       EpilogueSchedule,
       cutlass::epilogue::fusion::LinearCombination<ElementC, ElementAccumulator>>::CollectiveOp;
   using CollectiveMainloop = typename MainloopPolicy::CollectiveOp;
+  static_assert(
+      cute::size<0>(typename CollectiveEpilogue::SmemLayout{}) ==
+          cute::size<0>(typename CollectiveMainloop::TiledMma::AtomShape_MNK{}) *
+              cute::size<1>(typename CollectiveMainloop::TiledMma::ThrLayoutVMNK{}),
+      "grouped epilogue M layout must match the mainloop's selected MMA instruction and M-warps");
   if constexpr (ExpectPackedScale) {
     static_assert(CollectiveMainloop::is_packed_scale,
                   "fully-quantized grouped requires the shared packed-scale mainloop at this tile shape");
@@ -194,7 +199,9 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
       // cosize_v<SmemLayoutA> is the LAYOUT's extent. It equals the allocation only while SharedStorage actually
       // has an A member; a variant that dropped the member but kept the layout printed 'A = 16384 B, 160%' of a
       // 10240 B block.
-      constexpr int a_elems = int(cute::cosize_v<typename CollectiveMainloop::SmemLayoutA>);
+      // TM8 exposes a logical eight-row MMA view, but the AIU writes a physical 16-row cube.  Report the
+      // allocation-bearing view, not the smaller logical view, or MOEG_SMEM silently undercharges A by 2x.
+      constexpr int a_elems = int(cute::cosize_v<typename CollectiveMainloop::SmemLayoutAPhysical>);
       constexpr int a_bytes = a_elems * int(sizeof(ElementA));
       std::printf("[moe_grouped] smem/block = %d B  (A = %d B = %d elems, %.0f%%)  A path: %s\n",
                   int(GemmKernel::SharedStorageSize), a_bytes, a_elems,
@@ -246,7 +253,7 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   // corresponding ABI guards. Thus this path is host-only and does not need valid device pointers or a PPU context.
   if constexpr (QueryOnly) return true;
   // A's GMEM m-stride is NEVER zeroed here, and the parameter that used to do it is gone. It looked like a way to say
-  // 'read one row of A' at decode, where TileM >= 16 against one row per expert makes 15/16 of the tile padding --
+  // 'read one row of A' at decode, where the original TileM=16 path made 15/16 of a one-row expert padding --
   // but AiuDesc::init (cute/arch/copy_aiu_base.hpp) takes dim_w, the row PITCH, from exactly that stride, while
   // dim_h, the row EXTENT, comes from the problem's M. So it produced a descriptor claiming TileM rows spaced zero
   // bytes apart, which is malformed, and the kernel returned NaN.

@@ -275,9 +275,35 @@ public:
   static_assert((size<0>(TileShape{}) % size<0>(SmemLayoutAtomScale{})) == 0, "SmemLayoutAtomScale must equal the tile shape.");
   static_assert((size<2>(TileShape{}) % size<1>(SmemLayoutAtomScale{})) == 0, "SmemLayoutAtomScale must evenly divide tile k shape.");
 
-  using SmemLayoutA = decltype(tile_to_shape(
+  // The m8 MMA sees eight logical rows, while PPU0010 AIU/swzl still writes and reads a physical 16-row cube.
+  // Allocate the physical view, then expose a logical view whose stage stride remains the full physical span.
+  // Keeping a compact 8-row stage stride would alias stage i+1 with the poison half of stage i.
+  static constexpr int LogicalTileM = int(size<0>(TileShape{}));
+  static constexpr int PhysicalATileM = LogicalTileM < 16 ? 16 : LogicalTileM;
+  using SmemLayoutACompact = decltype(tile_to_shape(
       InternalSmemLayoutAtomA{},
       make_shape(shape<0>(TileShape{}), shape<2>(TileShape{}), Int<DispatchPolicy::Stages>{})));
+  using SmemLayoutAPhysicalStage = decltype(tile_to_shape(
+      InternalSmemLayoutAtomA{},
+      make_shape(Int<PhysicalATileM>{}, shape<2>(TileShape{}))));
+  using SmemLayoutAPhysical = decltype(tile_to_shape(
+      InternalSmemLayoutAtomA{},
+      make_shape(Int<PhysicalATileM>{}, shape<2>(TileShape{}), Int<DispatchPolicy::Stages>{})));
+  using SmemLayoutALogicalStage = decltype(tile_to_shape(
+      InternalSmemLayoutAtomA{},
+      make_shape(shape<0>(TileShape{}), shape<2>(TileShape{}))));
+  using SmemLayoutALogicalPitched = decltype(append(
+      SmemLayoutALogicalStage{},
+      make_layout(Int<DispatchPolicy::Stages>{}, Int<cute::cosize_v<SmemLayoutAPhysicalStage>>{})));
+  using SmemLayoutA = cute::conditional_t<LogicalTileM == PhysicalATileM,
+      SmemLayoutACompact, SmemLayoutALogicalPitched>;
+  static_assert(size<0>(SmemLayoutA{}) == LogicalTileM,
+                "fold A MMA view must expose exactly the logical TileM");
+  static_assert(size<0>(SmemLayoutAPhysical{}) == PhysicalATileM,
+                "fold A physical view must retain the 16-row AIU cube floor");
+  static_assert(LogicalTileM != 8 ||
+                    cute::cosize_v<SmemLayoutAPhysical> >= 16 * int(size<2>(TileShape{})) * DispatchPolicy::Stages,
+                "fold TM8 must pay for complete 16-row A cubes in every stage");
   // N-FOLD defining change = a FOLD-IN-N smem layout (verified in scratchpad/cute_nfold3.cu). The physical folded
   // run is [n_a's TK][n_b's TK]...(FoldF cols) = FoldF*TK contiguous. Instead of presenting this as (N, FoldF*TK)
   // [which would put the fold in MMA_K -> need a 2-pass mainloop + a 2xN interleaved epilogue], present it as a
@@ -367,7 +393,7 @@ public:
   {
     static constexpr int scale_elements = elements_per_smem_scale();
     static constexpr int zero_elements = elements_per_smem_zero();
-    cute::ArrayEngine<RealInternalElementA, cute::cosize_v<SmemLayoutA>> smem_a;
+    cute::ArrayEngine<RealInternalElementA, cute::cosize_v<SmemLayoutAPhysical>> smem_a;
     cute::ArrayEngine<RealInternalElementB, cute::cosize_v<SmemLayoutB>> smem_b;
     cute::ArrayEngine<NonVoidElementScale, scale_elements> smem_scale;
     cute::ArrayEngine<NonVoidElementZero, zero_elements> smem_zero;
@@ -468,7 +494,16 @@ public:
     Tensor mA_mkl = make_tensor(make_gmem_ptr(mainloop_params.ptr_A + a_row_off * K),
                                 make_shape(M,K,cute::Int<1>{}), mainloop_params.dA);                            // (m,k,1)
     Tensor mA_mk = make_mix_tensor_like(mA_mkl(_,_,0));                                                         // (m,k)
-    Tensor gA = local_tile(mA_mk, TileShape{}, take<0,3>(blk_coord_mnkl), Step<_1, X,_1>{});                    // (BLK_M,BLK_K,k)
+    auto gA_logical = local_tile(
+        mA_mk, TileShape{}, take<0,3>(blk_coord_mnkl), Step<_1, X,_1>{});                                       // (BLK_M,BLK_K,k)
+    auto gA = [&] {
+      if constexpr (LogicalTileM == PhysicalATileM) {
+        return gA_logical;
+      } else {
+        auto physical_m = make_layout(Int<PhysicalATileM>{}, stride<0>(gA_logical.layout()));
+        return make_tensor(gA_logical.data(), replace<0>(gA_logical.layout(), physical_m));
+      }
+    }();                                                                                                       // (A_PHYS_M,BLK_K,k)
 
     // B init (include init aiu desc)
     auto mB_nk = load_init_B(mainloop_params, N, K, L, l_coord);                                                // (n,k)
@@ -542,7 +577,9 @@ public:
 
     // Construct shared memory tiles
     SharedStorage& storage = *reinterpret_cast<SharedStorage*>(smem_buf);
-    Tensor sA = make_tensor(make_smem_ptr(storage.smem_a.begin()), SmemLayoutA{}); // (BLK_M,BLK_K,PIPE)
+    Tensor sA = make_tensor(make_smem_ptr(storage.smem_a.begin()), SmemLayoutA{}); // (BLK_M_LOGICAL,BLK_K,PIPE)
+    Tensor sA_physical = make_tensor(
+        make_smem_ptr(storage.smem_a.begin()), SmemLayoutAPhysical{});              // (BLK_M_PHYSICAL,BLK_K,PIPE)
     Tensor sB = make_tensor(make_smem_ptr(storage.smem_b.begin()), SmemLayoutB{}); // (BLK_N,BLK_K,PIPE)
 
     // A legal plan can have fewer logical copy slots than physical CTA threads; that behavior predates the H cap.
@@ -552,14 +589,16 @@ public:
     auto extra_input_partitions = partition_extra_inputs(
         mainloop_params, load_inputs, storage, thread_idx % (Scale_GmemCopyThrLayoutH{} * Scale_GmemCopyThrLayoutW{}));
 
-    CUTE_STATIC_ASSERT_V(size<0>(gA) == size<0>(sA));                          // BLK_M
-    CUTE_STATIC_ASSERT_V(size<1>(gA) == size<1>(sA));                          // BLK_K
+    CUTE_STATIC_ASSERT_V(size<0>(gA) == size<0>(sA_physical));                 // BLK_M_PHYSICAL
+    CUTE_STATIC_ASSERT_V(size<1>(gA) == size<1>(sA_physical));                 // BLK_K
+    CUTE_STATIC_ASSERT_V(size<0>(sA) == size<0>(TileShape{}));                 // BLK_M_LOGICAL
     CUTE_STATIC_ASSERT_V(size<0>(gB) == size<0>(sB));                          // BLK_N
     CUTE_STATIC_ASSERT_V(size<1>(gB) == size<1>(sB));                          // BLK_K
     // N-FOLD: sB is PHYSICAL (Ng, FoldF*TKe), so its K-extent is FoldF x A's TK, and its N-extent is TNe/FoldF.
     // Both relations are checked here (gB is cut with the same folded tiler above, so gB/sB agree by construction).
     CUTE_STATIC_ASSERT_V(size<1>(sA) * Int<FoldF>{} == size<1>(sB));           // BLK_K (folded, physical)
     CUTE_STATIC_ASSERT_V(Int<DispatchPolicy::Stages>{} == size<2>(sA));        // PIPE
+    CUTE_STATIC_ASSERT_V(Int<DispatchPolicy::Stages>{} == size<2>(sA_physical)); // PIPE
     CUTE_STATIC_ASSERT_V(Int<DispatchPolicy::Stages>{} == size<2>(sB));        // PIPE
 
     // Partition the copying of A and B tiles across the threads
@@ -567,7 +606,7 @@ public:
     auto gmem_thr_copy_B = gmem_tiled_copy_B.get_slice(thread_idx);
 
     Tensor tAgA = gmem_thr_copy_A.partition_S(gA);                             // (ACPY,ACPY_M,ACPY_K,k)
-    Tensor tAsA = gmem_thr_copy_A.partition_D(sA);                             // (ACPY,ACPY_M,ACPY_K,PIPE)
+    Tensor tAsA = gmem_thr_copy_A.partition_D(sA_physical);                    // (ACPY,ACPY_M_PHYS,ACPY_K,PIPE)
     Tensor tBgB = gmem_thr_copy_B.partition_S(gB);                             // (BCPY,BCPY_N,BCPY_K,k)
     Tensor tBsB = gmem_thr_copy_B.partition_D(sB);                             // (BCPY,BCPY_N,BCPY_K,PIPE)
 
@@ -629,6 +668,14 @@ public:
     using PermutationM = decltype(tiled_mma.template permutation_mnk<0>());
     using PermutationN = decltype(tiled_mma.template permutation_mnk<1>());
 
+    // The fixed m16 int8 MMA is only a B-loader descriptor.  It shares the main MMA's warp count, but its virtual M
+    // extent must remain 16 rows per warp when the compute path selects m8.
+    static constexpr int MainInstM = size<0>(typename TiledMma::AtomShape_MNK{});
+    static_assert(MainInstM == 8 || MainInstM == 16, "the B shadow loader only supports the m8 and m16 families");
+    static_assert(PermutationM{} == warpOnM{} * Int<MainInstM>{},
+                  "main-M permutation must cover one compute atom per M warp");
+    using ShadowPermutationM = Int<warpOnM() * 16>;
+
     using TiledMma_S8 = TiledMMA<
 #if defined(__HGGC_ARCH__) && __HGGC_ARCH__ == 100
         MMA_Atom<PPU0010_16x16x32_S32S8S8S32_TN>,
@@ -636,7 +683,7 @@ public:
         MMA_Atom<PPU0015_16x16x32_S32S8S8S32_TN>,
 #endif
         Layout<Shape<warpOnM, warpOnN,_1>>,
-        Tile<PermutationM, PermutationN, _32>>;
+        Tile<ShadowPermutationM, PermutationN, _32>>;
 
     TiledMma_S8 tiled_mma_s8;
     auto thr_mma_s8 = tiled_mma_s8.get_thread_slice(thread_idx);

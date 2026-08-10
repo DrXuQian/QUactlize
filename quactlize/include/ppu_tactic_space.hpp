@@ -45,9 +45,11 @@ inline constexpr std::array<FormatSpec, 6> kFormats{{
                    ppu_formats::for_qtype(14).low_bits, ppu_formats::for_qtype(14).high_bits},
 }};
 inline constexpr std::array<int, 4> kTileK{{32, 64, 128, 256}};
-inline constexpr std::array<int, 5> kTileM{{16, 32, 64, 128, 256}};
+// PPU0010's m8n16k16 atom is exposed only for the exact TileM=8/WarpM=8 family.  Keeping eight on both axes, rather
+// than manufacturing that pair in an emitter, lets the one legality predicate reject every cross-family combination.
+inline constexpr std::array<int, 6> kTileM{{8, 16, 32, 64, 128, 256}};
 inline constexpr std::array<int, 5> kTileN{{16, 32, 64, 128, 256}};
-inline constexpr std::array<int, 3> kWarpM{{16, 32, 64}};
+inline constexpr std::array<int, 4> kWarpM{{8, 16, 32, 64}};
 // WN=128 is deliberate.  The current MoE generator omits it, but it is the delivery escape for an int1 plane at TK32;
 // whether the remaining constraints reject a row must be printed, not encoded by leaving the axis out.
 inline constexpr std::array<int, 4> kWarpN{{16, 32, 64, 128}};
@@ -84,7 +86,8 @@ enum class Exclusion {
 constexpr char const* exclusion_clause(Exclusion e) {
   switch (e) {
     case Exclusion::None: return "";
-    case Exclusion::AtomAlignment: return "tile and warp extents must be multiples of the 16x16x16 MMA atom";
+    case Exclusion::AtomAlignment:
+      return "tile and warp extents must align to the selected m8n16k16 or m16n16k16 MMA atom";
     case Exclusion::WarpDoesNotDivideTile: return "warp shape must divide tile shape";
     case Exclusion::TooManyWarps: return "tile needs more than the 32-warp block limit";
     case Exclusion::AccumulatorRegisters: return "the fp32 accumulator alone exceeds the 192-register sweep ceiling";
@@ -139,6 +142,18 @@ constexpr bool has_q6_plane_pair(Candidate c) {
   return c.spec.low_bits == 4 && c.spec.high_bits == 2;
 }
 
+// Mirror GetMmaInstForShape's deliberately narrow first m8 exposure without importing CUTLASS into this host-only
+// header.  In particular, (TM=16,WM=8) must not become "two m8 atoms": the device selector falls back to m16 there.
+constexpr int instruction_m(Candidate c) {
+  return c.tm == 8 && c.wm == 8 ? 8 : 16;
+}
+
+// The logical m8 tile still uses the AIU's physical 16-row A cube and .padz supplies rows 8..15.  Billing only TM
+// rows here would admit tactics whose generated kernel needs more shared memory than the host model promised.
+constexpr int physical_a_rows(Candidate c) {
+  return c.tm < 16 ? 16 : c.tm;
+}
+
 // This is the actual CTA warp count for the current PPU0010 builder, not a performance proxy. get_tiled_mma tiles one
 // 32-thread MMA atom by Layout<Shape<TileM/WarpM, TileN/WarpN, _1>>, and both dense and grouped kernels launch
 // cute::size(TiledMma{}) threads. Each launcher static-asserts this expression against its instantiated TiledMma so a
@@ -156,7 +171,8 @@ constexpr Exclusion common_kernel_exclusion(Candidate c) {
   // the collective's TiledMma-dependent effectiveness predicate into this host-only header.
   if (c.b_chunk != 0 && c.spec.high_bits == 0 && c.spec.low_bits != 1 && c.spec.low_bits != 2)
     return Exclusion::BChunkUnsupportedBits;
-  if (c.tm % 16 || c.tn % 16 || c.tactic_tile_k % 16 || c.wm % 16 || c.wn % 16)
+  int const inst_m = instruction_m(c);
+  if (c.tm % inst_m || c.tn % 16 || c.tactic_tile_k % 16 || c.wm % inst_m || c.wn % 16)
     return Exclusion::AtomAlignment;
   if (c.wm > c.tm || c.wn > c.tn || c.tm % c.wm || c.tn % c.wn)
     return Exclusion::WarpDoesNotDivideTile;
@@ -199,7 +215,8 @@ constexpr Exclusion common_topology_exclusion(Candidate c, int stages = 2) {
 
   // Match moe_ok's conservative stage-2 existence test exactly. Fold cancels from B bytes; scale+zero is sized for
   // the smallest runtime group (16), because a too-loose filter produces a fake winner when initialize fails.
-  if (common_per_stage_smem(c, c.tm) * stages > kBlockSmemBytes) return Exclusion::MinimumStageSmem;
+  if (common_per_stage_smem(c, physical_a_rows(c)) * stages > kBlockSmemBytes)
+    return Exclusion::MinimumStageSmem;
   return Exclusion::None;
 }
 
@@ -229,6 +246,22 @@ static_assert(common_kernel_exclusion(
 static_assert(common_kernel_exclusion(
                   Candidate{kArtifactFoldControlI2, 64, 64, 96, 64, 32, 48}) ==
               Exclusion::ArtifactLowRun);
+
+// Atom-family controls: exactly 8x8 selects m8, both cross-family spellings remain illegal, and the m8 shared-memory
+// charge retains the physical 16-row A cube rather than silently halving it with the logical TileM.
+inline constexpr Candidate kM8AtomControl{kArtifactFoldControlI2, 8, 32, 64, 8, 32, 64};
+static_assert(instruction_m(kM8AtomControl) == 8);
+static_assert(common_kernel_exclusion(kM8AtomControl) == Exclusion::None);
+static_assert(physical_a_rows(kM8AtomControl) == 16);
+static_assert(common_per_stage_smem(kM8AtomControl, physical_a_rows(kM8AtomControl)) -
+                  common_per_stage_smem(kM8AtomControl, kM8AtomControl.tm) == 8 * 64 * 2,
+              "logical TM8 must not halve the physical A-cube shared-memory charge");
+static_assert(common_kernel_exclusion(
+                  Candidate{kArtifactFoldControlI2, 16, 32, 64, 8, 32, 64}) == Exclusion::AtomAlignment,
+              "WM8 is legal only in the exact TM8 m8-atom family");
+static_assert(common_kernel_exclusion(
+                  Candidate{kArtifactFoldControlI2, 8, 32, 64, 16, 32, 64}) == Exclusion::AtomAlignment,
+              "TM8 must not fall back silently to the m16 atom");
 
 // Paired controls for the field-ownership regression. l115's shipping witness is exactly
 //   Q6_K high A=128 T=256 tile=64x128x256 warp=64x64 F=1/1
