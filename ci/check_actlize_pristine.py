@@ -84,8 +84,6 @@ FIXES = {
         "cd17c2b9: {0,0,0} -> dim3(0,0,0); nvcc will not brace-init dim3 here",
     "include/cutlass/gemm/config/gemm_configs.hpp":
         "cd17c2b9: trailing commas in template argument lists",
-    "include/cutlass/gemm/kernel/ppu_tile_scheduler_stream_k.hpp":
-        "cd17c2b9: trailing commas in template argument lists",
     "include/cutlass/fast_numeric_conversion_for_mix_gemm.h":
         "c48cb105: the int8 converter's ppu.prmt/ppu.sub behind __HGGC_ARCH__, with a plain-C++ arm. It is a FULL "
         "specialisation, so the body reaches ptxas whether or not it is called, and nvcc cannot assemble `ppu`",
@@ -116,6 +114,9 @@ EXTENSIONS = {
     "include/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input.hpp":
         "enable_if gains `&& !isGroupProblemShape_v<ProblemShape_>` so the grouped shape can select a different "
         "specialisation; narrows this arm only where another one now exists",
+    "include/cutlass/gemm/kernel/tile_scheduler_params.h":
+        "default-compatible Stream-K ParamsT<MinIters>: the legacy Params alias remains exactly ParamsT<8>, "
+        "while an explicit specialization lets host decomposition use a shorter reviewed K stripe",
     "include/cutlass/gemm/config/gemm_operands.hpp":
         "adds a defaulted shape-aware selector alongside the existing type-only selector; only exact ppu001 "
         "TileM=WarpM=8 chooses m8n16, so all existing shapes and every other architecture retain their old atom",
@@ -131,7 +132,12 @@ EXTENSIONS = {
 # parameter (the Stream-K minimum k-stripe), which is an extension. Landing that by leaning on the file's
 # existing FIXES entry would hide a new change behind an old allowance -- which is the same shape as a stale
 # ALLOWED entry in ci/check_switch_macros.py exempting a name rather than a decision.
-MIXED: dict = {}
+MIXED: dict = {
+    "include/cutlass/gemm/kernel/ppu_tile_scheduler_stream_k.hpp":
+        "FIX cd17c2b9: removes trailing commas rejected in template argument lists; EXTENSION: a defaulted "
+        "MinItersPerSkUnit template argument selects the matching ParamsT specialization, so every existing "
+        "two-argument actlize spelling remains on 8 while reviewed quactlize kernels can opt into a shorter stripe",
+}
 
 _collisions = sorted((set(FIXES) & set(EXTENSIONS)) | (set(MIXED) & (set(FIXES) | set(EXTENSIONS))))
 if _collisions:

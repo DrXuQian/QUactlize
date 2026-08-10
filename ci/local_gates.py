@@ -71,6 +71,7 @@ GATES = [
     ("l114_scale_copy_coverage@ordinary", []),
     ("l114_scale_copy_coverage@fold", []),
     ("l114_scale_copy_coverage@two_plane", []),
+    ("l120_streamk_min_iters_policy", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -263,6 +264,7 @@ GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               "l114_scale_copy_coverage@two_plane":
                   ["-D__HGGCCC__", "--expt-relaxed-constexpr", "-DL114_PROVIDER=3"],
               "l109_rt_hggc_parse": ["-D__HGGCCC__"],
+              "l120_streamk_min_iters_policy": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               # THE MACROS ARE THE POINT. This gate asserts the fused path is ON, so it has to be built the way the
               # box builds packfuse -- without these two it would assert about a configuration nobody runs and pass
               # for the wrong reason, which is the failure it exists to catch.
@@ -314,6 +316,26 @@ def lint_scale_copy_coverage_fires():
         first = next((line for line in log.splitlines() if "error:" in line), "no compiler diagnostic")
         return "FAIL", f"uncapped scale-copy build failed for the wrong reason: {first[:140]}", dt
     return "PASS", "shared witness rejects the old uncapped Q3/Q5 scale-copy layout", dt
+
+
+def lint_streamk_min_zero_fires():
+    """The default-compatible Stream-K policy seam must reject a zero-sized stripe at its type boundary."""
+    src = DEV / "l120_streamk_min_iters_policy.cu"
+    if not src.is_file():
+        return "FAIL", f"missing {src.name}", 0.0
+    OUT.mkdir(parents=True, exist_ok=True)
+    planted = OUT / "l120_streamk_min_zero.o"
+    rc, log, dt = run(NVCC + ["-D__HGGCCC__", "--expt-relaxed-constexpr",
+                              "-DL120_SELECTED_MIN=0", "-I", str(STUB), "-I", str(ACT),
+                              "-I", str(ACT_UTIL), "-I", str(ROOT / "quactlize/include"),
+                              "-c", "-o", str(planted), str(src)])
+    expected = "Stream-K requires at least one K tile per work unit"
+    if rc == 0:
+        return "FAIL", "ParamsT<0> compiled, so the minimum-stripe type admits an empty work unit", dt
+    if expected not in log:
+        first = next((line for line in log.splitlines() if "error:" in line), "no compiler diagnostic")
+        return "FAIL", f"ParamsT<0> failed for the wrong reason: {first[:140]}", dt
+    return "PASS", "ParamsT<0> is rejected at the policy type boundary", dt
 
 
 def lint_mixed_pipeline_shared():
@@ -1410,6 +1432,7 @@ def main():
                 ("lint", "dense/grouped tactic names alias one generator and route output agrees", lint_tactic_spaces_agree),
                 ("lint", "dense/grouped mixed policy descriptor parity fires on planted drift", lint_mixed_policy_parity_fires),
                 ("lint", "l114_scale_copy_coverage: uncapped layout fails the shared witness", lint_scale_copy_coverage_fires),
+                ("lint", "Stream-K minimum policy rejects an empty K stripe", lint_streamk_min_zero_fires),
                 ("lint", "all mixed collectives use one stage-ring driver", lint_mixed_pipeline_shared),
                 ("lint", "the committed dense tactic table exactly regenerates from its stamped sources", lint_dense_tactic_table_current),
                 ("lint", "offline tactic buckets never extrapolate beyond measured M", lint_tactic_buckets_do_not_extrapolate),
