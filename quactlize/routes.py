@@ -242,6 +242,63 @@ def has_op(name: str) -> bool:
         return False                     # extension not built at all -- absent, not stale
 
 
+class PlacedArtifact(tuple):
+    """(low, high, units) AND the placement it was produced for.
+
+    WHY IT IS A tuple SUBCLASS. Every existing consumer treats the artifact as a 3-tuple -- tools/pack_gguf.py
+    does `low, high, units = prepare_fully_quantized_dense(...)`, _unpack_fq does `list(artifact)`, and the
+    tests index it. Subclassing tuple keeps all of that byte-identical while giving the object somewhere to
+    carry what the tensors cannot say about themselves.
+
+    WHAT IT CARRIES AND WHY. prepare_fully_quantized_dense's own docstring: "the default producer pins the fold
+    at 1", and an explicit tile_k routes to the *_for_tile op, which "is the only way to obtain a folded
+    artifact". A folded artifact's bytes sit in their own layout class -- dev/fold_derivation/
+    l105_low_plane_config_classes.cu separates F=1, F=2 and F=4 while NOT separating WON or TileK within F=1 --
+    so only a reader using the same fold may decode it. `requested_tile_k` is that fact, recorded at the one
+    moment it is known.
+
+    It is deliberately NOT a full placement descriptor yet. The descriptor that will cross this ABI is
+    (bits, tile_k, high_bits), i.e. formats.PlacedArrangement, and it needs the read op to accept it. Until then
+    this records the one bit that lets the reader REFUSE instead of returning wrong numbers.
+    """
+    # NO __slots__: a tuple subclass cannot have a nonempty one (TypeError at class creation).
+
+    def __new__(cls, tensors, requested_tile_k=None):
+        return super().__new__(cls, tuple(tensors))
+
+    def __init__(self, tensors, requested_tile_k=None):
+        super().__init__()
+        self.requested_tile_k = requested_tile_k
+
+
+def _refuse_if_folded(artifact, where: str) -> None:
+    """A folded artifact reaching a reader that cannot express the fold is silent wrong numbers, not an error.
+
+    The op behind these routes takes (a, low, high, units, qtype) and no tile_k, so it decodes at the DEFAULT
+    fold whatever the artifact was placed for. Bytes present, pairing present, numbers wrong -- the failure mode
+    this repository has paid for more than once. Refuse instead, and say what would have to change.
+
+    Conservative on purpose: it refuses on ANY explicit tile_k rather than deriving the fold, because deriving
+    it here would put a second copy of fold_for's arithmetic on the read path. When the descriptor crosses the
+    ABI the test becomes exact and this becomes redundant.
+
+    THE THREE ROUTES THAT CALL IT ARE THE THREE THAT CAN RECEIVE A FOLDED ARTIFACT -- matmul_fully_quantized_dense,
+    dequantize_fully_quantized and matmul_bc_gemv, all fed by prepare_fully_quantized_dense (tests/
+    test_gguf_routes.py:642, :679). The GROUPED routes are deliberately NOT guarded: prepare_fully_quantized_grouped
+    takes no tile_k, so it cannot produce a folded artifact, and a guard there would be a check that no input can
+    fail -- which reads like coverage and is not. Give the grouped producer a tile_k and the guard goes on in the
+    same change.
+    """
+    tk = getattr(artifact, "requested_tile_k", None)
+    if tk is not None:
+        raise ValueError(
+            f"{where}: this artifact was placed for TileK={tk} (prepare_*(..., tile_k={tk}) routes to the "
+            f"*_for_tile op, the only producer of a folded arrangement), and this route's op signature carries "
+            f"no tile_k -- it would decode at the default fold and return finite wrong numbers. Either pass an "
+            f"artifact built with tile_k=None, or wait for the placement descriptor to cross this ABI (task "
+            f"#54); the kernel-side accept/reject predicate is the other half of that.")
+
+
 def _unpack_fq(artifact, where: str):
     """(low, high, units), with a message about the CONTRACT instead of a bare unpacking error.
 
@@ -294,6 +351,7 @@ def matmul_bc_gemv(a: torch.Tensor, artifact, qtype: int) -> torch.Tensor:
     shape, not "no worse under one condition", and it has not been met: at N=K=2048 the measurement is a cold tie
     and warm +11%. Both paths stay callable until it is.
     """
+    _refuse_if_folded(artifact, "matmul_bc_gemv")
     low, high, units = _unpack_fq(artifact, "matmul_bc_gemv")
     return _op("gguf_gemv_bc")(a, low, high, units, int(qtype))
 
@@ -330,6 +388,7 @@ def dequantize_fully_quantized(artifact, qtype: int, grouped: bool = False) -> t
     gives the wrong answer against official gguf -- which is a better outcome than a private decoder that agrees
     with itself.
     """
+    _refuse_if_folded(artifact, "dequantize_fully_quantized")
     low, high, units = _unpack_fq(artifact, "dequantize_fully_quantized")
     scale, zero = dequantize_scale_from_units(units, qtype)
     op = "gguf_grouped_artifact_dequantize" if grouped else "gguf_dense_artifact_dequantize"
@@ -360,8 +419,10 @@ def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: i
     """
     _check_shape(blocks, n, k, int(qtype))
     if tile_k is None:
-        return _op("gguf_prepare_fully_quantized_dense")(blocks, n, k, int(qtype))
-    return _op("gguf_prepare_fully_quantized_dense_for_tile")(blocks, n, k, int(qtype), int(tile_k))
+        return PlacedArtifact(_op("gguf_prepare_fully_quantized_dense")(blocks, n, k, int(qtype)))
+    return PlacedArtifact(
+        _op("gguf_prepare_fully_quantized_dense_for_tile")(blocks, n, k, int(qtype), int(tile_k)),
+        requested_tile_k=int(tile_k))
 
 
 def matmul_fully_quantized_dense(a: torch.Tensor, artifact, qtype: int):
@@ -371,6 +432,7 @@ def matmul_fully_quantized_dense(a: torch.Tensor, artifact, qtype: int):
     always exists and the launch returns rc=34, which surfaces here as an error naming the macro. A silent
     fallback would make a build that cannot run this cell indistinguishable from one that can.
     """
+    _refuse_if_folded(artifact, "matmul_fully_quantized_dense")
     low, high, units = _unpack_fq(artifact, "matmul_fully_quantized_dense")
     return _op("gguf_dense_fully_quantized")(a, low, high, units, int(qtype))
 
