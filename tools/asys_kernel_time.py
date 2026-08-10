@@ -46,9 +46,16 @@ import sqlite3
 import statistics
 import sys
 
-# Activities that are never part of a kernel-only time. Reported by name and count rather than dropped in
-# silence: "we excluded the right things" is only checkable if the exclusions are visible.
-EXCLUDE_PAT = re.compile(r"bench_floor_nop|memcpy|memset|_nop$", re.I)
+# THE HARNESS'S OWN KERNELS, BY NAME. Taken from `grep -o "__global__ void [a-z_]*" benchmarks/`, not guessed:
+# bench_floor_nop (the launch-rate probe), flush_l2 (cold-cache control) and moe_output_witness_scan (the
+# post-timing output check). They bracket every candidate, so a sweep's timeline reads witness, N launches,
+# witness, N launches, ... and they must come out before anything is segmented.
+#
+# EARLIER VERSIONS INFERRED THIS FROM LAUNCH COUNTS AND BOTH WERE WRONG. Selecting the modal count picked the
+# once-per-candidate kernels and announced moe_output_witness_scan as the fastest config; selecting the maximum
+# worked only while every timing loop had the same iteration count. Which kernel we launched is not something to
+# infer -- the harness kernels are ours and finite, so name them and let everything else be a candidate.
+EXCLUDE_PAT = re.compile(r"bench_floor_nop|flush_l2|moe_output_witness_scan|memcpy|memset|_nop$", re.I)
 
 NAME_HINTS = ("demangledname", "shortname", "name", "kernelname", "demangled", "symbol")
 DUR_HINTS = ("duration", "gpu_duration", "elapsed", "dur")
@@ -206,6 +213,25 @@ def segments(acts: list[tuple[str, float]]) -> list[tuple[str, list[float]]]:
     return segs
 
 
+def timing_segments(segs: list[tuple[str, list[float]]]) -> tuple[list[int], int]:
+    """Which segments are a config's timing loop, by the modal launch count.
+
+    The timeline is not just the swept kernel. The harness poisons D before each candidate and scans every output
+    word after it, so a sweep reads poison, 21 launches, witness scan, poison, 21 launches, ... Zipping tags to
+    every segment therefore lines up three segments per tag and mislabels all of them; with one config it happens
+    to work, which is why this only appears at sweep scale.
+
+    THE CRITERION IS THE MAXIMUM LAUNCH COUNT, NOT THE MODE. The first version of this used the mode and was
+    exactly backwards: with two configs the counts are 1,21,1,1,21,1 and the mode is 1, so it selected the poison
+    and witness kernels, relegated both timing loops to "other", and announced moe_poison_kernel as the fastest
+    kernel-only time. A plausible, ranked, completely wrong table. The bracketing kernels fire once per candidate
+    while the timing loop fires once per iteration, so the loops are the longest runs and nothing needs to name
+    anybody's kernel."""
+    counts = [len(d) for _, d in segs]
+    top = max(counts) if counts else 0
+    return [i for i, n in enumerate(counts) if n == top], top
+
+
 def tags_from_log(path: str) -> list[str]:
     """Config tags in the order the bench ran them. `TMxTN:TK wWMxWN s<stages> bc<a>-><b>`."""
     pat = re.compile(r"([a-z0-9_]+ \d+x\d+:\d+ w\d+x\d+ s\d+ bc\d+->\d+)")
@@ -215,6 +241,22 @@ def tags_from_log(path: str) -> list[str]:
         if m and m.group(1) not in seen:
             seen.add(m.group(1))
             out.append(m.group(1))
+    return out
+
+
+def wall_from_log(path: str) -> dict[str, float]:
+    """tag -> the bench's own host wall-clock in us, so the two can be printed together and cross-checked.
+
+    This is also the only free check on the time unit. `--scale` assumes the timeline stores nanoseconds; if a
+    build stored microseconds every figure would be a thousand times too large and nothing in the database would
+    say so. A kernel cannot outlast the wall-clock that contains it, so a violation is reported rather than
+    printed as a result."""
+    pat = re.compile(r"([a-z0-9_]+ \d+x\d+:\d+ w\d+x\d+ s\d+ bc\d+->\d+)\s+([\d.]+) us")
+    out: dict[str, float] = {}
+    for line in open(path, errors="replace"):
+        m = pat.search(line)
+        if m:
+            out.setdefault(m.group(1), float(m.group(2)))
     return out
 
 
@@ -257,32 +299,65 @@ def main() -> int:
     print(f"[asys] {len(kept)} kernel activities in {len(segments(kept))} contiguous segment(s)\n")
 
     segs = segments(kept)
+    idx = list(range(len(segs)))
+    counts = sorted({len(d) for _, d in segs})
+    if len(counts) > 1:
+        # Not fatal, but it means a candidate launched more than one kernel (a split-K reduce, say), so segments
+        # and tags no longer correspond one to one. Say so rather than letting the zip below quietly slide.
+        print(f"[asys] NOTE: segments have differing launch counts {counts}. A candidate that launches more than "
+              f"one kernel produces more segments than tags; check the labelling below.")
     tags = tags_from_log(a.log) if a.log else []
+    walls = wall_from_log(a.log) if a.log else {}
     if tags and len(tags) != len(segs):
-        # Loud, not fatal: the numbers are still right, only the labels are unavailable.
-        print(f"[asys] WARNING: {len(tags)} tag(s) in the log but {len(segs)} segment(s) in the timeline. "
-              f"Not labelling; the per-segment numbers below are unaffected.\n")
-        tags = []
+        # WE KNOW WHAT WE LAUNCHED, SO THIS IS A STOP AND NOT A WARNING. The log names one tag per candidate and
+        # EXCLUDE_PAT names the harness's own kernels, so the counts must agree. When they do not, the timeline
+        # holds something that is neither -- a harness kernel added since that list was written, or a candidate
+        # that launches more than one kernel. Continuing would rank it as a config, which is how an earlier
+        # version of this tool announced a witness-scan kernel as the fastest configuration.
+        print(f"[asys] STOP: {len(tags)} tag(s) in the log but {len(segs)} segment(s) in the timeline.")
+        print(f"[asys] Every segment below is either a candidate or something EXCLUDE_PAT should name:")
+        for name, durs in segs:
+            print(f"[asys]   x{len(durs):<5} {name[:88]}")
+        print(f"[asys] Add the harness kernels to EXCLUDE_PAT, or drop --log to read the timeline unlabelled.")
+        return 1
 
-    rows = []
-    for i, (name, durs) in enumerate(segs):
+    rows, viol = [], []
+    for pos, i in enumerate(idx):
+        name, durs = segs[i]
         timed = durs[a.drop_first:] if len(durs) > a.drop_first else durs
         us = [d * a.scale for d in timed]
         mean = statistics.fmean(us)
         spread = (max(us) - min(us)) / mean * 100 if mean and len(us) > 1 else 0.0
-        rows.append((tags[i] if tags else name[:52], len(durs), mean,
-                     statistics.median(us), min(us), max(us), spread))
+        tag = tags[pos] if tags else name[:52]
+        wall = walls.get(tag)
+        if wall is not None and mean > wall:
+            viol.append((tag, mean, wall))
+        rows.append((tag, len(durs), mean, statistics.median(us), min(us), max(us), spread, wall))
+
+    if viol:
+        print("[asys] STOP: kernel time exceeds the bench's own host wall-clock, which is impossible.")
+        for tag, k, w_ in viol:
+            print(f"[asys]   {tag}: kernel {k:.3f} us > wall {w_:.3f} us")
+        print("[asys] The most likely cause is the time unit: --scale assumes the timeline stores nanoseconds.")
+        print("[asys] Nothing else is printed, because a wrong unit scales every figure equally and still looks")
+        print("[asys] internally consistent.")
+        return 1
 
     rows.sort(key=lambda r: r[2])
     w = max((len(r[0]) for r in rows), default=10)
-    print(f"{'config':<{w}} {'launches':>8} {'mean us':>10} {'median':>9} {'min':>9} {'max':>9} {'spread':>8}")
-    for tag, n, mean, med, lo, hi, sp in rows:
-        print(f"{tag:<{w}} {n:>8} {mean:>10.3f} {med:>9.3f} {lo:>9.3f} {hi:>9.3f} {sp:>7.1f}%")
+    hdr = f"{'config':<{w}} {'launches':>8} {'kernel us':>10} {'median':>9} {'min':>9} {'max':>9} {'spread':>8}"
+    print(hdr + (f" {'wall us':>9} {'overhead':>9}" if walls else ""))
+    for tag, n, mean, med, lo, hi, sp, wall in rows:
+        line = f"{tag:<{w}} {n:>8} {mean:>10.3f} {med:>9.3f} {lo:>9.3f} {hi:>9.3f} {sp:>7.1f}%"
+        if walls:
+            line += f" {wall:>9.2f} {wall-mean:>8.2f}" if wall is not None else f" {'-':>9} {'-':>9}"
+        print(line)
 
     if rows:
         print(f"\n[asys] fastest kernel-only: {rows[0][0]}  {rows[0][2]:.3f} us")
-        print("[asys] this ranking is kernel duration only. Host wall-clock from the bench includes launcher,")
-        print("       per-iteration initialize, a blocking prefix H2D and the final sync, and is NOT comparable.")
+        if walls:
+            print("[asys] 'overhead' is wall minus kernel: launcher, per-iteration initialize, the blocking prefix")
+            print("       H2D and the final sync. It is not a property of the kernel and must not be ranked on.")
     return 0
 
 
