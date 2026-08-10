@@ -101,6 +101,23 @@ SYNTAX = [
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_B_DEQUANT_NOP=1"),
     ("tests/test_moe_grouped_verify.cu", ""),
     ("tests/test_moe_grouped_real.cu", ""),
+    # L>1 is the unique coverage here: each expert gets different low/high weights and metadata, then the grouped
+    # result is checked against per-expert L=1 launches.  Both optional collective headers must therefore instantiate,
+    # and PPU_B_CHUNK changes the converter pipeline rather than merely changing host code.
+    ("tests/test_lowbit_grouped.cu", ""),
+    ("tests/test_lowbit_grouped.cu", "-DPPU_B_CHUNK=1"),
+    # These registered targets all had baseline files but no SYNTAX row.  Keep the boundaries that still provide
+    # distinct evidence: all five placed k-quant formats, the standalone GEMV converter/kernel matrix and perf main,
+    # and the native-scale device decoder.  test_fpA_intB_ppu and test_moe_grouped_ppu are superseded perf-only
+    # fossils (no oracle, obsolete timing/traffic); an empty baseline must not promote either into evidence.
+    ("tests/test_fpA_kquant_dense.cu", ""),
+    ("tests/test_gemv_lowbit.cu", ""),
+    ("benchmarks/test_gemv_perf.cu", ""),
+    ("tests/test_q4k_native_scale.cu", ""),
+    # test_ppu_f16x2_probe.cu intentionally has no local SYNTAX row: its alias arm deliberately exposes raw PPU
+    # f16x2 instructions, so nvcc reaches ptxas, rejects `ppu.fma/sub` as unknown and exits 255 without this gate's
+    # completion witness.  The source remains a box gate; unlike the old empty baseline, its absence here does not
+    # pretend that nvcc checked it.
     # #112's collective gate is a new device path, not merely a host harness:
     # compile the raw-mainloop G3 arm and both TM8/TM16 production G4 arms
     # locally so a dependent-template error cannot wait for the ppu001 box.
@@ -461,6 +478,27 @@ def syntax(src, defs):
     rc, log, dt = run(["bash", str(sc), str(ROOT / src)], cwd=str(DEV), env=env)
     last = [l for l in log.splitlines() if l.strip()]
     return ("PASS" if rc == 0 else "FAIL"), (last[-1] if last else ""), dt
+
+
+def lint_syntax_inventory():
+    """A baseline is coverage metadata, so it must correspond to a live SYNTAX source in both directions.
+
+    Empty baseline files are valid (they mean zero accepted diagnostics), which made eight orphan files look exactly
+    like eight clean, exercised sources.  Compare names instead of contents so that state cannot recur silently.
+    """
+    listed = {Path(src).name for src, _ in SYNTAX}
+    baseline_dir = DEV / "syntax_baseline"
+    baselined = {p.name[:-4] for p in baseline_dir.glob("*.txt")}
+    orphan = sorted(baselined - listed)
+    missing = sorted(listed - baselined)
+    if orphan or missing:
+        parts = []
+        if orphan:
+            parts.append("baseline without SYNTAX row: " + ", ".join(orphan))
+        if missing:
+            parts.append("SYNTAX row without baseline: " + ", ".join(missing))
+        return "FAIL", "; ".join(parts), 0.0
+    return "PASS", f"{len(listed)} syntax sources and baseline files match", 0.0
 
 
 def lint_ppu_portability():
@@ -1386,6 +1424,7 @@ def main():
                 ("lint", "dense and MoE consume one named measurement layer", lint_bench_measurement_shared),
                 ("lint", "MoE events bracket only gemm.run and retain the host-wall audit", lint_moe_event_timing),
                 ("lint", "dense Stream-K shares worker/K decomposition and resets locks before timing", lint_dense_streamk_contract),
+                ("lint", "syntax baselines and live SYNTAX sources match", lint_syntax_inventory),
                 ("lint", "m8n16 G2 replays the historical bad index on the production x4 payload", lint_m8n16_g2_contract),
                 ("lint", "ppu001 plain LDSM fails in C++ before its unproved assembler path", lint_plain_ldsm_failclosed),
                 ("lint", "quactlize_extensions adds to actlize rather than redefining it", lint_extension_additive),

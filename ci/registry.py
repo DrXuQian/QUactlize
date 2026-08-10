@@ -13,6 +13,7 @@ in its name. The registry FAILS when the code and the declaration disagree, in e
 
 Oracle kinds, weakest to strongest:
 
+  none       inventory only: a perf/diagnostic executable with no correctness comparison. Contributes no evidence.
   self       the result is compared against another run of the same kernel (a different tile, L=1, ...). Catches
              plumbing, structurally blind to a wrong shared constant -- both sides move together.
   synthetic  an independent CPU golden over generated inputs. A real oracle for the arithmetic; says nothing about
@@ -52,11 +53,9 @@ HARNESS_PATHS = {
     "test_w2a16_real": [FP16_P], "test_q4k_packed_gemm": [NATIVE_P, FP16_P], "test_q4k_native_scale": ["scale_decode"],
     "test_ppu_f16x2_probe": ["probe"], "test_w1a16_grouped": [FP16_P], "test_w2a16_grouped": [FP16_P],
     "test_w1a16_diag": [FP16_P], "test_w2a16_diag": [FP16_P], "test_w4a16_diag": [FP16_P],
-    "test_fpA_intB_ppu": [FP16_P, SCALE_DENSE_P],
     "test_fpA_kquant_dense": [SCALE_DENSE_P],
     "test_gemv_lowbit": [GEMV_P, SCALE_GEMV_P, SCALE_GEMV_MOE_P],
     "test_moe_gemm_ppu": [FP16_P],
-    "test_moe_grouped_ppu": [FP16_P],
     "test_ppu_m8n16_collective": [FP16_P],
     # THE FIRST EVIDENCE FOR dequant_then_dense. Until this existed DENSE_P appeared in the path vocabulary and in
     # no harness at all, which is the honest state of a route whose host side was never wired -- and check_against_
@@ -75,8 +74,8 @@ HARNESSES = {
         "grouped vs the same kernel at L=1; plumbing only, blind to a wrong dequant constant"),
     "test_moe_grouped_real":    (["gptq-int4-sym"],   "real",      None,
         "real GPTQ weights through the grouped path; reads the fixture path from argv"),
-    "test_lowbit_grouped":      (["int4", "int2", "int1"], "synthetic", None,
-        "CPU golden over the full code range"),
+    "test_lowbit_grouped":      (["int4", "int2", "int1"], "self", None,
+        "L>1 grouped output vs per-expert L=1 runs of the same kernel; per-expert addressing only"),
     "test_q3_concat_real":      (["gguf-q3k"],        "real",      "real_q3k_concat.bin",
         "A-concat: two GEMMs summed, same golden as the B-concat but 2x the mma"),
     "test_q3_bconcat_real":     (["gguf-q3k"],        "real",      "real_q3k_concat.bin",
@@ -97,7 +96,8 @@ HARNESSES = {
     "test_w1a16_diag":          (["int1"],            "synthetic", None, "diagonal probe"),
     "test_w2a16_diag":          (["int2"],            "synthetic", None, "diagonal probe"),
     "test_w4a16_diag":          (["int4"],            "synthetic", None, "diagonal probe"),
-    "test_fpA_intB_ppu":        (["int4"],            "self",      None, "dense launcher sweep"),
+    "test_fpA_intB_ppu":        ([],                  "none",      None,
+        "superseded perf-only sweep; uninitialised synthetic weights and no output comparison"),
     "test_fpA_kquant_dense":    (["gguf-q2k", "gguf-q3k", "gguf-q4k", "gguf-q5k", "gguf-q6k"], "self", None,
         "two fpA dense configurations over each resident k-quant artifact; catches launcher plumbing but shares constants"),
     # Also declares gptq-int4-sym, and the reason is representational rather than a second harness: this sweep
@@ -106,7 +106,8 @@ HARNESSES = {
     # real GPTQ checkpoint reaching the GEMV, so the oracle stays synthetic.
     "test_gemv_lowbit":         (["int4", "int2", "int1", "gptq-int4-sym"], "synthetic", None, "CUDA-core GEMV"),
     "test_moe_gemm_ppu":        (["int4"],            "self",      None, ""),
-    "test_moe_grouped_ppu":     (["int4"],            "self",      None, ""),
+    "test_moe_grouped_ppu":     ([],                  "none",      None,
+        "superseded perf-only grouped sweep; no output comparison"),
     "test_ppu_m8n16_collective":(["int4"],            "synthetic", None,
         "ppu001 m8 collective gate: raw FP32 mainloop plus grouped ptr-array epilogue at M=1/2/3/7/8, "
         "each against an independent CPU golden and an exact same-input m16 control; G5 remains blocked on #108"),
@@ -145,7 +146,7 @@ FORMAT_TO_QUANT_TYPE = {
 
 def coverage_by_path():
     """(format, path) -> the strongest oracle any harness gives that pair."""
-    rank = {"self": 0, "synthetic": 1, "real": 2}
+    rank = {"none": -1, "self": 0, "synthetic": 1, "real": 2}
     best = {}
     for name, (fmts, oracle, _fx, _n) in HARNESSES.items():
         for path in HARNESS_PATHS.get(name, []):
@@ -231,7 +232,7 @@ def check():
 
 def coverage():
     """format -> the strongest oracle any harness gives it."""
-    rank = {"self": 0, "synthetic": 1, "real": 2}
+    rank = {"none": -1, "self": 0, "synthetic": 1, "real": 2}
     best = {f: (None, -1) for f in FORMATS}
     for name, (fmts, oracle, _fx, _n) in HARNESSES.items():
         for f in fmts:

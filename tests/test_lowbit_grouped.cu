@@ -38,6 +38,12 @@
 #include "xplane_offline.hpp"
 #include "moe_grouped_ppu.cuh"
 
+// This test instantiates folded single-plane and folded two-plane collectives directly.  The launcher umbrella
+// deliberately carries only the base collective; each consumer must name the optional specializations it uses.
+// Omitting these headers leaves CollectiveMma at its failing primary template, which is not a valid syntax gate.
+#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
+
 // SELF-DESCRIBING RUN. Whether PPU_B_CHUNK was active has now been undeterminable from the build output twice: the
 // device compiles are add_custom_command with a COMMENT so make.log holds no compile line, and the build.sh line that
 // does check scrolls away above a long result. The binary reports its own configuration instead -- a log that does not
@@ -81,6 +87,45 @@ static T* expert_ptr(T* base, size_t e, size_t bytes_per_expert) {
 
 static int L = 4, Mb = 64, N = 256, K = 256, gs = 32;
 static bool ragged = true;
+
+struct SelfCompare {
+  int bad = 0;
+  int nonfinite = 0;
+  int worst_e = -1;
+  double max_rel = 0;
+  double grouped_absmax = 0;
+  double oracle_absmax = 0;
+};
+
+// This harness is deliberately a SELF oracle: L>1 and per-expert L=1 execute identical arithmetic, isolating only
+// per-expert addressing.  That makes liveness part of the contract.  If both arms refuse to launch, zero==zero is
+// not a match; likewise NaN must be counted before any comparison because every `NaN > threshold` test is false.
+static SelfCompare compare_self(std::vector<half_t> const& grouped, std::vector<half_t> const& oracle,
+                                std::vector<int> const& me, std::vector<int> const& offs, int n) {
+  SelfCompare r;
+  for (int e = 0; e < int(me.size()); ++e)
+    for (int i = 0; i < me[e]; ++i)
+      for (int j = 0; j < n; ++j) {
+        size_t const idx = (size_t(offs[e]) + i) * n + j;
+        double const a = double(float(grouped[idx])), b = double(float(oracle[idx]));
+        if (!std::isfinite(a) || !std::isfinite(b)) {
+          ++r.nonfinite;
+          ++r.bad;
+          if (r.worst_e < 0) r.worst_e = e;
+          continue;
+        }
+        r.grouped_absmax = std::max(r.grouped_absmax, std::abs(a));
+        r.oracle_absmax = std::max(r.oracle_absmax, std::abs(b));
+        double const rel = std::abs(a - b) / (std::abs(b) + 1e-3);
+        if (rel > 2e-2) {
+          if (r.bad < 4)
+            std::printf("      e=%d i=%d j=%d grouped=%.4f oracle=%.4f\n", e, i, j, a, b);
+          ++r.bad;
+        }
+        if (rel > r.max_rel) { r.max_rel = rel; r.worst_e = e; }
+      }
+  return r;
+}
 
 int main(int argc, char** argv) {
   if (argc > 1) L      = atoi(argv[1]);
@@ -151,7 +196,8 @@ int main(int argc, char** argv) {
     const size_t wsb = (size_t)cutlass::ceil_div(Mmax,16)*cutlass::ceil_div(N,64)*(size_t)L*64;                          \
     cutlass::DeviceAllocation<char> ws(wsb);                                                                             \
     CUTLASS_PPU_CHECK(hggcMemset(dD.get(), 0, sizeof(half_t) * (size_t)total * N));                                     \
-    moe_grouped_ppu::filter_and_run<QMODE, TMv, TNv, TKv, WMv, WNv, Sv, LOWELEM, HIELEM>(                               \
+    int const launch_failures_before = moe_grouped_ppu::moeg_fail_count();                                             \
+    moe_grouped_ppu::filter_and_run<QMODE, TMv, TNv, TKv, WMv, WNv, Sv, LOWELEM, HIELEM>(                              \
         dA.get(), dblo.get(), dSc.get(), dZr.get(), pd.get(), sd.get(), gm.get(),                                       \
         Mmax, N, K, L, gs, rdev.get(), rsh.data(), ragged ? offdev.get() : nullptr, ws.get(), wsb, nullptr, dbhi.get()); \
     CUTLASS_PPU_CHECK(hggcDeviceSynchronize());                                                                          \
@@ -169,29 +215,24 @@ int main(int argc, char** argv) {
       cutlass::DeviceAllocation<int> o1d(1);      o1d.copy_from_host(o1.data());                                          \
       const size_t w1b = (size_t)cutlass::ceil_div(Me,16)*cutlass::ceil_div(N,64)*64;                                    \
       cutlass::DeviceAllocation<char> w1(w1b);                                                                            \
-      moe_grouped_ppu::filter_and_run<QMODE, TMv, TNv, TKv, WMv, WNv, Sv, LOWELEM, HIELEM>(                             \
+      moe_grouped_ppu::filter_and_run<QMODE, TMv, TNv, TKv, WMv, WNv, Sv, LOWELEM, HIELEM>(                            \
           dA.get() + (size_t)offs[e] * K, expert_ptr(dblo.get(), (size_t)e, lo_per),                                    \
           dSc.get() + (size_t)e * scale_k * N, dZr.get() + (size_t)e * scale_k * N,                                     \
           p1d.get(), t1d.get(), g1d.get(), Me, N, K, 1, gs, s1d.get(), s1.data(), nullptr, w1.get(), w1b, nullptr,      \
-          expert_ptr(dbhi.get(), (size_t)e, hi_per));                                                                               \
+          expert_ptr(dbhi.get(), (size_t)e, hi_per));                                                               \
       CUTLASS_PPU_CHECK(hggcDeviceSynchronize());                                                                        \
     }                                                                                                                    \
     std::vector<half_t> h((size_t)total*N), h1((size_t)total*N);                                                         \
     dD.copy_to_host(h.data()); dD1.copy_to_host(h1.data());                                                              \
-    int bad = 0, worst_e = -1; double mr = 0;                                                                             \
-    for (int e = 0; e < L; ++e)                                                                                          \
-      for (int i = 0; i < me[e]; ++i)                                                                                    \
-        for (int j = 0; j < N; ++j) {                                                                                     \
-          const size_t idx = ((size_t)offs[e] + i) * N + j;                                                              \
-          const double a = double(float(h[idx])), b = double(float(h1[idx]));                                            \
-          const double rel = std::abs(a - b) / (std::abs(b) + 1e-3);                                                     \
-          if (rel > 2e-2) { if (bad < 4) std::printf("      e=%d i=%d j=%d grouped=%.4f oracle=%.4f\n", e, i, j, a, b);  \
-                            ++bad; }                                                                                      \
-          if (rel > mr) { mr = rel; worst_e = e; }                                                                        \
-        }                                                                                                                 \
-    std::printf("    %-46s bad=%d/%d max_rel=%.3e (worst e=%d) %s\n", TAG, bad, total * N, mr, worst_e,                  \
-                bad ? "MISMATCH" : "MATCH");                                                                              \
-    if (bad) ++fails;                                                                                                     \
+    SelfCompare const cmp = compare_self(h, h1, me, offs, N);                                                            \
+    int const launch_failures = moe_grouped_ppu::moeg_fail_count() - launch_failures_before;                           \
+    bool const all_launched = launch_failures == 0;                                                                      \
+    bool const live = cmp.grouped_absmax > 0 && cmp.oracle_absmax > 0;                                                   \
+    bool const ok = all_launched && live && cmp.bad == 0;                                                               \
+    std::printf("    %-46s launch_failures=%d bad=%d/%d nonfinite=%d max_rel=%.3e |grp|max=%.3e |ref|max=%.3e "         \
+                "(worst e=%d) %s\n", TAG, launch_failures, cmp.bad, total * N, cmp.nonfinite,                           \
+                cmp.max_rel, cmp.grouped_absmax, cmp.oracle_absmax, cmp.worst_e, ok ? "MATCH" : "FAIL");              \
+    if (!ok) ++fails;                                                                                                    \
   } while (0)
 
   // Single-plane variant: identical structure, no B2 argument. Same L=1-per-expert oracle, so it isolates the same
@@ -218,7 +259,8 @@ int main(int argc, char** argv) {
     const size_t wsb = (size_t)cutlass::ceil_div(Mmax,16)*cutlass::ceil_div(N,64)*(size_t)L*64;                            \
     cutlass::DeviceAllocation<char> ws(wsb);                                                                               \
     CUTLASS_PPU_CHECK(hggcMemset(dD.get(), 0, sizeof(half_t) * (size_t)total * N));                                       \
-    moe_grouped_ppu::filter_and_run<QMODE, TMv, TNv, TKv, WMv, WNv, Sv, ELEM>(                                            \
+    int const launch_failures_before = moe_grouped_ppu::moeg_fail_count();                                               \
+    moe_grouped_ppu::filter_and_run<QMODE, TMv, TNv, TKv, WMv, WNv, Sv, ELEM>(                                          \
         dA.get(), db.get(), dSc.get(), dZr.get(), pd.get(), sd.get(), gm.get(),                                          \
         Mmax, N, K, L, gs, rdev.get(), rsh.data(), ragged ? offdev.get() : nullptr, ws.get(), wsb, nullptr);              \
     CUTLASS_PPU_CHECK(hggcDeviceSynchronize());                                                                            \
@@ -234,7 +276,7 @@ int main(int argc, char** argv) {
       cutlass::DeviceAllocation<int> g1d(1);      g1d.copy_from_host(g1.data());                                            \
       const size_t w1b = (size_t)cutlass::ceil_div(Me,16)*cutlass::ceil_div(N,64)*64;                                      \
       cutlass::DeviceAllocation<char> w1(w1b);                                                                              \
-      moe_grouped_ppu::filter_and_run<QMODE, TMv, TNv, TKv, WMv, WNv, Sv, ELEM>(                                          \
+      moe_grouped_ppu::filter_and_run<QMODE, TMv, TNv, TKv, WMv, WNv, Sv, ELEM>(                                        \
           dA.get() + (size_t)offs[e] * K, expert_ptr(db.get(), (size_t)e, per),                                          \
           dSc.get() + (size_t)e * scale_k * N, dZr.get() + (size_t)e * scale_k * N,                                      \
           p1d.get(), t1d.get(), g1d.get(), Me, N, K, 1, gs, s1d.get(), s1.data(), nullptr, w1.get(), w1b, nullptr);      \
@@ -242,20 +284,15 @@ int main(int argc, char** argv) {
     }                                                                                                                      \
     std::vector<half_t> h((size_t)total*N), h1((size_t)total*N);                                                           \
     dD.copy_to_host(h.data()); dD1.copy_to_host(h1.data());                                                                \
-    int bad = 0, worst_e = -1; double mr = 0;                                                                               \
-    for (int e = 0; e < L; ++e)                                                                                            \
-      for (int i = 0; i < me[e]; ++i)                                                                                      \
-        for (int j = 0; j < N; ++j) {                                                                                       \
-          const size_t idx = ((size_t)offs[e] + i) * N + j;                                                                \
-          const double a = double(float(h[idx])), b = double(float(h1[idx]));                                              \
-          const double rel = std::abs(a - b) / (std::abs(b) + 1e-3);                                                       \
-          if (rel > 2e-2) { if (bad < 4) std::printf("      e=%d i=%d j=%d grouped=%.4f oracle=%.4f\n", e, i, j, a, b);   \
-                            ++bad; }                                                                                        \
-          if (rel > mr) { mr = rel; worst_e = e; }                                                                          \
-        }                                                                                                                   \
-    std::printf("    %-46s bad=%d/%d max_rel=%.3e (worst e=%d) %s\n", TAG, bad, total * N, mr, worst_e,                    \
-                bad ? "MISMATCH" : "MATCH");                                                                                \
-    if (bad) ++fails;                                                                                                       \
+    SelfCompare const cmp = compare_self(h, h1, me, offs, N);                                                              \
+    int const launch_failures = moe_grouped_ppu::moeg_fail_count() - launch_failures_before;                             \
+    bool const all_launched = launch_failures == 0;                                                                        \
+    bool const live = cmp.grouped_absmax > 0 && cmp.oracle_absmax > 0;                                                     \
+    bool const ok = all_launched && live && cmp.bad == 0;                                                                 \
+    std::printf("    %-46s launch_failures=%d bad=%d/%d nonfinite=%d max_rel=%.3e |grp|max=%.3e |ref|max=%.3e "           \
+                "(worst e=%d) %s\n", TAG, launch_failures, cmp.bad, total * N, cmp.nonfinite,                             \
+                cmp.max_rel, cmp.grouped_absmax, cmp.oracle_absmax, cmp.worst_e, ok ? "MATCH" : "FAIL");                \
+    if (!ok) ++fails;                                                                                                      \
   } while (0)
 
   std::printf("  --- Q3 = int2 + int1 ---\n");
