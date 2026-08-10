@@ -298,7 +298,28 @@ class PlacedArrangement(NamedTuple):
         return fold_for(self.high_bits, self.tile_k) if self.high_bits else 1
 
     def layout_is_tile_free(self) -> bool:
-        """True when this arrangement's bytes do not depend on the tile, so any TK <= 256 reads it."""
+        """True when this arrangement's bytes do not depend on the tile, so any TK <= 256 reads it.
+
+        SUFFICIENT, NOT THE BOUNDARY, and this used to be one sentence with no measurement under it.
+        dev/fold_derivation/l115_artifact_tactic_code_slots.cu is the durable witness -- it walks
+        xplane::place_from_map's exact physical address layouts and reports owner_diff, where 0 is the actual
+        "one resident artifact serves a larger tactic T" contract (bijective-but-differently-permuted is still
+        wrong). Run at HEAD on 2026-08-11, every cross-T row is owner_diff=0:
+
+            int4  low  A=64  T=128   F=1/1        int1  low  A=64  T=128,256  F=4/1
+            int2  low  A=64  T=128   F=2/1        Q6_K  high A=128 T=256      F=1/1   <- two-plane, F=1 both
+            Q6_K  high A=64  T=256   F=1/2        Q6_K  high A=32  T=256      F=2/4
+            Q3_K  high A=64  T=256   F=2/4        Q5_K  high A=64  T=256      F=1/4
+
+        So F>1 artifacts survive a larger T as well, PROVIDED the fold travels with the artifact rather than
+        being re-derived from (bits, T) -- which is exactly what task #37 is about and is not this predicate's
+        business. Returning True only at F=1 is therefore CONSERVATIVE: it is the subset that needs no ABI
+        promise, which is the right subset for a planner that must not assume plumbing exists.
+
+        The two-plane case is covered by the Q6_K A=128 T=256 F=1/1 row above; an earlier note of mine claimed
+        it was not, and claimed int2 F=2 and int1 F=4 fail cross-T. Both were true of an older tree and are not
+        true of this one. l115 takes about 15 s to build and needs no device -- run it rather than citing me.
+        """
         return self.fold == 1 and self.high_fold == 1
 
 

@@ -23,6 +23,12 @@ registry's own rule ("the canonical minimum 32-byte run for the narrowest code p
 rule that forces F=1. This tool CHECKS that rather than restating it: if a registry row ever stops being
 tile-free, the SCALE_FIRST and FULLY_QUANTIZED TileKs stop being servable by one file and the report says so.
 
+THE EVIDENCE UNDER THAT, because the predicate's own docstring used to have none:
+dev/fold_derivation/l115_artifact_tactic_code_slots.cu walks xplane::place_from_map's physical address layouts
+and reports owner_diff, of which 0 is the "one resident artifact serves a larger tactic T" contract. Run at HEAD
+2026-08-11 it is 0 on every cross-T row, INCLUDING the two-plane Q6_K A=128 -> T=256 F=1/1 row that this tool's
+Q3/Q5/Q6 lines depend on. It builds in ~15 s and needs no device; prefer running it to trusting this paragraph.
+
 WHAT THIS TOOL WILL NOT DO. It will not name an arrangement nobody can build. tools/pack_gguf.py refuses for the
 same reason and the reason is the same sentence: a manifest naming an unbuildable arrangement reads as a
 capability. Every cell here is taken from quactlize/schemes.py's status matrix, the shipping registry, or the
