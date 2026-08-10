@@ -4824,3 +4824,37 @@ m8n16 不加 CTA;它主要兑现在 prefill(`wav=16.12`,机器满的,`msk=11.8%`
    **如果它已经能用,108/109 的范围要改。**
 
 **先出判断和证据,不要开始移植。** 这条的产出是一个有依据的决定,不是代码。
+
+### 116 补充 — 范围收窄成 scheduler + epilogue,阅读顺序固定,并纠正我一个轴错
+
+**用户收窄了范围:只参考 Marlin 的 scheduler 和 epilogue。** 上面 116 正文里"逐条判六个机制"的部分降为背景,
+主问题只剩这两样。
+
+**阅读顺序是用户定的:先文档,后源码。**
+
+    /root/.claude/uploads/57027199-de80-4d5b-b901-e3ed437519e8/1c5aaf49-marlin.pdf    47 页,完整版
+    /root/.claude/uploads/a7d83a5d-10d6-445e-827f-6e082752c0a2/b00acd05-Marlin_1.pdf  11 页,只到 shared memory 构造
+
+**先读 47 页那份,再去看 vLLM 的源码。** 不要跳过文档直接读源码 —— 这两份是用户自己整理的,是这套东西的注释。
+
+### 我搞错了一个轴,别继承它
+
+我在前面几轮里反复说 Marlin 的 split-K 是"跨 CTA 切 K",**那是我推的,不是文档说的**。实际有两个不同的东西:
+
+- **`par` = M 方向的 threadblock tile 数**(11 页那份第 8 页:「par 用来控制 M 维度上的 threadblock tile 的数量」),
+  workspace 要 `n/128 * max_par` 个 int 做 **lock 同步**
+- **warp 切 K 是 CTA 内部的**(记忆 `ppu-marlin-warps-split-k`:`warp_k = (threadIdx.x/32)/(thread_n_blocks/4)`,
+  `thread_block_reduce()` 就是用来撤销它的)
+
+**我把这两个混成了"跨 CTA 切 K"。** 115 那条等功阶梯的实测结论(split-K 值 1.44×)不受影响 —— 那是我们自己的
+形状实验,不依赖对 Marlin 的理解;但**"Marlin 靠跨 CTA 切 K 填机器"这个说法要作废**,以文档为准。
+
+### 因此主问题
+
+1. **Marlin 的 scheduler 到底是什么形状** —— `par` / `max_par` / locks 三者的关系,grid 怎么定,一个 CTA 领什么,
+   接缝在哪里。**以 47 页文档为准**,源码用来确认。
+2. **它的 epilogue 做了什么** —— 部分累加怎么合并、locks 怎么用、和普通 epilogue 差在哪。
+3. **actlize 里已有的 StreamK(`ppu_tile_scheduler_stream_k.hpp` 46 KB、`ppu_aiu_gemm_streamk.hpp` 17 KB、
+   `epilogue_base_streamk.h`)和它是不是同一个东西。** 是 -> 我们要做的是接线(107a→107b),不是移植;
+   不是 -> 差在哪、值不值得补。
+4. 只有在 3 的答案是"不是"时,才谈"从 Marlin 搬什么进来"。
