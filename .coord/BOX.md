@@ -952,16 +952,27 @@ One capture per shape. **Do not pass `MOE_ONLY`** -- the whole table is wanted, 
     unset MOE_ACU MOE_ONLY BENCH_JSONL
     for S in "512 2048 S068" "512 3072 S069" "2048 512 S070" "3072 512 S071"; do
       set -- $S
-      asys profile -t hggc,acdnn,acblas -o /tmp/104b_$3 \
+      asys profile --hggc-memory-usage=true -t hggc,hgtx,acdnn,acblas -f true -o /tmp/104b_$3 \
         env MOE_REPS=1 MOE_VERBOSE=1 "$DEC" 256 8 $1 $2 32 3 8 | tee /tmp/104b_$3.log
     done
     # and C1 the same way, full table, no MOE_ONLY:
-    asys profile -t hggc,acdnn,acblas -o /tmp/104b_C1 \
+    asys profile --hggc-memory-usage=true -t hggc,hgtx,acdnn,acblas -f true -o /tmp/104b_C1 \
       env MOE_REPS=1 MOE_VERBOSE=1 "$C1" 256 4096 512 2048 32 4 8 | tee /tmp/104b_C1.log
 
-`asys profile -t hggc,acdnn,acblas` is the capture spelling recorded from an earlier session and is **not verified
-against this installation**. Check `asys --help` first; if the front end differs, only the wrapper changes -- what
-104b needs is a per-kernel activity timeline exported to sqlite, by whatever name this build gives it.
+The capture line above is the form used on this box (user-supplied 2026-08-10). An earlier version of this section
+omitted `hgtx` and `-f`. `-f true` overwrites an existing report, which matters because each shape is captured
+separately and a stale report is worse than none.
+
+**A capture can succeed, be 18 MB, and still contain no kernel timing.** Observed the same day: repeated
+`[error][activity_buffer.cpp:244] can't find time calibration info for device id 3600041488 / 3301327104` during
+capture, and the exported sqlite then had `HGPTI_ACTIVITY_KIND_KERNEL` at **0 rows** while
+`HGPTI_ACTIVITY_KIND_RUNTIME` held 33,529 host-API rows and `StringIds` held 11. Device activities are dropped when
+calibration fails; the size comes from the runtime rows alone. Note the two device ids in the error against the
+single row in `TARGET_INFO_PPU` -- they do not agree, which is where to look first.
+
+So **check the kernel table before trusting anything**: `--schema` prints per-table row counts, and the reader now
+refuses outright rather than falling through to the runtime table, which satisfies every shape test and would have
+produced a plausible ranked table of host-side API durations.
 
 ### Read
 
@@ -996,3 +1007,30 @@ the distinct-byte cross-check differs (S068: 4,759,552 B against 5,283,840 B).
 
 If this asys build only exposes a process aggregate, stop and say so rather than reporting it as kernel-only. The
 host `time_it` value is not a fallback -- it is the thing 104b exists to replace.
+
+---
+
+## INBOX 111 — ppu001 m8n16k16 atom, red-before-green numerical gate
+
+This is the hard prerequisite for 112, not a performance run. One script builds two fresh trees and preserves all
+artifacts under a printed `/tmp/quactlize-m8n16-111.*` directory. The ppu001 side audits the generated **hgcc
+build.make** (not an ArchTag or configure message), requires its only device flag to be `-arch=ppu_10`, requires an
+`m8n16k16` symbol, then runs G1 and G2. G2 passes only if the physical-16-row AIU+x4 projection is bit-exact **and**
+the deliberately wrong NVIDIA-x2 address formula produces a nonzero mismatch. The ppu0015 side compiles only the raw
+atom, so an AIU diagnostic cannot hide the required `Cannot select ... m8n16k16` ISel failure.
+
+    set -euo pipefail
+    cd /sim/eec/shared/junfu.qx/quactlize
+    git pull --ff-only origin develop
+    git submodule update --init --recursive
+    echo "gate-sha=$(git rev-parse HEAD)"
+    bash tools/run_m8n16_111_box.sh
+
+Do not open 112 unless the final line is:
+
+    [111] PASS: positive arch + G1 + G2 green/red + negative arch all proved
+
+Wanted back: `gate-sha`; the ppu001/ppu0015 unique-arch lines; the `m8n16k16` symbol line; G1's one-hot sweep and
+asymmetric-case summaries; `[G2-green]`; `[G2-negative]`; the ppu0015 `Cannot select` diagnostic; final PASS; and the
+printed artifact directory. A ppu0015 nonzero rc without both `Cannot select` and `m8n16k16` is a failure for the
+wrong reason, not G0 passing.
