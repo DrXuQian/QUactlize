@@ -42,9 +42,13 @@ split into two kinds, and the distinction is the useful part --
   * an UNRUN EXPERIMENT whose comment already states what each outcome would mean (PPU_PACKED_PAIR=0,
     PPU_F16X2_EARLYCLOBBER=0, PPU_F16X2_NOFTZ=1 -- all three bisecting the same open rowC failure). Deleting one
     destroys a pending answer, and each is a single build. They are in .coord/BOX.md as E1/E2/E3.
-  * a TOOL (GEMV_GATE_FAST narrows an axis while iterating and says "build the FULL matrix before trusting a
-    result"; PPU_B_CHUNK_BISECT exists BECAUSE PPU_B_CHUNK=2 once shipped a debug mode inside the flag that turns
-    the feature on). Deleting the second invites back the mistake that separating it fixed.
+  * a TOOL. PPU_B_CHUNK_BISECT exists BECAUSE PPU_B_CHUNK=2 once shipped a debug mode inside the flag that turns
+    the feature on, so deleting it invites back the mistake that separating it fixed. GEMV_GATE_FAST was the
+    other example here and is now the counter-example: it narrowed an axis while telling you to "build the FULL
+    matrix before trusting a result" -- a switch that shortens a run whose result you are then told not to trust
+    -- and it was DELETED (tests/test_gemv_lowbit.cu:25). Narrowing that axis needs no macro; GEMV_GS_LIST on the
+    command line is the documented way. So "a tool" is a reason to keep a switch only when the tool is one
+    somebody would actually reach for.
 
 So this prints the inventory and fails; a human decides which kind each is.
 
