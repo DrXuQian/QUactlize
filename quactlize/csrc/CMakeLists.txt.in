@@ -973,6 +973,20 @@ quactlize_ppu_executable(
 )
 target_compile_options(test_lowbit_grouped PRIVATE -w)
 
+# GROUPED STREAM-K PHASE 1. An isolated q-flattened mechanism gate, not a
+# production route and not a tactic sweep: production has only device-resident
+# row counts and cannot form the exact tactic-dependent output-tile prefix
+# without synchronising its asynchronous ABI. The two real arms keep
+# TM/TN/WM/WN/stages fixed and change only TileK (256 = expected no-split
+# negative, 64 = fixup/reduction positive).
+#   Build: TARGET=test_moe_grouped_streamk ./build.sh
+#   Run:   timeout 180s <binary>
+quactlize_ppu_executable(
+  test_moe_grouped_streamk
+  test_moe_grouped_streamk.cu
+)
+target_compile_options(test_moe_grouped_streamk PRIVATE -w)
+
 # MoE SHAPE BAND perf sweep, all low-bit formats. Separate from the correctness harness on purpose. Prints m_tiles and the
 # masked-row fraction NEXT TO the time, because the dense winner cannot be inherited: TN=128 won on dense by halving A's
 # re-read count (A traffic), while MoE is weight-bound and the recorded rule is to minimise the TOTAL m-tile count -- and

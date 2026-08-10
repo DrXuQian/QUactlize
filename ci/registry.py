@@ -49,6 +49,7 @@ SCALE_DENSE_ARTIFACT_P = "scale_first_dense_artifact"
 
 HARNESS_PATHS = {
     "test_moe_grouped_verify": [FP16_P], "test_moe_grouped_real": [FP16_P], "test_lowbit_grouped": [FP16_P],
+    "test_moe_grouped_streamk": [FP16_P],
     "test_q3_concat_real": [FP16_P], "test_q3_bconcat_real": [FP16_P], "test_q65_bconcat_real": [FP16_P],
     "test_w2a16_real": [FP16_P], "test_q4k_packed_gemm": [NATIVE_P, FP16_P], "test_q4k_native_scale": ["scale_decode"],
     "test_ppu_f16x2_probe": ["probe"], "test_w1a16_grouped": [FP16_P], "test_w2a16_grouped": [FP16_P],
@@ -76,6 +77,9 @@ HARNESSES = {
         "real GPTQ weights through the grouped path; reads the fixture path from argv"),
     "test_lowbit_grouped":      (["int4", "int2", "int1"], "self", None,
         "L>1 grouped output vs per-expert L=1 runs of the same kernel; per-expert addressing only"),
+    "test_moe_grouped_streamk": (["int4"],            "synthetic", None,
+        "isolated phase-1 grouped Stream-K: per-expert W/scale/zero/A and nonzero C against an independent CPU "
+        "golden, plus global-q lock/fixup and ragged expert decoding; not a production dispatch route"),
     "test_q3_concat_real":      (["gguf-q3k"],        "real",      "real_q3k_concat.bin",
         "A-concat: two GEMMs summed, same golden as the B-concat but 2x the mma"),
     "test_q3_bconcat_real":     (["gguf-q3k"],        "real",      "real_q3k_concat.bin",

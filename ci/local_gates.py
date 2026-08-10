@@ -72,6 +72,7 @@ GATES = [
     ("l114_scale_copy_coverage@fold", []),
     ("l114_scale_copy_coverage@two_plane", []),
     ("l120_streamk_min_iters_policy", []),
+    ("l121_grouped_streamk_wrapper", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -102,6 +103,7 @@ SYNTAX = [
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_B_DEQUANT_NOP=1"),
     ("tests/test_moe_grouped_verify.cu", ""),
     ("tests/test_moe_grouped_real.cu", ""),
+    ("tests/test_moe_grouped_streamk.cu", ""),
     # L>1 is the unique coverage here: each expert gets different low/high weights and metadata, then the grouped
     # result is checked against per-expert L=1 launches.  Both optional collective headers must therefore instantiate,
     # and PPU_B_CHUNK changes the converter pipeline rather than merely changing host code.
@@ -265,6 +267,7 @@ GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
                   ["-D__HGGCCC__", "--expt-relaxed-constexpr", "-DL114_PROVIDER=3"],
               "l109_rt_hggc_parse": ["-D__HGGCCC__"],
               "l120_streamk_min_iters_policy": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
+              "l121_grouped_streamk_wrapper": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               # THE MACROS ARE THE POINT. This gate asserts the fused path is ON, so it has to be built the way the
               # box builds packfuse -- without these two it would assert about a configuration nobody runs and pass
               # for the wrong reason, which is the failure it exists to catch.
@@ -977,6 +980,13 @@ def lint_dense_streamk_contract():
         "dense Stream-K worker/K/fixup/timing seams and the exact fixture are pinned")
 
 
+def lint_grouped_streamk_contract():
+    """Grouped Stream-K must preserve global q for locks while decoding expert-local compute coordinates."""
+    return _run_ci_script(
+        "check_grouped_streamk_contract.py",
+        "grouped Stream-K q/worker/K/fixup/timing seams and both decode controls are pinned")
+
+
 def lint_m8n16_g2_contract():
     """G2 must replay the historical provider index on one production x4 payload."""
     return _run_ci_script(
@@ -1417,6 +1427,8 @@ def main():
                   "WARP_M=32", "WARP_N=32", "STAGES=2", "BENCH_GS=32")),
                 ("boxdry", "dense Stream-K target reaches its isolated 128-thread device compile",
                  ("test_lowbit_dense_streamk_ab", "DENSE_DRYRUN=1")),
+                ("boxdry", "grouped Stream-K target reaches its isolated device compile",
+                 "test_moe_grouped_streamk"),
                 ("asan", "preprocessing chain under ASAN", None),
                 ("pytest", "torch op tests", None),
                 ("lint", "duplicate unroll directives (hgcc-only error)", lint_unroll),
@@ -1447,6 +1459,7 @@ def main():
                 ("lint", "dense and MoE consume one named measurement layer", lint_bench_measurement_shared),
                 ("lint", "MoE events bracket only gemm.run and retain the host-wall audit", lint_moe_event_timing),
                 ("lint", "dense Stream-K shares worker/K decomposition and resets locks before timing", lint_dense_streamk_contract),
+                ("lint", "grouped Stream-K preserves q locks, worker/K decomposition, and timing", lint_grouped_streamk_contract),
                 ("lint", "syntax baselines and live SYNTAX sources match", lint_syntax_inventory),
                 ("lint", "m8n16 G2 replays the historical bad index on the production x4 payload", lint_m8n16_g2_contract),
                 ("lint", "ppu001 plain LDSM fails in C++ before its unproved assembler path", lint_plain_ldsm_failclosed),
