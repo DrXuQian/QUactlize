@@ -4897,3 +4897,39 @@ m8n16 不加 CTA;它主要兑现在 prefill(`wav=16.12`,机器满的,`msk=11.8%`
 做完了(smem union 在持久化下仍成立,没有 tile 被淘汰)。
 
 **如果不是**,请指出差在哪、那个差值得不值得补 —— 而不是默认要补。
+
+### 116 三补 — 文档已给出答案:Marlin 的 scheduler 就是 StreamK,原文在此
+
+我按用户定的顺序读了 47 页那份(`00799607-marlin.pdf`,本会话上传)。**「CTA Dispatcher」和「init slice」两节直接
+给出了机制**,不需要再从锁数量反推。我上一段那个"待证伪的推断"可以退役,以下是文档原文:
+
+    int k_tiles = prob_k / 16 / thread_k_blocks;
+    int n_tiles = prob_n / 16 / thread_n_blocks;
+    int iters   = ceildiv(k_tiles * n_tiles * parallel, gridDim.x);   // stripe length per CTA (in K-tiles)
+
+    int slice_row     = (iters * blockIdx.x) % k_tiles;   // tile row in K grid
+    int slice_col_par = (iters * blockIdx.x) / k_tiles;   // tile col in N grid (incl parallel)
+    int slice_iters;      // K-tiles this CTA will process for current N tile
+    int slice_count = 0;  // num blocks contributing to this col
+    int slice_idx;        // this CTA's index within slice_count (barrier order)
+
+逐条对应 StreamK:工作空间拍平成 `k_tiles × n_tiles × parallel` 个 **K-tile**;`iters` 是**每 CTA 等量**的 stripe;
+起点 `iters * blockIdx.x` 使**切点不对齐 tile 边界**;`slice_count`/`slice_idx`/`locks[slice_col]` 是**接缝归约与
+barrier 次序**;跨 M 区时 `A += ...; C += ...; locks += ...` 就是"做完一个 M-block 的部分 K 接着做下一个"的代码。
+
+**M 从不被细分**:文档第 1–2 页写明「从 CTA 的 tile 切分到 warp 的时候不会切分 m 维度,只会切分 n 和 k 维度」。
+`parallel` 只是把拍平空间在 M 方向拉长(`prob_m` 最多 64×max_par;超过 1024 拆成多次 launch)。
+
+**我列的证伪项里最要紧的那条已经清掉**:scale 在 **mainloop 内**乘(`scale(frag_b0, frag_s[k%2][j], 0)` 在 mma
+循环里),所以 **K 的部分和可加** —— 这正是 StreamK 能用于我们 W4A16 分组 scale 的前提。
+
+### 所以 116 的问题变成两个,都要以源码收口
+
+1. **actlize 的 `PersistentTileSchedulerPPUStreamK` 与上面这套是不是同一个东西。** 它的 `WorkTileInfo` 已有
+   `k_tile_count` / `is_separate_reduction` / `reduction_subtile_idx` / `setup_separate_reduction`,`epilogue_base_streamk.h`
+   也在。**逐项对到 Marlin 的 `slice_iters` / `slice_count` / `slice_idx` / `locks[slice_col]` 上**,指出差异。
+   —— 若一致,116 的答案是**接线(107b),不是移植**,不必从 Marlin 搬任何代码。
+2. **差异里有没有对我们要紧的。** 特别是:接缝归约的 fp32 累加、以及 grouped scale 在切 K 之后的语义(Marlin 的
+   做法我们已确认可加,要确认 actlize 的 StreamK epilogue 也是同一语义,而不是把 scale 留到最后)。
+
+**读源码是为了收口这两条,不是重读一遍机制。** 机制文档已经讲完了。
