@@ -855,6 +855,23 @@ quactlize_ppu_executable(
 )
 target_compile_options(test_ppu_f16x2_probe PRIVATE -w)
 
+# #111: expose ppu001's m8n16k16 atom only after a two-direction numerical gate.  G1 invokes the raw atom from
+# ordinary registers; G2 uses the real AIU swizzle write/read and must show BOTH a green physical-16-row projection
+# and a red, deliberately wrong NVIDIA-x2 address control.  Keep this below the collective: a passing target proves
+# the instruction/register contract and that the detector sees the historical silent permutation, not TileM=8
+# collective plumbing (which belongs to #112).  Building this same target for ppu0015 is G0's required ISel-negative.
+set(_PPU_M8_GATE_SOURCES test_ppu_m8n16_gates.cpp test_ppu_m8n16_atom.cu)
+if(NOT CUTLASS_PPU_ARCHS STREQUAL "ppu0015")
+  list(APPEND _PPU_M8_GATE_SOURCES test_ppu_m8n16_aiu.cu)
+endif()
+quactlize_ppu_executable(test_ppu_m8n16_gates ${_PPU_M8_GATE_SOURCES})
+if(CUTLASS_PPU_ARCHS STREQUAL "ppu0015")
+  # Isolate G0's expected error: compile the raw atom but not G2's ppu001-only AIU path.  If m8 lowering ever starts
+  # succeeding on ppu0015 this target will link, and tools/run_m8n16_111_box.sh will reject that unexpected green.
+  target_compile_definitions(test_ppu_m8n16_gates PRIVATE PPU_M8_G0_ONLY=1)
+endif()
+target_compile_options(test_ppu_m8n16_gates PRIVATE -w)
+
 # Q3_K B-CONCAT: ONE GEMM with TWO B bit planes (dedicated 2-plane mainloop), vs the native Q3_K golden.
 #   Build: TARGET=test_q3_bconcat_real ./build.sh ; run: ./<bin> real_weight/real_q3k_concat.bin
 quactlize_ppu_executable(

@@ -1019,6 +1019,10 @@ build.make** (not an ArchTag or configure message), requires its only device fla
 the deliberately wrong NVIDIA-x2 address formula produces a nonzero mismatch. The ppu0015 side compiles only the raw
 atom, so an AIU diagnostic cannot hide the required `Cannot select ... m8n16k16` ISel failure.
 
+The named symbol is the requested provenance marker, not opcode evidence by itself. The instruction identity is
+cross-checked by executing the raw-atom golden on ppu001 and by the isolated ppu0015 compiler naming the
+`m8n16k16` intrinsic it cannot select; neither conclusion is inferred from the kernel's name.
+
     set -euo pipefail
     cd /sim/eec/shared/junfu.qx/quactlize
     git pull --ff-only origin develop
