@@ -965,8 +965,20 @@ against this installation**. Check `asys --help` first; if the front end differs
 
 ### Read
 
+**`asys -o X` writes `X.asysrep`, not sqlite.** Observed 2026-08-10: an 18.5 MB `/tmp/104b_S068.asysrep`. So there
+is an export step, exactly as with nsys, and the reader now says so instead of raising sqlite3's one-size-fits-all
+"unable to open database file". Check `asys export --help`; the nsys-shaped form is
+
+    asys export --type sqlite -o /tmp/104b_S068.sqlite /tmp/104b_S068.asysrep
+
     python3 tools/asys_kernel_time.py --schema /tmp/104b_S068.sqlite      # once, to see the schema
     python3 tools/asys_kernel_time.py /tmp/104b_S068.sqlite --log /tmp/104b_S068.log
+
+**`can't find time calibration info for device id ...` during capture is not automatically fatal.** It is the
+profiler failing to align DEVICE timestamps to HOST time; a kernel duration is `end - start` within one clock
+domain and can survive it. The 18.5 MB report proves activities were collected. Decide from the exported data, not
+from the warning: if the kernel table has rows and their start/end (or duration) are neither null nor zero, the
+capture is usable. Only an empty or all-zero kernel table makes it a real failure.
 
 The reader detects the kernel table, the name column (resolving a strings table when names are ids) and either a
 duration column or a start/end pair; `--table/--name-col/--dur-col` override it and the choice is always printed.
