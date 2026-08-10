@@ -4082,3 +4082,59 @@ Ada 白皮书**确实**公布过 `Peak FP16 Tensor TFLOPS with FP32 Accumulate 1
     cuBLAS 16F        320.628 TF/s   76.485%   (原  76.522%)
 
 文档仍是仓库里唯一变更,代码不进 quactlize。改完把新的 SHA-256 给我,我来提交。
+
+## 101 — 核对两边的流量口径:我们的 distinct 和你的 path_distinct 是不是同一个量
+
+用户要求你独立核一遍,不要接受我的结论。**只读不改**,除非核出差异。
+
+### 我们这边(`benchmarks/lowbit_moe_bench.hpp` + `bench_select.hpp`)
+
+报出去的 MBU 用的是 **distinct**,A 只算一次:
+
+    distinct = A + active*wb + active*sb + C
+      A  = total*K*2        每个 REAL 行一次(total 是真实路由行,不含 padding)
+      wb = N*K*bits_total/8 一个 expert 的权重
+      sb = N*ceil(K/gs)*2*metadata_planes   (i4 是 ScaleOnly ⟹ planes=1,无 zero plane)
+      C  = total*N*2
+    distinct_hbm_pct = distinct_gbs / kHbmGBPerSecond
+
+另有一个 **tile** 上界(`A*ntile`, `mt*wb`, `mt*sb`, `C`),**不进 MBU**,只用于 `tile_reuse` /
+`tile_l2_served` / "NOT-BW" 判定。历史坑:分子曾用 `a_pad = mt*TM*K`(padded 行),于是 TileM 越大
+"搬得越多"、带宽打印越高而读的是同一批行 —— 已改掉,padding 的 load 不发射。
+
+### 我算出来的对照(C1 = S088, i4 gs32, R=32768, N=512, K=2048, E_active=256)
+
+    A     = 2*32768*2048        = 134.2 MB
+    W     = 256*512*2048/2      = 134.2 MB
+    scale = 256*512*(2048/32)*2 =  16.8 MB
+    C     = 2*32768*512         =  33.6 MB
+                       distinct = 318.8 MB
+
+反推你 Marlin MoE gs32 那行(MFU 42.894873% ⟹ 179.8 TF/s ⟹ t=382.2 us;MBU 46.545994%)也是
+**318.8 MB**。**请你从你自己的 harness 侧独立验证这个数**,不要用我的反推 —— 反推用的是你的 MFU/MBU,
+循环论证。
+
+### 要你回答的四件事
+
+1. **term-by-term 是否一致**:你的 `A_bytes=2*R*K` / `W_bytes=E_active*N*K/2` /
+   `scale_bytes=E_active*N*ceil(K/32)*2` / `C_bytes=2*R*N` 与上面四项,是否逐项同定义同数值。
+   有任何一项不同(尤其 A 是否按 n-tile 重复计、padding 行是否进分子),**这是最重要的一条**。
+
+2. **你的 `path_distinct` 和我们的 `distinct` 是不是同一类量。** 我的读法:两者都是「**这条路径**必须搬的
+   最小字节」,不是「**这个问题**必须搬的最小字节」。所以 Marlin/我们(fused,无中间物化)两者重合,
+   而 llama.cpp 的 `W_f16_write=W_f16_read`、q8_1 写后再读、F32 边界是那条路径自身的最小值。
+   **如果这个读法对,MBU 就跨 kernel 家族不可比** —— 它衡量的是路径选择,不是效率。请确认或反驳。
+
+3. 若 2 成立,`## 解读警告`(现在只警告 MFU 的四个分母)**应否补一条 MBU 跨家族不可比**。
+   我给的数:Marlin 318.8 MB / MMQ Q4_K 637.6 MB / dequant→cuBLAS ~1896 MB,同一个 C1、同一批
+   useful FLOPs。我按你的九项公式独立复算 MMQ Q4_K 得 637.5 MB、dequant→cuBLAS 得 1896 MB,与你
+   表里的 MBU 反推分别对到 0.1 MB 和 ~0.5%;**这两个复算也请你核**。
+
+4. 我们有 distinct/tile 两个量而只报 distinct;**你那边有没有对应的「实际 DRAM 流量」与「路径下界」之分**。
+   如果没有,那我们的 tile 量在跨机器比较时没有对应物,这本身要写清楚。
+
+### 背景(会影响结论怎么用)
+
+用户在拿这些数当 PPU 的牵引目标。当前唯一同 shape 同 gs 同对称性的对照是你的 **Marlin MoE gs32 42.894873%**
+对我们的 **i4 34.4%**;TRT-LLM 那行是 gs128,你自己已经标了"非请求的 gs32",不参与。如果口径有任何一项
+不一致,这个 8.5 点的差距就要重算 —— 所以这条要硬。
