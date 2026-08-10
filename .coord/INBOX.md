@@ -4697,3 +4697,44 @@ atom/A-fragment/epilogue 共有的结构化排列错。
 112(m8 collective 接线)的收益要靠测量判定,而现在的测量分辨不出 2 µs 的差别(约 13 µs 固定成本 +
 harness 历史 13% 跨运行离散度)。**先有能分辨的尺子,再去改被它衡量的东西。**
 111 的 box gate 不受影响,它是数值不是性能。
+
+## 114 — 111 的 G2 编不过,而且暴露出负控的设计问题(比编译错重要)
+
+box 上 `test_ppu_m8n16_aiu` 编译失败:
+
+    line 1:4 extraneous input 'tc01' expecting {OPCODE_...}
+    line 1:8 token recognition error at: '.ex.'
+    hgcc error: Exited with error code 1
+
+### 直接原因:actlize 里一组躺了很久的坏助记符,你的负控是第一个碰它的
+
+    坏(assembler 不认)  cute/arch/copy_ppu.hpp:66,90,114,138,162,186
+                        cutlass/arch/memory_ppu.h:101,121,141,165
+        "ppu.tc01.ex.ldmatrix.sync.aligned.x4.m8n8.shared.b16"
+             ^^^^ 就是报错里 line 1:8 的 '.ex.'
+
+    好(AIU 路在用)      cute/arch/copy_ppu0010_aiu.hpp:427
+        "ppu.tc01.ldmatrix.sync.aligned.m8n8.x4.swzl.shared.b16"
+
+两处差别:**没有 `.ex.`**,且**形状在计数之前**(`.m8n8.x4.` 而非 `.x4.m8n8.`)。
+
+涉及的是 `PPU_U32x1/2/4_LDSM_N` 和 `PPU_U16x2/4/8_LDSM_T`。**shipping 路径从来没实例化过它们** —— 头被 include 但
+asm 只在实例化时才送到汇编器,所以这个错在 actlize 里潜伏至今。**这是既有缺陷,不是你引入的**;但它现在挡住了 111。
+
+### 更重要的:红绿用了两条不同的指令,这削弱了 G2 要证明的东西
+
+G2 的存在理由是**证明我们看得见那个静默的寄存器排列错**(记忆:PPU 的 `ldmatrix.m8n8.x2` 寄存器分布与 NVIDIA 的
+m8n8 地址公式不符,`broke every m8n16 KQ until fixed`,**静默,不报错**)。
+
+现在的红控换了一条**不同的指令**。即使它能编,红了也只证明"那条指令不работ",**不证明"错误的地址算法会被发现"**。
+
+**正确形状:红绿只差地址算术,指令必须相同。** 两边都走
+`ppu.tc01.ldmatrix.sync.aligned.m8n8.x4.swzl.shared.b16`(即现有的 `PPU0010_TSM_LD_SWZL`),
+红控喂按 NVIDIA m8n8 公式算出来的坐标/偏移。这样"红"唯一可能的原因就是地址错,而那正是要抓的病。
+
+### 交付
+
+1. 按上面重写 G2 的负控,**不要碰 `copy_ppu.hpp` 的坏助记符**(那是独立问题,见 3)。
+2. 重新确认 111 的成功判据仍然成立:绿控 bit-exact、红控 mismatch、0–7 行唯一 tag / 8–15 行 poison 且结果不依赖后 8 行。
+3. `.ex.` 那组 atom **单独记一条**:要么修正助记符(需要确认这个 SDK 的正确拼法),要么加 `static_assert` 让实例化时明确失败
+   而不是丢给汇编器。**现在的状态是"能编译通过是因为没人用它"**,和 [[verification-failure-shapes]] 第 3 条同型。
