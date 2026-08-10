@@ -64,14 +64,14 @@ class GroupStreamKMixedInputKernel {
 
   using ClusterShape = cute::Shape<cute::_1, cute::_1, cute::_1>;
   using SchedulerProblemShape = cute::Shape<int, int, int, int>;
+  static constexpr uint32_t MaxThreadsPerBlock = cute::size(TiledMma{});
   using TileScheduler = detail::PersistentTileSchedulerPPUStreamK<
-      TileShape, ClusterShape, MinSkIters>;
+      TileShape, ClusterShape, MinSkIters, MaxThreadsPerBlock>;
   using TileSchedulerArguments = typename TileScheduler::Arguments;
   using TileSchedulerParams = typename TileScheduler::Params;
   using ExpectedTileSchedulerParams =
       detail::PersistentTileSchedulerPPUStreamKParamsT<MinSkIters>;
 
-  static constexpr uint32_t MaxThreadsPerBlock = cute::size(TiledMma{});
   static constexpr uint32_t MinBlocksPerMultiprocessor = 1;
   static constexpr uint32_t NumMmaWarpGroups = 1;
   static constexpr int MinWorkspaceAlignment = 16;
@@ -89,10 +89,10 @@ class GroupStreamKMixedInputKernel {
                 "workspace alignment must cover the host shape mirror");
   static_assert(MinSkIters >= uint32_t(DispatchPolicy::Stages - 1),
                 "Stream-K stripe is shorter than pipeline startup");
-  // fixup() uses NamedBarrierManager<128> and indexes FP32 scratch with
-  // threadIdx.x % 128.  A different cohort can deadlock or alias addresses.
-  static_assert(MaxThreadsPerBlock == 128,
-                "grouped mixed-input Stream-K currently requires exactly 128 threads");
+  static_assert(MaxThreadsPerBlock == 64u || MaxThreadsPerBlock == 128u,
+                "grouped mixed-input Stream-K supports exactly 64- or 128-thread CTAs");
+  static_assert(TileScheduler::FixupThreadCount == MaxThreadsPerBlock,
+                "grouped Stream-K fixup cohort must equal the exact CTA thread count");
   static_assert(cute::is_same_v<ElementAccumulator, ElementCompute>,
                 "Stream-K scratch and live accumulators must have one type");
 

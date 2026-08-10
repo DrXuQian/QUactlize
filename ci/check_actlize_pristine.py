@@ -135,8 +135,9 @@ EXTENSIONS = {
 MIXED: dict = {
     "include/cutlass/gemm/kernel/ppu_tile_scheduler_stream_k.hpp":
         "FIX cd17c2b9: removes trailing commas rejected in template argument lists; EXTENSION: a defaulted "
-        "MinItersPerSkUnit template argument selects the matching ParamsT specialization, so every existing "
-        "two-argument actlize spelling remains on 8 while reviewed quactlize kernels can opt into a shorter stripe",
+        "MinItersPerSkUnit argument selects the matching ParamsT specialization, and a defaulted exact-fixup-cohort "
+        "argument selects 64 or 128 threads; every existing two-argument actlize spelling remains on Min8/128 "
+        "while reviewed quactlize kernels can opt into a shorter stripe and an exact CTA-sized barrier cohort",
 }
 
 _collisions = sorted((set(FIXES) & set(EXTENSIONS)) | (set(MIXED) & (set(FIXES) | set(EXTENSIONS))))

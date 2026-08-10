@@ -40,7 +40,8 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str) -> list
     for token in (
         "using TileSchedulerTag = StreamKScheduler;",
         "static_assert(!isGroupProblemShape_v<ProblemShape>",
-        "static_assert(MaxThreadsPerBlock == 128",
+        "static_assert(MaxThreadsPerBlock == 64u || MaxThreadsPerBlock == 128u",
+        "static_assert(TileScheduler::FixupThreadCount == MaxThreadsPerBlock",
         "static_assert(DispatchPolicy::Stages - 1 <= 8",
         "args.scheduler.splits == 1",
         "TileSchedulerParams::ReductionMode::Deterministic",
@@ -168,8 +169,9 @@ def main() -> int:
 
     # Each plant is valid-enough source text whose failure would otherwise be silent.
     plants = [
-        (0, "static_assert(MaxThreadsPerBlock == 128", "static_assert(MaxThreadsPerBlock == 256",
-         "128-thread barrier"),
+        (0, "static_assert(TileScheduler::FixupThreadCount == MaxThreadsPerBlock",
+         "static_assert(TileScheduler::FixupThreadCount != MaxThreadsPerBlock",
+         "exact fixup cohort"),
         (0, "params.scheduler_hw_info, args);", "params.real_hw_info, args);",
          "shared launch-worker source"),
         (0, "idx2crd(k_tile_start, shape<2>(gA))", "idx2crd(0, shape<2>(gA))",
@@ -192,7 +194,7 @@ def main() -> int:
             print(f"[dense-streamk-contract] FAIL: checker accepted planted {label} regression")
             return 1
 
-    print("[dense-streamk-contract] PASS -- shared workers x4, absolute K, 128-thread fixup, "
+    print("[dense-streamk-contract] PASS -- shared workers x4, absolute K, exact-CTA fixup, "
           "per-launch lock reset, exact seam fixture; seven planted regressions rejected")
     return 0
 

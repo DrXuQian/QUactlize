@@ -63,6 +63,28 @@ static_assert(Op<64>::TileSchedulerParams::min_iters_per_sk_unit_ == 2 &&
               Op<256>::TileSchedulerParams::min_iters_per_sk_unit_ == 2,
               "phase 2 grouped Stream-K must explicitly select Min=2");
 
+// Current decode champion.  Its 64-thread CTA was excluded only because the
+// vendor fixup cohort was hard-wired to 128; keep this as a separate
+// nonuniform-stripe device arm so the exact uniform oracle below remains an
+// independent proof rather than being weakened to admit this case.
+constexpr int kDecodeTM = 16;
+constexpr int kDecodeTN = 32;
+constexpr int kDecodeTK = 256;
+constexpr int kDecodeWM = 16;
+constexpr int kDecodeWN = 16;
+using Decode64Op = moe_grouped_streamk_ppu::Operation<
+    QM::FinegrainedScaleZero,
+    ppu_group_schedule::FinegrainedSchedule<kGs>,
+    cute::Shape<cute::Int<kDecodeTM>, cute::Int<kDecodeTN>,
+                cute::Int<kDecodeTK>>,
+    cute::Shape<cute::Int<kDecodeTN>, cute::Int<kDecodeTK / kGs>>,
+    cute::Shape<cute::Int<kDecodeWM>, cute::Int<kDecodeWN>,
+                cute::Int<kDecodeTK>>,
+    kStages, true, int4_t, void, kArtifactTileK, 2u>;
+static_assert(Decode64Op::Kernel::MaxThreadsPerBlock == 64);
+static_assert(Decode64Op::Kernel::TileScheduler::FixupThreadCount == 64);
+static_assert(Decode64Op::TileSchedulerParams::min_iters_per_sk_unit_ == 2);
+
 struct Fixture {
   char const* name = nullptr;
   int experts = 0;
@@ -592,6 +614,151 @@ ArmResult run_streamk_arm(Fixture const& f, DeviceFixture& d,
   return result;
 }
 
+// The decode champion produces a genuinely nonuniform Stream-K partition:
+// Q*Kt=1024 K tiles over 432 units.  The existing oracle above deliberately
+// rejects that shape rather than inventing a uniform peer count.  This arm
+// instead proves what the device can observe exactly (all K tiles visited
+// once, one final epilogue per q, no bad q/expert decode), then performs a
+// census-free launch against the independent CPU golden.  Per-tile traffic is
+// left N/A until an independent nonuniform peer oracle exists.
+int run_decode64_nonuniform(Fixture const& f, DeviceFixture& d,
+                            int device_id, int real_cu) {
+  using O = Decode64Op;
+  using Gemm = typename O::Gemm;
+  using Kernel = typename O::Kernel;
+  int errors = 0;
+
+  auto args = O::make_arguments(
+      d.a.get(), d.b.get(), d.scales.get(), d.zeros.get(),
+      d.ptr_c.get(), d.strides.get(), d.ptr_d.get(), d.strides.get(),
+      f.mmax, f.n, f.k, f.experts, d.shapes.get(),
+      d.host_shapes.data(), d.row_offsets.get(), kAlpha, kBeta);
+  int const ctas_per_cu = Gemm::maximum_active_blocks();
+  if (real_cu <= 0 || ctas_per_cu <= 0) {
+    std::printf("[grouped streamk decode64] invalid occupancy cu=%d ctas/cu=%d\n",
+                real_cu, ctas_per_cu);
+    return 1;
+  }
+  O::configure_runtime(args, device_id, real_cu, ctas_per_cu);
+  if (Gemm::can_implement(args) != cutlass::Status::kSuccess) {
+    std::printf("[grouped streamk decode64] can_implement failed\n");
+    return 1;
+  }
+
+  size_t const workspace_bytes = Gemm::get_workspace_size(args);
+  cutlass::DeviceAllocation<uint8_t> workspace(workspace_bytes);
+  auto const plan = O::inspect(args, workspace.get());
+  dim3 const grid = Gemm::get_grid_shape(args, workspace.get());
+  uint64_t const physical = uint64_t(grid.x) * grid.y * grid.z;
+  constexpr int kExpectedQ = 128;
+  constexpr int kExpectedKt = 8;
+  constexpr int kExpectedWorkers = 432;
+  constexpr size_t kReductionBytes =
+      size_t(kExpectedQ) * kDecodeTM * kDecodeTN * sizeof(float);
+  constexpr size_t kBarrierBytes = 512;
+  constexpr size_t kSchedulerBytes = kReductionBytes + kBarrierBytes;
+  Phase2Expectation const uniform = phase2_expectation(
+      plan.q, plan.kt, plan.workers);
+  bool const plan_ok =
+      plan.q == kExpectedQ && plan.kt == kExpectedKt &&
+      plan.workers == real_cu * ctas_per_cu &&
+      plan.workers == kExpectedWorkers && physical == uint64_t(plan.workers) &&
+      plan.sk_tiles == kExpectedQ && plan.sk_units == kExpectedWorkers &&
+      plan.splits == 1 && plan.separate_reduction_units == 0 &&
+      plan.scheduler_workspace_bytes == kSchedulerBytes &&
+      plan.scheduler_barrier_bytes == kBarrierBytes &&
+      plan.q == int(plan.units_per_problem - plan.sk_units + plan.sk_tiles) &&
+      !uniform.supported;
+  std::printf(
+      "[grouped streamk decode64 decomposition] fixture=%s "
+      "tactic=i4_%dx%dx%d_w%dx%d_s%d Min=%u threads=%u cohort=%u "
+      "Q=%d Kt=%d W=%d sk_tiles=%u sk_units=%llu "
+      "scheduler/reset=%zu/%zu grid=(%u,%u,%u) "
+      "uniform_oracle_supported=%u %s\n",
+      f.name, kDecodeTM, kDecodeTN, kDecodeTK, kDecodeWM, kDecodeWN,
+      kStages, kMinSkIters, Kernel::MaxThreadsPerBlock,
+      Kernel::TileScheduler::FixupThreadCount, plan.q, plan.kt, plan.workers,
+      plan.sk_tiles, static_cast<unsigned long long>(plan.sk_units),
+      plan.scheduler_workspace_bytes, plan.scheduler_barrier_bytes,
+      grid.x, grid.y, grid.z, unsigned(uniform.supported),
+      plan_ok ? "PLAN-PASS" : "PLAN-FAIL");
+  if (!plan_ok) return 1;
+
+  cutlass::DeviceAllocation<uint32_t> peer(plan.q);
+  cutlass::DeviceAllocation<uint32_t> visits(size_t(plan.q) * plan.kt);
+  cutlass::DeviceAllocation<uint32_t> totals(6);
+  CUTLASS_PPU_CHECK(hggcMemset(peer.get(), 0,
+                              sizeof(uint32_t) * plan.q));
+  CUTLASS_PPU_CHECK(hggcMemset(visits.get(), 0,
+                              sizeof(uint32_t) * size_t(plan.q) * plan.kt));
+  CUTLASS_PPU_CHECK(hggcMemset(totals.get(), 0, 6 * sizeof(uint32_t)));
+  typename O::Census census{peer.get(), visits.get(), totals.get(),
+                            uint32_t(plan.q),
+                            uint64_t(plan.q) * plan.kt};
+  O::configure_runtime(args, device_id, real_cu, ctas_per_cu, census);
+  Gemm gemm;
+  CUTLASS_PPU_CHECK(hggcMemset(d.d.get(), 0x7f,
+                              sizeof(half_t) * size_t(f.total) * f.n));
+  if (gemm.initialize(args, workspace.get()) != cutlass::Status::kSuccess ||
+      gemm.run() != cutlass::Status::kSuccess) {
+    std::printf("[grouped streamk decode64] census launch failed\n");
+    return 1;
+  }
+  CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
+
+  std::vector<uint32_t> hp(plan.q), hv(size_t(plan.q) * plan.kt);
+  uint32_t ht[6] = {};
+  peer.copy_to_host(hp.data());
+  visits.copy_to_host(hv.data());
+  totals.copy_to_host(ht);
+  int split_tiles = 0, holes = 0;
+  uint64_t peer_sum = 0;
+  for (uint32_t p : hp) {
+    split_tiles += p > 1;
+    holes += p == 0;
+    peer_sum += p;
+  }
+  int missing_k = 0, duplicate_k = 0;
+  for (uint32_t v : hv) {
+    missing_k += v == 0;
+    duplicate_k += v > 1;
+  }
+  uint64_t const peer_excess =
+      peer_sum >= uint64_t(plan.q) ? peer_sum - uint64_t(plan.q) : 0;
+  bool const census_ok =
+      split_tiles == plan.q && holes == 0 && missing_k == 0 &&
+      duplicate_k == 0 && ht[0] == peer_sum && ht[1] == uint32_t(plan.q) &&
+      ht[2] == 0 && ht[3] == uint32_t(plan.q) && ht[4] == 0 && ht[5] == 0;
+  std::printf(
+      "[grouped streamk decode64 census] fixture=%s Q=%d Kt=%d "
+      "split_tiles=%d peer_sum=%llu peer_excess=%llu "
+      "fixup_work_items=%u epilogue=%u separate=%u fixup_final=%u "
+      "q_oob=%u empty_decode=%u holes=%d missing_k=%d duplicate_k=%d %s\n",
+      f.name, plan.q, plan.kt, split_tiles,
+      static_cast<unsigned long long>(peer_sum),
+      static_cast<unsigned long long>(peer_excess), ht[0], ht[1], ht[2],
+      ht[3], ht[4], ht[5], holes, missing_k, duplicate_k,
+      census_ok ? "CENSUS-PASS" : "CENSUS-FAIL");
+  errors += !census_ok;
+
+  // Relower with census disabled.  The process-level timeout is also the
+  // no-deadlock gate for the exact 64-thread named-barrier cohort.
+  O::configure_runtime(args, device_id, real_cu, ctas_per_cu);
+  CUTLASS_PPU_CHECK(hggcMemset(d.d.get(), 0x7f,
+                              sizeof(half_t) * size_t(f.total) * f.n));
+  if (gemm.initialize(args, workspace.get()) != cutlass::Status::kSuccess ||
+      gemm.run() != cutlass::Status::kSuccess) {
+    std::printf("[grouped streamk decode64] clean launch failed\n");
+    return errors + 1;
+  }
+  CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
+  errors += verify_output(f, d, kAlpha, kBeta,
+                          "streamk-min2-decode64-nonuniform");
+  std::printf("[grouped streamk decode64 C-traffic] "
+              "N/A (nonuniform peer distribution; independent oracle pending)\n");
+  return errors;
+}
+
 bool print_c_traffic(Fixture const& f, ArmResult const& arm, int tile_k) {
   uint64_t const output_d = 2ull * f.total * f.n;
   uint64_t const accumulator_tile = uint64_t(kTM) * kTN * sizeof(float);
@@ -665,9 +832,6 @@ int main() {
   int errors = 0;
   errors += !host_policy_line<P8>("min8", 128, 8, 432, 0, 128, 128);
   errors += !host_policy_line<P2>("min2", 128, 8, 432, 128, 128, 432);
-  std::printf("[grouped streamk diagnostic-only] "
-              "tactic=i4_16x32x256_w16x16_s3 block_threads=64 "
-              "Q=128 Kt=8 W=432 not-launched=NamedBarrierManager<128>\n");
 
   moe_router_fixture::Rows routed;
   char why[160] = "";
@@ -691,9 +855,27 @@ int main() {
   int const unique_local_locks = int(std::unique(
       local_lock_ids.begin(), local_lock_ids.end()) - local_lock_ids.begin());
   int const local_lock_collisions = output_tiles - unique_local_locks;
+  std::vector<int> decode_local_lock_ids;
+  int decode_output_tiles = 0;
+  for (int e : s068.active) {
+    int const mt = (s068.me[e] + kDecodeTM - 1) / kDecodeTM;
+    int const nt = (s068.n + kDecodeTN - 1) / kDecodeTN;
+    decode_output_tiles += mt * nt;
+    for (int n_idx = 0; n_idx < nt; ++n_idx)
+      for (int m_idx = 0; m_idx < mt; ++m_idx)
+        decode_local_lock_ids.push_back(m_idx + n_idx * mt);
+  }
+  std::sort(decode_local_lock_ids.begin(), decode_local_lock_ids.end());
+  int const decode_unique_local_locks = int(std::unique(
+      decode_local_lock_ids.begin(), decode_local_lock_ids.end()) -
+      decode_local_lock_ids.begin());
+  int const decode_local_lock_collisions =
+      decode_output_tiles - decode_unique_local_locks;
   bool const router_ok = s068.active == expected_active &&
                          s068.experts == 256 && s068.total == 8 &&
-                         output_tiles == 16 && local_lock_collisions == 14;
+                         output_tiles == 16 && local_lock_collisions == 14 &&
+                         decode_output_tiles == 128 &&
+                         decode_local_lock_collisions == 112;
   std::printf("[grouped streamk plan] fixture=S068 router=%s E=%d active=%zu "
               "empty=%d active_ids=",
               moe_router_fixture::kName, s068.experts, s068.active.size(),
@@ -702,31 +884,45 @@ int main() {
     std::printf("%s%d", i ? "," : "", s068.active[i]);
   // q has two n tiles per active expert.  Replacing q by expert-local (m,n)
   // would collapse 16 lock ids to two: the fixture actively exposes 14 aliases.
-  std::printf(" Q=%d local_lock_collisions=%d %s\n", output_tiles,
-              local_lock_collisions, router_ok ? "ROUTER-PASS" : "ROUTER-FAIL");
+  std::printf(" Q=%d local_lock_collisions=%d "
+              "decode64_Q=%d decode64_local_lock_collisions=%d %s\n",
+              output_tiles, local_lock_collisions, decode_output_tiles,
+              decode_local_lock_collisions,
+              router_ok ? "ROUTER-PASS" : "ROUTER-FAIL");
   errors += !router_ok;
 
   // Canonical placement must not change when only the consumer TileK changes.
   std::vector<int8_t> packed256(s068.packed.size(), 0);
+  std::vector<int8_t> packed_decode64(s068.packed.size(), 0);
   size_t const per = size_t(s068.k) * s068.n * 4 / 8;
   for (int e : s068.active) {
     xplane::place_derived<4, kTM, kTN, 256, kWM, kWN, 1,
                           kArtifactTileK>(
         packed256.data() + size_t(e) * per, s068.codes[e], s068.n, s068.k);
+    xplane::place_derived<4, kDecodeTM, kDecodeTN, kDecodeTK,
+                          kDecodeWM, kDecodeWN, 1, kArtifactTileK>(
+        packed_decode64.data() + size_t(e) * per, s068.codes[e],
+        s068.n, s068.k);
   }
   int const placement_diff = int(std::inner_product(
       s068.packed.begin(), s068.packed.end(), packed256.begin(), size_t(0),
       std::plus<size_t>{}, [](int8_t a, int8_t b) { return a != b; }));
-  std::printf("[grouped streamk artifact] TK64/TK256 byte_diff=%d/%zu %s\n",
-              placement_diff, s068.packed.size(),
-              placement_diff == 0 ? "PASS" : "FAIL");
-  errors += placement_diff != 0;
+  int const decode_placement_diff = int(std::inner_product(
+      s068.packed.begin(), s068.packed.end(), packed_decode64.begin(), size_t(0),
+      std::plus<size_t>{}, [](int8_t a, int8_t b) { return a != b; }));
+  bool const artifact_ok = placement_diff == 0 && decode_placement_diff == 0;
+  std::printf("[grouped streamk artifact] TK64/TK256 byte_diff=%d/%zu "
+              "decode64 byte_diff=%d/%zu %s\n",
+              placement_diff, s068.packed.size(), decode_placement_diff,
+              s068.packed.size(), artifact_ok ? "PASS" : "FAIL");
+  errors += !artifact_ok;
 
   DeviceFixture ds068(s068);
   errors += run_legacy_control(s068, ds068);
   auto tk256 = run_streamk_arm<256>(s068, ds068, device_id, real_cu, true);
   auto tk64 = run_streamk_arm<64>(s068, ds068, device_id, real_cu, true);
   errors += tk256.errors + tk64.errors;
+  errors += run_decode64_nonuniform(s068, ds068, device_id, real_cu);
 
   errors += !print_c_traffic(s068, tk256, 256);
   errors += !print_c_traffic(s068, tk64, 64);

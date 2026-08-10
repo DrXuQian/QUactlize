@@ -73,6 +73,7 @@ GATES = [
     ("l114_scale_copy_coverage@two_plane", []),
     ("l120_streamk_min_iters_policy", []),
     ("l121_grouped_streamk_wrapper", []),
+    ("l122_streamk_fixup_cohort", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -268,6 +269,7 @@ GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               "l109_rt_hggc_parse": ["-D__HGGCCC__"],
               "l120_streamk_min_iters_policy": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               "l121_grouped_streamk_wrapper": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
+              "l122_streamk_fixup_cohort": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               # THE MACROS ARE THE POINT. This gate asserts the fused path is ON, so it has to be built the way the
               # box builds packfuse -- without these two it would assert about a configuration nobody runs and pass
               # for the wrong reason, which is the failure it exists to catch.
@@ -987,6 +989,13 @@ def lint_grouped_streamk_contract():
         "grouped Stream-K q/worker/K/fixup/timing seams and both decode controls are pinned")
 
 
+def lint_streamk_fixup_cohort():
+    """Stream-K fixup must use the exact 64/128-thread CTA as barrier and scratch cohort."""
+    return _run_ci_script(
+        "check_streamk_fixup_cohort.py",
+        "Stream-K exact CTA cohort and real-fragment workspace coverage are pinned")
+
+
 def lint_m8n16_g2_contract():
     """G2 must replay the historical provider index on one production x4 payload."""
     return _run_ci_script(
@@ -1460,6 +1469,7 @@ def main():
                 ("lint", "MoE events bracket only gemm.run and retain the host-wall audit", lint_moe_event_timing),
                 ("lint", "dense Stream-K shares worker/K decomposition and resets locks before timing", lint_dense_streamk_contract),
                 ("lint", "grouped Stream-K preserves q locks, worker/K decomposition, and timing", lint_grouped_streamk_contract),
+                ("lint", "l122_streamk_fixup_cohort contract pins the exact 64/128-thread CTA cohort", lint_streamk_fixup_cohort),
                 ("lint", "syntax baselines and live SYNTAX sources match", lint_syntax_inventory),
                 ("lint", "m8n16 G2 replays the historical bad index on the production x4 payload", lint_m8n16_g2_contract),
                 ("lint", "ppu001 plain LDSM fails in C++ before its unproved assembler path", lint_plain_ldsm_failclosed),

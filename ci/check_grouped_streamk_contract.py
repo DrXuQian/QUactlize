@@ -70,11 +70,12 @@ def audit(wrapper: str, builder: str, test: str, cmake: str, build: str) -> list
         bad.append("owned wrapper contains a constant short-circuit bypass")
     for token in (
         "class GroupStreamKMixedInputKernel",
-        "TileShape, ClusterShape, MinSkIters>;",
+        "TileShape, ClusterShape, MinSkIters, MaxThreadsPerBlock>;",
         "detail::PersistentTileSchedulerPPUStreamKParamsT<MinSkIters>",
         '"grouped Stream-K lost configured MinSkIters"',
         '"Stream-K stripe is shorter than pipeline startup"',
-        "static_assert(MaxThreadsPerBlock == 128",
+        "static_assert(MaxThreadsPerBlock == 64u || MaxThreadsPerBlock == 128u",
+        "static_assert(TileScheduler::FixupThreadCount == MaxThreadsPerBlock",
         "static_assert(!CollectiveMainloop::SwapAB",
         "q += mt * nt;",
         "args.mainloop.group_row_offsets != nullptr",
@@ -118,7 +119,8 @@ def audit(wrapper: str, builder: str, test: str, cmake: str, build: str) -> list
         grid = section(wrapper_code, "  static dim3 get_grid_shape", "\n  static dim3 get_block_shape")
         device = section(wrapper_code, "  CUTLASS_DEVICE\n  void operator()", "\n};")
         runtime = section(builder_code, "  static void configure_runtime", "\n  static Plan inspect")
-        arm = section(test_code, "ArmResult run_streamk_arm", "\nbool print_c_traffic")
+        arm = section(test_code, "ArmResult run_streamk_arm", "\nint run_decode64_nonuniform")
+        decode64 = section(test_code, "int run_decode64_nonuniform", "\nbool print_c_traffic")
         verify = section(test_code, "int verify_output", "\ntemplate <class Params>")
         policy = section(test_code, "bool host_policy_line", "\nstruct ArmResult")
         phase2_oracle = section(
@@ -462,6 +464,7 @@ def audit(wrapper: str, builder: str, test: str, cmake: str, build: str) -> list
         "errors += !host_policy_line<P2>(\"min2\", 128, 8, 432, 128, 128, 432);",
         "s068.active == expected_active",
         "local_lock_collisions == 14",
+        "decode_local_lock_collisions == 112",
         "errors += !router_ok;",
         "std::isfinite(us.front()) && std::isfinite(median)",
         "timing_ok ? \"TIMING-PASS\" : \"TIMING-FAIL\"",
@@ -472,7 +475,8 @@ def audit(wrapper: str, builder: str, test: str, cmake: str, build: str) -> list
             bad.append(f"box gate missing {token!r}")
     for token in (
         "run_streamk_arm<256>",
-        "local_lock_collisions=%d", "diagnostic-only",
+        " Q=%d local_lock_collisions=%d ",
+        "run_decode64_nonuniform(s068, ds068, device_id, real_cu)",
         "ragged-0,1,17,0,33",
     ):
         if test_code.count(token) != 1:
@@ -480,6 +484,30 @@ def audit(wrapper: str, builder: str, test: str, cmake: str, build: str) -> list
 
     if test_code.count("run_streamk_arm<64>") != 2:
         bad.append("TK64 must run once on S068 and once on the ragged fixture")
+    for token in (
+        "using O = Decode64Op;",
+        "constexpr int kExpectedQ = 128;",
+        "constexpr int kExpectedKt = 8;",
+        "constexpr int kExpectedWorkers = 432;",
+        "constexpr size_t kBarrierBytes = 512;",
+        "plan.sk_tiles == kExpectedQ && plan.sk_units == kExpectedWorkers",
+        "!uniform.supported",
+        "split_tiles == plan.q && holes == 0 && missing_k == 0",
+        "ht[0] == peer_sum && ht[1] == uint32_t(plan.q)",
+        "ht[2] == 0 && ht[3] == uint32_t(plan.q) && ht[4] == 0 && ht[5] == 0",
+        '"streamk-min2-decode64-nonuniform"',
+        '"N/A (nonuniform peer distribution; independent oracle pending)\\n"',
+    ):
+        if decode64.count(token) != 1:
+            bad.append(f"decode64 nonuniform gate missing exactly one {token!r}")
+    if "print_c_traffic" in decode64 or "expected_peer_excess" in decode64:
+        bad.append("decode64 nonuniform arm fabricates the uniform C-traffic oracle")
+    if test_code.count("Decode64Op::Kernel::MaxThreadsPerBlock == 64") != 1 or \
+            test_code.count(
+                "Decode64Op::Kernel::TileScheduler::FixupThreadCount == 64") != 1:
+        bad.append("decode64 type gate does not pin both CTA and fixup cohort to 64")
+    if test_code.count("decode_placement_diff == 0") != 1:
+        bad.append("decode64 does not prove its resident artifact matches the control")
     c_traffic = section(test_code, "bool print_c_traffic", "\nint run_legacy_control")
     if re.search(r"\btrue\s*\|\||\bfalse\s*&&", test_code):
         bad.append("box oracle contains a constant short-circuit bypass")
@@ -578,7 +606,7 @@ def compiled_controls() -> list[str]:
         planted_wrapper.parent.mkdir(parents=True)
         text = WRAPPER.read_text()
         old = ("using TileScheduler = detail::PersistentTileSchedulerPPUStreamK<\n"
-               "      TileShape, ClusterShape, MinSkIters>;")
+               "      TileShape, ClusterShape, MinSkIters, MaxThreadsPerBlock>;")
         new = ("using TileScheduler = detail::PersistentTileSchedulerPPUStreamK<\n"
                "      TileShape, ClusterShape>;")
         if text.count(old) != 1:
@@ -787,8 +815,9 @@ def main() -> int:
          "timed reset clears reduction scratch as well as barriers"),
         (0, "TileScheduler::fixup(params.scheduler, sched_work",
          "TileScheduler::fixup(params.scheduler, real_work", "local work aliases locks"),
-        (0, "static_assert(MaxThreadsPerBlock == 128",
-         "static_assert(MaxThreadsPerBlock == 64", "wrong barrier cohort"),
+        (0, "static_assert(TileScheduler::FixupThreadCount == MaxThreadsPerBlock",
+         "static_assert(TileScheduler::FixupThreadCount != MaxThreadsPerBlock",
+         "wrong barrier cohort"),
         (2, "return errors ? 1 : 0;",
          "if (false) return errors ? 1 : 0; return 0;",
          "dead error verdict precedes an unconditional success"),
@@ -825,6 +854,22 @@ def main() -> int:
         (2, "arm.peer_excess == arm.expected_peer_excess",
          "arm.peer_excess == arm.peer_excess",
          "traffic oracle compares the census to itself"),
+        (2, "!uniform.supported;", "uniform.supported;",
+         "decode64 accepts the rejected uniform peer oracle"),
+        (2,
+         "split_tiles == plan.q && holes == 0 && missing_k == 0 &&",
+         "split_tiles == plan.q && holes == 0 && missing_k >= 0 &&",
+         "decode64 stops requiring exact K coverage"),
+        (2, "decode_local_lock_collisions == 112",
+         "decode_local_lock_collisions >= 0",
+         "decode64 lock-alias witness becomes vacuous"),
+        (2, "decode_placement_diff == 0",
+         "decode_placement_diff == decode_placement_diff",
+         "decode64 artifact comparison becomes self-referential"),
+        (2,
+         "N/A (nonuniform peer distribution; independent oracle pending)",
+         "0 bytes (uniform estimate)",
+         "decode64 fabricates nonuniform C traffic"),
         (2, "if (!census_identity) ++result.errors;",
          "if (false && !census_identity) ++result.errors;",
          "census failure is moved into a dead branch"),
@@ -878,7 +923,7 @@ def main() -> int:
         return 1
     print("[grouped-streamk-contract] PASS -- explicit Min2, independent worker "
           "oracle, q lock identity, shared workers, workspace/prefix separation, "
-          "absolute K, 128-thread fixup; "
+          "absolute K, exact-CTA fixup; "
           f"{len(plants)} semantic source plants + default-Params/Min1/"
           "deleted-update/no-Params-run compiled controls rejected; device body is "
           "covered separately by the registered SYNTAX target")

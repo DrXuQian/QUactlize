@@ -58,21 +58,20 @@ public:
 
   using ClusterShape = cute::Shape<cute::Int<1>, cute::Int<1>, cute::Int<1>>;
   using TileSchedulerTag = StreamKScheduler;
-  using TileScheduler = typename detail::TileSchedulerSelector<
-      TileSchedulerTag, ArchTag, TileShape, ClusterShape>::Scheduler;
+  static constexpr uint32_t MaxThreadsPerBlock = cute::size(TiledMma{});
+  using TileScheduler = detail::PersistentTileSchedulerPPUStreamK<
+      TileShape, ClusterShape, 8u, MaxThreadsPerBlock>;
   using TileSchedulerArguments = typename TileScheduler::Arguments;
   using TileSchedulerParams = typename TileScheduler::Params;
 
-  static constexpr uint32_t MaxThreadsPerBlock = cute::size(TiledMma{});
   static constexpr uint32_t MinBlocksPerMultiprocessor = 1;
   static constexpr uint32_t NumMmaWarpGroups = 1;
   static constexpr bool IsDenseStreamK = true;
 
-  // actlize fixup() uses NamedBarrierManager<128> and indexes its FP32
-  // workspace with threadIdx.x % 128.  Until that cohort is generalized,
-  // accepting any other CTA size is a potential deadlock or address alias.
-  static_assert(MaxThreadsPerBlock == 128,
-                "dense mixed-input Stream-K currently requires exactly 128 threads");
+  static_assert(MaxThreadsPerBlock == 64u || MaxThreadsPerBlock == 128u,
+                "dense mixed-input Stream-K supports exactly 64- or 128-thread CTAs");
+  static_assert(TileScheduler::FixupThreadCount == MaxThreadsPerBlock,
+                "dense Stream-K fixup cohort must equal the exact CTA thread count");
   static_assert(cute::is_same_v<ElementAccumulator, ElementCompute>,
                 "Stream-K scratch and the live accumulator fragment must have one type");
   // The scheduler guarantees no fewer than eight K tiles per Stream-K unit.

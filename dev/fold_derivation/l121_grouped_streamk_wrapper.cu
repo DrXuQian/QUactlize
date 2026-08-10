@@ -26,13 +26,17 @@ using Expected = cutlass::gemm::kernel::detail::
 static_assert(std::is_same_v<typename Kernel::TileSchedulerParams, Expected>);
 static_assert(Kernel::TileSchedulerParams::min_iters_per_sk_unit_ == 2);
 static_assert(Kernel::MaxThreadsPerBlock == 128);
+static_assert(Kernel::TileScheduler::FixupThreadCount ==
+              Kernel::MaxThreadsPerBlock);
 static_assert(sizeof(Kernel) > 0);
 
 }  // namespace
 
 int main() {
-  std::printf("L121 grouped wrapper min=%u stages=%d threads=%u Params=exact PASS\n",
+  std::printf("L121 grouped wrapper min=%u stages=%d threads=%u "
+              "cohort=%u Params=exact PASS\n",
               Kernel::TileSchedulerParams::min_iters_per_sk_unit_,
-              Kernel::DispatchPolicy::Stages, Kernel::MaxThreadsPerBlock);
+              Kernel::DispatchPolicy::Stages, Kernel::MaxThreadsPerBlock,
+              Kernel::TileScheduler::FixupThreadCount);
   return 0;
 }
