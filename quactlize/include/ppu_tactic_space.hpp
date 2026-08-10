@@ -46,7 +46,7 @@ inline constexpr std::array<FormatSpec, 6> kFormats{{
 }};
 inline constexpr std::array<int, 4> kTileK{{32, 64, 128, 256}};
 inline constexpr std::array<int, 5> kTileM{{16, 32, 64, 128, 256}};
-inline constexpr std::array<int, 4> kTileN{{16, 32, 64, 128}};
+inline constexpr std::array<int, 5> kTileN{{16, 32, 64, 128, 256}};
 inline constexpr std::array<int, 3> kWarpM{{16, 32, 64}};
 // WN=128 is deliberate.  The current MoE generator omits it, but it is the delivery escape for an int1 plane at TK32;
 // whether the remaining constraints reject a row must be printed, not encoded by leaving the axis out.

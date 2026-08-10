@@ -906,7 +906,7 @@ set(MOE_TN_LIST "" CACHE STRING "MoE TileN values to compile (semicolon-separate
 set(MOE_WM_LIST "" CACHE STRING "MoE WarpM values to compile (semicolon-separated; empty=all)")
 set(MOE_STAGES "" CACHE STRING "MoE pipeline stages to instantiate (semicolon-separated subset of 2;3;4;6;8;12; empty=all)")
 
-set(_MOE_TN_ALLOWED 16 32 64 128)
+set(_MOE_TN_ALLOWED 16 32 64 128 256)
 set(_MOE_WM_ALLOWED 16 32 64)
 set(_MOE_STAGE_DEFINE_ROWS
   "2|-DMOE_STAGES_2|MOE_STAGES_2"
