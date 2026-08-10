@@ -4612,3 +4612,50 @@ Marlin 必须用 `mma_trans` **对调 A/B**,因为 NVIDIA 的是 `m16n8` —— 
 1. ~~"decode 上的 split-K 是已测负收益"~~ —— 依据是 `20.18→20.96 µs`,差值 3.9%,而该 harness 的历史跨运行
    离散度是 13%,且两个数都含约 13 µs 的固定开销。**埋在噪声里,没有被证实。K-striping 重新开放。**
 2. ~~"TC 路的上限是 TRT 的 21.7%"~~ —— 那是"缺 m8"推出来的,前提已倒。
+
+## 111 — m8n16k16:atom + traits + G0/G1/G2(**不碰 collective**)
+
+110 的判断我接受,拆成两步。**111 是 112 的门:G2 的负控不成立,就不许往下接线。**
+
+### 做
+
+1. `PPU0010_8x16x16_F32F16F16F32_TN` atom + traits,按你 110 给的布局(A `uint32_t[2]`、B 不变、C `float[4]`,
+   ALayout/CLayout 你已用 CuTe host algebra 逐 lane 验过 0 mismatch)。
+2. atom selector 加 **shape-aware** 分支,首版严格限定 `Arch=PPU0010 && TileM=8 && WarpM=8 → m8`,其余走原子。
+   **不要全局把 half/half/float 换成 m8。**
+3. **G0**:完整 `.cu → bitcode → llc`,审计生成的 hgcc 命令**只有 `-arch=ppu_10`、没有 `-arch=ppu_15`**
+   (不能只看 C++ 的 `ArchTag`,你自己说了 atom 头里同时带 arch100/150 分支)。symbol 里要出现 `m8n16k16`。
+   **负控:`PPU_ARCHS=ppu0015` 必须以预期的 ISel 错误失败。**
+4. **G1**:纯 atom,不经 ldmatrix/dequant。one-hot + 非对称 pattern + 非零 C,8×16=128 个 FP32 输出全对独立 CPU golden。
+5. **G2**:真实 AIU write + 物理 16 行 swzl x4 + 只交付 `v0/v1`。`(lane,reg)` 与 ALayout bit-exact;
+   **0–7 行用唯一 tag,8–15 行用不同 poison,结果不得依赖后 8 行。**
+6. **G2 负控(这条是 111 的承重)**:故意换成已知错误的 NVIDIA x2 地址式,**必须产生 mismatch**。
+   先红后绿,两个方向都要贴出来。**只见过通过的 gate 等于没测。**
+
+### 不做
+
+- 不碰 collective(B shadow loader / offline producer / epilogue / tactic space / CMake 过滤器)—— 那是 112
+- 不承诺任何性能数字
+
+## 112 — m8n16k16:collective 接线 + G3/G4/G5(**111 绿了才开**)
+
+按你 110 列的清单,一处不能漏,每处都是**静默**失效:
+
+| 部件 | 要改成 |
+|---|---|
+| A staging | **逻辑 TileM=8、物理 cube 仍 16×K**,`.padz` 补零;A-smem 仍按 `16×K×stages` 收费,**不许按 TM8 砍半** |
+| B shadow loader | 现在用固定 m16 int8 atom 构造辅助 TiledMma,`PermutationM=8` 后契约不成立 |
+| Offline B producer | `xplane_offline.hpp` 的 `max(WM,16)` 在 TM8/WM8 下得到 `WOM=0` —— 要把 B-only 的虚拟 M 与主 atom M 解耦 |
+| Epilogue | `WarpOnM*16` 写死,要参数化成实际 `InstM` |
+| Tactic space | 加 TM8/WM8 两条轴,`%16` 改成 atom-aware |
+| **CMake 第二道过滤器** | `_MOE_TM_ALLOWED` / `_MOE_WM_ALLOWED` 都没有 8 —— **又是它**(TileN=256 那次一模一样) |
+| Host 模型 | `fold_traits.hpp` 的 `WM/16`、TM `%16` 按 InstM 泛化;m8 下 B 的 M 向复用是 `WM/8` |
+| `PPU_A_PACK` | **首版禁用** —— 它断言 `CUBE_H == TileM`,和 m8 的"物理16/逻辑8"直接冲突 |
+
+**一个会静默削掉对照组的生成器陷阱**:decode 的 `--m-max` 只保留"最小可覆盖 TileM",加了 8 之后会把 **m16 的对照行剪光**。
+首轮必须保留 m8/m16 两个 family 的最小行,或者建独立的 m8-vs-m16 target。**没有对照就没有 A/B。**
+
+G3(B/dequant)、G4(单 CTA 全链,M={1,2,3,7,8},D 预填 NaN + 两侧 canary)、G5(真 grouped,E=256/active=8/
+非连续 expert id/ragged M/每 expert 不同 A/W/S/Z)按你 110 的设计。**G5 依赖 108 的真实 harness**,所以 112 的完成
+定义里要写清楚哪一部分被 108 卡住,不要用现有 `test_lowbit_grouped.cu` 的 L=1 自比冒充 —— 你自己说了它抓不到
+atom/A-fragment/epilogue 共有的结构化排列错。
