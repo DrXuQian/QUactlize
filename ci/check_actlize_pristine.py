@@ -66,6 +66,12 @@ OWNED = [
 # FIXES are corrections to actlize, true whether or not quactlize exists. They came in as cd17c2b9 on the
 # nvcc-portability branch off v1.0.0, and every one is nvcc/EDG rejecting what clang accepted.
 FIXES = {
+    "include/cute/arch/copy_ppu.hpp":
+        "#114: ppu001's six assembler-rejected plain-LDSM atoms are deleted at the C++ call site; legacy helper "
+        "templates carry a dependent static_assert, while the ppu0015 tc02 API and bodies stay unchanged",
+    "include/cutlass/arch/memory_ppu.h":
+        "#114: ppu001's six assembler-rejected explicit ldsm specializations are deleted at the C++ call site; "
+        "the ppu0015 tc02 specializations stay unchanged",
     "include/cute/arch/util.hpp":
         "cd17c2b9: CUTE_DEVICE -> CUTE_HOST_DEVICE; nvcc rejects the host call",
     "include/cutlass/arch/mma_ppu.h":

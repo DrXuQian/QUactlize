@@ -1041,12 +1041,15 @@ shifted-coordinate golden, then exactly 120/128 projected values must differ fro
 an invalid read cannot masquerade as the expected red; the box also decides whether the x4 interface really honors
 the NVIDIA formula's 16-byte column component rather than assuming it from the host model.
 
-Deferred vendor defect, deliberately not fixed by 114: ppu001's six plain-LDSM sites in `cute/arch/copy_ppu.hpp`
-and six in `cutlass/arch/memory_ppu.h` contain assembler-rejected `ppu.tc01.ex.ldmatrix` spellings. The working
-swizzled opcode does **not** establish the plain x1/x2/x4 N/T grammar, so guessing a replacement is forbidden. A
-separate actlize change must either prove all six forms with SDK compile + numerical gates, or make their use fail
-at the C++ call site; merely remaining uninstantiated is not support. G2 must not directly name the legacy header
-or instantiate/call those atoms (an unrelated actlize trait still includes that header transitively).
+Separate vendor defect, fail-closed by 114: ppu001's six plain-LDSM sites in `cute/arch/copy_ppu.hpp` and six in
+`cutlass/arch/memory_ppu.h` formerly carried assembler-rejected `ppu.tc01.ex.ldmatrix` spellings. The working
+swizzled opcode does **not** establish the plain x1/x2/x4 N/T grammar, so 114 does not guess a replacement: all 12
+direct ppu001 entries now fail at the C++ call site, while the two legacy CuTe helpers carry dependent
+`static_assert`s. A local four-arm compile gate proves unused ppu001 headers compile, all 12 ppu001 direct calls stop
+with 12 deleted-function diagnostics and both helpers stop with their two reasoned assertions before assembly, while
+ppu0015 retains CuTe+CUTLASS copies of all six tc02 forms plus the exact direct-function ABI.
+G2 still must not directly name the legacy header or instantiate/call those atoms (an unrelated actlize trait
+includes that header transitively). Any future implementation needs its own SDK compile plus numerical gate.
 
 The named symbol is the requested provenance marker, not opcode evidence by itself. The instruction identity is
 cross-checked by executing the raw-atom golden on ppu001 and by the isolated ppu0015 compiler naming the

@@ -21,14 +21,14 @@
 // checks every one of the bad arm's 512 halfwords against the shifted valid
 // tags before accepting its exact 120/128 mismatch against the origin.
 //
-// KNOWN PRE-EXISTING ACTLIZE DEFECT, DEFERRED FROM #114.  The six ppu001
+// KNOWN PRE-EXISTING ACTLIZE DEFECT, FAIL-CLOSED BY #114.  The six ppu001
 // plain-LDSM atoms in cute/arch/copy_ppu.hpp and the six counterparts in
-// cutlass/arch/memory_ppu.h contain assembler-rejected
-// `ppu.tc01.ex.ldmatrix` spellings.  Their correct non-swzl SDK grammar has
-// not been established, so G2 deliberately instantiates none of them.  Do not
-// substitute a plain x1/x2/x4 N/T atom until a separate SDK compile plus
-// numerical gate establishes every spelling; silently surviving only because
-// an asm-bearing function was never instantiated is not support.
+// cutlass/arch/memory_ppu.h formerly contained assembler-rejected
+// `ppu.tc01.ex.ldmatrix` spellings.  Their correct non-swzl SDK grammar is
+// still unproved: the direct ppu001 entries are now deleted C++ functions and
+// the two legacy helpers use dependent static_asserts; ppu0015's tc02 entries
+// remain intact.  G2 deliberately instantiates none of them.  A future plain
+// x1/x2/x4 N/T implementation still requires SDK compile plus numerical gates.
 //
 // This source has no main.  The aggregate G0/G1/G2 target calls:
 //

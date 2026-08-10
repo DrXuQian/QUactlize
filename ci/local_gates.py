@@ -902,6 +902,13 @@ def lint_m8n16_g2_contract():
         "m8n16 G2 good/bad arms share one x4-swzl instruction seam")
 
 
+def lint_plain_ldsm_failclosed():
+    """The twelve dormant ppu001 plain-LDSM entries must fail before assembly when called."""
+    return _run_ci_script(
+        "check_plain_ldsm_failclosed.py",
+        "ppu001 plain LDSM fails at C++ call sites while ppu0015 tc02 remains intact")
+
+
 def _run_ci_script(name: str, label: str):
     """Shared shim for the ci/ checkers that are complete programs already; report their last meaningful line."""
     checker = ROOT / "ci" / name
@@ -1355,6 +1362,7 @@ def main():
                 ("lint", "dense and MoE consume one named measurement layer", lint_bench_measurement_shared),
                 ("lint", "MoE events bracket only gemm.run and retain the host-wall audit", lint_moe_event_timing),
                 ("lint", "m8n16 G2 changes only address coordinates between guard arms", lint_m8n16_g2_contract),
+                ("lint", "ppu001 plain LDSM fails in C++ before its unproved assembler path", lint_plain_ldsm_failclosed),
                 ("lint", "quactlize_extensions adds to actlize rather than redefining it", lint_extension_additive),
                 ("lint", "every file naming a quactlize type reaches its defining header", lint_owned_symbol_includes),
                 ("lint", "every listed GGUF format has the collective its row implies", lint_format_table_buildable),

@@ -120,7 +120,7 @@ def audit(source: str) -> list[str]:
         "cutlass/arch/memory_ppu.h", "six ppu001", "six counterparts",
     ):
         if token not in source:
-            bad.append(f"the deferred 12-site vendor defect no longer records {token!r}")
+            bad.append(f"the 12-site vendor defect/disposition no longer records {token!r}")
 
     required_flat = (
         "constexprintkCubeH=16;",
