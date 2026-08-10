@@ -4230,3 +4230,120 @@ MFU 差 8.494873 点(42.894873% vs 34.4%)。这 117.4 MB 就在计时区里,是�
 - 仍然**只分析不改代码**,除了 A 如果需要跑一次 asys 取数(那属于测量,可以)。
 - 不要重复 102 已经确立的东西。
 - 有任何一条是"我印象里"而不是"我查了代码/跑了数",明确标出来。
+
+## 104 — Marlin 的结构能不能接进我们的架构:先测我们已有的,再判断要不要移植
+
+用户指定的下一个任务。**但顺序我改了:先量我们现在在 decode 段是什么水平,再决定要不要移植** —— 在知道自己差多少之前设计移植方案,是先建后测。
+
+### 背景:decode 是两种架构真正拉开的地方
+
+5090 实测,四个真实 expert 形状上 crossover 完全一致:
+
+    tokens<=4    Marlin 赢,最多快 148%
+    tokens>=64   TRT-LLM(CUTLASS grouped)赢,快 1-29%
+    tokens=1     Marlin MBU 43.01/47.16/53.87/74.96%   TRT-LLM 19.93/39.66/22.08/56.24%
+
+我们结构上站 TRT-LLM 那边。103 正在问这个塌陷是不是结构性的;**这一条假设它是,问我们该怎么办**。
+
+### 我们已经有的(我查过代码,不是印象)
+
+- **grouped CUDA-core GEMV**:`gemv_lowbit/gemv_launcher.hpp` 有 `num_experts` / `row_offsets` /
+  `GEMV_GROUPED_CTAM_MAX`,`grid.z=num_experts`,有独立的 grouped 段。**记忆里"MoE 缺 GEMV"那条是过期的。**
+- **grouped tensor-core GEMM**:`moe_grouped_ppu.cuh`(BACKTEST D4 = 20.74 µs / 37.5%,同一 band)
+- **grouped split-K**:`moe_splitk_ppu.cuh`
+
+### 第一步(必须先做):我们在 decode 段实际是多少
+
+在 **S068-S071 这四个真实形状、tokens=1** 上,把上面两条路各测一次,给 MBU 和绝对时间,和 Marlin 的
+43.01 / 47.16 / 53.87 / 74.96% 并排。**注意 103 的计时口径问题同样适用** —— 要 kernel-only,不要 wall-clock,
+否则 decode 段几微秒的量级会被 launch 开销整个淹没(这是 decode 比 prefill 更严重的地方)。
+
+**如果我们已经在 Marlin 附近,后面几步就不用做了。** 先答这个。
+
+### 第二步(只在落后时做):把 Marlin 拆成可分离的机制
+
+不要整体判断"能不能移植",拆开逐条判。我列出候选,你以源码为准增删:
+
+1. **in-kernel gather**(`sorted_token_ids`,A 保持 `tokens×K`)—— 102 已确立我们的 AIU descriptor 只收
+   单基址+固定 stride,这条对我们最难
+2. **随 M 缩小的 m-tile**(`thread_m_blocks`)
+3. **K 切到 warp 上**(我们记录过 Marlin 这个特性:任何 per-k 量都要带 `warp_k`)
+4. 它自己的 async pipeline(不是 CUTLASS collective)
+5. GPTQ-Marlin 的权重/scale 布局(我们记录过 PPU 上零转换可直接吃,`_scale_perm` 通用)
+6. split-K + locks 的全局 reduce
+7. 寄存器内 fp32 累加 + 融合反量化
+
+每条给三个判断:**(a) 是不是 decode 那个胜势的成因**(这条最重要,七条里多半只有两三条真的相关);
+(b) PPU 允不允许(AIU 32B 下限、swzl 16 行、无 stride 操作数);(c) 我们是不是已经有了。
+
+### 一个必须正面处理的矛盾
+
+我们自己 dense decode GEMV 的实测结论是:**赢家是纯 CUDA-core、1 行/block、128 线程、不用 shared/cp.async/
+AIU/split-K,打到 82% HBM;multi-row、split-K、cp.async、AIU 全部输了。** 而且另一条实测说 **GEMV 是 ALU 受限
+不是带宽受限**(i1/i2/i4 三个位宽字节差 2.5×,时间只差 1.1%)。
+
+Marlin 走的是相反方向:tensor core + 小 tile + warp 切 K + split-K。
+
+**这两个结论至少有一个不能同时成立于 MoE decode。** 可能的解释:(i) dense GEMV 和 MoE decode 不是同一个问题
+(MoE 每个 expert 只有 1-8 行但有 8 个 expert,总行数不是 1);(ii) ALU 受限说明 tensor core 恰恰能帮上忙,
+把反量化和点积从 ALU 挪走;(iii) 我们那个 GEMV 结论只在 dense 的 N/K 比例下成立。
+**请正面判断是哪一种,别绕过去。** 这决定了 Marlin 的结构对我们到底是不是正确方向。
+
+### 边界
+
+- 第一步是测量,可以跑。第二步只出判断,不写代码。
+- 结论要能被证伪:第一步给数,第二步指源码行。
+- 如果结论是"不该移植 Marlin,该改我们自己的 X",那更好 —— 这条问的是方向,不是让你论证移植可行。
+
+### 104 补充 — 用户给的 Marlin 源码走读,把上面的第二步收窄了
+
+用户提供了 Marlin 的代码走读。**它把"Marlin 的结构"拆开之后,有几条我们已经有了,有几条变成了很具体的问题。**
+
+**(a) 小 M 的 tile 是启发式,不是另一套 kernel。同一个 kernel 按 M 换形状:**
+
+    if (prob_m <= 16) { thread_k = 128; thread_n = 128; }   // 小 M:更小的 N tile + 更大的 K tile
+    else              { thread_k =  64; thread_n = 256; }   // 大 M:更大的 N tile
+
+`CALL_IF` 只有两种 (nb,kb):(8,8) 和 (16,4),即 n128/k128 与 n256/k64;mb 1-4,gb ∈ {-1, 8}。
+
+**我们的 i4 decode 表全是 TileM=16(= Marlin 的 THREAD_M_BLOCKS=1 × 16),而且 `16x128:128` 有 18 行 ——
+Marlin 的小-M 形状我们已经能表达。** 所以第一步测的时候**必须把这 18 行包含进去**;如果它已经接近 Marlin,
+那 tile 形状这条就排除了,第二步只需要查剩下的。TileN=256 我们一行都没有,但那是大-M 档,decode 用不上。
+
+**(b) 已经在我们 todo 上的一条:LOP3 + FP16 魔数快速反量化。** PDF 给了确切常数:
+
+    LO=0x000f000f  HI=0x00f000f0  EX=0x64006400
+    lo = lop3<(0xf0&0xcc)|0xaa>(q, LO, EX)          // = (q & LO) | EX
+    SUB=0x64086408 (1024+8=1032,把对称零点 -8 折进来)
+    MUL=0x2c002c00 (两个 0.0625,即除以 16)   ADD=0xd480d480 (-72 = -1024/16 - 8)
+    frag_b[0] = __hsub2(lo, SUB);   frag_b[1] = __hfma2(hi, MUL, ADD);
+
+这正是 **#18(把 -1024、零点、2^-b 折成一对 (s',b') 让反量化变成单条 hfma2)** 的参考实现。
+问题很具体:**PPU 有没有 `lop3` 等价物**(我们知道有 `__byte_perm`,IQ4 的 LUT 就靠它);没有的话
+`(q & LO) | EX` 要几条指令,值不值。
+
+**(c) shared memory:Marlin 假设 96 KB,PPU 是 256 KB。** 用户在 PDF 里自己标了一句
+"ppu 的 shm 大小更大,可以考虑一下这部分能不能优化"。Marlin 是 `THREADS=256, STAGES=4, SHARED_MEM=96*1024`。
+问:多出来的容量该换成**更深的 pipeline(STAGES>4)还是更大的 tile**,以及我们的 occupancy 上限
+(每 CU 256 KB shared 是硬上限)会不会先咬。
+
+**(d) `thread_m_blocks` 最大 4,理由是"更大会导致寄存器爆炸"。** 这和我们记的
+"Marlin 的 m-tile 只有 32 行,MAX_MB=2 卡在寄存器上"是同一件事,**说明这是两边共有的约束,不是我们的缺陷**。
+
+**(e) m 维放在内层循环**,为了让反量化和 mma 重叠:`for j<4 { dequant; scale; for i<thread_m_blocks { mma; mma } }`。
+问:我们的 mainloop 是不是同样的嵌套顺序;如果不是,这是个便宜的改动。
+
+**(f) 真正的移植难点在 A 的 shared 布局。** Marlin 手写了一个 XOR swizzle:
+
+    transform_a(i) = a_gl_rd_delta_o * row + (i % a_gl_rd_delta_o) ^ row
+
+注释说目标是"8 个连续线程的 16 字节 int4 块,读和写都不落在同一 bank",而且"每个 warp 还必须写连续段"。
+**我们的 `tsm.ld.swzl` 是硬件固定的 swizzle 且有 16 行硬约束、无 stride 操作数。**
+问:PPU 的 swzl 能不能表达 Marlin 这个 A 布局;不能的话,A 是否必须走非 swzl 路径(102 已确认那条路 55% 更慢)。
+**这条是 (a)-(e) 里唯一可能真的搬不动的。**
+
+**(g) B 用多个指针打断依赖**("B-accesses have non-constant stride ... maintaining multiple pointers")。
+我们已经有 `PPU_B_CHUNK`,机制相近但动机不同(我们是寄存器饥饿,它是打断依赖链)。问是不是同一件事。
+
+**所以第二步的清单从七条收窄成:(b) lop3、(c) 更大的 shared 怎么花、(e) 循环嵌套顺序、(f) A 的 swizzle。**
+(a) 我们已有,(d) 是共有约束,(g) 可能已有。**(f) 是唯一的结构性风险,请优先判它。**
