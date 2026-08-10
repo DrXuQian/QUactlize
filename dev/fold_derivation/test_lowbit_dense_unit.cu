@@ -4,7 +4,12 @@
 #ifndef PPU_B_CHUNK
 #define PPU_B_CHUNK 0
 #endif
-#if defined(DENSE_PERSISTENT_AB)
+#if defined(DENSE_STREAMK_AB)
+// 107b's isolated four-warp row.  Keep it separate from 107a: Stream-K
+// fixup() currently requires exactly one 128-thread barrier cohort.
+#define LOWBIT_DENSE_UNIT_CONFIGS(X) \
+  X(lowbit_dense_streamk_probe,64,128,64,64,32,2,0)
+#elif defined(DENSE_PERSISTENT_AB)
 // 107a's two causal anchors: BACKTEST A0 and the exact #10/ACU rung whose wave
 // geometry implies the 11.1% tail.  Instantiate both scheduler arms for both rows.
 #define LOWBIT_DENSE_UNIT_CONFIGS(X) \

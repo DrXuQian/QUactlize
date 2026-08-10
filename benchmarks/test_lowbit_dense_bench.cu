@@ -79,6 +79,7 @@
 
 #include "quactlize_actlize.hpp"
 #include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_persistent.hpp"
+#include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_streamk.hpp"
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
 #include "ppu_mixed_policy.hpp"
 #include "bench_select.hpp"
@@ -92,6 +93,10 @@
 #endif
 
 using namespace cute;
+
+#if defined(DENSE_PERSISTENT_AB) || defined(DENSE_STREAMK_AB)
+#define DENSE_SCHEDULER_AB 1
+#endif
 
 
 // This is just an example, so we use a regular enum so we can compare directly to the command-line int.
@@ -297,12 +302,20 @@ struct Cfg {
   static_assert(ppu_mixed_policy::kernel_policy_valid_v<ppu_tactics::DenseSpace, Policy>);
   using Kernel = cutlass::gemm::kernel::GemmUniversal<Shape<int,int,int,int>, Main, Epi>;
   using Gemm = cutlass::gemm::device::GemmUniversalAdapter<Kernel>;
-#if defined(DENSE_PERSISTENT_AB)
+#if defined(DENSE_SCHEDULER_AB)
   // A named kernel, not a GemmUniversal specialization: the vendor non-persistent
   // mixed-input kernel remains byte-for-byte the control side of this experiment.
   using PersistentKernel = cutlass::gemm::kernel::PersistentMixedInputKernel<
       Shape<int,int,int,int>, Main, Epi>;
   using PersistentGemm = cutlass::gemm::device::GemmUniversalAdapter<PersistentKernel>;
+#endif
+#if defined(DENSE_STREAMK_AB)
+  // Keep the four-warp Stream-K hard gate in a separate target.  Merely naming
+  // this type in 107a's 64/256-thread rows would make their valid persistent
+  // controls fail a constraint that belongs only to Stream-K fixup.
+  using StreamKKernel = cutlass::gemm::kernel::StreamKMixedInputKernel<
+      Shape<int,int,int,int>, Main, Epi>;
+  using StreamKGemm = cutlass::gemm::device::GemmUniversalAdapter<StreamKKernel>;
 #endif
 };
 
@@ -353,16 +366,22 @@ inline bench_measure::Tactic dense_fixed_tactic() {
 #if !defined(LOWBIT_DENSE_UNIT_BUILD)
 #include "bench_samples.hpp"
 #include "bench_floor.cuh"
-#if defined(DENSE_PERSISTENT_AB)
-// The persistent A/B target deliberately instantiates exactly one row.  It is a mechanism
-// experiment, not a truncated tactic search; keeping a separate registry identity prevents
-// its one-row result from being mistaken for the winner of the full 1571-row table.
+#if defined(DENSE_SCHEDULER_AB)
+// Each scheduler A/B target deliberately instantiates exactly one row.  These are mechanism
+// experiments, not truncated tactic searches; a separate registry identity prevents a
+// one-row result from being mistaken for the winner of the full dense table.
+#if defined(DENSE_STREAMK_AB)
+#define LOWBIT_DENSE_TABLE_FILE                 "streamk-ab-single-row"
+#define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    "streamk-ab"
+#define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  "streamk-ab"
+#else
 #define LOWBIT_DENSE_TABLE_FILE                 "persistent-ab-single-row"
+#define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    "persistent-ab"
+#define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  "persistent-ab"
+#endif
 #define LOWBIT_DENSE_TABLE_CFG_BITS             DENSE_AB_BITS
 #define LOWBIT_DENSE_TABLE_CFG_ARTIFACT_TILEK   DENSE_AB_TK
 #define LOWBIT_DENSE_TABLE_CFG_ROWS             1
-#define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    "persistent-ab"
-#define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  "persistent-ab"
 #define LOWBIT_DENSE_TABLE_CFG_LIST(X,A) \
   X(DENSE_AB_TM,DENSE_AB_TN,DENSE_AB_TK,DENSE_AB_WM,DENSE_AB_WN,DENSE_AB_ST,DENSE_AB_BC,A)
 #elif defined(BENCH_UINT1)
@@ -500,6 +519,8 @@ struct Options {
   bool search_configs = false;
   bool xcheck = false;           // --xcheck: run the grouped kernel (L=1) on this run's verified data and compare
   bool persistent = false;       // --persistent: 107a A/B target only; select serial persistent work loop
+  bool streamk = false;          // --streamk: 107b target only; select deterministic dense Stream-K
+  bool streamk_gate = false;     // --streamk_gate: require the independent CPU-FP32/fixup gate
 
   // Parses the command line
   void parse(int argc, char const **args) {
@@ -526,6 +547,9 @@ struct Options {
     search_configs = cmd.check_cmd_line_flag("search_configs");
     xcheck         = cmd.check_cmd_line_flag("xcheck");
     persistent     = cmd.check_cmd_line_flag("persistent");
+    streamk        = cmd.check_cmd_line_flag("streamk");
+    streamk_gate   = cmd.check_cmd_line_flag("streamk_gate");
+    if (streamk_gate) streamk = true;
   }
 
   /// Prints the usage statement.
@@ -543,8 +567,12 @@ struct Options {
       << "  --alpha=<f32>               Epilogue scalar alpha\n"
       << "  --beta=<f32>                Epilogue scalar beta\n\n"
       << "  --iterations=<int>          Number of profiling iterations to perform.\n\n";
-#if defined(DENSE_PERSISTENT_AB)
+#if defined(DENSE_SCHEDULER_AB)
     out << "  --persistent                Use the dense persistent scheduler A/B arm.\n";
+#endif
+#if defined(DENSE_STREAMK_AB)
+    out << "  --streamk                   Use deterministic dense Stream-K (splits=1).\n"
+        << "  --streamk_gate              Also require fixup witness + CPU FP32 golden.\n";
 #endif
 
     out
@@ -574,6 +602,38 @@ struct Result
   bool passed = false;
 
 };
+
+#if defined(DENSE_STREAMK_AB)
+// Distinct pairs preserve every launch interval while keeping event creation,
+// querying, and destruction outside it.  Reusing one PpuTimer and querying it
+// after every launch would serialize the batch and make "independent events"
+// a false label; one pair around all launches would only return their sum.
+class DenseKernelEventBatch {
+ public:
+  struct Pair { hggcEvent_t start{}, stop{}; };
+
+  explicit DenseKernelEventBatch(int count) : events_(size_t(count)) {
+    for (auto& e : events_) {
+      CUTLASS_PPU_CHECK(hggcEventCreate(&e.start));
+      CUTLASS_PPU_CHECK(hggcEventCreate(&e.stop));
+    }
+  }
+  ~DenseKernelEventBatch() {
+    for (auto& e : events_) {
+      CUTLASS_PPU_CHECK(hggcEventDestroy(e.start));
+      CUTLASS_PPU_CHECK(hggcEventDestroy(e.stop));
+    }
+  }
+  DenseKernelEventBatch(DenseKernelEventBatch const&) = delete;
+  DenseKernelEventBatch& operator=(DenseKernelEventBatch const&) = delete;
+
+  Pair& at(int i) { return events_[size_t(i)]; }
+  Pair const& at(int i) const { return events_[size_t(i)]; }
+
+ private:
+  std::vector<Pair> events_;
+};
+#endif
 
 // BENCH_GS optionally restricts every generated wrapper to one group-size instantiation. Unset preserves the
 // one-binary --g contract. The same preprocessor decision is compiled into the main TU and every unit TU.
@@ -752,6 +812,48 @@ void initialize(Options const& options) {
   initialize_zero(block_zero, options);
 
   block_B.copy_to_host(tensor_B.host_data());
+
+#if defined(DENSE_STREAMK_AB)
+  if (options.streamk_gate) {
+    // A K-asymmetric, nonzero fixture whose scales change every gs128 group.
+    // Random input would usually expose a wrong absolute K iterator, but it
+    // would not prove that the seam's local and absolute scale groups differ.
+    // This pattern makes that distinction part of the gate's construction.
+    std::vector<ElementA> host_a(block_A.size());
+    std::vector<ElementC> host_c(block_C.size());
+    std::vector<ElementScale> host_scale(block_scale.size());
+    for (int m = 0; m < options.m; ++m) {
+      for (int k = 0; k < options.k; ++k) {
+        int const v = ((m + 3 * k) % 5) - 2;
+        host_a[size_t(m) * options.k + k] = ElementA(float(v) * 0.25f);
+      }
+    }
+    for (int m = 0; m < options.m; ++m) {
+      for (int n = 0; n < options.n; ++n) {
+        int const v = 1 + ((m + 2 * n) % 7);
+        host_c[size_t(m) * options.n + n] = ElementC(float(v) * 0.125f);
+      }
+    }
+    for (int kg = 0; kg < scale_k; ++kg) {
+      for (int n = 0; n < options.n; ++n) {
+        int const v = 1 + ((5 * kg + 3 * n) % 7);
+        host_scale[size_t(kg) * options.n + n] = ElementScale(float(v) * 0.0625f);
+      }
+    }
+    auto b_view = tensor_B.host_view();
+    for (int k = 0; k < options.k; ++k) {
+      for (int n = 0; n < options.n; ++n) {
+        int const q = ((7 * k + 3 * n) % 15) - 7;
+        b_view.at({k, n}) = QuantType(q);
+      }
+    }
+    block_A.copy_from_host(host_a.data());
+    block_C.copy_from_host(host_c.data());
+    block_scale.copy_from_host(host_scale.data());
+    block_B.copy_from_host(tensor_B.host_data());
+    std::printf("  [streamk fixture] deterministic K-asymmetric A/B, per-group-distinct scale, nonzero C\n");
+  }
+#endif
   
   auto layout_B = make_layout(shape_b, stride_B);
 
@@ -826,6 +928,7 @@ Args args_from_options(Options const& options)
 }
 
 bool verify(const Options &options);
+bool verify_streamk_cpu_fp32(const Options &options);
 
 #if !defined(LOWBIT_DENSE_UNIT_BUILD)
 bool verify(const Options &options) {
@@ -891,6 +994,76 @@ bool verify(const Options &options) {
   bool passed = cutlass::reference::device::BlockCompareRelativelyEqual(block_ref_D.get(), block_D.get(), block_D.size(), epsilon, non_zero_floor);
   return passed;
 }
+
+// Independent host accumulation for 107b's numerical gate.  The existing
+// verify() deliberately uses a PPU GEMM to avoid accumulation-order noise;
+// that is a useful broad bench check but not an independent oracle for a new
+// K-slice/reduction path.  Here A, scale and C are copied to the host; B is
+// read from the original pre-preprocess HostTensor with its signed int4
+// SubbyteReference.  Thus even dequantization is independent of the device
+// path.  Nonzero beta proves that only the final slice executes the epilogue.
+bool verify_streamk_cpu_fp32(const Options &options) {
+  if (options.l != 1 || options.beta == 0.0f) {
+    std::fprintf(stderr,
+                 "[streamk CPU-FP32] requires l=1 and nonzero beta (got l=%d beta=%g)\n",
+                 options.l, double(options.beta));
+    return false;
+  }
+  uint64_t const macs = uint64_t(options.m) * uint64_t(options.n) * uint64_t(options.k);
+  constexpr uint64_t kMaxGateMacs = 100000000ull;
+  if (macs > kMaxGateMacs) {
+    std::fprintf(stderr,
+                 "[streamk CPU-FP32] gate is capped at %llu MACs (requested %llu); "
+                 "use the documented 64x128x4352 shape\n",
+                 static_cast<unsigned long long>(kMaxGateMacs),
+                 static_cast<unsigned long long>(macs));
+    return false;
+  }
+
+  std::vector<ElementA> host_a(block_A.size());
+  std::vector<ElementScale> host_scale(block_scale.size());
+  std::vector<ElementC> host_c(block_C.size());
+  std::vector<ElementD> host_d(block_D.size());
+  block_A.copy_to_host(host_a.data());
+  block_scale.copy_to_host(host_scale.data());
+  block_C.copy_to_host(host_c.data());
+  block_D.copy_to_host(host_d.data());
+
+  int bad = 0;
+  int bitdiff = 0;
+  double max_abs = 0.0;
+  double max_rel = 0.0;
+  for (int m = 0; m < options.m; ++m) {
+    for (int n = 0; n < options.n; ++n) {
+      float accum = 0.0f;
+      for (int k = 0; k < options.k; ++k) {
+        // The source HostTensor has extent [K,N] and column-major layout, so
+        // at({k,n}) is the same packed source element the device preprocesses.
+        int const q = int(tensor_B.host_view().at({k, n}));
+        float const scale = float(host_scale[size_t(k / options.g) * options.n + n]);
+        accum += float(host_a[size_t(m) * options.k + k]) * (float(q) * scale);
+      }
+      size_t const out = size_t(m) * options.n + n;
+      float const golden = options.alpha * accum + options.beta * float(host_c[out]);
+      float const got = float(host_d[out]);
+      float const rounded_golden = float(ElementD(golden));
+      double const abs_err = std::abs(double(got) - double(golden));
+      double const rel_err = abs_err / (std::abs(double(golden)) + 1.0e-3);
+      max_abs = std::max(max_abs, abs_err);
+      max_rel = std::max(max_rel, rel_err);
+      if (got != rounded_golden) {
+        ++bad;
+        ++bitdiff;
+      }
+    }
+  }
+  size_t const outputs = size_t(options.m) * options.n;
+  std::printf("  [streamk CPU-FP32] outputs=%zu bad=%d bitdiff=%d "
+              "max_abs=%.6g max_rel=%.6g %s\n",
+              outputs, bad, bitdiff, max_abs, max_rel,
+              bad == 0 ? "BIT-EXACT" : "MISMATCH");
+  return bad == 0;
+}
 #endif
 
 /// Execute a given example GEMM computation. Returns the Result (does not exit on failure, so the tactic
@@ -902,6 +1075,14 @@ struct dense_has_persistent_ctas : std::false_type {};
 template <class T>
 struct dense_has_persistent_ctas<
     T, std::void_t<decltype(std::declval<T&>().ctas_per_cu)>> : std::true_type {};
+
+template <class Gemm, class = void>
+struct dense_is_streamk_gemm : std::false_type {};
+
+template <class Gemm>
+struct dense_is_streamk_gemm<
+    Gemm, std::void_t<decltype(std::declval<typename Gemm::Arguments&>().fixup_witness)>>
+    : std::true_type {};
 
 template <typename Gemm>
 Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic(),
@@ -915,7 +1096,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   // Create a structure of gemm kernel arguments suitable for invoking an instance of Gemm
   auto arguments = args_from_options<typename Gemm::Arguments>(options);
 
-#if defined(DENSE_PERSISTENT_AB)
+#if defined(DENSE_SCHEDULER_AB)
   // Query the FINAL kernel, not a tile-model estimate.  This accounts for registers, dynamic
   // shared memory, threads, and any work-loop register pressure introduced by persistence.
   int current_device = 0;
@@ -934,6 +1115,21 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   if constexpr (dense_has_persistent_ctas<decltype(arguments)>::value) {
     arguments.ctas_per_cu = ctas_per_cu;
   }
+#if defined(DENSE_STREAMK_AB)
+  cutlass::DeviceAllocation<uint32_t> streamk_witness;
+  if constexpr (dense_is_streamk_gemm<Gemm>::value) {
+    using SchedulerParams = typename Gemm::GemmKernel::TileSchedulerParams;
+    arguments.scheduler.splits = 1;
+    arguments.scheduler.max_swizzle_size = 1;
+    arguments.scheduler.reduction_mode = SchedulerParams::ReductionMode::Deterministic;
+    arguments.scheduler.decomposition_mode = SchedulerParams::DecompositionMode::StreamK;
+    if (options.streamk_gate) {
+      streamk_witness.reset(3);
+      CUTLASS_PPU_CHECK(hggcMemset(streamk_witness.get(), 0, 3 * sizeof(uint32_t)));
+      arguments.fixup_witness = streamk_witness.get();
+    }
+  }
+#endif
 #endif
 
   // Using the arguments, query for extra workspace required for matrix multiplication computation
@@ -942,7 +1138,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   // Allocate workspace memory
   cutlass::device_memory::allocation<uint8_t> workspace(workspace_size);
 
-#if defined(DENSE_PERSISTENT_AB)
+#if defined(DENSE_SCHEDULER_AB)
   dim3 const physical_grid = Gemm::get_grid_shape(arguments, workspace.get());
   uint64_t const logical_ctas =
       uint64_t(cute::ceil_div(options.m, tactic.tm)) *
@@ -958,6 +1154,39 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   constexpr size_t kSharedPerCu = 256u << 10;
   size_t const union_shared_ctas = union_bytes ? kSharedPerCu / union_bytes : 0;
   size_t const sum_shared_ctas = overlap_sum_bytes ? kSharedPerCu / overlap_sum_bytes : 0;
+#if defined(DENSE_STREAMK_AB)
+  if constexpr (dense_is_streamk_gemm<Gemm>::value) {
+    using SchedulerParams = typename Gemm::GemmKernel::TileSchedulerParams;
+    auto const params = Gemm::GemmKernel::to_underlying_arguments(arguments, workspace.get());
+    auto const& sk = params.scheduler;
+    uint64_t const workers = uint64_t(cu_count) * uint64_t(ctas_per_cu);
+    uint64_t const dp_units = sk.units_per_problem_ >= sk.sk_units_
+        ? sk.units_per_problem_ - sk.sk_units_ : 0;
+    char const* actual = sk.divmod_splits_.divisor > 1 ? "SplitK" :
+                         (sk.sk_tiles_ > 0 && sk.sk_units_ > 0 ? "StreamK" : "DataParallel");
+    std::printf(
+        "  [dense streamk decomposition] actual=%s real_cu=%d ctas_per_cu=%d "
+        "workers=%llu scheduler_workers=%d sk_tiles=%u sk_units=%u dp_units=%llu "
+        "units=%llu splits=%d separate=%u workspace=%zu\n",
+        actual, cu_count, ctas_per_cu, static_cast<unsigned long long>(workers),
+        params.scheduler_hw_info.cu_count, sk.sk_tiles_, sk.sk_units_,
+        static_cast<unsigned long long>(dp_units),
+        static_cast<unsigned long long>(sk.units_per_problem_),
+        sk.divmod_splits_.divisor, sk.separate_reduction_units_, workspace_size);
+    bool const valid_decomposition =
+        sk.sk_tiles_ > 0 && sk.sk_units_ > 0 &&
+        sk.divmod_splits_.divisor == 1 && sk.separate_reduction_units_ == 0 &&
+        params.scheduler_hw_info.cu_count == int(workers) &&
+        sk.reduction_mode_ == SchedulerParams::ReductionMode::Deterministic;
+    if (!valid_decomposition) {
+      std::fprintf(stderr,
+                   "dense Stream-K fail-close: requested deterministic StreamK but actual decomposition/worker contract differs\n");
+      Result decomposition_failure;
+      decomposition_failure.passed = false;
+      return decomposition_failure;
+    }
+  }
+#endif
   std::printf(
       "  [dense scheduler=%s] logical_cta=%llu cu=%d occupancy_api=%d "
       "grid=(%u,%u,%u) physical_cta=%llu block_threads=%u warps/cta=%d "
@@ -972,7 +1201,18 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
       "overlap-sum-counterfactual=%zu shared-only-cta/cu=%zu->%zu\n",
       scheduler_kind, mainloop_bytes, epilogue_bytes, union_bytes,
       overlap_sum_bytes, union_shared_ctas, sum_shared_ctas);
-  if constexpr (dense_has_persistent_ctas<decltype(arguments)>::value) {
+  if constexpr (dense_is_streamk_gemm<Gemm>::value) {
+    uint64_t const expected = uint64_t(cu_count) * uint64_t(ctas_per_cu);
+    if (physical_ctas != expected) {
+      std::fprintf(stderr,
+                   "Stream-K grid mismatch: got %llu CTA, expected full worker grid %d*%d=%llu\n",
+                   static_cast<unsigned long long>(physical_ctas), cu_count, ctas_per_cu,
+                   static_cast<unsigned long long>(expected));
+      Result grid_failure;
+      grid_failure.passed = false;
+      return grid_failure;
+    }
+  } else if constexpr (dense_has_persistent_ctas<decltype(arguments)>::value) {
     uint64_t const expected = std::min(
         logical_ctas, uint64_t(cu_count) * uint64_t(ctas_per_cu));
     if (physical_ctas != expected) {
@@ -1003,20 +1243,62 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   if (gemm.initialize(arguments, workspace.get()) != cutlass::Status::kSuccess) { result.passed = false; return result; }
 
   // Correctness / Warmup iteration
-#if defined(DENSE_PERSISTENT_AB)
+#if defined(DENSE_STREAMK_AB)
+  // Create the whole pool before warmup so first-use event initialization
+  // cannot perturb timed launch 1. Pair zero belongs only to warmup; every
+  // timed launch below owns a distinct remaining pair.
+  DenseKernelEventBatch streamk_events(std::max(options.iterations, 0) + 1);
+#endif
+#if defined(DENSE_SCHEDULER_AB)
   // Make a missed scheduler tile deterministic: 0xffff is a half NaN, so an unwritten D
   // element cannot accidentally compare equal to the reference.  This is outside all timing.
   CUTLASS_PPU_CHECK(hggcMemset(block_D.get(), 0xff,
                               block_D.size() * sizeof(typename Gemm::ElementD)));
 #endif
+#if defined(DENSE_STREAMK_AB)
+  CUTLASS_PPU_CHECK(hggcEventRecord(streamk_events.at(0).start, nullptr));
+#endif
   CUTLASS_CHECK(gemm.run());
+#if defined(DENSE_STREAMK_AB)
+  CUTLASS_PPU_CHECK(hggcEventRecord(streamk_events.at(0).stop, nullptr));
+  CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
+#endif
 
   // Check if output from kernel and reference kernel are equal or not
   result.passed = verify(options);
+#if defined(DENSE_STREAMK_AB)
+  if constexpr (dense_is_streamk_gemm<Gemm>::value) {
+    if (options.streamk_gate) {
+      uint32_t witness[3] = {};
+      streamk_witness.copy_to_host(witness);
+      std::printf("  [streamk witness] fixup_work=%u epilogue_work=%u "
+                  "separate_reduction_work=%u\n",
+                  witness[0], witness[1], witness[2]);
+      bool const witness_ok = witness[0] == 8 && witness[1] == 1 && witness[2] == 0;
+      if (!witness_ok) {
+        std::fprintf(stderr,
+                     "[streamk witness] expected exact 107b seam decomposition 8/1/0\n");
+      }
+      bool const cpu_ok = verify_streamk_cpu_fp32(options);
+      result.passed = result.passed && witness_ok && cpu_ok;
+      // The witness uses one atomic per work item.  It belongs to the numerical
+      // gate, not a performance kernel; remove it before any timed launches.
+      if (options.iterations > 0) {
+        arguments.fixup_witness = nullptr;
+        if (gemm.initialize(arguments, workspace.get()) != cutlass::Status::kSuccess) {
+          result.passed = false;
+        }
+      }
+    }
+  }
+#endif
 
   std::cout << "  Disposition: " << (result.passed ? "Passed" : "Failed") << std::endl;
 
   if (!result.passed) {
+#if defined(DENSE_STREAMK_AB)
+    if (options.streamk_gate) return result;
+#endif
     // The int2 (uint2) path's kernel is verified correct elsewhere (test_w2a16_diag/grouped/real all MATCH);
     // this bench's verify() reference (dequantize_weight) is int4-oriented, so it flags int2 spuriously. For a
     // perf run (iterations>0) time anyway; only bail when timing wasn't requested (the correctness-only sweep).
@@ -1027,20 +1309,76 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   // Run profiling loop
   if (options.iterations > 0)
   {
+#if defined(DENSE_STREAMK_AB)
+    // One distinct event pair per launch for every arm in this binary.  A
+    // Stream-K launch leaves its turnstile lock at the completed K count, so
+    // reset scheduler workspace on the same stream before (and outside) the
+    // start event.  The old 107a binary retains its original aggregate-event
+    // protocol; no historical row silently changes meaning.
+    std::vector<double> launch_ms;
+    launch_ms.reserve(options.iterations);
+    for (int iter = 0; iter < options.iterations; ++iter) {
+      if constexpr (dense_is_streamk_gemm<Gemm>::value) {
+        CUTLASS_CHECK(Gemm::GemmKernel::initialize_workspace(
+            arguments, workspace.get(), /*stream=*/nullptr));
+      }
+      auto& events = streamk_events.at(iter + 1);
+      CUTLASS_PPU_CHECK(hggcEventRecord(events.start, nullptr));
+      CUTLASS_CHECK(gemm.run());
+      CUTLASS_PPU_CHECK(hggcEventRecord(events.stop, nullptr));
+    }
+    CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
+    for (int iter = 0; iter < options.iterations; ++iter) {
+      auto const& events = streamk_events.at(iter + 1);
+      float elapsed_ms = 0.0f;
+      CUTLASS_PPU_CHECK(hggcEventElapsedTime(&elapsed_ms, events.start, events.stop));
+      if (!std::isfinite(elapsed_ms) || elapsed_ms <= 0.0f) {
+        std::fprintf(stderr,
+                     "dense kernel-span event %d/%d is invalid (%g ms); no timing fallback\n",
+                     iter + 1, options.iterations, double(elapsed_ms));
+        result.passed = false;
+        return result;
+      }
+      launch_ms.push_back(double(elapsed_ms));
+    }
+    double mean_ms = 0.0;
+    for (double ms : launch_ms) mean_ms += ms;
+    mean_ms /= double(launch_ms.size());
+    std::sort(launch_ms.begin(), launch_ms.end());
+    double const median_ms = launch_ms.size() & 1
+        ? launch_ms[launch_ms.size() / 2]
+        : 0.5 * (launch_ms[launch_ms.size() / 2 - 1] + launch_ms[launch_ms.size() / 2]);
+    double const spread_pct = mean_ms > 0.0
+        ? 100.0 * (launch_ms.back() - launch_ms.front()) / mean_ms : 0.0;
+    result.avg_runtime_ms = median_ms;
+    std::printf("  [dense kernel-span-upper] n=%zu median=%.3f us mean=%.3f us "
+                "min=%.3f us max=%.3f us spread=(max-min)/mean=%.2f%% "
+                "distinct-event-pairs=%zu warmup-event-pairs=1 includes-launch-idle=1 "
+                "lock-reset-before-start=%d\n",
+                launch_ms.size(), median_ms * 1.0e3, mean_ms * 1.0e3,
+                launch_ms.front() * 1.0e3, launch_ms.back() * 1.0e3,
+                spread_pct, launch_ms.size(), dense_is_streamk_gemm<Gemm>::value ? 1 : 0);
+#else
     PpuTimer timer;
     timer.start();
     for (int iter = 0; iter < options.iterations; ++iter) {
       CUTLASS_CHECK(gemm.run());
     }
     timer.stop();
-
-    // Compute average runtime and GFLOPs.
     float elapsed_ms = timer.elapsed_millis();
     result.avg_runtime_ms = double(elapsed_ms) / double(options.iterations);
+#endif
+
+    // Compute runtime-normalized throughput.  The 107b target uses the median
+    // of independent kernel spans; the existing targets retain their mean.
     result.gflops = options.gflops(result.avg_runtime_ms / 1000.0);
 
     std::cout << "  Problem Size: " << options.m << 'x' << options.n << 'x' << options.k << 'x' << options.l << std::endl;
+#if defined(DENSE_STREAMK_AB)
+    std::cout << "  Median runtime: " << result.avg_runtime_ms << " ms" << std::endl;
+#else
     std::cout << "  Avg runtime: " << result.avg_runtime_ms << " ms" << std::endl;
+#endif
     std::cout << "  GFLOPS: " << result.gflops << std::endl;
 
     // Report BOTH traffic ends -- neither alone tells you what is binding:
@@ -1060,33 +1398,44 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
     //   only 48%". 83% of tile-level traffic does not establish DRAM-bound either; the same L2 objection applies,
     //   and that claim should be treated as unproven until something measures actual DRAM traffic (acu can).
     const double us = result.avg_runtime_ms * 1e3;
-    const double Mm = options.m, Nn = options.n, Kk = options.k;
-    const double bq = double(sizeof_bits<QuantType>::value) / 8.0;   // bytes per weight element
-    const double n_tiles = tactic.tn > 0 ? std::ceil(Nn / tactic.tn) : 1.0;
-    const double m_tiles = tactic.tm > 0 ? std::ceil(Mm / tactic.tm) : 1.0;
-    // Preserve the dense model's established byte terms in this consolidation commit: it did not count scale
-    // metadata or multiply traffic by batch L. Those are separate arithmetic changes, not refactoring licenses.
-    const auto traffic = bench_measure::make_traffic({
-        Mm * Kk * 2.0, Nn * Kk * bq, 0.0, Mm * Nn * 2.0,
-        1.0, n_tiles, m_tiles});
-    const auto metrics = bench_measure::measure(
-        us, 2.0 * Mm * Nn * Kk * double(options.l), traffic);
     // NOTE: the w%d tag (w4/w2/w1) is essential -- the cfg label alone is identical across quant builds and the
     // numbers are easy to mix up between them (int4/int2/int1 all have a "64x64:32x32:s3").
     // distinct IS the only figure with a legitimate HBM denominator: it counts every byte once, which is what DRAM
     // must actually deliver. tile carries a reuse factor instead, and a marker when it exceeds the DRAM peak --
     // which says the re-reads are cache-served, not that the kernel is bandwidth-bound.
-    char tag[bench_measure::kTagBytes], core[256];
+    char tag[bench_measure::kTagBytes];
     bench_measure::format_tag(tag, sizeof tag, tactic);
-    bench_measure::format_metrics(core, sizeof core, metrics);
-#if defined(DENSE_PERSISTENT_AB)
-    std::printf("  [CUTLASS w%d gs=%d cfg=%s scheduler=%s] M=%d %7.2f us | %s\n",
-                int(sizeof_bits<QuantType>::value), options.g, tag, scheduler_kind,
-                options.m, us, core);
+    if constexpr (dense_is_streamk_gemm<Gemm>::value) {
+      double const tflops = result.gflops / 1.0e3;
+      std::printf(
+          "  [CUTLASS w%d gs=%d cfg=%s scheduler=%s] M=%d %7.2f us | "
+          "%.3f TFLOP/s %.3f%% MFU | MBU=N/A "
+          "(StreamK partial-C traffic is per-tile and not yet surfaced)\n",
+          int(sizeof_bits<QuantType>::value), options.g, tag, scheduler_kind,
+          options.m, us, tflops, bench_measure::mfu_pct(tflops));
+    } else {
+      const double Mm = options.m, Nn = options.n, Kk = options.k;
+      const double bq = double(sizeof_bits<QuantType>::value) / 8.0;
+      const double n_tiles = tactic.tn > 0 ? std::ceil(Nn / tactic.tn) : 1.0;
+      const double m_tiles = tactic.tm > 0 ? std::ceil(Mm / tactic.tm) : 1.0;
+      // Preserve the established dense model.  Stream-K deliberately bypasses
+      // this branch because one uniform split count cannot describe its C traffic.
+      const auto traffic = bench_measure::make_traffic({
+          Mm * Kk * 2.0, Nn * Kk * bq, 0.0, Mm * Nn * 2.0,
+          1.0, n_tiles, m_tiles});
+      const auto metrics = bench_measure::measure(
+          us, 2.0 * Mm * Nn * Kk * double(options.l), traffic);
+      char core[256];
+      bench_measure::format_metrics(core, sizeof core, metrics);
+#if defined(DENSE_SCHEDULER_AB)
+      std::printf("  [CUTLASS w%d gs=%d cfg=%s scheduler=%s] M=%d %7.2f us | %s\n",
+                  int(sizeof_bits<QuantType>::value), options.g, tag, scheduler_kind,
+                  options.m, us, core);
 #else
-    std::printf("  [CUTLASS w%d gs=%d cfg=%s] M=%d %7.2f us | %s\n",
-                int(sizeof_bits<QuantType>::value), options.g, tag, options.m, us, core);
+      std::printf("  [CUTLASS w%d gs=%d cfg=%s] M=%d %7.2f us | %s\n",
+                  int(sizeof_bits<QuantType>::value), options.g, tag, options.m, us, core);
 #endif
+    }
   }
 
   return result;
@@ -1339,18 +1688,38 @@ int main(int argc, char const **args) {
   options.parse(argc, args);
   print_dense_table_provenance();
 
-#if !defined(DENSE_PERSISTENT_AB)
-  if (options.persistent) {
+#if !defined(DENSE_SCHEDULER_AB)
+  if (options.persistent || options.streamk || options.streamk_gate) {
     std::fprintf(stderr,
-                 "--persistent is available only in test_lowbit_dense_persistent_ab; "
+                 "scheduler A/B flags are available only in the dedicated dense scheduler targets; "
                  "the ordinary dense sweep is unchanged\n");
     return 1;
   }
 #else
-  if (options.persistent && options.mode != GemmMode::ScaleOnly) {
-    std::fprintf(stderr, "--persistent currently covers dense ScaleOnly (mode=1) only\n");
+  if (options.persistent && options.streamk) {
+    std::fprintf(stderr, "--persistent and --streamk are mutually exclusive A/B arms\n");
     return 1;
   }
+  if ((options.persistent || options.streamk) && options.mode != GemmMode::ScaleOnly) {
+    std::fprintf(stderr, "dense scheduler A/B currently covers ScaleOnly (mode=1) only\n");
+    return 1;
+  }
+#if !defined(DENSE_STREAMK_AB)
+  if (options.streamk || options.streamk_gate) {
+    std::fprintf(stderr, "--streamk is available only in test_lowbit_dense_streamk_ab\n");
+    return 1;
+  }
+#else
+  if (options.streamk_gate &&
+      (options.m != 64 || options.n != 128 || options.k != 4352 || options.l != 1 ||
+       options.g != 128 || std::abs(options.alpha - 0.75f) > 1.0e-7f ||
+       std::abs(options.beta - 0.5f) > 1.0e-7f)) {
+    std::fprintf(stderr,
+                 "--streamk_gate is the exact dyadic seam fixture: "
+                 "--m=64 --n=128 --k=4352 --l=1 --g=128 --alpha=.75 --beta=.5\n");
+    return 1;
+  }
+#endif
 #endif
 
   if (options.help) {
@@ -1504,8 +1873,16 @@ int main(int argc, char const **args) {
     if (!name.empty()) std::printf("[tactic] %s -> %s\n", tactic_key(options).c_str(), name.c_str());
   }
   if (name.empty()) name = supported_configs().front().name;
-  run_config(options, find_config(name));
+  Result const final_result = run_config(options, find_config(name));
+#if defined(DENSE_STREAMK_AB)
+  // The 107b target is a mechanism/numerical gate, not a sweep that may skip
+  // an unsupported candidate.  Propagate every decomposition, witness,
+  // golden, event, or correctness failure to the operator and automation.
+  return final_result.passed ? 0 : 1;
+#else
+  (void)final_result;
   return 0;
+#endif
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////

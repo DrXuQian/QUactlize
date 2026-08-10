@@ -134,11 +134,22 @@ SYNTAX = [
     ("benchmarks/test_lowbit_dense_bench.cu",
      "-DDENSE_PERSISTENT_AB=1 -DDENSE_AB_BITS=4 -DDENSE_AB_TM=64 -DDENSE_AB_TN=64 "
      "-DDENSE_AB_TK=64 -DDENSE_AB_WM=64 -DDENSE_AB_WN=32 -DDENSE_AB_ST=3 -DDENSE_AB_BC=0 -DBENCH_GS=32"),
+    # 107b is deliberately a different target from 107a.  Its named kernel
+    # instantiates fixup(), whose barrier cohort is fixed at 128 threads, and
+    # its host path carries the decomposition/witness/per-launch lock reset.
+    ("benchmarks/test_lowbit_dense_bench.cu",
+     "-DDENSE_STREAMK_AB=1 -DDENSE_AB_BITS=4 -DDENSE_AB_TM=64 -DDENSE_AB_TN=128 "
+     "-DDENSE_AB_TK=64 -DDENSE_AB_WM=64 -DDENSE_AB_WN=32 -DDENSE_AB_ST=2 "
+     "-DDENSE_AB_BC=0 -DBENCH_GS=128 -DTILE_M=64 -DTILE_N=128 -DWARP_M=64 "
+     "-DWARP_N=32 -DSTAGES=2"),
     # Main mode only declares generated wrappers. This is one real unit-mode row, so shared tag/metric plumbing in
     # lowbit_dense_unit.inc is instantiated locally instead of waiting for hgcc on the box.
     ("dev/fold_derivation/test_lowbit_dense_unit.cu", ""),
     ("dev/fold_derivation/test_lowbit_dense_unit.cu", "-DPPU_B_CHUNK=1"),
     ("dev/fold_derivation/test_lowbit_dense_unit.cu", "-DDENSE_PERSISTENT_AB=1 -DBENCH_GS=32"),
+    ("dev/fold_derivation/test_lowbit_dense_unit.cu",
+     "-DDENSE_STREAMK_AB=1 -DBENCH_GS=128 -DTILE_M=64 -DTILE_N=128 "
+     "-DWARP_M=64 -DWARP_N=32 -DSTAGES=2"),
     # THE SHIPPING .so BOUNDARY. The benches compiled the grouped collective for years while the product wrapper
     # did not expose it; compiling this translation unit is what covers the six-entry ABI and every qtype dispatch.
     ("quactlize/csrc/device/ppu_dense_backend.cu", ""),
@@ -899,6 +910,13 @@ def lint_moe_event_timing():
     return _run_ci_script("check_moe_event_timing.py", "MoE event interval and batching protocol are pinned")
 
 
+def lint_dense_streamk_contract():
+    """107b must share worker decomposition, use absolute K, and reset locks outside each event."""
+    return _run_ci_script(
+        "check_dense_streamk_contract.py",
+        "dense Stream-K worker/K/fixup/timing seams and the exact fixture are pinned")
+
+
 def lint_m8n16_g2_contract():
     """G2 must replay the historical provider index on one production x4 payload."""
     return _run_ci_script(
@@ -1337,6 +1355,8 @@ def main():
                 ("boxdry", "dense persistent A/B target reaches its one-row device compile",
                  ("test_lowbit_dense_persistent_ab", "DENSE_DRYRUN=1", "TILE_M=64", "TILE_N=128",
                   "WARP_M=32", "WARP_N=32", "STAGES=2", "BENCH_GS=32")),
+                ("boxdry", "dense Stream-K target reaches its isolated 128-thread device compile",
+                 ("test_lowbit_dense_streamk_ab", "DENSE_DRYRUN=1")),
                 ("asan", "preprocessing chain under ASAN", None),
                 ("pytest", "torch op tests", None),
                 ("lint", "duplicate unroll directives (hgcc-only error)", lint_unroll),
@@ -1365,6 +1385,7 @@ def main():
                 ("lint", "advertised MoE restrictions change generated code", lint_moe_build_knobs),
                 ("lint", "dense and MoE consume one named measurement layer", lint_bench_measurement_shared),
                 ("lint", "MoE events bracket only gemm.run and retain the host-wall audit", lint_moe_event_timing),
+                ("lint", "dense Stream-K shares worker/K decomposition and resets locks before timing", lint_dense_streamk_contract),
                 ("lint", "m8n16 G2 replays the historical bad index on the production x4 payload", lint_m8n16_g2_contract),
                 ("lint", "ppu001 plain LDSM fails in C++ before its unproved assembler path", lint_plain_ldsm_failclosed),
                 ("lint", "quactlize_extensions adds to actlize rather than redefining it", lint_extension_additive),
