@@ -5007,3 +5007,44 @@ uniform split-K 降级为**权宜**:只在想早点拿到 decode 的数、而 10
 
 **这两个是不是同一个量、各自量在哪条 band 上,要在报 107b/grouped StreamK 收益之前定下来。** 否则会拿 residue 的
 数去承诺 tail 的收益 —— 而 residue 是 masked 行烧 mma,StreamK 治不了(DeepGemm 也付,靠 pad 到 block-M)。
+
+## 118 — 111 的 box gate 跑了:G0/G1 全绿,**G2 的负控没红**(等 112 回来一起发)
+
+    [G0] unique hgcc arch flags: -arch=ppu_10          只有 ppu_10
+    [G0] provenance symbol contains m8n16k16: PASS
+    [G1] one-hot sweep cases=16 outputs=2048 bad=0
+    [G1] asymmetric + nonzero C outputs=128 bad=0
+    [G1] PASS: total_bad=0
+    [G2-green]           mismatches=0 PASS
+    [G2-negative-detail] bad_map_values=512 bad_map_bad=480 zero_coord_lanes=2 zero_coord_bad=0 red_expected=120/128
+    [G2-negative]        mismatches=0 UNEXPECTED_GREEN/FAIL
+    == [111] FAIL: G1=0 G2=1 ==     artifacts: /tmp/quactlize-m8n16-111.htuVXL
+
+**好消息:atom 本身验证通过。** `m8n16k16` 在这套 build 下真的发出来、算得对、A2/B4/C4 布局正确。**112 的前提成立。**
+
+**问题:植入的错误地址算法没有产生任何 mismatch,所以 G2 的绿不能采信** —— 「0 个不匹配」现在既可能是"对",
+也可能是"这个检查看不见任何东西"。gate 拒绝放行是对的。
+
+### 三件事,按这个顺序
+
+1. **先解释 `bad_map_bad=480/512`,不要先改控制项。** 负控自己的前置就没成立:用错坐标读出的 512 个值里 480 个
+   不是你预测的样子。**这说明"错坐标会读到什么"这个模型是错的,不是实现错了。** 先搞清楚它实际读到了什么。
+
+2. **控制臂和生产路径的几何不同,这可能就是原因:**
+
+       [G2-path]         production ... cube=16x64  project=v0,v1
+       [G2-control-path] same-op ...    cube=32x64  same-base=guard_swzl only-delta=coordinates
+
+   **guard 用 32 行 cube,生产用 16 行。** 即使负控红了,它验证的也是**另一个几何**下的探测器。这一条要么消除,
+   要么说清为什么无害。
+
+3. **然后判 A 还是 B,两种读法在输出上一模一样:**
+   - **A:控制项选错了。** 那个错公式的扰动落在**被丢弃的 v2/v3** 里,而投影只取 v0/v1,**按设计就看不见**。
+     需要一个**可证明会落进 v0/v1** 的植入故障。
+   - **B:我们的 m8 路径天然不暴露这个病。** 只投影一半寄存器,恰好把那个历史静默错的作用面切掉了。
+     **若是 B,那本身是个值得记录的结论**,但 G2 的判据要换成别的东西 —— 不能留一个永远不会红的负控。
+
+### 边界
+
+**在这条解决之前,112 的数值门不得宣称 A 交付路径已验证。** G3/G4/G5 全建在 G2 之上;一个不能证明自己看得见
+错误的检查,通过了也不构成证据。
