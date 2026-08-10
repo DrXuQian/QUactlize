@@ -16,6 +16,10 @@ set -Eeuo pipefail
 TAG="${1:?pass the row tag, e.g. \"i4 16x32:32 w16x32 s4\"}"
 OUT="${2:-$(echo "$TAG" | tr -c 'A-Za-z0-9' '_')}"
 shift; [ $# -gt 0 ] && shift || true
+# STRIP THE `--` THE USAGE LINE ADVERTISES. It was documented as the separator and never removed, so it reached the
+# bench as argv[1]; atoi("--") is 0, the harness saw L=0 and printed "all experts empty; nothing to measure", and acu
+# then reported "No kernels were profiled". Two correct refusals in a row, and neither of them names the cause.
+[ "${1:-}" = "--" ] && shift || true
 ARGS=("${@:-}")
 [ "${#ARGS[@]}" -eq 1 ] && [ -z "${ARGS[0]}" ] && ARGS=(64 8 2048 2048 32 3)   # default: decode batch=1, top-k 8 of 64
 
