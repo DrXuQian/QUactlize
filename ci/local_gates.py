@@ -125,10 +125,16 @@ SYNTAX = [
     ("benchmarks/test_lowbit_dense_bench.cu", "-DBENCH_UINT2"),
     ("benchmarks/test_lowbit_dense_bench.cu", "-DBENCH_UINT1"),
     ("benchmarks/test_lowbit_dense_bench.cu", "-DPPU_B_CHUNK=1"),
+    # 107a's dedicated main has a one-row registry; compile that preprocessor identity separately from the full
+    # tactic table. The unit row below is what instantiates the named persistent kernel and its scheduler loop.
+    ("benchmarks/test_lowbit_dense_bench.cu",
+     "-DDENSE_PERSISTENT_AB=1 -DDENSE_AB_BITS=4 -DDENSE_AB_TM=64 -DDENSE_AB_TN=64 "
+     "-DDENSE_AB_TK=64 -DDENSE_AB_WM=64 -DDENSE_AB_WN=32 -DDENSE_AB_ST=3 -DDENSE_AB_BC=0 -DBENCH_GS=32"),
     # Main mode only declares generated wrappers. This is one real unit-mode row, so shared tag/metric plumbing in
     # lowbit_dense_unit.inc is instantiated locally instead of waiting for hgcc on the box.
     ("dev/fold_derivation/test_lowbit_dense_unit.cu", ""),
     ("dev/fold_derivation/test_lowbit_dense_unit.cu", "-DPPU_B_CHUNK=1"),
+    ("dev/fold_derivation/test_lowbit_dense_unit.cu", "-DDENSE_PERSISTENT_AB=1 -DBENCH_GS=32"),
     # THE SHIPPING .so BOUNDARY. The benches compiled the grouped collective for years while the product wrapper
     # did not expose it; compiling this translation unit is what covers the six-entry ABI and every qtype dispatch.
     ("quactlize/csrc/device/ppu_dense_backend.cu", ""),
@@ -1305,6 +1311,9 @@ def main():
                 ("boxdry", "build.sh forwards restricted MoE axes and stage list",
                  ("test_lowbit_moe_decode_bench", "SK_QUANT=2", "MOE_FORMATS=i4", "MOE_TM_LIST=16",
                   "MOE_TN_LIST=16", "MOE_WM_LIST=16", "MOE_STAGES=2;12")),
+                ("boxdry", "dense persistent A/B target reaches its one-row device compile",
+                 ("test_lowbit_dense_persistent_ab", "DENSE_DRYRUN=1", "TILE_M=64", "TILE_N=128",
+                  "WARP_M=32", "WARP_N=32", "STAGES=2", "BENCH_GS=32")),
                 ("asan", "preprocessing chain under ASAN", None),
                 ("pytest", "torch op tests", None),
                 ("lint", "duplicate unroll directives (hgcc-only error)", lint_unroll),

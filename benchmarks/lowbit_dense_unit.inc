@@ -5,8 +5,14 @@
 
 template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int ST>
 static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
+#if defined(DENSE_PERSISTENT_AB)
+  if (options.persistent) {
+    using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::PersistentGemm;
+    return run<G>(options, dense_tactic(cfg), "persistent");
+  }
+#endif
   using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::Gemm;
-  return run<G>(options, dense_tactic(cfg));
+  return run<G>(options, dense_tactic(cfg), "non-persistent");
 }
 
 #if DENSE_GS_ARM(16)

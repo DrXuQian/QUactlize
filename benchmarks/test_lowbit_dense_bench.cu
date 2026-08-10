@@ -46,6 +46,7 @@
       $ ./examples/16_ppu_mixed_dtype_gemm/16_ppu_mixed_dtype_gemm --m=2048 --n=5120 --k=8192 --g=128 --mode=2
 */
 
+#include <algorithm>
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -53,6 +54,8 @@
 #include <cstdio>
 #include <cmath>
 #include <cstdlib>
+#include <type_traits>
+#include <utility>
 
 #include "cutlass/cutlass.h"
 
@@ -75,6 +78,7 @@
 #include "unfused_weight_dequantize.hpp"
 
 #include "quactlize_actlize.hpp"
+#include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_persistent.hpp"
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
 #include "ppu_mixed_policy.hpp"
 #include "bench_select.hpp"
@@ -293,6 +297,13 @@ struct Cfg {
   static_assert(ppu_mixed_policy::kernel_policy_valid_v<ppu_tactics::DenseSpace, Policy>);
   using Kernel = cutlass::gemm::kernel::GemmUniversal<Shape<int,int,int,int>, Main, Epi>;
   using Gemm = cutlass::gemm::device::GemmUniversalAdapter<Kernel>;
+#if defined(DENSE_PERSISTENT_AB)
+  // A named kernel, not a GemmUniversal specialization: the vendor non-persistent
+  // mixed-input kernel remains byte-for-byte the control side of this experiment.
+  using PersistentKernel = cutlass::gemm::kernel::PersistentMixedInputKernel<
+      Shape<int,int,int,int>, Main, Epi>;
+  using PersistentGemm = cutlass::gemm::device::GemmUniversalAdapter<PersistentKernel>;
+#endif
 };
 
 struct Options;
@@ -342,7 +353,19 @@ inline bench_measure::Tactic dense_fixed_tactic() {
 #if !defined(LOWBIT_DENSE_UNIT_BUILD)
 #include "bench_samples.hpp"
 #include "bench_floor.cuh"
-#if defined(BENCH_UINT1)
+#if defined(DENSE_PERSISTENT_AB)
+// The persistent A/B target deliberately instantiates exactly one row.  It is a mechanism
+// experiment, not a truncated tactic search; keeping a separate registry identity prevents
+// its one-row result from being mistaken for the winner of the full 1571-row table.
+#define LOWBIT_DENSE_TABLE_FILE                 "persistent-ab-single-row"
+#define LOWBIT_DENSE_TABLE_CFG_BITS             DENSE_AB_BITS
+#define LOWBIT_DENSE_TABLE_CFG_ARTIFACT_TILEK   DENSE_AB_TK
+#define LOWBIT_DENSE_TABLE_CFG_ROWS             1
+#define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    "persistent-ab"
+#define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  "persistent-ab"
+#define LOWBIT_DENSE_TABLE_CFG_LIST(X,A) \
+  X(DENSE_AB_TM,DENSE_AB_TN,DENSE_AB_TK,DENSE_AB_WM,DENSE_AB_WN,DENSE_AB_ST,DENSE_AB_BC,A)
+#elif defined(BENCH_UINT1)
 #include "lowbit_dense_i1_configs.inc"
 #define LOWBIT_DENSE_TABLE_FILE                 "lowbit_dense_i1_configs.inc"
 #define LOWBIT_DENSE_TABLE_CFG_BITS             LOWBIT_DENSE_I1_CFG_BITS
@@ -476,6 +499,7 @@ struct Options {
   bool list_configs = false;
   bool search_configs = false;
   bool xcheck = false;           // --xcheck: run the grouped kernel (L=1) on this run's verified data and compare
+  bool persistent = false;       // --persistent: 107a A/B target only; select serial persistent work loop
 
   // Parses the command line
   void parse(int argc, char const **args) {
@@ -501,6 +525,7 @@ struct Options {
     list_configs   = cmd.check_cmd_line_flag("list_configs");
     search_configs = cmd.check_cmd_line_flag("search_configs");
     xcheck         = cmd.check_cmd_line_flag("xcheck");
+    persistent     = cmd.check_cmd_line_flag("persistent");
   }
 
   /// Prints the usage statement.
@@ -518,6 +543,9 @@ struct Options {
       << "  --alpha=<f32>               Epilogue scalar alpha\n"
       << "  --beta=<f32>                Epilogue scalar beta\n\n"
       << "  --iterations=<int>          Number of profiling iterations to perform.\n\n";
+#if defined(DENSE_PERSISTENT_AB)
+    out << "  --persistent                Use the dense persistent scheduler A/B arm.\n";
+#endif
 
     out
       << "\n\nExamples:\n\n"
@@ -868,8 +896,16 @@ bool verify(const Options &options) {
 /// Execute a given example GEMM computation. Returns the Result (does not exit on failure, so the tactic
 /// search can skip a config that does not verify and move on). The structured tactic drives both the display
 /// tag and the traffic model; neither is recovered by parsing the other.
+template <class T, class = void>
+struct dense_has_persistent_ctas : std::false_type {};
+
+template <class T>
+struct dense_has_persistent_ctas<
+    T, std::void_t<decltype(std::declval<T&>().ctas_per_cu)>> : std::true_type {};
+
 template <typename Gemm>
-Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic())
+Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic(),
+           char const* scheduler_kind = "non-persistent")
 {
   initialize(options);
 
@@ -879,11 +915,86 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   // Create a structure of gemm kernel arguments suitable for invoking an instance of Gemm
   auto arguments = args_from_options<typename Gemm::Arguments>(options);
 
+#if defined(DENSE_PERSISTENT_AB)
+  // Query the FINAL kernel, not a tile-model estimate.  This accounts for registers, dynamic
+  // shared memory, threads, and any work-loop register pressure introduced by persistence.
+  int current_device = 0;
+  CUTLASS_PPU_CHECK(hggcGetDevice(&current_device));
+  int const cu_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(current_device);
+  int const ctas_per_cu = Gemm::maximum_active_blocks();
+  Result occupancy_failure;
+  if (cu_count <= 0 || ctas_per_cu <= 0) {
+    std::fprintf(stderr,
+                 "[dense scheduler=%s] invalid runtime occupancy: cu=%d cta_per_cu=%d\n",
+                 scheduler_kind, cu_count, ctas_per_cu);
+    occupancy_failure.passed = false;
+    return occupancy_failure;
+  }
+  arguments.hw_info = cutlass::KernelHardwareInfo{current_device, cu_count};
+  if constexpr (dense_has_persistent_ctas<decltype(arguments)>::value) {
+    arguments.ctas_per_cu = ctas_per_cu;
+  }
+#endif
+
   // Using the arguments, query for extra workspace required for matrix multiplication computation
   size_t workspace_size = Gemm::get_workspace_size(arguments);
 
   // Allocate workspace memory
   cutlass::device_memory::allocation<uint8_t> workspace(workspace_size);
+
+#if defined(DENSE_PERSISTENT_AB)
+  dim3 const physical_grid = Gemm::get_grid_shape(arguments, workspace.get());
+  uint64_t const logical_ctas =
+      uint64_t(cute::ceil_div(options.m, tactic.tm)) *
+      uint64_t(cute::ceil_div(options.n, tactic.tn)) * uint64_t(options.l);
+  uint64_t const physical_ctas =
+      uint64_t(physical_grid.x) * uint64_t(physical_grid.y) * uint64_t(physical_grid.z);
+  int const warps_per_cta =
+      (int(Gemm::GemmKernel::MaxThreadsPerBlock) + 31) / 32;
+  size_t const mainloop_bytes = sizeof(typename Gemm::CollectiveMainloop::SharedStorage);
+  size_t const epilogue_bytes = sizeof(typename Gemm::CollectiveEpilogue::SharedStorage);
+  size_t const union_bytes = Gemm::GemmKernel::SharedStorageSize;
+  size_t const overlap_sum_bytes = mainloop_bytes + epilogue_bytes;
+  constexpr size_t kSharedPerCu = 256u << 10;
+  size_t const union_shared_ctas = union_bytes ? kSharedPerCu / union_bytes : 0;
+  size_t const sum_shared_ctas = overlap_sum_bytes ? kSharedPerCu / overlap_sum_bytes : 0;
+  std::printf(
+      "  [dense scheduler=%s] logical_cta=%llu cu=%d occupancy_api=%d "
+      "grid=(%u,%u,%u) physical_cta=%llu block_threads=%u warps/cta=%d "
+      "resident_warps/cu=%d\n",
+      scheduler_kind, static_cast<unsigned long long>(logical_ctas), cu_count,
+      ctas_per_cu, physical_grid.x, physical_grid.y, physical_grid.z,
+      static_cast<unsigned long long>(physical_ctas),
+      unsigned(Gemm::GemmKernel::MaxThreadsPerBlock), warps_per_cta,
+      ctas_per_cu * warps_per_cta);
+  std::printf(
+      "  [dense smem scheduler=%s] main=%zu epi=%zu union=%zu "
+      "overlap-sum-counterfactual=%zu shared-only-cta/cu=%zu->%zu\n",
+      scheduler_kind, mainloop_bytes, epilogue_bytes, union_bytes,
+      overlap_sum_bytes, union_shared_ctas, sum_shared_ctas);
+  if constexpr (dense_has_persistent_ctas<decltype(arguments)>::value) {
+    uint64_t const expected = std::min(
+        logical_ctas, uint64_t(cu_count) * uint64_t(ctas_per_cu));
+    if (physical_ctas != expected) {
+      std::fprintf(stderr,
+                   "persistent grid mismatch: got %llu CTA, expected min(%llu,%d*%d)=%llu\n",
+                   static_cast<unsigned long long>(physical_ctas),
+                   static_cast<unsigned long long>(logical_ctas), cu_count,
+                   ctas_per_cu, static_cast<unsigned long long>(expected));
+      Result grid_failure;
+      grid_failure.passed = false;
+      return grid_failure;
+    }
+  } else if (physical_ctas != logical_ctas) {
+    std::fprintf(stderr,
+                 "non-persistent grid mismatch: got %llu CTA for %llu logical tiles\n",
+                 static_cast<unsigned long long>(physical_ctas),
+                 static_cast<unsigned long long>(logical_ctas));
+    Result grid_failure;
+    grid_failure.passed = false;
+    return grid_failure;
+  }
+#endif
 
   Result result;
   // Check if the problem size is supported or not. Do not hard-CHECK (which aborts): during a search an
@@ -892,6 +1003,12 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   if (gemm.initialize(arguments, workspace.get()) != cutlass::Status::kSuccess) { result.passed = false; return result; }
 
   // Correctness / Warmup iteration
+#if defined(DENSE_PERSISTENT_AB)
+  // Make a missed scheduler tile deterministic: 0xffff is a half NaN, so an unwritten D
+  // element cannot accidentally compare equal to the reference.  This is outside all timing.
+  CUTLASS_PPU_CHECK(hggcMemset(block_D.get(), 0xff,
+                              block_D.size() * sizeof(typename Gemm::ElementD)));
+#endif
   CUTLASS_CHECK(gemm.run());
 
   // Check if output from kernel and reference kernel are equal or not
@@ -962,8 +1079,14 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
     char tag[bench_measure::kTagBytes], core[256];
     bench_measure::format_tag(tag, sizeof tag, tactic);
     bench_measure::format_metrics(core, sizeof core, metrics);
+#if defined(DENSE_PERSISTENT_AB)
+    std::printf("  [CUTLASS w%d gs=%d cfg=%s scheduler=%s] M=%d %7.2f us | %s\n",
+                int(sizeof_bits<QuantType>::value), options.g, tag, scheduler_kind,
+                options.m, us, core);
+#else
     std::printf("  [CUTLASS w%d gs=%d cfg=%s] M=%d %7.2f us | %s\n",
                 int(sizeof_bits<QuantType>::value), options.g, tag, options.m, us, core);
+#endif
   }
 
   return result;
@@ -1215,6 +1338,20 @@ int main(int argc, char const **args) {
   Options options;
   options.parse(argc, args);
   print_dense_table_provenance();
+
+#if !defined(DENSE_PERSISTENT_AB)
+  if (options.persistent) {
+    std::fprintf(stderr,
+                 "--persistent is available only in test_lowbit_dense_persistent_ab; "
+                 "the ordinary dense sweep is unchanged\n");
+    return 1;
+  }
+#else
+  if (options.persistent && options.mode != GemmMode::ScaleOnly) {
+    std::fprintf(stderr, "--persistent currently covers dense ScaleOnly (mode=1) only\n");
+    return 1;
+  }
+#endif
 
   if (options.help) {
     options.print_usage(std::cout) << std::endl;
