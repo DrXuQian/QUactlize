@@ -900,10 +900,10 @@ def lint_moe_event_timing():
 
 
 def lint_m8n16_g2_contract():
-    """G2's expected-red arm must change address arithmetic, not the instruction being tested."""
+    """G2 must replay the historical provider index on one production x4 payload."""
     return _run_ci_script(
         "check_m8n16_g2_contract.py",
-        "m8n16 G2 good/bad arms share one x4-swzl instruction seam")
+        "m8n16 G2 maps one 16-row x4 payload with get_i/get_j and the historical NVIDIA provider index")
 
 
 def lint_plain_ldsm_failclosed():
@@ -1365,7 +1365,7 @@ def main():
                 ("lint", "advertised MoE restrictions change generated code", lint_moe_build_knobs),
                 ("lint", "dense and MoE consume one named measurement layer", lint_bench_measurement_shared),
                 ("lint", "MoE events bracket only gemm.run and retain the host-wall audit", lint_moe_event_timing),
-                ("lint", "m8n16 G2 changes only address coordinates between guard arms", lint_m8n16_g2_contract),
+                ("lint", "m8n16 G2 replays the historical bad index on the production x4 payload", lint_m8n16_g2_contract),
                 ("lint", "ppu001 plain LDSM fails in C++ before its unproved assembler path", lint_plain_ldsm_failclosed),
                 ("lint", "quactlize_extensions adds to actlize rather than redefining it", lint_extension_additive),
                 ("lint", "every file naming a quactlize type reaches its defining header", lint_owned_symbol_includes),

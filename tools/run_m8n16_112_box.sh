@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # #112's device gate.  The collective result is accepted only after #111 has
-# proved the ppu001 raw atom and the same-op G2 red/green address detector, so
+# proved the ppu001 raw atom and G2's same-payload historical-index replay, so
 # this script runs that prerequisite first instead of trusting a remembered
 # result from another checkout.
 #

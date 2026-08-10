@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # #111's complete device gate.  One invocation creates independent ppu001 and
 # ppu0015 build trees, preserves every log, and proves both directions:
-#   ppu001  -> exact G1 + G2 green, including G2's expected-red planted fault;
+#   ppu001  -> exact G1 + G2 green, including the historical-index expected red;
 #   ppu0015 -> the raw atom fails specifically in m8n16k16 ISel.
 set -Eeuo pipefail
 
@@ -90,16 +90,16 @@ if ! "$POS_BIN" 2>&1 | tee "$RUN_LOG"; then
 fi
 grep -q '^\[G1\] PASS: total_bad=0$' "$RUN_LOG" \
   || fail 'G1 did not report all atom outputs exact'
-grep -q '^\[G2-control-path\] same-op=PPU0010_TSM_LD_SWZL<m8n8.x4.swzl> cube=32x64 same-base=guard_swzl only-delta=coordinates$' "$RUN_LOG" \
-  || fail 'G2 did not report the one-op/one-base address-control path'
-grep -q '^\[G2-green-detail\] x4_values=512 x4_bad=0 projected_changed=0/128 lower_poison_changed=128/128 guard_x4_values=512 guard_x4_bad=0$' "$RUN_LOG" \
-  || fail 'G2 production poison checks or guard-good x4 map did not pass exactly'
+grep -q '^\[G2-control-path\] same-payload=production-x4 cube=16x64 coords=(0,0) green=get_i/get_j red=historical-nvidia-x2-provider-map$' "$RUN_LOG" \
+  || fail 'G2 did not report one production payload with correct and historical index maps'
+grep -q '^\[G2-green-detail\] x4_values=512 x4_bad=0 projected_changed=0/128 lower_poison_changed=128/128$' "$RUN_LOG" \
+  || fail 'G2 production 16-row x4 delivery and poison checks did not pass exactly'
 grep -q '^\[G2-green\] mismatches=0 PASS$' "$RUN_LOG" \
   || fail 'G2 physical-16-row x4 projection was not exactly green'
-grep -q '^\[G2-negative-detail\] same_op=x4-swzl bad_map_values=512 bad_map_bad=0 zero_coord_lanes=2 zero_coord_bad=0 red_expected=120/128$' "$RUN_LOG" \
-  || fail 'G2 bad-coordinate arm did not return the exact shifted tags or failed its zero-coordinate lanes'
-grep -q '^\[G2-negative\] mismatches=120 EXPECTED_RED/PASS$' "$RUN_LOG" \
-  || fail 'G2 same-op planted NVIDIA address arithmetic did not produce the exact required red mismatch'
+grep -q '^\[G2-negative-detail\] same_payload=x4-swzl geometry=16x64 bad_map_values=128 bad_map_bad=0 coincident_words=2/64 red_expected=124/128$' "$RUN_LOG" \
+  || fail 'G2 historical NVIDIA provider map did not name exact production-x4 tags and its two reviewed coincidences'
+grep -q '^\[G2-negative\] mismatches=124 EXPECTED_RED/PASS$' "$RUN_LOG" \
+  || fail 'G2 historical NVIDIA-on-PPU indexing did not produce the exact required red mismatch'
 grep -q '^== \[111\] PASS: G1=0 G2=0 ==$' "$RUN_LOG" \
   || fail 'aggregate G1/G2 PASS marker is absent'
 printf '[G0/G1/G2][ppu001] PASS\n'

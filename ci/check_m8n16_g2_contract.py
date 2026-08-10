@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Source-level contract for #114's G2 negative control.
+"""Source contract for #118's historical m8n16 address-fault replay.
 
-The failure being detected is silent address permutation.  A red arm that changes the load opcode, shared-memory
-base, or legal address range proves nothing about that defect.  This device-free checker pins the one-variable
-experiment; tools/run_m8n16_111_box.sh owns the real ppu001 numerical result.
+The old PPU failure was not a lane-varying x4 cube coordinate.  It was
+NVIDIA's plain-x2 per-lane provider formula indexing a PPU register
+distribution.  G2 must therefore read one production 16x64 AIU/x4 payload at
+uniform coordinates, prove that raw payload, and replay the old indexing on
+that payload.  This device-free checker pins that one-variable experiment;
+tools/run_m8n16_111_box.sh owns the real ppu001 numerical result.
 """
 
 from __future__ import annotations
@@ -21,12 +24,12 @@ SOURCE = ROOT / "tests/test_ppu_m8n16_aiu.cu"
 # worse than making a harmless refactor update an explicit digest.  The named
 # structural checks below explain the contract; these seals close aliasing and
 # post-processing escape hatches that a token allow-list cannot prove absent.
-DEVICE_CONTRACT_SHA256 = "6bcb9be4aea524de60b99845a2b4f5c2413992e5a05fa0fe9ab5c07c342a7176"
-HOST_ORACLE_SHA256 = "cbbf6ad39328eb42d7f5d4bce67a30e04b3086043c53be4c612a09b436a1980c"
+DEVICE_CONTRACT_SHA256 = "8179fc3f50f48e01cd6797ac5f59be9372a4abc00c36aa731d5aad4a599796fc"
+HOST_ORACLE_SHA256 = "49fb3ddd031bb72df2c82eeb3ec17a79d0aae7cc421bd49e13decc1092ec7940"
 
 
 def strip_comments_and_literals(text: str) -> str:
-    """Keep C++ tokens/newlines; blank comments, strings and chars so prose cannot satisfy a code audit."""
+    """Keep C++ tokens/newlines; blank comments, strings, and chars."""
     out: list[str] = []
     i = 0
     state = "code"
@@ -72,7 +75,6 @@ def strip_comments_and_literals(text: str) -> str:
                 out.append("\n" if ch == "\n" else " ")
                 i += 1
             continue
-        # String/character literal. Preserve escaped bytes as blanks and the physical newline shape.
         quote = '"' if state == "string" else "'"
         if ch == "\\" and i + 1 < len(text):
             out.extend("  ")
@@ -99,6 +101,54 @@ def frozen_digest(text: str) -> str:
     return hashlib.sha256(stable.encode()).hexdigest()
 
 
+def historical_coincidences() -> tuple[list[tuple[int, int]], bool]:
+    """Rebuild x2 routing from the SDK sample, then apply the old provider."""
+    # This intentionally spells out getThreadAddr1D(size=128) instead of
+    # repeating the simplified C++ inverse.  Each provider owns two 32-bit
+    # words in its 64-bit window.  Map correct matrix coordinates back to that
+    # (provider, in-window-word) pair first.
+    size = 128
+    num = size >> 6
+    shift_size = 5 - (num >> 1)
+    col_size_bytes = size >> 2
+    providers: dict[tuple[int, int], tuple[int, int]] = {}
+    for provider_lane in range(32):
+        offset_index = provider_lane >> shift_size
+        offset_bytes = offset_index << 4
+        col_div = 1 << shift_size
+        block_lane = provider_lane % col_div
+        block_row_threads = 4 // num
+        row = block_lane // block_row_threads
+        start_bytes = row * col_size_bytes
+        start_offset_bytes = (block_lane % block_row_threads) << (num + 1)
+        base_word = (start_bytes + start_offset_bytes + offset_bytes) // 4
+        row_base_word = row * (col_size_bytes // 4)
+        for in_window_word in range(2):
+            coord = (row, base_word - row_base_word + in_window_word)
+            if coord in providers:
+                raise AssertionError(f"PPU x2 provider map aliases {coord}")
+            providers[coord] = (provider_lane, in_window_word)
+
+    matches: list[tuple[int, int]] = []
+    simplified_route_matches = True
+    for lane in range(32):
+        good_row = lane // 4
+        lane_word = lane % 4
+        for reg in range(2):
+            good_word = lane_word + 4 * reg
+            provider_lane, in_window_word = providers[(good_row, good_word)]
+            simplified_route_matches &= (
+                provider_lane == 2 * good_row + lane_word // 2 + 16 * reg and
+                in_window_word == lane_word % 2
+            )
+            bad_row = provider_lane % 8
+            bad_base_word = ((provider_lane // 8) * 4) % 8
+            bad_word = bad_base_word + in_window_word
+            if (bad_row, bad_word) == (good_row, good_word):
+                matches.append((lane, reg))
+    return matches, simplified_route_matches
+
+
 def audit(source: str) -> list[str]:
     bad: list[str] = []
     code = strip_comments_and_literals(source)
@@ -122,66 +172,81 @@ def audit(source: str) -> list[str]:
         if token not in source:
             bad.append(f"the 12-site vendor defect/disposition no longer records {token!r}")
 
+    # No second geometry, smem payload, or divergent-coordinate arm may return.
+    for token in ("kGuardH", "GuardAiuWrite", "GuardSwzlRead", "guard_swzl",
+                  "guard_input", "guard_good", "guard_bad"):
+        if token in code:
+            bad.append(f"G2 resurrected the rejected 32-row guard path via {token!r}")
+
     required_flat = (
         "constexprintkCubeH=16;",
-        "constexprintkGuardH=32;",
-        "std::uint16_tguard_swzl[kGuardElements];",
-        "usingGuardSwzlRead=cute::PPU0010_TSM_LD_SWZL<half_t,kGuardH,kCubeW,true,false,1>;",
-        "GuardAiuWrite::copy(storage.guard_swzl,guard_input,guard_desc,0,0,0);",
-        "std::uint32_tguard_good[kX4Registers]={};",
-        "std::uint32_tguard_bad[kX4Registers]={};",
-        "intconstnvidia_row=lane%kI;",
-        "intconstnvidia_word=((lane/kI)*(kJ/2))%kJ;",
-        "g2_guard_swzl_x4(guard_good,storage.guard_swzl,0,0);",
-        "g2_guard_swzl_x4(guard_bad,storage.guard_swzl,2*nvidia_word,nvidia_row);",
-        "guard_desc.dim_h=kGuardH;",
-        "guard_desc.dim_w=kCubeW;",
-        "guard_desc.cube_h=kGuardH;",
-        "guard_desc.cube_w=kCubeW;",
-        "intguard_bad_map_bad=0;",
-        "intconstbad_row=(lane%8)+row;",
-        "intconstbad_k=2*(((lane/8)*(8/2))%8)+2*word+h;",
-        "guard_bad_map_bad+=halfword(guard_bad_got,h)!=guard_bad_want;",
-        "intred_mismatches=0;",
-        "std::uint16_tconstwant=guard_input[row*kCubeW+k];",
-        "x4_bad+guard_x4_bad+projected_changed+(kLowerValues-lower_changed)",
-        "red_mismatches==kExpectedRedMismatches&&guard_bad_map_bad==0&&zero_coord_lanes==2&&red_zero_coord_bad==0",
+        "constexprintkCubeW=64;",
+        "std::uint16_tswzl[kCubeElements];",
+        "usingSwzlRead=cute::PPU0010_TSM_LD_SWZL<half_t,kCubeH,kCubeW,true,false,1>;",
+        "AiuWrite::copy(storage.swzl,src,desc,0,0,0);",
+        "SwzlRead::copy(x4,storage.swzl,0,0,0,0);",
+        "g2_device<<<kCases,kWarp>>>(d_input.get(),d_x4.get());",
+        "intconstgood_row=lane/4;",
+        "intconstlane_word=lane%4;",
+        "intconstprovider_lane=2*good_row+lane_word/2+16*reg;",
+        "intconstnvidia_row=provider_lane%kI;",
+        "intconstnvidia_base_word=((provider_lane/kI)*(kJ/2))%kJ;",
+        "intconstbad_word=nvidia_base_word+lane_word%2;",
+        "intconstsrc_lane=4*nvidia_row+bad_word%4;",
+        "intconstsrc_reg=bad_word/4;",
+        "std::uint32_tconstgot=x4[src_lane*kX4Registers+src_reg];",
+        "intconstgood_word=lane_word+4*reg;",
+        "input[nvidia_row*kCubeW+2*bad_word+h];",
+        "input[good_row*kCubeW+2*good_word+h];",
+        "bad_map_bad+=halfword(got,h)!=bad_want;",
+        "red_mismatches+=halfword(got,h)!=good_want;",
+        "constexprintkExpectedCoincidentWords=2;",
+        "(kProjectedWords-kExpectedCoincidentWords)*kHalfsPerRegister;",
+        "red_mismatches==kExpectedRedMismatches&&bad_map_bad==0&&coincident_words==kExpectedCoincidentWords;",
+        "x4_bad+projected_changed+(kLowerValues-lower_changed);",
     )
     for token in required_flat:
         if flat.count(token) != 1:
             bad.append(f"G2 must contain exactly one frozen contract token {token!r}")
 
     try:
-        helper = section(code, "CUTE_DEVICE void g2_guard_swzl_x4", "\n__global__ void g2_device")
         kernel = section(code, "__global__ void g2_device", "\nconstexpr std::uint16_t upper_tag")
-    except ValueError as e:
-        return bad + [str(e)]
-    try:
         device_contract = "struct alignas(32) SharedStorage" + section(
             code, "struct alignas(32) SharedStorage", "\nconstexpr std::uint16_t upper_tag")
     except ValueError as e:
         return bad + [str(e)]
     host_oracle = "constexpr std::uint16_t upper_tag" + code.split(
         "constexpr std::uint16_t upper_tag", 1)[1]
+
     device_digest = frozen_digest(device_contract)
     host_digest = frozen_digest(host_oracle)
     if device_digest != DEVICE_CONTRACT_SHA256:
         bad.append(f"review-sealed G2 device body changed: {device_digest}")
     if host_digest != HOST_ORACLE_SHA256:
         bad.append(f"review-sealed G2 host oracle changed: {host_digest}")
-    if helper.count("GuardSwzlRead::copy") != 1 or code.count("GuardSwzlRead::copy") != 1:
-        bad.append("guard good/bad must share the only lexical GuardSwzlRead::copy instruction seam")
-    if kernel.count("g2_guard_swzl_x4(") != 2:
-        bad.append("kernel must invoke the one guard x4-swzl helper exactly twice (good and bad)")
-    if kernel.count("storage.guard_swzl") != 3:
-        # Exactly the AIU writer plus control-good and control-bad.  The descriptor
-        # names the global source, not this shared-memory destination.
-        bad.append("guard writer/good/bad no longer visibly share the one guard_swzl storage object")
+
+    if code.count("SwzlRead::copy") != 1:
+        bad.append("green/red must share the only lexical x4-swzl instruction seam")
+    if code.count("AiuWrite::copy") != 1:
+        bad.append("G2 must have exactly one production AIU write seam")
+    if kernel.count("storage.swzl") != 2:
+        bad.append("the one AIU writer and one x4 reader must share storage.swzl")
+    if re.search(r"SwzlRead::copy\([^;]*(?:lane|nvidia|bad_word)", kernel):
+        bad.append("x4 instruction coordinates became lane-dependent again")
+
+    expected = [(0, 0), (1, 0)]
+    coincidences, routing_ok = historical_coincidences()
+    if not routing_ok:
+        bad.append("source's simplified provider inverse disagrees with the SDK getThreadAddr1D reconstruction")
+    if coincidences != expected:
+        bad.append("checker's independent historical map no longer gives the two reviewed coincidences")
 
     for marker in (
-        "[G2-control-path] same-op=PPU0010_TSM_LD_SWZL<m8n8.x4.swzl>",
-        "guard_x4_values=%d guard_x4_bad=%d",
-        "[G2-negative-detail] same_op=x4-swzl bad_map_values=%d",
+        "[G2-control-path] same-payload=production-x4 cube=16x64 coords=(0,0)",
+        "green=get_i/get_j red=historical-nvidia-x2-provider-map",
+        "[G2-green-detail] x4_values=%d x4_bad=%d projected_changed=%d/%d",
+        "[G2-negative-detail] same_payload=x4-swzl geometry=16x64",
+        "bad_map_values=%d bad_map_bad=%d coincident_words=%d/%d",
     ):
         if marker not in source:
             bad.append(f"box-auditable output marker disappeared: {marker!r}")
@@ -190,7 +255,8 @@ def audit(source: str) -> list[str]:
 
 def plant(source: str, old: str, new: str) -> str:
     if source.count(old) != 1:
-        raise ValueError(f"planted-control anchor occurs {source.count(old)} times, wanted 1: {old!r}")
+        raise ValueError(
+            f"planted-control anchor occurs {source.count(old)} times, wanted 1: {old!r}")
     return source.replace(old, new, 1)
 
 
@@ -202,37 +268,42 @@ def main() -> int:
         return 1
 
     mutations = (
-        ("different primitive",
-         "g2_guard_swzl_x4(\n      guard_bad, storage.guard_swzl, 2 * nvidia_word, nvidia_row);",
+        ("different primitive", "SwzlRead::copy(x4, storage.swzl, 0, 0, 0, 0);",
          "cute::PPU_U32x4_LDSM_N::copy(/* planted different primitive */);"),
-        ("different base", "guard_bad, storage.guard_swzl, 2 * nvidia_word, nvidia_row",
-         "guard_bad, storage.prod_swzl, 2 * nvidia_word, nvidia_row"),
-        ("bad coords reset", "guard_bad, storage.guard_swzl, 2 * nvidia_word, nvidia_row",
-         "guard_bad, storage.guard_swzl, 0, 0"),
-        ("NVIDIA row drift", "int const nvidia_row = lane % kI;",
-         "int const nvidia_row = lane % (kI - 1);"),
+        ("different base", "x4, storage.swzl, 0, 0, 0, 0", "x4, storage.swzl + 16, 0, 0, 0, 0"),
+        ("divergent row coordinate", "x4, storage.swzl, 0, 0, 0, 0", "x4, storage.swzl, 0, lane % 8, 0, 0"),
+        ("physical height drift", "constexpr int kCubeH = 16;", "constexpr int kCubeH = 32;"),
+        ("second x4 instruction", "SwzlRead::copy(x4, storage.swzl, 0, 0, 0, 0);",
+         "SwzlRead::copy(x4, storage.swzl, 0, 0, 0, 0);\n"
+         "  SwzlRead::copy(x4, storage.swzl, 0, 0, 0, 0);"),
+        ("PPU x2 provider redistribution drift",
+         "2 * good_row + lane_word / 2 + 16 * reg",
+         "2 * good_row + lane_word / 2 + 8 * reg"),
+        ("NVIDIA row drift", "int const nvidia_row = provider_lane % kI;",
+         "int const nvidia_row = provider_lane % (kI - 1);"),
+        ("NVIDIA provider base drift", "((provider_lane / kI) * (kJ / 2)) % kJ",
+         "((provider_lane / kI) * (kJ / 4)) % kJ"),
+        ("PPU x2 in-window word dropped",
+         "int const bad_word = nvidia_base_word + lane_word % 2;",
+         "int const bad_word = nvidia_base_word;"),
+        ("x4 owner lane drift", "4 * nvidia_row + bad_word % 4",
+         "4 * nvidia_row + (bad_word + 1) % 4"),
+        ("x4 owner register drift", "int const src_reg = bad_word / 4;",
+         "int const src_reg = bad_word / 8;"),
+        ("bad source made direct green", "x4[src_lane * kX4Registers + src_reg]",
+         "x4[lane * kX4Registers + reg]"),
+        ("bad-map golden shifted", "input[nvidia_row * kCubeW + 2 * bad_word + h]",
+         "input[nvidia_row * kCubeW + 2 * bad_word + h + 1]"),
+        ("green golden shifted", "input[good_row * kCubeW + 2 * good_word + h]",
+         "input[good_row * kCubeW + 2 * good_word + h + 1]"),
         ("poison witness removed", " + (kLowerValues - lower_changed)", ""),
         ("red made tautological", "red_mismatches == kExpectedRedMismatches &&",
          "red_mismatches >= 0 &&"),
-        ("guard shrunk to unsafe height", "constexpr int kGuardH = 32;", "constexpr int kGuardH = 16;"),
-        ("second instruction seam",
-         "g2_guard_swzl_x4(\n      guard_bad, storage.guard_swzl, 2 * nvidia_word, nvidia_row);",
-         "GuardSwzlRead::copy(guard_bad, storage.guard_swzl, 2 * nvidia_word, nvidia_row, 0, 0);"),
-        ("helper changes the bad base",
-         "GuardSwzlRead::copy(frag, smem_base, coord_w, coord_h, 0, 0);",
-         "GuardSwzlRead::copy(frag, smem_base + (coord_w != 0), coord_w, coord_h, 0, 0);"),
-        ("bad arm postprocess",
-         "g2_guard_swzl_x4(\n      guard_bad, storage.guard_swzl, 2 * nvidia_word, nvidia_row);",
-         "g2_guard_swzl_x4(\n      guard_bad, storage.guard_swzl, 2 * nvidia_word, nvidia_row);\n"
-         "  guard_bad[0] ^= (nvidia_row != 0);"),
-        ("red mismatch seeded", "int red_mismatches = 0;", "int red_mismatches = 1;"),
-        ("guard valid height shrunk", "guard_desc.dim_h = kGuardH;", "guard_desc.dim_h = kCubeH;"),
-        ("NVIDIA I constant drift", "constexpr int kI = 8;", "constexpr int kI = 7;"),
-        ("origin golden shifted", "guard_input[row * kCubeW + k];", "guard_input[row * kCubeW + k + 1];"),
-        ("bad-map golden shifted", "guard_input[bad_row * kCubeW + bad_k];",
-         "guard_input[bad_row * kCubeW + bad_k + 1];"),
-        ("guard allocation shrunk", "std::uint16_t guard_swzl[kGuardElements];",
-         "std::uint16_t guard_swzl[kCubeElements];"),
+        ("bad-map proof removed", "bad_map_bad == 0 &&", "bad_map_bad >= 0 &&"),
+        ("coincidence count weakened", "coincident_words == kExpectedCoincidentWords",
+         "coincident_words >= 0"),
+        ("expected coincidences drift", "constexpr int kExpectedCoincidentWords = 2;",
+         "constexpr int kExpectedCoincidentWords = 3;"),
         ("halfword oracle broken", "word >> (16 * h)", "word >> 0"),
     )
     for name, old, new in mutations:
@@ -245,9 +316,9 @@ def main() -> int:
             print(f"[m8n16-g2-contract] FAIL: checker accepted planted regression: {name}")
             return 1
 
-    print("[m8n16-g2-contract] PASS -- production 16-row poison gate retained; guard good/bad share one "
-          "32-row x4-swzl seam; bad arm must match all 512 shifted tags and exactly 120/128 origin values "
-          "must differ; 17 regressions rejected")
+    print("[m8n16-g2-contract] PASS -- one 16x64 AIU/x4 payload feeds both maps; "
+          "historical NVIDIA provider indexing must name exact tags and differ in 124/128 values; "
+          "20 regressions rejected")
     return 0
 
 
