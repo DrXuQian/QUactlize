@@ -93,8 +93,17 @@ INFLIGHT = object()
 WORKER_SUFFIX = re.compile(r"\.w\d+$")
 
 
-def invocations(kind: str, gs: int, model_filter: str):
-    """-> [(label, argv_tail)] in a FIXED order, so resume and a fresh run agree on what 'the third one' is."""
+def invocations(kind: str, gs: int, model_filter: str, formats=("",)):
+    """-> [(label, argv_tail, fmt)] in a FIXED order, so resume and a fresh run agree on what 'the third one' is.
+
+    FORMAT IS AN AXIS, NOT A PROPERTY OF THE BINARY YOU HAPPENED TO BUILD. The five low-bit formats can no longer
+    share one executable -- all of them in one link overflows the small code model -- so a full MoE sweep is
+    shapes x formats, with a different binary per format. Crossing it here rather than looping outside keeps ONE
+    ordered list, which is what resume, --dry-run and the dynamic queue all read.
+
+    `fmt` is "" for the single-binary case (every dense run, and any MoE run given a plain --bin). That value is
+    load-bearing for resume: progress logs written before this axis existed carry no fmt, and `.get("fmt", "")`
+    reads them as "" too, so an old log still cancels the work it recorded instead of silently re-running it."""
     out = []
     for model, cfg in MODELS.items():
         if model_filter and model_filter != model:
@@ -107,7 +116,8 @@ def invocations(kind: str, gs: int, model_filter: str):
                         str(gs), str(extra["mode"]), str(extra["topk"])]
             else:
                 argv = [f"--m={t}", f"--n={n}", f"--k={k}", f"--g={gs}", "--search_configs"]
-            out.append((f"{label} m={t}", argv))
+            for fmt in formats:
+                out.append((f"{label} m={t}" + (f" [{fmt}]" if fmt else ""), argv, fmt))
     return out
 
 
@@ -131,7 +141,12 @@ def shards_on_disk(base: pathlib.Path):
 
 
 def load_done(progress: pathlib.Path) -> set:
-    """-> the set of argv tuples recorded complete, UNIONED over the single-worker log and every per-worker log.
+    """-> the set of (fmt, argv tuple) recorded complete, UNIONED over the single-worker and per-worker logs.
+
+    THE KEY CARRIES fmt BECAUSE argv CANNOT. A MoE invocation's argv is positional and names the SHAPE only --
+    L Rows N K gs mode topk -- while which format ran is a property of the binary. Keying on argv alone would let
+    the q3 run cancel the q5 one: four fifths of a sweep skipped, resume reporting it complete, and no error
+    anywhere. Old logs have no fmt and read as "", which is exactly the single-binary key.
 
     Unreadable or absent means nothing is done, which re-runs work rather than skipping it: the safe direction
     when the progress log itself is in doubt. That applies PER SHARD -- one unreadable worker log costs that
@@ -153,7 +168,7 @@ def load_done(progress: pathlib.Path) -> set:
             except json.JSONDecodeError:
                 continue
             if r.get("rec") == "inv" and r.get("done"):
-                done.add(tuple(r.get("argv", [])))
+                done.add((r.get("fmt", ""), tuple(r.get("argv", []))))
     return done
 
 
@@ -237,7 +252,7 @@ class WorkQueue:
             self.stopping = True
 
 
-def run_worker(w, dev, q, binary, jsonl, progress, workers, reps, say, finished):
+def run_worker(w, dev, q, binaries, jsonl, progress, workers, reps, say, finished):
     """Pop, launch, judge, log -- until the queue is drained. One of these per card.
 
     `finished` is this worker's own "I am done" flag, set in the finally below. The interrupt path waits on
@@ -266,14 +281,15 @@ def run_worker(w, dev, q, binary, jsonl, progress, workers, reps, say, finished)
                 i = q.pop()
                 if i is None:
                     return
-                lbl, argv = q.items[i]
+                lbl, argv, fmt = q.items[i]
+                binary = binaries[fmt]
                 try:
                     before = sample.stat().st_size if sample.is_file() else 0
                     # WRITTEN BEFORE THE LAUNCH, same reason bench_samples::attempt() is: if this process is
                     # killed with the child, the log still names what was in flight. `worker`/`device` ride
                     # along so a completed record says WHERE it ran; `device` is null when nothing was bound.
-                    plog.write(json.dumps({"rec": "inv", "label": lbl, "argv": argv, "done": False,
-                                           "worker": w, "device": dev}) + "\n")
+                    plog.write(json.dumps({"rec": "inv", "label": lbl, "argv": argv, "fmt": fmt,
+                                           "done": False, "worker": w, "device": dev}) + "\n")
                     plog.flush()
                     say(f"\n[sweep] {i + 1}/{len(q.items)}  {tag}{lbl}\n         {binary.name} {' '.join(argv)}")
                     t0 = time.time()
@@ -284,8 +300,8 @@ def run_worker(w, dev, q, binary, jsonl, progress, workers, reps, say, finished)
                     after = sample.stat().st_size if sample.is_file() else 0
                     grew = after > before
                     ok = rc == 0 and grew
-                    plog.write(json.dumps({"rec": "inv", "label": lbl, "argv": argv, "done": ok,
-                                           "worker": w, "device": dev,
+                    plog.write(json.dumps({"rec": "inv", "label": lbl, "argv": argv, "fmt": fmt,
+                                           "done": ok, "worker": w, "device": dev,
                                            "rc": rc, "grew": grew, "seconds": round(dt, 1)}) + "\n")
                     plog.flush()
                     # ONE spelling of the reason, used for both the status and the console line. Two spellings
@@ -321,7 +337,11 @@ def run_worker(w, dev, q, binary, jsonl, progress, workers, reps, say, finished)
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--bin", help="the bench binary (build.sh prints it)")
+    ap.add_argument("--bin", help="the bench binary (build.sh prints it); one format, or dense")
+    ap.add_argument("--bin-map", default="",
+                    help="per-format binaries for --kind moe: 'q3=PATH,q5=PATH,q6=PATH,i2=PATH,i4=PATH'. "
+                         "The five formats no longer fit one executable, so a full MoE sweep needs one binary "
+                         "each; the sweep then runs shapes x formats. Mutually exclusive with --bin.")
     ap.add_argument("--jsonl", required=True, help="sample file; passed to the bench as BENCH_JSONL and appended to")
     ap.add_argument("--kind", default="dense", choices=("dense", "moe"))
     ap.add_argument("--gs", type=int, default=DEFAULT_GS["i4"])
@@ -371,10 +391,30 @@ def main() -> int:
         print(f"[sweep] ⚠ --workers {workers} with no --devices: nothing binds a card, so the runtime picks -- "
               f"probably the same one {workers} times. Pass --devices to spread them.", file=sys.stderr)
 
-    todo = invocations(a.kind, a.gs, a.model)
+    # ONE BINARY OR A MAP, NEVER BOTH -- "both" has no meaning and the two answers would silently disagree about
+    # which executable ran the q3 rows.
+    if a.bin and a.bin_map:
+        print("[sweep] pass --bin OR --bin-map, not both", file=sys.stderr)
+        return 2
+    binaries, formats = {}, ("",)
+    if a.bin_map:
+        for tok in a.bin_map.split(","):
+            tok = tok.strip()
+            if not tok or "=" not in tok:
+                print(f"[sweep] --bin-map entry {tok!r} is not FMT=PATH", file=sys.stderr)
+                return 2
+            f, path = tok.split("=", 1)
+            f = f.strip()
+            if f in binaries:
+                print(f"[sweep] --bin-map names {f} twice", file=sys.stderr)
+                return 2
+            binaries[f] = pathlib.Path(path.strip()).resolve()
+        formats = tuple(binaries)          # the map's ORDER, so --dry-run and the run agree
+
+    todo = invocations(a.kind, a.gs, a.model, formats)
     done = load_done(progress)
 
-    pending = [(lbl, argv) for lbl, argv in todo if tuple(argv) not in done]
+    pending = [it for it in todo if (it[2], tuple(it[1])) not in done]
     print(f"[sweep] {a.kind}: {len(todo)} invocation(s), {len(todo) - len(pending)} already complete, "
           f"{len(pending)} to run")
     if workers == 1:
@@ -387,7 +427,7 @@ def main() -> int:
               f"{'device(s) ' + ','.join(str(d) for d in devices[:workers]) if devices else 'whatever the runtime picks'}")
 
     if a.dry_run:
-        for j, (lbl, argv) in enumerate(pending):
+        for j, (lbl, argv, _fmt) in enumerate(pending):
             # ROUND-ROBIN HERE AND NOWHERE ELSE. The real queue is dynamic, so which worker takes an item
             # depends on how long its predecessors ran; this column is what the plan LOOKS like, not a
             # prediction. Absent entirely for a lone unbound worker, so the old plan output is unchanged.
@@ -401,13 +441,17 @@ def main() -> int:
                   " item\n   depends on how long the items before it took. Shape of the plan, not a prediction.)")
         print("\n--dry-run: nothing launched")
         return 0
-    if not a.bin:
-        print("[sweep] --bin is required unless --dry-run", file=sys.stderr)
+    if not a.bin and not a.bin_map:
+        print("[sweep] --bin or --bin-map is required unless --dry-run", file=sys.stderr)
         return 2
-    binary = pathlib.Path(a.bin).resolve()
-    if not binary.is_file():
-        print(f"[sweep] no such binary: {binary}", file=sys.stderr)
-        return 2
+    if a.bin:
+        binaries = {"": pathlib.Path(a.bin).resolve()}
+    # EVERY mapped binary is checked BEFORE the first launch. Discovering the fifth path is wrong after four
+    # formats have swept is the same waste as the link failure that made the map necessary.
+    for f, b in sorted(binaries.items()):
+        if not b.is_file():
+            print(f"[sweep] no such binary{f and ' for ' + f}: {b}", file=sys.stderr)
+            return 2
 
     q = WorkQueue(pending)
     console = threading.Lock()
@@ -422,7 +466,7 @@ def main() -> int:
     sys.stdout.flush()          # the prologue above, ahead of anything a worker flushes
     finished = [threading.Event() for _ in range(workers)]
     threads = [threading.Thread(target=run_worker,
-                                args=(w, devices[w] if devices else None, q, binary, jsonl, progress,
+                                args=(w, devices[w] if devices else None, q, binaries, jsonl, progress,
                                       workers, a.reps, say, finished[w]),
                                 name=f"w{w}", daemon=True)
                for w in range(workers)]
