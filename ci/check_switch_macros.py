@@ -83,12 +83,12 @@ INTERPOLATED = re.compile(r"-D([A-Z_]+)\$\{")
 # later" is what produced the list this gate exists to shorten.
 ALLOWED = {
     # DATED DEBT, NOT ACCEPTED EXCEPTIONS. Eight were found the day this gate was written (2026-08-07);
-    # GEMV_GATE_FAST has since left by being DELETED (tests/test_gemv_lowbit.cu:25 records why), which is one
-    # of the two permitted exits, and the staleness check below is what made that visible. Each remaining one
+    # two have since left: GEMV_GATE_FAST by being DELETED (tests/test_gemv_lowbit.cu:25 records why) and
+    # QUACTLIZE_DENSE_ONLY by being WIRED (its owning file's header now carries the PPU_DEFS command, which
+    # the scan accepts as of 2026-08-11). Those are the two permitted exits. Each remaining one
     # is an open decision, not a justified switch -- they are here so the gate's job becomes "no NEW
     # unrecorded switch appears" while the existing set stays visible and owned. Task #40 tracks the merge.
     # An entry may only leave this dict by being deleted or wired, never by being re-justified.
-    "QUACTLIZE_DENSE_ONLY":   "claude  -- ci/check_format_table_buildable.py's docstring cites it as a thing a build can do",
     "PPU_B_CHUNK_BISECT":     "codex   -- TOOL: exists BECAUSE PPU_B_CHUNK=2 shipped a debug mode inside the feature flag. Deleting it invites that back",
     "PPU_F16X2_EARLYCLOBBER": "codex   -- UNRUN EXPERIMENT E2 in .coord/BOX.md: was \"=&r\" the rowC fix, or did the failure merely go away across four commits?",
     "PPU_F16X2_NOFTZ":        "codex   -- UNRUN EXPERIMENT E3 in .coord/BOX.md: does ppu.fma.rtte.f16x2 flush its subnormal input? One build; a build failure kills the hypothesis for free",
@@ -152,6 +152,22 @@ def main() -> int:
         for name in consumers:
             if re.search(rf"-D{re.escape(name)}\b", text) or re.search(rf"(?:^|[\s\"'=]){re.escape(name)}\s*=", text):
                 setters.setdefault(name, set()).add(str(f.relative_to(ROOT)))
+
+    # THE FILE'S OWN HEADER COUNTS, in exactly one form. This gate's FAIL message has always advised
+    # "PPU_DEFS=NAME=VALUE in the file's own header or a doc" while the scan above looked only at setter_files()
+    # -- .sh/.py/.md/... -- so a header comment in the .cu or .hpp that OWNS the switch satisfied the advice and
+    # not the check. LOWBIT_QMODE is the precedent the docstring cites as the model fix, and it passes today only
+    # because ci/local_gates.py happens to also carry -DLOWBIT_QMODE=1; its header line was never what counted.
+    #
+    # ONLY the literal `PPU_DEFS=NAME=` is accepted here, not the general setter pattern. Turning the general one
+    # loose on sources would make every switch self-satisfying: the SETTER regex's `NAME\s*=` arm matches
+    # `#if !defined(NAME) || NAME == 12`, i.e. the guard the switch is FOR. A build-command prefix cannot appear
+    # by accident in C++.
+    for f in sources():
+        text = f.read_text(errors="replace")
+        for name in consumers:
+            if f"PPU_DEFS={name}=" in text:
+                setters.setdefault(name, set()).add(str(f.relative_to(ROOT)) + " (header invocation)")
 
     unreachable = sorted(n for n in consumers
                          if n not in definers and n not in setters and n not in ALLOWED)

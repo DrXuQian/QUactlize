@@ -1,5 +1,21 @@
 // hgcc half of SCALE_FIRST x DENSE: raw host pointers -> the dedicated fpA mixed-input launcher. The offline weight
 // reorder lives in ppu_dense_layout.cu so the resident artifact crosses this ABI already in the kernel's layout.
+//
+// NARROWING THE BUILD TO ONE FORMAT, which is what QUACTLIZE_DENSE_ONLY below is for. Every `#if !defined(
+// QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == <qtype>` guard drops the formats that do not match, and the
+// qtype ids are the registry's (quactlize/include/ppu_format_config.inc): Q2_K 10, Q3_K 11, Q4_K 12, Q5_K 13,
+// Q6_K 14. This translation unit is the slowest thing in the tree to compile, so iterating on ONE format is the
+// difference between a change costing a minute and costing five.
+//
+//     PPU_DEFS=QUACTLIZE_DENSE_ONLY=12 TARGET=ppu_dense_backend ./build.sh      # Q4_K only
+//
+// THE INVOCATION IS WRITTEN DOWN BECAUSE IT WAS NOT, and ci/check_switch_macros.py holds this macro in its
+// ALLOWED dict for exactly that reason: ci/check_format_table_buildable.py's docstring CITES the switch as a
+// thing a build can do, so a gate documented a capability nobody could invoke. Measured 2026-08-11 with the
+// syntax gate's own flags on this file, which is the evidence that the guards actually drop work rather than
+// merely compiling: 10368 diagnostics with no defs against 2232 with QUACTLIZE_DENSE_ONLY=12, a ratio of 4.6
+// against the 5 formats it selects between. (Neither run produces an artifact -- the stub's cute:: noise
+// prevents that for every file in this tree; see dev/fold_derivation/syntax_check.sh.)
 #include <cstdint>
 #include <algorithm>
 #include <cstdio>
