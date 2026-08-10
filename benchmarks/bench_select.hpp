@@ -67,23 +67,46 @@ struct TiledGemmTrafficInput {
   double distinct_resident_copies = 0.0;
   double tile_activation_copies = 0.0;
   double tile_resident_copies = 0.0;
+  // UNIFORM K-SPLIT ONLY: S peers per output tile, every tile split the same way. Read off actlize's non-separate
+  // deterministic reduction (ppu_tile_scheduler_stream_k.hpp:495-534), not assumed:
+  //   K_idx == 0     BlockStripedReduce::store     -> W written
+  //   K_idx 1..S-2   BlockStripedReduce::reduce    -> ATOMIC_ADD, so the line is fetched and written back: 2W each
+  //   final peer     BlockStripedReduce::load_add  -> W read, then ONE ordinary epilogue writes D
+  // so C costs 2*W*(S-1) + D, with W the tile in ACCUMULATOR elements. S=1 adds nothing and every existing row is
+  // unchanged to the bit.
+  //
+  // STREAM-K IS NOT THIS. StreamK splits only a SUBSET of tiles, so its S is a per-tile property of the scheduler
+  // and no single count reproduces its traffic. Leave splitk = 1 for a StreamK run until that count is plumbed
+  // through; a uniform S there would be a fabricated number, not a conservative one.
+  int splitk = 1;
+  double workspace_over_output = 2.0;  // sizeof(ElementAccumulator)/sizeof(ElementD): fp32 accumulate, fp16 out
 };
 
+// The C term including the split-K reduction round trip. Exact at splitk == 1 (returns output_bytes unchanged).
+inline double reduced_output_bytes(TiledGemmTrafficInput const& i) {
+  if (i.splitk <= 1) return i.output_bytes;
+  const double W = i.output_bytes * i.workspace_over_output;
+  return i.output_bytes + 2.0 * W * double(i.splitk - 1);
+}
+
 struct Traffic {
-  ByteTerms distinct;  // every unique byte at least once: the only numerator that may be called %HBM
+  ByteTerms distinct;  // every unique byte at least once: the only numerator that may be put over the nameplate
   ByteTerms tile;      // tile-level requests with no cache reuse: a ceiling, reported as GB/s + reuse
 };
 
 inline Traffic make_traffic(TiledGemmTrafficInput const& i) {
+  // The reduction round trip is DISTINCT traffic, not a re-read: the workspace partials are written once and read
+  // once and exist nowhere else, so both models carry the same C term.
+  const double c = reduced_output_bytes(i);
   return {
     {i.activation_bytes,
      i.distinct_resident_copies * i.weight_bytes_per_copy,
      i.distinct_resident_copies * i.metadata_bytes_per_copy,
-     i.output_bytes},
+     c},
     {i.tile_activation_copies * i.activation_bytes,
      i.tile_resident_copies * i.weight_bytes_per_copy,
      i.tile_resident_copies * i.metadata_bytes_per_copy,
-     i.output_bytes}
+     c}
   };
 }
 
@@ -91,7 +114,14 @@ inline double gbs(double bytes, double us) {
   return us > 0.0 ? bytes / (us * 1.0e-6) / 1.0e9 : 0.0;
 }
 
-inline double hbm_pct(double achieved_gbs) {
+// PERCENT OF THE NAMEPLATE FIGURE. Not bus utilisation, and the two differ by enough to change a conclusion:
+//   - 2766 GB/s and 500 TF/s are the datasheet numbers. The repo's own bw_probe measures ~2200 GB/s sustained, so a
+//     kernel that fully saturates DRAM reads about 79.5% here and can never reach 100.
+//   - the numerator is DISTINCT bytes, so a 32 B effective request that pulls a whole 128 B line saturates the bus
+//     while printing 25%. A low number is therefore not evidence of spare bandwidth.
+// Keep the nameplate denominator anyway: Marlin, TRT-LLM and llama.cpp all quote against nameplate, and changing it
+// would make our rows incomparable with every published one. What must not survive is the WORD "utilisation".
+inline double nameplate_pct(double achieved_gbs) {
   return 100.0 * achieved_gbs / kHbmGBPerSecond;
 }
 
@@ -115,7 +145,7 @@ struct HbmModel {
   double distinct_bytes = 0.0;
   double tile_bytes = 0.0;
   double distinct_gbs = 0.0;
-  double distinct_hbm_pct = 0.0;
+  double distinct_nameplate_pct = 0.0;
   double tile_gbs = 0.0;
   double tile_reuse = 0.0;
   double distinct_metadata_share = 0.0;
@@ -127,7 +157,7 @@ inline HbmModel hbm(Traffic const& traffic, double us) {
   const double tile_bytes = traffic.tile.total();
   const double distinct_gbs = gbs(distinct_bytes, us);
   const double tile_gbs = gbs(tile_bytes, us);
-  return {traffic, distinct_bytes, tile_bytes, distinct_gbs, hbm_pct(distinct_gbs), tile_gbs,
+  return {traffic, distinct_bytes, tile_bytes, distinct_gbs, nameplate_pct(distinct_gbs), tile_gbs,
           distinct_bytes > 0.0 ? tile_bytes / distinct_bytes : 0.0,
           distinct_bytes > 0.0 ? traffic.distinct.metadata / distinct_bytes : 0.0,
           tile_gbs > kHbmGBPerSecond};
@@ -151,10 +181,10 @@ inline double ridge_flops_per_byte() {
 // A tile rate above the DRAM peak therefore says "L2-served", not ">100% HBM".
 inline int format_metrics(char* out, std::size_t cap, Metrics const& m) {
   return std::snprintf(out, cap,
-      "%6.1f TF/s (%4.1f%% MFU) | distinct %6.0f GB/s (%4.1f%% HBM) | "
+      "%6.1f TF/s (%4.1f%% MFU) | distinct %6.0f GB/s (%4.1f%% of %.0f nameplate) | "
       "tile %6.0f GB/s (%.1fx distinct%s)",
       m.compute.tflops, m.compute.mfu_pct,
-      m.hbm.distinct_gbs, m.hbm.distinct_hbm_pct,
+      m.hbm.distinct_gbs, m.hbm.distinct_nameplate_pct, kHbmGBPerSecond,
       m.hbm.tile_gbs, m.hbm.tile_reuse, m.hbm.tile_l2_served ? ", L2-served" : "");
 }
 

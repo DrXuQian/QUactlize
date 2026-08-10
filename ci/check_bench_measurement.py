@@ -50,7 +50,7 @@ CONSUMERS = {
         "bench_measure::format_tag(",
     ),
     "benchmarks/moe_splitk_bench_common.hpp": (
-        "bench_measure::hbm_pct(",
+        "bench_measure::nameplate_pct(",
         "bench_measure::kHbmGBPerSecond",
     ),
     "benchmarks/test_moe_splitk_bench.cu": (
@@ -161,11 +161,27 @@ int main(int argc, char** argv) {
   auto traffic = bench_measure::make_traffic({1.0e6,0.5e6,0.1e6,0.2e6,3.0,2.0,6.0});
   if (!close(traffic.distinct.total(), 3.0e6) || !close(traffic.tile.total(), 5.8e6))
     return fail("traffic channels/copy counts do not produce the planted distinct and tile totals");
+
+  // THE SPLIT-K C TERM, which no control could previously reach. Two independent properties:
+  //   splitk == 1 must be BYTE-IDENTICAL to the unsplit model, or every row ever recorded moves under a change
+  //     that was supposed to affect only split runs;
+  //   splitk == S must carry the reduction round trip 2*W*(S-1) + D. Planted: D = 0.2e6, W = 2D, S = 3
+  //     -> 0.2e6 + 2*(0.4e6)*2 = 1.8e6 = 9D, in BOTH models (the workspace is written once and read once, so it
+  //     is distinct traffic, not a re-read).
+  auto sk1 = bench_measure::make_traffic({1.0e6,0.5e6,0.1e6,0.2e6,3.0,2.0,6.0,1,2.0});
+  auto sk3 = bench_measure::make_traffic({1.0e6,0.5e6,0.1e6,0.2e6,3.0,2.0,6.0,3,2.0});
+  if (!close(sk1.distinct.total(), traffic.distinct.total()) ||
+      !close(sk1.tile.total(), traffic.tile.total()))
+    return fail("splitk=1 is no longer identical to the unsplit traffic model");
+  if (!close(sk3.distinct.output, 9.0 * 0.2e6) || !close(sk3.tile.output, 9.0 * 0.2e6))
+    return fail("the split-K reduction round trip is missing from the C term");
+  if (close(sk3.distinct.total(), traffic.distinct.total()))
+    return fail("splitk did not change total traffic at all");
   auto m = bench_measure::measure(2.0, 1.0e9, traffic);
   if (!close(m.compute.tflops, 500.0) || !close(m.compute.mfu_pct, 100.0))
     return fail("useful FLOP -> TF/s/MFU arithmetic drifted");
   if (!close(m.hbm.distinct_gbs, 1500.0) || !close(m.hbm.tile_gbs, 2900.0) ||
-      !close(m.hbm.distinct_hbm_pct, 100.0 * 1500.0 / 2766.0) ||
+      !close(m.hbm.distinct_nameplate_pct, 100.0 * 1500.0 / 2766.0) ||
       !close(m.hbm.tile_reuse, 5.8 / 3.0) || !close(m.hbm.distinct_metadata_share, 0.1) ||
       !m.hbm.tile_l2_served)
     return fail("HBM/reuse named fields drifted");
@@ -183,7 +199,7 @@ int main(int argc, char** argv) {
   char fragment[256];
   bench_measure::format_metrics(fragment, sizeof fragment, m);
   if (!std::strstr(fragment, "MFU") || !std::strstr(fragment, "distinct") ||
-      !std::strstr(fragment, "% HBM") || !std::strstr(fragment, "tile") ||
+      !std::strstr(fragment, "nameplate") || !std::strstr(fragment, "tile") ||
       !std::strstr(fragment, "x distinct") || !std::strstr(fragment, "L2-served"))
     return fail("common printed fragment lost a named measurement field");
   std::puts(fragment);

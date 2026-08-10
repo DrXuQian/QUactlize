@@ -66,7 +66,7 @@ inline bool sk_acu() { return std::getenv("SPLITK_ACU") != nullptr; }
 // for any expert with more than one row, and launch() refuses it above Mmax == 1.
 // SPLITK_ABCAST is gone with the a_row_broadcast parameter it drove: that zeroed the AIU descriptor's row PITCH
 // (dim_w) to request what dim_h already provides, and returned NaN. See moe_grouped_ppu.cuh.
-inline double pct_of(double gbs) { return bench_measure::hbm_pct(gbs); }
+inline double pct_of(double gbs) { return bench_measure::nameplate_pct(gbs); }
 // SPLITK_ONLY matches the whole tag, which means counting the spaces the format string pads out -- and that
 // already cost an acu run ("No kernels were profiled") after the abcast marker changed the spacing from two to
 // three. SPLITK_CFG and SPLITK_S match the two halves independently, so a capture never depends on whitespace.

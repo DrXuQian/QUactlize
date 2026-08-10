@@ -58,6 +58,26 @@ using DStride = moe_grouped_ppu::DStride;
 using QM      = moe_grouped_ppu::QuantMode;
 
 constexpr int moe_scale_groups(int k, int gs) { return (k + gs - 1) / gs; }
+
+// THE PER-PLANE AIU RUN, as a runtime mirror of the trait that actually performs the fold. report() only has the
+// widths as runtime ints, so it cannot instantiate fold::DeliveryFold directly -- but it can be made to AGREE with
+// it, which is the difference between a second derivation and a view of the same one. The static_assert below is
+// that agreement over every (bits, TileK) this bench builds, so a change to either side stops the compile.
+constexpr int moe_plane_fold(int bits, int tk) {
+  const int atom = tk * bits / 8;                       // one k-atom of this plane, per thread, in bytes
+  return atom >= 32 ? 1 : (atom > 0 ? 32 / atom : 0);
+}
+constexpr int moe_plane_run_bytes(int bits, int tk) { return moe_plane_fold(bits, tk) * tk * bits / 8; }
+static_assert(moe_plane_fold(1,  64) == fold::delivery_fold_v<1,  64> &&
+              moe_plane_fold(2,  64) == fold::delivery_fold_v<2,  64> &&
+              moe_plane_fold(4,  64) == fold::delivery_fold_v<4,  64> &&
+              moe_plane_fold(1, 128) == fold::delivery_fold_v<1, 128> &&
+              moe_plane_fold(2, 128) == fold::delivery_fold_v<2, 128> &&
+              moe_plane_fold(4, 128) == fold::delivery_fold_v<4, 128> &&
+              moe_plane_fold(1, 256) == fold::delivery_fold_v<1, 256> &&
+              moe_plane_fold(2, 256) == fold::delivery_fold_v<2, 256> &&
+              moe_plane_fold(4, 256) == fold::delivery_fold_v<4, 256>,
+              "the reported per-plane run disagrees with the fold the kernel actually performs");
 constexpr int moe_metadata_planes(QM mode) { return moe_grouped_ppu::has_zero(mode) ? 2 : 1; }
 static_assert(moe_scale_groups(65, 32) == 3, "scale metadata covers a partial final group");
 static_assert(moe_metadata_planes(QM::FinegrainedScaleOnly) == 1 &&
@@ -431,7 +451,8 @@ inline double masked_fraction(const Band& bd, int TM) {
 }
 
 inline void report(const Band& bd, const char* tag, MoeTiming const& timing, bench_measure::Tactic const& tactic,
-                   int bits_total, int wcu) {
+                   int bits_lo, int bits_hi, int wcu) {
+  const int bits_total = bits_lo + bits_hi;   // weight BYTES are the sum; the AIU RUN is not (see plane_run below)
   const double us = timing.complete() ? timing.kernel_span_us : timing.wall_us;
   const int TM = tactic.tm, TN = tactic.tn, TK = tactic.tk;
   const int WM = tactic.wm, WN = tactic.wn;
@@ -481,8 +502,15 @@ inline void report(const Band& bd, const char* tag, MoeTiming const& timing, ben
   //   kit  = K/TK, the k-iteration count. 64 dependent iterations at TK=32 against 8 at TK=256.
   // Both improve monotonically with TileK, so they are confounded across a TileK scan -- report them so the confound is
   // visible rather than discovered later.
-  const int  fold_l = (TK * bits_total / 8) >= 32 ? 1 : 32 / (TK * bits_total / 8);
-  const int  run_b  = fold_l * TK * bits_total / 8;
+  // ONE RUN PER PLANE. A two-plane format is not one contiguous bits_lo+bits_hi plane: Q3 at TileK=64 issues an
+  // int2 32 B run AND an int1 32 B run, and folding is decided per plane (int2 F=1, int1 F=2 at Block_K=128). The
+  // combined spelling printed a 24 B run that no copy ever performs. bits_total stays right for weight BYTES --
+  // it is the same weight, just delivered as two streams.
+  const int  run_lo = moe_plane_run_bytes(bits_lo, TK);
+  const int  run_hi = bits_hi > 0 ? moe_plane_run_bytes(bits_hi, TK) : 0;
+  char run_s[24];
+  if (bits_hi > 0) std::snprintf(run_s, sizeof run_s, "%d+%dB", run_lo, run_hi);
+  else             std::snprintf(run_s, sizeof run_s, "%dB", run_lo);
   const long kit    = bd.K / TK;
   const int  warps  = (TM / WM) * (TN / WN);
   const int  blk    = warps > 0 ? wcu / warps : 0;          // wcu comes from fold::warps_per_cu_chunked at the call site
@@ -502,17 +530,15 @@ inline void report(const Band& bd, const char* tag, MoeTiming const& timing, ben
     std::printf("    %-30s %8.3f us kernel-span-upper | host-wall %8.3f us |"
                 " n=%d min=%7.3f max=%7.3f spread=%5.1f%% | %s |"
                 " mt=%-5lld msk=%4.1f%% skw=%.1fx S=%4.1f%% |"
-                " blk %-2d wrp/CU %-3d grid_wrp/CU %5.1f cta=%-5ld wav=%4.2f run=%-3dB kit=%-3ld%s\n",
+                " blk %-2d wrp/CU %-3d grid_wrp/CU %5.1f cta=%-5ld wav=%4.2f run=%-7s kit=%-3ld\n",
                 tag, us, timing.wall_us, timing.samples, timing.min_us, timing.max_us, timing.spread_pct,
                 core, mt, 100.0 * masked, skew, 100.0 * s_share,
-                blk, blk * warps, wcu_grid, ctas, waves, run_b, kit,
-                metrics.hbm.tile_gbs < 0.9 * bench_measure::kHbmGBPerSecond ? "  NOT-BW" : "");
+                blk, blk * warps, wcu_grid, ctas, waves, run_s, kit);
   } else {
     std::printf("    %-30s %8.2f us ACU-cold-host-wall | %s | mt=%-5lld msk=%4.1f%% skw=%.1fx S=%4.1f%% |"
-                " blk %-2d wrp/CU %-3d grid_wrp/CU %5.1f cta=%-5ld wav=%4.2f run=%-3dB kit=%-3ld%s\n",
+                " blk %-2d wrp/CU %-3d grid_wrp/CU %5.1f cta=%-5ld wav=%4.2f run=%-7s kit=%-3ld\n",
                 tag, us, core, mt, 100.0 * masked, skew, 100.0 * s_share,
-                blk, blk * warps, wcu_grid, ctas, waves, run_b, kit,
-                metrics.hbm.tile_gbs < 0.9 * bench_measure::kHbmGBPerSecond ? "  NOT-BW" : "");
+                blk, blk * warps, wcu_grid, ctas, waves, run_s, kit);
   }
 }
 
@@ -685,7 +711,7 @@ constexpr bool moe_b_chunk_effective() {
           ? fold::warps_per_cu_chunked<TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),32,true>                                 \
           : fold::warps_per_cu<TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),32,true>;                                        \
       char const* _why = nullptr;                                                                                 \
-      if (moe_row_ran(BD, _t, _tim, _f0, (LOB)+(HIB), _ow, _why)) { report(BD,_t,_tim,_cfg,(LOB)+(HIB),_wcu); upd(BEST, _cfg, u, _tim.wall_us); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), u, _tim.wall_us, _tim.samples, _tim.min_us, _tim.max_us, _tim.spread_pct); } \
+      if (moe_row_ran(BD, _t, _tim, _f0, (LOB)+(HIB), _ow, _why)) { report(BD,_t,_tim,_cfg,(LOB),(HIB),_wcu); upd(BEST, _cfg, u, _tim.wall_us); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), u, _tim.wall_us, _tim.samples, _tim.min_us, _tim.max_us, _tim.spread_pct); } \
       else { moe_excluded(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), _why); }             \
     }                                                                                                              \
   }
@@ -741,7 +767,7 @@ constexpr bool moe_b_chunk_effective() {
           ? fold::warps_per_cu_chunked<TMv,TNv,TKv,WMv,WNv,Sv,(BITS),32,true>                                      \
           : fold::warps_per_cu<TMv,TNv,TKv,WMv,WNv,Sv,(BITS),32,true>;                                             \
       char const* _why = nullptr;                                                                                 \
-      if (moe_row_ran(BD, _t, _tim, _f0, (BITS), _ow, _why)) { report(BD,_t,_tim,_cfg,(BITS),_wcu); upd(BEST, _cfg, u, _tim.wall_us); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), u, _tim.wall_us, _tim.samples, _tim.min_us, _tim.max_us, _tim.spread_pct); } \
+      if (moe_row_ran(BD, _t, _tim, _f0, (BITS), _ow, _why)) { report(BD,_t,_tim,_cfg,(BITS),0,_wcu); upd(BEST, _cfg, u, _tim.wall_us); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), u, _tim.wall_us, _tim.samples, _tim.min_us, _tim.max_us, _tim.spread_pct); } \
       else { moe_excluded(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), _why); }             \
     }                                                                                                              \
   }
