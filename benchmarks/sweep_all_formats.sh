@@ -50,7 +50,12 @@ cd "$ROOT"
 # These are the CMake MOE_FORMATS keys, not the JSON schema labels Q3_K/Q5_K/Q6_K.  Passing the latter gets as far
 # as configure and then (correctly) matches no format row; using the public keys here is what makes the default
 # command actually build all five shards.
-FORMATS="${FORMATS:-q3 q5 q6 i2 i4}"
+# `${VAR-default}`, NOT `${VAR:-default}`. The colon form substitutes when VAR is unset OR empty, so an explicit
+# FORMATS="" would silently become all five and the empty-list guard below could never fire. I wrote the guard with
+# the colon form still in place, tested it, watched all five formats build instead, and had already claimed in a
+# commit message that the guard was verified. Unset means "give me everything"; empty means "I said none", and
+# those are different requests.
+FORMATS="${FORMATS-q3 q5 q6 i2 i4}"
 CORES="${MOE_CORES:-192}"
 JOBS="${JOBS:-$(nproc)}"
 TARGET=test_lowbit_moe_bench
