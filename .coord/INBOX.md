@@ -4183,3 +4183,50 @@ MFU 差 8.494873 点(42.894873% vs 34.4%)。这 117.4 MB 就在计时区里,是�
 - 结论要能被证伪:第 2 点必须是读数不是估算;第 3 点要指到具体文件/行。
 - 如果第 1 点的答案是"生产路径也展开",那说明这是个真实的架构选择,请说明当初为什么这么选(可能有正当理由,
   比如 AIU 的连续性要求),**别默认它是疏忽**。
+
+## 103 — TRT-LLM MoeFCGemm 才是我们的同类,以及一个必须先修的计时范围错配
+
+**102 的收尾发现了一个比 102 本身更急的问题,先说它。**
+
+### A. 计时范围错配(优先做)
+
+`time_it`(`lowbit_moe_bench.hpp:211`)是 host wall-clock 包住 launch + `hggcDeviceSynchronize()`,含 launcher/setup/同步。
+5090 那边**每一行都是 CUPTI CONCURRENT_KERNEL kernel-only**,明确排除 launcher/setup/idle。
+
+**所以 34.4% vs 42.894873% 这个对比在时间维度上不对等**,而且方向固定:我们高估了自己的时间、低估了自己的 MFU。
+灵敏度约 **0.9 个 MFU 点 / 10 µs**。前科:DeepGemm 那次 asys kernel-only 452 µs 对 wall-clock 1440 µs,3.2 倍。
+
+问:**我们能不能用 asys 给 C1 冠军行(`i4 32x128:128 w32x32 s3 bc0->0`)取一个 kernel-only 时间**,
+和 wall-clock 的 399.74 µs 并列。这是把整个对标拉回可比的前提,比 A-gather 更该先做。
+如果 asys 不适用(它按整进程归因,102 的注释里提过 iters==0 的理由),说明替代手段是什么。
+
+### B. TRT-LLM MoeFCGemm 才是结构同类
+
+用户的观察,我认为对:**Marlin 是手写 kernel,TRT-LLM MoeFCGemm 和我们一样是 CUTLASS collective**,
+面对同一套约束。它的 gs 是 128 不是 32,但同 shape 上 Marlin@gs32=42.894873% 与 TRT@gs128=44.037859% 只差 3%,
+**说明这个 shape 上 gs 最多值约 1 个点**,所以 44% 作为结构参考是站得住的。
+
+而且它可能直接回答 102 的核心问题。102 已经确立我们展开 A 是 ABI + AIU descriptor 逼出来的。那么:
+
+1. **TRT-LLM 的 MoeFCGemm 是预展开/permute A,还是 in-kernel gather?** 它是 CUTLASS,受 CUTLASS 的
+   `GroupedProblemVisitor` 约束,和我们同源。**如果它也展开,那我们的做法就是这个结构的常态,Marlin 才是特例**;
+   如果它 gather,那 CUTLASS 里就有现成办法,我们的 AIU descriptor 才是真约束。
+   身份锚:TRT-LLM `4ec478deded54cb83593999ccc57f17d3821e12b`,内含 CUTLASS `f94ec46f4f63f96003d6cfdf2014731e7672c281`,
+   CUPTI 已证实 SM120 上跑的是官方 Sm80 `MoeFCGemm` fallback(不是 SM120 specialization)。
+
+2. **结构逐项对比**:tile scheduler(它的 problem visitor vs 我们的 GroupScheduler/持久化)、
+   C1 上它实际选的 tile shape 和 stage 数、epilogue、converter 在 mainloop 里的位置。**只挑对我们可迁移的**。
+
+3. **decode 段的塌陷是不是结构性的。** 实测的 crossover 在四个 shape 上完全一致:
+
+       tokens<=4   Marlin 赢,最多快 148%
+       tokens>=64  TRT-LLM 赢,快 1-29%
+
+   TRT-LLM 在 tokens=1 只有 0.33-0.92% MFU。**如果这是 CUTLASS grouped 结构本身带来的,那照抄 TRT-LLM 救不了
+   decode,decode 必须另走一条路** —— 这条结论对路线图的影响比性能数字大,请给依据而不是印象。
+
+### 边界
+
+- 仍然**只分析不改代码**,除了 A 如果需要跑一次 asys 取数(那属于测量,可以)。
+- 不要重复 102 已经确立的东西。
+- 有任何一条是"我印象里"而不是"我查了代码/跑了数",明确标出来。
