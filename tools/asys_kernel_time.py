@@ -117,8 +117,30 @@ def string_table(con: sqlite3.Connection) -> dict[int, str] | None:
     return None
 
 
+def open_ro(path: str) -> sqlite3.Connection:
+    """Say WHICH of the three ways this fails. sqlite3 reports 'unable to open database file' for a missing
+    path, an unreadable one and a file that is not a database, and the raw traceback names none of them --
+    observed on the box when `asys -o out` had written a report in its own format and no .sqlite existed at all."""
+    import os
+    if not os.path.exists(path):
+        near = sorted(p for p in os.listdir(os.path.dirname(path) or ".")
+                      if os.path.basename(path).split(".")[0] in p)[:8]
+        raise SystemExit(f"[asys] no such file: {path}\n"
+                         f"[asys] alongside it: {', '.join(near) if near else '(nothing with that stem)'}\n"
+                         f"[asys] asys may have written its own report format. Look for an export step -- nsys\n"
+                         f"[asys] spells it `nsys export --type sqlite`; check `asys --help` for the equivalent.")
+    if not os.access(path, os.R_OK):
+        raise SystemExit(f"[asys] {path} exists but is not readable")
+    with open(path, "rb") as fh:
+        magic = fh.read(16)
+    if magic != b"SQLite format 3\x00":
+        raise SystemExit(f"[asys] {path} is not a sqlite database (starts with {magic[:12]!r}).\n"
+                         f"[asys] If this is asys's native report, export it to sqlite first.")
+    return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+
+
 def load(path: str, table=None, name_col=None, dur_col=None) -> list[tuple[str, float]]:
-    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    con = open_ro(path)
     if table and name_col:
         cols = [c for c, _ in columns(con, table)]
         dur = dur_col or pick(cols, DUR_HINTS)
@@ -182,7 +204,7 @@ def main() -> int:
     a = ap.parse_args()
 
     if a.schema:
-        con = sqlite3.connect(f"file:{a.sqlite}?mode=ro", uri=True)
+        con = open_ro(a.sqlite)
         for t in tables(con):
             n = con.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]
             print(f"\n== {t}  ({n} rows)")
