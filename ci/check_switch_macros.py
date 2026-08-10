@@ -82,11 +82,12 @@ INTERPOLATED = re.compile(r"-D([A-Z_]+)\$\{")
 # Intentional exceptions. Each needs a reason, and the reason has to be about REACHABILITY -- "we might want it
 # later" is what produced the list this gate exists to shorten.
 ALLOWED = {
-    # DATED DEBT, NOT ACCEPTED EXCEPTIONS. These eight were found the day this gate was written (2026-08-07) and
-    # each is an open decision, not a justified switch -- they are here so the gate's job becomes "no NEW
+    # DATED DEBT, NOT ACCEPTED EXCEPTIONS. Eight were found the day this gate was written (2026-08-07);
+    # GEMV_GATE_FAST has since left by being DELETED (tests/test_gemv_lowbit.cu:25 records why), which is one
+    # of the two permitted exits, and the staleness check below is what made that visible. Each remaining one
+    # is an open decision, not a justified switch -- they are here so the gate's job becomes "no NEW
     # unrecorded switch appears" while the existing set stays visible and owned. Task #40 tracks the merge.
     # An entry may only leave this dict by being deleted or wired, never by being re-justified.
-    "GEMV_GATE_FAST":         "claude  -- TOOL: narrows the gs axis while iterating; its own comment says build the FULL matrix before trusting a result. Needs a documented invocation, not deletion",
     "QUACTLIZE_DENSE_ONLY":   "claude  -- ci/check_format_table_buildable.py's docstring cites it as a thing a build can do",
     "PPU_B_CHUNK_BISECT":     "codex   -- TOOL: exists BECAUSE PPU_B_CHUNK=2 shipped a debug mode inside the feature flag. Deleting it invites that back",
     "PPU_F16X2_EARLYCLOBBER": "codex   -- UNRUN EXPERIMENT E2 in .coord/BOX.md: was \"=&r\" the rowC fix, or did the failure merely go away across four commits?",
@@ -168,6 +169,25 @@ def main() -> int:
         for n in sorted(interpolated):
             print(f"    -D{n}${{...}}")
         print("    Extracting the name statically is the whole mechanism. Not reporting a verdict.")
+        return 1
+
+    # A STALE EXEMPTION IS INVISIBLE DEBT, and until 2026-08-11 nothing could see one. ALLOWED was consumed at
+    # exactly one place -- as a negative filter in `unreachable` above -- so an entry whose switch had since been
+    # DELETED stayed in the dict forever, and the dict's own rule ("an entry may only leave by being deleted or
+    # wired") could be satisfied without anyone noticing the entry had not left. GEMV_GATE_FAST was in exactly
+    # that state: tests/test_gemv_lowbit.cu:25 says "it is DELETED: nothing in the tree could define it" while
+    # the dict still carried it as open debt owned by claude.
+    #
+    # The worse case is the one this prevents: a future switch reusing a name that is already exempted would be
+    # waved through on the strength of a note about something else.
+    stale = sorted(n for n in ALLOWED if n not in consumers)
+    if stale:
+        print(f"[switch-macros] FAIL: {len(stale)} ALLOWED entr(ies) name a switch that no longer exists:")
+        for n in stale:
+            print(f"    {n}    -- recorded as: {ALLOWED[n].strip()[:90]}")
+        print("    The switch left by being DELETED, which the dict's own rule permits -- but the ENTRY has to")
+        print("    leave with it. Delete these lines. Keeping them exempts a name, not a decision, so the next")
+        print("    switch to reuse the name inherits an exemption written about something else.")
         return 1
 
     if unreachable:
