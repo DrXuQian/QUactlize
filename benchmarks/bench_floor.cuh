@@ -22,6 +22,7 @@
 // be flagged rather than believed.
 #pragma once
 #include <chrono>
+#include <cstdlib>
 #include "cutlass/util/device_memory.h"
 
 // INCLUDE WHAT IT USES. This called hggcDeviceSynchronize while including nothing that declares it -- it
@@ -61,6 +62,12 @@ __global__ void bench_floor_nop(int* sink) { if (threadIdx.x == 0 && blockIdx.x 
 // error that gate exists for: it compiles here and nowhere else, and "it built on my machine" is not evidence
 // about the target. DeviceAllocation is the allocation the rest of the benches use and is portable to both.
 double probe(int iters = 200) {
+  // BENCH_FLOOR=0 SKIPS THE 201 LAUNCHES, for profiler captures. Under asys a single swept config produces 222
+  // kernel activities of which 201 are this nop -- 90% of the capture describing the probe rather than the kernel.
+  // The full-table capture on aiswu96 came back with an EMPTY kernel table, and an activity ceiling is the obvious
+  // suspect, so the cheapest lever is to stop generating activities nobody reads. Returning 0.0 is not a new state:
+  // the allocation-failure path already returns it and the report already prints it as "not measured".
+  if (const char* e = std::getenv("BENCH_FLOOR"); e && e[0] == '0' && e[1] == '\0') return 0.0;
   cutlass::DeviceAllocation<int> sink(1);
   if (sink.get() == nullptr) return 0.0;                  // 0 == "not measured", and it is reported as such
   bench_floor_nop<<<1, 32>>>(sink.get());
