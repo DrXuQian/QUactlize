@@ -59,6 +59,17 @@ using MixedMainloopPolicy = ppu_mixed_policy::MainloopPolicy<QuantOp, BaseSchedu
 using GroupShape = cute::Shape<int,int,int>;                            // per-expert [M,N,K]
 using GroupProblemShape = cutlass::gemm::GroupProblemShape<GroupShape>;
 
+// Optional, non-owning event pair used by a benchmark to bracket ONLY Gemm::run(). Ownership stays with the
+// caller: a timed batch needs one pair per launch so all per-launch spans can be queried after one final device
+// synchronisation rather than serialising the workload launch by launch. `recorded` is a fail-closed handshake --
+// can_implement/initialize may reject before either event exists in the stream, and such a pair must never be
+// queried or substituted with a host-wall number.
+struct KernelSpanEvents {
+  hggcEvent_t start{};
+  hggcEvent_t stop{};
+  bool recorded = false;
+};
+
 // LAUNCHES THAT DID NOT HAPPEN MUST BE VISIBLE TO THE CALLER. launch() returns void and reports failure by printf, so a
 // harness that times it measures an empty call -- the MoE bench ranked several `init failed` rows as its FASTEST configs at
 // 3.17 us, which is 6.6 TB/s against a 2.77 TB/s HBM peak. A counter costs nothing and needs no signature change through the
@@ -113,7 +124,9 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
             // spills into expert e+1's rows and those results are masked anyway. All it needs is the A allocation
             // padded by TileM rows, which buys a uniform fully-vectorised copy for every expert shape. That is a
             // change to the collective's copy, not to a stride, so it is not done here.
-            bool /*unused, was a_row_broadcast*/ = false) {
+            bool /*unused, was a_row_broadcast*/ = false,
+            KernelSpanEvents* kernel_span = nullptr) {
+  if (kernel_span != nullptr) kernel_span->recorded = false;
   using MainloopPolicy = MixedMainloopPolicy<QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
                                               Stages, AiuInterleaved, ElementB, PlaneB2,
                                               ArtifactTileK>;
@@ -332,7 +345,28 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
       hggcMemcpy(workspace, pfx.data(), sizeof(int) * (L + 1), hggcMemcpyHostToDevice);
     }
   }
+  // THE MEASURED INTERVAL STARTS HERE. initialize is launcher/setup work and the ragged prefix above is a
+  // blocking H2D copy; both dominated the old host timer at decode. Recording on run's own stream excludes those
+  // operations. The device span can still include launch scheduling and idle time, so it is an upper bound on a
+  // profiler's kernel-only duration, not a synonym for it.
+  if (kernel_span != nullptr) {
+    hggcError_t const err = hggcEventRecord(kernel_span->start, stream);
+    if (err != hggcSuccess) {
+      std::printf("[moe_grouped] start-event record failed: %s\n", hggcGetErrorString(err));
+      ++moeg_fail_count();
+      return false;
+    }
+  }
   gemm.run(stream);
+  if (kernel_span != nullptr) {
+    hggcError_t const err = hggcEventRecord(kernel_span->stop, stream);
+    if (err != hggcSuccess) {
+      std::printf("[moe_grouped] stop-event record failed: %s\n", hggcGetErrorString(err));
+      ++moeg_fail_count();
+      return false;
+    }
+    kernel_span->recorded = true;
+  }
   return true;
 }
 
@@ -347,14 +381,15 @@ void filter_and_run(const cutlass::half_t* A, const ElementB* B, const cutlass::
                     GroupShape* gsd, GroupShape const* gsh, int const* group_row_offsets,
                     char* ws, size_t ws_bytes, hggcStream_t stream,
                     const PlaneB2* B2 = nullptr, int k_full = -1, bool prefix_ready = false, int splitk = 1,
-                    bool /*unused, was a_row_broadcast*/ = false) {
+                    bool /*unused, was a_row_broadcast*/ = false,
+                    KernelSpanEvents* kernel_span = nullptr) {
   using TileShape = cute::Shape<cute::Int<TM>, cute::Int<TN>, cute::Int<TK>>;
   using WarpShape = cute::Shape<cute::Int<WM>, cute::Int<WN>, cute::Int<TK>>;
   const bool il = (n % 256 == 0 && k % 256 == 0);
   // Artifact folds come from ArtifactTileK; TK here is TacticTileK and changes only the consumer geometry. A larger
   // tactic keeps the resident physical (N/F, F*K) descriptors instead of re-deriving F and switching providers.
   #define MOEG_CALL(SCH, STK, IL) launch<QuantOp, SCH, TileShape, cute::Shape<cute::Int<TN>, STK>, WarpShape, Stages, IL, ElementB, PlaneB2, ExpectPackedScale, false, false, ArtifactTileK>( \
-      A,B,scales,zeros,ptr_D,stride_D,group_M,m,n,k,L,group_size,gsd,gsh,group_row_offsets,ws,ws_bytes,stream,B2,k_full,prefix_ready,splitk,false)
+      A,B,scales,zeros,ptr_D,stride_D,group_M,m,n,k,L,group_size,gsd,gsh,group_row_offsets,ws,ws_bytes,stream,B2,k_full,prefix_ready,splitk,false,kernel_span)
   // COLLECTIVE CONSTRAINT (SK = Scale_TileK = ceil(TK/gs) = #scale groups per K-tile):
   //   Scale_TileK <= mma_K_atoms (= TK/16), i.e. gs >= 16, so each scale group covers >=1 mma atom. The collective
   //   applies scale per mma-atom (FINE path) when a B copy step (64-K) straddles >1 group, so gs < the copy-step K

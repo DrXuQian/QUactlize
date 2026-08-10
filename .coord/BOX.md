@@ -770,7 +770,7 @@ First C1, isolating the previously reported wall-clock champion.  `MOE_REPS=1` s
 launches: one warm-up followed by 20 timed launches.  `MOE_ACU` must be absent because it changes that to one cold
 launch.
 
-    unset MOE_ACU BENCH_JSONL
+    unset MOE_ACU MOE_ONLY MOE_ABCAST MOEG_FORCE3D BENCH_JSONL
     MOE_REPS=1 MOE_VERBOSE=1 \
       MOE_ONLY='i4 32x128:128 w32x32 s3 bc0->0' \
       "$C1" 256 4096 512 2048 32 4 8 | tee /tmp/104_c1_wall_and_identity.log
@@ -927,6 +927,11 @@ and any device/compiler error verbatim.  There is no acceptable wall-clock subst
 
 ## 104b — ONE capture, every config: kernel-only time from the asys sqlite
 
+**SUPERSEDED BY INBOX 113; DO NOT RE-RUN THIS CAPTURE PROTOCOL.** One capture produced the S068 anchor below, but
+repeated captures report `can't find time calibration info for device id ...` with changing 64-KB-aligned ids and
+export zero KERNEL/MEMCPY/MEMSET rows (33,529 RUNTIME rows survive). This is profiler/driver state, not a harness
+fallback. The one usable result remains evidence; the repeatable measurement is now the in-harness event span.
+
 **This replaces the per-config `MOE_ONLY` / 21-launch / drop-one / mean-of-20 procedure.** That procedure exists to
 reconstruct a kernel time out of host wall-clock by repeating until the launch overhead averages out. It does not
 average out: `time_it` wraps the launch and `hggcDeviceSynchronize` in the host clock, and the grouped path runs
@@ -1049,3 +1054,76 @@ Wanted back: `gate-sha`; the ppu001/ppu0015 unique-arch lines; the `m8n16k16` sy
 asymmetric-case summaries; `[G2-green]`; `[G2-negative]`; the ppu0015 `Cannot select` diagnostic; final PASS; and the
 printed artifact directory. A ppu0015 nonzero rc without both `Cannot select` and `m8n16k16` is a failure for the
 wrong reason, not G0 passing.
+
+---
+
+## INBOX 113 — in-harness device-event span, before 112
+
+This replaces 104b's unreliable profiler dependency. The event pair is recorded after `initialize` and the optional
+blocking ragged-prefix H2D, immediately around `gemm.run()` on the same stream. Each row now prints two times from
+the same 20 launches:
+
+- `kernel-span-upper`: primary for ranking/MFU/MBU; includes launch scheduling/idle, so it is an upper bound on, not
+  an alias for, profiler kernel-only time;
+- `host-wall`: the instrumented old interval, retained only for audit and the same-clock host launch-floor marker.
+
+The one usable asys capture is the calibration anchor, not another required tool invocation: S068's exact decode row
+was 11.122 us kernel-only (20 launches, 4.3% `(max-min)/mean`) beside 20.62 us wall. The 9.50 us gap was 46% of wall.
+The earlier subtract-a-guessed-floor estimate, 7.49 us / 25.5% MBU, was 48% optimistic and is retired.
+
+Build the two quant modes separately. C1's recorded 399.74 us row was ScaleOnly; S068's 20.62/11.122 us anchor and
+5,283,840-byte traffic check were ScaleZero. Tactic TileK is a row axis now -- do not restore the stale `MOE_TK=128`
+build knob.
+
+    set -euo pipefail
+    cd /sim/eec/shared/junfu.qx/quactlize
+    git pull --ff-only origin develop
+    git submodule update --init --recursive
+    echo "gate-sha=$(git rev-parse HEAD)"
+
+    PPU_BUILD_DIR="$PWD/build_113_c1" \
+      MOE_FORMATS=i4 MOE_TM_LIST=32 MOE_TN_LIST=128 MOE_WM_LIST=32 MOE_STAGES=3 \
+      PPU_DEFS='LOWBIT_QMODE=1' \
+      TARGET=test_lowbit_moe_bench ./build.sh
+    C1=$(find build_113_c1 -type f -name test_lowbit_moe_bench -perm -u+x -print -quit)
+    test -n "$C1"
+
+    PPU_BUILD_DIR="$PWD/build_113_decode" \
+      MOE_FORMATS=i4 MOE_TM_LIST=16 MOE_TN_LIST=32 MOE_WM_LIST=16 MOE_STAGES=3 \
+      PPU_DEFS='' \
+      TARGET=test_lowbit_moe_decode_bench ./build.sh
+    DEC=$(find build_113_decode -type f -name test_lowbit_moe_decode_bench -perm -u+x -print -quit)
+    test -n "$DEC"
+
+    unset MOE_ACU MOE_ONLY MOE_ABCAST MOEG_FORCE3D MOEG_PROBE BENCH_JSONL
+    MOE_REPS=1 MOE_VERBOSE=1 \
+      MOE_ONLY='i4 32x128:128 w32x32 s3 bc0->0' \
+      "$C1" 256 4096 512 2048 32 4 8 | tee /tmp/113_C1.log
+
+    MOE_REPS=1 MOE_VERBOSE=1 \
+      MOE_ONLY='i4 16x32:256 w16x16 s3 bc0->0' \
+      "$DEC" 256 8 512 2048 32 3 8 | tee /tmp/113_S068.log
+
+    # Same binary/config/router population, about 3.98x the distinct path bytes by widening N from 512 to 2048.
+    MOE_REPS=1 MOE_VERBOSE=1 \
+      MOE_ONLY='i4 16x32:256 w16x16 s3 bc0->0' \
+      "$DEC" 256 8 2048 2048 32 3 8 | tee /tmp/113_N2048.log
+
+Independent traffic checks for the printed rows are C1 ScaleOnly `318,767,104 B`, S068 ScaleZero `5,283,840 B`,
+and N=K=2048 ScaleZero `21,037,056 B`. A different quant-mode banner invalidates that row's byte check.
+
+Acceptance, in order:
+
+1. Every non-ACU detailed candidate row names `kernel-span-upper` and `host-wall`, and prints `n=20`, min, max,
+   and `spread=(max-min)/mean`. Recompute spread from the three printed values. Summary/verdict rows retain the two
+   means but do not repeat the per-launch range.
+2. S068's event mean must land near the independent 11.122 us anchor, not 20.62 us. Treat 9--14 us as a fault-screen
+   window rather than a new performance tolerance; outside it, stop and inspect the event placement/runtime.
+3. S068 and N2048 must no longer collapse to the old ~20.6/~20.7 us pair. Their event means must differ by at least
+   2 us, and their `[min,max]` ranges must not overlap. Either failure means this change has not yet supplied the
+   2-us-resolution ruler needed by 112.
+4. C1 and S068 must each return their exact selected tag, event mean/min/max/spread, host wall, and the event-based
+   MFU/MBU row. Do not substitute the still-present wall number into either metric.
+
+Wanted back: gate SHA; both build rc/binary paths and quant banners; all three exact candidate rows plus verdict rows;
+the three independent byte totals; and any hggc event error verbatim. Do not open 112 until these gates pass.

@@ -211,7 +211,7 @@ int main(int argc, char** argv) {
   // "single-plane" groups i2/i4 -- a split by how the kernel is built, not by anything a caller picks, and it hid i4's
   // own best entirely once i2 started winning the shared slot.
   Best b[MOE_FMT_COUNT];
-  for (int i = 0; i < MOE_FMT_COUNT; ++i) { b[i].tag[0] = '\0'; b[i].us = 1e18; }
+  for (int i = 0; i < MOE_FMT_COUNT; ++i) { b[i].tag[0] = '\0'; b[i].us = b[i].wall_us = 1e18; }
 
   // THE WHOLE LIST, REPEATED -- not each candidate repeated in place. See the comment on Best in
   // lowbit_moe_bench.hpp: drift is time-correlated, so interleaving is what keeps it from landing on one
@@ -219,10 +219,19 @@ int main(int argc, char** argv) {
   const int reps = moe_acu() ? 1 : bench_measure::read_reps("MOE_REPS");
   (void)bench_floor::us();  // measure before the sweep even when its explanatory banner is hidden
   if (moe_verbose()) bench_floor::banner();
-  char build_identity[128];
+  if (moe_acu())
+    std::printf("  [timing] MOE_ACU=1 bypasses device-event sampling: one cold host-wall launch, not a timing\n");
+  else
+    std::printf("  [timing] primary us = device-event kernel-span upper bound around gemm.run"
+                " (includes launch/idle; not profiler kernel-only)\n"
+                "           audit = instrumented host-wall over the same launches;"
+                " per-launch spread=(max-min)/mean, warmup excluded\n");
+  char build_identity[192];
+  char const* timing_identity = moe_acu() ? "acu-cold-host-wall-v1" : "event-kernel-span-upper-v1";
   std::snprintf(build_identity, sizeof build_identity,
-                "PPU_B_CHUNK=row-axis %s table-band=%s table-m-max=%d",
-                LOWBIT_QMODE_STR, MOE_TABLE_BAND_STR, MOE_TABLE_M_MAX);
+                "PPU_B_CHUNK=row-axis %s table-band=%s table-m-max=%d hdr-rev=%d timing=%s",
+                LOWBIT_QMODE_STR, MOE_TABLE_BAND_STR, MOE_TABLE_M_MAX,
+                LOWBIT_MOE_BENCH_REV, timing_identity);
   bench_samples::run_header(MOE_TABLE_BENCH_STR, build_identity, reps);
   for (int r = 0; r < reps; ++r) {
     moe_pass() = r;
@@ -250,9 +259,10 @@ int main(int argc, char** argv) {
                         : reps < 2 ? "MOE_REPS=1: ONE timing per candidate -- NOT a ranking"
                                    : "VERDICT: best config per format");
   if (reps > 1 && moe_verbose())
-    std::printf("  %d passes, median per candidate, band = [min,max] over passes. A candidate whose band reaches\n"
-                "  into the leader's is reported as a TIE, not beaten: at the recorded 13%% cross-run spread that\n"
-                "  is the honest statement. Ties are the guards to expand, not noise to round away.\n", reps);
+    std::printf("  %d passes, median event-span per candidate, band = [min,max] over passes. A candidate whose\n"
+                "  band reaches into the leader's is reported as a TIE, not beaten. The old 13%% host-wall\n"
+                "  cross-run spread is not reused as an event-span noise floor; each row prints its own 20-launch spread.\n",
+                reps);
   int ord[MOE_FMT_COUNT];
   for (int i = 0; i < MOE_FMT_COUNT; ++i) ord[i] = i;
   for (int i = 1; i < MOE_FMT_COUNT; ++i)                    // insertion sort: 5 entries, fastest first
@@ -275,7 +285,9 @@ int main(int argc, char** argv) {
     const int nt = ties[ord[i]];
     // LAUNCH-BOUND IS SAID ON THE ROW, not left in the banner. A reader comparing two decode rows will not go
     // back and divide by the floor; the row has to carry it.
-    char const* lb = bench_floor::launch_bound(e.us) ? "  [LAUNCH-BOUND]" : "";
+    // bench_floor is a HOST launch-rate measurement. The leader is selected on event span, but this diagnostic
+    // must stay on the corresponding host wall or it would compare two clocks and recreate the protocol error.
+    char const* lb = bench_floor::launch_bound(e.wall_us) ? "  [HOST-LAUNCH-BOUND]" : "";
     char verdict[96] = "";
     if (i == 0 && !moe_acu()) {
       if (reps < 2)      std::snprintf(verdict, sizeof verdict, "   <-- lowest (ONE pass: not a ranking)");
@@ -293,10 +305,17 @@ int main(int argc, char** argv) {
     // kernel padded out to TileM are the kernel's own overhead, not work, and they must count AGAINST it: an MFU
     // that forgave padding would be silent on exactly the defect it should expose (an oversized TileM at decode).
     // msk is printed beside it as a DIAGNOSTIC -- it says where the missing fraction went, it does not rescale it.
-    std::printf("  %-4s %-30s %8.2f us | %6.1f TF/s (%4.1f%% MFU) msk=%.0f%%%s%s\n",
-                moe_fmt_names[ord[i]], e.tag, e.us, tf, bench_measure::mfu_pct(tf), 100.0 * msk, lb, verdict);
+    if (moe_acu())
+      std::printf("  %-4s %-30s %8.2f us ACU-cold-host-wall | NOT A PERFORMANCE NUMBER%s\n",
+                  moe_fmt_names[ord[i]], e.tag, e.wall_us, verdict);
+    else
+      std::printf("  %-4s %-30s %8.3f us kernel-span-upper | host-wall %8.3f us |"
+                  " %6.1f TF/s (%4.1f%% MFU) msk=%.0f%%%s%s\n",
+                  moe_fmt_names[ord[i]], e.tag, e.us, e.wall_us,
+                  tf, bench_measure::mfu_pct(tf), 100.0 * msk, lb, verdict);
     if (*lb && moe_verbose())
-      std::printf("       %s this row is within 3x the empty-launch floor (%.2f us)\n", lb, bench_floor::us());
+      std::printf("       %s host-wall is within 3x the host empty-launch floor (%.2f us)\n",
+                  lb, bench_floor::us());
   }
   // THE TIES ARE THE OUTPUT, not a footnote. codex's H1/H2 pruning rules keep guards precisely so that a guard
   // landing inside the leader's band triggers expanding that stratum; without this list that rule has no input.

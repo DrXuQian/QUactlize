@@ -170,10 +170,10 @@ inline int read_reps(char const* local_override_env = nullptr) {
 }  // namespace bench_measure
 
 // ================= SELECTION ==================================================================================
-// A WINNER PICKED FROM ONE TIMING IS PICKED FROM NOISE. The recorded cross-run spread for one configuration on
-// this machine is 13%, and the old rule here was `if (u < b.us)` over a single measurement per candidate -- so any
-// two configurations within 13% of each other were being ordered by whichever happened to run in a good moment.
-// The sweep exists to separate configurations that differ by less than that.
+// A WINNER PICKED FROM ONE TIMING IS PICKED FROM NOISE. The historical HOST-WALL protocol once showed 13%
+// cross-run spread, and the old rule here was `if (u < b.us)` over a single measurement per candidate. That number
+// is motivation, not a threshold: MoE now selects on device-event spans and prints their own per-launch spread.
+// The procedure below uses each candidate's actually measured [min,max] band, never a baked-in 13% allowance.
 //
 // THREE CHOICES, EACH LOAD-BEARING:
 //
@@ -193,11 +193,13 @@ struct Sample {
   bench_measure::Tactic tactic{};
   bool has_tactic = false;
   std::vector<double> us;
+  std::vector<double> wall_us;       // same launches, for protocol audit / host launch-floor diagnostics
 };
 
 struct Best {
   char tag[bench_measure::kTagBytes];
   double us;                       // median of the leader
+  double wall_us;                  // host-wall median for that same leader (selection still uses `us` only)
   std::vector<Sample> seen;        // every candidate, every repeat
   bench_measure::Tactic tactic{};  // structured identity of the leader; never parse tag to recover it
   bool has_tactic = false;
@@ -214,10 +216,12 @@ inline double median_of(std::vector<double> v) {
 
 // Called by every generated unit for every kernel it runs. Accumulates rather than compares: the comparison
 // cannot be made until all repeats are in, and doing it here is what made the old version single-shot.
-inline void upd_impl(Best& b, const char* t, double u, bench_measure::Tactic const* tactic) {
+inline void upd_impl(Best& b, const char* t, double u, double wall_u,
+                     bench_measure::Tactic const* tactic) {
   for (auto& s : b.seen)
     if (std::strncmp(s.tag, t, bench_measure::kTagBytes) == 0) {
       s.us.push_back(u);
+      s.wall_us.push_back(wall_u);
       if (tactic && !s.has_tactic) { s.tactic = *tactic; s.has_tactic = true; }
       return;
     }
@@ -225,24 +229,32 @@ inline void upd_impl(Best& b, const char* t, double u, bench_measure::Tactic con
   std::snprintf(b.seen.back().tag, bench_measure::kTagBytes, "%s", t);
   if (tactic) { b.seen.back().tactic = *tactic; b.seen.back().has_tactic = true; }
   b.seen.back().us.push_back(u);
+  b.seen.back().wall_us.push_back(wall_u);
 }
 
-inline void upd(Best& b, const char* t, double u) { upd_impl(b, t, u, nullptr); }
+inline void upd(Best& b, const char* t, double u) { upd_impl(b, t, u, u, nullptr); }
 
 inline void upd(Best& b, bench_measure::Tactic const& tactic, double u) {
   char tag[bench_measure::kTagBytes];
   bench_measure::format_tag(tag, sizeof tag, tactic);
-  upd_impl(b, tag, u, &tactic);
+  upd_impl(b, tag, u, u, &tactic);
+}
+
+inline void upd(Best& b, bench_measure::Tactic const& tactic, double u, double wall_u) {
+  char tag[bench_measure::kTagBytes];
+  bench_measure::format_tag(tag, sizeof tag, tactic);
+  upd_impl(b, tag, u, wall_u, &tactic);
 }
 
 // Resolve after every repeat has run. Returns the number of candidates that TIE with the leader -- 0 means the
 // leader is separated, and anything above 0 is the honest statement that this sweep did not resolve them.
 inline int settle(Best& b) {
-  b.us = 1e18; b.tag[0] = '\0'; b.has_tactic = false;
+  b.us = 1e18; b.wall_us = 1e18; b.tag[0] = '\0'; b.has_tactic = false;
   for (auto& s : b.seen) {
     const double m = median_of(s.us);
     if (m < b.us) {
       b.us = m;
+      b.wall_us = median_of(s.wall_us);
       std::snprintf(b.tag, bench_measure::kTagBytes, "%s", s.tag);
       b.tactic = s.tactic;
       b.has_tactic = s.has_tactic;

@@ -34,6 +34,9 @@ int main() {
   // The pair that MUST cancel: a candidate that launched and finished.
   bench_samples::attempt(s);
   s.us = 209.27;
+  s.timing = "event-kernel-span-upper-v1";
+  s.wall_us = 220.50; s.launches = 20;
+  s.launch_min_us = 205.0; s.launch_max_us = 215.0; s.launch_spread_pct = 4.8;
   bench_samples::emit(s);
   // The one that must NOT: a candidate that launched and died. Nothing follows it, exactly as a device assert
   // would leave the file.
@@ -94,19 +97,25 @@ def main() -> int:
         if (stopped[0].get("tm"), stopped[0].get("st")) != (16, 2):
             return fail(f"the wrong attempt was reported as unfinished: {stopped[0]}")
 
-        # The completed pair must agree field for field apart from `us`, or an attempt and its sample could
-        # describe different runs and the matching would be luck.
+        # The completed pair must agree on every IDENTITY field. Device-event MoE samples legitimately add a
+        # named timing protocol, same-batch wall and per-launch distribution after the attempt was written; those
+        # are measurements just like `us`, not candidate identity.
         a_done = next(a for a in attempts if a.get("tm") == 64)
         s_done = samples[0]
+        expected_timing = dict(timing="event-kernel-span-upper-v1", wall_us=220.5, launches=20,
+                               launch_min_us=205.0, launch_max_us=215.0, launch_spread_pct=4.8)
+        if any(s_done.get(k) != v for k, v in expected_timing.items()):
+            return fail(f"optional event timing fields did not round-trip: {s_done}")
+        measurement = {"rec", "us", *expected_timing}
         differing = {k for k in set(a_done) | set(s_done)
-                     if k not in ("rec", "us") and a_done.get(k) != s_done.get(k)}
+                     if k not in measurement and a_done.get(k) != s_done.get(k)}
         if differing:
-            return fail(f"attempt and its sample disagree on {sorted(differing)} -- they may describe different runs")
+            return fail(f"attempt and sample disagree on identity fields {sorted(differing)} -- they may describe different runs")
         if "us" in a_done:
             return fail("the attempt record carries a `us`; nothing is measured before the launch")
 
-    print(f"[attempt-roundtrip] PASS -- the writer's actual bytes parse, the finished pair cancels, "
-          f"the dead candidate is named (tm=16 st=2), and attempt/sample agree on every field but `us`")
+    print(f"[attempt-roundtrip] PASS -- actual bytes parse, event timing fields round-trip, the finished pair "
+          f"cancels, the dead candidate is named (tm=16 st=2), and all identity fields agree")
     return 0
 
 

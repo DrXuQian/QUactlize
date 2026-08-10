@@ -18,6 +18,9 @@
 #include <cstdint>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <limits>
+#include <type_traits>
 #include "cutlass/util/device_memory.h"
 #include "cutlass/util/packed_stride.hpp"
 #include "helper.h"
@@ -66,7 +69,7 @@ static_assert(moe_metadata_planes(QM::FinegrainedScaleOnly) == 1 &&
 // containing `fold::FoldTraits` while the checked-out tree had `moe_fold`, and there was no way to tell from here whether
 // the box had built an older commit or the overlay had a stale copy. That ambiguity has cost rounds twice in this work (the
 // per-row PPU_B_CHUNK request/effective tag exists for the same reason), so it gets an invariant instead of a guess.
-#define LOWBIT_MOE_BENCH_REV 20
+#define LOWBIT_MOE_BENCH_REV 21
 
 // The table band is generated next to each target's dispatcher and included before this header. Other users of this
 // shared harness (the split-K probe) remain explicitly unbanded rather than accidentally inheriting lowbit-MoE metadata.
@@ -199,16 +202,37 @@ inline void moe_attempt(const Band& bd, char const* schema,
 
 inline void moe_sample(const Band& bd, char const* schema,
                        int tm, int tn, int tk, int wm, int wn, int st,
-                       int bc, int bc_eff, double us) {
+                       int bc, int bc_eff, double us,
+                       double wall_us = 0.0, int launches = 0,
+                       double launch_min_us = 0.0, double launch_max_us = 0.0,
+                       double launch_spread_pct = 0.0) {
   if (!bench_samples::enabled()) return;
   bench_samples::Sample s = moe_identity(bd, schema, tm, tn, tk, wm, wn, st, bc, bc_eff);
   s.us = us;
+  if (launches > 0) {
+    s.timing = "event-kernel-span-upper-v1";
+    s.wall_us = wall_us;
+    s.launches = launches;
+    s.launch_min_us = launch_min_us;
+    s.launch_max_us = launch_max_us;
+    s.launch_spread_pct = launch_spread_pct;
+  }
   bench_samples::emit(s);
 }
 
+inline void moe_excluded(const Band& bd, char const* schema,
+                         int tm, int tn, int tk, int wm, int wn, int st,
+                         int bc, int bc_eff, char const* why) {
+  if (!bench_samples::enabled()) return;
+  bench_samples::excluded(moe_identity(bd, schema, tm, tn, tk, wm, wn, st, bc, bc_eff), why);
+}
+
+// The zero-argument overload remains for the split-K probe that includes this shared header. Its launcher does not
+// expose an event seam, so changing its number silently would be worse than keeping its explicitly host-wall protocol.
 // iters == 0 means EXACTLY ONE launch and no warmup: acu attributes counters to the whole process, so a warmup would
 // double-count and 20 iterations would make the report meaningless.
-template <class F> inline double time_it(F&& f, int iters) {
+template <class F, std::enable_if_t<std::is_invocable_v<F>, int> = 0>
+inline double time_it(F&& f, int iters) {
   if (iters == 0) {
     auto a = std::chrono::high_resolution_clock::now();
     f(); CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
@@ -221,6 +245,103 @@ template <class F> inline double time_it(F&& f, int iters) {
   CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
   auto t1 = std::chrono::high_resolution_clock::now();
   return std::chrono::duration<double, std::micro>(t1 - t0).count() / iters;
+}
+
+// ONE MEASUREMENT, TWO CLOCKS. `kernel_span_us` is the primary time used for tactic selection and metrics; wall_us
+// is the same 20 instrumented launches measured by the old host clock so the protocol change remains auditable.
+// The device interval starts after initialize and any blocking ragged-prefix H2D, immediately around gemm.run().
+// It can still include launch scheduling and idle gaps, hence "upper bound" rather than profiler kernel-only.
+struct MoeTiming {
+  double kernel_span_us = 0.0;
+  double wall_us = 0.0;
+  double min_us = 0.0;
+  double max_us = 0.0;
+  double spread_pct = 0.0;  // (max-min)/mean, deliberately identical to tools/asys_kernel_time.py
+  int samples = 0;
+  int expected = 0;
+
+  bool complete() const { return expected > 0 && samples == expected && kernel_span_us > 0.0; }
+};
+
+// Own the runtime events outside the measured host-wall interval. A vector<PpuTimer> is unsafe here because the
+// existing helper is shallow-copyable despite owning two handles; this batch owns plain non-copyable slots instead.
+class MoeKernelEventBatch {
+ public:
+  explicit MoeKernelEventBatch(int count) : events_(size_t(count)) {
+    for (auto& e : events_) {
+      CUTLASS_PPU_CHECK(hggcEventCreate(&e.start));
+      CUTLASS_PPU_CHECK(hggcEventCreate(&e.stop));
+    }
+  }
+  ~MoeKernelEventBatch() {
+    for (auto& e : events_) {
+      CUTLASS_PPU_CHECK(hggcEventDestroy(e.start));
+      CUTLASS_PPU_CHECK(hggcEventDestroy(e.stop));
+    }
+  }
+  MoeKernelEventBatch(MoeKernelEventBatch const&) = delete;
+  MoeKernelEventBatch& operator=(MoeKernelEventBatch const&) = delete;
+
+  moe_grouped_ppu::KernelSpanEvents* at(int i) { return &events_[size_t(i)]; }
+  moe_grouped_ppu::KernelSpanEvents const& at(int i) const { return events_[size_t(i)]; }
+
+ private:
+  std::vector<moe_grouped_ppu::KernelSpanEvents> events_;
+};
+
+// S068 exposed why subtraction is not a timer: the host wall was 20.62 us, while the one usable asys capture was
+// 11.122 us kernel-only (9.50 us / 46% outside it) with 4.3% launch spread. An earlier estimate subtracted a guessed
+// floor and claimed 7.49 us / 25.5% MBU; the real kernel was 48% slower, so that inference is retired. Measure each
+// launch directly. Create/query/destroy remain outside wall; only the two EventRecord enqueues instrument the batch.
+template <class F, std::enable_if_t<std::is_invocable_v<F, moe_grouped_ppu::KernelSpanEvents*>, int> = 0>
+inline MoeTiming time_it(F&& f, int iters) {
+  MoeTiming out{};
+  out.expected = iters;
+  if (iters == 0) {
+    auto a = std::chrono::high_resolution_clock::now();
+    f(nullptr); CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
+    auto b = std::chrono::high_resolution_clock::now();
+    out.wall_us = std::chrono::duration<double, std::micro>(b - a).count();
+    return out;
+  }
+
+  // Create the event pool before warmup as well as before wall t0, and instrument the warmup too: neither event
+  // creation nor first-EventRecord lazy initialisation may land on timed launch 1. The completed warmup pair is
+  // dedicated to that launch and never queried. Then run exactly `iters` timed launches on `iters` other pairs.
+  // Distinct timed pairs preserve every interval while retaining the old one-final-sync pattern; per-launch sync
+  // would change it.
+  MoeKernelEventBatch batch(iters + 1);
+  f(batch.at(0));
+  CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
+  auto t0 = std::chrono::high_resolution_clock::now();
+  for (int i = 0; i < iters; ++i) f(batch.at(i + 1));
+  CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
+  auto t1 = std::chrono::high_resolution_clock::now();
+  out.wall_us = std::chrono::duration<double, std::micro>(t1 - t0).count() / double(iters);
+
+  double sum = 0.0;
+  double lo = std::numeric_limits<double>::infinity();
+  double hi = 0.0;
+  for (int i = 0; i < iters; ++i) {
+    auto const& e = *batch.at(i + 1);
+    if (!e.recorded) continue;  // fail closed below; never query an event rejected before run
+    float ms = 0.0f;
+    CUTLASS_PPU_CHECK(hggcEventElapsedTime(&ms, e.start, e.stop));
+    double const us = double(ms) * 1.0e3;
+    if (!std::isfinite(us) || us <= 0.0) continue;  // 19/20 must fail closed, not raise MFU through a zero sample
+    sum += us;
+    lo = std::min(lo, us);
+    hi = std::max(hi, us);
+    ++out.samples;
+  }
+  if (out.samples > 0) {
+    out.kernel_span_us = sum / double(out.samples);
+    out.min_us = lo;
+    out.max_us = hi;
+    out.spread_pct = out.kernel_span_us > 0.0
+        ? 100.0 * (out.max_us - out.min_us) / out.kernel_span_us : 0.0;
+  }
+  return out;
 }
 
 // A CHECKSUM BEFORE/AFTER IS NOT A WRITE WITNESS HERE. Every candidate sees the same inputs and a correct candidate
@@ -309,8 +430,9 @@ inline double masked_fraction(const Band& bd, int TM) {
   return mt ? 1.0 - double(bd.total) / (double(TM) * double(mt)) : 0.0;
 }
 
-inline void report(const Band& bd, const char* tag, double us, bench_measure::Tactic const& tactic,
+inline void report(const Band& bd, const char* tag, MoeTiming const& timing, bench_measure::Tactic const& tactic,
                    int bits_total, int wcu) {
+  const double us = timing.complete() ? timing.kernel_span_us : timing.wall_us;
   const int TM = tactic.tm, TN = tactic.tn, TK = tactic.tk;
   const int WM = tactic.wm, WN = tactic.wn;
   long long mt_max = 0;
@@ -376,30 +498,53 @@ inline void report(const Band& bd, const char* tag, double us, bench_measure::Ta
   const double wcu_grid = gwarps / 72.0;
   char core[256];
   bench_measure::format_metrics(core, sizeof core, metrics);
-  std::printf("    %-30s %8.2f us | %s | mt=%-5lld msk=%4.1f%% skw=%.1fx S=%4.1f%% |"
-              " blk %-2d wrp/CU %-3d grid_wrp/CU %5.1f cta=%-5ld wav=%4.2f run=%-3dB kit=%-3ld%s\n",
-              tag, us, core, mt, 100.0 * masked, skew, 100.0 * s_share,
-              blk, blk * warps, wcu_grid, ctas, waves, run_b, kit,
-              metrics.hbm.tile_gbs < 0.9 * bench_measure::kHbmGBPerSecond ? "  NOT-BW" : "");
+  if (timing.complete()) {
+    std::printf("    %-30s %8.3f us kernel-span-upper | host-wall %8.3f us |"
+                " n=%d min=%7.3f max=%7.3f spread=%5.1f%% | %s |"
+                " mt=%-5lld msk=%4.1f%% skw=%.1fx S=%4.1f%% |"
+                " blk %-2d wrp/CU %-3d grid_wrp/CU %5.1f cta=%-5ld wav=%4.2f run=%-3dB kit=%-3ld%s\n",
+                tag, us, timing.wall_us, timing.samples, timing.min_us, timing.max_us, timing.spread_pct,
+                core, mt, 100.0 * masked, skew, 100.0 * s_share,
+                blk, blk * warps, wcu_grid, ctas, waves, run_b, kit,
+                metrics.hbm.tile_gbs < 0.9 * bench_measure::kHbmGBPerSecond ? "  NOT-BW" : "");
+  } else {
+    std::printf("    %-30s %8.2f us ACU-cold-host-wall | %s | mt=%-5lld msk=%4.1f%% skw=%.1fx S=%4.1f%% |"
+                " blk %-2d wrp/CU %-3d grid_wrp/CU %5.1f cta=%-5ld wav=%4.2f run=%-3dB kit=%-3ld%s\n",
+                tag, us, core, mt, 100.0 * masked, skew, 100.0 * s_share,
+                blk, blk * warps, wcu_grid, ctas, waves, run_b, kit,
+                metrics.hbm.tile_gbs < 0.9 * bench_measure::kHbmGBPerSecond ? "  NOT-BW" : "");
+  }
 }
 
 // DID THIS ROW ACTUALLY RUN? Two cache-independent nets exclude it: the launch-refusal counter, and the full-D poison
 // witness above. The old bandwidth net divided one expert's weights by the per-iteration time even though time_it()
 // warms the SAME buffers; cache-hot bytes can legitimately imply more than the HBM rate. Keep that rate as a warning,
 // but never let either a no-write launch or an all-zero result enter report(), samples or the winner verdict.
-inline bool moe_row_ran(const Band& bd, const char* tag, double us, int fail0, int bits_total,
-                        MoeOutputWitness output) {
+inline bool moe_row_ran(const Band& bd, const char* tag, MoeTiming const& timing, int fail0, int bits_total,
+                        MoeOutputWitness output, char const*& exclusion_reason) {
+  exclusion_reason = nullptr;
+  const double us = timing.complete() ? timing.kernel_span_us : timing.wall_us;
   const bool refused = moe_grouped_ppu::moeg_fail_count() > fail0;
   if (refused) {
+    exclusion_reason = "launch refused";
     std::printf("    %-30s %8.2f us | DID NOT RUN (launch refused) -- excluded from the verdict\n", tag, us);
     return false;
   }
+  if (timing.expected > 0 && !timing.complete()) {
+    exclusion_reason = "incomplete device-event batch";
+    std::printf("    %-30s %8.2f us host-wall | DID NOT TIME (%d/%d valid device-event spans)"
+                " -- no wall fallback; excluded from the verdict\n",
+                tag, timing.wall_us, timing.samples, timing.expected);
+    return false;
+  }
   if (!output.fully_written) {
+    exclusion_reason = "D retained poison (no or partial write)";
     std::printf("    %-30s %8.2f us | DID NOT RUN (D retained poison: no/partial write) -- excluded from the verdict\n",
                 tag, us);
     return false;
   }
   if (!output.any_nonzero) {
+    exclusion_reason = "D is all zero";
     std::printf("    %-30s %8.2f us | DID NOT RUN (D is all zero) -- excluded from the verdict\n", tag, us);
     return false;
   }
@@ -524,22 +669,24 @@ constexpr bool moe_b_chunk_effective() {
     char _t[bench_measure::kTagBytes]; bench_measure::format_tag(_t, sizeof _t, _cfg);                              \
     if (moe_row_selected(_t)) {                                                                                    \
       (BEST).any_selected = true;                                                                                  \
-      auto _go = [&]{                                                                                              \
+      auto _go = [&](moe_grouped_ppu::KernelSpanEvents* _kev){                                                    \
         moe_grouped_ppu::filter_and_run<LOWBIT_QMODE_SEL,TMv,TNv,TKv,WMv,WNv,Sv,LOELEM,HIELEM,false,Av>(           \
             (BD).dA, _b1.get(), (BD).dSc, (BD).dZr, (BD).pd, (BD).sd, (BD).gm,                                     \
             (BD).Mmax, (BD).N, (BD).K, (BD).L, (BD).gs, (BD).rdev, (BD).rsh.data(),                                \
             (BD).mode ? (BD).offdev : nullptr, (BD).ws, (BD).wsb, nullptr, _b2.get(),                                \
-            /*k_full=*/-1, /*prefix_ready=*/false, /*splitk=*/1, moe_abcast()); };                                  \
-      double u; const int _f0 = moe_grouped_ppu::moeg_fail_count();                                                \
+            /*k_full=*/-1, /*prefix_ready=*/false, /*splitk=*/1, moe_abcast(), _kev); };                            \
+      MoeTiming _tim; double u; const int _f0 = moe_grouped_ppu::moeg_fail_count();                                \
       MoeOutputWitness _ow{true, true};                                                                            \
       moe_attempt(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc));                             \
       std::printf("  -> %s\n", _t); std::fflush(stdout);                                                           \
-      if (moe_acu()) { u = time_it(_go, 0); if (moe_verbose()) std::printf("  [acu] ONE COLD launch (not a timing): %s\n", _t); }       \
-      else             { moe_poison_output(BD); u = time_it(_go, 20); _ow = moe_output_witness(BD); }              \
+      if (moe_acu()) { _tim = time_it(_go, 0); u = _tim.wall_us; if (moe_verbose()) std::printf("  [acu] ONE COLD launch (not a timing): %s\n", _t); } \
+      else             { moe_poison_output(BD); _tim = time_it(_go, 20); u = _tim.kernel_span_us; _ow = moe_output_witness(BD); }       \
       constexpr int _wcu = _bc                                                                                     \
           ? fold::warps_per_cu_chunked<TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),32,true>                                 \
           : fold::warps_per_cu<TMv,TNv,TKv,WMv,WNv,Sv,(LOB)+(HIB),32,true>;                                        \
-      if (moe_row_ran(BD, _t, u, _f0, (LOB)+(HIB), _ow)) { report(BD,_t,u,_cfg,(LOB)+(HIB),_wcu); upd(BEST, _cfg, u); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), u); } \
+      char const* _why = nullptr;                                                                                 \
+      if (moe_row_ran(BD, _t, _tim, _f0, (LOB)+(HIB), _ow, _why)) { report(BD,_t,_tim,_cfg,(LOB)+(HIB),_wcu); upd(BEST, _cfg, u, _tim.wall_us); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), u, _tim.wall_us, _tim.samples, _tim.min_us, _tim.max_us, _tim.spread_pct); } \
+      else { moe_excluded(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), _why); }             \
     }                                                                                                              \
   }
 
@@ -575,7 +722,7 @@ constexpr bool moe_b_chunk_effective() {
     char _t[bench_measure::kTagBytes]; bench_measure::format_tag(_t, sizeof _t, _cfg);                              \
     if (moe_row_selected(_t)) {                                                                                    \
       (BEST).any_selected = true;                                                                                  \
-      auto _go = [&]{                                                                                              \
+      auto _go = [&](moe_grouped_ppu::KernelSpanEvents* _kev){                                                    \
         /* PlaneB2 is NAMED (void) on purpose: passing nullptr for B2 while letting PlaneB2 deduce makes the    \
            deduction fail on std::nullptr_t, and a failed deduction is NOT rescued by the default template       \
            argument -- the call simply stops matching. */                                                        \
@@ -583,17 +730,19 @@ constexpr bool moe_b_chunk_effective() {
             (BD).dA, _db.get(), (BD).dSc, (BD).dZr, (BD).pd, (BD).sd, (BD).gm,                                     \
             (BD).Mmax, (BD).N, (BD).K, (BD).L, (BD).gs, (BD).rdev, (BD).rsh.data(),                                \
             (BD).mode ? (BD).offdev : nullptr, (BD).ws, (BD).wsb, nullptr,                                          \
-            /*B2=*/nullptr, /*k_full=*/-1, /*prefix_ready=*/false, /*splitk=*/1, moe_abcast()); };                   \
-      double u; const int _f0 = moe_grouped_ppu::moeg_fail_count();                                                \
+            /*B2=*/nullptr, /*k_full=*/-1, /*prefix_ready=*/false, /*splitk=*/1, moe_abcast(), _kev); };             \
+      MoeTiming _tim; double u; const int _f0 = moe_grouped_ppu::moeg_fail_count();                                \
       MoeOutputWitness _ow{true, true};                                                                            \
       moe_attempt(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc));                             \
       std::printf("  -> %s\n", _t); std::fflush(stdout);                                                           \
-      if (moe_acu()) { u = time_it(_go, 0); if (moe_verbose()) std::printf("  [acu] ONE COLD launch (not a timing): %s\n", _t); }       \
-      else             { moe_poison_output(BD); u = time_it(_go, 20); _ow = moe_output_witness(BD); }              \
+      if (moe_acu()) { _tim = time_it(_go, 0); u = _tim.wall_us; if (moe_verbose()) std::printf("  [acu] ONE COLD launch (not a timing): %s\n", _t); } \
+      else             { moe_poison_output(BD); _tim = time_it(_go, 20); u = _tim.kernel_span_us; _ow = moe_output_witness(BD); }       \
       constexpr int _wcu = _bc                                                                                     \
           ? fold::warps_per_cu_chunked<TMv,TNv,TKv,WMv,WNv,Sv,(BITS),32,true>                                      \
           : fold::warps_per_cu<TMv,TNv,TKv,WMv,WNv,Sv,(BITS),32,true>;                                             \
-      if (moe_row_ran(BD, _t, u, _f0, (BITS), _ow)) { report(BD,_t,u,_cfg,(BITS),_wcu); upd(BEST, _cfg, u); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), u); } \
+      char const* _why = nullptr;                                                                                 \
+      if (moe_row_ran(BD, _t, _tim, _f0, (BITS), _ow, _why)) { report(BD,_t,_tim,_cfg,(BITS),_wcu); upd(BEST, _cfg, u, _tim.wall_us); moe_sample(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), u, _tim.wall_us, _tim.samples, _tim.min_us, _tim.max_us, _tim.spread_pct); } \
+      else { moe_excluded(BD, NAME, TMv, TNv, TKv, WMv, WNv, Sv, int(UNIT_B_CHUNK), int(_bc), _why); }             \
     }                                                                                                              \
   }
 

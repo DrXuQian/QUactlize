@@ -22,9 +22,10 @@
 
 namespace bench_samples {
 
-// WHAT WAS RUN, as opposed to what was measured. Everything here is chosen before the kernel launches; `us` is
-// the only field the machine produces. Keeping that split visible in the struct is what stops a derived
-// quantity (a median, an MFU, a "best") from being written into a sample file and later read as a measurement.
+// WHAT WAS RUN, as opposed to what was measured. Everything through `pass` is chosen before the kernel launches;
+// `us` is the primary machine measurement, with optional same-batch audit measurements below it. Keeping that split
+// visible in the struct is what stops a derived quantity (a median, an MFU, a "best") from being written into a
+// sample file and later read as a measurement.
 struct Sample {
   char const* fixture;      // named, versioned: "qwen35-a3b-expert-gate"
   char const* dist;         // the row distribution, named and versioned: "skew-h8-v1"
@@ -41,6 +42,13 @@ struct Sample {
   int bc, bc_eff;
   int pass;                 // which repetition of the WHOLE candidate list this came from
   double us;                // the measurement
+  // Optional audit trail for a benchmark whose primary `us` is a device-event span. Older/dense emitters leave
+  // timing null and preserve their byte-for-byte JSON shape; the MoE emitter records the same batch's host wall
+  // plus the per-launch range so a future reader cannot mistake the new primary for the superseded wall protocol.
+  char const* timing = nullptr;
+  double wall_us = 0.0;
+  double launch_min_us = 0.0, launch_max_us = 0.0, launch_spread_pct = 0.0;
+  int launches = 0;
 };
 
 inline std::FILE* stream() {
@@ -74,7 +82,7 @@ inline void run_header(char const* bench, char const* build_defines, int reps) {
 // quote in one is a bug in the caller rather than data to be escaped. Refuse instead of silently mangling.
 inline bool plain_names(Sample const& s) {
   auto plain = [](char const* p) { return p && !std::strchr(p, '"') && !std::strchr(p, '\\'); };
-  if (plain(s.fixture) && plain(s.dist) && plain(s.schema)) return true;
+  if (plain(s.fixture) && plain(s.dist) && plain(s.schema) && (!s.timing || plain(s.timing))) return true;
   std::fprintf(stderr, "[bench_samples] refusing to write a record with a quote in a name field\n");
   return false;
 }
@@ -112,9 +120,16 @@ inline void emit(Sample const& s) {
       "{\"rec\":\"s\",\"fixture\":\"%s\",\"dist\":\"%s\",\"schema\":\"%s\","
       "\"n\":%d,\"k\":%d,\"gs\":%d,\"experts\":%d,\"rows\":%d,\"mmax\":%d,"
       "\"tm\":%d,\"tn\":%d,\"tk\":%d,\"wm\":%d,\"wn\":%d,\"st\":%d,"
-      "\"bc\":%d,\"bc_eff\":%d,\"pass\":%d,\"us\":%.6f}\n",
+      "\"bc\":%d,\"bc_eff\":%d,\"pass\":%d,\"us\":%.6f",
       s.fixture, s.dist, s.schema, s.n, s.k, s.gs, s.experts, s.rows, s.mmax,
       s.tm, s.tn, s.tk, s.wm, s.wn, s.st, s.bc, s.bc_eff, s.pass, s.us);
+  if (s.timing) {
+    std::fprintf(f,
+        ",\"timing\":\"%s\",\"wall_us\":%.6f,\"launches\":%d,"
+        "\"launch_min_us\":%.6f,\"launch_max_us\":%.6f,\"launch_spread_pct\":%.6f",
+        s.timing, s.wall_us, s.launches, s.launch_min_us, s.launch_max_us, s.launch_spread_pct);
+  }
+  std::fprintf(f, "}\n");
   // FLUSHED PER SAMPLE, not once at the end. run_header() already flushed; emit() did not, and the benches call
   // flush() only after every pass and candidate -- so an abort discarded every buffered sample, which is the
   // entire content of the file. Per-sample flushing cannot make the SUCCESSORS run (a poisoned context needs the

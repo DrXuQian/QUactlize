@@ -38,7 +38,7 @@ CONSUMERS = {
         "bench_measure::measure(",
         "bench_measure::format_metrics(",
         "bench_measure::format_tag(",
-        "upd(BEST, _cfg, u)",
+        "upd(BEST, _cfg, u, _tim.wall_us)",
     ),
     "benchmarks/test_lowbit_moe_bench.cu": (
         'bench_measure::read_reps("MOE_REPS")',
