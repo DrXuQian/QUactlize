@@ -4376,3 +4376,71 @@ padding 压着。它的优势全在时间上:6.175 vs 12.224 µs,快一倍;MBU 4
 把命令按 `BOX.md` 的格式写好留给操作者,包含 asys kernel-only 的过滤协议(103 已给出:每 pass 21 发目标 kernel、
 丢第 1 发 warmup、对余下 20 发求均值、排除 `bench_floor_nop`/memcpy/initialize/launcher/sync)。
 **分析部分现在就做,不要等测量。**
+
+## 105 — P1:TileN=256 进 tactic 空间(两个参考实现都选它,我们 0 行)
+
+**小而具体,先做这条。**
+
+grouped 表的 TileN 只有 {16,32,64,128}。而:
+
+- TRT-LLM 的 **prefill** tile 是 `16×256×64`(你 104 已更正:`16×128×64` 是它的 decode 档)
+- Marlin 的大-M 档是 `thread_k=64, thread_n=256`,注释写明 "Larger-M: favor a larger N tile (better throughput)"
+
+**两家在 prefill 都往 TileN=256 走,我们连生成都没生成过。** 按"先全后 prune",这属于「输了」和「从没生成过」分不清的那一类。
+
+用户的论据:**Marlin 假设 96 KB shared,PPU 每 CU 是 256 KB**,所以在 NV 上会咬的 smem 排除在我们这儿多半不咬。
+
+**但你自己 104 的 shared 分析给了反向约束**,要一起考虑:C1 的 `32×128×128 s3` 用 52,224 B,shared-only 上限 5 CTA/CU;TileN=256 会把 B-smem 翻倍。所以这条的真实答案可能是"合法但 occupancy 掉太多",**那也是个有价值的结论 —— 只要它是被 static_assert / 排除项说出来的,而不是从来没生成过。**
+
+### 交付
+
+1. 把 256 加进 TileN 的枚举(`ppu_tactic_space.hpp`),重生成五张 grouped 表 + dense 表。
+2. **报每张表 TileN=256 活下来多少行**;若为 0,**指名是哪条 Exclusion 剪的**,并判断它是硬件限制还是软件产物(判据:能不能靠改代码消失)。
+3. 若活下来,给出这些行的 shared/CTA 和 shared-only 的 CTA/CU 上限,和现有冠军并列。
+4. 本地 gate 要过;不要在这条里顺手改别的轴。
+
+## 106 — decode 的优化点清单(参考 Marlin,但 m8 那招已排除)
+
+**已确立、不要重做:** PPU 的 FP16 MMA 只有 `16×16×16`,唯一的 `m16n8` 是 PPU0015/TF32/arch≥150,**所以 Marlin 的 `m8=true + mma_trans` 抄不了**,那 18 行 `16x128:128` 的 16× padding 是结构下限。
+
+**问题是:在这个前提下,我们 decode 还有哪些真实杠杆。** 要一个**按预期收益排序**的清单,每条给机制、量级、代价。你已经点到的几条先摆进去:
+
+1. **active-expert-only 的专用 grouped GEMV** —— 现在 `grid.z` 挂全部 256 个 expert,tokens=1 时 248 个空 expert
+   进 kernel 再返回,**31/32 的 CTA 是空的**。需要 `active_slot → real_expert_id` 映射(W/S 寻址共用)。
+2. **GEMV converter 的 LOP3 / 向量化解码** —— actlize 的 TC converter 已经逐条写了 Marlin 那套(4×LOP3+shift+sub/fma),
+   但 `gemv_lowbit` 自己的 converter 没显式写,**要看反汇编确认编译器有没有合并**。
+3. **一个必须解释的对照:同 band 下 GEMV 22.27 µs vs 张量核 GEMM 20.74 µs —— 我们的 GEMV 输给我们自己的 TC GEMM。**
+   在 16× padding 还压着 TC GEMM 的情况下 GEMV 仍然更慢,说明 GEMV 侧有更大的问题。**这条要机制,不要猜。**
+4. Marlin 在 decode 还做了什么是**可移植**的:K-striping 填机器、小-M tile 启发式、dequant 序列。逐条判可否。
+5. harness 的缺口:现在只能构造均匀 `L=8×1 行`,表达不了 `E=256, active=8`。**这决定上面任何一条能不能被验证**,
+   所以要说清楚补它的代价。
+
+**不要写代码,给排序清单。** 每条注明是"机制已确认"还是"待测"。
+
+## 107 — P2':StreamK 先在 dense 上试,不碰 group scheduler
+
+**用户明确 scoping:先 dense,不需要 group scheduler。** 这砍掉了最难的一半。
+
+现成件(我查过):
+
+    ppu_tile_scheduler_stream_k.hpp    PersistentTileSchedulerPPUStreamK<TileShape, ClusterShape>   1078 行
+    ppu_aiu_gemm_streamk.hpp           PPU AIU 的 StreamK kernel                                     406 行
+    epilogue_base_streamk.h / epilogue_streamk_with_broadcast.h                                       接缝归约
+    tile_scheduler.hpp                 TileSchedulerSelector<StreamKScheduler,...> 已解析到上面那个
+
+而且 `WorkTileInfo` 里已经有 `is_separate_reduction` / `reduction_subtile_idx` / `setup_separate_reduction`,
+说明接缝归约的语义是齐的。
+
+### 问题
+
+1. **我们的 dense mixed-input W4A16 路径今天能不能选 `StreamKScheduler`?** 缺什么 —— epilogue 要换成
+   `epilogue_base_streamk` 系?workspace?barrier?**「不能调用」不等于「不存在」,请分清是没接线还是缺机制。**
+2. 若能接,在 dense band 上按 M 扫一遍,和现有 scheduler 并列。**重点是 M 小、tile 数少、机器填不满的那几档** ——
+   那正是 StreamK 的适用区,也是 #10 那条 ~11% last-wave tail 的来源。
+3. 若不能接,指出缺的那一件,并估代价。
+
+### 一个必须澄清的前提
+
+我之前说"拍平队列是 Marlin decode 那 2× 的机制",**你 104 已经证伪了**(2× 是 m8 少做一半 MMA,
+K-striping 只是辅助,locks 是代价)。**所以这条的理由不是那个 2×**,而是独立的 #10:
+last-wave tail 实测 ~11% 且 tile tuning 够不到。**别拿一个已被证伪的理由去论证它。**
