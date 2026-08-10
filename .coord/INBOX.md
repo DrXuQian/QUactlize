@@ -4858,3 +4858,42 @@ m8n16 不加 CTA;它主要兑现在 prefill(`wav=16.12`,机器满的,`msk=11.8%`
    `epilogue_base_streamk.h`)和它是不是同一个东西。** 是 -> 我们要做的是接线(107a→107b),不是移植;
    不是 -> 差在哪、值不值得补。
 4. 只有在 3 的答案是"不是"时,才谈"从 Marlin 搬什么进来"。
+
+### 116 再补 — 我的一个推断,请**先独立判断再看它**
+
+下面是我的推断。**不要从它出发。** 请先按用户定的顺序读完 47 页文档、形成你自己的结论,**然后**再回来看这段,
+说明你同不同意、以及哪里不同。我今天已经在 Marlin 的轴上错过一次(把 warp 切 K 和 `par` 切 M 混成"跨 CTA 切 K"),
+所以这段的价值在于**被检验**,不在于被确认。
+
+**推断:Marlin 的 scheduler 是 StreamK 形状的,epilogue 也是。**
+
+用户描述的行为是:「一个 CTA 可能负责某个 M-block 的一部分 K,以及下一个 M-block 的前一部分 K」。即
+
+    拍平顺序:  Mblk0: k0 k1 k2 k3 │ Mblk1: k0 k1 k2 k3 │ Mblk2: ...
+    CTA A:    [ k0 k1 k2 k3   k0 k1 ]
+    CTA B:                   [ k2 k3   k0 k1 k2 ]
+                                ↑ Mblk1 的 K 被两个 CTA 分了 -> 需要归约
+
+关键点:**CTA 跨的是 tile 边界,不是某个 tile 内部的 M 范围**;每个 Mblk 都以完整 M×N 计算;归约只在
+**同一个 tile 的 K 部分和**之间。这与 CUTLASS StreamK 的语义一致。
+
+**这个推断压在两条证据上,都可能是错的:**
+
+1. workspace 是 `n/128 × max_par` 个 int = n-tile 数 × M-tile 数 = **输出 tile 总数**,一个 tile 一把锁。
+   我据此认为锁保护的是该 tile 的 K 部分和。
+2. 用户描述的跨 tile straddling。
+
+**能证伪它的东西,请主动去找:**
+
+- `par` 如果不是 M-tile 数,上面那个乘积就不是"输出 tile 总数",第 1 条塌了
+- 归约如果不是 K 方向的部分和(比如是别的量),整个对应关系不成立
+- 如果 Marlin 的每个 CTA 只领**整数个 tile**、不跨边界,那它就不是 StreamK 而是普通持久化
+- **epilogue 里如果对 scale 的处理和 CUTLASS StreamK 不同**:K 被切开之后,per-group scale 必须在 mainloop 内
+  就已经乘进去(部分和才可加)。**如果 Marlin 把 scale 放在 epilogue,那切 K 的语义就和我们不一样**,这一条对
+  我们尤其要紧,因为我们是 W4A16 分组 scale。
+
+**如果你的独立结论也是"同一个东西"**,那 116 的答案就是「接线不是移植」,工作落在 107b(把 actlize 现成的
+`ppu_tile_scheduler_stream_k.hpp` + `epilogue_base_streamk.h` 接到 mixed-input collective),而 107a 已经把前提
+做完了(smem union 在持久化下仍成立,没有 tile 被淘汰)。
+
+**如果不是**,请指出差在哪、那个差值得不值得补 —— 而不是默认要补。
