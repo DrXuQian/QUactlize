@@ -47,6 +47,37 @@ run_case() {
     || fail "$label did not report 20 distinct event-pair kernel spans"
 }
 
+require_verify_buckets() {
+  local label="$1" log="$2"
+  local bucket
+  for bucket in DP SK-whole SK-split; do
+    [ "$(grep -Ec "^  \\[dense verify bucket=${bucket}\\] tiles=[0-9]+ outputs=[0-9]+ mismatches=[0-9]+ max_abs=[^ ]+ max_rel_sym=[^ ]+ max_half_ulp=[0-9]+ nonfinite=[0-9]+$" "$log")" -eq 1 ] \
+      || fail "$label did not report exactly one complete ${bucket} error bucket"
+  done
+}
+
+# A0 is deliberately diagnostic: the device result that opened this item was
+# Failed, and accepting only rc=0 would delete the evidence we are here to
+# classify.  Accept only the program's two documented verdict exits, require a
+# complete verdict plus all three buckets, and reject crashes or partial logs.
+run_diagnostic_case() {
+  local label="$1" log="$2"
+  shift 2
+  printf '\n== %s ==\n' "$label"
+  set +e
+  "$BIN" "$@" 2>&1 | tee "$log"
+  local rc=${PIPESTATUS[0]}
+  set -e
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+    fail "$label exited rc=$rc instead of a numerical Passed/Failed verdict"
+  fi
+  [ "$(grep -Ec '^  Disposition: (Passed|Failed)$' "$log")" -eq 1 ] \
+    || fail "$label did not report exactly one numerical disposition"
+  grep -Eq '^  \[dense kernel-span-upper\] n=20 median=[0-9.]+ us .*distinct-event-pairs=20 ' "$log" \
+    || fail "$label did not report 20 distinct event-pair kernel spans"
+  require_verify_buckets "$label" "$log"
+}
+
 printf '[107b] root-sha=%s\n' "$(git -C "$ROOT" rev-parse HEAD)"
 printf '[107b] actlize-sha=%s\n' "$(git -C "$ROOT/third_party/actlize" rev-parse HEAD)"
 printf '[107b] artifacts=%s\n' "$ARTIFACT_ROOT"
@@ -132,7 +163,12 @@ PY
 COMMON=(--m=2048 --n=4096 --k=4096 --l=1 --g=128 --mode=1 --iterations=20)
 run_case 'A0 non-persistent control' "$NP_LOG" "${COMMON[@]}"
 run_case 'A0 serial-persistent control' "$P_LOG" "${COMMON[@]}" --persistent
-run_case 'A0 Stream-K' "$SK_LOG" "${COMMON[@]}" --streamk
+run_diagnostic_case 'A0 Stream-K diagnostic' "$SK_LOG" "${COMMON[@]}" --streamk
+
+require_verify_buckets 'A0 non-persistent control' "$NP_LOG"
+require_verify_buckets 'A0 serial-persistent control' "$P_LOG"
+grep -Eq '^  \[dense verify partition\] DP=[0-9]+ SK-whole=[0-9]+ SK-split=[0-9]+ peer_excess=[0-9]+ qk_cells=[0-9]+ coverage=exact-once$' "$SK_LOG" \
+  || fail 'A0 Stream-K did not prove an exact scheduler-derived DP/SK partition'
 
 grep -q 'lock-reset-before-start=0' "$NP_LOG" || fail 'non-persistent timing identity drifted'
 grep -q 'lock-reset-before-start=0' "$P_LOG" || fail 'persistent timing identity drifted'
@@ -159,6 +195,7 @@ print(f"[107b][A0] persistent/non-persistent={vals['persistent']/vals['non-persi
       f"streamk/non-persistent={vals['streamk']/vals['non-persistent']:.6f}")
 PY
 
-printf '\n[107b] PASS: dense absolute-K/fixup/worker contract and repeated launches proved on ppu001\n'
+printf '\n[107b] PASS: dense absolute-K/fixup/worker seam and repeated launches proved on ppu001\n'
+printf '[107b] COLLECTED: A0 DP/SK-whole/SK-split error buckets; A0 correctness is the printed disposition, not this script exit\n'
 printf '[107b] NOTE: A0 ratios are dense diagnostics; no grouped/MoE result is changed or claimed\n'
 printf '[107b] artifacts preserved at %s\n' "$ARTIFACT_ROOT"

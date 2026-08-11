@@ -47,8 +47,11 @@
 */
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
 #include <iostream>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 #include <cstdio>
@@ -58,6 +61,7 @@
 #include <utility>
 
 #include "cutlass/cutlass.h"
+#include "cutlass/relatively_equal.h"
 
 #include "cute/tensor.hpp"
 #include "cutlass/tensor_ref.h"
@@ -603,7 +607,202 @@ struct Result
 
 };
 
+enum class DenseVerifyBucket : uint8_t {
+  DataParallel = 0,
+  StreamKWhole = 1,
+  StreamKSplit = 2,
+  Count = 3,
+};
+
+// Host-only diagnostic map.  It never enters Gemm::Arguments and therefore
+// cannot change decomposition or kernel behaviour.  The dedicated 107b binary
+// fills one entry per logical output tile from the scheduler's lowered Params;
+// verify() then attributes every half output to DP, an unsplit Stream-K tile,
+// or a Stream-K tile that crossed the global fixup path.
+struct DenseVerifyPartition {
+  int tile_m = 0;
+  int tile_n = 0;
+  int tiles_m = 0;
+  int tiles_n = 0;
+  int batches = 0;
+  std::vector<DenseVerifyBucket> tile_bucket;
+};
+
 #if defined(DENSE_STREAMK_AB)
+template <class SchedulerParams>
+bool dense_classify_streamk_tiles(
+    DenseVerifyPartition& partition, SchedulerParams const& sk) {
+  uint64_t const tile_count = uint64_t(partition.tiles_m) *
+      uint64_t(partition.tiles_n) * uint64_t(partition.batches);
+  uint64_t const tiles_per_batch =
+      uint64_t(partition.tiles_m) * uint64_t(partition.tiles_n);
+  uint64_t const cluster_size = sk.get_cluster_size();
+  uint64_t const groups = sk.divmod_sk_groups_.divisor;
+  uint64_t const units_per_group = sk.divmod_sk_units_per_group_.divisor;
+  uint64_t const k_tiles = sk.divmod_tiles_per_output_tile_.divisor;
+  constexpr uint64_t min_k_tiles = SchedulerParams::min_iters_per_sk_unit_;
+
+  auto reject = [](char const* why) {
+    std::fprintf(stderr, "  [dense verify partition] fail-close: %s\n", why);
+    return false;
+  };
+  if (partition.tile_bucket.size() != tile_count || tiles_per_batch == 0 ||
+      partition.batches <= 0) {
+    return reject("invalid logical output-tile map");
+  }
+  // This bench-local mirror intentionally accepts only the exact geometry that
+  // it mirrors below.  General clusters, swizzles, aligned K starts, split-K,
+  // and separate reduction must add their own oracle rather than inherit a
+  // plausible-looking but wrong DP/SK label.
+  if (cluster_size != 1 || sk.divmod_cluster_shape_major_.divisor != 1 ||
+      sk.divmod_cluster_shape_minor_.divisor != 1) {
+    return reject("only a 1x1 dense scheduler cluster is classified");
+  }
+  if (sk.log_swizzle_size_ != 0 || sk.ktile_start_alignment_count_ != 1 ||
+      sk.divmod_splits_.divisor != 1 || sk.separate_reduction_units_ != 0) {
+    return reject("swizzle/aligned-K/split-K/separate-reduction is outside this diagnostic");
+  }
+  if (groups == 0 || units_per_group == 0 || k_tiles < min_k_tiles ||
+      sk.sk_tiles_ == 0 || sk.sk_units_ != groups * units_per_group ||
+      groups > sk.sk_tiles_ || sk.sk_tiles_ > tile_count ||
+      sk.big_groups_ != sk.sk_tiles_ % groups ||
+      sk.divmod_batch_.divisor != tiles_per_batch) {
+    return reject("lowered Stream-K group/tile counts are inconsistent");
+  }
+  uint64_t const expected_major =
+      sk.raster_order_ == SchedulerParams::RasterOrder::AlongN
+          ? uint64_t(partition.tiles_n) : uint64_t(partition.tiles_m);
+  if (sk.divmod_cluster_blk_major_.divisor != expected_major) {
+    return reject("raster divisor does not match the logical tile grid");
+  }
+
+  // Prove the q <-> (l,m,n) inverse for every output tile before using q as
+  // the lock/fixup identity.  With cluster=1 and swizzle=1, AlongN linearizes
+  // m-major and AlongM linearizes n-major.
+  std::vector<uint8_t> mapped(tile_count, 0);
+  auto logical_tile_for_q = [&](uint64_t q, uint64_t& logical) {
+    uint64_t const l = q / tiles_per_batch;
+    uint64_t const r = q % tiles_per_batch;
+    uint64_t m = 0, n = 0;
+    if (sk.raster_order_ == SchedulerParams::RasterOrder::AlongN) {
+      m = r / uint64_t(partition.tiles_n);
+      n = r % uint64_t(partition.tiles_n);
+    }
+    else {
+      n = r / uint64_t(partition.tiles_m);
+      m = r % uint64_t(partition.tiles_m);
+    }
+    if (l >= uint64_t(partition.batches) ||
+        m >= uint64_t(partition.tiles_m) || n >= uint64_t(partition.tiles_n)) {
+      return false;
+    }
+    logical = (l * uint64_t(partition.tiles_m) + m) *
+        uint64_t(partition.tiles_n) + n;
+    return logical < tile_count;
+  };
+  for (uint64_t q = 0; q < tile_count; ++q) {
+    uint64_t logical = 0;
+    if (!logical_tile_for_q(q, logical) || mapped[logical]++) {
+      return reject("scheduler q does not bijectively cover logical output tiles");
+    }
+  }
+  if (std::find(mapped.begin(), mapped.end(), uint8_t(0)) != mapped.end()) {
+    return reject("scheduler q leaves a logical output tile unmapped");
+  }
+
+  // Mirror get_current_work_iter_start_possible_update_work_tile_k_remaining()
+  // for the accepted cluster=1 case.  Counting interval intersections is
+  // equivalent to the device work loop, which consumes those intersections in
+  // reverse tile order.  A (q,k) coverage table makes this mirror fail closed
+  // if its boundary repair ever drifts from a complete, disjoint partition.
+  std::vector<uint16_t> coverage(uint64_t(sk.sk_tiles_) * k_tiles, 0);
+  std::vector<uint32_t> peers(sk.sk_tiles_, 0);
+  for (uint64_t linear = 0; linear < sk.sk_units_; ++linear) {
+    uint64_t const group = linear % groups;
+    uint64_t const unit = linear / groups;
+    uint64_t const tiles_in_group = sk.sk_tiles_ / groups +
+        (group < sk.big_groups_ ? 1u : 0u);
+    uint64_t const group_k_tiles = tiles_in_group * k_tiles;
+    uint64_t const base = group_k_tiles / units_per_group;
+    uint64_t const big_units = group_k_tiles % units_per_group;
+    uint64_t start = base * unit + std::min(unit, big_units);
+    uint64_t count = base + (unit < big_units ? 1u : 0u);
+
+    uint64_t const start_in_tile = start % k_tiles;
+    if (start_in_tile < min_k_tiles) {
+      start -= start_in_tile;
+      count += start_in_tile;
+    }
+    else if (start_in_tile > k_tiles - min_k_tiles) {
+      uint64_t const adjustment = k_tiles - start_in_tile;
+      if (count < adjustment) return reject("start-boundary repair underflowed");
+      start += adjustment;
+      count -= adjustment;
+    }
+
+    uint64_t const initial_end_in_tile = (start + count) % k_tiles;
+    if (initial_end_in_tile < min_k_tiles) {
+      if (count < initial_end_in_tile) return reject("end-boundary repair underflowed");
+      count -= initial_end_in_tile;
+    }
+    else if (initial_end_in_tile > k_tiles - min_k_tiles) {
+      count += k_tiles - initial_end_in_tile;
+    }
+    if (count == 0 || start + count > group_k_tiles) {
+      return reject("repaired work-unit interval is empty or outside its group");
+    }
+
+    uint64_t const first_local_tile = start / k_tiles;
+    uint64_t const last_local_tile = (start + count - 1) / k_tiles;
+    for (uint64_t local = first_local_tile; local <= last_local_tile; ++local) {
+      uint64_t const q = local * groups + group;
+      if (q >= sk.sk_tiles_) return reject("work-unit interval maps outside SK tiles");
+      uint64_t const tile_begin = local * k_tiles;
+      uint64_t const begin = std::max(start, tile_begin);
+      uint64_t const end = std::min(start + count, tile_begin + k_tiles);
+      if (begin >= end) return reject("empty work-unit/output-tile intersection");
+      ++peers[q];
+      for (uint64_t k = begin - tile_begin; k < end - tile_begin; ++k) {
+        ++coverage[q * k_tiles + k];
+      }
+    }
+  }
+
+  if (std::find_if(coverage.begin(), coverage.end(),
+                   [](uint16_t visits) { return visits != 1; }) != coverage.end()) {
+    return reject("(q,k) coverage has a hole or duplicate owner");
+  }
+  uint64_t split_tiles = 0;
+  uint64_t peer_excess = 0;
+  for (uint64_t q = 0; q < sk.sk_tiles_; ++q) {
+    if (peers[q] == 0) return reject("Stream-K output tile has no owner");
+    uint64_t logical = 0;
+    if (!logical_tile_for_q(q, logical)) return reject("Stream-K q cannot be decoded");
+    bool const split = peers[q] > 1;
+    partition.tile_bucket[logical] = split
+        ? DenseVerifyBucket::StreamKSplit : DenseVerifyBucket::StreamKWhole;
+    split_tiles += split ? 1u : 0u;
+    peer_excess += peers[q] - 1;
+  }
+  uint64_t dp_tiles = 0, whole_tiles = 0;
+  for (DenseVerifyBucket bucket : partition.tile_bucket) {
+    dp_tiles += bucket == DenseVerifyBucket::DataParallel ? 1u : 0u;
+    whole_tiles += bucket == DenseVerifyBucket::StreamKWhole ? 1u : 0u;
+  }
+  if (dp_tiles + whole_tiles + split_tiles != tile_count ||
+      whole_tiles + split_tiles != sk.sk_tiles_) {
+    return reject("DP/SK tile census does not close");
+  }
+  std::printf("  [dense verify partition] DP=%llu SK-whole=%llu SK-split=%llu "
+              "peer_excess=%llu qk_cells=%llu coverage=exact-once\n",
+              static_cast<unsigned long long>(dp_tiles),
+              static_cast<unsigned long long>(whole_tiles),
+              static_cast<unsigned long long>(split_tiles),
+              static_cast<unsigned long long>(peer_excess),
+              static_cast<unsigned long long>(coverage.size()));
+  return true;
+}
+
 // Distinct pairs preserve every launch interval while keeping event creation,
 // querying, and destruction outside it.  Reusing one PpuTimer and querying it
 // after every launch would serialize the batch and make "independent events"
@@ -927,11 +1126,11 @@ Args args_from_options(Options const& options)
   }
 }
 
-bool verify(const Options &options);
+bool verify(const Options &options, DenseVerifyPartition const* partition);
 bool verify_streamk_cpu_fp32(const Options &options);
 
 #if !defined(LOWBIT_DENSE_UNIT_BUILD)
-bool verify(const Options &options) {
+bool verify(const Options &options, DenseVerifyPartition const* partition) {
   //
   // Compute reference output
   //
@@ -992,6 +1191,135 @@ bool verify(const Options &options) {
   ElementD const epsilon(1e-2f);
   ElementD const non_zero_floor(1e-4f);
   bool passed = cutlass::reference::device::BlockCompareRelativelyEqual(block_ref_D.get(), block_D.get(), block_D.size(), epsilon, non_zero_floor);
+
+  if (partition != nullptr) {
+    std::size_t const expected_tiles = std::size_t(partition->tiles_m) *
+        std::size_t(partition->tiles_n) * std::size_t(partition->batches);
+    bool const map_ok = partition->tile_m > 0 && partition->tile_n > 0 &&
+        partition->tiles_m == int(cute::ceil_div(options.m, partition->tile_m)) &&
+        partition->tiles_n == int(cute::ceil_div(options.n, partition->tile_n)) &&
+        partition->batches == options.l &&
+        partition->tile_bucket.size() == expected_tiles;
+    if (!map_ok) {
+      std::fprintf(stderr,
+                   "  [dense verify buckets] invalid tile map: tile=%dx%d grid=%dx%dx%d entries=%zu\n",
+                   partition->tile_m, partition->tile_n, partition->tiles_m,
+                   partition->tiles_n, partition->batches,
+                   partition->tile_bucket.size());
+      return false;
+    }
+
+    static_assert(cutlass::sizeof_bits<ElementD>::value == 16,
+                  "107b half-ULP diagnostics require a 16-bit epilogue output");
+    std::vector<ElementD> host_ref(block_ref_D.size());
+    std::vector<ElementD> host_got(block_D.size());
+    block_ref_D.copy_to_host(host_ref.data());
+    block_D.copy_to_host(host_got.data());
+
+    struct BucketStats {
+      uint64_t tiles = 0;
+      uint64_t outputs = 0;
+      uint64_t mismatches = 0;
+      uint64_t nonfinite = 0;
+      double max_abs = 0.0;
+      double max_rel_sym = 0.0;
+      uint32_t max_half_ulp = 0;
+    };
+    constexpr std::size_t bucket_count =
+        static_cast<std::size_t>(DenseVerifyBucket::Count);
+    std::array<BucketStats, bucket_count> stats{};
+    for (DenseVerifyBucket bucket : partition->tile_bucket) {
+      std::size_t const i = static_cast<std::size_t>(bucket);
+      if (i >= stats.size()) {
+        std::fprintf(stderr,
+                     "  [dense verify buckets] invalid bucket id=%zu in tile map\n", i);
+        return false;
+      }
+      ++stats[i].tiles;
+    }
+
+    auto ordered_half = [](ElementD value) {
+      uint16_t const bits = value.raw();
+      // Collapse +/-0 to the same point and make adjacent finite half values
+      // adjacent integers on both sides of zero.
+      return (bits & 0x8000u)
+          ? int32_t(0x8000u - (bits & 0x7fffu))
+          : int32_t(0x8000u + bits);
+    };
+    auto half_ulp = [&](ElementD a, ElementD b) {
+      if (!std::isfinite(float(a)) || !std::isfinite(float(b))) {
+        return std::numeric_limits<uint32_t>::max();
+      }
+      int64_t const delta = int64_t(ordered_half(a)) - int64_t(ordered_half(b));
+      return uint32_t(delta < 0 ? -delta : delta);
+    };
+
+    for (int l = 0; l < options.l; ++l) {
+      for (int m = 0; m < options.m; ++m) {
+        for (int n = 0; n < options.n; ++n) {
+          std::size_t const out =
+              (std::size_t(l) * options.m + m) * options.n + n;
+          std::size_t const tile =
+              (std::size_t(l) * partition->tiles_m + m / partition->tile_m) *
+                  partition->tiles_n + n / partition->tile_n;
+          std::size_t const bucket = std::size_t(partition->tile_bucket[tile]);
+          if (bucket >= stats.size()) {
+            std::fprintf(stderr,
+                         "  [dense verify buckets] invalid bucket id=%zu at logical tile=%zu\n",
+                         bucket, tile);
+            return false;
+          }
+
+          ElementD const want = host_ref[out];
+          ElementD const got = host_got[out];
+          double const want_f = double(float(want));
+          double const got_f = double(float(got));
+          bool const finite = std::isfinite(want_f) && std::isfinite(got_f);
+          BucketStats& s = stats[bucket];
+          ++s.outputs;
+          if (!cutlass::relatively_equal(want, got, epsilon, non_zero_floor)) {
+            ++s.mismatches;
+          }
+          if (finite) {
+            double const abs_err = std::abs(got_f - want_f);
+            // This symmetric denominator is the same scale used by the
+            // comparator's non-near-zero branch.  Pass/fail still calls the
+            // exact CUTLASS predicate above; max_abs explains its near-zero
+            // branch and ULP makes small half regrouping visible.
+            double const denom = std::abs(got_f) + std::abs(want_f);
+            double const rel_sym = denom == 0.0 ? 0.0 : abs_err / denom;
+            s.max_abs = std::max(s.max_abs, abs_err);
+            s.max_rel_sym = std::max(s.max_rel_sym, rel_sym);
+          }
+          else {
+            ++s.nonfinite;
+          }
+          s.max_half_ulp = std::max(s.max_half_ulp, half_ulp(want, got));
+        }
+      }
+    }
+
+    constexpr char const* names[] = {"DP", "SK-whole", "SK-split"};
+    uint64_t bucket_mismatches = 0;
+    for (std::size_t i = 0; i < stats.size(); ++i) {
+      BucketStats const& s = stats[i];
+      bucket_mismatches += s.mismatches;
+      std::printf("  [dense verify bucket=%s] tiles=%llu outputs=%llu mismatches=%llu "
+                  "max_abs=%.9g max_rel_sym=%.9g max_half_ulp=%u nonfinite=%llu\n",
+                  names[i], static_cast<unsigned long long>(s.tiles),
+                  static_cast<unsigned long long>(s.outputs),
+                  static_cast<unsigned long long>(s.mismatches), s.max_abs,
+                  s.max_rel_sym, s.max_half_ulp,
+                  static_cast<unsigned long long>(s.nonfinite));
+    }
+    if ((bucket_mismatches == 0) != passed) {
+      std::fprintf(stderr,
+                   "  [dense verify buckets] fail-close: bucket comparator disagrees with device comparator "
+                   "(bucket mismatches=%llu device_passed=%d)\n",
+                   static_cast<unsigned long long>(bucket_mismatches), int(passed));
+      return false;
+    }
+  }
   return passed;
 }
 
@@ -1095,6 +1423,20 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
 
   // Create a structure of gemm kernel arguments suitable for invoking an instance of Gemm
   auto arguments = args_from_options<typename Gemm::Arguments>(options);
+
+#if defined(DENSE_STREAMK_AB)
+  DenseVerifyPartition verify_partition;
+  verify_partition.tile_m = tactic.tm;
+  verify_partition.tile_n = tactic.tn;
+  verify_partition.tiles_m = int(cute::ceil_div(options.m, tactic.tm));
+  verify_partition.tiles_n = int(cute::ceil_div(options.n, tactic.tn));
+  verify_partition.batches = options.l;
+  verify_partition.tile_bucket.assign(
+      std::size_t(verify_partition.tiles_m) *
+          std::size_t(verify_partition.tiles_n) *
+          std::size_t(verify_partition.batches),
+      DenseVerifyBucket::DataParallel);
+#endif
 
 #if defined(DENSE_SCHEDULER_AB)
   // Query the FINAL kernel, not a tile-model estimate.  This accounts for registers, dynamic
@@ -1242,6 +1584,22 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   if (gemm.can_implement(arguments) != cutlass::Status::kSuccess) { result.passed = false; return result; }
   if (gemm.initialize(arguments, workspace.get()) != cutlass::Status::kSuccess) { result.passed = false; return result; }
 
+#if defined(DENSE_STREAMK_AB)
+  if constexpr (dense_is_streamk_gemm<Gemm>::value) {
+    static_assert(!Gemm::CollectiveMainloop::SwapAB,
+                  "107b DP/SK diagnostic maps the unswapped dense output-tile axes");
+    // Lower only after can_implement()/initialize() accepted the arm.  A Params
+    // object from a rejected request is not decomposition evidence.
+    auto const diagnostic_params =
+        Gemm::GemmKernel::to_underlying_arguments(arguments, workspace.get());
+    if (!dense_classify_streamk_tiles(verify_partition,
+                                      diagnostic_params.scheduler)) {
+      result.passed = false;
+      return result;
+    }
+  }
+#endif
+
   // Correctness / Warmup iteration
 #if defined(DENSE_STREAMK_AB)
   // Create the whole pool before warmup so first-use event initialization
@@ -1265,7 +1623,11 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
 #endif
 
   // Check if output from kernel and reference kernel are equal or not
-  result.passed = verify(options);
+#if defined(DENSE_STREAMK_AB)
+  result.passed = verify(options, &verify_partition);
+#else
+  result.passed = verify(options, nullptr);
+#endif
 #if defined(DENSE_STREAMK_AB)
   if constexpr (dense_is_streamk_gemm<Gemm>::value) {
     if (options.streamk_gate) {
@@ -1299,11 +1661,11 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
 #if defined(DENSE_STREAMK_AB)
     if (options.streamk_gate) return result;
 #endif
-    // The int2 (uint2) path's kernel is verified correct elsewhere (test_w2a16_diag/grouped/real all MATCH);
-    // this bench's verify() reference (dequantize_weight) is int4-oriented, so it flags int2 spuriously. For a
-    // perf run (iterations>0) time anyway; only bail when timing wasn't requested (the correctness-only sweep).
+    // A failed numerical arm remains failed.  When timing was explicitly
+    // requested, retain its timing only as a diagnostic alongside that failure;
+    // do not guess whether the reference or the kernel is responsible.
     if (options.iterations <= 0) return result;
-    std::cout << "  (verify failed -- likely the int4-oriented reference; timing the kernel anyway for perf)\n";
+    std::cout << "  (verify failed; timing was requested, so this failed arm is timed only for diagnosis)\n";
   }
 
   // Run profiling loop

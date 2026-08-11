@@ -19,6 +19,7 @@ BENCH = ROOT / "benchmarks/test_lowbit_dense_bench.cu"
 UNIT = ROOT / "dev/fold_derivation/test_lowbit_dense_unit.cu"
 DISPATCH = ROOT / "benchmarks/lowbit_dense_unit.inc"
 CMAKE = ROOT / "quactlize/csrc/CMakeLists.txt.in"
+BOX_GATE = ROOT / "tools/run_dense_streamk_107b_box.sh"
 
 
 def section(text: str, begin: str, end: str) -> str:
@@ -34,7 +35,8 @@ def ordered_once(text: str, anchors: tuple[str, ...], label: str, bad: list[str]
         bad.append(f"{label}: source order is wrong")
 
 
-def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str) -> list[str]:
+def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
+          box_gate: str) -> list[str]:
     bad: list[str] = []
 
     for token in (
@@ -94,6 +96,45 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str) -> list
     ), "absolute-K mainloop/fixup/final-epilogue", bad)
     if device.count("TileScheduler::get_work_k_tile_count(") != 1:
         bad.append("mainloop does not use exactly one scheduler-owned K-tile count")
+
+    # A0's old bool collapsed harmless half regrouping and a real ownership bug
+    # into the same word.  The diagnostic must derive buckets from the lowered
+    # scheduler, prove its own (q,k) coverage, and use the exact comparator that
+    # produced the original disposition.  tile_peer_range() assumes one SK
+    # group in this vendor revision and is therefore explicitly forbidden here.
+    diagnostic_tokens = (
+        "bool dense_classify_streamk_tiles(",
+        "sk.big_groups_ != sk.sk_tiles_ % groups",
+        "std::find_if(coverage.begin(), coverage.end(),",
+        "[](uint16_t visits) { return visits != 1; }",
+        "coverage=exact-once",
+        "[dense verify bucket=%s] tiles=%llu outputs=%llu mismatches=%llu",
+        "cutlass::relatively_equal(want, got, epsilon, non_zero_floor)",
+        "bucket comparator disagrees with device comparator",
+        "max_rel_sym=%.9g max_half_ulp=%u nonfinite=%llu",
+    )
+    for token in diagnostic_tokens:
+        if bench.count(token) != 1:
+            bad.append(f"A0 bucket diagnostic must contain exactly one {token!r}")
+    if bench.count("dense_classify_streamk_tiles(") != 2:
+        bad.append("the Stream-K classifier must have exactly one definition and one accepted-arm call")
+    if "tile_peer_range(" in bench:
+        bad.append("A0 bucket diagnostic uses tile_peer_range(), which is not group-general")
+    if "likely the int4-oriented reference" in bench:
+        bad.append("a failed Stream-K arm still blames the shared reference without evidence")
+    try:
+        run_body = section(bench, "template <typename Gemm>\nResult run(",
+                           "\nResult run_scale_only")
+        accepted = section(run_body, "  Result result;", "\n  // Correctness / Warmup iteration")
+    except ValueError as e:
+        bad.append(str(e))
+    else:
+        ordered_once(accepted, (
+            "gemm.can_implement(arguments)",
+            "gemm.initialize(arguments, workspace.get())",
+            "Gemm::GemmKernel::to_underlying_arguments(arguments, workspace.get())",
+            "dense_classify_streamk_tiles(verify_partition,",
+        ), "only classify an accepted lowered Params", bad)
 
     try:
         timing = section(bench, "    // One distinct event pair per launch for every arm", "\n#else\n    PpuTimer timer;")
@@ -157,11 +198,25 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str) -> list
     ):
         if cmake.count(token) < 1:
             bad.append(f"isolated CMake target is missing {token!r}")
+
+    for token in (
+        "run_diagnostic_case 'A0 Stream-K diagnostic'",
+        "require_verify_buckets 'A0 non-persistent control'",
+        "require_verify_buckets 'A0 serial-persistent control'",
+        "A0 correctness is the printed disposition, not this script exit",
+        "coverage=exact-once",
+    ):
+        if box_gate.count(token) != 1:
+            bad.append(f"box gate must contain exactly one {token!r}")
+    if 'if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]' not in box_gate:
+        bad.append("box gate does not preserve a complete rc=1 numerical diagnostic")
+    if "run_case 'A0 Stream-K'" in box_gate:
+        bad.append("box gate still drops the failing A0 Stream-K diagnostic")
     return bad
 
 
 def main() -> int:
-    texts = [p.read_text() for p in (HEADER, BENCH, UNIT, DISPATCH, CMAKE)]
+    texts = [p.read_text() for p in (HEADER, BENCH, UNIT, DISPATCH, CMAKE, BOX_GATE)]
     bad = audit(*texts)
     if bad:
         print("[dense-streamk-contract] FAIL: " + "; ".join(bad))
@@ -181,8 +236,14 @@ def main() -> int:
          "lock reset before event"),
         (1, "MBU=N/A", "MBU=0.0%", "unmodeled per-tile C traffic"),
         (1, "return final_result.passed ? 0 : 1;", "return 0;", "gate exit status"),
+        (1, "[](uint16_t visits) { return visits != 1; }",
+         "[](uint16_t visits) { return visits != 0; }", "exact (q,k) coverage"),
+        (1, "cutlass::relatively_equal(want, got, epsilon, non_zero_floor)",
+         "true /* planted comparator bypass */", "same comparator for bucket and disposition"),
         (2, "X(lowbit_dense_streamk_probe,64,128,64,64,32,2,0)",
          "X(lowbit_dense_streamk_probe,64,128,64,64,32,3,0)", "isolated fixture"),
+        (5, "run_diagnostic_case 'A0 Stream-K diagnostic'",
+         "run_case 'A0 Stream-K'", "preserve a failed A0 diagnostic"),
     ]
     for index, old, new, label in plants:
         planted = list(texts)
@@ -195,7 +256,8 @@ def main() -> int:
             return 1
 
     print("[dense-streamk-contract] PASS -- shared workers x4, absolute K, exact-CTA fixup, "
-          "per-launch lock reset, exact seam fixture; seven planted regressions rejected")
+          "per-launch lock reset, exact seam fixture, exact DP/SK error buckets; "
+          "ten planted regressions rejected")
     return 0
 
 
