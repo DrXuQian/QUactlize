@@ -1153,6 +1153,13 @@ def lint_dense_streamk_contract():
         "dense Stream-K worker/K/fixup/timing seams and the exact fixture are pinned")
 
 
+def lint_streamk_tail_plan():
+    """INBOX 122's scan must include attributed zero, medium, and extreme last waves."""
+    return _run_ci_script(
+        "check_streamk_tail_plan.py",
+        "Stream-K scan shapes derive from runtime workers and print Q/W/tail per row")
+
+
 def lint_dense_marlin_contract():
     """Marlin must remain an additive K-fast scheduler with its own peer protocol and launch guard."""
     return _run_ci_script(
@@ -1732,6 +1739,7 @@ def main():
                 ("lint", "dense and MoE consume one named measurement layer", lint_bench_measurement_shared),
                 ("lint", "MoE events bracket only gemm.run and retain the host-wall audit", lint_moe_event_timing),
                 ("lint", "dense Stream-K shares worker/K decomposition and resets locks before timing", lint_dense_streamk_contract),
+                ("lint", "Stream-K tail scan covers attributed zero, medium, and extreme waves", lint_streamk_tail_plan),
                 ("lint", "dense Marlin keeps K-fast stripes, reverse q locks, and the scheduler-owned grid", lint_dense_marlin_contract),
                 ("lint", "dense Marlin sweep has private sources, a forced cohort, and distinct provenance", lint_dense_marlin_sweep_contract),
                 ("lint", "grouped Stream-K preserves q locks, worker/K decomposition, and timing", lint_grouped_streamk_contract),
