@@ -1313,20 +1313,24 @@ not merely the shell rc:
 Wanted back: both SHAs, the unique `-arch=ppu_10` line, all four exact PASS/FAIL
 rows, the aggregate line, rc, and the preserved artifact directory.
 
-## Dense Marlin full-table target — compile and enumerate only, do not sweep yet
+## A2 dense Marlin cohort capability — compile and enumerate only, do not sweep yet
 
-Commit `79f8766` adds a scheduler-specific table target.  Its rows are derived
-from the committed dense table and filtered to the exact 64/128-thread cohorts
-accepted by the cooperative.  It has private main/device-TU paths and every
-wrapper is unconditionally Marlin; ordinary dense tactic caches are rejected.
-This morning step validates build and selection surface only.  Do **not** pass
-`--search_configs` until the queued B2 device evidence is in.
+Commit `f477425` (actlize `73e8884c`) replaces PRE_A2's 2/4-warp numeric
+whitelist with the cooperative's structural capability: one or more complete
+32-thread warps, at most 1024 threads, with the actual TiledMMA CTA, FP32
+workspace stripes and named-barrier arrival count statically identical.  The
+committed i4 table therefore expands from 746 to all 1772 already-legal rows.
+This step validates the PPU build and selection surface only; local type/layout
+proof is not a device-progress result.  Do **not** pass `--search_configs`
+until the queued B2 device evidence is in.
 
     set -euo pipefail
     cd /sim/eec/shared/junfu.qx/quactlize
     git pull --ff-only origin develop
     git submodule update --init --recursive
-    git merge-base --is-ancestor 79f8766 HEAD
+    git merge-base --is-ancestor f477425 HEAD
+    test "$(git -C third_party/actlize rev-parse HEAD)" = \
+      73e8884c239b1ba33fe18c6825756176158b0419
 
     unset PPU_A_PACK PPU_B_CHUNK PPU_B_CHUNK_BISECT PPU_MAXREG PPU_DEFS
     PPU_BUILD_DIR="$PWD/build_dense_marlin_sweep_i4" \
@@ -1338,7 +1342,10 @@ This morning step validates build and selection surface only.  Do **not** pass
     "$MARLIN_SWEEP" --list_configs | tee /tmp/dense_marlin_sweep_i4_list.log
 
 The provenance line must say `scheduler=marlin`, `source_rows=1772`,
-`eligible_rows=746`, `filtered_rows=1026`, `cohort_threads=64|128`, and retain
-the source table's two real FNV hashes under `source_*_fnv1a64`.  The list must
-contain exactly 746 configs and no runtime DP/Stream-K arm.  This is not a
+`eligible_rows=1772`, `filtered_rows=0`,
+`cohort_capability=warp-aligned-threads-32..1024`, and retain the source table's
+two real FNV hashes under `source_*_fnv1a64`.  The list must contain exactly
+1772 configs and no runtime DP/Stream-K arm.  A successful build establishes
+that the emitted PPU device types compile; it does not establish named-barrier
+progress, numerical correctness, occupancy, or speed.  This is not a
 performance result and must not be reported as one.
