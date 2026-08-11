@@ -20,6 +20,7 @@ UNIT = ROOT / "dev/fold_derivation/test_lowbit_dense_unit.cu"
 DISPATCH = ROOT / "benchmarks/lowbit_dense_unit.inc"
 CMAKE = ROOT / "quactlize/csrc/CMakeLists.txt.in"
 BOX_GATE = ROOT / "tools/run_dense_streamk_107b_box.sh"
+BARRIER = ROOT / "third_party/actlize/include/cutlass/arch/barrier.h"
 
 
 def section(text: str, begin: str, end: str) -> str:
@@ -36,7 +37,7 @@ def ordered_once(text: str, anchors: tuple[str, ...], label: str, bad: list[str]
 
 
 def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
-          box_gate: str) -> list[str]:
+          box_gate: str, barrier: str) -> list[str]:
     bad: list[str] = []
 
     for token in (
@@ -240,11 +241,30 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         bad.append("box gate does not preserve a complete rc=1 numerical diagnostic")
     if "run_case 'A0 Stream-K'" in box_gate:
         bad.append("box gate still drops the failing A0 Stream-K diagnostic")
+
+    # This is a compiler-ordering contract, not a hardware-instruction check.
+    # ppu.bar.sync and ppu.fence are opaque strings to C++; volatile preserves
+    # the asm itself but only a memory clobber pins ordinary FP32 workspace
+    # accesses to the two sides of the publish/acquire seam.  Keep all four
+    # arms aligned with upstream CUTLASS, not just the one A0 happens to call.
+    sync = ('asm volatile("ppu.bar.sync %0, %1;" : : "r"(barrier_id), '
+            '"r"(num_threads) : "memory");')
+    arrive = ('asm volatile("ppu.bar.arrive %0, %1;" : : "r"(barrier_id), '
+              '"r"(num_threads) : "memory");')
+    if barrier.count(sync) != 2 or barrier.count(arrive) != 2:
+        bad.append("all four PPU named-barrier asm arms must carry a compiler memory clobber")
+    legacy_sync = ('asm volatile("ppu.bar.sync %0, %1;" : : "r"(barrier_id), '
+                   '"r"(num_threads));')
+    legacy_arrive = ('asm volatile("ppu.bar.arrive %0, %1;" : : "r"(barrier_id), '
+                     '"r"(num_threads));')
+    if legacy_sync in barrier or legacy_arrive in barrier:
+        bad.append("a PPU named-barrier arm retains the compiler-reorderable spelling")
     return bad
 
 
 def main() -> int:
-    texts = [p.read_text() for p in (HEADER, BENCH, UNIT, DISPATCH, CMAKE, BOX_GATE)]
+    texts = [p.read_text() for p in
+             (HEADER, BENCH, UNIT, DISPATCH, CMAKE, BOX_GATE, BARRIER)]
     bad = audit(*texts)
     if bad:
         print("[dense-streamk-contract] FAIL: " + "; ".join(bad))
@@ -283,6 +303,11 @@ def main() -> int:
         (5, "run_verify_only_case 'A0 Stream-K repeat-position diagnostic'",
          "run_diagnostic_case 'A0 Stream-K repeat-position diagnostic'",
          "independent repeat-position arm"),
+        (6, '    // rise above its acquire-side sync.\n'
+            '    asm volatile("ppu.bar.sync %0, %1;" : : "r"(barrier_id), "r"(num_threads) : "memory");',
+         '    // rise above its acquire-side sync.\n'
+            '    asm volatile("ppu.bar.sync %0, %1;" : : "r"(barrier_id), "r"(num_threads));',
+         "named-barrier compiler memory fence"),
     ]
     for index, old, new, label in plants:
         planted = list(texts)
@@ -295,7 +320,7 @@ def main() -> int:
             return 1
 
     print("[dense-streamk-contract] PASS -- shared workers x4, absolute K, exact-CTA fixup, "
-          "per-launch lock reset, exact seam fixture, exact DP/SK error buckets; "
+          "named-barrier compiler fence, per-launch lock reset, exact seam fixture, exact DP/SK error buckets; "
           f"{len(plants)} planted regressions rejected")
     return 0
 

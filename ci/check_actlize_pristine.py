@@ -66,6 +66,10 @@ OWNED = [
 # FIXES are corrections to actlize, true whether or not quactlize exists. They came in as cd17c2b9 on the
 # nvcc-portability branch off v1.0.0, and every one is nvcc/EDG rejecting what clang accepted.
 FIXES = {
+    "include/cutlass/arch/barrier.h":
+        "A0 Stream-K correctness: all four PPU named-barrier asm arms retain upstream CUTLASS's compiler "
+        "`memory` clobber; the hardware barrier/fence strings alone cannot stop ordinary partial stores and "
+        "loads from crossing the publish/acquire seam",
     "include/cute/arch/copy_ppu.hpp":
         "#114: ppu001's six assembler-rejected plain-LDSM atoms are deleted at the C++ call site; legacy helper "
         "templates carry a dependent static_assert, while the ppu0015 tc02 API and bodies stay unchanged",
