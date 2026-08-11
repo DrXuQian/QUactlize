@@ -35,6 +35,7 @@ namespace cutlass::gemm {
 //////////////////////////////////////////////////////////////////////////////
 
 struct KernelAiuMultistageMixedInputFinegrainedGs32 { };  // gs=32 (Q4_0/Q4_1/Q4_K-as-AWQ)
+struct KernelAiuMultistageMixedInputFinegrainedGs16 { };  // gs=16 (Q2/Q3/Q6 k-quants)
 
 // Artifact-fold schedule wrapper. The folds describe the resident B planes, not the consumer TileShape.K: a tactic
 // with a larger TileK may read the same bytes, but it must keep both physical (N/F, F*K) descriptors. The low fold
@@ -121,6 +122,15 @@ struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuMultistageMixe
   using ClusterShape = Shape<_1,_1,_1>;
 };
 
+template<int Stages_, class kContinous_>
+struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs16> {
+  constexpr static int Stages = Stages_;
+  constexpr static int StaticGroupSize = 16;
+  using kContinous = kContinous_;
+  using Schedule = KernelAiuMultistageMixedInput;
+  using ClusterShape = Shape<_1,_1,_1>;
+};
+
 //////////////////////////////////////////////////////////////////////////////
 // B BIT-PLANE CONCAT (Q3 = int2+int1, Q5 = int4+int1, Q6 = int4+int2)
 //////////////////////////////////////////////////////////////////////////////
@@ -172,6 +182,12 @@ struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageM
     : MainloopPPUAiuMixedInput2PlaneBase<Stages_, kContinous_, 32,
                                         ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_> {};
 
+template<int Stages_, class kContinous_, int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_>
+struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs16,
+                                     ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_>
+    : MainloopPPUAiuMixedInput2PlaneBase<Stages_, kContinous_, 16,
+                                        ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_> {};
+
 //////////////////////////////////////////////////////////////////////////////
 // N-FOLD (TK-freeing) mainloop policy
 //////////////////////////////////////////////////////////////////////////////
@@ -211,6 +227,12 @@ struct MainloopPPUAiuFold<Stages_, kContinous_, FoldF_, KernelAiuMultistageMixed
 template<int Stages_, class kContinous_, int FoldF_>
 struct MainloopPPUAiuFold<Stages_, kContinous_, FoldF_, KernelAiuMultistageMixedInputFinegrainedGs32> {
   constexpr static int Stages = Stages_; constexpr static int StaticGroupSize = 32;
+  constexpr static int FoldFactor = FoldF_; using kContinous = kContinous_;
+  using Schedule = KernelAiuMultistageMixedInput; using ClusterShape = Shape<_1,_1,_1>;
+};
+template<int Stages_, class kContinous_, int FoldF_>
+struct MainloopPPUAiuFold<Stages_, kContinous_, FoldF_, KernelAiuMultistageMixedInputFinegrainedGs16> {
+  constexpr static int Stages = Stages_; constexpr static int StaticGroupSize = 16;
   constexpr static int FoldFactor = FoldF_; using kContinous = kContinous_;
   using Schedule = KernelAiuMultistageMixedInput; using ClusterShape = Shape<_1,_1,_1>;
 };

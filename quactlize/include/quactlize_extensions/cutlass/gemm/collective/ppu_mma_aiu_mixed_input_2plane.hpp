@@ -536,6 +536,46 @@ public:
     bool dB2_valid = false;
   };
 
+  template <class ProblemShape>
+  static bool can_implement(ProblemShape const& problem_shape,
+                            Arguments const& args) {
+    auto mnkl = append<4>(problem_shape, Int<1>{});
+    int64_t const N = int64_t(get<1>(mnkl));
+    int64_t const K = int64_t(get<2>(mnkl));
+    int64_t const L = int64_t(get<3>(mnkl));
+    auto const& dB = [&]() -> auto const& {
+      if constexpr (SwapAB) return args.dA;
+      else return args.dB;
+    }();
+    detail::MixedArgumentContract c{};
+    c.n = N; c.k = K; c.l = L;
+    c.group_size = args.group_size;
+    c.tile_k = int64_t(size<2>(TileShape{}));
+    c.scale_tile_k = int64_t(Scale_TileK);
+    c.static_group_size = DispatchPolicy::StaticGroupSize;
+    c.low_fold = P1Fold;
+    c.high_fold = P2Fold;
+    c.low_bits = kLowBits;
+    c.high_bits = kHiBits;
+    c.interleave = int(kContinous{});
+    c.has_scales = ModeHasScales;
+    c.two_plane = true;
+    c.packed_scale = kPackedScaleOn;
+    c.packed_tiles_per_unit = kPackedScaleOn ? kPackedTilesPerUnit : 1;
+    c.dB2_valid = args.dB2_valid;
+    c.ptr_Z_nonnull = args.ptr_Z != nullptr;
+    c.dB0 = int64_t(get<0>(dB));
+    c.dB1 = int64_t(get<1>(dB));
+    c.dBL = int64_t(get<2>(dB));
+    c.dB20 = int64_t(get<0>(args.dB2));
+    c.dB21 = int64_t(get<1>(args.dB2));
+    c.dB2L = int64_t(get<2>(args.dB2));
+    c.dS0 = int64_t(get<0>(args.dS));
+    c.dS1 = int64_t(get<1>(args.dS));
+    c.dSL = int64_t(get<2>(args.dS));
+    return detail::mixed_arguments_supported(c);
+  }
+
   // Device side kernel params
   struct Params {
     GmemTiledCopyScale gmem_tiled_copy_scale;

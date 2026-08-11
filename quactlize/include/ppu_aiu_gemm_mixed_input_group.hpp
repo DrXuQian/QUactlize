@@ -184,7 +184,24 @@ public:
   }
 
   static bool can_implement(Arguments const& args) {
-    return args.mode == GemmUniversalMode::kGrouped || args.mode == GemmUniversalMode::kArray;
+    if (args.mode != GemmUniversalMode::kGrouped &&
+        args.mode != GemmUniversalMode::kArray) {
+      return false;
+    }
+    if (args.problem_shape.groups() <= 0 ||
+        args.problem_shape.host_problem_shapes == nullptr) {
+      return false;
+    }
+    auto host0 = args.problem_shape.get_host_problem_shape(0);
+    int const rep_m = args.representative_m > 0
+        ? args.representative_m : int(get<0>(host0));
+    int const rep_n = args.representative_n > 0
+        ? args.representative_n : int(get<1>(host0));
+    int const rep_k = args.representative_k > 0
+        ? args.representative_k : int(get<2>(host0));
+    auto rep_mnkl = cute::make_shape(
+        rep_m, rep_n, rep_k, args.problem_shape.groups());
+    return CollectiveMainloop::can_implement(rep_mnkl, args.mainloop);
   }
   static int get_workspace_size(Arguments const& args) {
     // GroupScheduler workspace only (epilogue needs none on this path).

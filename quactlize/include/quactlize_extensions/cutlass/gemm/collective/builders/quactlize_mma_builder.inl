@@ -423,6 +423,7 @@ struct CollectiveBuilder<
     // correct answer to that question and no longer an accident of include order.
     cute::enable_if_t<
       (cute::is_same_v<KernelScheduleType, KernelAiuMultistageMixedInputFinegrainedGs32> ||
+       cute::is_same_v<KernelScheduleType, KernelAiuMultistageMixedInputFinegrainedGs16> ||
        (fold_schedule_traits<KernelScheduleType>::ArtifactLowFold > 0))>   // artifact-fold contract
 > {
 private:

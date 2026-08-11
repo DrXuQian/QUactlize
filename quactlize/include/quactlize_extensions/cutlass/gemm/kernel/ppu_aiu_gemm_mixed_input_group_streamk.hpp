@@ -369,6 +369,8 @@ class GroupStreamKMixedInputKernel {
     return args.mode == GemmUniversalMode::kGrouped && g.valid &&
            real.cu_count > 0 && workers.cu_count > 0 &&
            args.ctas_per_cu > 0 && args.domain_valid && census_ok &&
+           CollectiveMainloop::can_implement(
+               representative_problem_shape(args, g), args.mainloop) &&
            args.mainloop.group_row_offsets != nullptr &&
            args.scheduler.splits == 1 &&
            args.scheduler.max_swizzle_size == 1 &&

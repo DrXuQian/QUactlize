@@ -223,6 +223,7 @@ public:
     return args.mode == GemmUniversalMode::kGemm &&
            real.cu_count > 0 && workers.cu_count > 0 &&
            args.ctas_per_cu > 0 &&
+           CollectiveMainloop::can_implement(args.problem_shape, args.mainloop) &&
            args.scheduler.splits == 1 &&
            args.scheduler.reduction_mode == TileSchedulerParams::ReductionMode::Deterministic &&
            args.scheduler.decomposition_mode == TileSchedulerParams::DecompositionMode::StreamK &&

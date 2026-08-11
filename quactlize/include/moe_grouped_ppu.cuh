@@ -418,7 +418,7 @@ void filter_and_run(const cutlass::half_t* A, const ElementB* B, const cutlass::
     if (group_size == 128)     { constexpr int SK=ppu_group_schedule::scale_groups_v<TK,128>; MOEG_FG(ppu_group_schedule::FinegrainedSchedule<128>, SK); }
     else if (group_size == 64) { constexpr int SK=ppu_group_schedule::scale_groups_v<TK,64>;  MOEG_FG(ppu_group_schedule::FinegrainedSchedule<64>,  SK); }
     else if (group_size == 32) { constexpr int SK=ppu_group_schedule::scale_groups_v<TK,32>;  MOEG_FG(ppu_group_schedule::FinegrainedSchedule<32>,  SK); }  // FIXED (per-mma-atom FINE scale)
-    else if (group_size == 16) { constexpr int SK=ppu_group_schedule::scale_groups_v<TK,16>;  MOEG_FG(ppu_group_schedule::FinegrainedSchedule<16>,  SK); }  // gs=16 (Q2_K/Q3_K/Q6_K) reuses the Gs32 tag; real grouping via SK=ceil(TK/16)+FINE. Needs TK=128 (SK=8=TK/16 cap).
+    else if (group_size == 16) { constexpr int SK=ppu_group_schedule::scale_groups_v<TK,16>;  MOEG_FG(ppu_group_schedule::FinegrainedSchedule<16>,  SK); }  // gs=16 (Q2_K/Q3_K/Q6_K), real grouping via SK=ceil(TK/16)+FINE. Needs TK=128 (SK=8=TK/16 cap).
     else std::printf("[moe_grouped] gs %d unsupported\n", group_size);
   } else {
     if (il) MOEG_CALL(cutlass::gemm::KernelAiuMultistageMixedInputPerCol, cute::_1, true);

@@ -56,6 +56,7 @@ OWNED = [
     "KernelAiuFold",                     # the fold schedule
     "fold_schedule_traits",              # and its traits hook
     "KernelAiuMultistageMixedInputFinegrainedGs32",  # gs=32 schedule (Q4_0/Q4_1/Q4_K-as-AWQ)
+    "KernelAiuMultistageMixedInputFinegrainedGs16",  # gs=16 schedule (Q2/Q3/Q6 k-quants)
     "GgufPackedScale",                   # the packed k-quant scale format
     "quactlize_extensions",              # any include path into our tree
 ]
@@ -129,7 +130,12 @@ EXTENSIONS = {
         "permissive: the body already returned void out of range, so 0/1/2 are unchanged",
     "include/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input.hpp":
         "enable_if gains `&& !isGroupProblemShape_v<ProblemShape_>` so the grouped shape can select a different "
-        "specialisation; narrows this arm only where another one now exists",
+        "specialisation; narrows this arm only where another one now exists. It also probes for an optional "
+        "collective can_implement(problem,args) admission seam; legacy actlize collectives have no such member "
+        "and retain the prior true default",
+    "include/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_splitk_serial.hpp":
+        "probes for the same optional collective can_implement(problem,args) admission seam as the ordinary "
+        "dense wrapper; SFINAE leaves every legacy actlize collective on its previous true default",
     "include/cutlass/gemm/kernel/tile_scheduler_params.h":
         "default-compatible Stream-K ParamsT<MinIters>: the legacy Params alias remains exactly ParamsT<8>, "
         "while an explicit specialization lets host decomposition use a shorter reviewed K stripe",

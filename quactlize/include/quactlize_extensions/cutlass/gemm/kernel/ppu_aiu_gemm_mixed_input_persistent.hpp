@@ -133,6 +133,7 @@ public:
 
   static bool can_implement(Arguments const& args) {
     return args.mode == GemmUniversalMode::kGemm && args.ctas_per_cu > 0 &&
+           CollectiveMainloop::can_implement(args.problem_shape, args.mainloop) &&
            TileScheduler::can_implement(args.scheduler);
   }
 

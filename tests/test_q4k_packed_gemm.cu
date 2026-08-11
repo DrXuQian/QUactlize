@@ -200,9 +200,11 @@ int main(int argc, char** argv) {
   // always on the fp16 path and always takes dSc.
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
   half_t const* scale_arg = reinterpret_cast<half_t const*>(dPlane.get());
+  half_t const* zero_arg  = nullptr;  // packed unit owns both d and dmin; ptr_Z is contradictory
   char const*   which     = "row2 reads the gguf's own 16 B units";
 #else
   half_t const* scale_arg = dSc.get();
+  half_t const* zero_arg  = dZr.get();
   char const*   which     = "row2 reads fp16 planes (reference build)";
 #endif
   std::printf("  %s\n", which);
@@ -258,7 +260,7 @@ int main(int argc, char** argv) {
   // rowC is the only tile where Scale_TileK == 8, i.e. the one the packed channel runs in.
   fail += run_and_check("rowC affine   16x128:256", hAff.data(), [&]{
     moe_grouped_ppu::filter_and_run<QM::FinegrainedScaleZero, 16, 128, 256, 16, 16, 2>(
-        dA.get(), dB.get(), scale_arg, dZr.get(), pdd.get(), sdd.get(), gmd.get(),
+        dA.get(), dB.get(), scale_arg, zero_arg, pdd.get(), sdd.get(), gmd.get(),
         M, N, K, L, gs, shpd.get(), shp.data(), nullptr, ws.get(), wsb, nullptr);
   });
 

@@ -165,6 +165,7 @@ public:
         /*workspace=*/nullptr, /*epilogue_subtile=*/1,
         /*ktile alignment=*/1);
     return args.mode == GemmUniversalMode::kGemm && hw.cu_count > 0 &&
+           CollectiveMainloop::can_implement(args.problem_shape, args.mainloop) &&
            scheduler.valid_ && TileScheduler::can_implement(args.scheduler);
   }
 
