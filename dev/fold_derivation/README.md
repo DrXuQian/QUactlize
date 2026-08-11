@@ -524,3 +524,19 @@ The current ABI has one shared S/Z stride, not a separate `dZ`.  L127 proves tha
 independently pitched S and Z would require an explicit new argument rather than another inferred layout.
 The packed-metadata path is a different raw-unit ABI and does not use an affine fp16 S/Z plane; non-canonical packed
 arguments therefore need an explicit fail-closed contract rather than being inferred from this result.
+
+
+## L128: outer A stride and logical-N residue
+
+The mixed-input collectives formerly honoured `dA` inside the selected expert tensor but selected that tensor with a
+manually reconstructed compact base: ragged `row_offsets[e] * K`, uniform `e * M * K`.  A padded row pitch or batch
+pitch was therefore accepted and then partly ignored.  The folded collectives had the analogous residue error on N:
+they subtracted the physical B width `TileN/Fold` from logical N and could admit metadata columns beyond the logical
+output residue.  Existing public N-divisibility guards hid the second defect, but they are not part of the collective
+ABI and cannot make the arithmetic sound.
+
+`l128_mixed_argument_contract.cu` calls the same two lightweight helpers used by ordinary, fold and two-plane
+production collectives.  Its independent anchors are explicit int64 stride formulae plus unique physical-offset tags
+for A, and `N - n_tile * logical_TileN` for the residue.  It exhausts fold factors 1/2/4 over N=1..129 (585 cases).
+The old compact A formula must red on four of five experts in both uniform and ragged arms; the physical folded-N
+formula must red on 132 cases.  No PPU is required.

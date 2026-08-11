@@ -48,6 +48,7 @@
 
 #include "cutlass/gemm/collective/collective_mma.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
+#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_argument_contract.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_a_pack.hpp"
 #include "cutlass/detail/collective.hpp"
@@ -873,11 +874,13 @@ public:
     // A init
     using TilerA = typename GmemTiledCopyA::Tiler_MN;
     gmem_tiled_copy_A.desc_.template init<RealInternalElementA, false, get<0>(TilerA{}), get<1>(TilerA{})>(nullptr, M, K, mainloop_params.dA);
-    // RAGGED grouped: expert l_coord's A starts group_row_offsets[l_coord] rows in (M is that expert's M_e).
-    // When null (batched/uniform) fall back to the uniform l_coord*M offset -> identical to the original.
-    int64_t a_row_off = mainloop_params.group_row_offsets ? int64_t(mainloop_params.group_row_offsets[l_coord])
-                                                          : int64_t(l_coord) * int64_t(M);
-    Tensor mA_mkl = make_tensor(make_gmem_ptr(mainloop_params.ptr_A + a_row_off * K),
+    // RAGGED grouped: expert l_coord starts at group_row_offsets[l_coord] rows using dA's row pitch.
+    // Uniform/batched: dA's L pitch owns the expert base. Reconstructing either base with logical K accepted a
+    // caller stride and then silently substituted a compact layout (L128).
+    auto a_expert_base = detail::mixed_a_expert_base(
+        mainloop_params.ptr_A, mainloop_params.dA,
+        mainloop_params.group_row_offsets, l_coord);
+    Tensor mA_mkl = make_tensor(make_gmem_ptr(a_expert_base),
                                 make_shape(M,K,cute::Int<1>{}), mainloop_params.dA);                            // (m,k,1)
     auto gA_logical = [&] {
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
@@ -921,7 +924,8 @@ public:
           N, scale_k, L, l_coord, n_coord);                                           // (BLK_N, 1, scale_k)
 
       // init scale_residue_n
-      scale_residue_n = N - size<0>(gB) * n_coord;
+      scale_residue_n = detail::mixed_logical_n_residue(
+          N, int(size<1>(TileShape{})), n_coord);
 
       // THE PACKED PLANE: [nsb][N][16] bytes, i.e. one 16 B unit per (superblock, column) holding d, dmin and the codes.
       // nsb is DERIVED, not a new parameter: at Scale_TileK groups per k-tile, scale_k / Scale_TileK is the superblock

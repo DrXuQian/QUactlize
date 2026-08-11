@@ -1224,6 +1224,13 @@ def lint_metadata_stride_contract():
         "three mixed-input collectives consume caller dS and L127 rejects compact substitution")
 
 
+def lint_mixed_argument_contract():
+    """Outer A bases and metadata residues must use caller/logical coordinates."""
+    return _run_ci_script(
+        "check_mixed_argument_contract.py",
+        "three mixed-input collectives share dA outer-base and logical-N residue seams")
+
+
 def lint_plain_ldsm_failclosed():
     """The twelve dormant ppu001 plain-LDSM entries must fail before assembly when called."""
     return _run_ci_script(
@@ -1702,6 +1709,7 @@ def main():
                 ("lint", "l125 exhausts all 256 G5 zero-plane addresses through the production CuTe map", lint_grouped_metadata_layout),
                 ("lint", "G5 production and l125 share one exact typed metadata-layout seam", lint_grouped_metadata_layout_contract),
                 ("lint", "caller dS changes all three shipping S/Z metadata address maps", lint_metadata_stride_contract),
+                ("lint", "mixed-input outer bases and residues honor caller/logical coordinates", lint_mixed_argument_contract),
                 ("lint", "ppu001 plain LDSM fails in C++ before its unproved assembler path", lint_plain_ldsm_failclosed),
                 ("lint", "quactlize_extensions adds to actlize rather than redefining it", lint_extension_additive),
                 ("lint", "every file naming a quactlize type reaches its defining header", lint_owned_symbol_includes),
