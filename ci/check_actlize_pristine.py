@@ -107,7 +107,8 @@ EXTENSIONS = {
         "legacy selectors are byte-for-byte unchanged and the new tag is unreachable unless named explicitly",
     "include/cutlass/gemm/kernel/ppu_tile_scheduler_marlin.hpp":
         "additive Marlin CTA-stripe scheduler/cooperative: K-fast equal stripes, scheduler-owned Q-vs-CU launch "
-        "protection, global-q locks and FP32 ordered handoff; no existing scheduler includes or inherits it",
+        "protection, global-q locks and FP32 ordered handoff; its default-compatible exact-cohort capability covers "
+        "one warp through the 1024-thread CTA limit without changing any existing scheduler",
     "include/cutlass/gemm/kernel/ppu_tile_scheduler_marlin_core.hpp":
         "pure host/device integer core shared by the additive Marlin scheduler and its exhaustive host oracle; "
         "it owns no existing tag, Params type, device primitive or mainloop policy",

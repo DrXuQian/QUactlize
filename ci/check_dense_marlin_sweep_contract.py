@@ -4,8 +4,8 @@
 This is deliberately a source contract, not a device benchmark.  It proves the
 parts that must be true before a box run is meaningful:
 
-* the committed dense tables are filtered to the only CTA cohorts supported by
-  the Marlin cooperative (two or four warps, i.e. 64/128 threads);
+* PRE_A2's two/four-warp whitelist remains an explicit historical baseline,
+  while the current sweep admits every warp-aligned 32..1024-thread cohort;
 * the target has private main/unit source paths, because PPUToolchain keys a
   device object by source path rather than target plus flags;
 * both host and device compiles see ``DENSE_MARLIN_SWEEP``;
@@ -14,14 +14,13 @@ parts that must be true before a box run is meaningful:
 * provenance/sample identity names Marlin, and ordinary dense tactic caches
   cannot be loaded or written by this binary.
 
-The exact eligible-row census is recomputed from the committed seven-field
-tables here.  It is not copied from CMake's status message.
+The exact PRE_A2/current/recovered census is recomputed from the committed
+seven-field tables here.  It is not copied from CMake's status message.
 """
 
 from __future__ import annotations
 
 import re
-import sys
 from pathlib import Path
 
 
@@ -37,6 +36,11 @@ TABLES = (
 )
 
 ROW_RE = re.compile(r"^\s*X\((\d+(?:,\d+){6}),B\)\s*\\?\s*$", re.M)
+WARP_THREADS = 32
+MIN_CAPABLE_THREADS = 32
+MAX_CAPABLE_THREADS = 1024
+PRE_A2_WARPS = frozenset({2, 4})
+EXPECTED_RECOVERED_BY_WARP = {1: 610, 8: 1012, 16: 713, 32: 353}
 
 
 def rows(path: Path) -> list[tuple[int, ...]]:
@@ -46,11 +50,35 @@ def rows(path: Path) -> list[tuple[int, ...]]:
     return parsed
 
 
-def eligible(row: tuple[int, ...]) -> bool:
+def cta_warps(row: tuple[int, ...]) -> int:
     tm, tn, _tk, wm, wn, _st, _bc = row
     if tm % wm or tn % wn:
-        return False
-    return (tm // wm) * (tn // wn) in (2, 4)
+        raise RuntimeError(f"non-integral committed CTA topology: {row}")
+    return (tm // wm) * (tn // wn)
+
+
+def capable(row: tuple[int, ...]) -> bool:
+    threads = cta_warps(row) * WARP_THREADS
+    return (MIN_CAPABLE_THREADS <= threads <= MAX_CAPABLE_THREADS and
+            threads % WARP_THREADS == 0)
+
+
+def cmake_capability(cmake: str) -> tuple[int, int] | None:
+    thread_expr = re.search(
+        r'math\(EXPR\s+_DENSE_MARLIN_CTA_THREADS\s+'
+        r'"\$\{_DENSE_MARLIN_CTA_WARPS\}\s*\*\s*(\d+)"\)',
+        cmake,
+    )
+    block = re.search(
+        r"if\(\s*\(\s*_DENSE_MARLIN_CTA_THREADS\s+GREATER_EQUAL\s+(\d+)\s*\)\s*"
+        r"AND\s*\(\s*_DENSE_MARLIN_CTA_THREADS\s+LESS_EQUAL\s+(\d+)\s*\)\s*\)\s*"
+        r"list\(APPEND _LOWBIT_DENSE_MARLIN_SWEEP_ROWS",
+        cmake,
+        re.S,
+    )
+    if not thread_expr or int(thread_expr.group(1)) != WARP_THREADS or not block:
+        return None
+    return tuple(map(int, block.groups()))
 
 
 def target_call(cmake: str) -> str:
@@ -119,8 +147,14 @@ def audit(cmake: str, bench: str, dispatch: str, build: str) -> list[str]:
         bad.append("CMake does not derive the Marlin CTA M-warp count from TM/WM")
     if not re.search(r"math\(EXPR\s+[^\n]*[Mm][Aa][Rr][Ll][Ii][Nn][^\n]*[Tt][Nn][^\n]*/[^\n]*[Ww][Nn]", cmake):
         bad.append("CMake does not derive the Marlin CTA N-warp count from TN/WN")
-    if not re.search(r"(?:EQUAL|STREQUAL)\s+2.*?(?:OR|or).*?(?:EQUAL|STREQUAL)\s+4", cmake, re.S):
-        bad.append("CMake filter is not the exact 2-or-4-warp Marlin cohort")
+    bounds = cmake_capability(cmake)
+    if bounds != (MIN_CAPABLE_THREADS, MAX_CAPABLE_THREADS):
+        bad.append(
+            f"CMake capability is not warp-aligned {MIN_CAPABLE_THREADS}.."
+            f"{MAX_CAPABLE_THREADS} threads (got {bounds})"
+        )
+    if re.search(r"_DENSE_MARLIN_CTA_WARPS\s+(?:EQUAL|STREQUAL)\s+\d+", cmake):
+        bad.append("CMake reintroduced a numeric CTA-warp whitelist")
     for token in ("source_rows", "eligible_rows", "filtered_rows"):
         if token not in cmake.lower():
             bad.append(f"Marlin sweep does not expose its {token.replace('_', '-')} census")
@@ -138,11 +172,19 @@ def audit(cmake: str, bench: str, dispatch: str, build: str) -> list[str]:
         ):
             if forbidden in arm:
                 bad.append(f"Marlin sweep arm can silently fall back through {forbidden!r}")
-        if "static_assert" not in arm or not re.search(r"(?:64|2).*?(?:128|4)", arm, re.S):
-            bad.append("wrapper does not fail closed outside the 64/128-thread cohort")
+        if not re.search(
+                r"static_assert\(\s*Kernel::TileScheduler::fixup_thread_count_capable\(\s*"
+                r"Kernel::MaxThreadsPerBlock\s*\)", arm, re.S):
+            bad.append("wrapper does not consume the production CTA capability")
+        if not re.search(
+                r"static_assert\(\s*Kernel::TileScheduler::FixupThreadCount\s*==\s*"
+                r"Kernel::MaxThreadsPerBlock", arm, re.S):
+            bad.append("wrapper does not preserve the exact CTA/fixup cohort binding")
 
     if not re.search(r"DENSE_MARLIN_SWEEP.*?scheduler=marlin", bench, re.S):
         bad.append("benchmark provenance does not bind DENSE_MARLIN_SWEEP to scheduler=marlin")
+    if "cohort_capability=warp-aligned-threads-32..1024" not in bench:
+        bad.append("benchmark provenance does not name the current CTA capability")
     if 'return "dense-marlin-v1";' not in bench:
         bad.append("Marlin samples can masquerade as ordinary dense-v1 samples")
     if "if (!options.tactic_file.empty() || !options.save_tactic_file.empty())" not in bench:
@@ -176,11 +218,30 @@ def main() -> int:
     }
     bad = audit(**source)
 
-    census: dict[str, tuple[int, int]] = {}
+    census: dict[str, tuple[int, int, int]] = {}
+    recovered_by_warp: dict[int, int] = {}
     try:
         for table in TABLES:
             table_rows = rows(table)
-            census[table.name] = (len(table_rows), sum(map(eligible, table_rows)))
+            pre = sum(cta_warps(row) in PRE_A2_WARPS for row in table_rows)
+            current = sum(map(capable, table_rows))
+            census[table.name] = (len(table_rows), pre, current)
+            for row in table_rows:
+                warps = cta_warps(row)
+                if warps not in PRE_A2_WARPS and capable(row):
+                    recovered_by_warp[warps] = recovered_by_warp.get(warps, 0) + 1
+        if dict(sorted(recovered_by_warp.items())) != EXPECTED_RECOVERED_BY_WARP:
+            bad.append(
+                f"A2 per-cohort recovery drifted: {dict(sorted(recovered_by_warp.items()))}"
+            )
+        total = sum(v[0] for v in census.values())
+        pre = sum(v[1] for v in census.values())
+        current = sum(v[2] for v in census.values())
+        if (total, pre, current, current - pre) != (4790, 2102, 4790, 2688):
+            bad.append(
+                f"A2 closure drifted: source={total} PRE_A2={pre} "
+                f"current={current} recovered={current - pre}"
+            )
     except RuntimeError as exc:
         bad.append(str(exc))
 
@@ -190,8 +251,8 @@ def main() -> int:
         ("ordinary-unit-path", "lowbit_dense_marlin_sweep_units", "lowbit_dense_units"),
         ("ordinary-main-path", "test_lowbit_dense_marlin_sweep_main.cu", "test_lowbit_dense_bench.cu"),
         ("missing-device-define", "-DDENSE_MARLIN_SWEEP=1", "-DDENSE_MARLIN_SWEEP_REMOVED=1"),
-        ("one-warp-cohort", "_DENSE_MARLIN_CTA_WARPS EQUAL 2",
-         "_DENSE_MARLIN_CTA_WARPS EQUAL 1"),
+        ("capability-truncated", "_DENSE_MARLIN_CTA_THREADS LESS_EQUAL 1024",
+         "_DENSE_MARLIN_CTA_THREADS LESS_EQUAL 512"),
     )
     for label, old, new in cmake_plants:
         planted_text = replace_once(source["cmake"], old, new, label, bad)
@@ -205,6 +266,10 @@ def main() -> int:
     dispatch_plants = (
         ("runtime-marlin-switch", "#if defined(DENSE_MARLIN_SWEEP)",
          "#if defined(DENSE_MARLIN_SWEEP)\n  if (options.marlin)"),
+        ("wrapper-capability-disabled", "fixup_thread_count_capable(",
+         "fixup_thread_count_capable_removed("),
+        ("wrapper-exact-binding-reversed", "FixupThreadCount ==",
+         "FixupThreadCount !="),
     )
     for label, old, new in dispatch_plants:
         planted_text = replace_once(source["dispatch"], old, new, label, bad)
@@ -253,12 +318,14 @@ def main() -> int:
         print("[dense-marlin-sweep-contract] FAIL: " + "; ".join(bad))
         return 1
     summary = "; ".join(
-        f"{name}={eligible_count}/{total} eligible ({total - eligible_count} filtered)"
-        for name, (total, eligible_count) in census.items()
+        f"{name}=PRE_A2:{pre}/{total}->current:{current}/{total} "
+        f"(+{current - pre})"
+        for name, (total, pre, current) in census.items()
     )
-    print("[dense-marlin-sweep-contract] PASS: private host/device route, exact 64/128-thread "
-          "filter, forced Marlin wrappers, distinct provenance and cache rejection; "
-          f"eight source plants rejected; {summary}")
+    print("[dense-marlin-sweep-contract] PASS: private host/device route, "
+          "warp-aligned 32..1024-thread capability, exact CTA/fixup binding, forced "
+          "Marlin wrappers, distinct provenance and cache rejection; ten source plants "
+          f"rejected; recovered=w1:610,w8:1012,w16:713,w32:353; {summary}")
     return 0
 
 

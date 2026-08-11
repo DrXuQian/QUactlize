@@ -260,14 +260,13 @@ SYNTAX = [
      "-DDENSE_AB_BC=0 -DTILE_M=16 -DTILE_N=128 -DWARP_M=16 -DWARP_N=32 -DSTAGES=3"),
     # The full-table executable has a distinct generated-unit preprocessor arm:
     # every row is unconditionally Marlin, with no DP/runtime-switch fallback.
-    # Compile one real filtered table row so that arm is not merely source-linted.
+    # Compile one real table row so that arm is not merely source-linted.
     ("dev/fold_derivation/test_lowbit_dense_unit.cu",
      "-DDENSE_MARLIN_SWEEP=1 -DBENCH_GS=128 -DBENCH_TSK=64 "
      "-DTILE_M=16 -DTILE_N=128 -DWARP_M=16 -DWARP_N=32 -DSTAGES=3"),
-    # One real committed row from every CTA-warp cohort rejected by the
-    # second-stage Marlin sweep filter.  The ordinary DP arm must compile;
-    # run_l131 recompiles the same rows with only the Marlin wrapper enabled
-    # and requires the authored current-implementation guards to fire.
+    # One real committed row from every CTA-warp cohort released by A2.  The
+    # ordinary DP and Marlin arms must both compile; run_l131 also requires an
+    # intentionally inexact explicit cohort to fail at the authored binding.
     ("dev/fold_derivation/l131_marlin_rejected_cohorts.cu", ""),
     # THE SHIPPING .so BOUNDARY. The benches compiled the grouped collective for years while the product wrapper
     # did not expose it; compiling this translation unit is what covers the six-entry ABI and every qtype dispatch.
@@ -1173,21 +1172,21 @@ def lint_dense_marlin_contract():
 
 
 def lint_dense_marlin_sweep_contract():
-    """The full-table Marlin target must contain only forced 64/128-thread Marlin wrappers."""
+    """The full-table target must emit every structurally capable exact-cohort Marlin wrapper."""
     return _run_ci_script(
         "check_dense_marlin_sweep_contract.py",
-        "dense Marlin sweep has private sources, an exact cohort, distinct identity and no DP/cache fallback")
+        "dense Marlin sweep has private sources, exact capable cohorts, distinct identity and no DP/cache fallback")
 
 
 def lint_dense_marlin_rejection_census():
-    """Every table row filtered from Marlin must retain one parsed, classified reason."""
+    """The A2 capability delta must recover every row formerly cut by the 2/4-warp whitelist."""
     return _run_ci_script(
         "check_dense_marlin_rejection_census.py",
-        "Marlin rejections are relative to committed-legal rows and name their first guard")
+        "Marlin A2 recovery closes exactly by cohort against the committed legal rows")
 
 
 def lint_dense_marlin_rejected_cohorts():
-    """Bypass only the CMake cohort guard and compile one rejected row per cohort."""
+    """Compile one released Marlin row per A2 cohort and reject an inexact explicit cohort."""
     script = DEV / "run_l131_marlin_rejected_cohorts.sh"
     if not script.is_file():
         return "FAIL", f"missing {script.name}", 0.0
@@ -1774,9 +1773,9 @@ def main():
                 ("lint", "dense Stream-K shares worker/K decomposition and resets locks before timing", lint_dense_streamk_contract),
                 ("lint", "Stream-K tail scan covers attributed zero, medium, and extreme waves", lint_streamk_tail_plan),
                 ("lint", "dense Marlin keeps K-fast stripes, reverse q locks, and the scheduler-owned grid", lint_dense_marlin_contract),
-                ("lint", "dense Marlin sweep has private sources, a forced cohort, and distinct provenance", lint_dense_marlin_sweep_contract),
-                ("lint", "every Marlin-filtered dense row carries one parsed implementation reason", lint_dense_marlin_rejection_census),
-                ("lint", "each rejected Marlin CTA cohort compiles as DP and reds only after guard bypass", lint_dense_marlin_rejected_cohorts),
+                ("lint", "dense Marlin sweep has private sources, exact capable cohorts, and distinct provenance", lint_dense_marlin_sweep_contract),
+                ("lint", "Marlin A2 recovers every formerly filtered row with an exact cohort census", lint_dense_marlin_rejection_census),
+                ("lint", "each released Marlin cohort compiles and an inexact explicit cohort reds", lint_dense_marlin_rejected_cohorts),
                 ("lint", "grouped Stream-K preserves q locks, worker/K decomposition, and timing", lint_grouped_streamk_contract),
                 ("lint", "l122_streamk_fixup_cohort contract pins the exact 64/128-thread CTA cohort", lint_streamk_fixup_cohort),
                 ("lint", "l124 predicates every shipped FP32 accumulator residue and preserves S1-4", lint_fp32_residue_fixup),

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audit every row rejected by the second-stage dense Marlin filter.
+"""Audit A2's removal of the dense Marlin 2/4-warp whitelist.
 
 The source universe is deliberately the *committed dense tactic tables* --
 those rows have already survived the ordinary tactic-space exclusions.  This
@@ -7,8 +7,11 @@ checker must never quietly reinterpret the rejected count as a subtraction
 from the raw Cartesian product (the TileK guard made that mistake expensive).
 
 ``--write`` refreshes the checked-in TSV.  The default mode regenerates it in
-memory and requires byte-for-byte equality, so every rejected row keeps an
-explicit, reviewable reason when either a table or a guard moves.
+memory and requires byte-for-byte equality.  The TSV deliberately retains one
+row for every tactic rejected by the historical PRE_A2={2,4} implementation
+and records that the current structural capability admits it.  Thus a future
+filter cannot erase the evidence by merely making the current rejected set
+empty.
 """
 
 from __future__ import annotations
@@ -16,7 +19,6 @@ from __future__ import annotations
 import argparse
 import collections
 import re
-import sys
 from pathlib import Path
 
 
@@ -35,122 +37,139 @@ TABLES = (
     ("i1", ROOT / "benchmarks/lowbit_dense_i1_configs.inc"),
 )
 ROW_RE = re.compile(r"^\s*X\((\d+(?:,\d+){6}),B\)\s*\\?\s*$", re.M)
-REASON = "MARLIN_FIXUP_COHORT_NOT_IN_SUPPORTED_SET"
-CATEGORY = "CURRENT_IMPLEMENTATION"
+WARP_THREADS = 32
+CURRENT_MIN_THREADS = 32
+CURRENT_MAX_THREADS = 1024
+PRE_A2_WARPS = frozenset({2, 4})
+EXPECTED_RECOVERED_BY_WARP = {1: 610, 8: 1012, 16: 713, 32: 353}
+EXPECTED_SOURCE_ROWS = 4790
+EXPECTED_PRE_A2_ROWS = 2102
+EXPECTED_RECOVERED_ROWS = 2688
+REASON = "A2_COHORT_CAPABILITY_RECOVERED"
+CATEGORY = "CURRENT_IMPLEMENTATION_REMOVED"
 DOC_BEGIN = "<!-- BEGIN GENERATED MARLIN REJECTION CENSUS -->"
 DOC_END = "<!-- END GENERATED MARLIN REJECTION CENSUS -->"
-
-
-def line_of(path: Path, needle: str) -> int:
-    lines = path.read_text().splitlines()
-    hits = [i for i, line in enumerate(lines, 1) if needle in line]
-    if len(hits) != 1:
-        raise RuntimeError(f"{path.relative_to(ROOT)}: expected one {needle!r}, got {hits}")
-    return hits[0]
-
-
-def rel_line(path: Path, needle: str) -> str:
-    return f"{path.relative_to(ROOT)}:{line_of(path, needle)}"
 
 
 def line_at(path: Path, offset: int) -> str:
     return f"{path.relative_to(ROOT)}:{path.read_text()[:offset].count(chr(10)) + 1}"
 
 
-def parse_cmake_supported_cohorts() -> tuple[set[int], str]:
-    """Read the actual CMake OR-of-EQUAL cohort guard, fail closed otherwise."""
+def parse_cmake_capability() -> tuple[int, int, str]:
+    """Read CMake's thread-range capability, rejecting a cohort allow-list."""
     text = CMAKE.read_text()
+    thread_expr = re.search(
+        r'math\(EXPR\s+_DENSE_MARLIN_CTA_THREADS\s+'
+        r'"\$\{_DENSE_MARLIN_CTA_WARPS\}\s*\*\s*(\d+)"\)',
+        text,
+    )
+    if not thread_expr or int(thread_expr.group(1)) != WARP_THREADS:
+        raise RuntimeError("CMake does not derive CTA threads as CTA warps * 32")
     match = re.search(
-        r"if\((?P<condition>\s*\(\s*_DENSE_MARLIN_CTA_WARPS\s+EQUAL.*)\)\s*\n"
+        r"if\((?P<condition>\s*\(\s*_DENSE_MARLIN_CTA_THREADS\s+GREATER_EQUAL.*)\)\s*\n"
         r"\s*list\(APPEND _LOWBIT_DENSE_MARLIN_SWEEP_ROWS",
         text,
         re.S,
     )
     if not match:
-        raise RuntimeError("cannot locate the CMake Marlin cohort admission block")
+        raise RuntimeError("cannot locate the CMake Marlin thread-capability block")
     condition = match.group("condition")
-    atom = re.compile(r"\(\s*_DENSE_MARLIN_CTA_WARPS\s+EQUAL\s+(\d+)\s*\)")
-    values = [int(value) for value in atom.findall(condition)]
-    normalized = atom.sub("ATOM", condition)
-    if not values or len(values) != len(set(values)) or not re.fullmatch(
-            r"\s*ATOM(?:\s+OR\s+ATOM)*\s*", normalized):
+    bounds = re.fullmatch(
+        r"\s*\(\s*_DENSE_MARLIN_CTA_THREADS\s+GREATER_EQUAL\s+(\d+)\s*\)\s*"
+        r"AND\s*\(\s*_DENSE_MARLIN_CTA_THREADS\s+LESS_EQUAL\s+(\d+)\s*\)\s*",
+        condition,
+    )
+    if not bounds:
         raise RuntimeError(
-            "CMake Marlin cohort guard is no longer a unique OR-of-EQUAL set: "
+            "CMake Marlin capability is no longer one inclusive thread range: "
             + repr(condition)
         )
-    if any(value <= 0 for value in values):
-        raise RuntimeError(f"CMake Marlin cohort set contains a nonpositive value: {values}")
-    guard_offset = match.start("condition") + condition.find("_DENSE_MARLIN_CTA_WARPS")
-    return set(values), line_at(CMAKE, guard_offset)
+    minimum, maximum = map(int, bounds.groups())
+    guard_offset = match.start("condition") + condition.find("_DENSE_MARLIN_CTA_THREADS")
+    return minimum, maximum, line_at(CMAKE, guard_offset)
 
 
-def parse_cpp_supported_values(path: Path, variable: str, message: str) -> set[int]:
-    """Parse one C++ static_assert that is strictly an OR-of-== set."""
-    text = path.read_text()
-    pattern = re.compile(
-        r"static_assert\((?P<condition>\s*" + re.escape(variable) +
-        r"\s*==.*?),\s*\"" + re.escape(message) + r"\"\s*\);",
+def require_once(text: str, pattern: str, label: str) -> None:
+    hits = re.findall(pattern, text, re.S)
+    if len(hits) != 1:
+        raise RuntimeError(f"expected one {label}, got {len(hits)}")
+
+
+def current_capability() -> tuple[int, int, str]:
+    """Require CMake, scheduler, named kernel and wrapper to share one ability."""
+    minimum, maximum, first_guard = parse_cmake_capability()
+    scheduler = SCHED.read_text()
+    kernel = KERNEL.read_text()
+    wrapper = WRAPPER.read_text()
+
+    helper = re.search(
+        r"fixup_thread_count_capable\(\s*uint32_t\s+thread_count\s*\)\s*\{"
+        r"(?P<body>.*?)\}",
+        scheduler,
         re.S,
     )
-    matches = list(pattern.finditer(text))
-    if len(matches) != 1:
-        raise RuntimeError(
-            f"{path.relative_to(ROOT)}: expected one support assertion {message!r}, "
-            f"got {len(matches)}"
-        )
-    condition = matches[0].group("condition")
-    atom = re.compile(re.escape(variable) + r"\s*==\s*(\d+)u?")
-    values = [int(value) for value in atom.findall(condition)]
-    normalized = atom.sub("ATOM", condition)
-    if not values or len(values) != len(set(values)) or not re.fullmatch(
-            r"\s*ATOM(?:\s*\|\|\s*ATOM)*\s*", normalized):
-        raise RuntimeError(
-            f"{path.relative_to(ROOT)}: support assertion is not a unique OR-of-== set: "
-            + repr(condition)
-        )
-    return set(values)
+    if not helper:
+        raise RuntimeError("scheduler lost fixup_thread_count_capable")
+    body = re.sub(r"\s+", "", helper.group("body"))
+    want_body = (
+        "returnthread_count>=uint32_t(cutlass::NumThreadsPerWarp)&&"
+        "thread_count<=32u*uint32_t(cutlass::NumThreadsPerWarp)&&"
+        "thread_count%uint32_t(cutlass::NumThreadsPerWarp)==0;"
+    )
+    if body != want_body:
+        raise RuntimeError("scheduler capability is not warp-aligned 32..1024: " + body)
 
+    require_once(
+        scheduler,
+        r"static_assert\(\s*FixupThreadCount\s*==\s*0\s*\|\|\s*"
+        r"fixup_thread_count_capable\(FixupThreadCount\)",
+        "scheduler explicit-or-derived capability assertion",
+    )
+    require_once(
+        scheduler,
+        r"static_assert\(\s*fixup_thread_count_capable\(Cohort\)",
+        "scheduler derived capability assertion",
+    )
+    require_once(
+        scheduler,
+        r"static_assert\(\s*FixupThreadCount\s*==\s*0\s*\|\|\s*"
+        r"FixupThreadCount\s*==\s*DerivedThreadCount",
+        "scheduler explicit/derived exact binding",
+    )
+    require_once(
+        scheduler,
+        r"static_assert\(\s*Cohort\s*==\s*DerivedThreadCount",
+        "scheduler cohort/accumulator exact binding",
+    )
+    require_once(
+        kernel,
+        r"static_assert\(\s*TileScheduler::fixup_thread_count_capable\(MaxThreadsPerBlock\)",
+        "named-kernel capability assertion",
+    )
+    require_once(
+        kernel,
+        r"static_assert\(\s*TileScheduler::FixupThreadCount\s*==\s*MaxThreadsPerBlock",
+        "named-kernel exact cohort assertion",
+    )
+    require_once(
+        wrapper,
+        r"static_assert\(\s*Kernel::TileScheduler::fixup_thread_count_capable\(\s*"
+        r"Kernel::MaxThreadsPerBlock\s*\)",
+        "generated-wrapper capability assertion",
+    )
+    require_once(
+        wrapper,
+        r"static_assert\(\s*Kernel::TileScheduler::FixupThreadCount\s*==\s*"
+        r"Kernel::MaxThreadsPerBlock",
+        "generated-wrapper exact cohort assertion",
+    )
 
-def supported_cohorts() -> tuple[set[int], str]:
-    """Require CMake, scheduler, named kernel, wrapper and fixup to agree."""
-    warps, first_guard = parse_cmake_supported_cohorts()
-    threads = {warps_per_cta * 32 for warps_per_cta in warps}
-    scheduler = parse_cpp_supported_values(
-        SCHED,
-        "FixupThreadCount",
-        "Marlin cooperative supports only derived/exact 64/128-thread CTA cohorts",
-    )
-    kernel = parse_cpp_supported_values(
-        KERNEL,
-        "MaxThreadsPerBlock",
-        "dense mixed-input Marlin supports exact 64/128-thread CTAs",
-    )
-    wrapper = parse_cpp_supported_values(
-        WRAPPER,
-        "G::GemmKernel::MaxThreadsPerBlock",
-        "the dense Marlin sweep admits only 64/128-thread rows",
-    )
-    fixup = parse_cpp_supported_values(
-        SCHED,
-        "Cohort",
-        "Marlin cooperative derived an unsupported CTA cohort",
-    )
-    expected = {
-        "scheduler explicit cohort (plus derived=0)": scheduler - {0},
-        "named kernel": kernel,
-        "generated wrapper": wrapper,
-        "fixup": fixup,
-    }
-    if 0 not in scheduler:
-        raise RuntimeError("scheduler support assertion lost its derived-cohort zero arm")
-    mismatches = {name: values for name, values in expected.items() if values != threads}
-    if mismatches:
-        detail = ", ".join(f"{name}={sorted(values)}" for name, values in mismatches.items())
+    if (minimum, maximum) != (CURRENT_MIN_THREADS, CURRENT_MAX_THREADS):
         raise RuntimeError(
-            f"CMake admits warp cohorts {sorted(warps)} / threads {sorted(threads)}, "
-            f"but implementation guards disagree: {detail}"
+            f"CMake admits [{minimum},{maximum}] threads, scheduler admits "
+            f"[{CURRENT_MIN_THREADS},{CURRENT_MAX_THREADS}]"
         )
-    return warps, first_guard
+    return minimum, maximum, first_guard
 
 
 def parse_rows(path: Path) -> list[tuple[int, ...]]:
@@ -170,13 +189,18 @@ def cohort(row: tuple[int, ...]) -> tuple[int, int, int]:
     return mw, nw, mw * nw
 
 
-def generate() -> tuple[str, dict[str, collections.Counter[int]], set[int]]:
-    admitted_warps, first_guard = supported_cohorts()
-    admitted_text = "|".join(map(str, sorted(admitted_warps)))
+def capable(warps: int, minimum: int, maximum: int) -> bool:
+    threads = warps * WARP_THREADS
+    return minimum <= threads <= maximum and threads % WARP_THREADS == 0
+
+
+def generate() -> tuple[str, dict[str, collections.Counter[int]], tuple[int, int]]:
+    minimum, maximum, first_guard = current_capability()
     header = (
         "bits\ttable\tsource_index\ttm\ttn\ttk\twm\twn\tstages\tb_chunk\t"
-        "m_warps\tn_warps\tcta_warps\tcta_threads\tsupported_cta_warps\t"
-        "category\treason_id\tfirst_guard\n"
+        "m_warps\tn_warps\tcta_warps\tcta_threads\tpre_a2_supported_cta_warps\t"
+        "current_capability\tpre_a2_status\tcurrent_status\tcategory\ttransition_id\t"
+        "current_capability_guard\n"
     )
     output = [header]
     census: dict[str, collections.Counter[int]] = {}
@@ -187,18 +211,24 @@ def generate() -> tuple[str, dict[str, collections.Counter[int]], set[int]]:
             tm, tn, tk, wm, wn, stages, bc = row
             mw, nw, warps = cohort(row)
             counter[warps] += 1
-            if warps in admitted_warps:
+            if warps in PRE_A2_WARPS:
                 continue
+            if not capable(warps, minimum, maximum):
+                raise RuntimeError(
+                    f"A2 capability still rejects PRE_A2 row {bits}:{source_index} cohort w{warps}"
+                )
             output.append(
                 f"{bits}\t{path.name}\t{source_index}\t{tm}\t{tn}\t{tk}\t"
                 f"{wm}\t{wn}\t{stages}\t{bc}\t{mw}\t{nw}\t{warps}\t{warps * 32}\t"
-                f"{admitted_text}\t{CATEGORY}\t{REASON}\t{first_guard}\n"
+                f"2|4\twarp-aligned-threads-{minimum}..{maximum}\tREJECTED\tADMITTED\t"
+                f"{CATEGORY}\t{REASON}\t{first_guard}\n"
             )
         census[bits] = counter
-    return "".join(output), census, admitted_warps
+    return "".join(output), census, (minimum, maximum)
 
 
-def verify_probe(census: dict[str, collections.Counter[int]], admitted_warps: set[int]) -> None:
+def verify_probe(
+        census: dict[str, collections.Counter[int]], capability: tuple[int, int]) -> None:
     text = PROBE.read_text()
     i4_rows = set(parse_rows(TABLES[0][1]))
     representatives = {
@@ -218,50 +248,81 @@ def verify_probe(census: dict[str, collections.Counter[int]], admitted_warps: se
     domains = {bits: set(counts) for bits, counts in census.items()}
     if len({frozenset(domain) for domain in domains.values()}) != 1:
         raise RuntimeError(f"committed table cohort domains disagree: {domains}")
-    rejected_domain = domains["i4"] - admitted_warps
-    if set(representatives) != rejected_domain:
+    recovered_domain = domains["i4"] - PRE_A2_WARPS
+    if set(representatives) != recovered_domain:
         raise RuntimeError(
-            f"L131 representatives {sorted(representatives)} do not cover every rejected "
-            f"cohort {sorted(rejected_domain)}"
+            f"L131 representatives {sorted(representatives)} do not cover every recovered "
+            f"cohort {sorted(recovered_domain)}"
+        )
+
+    minimum, maximum = capability
+    recovered = collections.Counter()
+    source = pre_a2 = current = 0
+    for counts in census.values():
+        source += sum(counts.values())
+        pre_a2 += sum(n for warps, n in counts.items() if warps in PRE_A2_WARPS)
+        current += sum(n for warps, n in counts.items() if capable(warps, minimum, maximum))
+        for warps, n in counts.items():
+            if warps not in PRE_A2_WARPS and capable(warps, minimum, maximum):
+                recovered[warps] += n
+    if dict(sorted(recovered.items())) != EXPECTED_RECOVERED_BY_WARP:
+        raise RuntimeError(
+            f"A2 per-cohort recovery drifted: got {dict(sorted(recovered.items()))}, "
+            f"expected {EXPECTED_RECOVERED_BY_WARP}"
+        )
+    if (source, pre_a2, current, current - pre_a2) != (
+            EXPECTED_SOURCE_ROWS, EXPECTED_PRE_A2_ROWS,
+            EXPECTED_SOURCE_ROWS, EXPECTED_RECOVERED_ROWS):
+        raise RuntimeError(
+            "A2 closure drifted: "
+            f"source={source} PRE_A2={pre_a2} current={current} recovered={current - pre_a2}"
         )
 
 
 def generated_doc_block(
-        census: dict[str, collections.Counter[int]], admitted_warps: set[int]) -> str:
-    warp_text = "|".join(map(str, sorted(admitted_warps)))
-    thread_text = "|".join(str(warps * 32) for warps in sorted(admitted_warps))
+        census: dict[str, collections.Counter[int]], capability: tuple[int, int]) -> str:
+    minimum, maximum = capability
     output = [
         DOC_BEGIN,
-        f"Parsed supported CTA warp cohorts: `{warp_text}` (threads: `{thread_text}`).",
+        "Historical baseline: `PRE_A2={2,4}` CTA warps (threads `64|128`).",
+        f"Current capability: warp-aligned CTA threads in `[{minimum},{maximum}]`.",
         "",
-        "| format | committed legal source rows | Marlin rows (parsed supported set) | rejected | rejected by CTA warps |",
-        "|---|---:|---:|---:|---|",
+        "| format | committed legal rows | PRE_A2 admitted | PRE_A2 rejected | current admitted | current rejected | A2 recovered by cohort |",
+        "|---|---:|---:|---:|---:|---:|---|",
     ]
-    total_source = total_accepted = total_rejected = 0
+    total_source = total_pre = total_current = total_recovered = 0
     for bits, _path in TABLES:
         counts = census[bits]
         source = sum(counts.values())
-        accepted = sum(count for warps, count in counts.items() if warps in admitted_warps)
-        rejected = source - accepted
+        pre = sum(count for warps, count in counts.items() if warps in PRE_A2_WARPS)
+        current = sum(
+            count for warps, count in counts.items() if capable(warps, minimum, maximum))
+        recovered = current - pre
         breakdown = ", ".join(
             f"w{warps}={count}" for warps, count in sorted(counts.items())
-            if warps not in admitted_warps
+            if warps not in PRE_A2_WARPS and capable(warps, minimum, maximum)
         )
-        output.append(f"| {bits} | {source} | {accepted} | {rejected} | {breakdown} |")
+        output.append(
+            f"| {bits} | {source} | {pre} | {source - pre} | {current} | "
+            f"{source - current} | {breakdown} |"
+        )
         total_source += source
-        total_accepted += accepted
-        total_rejected += rejected
+        total_pre += pre
+        total_current += current
+        total_recovered += recovered
     output.extend((
-        f"| **total** | **{total_source}** | **{total_accepted}** | **{total_rejected}** | |",
+        f"| **total** | **{total_source}** | **{total_pre}** | "
+        f"**{total_source - total_pre}** | **{total_current}** | "
+        f"**{total_source - total_current}** | **{total_recovered} recovered** |",
         "",
-        "All committed rows have integral `TM/WM` and `TN/WN`.  There is exactly one",
-        "rejection reason:",
+        "All committed rows have integral `TM/WM` and `TN/WN`.  A2 removes exactly",
+        "the former current-implementation rejection:",
         "",
-        "| reason id | category | rows | meaning |",
+        "| transition id | category | rows | meaning |",
         "|---|---|---:|---|",
-        f"| `{REASON}` | `{CATEGORY}` | {total_rejected} | The named Marlin cooperative is currently implemented and gated for the parsed set: exact {thread_text.replace('|', '/')}-thread ({warp_text.replace('|', '/')}-warp) CTA cohorts. |",
-        "| hardware/ISA limitation | — | 0 | No rejected row reached a hardware/ISA diagnostic. |",
-        "| accidental independent enumeration rule | — | 0 | The CMake rule mirrors four fail-closed implementation assertions; it is not an otherwise unexplained second filter. |",
+        f"| `{REASON}` | `{CATEGORY}` | {total_recovered} | Every row rejected only by PRE_A2's 2/4-warp whitelist is admitted by the current structural capability. |",
+        "| current rejection | — | 0 | Current capability admits 4790/4790 committed-legal rows. |",
+        "| hardware/ISA limitation | — | 0 | A2 adds no claim of device speed or correctness; those remain box gates. |",
         DOC_END,
     ))
     return "\n".join(output)
@@ -286,9 +347,9 @@ def main() -> int:
     parser.add_argument("--write", action="store_true", help="refresh checked-in TSV")
     args = parser.parse_args()
     try:
-        expected, census, admitted_warps = generate()
-        verify_probe(census, admitted_warps)
-        old_doc, expected_doc = checked_doc_text(generated_doc_block(census, admitted_warps))
+        expected, census, capability = generate()
+        verify_probe(census, capability)
+        old_doc, expected_doc = checked_doc_text(generated_doc_block(census, capability))
     except RuntimeError as exc:
         print(f"[dense-marlin-rejection-census] FAIL: {exc}")
         return 1
@@ -308,22 +369,28 @@ def main() -> int:
         return 1
 
     summaries = []
-    rejected_total = 0
+    recovered_total = 0
+    minimum, maximum = capability
     for bits, counts in census.items():
         source = sum(counts.values())
-        accepted = sum(count for warps, count in counts.items() if warps in admitted_warps)
-        rejected = source - accepted
-        rejected_total += rejected
-        rejected_breakdown = ",".join(
+        pre = sum(count for warps, count in counts.items() if warps in PRE_A2_WARPS)
+        current = sum(
+            count for warps, count in counts.items() if capable(warps, minimum, maximum))
+        recovered = current - pre
+        recovered_total += recovered
+        recovered_breakdown = ",".join(
             f"w{warps}={count}" for warps, count in sorted(counts.items())
-            if warps not in admitted_warps
+            if warps not in PRE_A2_WARPS and capable(warps, minimum, maximum)
         )
-        summaries.append(f"{bits}={rejected}/{source} rejected ({rejected_breakdown})")
+        summaries.append(
+            f"{bits}=PRE_A2:{pre}/{source}->current:{current}/{source} "
+            f"(+{recovered}: {recovered_breakdown})"
+        )
     print(
         "[dense-marlin-rejection-census] PASS: "
-        f"parsed CMake cohorts={sorted(admitted_warps)}; implementation guards agree; "
-        f"{rejected_total} relative-to-committed-legal rows each carry {REASON}/"
-        f"{CATEGORY}; " + "; ".join(summaries)
+        f"PRE_A2={sorted(PRE_A2_WARPS)}; current=warp-aligned-{minimum}..{maximum}; "
+        f"implementation guards agree; recovered={recovered_total}/{EXPECTED_RECOVERED_ROWS}; "
+        "current=4790/4790; " + "; ".join(summaries)
     )
     return 0
 

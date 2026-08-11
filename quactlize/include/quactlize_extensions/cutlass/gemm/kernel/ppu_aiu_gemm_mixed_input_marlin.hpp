@@ -71,8 +71,10 @@ public:
   static constexpr uint32_t NumMmaWarpGroups = 1;
   static constexpr bool IsDenseMarlin = true;
 
-  static_assert(MaxThreadsPerBlock == 64u || MaxThreadsPerBlock == 128u,
-                "dense mixed-input Marlin supports exact 64/128-thread CTAs");
+  static_assert(MaxThreadsPerBlock == uint32_t(cute::size(TiledMma{})),
+                "Marlin launch size must equal the exact TiledMma CTA size");
+  static_assert(TileScheduler::fixup_thread_count_capable(MaxThreadsPerBlock),
+                "dense mixed-input Marlin requires a structurally capable CTA cohort");
   static_assert(TileScheduler::FixupThreadCount == MaxThreadsPerBlock,
                 "Marlin cooperative cohort must equal the exact CTA thread count");
   static_assert(cute::is_same_v<ElementAccumulator, ElementCompute> &&

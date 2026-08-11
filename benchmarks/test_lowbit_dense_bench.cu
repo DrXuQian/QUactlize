@@ -386,9 +386,10 @@ inline bench_measure::Tactic dense_fixed_tactic() {
 #include "bench_samples.hpp"
 #include "bench_floor.cuh"
 #if defined(DENSE_MARLIN_SWEEP)
-// A second registry over the SAME committed table: CMake emits only rows whose
-// final Marlin kernel has a supported 64/128-thread cooperative cohort.  Keep
-// the source table's bits/artifact identity, but make both the registry and
+// A second registry over the SAME committed table: CMake emits rows whose
+// final Marlin kernel has a warp-aligned CTA cohort in [32,1024].  The named
+// kernel independently proves the exact accumulator/cohort binding.  Keep the
+// source table's bits/artifact identity, but make both the registry and
 // provenance distinct from the ordinary DP sweep.
 #if defined(BENCH_UINT1)
 #include "lowbit_dense_i1_configs.inc"
@@ -495,8 +496,9 @@ inline void print_dense_table_provenance() {
                 LOWBIT_DENSE_MARLIN_SWEEP_SOURCE_ROWS,
                 "the Marlin source/eligible/filtered census does not close");
   std::printf("[dense-table] scheduler=marlin file=%s rows=%d source_rows=%d "
-              "eligible_rows=%d filtered_rows=%d cohort_threads=64|128 "
-              "filter=cta-warps-2|4 source_space_fnv1a64=%s "
+              "eligible_rows=%d filtered_rows=%d "
+              "cohort_capability=warp-aligned-threads-32..1024 "
+              "source_space_fnv1a64=%s "
               "source_emitter_fnv1a64=%s\n",
               LOWBIT_DENSE_TABLE_FILE, kLowbitDenseConfigRows,
               LOWBIT_DENSE_MARLIN_SWEEP_SOURCE_ROWS,

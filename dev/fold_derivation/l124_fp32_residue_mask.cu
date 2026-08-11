@@ -13,6 +13,7 @@
 // modeled here; those remain box gates.
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -48,6 +49,10 @@ constexpr uint32_t kPoison = 0x7fc12345u;
 struct Totals {
   uint64_t cases = 0, slots = 0, residues = 0, simulations = 0;
   uint64_t coverage_bad = 0, helper_bad = 0, mask_bad = 0, semantic_bad = 0;
+  // Index by exact CTA thread count.  1024 is the tactic-space ceiling.
+  std::array<uint64_t, 1025> cohort_cases{};
+  std::array<uint64_t, 1025> cohort_slots{};
+  std::array<uint64_t, 1025> cohort_simulations{};
 };
 
 float value(int epoch, int peer, int logical) {
@@ -73,6 +78,8 @@ struct Geometry {
       Mma{}, make_shape(Int<TM>{}, Int<TN>{}))));
   static constexpr int FragmentSlots = size(Fragment{});
   static constexpr int TileSlots = TM * TN;
+  static_assert(Threads > 0 && Threads % 32 == 0 && Threads <= 1024,
+                "real tactic CTA cohort must be warp-aligned and fit one CTA");
   static_assert(Threads * FragmentSlots == TileSlots,
                 "FP32 scalar stripes must span one complete output tile");
 };
@@ -202,7 +209,49 @@ bool check_case(Totals& z) {
   }
 
   ++z.cases; z.slots += E;
+  ++z.cohort_cases[G::Threads];
+  z.cohort_slots[G::Threads] += E;
+  z.cohort_simulations[G::Threads] += 20;
   return ok;
+}
+
+struct StripeCoverage {
+  uint64_t visits = 0;
+  uint64_t holes = 0;
+  uint64_t duplicate_visits = 0;
+  uint64_t out_of_tile = 0;
+
+  bool exact(uint64_t expected) const {
+    return visits == expected && holes == 0 && duplicate_visits == 0 &&
+           out_of_tile == 0;
+  }
+};
+
+// Replay the exact scalar address seam used by Marlin's fixup:
+//   local = stripe * Cohort + threadIdx.x.
+// The green arm is already exercised above with Cohort == G::Threads.  This
+// helper exists for the independent red arm: silently falling back to the old
+// 128-thread cohort must create holes/aliases for every newly admitted cohort.
+template <class G, int Cohort>
+StripeCoverage striped_coverage() {
+  std::vector<uint16_t> visits(G::TileSlots, 0);
+  StripeCoverage out;
+  for (int thread = 0; thread < G::Threads; ++thread) {
+    for (int stripe = 0; stripe < G::FragmentSlots; ++stripe) {
+      ++out.visits;
+      int const local = stripe * Cohort + thread;
+      if (local < 0 || local >= G::TileSlots) {
+        ++out.out_of_tile;
+      } else {
+        ++visits[local];
+      }
+    }
+  }
+  for (uint16_t count : visits) {
+    out.holes += count == 0;
+    out.duplicate_visits += count > 1 ? uint64_t(count - 1) : 0;
+  }
+  return out;
 }
 
 } // namespace
@@ -214,6 +263,23 @@ int main() {
   ok &= check_case<TM,TN,WM,WN,ATOM>(z);
   L124_FOR_EACH_CASE(L124_RUN)
 #undef L124_RUN
+
+  uint64_t cohort_case_sum = 0;
+  int nonempty_cohorts = 0;
+#define L124_CHECK_COHORT(WARPS,THREADS,LAYOUTS)                           \
+  do {                                                                    \
+    static_assert((THREADS) == 32 * (WARPS));                             \
+    ok &= (LAYOUTS) > 0;                                                  \
+    ok &= z.cohort_cases[THREADS] == uint64_t(LAYOUTS);                   \
+    ok &= z.cohort_slots[THREADS] > 0;                                    \
+    ok &= z.cohort_simulations[THREADS] == uint64_t(LAYOUTS) * 20;        \
+    cohort_case_sum += z.cohort_cases[THREADS];                           \
+    nonempty_cohorts += z.cohort_cases[THREADS] != 0;                     \
+  } while (false);
+  L124_FOR_EACH_COHORT(L124_CHECK_COHORT)
+#undef L124_CHECK_COHORT
+  ok &= nonempty_cohorts == L124_COHORT_COUNT;
+  ok &= cohort_case_sum == z.cases;
 
   // Two planted controls.  Swapping the predicate axes must fail on this
   // rectangular tile, and shifting only workspace stores must break the
@@ -237,7 +303,29 @@ int main() {
   }
   bool const coordinate_red = good == 33 && swapped != good;
   bool const address_red = !simulate<Red, 8, 16>(lm, ln, 7, 13, 4, true);
-  ok &= z.cases == L124_CASE_COUNT && coordinate_red && address_red;
+
+  // These are the exact four real layouts carried by L131.  A stale fixed
+  // 128-thread fixup cohort has a distinct, deterministic failure shape for
+  // every one: 32 threads run out of tile; wider CTAs alias the prefix and
+  // leave the rest untouched.
+  using G32 = Geometry<8, 16, 8, 16, 8>;
+  using G256 = Geometry<8, 128, 8, 16, 8>;
+  using G512 = Geometry<8, 256, 8, 16, 8>;
+  using G1024 = Geometry<32, 256, 16, 16, 16>;
+  StripeCoverage const wrong32 = striped_coverage<G32, 128>();
+  StripeCoverage const wrong256 = striped_coverage<G256, 128>();
+  StripeCoverage const wrong512 = striped_coverage<G512, 128>();
+  StripeCoverage const wrong1024 = striped_coverage<G1024, 128>();
+  bool const cohort_red =
+      wrong32.visits == 128 && wrong32.holes == 96 &&
+      wrong32.duplicate_visits == 0 && wrong32.out_of_tile == 96 &&
+      wrong256.visits == 1024 && wrong256.holes == 384 &&
+      wrong256.duplicate_visits == 384 && wrong256.out_of_tile == 0 &&
+      wrong512.visits == 2048 && wrong512.holes == 1152 &&
+      wrong512.duplicate_visits == 1152 && wrong512.out_of_tile == 0 &&
+      wrong1024.visits == 8192 && wrong1024.holes == 6272 &&
+      wrong1024.duplicate_visits == 6272 && wrong1024.out_of_tile == 0;
+  ok &= z.cases == L124_CASE_COUNT && coordinate_red && address_red && cohort_red;
 
   std::printf("L124 cases=%llu/%d source_rows=%d slots=%llu exhaustive_residues=%llu "
               "S1-4_runs=%llu coverage_bad=%llu helper_bad=%llu mask_bad=%llu semantic_bad=%llu\n",
@@ -249,10 +337,19 @@ int main() {
       static_cast<unsigned long long>(z.coverage_bad),
       static_cast<unsigned long long>(z.helper_bad),
       static_cast<unsigned long long>(z.mask_bad),
-      static_cast<unsigned long long>(z.semantic_bad));
-  std::printf("L124 planted-coordinate=%s planted-address=%s result=%s\n",
+              static_cast<unsigned long long>(z.semantic_bad));
+#define L124_PRINT_COHORT(WARPS,THREADS,LAYOUTS)                           \
+  std::printf(" w%d/t%d=%llu", WARPS, THREADS,                           \
+      static_cast<unsigned long long>(z.cohort_cases[THREADS]));
+  std::printf("L124 cohort-layouts");
+  L124_FOR_EACH_COHORT(L124_PRINT_COHORT)
+#undef L124_PRINT_COHORT
+  std::printf(" nonempty=%d/%d\n", nonempty_cohorts, L124_COHORT_COUNT);
+  std::printf("L124 planted-coordinate=%s planted-address=%s "
+              "planted-fixed128-cohort=%s result=%s\n",
       coordinate_red ? "EXPECTED_RED" : "UNEXPECTED_GREEN",
       address_red ? "EXPECTED_RED" : "UNEXPECTED_GREEN",
+      cohort_red ? "EXPECTED_RED" : "UNEXPECTED_GREEN",
       ok ? "PASS" : "FAIL");
   return ok ? 0 : 1;
 }

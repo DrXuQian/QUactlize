@@ -58,8 +58,17 @@ def audit(files: dict[str, str]) -> list[str]:
         bad.append("scheduler core lets occupancy multiply its CU-owned grid")
 
     for token in (
+        "fixup_thread_count_capable(",
+        "thread_count >= uint32_t(cutlass::NumThreadsPerWarp)",
+        "thread_count <= 32u * uint32_t(cutlass::NumThreadsPerWarp)",
+        "thread_count % uint32_t(cutlass::NumThreadsPerWarp) == 0",
         "FixupThreadCount == 0 ? DerivedThreadCount : FixupThreadCount",
         "FixupThreadCount == 0 || FixupThreadCount == DerivedThreadCount",
+        "Cohort == DerivedThreadCount",
+        "using BarrierManager = NamedBarrierManager<\n        Cohort,",
+        "BarrierManager::ThreadCount == Cohort",
+        "using Striped = BlockStripedReduce<Cohort, AccumulatorArray>;",
+        "uint32_t const thread = uint32_t(threadIdx.x);",
         "Striped::store(workspace_array, *accumulator_array, thread, predicate);",
         "BarrierManager::wait_eq(0, locks, thread, lock, work.slice_idx);",
         "Striped::load_add(*accumulator_array, workspace_array, thread, predicate);",
@@ -70,6 +79,8 @@ def audit(files: dict[str, str]) -> list[str]:
         if token not in s:
             bad.append(f"cooperative is missing {token!r}")
     exact(s, "BarrierManager::arrive_inc(0, locks, thread, lock, 1);", 2, bad, "peer chain")
+    if "threadIdx.x) % Cohort" in s:
+        bad.append("Marlin fixup aliases surplus CTA threads through a cohort modulo")
     if "atomic_add" in s or "BlockStripedReduceT::reduce" in s:
         bad.append("Marlin cooperative silently became the Stream-K atomic protocol")
 
@@ -85,6 +96,9 @@ def audit(files: dict[str, str]) -> list[str]:
         "using ArchTag = typename CollectiveMainloop::ArchTag;",
         "using TileSchedulerTag = MarlinScheduler;",
         "TileShape, ClusterShape, MaxThreadsPerBlock",
+        "MaxThreadsPerBlock == uint32_t(cute::size(TiledMma{}))",
+        "TileScheduler::fixup_thread_count_capable(MaxThreadsPerBlock)",
+        "TileScheduler::FixupThreadCount == MaxThreadsPerBlock",
         "static constexpr bool IsDenseMarlin = true;",
         "TileScheduler::get_work_k_tile_start(work_tile_info)",
         "TileScheduler::get_work_k_tile_count(",
@@ -112,6 +126,13 @@ def audit(files: dict[str, str]) -> list[str]:
         if token not in b:
             bad.append(f"benchmark route is missing {token!r}")
     exact(d, "options.marlin", 1, bad, "generated dispatch")
+    for token in (
+        "Kernel::TileScheduler::fixup_thread_count_capable(",
+        "Kernel::TileScheduler::FixupThreadCount ==",
+        "Kernel::MaxThreadsPerBlock",
+    ):
+        if token not in d:
+            bad.append(f"generated Marlin wrapper is missing {token!r}")
     exact(u, "X(lowbit_dense_marlin_probe,16,128,128,16,32,3,0)", 1, bad, "local unit")
 
     for token in (
@@ -152,24 +173,42 @@ def main() -> int:
     bad = audit(files)
 
     plants = (
-        ("grid-times-occupancy",
+        ("core", "grid-times-occupancy",
          "p.grid_blocks_ = p.output_tiles_ >= cu_count ? p.output_tiles_ : cu_count;",
          "p.grid_blocks_ = cu_count * 4;"),
-        ("iters-minus-one",
+        ("core", "iters-minus-one",
          "p.iters_per_block_ = ceil_div_u64(p.total_k_tiles_, p.grid_blocks_);",
          "p.iters_per_block_ = ceil_div_u64(p.total_k_tiles_, p.grid_blocks_) - 1;"),
-        ("local-lock",
+        ("core", "local-lock",
          "out.lock_idx = q;", "out.lock_idx = uint64_t(out.N_idx);"),
-        ("natural-peer-order",
+        ("core", "natural-peer-order",
          "out.slice_idx = uint32_t(last_peer - block_idx);",
          "out.slice_idx = uint32_t(block_idx - first_peer);"),
+        ("sched", "capability-over-cta-limit",
+         "thread_count <= 32u * uint32_t(cutlass::NumThreadsPerWarp)",
+         "thread_count <= 64u * uint32_t(cutlass::NumThreadsPerWarp)"),
+        ("sched", "barrier-default-128",
+         "using BarrierManager = NamedBarrierManager<\n        Cohort,",
+         "using BarrierManager = NamedBarrierManager<\n        128,"),
+        ("sched", "reducer-default-128",
+         "using Striped = BlockStripedReduce<Cohort, AccumulatorArray>;",
+         "using Striped = BlockStripedReduce<128, AccumulatorArray>;"),
+        ("sched", "weak-derived-binding",
+         "static_assert(Cohort == DerivedThreadCount,",
+         "static_assert(Cohort % DerivedThreadCount == 0,"),
+        ("sched", "thread-modulo-alias",
+         "uint32_t const thread = uint32_t(threadIdx.x);",
+         "uint32_t const thread = uint32_t(threadIdx.x) % Cohort;"),
+        ("kernel", "kernel-drops-explicit-cohort",
+         "TileShape, ClusterShape, MaxThreadsPerBlock>;",
+         "TileShape, ClusterShape>;"),
     )
-    for label, old, new in plants:
-        if files["core"].count(old) != 1:
+    for owner, label, old, new in plants:
+        if files[owner].count(old) != 1:
             bad.append(f"cannot plant {label}: source anchor missing/duplicated")
             continue
         planted = dict(files)
-        planted["core"] = planted["core"].replace(old, new)
+        planted[owner] = planted[owner].replace(old, new)
         if not audit(planted):
             bad.append(f"contract accepted planted {label} regression")
 
@@ -195,7 +234,7 @@ def main() -> int:
         return 1
     print("[dense-marlin-contract] PASS -- additive K-fast scheduler, reverse q-lock cooperative, "
           "exact cohort, artifact/tactic split, and same-event DP/SK/Marlin route; "
-          "four structural plants rejected")
+          "ten structural plants rejected")
     return 0
 
 

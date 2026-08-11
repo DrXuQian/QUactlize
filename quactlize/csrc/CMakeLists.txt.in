@@ -337,9 +337,11 @@ target_compile_options(test_lowbit_dense_bench PRIVATE -w)
 
 # Full committed-table Marlin sweep.  This is a second scheduler identity over
 # the resident dense table, not a runtime arm of test_lowbit_dense_bench.
-# Marlin's cooperative supports exactly two/four warp cohorts; filter before
-# emitting sources, then retain a C++ static_assert in every wrapper as the
-# independent fail-closed boundary.
+# Marlin's cooperative is parameterized by the exact CTA cohort.  Admit every
+# warp-aligned cohort representable by one PPU CTA (32..1024 threads), then
+# retain the independent C++ capability and exact-binding static_asserts in
+# every wrapper.  Do not turn this back into a numeric cohort whitelist: that
+# silently removed more than half of the committed tactic space before A2.
 set(_LOWBIT_DENSE_MARLIN_SWEEP_ROWS "")
 foreach(_row IN LISTS _LOWBIT_DENSE_ROWS)
   string(REPLACE "," ";" _fields "${_row}")
@@ -362,8 +364,9 @@ foreach(_row IN LISTS _LOWBIT_DENSE_ROWS)
   math(EXPR _DENSE_MARLIN_N_WARPS "${_tn} / ${_wn}")
   math(EXPR _DENSE_MARLIN_CTA_WARPS
        "${_DENSE_MARLIN_M_WARPS} * ${_DENSE_MARLIN_N_WARPS}")
-  if((_DENSE_MARLIN_CTA_WARPS EQUAL 2) OR
-     (_DENSE_MARLIN_CTA_WARPS EQUAL 4))
+  math(EXPR _DENSE_MARLIN_CTA_THREADS "${_DENSE_MARLIN_CTA_WARPS} * 32")
+  if((_DENSE_MARLIN_CTA_THREADS GREATER_EQUAL 32) AND
+     (_DENSE_MARLIN_CTA_THREADS LESS_EQUAL 1024))
     list(APPEND _LOWBIT_DENSE_MARLIN_SWEEP_ROWS "${_row}")
   endif()
 endforeach()
@@ -396,7 +399,7 @@ foreach(_row IN LISTS _LOWBIT_DENSE_MARLIN_SWEEP_ROWS)
       "${_DENSE_MARLIN_SWEEP_CONFIG_ROWS}  X(${_row},A)${_continuation}")
 endforeach()
 file(WRITE "${_DENSE_MARLIN_SWEEP_CONFIG_HEADER}.in"
-  "// GENERATED from ${_LOWBIT_DENSE_TABLE_NAME}; scheduler=marlin, CTA threads in {64,128}.\n"
+  "// GENERATED from ${_LOWBIT_DENSE_TABLE_NAME}; scheduler=marlin, warp-aligned CTA threads in [32,1024].\n"
   "#define LOWBIT_DENSE_MARLIN_SWEEP_SOURCE_ROWS ${_LOWBIT_DENSE_MARLIN_SWEEP_SOURCE_ROWS}\n"
   "#define LOWBIT_DENSE_MARLIN_SWEEP_ROWS ${_LOWBIT_DENSE_MARLIN_SWEEP_ELIGIBLE_ROWS}\n"
   "#define LOWBIT_DENSE_MARLIN_SWEEP_FILTERED_ROWS ${_LOWBIT_DENSE_MARLIN_SWEEP_FILTERED_ROWS}\n"

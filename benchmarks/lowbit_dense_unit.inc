@@ -8,12 +8,17 @@ static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
 #if defined(DENSE_MARLIN_SWEEP)
   // This executable is a Marlin table, not a DP table plus a runtime switch.
   // CMake filters the committed rows before generating these wrappers; retain
-  // a type-level guard here so a future generator mistake fails compilation
-  // instead of silently instantiating an unsupported cooperative cohort.
+  // the production scheduler's structural capability here so a future
+  // generator mistake fails compilation instead of growing a second cohort
+  // whitelist in the benchmark.
   using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::MarlinGemm;
-  static_assert(G::GemmKernel::MaxThreadsPerBlock == 64 ||
-                G::GemmKernel::MaxThreadsPerBlock == 128,
-                "the dense Marlin sweep admits only 64/128-thread rows");
+  using Kernel = typename G::GemmKernel;
+  static_assert(Kernel::TileScheduler::fixup_thread_count_capable(
+                    Kernel::MaxThreadsPerBlock),
+                "the dense Marlin sweep requires a structurally capable CTA cohort");
+  static_assert(Kernel::TileScheduler::FixupThreadCount ==
+                    Kernel::MaxThreadsPerBlock,
+                "the dense Marlin sweep must preserve the exact CTA/fixup cohort");
   return run<G>(options, dense_tactic(cfg), "marlin");
 #else
 #if defined(DENSE_MARLIN_AB)
