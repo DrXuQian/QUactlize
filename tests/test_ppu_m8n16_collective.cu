@@ -16,10 +16,17 @@
 //       result is checked against an independent host dequant/GEMM oracle and
 //       against an exact m16-control launch on the same canonical A/Q/S/Z.
 //
-// G5 is intentionally NOT represented here.  Its E=256/active=8,
-// non-contiguous active IDs and genuinely ragged route require #108's real
-// harness; an L=1 self-comparison cannot detect a shared structured
-// atom/A-fragment/epilogue permutation and must not be presented as G5.
+//   G5  is #108's real route: E=256, eight non-contiguous active IDs, every
+//       expert given DIFFERENT W/S/Z and the 248 inactive ones poisoned.  G4
+//       cannot stand in for it -- with L=1 there is no route at all: no
+//       slot->expert map to invert, no row offset to be off by one, no expert
+//       that should not be read.  Two negative controls give it power: the
+//       neighbour-expert swap and the one-expert row shift must both be
+//       rejected, or a green G5 would only mean "the numbers matched
+//       something", which a fixture with indistinguishable experts always
+//       does.  It runs in three configurations -- LOW / UNIFORM / REAL -- so a
+//       red separates "the kernel's expert addressing" from "this fixture's
+//       per-expert placement" without changing the kernel.
 
 #include <algorithm>
 #include <cmath>
@@ -510,7 +517,7 @@ struct G5Fixture {
 
 // TM/WM only select which placement to write; the artifact is byte-identical for m8 and m16 (proved
 // above), so one buffer serves both arms and a divergence would already have failed the offline check.
-G5Fixture make_g5_fixture(int rows_per_expert) {
+G5Fixture make_g5_fixture(int rows_per_expert, int const* ids, bool uniform) {
   G5Fixture f;
   f.B.assign(std::size_t(kE) * kPlacedBBytes, 0);
   f.scales.assign(std::size_t(kE) * kScaleK * kN, half_t(0.0f));
@@ -519,14 +526,14 @@ G5Fixture make_g5_fixture(int rows_per_expert) {
   f.row_offsets.assign(kE + 1, 0);
 
   auto is_active = [&](int e) {
-    for (int i = 0; i < kActive; ++i) if (kActiveIds[i] == e) return i;
+    for (int i = 0; i < kActive; ++i) if (ids[i] == e) return i;
     return -1;
   };
 
   for (int e = 0; e < kE; ++e) {
     int const slot = is_active(e);
     // salt 0 is reserved for the G3/G4 data; actives take 1..kActive so no two experts share a pattern.
-    int const salt = (slot >= 0) ? (slot + 1) : (kActive + 1 + e);
+    int const salt = (slot >= 0) ? (uniform ? 1 : slot + 1) : (kActive + 1 + e);
     auto q = make_codes_salted(salt);
     auto s = (slot >= 0) ? make_scales_salted(salt) : make_poison_scales(e);
     auto z = make_zeros_salted(s, salt);
@@ -639,9 +646,9 @@ int g5_slot_mismatches(G5Fixture const& f, std::vector<half_t> const& got, int r
   return bad;
 }
 
-int run_g5(int rows_per_expert) {
+int run_g5(char const* label, int rows_per_expert, int const* ids, bool uniform) {
   int errors = 0;
-  auto f = make_g5_fixture(rows_per_expert);
+  auto f = make_g5_fixture(rows_per_expert, ids, uniform);
 
   cutlass::DeviceAllocation<int4_t> dB(f.B.size());
   cutlass::DeviceAllocation<half_t> dScale(f.scales.size());
@@ -652,9 +659,9 @@ int run_g5(int rows_per_expert) {
   dZero.copy_from_host(f.zeros.data());
   dA.copy_from_host(f.A.data());
 
-  std::printf("[G5] E=%d active=%d rows/expert=%d total_rows=%d active_ids=",
-              kE, kActive, rows_per_expert, f.total_rows);
-  for (int i = 0; i < kActive; ++i) std::printf("%d%s", kActiveIds[i], i + 1 < kActive ? "," : "\n");
+  std::printf("[G5:%s] E=%d active=%d rows/expert=%d total_rows=%d uniform=%d active_ids=",
+              label, kE, kActive, rows_per_expert, f.total_rows, int(uniform));
+  for (int i = 0; i < kActive; ++i) std::printf("%d%s", ids[i], i + 1 < kActive ? "," : "\n");
 
   auto m8 = run_g5_arm<8, 8>("m8", f, rows_per_expert, dA.get(), dB.get(),
                              dScale.get(), dZero.get(), &errors);
@@ -667,7 +674,7 @@ int run_g5(int rows_per_expert) {
     int const b16 = g5_slot_mismatches(f, m16, rows_per_expert, slot, slot);
     int const outputs = rows_per_expert * kN;
     std::printf("  G5 slot=%d expert=%-3d m8 bad=%d/%d  m16 bad=%d/%d  %s\n",
-                slot, kActiveIds[slot], b8, outputs, b16, outputs,
+                slot, ids[slot], b8, outputs, b16, outputs,
                 (b8 || b16) ? "FAIL" : "MATCH");
     errors += b8 + b16;
   }
@@ -713,8 +720,8 @@ int run_g5(int rows_per_expert) {
 
   int const cross = check_m8_m16(f.total_rows, m8, m16);
   errors += cross;
-  std::printf("[G5] %s: ragged route E=%d/active=%d, per-expert distinct W/S/Z, poisoned inactives\n",
-              errors ? "FAIL" : "PASS", kE, kActive);
+  std::printf("[G5:%s] %s: E=%d/active=%d uniform=%d\n",
+              label, errors ? "FAIL" : "PASS", kE, kActive, int(uniform));
   return errors;
 }
 
@@ -803,7 +810,20 @@ int main() {
 
   // G5 runs at the two row counts that separate the m8 family from its control: one row is the decode
   // case the atom exists for, eight is the last M an m8 tile holds without a second tile.
-  for (int rows : {1, 8}) errors += run_g5(rows);
+  // THREE CONFIGURATIONS, because a brand-new gate's first red is more often the gate.  The negative
+  // controls prove the experts are distinguishable; they do not prove that this fixture's per-expert
+  // W/S/Z placement agrees with the stride the kernel derives from the group index.  These separate
+  // the two candidate causes without touching the kernel:
+  //   LOW     contiguous ids 0..7, distinct data  -- isolates "id >= 128" from "non-contiguous"
+  //   UNIFORM the real ids, every active expert given IDENTICAL data (salt 1) -- if this passes, the
+  //           addressing is right and the defect is expert-DEPENDENT; if it fails, my layout is wrong
+  //   REAL    the ragged route this gate exists for
+  constexpr int kLowIds[kActive] = {0, 1, 2, 3, 4, 5, 6, 7};
+  for (int rows : {1, 8}) {
+    errors += run_g5("LOW",     rows, kLowIds,     false);
+    errors += run_g5("UNIFORM", rows, kActiveIds,  true);
+    errors += run_g5("REAL",    rows, kActiveIds,  false);
+  }
 
   std::printf("== [112] %s: errors=%d (G3/G4/G5) ==\n",
               errors ? "FAIL" : "PASS", errors);
