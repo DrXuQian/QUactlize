@@ -11,12 +11,15 @@ base=(nvcc -std=c++17 -x cu -arch=sm_80 -w "${inc[@]}")
 src="${repo}/dev/fold_derivation/l123_warp_nk_topology.cu"
 "${base[@]}" -D__HGGCCC__ --expt-relaxed-constexpr -DL123_TYPE_ONLY=1 \
   -o "${out}/types" "${src}"
-if "${base[@]}" -D__HGGCCC__ --expt-relaxed-constexpr -DL123_TYPE_ONLY=1 \
-    -DL123_BREAK_PERMK=1 -o "${out}/bad_permk" "${src}" >"${out}/bad_permk.log" 2>&1; then
-  echo "L123 negative: stale PermutationK unexpectedly compiled" >&2; exit 1
-fi
-grep -q "warp-K and PermutationK must change together" "${out}/bad_permk.log"
 "${base[@]}" -o "${out}/topology" "${src}"
+"${base[@]}" -DL123_BREAK_SHADOW_PERMK=1 -o "${out}/bad_shadow_permk" "${src}"
+if "${base[@]}" -DL123_BREAK_FOLDED_PERMK=1 -o "${out}/bad_folded_permk" "${src}" \
+    >"${out}/bad_folded_permk.log" 2>&1; then
+  echo "L123 negative: folded PermutationK multiplied by WK unexpectedly compiled" >&2; exit 1
+fi
+grep -q "folded compute PermutationK must remain the tactic TileK" "${out}/bad_folded_permk.log"
 "${out}/types"
-echo "L123 negative: AtomLayout.K changed without PermutationK was rejected PASS"
+"${out}/bad_shadow_permk" | tee "${out}/bad_shadow_permk.out"
+grep -q "EXPECTED-RED" "${out}/bad_shadow_permk.out"
+echo "L123 negative: stale shadow PermK and multiplied folded compute PermK were rejected PASS"
 "${out}/topology"
