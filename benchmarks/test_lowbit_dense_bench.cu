@@ -624,7 +624,7 @@ struct Result
 
 // Numerical evidence belongs to one invocation of initialize(), not to a log
 // file.  Keeping it as a returned POD prevents the exact 64x128x4352 seam
-// fixture from being accidentally consumed as evidence for the random A0 arm
+// fixture from being accidentally consumed as evidence for a different A0 arm
 // that happens to run later in the same box script.
 struct DenseFixtureEvidence {
   bool order_independent = false;
@@ -1284,14 +1284,15 @@ DenseFixtureEvidence initialize(Options const& options) {
     // THIS GATE FIXTURE PROVES ITS OWN EXACTNESS, from the arrays it just filled.
     //
     // SCOPE, STATED FIRST BECAUSE I GOT IT WRONG. This block is inside `if (options.streamk_gate)`,
-    // so it describes the small 64x128x4352 gate arm and NOTHING ELSE. A0's three arms pass only
-    // --streamk and still use the random initialize_tensor/initialize_quant_tensor path, whose fp16
-    // values are not dyadic and therefore DO round. I read this verdict off a log, applied it to A0's
+    // so it describes the small 64x128x4352 gate arm and NOTHING ELSE. At the time this mistake was
+    // found, A0's three arms passed only --streamk and used the random initialize_* path. I read this
+    // verdict off a log, applied it to A0's
     // 233 SK-split mismatches, and concluded they could not be reassociation. That conclusion does not
     // follow. I even noticed the printed 426496 did not match the 401408 I had computed for K=4096,
     // explained it as "the gate arm has K=4352", and then still carried the conclusion across --
     // exactness is a property of the VALUES, not of K, so a smaller K proves nothing about a different
-    // fixture. A0's mismatches remain unexplained until the exact fixture is wired into A0 itself.
+    // fixture. The separate --streamk_exact_fixture branch below now gives A0 its own evidence; this
+    // gate's evidence must still never be substituted for it.
     //
     // What it does establish, for this arm: every a is a multiple of 1/4, every dequantised
     // w = q*scale is a multiple of 1/16, so every product is a multiple of 1/64 and every partial sum
@@ -1367,7 +1368,10 @@ DenseFixtureEvidence initialize(Options const& options) {
       for (int kg = 0; kg < kExactFixtureNonzerosPerRow; ++kg) {
         int const within_group = (17 * m + 29 * kg) % options.g;
         int const k = kg * options.g + within_group;
-        int const sign = ((m + kg) & 1) ? -1 : 1;
+        // B's sign band below depends only on K.  Align A's sign with it so
+        // every nonzero product is nonnegative: exact cancellation cannot
+        // leave a +/-0 raw-bit ambiguity while q still spans all 16 int4 codes.
+        int const sign = ((k >> 3) & 1) ? -1 : 1;
         host_a[size_t(m) * options.k + k] = ElementA(float(sign));
       }
     }
@@ -1380,7 +1384,8 @@ DenseFixtureEvidence initialize(Options const& options) {
     auto b_view = tensor_B.host_view();
     for (int k = 0; k < options.k; ++k) {
       for (int n = 0; n < options.n; ++n) {
-        int const q = ((7 * k + 3 * n) & 15) - 8;
+        int const code = (5 * k + 3 * n) & 7;
+        int const q = ((k >> 3) & 1) ? (-8 + code) : code;
         b_view.at({k, n}) = QuantType(q);
       }
     }
@@ -1394,10 +1399,15 @@ DenseFixtureEvidence initialize(Options const& options) {
     // checker independently derives the same bounds from the published
     // constants; neither side can green by copying a printed expected number.
     int max_nonzeros = 0;
+    double max_abs_a = 0.0;
+    bool integer_a = true;
     for (int m = 0; m < options.m; ++m) {
       int nonzeros = 0;
       for (int k = 0; k < options.k; ++k) {
-        nonzeros += float(host_a[size_t(m) * options.k + k]) != 0.0f;
+        double const a = double(float(host_a[size_t(m) * options.k + k]));
+        nonzeros += a != 0.0;
+        integer_a &= a == std::nearbyint(a);
+        max_abs_a = std::max(max_abs_a, std::fabs(a));
       }
       max_nonzeros = std::max(max_nonzeros, nonzeros);
     }
@@ -1411,8 +1421,8 @@ DenseFixtureEvidence initialize(Options const& options) {
         max_weight = std::max(max_weight, std::fabs(weight));
       }
     }
-    double const max_output = double(max_nonzeros) * max_weight;
-    fixture_evidence.order_independent = integer_weights &&
+    double const max_output = double(max_nonzeros) * max_abs_a * max_weight;
+    fixture_evidence.order_independent = integer_a && integer_weights &&
         max_nonzeros == kExactFixtureNonzerosPerRow &&
         max_output <= std::ldexp(1.0, 24);
     fixture_evidence.fp16_output_exact = fixture_evidence.order_independent &&
@@ -1420,10 +1430,10 @@ DenseFixtureEvidence initialize(Options const& options) {
         max_output <= std::ldexp(1.0, 11);
     std::printf(
         "  [streamk fixture exactness] fixture=a0-exact shape=%dx%dx%d "
-        "nonzeros/row=%d integer_weights=%d max|w|=%g max|D|=%g "
+        "nonzeros/row=%d integer_A=%d integer_weights=%d max|A|=%g max|w|=%g max|D|=%g "
         "vs fp32=2^24 fp16=2^11 -> %s\n",
-        options.m, options.n, options.k, max_nonzeros, int(integer_weights),
-        max_weight, max_output,
+        options.m, options.n, options.k, max_nonzeros, int(integer_a),
+        int(integer_weights), max_abs_a, max_weight, max_output,
         fixture_evidence.order_independent && fixture_evidence.fp16_output_exact
             ? "ORDER-INDEPENDENT+FP16-EXACT"
             : "ROUNDS/INVALID (do not classify ordinary-reference differences)");
@@ -1879,8 +1889,8 @@ bool verify(const Options &options, DenseFixtureEvidence const& fixture_evidence
 // Stream-K peer grouping or the PPU MMA instruction's internal reduction
 // order.  The fixture's powers-of-two make those regroupings exact, while A,
 // scale and C still come independently from host data and nonzero beta proves
-// that only the final slice executes the epilogue.  Random A0 uses the captured
-// partial/CPU-fold oracle below instead of extrapolating this fixture.
+// that only the final slice executes the epilogue.  A0 carries its own explicit
+// fixture identity and exactness evidence instead of extrapolating this arm.
 bool verify_streamk_cpu_fp32(const Options &options) {
   if (options.l != 1 || options.beta == 0.0f) {
     std::fprintf(stderr,
@@ -2157,9 +2167,12 @@ DenseReplayEvidence verify_streamk_same_order_partial_replay(
       device_reference_bitdiff == replay_reference_bitdiff &&
       device_reference_position_hash == replay_reference_position_hash &&
       device_reference_value_hash == replay_reference_value_hash;
+  // FIXUP-CLOSED is deliberately independent of the whole-K reference,
+  // including non-split tiles.  It answers one question only: did production
+  // fixup reproduce the captured peer partials?  Reference agreement is
+  // consumed separately with this invocation's fixture exactness.
   bool const fixup_closed = split_outputs > 0 && device_replay_bitdiff == 0 &&
-      non_split_reference_mismatches == 0 &&
-      non_split_reference_bitdiff == 0 && triangle_closed;
+      triangle_closed;
   std::printf(
       "  [streamk same-order replay] split_tiles=%llu peers=%zu "
       "split_outputs=%llu capture_scalars=%zu capture_holes=%llu "
@@ -2509,10 +2522,10 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
 #endif
 #if defined(DENSE_STREAMK_AB)
   if constexpr (dense_is_streamk_gemm<Gemm>::value) {
-    // This is the verdict for the actual Stream-K arm, including fixed/adaptive
-    // A0.  ULPs against the ordinary whole-K reference above remain diagnostic;
-    // only replaying the captured partials in the scheduler's K order can say
-    // whether the kernel differs from its own specified reduction order.
+    // This is the fixup oracle for the actual Stream-K arm, including
+    // fixed/adaptive A0.  It says whether production fixup matches the captured
+    // partials.  Fixture exactness, carried separately, decides whether a
+    // whole-K reference difference is a numerical failure or unclassifiable.
     if (options.streamk) {
       if (ordinary_diagnostic_state == DenseVerifyState::NotClassifiable) {
         std::fprintf(stderr,

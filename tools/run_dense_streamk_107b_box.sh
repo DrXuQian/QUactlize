@@ -43,6 +43,7 @@ run_control_case() {
   "$BIN" "$@" 2>&1 | tee "$log"
   local rc=${PIPESTATUS[0]}
   set -e
+  require_exact_fixture "$label" "$log"
   if [ "$rc" -eq 1 ]; then
     fail "$label reported a real numerical/invariant failure"
   fi
@@ -51,7 +52,7 @@ run_control_case() {
       || fail "$label rc=0 lacked a passed numerical check"
     require_verify_buckets "$label" "$log"
   elif [ "$rc" -eq 3 ]; then
-    [ "$(grep -Ec '^  Disposition: NOT CLASSIFIABLE \(ordinary-reference=(Passed|Failed)\)$' "$log")" -eq 1 ] \
+    [ "$(grep -Fc '  Disposition: NOT CLASSIFIABLE (fixture rounds; fixup replay closed but partial correctness is not established)' "$log")" -eq 1 ] \
       || fail "$label rc=3 lacked one explicit NOT CLASSIFIABLE disposition"
     if grep -Eq '^  Disposition: (Passed|Failed)' "$log"; then
       fail "$label collapsed NOT CLASSIFIABLE into a numerical verdict"
@@ -62,6 +63,12 @@ run_control_case() {
   fi
   grep -Eq '^  \[dense kernel-span-upper\] n=20 median=[0-9.]+ us .*distinct-event-pairs=20 ' "$log" \
     || fail "$label did not report 20 distinct event-pair kernel spans"
+}
+
+require_exact_fixture() {
+  local label="$1" log="$2"
+  [ "$(grep -Ec '^  \[streamk fixture exactness\] fixture=(seam-gate|a0-exact) shape=[0-9]+x[0-9]+x[0-9]+ .* -> ORDER-' "$log")" -eq 1 ] \
+    || fail "$label did not carry one exactness result from its own fixture"
 }
 
 require_verify_buckets() {
@@ -84,6 +91,7 @@ run_split_probe() {
   "$BIN" "$@" 2>&1 | tee "$log"
   local rc=${PIPESTATUS[0]}
   set -e
+  require_exact_fixture "$label" "$log"
   if [ "$rc" -eq 2 ]; then
     python3 - "$log" <<'PY' || fail "$label malformed its NOT EXERCISED result"
 import pathlib, re, sys
@@ -119,15 +127,15 @@ PY
     return 2
   fi
   if [ "$rc" -eq 3 ]; then
-    grep -Eq '^  Disposition: NOT CLASSIFIABLE \(ordinary-reference=(Passed|Failed)\)$' "$log" \
+    grep -Fq '  Disposition: NOT CLASSIFIABLE (fixture rounds; fixup replay closed but partial correctness is not established)' "$log" \
       || fail "$label rc=3 lacked its NOT CLASSIFIABLE record"
     fail "$label was not classifiable; this is not a numerical failure, but it cannot be Stream-K evidence"
   fi
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
     fail "$label exited rc=$rc instead of Passed/Failed/NOT EXERCISED"
   fi
-  [ "$(grep -Ec '^  Disposition: (Passed \(StreamK same-order partial replay bit-exact; any ordinary-reference differences are reassociation\)|Failed \(StreamK same-order partial replay did not close\))$' "$log")" -eq 1 ] \
-    || fail "$label did not report exactly one exercised numerical disposition"
+  [ "$(grep -Ec '^  Disposition: (Passed \(whole-K reference bit-exact; fixup replay closed\)|Failed \(ORDER-INDEPENDENT fixture differs from whole-K reference; fixup replay closed, so the discrepancy is upstream of fixup\)|Failed \(StreamK capture/fixup replay did not close\))$' "$log")" -eq 1 ] \
+      || fail "$label did not report exactly one exercised numerical disposition"
   if grep -q '^  Disposition: NOT EXERCISED$' "$log"; then
     fail "$label returned a numerical rc but printed NOT EXERCISED"
   fi
@@ -162,11 +170,14 @@ replay = re.findall(
     r"capture_vs_normal_bitdiff=(\d+) device_replay_bitdiff=(\d+) "
     r"non_split_reference_mismatches=(\d+) non_split_reference_bitdiff=(\d+) "
     r"reference_raw_bitdiff=(\d+) "
-    r"triangle=(CLOSED|OPEN) (BIT-EXACT/PASS|MISMATCH/FAIL)", text)
+    r"triangle=(CLOSED|OPEN) (FIXUP-CLOSED|FIXUP-FAIL)", text)
 if len(replay) != 1:
     raise SystemExit("missing or duplicate same-order replay record")
-passed_disposition = "Disposition: Passed (StreamK same-order partial replay bit-exact; " in text
-failed_disposition = "Disposition: Failed (StreamK same-order partial replay did not close)" in text
+passed_disposition = "Disposition: Passed (whole-K reference bit-exact; fixup replay closed)" in text
+upstream_failed = ("Disposition: Failed (ORDER-INDEPENDENT fixture differs from whole-K reference; "
+                   "fixup replay closed, so the discrepancy is upstream of fixup)") in text
+replay_failed = "Disposition: Failed (StreamK capture/fixup replay did not close)" in text
+failed_disposition = upstream_failed or replay_failed
 *counts, triangle, replay_verdict = replay[0]
 counts = list(map(int, counts))
 if (rc == 0) != passed_disposition or (rc == 1) != failed_disposition:
@@ -175,11 +186,15 @@ if (rc == 0) != passed_disposition or (rc == 1) != failed_disposition:
         f"failed={failed_disposition}")
 if rc == 0 and not (
         counts[0] == split and counts[1] == split + peers and counts[2] > 0 and
-        counts[3] > 0 and counts[4:11] == [0, 0, 0, 0, 0, 0, 0] and
-        triangle == "CLOSED" and replay_verdict == "BIT-EXACT/PASS"):
+        counts[3] > 0 and counts[4:12] == [0, 0, 0, 0, 0, 0, 0, 0] and
+        triangle == "CLOSED" and replay_verdict == "FIXUP-CLOSED"):
     raise SystemExit(f"Passed disposition is not backed by a closed replay: {replay[0]}")
-if rc == 1 and replay_verdict != "MISMATCH/FAIL":
-    raise SystemExit(f"Failed disposition lacks a failed replay: {replay[0]}")
+if rc == 1 and upstream_failed and not (
+        replay_verdict == "FIXUP-CLOSED" and triangle == "CLOSED" and
+        counts[10] + counts[11] > 0):
+    raise SystemExit(f"upstream failure lacks closed fixup plus reference bitdiff: {replay[0]}")
+if rc == 1 and replay_failed and replay_verdict != "FIXUP-FAIL":
+    raise SystemExit(f"capture/fixup failure lacks a failed replay: {replay[0]}")
 print(f"[107b][split-path] EXERCISED tiles={tiles} workers={workers} "
       f"split_tiles={split} peer_excess={peers} replay={replay_verdict}")
 PY
@@ -191,6 +206,9 @@ PY
 printf '[107b] root-sha=%s\n' "$(git -C "$ROOT" rev-parse HEAD)"
 printf '[107b] actlize-sha=%s\n' "$(git -C "$ROOT/third_party/actlize" rev-parse HEAD)"
 printf '[107b] artifacts=%s\n' "$ARTIFACT_ROOT"
+
+python3 "$ROOT/ci/check_exact_fixture.py" \
+  || fail 'the exact A0 fixture is absent or no longer satisfies its FP32/fp16 bounds'
 
 printf '\n== build isolated ppu001 four-warp target ==\n'
 if ! env PPU_BUILD_DIR="$BUILD_ROOT" PPU_ARCHS=ppu0010 TARGET="$TARGET" \
@@ -266,7 +284,9 @@ required = (
     "[streamk same-order replay] split_tiles=1 peers=8 split_outputs=8192",
     "capture_holes=0 bad_slot_visits=0 bad_k_counts=0 capture_vs_normal_bitdiff=0 device_replay_bitdiff=0",
     "non_split_reference_mismatches=0 non_split_reference_bitdiff=0",
-    "triangle=CLOSED BIT-EXACT/PASS",
+    "triangle=CLOSED FIXUP-CLOSED",
+    "[streamk replay meaning] FIXUP-CLOSED: production fixup matches captured partials; partial correctness is not established.",
+    "fixture=seam-gate shape=64x128x4352",
     "BIT-EXACT",
     "distinct-event-pairs=20 warmup-event-pairs=1 includes-launch-idle=1 lock-reset-before-start=1",
     "StreamK-C valid_elements=",
@@ -315,7 +335,7 @@ for candidate_n in "${SPLIT_CANDIDATES[@]}"; do
   candidate_log="$ARTIFACT_ROOT/a0-split-n${candidate_n}.log"
   if run_split_probe "A0 replay probe N=${candidate_n}" "$candidate_log" \
       --m=2048 --n="$candidate_n" --k=4096 --l=1 --g=128 --mode=1 \
-      --iterations=0 --streamk; then
+      --iterations=0 --streamk --streamk_exact_fixture; then
     SPLIT_N="$candidate_n"
     SPLIT_LOG="$candidate_log"
     break
@@ -330,7 +350,7 @@ done
 
 if run_split_probe "adaptive split-path repeat N=${SPLIT_N}" "$SPLIT_REPEAT_LOG" \
     --m=2048 --n="$SPLIT_N" --k=4096 --l=1 --g=128 --mode=1 \
-    --iterations=0 --streamk; then
+    --iterations=0 --streamk --streamk_exact_fixture; then
   :
 else
   repeat_rc=$?
@@ -361,7 +381,7 @@ PY
 # but whose optional bucket validator cannot classify returns rc=3 and does not
 # block the Stream-K subject.  A classified numerical failure still stops.
 COMMON_SHAPE=(--m=2048 --n="$SPLIT_N" --k=4096 --l=1 --g=128 --mode=1)
-COMMON=("${COMMON_SHAPE[@]}" --iterations=20)
+COMMON=("${COMMON_SHAPE[@]}" --iterations=20 --streamk_exact_fixture)
 run_control_case 'A0 non-persistent control' "$NP_LOG" "${COMMON[@]}"
 run_control_case 'A0 serial-persistent control' "$P_LOG" "${COMMON[@]}" --persistent
 if run_split_probe 'A0 Stream-K same-order replay and performance' \

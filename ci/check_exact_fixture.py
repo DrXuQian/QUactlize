@@ -16,13 +16,15 @@ D is stored as fp16, so a defect smaller than fp16's ULP at the output magnitude
 away and never observed. The output has to be exact too, and fp16 carries 11 mantissa bits against
 FP32's 24 -- so the storage bound is 8192x tighter and it is the one that shapes the fixture.
 
-The construction that satisfies both while keeping scale AND zero load-bearing (a fixture that pinned
-scale=1, zero=0 would be exact and would also stop testing the ScaleZero path):
+The construction supports both ScaleOnly and ScaleZero.  The current A0 arm is ScaleOnly, so its
+published zero set is exactly ``{0}`` and no claim is made that A0 tests a zero plane; scale remains
+load-bearing through the non-constant set ``{1,2,4}``.  A future ScaleZero fixture may publish a
+nonzero set through the same checked formula:
 
     A       sparse: at most NZ nonzeros per row, values in {-1, +1}
-    q       the full int4 range [0, 16)
-    scale   integers, so (q-8)*scale is an integer
-    zero    integers, so (q-8)*scale + zero is an integer
+    q_code  the full int4 code range [0, 16), decoded as q_code-8
+    scale   integers, so (q_code-8)*scale is an integer
+    zero    integers (currently {0}), so (q_code-8)*scale + zero is an integer
 
 Every weight is then an integer, every partial sum over any subset of any order is an integer, and the
 bound on all of them is NZ * max|w|.

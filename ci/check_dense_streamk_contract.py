@@ -7,11 +7,14 @@ fixup can run with the wrong barrier cohort, an old turnstile value can deadlock
 next launch, or replay can silently run only on a tiny fixture while fixed A0 prints an
 unrelated whole-K verdict.  The PPU box owns numerical proof; this checker pins the
 source ordering and makes every actual Stream-K arm fail closed on an empty seam and
-derive its disposition from same-order replay before a box round trip.
+bind its fixture exactness, whole-K reference, and fixup-only replay to one invocation
+before deriving a disposition.
 """
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -23,6 +26,7 @@ DISPATCH = ROOT / "benchmarks/lowbit_dense_unit.inc"
 CMAKE = ROOT / "quactlize/csrc/CMakeLists.txt.in"
 BOX_GATE = ROOT / "tools/run_dense_streamk_107b_box.sh"
 BARRIER = ROOT / "third_party/actlize/include/cutlass/arch/barrier.h"
+EXACT_FIXTURE = ROOT / "ci/check_exact_fixture.py"
 
 
 def section(text: str, begin: str, end: str) -> str:
@@ -165,7 +169,8 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         "range.k_begin != expected_k",
         "partition.capture_slot_by_qk[map_index] = int32_t(range.capture_slot);",
         "partition.split_peer_ranges.size() != split_tiles + peer_excess",
-        "[dense verify interpretation] ordinary-reference ULP is diagnostic only;",
+        "[dense verify interpretation] ORDER-INDEPENDENT fixture: raw_bitdiff=%llu;",
+        "[dense verify interpretation] fixture rounds: ordinary-reference ULP is diagnostic only;",
         "capture_vs_normal_bitdiff +=",
         "for (uint32_t visits : capture_slot_visits) bad_slot_visits += visits != 1;",
         "capture_slot_k_counts[peer] !=",
@@ -182,15 +187,23 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         "ElementD const replay_half = replay_epilogue(replay, replay_source);",
         "triangle_closed ? \"CLOSED\" : \"OPEN\"",
         "device_replay_bitdiff == 0 &&",
-        "non_split_reference_bitdiff == 0 && triangle_closed",
+        "bool const fixup_closed = split_outputs > 0 && device_replay_bitdiff == 0 &&",
+        "triangle_closed;",
         "host_diagnostics.pre_fixup_capture_magic =",
         "captured_diagnostics.pre_fixup_capture_error_count",
-        "Passed (StreamK same-order partial replay bit-exact; ",
+        "[streamk replay meaning] FIXUP-CLOSED: production fixup matches ",
+        "partial correctness is not established.",
+        "fixture=a0-exact shape=%dx%dx%d ",
+        "kExactFixtureNonzerosPerRow = 32",
+        "kExactFixtureScales[] = {1, 2, 4}",
+        "kExactFixtureZeros[] = {0}",
+        "int const sign = ((k >> 3) & 1) ? -1 : 1;",
+        "int const q = ((k >> 3) & 1) ? (-8 + code) : code;",
     )
     for token in diagnostic_tokens:
         if bench.count(token) != 1:
             bad.append(f"A0 bucket diagnostic must contain exactly one {token!r}")
-    if bench.count("bool verify_streamk_same_order_partial_replay(") != 2:
+    if bench.count("DenseReplayEvidence verify_streamk_same_order_partial_replay(") != 2:
         bad.append("same-order replay must have one declaration and one definition")
     if bench.count("arguments.diagnostics = streamk_diagnostics.get();") != 2:
         bad.append("exact fixture and adaptive split gate must each wire the one-pointer diagnostic POD")
@@ -256,8 +269,10 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         for token in (
             "if (options.streamk && verify_partition.classification_closed) {\n      uint64_t const workers =",
             "if (options.streamk) {\n      if (ordinary_diagnostic_state == DenseVerifyState::NotClassifiable)",
-            "else if (options.streamk) {\n    std::cout << \"  Disposition: \"",
-            "result.passed = verify_streamk_same_order_partial_replay<Gemm>(",
+            "else if (options.streamk) {\n    if (result.passed) {",
+            "replay_evidence = verify_streamk_same_order_partial_replay<Gemm>(",
+            "else if (fixture_evidence.order_independent) {",
+            "reference_raw_bitdiff == 0;",
             "if (!result.verification_classified) {\n    std::cout << \"  Disposition: NOT CLASSIFIABLE \"",
         ):
             if run_body.count(token) != 1:
@@ -266,9 +281,10 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
             "if (verify_partition.split_tiles == 0 ||",
             "std::cout << \"  Disposition: NOT EXERCISED\"",
             "// Correctness / Warmup iteration",
-            "result.passed = verify_streamk_same_order_partial_replay<Gemm>(",
-            "else if (options.streamk) {\n    std::cout << \"  Disposition: \"",
-        ), "nonempty seam -> same-order replay -> replay-owned disposition", bad)
+            "replay_evidence = verify_streamk_same_order_partial_replay<Gemm>(",
+            "if (options.streamk && result.verification_classified)",
+            "else if (options.streamk) {\n    if (result.passed) {",
+        ), "nonempty seam -> same-order replay -> fixture-owned disposition", bad)
 
     try:
         timing = section(bench, "    // One distinct event pair per launch for every arm", "\n#else\n    PpuTimer timer;")
@@ -347,7 +363,7 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
 
     try:
         control_case = section(
-            box_gate, "run_control_case() {", "\n}\n\nrequire_verify_buckets()")
+            box_gate, "run_control_case() {", "\n}\n\nrequire_exact_fixture()")
     except ValueError as e:
         bad.append(str(e))
     else:
@@ -372,7 +388,7 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         "return \"$rc\"",
         "if (rc == 0) != passed_disposition or (rc == 1) != failed_disposition:",
         "if rc == 0 and not (",
-        "if rc == 1 and replay_verdict != \"MISMATCH/FAIL\":",
+        "if rc == 1 and upstream_failed and not (",
         "print(4096)                     # exact A0 is always tried first",
         "for n_tiles in range(32, 32 + 64)",
         "if n != 4096 and tiles > workers and tiles % workers:",
@@ -388,7 +404,8 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         "[streamk same-order replay] split_tiles=1 peers=8 split_outputs=8192",
         "capture_holes=0 bad_slot_visits=0 bad_k_counts=0 capture_vs_normal_bitdiff=0 device_replay_bitdiff=0",
         "non_split_reference_mismatches=0 non_split_reference_bitdiff=0",
-        "triangle=CLOSED BIT-EXACT/PASS",
+        "triangle=CLOSED FIXUP-CLOSED",
+        "ci/check_exact_fixture.py",
         "STABLE_POSITIONS_AND_VALUES",
         "STABLE_POSITIONS_VALUE_DRIFT",
         "POSITION_DRIFT",
@@ -405,6 +422,10 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         bad.append("fixed A0 still bypasses the same-order replay parser")
     if box_gate.count("run_split_probe") != 5:
         bad.append("box gate must use one replay parser for exact gate, A0 selection/repeat, and A0 timing")
+    if box_gate.count("--streamk_exact_fixture") != 3:
+        bad.append("A0 selection, repeat, and shared DP/P/SK controls must all select the exact fixture")
+    if box_gate.count('require_exact_fixture "$label" "$log"') != 2:
+        bad.append("both control and Stream-K helpers must bind exactness to their own log")
     if box_gate.count("--iterations=0 --streamk") != 2:
         bad.append("box gate must run exactly two correctness-only A0 replay arms")
     if "--streamk_split_gate" in box_gate:
@@ -468,6 +489,13 @@ def main() -> int:
     texts = [p.read_text() for p in
              (HEADER, BENCH, UNIT, DISPATCH, CMAKE, BOX_GATE, BARRIER)]
     bad = audit(*texts)
+    exact = subprocess.run(
+        [sys.executable, str(EXACT_FIXTURE)], cwd=ROOT,
+        capture_output=True, text=True)
+    if exact.returncode != 0:
+        detail = (exact.stdout + exact.stderr).strip().splitlines()
+        bad.append("exact A0 fixture checker did not PASS: " +
+                   (detail[-1] if detail else f"rc={exact.returncode}"))
     if bad:
         print("[dense-streamk-contract] FAIL: " + "; ".join(bad))
         return 1
@@ -530,8 +558,8 @@ def main() -> int:
         (1, "if (options.streamk) {\n      if (ordinary_diagnostic_state == DenseVerifyState::NotClassifiable)",
          "if (options.streamk_split_gate) {\n      if (ordinary_diagnostic_state == DenseVerifyState::NotClassifiable)",
          "fixed A0 cannot bypass same-order replay"),
-        (1, "else if (options.streamk) {\n    std::cout << \"  Disposition: \"",
-         "else if (options.streamk_split_gate) {\n    std::cout << \"  Disposition: \"",
+        (1, "else if (options.streamk) {\n    if (result.passed) {",
+         "else if (options.streamk_split_gate) {\n    if (result.passed) {",
          "every actual Stream-K disposition is replay-owned"),
         (1, "std::cout << \"  Disposition: NOT EXERCISED\"",
          "std::cout << \"  Disposition: Passed\"",
@@ -544,9 +572,20 @@ def main() -> int:
          "instrumented launch must equal normal launch"),
         (1, "device_replay_bitdiff == 0 &&",
          "device_replay_bitdiff >= 0 &&", "same-order replay is bit exact"),
-        (1, "non_split_reference_bitdiff == 0 && triangle_closed",
-         "non_split_reference_bitdiff >= 0 /* planted */",
-         "same-order/reference triangle closes"),
+        (1, "else if (fixture_evidence.order_independent) {",
+         "else if (false) {", "exactness must select the strict reference verdict"),
+        (1, "reference_raw_bitdiff == 0;",
+         "true; /* planted raw-reference bypass */",
+         "an exact fixture cannot pass with a raw reference difference"),
+        (1, "replay_evidence = verify_streamk_same_order_partial_replay<Gemm>(",
+         "result.passed = verify_streamk_same_order_partial_replay<Gemm>(",
+         "fixup replay cannot overwrite the ordinary-reference result"),
+        (1, "int const sign = ((k >> 3) & 1) ? -1 : 1;",
+         "int const sign = ((m + kg) & 1) ? -1 : 1;",
+         "exact A0 avoids cancellation and signed-zero ambiguity"),
+        (1, "bool const fixup_closed = split_outputs > 0 && device_replay_bitdiff == 0 &&",
+         "bool const fixup_closed = split_outputs > 0 && device_replay_bitdiff >= 0 &&",
+         "fixup closure requires bit-exact device replay"),
         (5, "  return \"$rc\"\n}", "  return 0\n}",
          "an exercised replay failure cannot become an adaptive-search success"),
         (1, "[](uint16_t visits) { return visits != 1; }",
@@ -596,7 +635,7 @@ def main() -> int:
 
     print("[dense-streamk-contract] PASS -- shared workers x4, absolute K, exact-CTA fixup, "
           "named-barrier compiler fence, per-launch lock reset, adaptive nonempty seam, "
-          "compact pre-fixup capture and same-order replay; "
+          "per-run exact A0 evidence, compact pre-fixup capture and fixup-only replay; "
           f"{len(plants)} planted regressions rejected")
     return 0
 
