@@ -313,6 +313,16 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
             "hggcEventRecord(streamk_events.at(0).stop, nullptr)",
             "hggcDeviceSynchronize()",
         ), "precreated event pool/instrumented warmup", bad)
+    try:
+        streamk_metrics = section(
+            bench,
+            "#if defined(DENSE_STREAMK_AB)\n"
+            "    if constexpr (dense_is_streamk_gemm<Gemm>::value) {",
+            "    } else if constexpr (dense_is_marlin_gemm<Gemm>::value) {")
+    except ValueError as e:
+        bad.append(str(e))
+        streamk_metrics = ""
+
     for token in (
         "actual=%s real_cu=%d ctas_per_cu=%d",
         "params.scheduler_hw_info.cu_count == int(workers)",
@@ -322,7 +332,6 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         "spread=(max-min)/mean=",
         "distinct-event-pairs=%zu warmup-event-pairs=1 includes-launch-idle=1",
         "StreamK-C valid_elements=%llu peer_excess=%llu",
-        "MODEL-ONLY/not-a-DRAM-counter",
         "[streamk sequential CPU-FP32 fixture] order=k-ascending ",
         "[streamk same-order replay] split_tiles=%llu peers=%zu ",
         "if (!final_result.split_path_exercised) return 2;",
@@ -331,14 +340,17 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
     ):
         if bench.count(token) != 1:
             bad.append(f"bench must contain exactly one {token!r}")
+    if streamk_metrics.count("MODEL-ONLY/not-a-DRAM-counter") != 1:
+        bad.append("Stream-K reporting branch must contain exactly one MODEL-ONLY/not-a-DRAM-counter label")
     for token in (
         "valid_fixup_elements +=\n        (peers[q] - 1) * uint64_t(valid_m) * uint64_t(valid_n);",
         "partition.valid_fixup_elements = valid_fixup_elements;",
         "2.0 * sizeof(float) * double(verify_partition.valid_fixup_elements)",
-        "bench_measure::make_traffic_with_output_bytes(",
     ):
         if bench.count(token) != 1:
             bad.append(f"dense per-q partial-C model must contain exactly one {token!r}")
+    if streamk_metrics.count("bench_measure::make_traffic_with_output_bytes(") != 1:
+        bad.append("Stream-K reporting branch must contain exactly one make_traffic_with_output_bytes call")
     exact_shape = (
         "options.m != 64 || options.n != 128 || options.k != 4352 || options.l != 1 ||\n"
         "       options.g != 128 || std::abs(options.alpha - 0.75f) > 1.0e-7f ||\n"
@@ -529,7 +541,10 @@ def main() -> int:
         (1, "2.0 * sizeof(float) * double(verify_partition.valid_fixup_elements)",
          "2.0 * sizeof(float) * double(verify_partition.peer_excess)",
          "partial-C traffic drops valid residue weighting"),
-        (1, "MODEL-ONLY/not-a-DRAM-counter", "measured-DRAM-bytes",
+        (1, '          "%s | StreamK-C valid_elements=%llu peer_excess=%llu "\n'
+            '          "logical_RW=%.0f MODEL-ONLY/not-a-DRAM-counter\\n",',
+         '          "%s | StreamK-C valid_elements=%llu peer_excess=%llu "\n'
+            '          "logical_RW=%.0f measured-DRAM-bytes\\n",',
          "logical partial-C model is mislabeled as a DRAM counter"),
         (1, "partition->local_stripe.size() ==\n"
          "            std::size_t(partition->tile_m) * partition->tile_n;",
