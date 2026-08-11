@@ -517,7 +517,7 @@ struct G5Fixture {
 
 // TM/WM only select which placement to write; the artifact is byte-identical for m8 and m16 (proved
 // above), so one buffer serves both arms and a divergence would already have failed the offline check.
-G5Fixture make_g5_fixture(int rows_per_expert, int const* ids, bool uniform) {
+G5Fixture make_g5_fixture(int rows_per_expert, int const* ids, int n_active, bool uniform) {
   G5Fixture f;
   f.B.assign(std::size_t(kE) * kPlacedBBytes, 0);
   f.scales.assign(std::size_t(kE) * kScaleK * kN, half_t(0.0f));
@@ -526,14 +526,14 @@ G5Fixture make_g5_fixture(int rows_per_expert, int const* ids, bool uniform) {
   f.row_offsets.assign(kE + 1, 0);
 
   auto is_active = [&](int e) {
-    for (int i = 0; i < kActive; ++i) if (ids[i] == e) return i;
+    for (int i = 0; i < n_active; ++i) if (ids[i] == e) return i;
     return -1;
   };
 
   for (int e = 0; e < kE; ++e) {
     int const slot = is_active(e);
     // salt 0 is reserved for the G3/G4 data; actives take 1..kActive so no two experts share a pattern.
-    int const salt = (slot >= 0) ? (uniform ? 1 : slot + 1) : (kActive + 1 + e);
+    int const salt = (slot >= 0) ? (uniform ? 1 : slot % 64 + 1) : (n_active + 1 + e);
     auto q = make_codes_salted(salt);
     auto s = (slot >= 0) ? make_scales_salted(salt) : make_poison_scales(e);
     auto z = make_zeros_salted(s, salt);
@@ -646,9 +646,11 @@ int g5_slot_mismatches(G5Fixture const& f, std::vector<half_t> const& got, int r
   return bad;
 }
 
-int run_g5(char const* label, int rows_per_expert, int const* ids, bool uniform) {
+int run_g5(char const* label, int rows_per_expert, int const* ids, int n_active, bool uniform);
+
+int run_g5(char const* label, int rows_per_expert, int const* ids, int n_active, bool uniform) {
   int errors = 0;
-  auto f = make_g5_fixture(rows_per_expert, ids, uniform);
+  auto f = make_g5_fixture(rows_per_expert, ids, n_active, uniform);
 
   cutlass::DeviceAllocation<int4_t> dB(f.B.size());
   cutlass::DeviceAllocation<half_t> dScale(f.scales.size());
@@ -660,8 +662,8 @@ int run_g5(char const* label, int rows_per_expert, int const* ids, bool uniform)
   dA.copy_from_host(f.A.data());
 
   std::printf("[G5:%s] E=%d active=%d rows/expert=%d total_rows=%d uniform=%d active_ids=",
-              label, kE, kActive, rows_per_expert, f.total_rows, int(uniform));
-  for (int i = 0; i < kActive; ++i) std::printf("%d%s", ids[i], i + 1 < kActive ? "," : "\n");
+              label, kE, n_active, rows_per_expert, f.total_rows, int(uniform));
+  for (int i = 0; i < n_active && i < 8; ++i) std::printf("%d%s", ids[i], i + 1 < kActive ? "," : "\n");
 
   auto m8 = run_g5_arm<8, 8>("m8", f, rows_per_expert, dA.get(), dB.get(),
                              dScale.get(), dZero.get(), &errors);
@@ -669,10 +671,12 @@ int run_g5(char const* label, int rows_per_expert, int const* ids, bool uniform)
                                 dScale.get(), dZero.get(), &errors);
   if (m8.empty() || m16.empty()) return errors ? errors : 1;
 
-  for (int slot = 0; slot < kActive; ++slot) {
+  int reported = 0;
+  for (int slot = 0; slot < n_active; ++slot) {
     int const b8 = g5_slot_mismatches(f, m8, rows_per_expert, slot, slot);
     int const b16 = g5_slot_mismatches(f, m16, rows_per_expert, slot, slot);
     int const outputs = rows_per_expert * kN;
+    if ((b8 || b16) ? reported++ < 8 : slot < 8)
     std::printf("  G5 slot=%d expert=%-3d m8 bad=%d/%d  m16 bad=%d/%d  %s\n",
                 slot, ids[slot], b8, outputs, b16, outputs,
                 (b8 || b16) ? "FAIL" : "MATCH");
@@ -683,24 +687,31 @@ int run_g5(char const* label, int rows_per_expert, int const* ids, bool uniform)
   // comparison to FAIL.  Without them a green G5 would only mean "the numbers matched something", and a
   // fixture whose experts are indistinguishable matches everything -- which is exactly the defect this
   // gate was built to remove, so it must be shown not to be present in the gate itself.
+  // IN UNIFORM MODE THESE CONTROLS CANNOT FIRE, BY CONSTRUCTION: every active expert holds the same
+  // W/S/Z, so swapping two of them changes nothing and shifting rows between them changes nothing.
+  // Reporting that as a failure was my error, not a finding -- it made UNIFORM (a diagnostic config,
+  // not a gate) print FAIL for a reason unrelated to what it measures.
+  if (uniform) {
+    std::printf("  G5 NEGATIVE controls SKIPPED: uniform data makes them vacuous by construction\n");
+  } else {
   int wrong_expert_detected = 0;
-  for (int slot = 0; slot + 1 < kActive; ++slot)
+  for (int slot = 0; slot + 1 < n_active; ++slot)
     if (g5_slot_mismatches(f, m8, rows_per_expert, slot, slot + 1) > 0) ++wrong_expert_detected;
-  if (wrong_expert_detected != kActive - 1) {
+  if (wrong_expert_detected != n_active - 1) {
     std::printf("  G5 NEGATIVE expert-identity: only %d/%d neighbour swaps were detected -- the experts "
                 "are not distinguishable, so a passing G5 proves nothing -- FAIL\n",
-                wrong_expert_detected, kActive - 1);
+                wrong_expert_detected, n_active - 1);
     ++errors;
   } else {
     std::printf("  G5 NEGATIVE expert-identity: %d/%d neighbour swaps rejected EXPECTED_RED\n",
-                wrong_expert_detected, kActive - 1);
+                wrong_expert_detected, n_active - 1);
   }
 
   // An off-by-one in the row offsets shifts every slot's rows by one expert's worth.  If that still
   // compares equal, the row offsets are not load-bearing in this fixture.
   int shift_detected = 0;
   std::size_t const shift = std::size_t(rows_per_expert) * kN;
-  for (int slot = 0; slot + 1 < kActive; ++slot) {
+  for (int slot = 0; slot + 1 < n_active; ++slot) {
     auto golden = golden_fp32(f.a_e[slot], rows_per_expert, f.q_e[slot], f.s_e[slot], f.z_e[slot]);
     std::size_t const base = std::size_t(slot) * shift + shift;   // read the NEXT slot's rows
     int bad = 0;
@@ -709,19 +720,20 @@ int run_g5(char const* label, int rows_per_expert, int const* ids, bool uniform)
         ++bad;
     if (bad > 0) ++shift_detected;
   }
-  if (shift_detected != kActive - 1) {
+  if (shift_detected != n_active - 1) {
     std::printf("  G5 NEGATIVE row-offset: only %d/%d one-expert shifts were detected -- FAIL\n",
-                shift_detected, kActive - 1);
+                shift_detected, n_active - 1);
     ++errors;
   } else {
     std::printf("  G5 NEGATIVE row-offset: %d/%d one-expert shifts rejected EXPECTED_RED\n",
-                shift_detected, kActive - 1);
+                shift_detected, n_active - 1);
   }
 
+  }
   int const cross = check_m8_m16(f.total_rows, m8, m16);
   errors += cross;
   std::printf("[G5:%s] %s: E=%d/active=%d uniform=%d\n",
-              label, errors ? "FAIL" : "PASS", kE, kActive, int(uniform));
+              label, errors ? "FAIL" : "PASS", kE, n_active, int(uniform));
   return errors;
 }
 
@@ -819,10 +831,18 @@ int main() {
   //           addressing is right and the defect is expert-DEPENDENT; if it fails, my layout is wrong
   //   REAL    the ragged route this gate exists for
   constexpr int kLowIds[kActive] = {0, 1, 2, 3, 4, 5, 6, 7};
+  // NO ZERO-ROW GROUPS.  248 groups with group_M == 0 is the one structural thing G4 (L=1) never
+  // had, and it is where a slot->expert map would break.  If DENSE passes while the others fail,
+  // the trigger is the zero-row group, not the expert index itself.
   for (int rows : {1, 8}) {
-    errors += run_g5("LOW",     rows, kLowIds,     false);
-    errors += run_g5("UNIFORM", rows, kActiveIds,  true);
-    errors += run_g5("REAL",    rows, kActiveIds,  false);
+    errors += run_g5("LOW",     rows, kLowIds,    kActive, false);
+    errors += run_g5("UNIFORM", rows, kActiveIds, kActive, true);
+    errors += run_g5("REAL",    rows, kActiveIds, kActive, false);
+    if (rows == 1) {
+      std::vector<int> all(kE);
+      for (int e = 0; e < kE; ++e) all[e] = e;
+      errors += run_g5("DENSE", rows, all.data(), kE, false);
+    }
   }
 
   std::printf("== [112] %s: errors=%d (G3/G4/G5) ==\n",
