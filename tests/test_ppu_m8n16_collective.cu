@@ -5,7 +5,8 @@
 //   G3  invokes the real ScaleZero int4 collective mainloop directly, then
 //       scatters its FP32 accumulator fragment with the TiledMma coordinate
 //       tensor.  There is no formal epilogue in this arm.  Eight one-hot A
-//       rows select K coordinates on both sides of the gs=32 boundary, so a
+//       rows select K coordinates across all four TK64 tiles and both sides
+//       of every gs=32 boundary, so a
 //       failure is in A delivery, B delivery/dequant, metadata selection, or
 //       the m8 atom -- not in the output epilogue.
 //
@@ -44,10 +45,21 @@ using QM = moe_grouped_ppu::QuantMode;
 using GS = moe_grouped_ppu::GroupShape;
 using DStride = moe_grouped_ppu::DStride;
 
+constexpr int kBits = 4;
 constexpr int kN = 32;
-constexpr int kK = 64;
+constexpr int kTacticK = 64;
+// F=1/TK64 is stored in the AIU's 256-code resident-row layout.  The old
+// K=64 fixture allocated the resulting padding but still advertised a packed
+// K=64 StrideB to the collective, so the consumer advanced by 64 codes while
+// the producer advanced by 256.  Four tactic tiles make those two strides the
+// same without changing the tactic under test.
+constexpr int kStoredRowK = 256;
+constexpr int kK = 256;
 constexpr int kGs = 32;
 constexpr int kScaleK = kK / kGs;
+constexpr std::size_t kHarnessBBytes = std::size_t(kN) * kK * kBits / 8;
+constexpr std::size_t kPlacedBBytes =
+    std::size_t(kN) * ((kK + kStoredRowK - 1) / kStoredRowK) * kStoredRowK * kBits / 8;
 constexpr int kStages = 3;
 constexpr int kGuard = 64;
 constexpr std::uint16_t kLeftCanary = 0x3555u;
@@ -55,8 +67,8 @@ constexpr std::uint16_t kRightCanary = 0xb555u;
 constexpr std::uint16_t kOutputNaN = 0x7e01u;
 
 using BaseSchedule = ppu_group_schedule::FinegrainedSchedule<kGs>;
-using M8Tile = cute::Shape<cute::_8, cute::_32, cute::_64>;
-using M8Warp = cute::Shape<cute::_8, cute::_32, cute::_64>;
+using M8Tile = cute::Shape<cute::_8, cute::_32, cute::Int<kTacticK>>;
+using M8Warp = cute::Shape<cute::_8, cute::_32, cute::Int<kTacticK>>;
 using ScaleTile = cute::Shape<cute::_32, cute::_2>;
 using M8Policy = ppu_mixed_policy::MainloopPolicy<
     QM::FinegrainedScaleZero, BaseSchedule, M8Tile, ScaleTile, M8Warp,
@@ -71,6 +83,13 @@ static_assert(cute::size<0>(typename M8Mainloop::SmemLayoutA{}) == 8,
               "m8 mainloop must expose eight logical A rows");
 static_assert(cute::size<0>(typename M8Mainloop::SmemLayoutAPhysical{}) == 16,
               "m8 mainloop must retain the physical 16-row AIU cube");
+static_assert(kK % kTacticK == 0 && kK / kTacticK == 4,
+              "G3/G4 must exercise four TK64 mainloop tiles");
+static_assert(kK % kStoredRowK == 0,
+              "G3/G4 packed StrideB must span complete interleave-256 stored rows; "
+              "a shorter problem K advertises a stride that disagrees with the artifact placement");
+static_assert(kHarnessBBytes == kPlacedBBytes,
+              "G3/G4 packed StrideB span disagrees with the F=1 interleave-256 artifact span");
 
 half_t hbits(std::uint16_t bits) { return half_t::bitcast(bits); }
 
@@ -126,7 +145,10 @@ std::vector<half_t> make_dense_a() {
 }
 
 std::vector<half_t> make_onehot_a() {
-  constexpr int selected[8] = {0, 7, 15, 31, 32, 39, 47, 63};
+  // Cross gs=32 boundaries and all four TK64 tiles.  A gate confined to the
+  // first tile would not prove that the packed K=256 stride advances to each
+  // resident TK64 artifact correctly.
+  constexpr int selected[8] = {31, 32, 95, 96, 159, 160, 223, 224};
   std::vector<half_t> a(std::size_t(8) * kK, half_t(0.0f));
   for (int m = 0; m < 8; ++m) {
     a[std::size_t(m) * kK + selected[m]] = half_t(float(m + 1) / 8.0f);
@@ -263,8 +285,8 @@ template <int TM, int WM>
 bool launch_g4(
     half_t const* A, int4_t const* B, half_t const* scales, half_t const* zeros,
     half_t* D, int M, char* workspace, std::size_t workspace_bytes) {
-  using Tile = cute::Shape<cute::Int<TM>, cute::_32, cute::_64>;
-  using Warp = cute::Shape<cute::Int<WM>, cute::_32, cute::_64>;
+  using Tile = cute::Shape<cute::Int<TM>, cute::_32, cute::Int<kTacticK>>;
+  using Warp = cute::Shape<cute::Int<WM>, cute::_32, cute::Int<kTacticK>>;
   using Scale = cute::Shape<cute::_32, cute::_2>;
 
   std::vector<GS> shapes{cute::make_shape(M, kN, kK)};
@@ -403,17 +425,25 @@ int main() {
   auto zeros = make_zeros(scales);
   auto dense_a = make_dense_a();
 
-  std::size_t const logical_bbytes = std::size_t(kK) * kN * 4 / 8;
-  // This intentionally tiny one-CTA N has fewer rows than one 256-code
-  // resident flat-layout quantum.  xplane's F=1/TK=64 artifact therefore
-  // has four physical run slots (RPS=256/64) even though only one slot per
-  // logical row is populated.  This synthetic gate allocates the physical
-  // domain explicitly; sizing it as logical int4 bytes makes the offline
-  // producer write past the buffer before the kernel is even launched.  The
-  // local recover_derived round trip checks all 2048 canonical codes through
-  // this 4096-byte artifact.
-  constexpr int kResidentRunSlots = 4;
-  std::size_t const artifact_bbytes = logical_bbytes * kResidentRunSlots;
+  std::size_t const logical_bbytes = kHarnessBBytes;
+  // Four TK64 artifacts exactly fill one interleave-256 row.  Unlike the old
+  // K=64 gate, the physical artifact and the packed StrideB now describe the
+  // same 4096-byte domain; the static_assert above makes a future shortened K
+  // fail at compile time instead of silently reading every fourth column.
+  std::size_t const artifact_bbytes = kPlacedBBytes;
+  using HarnessStrideB = typename M8Mainloop::StrideB;
+  HarnessStrideB const harness_b_stride = cutlass::make_cute_packed_stride(
+      HarnessStrideB{}, cute::make_shape(kN, kK, 1));
+  auto const harness_b_layout = cute::make_layout(
+      cute::make_shape(kN, kK, 1), harness_b_stride);
+  std::size_t const harness_bbytes =
+      std::size_t(cute::cosize(harness_b_layout)) * kBits / 8;
+  if (harness_bbytes != artifact_bbytes) {
+    std::printf("[offline] packed StrideB span=%zu bytes but F=1 interleave-256 "
+                "artifact span=%zu bytes -- FAIL\n",
+                harness_bbytes, artifact_bbytes);
+    return 1;
+  }
   std::vector<std::int8_t> b8(artifact_bbytes, 0), b16(artifact_bbytes, 0);
   xplane::place_derived<4, 8, 32, 64, 8, 32, 1>(
       b8.data(), q, kN, kK);

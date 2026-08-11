@@ -76,7 +76,7 @@ fi
 
 grep -q '^\[G5\] BLOCKED on #108 real E=256/active=8 ragged harness; L=1 is not substituted$' "$RUN_LOG" \
   || fail 'G5 blocker marker is absent or an L=1 substitute was presented'
-grep -q '^\[offline\] m8/m16 B artifacts byte-identical: 4096 physical bytes (1024 logical); roundtrip=0/2048$' "$RUN_LOG" \
+grep -q '^\[offline\] m8/m16 B artifacts byte-identical: 4096 physical bytes (4096 logical); roundtrip=0/8192$' "$RUN_LOG" \
   || fail 'offline m8/m16 physical artifact identity or round-trip gate did not pass exactly'
 grep -Eq '^  G3 raw FP32 accum +bad=0/256 max_abs=[^ ]+ MATCH$' "$RUN_LOG" \
   || fail 'G3 raw FP32 accumulator did not match all 256 values'
