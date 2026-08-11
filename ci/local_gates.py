@@ -238,6 +238,13 @@ SYNTAX = [
      "-DDENSE_AB_TK=64 -DDENSE_AB_WM=64 -DDENSE_AB_WN=32 -DDENSE_AB_ST=2 "
      "-DDENSE_AB_BC=0 -DBENCH_GS=128 -DTILE_M=64 -DTILE_N=128 -DWARP_M=64 "
      "-DWARP_N=32 -DSTAGES=2"),
+    # Independent Marlin scheduler target: artifact TK64 and tactic TK128 are
+    # deliberately different, and the same TU owns DP/Stream-K/Marlin arms.
+    ("benchmarks/test_lowbit_dense_bench.cu",
+     "-DDENSE_MARLIN_AB=1 -DDENSE_STREAMK_AB=1 -DBENCH_GS=128 -DBENCH_TSK=64 "
+     "-DDENSE_AB_BITS=4 -DDENSE_AB_ARTIFACT_TK=64 -DDENSE_AB_TM=16 -DDENSE_AB_TN=128 "
+     "-DDENSE_AB_TK=128 -DDENSE_AB_WM=16 -DDENSE_AB_WN=32 -DDENSE_AB_ST=3 "
+     "-DDENSE_AB_BC=0 -DTILE_M=16 -DTILE_N=128 -DWARP_M=16 -DWARP_N=32 -DSTAGES=3"),
     # Main mode only declares generated wrappers. This is one real unit-mode row, so shared tag/metric plumbing in
     # lowbit_dense_unit.inc is instantiated locally instead of waiting for hgcc on the box.
     ("dev/fold_derivation/test_lowbit_dense_unit.cu", ""),
@@ -246,6 +253,11 @@ SYNTAX = [
     ("dev/fold_derivation/test_lowbit_dense_unit.cu",
      "-DDENSE_STREAMK_AB=1 -DBENCH_GS=128 -DTILE_M=64 -DTILE_N=128 "
      "-DWARP_M=64 -DWARP_N=32 -DSTAGES=2"),
+    ("dev/fold_derivation/test_lowbit_dense_unit.cu",
+     "-DDENSE_MARLIN_AB=1 -DDENSE_STREAMK_AB=1 -DBENCH_GS=128 -DBENCH_TSK=64 "
+     "-DDENSE_AB_BITS=4 -DDENSE_AB_ARTIFACT_TK=64 -DDENSE_AB_TM=16 -DDENSE_AB_TN=128 "
+     "-DDENSE_AB_TK=128 -DDENSE_AB_WM=16 -DDENSE_AB_WN=32 -DDENSE_AB_ST=3 "
+     "-DDENSE_AB_BC=0 -DTILE_M=16 -DTILE_N=128 -DWARP_M=16 -DWARP_N=32 -DSTAGES=3"),
     # THE SHIPPING .so BOUNDARY. The benches compiled the grouped collective for years while the product wrapper
     # did not expose it; compiling this translation unit is what covers the six-entry ABI and every qtype dispatch.
     ("quactlize/csrc/device/ppu_dense_backend.cu", ""),
@@ -1124,6 +1136,13 @@ def lint_dense_streamk_contract():
         "dense Stream-K worker/K/fixup/timing seams and the exact fixture are pinned")
 
 
+def lint_dense_marlin_contract():
+    """Marlin must remain an additive K-fast scheduler with its own peer protocol and launch guard."""
+    return _run_ci_script(
+        "check_dense_marlin_contract.py",
+        "dense Marlin decomposition/cooperative and same-event DP/SK/Marlin route are pinned")
+
+
 def lint_grouped_streamk_contract():
     """Grouped Stream-K must preserve global q for locks while decoding expert-local compute coordinates."""
     ok, why = nvcc_can_compile_device_cuda()
@@ -1631,6 +1650,8 @@ def main():
                   "WARP_M=32", "WARP_N=32", "STAGES=2", "BENCH_GS=32")),
                 ("boxdry", "dense Stream-K target reaches its isolated 128-thread device compile",
                  ("test_lowbit_dense_streamk_ab", "DENSE_DRYRUN=1")),
+                ("boxdry", "dense Marlin target reaches its isolated DP/Stream-K/Marlin device compile",
+                 ("test_lowbit_dense_marlin_ab", "DENSE_DRYRUN=1")),
                 ("boxdry", "grouped Stream-K target reaches its isolated device compile",
                  "test_moe_grouped_streamk"),
                 ("asan", "preprocessing chain under ASAN", None),
@@ -1664,6 +1685,7 @@ def main():
                 ("lint", "dense and MoE consume one named measurement layer", lint_bench_measurement_shared),
                 ("lint", "MoE events bracket only gemm.run and retain the host-wall audit", lint_moe_event_timing),
                 ("lint", "dense Stream-K shares worker/K decomposition and resets locks before timing", lint_dense_streamk_contract),
+                ("lint", "dense Marlin keeps K-fast stripes, reverse q locks, and the scheduler-owned grid", lint_dense_marlin_contract),
                 ("lint", "grouped Stream-K preserves q locks, worker/K decomposition, and timing", lint_grouped_streamk_contract),
                 ("lint", "l122_streamk_fixup_cohort contract pins the exact 64/128-thread CTA cohort", lint_streamk_fixup_cohort),
                 ("lint", "l124 predicates every shipped FP32 accumulator residue and preserves S1-4", lint_fp32_residue_fixup),

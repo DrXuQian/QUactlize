@@ -4,7 +4,13 @@
 #ifndef PPU_B_CHUNK
 #define PPU_B_CHUNK 0
 #endif
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_MARLIN_AB)
+// Marlin's scheduler is exercised only when Q<CU.  This legal 128-thread
+// decode row has Q=32 for M=1,N=4096 on the 72-CU box; artifact TK remains
+// BENCH_TSK=64 while the tactic deliberately consumes it at TK=128.
+#define LOWBIT_DENSE_UNIT_CONFIGS(X) \
+  X(lowbit_dense_marlin_probe,16,128,128,16,32,3,0)
+#elif defined(DENSE_STREAMK_AB)
 // 107b's isolated four-warp row.  Keep it separate from 107a: Stream-K
 // fixup() currently requires exactly one 128-thread barrier cohort.
 #define LOWBIT_DENSE_UNIT_CONFIGS(X) \

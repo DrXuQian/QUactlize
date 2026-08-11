@@ -84,6 +84,7 @@
 #include "quactlize_actlize.hpp"
 #include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_persistent.hpp"
 #include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_streamk.hpp"
+#include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_marlin.hpp"
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
 #include "ppu_mixed_policy.hpp"
 #include "bench_select.hpp"
@@ -98,7 +99,7 @@
 
 using namespace cute;
 
-#if defined(DENSE_PERSISTENT_AB) || defined(DENSE_STREAMK_AB)
+#if defined(DENSE_PERSISTENT_AB) || defined(DENSE_STREAMK_AB) || defined(DENSE_MARLIN_AB)
 #define DENSE_SCHEDULER_AB 1
 #endif
 
@@ -313,13 +314,21 @@ struct Cfg {
       Shape<int,int,int,int>, Main, Epi>;
   using PersistentGemm = cutlass::gemm::device::GemmUniversalAdapter<PersistentKernel>;
 #endif
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_AB) || defined(DENSE_MARLIN_AB)
   // Keep the four-warp Stream-K hard gate in a separate target.  Merely naming
   // this type in 107a's 64/256-thread rows would make their valid persistent
   // controls fail a constraint that belongs only to Stream-K fixup.
   using StreamKKernel = cutlass::gemm::kernel::StreamKMixedInputKernel<
       Shape<int,int,int,int>, Main, Epi>;
   using StreamKGemm = cutlass::gemm::device::GemmUniversalAdapter<StreamKKernel>;
+#endif
+#if defined(DENSE_MARLIN_AB)
+  // Marlin is a third, additive scheduler/cooperative.  It consumes the same
+  // mixed-input Main/Epi types as the DP and Stream-K arms; no format or
+  // converter type is rebuilt for this scheduler.
+  using MarlinKernel = cutlass::gemm::kernel::MarlinMixedInputKernel<
+      Shape<int,int,int,int>, Main, Epi>;
+  using MarlinGemm = cutlass::gemm::device::GemmUniversalAdapter<MarlinKernel>;
 #endif
 };
 
@@ -374,7 +383,11 @@ inline bench_measure::Tactic dense_fixed_tactic() {
 // Each scheduler A/B target deliberately instantiates exactly one row.  These are mechanism
 // experiments, not truncated tactic searches; a separate registry identity prevents a
 // one-row result from being mistaken for the winner of the full dense table.
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_MARLIN_AB)
+#define LOWBIT_DENSE_TABLE_FILE                 "marlin-ab-single-row"
+#define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    "marlin-ab"
+#define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  "marlin-ab"
+#elif defined(DENSE_STREAMK_AB)
 #define LOWBIT_DENSE_TABLE_FILE                 "streamk-ab-single-row"
 #define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    "streamk-ab"
 #define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  "streamk-ab"
@@ -384,7 +397,11 @@ inline bench_measure::Tactic dense_fixed_tactic() {
 #define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  "persistent-ab"
 #endif
 #define LOWBIT_DENSE_TABLE_CFG_BITS             DENSE_AB_BITS
+#if defined(DENSE_MARLIN_AB)
+#define LOWBIT_DENSE_TABLE_CFG_ARTIFACT_TILEK   DENSE_AB_ARTIFACT_TK
+#else
 #define LOWBIT_DENSE_TABLE_CFG_ARTIFACT_TILEK   DENSE_AB_TK
+#endif
 #define LOWBIT_DENSE_TABLE_CFG_ROWS             1
 #define LOWBIT_DENSE_TABLE_CFG_LIST(X,A) \
   X(DENSE_AB_TM,DENSE_AB_TN,DENSE_AB_TK,DENSE_AB_WM,DENSE_AB_WN,DENSE_AB_ST,DENSE_AB_BC,A)
@@ -524,6 +541,7 @@ struct Options {
   bool xcheck = false;           // --xcheck: run the grouped kernel (L=1) on this run's verified data and compare
   bool persistent = false;       // --persistent: 107a A/B target only; select serial persistent work loop
   bool streamk = false;          // --streamk: 107b target only; select deterministic dense Stream-K
+  bool marlin = false;           // --marlin: select the independent Marlin stripe scheduler/cooperative
   bool streamk_gate = false;     // --streamk_gate: require the independent CPU-FP32/fixup gate
   bool streamk_split_gate = false; // --streamk_split_gate: require an actually split output tile
   bool streamk_exact_fixture = false; // --streamk_exact_fixture: use the exact-by-construction A0 inputs on every arm
@@ -554,6 +572,7 @@ struct Options {
     xcheck         = cmd.check_cmd_line_flag("xcheck");
     persistent     = cmd.check_cmd_line_flag("persistent");
     streamk        = cmd.check_cmd_line_flag("streamk");
+    marlin         = cmd.check_cmd_line_flag("marlin");
     streamk_gate   = cmd.check_cmd_line_flag("streamk_gate");
     streamk_split_gate = cmd.check_cmd_line_flag("streamk_split_gate");
     streamk_exact_fixture = cmd.check_cmd_line_flag("streamk_exact_fixture");
@@ -583,6 +602,9 @@ struct Options {
         << "  --streamk_gate              Also require fixup witness + CPU FP32 golden.\n"
         << "  --streamk_split_gate        Fail closed unless lowered Params contain a real cross-CTA seam.\n"
         << "  --streamk_exact_fixture     Fill the actual A0 arm with sparse integer inputs whose sums are order-independent.\n";
+#endif
+#if defined(DENSE_MARLIN_AB)
+    out << "  --marlin                    Use the independent Marlin CTA-stripe scheduler.\n";
 #endif
 
     out
@@ -2220,6 +2242,14 @@ struct dense_is_streamk_gemm<
     Gemm, std::void_t<decltype(std::declval<typename Gemm::Arguments&>().diagnostics)>>
     : std::true_type {};
 
+template <class Gemm, class = void>
+struct dense_is_marlin_gemm : std::false_type {};
+
+template <class Gemm>
+struct dense_is_marlin_gemm<
+    Gemm, std::void_t<decltype(Gemm::GemmKernel::IsDenseMarlin)>>
+    : std::bool_constant<Gemm::GemmKernel::IsDenseMarlin> {};
+
 struct DenseNoStreamKDiagnostics { uint32_t witness[3]{}; };
 
 template <class Gemm, bool = dense_is_streamk_gemm<Gemm>::value>
@@ -2292,7 +2322,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   if constexpr (dense_has_persistent_ctas<decltype(arguments)>::value) {
     arguments.ctas_per_cu = ctas_per_cu;
   }
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_AB) || defined(DENSE_MARLIN_AB)
   using StreamKDiagnosticState =
       typename dense_streamk_diagnostic_type<Gemm>::type;
   cutlass::DeviceAllocation<StreamKDiagnosticState> streamk_diagnostics;
@@ -2334,6 +2364,8 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   constexpr size_t kSharedPerCu = 256u << 10;
   size_t const union_shared_ctas = union_bytes ? kSharedPerCu / union_bytes : 0;
   size_t const sum_shared_ctas = overlap_sum_bytes ? kSharedPerCu / overlap_sum_bytes : 0;
+  uint64_t marlin_peer_excess = 0;
+  uint64_t marlin_valid_fixup_elements = 0;
 #if defined(DENSE_STREAMK_AB)
   if constexpr (dense_is_streamk_gemm<Gemm>::value) {
     using SchedulerParams = typename Gemm::GemmKernel::TileSchedulerParams;
@@ -2367,6 +2399,59 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
     }
   }
 #endif
+  if constexpr (dense_is_marlin_gemm<Gemm>::value) {
+    auto const params = Gemm::GemmKernel::to_underlying_arguments(
+        arguments, workspace.get());
+    auto const& ms = params.scheduler;
+    uint64_t handoffs = 0;
+    uint64_t const tiles_n = uint64_t(cute::ceil_div(options.n, tactic.tn));
+    uint64_t const tiles_m = uint64_t(cute::ceil_div(options.m, tactic.tm));
+    if (ms.valid_ && ms.iters_per_block_ > 0) {
+      for (uint64_t q = 0; q < ms.output_tiles_; ++q) {
+        uint64_t const q_begin = q * ms.k_tiles_per_output_;
+        uint64_t const q_end = q_begin + ms.k_tiles_per_output_;
+        uint64_t const first = q_begin / ms.iters_per_block_;
+        uint64_t const last = (q_end - 1) / ms.iters_per_block_;
+        uint64_t const peer_excess = last - first;
+        handoffs += peer_excess;
+        uint64_t const n_idx = q % tiles_n;
+        uint64_t const q_m = q / tiles_n;
+        uint64_t const m_idx = q_m % tiles_m;
+        uint64_t const m_begin = m_idx * uint64_t(tactic.tm);
+        uint64_t const n_begin = n_idx * uint64_t(tactic.tn);
+        uint64_t const valid_m = std::min<uint64_t>(
+            uint64_t(tactic.tm), uint64_t(options.m) - m_begin);
+        uint64_t const valid_n = std::min<uint64_t>(
+            uint64_t(tactic.tn), uint64_t(options.n) - n_begin);
+        marlin_valid_fixup_elements += valid_m * valid_n * peer_excess;
+      }
+    }
+    marlin_peer_excess = handoffs;
+    uint64_t const expected_grid = logical_ctas >= uint64_t(cu_count)
+        ? logical_ctas : uint64_t(cu_count);
+    uint64_t const expected_kt = uint64_t(cute::ceil_div(options.k, tactic.tk));
+    bool const valid_decomposition = ms.valid_ &&
+        ms.output_tiles_ == logical_ctas &&
+        ms.k_tiles_per_output_ == expected_kt &&
+        ms.grid_blocks_ == expected_grid;
+    std::printf(
+        "  [dense marlin decomposition] real_cu=%d occupancy_api=%d Q=%llu "
+        "Kt=%llu G=%llu I=%llu active=%llu handoffs=%llu workspace=%zu\n",
+        cu_count, ctas_per_cu,
+        static_cast<unsigned long long>(ms.output_tiles_),
+        static_cast<unsigned long long>(ms.k_tiles_per_output_),
+        static_cast<unsigned long long>(ms.grid_blocks_),
+        static_cast<unsigned long long>(ms.iters_per_block_),
+        static_cast<unsigned long long>(ms.active_blocks_),
+        static_cast<unsigned long long>(handoffs), workspace_size);
+    if (!valid_decomposition) {
+      std::fprintf(stderr,
+                   "dense Marlin fail-close: lowered Q/Kt/G differs from the scheduler-owned launch contract\n");
+      Result decomposition_failure;
+      decomposition_failure.passed = false;
+      return decomposition_failure;
+    }
+  }
   std::printf(
       "  [dense scheduler=%s] logical_cta=%llu cu=%d occupancy_api=%d "
       "grid=(%u,%u,%u) physical_cta=%llu block_threads=%u warps/cta=%d "
@@ -2387,6 +2472,20 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
       std::fprintf(stderr,
                    "Stream-K grid mismatch: got %llu CTA, expected full worker grid %d*%d=%llu\n",
                    static_cast<unsigned long long>(physical_ctas), cu_count, ctas_per_cu,
+                   static_cast<unsigned long long>(expected));
+      Result grid_failure;
+      grid_failure.passed = false;
+      return grid_failure;
+    }
+  } else if constexpr (dense_is_marlin_gemm<Gemm>::value) {
+    uint64_t const expected = logical_ctas >= uint64_t(cu_count)
+        ? logical_ctas : uint64_t(cu_count);
+    if (physical_ctas != expected || physical_grid.y != 1 || physical_grid.z != 1) {
+      std::fprintf(stderr,
+                   "Marlin grid mismatch: got (%u,%u,%u)=%llu CTA, expected max(Q=%llu,CU=%d)=%llu (occupancy must not multiply it)\n",
+                   physical_grid.x, physical_grid.y, physical_grid.z,
+                   static_cast<unsigned long long>(physical_ctas),
+                   static_cast<unsigned long long>(logical_ctas), cu_count,
                    static_cast<unsigned long long>(expected));
       Result grid_failure;
       grid_failure.passed = false;
@@ -2848,6 +2947,34 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
           static_cast<unsigned long long>(verify_partition.valid_fixup_elements),
           static_cast<unsigned long long>(verify_partition.peer_excess),
           logical_fixup_bytes);
+    } else if constexpr (dense_is_marlin_gemm<Gemm>::value) {
+      const double Mm = options.m, Nn = options.n, Kk = options.k;
+      const double bq = double(sizeof_bits<QuantType>::value) / 8.0;
+      const double n_tiles = tactic.tn > 0 ? std::ceil(Nn / tactic.tn) : 1.0;
+      const double m_tiles = tactic.tm > 0 ? std::ceil(Mm / tactic.tm) : 1.0;
+      bench_measure::TiledGemmTrafficInput const traffic_input{
+          Mm * Kk * 2.0, Nn * Kk * bq, 0.0, Mm * Nn * 2.0,
+          1.0, n_tiles, m_tiles};
+      // Each extra peer contributes one predicated FP32 store/load pair.
+      // This is the logical B2-lite model, not a DRAM counter: cache-line
+      // amplification remains a box-side measurement.
+      double const logical_fixup_bytes =
+          2.0 * sizeof(float) * double(marlin_valid_fixup_elements);
+      const auto traffic = bench_measure::make_traffic_with_output_bytes(
+          traffic_input, traffic_input.output_bytes + logical_fixup_bytes);
+      const auto metrics = bench_measure::measure(
+          us, 2.0 * Mm * Nn * Kk * double(options.l), traffic);
+      char core[256];
+      bench_measure::format_metrics(core, sizeof core, metrics);
+      std::printf(
+          "  [CUTLASS w%d gs=%d cfg=%s scheduler=%s] M=%d %7.2f us | "
+          "%s | Marlin-C valid_elements=%llu peer_excess=%llu "
+          "logical_RW=%.0f MODEL-ONLY/not-a-DRAM-counter\n",
+          int(sizeof_bits<QuantType>::value), options.g, tag, scheduler_kind,
+          options.m, us, core,
+          static_cast<unsigned long long>(marlin_valid_fixup_elements),
+          static_cast<unsigned long long>(marlin_peer_excess),
+          logical_fixup_bytes);
     } else
 #endif
     {
@@ -3127,7 +3254,7 @@ int main(int argc, char const **args) {
   print_dense_table_provenance();
 
 #if !defined(DENSE_SCHEDULER_AB)
-  if (options.persistent || options.streamk || options.streamk_gate ||
+  if (options.persistent || options.streamk || options.marlin || options.streamk_gate ||
       options.streamk_split_gate || options.streamk_exact_fixture) {
     std::fprintf(stderr,
                  "scheduler A/B flags are available only in the dedicated dense scheduler targets; "
@@ -3135,11 +3262,15 @@ int main(int argc, char const **args) {
     return 1;
   }
 #else
-  if (options.persistent && options.streamk) {
-    std::fprintf(stderr, "--persistent and --streamk are mutually exclusive A/B arms\n");
+  int const scheduler_arms = int(options.persistent) + int(options.streamk) +
+                             int(options.marlin);
+  if (scheduler_arms > 1) {
+    std::fprintf(stderr,
+                 "--persistent, --streamk, and --marlin are mutually exclusive A/B arms\n");
     return 1;
   }
-  if ((options.persistent || options.streamk || options.streamk_exact_fixture) &&
+  if ((options.persistent || options.streamk || options.marlin ||
+       options.streamk_exact_fixture) &&
       options.mode != GemmMode::ScaleOnly) {
     std::fprintf(stderr, "dense scheduler A/B currently covers ScaleOnly (mode=1) only\n");
     return 1;
@@ -3173,10 +3304,20 @@ int main(int argc, char const **args) {
     return 1;
   }
   if (options.streamk_exact_fixture &&
-      (options.m != 2048 || options.k != 4096 || options.l != 1 ||
+      (
+#if defined(DENSE_MARLIN_AB)
+       (options.m != 1 && options.m != 2048) ||
+#else
+       options.m != 2048 ||
+#endif
+       options.k != 4096 || options.l != 1 ||
        options.g != 128 || options.alpha != 1.0f || options.beta != 0.0f)) {
     std::fprintf(stderr,
+#if defined(DENSE_MARLIN_AB)
+                 "--streamk_exact_fixture requires --m=1-or-2048 --k=4096 --l=1 "
+#else
                  "--streamk_exact_fixture requires --m=2048 --k=4096 --l=1 "
+#endif
                  "--g=128 --alpha=1 --beta=0 (N may adapt to runtime workers)\n");
     return 1;
   }
@@ -3189,6 +3330,13 @@ int main(int argc, char const **args) {
       (options.l != 1 || options.alpha != 1.0f || options.beta != 0.0f)) {
     std::fprintf(stderr,
                  "--streamk_split_gate first replay requires --l=1 --alpha=1 --beta=0\n");
+    return 1;
+  }
+#endif
+#if !defined(DENSE_MARLIN_AB)
+  if (options.marlin) {
+    std::fprintf(stderr,
+                 "--marlin is available only in test_lowbit_dense_marlin_ab\n");
     return 1;
   }
 #endif

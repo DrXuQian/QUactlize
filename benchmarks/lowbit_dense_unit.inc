@@ -5,6 +5,12 @@
 
 template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int ST>
 static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
+#if defined(DENSE_MARLIN_AB)
+  if (options.marlin) {
+    using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::MarlinGemm;
+    return run<G>(options, dense_tactic(cfg), "marlin");
+  }
+#endif
 #if defined(DENSE_STREAMK_AB)
   if (options.streamk) {
     using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::StreamKGemm;
