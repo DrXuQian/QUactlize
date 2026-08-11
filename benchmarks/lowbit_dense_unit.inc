@@ -5,6 +5,17 @@
 
 template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int ST>
 static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
+#if defined(DENSE_MARLIN_SWEEP)
+  // This executable is a Marlin table, not a DP table plus a runtime switch.
+  // CMake filters the committed rows before generating these wrappers; retain
+  // a type-level guard here so a future generator mistake fails compilation
+  // instead of silently instantiating an unsupported cooperative cohort.
+  using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::MarlinGemm;
+  static_assert(G::GemmKernel::MaxThreadsPerBlock == 64 ||
+                G::GemmKernel::MaxThreadsPerBlock == 128,
+                "the dense Marlin sweep admits only 64/128-thread rows");
+  return run<G>(options, dense_tactic(cfg), "marlin");
+#else
 #if defined(DENSE_MARLIN_AB)
   if (options.marlin) {
     using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::MarlinGemm;
@@ -25,6 +36,7 @@ static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
 #endif
   using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::Gemm;
   return run<G>(options, dense_tactic(cfg), "non-persistent");
+#endif
 }
 
 #if DENSE_GS_ARM(16)

@@ -102,6 +102,12 @@ using namespace cute;
 #if defined(DENSE_PERSISTENT_AB) || defined(DENSE_STREAMK_AB) || defined(DENSE_MARLIN_AB)
 #define DENSE_SCHEDULER_AB 1
 #endif
+#if defined(DENSE_SCHEDULER_AB) || defined(DENSE_MARLIN_SWEEP)
+// DENSE_SCHEDULER_AB owns the one-row mechanism binaries.  The full Marlin
+// sweep is deliberately not one of them (it owns a filtered committed table),
+// but it still needs the named-scheduler occupancy/grid/provenance path.
+#define DENSE_NAMED_SCHEDULER 1
+#endif
 
 
 // This is just an example, so we use a regular enum so we can compare directly to the command-line int.
@@ -322,7 +328,7 @@ struct Cfg {
       Shape<int,int,int,int>, Main, Epi>;
   using StreamKGemm = cutlass::gemm::device::GemmUniversalAdapter<StreamKKernel>;
 #endif
-#if defined(DENSE_MARLIN_AB)
+#if defined(DENSE_MARLIN_AB) || defined(DENSE_MARLIN_SWEEP)
   // Marlin is a third, additive scheduler/cooperative.  It consumes the same
   // mixed-input Main/Epi types as the DP and Stream-K arms; no format or
   // converter type is rebuilt for this scheduler.
@@ -379,7 +385,43 @@ inline bench_measure::Tactic dense_fixed_tactic() {
 #if !defined(LOWBIT_DENSE_UNIT_BUILD)
 #include "bench_samples.hpp"
 #include "bench_floor.cuh"
-#if defined(DENSE_SCHEDULER_AB)
+#if defined(DENSE_MARLIN_SWEEP)
+// A second registry over the SAME committed table: CMake emits only rows whose
+// final Marlin kernel has a supported 64/128-thread cooperative cohort.  Keep
+// the source table's bits/artifact identity, but make both the registry and
+// provenance distinct from the ordinary DP sweep.
+#if defined(BENCH_UINT1)
+#include "lowbit_dense_i1_configs.inc"
+#define LOWBIT_DENSE_TABLE_CFG_BITS             LOWBIT_DENSE_I1_CFG_BITS
+#define LOWBIT_DENSE_TABLE_CFG_ARTIFACT_TILEK   LOWBIT_DENSE_I1_CFG_ARTIFACT_TILEK
+#define LOWBIT_DENSE_MARLIN_SOURCE_ROWS         LOWBIT_DENSE_I1_CFG_ROWS
+#define LOWBIT_DENSE_MARLIN_SOURCE_SPACE        LOWBIT_DENSE_I1_CFG_SPACE_FNV1A64
+#define LOWBIT_DENSE_MARLIN_SOURCE_EMITTER      LOWBIT_DENSE_I1_CFG_EMITTER_FNV1A64
+#define LOWBIT_DENSE_MARLIN_SOURCE_FILE         "lowbit_dense_i1_configs.inc"
+#elif defined(BENCH_UINT2)
+#include "lowbit_dense_i2_configs.inc"
+#define LOWBIT_DENSE_TABLE_CFG_BITS             LOWBIT_DENSE_I2_CFG_BITS
+#define LOWBIT_DENSE_TABLE_CFG_ARTIFACT_TILEK   LOWBIT_DENSE_I2_CFG_ARTIFACT_TILEK
+#define LOWBIT_DENSE_MARLIN_SOURCE_ROWS         LOWBIT_DENSE_I2_CFG_ROWS
+#define LOWBIT_DENSE_MARLIN_SOURCE_SPACE        LOWBIT_DENSE_I2_CFG_SPACE_FNV1A64
+#define LOWBIT_DENSE_MARLIN_SOURCE_EMITTER      LOWBIT_DENSE_I2_CFG_EMITTER_FNV1A64
+#define LOWBIT_DENSE_MARLIN_SOURCE_FILE         "lowbit_dense_i2_configs.inc"
+#else
+#include "lowbit_dense_configs.inc"
+#define LOWBIT_DENSE_TABLE_CFG_BITS             LOWBIT_DENSE_CFG_BITS
+#define LOWBIT_DENSE_TABLE_CFG_ARTIFACT_TILEK   LOWBIT_DENSE_CFG_ARTIFACT_TILEK
+#define LOWBIT_DENSE_MARLIN_SOURCE_ROWS         LOWBIT_DENSE_CFG_ROWS
+#define LOWBIT_DENSE_MARLIN_SOURCE_SPACE        LOWBIT_DENSE_CFG_SPACE_FNV1A64
+#define LOWBIT_DENSE_MARLIN_SOURCE_EMITTER      LOWBIT_DENSE_CFG_EMITTER_FNV1A64
+#define LOWBIT_DENSE_MARLIN_SOURCE_FILE         "lowbit_dense_configs.inc"
+#endif
+#include "lowbit_dense_marlin_sweep_configs.inc"
+#define LOWBIT_DENSE_TABLE_FILE                 "scheduler=marlin;source=" LOWBIT_DENSE_MARLIN_SOURCE_FILE
+#define LOWBIT_DENSE_TABLE_CFG_ROWS             LOWBIT_DENSE_MARLIN_SWEEP_ROWS
+#define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    LOWBIT_DENSE_MARLIN_SOURCE_SPACE
+#define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  LOWBIT_DENSE_MARLIN_SOURCE_EMITTER
+#define LOWBIT_DENSE_TABLE_CFG_LIST             LOWBIT_DENSE_MARLIN_SWEEP_CONFIGS
+#elif defined(DENSE_SCHEDULER_AB)
 // Each scheduler A/B target deliberately instantiates exactly one row.  These are mechanism
 // experiments, not truncated tactic searches; a separate registry identity prevents a
 // one-row result from being mistaken for the winner of the full dense table.
@@ -445,9 +487,28 @@ static_assert(kLowbitDenseConfigRows == LOWBIT_DENSE_TABLE_CFG_ROWS,
               "the selected dense config table's row-count provenance does not match its X-macro list; regenerate it");
 
 inline void print_dense_table_provenance() {
+#if defined(DENSE_MARLIN_SWEEP)
+  static_assert(LOWBIT_DENSE_MARLIN_SWEEP_SOURCE_ROWS == LOWBIT_DENSE_MARLIN_SOURCE_ROWS,
+                "the Marlin filter header and committed source table disagree");
+  static_assert(LOWBIT_DENSE_MARLIN_SWEEP_FILTERED_ROWS +
+                    LOWBIT_DENSE_MARLIN_SWEEP_ROWS ==
+                LOWBIT_DENSE_MARLIN_SWEEP_SOURCE_ROWS,
+                "the Marlin source/eligible/filtered census does not close");
+  std::printf("[dense-table] scheduler=marlin file=%s rows=%d source_rows=%d "
+              "eligible_rows=%d filtered_rows=%d cohort_threads=64|128 "
+              "filter=cta-warps-2|4 source_space_fnv1a64=%s "
+              "source_emitter_fnv1a64=%s\n",
+              LOWBIT_DENSE_TABLE_FILE, kLowbitDenseConfigRows,
+              LOWBIT_DENSE_MARLIN_SWEEP_SOURCE_ROWS,
+              LOWBIT_DENSE_MARLIN_SWEEP_ROWS,
+              LOWBIT_DENSE_MARLIN_SWEEP_FILTERED_ROWS,
+              LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64,
+              LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64);
+#else
   std::printf("[dense-table] file=%s rows=%d space_fnv1a64=%s emitter_fnv1a64=%s\n",
               LOWBIT_DENSE_TABLE_FILE, kLowbitDenseConfigRows,
               LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64, LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64);
+#endif
 }
 #endif
 // =================================================================================================================
@@ -605,6 +666,10 @@ struct Options {
 #endif
 #if defined(DENSE_MARLIN_AB)
     out << "  --marlin                    Use the independent Marlin CTA-stripe scheduler.\n";
+#endif
+#if defined(DENSE_MARLIN_SWEEP)
+    out << "  scheduler=marlin            Fixed at build time for every compiled table row; "
+           "runtime scheduler flags and ordinary dense tactic caches are rejected.\n";
 #endif
 
     out
@@ -2303,7 +2368,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
       owner_map_closed && !verify_partition.is_streamk;
 #endif
 
-#if defined(DENSE_SCHEDULER_AB)
+#if defined(DENSE_NAMED_SCHEDULER)
   // Query the FINAL kernel, not a tile-model estimate.  This accounts for registers, dynamic
   // shared memory, threads, and any work-loop register pressure introduced by persistence.
   int current_device = 0;
@@ -2348,7 +2413,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   // Allocate workspace memory
   cutlass::device_memory::allocation<uint8_t> workspace(workspace_size);
 
-#if defined(DENSE_SCHEDULER_AB)
+#if defined(DENSE_NAMED_SCHEDULER)
   dim3 const physical_grid = Gemm::get_grid_shape(arguments, workspace.get());
   uint64_t const logical_ctas =
       uint64_t(cute::ceil_div(options.m, tactic.tm)) *
@@ -2590,7 +2655,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   // timed launch below owns a distinct remaining pair.
   DenseKernelEventBatch streamk_events(std::max(options.iterations, 0) + 1);
 #endif
-#if defined(DENSE_SCHEDULER_AB)
+#if defined(DENSE_NAMED_SCHEDULER)
   // Make a missed scheduler tile deterministic: 0xffff is a half NaN, so an unwritten D
   // element cannot accidentally compare equal to the reference.  This is outside all timing.
   CUTLASS_PPU_CHECK(hggcMemset(block_D.get(), 0xff,
@@ -2947,7 +3012,10 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
           static_cast<unsigned long long>(verify_partition.valid_fixup_elements),
           static_cast<unsigned long long>(verify_partition.peer_excess),
           logical_fixup_bytes);
-    } else if constexpr (dense_is_marlin_gemm<Gemm>::value) {
+    } else
+#endif
+#if defined(DENSE_MARLIN_AB) || defined(DENSE_MARLIN_SWEEP)
+    if constexpr (dense_is_marlin_gemm<Gemm>::value) {
       const double Mm = options.m, Nn = options.n, Kk = options.k;
       const double bq = double(sizeof_bits<QuantType>::value) / 8.0;
       const double n_tiles = tactic.tn > 0 ? std::ceil(Nn / tactic.tn) : 1.0;
@@ -2992,7 +3060,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
           us, 2.0 * Mm * Nn * Kk * double(options.l), traffic);
       char core[256];
       bench_measure::format_metrics(core, sizeof core, metrics);
-#if defined(DENSE_SCHEDULER_AB)
+#if defined(DENSE_NAMED_SCHEDULER)
       std::printf("  [CUTLASS w%d gs=%d cfg=%s scheduler=%s] M=%d %7.2f us | %s\n",
                   int(sizeof_bits<QuantType>::value), options.g, tag, scheduler_kind,
                   options.m, us, core);
@@ -3095,6 +3163,22 @@ inline char const* dense_fixture(Options const& o) {
   static char fx[96];
   std::snprintf(fx, sizeof fx, "dense-m%d-n%d-k%d-gs%d", o.m, o.n, o.k, o.g);
   return fx;
+}
+
+inline char const* dense_sample_family() {
+#if defined(DENSE_MARLIN_SWEEP)
+  return "cutlass_w4a16_marlin";
+#else
+  return "cutlass_w4a16";
+#endif
+}
+
+inline char const* dense_distribution() {
+#if defined(DENSE_MARLIN_SWEEP)
+  return "dense-marlin-v1";
+#else
+  return "dense-v1";
+#endif
 }
 
 Result run_config(Options& options, TileCfg const& cfg) {
@@ -3253,7 +3337,36 @@ int main(int argc, char const **args) {
   options.parse(argc, args);
   print_dense_table_provenance();
 
-#if !defined(DENSE_SCHEDULER_AB)
+#if defined(DENSE_MARLIN_SWEEP)
+  // This binary's registry and every generated wrapper are compile-time
+  // Marlin.  Runtime scheduler flags would only create a false identity, and
+  // the ordinary dense cache key has no scheduler field, so both cache load
+  // and save must be rejected rather than aliasing DP samples/tactics.
+  if (options.persistent || options.streamk || options.marlin ||
+      options.streamk_gate || options.streamk_split_gate ||
+      options.streamk_exact_fixture) {
+    std::fprintf(stderr,
+                 "test_lowbit_dense_marlin_sweep fixes scheduler=marlin at build time; "
+                 "runtime scheduler flags are unsupported\n");
+    return 1;
+  }
+  if (options.xcheck) {
+    std::fprintf(stderr,
+                 "test_lowbit_dense_marlin_sweep cannot use --xcheck because it bypasses the Marlin table\n");
+    return 1;
+  }
+  if (options.mode != GemmMode::ScaleOnly) {
+    std::fprintf(stderr,
+                 "test_lowbit_dense_marlin_sweep covers ScaleOnly (mode=1) only\n");
+    return 1;
+  }
+  if (!options.tactic_file.empty() || !options.save_tactic_file.empty()) {
+    std::fprintf(stderr,
+                 "ordinary dense tactic cache load/save is rejected for scheduler=marlin; "
+                 "use --config or --search_configs without --tactic/--save_tactic\n");
+    return 1;
+  }
+#elif !defined(DENSE_SCHEDULER_AB)
   if (options.persistent || options.streamk || options.marlin || options.streamk_gate ||
       options.streamk_split_gate || options.streamk_exact_fixture) {
     std::fprintf(stderr,
@@ -3349,8 +3462,15 @@ int main(int argc, char const **args) {
 
   // --list_configs: enumerate the compiled tactics and exit.
   if (options.list_configs) {
-    std::printf("compiled CUTLASS W%dA16 tile configs (group sizes 16, 32, 64, 128):\n",
-                int(cutlass::sizeof_bits<QuantType>::value));
+    std::printf("compiled CUTLASS W%dA16 tile configs scheduler=%s "
+                "(group sizes 16, 32, 64, 128):\n",
+                int(cutlass::sizeof_bits<QuantType>::value),
+#if defined(DENSE_MARLIN_SWEEP)
+                "marlin"
+#else
+                "default"
+#endif
+    );
     for (auto const& c : supported_configs())
       std::printf("  %-22s  tile %dx%dx%d  warp %dx%d  stages %d\n",
                   c.name, c.tm, c.tn, c.tk, c.wm, c.wn, c.st);
@@ -3400,11 +3520,17 @@ int main(int argc, char const **args) {
     // DEFAULT 1, not 5. The user asked for one pass and five stayed the default. One repeat is legal and is
     // explicitly NOT a ranking -- the verdict lines below say so rather than printing something that reads like one.
     const int reps = bench_measure::read_reps();
-    char build[128];
+    char build[160];
+#if defined(DENSE_MARLIN_SWEEP)
+    std::snprintf(build, sizeof build, "bits=%d TSK=%d gs=%d scheduler=%s",
+                  int(cutlass::sizeof_bits<QuantType>::value), TileShapeK, options.g,
+                  "marlin");
+#else
     std::snprintf(build, sizeof build, "bits=%d TSK=%d gs=%d",
                   int(cutlass::sizeof_bits<QuantType>::value), TileShapeK, options.g);
+#endif
     bench_floor::banner();
-    bench_samples::run_header("cutlass_w4a16", build, reps);
+    bench_samples::run_header(dense_sample_family(), build, reps);
 
     std::printf("%-18s %-10s %s\n", "CONFIG", "TFLOP/s", "status");
     Best best; best.tag[0] = '\0'; best.us = 1e18;
@@ -3417,7 +3543,7 @@ int main(int argc, char const **args) {
         // it: the sample file (an `a` record with no matching `s` is where it stopped) and stdout, flushed
         // because stdout to a file is block-buffered and would lose its tail with the process.
         bench_samples::Sample _a{};
-        _a.fixture = dense_fixture(options); _a.dist = "dense-v1"; _a.schema = dense_schema();
+        _a.fixture = dense_fixture(options); _a.dist = dense_distribution(); _a.schema = dense_schema();
         _a.n = options.n; _a.k = options.k; _a.gs = options.g;
         _a.experts = 0; _a.rows = options.m; _a.mmax = options.m;
         _a.tm = c.tm; _a.tn = c.tn; _a.tk = c.tk; _a.wm = c.wm; _a.wn = c.wn; _a.st = c.st;
@@ -3482,8 +3608,16 @@ int main(int argc, char const **args) {
       std::printf("     [LAUNCH-BOUND] the leader is within 3x the empty-launch floor (%.2f us): this shape is\n"
                   "     too small for the loop to be measuring the kernel rather than the launch rate.\n",
                   bench_floor::us());
-    run_config(options, find_config(best.tag));
+    Result const winner_result = run_config(options, find_config(best.tag));
+#if defined(DENSE_MARLIN_SWEEP)
+    // A scheduler-specific sweep is evidence only if the selected Marlin arm
+    // itself passes; do not inherit the ordinary bench's historical rc=0
+    // convention for a failed final launch.
+    return winner_result.passed ? 0 : 1;
+#else
+    (void)winner_result;
     return 0;
+#endif
   }
 
   // Single run. Config precedence: --config > --tactic cache > compiled default (first supported).
@@ -3500,6 +3634,8 @@ int main(int argc, char const **args) {
   // golden, event, or correctness failure to the operator and automation.
   if (!final_result.split_path_exercised) return 2;
   if (!final_result.verification_classified) return 3;
+  return final_result.passed ? 0 : 1;
+#elif defined(DENSE_MARLIN_SWEEP)
   return final_result.passed ? 0 : 1;
 #else
   (void)final_result;

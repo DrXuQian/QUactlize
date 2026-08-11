@@ -335,6 +335,183 @@ target_compile_definitions(test_lowbit_dense_bench PRIVATE
   TILE_M=${TILE_M} TILE_N=${TILE_N} WARP_M=${WARP_M} WARP_N=${WARP_N} STAGES=${STAGES} ${_QUANT_DEFS})
 target_compile_options(test_lowbit_dense_bench PRIVATE -w)
 
+# Full committed-table Marlin sweep.  This is a second scheduler identity over
+# the resident dense table, not a runtime arm of test_lowbit_dense_bench.
+# Marlin's cooperative supports exactly two/four warp cohorts; filter before
+# emitting sources, then retain a C++ static_assert in every wrapper as the
+# independent fail-closed boundary.
+set(_LOWBIT_DENSE_MARLIN_SWEEP_ROWS "")
+foreach(_row IN LISTS _LOWBIT_DENSE_ROWS)
+  string(REPLACE "," ";" _fields "${_row}")
+  list(LENGTH _fields _field_count)
+  if(NOT _field_count EQUAL 7)
+    message(FATAL_ERROR "internal Marlin sweep row '${_row}' has ${_field_count} fields, expected 7")
+  endif()
+  list(GET _fields 0 _tm)
+  list(GET _fields 1 _tn)
+  list(GET _fields 3 _wm)
+  list(GET _fields 4 _wn)
+  math(EXPR _DENSE_MARLIN_M_REMAINDER "${_tm} % ${_wm}")
+  math(EXPR _DENSE_MARLIN_N_REMAINDER "${_tn} % ${_wn}")
+  if(NOT _DENSE_MARLIN_M_REMAINDER EQUAL 0 OR
+     NOT _DENSE_MARLIN_N_REMAINDER EQUAL 0)
+    message(FATAL_ERROR
+      "dense table row '${_row}' has non-integral CTA warp topology; cannot classify Marlin legality")
+  endif()
+  math(EXPR _DENSE_MARLIN_M_WARPS "${_tm} / ${_wm}")
+  math(EXPR _DENSE_MARLIN_N_WARPS "${_tn} / ${_wn}")
+  math(EXPR _DENSE_MARLIN_CTA_WARPS
+       "${_DENSE_MARLIN_M_WARPS} * ${_DENSE_MARLIN_N_WARPS}")
+  if((_DENSE_MARLIN_CTA_WARPS EQUAL 2) OR
+     (_DENSE_MARLIN_CTA_WARPS EQUAL 4))
+    list(APPEND _LOWBIT_DENSE_MARLIN_SWEEP_ROWS "${_row}")
+  endif()
+endforeach()
+list(LENGTH _LOWBIT_DENSE_ROWS _LOWBIT_DENSE_MARLIN_SWEEP_SOURCE_ROWS)
+list(LENGTH _LOWBIT_DENSE_MARLIN_SWEEP_ROWS _LOWBIT_DENSE_MARLIN_SWEEP_ELIGIBLE_ROWS)
+math(EXPR _LOWBIT_DENSE_MARLIN_SWEEP_FILTERED_ROWS
+     "${_LOWBIT_DENSE_MARLIN_SWEEP_SOURCE_ROWS} - ${_LOWBIT_DENSE_MARLIN_SWEEP_ELIGIBLE_ROWS}")
+if(_LOWBIT_DENSE_MARLIN_SWEEP_ELIGIBLE_ROWS EQUAL 0)
+  message(FATAL_ERROR
+    "dense Marlin sweep filtered every row from ${_LOWBIT_DENSE_TABLE_NAME}; refusing an empty green target")
+endif()
+
+# The main TU must name exactly the wrappers emitted below.  Place this header
+# beside the private copied main so a quoted include cannot accidentally pick
+# up an ordinary-table registry from the source tree.
+set(_DENSE_MARLIN_SWEEP_CONFIG_HEADER
+    "${CMAKE_CURRENT_BINARY_DIR}/lowbit_dense_marlin_sweep_configs.inc")
+set(_DENSE_MARLIN_SWEEP_CONFIG_ROWS
+    "#define LOWBIT_DENSE_MARLIN_SWEEP_CONFIGS(X,A) \\\n")
+set(_DENSE_MARLIN_SWEEP_CONFIG_INDEX 0)
+foreach(_row IN LISTS _LOWBIT_DENSE_MARLIN_SWEEP_ROWS)
+  math(EXPR _DENSE_MARLIN_SWEEP_CONFIG_INDEX
+       "${_DENSE_MARLIN_SWEEP_CONFIG_INDEX} + 1")
+  if(_DENSE_MARLIN_SWEEP_CONFIG_INDEX LESS _LOWBIT_DENSE_MARLIN_SWEEP_ELIGIBLE_ROWS)
+    set(_continuation " \\\n")
+  else()
+    set(_continuation "\n")
+  endif()
+  set(_DENSE_MARLIN_SWEEP_CONFIG_ROWS
+      "${_DENSE_MARLIN_SWEEP_CONFIG_ROWS}  X(${_row},A)${_continuation}")
+endforeach()
+file(WRITE "${_DENSE_MARLIN_SWEEP_CONFIG_HEADER}.in"
+  "// GENERATED from ${_LOWBIT_DENSE_TABLE_NAME}; scheduler=marlin, CTA threads in {64,128}.\n"
+  "#define LOWBIT_DENSE_MARLIN_SWEEP_SOURCE_ROWS ${_LOWBIT_DENSE_MARLIN_SWEEP_SOURCE_ROWS}\n"
+  "#define LOWBIT_DENSE_MARLIN_SWEEP_ROWS ${_LOWBIT_DENSE_MARLIN_SWEEP_ELIGIBLE_ROWS}\n"
+  "#define LOWBIT_DENSE_MARLIN_SWEEP_FILTERED_ROWS ${_LOWBIT_DENSE_MARLIN_SWEEP_FILTERED_ROWS}\n"
+  "${_DENSE_MARLIN_SWEEP_CONFIG_ROWS}")
+execute_process(COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_DENSE_MARLIN_SWEEP_CONFIG_HEADER}.in"
+                "${_DENSE_MARLIN_SWEEP_CONFIG_HEADER}")
+
+# Preserve the ordinary generator's one-preprocessor-value-per-TU rule for
+# PPU_B_CHUNK, but use a private directory.  PPUToolchain keys device objects
+# by source path rather than target+flags; sharing even one unit path could
+# silently reuse a DP object in this Marlin executable.
+set(_DENSE_MARLIN_SWEEP_BATCH_RECORDS "")
+foreach(_batch_bc IN ITEMS 0 1)
+  set(_DENSE_MARLIN_SWEEP_ROWS_BC "")
+  foreach(_row IN LISTS _LOWBIT_DENSE_MARLIN_SWEEP_ROWS)
+    string(REPLACE "," ";" _fields "${_row}")
+    list(GET _fields 6 _bc)
+    if(_bc STREQUAL _batch_bc)
+      list(APPEND _DENSE_MARLIN_SWEEP_ROWS_BC "${_row}")
+    endif()
+  endforeach()
+  if(_DENSE_MARLIN_SWEEP_ROWS_BC)
+    qz_batch_tactic_rows(_DENSE_MARLIN_SWEEP_BATCHES_BC
+                         _DENSE_MARLIN_SWEEP_ROWS_BC
+                         "${LOWBIT_DENSE_CONFIGS_PER_UNIT}")
+    foreach(_batch IN LISTS _DENSE_MARLIN_SWEEP_BATCHES_BC)
+      list(APPEND _DENSE_MARLIN_SWEEP_BATCH_RECORDS "${_batch_bc}@${_batch}")
+    endforeach()
+  endif()
+endforeach()
+
+set(_DENSE_MARLIN_SWEEP_GEN_DIR
+    "${CMAKE_CURRENT_BINARY_DIR}/lowbit_dense_marlin_sweep_units")
+file(MAKE_DIRECTORY "${_DENSE_MARLIN_SWEEP_GEN_DIR}")
+set(_DENSE_MARLIN_SWEEP_UNIT_SRCS "")
+set(_DENSE_MARLIN_SWEEP_GENERATED_ROWS 0)
+set(_DENSE_MARLIN_SWEEP_UNIT_INDEX 0)
+foreach(_batch_record IN LISTS _DENSE_MARLIN_SWEEP_BATCH_RECORDS)
+  string(REPLACE "@" ";" _batch_record_fields "${_batch_record}")
+  list(GET _batch_record_fields 0 _batch_bc)
+  list(GET _batch_record_fields 1 _batch)
+  string(REPLACE "|" ";" _batch_rows "${_batch}")
+  list(LENGTH _batch_rows _batch_count)
+  set(_unit_rows "#define LOWBIT_DENSE_UNIT_CONFIGS(X) \\\n")
+  set(_batch_index 0)
+  foreach(_row IN LISTS _batch_rows)
+    string(REPLACE "," ";" _fields "${_row}")
+    list(GET _fields 0 _tm)
+    list(GET _fields 1 _tn)
+    list(GET _fields 2 _tk)
+    list(GET _fields 3 _wm)
+    list(GET _fields 4 _wn)
+    list(GET _fields 5 _st)
+    list(GET _fields 6 _bc)
+    if(NOT _bc STREQUAL _batch_bc)
+      message(FATAL_ERROR
+        "dense Marlin batch bc${_batch_bc} contains row '${_row}' with bc${_bc}")
+    endif()
+    set(_fn "lowbit_dense_cfg_tm${_tm}_tn${_tn}_tk${_tk}_wm${_wm}_wn${_wn}_st${_st}_bc${_bc}")
+    math(EXPR _batch_index "${_batch_index} + 1")
+    math(EXPR _DENSE_MARLIN_SWEEP_GENERATED_ROWS
+         "${_DENSE_MARLIN_SWEEP_GENERATED_ROWS} + 1")
+    if(_batch_index LESS _batch_count)
+      set(_continuation " \\\n")
+    else()
+      set(_continuation "\n")
+    endif()
+    set(_unit_rows
+        "${_unit_rows}  X(${_fn},${_tm},${_tn},${_tk},${_wm},${_wn},${_st},${_bc})${_continuation}")
+  endforeach()
+  set(_src
+      "${_DENSE_MARLIN_SWEEP_GEN_DIR}/lowbit_dense_marlin_sweep_unit_bc${_batch_bc}_${_DENSE_MARLIN_SWEEP_UNIT_INDEX}.cu")
+  file(WRITE "${_src}.in"
+    "// GENERATED by CMakeLists.txt -- ${_batch_count} scheduler=marlin wrappers.\n"
+    "#ifdef PPU_B_CHUNK\n#undef PPU_B_CHUNK\n#endif\n"
+    "#define PPU_B_CHUNK ${_batch_bc}\n"
+    "${_unit_rows}"
+    "#include \"lowbit_dense_unit.inc\"\n")
+  execute_process(COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                  "${_src}.in" "${_src}")
+  list(APPEND _DENSE_MARLIN_SWEEP_UNIT_SRCS "${_src}")
+  math(EXPR _DENSE_MARLIN_SWEEP_UNIT_INDEX
+       "${_DENSE_MARLIN_SWEEP_UNIT_INDEX} + 1")
+endforeach()
+if(NOT _DENSE_MARLIN_SWEEP_GENERATED_ROWS EQUAL
+       _LOWBIT_DENSE_MARLIN_SWEEP_ELIGIBLE_ROWS)
+  message(FATAL_ERROR
+    "dense Marlin generator emitted ${_DENSE_MARLIN_SWEEP_GENERATED_ROWS} wrappers for ${_LOWBIT_DENSE_MARLIN_SWEEP_ELIGIBLE_ROWS} eligible rows")
+endif()
+
+qz_resolve_sources(_DENSE_MARLIN_SWEEP_MAIN_SOURCE test_lowbit_dense_bench.cu)
+list(GET _DENSE_MARLIN_SWEEP_MAIN_SOURCE 0 _DENSE_MARLIN_SWEEP_MAIN_SOURCE)
+set(_DENSE_MARLIN_SWEEP_MAIN
+    "${CMAKE_CURRENT_BINARY_DIR}/test_lowbit_dense_marlin_sweep_main.cu")
+configure_file("${_DENSE_MARLIN_SWEEP_MAIN_SOURCE}"
+               "${_DENSE_MARLIN_SWEEP_MAIN}" COPYONLY)
+set(_DENSE_MARLIN_SWEEP_DEFS ${_W4A16_DEFS} -DDENSE_MARLIN_SWEEP=1)
+quactlize_ppu_executable(
+  test_lowbit_dense_marlin_sweep
+  "${_DENSE_MARLIN_SWEEP_MAIN}"
+  ${_DENSE_MARLIN_SWEEP_UNIT_SRCS}
+  DEV_COMPILE_FLAGS ${_DENSE_MARLIN_SWEEP_DEFS}
+)
+target_compile_definitions(test_lowbit_dense_marlin_sweep PRIVATE
+  DENSE_MARLIN_SWEEP=1
+  TILE_M=${TILE_M} TILE_N=${TILE_N} WARP_M=${WARP_M} WARP_N=${WARP_N} STAGES=${STAGES}
+  ${_QUANT_DEFS})
+target_compile_options(test_lowbit_dense_marlin_sweep PRIVATE -w)
+list(LENGTH _DENSE_MARLIN_SWEEP_UNIT_SRCS _DENSE_MARLIN_SWEEP_UNIT_COUNT)
+message(STATUS
+  "Dense Marlin sweep (${_LOWBIT_DENSE_TABLE_NAME}): source_rows=${_LOWBIT_DENSE_MARLIN_SWEEP_SOURCE_ROWS} "
+  "eligible_rows=${_LOWBIT_DENSE_MARLIN_SWEEP_ELIGIBLE_ROWS} filtered_rows=${_LOWBIT_DENSE_MARLIN_SWEEP_FILTERED_ROWS}; "
+  "${_DENSE_MARLIN_SWEEP_UNIT_COUNT} private generated units")
+
 # 107a dense-persistence mechanism A/B.  This is intentionally a separate tiny target:
 # test_lowbit_dense_bench owns 1571 tactic wrappers, while this experiment must compare
 # exactly one geometry with and without the scheduler work loop.  TILE_*/WARP_*/STAGES

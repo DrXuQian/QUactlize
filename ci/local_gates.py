@@ -258,6 +258,12 @@ SYNTAX = [
      "-DDENSE_AB_BITS=4 -DDENSE_AB_ARTIFACT_TK=64 -DDENSE_AB_TM=16 -DDENSE_AB_TN=128 "
      "-DDENSE_AB_TK=128 -DDENSE_AB_WM=16 -DDENSE_AB_WN=32 -DDENSE_AB_ST=3 "
      "-DDENSE_AB_BC=0 -DTILE_M=16 -DTILE_N=128 -DWARP_M=16 -DWARP_N=32 -DSTAGES=3"),
+    # The full-table executable has a distinct generated-unit preprocessor arm:
+    # every row is unconditionally Marlin, with no DP/runtime-switch fallback.
+    # Compile one real filtered table row so that arm is not merely source-linted.
+    ("dev/fold_derivation/test_lowbit_dense_unit.cu",
+     "-DDENSE_MARLIN_SWEEP=1 -DBENCH_GS=128 -DBENCH_TSK=64 "
+     "-DTILE_M=16 -DTILE_N=128 -DWARP_M=16 -DWARP_N=32 -DSTAGES=3"),
     # THE SHIPPING .so BOUNDARY. The benches compiled the grouped collective for years while the product wrapper
     # did not expose it; compiling this translation unit is what covers the six-entry ABI and every qtype dispatch.
     ("quactlize/csrc/device/ppu_dense_backend.cu", ""),
@@ -1154,6 +1160,13 @@ def lint_dense_marlin_contract():
         "dense Marlin decomposition/cooperative and same-event DP/SK/Marlin route are pinned")
 
 
+def lint_dense_marlin_sweep_contract():
+    """The full-table Marlin target must contain only forced 64/128-thread Marlin wrappers."""
+    return _run_ci_script(
+        "check_dense_marlin_sweep_contract.py",
+        "dense Marlin sweep has private sources, an exact cohort, distinct identity and no DP/cache fallback")
+
+
 def lint_grouped_streamk_contract():
     """Grouped Stream-K must preserve global q for locks while decoding expert-local compute coordinates."""
     ok, why = nvcc_can_compile_device_cuda()
@@ -1684,6 +1697,8 @@ def main():
                  ("test_lowbit_dense_streamk_ab", "DENSE_DRYRUN=1")),
                 ("boxdry", "dense Marlin target reaches its isolated DP/Stream-K/Marlin device compile",
                  ("test_lowbit_dense_marlin_ab", "DENSE_DRYRUN=1")),
+                ("boxdry", "dense Marlin full table reaches every private generated device unit",
+                 ("test_lowbit_dense_marlin_sweep", "DENSE_MARLIN_SWEEP=1", "BENCH_GS=128")),
                 ("boxdry", "grouped Stream-K target reaches its isolated device compile",
                  "test_moe_grouped_streamk"),
                 ("asan", "preprocessing chain under ASAN", None),
@@ -1718,6 +1733,7 @@ def main():
                 ("lint", "MoE events bracket only gemm.run and retain the host-wall audit", lint_moe_event_timing),
                 ("lint", "dense Stream-K shares worker/K decomposition and resets locks before timing", lint_dense_streamk_contract),
                 ("lint", "dense Marlin keeps K-fast stripes, reverse q locks, and the scheduler-owned grid", lint_dense_marlin_contract),
+                ("lint", "dense Marlin sweep has private sources, a forced cohort, and distinct provenance", lint_dense_marlin_sweep_contract),
                 ("lint", "grouped Stream-K preserves q locks, worker/K decomposition, and timing", lint_grouped_streamk_contract),
                 ("lint", "l122_streamk_fixup_cohort contract pins the exact 64/128-thread CTA cohort", lint_streamk_fixup_cohort),
                 ("lint", "l124 predicates every shipped FP32 accumulator residue and preserves S1-4", lint_fp32_residue_fixup),
