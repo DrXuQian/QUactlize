@@ -35,7 +35,11 @@ command -v nvcc >/dev/null 2>&1 || {
 # and every row of this tier dies for a reason that has nothing to do with the source under test. Observed
 # 2026-08-11. Ask the compiler instead of the version string: three lines that need a device compiler.
 _probe_src="$(mktemp -u).cu"; _probe_out="$(mktemp -u)"
-printf '__global__ void k(int* p){ *p = int(threadIdx.x); }\nint main(){ return 0; }\n' > "$_probe_src"
+# The probe includes cuda_fp16.h ON PURPOSE. A bare-device-code probe passed on ppu001 while every row this
+# gate checks still failed: the PPU SDK ships a MODIFIED crt/device_functions.h that calls `__assert` (no such
+# symbol in stock CUDA 12.8), reached through cuda_fp16.h, which every CUTLASS TU includes. A probe weaker than
+# the precondition answers "capable" and changes nothing.
+printf '#include <cuda_fp16.h>\n__global__ void k(__half* p){ *p = __hadd(p[threadIdx.x], p[blockIdx.x]); }\nint main(){ return 0; }\n' > "$_probe_src"
 if ! nvcc -std=c++17 -arch=sm_80 -w -o "$_probe_out" "$_probe_src" >/dev/null 2>&1; then
   echo "syntax_check: SKIP -- this nvcc cannot compile NVIDIA device code (its device half is not NVIDIA's), so" >&2
   echo "              the CUTLASS stack every checked source includes cannot build here. Run this tier where nvcc" >&2

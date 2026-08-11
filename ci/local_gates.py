@@ -49,7 +49,15 @@ def nvcc_can_compile_device_cuda():
     says yes while `threadIdx` is undeclared and cutlass/float8.h's `#include <hggc_fp8.h>` fires. Checking the
     version string would have produced exactly the false green this probe exists to stop.
 
-    So: compile three lines that need a device compiler, and let the compiler answer. Cached; ~1 s once.
+    So: compile something that needs a device compiler, and let the compiler answer. Cached; ~1 s once.
+
+    AND THE PROBE MUST NOT BE WEAKER THAN THE PRECONDITION. Version one compiled three lines of bare device
+    code. Run on ppu001 it answered CAPABLE -- correctly, that much does compile there -- and all five guarded
+    rows still went red, with the same misleading reason the probe was written to remove. The break is one
+    layer up: `#include <cuda_fp16.h>` pulls `crt/device_functions.h`, and the PPU SDK ships a MODIFIED copy
+    that calls `__assert` (stock CUDA 12.8 has no such symbol anywhere in that header) which nothing on our
+    command line declares. So the probe includes cuda_fp16.h and uses a __half intrinsic: that is what every
+    CUTLASS translation unit needs, and therefore the capability actually worth asking about.
 
     WHY IT MATTERS. The `gate` tier's oracles (l120/l121/l122, ...) are HOST-ONLY by content -- zero __global__,
     zero __device__, zero launches -- but they include the CUTLASS/CuTe stack, whose device bodies only survive
@@ -62,7 +70,8 @@ def nvcc_can_compile_device_cuda():
     if _NVCC_DEVICE_PROBE is None:
         src = OUT / "nvcc_device_probe.cu"
         OUT.mkdir(parents=True, exist_ok=True)
-        src.write_text("__global__ void k(int* p){ *p = int(threadIdx.x + blockIdx.x); }\n"
+        src.write_text("#include <cuda_fp16.h>\n"
+                       "__global__ void k(__half* p){ *p = __hadd(p[threadIdx.x], p[blockIdx.x]); }\n"
                        "int main(){ return 0; }\n")
         rc, log, _ = run(NVCC + ["-o", str(OUT / "nvcc_device_probe"), str(src)])
         if rc == 0:
@@ -389,6 +398,39 @@ def lint_scale_copy_coverage_fires():
     return "PASS", "shared witness rejects the old uncapped Q3/Q5 scale-copy layout", dt
 
 
+
+def lint_device_probe_scope():
+    """A device-compiler SKIP may only guard a check that actually invokes a device compiler."""
+    # THE GUARD IS ITSELF A WAY TO LOSE A CHECK. `nvcc_can_compile_device_cuda()` exists so an environment that
+    # cannot compile device code says so instead of blaming the source. Applied one function too wide it does the
+    # opposite: it silently skips a check that would have run and passed. That happened the hour it was written --
+    # lint_dense_streamk_contract runs ci/check_dense_streamk_contract.py, which starts no subprocess at all, and
+    # the guard turned it into a SKIP on every box.
+    #
+    # So the rule is a property, not a list: a function that returns SKIP on the probe must reach a compiler.
+    # Resolved one level through _run_ci_script, since that is where three of the four actually compile.
+    # ast.parse rather than import -- a stale .pyc can serve bytecode the disk no longer has (see the memory on
+    # verification failure shapes), and this check exists precisely to be trusted about the file's current text.
+    import ast
+    src = (ROOT / "ci" / "local_gates.py").read_text()
+    tree = ast.parse(src)
+    bad = []
+    for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+        body = ast.get_source_segment(src, fn) or ""
+        if "nvcc_can_compile_device_cuda()" not in body or fn.name == "nvcc_can_compile_device_cuda":
+            continue
+        reaches = "NVCC" in body
+        for script in re.findall(r'_run_ci_script\(\s*"([^"]+)"', body):
+            f = ROOT / "ci" / script
+            if f.exists() and re.search(r'"nvcc"|\bnvcc\b', f.read_text()):
+                reaches = True
+        if not reaches:
+            bad.append(fn.name)
+    if bad:
+        return "FAIL", ("these guard on the device-compiler probe but never reach a compiler, so the guard can only "
+                        "skip a check that would have run: " + ", ".join(bad)), 0.0
+    return "PASS", "every device-compiler SKIP guards a check that reaches a compiler", 0.0
+
 def lint_streamk_min_zero_fires():
     """The default-compatible Stream-K policy seam must reject a zero-sized stripe at its type boundary."""
     ok, why = nvcc_can_compile_device_cuda()
@@ -596,8 +638,16 @@ def syntax(src, defs):
         return "MISSING", "syntax_check.sh not found", 0.0
     env = dict(os.environ, EXTRA_DEFS=defs, GEN_INC=str(DEV / "gen_stub"))
     rc, log, dt = run(["bash", str(sc), str(ROOT / src)], cwd=str(DEV), env=env)
-    last = [l for l in log.splitlines() if l.strip()]
-    return ("PASS" if rc == 0 else "FAIL"), (last[-1] if last else ""), dt
+    lines = [l for l in log.splitlines() if l.strip()]
+    # syntax_check.sh SEPARATES "cannot run" FROM "found errors" -- 3=no device compiler, 2=no compiler at all,
+    # 1=real errors -- and that distinction is worth nothing unless the caller reads it. It did not, at first:
+    # exit 3 landed in the `else` and was reported as FAIL with the tail of the skip message as its reason
+    # ("is a full CUDA toolchain. Exiting 3 so a caller can tell..."), which is both wrong and absurd. An exit
+    # code invented for a distinction has to be decoded somewhere or it is just a number.
+    if rc in (2, 3):
+        why = next((l.strip() for l in lines if "SKIP" in l or "not on PATH" in l), lines[0] if lines else "")
+        return "SKIP", why, dt
+    return ("PASS" if rc == 0 else "FAIL"), (lines[-1] if lines else ""), dt
 
 
 def lint_syntax_inventory():
@@ -1070,10 +1120,6 @@ def lint_moe_event_timing():
 
 def lint_dense_streamk_contract():
     """107b must share worker decomposition, use absolute K, and reset locks outside each event."""
-    ok, why = nvcc_can_compile_device_cuda()
-    if not ok:
-        return "SKIP", ("needs an NVIDIA device compiler for the CUTLASS stack its oracle includes: "
-                        + why), 0.0
     return _run_ci_script(
         "check_dense_streamk_contract.py",
         "dense Stream-K worker/K/fixup/timing seams and the exact fixture are pinned")
@@ -1558,6 +1604,7 @@ def main():
                 ("lint", "dense/grouped tactic names alias one generator and route output agrees", lint_tactic_spaces_agree),
                 ("lint", "dense/grouped mixed policy descriptor parity fires on planted drift", lint_mixed_policy_parity_fires),
                 ("lint", "l114_scale_copy_coverage: uncapped layout fails the shared witness", lint_scale_copy_coverage_fires),
+                ("lint", "a device-compiler SKIP only guards checks that reach a compiler", lint_device_probe_scope),
                 ("lint", "Stream-K minimum policy rejects an empty K stripe", lint_streamk_min_zero_fires),
                 ("lint", "all mixed collectives use one stage-ring driver", lint_mixed_pipeline_shared),
                 ("lint", "the committed dense tactic table exactly regenerates from its stamped sources", lint_dense_tactic_table_current),
