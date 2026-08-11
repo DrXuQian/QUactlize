@@ -2413,6 +2413,13 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   // Allocate workspace memory
   cutlass::device_memory::allocation<uint8_t> workspace(workspace_size);
 
+  // Keep these names available in every instantiation.  The reporting chain
+  // below is one syntactic if-constexpr ladder so the Stream-K contract can
+  // isolate its own arm even when another named scheduler is compiled in a
+  // different target.  Non-Marlin instantiations discard the arm.
+  uint64_t marlin_peer_excess = 0;
+  uint64_t marlin_valid_fixup_elements = 0;
+
 #if defined(DENSE_NAMED_SCHEDULER)
   dim3 const physical_grid = Gemm::get_grid_shape(arguments, workspace.get());
   uint64_t const logical_ctas =
@@ -2429,8 +2436,6 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   constexpr size_t kSharedPerCu = 256u << 10;
   size_t const union_shared_ctas = union_bytes ? kSharedPerCu / union_bytes : 0;
   size_t const sum_shared_ctas = overlap_sum_bytes ? kSharedPerCu / overlap_sum_bytes : 0;
-  uint64_t marlin_peer_excess = 0;
-  uint64_t marlin_valid_fixup_elements = 0;
 #if defined(DENSE_STREAMK_AB)
   if constexpr (dense_is_streamk_gemm<Gemm>::value) {
     using SchedulerParams = typename Gemm::GemmKernel::TileSchedulerParams;
@@ -3012,10 +3017,10 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
           static_cast<unsigned long long>(verify_partition.valid_fixup_elements),
           static_cast<unsigned long long>(verify_partition.peer_excess),
           logical_fixup_bytes);
-    } else
-#endif
-#if defined(DENSE_MARLIN_AB) || defined(DENSE_MARLIN_SWEEP)
+    } else if constexpr (dense_is_marlin_gemm<Gemm>::value) {
+#else
     if constexpr (dense_is_marlin_gemm<Gemm>::value) {
+#endif
       const double Mm = options.m, Nn = options.n, Kk = options.k;
       const double bq = double(sizeof_bits<QuantType>::value) / 8.0;
       const double n_tiles = tactic.tn > 0 ? std::ceil(Nn / tactic.tn) : 1.0;
@@ -3044,7 +3049,6 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
           static_cast<unsigned long long>(marlin_peer_excess),
           logical_fixup_bytes);
     } else
-#endif
     {
       const double Mm = options.m, Nn = options.n, Kk = options.k;
       const double bq = double(sizeof_bits<QuantType>::value) / 8.0;
@@ -3613,7 +3617,8 @@ int main(int argc, char const **args) {
     // A scheduler-specific sweep is evidence only if the selected Marlin arm
     // itself passes; do not inherit the ordinary bench's historical rc=0
     // convention for a failed final launch.
-    return winner_result.passed ? 0 : 1;
+    if (!winner_result.passed) return 1;
+    return 0;
 #else
     (void)winner_result;
     return 0;
@@ -3636,7 +3641,8 @@ int main(int argc, char const **args) {
   if (!final_result.verification_classified) return 3;
   return final_result.passed ? 0 : 1;
 #elif defined(DENSE_MARLIN_SWEEP)
-  return final_result.passed ? 0 : 1;
+  if (!final_result.passed) return 1;
+  return 0;
 #else
   (void)final_result;
   return 0;

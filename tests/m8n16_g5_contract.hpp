@@ -10,6 +10,7 @@
 #include "m8n16_g5_layout_spec.hpp"
 #include "ppu_group_schedule.hpp"
 #include "ppu_mixed_policy.hpp"
+#include "quactlize_extensions/cutlass/gemm/collective/builders/quactlize_mma_builder.inl"
 
 namespace m8n16_g5_contract {
 
@@ -49,6 +50,15 @@ struct Launch {
 
 using M8 = Launch<8, 8>;
 using M16 = Launch<16, 16>;
+
+// Independent spelling of the ordinary G5 B operand.  L130 compares the
+// shipping mainloop against this type, but the ownership belongs in the shared
+// launch contract: putting the definition only behind L130_TYPE_ONLY made the
+// default include-closure audit unable to prove which header owned the name.
+using ExpectedBOperand =
+    cutlass::gemm::collective::quactlize_detail::MixGemm_AIU_Operand<
+        cutlass::int4b_t, false, cute::_32, cute::_64, true,
+        cute::Shape<cute::_1, cute::_64>>;
 
 static_assert(kScaleK == 8 && cute::size<1>(typename M8::Scale{}) == 2);
 static_assert(int(cute::size(typename M8::Mainloop::TiledMma{})) ==

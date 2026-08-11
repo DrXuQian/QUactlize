@@ -20,12 +20,11 @@
 #include <type_traits>
 
 #include "m8n16_g5_contract.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/builders/quactlize_mma_builder.inl"
 
-namespace qd = cutlass::gemm::collective::quactlize_detail;
 using Shipping = m8n16_g5_contract::M8;
 using Mainloop = typename Shipping::Mainloop;
 using Descriptor = typename Shipping::Policy::Descriptor;
+using ExpectedOperand = m8n16_g5_contract::ExpectedBOperand;
 
 #ifndef L130_SELECTED_WN
 #define L130_SELECTED_WN 32
@@ -35,13 +34,6 @@ using SelectedPolicy = ppu_mixed_policy::MainloopPolicy<
     Shipping::QuantMode, typename Shipping::BaseSchedule,
     typename Shipping::Tile, typename Shipping::Scale, SelectedWarp,
     Shipping::Stages, Shipping::AiuInterleaved, typename Shipping::ElementB>;
-
-// G5 is an ordinary, non-interleaved, single-plane int4 B.  Spell the operand
-// independently from the builder inputs so changing the test constants without
-// changing the instantiated kernel cannot leave this oracle accidentally green.
-using ExpectedOperand = qd::MixGemm_AIU_Operand<
-    cutlass::int4b_t, false, cute::_32, cute::_64, true,
-    cute::Shape<cute::_1, cute::_64>>;
 
 static_assert(std::is_same_v<typename SelectedPolicy::CollectiveOp, Mainloop>,
               "L130 selected policy is not the shipping G5 B type");
