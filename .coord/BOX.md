@@ -437,56 +437,43 @@ a message that was already in the log, once three lines above where anyone looke
 
 ---
 
-## Three one-build experiments that have never been run, each with its decision rule already written
+## rowC diagnostic ledger — E1 remains; the falsely labelled E2/E3 "unrun" experiments are retired
 
-Found 2026-08-07 by `ci/check_switch_macros.py`: eight build switches that nothing in the tree can turn on. Three
-of them are not knobs — they are **unrun experiments** whose comments already state what each outcome means. They
-were nearly deleted as dead code. Each is one build and one run of an existing target; none needs new code.
+This section was added on 2026-08-07, but the 2026-08-01 derivation record already contained both alleged missing
+runs: `PPU_PACKED_PAIR=0` made rowC MATCH, and rebuilding with `PPU_F16X2_EARLYCLOBBER=0` still passed. The old
+`./build.sh && $BIN` recipe had a second bug: a child script cannot export its `BIN`, so an empty outer `$BIN` was a
+successful no-op. The controlled fixture is `tests/data/q4k_packed.bin`; the old `real_weight/` path is absent.
 
-All three point at the SAME open failure: `rowC` of `test_q4k_packed_gemm`, the only row where `kPackedScaleOn` is
-true. Run them in this order — the first that indicts something makes the rest cheaper to interpret.
+### E1 — retained only as a recurrence diagnostic
 
-### E1 — is the rowC regression the packed-pair arithmetic, or the rest of that change?
+rowC is intermittent. E1 is informative only after the same current-tree baseline reproduces a failure; one MATCH
+does not indict the packed arithmetic because this switch also changes instruction count, register pressure and
+scheduling. Build into distinct directories, resolve each binary explicitly, and require rowA/rowB to MATCH:
 
-`quactlize_mma_mixed_input.hpp:1522` — "the two candidate causes cannot be separated by reading: (i) the f16x2
-asm, which has zero local coverage because the local gate compiles under nvcc where the scalar fallback is
-selected, and (ii) anything else the same commits touched."
+    PPU_BUILD_DIR="$PWD/build_e1_base" \
+      PPU_DEFS="PPU_PACKED_SCALE=1" TARGET=test_q4k_packed_gemm ./build.sh
+    BASE=$(find build_e1_base -type f -name test_q4k_packed_gemm -perm -u+x -print -quit)
+    test -n "$BASE"
+    "$BASE" tests/data/q4k_packed.bin
 
-    PPU_DEFS="PPU_PACKED_SCALE=1 PPU_PACKED_PAIR=0" TARGET=test_q4k_packed_gemm ./build.sh && $BIN
+    PPU_BUILD_DIR="$PWD/build_e1_scalar" \
+      PPU_DEFS="PPU_PACKED_SCALE=1 PPU_PACKED_PAIR=0" TARGET=test_q4k_packed_gemm ./build.sh
+    E1=$(find build_e1_scalar -type f -name test_q4k_packed_gemm -perm -u+x -print -quit)
+    test -n "$E1"
+    "$E1" tests/data/q4k_packed.bin
 
-    rowC MATCH   -> INDICTS the packed arithmetic/asm. E2 and E3 then become the two candidate mechanisms.
-    rowC still bad -> EXONERATES it; the cause is elsewhere in the same commits, and E2/E3 are unrelated.
+### E2 — retired
 
-### E2 — was `"=&r"` the fix, or did the failure merely go away?
+The pressured mainloop was already rebuilt with `PPU_F16X2_EARLYCLOBBER=0` and still passed; the isolated alias
+probe also found 0/5 differences. Keep the conservative `"=&r"`, but there is no pending experiment and no switch.
 
-`gguf_packed_scale.h:285` — rowC went from bad=724/4096 to MATCH across FOUR commits and the earlyclobber
-constraint is only the most plausible of them. Note what is already ruled out: `test_ppu_f16x2_probe` section (4)
-forces dest == each input in turn and the hardware returns the same answer in 5 of 5 forms, so the instruction
-tolerates overlap. Whatever `"=r"` allowed happens in register allocation under the mainloop's pressure.
+### E3 — retired on end-to-end evidence, not assembler grammar
 
-    PPU_DEFS="PPU_PACKED_SCALE=1 PPU_F16X2_EARLYCLOBBER=0" TARGET=test_q4k_packed_gemm ./build.sh && $BIN
-
-    rowC bad     -> the constraint IS the fix; the attribution stops resting on plausibility.
-    rowC MATCH   -> it was not, and four commits' worth of candidates are still open.
-
-### E3 — does `ppu.fma.rtte.f16x2` flush its subnormal input?
-
-`gguf_packed_scale.h:263` — the ISA has an explicit `.noftz` on at least one f16x2 op
-(`ppu.atom.gpu.global.add.noftz.f16x2`), "which only makes sense if the DEFAULT flushes". If it does, the scale
-lane becomes 0 for ~80% of superblocks while the zero lane (normal dmin) survives — which is the observed shape:
-rowC wrong, errors dominated by scale, partial rather than total because each output sums over 19 superblocks.
-
-    PPU_DEFS="PPU_PACKED_SCALE=1 PPU_F16X2_NOFTZ=1" TARGET=test_q4k_packed_gemm ./build.sh && $BIN
-
-    build FAILS  -> the assembler does not take the qualified mnemonic; the hypothesis dies here, for free.
-    builds, rowC MATCH -> the default DOES flush, and this is a fix rather than a probe.
-    builds, rowC bad   -> flushing is not the mechanism; the `.noftz` reading was wrong.
-
-### Report
-
-For each: the build's exit status, and the `rowC` disposition line verbatim. `$BIN` is what build.sh prints.
-Do NOT read a MATCH as "fixed" without saying which of the three produced it — that is the D7 mistake, where a
-number was filed against a mechanism nobody had witnessed.
+The fresh same-run ppu001 build ran rowC — the only packed/f16x2 path — against an independent host golden five
+times with `bad=0/4096`. Flushing this fixture's subnormal `d` values predicts `3626/4096` bad, so the relevant Q4_K
+input-flush theory is excluded. A build failure for guessed `sub.noftz`/`fma.rtte.noftz` spellings would only reject
+the first exact mnemonic the assembler reported; it could not establish the default instruction's physical FTZ
+behaviour. The guessed E3 switch was therefore deleted instead of promoted into another permanent diagnostic.
 
 ---
 
@@ -1143,3 +1130,138 @@ Acceptance, in order:
 
 Wanted back: gate SHA; both build rc/binary paths and quant banners; all three exact candidate rows plus verdict rows;
 the three independent byte totals; and any hggc event error verbatim. Do not open 112 until these gates pass.
+
+---
+
+## Grouped/MoE Stream-K phase 2 — Min=2 plus exact 64-thread fixup cohort
+
+This is an isolated mechanism gate. It does **not** change production grouped dispatch or any published MoE number.
+Phase 1's Min=8 no-split result remains in the host oracle. The live 128-thread arms now explicitly instantiate
+`MinItersPerSkUnit=2`: S068 `TileK=256` / `Kt=8` must participate in Stream-K instead of merely carrying the
+scheduler name. A third ragged fixture still catches a wrong `q -> (expert,m,n)` decode that S068's one-row experts
+cannot see. The exact-cohort seam now also launches the current 64-thread decode champion (`16x32:256 w16x16 s3`):
+its named-barrier arrival count and FP32 workspace stripe both use the exact 64-thread CTA rather than the legacy
+128-thread default.
+
+    set -euo pipefail
+    cd /sim/eec/shared/junfu.qx/quactlize
+    git pull --ff-only origin develop
+    git submodule update --init --recursive
+    echo "gate-sha=$(git rev-parse HEAD) actlize=$(git -C third_party/actlize rev-parse HEAD)"
+
+    # NO local_gates HERE. Every tier in ci/local_gates.py -- gate, lint, syntax AND boxdry -- compiles
+    # against dev/fold_derivation/stub_inc, which is first on -I and exists to stand in for PPU headers on a
+    # machine that has none. This box HAS them, so there is no configuration in which that tier is meaningful
+    # here. Measured on ppu001 2026-08-11, same source, one variable per row:
+    #
+    #   stub_inc only        rc=2  hggc_fp8.h not found       <- the one hggc header with no stub
+    #   SDK includes only    rc=2  /usr/include/c++/13/cmath: constexpr fpclassify without __host__
+    #   both                 rc=2  crt/device_functions.h:3006: undeclared '__assert'
+    #
+    # The middle row is the one that settles it: all-real fails too, on gcc 13 against this CUDA, and that has
+    # nothing to do with our stubs. Running the tier here produced red rows that read as "the grouped Stream-K
+    # contract is broken" when the contract was never evaluated.
+    #
+    # So these are DEV-CONTAINER facts carried over by SHA, not box facts. Establish them there:
+    #
+    #   python3 ci/local_gates.py -k grouped_streamk --strict
+    #   python3 ci/local_gates.py -k 'grouped Stream-K' --strict
+    #   python3 ci/local_gates.py -k streamk_fixup_cohort --strict
+    #
+    # and record the sha they passed at. A gate result without a sha is not transferable -- on a shared
+    # worktree it is a statement about a tree that is nobody's commit.
+
+    unset PPU_A_PACK PPU_B_CHUNK PPU_B_CHUNK_BISECT PPU_MAXREG PPU_DEFS
+    PPU_BUILD_DIR="$PWD/build_grouped_streamk_p2" \
+      TARGET=test_moe_grouped_streamk ./build.sh | tee /tmp/grouped_streamk_p2_build.log
+    GSK=$(find build_grouped_streamk_p2 -type f -name test_moe_grouped_streamk -perm -u+x -print -quit)
+    test -n "$GSK"
+    echo "binary=$GSK"
+    timeout 180s "$GSK" | tee /tmp/grouped_streamk_p2.log
+
+The first two host-policy lines are fixed oracles, not performance claims:
+
+    min8 Q=128 Kt=8 W=432 heuristic_tiles=0 forced_tiles=128 forced_units=128
+    min2 Q=128 Kt=8 W=432 heuristic_tiles=128 forced_tiles=128 forced_units=432
+
+The device gate must then establish all of the following:
+
+- router IDs are `7,11,35,77,127,128,218,224`; the 128-thread control reports `Q=16` / 14 local-lock aliases,
+  while decode64 reports `Q=128` / 112 aliases; TK64/TK256 and decode64 artifact comparisons both have
+  `byte_diff=0`;
+- the existing nonpersistent TK64 routing control is bit-exact;
+- S068/TK256 prints `Q=16 Kt=8`, `sk_units=64`, `split_tiles=16`, `peer_excess=48`, `requires_fixup=1`,
+  `fixup_work_items=64`, `epilogue=16`, `separate=0`, with no missing/duplicate K tile;
+- on the expected `W>=256` geometry, S068/TK64 must print `Q=16 Kt=32`, `sk_units=256`, `split_tiles=16`,
+  `peer_excess=240`, `fixup_work_items=256`, and exact one-time K coverage;
+- on the expected `W>=96` geometry, ragged `{0,1,17,0,33}` must print `Q=6`, `sk_units=96`, `split_tiles=6`,
+  `peer_excess=90`, `fixup_work_items=96`, and exact output/coverage;
+- decode64 prints `threads=64 cohort=64 Q=128 Kt=8 W=432 sk_tiles=128 sk_units=432`, scheduler/reset bytes
+  `262656/512`, `uniform_oracle_supported=0`, and `PLAN-PASS`. That last zero is expected: `1024 % 432 != 0`,
+  so the existing uniform peer oracle must reject this partition instead of manufacturing a peer count;
+- decode64's census must report `split_tiles=128`, `epilogue=128`, `fixup_final=128`, no separate-reduction,
+  q-oob, empty-expert, hole, missing-K, or duplicate-K entries, and `fixup_work_items == peer_sum`. The actual
+  nonuniform `peer_sum/peer_excess` are diagnostics, not an independent expected-value oracle;
+- decode64's clean launch reports `bad=0 bitdiff=0 nonfinite=0 poison_left=0`; its C traffic stays explicitly
+  `N/A (nonuniform peer distribution; independent oracle pending)`. Do not feed it through the uniform traffic
+  formula or report MBU from the census alone;
+- census-derived production-`beta=0` C terms follow `D + 2*Wtile*peer_excess`, with measured and independently
+  expected peer counts required equal. S068/TK256 is fixed at `1,581,056 B` (`1,589,248 B` including this gate's
+  nonzero-beta C read). If the two `W>=cap` expectations above hold, S068/TK64 is `7,872,512 / 7,880,704 B` and
+  ragged/TK64 is `2,975,232 / 3,001,344 B`; do not merge production-beta0 and correctness-gate semantics;
+- every numerical arm reports `bad=0 bitdiff=0 nonfinite=0 poison_left=0`, and the final line is
+  `grouped Stream-K phase 2 min2 PASS: errors=0`.
+
+Both S068 tactics also print 20 independent `kernel-span-upper` event pairs with census disabled and the vendor
+barrier tail reset before each start event. Record the reset bytes and raw median/mean/min/max/spread, but phase 2
+has **no performance threshold**:
+this run proves the combined scheduler and reduction seam. It does not yet route production MoE or report MBU.
+
+Wanted back: both SHAs, all three local-gate summaries, build rc/binary path, both policy lines, active IDs/artifact
+line, all decomposition/census/exact/numeric/C-traffic lines including decode64, both timing lines, final PASS, and
+any compiler/runtime error verbatim. A timeout is a lock/fixup failure, not a reason to retry with a different
+tactic.
+
+Do not expect a live `requested=Heuristic` row from this isolated handle. Its `can_implement()` deliberately accepts
+only `DecompositionMode::StreamK`; feeding Heuristic to `Operation::inspect()` returns an empty Plan before lowering
+and is not evidence for DataParallel or SplitK. The two host-policy lines above are explicitly pre-lowering policy
+oracles; the device arms are explicitly forced Stream-K.
+
+If either TK64 arm has a lower occupancy cap, the independent oracle accepts `U=min(W,Q*Kt/2)` only when
+`Q*Kt % U == 0` and `Kt % (Q*Kt/U) == 0`; then `peer_excess=U-Q`. Otherwise
+`ORACLE-UNSUPPORTED/FAIL` is the intended fail-closed result, not a kernel correctness verdict.
+
+---
+
+## Dense Marlin scheduler — same-binary decode DP / Stream-K / Marlin comparison
+
+The additive scheduler is rooted at parent `b1d042d` and actlize `f5e1beb4`.  It reuses the shipping mixed-input
+collective byte-for-byte and changes only CTA decomposition plus the ordered FP32 cooperative.  The comparison uses
+one int4/gs128 artifact (`ArtifactTileK=64`), one legal tactic (`16x128:128 w16x32 s3`), one exact fixture, and 20
+independent event pairs per arm.  TN128 is deliberate: at `M=1,N=4096` it gives `Q=32<CU`, so Marlin must really
+stripe K; the TN32 decode champion has `Q=128>=72` and would correctly degenerate to no split.
+
+    set -euo pipefail
+    cd /sim/eec/shared/junfu.qx/quactlize
+    git pull --ff-only origin develop
+    git submodule update --init --recursive
+    echo "gate-sha=$(git rev-parse HEAD) actlize=$(git -C third_party/actlize rev-parse HEAD)"
+    test "$(git rev-parse HEAD)" = b1d042d02b602562ba16c1ebb8749d5322e18eb2
+    test "$(git -C third_party/actlize rev-parse HEAD)" = f5e1beb40f186ea91826691d5fd98da1132e7bee
+
+    unset PPU_A_PACK PPU_B_CHUNK PPU_B_CHUNK_BISECT PPU_MAXREG PPU_DEFS
+    timeout 900s tools/run_dense_marlin_box.sh | tee /tmp/dense_marlin_scheduler.log
+
+The script must fail closed unless all three arms report the same exact fixture, the same tactic identity, and
+`n=20 distinct-event-pairs=20`.  It additionally requires:
+
+- Marlin prints `Q=32 Kt=32`, `G=max(Q,real_cu)` (never `real_cu*occupancy`), and a nonzero handoff count;
+- Stream-K alone prints `lock-reset-before-start=1`; DP and Marlin both print zero;
+- the Marlin line surfaces `valid_elements`, `peer_excess`, and predicated FP32 `logical_RW`, explicitly marked
+  `MODEL-ONLY/not-a-DRAM-counter`;
+- all three dispositions pass and the final line is
+  `[marlin-scheduler] PASS: same fixture/tactic/protocol DP vs Stream-K vs Marlin`.
+
+Return both SHAs, the decomposition and traffic lines, each arm's disposition and raw kernel-span median/mean/min/
+max/spread, and any build/runtime error verbatim.  Do not substitute classic Marlin or a different tactic if the
+new scheduler fails: the point is an A/B/C of scheduler mechanisms inside the same pipeline.
