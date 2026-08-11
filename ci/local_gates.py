@@ -264,6 +264,11 @@ SYNTAX = [
     ("dev/fold_derivation/test_lowbit_dense_unit.cu",
      "-DDENSE_MARLIN_SWEEP=1 -DBENCH_GS=128 -DBENCH_TSK=64 "
      "-DTILE_M=16 -DTILE_N=128 -DWARP_M=16 -DWARP_N=32 -DSTAGES=3"),
+    # One real committed row from every CTA-warp cohort rejected by the
+    # second-stage Marlin sweep filter.  The ordinary DP arm must compile;
+    # run_l131 recompiles the same rows with only the Marlin wrapper enabled
+    # and requires the authored current-implementation guards to fire.
+    ("dev/fold_derivation/l131_marlin_rejected_cohorts.cu", ""),
     # THE SHIPPING .so BOUNDARY. The benches compiled the grouped collective for years while the product wrapper
     # did not expose it; compiling this translation unit is what covers the six-entry ABI and every qtype dispatch.
     ("quactlize/csrc/device/ppu_dense_backend.cu", ""),
@@ -1174,6 +1179,27 @@ def lint_dense_marlin_sweep_contract():
         "dense Marlin sweep has private sources, an exact cohort, distinct identity and no DP/cache fallback")
 
 
+def lint_dense_marlin_rejection_census():
+    """Every table row filtered from Marlin must retain one parsed, classified reason."""
+    return _run_ci_script(
+        "check_dense_marlin_rejection_census.py",
+        "Marlin rejections are relative to committed-legal rows and name their first guard")
+
+
+def lint_dense_marlin_rejected_cohorts():
+    """Bypass only the CMake cohort guard and compile one rejected row per cohort."""
+    ok, why = nvcc_can_compile_device_cuda()
+    if not ok:
+        return "SKIP", ("needs an NVIDIA device compiler for the CUTLASS compile witnesses: " + why), 0.0
+    script = DEV / "run_l131_marlin_rejected_cohorts.sh"
+    if not script.is_file():
+        return "FAIL", f"missing {script.name}", 0.0
+    rc, log, dt = run(["bash", str(script)], cwd=str(ROOT))
+    lines = [line.strip() for line in log.splitlines() if line.strip()]
+    verdict = lines[-1] if lines else "l131 produced no output"
+    return ("PASS" if rc == 0 else "FAIL"), verdict, dt
+
+
 def lint_grouped_streamk_contract():
     """Grouped Stream-K must preserve global q for locks while decoding expert-local compute coordinates."""
     ok, why = nvcc_can_compile_device_cuda()
@@ -1749,6 +1775,8 @@ def main():
                 ("lint", "Stream-K tail scan covers attributed zero, medium, and extreme waves", lint_streamk_tail_plan),
                 ("lint", "dense Marlin keeps K-fast stripes, reverse q locks, and the scheduler-owned grid", lint_dense_marlin_contract),
                 ("lint", "dense Marlin sweep has private sources, a forced cohort, and distinct provenance", lint_dense_marlin_sweep_contract),
+                ("lint", "every Marlin-filtered dense row carries one parsed implementation reason", lint_dense_marlin_rejection_census),
+                ("lint", "each rejected Marlin CTA cohort compiles as DP and reds only after guard bypass", lint_dense_marlin_rejected_cohorts),
                 ("lint", "grouped Stream-K preserves q locks, worker/K decomposition, and timing", lint_grouped_streamk_contract),
                 ("lint", "l122_streamk_fixup_cohort contract pins the exact 64/128-thread CTA cohort", lint_streamk_fixup_cohort),
                 ("lint", "l124 predicates every shipped FP32 accumulator residue and preserves S1-4", lint_fp32_residue_fixup),
