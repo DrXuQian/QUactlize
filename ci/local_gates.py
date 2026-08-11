@@ -605,7 +605,6 @@ def gate(name, args):
                       ["-I", str(STUB), "-I", str(ACT), "-I", str(ACT_UTIL),
                        "-I", str(ROOT / "quactlize/include"),
                        "-I", str(ROOT / "tests"), "-I", str(ROOT / "benchmarks")] +
-                      _sdk_target_includes() +
                       ["-o", str(exe), str(src)] +
                       [str(ROOT / s) for s in GATE_SRCS.get(name, GATE_SRCS.get(base, []))])
     if rc != 0:
