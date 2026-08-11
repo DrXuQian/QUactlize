@@ -1270,3 +1270,75 @@ The script must fail closed unless all three arms report the same exact fixture,
 Return both SHAs, the decomposition and traffic lines, each arm's disposition and raw kernel-span median/mean/min/
 max/spread, and any build/runtime error verbatim.  Do not substitute classic Marlin or a different tactic if the
 new scheduler fails: the point is an A/B/C of scheduler mechanisms inside the same pipeline.
+
+---
+
+## MORNING PRIORITY 0 — rerun exact grouped expert identity before every performance job
+
+This is the first box command after the mixed-argument hardening.  The old G5
+zero-plane fixture observed `e >= 128 -> e - 64`; the current tree now consumes
+the caller's `dS` and outer expert pitch instead of silently rebuilding them.
+The companion B fixture is independent: zero is inert and the expert identity
+is encoded into the low-plane q codes.  Both arms use `A=1`, so the `dA` pitch
+change cannot manufacture a pass in this fixture.
+
+    set -euo pipefail
+    cd /sim/eec/shared/junfu.qx/quactlize
+    git pull --ff-only origin develop
+    git submodule update --init --recursive
+    echo "gate-sha=$(git rev-parse HEAD) actlize=$(git -C third_party/actlize rev-parse HEAD)"
+    git merge-base --is-ancestor f539ac9 HEAD
+    test "$(git -C third_party/actlize rev-parse HEAD)" = b196cc83c1cf4fd1d9aae3e9a96dbb8d0a20a293
+
+    timeout 900s bash tools/run_grouped_b_idprobe_box.sh \
+      | tee /tmp/grouped_b_idprobe_morning.log
+
+The runner always launches all four arms before applying its strict aggregate
+verdict: zero-plane active=8/256 and B-plane active=8/256.  Interpret the log,
+not merely the shell rc:
+
+- all four raw-bit checks pass: the old `e-64` symptom is gone.  In the
+  zero-plane fixture `A` is uniform and B contributes zero, so among the mixed
+  argument fixes this isolates the previously ignored S/Z stride (`dS`) as the
+  causal seam;
+- B passes while either zero arm remains red: ordinary B addressing is cleared;
+  the remaining defect is specific to metadata/G5's runtime seam, below the
+  independently anchored L125 address algebra;
+- either B arm is red: do not retry with a different tactic.  L130 proves the
+  modeled ordinary-B chain for all 256 experts, so preserve the exact bitdiff
+  rows and artifact directory and inspect the device/model or G5-harness seam;
+- a build/arch failure is not a numerical result.  Return it verbatim; do not
+  substitute a different kernel or ppu0015 target.
+
+Wanted back: both SHAs, the unique `-arch=ppu_10` line, all four exact PASS/FAIL
+rows, the aggregate line, rc, and the preserved artifact directory.
+
+## Dense Marlin full-table target — compile and enumerate only, do not sweep yet
+
+Commit `79f8766` adds a scheduler-specific table target.  Its rows are derived
+from the committed dense table and filtered to the exact 64/128-thread cohorts
+accepted by the cooperative.  It has private main/device-TU paths and every
+wrapper is unconditionally Marlin; ordinary dense tactic caches are rejected.
+This morning step validates build and selection surface only.  Do **not** pass
+`--search_configs` until the queued B2 device evidence is in.
+
+    set -euo pipefail
+    cd /sim/eec/shared/junfu.qx/quactlize
+    git pull --ff-only origin develop
+    git submodule update --init --recursive
+    git merge-base --is-ancestor 79f8766 HEAD
+
+    unset PPU_A_PACK PPU_B_CHUNK PPU_B_CHUNK_BISECT PPU_MAXREG PPU_DEFS
+    PPU_BUILD_DIR="$PWD/build_dense_marlin_sweep_i4" \
+      QUANT=int4 BENCH_GS=128 TARGET=test_lowbit_dense_marlin_sweep \
+      ./build.sh | tee /tmp/dense_marlin_sweep_i4_build.log
+    MARLIN_SWEEP=$(find build_dense_marlin_sweep_i4 -type f \
+      -name test_lowbit_dense_marlin_sweep -perm -u+x -print -quit)
+    test -n "$MARLIN_SWEEP"
+    "$MARLIN_SWEEP" --list_configs | tee /tmp/dense_marlin_sweep_i4_list.log
+
+The provenance line must say `scheduler=marlin`, `source_rows=1772`,
+`eligible_rows=746`, `filtered_rows=1026`, `cohort_threads=64|128`, and retain
+the source table's two real FNV hashes under `source_*_fnv1a64`.  The list must
+contain exactly 746 configs and no runtime DP/Stream-K arm.  This is not a
+performance result and must not be reported as one.
