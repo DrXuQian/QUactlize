@@ -1323,6 +1323,7 @@ Args args_from_options(Options const& options)
 bool verify(const Options &options, DenseVerifyPartition const* partition,
             bool* diagnostic_closed = nullptr);
 bool verify_streamk_cpu_fp32(const Options &options);
+#if defined(DENSE_STREAMK_AB)
 template <class Gemm>
 bool verify_streamk_same_order_partial_replay(
     const Options& options, DenseVerifyPartition const& partition,
@@ -1332,6 +1333,7 @@ bool verify_streamk_same_order_partial_replay(
     std::vector<uint32_t> const& capture_slot_visits,
     std::vector<uint32_t> const& capture_slot_k_counts,
     uint32_t capture_errors);
+#endif
 
 #if !defined(LOWBIT_DENSE_UNIT_BUILD)
 bool verify(const Options &options, DenseVerifyPartition const* partition,
@@ -1715,7 +1717,9 @@ bool verify_streamk_cpu_fp32(const Options &options) {
               bad == 0 ? "BIT-EXACT" : "MISMATCH");
   return bad == 0;
 }
+#endif
 
+#if defined(DENSE_STREAMK_AB)
 // The broad reference above deliberately uses a whole-K GEMM.  A Stream-K
 // split changes FP32 parenthesization before the half epilogue, so disagreement
 // with that reference is not by itself a kernel defect.  This gate captures
