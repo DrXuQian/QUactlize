@@ -737,6 +737,79 @@ int run_g5(char const* label, int rows_per_expert, int const* ids, int n_active,
   return errors;
 }
 
+
+// ===================================================================================================
+// IDPROBE -- stop inferring which expert was read, and read it off the output.
+//
+// LOW/UNIFORM/DENSE narrowed the cause to "the expert used to fetch B/scales is not the one the slot
+// owns", but every one of those configurations answers it by INFERENCE: a mismatch says "not this
+// expert", never "that one instead".  Two hypotheses (off-by-one neighbour, and something specific to
+// id >= 128) both survive, which is exactly when a controlled input beats another comparison.
+//
+// Construction: q == 8 everywhere so the int4 converter's q-8 term is exactly zero; the zero plane
+// carries e/256, which is a dyadic and therefore exact in fp16 for every e in [0,256); A is all ones.
+// Then every dequantised weight is exactly e/256 and the FP32 accumulation over K=256 is exactly e.
+// The output IS the expert id the kernel used -- no oracle, no tolerance, no interpretation.
+std::vector<std::uint8_t> make_probe_codes() {
+  return std::vector<std::uint8_t>(std::size_t(kK) * kN, std::uint8_t(8));
+}
+std::vector<half_t> make_probe_zeros(int e) {
+  return std::vector<half_t>(std::size_t(kScaleK) * kN, half_t(float(e) / 256.0f));
+}
+
+int run_g5_idprobe(int const* ids, int n_active) {
+  G5Fixture f;
+  f.B.assign(std::size_t(kE) * kPlacedBBytes, 0);
+  f.scales.assign(std::size_t(kE) * kScaleK * kN, half_t(1.0f / 32.0f));
+  f.zeros.assign(f.scales.size(), half_t(0.0f));
+  f.group_m.assign(kE, 0);
+  f.row_offsets.assign(kE + 1, 0);
+  auto q = make_probe_codes();
+  for (int e = 0; e < kE; ++e) {
+    auto z = make_probe_zeros(e);
+    xplane::place_derived<4, 8, 32, 64, 8, 32, 1>(
+        f.B.data() + std::size_t(e) * kPlacedBBytes, q, kN, kK);
+    std::copy(z.begin(), z.end(), f.zeros.begin() + std::size_t(e) * kScaleK * kN);
+  }
+  for (int i = 0; i < n_active; ++i) f.group_m[ids[i]] = 1;
+  for (int e = 0; e < kE; ++e) f.row_offsets[e + 1] = f.row_offsets[e] + f.group_m[e];
+  f.total_rows = f.row_offsets[kE];
+  f.A.assign(std::size_t(f.total_rows) * kK, half_t(1.0f));
+  for (int i = 0; i < n_active; ++i) f.a_e.push_back(std::vector<half_t>(kK, half_t(1.0f)));
+
+  cutlass::DeviceAllocation<int4_t> dB(f.B.size());
+  cutlass::DeviceAllocation<half_t> dScale(f.scales.size());
+  cutlass::DeviceAllocation<half_t> dZero(f.zeros.size());
+  cutlass::DeviceAllocation<half_t> dA(f.A.size());
+  CUTLASS_PPU_CHECK(hggcMemcpy(dB.get(), f.B.data(), f.B.size(), hggcMemcpyHostToDevice));
+  dScale.copy_from_host(f.scales.data());
+  dZero.copy_from_host(f.zeros.data());
+  dA.copy_from_host(f.A.data());
+
+  int errors = 0;
+  auto got = run_g5_arm<8, 8>("m8", f, 1, dA.get(), dB.get(), dScale.get(), dZero.get(), &errors);
+  if (got.empty()) return errors ? errors : 1;
+
+  std::printf("[G5:IDPROBE] output value == the expert id actually read (want == slot's own id)\n");
+  int wrong = 0;
+  for (int slot = 0; slot < n_active; ++slot) {
+    // Every column of a row must agree, or the read is not even per-row consistent.
+    int const want = ids[slot];
+    float first = float(got[std::size_t(slot) * kN]);
+    bool row_uniform = true;
+    for (int n = 1; n < kN; ++n)
+      if (float(got[std::size_t(slot) * kN + n]) != first) row_uniform = false;
+    bool const ok = row_uniform && int(first + 0.5f) == want && std::fabs(first - float(want)) < 0.25f;
+    if (!ok && wrong++ < 16)
+      std::printf("  IDPROBE slot=%-3d owns_expert=%-3d read_expert=%.3f%s\n",
+                  slot, want, first, row_uniform ? "" : "  (row not uniform: per-column divergence)");
+    if (!ok) ++errors;
+  }
+  std::printf("[G5:IDPROBE] %s: %d/%d slots read an expert other than their own\n",
+              errors ? "FAIL" : "PASS", errors, n_active);
+  return errors;
+}
+
 int main() {
   std::printf("== [112] ppu001 m8n16 collective G3/G4/G5 ==\n");
 
@@ -842,6 +915,8 @@ int main() {
       std::vector<int> all(kE);
       for (int e = 0; e < kE; ++e) all[e] = e;
       errors += run_g5("DENSE", rows, all.data(), kE, false);
+      errors += run_g5_idprobe(kActiveIds, kActive);
+      errors += run_g5_idprobe(all.data(), kE);
     }
   }
 
