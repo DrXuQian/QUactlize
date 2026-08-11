@@ -628,11 +628,78 @@ struct DenseVerifyPartition {
   int tiles_n = 0;
   int batches = 0;
   std::vector<DenseVerifyBucket> tile_bucket;
+  // One entry per logical output tile.  These make a sparse A0 failure
+  // attributable to the scheduler's global q and to the final peer's position
+  // inside its persistent work unit, rather than leaving "233 mismatches" as
+  // an unlocatable scalar count.
+  std::vector<uint32_t> scheduler_q;
+  std::vector<uint32_t> final_peer_unit;
+  std::vector<uint16_t> final_peer_visit;
+  // One entry per local (m,n) output coordinate.  BlockStripedReduce addresses
+  // scalar `stripe * threads + lane`; derive that inverse from the actual MMA
+  // fragment instead of inventing a lane formula in the diagnostic.
+  std::vector<uint16_t> local_lane;
+  std::vector<uint16_t> local_stripe;
   uint64_t peer_excess = 0;
   uint64_t valid_fixup_elements = 0;
 };
 
 #if defined(DENSE_STREAMK_AB)
+template <class Gemm>
+bool dense_map_accumulator_owners(DenseVerifyPartition& partition) {
+  using TiledMma = typename Gemm::GemmKernel::TiledMma;
+  using TileShape = typename Gemm::GemmKernel::TileShape;
+  using ElementAccumulator = typename Gemm::GemmKernel::ElementAccumulator;
+  int const threads = int(Gemm::GemmKernel::MaxThreadsPerBlock);
+  int const tile_elements = partition.tile_m * partition.tile_n;
+  if (partition.tile_m != int(cute::size<0>(TileShape{})) ||
+      partition.tile_n != int(cute::size<1>(TileShape{})) ||
+      threads <= 0 || tile_elements <= 0) {
+    std::fprintf(stderr,
+                 "  [dense verify owners] fail-close: tactic and MMA tile disagree\n");
+    return false;
+  }
+
+  partition.local_lane.assign(std::size_t(tile_elements), uint16_t(-1));
+  partition.local_stripe.assign(std::size_t(tile_elements), uint16_t(-1));
+  std::vector<uint8_t> coverage(std::size_t(tile_elements), 0);
+  auto identity = cute::make_identity_tensor(cute::take<0, 2>(TileShape{}));
+  TiledMma tiled_mma;
+  auto accumulators = cute::make_fragment_like<ElementAccumulator>(
+      cute::partition_fragment_C(tiled_mma, cute::take<0, 2>(TileShape{})));
+  auto physical_to_fragment = cute::right_inverse(accumulators.layout());
+  int const stripes = int(cute::size(accumulators));
+  if (threads * stripes != tile_elements) {
+    std::fprintf(stderr,
+                 "  [dense verify owners] fail-close: threads*stripes=%d != tile=%d\n",
+                 threads * stripes, tile_elements);
+    return false;
+  }
+  for (int lane = 0; lane < threads; ++lane) {
+    auto coordinates = tiled_mma.get_thread_slice(lane).partition_C(identity);
+    if (int(cute::size(coordinates)) != stripes) return false;
+    for (int stripe = 0; stripe < stripes; ++stripe) {
+      auto mn = coordinates(physical_to_fragment(stripe));
+      int const m = int(cute::get<0>(mn));
+      int const n = int(cute::get<1>(mn));
+      if (m < 0 || m >= partition.tile_m || n < 0 || n >= partition.tile_n) {
+        return false;
+      }
+      std::size_t const local = std::size_t(m) * partition.tile_n + n;
+      if (coverage[local]++) return false;
+      partition.local_lane[local] = uint16_t(lane);
+      partition.local_stripe[local] = uint16_t(stripe);
+    }
+  }
+  if (std::find(coverage.begin(), coverage.end(), uint8_t(0)) != coverage.end()) {
+    return false;
+  }
+  std::printf("  [dense verify owners] tile=%dx%d lanes=%d stripes/lane=%d "
+              "coverage=exact-once\n",
+              partition.tile_m, partition.tile_n, threads, stripes);
+  return true;
+}
+
 template <class SchedulerParams>
 bool dense_classify_streamk_tiles(
     DenseVerifyPartition& partition, SchedulerParams const& sk) {
@@ -721,6 +788,8 @@ bool dense_classify_streamk_tiles(
   // if its boundary repair ever drifts from a complete, disjoint partition.
   std::vector<uint16_t> coverage(uint64_t(sk.sk_tiles_) * k_tiles, 0);
   std::vector<uint32_t> peers(sk.sk_tiles_, 0);
+  std::vector<uint32_t> final_unit(sk.sk_tiles_, uint32_t(-1));
+  std::vector<uint16_t> final_visit(sk.sk_tiles_, uint16_t(-1));
   for (uint64_t linear = 0; linear < sk.sk_units_; ++linear) {
     uint64_t const group = linear % groups;
     uint64_t const unit = linear / groups;
@@ -766,6 +835,14 @@ bool dense_classify_streamk_tiles(
       uint64_t const end = std::min(start + count, tile_begin + k_tiles);
       if (begin >= end) return reject("empty work-unit/output-tile intersection");
       ++peers[q];
+      if (end == tile_begin + k_tiles) {
+        if (final_unit[q] != uint32_t(-1)) {
+          return reject("output tile has more than one final peer");
+        }
+        final_unit[q] = uint32_t(linear);
+        // Device work walks this unit from its highest local output tile down.
+        final_visit[q] = uint16_t(last_local_tile - local);
+      }
       for (uint64_t k = begin - tile_begin; k < end - tile_begin; ++k) {
         ++coverage[q * k_tiles + k];
       }
@@ -779,13 +856,22 @@ bool dense_classify_streamk_tiles(
   uint64_t split_tiles = 0;
   uint64_t peer_excess = 0;
   uint64_t valid_fixup_elements = 0;
+  partition.scheduler_q.assign(tile_count, uint32_t(-1));
+  partition.final_peer_unit.assign(tile_count, uint32_t(-1));
+  partition.final_peer_visit.assign(tile_count, uint16_t(-1));
   for (uint64_t q = 0; q < sk.sk_tiles_; ++q) {
-    if (peers[q] == 0) return reject("Stream-K output tile has no owner");
+    if (peers[q] == 0 || final_unit[q] == uint32_t(-1) ||
+        final_visit[q] == uint16_t(-1)) {
+      return reject("Stream-K output tile has no unique final owner");
+    }
     uint64_t logical = 0;
     if (!logical_tile_for_q(q, logical)) return reject("Stream-K q cannot be decoded");
     bool const split = peers[q] > 1;
     partition.tile_bucket[logical] = split
         ? DenseVerifyBucket::StreamKSplit : DenseVerifyBucket::StreamKWhole;
+    partition.scheduler_q[logical] = uint32_t(q);
+    partition.final_peer_unit[logical] = final_unit[q];
+    partition.final_peer_visit[logical] = final_visit[q];
     split_tiles += split ? 1u : 0u;
     peer_excess += peers[q] - 1;
     uint64_t const tile_in_batch = logical % tiles_per_batch;
@@ -805,6 +891,17 @@ bool dense_classify_streamk_tiles(
   for (DenseVerifyBucket bucket : partition.tile_bucket) {
     dp_tiles += bucket == DenseVerifyBucket::DataParallel ? 1u : 0u;
     whole_tiles += bucket == DenseVerifyBucket::StreamKWhole ? 1u : 0u;
+  }
+  // DP tiles do not touch fixup, but retaining their global q makes every
+  // mismatch record self-contained and proves there is no hidden q reuse.
+  for (uint64_t q = sk.sk_tiles_; q < tile_count; ++q) {
+    uint64_t logical = 0;
+    if (!logical_tile_for_q(q, logical)) return reject("DP q cannot be decoded");
+    partition.scheduler_q[logical] = uint32_t(q);
+  }
+  if (std::find(partition.scheduler_q.begin(), partition.scheduler_q.end(),
+                uint32_t(-1)) != partition.scheduler_q.end()) {
+    return reject("logical output tile has no scheduler q");
   }
   if (dp_tiles + whole_tiles + split_tiles != tile_count ||
       whole_tiles + split_tiles != sk.sk_tiles_) {
@@ -1220,7 +1317,14 @@ bool verify(const Options &options, DenseVerifyPartition const* partition) {
         partition->tiles_m == int(cute::ceil_div(options.m, partition->tile_m)) &&
         partition->tiles_n == int(cute::ceil_div(options.n, partition->tile_n)) &&
         partition->batches == options.l &&
-        partition->tile_bucket.size() == expected_tiles;
+        partition->tile_bucket.size() == expected_tiles &&
+        partition->scheduler_q.size() == expected_tiles &&
+        partition->final_peer_unit.size() == expected_tiles &&
+        partition->final_peer_visit.size() == expected_tiles &&
+        partition->local_lane.size() ==
+            std::size_t(partition->tile_m) * partition->tile_n &&
+        partition->local_stripe.size() ==
+            std::size_t(partition->tile_m) * partition->tile_n;
     if (!map_ok) {
       std::fprintf(stderr,
                    "  [dense verify buckets] invalid tile map: tile=%dx%d grid=%dx%dx%d entries=%zu\n",
@@ -1249,6 +1353,21 @@ bool verify(const Options &options, DenseVerifyPartition const* partition) {
     constexpr std::size_t bucket_count =
         static_cast<std::size_t>(DenseVerifyBucket::Count);
     std::array<BucketStats, bucket_count> stats{};
+    std::vector<uint32_t> mismatch_per_tile(expected_tiles, 0);
+    std::vector<uint32_t> bitdiff_per_tile(expected_tiles, 0);
+    std::vector<uint32_t> mismatch_per_local(
+        std::size_t(partition->tile_m) * partition->tile_n, 0);
+    uint64_t mismatch_position_hash = 1469598103934665603ull;
+    uint64_t mismatch_value_hash = 1469598103934665603ull;
+    uint64_t bitdiff_position_hash = 1469598103934665603ull;
+    uint64_t bitdiff_count = 0;
+    uint64_t detail_count = 0;
+    auto fnv_mix = [](uint64_t& hash, uint64_t value) {
+      for (int byte = 0; byte < 8; ++byte) {
+        hash ^= uint8_t(value >> (8 * byte));
+        hash *= 1099511628211ull;
+      }
+    };
     for (DenseVerifyBucket bucket : partition->tile_bucket) {
       std::size_t const i = static_cast<std::size_t>(bucket);
       if (i >= stats.size()) {
@@ -1298,8 +1417,38 @@ bool verify(const Options &options, DenseVerifyPartition const* partition) {
           bool const finite = std::isfinite(want_f) && std::isfinite(got_f);
           BucketStats& s = stats[bucket];
           ++s.outputs;
-          if (!cutlass::relatively_equal(want, got, epsilon, non_zero_floor)) {
+          bool const mismatch =
+              !cutlass::relatively_equal(want, got, epsilon, non_zero_floor);
+          bool const bitdiff = want.raw() != got.raw();
+          if (bitdiff) {
+            ++bitdiff_count;
+            ++bitdiff_per_tile[tile];
+            fnv_mix(bitdiff_position_hash, out);
+          }
+          if (mismatch) {
             ++s.mismatches;
+            ++mismatch_per_tile[tile];
+            int const local_m = m % partition->tile_m;
+            int const local_n = n % partition->tile_n;
+            std::size_t const local =
+                std::size_t(local_m) * partition->tile_n + local_n;
+            ++mismatch_per_local[local];
+            fnv_mix(mismatch_position_hash, out);
+            fnv_mix(mismatch_value_hash,
+                    (uint64_t(want.raw()) << 16) | uint64_t(got.raw()));
+            if (detail_count < 16) {
+              std::printf(
+                  "  [dense verify mismatch] out=%zu tile=%zu q=%u "
+                  "global=(%d,%d,%d) local=(%d,%d) lane=%u stripe=%u "
+                  "final_unit=%u final_visit=%u want=0x%04x got=0x%04x ulp=%u\n",
+                  out, tile, partition->scheduler_q[tile], l, m, n,
+                  local_m, local_n, unsigned(partition->local_lane[local]),
+                  unsigned(partition->local_stripe[local]),
+                  partition->final_peer_unit[tile],
+                  unsigned(partition->final_peer_visit[tile]),
+                  unsigned(want.raw()), unsigned(got.raw()), half_ulp(want, got));
+              ++detail_count;
+            }
           }
           if (finite) {
             double const abs_err = std::abs(got_f - want_f);
@@ -1333,6 +1482,57 @@ bool verify(const Options &options, DenseVerifyPartition const* partition) {
                   s.max_rel_sym, s.max_half_ulp,
                   static_cast<unsigned long long>(s.nonfinite));
     }
+    uint64_t mismatch_tiles = 0;
+    uint64_t one_mismatch_tiles = 0;
+    uint64_t bitdiff_tiles = 0;
+    uint32_t max_mismatches_per_tile = 0;
+    uint32_t max_bitdiff_per_tile = 0;
+    uint64_t mismatch_on_first_final_visit = 0;
+    uint64_t mismatch_after_prior_final_visit = 0;
+    for (std::size_t tile = 0; tile < expected_tiles; ++tile) {
+      uint32_t const count = mismatch_per_tile[tile];
+      mismatch_tiles += count != 0;
+      one_mismatch_tiles += count == 1;
+      max_mismatches_per_tile = std::max(max_mismatches_per_tile, count);
+      bitdiff_tiles += bitdiff_per_tile[tile] != 0;
+      max_bitdiff_per_tile = std::max(
+          max_bitdiff_per_tile, bitdiff_per_tile[tile]);
+      if (partition->tile_bucket[tile] == DenseVerifyBucket::StreamKSplit) {
+        if (partition->final_peer_visit[tile] == 0) {
+          mismatch_on_first_final_visit += count;
+        }
+        else {
+          mismatch_after_prior_final_visit += count;
+        }
+      }
+    }
+    auto local_mode = std::max_element(
+        mismatch_per_local.begin(), mismatch_per_local.end());
+    std::size_t const local_mode_idx =
+        local_mode == mismatch_per_local.end()
+            ? 0 : std::size_t(local_mode - mismatch_per_local.begin());
+    uint32_t const local_mode_count =
+        local_mode == mismatch_per_local.end() ? 0 : *local_mode;
+    std::printf(
+        "  [dense verify fingerprint] comparator_positions=%llu "
+        "position_fnv1a=%016llx value_fnv1a=%016llx raw_bitdiff=%llu "
+        "raw_position_fnv1a=%016llx raw_bitdiff_tiles=%llu raw_max_per_tile=%u "
+        "mismatch_tiles=%llu one_mismatch_tiles=%llu max_per_tile=%u "
+        "final_visit0=%llu final_visit_gt0=%llu "
+        "local_mode=(%zu,%zu):%u\n",
+        static_cast<unsigned long long>(bucket_mismatches),
+        static_cast<unsigned long long>(mismatch_position_hash),
+        static_cast<unsigned long long>(mismatch_value_hash),
+        static_cast<unsigned long long>(bitdiff_count),
+        static_cast<unsigned long long>(bitdiff_position_hash),
+        static_cast<unsigned long long>(bitdiff_tiles), max_bitdiff_per_tile,
+        static_cast<unsigned long long>(mismatch_tiles),
+        static_cast<unsigned long long>(one_mismatch_tiles),
+        max_mismatches_per_tile,
+        static_cast<unsigned long long>(mismatch_on_first_final_visit),
+        static_cast<unsigned long long>(mismatch_after_prior_final_visit),
+        local_mode_idx / std::size_t(partition->tile_n),
+        local_mode_idx % std::size_t(partition->tile_n), local_mode_count);
     if ((bucket_mismatches == 0) != passed) {
       std::fprintf(stderr,
                    "  [dense verify buckets] fail-close: bucket comparator disagrees with device comparator "
@@ -1459,6 +1659,18 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
           std::size_t(verify_partition.tiles_n) *
           std::size_t(verify_partition.batches),
       DenseVerifyBucket::DataParallel);
+  std::size_t const verify_tiles = verify_partition.tile_bucket.size();
+  verify_partition.scheduler_q.resize(verify_tiles);
+  verify_partition.final_peer_unit.assign(verify_tiles, uint32_t(-1));
+  verify_partition.final_peer_visit.assign(verify_tiles, uint16_t(-1));
+  for (std::size_t q = 0; q < verify_tiles; ++q) {
+    verify_partition.scheduler_q[q] = uint32_t(q);
+  }
+  if (!dense_map_accumulator_owners<Gemm>(verify_partition)) {
+    Result owner_failure;
+    owner_failure.passed = false;
+    return owner_failure;
+  }
 #endif
 
 #if defined(DENSE_SCHEDULER_AB)

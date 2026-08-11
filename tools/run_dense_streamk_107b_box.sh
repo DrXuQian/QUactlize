@@ -14,6 +14,7 @@ GATE_LOG="$ARTIFACT_ROOT/seam-gate.log"
 NP_LOG="$ARTIFACT_ROOT/a0-non-persistent.log"
 P_LOG="$ARTIFACT_ROOT/a0-persistent.log"
 SK_LOG="$ARTIFACT_ROOT/a0-streamk.log"
+SK_REPEAT_LOG="$ARTIFACT_ROOT/a0-streamk-repeat.log"
 
 fail() {
   printf '[107b] FAIL: %s\n' "$*" >&2
@@ -76,6 +77,24 @@ run_diagnostic_case() {
   grep -Eq '^  \[dense kernel-span-upper\] n=20 median=[0-9.]+ us .*distinct-event-pairs=20 ' "$log" \
     || fail "$label did not report 20 distinct event-pair kernel spans"
   require_verify_buckets "$label" "$log"
+}
+
+run_verify_only_case() {
+  local label="$1" log="$2"
+  shift 2
+  printf '\n== %s ==\n' "$label"
+  set +e
+  "$BIN" "$@" 2>&1 | tee "$log"
+  local rc=${PIPESTATUS[0]}
+  set -e
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+    fail "$label exited rc=$rc instead of a numerical Passed/Failed verdict"
+  fi
+  [ "$(grep -Ec '^  Disposition: (Passed|Failed)$' "$log")" -eq 1 ] \
+    || fail "$label did not report exactly one numerical disposition"
+  require_verify_buckets "$label" "$log"
+  [ "$(grep -Ec '^  \[dense verify fingerprint\] comparator_positions=[0-9]+ position_fnv1a=[0-9a-f]{16} value_fnv1a=[0-9a-f]{16} .*' "$log")" -eq 1 ] \
+    || fail "$label did not report exactly one mismatch-position fingerprint"
 }
 
 printf '[107b] root-sha=%s\n' "$(git -C "$ROOT" rev-parse HEAD)"
@@ -161,10 +180,13 @@ PY
 # Same binary, geometry, event protocol, and 20-launch median for all three
 # dense arms.  This is diagnostic only: the 107b value is mechanism proof, not
 # a grouped/MoE speedup and it does not alter C1 or S068.
-COMMON=(--m=2048 --n=4096 --k=4096 --l=1 --g=128 --mode=1 --iterations=20)
+COMMON_SHAPE=(--m=2048 --n=4096 --k=4096 --l=1 --g=128 --mode=1)
+COMMON=("${COMMON_SHAPE[@]}" --iterations=20)
 run_case 'A0 non-persistent control' "$NP_LOG" "${COMMON[@]}"
 run_case 'A0 serial-persistent control' "$P_LOG" "${COMMON[@]}" --persistent
 run_diagnostic_case 'A0 Stream-K diagnostic' "$SK_LOG" "${COMMON[@]}" --streamk
+run_verify_only_case 'A0 Stream-K repeat-position diagnostic' "$SK_REPEAT_LOG" \
+  "${COMMON_SHAPE[@]}" --iterations=0 --streamk
 
 require_verify_buckets 'A0 non-persistent control' "$NP_LOG"
 require_verify_buckets 'A0 serial-persistent control' "$P_LOG"
@@ -179,6 +201,25 @@ grep -q 'StreamK-C valid_elements=' "$SK_LOG" \
   || fail 'A0 Stream-K did not surface its per-q partial-C model'
 grep -q 'MODEL-ONLY/not-a-DRAM-counter' "$SK_LOG" \
   || fail 'A0 Stream-K mislabeled logical partial-C accesses as measured DRAM traffic'
+
+python3 - "$SK_LOG" "$SK_REPEAT_LOG" <<'PY' || fail 'A0 mismatch fingerprint comparison failed'
+import pathlib, re, sys
+
+pat = re.compile(
+    r"\[dense verify fingerprint\] comparator_positions=(\d+) "
+    r"position_fnv1a=([0-9a-f]{16}) value_fnv1a=([0-9a-f]{16})")
+rows = []
+for path in sys.argv[1:]:
+    hits = pat.findall(pathlib.Path(path).read_text())
+    if len(hits) != 1:
+        raise SystemExit(f"expected one fingerprint in {path}, got {len(hits)}")
+    rows.append(hits[0])
+same_positions = rows[0][:2] == rows[1][:2]
+same_values = rows[0] == rows[1]
+verdict = "STABLE_POSITIONS_AND_VALUES" if same_values else (
+    "STABLE_POSITIONS_VALUE_DRIFT" if same_positions else "POSITION_DRIFT")
+print(f"[107b][A0 fingerprint] run1={rows[0]} run2={rows[1]} verdict={verdict}")
+PY
 
 python3 - "$NP_LOG" "$P_LOG" "$SK_LOG" <<'PY' || fail 'A0 median extraction failed'
 import pathlib, re, sys

@@ -115,8 +115,16 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         "sk.big_groups_ != sk.sk_tiles_ % groups",
         "std::find_if(coverage.begin(), coverage.end(),",
         "[](uint16_t visits) { return visits != 1; }",
-        "coverage=exact-once",
+        "[dense verify partition] DP=%llu SK-whole=%llu SK-split=%llu",
+        "[dense verify owners] tile=%dx%d lanes=%d stripes/lane=%d",
+        "dense_map_accumulator_owners<Gemm>(verify_partition)",
+        "right_inverse(accumulators.layout())",
+        "final_visit[q] = uint16_t(last_local_tile - local);",
         "[dense verify bucket=%s] tiles=%llu outputs=%llu mismatches=%llu",
+        "[dense verify mismatch] out=%zu tile=%zu q=%u",
+        "[dense verify fingerprint] comparator_positions=%llu",
+        "position_fnv1a=%016llx value_fnv1a=%016llx",
+        "final_visit0=%llu final_visit_gt0=%llu",
         "cutlass::relatively_equal(want, got, epsilon, non_zero_floor)",
         "bucket comparator disagrees with device comparator",
         "max_rel_sym=%.9g max_half_ulp=%u nonfinite=%llu",
@@ -217,10 +225,14 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
 
     for token in (
         "run_diagnostic_case 'A0 Stream-K diagnostic'",
+        "run_verify_only_case 'A0 Stream-K repeat-position diagnostic'",
         "require_verify_buckets 'A0 non-persistent control'",
         "require_verify_buckets 'A0 serial-persistent control'",
         "A0 correctness is the printed disposition, not this script exit",
         "coverage=exact-once",
+        "STABLE_POSITIONS_AND_VALUES",
+        "STABLE_POSITIONS_VALUE_DRIFT",
+        "POSITION_DRIFT",
     ):
         if box_gate.count(token) != 1:
             bad.append(f"box gate must contain exactly one {token!r}")
@@ -260,10 +272,17 @@ def main() -> int:
          "[](uint16_t visits) { return visits != 0; }", "exact (q,k) coverage"),
         (1, "cutlass::relatively_equal(want, got, epsilon, non_zero_floor)",
          "true /* planted comparator bypass */", "same comparator for bucket and disposition"),
+        (1, "dense_map_accumulator_owners<Gemm>(verify_partition)",
+         "true /* planted owner-map bypass */", "real MMA lane/stripe inverse"),
+        (1, "final_visit[q] = uint16_t(last_local_tile - local);",
+         "final_visit[q] = uint16_t(0);", "persistent final-peer visit ordinal"),
         (2, "X(lowbit_dense_streamk_probe,64,128,64,64,32,2,0)",
          "X(lowbit_dense_streamk_probe,64,128,64,64,32,3,0)", "isolated fixture"),
         (5, "run_diagnostic_case 'A0 Stream-K diagnostic'",
          "run_case 'A0 Stream-K'", "preserve a failed A0 diagnostic"),
+        (5, "run_verify_only_case 'A0 Stream-K repeat-position diagnostic'",
+         "run_diagnostic_case 'A0 Stream-K repeat-position diagnostic'",
+         "independent repeat-position arm"),
     ]
     for index, old, new, label in plants:
         planted = list(texts)
@@ -277,7 +296,7 @@ def main() -> int:
 
     print("[dense-streamk-contract] PASS -- shared workers x4, absolute K, exact-CTA fixup, "
           "per-launch lock reset, exact seam fixture, exact DP/SK error buckets; "
-          "ten planted regressions rejected")
+          f"{len(plants)} planted regressions rejected")
     return 0
 
 
