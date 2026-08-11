@@ -100,6 +100,8 @@ def audit(texts: list[str]) -> list[str]:
         "usingShipping=m8n16_g5_contract::M8",
         "std::is_same_v<typenameMainloop::MetadataPolicy,RuntimeMetadata>",
         "std::is_same_v<typenameMainloop::GmemTiledCopyZero,RuntimeCopy>",
+        "class=CuTe-tiled-copy/Copy_Traits",
+        "GmemTiledCopyScalePacked=NOT-SELECTEDscalar-global=NONEnaked-asm=NONE",
         "L125selectedpolicyisnottheshippingG5metadatatype",
         "md::make_tight_metadata_tile<ScaleTile>",
         "decode_uniform_z(expert,1)",
@@ -117,6 +119,10 @@ def audit(texts: list[str]) -> list[str]:
         "raw_in==640&&raw_oob==384",
         "tile0_holes==192&&tile0_duplicate_coords==64",
         "duplicate_holes==spec::kExperts",
+        "explicit-int64-tight-ABI+unique-raw16-tags",
+        "independentofCopy_Traitsagreement",
+        "zero-planeaddresschainisentirelymodelled",
+        "cp.asyncistheterminalbyte-copy",
         "B-addressing=NOT-COVERED",
     ):
         if token not in oracle_flat:

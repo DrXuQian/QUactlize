@@ -79,6 +79,9 @@ int main() {
   std::printf("[l125:type] exact G5: FinegrainedScaleZero gs32 "
               "tile=8x32x64 warp=8x32x64 stages=3 int4 CTA32; "
               "metadata plan H4xW2 slots8 values8 PASS\n");
+  std::printf("[l125:model] S/Z source=GmemTiledCopyScale/GmemTiledCopyZero "
+              "class=CuTe-tiled-copy/Copy_Traits host-modelled; "
+              "GmemTiledCopyScalePacked=NOT-SELECTED scalar-global=NONE naked-asm=NONE\n");
   return 0;
 }
 
@@ -415,6 +418,19 @@ int main() {
               tag_roundtrip_bad, scheduler_sweep_bad, total.scheduler_bad, total.gep_bad, total.gz_bad,
               total.partition_holes, total.partition_dups, total.visit_bad,
               total.recover_bad, total.non_target_poison_bad, positive ? "PASS" : "FAIL");
+  // This is the independent calibration point for the CuTe model.  The source
+  // address comes from the public tight metadata ABI (explicit int64
+  // e*scale_k*N + group*N + n), and every element carries that coordinate as
+  // a unique raw-16 tag.  partition_S/partition_D must scatter those tags and
+  // the explicit logical indexing above must recover them.  Thus a matching
+  // CuTe source/destination pair cannot pass merely by sharing one wrong map.
+  std::printf("[l125:anchor] explicit-int64-tight-ABI+unique-raw16-tags "
+              "scatter/recover=%s (independent of Copy_Traits agreement)\n",
+              total.gep_bad == 0 && total.recover_bad == 0 ? "PASS" : "FAIL");
+  std::printf("[l125:boundary] zero-plane address chain is entirely modelled: "
+              "make_tight_metadata_tile -> GmemTiledCopyZero.partition_S -> "
+              "partition_D; cp.async is the terminal byte-copy and contributes "
+              "no address algebra; no scalar/naked-asm metadata read exists\n");
   std::printf("[l125:red] e>=128->e-64 elements=%d low_experts_bad=%d "
               "high_experts_inexact=%d expected=32768 -> %s\n",
               folded_elements, low_expert_bad, high_expert_bad,
