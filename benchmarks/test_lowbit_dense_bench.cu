@@ -1255,7 +1255,55 @@ void initialize(Options const& options) {
     block_C.copy_from_host(host_c.data());
     block_scale.copy_from_host(host_scale.data());
     block_B.copy_from_host(tensor_B.host_data());
-    std::printf("  [streamk fixture] deterministic K-asymmetric A/B, per-group-distinct scale, nonzero C\n");
+    // THE FIXTURE PROVES ITS OWN EXACTNESS, from the arrays it just filled.
+    //
+    // For a day the leading reading of A0's SK-split mismatches was "FP32 reassociation" -- the split
+    // path sums in a different order than the reference, so small differences are expected.  That
+    // reading requires the fixture to round somewhere, and nobody checked whether it does.  It does
+    // not: every a is a multiple of 1/4, every dequantised w = q*scale is a multiple of 1/16, so every
+    // product is a multiple of 1/64 and every partial sum is an exactly representable FP32 integer
+    // multiple of it.  Under exact arithmetic EVERY accumulation order yields the identical value, and
+    // cancellation -- the mechanism "large ULP near zero" was attributed to -- amplifies pre-existing
+    // rounding error, of which there is none.  So a mismatch here cannot be reassociation.
+    //
+    // This is computed rather than asserted so it cannot drift: change any generator above and the
+    // printed verdict changes with it.  A future fixture that DOES round will say so instead of
+    // silently restoring the ambiguity.
+    {
+      auto granule_exp = [](double v) {                 // smallest e with v an integer multiple of 2^-e
+        for (int e = 0; e <= 24; ++e) {
+          double const u = std::ldexp(1.0, -e);
+          if (std::fabs(v / u - std::nearbyint(v / u)) < 1e-12) return e;
+        }
+        return 99;
+      };
+      // a and w have INDEPENDENT granularities; the product's is their SUM, not twice the larger.
+      // Using max(g_a,g_w) twice over-counts by 4x here -- conservative, but a printed number that
+      // is not the quantity it names is how a wrong bound gets believed later.
+      int ga = 0, gw = 0;
+      double amax = 0.0, wmax = 0.0;
+      for (int m = 0; m < options.m; ++m)
+        for (int k = 0; k < options.k; ++k) {
+          double const a = double(float(host_a[size_t(m) * options.k + k]));
+          ga = std::max(ga, granule_exp(a));
+          amax = std::max(amax, std::fabs(a));
+        }
+      for (int k = 0; k < options.k; ++k)
+        for (int n = 0; n < options.n; ++n) {
+          double const w = double(int(b_view.at({k, n}))) *
+                           double(float(host_scale[size_t(k / options.g) * options.n + n]));
+          gw = std::max(gw, granule_exp(w));
+          wmax = std::max(wmax, std::fabs(w));
+        }
+      // Every product is a multiple of 2^-(ga+gw); the worst-case partial sum is K*amax*wmax.
+      double const units = double(options.k) * amax * wmax * std::ldexp(1.0, ga + gw);
+      bool const exact = ga < 99 && gw < 99 && units <= std::ldexp(1.0, 24);
+      std::printf("  [streamk fixture] deterministic K-asymmetric A/B, per-group-distinct scale, nonzero C\n");
+      std::printf("  [streamk fixture exactness] granule=2^-(%d+%d) |a|max=%g |w|max=%g partial-sum"
+                  " units=%.0f vs 2^24=%.0f -> %s\n", ga, gw, amax, wmax, units, std::ldexp(1.0, 24),
+                  exact ? "ORDER-INDEPENDENT (a mismatch cannot be reassociation)"
+                        : "ROUNDS (a mismatch is ambiguous; fix the fixture before reading the verdict)");
+    }
   }
 #endif
   
