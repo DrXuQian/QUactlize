@@ -55,15 +55,16 @@ def audit(texts: list[str]) -> list[str]:
     runner_flat = compact(runner)
 
     helper_signature = (
-        "template<classScaleTileShape,classElement>"
-        "CUTE_HOST_DEVICEautomake_tight_metadata_tile("
-        "Elementconst*base,intN,int64_tscale_k,intL,intl_coord,intn_coord)"
+        "template<classScaleTileShape,classElement,classStride>"
+        "CUTE_HOST_DEVICEautomake_metadata_tile("
+        "Elementconst*base,Strideconst&dS,intN,int64_tscale_k,intL,intl_coord,intn_coord)"
     )
     if helper_flat.count(helper_signature) != 1:
-        bad.append("tight metadata helper is not one CUTE_HOST_DEVICE seam")
+        bad.append("strided metadata helper is not one CUTE_HOST_DEVICE seam")
     for plane in ("S", "Z"):
-        call = ("detail::make_tight_metadata_tile<ScaleTileShape>("
-                f"mainloop_params.ptr_{plane},N,scale_k,L,l_coord,n_coord)")
+        call = ("detail::make_metadata_tile<ScaleTileShape>("
+                f"mainloop_params.ptr_{plane},mainloop_params.dS,"
+                "N,scale_k,L,l_coord,n_coord)")
         if load.count(call) != 1:
             bad.append(f"production load_init does not route {plane} through the exact helper")
     for stale in ("mS_nkl", "mZ_nkl", "make_shape(N,scale_k,L)"):
@@ -103,7 +104,8 @@ def audit(texts: list[str]) -> list[str]:
         "class=CuTe-tiled-copy/Copy_Traits",
         "GmemTiledCopyScalePacked=NOT-SELECTEDscalar-global=NONEnaked-asm=NONE",
         "L125selectedpolicyisnottheshippingG5metadatatype",
-        "md::make_tight_metadata_tile<ScaleTile>",
+        "md::make_metadata_tile<ScaleTile>",
+        "tight_metadata_stride()",
         "decode_uniform_z(expert,1)",
         "for(inte=0;e<spec::kExperts;++e)",
         "thread%Plan::thread_slots",
@@ -159,14 +161,14 @@ def main() -> int:
         return 1
 
     plants = (
-        (0, "mainloop_params.ptr_Z, N, scale_k, L, l_coord, n_coord",
-         "mainloop_params.ptr_Z, N, scale_k, L, n_coord, n_coord",
+        (0, "mainloop_params.ptr_Z, mainloop_params.dS,\n            N, scale_k, L, l_coord, n_coord",
+         "mainloop_params.ptr_Z, mainloop_params.dS,\n            N, scale_k, L, n_coord, n_coord",
          "production expert coordinate"),
-        (0, "detail::make_tight_metadata_tile<ScaleTileShape>(\n            mainloop_params.ptr_Z",
-         "detail::make_tight_metadata_tile_bypassed<ScaleTileShape>(\n            mainloop_params.ptr_Z",
+        (0, "detail::make_metadata_tile<ScaleTileShape>(\n            mainloop_params.ptr_Z",
+         "detail::make_metadata_tile_bypassed<ScaleTileShape>(\n            mainloop_params.ptr_Z",
          "production helper bypass"),
-        (1, "CUTE_HOST_DEVICE auto make_tight_metadata_tile",
-         "auto make_tight_metadata_tile", "host/device helper qualifier"),
+        (1, "CUTE_HOST_DEVICE auto make_metadata_tile",
+         "auto make_metadata_tile", "host/device helper qualifier"),
         (2, "quactlize::grouped_schedule::decode_uniform_z(int(blockIdx.z), S)",
          "quactlize::grouped_schedule::ExpertSlice{int(blockIdx.z) / S, int(blockIdx.z) % S}",
          "shipping scheduler helper bypass"),

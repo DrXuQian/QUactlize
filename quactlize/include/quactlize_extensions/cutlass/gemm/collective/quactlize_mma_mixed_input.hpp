@@ -792,6 +792,7 @@ public:
     InternalStrideB dB{};
 
     NonVoidElementScale const* ptr_S = nullptr;
+    NonVoidStrideScale dS{};
     NonVoidElementZero const* ptr_Z = nullptr;
 
     int group_size = 0;
@@ -840,6 +841,7 @@ public:
     if constexpr (ModeHasScales) {
       p.gmem_tiled_copy_scale = GmemTiledCopyScale{};
       p.ptr_S = reinterpret_cast<NonVoidElementScale const*>(args.ptr_S);
+      p.dS = detail::lower_metadata_stride(args.dS);
       // THE SAME TYPE THE MEMBER IS DECLARED AS, not a second construction of it. This line spelled the atom out as
       // uint128 while GmemTiledCopyScalePacked derived it from the unit, so the moment the unit stopped being 16
       // bytes the two disagreed -- and the failure surfaced as "TiledCopy uses too few vals" pointing at a copy that
@@ -914,8 +916,9 @@ public:
     }
     else if constexpr (ModeHasScales) {
       auto scale_k = mainloop_params.scale_k;
-      Tensor gS = detail::make_tight_metadata_tile<ScaleTileShape>(
-          mainloop_params.ptr_S, N, scale_k, L, l_coord, n_coord);                    // (BLK_N, 1, scale_k)
+      Tensor gS = detail::make_metadata_tile<ScaleTileShape>(
+          mainloop_params.ptr_S, mainloop_params.dS,
+          N, scale_k, L, l_coord, n_coord);                                           // (BLK_N, 1, scale_k)
 
       // init scale_residue_n
       scale_residue_n = N - size<0>(gB) * n_coord;
@@ -936,8 +939,9 @@ public:
         return cute::make_tuple(gA, gB, gS, gSp);
       }
       else if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) {
-        Tensor gZ = detail::make_tight_metadata_tile<ScaleTileShape>(
-            mainloop_params.ptr_Z, N, scale_k, L, l_coord, n_coord);
+        Tensor gZ = detail::make_metadata_tile<ScaleTileShape>(
+            mainloop_params.ptr_Z, mainloop_params.dS,
+            N, scale_k, L, l_coord, n_coord);
         return cute::make_tuple(gA, gB, gS, gZ, gSp);
       }
       else {

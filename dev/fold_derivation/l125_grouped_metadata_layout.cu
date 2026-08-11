@@ -42,7 +42,7 @@ using RuntimeSmem = decltype(cute::tile_to_shape(
     cute::Layout<cute::Shape<cute::_8, cute::_1>>{},
     cute::Shape<cute::_32, cute::_2, cute::_3>{}));
 
-static_assert(md::kTightMetadataTileApi == 1);
+static_assert(md::kStridedMetadataTileApi == 2);
 static_assert(Descriptor::quant_mode == ppu_mixed_policy::QuantMode::FinegrainedScaleZero);
 static_assert(Descriptor::tactic_tile_k == 64 && Descriptor::artifact_tile_k == 64 &&
               Descriptor::artifact_low_fold == 1 && Descriptor::stages == 3 &&
@@ -118,7 +118,7 @@ using SmemLayout = decltype(tile_to_shape(
     Layout<Shape<_8, _1>>{},
     make_shape(Int<spec::kN>{}, Int<spec::kScaleTileK>{}, Int<spec::kStages>{})));
 
-static_assert(md::kTightMetadataTileApi == 1);
+static_assert(md::kStridedMetadataTileApi == 2);
 static_assert(spec::kExperts == 256 && spec::kN == 32 && spec::kK == 256 &&
               spec::kGroupSize == 32 && spec::kScaleK == 8 &&
               spec::kScaleTileK == 2 && spec::kStages == 3 &&
@@ -133,6 +133,11 @@ constexpr int kPlane = spec::kN * spec::kScaleK;
 constexpr int kAll = spec::kExperts * kPlane;
 constexpr int kGuard = 1024;
 constexpr std::uint16_t kPoison = 0xa55au;
+using MetadataStride = Stride<_1, int64_t, int64_t>;
+
+MetadataStride tight_metadata_stride() {
+  return make_stride(_1{}, int64_t(spec::kN), int64_t(kPlane));
+}
 
 std::uint16_t raw(Element const& value) {
   std::uint16_t out;
@@ -175,8 +180,9 @@ ExpertStats census_expert(std::vector<Element>& source, int expert) {
     }
   }
 
-  auto gZ = md::make_tight_metadata_tile<ScaleTile>(
-      source.data(), spec::kN, int64_t(spec::kScaleK), spec::kExperts,
+  auto gZ = md::make_metadata_tile<ScaleTile>(
+      source.data(), tight_metadata_stride(),
+      spec::kN, int64_t(spec::kScaleK), spec::kExperts,
       decoded.expert, 0);
   auto const* gz_base = raw_pointer_cast(gZ.data());
   out.gz_bad += gz_base - source.data() != int64_t(expert) * kPlane;
@@ -343,8 +349,9 @@ int main() {
   int raw_oob = 0, raw_in = 0;
   std::array<int, kPlane> raw_hits{};
   {
-    auto gZ = md::make_tight_metadata_tile<ScaleTile>(
-        source.data(), spec::kN, int64_t(spec::kScaleK), spec::kExperts, 255, 0);
+    auto gZ = md::make_metadata_tile<ScaleTile>(
+        source.data(), tight_metadata_stride(),
+        spec::kN, int64_t(spec::kScaleK), spec::kExperts, 255, 0);
     Element const* plane = source.data() + 255 * kPlane;
     for (int thread = 0; thread < spec::kCtaThreads; ++thread) {
       auto src = GmemCopy{}.get_slice(thread).partition_S(gZ);
@@ -373,8 +380,9 @@ int main() {
          ++metadata_tile) {
       (void)metadata_tile;
       for (int slot = 0; slot < Plan::thread_slots; ++slot) {
-        auto gZ = md::make_tight_metadata_tile<ScaleTile>(
-            source.data(), spec::kN, int64_t(spec::kScaleK), spec::kExperts, 0, 0);
+        auto gZ = md::make_metadata_tile<ScaleTile>(
+            source.data(), tight_metadata_stride(),
+            spec::kN, int64_t(spec::kScaleK), spec::kExperts, 0, 0);
         auto src = GmemCopy{}.get_slice(slot).partition_S(gZ)(_, _, _, 0);
         for (int i = 0; i < int(size(src)); ++i) {
           ++hits[int(raw_pointer_cast(&src(i)) - source.data())];
@@ -428,7 +436,7 @@ int main() {
               "scatter/recover=%s (independent of Copy_Traits agreement)\n",
               total.gep_bad == 0 && total.recover_bad == 0 ? "PASS" : "FAIL");
   std::printf("[l125:boundary] zero-plane address chain is entirely modelled: "
-              "make_tight_metadata_tile -> GmemTiledCopyZero.partition_S -> "
+              "make_metadata_tile(dS=tight) -> GmemTiledCopyZero.partition_S -> "
               "partition_D; cp.async is the terminal byte-copy and contributes "
               "no address algebra; no scalar/naked-asm metadata read exists\n");
   std::printf("[l125:red] e>=128->e-64 elements=%d low_experts_bad=%d "

@@ -1217,6 +1217,13 @@ def lint_grouped_metadata_layout_contract():
         "G5 metadata host-algebra contract")
 
 
+def lint_metadata_stride_contract():
+    """Caller dS must survive lowering and change the shared S/Z CuTe address map."""
+    return _run_ci_script(
+        "check_metadata_stride_contract.py",
+        "three mixed-input collectives consume caller dS and L127 rejects compact substitution")
+
+
 def lint_plain_ldsm_failclosed():
     """The twelve dormant ppu001 plain-LDSM entries must fail before assembly when called."""
     return _run_ci_script(
@@ -1694,6 +1701,7 @@ def main():
                 ("lint", "m8n16 G2 replays the historical bad index on the production x4 payload", lint_m8n16_g2_contract),
                 ("lint", "l125 exhausts all 256 G5 zero-plane addresses through the production CuTe map", lint_grouped_metadata_layout),
                 ("lint", "G5 production and l125 share one exact typed metadata-layout seam", lint_grouped_metadata_layout_contract),
+                ("lint", "caller dS changes all three shipping S/Z metadata address maps", lint_metadata_stride_contract),
                 ("lint", "ppu001 plain LDSM fails in C++ before its unproved assembler path", lint_plain_ldsm_failclosed),
                 ("lint", "quactlize_extensions adds to actlize rather than redefining it", lint_extension_additive),
                 ("lint", "every file naming a quactlize type reaches its defining header", lint_owned_symbol_includes),

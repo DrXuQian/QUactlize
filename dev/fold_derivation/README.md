@@ -503,3 +503,24 @@ Those percentages are **not measured HBM traffic**.  Allocation is unchanged, va
 with invalid ones, and atomics/locks can amplify or serve traffic from cache.  The grouped box gate therefore labels
 the result `MODEL-ONLY/not-a-DRAM-counter`; device counters and timing decide whether compact storage is worth a
 second step.
+
+
+## L127: caller-declared metadata stride is semantic
+
+All three shipping mixed-input collectives used to accept `dS` in `Arguments`, omit it from `Params`, and rebuild a
+compact `(N, scale_k, L)` tensor in `load_init`.  That is a dangerous ABI shape: CuTe and every copy trait can be
+internally correct while modelling a layout different from the one the caller declared.
+
+`l127_metadata_stride.cu` holds the pointer, logical shape, coordinate and payload fixed while switching only between
+compact and deliberately padded group/expert strides.  The padded pitches remain multiples of eight fp16 values,
+because the shipping metadata copies are 16-byte cp.async atoms; this test proves affine stride semantics, not that an
+arbitrarily misaligned address is legal.  It exhausts all `256 * 8 * 32` coordinates.  Each CuTe source
+address is checked against an independent int64 formula and each physical offset carries a unique uint32 tag; the
+planted historical implementation, which substitutes the compact stride for the padded one, must disagree on exactly
+65,504 coordinates.  The production ordinary/fold/two-plane collectives now carry `dS` into `Params` and route both
+scale and zero through the same `make_metadata_tile(..., dS, ...)` seam.
+
+The current ABI has one shared S/Z stride, not a separate `dZ`.  L127 proves that declared shared contract; support for
+independently pitched S and Z would require an explicit new argument rather than another inferred layout.
+The packed-metadata path is a different raw-unit ABI and does not use an affine fp16 S/Z plane; non-canonical packed
+arguments therefore need an explicit fail-closed contract rather than being inferred from this result.

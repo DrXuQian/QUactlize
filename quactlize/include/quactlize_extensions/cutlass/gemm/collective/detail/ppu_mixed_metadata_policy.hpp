@@ -20,23 +20,26 @@
 
 namespace cutlass::gemm::collective::detail {
 
-// One construction for the shape-only fp16 metadata ABI currently shipped by
-// the ordinary mixed-input collective.  Production load_init and the L125
-// host oracle call this exact function; the oracle then checks it against an
-// independent int64 compact-layout formula and globally unique payload tags.
-//
-// `dS` is intentionally absent because it is absent from today's Params.  The
-// name/version make that limitation explicit: wiring a caller-provided stride
-// must replace this seam and therefore force the oracle to be updated rather
-// than silently continuing to certify the old ABI.
-inline constexpr int kTightMetadataTileApi = 1;
+// One construction for the caller-declared fp16 metadata layout. Production
+// load_init in every shipping mixed-input collective and the host oracles call
+// this exact function.  The stride is part of the ABI: accepting dS in
+// Arguments and then rebuilding a compact layout here was a silent parameter
+// substitution, not an optimization.  L127 varies dS while holding pointer,
+// shape and payload fixed and anchors both address maps to an independent
+// int64 formula.
+inline constexpr int kStridedMetadataTileApi = 2;
 
-template <class ScaleTileShape, class Element>
-CUTE_HOST_DEVICE auto make_tight_metadata_tile(
-    Element const* base, int N, int64_t scale_k, int L,
+template <class Stride>
+CUTE_HOST_DEVICE constexpr Stride lower_metadata_stride(Stride const& dS) {
+  return dS;
+}
+
+template <class ScaleTileShape, class Element, class Stride>
+CUTE_HOST_DEVICE auto make_metadata_tile(
+    Element const* base, Stride const& dS, int N, int64_t scale_k, int L,
     int l_coord, int n_coord) {
   auto metadata_nkl = cute::make_tensor(
-      cute::make_gmem_ptr(base), cute::make_shape(N, scale_k, L));
+      cute::make_gmem_ptr(base), cute::make_shape(N, scale_k, L), dS);
   auto metadata_nk = metadata_nkl(cute::_, cute::_, l_coord);
   return cute::local_tile(
       metadata_nk, ScaleTileShape{}, cute::make_coord(n_coord, cute::_));
