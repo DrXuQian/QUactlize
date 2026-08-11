@@ -416,9 +416,310 @@ int check_m8_m16(int M, std::vector<half_t> const& m8,
 
 }  // namespace
 
+// ===================================================================================================
+// G5 -- the real route.  #108.
+//
+// WHAT G4 CANNOT TEST, AND WHY THAT IS NOT A MATTER OF SIZE.  G4 launches with `L = 1`: one group, one
+// expert, offset zero.  Its oracle (`golden_fp32`) is genuinely independent -- a scalar (m,n,k) triple
+// loop with explicit dequant, no CUTLASS layout in sight -- so it does catch an arithmetic or layout
+// error.  What it cannot catch is anything about the ROUTE, because with one group there is no route:
+// no slot->expert mapping to invert, no row offset to be off by one, and no expert that should not be
+// read.  Growing M does not create one.  That is why an L=1 self-comparison "must not be presented as
+// G5" (see the header): the missing coverage is structural, not statistical.
+//
+// The launch API already expresses the real thing -- `L = num_experts`, B/scales strided by the group
+// index, `group_row_offsets` for the ragged A -- so this is a fixture, not an interface change.
+//
+// TWO PROPERTIES DO THE WORK, and neither is "more experts":
+//
+//   1. EVERY EXPERT'S DATA IS DIFFERENT.  Today's fixture gives all experts identical W/S/Z (both here
+//      and in benchmarks/gemv_perf_common.hpp, which memcpys one packed plane L times).  Under that
+//      fixture a kernel that uses `slot` where `real_expert_id` belongs computes the right answer, and
+//      so does one that reads its neighbour.  Per-expert salting is what makes those two defects have
+//      an observable consequence at all.
+//   2. THE INACTIVE EXPERTS ARE POISON, NOT ABSENT.  All 256 experts are allocated and filled, the 248
+//      inactive ones with a scale ~100x the active range.  Reading one is then a large, obvious error
+//      rather than a plausible number.  Allocating only the active experts would turn the same defect
+//      into an out-of-bounds read, which is not reliably observable.
+//
+// The active IDs are deliberately non-contiguous and include 255: an off-by-one at the top of the
+// table is otherwise unreachable.
+constexpr int kE = 256;
+constexpr int kActive = 8;
+constexpr int kActiveIds[kActive] = {3, 17, 42, 88, 129, 190, 201, 255};
+
+// Salted generators.  `salt == 0` reproduces the G3/G4 pattern EXACTLY -- the salt terms vanish -- so
+// this addition cannot perturb the arms that are already proved.  The salt is mixed into the generator
+// rather than added to its output, because a uniform offset would leave a wrong-expert read numerically
+// close to the right one, and "close" is what this gate exists to reject.
+std::vector<std::uint8_t> make_codes_salted(int salt) {
+  std::vector<std::uint8_t> q(std::size_t(kK) * kN);
+  for (int k = 0; k < kK; ++k)
+    for (int n = 0; n < kN; ++n)
+      q[std::size_t(k) * kN + n] = std::uint8_t(
+          (11 * k + 7 * n + 3 * (k / kGs) + (k ^ n) + 29 * salt + salt * (k + n)) & 15);
+  return q;
+}
+
+std::vector<half_t> make_scales_salted(int salt) {
+  std::vector<half_t> s(std::size_t(kScaleK) * kN);
+  for (int g = 0; g < kScaleK; ++g)
+    for (int n = 0; n < kN; ++n)
+      s[std::size_t(g) * kN + n] =
+          half_t(float(1 + ((5 * g + 3 * n + 2 * salt) & 7)) / 32.0f);
+  return s;
+}
+
+std::vector<half_t> make_zeros_salted(std::vector<half_t> const& scales, int salt) {
+  std::vector<half_t> z(scales.size());
+  for (int g = 0; g < kScaleK; ++g)
+    for (int n = 0; n < kN; ++n) {
+      float const offset = float(((13 * n + 5 * g + 3 * salt) % 7) - 3) / 16.0f;
+      z[std::size_t(g) * kN + n] =
+          half_t(8.0f * float(scales[std::size_t(g) * kN + n]) + offset);
+    }
+  return z;
+}
+
+// ~100x the active scale range (active is 1/32 .. 8/32).  A wrong-expert read is then off by two orders
+// of magnitude, not by a plausible-looking amount.
+std::vector<half_t> make_poison_scales(int e) {
+  std::vector<half_t> s(std::size_t(kScaleK) * kN);
+  for (std::size_t i = 0; i < s.size(); ++i)
+    s[i] = half_t(4.0f + float((int(i) + e) & 7));
+  return s;
+}
+
+std::vector<half_t> make_a_salted(int rows, int salt) {
+  std::vector<half_t> a(std::size_t(rows) * kK);
+  for (int m = 0; m < rows; ++m)
+    for (int k = 0; k < kK; ++k)
+      a[std::size_t(m) * kK + k] =
+          half_t(float(1 + ((3 * m + 5 * k + 7 * salt) & 7)) / 8.0f);
+  return a;
+}
+
+struct G5Fixture {
+  std::vector<std::int8_t> B;                 // [kE] placed artifacts, expert-major
+  std::vector<half_t> scales, zeros, A;
+  std::vector<int> group_m, row_offsets;      // [kE], [kE + 1]
+  std::vector<std::vector<std::uint8_t>> q_e; // active only, indexed by slot
+  std::vector<std::vector<half_t>> s_e, z_e, a_e;
+  int total_rows = 0;
+};
+
+// TM/WM only select which placement to write; the artifact is byte-identical for m8 and m16 (proved
+// above), so one buffer serves both arms and a divergence would already have failed the offline check.
+G5Fixture make_g5_fixture(int rows_per_expert) {
+  G5Fixture f;
+  f.B.assign(std::size_t(kE) * kPlacedBBytes, 0);
+  f.scales.assign(std::size_t(kE) * kScaleK * kN, half_t(0.0f));
+  f.zeros.assign(f.scales.size(), half_t(0.0f));
+  f.group_m.assign(kE, 0);
+  f.row_offsets.assign(kE + 1, 0);
+
+  auto is_active = [&](int e) {
+    for (int i = 0; i < kActive; ++i) if (kActiveIds[i] == e) return i;
+    return -1;
+  };
+
+  for (int e = 0; e < kE; ++e) {
+    int const slot = is_active(e);
+    // salt 0 is reserved for the G3/G4 data; actives take 1..kActive so no two experts share a pattern.
+    int const salt = (slot >= 0) ? (slot + 1) : (kActive + 1 + e);
+    auto q = make_codes_salted(salt);
+    auto s = (slot >= 0) ? make_scales_salted(salt) : make_poison_scales(e);
+    auto z = make_zeros_salted(s, salt);
+    xplane::place_derived<4, 8, 32, 64, 8, 32, 1>(
+        f.B.data() + std::size_t(e) * kPlacedBBytes, q, kN, kK);
+    std::copy(s.begin(), s.end(), f.scales.begin() + std::size_t(e) * kScaleK * kN);
+    std::copy(z.begin(), z.end(), f.zeros.begin() + std::size_t(e) * kScaleK * kN);
+    if (slot >= 0) {
+      f.group_m[e] = rows_per_expert;
+      f.q_e.push_back(std::move(q));
+      f.s_e.push_back(std::move(s));
+      f.z_e.push_back(std::move(z));
+      f.a_e.push_back(make_a_salted(rows_per_expert, salt));
+    }
+  }
+  for (int e = 0; e < kE; ++e) f.row_offsets[e + 1] = f.row_offsets[e] + f.group_m[e];
+  f.total_rows = f.row_offsets[kE];
+  for (auto const& a : f.a_e) f.A.insert(f.A.end(), a.begin(), a.end());
+  return f;
+}
+
+template <int TM, int WM>
+bool launch_g5(G5Fixture const& f, half_t const* dA, int4_t const* dB,
+               half_t const* dScale, half_t const* dZero, half_t* dD,
+               int rows_per_expert, char* workspace, std::size_t workspace_bytes) {
+  using Tile = cute::Shape<cute::Int<TM>, cute::_32, cute::Int<kTacticK>>;
+  using Warp = cute::Shape<cute::Int<WM>, cute::_32, cute::Int<kTacticK>>;
+  using Scale = cute::Shape<cute::_32, cute::_2>;
+
+  std::vector<GS> shapes(kE);
+  std::vector<half_t*> ptrs(kE);
+  std::vector<DStride> strides(kE);
+  for (int e = 0; e < kE; ++e) {
+    int const Me = f.group_m[e];
+    shapes[e] = cute::make_shape(Me, kN, kK);
+    ptrs[e] = dD + std::size_t(f.row_offsets[e]) * kN;
+    strides[e] = cutlass::make_cute_packed_stride(
+        DStride{}, cute::make_shape(Me > 0 ? Me : 1, kN, 1));
+  }
+  cutlass::DeviceAllocation<GS> dShapes(kE);
+  cutlass::DeviceAllocation<half_t*> dPtrs(kE);
+  cutlass::DeviceAllocation<DStride> dStrides(kE);
+  cutlass::DeviceAllocation<int> dGroupM(kE);
+  cutlass::DeviceAllocation<int> dOffs(kE + 1);
+  dShapes.copy_from_host(shapes.data());
+  dPtrs.copy_from_host(ptrs.data());
+  dStrides.copy_from_host(strides.data());
+  dGroupM.copy_from_host(f.group_m.data());
+  dOffs.copy_from_host(f.row_offsets.data());
+
+  bool const launched = moe_grouped_ppu::launch<
+      QM::FinegrainedScaleZero, BaseSchedule, Tile, Scale, Warp,
+      kStages, false, int4_t>(
+          dA, dB, dScale, dZero, dPtrs.get(), dStrides.get(), dGroupM.get(),
+          rows_per_expert, kN, kK, kE, kGs, dShapes.get(), shapes.data(),
+          dOffs.get(), workspace, workspace_bytes, nullptr);
+  CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
+  return launched;
+}
+
+// Returns the device output, or an empty vector if the launch did not happen.
+template <int TM, int WM>
+std::vector<half_t> run_g5_arm(char const* family, G5Fixture const& f, int rows_per_expert,
+                               half_t const* dA, int4_t const* dB,
+                               half_t const* dScale, half_t const* dZero, int* errors) {
+  std::size_t const count = std::size_t(f.total_rows) * kN;
+  std::vector<half_t> host(kGuard + count + kGuard);
+  std::fill(host.begin(), host.begin() + kGuard, hbits(kLeftCanary));
+  std::fill(host.begin() + kGuard, host.begin() + kGuard + count, hbits(kOutputNaN));
+  std::fill(host.begin() + kGuard + count, host.end(), hbits(kRightCanary));
+
+  cutlass::DeviceAllocation<half_t> dStorage(host.size());
+  cutlass::DeviceAllocation<char> workspace(1 << 20);
+  dStorage.copy_from_host(host.data());
+  int const fail_before = moe_grouped_ppu::moeg_fail_count();
+  bool const launched = launch_g5<TM, WM>(
+      f, dA, dB, dScale, dZero, dStorage.get() + kGuard, rows_per_expert,
+      workspace.get(), workspace.size());
+  int const failed = moe_grouped_ppu::moeg_fail_count() - fail_before;
+  if (!launched || failed) {
+    std::printf("  G5 %-4s LAUNCH FAILED (launched=%d init_failures=%d) -- FAIL\n",
+                family, int(launched), failed);
+    ++*errors;
+    return {};
+  }
+  dStorage.copy_to_host(host.data());
+  for (int i = 0; i < kGuard; ++i) {
+    if (host[i] != hbits(kLeftCanary) || host[kGuard + count + i] != hbits(kRightCanary)) {
+      std::printf("  G5 %-4s CANARY CLOBBERED at %d -- FAIL\n", family, i);
+      ++*errors;
+      return {};
+    }
+  }
+  return std::vector<half_t>(host.begin() + kGuard, host.begin() + kGuard + count);
+}
+
+// Compare one slot's rows against a golden built from a NAMED expert's data.  `oracle_slot` is normally
+// the slot itself; the negative controls pass a different one on purpose.
+int g5_slot_mismatches(G5Fixture const& f, std::vector<half_t> const& got, int rows_per_expert,
+                       int slot, int oracle_slot) {
+  auto golden = golden_fp32(f.a_e[slot], rows_per_expert,
+                            f.q_e[oracle_slot], f.s_e[oracle_slot], f.z_e[oracle_slot]);
+  std::size_t const base = std::size_t(slot) * rows_per_expert * kN;
+  int bad = 0;
+  for (std::size_t i = 0; i < golden.size(); ++i) {
+    float const g = golden[i], d = float(got[base + i]);
+    float const tol = 3e-2f * std::max(1.0f, std::fabs(g));
+    if (!(std::fabs(g - d) <= tol)) ++bad;
+  }
+  return bad;
+}
+
+int run_g5(int rows_per_expert) {
+  int errors = 0;
+  auto f = make_g5_fixture(rows_per_expert);
+
+  cutlass::DeviceAllocation<int4_t> dB(f.B.size());
+  cutlass::DeviceAllocation<half_t> dScale(f.scales.size());
+  cutlass::DeviceAllocation<half_t> dZero(f.zeros.size());
+  cutlass::DeviceAllocation<half_t> dA(f.A.size());
+  CUTLASS_PPU_CHECK(hggcMemcpy(dB.get(), f.B.data(), f.B.size(), hggcMemcpyHostToDevice));
+  dScale.copy_from_host(f.scales.data());
+  dZero.copy_from_host(f.zeros.data());
+  dA.copy_from_host(f.A.data());
+
+  std::printf("[G5] E=%d active=%d rows/expert=%d total_rows=%d active_ids=",
+              kE, kActive, rows_per_expert, f.total_rows);
+  for (int i = 0; i < kActive; ++i) std::printf("%d%s", kActiveIds[i], i + 1 < kActive ? "," : "\n");
+
+  auto m8 = run_g5_arm<8, 8>("m8", f, rows_per_expert, dA.get(), dB.get(),
+                             dScale.get(), dZero.get(), &errors);
+  auto m16 = run_g5_arm<16, 16>("m16", f, rows_per_expert, dA.get(), dB.get(),
+                                dScale.get(), dZero.get(), &errors);
+  if (m8.empty() || m16.empty()) return errors ? errors : 1;
+
+  for (int slot = 0; slot < kActive; ++slot) {
+    int const b8 = g5_slot_mismatches(f, m8, rows_per_expert, slot, slot);
+    int const b16 = g5_slot_mismatches(f, m16, rows_per_expert, slot, slot);
+    int const outputs = rows_per_expert * kN;
+    std::printf("  G5 slot=%d expert=%-3d m8 bad=%d/%d  m16 bad=%d/%d  %s\n",
+                slot, kActiveIds[slot], b8, outputs, b16, outputs,
+                (b8 || b16) ? "FAIL" : "MATCH");
+    errors += b8 + b16;
+  }
+
+  // NEGATIVE CONTROLS.  Both are host-side: they re-run the oracle with the wrong data and require the
+  // comparison to FAIL.  Without them a green G5 would only mean "the numbers matched something", and a
+  // fixture whose experts are indistinguishable matches everything -- which is exactly the defect this
+  // gate was built to remove, so it must be shown not to be present in the gate itself.
+  int wrong_expert_detected = 0;
+  for (int slot = 0; slot + 1 < kActive; ++slot)
+    if (g5_slot_mismatches(f, m8, rows_per_expert, slot, slot + 1) > 0) ++wrong_expert_detected;
+  if (wrong_expert_detected != kActive - 1) {
+    std::printf("  G5 NEGATIVE expert-identity: only %d/%d neighbour swaps were detected -- the experts "
+                "are not distinguishable, so a passing G5 proves nothing -- FAIL\n",
+                wrong_expert_detected, kActive - 1);
+    ++errors;
+  } else {
+    std::printf("  G5 NEGATIVE expert-identity: %d/%d neighbour swaps rejected EXPECTED_RED\n",
+                wrong_expert_detected, kActive - 1);
+  }
+
+  // An off-by-one in the row offsets shifts every slot's rows by one expert's worth.  If that still
+  // compares equal, the row offsets are not load-bearing in this fixture.
+  int shift_detected = 0;
+  std::size_t const shift = std::size_t(rows_per_expert) * kN;
+  for (int slot = 0; slot + 1 < kActive; ++slot) {
+    auto golden = golden_fp32(f.a_e[slot], rows_per_expert, f.q_e[slot], f.s_e[slot], f.z_e[slot]);
+    std::size_t const base = std::size_t(slot) * shift + shift;   // read the NEXT slot's rows
+    int bad = 0;
+    for (std::size_t i = 0; i < golden.size(); ++i)
+      if (!(std::fabs(golden[i] - float(m8[base + i])) <= 3e-2f * std::max(1.0f, std::fabs(golden[i]))))
+        ++bad;
+    if (bad > 0) ++shift_detected;
+  }
+  if (shift_detected != kActive - 1) {
+    std::printf("  G5 NEGATIVE row-offset: only %d/%d one-expert shifts were detected -- FAIL\n",
+                shift_detected, kActive - 1);
+    ++errors;
+  } else {
+    std::printf("  G5 NEGATIVE row-offset: %d/%d one-expert shifts rejected EXPECTED_RED\n",
+                shift_detected, kActive - 1);
+  }
+
+  int const cross = check_m8_m16(f.total_rows, m8, m16);
+  errors += cross;
+  std::printf("[G5] %s: ragged route E=%d/active=%d, per-expert distinct W/S/Z, poisoned inactives\n",
+              errors ? "FAIL" : "PASS", kE, kActive);
+  return errors;
+}
+
 int main() {
-  std::printf("== [112] ppu001 m8n16 collective G3/G4 ==\n");
-  std::printf("[G5] BLOCKED on #108 real E=256/active=8 ragged harness; L=1 is not substituted\n");
+  std::printf("== [112] ppu001 m8n16 collective G3/G4/G5 ==\n");
 
   auto q = make_codes();
   auto scales = make_scales();
@@ -500,7 +801,11 @@ int main() {
     errors += check_m8_m16(M, m8.logical, m16.logical);
   }
 
-  std::printf("== [112] %s: errors=%d (G3/G4; G5 blocked on #108) ==\n",
+  // G5 runs at the two row counts that separate the m8 family from its control: one row is the decode
+  // case the atom exists for, eight is the last M an m8 tile holds without a second tile.
+  for (int rows : {1, 8}) errors += run_g5(rows);
+
+  std::printf("== [112] %s: errors=%d (G3/G4/G5) ==\n",
               errors ? "FAIL" : "PASS", errors);
   return errors ? 1 : 0;
 }
