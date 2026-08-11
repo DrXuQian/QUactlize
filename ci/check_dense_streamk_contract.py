@@ -54,6 +54,21 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
             bad.append(f"kernel must contain exactly one {token!r}")
     if "should_perform_separate_reduction" in header:
         bad.append("107b must not wire the disabled separate-reduction path")
+    for token, count in (
+        ("static constexpr uint32_t PreFixupCaptureMagic = 0x534b4650u;", 1),
+        ("struct DiagnosticState {", 1),
+        ("std::is_trivially_copyable_v<DiagnosticState>", 1),
+        ("DiagnosticState* diagnostics = nullptr;", 2),
+        ("params.diagnostics->witness", 3),
+        ("TileScheduler::output_tile_index(", 1),
+        ("map_idx = q * stride + k;", 1),
+        ("CaptureStriped::store(capture_array, *accumulator_array, thread_idx);", 1),
+        ("atomicAdd(diagnostics->pre_fixup_capture_slot_visits + slot, 1u);", 1),
+        ("diagnostics->pre_fixup_capture_slot_k_counts[slot] =", 1),
+        ("atomicAdd(&diagnostics->pre_fixup_capture_error_count, 1u);", 1),
+    ):
+        if header.count(token) != count:
+            bad.append(f"gate-only partial capture requires {count} occurrence(s) of {token!r}")
 
     try:
         ws_size = section(header, "  static size_t scheduler_workspace_size", "\npublic:")
@@ -105,6 +120,14 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
             bad.append(f"residue-aware fixup requires {count} occurrence(s) of {token!r}")
     if device.count("TileScheduler::get_work_k_tile_count(") != 1:
         bad.append("mainloop does not use exactly one scheduler-owned K-tile count")
+    ordered_once(device, (
+        "collective_mainloop(params.mainloop",
+        "bool const requires_fixup =",
+        "diagnostics->pre_fixup_capture_magic == PreFixupCaptureMagic",
+        "CaptureStriped::store(capture_array, *accumulator_array, thread_idx);",
+        "bool const full_output_tile =",
+        "if (!requires_fixup || full_output_tile)",
+    ), "pre-fixup capture stays after mainloop and before production fixup", bad)
 
     # A0's old bool collapsed harmless half regrouping and a real ownership bug
     # into the same word.  The diagnostic must derive buckets from the lowered
@@ -135,10 +158,40 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         "[dense streamk split gate] EXERCISED real_cu=%d ctas_per_cu=%d",
         "result.split_path_exercised = false;",
         "Disposition: NOT EXERCISED",
+        "std::vector<std::vector<DenseVerifyPeerRange>> peer_ranges(sk.sk_tiles_);",
+        "a.k_begin < b.k_begin",
+        "range.k_begin != expected_k",
+        "partition.capture_slot_by_qk[map_index] = int32_t(range.capture_slot);",
+        "partition.split_peer_ranges.size() != split_tiles + peer_excess",
+        "[dense verify interpretation] ordinary-reference ULP is diagnostic only;",
+        "capture_vs_normal_bitdiff +=",
+        "for (uint32_t visits : capture_slot_visits) bad_slot_visits += visits != 1;",
+        "capture_slot_k_counts[peer] !=",
+        "if (bad_k_counts != 0)",
+        "if (capture_vs_normal_bitdiff != 0)",
+        "device_replay_bitdiff += replay_half.raw() != got.raw();",
+        "non_split_reference_mismatches +=",
+        "non_split_reference_bitdiff += got.raw() != ref.raw();",
+        "typename Gemm::CollectiveEpilogue::ThreadEpilogueOp,",
+        "ReplayEpilogue replay_epilogue(replay_params);",
+        "volatile float workspace_replay = captured(first);",
+        "float const replay = captured(last - 1) + float(workspace_replay);",
+        "options.beta == 0.0f ? ElementC(0) : host_c[out];",
+        "ElementD const replay_half = replay_epilogue(replay, replay_source);",
+        "triangle_closed ? \"CLOSED\" : \"OPEN\"",
+        "device_replay_bitdiff == 0 &&",
+        "non_split_reference_bitdiff == 0 && triangle_closed",
+        "host_diagnostics.pre_fixup_capture_magic =",
+        "captured_diagnostics.pre_fixup_capture_error_count",
+        "Passed (StreamK same-order partial replay bit-exact; ",
     )
     for token in diagnostic_tokens:
         if bench.count(token) != 1:
             bad.append(f"A0 bucket diagnostic must contain exactly one {token!r}")
+    if bench.count("bool verify_streamk_same_order_partial_replay(") != 2:
+        bad.append("same-order replay must have one declaration and one definition")
+    if bench.count("arguments.diagnostics = streamk_diagnostics.get();") != 2:
+        bad.append("exact fixture and adaptive split gate must each wire the one-pointer diagnostic POD")
     if bench.count("dense_classify_streamk_tiles(") != 2:
         bad.append("the Stream-K classifier must have exactly one definition and one accepted-arm call")
     if "tile_peer_range(" in bench:
@@ -199,6 +252,8 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         "distinct-event-pairs=%zu warmup-event-pairs=1 includes-launch-idle=1",
         "StreamK-C valid_elements=%llu peer_excess=%llu",
         "MODEL-ONLY/not-a-DRAM-counter",
+        "[streamk sequential CPU-FP32 fixture] order=k-ascending ",
+        "[streamk same-order replay] split_tiles=%llu peers=%zu ",
         "if (!final_result.split_path_exercised) return 2;",
         "return final_result.passed ? 0 : 1;",
     ):
@@ -242,12 +297,20 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         "run_split_probe()",
         "if [ \"$rc\" -eq 2 ]",
         "return 2",
+        "return \"$rc\"",
+        "if (rc == 0) != passed_disposition or (rc == 1) != failed_disposition:",
+        "if rc == 0 and not (",
+        "if rc == 1 and replay_verdict != \"MISMATCH/FAIL\":",
         "for n_tiles in range(32, 32 + 64)",
         "if tiles > workers and tiles % workers:",
         "split == gate_split > 0",
         "peers == gate_peers > 0",
         "SK-split>0 and peer_excess>0 were prerequisites",
         "correctness is the printed disposition, never an empty PASS",
+        "[streamk same-order replay] split_tiles=1 peers=8 split_outputs=8192",
+        "capture_holes=0 bad_slot_visits=0 bad_k_counts=0 capture_vs_normal_bitdiff=0 device_replay_bitdiff=0",
+        "non_split_reference_mismatches=0 non_split_reference_bitdiff=0",
+        "triangle=CLOSED BIT-EXACT/PASS",
         "STABLE_POSITIONS_AND_VALUES",
         "STABLE_POSITIONS_VALUE_DRIFT",
         "POSITION_DRIFT",
@@ -317,6 +380,20 @@ def main() -> int:
          "shared launch-worker source"),
         (0, "idx2crd(k_tile_start, shape<2>(gA))", "idx2crd(0, shape<2>(gA))",
          "absolute K start"),
+        (0, "diagnostics->pre_fixup_capture_magic == PreFixupCaptureMagic",
+         "diagnostics->pre_fixup_capture_magic != PreFixupCaptureMagic",
+         "capture magic fail-close"),
+        (0, "map_idx = q * stride + k;", "map_idx = q + k;",
+         "capture map retains both q and absolute K"),
+        (0, "CaptureStriped::store(capture_array, *accumulator_array, thread_idx);",
+         "/* planted capture drop */ (void)capture_array;",
+         "every peer fragment is captured before fixup"),
+        (0, "atomicAdd(diagnostics->pre_fixup_capture_slot_visits + slot, 1u);",
+         "/* planted visit-count drop */ (void)slot;",
+         "duplicate or missing peer slots stay visible"),
+        (0, "diagnostics->pre_fixup_capture_slot_k_counts[slot] =",
+         "/* planted K-count capture drop */ (void)",
+         "device peer lengths remain tied to the host range census"),
         (1, "Gemm::GemmKernel::initialize_workspace(\n            arguments, workspace.get(), /*stream=*/nullptr));\n      }\n      auto& events = streamk_events.at(iter + 1);\n      CUTLASS_PPU_CHECK(hggcEventRecord(events.start, nullptr));",
          "auto& events = streamk_events.at(iter + 1);\n      CUTLASS_PPU_CHECK(hggcEventRecord(events.start, nullptr));\n      Gemm::GemmKernel::initialize_workspace(\n            arguments, workspace.get(), /*stream=*/nullptr));\n      }",
          "lock reset before event"),
@@ -334,6 +411,19 @@ def main() -> int:
          "if (false && (verify_partition.split_tiles == 0 ||\n"
          "          verify_partition.peer_excess == 0))",
          "empty split path fails closed in the benchmark"),
+        (1, "a.k_begin < b.k_begin", "a.k_begin > b.k_begin",
+         "peer replay is ordered by increasing K_idx"),
+        (1, "range.k_begin != expected_k", "range.k_begin == expected_k",
+         "peer ranges are contiguous exact-once"),
+        (1, "if (capture_vs_normal_bitdiff != 0)", "if (false)",
+         "instrumented launch must equal normal launch"),
+        (1, "device_replay_bitdiff == 0 &&",
+         "device_replay_bitdiff >= 0 &&", "same-order replay is bit exact"),
+        (1, "non_split_reference_bitdiff == 0 && triangle_closed",
+         "non_split_reference_bitdiff >= 0 /* planted */",
+         "same-order/reference triangle closes"),
+        (5, "  return \"$rc\"\n}", "  return 0\n}",
+         "an exercised replay failure cannot become an adaptive-search success"),
         (1, "[](uint16_t visits) { return visits != 1; }",
          "[](uint16_t visits) { return visits != 0; }", "exact (q,k) coverage"),
         (1, "cutlass::relatively_equal(want, got, epsilon, non_zero_floor)",
@@ -370,7 +460,8 @@ def main() -> int:
             return 1
 
     print("[dense-streamk-contract] PASS -- shared workers x4, absolute K, exact-CTA fixup, "
-          "named-barrier compiler fence, per-launch lock reset, exact seam fixture, exact DP/SK error buckets; "
+          "named-barrier compiler fence, per-launch lock reset, adaptive nonempty seam, "
+          "compact pre-fixup capture and same-order replay; "
           f"{len(plants)} planted regressions rejected")
     return 0
 

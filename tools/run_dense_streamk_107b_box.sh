@@ -117,7 +117,7 @@ if not (workers == cu * ctas and tiles == lhs and workers == rhs and
 if rem == 0 and reason != "complete-worker-waves":
     raise SystemExit(f"divisible tile count has wrong reason {reason}")
 if text.count("  Disposition: NOT EXERCISED") != 1 or re.search(
-        r"^  Disposition: (Passed|Failed)$", text, re.M):
+        r"^  Disposition: (Passed|Failed)", text, re.M):
     raise SystemExit("NOT EXERCISED was collapsed into a numerical disposition")
 print(f"[107b][split-search] rejected empty seam tiles={tiles} workers={workers} "
       f"remainder={rem}")
@@ -127,7 +127,7 @@ PY
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
     fail "$label exited rc=$rc instead of Passed/Failed/NOT EXERCISED"
   fi
-  [ "$(grep -Ec '^  Disposition: (Passed|Failed)$' "$log")" -eq 1 ] \
+  [ "$(grep -Ec '^  Disposition: (Passed \(StreamK same-order partial replay bit-exact; any ordinary-reference differences are reassociation\)|Failed \(StreamK same-order partial replay did not close\))$' "$log")" -eq 1 ] \
     || fail "$label did not report exactly one exercised numerical disposition"
   if grep -q '^  Disposition: NOT EXERCISED$' "$log"; then
     fail "$label returned a numerical rc but printed NOT EXERCISED"
@@ -135,10 +135,11 @@ PY
   require_verify_buckets "$label" "$log"
   [ "$(grep -Ec '^  \[dense verify fingerprint\] comparator_positions=[0-9]+ position_fnv1a=[0-9a-f]{16} value_fnv1a=[0-9a-f]{16} .*' "$log")" -eq 1 ] \
     || fail "$label did not report exactly one mismatch-position fingerprint"
-  python3 - "$log" <<'PY' || fail "$label did not prove a real split path"
+  python3 - "$log" "$rc" <<'PY' || fail "$label did not prove a real split path"
 import pathlib, re, sys
 
 text = pathlib.Path(sys.argv[1]).read_text()
+rc = int(sys.argv[2])
 part = re.findall(
     r"\[dense verify partition\] DP=(\d+) SK-whole=(\d+) SK-split=(\d+) "
     r"peer_excess=(\d+) valid_fixup_elements=(\d+) qk_cells=(\d+) coverage=exact-once",
@@ -155,10 +156,37 @@ if not (workers == cu * ctas and tiles == lhs and workers == rhs and
         rem == tiles % workers and split == gate_split > 0 and
         peers == gate_peers > 0 and valid > 0):
     raise SystemExit(f"split witness did not close: part={part[0]} gate={gate[0]}")
+replay = re.findall(
+    r"\[streamk same-order replay\] split_tiles=(\d+) peers=(\d+) "
+    r"split_outputs=(\d+) capture_scalars=(\d+) capture_holes=(\d+) "
+    r"bad_slot_visits=(\d+) bad_k_counts=(\d+) "
+    r"capture_vs_normal_bitdiff=(\d+) device_replay_bitdiff=(\d+) "
+    r"non_split_reference_mismatches=(\d+) non_split_reference_bitdiff=(\d+) "
+    r"reference_raw_bitdiff=(\d+) "
+    r"triangle=(CLOSED|OPEN) (BIT-EXACT/PASS|MISMATCH/FAIL)", text)
+if len(replay) != 1:
+    raise SystemExit("missing or duplicate same-order replay record")
+passed_disposition = "Disposition: Passed (StreamK same-order partial replay bit-exact; " in text
+failed_disposition = "Disposition: Failed (StreamK same-order partial replay did not close)" in text
+*counts, triangle, replay_verdict = replay[0]
+counts = list(map(int, counts))
+if (rc == 0) != passed_disposition or (rc == 1) != failed_disposition:
+    raise SystemExit(
+        f"process status/disposition disagree: rc={rc} passed={passed_disposition} "
+        f"failed={failed_disposition}")
+if rc == 0 and not (
+        counts[0] == split and counts[1] == split + peers and counts[2] > 0 and
+        counts[3] > 0 and counts[4:11] == [0, 0, 0, 0, 0, 0, 0] and
+        triangle == "CLOSED" and replay_verdict == "BIT-EXACT/PASS"):
+    raise SystemExit(f"Passed disposition is not backed by a closed replay: {replay[0]}")
+if rc == 1 and replay_verdict != "MISMATCH/FAIL":
+    raise SystemExit(f"Failed disposition lacks a failed replay: {replay[0]}")
 print(f"[107b][split-path] EXERCISED tiles={tiles} workers={workers} "
-      f"split_tiles={split} peer_excess={peers}")
+      f"split_tiles={split} peer_excess={peers} replay={replay_verdict}")
 PY
-  return 0
+  # rc=1 is evidence that the exercised kernel failed, not another shape to
+  # search past.  Only rc=2/NOT EXERCISED may advance the adaptive search.
+  return "$rc"
 }
 
 printf '[107b] root-sha=%s\n' "$(git -C "$ROOT" rev-parse HEAD)"
@@ -229,7 +257,11 @@ if gx * gy * gz != physical or physical != workers or threads != 128:
 
 required = (
     "[streamk witness] fixup_work=8 epilogue_work=1 separate_reduction_work=0",
-    "[streamk CPU-FP32] outputs=8192 bad=0 bitdiff=0",
+    "[streamk sequential CPU-FP32 fixture] order=k-ascending dyadic=1 outputs=8192 bad=0 bitdiff=0",
+    "[streamk same-order replay] split_tiles=1 peers=8 split_outputs=8192",
+    "capture_holes=0 bad_slot_visits=0 bad_k_counts=0 capture_vs_normal_bitdiff=0 device_replay_bitdiff=0",
+    "non_split_reference_mismatches=0 non_split_reference_bitdiff=0",
+    "triangle=CLOSED BIT-EXACT/PASS",
     "BIT-EXACT",
     "distinct-event-pairs=20 warmup-event-pairs=1 includes-launch-idle=1 lock-reset-before-start=1",
     "StreamK-C valid_elements=",

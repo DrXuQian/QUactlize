@@ -621,6 +621,15 @@ enum class DenseVerifyBucket : uint8_t {
   Count = 3,
 };
 
+struct DenseVerifyPeerRange {
+  uint32_t q = 0;
+  uint32_t k_begin = 0;
+  uint32_t k_count = 0;
+  uint32_t unit = 0;
+  uint16_t visit = 0;
+  uint32_t capture_slot = 0;
+};
+
 // Host-only diagnostic map.  It never enters Gemm::Arguments and therefore
 // cannot change decomposition or kernel behaviour.  The dedicated 107b binary
 // fills one entry per logical output tile from the scheduler's lowered Params;
@@ -634,6 +643,8 @@ struct DenseVerifyPartition {
   int tiles_m = 0;
   int tiles_n = 0;
   int batches = 0;
+  int fixup_threads = 0;
+  uint32_t k_tiles_per_output_tile = 0;
   std::vector<DenseVerifyBucket> tile_bucket;
   // One entry per logical output tile.  These make a sparse A0 failure
   // attributable to the scheduler's global q and to the final peer's position
@@ -647,6 +658,12 @@ struct DenseVerifyPartition {
   // fragment instead of inventing a lane formula in the diagnostic.
   std::vector<uint16_t> local_lane;
   std::vector<uint16_t> local_stripe;
+  // Exact K-ordered peer ranges for split q.  The device capture map is sparse
+  // in (q,K_idx) but compact in capture_slot, so A0 needs ~one FP32 tile per
+  // real peer instead of q*Kt tiles of debug storage.
+  std::vector<uint32_t> split_peer_offsets;
+  std::vector<DenseVerifyPeerRange> split_peer_ranges;
+  std::vector<int32_t> capture_slot_by_qk;
   uint64_t split_tiles = 0;
   uint64_t peer_excess = 0;
   uint64_t valid_fixup_elements = 0;
@@ -670,6 +687,7 @@ bool dense_map_accumulator_owners(DenseVerifyPartition& partition) {
 
   partition.local_lane.assign(std::size_t(tile_elements), uint16_t(-1));
   partition.local_stripe.assign(std::size_t(tile_elements), uint16_t(-1));
+  partition.fixup_threads = threads;
   std::vector<uint8_t> coverage(std::size_t(tile_elements), 0);
   auto identity = cute::make_identity_tensor(cute::take<0, 2>(TileShape{}));
   TiledMma tiled_mma;
@@ -798,6 +816,7 @@ bool dense_classify_streamk_tiles(
   std::vector<uint32_t> peers(sk.sk_tiles_, 0);
   std::vector<uint32_t> final_unit(sk.sk_tiles_, uint32_t(-1));
   std::vector<uint16_t> final_visit(sk.sk_tiles_, uint16_t(-1));
+  std::vector<std::vector<DenseVerifyPeerRange>> peer_ranges(sk.sk_tiles_);
   for (uint64_t linear = 0; linear < sk.sk_units_; ++linear) {
     uint64_t const group = linear % groups;
     uint64_t const unit = linear / groups;
@@ -843,6 +862,9 @@ bool dense_classify_streamk_tiles(
       uint64_t const end = std::min(start + count, tile_begin + k_tiles);
       if (begin >= end) return reject("empty work-unit/output-tile intersection");
       ++peers[q];
+      peer_ranges[q].push_back(DenseVerifyPeerRange{
+          uint32_t(q), uint32_t(begin - tile_begin), uint32_t(end - begin),
+          uint32_t(linear), uint16_t(last_local_tile - local), 0u});
       if (end == tile_begin + k_tiles) {
         if (final_unit[q] != uint32_t(-1)) {
           return reject("output tile has more than one final peer");
@@ -864,6 +886,11 @@ bool dense_classify_streamk_tiles(
   uint64_t split_tiles = 0;
   uint64_t peer_excess = 0;
   uint64_t valid_fixup_elements = 0;
+  partition.k_tiles_per_output_tile = uint32_t(k_tiles);
+  partition.split_peer_offsets.assign(std::size_t(sk.sk_tiles_) + 1, 0u);
+  partition.split_peer_ranges.clear();
+  partition.capture_slot_by_qk.assign(
+      std::size_t(sk.sk_tiles_) * std::size_t(k_tiles), int32_t(-1));
   partition.scheduler_q.assign(tile_count, uint32_t(-1));
   partition.final_peer_unit.assign(tile_count, uint32_t(-1));
   partition.final_peer_visit.assign(tile_count, uint16_t(-1));
@@ -875,6 +902,39 @@ bool dense_classify_streamk_tiles(
     uint64_t logical = 0;
     if (!logical_tile_for_q(q, logical)) return reject("Stream-K q cannot be decoded");
     bool const split = peers[q] > 1;
+    auto& ranges = peer_ranges[q];
+    std::sort(ranges.begin(), ranges.end(),
+              [](DenseVerifyPeerRange const& a, DenseVerifyPeerRange const& b) {
+                return a.k_begin < b.k_begin;
+              });
+    uint32_t expected_k = 0;
+    for (DenseVerifyPeerRange const& range : ranges) {
+      if (range.q != q || range.k_count == 0 || range.k_begin != expected_k ||
+          uint64_t(range.k_begin) + range.k_count > k_tiles) {
+        return reject("K-ordered peer ranges have a hole, overlap, or wrong q");
+      }
+      expected_k += range.k_count;
+    }
+    if (ranges.size() != peers[q] || expected_k != k_tiles ||
+        ranges.back().unit != final_unit[q] ||
+        ranges.back().visit != final_visit[q]) {
+      return reject("peer-range chain disagrees with coverage or final owner");
+    }
+    partition.split_peer_offsets[q] =
+        uint32_t(partition.split_peer_ranges.size());
+    if (split) {
+      for (DenseVerifyPeerRange range : ranges) {
+        range.capture_slot = uint32_t(partition.split_peer_ranges.size());
+        std::size_t const map_index = std::size_t(q) * k_tiles + range.k_begin;
+        if (partition.capture_slot_by_qk[map_index] != -1) {
+          return reject("two split peers share one (q,K_idx) capture key");
+        }
+        partition.capture_slot_by_qk[map_index] = int32_t(range.capture_slot);
+        partition.split_peer_ranges.push_back(range);
+      }
+    }
+    partition.split_peer_offsets[q + 1] =
+        uint32_t(partition.split_peer_ranges.size());
     partition.tile_bucket[logical] = split
         ? DenseVerifyBucket::StreamKSplit : DenseVerifyBucket::StreamKWhole;
     partition.scheduler_q[logical] = uint32_t(q);
@@ -917,6 +977,10 @@ bool dense_classify_streamk_tiles(
   }
   if ((split_tiles == 0) != (peer_excess == 0)) {
     return reject("split-tile and peer-excess witnesses disagree");
+  }
+  if (partition.split_peer_ranges.size() != split_tiles + peer_excess ||
+      partition.split_peer_offsets.back() != partition.split_peer_ranges.size()) {
+    return reject("compact split-peer capture census does not close");
   }
   partition.split_tiles = split_tiles;
   partition.peer_excess = peer_excess;
@@ -1256,11 +1320,23 @@ Args args_from_options(Options const& options)
   }
 }
 
-bool verify(const Options &options, DenseVerifyPartition const* partition);
+bool verify(const Options &options, DenseVerifyPartition const* partition,
+            bool* diagnostic_closed = nullptr);
 bool verify_streamk_cpu_fp32(const Options &options);
+template <class Gemm>
+bool verify_streamk_same_order_partial_replay(
+    const Options& options, DenseVerifyPartition const& partition,
+    std::vector<ElementD> const& normal_output,
+    std::vector<ElementD> const& capture_output,
+    std::vector<ElementAccumulator> const& captured_partials,
+    std::vector<uint32_t> const& capture_slot_visits,
+    std::vector<uint32_t> const& capture_slot_k_counts,
+    uint32_t capture_errors);
 
 #if !defined(LOWBIT_DENSE_UNIT_BUILD)
-bool verify(const Options &options, DenseVerifyPartition const* partition) {
+bool verify(const Options &options, DenseVerifyPartition const* partition,
+            bool* diagnostic_closed) {
+  if (diagnostic_closed) *diagnostic_closed = false;
   //
   // Compute reference output
   //
@@ -1333,10 +1409,16 @@ bool verify(const Options &options, DenseVerifyPartition const* partition) {
         partition->scheduler_q.size() == expected_tiles &&
         partition->final_peer_unit.size() == expected_tiles &&
         partition->final_peer_visit.size() == expected_tiles &&
+        partition->fixup_threads > 0 &&
+        partition->k_tiles_per_output_tile > 0 &&
         partition->local_lane.size() ==
             std::size_t(partition->tile_m) * partition->tile_n &&
         partition->local_stripe.size() ==
-            std::size_t(partition->tile_m) * partition->tile_n;
+            std::size_t(partition->tile_m) * partition->tile_n &&
+        partition->split_peer_offsets.size() >= 1 &&
+        partition->capture_slot_by_qk.size() ==
+            (partition->split_peer_offsets.size() - 1) *
+                std::size_t(partition->k_tiles_per_output_tile);
     if (!map_ok) {
       std::fprintf(stderr,
                    "  [dense verify buckets] invalid tile map: tile=%dx%d grid=%dx%dx%d entries=%zu\n",
@@ -1545,6 +1627,10 @@ bool verify(const Options &options, DenseVerifyPartition const* partition) {
         static_cast<unsigned long long>(mismatch_after_prior_final_visit),
         local_mode_idx / std::size_t(partition->tile_n),
         local_mode_idx % std::size_t(partition->tile_n), local_mode_count);
+    std::printf(
+        "  [dense verify interpretation] ordinary-reference ULP is diagnostic only; "
+        "near-zero cancellation can make a benign reassociation look arbitrarily large. "
+        "The split-path verdict requires the same-order partial replay.\n");
     if ((bucket_mismatches == 0) != passed) {
       std::fprintf(stderr,
                    "  [dense verify buckets] fail-close: bucket comparator disagrees with device comparator "
@@ -1553,20 +1639,22 @@ bool verify(const Options &options, DenseVerifyPartition const* partition) {
       return false;
     }
   }
+  if (diagnostic_closed) *diagnostic_closed = true;
   return passed;
 }
 
-// Independent host accumulation for 107b's numerical gate.  The existing
-// verify() deliberately uses a PPU GEMM to avoid accumulation-order noise;
-// that is a useful broad bench check but not an independent oracle for a new
-// K-slice/reduction path.  Here A, scale and C are copied to the host; B is
-// read from the original pre-preprocess HostTensor with its signed int4
-// SubbyteReference.  Thus even dequantization is independent of the device
-// path.  Nonzero beta proves that only the final slice executes the epilogue.
+// Independent scalar host accumulation for the exact dyadic 107b fixture.
+// This is deliberately sequential k=0..K-1; it does NOT reproduce arbitrary
+// Stream-K peer grouping or the PPU MMA instruction's internal reduction
+// order.  The fixture's powers-of-two make those regroupings exact, while A,
+// scale and C still come independently from host data and nonzero beta proves
+// that only the final slice executes the epilogue.  Random A0 uses the captured
+// partial/CPU-fold oracle below instead of extrapolating this fixture.
 bool verify_streamk_cpu_fp32(const Options &options) {
   if (options.l != 1 || options.beta == 0.0f) {
     std::fprintf(stderr,
-                 "[streamk CPU-FP32] requires l=1 and nonzero beta (got l=%d beta=%g)\n",
+                 "[streamk sequential CPU-FP32 fixture] requires l=1 and nonzero beta "
+                 "(got l=%d beta=%g)\n",
                  options.l, double(options.beta));
     return false;
   }
@@ -1574,7 +1662,8 @@ bool verify_streamk_cpu_fp32(const Options &options) {
   constexpr uint64_t kMaxGateMacs = 100000000ull;
   if (macs > kMaxGateMacs) {
     std::fprintf(stderr,
-                 "[streamk CPU-FP32] gate is capped at %llu MACs (requested %llu); "
+                 "[streamk sequential CPU-FP32 fixture] gate is capped at %llu MACs "
+                 "(requested %llu); "
                  "use the documented 64x128x4352 shape\n",
                  static_cast<unsigned long long>(kMaxGateMacs),
                  static_cast<unsigned long long>(macs));
@@ -1619,11 +1708,246 @@ bool verify_streamk_cpu_fp32(const Options &options) {
     }
   }
   size_t const outputs = size_t(options.m) * options.n;
-  std::printf("  [streamk CPU-FP32] outputs=%zu bad=%d bitdiff=%d "
-              "max_abs=%.6g max_rel=%.6g %s\n",
+  std::printf("  [streamk sequential CPU-FP32 fixture] order=k-ascending "
+              "dyadic=1 outputs=%zu bad=%d bitdiff=%d max_abs=%.6g "
+              "max_rel=%.6g %s\n",
               outputs, bad, bitdiff, max_abs, max_rel,
               bad == 0 ? "BIT-EXACT" : "MISMATCH");
   return bad == 0;
+}
+
+// The broad reference above deliberately uses a whole-K GEMM.  A Stream-K
+// split changes FP32 parenthesization before the half epilogue, so disagreement
+// with that reference is not by itself a kernel defect.  This gate captures
+// each real pre-fixup FP32 peer fragment from the production mainloop, folds
+// those fragments on the host in increasing K_idx order (the deterministic
+// lock-chain order), and compares the resulting half output bit-for-bit.
+//
+// Capturing production partials is intentional: a scalar host dot product does
+// not know the PPU m16n16k16 instruction's internal reduction order.  The old
+// CPU fixture below/above is sequential-k and uses exact dyadic inputs; it is
+// an excellent absolute-K seam gate, but it is not an A0 same-order replay.
+template <class Gemm>
+bool verify_streamk_same_order_partial_replay(
+    const Options& options, DenseVerifyPartition const& partition,
+    std::vector<ElementD> const& normal_output,
+    std::vector<ElementD> const& capture_output,
+    std::vector<ElementAccumulator> const& captured_partials,
+    std::vector<uint32_t> const& capture_slot_visits,
+    std::vector<uint32_t> const& capture_slot_k_counts,
+    uint32_t capture_errors) {
+  auto fail = [](char const* why) {
+    std::fprintf(stderr, "  [streamk same-order replay] UNVERIFIED: %s\n", why);
+    return false;
+  };
+  if (options.l != 1) return fail("first replay supports l=1 only");
+  std::size_t const outputs =
+      std::size_t(options.m) * options.n * options.l;
+  std::size_t const tile_elements =
+      std::size_t(partition.tile_m) * partition.tile_n;
+  std::size_t const slots = partition.split_peer_ranges.size();
+  if (partition.split_tiles == 0 || partition.peer_excess == 0 ||
+      slots != partition.split_tiles + partition.peer_excess) {
+    return fail("no nonempty split-peer census");
+  }
+  if (normal_output.size() != outputs || capture_output.size() != outputs ||
+      captured_partials.size() != slots * tile_elements ||
+      capture_slot_visits.size() != slots ||
+      capture_slot_k_counts.size() != slots ||
+      partition.fixup_threads <= 0 ||
+      partition.split_peer_offsets.size() < 2) {
+    return fail("capture/output extent does not match the scheduler census");
+  }
+  if (capture_errors != 0) {
+    return fail("device capture rejected a q/K_idx/slot mapping");
+  }
+  uint64_t bad_slot_visits = 0;
+  for (uint32_t visits : capture_slot_visits) bad_slot_visits += visits != 1;
+  if (bad_slot_visits != 0) {
+    return fail("a compact peer slot was captured zero or multiple times");
+  }
+  uint64_t bad_k_counts = 0;
+  for (std::size_t peer = 0; peer < slots; ++peer) {
+    bad_k_counts += capture_slot_k_counts[peer] !=
+        partition.split_peer_ranges[peer].k_count;
+  }
+  if (bad_k_counts != 0) {
+    return fail("device peer K counts disagree with the host scheduler census");
+  }
+
+  uint64_t capture_holes = 0;
+  for (ElementAccumulator value : captured_partials) {
+    capture_holes += !std::isfinite(float(value));
+  }
+  if (capture_holes != 0) {
+    return fail("poison remained in a captured FP32 peer fragment");
+  }
+
+  uint64_t capture_vs_normal_bitdiff = 0;
+  for (std::size_t out = 0; out < outputs; ++out) {
+    capture_vs_normal_bitdiff +=
+        capture_output[out].raw() != normal_output[out].raw();
+  }
+  if (capture_vs_normal_bitdiff != 0) {
+    return fail("the diagnostic capture changed the production output");
+  }
+
+  std::vector<ElementD> host_ref(block_ref_D.size());
+  std::vector<ElementC> host_c(block_C.size());
+  block_ref_D.copy_to_host(host_ref.data());
+  block_C.copy_to_host(host_c.data());
+  if (host_ref.size() != outputs || host_c.size() != outputs) {
+    return fail("whole-K reference/C extent drifted");
+  }
+
+  ElementD const epsilon(1e-2f);
+  ElementD const non_zero_floor(1e-4f);
+  uint64_t split_outputs = 0;
+  uint64_t device_replay_bitdiff = 0;
+  uint64_t non_split_reference_mismatches = 0;
+  uint64_t non_split_reference_bitdiff = 0;
+  uint64_t device_reference_bitdiff = 0;
+  uint64_t replay_reference_bitdiff = 0;
+  uint64_t device_reference_position_hash = 1469598103934665603ull;
+  uint64_t replay_reference_position_hash = 1469598103934665603ull;
+  uint64_t device_reference_value_hash = 1469598103934665603ull;
+  uint64_t replay_reference_value_hash = 1469598103934665603ull;
+  auto fnv_mix = [](uint64_t& hash, uint64_t value) {
+    for (int byte = 0; byte < 8; ++byte) {
+      hash ^= uint8_t(value >> (8 * byte));
+      hash *= 1099511628211ull;
+    }
+  };
+
+  // Pin the host replay to the exact linear-combination operation selected by
+  // this shipping collective.  The PPU EVT clears C when beta is zero, then
+  // evaluates beta*C + alpha*acc through the same CUTLASS multiply/multiply-add
+  // functors and destination converter used below.  If the collective grows a
+  // different epilogue, this gate must learn that operation instead of silently
+  // retaining a hand-written arithmetic expression.
+  using ExpectedFusionOp = cutlass::epilogue::fusion::LinearCombination<
+      ElementD, ElementAccumulator, ElementC, ElementAccumulator,
+      cutlass::FloatRoundStyle::round_to_nearest>;
+  static_assert(cute::is_same_v<
+                    typename Gemm::CollectiveEpilogue::ThreadEpilogueOp,
+                    ExpectedFusionOp>,
+                "same-order replay is pinned to the shipping linear-combination EVT");
+  using ReplayEpilogue = cutlass::epilogue::thread::LinearCombination<
+      ElementD, 1, ElementAccumulator, ElementAccumulator,
+      cutlass::epilogue::thread::ScaleType::Default,
+      cutlass::FloatRoundStyle::round_to_nearest, ElementC>;
+  typename ReplayEpilogue::Params replay_params{
+      ElementAccumulator(options.alpha), ElementAccumulator(options.beta)};
+  ReplayEpilogue replay_epilogue(replay_params);
+
+  for (int m = 0; m < options.m; ++m) {
+    for (int n = 0; n < options.n; ++n) {
+      std::size_t const out = std::size_t(m) * options.n + n;
+      std::size_t const logical_tile =
+          std::size_t(m / partition.tile_m) * partition.tiles_n +
+          std::size_t(n / partition.tile_n);
+      ElementD const got = normal_output[out];
+      ElementD const ref = host_ref[out];
+      if (partition.tile_bucket[logical_tile] !=
+          DenseVerifyBucket::StreamKSplit) {
+        non_split_reference_mismatches +=
+            !cutlass::relatively_equal(ref, got, epsilon, non_zero_floor);
+        non_split_reference_bitdiff += got.raw() != ref.raw();
+        continue;
+      }
+
+      ++split_outputs;
+      uint32_t const q = partition.scheduler_q[logical_tile];
+      if (std::size_t(q + 1) >= partition.split_peer_offsets.size()) {
+        return fail("split output decoded outside peer-offset table");
+      }
+      uint32_t const first = partition.split_peer_offsets[q];
+      uint32_t const last = partition.split_peer_offsets[q + 1];
+      if (last <= first + 1 || last > partition.split_peer_ranges.size()) {
+        return fail("split output does not have at least two captured peers");
+      }
+      int const local_m = m % partition.tile_m;
+      int const local_n = n % partition.tile_n;
+      std::size_t const local =
+          std::size_t(local_m) * partition.tile_n + local_n;
+      std::size_t const physical =
+          std::size_t(partition.local_stripe[local]) *
+              std::size_t(partition.fixup_threads) +
+          partition.local_lane[local];
+      if (physical >= tile_elements) {
+        return fail("logical accumulator coordinate maps outside capture tile");
+      }
+
+      auto captured = [&](uint32_t peer) -> float {
+        DenseVerifyPeerRange const& range = partition.split_peer_ranges[peer];
+        return float(captured_partials[
+            std::size_t(range.capture_slot) * tile_elements + physical]);
+      };
+      // Mirror the live fixup operation-for-operation.  Peer 0 stores the
+      // workspace value, middle peers atomic-add into it in K_idx order, and
+      // the final peer executes load_add as (final_partial + workspace).
+      // For finite FP32 values a single left fold happens to produce the same
+      // rounded additions (the last operation only swaps its two operands),
+      // but spelling out the vendor sequence keeps this oracle auditable and
+      // avoids depending on that equivalence.
+      volatile float workspace_replay = captured(first);
+      for (uint32_t peer = first + 1; peer + 1 < last; ++peer) {
+        workspace_replay = float(workspace_replay) + captured(peer);
+      }
+      float const replay = captured(last - 1) + float(workspace_replay);
+      // EVT's beta==0 specialization clears its source fragment rather than
+      // multiplying the live C value by zero (which matters for NaN and signed
+      // zero).  Keep that detail in the oracle as well.
+      ElementC const replay_source =
+          options.beta == 0.0f ? ElementC(0) : host_c[out];
+      ElementD const replay_half = replay_epilogue(replay, replay_source);
+      device_replay_bitdiff += replay_half.raw() != got.raw();
+
+      bool const device_ref_diff = got.raw() != ref.raw();
+      bool const replay_ref_diff = replay_half.raw() != ref.raw();
+      device_reference_bitdiff += device_ref_diff;
+      replay_reference_bitdiff += replay_ref_diff;
+      if (device_ref_diff) {
+        fnv_mix(device_reference_position_hash, out);
+        fnv_mix(device_reference_value_hash,
+                (uint64_t(ref.raw()) << 16) | uint64_t(got.raw()));
+      }
+      if (replay_ref_diff) {
+        fnv_mix(replay_reference_position_hash, out);
+        fnv_mix(replay_reference_value_hash,
+                (uint64_t(ref.raw()) << 16) | uint64_t(replay_half.raw()));
+      }
+    }
+  }
+
+  bool const triangle_closed =
+      device_reference_bitdiff == replay_reference_bitdiff &&
+      device_reference_position_hash == replay_reference_position_hash &&
+      device_reference_value_hash == replay_reference_value_hash;
+  bool const passed = split_outputs > 0 && device_replay_bitdiff == 0 &&
+      non_split_reference_mismatches == 0 &&
+      non_split_reference_bitdiff == 0 && triangle_closed;
+  std::printf(
+      "  [streamk same-order replay] split_tiles=%llu peers=%zu "
+      "split_outputs=%llu capture_scalars=%zu capture_holes=%llu "
+      "bad_slot_visits=%llu bad_k_counts=%llu "
+      "capture_vs_normal_bitdiff=%llu device_replay_bitdiff=%llu "
+      "non_split_reference_mismatches=%llu non_split_reference_bitdiff=%llu "
+      "reference_raw_bitdiff=%llu "
+      "triangle=%s %s\n",
+      static_cast<unsigned long long>(partition.split_tiles), slots,
+      static_cast<unsigned long long>(split_outputs), captured_partials.size(),
+      static_cast<unsigned long long>(capture_holes),
+      static_cast<unsigned long long>(bad_slot_visits),
+      static_cast<unsigned long long>(bad_k_counts),
+      static_cast<unsigned long long>(capture_vs_normal_bitdiff),
+      static_cast<unsigned long long>(device_replay_bitdiff),
+      static_cast<unsigned long long>(non_split_reference_mismatches),
+      static_cast<unsigned long long>(non_split_reference_bitdiff),
+      static_cast<unsigned long long>(device_reference_bitdiff),
+      triangle_closed ? "CLOSED" : "OPEN",
+      passed ? "BIT-EXACT/PASS" : "MISMATCH/FAIL");
+  return passed;
 }
 #endif
 
@@ -1642,8 +1966,18 @@ struct dense_is_streamk_gemm : std::false_type {};
 
 template <class Gemm>
 struct dense_is_streamk_gemm<
-    Gemm, std::void_t<decltype(std::declval<typename Gemm::Arguments&>().fixup_witness)>>
+    Gemm, std::void_t<decltype(std::declval<typename Gemm::Arguments&>().diagnostics)>>
     : std::true_type {};
+
+struct DenseNoStreamKDiagnostics { uint32_t witness[3]{}; };
+
+template <class Gemm, bool = dense_is_streamk_gemm<Gemm>::value>
+struct dense_streamk_diagnostic_type { using type = DenseNoStreamKDiagnostics; };
+
+template <class Gemm>
+struct dense_streamk_diagnostic_type<Gemm, true> {
+  using type = typename Gemm::GemmKernel::DiagnosticState;
+};
 
 template <typename Gemm>
 Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic(),
@@ -1705,7 +2039,9 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
     arguments.ctas_per_cu = ctas_per_cu;
   }
 #if defined(DENSE_STREAMK_AB)
-  cutlass::DeviceAllocation<uint32_t> streamk_witness;
+  using StreamKDiagnosticState =
+      typename dense_streamk_diagnostic_type<Gemm>::type;
+  cutlass::DeviceAllocation<StreamKDiagnosticState> streamk_diagnostics;
   if constexpr (dense_is_streamk_gemm<Gemm>::value) {
     using SchedulerParams = typename Gemm::GemmKernel::TileSchedulerParams;
     arguments.scheduler.splits = 1;
@@ -1713,9 +2049,10 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
     arguments.scheduler.reduction_mode = SchedulerParams::ReductionMode::Deterministic;
     arguments.scheduler.decomposition_mode = SchedulerParams::DecompositionMode::StreamK;
     if (options.streamk_gate) {
-      streamk_witness.reset(3);
-      CUTLASS_PPU_CHECK(hggcMemset(streamk_witness.get(), 0, 3 * sizeof(uint32_t)));
-      arguments.fixup_witness = streamk_witness.get();
+      streamk_diagnostics.reset(1);
+      StreamKDiagnosticState host_diagnostics{};
+      streamk_diagnostics.copy_from_host(&host_diagnostics);
+      arguments.diagnostics = streamk_diagnostics.get();
     }
   }
 #endif
@@ -1911,15 +2248,114 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
 
   // Check if output from kernel and reference kernel are equal or not
 #if defined(DENSE_STREAMK_AB)
-  result.passed = verify(options, &verify_partition);
+  bool ordinary_diagnostic_closed = false;
+  result.passed = verify(
+      options, &verify_partition, &ordinary_diagnostic_closed);
 #else
   result.passed = verify(options, nullptr);
 #endif
 #if defined(DENSE_STREAMK_AB)
   if constexpr (dense_is_streamk_gemm<Gemm>::value) {
+    if (options.streamk_split_gate || options.streamk_gate) {
+      if (!ordinary_diagnostic_closed) {
+        std::fprintf(stderr,
+                     "[streamk same-order replay] ordinary-reference diagnostic did not close\n");
+        result.passed = false;
+      }
+      else {
+        std::size_t const tile_elements =
+            std::size_t(verify_partition.tile_m) * verify_partition.tile_n;
+        std::size_t const capture_slots =
+            verify_partition.split_peer_ranges.size();
+        std::size_t const capture_scalars = capture_slots * tile_elements;
+        if (capture_slots == 0 || capture_scalars == 0 ||
+            verify_partition.capture_slot_by_qk.empty()) {
+          std::fprintf(stderr,
+                       "[streamk same-order replay] empty compact capture plan\n");
+          result.passed = false;
+        }
+        else {
+          std::vector<ElementD> normal_output(block_D.size());
+          block_D.copy_to_host(normal_output.data());
+
+          cutlass::DeviceAllocation<ElementAccumulator> pre_fixup_capture(
+              capture_scalars);
+          cutlass::DeviceAllocation<int32_t> pre_fixup_slot_map(
+              verify_partition.capture_slot_by_qk.size());
+          cutlass::DeviceAllocation<uint32_t> pre_fixup_slot_visits(
+              capture_slots);
+          cutlass::DeviceAllocation<uint32_t> pre_fixup_slot_k_counts(
+              capture_slots);
+          pre_fixup_slot_map.copy_from_host(
+              verify_partition.capture_slot_by_qk.data());
+          CUTLASS_PPU_CHECK(hggcMemset(
+              pre_fixup_capture.get(), 0xff,
+              capture_scalars * sizeof(ElementAccumulator)));
+          CUTLASS_PPU_CHECK(hggcMemset(
+              pre_fixup_slot_visits.get(), 0,
+              capture_slots * sizeof(uint32_t)));
+          CUTLASS_PPU_CHECK(hggcMemset(
+              pre_fixup_slot_k_counts.get(), 0xff,
+              capture_slots * sizeof(uint32_t)));
+          streamk_diagnostics.reset(1);
+          StreamKDiagnosticState host_diagnostics{};
+          host_diagnostics.pre_fixup_capture_magic =
+              Gemm::GemmKernel::PreFixupCaptureMagic;
+          host_diagnostics.pre_fixup_capture = pre_fixup_capture.get();
+          host_diagnostics.pre_fixup_capture_slot_map =
+              pre_fixup_slot_map.get();
+          host_diagnostics.pre_fixup_capture_slot_visits =
+              pre_fixup_slot_visits.get();
+          host_diagnostics.pre_fixup_capture_slot_k_counts =
+              pre_fixup_slot_k_counts.get();
+          host_diagnostics.pre_fixup_capture_k_stride =
+              verify_partition.k_tiles_per_output_tile;
+          host_diagnostics.pre_fixup_capture_slot_capacity = capture_slots;
+          host_diagnostics.pre_fixup_capture_map_capacity =
+              verify_partition.capture_slot_by_qk.size();
+          streamk_diagnostics.copy_from_host(&host_diagnostics);
+          arguments.diagnostics = streamk_diagnostics.get();
+
+          // A second, correctness-only launch captures the exact production
+          // mainloop partials.  Reset locks first and require its final D to be
+          // bit-identical to the uninstrumented launch, so instrumentation
+          // cannot silently "fix" the phenomenon it is meant to classify.
+          CUTLASS_PPU_CHECK(hggcMemset(
+              block_D.get(), 0xff, block_D.size() * sizeof(ElementD)));
+          if (gemm.initialize(arguments, workspace.get()) !=
+                  cutlass::Status::kSuccess ||
+              Gemm::GemmKernel::initialize_workspace(
+                  arguments, workspace.get(), /*stream=*/nullptr) !=
+                  cutlass::Status::kSuccess ||
+              gemm.run() != cutlass::Status::kSuccess) {
+            std::fprintf(stderr,
+                         "[streamk same-order replay] capture launch failed\n");
+            result.passed = false;
+          }
+          else {
+            CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
+            std::vector<ElementD> capture_output(block_D.size());
+            std::vector<ElementAccumulator> host_capture(capture_scalars);
+            std::vector<uint32_t> host_slot_visits(capture_slots);
+            std::vector<uint32_t> host_slot_k_counts(capture_slots);
+            StreamKDiagnosticState captured_diagnostics{};
+            block_D.copy_to_host(capture_output.data());
+            pre_fixup_capture.copy_to_host(host_capture.data());
+            pre_fixup_slot_visits.copy_to_host(host_slot_visits.data());
+            pre_fixup_slot_k_counts.copy_to_host(host_slot_k_counts.data());
+            streamk_diagnostics.copy_to_host(&captured_diagnostics);
+            result.passed = verify_streamk_same_order_partial_replay<Gemm>(
+                options, verify_partition, normal_output, capture_output,
+                host_capture, host_slot_visits, host_slot_k_counts,
+                captured_diagnostics.pre_fixup_capture_error_count);
+          }
+        }
+      }
+    }
     if (options.streamk_gate) {
-      uint32_t witness[3] = {};
-      streamk_witness.copy_to_host(witness);
+      StreamKDiagnosticState host_diagnostics{};
+      streamk_diagnostics.copy_to_host(&host_diagnostics);
+      uint32_t const* witness = host_diagnostics.witness;
       std::printf("  [streamk witness] fixup_work=%u epilogue_work=%u "
                   "separate_reduction_work=%u\n",
                   witness[0], witness[1], witness[2]);
@@ -1933,7 +2369,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
       // The witness uses one atomic per work item.  It belongs to the numerical
       // gate, not a performance kernel; remove it before any timed launches.
       if (options.iterations > 0) {
-        arguments.fixup_witness = nullptr;
+        arguments.diagnostics = nullptr;
         if (gemm.initialize(arguments, workspace.get()) != cutlass::Status::kSuccess) {
           result.passed = false;
         }
@@ -1942,7 +2378,18 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   }
 #endif
 
-  std::cout << "  Disposition: " << (result.passed ? "Passed" : "Failed") << std::endl;
+  if (options.streamk_split_gate) {
+    std::cout << "  Disposition: "
+              << (result.passed
+                      ? "Passed (StreamK same-order partial replay bit-exact; "
+                        "any ordinary-reference differences are reassociation)"
+                      : "Failed (StreamK same-order partial replay did not close)")
+              << std::endl;
+  }
+  else {
+    std::cout << "  Disposition: " << (result.passed ? "Passed" : "Failed")
+              << std::endl;
+  }
 
   if (!result.passed) {
 #if defined(DENSE_STREAMK_AB)
@@ -2398,6 +2845,12 @@ int main(int argc, char const **args) {
   if (options.streamk_split_gate && options.iterations != 0) {
     std::fprintf(stderr,
                  "--streamk_split_gate is correctness-only and requires --iterations=0\n");
+    return 1;
+  }
+  if (options.streamk_split_gate &&
+      (options.l != 1 || options.alpha != 1.0f || options.beta != 0.0f)) {
+    std::fprintf(stderr,
+                 "--streamk_split_gate first replay requires --l=1 --alpha=1 --beta=0\n");
     return 1;
   }
 #endif

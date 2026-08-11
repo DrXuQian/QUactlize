@@ -11,6 +11,7 @@
 #include <limits>
 #include <type_traits>
 
+#include "cutlass/block_striped.h"
 #include "cutlass/cutlass.h"
 #include "cutlass/kernel_hardware_info.hpp"
 #include "cutlass/gemm/gemm.h"
@@ -75,6 +76,8 @@ public:
                 "dense Stream-K fixup cohort must equal the exact CTA thread count");
   static_assert(cute::is_same_v<ElementAccumulator, ElementCompute>,
                 "Stream-K scratch and the live accumulator fragment must have one type");
+  static_assert(cute::is_same_v<ElementAccumulator, float>,
+                "the gate-only pre-fixup capture ABI is an FP32 scalar stream");
   // The scheduler guarantees no fewer than eight K tiles per Stream-K unit.
   // The mixed pipeline has a Stages-1 startup schedule (short slices repeat a
   // final valid prefetch rather than reading past the slice).  Keep this first
@@ -82,6 +85,29 @@ public:
   // belongs to a later tactic sweep, not this fixed s2 mechanism gate.
   static_assert(DispatchPolicy::Stages - 1 <= 8,
                 "dense mixed-input Stream-K first wiring is limited to the reviewed <=8 startup envelope");
+
+  // Keep the kernel-parameter ABI at one nullable diagnostic pointer.  The
+  // previous gate used one uint32_t* witness pointer; growing Arguments/Params
+  // by individual capture fields would perturb that layout.  This POD lives
+  // in device memory only for correctness gates.  Null performs no diagnostic global
+  // access; adding the dormant branch still changes codegen, so byte identity
+  // with an older binary is deliberately not claimed.
+  static constexpr uint32_t PreFixupCaptureMagic = 0x534b4650u; // "SKFP"
+  struct DiagnosticState {
+    uint32_t witness[3]{};
+    uint32_t pre_fixup_capture_magic = 0;
+    ElementAccumulator* pre_fixup_capture = nullptr;
+    int32_t const* pre_fixup_capture_slot_map = nullptr;
+    uint32_t* pre_fixup_capture_slot_visits = nullptr;
+    uint32_t* pre_fixup_capture_slot_k_counts = nullptr;
+    uint64_t pre_fixup_capture_slot_capacity = 0;
+    uint64_t pre_fixup_capture_map_capacity = 0;
+    uint32_t pre_fixup_capture_k_stride = 0;
+    uint32_t pre_fixup_capture_error_count = 0;
+  };
+  static_assert(std::is_trivially_copyable_v<DiagnosticState> &&
+                alignof(DiagnosticState) >= alignof(void*),
+                "Stream-K diagnostic POD must cross the host/device ABI unchanged");
 
   // Tile i executes mainloop -> fixup/epilogue before tile i+1 starts.  The
   // union is valid only while nobody overlaps tile i's epilogue with the next
@@ -104,10 +130,10 @@ public:
     KernelHardwareInfo hw_info{};       // real device/CU count
     TileSchedulerArguments scheduler{};
     int ctas_per_cu = 0;                // occupancy of this exact kernel
-    // Optional three-word gate witness: [0] requires_fixup work items,
-    // [1] final-epilogue work items, [2] separate-reduction work items.
-    // Null on performance runs.
-    uint32_t* fixup_witness = nullptr;
+    // Optional gate POD; null on every performance/shipping run. witness[] is
+    // [requires_fixup, final-epilogue, separate-reduction].  Capture metadata
+    // is active only when its magic is exact.
+    DiagnosticState* diagnostics = nullptr;
   };
 
   struct Params {
@@ -119,7 +145,7 @@ public:
     KernelHardwareInfo scheduler_hw_info{}; // cu_count == physical workers
     TileSchedulerParams scheduler{};
     int ctas_per_cu = 0;
-    uint32_t* fixup_witness = nullptr;
+    DiagnosticState* diagnostics = nullptr;
   };
 
 private:
@@ -187,7 +213,7 @@ public:
         workers,
         scheduler,
         args.ctas_per_cu,
-        args.fixup_witness,
+        args.diagnostics,
     };
   }
 
@@ -275,8 +301,8 @@ public:
     auto const blk_shape = TileShape{};
 
     while (work_tile_info.is_valid()) {
-      if (params.fixup_witness && thread_idx == 0 && work_tile_info.is_reduction_unit()) {
-        atomicAdd(params.fixup_witness + 2, 1u);
+      if (params.diagnostics && thread_idx == 0 && work_tile_info.is_reduction_unit()) {
+        atomicAdd(params.diagnostics->witness + 2, 1u);
       }
       if (!TileScheduler::valid_warpgroup_in_work_tile(work_tile_info)) {
         auto next = scheduler.fetch_next_work(work_tile_info);
@@ -317,8 +343,83 @@ public:
 
       bool const requires_fixup = TileScheduler::requires_fixup(
           params.scheduler, work_tile_info);
-      if (params.fixup_witness && thread_idx == 0 && requires_fixup) {
-        atomicAdd(params.fixup_witness + 0, 1u);
+      if (params.diagnostics && thread_idx == 0 && requires_fixup) {
+        atomicAdd(params.diagnostics->witness + 0, 1u);
+      }
+      // Capture the raw mainloop partial before fixup changes the live
+      // accumulator.  This seam is intentionally all-or-none and gate-only:
+      // the default nullptr configuration performs no map/capture global
+      // access.  Invalid q/K/map/slot metadata increments one error per work
+      // item (thread 0 only), while every CTA thread takes the same skip path.
+      DiagnosticState* diagnostics = params.diagnostics;
+      if (requires_fixup && diagnostics != nullptr &&
+          diagnostics->pre_fixup_capture_magic == PreFixupCaptureMagic) {
+        using AccumulatorArray =
+            Array<ElementAccumulator, size(decltype(accumulators){})>;
+        using CaptureStriped =
+            BlockStripedReduce<TileScheduler::FixupThreadCount, AccumulatorArray>;
+        static_assert(CaptureStriped::kStripes == size(decltype(accumulators){}),
+                      "pre-fixup capture must use scalar FP32 stripes");
+        static_assert(
+            uint64_t(TileScheduler::FixupThreadCount) *
+                uint64_t(size(decltype(accumulators){})) ==
+              uint64_t(size<0>(TileShape{})) * uint64_t(size<1>(TileShape{})),
+            "pre-fixup capture slot must cover one exact accumulator tile");
+
+        uint64_t const q = TileScheduler::output_tile_index(
+            params.scheduler, work_tile_info);
+        int32_t const k_idx = work_tile_info.K_idx;
+        uint64_t map_idx = 0;
+        bool valid = diagnostics->pre_fixup_capture != nullptr &&
+                     diagnostics->pre_fixup_capture_slot_map != nullptr &&
+                     diagnostics->pre_fixup_capture_slot_visits != nullptr &&
+                     diagnostics->pre_fixup_capture_slot_k_counts != nullptr &&
+                     diagnostics->pre_fixup_capture_k_stride > 0 && k_idx >= 0 &&
+                     uint64_t(k_idx) <
+                         uint64_t(diagnostics->pre_fixup_capture_k_stride);
+        if (valid) {
+          uint64_t const k = uint64_t(k_idx);
+          uint64_t const stride =
+              uint64_t(diagnostics->pre_fixup_capture_k_stride);
+          valid = q <= (std::numeric_limits<uint64_t>::max() - k) / stride;
+          if (valid) {
+            map_idx = q * stride + k;
+            valid = map_idx < diagnostics->pre_fixup_capture_map_capacity;
+          }
+        }
+
+        int32_t slot = -1;
+        if (valid) {
+          slot = diagnostics->pre_fixup_capture_slot_map[map_idx];
+          valid = slot >= 0 &&
+                  uint64_t(slot) <
+                      diagnostics->pre_fixup_capture_slot_capacity;
+        }
+
+        constexpr uint64_t kCaptureElementsPerSlot =
+            uint64_t(size<0>(TileShape{})) * uint64_t(size<1>(TileShape{}));
+        if (valid) {
+          valid = uint64_t(slot) <=
+              std::numeric_limits<uint64_t>::max() / kCaptureElementsPerSlot;
+        }
+        if (!valid) {
+          if (thread_idx == 0) {
+            atomicAdd(&diagnostics->pre_fixup_capture_error_count, 1u);
+          }
+        }
+        else {
+          if (thread_idx == 0) {
+            diagnostics->pre_fixup_capture_slot_k_counts[slot] =
+                uint32_t(k_tile_count);
+            atomicAdd(diagnostics->pre_fixup_capture_slot_visits + slot, 1u);
+          }
+          ElementAccumulator* slot_base = diagnostics->pre_fixup_capture +
+              uint64_t(slot) * kCaptureElementsPerSlot;
+          auto* capture_array = reinterpret_cast<AccumulatorArray*>(slot_base);
+          auto const* accumulator_array =
+              reinterpret_cast<AccumulatorArray const*>(accumulators.data());
+          CaptureStriped::store(capture_array, *accumulator_array, thread_idx);
+        }
       }
       bool const full_output_tile =
           int(get<0>(residue_mnk)) >= int(size<0>(blk_shape)) &&
@@ -338,8 +439,8 @@ public:
       }
 
       if (TileScheduler::compute_epilogue(work_tile_info, params.scheduler)) {
-        if (params.fixup_witness && thread_idx == 0) {
-          atomicAdd(params.fixup_witness + 1, 1u);
+        if (params.diagnostics && thread_idx == 0) {
+          atomicAdd(params.diagnostics->witness + 1, 1u);
         }
         CollectiveEpilogue epilogue{params.epilogue, shared_storage.tensors.epilogue};
         #pragma hggc dislicm
