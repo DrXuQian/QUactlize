@@ -129,6 +129,12 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         "cutlass::relatively_equal(want, got, epsilon, non_zero_floor)",
         "bucket comparator disagrees with device comparator",
         "max_rel_sym=%.9g max_half_ulp=%u nonfinite=%llu",
+        "if ((split_tiles == 0) != (peer_excess == 0))",
+        "partition.split_tiles = split_tiles;",
+        "[dense streamk split gate] NOT EXERCISED real_cu=%d",
+        "[dense streamk split gate] EXERCISED real_cu=%d ctas_per_cu=%d",
+        "result.split_path_exercised = false;",
+        "Disposition: NOT EXERCISED",
     )
     for token in diagnostic_tokens:
         if bench.count(token) != 1:
@@ -151,6 +157,9 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
             "gemm.initialize(arguments, workspace.get())",
             "Gemm::GemmKernel::to_underlying_arguments(arguments, workspace.get())",
             "dense_classify_streamk_tiles(verify_partition,",
+            "if (options.streamk_split_gate)",
+            "if (verify_partition.split_tiles == 0 ||",
+            "result.split_path_exercised = false;",
         ), "only classify an accepted lowered Params", bad)
 
     try:
@@ -190,6 +199,7 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         "distinct-event-pairs=%zu warmup-event-pairs=1 includes-launch-idle=1",
         "StreamK-C valid_elements=%llu peer_excess=%llu",
         "MODEL-ONLY/not-a-DRAM-counter",
+        "if (!final_result.split_path_exercised) return 2;",
         "return final_result.passed ? 0 : 1;",
     ):
         if bench.count(token) != 1:
@@ -225,12 +235,19 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
             bad.append(f"isolated CMake target is missing {token!r}")
 
     for token in (
-        "run_diagnostic_case 'A0 Stream-K diagnostic'",
-        "run_verify_only_case 'A0 Stream-K repeat-position diagnostic'",
+        "run_diagnostic_case 'A0 Stream-K performance diagnostic (not split gate)'",
         "require_verify_buckets 'A0 non-persistent control'",
         "require_verify_buckets 'A0 serial-persistent control'",
-        "A0 correctness is the printed disposition, not this script exit",
-        "coverage=exact-once",
+        "COMMON_SHAPE=(--m=2048 --n=4096 --k=4096 --l=1 --g=128 --mode=1)",
+        "run_split_probe()",
+        "if [ \"$rc\" -eq 2 ]",
+        "return 2",
+        "for n_tiles in range(32, 32 + 64)",
+        "if tiles > workers and tiles % workers:",
+        "split == gate_split > 0",
+        "peers == gate_peers > 0",
+        "SK-split>0 and peer_excess>0 were prerequisites",
+        "correctness is the printed disposition, never an empty PASS",
         "STABLE_POSITIONS_AND_VALUES",
         "STABLE_POSITIONS_VALUE_DRIFT",
         "POSITION_DRIFT",
@@ -241,6 +258,27 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         bad.append("box gate does not preserve a complete rc=1 numerical diagnostic")
     if "run_case 'A0 Stream-K'" in box_gate:
         bad.append("box gate still drops the failing A0 Stream-K diagnostic")
+    if box_gate.count("run_split_probe") != 3:
+        bad.append("box gate must define one split probe and invoke it for selection plus repeat")
+    if box_gate.count("--iterations=0 --streamk_split_gate") != 2:
+        bad.append("box gate must run exactly two correctness-only exercised split arms")
+    if "coverage=exact-once" not in box_gate:
+        bad.append("box gate does not require the exact scheduler coverage witness")
+    try:
+        split_flow = section(box_gate,
+                             "# Choose a correctness shape from the runtime worker count",
+                             "\npython3 - \"$NP_LOG\"")
+    except ValueError as e:
+        bad.append(str(e))
+    else:
+        ordered_once(split_flow, (
+            "WORKERS=\"$(python3 - \"$SK_LOG\"",
+            "mapfile -t SPLIT_CANDIDATES",
+            "for candidate_n in \"${SPLIT_CANDIDATES[@]}\"",
+            "SPLIT_LOG=\"$candidate_log\"",
+            "adaptive split-path repeat N=${SPLIT_N}",
+            "python3 - \"$SPLIT_LOG\" \"$SPLIT_REPEAT_LOG\"",
+        ), "runtime-adaptive split selection before fingerprint comparison", bad)
 
     # This is a compiler-ordering contract, not a hardware-instruction check.
     # ppu.bar.sync and ppu.fence are opaque strings to C++; volatile preserves
@@ -288,6 +326,14 @@ def main() -> int:
         (1, "MODEL-ONLY/not-a-DRAM-counter", "measured-DRAM-bytes",
          "logical partial-C model is mislabeled as a DRAM counter"),
         (1, "return final_result.passed ? 0 : 1;", "return 0;", "gate exit status"),
+        (1, "if (!final_result.split_path_exercised) return 2;",
+         "if (!final_result.split_path_exercised) return 0;",
+         "NOT EXERCISED has a distinct process status"),
+        (1, "if (verify_partition.split_tiles == 0 ||\n"
+         "          verify_partition.peer_excess == 0)",
+         "if (false && (verify_partition.split_tiles == 0 ||\n"
+         "          verify_partition.peer_excess == 0))",
+         "empty split path fails closed in the benchmark"),
         (1, "[](uint16_t visits) { return visits != 1; }",
          "[](uint16_t visits) { return visits != 0; }", "exact (q,k) coverage"),
         (1, "cutlass::relatively_equal(want, got, epsilon, non_zero_floor)",
@@ -298,11 +344,15 @@ def main() -> int:
          "final_visit[q] = uint16_t(0);", "persistent final-peer visit ordinal"),
         (2, "X(lowbit_dense_streamk_probe,64,128,64,64,32,2,0)",
          "X(lowbit_dense_streamk_probe,64,128,64,64,32,3,0)", "isolated fixture"),
-        (5, "run_diagnostic_case 'A0 Stream-K diagnostic'",
+        (5, "run_diagnostic_case 'A0 Stream-K performance diagnostic (not split gate)'",
          "run_case 'A0 Stream-K'", "preserve a failed A0 diagnostic"),
-        (5, "run_verify_only_case 'A0 Stream-K repeat-position diagnostic'",
-         "run_diagnostic_case 'A0 Stream-K repeat-position diagnostic'",
-         "independent repeat-position arm"),
+        (5, "    return 2\n  fi",
+         "    return 0\n  fi", "empty split probe cannot become evidence"),
+        (5, "    if tiles > workers and tiles % workers:",
+         "    if tiles > workers:", "adaptive candidates avoid exact worker waves"),
+        (5, "split == gate_split > 0 and\n        peers == gate_peers > 0",
+         "split == gate_split >= 0 and\n        peers == gate_peers >= 0",
+         "split evidence must be non-empty"),
         (6, '    // rise above its acquire-side sync.\n'
             '    asm volatile("ppu.bar.sync %0, %1;" : : "r"(barrier_id), "r"(num_threads) : "memory");',
          '    // rise above its acquire-side sync.\n'

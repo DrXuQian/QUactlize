@@ -14,7 +14,7 @@ GATE_LOG="$ARTIFACT_ROOT/seam-gate.log"
 NP_LOG="$ARTIFACT_ROOT/a0-non-persistent.log"
 P_LOG="$ARTIFACT_ROOT/a0-persistent.log"
 SK_LOG="$ARTIFACT_ROOT/a0-streamk.log"
-SK_REPEAT_LOG="$ARTIFACT_ROOT/a0-streamk-repeat.log"
+SPLIT_REPEAT_LOG="$ARTIFACT_ROOT/a0-split-repeat.log"
 
 fail() {
   printf '[107b] FAIL: %s\n' "$*" >&2
@@ -79,7 +79,10 @@ run_diagnostic_case() {
   require_verify_buckets "$label" "$log"
 }
 
-run_verify_only_case() {
+# A split-path gate has three outcomes: numerical PASS/FAIL after exercising a
+# real peer seam, or rc=2/NOT EXERCISED.  The last outcome is useful while
+# searching runtime-dependent shapes, but it is never accepted as evidence.
+run_split_probe() {
   local label="$1" log="$2"
   shift 2
   printf '\n== %s ==\n' "$label"
@@ -87,14 +90,75 @@ run_verify_only_case() {
   "$BIN" "$@" 2>&1 | tee "$log"
   local rc=${PIPESTATUS[0]}
   set -e
+  if [ "$rc" -eq 2 ]; then
+    python3 - "$log" <<'PY' || fail "$label malformed its NOT EXERCISED result"
+import pathlib, re, sys
+
+text = pathlib.Path(sys.argv[1]).read_text()
+part = re.findall(
+    r"\[dense verify partition\] DP=(\d+) SK-whole=(\d+) SK-split=(\d+) "
+    r"peer_excess=(\d+) valid_fixup_elements=(\d+) qk_cells=(\d+) coverage=exact-once",
+    text)
+gate = re.findall(
+    r"\[dense streamk split gate\] NOT EXERCISED real_cu=(\d+) "
+    r"ctas_per_cu=(\d+) workers=(\d+) logical_cta=(\d+) "
+    r"logical_cta%workers=(\d+)%(\d+)=(\d+) SK-split=(\d+) "
+    r"peer_excess=(\d+) reason=([a-z-]+)", text)
+if len(part) != 1 or len(gate) != 1:
+    raise SystemExit("missing or duplicate partition/NOT EXERCISED record")
+dp, whole, split, peers, valid, cells = map(int, part[0])
+cu, ctas, workers, tiles, lhs, rhs, rem, gate_split, gate_peers, reason = gate[0]
+cu, ctas, workers, tiles, lhs, rhs, rem, gate_split, gate_peers = map(
+    int, (cu, ctas, workers, tiles, lhs, rhs, rem, gate_split, gate_peers))
+if not (workers == cu * ctas and tiles == lhs and workers == rhs and
+        rem == tiles % workers and split == peers == gate_split == gate_peers == 0 and
+        valid == 0):
+    raise SystemExit(f"inconsistent empty seam: part={part[0]} gate={gate[0]}")
+if rem == 0 and reason != "complete-worker-waves":
+    raise SystemExit(f"divisible tile count has wrong reason {reason}")
+if text.count("  Disposition: NOT EXERCISED") != 1 or re.search(
+        r"^  Disposition: (Passed|Failed)$", text, re.M):
+    raise SystemExit("NOT EXERCISED was collapsed into a numerical disposition")
+print(f"[107b][split-search] rejected empty seam tiles={tiles} workers={workers} "
+      f"remainder={rem}")
+PY
+    return 2
+  fi
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
-    fail "$label exited rc=$rc instead of a numerical Passed/Failed verdict"
+    fail "$label exited rc=$rc instead of Passed/Failed/NOT EXERCISED"
   fi
   [ "$(grep -Ec '^  Disposition: (Passed|Failed)$' "$log")" -eq 1 ] \
-    || fail "$label did not report exactly one numerical disposition"
+    || fail "$label did not report exactly one exercised numerical disposition"
+  if grep -q '^  Disposition: NOT EXERCISED$' "$log"; then
+    fail "$label returned a numerical rc but printed NOT EXERCISED"
+  fi
   require_verify_buckets "$label" "$log"
   [ "$(grep -Ec '^  \[dense verify fingerprint\] comparator_positions=[0-9]+ position_fnv1a=[0-9a-f]{16} value_fnv1a=[0-9a-f]{16} .*' "$log")" -eq 1 ] \
     || fail "$label did not report exactly one mismatch-position fingerprint"
+  python3 - "$log" <<'PY' || fail "$label did not prove a real split path"
+import pathlib, re, sys
+
+text = pathlib.Path(sys.argv[1]).read_text()
+part = re.findall(
+    r"\[dense verify partition\] DP=(\d+) SK-whole=(\d+) SK-split=(\d+) "
+    r"peer_excess=(\d+) valid_fixup_elements=(\d+) qk_cells=(\d+) coverage=exact-once",
+    text)
+gate = re.findall(
+    r"\[dense streamk split gate\] EXERCISED real_cu=(\d+) ctas_per_cu=(\d+) "
+    r"workers=(\d+) logical_cta=(\d+) logical_cta%workers=(\d+)%(\d+)=(\d+) "
+    r"SK-split=(\d+) peer_excess=(\d+)", text)
+if len(part) != 1 or len(gate) != 1:
+    raise SystemExit("missing or duplicate exercised partition/gate record")
+dp, whole, split, peers, valid, cells = map(int, part[0])
+cu, ctas, workers, tiles, lhs, rhs, rem, gate_split, gate_peers = map(int, gate[0])
+if not (workers == cu * ctas and tiles == lhs and workers == rhs and
+        rem == tiles % workers and split == gate_split > 0 and
+        peers == gate_peers > 0 and valid > 0):
+    raise SystemExit(f"split witness did not close: part={part[0]} gate={gate[0]}")
+print(f"[107b][split-path] EXERCISED tiles={tiles} workers={workers} "
+      f"split_tiles={split} peer_excess={peers}")
+PY
+  return 0
 }
 
 printf '[107b] root-sha=%s\n' "$(git -C "$ROOT" rev-parse HEAD)"
@@ -178,15 +242,15 @@ print(f"[107b][gate] PASS workers={workers} decomposition=1x8 witness=8/1/0 grid
 PY
 
 # Same binary, geometry, event protocol, and 20-launch median for all three
-# dense arms.  This is diagnostic only: the 107b value is mechanism proof, not
-# a grouped/MoE speedup and it does not alter C1 or S068.
+# dense arms.  Fixed A0 remains a performance comparison.  It is deliberately
+# not the split-path correctness gate: on a worker count that divides its 1024
+# output tiles, its Stream-K arm contains no peer seam.
 COMMON_SHAPE=(--m=2048 --n=4096 --k=4096 --l=1 --g=128 --mode=1)
 COMMON=("${COMMON_SHAPE[@]}" --iterations=20)
 run_case 'A0 non-persistent control' "$NP_LOG" "${COMMON[@]}"
 run_case 'A0 serial-persistent control' "$P_LOG" "${COMMON[@]}" --persistent
-run_diagnostic_case 'A0 Stream-K diagnostic' "$SK_LOG" "${COMMON[@]}" --streamk
-run_verify_only_case 'A0 Stream-K repeat-position diagnostic' "$SK_REPEAT_LOG" \
-  "${COMMON_SHAPE[@]}" --iterations=0 --streamk
+run_diagnostic_case 'A0 Stream-K performance diagnostic (not split gate)' \
+  "$SK_LOG" "${COMMON[@]}" --streamk
 
 require_verify_buckets 'A0 non-persistent control' "$NP_LOG"
 require_verify_buckets 'A0 serial-persistent control' "$P_LOG"
@@ -202,7 +266,62 @@ grep -q 'StreamK-C valid_elements=' "$SK_LOG" \
 grep -q 'MODEL-ONLY/not-a-DRAM-counter' "$SK_LOG" \
   || fail 'A0 Stream-K mislabeled logical partial-C accesses as measured DRAM traffic'
 
-python3 - "$SK_LOG" "$SK_REPEAT_LOG" <<'PY' || fail 'A0 mismatch fingerprint comparison failed'
+# Choose a correctness shape from the runtime worker count, then let the
+# lowered scheduler be the final oracle.  Filtering out exact worker-wave
+# multiples avoids the known empty case; rc=2 advances to the next N if a
+# future MinIters/grouping policy still produces no peer seam.
+WORKERS="$(python3 - "$SK_LOG" <<'PY'
+import pathlib, re, sys
+text = pathlib.Path(sys.argv[1]).read_text()
+hits = re.findall(r"\[dense streamk decomposition\].* workers=(\d+) ", text)
+if len(hits) != 1 or int(hits[0]) <= 0:
+    raise SystemExit("cannot recover one positive runtime worker count")
+print(hits[0])
+PY
+)" || fail 'could not derive runtime workers for the adaptive split gate'
+
+mapfile -t SPLIT_CANDIDATES < <(python3 - "$WORKERS" <<'PY'
+import sys
+workers = int(sys.argv[1])
+tiles_m, tile_n = 32, 128       # reviewed 64x128 A0 tactic, M=2048
+for n_tiles in range(32, 32 + 64):
+    tiles = tiles_m * n_tiles
+    if tiles > workers and tiles % workers:
+        print(n_tiles * tile_n)
+PY
+)
+[ "${#SPLIT_CANDIDATES[@]}" -gt 0 ] \
+  || fail "adaptive split search generated no candidate for workers=$WORKERS"
+
+SPLIT_N=''
+SPLIT_LOG=''
+for candidate_n in "${SPLIT_CANDIDATES[@]}"; do
+  candidate_log="$ARTIFACT_ROOT/a0-split-n${candidate_n}.log"
+  if run_split_probe "adaptive split-path probe N=${candidate_n}" "$candidate_log" \
+      --m=2048 --n="$candidate_n" --k=4096 --l=1 --g=128 --mode=1 \
+      --iterations=0 --streamk_split_gate; then
+    SPLIT_N="$candidate_n"
+    SPLIT_LOG="$candidate_log"
+    break
+  else
+    probe_rc=$?
+    [ "$probe_rc" -eq 2 ] \
+      || fail "adaptive split-path probe N=${candidate_n} failed unexpectedly rc=$probe_rc"
+  fi
+done
+[ -n "$SPLIT_N" ] && [ -n "$SPLIT_LOG" ] \
+  || fail "no tested N exercised a split path for workers=$WORKERS"
+
+if run_split_probe "adaptive split-path repeat N=${SPLIT_N}" "$SPLIT_REPEAT_LOG" \
+    --m=2048 --n="$SPLIT_N" --k=4096 --l=1 --g=128 --mode=1 \
+    --iterations=0 --streamk_split_gate; then
+  :
+else
+  repeat_rc=$?
+  fail "selected split shape N=${SPLIT_N} was not repeatably exercised rc=$repeat_rc"
+fi
+
+python3 - "$SPLIT_LOG" "$SPLIT_REPEAT_LOG" <<'PY' || fail 'split-path mismatch fingerprint comparison failed'
 import pathlib, re, sys
 
 pat = re.compile(
@@ -218,7 +337,7 @@ same_positions = rows[0][:2] == rows[1][:2]
 same_values = rows[0] == rows[1]
 verdict = "STABLE_POSITIONS_AND_VALUES" if same_values else (
     "STABLE_POSITIONS_VALUE_DRIFT" if same_positions else "POSITION_DRIFT")
-print(f"[107b][A0 fingerprint] run1={rows[0]} run2={rows[1]} verdict={verdict}")
+print(f"[107b][split fingerprint] run1={rows[0]} run2={rows[1]} verdict={verdict}")
 PY
 
 python3 - "$NP_LOG" "$P_LOG" "$SK_LOG" <<'PY' || fail 'A0 median extraction failed'
@@ -240,6 +359,7 @@ print(f"[107b][A0] persistent/non-persistent={vals['persistent']/vals['non-persi
 PY
 
 printf '\n[107b] PASS: dense absolute-K/fixup/worker seam and repeated launches proved on ppu001\n'
-printf '[107b] COLLECTED: A0 DP/SK-whole/SK-split error buckets; A0 correctness is the printed disposition, not this script exit\n'
+printf '[107b] COLLECTED: fixed-A0 performance plus runtime-adaptive split-path correctness at N=%s\n' "$SPLIT_N"
+printf '[107b] SPLIT-PATH: SK-split>0 and peer_excess>0 were prerequisites; correctness is the printed disposition, never an empty PASS\n'
 printf '[107b] NOTE: A0 ratios are dense diagnostics; no grouped/MoE result is changed or claimed\n'
 printf '[107b] artifacts preserved at %s\n' "$ARTIFACT_ROOT"

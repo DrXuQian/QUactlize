@@ -525,6 +525,7 @@ struct Options {
   bool persistent = false;       // --persistent: 107a A/B target only; select serial persistent work loop
   bool streamk = false;          // --streamk: 107b target only; select deterministic dense Stream-K
   bool streamk_gate = false;     // --streamk_gate: require the independent CPU-FP32/fixup gate
+  bool streamk_split_gate = false; // --streamk_split_gate: require an actually split output tile
 
   // Parses the command line
   void parse(int argc, char const **args) {
@@ -553,7 +554,8 @@ struct Options {
     persistent     = cmd.check_cmd_line_flag("persistent");
     streamk        = cmd.check_cmd_line_flag("streamk");
     streamk_gate   = cmd.check_cmd_line_flag("streamk_gate");
-    if (streamk_gate) streamk = true;
+    streamk_split_gate = cmd.check_cmd_line_flag("streamk_split_gate");
+    if (streamk_gate || streamk_split_gate) streamk = true;
   }
 
   /// Prints the usage statement.
@@ -576,7 +578,8 @@ struct Options {
 #endif
 #if defined(DENSE_STREAMK_AB)
     out << "  --streamk                   Use deterministic dense Stream-K (splits=1).\n"
-        << "  --streamk_gate              Also require fixup witness + CPU FP32 golden.\n";
+        << "  --streamk_gate              Also require fixup witness + CPU FP32 golden.\n"
+        << "  --streamk_split_gate        Fail closed unless lowered Params contain a real cross-CTA seam.\n";
 #endif
 
     out
@@ -604,6 +607,10 @@ struct Result
   cutlass::Status status = cutlass::Status::kSuccess;
   hggcError_t error = hggcSuccess;
   bool passed = false;
+  // A numerical PASS is not evidence about the fixup seam when the scheduler
+  // produced no split output tile.  The explicit split-path gate maps that
+  // third state to process rc=2 instead of collapsing it into PASS/FAIL.
+  bool split_path_exercised = true;
 
 };
 
@@ -640,6 +647,7 @@ struct DenseVerifyPartition {
   // fragment instead of inventing a lane formula in the diagnostic.
   std::vector<uint16_t> local_lane;
   std::vector<uint16_t> local_stripe;
+  uint64_t split_tiles = 0;
   uint64_t peer_excess = 0;
   uint64_t valid_fixup_elements = 0;
 };
@@ -907,6 +915,10 @@ bool dense_classify_streamk_tiles(
       whole_tiles + split_tiles != sk.sk_tiles_) {
     return reject("DP/SK tile census does not close");
   }
+  if ((split_tiles == 0) != (peer_excess == 0)) {
+    return reject("split-tile and peer-excess witnesses disagree");
+  }
+  partition.split_tiles = split_tiles;
   partition.peer_excess = peer_excess;
   partition.valid_fixup_elements = valid_fixup_elements;
   std::printf("  [dense verify partition] DP=%llu SK-whole=%llu SK-split=%llu "
@@ -1832,6 +1844,46 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
       result.passed = false;
       return result;
     }
+    if (options.streamk_split_gate) {
+      uint64_t const workers =
+          uint64_t(cu_count) * uint64_t(ctas_per_cu);
+      uint64_t const remainder = logical_ctas % workers;
+      if (verify_partition.split_tiles == 0 ||
+          verify_partition.peer_excess == 0) {
+        char const* reason = remainder == 0
+            ? "complete-worker-waves"
+            : "lowered-scheduler-produced-no-peer-seam";
+        std::printf(
+            "  [dense streamk split gate] NOT EXERCISED real_cu=%d "
+            "ctas_per_cu=%d workers=%llu logical_cta=%llu "
+            "logical_cta%%workers=%llu%%%llu=%llu SK-split=%llu "
+            "peer_excess=%llu reason=%s\n",
+            cu_count, ctas_per_cu,
+            static_cast<unsigned long long>(workers),
+            static_cast<unsigned long long>(logical_ctas),
+            static_cast<unsigned long long>(logical_ctas),
+            static_cast<unsigned long long>(workers),
+            static_cast<unsigned long long>(remainder),
+            static_cast<unsigned long long>(verify_partition.split_tiles),
+            static_cast<unsigned long long>(verify_partition.peer_excess), reason);
+        std::cout << "  Disposition: NOT EXERCISED" << std::endl;
+        result.passed = false;
+        result.split_path_exercised = false;
+        return result;
+      }
+      std::printf(
+          "  [dense streamk split gate] EXERCISED real_cu=%d ctas_per_cu=%d "
+          "workers=%llu logical_cta=%llu logical_cta%%workers=%llu%%%llu=%llu "
+          "SK-split=%llu peer_excess=%llu\n",
+          cu_count, ctas_per_cu,
+          static_cast<unsigned long long>(workers),
+          static_cast<unsigned long long>(logical_ctas),
+          static_cast<unsigned long long>(logical_ctas),
+          static_cast<unsigned long long>(workers),
+          static_cast<unsigned long long>(remainder),
+          static_cast<unsigned long long>(verify_partition.split_tiles),
+          static_cast<unsigned long long>(verify_partition.peer_excess));
+    }
   }
 #endif
 
@@ -2306,7 +2358,8 @@ int main(int argc, char const **args) {
   print_dense_table_provenance();
 
 #if !defined(DENSE_SCHEDULER_AB)
-  if (options.persistent || options.streamk || options.streamk_gate) {
+  if (options.persistent || options.streamk || options.streamk_gate ||
+      options.streamk_split_gate) {
     std::fprintf(stderr,
                  "scheduler A/B flags are available only in the dedicated dense scheduler targets; "
                  "the ordinary dense sweep is unchanged\n");
@@ -2322,7 +2375,7 @@ int main(int argc, char const **args) {
     return 1;
   }
 #if !defined(DENSE_STREAMK_AB)
-  if (options.streamk || options.streamk_gate) {
+  if (options.streamk || options.streamk_gate || options.streamk_split_gate) {
     std::fprintf(stderr, "--streamk is available only in test_lowbit_dense_streamk_ab\n");
     return 1;
   }
@@ -2334,6 +2387,17 @@ int main(int argc, char const **args) {
     std::fprintf(stderr,
                  "--streamk_gate is the exact dyadic seam fixture: "
                  "--m=64 --n=128 --k=4352 --l=1 --g=128 --alpha=.75 --beta=.5\n");
+    return 1;
+  }
+  if (options.streamk_gate && options.streamk_split_gate) {
+    std::fprintf(stderr,
+                 "--streamk_gate and --streamk_split_gate are independent fixtures; "
+                 "run them separately\n");
+    return 1;
+  }
+  if (options.streamk_split_gate && options.iterations != 0) {
+    std::fprintf(stderr,
+                 "--streamk_split_gate is correctness-only and requires --iterations=0\n");
     return 1;
   }
 #endif
@@ -2495,6 +2559,7 @@ int main(int argc, char const **args) {
   // The 107b target is a mechanism/numerical gate, not a sweep that may skip
   // an unsupported candidate.  Propagate every decomposition, witness,
   // golden, event, or correctness failure to the operator and automation.
+  if (!final_result.split_path_exercised) return 2;
   return final_result.passed ? 0 : 1;
 #else
   (void)final_result;
