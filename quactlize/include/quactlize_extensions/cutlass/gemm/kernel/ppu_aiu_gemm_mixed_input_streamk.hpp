@@ -19,6 +19,7 @@
 #include "cutlass/gemm/kernel/gemm_universal.hpp"
 #include "cutlass/utils.h"
 #include "cute/tensor.hpp"
+#include "quactlize_extensions/cutlass/gemm/kernel/ppu_accumulator_residue_mask.hpp"
 
 namespace cutlass::gemm::kernel {
 
@@ -319,8 +320,22 @@ public:
       if (params.fixup_witness && thread_idx == 0 && requires_fixup) {
         atomicAdd(params.fixup_witness + 0, 1u);
       }
-      TileScheduler::fixup(
-          params.scheduler, work_tile_info, accumulators, NumMmaWarpGroups, 0);
+      bool const full_output_tile =
+          int(get<0>(residue_mnk)) >= int(size<0>(blk_shape)) &&
+          int(get<1>(residue_mnk)) >= int(size<1>(blk_shape));
+      if (!requires_fixup || full_output_tile) {
+        // Preserve the vendor's old unpredicated fast path byte-for-byte.
+        TileScheduler::fixup(
+            params.scheduler, work_tile_info, accumulators, NumMmaWarpGroups, 0);
+      }
+      else {
+        auto valid_accumulator = detail::make_accumulator_residue_mask(
+            tiled_mma, accumulators, take<0, 2>(blk_shape),
+            take<0, 2>(residue_mnk), thread_idx);
+        TileScheduler::fixup(
+            params.scheduler, work_tile_info, accumulators, NumMmaWarpGroups, 0,
+            valid_accumulator);
+      }
 
       if (TileScheduler::compute_epilogue(work_tile_info, params.scheduler)) {
         if (params.fixup_witness && thread_idx == 0) {

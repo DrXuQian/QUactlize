@@ -76,8 +76,8 @@ struct TiledGemmTrafficInput {
   // unchanged to the bit.
   //
   // STREAM-K IS NOT THIS. StreamK splits only a SUBSET of tiles, so its S is a per-tile property of the scheduler
-  // and no single count reproduces its traffic. Leave splitk = 1 for a StreamK run until that count is plumbed
-  // through; a uniform S there would be a fabricated number, not a conservative one.
+  // and no single count reproduces its traffic. Stream-K callers leave splitk=1 and use
+  // make_traffic_with_output_bytes() with the exact per-q valid-residue sum; a uniform S would be fabricated.
   int splitk = 1;
   double workspace_over_output = 2.0;  // sizeof(ElementAccumulator)/sizeof(ElementD): fp32 accumulate, fp16 out
 };
@@ -94,20 +94,26 @@ struct Traffic {
   ByteTerms tile;      // tile-level requests with no cache reuse: a ceiling, reported as GB/s + reuse
 };
 
-inline Traffic make_traffic(TiledGemmTrafficInput const& i) {
-  // The reduction round trip is DISTINCT traffic, not a re-read: the workspace partials are written once and read
-  // once and exist nowhere else, so both models carry the same C term.
-  const double c = reduced_output_bytes(i);
+inline Traffic make_traffic_with_output_bytes(
+    TiledGemmTrafficInput const& i, double output_bytes) {
+  // A reduction round trip is DISTINCT traffic, not a re-read: workspace
+  // partials are written and read and exist nowhere else, so both models carry
+  // the same caller-proved C term.  Stream-K callers use this overload after
+  // summing valid accumulator elements over each tile's actual peer count.
   return {
     {i.activation_bytes,
      i.distinct_resident_copies * i.weight_bytes_per_copy,
      i.distinct_resident_copies * i.metadata_bytes_per_copy,
-     c},
+     output_bytes},
     {i.tile_activation_copies * i.activation_bytes,
      i.tile_resident_copies * i.weight_bytes_per_copy,
      i.tile_resident_copies * i.metadata_bytes_per_copy,
-     c}
+     output_bytes}
   };
+}
+
+inline Traffic make_traffic(TiledGemmTrafficInput const& i) {
+  return make_traffic_with_output_bytes(i, reduced_output_bytes(i));
 }
 
 inline double gbs(double bytes, double us) {

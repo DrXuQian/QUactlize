@@ -121,6 +121,8 @@ def audit(wrapper: str, builder: str, test: str, cmake: str, build: str) -> list
         runtime = section(builder_code, "  static void configure_runtime", "\n  static Plan inspect")
         arm = section(test_code, "ArmResult run_streamk_arm", "\nint run_decode64_nonuniform")
         decode64 = section(test_code, "int run_decode64_nonuniform", "\nbool print_c_traffic")
+        valid_traffic = section(test_code, "uint64_t valid_fixup_elements(",
+                                "\nPhase2Expectation phase2_expectation")
         verify = section(test_code, "int verify_output", "\ntemplate <class Params>")
         policy = section(test_code, "bool host_policy_line", "\nstruct ArmResult")
         phase2_oracle = section(
@@ -333,12 +335,19 @@ def audit(wrapper: str, builder: str, test: str, cmake: str, build: str) -> list
         "idx2crd(k_tile_start, shape<2>(gA))",
         "collective_mainloop(params.mainloop",
         "TileScheduler::requires_fixup(params.scheduler, sched_work)",
-        "TileScheduler::fixup(params.scheduler, sched_work",
+        "bool const full_output_tile =",
         "epilogue(real_problem_shape, blk_shape, real_blk_coord",
         "scheduler.fetch_next_work(sched_work)",
     ), "absolute-K/fixup/final-epilogue path", bad)
-    if device.count("TileScheduler::fixup(") != 1:
-        bad.append("device path must have one live global-q fixup call")
+    for token, count in (
+        ("TileScheduler::fixup(", 2),
+        ("params.scheduler, sched_work, accumulators,", 2),
+        ("detail::make_accumulator_residue_mask(", 1),
+        ("if (!requires_fixup || full_output_tile)", 1),
+        ("take<0, 2>(residue_mnk), thread_idx", 1),
+    ):
+        if device.count(token) != count:
+            bad.append(f"residue-aware global-q fixup requires {count} occurrence(s) of {token!r}")
     if "should_perform_separate_reduction" in wrapper_code:
         bad.append("isolated grouped Stream-K must not wire the disabled separate-reduction path")
 
@@ -496,7 +505,9 @@ def audit(wrapper: str, builder: str, test: str, cmake: str, build: str) -> list
         "ht[0] == peer_sum && ht[1] == uint32_t(plan.q)",
         "ht[2] == 0 && ht[3] == uint32_t(plan.q) && ht[4] == 0 && ht[5] == 0",
         '"streamk-min2-decode64-nonuniform"',
-        '"N/A (nonuniform peer distribution; independent oracle pending)\\n"',
+        "f, hp, kDecodeTM, kDecodeTN, &logical_exact);",
+        '"MODEL-ONLY/not-a-DRAM-counter %s\\n"',
+        "2ull * uint64_t(kDecodeTM) * kDecodeTN * sizeof(float) * peer_excess",
     ):
         if decode64.count(token) != 1:
             bad.append(f"decode64 nonuniform gate missing exactly one {token!r}")
@@ -511,12 +522,16 @@ def audit(wrapper: str, builder: str, test: str, cmake: str, build: str) -> list
     c_traffic = section(test_code, "bool print_c_traffic", "\nint run_legacy_control")
     if re.search(r"\btrue\s*\|\||\bfalse\s*&&", test_code):
         bad.append("box oracle contains a constant short-circuit bypass")
-    if c_traffic.count(
-            "output_d + 2ull * accumulator_tile * arm.peer_excess") != 1:
-        bad.append("C traffic is not derived from the measured per-tile peer excess")
-    if c_traffic.count(
-            "output_d + 2ull * accumulator_tile * arm.expected_peer_excess") != 1:
-        bad.append("C traffic has no independent expected-peer oracle")
+    for token in (
+        "2ull * accumulator_tile * arm.peer_excess",
+        "2ull * arm.logical_fixup_elements * sizeof(float)",
+        "2ull * arm.expected_logical_fixup_elements * sizeof(float)",
+        "output_d + logical_workspace_rw",
+        "output_d + expected_logical_workspace_rw",
+        "MODEL-ONLY/not-a-DRAM-counter",
+    ):
+        if c_traffic.count(token) != 1:
+            bad.append(f"C traffic missing exact logical/full-tile distinction {token!r}")
     if c_traffic.count(
             "arm.peer_excess == arm.expected_peer_excess") != 1:
         bad.append("C traffic does not compare measured and independently expected peers")
@@ -524,6 +539,15 @@ def audit(wrapper: str, builder: str, test: str, cmake: str, build: str) -> list
         bad.append("C traffic can pass after the phase-2 arithmetic oracle rejected its geometry")
     if c_traffic.count("gate_path = production_beta0 + gate_c_input") != 1:
         bad.append("nonzero-beta gate traffic does not distinguish its C input read")
+    for token in (
+        "for (int n_idx = 0; n_idx < nt; ++n_idx)",
+        "for (int m_idx = 0; m_idx < mt; ++m_idx, ++q)",
+        "peer_count[q] > 0 ? peer_count[q] - 1 : 0",
+        "elements += excess * uint64_t(valid_m) * uint64_t(valid_n)",
+        "ok = ok && q == peer_count.size()",
+    ):
+        if valid_traffic.count(token) != 1:
+            bad.append(f"valid-residue traffic oracle missing exactly one {token!r}")
     verify_flat = re.sub(r"\s+", " ", verify)
     if ("return (bad == 0 && nonfinite == 0 && poison == 0 && absmax > 0.0) "
             "? 0 : 1;") not in verify_flat:
@@ -813,8 +837,12 @@ def main() -> int:
          "        params.scheduler_barrier_bytes, stream);",
          "workspace, 0, params.scheduler_workspace_bytes, stream);",
          "timed reset clears reduction scratch as well as barriers"),
-        (0, "TileScheduler::fixup(params.scheduler, sched_work",
-         "TileScheduler::fixup(params.scheduler, real_work", "local work aliases locks"),
+        (0,
+         "TileScheduler::fixup(params.scheduler, sched_work, accumulators,\n"
+         "                             NumMmaWarpGroups, 0);",
+         "TileScheduler::fixup(params.scheduler, real_work, accumulators,\n"
+         "                             NumMmaWarpGroups, 0);",
+         "local work aliases locks"),
         (0, "static_assert(TileScheduler::FixupThreadCount == MaxThreadsPerBlock",
          "static_assert(TileScheduler::FixupThreadCount != MaxThreadsPerBlock",
          "wrong barrier cohort"),
@@ -867,9 +895,9 @@ def main() -> int:
          "decode_placement_diff == decode_placement_diff",
          "decode64 artifact comparison becomes self-referential"),
         (2,
-         "N/A (nonuniform peer distribution; independent oracle pending)",
-         "0 bytes (uniform estimate)",
-         "decode64 fabricates nonuniform C traffic"),
+         "f, hp, kDecodeTM, kDecodeTN, &logical_exact);",
+         "uint64_t(kDecodeTM) * kDecodeTN * peer_excess",
+         "decode64 replaces the measured per-q residue model with full tiles"),
         (2, "if (!census_identity) ++result.errors;",
          "if (false && !census_identity) ++result.errors;",
          "census failure is moved into a dead branch"),
@@ -898,9 +926,16 @@ def main() -> int:
          "gemm.params(), workspace.get() + 16, nullptr));\n"
          "      CUTLASS_PPU_CHECK(hggcEventRecord(events[size_t(i) + 1].start",
          "timed reset shifts away from the installed workspace base"),
-        (2, "output_d + 2ull * accumulator_tile * arm.peer_excess",
-         "output_d + 2ull * accumulator_tile * 48ull",
-         "C traffic ignores the measured peer excess"),
+        (2, "2ull * arm.logical_fixup_elements * sizeof(float)",
+         "2ull * accumulator_tile * arm.peer_excess",
+         "C traffic replaces valid rows with full accumulator tiles"),
+        (2, "elements += excess * uint64_t(valid_m) * uint64_t(valid_n)",
+         "elements += excess * uint64_t(tile_m) * uint64_t(tile_n)",
+         "per-q traffic oracle ignores ragged output residues"),
+        (2, "gate_beta=%.3g gate_C_read=%llu gate_C_path=%llu \"\n"
+            "              \"MODEL-ONLY/not-a-DRAM-counter %s\\n\",",
+         "gate_beta=%.3g gate_C_read=%llu gate_C_path=%llu measured-DRAM-bytes %s\\n\",",
+         "logical workspace accesses are mislabeled as a DRAM counter"),
         (2,
          "hggcEventRecord(events[size_t(i) + 1].stop, nullptr));\n    }\n"
          "    CUTLASS_PPU_CHECK(hggcDeviceSynchronize());",

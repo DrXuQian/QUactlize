@@ -622,10 +622,14 @@ enum class DenseVerifyBucket : uint8_t {
 struct DenseVerifyPartition {
   int tile_m = 0;
   int tile_n = 0;
+  int problem_m = 0;
+  int problem_n = 0;
   int tiles_m = 0;
   int tiles_n = 0;
   int batches = 0;
   std::vector<DenseVerifyBucket> tile_bucket;
+  uint64_t peer_excess = 0;
+  uint64_t valid_fixup_elements = 0;
 };
 
 #if defined(DENSE_STREAMK_AB)
@@ -774,6 +778,7 @@ bool dense_classify_streamk_tiles(
   }
   uint64_t split_tiles = 0;
   uint64_t peer_excess = 0;
+  uint64_t valid_fixup_elements = 0;
   for (uint64_t q = 0; q < sk.sk_tiles_; ++q) {
     if (peers[q] == 0) return reject("Stream-K output tile has no owner");
     uint64_t logical = 0;
@@ -783,6 +788,18 @@ bool dense_classify_streamk_tiles(
         ? DenseVerifyBucket::StreamKSplit : DenseVerifyBucket::StreamKWhole;
     split_tiles += split ? 1u : 0u;
     peer_excess += peers[q] - 1;
+    uint64_t const tile_in_batch = logical % tiles_per_batch;
+    uint64_t const m = tile_in_batch / uint64_t(partition.tiles_n);
+    uint64_t const n = tile_in_batch % uint64_t(partition.tiles_n);
+    int const valid_m = std::min(
+        partition.tile_m, partition.problem_m - int(m) * partition.tile_m);
+    int const valid_n = std::min(
+        partition.tile_n, partition.problem_n - int(n) * partition.tile_n);
+    if (valid_m <= 0 || valid_n <= 0) {
+      return reject("logical tile has an empty output residue");
+    }
+    valid_fixup_elements +=
+        (peers[q] - 1) * uint64_t(valid_m) * uint64_t(valid_n);
   }
   uint64_t dp_tiles = 0, whole_tiles = 0;
   for (DenseVerifyBucket bucket : partition.tile_bucket) {
@@ -793,12 +810,16 @@ bool dense_classify_streamk_tiles(
       whole_tiles + split_tiles != sk.sk_tiles_) {
     return reject("DP/SK tile census does not close");
   }
+  partition.peer_excess = peer_excess;
+  partition.valid_fixup_elements = valid_fixup_elements;
   std::printf("  [dense verify partition] DP=%llu SK-whole=%llu SK-split=%llu "
-              "peer_excess=%llu qk_cells=%llu coverage=exact-once\n",
+              "peer_excess=%llu valid_fixup_elements=%llu qk_cells=%llu "
+              "coverage=exact-once\n",
               static_cast<unsigned long long>(dp_tiles),
               static_cast<unsigned long long>(whole_tiles),
               static_cast<unsigned long long>(split_tiles),
               static_cast<unsigned long long>(peer_excess),
+              static_cast<unsigned long long>(valid_fixup_elements),
               static_cast<unsigned long long>(coverage.size()));
   return true;
 }
@@ -1428,6 +1449,8 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   DenseVerifyPartition verify_partition;
   verify_partition.tile_m = tactic.tm;
   verify_partition.tile_n = tactic.tn;
+  verify_partition.problem_m = options.m;
+  verify_partition.problem_n = options.n;
   verify_partition.tiles_m = int(cute::ceil_div(options.m, tactic.tm));
   verify_partition.tiles_n = int(cute::ceil_div(options.n, tactic.tn));
   verify_partition.batches = options.l;
@@ -1768,20 +1791,40 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
     char tag[bench_measure::kTagBytes];
     bench_measure::format_tag(tag, sizeof tag, tactic);
     if constexpr (dense_is_streamk_gemm<Gemm>::value) {
-      double const tflops = result.gflops / 1.0e3;
+      const double Mm = options.m, Nn = options.n, Kk = options.k;
+      const double bq = double(sizeof_bits<QuantType>::value) / 8.0;
+      const double n_tiles = tactic.tn > 0 ? std::ceil(Nn / tactic.tn) : 1.0;
+      const double m_tiles = tactic.tm > 0 ? std::ceil(Mm / tactic.tm) : 1.0;
+      bench_measure::TiledGemmTrafficInput const traffic_input{
+          Mm * Kk * 2.0, Nn * Kk * bq, 0.0, Mm * Nn * 2.0,
+          1.0, n_tiles, m_tiles};
+      double const logical_fixup_bytes =
+          2.0 * sizeof(float) * double(verify_partition.valid_fixup_elements);
+      double const modeled_output_bytes =
+          traffic_input.output_bytes + logical_fixup_bytes;
+      const auto traffic = bench_measure::make_traffic_with_output_bytes(
+          traffic_input, modeled_output_bytes);
+      const auto metrics = bench_measure::measure(
+          us, 2.0 * Mm * Nn * Kk * double(options.l), traffic);
+      char core[256];
+      bench_measure::format_metrics(core, sizeof core, metrics);
       std::printf(
           "  [CUTLASS w%d gs=%d cfg=%s scheduler=%s] M=%d %7.2f us | "
-          "%.3f TFLOP/s %.3f%% MFU | MBU=N/A "
-          "(StreamK partial-C traffic is per-tile and not yet surfaced)\n",
+          "%s | StreamK-C valid_elements=%llu peer_excess=%llu "
+          "logical_RW=%.0f MODEL-ONLY/not-a-DRAM-counter\n",
           int(sizeof_bits<QuantType>::value), options.g, tag, scheduler_kind,
-          options.m, us, tflops, bench_measure::mfu_pct(tflops));
+          options.m, us, core,
+          static_cast<unsigned long long>(verify_partition.valid_fixup_elements),
+          static_cast<unsigned long long>(verify_partition.peer_excess),
+          logical_fixup_bytes);
     } else {
       const double Mm = options.m, Nn = options.n, Kk = options.k;
       const double bq = double(sizeof_bits<QuantType>::value) / 8.0;
       const double n_tiles = tactic.tn > 0 ? std::ceil(Nn / tactic.tn) : 1.0;
       const double m_tiles = tactic.tm > 0 ? std::ceil(Mm / tactic.tm) : 1.0;
-      // Preserve the established dense model.  Stream-K deliberately bypasses
-      // this branch because one uniform split count cannot describe its C traffic.
+      // Preserve the established dense model. Stream-K uses the same base terms
+      // above, but supplies its per-q valid-residue C term explicitly rather
+      // than fabricating one uniform split count.
       const auto traffic = bench_measure::make_traffic({
           Mm * Kk * 2.0, Nn * Kk * bq, 0.0, Mm * Nn * 2.0,
           1.0, n_tiles, m_tiles});

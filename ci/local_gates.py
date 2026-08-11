@@ -1146,6 +1146,31 @@ def lint_streamk_fixup_cohort():
         "Stream-K exact CTA cohort and real-fragment workspace coverage are pinned")
 
 
+def lint_fp32_residue_fixup():
+    """Every tactic layout must predicate the same scalar FP32 fixup slots."""
+    ok, why = nvcc_can_compile_device_cuda()
+    if not ok:
+        return "SKIP", ("needs an NVIDIA device compiler for the CUTLASS stack its oracle includes: "
+                        + why), 0.0
+    script = DEV / "run_l124_fp32_residue_mask.sh"
+    if not script.is_file():
+        return "FAIL", f"missing {script.name}", 0.0
+    out = OUT / "l124_fp32_residue_mask"
+    env = dict(os.environ, QUACTLIZE_L124_OUT=str(out))
+    rc, log, dt = run(["bash", str(script)], cwd=str(ROOT), env=env)
+    lines = [line.strip() for line in log.splitlines() if line.strip()]
+    verdict = next((line for line in reversed(lines) if "L124 planted-" in line),
+                   lines[-1] if lines else "l124 produced no output")
+    return ("PASS" if rc == 0 else "FAIL"), verdict, dt
+
+
+def lint_fp32_residue_contract():
+    """Predicates guard scalar workspace accesses, never Stream-K lock progress."""
+    return _run_ci_script(
+        "check_fp32_residue_fixup_contract.py",
+        "FP32 residue mask is shared by store/reduce/load-add while barriers remain unconditional")
+
+
 def lint_m8n16_g2_contract():
     """G2 must replay the historical provider index on one production x4 payload."""
     return _run_ci_script(
@@ -1621,6 +1646,8 @@ def main():
                 ("lint", "dense Stream-K shares worker/K decomposition and resets locks before timing", lint_dense_streamk_contract),
                 ("lint", "grouped Stream-K preserves q locks, worker/K decomposition, and timing", lint_grouped_streamk_contract),
                 ("lint", "l122_streamk_fixup_cohort contract pins the exact 64/128-thread CTA cohort", lint_streamk_fixup_cohort),
+                ("lint", "l124 predicates every shipped FP32 accumulator residue and preserves S1-4", lint_fp32_residue_fixup),
+                ("lint", "FP32 residue predicates scalar fixup accesses without predicating locks", lint_fp32_residue_contract),
                 ("lint", "syntax baselines and live SYNTAX sources match", lint_syntax_inventory),
                 ("lint", "m8n16 G2 replays the historical bad index on the production x4 payload", lint_m8n16_g2_contract),
                 ("lint", "ppu001 plain LDSM fails in C++ before its unproved assembler path", lint_plain_ldsm_failclosed),

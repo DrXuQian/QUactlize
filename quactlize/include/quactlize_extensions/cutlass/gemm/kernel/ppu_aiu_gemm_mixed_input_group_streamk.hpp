@@ -24,6 +24,7 @@
 #include "cutlass/gemm/kernel/ppu_tile_scheduler_stream_k.hpp"
 #include "cutlass/utils.h"
 #include "cute/tensor.hpp"
+#include "quactlize_extensions/cutlass/gemm/kernel/ppu_accumulator_residue_mask.hpp"
 
 namespace cutlass::gemm::kernel {
 
@@ -619,8 +620,20 @@ class GroupStreamKMixedInputKernel {
 
       // sched_work.M_idx remains q here.  Never substitute expert-local
       // coordinates: output_tile_index() derives the global lock from it.
-      TileScheduler::fixup(params.scheduler, sched_work, accumulators,
-                           NumMmaWarpGroups, 0);
+      bool const full_output_tile =
+          int(get<0>(residue_mnk)) >= int(size<0>(blk_shape)) &&
+          int(get<1>(residue_mnk)) >= int(size<1>(blk_shape));
+      if (!requires_fixup || full_output_tile) {
+        TileScheduler::fixup(params.scheduler, sched_work, accumulators,
+                             NumMmaWarpGroups, 0);
+      }
+      else {
+        auto valid_accumulator = detail::make_accumulator_residue_mask(
+            tiled_mma, accumulators, take<0, 2>(blk_shape),
+            take<0, 2>(residue_mnk), thread_idx);
+        TileScheduler::fixup(params.scheduler, sched_work, accumulators,
+                             NumMmaWarpGroups, 0, valid_accumulator);
+      }
 
       if (compute_epilogue) {
         CollectiveEpilogue epilogue{

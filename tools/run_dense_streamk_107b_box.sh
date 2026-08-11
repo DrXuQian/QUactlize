@@ -149,7 +149,8 @@ required = (
     "[streamk CPU-FP32] outputs=8192 bad=0 bitdiff=0",
     "BIT-EXACT",
     "distinct-event-pairs=20 warmup-event-pairs=1 includes-launch-idle=1 lock-reset-before-start=1",
-    "MBU=N/A (StreamK partial-C traffic is per-tile and not yet surfaced)",
+    "StreamK-C valid_elements=",
+    "MODEL-ONLY/not-a-DRAM-counter",
 )
 missing = [x for x in required if x not in text]
 if missing:
@@ -167,15 +168,17 @@ run_diagnostic_case 'A0 Stream-K diagnostic' "$SK_LOG" "${COMMON[@]}" --streamk
 
 require_verify_buckets 'A0 non-persistent control' "$NP_LOG"
 require_verify_buckets 'A0 serial-persistent control' "$P_LOG"
-grep -Eq '^  \[dense verify partition\] DP=[0-9]+ SK-whole=[0-9]+ SK-split=[0-9]+ peer_excess=[0-9]+ qk_cells=[0-9]+ coverage=exact-once$' "$SK_LOG" \
+grep -Eq '^  \[dense verify partition\] DP=[0-9]+ SK-whole=[0-9]+ SK-split=[0-9]+ peer_excess=[0-9]+ valid_fixup_elements=[0-9]+ qk_cells=[0-9]+ coverage=exact-once$' "$SK_LOG" \
   || fail 'A0 Stream-K did not prove an exact scheduler-derived DP/SK partition'
 
 grep -q 'lock-reset-before-start=0' "$NP_LOG" || fail 'non-persistent timing identity drifted'
 grep -q 'lock-reset-before-start=0' "$P_LOG" || fail 'persistent timing identity drifted'
 grep -q 'lock-reset-before-start=1' "$SK_LOG" || fail 'Stream-K did not reset locks outside every event'
 grep -q 'actual=StreamK' "$SK_LOG" || fail 'A0 Stream-K silently fell back to another decomposition'
-grep -q 'MBU=N/A (StreamK partial-C traffic is per-tile and not yet surfaced)' "$SK_LOG" \
-  || fail 'A0 Stream-K fabricated a uniform-split C traffic number'
+grep -q 'StreamK-C valid_elements=' "$SK_LOG" \
+  || fail 'A0 Stream-K did not surface its per-q partial-C model'
+grep -q 'MODEL-ONLY/not-a-DRAM-counter' "$SK_LOG" \
+  || fail 'A0 Stream-K mislabeled logical partial-C accesses as measured DRAM traffic'
 
 python3 - "$NP_LOG" "$P_LOG" "$SK_LOG" <<'PY' || fail 'A0 median extraction failed'
 import pathlib, re, sys

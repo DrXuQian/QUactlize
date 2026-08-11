@@ -334,6 +334,8 @@ struct ArmResult {
   uint32_t epilogue_work_items = 0;
   bool expected_supported = false;
   uint64_t expected_peer_excess = 0;
+  uint64_t logical_fixup_elements = 0;
+  uint64_t expected_logical_fixup_elements = 0;
 };
 
 struct Phase2Expectation {
@@ -346,6 +348,37 @@ struct Phase2Expectation {
   uint32_t stripe_k_tiles = 0;
   uint32_t peers_per_tile = 0;
 };
+
+// The grouped scheduler flattens q with m-tile as the fast coordinate inside
+// each expert, then n-tile.  Weight each q's peer excess by its *valid* output
+// rectangle.  This is the logical FP32 workspace footprint of the predicated
+// fixup path; allocation and cache-line/DRAM traffic remain full-tile concerns.
+uint64_t valid_fixup_elements(Fixture const& f,
+                              std::vector<uint32_t> const& peer_count,
+                              int tile_m, int tile_n, bool* exact = nullptr) {
+  uint64_t elements = 0;
+  size_t q = 0;
+  bool ok = tile_m > 0 && tile_n > 0;
+  for (int e = 0; e < f.experts && ok; ++e) {
+    int const mt = (f.me[e] + tile_m - 1) / tile_m;
+    int const nt = (f.n + tile_n - 1) / tile_n;
+    for (int n_idx = 0; n_idx < nt; ++n_idx) {
+      int const valid_n = std::min(tile_n, f.n - n_idx * tile_n);
+      for (int m_idx = 0; m_idx < mt; ++m_idx, ++q) {
+        if (q >= peer_count.size()) {
+          ok = false;
+          break;
+        }
+        int const valid_m = std::min(tile_m, f.me[e] - m_idx * tile_m);
+        uint64_t const excess = peer_count[q] > 0 ? peer_count[q] - 1 : 0;
+        elements += excess * uint64_t(valid_m) * uint64_t(valid_n);
+      }
+    }
+  }
+  ok = ok && q == peer_count.size();
+  if (exact != nullptr) *exact = ok;
+  return ok ? elements : 0;
+}
 
 // Independent arithmetic oracle for this gate's single-cluster, sub-wave
 // fixtures.  It intentionally does not call the vendor Params methods used by
@@ -504,6 +537,15 @@ ArmResult run_streamk_arm(Fixture const& f, DeviceFixture& d,
   result.peer_excess = peer_excess;
   result.fixup_work_items = ht[0];
   result.epilogue_work_items = ht[1];
+  bool logical_exact = false;
+  result.logical_fixup_elements =
+      valid_fixup_elements(f, hp, kTM, kTN, &logical_exact);
+  std::vector<uint32_t> expected_peers(
+      size_t(result.plan.q), expected.peers_per_tile);
+  bool expected_logical_exact = false;
+  result.expected_logical_fixup_elements = valid_fixup_elements(
+      f, expected_peers, kTM, kTN, &expected_logical_exact);
+  if (!logical_exact || !expected_logical_exact) ++result.errors;
   std::printf("[grouped streamk census] fixture=%s TK=%d Min=%u Q=%d Kt=%d "
               "split_tiles=%d peer_excess=%llu requires_fixup=%u "
               "fixup_work_items=%u epilogue=%u separate=%u "
@@ -522,7 +564,10 @@ ArmResult run_streamk_arm(Fixture const& f, DeviceFixture& d,
                      result.plan.sk_units == expected.sk_units &&
                      split_tiles == expected.split_tiles &&
                      peer_excess == expected.peer_excess &&
-                     ht[0] == expected.fixup_work_items;
+                     ht[0] == expected.fixup_work_items && logical_exact &&
+                     expected_logical_exact &&
+                     result.logical_fixup_elements ==
+                         result.expected_logical_fixup_elements;
   std::printf("[grouped streamk exact] fixture=%s TK=%d Min=%u expected "
               "Q/units/split/excess/fixup=%d/%llu/%d/%llu/%u %s\n",
               f.name, TK, kMinSkIters, expected_q,
@@ -754,36 +799,63 @@ int run_decode64_nonuniform(Fixture const& f, DeviceFixture& d,
   CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
   errors += verify_output(f, d, kAlpha, kBeta,
                           "streamk-min2-decode64-nonuniform");
+  bool logical_exact = false;
+  uint64_t const logical_elements = valid_fixup_elements(
+      f, hp, kDecodeTM, kDecodeTN, &logical_exact);
+  uint64_t const logical_workspace_rw =
+      2ull * logical_elements * sizeof(float);
+  uint64_t const full_tile_workspace_rw =
+      2ull * uint64_t(kDecodeTM) * kDecodeTN * sizeof(float) * peer_excess;
+  errors += !logical_exact;
   std::printf("[grouped streamk decode64 C-traffic] "
-              "N/A (nonuniform peer distribution; independent oracle pending)\n");
+              "valid_accumulator_elements=%llu logical_workspace_RW=%llu "
+              "old_full_tile_logical_RW=%llu allocation_unchanged=%zu "
+              "MODEL-ONLY/not-a-DRAM-counter %s\n",
+              static_cast<unsigned long long>(logical_elements),
+              static_cast<unsigned long long>(logical_workspace_rw),
+              static_cast<unsigned long long>(full_tile_workspace_rw),
+              kReductionBytes, logical_exact ? "TRAFFIC-PASS" : "TRAFFIC-FAIL");
   return errors;
 }
 
 bool print_c_traffic(Fixture const& f, ArmResult const& arm, int tile_k) {
   uint64_t const output_d = 2ull * f.total * f.n;
   uint64_t const accumulator_tile = uint64_t(kTM) * kTN * sizeof(float);
+  uint64_t const old_full_tile_workspace_rw =
+      2ull * accumulator_tile * arm.peer_excess;
+  uint64_t const logical_workspace_rw =
+      2ull * arm.logical_fixup_elements * sizeof(float);
   uint64_t const production_beta0 =
-      output_d + 2ull * accumulator_tile * arm.peer_excess;
+      output_d + logical_workspace_rw;
   // This correctness gate deliberately uses beta=0.5. The shipping benchmark
   // uses beta=0, whose agreed C term is the line above; the gate itself also
   // reads one fp16 C input plane of the same logical size as D.
   uint64_t const gate_c_input = kBeta == 0.0f ? 0ull : output_d;
   uint64_t const gate_path = production_beta0 + gate_c_input;
+  uint64_t const expected_logical_workspace_rw =
+      2ull * arm.expected_logical_fixup_elements * sizeof(float);
   uint64_t const expected_production_beta0 =
-      output_d + 2ull * accumulator_tile * arm.expected_peer_excess;
+      output_d + expected_logical_workspace_rw;
   uint64_t const expected_gate_path = expected_production_beta0 + gate_c_input;
   bool const traffic_ok = production_beta0 == expected_production_beta0 &&
                           gate_path == expected_gate_path &&
                           arm.expected_supported &&
-                          arm.peer_excess == arm.expected_peer_excess;
+                          arm.peer_excess == arm.expected_peer_excess &&
+                          arm.logical_fixup_elements ==
+                              arm.expected_logical_fixup_elements;
   std::printf("[grouped streamk C-traffic] fixture=%s TK=%d Min=%u "
               "output_D=%llu accumulator_Wtile=%llu peer_excess=%llu "
-              "production_beta0_C=%llu gate_beta=%.3g gate_C_read=%llu "
-              "gate_C_path=%llu %s\n",
+              "old_full_tile_logical_RW=%llu valid_accumulator_elements=%llu "
+              "logical_workspace_RW=%llu production_beta0_C=%llu "
+              "gate_beta=%.3g gate_C_read=%llu gate_C_path=%llu "
+              "MODEL-ONLY/not-a-DRAM-counter %s\n",
               f.name, tile_k, kMinSkIters,
               static_cast<unsigned long long>(output_d),
               static_cast<unsigned long long>(accumulator_tile),
               static_cast<unsigned long long>(arm.peer_excess),
+              static_cast<unsigned long long>(old_full_tile_workspace_rw),
+              static_cast<unsigned long long>(arm.logical_fixup_elements),
+              static_cast<unsigned long long>(logical_workspace_rw),
               static_cast<unsigned long long>(production_beta0),
               double(kBeta), static_cast<unsigned long long>(gate_c_input),
               static_cast<unsigned long long>(gate_path),

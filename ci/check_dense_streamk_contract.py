@@ -90,10 +90,18 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         "TileScheduler::get_work_k_tile_start(work_tile_info)",
         "idx2crd(k_tile_start, shape<2>(gA))",
         "collective_mainloop(params.mainloop",
-        "TileScheduler::fixup(",
+        "bool const full_output_tile =",
         "TileScheduler::compute_epilogue(",
         "scheduler.fetch_next_work(work_tile_info)",
     ), "absolute-K mainloop/fixup/final-epilogue", bad)
+    for token, count in (
+        ("TileScheduler::fixup(", 2),
+        ("detail::make_accumulator_residue_mask(", 1),
+        ("if (!requires_fixup || full_output_tile)", 1),
+        ("take<0, 2>(residue_mnk), thread_idx", 1),
+    ):
+        if device.count(token) != count:
+            bad.append(f"residue-aware fixup requires {count} occurrence(s) of {token!r}")
     if device.count("TileScheduler::get_work_k_tile_count(") != 1:
         bad.append("mainloop does not use exactly one scheduler-owned K-tile count")
 
@@ -171,12 +179,20 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         "[dense kernel-span-upper]",
         "spread=(max-min)/mean=",
         "distinct-event-pairs=%zu warmup-event-pairs=1 includes-launch-idle=1",
-        "MBU=N/A",
-        "StreamK partial-C traffic is per-tile and not yet surfaced",
+        "StreamK-C valid_elements=%llu peer_excess=%llu",
+        "MODEL-ONLY/not-a-DRAM-counter",
         "return final_result.passed ? 0 : 1;",
     ):
         if bench.count(token) != 1:
             bad.append(f"bench must contain exactly one {token!r}")
+    for token in (
+        "valid_fixup_elements +=\n        (peers[q] - 1) * uint64_t(valid_m) * uint64_t(valid_n);",
+        "partition.valid_fixup_elements = valid_fixup_elements;",
+        "2.0 * sizeof(float) * double(verify_partition.valid_fixup_elements)",
+        "bench_measure::make_traffic_with_output_bytes(",
+    ):
+        if bench.count(token) != 1:
+            bad.append(f"dense per-q partial-C model must contain exactly one {token!r}")
     exact_shape = (
         "options.m != 64 || options.n != 128 || options.k != 4352 || options.l != 1 ||\n"
         "       options.g != 128 || std::abs(options.alpha - 0.75f) > 1.0e-7f ||\n"
@@ -234,7 +250,11 @@ def main() -> int:
         (1, "Gemm::GemmKernel::initialize_workspace(\n            arguments, workspace.get(), /*stream=*/nullptr));\n      }\n      auto& events = streamk_events.at(iter + 1);\n      CUTLASS_PPU_CHECK(hggcEventRecord(events.start, nullptr));",
          "auto& events = streamk_events.at(iter + 1);\n      CUTLASS_PPU_CHECK(hggcEventRecord(events.start, nullptr));\n      Gemm::GemmKernel::initialize_workspace(\n            arguments, workspace.get(), /*stream=*/nullptr));\n      }",
          "lock reset before event"),
-        (1, "MBU=N/A", "MBU=0.0%", "unmodeled per-tile C traffic"),
+        (1, "2.0 * sizeof(float) * double(verify_partition.valid_fixup_elements)",
+         "2.0 * sizeof(float) * double(verify_partition.peer_excess)",
+         "partial-C traffic drops valid residue weighting"),
+        (1, "MODEL-ONLY/not-a-DRAM-counter", "measured-DRAM-bytes",
+         "logical partial-C model is mislabeled as a DRAM counter"),
         (1, "return final_result.passed ? 0 : 1;", "return 0;", "gate exit status"),
         (1, "[](uint16_t visits) { return visits != 1; }",
          "[](uint16_t visits) { return visits != 0; }", "exact (q,k) coverage"),

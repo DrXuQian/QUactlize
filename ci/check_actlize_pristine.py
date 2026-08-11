@@ -97,6 +97,9 @@ FIXES = {
 # Anything expressible as an addition does NOT belong here. The four collectives, the dispatch policies, the
 # converter widths and the NoZero marker were all in this position on 2026-08-06 and all moved out.
 EXTENSIONS = {
+    "include/cutlass/block_striped.h":
+        "default-compatible predicate overloads for scalar-striped store/load_add/reduce; every existing spelling "
+        "and the half2 specialization are unchanged, while residue-aware FP32 callers may guard individual scalars",
     "include/cute/arch/mma_ppu0010.hpp":
         "30 added, 0 removed: one ppu001-only m8n16 raw atom; every existing atom is byte-for-byte unchanged",
     "include/cute/atom/mma_traits_ppu0010.hpp":
@@ -137,7 +140,9 @@ MIXED: dict = {
         "FIX cd17c2b9: removes trailing commas rejected in template argument lists; EXTENSION: a defaulted "
         "MinItersPerSkUnit argument selects the matching ParamsT specialization, and a defaulted exact-fixup-cohort "
         "argument selects 64 or 128 threads; every existing two-argument actlize spelling remains on Min8/128 "
-        "while reviewed quactlize kernels can opt into a shorter stripe and an exact CTA-sized barrier cohort",
+        "while reviewed quactlize kernels can opt into a shorter stripe and an exact CTA-sized barrier cohort; "
+        "an additive predicated fixup overload guards only scalar FP32 workspace accesses and leaves the legacy "
+        "five-argument path and all barrier progress unchanged",
 }
 
 _collisions = sorted((set(FIXES) & set(EXTENSIONS)) | (set(MIXED) & (set(FIXES) | set(EXTENSIONS))))

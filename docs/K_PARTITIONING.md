@@ -84,11 +84,13 @@ The middle row is the whole finding. An earlier claim that Marlin's fp16 reduce 
 of 32, because Marlin guards its store with `if (r < prob_m)` — at `Mvalid = 1` its partial is a *row*, not a padded
 tile. Once the valid-element guard is applied, **FP32 already captures 94% of the available saving** (26.162 → 1.635)
 and the remaining 0.8 points is what fp16 would buy at the cost of precision and a C/D aliasing constraint. That is
-why the recommended single optimisation is FP32-lite and not the fp16 C-chain: the guard is the mechanism, the
-narrower type was never the point.
+why B2 implements FP32-lite and not the fp16 C-chain: the guard is the mechanism, the narrower type was never the
+point. Full output tiles retain the original unpredicated fast path; residue tiles derive one scalar mask from the
+real accumulator layout and use it for store, reduce and load-add.
 
 Caveat on the middle row: it counts *logical* accesses. If the valid fragment is scattered across cache lines the
-DRAM saving will be smaller than 16×, and only a device counter can say by how much.
+DRAM saving will be smaller than 16×, and only a device counter can say by how much. The box gate therefore prints
+`MODEL-ONLY/not-a-DRAM-counter`; workspace allocation is deliberately unchanged.
 
 ## What is actually upstream of all of this
 

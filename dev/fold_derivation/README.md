@@ -472,3 +472,34 @@ freeing registers underneath a ceiling buys nothing.
 `CHUNK` / `chunk-N/A` per row so it is visible rather than inferred. The suspect is the emitter's
 `size(FragLayout) == kOut` assertion: at `TK=256` the fragment is 256 elements while one delivery covers 128, so
 either the assertion is too strict or the config silently took the default path.
+
+
+## L124 / Marlin mechanism 3: guard FP32 cooperative handoff by valid output rows
+
+Marlin does not hand padded accumulator rows to its cross-CTA reduction: both its partial read and partial write are
+inside `r < prob_m`.  Our Stream-K fixup previously handed the complete FP32 accumulator fragment to
+`BlockStripedReduce`; the final epilogue masked D correctly, so this was not a numerical bug, but every peer still
+touched workspace for padded rows.  B2-FP32-lite adds the same **effective-row guard** while retaining our FP32
+workspace, global-q lock identity, ordered K-index handoff, and full allocation.
+
+For a split output tile q, the old and new logical fixup accesses are:
+
+```text
+old = 2 * (TM * TN)             * sizeof(float) * (S_q - 1)
+new = 2 * (Mvalid_q * Nvalid_q) * sizeof(float) * (S_q - 1)
+```
+
+The factor 2 is the existing store/reduce/load-add chain summed over peer excess.  A full tile takes the old overload
+unchanged; only a residue builds a predicate from the exact `TiledMma::partition_C` coordinates.  `l124` exhausts all
+accumulator layouts present in shipping and benchmark tactic tables, every rectangular residue, and S=1..4.  It also
+reuses poisoned workspace between complementary residues, so an invalid NaN access or a missing peer-0 overwrite is
+visible rather than masked by a fresh allocation.
+
+For the Mvalid=1 decode model this cuts the logical FP32 partial term 16x.  In the previously agreed whole-path model,
+that is the **modeled** `26.162% -> 1.635%`; changing the handoff itself to fp16 would only reach 0.818% and would add
+precision plus C/D-aliasing risk, so it is deliberately out of scope.
+
+Those percentages are **not measured HBM traffic**.  Allocation is unchanged, valid scalars can share cache lines
+with invalid ones, and atomics/locks can amplify or serve traffic from cache.  The grouped box gate therefore labels
+the result `MODEL-ONLY/not-a-DRAM-counter`; device counters and timing decide whether compact storage is worth a
+second step.
