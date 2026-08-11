@@ -81,13 +81,16 @@ def audit(vendor: str, dense: str, grouped: str, oracle: str) -> list[str]:
         "vendor exposed cohort constant",
         bad,
     )
-    one_regex(
-        vendor,
+    barrier_pattern = (
         r"using\s+BarrierManager\s*=\s*NamedBarrierManager\s*<\s*"
-        r"FixupThreadCount\s*,",
-        "fixup named-barrier cohort",
-        bad,
+        r"FixupThreadCount\s*,"
     )
+    barrier_count = len(re.findall(barrier_pattern, vendor, re.MULTILINE | re.DOTALL))
+    if barrier_count != 2:
+        bad.append(
+            "legacy and residue-predicated fixup named-barrier cohorts: "
+            f"expected two matches, found {barrier_count}"
+        )
     # First version is deliberately exact: no sub-warp cohort and no CTA with
     # more than one 128-thread warp group.
     allowed = re.compile(
@@ -177,51 +180,79 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
+def replace_nth(text: str, old: str, new: str, occurrence: int, label: str) -> str:
+    """Replace one selected occurrence while leaving its sibling arm intact."""
+    starts = [match.start() for match in re.finditer(re.escape(old), text)]
+    if occurrence >= len(starts):
+        raise ValueError(
+            f"cannot plant {label}: need occurrence {occurrence + 1}, found {len(starts)}"
+        )
+    start = starts[occurrence]
+    return text[:start] + new + text[start + len(old):]
+
+
 def source_plants(texts: list[str]) -> list[str]:
     """Return failures of the checker itself, not failures of planted source."""
     bad: list[str] = []
-    plants: list[tuple[int, str, str, str]] = [
+    plants: list[tuple[int, str, str, int, str]] = [
         (
             0,
             "NamedBarrierManager<FixupThreadCount,",
             "NamedBarrierManager<NumThreadsPerWarpGroup,",
-            "vendor barrier falls back to the global 128-thread cohort",
+            0,
+            "vendor legacy fixup barrier falls back to the global 128-thread cohort",
+        ),
+        (
+            0,
+            "NamedBarrierManager<FixupThreadCount,",
+            "NamedBarrierManager<NumThreadsPerWarpGroup,",
+            1,
+            "vendor predicated fixup barrier falls back to the global 128-thread cohort",
         ),
         (
             1,
             ", MaxThreadsPerBlock>;",
             ">;",
+            -1,
             "dense wrapper drops the cohort template argument",
         ),
         (
             2,
             ", MaxThreadsPerBlock>;",
             ">;",
+            -1,
             "grouped wrapper drops the cohort template argument",
         ),
         (
             1,
             "TileScheduler::FixupThreadCount == MaxThreadsPerBlock",
             "TileScheduler::FixupThreadCount % MaxThreadsPerBlock == 0",
+            -1,
             "dense wrapper weakens exact cohort equality",
         ),
         (
             2,
             "TileScheduler::FixupThreadCount == MaxThreadsPerBlock",
             "TileScheduler::FixupThreadCount % MaxThreadsPerBlock == 0",
+            -1,
             "grouped wrapper weakens exact cohort equality",
         ),
         (
             3,
             "stripe * CohortThreads + cohort_thread",
             "stripe * CohortThreads + (cohort_thread % (CohortThreads / 2))",
+            -1,
             "L122 aliases the workspace address across half-cohorts",
         ),
     ]
-    for index, old, new, label in plants:
+    for index, old, new, occurrence, label in plants:
         planted = list(texts)
         try:
-            planted[index] = replace_once(planted[index], old, new, label)
+            planted[index] = (
+                replace_once(planted[index], old, new, label)
+                if occurrence < 0 else
+                replace_nth(planted[index], old, new, occurrence, label)
+            )
         except ValueError as exc:
             bad.append(str(exc))
             continue
@@ -280,7 +311,7 @@ def main() -> int:
         return 1
     print(
         "[streamk-fixup-cohort] PASS -- exact 64/128 vendor cohort, dense/grouped "
-        "type wiring, real-fragment workspace coverage; six planted regressions and "
+        "type wiring, real-fragment workspace coverage; seven planted regressions and "
         "invalid 32/256 cohorts rejected"
     )
     return 0

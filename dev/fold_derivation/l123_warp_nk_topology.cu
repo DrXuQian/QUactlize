@@ -16,10 +16,15 @@
 #include "cute/atom/mma_atom.hpp"
 #include "cutlass/numeric_types.h"
 #include "quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
+#if defined(__HGGCCC__)
+// The real shipping-builder identity arm is a PPU-device contract.  Keep its
+// definition visible to that arm (and to the device-aware include-closure
+// gate) without pulling device-only CUTLASS bodies into the host topology run.
+#include "quactlize_extensions/cutlass/gemm/collective/builders/quactlize_mma_builder.inl"
+#endif
 #if defined(L123_TYPE_ONLY)
 #include "cute/atom/mma_traits_ppu0010.hpp"
 #include "cute/atom/mma_traits_ppu0015.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/builders/quactlize_mma_builder.inl"
 #else
 #include "xplane_offline.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_2plane_source_layout.hpp"

@@ -420,7 +420,9 @@ def lint_device_probe_scope():
     # the guard turned it into a SKIP on every box.
     #
     # So the rule is a property, not a list: a function that returns SKIP on the probe must reach a compiler.
-    # Resolved one level through _run_ci_script, since that is where three of the four actually compile.
+    # Resolved one level through _run_ci_script and through an explicitly named shell runner.  L124 is the latter:
+    # the Python gate launches run_l124_fp32_residue_mask.sh, and that script invokes nvcc.  Ignoring that one
+    # seam misclassifies a real compiler gate as a source-only check, just as ignoring _run_ci_script once did.
     # ast.parse rather than import -- a stale .pyc can serve bytecode the disk no longer has (see the memory on
     # verification failure shapes), and this check exists precisely to be trusted about the file's current text.
     import ast
@@ -435,6 +437,15 @@ def lint_device_probe_scope():
         for script in re.findall(r'_run_ci_script\(\s*"([^"]+)"', body):
             f = ROOT / "ci" / script
             if f.exists() and re.search(r'"nvcc"|\bnvcc\b', f.read_text()):
+                reaches = True
+        for script in re.findall(r'["\']([^"\']+\.sh)["\']', body):
+            candidates = (DEV / script, ROOT / script)
+            f = next((candidate for candidate in candidates if candidate.is_file()), None)
+            shell_code = "\n".join(
+                line for line in f.read_text().splitlines()
+                if not line.lstrip().startswith("#")
+            ) if f is not None else ""
+            if re.search(r'\bnvcc\b', shell_code):
                 reaches = True
         if not reaches:
             bad.append(fn.name)
