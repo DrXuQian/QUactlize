@@ -30,6 +30,20 @@ command -v nvcc >/dev/null 2>&1 || {
   echo "syntax_check: nvcc is not on PATH -- this gate compiles, so it cannot report anything without a compiler" >&2
   exit 2
 }
+# THE NAME `nvcc` IS NOT THE CAPABILITY. On the PPU box `which nvcc` is NVIDIA's own driver, but it hands DEVICE
+# preprocessing to ppu_clang++ -- so `threadIdx` is undeclared and cutlass/float8.h's `#include <hggc_fp8.h>` fires,
+# and every row of this tier dies for a reason that has nothing to do with the source under test. Observed
+# 2026-08-11. Ask the compiler instead of the version string: three lines that need a device compiler.
+_probe_src="$(mktemp -u).cu"; _probe_out="$(mktemp -u)"
+printf '__global__ void k(int* p){ *p = int(threadIdx.x); }\nint main(){ return 0; }\n' > "$_probe_src"
+if ! nvcc -std=c++17 -arch=sm_80 -w -o "$_probe_out" "$_probe_src" >/dev/null 2>&1; then
+  echo "syntax_check: SKIP -- this nvcc cannot compile NVIDIA device code (its device half is not NVIDIA's), so" >&2
+  echo "              the CUTLASS stack every checked source includes cannot build here. Run this tier where nvcc" >&2
+  echo "              is a full CUDA toolchain. Exiting 3 so a caller can tell 'cannot run' from 'found errors'." >&2
+  rm -f "$_probe_src" "$_probe_out"
+  exit 3
+fi
+rm -f "$_probe_src" "$_probe_out"
 # The repo root, and the three directories a checkable source can live in. This used to be one directory
 # up; the tree now separates kernels, tests and benchmarks, so -I has to name all of them or a harness
 # fails on its own neighbour's header and the failure looks like the header being wrong.

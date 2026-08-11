@@ -38,6 +38,42 @@ ACT_UTIL = ROOT / "third_party" / "actlize" / "tools" / "util" / "include"
 OUT = Path(os.environ.get("QUACTLIZE_CI_OUT", "/tmp/quactlize_ci"))
 
 
+_NVCC_DEVICE_PROBE = None
+
+
+def nvcc_can_compile_device_cuda():
+    """(ok, why) -- can this machine's `nvcc` actually compile NVIDIA device code?
+
+    THE NAME IS NOT THE ANSWER. On the box `which nvcc` is NVIDIA's own driver (PPU_SDK/CUDA_SDK/bin/nvcc,
+    "NVIDIA (R) Cuda compiler driver"), but it hands DEVICE preprocessing to ppu_clang++. So `nvcc --version`
+    says yes while `threadIdx` is undeclared and cutlass/float8.h's `#include <hggc_fp8.h>` fires. Checking the
+    version string would have produced exactly the false green this probe exists to stop.
+
+    So: compile three lines that need a device compiler, and let the compiler answer. Cached; ~1 s once.
+
+    WHY IT MATTERS. The `gate` tier's oracles (l120/l121/l122, ...) are HOST-ONLY by content -- zero __global__,
+    zero __device__, zero launches -- but they include the CUTLASS/CuTe stack, whose device bodies only survive
+    a device compile. On 2026-08-11 that made l121/l122 fail on the box while passing on a dev container, and
+    the failure read as "the grouped Stream-K contract is broken" rather than "this machine cannot run this
+    check". A SKIP naming the reason is the honest verdict; --strict turns it into a failure wherever a green
+    tier is being claimed as evidence.
+    """
+    global _NVCC_DEVICE_PROBE
+    if _NVCC_DEVICE_PROBE is None:
+        src = OUT / "nvcc_device_probe.cu"
+        OUT.mkdir(parents=True, exist_ok=True)
+        src.write_text("__global__ void k(int* p){ *p = int(threadIdx.x + blockIdx.x); }\n"
+                       "int main(){ return 0; }\n")
+        rc, log, _ = run(NVCC + ["-o", str(OUT / "nvcc_device_probe"), str(src)])
+        if rc == 0:
+            _NVCC_DEVICE_PROBE = (True, "")
+        else:
+            first = next((l.strip() for l in log.splitlines() if ": error:" in l or ": fatal error:" in l),
+                         (log.strip().splitlines() or ["nvcc failed"])[-1])
+            _NVCC_DEVICE_PROBE = (False, first[:160])
+    return _NVCC_DEVICE_PROBE
+
+
 def _sdk_target_includes() -> list:
     """The PPU SDK's own target include dir, WHEN THERE IS ONE. Empty off the box, which is the point.
 
@@ -355,6 +391,10 @@ def lint_scale_copy_coverage_fires():
 
 def lint_streamk_min_zero_fires():
     """The default-compatible Stream-K policy seam must reject a zero-sized stripe at its type boundary."""
+    ok, why = nvcc_can_compile_device_cuda()
+    if not ok:
+        return "SKIP", ("needs an NVIDIA device compiler for the CUTLASS stack its oracle includes: "
+                        + why), 0.0
     src = DEV / "l120_streamk_min_iters_policy.cu"
     if not src.is_file():
         return "FAIL", f"missing {src.name}", 0.0
@@ -512,6 +552,11 @@ def gate(name, args):
     src = DEV / f"{base}.cu"
     if not src.exists():
         return "MISSING", f"{src} not found", 0.0
+    ok, why = nvcc_can_compile_device_cuda()
+    if not ok:
+        return "SKIP", (f"this nvcc cannot compile NVIDIA device code, so the CUTLASS stack these host-only "
+                        f"oracles include will not build: {why}. Run this tier where nvcc is a full CUDA "
+                        f"toolchain; --strict makes this a failure."), 0.0
     OUT.mkdir(parents=True, exist_ok=True)
     exe = OUT / name.replace("@", "_")
     rc, log, dt = run(NVCC + GATE_FLAGS.get(name, []) +
@@ -1025,6 +1070,10 @@ def lint_moe_event_timing():
 
 def lint_dense_streamk_contract():
     """107b must share worker decomposition, use absolute K, and reset locks outside each event."""
+    ok, why = nvcc_can_compile_device_cuda()
+    if not ok:
+        return "SKIP", ("needs an NVIDIA device compiler for the CUTLASS stack its oracle includes: "
+                        + why), 0.0
     return _run_ci_script(
         "check_dense_streamk_contract.py",
         "dense Stream-K worker/K/fixup/timing seams and the exact fixture are pinned")
@@ -1032,6 +1081,10 @@ def lint_dense_streamk_contract():
 
 def lint_grouped_streamk_contract():
     """Grouped Stream-K must preserve global q for locks while decoding expert-local compute coordinates."""
+    ok, why = nvcc_can_compile_device_cuda()
+    if not ok:
+        return "SKIP", ("needs an NVIDIA device compiler for the CUTLASS stack its oracle includes: "
+                        + why), 0.0
     return _run_ci_script(
         "check_grouped_streamk_contract.py",
         "grouped Stream-K q/worker/K/fixup/timing seams and both decode controls are pinned")
@@ -1039,6 +1092,10 @@ def lint_grouped_streamk_contract():
 
 def lint_streamk_fixup_cohort():
     """Stream-K fixup must use the exact 64/128-thread CTA as barrier and scratch cohort."""
+    ok, why = nvcc_can_compile_device_cuda()
+    if not ok:
+        return "SKIP", ("needs an NVIDIA device compiler for the CUTLASS stack its oracle includes: "
+                        + why), 0.0
     return _run_ci_script(
         "check_streamk_fixup_cohort.py",
         "Stream-K exact CTA cohort and real-fragment workspace coverage are pinned")
