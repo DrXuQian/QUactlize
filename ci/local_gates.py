@@ -1188,15 +1188,15 @@ def lint_dense_marlin_rejection_census():
 
 def lint_dense_marlin_rejected_cohorts():
     """Bypass only the CMake cohort guard and compile one rejected row per cohort."""
-    ok, why = nvcc_can_compile_device_cuda()
-    if not ok:
-        return "SKIP", ("needs an NVIDIA device compiler for the CUTLASS compile witnesses: " + why), 0.0
     script = DEV / "run_l131_marlin_rejected_cohorts.sh"
     if not script.is_file():
         return "FAIL", f"missing {script.name}", 0.0
     rc, log, dt = run(["bash", str(script)], cwd=str(ROOT))
     lines = [line.strip() for line in log.splitlines() if line.strip()]
     verdict = lines[-1] if lines else "l131 produced no output"
+    if rc in (2, 3):
+        why = next((line for line in lines if "SKIP" in line), verdict)
+        return "SKIP", why, dt
     return ("PASS" if rc == 0 else "FAIL"), verdict, dt
 
 

@@ -14,7 +14,16 @@ python3 "$ROOT/ci/check_dense_marlin_rejection_census.py"
 
 dp_log="$(mktemp)"
 trap 'rm -f "$dp_log" "${red_log:-}"' EXIT
-if ! bash "$SYNTAX" "$SRC" >"$dp_log" 2>&1; then
+set +e
+bash "$SYNTAX" "$SRC" >"$dp_log" 2>&1
+dp_rc=$?
+set -e
+if [[ $dp_rc -eq 2 || $dp_rc -eq 3 ]]; then
+  echo "[L131] SKIP: syntax compiler unavailable for the ordinary-DP witness" >&2
+  cat "$dp_log" >&2
+  exit 3
+fi
+if [[ $dp_rc -ne 0 ]]; then
   echo "[L131] FAIL: ordinary DP control did not compile cleanly" >&2
   sed -n '1,20p' "$dp_log" >&2
   exit 1
