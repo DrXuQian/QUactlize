@@ -5239,3 +5239,112 @@ codex 提到 `test_gemv_perf` 还有旧口径债,顺着扫了一遍全部 bench:
 `01:12:56` 出现一个 **0 字节**的锁,到 `01:45` 还在、期间**任何提交都失败**、而且**没有任何 git 进程存活**。按「0 字节 + 三十多分钟 + 无活进程 = 崩溃残留」删除后恢复正常。
 
 **这个失败形态很阴:`git add` 拿不到锁会整条中止,而随后的 `git commit` 仍可能成功** —— 只要暂存区里还有别的东西(比如更早的一次删除),它就带着别的内容提交。我在 `48fcbb7` 上吃过一次,靠 `git show --stat` 才发现,用 `e44012a` 补的。**判据:`git add` 后查 rc,`git commit` 后查 `git show --stat`,两个都要。**
+
+---
+
+## 121 — StreamK 的 A0 在 SK-split 上算错,而且是**每个分裂 tile 恰好一个元素**
+
+**立项,不是口头提醒。** 这条已经在 MCP 里说过两遍(先是竞态假设,后是对它的修正),但那是一个四十多条深的队列,口头指示会被吞掉。这里是耐久版本,以 box 实测为准。
+
+### 事实(2026-08-11 ppu001,`tools/run_dense_streamk_107b_box.sh`,shape 2048×4096×4096)
+
+```
+[partition] DP=576 SK-whole=224 SK-split=224 peer_excess=224 qk_cells=28672 coverage=exact-once
+bucket=DP        tiles=576 outputs=4718592 mismatches=0
+bucket=SK-whole  tiles=224 outputs=1835008 mismatches=0
+bucket=SK-split  tiles=224 outputs=1835008 mismatches=233
+                 max_abs=1 max_rel_sym=1 max_half_ulp=8947 nonfinite=0
+Disposition: Failed
+```
+
+`8366f09` 的三桶诊断做到了它该做的事:**判据在事前就写死了** —— 错误全落 SK-split 且 half ULP 个位数 ⟹ 重结合;DP 桶里也有或出现大 ULP ⟹ 真错。结果是**前半满足、后半也满足**:DP 和 SK-whole 是干净的 0,但 `max_half_ulp=8947`、`max_rel_sym=1`(100% 相对误差)。**重结合不会给出 100% 相对误差。这是 kernel 缺陷,不是比较器。**
+
+`coverage=exact-once`(28672 格各一个 owner)⟹ **调度分解是对的**,错在 fixup。`nonfinite=0` ⟹ 不是污染。
+
+### 形状(这是本条的主要内容)
+
+**233 ÷ 224 个 SK-split tile ≈ 每个分裂 tile 恰好 1 个错元素**,而每 tile 有 8192 个输出、`peer_excess=224` 即每个分裂 tile 正好 1 次 handoff。
+
+我先给出的"竞态丢掉整个 peer 贡献"假设**被这个数削弱**:竞态丢一份 partial 会毁掉一片**连续**元素,不会每 tile 只坏一个。"每 tile 恰好一个"更像**确定性边界缺陷** —— `BlockStripedReduce` 按线程切条时的余数/边界那一格,或 fixup 元素范围少覆盖/多覆盖一格。
+
+同一条接缝**在小规模下逐位精确**:gate 那一臂 `SK-split tiles=1 peer_excess=7` 是 `mismatches=0`,且 `[streamk CPU-FP32] outputs=8192 bad=0 bitdiff=0 BIT-EXACT`。所以缺陷需要多个分裂 tile 才显形,或者需要 224 这个规模才踩到边界。
+
+### 判别式(便宜的在前)
+
+1. **跑两次,比较错误位置集合。** 位置漂移 = 竞态;位置固定 = 确定性缺陷。这比缩 grid 便宜,而且先做能省一次重建。
+2. 位置固定的话,打印这 233 个位置的 `(tile, m, n, lane, stripe_index)`。**规律大概率一眼可见**,不需要再设计探针。
+3. 只有在 1 判为漂移时才需要:缩 grid 到 `units <= physical_cta`(每 CTA 只做一个 unit)重跑,消失即定位到「CTA 复用」这一层。
+
+### 一条同源风险,决定了顺序
+
+**B2 正在给同一个 fixup 加有效行 mask。** 如果 A0 的缺陷本来就在 fixup 的元素范围算术上,B2 的 mask 会**盖在同一段索引上** —— B2 落地后 A0 的红可能**变形而不是消失**,那时两个缺陷混在一起,比现在难定位。
+
+**所以 A0 至少要在 B2 提交之前做完判别式 1**(位置固定还是漂移)。这一步不需要改任何代码,只要重跑一次并 diff 位置集合。
+
+### 为什么它排在 Marlin scheduler 之前
+
+一条已知会算错的 StreamK,在它上面做调度是在错的基座上;而且 Marlin scheduler 最终也要接一套 peer/reduce,和这个缺陷同层。顺序:B1.0 收口 → B2 → **A0** → Marlin 四问 + 实现。
+
+### 不在本条范围内的
+
+性能不是问题:`streamk/non-persistent = 1.000442`、`persistent/non-persistent = 1.011571`,M=2048 上三条路都在 1.2% 内 —— 预期之内(1024 tile 对 288 worker,机器本来就满),StreamK 的价值只在 decode。**不要顺手去调性能**,这条只要正确性。
+
+---
+
+## 122 — StreamK 该解决尾波,今天却慢 8%:因为它用 12.5% 的尾波换了 26% 的归约流量
+
+**这是 TODO,不是今晚要做的事。** 记在这里是因为它有一个**必须先做的前置**,不写下来会被人直接去扫 config 然后学到一个错误的结论。
+
+### 事实(2026-08-11 ppu001,`fixture=a0-exact`,2048×4096×4096)
+
+```
+non-persistent  209.380 us   328.2 TF/s (65.6% MFU)
+persistent      228.860 us   300.3 TF/s (60.1% MFU)
+streamk         226.300 us   303.7 TF/s (60.7% MFU)
+streamk/non-persistent = 1.081        <- StreamK 慢 8.1%
+```
+
+### 两边都量出来了,交易是亏的
+
+**尾波(StreamK 要解决的东西):** tile 64×128 ⟹ `Q = 32×32 = 1024` tiles,`W = 288` workers。
+
+```
+waves = ceil(1024/288) = 4     末波占用 160/288 = 55.6%
+尾波开销 = 4×288/1024 − 1 = 12.5%      <- 和 task #10 记的 ~11% 吻合
+```
+
+**StreamK 为此付的代价(同一次运行的实测字段):**
+
+```
+kernel 226.3 us @ distinct 250 GB/s  -> 基线搬运 56.6 MB
+StreamK 归约 logical_RW = 14.68 MB   -> 基线的 25.9%
+```
+
+**用 12.5% 的时间尾波,换 26% 的额外流量。** 这个 shape 上净亏,实测慢 8.1%,和这个量级一致。
+
+### 前置:B2-FP32-lite。**没有它,任何 config 扫描都会学到错的结论**
+
+有效行守卫把归约流量从 **26.16% 压到 1.64%**(16×,而且数值语义不变)。之后交易变成:**用 ~1.6% 的流量换 12.5% 的尾波 ⟹ 净收益约 +10 点。**
+
+**所以顺序是 B2-lite → 再扫 config。** 反过来做,扫出来的结论是"StreamK 在 dense 上没用",而那个结论只在一个即将消失的配置下成立。这正是 [#47 PPU_B_CHUNK] 的同型错误(整个 sweep 在开关关着的情况下跑完)。
+
+### 扫描本身的两条要求
+
+1. **StreamK 目前不是 tactic 轴**,是一条独立的臂。要扫就得让它进 config 表,否则每个 shape 都要手工跑三遍。
+2. **必须覆盖尾波大的 shape,不能只扫整除的。** 尾波 `ceil(Q/W)·W/Q − 1` 对 Q 极度敏感:
+
+   | Q | waves | 末波占用 | 尾波开销 |
+   |---:|---:|---:|---:|
+   | 288 | 1 | 100% | **0.0%** |
+   | 289 | 2 | 0% | **99.3%** |
+   | 320 | 2 | 11% | 80.0% |
+   | 432 | 2 | 50% | 33.3% |
+   | 576 | 2 | 100% | **0.0%** |
+   | 1024 | 4 | 56% | 12.5% |
+   | 1152 | 4 | 100% | **0.0%** |
+
+   **只扫 288/576/864/1152 会得到"StreamK 永远是净亏"**,因为那些点的尾波恰好是 0。判据要求每一行**同时记录该 shape 的尾波百分比**,否则赢输不可归因。
+
+### 与 Marlin 的关系
+
+Marlin 的 `blocks = (tiles >= sms) ? tiles : sms` 是**另一种**处理:tile 填得满机器就完全不切 K(尾波照吃),填不满才切。也就是说 Marlin 放弃了 dense 大 M 的尾波,只救 tile 不够的情形(decode)。**我们如果把 B2-lite 做掉,StreamK 在 dense 上能拿到 Marlin 主动放弃的那一块。** 这两条不冲突,是不同 M 区间的事。
