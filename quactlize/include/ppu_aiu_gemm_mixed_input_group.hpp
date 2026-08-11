@@ -30,6 +30,63 @@
 
 namespace cutlass::gemm::kernel {
 
+#if defined(PPU_METADATA_ADDR_PROBE) && (PPU_METADATA_ADDR_PROBE != 0)
+// Test-only address/value trace for the grouped metadata path.  The production
+// ABI and codegen do not contain this buffer or branch unless the dedicated
+// probe target defines PPU_METADATA_ADDR_PROBE.
+//
+// Keep the trace split into three observations.  A normal scalar load from an
+// explicit int64 GEP establishes the allocation contents; gZ establishes the
+// shape-only expert slice; tZgZ plus the copied smem value separate CuTe's
+// partition from the PPU cp.async address path.  G5's controlled q==8 fixture
+// proves only the zero plane, so this trace deliberately makes no claim about B.
+inline constexpr uint32_t kGroupedMetadataProbeMagic = 0x475a4150u; // "GZAP"
+inline constexpr uint32_t kGroupedMetadataProbeVersion = 1u;
+inline constexpr int kGroupedMetadataProbeExperts = 3;
+inline constexpr uint32_t kGroupedMetadataProbeMaxShapeRecords = 1024u;
+inline constexpr uint32_t kGroupedMetadataProbeMaxCopyRecords = 4096u;
+
+struct GroupedMetadataShapeRecord {
+  int32_t scheduler_expert = -1;
+  int32_t local_n = -1;
+  int32_t scale_group = -1;
+  int32_t thread_idx = -1;
+  uint64_t explicit_addr = 0;
+  uint64_t gz_addr = 0;
+  uint64_t gz_base_addr = 0;
+  uint16_t explicit_bits = 0;
+  uint16_t gz_bits = 0;
+};
+
+struct GroupedMetadataCopyRecord {
+  int32_t scheduler_expert = -1;
+  int32_t thread_idx = -1;
+  int32_t copy_slot = -1;
+  int32_t metadata_tile = -1;
+  int32_t value_idx = -1;
+  uint64_t partition_addr = 0;
+  uint64_t destination_addr = 0;
+  uint16_t partition_bits = 0;
+  uint16_t cp_async_bits = 0;
+};
+
+struct GroupedMetadataAddressProbe {
+  uint32_t magic = kGroupedMetadataProbeMagic;
+  uint32_t version = kGroupedMetadataProbeVersion;
+  uint32_t shape_count = 0;
+  uint32_t copy_count = 0;
+  uint32_t overflow = 0;
+  uint32_t configuration_errors = 0;
+  uint32_t cta_threads = 0;
+  uint32_t thread_slots = 0;
+  uint32_t metadata_tiles = 0;
+  uint32_t values_per_thread = 0;
+  uint32_t expert_ctas[kGroupedMetadataProbeExperts]{};
+  GroupedMetadataShapeRecord shape[kGroupedMetadataProbeMaxShapeRecords]{};
+  GroupedMetadataCopyRecord copy[kGroupedMetadataProbeMaxCopyRecords]{};
+};
+#endif
+
 ///////////////////////////////////////////////////////////////////////////////
 
 template <class ProblemShape_, class CollectiveMainloop_, class CollectiveEpilogue_, class TileScheduler_>
@@ -280,6 +337,155 @@ public:
     auto load_inputs = collective_mainloop.load_init(problem_shape_MNKL, blk_coord_mnkl, params.mainloop);
     Tensor gA = get<0>(load_inputs);
     Tensor gB = get<1>(load_inputs);
+
+#if defined(PPU_METADATA_ADDR_PROBE) && (PPU_METADATA_ADDR_PROBE != 0)
+    if (params.probe == 2) {
+      // Only the three boundary experts write.  Every other CTA exits before
+      // the GEMM, so this mode is an address probe rather than a numerical arm.
+      // Spell the three values in the device expression itself.  A namespace-
+      // scope constexpr array is ODR-used by indexing here, and NVCC's device
+      // pass then requires a separately emitted device definition.  This
+      // diagnostic must not acquire a hidden device-global ABI just to select
+      // three experts.
+      int const probe_expert_slot =
+          expert == 127 ? 0 : expert == 128 ? 1 : expert == 129 ? 2 : -1;
+      if (probe_expert_slot < 0) return;
+
+      auto* trace = reinterpret_cast<GroupedMetadataAddressProbe*>(params.workspace);
+      if (trace == nullptr || trace->magic != kGroupedMetadataProbeMagic ||
+          trace->version != kGroupedMetadataProbeVersion) return;
+
+      if (thread_idx == 0) {
+        atomicAdd(trace->expert_ctas + probe_expert_slot, 1u);
+      }
+
+      // gZ below is a CTA-local tile.  The dedicated harness deliberately
+      // makes all 256 experts one row and N exactly one TileN so the address
+      // census is one CTA per expert with no ragged-prefix/workspace alias.
+      // Refuse to reinterpret another geometry as evidence: an incomplete
+      // trace is a probe failure, not a clean metadata path.
+      bool const supported_geometry =
+          params.mtiles_uniform > 0 && M == 1 && m_idx == 0 &&
+          N == int(size<1>(TileShape{})) && n_idx == 0 && S == 1 &&
+          params.mainloop.scale_k % int(CollectiveMainloop::Scale_TileK) == 0;
+      if (!supported_geometry) {
+        if (thread_idx == 0) atomicAdd(&trace->configuration_errors, 1u);
+        return;
+      }
+
+      // `load_inputs` is the exact tuple the production mainloop consumes.
+      // The probe is instantiated only for ScaleZero, so gZ is element 3.
+      static_assert(!cute::is_void_v<typename CollectiveMainloop::ElementZero>,
+                    "metadata address probe requires a zero plane");
+      Tensor gZ = get<3>(load_inputs);
+      using Zero = typename CollectiveMainloop::NonVoidElementZero;
+      static_assert(sizeof(Zero) == sizeof(uint16_t),
+                    "metadata address probe records raw fp16 zero values");
+
+      int64_t const scale_k = params.mainloop.scale_k;
+      int64_t const plane_elements = int64_t(N) * scale_k;
+      Zero const* explicit_plane = params.mainloop.ptr_Z +
+          int64_t(expert) * plane_elements;
+      auto const* gz_base = cute::raw_pointer_cast(gZ.data());
+
+      // Shape-only arm.  The logical tensor is (N, ScaleTileK,
+      // ceil(scale_k/ScaleTileK)); enumerate every (n,group) independently of
+      // the tiled-copy mapping.  If this differs from the int64 GEP, the fault
+      // predates partition_S/cp.async.
+      for (int64_t linear = thread_idx; linear < plane_elements;
+           linear += int64_t(MaxThreadsPerBlock)) {
+        int const local_n = int(linear % int64_t(N));
+        int const group = int(linear / int64_t(N));
+        int const group_in_tile = group % int(CollectiveMainloop::Scale_TileK);
+        int const metadata_tile = group / int(CollectiveMainloop::Scale_TileK);
+        Zero const* explicit_ptr = explicit_plane + int64_t(group) * int64_t(N) + local_n;
+        Zero const* gz_ptr = cute::raw_pointer_cast(&gZ(local_n, group_in_tile, metadata_tile));
+        uint32_t const out = atomicAdd(&trace->shape_count, 1u);
+        if (out < kGroupedMetadataProbeMaxShapeRecords) {
+          auto& rec = trace->shape[out];
+          rec.scheduler_expert = expert;
+          rec.local_n = local_n;
+          rec.scale_group = group;
+          rec.thread_idx = thread_idx;
+          rec.explicit_addr = reinterpret_cast<uint64_t>(explicit_ptr);
+          rec.gz_addr = reinterpret_cast<uint64_t>(gz_ptr);
+          rec.gz_base_addr = reinterpret_cast<uint64_t>(gz_base);
+          rec.explicit_bits = *reinterpret_cast<uint16_t const*>(explicit_ptr);
+          rec.gz_bits = *reinterpret_cast<uint16_t const*>(gz_ptr);
+        } else {
+          atomicAdd(&trace->overflow, 1u);
+        }
+      }
+
+      // Production partition and production copy atom, unchanged.  The
+      // metadata copy has fewer unique logical thread slots than CTA threads.
+      // The shipping ordinary/F=1 collective wraps surplus physical threads
+      // onto valid slots (quactlize_mma_mixed_input.hpp); raw CuTe get_slice
+      // does NOT wrap.  Reproduce that exact mapping here, or the probe itself
+      // creates an out-of-range partition and can manufacture the row
+      // divergence it is meant to diagnose.
+      constexpr int thread_slots = CollectiveMainloop::ScaleCopyPlan::thread_slots;
+      int const copy_slot = thread_idx % thread_slots;
+      auto gmem_thr_copy_zero =
+          params.mainloop.gmem_tiled_copy_zero.get_slice(copy_slot);
+      Tensor tZgZ = gmem_thr_copy_zero.partition_S(gZ);
+      Tensor sZ = make_tensor(
+          make_smem_ptr(shared_storage.tensors.mainloop.smem_zero.begin()),
+          typename CollectiveMainloop::SmemLayoutScale{});
+      Tensor tZsZ = gmem_thr_copy_zero.partition_D(sZ);
+      int const metadata_tiles = int(size<3>(tZgZ));
+      auto first_src = tZgZ(_, _, _, 0);
+      auto first_dst = tZsZ(_, _, _, 0);
+      constexpr int values_per_thread = CollectiveMainloop::ScaleCopyPlan::values_per_thread;
+      static_assert(int(size(first_src)) == values_per_thread,
+                    "probe source view must match the shipping metadata copy plan");
+      static_assert(int(size(first_dst)) == values_per_thread,
+                    "probe destination view must match the shipping metadata copy plan");
+      static_assert(thread_slots <= int(MaxThreadsPerBlock),
+                    "metadata copy's unique slots must fit the CTA");
+      if (probe_expert_slot == 0 && thread_idx == 0) {
+        trace->cta_threads = uint32_t(MaxThreadsPerBlock);
+        trace->thread_slots = uint32_t(thread_slots);
+        trace->metadata_tiles = uint32_t(metadata_tiles);
+        trace->values_per_thread = uint32_t(values_per_thread);
+      }
+
+      for (int metadata_tile = 0; metadata_tile < metadata_tiles; ++metadata_tile) {
+        auto src = tZgZ(_, _, _, metadata_tile);
+        auto dst = tZsZ(_, _, _, 0);
+        clear(dst);
+        __syncthreads();
+        copy(params.mainloop.gmem_tiled_copy_zero, src, dst);
+        cute::cp_async_fence();
+        cute::cp_async_wait<0>();
+        __syncthreads();
+
+        if (thread_idx < thread_slots) {
+          for (int value_idx = 0; value_idx < values_per_thread; ++value_idx) {
+            Zero const* src_ptr = cute::raw_pointer_cast(&src(value_idx));
+            Zero const* dst_ptr = cute::raw_pointer_cast(&dst(value_idx));
+            uint32_t const out = atomicAdd(&trace->copy_count, 1u);
+            if (out < kGroupedMetadataProbeMaxCopyRecords) {
+              auto& rec = trace->copy[out];
+              rec.scheduler_expert = expert;
+              rec.thread_idx = thread_idx;
+              rec.copy_slot = copy_slot;
+              rec.metadata_tile = metadata_tile;
+              rec.value_idx = value_idx;
+              rec.partition_addr = reinterpret_cast<uint64_t>(src_ptr);
+              rec.destination_addr = reinterpret_cast<uint64_t>(dst_ptr);
+              rec.partition_bits = *reinterpret_cast<uint16_t const*>(src_ptr);
+              rec.cp_async_bits = *reinterpret_cast<uint16_t const*>(dst_ptr);
+            } else {
+              atomicAdd(&trace->overflow, 1u);
+            }
+          }
+        }
+        __syncthreads();
+      }
+      return;
+    }
+#endif
 
     auto m_max = M - size<0>(gA) * m_idx;
     auto n_max = N - size<0>(gB) * n_idx;

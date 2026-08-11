@@ -201,6 +201,10 @@ SYNTAX = [
     # compile the raw-mainloop G3 arm and both TM8/TM16 production G4 arms
     # locally so a dependent-template error cannot wait for the ppu001 box.
     ("tests/test_ppu_m8n16_collective.cu", ""),
+    # The G5 address census is compile-time absent from production.  Compile
+    # the macro-on TU explicitly; a macro-off syntax row would prove only that
+    # the diagnostic code was preprocessed away.
+    ("tests/test_ppu_grouped_metadata_address.cu", "-DPPU_METADATA_ADDR_PROBE=1"),
     # INBOX 097 changes scale-copy ownership, so its two independent-golden box targets must at least instantiate
     # locally. Q65 once omitted the optional two-plane specialization include and otherwise reached the box with
     # CollectiveMma's failing primary template; keeping the real source here makes that omission non-repeatable.
@@ -1178,6 +1182,13 @@ def lint_m8n16_g2_contract():
         "m8n16 G2 maps one 16-row x4 payload with get_i/get_j and the historical NVIDIA provider index")
 
 
+def lint_grouped_metadata_address_contract():
+    """The G5 address census must keep all four observation layers distinct."""
+    return _run_ci_script(
+        "check_grouped_metadata_address_contract.py",
+        "grouped metadata address source contract")
+
+
 def lint_plain_ldsm_failclosed():
     """The twelve dormant ppu001 plain-LDSM entries must fail before assembly when called."""
     return _run_ci_script(
@@ -1650,6 +1661,7 @@ def main():
                 ("lint", "FP32 residue predicates scalar fixup accesses without predicating locks", lint_fp32_residue_contract),
                 ("lint", "syntax baselines and live SYNTAX sources match", lint_syntax_inventory),
                 ("lint", "m8n16 G2 replays the historical bad index on the production x4 payload", lint_m8n16_g2_contract),
+                ("lint", "G5 address probe keeps int64 GEP, gZ, partition_S and cp.async observations distinct", lint_grouped_metadata_address_contract),
                 ("lint", "ppu001 plain LDSM fails in C++ before its unproved assembler path", lint_plain_ldsm_failclosed),
                 ("lint", "quactlize_extensions adds to actlize rather than redefining it", lint_extension_additive),
                 ("lint", "every file naming a quactlize type reaches its defining header", lint_owned_symbol_includes),
