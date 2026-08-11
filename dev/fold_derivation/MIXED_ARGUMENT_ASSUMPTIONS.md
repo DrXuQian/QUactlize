@@ -56,11 +56,24 @@ Status terms are deliberately distinct:
 The G5 ID probe is deliberately narrower than this table:
 
 - `q == 8` zeros the B contribution, so it observes the zero-metadata plane;
-  it does not establish B's expert indexing.
+  it does not establish B's expert indexing by itself.
 - Its S/Z layout is tight, its static and runtime group sizes match, it uses the
   noninterleaved path, and all relevant extents divide their format quanta.
 - Consequently, honoring `dS` in `8e4196c` is independent correctness
   hardening but cannot explain the observed `e >= 128 -> e - 64` pattern.
+
+L130 supplies the missing B-side arm for the exact shipping G5 type.  With
+`zero=0`, `scale=1`, and expert `e` holding exactly `e` unit int4 deviations,
+the output is the integer `e` without a floating-point oracle.  Its host sweep
+exhausts all 256 ordinary-`dB` expert pitches and reports zero address/value
+errors; `place_derived -> recover_derived` and byte identity against the legacy
+five-step packer are independent anchors.  Planting the historical
+`e >= 128 -> e - 64` remap rejects exactly 128 experts.  Thus the observed
+remap is absent from both modelled shipping chains (L125 metadata and L130
+ordinary B).  It is not evidence about an interleaved `dB2` path that G5 does
+not instantiate.  A raw-bit-exact device companion is queued to distinguish a
+runtime/harness defect from a device implementation that diverges from those
+anchored models; no device result is claimed here.
 
 The host layout oracle must also be scoped carefully.  Internal agreement is
 not an anchor: a wrong `Copy_Traits` and a model built from the same traits can

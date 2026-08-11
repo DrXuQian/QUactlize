@@ -32,6 +32,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <type_traits>
 #include <vector>
@@ -796,16 +797,20 @@ int run_g5_idprobe(int const* ids, int n_active) {
   std::printf("[G5:IDPROBE] output value == the expert id actually read (want == slot's own id)\n");
   int wrong = 0;
   for (int slot = 0; slot < n_active; ++slot) {
-    // Every column of a row must agree, or the read is not even per-row consistent.
     int const want = ids[slot];
-    float first = float(got[std::size_t(slot) * kN]);
-    bool row_uniform = true;
-    for (int n = 1; n < kN; ++n)
-      if (float(got[std::size_t(slot) * kN + n]) != first) row_uniform = false;
-    bool const ok = row_uniform && int(first + 0.5f) == want && std::fabs(first - float(want)) < 0.25f;
+    half_t const expected{float(want)};
+    half_t const first = got[std::size_t(slot) * kN];
+    bool row_exact = true;
+    for (int n = 0; n < kN; ++n)
+      row_exact &= got[std::size_t(slot) * kN + n].raw() == expected.raw();
+    bool const ok = row_exact;
     if (!ok && wrong++ < 16)
-      std::printf("  IDPROBE slot=%-3d owns_expert=%-3d read_expert=%.3f%s\n",
-                  slot, want, first, row_uniform ? "" : "  (row not uniform: per-column divergence)");
+      std::printf("  IDPROBE slot=%-3d owns_expert=%-3d "
+                  "first=%.3f/0x%04x want=%.3f/0x%04x%s\n",
+                  slot, want, double(float(first)), unsigned(first.raw()),
+                  double(float(expected)), unsigned(expected.raw()),
+                  first.raw() == expected.raw()
+                      ? "  (first matches; another column diverges)" : "");
     if (!ok) ++errors;
   }
   std::printf("[G5:IDPROBE] %s: %d/%d slots read an expert other than their own\n",
@@ -813,7 +818,106 @@ int run_g5_idprobe(int const* ids, int n_active) {
   return errors;
 }
 
-int main() {
+// B-side companion to the zero-plane probe above.  Metadata is deliberately
+// inert (scale=1, zero=0), and expert e stores q=9 for the first e K values of
+// every column and q=8 for the rest.  The converter emits q-8, A is one, and
+// K=256, so every output is the integer e exactly.  e<=255 is exactly
+// representable in fp16: compare raw bits, not a tolerance or a rounded ID.
+std::vector<std::uint8_t> make_b_probe_codes(int e) {
+  std::vector<std::uint8_t> q(std::size_t(kK) * kN, std::uint8_t(8));
+  for (int k = 0; k < e; ++k)
+    for (int n = 0; n < kN; ++n)
+      q[std::size_t(k) * kN + n] = std::uint8_t(9);
+  return q;
+}
+
+int run_g5_b_idprobe(int const* ids, int n_active) {
+  G5Fixture f;
+  f.B.assign(std::size_t(kE) * kPlacedBBytes, 0);
+  f.scales.assign(std::size_t(kE) * kScaleK * kN, half_t(1.0f));
+  f.zeros.assign(f.scales.size(), half_t(0.0f));
+  f.group_m.assign(kE, 0);
+  f.row_offsets.assign(kE + 1, 0);
+
+  for (int e = 0; e < kE; ++e) {
+    auto const q = make_b_probe_codes(e);
+    xplane::place_derived<4, 8, 32, 64, 8, 32, 1>(
+        f.B.data() + std::size_t(e) * kPlacedBBytes, q, kN, kK);
+  }
+  for (int i = 0; i < n_active; ++i) f.group_m[ids[i]] = 1;
+  for (int e = 0; e < kE; ++e)
+    f.row_offsets[e + 1] = f.row_offsets[e] + f.group_m[e];
+  f.total_rows = f.row_offsets[kE];
+  f.A.assign(std::size_t(f.total_rows) * kK, half_t(1.0f));
+
+  cutlass::DeviceAllocation<int4_t> dB(f.B.size());
+  cutlass::DeviceAllocation<half_t> dScale(f.scales.size());
+  cutlass::DeviceAllocation<half_t> dZero(f.zeros.size());
+  cutlass::DeviceAllocation<half_t> dA(f.A.size());
+  CUTLASS_PPU_CHECK(hggcMemcpy(
+      dB.get(), f.B.data(), f.B.size(), hggcMemcpyHostToDevice));
+  dScale.copy_from_host(f.scales.data());
+  dZero.copy_from_host(f.zeros.data());
+  dA.copy_from_host(f.A.data());
+
+  int errors = 0;
+  auto got = run_g5_arm<8, 8>(
+      "m8-B-ID", f, 1, dA.get(), dB.get(), dScale.get(), dZero.get(), &errors);
+  if (got.empty()) return errors ? errors : 1;
+
+  std::printf("[G5:B-IDPROBE] A=1 scale=1 zero=0; expert e has e q9 codes "
+              "and K-e q8 codes per column; output bits must equal half(e)\n");
+  int bad_slots = 0;
+  int bitdiff = 0;
+  int reported = 0;
+  for (int slot = 0; slot < n_active; ++slot) {
+    int const expert = ids[slot];
+    int const row = f.row_offsets[expert];
+    half_t const want{float(expert)};
+    int row_diff = 0;
+    for (int n = 0; n < kN; ++n) {
+      half_t const value = got[std::size_t(row) * kN + n];
+      row_diff += value.raw() != want.raw();
+      if (value.raw() != want.raw() && reported++ < 16) {
+        std::printf("  B-IDPROBE slot=%-3d expert=%-3d n=%-2d "
+                    "got=%9.3f/0x%04x want=%9.3f/0x%04x BITDIFF\n",
+                    slot, expert, n, double(float(value)), unsigned(value.raw()),
+                    double(float(want)), unsigned(want.raw()));
+      }
+    }
+    bitdiff += row_diff;
+    bad_slots += row_diff != 0;
+  }
+  errors += bitdiff;
+  std::printf("[G5:B-IDPROBE] %s: slot-mismatches=%d/%d "
+              "output-bitdiff=%d/%d\n",
+              errors ? "FAIL" : "PASS", bad_slots, n_active,
+              bitdiff, n_active * kN);
+  return errors;
+}
+
+int main(int argc, char** argv) {
+  bool const idprobe_only = argc == 2 && std::strcmp(argv[1], "--idprobe-only") == 0;
+  if (argc != 1 && !idprobe_only) {
+    std::fprintf(stderr, "usage: %s [--idprobe-only]\n", argv[0]);
+    return 2;
+  }
+
+  if (idprobe_only) {
+    std::printf("== [112:IDPROBE-ONLY] zero-plane + B-plane expert identity ==\n");
+    std::vector<int> all(kE);
+    for (int e = 0; e < kE; ++e) all[e] = e;
+    int errors = 0;
+    errors += run_g5_idprobe(kActiveIds, kActive);
+    errors += run_g5_idprobe(all.data(), kE);
+    errors += run_g5_b_idprobe(kActiveIds, kActive);
+    errors += run_g5_b_idprobe(all.data(), kE);
+    std::printf("== [112:IDPROBE-ONLY] %s: errors=%d "
+                "(zero active=8/256; B active=8/256) ==\n",
+                errors ? "FAIL" : "PASS", errors);
+    return errors ? 1 : 0;
+  }
+
   std::printf("== [112] ppu001 m8n16 collective G3/G4/G5 ==\n");
 
   auto q = make_codes();
@@ -920,6 +1024,8 @@ int main() {
       errors += run_g5("DENSE", rows, all.data(), kE, false);
       errors += run_g5_idprobe(kActiveIds, kActive);
       errors += run_g5_idprobe(all.data(), kE);
+      errors += run_g5_b_idprobe(kActiveIds, kActive);
+      errors += run_g5_b_idprobe(all.data(), kE);
     }
   }
 

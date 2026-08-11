@@ -1228,6 +1228,13 @@ def lint_grouped_metadata_layout_contract():
         "G5 metadata host-algebra contract")
 
 
+def lint_grouped_b_idprobe_contract():
+    """L130 exhausts G5 B expert identity with independent byte-map anchors."""
+    return _run_ci_script(
+        "check_grouped_b_idprobe_contract.py",
+        "G5 B-side exhaustive identity contract")
+
+
 def lint_metadata_stride_contract():
     """Caller dS must survive lowering and change the shared S/Z CuTe address map."""
     return _run_ci_script(
@@ -1719,6 +1726,7 @@ def main():
                 ("lint", "m8n16 G2 replays the historical bad index on the production x4 payload", lint_m8n16_g2_contract),
                 ("lint", "l125 exhausts all 256 G5 zero-plane addresses through the production CuTe map", lint_grouped_metadata_layout),
                 ("lint", "G5 production and l125 share one exact typed metadata-layout seam", lint_grouped_metadata_layout_contract),
+                ("lint", "l130 exhausts all 256 G5 B experts with independent byte-map anchors", lint_grouped_b_idprobe_contract),
                 ("lint", "caller dS changes all three shipping S/Z metadata address maps", lint_metadata_stride_contract),
                 ("lint", "mixed-input outer bases and residues honor caller/logical coordinates", lint_mixed_argument_contract),
                 ("lint", "ppu001 plain LDSM fails in C++ before its unproved assembler path", lint_plain_ldsm_failclosed),
