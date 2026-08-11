@@ -1148,6 +1148,8 @@ its named-barrier arrival count and FP32 workspace stripe both use the exact 64-
     git pull --ff-only origin develop
     git submodule update --init --recursive
     echo "gate-sha=$(git rev-parse HEAD) actlize=$(git -C third_party/actlize rev-parse HEAD)"
+    git merge-base --is-ancestor c72365a HEAD
+    git merge-base --is-ancestor 4129f7e HEAD
 
     # NO local_gates HERE. Every tier in ci/local_gates.py -- gate, lint, syntax AND boxdry -- compiles
     # against dev/fold_derivation/stub_inc, which is first on -I and exists to stand in for PPU headers on a
@@ -1202,13 +1204,16 @@ The device gate must then establish all of the following:
 - decode64's census must report `split_tiles=128`, `epilogue=128`, `fixup_final=128`, no separate-reduction,
   q-oob, empty-expert, hole, missing-K, or duplicate-K entries, and `fixup_work_items == peer_sum`. The actual
   nonuniform `peer_sum/peer_excess` are diagnostics, not an independent expected-value oracle;
-- decode64's clean launch reports `bad=0 bitdiff=0 nonfinite=0 poison_left=0`; its C traffic stays explicitly
-  `N/A (nonuniform peer distribution; independent oracle pending)`. Do not feed it through the uniform traffic
-  formula or report MBU from the census alone;
-- census-derived production-`beta=0` C terms follow `D + 2*Wtile*peer_excess`, with measured and independently
-  expected peer counts required equal. S068/TK256 is fixed at `1,581,056 B` (`1,589,248 B` including this gate's
-  nonzero-beta C read). If the two `W>=cap` expectations above hold, S068/TK64 is `7,872,512 / 7,880,704 B` and
-  ragged/TK64 is `2,975,232 / 3,001,344 B`; do not merge production-beta0 and correctness-gate semantics;
+- decode64's clean launch reports `bad=0 bitdiff=0 nonfinite=0 poison_left=0`. Its nonuniform peer census must now
+  surface `valid_accumulator_elements`, `logical_workspace_RW=8*valid_accumulator_elements`, the old full-tile
+  logical value, unchanged allocation bytes, and `MODEL-ONLY/not-a-DRAM-counter TRAFFIC-PASS`. This is a path model,
+  not an HBM counter or an MBU value;
+- every C-traffic row uses the per-q valid rectangle, not `Wtile*peer_excess`: production beta-zero is
+  `D + 8*sum_q((peers[q]-1)*valid_m[q]*valid_n[q])`. The correctness gate additionally reads one fp16 C plane
+  because it deliberately uses nonzero beta. `old_full_tile_logical_RW` remains beside the new value only as the
+  historical comparison. Measured and independently expected peer counts **and** valid-element totals must agree;
+  do not reuse the old fixed full-tile byte totals, merge production-beta0 with gate semantics, or infer DRAM savings
+  from the logical ratio before counters;
 - every numerical arm reports `bad=0 bitdiff=0 nonfinite=0 poison_left=0`, and the final line is
   `grouped Stream-K phase 2 min2 PASS: errors=0`.
 
@@ -1246,7 +1251,7 @@ stripe K; the TN32 decode champion has `Q=128>=72` and would correctly degenerat
     git pull --ff-only origin develop
     git submodule update --init --recursive
     echo "gate-sha=$(git rev-parse HEAD) actlize=$(git -C third_party/actlize rev-parse HEAD)"
-    test "$(git rev-parse HEAD)" = b1d042d02b602562ba16c1ebb8749d5322e18eb2
+    git merge-base --is-ancestor b1d042d02b602562ba16c1ebb8749d5322e18eb2 HEAD
     test "$(git -C third_party/actlize rev-parse HEAD)" = f5e1beb40f186ea91826691d5fd98da1132e7bee
 
     unset PPU_A_PACK PPU_B_CHUNK PPU_B_CHUNK_BISECT PPU_MAXREG PPU_DEFS
