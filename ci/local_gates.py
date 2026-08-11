@@ -37,6 +37,36 @@ ACT = ROOT / "third_party" / "actlize" / "include"
 ACT_UTIL = ROOT / "third_party" / "actlize" / "tools" / "util" / "include"
 OUT = Path(os.environ.get("QUACTLIZE_CI_OUT", "/tmp/quactlize_ci"))
 
+
+def _sdk_target_includes() -> list:
+    """The PPU SDK's own target include dir, WHEN THERE IS ONE. Empty off the box, which is the point.
+
+    WHY THIS EXISTS, and it is a case where the local tier was green on the wrong compiler. actlize's
+    cutlass/float8.h:88 includes <hggc_fp8.h> under `#ifdef PPU_FP8_ENABLED`, and :55 defines that macro from
+    `__HGGCCC_VER_MAJOR__ >= 12`. NVIDIA nvcc does not define __HGGCCC_VER_MAJOR__, so on a dev container that
+    include is NEVER EXPANDED and the stub set never needed an fp8 header. On the box the same `nvcc` (real
+    NVIDIA nvcc, under PPU_SDK/CUDA_SDK/bin) hands device preprocessing to ppu_clang++, which DOES define it --
+    and that invocation's include path does not carry the SDK's targets/<triple>/include, where hggc_fp8.h
+    actually lives. Result on 2026-08-11: l121 and l122 failed to build on the box with
+    `fatal error: hggc_fp8.h: No such file or directory` while passing here.
+
+    NOT a stub. Putting a fake hggc_fp8.h in stub_inc would SHADOW the real header on the box -- stub_inc is
+    first on the -I list -- so the gate would compile against an invented fp8 type while every device build uses
+    the SDK's. This appends the real directory, LAST, so nothing already on the path is displaced.
+
+    The SDK root follows build.sh's precedence exactly (PPU_SDK, then PPU_HOME, then PPU_SDK_SITE_DEFAULT) so
+    the two cannot disagree about which SDK is in play.
+    """
+    root = (os.environ.get("PPU_SDK") or os.environ.get("PPU_HOME")
+            or os.environ.get("PPU_SDK_SITE_DEFAULT") or "")
+    if not root:
+        return []
+    out = []
+    for d in sorted(Path(root).glob("targets/*/include")):
+        if d.is_dir():
+            out += ["-I", str(d)]
+    return out
+
 # l9x gates. `args` is passed to the built binary; a fixture path is given relative to the repo root so a gate that
 # needs data says so here rather than defaulting to a path that happens to exist.
 # name -> (argv, extra nvcc flags). l95 asserts TYPE IDENTITY against the collective and needs -D__HGGCCC__, or
@@ -487,11 +517,29 @@ def gate(name, args):
     rc, log, dt = run(NVCC + GATE_FLAGS.get(name, []) +
                       ["-I", str(STUB), "-I", str(ACT), "-I", str(ACT_UTIL),
                        "-I", str(ROOT / "quactlize/include"),
-                       "-I", str(ROOT / "tests"), "-I", str(ROOT / "benchmarks"),
-                       "-o", str(exe), str(src)] +
+                       "-I", str(ROOT / "tests"), "-I", str(ROOT / "benchmarks")] +
+                      _sdk_target_includes() +
+                      ["-o", str(exe), str(src)] +
                       [str(ROOT / s) for s in GATE_SRCS.get(name, GATE_SRCS.get(base, []))])
     if rc != 0:
-        return "BUILD", log.strip().splitlines()[0] if log.strip() else "nvcc failed", dt
+        # THE FIRST LINE OF AN nvcc FAILURE CARRIES NO INFORMATION. It is the head of the
+        # "In file included from a.h:1,\n from b.h:2,\n ... : error: ..." cascade, so this
+        # used to report `In file included from .../cutlass/half.h:68,` and nothing else --
+        # a build failure whose message names an #include. Observed 2026-08-11 on the box for
+        # l121/l122, where it cost a round trip to learn that the gate had truncated the error
+        # rather than that the compiler had produced one.
+        #
+        # The ASAN gate in this same file already did the right thing (`next(l for l in log if
+        # " error" in l)`); gate() simply did not follow it. Report the first real diagnostic,
+        # say how many there were, and keep the last include-chain line for context because
+        # that is where the instantiation came from.
+        errs = [l for l in log.splitlines() if ": error:" in l or ": fatal error:" in l]
+        chain = [l for l in log.splitlines() if l.lstrip().startswith(("In file included from", "from "))]
+        if errs:
+            where = f"  [via {chain[-1].strip()}]" if chain else ""
+            more = f"  (+{len(errs) - 1} more)" if len(errs) > 1 else ""
+            return "BUILD", errs[0].strip() + more + where, dt
+        return "BUILD", (log.strip().splitlines()[-1] if log.strip() else "nvcc failed"), dt
     rc, log, dt2 = run([str(exe)] + [str(ROOT / a) for a in args])
     tail = [l for l in log.splitlines() if l.strip()]
     return ("PASS" if rc == 0 else "FAIL"), (tail[-1] if tail else ""), dt + dt2
