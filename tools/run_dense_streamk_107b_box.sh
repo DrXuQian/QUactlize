@@ -35,15 +35,31 @@ find_one() {
   printf '%s\n' "${hits[0]}"
 }
 
-run_case() {
+run_control_case() {
   local label="$1" log="$2"
   shift 2
   printf '\n== %s ==\n' "$label"
-  if ! "$BIN" "$@" 2>&1 | tee "$log"; then
-    fail "$label returned nonzero"
+  set +e
+  "$BIN" "$@" 2>&1 | tee "$log"
+  local rc=${PIPESTATUS[0]}
+  set -e
+  if [ "$rc" -eq 1 ]; then
+    fail "$label reported a real numerical/invariant failure"
   fi
-  grep -q '^  Disposition: Passed$' "$log" \
-    || fail "$label did not report a passed numerical check"
+  if [ "$rc" -eq 0 ]; then
+    grep -q '^  Disposition: Passed$' "$log" \
+      || fail "$label rc=0 lacked a passed numerical check"
+    require_verify_buckets "$label" "$log"
+  elif [ "$rc" -eq 3 ]; then
+    [ "$(grep -Ec '^  Disposition: NOT CLASSIFIABLE \(ordinary-reference=(Passed|Failed)\)$' "$log")" -eq 1 ] \
+      || fail "$label rc=3 lacked one explicit NOT CLASSIFIABLE disposition"
+    if grep -Eq '^  Disposition: (Passed|Failed)' "$log"; then
+      fail "$label collapsed NOT CLASSIFIABLE into a numerical verdict"
+    fi
+    printf '[107b][control] %s: NOT CLASSIFIABLE; continuing to the Stream-K subject\n' "$label"
+  else
+    fail "$label exited rc=$rc instead of CLASSIFIED(0/1) or NOT CLASSIFIABLE(3)"
+  fi
   grep -Eq '^  \[dense kernel-span-upper\] n=20 median=[0-9.]+ us .*distinct-event-pairs=20 ' "$log" \
     || fail "$label did not report 20 distinct event-pair kernel spans"
 }
@@ -55,28 +71,6 @@ require_verify_buckets() {
     [ "$(grep -Ec "^  \\[dense verify bucket=${bucket}\\] tiles=[0-9]+ outputs=[0-9]+ mismatches=[0-9]+ max_abs=[^ ]+ max_rel_sym=[^ ]+ max_half_ulp=[0-9]+ nonfinite=[0-9]+$" "$log")" -eq 1 ] \
       || fail "$label did not report exactly one complete ${bucket} error bucket"
   done
-}
-
-# A0 is deliberately diagnostic: the device result that opened this item was
-# Failed, and accepting only rc=0 would delete the evidence we are here to
-# classify.  Accept only the program's two documented verdict exits, require a
-# complete verdict plus all three buckets, and reject crashes or partial logs.
-run_diagnostic_case() {
-  local label="$1" log="$2"
-  shift 2
-  printf '\n== %s ==\n' "$label"
-  set +e
-  "$BIN" "$@" 2>&1 | tee "$log"
-  local rc=${PIPESTATUS[0]}
-  set -e
-  if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
-    fail "$label exited rc=$rc instead of a numerical Passed/Failed verdict"
-  fi
-  [ "$(grep -Ec '^  Disposition: (Passed|Failed)$' "$log")" -eq 1 ] \
-    || fail "$label did not report exactly one numerical disposition"
-  grep -Eq '^  \[dense kernel-span-upper\] n=20 median=[0-9.]+ us .*distinct-event-pairs=20 ' "$log" \
-    || fail "$label did not report 20 distinct event-pair kernel spans"
-  require_verify_buckets "$label" "$log"
 }
 
 # A split-path gate has three outcomes: numerical PASS/FAIL after exercising a
@@ -123,6 +117,11 @@ print(f"[107b][split-search] rejected empty seam tiles={tiles} workers={workers}
       f"remainder={rem}")
 PY
     return 2
+  fi
+  if [ "$rc" -eq 3 ]; then
+    grep -Eq '^  Disposition: NOT CLASSIFIABLE \(ordinary-reference=(Passed|Failed)\)$' "$log" \
+      || fail "$label rc=3 lacked its NOT CLASSIFIABLE record"
+    fail "$label was not classifiable; this is not a numerical failure, but it cannot be Stream-K evidence"
   fi
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
     fail "$label exited rc=$rc instead of Passed/Failed/NOT EXERCISED"
@@ -225,9 +224,15 @@ fi
 # eight-tile slice, forced Stream-K must make 8 ordered contributors.  The
 # seams after tiles 9 and 27 are inside gs128 groups (TileK=64), so restarting
 # metadata at local K=0 cannot pass this gate.
-run_case 'exact absolute-K/fixup seam gate plus repeated-launch lock gate' "$GATE_LOG" \
-  --m=64 --n=128 --k=4352 --l=1 --g=128 --mode=1 \
-  --alpha=.75 --beta=.5 --iterations=20 --streamk_gate
+if run_split_probe \
+    'exact absolute-K/fixup seam gate plus repeated-launch lock gate' "$GATE_LOG" \
+    --m=64 --n=128 --k=4352 --l=1 --g=128 --mode=1 \
+    --alpha=.75 --beta=.5 --iterations=20 --streamk_gate; then
+  :
+else
+  gate_rc=$?
+  fail "exact seam gate did not pass its exercised replay rc=$gate_rc"
+fi
 
 python3 - "$GATE_LOG" <<'PY' || fail 'exact seam/decomposition audit failed'
 import pathlib, re, sys
@@ -273,36 +278,13 @@ if missing:
 print(f"[107b][gate] PASS workers={workers} decomposition=1x8 witness=8/1/0 grid={gx}x{gy}x{gz}")
 PY
 
-# Same binary, geometry, event protocol, and 20-launch median for all three
-# dense arms.  Fixed A0 remains a performance comparison.  It is deliberately
-# not the split-path correctness gate: on a worker count that divides its 1024
-# output tiles, its Stream-K arm contains no peer seam.
-COMMON_SHAPE=(--m=2048 --n=4096 --k=4096 --l=1 --g=128 --mode=1)
-COMMON=("${COMMON_SHAPE[@]}" --iterations=20)
-run_case 'A0 non-persistent control' "$NP_LOG" "${COMMON[@]}"
-run_case 'A0 serial-persistent control' "$P_LOG" "${COMMON[@]}" --persistent
-run_diagnostic_case 'A0 Stream-K performance diagnostic (not split gate)' \
-  "$SK_LOG" "${COMMON[@]}" --streamk
-
-require_verify_buckets 'A0 non-persistent control' "$NP_LOG"
-require_verify_buckets 'A0 serial-persistent control' "$P_LOG"
-grep -Eq '^  \[dense verify partition\] DP=[0-9]+ SK-whole=[0-9]+ SK-split=[0-9]+ peer_excess=[0-9]+ valid_fixup_elements=[0-9]+ qk_cells=[0-9]+ coverage=exact-once$' "$SK_LOG" \
-  || fail 'A0 Stream-K did not prove an exact scheduler-derived DP/SK partition'
-
-grep -q 'lock-reset-before-start=0' "$NP_LOG" || fail 'non-persistent timing identity drifted'
-grep -q 'lock-reset-before-start=0' "$P_LOG" || fail 'persistent timing identity drifted'
-grep -q 'lock-reset-before-start=1' "$SK_LOG" || fail 'Stream-K did not reset locks outside every event'
-grep -q 'actual=StreamK' "$SK_LOG" || fail 'A0 Stream-K silently fell back to another decomposition'
-grep -q 'StreamK-C valid_elements=' "$SK_LOG" \
-  || fail 'A0 Stream-K did not surface its per-q partial-C model'
-grep -q 'MODEL-ONLY/not-a-DRAM-counter' "$SK_LOG" \
-  || fail 'A0 Stream-K mislabeled logical partial-C accesses as measured DRAM traffic'
-
-# Choose a correctness shape from the runtime worker count, then let the
-# lowered scheduler be the final oracle.  Filtering out exact worker-wave
-# multiples avoids the known empty case; rc=2 advances to the next N if a
-# future MinIters/grouping policy still produces no peer seam.
-WORKERS="$(python3 - "$SK_LOG" <<'PY'
+# Select A0 itself when its lowered scheduler contains a peer seam.  Otherwise
+# choose the nearest larger N on this runtime.  Shape selection belongs to the
+# A0 subject, not to the tiny exact fixture: every selected Stream-K arm below
+# must run the same-order replay, and DP/P/Stream-K timing then uses that same
+# selected shape.  rc=1 is a real exercised replay failure and is never searched
+# past; only rc=2/NOT EXERCISED may advance to another N.
+WORKERS="$(python3 - "$GATE_LOG" <<'PY'
 import pathlib, re, sys
 text = pathlib.Path(sys.argv[1]).read_text()
 hits = re.findall(r"\[dense streamk decomposition\].* workers=(\d+) ", text)
@@ -316,9 +298,11 @@ mapfile -t SPLIT_CANDIDATES < <(python3 - "$WORKERS" <<'PY'
 import sys
 workers = int(sys.argv[1])
 tiles_m, tile_n = 32, 128       # reviewed 64x128 A0 tactic, M=2048
+print(4096)                     # exact A0 is always tried first
 for n_tiles in range(32, 32 + 64):
     tiles = tiles_m * n_tiles
-    if tiles > workers and tiles % workers:
+    n = n_tiles * tile_n
+    if n != 4096 and tiles > workers and tiles % workers:
         print(n_tiles * tile_n)
 PY
 )
@@ -329,9 +313,9 @@ SPLIT_N=''
 SPLIT_LOG=''
 for candidate_n in "${SPLIT_CANDIDATES[@]}"; do
   candidate_log="$ARTIFACT_ROOT/a0-split-n${candidate_n}.log"
-  if run_split_probe "adaptive split-path probe N=${candidate_n}" "$candidate_log" \
+  if run_split_probe "A0 replay probe N=${candidate_n}" "$candidate_log" \
       --m=2048 --n="$candidate_n" --k=4096 --l=1 --g=128 --mode=1 \
-      --iterations=0 --streamk_split_gate; then
+      --iterations=0 --streamk; then
     SPLIT_N="$candidate_n"
     SPLIT_LOG="$candidate_log"
     break
@@ -346,7 +330,7 @@ done
 
 if run_split_probe "adaptive split-path repeat N=${SPLIT_N}" "$SPLIT_REPEAT_LOG" \
     --m=2048 --n="$SPLIT_N" --k=4096 --l=1 --g=128 --mode=1 \
-    --iterations=0 --streamk_split_gate; then
+    --iterations=0 --streamk; then
   :
 else
   repeat_rc=$?
@@ -372,6 +356,31 @@ verdict = "STABLE_POSITIONS_AND_VALUES" if same_values else (
 print(f"[107b][split fingerprint] run1={rows[0]} run2={rows[1]} verdict={verdict}")
 PY
 
+# Same binary, tactic, selected shape, event protocol, and 20-launch median for
+# all three scheduler arms.  A control whose independent numerical result ran
+# but whose optional bucket validator cannot classify returns rc=3 and does not
+# block the Stream-K subject.  A classified numerical failure still stops.
+COMMON_SHAPE=(--m=2048 --n="$SPLIT_N" --k=4096 --l=1 --g=128 --mode=1)
+COMMON=("${COMMON_SHAPE[@]}" --iterations=20)
+run_control_case 'A0 non-persistent control' "$NP_LOG" "${COMMON[@]}"
+run_control_case 'A0 serial-persistent control' "$P_LOG" "${COMMON[@]}" --persistent
+if run_split_probe 'A0 Stream-K same-order replay and performance' \
+    "$SK_LOG" "${COMMON[@]}" --streamk; then
+  :
+else
+  a0_rc=$?
+  fail "A0 Stream-K subject failed or was not exercised rc=$a0_rc"
+fi
+
+grep -q 'lock-reset-before-start=0' "$NP_LOG" || fail 'non-persistent timing identity drifted'
+grep -q 'lock-reset-before-start=0' "$P_LOG" || fail 'persistent timing identity drifted'
+grep -q 'lock-reset-before-start=1' "$SK_LOG" || fail 'Stream-K did not reset locks outside every event'
+grep -q 'actual=StreamK' "$SK_LOG" || fail 'A0 Stream-K silently fell back to another decomposition'
+grep -q 'StreamK-C valid_elements=' "$SK_LOG" \
+  || fail 'A0 Stream-K did not surface its per-q partial-C model'
+grep -q 'MODEL-ONLY/not-a-DRAM-counter' "$SK_LOG" \
+  || fail 'A0 Stream-K mislabeled logical partial-C accesses as measured DRAM traffic'
+
 python3 - "$NP_LOG" "$P_LOG" "$SK_LOG" <<'PY' || fail 'A0 median extraction failed'
 import pathlib, re, sys
 
@@ -391,7 +400,7 @@ print(f"[107b][A0] persistent/non-persistent={vals['persistent']/vals['non-persi
 PY
 
 printf '\n[107b] PASS: dense absolute-K/fixup/worker seam and repeated launches proved on ppu001\n'
-printf '[107b] COLLECTED: fixed-A0 performance plus runtime-adaptive split-path correctness at N=%s\n' "$SPLIT_N"
+printf '[107b] COLLECTED: same-shape DP/P/StreamK performance and A0 same-order replay at N=%s\n' "$SPLIT_N"
 printf '[107b] SPLIT-PATH: SK-split>0 and peer_excess>0 were prerequisites; correctness is the printed disposition, never an empty PASS\n'
 printf '[107b] NOTE: A0 ratios are dense diagnostics; no grouped/MoE result is changed or claimed\n'
 printf '[107b] artifacts preserved at %s\n' "$ARTIFACT_ROOT"

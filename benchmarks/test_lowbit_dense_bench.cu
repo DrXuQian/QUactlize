@@ -611,6 +611,11 @@ struct Result
   // produced no split output tile.  The explicit split-path gate maps that
   // third state to process rc=2 instead of collapsing it into PASS/FAIL.
   bool split_path_exercised = true;
+  // A validator that cannot describe an arm has not proved that the arm is
+  // numerically wrong.  Keep that third state separate from `passed`: the box
+  // driver may continue on to the actual Stream-K subject, while process rc=3
+  // prevents NOT CLASSIFIABLE from being consumed as correctness evidence.
+  bool verification_classified = true;
 
 };
 
@@ -667,6 +672,12 @@ struct DenseVerifyPartition {
   uint64_t split_tiles = 0;
   uint64_t peer_excess = 0;
   uint64_t valid_fixup_elements = 0;
+  // The basic DP bucket map and the Stream-K replay map have different
+  // contracts.  In particular, ordinary DP has no K-peer capture slots.  The
+  // c96fe8d gate accidentally required those Stream-K-only fields for every
+  // arm and rejected a perfectly ordinary 32x32 logical DP tile grid.
+  bool is_streamk = false;
+  bool classification_closed = false;
 };
 
 #if defined(DENSE_STREAMK_AB)
@@ -1320,8 +1331,14 @@ Args args_from_options(Options const& options)
   }
 }
 
+enum class DenseVerifyState : uint8_t {
+  NotClassifiable,
+  Classified,
+  InvariantFailure,
+};
+
 bool verify(const Options &options, DenseVerifyPartition const* partition,
-            bool* diagnostic_closed = nullptr);
+            DenseVerifyState* diagnostic_state = nullptr);
 bool verify_streamk_cpu_fp32(const Options &options);
 #if defined(DENSE_STREAMK_AB)
 template <class Gemm>
@@ -1337,8 +1354,10 @@ bool verify_streamk_same_order_partial_replay(
 
 #if !defined(LOWBIT_DENSE_UNIT_BUILD)
 bool verify(const Options &options, DenseVerifyPartition const* partition,
-            bool* diagnostic_closed) {
-  if (diagnostic_closed) *diagnostic_closed = false;
+            DenseVerifyState* diagnostic_state) {
+  if (diagnostic_state) {
+    *diagnostic_state = DenseVerifyState::NotClassifiable;
+  }
   //
   // Compute reference output
   //
@@ -1403,7 +1422,9 @@ bool verify(const Options &options, DenseVerifyPartition const* partition,
   if (partition != nullptr) {
     std::size_t const expected_tiles = std::size_t(partition->tiles_m) *
         std::size_t(partition->tiles_n) * std::size_t(partition->batches);
-    bool const map_ok = partition->tile_m > 0 && partition->tile_n > 0 &&
+    bool const common_map_ok =
+        partition->classification_closed &&
+        partition->tile_m > 0 && partition->tile_n > 0 &&
         partition->tiles_m == int(cute::ceil_div(options.m, partition->tile_m)) &&
         partition->tiles_n == int(cute::ceil_div(options.n, partition->tile_n)) &&
         partition->batches == options.l &&
@@ -1412,22 +1433,28 @@ bool verify(const Options &options, DenseVerifyPartition const* partition,
         partition->final_peer_unit.size() == expected_tiles &&
         partition->final_peer_visit.size() == expected_tiles &&
         partition->fixup_threads > 0 &&
-        partition->k_tiles_per_output_tile > 0 &&
         partition->local_lane.size() ==
             std::size_t(partition->tile_m) * partition->tile_n &&
         partition->local_stripe.size() ==
-            std::size_t(partition->tile_m) * partition->tile_n &&
+            std::size_t(partition->tile_m) * partition->tile_n;
+    // These fields describe K-peer capture and have no meaning for ordinary
+    // data-parallel or serial-persistent arms.  Requiring them in the common
+    // map check made every DP grid look invalid before its buckets ran.
+    bool const replay_map_ok = !partition->is_streamk ||
+        (partition->k_tiles_per_output_tile > 0 &&
         partition->split_peer_offsets.size() >= 1 &&
         partition->capture_slot_by_qk.size() ==
             (partition->split_peer_offsets.size() - 1) *
-                std::size_t(partition->k_tiles_per_output_tile);
-    if (!map_ok) {
+                std::size_t(partition->k_tiles_per_output_tile));
+    if (!common_map_ok || !replay_map_ok) {
       std::fprintf(stderr,
-                   "  [dense verify buckets] invalid tile map: tile=%dx%d grid=%dx%dx%d entries=%zu\n",
+                   "  [dense verify buckets] NOT CLASSIFIABLE: tile=%dx%d "
+                   "logical_grid=%dx%dx%d entries=%zu common=%d replay=%d streamk=%d\n",
                    partition->tile_m, partition->tile_n, partition->tiles_m,
                    partition->tiles_n, partition->batches,
-                   partition->tile_bucket.size());
-      return false;
+                   partition->tile_bucket.size(), int(common_map_ok),
+                   int(replay_map_ok), int(partition->is_streamk));
+      return passed;
     }
 
     static_assert(cutlass::sizeof_bits<ElementD>::value == 16,
@@ -1469,6 +1496,9 @@ bool verify(const Options &options, DenseVerifyPartition const* partition,
       if (i >= stats.size()) {
         std::fprintf(stderr,
                      "  [dense verify buckets] invalid bucket id=%zu in tile map\n", i);
+        if (diagnostic_state) {
+          *diagnostic_state = DenseVerifyState::InvariantFailure;
+        }
         return false;
       }
       ++stats[i].tiles;
@@ -1503,6 +1533,9 @@ bool verify(const Options &options, DenseVerifyPartition const* partition,
             std::fprintf(stderr,
                          "  [dense verify buckets] invalid bucket id=%zu at logical tile=%zu\n",
                          bucket, tile);
+            if (diagnostic_state) {
+              *diagnostic_state = DenseVerifyState::InvariantFailure;
+            }
             return false;
           }
 
@@ -1638,10 +1671,15 @@ bool verify(const Options &options, DenseVerifyPartition const* partition,
                    "  [dense verify buckets] fail-close: bucket comparator disagrees with device comparator "
                    "(bucket mismatches=%llu device_passed=%d)\n",
                    static_cast<unsigned long long>(bucket_mismatches), int(passed));
+      if (diagnostic_state) {
+        *diagnostic_state = DenseVerifyState::InvariantFailure;
+      }
       return false;
     }
   }
-  if (diagnostic_closed) *diagnostic_closed = true;
+  if (diagnostic_state) {
+    *diagnostic_state = DenseVerifyState::Classified;
+  }
   return passed;
 }
 
@@ -1997,6 +2035,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
 
 #if defined(DENSE_STREAMK_AB)
   DenseVerifyPartition verify_partition;
+  verify_partition.is_streamk = dense_is_streamk_gemm<Gemm>::value;
   verify_partition.tile_m = tactic.tm;
   verify_partition.tile_n = tactic.tn;
   verify_partition.problem_m = options.m;
@@ -2016,11 +2055,13 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   for (std::size_t q = 0; q < verify_tiles; ++q) {
     verify_partition.scheduler_q[q] = uint32_t(q);
   }
-  if (!dense_map_accumulator_owners<Gemm>(verify_partition)) {
-    Result owner_failure;
-    owner_failure.passed = false;
-    return owner_failure;
-  }
+  bool const owner_map_closed =
+      dense_map_accumulator_owners<Gemm>(verify_partition);
+  // An ordinary DP arm needs no K-peer capture plan: its all-DP map is already
+  // complete once the MMA owner map closes.  Stream-K fills the remaining
+  // peer fields from its accepted lowered Params below.
+  verify_partition.classification_closed =
+      owner_map_closed && !verify_partition.is_streamk;
 #endif
 
 #if defined(DENSE_SCHEDULER_AB)
@@ -2180,12 +2221,18 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
     // object from a rejected request is not decomposition evidence.
     auto const diagnostic_params =
         Gemm::GemmKernel::to_underlying_arguments(arguments, workspace.get());
-    if (!dense_classify_streamk_tiles(verify_partition,
-                                      diagnostic_params.scheduler)) {
-      result.passed = false;
-      return result;
-    }
-    if (options.streamk_split_gate) {
+    verify_partition.classification_closed =
+        owner_map_closed && dense_classify_streamk_tiles(
+            verify_partition, diagnostic_params.scheduler);
+    // Every Stream-K arm that claims numerical evidence must actually contain
+    // a peer seam.  This used to guard only --streamk_split_gate, so fixed A0
+    // could print an ordinary Failed disposition while the same-order replay
+    // silently ran on the tiny, already-bit-exact seam fixture instead.  A
+    // machine whose worker count divides A0 then made that failure even worse:
+    // zero split tiles looked like an exercised numerical arm.  The lowered
+    // scheduler, not the command-line spelling, decides whether this run has a
+    // subject to replay.
+    if (options.streamk && verify_partition.classification_closed) {
       uint64_t const workers =
           uint64_t(cu_count) * uint64_t(ctas_per_cu);
       uint64_t const remainder = logical_ctas % workers;
@@ -2252,18 +2299,33 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
 
   // Check if output from kernel and reference kernel are equal or not
 #if defined(DENSE_STREAMK_AB)
-  bool ordinary_diagnostic_closed = false;
+  DenseVerifyState ordinary_diagnostic_state =
+      DenseVerifyState::NotClassifiable;
   result.passed = verify(
-      options, &verify_partition, &ordinary_diagnostic_closed);
+      options, &verify_partition, &ordinary_diagnostic_state);
+  result.verification_classified =
+      ordinary_diagnostic_state != DenseVerifyState::NotClassifiable;
 #else
   result.passed = verify(options, nullptr);
 #endif
 #if defined(DENSE_STREAMK_AB)
   if constexpr (dense_is_streamk_gemm<Gemm>::value) {
-    if (options.streamk_split_gate || options.streamk_gate) {
-      if (!ordinary_diagnostic_closed) {
+    // This is the verdict for the actual Stream-K arm, including fixed/adaptive
+    // A0.  ULPs against the ordinary whole-K reference above remain diagnostic;
+    // only replaying the captured partials in the scheduler's K order can say
+    // whether the kernel differs from its own specified reduction order.
+    if (options.streamk) {
+      if (ordinary_diagnostic_state == DenseVerifyState::NotClassifiable) {
         std::fprintf(stderr,
-                     "[streamk same-order replay] ordinary-reference diagnostic did not close\n");
+                     "[streamk same-order replay] NOT CLASSIFIABLE: "
+                     "the scheduler tile/capture map did not close\n");
+        result.verification_classified = false;
+      }
+      else if (ordinary_diagnostic_state ==
+               DenseVerifyState::InvariantFailure) {
+        std::fprintf(stderr,
+                     "[streamk same-order replay] fail-close: the claimed "
+                     "bucket map violated its own invariant\n");
         result.passed = false;
       }
       else {
@@ -2370,19 +2432,27 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
       }
       bool const cpu_ok = verify_streamk_cpu_fp32(options);
       result.passed = result.passed && witness_ok && cpu_ok;
-      // The witness uses one atomic per work item.  It belongs to the numerical
-      // gate, not a performance kernel; remove it before any timed launches.
-      if (options.iterations > 0) {
-        arguments.diagnostics = nullptr;
-        if (gemm.initialize(arguments, workspace.get()) != cutlass::Status::kSuccess) {
-          result.passed = false;
-        }
+    }
+    // The replay capture (and the exact-fixture witness) points `arguments` at
+    // a correctness-only allocation whose lifetime ends before run() returns.
+    // It must never leak into the timing loop.  Reinitialising after clearing it
+    // also proves the timed launch is the ordinary, uninstrumented kernel whose
+    // output was compared by capture_vs_normal_bitdiff above.
+    if (options.iterations > 0) {
+      arguments.diagnostics = nullptr;
+      if (gemm.initialize(arguments, workspace.get()) != cutlass::Status::kSuccess) {
+        result.passed = false;
       }
     }
   }
 #endif
 
-  if (options.streamk_split_gate) {
+  if (!result.verification_classified) {
+    std::cout << "  Disposition: NOT CLASSIFIABLE "
+              << "(ordinary-reference="
+              << (result.passed ? "Passed" : "Failed") << ")" << std::endl;
+  }
+  else if (options.streamk) {
     std::cout << "  Disposition: "
               << (result.passed
                       ? "Passed (StreamK same-order partial replay bit-exact; "
@@ -2505,6 +2575,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
     // which says the re-reads are cache-served, not that the kernel is bandwidth-bound.
     char tag[bench_measure::kTagBytes];
     bench_measure::format_tag(tag, sizeof tag, tactic);
+#if defined(DENSE_STREAMK_AB)
     if constexpr (dense_is_streamk_gemm<Gemm>::value) {
       const double Mm = options.m, Nn = options.n, Kk = options.k;
       const double bq = double(sizeof_bits<QuantType>::value) / 8.0;
@@ -2532,7 +2603,9 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
           static_cast<unsigned long long>(verify_partition.valid_fixup_elements),
           static_cast<unsigned long long>(verify_partition.peer_excess),
           logical_fixup_bytes);
-    } else {
+    } else
+#endif
+    {
       const double Mm = options.m, Nn = options.n, Kk = options.k;
       const double bq = double(sizeof_bits<QuantType>::value) / 8.0;
       const double n_tiles = tactic.tn > 0 ? std::ceil(Nn / tactic.tn) : 1.0;
@@ -3017,6 +3090,7 @@ int main(int argc, char const **args) {
   // an unsupported candidate.  Propagate every decomposition, witness,
   // golden, event, or correctness failure to the operator and automation.
   if (!final_result.split_path_exercised) return 2;
+  if (!final_result.verification_classified) return 3;
   return final_result.passed ? 0 : 1;
 #else
   (void)final_result;

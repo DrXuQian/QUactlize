@@ -3,9 +3,11 @@
 
 The dangerous failures here all compile and often return plausible numbers: workspace
 decomposition and launch can see different worker counts, K slices can restart at zero,
-fixup can run with the wrong barrier cohort, or an old turnstile value can deadlock the
-next launch.  The PPU box owns numerical proof; this checker pins the source
-ordering and the isolated four-warp fixture before a box round trip.
+fixup can run with the wrong barrier cohort, an old turnstile value can deadlock the
+next launch, or replay can silently run only on a tiny fixture while fixed A0 prints an
+unrelated whole-K verdict.  The PPU box owns numerical proof; this checker pins the
+source ordering and makes every actual Stream-K arm fail closed on an empty seam and
+derive its disposition from same-order replay before a box round trip.
 """
 
 from __future__ import annotations
@@ -199,6 +201,35 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
     if "likely the int4-oriented reference" in bench:
         bad.append("a failed Stream-K arm still blames the shared reference without evidence")
     try:
+        common_map = section(
+            bench, "    bool const common_map_ok =",
+            "\n    // These fields describe K-peer capture")
+        replay_map = section(
+            bench, "    bool const replay_map_ok =",
+            "\n    if (!common_map_ok || !replay_map_ok)")
+    except ValueError as e:
+        bad.append(str(e))
+    else:
+        # Ordinary DP/persistent arms have an output-tile ownership map but no
+        # K-peer capture plan.  Requiring replay-only fields in common_map_ok is
+        # the exact regression that made their bucket diagnostics silently
+        # NOT CLASSIFIABLE.  Conversely, a Stream-K replay map must retain all
+        # three pieces needed to address every captured (q,K_idx) peer.
+        for token in (
+            "k_tiles_per_output_tile",
+            "split_peer_offsets",
+            "capture_slot_by_qk",
+        ):
+            if token in common_map:
+                bad.append(f"common DP tile map incorrectly requires replay-only {token}")
+        for token in (
+            "partition->k_tiles_per_output_tile > 0 &&",
+            "partition->split_peer_offsets.size() >= 1 &&",
+            "partition->capture_slot_by_qk.size() ==",
+        ):
+            if replay_map.count(token) != 1:
+                bad.append(f"Stream-K replay map must contain exactly one {token!r}")
+    try:
         run_body = section(bench, "template <typename Gemm>\nResult run(",
                            "\nResult run_scale_only")
         accepted = section(run_body, "  Result result;", "\n  // Correctness / Warmup iteration")
@@ -209,11 +240,35 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
             "gemm.can_implement(arguments)",
             "gemm.initialize(arguments, workspace.get())",
             "Gemm::GemmKernel::to_underlying_arguments(arguments, workspace.get())",
-            "dense_classify_streamk_tiles(verify_partition,",
-            "if (options.streamk_split_gate)",
+            "dense_classify_streamk_tiles(",
+            "if (options.streamk && verify_partition.classification_closed)",
             "if (verify_partition.split_tiles == 0 ||",
             "result.split_path_exercised = false;",
         ), "only classify an accepted lowered Params", bad)
+        # `--streamk_split_gate` is only a command-line request for a
+        # correctness-only arm.  Once the named Stream-K kernel is selected,
+        # every real `options.streamk` arm (fixed A0 included) must prove that
+        # it has a peer seam and must replay that seam.  Reintroducing the old
+        # flag guard silently moves both checks back onto the tiny/adaptive
+        # fixture while A0 prints an unrelated ordinary-reference verdict.
+        if "options.streamk_split_gate" in run_body:
+            bad.append("run<Gemm> still limits split/replay evidence to --streamk_split_gate")
+        for token in (
+            "if (options.streamk && verify_partition.classification_closed) {\n      uint64_t const workers =",
+            "if (options.streamk) {\n      if (ordinary_diagnostic_state == DenseVerifyState::NotClassifiable)",
+            "else if (options.streamk) {\n    std::cout << \"  Disposition: \"",
+            "result.passed = verify_streamk_same_order_partial_replay<Gemm>(",
+            "if (!result.verification_classified) {\n    std::cout << \"  Disposition: NOT CLASSIFIABLE \"",
+        ):
+            if run_body.count(token) != 1:
+                bad.append(f"every actual Stream-K arm requires exactly one {token!r}")
+        ordered_once(run_body, (
+            "if (verify_partition.split_tiles == 0 ||",
+            "std::cout << \"  Disposition: NOT EXERCISED\"",
+            "// Correctness / Warmup iteration",
+            "result.passed = verify_streamk_same_order_partial_replay<Gemm>(",
+            "else if (options.streamk) {\n    std::cout << \"  Disposition: \"",
+        ), "nonempty seam -> same-order replay -> replay-owned disposition", bad)
 
     try:
         timing = section(bench, "    // One distinct event pair per launch for every arm", "\n#else\n    PpuTimer timer;")
@@ -255,6 +310,7 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         "[streamk sequential CPU-FP32 fixture] order=k-ascending ",
         "[streamk same-order replay] split_tiles=%llu peers=%zu ",
         "if (!final_result.split_path_exercised) return 2;",
+        "if (!final_result.verification_classified) return 3;",
         "return final_result.passed ? 0 : 1;",
     ):
         if bench.count(token) != 1:
@@ -289,11 +345,27 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         if cmake.count(token) < 1:
             bad.append(f"isolated CMake target is missing {token!r}")
 
+    try:
+        control_case = section(
+            box_gate, "run_control_case() {", "\n}\n\nrequire_verify_buckets()")
+    except ValueError as e:
+        bad.append(str(e))
+    else:
+        ordered_once(control_case, (
+            'if [ "$rc" -eq 1 ]; then',
+            'fail "$label reported a real numerical/invariant failure"',
+            'if [ "$rc" -eq 0 ]; then',
+            'elif [ "$rc" -eq 3 ]; then',
+            'NOT CLASSIFIABLE; continuing to the Stream-K subject',
+            'else',
+            'fail "$label exited rc=$rc instead of CLASSIFIED(0/1) or NOT CLASSIFIABLE(3)"',
+            'dense kernel-span-upper',
+        ), "control rc1 fails while rc3 continues to the Stream-K subject", bad)
+
     for token in (
-        "run_diagnostic_case 'A0 Stream-K performance diagnostic (not split gate)'",
-        "require_verify_buckets 'A0 non-persistent control'",
-        "require_verify_buckets 'A0 serial-persistent control'",
-        "COMMON_SHAPE=(--m=2048 --n=4096 --k=4096 --l=1 --g=128 --mode=1)",
+        "run_control_case 'A0 non-persistent control'",
+        "run_control_case 'A0 serial-persistent control'",
+        "COMMON_SHAPE=(--m=2048 --n=\"$SPLIT_N\" --k=4096 --l=1 --g=128 --mode=1)",
         "run_split_probe()",
         "if [ \"$rc\" -eq 2 ]",
         "return 2",
@@ -301,8 +373,14 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         "if (rc == 0) != passed_disposition or (rc == 1) != failed_disposition:",
         "if rc == 0 and not (",
         "if rc == 1 and replay_verdict != \"MISMATCH/FAIL\":",
+        "print(4096)                     # exact A0 is always tried first",
         "for n_tiles in range(32, 32 + 64)",
-        "if tiles > workers and tiles % workers:",
+        "if n != 4096 and tiles > workers and tiles % workers:",
+        "if run_split_probe \"A0 replay probe N=${candidate_n}\"",
+        "if run_split_probe \"adaptive split-path repeat N=${SPLIT_N}\"",
+        "if run_split_probe 'A0 Stream-K same-order replay and performance'",
+        '"$SK_LOG" "${COMMON[@]}" --streamk',
+        "[ \"$probe_rc\" -eq 2 ]",
         "split == gate_split > 0",
         "peers == gate_peers > 0",
         "SK-split>0 and peer_excess>0 were prerequisites",
@@ -319,29 +397,52 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
             bad.append(f"box gate must contain exactly one {token!r}")
     if 'if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]' not in box_gate:
         bad.append("box gate does not preserve a complete rc=1 numerical diagnostic")
+    if box_gate.count('if [ "$rc" -eq 3 ]') != 2:
+        bad.append("control and replay helpers must each fail closed on NOT CLASSIFIABLE rc=3")
     if "run_case 'A0 Stream-K'" in box_gate:
         bad.append("box gate still drops the failing A0 Stream-K diagnostic")
-    if box_gate.count("run_split_probe") != 3:
-        bad.append("box gate must define one split probe and invoke it for selection plus repeat")
-    if box_gate.count("--iterations=0 --streamk_split_gate") != 2:
-        bad.append("box gate must run exactly two correctness-only exercised split arms")
+    if "run_diagnostic_case 'A0 Stream-K" in box_gate:
+        bad.append("fixed A0 still bypasses the same-order replay parser")
+    if box_gate.count("run_split_probe") != 5:
+        bad.append("box gate must use one replay parser for exact gate, A0 selection/repeat, and A0 timing")
+    if box_gate.count("--iterations=0 --streamk") != 2:
+        bad.append("box gate must run exactly two correctness-only A0 replay arms")
+    if "--streamk_split_gate" in box_gate:
+        bad.append("box gate still limits A0 replay to the obsolete split-only option")
     if "coverage=exact-once" not in box_gate:
         bad.append("box gate does not require the exact scheduler coverage witness")
     try:
         split_flow = section(box_gate,
-                             "# Choose a correctness shape from the runtime worker count",
-                             "\npython3 - \"$NP_LOG\"")
+                             "# Select A0 itself when its lowered scheduler contains a peer seam.",
+                             "\n# Same binary, tactic, selected shape, event protocol")
     except ValueError as e:
         bad.append(str(e))
     else:
         ordered_once(split_flow, (
-            "WORKERS=\"$(python3 - \"$SK_LOG\"",
+            "WORKERS=\"$(python3 - \"$GATE_LOG\"",
             "mapfile -t SPLIT_CANDIDATES",
+            "print(4096)",
             "for candidate_n in \"${SPLIT_CANDIDATES[@]}\"",
+            "A0 replay probe N=${candidate_n}",
             "SPLIT_LOG=\"$candidate_log\"",
             "adaptive split-path repeat N=${SPLIT_N}",
             "python3 - \"$SPLIT_LOG\" \"$SPLIT_REPEAT_LOG\"",
-        ), "runtime-adaptive split selection before fingerprint comparison", bad)
+        ), "runtime A0 selection/replay before fingerprint comparison", bad)
+    try:
+        a0_flow = section(box_gate,
+                          "# Same binary, tactic, selected shape, event protocol",
+                          "\npython3 - \"$NP_LOG\"")
+    except ValueError as e:
+        bad.append(str(e))
+    else:
+        ordered_once(a0_flow, (
+            "COMMON_SHAPE=(--m=2048 --n=\"$SPLIT_N\"",
+            "run_control_case 'A0 non-persistent control'",
+            "run_control_case 'A0 serial-persistent control'",
+            "if run_split_probe 'A0 Stream-K same-order replay and performance'",
+            '"$SK_LOG" "${COMMON[@]}" --streamk',
+            "fail \"A0 Stream-K subject failed or was not exercised rc=$a0_rc\"",
+        ), "selected-shape A0 controls and replay-owned Stream-K timing", bad)
 
     # This is a compiler-ordering contract, not a hardware-instruction check.
     # ppu.bar.sync and ppu.fence are opaque strings to C++; volatile preserves
@@ -402,6 +503,18 @@ def main() -> int:
          "partial-C traffic drops valid residue weighting"),
         (1, "MODEL-ONLY/not-a-DRAM-counter", "measured-DRAM-bytes",
          "logical partial-C model is mislabeled as a DRAM counter"),
+        (1, "partition->local_stripe.size() ==\n"
+         "            std::size_t(partition->tile_m) * partition->tile_n;",
+         "partition->local_stripe.size() ==\n"
+         "            std::size_t(partition->tile_m) * partition->tile_n &&\n"
+         "        partition->k_tiles_per_output_tile > 0;",
+         "common DP map cannot inherit a Stream-K replay requirement"),
+        (1, "partition->k_tiles_per_output_tile > 0 &&",
+         "true &&", "replay map retains K-tile stride"),
+        (1, "partition->split_peer_offsets.size() >= 1 &&",
+         "true &&", "replay map retains peer offsets"),
+        (1, "partition->capture_slot_by_qk.size() ==",
+         "std::size_t(0) ==", "replay map retains q/K capture slots"),
         (1, "return final_result.passed ? 0 : 1;", "return 0;", "gate exit status"),
         (1, "if (!final_result.split_path_exercised) return 2;",
          "if (!final_result.split_path_exercised) return 0;",
@@ -411,6 +524,18 @@ def main() -> int:
          "if (false && (verify_partition.split_tiles == 0 ||\n"
          "          verify_partition.peer_excess == 0))",
          "empty split path fails closed in the benchmark"),
+        (1, "if (options.streamk && verify_partition.classification_closed) {\n      uint64_t const workers =",
+         "if (options.streamk_split_gate && verify_partition.classification_closed) {\n      uint64_t const workers =",
+         "fixed A0 cannot bypass the nonempty-seam gate"),
+        (1, "if (options.streamk) {\n      if (ordinary_diagnostic_state == DenseVerifyState::NotClassifiable)",
+         "if (options.streamk_split_gate) {\n      if (ordinary_diagnostic_state == DenseVerifyState::NotClassifiable)",
+         "fixed A0 cannot bypass same-order replay"),
+        (1, "else if (options.streamk) {\n    std::cout << \"  Disposition: \"",
+         "else if (options.streamk_split_gate) {\n    std::cout << \"  Disposition: \"",
+         "every actual Stream-K disposition is replay-owned"),
+        (1, "std::cout << \"  Disposition: NOT EXERCISED\"",
+         "std::cout << \"  Disposition: Passed\"",
+         "an empty seam cannot be reported as Passed"),
         (1, "a.k_begin < b.k_begin", "a.k_begin > b.k_begin",
          "peer replay is ordered by increasing K_idx"),
         (1, "range.k_begin != expected_k", "range.k_begin == expected_k",
@@ -434,12 +559,22 @@ def main() -> int:
          "final_visit[q] = uint16_t(0);", "persistent final-peer visit ordinal"),
         (2, "X(lowbit_dense_streamk_probe,64,128,64,64,32,2,0)",
          "X(lowbit_dense_streamk_probe,64,128,64,64,32,3,0)", "isolated fixture"),
-        (5, "run_diagnostic_case 'A0 Stream-K performance diagnostic (not split gate)'",
-         "run_case 'A0 Stream-K'", "preserve a failed A0 diagnostic"),
+        (5, "if run_split_probe 'A0 Stream-K same-order replay and performance'",
+         "if run_control_case 'A0 Stream-K same-order replay and performance'",
+         "A0 timing arm cannot drop same-order replay"),
+        (5, "if run_split_probe \"A0 replay probe N=${candidate_n}\"",
+         "if run_control_case \"A0 replay probe N=${candidate_n}\"",
+         "adaptive A0 selection cannot drop same-order replay"),
+        (5, 'fail "$label reported a real numerical/invariant failure"',
+         'printf "%s\\n" "$label reported a real numerical/invariant failure"',
+         "a classified control failure remains fatal"),
+        (5, "printf '[107b][control] %s: NOT CLASSIFIABLE; continuing to the Stream-K subject\\n' \"$label\"",
+         "fail \"$label blocked the Stream-K subject after NOT CLASSIFIABLE\"",
+         "an unclassifiable optional control does not block Stream-K"),
         (5, "    return 2\n  fi",
          "    return 0\n  fi", "empty split probe cannot become evidence"),
-        (5, "    if tiles > workers and tiles % workers:",
-         "    if tiles > workers:", "adaptive candidates avoid exact worker waves"),
+        (5, "    if n != 4096 and tiles > workers and tiles % workers:",
+         "    if n != 4096 and tiles > workers:", "adaptive candidates avoid exact worker waves"),
         (5, "split == gate_split > 0 and\n        peers == gate_peers > 0",
          "split == gate_split >= 0 and\n        peers == gate_peers >= 0",
          "split evidence must be non-empty"),
