@@ -914,9 +914,8 @@ public:
     }
     else if constexpr (ModeHasScales) {
       auto scale_k = mainloop_params.scale_k;
-      Tensor mS_nkl = make_tensor(make_gmem_ptr(mainloop_params.ptr_S), make_shape(N,scale_k,L));      // (n,scale_k,l)
-      Tensor mS_nk = mS_nkl(_,_,l_coord);                                                              // (n,scale_k)
-      Tensor gS = local_tile(mS_nk, ScaleTileShape{}, make_coord(n_coord, _));                         // (BLK_N, 1, scale_k)
+      Tensor gS = detail::make_tight_metadata_tile<ScaleTileShape>(
+          mainloop_params.ptr_S, N, scale_k, L, l_coord, n_coord);                    // (BLK_N, 1, scale_k)
 
       // init scale_residue_n
       scale_residue_n = N - size<0>(gB) * n_coord;
@@ -937,9 +936,8 @@ public:
         return cute::make_tuple(gA, gB, gS, gSp);
       }
       else if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) {
-        Tensor mZ_nkl = make_tensor(make_gmem_ptr(mainloop_params.ptr_Z), make_shape(N,scale_k,L));    // (n,scale_k,l)
-        Tensor mZ_nk = mZ_nkl(_,_,l_coord);
-        Tensor gZ = local_tile(mZ_nk, ScaleTileShape{}, make_coord(n_coord, _));
+        Tensor gZ = detail::make_tight_metadata_tile<ScaleTileShape>(
+            mainloop_params.ptr_Z, N, scale_k, L, l_coord, n_coord);
         return cute::make_tuple(gA, gB, gS, gZ, gSp);
       }
       else {

@@ -940,20 +940,6 @@ quactlize_ppu_executable(
 )
 target_compile_options(test_ppu_m8n16_collective PRIVATE -w)
 
-# G5 expert-boundary metadata address census.  This is deliberately a separate
-# binary from #112: it diagnoses the zero-plane route and contributes no m8
-# atom/format correctness evidence.  hgcc's device custom command does not
-# inherit target_compile_definitions, so the opt-in branch must be defined on
-# both compilation paths.
-quactlize_ppu_executable(
-  test_ppu_grouped_metadata_address
-  test_ppu_grouped_metadata_address.cu
-  DEV_COMPILE_FLAGS -DPPU_METADATA_ADDR_PROBE=1
-)
-target_compile_definitions(test_ppu_grouped_metadata_address PRIVATE
-  PPU_METADATA_ADDR_PROBE=1)
-target_compile_options(test_ppu_grouped_metadata_address PRIVATE -w)
-
 # Q3_K B-CONCAT: ONE GEMM with TWO B bit planes (dedicated 2-plane mainloop), vs the native Q3_K golden.
 #   Build: TARGET=test_q3_bconcat_real ./build.sh ; run: ./<bin> real_weight/real_q3k_concat.bin
 quactlize_ppu_executable(

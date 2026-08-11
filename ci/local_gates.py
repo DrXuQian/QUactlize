@@ -201,10 +201,6 @@ SYNTAX = [
     # compile the raw-mainloop G3 arm and both TM8/TM16 production G4 arms
     # locally so a dependent-template error cannot wait for the ppu001 box.
     ("tests/test_ppu_m8n16_collective.cu", ""),
-    # The G5 address census is compile-time absent from production.  Compile
-    # the macro-on TU explicitly; a macro-off syntax row would prove only that
-    # the diagnostic code was preprocessed away.
-    ("tests/test_ppu_grouped_metadata_address.cu", "-DPPU_METADATA_ADDR_PROBE=1"),
     # INBOX 097 changes scale-copy ownership, so its two independent-golden box targets must at least instantiate
     # locally. Q65 once omitted the optional two-plane specialization include and otherwise reached the box with
     # CollectiveMma's failing primary template; keeping the real source here makes that omission non-repeatable.
@@ -1182,11 +1178,24 @@ def lint_m8n16_g2_contract():
         "m8n16 G2 maps one 16-row x4 payload with get_i/get_j and the historical NVIDIA provider index")
 
 
-def lint_grouped_metadata_address_contract():
-    """The G5 address census must keep all four observation layers distinct."""
+def lint_grouped_metadata_layout():
+    """L125 exhausts the exact G5 zero-plane layout without asking a device."""
+    script = DEV / "run_l125_grouped_metadata_layout.sh"
+    if not script.is_file():
+        return "FAIL", f"missing {script.name}", 0.0
+    out = OUT / "l125_grouped_metadata_layout"
+    env = dict(os.environ, QUACTLIZE_L125_OUT=str(out))
+    rc, log, dt = run(["bash", str(script)], cwd=str(ROOT), env=env)
+    lines = [line.strip() for line in log.splitlines() if line.strip()]
+    verdict = " | ".join(lines[-2:]) if lines else "l125 produced no output"
+    return ("PASS" if rc == 0 else "FAIL"), verdict, dt
+
+
+def lint_grouped_metadata_layout_contract():
+    """Production G5 and L125 share one typed helper while independent anchors remain load-bearing."""
     return _run_ci_script(
-        "check_grouped_metadata_address_contract.py",
-        "grouped metadata address source contract")
+        "check_grouped_metadata_layout_contract.py",
+        "G5 metadata host-algebra contract")
 
 
 def lint_plain_ldsm_failclosed():
@@ -1661,7 +1670,8 @@ def main():
                 ("lint", "FP32 residue predicates scalar fixup accesses without predicating locks", lint_fp32_residue_contract),
                 ("lint", "syntax baselines and live SYNTAX sources match", lint_syntax_inventory),
                 ("lint", "m8n16 G2 replays the historical bad index on the production x4 payload", lint_m8n16_g2_contract),
-                ("lint", "G5 address probe keeps int64 GEP, gZ, partition_S and cp.async observations distinct", lint_grouped_metadata_address_contract),
+                ("lint", "l125 exhausts all 256 G5 zero-plane addresses through the production CuTe map", lint_grouped_metadata_layout),
+                ("lint", "G5 production and l125 share one exact typed metadata-layout seam", lint_grouped_metadata_layout_contract),
                 ("lint", "ppu001 plain LDSM fails in C++ before its unproved assembler path", lint_plain_ldsm_failclosed),
                 ("lint", "quactlize_extensions adds to actlize rather than redefining it", lint_extension_additive),
                 ("lint", "every file naming a quactlize type reaches its defining header", lint_owned_symbol_includes),

@@ -20,6 +20,28 @@
 
 namespace cutlass::gemm::collective::detail {
 
+// One construction for the shape-only fp16 metadata ABI currently shipped by
+// the ordinary mixed-input collective.  Production load_init and the L125
+// host oracle call this exact function; the oracle then checks it against an
+// independent int64 compact-layout formula and globally unique payload tags.
+//
+// `dS` is intentionally absent because it is absent from today's Params.  The
+// name/version make that limitation explicit: wiring a caller-provided stride
+// must replace this seam and therefore force the oracle to be updated rather
+// than silently continuing to certify the old ABI.
+inline constexpr int kTightMetadataTileApi = 1;
+
+template <class ScaleTileShape, class Element>
+CUTE_HOST_DEVICE auto make_tight_metadata_tile(
+    Element const* base, int N, int64_t scale_k, int L,
+    int l_coord, int n_coord) {
+  auto metadata_nkl = cute::make_tensor(
+      cute::make_gmem_ptr(base), cute::make_shape(N, scale_k, L));
+  auto metadata_nk = metadata_nkl(cute::_, cute::_, l_coord);
+  return cute::local_tile(
+      metadata_nk, ScaleTileShape{}, cute::make_coord(n_coord, cute::_));
+}
+
 // CuTe neither diagnoses a tiled-copy thread layout larger than the CTA nor wraps get_slice(t) when t exceeds the
 // logical layout. Callers wrap the physical thread index: slots > CTA would leave metadata behind, while slots < CTA
 // deliberately makes surplus threads repeat the same source/destination transfers. Keep the explicit layout

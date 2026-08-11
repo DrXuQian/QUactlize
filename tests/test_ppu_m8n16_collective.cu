@@ -39,6 +39,7 @@
 #include "cutlass/util/device_memory.h"
 #include "cutlass/util/packed_stride.hpp"
 #include "helper.h"
+#include "m8n16_g5_contract.hpp"
 #include "moe_grouped_ppu.cuh"
 #include "ppu_group_schedule.hpp"
 #include "ppu_mixed_policy.hpp"
@@ -52,34 +53,32 @@ using QM = moe_grouped_ppu::QuantMode;
 using GS = moe_grouped_ppu::GroupShape;
 using DStride = moe_grouped_ppu::DStride;
 
-constexpr int kBits = 4;
-constexpr int kN = 32;
-constexpr int kTacticK = 64;
+constexpr int kBits = m8n16_g5_contract::kBits;
+constexpr int kN = m8n16_g5_contract::kN;
+constexpr int kTacticK = m8n16_g5_contract::kTacticK;
 // F=1/TK64 is stored in the AIU's 256-code resident-row layout.  The old
 // K=64 fixture allocated the resulting padding but still advertised a packed
 // K=64 StrideB to the collective, so the consumer advanced by 64 codes while
 // the producer advanced by 256.  Four tactic tiles make those two strides the
 // same without changing the tactic under test.
-constexpr int kStoredRowK = 256;
-constexpr int kK = 256;
-constexpr int kGs = 32;
-constexpr int kScaleK = kK / kGs;
+constexpr int kStoredRowK = m8n16_g5_contract::kStoredRowK;
+constexpr int kK = m8n16_g5_contract::kK;
+constexpr int kGs = m8n16_g5_contract::kGroupSize;
+constexpr int kScaleK = m8n16_g5_contract::kScaleK;
 constexpr std::size_t kHarnessBBytes = std::size_t(kN) * kK * kBits / 8;
 constexpr std::size_t kPlacedBBytes =
     std::size_t(kN) * ((kK + kStoredRowK - 1) / kStoredRowK) * kStoredRowK * kBits / 8;
-constexpr int kStages = 3;
+constexpr int kStages = m8n16_g5_contract::kStages;
 constexpr int kGuard = 64;
 constexpr std::uint16_t kLeftCanary = 0x3555u;
 constexpr std::uint16_t kRightCanary = 0xb555u;
 constexpr std::uint16_t kOutputNaN = 0x7e01u;
 
-using BaseSchedule = ppu_group_schedule::FinegrainedSchedule<kGs>;
-using M8Tile = cute::Shape<cute::_8, cute::_32, cute::Int<kTacticK>>;
-using M8Warp = cute::Shape<cute::_8, cute::_32, cute::Int<kTacticK>>;
-using ScaleTile = cute::Shape<cute::_32, cute::_2>;
-using M8Policy = ppu_mixed_policy::MainloopPolicy<
-    QM::FinegrainedScaleZero, BaseSchedule, M8Tile, ScaleTile, M8Warp,
-    kStages, false, int4_t>;
+using BaseSchedule = m8n16_g5_contract::Schedule;
+using M8Tile = typename m8n16_g5_contract::M8::Tile;
+using M8Warp = typename m8n16_g5_contract::M8::Warp;
+using ScaleTile = typename m8n16_g5_contract::M8::Scale;
+using M8Policy = typename m8n16_g5_contract::M8::Policy;
 using M8Mainloop = typename M8Policy::CollectiveOp;
 
 static_assert(cute::size<0>(typename M8Mainloop::TiledMma::AtomShape_MNK{}) == 8,
@@ -292,9 +291,10 @@ template <int TM, int WM>
 bool launch_g4(
     half_t const* A, int4_t const* B, half_t const* scales, half_t const* zeros,
     half_t* D, int M, char* workspace, std::size_t workspace_bytes) {
-  using Tile = cute::Shape<cute::Int<TM>, cute::_32, cute::Int<kTacticK>>;
-  using Warp = cute::Shape<cute::Int<WM>, cute::_32, cute::Int<kTacticK>>;
-  using Scale = cute::Shape<cute::_32, cute::_2>;
+  using Contract = m8n16_g5_contract::Launch<TM, WM>;
+  using Tile = typename Contract::Tile;
+  using Warp = typename Contract::Warp;
+  using Scale = typename Contract::Scale;
 
   std::vector<GS> shapes{cute::make_shape(M, kN, kK)};
   cutlass::DeviceAllocation<GS> dShapes(1);
@@ -312,8 +312,10 @@ bool launch_g4(
   dGroupM.copy_from_host(group_m.data());
 
   bool const launched = moe_grouped_ppu::launch<
-      QM::FinegrainedScaleZero, BaseSchedule, Tile, Scale, Warp,
-      kStages, false, int4_t>(
+      Contract::QuantMode,
+      typename Contract::BaseSchedule, Tile, Scale, Warp,
+      Contract::Stages, Contract::AiuInterleaved,
+      typename Contract::ElementB>(
           A, B, scales, zeros, dPtrs.get(), dStrides.get(), dGroupM.get(),
           M, kN, kK, 1, kGs, dShapes.get(), shapes.data(), nullptr,
           workspace, workspace_bytes, nullptr);
@@ -451,7 +453,7 @@ int check_m8_m16(int M, std::vector<half_t> const& m8,
 //
 // The active IDs are deliberately non-contiguous and include 255: an off-by-one at the top of the
 // table is otherwise unreachable.
-constexpr int kE = 256;
+constexpr int kE = m8n16_g5_contract::kExperts;
 constexpr int kActive = 8;
 constexpr int kActiveIds[kActive] = {3, 17, 42, 88, 129, 190, 201, 255};
 
@@ -559,9 +561,10 @@ template <int TM, int WM>
 bool launch_g5(G5Fixture const& f, half_t const* dA, int4_t const* dB,
                half_t const* dScale, half_t const* dZero, half_t* dD,
                int rows_per_expert, char* workspace, std::size_t workspace_bytes) {
-  using Tile = cute::Shape<cute::Int<TM>, cute::_32, cute::Int<kTacticK>>;
-  using Warp = cute::Shape<cute::Int<WM>, cute::_32, cute::Int<kTacticK>>;
-  using Scale = cute::Shape<cute::_32, cute::_2>;
+  using Contract = m8n16_g5_contract::Launch<TM, WM>;
+  using Tile = typename Contract::Tile;
+  using Warp = typename Contract::Warp;
+  using Scale = typename Contract::Scale;
 
   std::vector<GS> shapes(kE);
   std::vector<half_t*> ptrs(kE);
@@ -585,8 +588,8 @@ bool launch_g5(G5Fixture const& f, half_t const* dA, int4_t const* dB,
   dOffs.copy_from_host(f.row_offsets.data());
 
   bool const launched = moe_grouped_ppu::launch<
-      QM::FinegrainedScaleZero, BaseSchedule, Tile, Scale, Warp,
-      kStages, false, int4_t>(
+      Contract::QuantMode, typename Contract::BaseSchedule, Tile, Scale, Warp,
+      Contract::Stages, Contract::AiuInterleaved, typename Contract::ElementB>(
           dA, dB, dScale, dZero, dPtrs.get(), dStrides.get(), dGroupM.get(),
           rows_per_expert, kN, kK, kE, kGs, dShapes.get(), shapes.data(),
           dOffs.get(), workspace, workspace_bytes, nullptr);

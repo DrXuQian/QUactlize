@@ -115,9 +115,6 @@ HARNESSES = {
     "test_ppu_m8n16_collective":(["int4"],            "synthetic", None,
         "ppu001 m8 collective gate: raw FP32 mainloop plus grouped ptr-array epilogue at M=1/2/3/7/8, "
         "each against an independent CPU golden and an exact same-input m16 control; G5 remains blocked on #108"),
-    "test_ppu_grouped_metadata_address":([],            "none",      None,
-        "diagnostic component census: q==8 makes B irrelevant while experts 127/128/129 trace explicit int64 GEP, "
-        "CuTe gZ, partition_S and cp.async-smem zero-plane addresses/values; B is explicitly not covered"),
     # Component probes only: these establish the ppu001 m8 atom ABI and the
     # AIU/x4-swzl delivery contract.  Empty format lists are deliberate; a
     # register/layout probe is not evidence for any quantized launch path.
