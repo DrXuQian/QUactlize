@@ -41,6 +41,7 @@
 #include "cutlass/util/packed_stride.hpp"
 #include "helper.h"
 #include "m8n16_g5_contract.hpp"
+#include "m8n16_g5_slot_map.hpp"
 #include "moe_grouped_ppu.cuh"
 #include "ppu_group_schedule.hpp"
 #include "ppu_mixed_policy.hpp"
@@ -513,10 +514,24 @@ struct G5Fixture {
   std::vector<std::int8_t> B;                 // [kE] placed artifacts, expert-major
   std::vector<half_t> scales, zeros, A;
   std::vector<int> group_m, row_offsets;      // [kE], [kE + 1]
-  std::vector<std::vector<std::uint8_t>> q_e; // active only, indexed by slot
-  std::vector<std::vector<half_t>> s_e, z_e, a_e;
+  std::vector<int> expert_for_slot, slot_for_expert;
+  std::vector<std::vector<std::uint8_t>> q_by_slot;
+  std::vector<std::vector<half_t>> s_by_slot, z_by_slot, a_by_slot;
+  bool route_valid = false;
   int total_rows = 0;
 };
+
+void set_g5_route(G5Fixture& f, int rows_per_expert,
+                  int const* ids, int n_active) {
+  auto route = m8n16_g5_slot_map::make(
+      kE, ids, n_active, rows_per_expert);
+  f.route_valid = route.valid;
+  f.expert_for_slot = std::move(route.expert_for_slot);
+  f.slot_for_expert = std::move(route.slot_for_expert);
+  f.group_m = std::move(route.group_m);
+  f.row_offsets = std::move(route.row_offsets);
+  f.total_rows = route.total_rows;
+}
 
 // TM/WM only select which placement to write; the artifact is byte-identical for m8 and m16 (proved
 // above), so one buffer serves both arms and a divergence would already have failed the offline check.
@@ -525,16 +540,14 @@ G5Fixture make_g5_fixture(int rows_per_expert, int const* ids, int n_active, boo
   f.B.assign(std::size_t(kE) * kPlacedBBytes, 0);
   f.scales.assign(std::size_t(kE) * kScaleK * kN, half_t(0.0f));
   f.zeros.assign(f.scales.size(), half_t(0.0f));
-  f.group_m.assign(kE, 0);
-  f.row_offsets.assign(kE + 1, 0);
-
-  auto is_active = [&](int e) {
-    for (int i = 0; i < n_active; ++i) if (ids[i] == e) return i;
-    return -1;
-  };
+  set_g5_route(f, rows_per_expert, ids, n_active);
+  f.q_by_slot.resize(n_active);
+  f.s_by_slot.resize(n_active);
+  f.z_by_slot.resize(n_active);
+  f.a_by_slot.resize(n_active);
 
   for (int e = 0; e < kE; ++e) {
-    int const slot = is_active(e);
+    int const slot = f.route_valid ? f.slot_for_expert[e] : -1;
     // salt 0 is reserved for the G3/G4 data; actives take 1..kActive so no two experts share a pattern.
     int const salt = (slot >= 0) ? (uniform ? 1 : slot % 64 + 1) : (n_active + 1 + e);
     auto q = make_codes_salted(salt);
@@ -545,16 +558,20 @@ G5Fixture make_g5_fixture(int rows_per_expert, int const* ids, int n_active, boo
     std::copy(s.begin(), s.end(), f.scales.begin() + std::size_t(e) * kScaleK * kN);
     std::copy(z.begin(), z.end(), f.zeros.begin() + std::size_t(e) * kScaleK * kN);
     if (slot >= 0) {
-      f.group_m[e] = rows_per_expert;
-      f.q_e.push_back(std::move(q));
-      f.s_e.push_back(std::move(s));
-      f.z_e.push_back(std::move(z));
-      f.a_e.push_back(make_a_salted(rows_per_expert, salt));
+      f.q_by_slot[slot] = std::move(q);
+      f.s_by_slot[slot] = std::move(s);
+      f.z_by_slot[slot] = std::move(z);
+      f.a_by_slot[slot] = make_a_salted(rows_per_expert, salt);
     }
   }
-  for (int e = 0; e < kE; ++e) f.row_offsets[e + 1] = f.row_offsets[e] + f.group_m[e];
-  f.total_rows = f.row_offsets[kE];
-  for (auto const& a : f.a_e) f.A.insert(f.A.end(), a.begin(), a.end());
+  f.A.assign(std::size_t(f.total_rows) * kK, half_t(0.0f));
+  if (f.route_valid) {
+    for (int slot = 0; slot < n_active; ++slot) {
+      int const expert = f.expert_for_slot[slot];
+      std::copy(f.a_by_slot[slot].begin(), f.a_by_slot[slot].end(),
+                f.A.begin() + std::size_t(f.row_offsets[expert]) * kK);
+    }
+  }
   return f;
 }
 
@@ -638,9 +655,11 @@ std::vector<half_t> run_g5_arm(char const* family, G5Fixture const& f, int rows_
 // the slot itself; the negative controls pass a different one on purpose.
 int g5_slot_mismatches(G5Fixture const& f, std::vector<half_t> const& got, int rows_per_expert,
                        int slot, int oracle_slot) {
-  auto golden = golden_fp32(f.a_e[slot], rows_per_expert,
-                            f.q_e[oracle_slot], f.s_e[oracle_slot], f.z_e[oracle_slot]);
-  std::size_t const base = std::size_t(slot) * rows_per_expert * kN;
+  auto golden = golden_fp32(f.a_by_slot[slot], rows_per_expert,
+                            f.q_by_slot[oracle_slot], f.s_by_slot[oracle_slot],
+                            f.z_by_slot[oracle_slot]);
+  int const expert = f.expert_for_slot[slot];
+  std::size_t const base = std::size_t(f.row_offsets[expert]) * kN;
   int bad = 0;
   for (std::size_t i = 0; i < golden.size(); ++i) {
     float const g = golden[i], d = float(got[base + i]);
@@ -655,6 +674,10 @@ int run_g5(char const* label, int rows_per_expert, int const* ids, int n_active,
 int run_g5(char const* label, int rows_per_expert, int const* ids, int n_active, bool uniform) {
   int errors = 0;
   auto f = make_g5_fixture(rows_per_expert, ids, n_active, uniform);
+  if (!f.route_valid) {
+    std::printf("[G5:%s] invalid slot->expert map -- FAIL\n", label);
+    return 1;
+  }
 
   cutlass::DeviceAllocation<int4_t> dB(f.B.size());
   cutlass::DeviceAllocation<half_t> dScale(f.scales.size());
@@ -714,10 +737,12 @@ int run_g5(char const* label, int rows_per_expert, int const* ids, int n_active,
   // An off-by-one in the row offsets shifts every slot's rows by one expert's worth.  If that still
   // compares equal, the row offsets are not load-bearing in this fixture.
   int shift_detected = 0;
-  std::size_t const shift = std::size_t(rows_per_expert) * kN;
   for (int slot = 0; slot + 1 < n_active; ++slot) {
-    auto golden = golden_fp32(f.a_e[slot], rows_per_expert, f.q_e[slot], f.s_e[slot], f.z_e[slot]);
-    std::size_t const base = std::size_t(slot) * shift + shift;   // read the NEXT slot's rows
+    auto golden = golden_fp32(f.a_by_slot[slot], rows_per_expert,
+                              f.q_by_slot[slot], f.s_by_slot[slot],
+                              f.z_by_slot[slot]);
+    int const next_expert = f.expert_for_slot[slot + 1];
+    std::size_t const base = std::size_t(f.row_offsets[next_expert]) * kN;
     int bad = 0;
     for (std::size_t i = 0; i < golden.size(); ++i)
       if (!(std::fabs(golden[i] - float(m8[base + i])) <= 3e-2f * std::max(1.0f, std::fabs(golden[i]))))
@@ -766,8 +791,8 @@ int run_g5_idprobe(int const* ids, int n_active) {
   f.B.assign(std::size_t(kE) * kPlacedBBytes, 0);
   f.scales.assign(std::size_t(kE) * kScaleK * kN, half_t(1.0f / 32.0f));
   f.zeros.assign(f.scales.size(), half_t(0.0f));
-  f.group_m.assign(kE, 0);
-  f.row_offsets.assign(kE + 1, 0);
+  set_g5_route(f, 1, ids, n_active);
+  if (!f.route_valid) return 1;
   auto q = make_probe_codes();
   for (int e = 0; e < kE; ++e) {
     auto z = make_probe_zeros(e);
@@ -775,11 +800,7 @@ int run_g5_idprobe(int const* ids, int n_active) {
         f.B.data() + std::size_t(e) * kPlacedBBytes, q, kN, kK);
     std::copy(z.begin(), z.end(), f.zeros.begin() + std::size_t(e) * kScaleK * kN);
   }
-  for (int i = 0; i < n_active; ++i) f.group_m[ids[i]] = 1;
-  for (int e = 0; e < kE; ++e) f.row_offsets[e + 1] = f.row_offsets[e] + f.group_m[e];
-  f.total_rows = f.row_offsets[kE];
   f.A.assign(std::size_t(f.total_rows) * kK, half_t(1.0f));
-  for (int i = 0; i < n_active; ++i) f.a_e.push_back(std::vector<half_t>(kK, half_t(1.0f)));
 
   cutlass::DeviceAllocation<int4_t> dB(f.B.size());
   cutlass::DeviceAllocation<half_t> dScale(f.scales.size());
@@ -799,10 +820,11 @@ int run_g5_idprobe(int const* ids, int n_active) {
   for (int slot = 0; slot < n_active; ++slot) {
     int const want = ids[slot];
     half_t const expected{float(want)};
-    half_t const first = got[std::size_t(slot) * kN];
+    std::size_t const row = std::size_t(f.row_offsets[want]);
+    half_t const first = got[row * kN];
     bool row_exact = true;
     for (int n = 0; n < kN; ++n)
-      row_exact &= got[std::size_t(slot) * kN + n].raw() == expected.raw();
+      row_exact &= got[row * kN + n].raw() == expected.raw();
     bool const ok = row_exact;
     if (!ok && wrong++ < 16)
       std::printf("  IDPROBE slot=%-3d owns_expert=%-3d "
@@ -836,18 +858,14 @@ int run_g5_b_idprobe(int const* ids, int n_active) {
   f.B.assign(std::size_t(kE) * kPlacedBBytes, 0);
   f.scales.assign(std::size_t(kE) * kScaleK * kN, half_t(1.0f));
   f.zeros.assign(f.scales.size(), half_t(0.0f));
-  f.group_m.assign(kE, 0);
-  f.row_offsets.assign(kE + 1, 0);
+  set_g5_route(f, 1, ids, n_active);
+  if (!f.route_valid) return 1;
 
   for (int e = 0; e < kE; ++e) {
     auto const q = make_b_probe_codes(e);
     xplane::place_derived<4, 8, 32, 64, 8, 32, 1>(
         f.B.data() + std::size_t(e) * kPlacedBBytes, q, kN, kK);
   }
-  for (int i = 0; i < n_active; ++i) f.group_m[ids[i]] = 1;
-  for (int e = 0; e < kE; ++e)
-    f.row_offsets[e + 1] = f.row_offsets[e] + f.group_m[e];
-  f.total_rows = f.row_offsets[kE];
   f.A.assign(std::size_t(f.total_rows) * kK, half_t(1.0f));
 
   cutlass::DeviceAllocation<int4_t> dB(f.B.size());
