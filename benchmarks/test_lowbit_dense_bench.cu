@@ -526,6 +526,7 @@ struct Options {
   bool streamk = false;          // --streamk: 107b target only; select deterministic dense Stream-K
   bool streamk_gate = false;     // --streamk_gate: require the independent CPU-FP32/fixup gate
   bool streamk_split_gate = false; // --streamk_split_gate: require an actually split output tile
+  bool streamk_exact_fixture = false; // --streamk_exact_fixture: use the exact-by-construction A0 inputs on every arm
 
   // Parses the command line
   void parse(int argc, char const **args) {
@@ -555,6 +556,7 @@ struct Options {
     streamk        = cmd.check_cmd_line_flag("streamk");
     streamk_gate   = cmd.check_cmd_line_flag("streamk_gate");
     streamk_split_gate = cmd.check_cmd_line_flag("streamk_split_gate");
+    streamk_exact_fixture = cmd.check_cmd_line_flag("streamk_exact_fixture");
     if (streamk_gate || streamk_split_gate) streamk = true;
   }
 
@@ -579,7 +581,8 @@ struct Options {
 #if defined(DENSE_STREAMK_AB)
     out << "  --streamk                   Use deterministic dense Stream-K (splits=1).\n"
         << "  --streamk_gate              Also require fixup witness + CPU FP32 golden.\n"
-        << "  --streamk_split_gate        Fail closed unless lowered Params contain a real cross-CTA seam.\n";
+        << "  --streamk_split_gate        Fail closed unless lowered Params contain a real cross-CTA seam.\n"
+        << "  --streamk_exact_fixture     Fill the actual A0 arm with sparse integer inputs whose sums are order-independent.\n";
 #endif
 
     out
@@ -618,6 +621,27 @@ struct Result
   bool verification_classified = true;
 
 };
+
+// Numerical evidence belongs to one invocation of initialize(), not to a log
+// file.  Keeping it as a returned POD prevents the exact 64x128x4352 seam
+// fixture from being accidentally consumed as evidence for the random A0 arm
+// that happens to run later in the same box script.
+struct DenseFixtureEvidence {
+  bool order_independent = false;
+  bool fp16_output_exact = false;
+};
+
+struct DenseReplayEvidence {
+  bool fixup_closed = false;
+  uint64_t split_reference_bitdiff = 0;
+  uint64_t non_split_reference_bitdiff = 0;
+};
+
+// Published for ci/check_exact_fixture.py.  The A0 fixture below consumes the
+// same constants; the checker derives its bounds instead of restating them.
+inline constexpr int kExactFixtureNonzerosPerRow = 32;
+inline constexpr int kExactFixtureScales[] = {1, 2, 4};
+inline constexpr int kExactFixtureZeros[] = {0};
 
 enum class DenseVerifyBucket : uint8_t {
   DataParallel = 0,
@@ -1090,7 +1114,7 @@ inline std::vector<TileCfg> const& supported_configs() {
 /// GEMM setup and evaluation
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
-void initialize(Options const& options);
+DenseFixtureEvidence initialize(Options const& options);
 
 #if !defined(LOWBIT_DENSE_UNIT_BUILD)
 /// Helper to initialize a block of device data
@@ -1180,7 +1204,9 @@ bool initialize_zero(
 }
 
 /// Initialize operands to be used in the GEMM and reference GEMM
-void initialize(Options const& options) {
+DenseFixtureEvidence initialize(Options const& options) {
+
+  DenseFixtureEvidence fixture_evidence;
 
   auto shape_b = cute::make_shape(options.n, options.k, options.l);
   int const scale_k = (options.k + options.g - 1) / options.g;
@@ -1255,16 +1281,25 @@ void initialize(Options const& options) {
     block_C.copy_from_host(host_c.data());
     block_scale.copy_from_host(host_scale.data());
     block_B.copy_from_host(tensor_B.host_data());
-    // THE FIXTURE PROVES ITS OWN EXACTNESS, from the arrays it just filled.
+    // THIS GATE FIXTURE PROVES ITS OWN EXACTNESS, from the arrays it just filled.
     //
-    // For a day the leading reading of A0's SK-split mismatches was "FP32 reassociation" -- the split
-    // path sums in a different order than the reference, so small differences are expected.  That
-    // reading requires the fixture to round somewhere, and nobody checked whether it does.  It does
-    // not: every a is a multiple of 1/4, every dequantised w = q*scale is a multiple of 1/16, so every
-    // product is a multiple of 1/64 and every partial sum is an exactly representable FP32 integer
-    // multiple of it.  Under exact arithmetic EVERY accumulation order yields the identical value, and
-    // cancellation -- the mechanism "large ULP near zero" was attributed to -- amplifies pre-existing
-    // rounding error, of which there is none.  So a mismatch here cannot be reassociation.
+    // SCOPE, STATED FIRST BECAUSE I GOT IT WRONG. This block is inside `if (options.streamk_gate)`,
+    // so it describes the small 64x128x4352 gate arm and NOTHING ELSE. A0's three arms pass only
+    // --streamk and still use the random initialize_tensor/initialize_quant_tensor path, whose fp16
+    // values are not dyadic and therefore DO round. I read this verdict off a log, applied it to A0's
+    // 233 SK-split mismatches, and concluded they could not be reassociation. That conclusion does not
+    // follow. I even noticed the printed 426496 did not match the 401408 I had computed for K=4096,
+    // explained it as "the gate arm has K=4352", and then still carried the conclusion across --
+    // exactness is a property of the VALUES, not of K, so a smaller K proves nothing about a different
+    // fixture. A0's mismatches remain unexplained until the exact fixture is wired into A0 itself.
+    //
+    // What it does establish, for this arm: every a is a multiple of 1/4, every dequantised
+    // w = q*scale is a multiple of 1/16, so every product is a multiple of 1/64 and every partial sum
+    // is an exactly representable FP32 multiple of it. Under exact arithmetic EVERY accumulation order
+    // yields the identical value, and cancellation -- the mechanism "large ULP near zero" gets
+    // attributed to -- amplifies pre-existing rounding error, of which there is none. So a mismatch
+    // IN THIS ARM cannot be reassociation. This arm is currently BIT-EXACT PASS, which is also why it
+    // does not indict the seam: its split deliberately lands inside a gs128 group and still agrees.
     //
     // This is computed rather than asserted so it cannot drift: change any generator above and the
     // printed verdict changes with it.  A future fixture that DOES round will say so instead of
@@ -1298,12 +1333,105 @@ void initialize(Options const& options) {
       // Every product is a multiple of 2^-(ga+gw); the worst-case partial sum is K*amax*wmax.
       double const units = double(options.k) * amax * wmax * std::ldexp(1.0, ga + gw);
       bool const exact = ga < 99 && gw < 99 && units <= std::ldexp(1.0, 24);
+      fixture_evidence.order_independent = exact;
       std::printf("  [streamk fixture] deterministic K-asymmetric A/B, per-group-distinct scale, nonzero C\n");
-      std::printf("  [streamk fixture exactness] granule=2^-(%d+%d) |a|max=%g |w|max=%g partial-sum"
-                  " units=%.0f vs 2^24=%.0f -> %s\n", ga, gw, amax, wmax, units, std::ldexp(1.0, 24),
+      std::printf("  [streamk fixture exactness] fixture=seam-gate shape=%dx%dx%d "
+                  "granule=2^-(%d+%d) |a|max=%g |w|max=%g partial-sum"
+                  " units=%.0f vs 2^24=%.0f -> %s\n", options.m, options.n, options.k,
+                  ga, gw, amax, wmax, units, std::ldexp(1.0, 24),
                   exact ? "ORDER-INDEPENDENT (a mismatch cannot be reassociation)"
                         : "ROUNDS (a mismatch is ambiguous; fix the fixture before reading the verdict)");
     }
+  }
+  else if (options.streamk_exact_fixture) {
+    // The actual A0 correctness fixture, deliberately separate from the tiny
+    // --streamk_gate fixture above.  Every row has one +/-1 in each gs128
+    // group, so every split peer sees useful work; scales and int4 codes vary
+    // by both absolute K and N.  Products and all subset sums are integers.
+    std::vector<ElementA> host_a(block_A.size(), ElementA(0));
+    std::vector<ElementC> host_c(block_C.size(), ElementC(0));
+    std::vector<ElementScale> host_scale(block_scale.size());
+    std::vector<ElementZero> host_zero(block_zero.size(), ElementZero(0));
+    static_assert(sizeof(kExactFixtureScales) / sizeof(kExactFixtureScales[0]) == 3,
+                  "the exact A0 scale cycle is part of its checked construction");
+    static_assert(sizeof(kExactFixtureZeros) / sizeof(kExactFixtureZeros[0]) == 1 &&
+                      kExactFixtureZeros[0] == 0,
+                  "ScaleOnly A0 must not claim a load-bearing zero plane");
+    if (options.k / options.g != kExactFixtureNonzerosPerRow) {
+      std::fprintf(stderr,
+                   "--streamk_exact_fixture requires K/gs=%d (got %d/%d)\n",
+                   kExactFixtureNonzerosPerRow, options.k, options.g);
+      std::exit(1);
+    }
+    for (int m = 0; m < options.m; ++m) {
+      for (int kg = 0; kg < kExactFixtureNonzerosPerRow; ++kg) {
+        int const within_group = (17 * m + 29 * kg) % options.g;
+        int const k = kg * options.g + within_group;
+        int const sign = ((m + kg) & 1) ? -1 : 1;
+        host_a[size_t(m) * options.k + k] = ElementA(float(sign));
+      }
+    }
+    for (int kg = 0; kg < scale_k; ++kg) {
+      for (int n = 0; n < options.n; ++n) {
+        int const scale = kExactFixtureScales[(5 * kg + 3 * n) % 3];
+        host_scale[size_t(kg) * options.n + n] = ElementScale(float(scale));
+      }
+    }
+    auto b_view = tensor_B.host_view();
+    for (int k = 0; k < options.k; ++k) {
+      for (int n = 0; n < options.n; ++n) {
+        int const q = ((7 * k + 3 * n) & 15) - 8;
+        b_view.at({k, n}) = QuantType(q);
+      }
+    }
+    block_A.copy_from_host(host_a.data());
+    block_C.copy_from_host(host_c.data());
+    block_scale.copy_from_host(host_scale.data());
+    block_zero.copy_from_host(host_zero.data());
+    block_B.copy_from_host(tensor_B.host_data());
+
+    // Derive the two bounds from the arrays just installed.  The standalone
+    // checker independently derives the same bounds from the published
+    // constants; neither side can green by copying a printed expected number.
+    int max_nonzeros = 0;
+    for (int m = 0; m < options.m; ++m) {
+      int nonzeros = 0;
+      for (int k = 0; k < options.k; ++k) {
+        nonzeros += float(host_a[size_t(m) * options.k + k]) != 0.0f;
+      }
+      max_nonzeros = std::max(max_nonzeros, nonzeros);
+    }
+    double max_weight = 0.0;
+    bool integer_weights = true;
+    for (int k = 0; k < options.k; ++k) {
+      for (int n = 0; n < options.n; ++n) {
+        double const weight = double(int(b_view.at({k, n}))) *
+            double(float(host_scale[size_t(k / options.g) * options.n + n]));
+        integer_weights &= weight == std::nearbyint(weight);
+        max_weight = std::max(max_weight, std::fabs(weight));
+      }
+    }
+    double const max_output = double(max_nonzeros) * max_weight;
+    fixture_evidence.order_independent = integer_weights &&
+        max_nonzeros == kExactFixtureNonzerosPerRow &&
+        max_output <= std::ldexp(1.0, 24);
+    fixture_evidence.fp16_output_exact = fixture_evidence.order_independent &&
+        options.alpha == 1.0f && options.beta == 0.0f &&
+        max_output <= std::ldexp(1.0, 11);
+    std::printf(
+        "  [streamk fixture exactness] fixture=a0-exact shape=%dx%dx%d "
+        "nonzeros/row=%d integer_weights=%d max|w|=%g max|D|=%g "
+        "vs fp32=2^24 fp16=2^11 -> %s\n",
+        options.m, options.n, options.k, max_nonzeros, int(integer_weights),
+        max_weight, max_output,
+        fixture_evidence.order_independent && fixture_evidence.fp16_output_exact
+            ? "ORDER-INDEPENDENT+FP16-EXACT"
+            : "ROUNDS/INVALID (do not classify ordinary-reference differences)");
+  }
+  else {
+    std::printf("  [streamk fixture exactness] fixture=random shape=%dx%dx%d -> "
+                "ROUNDS/UNKNOWN (ordinary-reference differences are not classifiable)\n",
+                options.m, options.n, options.k);
   }
 #endif
   
@@ -1342,6 +1470,7 @@ void initialize(Options const& options) {
         {static_cast<size_t>(col), static_cast<size_t>(row)}, quant_type);
   }
   block_B_buff.sync_device();
+  return fixture_evidence;
 }
 #endif
 
@@ -1385,12 +1514,13 @@ enum class DenseVerifyState : uint8_t {
   InvariantFailure,
 };
 
-bool verify(const Options &options, DenseVerifyPartition const* partition,
+bool verify(const Options &options, DenseFixtureEvidence const& fixture_evidence,
+            DenseVerifyPartition const* partition,
             DenseVerifyState* diagnostic_state = nullptr);
 bool verify_streamk_cpu_fp32(const Options &options);
 #if defined(DENSE_STREAMK_AB)
 template <class Gemm>
-bool verify_streamk_same_order_partial_replay(
+DenseReplayEvidence verify_streamk_same_order_partial_replay(
     const Options& options, DenseVerifyPartition const& partition,
     std::vector<ElementD> const& normal_output,
     std::vector<ElementD> const& capture_output,
@@ -1401,7 +1531,8 @@ bool verify_streamk_same_order_partial_replay(
 #endif
 
 #if !defined(LOWBIT_DENSE_UNIT_BUILD)
-bool verify(const Options &options, DenseVerifyPartition const* partition,
+bool verify(const Options &options, DenseFixtureEvidence const& fixture_evidence,
+            DenseVerifyPartition const* partition,
             DenseVerifyState* diagnostic_state) {
   if (diagnostic_state) {
     *diagnostic_state = DenseVerifyState::NotClassifiable;
@@ -1466,6 +1597,7 @@ bool verify(const Options &options, DenseVerifyPartition const* partition,
   ElementD const epsilon(1e-2f);
   ElementD const non_zero_floor(1e-4f);
   bool passed = cutlass::reference::device::BlockCompareRelativelyEqual(block_ref_D.get(), block_D.get(), block_D.size(), epsilon, non_zero_floor);
+  bool const device_comparator_passed = passed;
 
   if (partition != nullptr) {
     std::size_t const expected_tiles = std::size_t(partition->tiles_m) *
@@ -1710,11 +1842,19 @@ bool verify(const Options &options, DenseVerifyPartition const* partition,
         static_cast<unsigned long long>(mismatch_after_prior_final_visit),
         local_mode_idx / std::size_t(partition->tile_n),
         local_mode_idx % std::size_t(partition->tile_n), local_mode_count);
-    std::printf(
-        "  [dense verify interpretation] ordinary-reference ULP is diagnostic only; "
-        "near-zero cancellation can make a benign reassociation look arbitrarily large. "
-        "The split-path verdict requires the same-order partial replay.\n");
-    if ((bucket_mismatches == 0) != passed) {
+    bool const raw_reference_passed = bitdiff_count == 0;
+    if (fixture_evidence.order_independent) {
+      std::printf(
+          "  [dense verify interpretation] ORDER-INDEPENDENT fixture: raw_bitdiff=%llu; "
+          "any nonzero ordinary-reference difference is a numerical failure.\n",
+          static_cast<unsigned long long>(bitdiff_count));
+    }
+    else {
+      std::printf(
+          "  [dense verify interpretation] fixture rounds: ordinary-reference ULP is diagnostic only; "
+          "same-order replay can validate fixup, not the captured partials.\n");
+    }
+    if ((bucket_mismatches == 0) != device_comparator_passed) {
       std::fprintf(stderr,
                    "  [dense verify buckets] fail-close: bucket comparator disagrees with device comparator "
                    "(bucket mismatches=%llu device_passed=%d)\n",
@@ -1723,6 +1863,9 @@ bool verify(const Options &options, DenseVerifyPartition const* partition,
         *diagnostic_state = DenseVerifyState::InvariantFailure;
       }
       return false;
+    }
+    if (fixture_evidence.order_independent) {
+      passed = raw_reference_passed;
     }
   }
   if (diagnostic_state) {
@@ -1818,7 +1961,7 @@ bool verify_streamk_cpu_fp32(const Options &options) {
 // CPU fixture below/above is sequential-k and uses exact dyadic inputs; it is
 // an excellent absolute-K seam gate, but it is not an A0 same-order replay.
 template <class Gemm>
-bool verify_streamk_same_order_partial_replay(
+DenseReplayEvidence verify_streamk_same_order_partial_replay(
     const Options& options, DenseVerifyPartition const& partition,
     std::vector<ElementD> const& normal_output,
     std::vector<ElementD> const& capture_output,
@@ -1828,7 +1971,7 @@ bool verify_streamk_same_order_partial_replay(
     uint32_t capture_errors) {
   auto fail = [](char const* why) {
     std::fprintf(stderr, "  [streamk same-order replay] UNVERIFIED: %s\n", why);
-    return false;
+    return DenseReplayEvidence{};
   };
   if (options.l != 1) return fail("first replay supports l=1 only");
   std::size_t const outputs =
@@ -2014,7 +2157,7 @@ bool verify_streamk_same_order_partial_replay(
       device_reference_bitdiff == replay_reference_bitdiff &&
       device_reference_position_hash == replay_reference_position_hash &&
       device_reference_value_hash == replay_reference_value_hash;
-  bool const passed = split_outputs > 0 && device_replay_bitdiff == 0 &&
+  bool const fixup_closed = split_outputs > 0 && device_replay_bitdiff == 0 &&
       non_split_reference_mismatches == 0 &&
       non_split_reference_bitdiff == 0 && triangle_closed;
   std::printf(
@@ -2036,8 +2179,13 @@ bool verify_streamk_same_order_partial_replay(
       static_cast<unsigned long long>(non_split_reference_bitdiff),
       static_cast<unsigned long long>(device_reference_bitdiff),
       triangle_closed ? "CLOSED" : "OPEN",
-      passed ? "BIT-EXACT/PASS" : "MISMATCH/FAIL");
-  return passed;
+      fixup_closed ? "FIXUP-CLOSED" : "FIXUP-FAIL");
+  if (fixup_closed) {
+    std::printf("  [streamk replay meaning] FIXUP-CLOSED: production fixup matches "
+                "captured partials; partial correctness is not established.\n");
+  }
+  return DenseReplayEvidence{
+      fixup_closed, device_reference_bitdiff, non_split_reference_bitdiff};
 }
 #endif
 
@@ -2073,7 +2221,7 @@ template <typename Gemm>
 Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic(),
            char const* scheduler_kind = "non-persistent")
 {
-  initialize(options);
+  DenseFixtureEvidence const fixture_evidence = initialize(options);
 
   // Instantiate kernel depending on templates
   Gemm gemm;
@@ -2346,15 +2494,18 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
 #endif
 
   // Check if output from kernel and reference kernel are equal or not
+  DenseReplayEvidence replay_evidence;
 #if defined(DENSE_STREAMK_AB)
   DenseVerifyState ordinary_diagnostic_state =
       DenseVerifyState::NotClassifiable;
   result.passed = verify(
-      options, &verify_partition, &ordinary_diagnostic_state);
+      options, fixture_evidence, &verify_partition, &ordinary_diagnostic_state);
+  bool const ordinary_reference_passed = result.passed;
+  bool replay_attempted = false;
   result.verification_classified =
       ordinary_diagnostic_state != DenseVerifyState::NotClassifiable;
 #else
-  result.passed = verify(options, nullptr);
+  result.passed = verify(options, fixture_evidence, nullptr);
 #endif
 #if defined(DENSE_STREAMK_AB)
   if constexpr (dense_is_streamk_gemm<Gemm>::value) {
@@ -2458,12 +2609,38 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
             pre_fixup_slot_visits.copy_to_host(host_slot_visits.data());
             pre_fixup_slot_k_counts.copy_to_host(host_slot_k_counts.data());
             streamk_diagnostics.copy_to_host(&captured_diagnostics);
-            result.passed = verify_streamk_same_order_partial_replay<Gemm>(
+            replay_attempted = true;
+            replay_evidence = verify_streamk_same_order_partial_replay<Gemm>(
                 options, verify_partition, normal_output, capture_output,
                 host_capture, host_slot_visits, host_slot_k_counts,
                 captured_diagnostics.pre_fixup_capture_error_count);
           }
         }
+      }
+    }
+    if (options.streamk && result.verification_classified) {
+      uint64_t const reference_raw_bitdiff =
+          replay_evidence.split_reference_bitdiff +
+          replay_evidence.non_split_reference_bitdiff;
+      if (!replay_attempted || !replay_evidence.fixup_closed) {
+        result.passed = false;
+      }
+      else if (fixture_evidence.order_independent) {
+        // Exact arithmetic removes reassociation from the hypothesis space.
+        // The replay still localises a failure: closed fixup plus a reference
+        // difference means the captured mainloop partials are already wrong.
+        result.passed = ordinary_reference_passed &&
+            reference_raw_bitdiff == 0;
+      }
+      else if (reference_raw_bitdiff == 0) {
+        result.passed = true;
+      }
+      else {
+        // Random A0 rounds.  A closed replay proves only that fixup consumed
+        // the captured partials correctly; it cannot classify the partials
+        // against a differently-parenthesised whole-K reference.
+        result.passed = false;
+        result.verification_classified = false;
       }
     }
     if (options.streamk_gate) {
@@ -2497,16 +2674,23 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
 
   if (!result.verification_classified) {
     std::cout << "  Disposition: NOT CLASSIFIABLE "
-              << "(ordinary-reference="
-              << (result.passed ? "Passed" : "Failed") << ")" << std::endl;
+              << "(fixture rounds; fixup replay closed but partial correctness "
+                 "is not established)" << std::endl;
   }
   else if (options.streamk) {
-    std::cout << "  Disposition: "
-              << (result.passed
-                      ? "Passed (StreamK same-order partial replay bit-exact; "
-                        "any ordinary-reference differences are reassociation)"
-                      : "Failed (StreamK same-order partial replay did not close)")
-              << std::endl;
+    if (result.passed) {
+      std::cout << "  Disposition: Passed (whole-K reference bit-exact; "
+                   "fixup replay closed)" << std::endl;
+    }
+    else if (fixture_evidence.order_independent && replay_evidence.fixup_closed) {
+      std::cout << "  Disposition: Failed (ORDER-INDEPENDENT fixture differs "
+                   "from whole-K reference; fixup replay closed, so the "
+                   "discrepancy is upstream of fixup)" << std::endl;
+    }
+    else {
+      std::cout << "  Disposition: Failed (StreamK capture/fixup replay did not close)"
+                << std::endl;
+    }
   }
   else {
     std::cout << "  Disposition: " << (result.passed ? "Passed" : "Failed")
@@ -2931,7 +3115,7 @@ int main(int argc, char const **args) {
 
 #if !defined(DENSE_SCHEDULER_AB)
   if (options.persistent || options.streamk || options.streamk_gate ||
-      options.streamk_split_gate) {
+      options.streamk_split_gate || options.streamk_exact_fixture) {
     std::fprintf(stderr,
                  "scheduler A/B flags are available only in the dedicated dense scheduler targets; "
                  "the ordinary dense sweep is unchanged\n");
@@ -2942,12 +3126,14 @@ int main(int argc, char const **args) {
     std::fprintf(stderr, "--persistent and --streamk are mutually exclusive A/B arms\n");
     return 1;
   }
-  if ((options.persistent || options.streamk) && options.mode != GemmMode::ScaleOnly) {
+  if ((options.persistent || options.streamk || options.streamk_exact_fixture) &&
+      options.mode != GemmMode::ScaleOnly) {
     std::fprintf(stderr, "dense scheduler A/B currently covers ScaleOnly (mode=1) only\n");
     return 1;
   }
 #if !defined(DENSE_STREAMK_AB)
-  if (options.streamk || options.streamk_gate || options.streamk_split_gate) {
+  if (options.streamk || options.streamk_gate || options.streamk_split_gate ||
+      options.streamk_exact_fixture) {
     std::fprintf(stderr, "--streamk is available only in test_lowbit_dense_streamk_ab\n");
     return 1;
   }
@@ -2965,6 +3151,20 @@ int main(int argc, char const **args) {
     std::fprintf(stderr,
                  "--streamk_gate and --streamk_split_gate are independent fixtures; "
                  "run them separately\n");
+    return 1;
+  }
+  if (options.streamk_gate && options.streamk_exact_fixture) {
+    std::fprintf(stderr,
+                 "--streamk_gate and --streamk_exact_fixture name different fixtures; "
+                 "run them separately\n");
+    return 1;
+  }
+  if (options.streamk_exact_fixture &&
+      (options.m != 2048 || options.k != 4096 || options.l != 1 ||
+       options.g != 128 || options.alpha != 1.0f || options.beta != 0.0f)) {
+    std::fprintf(stderr,
+                 "--streamk_exact_fixture requires --m=2048 --k=4096 --l=1 "
+                 "--g=128 --alpha=1 --beta=0 (N may adapt to runtime workers)\n");
     return 1;
   }
   if (options.streamk_split_gate && options.iterations != 0) {
