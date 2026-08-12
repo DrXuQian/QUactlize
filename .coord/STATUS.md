@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-12 17:20:59 UTC
+    updated-at:     2026-08-12 17:50:42 UTC
     inbox-consumed: 138
-    working-on:     final precommit verification of the classic-aligned dense Marlin 2N x 4K shipping-xplane consumer and its permanent negative controls
-    blocked-on:     no local correctness blocker; ppu001 device codegen/registers/occupancy/numerics/performance remain box-only and deliberately unclaimed
-    local-gates:    157/158 full tier PASS; the sole red was INBOX 138 arriving while STATUS still said 137, now consumed; affected WK4 wording/oracles and final full tier are being rerun
-    last-commit:    03cd45e INBOX 138: three outstanding asks -- stale STATUS, the 134 answers, and a checkpoint commit
-    last-heartbeat: 226
+    working-on:     INBOX 133 GEMV sweep design after the classic-aligned dense Marlin 2N x 4K local acceptance line closed
+    blocked-on:     WK4 ppu001 device codegen/registers/occupancy/numerics/performance remain box-only and deliberately unclaimed; no local correctness blocker
+    local-gates:    158/158 full tier PASS on frozen efcad2b; pytest 248 passed / 37 device-only skipped; wall clock 544 s
+    last-commit:    efcad2b Complete the classic-aligned WK4 consumer seam
+    last-heartbeat: 227
