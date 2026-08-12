@@ -14,8 +14,8 @@ Three kinds of check:
   syntax   nvcc's front end over a device source, diffed against a recorded baseline of accepted noise. Catches
            template instantiation failures that only appear under a macro combination.
   registry the coverage declarations against the source (see registry.py).
-  boxdry   build.sh itself, against a stub PPU SDK, as far as the compile. The only check that goes through
-           actlize's example registration -- everything else verifies a piece of the build in isolation.
+  boxdry   build.sh itself, against a stub PPU SDK, through generated device objects and a real host link. The only
+           check that goes through actlize's example registration -- everything else verifies a piece in isolation.
   asan     the host preprocessing chain compiled with -fsanitize=address and swept over shapes. It found two
            out-of-bounds accesses that no assertion could have located: both corrupted the heap silently and
            surfaced as an intermittent Bus error or SIGSEGV in an unrelated test, several tests later.
@@ -1220,6 +1220,27 @@ def lint_dense_marlin_rejected_cohorts():
     return ("PASS" if rc == 0 else "FAIL"), verdict, dt
 
 
+def lint_grouped_marlin_contract():
+    """Grouped Marlin must flatten ragged experts to global q without changing collectives."""
+    return _run_ci_script(
+        "check_grouped_marlin_contract.py",
+        "grouped Marlin preserves ragged-prefix/global-q seams and instantiates all collective families")
+
+
+def lint_grouped_marlin_exhaustive():
+    """Every committed grouped table/shape tuple must cover each (q,K-tile) once."""
+    return _run_ci_script(
+        "check_grouped_marlin_exhaustive.py",
+        "grouped Marlin exhausts committed formats and ragged MoE routes without sampling")
+
+
+def lint_gemv_perf_authority():
+    """The GEMV bench must derive real shapes/routing and detect expert-pitch regressions."""
+    return _run_ci_script(
+        "check_gemv_perf_authority.py",
+        "GEMV S068-S071 x T=1/2/4 fixtures are ragged, expert-distinct, poisoned and pitch-sensitive")
+
+
 def lint_grouped_streamk_contract():
     """Grouped Stream-K must preserve global q for locks while decoding expert-local compute coordinates."""
     ok, why = nvcc_can_compile_device_cuda()
@@ -1757,16 +1778,19 @@ def main():
                 ("boxdry", "build.sh forwards restricted MoE axes and stage list",
                  ("test_lowbit_moe_decode_bench", "SK_QUANT=2", "MOE_FORMATS=i4", "MOE_TM_LIST=16",
                   "MOE_TN_LIST=16", "MOE_WM_LIST=16", "MOE_STAGES=2;12")),
-                ("boxdry", "dense persistent A/B target reaches its one-row device compile",
-                 ("test_lowbit_dense_persistent_ab", "DENSE_DRYRUN=1", "TILE_M=64", "TILE_N=128",
+                ("boxdry", "dense persistent A/B target reaches its one-row object graph and host link",
+                 ("test_lowbit_dense_persistent_ab", "DENSE_PERSISTENT_AB=1", "TILE_M=64", "TILE_N=128",
                   "WARP_M=32", "WARP_N=32", "STAGES=2", "BENCH_GS=32")),
-                ("boxdry", "dense Stream-K target reaches its isolated 128-thread device compile",
-                 ("test_lowbit_dense_streamk_ab", "DENSE_DRYRUN=1")),
-                ("boxdry", "dense Marlin target reaches its isolated DP/Stream-K/Marlin device compile",
-                 ("test_lowbit_dense_marlin_ab", "DENSE_DRYRUN=1")),
-                ("boxdry", "dense Marlin full table reaches every private generated device unit",
+                ("boxdry", "dense Stream-K target reaches its isolated object graph and host link",
+                 ("test_lowbit_dense_streamk_ab", "DENSE_STREAMK_AB=1")),
+                ("boxdry", "dense Marlin target reaches its isolated DP/Stream-K/Marlin object graph and host link",
+                 ("test_lowbit_dense_marlin_ab", "DENSE_MARLIN_AB=1")),
+                ("boxdry", "generated-unit undefined reference is rejected by the real host link",
+                 ("test_lowbit_dense_streamk_ab", "DENSE_STREAMK_AB=1",
+                  "BOX_DRYRUN_EXPECT_LINK_FAILURE=1")),
+                ("boxdry", "dense Marlin full table links every private generated device unit",
                  ("test_lowbit_dense_marlin_sweep", "DENSE_MARLIN_SWEEP=1", "BENCH_GS=128")),
-                ("boxdry", "grouped Stream-K target reaches its isolated device compile",
+                ("boxdry", "grouped Stream-K target reaches its isolated object graph and host link",
                  "test_moe_grouped_streamk"),
                 ("asan", "preprocessing chain under ASAN", None),
                 ("pytest", "torch op tests", None),
@@ -1806,6 +1830,9 @@ def main():
                 ("lint", "dense Marlin sweep has private sources, exact capable cohorts, and distinct provenance", lint_dense_marlin_sweep_contract),
                 ("lint", "Marlin A2 recovers every formerly filtered row with an exact cohort census", lint_dense_marlin_rejection_census),
                 ("lint", "each released Marlin cohort compiles and an inexact explicit cohort reds", lint_dense_marlin_rejected_cohorts),
+                ("lint", "grouped Marlin preserves ragged q and all mixed-input collective families", lint_grouped_marlin_contract),
+                ("lint", "grouped Marlin exhausts every committed format/shape tuple", lint_grouped_marlin_exhaustive),
+                ("lint", "GEMV reference fixtures expose expert routing and packed pitch", lint_gemv_perf_authority),
                 ("lint", "grouped Stream-K preserves q locks, worker/K decomposition, and timing", lint_grouped_streamk_contract),
                 ("lint", "l122_streamk_fixup_cohort contract pins the exact 64/128-thread CTA cohort", lint_streamk_fixup_cohort),
                 ("lint", "l124 predicates every shipped FP32 accumulator residue and preserves S1-4", lint_fp32_residue_fixup),

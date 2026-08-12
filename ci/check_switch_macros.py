@@ -77,6 +77,12 @@ COND = re.compile(
     r"|^\s*#\s*ifn?def\s+([A-Z_][A-Z0-9_]*)"
     r"|^\s*#\s*(?:if|elif)\s+\(?\s*([A-Z_][A-Z0-9_]*)\s*[!=<>]", re.M)
 INTERPOLATED = re.compile(r"-D([A-Z_]+)\$\{")
+# A gate can also invent a define that no source consumes.  The original inventory starts from #if consumers, so
+# DENSE_DRYRUN=1 lived only in ci/local_gates.py and was invisible: it was forwarded all the way to hgcc, where no
+# token read it.  Restrict this second scan to quoted gate arguments and require complete absence outside the gate;
+# ordinary CMake/env variables remain valid when their name is consumed by build.sh/CMake/Python rather than #if.
+GATE_ASSIGNMENT = re.compile(
+    r"[\"'](?:-D)?((?:PPU_|QUACTLIZE_|LOWBIT_|MOE_|GEMV_|BENCH_|SK_|DENSE_)[A-Z0-9_]*)=")
 
 # Temporary reachability debt only. This is intentionally empty. The stale check below rejects both permitted exits
 # if their entry is forgotten: a deleted switch and a switch that has acquired a real definer/setter.
@@ -114,6 +120,13 @@ def stale_allowed(consumers, definers, setters, allowed):
     return deleted, resolved
 
 
+def gate_only_dead_assignments(gate_text: str, external_text: str):
+    """Quoted NAME= values in local_gates that have no identifier use anywhere else."""
+    assigned = set(GATE_ASSIGNMENT.findall(gate_text))
+    return sorted(name for name in assigned
+                  if not re.search(rf"\b{re.escape(name)}\b", external_text))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", action="store_true", help="print every switch, not only the unreachable ones")
@@ -139,6 +152,30 @@ def main() -> int:
         for name in consumers:
             if re.search(rf"^\s*#\s*define\s+{re.escape(name)}\b", text, re.M):
                 definers.setdefault(name, set()).add(str(f.relative_to(ROOT)))
+
+    # GATE-ONLY DEFINES ARE A SEPARATE FAILURE SHAPE from an unwired source switch.  Build one external corpus from
+    # executable/build inputs (not docs, which can mention a dead name without consuming it), then ask whether a
+    # local-gate assignment names anything outside the gate that sets it.
+    gate_path = ROOT / "ci/local_gates.py"
+    gate_text = gate_path.read_text(errors="replace")
+    external_paths = list(sources()) + [ROOT / "build.sh", ROOT / "CMakeLists.txt"]
+    external_paths += sorted((ROOT / "quactlize/csrc").glob("*.in"))
+    external_paths += sorted((ROOT / "ci").glob("*.py"))
+    external_text = "\n".join(
+        p.read_text(errors="replace") for p in external_paths
+        if p.is_file() and p.resolve() != gate_path.resolve() and p.resolve() != pathlib.Path(__file__).resolve())
+    gate_dead = gate_only_dead_assignments(gate_text, external_text)
+
+    # Both directions are load-bearing: a planted gate-only define must red, and adding an actual consumer must
+    # clear it.  Otherwise this check would merely special-case the historical spelling DENSE_DRYRUN.
+    gate_control = "DENSE_GATE_ONLY_CONTROL"
+    planted_gate = gate_text + f'\n("boxdry", "plant", "{gate_control}=1")\n'
+    if gate_only_dead_assignments(planted_gate, external_text) != [gate_control]:
+        print("[switch-macros] ERROR: planted gate-only define was not reported")
+        return 1
+    if gate_only_dead_assignments(planted_gate, external_text + f"\n#if defined({gate_control})\n"):
+        print("[switch-macros] ERROR: planted gate-only define stayed dead after adding a consumer")
+        return 1
 
     setters, interpolated = {}, set()
     for f in setter_files():
@@ -238,8 +275,18 @@ def main() -> int:
         print("    by deleting the switch, or by promoting it to a real option. Do not add to ALLOWED without a reason.")
         return 1
 
+
+    if gate_dead:
+        print(f"[switch-macros] FAIL: {len(gate_dead)} define assignment(s) exist only in ci/local_gates.py; "
+              "the build forwards them but no implementation consumes them:")
+        for n in gate_dead:
+            print(f"    {n}")
+        print("    Remove the dead gate argument or add the real source/build consumer. A forwarded -D is not evidence "
+              "that anything read it.")
+        return 1
+
     print(f"[switch-macros] PASS: {len(consumers)} owned switch(es), every one has a recorded #define/-D route; "
-          "six classifier controls passed")
+          "six classifier controls plus two gate-only assignment controls passed")
     return 0
 
 

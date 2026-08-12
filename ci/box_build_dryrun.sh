@@ -16,16 +16,17 @@
 # stayed green while the box reported "No rule to make target test_moe_splitk_bench" alongside "cmake did not
 # report PPU_EXTRA_DEFS". Two symptoms of one missing sed, and a diagnosis that reads like macro plumbing.
 #
-# THE STUB SDK is enough for cmake to configure and for make to reach the compile: an hgcc that exits 0 without
-# producing output, empty shared libraries for the five find_library() names, and the two directories PPUToolchain
-# checks for. The compile then fails, which is expected and is where this check stops. Everything before it --
-# registration, add_subdirectory, target creation, and the defines landing on the device compile command -- is
-# exactly what the box does.
+# THE STUB SDK is enough for cmake to configure and for make to reach the REAL HOST LINK: fake hgcc emits a valid
+# x86 object for every device TU, generated-unit objects carry an unresolved reference, and the main TU defines it.
+# That cross-TU edge is deliberate.  The old fake hgcc exited zero without producing an object, so make failed before
+# linking and this gate could never catch the class that produced c96fe8d: a generated per-config TU called a template
+# whose definition existed only in the main TU.  We cannot compile PPU instructions locally, but we can and must prove
+# that CMake presents every generated object to a linker and that an unresolved cross-TU edge makes that link red.
 #
 #   ./ci/box_build_dryrun.sh [TARGET] [PPU_DEFS] [NAME=VALUE ...]
 #
-# Exit 0 = every pre-compile stage reached the box's own conclusion. Exit 1 = one of them did not. Exit 2 = the
-# stub could not be built here (no gcc), which is a skip, not a pass.
+# Exit 0 = the real build graph reached a host link (or the planted undefined reference was rejected there).
+# Exit 1 = one of those claims did not hold. Exit 2 = the stub could not be built here, which is a skip, not a pass.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET="${1:-test_moe_splitk_bench}"
@@ -33,9 +34,16 @@ if [ "$#" -gt 0 ]; then shift; fi
 DEFS="${1:-SK_QUANT=2}"
 if [ "$#" -gt 0 ]; then shift; fi
 BUILD_ENV=("$@")
+EXPECT_LINK_FAILURE=0
 for _entry in "${BUILD_ENV[@]}"; do
   [[ "$_entry" =~ ^[A-Z][A-Z0-9_]*= ]] || {
     echo "  [FAIL] box_build_dryrun: extra build input is not NAME=VALUE: $_entry"; exit 1; }
+  case "$_entry" in
+    BOX_DRYRUN_EXPECT_LINK_FAILURE=0) EXPECT_LINK_FAILURE=0 ;;
+    BOX_DRYRUN_EXPECT_LINK_FAILURE=1) EXPECT_LINK_FAILURE=1 ;;
+    BOX_DRYRUN_EXPECT_LINK_FAILURE=*)
+      echo "  [FAIL] box_build_dryrun: BOX_DRYRUN_EXPECT_LINK_FAILURE must be 0 or 1"; exit 1 ;;
+  esac
 done
 # ALWAYS A PRIVATE TEMPORARY DIRECTORY. This used to accept BOX_DRYRUN_SDK from the caller and then rm -rf it --
 # pointed at a real SDK or at the repository, that deletes it. A fixed path also races between concurrent runs.
@@ -51,11 +59,37 @@ command -v cmake >/dev/null 2>&1 || { echo "  [SKIP] box_build_dryrun: no cmake"
 
 # --- the stub SDK ------------------------------------------------------------------------------------------------
 mkdir -p "$SDK/targets/x86_64-linux/include" "$SDK/include" "$SDK/lib" "$SDK/bin"
-# THE STUB hgcc RECORDS THAT IT RAN, and on which file. Without that, "the build failed" is not evidence that the
-# compile was ever reached: a broken recipe ANYWHERE in the graph produces the same `make: *** [...] Error`, and the
-# first version of this script accepted exactly that. Demonstrated in review with a prerequisite whose command was
-# /bin/false -- configuration succeeded, the defines were on the right build.make, no hgcc ran, and this reported ok.
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexit 0\n' "$SENTINEL" > "$SDK/bin/hgcc"
+# THE STUB hgcc RECORDS THAT IT RAN, and on which file, then emits a REAL host object.  A generated unit owns an
+# undefined reference to qz_boxdry_generated_unit_anchor; a non-unit/main TU defines that anchor and main().  Thus the
+# final executable can exist only if the generated units and a main object reach one host link.  The negative-control
+# mode deliberately omits the anchor and must fail naming that exact symbol.
+{
+  printf '%s\n' '#!/bin/sh' 'set -eu'
+  printf 'sentinel=%s\n' "$SENTINEL"
+  printf '%s\n' \
+    'printf "%s\n" "$*" >> "$sentinel"' \
+    'out=""; src=""; previous=""' \
+    'for argument in "$@"; do' \
+    '  [ "$previous" = "-o" ] && out="$argument"' \
+    '  [ "$previous" = "-c" ] && src="$argument"' \
+    '  previous="$argument"' \
+    'done' \
+    '[ -n "$out" ] && [ -n "$src" ] || { echo "boxdry hgcc: missing -c/-o" >&2; exit 2; }' \
+    'body="${out}.boxdry.c"' \
+    'base=${src##*/}' \
+    'case "$base" in' \
+    '  *unit*.cu)' \
+    '    printf "%s\n" "extern void qz_boxdry_generated_unit_anchor(void);" "static void (*volatile qz_boxdry_keep_anchor)(void) = qz_boxdry_generated_unit_anchor;" > "$body"' \
+    '    ;;' \
+    '  *)' \
+    '    printf "%s\n" "int __attribute__((weak)) main(void) { return 0; }" > "$body"' \
+    '    if [ "${BOX_DRYRUN_EXPECT_LINK_FAILURE:-0}" != 1 ]; then' \
+    '      printf "%s\n" "void __attribute__((weak)) qz_boxdry_generated_unit_anchor(void) {}" >> "$body"' \
+    '    fi' \
+    '    ;;' \
+    'esac' \
+    'gcc -x c -c "$body" -o "$out"'
+} > "$SDK/bin/hgcc"
 chmod +x "$SDK/bin/hgcc"
 _c="$SDK/stub.c"
 for _l in hg_wrapper hggc_wrapper hggcrt1 hggc hgrtc; do
@@ -63,7 +97,9 @@ for _l in hg_wrapper hggc_wrapper hggcrt1 hggc hgrtc; do
   gcc -shared -fPIC -o "$SDK/lib/lib$_l.so" "$_c" 2>/dev/null || {
     echo "  [SKIP] box_build_dryrun: cannot build stub lib$_l.so"; exit 2; }
 done
-rm -f "$_c"
+# Keep this tiny source inside the private SDK until the EXIT cleanup.  Besides
+# avoiding a second cleanup path, preserving it makes a failed dry-run fully
+# inspectable while the script is still running.
 
 # --- the real build.sh, exactly as the box runs it, but writing NOWHERE the box would ------------------------------
 # PPU_BUILD_DIR keeps this out of build_ppu. Without it, "checking the build" DELETED
@@ -108,13 +144,30 @@ for _entry in "${BUILD_ENV[@]}"; do
   fi
 done
 
-# 4. THE STUB hgcc MUST HAVE RUN. This is the only evidence that the graph was walked as far as compiling; a make
-#    error on its own proves nothing about where the graph stopped. The stub exits 0 and writes no object, so what
-#    actually fails afterwards is the link -- which is why the failure is not classified, only the sentinel is.
+# 4. THE STUB hgcc MUST HAVE RUN. This is the first half of the evidence; the linked binary below is the second.
 [ -s "$SENTINEL" ] || fail "the stub hgcc never ran -- the build stopped before compiling anything, so registration and target creation are the only things this proves"
 _n="$(wc -l < "$SENTINEL")"
-if [ "$rc" -eq 0 ]; then
-  echo "  [ok]   box_build_dryrun: $TARGET configured, registered, and built ($_n hgcc invocations)"
-else
-  echo "  [ok]   box_build_dryrun: $TARGET registered, created, -D$DEFS a whole argument on its compile command, and the stub hgcc ran $_n time(s); only the link fails, because the stub writes no object"
+_unit_n="$(grep -c 'unit[^ ]*\.cu' "$SENTINEL" || true)"
+
+# 5. LINK IS A VERDICT, not an expected casualty of the stub.  The planted mode is the negative arm: it is valid only
+#    for a generated-unit target and only when the real linker names the deliberately absent cross-TU anchor.
+if [ "$EXPECT_LINK_FAILURE" = 1 ]; then
+  [ "$_unit_n" -gt 0 ] || fail "link-failure control selected a target with no generated unit"
+  [ "$rc" -ne 0 ] || fail "link-failure control unexpectedly produced a binary"
+  grep -q 'qz_boxdry_generated_unit_anchor' "$LOG" || \
+    fail "planted generated-unit link failed for the wrong reason (missing anchor was not diagnosed)"
+  echo "  [ok]   box_build_dryrun: planted generated-unit undefined reference reached the real host linker and was rejected"
+  exit 0
 fi
+
+[ "$rc" -eq 0 ] || fail "compile objects were emitted but the real host link failed"
+BIN="$(find "$BUILDDIR" -type f -name "$TARGET" -perm -u+x -print -quit 2>/dev/null)"
+[ -n "$BIN" ] || fail "build returned success but no linked $TARGET executable exists"
+"$BIN" >/dev/null 2>&1 || fail "the linked $TARGET executable does not start successfully against the stub SDK"
+if [ "$_unit_n" -gt 0 ]; then
+  command -v nm >/dev/null 2>&1 || { echo "  [SKIP] box_build_dryrun: nm is required to inspect the generated-unit link seam"; exit 2; }
+  nm "$BIN" > "$BUILDDIR/boxdry.nm" || fail "nm could not inspect the linked generated-unit target"
+  grep -q 'qz_boxdry_generated_unit_anchor' "$BUILDDIR/boxdry.nm" || \
+    fail "generated-unit target linked without retaining its cross-TU anchor"
+fi
+echo "  [ok]   box_build_dryrun: $TARGET configured, registered, compiled and genuinely linked ($_n hgcc invocations, $_unit_n generated units)"
