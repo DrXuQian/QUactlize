@@ -118,7 +118,7 @@ static void check_no_split(Key const& x, Params const& p, Totals& t) {
   uint64_t const q_count = x.mt * x.nt * x.l;
   if (p.grid_blocks_ != q_count || p.active_blocks_ != q_count ||
       p.iters_per_block_ != x.kt) {
-    fail(t, "G=max(Q,CU)-no-split", x, p.grid_blocks_, q_count);
+    fail(t, "default-B1-G=max(Q,CU)-no-split", x, p.grid_blocks_, q_count);
     return;
   }
   for (uint64_t q = 0; q < q_count; ++q) {

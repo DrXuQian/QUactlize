@@ -137,9 +137,10 @@ def main() -> int:
 
         source = CORE.read_text()
         plants = (
-            ("grid-times-occupancy",
-             (("p.grid_blocks_ = p.output_tiles_ >= cu_count ? p.output_tiles_ : cu_count;",
-               "p.grid_blocks_ = cu_count * 4;"),)),
+            ("drop-output-tile-floor",
+             (("p.grid_blocks_ = p.output_tiles_ >= launch_capacity\n"
+               "        ? p.output_tiles_ : launch_capacity;",
+               "p.grid_blocks_ = launch_capacity;"),)),
             ("floor-stripe",
              (("p.iters_per_block_ = ceil_div_u64(p.total_k_tiles_, p.grid_blocks_);",
                "p.iters_per_block_ = p.total_k_tiles_ / p.grid_blocks_;"),)),

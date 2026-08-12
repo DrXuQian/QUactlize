@@ -45,6 +45,10 @@ def main() -> int:
         bad.append("runtime probe no longer consumes CTA x index")
     if entry and ("ctaid.y" in entry or "ctaid.z" in entry):
         bad.append("scheduler probe consumed non-x CTA coordinate")
+    if entry and not re.search(
+            r"ld\.param\.u32\s+[^,]+,\s*\[l134_marlin_runtime_probe_param_5\]",
+            entry):
+        bad.append("runtime scheduler algebra lost blocks-per-CU input")
     if entry:
         labels = {m.group(1): m.start() for m in re.finditer(
             r"^(\$L[^:]+):", entry, re.M)}
@@ -53,33 +57,33 @@ def main() -> int:
             for m in re.finditer(r"\bbra(?:\.uni)?\s+(\$L[^;\s]+)", entry))
         if not has_backedge:
             bad.append("runtime scheduler fetch loop lost its device-code backedge")
-    # NVCC emits an unsigned-long-long constant as `.b8 symbol[256]` on this
-    # path, i.e. 32 little-endian u64 values represented by 256 byte literals.
-    # Some frontends retain a typed `[32]` initializer, so accept both forms
+    # NVCC emits an unsigned-long-long constant as `.b8 symbol[280]` on this
+    # path, i.e. 35 little-endian u64 values represented by 280 byte literals.
+    # Some frontends retain a typed `[35]` initializer, so accept both forms
     # and decode them to the same semantic vector before comparing it.
     m = re.search(
-        r"l134_marlin_constexpr_witness\[(32|256)\]\s*=\s*\{([^}]*)\}",
+        r"l134_marlin_constexpr_witness\[(35|280)\]\s*=\s*\{([^}]*)\}",
         ptx, re.S)
     if not m:
-        bad.append("cannot parse 32-field constexpr witness initializer")
+        bad.append("cannot parse 35-field constexpr witness initializer")
     else:
         raw = [int(x, 0) for x in re.findall(
             r"0x[0-9a-fA-F]+|\b\d+\b", m.group(2))]
-        if m.group(1) == "256":
+        if m.group(1) == "280":
             # PTX permits a short aggregate initializer; the omitted tail is
             # zero-filled.  The final witness value is 128, so NVCC emits its
             # low byte and elides the seven trailing zero bytes.
-            if len(raw) > 256 or any(x > 255 for x in raw):
+            if len(raw) > 280 or any(x > 255 for x in raw):
                 got = []
             else:
-                raw.extend([0] * (256 - len(raw)))
+                raw.extend([0] * (280 - len(raw)))
                 got = [sum(raw[8*i + j] << (8*j) for j in range(8))
-                       for i in range(32)]
+                       for i in range(35)]
         else:
             got = raw
         expected = [20, 13, 0, 13, 3, 2, 0, 0, 0, 0, 1, 0, 13,
                     1, 0, 10, 2, 1, 1, 2048, 1, 1, 1,
-                    72, 15, 15, 3, 9, 3, 19, 4, 128]
+                    72, 15, 15, 3, 9, 3, 19, 4, 128, 144, 8, 128]
         if got != expected:
             bad.append(f"constexpr witness differs: got={got}")
     if bad:

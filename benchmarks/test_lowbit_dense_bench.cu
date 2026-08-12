@@ -608,6 +608,7 @@ struct Options {
   bool streamk_gate = false;     // --streamk_gate: require the independent CPU-FP32/fixup gate
   bool streamk_split_gate = false; // --streamk_split_gate: require an actually split output tile
   bool streamk_exact_fixture = false; // --streamk_exact_fixture: use the exact-by-construction A0 inputs on every arm
+  int marlin_blocks_per_cu = 1; // --marlin-blocks-per-cu: scheduler-owned CTA/CU sweep, default is legacy 1
 
   // Parses the command line
   void parse(int argc, char const **args) {
@@ -639,6 +640,7 @@ struct Options {
     streamk_gate   = cmd.check_cmd_line_flag("streamk_gate");
     streamk_split_gate = cmd.check_cmd_line_flag("streamk_split_gate");
     streamk_exact_fixture = cmd.check_cmd_line_flag("streamk_exact_fixture");
+    cmd.get_cmd_line_argument("marlin-blocks-per-cu", marlin_blocks_per_cu);
     if (streamk_gate || streamk_split_gate) streamk = true;
   }
 
@@ -667,7 +669,8 @@ struct Options {
         << "  --streamk_exact_fixture     Fill the actual A0 arm with sparse integer inputs whose sums are order-independent.\n";
 #endif
 #if defined(DENSE_MARLIN_AB)
-    out << "  --marlin                    Use the independent Marlin CTA-stripe scheduler.\n";
+    out << "  --marlin                    Use the independent Marlin CTA-stripe scheduler.\n"
+        << "  --marlin-blocks-per-cu=<n>  Marlin launch multiplier (1..this kernel's runtime occupancy; default 1).\n";
 #endif
 #if defined(DENSE_MARLIN_SWEEP)
     out << "  scheduler=marlin            Fixed at build time for every compiled table row; "
@@ -2484,6 +2487,20 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   if constexpr (dense_has_persistent_ctas<decltype(arguments)>::value) {
     arguments.ctas_per_cu = ctas_per_cu;
   }
+  if constexpr (dense_is_marlin_gemm<Gemm>::value) {
+    if (options.marlin_blocks_per_cu < 1 ||
+        options.marlin_blocks_per_cu > ctas_per_cu) {
+      std::fprintf(
+          stderr,
+          "[dense scheduler=marlin] --marlin-blocks-per-cu=%d is outside "
+          "the exact kernel occupancy range 1..%d\n",
+          options.marlin_blocks_per_cu, ctas_per_cu);
+      occupancy_failure.passed = false;
+      return occupancy_failure;
+    }
+    arguments.scheduler.blocks_per_cu =
+        uint32_t(options.marlin_blocks_per_cu);
+  }
 #if defined(DENSE_STREAMK_AB) || defined(DENSE_MARLIN_AB)
   using StreamKDiagnosticState =
       typename dense_streamk_diagnostic_type<Gemm>::type;
@@ -2571,6 +2588,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
         arguments, workspace.get());
     auto const& ms = params.scheduler;
     uint64_t handoffs = 0;
+    uint64_t max_peers = 0;
     uint64_t const tiles_n = uint64_t(cute::ceil_div(options.n, tactic.tn));
     uint64_t const tiles_m = uint64_t(cute::ceil_div(options.m, tactic.tm));
     if (ms.valid_ && ms.iters_per_block_ > 0) {
@@ -2581,6 +2599,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
         uint64_t const last = (q_end - 1) / ms.iters_per_block_;
         uint64_t const peer_excess = last - first;
         handoffs += peer_excess;
+        max_peers = std::max<uint64_t>(max_peers, peer_excess + 1);
         uint64_t const n_idx = q % tiles_n;
         uint64_t const q_m = q / tiles_n;
         uint64_t const m_idx = q_m % tiles_m;
@@ -2594,23 +2613,28 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
       }
     }
     marlin_peer_excess = handoffs;
-    uint64_t const expected_grid = logical_ctas >= uint64_t(cu_count)
-        ? logical_ctas : uint64_t(cu_count);
+    uint64_t const selected_workers =
+        uint64_t(cu_count) * uint64_t(options.marlin_blocks_per_cu);
+    uint64_t const expected_grid =
+        std::max<uint64_t>(logical_ctas, selected_workers);
     uint64_t const expected_kt = uint64_t(cute::ceil_div(options.k, tactic.tk));
     bool const valid_decomposition = ms.valid_ &&
         ms.output_tiles_ == logical_ctas &&
         ms.k_tiles_per_output_ == expected_kt &&
         ms.grid_blocks_ == expected_grid;
     std::printf(
-        "  [dense marlin decomposition] real_cu=%d occupancy_api=%d Q=%llu "
-        "Kt=%llu G=%llu I=%llu active=%llu handoffs=%llu workspace=%zu\n",
-        cu_count, ctas_per_cu,
+        "  [dense marlin decomposition] real_cu=%d occupancy_api=%d "
+        "blocks_per_cu=%d Q=%llu Kt=%llu G=%llu I=%llu active=%llu "
+        "idle=%llu handoffs=%llu max_peers=%llu workspace=%zu\n",
+        cu_count, ctas_per_cu, options.marlin_blocks_per_cu,
         static_cast<unsigned long long>(ms.output_tiles_),
         static_cast<unsigned long long>(ms.k_tiles_per_output_),
         static_cast<unsigned long long>(ms.grid_blocks_),
         static_cast<unsigned long long>(ms.iters_per_block_),
         static_cast<unsigned long long>(ms.active_blocks_),
-        static_cast<unsigned long long>(handoffs), workspace_size);
+        static_cast<unsigned long long>(ms.grid_blocks_ - ms.active_blocks_),
+        static_cast<unsigned long long>(handoffs),
+        static_cast<unsigned long long>(max_peers), workspace_size);
     if (!valid_decomposition) {
       std::fprintf(stderr,
                    "dense Marlin fail-close: lowered Q/Kt/G differs from the scheduler-owned launch contract\n");
@@ -2645,14 +2669,18 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
       return grid_failure;
     }
   } else if constexpr (dense_is_marlin_gemm<Gemm>::value) {
-    uint64_t const expected = logical_ctas >= uint64_t(cu_count)
-        ? logical_ctas : uint64_t(cu_count);
+    uint64_t const selected_workers =
+        uint64_t(cu_count) * uint64_t(options.marlin_blocks_per_cu);
+    uint64_t const expected =
+        std::max<uint64_t>(logical_ctas, selected_workers);
     if (physical_ctas != expected || physical_grid.y != 1 || physical_grid.z != 1) {
       std::fprintf(stderr,
-                   "Marlin grid mismatch: got (%u,%u,%u)=%llu CTA, expected max(Q=%llu,CU=%d)=%llu (occupancy must not multiply it)\n",
+                   "Marlin grid mismatch: got (%u,%u,%u)=%llu CTA, expected "
+                   "max(Q=%llu,CU=%d*blocks_per_cu=%d)=%llu\n",
                    physical_grid.x, physical_grid.y, physical_grid.z,
                    static_cast<unsigned long long>(physical_ctas),
                    static_cast<unsigned long long>(logical_ctas), cu_count,
+                   options.marlin_blocks_per_cu,
                    static_cast<unsigned long long>(expected));
       Result grid_failure;
       grid_failure.passed = false;
@@ -3458,10 +3486,10 @@ int main(int argc, char const **args) {
   // and save must be rejected rather than aliasing DP samples/tactics.
   if (options.persistent || options.streamk || options.marlin ||
       options.streamk_gate || options.streamk_split_gate ||
-      options.streamk_exact_fixture) {
+      options.streamk_exact_fixture || options.marlin_blocks_per_cu != 1) {
     std::fprintf(stderr,
                  "test_lowbit_dense_marlin_sweep fixes scheduler=marlin at build time; "
-                 "runtime scheduler flags are unsupported\n");
+                 "runtime scheduler flags and --marlin-blocks-per-cu are unsupported\n");
     return 1;
   }
   if (options.xcheck) {
@@ -3482,7 +3510,8 @@ int main(int argc, char const **args) {
   }
 #elif !defined(DENSE_SCHEDULER_AB)
   if (options.persistent || options.streamk || options.marlin || options.streamk_gate ||
-      options.streamk_split_gate || options.streamk_exact_fixture) {
+      options.streamk_split_gate || options.streamk_exact_fixture ||
+      options.marlin_blocks_per_cu != 1) {
     std::fprintf(stderr,
                  "scheduler A/B flags are available only in the dedicated dense scheduler targets; "
                  "the ordinary dense sweep is unchanged\n");
@@ -3494,6 +3523,15 @@ int main(int argc, char const **args) {
   if (scheduler_arms > 1) {
     std::fprintf(stderr,
                  "--persistent, --streamk, and --marlin are mutually exclusive A/B arms\n");
+    return 1;
+  }
+  if (options.marlin_blocks_per_cu < 1) {
+    std::fprintf(stderr, "--marlin-blocks-per-cu must be positive\n");
+    return 1;
+  }
+  if (!options.marlin && options.marlin_blocks_per_cu != 1) {
+    std::fprintf(stderr,
+                 "--marlin-blocks-per-cu is valid only with --marlin\n");
     return 1;
   }
   if ((options.persistent || options.streamk || options.marlin ||

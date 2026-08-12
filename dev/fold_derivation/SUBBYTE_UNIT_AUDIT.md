@@ -84,7 +84,7 @@ complete producer-to-consumer unit map is:
 | `tiles_m_`, `tiles_n_`, `tiles_l_`, `output_tiles_` | output-tile counts | flatten/decode global `q` |
 | `k_tiles_per_output_`, `K_idx`, `k_tile_count` | tactic-K tiles, not elements or bytes | mainloop absolute K-tile iterator |
 | `total_k_tiles_`, `iters_per_block_`, `linear_*` | flattened `(q,k-tile)` cells | equal-stripe dispatcher |
-| `grid_blocks_`, `active_blocks_`, `block_idx` | CTA counts/indices | scheduler-owned `G=max(Q,CU)` launch |
+| `grid_blocks_`, `active_blocks_`, `block_idx` | CTA counts/indices | scheduler-owned `G=max(Q,CU*B)`, default `B=1` |
 | `output_tile_idx`, `lock_idx` | global output-tile `q` | FP32 workspace tile and one lock per q |
 | `M_idx`, `N_idx`, `L_idx` | output-tile coordinates | kernel problem coordinate only |
 | reduction workspace offset | FP32 accumulator elements | `q * TM * TN`, converted to bytes only by the typed pointer |

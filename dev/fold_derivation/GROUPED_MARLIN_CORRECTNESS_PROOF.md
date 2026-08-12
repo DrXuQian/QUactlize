@@ -44,6 +44,7 @@ cross-group=1490
 Q>=CU classes=1448 handoffs=0
 ```
 
+Grouped production leaves the scheduler argument at its default `B=1`.
 Every cell is visited exactly once, every output has one globally unique lock,
 zero experts receive no `q`, and the peer protocol is checked in reverse
 Marlin order.  For every `Q>=CU` class, `G=Q`, `I=Kt`, and handoffs are exactly
@@ -51,7 +52,7 @@ zero.  The fixture contribution is an integer in `{-1,0,1}` with at most the
 declared K-tile count, so reassociation cannot change it in FP32 or FP16; the
 criterion is raw equality fixed before the run.  Six independently causal
 plants (zero expert consumes a tile, wrong prefix comparison, wrong expert
-decode, occupancy-multiplied grid, floor stripe, local lock) all fail.
+decode, dropped output-tile grid floor, floor stripe, local lock) all fail.
 
 ## Collective coverage and sweep tables
 

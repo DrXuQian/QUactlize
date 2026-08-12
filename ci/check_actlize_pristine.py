@@ -107,12 +107,16 @@ EXTENSIONS = {
         "legacy selectors are byte-for-byte unchanged and the new tag is unreachable unless named explicitly",
     "include/cutlass/gemm/kernel/ppu_tile_scheduler_marlin.hpp":
         "additive Marlin CTA-stripe scheduler/cooperative: K-fast equal stripes, scheduler-owned Q-vs-CU launch "
-        "protection, global-q locks and FP32 ordered handoff; its default-compatible exact-cohort capability covers "
+        "policy, global-q locks and FP32 ordered handoff; a default-one host blocks-per-CU argument permits an "
+        "occupancy-bounded experiment while leaving the lowered device Params ABI unchanged; its default-compatible "
+        "exact-cohort capability covers "
         "one warp through the 1024-thread CTA limit without changing any existing scheduler; constexpr raw-shape "
         "lowering and output/K/workspace/lock accessors are shared by production and the generated-code proof",
     "include/cutlass/gemm/kernel/ppu_tile_scheduler_marlin_core.hpp":
         "pure host/device integer core shared by the additive Marlin scheduler and its exhaustive host oracle; "
-        "constexpr only makes the already-shared production decomposition inspectable and changes no layout; it "
+        "constexpr only makes the already-shared production decomposition inspectable; a default-one checked "
+        "blocks-per-CU input changes only an explicitly selected launch/decomposition and preserves the legacy "
+        "device Params layout; it "
         "owns no existing tag, Params type, device primitive or mainloop policy",
     "include/cutlass/block_striped.h":
         "default-compatible predicate overloads for scalar-striped store/load_add/reduce; every existing spelling "

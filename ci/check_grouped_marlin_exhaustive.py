@@ -121,9 +121,10 @@ def main() -> int:
 
         core_source = CORE.read_text()
         core_plants = (
-            ("grid-times-occupancy",
-             "p.grid_blocks_ = p.output_tiles_ >= cu_count ? p.output_tiles_ : cu_count;",
-             "p.grid_blocks_ = 4 * cu_count;"),
+            ("drop-output-tile-floor",
+             "p.grid_blocks_ = p.output_tiles_ >= launch_capacity\n"
+             "        ? p.output_tiles_ : launch_capacity;",
+             "p.grid_blocks_ = launch_capacity;"),
             ("floor-iters",
              "p.iters_per_block_ = ceil_div_u64(p.total_k_tiles_, p.grid_blocks_);",
              "p.iters_per_block_ = p.total_k_tiles_ / p.grid_blocks_;"),

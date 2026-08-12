@@ -26,6 +26,7 @@ def validate(kernel: str, builder: str, geometry: str, types: str) -> list[str]:
         "TileScheduler::fixup(params.scheduler, sched_work, accumulators",
         "epilogue(real_problem_shape, blk_shape, real_blk_coord, accumulators",
         "args.mainloop.group_row_offsets != nullptr",
+        "args.scheduler.blocks_per_cu == 1",
         "TileScheduler::fixup_thread_count_capable(MaxThreadsPerBlock)",
     )
     for token in required_kernel:
@@ -123,6 +124,8 @@ def main() -> int:
          "GroupedRaggedOutputTiles::group_tile_count(", 1),
         (0, "occupancy-workers", "TileScheduler::get_grid_shape(params.scheduler)",
          "TileScheduler::get_grid_shape(params.scheduler, ctas_per_cu)", 1),
+        (0, "dense-B-leaks-into-grouped", "args.scheduler.blocks_per_cu == 1",
+         "args.scheduler.blocks_per_cu > 0", 1),
         (2, "empty-expert-lower-bound", "if (prefix[mid + 1] <= q)",
          "if (prefix[mid + 1] < q)", 1),
         (1, "drop-two-plane", "args.mainloop.ptr_B2 = B2;", "(void)B2;", 1),
@@ -141,7 +144,7 @@ def main() -> int:
     if rc != 0:
         print("[grouped-marlin-contract] FAIL: ordinary/fold/two-plane type compile\n" + log[-3000:])
         return 1
-    print("[grouped-marlin-contract] PASS: ragged prefix/global-q lock and scheduler-owned G are pinned; ordinary/fold/two-plane instantiate one grouped Marlin kernel; five plants rejected")
+    print("[grouped-marlin-contract] PASS: ragged prefix/global-q lock and default-B1 scheduler-owned G are pinned; ordinary/fold/two-plane instantiate one grouped Marlin kernel; six plants rejected")
     return 0
 
 

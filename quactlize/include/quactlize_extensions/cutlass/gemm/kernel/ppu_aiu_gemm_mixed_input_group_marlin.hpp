@@ -4,7 +4,7 @@
 // Grouped mixed-input driver for Marlin's independent CTA stripe scheduler.
 // Ragged expert output tiles are flattened through a host-built prefix into
 // one global scheduler coordinate q.  The proven Marlin scheduler owns the
-// K-fast stripe, G=max(Q,CU) launcher protection and cooperative; this wrapper
+// K-fast stripe, default-B1 G=max(Q,CU) launch policy and cooperative; this wrapper
 // only decodes q back to (expert,m,n).  sched_work itself must remain global-q
 // when passed to fixup so locks cannot alias across experts.
 #pragma once
@@ -336,6 +336,11 @@ class GroupMarlinMixedInputKernel {
          args.census.k_visit_capacity >= qk);
     return args.mode == GemmUniversalMode::kGrouped && g.valid &&
            real.cu_count > 0 && args.domain_valid && census_ok &&
+           // The blocks-per-CU experiment is intentionally dense-only.  A
+           // grouped caller has no binding to its final kernel's
+           // maximum_active_blocks(), so accepting B>1 here would silently
+           // enable an occupancy-unbounded launch policy.
+           args.scheduler.blocks_per_cu == 1 &&
            CollectiveMainloop::can_implement(
                representative_problem_shape(args, g), args.mainloop) &&
            args.mainloop.group_row_offsets != nullptr &&

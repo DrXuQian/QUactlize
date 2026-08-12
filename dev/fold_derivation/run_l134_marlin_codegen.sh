@@ -42,5 +42,18 @@ if [[ ${raw_rc} -eq 0 ]] ||
   exit 1
 fi
 
+bpc="${out}/bpc.log"
+set +e
+nvcc "${flags[@]}" -DL134_IGNORE_BLOCKS_PER_CU_PLANT=1 -ptx \
+  -o "${out}/bpc.ptx" "${src}" >"${bpc}" 2>&1
+bpc_rc=$?
+set -e
+if [[ ${bpc_rc} -eq 0 ]] ||
+   ! grep -q 'must lower the explicit B=2 launch cohort' "${bpc}"; then
+  echo "[l134] FAIL: hardcoded-B1 plant did not fail the production-Cfg binding" >&2
+  sed -n '1,20p' "${bpc}" >&2
+  exit 1
+fi
+
 python3 "${repo}/ci/check_dense_marlin_codegen.py" "${out}/l134.ptx"
-echo '[l134] PASS: real dense Cfg constexpr/static_assert + runtime PTX probe; wrong-value and raw-core controls red'
+echo '[l134] PASS: real dense Cfg constexpr/static_assert + runtime PTX probe; wrong-value, raw-core and hardcoded-B1 controls red'

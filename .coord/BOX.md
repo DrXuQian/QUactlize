@@ -1243,41 +1243,111 @@ If either TK64 arm has a lower occupancy cap, the independent oracle accepts `U=
 
 ---
 
-## Dense Marlin scheduler — same-binary decode DP / Stream-K / Marlin comparison
+## Dense Marlin scheduler — default DP / Stream-K / Marlin plus blocks-per-CU ladder
 
-The additive scheduler is rooted at parent `b1d042d` and actlize `f5e1beb4`.  It reuses the shipping mixed-input
-collective byte-for-byte and changes only CTA decomposition plus the ordered FP32 cooperative.  The comparison uses
-one int4/gs128 artifact (`ArtifactTileK=64`), one legal tactic (`16x128:128 w16x32 s3`), one exact fixture, and 20
-independent event pairs per arm.  TN128 is deliberate: at `M=1,N=4096` it gives `Q=32<CU`, so Marlin must really
-stripe K; the TN32 decode champion has `Q=128>=72` and would correctly degenerate to no split.
+This remains a **dense-only** experiment.  Do not substitute a MoE shape, fixture, or reference number.  The first
+three runs preserve the existing same-binary DP / Stream-K / Marlin-B1 comparison.  The no-flag Marlin invocation is
+deliberately the B1 control: `--marlin-blocks-per-cu=1` is not passed.  Only after that control has reported the exact
+instantiated kernel's `Gemm::maximum_active_blocks()` value does the script launch explicit Marlin B2/B4/B6 points.
+If any requested B exceeds that runtime value, the script prints `NOT RUN` and fails before launching the explicit
+ladder.  Thus six is a requested fixture point, not a hard-coded legality limit.
+
+Every run uses one int4/gs128 artifact (`ArtifactTileK=64`), one tactic (`16x128:128 w16x32 s3 bc0->0`), the same
+`M=1,N=4096,K=4096,L=1` exact fixture, and 20 distinct event pairs.  TN128 gives `Q=32<CU`, so changing B changes
+only Marlin's flattened `(q,k)` stripe cohort.  DP and Stream-K remain the unchanged references.
 
     set -euo pipefail
     cd /sim/eec/shared/junfu.qx/quactlize
     git pull --ff-only origin develop
     git submodule update --init --recursive
     echo "gate-sha=$(git rev-parse HEAD) actlize=$(git -C third_party/actlize rev-parse HEAD)"
-    git merge-base --is-ancestor b1d042d02b602562ba16c1ebb8749d5322e18eb2 HEAD
-    test "$(git -C third_party/actlize rev-parse HEAD)" = 3102d13d51d9359c2ccfe25472c226985ef44889
 
     unset PPU_A_PACK PPU_B_CHUNK PPU_B_CHUNK_BISECT PPU_MAXREG PPU_DEFS
     timeout 900s tools/run_dense_marlin_box.sh | tee /tmp/dense_marlin_scheduler.log
 
-The script must fail closed unless all three arms report the same exact fixture, the same tactic identity, and
-`n=20 distinct-event-pairs=20`.  It additionally requires:
+The script fails closed unless all six invocations report the exact fixture/tactic, exactly one Passed disposition,
+and `n=20 distinct-event-pairs=20`.  For the fixed 72-CU box it hard-checks this lowering and the matching physical
+`(G,1,1)` grid:
 
-- Marlin prints `Q=32 Kt=32`, `G=max(Q,real_cu)` (never `real_cu*occupancy`), and a nonzero handoff count;
-- Stream-K alone prints `lock-reset-before-start=1`; DP and Marlin both print zero;
-- the Marlin line surfaces `valid_elements`, `peer_excess`, and predicated FP32 `logical_RW`, explicitly marked
-  `MODEL-ONLY/not-a-DRAM-counter`;
-- the same initialized Marlin Gemm/workspace completes eight additional exact-fixture launches with raw bitdiff
-  zero and stable position/value fingerprints; every line must say `external-lock-reset=0`, so this exercises the
-  final peer's named-barrier reset lifecycle rather than a host reset;
-- all three dispositions pass and the final line is
-  `[marlin-scheduler] PASS: same fixture/tactic/protocol DP vs Stream-K vs Marlin; Marlin lock lifecycle 8/8 stable bit-exact`.
+| Marlin point | flag | G | I | active | idle | handoffs | max peers |
+|---|---|---:|---:|---:|---:|---:|---:|
+| B1 control | none | 72 | 15 | 69 | 3 | 66 | 4 |
+| B2 | `--marlin-blocks-per-cu=2` | 144 | 8 | 128 | 16 | 96 | 4 |
+| B4 | `--marlin-blocks-per-cu=4` | 288 | 4 | 256 | 32 | 224 | 8 |
+| B6 | `--marlin-blocks-per-cu=6` | 432 | 3 | 342 | 90 | 331 | 12 |
 
-Return both SHAs, the decomposition and traffic lines, each arm's disposition and raw kernel-span median/mean/min/
-max/spread, and any build/runtime error verbatim.  Do not substitute classic Marlin or a different tactic if the
-new scheduler fails: the point is an A/B/C of scheduler mechanisms inside the same pipeline.
+For every B, the same initialized Gemm/workspace must then complete eight additional launches with raw bitdiff zero,
+stable position/value fingerprints, `same-workspace=1`, and `external-lock-reset=0`.  Stream-K alone must report
+`lock-reset-before-start=1`; DP and every Marlin point must report zero.  The script also binds each timing row's
+`Marlin-C peer_excess` to the pinned handoff count.  There is deliberately no performance threshold: a slower B is
+still a valid and necessary result.
+
+Exact `(q,k)` coverage and globally unique q-based lock IDs are the host-side algebraic gate, not claims reconstructed
+from device timing.  `l126` proves exact-once/global-q/reverse-peer for all four ladder points (and proves implicit B1
+is schedule-identical to explicit B1); `l133` retains exhaustive deployment-shape coverage for the default schedule.
+The box run adds numerical output plus the real named-barrier memory-order/reset evidence.  Do not claim that a timing
+row by itself measured exact-once coverage.
+
+### ACU full-counter follow-up — one instrumented B per report
+
+Run this only after the script above passes.  It recovers the exact preserved binary path from that log.  These are
+four separate full-counter captures at `iterations=1`, matching the established ACU protocol; B1 again has no BPC
+flag, while B2/B4/B6 are explicit.
+
+    set -euo pipefail
+    cd /sim/eec/shared/junfu.qx/quactlize
+    MARLIN_BIN=$(sed -n 's/^\[marlin-scheduler\] binary=//p' \
+      /tmp/dense_marlin_scheduler.log | tail -1)
+    test -n "$MARLIN_BIN" && test -x "$MARLIN_BIN"
+    ACU_DIR=$(mktemp -d /tmp/dense-marlin-bpc-acu.XXXXXX)
+    test -n "$ACU_DIR" && test -d "$ACU_DIR"
+
+    ACU_USER_ROOT=/sim/eec/shared/junfu.qx
+    ACU="$ACU_USER_ROOT/asight/bin/acu"
+    test -x "$ACU"
+    "$ACU" -f -o "$ACU_DIR/marlin-b1.report" --set full "$MARLIN_BIN" \
+      --m=1 --n=4096 --k=4096 --l=1 --g=128 --mode=1 --alpha=1 --beta=0 \
+      --iterations=1 --streamk_exact_fixture --marlin
+    "$ACU" -f -o "$ACU_DIR/marlin-b2.report" --set full "$MARLIN_BIN" \
+      --m=1 --n=4096 --k=4096 --l=1 --g=128 --mode=1 --alpha=1 --beta=0 \
+      --iterations=1 --streamk_exact_fixture --marlin --marlin-blocks-per-cu=2
+    "$ACU" -f -o "$ACU_DIR/marlin-b4.report" --set full "$MARLIN_BIN" \
+      --m=1 --n=4096 --k=4096 --l=1 --g=128 --mode=1 --alpha=1 --beta=0 \
+      --iterations=1 --streamk_exact_fixture --marlin --marlin-blocks-per-cu=4
+    "$ACU" -f -o "$ACU_DIR/marlin-b6.report" --set full "$MARLIN_BIN" \
+      --m=1 --n=4096 --k=4096 --l=1 --g=128 --mode=1 --alpha=1 --beta=0 \
+      --iterations=1 --streamk_exact_fixture --marlin --marlin-blocks-per-cu=6
+
+    for B in 1 2 4 6; do
+      "$ACU" --import "$ACU_DIR/marlin-b${B}.report" --csv --page details \
+        > "$ACU_DIR/marlin-b${B}.details.csv"
+    done
+    echo "ACU reports and details CSV: $ACU_DIR"
+
+Each `iterations=1` process still contains correctness, warmup, and eight lock-fingerprint launches; it is not a
+one-kernel process.  In every details CSV, bind the counter row to the production Marlin kernel and the requested
+B/grid, and exclude correctness/fingerprint/warmup rows before extracting counters.
+
+ACU is **counter-only here**.  Its instrumentation changes runtime, so neither ACU `Duration` nor the benchmark's
+stdout time under ACU is a performance number.  Take time only from the preceding `iterations=20`, 20-distinct-event
+box run.  For each B, return that raw timing line beside the following CSV fields:
+
+- kernel identity, grid/block, registers/thread, theoretical and achieved occupancy (both percent and warp/CU), and
+  Block Limit Registers / Shared Mem / Warps / CU;
+- Speed of Light CU, Memory, L1, L2, LLC, and DRAM throughput plus Elapsed, Active, and CU Active cycles;
+- Warp State cycles/instruction for `Instruction Fetch`, `Stall AMC`, `Stall Sync`, and `Memory Dependency`;
+- executed counts for `v.mma.f32.f16.m16n16k16` and `v.mov.v2s`.
+
+The comparison table must contain, at minimum, B, the 20-event time, achieved warp/CU, scheduler handoffs, and
+Instruction Fetch.  Interpret both possible outcomes: falling time with gently growing handoffs means the B1 guard
+was too strict; superlinear degradation as B grows is the measured slice-count/peer-chain cost curve and supports a
+lower guard.  Report the entire curve in either case, not only improving points.
+
+The earlier baseline ACU numbers were manually transcribed from GUI screenshots.  They are useful context but are not
+hard-coded expectations in this script.  If a new CSV counter contradicts a copied number, flag the copied field for
+re-check before changing the model.  Return both SHAs, all decomposition/grid/traffic/fingerprint lines, each arm's
+raw kernel-span median/mean/min/max/spread, all four reports and details CSVs, and any build/runtime error verbatim.
+Do not substitute classic Marlin, another tactic, or a MoE fixture if any rung fails.
 
 ---
 

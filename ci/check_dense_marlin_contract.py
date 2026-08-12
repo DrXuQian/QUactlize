@@ -3,7 +3,7 @@
 
 The device result belongs to ppu001.  This gate pins everything layout and
 integer algebra can decide locally: K-fast exact-once stripes, scheduler-owned
-Q-vs-CU launch protection, reverse peer order, global-q locks, exact fixup
+Q-vs-(CU*B) launch policy with a legacy B=1 default, reverse peer order, global-q locks, exact fixup
 cohort, the unchanged mixed-input collective, and the same-binary/event A/B/C
 route.  Its red controls are structural mutations, not alternate expected
 outputs.
@@ -43,7 +43,11 @@ def audit(files: dict[str, str]) -> list[str]:
     bad: list[str] = []
 
     for token in (
-        "p.grid_blocks_ = p.output_tiles_ >= cu_count ? p.output_tiles_ : cu_count;",
+        "uint64_t blocks_per_cu = 1)",
+        "k_tiles > 0 && cu_count > 0 && blocks_per_cu > 0",
+        "if (!mul_u64(cu_count, blocks_per_cu, launch_capacity))",
+        "p.grid_blocks_ = p.output_tiles_ >= launch_capacity",
+        "? p.output_tiles_ : launch_capacity;",
         "p.iters_per_block_ = ceil_div_u64(p.total_k_tiles_, p.grid_blocks_);",
         "uint64_t const q = cursor / p.k_tiles_per_output_;",
         "uint64_t const k = cursor % p.k_tiles_per_output_;",
@@ -57,10 +61,15 @@ def audit(files: dict[str, str]) -> list[str]:
         "CUTLASS_HOST_DEVICE static constexpr WorkTileInfo fetch_next_work(",
     ):
         exact(c, token, 1, bad, "scheduler core")
-    if "cu_count *" in c or "ctas_per_cu" in c:
-        bad.append("scheduler core lets occupancy multiply its CU-owned grid")
+    if "ctas_per_cu" in c:
+        bad.append("scheduler core reads runtime occupancy instead of its explicit launch policy")
 
     for token in (
+        "uint32_t blocks_per_cu = 1;",
+        "void* workspace = nullptr, uint32_t blocks_per_cu = 1)",
+        "uint64_t(blocks_per_cu)",
+        "args.blocks_per_cu);",
+        "return args.blocks_per_cu > 0;",
         "fixup_thread_count_capable(",
         "thread_count >= uint32_t(cutlass::NumThreadsPerWarp)",
         "thread_count <= 32u * uint32_t(cutlass::NumThreadsPerWarp)",
@@ -76,7 +85,7 @@ def audit(files: dict[str, str]) -> list[str]:
         "BarrierManager::wait_eq(0, locks, thread, lock, work.slice_idx);",
         "Striped::load_add(*accumulator_array, workspace_array, thread, predicate);",
         "BarrierManager::wait_eq_reset(0, locks, thread, lock, work.slice_idx);",
-        "return make_params_for_problem_shape(\n        problem_shape, uint64_t(hw_info.cu_count), workspace);",
+        "return make_params_for_problem_shape(\n        problem_shape, uint64_t(hw_info.cu_count), workspace,\n        args.blocks_per_cu);",
         "return get_work_for_block_index(uint64_t(blockIdx.x));",
         "return cute::make_tuple(get_next_work(work), true);",
         "return cute::idx2crd(get_work_k_tile_start(work), shape);",
@@ -126,14 +135,22 @@ def audit(files: dict[str, str]) -> list[str]:
         "#include \"quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_marlin.hpp\"",
         "using MarlinGemm = cutlass::gemm::device::GemmUniversalAdapter<MarlinKernel>;",
         "struct dense_is_marlin_gemm",
-        "expected = logical_ctas >= uint64_t(cu_count)",
-        "occupancy must not multiply it",
         "[dense marlin decomposition]",
         "Marlin-C valid_elements=%llu peer_excess=%llu",
         "MODEL-ONLY/not-a-DRAM-counter",
         "verify_marlin_lock_lifecycle",
         "same-workspace=1 external-lock-reset=0",
         "--marlin",
+        "int marlin_blocks_per_cu = 1;",
+        'cmd.get_cmd_line_argument("marlin-blocks-per-cu", marlin_blocks_per_cu);',
+        "options.marlin_blocks_per_cu > ctas_per_cu",
+        "arguments.scheduler.blocks_per_cu =",
+        "uint32_t(options.marlin_blocks_per_cu);",
+        "uint64_t(cu_count) * uint64_t(options.marlin_blocks_per_cu)",
+        "std::max<uint64_t>(logical_ctas, selected_workers)",
+        "blocks_per_cu=%d Q=%llu Kt=%llu G=%llu I=%llu active=%llu",
+        "idle=%llu handoffs=%llu max_peers=%llu workspace=%zu",
+        '"--marlin-blocks-per-cu is valid only with --marlin\\n"',
     ):
         if token not in b:
             bad.append(f"benchmark route is missing {token!r}")
@@ -163,13 +180,23 @@ def audit(files: dict[str, str]) -> list[str]:
         "--m=1 --n=4096 --k=4096",
         "run_arm non-persistent",
         "run_arm streamk --streamk",
-        "run_arm marlin --marlin",
         "distinct-event-pairs=20",
         "lock-reset-before-start=1",
         "lock-reset-before-start=0",
-        "handoffs=[1-9][0-9]*",
-        "MARLIN_LOCK_REPEATS",
-        "Marlin lock lifecycle 8/8 stable bit-exact",
+        "peer_excess=${handoffs}",
+        "lock_repeats",
+        "every Marlin lock lifecycle 8/8 stable bit-exact",
+        "B=1 deliberately carries no --marlin-blocks-per-cu flag",
+        "run_arm marlin --marlin\n",
+        'if [ "$requested" -gt "$OCCUPANCY_API" ]',
+        "requested B=%d exceeds B=1 occupancy_api=%d",
+        "for bpc in 2 4 6",
+        'run_arm "marlin-bpc${bpc}" --marlin "--marlin-blocks-per-cu=${bpc}"',
+        "blocks_per_cu=1",
+        "validate_marlin_point 1 72 15 69 3 66 4 marlin",
+        "2) expected=(144 8 128 16 96 4)",
+        "4) expected=(288 4 256 32 224 8)",
+        "6) expected=(432 3 342 90 331 12)",
     ):
         if token not in box:
             bad.append(f"box comparison is missing {token!r}")
@@ -187,9 +214,24 @@ def main() -> int:
     bad = audit(files)
 
     plants = (
-        ("core", "grid-times-occupancy",
-         "p.grid_blocks_ = p.output_tiles_ >= cu_count ? p.output_tiles_ : cu_count;",
-         "p.grid_blocks_ = cu_count * 4;"),
+        ("core", "lowering-hardcodes-one",
+         "if (!mul_u64(cu_count, blocks_per_cu, launch_capacity))",
+         "if (!mul_u64(cu_count, uint64_t(1), launch_capacity))"),
+        ("sched", "scheduler-ignores-argument",
+         "args.blocks_per_cu);",
+         "uint32_t(1));"),
+        ("bench", "bench-does-not-forward-B",
+         "arguments.scheduler.blocks_per_cu =\n        uint32_t(options.marlin_blocks_per_cu);",
+         "arguments.scheduler.blocks_per_cu =\n        uint32_t(1);"),
+        ("bench", "bench-drops-occupancy-upper-bound",
+         "options.marlin_blocks_per_cu > ctas_per_cu",
+         "options.marlin_blocks_per_cu > 999"),
+        ("box", "box-drops-runtime-occupancy-upper-bound",
+         'if [ "$requested" -gt "$OCCUPANCY_API" ]',
+         'if [ "$requested" -gt 999 ]'),
+        ("box", "box-default-arm-spells-B1-explicitly",
+         "run_arm marlin --marlin\n",
+         "run_arm marlin --marlin --marlin-blocks-per-cu=1\n"),
         ("core", "iters-minus-one",
          "p.iters_per_block_ = ceil_div_u64(p.total_k_tiles_, p.grid_blocks_);",
          "p.iters_per_block_ = ceil_div_u64(p.total_k_tiles_, p.grid_blocks_) - 1;"),
@@ -244,7 +286,13 @@ def main() -> int:
     required = (
         "classic Q=16 Kt=16 CU=20 G=20 I=13 active=20 last=9 handoff=18 cross-CTA=14 -> PASS",
         "decode Q=128 Kt=8 CU=72 G=128 I=8 handoff=0 -> PASS",
-        "grid*occupancy G=288 handoff=128 -> EXPECTED-RED",
+        "B=1 G=72 I=15 active=69 handoff=66 max-peers=4 hist=3:30,4:2 exact-once/global-q/reverse-peer -> PASS",
+        "B=2 G=144 I=8 active=128 handoff=96 max-peers=4 hist=4:32 exact-once/global-q/reverse-peer -> PASS",
+        "B=4 G=288 I=4 active=256 handoff=224 max-peers=8 hist=8:32 exact-once/global-q/reverse-peer -> PASS",
+        "B=6 G=432 I=3 active=342 handoff=331 max-peers=12 hist=11:21,12:11 exact-once/global-q/reverse-peer -> PASS",
+        "default B=1 explicit-vs-implicit schedule identity -> PASS",
+        "B=0/multiply-overflow/grid-over-UINT_MAX fail-closed=1/1/1 -> PASS",
+        "requested B=4 lowered as hardcoded B=1 G=288/72 -> EXPECTED-RED",
         "I-1 holes=16 dup=0 owner=0 -> EXPECTED-RED",
         "natural-peer mismatches=32 -> EXPECTED-RED",
         "default persistent/StreamK selector types unchanged; result=PASS",
@@ -260,7 +308,7 @@ def main() -> int:
         return 1
     print("[dense-marlin-contract] PASS -- additive K-fast scheduler, reverse q-lock cooperative, "
           "exact cohort, artifact/tactic split, and same-event DP/SK/Marlin route; "
-          "fourteen structural plants rejected")
+        "nineteen structural plants rejected")
     return 0
 
 

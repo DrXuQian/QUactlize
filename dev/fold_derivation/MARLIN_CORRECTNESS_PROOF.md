@@ -17,7 +17,8 @@ Let
 Q  = ceil(M/TM) * ceil(N/TN) * L
 Kt = ceil(K/TK)
 T  = Q * Kt
-G  = max(Q, CU)
+B  = blocks_per_cu (default 1)
+G  = max(Q, CU*B)
 I  = ceil(T/G)
 ```
 
@@ -43,7 +44,8 @@ The lock ID is this same global q, so two distinct output tiles cannot alias a
 lock.  The proof includes continuation across N, M and L; a stripe is not
 required to end at any of those boundaries.
 
-The scheduler-owned launch protection follows directly.  If `Q >= CU`, then
+The exhaustive deployment proof below fixes the shipping/default `B=1` lane.
+In that lane the scheduler-owned launch protection follows directly.  If `Q >= CU`, then
 `G=Q`, `I=ceil(Q*Kt/Q)=Kt`, and CTA q owns exactly the complete K range of
 output q.  Thus every `slice_count` is one and the handoff count is zero.
 When `Q < CU`, the scheduler is in the stripe regime, but that does not imply
@@ -61,9 +63,9 @@ The final inequality is strict.  At `Q=64,Kt=8,CU=72`, the left side is 64
 and the class is unsplit; at `Q=63` it is 72 and the class splits.  In the
 unsplit case `active_blocks=Q`: each active CTA owns one complete output tile
 and the remaining `CU-Q` launch slots are idle.  This is ceil quantization of
-the uniform stripe length, not a hole in the `G=max(Q,CU)` launcher guard.
+the uniform stripe length, not a hole in the default-B1 `G=max(Q,CU)` policy.
 
-The complete current census is:
+The complete current default-B1 census is:
 
 | Mt | Nt | L | Kt | CU | Q | G | I | active CTA | raw multiplicity |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -86,6 +88,21 @@ FP16.  The pass criterion is fixed before execution: raw integer equality of
 the scheduled sum and the DP sum.  No ULP or tolerance is selected after the
 result.  Therefore, for this fixture, exact-once coverage implies numerical
 identity with DP.
+
+### Explicit blocks-per-CU experiment
+
+The host scheduler argument may explicitly request `B>1`, after the exact
+kernel's runtime occupancy has bounded it.  The lowered device `Params`,
+workspace layout, global-q lock IDs, and cooperative ABI do not change; only
+`G/I/active` and the resulting peer chains do.  Omitting the argument is
+identical to explicit `B=1`.
+
+L126 exhausts all 1,024 `(q,k_tile)` cells for the decode anchor
+`Q=32,Kt=32,CU=72` at `B={1,2,4,6}`.  It requires exact-once ownership,
+reverse peer IDs, globally unique q locks, and the exact launch/decomposition
+ladder.  Device runs additionally require eight stable bit-exact launches on
+the same workspace for every rung; that is the memory-order portion the host
+proof cannot establish.
 
 ### Exhaustive finite deployment closure
 
@@ -122,8 +139,8 @@ Params class after tile-count lowering.  The raw count proves every committed
 tactic was admitted; the unique count prevents repeating an identical walk
 from being mistaken for broader algebraic coverage.
 
-Eight independently compiled mutations must turn the proof red: multiplying
-G by occupancy, flooring I, omitting q-boundary clipping, losing K-fast order,
+Eight independently compiled mutations must turn the proof red: dropping the
+output-tile floor from G, flooring I, omitting q-boundary clipping, losing K-fast order,
 swapping the M/N decode, stopping after the first segment, using an N-local
 lock, and reversing the peer-order convention.
 
@@ -162,7 +179,7 @@ The broader sub-byte unit inventory is in
 
 L134 emits a nonempty NVCC PTX entry with runtime raw M/N/K/L, CU and
 `blockIdx.x`.  The entry follows the real scheduler object's fetch loop and
-retains the quotient/remainder decomposition.  A 32-field device constant
+retains the quotient/remainder decomposition.  A 35-field device constant
 pins concrete values from the same production type.  A deliberately wrong
 `I=12` assertion must expose the actual 13, and a raw-shape bypass that treats
 scalar M/N/K as tile ordinals must fail.
