@@ -41,6 +41,54 @@ H1. **THE M-SWEEP (INBOX 025), and any other tactic sweep.** The user set the or
 
 These are correctness and inspection, not tactic sweeps, so the hold above does not apply to them.
 
+### AFTER the two frozen morning runs: TODO #36 measurement gaps
+
+Do **not** interleave these with `tools/run_dense_marlin_wk4_box.sh` or
+`tools/run_gemv_sweep_box.sh`.  Those two frozen runs must first finish at one
+identified SHA so their numbers have one implementation owner.
+
+The gs=128 COARSE and gs=16 freshness rows are runnable with the existing dense
+bench.  Build in separate directories and run the explicit row before any
+search; a failing row may not be hidden by choosing another tactic.
+
+```bash
+cd /sim/eec/shared/junfu.qx/quactlize
+git pull --recurse-submodules
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+TODO36=$PWD/todo36-$(git rev-parse --short=12 HEAD)
+mkdir -p "$TODO36"
+git rev-parse HEAD | tee "$TODO36/root.sha"
+git submodule status --recursive | tee "$TODO36/submodules.txt"
+
+PPU_BUILD_DIR="$TODO36/build-gs128" QUANT=int4 BENCH_GS=128 \
+  TARGET=test_lowbit_dense_bench ./build.sh 2>&1 | tee "$TODO36/build-gs128.log"
+BIN128=$(find "$TODO36/build-gs128" -type f -name test_lowbit_dense_bench -perm -u+x -print -quit)
+test -n "$BIN128" && sha256sum "$BIN128" | tee "$TODO36/gs128.binary.sha256"
+"$BIN128" --m=2048 --n=4096 --k=4096 --l=1 --g=128 --mode=1 \
+  --config='64x64x64:32x32:s4:bc0->0' --iterations=100 \
+  2>&1 | tee "$TODO36/gs128-coarse.log"
+
+PPU_BUILD_DIR="$TODO36/build-gs16" QUANT=int4 BENCH_GS=16 \
+  TARGET=test_lowbit_dense_bench ./build.sh 2>&1 | tee "$TODO36/build-gs16.log"
+BIN16=$(find "$TODO36/build-gs16" -type f -name test_lowbit_dense_bench -perm -u+x -print -quit)
+test -n "$BIN16" && sha256sum "$BIN16" | tee "$TODO36/gs16.binary.sha256"
+"$BIN16" --m=2048 --n=4096 --k=4096 --l=1 --g=16 --mode=1 \
+  --config='64x64x64:64x32:s3:bc0->0' --iterations=100 \
+  2>&1 | tee "$TODO36/gs16-current-head.log"
+```
+
+Wanted: numerical PASS plus the complete timing line for each explicit row.
+gs=128 closes correctness/timing on repaired COARSE; gs=16 refreshes the
+historical 234.16 µs and 228.13→227.35 µs grouped-L1 measurements on the
+current native dense operator.
+
+**BLOCKED, no command yet:** fully-quantized prefill.  The production ops and
+correctness oracles exist, but no harness times the shipping route at M=2048.
+Do not substitute `test_q4k_packed_gemm.cu` (header-level correctness only) or
+the M=7/65 route pytest (not timed).  The required harness contract is recorded
+in `dev/fold_derivation/TODO36_MEASUREMENT_GAPS.md`.
+
 1. **TWO THINGS, ONE PULL.** (a) the sixth per-format oracle is newer than the last run -- expect
    `6 passed, 24 skipped` instead of 5/20; (b) the packer now exists and can be pointed at a real checkpoint.
 

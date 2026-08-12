@@ -89,9 +89,12 @@ comparison before it means anything.
 grid did not contain `w64x32`, which the record measures at **+8.6 points for int4**. Reproducing 55.8% instead
 of 65.0% therefore means the warp shape is missing again, not that the kernel regressed.
 
-**gs=16 for int4 is NOT recorded post-`w64x32`.** The record gives the delta instead: moving int4 to gs=16 costs
-**10.8%**, so A1 implies ≈234 µs / **58.7%**. That is arithmetic over a measurement, not a measurement — the box
-run settles it. (A recollection of "60+% at gs=16" exists and is not what the arithmetic gives.)
+**gs=16 for int4 WAS measured post-`w64x32`; the earlier version of this paragraph was false.** The same
+grouped-L=1 sweep recorded **234.16 µs** for `(64,64,64) w64x32 s3`, then a later equivalence-refactor A/B
+recorded **228.13 → 227.35 µs** at the same group size.  Those are historical device measurements, not the
+old 58.7% extrapolation.  What remains missing is narrower: the current HEAD has not re-run that row through the
+native dense operator, so it is a stale regression target rather than an absent measurement.  See
+`dev/fold_derivation/TODO36_MEASUREMENT_GAPS.md` for the evidence and the queued fresh run.
 
 ## B. DENSE — other shapes and group sizes
 <!-- route: dense_lowbit -->
@@ -283,7 +286,8 @@ One at a time, each against its own row, because a failure means different thing
 2. **B2** — the `32x32` control, read out of the same A1 sweep at gs=128. Costs nothing extra and validates the
    baseline before anything else is believed.
 3. **dense ≤ grouped(L=1)** — the invariant (`analyse.py --invariant`). Needs no historical figure at all.
-4. **A7 / gs=16** — settles the 58.7%-vs-"60+%" disagreement between the record's arithmetic and recollection.
+4. **A7 / gs=16** — refreshes on current HEAD the historical post-`w64x32` 234.16 µs and 228.13→227.35 µs
+   measurements; it no longer settles a measurement-versus-recollection disagreement.
 5. **B1** — gs=128, a different sweep's number, to check the two sweeps still agree with each other.
 6. **C1** — the MoE ragged figure, whose harness was already back-tested to within 1.9% on 2026-08-04.
 
