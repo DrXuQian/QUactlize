@@ -17,6 +17,8 @@
 #include <cstdint>
 #include <string>
 
+#include "quactlize_ppu_config.h"
+
 namespace torch_ext {
 namespace ppu_backend {
 
@@ -54,6 +56,10 @@ struct Api {
   int (*bc_gemv)(uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
                  int const* row_offsets, float* out,
                  int total_rows, int n, int k, int experts, int max_rows, int qtype);
+  int (*bc_gemv_for_arrangement)(
+      uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
+      int const* row_offsets, float* out, int total_rows, int n, int k, int experts, int max_rows, int qtype,
+      quactlize_ppu_placed_arrangement_v1 const* arrangement);
   // Resident SCALE_FIRST artifact -> fp16 GEMV result. experts==0 is dense; otherwise offsets is [E+1].
   int (*gemv_lowbit)(uint16_t const* act, uint8_t const* low, uint8_t const* high,
                      uint16_t const* scale, uint16_t const* zero, uint16_t* out,
@@ -80,6 +86,16 @@ struct Api {
   // units are the format's byte-neutral reordered metadata. rc=34 means PPU_PACKED_SCALE was not built in.
   int (*dense_fully_quantized)(uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
                                uint16_t* out, int m, int n, int k, int qtype);
+  int (*dense_fully_quantized_for_arrangement)(
+      uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
+      uint16_t* out, int m, int n, int k, int qtype,
+      quactlize_ppu_placed_arrangement_v1 const* arrangement, char const* config_name);
+  // Host-only shared predicate exported by the same format-selected binary.  The torch seam uses it even for an
+  // empty-M result: returning an empty tensor must not let an unsupported/mismatched descriptor bypass the reader
+  // contract merely because no kernel launch is needed.
+  int32_t (*dense_fully_quantized_arrangement_valid)(
+      int m, int n, int k, int group_size, int qtype,
+      quactlize_ppu_placed_arrangement_v1 const* arrangement, char const* config_name);
   int (*grouped_fully_quantized)(uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
                                  int const* rows_per_expert, uint16_t* out,
                                  int total_rows, int n, int k, int experts, int qtype);

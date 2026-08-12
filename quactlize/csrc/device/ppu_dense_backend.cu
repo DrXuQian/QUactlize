@@ -28,6 +28,7 @@
 #include "ppu_dense_configs.inc"
 #include "ppu_format_config.hpp"
 #include "ppu_grouped_configs.inc"
+#include "ppu_placed_arrangement.hpp"
 #include "quactlize_ppu_device.h"
 
 // The optional collectives this backend INSTANTIATES: it ships Q3_K (uint2+uint1, two planes) and folded
@@ -249,7 +250,7 @@ int launch_grouped_config(
   return 31;
 }
 
-template <class Low, class High, int GroupSize, int TileK, bool PackedScale,
+template <class Low, class High, int GroupSize, int TacticTileK, int ArtifactTileK, bool PackedScale,
           int TileM, int TileN, int WarpM, int WarpN, int Stages,
           bool QueryOnly = false, bool RequireUniversalFallback = false>
 int launch_dense_tactic(uint16_t const* act, uint8_t const* low, uint8_t const* high,
@@ -262,19 +263,20 @@ int launch_dense_tactic(uint16_t const* act, uint8_t const* low, uint8_t const* 
   constexpr ppu_tactics::Candidate kTactic{
       {ppu_tactics::Format::I4, "dense-backend",
        ppu_mixed_policy::element_bits_v<Low>, ppu_mixed_policy::element_bits_v<High>},
-      TileM, TileN, TileK, WarpM, WarpN, TileK};
-  if constexpr (ppu_tactics::DenseSpace::kernel_exclusion(kTactic) != ppu_tactics::Exclusion::None) {
+      TileM, TileN, TacticTileK, WarpM, WarpN, ArtifactTileK};
+  if constexpr (ppu_tactics::DenseSpace::kernel_exclusion(kTactic) != ppu_tactics::Exclusion::None ||
+                ppu_tactics::common_producer_exclusion(kTactic) != ppu_tactics::Exclusion::None) {
     // 31 is this file's existing "did not launch". A separate code would be a new ABI meaning for callers that only
     // test truthiness, so every remaining tactic-space exclusion keeps the established result.
     return 31;
   } else {
-  constexpr int ScaleGroups = ppu_group_schedule::scale_groups_v<TileK, GroupSize>;
-  using Tile = cute::Shape<cute::C<TileM>, cute::C<TileN>, cute::C<TileK>>;
-  using Warp = cute::Shape<cute::C<WarpM>, cute::C<WarpN>, cute::C<TileK>>;
+  constexpr int ScaleGroups = ppu_group_schedule::scale_groups_v<TacticTileK, GroupSize>;
+  using Tile = cute::Shape<cute::C<TileM>, cute::C<TileN>, cute::C<TacticTileK>>;
+  using Warp = cute::Shape<cute::C<WarpM>, cute::C<WarpN>, cute::C<TacticTileK>>;
   bool const launched = fpa_intb_ppu::generic_launcher<QM::FinegrainedScaleZero,
       ppu_group_schedule::FinegrainedSchedule<GroupSize>,
       Tile, cute::Shape<cute::C<TileN>, cute::C<ScaleGroups>>, Warp, Stages, true,
-      Low, High, PackedScale, QueryOnly, RequireUniversalFallback, TileK>(
+      Low, High, PackedScale, QueryOnly, RequireUniversalFallback, ArtifactTileK>(
           reinterpret_cast<half_t const*>(act), reinterpret_cast<Low const*>(low),
           reinterpret_cast<half_t const*>(scale), reinterpret_cast<half_t const*>(zero),
           reinterpret_cast<half_t*>(out),
@@ -287,7 +289,8 @@ int launch_dense_tactic(uint16_t const* act, uint8_t const* low, uint8_t const* 
   }
 }
 
-template <class Low, class High, int GroupSize, int TileK, bool PackedScale, bool QueryOnly = false>
+template <class Low, class High, int GroupSize, int TacticTileK, int ArtifactTileK,
+          bool PackedScale, bool QueryOnly = false>
 int launch_dense_config(DenseConfigId config, uint16_t const* act, uint8_t const* low, uint8_t const* high,
                         void const* scale, uint16_t const* zero, uint16_t* out,
                         int m, int n, int k, void* workspace, size_t workspace_bytes,
@@ -295,7 +298,8 @@ int launch_dense_config(DenseConfigId config, uint16_t const* act, uint8_t const
   switch (config) {
 #define QUACTLIZE_PPU_DENSE_CONFIG_CASE(ID, NAME, TM, TN, WM, WN, STAGES) \
     case DenseConfigId::ID: \
-      return launch_dense_tactic<Low, High, GroupSize, TileK, PackedScale, TM, TN, WM, WN, STAGES, QueryOnly, \
+      return launch_dense_tactic<Low, High, GroupSize, TacticTileK, ArtifactTileK, PackedScale, \
+                                 TM, TN, WM, WN, STAGES, QueryOnly, \
                                  DenseConfigId::ID == kDefaultDenseConfig>( \
           act, low, high, scale, zero, out, m, n, k, workspace, workspace_bytes, stream);
     QUACTLIZE_PPU_DENSE_CONFIGS(QUACTLIZE_PPU_DENSE_CONFIG_CASE)
@@ -316,9 +320,9 @@ bool tensor_problem_domain(int m, int n, int k, int group_size, int qtype) {
          group_size == qtype_group_size(qtype);
 }
 
-template <class Low, class High, int GroupSize, int TileK, bool PackedScale>
+template <class Low, class High, int GroupSize, int TacticTileK, int ArtifactTileK, bool PackedScale>
 bool dense_config_type_valid(DenseConfigId config, int m, int n, int k) {
-  return launch_dense_config<Low, High, GroupSize, TileK, PackedScale, true>(
+  return launch_dense_config<Low, High, GroupSize, TacticTileK, ArtifactTileK, PackedScale, true>(
       config, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
       m, n, k, nullptr, 0, nullptr) == 0;
 }
@@ -337,9 +341,11 @@ bool dense_lowbit_config_valid(
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 10
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 2
     case 10: return dense_config_type_valid<cutlass::uint2b_t, void, 16,
+        ppu_formats::for_qtype(10).scale_first_tile_k,
         ppu_formats::for_qtype(10).scale_first_tile_k, false>(config, m, n, k);
 #else
     case 10: return dense_config_type_valid<cutlass::uint2b_t, void, 16,
+        ppu_formats::for_qtype(10).scale_first_tile_k,
         ppu_formats::for_qtype(10).scale_first_tile_k, false>(config, m, n, k);
 #endif
 #endif
@@ -348,15 +354,18 @@ bool dense_lowbit_config_valid(
     case 11: return false;
 #else
     case 11: return dense_config_type_valid<cutlass::uint2b_t, cutlass::uint1b_t, 16,
+        ppu_formats::for_qtype(11).scale_first_tile_k,
         ppu_formats::for_qtype(11).scale_first_tile_k, false>(config, m, n, k);
 #endif
 #endif
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 12
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
     case 12: return dense_config_type_valid<cutlass::int4b_t, void, 32,
+        ppu_formats::for_qtype(12).scale_first_tile_k,
         ppu_formats::for_qtype(12).scale_first_tile_k, false>(config, m, n, k);
 #else
     case 12: return dense_config_type_valid<cutlass::int4b_t, void, 32,
+        ppu_formats::for_qtype(12).scale_first_tile_k,
         ppu_formats::for_qtype(12).scale_first_tile_k, false>(config, m, n, k);
 #endif
 #endif
@@ -365,6 +374,7 @@ bool dense_lowbit_config_valid(
     case 13: return false;
 #else
     case 13: return dense_config_type_valid<cutlass::int4b_t, cutlass::uint1b_t, 32,
+        ppu_formats::for_qtype(13).scale_first_tile_k,
         ppu_formats::for_qtype(13).scale_first_tile_k, false>(config, m, n, k);
 #endif
 #endif
@@ -373,6 +383,7 @@ bool dense_lowbit_config_valid(
     case 14: return false;
 #else
     case 14: return dense_config_type_valid<cutlass::int4b_t, cutlass::uint2b_t, 16,
+        ppu_formats::for_qtype(14).scale_first_tile_k,
         ppu_formats::for_qtype(14).scale_first_tile_k, false>(config, m, n, k);
 #endif
 #endif
@@ -380,26 +391,61 @@ bool dense_lowbit_config_valid(
   }
 }
 
+template <int QType, class Low, class High, int GroupSize, int TacticTileK, int ArtifactTileK>
+bool dense_fully_quantized_config_type_valid(DenseConfigId config, int m, int n, int k) {
+  if constexpr (!ppu_arrangements::static_packed_tensor_reader_supported<
+                    QType, TacticTileK, ArtifactTileK>()) {
+    return false;
+  } else {
+    return dense_config_type_valid<Low, High, GroupSize, TacticTileK, ArtifactTileK, true>(
+        config, m, n, k);
+  }
+}
+
+template <int QType, class Low, class High, int GroupSize, int TacticTileK>
+bool dense_fully_quantized_config_for_artifact_valid(
+    DenseConfigId config, int m, int n, int k, int artifact_tile_k) {
+  switch (artifact_tile_k) {
+    case 32: return dense_fully_quantized_config_type_valid<
+        QType, Low, High, GroupSize, TacticTileK, 32>(config, m, n, k);
+    case 64: return dense_fully_quantized_config_type_valid<
+        QType, Low, High, GroupSize, TacticTileK, 64>(config, m, n, k);
+    case 128: return dense_fully_quantized_config_type_valid<
+        QType, Low, High, GroupSize, TacticTileK, 128>(config, m, n, k);
+    case 256: return dense_fully_quantized_config_type_valid<
+        QType, Low, High, GroupSize, TacticTileK, 256>(config, m, n, k);
+    default: return false;
+  }
+}
+
 bool dense_fully_quantized_config_valid(
-    DenseConfigId config, int m, int n, int k, int group_size, int qtype) {
+    DenseConfigId config, int m, int n, int k, int group_size, int qtype,
+    quactlize_ppu_placed_arrangement_v1 const* arrangement) {
   if (!tensor_problem_domain(m, n, k, group_size, qtype) ||
-      !selected_fully_quantized_qtype(qtype, k)) return false;
+      !selected_fully_quantized_qtype(qtype, k) ||
+      !ppu_arrangements::packed_tensor_reader_supported(
+          arrangement, qtype, k, ppu_formats::for_qtype(qtype).fully_quantized_tile_k)) return false;
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
-  return dense_config_type_valid<cutlass::int4b_t, void, 32,
-      ppu_formats::for_qtype(12).fully_quantized_tile_k, true>(config, m, n, k);
+  return dense_fully_quantized_config_for_artifact_valid<12, cutlass::int4b_t, void, 32,
+      ppu_formats::for_qtype(12).fully_quantized_tile_k>(
+          config, m, n, k, arrangement->artifact_tile_k);
 #elif PPU_PACKED_FORMAT == 2
-  return dense_config_type_valid<cutlass::uint2b_t, void, 16,
-      ppu_formats::for_qtype(10).fully_quantized_tile_k, true>(config, m, n, k);
+  return dense_fully_quantized_config_for_artifact_valid<10, cutlass::uint2b_t, void, 16,
+      ppu_formats::for_qtype(10).fully_quantized_tile_k>(
+          config, m, n, k, arrangement->artifact_tile_k);
 #elif PPU_PACKED_FORMAT == 1
-  return dense_config_type_valid<cutlass::int4b_t, cutlass::uint1b_t, 32,
-      ppu_formats::for_qtype(13).fully_quantized_tile_k, true>(config, m, n, k);
+  return dense_fully_quantized_config_for_artifact_valid<13, cutlass::int4b_t, cutlass::uint1b_t, 32,
+      ppu_formats::for_qtype(13).fully_quantized_tile_k>(
+          config, m, n, k, arrangement->artifact_tile_k);
 #elif PPU_PACKED_FORMAT == 3
-  return dense_config_type_valid<cutlass::uint2b_t, cutlass::uint1b_t, 16,
-      ppu_formats::for_qtype(11).fully_quantized_tile_k, true>(config, m, n, k);
+  return dense_fully_quantized_config_for_artifact_valid<11, cutlass::uint2b_t, cutlass::uint1b_t, 16,
+      ppu_formats::for_qtype(11).fully_quantized_tile_k>(
+          config, m, n, k, arrangement->artifact_tile_k);
 #elif PPU_PACKED_FORMAT == 4
-  return dense_config_type_valid<cutlass::int4b_t, cutlass::uint2b_t, 16,
-      ppu_formats::for_qtype(14).fully_quantized_tile_k, true>(config, m, n, k);
+  return dense_fully_quantized_config_for_artifact_valid<14, cutlass::int4b_t, cutlass::uint2b_t, 16,
+      ppu_formats::for_qtype(14).fully_quantized_tile_k>(
+          config, m, n, k, arrangement->artifact_tile_k);
 #else
   return false;
 #endif
@@ -407,6 +453,13 @@ bool dense_fully_quantized_config_valid(
   (void)config;
   return false;
 #endif
+}
+
+bool dense_fully_quantized_config_valid(
+    DenseConfigId config, int m, int n, int k, int group_size, int qtype) {
+  auto const arrangement = ppu_arrangements::legacy_fully_quantized_default(qtype);
+  return dense_fully_quantized_config_valid(
+      config, m, n, k, group_size, qtype, &arrangement);
 }
 
 bool grouped_lowbit_config_valid(
@@ -499,6 +552,12 @@ quactlize_ppu_config_v2 config_v2(quactlize_ppu_config_v1 const& config, int til
           config.warp_m, config.warp_n, config.stages};
 }
 
+quactlize_ppu_config_v3 config_v3(
+    quactlize_ppu_config_v1 const& config, int tactic_tile_k, int artifact_tile_k) {
+  return {config.enable_cuda_kernel, config.name, config.tile_m, config.tile_n,
+          tactic_tile_k, artifact_tile_k, config.warp_m, config.warp_n, config.stages};
+}
+
 int32_t list_valid_dense_configs_v2(
     quactlize_ppu_config_v2* configs, int32_t capacity,
     int m, int n, int k, int group_size, int qtype, bool fully_quantized) {
@@ -524,6 +583,27 @@ int32_t list_valid_dense_configs_v2(
   return count;
 }
 
+int32_t list_valid_dense_fully_quantized_configs_for_arrangement_v1(
+    quactlize_ppu_config_v3* configs, int32_t capacity,
+    int m, int n, int k, int group_size, int qtype,
+    quactlize_ppu_placed_arrangement_v1 const* arrangement) {
+  if (!ppu_arrangements::packed_tensor_reader_supported(
+          arrangement, qtype, k, ppu_formats::for_qtype(qtype).fully_quantized_tile_k)) return 0;
+  int const tactic_tile_k = ppu_formats::for_qtype(qtype).fully_quantized_tile_k;
+  int32_t count = 0;
+  for (int i = 0; i < int(DenseConfigId::Count); ++i) {
+    auto const id = static_cast<DenseConfigId>(i);
+    if (!dense_fully_quantized_config_valid(
+            id, m, n, k, group_size, qtype, arrangement))
+      continue;
+    if (configs && count < capacity) {
+      configs[count] = config_v3(kDenseConfigs[i], tactic_tile_k, arrangement->artifact_tile_k);
+    }
+    ++count;
+  }
+  return count;
+}
+
 int32_t list_valid_grouped_configs_v2(
     quactlize_ppu_config_v2* configs, int32_t capacity,
     int total_rows, int n, int k, int group_size, int experts, int max_rows, int qtype) {
@@ -540,21 +620,23 @@ int32_t list_valid_grouped_configs_v2(
   return count;
 }
 
-template <class Low, class High = void, int GroupSize = 16, int TileK = 256>
+template <class Low, class High = void, int GroupSize = 16,
+          int TacticTileK = 256, int ArtifactTileK = TacticTileK>
 int dense_fully_quantized_device(uint16_t const* act, uint8_t const* low, uint8_t const* high,
                                  uint8_t const* units, uint16_t* out, int m, int n, int k,
                                  DenseConfigId config, void* workspace, size_t workspace_bytes,
                                  hggcStream_t stream) {
   size_t const need = dense_workspace_bytes(m, n);
   if (!workspace || workspace_bytes < need) return 37;
-  int const launch_rc = launch_dense_config<Low, High, GroupSize, TileK, true>(
+  int const launch_rc = launch_dense_config<Low, High, GroupSize, TacticTileK, ArtifactTileK, true>(
       config, act, low, high, units, nullptr, out, m, n, k, workspace, workspace_bytes, stream);
   if (launch_rc) return launch_rc;
   return ppu_gemv::rt_check_launch("fully-quantized dense GEMM enqueue")
       ? 0 : ppu_gemv::kRuntimeError;
 }
 
-template <class Low, class High = void, int GroupSize = 16, int TileK = 256, bool PackedScale = false>
+template <class Low, class High = void, int GroupSize = 16,
+          int TacticTileK = 256, bool PackedScale = false, int ArtifactTileK = TacticTileK>
 int dense(uint16_t const* act, uint8_t const* low, uint8_t const* high,
           void const* scale, uint16_t const* zero, uint16_t* out,
           int m, int n, int k, int group_size, DenseConfigId config = kDefaultDenseConfig) {
@@ -583,12 +665,12 @@ int dense(uint16_t const* act, uint8_t const* low, uint8_t const* high,
 
   int launch_rc = 0;
   if constexpr (PackedScale) {
-    launch_rc = dense_fully_quantized_device<Low, High, GroupSize, TileK>(
+    launch_rc = dense_fully_quantized_device<Low, High, GroupSize, TacticTileK, ArtifactTileK>(
         reinterpret_cast<uint16_t const*>(da.p), reinterpret_cast<uint8_t const*>(dl.p),
         reinterpret_cast<uint8_t const*>(dh.p), reinterpret_cast<uint8_t const*>(ds.p),
         reinterpret_cast<uint16_t*>(dout.p), m, n, k, config, ws.p, ws_bytes, nullptr);
   } else {
-    launch_rc = launch_dense_config<Low, High, GroupSize, TileK, false>(
+    launch_rc = launch_dense_config<Low, High, GroupSize, TacticTileK, ArtifactTileK, false>(
         config, reinterpret_cast<uint16_t const*>(da.p), reinterpret_cast<uint8_t const*>(dl.p),
         reinterpret_cast<uint8_t const*>(dh.p), ds.p, reinterpret_cast<uint16_t const*>(dz.p),
         reinterpret_cast<uint16_t*>(dout.p), m, n, k, ws.p, ws_bytes, nullptr);
@@ -597,6 +679,72 @@ int dense(uint16_t const* act, uint8_t const* low, uint8_t const* high,
   ppu_gemv::rt_sync(PackedScale ? "fully-quantized dense GEMM" : "scale-first dense GEMM");
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
   return ppu_gemv::rt_copy_output(dout, out, size_t(m) * n);
+}
+
+template <int QType, class Low, class High, int GroupSize, int TacticTileK, int ArtifactTileK>
+int dense_fully_quantized_for_artifact(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
+    int m, int n, int k, DenseConfigId config) {
+  if constexpr (!ppu_arrangements::static_packed_tensor_reader_supported<
+                    QType, TacticTileK, ArtifactTileK>()) {
+    return 38;
+  } else {
+    return dense<Low, High, GroupSize, TacticTileK, true, ArtifactTileK>(
+        act, low, high, units, nullptr, out, m, n, k, GroupSize, config);
+  }
+}
+
+template <int QType, class Low, class High, int GroupSize, int TacticTileK>
+int dense_fully_quantized_for_arrangement(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
+    int m, int n, int k, DenseConfigId config, int artifact_tile_k) {
+  switch (artifact_tile_k) {
+    case 32: return dense_fully_quantized_for_artifact<
+        QType, Low, High, GroupSize, TacticTileK, 32>(act, low, high, units, out, m, n, k, config);
+    case 64: return dense_fully_quantized_for_artifact<
+        QType, Low, High, GroupSize, TacticTileK, 64>(act, low, high, units, out, m, n, k, config);
+    case 128: return dense_fully_quantized_for_artifact<
+        QType, Low, High, GroupSize, TacticTileK, 128>(act, low, high, units, out, m, n, k, config);
+    case 256: return dense_fully_quantized_for_artifact<
+        QType, Low, High, GroupSize, TacticTileK, 256>(act, low, high, units, out, m, n, k, config);
+    default: return 38;
+  }
+}
+
+template <int QType, class Low, class High, int GroupSize, int TacticTileK, int ArtifactTileK>
+int dense_fully_quantized_device_for_artifact(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
+    int m, int n, int k, DenseConfigId config, void* workspace, size_t workspace_bytes,
+    hggcStream_t stream) {
+  if constexpr (!ppu_arrangements::static_packed_tensor_reader_supported<
+                    QType, TacticTileK, ArtifactTileK>()) {
+    return 38;
+  } else {
+    return dense_fully_quantized_device<Low, High, GroupSize, TacticTileK, ArtifactTileK>(
+        act, low, high, units, out, m, n, k, config, workspace, workspace_bytes, stream);
+  }
+}
+
+template <int QType, class Low, class High, int GroupSize, int TacticTileK>
+int dense_fully_quantized_device_for_arrangement(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
+    int m, int n, int k, DenseConfigId config, void* workspace, size_t workspace_bytes,
+    hggcStream_t stream, int artifact_tile_k) {
+  switch (artifact_tile_k) {
+    case 32: return dense_fully_quantized_device_for_artifact<
+        QType, Low, High, GroupSize, TacticTileK, 32>(
+            act, low, high, units, out, m, n, k, config, workspace, workspace_bytes, stream);
+    case 64: return dense_fully_quantized_device_for_artifact<
+        QType, Low, High, GroupSize, TacticTileK, 64>(
+            act, low, high, units, out, m, n, k, config, workspace, workspace_bytes, stream);
+    case 128: return dense_fully_quantized_device_for_artifact<
+        QType, Low, High, GroupSize, TacticTileK, 128>(
+            act, low, high, units, out, m, n, k, config, workspace, workspace_bytes, stream);
+    case 256: return dense_fully_quantized_device_for_artifact<
+        QType, Low, High, GroupSize, TacticTileK, 256>(
+            act, low, high, units, out, m, n, k, config, workspace, workspace_bytes, stream);
+    default: return 38;
+  }
 }
 
 }  // namespace
@@ -623,6 +771,15 @@ extern "C" int32_t quactlize_ppu_dense_fully_quantized_config_valid_v1(
   DenseConfigId config{};
   return find_dense_config(config_name, config) &&
          dense_fully_quantized_config_valid(config, m, n, k, group_size, qtype);
+}
+
+extern "C" int32_t quactlize_ppu_dense_fully_quantized_config_valid_for_arrangement_v1(
+    int m, int n, int k, int group_size, int qtype,
+    quactlize_ppu_placed_arrangement_v1 const* arrangement, char const* config_name) {
+  DenseConfigId config{};
+  return find_dense_config(config_name, config) &&
+         dense_fully_quantized_config_valid(
+             config, m, n, k, group_size, qtype, arrangement);
 }
 
 extern "C" int32_t quactlize_ppu_grouped_lowbit_config_valid_v1(
@@ -655,6 +812,14 @@ extern "C" int32_t quactlize_ppu_list_valid_dense_fully_quantized_configs_v2(
     int m, int n, int k, int group_size, int qtype) {
   return list_valid_dense_configs_v2(
       configs, capacity, m, n, k, group_size, qtype, true);
+}
+
+extern "C" int32_t quactlize_ppu_list_valid_dense_fully_quantized_configs_for_arrangement_v1(
+    quactlize_ppu_config_v3* configs, int32_t capacity,
+    int m, int n, int k, int group_size, int qtype,
+    quactlize_ppu_placed_arrangement_v1 const* arrangement) {
+  return list_valid_dense_fully_quantized_configs_for_arrangement_v1(
+      configs, capacity, m, n, k, group_size, qtype, arrangement);
 }
 
 extern "C" int32_t quactlize_ppu_list_valid_grouped_fully_quantized_configs_v2(
@@ -735,9 +900,10 @@ extern "C" int quactlize_ppu_dense_lowbit(uint16_t const* act, uint8_t const* lo
 }
 
 // FULLY_QUANTIZED x DENSE, format-selected k-quants. This is only a second ABI contract: it instantiates the SAME
-// dense() wrapper and CollectiveBuilder as scale-first. Q2/Q3/Q4/Q5 use TileK=256; Q6 keeps the required TileK=128
-// high-plane placement and selects one of two group runs from each superblock. The two-plane collective's scale
-// channel calls the same packed helpers and stages paired units without changing weight-plane placement.
+// dense() wrapper and CollectiveBuilder as scale-first. Q2/Q3/Q4/Q5 use tactic TileK=256; Q6 keeps tactic TileK=128.
+// The legacy resident-byte arrangement remains fully_quantized_tile_k, exactly as before the versioned descriptor;
+// new Python artifacts use the arrangement-aware entry even at their no-tile scale-first default. The two-plane
+// collective's scale channel stages paired units without silently replacing an explicit artifact identity.
 // Builds without PPU_PACKED_SCALE retain the symbol but return 34.
 extern "C" int quactlize_ppu_dense_fully_quantized_config_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
@@ -747,26 +913,31 @@ extern "C" int quactlize_ppu_dense_fully_quantized_config_v1(
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
   if (qtype != 12) return 33;
-  return dense<cutlass::int4b_t, void, 32, ppu_formats::for_qtype(12).fully_quantized_tile_k, true>(
+  return dense<cutlass::int4b_t, void, 32, ppu_formats::for_qtype(12).fully_quantized_tile_k, true,
+               ppu_formats::for_qtype(12).fully_quantized_tile_k>(
       act, low, nullptr, units, nullptr, out, m, n, k, 32, config);
 #elif PPU_PACKED_FORMAT == 2
   if (qtype != 10) return 33;
-  return dense<cutlass::uint2b_t, void, 16, ppu_formats::for_qtype(10).fully_quantized_tile_k, true>(
+  return dense<cutlass::uint2b_t, void, 16, ppu_formats::for_qtype(10).fully_quantized_tile_k, true,
+               ppu_formats::for_qtype(10).fully_quantized_tile_k>(
       act, low, nullptr, units, nullptr, out, m, n, k, 16, config);
 #elif PPU_PACKED_FORMAT == 1
   if (qtype != 13 || !high) return 33;
   return dense<cutlass::int4b_t, cutlass::uint1b_t, 32,
-               ppu_formats::for_qtype(13).fully_quantized_tile_k, true>(
+               ppu_formats::for_qtype(13).fully_quantized_tile_k, true,
+               ppu_formats::for_qtype(13).fully_quantized_tile_k>(
       act, low, high, units, nullptr, out, m, n, k, 32, config);
 #elif PPU_PACKED_FORMAT == 3
   if (qtype != 11 || !high || k % 512) return 33;
   return dense<cutlass::uint2b_t, cutlass::uint1b_t, 16,
-               ppu_formats::for_qtype(11).fully_quantized_tile_k, true>(
+               ppu_formats::for_qtype(11).fully_quantized_tile_k, true,
+               ppu_formats::for_qtype(11).fully_quantized_tile_k>(
       act, low, high, units, nullptr, out, m, n, k, 16, config);
 #elif PPU_PACKED_FORMAT == 4
   if (qtype != 14 || !high || k % 512) return 33;
   return dense<cutlass::int4b_t, cutlass::uint2b_t, 16,
-               ppu_formats::for_qtype(14).fully_quantized_tile_k, true>(
+               ppu_formats::for_qtype(14).fully_quantized_tile_k, true,
+               ppu_formats::for_qtype(14).fully_quantized_tile_k>(
       act, low, high, units, nullptr, out, m, n, k, 16, config);
 #else
   (void)qtype;
@@ -784,6 +955,51 @@ extern "C" int quactlize_ppu_dense_fully_quantized(
     int m, int n, int k, int qtype) {
   return quactlize_ppu_dense_fully_quantized_config_v1(
       act, low, high, units, out, m, n, k, qtype, nullptr);
+}
+
+extern "C" int quactlize_ppu_dense_fully_quantized_for_arrangement_v1(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
+    int m, int n, int k, int qtype,
+    quactlize_ppu_placed_arrangement_v1 const* arrangement, char const* config_name) {
+  if (!act || !low || !units || !out || m <= 0 || n <= 0 || k <= 0 || n % 256 || k % 256) return 30;
+  if (!selected_fully_quantized_qtype(qtype, k) ||
+      !ppu_arrangements::packed_tensor_reader_supported(
+          arrangement, qtype, k, ppu_formats::for_qtype(qtype).fully_quantized_tile_k)) return 38;
+  DenseConfigId config{};
+  if (!find_dense_config(config_name, config)) return 39;
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
+#if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
+  if (qtype != 12) return 33;
+  return dense_fully_quantized_for_arrangement<12, cutlass::int4b_t, void, 32,
+      ppu_formats::for_qtype(12).fully_quantized_tile_k>(
+          act, low, nullptr, units, out, m, n, k, config, arrangement->artifact_tile_k);
+#elif PPU_PACKED_FORMAT == 2
+  if (qtype != 10) return 33;
+  return dense_fully_quantized_for_arrangement<10, cutlass::uint2b_t, void, 16,
+      ppu_formats::for_qtype(10).fully_quantized_tile_k>(
+          act, low, nullptr, units, out, m, n, k, config, arrangement->artifact_tile_k);
+#elif PPU_PACKED_FORMAT == 1
+  if (qtype != 13 || !high) return 33;
+  return dense_fully_quantized_for_arrangement<13, cutlass::int4b_t, cutlass::uint1b_t, 32,
+      ppu_formats::for_qtype(13).fully_quantized_tile_k>(
+          act, low, high, units, out, m, n, k, config, arrangement->artifact_tile_k);
+#elif PPU_PACKED_FORMAT == 3
+  if (qtype != 11 || !high || k % 512) return 33;
+  return dense_fully_quantized_for_arrangement<11, cutlass::uint2b_t, cutlass::uint1b_t, 16,
+      ppu_formats::for_qtype(11).fully_quantized_tile_k>(
+          act, low, high, units, out, m, n, k, config, arrangement->artifact_tile_k);
+#elif PPU_PACKED_FORMAT == 4
+  if (qtype != 14 || !high || k % 512) return 33;
+  return dense_fully_quantized_for_arrangement<14, cutlass::int4b_t, cutlass::uint2b_t, 16,
+      ppu_formats::for_qtype(14).fully_quantized_tile_k>(
+          act, low, high, units, out, m, n, k, config, arrangement->artifact_tile_k);
+#else
+  return 35;
+#endif
+#else
+  (void)high; (void)config;
+  return 34;
+#endif
 }
 
 extern "C" int64_t quactlize_ppu_dense_fully_quantized_workspace_bytes_v1(
@@ -804,32 +1020,87 @@ extern "C" int quactlize_ppu_dense_fully_quantized_dev_v2(
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
   return dense_fully_quantized_device<cutlass::int4b_t, void, 32,
+      ppu_formats::for_qtype(12).fully_quantized_tile_k,
       ppu_formats::for_qtype(12).fully_quantized_tile_k>(
       act, low, nullptr, units, out, m, n, k, config,
       workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 2
   return dense_fully_quantized_device<cutlass::uint2b_t, void, 16,
+      ppu_formats::for_qtype(10).fully_quantized_tile_k,
       ppu_formats::for_qtype(10).fully_quantized_tile_k>(
       act, low, nullptr, units, out, m, n, k, config,
       workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 1
   if (!high) return 33;
   return dense_fully_quantized_device<cutlass::int4b_t, cutlass::uint1b_t, 32,
+      ppu_formats::for_qtype(13).fully_quantized_tile_k,
       ppu_formats::for_qtype(13).fully_quantized_tile_k>(
       act, low, high, units, out, m, n, k, config,
       workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 3
   if (!high) return 33;
   return dense_fully_quantized_device<cutlass::uint2b_t, cutlass::uint1b_t, 16,
+      ppu_formats::for_qtype(11).fully_quantized_tile_k,
       ppu_formats::for_qtype(11).fully_quantized_tile_k>(
       act, low, high, units, out, m, n, k, config,
       workspace, size_t(workspace_bytes), s);
 #elif PPU_PACKED_FORMAT == 4
   if (!high) return 33;
   return dense_fully_quantized_device<cutlass::int4b_t, cutlass::uint2b_t, 16,
+      ppu_formats::for_qtype(14).fully_quantized_tile_k,
       ppu_formats::for_qtype(14).fully_quantized_tile_k>(
       act, low, high, units, out, m, n, k, config,
       workspace, size_t(workspace_bytes), s);
+#else
+  return 35;
+#endif
+#else
+  (void)high; (void)stream; (void)config;
+  return 34;
+#endif
+}
+
+extern "C" int quactlize_ppu_dense_fully_quantized_dev_for_arrangement_v1(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
+    int m, int n, int k, int qtype, void* workspace, int64_t workspace_bytes, void* stream,
+    char const* config_name, quactlize_ppu_placed_arrangement_v1 const* arrangement) {
+  int64_t const need = quactlize_ppu_dense_fully_quantized_workspace_bytes_v1(m, n, k, qtype);
+  if (!act || !low || !units || !out || !workspace || need < 0 || workspace_bytes < need) return 30;
+  if (!ppu_arrangements::packed_tensor_reader_supported(
+          arrangement, qtype, k, ppu_formats::for_qtype(qtype).fully_quantized_tile_k)) return 38;
+  DenseConfigId config{};
+  if (!find_dense_config(config_name, config)) return 39;
+  ppu_gemv::rt_clear_error();
+  hggcStream_t const s = static_cast<hggcStream_t>(stream);
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
+#if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
+  return dense_fully_quantized_device_for_arrangement<12, cutlass::int4b_t, void, 32,
+      ppu_formats::for_qtype(12).fully_quantized_tile_k>(
+          act, low, nullptr, units, out, m, n, k, config, workspace, size_t(workspace_bytes), s,
+          arrangement->artifact_tile_k);
+#elif PPU_PACKED_FORMAT == 2
+  return dense_fully_quantized_device_for_arrangement<10, cutlass::uint2b_t, void, 16,
+      ppu_formats::for_qtype(10).fully_quantized_tile_k>(
+          act, low, nullptr, units, out, m, n, k, config, workspace, size_t(workspace_bytes), s,
+          arrangement->artifact_tile_k);
+#elif PPU_PACKED_FORMAT == 1
+  if (!high) return 33;
+  return dense_fully_quantized_device_for_arrangement<13, cutlass::int4b_t, cutlass::uint1b_t, 32,
+      ppu_formats::for_qtype(13).fully_quantized_tile_k>(
+          act, low, high, units, out, m, n, k, config, workspace, size_t(workspace_bytes), s,
+          arrangement->artifact_tile_k);
+#elif PPU_PACKED_FORMAT == 3
+  if (!high) return 33;
+  return dense_fully_quantized_device_for_arrangement<11, cutlass::uint2b_t, cutlass::uint1b_t, 16,
+      ppu_formats::for_qtype(11).fully_quantized_tile_k>(
+          act, low, high, units, out, m, n, k, config, workspace, size_t(workspace_bytes), s,
+          arrangement->artifact_tile_k);
+#elif PPU_PACKED_FORMAT == 4
+  if (!high) return 33;
+  return dense_fully_quantized_device_for_arrangement<14, cutlass::int4b_t, cutlass::uint2b_t, 16,
+      ppu_formats::for_qtype(14).fully_quantized_tile_k>(
+          act, low, high, units, out, m, n, k, config, workspace, size_t(workspace_bytes), s,
+          arrangement->artifact_tile_k);
 #else
   return 35;
 #endif

@@ -4,9 +4,9 @@
 THE QUESTION THIS EXISTS TO ANSWER PRECISELY -- is the offline format M-dependent? The two halves have different
 answers and conflating them is the trap:
 
-  * THE BYTES ARE NOT chosen per M. ci/local_gates.py's lint_tactic_cannot_change_offline_layout enforces that no
-    config row carries TileK, and quactlize/include/ppu_format_config.inc fixes TileK per format. A sweep that
-    moved the layout per M would invalidate every artifact on disk.
+  * THE BYTES ARE NOT chosen per M. Each PlacedArtifact carries a versioned
+    PlacedArrangement(bits, artifact_tile_k, high_bits), and config selection receives that descriptor instead of
+    choosing an offline TileK. A sweep that moved the layout per M would invalidate every artifact on disk.
   * WHICH KERNEL READS THEM IS chosen per M. Three routes -- the CUDA-core GEMV at decode, the mixed-input GEMM in
     the middle, dequantise-then-dense at large M -- and two schemes (SCALE_FIRST, FULLY_QUANTIZED) whose TileK the
     registry deliberately makes DIFFERENT for four of the five k-quants.
@@ -23,11 +23,11 @@ F=2, F=4 and TK=512 each form their own class. So the fold is the discriminator 
 quactlize/layouts.py:xplane's `w{WON}k{TK}` token OVERNAMES at F=1, which is the same defect xplane_hi was
 already corrected for, and overnaming refuses a weight the kernel could read.
 
-So ONE ARTIFACT IS ENOUGH exactly while every plane is at F=1, and the registry's own rule ("the canonical
-minimum 32-byte run for the narrowest code plane: 256/bits") is precisely the rule that forces F=1. This tool
-CHECKS that rather than restating it: if a registry row ever became folded, its SCALE_FIRST and FULLY_QUANTIZED
-TileKs would stop being servable by one file AND the read path could not say which fold it holds -- both of
-which the report then states.
+F=1 is the layout-free fast case, not the read-ABI boundary. A folded artifact records the TileK from which both
+folds derive, and the three dense readers (fully-quantized GEMM, BC GEMV, and dequant-all) take that descriptor
+from the artifact. The backend's descriptor x tactic predicate then accepts or rejects a compiled reader; it never
+re-derives the artifact fold from the tactic. This tool checks that wiring below. It does NOT claim an arbitrary
+folded arrangement has a compiled tactic -- that is what list_valid_*_for_arrangement reports.
 
 THE EVIDENCE UNDER THAT, because the predicate's own docstring used to have none:
 dev/fold_derivation/l115_artifact_tactic_code_slots.cu walks xplane::place_from_map's physical address layouts
@@ -152,18 +152,7 @@ def plan_tensor(t: Tensor, row: dict) -> dict:
 
     conflicts = []
 
-    # CONFLICT 1 -- the two schemes want different TileK and the bytes are not TileK-free.
-    if sf != fq:
-        if f_sf and f_fq and f_sf[2] and f_fq[2]:
-            pass  # both F=1: TileK does not reach the stored bytes, so one file serves both
-        else:
-            bad = [f"SCALE_FIRST TK={sf} F={f_sf[:2] if f_sf else ef_sf}",
-                   f"FULLY_QUANTIZED TK={fq} F={f_fq[:2] if f_fq else ef_fq}"]
-            conflicts.append(
-                "TWO ARTIFACTS: the schemes want different TileK and at least one arrangement is not "
-                "TileK-free, so the same bytes cannot serve both -- " + "; ".join(bad))
-
-    # CONFLICT 2 -- ONLY FOR A FOLDED ARTIFACT, and this is a RETRACTION of what stood here first.
+    # THE OLD CONFLICTS ARE RETRACTED, FOR TWO SEPARATE REASONS.
     #
     # The original text reported that WON = TN/max(WN,16) is built from two per-row config fields, changes the
     # stored bytes (layouts.py:xplane says so), and cannot be recorded by PlacedArrangement -- so every tensor was
@@ -174,20 +163,19 @@ def plan_tensor(t: Tensor, row: dict) -> dict:
     # classes, and TK=512 at F=1 is a separate class again, which is where the TileK <= 256 boundary comes from.
     # So xplane's `w{WON}k{TK}` token OVERNAMES at F=1, exactly the defect xplane_hi was already corrected for.
     #
-    # What survives is narrower and real: a FOLDED artifact (F > 1 on some plane) is readable only by a tactic
-    # with the same fold, and routes.matmul_fully_quantized_dense cannot carry that fact -- it unpacks
-    # (low, high, units) and calls the op without tile_k, while prepare_fully_quantized_dense(..., tile_k=X)
-    # can produce exactly such an artifact through the *_for_tile op. The registry emits no folded row today, so
-    # this cannot fire; it exists so that changing one would not be silent.
-    folded = [f"{lbl} TK={tk} F={fl[0]}/{fl[1]}"
-              for lbl, tk, fl in (("SCALE_FIRST", sf, f_sf), ("FULLY_QUANTIZED", fq, f_fq))
-              if fl and not fl[2]]
-    if folded:
+    # What used to survive was "the read ABI cannot say which fold it holds". It no longer survives:
+    # prepare_fully_quantized_dense attaches PlacedArrangement to a versioned PlacedArtifact, and all three dense
+    # readers consume that object. The offline file uses the FULLY_QUANTIZED arrangement; SCALE_FIRST/BC and
+    # dequant readers receive that ARTIFACT TileK independently of their tactic TileK. Whether a compiled tactic
+    # accepts the pairing is an availability result from list_valid_*_for_arrangement, not a reason to silently
+    # build a second file. A missing compatible tactic must refuse at dispatch; it is not a storage conflict.
+    # GROUPED IS NOT CLAIMED HERE. Its producer/reader still use the fixed F=1 ABI. Today's registry rows are all
+    # tile-free, so that is harmless today; a future folded grouped row remains a real storage/ABI conflict until
+    # PlacedArtifact is carried through the grouped routes too.
+    if t.is_moe and sf != fq and not (f_sf and f_fq and f_sf[2] and f_fq[2]):
         conflicts.append(
-            "FOLDED ARTIFACT, AND THE READ PATH CANNOT SAY SO: " + "; ".join(folded) + ". A fold > 1 puts the "
-            "bytes in their own layout class (l105), so only a tactic with the same fold may read them -- but "
-            "routes.matmul_fully_quantized_dense takes (low, high, units) with no tile_k, so a folded artifact "
-            "would be read at the default fold: bytes present, pairing present, numbers wrong.")
+            "GROUPED FOLDED ARTIFACT HAS NO DESCRIPTOR ABI: the dense readers carry PlacedArrangement, but the "
+            f"grouped producer/reader are still fixed; SCALE_FIRST TK={sf}, FULLY_QUANTIZED TK={fq}")
 
     # The status of each cell, taken from the matrix rather than assumed.
     cells = {}
@@ -222,11 +210,12 @@ def plan_tensor(t: Tensor, row: dict) -> dict:
 def invariants() -> list:
     """The claims this tool's headline rests on, each as a check that can FAIL rather than a sentence.
 
-    1. Every registry row is TileK-free at BOTH of its TileKs. This is what makes "one artifact per tensor" true;
-       the registry's 256/bits rule is what forces it. If it ever fails, the report's conflict 1 fires and the
-       operator has a storage decision to make -- so it must be checked, not asserted.
+    1. Every registry row names a constructible arrangement at BOTH historical TileKs. Tile-free is printed as
+       context, not required: the descriptor is what makes a folded artifact readable without guessing.
     2. The shipped placement pins ONE WON. unfused_weight_dequantize.hpp calls place_derived with TN=64, WN=32,
        i.e. WON=2. If that ever becomes two call sites with different ratios, an artifact serves neither.
+    3. The producer attaches the versioned descriptor and EACH of the three dense readers consumes it. A class
+       existing somewhere in routes.py is not evidence that a reader uses it, so this is checked per function.
     """
     out = []
     reg = format_registry()
@@ -241,7 +230,7 @@ def invariants() -> list:
             if ferr:
                 out.append((False, f"{row['name']} {label} TK={tk}: {ferr}"))
             else:
-                out.append((fl[2], f"{row['name']:<5} {label:<16} TK={tk:<3} F={fl[0]} F_hi={fl[1]} "
+                out.append((True, f"{row['name']:<5} {label:<16} TK={tk:<3} F={fl[0]} F_hi={fl[1]} "
                                    f"tile-free={fl[2]}"))
 
     src = (ROOT / "quactlize" / "include" / "unfused_weight_dequantize.hpp").read_text()
@@ -251,6 +240,25 @@ def invariants() -> list:
     out.append((len(wons) == 1,
                 f"shipping placement pins WON={sorted(wons)} over {len(calls)} place_derived call sites "
                 f"in unfused_weight_dequantize.hpp"))
+
+    routes_src = (ROOT / "quactlize" / "routes.py").read_text()
+
+    def body(name):
+        match = re.search(rf"^def {name}\(.*?(?=^def |\Z)", routes_src, re.M | re.S)
+        return match.group(0) if match else ""
+
+    producer = body("prepare_fully_quantized_dense")
+    out.append(("PlacedArtifact(" in producer and "placed_arrangement(" in producer,
+                "dense producer attaches PlacedArrangement to PlacedArtifact"))
+    reader_contracts = {
+        "matmul_fully_quantized_dense": "gguf_dense_fully_quantized_for_arrangement",
+        "matmul_bc_gemv": "gguf_gemv_bc_for_arrangement",
+        "dequantize_fully_quantized": "artifact_dequantize_for_tile",
+    }
+    for name, seam in reader_contracts.items():
+        src = body(name)
+        ok = "_require_placed_artifact(" in src and seam in src
+        out.append((ok, f"{name} consumes versioned artifact descriptor through {seam}"))
     return out
 
 
@@ -298,8 +306,13 @@ def main() -> int:
                 p = plan_tensor(t, reg[fname])
                 f_sf = f"F={p['f_sf'][0]}/{p['f_sf'][1]}" if p["f_sf"] else f"({p['ef_sf']})"
                 f_fq = f"F={p['f_fq'][0]}/{p['f_fq'][1]}" if p["f_fq"] else f"({p['ef_fq']})"
-                free = "one artifact serves both TileK" if (p["f_sf"] and p["f_fq"]
-                                                            and p["f_sf"][2] and p["f_fq"][2]) else "SEE CONFLICT"
+                if p["tensor"].is_moe:
+                    free = ("one tile-free grouped artifact" if (p["f_sf"] and p["f_fq"]
+                                                                  and p["f_sf"][2] and p["f_fq"][2])
+                            else "SEE CONFLICT")
+                else:
+                    free = (f"one descriptor-bound artifact (artifact TK={p['fq']}); reader tactic checked at dispatch"
+                            if p["f_fq"] else "SEE CONFLICT")
                 nb = p["bytes_total"]
                 print(f"    {fname}  planes {p['row']['low_bits']}"
                       f"{'+' + str(p['row']['high_bits']) if p['row']['high_bits'] else ''} bit"

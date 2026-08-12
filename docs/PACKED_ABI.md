@@ -24,9 +24,14 @@ Everything `extern "C"` in the library today. Grouped by what it is for, so a mi
 | `quactlize_ppu_prepare_units_grouped` | blocks → `units` | expert-major forward producer |
 | `quactlize_ppu_prepass_unit` | `units` → (scale, zero) | metadata inverse |
 | `quactlize_ppu_dense_fully_quantized` | consume | packed dense GEMM |
+| `quactlize_ppu_dense_fully_quantized_for_arrangement_v1` | consume | versioned artifact descriptor; never guesses fold |
+| `quactlize_ppu_dense_fully_quantized_dev_for_arrangement_v1` | consume device pointers | asynchronous descriptor-aware dense reader |
+| `quactlize_ppu_list_valid_dense_fully_quantized_configs_for_arrangement_v1` | query | descriptor-aware tactic inventory |
+| `quactlize_ppu_dense_fully_quantized_config_valid_for_arrangement_v1` | query | shared inventory/launch predicate |
 | `quactlize_ppu_grouped_fully_quantized` | consume | packed MoE GEMM |
 | `quactlize_ppu_vecdot`, `_dense`, `_moe` | consume RAW blocks | the other path, not this one |
-| `quactlize_ppu_bc_gemv`, `_gemv_lowbit`, `_dense_lowbit` | consume | GEMV / low-bit variants |
+| `quactlize_ppu_bc_gemv`, `_gemv_lowbit`, `_dense_lowbit` | consume | legacy/default-arrangement GEMV / low-bit variants |
+| `quactlize_ppu_bc_gemv_for_arrangement_v1`, `_dev_v1` | consume | descriptor-aware BC host/device readers |
 | `quactlize_ppu_dequantize`, `_prepass` | consume RAW | dequant and online scale prepass |
 
 ## 2. The asymmetry that decides how many libraries you build
@@ -99,18 +104,25 @@ int quactlize_ppu_recover_dense_for_tile(const uint8_t *low_layout, const uint8_
 
 Per format:
 
-| qtype | format | planes | code | TileK | `units` unit, copyable |
-|---|---|---|---|---|---|
-| 10 | Q2_K | 1 | i2 | 256 | 20 B |
-| 11 | Q3_K | 2 | i2 + i1 | 256 | 28 B (two superblocks paired) |
-| 12 | Q4_K | 1 | i4 | 256 | 16 B |
-| 13 | Q5_K | 2 | i4 + i1 | 256 | 16 B |
-| 14 | Q6_K | 2 | i4 + i2 | **128** | 36 B (paired) |
+| qtype | format | planes | code | default artifact TileK | packed tactic TileK | `units` unit, copyable |
+|---|---|---|---|---:|---:|---|
+| 10 | Q2_K | 1 | i2 | **128** | 256 | 20 B |
+| 11 | Q3_K | 2 | i2 + i1 | 256 | 256 | 28 B (two superblocks paired) |
+| 12 | Q4_K | 1 | i4 | **64** | 256 | 16 B |
+| 13 | Q5_K | 2 | i4 + i1 | 256 | 256 | 16 B |
+| 14 | Q6_K | 2 | i4 + i2 | **128** | **128** | 36 B (paired) |
 
 `high_native` / `high_layout` are `nullptr` for the single-plane formats.
 
-**Q6_K's 128 is not a preference.** At TK=256 the two-plane high map covers only half the logical K slots and
+The first TileK identifies resident bytes; the second identifies a compute tactic.  They are deliberately separate.
+An explicit `*_for_tile` producer records its own value instead of using the default. **Q6_K's 128 is not a
+preference.** At artifact TK=256 the two-plane high map covers only half the logical K slots and
 produces conditioned error 8.76e-1; the inverse is what caught it. Do not "fix" it to 256.
+
+The table's **default artifact TileK** is the no-`tile_k` Python producer's scale-first placement.  It is not a
+retroactive change to the unversioned readers: legacy dense fully-quantized Q2/Q4 and legacy BC still consume their
+historical fully-quantized placement at artifact TileK 256.  Therefore bytes from the default Q2/Q4 producer must
+go through the arrangement-aware successor; passing them to the old C entry is an ABI mismatch, not compatibility.
 
 The pairing rule behind the unit size is `supers = 2 if per_superblock_meta % 4 else 1`, because `ppu.cp.async`
 moves only 4, 8 or 16 bytes and Q3's 14 and Q6's 18 are movable at none of them.
@@ -135,6 +147,13 @@ int quactlize_ppu_dense_fully_quantized(const uint16_t *act,
                                         uint16_t *out,
                                         int m, int n, int k, int qtype);
 
+// Arrangement-aware successor. The descriptor is part of the artifact identity and is checked by the same
+// predicate used by the v3 tactic inventory. Unknown/mismatched arrangements fail before launch.
+int quactlize_ppu_dense_fully_quantized_for_arrangement_v1(
+    const uint16_t *act, const uint8_t *low, const uint8_t *high, const uint8_t *units,
+    uint16_t *out, int m, int n, int k, int qtype,
+    const quactlize_ppu_placed_arrangement_v1 *arrangement, const char *config_name);
+
 // GROUPED (MoE). Experts lie back to back in low/high/units; rows_per_expert is int[experts] and total_rows is
 // their sum; act rows are grouped by expert in the same order.
 int quactlize_ppu_grouped_fully_quantized(const uint16_t *act,
@@ -155,6 +174,10 @@ int quactlize_ppu_grouped_fully_quantized(const uint16_t *act,
 
 On any non-zero return **`out` has not been written**. Abort; do not fall through to another kernel, or the model
 consumes uninitialised memory.
+
+The current packed tensor collective accepts folded Q3/Q5/Q6 two-plane artifacts through this descriptor. A
+single-plane Q2/Q4 artifact with `F>1` is deliberately fail-closed: that collective does not yet stage packed
+metadata for the folded delivery. This is an implementation boundary, not permission to reinterpret it as F=1.
 
 Device-runtime failures return 41; the library never calls `exit` for them. The output D2H is staged through a
 private host buffer and committed only after the copy succeeds, so this rule includes a failed output copy rather
@@ -183,18 +206,20 @@ This is the higher-level wrapper over the §3 producer, and how `tools/pack_gguf
 ```python
 from quactlize import routes, formats
 
-low, high, units = routes.prepare_fully_quantized_dense(blocks, n, k, qtype)                 # fixed arrangement
-low, high, units = routes.prepare_fully_quantized_dense(blocks, n, k, qtype, tile_k=128)     # tile-aware
+artifact = routes.prepare_fully_quantized_dense(blocks, n, k, qtype)                 # fixed arrangement
+artifact = routes.prepare_fully_quantized_dense(blocks, n, k, qtype, tile_k=128)     # tile-aware
 low, high, units = routes.prepare_fully_quantized_grouped(blocks, n, k, qtype, num_experts)  # MoE
 
-native      = routes.dequantize_fully_quantized(low, high, units, n, k, qtype)   # inverses, for telling a
-scale, zero = routes.dequantize_scale_from_units(units, qtype)                   # packing bug from a compute bug
+native      = routes.dequantize_fully_quantized(artifact, qtype)                 # descriptor selects inverse
+scale, zero = routes.dequantize_scale_from_units(artifact[-1], qtype)            # metadata-only diagnostic
 ```
 
 `blocks` is the raw GGUF tensor viewed as `[n * k/256, block_bytes]`, CPU, contiguous.
 
-The returned tuple's **shape does not vary with format**: `high` is EMPTY for a single-plane one, so `units` is
-always the LAST element. Index it as `[-1]`, never as `[1]` or `[2]`.
+`PlacedArtifact` remains tuple-compatible: `high` is EMPTY for a single-plane format and `units` is always last.
+Its versioned `PlacedArrangement(bits,tile_k,high_bits)` is nevertheless part of the object identity and survives
+copy/pickle/manifest round trips. Stripping it to `tuple` is rejected by all three readers; they never ask the caller
+to remember a parallel `tile_k` argument.
 
 Whole-model driver: `python3 tools/pack_gguf.py MODEL.gguf OUT_DIR [--dry-run]`. `--dry-run` reports the type mix
 — i.e. how many format-specific libraries a deployment of that file needs — without touching the device.

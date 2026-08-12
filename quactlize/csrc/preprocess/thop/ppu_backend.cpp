@@ -1,11 +1,10 @@
 #include "thop/ppu_backend.h"
 
 #include <dlfcn.h>
+#include <cstdlib>
 #include <map>
 #include <mutex>
 #include <string>
-#include <cstdlib>
-#include <mutex>
 
 namespace torch_ext {
 namespace ppu_backend {
@@ -105,6 +104,9 @@ State& state(int fmt) {
     dlerror();
     s.api.bc_gemv = reinterpret_cast<decltype(s.api.bc_gemv)>(dlsym(h, "quactlize_ppu_bc_gemv"));
     dlerror();
+    s.api.bc_gemv_for_arrangement = reinterpret_cast<decltype(s.api.bc_gemv_for_arrangement)>(
+        dlsym(h, "quactlize_ppu_bc_gemv_for_arrangement_v1"));
+    dlerror();
     if (!sym("quactlize_ppu_gemv_lowbit", reinterpret_cast<void**>(&s.api.gemv_lowbit))) return s;
     // Dense tensor-core symbols are hgcc-only. Do not make their absence invalidate a plain-nvcc CUDA-core GEMV
     // library; the dense op checks these pointers explicitly and refuses instead of falling back.
@@ -123,6 +125,14 @@ State& state(int fmt) {
     dlerror();
     s.api.dense_fully_quantized = reinterpret_cast<decltype(s.api.dense_fully_quantized)>(
         dlsym(h, "quactlize_ppu_dense_fully_quantized"));
+    dlerror();
+    s.api.dense_fully_quantized_for_arrangement =
+        reinterpret_cast<decltype(s.api.dense_fully_quantized_for_arrangement)>(
+            dlsym(h, "quactlize_ppu_dense_fully_quantized_for_arrangement_v1"));
+    dlerror();
+    s.api.dense_fully_quantized_arrangement_valid =
+        reinterpret_cast<decltype(s.api.dense_fully_quantized_arrangement_valid)>(
+            dlsym(h, "quactlize_ppu_dense_fully_quantized_config_valid_for_arrangement_v1"));
     dlerror();
     s.api.grouped_fully_quantized = reinterpret_cast<decltype(s.api.grouped_fully_quantized)>(
         dlsym(h, "quactlize_ppu_grouped_fully_quantized"));

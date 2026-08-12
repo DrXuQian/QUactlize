@@ -15,6 +15,7 @@
 #include <torch/script.h>
 
 #include <cstdint>
+#include <climits>
 #include <cstring>
 #include <cstdlib>
 #include <algorithm>
@@ -24,6 +25,7 @@
 #include "gguf_vecdot.hpp"
 #include "gguf_packed_unit.hpp"
 #include "gguf_unit_pack.hpp"
+#include "ppu_format_config.hpp"
 #include "weight_layout.h"
 #include "thop/th_utils.h"
 #include "thop/ppu_backend.h"
@@ -46,6 +48,16 @@ bool cpu_reference_allowed() {
 }
 
 constexpr int64_t kGgmlQ2K = 10, kGgmlQ3K = 11, kGgmlQ4K = 12, kGgmlQ5K = 13, kGgmlQ6K = 14;
+
+// PPU_PACKED_FORMAT is a build identity, not the GGML qtype. Kernel readers must open the library compiled for the
+// tensor's format; otherwise a mixed checkpoint can hand a valid descriptor to the wrong binary. Consume the same
+// X-macro registry as the device rather than maintaining a second qtype -> binary mapping in the torch seam.
+int packed_format_for_qtype(int64_t qtype) {
+  auto const& format = ppu_formats::for_qtype(int(qtype));
+  TORCH_CHECK(format.qtype >= 0 && format.packed_format >= 0,
+              "no format-selected PPU library is registered for ggml type ", qtype);
+  return format.packed_format;
+}
 
 // ONE PLACE THAT KNOWS EVERY FORMAT, so adding one cannot be half-done. The alternative -- a switch per property --
 // is how a format ends up with the right group count and the wrong block size.
@@ -479,7 +491,8 @@ namespace {
 
 torch::Tensor gguf_gemv_bc_impl(torch::Tensor a, torch::Tensor low, torch::Tensor high,
                                 torch::Tensor units, torch::Tensor row_offsets,
-                                int64_t qtype, bool grouped) {
+                                int64_t qtype, bool grouped,
+                                quactlize_ppu_placed_arrangement_v1 const* arrangement = nullptr) {
   CHECK_CPU(a); CHECK_CONTIGUOUS(a); CHECK_CPU(low); CHECK_CONTIGUOUS(low);
   CHECK_CPU(units); CHECK_CONTIGUOUS(units);
   TORCH_CHECK((a.dtype() == torch::kFloat16 || a.dtype() == torch::kFloat32) && a.dim() == 2,
@@ -548,13 +561,33 @@ torch::Tensor gguf_gemv_bc_impl(torch::Tensor a, torch::Tensor low, torch::Tenso
   torch::Tensor out = torch::empty({a.size(0), n},
       torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
   if (a.size(0) == 0) return out;
+  // BC is one generic CUDA-core library: its arrangement-aware entry runtime-dispatches all five qtypes and never
+  // reads PPU_PACKED_FORMAT. Only the tensor-core fully-quantized reader below is format-selected at build time.
   auto const* api = ppu_backend::load();
-  TORCH_CHECK(api && api->bc_gemv,
-              "BC GEMV requires libquactlize_ppu.so with the merged-artifact CUDA-core symbol");
-  TORCH_CHECK(api->bc_gemv(reinterpret_cast<uint16_t const*>(get_ptr<at::Half const>(a16)),
-                           get_ptr<uint8_t const>(low), hp, get_ptr<uint8_t const>(units), off,
-                           get_ptr<float>(out), int(a.size(0)), n, k, experts, max_rows, int(qtype)) == 0,
-              "PPU BC GEMV failed");
+  TORCH_CHECK(api, "BC GEMV requires libquactlize_ppu.so");
+  int rc = 0;
+  if (arrangement) {
+    TORCH_CHECK(arrangement->version == QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V1,
+                "unknown placed-artifact arrangement version ", arrangement->version);
+    TORCH_CHECK(arrangement->bits == meta[0] && arrangement->high_bits == meta[1],
+                "placed-artifact bit widths do not match qtype");
+    TORCH_CHECK(arrangement->artifact_tile_k > 0 && k % arrangement->artifact_tile_k == 0,
+                "placed-artifact TileK must be positive and divide k");
+    TORCH_CHECK(api->bc_gemv_for_arrangement,
+                "BC GEMV reader lacks the arrangement-aware ABI; refusing to reinterpret folded bytes with the "
+                "registry-default reader");
+    rc = api->bc_gemv_for_arrangement(
+        reinterpret_cast<uint16_t const*>(get_ptr<at::Half const>(a16)), get_ptr<uint8_t const>(low), hp,
+        get_ptr<uint8_t const>(units), off, get_ptr<float>(out), int(a.size(0)), n, k, experts, max_rows,
+        int(qtype), arrangement);
+  } else {
+    TORCH_CHECK(api->bc_gemv,
+                "BC GEMV requires libquactlize_ppu.so with the merged-artifact CUDA-core symbol");
+    rc = api->bc_gemv(reinterpret_cast<uint16_t const*>(get_ptr<at::Half const>(a16)),
+                      get_ptr<uint8_t const>(low), hp, get_ptr<uint8_t const>(units), off,
+                      get_ptr<float>(out), int(a.size(0)), n, k, experts, max_rows, int(qtype));
+  }
+  TORCH_CHECK(rc == 0, "PPU BC GEMV failed (rc=", rc, ")");
   return out;
 }
 
@@ -563,6 +596,20 @@ torch::Tensor gguf_gemv_bc_impl(torch::Tensor a, torch::Tensor low, torch::Tenso
 torch::Tensor gguf_gemv_bc(torch::Tensor a, torch::Tensor low, torch::Tensor high,
                            torch::Tensor units, int64_t qtype) {
   return gguf_gemv_bc_impl(a, low, high, units, torch::Tensor(), qtype, false);
+}
+
+torch::Tensor gguf_gemv_bc_for_arrangement(
+    torch::Tensor a, torch::Tensor low, torch::Tensor high, torch::Tensor units, int64_t qtype,
+    int64_t version, int64_t bits, int64_t artifact_tile_k, int64_t high_bits) {
+  TORCH_CHECK(version == QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V1,
+              "unsupported placed-artifact descriptor version ", version);
+  TORCH_CHECK(bits > 0 && bits <= INT32_MAX && high_bits >= 0 && high_bits <= INT32_MAX,
+              "placed-artifact bit widths are outside the int32 ABI domain");
+  TORCH_CHECK(artifact_tile_k > 0 && artifact_tile_k <= INT32_MAX,
+              "placed-artifact TileK is outside the positive int32 ABI domain");
+  quactlize_ppu_placed_arrangement_v1 const arrangement{
+      int32_t(version), int32_t(bits), int32_t(artifact_tile_k), int32_t(high_bits)};
+  return gguf_gemv_bc_impl(a, low, high, units, torch::Tensor(), qtype, false, &arrangement);
 }
 
 torch::Tensor gguf_gemv_bc_moe(torch::Tensor a, torch::Tensor low, torch::Tensor high,
@@ -618,12 +665,13 @@ torch::Tensor gguf_dense_scale_first(torch::Tensor a, torch::Tensor low, torch::
 
 // FULLY_QUANTIZED x DENSE, format-selected k-quants. `low`, optional `high`, and `units` are resident artifacts: the
 // code planes have crossed fixed xplane placement and units have crossed gguf_pack_unit's byte-neutral reorder. No
-// decode happens here;
-// its device entry is an explicit TileK=256 instantiation of the shared CollectiveBuilder packed-scale mainloop.
+// decode happens here.  The device tactic TileK remains format-selected, while an arrangement-aware call carries
+// the artifact TileK independently; conflating those two is precisely what made a folded artifact unreadable.
 // Keeping the contract separate from gguf_dense_scale_first prevents a flagged binary from interpreting an fp16
 // scale plane as raw unit bytes. The build-time PPU_PACKED_FORMAT selects which unit trait the device consumes.
-torch::Tensor gguf_dense_fully_quantized(torch::Tensor a, torch::Tensor low, torch::Tensor high, torch::Tensor units,
-                                          int64_t qtype) {
+torch::Tensor gguf_dense_fully_quantized_impl(
+    torch::Tensor a, torch::Tensor low, torch::Tensor high, torch::Tensor units,
+    int64_t qtype, quactlize_ppu_placed_arrangement_v1 const* arrangement = nullptr) {
   CHECK_CPU(a); CHECK_CONTIGUOUS(a); CHECK_CPU(low); CHECK_CONTIGUOUS(low);
   CHECK_CPU(high); CHECK_CONTIGUOUS(high); CHECK_CPU(units); CHECK_CONTIGUOUS(units);
   auto const meta = dispatch_ktype(qtype, [](auto tag) -> std::vector<int64_t> {
@@ -653,21 +701,73 @@ torch::Tensor gguf_dense_fully_quantized(torch::Tensor a, torch::Tensor low, tor
   }
   TORCH_CHECK(units.size(0) == k / (256 * meta[3]) && units.size(1) == n,
               "packed unit shape disagrees with the dense artifact");
+  if (arrangement) {
+    TORCH_CHECK(arrangement->version == QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V1,
+                "unknown placed-artifact arrangement version ", arrangement->version);
+    TORCH_CHECK(arrangement->bits == meta[0] && arrangement->high_bits == meta[1],
+                "placed-artifact bit widths do not match qtype");
+    TORCH_CHECK(arrangement->artifact_tile_k > 0 && k % arrangement->artifact_tile_k == 0,
+                "placed-artifact TileK must be positive and divide k");
+  }
 
   torch::Tensor a16 = a.dtype() == torch::kFloat16 ? a : a.to(torch::kFloat16);
   torch::Tensor out = torch::empty({m, n}, torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCPU));
+  auto const* api = arrangement ? ppu_backend::load_format(packed_format_for_qtype(qtype))
+                                : ppu_backend::load();
+  TORCH_CHECK(api, "fully-quantized dense requires a current hgcc libquactlize_ppu.so");
+  if (arrangement) {
+    int const group_size = (qtype == kGgmlQ4K || qtype == kGgmlQ5K) ? 32 : 16;
+    TORCH_CHECK(api->dense_fully_quantized_for_arrangement,
+                "fully-quantized dense reader lacks the arrangement-aware ABI; refusing to reinterpret folded "
+                "bytes with the registry-default reader");
+    TORCH_CHECK(api->dense_fully_quantized_arrangement_valid,
+                "fully-quantized dense reader lacks the shared arrangement predicate; refusing an artifact whose "
+                "descriptor this binary cannot prove it consumes");
+    // Validity is independent of M once M is positive.  Probe one row before the empty-M fast return so an
+    // unsupported F=2 artifact cannot obtain a vacuous success merely by presenting a [0,K] activation.
+    TORCH_CHECK(api->dense_fully_quantized_arrangement_valid(
+                    std::max(m, 1), n, k, group_size, int(qtype), arrangement, nullptr) == 1,
+                "fully-quantized dense artifact arrangement has no compatible compiled reader");
+  }
   if (m == 0) return out;
-  auto const* api = ppu_backend::load();
-  TORCH_CHECK(api && api->dense_fully_quantized,
-              "fully-quantized dense requires a current hgcc libquactlize_ppu.so");
-  int const rc = api->dense_fully_quantized(
-      reinterpret_cast<uint16_t const*>(get_ptr<at::Half const>(a16)), get_ptr<uint8_t const>(low),
-      high.numel() ? get_ptr<uint8_t const>(high) : nullptr, get_ptr<uint8_t const>(units),
-      reinterpret_cast<uint16_t*>(get_ptr<at::Half>(out)),
-      m, n, k, int(qtype));
+  int rc = 0;
+  if (arrangement) {
+    rc = api->dense_fully_quantized_for_arrangement(
+        reinterpret_cast<uint16_t const*>(get_ptr<at::Half const>(a16)), get_ptr<uint8_t const>(low),
+        high.numel() ? get_ptr<uint8_t const>(high) : nullptr, get_ptr<uint8_t const>(units),
+        reinterpret_cast<uint16_t*>(get_ptr<at::Half>(out)),
+        m, n, k, int(qtype), arrangement, nullptr);
+  } else {
+    TORCH_CHECK(api->dense_fully_quantized,
+                "fully-quantized dense requires a current hgcc libquactlize_ppu.so");
+    rc = api->dense_fully_quantized(
+        reinterpret_cast<uint16_t const*>(get_ptr<at::Half const>(a16)), get_ptr<uint8_t const>(low),
+        high.numel() ? get_ptr<uint8_t const>(high) : nullptr, get_ptr<uint8_t const>(units),
+        reinterpret_cast<uint16_t*>(get_ptr<at::Half>(out)),
+        m, n, k, int(qtype));
+  }
   TORCH_CHECK(rc == 0, "PPU fully-quantized dense GEMM failed (rc=", rc,
               "; rc=34 means this library is not built with PPU_PACKED_SCALE=1)");
   return out;
+}
+
+torch::Tensor gguf_dense_fully_quantized(
+    torch::Tensor a, torch::Tensor low, torch::Tensor high, torch::Tensor units, int64_t qtype) {
+  return gguf_dense_fully_quantized_impl(a, low, high, units, qtype);
+}
+
+torch::Tensor gguf_dense_fully_quantized_for_arrangement(
+    torch::Tensor a, torch::Tensor low, torch::Tensor high, torch::Tensor units, int64_t qtype,
+    int64_t version, int64_t bits, int64_t artifact_tile_k, int64_t high_bits) {
+  TORCH_CHECK(version == QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V1,
+              "unsupported placed-artifact descriptor version ", version);
+  TORCH_CHECK(bits > 0 && bits <= INT32_MAX && high_bits >= 0 && high_bits <= INT32_MAX,
+              "placed-artifact bit widths are outside the int32 ABI domain");
+  TORCH_CHECK(artifact_tile_k > 0 && artifact_tile_k <= INT32_MAX,
+              "placed-artifact TileK is outside the positive int32 ABI domain");
+  quactlize_ppu_placed_arrangement_v1 const arrangement{
+      int32_t(version), int32_t(bits), int32_t(artifact_tile_k), int32_t(high_bits)};
+  return gguf_dense_fully_quantized_impl(a, low, high, units, qtype, &arrangement);
 }
 
 torch::Tensor gguf_grouped_fully_quantized(torch::Tensor a, torch::Tensor low, torch::Tensor high, torch::Tensor units,
@@ -1532,6 +1632,9 @@ static auto gguf_gemv_scale_first_moe_op =
 static auto gguf_gemv_bc_op =
     torch::RegisterOperators("quactlize::gguf_gemv_bc", &torch_ext::gguf_gemv_bc);
 
+static auto gguf_gemv_bc_for_arrangement_op = torch::RegisterOperators(
+    "quactlize::gguf_gemv_bc_for_arrangement", &torch_ext::gguf_gemv_bc_for_arrangement);
+
 static auto gguf_gemv_bc_moe_op =
     torch::RegisterOperators("quactlize::gguf_gemv_bc_moe", &torch_ext::gguf_gemv_bc_moe);
 
@@ -1540,6 +1643,10 @@ static auto gguf_dense_scale_first_op =
 
 static auto gguf_dense_fully_quantized_op = torch::RegisterOperators(
     "quactlize::gguf_dense_fully_quantized", &torch_ext::gguf_dense_fully_quantized);
+
+static auto gguf_dense_fully_quantized_for_arrangement_op = torch::RegisterOperators(
+    "quactlize::gguf_dense_fully_quantized_for_arrangement",
+    &torch_ext::gguf_dense_fully_quantized_for_arrangement);
 
 static auto gguf_grouped_fully_quantized_op = torch::RegisterOperators(
     "quactlize::gguf_grouped_fully_quantized", &torch_ext::gguf_grouped_fully_quantized);

@@ -56,6 +56,11 @@ These are correctness and inspection, not tactic sweeps, so the hold above does 
    many format-specific libraries a deployment of it needs. Drop --dry-run (with QUACTLIZE_PPU_LIB=$SO) to
    actually pack.
 
+   `run_batch.sh` now binds each just-built packed binary through both loader domains: the generic base remains
+   `QUACTLIZE_PPU_LIB`, while the arrangement-aware dense reader receives the matching
+   `QUACTLIZE_PPU_LIB_FMT{0..4}` (Q4/Q5/Q2/Q3/Q6 = 0/1/2/3/4).  Do not simplify this back to a base variable only:
+   `load_format(fmt)` would splice `_fmtN.so` onto that path and test a nonexistent library instead of the build.
+
 2. **THE SWEEP'S PROBLEM SHAPES. Everything measured so far was N=K=4096, which is none of the three targets.**
    The user fixed the workload on 2026-08-04: Qwen3-32B (dense), Qwen3.5-35B-A3B (MoE), Qwen3.5-122B-A10B
    (MoE, 2-card TP), at n-token in {1,2,4,64,2048,4096}. Shapes are deliberately NOT written into

@@ -36,6 +36,34 @@ typedef struct quactlize_ppu_config_v2 {
   int32_t stages;
 } quactlize_ppu_config_v2;
 
+// Versioned identity of the bytes produced by the dense offline placer.  `bits` and `high_bits` describe the
+// physical low/high code planes; artifact_tile_k selects their delivery fold.  This descriptor belongs to the
+// artifact, not to a tactic.  New readers require the pointer and fail closed on a null/unknown version instead of
+// guessing the registry default.  The established v1/v2 reader entries below remain the compatibility surface for
+// registry-default artifacts.
+#define QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V1 1
+typedef struct quactlize_ppu_placed_arrangement_v1 {
+  int32_t version;
+  int32_t bits;
+  int32_t artifact_tile_k;
+  int32_t high_bits;
+} quactlize_ppu_placed_arrangement_v1;
+
+// Arrangement-aware inventory row.  v2 could use one TileK field only because its artifact and tactic were the
+// same registry value.  A folded artifact may be consumed by a wider tactic, so v3 names both quantities and makes
+// accidental substitution visible to callers.
+typedef struct quactlize_ppu_config_v3 {
+  bool enable_cuda_kernel;
+  char const* name;
+  int32_t tile_m;
+  int32_t tile_n;
+  int32_t tactic_tile_k;
+  int32_t artifact_tile_k;
+  int32_t warp_m;
+  int32_t warp_n;
+  int32_t stages;
+} quactlize_ppu_config_v3;
+
 // Stores a static config-array address in *configs when configs is non-null and returns its element count.
 // No CUDA/PPU context is required. Dense and grouped are separate operators and therefore separate inventories;
 // each array also contains its CUDA-core GEMV tactic, discriminated before its meaningless tile fields.
@@ -52,6 +80,12 @@ int32_t quactlize_ppu_list_valid_dense_lowbit_configs_v2(
 int32_t quactlize_ppu_list_valid_dense_fully_quantized_configs_v2(
     quactlize_ppu_config_v2* configs, int32_t capacity,
     int m, int n, int k, int group_size, int qtype);
+// Arrangement-aware successor.  The same descriptor-to-tactic predicate is used here and by the corresponding
+// launch entry; a missing/unknown/mismatched descriptor returns no rows rather than decoding with a default fold.
+int32_t quactlize_ppu_list_valid_dense_fully_quantized_configs_for_arrangement_v1(
+    quactlize_ppu_config_v3* configs, int32_t capacity,
+    int m, int n, int k, int group_size, int qtype,
+    quactlize_ppu_placed_arrangement_v1 const* arrangement);
 int32_t quactlize_ppu_list_valid_grouped_fully_quantized_configs_v2(
     quactlize_ppu_config_v2* configs, int32_t capacity,
     int total_rows, int n, int k, int group_size, int experts, int max_rows, int qtype);
@@ -80,6 +114,9 @@ int32_t quactlize_ppu_gemv_lowbit_config_valid_v1(
     int m, int n, int k, int group_size, int qtype, char const* config_name);
 int32_t quactlize_ppu_dense_fully_quantized_config_valid_v1(
     int m, int n, int k, int group_size, int qtype, char const* config_name);
+int32_t quactlize_ppu_dense_fully_quantized_config_valid_for_arrangement_v1(
+    int m, int n, int k, int group_size, int qtype,
+    quactlize_ppu_placed_arrangement_v1 const* arrangement, char const* config_name);
 int32_t quactlize_ppu_grouped_lowbit_config_valid_v1(
     int total_rows, int n, int k, int group_size, int experts, int max_rows,
     int qtype, char const* config_name);
@@ -105,6 +142,12 @@ int quactlize_ppu_gemv_lowbit_config_v1(
 int quactlize_ppu_dense_fully_quantized_config_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
     int m, int n, int k, int qtype, char const* config_name);
+// v1 above is the legacy reader-default ABI: its tactic and resident bytes both keep the historical registry
+// fully_quantized_tile_k. An artifact carrying any explicit arrangement uses this successor instead.
+int quactlize_ppu_dense_fully_quantized_for_arrangement_v1(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
+    int m, int n, int k, int qtype,
+    quactlize_ppu_placed_arrangement_v1 const* arrangement, char const* config_name);
 int quactlize_ppu_grouped_lowbit_config_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint16_t const* scale,
     int const* rows_per_expert, uint16_t* out,

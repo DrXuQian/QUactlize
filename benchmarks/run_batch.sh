@@ -703,7 +703,7 @@ do_pytest() {
   # The default build (already made above) is Q4_K. Each additional format gets its own build, and
   # QUACTLIZE_PACKED_FORMAT tells the oracles which one they are looking at so the other formats skip with a
   # reason instead of failing against a binary that was never meant to run them.
-  local fqrc=0 _fmt _fmtname _label _fmtdefs _fmtso _fqlog _r _b2 _d2 _LAST_FMT_BUILT=default
+  local fqrc=0 _fmt _fmtname _label _fmtdefs _packed_fmt _fmtso _fqlog _r _b2 _d2 _LAST_FMT_BUILT=default
   # ggml type : label : extra defines.  The default build (no PPU_PACKED_FORMAT) is Q4_K.
   #   Q2_K single-plane, 20 B unit staged as five 4 B copies      PPU_PACKED_FORMAT=2
   #   Q5_K TWO-plane weight, scu16x1 -- the SAME scale unit as Q4  PPU_PACKED_FORMAT=1
@@ -714,6 +714,11 @@ do_pytest() {
   for _fmt in "12:Q4_K:" "10:Q2_K:PPU_PACKED_FORMAT=2" "13:Q5_K:PPU_PACKED_FORMAT=1" \
               "11:Q3_K:PPU_PACKED_FORMAT=3" "14:Q6_K:PPU_PACKED_FORMAT=4"; do
     IFS=: read -r _fmtname _label _fmtdefs <<<"$_fmt"
+    case "$_fmtname" in
+      12) _packed_fmt=0 ;; 13) _packed_fmt=1 ;; 10) _packed_fmt=2 ;;
+      11) _packed_fmt=3 ;; 14) _packed_fmt=4 ;;
+      *) echo "   !!! no packed-format library id for ggml qtype $_fmtname"; fqrc=1; continue ;;
+    esac
     _fqlog="$OUT/fully_quantized_$_label.log"
     if [ -z "$_fmtdefs" ]; then
       _fmtso="$so"                                     # the build made above
@@ -739,7 +744,11 @@ do_pytest() {
     # Widening this selection would turn a build's deliberate scope into a wall of failures on cells that are
     # VALIDATED and untouched.
     echo "-- fully_quantized cells, $_label (a skip here is a failure once the ops are built)"
-    QUACTLIZE_PPU_LIB="$_fmtso" QUACTLIZE_PACKED_FORMAT="$_fmtname" PYTHONPATH="$ROOT" \
+    # Arrangement-aware tensor readers use load_format(fmt), while generic producer/BC ops still use load().
+    # Name BOTH paths explicitly: setting only the base makes load_format splice `_fmtN` onto the path of the
+    # library which was just built and then fail to open a file that does not exist.
+    env QUACTLIZE_PPU_LIB="$so" "QUACTLIZE_PPU_LIB_FMT${_packed_fmt}=$_fmtso" \
+      QUACTLIZE_PACKED_FORMAT="$_fmtname" PYTHONPATH="$ROOT" \
       python3 -m pytest "$ROOT/tests" -q -rs -m fully_quantized_dense >"$_fqlog" 2>&1 && _r=0 || _r=$?
     tail -3 "$_fqlog" | sed 's/^/   /'
     # SKIPS ARE THE DESIGN HERE, and this check predated it. Ten tests are collected -- five formats x dense and

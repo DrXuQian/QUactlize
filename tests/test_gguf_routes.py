@@ -645,7 +645,8 @@ def test_bc_dequant_all_matches_official_gguf(name, gt, hdr, qtype, ppu_backend_
 
     fault = [x.clone() for x in artifact]
     fault[0] = torch.zeros_like(fault[0])
-    planted = rel(routes.dequantize_fully_quantized(tuple(fault), qtype).numpy()[0])
+    planted_artifact = routes.PlacedArtifact(fault, artifact.arrangement)
+    planted = rel(routes.dequantize_fully_quantized(planted_artifact, qtype).numpy()[0])
     assert planted > 1e-3, (
         f"{name}: the BC inverse returned the right weight from a ZEROED code plane ({planted:.3e}) -- it is "
         f"reading something other than the codes, so a pass below would not be about the artifact")
@@ -668,7 +669,7 @@ def test_bc_gemv_matches_dequant_first_and_rejects_fault(name, gt, hdr, qtype, p
     first day rather than retrofitted. The planted fault zeroes the LOW code plane and must be rejected before a
     pass counts.
     """
-    if not routes.has_op("gguf_gemv_bc"):
+    if not routes.has_op("gguf_gemv_bc_for_arrangement"):
         pytest.skip("the BC GEMV op is not in this build yet (INBOX 016)")
     _require_packed_format(qtype, name)
 
@@ -689,7 +690,8 @@ def test_bc_gemv_matches_dequant_first_and_rejects_fault(name, gt, hdr, qtype, p
 
     fault = [x.clone() for x in artifact]
     fault[0] = torch.zeros_like(fault[0])
-    planted = cond(routes.matmul_bc_gemv(at, tuple(fault), qtype).numpy())
+    planted_artifact = routes.PlacedArtifact(fault, artifact.arrangement)
+    planted = cond(routes.matmul_bc_gemv(at, planted_artifact, qtype).numpy())
     assert planted > 5e-3, f"{name}: the BC GEMV oracle missed a zeroed low code plane ({planted:.3e})"
 
     err = cond(routes.matmul_bc_gemv(at, artifact, qtype).numpy())
@@ -838,7 +840,8 @@ def test_fully_quantized_dense_matches_dequant_first_and_rejects_fault(name, gt,
     # THE SKIP TESTS THE OP, NOT THE ROUTE. The route functions exist as soon as I write them, so keying on them
     # would make this test fail on every build that predates the op -- an absence reported as a defect. The op's
     # presence is the real question, and "built and wrong" then stays a failure rather than becoming a skip.
-    if not (routes.has_op("gguf_prepare_fully_quantized_dense") and routes.has_op("gguf_dense_fully_quantized")):
+    if not (routes.has_op("gguf_prepare_fully_quantized_dense") and
+            routes.has_op("gguf_dense_fully_quantized_for_arrangement")):
         pytest.skip("the packed-dense ops are not in this build yet (INBOX 012). When they land, run_batch's "
                     "required-not-to-skip list must be updated in the same change, or a skip on a device box "
                     "reads as a pass.")
@@ -872,7 +875,9 @@ def test_fully_quantized_dense_matches_dequant_first_and_rejects_fault(name, gt,
         fault = [x.clone() for x in artifact]
         fault[-1] = torch.zeros_like(fault[-1])
 
-        planted = launch(at, tuple(fault), qtype).numpy()
+        planted_artifact = routes.PlacedArtifact(
+            fault, artifact.arrangement, version=artifact.arrangement_version)
+        planted = launch(at, planted_artifact, qtype).numpy()
         planted_err = conditioned(planted)
         assert planted_err > bound, (
             f"{name} m={m}: the packed-dense oracle MISSED a zeroed SCALE UNIT ({planted_err:.3e}). The unit is "

@@ -30,7 +30,7 @@ from . import (gguf_dequantize, gguf_vecdot_dense, gguf_vecdot_moe, gguf_prepare
                gguf_gemv_artifact_dequantize, gguf_gemv_artifact_dequantize_scale,
                gguf_dense_artifact_dequantize, gguf_dense_artifact_dequantize_scale,
                gguf_gemv_scale_first, gguf_gemv_scale_first_moe, gguf_dense_scale_first)
-from .formats import QuantType
+from .formats import PlacedArrangement, QuantType, placed_arrangement, placed_code_planes
 
 
 def _check_shape(blocks: torch.Tensor, n: int, k: int, qtype: int) -> None:
@@ -242,61 +242,111 @@ def has_op(name: str) -> bool:
         return False                     # extension not built at all -- absent, not stale
 
 
+PLACED_ARTIFACT_VERSION = 1
+
+
 class PlacedArtifact(tuple):
-    """(low, high, units) AND the placement it was produced for.
+    """(low, high, units) AND the versioned placement it was produced for.
 
     WHY IT IS A tuple SUBCLASS. Every existing consumer treats the artifact as a 3-tuple -- tools/pack_gguf.py
     does `low, high, units = prepare_fully_quantized_dense(...)`, _unpack_fq does `list(artifact)`, and the
     tests index it. Subclassing tuple keeps all of that byte-identical while giving the object somewhere to
     carry what the tensors cannot say about themselves.
 
-    WHAT IT CARRIES AND WHY. prepare_fully_quantized_dense's own docstring: "the default producer pins the fold
-    at 1", and an explicit tile_k routes to the *_for_tile op, which "is the only way to obtain a folded
-    artifact". A folded artifact's bytes sit in their own layout class -- dev/fold_derivation/
-    l105_low_plane_config_classes.cu separates F=1, F=2 and F=4 while NOT separating WON or TileK within F=1 --
-    so only a reader using the same fold may decode it. `requested_tile_k` is that fact, recorded at the one
-    moment it is known.
+    WHAT IT CARRIES AND WHY. `arrangement` is formats.PlacedArrangement(bits, tile_k, high_bits), not just fold:
+    l105 showed that F is derived but is not enough to identify every physical class. The descriptor is attached
+    at the producer, where the actual *_for_tile argument is known, and every reader below obtains it from this
+    object. There is intentionally no reader-side tile_k argument for a caller to forget or contradict.
 
-    It is deliberately NOT a full placement descriptor yet. The descriptor that will cross this ABI is
-    (bits, tile_k, high_bits), i.e. formats.PlacedArrangement, and it needs the read op to accept it. Until then
-    this records the one bit that lets the reader REFUSE instead of returning wrong numbers.
+    THE VERSION IS PART OF THE CONTRACT. A future descriptor may add WK or another placement axis. Treating an
+    old tuple as the new version would restore the exact silent-guessing failure this class removes, so unknown
+    versions and tuple-stripped artifacts fail before an op is called.
     """
     # NO __slots__: a tuple subclass cannot have a nonempty one (TypeError at class creation).
 
-    def __new__(cls, tensors, requested_tile_k=None):
+    def __new__(cls, tensors, arrangement: PlacedArrangement, version: int = PLACED_ARTIFACT_VERSION):
         return super().__new__(cls, tuple(tensors))
 
-    def __init__(self, tensors, requested_tile_k=None):
+    def __init__(self, tensors, arrangement: PlacedArrangement, version: int = PLACED_ARTIFACT_VERSION):
         super().__init__()
-        self.requested_tile_k = requested_tile_k
+        if not isinstance(arrangement, PlacedArrangement):
+            raise TypeError(
+                "PlacedArtifact arrangement must be formats.PlacedArrangement(bits, tile_k, high_bits); "
+                f"got {type(arrangement).__name__}")
+        self.arrangement = arrangement
+        self.arrangement_version = int(version)
+
+    def __reduce__(self):
+        """Persist tensors and descriptor as one identity.
+
+        tuple's default reducer serialises only its elements, which either loses the placement or cannot call this
+        class's required constructor on unpickle/deepcopy.  Carry both descriptor fields explicitly so a copied or
+        torch-saved folded artifact cannot silently become an ordinary 3-tuple.
+        """
+        return (type(self), (tuple(self), self.arrangement, self.arrangement_version))
+
+    # Tensor-valued tuple equality is not a useful scalar predicate, and inheriting tuple.__eq__ would ignore the
+    # descriptor entirely.  Make identity comparison explicit and boolean while retaining tuple indexing/unpacking.
+    def __eq__(self, other):
+        if not isinstance(other, PlacedArtifact):
+            return False
+        if (self.arrangement_version != other.arrangement_version or
+                self.arrangement != other.arrangement or len(self) != len(other)):
+            return False
+        return all(torch.equal(a, b) for a, b in zip(self, other))
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    __hash__ = None
+
+    @property
+    def requested_tile_k(self):
+        """Compatibility VIEW, not the ABI: old diagnostics named this field before the full descriptor existed."""
+        return self.arrangement.tile_k
 
 
-def _refuse_if_folded(artifact, where: str) -> None:
-    """A folded artifact reaching a reader that cannot express the fold is silent wrong numbers, not an error.
-
-    The op behind these routes takes (a, low, high, units, qtype) and no tile_k, so it decodes at the DEFAULT
-    fold whatever the artifact was placed for. Bytes present, pairing present, numbers wrong -- the failure mode
-    this repository has paid for more than once. Refuse instead, and say what would have to change.
-
-    Conservative on purpose: it refuses on ANY explicit tile_k rather than deriving the fold, because deriving
-    it here would put a second copy of fold_for's arithmetic on the read path. When the descriptor crosses the
-    ABI the test becomes exact and this becomes redundant.
-
-    THE THREE ROUTES THAT CALL IT ARE THE THREE THAT CAN RECEIVE A FOLDED ARTIFACT -- matmul_fully_quantized_dense,
-    dequantize_fully_quantized and matmul_bc_gemv, all fed by prepare_fully_quantized_dense (tests/
-    test_gguf_routes.py:642, :679). The GROUPED routes are deliberately NOT guarded: prepare_fully_quantized_grouped
-    takes no tile_k, so it cannot produce a folded artifact, and a guard there would be a check that no input can
-    fail -- which reads like coverage and is not. Give the grouped producer a tile_k and the guard goes on in the
-    same change.
-    """
-    tk = getattr(artifact, "requested_tile_k", None)
-    if tk is not None:
+def _require_placed_artifact(artifact, qtype: int, where: str):
+    """Validate descriptor version, qtype and plane widths before any reader op sees the bytes."""
+    if not isinstance(artifact, PlacedArtifact):
+        raise TypeError(
+            f"{where}: expected a PlacedArtifact carrying its placement descriptor; got "
+            f"{type(artifact).__name__}. Converting one to tuple/list strips (bits,tile_k,high_bits), so the "
+            f"reader must refuse rather than guess a fold")
+    if artifact.arrangement_version != PLACED_ARTIFACT_VERSION:
         raise ValueError(
-            f"{where}: this artifact was placed for TileK={tk} (prepare_*(..., tile_k={tk}) routes to the "
-            f"*_for_tile op, the only producer of a folded arrangement), and this route's op signature carries "
-            f"no tile_k -- it would decode at the default fold and return finite wrong numbers. Either pass an "
-            f"artifact built with tile_k=None, or wait for the placement descriptor to cross this ABI (task "
-            f"#54); the kernel-side accept/reject predicate is the other half of that.")
+            f"{where}: unsupported placed-artifact descriptor version {artifact.arrangement_version}; "
+            f"this build reads version {PLACED_ARTIFACT_VERSION}. Guessing the meaning of a future descriptor "
+            f"would silently ignore a placement axis")
+    expected_bits = placed_code_planes(qtype)
+    got_bits = (artifact.arrangement.bits, artifact.arrangement.high_bits)
+    if got_bits != expected_bits:
+        raise ValueError(
+            f"{where}: artifact code planes are {got_bits[0]}+{got_bits[1]} bits but "
+            f"{QuantType(qtype).name} requires {expected_bits[0]}+{expected_bits[1]}; this is a qtype/artifact "
+            f"mismatch, not a layout the reader can reinterpret")
+    # Force validation of the derived arrangement before dispatch. This catches non-integral delivery runs at the
+    # Python ABI instead of relying on whichever reader happens to instantiate first.
+    _ = artifact.arrangement.fold, artifact.arrangement.high_fold
+    low, high, units = _unpack_fq(artifact, where)
+    if low.dtype != torch.uint8 or high.dtype != torch.uint8:
+        raise ValueError(f"{where}: placed code planes must be uint8, got low={low.dtype} high={high.dtype}")
+    if low.dim() != 3:
+        raise ValueError(f"{where}: low plane must be [experts,n,packed_k], got {tuple(low.shape)}")
+    if expected_bits[1] == 0:
+        if high.numel() != 0:
+            raise ValueError(f"{where}: {QuantType(qtype).name} is single-plane but high has {high.numel()} bytes")
+    else:
+        if high.dim() != 3 or high.shape[:2] != low.shape[:2]:
+            raise ValueError(
+                f"{where}: high plane must share [experts,n] with low; got low={tuple(low.shape)} "
+                f"high={tuple(high.shape)}")
+        # Both dimensions encode the same logical K. Cross multiplication avoids truncating malformed sub-byte
+        # extents into the same integer quotient (for example, two odd byte counts which each floor to K=0).
+        if low.shape[2] * expected_bits[1] != high.shape[2] * expected_bits[0]:
+            raise ValueError(
+                f"{where}: low/high planes encode different K extents: {tuple(low.shape)} vs {tuple(high.shape)}")
+    return low, high, units, artifact.arrangement
 
 
 def _unpack_fq(artifact, where: str):
@@ -351,9 +401,10 @@ def matmul_bc_gemv(a: torch.Tensor, artifact, qtype: int) -> torch.Tensor:
     shape, not "no worse under one condition", and it has not been met: at N=K=2048 the measurement is a cold tie
     and warm +11%. Both paths stay callable until it is.
     """
-    _refuse_if_folded(artifact, "matmul_bc_gemv")
-    low, high, units = _unpack_fq(artifact, "matmul_bc_gemv")
-    return _op("gguf_gemv_bc")(a, low, high, units, int(qtype))
+    low, high, units, arrangement = _require_placed_artifact(artifact, qtype, "matmul_bc_gemv")
+    return _op("gguf_gemv_bc_for_arrangement")(
+        a, low, high, units, int(qtype), PLACED_ARTIFACT_VERSION,
+        arrangement.bits, arrangement.tile_k, arrangement.high_bits)
 
 
 def matmul_bc_gemv_moe(a: torch.Tensor, artifact, qtype: int, num_experts: int,
@@ -365,6 +416,10 @@ def matmul_bc_gemv_moe(a: torch.Tensor, artifact, qtype: int, num_experts: int,
     side of the seam it is on, and the cumulative-offset form is the one that has an empty expert as a silent
     special case.
     """
+    if isinstance(artifact, PlacedArtifact):
+        raise ValueError(
+            "matmul_bc_gemv_moe: the grouped legacy op cannot carry a placed-artifact descriptor; refusing to "
+            "strip it and guess the registry map. A grouped arrangement-aware ABI must land with its producer")
     low, high, units = _unpack_fq(artifact, "matmul_bc_gemv_moe")
     offsets = _row_offsets(rows_per_expert, num_experts, a.shape[0])
     return _op("gguf_gemv_bc_moe")(a, low, high, units, offsets, int(qtype))
@@ -388,16 +443,27 @@ def dequantize_fully_quantized(artifact, qtype: int, grouped: bool = False) -> t
     gives the wrong answer against official gguf -- which is a better outcome than a private decoder that agrees
     with itself.
     """
-    _refuse_if_folded(artifact, "dequantize_fully_quantized")
-    low, high, units = _unpack_fq(artifact, "dequantize_fully_quantized")
+    arrangement = None
+    if isinstance(artifact, PlacedArtifact) or not grouped:
+        low, high, units, arrangement = _require_placed_artifact(
+            artifact, qtype, "dequantize_fully_quantized")
+    else:
+        # The grouped producer does not yet accept TileK and therefore cannot manufacture a folded artifact. Keep
+        # its fixed-layout inverse reachable until that producer is upgraded in the same change as its descriptor.
+        low, high, units = _unpack_fq(artifact, "dequantize_fully_quantized(grouped=True)")
     scale, zero = dequantize_scale_from_units(units, qtype)
-    op = "gguf_grouped_artifact_dequantize" if grouped else "gguf_dense_artifact_dequantize"
+    if arrangement is not None:
+        op = ("gguf_grouped_artifact_dequantize_for_tile" if grouped
+              else "gguf_dense_artifact_dequantize_for_tile")
+    else:
+        op = "gguf_grouped_artifact_dequantize" if grouped else "gguf_dense_artifact_dequantize"
     if grouped and not has_op(op):
         raise NotImplementedError(
             "the grouped artifact dequant-all op is not in this build; the dense one composes because the dense "
             "artifact is one expert. A grouped weight needs the per-expert form -- request it rather than "
             "looping here, since a python loop over experts would not exercise the same addressing.")
-    return _op(op)(low, high, scale, zero, int(qtype))
+    args = (low, high, scale, zero, int(qtype))
+    return _op(op)(*args, arrangement.tile_k) if arrangement is not None else _op(op)(*args)
 
 
 def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: int, tile_k: int | None = None):
@@ -418,11 +484,12 @@ def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: i
     nothing could build.
     """
     _check_shape(blocks, n, k, int(qtype))
+    arrangement = placed_arrangement(qtype, tile_k)
     if tile_k is None:
-        return PlacedArtifact(_op("gguf_prepare_fully_quantized_dense")(blocks, n, k, int(qtype)))
-    return PlacedArtifact(
-        _op("gguf_prepare_fully_quantized_dense_for_tile")(blocks, n, k, int(qtype), int(tile_k)),
-        requested_tile_k=int(tile_k))
+        tensors = _op("gguf_prepare_fully_quantized_dense")(blocks, n, k, int(qtype))
+    else:
+        tensors = _op("gguf_prepare_fully_quantized_dense_for_tile")(blocks, n, k, int(qtype), int(tile_k))
+    return PlacedArtifact(tensors, arrangement)
 
 
 def matmul_fully_quantized_dense(a: torch.Tensor, artifact, qtype: int):
@@ -432,9 +499,11 @@ def matmul_fully_quantized_dense(a: torch.Tensor, artifact, qtype: int):
     always exists and the launch returns rc=34, which surfaces here as an error naming the macro. A silent
     fallback would make a build that cannot run this cell indistinguishable from one that can.
     """
-    _refuse_if_folded(artifact, "matmul_fully_quantized_dense")
-    low, high, units = _unpack_fq(artifact, "matmul_fully_quantized_dense")
-    return _op("gguf_dense_fully_quantized")(a, low, high, units, int(qtype))
+    low, high, units, arrangement = _require_placed_artifact(
+        artifact, qtype, "matmul_fully_quantized_dense")
+    return _op("gguf_dense_fully_quantized_for_arrangement")(
+        a, low, high, units, int(qtype), PLACED_ARTIFACT_VERSION,
+        arrangement.bits, arrangement.tile_k, arrangement.high_bits)
 
 
 def prepare_fully_quantized_grouped(blocks: torch.Tensor, n: int, k: int, qtype: int, experts: int):
@@ -457,6 +526,10 @@ def matmul_fully_quantized_grouped(a: torch.Tensor, artifact, qtype: int, rows_p
     the C++ op takes (a, low, units, rows, qtype) and the reorder happens here rather than in the kernel. One
     convention per layer -- the alternative is a caller that has to remember which side it is on.
     """
+    if isinstance(artifact, PlacedArtifact):
+        raise ValueError(
+            "matmul_fully_quantized_grouped: the grouped legacy op cannot carry a placed-artifact descriptor; "
+            "refusing to strip it and guess the registry map")
     low, high, units = _unpack_fq(artifact, "matmul_fully_quantized_grouped")
     return _op("gguf_grouped_fully_quantized")(a, low, high, units, rows_per_expert.to(torch.int32), int(qtype))
 

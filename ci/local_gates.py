@@ -271,6 +271,11 @@ SYNTAX = [
     # THE SHIPPING .so BOUNDARY. The benches compiled the grouped collective for years while the product wrapper
     # did not expose it; compiling this translation unit is what covers the six-entry ABI and every qtype dispatch.
     ("quactlize/csrc/device/ppu_dense_backend.cu", ""),
+    # True folded-reader control: Q3 ArtifactTileK=64 is F_low/F_high=2/4 beneath a TK256 tensor tactic.  This
+    # flag-on row proves the arrangement-aware ABI instantiates the packed two-plane collective rather than merely
+    # accepting the descriptor in host arithmetic.  Single-plane F>1 remains explicitly fail-closed (l138).
+    ("quactlize/csrc/device/ppu_dense_backend.cu",
+     "-DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT=3 -DQUACTLIZE_DENSE_ONLY=11"),
     ("benchmarks/test_moe_splitk_bench.cu", "-DPPU_PACKED_SCALE=1"),
     # dev/'s top-level probes. They are DEVICE probes -- swzl_ldmatrix_probe reads the hardware swizzle, the
     # ablations and sweeps run on the accelerator -- so build.sh overlays them onto the box, and anything that
@@ -1220,6 +1225,53 @@ def lint_dense_marlin_rejected_cohorts():
     return ("PASS" if rc == 0 else "FAIL"), verdict, dt
 
 
+def lint_dense_arrangement_abi():
+    """A folded artifact descriptor must select its exact reader and fail closed on every ABI mismatch."""
+    script = DEV / "run_l138_dense_arrangement_abi.sh"
+    if not script.is_file():
+        return "FAIL", f"missing {script.name}", 0.0
+    rc, log, dt = run(["bash", str(script)], cwd=str(ROOT))
+    lines = [line.strip() for line in log.splitlines() if line.strip()]
+    verdict = lines[-1] if lines else "l138 produced no output"
+    return ("PASS" if rc == 0 else "FAIL"), verdict, dt
+
+
+def lint_bc_arrangement_layout():
+    """BC's arrangement reader must equal the production xplane writer over every physical code slot."""
+    script = DEV / "run_l137_bc_arrangement_layout.sh"
+    if not script.is_file():
+        return "FAIL", f"missing {script.name}", 0.0
+    rc, log, dt = run(["bash", str(script)], cwd=str(ROOT))
+    lines = [line.strip() for line in log.splitlines() if line.strip()]
+    verdict = lines[-1] if lines else "l137 produced no output"
+    return ("PASS" if rc == 0 else "FAIL"), verdict, dt
+
+
+def lint_format_loader():
+    """Every qtype must open its own packed-format binary under the documented path precedence."""
+    script = DEV / "run_l140_format_loader.sh"
+    if not script.is_file():
+        return "FAIL", f"missing {script.name}", 0.0
+    rc, log, dt = run(["bash", str(script)], cwd=str(ROOT))
+    lines = [line.strip() for line in log.splitlines() if line.strip()]
+    verdict = lines[-1] if lines else "l140 produced no output"
+    if rc != 0:
+        return "FAIL", verdict, dt
+    # l140 proves loader semantics, but the actual device recipe once supplied only the generic base path.  That
+    # made load_format(fmt) splice a nonexistent `_fmtN.so` even though the just-built library was valid.  Bind the
+    # integration line and its independent qtype mapping here so this exact failure cannot recur outside the oracle.
+    batch = (ROOT / "benchmarks" / "run_batch.sh").read_text()
+    required = (
+        '12) _packed_fmt=0', '13) _packed_fmt=1', '10) _packed_fmt=2',
+        '11) _packed_fmt=3', '14) _packed_fmt=4',
+        '"QUACTLIZE_PPU_LIB_FMT${_packed_fmt}=$_fmtso"',
+    )
+    missing = [needle for needle in required if needle not in batch]
+    if missing:
+        return "FAIL", f"run_batch format-loader binding missing {missing}", dt
+    return "PASS", verdict + "; run_batch FMT binding=PASS", dt
+
+
 def lint_grouped_marlin_contract():
     """Grouped Marlin must flatten ragged experts to global q without changing collectives."""
     return _run_ci_script(
@@ -1830,6 +1882,9 @@ def main():
                 ("lint", "dense Marlin sweep has private sources, exact capable cohorts, and distinct provenance", lint_dense_marlin_sweep_contract),
                 ("lint", "Marlin A2 recovers every formerly filtered row with an exact cohort census", lint_dense_marlin_rejection_census),
                 ("lint", "each released Marlin cohort compiles and an inexact explicit cohort reds", lint_dense_marlin_rejected_cohorts),
+                ("lint", "folded dense artifacts select an exact versioned reader and F2-to-F1 reds", lint_dense_arrangement_abi),
+                ("lint", "BC arrangement maps exhaustively equal the production writer and F2-to-F1 reds", lint_bc_arrangement_layout),
+                ("lint", "packed qtypes select distinct format binaries under fail-closed path precedence", lint_format_loader),
                 ("lint", "grouped Marlin preserves ragged q and all mixed-input collective families", lint_grouped_marlin_contract),
                 ("lint", "grouped Marlin exhausts every committed format/shape tuple", lint_grouped_marlin_exhaustive),
                 ("lint", "GEMV reference fixtures expose expert routing and packed pitch", lint_gemv_perf_authority),

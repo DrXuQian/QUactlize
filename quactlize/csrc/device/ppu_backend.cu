@@ -133,23 +133,23 @@ int native_moe(uint8_t const* blocks, uint16_t const* x, int const* offsets, flo
 // The merged BC resident artifact: xplane-placed low/high codes plus byte-neutral packed scale units. The CUDA-core
 // decode path consumes those exact bytes; unlike SCALE_FIRST it neither materialises nor reads fp16 affine planes.
 // experts==0 is one dense decode row. Grouped mode uses the same gathered-row/offset contract as native_moe.
-template <KType T>
+template <KType T, int ArtifactTileK>
 int bc_gemv_device(uint16_t const* x, uint8_t const* low, uint8_t const* high, uint8_t const* units,
                    int const* offsets, float* out, int total_rows, int n, int k, int experts, int max_rows,
                    gemv_stream_t stream) {
   int const bpr = k / 256;
   if (experts > 0) {
-    gguf_scale::bc_vecdot::launch<T, true>(low, high, units, reinterpret_cast<VecdotActivation const*>(x),
+    gguf_scale::bc_vecdot::launch<T, ArtifactTileK, true>(low, high, units, reinterpret_cast<VecdotActivation const*>(x),
                                            offsets, out, n, bpr, experts, max_rows, stream);
   } else {
-    gguf_scale::bc_vecdot::launch<T, false>(low, high, units, reinterpret_cast<VecdotActivation const*>(x),
+    gguf_scale::bc_vecdot::launch<T, ArtifactTileK, false>(low, high, units, reinterpret_cast<VecdotActivation const*>(x),
                                             nullptr, out, n, bpr, 1, 1, stream);
   }
   return ppu_gemv::rt_check_launch(experts > 0 ? "BC MoE GEMV enqueue" : "BC dense GEMV enqueue")
       ? 0 : ppu_gemv::kRuntimeError;
 }
 
-template <KType T>
+template <KType T, int ArtifactTileK>
 int bc_gemv(uint16_t const* x, uint8_t const* low, uint8_t const* high, uint8_t const* units,
             int const* offsets, float* out, int total_rows, int n, int k, int experts, int max_rows) {
   ppu_gemv::rt_clear_error();
@@ -167,12 +167,32 @@ int bc_gemv(uint16_t const* x, uint8_t const* low, uint8_t const* high, uint8_t 
   dx.from_host(x); dl.from_host(low); if constexpr (BT::Hi != 0) dh.from_host(high); du.from_host(units);
   if (experts > 0) doff.from_host(offsets);
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
-  int const launch_rc = bc_gemv_device<T>(dx.as<uint16_t>(), dl.as<uint8_t>(), dh.as<uint8_t>(), du.as<uint8_t>(),
+  int const launch_rc = bc_gemv_device<T, ArtifactTileK>(
+      dx.as<uint16_t>(), dl.as<uint8_t>(), dh.as<uint8_t>(), du.as<uint8_t>(),
       doff.as<int>(), dout.as<float>(), total_rows, n, k, experts, max_rows, nullptr);
   if (launch_rc) return launch_rc;
   ppu_gemv::rt_sync(experts > 0 ? "BC MoE GEMV" : "BC dense GEMV");
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
   return ppu_gemv::rt_copy_output(dout, out, size_t(total_rows) * n);
+}
+
+template <KType T, bool Device>
+int bc_gemv_arrangement_dispatch(
+    uint16_t const* x, uint8_t const* low, uint8_t const* high, uint8_t const* units,
+    int const* offsets, float* out, int total_rows, int n, int k, int experts, int max_rows,
+    int artifact_tile_k, gemv_stream_t stream = nullptr) {
+#define QUACTLIZE_BC_A(A) case A:                                                       \
+  if constexpr (gguf_scale::bc_vecdot::arrangement_supported_v<T, A>) {                 \
+    if constexpr (Device)                                                               \
+      return bc_gemv_device<T,A>(x,low,high,units,offsets,out,total_rows,n,k,experts,max_rows,stream); \
+    else                                                                                 \
+      return bc_gemv<T,A>(x,low,high,units,offsets,out,total_rows,n,k,experts,max_rows);  \
+  } else return 23
+  switch (artifact_tile_k) {
+    QUACTLIZE_BC_A(32); QUACTLIZE_BC_A(64); QUACTLIZE_BC_A(128); QUACTLIZE_BC_A(256);
+    default: return 23;
+  }
+#undef QUACTLIZE_BC_A
 }
 
 template <KType T>
@@ -402,7 +422,29 @@ extern "C" int quactlize_ppu_bc_gemv(uint16_t const* x, uint8_t const* low, uint
       experts < 0 || (experts > 0 && (!offsets || max_rows <= 0)) || (experts == 0 && total_rows != 1)) return 13;
 #define RUN(T) (gguf_scale::bc_vecdot::Traits<KType::T>::Hi && !high ? 14 : \
                 ((k / 256) % gguf_scale::packed_unit::Unit<KType::T>::kSbPerUnit ? 15 : \
-                 bc_gemv<KType::T>(x,low,high,units,offsets,out,total_rows,n,k,experts,max_rows)))
+                 bc_gemv<KType::T,gguf_scale::bc_vecdot::Traits<KType::T>::DefaultArtifactTileK>( \
+                     x,low,high,units,offsets,out,total_rows,n,k,experts,max_rows)))
+  switch (qtype) { case 10: return RUN(Q2_K); case 11: return RUN(Q3_K); case 12: return RUN(Q4_K);
+                   case 13: return RUN(Q5_K); case 14: return RUN(Q6_K); default: return 16; }
+#undef RUN
+}
+
+extern "C" int quactlize_ppu_bc_gemv_for_arrangement_v1(
+    uint16_t const* x, uint8_t const* low, uint8_t const* high,
+    uint8_t const* units, int const* offsets, float* out,
+    int total_rows, int n, int k, int experts, int max_rows, int qtype,
+    quactlize_ppu_placed_arrangement_v1 const* arrangement) {
+  if (!x || !low || !units || !out || total_rows <= 0 || n <= 0 || n % 256 || k <= 0 || k % 256 ||
+      experts < 0 || (experts > 0 && (!offsets || max_rows <= 0)) || (experts == 0 && total_rows != 1) ||
+      !arrangement || arrangement->version != QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V1 ||
+      arrangement->artifact_tile_k <= 0 || k % arrangement->artifact_tile_k) return 13;
+#define RUN(T) (arrangement->bits != gguf_scale::bc_vecdot::Traits<KType::T>::Lo || \
+                arrangement->high_bits != gguf_scale::bc_vecdot::Traits<KType::T>::Hi ? 24 : \
+               (gguf_scale::bc_vecdot::Traits<KType::T>::Hi && !high ? 14 : \
+               ((k / 256) % gguf_scale::packed_unit::Unit<KType::T>::kSbPerUnit ? 15 : \
+                bc_gemv_arrangement_dispatch<KType::T,false>( \
+                    x,low,high,units,offsets,out,total_rows,n,k,experts,max_rows, \
+                    arrangement->artifact_tile_k))))
   switch (qtype) { case 10: return RUN(Q2_K); case 11: return RUN(Q3_K); case 12: return RUN(Q4_K);
                    case 13: return RUN(Q5_K); case 14: return RUN(Q6_K); default: return 16; }
 #undef RUN
@@ -419,7 +461,30 @@ extern "C" int quactlize_ppu_bc_gemv_dev_v1(uint16_t const* x,
   gemv_stream_t const s = static_cast<gemv_stream_t>(stream);
 #define RUN(T) (gguf_scale::bc_vecdot::Traits<KType::T>::Hi && !high ? 14 : \
                 ((k / 256) % gguf_scale::packed_unit::Unit<KType::T>::kSbPerUnit ? 15 : \
-                 bc_gemv_device<KType::T>(x,low,high,units,offsets,out,total_rows,n,k,experts,max_rows,s)))
+                 bc_gemv_device<KType::T,gguf_scale::bc_vecdot::Traits<KType::T>::DefaultArtifactTileK>( \
+                     x,low,high,units,offsets,out,total_rows,n,k,experts,max_rows,s)))
+  switch (qtype) { case 10: return RUN(Q2_K); case 11: return RUN(Q3_K); case 12: return RUN(Q4_K);
+                   case 13: return RUN(Q5_K); case 14: return RUN(Q6_K); default: return 16; }
+#undef RUN
+}
+
+extern "C" int quactlize_ppu_bc_gemv_for_arrangement_dev_v1(
+    uint16_t const* x, uint8_t const* low, uint8_t const* high, uint8_t const* units,
+    int const* offsets, float* out, int total_rows, int n, int k, int experts, int max_rows, int qtype,
+    quactlize_ppu_placed_arrangement_v1 const* arrangement, void* stream) {
+  if (!x || !low || !units || !out || total_rows <= 0 || n <= 0 || n % 256 || k <= 0 || k % 256 ||
+      experts < 0 || (experts > 0 && (!offsets || max_rows <= 0)) || (experts == 0 && total_rows != 1) ||
+      !arrangement || arrangement->version != QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V1 ||
+      arrangement->artifact_tile_k <= 0 || k % arrangement->artifact_tile_k) return 13;
+  ppu_gemv::rt_clear_error();
+  gemv_stream_t const s = static_cast<gemv_stream_t>(stream);
+#define RUN(T) (arrangement->bits != gguf_scale::bc_vecdot::Traits<KType::T>::Lo || \
+                arrangement->high_bits != gguf_scale::bc_vecdot::Traits<KType::T>::Hi ? 24 : \
+               (gguf_scale::bc_vecdot::Traits<KType::T>::Hi && !high ? 14 : \
+               ((k / 256) % gguf_scale::packed_unit::Unit<KType::T>::kSbPerUnit ? 15 : \
+                bc_gemv_arrangement_dispatch<KType::T,true>( \
+                    x,low,high,units,offsets,out,total_rows,n,k,experts,max_rows, \
+                    arrangement->artifact_tile_k,s))))
   switch (qtype) { case 10: return RUN(Q2_K); case 11: return RUN(Q3_K); case 12: return RUN(Q4_K);
                    case 13: return RUN(Q5_K); case 14: return RUN(Q6_K); default: return 16; }
 #undef RUN

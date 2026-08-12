@@ -118,9 +118,8 @@ int tile_dispatch(uint8_t const* low_in, uint8_t const* high_in,
                   uint8_t* low_out, uint8_t* high_out,
                   int n, int k, int qtype, int artifact_tile_k) {
   if (!low_in || !low_out || n <= 0 || k <= 0 || n % 256 || k % 256) return 20;
-  if (artifact_tile_k <= 0 || k % artifact_tile_k) return 23;
-  if ((qtype == 11 || qtype == 13) && artifact_tile_k == 32) return 23;
-  if (qtype == 14 && artifact_tile_k == 256) return 23;
+  auto const& format = ppu_formats::for_qtype(qtype);
+  if (!ppu_formats::artifact_tile_k_supported(format, artifact_tile_k) || k % artifact_tile_k) return 23;
   // A conditional expression cannot name function templates, so select the operation once around the format/tile
   // ladder while keeping each legal row an explicit instantiation.
   if constexpr (Recover) {

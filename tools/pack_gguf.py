@@ -108,7 +108,8 @@ def main() -> int:
         n, k = int(t.shape[1]), int(t.shape[0])         # gguf reports (k, n); the routes want (n, k)
         qtype = int(t.tensor_type)
         blocks = torch.from_numpy(t.data.reshape(n * (k // 256), -1).copy())
-        low, high, units = routes.prepare_fully_quantized_dense(blocks, n, k, qtype, tile_k=_tile_k(qtype))
+        artifact = routes.prepare_fully_quantized_dense(blocks, n, k, qtype, tile_k=_tile_k(qtype))
+        low, high, units = artifact
 
         stem = t.name.replace("/", "_").replace(".", "_")
         tmp = out / (stem + ".partial")
@@ -121,15 +122,23 @@ def main() -> int:
         # passed to the producer above, so the manifest describes bytes that were actually built -- which was
         # not true before the *_for_tile ops existed (INBOX 027/028): the producer pinned F=1 whatever this
         # recorded, and a manifest naming an unbuildable arrangement reads as a capability.
-        arr = F.PlacedArrangement(bits=_low_bits(qtype), tile_k=_tile_k(qtype), high_bits=_high_bits(qtype))
+        arr = artifact.arrangement
+        expected = F.PlacedArrangement(bits=_low_bits(qtype), tile_k=_tile_k(qtype), high_bits=_high_bits(qtype))
+        if arr != expected:
+            raise RuntimeError(
+                f"{t.name}: producer returned arrangement {arr}, pack plan expected {expected}; refusing to write "
+                f"a manifest that describes different bytes from the ones just produced")
         manifest.append({"name": t.name, "dir": stem, "ggml_type": qtype, "type_name": t.tensor_type.name,
-                         "n": n, "k": k, "arrangement": arr._asdict(),
+                         "n": n, "k": k, "arrangement_version": artifact.arrangement_version,
+                         "arrangement": arr._asdict(),
                          "fold": [arr.fold, arr.high_fold],  # derived, printed for a human; readers re-derive
                          "shapes": {"low": list(low.shape), "high": list(high.shape), "units": list(units.shape)}})
         if (i + 1) % 25 == 0 or i + 1 == len(todo):
             print(f"  packed {i+1}/{len(todo)}  ({time.time()-t0:.1f}s)")
 
-    (out / "manifest.json").write_text(json.dumps({"model": a.model, "tensors": manifest}, indent=2) + "\n")
+    (out / "manifest.json").write_text(json.dumps(
+        {"artifact_schema_version": routes.PLACED_ARTIFACT_VERSION, "model": a.model, "tensors": manifest},
+        indent=2) + "\n")
     print(f"\nwrote {len(manifest)} artifact(s) + manifest.json to {out}")
     print("The manifest carries the ARRANGEMENT per tensor, not per format: dense and MoE want different folds,\n"
           "and a reader that has to infer it is a reader that will one day infer wrongly.")
@@ -202,6 +211,40 @@ def _write(d: pathlib.Path, low, high, units) -> None:
     import numpy as np
     for name, t in (("low", low), ("high", high), ("units", units)):
         np.save(d / f"{name}.npy", t.numpy())
+
+
+def restore_artifact(root: pathlib.Path, record: dict):
+    """Restore one manifest entry without dropping the descriptor that makes its code planes readable.
+
+    This is intentionally the inverse of _write plus the manifest record, not a convenience that returns three
+    tensors. Returning a plain tuple here would make every correct reader reject it -- and permitting that tuple
+    would put guessing back into the ABI. Unknown/missing versions fail closed before any bytes are loaded.
+    """
+    import numpy as np
+    import torch
+    from quactlize import formats as F
+    from quactlize import routes
+
+    version = record.get("arrangement_version")
+    if version != routes.PLACED_ARTIFACT_VERSION:
+        raise ValueError(
+            f"artifact {record.get('name', '<unnamed>')}: arrangement_version={version!r}, this build reads "
+            f"{routes.PLACED_ARTIFACT_VERSION}; missing is legacy/ambiguous, not version 1")
+    raw = record.get("arrangement")
+    if not isinstance(raw, dict) or set(raw) != {"bits", "tile_k", "high_bits"}:
+        raise ValueError(
+            f"artifact {record.get('name', '<unnamed>')}: arrangement must contain exactly "
+            f"bits/tile_k/high_bits, got {raw!r}")
+    arrangement = F.PlacedArrangement(int(raw["bits"]), int(raw["tile_k"]), int(raw["high_bits"]))
+    _ = arrangement.fold, arrangement.high_fold
+    expected = F.placed_arrangement(int(record["ggml_type"]), arrangement.tile_k)
+    if arrangement != expected:
+        raise ValueError(
+            f"artifact {record.get('name', '<unnamed>')}: manifest arrangement {arrangement} disagrees with "
+            f"ggml_type={record['ggml_type']} ({expected})")
+    d = pathlib.Path(root) / record["dir"]
+    tensors = tuple(torch.from_numpy(np.load(d / f"{name}.npy")) for name in ("low", "high", "units"))
+    return routes.PlacedArtifact(tensors, arrangement, version)
 
 
 if __name__ == "__main__":

@@ -323,6 +323,52 @@ class PlacedArrangement(NamedTuple):
         return self.fold == 1 and self.high_fold == 1
 
 
+# LOGICAL CODE PLANES ARE PART OF THE GGUF FORMAT, NOT A TACTIC CHOICE. Keeping this beside BLOCKS makes the
+# Python artifact header derive from the same format identity that validates the raw blocks. TileK is deliberately
+# absent: the producer records the TileK it actually used, and fold_for derives the physical fold from that value.
+#
+# This table is not a second copy of a tunable registry. Q2/Q3 split their 2/3 bits as 2+0/2+1, Q4/Q5 as 4+0/4+1,
+# and Q6 as 4+2 -- the official format definition. quactlize/include/ppu_format_config.inc has a build-time copy
+# for C++; tests cross-check it so a drift is a hard failure rather than two plausible artifact descriptors.
+PLACED_CODE_PLANES = {
+    QuantType.Q2_K: (2, 0),
+    QuantType.Q3_K: (2, 1),
+    QuantType.Q4_K: (4, 0),
+    QuantType.Q5_K: (4, 1),
+    QuantType.Q6_K: (4, 2),
+}
+
+
+def placed_code_planes(qtype) -> tuple[int, int]:
+    """Return the low/high code-plane widths for a shipping k-quant, refusing every other qtype."""
+    q = QuantType(qtype)
+    if q not in PLACED_CODE_PLANES:
+        raise NotImplementedError(
+            f"{q.name} has no placed fully-quantized artifact; accepting it would manufacture a descriptor for "
+            f"bytes no producer in this tree can build")
+    return PLACED_CODE_PLANES[q]
+
+
+def placed_arrangement(qtype, tile_k: int | None = None) -> PlacedArrangement:
+    """The descriptor a dense producer must attach to its bytes.
+
+    `tile_k=None` means the old/fixed producer. Its C++ placement uses the minimum K span that gives the narrowest
+    plane a 32-byte delivery, which is 256/min(low_bits, high_bits). That is a FORMAT consequence, not a hidden
+    reader default. An explicit TileK is recorded verbatim because it is the argument sent to *_for_tile.
+    """
+    low_bits, high_bits = placed_code_planes(qtype)
+    if tile_k is None:
+        tile_k = 256 // (high_bits or low_bits)
+    tile_k = int(tile_k)
+    if tile_k <= 0:
+        raise ValueError(f"artifact TileK must be positive, got {tile_k}")
+    arrangement = PlacedArrangement(low_bits, tile_k, high_bits)
+    # Evaluate both derived folds now. A descriptor whose run cannot satisfy the 32-byte floor must fail at the
+    # producer seam, not survive until a reader sees finite wrong values.
+    _ = arrangement.fold, arrangement.high_fold
+    return arrangement
+
+
 # THE CODE CORRECTION OF THE PLACED DENSE ARRANGEMENT, per format. NOT a free parameter and NOT zero by default:
 # a placed weight's codes carry a per-format offset, and reading them back with the wrong one produces plausible
 # scales rather than an error. codex measured these against the stored planes (heartbeat 088) --
