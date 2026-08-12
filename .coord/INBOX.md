@@ -5531,3 +5531,48 @@ box 上的 acu **不能导出文本,只能截图**,所以手抄是唯一通道,�
 * TileM=8:同样的 warp 数,**每个 warp 少一半累加器**(省寄存器)
 
 寄存器是当前 warps/CU 的绑定约束(25),所以三条里只有第三条直接顶在绑定约束上。**顺序建议:旋钮(在做)-> tm=8 进表并实测 -> 再看 warp-K 值不值。**
+
+## 128 — **用户定调:先对齐 standalone Marlin,对齐之前谈不了后续。** 126 升级为任务
+
+原话:*"肯定要做的,因为还没有对齐 marlin 的 standalone 的 kernel 的做法。对齐之后你才能谈后续。"*
+
+我提过"warp-K 在寄存器上可能是净亏"(126),**用户重申了,按用户的决定执行**。而且他的框架比我的硬:**在"我们的 Marlin 真的是 Marlin"之前,任何"Marlin 的调度在 PPU 上不管用"的结论都无效**,因为差异归因根本没建立。这条我同意。
+
+### 事前判据(现在写死,不许事后调)
+
+    marlin_classic_ppu.cuh:859   同一台 PPU、M=1、N=K=4096、gs=128
+      手写 marlin classic  ->  17.8 us   17.5% HBM
+      我们的 marlin 臂     ->  21.14 us  14.5% HBM      <- 差 19%
+
+**对齐后应收敛到 ~17.8 us / 17.5%。收不敛 ⟹ 差异清单没列全**,不是"PPU 就这样"。**两个结果都要报**:收敛了报收敛;没收敛,报**还差哪一项没对齐**,不要报成"已尽力"。
+
+### 交付 0:差异清单(**先于任何代码**)
+
+逐轴对照我们的 marlin 臂 vs `marlin_classic_ppu.cuh` 在 decode config 上的取值,输出一张 `相同 / 不同 / 未知` 的表。**"未知"必须写成未知**,不许猜成"相同"。已知的起点:
+
+| 轴 | classic | 我们 |
+|---|---|---|
+| warp 网格 | `2N × 4K`(`NWK=(threads/32)/(thread_n_blocks/4)`) | `4N × 1K`(`Layout<Shape<TM/WM, TN/WN, _1>>`) |
+| CTA 线程 | 256 | 128 |
+| `frag_c`/thread | `thread_m_blocks*4*8` = 32 float | 16 float(warp tile 16x32) |
+| 跨 K-warp 归约 | `thread_block_reduce`(:552) | **不存在** |
+| CTA 层调度 | 拉平 (tile, k-tile) + `barrier_acquire` | 已移植 |
+
+**剩下的轴由你补全**:stages、共享布局与 swizzle、scale 载入路径、A/B 的 cp.async 形状、epilogue、寄存器预算、`b_sh_wr_iters` 与 `warp_k` 的交互(见 [[ppu-marlin-warps-split-k]] 那条记忆:`b_sh_wr_iters != thread_k_blocks`,**任何 per-k 量都必须带 warp_k**)。
+
+### 交付 1:warp-K,**两件事不是一件**
+
+1. **(N,K) warp 网格** —— TiledMMA 的第三模从 `_1` 变成 WK,`cta_warps` 跟着带 K 因子,`ppu_tactic_space.hpp:158` 那条注释和两个 launcher 的 `static_assert` 一起改。
+2. **`thread_block_reduce`** —— CTA 内跨 K-warp 归约。classic 的注释点出它成立的前提:*register-index-aligned across K-warps*,即**跨 K-warp 的同一寄存器下标必须对应同一输出元素**。加了 K 模之后这条是不是还成立,**本地用 cute layout 验**(L123 那套 harness 的地盘),不要靠上设备发现。
+
+### 负控与范围
+
+* **WK=1 必须与今天逐位相同**(和 `blocks_per_cu=1` 同样的要求)。
+* **L123 自己把 WK 定性为 artifact-descriptor 轴**(和 TileK、fold 同类)。所以**先回答这个门槛问题**:现有离线 artifact 能不能直接服务 WK>1,还是要新 descriptor?**这个答案决定工作量的量级,先答再动 kernel 代码。**
+* L123 说 `2Nx2K / 1Nx4K` 的等 warp 数对能证明 N、K 是独立轴 —— **它当时验到哪一步、B 的物理 oracle 过没过,一并报。** 别重做已经做过的。
+
+### 排序
+
+`blocks_per_cu` 已经写完过完复核了,**照常落地,别丢**。但**它的 box 扫描先不跑** —— 用户认为未对齐前的 box 性能没有意义,这个判断我接受。**把旋钮的 1/2/4/6 和 warp-K 对齐后的复测合并成一个 box 批次**,一次上机。
+
+分区分析继续排在所有实测之后。
