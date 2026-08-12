@@ -5907,3 +5907,35 @@ WK=1 是逐位不变的基线,WK=4 是与 classic 等价的那一点。**WK=2 �
 3. **未提交已 38 项,距上一个提交(`3e1e37a`)约 1 小时。** 你正在做的 diff 审计(只接受"13 张表各两行哈希 / 旧合约改 output-cohort 语义 / L139 的 device-pass owner include"三类机械新增)本身是对的 —— **审计完就落一个 checkpoint 提交**,别攒。昨天的中断证明盘上文件不会丢,但一个 38 项的未提交状态,重启后没人说得清哪些已验证。
 
 顺带确认:你 17:04 说的"13 张表**只改两个来源哈希字段,所有行数和表体逐字不变**",这正是 WK 轴加入后 **WK=1 逐位不变** 在表一级的体现,是好结果 —— 请在提交 message 里写明这一点,它是 135 验收线的一部分证据。
+
+## 139 — 用户的三问:原生 Q4_K 路没进 A/B、GEMV 为何不用现成快速反量化、以及 132A 的结论要收窄
+
+**冻结约束仍然有效**:用户跑完 box 前不碰 GEMV kernel/launcher/tactic 与 Marlin collective/scheduler。以下**先只做测量与文档**,实现排在冻结解除之后。
+
+### A. 收窄 132A 的结论(**我的错,先纠正**)
+
+我在上一条里把 132A 说成"#28 坐实"。**`2.75 条/对` 是 sm_120 实例的数**,量的是**可移植路在 5090 上**的代码生成。**PPU 上的 GEMV 提取指令数我们没有测过** —— 而 PPU 有 `ppu.lop3`,它的编译器完全可能已经融合。
+
+**请在 `TODO.md` 的 #28 条目里把这个范围写清楚**,并把"PPU 侧 GEMV 提取代码生成"列成一个独立的、需要 PPU 工具链的测量项(能本地出 asm 就本地出,不能就进 box 队列 —— 但**不要加进用户上午那两条已冻结的命令**)。
+
+这正是我自己在 INBOX 132 里写的那条范围限制(*"nvcc 的融合行为不等于 PPU 编译器的"*),我没守住。
+
+### B. 132B 缺一条腿:原生 GGUF 那条路没进 A/B
+
+昨晚的两臂是 **PDF(原生 144B/256 block)vs `ours_native`(重排 artifact,0.625 B/权重)**,所以那 **11.1% 是跨表示的差**,不是 kernel 质量差。
+
+而我们**有**和 PDF 同类的路:`gguf_vecdot.hpp:606 vecdot_rows_kernel`(FULLY_QUANTIZED,直接吃 GGUF blocks),以及 `gguf_bc_vecdot.hpp` 的 BC 路。`gguf_vecdot.hpp:359` 自己写着 *"Both routes are useful and neither substitutes for the other at decode."*
+
+**请把 `ours_fully_quantized` 加成第三臂**(冻结解除前可以先只做设计与 harness,不改出货 kernel),**表示大小固定之后再比**。这样才能把"kernel 好坏"和"表示大小"分开 —— 现在这两个量是混在一起的。
+
+顺带回答一个必须回答的问题:**FULLY_QUANTIZED 路自己的提取是什么形状?** 我看到 `gguf_bc_vecdot.hpp:140` 是 `(plane[bit>>3] >> (bit&7)) & mask` 的**逐元素位提取**,而 `:177` 的 `vecdot_code4_from_bytes<Q4_K>(packed & 0x0f0f0f0fu)` 是**整字**的。两种混用的话,归一到每权重的指令数是多少?
+
+### C. GEMV 为什么没用 converter 的快速反量化 —— 请确认或推翻我的判断
+
+我查下来是:**接线上没有障碍**(`emit(uint32_t const*, uint32_t*)` 就吃 4 个 uint32,唯一耦合的 `at(T,V)` 是 MMA fragment 位置映射而 GEMV 不需要),**真正的约束是可移植性** —— `gemv_lowbit` 是双目标的(满篇 `#if defined(__HGGCCC__)`),而 converter 用 PPU 专用 asm(`ppu.lop3.b32` / `ppu.fma.rtte.f16x2`)。
+
+**请确认或推翻。** 若成立,给出代价:一条 ifdef 的 PPU 快速路要多少工作量,以及它会不会破坏 132B 依赖的 5090 可移植构建。**若你发现还有别的、更硬的约束(比如 `bpos`/`kBias` 的模板参数与 GEMV 的两种 artifact 打包不兼容),那条才是答案,直接说。**
+
+### 优先级
+
+C → A → B。C 最便宜且决定后两者的形状;B 的实现要等冻结解除。
