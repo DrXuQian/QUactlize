@@ -1147,7 +1147,7 @@ public:
         // The int8 shadow atom covers 32 logical K codes.  Its permutation
         // must span every compute K cohort; changing AtomLayout.K alone leaves
         // valid-looking fragments with holes (L123's stale-shadow negative).
-        Tile<ShadowPermutationM, PermutationN, Int<32 * warpOnK()>>> >;
+        Tile<ShadowPermutationM, PermutationN, Int<32 * warpOnK()>>>;
 
     TiledMma_S8 tiled_mma_s8;
     auto thr_mma_s8 = tiled_mma_s8.get_thread_slice(thread_idx);
