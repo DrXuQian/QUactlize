@@ -86,7 +86,8 @@ def audit(block: str, scheduler: str, dense: str, grouped: str,
         "for (int peers = 1; peers <= 4; ++peers)",
         "bits(pred_out[slot]) == bits(full_out[slot])",
         "pred_touched[slot] == 0",
-        "planted-coordinate=%s planted-address=%s result=%s",
+        "planted-coordinate=%s planted-address=%s ",
+        "planted-fixed128-cohort=%s result=%s",
     ):
         if oracle.count(token) != 1:
             bad.append(f"l124 semantic oracle lost {token!r}")
