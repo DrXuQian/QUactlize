@@ -20,12 +20,15 @@ scalar metadata 转换与解释页的 pair 转换同时保留为两个 arm，避
 - `warm`：计时前每个 arm warmup 100 rounds；每个 event 固定 64 个 logical workloads。
   每个 shape/state/arm 保留 31 个原始样本；两状态前均有 50 ms host enqueue window
   交替提交各 arm，随后同步。该窗口不是 GPU 恰好运行同样时长的声明。
-  AB/BA 交替；初始化、pack、H2D、flush 与 NVML 查询均在目标 event 外。event span 包含 GPU launch
+  每个 pass 对完整 arm 列表采用 forward/reverse 顺序；三臂时中间 arm 的位置不变，因此不冒充完整的
+  positional counterbalance。初始化、pack、H2D、flush 与 NVML 查询均在目标 event 外。event span 包含 GPU launch
   间隙，因此是 kernel-only 的上界而非 CUPTI kernel duration 同义词。
 - 每个 stop event 入队后采一次 NVML SM clock，并记录 event 当时是否仍 pending。它是 adjacent snapshot，
   不是 time-integrated kernel clock。
 - L=8 点同时报 `ours_native_grouped1`（1 kernel/workload）与 `ours_native_dense8`（8 kernels/workload）；
   PDF API 只有 dense，因此是 8 kernels/workload。不能把 1-vs-8 launch 差异藏起来。
+  该 H-G8 shape 使用 PDF 文档给出的默认 `2x8x1`，但不是第 22 页实测 winner；raw authority 明确标为
+  `pdf_documented_default_unmeasured_shape`。
 
 ## 原始汇总
 
