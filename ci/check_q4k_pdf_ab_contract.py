@@ -62,7 +62,8 @@ def audit(harness: str, kernel: str, fixture: str, runner: str) -> list[str]:
         "values = sorted(timing_us(r) for r in group)",
         "raw CSV mixes protocol field", "len(group) != requested", "protocol_selftest",
         "decimal per-workload time disagrees with bits", "sub-floor observed GCD was admitted",
-        'verdict = "UNRESOLVED"', "topology-inclusive 1-vs-8", "not an exact-paper reproduction",
+        'verdict = "UNRESOLVED: quantum rejected by policy"', "topology-inclusive 1-vs-8",
+        "not an exact-paper reproduction",
     ]:
         if token not in runner:
             errors.append(f"runner/report fail-close missing: {token}")
@@ -99,7 +100,8 @@ def main() -> int:
           "reconstruction source boundary")
     plant(2, "Independent decode from raw blocks", "Decode from the affine artifact",
           "independent raw golden")
-    plant(3, 'verdict = "UNRESOLVED"', 'verdict = "TIE"', "timer-resolution fail-close")
+    plant(3, 'verdict = "UNRESOLVED: quantum rejected by policy"', 'verdict = "TIE"',
+          "timer-resolution fail-close")
     plant(3, "len(group) != requested", "len(group) < 0", "declared sample-count fail-close")
     plant(3, "values = sorted(timing_us(r) for r in group)",
           'values = sorted(float(r["event_us_per_workload"]) for r in group)',

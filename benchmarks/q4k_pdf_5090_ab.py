@@ -87,12 +87,12 @@ def infer_quantum(rows: list[dict[str, str]]) -> tuple[Decimal | None, Decimal |
     ns = Decimal("0.001")
     ints = [int(v.quantize(ns, rounding=ROUND_HALF_EVEN) / ns) for v in values]
     gcd = 0
-    for value in ints:
-        gcd = math.gcd(gcd, abs(value))
+    for left, right in zip(ints, ints[1:]):
+        gcd = math.gcd(gcd, right - left)
     quantum = Decimal(gcd) * ns
     if quantum < Decimal("0.5"):
-        return None, quantum, f"GCD {quantum} us below the predeclared conservative 0.5-us floor"
-    return quantum, quantum, f"integer-nanosecond GCD over {len(values)} distinct binary32 event values"
+        return None, quantum, f"adjacent-difference GCD {quantum} us rejected by the predeclared 0.5-us floor"
+    return quantum, quantum, f"integer-nanosecond adjacent-difference GCD over {len(values)} distinct binary32 event values"
 
 
 def fnum(value: float) -> str:
@@ -285,6 +285,7 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
             "clock": statistics.median(clocks), "clock_min": min(clocks), "clock_max": max(clocks),
             "pending": sum(int(r["event_pending_after_clock_query"]) for r in group),
             "samples": len(group), "row": group[0],
+            "by_pass": {int(r["pass"]): timing_us(r) for r in group},
         }
     canonical_shapes = ["D-EXT-O", "D-EXT-K1024", "D-EXT-Q", "H-G8-2048"]
     shape_order = [shape for shape in canonical_shapes if any(k[0] == shape for k in stats)]
@@ -303,10 +304,10 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
         "packer、golden 和 timer；launcher 由文档第 14 页的 grid/block/smem 伪码恢复。文档主 listing 的",
         "scalar metadata 转换与解释页的 pair 转换同时保留为两个 arm，避免把两份不同代码揉成一个“原版”。",
         "",
-        f"Raw CSV: `{raw}`  ",
-        f"Git: `{rows[0]['git_sha']}`  ",
-        f"Binary SHA-256: `{rows[0]['binary_sha']}`  ",
-        f"Device / PCI / driver: `{rows[0]['device_name']}` / `{rows[0]['device_pci']}` / `{rows[0]['nvidia_driver_version']}`",
+        f"- Raw CSV: `{raw}`",
+        f"- Git: `{rows[0]['git_sha']}`",
+        f"- Binary SHA-256: `{rows[0]['binary_sha']}`",
+        f"- Device / PCI / driver: `{rows[0]['device_name']}` / `{rows[0]['device_pci']}` / `{rows[0]['nvidia_driver_version']}`",
         "",
         "## 输入与协议",
         "",
@@ -361,9 +362,12 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
         "本协议事前规定：总 event 的 GCD 低于 0.5 us 时只作为 observed grid 展示，不准入为计时器分辨率；",
         "因此本次 admissible quantum 全为 `UNKNOWN`，正式 verdict 全部 fail-close 为 `UNRESOLVED`。",
         "",
-        "| shape | state | comparison | ratio target/PDF | sampled bands | resolution-qualified verdict |",
-        "|---|---|---|---:|---|---|",
+        "| shape | state | comparison | ratio target/PDF | sampled bands | paired target/PDF/tie | resolution-qualified verdict |",
+        "|---|---|---|---:|---|---:|---|",
     ]
+    comparison_count = 0
+    disjoint_count = 0
+    unanimous_count = 0
     for shape in shape_order:
         for state in ["weight_metadata_cold", "warm"]:
             pool = [stats[k] for k in stats if k[0] == shape and k[1] == state and k[2].startswith("pdf_")]
@@ -378,21 +382,37 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
                 effective = None if q is None else float(q) / batch
                 overlap = not (target["max"] < pdf["min"] or pdf["max"] < target["min"])
                 diff = abs(target["median"] - pdf["median"])
-                sampled = ("bands overlap" if overlap else
-                           "target faster" if target["max"] < pdf["min"] else
-                           "PDF reconstruction faster")
-                if overlap or effective is None or diff <= effective:
-                    verdict = "UNRESOLVED"
+                sampled = ("bands overlap" if overlap else "target faster" if target["max"] < pdf["min"]
+                           else "selected PDF variant faster")
+                pair_delta = [target["by_pass"][p] - pdf["by_pass"][p]
+                              for p in sorted(target["by_pass"])]
+                target_wins = sum(delta < 0 for delta in pair_delta)
+                pdf_wins = sum(delta > 0 for delta in pair_delta)
+                ties = sum(delta == 0 for delta in pair_delta)
+                comparison_count += 1
+                disjoint_count += not overlap
+                unanimous_count += max(target_wins, pdf_wins) == len(pair_delta)
+                if overlap:
+                    verdict = "UNRESOLVED: bands overlap"
+                elif effective is None:
+                    verdict = "UNRESOLVED: quantum rejected by policy"
+                elif diff <= effective:
+                    verdict = "UNRESOLVED: median gap <= 1 quantum"
                 elif target["median"] < pdf["median"]:
                     verdict = "target faster on RTX5090"
                 else:
-                    verdict = "PDF reconstruction faster on RTX5090"
+                    verdict = "selected PDF variant faster on RTX5090"
                 topology = " (topology-inclusive 1-vs-8)" if target_name.endswith("grouped1") else ""
                 lines.append(
                     f"| {shape} | {state} | {target_name} / {pdf_name}{topology} | "
-                    f"{target['median'] / pdf['median']:.4f} | {sampled} | {verdict} |"
+                    f"{target['median'] / pdf['median']:.4f} | {sampled} | "
+                    f"{target_wins}/{pdf_wins}/{ties} | {verdict} |"
                 )
     lines += [
+        "",
+        f"方向性证据：{comparison_count} 个比较中 raw bands 有 {disjoint_count} 个不重叠，按同 pass 配对有",
+        f"{unanimous_count} 个呈 31/31 单向。它证明 sampled direction 稳定；它不把被事前政策拒绝的",
+        "32 ns observed grid 升格成可准入 timer quantum，因此不会把方向证据冒充 resolution-qualified 判决。",
         "",
         "## 不可外推的部分",
         "",
@@ -402,7 +422,6 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
         "3. 原生 Q4_K 是 0.5625 B/weight；ours 是 0.625 B/weight。绝对时间可比，GB/s 必须用各自行的分子。",
         "4. PDF 未提供 L=8 grouped kernel；该行的 8 次 dense launch 是 API 事实，不是 grouped 等价实现。",
         "5. scalar/pair 两版均来自 PDF，但无法从文档判定第 22 页时间对应哪版。本结果保留两行，不替作者选择。",
-        "",
     ]
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines) + "\n")
