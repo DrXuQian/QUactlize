@@ -59,11 +59,29 @@ public:
   using EpilogueArguments = typename CollectiveEpilogue::Arguments;
   using EpilogueParams = typename CollectiveEpilogue::Params;
 
+  // A K-tiled TiledMma gives every K cohort an isomorphic FP32 fragment for
+  // the same output tile.  Only the K=0 cohort survives the CTA-local
+  // reduction and participates in the cross-CTA cooperative/epilogue.  Derive
+  // that exact cohort from the output tile and fragment instead of assuming
+  // either the launch size or a historical 128-thread default.
+  using AccumulatorFragment = decltype(cute::make_fragment_like<ElementCompute>(
+      cute::partition_fragment_C(TiledMma{}, cute::take<0, 2>(TileShape{}))));
+  static constexpr uint32_t OutputTileElements =
+      uint32_t(cute::size<0>(TileShape{})) * uint32_t(cute::size<1>(TileShape{}));
+  static constexpr uint32_t FragmentElements = uint32_t(cute::size(AccumulatorFragment{}));
+  static constexpr uint32_t WarpKCohorts =
+      uint32_t(cute::size<3>(typename TiledMma::ThrLayoutVMNK{}));
+  static_assert(FragmentElements > 0 && OutputTileElements % FragmentElements == 0,
+                "Marlin output fragment must divide one output tile exactly");
+  static constexpr uint32_t OutputThreads = OutputTileElements / FragmentElements;
+  static constexpr uint32_t ReductionScratchElements =
+      (WarpKCohorts - 1) * OutputTileElements;
+
   using ClusterShape = cute::Shape<cute::Int<1>, cute::Int<1>, cute::Int<1>>;
   using TileSchedulerTag = MarlinScheduler;
   static constexpr uint32_t MaxThreadsPerBlock = cute::size(TiledMma{});
   using TileScheduler = detail::PersistentTileSchedulerPPUMarlin<
-      TileShape, ClusterShape, MaxThreadsPerBlock>;
+      TileShape, ClusterShape, OutputThreads>;
   using TileSchedulerArguments = typename TileScheduler::Arguments;
   using TileSchedulerParams = typename TileScheduler::Params;
 
@@ -73,10 +91,15 @@ public:
 
   static_assert(MaxThreadsPerBlock == uint32_t(cute::size(TiledMma{})),
                 "Marlin launch size must equal the exact TiledMma CTA size");
-  static_assert(TileScheduler::fixup_thread_count_capable(MaxThreadsPerBlock),
-                "dense mixed-input Marlin requires a structurally capable CTA cohort");
-  static_assert(TileScheduler::FixupThreadCount == MaxThreadsPerBlock,
-                "Marlin cooperative cohort must equal the exact CTA thread count");
+  static_assert(MaxThreadsPerBlock == OutputThreads * WarpKCohorts,
+                "Marlin CTA must be an exact output-cohort x warp-K product");
+  static_assert(TileScheduler::fixup_thread_count_capable(OutputThreads),
+                "dense mixed-input Marlin requires a structurally capable output cohort");
+  static_assert(TileScheduler::FixupThreadCount == OutputThreads,
+                "Marlin cooperative cohort must equal the exact output cohort");
+  static_assert(uint32_t(typename CollectiveEpilogue::TiledCopyS2R::TiledNumThr{}) ==
+                    OutputThreads,
+                "Marlin epilogue named-barrier cohort must equal the K0 output cohort");
   static_assert(cute::is_same_v<ElementAccumulator, ElementCompute> &&
                 cute::is_same_v<ElementAccumulator, float>,
                 "the first Marlin cooperative stores exact FP32 accumulator tiles");
@@ -86,11 +109,20 @@ public:
   // used: CUTLASS C is a const beta source and D may have an arbitrary
   // epilogue/layout.  FP32 scratch preserves the existing C/D/beta ABI.
   struct SharedStorage {
+    struct ReductionScratchStorage {
+      // C++ does not admit zero-length arrays.  WK=1 never names this member;
+      // retaining one inert scalar keeps that specialization well-formed and
+      // does not enlarge the existing mainloop/epilogue union.
+      ElementAccumulator values[ReductionScratchElements == 0
+                                    ? 1
+                                    : ReductionScratchElements];
+    };
     union SharedTensorStorage {
       using MainloopSharedStorage = typename CollectiveMainloop::SharedStorage;
       using EpilogueSharedStorage = typename CollectiveEpilogue::SharedStorage;
       MainloopSharedStorage mainloop;
       EpilogueSharedStorage epilogue;
+      ReductionScratchStorage reduction;
     } tensors;
   };
   static constexpr int SharedStorageSize = sizeof(SharedStorage);
@@ -267,32 +299,124 @@ public:
       collective_mainloop(params.mainloop, load_inputs, accumulators,
                           k_tile_iter, int(k_tile_count), thread_idx, smem_buf);
 
-      bool const requires_fixup = TileScheduler::requires_fixup(
-          params.scheduler, work_tile_info);
-      bool const full_output_tile =
-          int(get<0>(residue_mnk)) >= int(size<0>(blk_shape)) &&
-          int(get<1>(residue_mnk)) >= int(size<1>(blk_shape));
-      if (!requires_fixup || full_output_tile) {
-        TileScheduler::fixup(
-            params.scheduler, work_tile_info, accumulators, NumMmaWarpGroups, 0);
+      if constexpr (WarpKCohorts == 1) {
+        // Keep the shipping WK=1 path structurally unchanged.  In particular,
+        // its cooperative cohort remains the full CTA and no extra barrier or
+        // shared-memory instruction is emitted.
+        bool const requires_fixup = TileScheduler::requires_fixup(
+            params.scheduler, work_tile_info);
+        bool const full_output_tile =
+            int(get<0>(residue_mnk)) >= int(size<0>(blk_shape)) &&
+            int(get<1>(residue_mnk)) >= int(size<1>(blk_shape));
+        if (!requires_fixup || full_output_tile) {
+          TileScheduler::fixup(
+              params.scheduler, work_tile_info, accumulators, NumMmaWarpGroups, 0);
+        }
+        else {
+          auto valid_accumulator = detail::make_accumulator_residue_mask(
+              tiled_mma, accumulators, take<0, 2>(blk_shape),
+              take<0, 2>(residue_mnk), thread_idx);
+          TileScheduler::fixup(
+              params.scheduler, work_tile_info, accumulators, NumMmaWarpGroups, 0,
+              valid_accumulator);
+        }
+
+        if (TileScheduler::compute_epilogue(work_tile_info, params.scheduler)) {
+          CollectiveEpilogue epilogue{params.epilogue, shared_storage.tensors.epilogue};
+          #pragma hggc dislicm
+          {
+            epilogue(problem_shape_mnkl, blk_shape, blk_coord_mnkl, accumulators,
+                     tiled_mma, residue_mnk, thread_idx,
+                     reinterpret_cast<char*>(&shared_storage.tensors.epilogue));
+          }
+        }
       }
       else {
-        auto valid_accumulator = detail::make_accumulator_residue_mask(
-            tiled_mma, accumulators, take<0, 2>(blk_shape),
-            take<0, 2>(residue_mnk), thread_idx);
-        TileScheduler::fixup(
-            params.scheduler, work_tile_info, accumulators, NumMmaWarpGroups, 0,
-            valid_accumulator);
-      }
+        // Project the real VMNK thread coordinate onto K=0.  This is the
+        // compact output-cohort ID proved by L139; unlike thread_idx % cohort,
+        // it remains tied to the TiledMma layout if its physical ordering ever
+        // changes.
+        auto const thr_layout_vmnk = tiled_mma.get_thr_layout_vmnk();
+        auto const vmnk = thr_layout_vmnk.get_flat_coord(thread_idx);
+        int const warp_k = int(get<3>(vmnk));
+        int const output_thread_idx = int(thr_layout_vmnk(make_coord(
+            get<0>(vmnk), get<1>(vmnk), get<2>(vmnk), Int<0>{})));
+        CUTLASS_ASSERT(0 <= warp_k && warp_k < int(WarpKCohorts));
+        CUTLASS_ASSERT(0 <= output_thread_idx &&
+                       output_thread_idx < int(OutputThreads));
+        CUTLASS_ASSERT(warp_k != 0 || output_thread_idx == thread_idx);
 
-      if (TileScheduler::compute_epilogue(work_tile_info, params.scheduler)) {
-        CollectiveEpilogue epilogue{params.epilogue, shared_storage.tensors.epilogue};
-        #pragma hggc dislicm
-        {
-          epilogue(problem_shape_mnkl, blk_shape, blk_coord_mnkl, accumulators,
-                   tiled_mma, residue_mnk, thread_idx,
-                   reinterpret_cast<char*>(&shared_storage.tensors.epilogue));
+        // The reduction scratch aliases mainloop and epilogue storage.  The
+        // mainloop ends with a CTA barrier; the barrier after the stores below
+        // is therefore the phase boundary that makes scratch visible before
+        // any K0 load.  Avoiding a redundant leading barrier matters in this
+        // latency-sensitive decode path.
+        ElementAccumulator* reduction_scratch =
+            shared_storage.tensors.reduction.values;
+        if (warp_k != 0) {
+          #pragma unroll
+          for (uint32_t i = 0; i < FragmentElements; ++i) {
+            uint32_t const stripe = i * OutputThreads +
+                                    uint32_t(output_thread_idx);
+            uint32_t const scratch_idx =
+                (uint32_t(warp_k) - 1) * OutputTileElements + stripe;
+            reduction_scratch[scratch_idx] = accumulators.data()[i];
+          }
         }
+        __syncthreads();
+
+        if (warp_k == 0) {
+          // Every K cohort has the same logical C fragment ordering for a
+          // given compact output thread (L139).  Accumulate the other cohorts
+          // in deterministic K order and keep the complete FP32 result in K0.
+          #pragma unroll
+          for (uint32_t i = 0; i < FragmentElements; ++i) {
+            uint32_t const stripe = i * OutputThreads +
+                                    uint32_t(output_thread_idx);
+            #pragma unroll
+            for (uint32_t peer_k = 1; peer_k < WarpKCohorts; ++peer_k) {
+              accumulators.data()[i] += reduction_scratch[
+                  (peer_k - 1) * OutputTileElements + stripe];
+            }
+          }
+        }
+
+        // All K0 loads must finish before the epilogue reuses the union.  Only
+        // that compact cohort may enter the cross-CTA cooperative and output.
+        __syncthreads();
+        if (warp_k == 0) {
+          bool const requires_fixup = TileScheduler::requires_fixup(
+              params.scheduler, work_tile_info);
+          bool const full_output_tile =
+              int(get<0>(residue_mnk)) >= int(size<0>(blk_shape)) &&
+              int(get<1>(residue_mnk)) >= int(size<1>(blk_shape));
+          if (!requires_fixup || full_output_tile) {
+            TileScheduler::fixup(
+                params.scheduler, work_tile_info, accumulators, NumMmaWarpGroups, 0);
+          }
+          else {
+            auto valid_accumulator = detail::make_accumulator_residue_mask(
+                tiled_mma, accumulators, take<0, 2>(blk_shape),
+                take<0, 2>(residue_mnk), thread_idx);
+            TileScheduler::fixup(
+                params.scheduler, work_tile_info, accumulators, NumMmaWarpGroups, 0,
+                valid_accumulator);
+          }
+
+          if (TileScheduler::compute_epilogue(work_tile_info, params.scheduler)) {
+            CollectiveEpilogue epilogue{params.epilogue, shared_storage.tensors.epilogue};
+            #pragma hggc dislicm
+            {
+              epilogue(problem_shape_mnkl, blk_shape, blk_coord_mnkl, accumulators,
+                       tiled_mma, residue_mnk, thread_idx,
+                       reinterpret_cast<char*>(&shared_storage.tensors.epilogue));
+            }
+          }
+        }
+
+        // No non-output K cohort may advance to the next persistent tile while
+        // K0 still owns epilogue shared memory for the current tile.
+        __syncthreads();
       }
 
       auto next = scheduler.fetch_next_work(work_tile_info);
