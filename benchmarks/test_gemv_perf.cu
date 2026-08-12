@@ -4,8 +4,8 @@
 // TWO SHAPE FAMILIES, because they have DIFFERENT parallelism knobs and conflating them hid a factor of 8
 // earlier in this work:
 //
-//   * MoE decode (L experts x 1 row). grid = 1 x n/CtaN x L. The expert dimension multiplies the grid, so at
-//     L=8, n=2048, CtaN=8 this is 2048 CTAs x 128 threads.
+//   * MoE decode uses the same E=256/top-8 pinned router as S068--S071 at T=1/2/4. At T=1 only eight non-contiguous
+//     real expert IDs own rows; the other 248 grid.z slots return empty.  W/S/Z remain expert-id addressed.
 //   * DENSE decode (one matrix, m rows). grid = ceil(m/CtaM) x n/CtaN x 1. There is NO expert dimension, so
 //     at m=1, n=2048, CtaN=8 it is 256 CTAs = 1024 warps = 14.2 warps/CU -- the SAME warp count as the
 //     grouped GEMM's decode launch. For dense, parallelism has to be bought with CtaN, and the price is A
@@ -29,9 +29,19 @@ int main(int argc, char** argv) {
   if (acu_mode()) std::printf("   *** GEMV_ACU: ONE COLD LAUNCH PER ROW. These are captures, not timings. ***\n");
 
   Shape const shapes[] = {
-    {"MoE  L=8  x1 row  N=K=2048", 8, 1, 2048, 2048, 32, QuantOp::FinegrainedScaleZero},
-    {"MoE  L=8  x1 row  N=K=4096", 8, 1, 4096, 4096, 32, QuantOp::FinegrainedScaleZero},
-    {"MoE  L=64 x1 row  N=K=2048", 64, 1, 2048, 2048, 32, QuantOp::FinegrainedScaleZero},
+    // Checked mirror of fixtures.py/workloads.py. ci/check_gemv_perf_authority.py derives and compares all twelve.
+    {"S068 T1 35B expert_gate+up", 256, 1,  512, 2048, 32, QuantOp::FinegrainedScaleZero, 8,  8},
+    {"S069 T1 122B expert_gate+up",256, 1,  512, 3072, 32, QuantOp::FinegrainedScaleZero, 8,  8},
+    {"S070 T1 35B expert_down",    256, 1, 2048,  512, 32, QuantOp::FinegrainedScaleZero, 8,  8},
+    {"S071 T1 122B expert_down",   256, 1, 3072,  512, 32, QuantOp::FinegrainedScaleZero, 8,  8},
+    {"S068 T2 35B expert_gate+up", 256, 2,  512, 2048, 32, QuantOp::FinegrainedScaleZero, 8, 15},
+    {"S069 T2 122B expert_gate+up",256, 2,  512, 3072, 32, QuantOp::FinegrainedScaleZero, 8, 15},
+    {"S070 T2 35B expert_down",    256, 2, 2048,  512, 32, QuantOp::FinegrainedScaleZero, 8, 15},
+    {"S071 T2 122B expert_down",   256, 2, 3072,  512, 32, QuantOp::FinegrainedScaleZero, 8, 15},
+    {"S068 T4 35B expert_gate+up", 256, 4,  512, 2048, 32, QuantOp::FinegrainedScaleZero, 8, 30},
+    {"S069 T4 122B expert_gate+up",256, 4,  512, 3072, 32, QuantOp::FinegrainedScaleZero, 8, 30},
+    {"S070 T4 35B expert_down",    256, 4, 2048,  512, 32, QuantOp::FinegrainedScaleZero, 8, 30},
+    {"S071 T4 122B expert_down",   256, 4, 3072,  512, 32, QuantOp::FinegrainedScaleZero, 8, 30},
     {"dense m=1         N=K=2048", 0, 1, 2048, 2048, 32, QuantOp::FinegrainedScaleZero},
     {"dense m=1         N=K=4096", 0, 1, 4096, 4096, 32, QuantOp::FinegrainedScaleZero},
     {"dense m=1  N=12288 K=4096",  0, 1, 12288, 4096, 128, QuantOp::FinegrainedScaleOnly},
@@ -47,12 +57,32 @@ int main(int argc, char** argv) {
   for (int i = 0; i < ns; ++i) {
     if (only_shape >= 0 && i != only_shape) continue;
     Shape const& sh = shapes[i];
-    int const experts = sh.experts > 0 ? sh.experts : 1;
+    auto const routed = sh.experts > 0
+        ? gemv_perf_fixture::make_route(sh.experts, sh.rows, sh.topk)
+        : gemv_perf_fixture::Route{};
+    int const active = sh.experts > 0 ? int(routed.active_ids.size()) : 1;
+    if (sh.experts > 0 && active != sh.active) {
+      std::fprintf(stderr, "shape %s expected active=%d, router produced %d\n",
+                   sh.name, sh.active, active);
+      return 2;
+    }
+    int const total_rows = sh.experts > 0 ? routed.total_rows : sh.rows;
+    int const max_rows = sh.experts > 0 ? routed.max_rows : sh.rows;
     int const sk = sh.K / sh.gs;
-    double const floor_b = double(experts) * (double(sh.N) * sh.K * 4 / 8.0 + double(sk) * sh.N * 4.0)
-                         + double(experts) * sh.rows * sh.K * 2.0 + double(experts) * sh.rows * sh.N * 2.0;
-    std::printf("\n-- [%d] %s  gs=%d %s --\n     int4 memory roof: %.2f us (%.2f MB at %.0f GB/s)\n",
-                i, sh.name, sh.gs, name_of(sh.quant), floor_b / (HBM_GBS * 1e9) * 1e6, floor_b / 1e6, HBM_GBS);
+    double const floor_b = double(active) * (double(sh.N) * sh.K * 4 / 8.0 + double(sk) * sh.N * 4.0)
+                         + double(total_rows) * sh.K * 2.0
+                         + double(total_rows) * sh.N * 2.0;
+    std::printf("\n-- [%d] %s  gs=%d %s E=%d active=%d real_rows=%d Mmax=%d active_ids=",
+                i, sh.name, sh.gs, name_of(sh.quant), sh.experts, active,
+                total_rows, max_rows);
+    if (sh.experts > 0) {
+      for (std::size_t a = 0; a < routed.active_ids.size(); ++a)
+        std::printf("%d%s", routed.active_ids[a], a + 1 == routed.active_ids.size() ? "\n" : ",");
+    } else {
+      std::printf("dense\n");
+    }
+    std::printf("     int4 memory roof: %.2f us (%.2f MB at %.0f GB/s)\n",
+                floor_b / (HBM_GBS * 1e9) * 1e6, floor_b / 1e6, HBM_GBS);
     gemv_run_all(sh, bests[i].data());
     for (auto const& b : bests[i]) if (b.us < overall[i].us) overall[i] = b;
     if (!acu_mode() && overall[i].us < 1e29)

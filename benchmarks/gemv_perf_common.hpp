@@ -19,6 +19,9 @@
 #include <string>
 #include <chrono>
 #include <algorithm>
+#include <utility>
+
+#include "gemv_perf_fixture.hpp"
 
 // NARROW THE INSTANTIATION SET TO WHAT THE SHAPE LIST ACTUALLY CALLS. Every (gs, quant) pair is a full set of
 // kernels per unit; the shapes below use gs 32 and 128 and only the two finegrained quant ops, so paying for
@@ -32,7 +35,7 @@
 
 using namespace ppu_gemv;
 
-#define GEMV_PERF_REV 1
+#define GEMV_PERF_REV 2
 
 // ppu001. A CHECKED MIRROR OF bench_select.hpp's kHbmGBPerSecond, not a second source. The comment here used to
 // read "same constants the MoE bench uses, so the percentages are comparable" -- an assertion a copy cannot make
@@ -85,20 +88,37 @@ inline void upd(Best& b, const char* t, double us, double pct) {
 struct Shape {
   const char* name;
   int experts;      // 0 = dense
-  int rows;         // dense: m. MoE: rows per expert.
+  int rows;         // dense: m. MoE: global routed token count.
   int N, K;
   int gs;
   QuantOp quant;
+  int topk = 0;     // grouped: route every token to top-k distinct experts
+  int active = 0;   // grouped: expected distinct active experts; independent of E
+};
+
+struct OutputWitness {
+  std::size_t index = 0;
+  float want = 0.0f;
+  int expert = 0;
+  int column = 0;
 };
 
 struct Bufs {
   DevBuf A, W, Wh, S, Z, O, Off;
   std::vector<int> offs;
+  std::vector<int> rows_per_expert;
+  std::vector<int> active_ids;
+  std::vector<OutputWitness> witnesses;
   int total_rows = 0;
+  int max_rows = 0;
 };
 
 // Pack a plane the way gemv_wformat.hpp defines the layout. Deliberately the same bit-position expression as
 // the correctness gate's packer -- there is one convention and it lives in one form.
+inline uint32_t plane_code(int bits, int n, int k, uint32_t seed) {
+  return gemv_perf_fixture::plane_code(bits, n, k, seed);
+}
+
 inline std::vector<uint8_t> pack_plane(WLayout lay, int bits, int TS, int N, int K, uint32_t seed) {
   std::vector<uint8_t> out(size_t(N) * K * bits / 8, 0);
   for (int n = 0; n < N; ++n)
@@ -106,7 +126,7 @@ inline std::vector<uint8_t> pack_plane(WLayout lay, int bits, int TS, int N, int
       size_t bitpos = (lay == WLayout::Native)
           ? (size_t(n) * K + size_t(k)) * bits
           : ((size_t(k / TS) * N * TS) + size_t(n) * TS + size_t(k % TS)) * bits;
-      uint32_t const v = ((uint32_t(n) * 2654435761u + uint32_t(k) * 40503u + seed) >> 7) & ((1u << bits) - 1u);
+      uint32_t const v = plane_code(bits, n, k, seed);
       out[bitpos >> 3] |= uint8_t(v << (bitpos & 7));
     }
   return out;
@@ -118,36 +138,130 @@ inline Bufs make_bufs(WFormat fmt, WLayout Lay, int TS, Shape const& sh) {
 
   int const experts = sh.experts > 0 ? sh.experts : 1;
   Bufs b;
-  b.offs.assign(experts + 1, 0);
-  for (int e = 0; e < experts; ++e) b.offs[e + 1] = b.offs[e] + sh.rows;
-  b.total_rows = b.offs[experts];
+  std::vector<int> active_slot(std::size_t(experts), -1);
+  if (sh.experts > 0) {
+    auto route = gemv_perf_fixture::make_route(sh.experts, sh.rows, sh.topk);
+    if (!route.valid) {
+      std::fprintf(stderr, "GEMV perf router refused E=%d tokens=%d topk=%d\n",
+                   sh.experts, sh.rows, sh.topk);
+      std::abort();
+    }
+    if (int(route.active_ids.size()) != sh.active) {
+      std::fprintf(stderr,
+                   "GEMV perf active-expert authority drift: E=%d tokens=%d topk=%d got=%zu want=%d\n",
+                   sh.experts, sh.rows, sh.topk, route.active_ids.size(), sh.active);
+      std::abort();
+    }
+    b.offs = std::move(route.row_offsets);
+    b.rows_per_expert = std::move(route.rows_per_expert);
+    b.active_ids = std::move(route.active_ids);
+    active_slot = std::move(route.active_slot_for_expert);
+    b.total_rows = route.total_rows;
+    b.max_rows = route.max_rows;
+  } else {
+    b.offs = {0, sh.rows};
+    b.rows_per_expert = {sh.rows};
+    b.active_ids = {0};
+    active_slot[0] = 0;
+    b.total_rows = sh.rows;
+    b.max_rows = sh.rows;
+  }
 
   int const sk = (sh.gs == 0) ? 1 : sh.K / sh.gs;
 
-  std::vector<uint16_t> hA(size_t(b.total_rows) * sh.K, 0x3000);   // ~0.125 in fp16
-  std::vector<uint16_t> hS(size_t(experts) * sk * sh.N, 0x2C00);   // ~0.0625
-  std::vector<uint16_t> hZ(size_t(experts) * sk * sh.N, 0xA800);   // ~-0.0625
-  auto plo = pack_plane(Lay, LoBits, TS, sh.N, sh.K, 1u);
-  std::vector<uint8_t> phi;
-  if (TwoPlane) phi = pack_plane(Lay, HiBits, TS, sh.N, sh.K, 7u);
+  using half_t = cutlass::half_t;
+  std::vector<half_t> hA(size_t(b.total_rows) * sh.K);
+  std::vector<half_t> hS(size_t(experts) * sk * sh.N);
+  std::vector<half_t> hZ(size_t(experts) * sk * sh.N);
+  std::size_t const lo_bytes = std::size_t(
+      gemv_perf_fixture::packed_plane_bytes(sh.N, sh.K, LoBits));
+  std::size_t const hi_bytes = HiBits ? std::size_t(
+      gemv_perf_fixture::packed_plane_bytes(sh.N, sh.K, HiBits)) : 0;
+  std::vector<uint8_t> wl(std::size_t(experts) * lo_bytes);
+  std::vector<uint8_t> wh(std::size_t(experts) * hi_bytes);
 
-  // One expert's weights replicated: the pattern does not depend on e and packing L times is what made the
-  // MoE sweep unaffordable at N=K=2048 before.
-  std::vector<uint8_t> wl(size_t(experts) * plo.size());
-  for (int e = 0; e < experts; ++e) std::memcpy(wl.data() + size_t(e) * plo.size(), plo.data(), plo.size());
+  for (int e = 0; e < experts; ++e) {
+    bool const active = active_slot[std::size_t(e)] >= 0;
+    uint32_t const lo_seed = gemv_perf_fixture::plane_seed(e, active, false);
+    uint32_t const hi_seed = gemv_perf_fixture::plane_seed(e, active, true);
+    auto const plo = pack_plane(Lay, LoBits, TS, sh.N, sh.K, lo_seed);
+    std::memcpy(wl.data() + gemv_perf_fixture::packed_plane_expert_offset(
+                    e, sh.N, sh.K, LoBits), plo.data(), lo_bytes);
+    if (TwoPlane) {
+      auto const phi = pack_plane(Lay, HiBits, TS, sh.N, sh.K, hi_seed);
+      std::memcpy(wh.data() + gemv_perf_fixture::packed_plane_expert_offset(
+                      e, sh.N, sh.K, HiBits), phi.data(), hi_bytes);
+    }
+    for (int g = 0; g < sk; ++g)
+      for (int n = 0; n < sh.N; ++n) {
+        std::size_t const i = (std::size_t(e) * sk + g) * sh.N + n;
+        hS[i] = half_t(gemv_perf_fixture::scale_value(e, g, n, active));
+        hZ[i] = half_t(gemv_perf_fixture::zero_value(e, g, n, active));
+      }
+    for (int r = 0; r < b.rows_per_expert[std::size_t(e)]; ++r) {
+      int const row = b.offs[std::size_t(e)] + r;
+      half_t const av(gemv_perf_fixture::activation_value(e, r));
+      std::fill(hA.begin() + std::size_t(row) * sh.K,
+                hA.begin() + std::size_t(row + 1) * sh.K, av);
+    }
+  }
+
+  // Three columns per real row are enough to make real-expert W/S/Z identity
+  // observable without copying or golden-checking the full output matrix.
+  int const witness_columns[] = {0, sh.N / 2, sh.N - 1};
+  for (int e : b.active_ids) {
+    bool const active = true;
+    uint32_t const lo_seed = gemv_perf_fixture::plane_seed(e, active, false);
+    uint32_t const hi_seed = gemv_perf_fixture::plane_seed(e, active, true);
+    for (int r = 0; r < b.rows_per_expert[std::size_t(e)]; ++r) {
+      int const row = b.offs[std::size_t(e)] + r;
+      float const av = float(hA[std::size_t(row) * sh.K]);
+      for (int n : witness_columns) {
+        float acc = 0.0f;
+        for (int k = 0; k < sh.K; ++k) {
+          uint32_t q = plane_code(LoBits, n, k, lo_seed);
+          if (TwoPlane) q |= plane_code(HiBits, n, k, hi_seed) << LoBits;
+          int const g = sh.gs == 0 ? 0 : k / sh.gs;
+          std::size_t const si = (std::size_t(e) * sk + g) * sh.N + n;
+          float const z = has_zero(sh.quant) ? float(hZ[si]) : 0.0f;
+          acc += av * (float(q) * float(hS[si]) + z);
+        }
+        b.witnesses.push_back({std::size_t(row) * sh.N + n, acc, e, n});
+      }
+    }
+  }
+
   b.A = DevBuf(hA.size() * 2);  b.A.from_host(hA.data());
   b.S = DevBuf(hS.size() * 2);  b.S.from_host(hS.data());
   if (has_zero(sh.quant)) { b.Z = DevBuf(hZ.size() * 2); b.Z.from_host(hZ.data()); }
   b.W = DevBuf(wl.size());      b.W.from_host(wl.data());
   if (TwoPlane) {
-    std::vector<uint8_t> wh(size_t(experts) * phi.size());
-    for (int e = 0; e < experts; ++e) std::memcpy(wh.data() + size_t(e) * phi.size(), phi.data(), phi.size());
     b.Wh = DevBuf(wh.size());   b.Wh.from_host(wh.data());
   }
   b.O = DevBuf(size_t(b.total_rows) * sh.N * 2);
   rt_memset0(b.O.p, b.O.bytes);
   if (sh.experts > 0) { b.Off = DevBuf(b.offs.size() * 4); b.Off.from_host(b.offs.data()); }
   return b;
+}
+
+inline bool verify_witnesses(Bufs const& b, int n, char const* tag) {
+  using half_t = cutlass::half_t;
+  std::vector<half_t> got(std::size_t(b.total_rows) * n);
+  rt_d2h(got.data(), b.O.p, got.size() * sizeof(half_t));
+  int bad = 0;
+  for (auto const& w : b.witnesses) {
+    float const value = float(got[w.index]);
+    float const want = float(half_t(w.want));
+    float const tol = 0.02f * std::max(1.0f, std::fabs(want));
+    if (!std::isfinite(value) || std::fabs(value - want) > tol) {
+      if (bad++ < 4)
+        std::printf("    witness expert=%d n=%d got=%.6g want=%.6g\n",
+                    w.expert, w.column, double(value), double(want));
+    }
+  }
+  if (bad) std::printf("  %-34s %10s | WRONG EXPERT DATA (%d/%zu witnesses) -- excluded\n",
+                       tag, "-", bad, b.witnesses.size());
+  return bad == 0;
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -170,13 +284,17 @@ inline void run_row(Shape const& sh, Bufs const& b, Best& best) {
   p.m = b.total_rows; p.n = sh.N; p.k = sh.K; p.groupsize = sh.gs;
   p.format = Details::kFormat; p.quant = sh.quant; p.layout = Details::kLayout;
   if (sh.experts > 0) {
-    p.num_experts = sh.experts; p.row_offsets = b.Off.as<int>(); p.max_rows = sh.rows;
-    p.w_bytes_per_expert = int64_t(sh.N) * sh.K * LoBits / 8;
-    p.w_hi_bytes_per_expert = HiBits ? int64_t(sh.N) * sh.K * HiBits / 8 : 0;
+    p.num_experts = sh.experts; p.row_offsets = b.Off.as<int>(); p.max_rows = b.max_rows;
+    p.w_bytes_per_expert = int64_t(gemv_perf_fixture::packed_plane_bytes(sh.N, sh.K, LoBits));
+    p.w_hi_bytes_per_expert = HiBits ?
+        int64_t(gemv_perf_fixture::packed_plane_bytes(sh.N, sh.K, HiBits)) : 0;
     p.scale_elems_per_expert = int64_t(sk) * sh.N;
   }
 
   int const f0 = gemv_fail_count();
+  std::vector<cutlass::half_t> output_poison(
+      std::size_t(b.total_rows) * sh.N, cutlass::half_t::bitcast(uint16_t(0x7f7f)));
+  rt_h2d(b.O.p, output_poison.data(), output_poison.size() * sizeof(cutlass::half_t));
   auto go = [&] { launch_gemv<Details, CtaN, Chunk>(p, 0); };
   double const us = acu_mode() ? (time_it(go, 0), 0.0) : time_it(go, 100);
   if (acu_mode()) { std::printf("  [acu] ONE COLD launch (not a timing): %s\n", tag); return; }
@@ -184,26 +302,31 @@ inline void run_row(Shape const& sh, Bufs const& b, Best& best) {
     std::printf("  %-34s %10s | DID NOT RUN (launch refused) -- excluded\n", tag, "-");
     return;
   }
+  if (!verify_witnesses(b, sh.N, tag)) return;
 
   // Compulsory traffic. B counted grid.x times because every m-tile re-reads it; A counted once (it is tiny
   // at decode and should be served by L2 across the n-tiles -- if the measured rate exceeds this model, that
   // assumption is what broke).
-  int const ctam = std::min(sh.rows, GEMV_CTAM_MAX);
-  int const grid_m = (sh.rows + ctam - 1) / ctam;
+  int const ctam = std::min(b.max_rows, GEMV_CTAM_MAX);
+  int64_t grid_m_sum = 0;
+  for (int e : b.active_ids)
+    grid_m_sum += (b.rows_per_expert[std::size_t(e)] + ctam - 1) / ctam;
   double const wb  = double(sh.N) * sh.K * TotalBits / 8.0;
   double const sb  = double(sk) * sh.N * 2.0 * (has_zero(sh.quant) ? 2 : 1);
   double const ab  = double(b.total_rows) * sh.K * 2.0;
   double const db  = double(b.total_rows) * sh.N * 2.0;
-  double const bytes = double(experts) * (wb + sb) * grid_m + ab + db;
+  double const bytes = double(grid_m_sum) * (wb + sb) + ab + db;
   double const gbs = bytes / (us * 1e-6) / 1e9;
   double const pct = 100.0 * gbs / HBM_GBS;
 
-  int64_t const ctas = int64_t(grid_m) * (sh.N / CtaN) * experts;
+  int64_t const work_ctas = grid_m_sum * (sh.N / CtaN);
+  int64_t const launch_ctas = int64_t((b.max_rows + ctam - 1) / ctam) *
+                              (sh.N / CtaN) * experts;
   // WARPS OF WORK PER CU, not achieved occupancy -- the same quantity the MoE bench prints as grid_wrp/CU.
   // Naming it "wrp/CU" invited exactly the misreading that cost rounds earlier: 14.2 there was the TOTAL work,
   // and the reason occupancy could not exceed it. `wave` divides by the 64-warp/CU hardware maximum, so it is
   // a LOWER bound on the wave count (real occupancy is below 64, so real waves are more).
-  double const wkwrp_cu = double(ctas) * (Threads / 32.0) / CU;
+  double const wkwrp_cu = double(work_ctas) * (Threads / 32.0) / CU;
 
   // A ROW OVER THE NAMEPLATE INDICTS THE TRAFFIC MODEL, NOT THE MEASUREMENT -- and this used to DROP it from
   // the winner. The comment above already says why the rate can exceed 2766: the model charges the weight once
@@ -211,9 +334,10 @@ inline void run_row(Shape const& sh, Bufs const& b, Best& best) {
   // reads high. Excluding those rows removed exactly the FASTEST configurations from `best`, which is worse
   // than the MoE bench's version of this bug (#52 item 1) -- there it mislabelled a row, here it deleted the
   // winner. The row is now retained and the MODEL is flagged.
-  std::printf("  %-34s %8.2f us | %7.1f GB/s | %5.1f%% of %.0f nameplate | cta %6lld | wkwrp/CU %6.1f | "
+  std::printf("  %-34s %8.2f us | %7.1f GB/s | %5.1f%% of %.0f nameplate | cta launch/work %6lld/%-6lld | wkwrp/CU %6.1f | "
               "wave>=%5.1f%s\n",
-              tag, us, gbs, pct, HBM_GBS, (long long)ctas, wkwrp_cu, wkwrp_cu / 64.0,
+              tag, us, gbs, pct, HBM_GBS, (long long)launch_ctas,
+              (long long)work_ctas, wkwrp_cu, wkwrp_cu / 64.0,
               gbs > HBM_GBS ? "  <-- MODEL BROKE: over nameplate, so the once-per-grid_m weight charge is "
                               "wrong here; row RETAINED" : "");
   upd(best, tag, us, pct);
