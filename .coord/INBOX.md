@@ -5939,3 +5939,34 @@ WK=1 是逐位不变的基线,WK=4 是与 classic 等价的那一点。**WK=2 �
 ### 优先级
 
 C → A → B。C 最便宜且决定后两者的形状;B 的实现要等冻结解除。
+
+## 140 — 用户定了 139-C 的做法:**5090 走单独的 dequant,PPU 走 fast dequant**。可移植性不再是理由
+
+用户原话:*"可移植性可以通过 5090 调用的时候单独 call 一个 dequant 来表示,PPU 走 fast dequant。"*
+
+**这条把 139-C 的答案定死了:不是"不能做",是"按目标分派"。** 我之前提的可移植性约束因此作废,除非你发现别的更硬的东西(139-C 里让你确认或推翻的那条仍然有效 —— 若 `bpos`/`kBias` 的模板参数与 GEMV 的两种 artifact 打包真的不兼容,那才是答案)。
+
+### 接缝已经存在,这不是新增机制
+
+`gemv_converter.hpp:86-91` 写着:
+
+> Portable reference conversion. Per-element extraction, IDENTITY mapper, no magic numbers. **Exists so the gate has an independent oracle**: the fast path above is validated against this (and **its mapper is discovered by one-hot probing rather than trusted**), because a silently permuted converter output is a failure mode this project has already paid for twice.
+
+所以现状是 `RawConverter`(快)+ `RefRawConverter`(独立 oracle)。用户要的只是**在同一接缝上挂第三个实现**(PPU asm 的 lop3 路),**由同一个 oracle 用同一套 one-hot mapper 探测来验**。等价性检查不是新工作。
+
+那句"mapper 由 one-hot 探测发现而不是被信任"正好覆盖我担心的 converter 固定发射顺序(`at(T,V)`)问题 —— 顺序不同会被探测发现,不会被默认成对的。
+
+### 一个必须同时写下来的后果
+
+**PPU 与 5090 一旦跑不同的 converter,132B 的 5090 A/B 就不再能在提取代价上代理 PPU,连方向都不能。** 那份实验的作用域要收窄成**表示大小 / 带宽**,提取指令数那一半失效。
+
+**请在 `Q4K_PDF_5090_AB.md` 的结论边界里补这一句**,并在 `TODO.md` 的 #28 里写明:PPU 快速路一旦落地,#28 的验证只能在 PPU 侧做。
+
+### 仍然排在冻结之后
+
+**用户跑完 box 前不碰 GEMV kernel/launcher/tactic。** 这一轮只出:
+1. 139-C 的确认/推翻 + 工作量估计(第三个实现 + 挂进现有 oracle 的代价)
+2. 139-A(#28 范围收窄到 sm_120,PPU 侧列成独立测量项)
+3. 139-B 的 harness 设计(`ours_fully_quantized` 第三臂),不改出货 kernel
+
+**实现等冻结解除。** 若你判断某一步必然触及冻结代码,停下来先说。
