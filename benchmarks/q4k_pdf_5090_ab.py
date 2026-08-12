@@ -73,6 +73,13 @@ def decoded_event_us(row: dict[str, str]) -> Decimal:
     return Decimal.from_float(ms) * Decimal(1000)
 
 
+def timing_us(row: dict[str, str]) -> float:
+    batch = int(row["batch"])
+    if batch <= 0:
+        raise ValueError("event batch must be positive")
+    return float(decoded_event_us(row) / Decimal(batch))
+
+
 def infer_quantum(rows: list[dict[str, str]]) -> tuple[Decimal | None, Decimal | None, str]:
     values = sorted({decoded_event_us(r) for r in rows})
     if len(values) < 2:
@@ -92,42 +99,176 @@ def fnum(value: float) -> str:
     return f"{value:.4f}"
 
 
-def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> None:
-    with raw.open(newline="") as f:
-        rows = list(csv.DictReader(f))
+EXPECTED_ARMS = {
+    "D-EXT-O": ["pdf_scalar_dense1", "pdf_pair_dense1", "ours_native_dense1"],
+    "D-EXT-K1024": ["pdf_scalar_dense1", "pdf_pair_dense1", "ours_native_dense1"],
+    "D-EXT-Q": ["pdf_scalar_dense1", "pdf_pair_dense1", "ours_native_dense1"],
+    "H-G8-2048": [
+        "pdf_scalar_dense8", "pdf_pair_dense8", "ours_native_dense8", "ours_native_grouped1",
+    ],
+}
+
+
+def validate_rows(rows: list[dict[str, str]], expected_binary_sha: str | None = None) -> None:
     if not rows:
-        raise SystemExit("raw CSV is empty")
+        raise ValueError("raw CSV is empty")
     required = {
-        "event_ms_bits", "event_us_per_workload", "correctness_hash",
+        "schema", "git_sha", "binary_sha", "device_pci", "nvidia_driver_version",
+        "event_ms_bits", "event_total_us", "event_us_per_workload", "correctness_hash",
         "representation_bytes", "distinct_bytes", "event_pending_after_clock_query",
-        "device_name", "samples_requested", "warmup", "precondition_ms",
-        "cold_budget_mib", "timing_scope", "clock_scope",
+        "device_name", "samples_requested", "warmup_rounds_per_arm",
+        "precondition_host_enqueue_ms", "cold_budget_mib", "timing_scope", "clock_scope",
     }
     if not required.issubset(rows[0]):
-        raise SystemExit(f"raw schema missing {sorted(required - set(rows[0]))}")
-    identities = {(r["git_sha"], r["binary_sha"], r["device_pci"], r["driver"], r["device_name"])
-                  for r in rows}
-    if len(identities) != 1:
-        raise SystemExit(f"raw CSV merged incompatible runs: {identities}")
-    expected_binary = sha256(binary)
-    if rows[0]["binary_sha"] != expected_binary:
-        raise SystemExit("raw binary SHA does not match the executable being summarized")
-
+        raise ValueError(f"raw schema missing {sorted(required - set(rows[0]))}")
     protocol_columns = [
-        "schema", "git_sha", "binary_sha", "device_pci", "driver", "device_name",
-        "samples_requested", "warmup", "precondition_ms", "cold_budget_mib",
-        "timing_scope", "clock_scope",
+        "schema", "git_sha", "binary_sha", "device_pci", "nvidia_driver_version", "device_name",
+        "samples_requested", "warmup_rounds_per_arm", "precondition_host_enqueue_ms",
+        "cold_budget_mib", "timing_scope", "clock_scope",
     ]
     for column in protocol_columns:
         values = {row[column] for row in rows}
         if len(values) != 1:
-            raise SystemExit(f"raw CSV mixes protocol field {column}: {sorted(values)}")
-    if rows[0]["schema"] != "q4k-pdf-ab-raw-v1":
-        raise SystemExit(f"unknown raw schema {rows[0]['schema']!r}")
+            raise ValueError(f"raw CSV mixes protocol field {column}: {sorted(values)}")
+    if rows[0]["schema"] != "q4k-pdf-ab-raw-v2":
+        raise ValueError(f"unknown raw schema {rows[0]['schema']!r}")
     if rows[0]["timing_scope"] != "cuda_event_gpu_span":
-        raise SystemExit("raw timing scope is not the declared CUDA event GPU span")
+        raise ValueError("raw timing scope is not the declared CUDA event GPU span")
     if rows[0]["clock_scope"] != "nvml_adjacent_snapshot":
-        raise SystemExit("raw clock scope is not the declared adjacent NVML snapshot")
+        raise ValueError("raw clock scope is not the declared adjacent NVML snapshot")
+    if expected_binary_sha is not None and rows[0]["binary_sha"] != expected_binary_sha:
+        raise ValueError("raw binary SHA does not match the executable being summarized")
+
+    groups: dict[tuple[str, str, str], list[dict[str, str]]] = defaultdict(list)
+    states: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
+    fixed_group_columns = [
+        "m", "n", "k", "l", "kernels_per_workload", "representation",
+        "representation_bytes", "distinct_bytes", "cold_copy_count", "l2_bytes", "flush_bytes",
+        "correctness_hash", "pdf_config", "pdf_config_authority",
+    ]
+    for row in rows:
+        shape, state, arm = row["shape_id"], row["cache_state"], row["arm"]
+        if shape not in EXPECTED_ARMS:
+            raise ValueError(f"raw CSV contains unknown shape {shape!r}")
+        if state not in {"weight_metadata_cold", "warm"}:
+            raise ValueError(f"raw CSV contains unknown cache state {state!r}")
+        if arm not in EXPECTED_ARMS[shape]:
+            raise ValueError(f"raw CSV contains unexpected arm {shape}/{arm}")
+        batch = int(row["batch"])
+        if batch <= 0 or int(row["logical_workloads"]) != batch:
+            raise ValueError(f"raw row {shape}/{state}/{arm} has invalid logical workload batch")
+        total = float(decoded_event_us(row))
+        per = total / batch
+        emitted_total = float(row["event_total_us"])
+        emitted_per = float(row["event_us_per_workload"])
+        if not all(math.isfinite(x) and x > 0 for x in (total, per, emitted_total, emitted_per)):
+            raise ValueError(f"raw row {shape}/{state}/{arm} has non-positive/non-finite timing")
+        if not math.isclose(emitted_total, total, rel_tol=2e-7, abs_tol=1e-7):
+            raise ValueError(f"raw row {shape}/{state}/{arm} decimal total disagrees with event bits")
+        if not math.isclose(emitted_per, per, rel_tol=2e-7, abs_tol=1e-7):
+            raise ValueError(f"raw row {shape}/{state}/{arm} decimal per-workload time disagrees with bits")
+        if int(row["sm_clock_mhz"]) <= 0:
+            raise ValueError(f"raw row {shape}/{state}/{arm} has invalid SM clock")
+        groups[(shape, state, arm)].append(row)
+        states[(shape, state)].append(row)
+
+    requested = int(rows[0]["samples_requested"])
+    if requested <= 0:
+        raise ValueError("samples_requested must be positive")
+    for key, group in groups.items():
+        passes = sorted(int(row["pass"]) for row in group)
+        if len(group) != requested or passes != list(range(requested)):
+            raise ValueError(f"raw group {key} has {len(group)} samples/passes {passes}, requested {requested}")
+        for column in fixed_group_columns:
+            values = {row[column] for row in group}
+            if len(values) != 1:
+                raise ValueError(f"raw group {key} mixes {column}: {sorted(values)}")
+
+    shapes = {row["shape_id"] for row in rows}
+    for shape in shapes:
+        present_states = {state for (candidate, state) in states if candidate == shape}
+        if present_states != {"weight_metadata_cold", "warm"}:
+            raise ValueError(f"raw shape {shape} lacks a complete cold/warm pair: {sorted(present_states)}")
+    for (shape, state), state_rows in states.items():
+        batches = {int(row["batch"]) for row in state_rows}
+        if len(batches) != 1:
+            raise ValueError(f"raw state {shape}/{state} mixes arm batches: {sorted(batches)}")
+        batch = next(iter(batches))
+        if state == "weight_metadata_cold":
+            copies = {int(row["cold_copy_count"]) for row in state_rows}
+            if copies != {batch}:
+                raise ValueError(f"raw cold state {shape} batch {batch} disagrees with copies {sorted(copies)}")
+        canonical = EXPECTED_ARMS[shape]
+        for pass_id in range(requested):
+            pass_rows = [row for row in state_rows if int(row["pass"]) == pass_id]
+            expected = canonical if pass_id % 2 == 0 else list(reversed(canonical))
+            actual = [row["arm"] for row in sorted(pass_rows, key=lambda row: int(row["arm_order"]))]
+            if actual != expected:
+                raise ValueError(f"raw pass {shape}/{state}/{pass_id} order={actual}, expected={expected}")
+
+
+def protocol_selftest() -> None:
+    rows: list[dict[str, str]] = []
+    arms = EXPECTED_ARMS["D-EXT-O"]
+    for state, batch in (("weight_metadata_cold", 2), ("warm", 4)):
+        for pass_id in range(2):
+            order = arms if pass_id == 0 else list(reversed(arms))
+            for rank, arm in enumerate(order):
+                ms = 0.001 + 0.0001 * (pass_id * len(arms) + rank)
+                bits = struct.unpack("<I", struct.pack("<f", ms))[0]
+                total = struct.unpack("<f", struct.pack("<I", bits))[0] * 1000
+                pdf = arm.startswith("pdf_")
+                rows.append({
+                    "schema": "q4k-pdf-ab-raw-v2", "git_sha": "g", "binary_sha": "b",
+                    "device_pci": "p", "nvidia_driver_version": "d", "device_name": "dev",
+                    "shape_id": "D-EXT-O", "m": "1", "n": "5120", "k": "8192", "l": "1",
+                    "arm": arm, "cache_state": state, "pass": str(pass_id), "arm_order": str(rank),
+                    "logical_workloads": str(batch), "batch": str(batch), "kernels_per_workload": "1",
+                    "representation": "pdf" if pdf else "ours", "representation_bytes": "10",
+                    "distinct_bytes": "20", "cold_copy_count": "2", "l2_bytes": "30",
+                    "flush_bytes": "40", "event_ms_bits": f"0x{bits:08x}",
+                    "event_total_us": f"{total:.9g}", "event_us_per_workload": f"{total/batch:.9g}",
+                    "sm_clock_mhz": "2407", "event_pending_after_clock_query": "1",
+                    "correctness_hash": "1" if pdf else "2", "pdf_config": "2x8x1",
+                    "pdf_config_authority": "pdf_p22_winner", "timing_scope": "cuda_event_gpu_span",
+                    "clock_scope": "nvml_adjacent_snapshot", "samples_requested": "2",
+                    "warmup_rounds_per_arm": "100", "precondition_host_enqueue_ms": "50",
+                    "cold_budget_mib": "512",
+                })
+    validate_rows(rows, "b")
+    controls = [
+        (lambda rs: rs.pop(0), "missing arm/pass"),
+        (lambda rs: rs[0].update(batch="3", logical_workloads="3"), "mixed arm batch"),
+        (lambda rs: rs[0].update(event_us_per_workload="999"), "decimal/bits disagreement"),
+        (lambda rs: rs[0].update(schema="q4k-pdf-ab-raw-v1"), "old schema"),
+        (lambda rs: rs[0].update(cache_state="mystery"), "unknown cache state"),
+    ]
+    import copy
+    for mutate, label in controls:
+        planted = copy.deepcopy(rows)
+        mutate(planted)
+        try:
+            validate_rows(planted, "b")
+        except ValueError:
+            continue
+        raise AssertionError(f"protocol selftest fault escaped: {label}")
+    tiny = [dict(rows[0]), dict(rows[0])]
+    tiny[0]["event_ms_bits"] = f"0x{struct.unpack('<I', struct.pack('<f', 0.000032))[0]:08x}"
+    tiny[1]["event_ms_bits"] = f"0x{struct.unpack('<I', struct.pack('<f', 0.000064))[0]:08x}"
+    admissible, demonstrated, _ = infer_quantum(tiny)
+    if admissible is not None or demonstrated is None or demonstrated >= Decimal("0.5"):
+        raise AssertionError("sub-floor observed GCD was admitted as timer resolution")
+    print(f"PASS: protocol synthetic controls={len(controls)}; sub-floor GCD remains diagnostic-only")
+
+
+def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> None:
+    with raw.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+    expected_binary = sha256(binary)
+    try:
+        validate_rows(rows, expected_binary)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
     groups: dict[tuple[str, str, str], list[dict[str, str]]] = defaultdict(list)
     states: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
@@ -135,40 +276,9 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
         groups[(row["shape_id"], row["cache_state"], row["arm"])].append(row)
         states[(row["shape_id"], row["cache_state"])].append(row)
 
-    expected_arms = {
-        "D-EXT-O": {"pdf_scalar_dense1", "pdf_pair_dense1", "ours_native_dense1"},
-        "D-EXT-K1024": {"pdf_scalar_dense1", "pdf_pair_dense1", "ours_native_dense1"},
-        "D-EXT-Q": {"pdf_scalar_dense1", "pdf_pair_dense1", "ours_native_dense1"},
-        "H-G8-2048": {
-            "pdf_scalar_dense8", "pdf_pair_dense8", "ours_native_dense8",
-            "ours_native_grouped1",
-        },
-    }
-    for (shape, state), state_rows in states.items():
-        if shape not in expected_arms:
-            raise SystemExit(f"raw CSV contains unknown shape {shape!r}")
-        requested = int(rows[0]["samples_requested"])
-        for pass_id in range(requested):
-            pass_rows = [row for row in state_rows if int(row["pass"]) == pass_id]
-            arms = {row["arm"] for row in pass_rows}
-            orders = {int(row["arm_order"]) for row in pass_rows}
-            if arms != expected_arms[shape] or orders != set(range(len(expected_arms[shape]))):
-                raise SystemExit(
-                    f"raw pass {shape}/{state}/{pass_id} has arms={sorted(arms)}, "
-                    f"orders={sorted(orders)}"
-                )
-
     stats = {}
     for key, group in groups.items():
-        requested = int(group[0]["samples_requested"])
-        passes = sorted(int(row["pass"]) for row in group)
-        if len(group) != requested or passes != list(range(requested)):
-            raise SystemExit(
-                f"raw group {key} has {len(group)} samples/passes {passes}, requested {requested}"
-            )
-        if any(row["logical_workloads"] != row["batch"] for row in group):
-            raise SystemExit(f"raw group {key} disagrees on logical_workloads vs batch")
-        values = sorted(float(r["event_us_per_workload"]) for r in group)
+        values = sorted(timing_us(r) for r in group)
         clocks = sorted(int(r["sm_clock_mhz"]) for r in group)
         stats[key] = {
             "median": statistics.median(values), "min": min(values), "max": max(values),
@@ -181,8 +291,9 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
     warm_batches = sorted({int(r["batch"]) for r in rows if r["cache_state"] == "warm"})
     warm_batch_text = "/".join(map(str, warm_batches))
     samples_requested = int(rows[0]["samples_requested"])
-    warmup = int(rows[0]["warmup"])
-    precondition_ms = int(rows[0]["precondition_ms"])
+    warmup = int(rows[0]["warmup_rounds_per_arm"])
+    precondition_ms = int(rows[0]["precondition_host_enqueue_ms"])
+    cold_budget_mib = int(rows[0]["cold_budget_mib"])
 
     lines = []
     lines += [
@@ -195,7 +306,7 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
         f"Raw CSV: `{raw}`  ",
         f"Git: `{rows[0]['git_sha']}`  ",
         f"Binary SHA-256: `{rows[0]['binary_sha']}`  ",
-        f"Device / PCI / driver: `{rows[0]['device_name']}` / `{rows[0]['device_pci']}` / `{rows[0]['driver']}`",
+        f"Device / PCI / driver: `{rows[0]['device_name']}` / `{rows[0]['device_pci']}` / `{rows[0]['nvidia_driver_version']}`",
         "",
         "## 输入与协议",
         "",
@@ -203,9 +314,11 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
         "  code plane + fp16 scale/zero(gs=32)。CPU golden 独立从 raw block 解码；任一输出不满足固定",
         "  conditioned error `<=2^-7` 时整组拒绝计时。",
         "- `weight_metadata_cold`：先触碰 `max(2×L2,128 MiB)` flush buffer，再在一个 event 中逐份读取完整且",
-        "  不重叠的 representation。两臂 cold batch 相同；ours 的 S/Z 也逐份复制，不只冷 low plane。",
-        f"- `warm`：计时前 warmup={warmup}；每个 event 固定 {warm_batch_text} 个 logical workloads。",
-        f"  每个 shape/state/arm 保留 {samples_requested} 个原始样本；两状态前均有 {precondition_ms} ms 交替 arm 的 clock precondition。",
+        f"  不重叠的 representation。cold budget={cold_budget_mib} MiB，copies=`min(64,floor(budget/max_repr))`；",
+        "  两臂 cold batch 相同，ours 的 S/Z 也逐份复制，不只冷 low plane。",
+        f"- `warm`：计时前每个 arm warmup {warmup} rounds；每个 event 固定 {warm_batch_text} 个 logical workloads。",
+        f"  每个 shape/state/arm 保留 {samples_requested} 个原始样本；两状态前均有 {precondition_ms} ms host enqueue window",
+        "  交替提交各 arm，随后同步。该窗口不是 GPU 恰好运行同样时长的声明。",
         "  AB/BA 交替；初始化、pack、H2D、flush 与 NVML 查询均在目标 event 外。event span 包含 GPU launch",
         "  间隙，因此是 kernel-only 的上界而非 CUPTI kernel duration 同义词。",
         "- 每个 stop event 入队后采一次 NVML SM clock，并记录 event 当时是否仍 pending。它是 adjacent snapshot，",
@@ -215,8 +328,8 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
         "",
         "## 原始汇总",
         "",
-        "| shape | state | arm | kernels/work | repr MiB | median us | min..max us | GB/s* | SM MHz median[min,max] | pending | quantum/work |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| shape | state | arm | batch | kernels/work | repr MiB | median us | min..max us | GB/s* | SM MHz median[min,max] | pending | observed GCD grid/work | admissible quantum/work |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for shape in shape_order:
         for state in ["weight_metadata_cold", "warm"]:
@@ -225,19 +338,15 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
                 s = stats[key]
                 row = s["row"]
                 batch = int(row["batch"])
-                if q is not None:
-                    qwork = f"{float(q) / batch:.6f} us"
-                elif demonstrated is not None:
-                    qwork = f"{float(demonstrated) / batch:.6f} us (below floor)"
-                else:
-                    qwork = "UNKNOWN"
+                observed = "UNKNOWN" if demonstrated is None else f"{float(demonstrated) / batch:.6f} us"
+                admissible = "UNKNOWN" if q is None else f"{float(q) / batch:.6f} us"
                 gbs = float(row["distinct_bytes"]) / (s["median"] * 1e-6) / 1e9
                 lines.append(
-                    f"| {shape} | {state} | {key[2]} | {row['kernels_per_workload']} | "
+                    f"| {shape} | {state} | {key[2]} | {batch} | {row['kernels_per_workload']} | "
                     f"{int(row['representation_bytes']) / 2**20:.3f} | {s['median']:.4f} | "
                     f"{s['min']:.4f}..{s['max']:.4f} | {gbs:.1f} | "
                     f"{s['clock']:.0f}[{s['clock_min']},{s['clock_max']}] | "
-                    f"{s['pending']}/{s['samples']} | {qwork} |"
+                    f"{s['pending']}/{s['samples']} | {observed} | {admissible} |"
                 )
             lines.append(f"<!-- timer {shape}/{state}: {qwhy} -->")
     lines += [
@@ -249,6 +358,8 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
         "方向只有在两臂 raw `[min,max]` 不重叠，且 median 差大于一个有效 event quantum 时才判定；否则为",
         "`UNRESOLVED`。PDF 两个 metadata variant 先各自展示，比较时采用其中更快者并明确这是文档内部歧义，",
         "不是事后把两份实现冒充成一个确定原版。",
+        "本协议事前规定：总 event 的 GCD 低于 0.5 us 时只作为 observed grid 展示，不准入为计时器分辨率；",
+        "因此本次 admissible quantum 全为 `UNKNOWN`，正式 verdict 全部 fail-close 为 `UNRESOLVED`。",
         "",
         "| shape | state | comparison | ratio target/PDF | sampled bands | resolution-qualified verdict |",
         "|---|---|---|---:|---|---|",
@@ -312,7 +423,11 @@ def main() -> None:
     ap.add_argument("--allow-dirty", action="store_true")
     ap.add_argument("--build-only", action="store_true")
     ap.add_argument("--quick", action="store_true")
+    ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
+    if a.self_test:
+        protocol_selftest()
+        return
     require_clean(a.allow_dirty)
     build(a.binary)
     if a.build_only:

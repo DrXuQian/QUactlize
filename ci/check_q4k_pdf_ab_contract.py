@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pathlib
+import csv
 import shutil
 import subprocess
 import sys
@@ -46,7 +47,9 @@ def audit(harness: str, kernel: str, fixture: str, runner: str) -> list[str]:
         'sample.state == "weight_metadata_cold" ? b : 0',
         "event_ms_bits", "float_bits(sample.elapsed_ms)",
         "cudaEventQuery(sample.stop)", "nvmlDeviceGetClockInfo",
-        "nvml_ok(nvmlSystemGetDriverVersion", "device_name,samples_requested,warmup,precondition_ms",
+        "nvml_ok(nvmlSystemGetDriverVersion", "q4k-pdf-ab-raw-v2",
+        "nvidia_driver_version", "device_name,samples_requested,warmup_rounds_per_arm",
+        "precondition_host_enqueue_ms", "write_schema_selftest",
         'add("ours_native_grouped1"', 'add(s.l == 1 ? "ours_native_dense1" : "ours_native_dense8"',
         "correctness_gate(device, arms);", "max_conditioned", "1.f / 128.f",
     ]:
@@ -55,8 +58,10 @@ def audit(harness: str, kernel: str, fixture: str, runner: str) -> list[str]:
     if harness.find("correctness_gate(device, arms);") > harness.find("measure_state(f, options"):
         errors.append("timing starts before correctness")
     for token in [
-        "dirty tree", "binary_sha", "event_ms_bits", "infer_quantum",
-        "raw CSV mixes protocol field", "len(group) != requested",
+        "dirty tree", "binary_sha", "event_ms_bits", "infer_quantum", "timing_us",
+        "values = sorted(timing_us(r) for r in group)",
+        "raw CSV mixes protocol field", "len(group) != requested", "protocol_selftest",
+        "decimal per-workload time disagrees with bits", "sub-floor observed GCD was admitted",
         'verdict = "UNRESOLVED"', "topology-inclusive 1-vs-8", "not an exact-paper reproduction",
     ]:
         if token not in runner:
@@ -96,6 +101,9 @@ def main() -> int:
           "independent raw golden")
     plant(3, 'verdict = "UNRESOLVED"', 'verdict = "TIE"', "timer-resolution fail-close")
     plant(3, "len(group) != requested", "len(group) < 0", "declared sample-count fail-close")
+    plant(3, "values = sorted(timing_us(r) for r in group)",
+          'values = sorted(float(r["event_us_per_workload"]) for r in group)',
+          "event bits remain the sole timing authority")
 
     nvcc = shutil.which("nvcc")
     if not nvcc:
@@ -120,7 +128,34 @@ def main() -> int:
             print("FAIL: full reconstruction build failed")
             print("\n".join(log[-20:]))
             return 1
-    print(f"PASS: {len(plants)} planted evidence faults red; full sm_120 reconstruction links")
+        sentinel = pathlib.Path(td) / "schema.csv"
+        emitted = subprocess.run([str(out), "--schema-selftest", str(sentinel)],
+                                 text=True, capture_output=True)
+        if emitted.returncode:
+            print("FAIL: schema sentinel executable failed")
+            print(emitted.stdout + emitted.stderr)
+            return 1
+        with sentinel.open(newline="") as f:
+            sentinel_rows = list(csv.DictReader(f))
+        expected = {
+            "schema": "q4k-pdf-ab-raw-v2", "git_sha": "SENTINEL_GIT",
+            "nvidia_driver_version": "SENTINEL_DRIVER", "shape_id": "SENTINEL_SHAPE",
+            "m": "101", "n": "102", "k": "103", "l": "104", "arm": "SENTINEL_ARM",
+            "logical_workloads": "107", "batch": "108", "kernels_per_workload": "109",
+            "device_name": "SENTINEL_DEVICE", "samples_requested": "120",
+            "warmup_rounds_per_arm": "121", "precondition_host_enqueue_ms": "122",
+            "cold_budget_mib": "123",
+        }
+        if len(sentinel_rows) != 1 or any(sentinel_rows[0].get(k) != v for k, v in expected.items()):
+            print(f"FAIL: schema sentinel field mapping drift: {sentinel_rows}")
+            return 1
+    selftest = subprocess.run([sys.executable, str(RUNNER), "--self-test"],
+                              text=True, capture_output=True)
+    if selftest.returncode:
+        print("FAIL: synthetic raw-protocol controls failed")
+        print(selftest.stdout + selftest.stderr)
+        return 1
+    print(f"PASS: {len(plants)} source plants red; schema sentinel and synthetic CSV controls pass; full sm_120 reconstruction links")
     return 0
 
 

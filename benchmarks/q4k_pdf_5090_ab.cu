@@ -313,6 +313,7 @@ void correctness_gate(DeviceProblem const& d, std::vector<Arm>& arms) {
 
 struct Options {
   std::string output = "/tmp/q4k_pdf_5090_ab_raw.csv";
+  std::string schema_selftest;
   std::string shape;
   std::string git_sha = "UNKNOWN";
   std::string binary_sha = "UNKNOWN";
@@ -331,6 +332,7 @@ Options parse_options(int argc, char** argv) {
       return argv[++i];
     };
     if (!std::strcmp(argv[i], "--output")) o.output = value(argv[i]);
+    else if (!std::strcmp(argv[i], "--schema-selftest")) o.schema_selftest = value(argv[i]);
     else if (!std::strcmp(argv[i], "--shape")) o.shape = value(argv[i]);
     else if (!std::strcmp(argv[i], "--samples")) o.samples = std::atoi(value(argv[i]));
     else if (!std::strcmp(argv[i], "--warm-batch")) o.warm_batch = std::atoi(value(argv[i]));
@@ -367,12 +369,61 @@ struct RawSample {
 
 void write_header(std::FILE* f) {
   std::fprintf(f,
-      "schema,git_sha,binary_sha,device_pci,driver,shape_id,m,n,k,l,arm,cache_state,pass,arm_order,"
+      "schema,git_sha,binary_sha,device_pci,nvidia_driver_version,shape_id,m,n,k,l,arm,cache_state,pass,arm_order,"
       "logical_workloads,batch,kernels_per_workload,representation,representation_bytes,distinct_bytes,"
       "cold_copy_count,l2_bytes,flush_bytes,event_ms_bits,event_total_us,event_us_per_workload,"
       "sm_clock_mhz,event_pending_after_clock_query,correctness_hash,pdf_config,pdf_config_authority,"
-      "timing_scope,clock_scope,device_name,samples_requested,warmup,precondition_ms,cold_budget_mib\n");
+      "timing_scope,clock_scope,device_name,samples_requested,warmup_rounds_per_arm,"
+      "precondition_host_enqueue_ms,cold_budget_mib\n");
   std::fflush(f);
+}
+
+struct CsvRow {
+  std::string git_sha, binary_sha, pci, driver, shape, arm, state, representation;
+  std::string pdf_config, authority, device_name;
+  int m = 0, n = 0, k = 0, l = 0, pass = 0, order = 0, logical = 0, batch = 0;
+  int kernels = 0, cold_copies = 0, pending = 0, samples = 0, warmup = 0;
+  int precondition_host_enqueue_ms = 0, cold_budget_mib = 0;
+  std::size_t representation_bytes = 0, distinct_bytes = 0, l2_bytes = 0, flush_bytes = 0;
+  std::uint32_t event_bits = 0;
+  double event_total_us = 0, event_per_us = 0;
+  unsigned clock_mhz = 0;
+  std::uint64_t correctness_hash = 0;
+};
+
+void write_row(std::FILE* f, CsvRow const& r) {
+  std::fprintf(f,
+      "q4k-pdf-ab-raw-v2,%s,%s,%s,%s,%s,%d,%d,%d,%d,%s,%s,%d,%d,%d,%d,%d,%s,%zu,%zu,%d,%zu,%zu,"
+      "0x%08x,%.9g,%.9g,%u,%d,%016llx,%s,%s,cuda_event_gpu_span,nvml_adjacent_snapshot,%s,%d,%d,%d,%d\n",
+      r.git_sha.c_str(), r.binary_sha.c_str(), r.pci.c_str(), r.driver.c_str(), r.shape.c_str(),
+      r.m, r.n, r.k, r.l, r.arm.c_str(), r.state.c_str(), r.pass, r.order, r.logical, r.batch,
+      r.kernels, r.representation.c_str(), r.representation_bytes, r.distinct_bytes, r.cold_copies,
+      r.l2_bytes, r.flush_bytes, r.event_bits, r.event_total_us, r.event_per_us, r.clock_mhz,
+      r.pending, static_cast<unsigned long long>(r.correctness_hash), r.pdf_config.c_str(),
+      r.authority.c_str(), r.device_name.c_str(), r.samples, r.warmup,
+      r.precondition_host_enqueue_ms, r.cold_budget_mib);
+  std::fflush(f);
+}
+
+void write_schema_selftest(std::string const& path) {
+  std::FILE* f = std::fopen(path.c_str(), "w");
+  if (!f) fail("cannot open schema selftest CSV: " + path + ": " + std::strerror(errno));
+  write_header(f);
+  CsvRow row;
+  row.git_sha = "SENTINEL_GIT"; row.binary_sha = "SENTINEL_BINARY";
+  row.pci = "SENTINEL_PCI"; row.driver = "SENTINEL_DRIVER"; row.shape = "SENTINEL_SHAPE";
+  row.m = 101; row.n = 102; row.k = 103; row.l = 104;
+  row.arm = "SENTINEL_ARM"; row.state = "warm"; row.pass = 105; row.order = 106;
+  row.logical = 107; row.batch = 108; row.kernels = 109; row.representation = "SENTINEL_REP";
+  row.representation_bytes = 110; row.distinct_bytes = 111; row.cold_copies = 112;
+  row.l2_bytes = 113; row.flush_bytes = 114; row.event_bits = 0x3f800000u;
+  row.event_total_us = 115.25; row.event_per_us = 116.5; row.clock_mhz = 117;
+  row.pending = 118; row.correctness_hash = 0x119ULL; row.pdf_config = "SENTINEL_CFG";
+  row.authority = "SENTINEL_AUTH"; row.device_name = "SENTINEL_DEVICE";
+  row.samples = 120; row.warmup = 121; row.precondition_host_enqueue_ms = 122;
+  row.cold_budget_mib = 123;
+  write_row(f, row);
+  std::fclose(f);
 }
 
 void emit_samples(std::FILE* f, Options const& options, Shape const& shape,
@@ -388,19 +439,22 @@ void emit_samples(std::FILE* f, Options const& options, Shape const& shape,
     std::size_t const distinct = arm.representation_bytes + ad;
     char cfg[32];
     std::snprintf(cfg, sizeof(cfg), "%dx%dx%d", shape.pdf_cta_n, shape.pdf_warps_n, shape.pdf_warps_k);
-    std::fprintf(f,
-      "q4k-pdf-ab-raw-v1,%s,%s,%s,%s,%s,1,%d,%d,%d,%s,%s,%d,%d,%d,%d,%d,%s,%zu,%zu,%d,%zu,%zu,"
-      "0x%08x,%.9g,%.9g,%u,%d,%016llx,%s,%s,cuda_event_gpu_span,nvml_adjacent_snapshot,%s,%d,%d,%d,%d\n",
-      options.git_sha.c_str(), options.binary_sha.c_str(), clock.pci.c_str(), clock.driver.c_str(), shape.id,
-      shape.n, shape.k, shape.l, arm.name.c_str(), sample.state.c_str(), sample.pass, sample.order,
-      sample.batch, sample.batch, arm.kernels_per_workload, arm.representation.c_str(),
-      arm.representation_bytes, distinct, cold_copies, l2_bytes, flush_bytes,
-      float_bits(sample.elapsed_ms), total_us, per, sample.clock_mhz, sample.pending,
-      static_cast<unsigned long long>(arm.correctness_hash), cfg,
-      shape.document_winner ? "pdf_p22_winner" : "pdf_documented_default_unmeasured_shape",
-      clock.name.c_str(), options.samples, options.warmup, options.precondition_ms,
-      options.cold_budget_mib);
-    std::fflush(f);
+    CsvRow row;
+    row.git_sha = options.git_sha; row.binary_sha = options.binary_sha;
+    row.pci = clock.pci; row.driver = clock.driver; row.shape = shape.id;
+    row.m = 1; row.n = shape.n; row.k = shape.k; row.l = shape.l;
+    row.arm = arm.name; row.state = sample.state; row.pass = sample.pass; row.order = sample.order;
+    row.logical = sample.batch; row.batch = sample.batch; row.kernels = arm.kernels_per_workload;
+    row.representation = arm.representation; row.representation_bytes = arm.representation_bytes;
+    row.distinct_bytes = distinct; row.cold_copies = cold_copies; row.l2_bytes = l2_bytes;
+    row.flush_bytes = flush_bytes; row.event_bits = float_bits(sample.elapsed_ms);
+    row.event_total_us = total_us; row.event_per_us = per; row.clock_mhz = sample.clock_mhz;
+    row.pending = sample.pending; row.correctness_hash = arm.correctness_hash; row.pdf_config = cfg;
+    row.authority = shape.document_winner ? "pdf_p22_winner" : "pdf_documented_default_unmeasured_shape";
+    row.device_name = clock.name; row.samples = options.samples; row.warmup = options.warmup;
+    row.precondition_host_enqueue_ms = options.precondition_ms;
+    row.cold_budget_mib = options.cold_budget_mib;
+    write_row(f, row);
     cudaEventDestroy(sample.start);
     cudaEventDestroy(sample.stop);
   }
@@ -477,6 +531,10 @@ void print_summary(Shape const& shape, std::vector<Arm> const& arms) {
 int main(int argc, char** argv) {
   try {
     Options const options = parse_options(argc, argv);
+    if (!options.schema_selftest.empty()) {
+      write_schema_selftest(options.schema_selftest);
+      return 0;
+    }
     int ordinal = 0;
     cuda_ok(cudaSetDevice(ordinal), "cudaSetDevice");
     cudaDeviceProp prop{};
