@@ -42,11 +42,11 @@ struct Totals {
   uint64_t raw_protected = 0;
   uint64_t raw_stripe_regime = 0;
   uint64_t raw_actual_split = 0;
-  uint64_t raw_guarded_unsplit = 0;
+  uint64_t raw_ceil_unsplit = 0;
   uint64_t unique_protected = 0;
   uint64_t unique_stripe_regime = 0;
   uint64_t unique_actual_split = 0;
-  uint64_t unique_guarded_unsplit = 0;
+  uint64_t unique_ceil_unsplit = 0;
   uint64_t unique_checked = 0;
   uint64_t segments = 0;
   uint64_t logical_cells = 0;
@@ -61,6 +61,12 @@ struct Totals {
 
 static uint64_t ceil_div(uint64_t x, uint64_t y) {
   return x / y + uint64_t(x % y != 0);
+}
+
+static bool q_lt_cu_ceil_unsplit(uint64_t q, uint64_t kt, uint64_t cu) {
+  // (CU-Q)*Kt < CU, written without multiplication overflow. All scheduler
+  // inputs are positive; equality belongs to the split side.
+  return q < cu && kt != 0 && (cu - q) <= (cu - 1) / kt;
 }
 
 static int cell_value(uint64_t q, uint64_t k) {
@@ -140,8 +146,8 @@ static void check_no_split(Key const& x, Params const& p, Totals& t) {
   }
 }
 
-static void check_split(Key const& x, Params const& p,
-                        bool require_cross_l, Totals& t) {
+static void check_stripe_regime(Key const& x, Params const& p,
+                                bool require_cross_l, Totals& t) {
   uint64_t const q_count = x.mt * x.nt * x.l;
   uint64_t const cells = q_count * x.kt;
   std::vector<uint8_t> visits(std::size_t(cells), uint8_t(0));
@@ -288,8 +294,18 @@ int main(int argc, char** argv) {
     }
     else {
       ++t.raw_stripe_regime;
-      if (I < kt) ++t.raw_actual_split;
-      else ++t.raw_guarded_unsplit;
+      bool const ceil_unsplit = I == kt;
+      // For Q<CU, ceil(Q*Kt/CU)==Kt iff the final missing-CTA gap is
+      // smaller than one K-tile quantum: (CU-Q)*Kt < CU.  This is strict;
+      // equality is already the split side. Use division to avoid overflow.
+      bool const inequality = q_lt_cu_ceil_unsplit(q, kt, CU);
+      if (ceil_unsplit != inequality)
+        fail(t, "q<CU-ceil-unsplit-iff", x, ceil_unsplit, inequality);
+      if (ceil_unsplit) {
+        ++t.raw_ceil_unsplit;
+        if (active != q) fail(t, "q<CU-ceil-unsplit-active", x, active, q);
+      }
+      else ++t.raw_actual_split;
     }
     t.max_kt = std::max(t.max_kt, kt);
     Multiplicity& mult = unique[x];
@@ -314,8 +330,8 @@ int main(int argc, char** argv) {
       else {
         ++t.unique_stripe_regime;
         if (p.iters_per_block_ < x.kt) ++t.unique_actual_split;
-        else ++t.unique_guarded_unsplit;
-        check_split(x, p, item.second.cross_l != 0, t);
+        else ++t.unique_ceil_unsplit;
+        check_stripe_regime(x, p, item.second.cross_l != 0, t);
       }
       ++t.unique_checked;
       if (t.errors != 0) break;  // planted controls fail at their first causal tuple
@@ -332,19 +348,46 @@ int main(int argc, char** argv) {
       (unsigned long long)t.raw_cross_l,
       (unsigned long long)scanned, (unsigned long long)raw_remaining);
   std::printf("[l133] equivalence unique=%llu checked=%llu remaining=%llu "
-              "protected=%llu stripe-regime=%llu actual-split=%llu q<CU-unsplit=%llu "
-              "raw-protected/stripe/actual/q<CU-unsplit=%llu/%llu/%llu/%llu\n",
+              "protected=%llu stripe-regime=%llu actual-split=%llu q<CU-ceil-unsplit=%llu "
+              "raw-protected/stripe/actual/q<CU-ceil-unsplit=%llu/%llu/%llu/%llu\n",
       (unsigned long long)unique.size(),
       (unsigned long long)t.unique_checked,
       (unsigned long long)unique_remaining,
       (unsigned long long)t.unique_protected,
       (unsigned long long)t.unique_stripe_regime,
       (unsigned long long)t.unique_actual_split,
-      (unsigned long long)t.unique_guarded_unsplit,
+      (unsigned long long)t.unique_ceil_unsplit,
       (unsigned long long)t.raw_protected,
       (unsigned long long)t.raw_stripe_regime,
       (unsigned long long)t.raw_actual_split,
-      (unsigned long long)t.raw_guarded_unsplit);
+      (unsigned long long)t.raw_ceil_unsplit);
+  uint64_t printed_ceil_unsplit = 0;
+  for (auto const& item : unique) {
+    Key const& x = item.first;
+    uint64_t const q = x.mt * x.nt * x.l;
+    Params const p = Core::make_params_for_tiles(x.mt, x.nt, x.l, x.kt, x.cu);
+    if (q >= x.cu || p.iters_per_block_ != x.kt) continue;
+    uint64_t const raw = item.second.deployment + item.second.cross_l;
+    std::printf("[l133] q<CU-ceil-unsplit class Mt=%llu Nt=%llu L=%llu Kt=%llu CU=%llu "
+                "Q=%llu G=%llu I=%llu active=%llu raw=%llu\n",
+        (unsigned long long)x.mt, (unsigned long long)x.nt,
+        (unsigned long long)x.l, (unsigned long long)x.kt,
+        (unsigned long long)x.cu, (unsigned long long)q,
+        (unsigned long long)p.grid_blocks_,
+        (unsigned long long)p.iters_per_block_,
+        (unsigned long long)p.active_blocks_, (unsigned long long)raw);
+    ++printed_ceil_unsplit;
+  }
+  if (printed_ceil_unsplit != t.unique_ceil_unsplit)
+    fail(t, "q<CU-ceil-unsplit-census", Key{}, printed_ceil_unsplit,
+         t.unique_ceil_unsplit);
+  bool const q64 = q_lt_cu_ceil_unsplit(64, 8, 72);
+  bool const q63 = q_lt_cu_ceil_unsplit(63, 8, 72);
+  if (!q64 || q63) fail(t, "q<CU-ceil-unsplit-strict-boundary", Key{}, q64, q63);
+  std::printf("[l133] q<CU-ceil-unsplit iff (CU-Q)*Kt<CU; "
+              "boundary Q64/Kt8/CU72=%s Q63/Kt8/CU72=%s %s\n",
+      q64 ? "unsplit" : "split", q63 ? "unsplit" : "split",
+      q64 && !q63 ? "PASS" : "FAIL");
   std::printf("[l133] production segments=%llu logical-(q,k)-cells=%llu outputs=%llu handoffs=%llu cross(N/M/L)=%llu/%llu/%llu\n",
       (unsigned long long)t.segments,
       (unsigned long long)t.logical_cells,

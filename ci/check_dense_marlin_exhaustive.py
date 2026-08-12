@@ -114,8 +114,16 @@ def main() -> int:
         required_output = (
             "raw deployment=651440 cross-L=4790 scanned=656230 remaining=0",
             "equivalence unique=2815 checked=2815 remaining=0 protected=2465 "
-            "stripe-regime=350 actual-split=344 q<CU-unsplit=6 "
-            "raw-protected/stripe/actual/q<CU-unsplit=435252/220978/218313/2665",
+            "stripe-regime=350 actual-split=344 q<CU-ceil-unsplit=6 "
+            "raw-protected/stripe/actual/q<CU-ceil-unsplit=435252/220978/218313/2665",
+            "q<CU-ceil-unsplit class Mt=1 Nt=64 L=1 Kt=8 CU=72 Q=64 G=72 I=8 active=64 raw=2034",
+            "q<CU-ceil-unsplit class Mt=2 Nt=32 L=1 Kt=8 CU=72 Q=64 G=72 I=8 active=64 raw=204",
+            "q<CU-ceil-unsplit class Mt=4 Nt=16 L=1 Kt=8 CU=72 Q=64 G=72 I=8 active=64 raw=123",
+            "q<CU-ceil-unsplit class Mt=8 Nt=8 L=1 Kt=8 CU=72 Q=64 G=72 I=8 active=64 raw=90",
+            "q<CU-ceil-unsplit class Mt=16 Nt=4 L=1 Kt=8 CU=72 Q=64 G=72 I=8 active=64 raw=72",
+            "q<CU-ceil-unsplit class Mt=32 Nt=2 L=1 Kt=8 CU=72 Q=64 G=72 I=8 active=64 raw=142",
+            "q<CU-ceil-unsplit iff (CU-Q)*Kt<CU; boundary "
+            "Q64/Kt8/CU72=unsplit Q63/Kt8/CU72=split PASS",
             "production segments=42231743 logical-(q,k)-cells=2632768288 "
             "outputs=42215890 handoffs=15853 cross(N/M/L)=4717/767/1",
             "fixture=marlin-cell-exact contribution={-1,0,1} max-terms=400 < 2048 "
@@ -171,7 +179,7 @@ def main() -> int:
                 return 1
 
     print("[marlin-exhaustive] PASS: 656230/656230 raw tuples -> 2815/2815 production Params; "
-          "344 real split classes, 2632768288 logical cells exact-once, remaining=0; "
+          "344 real split + 6 explained ceil-unsplit classes, 2632768288 logical cells exact-once, remaining=0; "
           "8 compiled core plants rejected")
     return 0
 

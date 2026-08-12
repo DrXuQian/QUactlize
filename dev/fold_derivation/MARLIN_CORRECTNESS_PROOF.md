@@ -47,8 +47,37 @@ The scheduler-owned launch protection follows directly.  If `Q >= CU`, then
 `G=Q`, `I=ceil(Q*Kt/Q)=Kt`, and CTA q owns exactly the complete K range of
 output q.  Thus every `slice_count` is one and the handoff count is zero.
 When `Q < CU`, the scheduler is in the stripe regime, but that does not imply
-an actual split: six scheduler-visible classes currently have `I=Kt` and no
-handoff despite `Q<CU`.
+an actual split.  Since `G=CU` and `Q<CU`, `I<=Kt`; therefore
+
+```text
+no split
+<=> I = Kt
+<=> ceil(Q*Kt/CU) = Kt
+<=> Q*Kt > CU*(Kt-1)
+<=> (CU-Q)*Kt < CU
+```
+
+The final inequality is strict.  At `Q=64,Kt=8,CU=72`, the left side is 64
+and the class is unsplit; at `Q=63` it is 72 and the class splits.  In the
+unsplit case `active_blocks=Q`: each active CTA owns one complete output tile
+and the remaining `CU-Q` launch slots are idle.  This is ceil quantization of
+the uniform stripe length, not a hole in the `G=max(Q,CU)` launcher guard.
+
+The complete current census is:
+
+| Mt | Nt | L | Kt | CU | Q | G | I | active CTA | raw multiplicity |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 64 | 1 | 8 | 72 | 64 | 72 | 8 | 64 | 2,034 |
+| 2 | 32 | 1 | 8 | 72 | 64 | 72 | 8 | 64 | 204 |
+| 4 | 16 | 1 | 8 | 72 | 64 | 72 | 8 | 64 | 123 |
+| 8 | 8 | 1 | 8 | 72 | 64 | 72 | 8 | 64 | 90 |
+| 16 | 4 | 1 | 8 | 72 | 64 | 72 | 8 | 64 | 72 |
+| 32 | 2 | 1 | 8 | 72 | 64 | 72 | 8 | 64 | 142 |
+
+These are six `(Mt,Nt)` factorizations of the same scheduler geometry, not six
+different mechanisms.  Their raw multiplicities sum to 2,665.  L133 checks
+the iff for every raw `Q<CU` tuple, prints every unique class, and requires the
+printed multiplicities to match the independently generated manifest.
 
 On the L133 exact fixture each logical cell contributes one of `{-1,0,1}`.
 Every partial sum has at most 400 terms and is exactly representable in FP32;
@@ -80,7 +109,7 @@ cross-N/M/L construction tuples             4,790
 raw tuples scanned / remaining            656,230 / 0
 distinct production Params checked          2,815 / 2,815
 protected / stripe-regime classes           2,465 / 350
-actual-split / Q<CU-unsplit classes            344 / 6
+actual-split / Q<CU-ceil-unsplit classes       344 / 6
 production work segments                42,231,743
 logical (q,k_tile) cells             2,632,768,288
 output sums checked                    42,215,890
