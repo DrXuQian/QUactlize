@@ -73,6 +73,10 @@ template <int WN>
 using RealBuilder=cutlass::gemm::collective::quactlize_detail::get_tiled_mma<
     cutlass::arch::PPU0010,cutlass::half_t,cutlass::half_t,float,
     TileShape,Shape<Int<WM>,Int<WN>,Int<TK>>,Int<BasePermK>>;
+template <int WN, int WK>
+using RealBuilderNK=cutlass::gemm::collective::quactlize_detail::get_tiled_mma<
+    cutlass::arch::PPU0010,cutlass::half_t,cutlass::half_t,float,
+    TileShape,Shape<Int<WM>,Int<WN>,Int<TK/WK>>,Int<BasePermK>>;
 template <int WN,int WK,bool Expand=true>
 using RealMma=typename Pair<WN,WK,typename RealBuilder<WN>::MmaInst,Expand>::Mma;
 static_assert(std::is_same_v<RealMma<16,1>,typename RealBuilder<16>::TiledMma>);
@@ -80,6 +84,9 @@ static_assert(std::is_same_v<RealMma<32,1>,typename RealBuilder<32>::TiledMma>);
 static_assert(!std::is_same_v<RealMma<16,2>,typename RealBuilder<16>::TiledMma>);
 static_assert(!std::is_same_v<RealMma<16,2,true>,RealMma<16,2,false>>,
               "fixed and expanded K permutations are distinct types even where their maps repeat");
+static_assert(std::is_same_v<typename RealBuilderNK<16,2>::TiledMma, RealMma<16,2,false>>);
+static_assert(std::is_same_v<typename RealBuilderNK<16,4>::TiledMma, RealMma<16,4,false>>,
+              "the shipping builder must consume WarpShape.K as the real K-cohort axis");
 static_assert(!std::is_same_v<RealMma<16,2>,RealMma<32,4>>,
               "equal total warp count must not collapse the independent N/K axes");
 static_assert(std::is_same_v<typename RealMma<16,4>::ThrLayoutVMNK,

@@ -1124,6 +1124,7 @@ public:
 
     using warpOnM = decltype(get<1>(tiled_mma.get_thr_layout_vmnk().shape()));
     using warpOnN = decltype(get<2>(tiled_mma.get_thr_layout_vmnk().shape()));
+    using warpOnK = decltype(get<3>(tiled_mma.get_thr_layout_vmnk().shape()));
     using PermutationM = decltype(tiled_mma.template permutation_mnk<0>());
     using PermutationN = decltype(tiled_mma.template permutation_mnk<1>());
 
@@ -1142,8 +1143,11 @@ public:
 #else
         MMA_Atom<PPU0015_16x16x32_S32S8S8S32_TN>,
 #endif
-        Layout<Shape<warpOnM, warpOnN,_1>>,
-        Tile<ShadowPermutationM, PermutationN, _32>>;
+        Layout<Shape<warpOnM, warpOnN, warpOnK>>,
+        // The int8 shadow atom covers 32 logical K codes.  Its permutation
+        // must span every compute K cohort; changing AtomLayout.K alone leaves
+        // valid-looking fragments with holes (L123's stale-shadow negative).
+        Tile<ShadowPermutationM, PermutationN, Int<32 * warpOnK()>>> >;
 
     TiledMma_S8 tiled_mma_s8;
     auto thr_mma_s8 = tiled_mma_s8.get_thread_slice(thread_idx);
