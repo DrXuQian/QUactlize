@@ -5455,3 +5455,39 @@ box 上的 acu **不能导出文本,只能截图**,所以手抄是唯一通道,�
 **校验器自己就能定,不用上设备**:填 `Threads per block=128`、`Registers per thread=144`、dp 的实际共享字节。若 Registers 行给 `Allocatable Blocks Per CU = 7` 而 Shared 行给 6,则报告列是 post-min,寄存器模型完全没问题。
 
 顺带:`BL Shared=6` 要求每 block 共享 ∈ (37450, 43690] 且是 128 的倍数。按 config 直接记账 —— A `16·128·2·3=12288`,B(int4)`128·128/2·3=24576`,scale(gs=128)`128·2·3=768` —— 合计 **37,632 = 294×128**,落在窗口内。**这条给了你一个可用的共享内存记账口径**,`blocks_per_cu` 抬上去之后共享会先撞墙还是寄存器先撞墙,用它算。
+
+## 126 — 用户问"测的 marlin 切 warp-K 了吗":**没有,而且 tactic space 里没这个轴**
+
+我核了代码,不是从 config 串推的:
+
+* `ppu_tactic_space.hpp:158` 注释写明 builder 行为 —— `get_tiled_mma` 用 `Layout<Shape<TileM/WarpM, TileN/WarpN, **_1**>>` 平铺 32 线程 atom。**K 分量硬写 `_1`。**
+* `cta_warps(c) = (c.tm/c.wm) * (c.tn/c.wn)` —— 无 K 因子;而且每个 launcher `static_assert` 它对上实例化的 TiledMma,所以这不是"可能漂移的推导",是被钉住的。
+* 全仓 `\bwarp_k\b` 只命中 `dev/fold_derivation/l123_warp_nk_topology.cu`(本地 harness),两个 marlin kernel 里零命中。
+
+对照 marlin classic(`marlin_classic_ppu.cuh:471-475`):
+
+    NWK    = (threads/32) / (thread_n_blocks/4)
+    warp_k = (threadIdx.x/32) / (thread_n_blocks/4)
+    ktile  = (k % b_sh_wr_iters) * NWK + warp_k
+    threads=256, thread_n_blocks=8  =>  NWK = 4
+
+**Marlin 靠切 K 才能把 8 个 warp 放上 16×128 的输出 tile。** 不切 K,warp 数被 `TileN/WarpN` 卡死 —— 我们这个 config 就是 4。
+
+### 这条对 acu 那份数据的影响(**有利的那一面**)
+
+三条臂的 warp 排布**完全相同**(4 warp,全在 N),这正是 `v.mma` 三条臂都是 65,536 的原因。所以那个三方对比**干净地隔离了 CTA 层调度**,没有混入 warp 层差异。分区分析时可以放心用,但**结论只能说到"CTA 调度",不能说成"Marlin vs 我们"**。
+
+### 一个你会用到的算术:寄存器限是 warps/CU 限,与 CTA 分组无关
+
+    R=160 -> regs/warp 5120 -> floor(131072/5120) = 25 warps/CU
+      4 warp/CTA: floor(25/4)=6 CTA x 4 = 24 warps
+      8 warp/CTA: floor(25/8)=3 CTA x 8 = 24 warps      <- 相同
+
+**所以 warp-K 和 `blocks_per_cu` 解的不是同一个约束**:旋钮把 achieved 从 4.00 抬向 24(6 倍,继续做);warp-K 省的是**共享内存**(8 warp 共用一份 37,632 B tile,而不是两个 CTA 各一份)。要越过 24–25 warps/CU 只能压每线程寄存器 —— 64 warps/CU 需要 R ≤ 64。
+
+### 请你回答(不要现在做,排在旋钮和分区分析之后)
+
+`warp_k` 该不该成为 tactic 轴?L123 自己的定性是 *"WK is an offline-packer/artifact-descriptor axis (the same kind of axis as TileK and fold), not a new quantization format"* —— 即它会连带动离线权重摆放,不是纯 kernel 改动。我要的是:
+
+1. **L123 当时到底验到哪一步**(它说 `2Nx2K/1Nx4K` 等 warp 数对能证明 N 和 K 是独立轴,那 B 的物理 oracle 过了没有?),以及
+2. 在**当前**这个共享/寄存器双限的画面下,WK 能不能换来实际收益 —— 按上面那个"寄存器限是 warps/CU 限"的算术,它像是只在**共享先撞墙**的 config 上才有用。**如果结论是"这个 shape 上没用",直接说没用**,别为了对齐 Marlin 而做。
