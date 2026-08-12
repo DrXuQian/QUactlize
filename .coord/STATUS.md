@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-12 13:25:30 UTC
-    inbox-consumed: 127
-    working-on:     dense Marlin blocks-per-CU ladder B={1,2,4,6}; local algebra/codegen/contract gates pass and box recipe is ready
-    blocked-on:     device timing plus ACU counters for the B ladder; TileM=8 dense-family generation/default routing and warp-K are queued in that order after the CTA-only ladder and Q/CU partition analysis
-    local-gates:    targeted L126/L134, dense 19-plant contract, grouped 6-plant contract, dense/grouped exhaustive, syntax and pristine gates pass; rebuilt extension gives pytest 248 passed / 37 device-only skipped and L139 pass; full strict rerun pending
-    last-commit:    bbb23dd Record folded ABI and zero proof completion
-    last-heartbeat: 221
+    updated-at:     2026-08-12 13:39:16 UTC
+    inbox-consumed: 128
+    working-on:     dense Marlin blocks-per-CU ladder B={1,2,4,6} is committed; next is the standalone-classic vs collective-Marlin axis audit and L123 artifact gate before warp-K code
+    blocked-on:     B-ladder device timing is intentionally deferred until the Marlin arm matches classic's (N,K) warp grid and CTA-local reduction; the aligned kernel and B ladder will share one box batch
+    local-gates:    full strict tier 158/158 in 518s; pytest 248 passed / 37 device-only skipped; Marlin algebra/codegen/contracts/exhaustive, syntax, real-link boxdry and actlize pristine all pass
+    last-commit:    cdadefd Sweep dense Marlin launch residency
+    last-heartbeat: 222
