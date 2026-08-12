@@ -5491,3 +5491,43 @@ box 上的 acu **不能导出文本,只能截图**,所以手抄是唯一通道,�
 
 1. **L123 当时到底验到哪一步**(它说 `2Nx2K/1Nx4K` 等 warp 数对能证明 N 和 K 是独立轴,那 B 的物理 oracle 过了没有?),以及
 2. 在**当前**这个共享/寄存器双限的画面下,WK 能不能换来实际收益 —— 按上面那个"寄存器限是 warps/CU 限"的算术,它像是只在**共享先撞墙**的 config 上才有用。**如果结论是"这个 shape 上没用",直接说没用**,别为了对齐 Marlin 而做。
+
+## 127 — **用户指令:M<8 时默认就该是 TileM=8。而出货 dense 表里根本没有 tm=8 这一行**
+
+`quactlize/include/ppu_dense_configs.inc` 是**手写的 5 行**,不是从 tactic space 生成的:
+
+    Default     64x64:32x32:s3
+    SmallSquare 32x32:16x16:s3
+    ShortWide   16x128:16x32:s3     <- decode 跑的就是这一行(= acu 那份数据的 config)
+    MidWide     32x128:32x32:s3
+    Tall        128x64:64x32:s2
+
+最小的 TileM 是 16。而 `kTileM{{8,16,32,64,128,256}}` 有 8,`instruction_m(c) = (tm==8 && wm==8) ? 8 : 16` 也支持 m8n16k16 atom —— **所以 tm=8 是合法的、可生成的,只是从来没进过出货表,一次都没参与过竞争。**
+
+**这是 [#46 ScaleCopyCoverage] / [#50 dense 只有一张 bits=4 表] 的同型错误第三次出现:"输了"和"从没生成过"长得一样。** 用户的原则是先全后 prune。
+
+### 要做的
+
+1. **dense 表补上 TileM=8 的行**(至少 `8x128:8x32` 这一族,N 侧沿用 ShortWide 的形状,便于和现有行直接对照)。**别只加一行就收工** —— 按 tactic space 的合法集把 tm=8 那一族生成出来,让它和 ShortWide 在同一个 shape 上跑。
+2. **路由:M<8(decode)默认选 TileM=8。** 运行时已有 search + shape cache,所以主要是"让它在表里可选";若默认路径绕过 search,那条默认也要跟着改。
+3. **报告时必须带上"这一族有几行、几行被判非法、判据是什么"** —— 不要只报赢家。
+
+### 一个必须一起说清的约束,否则会高估收益
+
+    constexpr int physical_a_rows(Candidate c) { return c.tm < 16 ? 16 : c.tm; }
+    // logical m8 tile still uses the AIU's physical 16-row A cube, .padz supplies rows 8..15
+    static_assert(..., "logical TM8 must not halve the physical A-cube shared-memory charge");
+
+**TileM=8 不省 A 的共享内存。** 省的是:累加器寄存器(warp tile 16x32 -> 8x32,每 lane 16 -> 8 个 fp32)、m8 的 mma、以及 epilogue。
+
+寄存器那条可以接到 126 的算术上:R=160 时 warps/CU 上限是 `floor(131072/5120)=25`;若累加器省下 8 个 reg/thread -> R≈152 -> `roundup(152*32,64)=4864` -> 26 warps。**看起来是个小数,但这是我推的,不是测的 —— 由你判,而且要归一到时间而不是 warp 数。**
+
+### 与 126(warp-K)的关系
+
+两条都是"往同一个小输出 tile 上塞更多并行"的不同办法,但**约束不同**:
+
+* `blocks_per_cu`:更多 CTA/CU,每个 CTA 自带一份共享 footprint
+* warp-K:更多 warp/CTA,共用一份 footprint(省共享)
+* TileM=8:同样的 warp 数,**每个 warp 少一半累加器**(省寄存器)
+
+寄存器是当前 warps/CU 的绑定约束(25),所以三条里只有第三条直接顶在绑定约束上。**顺序建议:旋钮(在做)-> tm=8 进表并实测 -> 再看 warp-K 值不值。**
