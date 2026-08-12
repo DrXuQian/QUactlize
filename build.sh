@@ -79,6 +79,10 @@ overlay_manifest() {
   # host-only harnesses that must NOT reach the box, which is why this is one named path and not a recursive walk.
   _emit_dir "$HERE/$_subdir_src" "gemv_lowbit/"
   _emit_dir "$HERE/quactlize/csrc" "" cmake
+  # The GEMV generator consumes this mechanically generated authority during
+  # configure.  Preserve the SAME file in the legacy flat-overlay model; do
+  # not reconstruct its 540 rows in CMake or in this manifest function.
+  printf 'gemv_tactic_units.cmake|%s\n' "$HERE/benchmarks/gemv_tactic_units.cmake"
   printf 'CMakeLists.txt|%s\n' "$HERE/quactlize/csrc/CMakeLists.txt.in"
 }
 
@@ -295,9 +299,9 @@ rm -rf "$BUILD" && mkdir -p "$BUILD" && cd "$BUILD"
 # impossible from build.sh -- the knob existed and could not be reached, which is worse than no knob because it reads as
 # available. Keep this explicit list in lockstep with the cache variables advertised by CMake; the advice gate
 # below checks the link so a new printed knob cannot become another accepted-but-dropped environment variable.
-_MOE_VARS=()
-for _v in MOE_FORMATS MOE_TM_LIST MOE_TN_LIST MOE_WM_LIST MOE_STAGES MOE_CORES; do
-  if [ -n "${!_v:-}" ]; then _MOE_VARS+=("-D$_v=${!_v}"); echo "[build.sh] $_v=${!_v}"; fi
+_SWEEP_VARS=()
+for _v in MOE_FORMATS MOE_TM_LIST MOE_TN_LIST MOE_WM_LIST MOE_STAGES MOE_CORES GEMV_GROUPS; do
+  if [ -n "${!_v:-}" ]; then _SWEEP_VARS+=("-D$_v=${!_v}"); echo "[build.sh] $_v=${!_v}"; fi
 done
 # NO GOOGLETEST CLONE. actlize's CMakeLists.txt:423 clones github.com/google/googletest when
 # CUTLASS_ENABLE_GTEST_UNIT_TESTS is on, and :108 defaults it to CUTLASS_ENABLE_TESTS -- which nothing here ever
@@ -348,7 +352,7 @@ cmake "$_CMAKE_SRC" "${_CMAKE_EXTRA[@]}" -DPPU_SDK_ROOT="$PPU_SDK_ROOT" -DCUTLAS
   -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
   -DTILE_M="$TILE_M" -DTILE_N="$TILE_N" -DWARP_M="$WARP_M" -DWARP_N="$WARP_N" -DSTAGES="$STAGES" -DBENCH_QUANT="$QUANT" -DTSK="$TSK" -DBENCH_GS="$BENCH_GS" \
   -DLOWBIT_DENSE_CONFIGS_PER_UNIT="$LOWBIT_DENSE_CONFIGS_PER_UNIT" \
-  -DPPU_EXTRA_DEFS="${PPU_DEFS:-}" "${_MOE_VARS[@]+"${_MOE_VARS[@]}"}" \
+  -DPPU_EXTRA_DEFS="${PPU_DEFS:-}" "${_SWEEP_VARS[@]+"${_SWEEP_VARS[@]}"}" \
   >cmake.log 2>&1 || { tail -40 cmake.log; exit 1; }
 # CMake owns the literal list and the advice gate checks every name in it. Surface that one source of truth for
 # the two sweep targets instead of copying the names into another shell message that can drift.

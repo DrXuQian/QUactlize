@@ -245,4 +245,96 @@ bool launch_gemv(Params const& p, gemv_stream_t s) {
   return gemv_dispatch_quant<Details, CtaN, Chunk>(p, args, rows_max, s);
 }
 
+// ---------------------------------------------------------------------------------------------------
+// Benchmark-only exact-CtaM dispatch.  This is deliberately a second chain:
+// the shipping launch_gemv type and adaptive 1..max selection above remain
+// byte-for-byte unchanged.  Grouped is compile-time fixed so dense CtaM 5..15
+// never instantiate an otherwise-illegal grouped kernel.  StepK remains one
+// thread's K advance per mainloop iteration; it is not a split-K factor.
+template <int CtaM, bool Grouped>
+inline constexpr bool gemv_exact_ctam_supported_v =
+    CtaM >= 1 && CtaM <= (Grouped ? GEMV_GROUPED_CTAM_MAX : GEMV_CTAM_MAX);
+
+template <typename Details, int CtaM, int CtaN, int Chunk, int GS, QuantOp QOp,
+          bool EnableBias, bool Grouped>
+bool gemv_dispatch_ctam_exact(Params const& p, KernelArgs const& args, int rows_max,
+                              gemv_stream_t s) {
+  static_assert(gemv_exact_ctam_supported_v<CtaM, Grouped>,
+                "benchmark exact CtaM is outside the compiled route's range");
+  int const gm = (rows_max + CtaM - 1) / CtaM;
+  gemv_exec<Details, CtaM, CtaN, Chunk, GS, QOp, EnableBias, Grouped>(p, args, gm, s);
+  return true;
+}
+
+template <typename Details, int CtaM, int CtaN, int Chunk, int GS, QuantOp QOp, bool Grouped>
+bool gemv_dispatch_bias_exact(Params const& p, KernelArgs const& args, int rows_max,
+                              gemv_stream_t s) {
+#if GEMV_ENABLE_BIAS
+  if (p.bias)
+    return gemv_dispatch_ctam_exact<Details, CtaM, CtaN, Chunk, GS, QOp, true, Grouped>(
+        p, args, rows_max, s);
+#endif
+  return gemv_dispatch_ctam_exact<Details, CtaM, CtaN, Chunk, GS, QOp, false, Grouped>(
+      p, args, rows_max, s);
+}
+
+template <typename Details, int CtaM, int CtaN, int Chunk, bool Grouped>
+bool gemv_dispatch_quant_exact(Params const& p, KernelArgs const& args, int rows_max,
+                               gemv_stream_t s) {
+#define GEMV_TRY_EXACT_QGS(QO, G)                                                                  \
+  if (p.quant == (QO) && p.groupsize == (G)) {                                                     \
+    if constexpr (gemv_combo_ok<Details, (G), (QO)>())                                             \
+      return gemv_dispatch_bias_exact<Details, CtaM, CtaN, Chunk, (G), (QO), Grouped>(             \
+          p, args, rows_max, s);                                                                    \
+    else { gemv_refuse("group size illegal for this StepK"); return false; }                       \
+  }
+#define GEMV_EMIT_EXACT_GS(G) GEMV_QUANT_LIST(GEMV_TRY_EXACT_QGS, G)
+  GEMV_GS_LIST(GEMV_EMIT_EXACT_GS)
+#undef GEMV_EMIT_EXACT_GS
+#undef GEMV_TRY_EXACT_QGS
+  gemv_refuse("group size not instantiated (see GEMV_GS_LIST)");
+  return false;
+}
+
+template <typename Details, bool Grouped, int CtaM, int CtaN, int Chunk>
+bool launch_gemv_exact_ctam(Params const& p, gemv_stream_t s) {
+  static_assert(gemv_exact_ctam_supported_v<CtaM, Grouped>,
+                "benchmark exact CtaM is outside the compiled route's range");
+  if ((p.num_experts > 0) != Grouped) {
+    gemv_refuse("runtime Params route disagrees with benchmark exact-CtaM route");
+    return false;
+  }
+  // The buffer's own record wins over anything the caller claims in Params.
+  if (p.record) {
+    char const* why = "";
+    if (!wfmt_matches<Details>(*reinterpret_cast<WeightFormatRecord const*>(p.record),
+                              p.n, p.k, p.groupsize, p.quant, &why)) {
+      char msg[128];
+      std::snprintf(msg, sizeof(msg), "weight format record disagrees: %s", why);
+      gemv_refuse(msg);
+      return false;
+    }
+  }
+  if (char const* why = gemv_config_invalid_reason<Details, CtaN>(p)) {
+    gemv_refuse(why);
+    return false;
+  }
+  int const rows_max = Grouped ? p.max_rows : p.m;
+
+  KernelArgs args{};
+  args.act = p.act;  args.act_scale = p.act_scale;
+  args.w_lo = p.weight;  args.w_hi = p.weight_hi;
+  args.scales = p.scales;  args.zeros = p.zeros;  args.bias = p.bias;
+  args.out = p.out;  args.alpha = p.alpha;
+  args.n = p.n;  args.k = p.k;  args.rows = p.m;
+  args.row_offsets = p.row_offsets;
+  args.w_lo_stride_e = p.w_bytes_per_expert;
+  args.w_hi_stride_e = p.w_hi_bytes_per_expert;
+  args.scale_stride_e = p.scale_elems_per_expert;
+  args.lo_s = Details::LoLayout::strides(p.n, p.k);
+  args.hi_s = Details::HiLayout::strides(p.n, p.k);
+
+  return gemv_dispatch_quant_exact<Details, CtaM, CtaN, Chunk, Grouped>(p, args, rows_max, s);
+}
+
 }  // namespace ppu_gemv

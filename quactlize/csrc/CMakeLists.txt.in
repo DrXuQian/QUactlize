@@ -808,26 +808,33 @@ set_target_properties(quactlize_ppu PROPERTIES OUTPUT_NAME quactlize_ppu)
 # sweep is generated: one .cu is one compiler invocation, so a single-TU sweep compiles strictly serially no
 # matter what -j says. Build: TARGET=test_gemv_perf ./build.sh
 #
-# A row is  name|WFormat|WLayout|tier  and the tier names the (StepK, Threads, CtaN, Chunk) list below. The
-# tier is set by the SPARSEST plane: StepK*min(bits) >= 32 is a 4-byte floor per plane per thread, so (8,256)
-# is legal for int4/int8, drops out at 2 bits, and only (32,64) survives with an int1 plane.
+# The finite Cartesian domain and its legality live in
+# gemv_lowbit/gemv_tactic_space.hpp.  Its checked, mechanically generated
+# CMake view has one row per (format, artifact layout, StepK, Threads, CtaN,
+# Chunk) translation unit.  Route and CtaM remain result axes instantiated
+# inside the unit; they are deliberately not a second CMake filter.
+set(_GEMV_AUTHORITY_CMAKE "${QZ_ROOT}/benchmarks/gemv_tactic_units.cmake")
+if(NOT EXISTS "${_GEMV_AUTHORITY_CMAKE}")
+  # The retired flat overlay is still configured by a local structural gate.
+  # build.sh copies the exact same committed authority next to this file.
+  set(_GEMV_AUTHORITY_CMAKE "${CMAKE_CURRENT_LIST_DIR}/gemv_tactic_units.cmake")
+endif()
+if(NOT EXISTS "${_GEMV_AUTHORITY_CMAKE}")
+  message(FATAL_ERROR "GEMV tactic authority is missing: ${_GEMV_AUTHORITY_CMAKE}")
+endif()
+include("${_GEMV_AUTHORITY_CMAKE}")
 set(_GEMV_GROUPS
-  "i4-native|WFormat::Int4|WLayout::Native|wide"
-  "i4-tileK|WFormat::Int4|WLayout::TileK|wide"
-  "i2-native|WFormat::Int2|WLayout::Native|mid"
-  "q6-native|WFormat::Q6_42|WLayout::Native|mid"
-  "q3-native|WFormat::Q3_21|WLayout::Native|narrow"
-  "i1-native|WFormat::Int1|WLayout::Native|narrow"
+  "i4-native|int4|WFormat::Int4|native|WLayout::Native"
+  "i4-tileK|int4|WFormat::Int4|tileK|WLayout::TileK"
+  "i2-native|int2|WFormat::Int2|native|WLayout::Native"
+  "i2-tileK|int2|WFormat::Int2|tileK|WLayout::TileK"
+  "i1-native|int1|WFormat::Int1|native|WLayout::Native"
+  "i1-tileK|int1|WFormat::Int1|tileK|WLayout::TileK"
+  "q3-native|q3|WFormat::Q3_21|native|WLayout::Native"
+  "q3-tileK|q3|WFormat::Q3_21|tileK|WLayout::TileK"
+  "q6-native|q6|WFormat::Q6_42|native|WLayout::Native"
+  "q6-tileK|q6|WFormat::Q6_42|tileK|WLayout::TileK"
 )
-# COMMA-separated inside a row: ';' is CMake's own list separator and would split the row itself. The MoE
-# generator learned this the expensive way -- a stray ';' produced 8 malformed iterations that still summed to
-# the right unit COUNT, so the log looked correct.
-set(_GEMV_TIER_wide   "8,256,2,2" "8,256,4,2" "8,256,8,2"
-                      "16,128,2,2" "16,128,4,2" "16,128,8,2" "16,128,8,4"
-                      "32,64,2,2" "32,64,4,2" "32,64,8,2")
-set(_GEMV_TIER_mid    "16,128,2,2" "16,128,4,2" "16,128,8,2" "16,128,8,4"
-                      "32,64,2,2" "32,64,4,2" "32,64,8,2")
-set(_GEMV_TIER_narrow "32,64,2,2" "32,64,4,2" "32,64,8,2" "32,64,8,4")
 
 if(GEMV_GROUPS)   # narrow by group name, e.g. -DGEMV_GROUPS="i4-native;i2-native"
   set(_keep "")
@@ -856,28 +863,35 @@ set(_GEMV_GROUP_IDX -1)
 foreach(_row IN LISTS _GEMV_GROUPS)
   string(REPLACE "|" ";" _g "${_row}")
   list(LENGTH _g _nf)
-  if(NOT _nf EQUAL 4)
-    message(FATAL_ERROR "_GEMV_GROUPS row '${_row}' has ${_nf} fields, expected 4 (name|fmt|layout|tier)")
+  if(NOT _nf EQUAL 5)
+    message(FATAL_ERROR "_GEMV_GROUPS row '${_row}' has ${_nf} fields, expected 5 (name|authority-format|WFormat|authority-layout|WLayout)")
   endif()
   list(GET _g 0 _nm)
-  list(GET _g 1 _fmt)
-  list(GET _g 2 _lay)
-  list(GET _g 3 _tier)
+  list(GET _g 1 _authority_fmt)
+  list(GET _g 2 _fmt)
+  list(GET _g 3 _authority_lay)
+  list(GET _g 4 _lay)
   math(EXPR _GEMV_GROUP_IDX "${_GEMV_GROUP_IDX} + 1")
   list(APPEND _GEMV_GROUP_NAMES "${_nm}")
   # TileSizeK is 256 for every instantiation here (KernelDetails' default); the group needs it at RUNTIME to
   # pack, so it is passed to make_bufs rather than inferred there.
   set(_GEMV_UNIT_CALLS "${_GEMV_UNIT_CALLS}  {\n    std::printf(\"  --- ${_nm} ---\\n\");\n    Bufs const _bf = make_bufs(${_fmt}, ${_lay}, 256, sh);\n")
-  foreach(_cfg IN LISTS _GEMV_TIER_${_tier})
-    string(REPLACE "," ";" _c "${_cfg}")
+  foreach(_cfg IN LISTS _GEMV_AUTHORITY_UNITS)
+    string(REPLACE "|" ";" _c "${_cfg}")
     list(LENGTH _c _cn_f)
-    if(NOT _cn_f EQUAL 4)
-      message(FATAL_ERROR "tier ${_tier} entry '${_cfg}' has ${_cn_f} fields, expected 4 (StepK,Threads,CtaN,Chunk)")
+    if(NOT _cn_f EQUAL 7)
+      message(FATAL_ERROR "authority unit '${_cfg}' has ${_cn_f} fields, expected 7 (format|layout|artifact-TileK|StepK|Threads|CtaN|Chunk)")
     endif()
-    list(GET _c 0 _sk)
-    list(GET _c 1 _th)
-    list(GET _c 2 _cn)
-    list(GET _c 3 _ch)
+    list(GET _c 0 _unit_fmt)
+    list(GET _c 1 _unit_lay)
+    if(NOT _unit_fmt STREQUAL _authority_fmt OR NOT _unit_lay STREQUAL _authority_lay)
+      continue()
+    endif()
+    list(GET _c 2 _artifact_tk)
+    list(GET _c 3 _sk)
+    list(GET _c 4 _th)
+    list(GET _c 5 _cn)
+    list(GET _c 6 _ch)
     string(REPLACE "-" "_" _nm_id "${_nm}")
     set(_fn "gemv_unit_${_nm_id}_s${_sk}_t${_th}_n${_cn}_c${_ch}")
     set(_src "${_GEMV_GEN_DIR}/${_fn}.cu")
@@ -886,6 +900,8 @@ foreach(_row IN LISTS _GEMV_GROUPS)
       "#define UNIT_FN  ${_fn}\n"
       "#define UNIT_FMT ${_fmt}\n"
       "#define UNIT_LAY ${_lay}\n"
+      "#define UNIT_ARTIFACT_TK ${_artifact_tk}\n"
+      "#define UNIT_TS 256\n"
       "#define UNIT_SK  ${_sk}\n"
       "#define UNIT_TH  ${_th}\n"
       "#define UNIT_CN  ${_cn}\n"
@@ -901,6 +917,9 @@ endforeach()
 
 list(LENGTH _GEMV_UNIT_SRCS _GEMV_UNIT_N)
 list(LENGTH _GEMV_GROUP_NAMES _GEMV_GROUP_N)
+if(NOT GEMV_GROUPS AND NOT _GEMV_UNIT_N EQUAL _GEMV_AUTHORITY_UNIT_COUNT)
+  message(FATAL_ERROR "GEMV generator emitted ${_GEMV_UNIT_N} units, authority requires ${_GEMV_AUTHORITY_UNIT_COUNT}")
+endif()
 message(STATUS "GEMV sweep: ${_GEMV_UNIT_N} generated units in ${_GEMV_GEN_DIR} (${_GEMV_GROUP_N} groups)")
 if(_GEMV_UNIT_N GREATER MOE_CORES)
   math(EXPR _w "(${_GEMV_UNIT_N} + ${MOE_CORES} - 1) / ${MOE_CORES}")

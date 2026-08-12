@@ -26,7 +26,7 @@
 // NARROW THE INSTANTIATION SET TO WHAT THE SHAPE LIST ACTUALLY CALLS. Every (gs, quant) pair is a full set of
 // kernels per unit; the shapes below use gs 32 and 128 and only the two finegrained quant ops, so paying for
 // gs {0,16,64} and PerColScaleOnly would triple the per-unit compile for coverage nothing exercises.
-#define GEMV_GS_LIST(EMIT) EMIT(32) EMIT(128)
+#define GEMV_GS_LIST(EMIT) EMIT(16) EMIT(32) EMIT(128)
 #define GEMV_QUANT_LIST(EMIT, G) \
   EMIT(QuantOp::FinegrainedScaleOnly, G) EMIT(QuantOp::FinegrainedScaleZero, G)
 #define GEMV_ENABLE_BIAS 0

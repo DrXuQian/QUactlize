@@ -8,7 +8,7 @@
 
 template <int Dummy>
 static void unit_body(Shape const& sh, Bufs const& b, Best& best) {
-  using D = KernelDetails<FP16DetailsA, UNIT_FMT, UNIT_LAY, UNIT_SK, UNIT_TH>;
+  using D = KernelDetails<FP16DetailsA, UNIT_FMT, UNIT_LAY, UNIT_SK, UNIT_TH, UNIT_TS>;
   run_row<D, UNIT_CN, UNIT_CH>(sh, b, best);
 }
 
