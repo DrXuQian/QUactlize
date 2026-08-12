@@ -73,7 +73,8 @@ it reads a per-device LUT keyed by {m,n,k} (offline-built) and falls back to an 
 
 The stock 32x32 tile (2x2=4 warps) starves the MMA pipe; the win is entirely tile choice. Non-obvious: 64x64
 is the sweet spot, not the biggest tile — 128/256 tiles undersubscribe the 72 CUs at these shapes, and 4
-stages help 64x64 but collapse 128x128 (24%, shared/occupancy). 64x64/s4 is now the compiled default.
+stages help 64x64 but collapse 128x128 (24%, shared/occupancy). That table's 64x64/s4 is a benchmark winner, not
+the current library default: empty/null config uses 8x128:8x32/s3 for M<8 and 64x64:32x32/s3 for M>=8.
 
 ## Tuning the actlize tile
 

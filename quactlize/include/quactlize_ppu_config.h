@@ -94,8 +94,9 @@ int32_t quactlize_ppu_list_valid_vecdot_moe_configs_v2(
     int total_rows, int n, int k, int group_size, int experts, int max_rows, int qtype);
 
 // Host-only per-problem validity predicates for the inventories above. They return 1 only when config_name names a
-// compiled tactic that the corresponding shipping entry can run for this problem, and 0 otherwise. A null/empty name
-// asks about that entry's compiled default. No CUDA/PPU context is required, and the launch entries enforce the same
+// compiled tactic that the corresponding shipping entry can run for this problem, and 0 otherwise. For dense, a
+// null/empty name asks about the M<8 decode default or the M>=8 legacy default; grouped has one compiled default. No
+// CUDA/PPU context is required, and the launch entries enforce the same
 // exact-type shared-memory/compact-A checks even when a caller neglects to query first.
 //
 // Both inventories contain tensor-core and CUDA-core families. Call the predicate matching enable_cuda_kernel;
@@ -128,8 +129,10 @@ int32_t quactlize_ppu_vecdot_moe_config_valid_v1(
     int qtype, char const* config_name);
 
 // Config-selecting host-pointer operator entries. config_name comes from the corresponding dense or grouped
-// inventory above. A null/empty name requests that entry's compiled default; an unknown non-empty name reports
-// the decline and also runs that default. Each tensor default is instantiated with compile-time assertions that its
+// inventory above. For non-arrangement dense entries, a null/empty name requests the shape-selected default (M<8
+// decode, M>=8 legacy); an unknown non-empty name reports the decline and retains the legacy fallback. Arrangement
+// entries remain strict: null/empty is shape-selected, but an unknown non-empty config name returns 39. Each tensor
+// default is instantiated with compile-time assertions that its
 // exact shared storage fits ppu001 and that it uses the unrestricted ordinary-A path throughout the admitted domain.
 int quactlize_ppu_dense_lowbit_config_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high,
@@ -143,7 +146,8 @@ int quactlize_ppu_dense_fully_quantized_config_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
     int m, int n, int k, int qtype, char const* config_name);
 // v1 above is the legacy reader-default ABI: its tactic and resident bytes both keep the historical registry
-// fully_quantized_tile_k. An artifact carrying any explicit arrangement uses this successor instead.
+// fully_quantized_tile_k. An artifact carrying any explicit arrangement uses this successor instead; an unknown
+// non-empty config name returns 39 rather than falling back.
 int quactlize_ppu_dense_fully_quantized_for_arrangement_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
     int m, int n, int k, int qtype,

@@ -61,6 +61,45 @@ using MixedMainloopPolicy = ppu_mixed_policy::MainloopPolicy<QuantOp, BaseSchedu
                                                              WarpShape, Stages, AiuInterleaved, ElementB, PlaneB2,
                                                              ArtifactTileK>;
 
+// The exact compiled kernel type is one authority shared by launch and by build-time shipping censuses.  In
+// particular, packed-scale collectives add raw metadata staging that the broad host tactic arithmetic cannot
+// describe. Keep all type construction here: an oracle may inspect SharedStorageSize, but it
+// must not reconstruct the kernel from tile coordinates in parallel with production.
+template <QuantMode QuantOp, class BaseSchedule,
+          class TileShape, class ScaleTileShape, class WarpShape, int Stages, bool AiuInterleaved,
+          class ElementB = cutlass::int4b_t, class PlaneB2 = void, int ArtifactTileK = 0>
+struct DenseKernelTypes {
+  using MainloopPolicy = MixedMainloopPolicy<QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
+                                              Stages, AiuInterleaved, ElementB, PlaneB2, ArtifactTileK>;
+  using ElementA = typename MainloopPolicy::ElementA;
+  using ElementC = cutlass::half_t;
+  using LayoutC = cutlass::layout::RowMajor;
+  using ElementD = cutlass::half_t;
+  using LayoutD = cutlass::layout::RowMajor;
+  static constexpr int AlignmentC = 128 / cutlass::sizeof_bits<ElementC>::value;
+  static constexpr int AlignmentD = 128 / cutlass::sizeof_bits<ElementD>::value;
+  using ElementAccumulator = float;
+  using OperatorClass = cutlass::arch::OpClassTensorOp;
+  using ClusterShape = WarpShape;
+  using EpilogueSchedule = cutlass::epilogue::EpilogueSimtVectorizedWithoutEvt;
+  using EpilogueTileType = cutlass::epilogue::collective::EpilogueTileAuto;
+  using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
+      cutlass::arch::PPU0010, OperatorClass, TileShape, ClusterShape, EpilogueTileType,
+      ElementAccumulator, ElementAccumulator, ElementC, LayoutC, AlignmentC,
+      ElementD, LayoutD, AlignmentD, EpilogueSchedule>::CollectiveOp;
+  using CollectiveMainloop = typename MainloopPolicy::CollectiveOp;
+  static_assert(
+      cute::size<0>(typename CollectiveEpilogue::SmemLayout{}) ==
+          cute::size<0>(typename CollectiveMainloop::TiledMma::AtomShape_MNK{}) *
+              cute::size<1>(typename CollectiveMainloop::TiledMma::ThrLayoutVMNK{}),
+      "dense epilogue M layout must match the mainloop's selected MMA instruction and M-warps");
+  using GemmKernel = cutlass::gemm::kernel::GemmUniversal<
+      cute::Shape<int, int, int, int>, CollectiveMainloop, CollectiveEpilogue,
+      cutlass::gemm::SplitKSerialScheduler>;
+  using Gemm = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
+  static constexpr size_t SharedStorageSize = GemmKernel::SharedStorageSize;
+};
+
 // One instantiation: fp16 x a packed 1/2/4-bit B plane, optionally with a second high plane. The ElementBInfo tuple
 // is the same seam moe_grouped_ppu uses: a fourth tuple element makes CollectiveBuilder select the already-existing
 // two-plane collective. There is no dense-specific second collective or converter to maintain here.
@@ -74,35 +113,14 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
                       int m, int n, int k, int group_size, int split_k,
                       char* workspace, size_t workspace_bytes, hggcStream_t stream,
                       const PlaneB2* B2 = nullptr) {
-  using MainloopPolicy = MixedMainloopPolicy<QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
-                                              Stages, AiuInterleaved, ElementB, PlaneB2,
-                                              ArtifactTileK>;
+  using KernelTypes = DenseKernelTypes<QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
+                                       Stages, AiuInterleaved, ElementB, PlaneB2, ArtifactTileK>;
+  using MainloopPolicy = typename KernelTypes::MainloopPolicy;
   using ElementA = typename MainloopPolicy::ElementA;
-
-  using ElementC = cutlass::half_t;                     // [F2] could be void when no bias
-  using LayoutC  = cutlass::layout::RowMajor;
-  using ElementD = cutlass::half_t;
-  using LayoutD  = cutlass::layout::RowMajor;
-  constexpr int AlignmentC = 128 / cutlass::sizeof_bits<ElementC>::value;
-  constexpr int AlignmentD = 128 / cutlass::sizeof_bits<ElementD>::value;
-
-  using ElementAccumulator = float;
-  using OperatorClass = cutlass::arch::OpClassTensorOp;
-  using ClusterShape  = WarpShape;                      // ppu1.0 has no cluster; the builder takes WarpShape here
-  using EpilogueSchedule = cutlass::epilogue::EpilogueSimtVectorizedWithoutEvt;  // [F1] non-EVT: splitk kernel needs .thread.beta
-  using EpilogueTileType = cutlass::epilogue::collective::EpilogueTileAuto;
-
-  using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
-      cutlass::arch::PPU0010, OperatorClass, TileShape, ClusterShape, EpilogueTileType,
-      ElementAccumulator, ElementAccumulator, ElementC, LayoutC, AlignmentC,
-      ElementD, LayoutD, AlignmentD, EpilogueSchedule>::CollectiveOp;
-
-  using CollectiveMainloop = typename MainloopPolicy::CollectiveOp;
-  static_assert(
-      cute::size<0>(typename CollectiveEpilogue::SmemLayout{}) ==
-          cute::size<0>(typename CollectiveMainloop::TiledMma::AtomShape_MNK{}) *
-              cute::size<1>(typename CollectiveMainloop::TiledMma::ThrLayoutVMNK{}),
-      "dense epilogue M layout must match the mainloop's selected MMA instruction and M-warps");
+  using ElementC = typename KernelTypes::ElementC;
+  using ElementD = typename KernelTypes::ElementD;
+  using ElementAccumulator = typename KernelTypes::ElementAccumulator;
+  using CollectiveMainloop = typename KernelTypes::CollectiveMainloop;
 
   // FULLY_QUANTIZED is an INSTANTIATION of the shared mainloop, not a dense-specific decoder. Make that selection
   // compile-time observable at its call site: a flagged binary that accidentally falls back to fp16 scale planes
@@ -114,10 +132,8 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
                   "fully-quantized dense requires the shared packed-scale mainloop at this tile shape");
   }
 
-  using GemmKernel = cutlass::gemm::kernel::GemmUniversal<
-      cute::Shape<int,int,int,int>, CollectiveMainloop, CollectiveEpilogue,
-      cutlass::gemm::SplitKSerialScheduler>;
-  using Gemm = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
+  using GemmKernel = typename KernelTypes::GemmKernel;
+  using Gemm = typename KernelTypes::Gemm;
 
   // This is the exact compiled type, including packed-unit staging, scale padding/swizzles and experimental A
   // layouts. The host arithmetic in ppu_tactic_space.hpp deliberately remains useful for emitting a broad finite
@@ -130,7 +146,9 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
   static_assert(!RequireUniversalFallback,
                 "PPU_A_PACK=R is bounded to M<=R and cannot be the universal dense fallback");
 #endif
-  if constexpr (GemmKernel::SharedStorageSize > ppu_tactics::kBlockSmemBytes) return false;
+  if constexpr (GemmKernel::SharedStorageSize > ppu_tactics::kBlockSmemBytes) {
+    return false;
+  } else {
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
   // The packed writer materialises rows [0,R); all later accumulator rows are padding. Dense used to have no
   // matching runtime guard at all, so the row-0 provider could silently launch at M>1 while grouped rejected it.
@@ -142,7 +160,9 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
     return false;
   }
 #endif
-  if constexpr (QueryOnly) return true;
+  if constexpr (QueryOnly) {
+    return true;
+  } else {
 
   using StrideA = typename GemmKernel::StrideA;
   using StrideB = typename GemmKernel::StrideB;
@@ -190,6 +210,8 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
   if (gemm.initialize(args, workspace, stream) != cutlass::Status::kSuccess) return false;
   gemm.run(stream);
   return true;
+  }
+  }
 }
 
 // group_size -> compile-time schedule + ScaleTileShape, with the official block_k >= group_size gate.

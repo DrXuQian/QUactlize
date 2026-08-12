@@ -1163,6 +1163,13 @@ def lint_dense_streamk_contract():
         "dense Stream-K worker/K/fixup/timing seams and the exact fixture are pinned")
 
 
+def lint_dense_shipping_tm8():
+    """The complete m8 family must share exact compiled legality and one shape-default authority."""
+    return _run_ci_script(
+        "check_dense_shipping_tm8.py",
+        "dense TM8 ships six stages, closes exact 51/9 cells, and owns the M<8 empty-config default")
+
+
 def lint_streamk_tail_plan():
     """INBOX 122's scan must include attributed zero, medium, and extreme last waves."""
     return _run_ci_script(
@@ -2005,6 +2012,7 @@ def main():
                 ("lint", "dense and MoE consume one named measurement layer", lint_bench_measurement_shared),
                 ("lint", "MoE events bracket only gemm.run and retain the host-wall audit", lint_moe_event_timing),
                 ("lint", "dense Stream-K shares worker/K decomposition and resets locks before timing", lint_dense_streamk_contract),
+                ("lint", "dense TM8 family and M<8 default share one exhaustive shipping authority", lint_dense_shipping_tm8),
                 ("lint", "Stream-K tail scan covers attributed zero, medium, and extreme waves", lint_streamk_tail_plan),
                 ("lint", "dense Marlin keeps K-fast stripes, reverse q locks, and the scheduler-owned grid", lint_dense_marlin_contract),
                 ("lint", "dense Marlin exhausts the declared deployment domain without sampling", lint_dense_marlin_exhaustive),

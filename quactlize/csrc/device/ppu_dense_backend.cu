@@ -25,7 +25,7 @@
 #include "fpA_intB_ppu.cuh"
 #include "moe_grouped_ppu.cuh"
 #include "gemv_lowbit/gemv_rt.hpp"
-#include "ppu_dense_configs.inc"
+#include "ppu_dense_shipping_policy.hpp"
 #include "ppu_format_config.hpp"
 #include "ppu_grouped_configs.inc"
 #include "ppu_placed_arrangement.hpp"
@@ -57,12 +57,7 @@ static constexpr auto kSelectedFormat = ppu_formats::for_packed_format(kSelected
 static_assert(kSelectedFormat.qtype >= 0, "PPU_PACKED_FORMAT must name a row in ppu_format_config.inc");
 using SelectedPackedUnit = cutlass::gguf_packed::Unit<kSelectedPackedFmt>;
 
-enum class DenseConfigId {
-#define QUACTLIZE_PPU_DENSE_CONFIG_ID(ID, NAME, TM, TN, WM, WN, STAGES) ID,
-  QUACTLIZE_PPU_DENSE_CONFIGS(QUACTLIZE_PPU_DENSE_CONFIG_ID)
-#undef QUACTLIZE_PPU_DENSE_CONFIG_ID
-  Count,
-};
+using DenseConfigId = ppu_dense_shipping::ConfigId;
 
 constexpr quactlize_ppu_config_v1 kDenseConfigs[] = {
 #define QUACTLIZE_PPU_DENSE_CONFIG_ROW(ID, NAME, TM, TN, WM, WN, STAGES) \
@@ -72,36 +67,23 @@ constexpr quactlize_ppu_config_v1 kDenseConfigs[] = {
   // The scale-first CUDA-core family consumes the same logical planes but has no tensor tile geometry.
   {true, QUACTLIZE_PPU_DENSE_CUDA_CONFIG_NAME, 0, 0, 0, 0, 0},
 };
-constexpr DenseConfigId kDefaultDenseConfig = DenseConfigId::Default;
+constexpr DenseConfigId kDefaultDenseConfig = ppu_dense_shipping::kLegacyDefault;
+constexpr DenseConfigId kDecodeDefaultDenseConfig = ppu_dense_shipping::kDecodeDefault;
 static_assert(sizeof(kDenseConfigs) / sizeof(kDenseConfigs[0]) > 1,
               "libquactlize_ppu must compile a config set, not one frozen tactic");
 static_assert(sizeof(kDenseConfigs) / sizeof(kDenseConfigs[0]) == size_t(DenseConfigId::Count) + 1,
               "the dense inventory must contain every tensor-core config followed by its one CUDA tactic");
 
-constexpr int minimum_dense_tile_m() {
-  int value = kDenseConfigs[0].tile_m;
-  for (int i = 0; i < int(DenseConfigId::Count); ++i) value = std::min(value, kDenseConfigs[i].tile_m);
-  return value;
+constexpr int minimum_dense_tile_m() { return ppu_dense_shipping::minimum_tile_m(); }
+constexpr int minimum_dense_tile_n() { return ppu_dense_shipping::minimum_tile_n(); }
+
+bool find_dense_config(char const* name, int m, DenseConfigId& config) {
+  return ppu_dense_shipping::find_config(name, m, config);
 }
 
-constexpr int minimum_dense_tile_n() {
-  int value = kDenseConfigs[0].tile_n;
-  for (int i = 0; i < int(DenseConfigId::Count); ++i) value = std::min(value, kDenseConfigs[i].tile_n);
-  return value;
-}
-
-bool find_dense_config(char const* name, DenseConfigId& config) {
-  if (!name || !name[0]) { config = kDefaultDenseConfig; return true; }
-#define QUACTLIZE_PPU_DENSE_CONFIG_MATCH(ID, NAME, TM, TN, WM, WN, STAGES) \
-  if (std::strcmp(name, NAME) == 0) { config = DenseConfigId::ID; return true; }
-  QUACTLIZE_PPU_DENSE_CONFIGS(QUACTLIZE_PPU_DENSE_CONFIG_MATCH)
-#undef QUACTLIZE_PPU_DENSE_CONFIG_MATCH
-  return false;
-}
-
-DenseConfigId resolve_dense_config(char const* name) {
+DenseConfigId resolve_dense_config(char const* name, int m) {
   DenseConfigId config{};
-  if (find_dense_config(name, config)) return config;
+  if (find_dense_config(name, m, config)) return config;
   std::fprintf(stderr, "[quactlize_ppu] dense config '%s' is not compiled in; declining to default '%s'\n",
                name, kDenseConfigs[0].name);
   return kDefaultDenseConfig;
@@ -159,7 +141,8 @@ bool selected_fully_quantized_qtype(int qtype, int k) {
 }
 
 size_t dense_workspace_bytes(int m, int n) {
-  // One query serves every compiled tactic, so size for the largest possible CTA grid rather than for the default.
+  // One query serves every compiled tactic, so size for the largest possible CTA grid rather than for either
+  // shape-selected default. TM8 still stages a physical 16-row A cube; this bound counts output CTAs, not A-smem.
   return size_t(cutlass::ceil_div(m, minimum_dense_tile_m()))
        * cutlass::ceil_div(n, minimum_dense_tile_n()) * sizeof(int);
 }
@@ -264,8 +247,14 @@ int launch_dense_tactic(uint16_t const* act, uint8_t const* low, uint8_t const* 
       {ppu_tactics::Format::I4, "dense-backend",
        ppu_mixed_policy::element_bits_v<Low>, ppu_mixed_policy::element_bits_v<High>},
       TileM, TileN, TacticTileK, WarpM, WarpN, ArtifactTileK};
-  if constexpr (ppu_tactics::DenseSpace::kernel_exclusion(kTactic) != ppu_tactics::Exclusion::None ||
-                ppu_tactics::common_producer_exclusion(kTactic) != ppu_tactics::Exclusion::None) {
+  constexpr auto kKernelExclusion = ppu_tactics::DenseSpace::kernel_exclusion(kTactic);
+  constexpr auto kProducerExclusion = ppu_tactics::common_producer_exclusion(kTactic);
+  static_assert(!RequireUniversalFallback ||
+                    (kKernelExclusion == ppu_tactics::Exclusion::None &&
+                     kProducerExclusion == ppu_tactics::Exclusion::None),
+                "a compiled dense default must survive kernel and producer legality before exact type proof");
+  if constexpr (kKernelExclusion != ppu_tactics::Exclusion::None ||
+                kProducerExclusion != ppu_tactics::Exclusion::None) {
     // 31 is this file's existing "did not launch". A separate code would be a new ABI meaning for callers that only
     // test truthiness, so every remaining tactic-space exclusion keeps the established result.
     return 31;
@@ -300,7 +289,8 @@ int launch_dense_config(DenseConfigId config, uint16_t const* act, uint8_t const
     case DenseConfigId::ID: \
       return launch_dense_tactic<Low, High, GroupSize, TacticTileK, ArtifactTileK, PackedScale, \
                                  TM, TN, WM, WN, STAGES, QueryOnly, \
-                                 DenseConfigId::ID == kDefaultDenseConfig>( \
+                                 (DenseConfigId::ID == kDefaultDenseConfig || \
+                                  DenseConfigId::ID == kDecodeDefaultDenseConfig)>( \
           act, low, high, scale, zero, out, m, n, k, workspace, workspace_bytes, stream);
     QUACTLIZE_PPU_DENSE_CONFIGS(QUACTLIZE_PPU_DENSE_CONFIG_CASE)
 #undef QUACTLIZE_PPU_DENSE_CONFIG_CASE
@@ -639,7 +629,7 @@ template <class Low, class High = void, int GroupSize = 16,
           int TacticTileK = 256, bool PackedScale = false, int ArtifactTileK = TacticTileK>
 int dense(uint16_t const* act, uint8_t const* low, uint8_t const* high,
           void const* scale, uint16_t const* zero, uint16_t* out,
-          int m, int n, int k, int group_size, DenseConfigId config = kDefaultDenseConfig) {
+          int m, int n, int k, int group_size, DenseConfigId config) {
   ppu_gemv::rt_clear_error();
   constexpr int LowBits = cutlass::sizeof_bits<Low>::value;
   constexpr int HighBits = std::is_void_v<High> ? 0 : cutlass::sizeof_bits<High>::value;
@@ -762,14 +752,14 @@ extern "C" int32_t quactlize_ppu_list_grouped_configs(quactlize_ppu_config_v1 co
 extern "C" int32_t quactlize_ppu_dense_lowbit_config_valid_v1(
     int m, int n, int k, int group_size, int qtype, char const* config_name) {
   DenseConfigId config{};
-  return find_dense_config(config_name, config) &&
+  return find_dense_config(config_name, m, config) &&
          dense_lowbit_config_valid(config, m, n, k, group_size, qtype);
 }
 
 extern "C" int32_t quactlize_ppu_dense_fully_quantized_config_valid_v1(
     int m, int n, int k, int group_size, int qtype, char const* config_name) {
   DenseConfigId config{};
-  return find_dense_config(config_name, config) &&
+  return find_dense_config(config_name, m, config) &&
          dense_fully_quantized_config_valid(config, m, n, k, group_size, qtype);
 }
 
@@ -777,7 +767,7 @@ extern "C" int32_t quactlize_ppu_dense_fully_quantized_config_valid_for_arrangem
     int m, int n, int k, int group_size, int qtype,
     quactlize_ppu_placed_arrangement_v1 const* arrangement, char const* config_name) {
   DenseConfigId config{};
-  return find_dense_config(config_name, config) &&
+  return find_dense_config(config_name, m, config) &&
          dense_fully_quantized_config_valid(
              config, m, n, k, group_size, qtype, arrangement);
 }
@@ -834,7 +824,7 @@ extern "C" int quactlize_ppu_dense_lowbit_config_v1(
     uint16_t const* scale, uint16_t const* zero, uint16_t* out,
     int m, int n, int k, int group_size, int qtype, char const* config_name) {
   if (!act || !low || !scale || !zero || !out || m <= 0 || n <= 0 || k <= 0 || n % 256 || k % 256) return 30;
-  DenseConfigId const config = resolve_dense_config(config_name);
+  DenseConfigId const config = resolve_dense_config(config_name, m);
   switch (qtype) {
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 10
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT) && PPU_PACKED_FORMAT == 2
@@ -909,7 +899,7 @@ extern "C" int quactlize_ppu_dense_fully_quantized_config_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
     int m, int n, int k, int qtype, char const* config_name) {
   if (!act || !low || !units || !out || m <= 0 || n <= 0 || k <= 0 || n % 256 || k % 256) return 30;
-  DenseConfigId const config = resolve_dense_config(config_name);
+  DenseConfigId const config = resolve_dense_config(config_name, m);
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
   if (qtype != 12) return 33;
@@ -966,7 +956,7 @@ extern "C" int quactlize_ppu_dense_fully_quantized_for_arrangement_v1(
       !ppu_arrangements::packed_tensor_reader_supported(
           arrangement, qtype, k, ppu_formats::for_qtype(qtype).fully_quantized_tile_k)) return 38;
   DenseConfigId config{};
-  if (!find_dense_config(config_name, config)) return 39;
+  if (!find_dense_config(config_name, m, config)) return 39;
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
   if (qtype != 12) return 33;
@@ -1016,7 +1006,7 @@ extern "C" int quactlize_ppu_dense_fully_quantized_dev_v2(
   if (!act || !low || !units || !out || !workspace || need < 0 || workspace_bytes < need) return 30;
   ppu_gemv::rt_clear_error();
   hggcStream_t const s = static_cast<hggcStream_t>(stream);
-  DenseConfigId const config = resolve_dense_config(config_name);
+  DenseConfigId const config = resolve_dense_config(config_name, m);
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
 #if !defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0
   return dense_fully_quantized_device<cutlass::int4b_t, void, 32,
@@ -1069,7 +1059,7 @@ extern "C" int quactlize_ppu_dense_fully_quantized_dev_for_arrangement_v1(
   if (!ppu_arrangements::packed_tensor_reader_supported(
           arrangement, qtype, k, ppu_formats::for_qtype(qtype).fully_quantized_tile_k)) return 38;
   DenseConfigId config{};
-  if (!find_dense_config(config_name, config)) return 39;
+  if (!find_dense_config(config_name, m, config)) return 39;
   ppu_gemv::rt_clear_error();
   hggcStream_t const s = static_cast<hggcStream_t>(stream);
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
