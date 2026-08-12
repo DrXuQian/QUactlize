@@ -52,6 +52,9 @@ def audit(files: dict[str, str]) -> list[str]:
         "out.N_idx = int32_t(q_mn % p.tiles_n_);",
         "out.M_idx = int32_t(q_mn % p.tiles_m_);",
         "out.L_idx = int32_t(q_mn / p.tiles_m_);",
+        "CUTLASS_HOST_DEVICE static constexpr Params make_params_for_tiles(",
+        "CUTLASS_HOST_DEVICE static constexpr WorkTileInfo get_work_for_block(",
+        "CUTLASS_HOST_DEVICE static constexpr WorkTileInfo fetch_next_work(",
     ):
         exact(c, token, 1, bad, "scheduler core")
     if "cu_count *" in c or "ctas_per_cu" in c:
@@ -73,8 +76,14 @@ def audit(files: dict[str, str]) -> list[str]:
         "BarrierManager::wait_eq(0, locks, thread, lock, work.slice_idx);",
         "Striped::load_add(*accumulator_array, workspace_array, thread, predicate);",
         "BarrierManager::wait_eq_reset(0, locks, thread, lock, work.slice_idx);",
-        "work.output_tile_idx * tile_elements",
-        "int const lock = int(work.lock_idx);",
+        "return make_params_for_problem_shape(\n        problem_shape, uint64_t(hw_info.cu_count), workspace);",
+        "return get_work_for_block_index(uint64_t(blockIdx.x));",
+        "return cute::make_tuple(get_next_work(work), true);",
+        "return cute::idx2crd(get_work_k_tile_start(work), shape);",
+        "return work.output_tile_idx * OutputTileElements;",
+        "return int(work.lock_idx);",
+        "reduction_workspace_element_offset(work);",
+        "int const lock = barrier_lock_index(work);",
     ):
         if token not in s:
             bad.append(f"cooperative is missing {token!r}")
@@ -100,8 +109,9 @@ def audit(files: dict[str, str]) -> list[str]:
         "TileScheduler::fixup_thread_count_capable(MaxThreadsPerBlock)",
         "TileScheduler::FixupThreadCount == MaxThreadsPerBlock",
         "static constexpr bool IsDenseMarlin = true;",
-        "TileScheduler::get_work_k_tile_start(work_tile_info)",
         "TileScheduler::get_work_k_tile_count(",
+        "scheduler_output_tile_coord(work_tile_info)",
+        "scheduler_k_tile_coord(work_tile_info, shape<2>(gA))",
         "collective_mainloop(params.mainloop, load_inputs, accumulators,",
         "detail::make_accumulator_residue_mask(",
         "TileScheduler::compute_epilogue(work_tile_info, params.scheduler)",
@@ -121,6 +131,8 @@ def audit(files: dict[str, str]) -> list[str]:
         "[dense marlin decomposition]",
         "Marlin-C valid_elements=%llu peer_excess=%llu",
         "MODEL-ONLY/not-a-DRAM-counter",
+        "verify_marlin_lock_lifecycle",
+        "same-workspace=1 external-lock-reset=0",
         "--marlin",
     ):
         if token not in b:
@@ -156,6 +168,8 @@ def audit(files: dict[str, str]) -> list[str]:
         "lock-reset-before-start=1",
         "lock-reset-before-start=0",
         "handoffs=[1-9][0-9]*",
+        "MARLIN_LOCK_REPEATS",
+        "Marlin lock lifecycle 8/8 stable bit-exact",
     ):
         if token not in box:
             bad.append(f"box comparison is missing {token!r}")
@@ -202,6 +216,18 @@ def main() -> int:
         ("kernel", "kernel-drops-explicit-cohort",
          "TileShape, ClusterShape, MaxThreadsPerBlock>;",
          "TileShape, ClusterShape>;"),
+        ("sched", "K-tile-ordinal-becomes-scalar-K",
+         "return cute::idx2crd(get_work_k_tile_start(work), shape);",
+         "return cute::idx2crd(get_work_k_tile_start(work) * cute::size(shape), shape);"),
+        ("sched", "FP32-element-offset-becomes-byte-offset",
+         "return work.output_tile_idx * OutputTileElements;",
+         "return work.output_tile_idx * OutputTileElements * sizeof(float);"),
+        ("sched", "global-lock-becomes-N-local",
+         "return int(work.lock_idx);",
+         "return int(work.N_idx);"),
+        ("kernel", "kernel-bypasses-K-coordinate-seam",
+         "scheduler_k_tile_coord(work_tile_info, shape<2>(gA))",
+         "idx2crd(work_tile_info.K_idx * size<2>(blk_shape), shape<2>(gA))"),
     )
     for owner, label, old, new in plants:
         if files[owner].count(old) != 1:
@@ -234,7 +260,7 @@ def main() -> int:
         return 1
     print("[dense-marlin-contract] PASS -- additive K-fast scheduler, reverse q-lock cooperative, "
           "exact cohort, artifact/tactic split, and same-event DP/SK/Marlin route; "
-          "ten structural plants rejected")
+          "fourteen structural plants rejected")
     return 0
 
 

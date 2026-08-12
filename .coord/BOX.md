@@ -1252,7 +1252,7 @@ stripe K; the TN32 decode champion has `Q=128>=72` and would correctly degenerat
     git submodule update --init --recursive
     echo "gate-sha=$(git rev-parse HEAD) actlize=$(git -C third_party/actlize rev-parse HEAD)"
     git merge-base --is-ancestor b1d042d02b602562ba16c1ebb8749d5322e18eb2 HEAD
-    test "$(git -C third_party/actlize rev-parse HEAD)" = f5e1beb40f186ea91826691d5fd98da1132e7bee
+    test "$(git -C third_party/actlize rev-parse HEAD)" = 3102d13d51d9359c2ccfe25472c226985ef44889
 
     unset PPU_A_PACK PPU_B_CHUNK PPU_B_CHUNK_BISECT PPU_MAXREG PPU_DEFS
     timeout 900s tools/run_dense_marlin_box.sh | tee /tmp/dense_marlin_scheduler.log
@@ -1264,8 +1264,11 @@ The script must fail closed unless all three arms report the same exact fixture,
 - Stream-K alone prints `lock-reset-before-start=1`; DP and Marlin both print zero;
 - the Marlin line surfaces `valid_elements`, `peer_excess`, and predicated FP32 `logical_RW`, explicitly marked
   `MODEL-ONLY/not-a-DRAM-counter`;
+- the same initialized Marlin Gemm/workspace completes eight additional exact-fixture launches with raw bitdiff
+  zero and stable position/value fingerprints; every line must say `external-lock-reset=0`, so this exercises the
+  final peer's named-barrier reset lifecycle rather than a host reset;
 - all three dispositions pass and the final line is
-  `[marlin-scheduler] PASS: same fixture/tactic/protocol DP vs Stream-K vs Marlin`.
+  `[marlin-scheduler] PASS: same fixture/tactic/protocol DP vs Stream-K vs Marlin; Marlin lock lifecycle 8/8 stable bit-exact`.
 
 Return both SHAs, the decomposition and traffic lines, each arm's disposition and raw kernel-span median/mean/min/
 max/spread, and any build/runtime error verbatim.  Do not substitute classic Marlin or a different tactic if the

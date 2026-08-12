@@ -2317,6 +2317,101 @@ struct dense_is_marlin_gemm<
     Gemm, std::void_t<decltype(Gemm::GemmKernel::IsDenseMarlin)>>
     : std::bool_constant<Gemm::GemmKernel::IsDenseMarlin> {};
 
+#if defined(DENSE_MARLIN_AB)
+// The integer/algebraic proof closes Marlin's decomposition locally.  The one
+// scheduler property that remains device-only is the ordered peer handoff:
+// named-barrier memory ordering and the final peer's wait_eq_reset lifecycle.
+// Exercise that property without reinitialising the Gemm or its workspace.
+// The exactness evidence is passed from this run's own initialize() call; a
+// log line or a fixture from another scheduler arm is not admissible evidence.
+template <class Gemm>
+bool verify_marlin_lock_lifecycle(
+    Gemm& gemm, Options const& options,
+    DenseFixtureEvidence const& fixture_evidence) {
+  static_assert(cutlass::sizeof_bits<ElementD>::value == 16,
+                "Marlin lock fingerprints require raw 16-bit output values");
+  constexpr int kRepeats = 8;
+  if (!fixture_evidence.order_independent ||
+      !fixture_evidence.fp16_output_exact) {
+    std::fprintf(
+        stderr,
+        "  [dense marlin lock protocol] NOT EXERCISED: this invocation's "
+        "fixture is not ORDER-INDEPENDENT+FP16-EXACT\n");
+    return false;
+  }
+
+  std::vector<ElementD> reference(block_ref_D.size());
+  std::vector<ElementD> output(block_D.size());
+  block_ref_D.copy_to_host(reference.data());
+  uint64_t first_position_hash = 0;
+  uint64_t first_value_hash = 0;
+  bool stable = true;
+  bool all_bitexact = true;
+  auto fnv_mix = [](uint64_t& hash, uint64_t value) {
+    for (int byte = 0; byte < 8; ++byte) {
+      hash ^= uint8_t(value >> (8 * byte));
+      hash *= 1099511628211ull;
+    }
+  };
+
+  for (int repeat = 0; repeat < kRepeats; ++repeat) {
+    // Poison only D.  In particular, do not call initialize(),
+    // initialize_workspace(), or memset the Marlin lock/workspace allocation:
+    // the next launch is valid only if the previous final peer reset its lock.
+    CUTLASS_PPU_CHECK(hggcMemset(
+        block_D.get(), 0xff, block_D.size() * sizeof(ElementD)));
+    if (gemm.run() != cutlass::Status::kSuccess) {
+      std::fprintf(stderr,
+                   "  [dense marlin lock fingerprint] repeat=%d/%d launch failed\n",
+                   repeat + 1, kRepeats);
+      return false;
+    }
+    CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
+    block_D.copy_to_host(output.data());
+
+    uint64_t raw_bitdiff = 0;
+    uint64_t nonzero_positions = 0;
+    uint64_t position_hash = 1469598103934665603ull;
+    uint64_t value_hash = 1469598103934665603ull;
+    for (std::size_t i = 0; i < output.size(); ++i) {
+      uint16_t const got = output[i].raw();
+      uint16_t const want = reference[i].raw();
+      raw_bitdiff += got != want;
+      if (got != 0) {
+        ++nonzero_positions;
+        fnv_mix(position_hash, uint64_t(i));
+      }
+      fnv_mix(value_hash, uint64_t(got));
+    }
+    if (repeat == 0) {
+      first_position_hash = position_hash;
+      first_value_hash = value_hash;
+    }
+    bool const repeat_stable =
+        position_hash == first_position_hash && value_hash == first_value_hash;
+    stable = stable && repeat_stable;
+    all_bitexact = all_bitexact && raw_bitdiff == 0;
+    std::printf(
+        "  [dense marlin lock fingerprint] repeat=%d/%d raw_bitdiff=%llu "
+        "nonzero_positions=%llu nonzero_position_fnv1a=%016llx "
+        "output_value_fnv1a=%016llx "
+        "stable=%d same-workspace=1 external-lock-reset=0\n",
+        repeat + 1, kRepeats,
+        static_cast<unsigned long long>(raw_bitdiff),
+        static_cast<unsigned long long>(nonzero_positions),
+        static_cast<unsigned long long>(position_hash),
+        static_cast<unsigned long long>(value_hash), int(repeat_stable));
+  }
+  std::printf(
+      "  [dense marlin lock protocol] fixture_identity=a0-exact shape=%dx%dx%d "
+      "repeats=%d stable=%d all-bitexact=%d same-workspace=1 "
+      "external-lock-reset=0\n",
+      options.m, options.n, options.k, kRepeats, int(stable),
+      int(all_bitexact));
+  return stable && all_bitexact;
+}
+#endif
+
 struct DenseNoStreamKDiagnostics { uint32_t witness[3]{}; };
 
 template <class Gemm, bool = dense_is_streamk_gemm<Gemm>::value>
@@ -2853,6 +2948,19 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
         result.passed = false;
       }
     }
+  }
+#endif
+
+#if defined(DENSE_MARLIN_AB)
+  if constexpr (dense_is_marlin_gemm<Gemm>::value) {
+    // Correctness-only and outside every event interval.  Do not attempt this
+    // after an initial numerical failure: the required exact golden and the
+    // lock lifecycle are two conjunctive gates, not fallback explanations for
+    // one another.
+    bool const lock_protocol_ok = result.passed &&
+        options.streamk_exact_fixture &&
+        verify_marlin_lock_lifecycle(gemm, options, fixture_evidence);
+    result.passed = result.passed && lock_protocol_ok;
   }
 #endif
 

@@ -108,10 +108,12 @@ EXTENSIONS = {
     "include/cutlass/gemm/kernel/ppu_tile_scheduler_marlin.hpp":
         "additive Marlin CTA-stripe scheduler/cooperative: K-fast equal stripes, scheduler-owned Q-vs-CU launch "
         "protection, global-q locks and FP32 ordered handoff; its default-compatible exact-cohort capability covers "
-        "one warp through the 1024-thread CTA limit without changing any existing scheduler",
+        "one warp through the 1024-thread CTA limit without changing any existing scheduler; constexpr raw-shape "
+        "lowering and output/K/workspace/lock accessors are shared by production and the generated-code proof",
     "include/cutlass/gemm/kernel/ppu_tile_scheduler_marlin_core.hpp":
         "pure host/device integer core shared by the additive Marlin scheduler and its exhaustive host oracle; "
-        "it owns no existing tag, Params type, device primitive or mainloop policy",
+        "constexpr only makes the already-shared production decomposition inspectable and changes no layout; it "
+        "owns no existing tag, Params type, device primitive or mainloop policy",
     "include/cutlass/block_striped.h":
         "default-compatible predicate overloads for scalar-striped store/load_add/reduce; every existing spelling "
         "and the half2 specialization are unchanged, while residue-aware FP32 callers may guard individual scalars",

@@ -70,6 +70,13 @@ grep -Eq '^  \[dense marlin decomposition\] real_cu=[0-9]+ occupancy_api=[0-9]+ 
 grep -Eq '^  \[CUTLASS .* scheduler=marlin\].*Marlin-C valid_elements=[1-9][0-9]* peer_excess=[1-9][0-9]* logical_RW=[1-9][0-9]* MODEL-ONLY/not-a-DRAM-counter$' \
   "$ARTIFACT_ROOT/marlin.log" \
   || fail 'Marlin arm did not surface its predicated FP32 cooperative traffic'
+MARLIN_LOCK_REPEATS="$(grep -Ec '^  \[dense marlin lock fingerprint\] repeat=[1-8]/8 raw_bitdiff=0 .* stable=1 same-workspace=1 external-lock-reset=0$' \
+  "$ARTIFACT_ROOT/marlin.log" || true)"
+[ "$MARLIN_LOCK_REPEATS" -eq 8 ] \
+  || fail "Marlin lock lifecycle produced $MARLIN_LOCK_REPEATS/8 stable bit-exact fingerprints"
+grep -Eq '^  \[dense marlin lock protocol\] fixture_identity=a0-exact shape=1x4096x4096 repeats=8 stable=1 all-bitexact=1 same-workspace=1 external-lock-reset=0$' \
+  "$ARTIFACT_ROOT/marlin.log" \
+  || fail 'Marlin did not close the repeated same-workspace lock protocol'
 grep -Eq '^  \[dense kernel-span-upper\].*lock-reset-before-start=1$' \
   "$ARTIFACT_ROOT/streamk.log" \
   || fail 'Stream-K timing did not reset its workspace outside the event'
@@ -79,5 +86,5 @@ for arm in non-persistent marlin; do
     || fail "$arm unexpectedly used the Stream-K host reset path"
 done
 
-printf '\n[marlin-scheduler] PASS: same fixture/tactic/protocol DP vs Stream-K vs Marlin\n'
+printf '\n[marlin-scheduler] PASS: same fixture/tactic/protocol DP vs Stream-K vs Marlin; Marlin lock lifecycle 8/8 stable bit-exact\n'
 printf '[marlin-scheduler] artifacts preserved at %s\n' "$ARTIFACT_ROOT"

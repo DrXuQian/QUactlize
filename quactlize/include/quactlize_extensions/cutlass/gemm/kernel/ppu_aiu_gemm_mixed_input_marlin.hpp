@@ -113,8 +113,8 @@ public:
     TileSchedulerParams scheduler{};
   };
 
-private:
-  static ProblemShape scheduler_problem_shape(ProblemShape const& input) {
+  CUTLASS_HOST_DEVICE static constexpr ProblemShape scheduler_problem_shape(
+      ProblemShape const& input) {
     auto shape = input;
     if constexpr (detail::Has_SwapAB_v<CollectiveMainloop>) {
       cute::get<0>(shape) = cute::get<1>(input);
@@ -122,6 +122,20 @@ private:
     }
     return shape;
   }
+
+  CUTLASS_HOST_DEVICE static constexpr auto scheduler_output_tile_coord(
+      typename TileScheduler::WorkTileInfo const& work) {
+    return cute::make_coord(work.M_idx, work.N_idx, work.L_idx);
+  }
+
+  template <class KTileShape>
+  CUTLASS_HOST_DEVICE static constexpr auto scheduler_k_tile_coord(
+      typename TileScheduler::WorkTileInfo const& work,
+      KTileShape const& shape) {
+    return TileScheduler::get_work_k_tile_coord(work, shape);
+  }
+
+private:
 
   static KernelHardwareInfo real_hw_info(Arguments const& args) {
     int cu_count = args.hw_info.cu_count;
@@ -222,9 +236,10 @@ public:
     auto const blk_shape = TileShape{};
 
     while (work_tile_info.is_valid()) {
-      int const m_coord = work_tile_info.M_idx;
-      int const n_coord = work_tile_info.N_idx;
-      int const l_coord = work_tile_info.L_idx;
+      auto const output_tile_coord = scheduler_output_tile_coord(work_tile_info);
+      int const m_coord = get<0>(output_tile_coord);
+      int const n_coord = get<1>(output_tile_coord);
+      int const l_coord = get<2>(output_tile_coord);
       auto blk_coord_mnkl = make_coord(m_coord, n_coord, _, l_coord);
 
       CollectiveMainloop collective_mainloop;
@@ -245,11 +260,10 @@ public:
           partition_fragment_C(tiled_mma, take<0, 2>(blk_shape)));
       clear(accumulators);
 
-      uint32_t const k_tile_start = TileScheduler::get_work_k_tile_start(work_tile_info);
       uint32_t const k_tile_count = TileScheduler::get_work_k_tile_count(
           work_tile_info, problem_shape_mnkl, blk_shape);
       auto k_tile_iter = make_coord_iterator(
-          idx2crd(k_tile_start, shape<2>(gA)), shape<2>(gA));
+          scheduler_k_tile_coord(work_tile_info, shape<2>(gA)), shape<2>(gA));
       collective_mainloop(params.mainloop, load_inputs, accumulators,
                           k_tile_iter, int(k_tile_count), thread_idx, smem_buf);
 

@@ -1171,6 +1171,27 @@ def lint_dense_marlin_contract():
         "dense Marlin decomposition/cooperative and same-event DP/SK/Marlin route are pinned")
 
 
+def lint_dense_marlin_exhaustive():
+    """The declared Marlin deployment domain must close exact-once without sampling."""
+    return _run_ci_script(
+        "check_dense_marlin_exhaustive.py",
+        "dense Marlin exhausts 656230 raw tuples and every production (q,K-tile) cell")
+
+
+def lint_dense_marlin_codegen():
+    """The real dense Cfg must emit the same raw-shape/K/workspace/lock arithmetic."""
+    ok, why = nvcc_can_compile_device_cuda()
+    if not ok:
+        return "SKIP", f"Marlin generated-code proof unavailable: {why}", 0.0
+    script = DEV / "run_l134_marlin_codegen.sh"
+    if not script.is_file():
+        return "FAIL", f"missing {script.name}", 0.0
+    rc, log, dt = run(["bash", str(script)], cwd=str(ROOT))
+    lines = [line.strip() for line in log.splitlines() if line.strip()]
+    verdict = lines[-1] if lines else "l134 produced no output"
+    return ("PASS" if rc == 0 else "FAIL"), verdict, dt
+
+
 def lint_dense_marlin_sweep_contract():
     """The full-table target must emit every structurally capable exact-cohort Marlin wrapper."""
     return _run_ci_script(
@@ -1780,6 +1801,8 @@ def main():
                 ("lint", "dense Stream-K shares worker/K decomposition and resets locks before timing", lint_dense_streamk_contract),
                 ("lint", "Stream-K tail scan covers attributed zero, medium, and extreme waves", lint_streamk_tail_plan),
                 ("lint", "dense Marlin keeps K-fast stripes, reverse q locks, and the scheduler-owned grid", lint_dense_marlin_contract),
+                ("lint", "dense Marlin exhausts the declared deployment domain without sampling", lint_dense_marlin_exhaustive),
+                ("lint", "the real dense Marlin Cfg emits the proved raw-shape and unit seams", lint_dense_marlin_codegen),
                 ("lint", "dense Marlin sweep has private sources, exact capable cohorts, and distinct provenance", lint_dense_marlin_sweep_contract),
                 ("lint", "Marlin A2 recovers every formerly filtered row with an exact cohort census", lint_dense_marlin_rejection_census),
                 ("lint", "each released Marlin cohort compiles and an inexact explicit cohort reds", lint_dense_marlin_rejected_cohorts),
