@@ -1396,6 +1396,19 @@ def lint_gemv_sweep_integration():
         "GEMV full/partial manifests share the exact-CtaM and raw-event runtime identity")
 
 
+def lint_gemv_lop3_codegen():
+    """The real sm_120 shipping GEMV must report normalized extraction codegen, not mere LOP3 presence."""
+    script = ROOT / "ci" / "check_gemv_lop3_codegen.py"
+    if not script.is_file():
+        return "FAIL", f"missing {script.name}", 0.0
+    rc, log, dt = run([sys.executable, str(script)], cwd=str(ROOT))
+    lines = [line.strip() for line in log.splitlines() if line.strip()]
+    verdict = lines[-1] if lines else "l145 produced no output"
+    if rc == 3:
+        return "SKIP", verdict, dt
+    return ("PASS" if rc == 0 else "FAIL"), verdict, dt
+
+
 def lint_grouped_streamk_contract():
     """Grouped Stream-K must preserve global q for locks while decoding expert-local compute coordinates."""
     ok, why = nvcc_can_compile_device_cuda()
@@ -1997,6 +2010,7 @@ def main():
                 ("lint", "GEMV timing records one raw device-event pair per launch", lint_gemv_event_protocol),
                 ("lint", "GEMV bounded driver resumes without path or raw-prefix poisoning", lint_gemv_sweep_driver),
                 ("lint", "GEMV manifest, exact units and raw writer preserve one identity", lint_gemv_sweep_integration),
+                ("lint", "GEMV production converter reports normalized sm_120 extraction codegen", lint_gemv_lop3_codegen),
                 ("lint", "grouped Stream-K preserves q locks, worker/K decomposition, and timing", lint_grouped_streamk_contract),
                 ("lint", "l122_streamk_fixup_cohort contract pins the exact 64/128-thread CTA cohort", lint_streamk_fixup_cohort),
                 ("lint", "l124 predicates every shipped FP32 accumulator residue and preserves S1-4", lint_fp32_residue_fixup),

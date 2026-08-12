@@ -725,6 +725,23 @@ differs slightly. So the time is set by per-ELEMENT work, not by bytes: **this k
 The %HBM column being in exact inverse bit-width order across the formats (q6 38.7 > i4 34.1 > i2 20.9 > i1
 14.1) is the same fact seen from the other side -- with the time pinned, %HBM only reports the bit width.
 
+### TODO #28 codegen verdict: still open, but the exact gap is 2.75 -> 1 on RTX 5090
+
+L145 compiles the real shipping specialization (`int4/native`, StepK=16, 128 threads, dense M=1,
+CtaN=8, Chunk=2, gs=32, affine scale+zero) with nvcc 12.8 for sm_120 and disassembles the full kernel. Per
+K-loop iteration and thread it converts 128 weights = 64 half2 pairs. Final SASS contains 64 mask
+`LOP3.LUT`, 64 separate magic-OR `LOP3.LUT`, and 48 shifts (16 each at 4, 8, and 12 bits). Slot p=0 therefore
+costs two extraction instructions, while p=1..3 cost three: `(64 + 64 + 48) / 64 = 2.75` integer extraction
+instructions per pair. The 64 offset `HADD2` instructions are a separate necessary converter step and are not
+included in that extraction count.
+
+Therefore “the compiler already fused it because SASS contains LOP3” is false: those are two different LUTs
+implementing AND and OR, and nonzero shifts remain. #28's whole-word extraction premise is alive on RTX 5090,
+with an exact average target of **2.75 -> 1** (the nonzero-shift slots are 3 -> 1), not a blanket 3 -> 1.
+This is an NVIDIA codegen result, not a PPU result. No local hgcc/PPU assembler is available; the PPU side stays
+UNKNOWN until the same production instantiation is compiled and disassembled there. Run
+`dev/fold_derivation/run_l145_gemv_lop3_codegen.sh` to reproduce the sm_120 evidence.
+
 **This also predicts split-K will not help**, for the same reason: split-K buys CTAs, and CTAs are not what is
 short. That prediction is exactly what test_moe_splitk_bench measures, so it is still worth running.
 
