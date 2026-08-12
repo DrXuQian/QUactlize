@@ -526,7 +526,7 @@ inline void print_dense_table_provenance() {
       "[dense-marlin-aligned] scheduler=marlin-only topology=1Mx2Nx4K "
       "cta_threads=256 output_cohort_threads=64 warp_k_extent=32 warp_k_cohorts=4 "
       "tile=16x128x128 warp=16x64x32 stages=4 bits=4 fold=1 "
-      "artifact_tile_k=64 artifact_axis=WarpK32\n");
+      "artifact_tile_k=64 artifact=shipping-xplane consumer_axis=WarpK32\n");
 #endif
 #endif
 }
@@ -1588,16 +1588,16 @@ DenseFixtureEvidence initialize(Options const& options) {
   }
   for (int b = 0; b < batch; b++) {
 #if defined(DENSE_MARLIN_WK4_AB)
-    // The classic-aligned 2N x 4K consumer has a proved, distinct offline
-    // byte map.  Reusing preprocess_weights_for_mixed_gemm here would silently
-    // feed the shipping WK1 artifact to a WK4 tactic: both buffers have the
-    // same size, so allocation and stride checks cannot catch that error.
+    // The classic-aligned 2N x 4K consumer has a proved direct-pair path from
+    // the shipping xplane bytes.  Keep the explicit WarpK API here: it records
+    // the exact consumer proof and fails closed for every unproved topology,
+    // even though this admitted arm deliberately produces shipping bytes.
     static_assert(cutlass::sizeof_bits<QuantType>::value == 4 &&
                       DENSE_AB_TM == 16 && DENSE_AB_TN == 128 &&
                       DENSE_AB_TK == 128 && DENSE_AB_WM == 16 &&
                       DENSE_AB_WN == 64 && DENSE_AB_WARP_K == 32 &&
                       DENSE_AB_ARTIFACT_TK == 64,
-                  "WK4 preprocessing is enabled only for the L138/L141-proved int4 artifact");
+                  "WK4 preprocessing is enabled only for the L142/L143-proved shipping-map int4 consumer");
     std::vector<uint8_t> q(size_t(row) * col);
     auto logical_b = tensor_B.host_view();
     for (int k = 0; k < col; ++k) {
@@ -1623,11 +1623,12 @@ DenseFixtureEvidence initialize(Options const& options) {
     }
     std::printf(
         "  [dense marlin aligned artifact] batch=%d bytes=%zu "
-        "placement=WK4 artifact_tile_k=64 roundtrip_bad=%zu/%zu\n",
+        "placement=shipping-xplane consumer_axis=WarpK32 "
+        "artifact_tile_k=64 roundtrip_bad=%zu/%zu\n",
         b, artifact_bytes, roundtrip_bad, q.size());
     if (roundtrip_bad != 0) {
       std::fprintf(stderr,
-                   "classic-aligned WK4 artifact failed its host roundtrip\n");
+                   "classic-aligned WK4 consumer artifact failed its host roundtrip\n");
       std::exit(1);
     }
 #else

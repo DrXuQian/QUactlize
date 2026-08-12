@@ -322,6 +322,15 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
     except ValueError as e:
         bad.append(str(e))
         streamk_metrics = ""
+    try:
+        streamk_exit = section(
+            bench,
+            "#elif defined(DENSE_STREAMK_AB)\n"
+            "  // The 107b target is a mechanism/numerical gate",
+            "#elif defined(DENSE_MARLIN_SWEEP)")
+    except ValueError as e:
+        bad.append(str(e))
+        streamk_exit = ""
 
     for token in (
         "actual=%s real_cu=%d ctas_per_cu=%d",
@@ -336,10 +345,16 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         "[streamk same-order replay] split_tiles=%llu peers=%zu ",
         "if (!final_result.split_path_exercised) return 2;",
         "if (!final_result.verification_classified) return 3;",
-        "return final_result.passed ? 0 : 1;",
     ):
         if bench.count(token) != 1:
             bad.append(f"bench must contain exactly one {token!r}")
+    for token in (
+        "if (!final_result.split_path_exercised) return 2;",
+        "if (!final_result.verification_classified) return 3;",
+        "return final_result.passed ? 0 : 1;",
+    ):
+        if streamk_exit.count(token) != 1:
+            bad.append(f"Stream-K exit arm must contain exactly one {token!r}")
     if streamk_metrics.count("MODEL-ONLY/not-a-DRAM-counter") != 1:
         bad.append("Stream-K reporting branch must contain exactly one MODEL-ONLY/not-a-DRAM-counter label")
     for token in (
@@ -558,7 +573,10 @@ def main() -> int:
          "true &&", "replay map retains peer offsets"),
         (1, "partition->capture_slot_by_qk.size() ==",
          "std::size_t(0) ==", "replay map retains q/K capture slots"),
-        (1, "return final_result.passed ? 0 : 1;", "return 0;", "gate exit status"),
+        (1, "if (!final_result.verification_classified) return 3;\n"
+         "  return final_result.passed ? 0 : 1;",
+         "if (!final_result.verification_classified) return 3;\n"
+         "  return 0;", "gate exit status"),
         (1, "if (!final_result.split_path_exercised) return 2;",
          "if (!final_result.split_path_exercised) return 0;",
          "NOT EXERCISED has a distinct process status"),

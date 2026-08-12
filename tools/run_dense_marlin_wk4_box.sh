@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Classic-aligned dense Marlin decode: exact WK4 artifact + 2N x 4K CTA.
+# Classic-aligned dense Marlin decode: shipping artifact + 2N x 4K consumer.
 # This target is Marlin-only.  It sweeps only scheduler blocks_per_cu; B values
 # above Gemm::maximum_active_blocks() are reported NOT RUN and the binary's
 # fail-closed upper bound is checked without launching a kernel.
@@ -55,10 +55,10 @@ run_point() {
   if ! "$BIN" "${COMMON[@]}" "${bflag[@]}" 2>&1 | tee "$log"; then
     fail "B=$bpc returned nonzero"
   fi
-  grep -Fq '[dense-marlin-aligned] scheduler=marlin-only topology=1Mx2Nx4K cta_threads=256 output_cohort_threads=64 warp_k_extent=32 warp_k_cohorts=4 tile=16x128x128 warp=16x64x32 stages=4 bits=4 fold=1 artifact_tile_k=64 artifact_axis=WarpK32' "$log" \
+  grep -Fq '[dense-marlin-aligned] scheduler=marlin-only topology=1Mx2Nx4K cta_threads=256 output_cohort_threads=64 warp_k_extent=32 warp_k_cohorts=4 tile=16x128x128 warp=16x64x32 stages=4 bits=4 fold=1 artifact_tile_k=64 artifact=shipping-xplane consumer_axis=WarpK32' "$log" \
     || fail "B=$bpc did not print the exact compiled topology"
-  grep -Eq '^  \[dense marlin aligned artifact\] batch=0 bytes=8388608 placement=WK4 artifact_tile_k=64 roundtrip_bad=0/16777216$' "$log" \
-    || fail "B=$bpc did not consume and roundtrip the WK4 artifact"
+  grep -Eq '^  \[dense marlin aligned artifact\] batch=0 bytes=8388608 placement=shipping-xplane consumer_axis=WarpK32 artifact_tile_k=64 roundtrip_bad=0/16777216$' "$log" \
+    || fail "B=$bpc did not consume and roundtrip the explicit WK4 consumer's shipping artifact"
   grep -Eq '^  \[streamk fixture exactness\] fixture=a0-exact shape=1x4096x4096 .* -> ORDER-INDEPENDENT\+FP16-EXACT$' "$log" \
     || fail "B=$bpc did not use the exact decode fixture"
   grep -Eq "^  \\[dense marlin decomposition\\] real_cu=[0-9]+ occupancy_api=[0-9]+ blocks_per_cu=${bpc} Q=32 Kt=32 G=[0-9]+ I=[0-9]+ active=[0-9]+ idle=[0-9]+ handoffs=[0-9]+ max_peers=[0-9]+ workspace=[0-9]+$" "$log" \
@@ -106,5 +106,5 @@ grep -Fq -- "--marlin-blocks-per-cu=$ILLEGAL is outside the exact kernel occupan
   "$ARTIFACT_ROOT/illegal-bpc.log" \
   || fail "illegal B=$ILLEGAL was not rejected by the exact runtime cap"
 
-printf '\n[marlin-wk4] PASS: classic-aligned WK4 target built; supported B points passed exact output + 8-launch locks; over-cap B stayed NOT RUN\n'
+printf '\n[marlin-wk4] PASS: classic-aligned WK4 consumer built on shipping bytes; supported B points passed exact output + 8-launch locks; over-cap B stayed NOT RUN\n'
 printf '[marlin-wk4] artifacts preserved at %s\n' "$ARTIFACT_ROOT"

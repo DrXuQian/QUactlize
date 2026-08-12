@@ -23,7 +23,7 @@
 #include "cute/atom/mma_traits_ppu0010.hpp"
 #include "cute/tensor.hpp"
 #include "cutlass/numeric_types.h"
-#if defined(L139_TYPE_ONLY)
+#if defined(__HGGCCC__)
 #include "quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
 #include "quactlize_extensions/cutlass/gemm/collective/builders/quactlize_mma_builder.inl"
 #endif

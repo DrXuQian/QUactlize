@@ -113,10 +113,11 @@ def audit(files: dict[str, str]) -> list[str]:
         "class MarlinMixedInputKernel",
         "using ArchTag = typename CollectiveMainloop::ArchTag;",
         "using TileSchedulerTag = MarlinScheduler;",
-        "TileShape, ClusterShape, MaxThreadsPerBlock",
+        "TileShape, ClusterShape, OutputThreads",
         "MaxThreadsPerBlock == uint32_t(cute::size(TiledMma{}))",
-        "TileScheduler::fixup_thread_count_capable(MaxThreadsPerBlock)",
-        "TileScheduler::FixupThreadCount == MaxThreadsPerBlock",
+        "MaxThreadsPerBlock == OutputThreads * WarpKCohorts",
+        "TileScheduler::fixup_thread_count_capable(OutputThreads)",
+        "TileScheduler::FixupThreadCount == OutputThreads",
         "static constexpr bool IsDenseMarlin = true;",
         "TileScheduler::get_work_k_tile_count(",
         "scheduler_output_tile_coord(work_tile_info)",
@@ -158,6 +159,8 @@ def audit(files: dict[str, str]) -> list[str]:
     for token in (
         "Kernel::TileScheduler::fixup_thread_count_capable(",
         "Kernel::TileScheduler::FixupThreadCount ==",
+        "Kernel::OutputThreads",
+        "Kernel::WarpKCohorts",
         "Kernel::MaxThreadsPerBlock",
     ):
         if token not in d:
@@ -256,7 +259,7 @@ def main() -> int:
          "uint32_t const thread = uint32_t(threadIdx.x);",
          "uint32_t const thread = uint32_t(threadIdx.x) % Cohort;"),
         ("kernel", "kernel-drops-explicit-cohort",
-         "TileShape, ClusterShape, MaxThreadsPerBlock>;",
+         "TileShape, ClusterShape, OutputThreads>;",
          "TileShape, ClusterShape>;"),
         ("sched", "K-tile-ordinal-becomes-scalar-K",
          "return cute::idx2crd(get_work_k_tile_start(work), shape);",

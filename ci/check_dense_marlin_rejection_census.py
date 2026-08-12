@@ -143,25 +143,36 @@ def current_capability() -> tuple[int, int, str]:
     )
     require_once(
         kernel,
-        r"static_assert\(\s*TileScheduler::fixup_thread_count_capable\(MaxThreadsPerBlock\)",
+        r"static_assert\(\s*TileScheduler::fixup_thread_count_capable\(OutputThreads\)",
         "named-kernel capability assertion",
     )
     require_once(
         kernel,
-        r"static_assert\(\s*TileScheduler::FixupThreadCount\s*==\s*MaxThreadsPerBlock",
+        r"static_assert\(\s*TileScheduler::FixupThreadCount\s*==\s*OutputThreads",
         "named-kernel exact cohort assertion",
+    )
+    require_once(
+        kernel,
+        r"static_assert\(\s*MaxThreadsPerBlock\s*==\s*OutputThreads\s*\*\s*WarpKCohorts",
+        "named-kernel K-cohort accounting assertion",
     )
     require_once(
         wrapper,
         r"static_assert\(\s*Kernel::TileScheduler::fixup_thread_count_capable\(\s*"
-        r"Kernel::MaxThreadsPerBlock\s*\)",
+        r"Kernel::OutputThreads\s*\)",
         "generated-wrapper capability assertion",
     )
     require_once(
         wrapper,
         r"static_assert\(\s*Kernel::TileScheduler::FixupThreadCount\s*==\s*"
-        r"Kernel::MaxThreadsPerBlock",
+        r"Kernel::OutputThreads",
         "generated-wrapper exact cohort assertion",
+    )
+    require_once(
+        wrapper,
+        r"static_assert\(\s*Kernel::MaxThreadsPerBlock\s*==\s*"
+        r"Kernel::OutputThreads\s*\*\s*Kernel::WarpKCohorts",
+        "generated-wrapper K-cohort accounting assertion",
     )
 
     if (minimum, maximum) != (CURRENT_MIN_THREADS, CURRENT_MAX_THREADS):

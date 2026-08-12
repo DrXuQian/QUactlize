@@ -310,9 +310,9 @@ static_assert(common_kernel_exclusion(
                   Exclusion::WarpKDoesNotDivideTile,
               "a partial K cohort must fail before TiledMma instantiation");
 static_assert(common_kernel_exclusion(
-                  Candidate{kArtifactFoldControlI2, 16, 128, 128, 16, 64, 64, 0, 32}) ==
+              Candidate{kArtifactFoldControlI2, 16, 128, 128, 16, 64, 64, 0, 32}) ==
                   Exclusion::WarpKUnsupportedFormat,
-              "folded/narrower formats remain fail-closed until their WK-aware artifact proof exists");
+              "folded/narrower formats remain fail-closed until their WarpK consumer proof exists");
 
 // Paired controls for the field-ownership regression. l115's shipping witness is exactly
 //   Q6_K high A=128 T=256 tile=64x128x256 warp=64x64 F=1/1

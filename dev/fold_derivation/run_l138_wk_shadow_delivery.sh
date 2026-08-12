@@ -25,5 +25,5 @@ nvcc -std=c++17 -x cu -arch=sm_80 -w "${inc[@]}" \
   "${repo}/dev/fold_derivation/l138_wk_shadow_delivery.cu"
 
 "${out}/l138_wk_shadow_delivery" | tee "${out}/l138_wk_shadow_delivery.out"
-grep -q "shipping-xplane-WK1 anchor=L123+WK4-BIJECTIVE old-K4=EXPECTED-RED wrong-pair=EXPECTED-RED result=PASS" \
+grep -q "two-source-availability=EXACT sequential-order=L142-COUNTERFEIT old-K4=EXPECTED-RED wrong-pair=EXPECTED-RED result=PASS" \
   "${out}/l138_wk_shadow_delivery.out"

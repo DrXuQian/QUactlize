@@ -7,17 +7,19 @@ This audit binds one exact comparison.  It does not generalize from a generic
 M=1, N=4096, K=4096, L=1, gs=128
 CTA tile = 16x128x128
 classic = Marlin<256, 1, 8, 8, 4, 8>
-collective = Cfg<128,16,128,128,16,32,3>::MarlinKernel
+historical measured collective = Cfg<128,16,128,128,16,32,3>::MarlinKernel
+classic-aligned local target = Cfg<128,16,128,128,16,64,4,WarpK=32>::MarlinKernel
 ```
 
 The measured anchors are 17.8 us / 17.5% of nameplate for classic and
-21.14 us / 14.5% for the current collective arm.  The 19% time gap must not be
+21.14 us / 14.5% for the historical collective arm.  The aligned target has
+local front-end reachability/layout/reduction proof but no device result yet.  The 19% time gap must not be
 attributed to the CTA stripe scheduler until every row below is either aligned
 or retained as an explicit difference.
 
 ## Axis-by-axis audit
 
-| Axis | standalone classic | current collective Marlin | Verdict | Evidence / consequence |
+| Axis | standalone classic | historical measured collective Marlin | Verdict | Evidence / consequence |
 |---|---|---|---|---|
 | Logical CTA tile | `16x128x128` | `16x128x128` | **same** | classic selects `(MB,NB,KB)=(1,8,8)` at `marlin_classic_ppu.cuh:841-845,893`; the production row is pinned in `l134_marlin_codegen.cu:16-25`. |
 | FP16 MMA atom | PPU `m16n16k16`, FP32 accumulator | PPU `m16n16k16`, FP32 accumulator | **same** | classic calls `mma_n16` at `:513-548`; the builder selects the m16 atom for `TM=16/WM=16` at `quactlize_mma_builder.inl:335-355`. |
@@ -40,6 +42,28 @@ or retained as an explicit difference.
 | Register contract | `__launch_bounds__(256,2)`, zero reported spill in the documented classic point; exact registers/thread not recorded | measured 160 registers/thread at 128 threads; occupancy API says six blocks | **unknown equality / known different launch contract** | classic `:226-241`; committed ACU transcription records the collective count.  Device codegen must report the aligned 256-thread kernel before comparing occupancy. |
 | Mainloop instruction schedule | four-stage manual pipeline, two B write iterations, classic dependency chain | shared mixed pipeline driver, three stages, collective-derived B chunks | **different** | classic `:721-790`; collective `quactlize_mma_mixed_input.hpp:1202-1249`. |
 
+## Classic-aligned target: local closure
+
+The isolated target now aligns the topology rows that were intentionally left
+different in the measured control: `2N x 4K`, 256 threads, four stages, 32
+FP32 C values per thread, and a 64-thread K0 output cohort after CTA-local FP32
+reduction.  The historical `4N x 1K` target remains unchanged.
+
+Its B path does **not** introduce a new artifact.  L142 models the exact
+production source and destination layouts; L143 independently exhausts 8,192
+half2 destinations / 16,384 int4 codes and proves that direct `(t,t+4)` pair
+selection consumes the shipping xplane bytes with zero differences (hash
+`b89b157b5b1bd6c3`).  The sequential production-fragment order (`ea96...`),
+compact-s16 order (`17df...`), whole `Converter<32>`, adjacent-nibble pairing,
+and swapped sources are permanent red controls.  The real Cfg full-body gate
+instantiates the WK4 branch; WK2 is an expected compile-time failure and WK1
+retains its original branch and bytes.
+
+Remaining unknowns are device codegen details (register count/spills), runtime
+lock progress, occupancy, time and ACU counters.  The existing A/B copy
+machinery, scale/zero path and cross-CTA FP32 workspace remain intentionally
+different from standalone classic.
+
 ## L123 artifact gate (proved before kernel changes)
 
 `run_l123_warp_nk_topology.sh` was rerun on this tree.  Its scope and result are:
@@ -52,32 +76,32 @@ or retained as an explicit difference.
 - The oracle includes the real `partition_S -> retile_D -> converter emission ->
   partition_B` chain, not only an abstract CuTe layout.  Its stale shadow-K and
   folded-K negative controls both fail.
-- The current WK1 artifact cannot directly serve WK2 or WK4.  F1-int4 changes
-  `6144/8192` logical slots for either candidate, and WK2 and WK4 differ from
-  one another.  A single K base, a global vreg permutation, or their
-  combination cannot repair it.
-- This is an **offline placement descriptor axis**, not a new quantization
-  format.  The descriptor/packer must carry a normalized WK placement class
-  beside TileK/fold.  The proof does not require the ABI field to be literally
-  named `WK`, and it does not exclude a future, more complex kernel-side
-  per-cohort/per-vreg remap.
+- The compact destination used by L123 changes `6144/8192` logical slots for
+  WK2 and WK4.  This proves that a single K base, a global vreg permutation,
+  or their combination cannot repair that compact consumer.  It explicitly
+  did **not** exclude a per-cohort/per-vreg consumer remap.
+- L142/L143 found exactly that narrower remap for the production-layout WK4
+  target.  Therefore WarpK is a consumer/tactic axis for this target, not an
+  artifact descriptor axis: the shipping packer and bytes remain unchanged.
+  Folded, two-plane, int1/int2 and other WarpK shapes remain unproved and fail
+  closed; this result must not be generalized from pattern matching.
 - Positive folded coverage exists for int2-F2 and Q3 low/high planes.  Int1,
   Q6, real-device numerical execution and performance are still **unknown**.
 
-Therefore the first aligned implementation may not silently point a WK4
-consumer at the WK1 artifact.  It must either produce/route a WK-aware artifact
-or fail closed.
+Therefore the aligned implementation calls an explicit WarpK consumer API,
+but that API resolves to shipping bytes only for the exact L142/L143-proved
+int4 target.  Every other non-default topology fails closed.
 
-## Implementation boundary fixed by this audit
+## Implemented boundary fixed by this audit
 
-The first alignment change is deliberately narrower than a rewrite of the
+The local alignment change is deliberately narrower than a rewrite of the
 mixed-input formats:
 
 1. add a `(WN,WK)` TiledMma topology while preserving exact WK1 types;
 2. add CTA-local FP32 reduction with register-index/coordinate identity proved
    before device timing;
 3. route only the surviving K cohort into CTA fixup and the epilogue;
-4. make the offline artifact descriptor/packer select the proved WK placement;
+4. keep the shipping artifact and select its pairs in the production consumer;
 5. keep converter, scale/zero, fold, B-chunk, two-plane and the FP32 cross-CTA
    workspace implementation otherwise unchanged;
 6. measure the aligned kernel and B1/B2/B4/B6 in one box batch.

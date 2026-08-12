@@ -2,9 +2,10 @@
 // S068 is 16x32x256/w16x16: 2N x 1K today, 2N x 4K in the candidate.
 // The equal-four-warp 2Nx2K/1Nx4K pair proves N and K are separate axes.
 // B's physical oracle composes the real partition_S -> retile_D -> int4
-// converter-emission -> compute-fragment chain.  WK1 must reproduce the
-// shipping xplane byte map.  WK is an offline-packer/artifact-descriptor axis
-// (the same kind of axis as TileK and fold), not a new quantization format.
+// converter-emission -> compact compute-fragment chain.  WK1 must reproduce
+// the shipping xplane byte map.  Its WK2/WK4 negatives exclude a K-base or
+// global-vreg repair; they do not exclude a production-layout per-cohort pair
+// consumer.  L142/L143 later prove that exact WK4 target on shipping bytes.
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -606,7 +607,7 @@ int main(){
   ok&=same_wn&&anchored&&direct_remap&&two_dim&&phase_exact&&kbase_excluded&&
       compute_permk_repeats&&fixed_vreg_excluded;
   std::printf("L123 current=2Nx1K candidate=2Nx4K fixed4={2Nx2K,1Nx4K} "
-              "shipping-anchor=%zu WN-invariant=%s direct-shadow-artifact-invariance=REFUTED(d2=%zu,d4=%zu) "
+              "shipping-anchor=%zu WN-invariant=%s compact-direct-extension-invariance=REFUTED(d2=%zu,d4=%zu) "
               "fixed4-diff=%zu compute-PermK-fixed-vs-expanded=%s simple-K-base=%s "
               "phase-rule=%s vreg-bad=%d/%d/%d/%d fixed-vreg-plus-base=%s "
               "{wk2:cross-row=%d,max-delta-set=%d,max-vreg-set=%d;"
@@ -668,9 +669,10 @@ int main(){
               q3hi_wn_slot,q3hi_wn_bytes);
   bool row_metric_ok=fold_row_metric_controls();ok&=row_metric_ok;
   std::printf("L123 fold-row-metric +TK=same-row +(F*TK)=next-row %s\n",row_metric_ok?"PASS":"FAIL");
-  std::printf("L123 conclusion: WK is an offline-packer/artifact-descriptor parameter carried with TileK/fold (#37), "
-              "not a new quantization format; WK1=0/8192 remains permanent. WN is byte-map invariant for the F1-int4 "
-              "anchor; folded int2/Q3 report their distinct WN artifact classes above.\n");
+  std::printf("L123 conclusion: compact direct-extension WK2/WK4 reject K-base/global-vreg repairs; "
+              "this does not make WK an artifact axis. L142/L143 prove the exact production WK4 consumer on "
+              "shipping bytes. WK1=0/8192 remains permanent; WN is byte-map invariant for the F1-int4 anchor; "
+              "folded int2/Q3 report their distinct WN artifact classes above.\n");
   return ok?0:1;
 }
 #endif

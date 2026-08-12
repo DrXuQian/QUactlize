@@ -10,12 +10,14 @@
 // retile_D objects. Physical int4 slots are labelled by the shipping WK1
 // xplane map, independently anchored by L123 in the runner.
 //
-// A green result proves availability, not converter code generation: every
-// logical (n,k) requested by every compute fragment occurs exactly once in the
-// mapped two-shadow source, and the tile-wide union consumes every physical
-// code exactly once. The red controls prove that one source is insufficient,
-// reversing source order changes all 16,384 owners, and the old 2N x 4K /
-// PermK=128 shadow is physically invalid.
+// A green result proves source availability, not source-to-destination order
+// or converter code generation: two K2 shadow fragments provide the required
+// 64 selected codes per compute thread and their tile-wide union covers every
+// physical code exactly once.  L142/L143 derive the real production
+// destination and prove the direct-pair scatter.  The red controls here prove
+// that one source is insufficient, reversing the sequential source order
+// changes all 16,384 owners, and the old 2N x 4K / PermK=128 shadow is
+// physically invalid.
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -272,8 +274,9 @@ DerivedMap derive_map(Pairing pairing) {
       if(keep)selected.push_back(d);
     }
     if(selected.size()!=refs.size()){if(ct<193&&ct%64==0)std::printf("L138 derive ct%d wk%d selected=%zu refs=%zu\n",ct,wk,selected.size(),refs.size());++out.fragment_holes[wk];continue;}
-    // Source and destination ordering are both the production fragment
-    // orders. This is precisely the tiny converter seam needed in-kernel.
+    // This early oracle zipped source and destination fragment orders. L142
+    // later proved that this order is NOT the production conversion order;
+    // retain it only as a source-availability/bijection diagnostic.
     for(int i=0;i<int(refs.size());++i){int p=sf.physical[selected[i]],l=refs[i].logical;
       if(p<0||p>=int(out.map.size())||l<0||l>=int(out.map.size())){++out.conflicts;continue;}
       ++physical_hits[p];++logical_hits[l];
@@ -596,7 +599,7 @@ int main() {
               derived.physical_duplicates,derived.fragment_holes[0],derived.fragment_holes[1],
               derived.fragment_holes[2],derived.fragment_holes[3],
               (unsigned long long)derived.hash,derived_clean(derived)?"BIJECTIVE":"FAIL");
-  std::printf("L138 two-source-WK4 entries=%zu conflicts=%d holes=%d logical-dup=%d physical-dup=%d "
+  std::printf("L138 sequential-two-source-order entries=%zu conflicts=%d holes=%d logical-dup=%d physical-dup=%d "
               "fragment-holes=%d/%d/%d/%d hash=%016llx %s\n",two_source.map.size(),two_source.conflicts,
               two_source.holes,two_source.logical_duplicates,two_source.physical_duplicates,
               two_source.fragment_holes[0],two_source.fragment_holes[1],two_source.fragment_holes[2],
@@ -628,8 +631,9 @@ int main() {
             reversed_map_diff>0 && !derived_clean(derived_wrong) &&
             old_red && wrong_red;
   std::printf("L138 target compute=<1,2,4>/perm64 shadow=<1,2,2>/perm64 "
-              "shipping-xplane-WK1 anchor=%s old-K4=%s wrong-pair=%s result=%s\n",
-              derived_clean(two_source) ? "L123+WK4-BIJECTIVE" : "FAIL",
+              "two-source-availability=%s sequential-order=L142-COUNTERFEIT "
+              "old-K4=%s wrong-pair=%s result=%s\n",
+              derived_clean(two_source) ? "EXACT" : "FAIL",
               old_red ? "EXPECTED-RED" : "UNEXPECTED-GREEN",
               wrong_red ? "EXPECTED-RED" : "UNEXPECTED-GREEN",
               ok ? "PASS" : "FAIL");

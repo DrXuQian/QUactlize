@@ -4,8 +4,8 @@
 This check owns no performance claim.  It pins the build/CLI/artifact seams
 that can be falsified locally before the PPU run: the old 4N x 1K target stays
 unchanged, the new target is exactly 1M x 2N x 4K, its generated wrapper can
-only instantiate Marlin, and its bytes come from the explicit WK4 artifact
-API rather than the shipping WK1 writer.
+only instantiate Marlin, and its explicit WarpK consumer API resolves to the
+shipping bytes proved by L142/L143 rather than an inferred new artifact.
 """
 
 from __future__ import annotations
@@ -20,6 +20,13 @@ UNIT = ROOT / "benchmarks/lowbit_dense_unit.inc"
 BENCH = ROOT / "benchmarks/test_lowbit_dense_bench.cu"
 BUILD = ROOT / "build.sh"
 BOX = ROOT / "tools/run_dense_marlin_wk4_box.sh"
+XPLANE = ROOT / "quactlize/include/xplane_offline.hpp"
+COLLECTIVE = ROOT / (
+    "quactlize/include/quactlize_extensions/cutlass/gemm/collective/"
+    "quactlize_mma_mixed_input.hpp"
+)
+L142 = ROOT / "dev/fold_derivation/l142_production_destination_map.cu"
+L143 = ROOT / "dev/fold_derivation/l143_wk4_production_delivery.cu"
 
 
 def exact(text: str, token: str, count: int, bad: list[str], label: str) -> None:
@@ -29,8 +36,11 @@ def exact(text: str, token: str, count: int, bad: list[str], label: str) -> None
 
 
 def audit(files: dict[str, str]) -> list[str]:
-    cm, unit, bench, build, box = (
-        files[name] for name in ("cmake", "unit", "bench", "build", "box")
+    cm, unit, bench, build, box, xplane, collective, l142, l143 = (
+        files[name] for name in (
+            "cmake", "unit", "bench", "build", "box", "xplane",
+            "collective", "l142", "l143"
+        )
     )
     bad: list[str] = []
 
@@ -52,7 +62,7 @@ def audit(files: dict[str, str]) -> list[str]:
         if token not in old:
             bad.append(f"historical target drifted: missing {token!r}")
     if "DENSE_AB_WARP_K" in old or "place_derived_warp_k" in old:
-        bad.append("historical target acquired the WK4 artifact/type axis")
+        bad.append("historical target acquired the WK4 consumer/type axis")
 
     new_begin = cm.find("# Classic-aligned Marlin decode target.")
     new_end = cm.find("# Root-cause cross-check", new_begin)
@@ -109,7 +119,7 @@ def audit(files: dict[str, str]) -> list[str]:
         "topology=1Mx2Nx4K",
         "cta_threads=256 output_cohort_threads=64",
         "warp_k_extent=32 warp_k_cohorts=4",
-        "artifact_tile_k=64 artifact_axis=WarpK32",
+        "artifact_tile_k=64 artifact=shipping-xplane consumer_axis=WarpK32",
         "xplane::place_derived_warp_k<4, 16, 128, 128, 16, 64, 1,",
         "32, 64>(dst, q, row, col);",
         "xplane::recover_derived_warp_k<4, 16, 128, 128, 16, 64, 1,",
@@ -134,7 +144,7 @@ def audit(files: dict[str, str]) -> list[str]:
     for token in (
         "TARGET=test_lowbit_dense_marlin_wk4_ab",
         "COMMON=(--marlin --streamk_exact_fixture",
-        "placement=WK4 artifact_tile_k=64 roundtrip_bad=0",
+        "placement=shipping-xplane consumer_axis=WarpK32 artifact_tile_k=64 roundtrip_bad=0",
         "block_threads=256 warps/cta=8",
         "Gemm::maximum_active_blocks()",
         'if [ "$bpc" -gt "$CAP" ]',
@@ -144,6 +154,28 @@ def audit(files: dict[str, str]) -> list[str]:
     ):
         if token not in box:
             bad.append(f"box recipe is missing {token!r}")
+
+    for token in (
+        "WarpK is a consumer topology axis, not automatically an artifact-format",
+        "non-default WarpK consumer mapping is proved only for the shipping-map ordinary-int4 2N x 4K target\");\n"
+        "    return plane_map<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>();",
+    ):
+        if token not in xplane:
+            bad.append(f"explicit WarpK artifact API is missing {token!r}")
+    for token in (
+        "WarpKCohorts == 4 ? (shadow_thread_0 / 32) * 32",
+        "Layout<Shape<Shape<_2, _2, _2>, _1, _4>",
+        "cutlass::MixGemmChunkEmit<",
+        "Emit::emit(source + 4 * NI, destination + 4 * NI);",
+        "convert_int4_two_source(source0, source1, output, compute_warp_k);",
+        "int const d1 = source_slot(sf, ni, v, t + 4);",
+        "DirectResult direct_pair_scatter(DirectMode mode=DirectMode::Correct)",
+    ):
+        owner = collective if token in collective else l142 if token in l142 else l143
+        if token not in owner:
+            bad.append(f"production direct-pair proof is missing {token!r}")
+    if "convert_int4_pair" in collective:
+        bad.append("production WK4 path duplicated the shipping emitter's LOP3/FMA sequence")
     return bad
 
 
@@ -154,6 +186,10 @@ def main() -> int:
         "bench": BENCH.read_text(),
         "build": BUILD.read_text(),
         "box": BOX.read_text(),
+        "xplane": XPLANE.read_text(),
+        "collective": COLLECTIVE.read_text(),
+        "l142": L142.read_text(),
+        "l143": L143.read_text(),
     }
     bad = audit(files)
 
@@ -168,7 +204,7 @@ def main() -> int:
         ("unit", "aligned-wrapper-launches-DP",
          "DENSE_AB_WARP_K>::MarlinGemm;",
          "DENSE_AB_WARP_K>::Gemm;"),
-        ("bench", "aligned-reuses-WK1-writer", "xplane::place_derived_warp_k<",
+        ("bench", "aligned-drops-explicit-consumer-proof", "xplane::place_derived_warp_k<",
          "xplane::place_derived<"),
         ("bench", "CLI-does-not-require-marlin", "if (!options.marlin || options.persistent",
          "if (false || options.persistent"),
@@ -182,6 +218,20 @@ def main() -> int:
          '   [ "$TARGET" = "test_lowbit_dense_marlin_ab" ]; then'),
         ("box", "over-cap-point-launched", 'if [ "$bpc" -gt "$CAP" ]; then',
          'if [ "$bpc" -gt 999 ]; then'),
+        ("xplane", "explicit-WK4-API-invents-new-bytes",
+         "non-default WarpK consumer mapping is proved only for the shipping-map ordinary-int4 2N x 4K target\");\n"
+         "    return plane_map<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>();",
+         "non-default WarpK consumer mapping is proved only for the shipping-map ordinary-int4 2N x 4K target\");\n"
+         "    return {};"),
+        ("collective", "primary-copy-uses-compute-warp",
+         "WarpKCohorts == 4 ? (shadow_thread_0 / 32) * 32 : aiu_warp_group_thread_idx",
+         "aiu_warp_group_thread_idx"),
+        ("collective", "emitter-loses-semantic-K-mode",
+         "Layout<Shape<Shape<_2, _2, _2>, _1, _4>",
+         "Layout<Shape<Shape<_2, _2, _2>, _4>"),
+        ("l142", "consumer-pairs-adjacent-nibbles",
+         "int const d1 = source_slot(sf, ni, v, t + 4);",
+         "int const d1 = source_slot(sf, ni, v, t + 1);"),
     )
     for owner, label, old, new in plants:
         if files[owner].count(old) != 1:
@@ -197,8 +247,8 @@ def main() -> int:
             print(f"[dense-marlin-wk4] FAIL: {item}", file=sys.stderr)
         return 1
     print(
-        "[dense-marlin-wk4] PASS: isolated 1Mx2Nx4K type/artifact/CLI; "
-        "historical target unchanged; nine structural plants rejected"
+        "[dense-marlin-wk4] PASS: isolated 1Mx2Nx4K type/shipping-artifact/CLI; "
+        "historical target unchanged; thirteen structural plants rejected"
     )
     return 0
 

@@ -1167,6 +1167,7 @@ public:
     };
     int const shadow_thread_0 = WarpKCohorts == 4 ? shadow_thread(0) : thread_idx;
     int const shadow_thread_1 = WarpKCohorts == 4 ? shadow_thread(1) : shadow_thread_0;
+    int const compute_warp_k = int(get<3>(compute_vmnk));
     auto thr_mma_s8 = tiled_mma_s8.get_thread_slice(shadow_thread_0);
     auto thr_mma_s8_peer = tiled_mma_s8.get_thread_slice(shadow_thread_1);
 
@@ -1183,7 +1184,8 @@ public:
     Tensor tCrB_load_peer = thr_mma_s8_peer.partition_fragment_B(sB_s8(_,_,0));
 
     auto smem_tiled_copy_B = make_tiled_copy_B(SmemCopyAtomB{}, tiled_mma_s8);
-    auto smem_thr_copy_B   = smem_tiled_copy_B.get_thread_slice(aiu_warp_group_thread_idx);
+    auto smem_thr_copy_B   = smem_tiled_copy_B.get_thread_slice(
+        WarpKCohorts == 4 ? (shadow_thread_0 / 32) * 32 : aiu_warp_group_thread_idx);
     Tensor tCsB            = smem_thr_copy_B.partition_S(make_mix_tensor_like(sB_s8));             // (CPY,CPY_N,CPY_K,PIPE)
     Tensor tCrB_copy_view  = smem_thr_copy_B.retile_D(tCrB_load);                                  // (CPY,CPY_N,CPY_K)
     auto smem_thr_copy_B_peer = smem_tiled_copy_B.get_thread_slice(
@@ -1258,7 +1260,8 @@ public:
       copy(smem_tiled_copy_A, tCsA_p(_,_,k_block), tCrA_copy_view(_,_,k_block));
       transform_B_kblock<RealInternalElementB>(tCrB_copy_view, tCrB_copy_view_peer,
           tCrB_mma, partitioned_extra_info, k_block,
-          K_ATOM_PER_COPY, copy_partitions_extra_info, read_stage, scale_pf);
+          K_ATOM_PER_COPY, copy_partitions_extra_info, read_stage, scale_pf,
+          compute_warp_k);
     };
     auto prefetch = [&] (auto k_tile, int write_stage) {
           auto k_iter_crd = cute::idx2crd(k_tile, k_iter_shape);
@@ -2011,6 +2014,48 @@ private:
   }
 
   /// Utilities to transform B.
+  template <int ComputeWarpK>
+  CUTLASS_DEVICE static void convert_int4_shadow_source(
+      uint32_t const* source, uint32_t* destination) {
+    static_assert(ComputeWarpK >= 0 && ComputeWarpK < 4);
+    // Reuse the existing MixGemmChunkEmit algebra and implementation.  The apparent production
+    // destination shape ((2,2,2),4) is NOT enough here: ChunkPlace assigns
+    // semantic roles to modes 1=N and 2=K, so omitting the singleton N mode
+    // makes ka() constant zero and silently selects only cohort 0.  This
+    // local 32-code view retains that semantic rank while preserving the
+    // exact production half2 strides.  L142 exhausts keep()/at() for all
+    // four cohorts and keeps the tempting rank-2 view as a red control.
+    using EmitFragLayout =
+        Layout<Shape<Shape<_2, _2, _2>, _1, _4>,
+               Stride<Stride<_1, _2, _4>, _0, _8>>;
+    using Emit = cutlass::MixGemmChunkEmit<
+        4, ComputeWarpK, 4, true, EmitFragLayout>;
+    static_assert(Emit::kHalf2 == 4,
+                  "one source contributes four production half2 values per N instance");
+    cute::for_each(cute::make_int_sequence<4>{}, [&] (auto ni) {
+      constexpr int NI = decltype(ni)::value;
+      Emit::emit(source + 4 * NI, destination + 4 * NI);
+    });
+  }
+
+  CUTLASS_DEVICE static void convert_int4_two_source(
+      uint32_t const* source0, uint32_t const* source1,
+      uint32_t* destination, int compute_warp_k) {
+    // Template dispatch avoids dynamic indexing into register-backed source
+    // arrays.  L142 proves every read and every production-fragment write.
+    switch (compute_warp_k) {
+      case 0: convert_int4_shadow_source<0>(source0, destination);
+              convert_int4_shadow_source<0>(source1, destination + 16); break;
+      case 1: convert_int4_shadow_source<1>(source0, destination);
+              convert_int4_shadow_source<1>(source1, destination + 16); break;
+      case 2: convert_int4_shadow_source<2>(source0, destination);
+              convert_int4_shadow_source<2>(source1, destination + 16); break;
+      case 3: convert_int4_shadow_source<3>(source0, destination);
+              convert_int4_shadow_source<3>(source1, destination + 16); break;
+      default: CUTE_GCC_UNREACHABLE;
+    }
+  }
+
   // FINE-grained scale (gs < B-copy-step K, i.e. Scale_TileK > K_BLOCK_MAX): a single copy step's K_ATOM_PER_COPY
   // mma atoms straddle MORE than one scale group, so one pre-loaded scale reg can't cover the step (and the coarse
   // GroupK = K_BLOCK_MAX/Scale_TileK is 0). Here each mma atom reloads ITS group's scale straight from smem:
@@ -2042,7 +2087,8 @@ private:
     int const read_stage,
     // The second scale/zero register set, or an empty tuple. A separate template parameter and NOT an extension of
     // the Ts... pack above: appending to cute::tuple<Ts...> fails deduction.
-    PfPack const& pf) {
+    PfPack const& pf,
+    int compute_warp_k) {
 
     static constexpr int K_BLOCK_STATIC = int(KBlockT{});
     Tensor cvt_in  = recast<RealInternalElementB>(tCrB_load(_, _, k_block));
@@ -2061,7 +2107,8 @@ private:
     if constexpr (WarpKCohorts == 1) {
       // Permanent compatibility arm.  This is the shipping converter call,
       // kept as a distinct branch so adding K cohorts cannot perturb its
-      // source layout, destination layout, or instruction sequence.
+      // source or destination layout.  L123/L143 pin the WK1 map and bytes;
+      // only the device build can compare the generated instruction stream.
       convert_tensor(cvt_in, cvt_out, CPY_VEC{});
     }
     else {
@@ -2071,10 +2118,14 @@ private:
                     "two-source B delivery is first proved only for ordinary int4");
       static_assert(size(decltype(cvt_in.layout()){}) == 128,
                     "each K2 shadow source must hold 128 int4 codes");
-      static_assert(size<0>(typename TCrB_mma::layout_type{}) == 8 &&
-                    size<1>(typename TCrB_mma::layout_type{}) == 4 &&
-                    size<2>(typename TCrB_mma::layout_type{}) == 2,
-                    "L138 target compute fragment must be (8,4,2) = 64 fp16 values");
+      static_assert(std::is_same_v<typename TCrB_load::layout_type,
+                    Layout<Shape<Shape<_16,_1>,_4,_1>,
+                           Stride<Stride<_1,_0>,_16,_0>>>,
+                    "K2 shadow bytes must be four contiguous uint32 vregs per N instance");
+      static_assert(std::is_same_v<typename TCrB_mma::layout_type,
+                    Layout<Shape<Shape<_2,_2,_2>,_4,_2>,
+                           Stride<Stride<_1,_2,_4>,_8,_32>>>,
+                    "two-source writes require the production (8,4,2):(...,8,32) fp16 fragment");
 
       Tensor cvt_in_peer = recast<RealInternalElementB>(tCrB_load_peer(_, _, k_block));
       uint32_t const* source0 = reinterpret_cast<uint32_t const*>(
@@ -2084,23 +2135,11 @@ private:
       uint32_t* output = reinterpret_cast<uint32_t*>(
           raw_pointer_cast(tCrB_mma(_, _, k_block * K_ATOM_PER_COPY).data()));
 
-      // L138's real partition_S -> retile_D objects establish two facts:
-      // (1) each source contributes exactly 32 codes, and (2) source order is
-      // K2 cohort 0 followed by cohort 1. The source converter is therefore
-      // the production 32-code int4 converter, once per source. L142 binds the
-      // two contiguous destination groups below to the REAL collective
-      // fragment; its compact-s16 counterfeit is a permanent negative.
-      using Source = cutlass::Array<cutlass::int4b_t, 32>;
-      using Converted = cutlass::Array<cutlass::half_t, 32>;
-      using Converter = cutlass::MixGemmNumericArrayConverter<
-          cutlass::half_t, cutlass::int4b_t, 32>;
-      static_assert(sizeof(Source) == 16 && sizeof(Converted) == 64);
-      auto convert_source = [&] (uint32_t const* source, int destination_group) {
-        auto values = Converter::convert(*reinterpret_cast<Source const*>(source));
-        *reinterpret_cast<Converted*>(output + 16 * destination_group) = values;
-      };
-      convert_source(source0, 0);
-      convert_source(source1, 1);
+      // The shipping xplane -- not an invented WK4 artifact -- anchors
+      // this direct pair consumer. L142 maps every actual source-word read and
+      // production-fragment write; whole Converter<32>, ea96 and compact-s16
+      // alternatives are permanent red controls.
+      convert_int4_two_source(source0, source1, output, compute_warp_k);
     }
 #endif
 

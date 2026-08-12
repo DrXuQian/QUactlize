@@ -1426,10 +1426,14 @@ ArtifactTileK 64: `1M x 2N x 4K`, 8 warps / 256 threads, with a 64-thread K0
 output/fixup cohort.  DP and Stream-K are numerically invalid for this
 four-K-cohort CTA and the binary rejects them; do not substitute either arm.
 
-The local prerequisites are `run_l138`, `run_l139`, `run_l140`, `run_l141`,
-and `run_l143`.  They prove two-source delivery, the CTA-local FP32 reduction,
-the exact type, the distinct WK4 artifact plus stale-WK1 negative, and the
-isolated build/CLI route.  They do not prove device progress or speed.
+The local prerequisites are the umbrella
+`dev/fold_derivation/run_l143_dense_marlin_wk4_target.sh`.  It runs L123,
+L138--L143 and the target contract.  Together they prove two-source delivery,
+the CTA-local FP32 reduction, the exact type, and that the real production
+consumer reads `(t,t+4)` pairs from the unchanged shipping xplane bytes.
+The inferred `ea96...`, `17df...`, first-32, adjacent-nibble and swapped-source
+alternatives are required red controls.  These checks do not prove device
+progress or speed.
 
     set -euo pipefail
     cd /sim/eec/shared/junfu.qx/quactlize
@@ -1455,7 +1459,8 @@ the script separately asks for `cap+1` and requires the host-side exact-cap
 rejection before launch.  Every supported B must report:
 
 - the `scheduler=marlin-only topology=1Mx2Nx4K` provenance line;
-- WK4 artifact `roundtrip_bad=0` (stale shipping WK1 bytes are not admissible);
+- explicit `consumer_axis=WarpK32` with `placement=shipping-xplane` and
+  `roundtrip_bad=0` (unproved WarpK topologies fail closed);
 - 20 independent event-pair kernel spans;
 - the full decomposition/grid including `blocks_per_cu`, handoffs and 256
   threads / 8 warps per CTA;
@@ -1466,7 +1471,8 @@ Only after that correctness/performance run, collect ACU counters for the B
 values the runtime cap admitted.  ACU is counter-only; its instrumented time
 is not a performance result.
 
-    ACU=/sim/eec/shared/junfu.qx/asight/bin/acu
+    ACU_ROOT=/sim/eec/shared/junfu.qx/${ASIGHT_DIR:-asight}
+    ACU="$ACU_ROOT/bin/acu"
     test -x "$ACU"
     ACU_DIR=$(mktemp -d /tmp/dense-marlin-wk4-acu.XXXXXX)
     for B in 1 2 4 6; do

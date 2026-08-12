@@ -14,11 +14,14 @@ static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
   using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::MarlinGemm;
   using Kernel = typename G::GemmKernel;
   static_assert(Kernel::TileScheduler::fixup_thread_count_capable(
-                    Kernel::MaxThreadsPerBlock),
-                "the dense Marlin sweep requires a structurally capable CTA cohort");
+                    Kernel::OutputThreads),
+                "the dense Marlin sweep requires a structurally capable output cohort");
   static_assert(Kernel::TileScheduler::FixupThreadCount ==
-                    Kernel::MaxThreadsPerBlock,
-                "the dense Marlin sweep must preserve the exact CTA/fixup cohort");
+                    Kernel::OutputThreads,
+                "the dense Marlin sweep must preserve the exact output/fixup cohort");
+  static_assert(Kernel::MaxThreadsPerBlock ==
+                    Kernel::OutputThreads * Kernel::WarpKCohorts,
+                "the dense Marlin sweep must account for every K cohort in the CTA");
   return run<G>(options, dense_tactic(cfg), "marlin");
 #else
 #if defined(DENSE_MARLIN_WK4_AB)

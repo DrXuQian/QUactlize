@@ -174,12 +174,16 @@ def audit(cmake: str, bench: str, dispatch: str, build: str) -> list[str]:
                 bad.append(f"Marlin sweep arm can silently fall back through {forbidden!r}")
         if not re.search(
                 r"static_assert\(\s*Kernel::TileScheduler::fixup_thread_count_capable\(\s*"
-                r"Kernel::MaxThreadsPerBlock\s*\)", arm, re.S):
-            bad.append("wrapper does not consume the production CTA capability")
+                r"Kernel::OutputThreads\s*\)", arm, re.S):
+            bad.append("wrapper does not consume the production output-cohort capability")
         if not re.search(
                 r"static_assert\(\s*Kernel::TileScheduler::FixupThreadCount\s*==\s*"
-                r"Kernel::MaxThreadsPerBlock", arm, re.S):
-            bad.append("wrapper does not preserve the exact CTA/fixup cohort binding")
+                r"Kernel::OutputThreads", arm, re.S):
+            bad.append("wrapper does not preserve the exact output/fixup cohort binding")
+        if not re.search(
+                r"static_assert\(\s*Kernel::MaxThreadsPerBlock\s*==\s*"
+                r"Kernel::OutputThreads\s*\*\s*Kernel::WarpKCohorts", arm, re.S):
+            bad.append("wrapper does not account for every K cohort in the CTA")
 
     if not re.search(r"DENSE_MARLIN_SWEEP.*?scheduler=marlin", bench, re.S):
         bad.append("benchmark provenance does not bind DENSE_MARLIN_SWEEP to scheduler=marlin")
@@ -266,10 +270,6 @@ def main() -> int:
     dispatch_plants = (
         ("runtime-marlin-switch", "#if defined(DENSE_MARLIN_SWEEP)",
          "#if defined(DENSE_MARLIN_SWEEP)\n  if (options.marlin)"),
-        ("wrapper-capability-disabled", "fixup_thread_count_capable(",
-         "fixup_thread_count_capable_removed("),
-        ("wrapper-exact-binding-reversed", "FixupThreadCount ==",
-         "FixupThreadCount !="),
     )
     for label, old, new in dispatch_plants:
         planted_text = replace_once(source["dispatch"], old, new, label, bad)
@@ -277,6 +277,25 @@ def main() -> int:
             continue
         planted = dict(source)
         planted["dispatch"] = planted_text
+        if not audit(**planted):
+            bad.append(f"contract accepted planted {label}")
+
+    arm = marlin_dispatch_arm(source["dispatch"])
+    arm_plants = (
+        ("wrapper-capability-disabled", "fixup_thread_count_capable(",
+         "fixup_thread_count_capable_removed("),
+        ("wrapper-exact-binding-reversed", "FixupThreadCount ==",
+         "FixupThreadCount !="),
+        ("wrapper-K-cohort-accounting-reversed", "MaxThreadsPerBlock ==",
+         "MaxThreadsPerBlock !="),
+    )
+    for label, old, new in arm_plants:
+        if arm.count(old) != 1:
+            bad.append(f"cannot plant {label}: expected one sweep-arm anchor, got {arm.count(old)}")
+            continue
+        planted_arm = arm.replace(old, new, 1)
+        planted = dict(source)
+        planted["dispatch"] = source["dispatch"].replace(arm, planted_arm, 1)
         if not audit(**planted):
             bad.append(f"contract accepted planted {label}")
 
@@ -323,8 +342,9 @@ def main() -> int:
         for name, (total, pre, current) in census.items()
     )
     print("[dense-marlin-sweep-contract] PASS: private host/device route, "
-          "warp-aligned 32..1024-thread capability, exact CTA/fixup binding, forced "
-          "Marlin wrappers, distinct provenance and cache rejection; ten source plants "
+          "warp-aligned 32..1024-thread capability, exact output/fixup binding, full "
+          "K-cohort accounting, forced Marlin wrappers, distinct provenance and cache rejection; "
+          "eleven source plants "
           f"rejected; recovered=w1:610,w8:1012,w16:713,w32:353; {summary}")
     return 0
 
