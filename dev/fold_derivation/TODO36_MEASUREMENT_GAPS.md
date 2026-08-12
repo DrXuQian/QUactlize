@@ -7,7 +7,7 @@ and different ways to close them.  No device result is invented here.
 | item | classification at this revision | what is already established | what is not established |
 |---|---|---|---|
 | fully-quantized prefill | **Not measured; the current repository has no production-route performance harness.** It is measurable in principle, but not by an existing command. | The packed artifact ABI, production readers, independent numerical golden, and planted metadata fault are covered.  The only timing is a small-M paired A/B: +13.1% native-scale tax. | No M=2048 timing for either shipping dense or grouped-L1 fully-quantized entry.  Neither the ~65% scale-first prefill result nor the +13.1% decode-band tax may be extrapolated to it. |
-| int4 gs=128 COARSE | **Not measured after the COARSE runtime-assert fix; measurable by the existing dense bench.** | The exact row instantiates; local layout/metadata contracts cover the COARSE/FINE boundary. | Device numerical correctness and timing on the repaired implementation.  BACKTEST B1/B2/B3 remain old-implementation targets, not current results. |
+| int4 gs=128 COARSE | **Not measured after the COARSE runtime-assert fix; measurable by the existing dense bench.** | The exact ScaleOnly row instantiates; local layout/metadata contracts cover the COARSE/FINE boundary. | Device numerical correctness and timing on the repaired ScaleOnly implementation.  BACKTEST B1/B2/B3 remain old-implementation targets, not current results. |
 | int4 gs=16 post-`w64x32` | **Measured historically; current native-dense HEAD has not been refreshed.** | `HANDOFF_TASK12.md` records 234.16 µs, followed by 228.13 → 227.35 µs, at M=2048/N=K=4096 and gs=16.  Thus the old claim that 58.7% was only arithmetic is false. | A fresh regression result through today's dense operator and generated tactic row. |
 
 ## Evidence and impact
@@ -35,8 +35,9 @@ grouped-L1 are distinct shipping entries and must be reported separately.
 The old unconditional runtime assert is gone and the row now compiles, but a
 compile is not a numerical result.  The missing run weakens every current-use
 claim based on BACKTEST B1/B2/B3 (61%/25%/56.6%).  It does **not** weaken GGUF
-shipping qtypes, whose registered group sizes are 16 or 32; it does weaken the
-generic/GPTQ-header claim that gs=128 works on the repaired path.
+shipping qtypes, whose registered group sizes are 16 or 32.  The queued mode-1
+row can establish the symmetric GPTQ/ScaleOnly gs=128 path for one B1 topology;
+it cannot establish asymmetric GPTQ/AWQ ScaleZero or refresh B2/B3.
 
 The existing dense bench can close it.  The box queue deliberately schedules
 the explicit historical B1 row before any search, so numerical failure cannot
@@ -48,9 +49,10 @@ The historical source is `HANDOFF_TASK12.md`: its post-chunking/post-`w64x32`
 table records 234.16 µs, and the later equivalence refactor records
 228.13 → 227.35 µs.  `TODO.md` already marked the gs=16 remeasurement done.
 The remaining gap is freshness and operator identity: those values came from
-the grouped-L=1 route, while current HEAD should be rechecked through the
-native dense route.  Until then the ~60% mechanism is measured historically,
-but it is not a current regression result.
+the grouped-L=1 route, while current HEAD should be checked through the native
+dense route.  Until then the ~60% mechanism is measured historically, but it
+is not a current regression result.  The new run is a cross-operator bridge;
+a changed time alone is not proof that either kernel regressed.
 
 ## Queue discipline
 

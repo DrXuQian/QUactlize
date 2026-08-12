@@ -52,9 +52,16 @@ bench.  Build in separate directories and run the explicit row before any
 search; a failing row may not be hidden by choosing another tactic.
 
 ```bash
+set -euo pipefail
 cd /sim/eec/shared/junfu.qx/quactlize
 git pull --recurse-submodules
 test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+# This is a measurement recipe, not an inherited A/B shell.  A stale switch
+# would silently select a different kernel while preserving the config label.
+unset PPU_DEFS PPU_A_PACK PPU_B_CHUNK PPU_B_CHUNK_BISECT PPU_MAXREG TSK \
+      TILE_M TILE_N WARP_M WARP_N STAGES MOE_STAGES
+export PPU_ARCHS=ppu0010
 
 TODO36=$PWD/todo36-$(git rev-parse --short=12 HEAD)
 mkdir -p "$TODO36"
@@ -68,6 +75,9 @@ test -n "$BIN128" && sha256sum "$BIN128" | tee "$TODO36/gs128.binary.sha256"
 "$BIN128" --m=2048 --n=4096 --k=4096 --l=1 --g=128 --mode=1 \
   --config='64x64x64:32x32:s4:bc0->0' --iterations=100 \
   2>&1 | tee "$TODO36/gs128-coarse.log"
+test "$(grep -Fxc '  Disposition: Passed' "$TODO36/gs128-coarse.log")" -eq 1
+test "$(grep -Fc '[CUTLASS w4 gs=128 cfg=64x64:64 w32x32 s4 bc0->0]' \
+                "$TODO36/gs128-coarse.log")" -eq 1
 
 PPU_BUILD_DIR="$TODO36/build-gs16" QUANT=int4 BENCH_GS=16 \
   TARGET=test_lowbit_dense_bench ./build.sh 2>&1 | tee "$TODO36/build-gs16.log"
@@ -76,12 +86,17 @@ test -n "$BIN16" && sha256sum "$BIN16" | tee "$TODO36/gs16.binary.sha256"
 "$BIN16" --m=2048 --n=4096 --k=4096 --l=1 --g=16 --mode=1 \
   --config='64x64x64:64x32:s3:bc0->0' --iterations=100 \
   2>&1 | tee "$TODO36/gs16-current-head.log"
+test "$(grep -Fxc '  Disposition: Passed' "$TODO36/gs16-current-head.log")" -eq 1
+test "$(grep -Fc '[CUTLASS w4 gs=16 cfg=64x64:64 w64x32 s3 bc0->0]' \
+                "$TODO36/gs16-current-head.log")" -eq 1
 ```
 
-Wanted: numerical PASS plus the complete timing line for each explicit row.
-gs=128 closes correctness/timing on repaired COARSE; gs=16 refreshes the
-historical 234.16 µs and 228.13→227.35 µs grouped-L1 measurements on the
-current native dense operator.
+Wanted: numerical PASS plus exactly one complete timing line for each explicit
+row.  The gs=128 run closes the repaired COARSE question only for this
+ScaleOnly B1 topology; it does not establish ScaleZero or refresh B2/B3.  The
+gs=16 run establishes a current native-dense bridge to the historical 234.16
+µs and 228.13→227.35 µs grouped-L1 measurements; it is not a same-operator
+regression rerun.
 
 **BLOCKED, no command yet:** fully-quantized prefill.  The production ops and
 correctness oracles exist, but no harness times the shipping route at M=2048.
