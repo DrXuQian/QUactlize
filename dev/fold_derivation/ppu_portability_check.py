@@ -25,6 +25,19 @@ DENY = re.compile(r'cuda_fp16\.h|cuda_bf16\.h|cuda_runtime\.h|cudaStream_t|cudaM
                   r'|__halves2half2|__halves2bfloat162|__nv_bfloat')
 # gemv_rt.hpp's whole job is to straddle the two runtimes, so it names both by design.
 ALLOW = {'gemv_rt.hpp'}
+# THIS IS AN APPLICABILITY BOUNDARY, NOT A PORTABILITY EXCEPTION.  These files form one local RTX5090/sm_120
+# experiment.  They are built directly by benchmarks/q4k_pdf_5090_ab.py with nvcc and NVML; they are not sources
+# of any PPU CMake target.  Treating their CUDA API as a PPU failure stopped every boxdry check before CMake.
+#
+# A bare allow-list would be dangerous: if one of these files later became PPU-reachable, the exception would hide
+# exactly the regression this check exists to catch.  _nvidia_island_errors() therefore proves both sides on every
+# run: the island still has its NVIDIA-only build contract, and no PPU CMake/source edge reaches it.
+NVIDIA_ONLY_ISLAND = {
+    'benchmarks/q4k_pdf_5090_ab.cu',
+    'benchmarks/q4k_pdf_ab_fixture.hpp',
+    'benchmarks/q4k_pdf_reconstruction.cuh',
+    'dev/fold_derivation/l146_q4k_pdf_ab_fixture.cu',
+}
 # *_cuda_probe.* is a LOCAL CUDA harness by convention and is excluded from the overlay by build.sh, so it never
 # reaches hgcc. Skipping it here is not a weakening: the two rules have to agree, and if a probe loses the suffix it
 # starts being overlaid AND starts being reported here at the same moment.
@@ -34,6 +47,50 @@ def _is_local_cuda_probe(path):
 # What the box defines. Anything guarded on something else is assumed live (conservative: reports more).
 DEFINED = {'__HGGCCC__'}
 UNDEFINED = {'ENABLE_BF16'}
+
+
+def _rel(root, path):
+    return os.path.relpath(os.path.abspath(path), os.path.abspath(root)).replace(os.sep, '/')
+
+
+def _deny_hits(path):
+    return [(ln, text) for ln, text in live_lines(path) if DENY.search(text.split('//')[0])]
+
+
+def _nvidia_island_errors(root, ppu_candidates, cmake_text, runner_text=None):
+    """Prove the exact NVIDIA-only island remains N/A to PPU rather than silently exempting it."""
+    errors = []
+    for rel in sorted(NVIDIA_ONLY_ISLAND):
+        if not os.path.isfile(os.path.join(root, rel)):
+            errors.append(f"declared NVIDIA-only source vanished: {rel}")
+
+    runner = os.path.join(root, 'benchmarks/q4k_pdf_5090_ab.py')
+    if runner_text is None and os.path.isfile(runner):
+        runner_text = open(runner, errors='replace').read()
+    runner_text = runner_text or ''
+    for token in ('nvcc', '-arch=sm_120', '-lnvidia-ml', 'compute capability {cap}'):
+        if token not in runner_text:
+            errors.append(f"NVIDIA-only Q4_K contract lost {token!r}; its PPU N/A classification is stale")
+
+    # A source named by the PPU CMake authority is PPU-reachable even if the wide source scan still labels it an
+    # island.  Basenames are unique in this tree (overlay_targets_check proves that), so a basename is sufficient
+    # and also catches both relative and generated absolute spellings.
+    for rel in sorted(NVIDIA_ONLY_ISLAND):
+        base = os.path.basename(rel)
+        if re.search(r'(?<![A-Za-z0-9_])' + re.escape(base) + r'(?![A-Za-z0-9_])', cmake_text):
+            errors.append(f"declared NVIDIA-only source became PPU-CMake-reachable: {rel}")
+
+    island_bases = {os.path.basename(p) for p in NVIDIA_ONLY_ISLAND}
+    include = re.compile(r'^\s*#\s*include\s*[\"<]([^\">]+)[\">]', re.M)
+    for path in ppu_candidates:
+        rel = _rel(root, path)
+        if rel in NVIDIA_ONLY_ISLAND or not os.path.isfile(path):
+            continue
+        text = open(path, errors='replace').read()
+        reached = sorted({os.path.basename(m.group(1)) for m in include.finditer(text)} & island_bases)
+        if reached:
+            errors.append(f"PPU candidate {rel} includes NVIDIA-only island member(s): {', '.join(reached)}")
+    return errors
 
 def live_lines(path):
     """Yield (lineno, text) for lines the box would compile, honouring #if/#else/#endif on the macros above."""
@@ -88,19 +145,28 @@ def main():
         print("  [FAIL] ppu_portability: scanned no files at all -- the source directories moved")
         return 1
 
+    cmake = os.environ.get('QUACTLIZE_CMAKE') or os.path.join(root, 'quactlize/csrc/CMakeLists.txt.in')
+    if not os.path.isfile(cmake):
+        print(f"  [FAIL] ppu_portability: PPU CMake source authority is missing: {cmake}")
+        return 1
+    island_errors = _nvidia_island_errors(root, files, open(cmake, errors='replace').read())
+    if island_errors:
+        for error in island_errors:
+            print(f"  [FAIL] ppu_portability: {error}")
+        return 1
+
     bad = 0
     for f in files:
         if os.path.basename(f) in ALLOW: continue
         if _is_local_cuda_probe(f): continue
-        for ln, text in live_lines(f):
-            s = text.split('//')[0]
-            if DENY.search(s):
-                # `root`, not `here` -- there is no `here`. This line is in the FAILURE path, which had never run,
-                # so a NameError sat in the one branch whose whole job is to report a problem: the check could only
-                # ever pass or crash. Verified below by making it fire on purpose.
-                print(f"  [FAIL] ppu_portability: {os.path.relpath(f, root)}:{ln} is NVIDIA-only in a branch "
-                      f"the box compiles:\n           {text.strip()}")
-                bad = 1
+        if _rel(root, f) in NVIDIA_ONLY_ISLAND: continue
+        for ln, text in _deny_hits(f):
+            # `root`, not `here` -- there is no `here`. This line is in the FAILURE path, which had never run,
+            # so a NameError sat in the one branch whose whole job is to report a problem: the check could only
+            # ever pass or crash. Verified below by making it fire on purpose.
+            print(f"  [FAIL] ppu_portability: {os.path.relpath(f, root)}:{ln} is NVIDIA-only in a branch "
+                  f"the box compiles:\n           {text.strip()}")
+            bad = 1
 
     # TWO SELF-CHECKS, because a portability check that silently stops matching is worse than none.
     #
@@ -112,17 +178,35 @@ def main():
     if not (os.path.exists(rt) and DENY.search(open(rt, errors='replace').read())):
         print("  [FAIL] ppu_portability: the deny list matches nothing even in gemv_rt.hpp -- vacuous check")
         return 1
-    # (2) An UNCONDITIONAL cuda include must be reported. This is the exact shape that reached the box.
+    # (2) An UNCONDITIONAL cuda include in a PPU candidate must be reported.  This is a planted REAL source defect,
+    #     not a synthetic status string; it proves the island cannot turn a new PPU regression into N/A/SKIP.
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         probe = os.path.join(td, 'probe.cuh')
         open(probe, 'w').write("#include <cuda_fp16.h>\nint x;\n")
-        if not any(DENY.search(t.split('//')[0]) for _, t in live_lines(probe)):
+        if not _deny_hits(probe):
             print("  [FAIL] ppu_portability: an unconditional cuda_fp16.h include is NOT reported -- the "
                   "liveness filter is swallowing everything")
             return 1
+        # (3) The N/A boundary itself must fail closed in both directions.  Registering an island TU with PPU CMake,
+        #     or including an island header from a PPU source, is a FAIL -- never an inherited exemption.
+        cmake_text = open(cmake, errors='replace').read()
+        planted_cmake = cmake_text + "\nq4k_pdf_5090_ab.cu\n"
+        if not any('became PPU-CMake-reachable' in e
+                   for e in _nvidia_island_errors(root, files, planted_cmake)):
+            print("  [FAIL] ppu_portability: registering the NVIDIA-only harness as a PPU source escaped")
+            return 1
+        edge = os.path.join(td, 'ppu_candidate.cuh')
+        open(edge, 'w').write('#include "q4k_pdf_reconstruction.cuh"\n')
+        if not any('includes NVIDIA-only island' in e
+                   for e in _nvidia_island_errors(root, files + [edge], cmake_text)):
+            print("  [FAIL] ppu_portability: a PPU include edge into the NVIDIA-only island escaped")
+            return 1
     if not bad:
-        print(f"  [ok]   ppu_portability: {len(files)} box-built sources are in the portable subset")
+        applicable = sum(_rel(root, f) not in NVIDIA_ONLY_ISLAND and not _is_local_cuda_probe(f)
+                         for f in files)
+        print(f"  [ok]   ppu_portability: {applicable} PPU candidates are portable; exact RTX5090 Q4_K "
+              f"island is N/A to PPU and proved unreachable; 3 planted boundary defects fail")
     return bad
 
 sys.exit(main())

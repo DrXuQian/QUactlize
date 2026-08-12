@@ -710,20 +710,16 @@ def lint_syntax_inventory():
 
 
 def lint_ppu_portability():
-    """THE BOX-BUILT SOURCES MUST BE IN THE PORTABLE SUBSET -- checked here, not only inside build.sh.
+    """PPU-reachable sources must be portable; exact NVIDIA-only islands must prove they are unreachable.
 
-    dev/fold_derivation/ppu_portability_check.py already existed and runs in under a second, but it was only
-    invoked from build.sh (line 138). The local tier reaches build.sh solely through the `boxdry` gate, and that
-    gate hangs on a googletest clone -- so in practice this check was unreachable from the tier whose entire
-    purpose is catching box failures before the box.
-
-    On 2026-08-04 that cost a round trip: benchmarks/bench_floor.cuh used cudaMalloc/cudaSuccess, the local
-    syntax gate compiled it happily (nvcc accepts the NVIDIA runtime by definition), and the box rejected it.
-    The check that would have caught it in zero seconds was sitting one directory away.
+    A directory-wide scan once classified the RTX5090-only Q4_K reconstruction as PPU code and stopped all nine
+    boxdry rows before CMake.  The checker now owns a fail-closed applicability boundary: N/A files must retain
+    their NVIDIA build contract and must remain absent from the PPU CMake/include graph.  A new CUDA spelling in
+    real PPU code is still a FAIL, and planted source/include/CMake violations prove that on every invocation.
     """
     script = ROOT / "dev" / "fold_derivation" / "ppu_portability_check.py"
     if not script.is_file():
-        return "SKIP", "no ppu_portability_check.py", 0.0
+        return "FAIL", "ppu_portability_check.py is a repository gate and is missing", 0.0
     r = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, cwd=ROOT)
     line = next((l.strip() for l in (r.stdout + r.stderr).splitlines() if l.strip()), f"exit {r.returncode}")
     return ("PASS" if r.returncode == 0 else "FAIL"), line, 0.0
@@ -1976,7 +1972,10 @@ def main():
                  ("test_lowbit_dense_marlin_ab", "DENSE_MARLIN_AB=1")),
                 ("boxdry", "generated-unit undefined reference is rejected by the real host link",
                  ("test_lowbit_dense_streamk_ab", "DENSE_STREAMK_AB=1",
-                  "BOX_DRYRUN_EXPECT_LINK_FAILURE=1")),
+                  "BOX_DRYRUN_PLANT_LINK_FAILURE=1", "BOX_DRYRUN_EXPECT_LINK_FAILURE=1")),
+                ("boxdry-negative", "a real generated-unit link defect is FAIL, never SKIP",
+                 ("test_lowbit_dense_streamk_ab", "DENSE_STREAMK_AB=1",
+                  "BOX_DRYRUN_PLANT_LINK_FAILURE=1")),
                 ("boxdry", "dense Marlin full table links every private generated device unit",
                  ("test_lowbit_dense_marlin_sweep", "DENSE_MARLIN_SWEEP=1", "BENCH_GS=128")),
                 ("boxdry", "grouped Stream-K target reaches its isolated object graph and host link",
@@ -2091,6 +2090,22 @@ def main():
             msg = next((l.strip() for l in last if "[ok]" in l or "[FAIL]" in l or "[SKIP]" in l),
                        last[-1].strip() if last else f"exit {rc}")
             return st, msg, dt
+        if kind == "boxdry-negative":
+            args = list(payload)
+            rc, log, dt = run(["bash", str(ROOT / "ci/box_build_dryrun.sh")] + args)
+            lines = [line.strip() for line in log.splitlines() if line.strip()]
+            if rc == 2:
+                why = next((line for line in lines if "[SKIP]" in line), "environment cannot run boxdry")
+                return "SKIP", why, dt
+            if rc != 1:
+                return "FAIL", f"planted link defect returned {rc}, expected the raw FAIL status 1", dt
+            if any("[SKIP]" in line for line in lines):
+                return "FAIL", "planted link defect was reported as an environment SKIP", dt
+            if not any("[FAIL]" in line for line in lines):
+                return "FAIL", "planted link defect returned 1 without an explicit FAIL verdict", dt
+            if not any("qz_boxdry_generated_unit_anchor" in line for line in lines):
+                return "FAIL", "negative arm failed for a reason other than the planted cross-TU symbol", dt
+            return "PASS", "planted cross-TU undefined symbol was classified as FAIL (raw rc=1), never SKIP", dt
         if kind == "overlay":
             rc, log, dt = run([sys.executable, str(ROOT / "dev/fold_derivation/overlay_targets_check.py")])
             last = [l for l in log.splitlines() if l.strip()]
@@ -2119,8 +2134,8 @@ def main():
     # file while the other still needs the registration, and the second reports "our CMakeLists was not reached".
     # Concurrency found that immediately, which is the right outcome; they run one at a time and everything else
     # concurrently. Bounded workers because each nvcc front end takes GBs.
-    exclusive = [i for i in items if i[0] == "boxdry"]
-    parallel = [i for i in items if i[0] != "boxdry"]
+    exclusive = [i for i in items if i[0] in ("boxdry", "boxdry-negative")]
+    parallel = [i for i in items if i[0] not in ("boxdry", "boxdry-negative")]
     got = {}
     with ThreadPoolExecutor(max_workers=min(8, (os.cpu_count() or 4))) as pool:
         futures = {id(i): pool.submit(run_one, i) for i in parallel}
@@ -2130,18 +2145,28 @@ def main():
             got[k] = f.result()
     results = [got[id(i)] for i in items]
 
-    fails = []
+    failures = []
+    skips = []
+    passes = 0
     for (kind, name, _), (st, msg, dt) in zip(items, results):
         mark = {"PASS": "ok  ", "FAIL": "FAIL", "BUILD": "BLD!", "MISSING": "MISS", "SKIP": "skip"}[st]
         print(f"  [{mark}] {kind:<8} {name:<44} {dt:5.1f}s  {msg[:88]}")
-        if st in ("FAIL", "BUILD", "MISSING") or (a.strict and st == "SKIP"):
-            fails.append(f"{kind}/{name}: {msg}" + (" (skipped, and --strict was given)" if st == "SKIP" else ""))
+        if st == "PASS":
+            passes += 1
+        elif st == "SKIP":
+            skips.append(f"{kind}/{name}: {msg}")
+        else:
+            failures.append(f"{kind}/{name}: {msg}")
     print(f"  wall clock {time.time() - t0:.0f}s")
 
-    print(f"\n== {len(items) - len(fails)}/{len(items)} passed or skipped ==")
-    for f in fails:
+    print(f"\n== PASS {passes} / SKIP {len(skips)} / FAIL {len(failures)} / TOTAL {len(items)} ==")
+    for skipped in skips:
+        print(f"   SKIPPED {skipped}")
+    for f in failures:
         print(f"   FAILED  {f}")
-    return 1 if fails else 0
+    if a.strict and skips:
+        print(f"   STRICT  {len(skips)} SKIP verdict(s) make this invocation non-green; classifications stay SKIP")
+    return 1 if failures or (a.strict and skips) else 0
 
 
 if __name__ == "__main__":

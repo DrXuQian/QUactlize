@@ -35,6 +35,7 @@ DEFS="${1:-SK_QUANT=2}"
 if [ "$#" -gt 0 ]; then shift; fi
 BUILD_ENV=("$@")
 EXPECT_LINK_FAILURE=0
+PLANT_LINK_FAILURE=0
 for _entry in "${BUILD_ENV[@]}"; do
   [[ "$_entry" =~ ^[A-Z][A-Z0-9_]*= ]] || {
     echo "  [FAIL] box_build_dryrun: extra build input is not NAME=VALUE: $_entry"; exit 1; }
@@ -43,6 +44,10 @@ for _entry in "${BUILD_ENV[@]}"; do
     BOX_DRYRUN_EXPECT_LINK_FAILURE=1) EXPECT_LINK_FAILURE=1 ;;
     BOX_DRYRUN_EXPECT_LINK_FAILURE=*)
       echo "  [FAIL] box_build_dryrun: BOX_DRYRUN_EXPECT_LINK_FAILURE must be 0 or 1"; exit 1 ;;
+    BOX_DRYRUN_PLANT_LINK_FAILURE=0) PLANT_LINK_FAILURE=0 ;;
+    BOX_DRYRUN_PLANT_LINK_FAILURE=1) PLANT_LINK_FAILURE=1 ;;
+    BOX_DRYRUN_PLANT_LINK_FAILURE=*)
+      echo "  [FAIL] box_build_dryrun: BOX_DRYRUN_PLANT_LINK_FAILURE must be 0 or 1"; exit 1 ;;
   esac
 done
 # ALWAYS A PRIVATE TEMPORARY DIRECTORY. This used to accept BOX_DRYRUN_SDK from the caller and then rm -rf it --
@@ -55,7 +60,9 @@ cleanup() { rm -rf "$SDK" "$BUILDDIR"; rm -f "$SENTINEL" "$LOG"; }
 trap cleanup EXIT
 
 command -v gcc >/dev/null 2>&1 || { echo "  [SKIP] box_build_dryrun: no gcc to build the stub SDK"; exit 2; }
+command -v g++ >/dev/null 2>&1 || { echo "  [SKIP] box_build_dryrun: no g++ for CMake's host compiler"; exit 2; }
 command -v cmake >/dev/null 2>&1 || { echo "  [SKIP] box_build_dryrun: no cmake"; exit 2; }
+command -v make >/dev/null 2>&1 || { echo "  [SKIP] box_build_dryrun: no make for the generated build"; exit 2; }
 
 # --- the stub SDK ------------------------------------------------------------------------------------------------
 mkdir -p "$SDK/targets/x86_64-linux/include" "$SDK/include" "$SDK/lib" "$SDK/bin"
@@ -83,7 +90,7 @@ mkdir -p "$SDK/targets/x86_64-linux/include" "$SDK/include" "$SDK/lib" "$SDK/bin
     '    ;;' \
     '  *)' \
     '    printf "%s\n" "int __attribute__((weak)) main(void) { return 0; }" > "$body"' \
-    '    if [ "${BOX_DRYRUN_EXPECT_LINK_FAILURE:-0}" != 1 ]; then' \
+    '    if [ "${BOX_DRYRUN_PLANT_LINK_FAILURE:-0}" != 1 ]; then' \
     '      printf "%s\n" "void __attribute__((weak)) qz_boxdry_generated_unit_anchor(void) {}" >> "$body"' \
     '    fi' \
     '    ;;' \
@@ -112,7 +119,15 @@ fail() { echo "  [FAIL] box_build_dryrun: $1"; echo "         last lines of the 
 
 # 1. cmake must have PROCESSED OUR CMakeLists. This message comes from it and from nowhere else, so its absence
 #    means the example was never add_subdirectory'd -- the exact failure this check was written for.
-grep -q "PPU_EXTRA_DEFS ->" "$LOG" || fail "cmake never reported PPU_EXTRA_DEFS -- our CMakeLists was not reached, so the example is not registered in actlize's foreach list"
+if ! grep -q "PPU_EXTRA_DEFS ->" "$LOG"; then
+  if [ "$rc" -ne 0 ]; then
+    # Do not overwrite a real pre-CMake verdict with the old registration diagnosis.  A portability/generator/
+    # source-authority failure is a repository FAIL, not an environment SKIP and not evidence about registration.
+    _cause="$(grep -m1 -E '\[FAIL\]|(^|[[:space:]])(ERROR|Error):' "$LOG" || true)"
+    fail "build.sh failed before the CMake target witness${_cause:+: $_cause}"
+  fi
+  fail "build succeeded without the PPU_EXTRA_DEFS witness -- our CMakeLists was not reached"
+fi
 
 # 2. the target must EXIST in the real build system, not in a scratch tree with stubbed helpers.
 BM="$(find "$BUILDDIR" -path "*${TARGET}.dir/build.make" 2>/dev/null | head -1)"
@@ -152,6 +167,7 @@ _unit_n="$(grep -c 'unit[^ ]*\.cu' "$SENTINEL" || true)"
 # 5. LINK IS A VERDICT, not an expected casualty of the stub.  The planted mode is the negative arm: it is valid only
 #    for a generated-unit target and only when the real linker names the deliberately absent cross-TU anchor.
 if [ "$EXPECT_LINK_FAILURE" = 1 ]; then
+  [ "$PLANT_LINK_FAILURE" = 1 ] || fail "link-failure expectation was set without planting the missing symbol"
   [ "$_unit_n" -gt 0 ] || fail "link-failure control selected a target with no generated unit"
   [ "$rc" -ne 0 ] || fail "link-failure control unexpectedly produced a binary"
   grep -q 'qz_boxdry_generated_unit_anchor' "$LOG" || \
@@ -159,6 +175,8 @@ if [ "$EXPECT_LINK_FAILURE" = 1 ]; then
   echo "  [ok]   box_build_dryrun: planted generated-unit undefined reference reached the real host linker and was rejected"
   exit 0
 fi
+
+[ "$PLANT_LINK_FAILURE" = 0 ] || fail "planted generated-unit undefined reference was not declared as expected"
 
 [ "$rc" -eq 0 ] || fail "compile objects were emitted but the real host link failed"
 BIN="$(find "$BUILDDIR" -type f -name "$TARGET" -perm -u+x -print -quit 2>/dev/null)"
