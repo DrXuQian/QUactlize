@@ -687,6 +687,17 @@ FOR stream-K, not against.
 
 ## GEMV on the box: ALU-bound, not bandwidth-bound -- and it does NOT beat the tensor-core GEMM at decode (2026-07-30)
 
+> **Superseded by the 2026-08-03 retune.**  Keep this table as the pre-retune
+> historical record, but use `docs/BACKTEST.md` D1--D3 for current GEMV
+> numbers.  The same config family improved from 22.27 us here to 16.05 us;
+> this is a retune, not a different shape.  Current D1 GEMV (16.05 us,
+> 47.4%) and D9 tensor-core GEMM (16.49 us, 46.0%) are effectively tied, with
+> GEMV ahead by 2.7%.  Consequently this table no longer supports either the
+> old "GEMV is 7% slower" statement or a strong claim that a larger grid is
+> ineffective.  The bit-width cluster still supports the narrower conclusion
+> below: this GEMV family is governed by per-element ALU/latency work rather
+> than HBM bytes.
+
 First real numbers for the CUDA-core GEMV, 42 generated units, ppu001.
 
 ### The decode band, shape [0] = L=8 active experts x 1 row, N=K=2048, gs=32, ScaleZero
