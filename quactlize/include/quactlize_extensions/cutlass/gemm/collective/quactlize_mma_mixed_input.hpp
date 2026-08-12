@@ -1137,20 +1137,38 @@ public:
                   "main-M permutation must cover one compute atom per M warp");
     using ShadowPermutationM = Int<warpOnM() * 16>;
 
+    static constexpr int WarpKCohorts = int(warpOnK{});
+    static_assert(WarpKCohorts == 1 || WarpKCohorts == 4,
+                  "B two-source delivery is not yet proved for this K-cohort count");
+    // L138 proves that the classic 2N x 4K compute topology is not fed by a
+    // four-K-cohort int8 shadow.  Each compute fragment is assembled from two
+    // K2 shadow fragments with the SAME PermK=64.  WK=1 deliberately retains
+    // the old one-source type and code path below; do not merge these types
+    // into a formula whose WK1 spelling could drift.
+    using ShadowWarpOnK = cute::conditional_t<WarpKCohorts == 4, Int<2>, warpOnK>;
+    using ShadowPermutationK = cute::conditional_t<WarpKCohorts == 4, Int<64>, Int<32 * warpOnK()>>;
     using TiledMma_S8 = TiledMMA<
 #if defined(__HGGC_ARCH__) && __HGGC_ARCH__ == 100
         MMA_Atom<PPU0010_16x16x32_S32S8S8S32_TN>,
 #else
         MMA_Atom<PPU0015_16x16x32_S32S8S8S32_TN>,
 #endif
-        Layout<Shape<warpOnM, warpOnN, warpOnK>>,
+        Layout<Shape<warpOnM, warpOnN, ShadowWarpOnK>>,
         // The int8 shadow atom covers 32 logical K codes.  Its permutation
         // must span every compute K cohort; changing AtomLayout.K alone leaves
         // valid-looking fragments with holes (L123's stale-shadow negative).
-        Tile<ShadowPermutationM, PermutationN, Int<32 * warpOnK()>>>;
+        Tile<ShadowPermutationM, PermutationN, ShadowPermutationK>>;
 
     TiledMma_S8 tiled_mma_s8;
-    auto thr_mma_s8 = tiled_mma_s8.get_thread_slice(thread_idx);
+    auto compute_vmnk = tiled_mma.get_thr_layout_vmnk().get_flat_coord(thread_idx);
+    auto shadow_thread = [&] (int shadow_k) {
+      return int(tiled_mma_s8.get_thr_layout_vmnk()(make_coord(
+          get<0>(compute_vmnk), get<1>(compute_vmnk), get<2>(compute_vmnk), shadow_k)));
+    };
+    int const shadow_thread_0 = WarpKCohorts == 4 ? shadow_thread(0) : thread_idx;
+    int const shadow_thread_1 = WarpKCohorts == 4 ? shadow_thread(1) : shadow_thread_0;
+    auto thr_mma_s8 = tiled_mma_s8.get_thread_slice(shadow_thread_0);
+    auto thr_mma_s8_peer = tiled_mma_s8.get_thread_slice(shadow_thread_1);
 
     auto smem_tiled_copy_A = make_tiled_copy_A(SmemCopyAtomA{}, tiled_mma);
     auto smem_thr_copy_A   = smem_tiled_copy_A.get_thread_slice(aiu_warp_group_thread_idx);
@@ -1161,12 +1179,17 @@ public:
     CUTE_STATIC_ASSERT_V(size<2>(tCsA) == size<2>(tCrA_copy_view));            // CPY_K
 
     auto sB_s8 = recast<int8_t>(sB);
-    Tensor tCrB_load =thr_mma_s8.partition_fragment_B(sB_s8(_,_,0));
+    Tensor tCrB_load = thr_mma_s8.partition_fragment_B(sB_s8(_,_,0));
+    Tensor tCrB_load_peer = thr_mma_s8_peer.partition_fragment_B(sB_s8(_,_,0));
 
     auto smem_tiled_copy_B = make_tiled_copy_B(SmemCopyAtomB{}, tiled_mma_s8);
     auto smem_thr_copy_B   = smem_tiled_copy_B.get_thread_slice(aiu_warp_group_thread_idx);
     Tensor tCsB            = smem_thr_copy_B.partition_S(make_mix_tensor_like(sB_s8));             // (CPY,CPY_N,CPY_K,PIPE)
     Tensor tCrB_copy_view  = smem_thr_copy_B.retile_D(tCrB_load);                                  // (CPY,CPY_N,CPY_K)
+    auto smem_thr_copy_B_peer = smem_tiled_copy_B.get_thread_slice(
+        WarpKCohorts == 4 ? (shadow_thread_1 / 32) * 32 : aiu_warp_group_thread_idx);
+    Tensor tCsB_peer = smem_thr_copy_B_peer.partition_S(make_mix_tensor_like(sB_s8));
+    Tensor tCrB_copy_view_peer = smem_thr_copy_B_peer.retile_D(tCrB_load_peer);
     CUTE_STATIC_ASSERT_V(size<1>(tCsB) == size<1>(tCrB_copy_view));            // CPY_N
     CUTE_STATIC_ASSERT_V(size<2>(tCsB) == size<2>(tCrB_copy_view));            // CPY_K
 
@@ -1224,12 +1247,17 @@ public:
     auto prepare = [&] (auto k_block, int read_stage, auto) {
       copy_B_and_extra_info(smem_tiled_copy_B, tCsB, tCrB_copy_view,
           partitioned_extra_info, copy_partitions_extra_info, k_block, read_stage);
+      if constexpr (WarpKCohorts == 4) {
+        copy(smem_tiled_copy_B, tCsB_peer(_,_,k_block,read_stage),
+             tCrB_copy_view_peer(_,_,k_block));
+      }
       // NO M-PINNING LOOP HERE, and that is a measured decision. CPY_M = size<1>(tCsA) is 1 both with and without
       // PPU_A_CUBE_H (fold_derivation/l77), so M does not live on mode 1 and a loop over it is a no-op. With
       // CUBE_H=1 cute instead moves mode 2 from basis 2 to basis 0 with stride 64 and halves the A register
       // fragment (ArrayEngine 128 -> 64, with a stride-0 component), i.e. it re-derives the geometry itself.
       copy(smem_tiled_copy_A, tCsA_p(_,_,k_block), tCrA_copy_view(_,_,k_block));
-      transform_B_kblock<RealInternalElementB>(tCrB_copy_view, tCrB_mma, partitioned_extra_info, k_block,
+      transform_B_kblock<RealInternalElementB>(tCrB_copy_view, tCrB_copy_view_peer,
+          tCrB_mma, partitioned_extra_info, k_block,
           K_ATOM_PER_COPY, copy_partitions_extra_info, read_stage, scale_pf);
     };
     auto prefetch = [&] (auto k_tile, int write_stage) {
@@ -1990,6 +2018,7 @@ private:
   // This needs tiled_copy_and_views (smem_tiled_copy_S + reg-copy dst views) + read_stage, so both are passed in.
   template <typename RealInternalElementB,
             class TCrB_load,
+            class TCrB_load_peer,
             class TCrB_mma,
             int K_ATOM_PER_COPY,
             class... Ts,
@@ -1999,6 +2028,7 @@ private:
   CUTLASS_DEVICE
   void transform_B_kblock(
     TCrB_load const& tCrB_load,
+    TCrB_load_peer const& tCrB_load_peer,
     TCrB_mma& tCrB_mma,
     cute::tuple<Ts...>& partitioned_extra_info,
     // KBlockT, NOT int: the callers already hold a static k_block (for_each gives Int<x>, and k_block_next is
@@ -2018,6 +2048,8 @@ private:
     Tensor cvt_in  = recast<RealInternalElementB>(tCrB_load(_, _, k_block));
     Tensor cvt_out = make_tensor(tCrB_mma(_, _, k_block * K_ATOM_PER_COPY).data(), cvt_in.layout());
 
+    constexpr int WarpKCohorts = int(size<3>(TiledMma{}.get_thr_layout_vmnk()));
+
     using CPY_VEC = Int<4 * 32 / sizeof_bits<RealInternalElementB>::value>;
 #if defined(PPU_B_DEQUANT_NOP) && (PPU_B_DEQUANT_NOP != 0)
     // Nothing. The earlier version copied one 32-bit word of cvt_in into cvt_out to keep the B load alive, on the
@@ -2026,7 +2058,50 @@ private:
     // not need that crutch: it is a TSM_LD_SWZL implemented as asm volatile, so it survives its results going unused.
     (void)cvt_in; (void)cvt_out;
 #else
-    convert_tensor(cvt_in, cvt_out, CPY_VEC{});
+    if constexpr (WarpKCohorts == 1) {
+      // Permanent compatibility arm.  This is the shipping converter call,
+      // kept as a distinct branch so adding K cohorts cannot perturb its
+      // source layout, destination layout, or instruction sequence.
+      convert_tensor(cvt_in, cvt_out, CPY_VEC{});
+    }
+    else {
+      static_assert(WarpKCohorts == 4,
+                    "two-source B delivery is not yet proved outside four K cohorts");
+      static_assert(std::is_same_v<RealInternalElementB, cutlass::int4b_t>,
+                    "two-source B delivery is first proved only for ordinary int4");
+      static_assert(size(decltype(cvt_in.layout()){}) == 128,
+                    "each K2 shadow source must hold 128 int4 codes");
+      static_assert(size<0>(typename TCrB_mma::layout_type{}) == 8 &&
+                    size<1>(typename TCrB_mma::layout_type{}) == 4 &&
+                    size<2>(typename TCrB_mma::layout_type{}) == 2,
+                    "L138 target compute fragment must be (8,4,2) = 64 fp16 values");
+
+      Tensor cvt_in_peer = recast<RealInternalElementB>(tCrB_load_peer(_, _, k_block));
+      uint32_t const* source0 = reinterpret_cast<uint32_t const*>(
+          raw_pointer_cast(cvt_in.data()));
+      uint32_t const* source1 = reinterpret_cast<uint32_t const*>(
+          raw_pointer_cast(cvt_in_peer.data()));
+      uint32_t* output = reinterpret_cast<uint32_t*>(
+          raw_pointer_cast(tCrB_mma(_, _, k_block * K_ATOM_PER_COPY).data()));
+
+      // L138's real partition_S -> retile_D objects establish two facts:
+      // (1) each source contributes exactly 32 codes, and (2) source order is
+      // K2 cohort 0 followed by cohort 1. The source converter is therefore
+      // the production 32-code int4 converter, once per source. L142 binds the
+      // two contiguous destination groups below to the REAL collective
+      // fragment; its compact-s16 counterfeit is a permanent negative.
+      using Source = cutlass::Array<cutlass::int4b_t, 32>;
+      using Converted = cutlass::Array<cutlass::half_t, 32>;
+      using Converter = cutlass::MixGemmNumericArrayConverter<
+          cutlass::half_t, cutlass::int4b_t, 32>;
+      static_assert(sizeof(Source) == 16 && sizeof(Converted) == 64);
+      auto convert_source = [&] (uint32_t const* source, int destination_group) {
+        auto values = Converter::convert(*reinterpret_cast<Source const*>(source));
+        *reinterpret_cast<Converted*>(output + 16 * destination_group) = values;
+      };
+      convert_source(source0, 0);
+      convert_source(source1, 1);
+    }
 #endif
 
     constexpr int MMA_KA_ = decltype(cute::size<2>(tCrB_mma))::value;   // total mma-K atoms in the tile

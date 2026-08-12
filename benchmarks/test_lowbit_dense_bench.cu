@@ -427,7 +427,11 @@ inline bench_measure::Tactic dense_fixed_tactic() {
 // Each scheduler A/B target deliberately instantiates exactly one row.  These are mechanism
 // experiments, not truncated tactic searches; a separate registry identity prevents a
 // one-row result from being mistaken for the winner of the full dense table.
-#if defined(DENSE_MARLIN_AB)
+#if defined(DENSE_MARLIN_WK4_AB)
+#define LOWBIT_DENSE_TABLE_FILE                 "marlin-wk4-aligned-single-row"
+#define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    "marlin-wk4-aligned"
+#define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  "marlin-wk4-aligned"
+#elif defined(DENSE_MARLIN_AB)
 #define LOWBIT_DENSE_TABLE_FILE                 "marlin-ab-single-row"
 #define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    "marlin-ab"
 #define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  "marlin-ab"
@@ -511,6 +515,19 @@ inline void print_dense_table_provenance() {
   std::printf("[dense-table] file=%s rows=%d space_fnv1a64=%s emitter_fnv1a64=%s\n",
               LOWBIT_DENSE_TABLE_FILE, kLowbitDenseConfigRows,
               LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64, LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64);
+#if defined(DENSE_MARLIN_WK4_AB)
+  static_assert(cutlass::sizeof_bits<QuantType>::value == 4 &&
+                    DENSE_AB_ARTIFACT_TK == 64 && DENSE_AB_TM == 16 &&
+                    DENSE_AB_TN == 128 && DENSE_AB_TK == 128 &&
+                    DENSE_AB_WM == 16 && DENSE_AB_WN == 64 &&
+                    DENSE_AB_WARP_K == 32 && DENSE_AB_ST == 4,
+                "classic-aligned provenance must describe its exact compiled type");
+  std::printf(
+      "[dense-marlin-aligned] scheduler=marlin-only topology=1Mx2Nx4K "
+      "cta_threads=256 output_cohort_threads=64 warp_k_extent=32 warp_k_cohorts=4 "
+      "tile=16x128x128 warp=16x64x32 stages=4 bits=4 fold=1 "
+      "artifact_tile_k=64 artifact_axis=WarpK32\n");
+#endif
 #endif
 }
 #endif
@@ -660,10 +677,10 @@ struct Options {
       << "  --alpha=<f32>               Epilogue scalar alpha\n"
       << "  --beta=<f32>                Epilogue scalar beta\n\n"
       << "  --iterations=<int>          Number of profiling iterations to perform.\n\n";
-#if defined(DENSE_SCHEDULER_AB)
+#if defined(DENSE_SCHEDULER_AB) && !defined(DENSE_MARLIN_WK4_AB)
     out << "  --persistent                Use the dense persistent scheduler A/B arm.\n";
 #endif
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_AB) && !defined(DENSE_MARLIN_WK4_AB)
     out << "  --streamk                   Use deterministic dense Stream-K (splits=1).\n"
         << "  --streamk_gate              Also require fixup witness + CPU FP32 golden.\n"
         << "  --streamk_split_gate        Fail closed unless lowered Params contain a real cross-CTA seam.\n"
@@ -672,6 +689,10 @@ struct Options {
 #if defined(DENSE_MARLIN_AB)
     out << "  --marlin                    Use the independent Marlin CTA-stripe scheduler.\n"
         << "  --marlin-blocks-per-cu=<n>  Marlin launch multiplier (1..this kernel's runtime occupancy; default 1).\n";
+#if defined(DENSE_MARLIN_WK4_AB)
+    out << "  --streamk_exact_fixture     Required: exact decode fixture for 8-launch lock fingerprints.\n"
+        << "  build identity              Marlin-only 1M x 2N x 4K / 256-thread / WarpK4; DP and Stream-K are rejected.\n";
+#endif
 #endif
 #if defined(DENSE_MARLIN_SWEEP)
     out << "  scheduler=marlin            Fixed at build time for every compiled table row; "
@@ -1566,11 +1587,56 @@ DenseFixtureEvidence initialize(Options const& options) {
     exit(-1);
   }
   for (int b = 0; b < batch; b++) {
+#if defined(DENSE_MARLIN_WK4_AB)
+    // The classic-aligned 2N x 4K consumer has a proved, distinct offline
+    // byte map.  Reusing preprocess_weights_for_mixed_gemm here would silently
+    // feed the shipping WK1 artifact to a WK4 tactic: both buffers have the
+    // same size, so allocation and stride checks cannot catch that error.
+    static_assert(cutlass::sizeof_bits<QuantType>::value == 4 &&
+                      DENSE_AB_TM == 16 && DENSE_AB_TN == 128 &&
+                      DENSE_AB_TK == 128 && DENSE_AB_WM == 16 &&
+                      DENSE_AB_WN == 64 && DENSE_AB_WARP_K == 32 &&
+                      DENSE_AB_ARTIFACT_TK == 64,
+                  "WK4 preprocessing is enabled only for the L138/L141-proved int4 artifact");
+    std::vector<uint8_t> q(size_t(row) * col);
+    auto logical_b = tensor_B.host_view();
+    for (int k = 0; k < col; ++k) {
+      for (int n = 0; n < row; ++n) {
+        // tensor_B is signed int4.  MixGemmEmit consumes the biased nibble;
+        // this is the same (sign_extend(v)+8) mod 16 transform used by the
+        // shipping preprocess, expressed at logical [K,N] coordinates.
+        int const signed_q = int(logical_b.at({k, b * row + n}));
+        q[size_t(k) * row + n] = uint8_t((signed_q + 8) & 15);
+      }
+    }
+    size_t const artifact_bytes = size_t(row) * col / 2;
+    int8_t* const dst = reinterpret_cast<int8_t*>(block_B_buff.host_data()) +
+                        size_t(b) * artifact_bytes;
+    xplane::place_derived_warp_k<4, 16, 128, 128, 16, 64, 1,
+                                 32, 64>(dst, q, row, col);
+    std::vector<uint8_t> recovered;
+    xplane::recover_derived_warp_k<4, 16, 128, 128, 16, 64, 1,
+                                   32, 64>(dst, recovered, row, col);
+    size_t roundtrip_bad = recovered.size() != q.size();
+    if (!roundtrip_bad) {
+      for (size_t i = 0; i < q.size(); ++i) roundtrip_bad += q[i] != recovered[i];
+    }
+    std::printf(
+        "  [dense marlin aligned artifact] batch=%d bytes=%zu "
+        "placement=WK4 artifact_tile_k=64 roundtrip_bad=%zu/%zu\n",
+        b, artifact_bytes, roundtrip_bad, q.size());
+    if (roundtrip_bad != 0) {
+      std::fprintf(stderr,
+                   "classic-aligned WK4 artifact failed its host roundtrip\n");
+      std::exit(1);
+    }
+#else
     int64_t batch_offset = b * row * col;
     // preprocess_weights_for_mixed_gemm<is_rowmajor, -1>((int8_t*)(&block_B_buff.host_data()[batch_offset]),
     preprocess_weights_for_mixed_gemm<is_rowmajor, 256>((int8_t*)(&block_B_buff.host_data()[batch_offset]),
         (int8_t*)(&tensor_B.host_data()[batch_offset]),
         {static_cast<size_t>(col), static_cast<size_t>(row)}, quant_type);
+#endif
   }
   block_B_buff.sync_device();
   return fixture_evidence;
@@ -3480,7 +3546,52 @@ int main(int argc, char const **args) {
   options.parse(argc, args);
   print_dense_table_provenance();
 
-#if defined(DENSE_MARLIN_SWEEP)
+#if defined(DENSE_MARLIN_WK4_AB)
+  // This binary contains one classic-aligned Marlin type.  Its four K
+  // cohorts require the CTA-local reduction in MarlinMixedInputKernel, so a
+  // DP, persistent or Stream-K launch would be numerically invalid rather
+  // than a useful A/B arm.  Fail at the host boundary and keep the generated
+  // wrapper compile-time Marlin-only as the second line of defence.
+  if (!options.help && !options.list_configs) {
+    if (!options.marlin || options.persistent || options.streamk ||
+        options.streamk_gate || options.streamk_split_gate) {
+      std::fprintf(
+          stderr,
+          "test_lowbit_dense_marlin_wk4_ab is Marlin-only: pass --marlin; "
+          "DP, persistent and Stream-K arms are not valid for a 4K-cohort CTA\n");
+      return 1;
+    }
+    if (!options.streamk_exact_fixture) {
+      std::fprintf(
+          stderr,
+          "test_lowbit_dense_marlin_wk4_ab requires --streamk_exact_fixture "
+          "so every measured point also runs the 8-launch bit-exact lock fingerprint\n");
+      return 1;
+    }
+    if (options.mode != GemmMode::ScaleOnly || options.g != 128 ||
+        options.m != 1 || options.n <= 0 || options.n % DENSE_AB_TN != 0 ||
+        options.k != 4096 || options.l != 1 || options.alpha != 1.0f ||
+        options.beta != 0.0f) {
+      std::fprintf(
+          stderr,
+          "classic-aligned decode requires --m=1 --n=<positive multiple of 128> "
+          "--k=4096 --l=1 --g=128 --mode=1 --alpha=1 --beta=0\n");
+      return 1;
+    }
+    if (options.xcheck || options.search_configs ||
+        !options.tactic_file.empty() || !options.save_tactic_file.empty()) {
+      std::fprintf(
+          stderr,
+          "classic-aligned target is one explicit Marlin type; xcheck, tactic "
+          "search and ordinary tactic caches are rejected\n");
+      return 1;
+    }
+    if (options.marlin_blocks_per_cu < 1) {
+      std::fprintf(stderr, "--marlin-blocks-per-cu must be positive\n");
+      return 1;
+    }
+  }
+#elif defined(DENSE_MARLIN_SWEEP)
   // This binary's registry and every generated wrapper are compile-time
   // Marlin.  Runtime scheduler flags would only create a false identity, and
   // the ordinary dense cache key has no scheduler field, so both cache load
@@ -3782,7 +3893,12 @@ int main(int argc, char const **args) {
   }
   if (name.empty()) name = supported_configs().front().name;
   Result const final_result = run_config(options, find_config(name));
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_MARLIN_WK4_AB)
+  // Unlike the historical generic dense bench, this is a correctness and
+  // performance gate for one exact kernel.  A failed artifact roundtrip,
+  // golden, occupancy check or 8-launch lock fingerprint is the process rc.
+  return final_result.passed ? 0 : 1;
+#elif defined(DENSE_STREAMK_AB)
   // The 107b target is a mechanism/numerical gate, not a sweep that may skip
   // an unsupported candidate.  Propagate every decomposition, witness,
   // golden, event, or correctness failure to the operator and automation.

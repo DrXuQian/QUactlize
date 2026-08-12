@@ -21,6 +21,30 @@ static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
                 "the dense Marlin sweep must preserve the exact CTA/fixup cohort");
   return run<G>(options, dense_tactic(cfg), "marlin");
 #else
+#if defined(DENSE_MARLIN_WK4_AB)
+  // The classic-aligned target is a Marlin-only kernel, not a fourth runtime
+  // arm on the historical one-row A/B binary.  In particular, a TiledMma
+  // with four K cohorts is not a valid DP/Stream-K result: those kernels do
+  // not perform the CTA-local K reduction.  main() independently requires
+  // --marlin; keeping the wrapper compile-time Marlin-only prevents a future
+  // CLI regression from silently launching one of those numerically invalid
+  // alternatives.
+  static_assert(GroupSize == 128 && TM == 16 && TN == 128 && TK == 128 &&
+                    WM == 16 && WN == 64 && ST == 4,
+                "the first classic-aligned target is the exact int4 gs128 2N x 4K tactic");
+  static_assert(DENSE_AB_WARP_K == 32,
+                "classic-aligned WarpK is the per-warp K extent 32");
+  using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST,
+                         DENSE_AB_WARP_K>::MarlinGemm;
+  using Kernel = typename G::GemmKernel;
+  static_assert(Kernel::WarpKCohorts == 4 &&
+                    Kernel::MaxThreadsPerBlock == 256 &&
+                    Kernel::OutputThreads == 64,
+                "classic alignment must be 1M x 2N x 4K = 8 warps with a 64-thread output cohort");
+  static_assert(Kernel::TileScheduler::FixupThreadCount == 64,
+                "cross-CTA fixup must use the exact surviving K0 cohort");
+  return run<G>(options, dense_tactic(cfg), "marlin");
+#else
 #if defined(DENSE_MARLIN_AB)
   if (options.marlin) {
     using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::MarlinGemm;
@@ -41,6 +65,7 @@ static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
 #endif
   using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::Gemm;
   return run<G>(options, dense_tactic(cfg), "non-persistent");
+#endif
 #endif
 }
 
@@ -74,11 +99,17 @@ static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
 #else
 #define LOWBIT_DENSE_TAG_GS 16
 #endif
+#if defined(DENSE_MARLIN_WK4_AB)
+#define LOWBIT_DENSE_CFG_WARP_K , DENSE_AB_WARP_K
+#else
+#define LOWBIT_DENSE_CFG_WARP_K
+#endif
 // The tag reads the instantiated policy descriptor.  The request macro is not evidence that the collective took
 // the path: ordinary/folded/two-plane builders expose one unified atom_at_a_time witness through Descriptor.
 #define LOWBIT_DENSE_DEFINE_WRAPPER(FN,TM,TN,TK,WM,WN,ST,BC) \
   int FN##_effective() { \
-    using TagCfg = Cfg<LOWBIT_DENSE_TAG_GS,TM,TN,TK,WM,WN,ST>; \
+    /* The tag's policy must be the policy the wrapper instantiates. */ \
+    using TagCfg = Cfg<LOWBIT_DENSE_TAG_GS,TM,TN,TK,WM,WN,ST LOWBIT_DENSE_CFG_WARP_K>; \
     return TagCfg::Policy::Descriptor::atom_at_a_time ? 1 : 0; \
   } \
   char const* FN##_tag() { \
@@ -106,3 +137,4 @@ LOWBIT_DENSE_UNIT_CONFIGS(LOWBIT_DENSE_DEFINE_WRAPPER)
 #undef LOWBIT_DENSE_CASE_32
 #undef LOWBIT_DENSE_CASE_16
 #undef LOWBIT_DENSE_TAG_GS
+#undef LOWBIT_DENSE_CFG_WARP_K

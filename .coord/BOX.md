@@ -1414,3 +1414,83 @@ two real FNV hashes under `source_*_fnv1a64`.  The list must contain exactly
 that the emitted PPU device types compile; it does not establish named-barrier
 progress, numerical correctness, occupancy, or speed.  This is not a
 performance result and must not be reported as one.
+
+---
+
+## Classic-aligned dense Marlin — 2N x 4K target and occupancy ladder
+
+This is a new, isolated target.  It does **not** replace the measured
+`test_lowbit_dense_marlin_ab` 4N x 1K/stages-3 control.  Its exact compiled
+identity is ordinary int4 F1, Tile `16x128x128`, Warp `16x64x32`, stages 4,
+ArtifactTileK 64: `1M x 2N x 4K`, 8 warps / 256 threads, with a 64-thread K0
+output/fixup cohort.  DP and Stream-K are numerically invalid for this
+four-K-cohort CTA and the binary rejects them; do not substitute either arm.
+
+The local prerequisites are `run_l138`, `run_l139`, `run_l140`, `run_l141`,
+and `run_l143`.  They prove two-source delivery, the CTA-local FP32 reduction,
+the exact type, the distinct WK4 artifact plus stale-WK1 negative, and the
+isolated build/CLI route.  They do not prove device progress or speed.
+
+    set -euo pipefail
+    cd /sim/eec/shared/junfu.qx/quactlize
+    git pull --ff-only origin develop
+    git submodule update --init --recursive
+    unset PPU_A_PACK PPU_B_CHUNK PPU_B_CHUNK_BISECT PPU_MAXREG PPU_DEFS
+
+    bash tools/run_dense_marlin_wk4_box.sh | tee /tmp/dense_marlin_wk4_box.log
+    WK4_ROOT=$(sed -n 's/^\[marlin-wk4\] artifacts=//p' \
+      /tmp/dense_marlin_wk4_box.log | tail -1)
+    WK4_BIN=$(sed -n 's/^\[marlin-wk4\] binary=//p' \
+      /tmp/dense_marlin_wk4_box.log | tail -1)
+    WK4_CAP=$(sed -n 's/^\[marlin-wk4\] exact instantiated-kernel B cap=//p' \
+      /tmp/dense_marlin_wk4_box.log | tail -1)
+    test -n "$WK4_ROOT" && test -d "$WK4_ROOT"
+    test -n "$WK4_BIN" && test -x "$WK4_BIN"
+    test -n "$WK4_CAP"
+
+The script runs B=1 without an explicit override (the default-compatibility
+arm), then B in `{2,4,6}` only when `B <= Gemm::maximum_active_blocks()` for
+this exact instantiated kernel.  Over-cap requested rungs must print `NOT RUN`;
+the script separately asks for `cap+1` and requires the host-side exact-cap
+rejection before launch.  Every supported B must report:
+
+- the `scheduler=marlin-only topology=1Mx2Nx4K` provenance line;
+- WK4 artifact `roundtrip_bad=0` (stale shipping WK1 bytes are not admissible);
+- 20 independent event-pair kernel spans;
+- the full decomposition/grid including `blocks_per_cu`, handoffs and 256
+  threads / 8 warps per CTA;
+- eight stable, raw-bit-exact same-workspace lock fingerprints with no host
+  lock reset.
+
+Only after that correctness/performance run, collect ACU counters for the B
+values the runtime cap admitted.  ACU is counter-only; its instrumented time
+is not a performance result.
+
+    ACU=/sim/eec/shared/junfu.qx/asight/bin/acu
+    test -x "$ACU"
+    ACU_DIR=$(mktemp -d /tmp/dense-marlin-wk4-acu.XXXXXX)
+    for B in 1 2 4 6; do
+      if [ "$B" -gt "$WK4_CAP" ]; then
+        echo "ACU NOT RUN: B=$B exceeds exact cap=$WK4_CAP"
+        continue
+      fi
+      BFLAG=()
+      [ "$B" -eq 1 ] || BFLAG=("--marlin-blocks-per-cu=$B")
+      "$ACU" -f -o "$ACU_DIR/wk4-b${B}.report" --set full "$WK4_BIN" \
+        --marlin --streamk_exact_fixture \
+        --m=1 --n=4096 --k=4096 --l=1 --g=128 --mode=1 \
+        --alpha=1 --beta=0 --iterations=1 "${BFLAG[@]}"
+      "$ACU" --import "$ACU_DIR/wk4-b${B}.report" --csv --page details \
+        > "$ACU_DIR/wk4-b${B}.details.csv"
+    done
+    echo "classic-aligned ACU artifacts: $ACU_DIR"
+
+Bind each CSV row to the production Marlin kernel/grid; exclude initialization,
+golden, warmup and eight fingerprint launches.  Return, per supported B: the
+20-event median/mean/min/max/spread from the first run, achieved warp/CU,
+registers/thread, block limits, handoffs, Instruction Fetch, AMC, Sync, Memory
+Dependency, and executed `v.mma...` / `v.mov.v2s`.  Compare the aligned B=1
+time first to the standalone classic anchor `17.8 us / 17.5% nameplate`; only
+then interpret the B ladder.  If a CSV value conflicts with the manually copied
+ACU dataset, request a re-check of the copied field rather than changing the
+model from one transcription discrepancy.
