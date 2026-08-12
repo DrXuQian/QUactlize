@@ -56,7 +56,6 @@ HARNESS_PATHS = {
     "test_w1a16_diag": [FP16_P], "test_w2a16_diag": [FP16_P], "test_w4a16_diag": [FP16_P],
     "test_fpA_kquant_dense": [SCALE_DENSE_P],
     "test_gemv_lowbit": [GEMV_P, SCALE_GEMV_P, SCALE_GEMV_MOE_P],
-    "test_moe_gemm_ppu": [FP16_P],
     "test_ppu_m8n16_collective": [FP16_P],
     # THE FIRST EVIDENCE FOR dequant_then_dense. Until this existed DENSE_P appeared in the path vocabulary and in
     # no harness at all, which is the honest state of a route whose host side was never wired -- and check_against_
@@ -109,7 +108,9 @@ HARNESSES = {
     # representation -- same packing, same scale dtype, zero folded into the code range. What it does NOT cover is a
     # real GPTQ checkpoint reaching the GEMV, so the oracle stays synthetic.
     "test_gemv_lowbit":         (["int4", "int2", "int1", "gptq-int4-sym"], "synthetic", None, "CUDA-core GEMV"),
-    "test_moe_gemm_ppu":        (["int4"],            "self",      None, ""),
+    "test_moe_gemm_ppu":        ([],                  "none",      None,
+        "retired uniform-M timing probe; L>1 fails closed because the legacy vendor collective has unsafe "
+        "sub-byte expert pitches; contributes no correctness evidence"),
     "test_moe_grouped_ppu":     ([],                  "none",      None,
         "superseded perf-only grouped sweep; no output comparison"),
     "test_ppu_m8n16_collective":(["int4"],            "synthetic", None,

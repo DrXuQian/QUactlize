@@ -226,4 +226,18 @@ CUTE_HOST_DEVICE auto mixed_subbyte_l_slice(
       logical_nk.layout());
 }
 
+// Interleaved AIU descriptors take a raw byte base, but their inner shape and
+// strides are still expressed in logical sub-byte codes.  Do not manufacture
+// one rank-3 tensor whose inner modes are codes and whose L mode is bytes: it
+// happens to work while callers only extract raw_pointer_cast after slicing L,
+// but generic tensor indexing would silently interpret all three strides in
+// one unit.  Select the expert in bytes first, then build a pure logical inner
+// layout beside that base.
+template <class Pointer>
+CUTE_HOST_DEVICE uint8_t const* mixed_packed_byte_expert_base(
+    Pointer base, int64_t bytes_per_expert, int l_coord) {
+  return reinterpret_cast<uint8_t const*>(base) +
+         int64_t(l_coord) * bytes_per_expert;
+}
+
 }  // namespace cutlass::gemm::collective::detail

@@ -113,7 +113,7 @@ struct SkCtx {
 
 // One (config, S) row.
 template <int TM, int TN, int TK, int WM, int WN, int Stages>
-inline void sk_row(Band const& bd, SkCtx const& cx, cutlass::DeviceAllocation<int4_t>& dB,
+inline void sk_row(Band const& bd, SkCtx const& cx, cutlass::DeviceAllocation<uint8_t>& dB,
                    int slices, SkBest& b1, SkBest& bS) {
   if constexpr (!moe_ok<TM, TN, TK, WM, WN, Stages, 4>()) { (void)slices; return; }
   else {
@@ -135,7 +135,7 @@ inline void sk_row(Band const& bd, SkCtx const& cx, cutlass::DeviceAllocation<in
 
     auto go = [&] {
       moe_splitk_ppu::launch_splitk<SK_QUANT_MODE, TM, TN, TK, WM, WN, Stages, int4_t>(
-          bd.dA, dB.get(), scale_ptr, bd.dZr,
+          bd.dA, reinterpret_cast<int4_t const*>(dB.get()), scale_ptr, bd.dZr,
           cx.dD->get(), cx.dPart->get(),
           slices == 1 ? cx.pdOne->get() : cx.pdAll->get(),
           slices == 1 ? cx.sdOne->get() : cx.sdAll->get(), bd.gm,
@@ -262,8 +262,12 @@ inline void sk_config(Band const& bd, SkCtx const& cx, SkBest& b1, SkBest& bS) {
       xplane::place_derived<4, TM, TN, TK, WM, WN, _F>(bb.data(), q, bd.N, bd.K);
       for (int e = 1; e < bd.L; ++e) std::memcpy(bb.data() + (size_t)e * per, bb.data(), per);
     }
-    cutlass::DeviceAllocation<int4_t> db((size_t)bd.L * per);
-    db.copy_from_host(reinterpret_cast<int4_t const*>(bb.data()));
+    // `per` is a physical byte count. DeviceAllocation<T> takes a sizeof(T)
+    // element count while its typed copy takes sizeof_bits<T>; for int4 those
+    // are different units. Own packed storage as bytes and cast only at the
+    // launch boundary.
+    cutlass::DeviceAllocation<uint8_t> db((size_t)bd.L * per);
+    db.copy_from_host(reinterpret_cast<uint8_t const*>(bb.data()));
     for (int S : {1, 2, 4, 8}) sk_row<TM, TN, TK, WM, WN, Stages>(bd, cx, db, S, b1, bS);
   } else {
     std::printf("  i4 %dx%d:%d w%dx%d s%d  -- ILLEGAL SHAPE (moe_ok), not built\n",

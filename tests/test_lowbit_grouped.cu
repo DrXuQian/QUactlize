@@ -177,13 +177,12 @@ int main(int argc, char** argv) {
       xplane::place_derived<LOWB, TMv, TNv, TKv, WMv, WNv, F1v>(blo.data() + (size_t)e * lo_per, lo, N, K);             \
       xplane::place_hi<LOWB, HIB, TMv, TNv, TKv, WMv, WNv, F2v, F1v>(bhi.data() + (size_t)e * hi_per, hi, N, K);        \
     }                                                                                                                   \
-    /* SIZED IN BYTES, because sizeof(uint2b_t) == 1: DeviceAllocation<LOWELEM>(L*K*N) would allocate L*K*N BYTES and
-       copy_from_host would then read L*K*N bytes out of a host buffer holding only L*K*N*BITS/8 -- an out-of-bounds host
-       read. L*lo_per is both the exact host size and exactly what the kernel's element-based L-stride resolves to. */    \
-    cutlass::DeviceAllocation<LOWELEM> dblo((size_t)L * lo_per);                                                         \
-    dblo.copy_from_host(reinterpret_cast<LOWELEM const*>(blo.data()));                                                  \
-    cutlass::DeviceAllocation<HIELEM> dbhi((size_t)L * hi_per);                                                          \
-    dbhi.copy_from_host(reinterpret_cast<HIELEM const*>(bhi.data()));                                                   \
+    /* lo_per/hi_per are physical bytes. A typed sub-byte DeviceAllocation allocates by sizeof(T) but copies by       \
+       sizeof_bits<T>; passing a byte count therefore under-copies. Own exact bytes and cast only at the ABI seam. */   \
+    cutlass::DeviceAllocation<uint8_t> dblo((size_t)L * lo_per);                                                         \
+    dblo.copy_from_host(reinterpret_cast<uint8_t const*>(blo.data()));                                                   \
+    cutlass::DeviceAllocation<uint8_t> dbhi((size_t)L * hi_per);                                                         \
+    dbhi.copy_from_host(reinterpret_cast<uint8_t const*>(bhi.data()));                                                   \
     /* ---- the full L>1 run, contiguous D[total][N] via the ptr-array epilogue */                                       \
     std::vector<GS> rsh(L); std::vector<half_t*> pdh(L); std::vector<DStride> sdh(L); std::vector<int> gmh(L);          \
     for (int e = 0; e < L; ++e) { rsh[e] = cute::make_shape(me[e], N, K); pdh[e] = dD.get() + (size_t)offs[e] * N;       \
@@ -198,8 +197,9 @@ int main(int argc, char** argv) {
     CUTLASS_PPU_CHECK(hggcMemset(dD.get(), 0, sizeof(half_t) * (size_t)total * N));                                     \
     int const launch_failures_before = moe_grouped_ppu::moeg_fail_count();                                             \
     moe_grouped_ppu::filter_and_run<QMODE, TMv, TNv, TKv, WMv, WNv, Sv, LOWELEM, HIELEM>(                              \
-        dA.get(), dblo.get(), dSc.get(), dZr.get(), pd.get(), sd.get(), gm.get(),                                       \
-        Mmax, N, K, L, gs, rdev.get(), rsh.data(), ragged ? offdev.get() : nullptr, ws.get(), wsb, nullptr, dbhi.get()); \
+        dA.get(), reinterpret_cast<LOWELEM const*>(dblo.get()), dSc.get(), dZr.get(), pd.get(), sd.get(), gm.get(),      \
+        Mmax, N, K, L, gs, rdev.get(), rsh.data(), ragged ? offdev.get() : nullptr, ws.get(), wsb, nullptr,              \
+        reinterpret_cast<HIELEM const*>(dbhi.get()));                                                                    \
     CUTLASS_PPU_CHECK(hggcDeviceSynchronize());                                                                          \
     /* ---- the ORACLE: each expert alone at L=1, into the same contiguous rows */                                       \
     CUTLASS_PPU_CHECK(hggcMemset(dD1.get(), 0, sizeof(half_t) * (size_t)total * N));                                    \
@@ -216,10 +216,10 @@ int main(int argc, char** argv) {
       const size_t w1b = (size_t)cutlass::ceil_div(Me,16)*cutlass::ceil_div(N,64)*64;                                    \
       cutlass::DeviceAllocation<char> w1(w1b);                                                                            \
       moe_grouped_ppu::filter_and_run<QMODE, TMv, TNv, TKv, WMv, WNv, Sv, LOWELEM, HIELEM>(                            \
-          dA.get() + (size_t)offs[e] * K, expert_ptr(dblo.get(), (size_t)e, lo_per),                                    \
+          dA.get() + (size_t)offs[e] * K, reinterpret_cast<LOWELEM const*>(dblo.get() + (size_t)e * lo_per),            \
           dSc.get() + (size_t)e * scale_k * N, dZr.get() + (size_t)e * scale_k * N,                                     \
           p1d.get(), t1d.get(), g1d.get(), Me, N, K, 1, gs, s1d.get(), s1.data(), nullptr, w1.get(), w1b, nullptr,      \
-          expert_ptr(dbhi.get(), (size_t)e, hi_per));                                                               \
+          reinterpret_cast<HIELEM const*>(dbhi.get() + (size_t)e * hi_per));                                         \
       CUTLASS_PPU_CHECK(hggcDeviceSynchronize());                                                                        \
     }                                                                                                                    \
     std::vector<half_t> h((size_t)total*N), h1((size_t)total*N);                                                         \
@@ -246,8 +246,8 @@ int main(int argc, char** argv) {
         q[i] = uint8_t(((size_t(e) * 104729 + i) * 2654435761u >> 5) & ((1u << (BITS)) - 1u));                            \
       xplane::place_derived<BITS, TMv, TNv, TKv, WMv, WNv, Fv>(bb.data() + (size_t)e * per, q, N, K);                     \
     }                                                                                                                    \
-    cutlass::DeviceAllocation<ELEM> db((size_t)L * per);   /* bytes -- see the note in the two-plane macro */            \
-    db.copy_from_host(reinterpret_cast<ELEM const*>(bb.data()));                                                          \
+    cutlass::DeviceAllocation<uint8_t> db((size_t)L * per); /* physical bytes */                                          \
+    db.copy_from_host(reinterpret_cast<uint8_t const*>(bb.data()));                                                       \
     std::vector<GS> rsh(L); std::vector<half_t*> pdh(L); std::vector<DStride> sdh(L); std::vector<int> gmh(L);            \
     for (int e = 0; e < L; ++e) { rsh[e] = cute::make_shape(me[e], N, K); pdh[e] = dD.get() + (size_t)offs[e] * N;         \
                                   sdh[e] = out_stride(me[e]); gmh[e] = me[e]; }                                            \
@@ -261,7 +261,7 @@ int main(int argc, char** argv) {
     CUTLASS_PPU_CHECK(hggcMemset(dD.get(), 0, sizeof(half_t) * (size_t)total * N));                                       \
     int const launch_failures_before = moe_grouped_ppu::moeg_fail_count();                                               \
     moe_grouped_ppu::filter_and_run<QMODE, TMv, TNv, TKv, WMv, WNv, Sv, ELEM>(                                          \
-        dA.get(), db.get(), dSc.get(), dZr.get(), pd.get(), sd.get(), gm.get(),                                          \
+        dA.get(), reinterpret_cast<ELEM const*>(db.get()), dSc.get(), dZr.get(), pd.get(), sd.get(), gm.get(),           \
         Mmax, N, K, L, gs, rdev.get(), rsh.data(), ragged ? offdev.get() : nullptr, ws.get(), wsb, nullptr);              \
     CUTLASS_PPU_CHECK(hggcDeviceSynchronize());                                                                            \
     CUTLASS_PPU_CHECK(hggcMemset(dD1.get(), 0, sizeof(half_t) * (size_t)total * N));                                      \
@@ -277,7 +277,7 @@ int main(int argc, char** argv) {
       const size_t w1b = (size_t)cutlass::ceil_div(Me,16)*cutlass::ceil_div(N,64)*64;                                      \
       cutlass::DeviceAllocation<char> w1(w1b);                                                                              \
       moe_grouped_ppu::filter_and_run<QMODE, TMv, TNv, TKv, WMv, WNv, Sv, ELEM>(                                        \
-          dA.get() + (size_t)offs[e] * K, expert_ptr(db.get(), (size_t)e, per),                                          \
+          dA.get() + (size_t)offs[e] * K, reinterpret_cast<ELEM const*>(db.get() + (size_t)e * per),                    \
           dSc.get() + (size_t)e * scale_k * N, dZr.get() + (size_t)e * scale_k * N,                                      \
           p1d.get(), t1d.get(), g1d.get(), Me, N, K, 1, gs, s1d.get(), s1.data(), nullptr, w1.get(), w1b, nullptr);      \
       CUTLASS_PPU_CHECK(hggcDeviceSynchronize());                                                                          \

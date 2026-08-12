@@ -18,6 +18,20 @@ int main(int argc, char** argv) {
   int k  = argc > 4 ? atoi(argv[4]) : 2048;   // qwen35moe FC1 K
   int g  = argc > 5 ? atoi(argv[5]) : 128;
 
+  // RETIRED MULTI-EXPERT SEAM. This old uniform-M wrapper reaches actlize's
+  // generic mixed collective directly. Its noninterleaved B pitch advances a
+  // sub-byte logical-code count through a byte-sized C++ wrapper, while the
+  // interleaved branch gives the expert axis zero stride. Both are wrong for
+  // L>1. The owned grouped wrapper supersedes it and has an independent
+  // oracle; fail closed here so a timing-only target cannot advertise a
+  // corrupt multi-expert result as performance evidence.
+  if (L != 1) {
+    std::fprintf(stderr,
+        "test_moe_gemm_ppu: retired for L>1 (legacy sub-byte expert pitch is unsafe); "
+        "use test_lowbit_moe_bench/test_moe_grouped_verify\n");
+    return 2;
+  }
+
   using half_t = cutlass::half_t;
   using int4_t = cutlass::int4b_t;
   const int scale_k = (k + g - 1) / g;
@@ -28,7 +42,7 @@ int main(int argc, char** argv) {
   cutlass::DeviceAllocation<int4_t> B((size_t)L*n*k);
   cutlass::DeviceAllocation<char>   ws(ws_bytes);
 
-  std::printf("MoE W4A16 batched (uniform m_per_expert): experts=%d m=%d n=%d k=%d gs=%d\n", L,m,n,k,g);
+  std::printf("Legacy rank-4 mixed-input probe (L=1 only): experts=%d m=%d n=%d k=%d gs=%d\n", L,m,n,k,g);
   std::printf("%-28s %-9s %-6s %-9s %s\n", "TILE(MxNxK)/WARP/ST", "TFLOP/s", "MFU", "GB/s", "%HBM");
 
   const int warmup = 10, iters = 50;

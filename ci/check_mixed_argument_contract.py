@@ -51,6 +51,8 @@ def audit(texts: list[str]) -> list[str]:
         "mixed_subbyte_l_slice(",
         "make_gmem_ptr<Element>(static_cast<voidconst*>(base))",
         "raw_pointer_cast(logical_nk.data())",
+        "mixed_packed_byte_expert_base(",
+        "reinterpret_cast<uint8_tconst*>(base)+int64_t(l_coord)*bytes_per_expert;",
     ):
         if token not in h:
             bad.append(f"shared argument helper lost {token!r}")
@@ -71,6 +73,12 @@ def audit(texts: list[str]) -> list[str]:
             bad.append(
                 f"{label} must normalize exactly {expected_b_slices} "
                 "noninterleaved subbyte B expert base(s)")
+        if s.count("detail::mixed_packed_byte_expert_base(") != expected_b_slices:
+            bad.append(
+                f"{label} must select exactly {expected_b_slices} "
+                "interleaved packed-byte expert base(s) before building logical layouts")
+        if re.search(r"make_stride\([^;]*sizeof_bits<[^;]*>/8\)", source, re.S):
+            bad.append(f"{label} restored a mixed logical-code/byte stride tuple")
 
     o = flat(oracle)
     for token in (
@@ -208,11 +216,15 @@ def main() -> int:
          "logical N residue"),
         (0, "cute::make_gmem_ptr<Element>(static_cast<void const*>(base))",
          "cute::make_gmem_ptr(base)", "subbyte B pointer overload"),
+        (0, "int64_t(l_coord) * bytes_per_expert",
+         "int64_t(l_coord) * bytes_per_expert * 2", "interleaved byte expert base"),
         (1, "detail::mixed_a_expert_base(", "detail::planted_compact_a_base(",
          "ordinary helper bypass"),
         (2, "detail::mixed_subbyte_l_slice<RealInternalElementB>(",
          "detail::planted_raw_l_slice<RealInternalElementB>(",
          "fold subbyte B helper bypass"),
+        (3, "detail::mixed_packed_byte_expert_base(",
+         "detail::planted_typed_expert_base(", "two-plane interleaved base bypass"),
         (2, "detail::mixed_logical_n_residue(", "detail::planted_physical_n_residue(",
          "fold residue bypass"),
         (4, "physical_formula_red += legacy != expected;",

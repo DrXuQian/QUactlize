@@ -697,9 +697,10 @@ constexpr bool moe_b_chunk_effective() {
       (BEST).any_selected = true;                                                                                  \
       auto _go = [&](moe_grouped_ppu::KernelSpanEvents* _kev){                                                    \
         moe_grouped_ppu::filter_and_run<LOWBIT_QMODE_SEL,TMv,TNv,TKv,WMv,WNv,Sv,LOELEM,HIELEM,false,Av>(           \
-            (BD).dA, _b1.get(), (BD).dSc, (BD).dZr, (BD).pd, (BD).sd, (BD).gm,                                     \
+            (BD).dA, reinterpret_cast<LOELEM const*>(_b1.get()), (BD).dSc, (BD).dZr, (BD).pd, (BD).sd, (BD).gm,     \
             (BD).Mmax, (BD).N, (BD).K, (BD).L, (BD).gs, (BD).rdev, (BD).rsh.data(),                                \
-            (BD).mode ? (BD).offdev : nullptr, (BD).ws, (BD).wsb, nullptr, _b2.get(),                                \
+            (BD).mode ? (BD).offdev : nullptr, (BD).ws, (BD).wsb, nullptr,                                         \
+            reinterpret_cast<HIELEM const*>(_b2.get()),                                                            \
             /*k_full=*/-1, /*prefix_ready=*/false, /*splitk=*/1, moe_abcast(), _kev); };                            \
       MoeTiming _tim; double u; const int _f0 = moe_grouped_ppu::moeg_fail_count();                                \
       MoeOutputWitness _ow{true, true};                                                                            \
@@ -732,10 +733,12 @@ constexpr bool moe_b_chunk_effective() {
       for (int e = 1; e < (BD).L; ++e) {                                                                           \
         std::memcpy(_blo.data() + (size_t)e*_lo, _blo.data(), _lo);                                                 \
         std::memcpy(_bhi.data() + (size_t)e*_hi, _bhi.data(), _hi); } }                                            \
-    cutlass::DeviceAllocation<LOELEM> _b1((size_t)(BD).L*_lo);                                                     \
-    _b1.copy_from_host(reinterpret_cast<LOELEM const*>(_blo.data()));                                              \
-    cutlass::DeviceAllocation<HIELEM> _b2((size_t)(BD).L*_hi);                                                     \
-    _b2.copy_from_host(reinterpret_cast<HIELEM const*>(_bhi.data()));                                              \
+    /* _lo/_hi are physical bytes. Keep the allocation/copy unit byte-exact;                                 */    \
+    /* the collective type is introduced only at the launch boundary above.                                 */    \
+    cutlass::DeviceAllocation<uint8_t> _b1((size_t)(BD).L*_lo);                                                    \
+    _b1.copy_from_host(reinterpret_cast<uint8_t const*>(_blo.data()));                                             \
+    cutlass::DeviceAllocation<uint8_t> _b2((size_t)(BD).L*_hi);                                                    \
+    _b2.copy_from_host(reinterpret_cast<uint8_t const*>(_bhi.data()));                                             \
     MOE_STAGE_LIST(MOE2_TIME, BD,BEST,NAME,LOELEM,HIELEM,LOB,HIB,TMv,TNv,TKv,Av,WMv,WNv)                           \
   } } while (0)
 
@@ -753,7 +756,7 @@ constexpr bool moe_b_chunk_effective() {
            deduction fail on std::nullptr_t, and a failed deduction is NOT rescued by the default template       \
            argument -- the call simply stops matching. */                                                        \
         moe_grouped_ppu::filter_and_run<LOWBIT_QMODE_SEL,TMv,TNv,TKv,WMv,WNv,Sv,ELEM,void,false,Av>(               \
-            (BD).dA, _db.get(), (BD).dSc, (BD).dZr, (BD).pd, (BD).sd, (BD).gm,                                     \
+            (BD).dA, reinterpret_cast<ELEM const*>(_db.get()), (BD).dSc, (BD).dZr, (BD).pd, (BD).sd, (BD).gm,       \
             (BD).Mmax, (BD).N, (BD).K, (BD).L, (BD).gs, (BD).rdev, (BD).rsh.data(),                                \
             (BD).mode ? (BD).offdev : nullptr, (BD).ws, (BD).wsb, nullptr,                                          \
             /*B2=*/nullptr, /*k_full=*/-1, /*prefix_ready=*/false, /*splitk=*/1, moe_abcast(), _kev); };             \
@@ -782,8 +785,8 @@ constexpr bool moe_b_chunk_effective() {
       for (size_t i = 0; i < _q.size(); ++i) _q[i] = uint8_t((i * 2654435761u >> 5) & ((1u<<(BITS))-1u));           \
       xplane::place_derived<BITS,TMv,TNv,TKv,WMv,WNv,_F,Av>(_bb.data(), _q, (BD).N, (BD).K);                        \
       for (int e = 1; e < (BD).L; ++e) std::memcpy(_bb.data() + (size_t)e*_per, _bb.data(), _per); }                \
-    cutlass::DeviceAllocation<ELEM> _db((size_t)(BD).L*_per);                                                      \
-    _db.copy_from_host(reinterpret_cast<ELEM const*>(_bb.data()));                                                 \
+    cutlass::DeviceAllocation<uint8_t> _db((size_t)(BD).L*_per);                                                   \
+    _db.copy_from_host(reinterpret_cast<uint8_t const*>(_bb.data()));                                              \
     MOE_STAGE_LIST(MOE1_TIME, BD,BEST,NAME,ELEM,BITS,TMv,TNv,TKv,Av,WMv,WNv)                                       \
   } } while (0)
 

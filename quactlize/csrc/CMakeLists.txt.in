@@ -1023,7 +1023,9 @@ quactlize_ppu_executable(
 target_compile_options(test_moe_splitk_bench PRIVATE -w)
 target_include_directories(test_moe_splitk_bench PRIVATE ${_SK_GEN_DIR})
 
-# STEP 1 of MoE W4A16: batched (uniform m_per_expert) mixed-input GEMM. Build: TARGET=test_moe_gemm_ppu ./build.sh
+# Retired uniform-M timing probe. It remains buildable at L=1 for archaeology,
+# but its executable fails closed for L>1; owned grouped launchers supersede it.
+# Build: TARGET=test_moe_gemm_ppu ./build.sh
 quactlize_ppu_executable(
   test_moe_gemm_ppu
   test_moe_gemm_ppu.cu

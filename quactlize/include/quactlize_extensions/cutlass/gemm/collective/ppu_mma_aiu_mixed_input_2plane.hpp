@@ -1089,20 +1089,17 @@ private:
     auto kCon = kContinous{};
     using TilerB = typename GmemTiledCopyB::Tiler_MN;
     if constexpr (kCon != 1) {
-      Tensor mB_nkl = make_tensor(make_gmem_ptr(mainloop_params.ptr_B),
-        make_shape(N1_, make_shape(kCon, K1_ / kCon), L),
-        // GROUPED FIX: interleaved desc base = (uint8_t*)raw_pointer_cast(mB_nk.data()) treats the packed
-        // ELEMENT L-stride as a BYTE count, so the stride must be in bytes: one expert weight is
-        // N*K * sizeof_bits<B>/8 bytes (int4 -> N*K/2, int2 -> N*K/4, int8 -> N*K). (Was Int<0> -> every expert
-        // read plane 0; wrong scale -> e>=2 read OOB garbage. This lands each expert exactly. No effect on L=1.)
-        make_stride(kCon, make_stride(cute::Int<1>{}, kCon * N1_), int64_t(N) * int64_t(K) * sizeof_bits<RealInternalElementB>::value / 8)
-      );
-      Tensor mB_nk = mB_nkl(_,_,l_coord);
+      auto const b_shape = make_shape(N1_, make_shape(kCon, K1_ / kCon));
+      auto const b_stride = make_stride(kCon, make_stride(cute::Int<1>{}, kCon * N1_));
       auto layout_counting = make_layout(
-        mB_nk.shape(),
+        b_shape,
         make_stride(ScaledBasis<_1, 1>{}, make_stride(ScaledBasis<_1, 0>{}, ScaledBasis<int, 1>{N1_}))
       );
       Tensor mB_nk_counting = make_counting_tensor(layout_counting);
+      auto const* expert_base = detail::mixed_packed_byte_expert_base(
+          mainloop_params.ptr_B,
+          int64_t(N) * int64_t(K) * sizeof_bits<RealInternalElementB>::value / 8,
+          l_coord);
     // (i) THE DESCRIPTOR'S EXTENTS COME OFF THE TENSOR. The folded row/column counts used to be restated in the
     // AiuDesc::init call (and in the counting layout) after already defining the tensor, i.e. one rule written three or
     // four times per branch across four branches. The comment in load_init_B2 records what that costs: the interleaved
@@ -1116,7 +1113,7 @@ private:
     // selected only when n % 256 == 0 && k % 256 == 0 (moe_grouped_ppu.cuh's `il`), so K1_ = K * fold is a multiple of
     // kCon = 256.
       gmem_tiled_copy_B.desc_.template init<RealInternalElementB, false, get<0>(TilerB{}), get<1>(TilerB{})>(
-            (uint8_t*)(raw_pointer_cast(mB_nk.data())), int(cute::size(mB_nk)) / kCon, kCon, mB_nk.stride());
+            const_cast<uint8_t*>(expert_base), N1_ * K1_ / kCon, kCon, b_stride);
       return mB_nk_counting;
     } else {
       Tensor mB_nk = make_mix_tensor_like(
@@ -1156,19 +1153,19 @@ private:
     // P2Fold == 1 reproduces the previous code exactly.
     const int N2 = N / P2Fold, K2 = K * P2Fold;
     if constexpr (kCon != 1) {
-      Tensor mB_nkl = make_tensor(make_gmem_ptr(mainloop_params.ptr_B2),
-        make_shape(N2, make_shape(kCon, K2 / kCon), L),
-        make_stride(kCon, make_stride(cute::Int<1>{}, kCon * N2),
-                    int64_t(N) * int64_t(K) * sizeof_bits<PlaneB2>::value / 8)   // L-stride is fold-invariant (bytes)
-      );
-      Tensor mB_nk = mB_nkl(_,_,l_coord);
+      auto const b_shape = make_shape(N2, make_shape(kCon, K2 / kCon));
+      auto const b_stride = make_stride(kCon, make_stride(cute::Int<1>{}, kCon * N2));
       auto layout_counting = make_layout(
-        mB_nk.shape(),
-        make_stride(ScaledBasis<_1, 1>{}, make_stride(ScaledBasis<_1, 0>{}, ScaledBasis<int, 1>{int(cute::size<0>(mB_nk))}))
+        b_shape,
+        make_stride(ScaledBasis<_1, 1>{}, make_stride(ScaledBasis<_1, 0>{}, ScaledBasis<int, 1>{N2}))
       );
       Tensor mB_nk_counting = make_counting_tensor(layout_counting);
+      auto const* expert_base = detail::mixed_packed_byte_expert_base(
+          mainloop_params.ptr_B2,
+          int64_t(N) * int64_t(K) * sizeof_bits<PlaneB2>::value / 8,
+          l_coord);
       gmem_tiled_copy_B2.desc_.template init<PlaneB2, false, get<0>(TilerB2{}), get<1>(TilerB2{})>(
-            (uint8_t*)(raw_pointer_cast(mB_nk.data())), int(cute::size(mB_nk)) / kCon, kCon, mB_nk.stride());
+            const_cast<uint8_t*>(expert_base), N2 * K2 / kCon, kCon, b_stride);
       return mB_nk_counting;
     } else {
       // dB2 carries plane 2's OWN folded row pitch (set in launch); the SHAPE must match it. Falls back to dB when the

@@ -1301,6 +1301,13 @@ def lint_mixed_argument_contract():
         "three mixed-input collectives share dA outer-base and logical-N residue seams")
 
 
+def lint_subbyte_units():
+    """Physical bytes, logical codes and scheduler K tiles must not alias units."""
+    return _run_ci_script(
+        "check_subbyte_units.py",
+        "sub-byte allocation/copy and expert-pitch unit seams are explicit")
+
+
 def lint_plain_ldsm_failclosed():
     """The twelve dormant ppu001 plain-LDSM entries must fail before assembly when called."""
     return _run_ci_script(
@@ -1788,6 +1795,7 @@ def main():
                 ("lint", "G5 maps caller slots through real experts before naming oracles and output rows", lint_g5_harness_slot_contract),
                 ("lint", "caller dS changes all three shipping S/Z metadata address maps", lint_metadata_stride_contract),
                 ("lint", "mixed-input outer bases and residues honor caller/logical coordinates", lint_mixed_argument_contract),
+                ("lint", "sub-byte logical codes and packed bytes never share an unlabeled owner", lint_subbyte_units),
                 ("lint", "ppu001 plain LDSM fails in C++ before its unproved assembler path", lint_plain_ldsm_failclosed),
                 ("lint", "quactlize_extensions adds to actlize rather than redefining it", lint_extension_additive),
                 ("lint", "every file naming a quactlize type reaches its defining header", lint_owned_symbol_includes),
