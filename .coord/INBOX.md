@@ -5623,3 +5623,44 @@ box 批次(旋钮 1/2/4/6 + 对齐后复测)攒着,等用户上机。
 2. **"加 grid 没用"这个先例的证据强度要下调。** 我今天在 INBOX 里拿"GEMV 有 7 倍 grid 却慢 7%"当过 `blocks_per_cu` 的对照点 —— 那 7% 现在看大部分是 GEMV 自己没调好。**请把这条从锚点里降级**,它不再能支撑"occupancy 对这类 kernel 不是约束"。
 
 **仍然成立的是"ALU/延迟受限,不是带宽受限"**,而且证据更强:三个单平面位宽字节差 2.5×、时间差 1.1%(15.86 / 15.88 / 16.05),双平面是 +50% 的第二个簇(q3 24.03 / q6 24.36)且与字节反向。杠杆是**每元素 op 数**,这条没变。
+
+## 132 — 用户给了一份 **PPU 上的 Q4_K GEMV 实现文档**,里面有我们两个未完成 TODO 的现成实现 + 一个 warp-K 先例
+
+用户提供,**在 PPU 上实测**(设备由用户确认)。llama.cpp 对比:
+
+| shape | llama.cpp | 该实现 | 加速 | 反推 GB/s | %HBM(÷2766) |
+|---|---:|---:|---:|---:|---:|
+| K=8192 N=5120 | 44,721 ns | **15,000 ns** | 2.98x | 1573 | **56.9%** |
+| K=5120 N=8192 | 44,000 ns | **15,000 ns** | 2.93x | 1573 | **56.9%** |
+| K=1024 N=5120 | 7,280 ns | **4,000 ns** | 1.82x | 737 | 26.6% |
+
+(Q4_K = 144 B / 256 权重 = 0.5625 B/权重;23.59 MB / 15 us = 1573 GB/s。**这几个 % 是我算的,不是文档给的**,请自己复核。)
+
+### 六条可搬的技术
+
+1. **`template<int CTA_N, int WARPS_N, int WARPS_K>` —— 它有 warp-K,参数化的。** 注释:*"WARPS_N warp groups along the column axis / WARPS_K warps splitting the k axis inside a group"*。**这是 128/129 那个 Marlin 对齐任务里缺的同一个轴,在 PPU 上跑着的实例。** 它的 CTA 内跨 K-warp 归约怎么写的,直接对照 —— 可能省掉你自己推 `thread_block_reduce` 的一半工作。
+2. **反量化折成两条 hfma2 = 我们的 TODO #18,已实现:**
+   `scale = d*sc`;`zero = 8*scale - dmin*m`(**-8 折进 zero**);`dq = hfma2(hfma2(q, scale, zero), a, dq)` —— 内层反量化、外层 MAC,**每 2 权重 2 条 hfma2**。这个闭式与我们 [[ppu-q65-two-plane-closed-form]] 独立推出的"int4 的 −8 折进 zero"**相同**。
+3. **`lop3_convert_to_h2(qword)` 整字提取 = 我们的 TODO #28**(原话 "whole-word extraction, not per-nibble shift+mask")。
+4. **两次 128-bit 读吃完 144 B superblock**:`uint4 meta`(`d|dmin<<16` + `scales[0..11]`)+ `uint4 qs`(32 个 int4)。**Q4_K 原生交错不重排**:一个 thread 覆盖 `element[0:16]+element[32:48]`,故需两组 (sc,m),`u6_pair_to_half2` 成对转。
+5. **`dminn = __ushort_as_half((meta0>>16) ^ 0x8000)`** —— XOR 翻符号位,`-dmin` 免费。
+6. **`__launch_bounds__(WARPS_N*WARPS_K*32, 1024/(WARPS_N*WARPS_K*32))`** —— 第二参数就是你正在做的 `blocks_per_cu`,这里直接写进 launch bounds。
+
+另:*"每个 block 一次会读一个完整的 activation 到 smem"* —— 与 [[ppu-a-must-stay-in-smem]] 一致。
+
+### 口径警告,**不要拿 56.9% 直接对我们的 47.4%**
+
+| | 该文档 | 我们 D1 |
+|---|---|---|
+| K | 8192 | 2048 |
+| 排布 | dense 单矩阵 | 8 experts x 1 row |
+| 字节 | 23.59 MB | 21.04 MB |
+
+K 大 4 倍,内循环长、setup 摊得开。它自己 `K=1024` 掉到 26.6%,和我们小 shape 掉下去同源。**方向有意义,幅度没建立。** 而且文档**没有测量口径**(cold/warm、迭代、是否 flush),我们的表在这点上是严格的 —— 要引它的数,先补口径。
+
+### 请你做
+
+先只做**读和对照**,不要立刻改代码(Marlin 对齐仍是主线):
+1. 第 1 条(warp-K + CTA 内归约)与你为 128 正在列的差异清单**互相印证** —— 它是否给出了 `thread_block_reduce` 的一个可直接参考的写法?
+2. 第 2、3 条与我们 #18/#28 的当前状态**逐条比对**:我们缺的是想法还是落地?若只是落地,给出工作量。
+3. 第 4、5 条是否已经在我们的 Q4_K 原生路里(记忆里那条 "+12.8% 原生格式税,传输占七成"可能正好是这里的差距)。
