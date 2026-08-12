@@ -5722,3 +5722,50 @@ tensor-core `quactlize_mix_gemm_convert.h:366`:
 ## C —— 优先级
 
 **A 和 B 都排在 128/129/130 的 Marlin 对齐之后。** A 很便宜(分钟级)可以顺手做;B 是个独立实验,别让它挤掉主线。
+
+## 133 — 给 GEMV 加 sweep,用户明天在 box 上跑
+
+**优先级:排在 Marlin 对齐(128/129/130)之后,但要在明天早上之前可用** —— 用户要拿它上机。
+
+### 前置:入口本身现在是不可信的,先修它
+
+`BOX.md:734` 是我们自己写下的:
+
+> This gate deliberately does not ask the operator to run `test_gemv_perf` for S068–S071. That harness **hard-codes uniform `L=8 x 1 row` shapes and cannot represent the real `E=256, active=8, empty=248` histogram**; its grouped grid also launches `grid.z=num_experts`, so substituting the synthetic case would hide **31/32 of the scheduler work**. **There is no truthful same-shape GEMV command until that benchmark entry point accepts the real histogram.**
+
+**所以 sweep 的第一步不是加轴,是让入口能吃真实 histogram。** 否则扫出来的每一行都落在我们自己判定为不可信的那个口径里。
+
+### 一、轴必须枚举出来,不许手挑
+
+**今天刚被这个咬过**:出货的 dense 表是**手写的 5 行**,`TileM=8` 合法可生成却从没进过表 ⟹「输了」和「从没生成过」长得一样(INBOX 127)。GEMV 不要重犯。
+
+要求:轴的取值域写成可枚举的常量(像 `ppu_tactic_space.hpp` 的 `kTileM/kWarpN/...`),合法性判据单独一层,**被剪掉的行连同理由一起打印**。已知的轴(**你补全,别以我这份为准**):`CtaN`、`CtaM`、split-K(`sk`)、线程数(`t`)、`Chunk`、weight layout(`native` / `tileK`)。
+
+### 二、shape 不是一个,是一组 —— 这条有先例
+
+`HANDOFF_gguf_pipeline.md`:*"The omitted tuning shape was how a large-grid optimisation became a shipping-shape regression."* 在 `rows=131072` 上调出来的策略在 `rows=2048` 上是回归。**单 shape 扫出来的赢家只对那个 shape 成立。**
+
+必须覆盖:
+* **decode band**:`L=8 active × 1 row, N=K=2048, gs=32`(D1–D3 的那个,可对历史)
+* **真实层形状**:`K=8192 N=5120`、`K=1024 N=5120`、`K=5120 N=8192`(INBOX 132 那份文档的三个,可对外部)
+* **dense M=1 `N=K=4096`**(今天 Marlin 的那个,可对 tensor-core)
+* **真实 MoE histogram**(`E=256, active=8`),一旦入口修好
+
+### 三、每个 shape 必须打印分辨率下限
+
+计时量化会吃掉真实效应(5090 的 event 粒度 2.048 µs;我们自己记过 *"at 2048 rows cold is seven 2.048-us ticks, so differences below ~14% are unresolved"*)。
+
+**要求:每个 shape 打印它的分辨率下限,并且落在下限以内的"赢家"必须标成 UNRESOLVED,不许当赢家报。** 判据是所有读数是否为同一个数的整数倍。
+
+### 四、位宽全上
+
+int4 / int2 / int1 / q3(2+1) / q6(4+2) 全扫。理由:这五个**不是一个连续谱,是两个簇** —— 单平面三个位宽字节差 2.5× 时间差 1.1%,双平面是 +50% 的第二簇且与字节反向(D1–D3 vs q3/q6)。**只扫 int4 会看不到簇结构。**
+
+### 五、输出
+
+机器可读(csv/json)落进仓库,像 dense sweep 那样,**别只打屏**。一条命令、有界时长、结尾打印:总行数 / 合法行数 / 被剪行数 + 理由直方图 / 每 shape 的分辨率下限。
+
+### 事前判据
+
+* **赢家变了** ⟹ 现行 shipping config 是在不完整的空间里选的,记下新旧差值。
+* **赢家没变** ⟹ 也要报,并且报**第二名差多少** —— 如果差值落在分辨率下限内,那"赢家"本来就没有被建立过。
