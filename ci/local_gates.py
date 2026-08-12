@@ -26,7 +26,7 @@ Three kinds of check:
   ./ci/local_gates.py --list     show what would run
   ./ci/local_gates.py -k q4k     run only matching names
 """
-import argparse, os, re, subprocess, sys, time
+import argparse, json, os, re, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -1272,6 +1272,74 @@ def lint_format_loader():
     return "PASS", verdict + "; run_batch FMT binding=PASS", dt
 
 
+def lint_q36_zero_redundancy():
+    """Q3/Q6 external fp16 zero must remain a bitwise function of the scale returned by each producer."""
+    script = DEV / "run_l139_q36_zero_redundancy.sh"
+    if not script.is_file():
+        return "FAIL", f"missing {script.name}", 0.0
+    rc, log, dt = run(["bash", str(script), "--json"], cwd=str(ROOT))
+    if rc != 0:
+        lines = [line.strip() for line in log.splitlines() if line.strip()]
+        return "FAIL", (lines[-1] if lines else f"l139 exited {rc}"), dt
+
+    payload = None
+    for line in log.splitlines():
+        try:
+            candidate = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, dict) and "formats" in candidate:
+            payload = candidate
+    if payload is None:
+        return "FAIL", "l139 emitted no JSON result", dt
+
+    expected_claim = (
+        "external-fp16-zero-is-structurally-derived; "
+        "packed-unit-already-has-no-external-zero; physical-plane-removal-not-implemented"
+    )
+    expected_scope = {
+        "structural_formulas": True,
+        "bitwise_witness_elements_per_arm": 8192,
+        "sample_is_not_exhaustive": True,
+        "packed_collective_kPackedZMul_proved": False,
+    }
+    if payload.get("claim") != expected_claim or payload.get("scope") != expected_scope:
+        return "FAIL", "l139 claim/scope drifted from the proved boundary", dt
+    rows = payload.get("formats")
+    if not isinstance(rows, list) or [row.get("name") for row in rows] != ["Q3_K", "Q6_K"]:
+        return "FAIL", "l139 did not report exactly Q3_K and Q6_K", dt
+    for row in rows:
+        name = row["name"]
+        arm_counts = tuple(row.get(k) for k in (
+            "scale_first_elements", "dense_elements", "packed_decode_elements"))
+        if arm_counts != (8192, 8192, 8192):
+            return "FAIL", f"{name} sf/dense/packed arms are not each 8192 elements: {arm_counts}", dt
+        if tuple(row.get(k) for k in ("scale_first_bad", "dense_bad", "packed_decode_bad")) != (0, 0, 0):
+            return "FAIL", f"{name} reconstructed zero differs from the producer", dt
+        if not (0.0 <= row.get("official_max_block_relative_error", 1.0) < 1.0e-3):
+            return "FAIL", f"{name} lost the independent official-GGUF anchor", dt
+        if row.get("wrong_bias_witnesses", 0) <= 0 or row.get("packed_perturbation_witnesses") != 1:
+            return "FAIL", f"{name} negative controls did not fire exactly", dt
+        want_rounding = 1 if name == "Q6_K" else 0
+        if row.get("targeted_dense_actual_vs_staged_bad") != 0:
+            return "FAIL", f"{name} actual producer disagrees with the staged formula", dt
+        if row.get("targeted_dense_rounding_witnesses") != want_rounding:
+            return "FAIL", f"{name} staged-rounding control expected {want_rounding}", dt
+
+    # The two meta-controls guard the proof machinery itself.  The first plants a stale extension without touching
+    # source mtimes; the second proves Python -O cannot erase the assertion-backed structural checks into a green.
+    stale_env = dict(os.environ, L139_PLANT_STALE_EXTENSION="1")
+    stale_rc, stale_log, stale_dt = run(["bash", str(script), "--json"], cwd=str(ROOT), env=stale_env)
+    if stale_rc == 0 or "_C is older than its source inputs" not in stale_log:
+        return "FAIL", "l139 stale-extension plant did not fail closed", dt + stale_dt
+    optimized_rc, optimized_log, optimized_dt = run(
+        [sys.executable, "-O", str(DEV / "q36_zero_redundancy.py"), "--json"], cwd=str(ROOT))
+    if optimized_rc == 0 or "assertions are disabled" not in optimized_log:
+        return "FAIL", "l139 Python -O plant did not fail closed", dt + stale_dt + optimized_dt
+    return ("PASS", "Q3/Q6 external zero=derived bitwise (8192/arm/format); official anchor and all negatives PASS",
+            dt + stale_dt + optimized_dt)
+
+
 def lint_grouped_marlin_contract():
     """Grouped Marlin must flatten ragged experts to global q without changing collectives."""
     return _run_ci_script(
@@ -1885,6 +1953,7 @@ def main():
                 ("lint", "folded dense artifacts select an exact versioned reader and F2-to-F1 reds", lint_dense_arrangement_abi),
                 ("lint", "BC arrangement maps exhaustively equal the production writer and F2-to-F1 reds", lint_bc_arrangement_layout),
                 ("lint", "packed qtypes select distinct format binaries under fail-closed path precedence", lint_format_loader),
+                ("lint", "Q3/Q6 external fp16 zero is scale-derived with independent anchors", lint_q36_zero_redundancy),
                 ("lint", "grouped Marlin preserves ragged q and all mixed-input collective families", lint_grouped_marlin_contract),
                 ("lint", "grouped Marlin exhausts every committed format/shape tuple", lint_grouped_marlin_exhaustive),
                 ("lint", "GEMV reference fixtures expose expert routing and packed pitch", lint_gemv_perf_authority),
