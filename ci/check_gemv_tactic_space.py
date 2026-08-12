@@ -7,6 +7,7 @@ import csv
 import io
 import re
 import subprocess
+import sys
 import tempfile
 from collections import Counter
 from itertools import product
@@ -21,6 +22,8 @@ DETAILS = ROOT / "quactlize/include/gemv_lowbit/gemv_details.hpp"
 WFORMAT = ROOT / "quactlize/include/gemv_lowbit/gemv_wformat.hpp"
 KERNEL = ROOT / "quactlize/include/gemv_lowbit/gemv_kernel.hpp"
 LAUNCHER = ROOT / "quactlize/include/gemv_lowbit/gemv_launcher.hpp"
+UNIT_GENERATOR = ROOT / "tools/generate_gemv_tactic_units.py"
+UNIT_MANIFEST = ROOT / "benchmarks/gemv_tactic_units.cmake"
 
 FORMATS = ("int4", "int2", "int1", "q3", "q6")
 LAYOUT_TILES = (("native", 0), ("tileK", 256))
@@ -77,6 +80,42 @@ def expected_cells() -> set[tuple[str, str, int, int, int, str, int, int, int]]:
         cells.update((fmt, layout, tk, sk, th, "dense", cm, cn, ch) for cm in DENSE_M)
         cells.update((fmt, layout, tk, sk, th, "grouped", cm, cn, ch) for cm in GROUPED_M)
     return cells
+
+
+def expected_units() -> set[tuple[str, str, int, int, int, int, int]]:
+    """Collapse legal route/CtaM result rows to generated translation units."""
+    legal: set[tuple[str, str, int, int, int, int, int]] = set()
+    run = build_run(arg="--legal")
+    if run.returncode:
+        raise RuntimeError("cannot obtain legal rows:\n" + run.stdout)
+    for row in csv.reader(io.StringIO(run.stdout)):
+        if row and row[0] == "ROW":
+            legal.add((row[1], row[2], int(row[3]), int(row[4]), int(row[5]),
+                       int(row[8]), int(row[9])))
+    return legal
+
+
+def audit_unit_view(text: str) -> list[str]:
+    bad: list[str] = []
+    rows: list[tuple[str, str, int, int, int, int, int]] = []
+    census = None
+    for row in csv.reader(io.StringIO(text)):
+        if row and row[0] == "UNIT":
+            if len(row) != 8:
+                bad.append(f"malformed unit row={row}")
+                continue
+            rows.append((row[1], row[2], int(row[3]), int(row[4]), int(row[5]),
+                         int(row[6]), int(row[7])))
+        elif row and row[:2] == ["UNIT_CENSUS", "compile_units"]:
+            census = int(row[2])
+    wanted = expected_units()
+    if census != 540 or len(rows) != 540 or len(set(rows)) != 540:
+        bad.append(f"unit census={census} rows={len(rows)} unique={len(set(rows))}, want 540")
+    if set(rows) != wanted:
+        bad.append(f"unit collapse difference missing={len(wanted-set(rows))} extra={len(set(rows)-wanted)}")
+    if "RESULT,PASS" not in text:
+        bad.append("unit emitter did not report PASS")
+    return bad
 
 
 def production_constraints_present() -> list[str]:
@@ -235,7 +274,8 @@ def run_plant(old: str, new: str) -> list[str]:
 
 
 def main() -> int:
-    required = (HEADER, EMITTER, REGISTRY, BACKEND, DETAILS, WFORMAT, KERNEL, LAUNCHER)
+    required = (HEADER, EMITTER, REGISTRY, BACKEND, DETAILS, WFORMAT, KERNEL,
+                LAUNCHER, UNIT_GENERATOR, UNIT_MANIFEST)
     missing = [str(p) for p in required if not p.is_file()]
     if missing:
         print("[gemv-tactic-space] FAIL missing: " + ", ".join(missing))
@@ -255,8 +295,21 @@ def main() -> int:
         print("[gemv-tactic-space] FAIL rows:\n" + rows.stdout)
         return 1
     bad += audit_output(rows.stdout, True)
+    units = build_run(arg="--units")
+    if units.returncode:
+        print("[gemv-tactic-space] FAIL units:\n" + units.stdout)
+        return 1
+    bad += audit_unit_view(units.stdout)
     if bad:
         print("[gemv-tactic-space] FAIL: " + "; ".join(bad[:12]))
+        return 1
+
+    committed = subprocess.run(
+        [sys.executable, str(UNIT_GENERATOR), "--check", "--output", str(UNIT_MANIFEST)],
+        cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    if committed.returncode:
+        print("[gemv-tactic-space] FAIL committed CMake view:\n" + committed.stdout)
         return 1
 
     # Three source-level plants: shrink an axis, weaken a legality rule, and
@@ -282,7 +335,7 @@ def main() -> int:
     reasons = ",".join(f"{k}={v}" for k, v in sorted(exclusions.items()))
     print(f"[gemv-tactic-space] PASS total={census['total']} legal={census['legal']} "
           f"rejected={census['rejected']} reasons=[{reasons}] rows=unique+complete "
-          f"anchors=registry+ppu_backend plants={','.join(plant_results)}")
+          f"units=540+committed anchors=registry+ppu_backend plants={','.join(plant_results)}")
     return 0
 
 

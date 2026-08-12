@@ -40,9 +40,37 @@ void print_row(ts::Candidate const& c, ts::Exclusion x) {
 int main(int argc, char** argv) {
   bool const rows = argc == 2 && std::strcmp(argv[1], "--rows") == 0;
   bool const legal_rows = argc == 2 && std::strcmp(argv[1], "--legal") == 0;
-  if (argc > 2 || (argc == 2 && !rows && !legal_rows)) {
-    std::fprintf(stderr, "usage: %s [--rows|--legal]\n", argv[0]);
+  bool const units = argc == 2 && std::strcmp(argv[1], "--units") == 0;
+  if (argc > 2 || (argc == 2 && !rows && !legal_rows && !units)) {
+    std::fprintf(stderr, "usage: %s [--rows|--legal|--units]\n", argv[0]);
     return 2;
+  }
+
+  // A compile unit owns one (format, artifact layout, StepK, Threads, CtaN,
+  // Chunk) tuple and instantiates CtaM inside that TU.  Route and CtaM remain
+  // result axes, but neither changes the generated source.  Derive this view
+  // from the same Candidate/static_exclusion authority as the full census;
+  // CMake consumes the checked output rather than maintaining a second tier.
+  if (units) {
+    std::uint64_t count = 0;
+    for (auto const& fmt : ts::kFormats)
+      for (auto const& lt : ts::kLayoutTiles)
+        for (int sk : ts::kStepKs)
+          for (int th : ts::kThreads)
+            for (int cn : ts::kCtaNs)
+              for (int ch : ts::kChunks) {
+                ts::Candidate const c{fmt.format, lt.layout, lt.tile_size_k,
+                                      sk, th, ts::Route::Dense, 1, cn, ch};
+                if (ts::static_exclusion(c) != ts::Exclusion::None) continue;
+                std::printf("UNIT,%s,%s,%d,%d,%d,%d,%d\n",
+                            ts::name_of(c.format), ts::name_of(c.layout),
+                            c.tile_size_k, c.step_k, c.threads, c.cta_n, c.chunk);
+                ++count;
+              }
+    std::printf("UNIT_CENSUS,compile_units,%llu\n",
+                static_cast<unsigned long long>(count));
+    std::printf("RESULT,%s\n", count == 540 ? "PASS" : "FAIL");
+    return count == 540 ? 0 : 1;
   }
 
   std::array<std::uint64_t, 14> excluded{};
