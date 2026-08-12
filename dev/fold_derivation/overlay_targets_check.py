@@ -142,7 +142,14 @@ def main():
         with open(cml, "w") as f:
             f.write(STUB + "\n" + body)
 
-        r = subprocess.run(["cmake", "-S", src, "-B", bld], capture_output=True, text=True)
+        # The overlay is a structural view, not a second source tree.  Point it
+        # at the exact committed authority in the real checkout; copying 540
+        # rows into the scratch tree would create a second apparent truth.
+        authority = os.path.join(ROOT, "benchmarks", "gemv_tactic_units.cmake")
+        r = subprocess.run(
+            ["cmake", "-S", src, "-B", bld,
+             f"-DGEMV_TACTIC_AUTHORITY={authority}"],
+            capture_output=True, text=True)
         created = []
         tf = os.path.join(bld, "created_targets.txt")
         if os.path.exists(tf):

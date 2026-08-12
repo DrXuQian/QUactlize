@@ -813,16 +813,14 @@ set_target_properties(quactlize_ppu PROPERTIES OUTPUT_NAME quactlize_ppu)
 # CMake view has one row per (format, artifact layout, StepK, Threads, CtaN,
 # Chunk) translation unit.  Route and CtaM remain result axes instantiated
 # inside the unit; they are deliberately not a second CMake filter.
-set(_GEMV_AUTHORITY_CMAKE "${QZ_ROOT}/benchmarks/gemv_tactic_units.cmake")
-if(NOT EXISTS "${_GEMV_AUTHORITY_CMAKE}")
-  # The retired flat overlay is still configured by a local structural gate.
-  # build.sh copies the exact same committed authority next to this file.
-  set(_GEMV_AUTHORITY_CMAKE "${CMAKE_CURRENT_LIST_DIR}/gemv_tactic_units.cmake")
+if(NOT GEMV_TACTIC_AUTHORITY)
+  set(GEMV_TACTIC_AUTHORITY "${QZ_ROOT}/benchmarks/gemv_tactic_units.cmake")
 endif()
-if(NOT EXISTS "${_GEMV_AUTHORITY_CMAKE}")
-  message(FATAL_ERROR "GEMV tactic authority is missing: ${_GEMV_AUTHORITY_CMAKE}")
+if(NOT IS_ABSOLUTE "${GEMV_TACTIC_AUTHORITY}" OR NOT EXISTS "${GEMV_TACTIC_AUTHORITY}")
+  message(FATAL_ERROR
+    "GEMV_TACTIC_AUTHORITY must be one existing absolute source-authority path; got '${GEMV_TACTIC_AUTHORITY}'")
 endif()
-include("${_GEMV_AUTHORITY_CMAKE}")
+include("${GEMV_TACTIC_AUTHORITY}")
 set(_GEMV_GROUPS
   "i4-native|int4|WFormat::Int4|native|WLayout::Native"
   "i4-tileK|int4|WFormat::Int4|tileK|WLayout::TileK"

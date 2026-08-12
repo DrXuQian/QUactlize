@@ -79,10 +79,6 @@ overlay_manifest() {
   # host-only harnesses that must NOT reach the box, which is why this is one named path and not a recursive walk.
   _emit_dir "$HERE/$_subdir_src" "gemv_lowbit/"
   _emit_dir "$HERE/quactlize/csrc" "" cmake
-  # The GEMV generator consumes this mechanically generated authority during
-  # configure.  Preserve the SAME file in the legacy flat-overlay model; do
-  # not reconstruct its 540 rows in CMake or in this manifest function.
-  printf 'gemv_tactic_units.cmake|%s\n' "$HERE/benchmarks/gemv_tactic_units.cmake"
   printf 'CMakeLists.txt|%s\n' "$HERE/quactlize/csrc/CMakeLists.txt.in"
 }
 
