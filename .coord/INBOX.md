@@ -5832,3 +5832,54 @@ int4 / int2 / int1 / q3(2+1) / q6(4+2) 全扫。理由:这五个**不是一个�
 WK=1 是逐位不变的基线,WK=4 是与 classic 等价的那一点。**WK=2 保留为中间点**(它能把"`frag_c` 翻倍压低 warps/CU"这条从推断变实测),但它不再是终点。
 
 **如果 `2N×4K` 在 8 点前构建不出来,照 134 的要求明说不交**,并给出还差什么 —— 不要交一个卡在 WK=2 的版本当"warp-K 完成"。
+
+## 136 — **CuTe 版 Marlin 参考实现**,用户给的。你 14:18 那个 64 槽阻塞在这里有直接答案
+
+用户:*"如果构建不出来显然是结构上的问题。marlin 的 cute 版本可以参考代码 …… 原始的代码可能难以读。"*
+
+已 clone 到 **`/root/marlin_ppu/ref/awesome-cute/gemm/marlin_gemm/`**(不在 git 仓库里,不要提交):
+
+    marlin_cute_trait.h      971 行   <- TiledMMA / warp 网格 / smem / 归约布局,主要看这个
+    marlin_cute_kernel.cu    115 行
+    marlin_official_kernel.cu 873 行  <- 原版对照
+    marlin.py / marlin_test.py / marlin_profiling.py
+
+**先记一条元事实:CuTe 版 Marlin 存在,本身就证明 `2N×4K` 在 CuTe/TiledMMA 里是可表达的。** 所以"构建不出来"只能是我们 collective 的问题,不能归给 CuTe。用户的判断是对的:那就是结构问题。
+
+### `marlin_cute_trait.h:50, 64-100` —— warp 网格
+
+    kThread = 256;  kWarp = 8
+    kWarpM = kCTAM;  kWarpN = 64;  kWarpK = 16
+
+    kMmaThrLayoutM = 1
+    kMmaThrLayoutN = kCTAN / kWarpN            // 128/64 = 2
+    kMmaThrLayoutK = kWarp  / kMmaThrLayoutN   // 8/2   = 4
+    MmaThrLayout   = Layout<Shape<_1, _2, _4>>
+
+    kMmaPermuteM = kMmaThrLayoutM * get<0>(atom_shape)
+    kMmaPermuteN = kCTAN
+    kMmaPermuteK = kMmaThrLayoutK * get<2>(atom_shape)      // 4*16 = 64
+    kMmaPermuteNLayout = Layout<Shape<_2,_4,Int<kMmaThrLayoutN>,_8>, Stride<_1,_2,_64,_8>>
+
+    MMA = make_tiled_mma(mma_atom, MmaThrLayout, MmaPermutations)
+
+**两条对你当前阻塞直接相关:**
+
+1. **`kWarpN = 64`,不是 32。** CTA_N=128 时 N 上只有 2 个 warp。你撞的"shadow converter 每 warp 写 128 个 fp16、compute fragment 只有 64 槽" —— **64 槽是 `WarpN=32` 的 fragment 尺寸**。走 `2N×4K` 时 warp 的 N tile 本来就该变成 64,fragment 跟着重新定尺寸。**所以这不是"converter 越界",是 fragment 还按旧 warp tile 算的。** 请按这个方向复核你的诊断(你的结论"consumer 要改"仍然成立,只是原因更具体)。
+2. **`kMmaPermuteK` 随 `kMmaThrLayoutK` 缩放。** 这**印证了 L123 的负控**("只改 AtomLayout.K 不改 K permutation 必须红")—— 参考实现里两者就是耦合改的。你的负控设计是对的,别动它。
+
+### `marlin_cute_trait.h:687-734` —— CTA 内跨 K-warp 归约(即 `thread_block_reduce`)
+
+    // multiple warp compute partial sum of one cta, so need to reduce intra-cta
+    warpn_idx = (tidx >> 5) % kMmaThrLayoutN
+    warpk_idx = (tidx >> 5) / kMmaThrLayoutN
+    for (warp_offset = kMmaThrLayoutK/2; warp_offset > 0; warp_offset >>= 1) { ... }
+    SmemEpilogCTAReduceLayout : [16*64, num_warpn, num_warpk]
+
+共享内存上的**折半树归约**,`warpk_idx == 0` 收尾。这是 128 里那第二件事(`thread_block_reduce`)的现成写法 —— **可能省掉你自己推的一半**。
+
+### 用法要求
+
+* **参考,不是照抄。** 它是 SM80 `SM80_16x8x16_F32F16F16F32_TN`,我们是 PPU 的 m16n16k16 / AIU / swzl。**atom 形状不同,warp 网格的表达方式可以照搬,fragment 与 smem 的具体布局不能。**
+* 读完请回一句:**我们的 collective 到底缺什么** —— 是 fragment 尺寸随 warp tile 走这一条没做,还是 permutation 没耦合,还是别的。**给结论,不要给"参考了"。**
+* 若读完发现 `2N×4K` 在我们架构上确有**结构性**障碍(不是尺寸没跟着变),**那本身就是明天最重要的交付**,写清楚障碍在哪一层。
