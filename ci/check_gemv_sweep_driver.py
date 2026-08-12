@@ -33,7 +33,7 @@ out = os.environ["GEMV_SWEEP_JSONL"]
 run = os.environ["GEMV_SWEEP_RUN_ID"]
 attempt = os.environ["GEMV_SWEEP_ATTEMPT"]
 shape = {"m": 1, "n": 2048 if job == "fast" else 4096, "k": 2048,
-         "experts": 0, "active": 1}
+         "experts": 0, "active": 1, "format":"int4", "route":"dense"}
 sid = "shape-fast" if job == "fast" else "shape-slow"
 cfg = {"format":"int4", "layout":"native", "tile_size_k":64, "step_k":16,
        "threads":64, "route":"dense", "cta_m":1, "cta_n":8, "chunk":1}
@@ -82,9 +82,10 @@ def main() -> int:
         jobs = []
         for name, n in (("fast", 2048), ("slow", 4096)):
             jobs.append({
-                "job_id": name,
+                "job_id": f"suite/{name}",
                 "shape_id": f"shape-{name}",
-                "shape": {"m": 1, "n": n, "k": 2048, "experts": 0, "active": 1},
+                "shape": {"m": 1, "n": n, "k": 2048, "experts": 0, "active": 1,
+                          "format": "int4", "route": "dense"},
                 "formats": ["int4"],
                 "argv": [name],
                 "env": {"FAKE_MARKER": str(marker)},
@@ -103,11 +104,15 @@ def main() -> int:
         plan.write_text(json.dumps(manifest))
         dry = root / "dry.jsonl"
         command = [sys.executable, str(SWEEP), "run", str(plan), "--bin", str(fake),
-                   "--raw", str(raw), "--progress", str(progress)]
+                   "--raw", str(raw), "--progress", str(progress),
+                   "--build-id", "fake-build"]
         run(command + ["--dry-run", "--dry-run-manifest", str(dry)])
         lines = [json.loads(x) for x in dry.read_text().splitlines()]
-        if [x["job_id"] for x in lines] != ["fast", "slow"] or marker.exists():
+        if [x["job_id"] for x in lines] != ["suite/fast", "suite/slow"] or marker.exists():
             raise AssertionError("dry-run did not emit exactly the pending manifest without launching")
+        if any(x["env"].get("GEMV_SWEEP_SAMPLES") != "20" or
+               x["env"].get("GEMV_SWEEP_BUILD") != "fake-build" for x in lines):
+            raise AssertionError("dry-run omitted the fixed sample/build protocol identity")
 
         # Fast completes; slow times out before writing.  rc=3 is bounded
         # incompleteness, not a malformed invocation.
@@ -115,6 +120,10 @@ def main() -> int:
         first = [json.loads(x) for x in progress.read_text().splitlines()]
         if [x["status"] for x in first] != ["complete", "timeout"]:
             raise AssertionError(f"timeout progress mismatch: {first}")
+
+        # Simulate death after raw append+fsync but before the complete progress
+        # record.  Durable raw, not the advisory progress file, must own fast.
+        progress.write_text(json.dumps(first[1], sort_keys=True) + "\n")
 
         # Resume must not launch fast again.  An external condition makes the
         # exact same slow job complete without changing the manifest hash.
@@ -125,8 +134,13 @@ def main() -> int:
             raise AssertionError(f"resume relaunched a completed job: {launches}")
         states = [json.loads(x) for x in progress.read_text().splitlines()]
         if [(x["job_id"], x["attempt"], x["status"]) for x in states] != [
-                ("fast", 0, "complete"), ("slow", 0, "timeout"), ("slow", 1, "complete")]:
+                ("suite/slow", 0, "timeout"), ("suite/slow", 1, "complete")]:
             raise AssertionError(f"attempt/progress sequence mismatch: {states}")
+
+        wrong_build = command[:-2] + ["--build-id", "different-build", "--resume"]
+        mismatch = run(wrong_build, env=env, want=2)
+        if "build/space/protocol identity differs" not in mismatch.stderr:
+            raise AssertionError("resume accepted durable raw from a different binary/build identity")
 
         result = root / "result.json"
         run([sys.executable, str(SWEEP), "analyse", str(raw), "--manifest", str(plan),
@@ -135,7 +149,8 @@ def main() -> int:
         if not analysed["complete"] or analysed["manifest_coverage"]["missing_outcomes"] != 0:
             raise AssertionError(f"completed raw failed exact manifest coverage: {analysed}")
 
-    print("[gemv-sweep-driver] PASS: analyser plants + dry-run + timeout + resume/progress + exact coverage")
+    print("[gemv-sweep-driver] PASS: analyser plants + dry-run + raw-owned crash resume + "
+          "build identity rejection + exact coverage")
     return 0
 
 

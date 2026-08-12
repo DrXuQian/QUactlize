@@ -50,8 +50,8 @@ Examples::
   python3 benchmarks/sweep_gemv_perf.py analyse raw.jsonl --output result.json
   python3 benchmarks/sweep_gemv_perf.py run plan.json --bin ./test_gemv_perf \
       --raw raw.jsonl --progress progress.jsonl --shape-timeout 900 \
-      --deadline-seconds 7200 --resume
-  python3 benchmarks/sweep_gemv_perf.py run plan.json --dry-run \
+      --deadline-seconds 7200 --build-id <source+binary+protocol> --resume
+  python3 benchmarks/sweep_gemv_perf.py run plan.json --build-id audit-only --dry-run \
       --dry-run-manifest /tmp/gemv-plan.jsonl
   python3 benchmarks/sweep_gemv_perf.py --self-test
 """
@@ -61,7 +61,7 @@ from __future__ import annotations
 import argparse
 import collections
 import dataclasses
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
 import hashlib
 import json
 import math
@@ -85,6 +85,7 @@ RESULT_SCHEMA = "gemv-sweep-result-v1"
 # UNKNOWN and therefore UNRESOLVED, never a false winner.  The threshold is a
 # CLI input and is recorded in the output.
 DEFAULT_MIN_QUANTUM_US = Decimal("0.01")
+TIMER_NORMALIZATION_US = Decimal("0.001")  # integer nanoseconds
 
 
 class ContractError(ValueError):
@@ -150,12 +151,12 @@ def _event_decimal(record: Mapping[str, Any]) -> Decimal:
     event_ms = struct.unpack("<f", struct.pack("<I", bits))[0]
     if not math.isfinite(event_ms) or event_ms <= 0:
         raise ContractError(f"{bit_fields[0]} does not encode a finite positive float")
-    # event_us is the human-readable lattice value; the word is the raw source.
-    # Decimal formatting may round at 0.001 us, hence half a last display unit.
+    # event_us is human-readable only; the binary32 word is the measurement.
+    # Decimal formatting may round at 0.001 us, hence one last display unit.
     if abs(float(value) - event_ms * 1000.0) > 0.001:
         raise ContractError(
             f"event_us {value} disagrees with raw event_ms_bits ({event_ms * 1000.0:.9g} us)")
-    return value
+    return Decimal.from_float(event_ms) * Decimal(1000)
 
 
 def _aliased_nonnegative_int(record: Mapping[str, Any], primary: str, alias: str) -> int:
@@ -378,39 +379,42 @@ class Quantum:
 
 def infer_quantum(values: Iterable[Decimal],
                   minimum: Decimal = DEFAULT_MIN_QUANTUM_US) -> Quantum:
-    """Infer a demonstrated event lattice with an exact decimal GCD.
+    """Infer a demonstrated timer lattice from raw binary32 event words.
 
     GCD can only overestimate a hidden finer quantum when the observed ticks have
     a common factor.  That is conservative for the <=1-quantum tie rule.  Decimal
-    noise collapses the GCD; values below ``minimum`` are UNKNOWN rather than a
-    spurious high-resolution timer.
+    rendering and binary32 representation are not timer ticks, so raw decoded
+    microseconds are first normalized to the nearest nanosecond.  A timer whose
+    lattice is not representable on that grid normally collapses below
+    ``minimum`` and therefore becomes UNKNOWN, never a false winner.
     """
     vals = sorted(set(values))
     if len(vals) < 2:
         return Quantum("UNKNOWN", None, "fewer than two distinct event values")
     if any(not v.is_finite() or v <= 0 for v in vals):
         return Quantum("UNKNOWN", None, "non-positive or non-finite event value")
-    places = max(max(0, -v.as_tuple().exponent) for v in vals)
-    # More than nanosecond-fraction decimal printing is usually formatter noise.
-    # Keep it in the GCD so it forces UNKNOWN instead of rounding it away.
-    scale = 10 ** places
-    ints = [int(v * scale) for v in vals]
+    ns = TIMER_NORMALIZATION_US
+    normalized = [v.quantize(ns, rounding=ROUND_HALF_EVEN) for v in vals]
+    ints = [int(v / ns) for v in normalized]
     g = 0
     for value in ints:
         g = math.gcd(g, abs(value))
     if g == 0:
         return Quantum("UNKNOWN", None, "zero GCD")
-    quantum = Decimal(g) / Decimal(scale)
+    quantum = Decimal(g) * ns
     if quantum < minimum:
         return Quantum(
             "UNKNOWN", None,
             f"decimal GCD {quantum} us is below conservative floor {minimum} us")
-    ticks = [v / quantum for v in vals]
+    ticks = [v / quantum for v in normalized]
     if any(t != t.to_integral_value() for t in ticks):
         # Defensive: exact integer construction above should make this impossible.
         return Quantum("UNKNOWN", None, "values are off the inferred lattice")
-    return Quantum("KNOWN", quantum,
-                   f"exact decimal GCD over {len(vals)} distinct raw event values")
+    max_residual = max(abs(a - b) for a, b in zip(vals, normalized))
+    return Quantum(
+        "KNOWN", quantum,
+        f"integer-nanosecond GCD over {len(vals)} distinct raw binary32 values "
+        f"(max f32 normalization residual {max_residual} us)")
 
 
 def _decimal_median(values: Sequence[Decimal]) -> Decimal:
@@ -536,7 +540,8 @@ def analyse_data(data: RawData, *, min_quantum_us: Decimal = DEFAULT_MIN_QUANTUM
             overlap = max(leader["_lo"], runner["_lo"]) <= min(leader["_hi"], runner["_hi"])
             if overlap:
                 reasons.append("BAND_OVERLAP")
-            if q.value is not None and gap <= q.value:
+            normalized_gap = gap.quantize(TIMER_NORMALIZATION_US, rounding=ROUND_HALF_EVEN)
+            if q.value is not None and normalized_gap <= q.value:
                 reasons.append("WITHIN_ONE_QUANTUM")
         if partial_space:
             verdict = "LOWEST_IN_PARTIAL_SPACE"
@@ -630,7 +635,8 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             raise ContractError(f"duplicate job_id {job_id!r}")
         seen_jobs.add(job_id)
         shape_id = _nonempty_string(job, "shape_id")
-        shape_json = canonical(_identity_object(job, "shape"))
+        shape_object = _identity_object(job, "shape")
+        shape_json = canonical(shape_object)
         if shape_id in shape_id_to_json and shape_id_to_json[shape_id] != shape_json:
             raise ContractError(f"manifest shape identity collision for {shape_id!r}")
         if shape_json in shape_json_to_id and shape_json_to_id[shape_json] != shape_id:
@@ -656,8 +662,18 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             fmt = _nonempty_string(item, "format")
             if fmt not in formats:
                 raise ContractError(f"job {job_id}: expected format {fmt!r} not in formats")
+            if shape_object.get("format") != fmt:
+                raise ContractError(
+                    f"job {job_id}: shape.format={shape_object.get('format')!r} differs from {fmt!r}")
             cid = _nonempty_string(item, "config_id")
-            cjson = canonical(_identity_object(item, "config"))
+            config_object = _identity_object(item, "config")
+            cjson = canonical(config_object)
+            if config_object.get("format") != fmt:
+                raise ContractError(
+                    f"job {job_id}: config.format={config_object.get('format')!r} differs from {fmt!r}")
+            if config_object.get("route") != shape_object.get("route"):
+                raise ContractError(
+                    f"job {job_id}: config.route differs from shape.route")
             by_id = (fmt, cid)
             by_json = (fmt, cjson)
             if by_id in expected_id_to_json and expected_id_to_json[by_id] != cjson:
@@ -704,6 +720,85 @@ def _progress_done(path: pathlib.Path, plan_hash: str) -> tuple[set[str], dict[s
     return done, attempts
 
 
+def _job_outcome_key(candidate: CandidateIdentity) -> tuple[str, str, str, str, str]:
+    return (candidate.shape_id, candidate.shape_json, candidate.fmt,
+            candidate.config_id, candidate.config_json)
+
+
+def _raw_resume_state(
+        path: pathlib.Path, manifest: dict[str, Any], run_id: str,
+        build_id: str) -> tuple[set[str], dict[str, int]]:
+    """Reconstruct durable completion from rankable raw, not progress hints.
+
+    Raw is fsynced before progress.  A process may therefore die with a fully
+    committed job in raw and no matching progress line.  Treating progress as
+    the owner would relaunch attempt zero and permanently duplicate that job.
+    """
+    if not path.exists() or path.stat().st_size == 0:
+        return set(), {}
+    data = load_raw([path])
+    if data.complaints:
+        raise ContractError(
+            "durable raw is not resumable: " + "; ".join(data.complaints[:4]))
+    if set(data.runs) != {run_id}:
+        raise ContractError(
+            f"durable raw run ids {sorted(data.runs)!r} differ from {run_id!r}")
+    header = data.runs[run_id]
+    if (header.build != build_id or header.space_id != manifest["space_id"]
+            or header.partial_space != manifest["partial_space"]):
+        raise ContractError(
+            "durable raw build/space/protocol identity differs from this invocation")
+
+    jobs_by_shape = {job["shape_id"]: job for job in manifest["jobs"]}
+    if len(jobs_by_shape) != len(manifest["jobs"]):
+        raise ContractError("manifest repeats a shape_id, so raw cannot own job completion")
+    expected: dict[str, set[tuple[str, str, str, str, str]]] = {}
+    for shape_id, job in jobs_by_shape.items():
+        shape_json = canonical(job["shape"])
+        expected[shape_id] = {
+            (shape_id, shape_json, item["format"], item["config_id"],
+             canonical(item["config"]))
+            for item in job["expected"]
+        }
+
+    observed: dict[str, set[tuple[str, str, str, str, str]]] = collections.defaultdict(set)
+    owner_count: collections.Counter[tuple[str, str, str, str, str]] = collections.Counter()
+    next_attempt: dict[str, int] = collections.defaultdict(int)
+    for aid in data.complete_attempts():
+        shape_id = aid.candidate.shape_id
+        if shape_id not in jobs_by_shape:
+            raise ContractError(f"durable raw contains unknown shape/job {shape_id!r}")
+        outcome_key = _job_outcome_key(aid.candidate)
+        owner_count[outcome_key] += 1
+        if owner_count[outcome_key] != 1:
+            raise ContractError(
+                "durable raw contains multiple complete attempts for one candidate")
+        observed[shape_id].add(outcome_key)
+        raw_attempt = data.attempts[aid].get("attempt_id")
+        try:
+            number = int(raw_attempt)
+        except (TypeError, ValueError) as exc:
+            raise ContractError(
+                f"durable raw has non-numeric production attempt {raw_attempt!r}") from exc
+        if number < 0 or str(number) != str(raw_attempt):
+            raise ContractError(f"durable raw has non-canonical attempt {raw_attempt!r}")
+        next_attempt[shape_id] = max(next_attempt[shape_id], number + 1)
+
+    done: set[str] = set()
+    for shape_id, outcomes in observed.items():
+        job_id = jobs_by_shape[shape_id]["job_id"]
+        if outcomes != expected[shape_id]:
+            missing = len(expected[shape_id] - outcomes)
+            extra = len(outcomes - expected[shape_id])
+            raise ContractError(
+                f"durable raw job {job_id!r} is partial: missing={missing} extra={extra}")
+        done.add(job_id)
+    return done, {
+        jobs_by_shape[shape_id]["job_id"]: attempt
+        for shape_id, attempt in next_attempt.items()
+    }
+
+
 def _append_line(path: pathlib.Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as handle:
@@ -727,7 +822,8 @@ def _append_file(source: pathlib.Path, destination: pathlib.Path) -> int:
 
 
 def _expected_job_outcomes(job: dict[str, Any], data: RawData,
-                           manifest: dict[str, Any], run_id: str) -> tuple[bool, str]:
+                           manifest: dict[str, Any], run_id: str,
+                           build_id: str) -> tuple[bool, str]:
     expected = {(item["format"], item["config_id"], canonical(item["config"]))
                 for item in job["expected"]}
     observed_attempts = {
@@ -745,8 +841,9 @@ def _expected_job_outcomes(job: dict[str, Any], data: RawData,
         return False, f"child run headers are {sorted(data.runs)!r}, expected {run_id!r}"
     run = data.runs.get(run_id)
     if run is not None and (run.space_id != manifest["space_id"]
-                            or run.partial_space != manifest["partial_space"]):
-        return False, "child run header disagrees with manifest space/partial_space"
+                            or run.partial_space != manifest["partial_space"]
+                            or run.build != build_id):
+        return False, "child run header disagrees with build/manifest/protocol identity"
     unexpected = observed_attempts - expected
     missing = expected - observed_attempts
     if unexpected:
@@ -759,7 +856,8 @@ def _expected_job_outcomes(job: dict[str, Any], data: RawData,
 
 
 def dry_run_records(manifest: dict[str, Any], binary: pathlib.Path, pending: set[str],
-                    shape_timeout: float, raw_env: str, run_id: str) -> list[dict[str, Any]]:
+                    shape_timeout: float, raw_env: str, run_id: str,
+                    build_id: str) -> list[dict[str, Any]]:
     records = []
     for job in manifest["jobs"]:
         if job["job_id"] not in pending:
@@ -770,6 +868,8 @@ def dry_run_records(manifest: dict[str, Any], binary: pathlib.Path, pending: set
             "GEMV_SWEEP_RUN_ID": run_id,
             "GEMV_SWEEP_JOB_ID": job["job_id"],
             "GEMV_SWEEP_ATTEMPT": "<resume-attempt>",
+            "GEMV_SWEEP_BUILD": build_id,
+            "GEMV_SWEEP_SAMPLES": "20",
         })
         records.append({
             "schema": "gemv-sweep-dry-run-v1",
@@ -795,13 +895,27 @@ def run_manifest(args: argparse.Namespace) -> int:
     raw = pathlib.Path(args.raw)
     if not args.resume and (progress.exists() or raw.exists()) and not args.dry_run:
         raise ContractError("raw/progress exists; pass --resume or choose fresh paths")
-    done, attempt_numbers = _progress_done(progress, plan_hash) if args.resume else (set(), {})
-    pending = {job["job_id"] for job in manifest["jobs"] if job["job_id"] not in done}
     run_id = args.run_id or f"run-{plan_hash[:12]}"
+    progress_done, progress_attempts = \
+        _progress_done(progress, plan_hash) if args.resume else (set(), {})
+    raw_done, raw_attempts = \
+        _raw_resume_state(raw, manifest, run_id, args.build_id) if args.resume else (set(), {})
+    orphan_progress = progress_done - raw_done
+    if orphan_progress:
+        raise ContractError(
+            "progress claims complete jobs absent from durable raw: "
+            + repr(sorted(orphan_progress)))
+    done = raw_done
+    attempt_numbers = {
+        job["job_id"]: max(progress_attempts.get(job["job_id"], 0),
+                           raw_attempts.get(job["job_id"], 0))
+        for job in manifest["jobs"]
+    }
+    pending = {job["job_id"] for job in manifest["jobs"] if job["job_id"] not in done}
 
     if args.dry_run:
         records = dry_run_records(manifest, binary, pending, args.shape_timeout,
-                                  args.jsonl_env, run_id)
+                                  args.jsonl_env, run_id, args.build_id)
         text = "".join(canonical(r) + "\n" for r in records)
         if args.dry_run_manifest:
             out = pathlib.Path(args.dry_run_manifest)
@@ -839,9 +953,12 @@ def run_manifest(args: argparse.Namespace) -> int:
             continue
         timeout = min(overall_left, shape_left)
         attempt = int(attempt_numbers.get(job_id, 0))
+        # IDs are semantic strings and deliberately contain '/' (for example
+        # S068/int4/gs32/scale-zero).  They are never filesystem paths.
+        job_file_id = hashlib.sha256(job_id.encode()).hexdigest()[:16]
         raw.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
-                prefix=f".{raw.name}.{job_id}.", suffix=".jsonl", dir=raw.parent,
+                prefix=f".{raw.name}.{job_file_id}.", suffix=".jsonl", dir=raw.parent,
                 delete=False) as tmp_handle:
             tmp = pathlib.Path(tmp_handle.name)
         env = dict(os.environ)
@@ -851,6 +968,8 @@ def run_manifest(args: argparse.Namespace) -> int:
             "GEMV_SWEEP_RUN_ID": run_id,
             "GEMV_SWEEP_JOB_ID": job_id,
             "GEMV_SWEEP_ATTEMPT": str(attempt),
+            "GEMV_SWEEP_BUILD": args.build_id,
+            "GEMV_SWEEP_SAMPLES": "20",
         })
         command = [str(binary)] + job.get("argv", [])
         launched = time.monotonic()
@@ -858,15 +977,18 @@ def run_manifest(args: argparse.Namespace) -> int:
         reason = ""
         rc: int | None = None
         stdout = stderr = ""
+        rankable = False
         try:
             proc = subprocess.run(command, env=env, text=True, capture_output=True, timeout=timeout)
             rc, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
             parsed = load_raw_lines(tmp.read_text().splitlines(), str(tmp)) if tmp.stat().st_size else \
                 load_raw_lines([], str(tmp))
-            valid, why = _expected_job_outcomes(job, parsed, manifest, run_id)
+            valid, why = _expected_job_outcomes(
+                job, parsed, manifest, run_id, args.build_id)
             if rc == 0 and valid:
                 status, reason = "complete", why
                 completed_now += 1
+                rankable = True
             else:
                 status = "invalid" if rc == 0 else "failed"
                 reason = (f"rc={rc}; " if rc else "") + why
@@ -883,13 +1005,19 @@ def run_manifest(args: argparse.Namespace) -> int:
         finally:
             duration = time.monotonic() - launched
             shape_spent[job["shape_id"]] += duration
-            appended = _append_file(tmp, raw)
-            tmp.unlink(missing_ok=True)
+            # A failed/incomplete child is audit evidence, not rankable raw.
+            # Appending it would poison every later --resume attempt because
+            # the reader correctly retains the original sample-hole complaint.
+            appended = _append_file(tmp, raw) if rankable else 0
         if args.logs_dir:
             logs = pathlib.Path(args.logs_dir)
             logs.mkdir(parents=True, exist_ok=True)
-            (logs / f"{job_id}.attempt{attempt}.stdout").write_text(stdout)
-            (logs / f"{job_id}.attempt{attempt}.stderr").write_text(stderr)
+            stem = f"{job_file_id}.attempt{attempt}"
+            (logs / f"{stem}.stdout").write_text(stdout)
+            (logs / f"{stem}.stderr").write_text(stderr)
+            if not rankable and tmp.exists():
+                (logs / f"{stem}.rejected-raw.jsonl").write_bytes(tmp.read_bytes())
+        tmp.unlink(missing_ok=True)
         _append_line(progress, {
             "schema": PROGRESS_SCHEMA,
             "manifest_sha256": plan_hash,
@@ -942,6 +1070,15 @@ def self_test(verbose: bool = True) -> None:
 
     q = infer_quantum(map(Decimal, ("6.144", "8.192", "10.240")))
     check(q.status == "KNOWN" and q.value == Decimal("2.048"), f"2.048 lattice: {q}")
+    # The writer stores binary32 milliseconds.  Those words decode to values
+    # such as 6.144000217... us, not the ideal decimal labels above.  The raw
+    # words, rather than their pretty strings, must still establish 2.048 us.
+    raw_f32 = analyse_data(load_raw_lines(_raw_records(values={
+        "a": ["6.144", "8.192", "10.240"],
+        "b": ["12.288", "14.336", "16.384"]})))
+    f32_quantum = raw_f32["groups"][0]["quantum"]
+    check(f32_quantum["status"] == "KNOWN" and f32_quantum["us"] == 2.048,
+          f"raw binary32 lattice drift: {f32_quantum}")
 
     one = analyse_data(load_raw_lines(_raw_records(values={
         "a": ["10.240", "10.240"], "b": ["12.288", "12.288"]})))
@@ -985,7 +1122,7 @@ def self_test(verbose: bool = True) -> None:
     check(any("incomplete attempt" in x for x in bad.complaints),
           "sample hole must be visible")
     if verbose:
-        print("[gemv-sweep-self-test] PASS: 2.048-us lattice; one-tick/band unresolved; "
+        print("[gemv-sweep-self-test] PASS: raw-binary32 2.048-us lattice; one-tick/band unresolved; "
               ">tick separated; off-lattice/single unknown; partial-space label; "
               "identity collision and incomplete attempt fail closed")
 
@@ -1022,6 +1159,9 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--raw", required=True, help="durable raw JSONL destination")
     run.add_argument("--progress", required=True, help="durable driver progress JSONL")
     run.add_argument("--run-id", help="stable run id; default derives from manifest hash")
+    run.add_argument(
+        "--build-id", required=True,
+        help="source+binary+protocol identity written into and checked against every child run")
     run.add_argument("--shape-timeout", type=float, default=900.0,
                      help="seconds budget shared by jobs of one shape")
     run.add_argument("--deadline-seconds", type=float, default=7200.0,

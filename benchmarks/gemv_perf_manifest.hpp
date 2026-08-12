@@ -54,6 +54,16 @@ struct ShapeCase {
   FormatSemantics semantics;
 };
 
+// Generated build metadata uses this exact host-only type.  It is deliberately
+// format/layout based rather than a group index: a partial build may contain
+// any subset and order without changing a candidate identity.
+struct CompiledGroup {
+  char const* name;
+  Format format;
+  Layout layout;
+  int tile_size_k;
+};
+
 // S068--S079 are checked against workloads.py/fixtures.py, not trusted as a
 // second handwritten authority.  The other four rows are explicitly named
 // anchors requested by the sweep: one historical grouped comparison and three

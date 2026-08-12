@@ -55,7 +55,7 @@ def audit(common: str) -> list[str]:
         "gemv_perf_fixture::packed_plane_bytes(sh.N, sh.K, LoBits)",
         "p.max_rows = b.max_rows",
         "for (int e : b.active_ids)",
-        "if (!verify_witnesses(b, sh.N, tag)) return;",
+        "if (!verify_witnesses(b, sh.N, tag)) {",
         "WRONG EXPERT DATA",
     )
     for token in tokens:
@@ -256,8 +256,8 @@ def main() -> int:
          "gemv_perf_fixture::Route{}", "router"),
         ("gemv_perf_fixture::plane_seed(e, active, false)",
          "gemv_perf_fixture::plane_seed(active_slot[e], active, false)", "real expert id"),
-        ("if (!verify_witnesses(b, sh.N, tag)) return;",
-         "if (false && !verify_witnesses(b, sh.N, tag)) return;", "device witness"),
+        ("if (!verify_witnesses(b, sh.N, tag)) {",
+         "if (false && !verify_witnesses(b, sh.N, tag)) {", "device witness"),
     )
     for old, new, label in plants:
         planted = COMMON.read_text().replace(old, new, 1)

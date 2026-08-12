@@ -81,7 +81,7 @@ authority_filenames() {
 mutate_authority() {
   local mode="$1" src="$2" dst="$3"
   case "$mode" in
-    none)
+    none|unknown-group|duplicate-group)
       cp "$src" "$dst"
       cmp -s "$src" "$dst" || {
         echo "  [FAIL] positive authority copy differs from committed manifest"
@@ -150,6 +150,20 @@ generate_case() {
           return 1
         }
         ;;
+      unknown-group)
+        grep -q "GEMV_GROUPS contains unknown group 'typo'" "$log" || {
+          echo "  [FAIL] unknown group failed for the wrong reason"
+          sed 's/^/           /' "$log"
+          return 1
+        }
+        ;;
+      duplicate-group)
+        grep -q "GEMV_GROUPS contains duplicate group 'i4-native'" "$log" || {
+          echo "  [FAIL] duplicate group failed for the wrong reason"
+          sed 's/^/           /' "$log"
+          return 1
+        }
+        ;;
     esac
     echo "  [ok]   gen_gemv_units_check ($name): production rejected planted $mutation authority"
     return 0
@@ -169,7 +183,7 @@ generate_case() {
   inc_n=$(sed -n 's/^#define GEMV_UNIT_COUNT \([0-9][0-9]*\)$/\1/p' "$inc")
   inc_g=$(sed -n 's/^#define GEMV_GROUP_COUNT \([0-9][0-9]*\)$/\1/p' "$inc")
   decls=$(grep -c '^void gemv_unit_' "$inc")
-  calls=$(grep -cE '^    gemv_unit_.*\(sh, _bf, b\[[0-9]+\]\);' "$inc")
+  calls=$(grep -cE '^    gemv_unit_.*\(sh, _bf, b\[[0-9]+\], sweep\);' "$inc")
   wanted_groups=$([ -n "$filter" ] && echo 1 || echo 10)
 
   [ "$got" = "$expected" ] || { echo "  [FAIL] $name: units on disk $got != authority subset $expected"; fail=1; }
@@ -179,6 +193,9 @@ generate_case() {
   }
   [ "$decls" = "$expected" ] || { echo "  [FAIL] $name: $decls declarations != $expected"; fail=1; }
   [ "$calls" = "$expected" ] || { echo "  [FAIL] $name: $calls calls != $expected"; fail=1; }
+  grep -q '^static const GemvCompiledGroup gemv_compiled_groups\[\]' "$inc" || {
+    echo "  [FAIL] $name: compiled group format/layout metadata missing"; fail=1;
+  }
   if ! cmp -s "$dir/expected.files" "$dir/actual.files"; then
     echo "  [FAIL] $name: generated filename set differs from committed authority subset"
     diff -u "$dir/expected.files" "$dir/actual.files" | head -80 | sed 's/^/           /'
@@ -207,7 +224,9 @@ case "${BAD:-}" in
     generate_case i4-native i4-native none 0 || exit 1
     generate_case malformed "" malformed 1 || exit 1
     generate_case missing "" missing 1 || exit 1
-    echo "  [ok]   gen_gemv_units_check: full=540/10, i4-native non-empty/exclusive, both authority plants red"
+    generate_case unknown-groups 'i4-native;typo' unknown-group 1 || exit 1
+    generate_case duplicate-groups 'i4-native;i4-native' duplicate-group 1 || exit 1
+    echo "  [ok]   gen_gemv_units_check: full=540/10, i4-native exclusive; authority/unknown/duplicate plants red"
     ;;
   1|malformed)
     generate_case malformed "" malformed 1 || exit 1

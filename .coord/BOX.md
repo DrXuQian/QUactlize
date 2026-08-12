@@ -1500,3 +1500,87 @@ time first to the standalone classic anchor `17.8 us / 17.5% nameplate`; only
 then interpret the B ladder.  If a CSV value conflicts with the manually copied
 ACU dataset, request a re-check of the copied field rather than changing the
 model from one transcription discrepancy.
+
+## INBOX 133 — finite GEMV tactic sweep (raw per-launch events)
+
+This is the first truthful `test_gemv_perf` recipe for the real S068--S079
+histograms.  The binary now consumes `E=256 / active={8,15,30}` routed shapes,
+per-real-expert W/S/Z salt and inactive poison.  It instantiates exact CtaM;
+the adaptive shipping dispatcher is not used by the sweep.
+
+The committed authority has 540 compile units and ten format/layout groups.
+Only a binary containing all ten may publish a full-space winner.  A narrowed
+group is useful as a compile/device smoke test, but its manifest carries
+`partial_space=true` and the analyser can only report
+`LOWEST_IN_PARTIAL_SPACE`.
+
+Start from the exact shared branch and make the output location explicit:
+
+    set -euo pipefail
+    cd /sim/eec/shared/junfu.qx/quactlize
+    git pull --ff-only origin develop
+    git submodule update --init --recursive
+    echo "gate-sha=$(git rev-parse HEAD)"
+    export GEMV_SWEEP_DIR=/tmp/quactlize-gemv-sweep
+
+The runner fails closed if the root or a submodule is dirty, or if a submodule
+does not equal the recorded gitlink.  It hashes the linked binary and keeps a
+different raw/progress namespace for every `(source SHA, binary SHA, samples20)`
+identity.  A rebuild under a different SDK can therefore never resume into old
+raw.  `MOE_CORES` is also forwarded as `JOBS`, so the advertised build bound is
+the actual `make -j` bound rather than a reporting-only variable.  The default
+`GEMV_SWEEP_REUSE_BUILD=auto` reuses an existing binary for an interrupted run;
+set it to `0` only for an intentional rebuild, which gets a new binary-hash run
+namespace if its bytes differ.
+
+First run the bounded int4/native smoke test.  Repeating the exact command
+resumes the same manifest rather than relaunching completed shapes:
+
+    GEMV_SWEEP_GROUPS=i4-native \
+      GEMV_SWEEP_BUILD_TIMEOUT_SECONDS=3600 \
+      GEMV_SWEEP_DEADLINE_SECONDS=1800 \
+      bash tools/run_gemv_sweep_box.sh
+
+Then run the full, ten-group space.  Do not concatenate ten independently
+narrowed results and call that a full winner: they have different partial-space
+identities and do not establish cross-build compatibility.
+
+    GEMV_SWEEP_GROUPS=all \
+      GEMV_SWEEP_BUILD_TIMEOUT_SECONDS=7200 \
+      GEMV_SWEEP_DEADLINE_SECONDS=7200 \
+      bash tools/run_gemv_sweep_box.sh
+
+The script prints the exact binary, manifest, raw, progress and result paths.
+The full manifest is expected to say:
+
+    jobs=86
+    total=165600  legal=63180  pruned=102420
+    STATIC/CTA_N_NOT_WHOLE_CHUNKS=37908
+    STATIC/STEP_TOO_SMALL_FOR_SPARSEST_PLANE=64512
+    partial_space=false
+
+The `i4-native` smoke manifest is expected to say:
+
+    jobs=18
+    total=18288  legal=11430  pruned=6858
+    STATIC/CTA_N_NOT_WHOLE_CHUNKS=6858
+    partial_space=true
+
+Each candidate has one warmup event pair plus twenty independent measured
+pairs.  There is one final device synchronization for the batch; the JSONL
+retains every raw float-millisecond word.  A launch refusal, timer failure or
+expert-data witness mismatch produces an exclusion, never a rankable prefix.
+The runner fixes `GEMV_SWEEP_SAMPLES=20`; an ambient override cannot change the
+protocol.  The driver is deadline-bounded and uses hashed filenames, so semantic
+job IDs containing `/` cannot become paths.  Failed/incomplete private JSONL is
+kept in `logs/` and is not appended to rankable raw.  Durable raw, not the
+advisory progress file, owns completion: an interruption after raw fsync but
+before its progress line resumes without relaunching or duplicating that job.
+The runner takes an exclusive lock for one binary/run namespace, so two sweeps
+cannot append concurrently.
+
+Wanted back: `gate-sha`, `binary_sha256`, `build_id`, both command exit codes,
+the final one-line manifest summary from each command, and the printed output
+paths.  Preserve `raw.jsonl`, `progress.jsonl`, `result.json`, `run.log`, and
+`logs/`.  Do not report a partial-space lowest row as a shipping winner.  Device
+output stays outside the repository until its identity and coverage are audited.

@@ -3,7 +3,12 @@
 #define GEMV_UNIT_COUNT 0
 #define GEMV_GROUP_COUNT 1
 static const char* const gemv_group_names[] = {"syntax-stub"};
-static inline void gemv_run_all(const Shape& sh, Best* best) {
+static const GemvCompiledGroup gemv_compiled_groups[] = {
+    {"i4-native", ppu_gemv::tactic_space::Format::Int4,
+     ppu_gemv::tactic_space::Layout::Native, 0},
+};
+static inline void gemv_run_all(const Shape& sh, Best* best, SweepRuntime& sweep) {
   (void)sh;
   (void)best;
+  (void)sweep;
 }

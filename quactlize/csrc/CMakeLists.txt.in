@@ -835,6 +835,24 @@ set(_GEMV_GROUPS
 )
 
 if(GEMV_GROUPS)   # narrow by group name, e.g. -DGEMV_GROUPS="i4-native;i2-native"
+  set(_all_names "")
+  foreach(_row IN LISTS _GEMV_GROUPS)
+    string(REPLACE "|" ";" _g "${_row}")
+    list(GET _g 0 _nm)
+    list(APPEND _all_names "${_nm}")
+  endforeach()
+  set(_seen_requested "")
+  foreach(_want IN LISTS GEMV_GROUPS)
+    list(FIND _all_names "${_want}" _known)
+    if(_known EQUAL -1)
+      message(FATAL_ERROR "GEMV_GROUPS contains unknown group '${_want}'; known groups: ${_all_names}")
+    endif()
+    list(FIND _seen_requested "${_want}" _duplicate)
+    if(NOT _duplicate EQUAL -1)
+      message(FATAL_ERROR "GEMV_GROUPS contains duplicate group '${_want}'")
+    endif()
+    list(APPEND _seen_requested "${_want}")
+  endforeach()
   set(_keep "")
   foreach(_row IN LISTS _GEMV_GROUPS)
     string(REPLACE "|" ";" _g "${_row}")
@@ -856,6 +874,7 @@ set(_GEMV_UNIT_SRCS "")
 set(_GEMV_UNIT_DECLS "")
 set(_GEMV_UNIT_CALLS "")
 set(_GEMV_GROUP_NAMES "")
+set(_GEMV_GROUP_META "")
 set(_GEMV_GROUP_IDX -1)
 
 foreach(_row IN LISTS _GEMV_GROUPS)
@@ -869,11 +888,34 @@ foreach(_row IN LISTS _GEMV_GROUPS)
   list(GET _g 2 _fmt)
   list(GET _g 3 _authority_lay)
   list(GET _g 4 _lay)
+  if(_authority_fmt STREQUAL "int4")
+    set(_fmt_enum "Int4")
+  elseif(_authority_fmt STREQUAL "int2")
+    set(_fmt_enum "Int2")
+  elseif(_authority_fmt STREQUAL "int1")
+    set(_fmt_enum "Int1")
+  elseif(_authority_fmt STREQUAL "q3")
+    set(_fmt_enum "Q3")
+  elseif(_authority_fmt STREQUAL "q6")
+    set(_fmt_enum "Q6")
+  else()
+    message(FATAL_ERROR "unknown authority format '${_authority_fmt}'")
+  endif()
+  if(_authority_lay STREQUAL "native")
+    set(_lay_enum "Native")
+    set(_group_tk 0)
+  elseif(_authority_lay STREQUAL "tileK")
+    set(_lay_enum "TileK")
+    set(_group_tk 256)
+  else()
+    message(FATAL_ERROR "unknown authority layout '${_authority_lay}'")
+  endif()
   math(EXPR _GEMV_GROUP_IDX "${_GEMV_GROUP_IDX} + 1")
   list(APPEND _GEMV_GROUP_NAMES "${_nm}")
+  set(_GEMV_GROUP_META "${_GEMV_GROUP_META}  {\"${_nm}\", ppu_gemv::tactic_space::Format::${_fmt_enum}, ppu_gemv::tactic_space::Layout::${_lay_enum}, ${_group_tk}},\n")
   # TileSizeK is 256 for every instantiation here (KernelDetails' default); the group needs it at RUNTIME to
   # pack, so it is passed to make_bufs rather than inferred there.
-  set(_GEMV_UNIT_CALLS "${_GEMV_UNIT_CALLS}  {\n    std::printf(\"  --- ${_nm} ---\\n\");\n    Bufs const _bf = make_bufs(${_fmt}, ${_lay}, 256, sh);\n")
+  set(_GEMV_UNIT_CALLS "${_GEMV_UNIT_CALLS}  if (sh.format == ppu_gemv::tactic_space::Format::${_fmt_enum}) {\n    std::printf(\"  --- ${_nm} ---\\n\");\n    Bufs const _bf = make_bufs(${_fmt}, ${_lay}, 256, sh);\n")
   foreach(_cfg IN LISTS _GEMV_AUTHORITY_UNITS)
     string(REPLACE "|" ";" _c "${_cfg}")
     list(LENGTH _c _cn_f)
@@ -898,6 +940,8 @@ foreach(_row IN LISTS _GEMV_GROUPS)
       "#define UNIT_FN  ${_fn}\n"
       "#define UNIT_FMT ${_fmt}\n"
       "#define UNIT_LAY ${_lay}\n"
+      "#define UNIT_AUTH_FORMAT ${_fmt_enum}\n"
+      "#define UNIT_AUTH_LAYOUT ${_lay_enum}\n"
       "#define UNIT_ARTIFACT_TK ${_artifact_tk}\n"
       "#define UNIT_TS 256\n"
       "#define UNIT_SK  ${_sk}\n"
@@ -907,15 +951,15 @@ foreach(_row IN LISTS _GEMV_GROUPS)
       "#include \"gemv_perf_unit.inc\"\n")
     execute_process(COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_src}.in" "${_src}")
     list(APPEND _GEMV_UNIT_SRCS "${_src}")
-    set(_GEMV_UNIT_DECLS "${_GEMV_UNIT_DECLS}void ${_fn}(const Shape&, const Bufs&, Best&);\n")
-    set(_GEMV_UNIT_CALLS "${_GEMV_UNIT_CALLS}    ${_fn}(sh, _bf, b[${_GEMV_GROUP_IDX}]);\n")
+    set(_GEMV_UNIT_DECLS "${_GEMV_UNIT_DECLS}void ${_fn}(const Shape&, const Bufs&, Best&, SweepRuntime&);\n")
+    set(_GEMV_UNIT_CALLS "${_GEMV_UNIT_CALLS}    ${_fn}(sh, _bf, b[${_GEMV_GROUP_IDX}], sweep);\n")
   endforeach()
   set(_GEMV_UNIT_CALLS "${_GEMV_UNIT_CALLS}  }\n")
 endforeach()
 
 list(LENGTH _GEMV_UNIT_SRCS _GEMV_UNIT_N)
 list(LENGTH _GEMV_GROUP_NAMES _GEMV_GROUP_N)
-if(NOT GEMV_GROUPS AND NOT _GEMV_UNIT_N EQUAL _GEMV_AUTHORITY_UNIT_COUNT)
+if(_GEMV_GROUP_N EQUAL 10 AND NOT _GEMV_UNIT_N EQUAL _GEMV_AUTHORITY_UNIT_COUNT)
   message(FATAL_ERROR "GEMV generator emitted ${_GEMV_UNIT_N} units, authority requires ${_GEMV_AUTHORITY_UNIT_COUNT}")
 endif()
 message(STATUS "GEMV sweep: ${_GEMV_UNIT_N} generated units in ${_GEMV_GEN_DIR} (${_GEMV_GROUP_N} groups)")
@@ -930,9 +974,10 @@ file(WRITE "${_GEMV_GEN_DIR}/gemv_perf_units.inc.in"
      "#define GEMV_UNIT_COUNT ${_GEMV_UNIT_N}\n"
      "#define GEMV_GROUP_COUNT ${_GEMV_GROUP_N}\n"
      "static const char* const gemv_group_names[] = {\"${_GEMV_GN_INIT}\"};\n"
+     "static const GemvCompiledGroup gemv_compiled_groups[] = {\n${_GEMV_GROUP_META}};\n"
      "${_GEMV_UNIT_DECLS}"
-     "static inline void gemv_run_all(const Shape& sh, Best* b) {\n"
-     "  (void)sh; (void)b;\n"
+     "static inline void gemv_run_all(const Shape& sh, Best* b, SweepRuntime& sweep) {\n"
+     "  (void)sh; (void)b; (void)sweep;\n"
      "${_GEMV_UNIT_CALLS}"
      "}\n")
 execute_process(COMMAND ${CMAKE_COMMAND} -E copy_if_different

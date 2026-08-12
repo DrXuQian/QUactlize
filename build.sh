@@ -454,7 +454,8 @@ case "$TARGET" in
     echo "       $BIN 256 4 512 2048 32 4 8       # pinned token->top-k router; prints Mmax/capacity"
     echo "       SPLITK_CFG='16x128:256 w16x16 s2' SPLITK_S=1 $BIN 64 8 2048 2048 32 3   # select one acu row" ;;
   test_gemv_perf)
-    echo "run:   $BIN [shape]                      # GEMV_FMT=/GEMV_CFG= select rows" ;;
+    echo "plan:  $BIN --manifest-json /tmp/gemv-plan.json"
+    echo "run:   $BIN --shape-case=N               # GEMV_FMT=/GEMV_CFG= hand-capture filters only" ;;
   *)
     echo "run:   $BIN --m=2048 --n=4096 --k=4096 --g=128 --mode=1 --iterations=100" ;;
 esac

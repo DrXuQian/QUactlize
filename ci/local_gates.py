@@ -1361,6 +1361,41 @@ def lint_gemv_perf_authority():
         "GEMV S068-S079 fixtures are ragged, expert-distinct, poisoned and pitch-sensitive")
 
 
+def lint_gemv_tactic_space():
+    """The finite GEMV axes, legality census and generated 540-unit view must agree."""
+    return _run_ci_script(
+        "check_gemv_tactic_space.py",
+        "GEMV finite axes/prune census and the committed compile-unit authority agree")
+
+
+def lint_gemv_exact_ctam():
+    """The benchmark-only exact CtaM route must not mutate adaptive shipping dispatch."""
+    return _run_ci_script(
+        "check_gemv_exact_ctam.py",
+        "GEMV exact dense/grouped CtaM domains compile while adaptive production stays unchanged")
+
+
+def lint_gemv_event_protocol():
+    """Each GEMV sample must have one independent device-event pair."""
+    return _run_ci_script(
+        "check_gemv_event_protocol.py",
+        "GEMV raw events preserve one warmup and one pair per measured launch")
+
+
+def lint_gemv_sweep_driver():
+    """Bounded GEMV runs must resume without path aliases or poisoned raw prefixes."""
+    return _run_ci_script(
+        "check_gemv_sweep_driver.py",
+        "GEMV driver dry-run, deadline, slash-ID, resume and exact coverage controls pass")
+
+
+def lint_gemv_sweep_integration():
+    """Manifest identities, generated exact-CtaM units and raw writer are one graph."""
+    return _run_ci_script(
+        "check_gemv_sweep_integration.py",
+        "GEMV full/partial manifests share the exact-CtaM and raw-event runtime identity")
+
+
 def lint_grouped_streamk_contract():
     """Grouped Stream-K must preserve global q for locks while decoding expert-local compute coordinates."""
     ok, why = nvcc_can_compile_device_cuda()
@@ -1957,6 +1992,11 @@ def main():
                 ("lint", "grouped Marlin preserves ragged q and all mixed-input collective families", lint_grouped_marlin_contract),
                 ("lint", "grouped Marlin exhausts every committed format/shape tuple", lint_grouped_marlin_exhaustive),
                 ("lint", "GEMV reference fixtures expose expert routing and packed pitch", lint_gemv_perf_authority),
+                ("lint", "GEMV finite tactic axes and generated units share one authority", lint_gemv_tactic_space),
+                ("lint", "GEMV exact-CtaM sweep leaves adaptive production dispatch unchanged", lint_gemv_exact_ctam),
+                ("lint", "GEMV timing records one raw device-event pair per launch", lint_gemv_event_protocol),
+                ("lint", "GEMV bounded driver resumes without path or raw-prefix poisoning", lint_gemv_sweep_driver),
+                ("lint", "GEMV manifest, exact units and raw writer preserve one identity", lint_gemv_sweep_integration),
                 ("lint", "grouped Stream-K preserves q locks, worker/K decomposition, and timing", lint_grouped_streamk_contract),
                 ("lint", "l122_streamk_fixup_cohort contract pins the exact 64/128-thread CTA cohort", lint_streamk_fixup_cohort),
                 ("lint", "l124 predicates every shipped FP32 accumulator residue and preserves S1-4", lint_fp32_residue_fixup),

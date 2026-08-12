@@ -17,11 +17,13 @@
 #include <cstdint>
 #include <vector>
 #include <string>
-#include <chrono>
 #include <algorithm>
 #include <utility>
 
 #include "gemv_perf_fixture.hpp"
+#include "gemv_perf_manifest.hpp"
+#include "gemv_perf_samples.hpp"
+#include "gemv_perf_timing.hpp"
 
 // NARROW THE INSTANTIATION SET TO WHAT THE SHAPE LIST ACTUALLY CALLS. Every (gs, quant) pair is a full set of
 // kernels per unit; the shapes below use gs 32 and 128 and only the two finegrained quant ops, so paying for
@@ -35,7 +37,7 @@
 
 using namespace ppu_gemv;
 
-#define GEMV_PERF_REV 2
+#define GEMV_PERF_REV 3
 
 // ppu001. A CHECKED MIRROR OF bench_select.hpp's kHbmGBPerSecond, not a second source. The comment here used to
 // read "same constants the MoE bench uses, so the percentages are comparable" -- an assertion a copy cannot make
@@ -65,19 +67,6 @@ inline bool row_selected(const char* tag) {
   return true;
 }
 
-// chrono + a device sync: the same timing shape lowbit_moe_bench.hpp uses, so it works under both runtimes.
-template <typename F>
-inline double time_it(F&& f, int iters) {
-  if (iters == 0) { f(); rt_sync("cold launch"); return 0.0; }
-  for (int i = 0; i < 5; ++i) f();
-  rt_sync("warmup");
-  auto t0 = std::chrono::high_resolution_clock::now();
-  for (int i = 0; i < iters; ++i) f();
-  rt_sync("timed");
-  auto t1 = std::chrono::high_resolution_clock::now();
-  return std::chrono::duration<double, std::micro>(t1 - t0).count() / iters;
-}
-
 struct Best { char tag[96] = ""; double us = 1e30; double pct = 0; };
 inline void upd(Best& b, const char* t, double us, double pct) {
   if (us > 0 && us < b.us) { std::snprintf(b.tag, sizeof(b.tag), "%s", t); b.us = us; b.pct = pct; }
@@ -86,7 +75,7 @@ inline void upd(Best& b, const char* t, double us, double pct) {
 // ---------------------------------------------------------------------------------------------------
 // One benchmark problem. `experts == 0` is dense.
 struct Shape {
-  const char* name;
+  std::string name;
   int experts;      // 0 = dense
   int rows;         // dense: m. MoE: global routed token count.
   int N, K;
@@ -94,7 +83,25 @@ struct Shape {
   QuantOp quant;
   int topk = 0;     // grouped: route every token to top-k distinct experts
   int active = 0;   // grouped: expected distinct active experts; independent of E
+  ppu_gemv::tactic_space::Format format = ppu_gemv::tactic_space::Format::Int4;
+  std::string shape_id;
+  std::string shape_json;
 };
+
+// One invocation of the benchmark owns one manifest job.  Passing this object
+// through the generated per-config TU boundary is deliberate: a file-local
+// global would give each generated unit a different writer/state machine.
+struct SweepRuntime {
+  gemv_perf_samples::JsonlWriter* writer = nullptr;
+  std::string run_id;
+  std::string attempt_id;
+  std::uint32_t pass = 0;
+  std::uint32_t measured_launches = 20;
+  bool sweep = false;
+  bool failed = false;
+};
+
+using GemvCompiledGroup = gemv_perf_manifest::CompiledGroup;
 
 struct OutputWitness {
   std::size_t index = 0;
@@ -109,9 +116,42 @@ struct Bufs {
   std::vector<int> rows_per_expert;
   std::vector<int> active_ids;
   std::vector<OutputWitness> witnesses;
+  std::vector<cutlass::half_t> output_poison;
   int total_rows = 0;
   int max_rows = 0;
 };
+
+inline Shape make_shape(gemv_perf_manifest::ShapeCase const& c) {
+  Shape out;
+  out.name = c.geometry.name;
+  out.experts = c.geometry.experts;
+  out.rows = c.geometry.rows;
+  out.N = c.geometry.n;
+  out.K = c.geometry.k;
+  out.gs = c.semantics.group_size;
+  out.quant = c.semantics.quant_op == gemv_perf_manifest::QuantOp::FinegrainedScaleOnly
+      ? QuantOp::FinegrainedScaleOnly : QuantOp::FinegrainedScaleZero;
+  out.topk = c.geometry.topk;
+  out.active = c.geometry.active;
+  out.format = c.semantics.format;
+  out.shape_id = gemv_perf_manifest::shape_id(c);
+  out.shape_json = gemv_perf_manifest::shape_json(c);
+  return out;
+}
+
+constexpr ppu_gemv::tactic_space::Format tactic_format_of(WFormat format) {
+  using F = ppu_gemv::tactic_space::Format;
+  return format == WFormat::Int4 ? F::Int4
+       : format == WFormat::Int2 ? F::Int2
+       : format == WFormat::Int1 ? F::Int1
+       : format == WFormat::Q3_21 ? F::Q3
+       : F::Q6;
+}
+
+constexpr ppu_gemv::tactic_space::Layout tactic_layout_of(WLayout layout) {
+  return layout == WLayout::Native ? ppu_gemv::tactic_space::Layout::Native
+                                   : ppu_gemv::tactic_space::Layout::TileK;
+}
 
 // Pack a plane the way gemv_wformat.hpp defines the layout. Deliberately the same bit-position expression as
 // the correctness gate's packer -- there is one convention and it lives in one form.
@@ -180,15 +220,29 @@ inline Bufs make_bufs(WFormat fmt, WLayout Lay, int TS, Shape const& sh) {
   std::vector<uint8_t> wl(std::size_t(experts) * lo_bytes);
   std::vector<uint8_t> wh(std::size_t(experts) * hi_bytes);
 
+  // E=256/active<=30 is the real route.  Packing an identical inactive poison
+  // plane 226--248 times would dominate the benchmark process before a kernel
+  // ever launches.  Active experts remain independently salted by real expert
+  // id; the inactive code is format-defined all-ones and is packed once.
+  bool const has_inactive = int(b.active_ids.size()) != experts;
+  auto const inactive_lo = has_inactive ? pack_plane(
+      Lay, LoBits, TS, sh.N, sh.K, gemv_perf_fixture::plane_seed(0, false, false))
+      : std::vector<uint8_t>{};
+  auto const inactive_hi = has_inactive && TwoPlane ? pack_plane(
+      Lay, HiBits, TS, sh.N, sh.K, gemv_perf_fixture::plane_seed(0, false, true))
+      : std::vector<uint8_t>{};
+
   for (int e = 0; e < experts; ++e) {
     bool const active = active_slot[std::size_t(e)] >= 0;
     uint32_t const lo_seed = gemv_perf_fixture::plane_seed(e, active, false);
     uint32_t const hi_seed = gemv_perf_fixture::plane_seed(e, active, true);
-    auto const plo = pack_plane(Lay, LoBits, TS, sh.N, sh.K, lo_seed);
+    auto const plo = active ? pack_plane(Lay, LoBits, TS, sh.N, sh.K, lo_seed)
+                            : inactive_lo;
     std::memcpy(wl.data() + gemv_perf_fixture::packed_plane_expert_offset(
                     e, sh.N, sh.K, LoBits), plo.data(), lo_bytes);
     if (TwoPlane) {
-      auto const phi = pack_plane(Lay, HiBits, TS, sh.N, sh.K, hi_seed);
+      auto const phi = active ? pack_plane(Lay, HiBits, TS, sh.N, sh.K, hi_seed)
+                              : inactive_hi;
       std::memcpy(wh.data() + gemv_perf_fixture::packed_plane_expert_offset(
                       e, sh.N, sh.K, HiBits), phi.data(), hi_bytes);
     }
@@ -239,6 +293,8 @@ inline Bufs make_bufs(WFormat fmt, WLayout Lay, int TS, Shape const& sh) {
     b.Wh = DevBuf(wh.size());   b.Wh.from_host(wh.data());
   }
   b.O = DevBuf(size_t(b.total_rows) * sh.N * 2);
+  b.output_poison.assign(std::size_t(b.total_rows) * sh.N,
+                         cutlass::half_t::bitcast(uint16_t(0x7f7f)));
   rt_memset0(b.O.p, b.O.bytes);
   if (sh.experts > 0) { b.Off = DevBuf(b.offs.size() * 4); b.Off.from_host(b.offs.data()); }
   return b;
@@ -265,15 +321,28 @@ inline bool verify_witnesses(Bufs const& b, int n, char const* tag) {
 }
 
 // ---------------------------------------------------------------------------------------------------
-template <typename Details, int CtaN, int Chunk>
-inline void run_row(Shape const& sh, Bufs const& b, Best& best) {
+template <typename Details, bool Grouped, int CtaM, int CtaN, int Chunk>
+inline void run_row_exact(Shape const& sh, Bufs const& b, Best& best, SweepRuntime& sweep) {
   constexpr int LoBits = Details::kLoBits, HiBits = Details::kHiBits;
   constexpr int TotalBits = LoBits + HiBits;
   constexpr int StepK = Details::kStepK, Threads = Details::kThreads;
+  static_assert(gemv_exact_ctam_supported_v<CtaM, Grouped>,
+                "generated benchmark CtaM left the route's compiled domain");
 
-  char tag[96];
-  std::snprintf(tag, sizeof(tag), "%-7s %-6s s%-2d/t%-3d N%d C%d", Details::format_name(),
-                name_of(Details::kLayout), StepK, Threads, CtaN, Chunk);
+  using namespace ppu_gemv::tactic_space;
+  constexpr Candidate candidate{
+      tactic_format_of(Details::kFormat), tactic_layout_of(Details::kLayout),
+      Details::kLayout == WLayout::TileK ? Details::kTileSizeK : 0,
+      StepK, Threads, Grouped ? Route::Grouped : Route::Dense, CtaM, CtaN, Chunk};
+  static_assert(static_exclusion(candidate) == Exclusion::None,
+                "generated unit is not a static-legal tactic-authority row");
+  if (sh.format != candidate.format || (sh.experts > 0) != Grouped) return;
+  Problem const problem{candidate.route, b.total_rows, sh.N, sh.K, sh.gs};
+  if (shape_exclusion(candidate, problem) != ShapeExclusion::None) return;
+
+  char tag[128];
+  std::snprintf(tag, sizeof(tag), "%-7s %-6s s%-2d/t%-3d M%d N%d C%d", Details::format_name(),
+                name_of(Details::kLayout), StepK, Threads, CtaM, CtaN, Chunk);
   if (!row_selected(tag)) return;
 
   int const experts = sh.experts > 0 ? sh.experts : 1;
@@ -292,25 +361,63 @@ inline void run_row(Shape const& sh, Bufs const& b, Best& best) {
   }
 
   int const f0 = gemv_fail_count();
-  std::vector<cutlass::half_t> output_poison(
-      std::size_t(b.total_rows) * sh.N, cutlass::half_t::bitcast(uint16_t(0x7f7f)));
-  rt_h2d(b.O.p, output_poison.data(), output_poison.size() * sizeof(cutlass::half_t));
-  auto go = [&] { launch_gemv<Details, CtaN, Chunk>(p, 0); };
-  double const us = acu_mode() ? (time_it(go, 0), 0.0) : time_it(go, 100);
-  if (acu_mode()) { std::printf("  [acu] ONE COLD launch (not a timing): %s\n", tag); return; }
-  if (gemv_fail_count() != f0) {
-    std::printf("  %-34s %10s | DID NOT RUN (launch refused) -- excluded\n", tag, "-");
+  rt_h2d(b.O.p, b.output_poison.data(),
+         b.output_poison.size() * sizeof(cutlass::half_t));
+  auto go = [&] { (void)launch_gemv_exact_ctam<Details, Grouped, CtaM, CtaN, Chunk>(p, 0); };
+  if (acu_mode()) {
+    go();
+    rt_sync("GEMV acu cold launch");
+    std::printf("  [acu] ONE COLD launch (not a timing): %s\n", tag);
     return;
   }
-  if (!verify_witnesses(b, sh.N, tag)) return;
+
+  gemv_perf_samples::Attempt attempt;
+  attempt.candidate = {sweep.run_id, sh.shape_id, sh.shape_json,
+                       ppu_gemv::tactic_space::name_of(candidate.format),
+                       gemv_perf_manifest::config_id(candidate),
+                       gemv_perf_manifest::config_json(candidate)};
+  attempt.attempt_id = sweep.attempt_id;
+  attempt.pass = sweep.pass;
+  if (sweep.writer && !sweep.writer->write_attempt(attempt, sweep.measured_launches)) {
+    sweep.failed = true;
+    return;
+  }
+
+  auto const batch = gemv_perf_timing::measure_raw_launches(go, sweep.measured_launches);
+  if (gemv_fail_count() != f0) {
+    std::printf("  %-34s %10s | DID NOT RUN (launch refused) -- excluded\n", tag, "-");
+    if (sweep.writer && !sweep.writer->write_excluded(attempt, "launch refused"))
+      sweep.failed = true;
+    return;
+  }
+  if (!batch.complete()) {
+    std::printf("  %-34s %10s | DID NOT RUN (%s) -- excluded\n",
+                tag, "-", batch.error.c_str());
+    if (sweep.writer && !sweep.writer->write_excluded(attempt, batch.error))
+      sweep.failed = true;
+    return;
+  }
+  if (!verify_witnesses(b, sh.N, tag)) {
+    if (sweep.writer && !sweep.writer->write_excluded(attempt, "output witness mismatch"))
+      sweep.failed = true;
+    return;
+  }
+  if (sweep.writer && !sweep.writer->write_samples(attempt, batch)) {
+    sweep.failed = true;
+    return;
+  }
+  std::vector<double> times;
+  times.reserve(batch.samples.size());
+  for (auto const& sample : batch.samples) times.push_back(sample.event_us);
+  std::sort(times.begin(), times.end());
+  double const us = times[times.size() / 2];
 
   // Compulsory traffic. B counted grid.x times because every m-tile re-reads it; A counted once (it is tiny
   // at decode and should be served by L2 across the n-tiles -- if the measured rate exceeds this model, that
   // assumption is what broke).
-  int const ctam = std::min(b.max_rows, GEMV_CTAM_MAX);
   int64_t grid_m_sum = 0;
   for (int e : b.active_ids)
-    grid_m_sum += (b.rows_per_expert[std::size_t(e)] + ctam - 1) / ctam;
+    grid_m_sum += (b.rows_per_expert[std::size_t(e)] + CtaM - 1) / CtaM;
   double const wb  = double(sh.N) * sh.K * TotalBits / 8.0;
   double const sb  = double(sk) * sh.N * 2.0 * (has_zero(sh.quant) ? 2 : 1);
   double const ab  = double(b.total_rows) * sh.K * 2.0;
@@ -320,7 +427,7 @@ inline void run_row(Shape const& sh, Bufs const& b, Best& best) {
   double const pct = 100.0 * gbs / HBM_GBS;
 
   int64_t const work_ctas = grid_m_sum * (sh.N / CtaN);
-  int64_t const launch_ctas = int64_t((b.max_rows + ctam - 1) / ctam) *
+  int64_t const launch_ctas = int64_t((b.max_rows + CtaM - 1) / CtaM) *
                               (sh.N / CtaN) * experts;
   // WARPS OF WORK PER CU, not achieved occupancy -- the same quantity the MoE bench prints as grid_wrp/CU.
   // Naming it "wrp/CU" invited exactly the misreading that cost rounds earlier: 14.2 there was the TOTAL work,
