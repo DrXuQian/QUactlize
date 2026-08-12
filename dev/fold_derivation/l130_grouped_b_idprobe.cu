@@ -16,6 +16,7 @@
 
 #if defined(L130_TYPE_ONLY)
 
+#include <cstdint>
 #include <cstdio>
 #include <type_traits>
 
@@ -59,10 +60,49 @@ static_assert(m8n16_g5_contract::kN == 32 && m8n16_g5_contract::kK == 256 &&
               m8n16_g5_contract::kGroupSize == 32);
 
 int main() {
+  // Replay the exact pointer construction used by load_init_B's ordinary
+  // (kContinuous == 1) arm.  dB is expressed in logical int4 elements, but
+  // make_gmem_ptr(typed_pointer) selects the generic Iterator overload and
+  // retains raw C++ pointer arithmetic.  This is the layer L130's original
+  // byte-map model skipped.
+  alignas(16) std::uint8_t storage[3 * m8n16_g5_contract::kN *
+                                    m8n16_g5_contract::kK]{};
+  auto const* typed = reinterpret_cast<cutlass::int4b_t const*>(storage);
+  auto const shape = cute::make_shape(
+      m8n16_g5_contract::kN, m8n16_g5_contract::kK,
+      m8n16_g5_contract::kExperts);
+  typename Mainloop::StrideB const dB{
+      int64_t(m8n16_g5_contract::kK), cute::_1{},
+      int64_t(m8n16_g5_contract::kN * m8n16_g5_contract::kK)};
+
+  auto const raw_nkl = cute::make_tensor(cute::make_gmem_ptr(typed), shape, dB);
+  auto const raw_e1 = raw_nkl(cute::_, cute::_, 1);
+  auto const sub_nkl = cute::make_tensor(
+      cute::make_gmem_ptr<cutlass::int4b_t>(
+          static_cast<void const*>(typed)),
+      shape, dB);
+  auto const sub_e1 = sub_nkl(cute::_, cute::_, 1);
+  auto const raw_delta = reinterpret_cast<std::uintptr_t>(
+      cute::raw_pointer_cast(raw_e1.data())) -
+      reinterpret_cast<std::uintptr_t>(storage);
+  auto const subbyte_delta = reinterpret_cast<std::uintptr_t>(
+      cute::raw_pointer_cast(sub_e1.data())) -
+      reinterpret_cast<std::uintptr_t>(storage);
+  constexpr std::uintptr_t kLogicalCodes =
+      m8n16_g5_contract::kN * m8n16_g5_contract::kK;
+  constexpr std::uintptr_t kPhysicalBytes = kLogicalCodes / 2;
+  bool const pointer_replay = raw_delta == kLogicalCodes &&
+                              subbyte_delta == kPhysicalBytes;
+
   std::puts("[l130:type] exact G5 B: FinegrainedScaleZero gs32 "
             "tile=8x32x64 warp=8x32x64 stages=3 int4 CTA32; "
             "ordinary dB-backed kContinuous=1; dB2/interleaved=NOT-SELECTED PASS");
-  return 0;
+  std::printf("[l130:production-slice] typed-int4 generic make_gmem_ptr "
+              "expert-delta=%zu B (observed bug); explicitly subbyte-aware "
+              "delta=%zu B (artifact=%zu B) -> %s\n",
+              std::size_t(raw_delta), std::size_t(subbyte_delta),
+              std::size_t(kPhysicalBytes), pointer_replay ? "EXPECTED-RED" : "FAIL");
+  return pointer_replay ? 0 : 1;
 }
 
 #else
@@ -134,6 +174,14 @@ struct Census {
   long long map_holes = 0;
   long long map_dups = 0;
 };
+
+int sum_dequantized_column(std::vector<std::uint8_t> const& q, int n,
+                           int scale_denominator, int zero_sum) {
+  int qsum = 0;
+  for (int k = 0; k < spec::kK; ++k)
+    qsum += int(q[std::size_t(k) * spec::kN + n]) - 8;
+  return qsum / scale_denominator + zero_sum;
+}
 
 }  // namespace
 
@@ -230,6 +278,65 @@ int main() {
                 expert_output_bad ? "BAD" : "32/32");
   }
 
+  // Reproduce the retained device observation with the missing production
+  // assumption made explicit.  The raw typed-int4 L slice advances 8192
+  // BYTES per expert, twice the 4096-byte artifact pitch.  Therefore the B
+  // probe reads payload(2e) below the allocation midpoint.  At e=128 the
+  // same bad slice starts one-past the 1 MiB B allocation.  In the observed
+  // allocation sequence the next 128 KiB is the scale plane: sixteen bad
+  // 8192-byte strides, exactly e=128..143.  Its repeated fp16(1/32) bytes
+  // 00 28, interpreted as packed int4, contribute -44.  A later zero-filled
+  // workspace contributes -64.  These are OOB contents, not two metadata
+  // remaps and not a dequantization gain of two.
+  int b_replay_bad = 0;
+  for (int e : {1, 3}) {
+    int const got = exact_output(recovered[2 * e], 0);
+    b_replay_bad += got != 2 * e;
+    std::printf("[l130:observed-B] e=%d raw-byte-pitch source-expert=%d "
+                "got=%d want=%d -> %s\n",
+                e, 2 * e, got, 2 * e, got == 2 * e ? "REPRODUCED" : "FAIL");
+  }
+
+  std::vector<std::int8_t> scale_bytes(kArtifactBytes);
+  for (int i = 0; i < kArtifactBytes; i += 2) {
+    scale_bytes[i] = std::int8_t(0x00);
+    scale_bytes[i + 1] = std::int8_t(0x28);  // fp16(1/32), little-endian
+  }
+  std::vector<std::uint8_t> scale_as_q, zero_as_q;
+  xplane::recover_derived<4, 8, 32, 64, 8, 32, 1>(
+      scale_bytes.data(), scale_as_q, spec::kN, spec::kK);
+  std::vector<std::int8_t> zero_bytes(kArtifactBytes, 0);
+  xplane::recover_derived<4, 8, 32, 64, 8, 32, 1>(
+      zero_bytes.data(), zero_as_q, spec::kN, spec::kK);
+
+  int zero_replay_bad = 0;
+  for (auto const target : {std::pair<int, int>{128, 84},
+                            std::pair<int, int>{129, 85},
+                            std::pair<int, int>{143, 99}}) {
+    int const got = sum_dequantized_column(scale_as_q, 0, 32, target.first);
+    bool all_columns = true;
+    for (int n = 1; n < spec::kN; ++n)
+      all_columns &= sum_dequantized_column(scale_as_q, n, 32, target.first) == got;
+    zero_replay_bad += got != target.second || !all_columns;
+    std::printf("[l130:observed-zero] e=%d OOB-source=fp16(1/32)-plane "
+                "got=%d want=%d columns=%s -> %s\n",
+                target.first, got, target.second, all_columns ? "uniform" : "SPLIT",
+                got == target.second && all_columns ? "REPRODUCED" : "FAIL");
+  }
+  for (auto const target : {std::pair<int, int>{190, 126},
+                            std::pair<int, int>{201, 137},
+                            std::pair<int, int>{255, 191}}) {
+    int const got = sum_dequantized_column(zero_as_q, 0, 32, target.first);
+    bool all_columns = true;
+    for (int n = 1; n < spec::kN; ++n)
+      all_columns &= sum_dequantized_column(zero_as_q, n, 32, target.first) == got;
+    zero_replay_bad += got != target.second || !all_columns;
+    std::printf("[l130:observed-zero] e=%d OOB-source=zero-filled-region "
+                "got=%d want=%d columns=%s -> %s\n",
+                target.first, got, target.second, all_columns ? "uniform" : "SPLIT",
+                got == target.second && all_columns ? "REPRODUCED" : "FAIL");
+  }
+
   // Required red control: replay the exact arithmetic with the historical
   // high-half remap.  It must reject exactly experts 128..255, and their
   // observed ID must be exactly e-64 in every column.
@@ -270,6 +377,7 @@ int main() {
   bool const red = red_mismatched_experts == 128 && red_low_bad == 0 &&
                    red_high_inexact == 0;
   bool const controls = corrupt_legacy_diff == 1 && corrupt_roundtrip_diff == 1;
+  bool const observed_replay = b_replay_bad == 0 && zero_replay_bad == 0;
 
   std::printf("[l130] e0..255 legacy-byte-diff=%lld place/recover-code-diff=%lld "
               "map-holes=%lld map-dups=%lld address-bad=%lld value-bad=%lld "
@@ -291,8 +399,13 @@ int main() {
   std::printf("[l130:scope] B-low-plane-only; G5 selects ordinary dB. "
               "interleaved dB and dB2 are NOT SELECTED by this kernel type; "
               "zero/scale addressing is covered by L125, not inferred here. result=%s\n",
-              positive && red && controls ? "PASS" : "FAIL");
-  return positive && red && controls ? 0 : 1;
+              positive && red && controls && observed_replay ? "PASS" : "FAIL");
+  std::printf("[l130:observed-replay] B-bad=%d zero-bad=%d -> %s; "
+              "the e>=128 values are consequences of the observed OOB "
+              "allocation contents, not a stable expert mapping\n",
+              b_replay_bad, zero_replay_bad,
+              observed_replay ? "PASS" : "FAIL");
+  return positive && red && controls && observed_replay ? 0 : 1;
 }
 
 #endif
