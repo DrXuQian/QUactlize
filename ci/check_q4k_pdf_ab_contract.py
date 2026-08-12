@@ -46,6 +46,7 @@ def audit(harness: str, kernel: str, fixture: str, runner: str) -> list[str]:
         'sample.state == "weight_metadata_cold" ? b : 0',
         "event_ms_bits", "float_bits(sample.elapsed_ms)",
         "cudaEventQuery(sample.stop)", "nvmlDeviceGetClockInfo",
+        "nvml_ok(nvmlSystemGetDriverVersion", "device_name,samples_requested,warmup,precondition_ms",
         'add("ours_native_grouped1"', 'add(s.l == 1 ? "ours_native_dense1" : "ours_native_dense8"',
         "correctness_gate(device, arms);", "max_conditioned", "1.f / 128.f",
     ]:
@@ -55,6 +56,7 @@ def audit(harness: str, kernel: str, fixture: str, runner: str) -> list[str]:
         errors.append("timing starts before correctness")
     for token in [
         "dirty tree", "binary_sha", "event_ms_bits", "infer_quantum",
+        "raw CSV mixes protocol field", "len(group) != requested",
         'verdict = "UNRESOLVED"', "topology-inclusive 1-vs-8", "not an exact-paper reproduction",
     ]:
         if token not in runner:
@@ -86,11 +88,14 @@ def main() -> int:
     plant(0, 'add("ours_native_grouped1"', 'add("ours_native_dense8_again"',
           "grouped-vs-dense topology label")
     plant(0, "float_bits(sample.elapsed_ms)", "0u", "raw binary32 event authority")
+    plant(0, "nvml_ok(nvmlSystemGetDriverVersion", "nvml_ok(cudaDriverGetVersion",
+          "actual driver identity")
     plant(1, "this is not an upstream/exact source file", "exact upstream source",
           "reconstruction source boundary")
     plant(2, "Independent decode from raw blocks", "Decode from the affine artifact",
           "independent raw golden")
     plant(3, 'verdict = "UNRESOLVED"', 'verdict = "TIE"', "timer-resolution fail-close")
+    plant(3, "len(group) != requested", "len(group) < 0", "declared sample-count fail-close")
 
     nvcc = shutil.which("nvcc")
     if not nvcc:

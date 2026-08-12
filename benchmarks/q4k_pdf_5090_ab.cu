@@ -99,6 +99,8 @@ __global__ void flush_l2(std::uint8_t const* p, std::size_t bytes,
 struct NvmlClock {
   nvmlDevice_t device{};
   std::string pci;
+  std::string name;
+  std::string driver;
   NvmlClock() {
     nvml_ok(nvmlInit_v2(), "nvmlInit_v2");
     int ordinal = 0;
@@ -107,6 +109,13 @@ struct NvmlClock {
     cuda_ok(cudaDeviceGetPCIBusId(bus, sizeof(bus), ordinal), "cudaDeviceGetPCIBusId");
     pci = bus;
     nvml_ok(nvmlDeviceGetHandleByPciBusId_v2(bus, &device), "nvmlDeviceGetHandleByPciBusId_v2");
+    char device_name[NVML_DEVICE_NAME_BUFFER_SIZE]{};
+    char driver_version[NVML_SYSTEM_DRIVER_VERSION_BUFFER_SIZE]{};
+    nvml_ok(nvmlDeviceGetName(device, device_name, sizeof(device_name)), "nvmlDeviceGetName");
+    nvml_ok(nvmlSystemGetDriverVersion(driver_version, sizeof(driver_version)),
+            "nvmlSystemGetDriverVersion");
+    name = device_name;
+    driver = driver_version;
   }
   ~NvmlClock() { nvmlShutdown(); }
   unsigned sample() const {
@@ -362,13 +371,13 @@ void write_header(std::FILE* f) {
       "logical_workloads,batch,kernels_per_workload,representation,representation_bytes,distinct_bytes,"
       "cold_copy_count,l2_bytes,flush_bytes,event_ms_bits,event_total_us,event_us_per_workload,"
       "sm_clock_mhz,event_pending_after_clock_query,correctness_hash,pdf_config,pdf_config_authority,"
-      "timing_scope,clock_scope\n");
+      "timing_scope,clock_scope,device_name,samples_requested,warmup,precondition_ms,cold_budget_mib\n");
   std::fflush(f);
 }
 
 void emit_samples(std::FILE* f, Options const& options, Shape const& shape,
                   std::vector<Arm> const& arms, std::vector<RawSample>& samples,
-                  NvmlClock const& clock, int driver, std::size_t l2_bytes,
+                  NvmlClock const& clock, std::size_t l2_bytes,
                   std::size_t flush_bytes, int cold_copies) {
   for (RawSample& sample : samples) {
     cuda_ok(cudaEventElapsedTime(&sample.elapsed_ms, sample.start, sample.stop), "cudaEventElapsedTime");
@@ -380,15 +389,17 @@ void emit_samples(std::FILE* f, Options const& options, Shape const& shape,
     char cfg[32];
     std::snprintf(cfg, sizeof(cfg), "%dx%dx%d", shape.pdf_cta_n, shape.pdf_warps_n, shape.pdf_warps_k);
     std::fprintf(f,
-      "q4k-pdf-ab-raw-v1,%s,%s,%s,%d,%s,1,%d,%d,%d,%s,%s,%d,%d,%d,%d,%d,%s,%zu,%zu,%d,%zu,%zu,"
-      "0x%08x,%.9g,%.9g,%u,%d,%016llx,%s,%s,cuda_event_gpu_span,nvml_adjacent_snapshot\n",
-      options.git_sha.c_str(), options.binary_sha.c_str(), clock.pci.c_str(), driver, shape.id,
+      "q4k-pdf-ab-raw-v1,%s,%s,%s,%s,%s,1,%d,%d,%d,%s,%s,%d,%d,%d,%d,%d,%s,%zu,%zu,%d,%zu,%zu,"
+      "0x%08x,%.9g,%.9g,%u,%d,%016llx,%s,%s,cuda_event_gpu_span,nvml_adjacent_snapshot,%s,%d,%d,%d,%d\n",
+      options.git_sha.c_str(), options.binary_sha.c_str(), clock.pci.c_str(), clock.driver.c_str(), shape.id,
       shape.n, shape.k, shape.l, arm.name.c_str(), sample.state.c_str(), sample.pass, sample.order,
       sample.batch, sample.batch, arm.kernels_per_workload, arm.representation.c_str(),
       arm.representation_bytes, distinct, cold_copies, l2_bytes, flush_bytes,
       float_bits(sample.elapsed_ms), total_us, per, sample.clock_mhz, sample.pending,
       static_cast<unsigned long long>(arm.correctness_hash), cfg,
-      shape.document_winner ? "pdf_p22_winner" : "pdf_documented_default_unmeasured_shape");
+      shape.document_winner ? "pdf_p22_winner" : "pdf_documented_default_unmeasured_shape",
+      clock.name.c_str(), options.samples, options.warmup, options.precondition_ms,
+      options.cold_budget_mib);
     std::fflush(f);
     cudaEventDestroy(sample.start);
     cudaEventDestroy(sample.stop);
@@ -397,7 +408,7 @@ void emit_samples(std::FILE* f, Options const& options, Shape const& shape,
 
 void measure_state(std::FILE* f, Options const& options, DeviceProblem const& d,
                    std::vector<Arm> const& arms, NvmlClock const& clock,
-                   char const* state, int batch, int driver, std::size_t l2_bytes) {
+                   char const* state, int batch, std::size_t l2_bytes) {
   std::vector<RawSample> raw;
   raw.reserve(std::size_t(options.samples) * arms.size());
   int const before = ppu_gemv::gemv_fail_count();
@@ -430,7 +441,7 @@ void measure_state(std::FILE* f, Options const& options, DeviceProblem const& d,
   cuda_ok(cudaGetLastError(), "queued timing launches");
   cuda_ok(cudaDeviceSynchronize(), "timing final synchronize");
   if (ppu_gemv::gemv_fail_count() != before) fail("gemv_lowbit refused a timed launch");
-  emit_samples(f, options, d.host->shape, arms, raw, clock, driver, l2_bytes,
+  emit_samples(f, options, d.host->shape, arms, raw, clock, l2_bytes,
                d.flush_bytes, d.copies);
 }
 
@@ -471,8 +482,6 @@ int main(int argc, char** argv) {
     cudaDeviceProp prop{};
     cuda_ok(cudaGetDeviceProperties(&prop, ordinal), "cudaGetDeviceProperties");
     if (prop.major != 12 || prop.minor != 0) fail("this evidence target requires sm_120 / RTX 5090");
-    int driver = 0;
-    cuda_ok(cudaDriverGetVersion(&driver), "cudaDriverGetVersion");
     std::size_t const flush_bytes = std::max<std::size_t>(std::size_t(prop.l2CacheSize) * 2,
                                                           std::size_t(128) << 20);
     NvmlClock clock;
@@ -497,11 +506,11 @@ int main(int argc, char** argv) {
       warmup(device, arms, options.warmup);
       clock_precondition(device, arms, options.precondition_ms);
       measure_state(f, options, device, arms, clock, "weight_metadata_cold", copies,
-                    driver, prop.l2CacheSize);
+                    prop.l2CacheSize);
       warmup(device, arms, options.warmup);
       clock_precondition(device, arms, options.precondition_ms);
       measure_state(f, options, device, arms, clock, "warm", options.warm_batch,
-                    driver, prop.l2CacheSize);
+                    prop.l2CacheSize);
       print_summary(shape, arms);
     }
     std::fclose(f);

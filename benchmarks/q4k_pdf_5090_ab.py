@@ -73,10 +73,10 @@ def decoded_event_us(row: dict[str, str]) -> Decimal:
     return Decimal.from_float(ms) * Decimal(1000)
 
 
-def infer_quantum(rows: list[dict[str, str]]) -> tuple[Decimal | None, str]:
+def infer_quantum(rows: list[dict[str, str]]) -> tuple[Decimal | None, Decimal | None, str]:
     values = sorted({decoded_event_us(r) for r in rows})
     if len(values) < 2:
-        return None, "fewer than two distinct raw event values"
+        return None, None, "fewer than two distinct raw event values"
     ns = Decimal("0.001")
     ints = [int(v.quantize(ns, rounding=ROUND_HALF_EVEN) / ns) for v in values]
     gcd = 0
@@ -84,8 +84,8 @@ def infer_quantum(rows: list[dict[str, str]]) -> tuple[Decimal | None, str]:
         gcd = math.gcd(gcd, abs(value))
     quantum = Decimal(gcd) * ns
     if quantum < Decimal("0.5"):
-        return None, f"GCD {quantum} us below the conservative 0.5-us floor"
-    return quantum, f"integer-nanosecond GCD over {len(values)} distinct binary32 event values"
+        return None, quantum, f"GCD {quantum} us below the predeclared conservative 0.5-us floor"
+    return quantum, quantum, f"integer-nanosecond GCD over {len(values)} distinct binary32 event values"
 
 
 def fnum(value: float) -> str:
@@ -100,15 +100,34 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
     required = {
         "event_ms_bits", "event_us_per_workload", "correctness_hash",
         "representation_bytes", "distinct_bytes", "event_pending_after_clock_query",
+        "device_name", "samples_requested", "warmup", "precondition_ms",
+        "cold_budget_mib", "timing_scope", "clock_scope",
     }
     if not required.issubset(rows[0]):
         raise SystemExit(f"raw schema missing {sorted(required - set(rows[0]))}")
-    identities = {(r["git_sha"], r["binary_sha"], r["device_pci"], r["driver"]) for r in rows}
+    identities = {(r["git_sha"], r["binary_sha"], r["device_pci"], r["driver"], r["device_name"])
+                  for r in rows}
     if len(identities) != 1:
         raise SystemExit(f"raw CSV merged incompatible runs: {identities}")
     expected_binary = sha256(binary)
     if rows[0]["binary_sha"] != expected_binary:
         raise SystemExit("raw binary SHA does not match the executable being summarized")
+
+    protocol_columns = [
+        "schema", "git_sha", "binary_sha", "device_pci", "driver", "device_name",
+        "samples_requested", "warmup", "precondition_ms", "cold_budget_mib",
+        "timing_scope", "clock_scope",
+    ]
+    for column in protocol_columns:
+        values = {row[column] for row in rows}
+        if len(values) != 1:
+            raise SystemExit(f"raw CSV mixes protocol field {column}: {sorted(values)}")
+    if rows[0]["schema"] != "q4k-pdf-ab-raw-v1":
+        raise SystemExit(f"unknown raw schema {rows[0]['schema']!r}")
+    if rows[0]["timing_scope"] != "cuda_event_gpu_span":
+        raise SystemExit("raw timing scope is not the declared CUDA event GPU span")
+    if rows[0]["clock_scope"] != "nvml_adjacent_snapshot":
+        raise SystemExit("raw clock scope is not the declared adjacent NVML snapshot")
 
     groups: dict[tuple[str, str, str], list[dict[str, str]]] = defaultdict(list)
     states: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
@@ -116,8 +135,39 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
         groups[(row["shape_id"], row["cache_state"], row["arm"])].append(row)
         states[(row["shape_id"], row["cache_state"])].append(row)
 
+    expected_arms = {
+        "D-EXT-O": {"pdf_scalar_dense1", "pdf_pair_dense1", "ours_native_dense1"},
+        "D-EXT-K1024": {"pdf_scalar_dense1", "pdf_pair_dense1", "ours_native_dense1"},
+        "D-EXT-Q": {"pdf_scalar_dense1", "pdf_pair_dense1", "ours_native_dense1"},
+        "H-G8-2048": {
+            "pdf_scalar_dense8", "pdf_pair_dense8", "ours_native_dense8",
+            "ours_native_grouped1",
+        },
+    }
+    for (shape, state), state_rows in states.items():
+        if shape not in expected_arms:
+            raise SystemExit(f"raw CSV contains unknown shape {shape!r}")
+        requested = int(rows[0]["samples_requested"])
+        for pass_id in range(requested):
+            pass_rows = [row for row in state_rows if int(row["pass"]) == pass_id]
+            arms = {row["arm"] for row in pass_rows}
+            orders = {int(row["arm_order"]) for row in pass_rows}
+            if arms != expected_arms[shape] or orders != set(range(len(expected_arms[shape]))):
+                raise SystemExit(
+                    f"raw pass {shape}/{state}/{pass_id} has arms={sorted(arms)}, "
+                    f"orders={sorted(orders)}"
+                )
+
     stats = {}
     for key, group in groups.items():
+        requested = int(group[0]["samples_requested"])
+        passes = sorted(int(row["pass"]) for row in group)
+        if len(group) != requested or passes != list(range(requested)):
+            raise SystemExit(
+                f"raw group {key} has {len(group)} samples/passes {passes}, requested {requested}"
+            )
+        if any(row["logical_workloads"] != row["batch"] for row in group):
+            raise SystemExit(f"raw group {key} disagrees on logical_workloads vs batch")
         values = sorted(float(r["event_us_per_workload"]) for r in group)
         clocks = sorted(int(r["sm_clock_mhz"]) for r in group)
         stats[key] = {
@@ -130,6 +180,9 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
     shape_order = [shape for shape in canonical_shapes if any(k[0] == shape for k in stats)]
     warm_batches = sorted({int(r["batch"]) for r in rows if r["cache_state"] == "warm"})
     warm_batch_text = "/".join(map(str, warm_batches))
+    samples_requested = int(rows[0]["samples_requested"])
+    warmup = int(rows[0]["warmup"])
+    precondition_ms = int(rows[0]["precondition_ms"])
 
     lines = []
     lines += [
@@ -142,7 +195,7 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
         f"Raw CSV: `{raw}`  ",
         f"Git: `{rows[0]['git_sha']}`  ",
         f"Binary SHA-256: `{rows[0]['binary_sha']}`  ",
-        f"Device PCI / CUDA driver integer: `{rows[0]['device_pci']}` / `{rows[0]['driver']}`",
+        f"Device / PCI / driver: `{rows[0]['device_name']}` / `{rows[0]['device_pci']}` / `{rows[0]['driver']}`",
         "",
         "## 输入与协议",
         "",
@@ -151,7 +204,8 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
         "  conditioned error `<=2^-7` 时整组拒绝计时。",
         "- `weight_metadata_cold`：先触碰 `max(2×L2,128 MiB)` flush buffer，再在一个 event 中逐份读取完整且",
         "  不重叠的 representation。两臂 cold batch 相同；ours 的 S/Z 也逐份复制，不只冷 low plane。",
-        f"- `warm`：计时前 warmup；本次每个 event 固定 {warm_batch_text} 个 logical workloads。每种状态保留全部原始样本，",
+        f"- `warm`：计时前 warmup={warmup}；每个 event 固定 {warm_batch_text} 个 logical workloads。",
+        f"  每个 shape/state/arm 保留 {samples_requested} 个原始样本；两状态前均有 {precondition_ms} ms 交替 arm 的 clock precondition。",
         "  AB/BA 交替；初始化、pack、H2D、flush 与 NVML 查询均在目标 event 外。event span 包含 GPU launch",
         "  间隙，因此是 kernel-only 的上界而非 CUPTI kernel duration 同义词。",
         "- 每个 stop event 入队后采一次 NVML SM clock，并记录 event 当时是否仍 pending。它是 adjacent snapshot，",
@@ -166,12 +220,17 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
     ]
     for shape in shape_order:
         for state in ["weight_metadata_cold", "warm"]:
-            q, qwhy = infer_quantum(states[(shape, state)])
+            q, demonstrated, qwhy = infer_quantum(states[(shape, state)])
             for key in sorted(k for k in stats if k[0] == shape and k[1] == state):
                 s = stats[key]
                 row = s["row"]
                 batch = int(row["batch"])
-                qwork = "UNKNOWN" if q is None else f"{float(q) / batch:.4f} us"
+                if q is not None:
+                    qwork = f"{float(q) / batch:.6f} us"
+                elif demonstrated is not None:
+                    qwork = f"{float(demonstrated) / batch:.6f} us (below floor)"
+                else:
+                    qwork = "UNKNOWN"
                 gbs = float(row["distinct_bytes"]) / (s["median"] * 1e-6) / 1e9
                 lines.append(
                     f"| {shape} | {state} | {key[2]} | {row['kernels_per_workload']} | "
@@ -191,15 +250,15 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
         "`UNRESOLVED`。PDF 两个 metadata variant 先各自展示，比较时采用其中更快者并明确这是文档内部歧义，",
         "不是事后把两份实现冒充成一个确定原版。",
         "",
-        "| shape | state | comparison | ratio target/PDF | verdict |",
-        "|---|---|---|---:|---|",
+        "| shape | state | comparison | ratio target/PDF | sampled bands | resolution-qualified verdict |",
+        "|---|---|---|---:|---|---|",
     ]
     for shape in shape_order:
         for state in ["weight_metadata_cold", "warm"]:
             pool = [stats[k] for k in stats if k[0] == shape and k[1] == state and k[2].startswith("pdf_")]
             pdf = min(pool, key=lambda x: x["median"])
             pdf_name = pdf["row"]["arm"]
-            q, _ = infer_quantum(states[(shape, state)])
+            q, _, _ = infer_quantum(states[(shape, state)])
             comparisons = ["ours_native_dense1"] if shape != "H-G8-2048" else [
                 "ours_native_dense8", "ours_native_grouped1"]
             for target_name in comparisons:
@@ -208,6 +267,9 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
                 effective = None if q is None else float(q) / batch
                 overlap = not (target["max"] < pdf["min"] or pdf["max"] < target["min"])
                 diff = abs(target["median"] - pdf["median"])
+                sampled = ("bands overlap" if overlap else
+                           "target faster" if target["max"] < pdf["min"] else
+                           "PDF reconstruction faster")
                 if overlap or effective is None or diff <= effective:
                     verdict = "UNRESOLVED"
                 elif target["median"] < pdf["median"]:
@@ -217,7 +279,7 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
                 topology = " (topology-inclusive 1-vs-8)" if target_name.endswith("grouped1") else ""
                 lines.append(
                     f"| {shape} | {state} | {target_name} / {pdf_name}{topology} | "
-                    f"{target['median'] / pdf['median']:.4f} | {verdict} |"
+                    f"{target['median'] / pdf['median']:.4f} | {sampled} | {verdict} |"
                 )
     lines += [
         "",
