@@ -208,17 +208,17 @@ struct KernelPolicyGuard {
   static constexpr ppu_tactics::Candidate tactic{{ppu_tactics::Format::I2, "mixed-policy",
       Policy::LowBits, Policy::HighBits}, int(cute::size<0>(TileShape{})), int(cute::size<1>(TileShape{})),
       Policy::TacticTileK, int(cute::size<0>(WarpShape{})), int(cute::size<1>(WarpShape{})),
-      Policy::ArtifactTileK};
+      Policy::ArtifactTileK, 0, int(cute::size<2>(WarpShape{}))};
   using TiledMma = typename Mainloop::TiledMma;
 
   static_assert(int(cute::size(TiledMma{})) == 32 * ppu_tactics::cta_warps(tactic),
                 "mixed policy: tactic warp count must equal the instantiated TiledMma launch size");
   static_assert(TacticSpace::kernel_exclusion(tactic) == ppu_tactics::Exclusion::None,
                 "mixed policy: tactic violates this operator's emitted kernel search-space rules");
-  static_assert(fold::CheckDelivery<Policy::LowBits, cute::size<1>(TileShape{}), Policy::TacticTileK,
+  static_assert(fold::CheckDelivery<Policy::LowBits, cute::size<1>(TileShape{}), cute::size<2>(WarpShape{}),
                                     cute::size<0>(WarpShape{}), cute::size<1>(WarpShape{})>::ok,
                 "mixed policy low plane: swzl over-delivers at this warp shape");
-  static_assert(fold::CheckDelivery<Policy::HighBits, cute::size<1>(TileShape{}), Policy::TacticTileK,
+  static_assert(fold::CheckDelivery<Policy::HighBits, cute::size<1>(TileShape{}), cute::size<2>(WarpShape{}),
                                     cute::size<0>(WarpShape{}), cute::size<1>(WarpShape{})>::ok,
                 "mixed policy high plane: swzl over-delivers at this warp shape");
   static constexpr bool value = true;

@@ -285,7 +285,8 @@ struct GroupKernels {
 // fpA_intB (../fpA_intB_standalone) do it. Cfg<> rebuilds the ScaleOnly (mode-1) type stack with a given
 // tile/warp/stages. Generated translation units instantiate the configs behind exported wrappers, and TileCfg
 // stores the matching wrapper pointer for runtime selection. This replaces the recompile-per-config sweep.sh.
-template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int St>
+template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int St,
+          int WarpK = TK>
 struct Cfg {
   // TK IS THE ROW'S TacticTileK, not the binary's. Until 2026-08-05 these three used the global TileShapeK,
   // because TileK was a build-time constant that also determined the bytes on disk. It no longer does: the artifact
@@ -295,7 +296,7 @@ struct Cfg {
   using CfgTile = Shape<cute::Int<TM>, cute::Int<TN>, cute::Int<TK>>;
   using CfgScale = Shape<cute::Int<TN>,
       cute::Int<ppu_group_schedule::scale_groups_v<TK, GroupSize>>>;
-  using CfgWarp = Shape<cute::Int<WM>, cute::Int<WN>, cute::Int<TK>>;
+  using CfgWarp = Shape<cute::Int<WM>, cute::Int<WN>, cute::Int<WarpK>>;
   using Epi = typename cutlass::epilogue::collective::CollectiveBuilder<
       ArchTag, OperatorClass, CfgTile, CfgWarp, EpilogueTileType,
       ElementAccumulator, ElementAccumulator, ElementC, LayoutC, AlignmentC,

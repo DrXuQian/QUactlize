@@ -68,6 +68,8 @@ enum class Exclusion {
   None,
   AtomAlignment,
   WarpDoesNotDivideTile,
+  WarpKDoesNotDivideTile,
+  WarpKUnsupportedFormat,
   TooManyWarps,
   AccumulatorRegisters,
   ArtifactTileKDoesNotTileTacticK,
@@ -89,6 +91,10 @@ constexpr char const* exclusion_clause(Exclusion e) {
     case Exclusion::AtomAlignment:
       return "tile and warp extents must align to the selected m8n16k16 or m16n16k16 MMA atom";
     case Exclusion::WarpDoesNotDivideTile: return "warp shape must divide tile shape";
+    case Exclusion::WarpKDoesNotDivideTile:
+      return "warp K must be atom-aligned and completely divide TacticTileK";
+    case Exclusion::WarpKUnsupportedFormat:
+      return "WarpK != TacticTileK is first exposed only for ordinary single-plane int4 F1";
     case Exclusion::TooManyWarps: return "tile needs more than the 32-warp block limit";
     case Exclusion::AccumulatorRegisters: return "the fp32 accumulator alone exceeds the 192-register sweep ceiling";
     case Exclusion::ArtifactTileKDoesNotTileTacticK: return "ArtifactTileK must be atom-aligned and completely tile TacticTileK";
@@ -115,11 +121,17 @@ struct Candidate {
   int wm, wn;
   int artifact_tile_k;
   int b_chunk;
+  // Append-only: generated tables and older aggregate-style call sites pass
+  // artifact_tile_k/b_chunk positionally.  Zero retains the shipping
+  // one-K-cohort builder exactly; an explicit smaller value is the new tactic
+  // axis and never changes the resident artifact identity by itself.
+  int warp_k;
 
   constexpr Candidate(FormatSpec spec_, int tm_, int tn_, int tactic_tile_k_, int wm_, int wn_,
-                      int artifact_tile_k_ = 0, int b_chunk_ = 0)
+                      int artifact_tile_k_ = 0, int b_chunk_ = 0, int warp_k_ = 0)
       : spec(spec_), tm(tm_), tn(tn_), tactic_tile_k(tactic_tile_k_), wm(wm_), wn(wn_),
-        artifact_tile_k(artifact_tile_k_ > 0 ? artifact_tile_k_ : tactic_tile_k_), b_chunk(b_chunk_) {}
+        artifact_tile_k(artifact_tile_k_ > 0 ? artifact_tile_k_ : tactic_tile_k_), b_chunk(b_chunk_),
+        warp_k(warp_k_ > 0 ? warp_k_ : tactic_tile_k_) {}
 };
 
 constexpr int artifact_low_fold(Candidate c) {
@@ -154,12 +166,12 @@ constexpr int physical_a_rows(Candidate c) {
   return c.tm < 16 ? 16 : c.tm;
 }
 
-// This is the actual CTA warp count for the current PPU0010 builder, not a performance proxy. get_tiled_mma tiles one
-// 32-thread MMA atom by Layout<Shape<TileM/WarpM, TileN/WarpN, _1>>, and both dense and grouped kernels launch
+// This is the actual CTA warp count for the PPU0010 builder, not a performance proxy. get_tiled_mma tiles one
+// 32-thread MMA atom by Layout<Shape<TileM/WarpM, TileN/WarpN, TacticTileK/WarpK>>, and both dense and grouped kernels launch
 // cute::size(TiledMma{}) threads. Each launcher static-asserts this expression against its instantiated TiledMma so a
 // future builder change cannot turn the host predicate into another unchecked re-derivation.
 constexpr int cta_warps(Candidate c) {
-  return (c.tm / c.wm) * (c.tn / c.wn);
+  return (c.tm / c.wm) * (c.tn / c.wn) * (c.tactic_tile_k / c.warp_k);
 }
 
 // These are kernel constraints, shared by the two launcher static_asserts and the host emitter.  They are kept apart
@@ -176,6 +188,17 @@ constexpr Exclusion common_kernel_exclusion(Candidate c) {
     return Exclusion::AtomAlignment;
   if (c.wm > c.tm || c.wn > c.tn || c.tm % c.wm || c.tn % c.wn)
     return Exclusion::WarpDoesNotDivideTile;
+  if (c.warp_k <= 0 || c.warp_k % 16 || c.warp_k > c.tactic_tile_k ||
+      c.tactic_tile_k % c.warp_k)
+    return Exclusion::WarpKDoesNotDivideTile;
+  // The first aligned Marlin seam deliberately does not claim folded,
+  // two-plane, chunked, or narrower-bit artifacts.  Those formats need their
+  // own WK-aware offline placement/consumer proof; compiling a type is not
+  // evidence that its resident byte map is correct.
+  if (c.warp_k != c.tactic_tile_k &&
+      !(c.spec.low_bits == 4 && c.spec.high_bits == 0 &&
+        artifact_low_fold(c) == 1 && c.b_chunk == 0))
+    return Exclusion::WarpKUnsupportedFormat;
   if (cta_warps(c) > 32)
     return Exclusion::TooManyWarps;
 
@@ -190,9 +213,11 @@ constexpr Exclusion common_kernel_exclusion(Candidate c) {
   int const fhi = artifact_high_fold(c);
   if (c.tn % flo) return Exclusion::LowFoldDoesNotDivideTileN;
   if (c.spec.high_bits && c.tn % fhi) return Exclusion::HighFoldDoesNotDivideTileN;
-  // CheckDelivery's measured predicate: one 16-byte swzl delivery must fit the B fragment slots.
-  if (int64_t(c.wn) * c.tactic_tile_k * c.spec.low_bits < 4096) return Exclusion::LowDelivery;
-  if (c.spec.high_bits && int64_t(c.wn) * c.tactic_tile_k * c.spec.high_bits < 4096)
+  // CheckDelivery's measured predicate is per warp: one 16-byte swzl
+  // delivery must fit that warp's B fragment slots.  TacticTileK was correct
+  // only while WarpK was implicitly equal to it.
+  if (int64_t(c.wn) * c.warp_k * c.spec.low_bits < 4096) return Exclusion::LowDelivery;
+  if (c.spec.high_bits && int64_t(c.wn) * c.warp_k * c.spec.high_bits < 4096)
     return Exclusion::HighDelivery;
   return Exclusion::None;
 }
@@ -262,6 +287,32 @@ static_assert(common_kernel_exclusion(
 static_assert(common_kernel_exclusion(
                   Candidate{kArtifactFoldControlI2, 8, 32, 64, 16, 32, 64}) == Exclusion::AtomAlignment,
               "TM8 must not fall back silently to the m16 atom");
+
+// WarpK is append-only and defaults to the whole tactic K, so every existing
+// candidate retains its exact one-K-cohort topology.  The first explicit seam
+// is the classic-aligned ordinary-int4 F1 target: 1M x 2N x 4K = eight warps.
+// Its neighboring controls pin the two easy silent regressions: counting only
+// M/N warps and billing delivery against the full tactic K instead of per-warp K.
+inline constexpr FormatSpec kWarpKControlI4{Format::I4, "warpk-control-i4", 4, 0};
+inline constexpr Candidate kWarpKDefaultControl{kWarpKControlI4, 16, 128, 128, 16, 64, 128};
+inline constexpr Candidate kWarpKAlignedControl{kWarpKControlI4, 16, 128, 128, 16, 64, 128, 0, 32};
+inline constexpr Candidate kWarpKDeliveryControl{kWarpKControlI4, 16, 128, 128, 16, 16, 128, 0, 32};
+static_assert(kWarpKDefaultControl.warp_k == kWarpKDefaultControl.tactic_tile_k &&
+              cta_warps(kWarpKDefaultControl) == 2,
+              "omitted WarpK must preserve the shipping M/N-only topology exactly");
+static_assert(common_kernel_exclusion(kWarpKAlignedControl) == Exclusion::None &&
+              cta_warps(kWarpKAlignedControl) == 8,
+              "16x128x128/w16x64x32 must be a legal 256-thread ordinary-int4 F1 tactic");
+static_assert(common_kernel_exclusion(kWarpKDeliveryControl) == Exclusion::LowDelivery,
+              "delivery capacity must use WarpK=32, never the full TacticTileK=128");
+static_assert(common_kernel_exclusion(
+                  Candidate{kWarpKControlI4, 16, 128, 128, 16, 64, 128, 0, 48}) ==
+                  Exclusion::WarpKDoesNotDivideTile,
+              "a partial K cohort must fail before TiledMma instantiation");
+static_assert(common_kernel_exclusion(
+                  Candidate{kArtifactFoldControlI2, 16, 128, 128, 16, 64, 64, 0, 32}) ==
+                  Exclusion::WarpKUnsupportedFormat,
+              "folded/narrower formats remain fail-closed until their WK-aware artifact proof exists");
 
 // Paired controls for the field-ownership regression. l115's shipping witness is exactly
 //   Q6_K high A=128 T=256 tile=64x128x256 warp=64x64 F=1/1
