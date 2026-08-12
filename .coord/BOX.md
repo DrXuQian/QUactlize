@@ -1273,45 +1273,32 @@ new scheduler fails: the point is an A/B/C of scheduler mechanisms inside the sa
 
 ---
 
-## MORNING PRIORITY 0 — rerun exact grouped expert identity before every performance job
+## Grouped expert identity — CLOSED LOCALLY; DO NOT RUN THIS ON THE BOX
 
-This is the first box command after the mixed-argument hardening.  The old G5
-zero-plane fixture observed `e >= 128 -> e - 64`; the current tree now consumes
-the caller's `dS` and outer expert pitch instead of silently rebuilding them.
-The companion B fixture is independent: zero is inert and the expert identity
-is encoded into the low-plane q codes.  Both arms use `A=1`, so the `dA` pitch
-change cannot manufacture a pass in this fixture.
+The old morning rerun is superseded by the user's hard constraint that this
+integer-addressing defect be reproduced and fixed locally.  Commit `bed75b9`
+first instantiated the exact G5 CuTe pointer overload and reproduced every
+retained wrong value before production changed:
 
-    set -euo pipefail
-    cd /sim/eec/shared/junfu.qx/quactlize
-    git pull --ff-only origin develop
-    git submodule update --init --recursive
-    echo "gate-sha=$(git rev-parse HEAD) actlize=$(git -C third_party/actlize rev-parse HEAD)"
-    git merge-base --is-ancestor f539ac9 HEAD
-    test "$(git -C third_party/actlize rev-parse HEAD)" = b196cc83c1cf4fd1d9aae3e9a96dbb8d0a20a293
+- typed-int4 L slicing advanced 8192 bytes for an 8192-code stride; an explicit
+  subbyte slice advanced the correct 4096-byte artifact pitch;
+- that read B expert `2e` below the midpoint (1→2, 3→6);
+- expert 128 began one-past the 1 MiB B allocation.  The following 128 KiB
+  fp16(1/32) plane spans exactly 16 bad strides and, decoded as int4, contributes
+  −44 (129→85); a later zero-filled region contributes −64 (190→126).
 
-    timeout 900s bash tools/run_grouped_b_idprobe_box.sh \
-      | tee /tmp/grouped_b_idprobe_morning.log
+Commit `1c5f4e7` fixes all four noninterleaved shipping seams (ordinary, fold,
+2-plane low/high) by slicing L with subbyte semantics before handing the
+byte-aligned expert base to AIU.  Interleaved byte-pitch paths are intentionally
+unchanged.  The local, independently anchored evidence is:
 
-The runner always launches all four arms before applying its strict aggregate
-verdict: zero-plane active=8/256 and B-plane active=8/256.  Interpret the log,
-not merely the shell rc:
+    bash dev/fold_derivation/run_l130_grouped_b_idprobe.sh
+    python3 ci/check_grouped_b_idprobe_contract.py
+    python3 ci/check_mixed_argument_contract.py
 
-- all four raw-bit checks pass: the old `e-64` symptom is gone.  In the
-  zero-plane fixture `A` is uniform and B contributes zero, so among the mixed
-  argument fixes this isolates the previously ignored S/Z stride (`dS`) as the
-  causal seam;
-- B passes while either zero arm remains red: ordinary B addressing is cleared;
-  the remaining defect is specific to metadata/G5's runtime seam, below the
-  independently anchored L125 address algebra;
-- either B arm is red: do not retry with a different tactic.  L130 proves the
-  modeled ordinary-B chain for all 256 experts, so preserve the exact bitdiff
-  rows and artifact directory and inspect the device/model or G5-harness seam;
-- a build/arch failure is not a numerical result.  Return it verbatim; do not
-  substitute a different kernel or ppu0015 target.
-
-Wanted back: both SHAs, the unique `-arch=ppu_10` line, all four exact PASS/FAIL
-rows, the aggregate line, rc, and the preserved artifact directory.
+Do not use `tools/run_grouped_b_idprobe_box.sh` to re-diagnose this item.  The
+old −44/−64 values were OOB allocation contents, not stable expert transforms,
+and another device allocation layout is allowed to produce different garbage.
 
 ## A2 dense Marlin cohort capability — compile and enumerate only, do not sweep yet
 
