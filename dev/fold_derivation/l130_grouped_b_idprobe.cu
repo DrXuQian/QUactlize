@@ -60,8 +60,8 @@ static_assert(m8n16_g5_contract::kN == 32 && m8n16_g5_contract::kK == 256 &&
               m8n16_g5_contract::kGroupSize == 32);
 
 int main() {
-  // Replay the exact pointer construction used by load_init_B's ordinary
-  // (kContinuous == 1) arm.  dB is expressed in logical int4 elements, but
+  // Replay the exact pointer construction formerly used by load_init_B's
+  // ordinary (kContinuous == 1) arm. dB is expressed in logical int4 elements, but
   // make_gmem_ptr(typed_pointer) selects the generic Iterator overload and
   // retains raw C++ pointer arithmetic.  This is the layer L130's original
   // byte-map model skipped.
@@ -97,7 +97,7 @@ int main() {
   std::puts("[l130:type] exact G5 B: FinegrainedScaleZero gs32 "
             "tile=8x32x64 warp=8x32x64 stages=3 int4 CTA32; "
             "ordinary dB-backed kContinuous=1; dB2/interleaved=NOT-SELECTED PASS");
-  std::printf("[l130:production-slice] typed-int4 generic make_gmem_ptr "
+  std::printf("[l130:historical-raw-slice] typed-int4 generic make_gmem_ptr "
               "expert-delta=%zu B (observed bug); explicitly subbyte-aware "
               "delta=%zu B (artifact=%zu B) -> %s\n",
               std::size_t(raw_delta), std::size_t(subbyte_delta),
@@ -398,7 +398,8 @@ int main() {
               red ? "EXPECTED-RED" : "FAIL");
   std::printf("[l130:scope] B-low-plane-only; G5 selects ordinary dB. "
               "interleaved dB and dB2 are NOT SELECTED by this kernel type; "
-              "zero/scale addressing is covered by L125, not inferred here. result=%s\n",
+              "intended zero/scale addressing is covered by L125; retained zero wrong-values are replayed here only as B OOB contents. "
+              "result=%s\n",
               positive && red && controls && observed_replay ? "PASS" : "FAIL");
   std::printf("[l130:observed-replay] B-bad=%d zero-bad=%d -> %s; "
               "the e>=128 values are consequences of the observed OOB "

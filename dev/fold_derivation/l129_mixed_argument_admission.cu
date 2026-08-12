@@ -151,7 +151,19 @@ int main() {
     auto c = ordinary; ++c.k; ++c.dB0; c.dBL = c.n * c.k;
     residue_red += !arg::mixed_arguments_supported(c);
   }
-  bad += residue_positive != 3 || residue_red != 3;
+  {
+    auto c = base(); ++c.dBL;
+    residue_red += (arg::mixed_argument_issues(c) &
+                    arg::MixedArgumentFractionalLowByte) != 0;
+  }
+  {
+    auto c = base(); c.two_plane = true; c.high_bits = 1;
+    c.high_fold = 1; c.dB2_valid = true;
+    c.dB20 = c.k; c.dB21 = 1; c.dB2L = c.dBL + 1;
+    residue_red += (arg::mixed_argument_issues(c) &
+                    arg::MixedArgumentFractionalHighByte) != 0;
+  }
+  bad += residue_positive != 3 || residue_red != 5;
   bad += gs_accept != gs_expected || gs_negative_red != 2;
 
   std::printf("L129 gs cases=%d accept=%d expected=%d negative_red=%d\n",
@@ -162,7 +174,7 @@ int main() {
               noninterleaved_consumed ? "YES" : "NO");
   std::printf("L129 packed canonical=%d/1 contradictions_red=%d/7\n",
               packed_positive, packed_red);
-  std::printf("L129 residues aligned=%d/3 residue_red=%d/3\n",
+  std::printf("L129 residues aligned=%d/3 residue_red=%d/5\n",
               residue_positive, residue_red);
   std::printf("L129 result=%s scope=gs+interleaved-B+B2+packed+divisibility\n",
               bad == 0 ? "PASS" : "FAIL");

@@ -1119,8 +1119,10 @@ private:
             (uint8_t*)(raw_pointer_cast(mB_nk.data())), int(cute::size(mB_nk)) / kCon, kCon, mB_nk.stride());
       return mB_nk_counting;
     } else {
-      Tensor mB_nkl = make_tensor(make_gmem_ptr(mainloop_params.ptr_B), make_shape(N1_, K1_, L), mainloop_params.dB);
-      Tensor mB_nk = make_mix_tensor_like(mB_nkl(_,_,l_coord));
+      Tensor mB_nk = make_mix_tensor_like(
+          detail::mixed_subbyte_l_slice<RealInternalElementB>(
+              mainloop_params.ptr_B, make_shape(N1_, K1_, L),
+              mainloop_params.dB, l_coord));
 
     // (i) THE DESCRIPTOR'S EXTENTS COME OFF THE TENSOR. The folded row/column counts used to be restated in the
     // AiuDesc::init call (and in the counting layout) after already defining the tensor, i.e. one rule written three or
@@ -1172,8 +1174,10 @@ private:
       // dB2 carries plane 2's OWN folded row pitch (set in launch); the SHAPE must match it. Falls back to dB when the
       // caller has not supplied one, which is the unfolded case where the two coincide.
       auto d2 = mainloop_params.dB2_valid ? mainloop_params.dB2 : mainloop_params.dB;
-      Tensor mB_nkl = make_tensor(make_gmem_ptr(mainloop_params.ptr_B2), make_shape(N2, K2, L), d2);
-      Tensor mB_nk = make_mix_tensor_like(mB_nkl(_,_,l_coord));
+      Tensor mB_nk = make_mix_tensor_like(
+          detail::mixed_subbyte_l_slice<PlaneB2>(
+              mainloop_params.ptr_B2, make_shape(N2, K2, L), d2,
+              l_coord));
       gmem_tiled_copy_B2.desc_.template init<PlaneB2, false, get<0>(TilerB2{}), get<1>(TilerB2{})>(
             nullptr, int(cute::size<0>(mB_nk)), int(cute::size<1>(mB_nk)), d2);
       return mB_nk;

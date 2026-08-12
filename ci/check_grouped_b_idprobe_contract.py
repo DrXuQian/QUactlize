@@ -73,6 +73,9 @@ def audit(oracle: str, runner: str) -> list[str]:
         "Mainloop::GmemTiledCopyB,typenameExpectedOperand::GmemTiledCopy",
         "Mainloop::SmemCopyAtomB,typenameExpectedOperand::SmemCopyAtom",
         "int(cute::size(typenameMainloop::TiledMma{}))==32",
+        "raw_nkl=cute::make_tensor(cute::make_gmem_ptr(typed),shape,dB)",
+        "cute::make_gmem_ptr<cutlass::int4b_t>(static_cast<voidconst*>(typed))",
+        "raw_delta==kLogicalCodes&&subbyte_delta==kPhysicalBytes",
     )
     for token in type_tokens:
         if token not in flat:
@@ -96,6 +99,17 @@ def audit(oracle: str, runner: str) -> list[str]:
     for token in sweep_tokens:
         if token not in sweep:
             bad.append(f"L130 lost exhaustive e0..255 sweep token {token!r}")
+
+    observed_tokens = (
+        "exact_output(recovered[2*e],0)",
+        "scale_bytes[i+1]=std::int8_t(0x28)",
+        "std::pair<int,int>{129,85}",
+        "std::pair<int,int>{190,126}",
+        "observed_replay=b_replay_bad==0&&zero_replay_bad==0",
+    )
+    for token in observed_tokens:
+        if token not in sweep and token not in flat:
+            bad.append(f"L130 lost retained-device observation replay {token!r}")
 
     anchor_tokens = (
         "constexprintkLegacyN=64",
@@ -126,7 +140,8 @@ def audit(oracle: str, runner: str) -> list[str]:
     for token in (
         "[l130:scope]B-low-plane-only",
         "interleaveddBanddB2areNOTSELECTEDbythiskerneltype",
-        "zero/scaleaddressingiscoveredbyL125,notinferredhere",
+        "intendedzero/scaleaddressingiscoveredbyL125",
+        "retainedzerowrong-valuesarereplayedhereonlyasBOOBcontents",
     ):
         if token not in flat:
             bad.append(f"L130 lost scope boundary {token!r}")
@@ -170,6 +185,17 @@ def validate_run(output: str) -> list[str]:
         "[l130:type] exact G5 B: FinegrainedScaleZero gs32 "
         "tile=8x32x64 warp=8x32x64 stages=3 int4 CTA32; "
         "ordinary dB-backed kContinuous=1; dB2/interleaved=NOT-SELECTED PASS",
+        "[l130:historical-raw-slice] typed-int4 generic make_gmem_ptr "
+        "expert-delta=8192 B (observed bug); explicitly subbyte-aware "
+        "delta=4096 B (artifact=4096 B) -> EXPECTED-RED",
+        "[l130:observed-B] e=1 raw-byte-pitch source-expert=2 "
+        "got=2 want=2 -> REPRODUCED",
+        "[l130:observed-B] e=3 raw-byte-pitch source-expert=6 "
+        "got=6 want=6 -> REPRODUCED",
+        "[l130:observed-zero] e=129 OOB-source=fp16(1/32)-plane "
+        "got=85 want=85 columns=uniform -> REPRODUCED",
+        "[l130:observed-zero] e=190 OOB-source=zero-filled-region "
+        "got=126 want=126 columns=uniform -> REPRODUCED",
         "[l130] e0..255 legacy-byte-diff=0 place/recover-code-diff=0 "
         "map-holes=0 map-dups=0 address-bad=0 value-bad=0 output-bad=0 "
         "source=[0,1048575] -> PASS",
@@ -180,9 +206,13 @@ def validate_run(output: str) -> list[str]:
         "high-inexact=0 expected=128/0/0 -> EXPECTED-RED",
         "[l130:scope] B-low-plane-only; G5 selects ordinary dB. "
         "interleaved dB and dB2 are NOT SELECTED by this kernel type; "
-        "zero/scale addressing is covered by L125, not inferred here. result=PASS",
+        "intended zero/scale addressing is covered by L125; retained zero "
+        "wrong-values are replayed here only as B OOB contents. result=PASS",
         "L130 compiled negative: wrong legal WN16 instance rejected by the "
         "shipping-type assertion PASS",
+        "[l130:observed-replay] B-bad=0 zero-bad=0 -> PASS; the e>=128 "
+        "values are consequences of the observed OOB allocation contents, "
+        "not a stable expert mapping",
     )
     for line in required:
         if line not in output:
@@ -236,6 +266,13 @@ def main() -> int:
         ("std::is_same_v<typename SelectedPolicy::CollectiveOp, Mainloop>",
          "true || std::is_same_v<typename SelectedPolicy::CollectiveOp, Mainloop>",
          "exact shipping type"),
+        ("auto const raw_nkl = cute::make_tensor(cute::make_gmem_ptr(typed), shape, dB);",
+         "auto const raw_nkl = cute::make_tensor(\n"
+         "      cute::make_gmem_ptr<cutlass::int4b_t>(static_cast<void const*>(typed)), shape, dB);",
+         "production raw-pointer replay"),
+        ("std::pair<int, int>{190, 126}",
+         "std::pair<int, int>{190, 127}",
+         "retained zero-region observation"),
     )
     for old, new, label in plants:
         if oracle.count(old) != 1:
@@ -256,7 +293,8 @@ def main() -> int:
         print("[l130-contract] FAIL: " + "; ".join(bad))
         return 1
     print("[l130-contract] PASS: real L130 proved 256 experts, legacy+roundtrip "
-          f"anchors, exact 128 red, and compiled type negative; {len(plants)} source plants rejected")
+          "anchors, raw-vs-subbyte production slice, retained device wrong-value "
+          f"replay, exact 128 red, and compiled type negative; {len(plants)} source plants rejected")
     return 0
 
 

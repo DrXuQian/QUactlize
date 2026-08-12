@@ -884,7 +884,7 @@ int run_g5_b_idprobe(int const* ids, int n_active) {
   if (got.empty()) return errors ? errors : 1;
 
   std::printf("[G5:B-IDPROBE] A=1 scale=1 zero=0; expert e has e q9 codes "
-              "and K-e q8 codes per column; output bits must equal half(e)\n");
+              "and K-e q8 codes per column; output bits must equal fp16(e)\n");
   int bad_slots = 0;
   int bitdiff = 0;
   int reported = 0;
@@ -893,15 +893,20 @@ int run_g5_b_idprobe(int const* ids, int n_active) {
     int const row = f.row_offsets[expert];
     half_t const want{float(expert)};
     int row_diff = 0;
+    half_t const first = got[std::size_t(row) * kN];
+    bool row_uniform = true;
     for (int n = 0; n < kN; ++n) {
       half_t const value = got[std::size_t(row) * kN + n];
       row_diff += value.raw() != want.raw();
-      if (value.raw() != want.raw() && reported++ < 16) {
-        std::printf("  B-IDPROBE slot=%-3d expert=%-3d n=%-2d "
-                    "got=%9.3f/0x%04x want=%9.3f/0x%04x BITDIFF\n",
-                    slot, expert, n, double(float(value)), unsigned(value.raw()),
-                    double(float(want)), unsigned(want.raw()));
-      }
+      row_uniform &= value.raw() == first.raw();
+    }
+    if (row_diff && reported++ < 16) {
+      std::printf("  B-IDPROBE slot=%-3d expert=%-3d first="
+                  "%9.3f/0x%04x want=%9.3f/0x%04x row=%s "
+                  "bitdiff=%d/%d\n",
+                  slot, expert, double(float(first)), unsigned(first.raw()),
+                  double(float(want)), unsigned(want.raw()),
+                  row_uniform ? "uniform" : "SPLIT", row_diff, kN);
     }
     bitdiff += row_diff;
     bad_slots += row_diff != 0;

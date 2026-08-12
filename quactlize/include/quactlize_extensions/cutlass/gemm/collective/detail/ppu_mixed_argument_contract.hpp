@@ -38,6 +38,19 @@ enum MixedArgumentIssue : uint32_t {
   MixedArgumentFractionalHighByte = 1u << 16,
 };
 
+CUTE_HOST_DEVICE constexpr bool mixed_bit_offset_byte_aligned(
+    int64_t elements, int bits) {
+  if (bits <= 0) return false;
+  int a = bits;
+  int b = 8;
+  while (b != 0) {
+    int const r = a % b;
+    a = b;
+    b = r;
+  }
+  return elements % (8 / a) == 0;
+}
+
 struct MixedArgumentContract {
   int64_t n = 0;
   int64_t k = 0;
@@ -100,6 +113,20 @@ CUTE_HOST_DEVICE constexpr uint32_t mixed_argument_issues(
   }
   if (x.two_plane && x.low_fold != x.high_fold && !x.dB2_valid) {
     issues |= MixedArgumentMissingHighStride;
+  }
+
+  // mixed_subbyte_l_slice converts the selected expert base back to a raw
+  // byte pointer for the AIU descriptor.  Reject an outer pitch that lands
+  // between bytes instead of relying on raw_pointer_cast's assertion.
+  if (x.l > 1 && x.low_bits > 0 &&
+      !mixed_bit_offset_byte_aligned(x.dBL, x.low_bits)) {
+    issues |= MixedArgumentFractionalLowByte;
+  }
+  if (x.l > 1 && x.two_plane && x.high_bits > 0) {
+    int64_t const high_l = x.dB2_valid ? x.dB2L : x.dBL;
+    if (!mixed_bit_offset_byte_aligned(high_l, x.high_bits)) {
+      issues |= MixedArgumentFractionalHighByte;
+    }
   }
 
   if (x.interleave > 1) {
@@ -177,6 +204,26 @@ CUTE_HOST_DEVICE Element const* mixed_a_expert_base(
 CUTE_HOST_DEVICE constexpr int64_t mixed_logical_n_residue(
     int64_t N, int logical_tile_n, int n_coord) {
   return N - int64_t(logical_tile_n) * int64_t(n_coord);
+}
+
+// Slice the outer L coordinate while the pointer still has sub-byte element
+// semantics, then hand the byte-aligned expert base to the AIU mix tensor.
+// StrideB is expressed in logical elements. Calling make_gmem_ptr on an
+// already-typed int4/int2 pointer selects CuTe's generic Iterator overload;
+// raw C++ pointer arithmetic would then count every sub-byte value as a byte.
+// The explicit Element overload constructs subbyte_iterator first. The raw
+// cast deliberately happens after the L slice because the AIU mix iterator
+// consumes a byte-aligned resident-artifact base.
+template <class Element, class Pointer, class Shape, class Stride>
+CUTE_HOST_DEVICE auto mixed_subbyte_l_slice(
+    Pointer base, Shape const& shape, Stride const& stride, int l_coord) {
+  auto logical_nkl = cute::make_tensor(
+      cute::make_gmem_ptr<Element>(static_cast<void const*>(base)),
+      shape, stride);
+  auto logical_nk = logical_nkl(cute::_, cute::_, l_coord);
+  return cute::make_tensor(
+      cute::make_gmem_ptr(cute::raw_pointer_cast(logical_nk.data())),
+      logical_nk.layout());
 }
 
 }  // namespace cutlass::gemm::collective::detail

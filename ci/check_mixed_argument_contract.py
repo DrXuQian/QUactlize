@@ -48,12 +48,16 @@ def audit(texts: list[str]) -> list[str]:
         "int64_t(l_coord)*int64_t(cute::get<2>(dA))",
         "mixed_logical_n_residue(",
         "N-int64_t(logical_tile_n)*int64_t(n_coord)",
+        "mixed_subbyte_l_slice(",
+        "make_gmem_ptr<Element>(static_cast<voidconst*>(base))",
+        "raw_pointer_cast(logical_nk.data())",
     ):
         if token not in h:
             bad.append(f"shared argument helper lost {token!r}")
 
-    for label, source in zip(("ordinary", "fold", "two-plane"),
-                             (ordinary, folded, two_plane)):
+    for label, source, expected_b_slices in zip(
+            ("ordinary", "fold", "two-plane"),
+            (ordinary, folded, two_plane), (1, 1, 2)):
         s = flat(source)
         if s.count("detail::mixed_a_expert_base(") != 1:
             bad.append(f"{label} does not consume the shared dA outer-base seam once")
@@ -63,6 +67,10 @@ def audit(texts: list[str]) -> list[str]:
             bad.append(f"{label} restored compact A outer-base arithmetic")
         if "scale_residue_n=N-size<0>(gB)*n_coord" in s:
             bad.append(f"{label} restored physical-B metadata residue arithmetic")
+        if s.count("detail::mixed_subbyte_l_slice<") != expected_b_slices:
+            bad.append(
+                f"{label} must normalize exactly {expected_b_slices} "
+                "noninterleaved subbyte B expert base(s)")
 
     o = flat(oracle)
     for token in (
@@ -109,6 +117,8 @@ def admission_audit(helper: str, collectives: tuple[str, ...],
         "x.ptr_Z_nonnull",
         "x.k%x.group_size!=0",
         "(scale_k/x.scale_tile_k)%x.packed_tiles_per_unit!=0",
+        "!mixed_bit_offset_byte_aligned(x.dBL,x.low_bits)",
+        "!mixed_bit_offset_byte_aligned(high_l,x.high_bits)",
     ):
         if token not in h:
             bad.append(f"shared admission predicate lost {token!r}")
@@ -134,6 +144,8 @@ def admission_audit(helper: str, collectives: tuple[str, ...],
         "MixedArgumentPackedGroupTail",
         "MixedArgumentPackedTileTail",
         "MixedArgumentPackedUnitTail",
+        "MixedArgumentFractionalLowByte",
+        "MixedArgumentFractionalHighByte",
         "scope=gs+interleaved-B+B2+packed+divisibility",
     ):
         if token not in o:
@@ -194,8 +206,13 @@ def main() -> int:
          "uniform A expert pitch"),
         (0, "int64_t(logical_tile_n)", "int64_t(logical_tile_n / 2)",
          "logical N residue"),
+        (0, "cute::make_gmem_ptr<Element>(static_cast<void const*>(base))",
+         "cute::make_gmem_ptr(base)", "subbyte B pointer overload"),
         (1, "detail::mixed_a_expert_base(", "detail::planted_compact_a_base(",
          "ordinary helper bypass"),
+        (2, "detail::mixed_subbyte_l_slice<RealInternalElementB>(",
+         "detail::planted_raw_l_slice<RealInternalElementB>(",
+         "fold subbyte B helper bypass"),
         (2, "detail::mixed_logical_n_residue(", "detail::planted_physical_n_residue(",
          "fold residue bypass"),
         (4, "physical_formula_red += legacy != expected;",
@@ -218,6 +235,8 @@ def main() -> int:
          "per-column group equality"),
         (0, "x.dB0 != low_k", "false", "interleaved dB pitch"),
         (0, "x.ptr_Z_nonnull", "false", "packed zero contradiction"),
+        (0, "!mixed_bit_offset_byte_aligned(x.dBL, x.low_bits)", "false",
+         "noninterleaved low-plane byte alignment"),
         (1, "detail::mixed_arguments_supported(c)", "true",
          "ordinary collective bypass"),
         (4, "mainloop_can_implement<CollectiveMainloop>(", "planted_admission_bypass(",
@@ -282,7 +301,7 @@ def main() -> int:
         "gs cases=30 accept=10 expected=10 negative_red=2",
         "interleaved canonical=3/3 perturb_red=7/7 noninterleaved_dB2_consumed=YES",
         "packed canonical=1/1 contradictions_red=7/7",
-        "residues aligned=3/3 residue_red=3/3",
+        "residues aligned=3/3 residue_red=5/5",
         "result=PASS scope=gs+interleaved-B+B2+packed+divisibility",
     )
     if admission_run.returncode != 0:

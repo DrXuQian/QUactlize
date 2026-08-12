@@ -1273,8 +1273,10 @@ private:
             (uint8_t*)(raw_pointer_cast(mB_nk.data())), N * K / kCon, kCon, mB_nk.stride());
       return mB_nk_counting;
     } else {
-      Tensor mB_nkl = make_tensor(make_gmem_ptr(mainloop_params.ptr_B), make_shape(N,K,L), mainloop_params.dB);
-      Tensor mB_nk = make_mix_tensor_like(mB_nkl(_,_,l_coord));
+      Tensor mB_nk = make_mix_tensor_like(
+          detail::mixed_subbyte_l_slice<RealInternalElementB>(
+              mainloop_params.ptr_B, make_shape(N, K, L),
+              mainloop_params.dB, l_coord));
 
       gmem_tiled_copy_B.desc_.template init<RealInternalElementB, false, get<0>(TilerB{}), get<1>(TilerB{})>(
             nullptr, N, K, mainloop_params.dB);
