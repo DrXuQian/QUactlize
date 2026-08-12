@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pin GEMV perf to real S068--S071 projections at T=1/2/4 and byte pitches."""
+"""Pin GEMV perf to real routed S068--S079 shapes and byte pitches."""
 
 from __future__ import annotations
 
@@ -32,14 +32,15 @@ def expected_shapes() -> list[tuple[int, int, int, int, int, int, int]]:
                 # down for both models; derive that order from the projection label.
                 band.append(("expert_down" in label, model_index, extra["experts"], n, k, extra["topk"]))
         for index, (_, _, experts, n, k, topk) in enumerate(sorted(band)):
-            out.append((68 + index, experts, tokens, n, k, topk,
+            out.append((68 + 4 * (tokens.bit_length() - 1) + index,
+                        experts, tokens, n, k, topk,
                         {1: 8, 2: 15, 4: 30}[tokens]))
     return out
 
 
 def source_shapes(text: str) -> list[tuple[int, int, int, int, int, int, int]]:
     pat = re.compile(
-        r'\{"S0(6[8-9]|7[0-1])[^\"]*",\s*(\d+),\s*(\d+),\s*'
+        r'\{"S0(6[8-9]|7[0-9])[^\"]*",\s*(\d+),\s*(\d+),\s*'
         r'(\d+),\s*(\d+),\s*32,\s*QuantOp::FinegrainedScaleZero,\s*(\d+),\s*(\d+)\}'
     )
     return [tuple(map(int, m.groups())) for m in pat.finditer(text)]
@@ -49,7 +50,7 @@ def audit(main: str, common: str) -> list[str]:
     bad = []
     got, want = source_shapes(main), expected_shapes()
     if got != want:
-        bad.append(f"S068--S071 x T=1/2/4 mirror drift: got={got}, want={want}")
+        bad.append(f"S068--S079 mirror drift: got={got}, want={want}")
     tokens = (
         "gemv_perf_fixture::make_route(sh.experts, sh.rows, sh.topk)",
         "int active = 0;   // grouped: expected distinct active experts; independent of E",
@@ -149,7 +150,7 @@ def main() -> int:
             print(f"[gemv-perf-authority] FAIL {label} plant escaped audit")
             return 1
 
-    print("[gemv-perf-authority] PASS: S068--S071 x T=1/2/4 derive from workloads/fixtures; "
+    print("[gemv-perf-authority] PASS: S068--S079 derive from workloads/fixtures; "
           "E256 ragged routes 8/15/30 active; 4096 byte-pitch checks; logical-code pitch planted red")
     return 0
 

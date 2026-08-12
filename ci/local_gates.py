@@ -1238,7 +1238,7 @@ def lint_gemv_perf_authority():
     """The GEMV bench must derive real shapes/routing and detect expert-pitch regressions."""
     return _run_ci_script(
         "check_gemv_perf_authority.py",
-        "GEMV S068-S071 x T=1/2/4 fixtures are ragged, expert-distinct, poisoned and pitch-sensitive")
+        "GEMV S068-S079 fixtures are ragged, expert-distinct, poisoned and pitch-sensitive")
 
 
 def lint_grouped_streamk_contract():

@@ -4,7 +4,7 @@
 // TWO SHAPE FAMILIES, because they have DIFFERENT parallelism knobs and conflating them hid a factor of 8
 // earlier in this work:
 //
-//   * MoE decode uses the same E=256/top-8 pinned router as S068--S071 at T=1/2/4. At T=1 only eight non-contiguous
+//   * MoE decode uses the same E=256/top-8 pinned router as S068--S079. At T=1 only eight non-contiguous
 //     real expert IDs own rows; the other 248 grid.z slots return empty.  W/S/Z remain expert-id addressed.
 //   * DENSE decode (one matrix, m rows). grid = ceil(m/CtaM) x n/CtaN x 1. There is NO expert dimension, so
 //     at m=1, n=2048, CtaN=8 it is 256 CTAs = 1024 warps = 14.2 warps/CU -- the SAME warp count as the
@@ -34,14 +34,14 @@ int main(int argc, char** argv) {
     {"S069 T1 122B expert_gate+up",256, 1,  512, 3072, 32, QuantOp::FinegrainedScaleZero, 8,  8},
     {"S070 T1 35B expert_down",    256, 1, 2048,  512, 32, QuantOp::FinegrainedScaleZero, 8,  8},
     {"S071 T1 122B expert_down",   256, 1, 3072,  512, 32, QuantOp::FinegrainedScaleZero, 8,  8},
-    {"S068 T2 35B expert_gate+up", 256, 2,  512, 2048, 32, QuantOp::FinegrainedScaleZero, 8, 15},
-    {"S069 T2 122B expert_gate+up",256, 2,  512, 3072, 32, QuantOp::FinegrainedScaleZero, 8, 15},
-    {"S070 T2 35B expert_down",    256, 2, 2048,  512, 32, QuantOp::FinegrainedScaleZero, 8, 15},
-    {"S071 T2 122B expert_down",   256, 2, 3072,  512, 32, QuantOp::FinegrainedScaleZero, 8, 15},
-    {"S068 T4 35B expert_gate+up", 256, 4,  512, 2048, 32, QuantOp::FinegrainedScaleZero, 8, 30},
-    {"S069 T4 122B expert_gate+up",256, 4,  512, 3072, 32, QuantOp::FinegrainedScaleZero, 8, 30},
-    {"S070 T4 35B expert_down",    256, 4, 2048,  512, 32, QuantOp::FinegrainedScaleZero, 8, 30},
-    {"S071 T4 122B expert_down",   256, 4, 3072,  512, 32, QuantOp::FinegrainedScaleZero, 8, 30},
+    {"S072 T2 35B expert_gate+up", 256, 2,  512, 2048, 32, QuantOp::FinegrainedScaleZero, 8, 15},
+    {"S073 T2 122B expert_gate+up",256, 2,  512, 3072, 32, QuantOp::FinegrainedScaleZero, 8, 15},
+    {"S074 T2 35B expert_down",    256, 2, 2048,  512, 32, QuantOp::FinegrainedScaleZero, 8, 15},
+    {"S075 T2 122B expert_down",   256, 2, 3072,  512, 32, QuantOp::FinegrainedScaleZero, 8, 15},
+    {"S076 T4 35B expert_gate+up", 256, 4,  512, 2048, 32, QuantOp::FinegrainedScaleZero, 8, 30},
+    {"S077 T4 122B expert_gate+up",256, 4,  512, 3072, 32, QuantOp::FinegrainedScaleZero, 8, 30},
+    {"S078 T4 35B expert_down",    256, 4, 2048,  512, 32, QuantOp::FinegrainedScaleZero, 8, 30},
+    {"S079 T4 122B expert_down",   256, 4, 3072,  512, 32, QuantOp::FinegrainedScaleZero, 8, 30},
     {"dense m=1         N=K=2048", 0, 1, 2048, 2048, 32, QuantOp::FinegrainedScaleZero},
     {"dense m=1         N=K=4096", 0, 1, 4096, 4096, 32, QuantOp::FinegrainedScaleZero},
     {"dense m=1  N=12288 K=4096",  0, 1, 12288, 4096, 128, QuantOp::FinegrainedScaleOnly},
