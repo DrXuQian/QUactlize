@@ -22,8 +22,10 @@
 #include <cstdint>
 #include <cstddef>
 #include <algorithm>
+#include <stdexcept>
 #include "cute/tensor.hpp"
 #include "cute/atom/mma_atom.hpp"
+#include "cute/atom/mma_traits_ppu0010.hpp"
 #include "cute/atom/mma_traits_ppu0015.hpp"
 #include "cute/ppu_tensor_mix.hpp"
 #include "cute/arch/copy_ppu0010_aiu.hpp"
@@ -169,6 +171,196 @@ inline std::vector<int> plane_map() {
         }
   }
   return m;
+}
+
+namespace detail {
+
+// The first shipping consumer with a real K-warp topology is deliberately
+// narrow: ordinary int4, F=1, (TM,TN,TK)=(16,128,128),
+// (WM,WN,WarpK)=(16,64,32), and a 64-code resident artifact quantum.  L138
+// proves that its 2N x 4K compute fragment cannot be fed by one int8 shadow
+// fragment.  Each compute thread instead consumes 32 codes from EACH of the
+// two K2 shadow cohorts below.  Keep this derivation beside the offline
+// writer: WarpK is an artifact-placement axis, so a caller must not obtain a
+// WK4 kernel while silently retaining the WK1 bytes.
+//
+// Do not generalise these static_asserts from pattern recognition.  Folded,
+// two-plane, int1, and int2 converters have different emission orders and
+// need their own composed proofs before they can use this seam.
+template <int TM, int TN, int TK, int WM, int WN, int WarpK,
+          int ArtifactTileK>
+struct Int4WarpK4Map {
+  static_assert(TM == 16 && TN == 128 && TK == 128,
+                "the first WK4 placement proof covers only Tile<16,128,128>");
+  static_assert(WM == 16 && WN == 64 && WarpK == 32,
+                "the first WK4 placement proof covers only Warp<16,64,32>");
+  static_assert(ArtifactTileK == 64,
+                "the first WK4 placement proof is anchored to ArtifactTileK=64");
+  static constexpr int kBits = 4;
+  static constexpr int kCohorts = TK / WarpK;
+  static constexpr int kWOM = TM / WM;
+  static constexpr int kWON = TN / WN;
+  static constexpr int kRowBytes = TK * kBits / 8;
+  static constexpr int kInstNum = TK / ArtifactTileK;
+  static_assert(kCohorts == 4 && kWOM == 1 && kWON == 2);
+
+  using F16Inst = cute::PPU0010_16x16x16_F32F16F16F32_TN;
+  using ComputeMma = cute::TiledMMA<
+      cute::MMA_Atom<F16Inst>,
+      cute::Layout<cute::Shape<cute::Int<kWOM>, cute::Int<kWON>,
+                               cute::Int<kCohorts>>>,
+      cute::Tile<cute::Int<kWOM * 16>, cute::Int<kWON * 16>, cute::Int<64>>>;
+
+  // A K4 compute fragment is assembled from BOTH K2 shadow cohorts.  A K1
+  // shadow underfills it, while a K4 shadow with PermK=128 addresses physical
+  // holes (the two permanent L138 negative controls).
+  using ShadowInst = cute::PPU0010_16x16x32_S32S8S8S32_TN;
+  using ShadowMma = cute::TiledMMA<
+      cute::MMA_Atom<ShadowInst>,
+      cute::Layout<cute::Shape<cute::Int<kWOM>, cute::Int<kWON>, cute::_2>>,
+      cute::Tile<cute::Int<kWOM * 16>, cute::Int<kWON * 16>, cute::Int<64>>>;
+  using ShadowOp = cute::PPU0010_TSM_LD_SWZL<
+      int8_t, TN, ArtifactTileK * kBits / 8, true, false, kInstNum>;
+  using ShadowTraits = cute::Copy_Traits<ShadowOp>;
+
+  static_assert(cute::size(ComputeMma{}) == 256,
+                "2N x 4K must contain eight 32-thread compute warps");
+  static_assert(cute::size(ShadowMma{}) == 128,
+                "the paired source is exactly 2N x 2K");
+  static_assert(ShadowTraits::LogicalSlices == 1);
+
+  struct SourceFragment {
+    std::vector<int> physical;
+    std::vector<int> vreg;
+    std::vector<int> code;
+    bool valid = true;
+  };
+
+  static SourceFragment source_fragment(int thread) {
+    using namespace cute;
+    constexpr int WPR = ShadowTraits::LogicalWordsPerRow;
+    auto s8 = make_tensor(make_smem_ptr((int8_t*)nullptr),
+                          make_layout(Shape<Int<TN>, Int<kRowBytes>>{},
+                                      Stride<Int<kRowBytes>, _1>{}));
+    auto sid = make_identity_tensor(make_shape(Int<TN>{}, Int<kRowBytes>{}));
+    auto load = ShadowMma{}.get_thread_slice(thread).partition_fragment_B(s8);
+    auto cp = make_tiled_copy_B(Copy_Atom<ShadowOp, int8_t>{}, ShadowMma{})
+                  .get_thread_slice((thread / 32) * 32);
+    auto src = cp.partition_S(sid);
+    auto view = cp.retile_D(load);
+
+    SourceFragment out;
+    out.physical.assign(2 * cosize(load.layout()), -1);
+    out.vreg.assign(out.physical.size(), -1);
+    out.code.assign(out.physical.size(), -1);
+    constexpr int CN = size<1>(decltype(view.layout()){});
+    constexpr int CK = size<2>(decltype(view.layout()){});
+    for (int ck = 0; ck < CK; ++ck)
+      for (int cn = 0; cn < CN; ++cn)
+        for (int v = 0; v < 4; ++v)
+          for (int c = 0; c < 8; ++c) {
+            auto base = src(0, cn, ck);
+            int word = int(typename ShadowTraits::LogicalTV{}(
+                make_coord(make_coord(thread % 4, (thread % 32) / 4),
+                           make_coord(v % 2, v / 2), _0{})));
+            int byte = (int(get<0>(base)) + word / WPR) * kRowBytes +
+                       int(get<1>(base)) + 4 * (word % WPR) + c / 2;
+            int dst = 2 * int(view.layout()(4 * v + c / 2, cn, ck)) + c % 2;
+            int physical = 2 * byte + c % 2;
+            bool in = dst >= 0 && dst < int(out.physical.size());
+            out.valid &= in;
+            if (!in) continue;
+            out.valid &= out.physical[dst] < 0 || out.physical[dst] == physical;
+            out.physical[dst] = physical;
+            out.vreg[dst] = v;
+            out.code[dst] = c;
+          }
+    out.valid &= std::none_of(out.physical.begin(), out.physical.end(),
+                              [](int x) { return x < 0; });
+    return out;
+  }
+
+  // This is the exact converter selection proved in L138.  Each of the two
+  // source cohorts contributes 32 codes, in production fragment order.
+  static constexpr bool keep(int wk, int vreg, int code) {
+    return vreg / 2 == wk / 2 && (code / 2) % 2 == wk % 2;
+  }
+
+  static std::vector<int> make() {
+    using namespace cute;
+    std::vector<int> map(size_t(TN) * TK, -1);
+    std::vector<int> physical_hits(size_t(TN) * TK, 0);
+    std::vector<int> logical_hits(size_t(TN) * TK, 0);
+    auto bid = make_identity_tensor(make_shape(Int<TN>{}, Int<TK>{}));
+    auto s16 = make_tensor(make_smem_ptr((cutlass::half_t*)nullptr),
+                           make_layout(Shape<Int<TN>, Int<TK>>{},
+                                       Stride<Int<TK>, _1>{}));
+    auto ctl = ComputeMma{}.get_thr_layout_vmnk();
+    auto stl = ShadowMma{}.get_thr_layout_vmnk();
+    bool valid = true;
+
+    for (int ct = 0; ct < int(size(ComputeMma{})); ++ct) {
+      auto coord = ctl.get_flat_coord(ct);
+      int wk = int(get<3>(coord));
+      std::vector<int> chosen;
+      chosen.reserve(64);
+      for (int sk = 0; sk < 2; ++sk) {
+        int st = int(stl(make_coord(get<0>(coord), get<1>(coord),
+                                    get<2>(coord), sk)));
+        auto source = source_fragment(st);
+        valid &= source.valid;
+        for (int d = 0; d < int(source.physical.size()); ++d)
+          if (keep(wk, source.vreg[d], source.code[d]))
+            chosen.push_back(source.physical[d]);
+      }
+
+      auto frag = ComputeMma{}.get_thread_slice(ct).partition_fragment_B(s16);
+      auto part = ComputeMma{}.get_thread_slice(ct).partition_B(bid);
+      auto pi = right_inverse(frag.layout());
+      valid &= chosen.size() == size_t(size(frag));
+      if (chosen.size() != size_t(size(frag))) continue;
+      for (int i = 0; i < int(size(frag)); ++i) {
+        auto logical_coord = part(pi(i));
+        int physical = chosen[i];
+        int logical = int(get<0>(logical_coord)) * TK + int(get<1>(logical_coord));
+        bool in = physical >= 0 && physical < int(map.size()) &&
+                  logical >= 0 && logical < int(map.size());
+        valid &= in;
+        if (!in) continue;
+        valid &= map[physical] < 0 || map[physical] == logical;
+        map[physical] = logical;
+        ++physical_hits[physical];
+        ++logical_hits[logical];
+      }
+    }
+
+    for (int i = 0; i < int(map.size()); ++i)
+      valid &= map[i] >= 0 && physical_hits[i] == 1 && logical_hits[i] == 1;
+    if (!valid)
+      throw std::logic_error("int4 WK4 offline placement is not a bijection");
+    return map;
+  }
+};
+
+} // namespace detail
+
+// WarpK is the per-warp K extent, not the cohort count.  Omitting the axis (or
+// spelling WarpK==TK) is exactly the shipping WK1 format.  The only new format
+// admitted here is the L138-proved ordinary-int4 WK4 target; everything else
+// fails at compile time instead of silently reusing stale WK1 bytes.
+template <int Bits, int TM, int TN, int TK, int WM, int WN, int F,
+          int WarpK = TK, int ArtifactTileK = TK>
+inline std::vector<int> plane_map_warp_k() {
+  static_assert(WarpK > 0 && TK % WarpK == 0,
+                "WarpK must evenly divide tactic TileK");
+  if constexpr (WarpK == TK) {
+    return plane_map<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>();
+  } else {
+    static_assert(Bits == 4 && F == 1,
+                  "WarpK artifacts are first enabled only for ordinary single-plane int4 F1");
+    return detail::Int4WarpK4Map<TM, TN, TK, WM, WN, WarpK,
+                                 ArtifactTileK>::make();
+  }
 }
 
 // The high plane's map, COMPOSED from plane 1's: for every slot the converter reads, record the logical element whose
@@ -356,6 +548,21 @@ inline void place_derived(int8_t* out, const std::vector<uint8_t>& q_kn, int N, 
       out, plane_map<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>(), q_kn, N, K);
 }
 
+// Offline writer for an explicitly declared K-warp artifact.  WarpK==TK is a
+// permanent compatibility arm: it calls the old map and writer, rather than a
+// second spelling of them.  A WK4 consumer must call this API explicitly so a
+// stale shipping artifact cannot be mistaken for the aligned layout.
+template <int Bits, int TM, int TN, int TK, int WM, int WN, int F,
+          int WarpK = TK, int ArtifactTileK = TK>
+inline void place_derived_warp_k(int8_t* out, const std::vector<uint8_t>& q_kn,
+                                 int N, int K) {
+  place_from_map<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>(
+      out,
+      plane_map_warp_k<Bits, TM, TN, TK, WM, WN, F, WarpK,
+                       ArtifactTileK>(),
+      q_kn, N, K);
+}
+
 // THE INVERSE IS PART OF THE FORMAT. A producer-only xplane buffer can be checked only by feeding it to a GEMM,
 // which mixes placement and compute defects. Walk the exact physical coordinates used by place_from_map and recover
 // the canonical [K,N] codes, so an offline artifact can be dequantised without launching the consumer. This is a
@@ -415,6 +622,17 @@ template <int Bits, int TM, int TN, int TK, int WM, int WN, int F, int ArtifactT
 inline void recover_derived(const int8_t* in, std::vector<uint8_t>& q_kn, int N, int K) {
   recover_from_map<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>(
       in, plane_map<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>(), q_kn, N, K);
+}
+
+template <int Bits, int TM, int TN, int TK, int WM, int WN, int F,
+          int WarpK = TK, int ArtifactTileK = TK>
+inline void recover_derived_warp_k(const int8_t* in,
+                                   std::vector<uint8_t>& q_kn, int N, int K) {
+  recover_from_map<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>(
+      in,
+      plane_map_warp_k<Bits, TM, TN, TK, WM, WN, F, WarpK,
+                       ArtifactTileK>(),
+      q_kn, N, K);
 }
 
 template <int LowBits, int HiBits, int TM, int TN, int TK, int WM, int WN,
