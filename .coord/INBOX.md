@@ -5418,3 +5418,40 @@ box 上的 acu **不能导出文本,只能截图**,所以手抄是唯一通道,�
 因为不存在准入限制,这个 2 倍**只能是时间平均** —— streamk 的 warp 只占住了大约一半的 elapsed cycles。两阶段(work 之后 fixup/reduce 排空)是显然的候选,但那是假设不是读数,归你在分区分析里判。
 
 **顺带一个对照,它对 `blocks_per_cu` 直接相关**:dp 和 marlin 的 achieved(1.78 / 4.00)**恰好等于各自的 grid 上限**(32·4/72、72·4/72)⟹ 这两条臂是**一波流、零周转**,每个 CTA 从头驻留到尾。streamk 是唯一一条 achieved 不等于 grid 的臂。也就是说 marlin 现在的 4.00 warp/CU 完全由 grid 决定,而硬件允许 24(BL=6×4)—— 旋钮要抬的就是这个,**上限 6 是这个 config 实测出来的,仍然从 `maximum_active_blocks()` 取,别写死。**
+
+## 125 — 用户给了 occupancy calculator 的 Physical Limit 面板,**124 的"保留量 c=4"作废**
+
+硬件规则是明写的,不用再猜:
+
+    Threads Per Warp 32          Registers per CU 131,072      Max Registers per Thread 256
+    Max Warps per CU 64          Max Thread Blocks per CU 64   Max Threads per CU 2,048
+    Register Allocation Unit Size 64,granularity = warp
+    Shared Memory per CU 262,144,allocation unit 128
+
+于是寄存器限就是
+
+    regs_per_warp = roundup(R·32, 64)
+    blocks        = floor( floor(131072 / regs_per_warp) / warps_per_block )
+
+| 臂 | R | regs/warp | warp 限 | 预测 | 面板 |
+|---|---:|---:|---:|---:|---:|
+| marlin | 160 | 5,120 | 25 | **6** | 6 |
+| streamk | 256 | 8,192 | 16 | **4** | 4 |
+| 校验器自带例子(R=32,32 warp/blk) | 32 | 1,024 | 128 | **4** | 4 |
+| dp | 144 | 4,608 | 28 | 7 | **6** |
+
+**三条更正,请覆盖 124 里对应的说法:**
+
+1. **保留量 `c=4` 死了。** marlin 和 streamk 在**零保留**下精确闭合,加保留反而会把它们打破。
+2. **streamk 就是 256 regs/thread**,不是"≤252"。而 256 恰好等于 `Max Registers per Thread` —— **那条臂顶死在硬件上限上**,这是个有分量的事实,不是推断的近似。
+3. **`Warp Allocation Granularity = 8` 不作用在这个除法上。** 若把 wpb 从 4 抬到 8,marlin 会变 3、streamk 变 2,两个面板都不同意。那个粒度管的是别的东西。
+
+**另外两列现在也闭合了**:`BL Warps=16` = 64 warps/CU ÷ 4;`BL CU=64` = `Max Thread Blocks per CU`。整张 occupancy 表只剩 dp 那一格。
+
+### dp 剩下的唯一解释
+
+保留和粒度都排除之后,只剩:**acu 的 "Block Limit Registers" 列可能是取过 min 之后的值**,不是纯寄存器限。dp 的共享限是 6,`min(7,6)=6` 正好是显示值;marlin/streamk 的寄存器限本来就 ≤ 共享限,所以区分不出来 —— dp 是唯一有鉴别力的行。
+
+**校验器自己就能定,不用上设备**:填 `Threads per block=128`、`Registers per thread=144`、dp 的实际共享字节。若 Registers 行给 `Allocatable Blocks Per CU = 7` 而 Shared 行给 6,则报告列是 post-min,寄存器模型完全没问题。
+
+顺带:`BL Shared=6` 要求每 block 共享 ∈ (37450, 43690] 且是 128 的倍数。按 config 直接记账 —— A `16·128·2·3=12288`,B(int4)`128·128/2·3=24576`,scale(gs=128)`128·2·3=768` —— 合计 **37,632 = 294×128**,落在窗口内。**这条给了你一个可用的共享内存记账口径**,`blocks_per_cu` 抬上去之后共享会先撞墙还是寄存器先撞墙,用它算。
