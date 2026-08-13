@@ -6284,3 +6284,43 @@ runner 自己写了 *"verify failed; timing was requested, so this failed arm is
 ### 优先级
 
 **排在 148 重跑之后、143/144 收尾之前。** 它便宜,而且**它的结果会决定后面一整项工作做不做** —— 这种测量应当尽早。
+
+## 151 — **你昨晚修过的同一类缺陷又犯了一次,而且本地 171/171 没抓到**
+
+用户重跑 box,`[marlin-wk4] FAIL: classic-aligned Marlin target failed to build`,~30 条:
+
+    [FAIL] ppu_portability: benchmarks/vllm_marlin_dense_axis_5090.cu:48 is NVIDIA-only
+           in a branch the box compiles: cudaStream_t stream) {
+
+**那是你 30 分钟前为 INBOX 144 建的探针(`9e9814e`)。**
+
+### 这是同型复发,不是新缺陷
+
+昨晚 INBOX 146 里,10 个红全部来自"**未注册的 RTX5090-only Q4_K 实验被误纳入 PPU source graph**"。你修了,方式是给**那个岛**一条 fail-closed 的适用性边界。
+
+**但那是特例,不是机制。** 新建一个 5090-only 文件立刻复现同样的失败。⟹ 需要的是**结构性规则**,不是逐个岛登记:
+
+* 判据应当是"**这个 TU 是否进入 PPU 的编译图**",而不是"它是否在某张白名单上"。
+* 更好的形状:**PPU 编译图 opt-in**(只有显式声明为 PPU 目标的 TU 才进),而不是 opt-out(默认全进、逐个排除)。opt-out 的漏检永远是"新加的那个"。
+* 按 [[observation-is-not-mechanism]]:约束该是结构性的,不是一张会漏的负面清单。
+
+### **比这次 FAIL 更严重的:本地 171/171 PASS,box FAIL**
+
+检查器自己写着 *"in a branch **the box compiles**"* —— **本地没有走那条分支**。
+
+⟹ **本地全绿不再蕴含 box 能编。** 这让每次上机都成了抽奖,而 box 时间比本地贵得多。这条必须一起修:
+
+1. 让本地的 `ppu_portability` 覆盖**box 实际编译的那条分支**(若本地缺 SDK 无法覆盖,**明说覆盖不到,并把它列成 SKIP 而不是 PASS** —— 我们自己的规矩:跑不了某项检查的环境不许把它变绿)。
+2. **负控**:在本地植入一个新的 NVIDIA-only TU,确认本地 tier **会红**。没有这个负控,修完仍然只是"这次没漏"。
+
+### 好消息:148 的修复是成功的,别回退
+
+    [dense-marlin-wk4] PASS: isolated 1Mx2Nx4K ... thirteen structural plants rejected
+    L143 WK1 shipping map-diff=0 byte-diff=0 result=BIT-IDENTICAL
+    L143 result=PASS,五个负控全 EXPECTED-RED
+
+**验证器的所有权模型修对了。** 这次 FAIL 只是那个 5090 文件把 target 编不出来,和 owner 逻辑无关。
+
+### 优先级
+
+**最高。** 用户连续第二次被挡在上机第一步,而且两次都是我们自己引入的。修完给可直接重跑的命令。
