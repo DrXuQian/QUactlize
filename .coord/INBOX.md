@@ -6440,3 +6440,54 @@ box 重跑,owner 模型现在正确:
 ### 优先级
 
 **最高,插在 150 之前。** 我已打断你的 150。这是主线上第一个真正的数值缺陷,而且现在有精确 fixture 兜底,可以直接定位。
+
+## 155 — **review 结果:没对齐的那一处是「按 `warp_k` 分支」而 classic 是「用 `warp_k` 索引」**
+
+用户看了 acu 说"指令多了茫茫多,这个肯定是没有对齐 marlin 的",让我 review 代码。**我 review 完,他说对了,而且位置很具体。**
+
+### 位置
+
+`quactlize_mma_mixed_input.hpp:2041` `convert_int4_two_source`,由 `:2142` 在**每个 `k_block` 的转换里**调用:
+
+    switch (compute_warp_k) {          // 运行时值,来自 threadIdx
+      case 0: convert_int4_shadow_source<0>(...); break;
+      case 1: ... case 2: ... case 3: ...
+    }
+
+注释写的动机是对的(*"Template dispatch avoids dynamic indexing into register-backed source arrays"*),**但代价没被记账**。
+
+### acu 的签名与之完全吻合(WK4 current vs 旧 dp baseline)
+
+    v.mov.v2s   106,279  vs     256   (+41,415%)   把 compute_warp_k 搬进标量以便分支
+    v.cmp.i      38,955  vs   1,152   ( +3,282%)   switch 的比较
+    s.lop.emsk   67,290  vs   4,608   ( +1,360%)   执行掩码 —— 编译器不知道它 warp 内一致
+    s.cbr        98,858  vs  22,816   (   +333%)   分支本身
+    Instruction Fetch  1.156(首位 stall, +195%)    四份代码全实体化 => 指令足迹约 4x
+
+**而 `v.mma` 65,536 → 65,536(0%)、`v.mul.f16` −1.54%、`v.lop3.i` −0.19%** —— 计算量纹丝不动。**多出来的全是"决定走哪个 case",不是算。**
+
+### classic 是怎么做的
+
+`marlin_classic_ppu.cuh:475`:`ktile = (k % b_sh_wr_iters) * NWK + warp_k` —— **`warp_k` 进的是地址算术,不是控制流。** 所有 warp 跑同一份代码、读不同地址:零谓词、零掩码、一份指令足迹。
+
+**我们把"用 `warp_k` 索引"实现成了"按 `warp_k` 分支"。这就是没对齐的那一处。**
+
+### 三条修法,判据由你定
+
+| | 做法 | 代价 |
+|---|---|---|
+| A | 告诉编译器 `compute_warp_k` **warp 内一致**(标量广播 / readfirstlane 等价物) | 改动最小;消掉 v2s/cmp/emsk,但**四份代码仍在**,I-fetch 不降 |
+| B | switch 提到 kernel 入口,分派 4 个模板化 mainloop | 消内层分支,但 **mainloop ×4**,I-fetch 可能更糟 |
+| C | **照 classic:cohort 变成索引/偏移,不是分支** | 改动最大;**一份代码、零谓词**,是 classic 的形状 |
+
+**我倾向 C**(A、B 都留着"四份代码"这个根,而 I-fetch 已是首位 stall),**但这是你的判断**。请给出:每条的预计指令足迹变化、以及**能把三者分开的观测**。
+
+**注意 `MixGemmChunkEmit<4, ComputeWarpK, 4, true, ...>` 的 `keep()/at()` 是编译期选子集** —— 走 C 需要把"选哪个子集"改成"从哪个位置取",这正是 [[ppu-swzl-cute-modelable]] 里"该建模 converter 的固定发射顺序"那条。**先说清楚能不能做,再动手。**
+
+### 与数值缺陷(INBOX 154)的关系
+
+**这两件事分开。** 154 是 `4096/4096 全错、总量少一半`(疑似折半树只跑一步);155 是性能。**先修 154 —— 一个算错的 kernel 的性能没有意义。** 但 155 的结论不会因为修了 154 而改变,可以并行想。
+
+### 口径
+
+`32.08 us / 54,534 cycles / Regs=192` 仍是**失败臂的诊断值**。另外:acu 的 achieved-occupancy 提示("warp scheduling overhead 或 workload imbalance")**在这里是错的** —— `achieved 7.98 = 72 CTA x 8 warps / 72 CU`,**grid 只给每 CU 一个 block**,理论 16 根本够不到。要 16 得 `blocks_per_cu=2`。别把它当不均衡去查。
