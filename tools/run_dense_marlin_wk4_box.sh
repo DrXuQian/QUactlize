@@ -186,7 +186,7 @@ grep -Fxq '[L167] PASS: independent classic/direct and Awesome-CuTe/permutation 
   || fail 'standalone admission lacks the independently anchored classic format proof'
 grep -Fxq '[l168:runner] positive=PASS negative_controls=3/3_RED result=PASS' "$LOCAL_EVIDENCE_LOG" \
   || fail 'standalone admission lacks the exact pipeline-cadence closure'
-grep -Fxq '[l169] PASS: generated-unit shape instantiates standalone Marlin collective/scheduler/kernel; only the two explicit nvcc/PPU environmental diagnostics remain' "$LOCAL_EVIDENCE_LOG" \
+grep -Fxq '[l169] PASS: generated wrapper reaches standalone Marlin kernel + collective device bodies; route-severed and collective-severed same-source controls suppress the exact marker' "$LOCAL_EVIDENCE_LOG" \
   || fail 'standalone admission lacks the generated standalone type closure'
 grep -Fxq '[l170:runner] positive=PASS negative_controls=7/7_RED result=PASS' "$LOCAL_EVIDENCE_LOG" \
   || fail 'standalone admission lacks the scheduler lifecycle closure'

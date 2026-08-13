@@ -58,7 +58,7 @@ def source_contract(dense: str, gemv: str) -> None:
             "fresh-box-execution=0",
             "[L167] PASS: independent classic/direct and Awesome-CuTe/permutation anchors agree",
             "[l168:runner] positive=PASS negative_controls=3/3_RED result=PASS",
-            "[l169] PASS: generated-unit shape instantiates standalone Marlin collective/scheduler/kernel",
+            "[l169] PASS: generated wrapper reaches standalone Marlin kernel + collective device bodies",
             "[l170:runner] positive=PASS negative_controls=7/7_RED result=PASS",
             "eleven structural plants rejected",
             "[classic-156] PASS: exact one-launch shape",

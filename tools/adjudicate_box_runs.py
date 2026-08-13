@@ -57,8 +57,8 @@ STANDALONE_EVIDENCE_LINES = (
     "[L167] PASS: independent classic/direct and Awesome-CuTe/permutation anchors agree; "
     "asymmetric provider, byte, inverse, and negative controls proved",
     "[l168:runner] positive=PASS negative_controls=3/3_RED result=PASS",
-    "[l169] PASS: generated-unit shape instantiates standalone Marlin collective/scheduler/kernel; "
-    "only the two explicit nvcc/PPU environmental diagnostics remain",
+    "[l169] PASS: generated wrapper reaches standalone Marlin kernel + collective device bodies; "
+    "route-severed and collective-severed same-source controls suppress the exact marker",
     "[l170:runner] positive=PASS negative_controls=7/7_RED result=PASS",
     "[dense-marlin-wk4] PASS: standalone format/collective/scheduler/kernel wired; "
     "standalone tactic authority consumed; generic WK4 compatibility absent; "

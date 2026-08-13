@@ -11,43 +11,182 @@ command -v nvcc >/dev/null 2>&1 || {
 }
 
 tmp="$(mktemp -d)"
-raw="$tmp/nvcc.log"
-out="$tmp/unit.cu.cpp"
-set +e
-# shellcheck disable=SC2086  # defs is the intentional compile-definition list.
-nvcc -std=c++17 -arch=sm_80 --expt-relaxed-constexpr \
-  -D__HGGCCC__ -DPPU_FORCE_INSTANTIATE=1 $defs \
-  -Xcudafe --error_limit=100000 \
-  -I"$repo/dev/fold_derivation/stub_inc" \
-  -I"$repo/third_party/actlize/include" \
-  -I"$repo/third_party/actlize/tools/util/include" \
-  -I"$repo/tests" -I"$repo/benchmarks" -I"$repo/quactlize/include" \
-  -I"$repo/dev" -cuda -o "$out" -x cu "$source_file" \
-  -Wno-deprecated-gpu-targets >"$raw" 2>&1
-nvcc_rc=$?
-set -e
+trap 'rm -rf "$tmp"' EXIT
 
-# Stock nvcc cannot model two PPU-only inline constants in the actlize stack.
-# Those are an explicit environmental floor, not a baseline: every other
-# compiler diagnostic is a real failure, and completion still requires EDG's
-# final error-count line plus an instantiated Marlin device_kernel note.
-unexpected="$tmp/unexpected.log"
-grep -E ': (error|fatal error|catastrophic error):' "$raw" \
-  | grep -v 'identifier "cute::_" is undefined in device code' \
-  | grep -v 'identifier "cute::product" is undefined in device code' \
-  >"$unexpected" || true
+overlay="$tmp/overlay"
+collective_rel=quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp
+kernel_rel=quactlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp
+collective_src="$repo/quactlize/include/$collective_rel"
+collective_probe="$overlay/$collective_rel"
+kernel_src="$repo/quactlize/include/$kernel_rel"
+kernel_probe="$overlay/$kernel_rel"
+unit_probe="$overlay/lowbit_dense_unit.inc"
+mkdir -p "$(dirname "$collective_probe")" "$(dirname "$kernel_probe")"
+cp "$collective_src" "$collective_probe"
+
+# Do not infer device-body instantiation from an unrelated warning or from an
+# environmental error's template stack.  Instead, put one uniquely named
+# failing assertion at the entrance to the production collective's
+# run_segment() in a TEMPORARY include overlay.  The source tree remains
+# untouched.  The exact generated TU must reach that assertion through:
+#   lowbit_dense_run_config -> run<G> -> maximum_active_blocks
+#     -> device_kernel -> MarlinKernelPPU::operator() -> run_segment().
+python3 - "$collective_probe" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+needle = """  CUTLASS_DEVICE static void run_segment(
+      CtaState const& state, SegmentState const& segment,
+      Accumulator& accum, SharedStorage& shared) {"""
+if text.count(needle) != 1:
+    raise SystemExit("L169 collective run_segment seam is not unique")
+plant = (
+    needle
+    + '\n    static_assert(sizeof(Accumulator) == 0, '
+      '"L169_DEVICE_BODY_INSTANTIATED");'
+)
+path.write_text(text.replace(needle, plant), encoding="utf-8")
+PY
+
+# shellcheck disable=SC2206  # defs is the intentional compile-definition list.
+def_args=($defs)
+common=(
+  -std=c++17 -arch=sm_80 --expt-relaxed-constexpr -D__HGGCCC__
+  "${def_args[@]}" -Xcudafe --error_limit=100000
+  -I"$overlay"
+  -I"$repo/dev/fold_derivation/stub_inc"
+  -I"$repo/third_party/actlize/include"
+  -I"$repo/third_party/actlize/tools/util/include"
+  -I"$repo/tests" -I"$repo/benchmarks" -I"$repo/quactlize/include"
+  -I"$repo/dev" -cuda -x cu "$source_file" -Wno-deprecated-gpu-targets
+)
+
+compile_probe() {
+  local name="$1"
+  set +e
+  nvcc "${common[@]}" -o "$tmp/$name.cu.cpp" >"$tmp/$name.log" 2>&1
+  local rc=$?
+  set -e
+  printf '%s' "$rc"
+}
+
+positive_rc="$(compile_probe positive)"
+[ "$positive_rc" -ne 0 ] || {
+  echo '[l169] FAIL: device-body plant did not stop the generated unit' >&2
+  exit 1
+}
+marker='error: static assertion failed with "L169_DEVICE_BODY_INSTANTIATED"'
+[ "$(grep -Fc "$marker" "$tmp/positive.log" || true)" -eq 1 ] || {
+  echo '[l169] FAIL: generated unit did not reach the exact device-body marker once' >&2
+  sed -n '1,30p' "$tmp/positive.log" >&2
+  exit 1
+}
+unexpected="$tmp/positive-unexpected.log"
+grep -E ': (error|fatal error|catastrophic error):' "$tmp/positive.log" \
+  | grep -Fv "$marker" >"$unexpected" || true
 if [[ -s "$unexpected" ]]; then
-  echo "[l169] FAIL: generated standalone unit has non-environmental diagnostics (nvcc rc=$nvcc_rc)" >&2
+  echo '[l169] FAIL: positive device-body witness carried an unrelated error' >&2
   sed -n '1,20p' "$unexpected" >&2
   exit 1
 fi
-grep -Eq '[0-9]+ errors? detected in the compilation of' "$raw" || {
-  echo '[l169] FAIL: compiler did not prove it reached the end of the unit' >&2
-  exit 1
-}
-grep -q 'device_kernel<Operator>.*MarlinKernelPPU' "$raw" || {
-  echo '[l169] FAIL: generated unit did not instantiate the standalone device kernel' >&2
-  exit 1
-}
+for token in \
+  'MarlinCollectivePPU<TileShape_, WarpShape_, Stages_, GroupSize_' \
+  'TileShape_=cute::tuple<cute::_16, cute::_128, cute::_128>' \
+  'WarpShape_=cute::tuple<cute::C<16>, cute::C<64>, cute::C<32>>' \
+  'Stages_=4, GroupSize_=128' \
+  'LoadPolicy_=cutlass::gemm::collective::MarlinCpAsyncLoadPolicyPPU' \
+  'MarlinKernelPPU<ProblemShape_' \
+  'instantiation of "void cutlass::device_kernel<Operator>' \
+  'instantiation of "Result run<Gemm>' \
+  'instantiation of "Result lowbit_dense_run_config'; do
+  grep -Fq "$token" "$tmp/positive.log" || {
+    echo "[l169] FAIL: device-body instantiation chain lost $token" >&2
+    exit 1
+  }
+done
 
-echo '[l169] PASS: generated-unit shape instantiates standalone Marlin collective/scheduler/kernel; only the two explicit nvcc/PPU environmental diagnostics remain'
+# Same plant, same generated TU, one changed variable: sever only the standalone
+# wrapper's call to run<G>.  The compile must now finish and the marker must be
+# absent.  This proves the positive is caused by the real wrapper/device-body
+# edge rather than by parsing the kernel header or ambient compiler noise.
+cp "$repo/benchmarks/lowbit_dense_unit.inc" "$unit_probe"
+python3 - "$unit_probe" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+function = text.index("static Result lowbit_dense_run_config")
+start = text.index("#if defined(DENSE_MARLIN_WK4_AB)", function)
+end = text.index("\n#else", start)
+arm = text[start:end]
+needle = '  return run<G>(options, dense_tactic(cfg), "marlin");'
+if arm.count(needle) != 1:
+    raise SystemExit("L169 standalone wrapper call seam is not unique")
+arm = arm.replace(needle, "  return {};  // L169 route-severed control")
+path.write_text(text[:start] + arm + text[end:], encoding="utf-8")
+PY
+negative_rc="$(compile_probe route-severed)"
+[ "$negative_rc" -eq 0 ] || {
+  echo "[l169] FAIL: route-severed control did not compile cleanly (nvcc rc=$negative_rc)" >&2
+  sed -n '1,30p' "$tmp/route-severed.log" >&2
+  exit 1
+}
+[ -s "$tmp/route-severed.cu.cpp" ] || {
+  echo '[l169] FAIL: route-severed control produced no completion artifact' >&2
+  exit 1
+}
+if grep -Fq 'L169_DEVICE_BODY_INSTANTIATED' "$tmp/route-severed.log"; then
+  echo '[l169] FAIL: device-body marker survived after its only generated route was severed' >&2
+  exit 1
+fi
+
+# Restore the real generated wrapper, then sever only the kernel-to-collective
+# call.  A second named assertion at that exact call site proves the kernel
+# body still instantiated while the collective marker disappeared.  Thus a
+# future unused collective type cannot masquerade as device-body coverage.
+cp "$repo/benchmarks/lowbit_dense_unit.inc" "$unit_probe"
+cp "$kernel_src" "$kernel_probe"
+python3 - "$kernel_probe" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+needle = """        CollectiveMainloop::run_segment(
+            cta_state, segment, accum, shared.tensors.mainloop);"""
+if text.count(needle) != 1:
+    raise SystemExit("L169 kernel-to-collective call seam is not unique")
+plant = (
+    '        static_assert(sizeof(CollectiveMainloop) == 0, '
+    '"L169_KERNEL_BODY_COLLECTIVE_SEVERED");'
+)
+path.write_text(text.replace(needle, plant), encoding="utf-8")
+PY
+kernel_severed_rc="$(compile_probe collective-severed)"
+[ "$kernel_severed_rc" -ne 0 ] || {
+  echo '[l169] FAIL: kernel-body control did not stop after severing run_segment' >&2
+  exit 1
+}
+kernel_marker='error: static assertion failed with "L169_KERNEL_BODY_COLLECTIVE_SEVERED"'
+[ "$(grep -Fc "$kernel_marker" "$tmp/collective-severed.log" || true)" -eq 1 ] || {
+  echo '[l169] FAIL: collective-severed control did not reach the exact kernel-body marker once' >&2
+  sed -n '1,30p' "$tmp/collective-severed.log" >&2
+  exit 1
+}
+if grep -Fq 'L169_DEVICE_BODY_INSTANTIATED' "$tmp/collective-severed.log"; then
+  echo '[l169] FAIL: collective marker survived after the kernel call was severed' >&2
+  exit 1
+fi
+unexpected="$tmp/collective-severed-unexpected.log"
+grep -E ': (error|fatal error|catastrophic error):' "$tmp/collective-severed.log" \
+  | grep -Fv "$kernel_marker" >"$unexpected" || true
+if [[ -s "$unexpected" ]]; then
+  echo '[l169] FAIL: collective-severed kernel witness carried an unrelated error' >&2
+  sed -n '1,20p' "$unexpected" >&2
+  exit 1
+fi
+
+echo '[l169] PASS: generated wrapper reaches standalone Marlin kernel + collective device bodies; route-severed and collective-severed same-source controls suppress the exact marker'
