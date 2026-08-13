@@ -6173,3 +6173,43 @@ C → A → B。C 最便宜且决定后两者的形状;B 的实现要等冻结�
 4. 顺带:这条 grep 的 rc 被 `if` 吞掉了。**凡是 `if cmd; then` 形式的守卫,`cmd` 报错(rc≥2)与"不匹配"(rc=1)在语义上完全不同**,但 `if` 把它们合并了。扫一遍其它守卫有没有同型问题;真正的判据是 `rc` 三态而不是真假。
 
 优先级:排在 145/146 之后,143/144 之前。**这次跑不受影响**(子模块干净且 `actlize-sha` 已记录),所以不必打断用户。
+
+## 148 — **box 上 B=1 FAIL,原因在验证器不在 kernel**;附一个必须正视的实测 occupancy
+
+用户跑了 `run_dense_marlin_wk4_box.sh`,`[marlin-wk4] FAIL: B=1 returned nonzero`。
+
+### 根因(算术是闭合的,请复核)
+
+    [dense verify owners] fail-close: threads*stripes=8192 != tile=2048
+    cta_threads=256  output_cohort_threads=64  warp_k_cohorts=4  tile=16x128
+
+`tile = 16×128 = 2048`。`256 × 32 = 8192`;`64 × 32 = 2048 = tile`。**差的正好是 `warp_k_cohorts = 4`。**
+
+⟹ **验证器的所有权模型是 warp-K 之前的**:它假设 CTA 里每个线程都拥有输出元素,而 `2N×4K` 下只有 **K0 cohort 的 64 线程**写输出,其余 192 个算的是待归约的部分和。
+
+**它 fail-close 了(`NOT CLASSIFIABLE`,不是假绿),这一点是对的,不要改这个行为。** 要改的是所有权模型:owners 应当按 **output cohort 线程数**算,不是 `cta_threads`。
+
+**同时请查 `[dense verify buckets] NOT CLASSIFIABLE: tile=16x128 logical_grid=1x32x1 entries=32 common=0 replay=1 streamk=0`** —— 这一条是不是同一个根因的下游,还是第二个独立缺口。**不要假设它是同一个。**
+
+### 一个真实数字,比这次 FAIL 更重要
+
+    [dense marlin decomposition] occupancy_api=2  blocks_per_cu=1  resident_warps/cu=16
+    [dense smem] main=50208 epi=8208 union=50208 shared-only-cta/cu=5->4
+
+**`occupancy_api=2`** —— 硬件对这个 kernel 只给 **2 blocks/CU**,不是我们之前按旧 config 算的 6。
+
+    旧 4N×1K(128 线程, s3):  6 blocks × 4 warps = 24 warps/CU
+    新 2N×4K(256 线程, s4):  2 blocks × 8 warps = 16 warps/CU
+
+**warp-K 把 occupancy 做低了。** 方向与我从 `frag_c` 16→32 推的一致,但**现在是实测**。两个后果:
+
+1. **`blocks_per_cu ∈ {2,4,6}` 那几档大概率会被 `occupancy_api=2` 拒掉。** 请确认 runner 在这种情况下是**明确报"超出真实上限、NOT RUN"**,而不是静默跳过 —— 用户需要看见"扫了但不可达",不是"没扫"。
+2. **`BOX_RUN_PREREGISTRATION.md` 里若没登记这种情形,不要事后改注册**;按既定规矩写进"未被注册覆盖的观察"那一段。
+
+### 关于那个 27.34 us
+
+runner 自己写了 *"verify failed; timing was requested, so this failed arm is **timed only for diagnosis**"*。**我已经告诉用户这不是结果,不能和 21.14 / 17.8 比。** 请在任何文档里保持这个口径。
+
+### 优先级
+
+**最高,插在所有排队项之前。** 用户正卡在这里,而且这是本次上机唯一的阻塞。修完给出可直接重跑的命令。
