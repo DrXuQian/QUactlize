@@ -1,102 +1,80 @@
 #!/usr/bin/env python3
-"""Regenerate L143/L154/L155 locally and pin WK4 delivery semantics.
+"""Regenerate and pin the result-SHA's standalone Marlin local evidence.
 
-The PPU box cannot compile this host-only CuTe oracle with its nvcc/GCC13
-combination.  The box runner therefore copies the result-SHA's committed output
-instead of pretending to rerun it.  This local-tier check is the executable
-owner of that evidence and its red controls.  L154 additionally proves that
-the WK4 mainloop fills both A subblocks consumed by one amortized B copy;
-L155 equates its branchless cohort indexing with all four old template arms.
+The PPU box is not the authority for these host/compile-time oracles.  It
+consumes their exact output from the commit it builds.  L167-L170 replace the
+retired generic-WK4 xplane/two-source/cadence evidence: they bind the classic
+format, pipeline cadence, generated standalone type and scheduler lifecycle.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 import subprocess
-import tempfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
-RUNNER = ROOT / "dev/fold_derivation/run_l143_wk4_production_delivery.sh"
-EXPECTED = ROOT / "dev/fold_derivation/l143_wk4_production_delivery.expected.txt"
-CADENCE_RUNNER = ROOT / "dev/fold_derivation/run_l154_wk4_a_cadence.sh"
-INDEXED_RUNNER = ROOT / "dev/fold_derivation/run_l155_wk4_indexed_converter.sh"
+RUNNER = ROOT / "dev/fold_derivation/run_l143_dense_marlin_wk4_target.sh"
+EXPECTED = ROOT / "dev/fold_derivation/l143_standalone_marlin.expected.txt"
+
+REQUIRED_LINES = (
+    "[L167] PASS: independent classic/direct and Awesome-CuTe/permutation anchors agree; "
+    "asymmetric provider, byte, inverse, and negative controls proved",
+    "[l168:runner] positive=PASS negative_controls=3/3_RED result=PASS",
+    "[l169] PASS: generated-unit shape instantiates standalone Marlin collective/scheduler/kernel; "
+    "only the two explicit nvcc/PPU environmental diagnostics remain",
+    "[l170:runner] positive=PASS negative_controls=7/7_RED result=PASS",
+    "[dense-marlin-wk4] PASS: standalone format/collective/scheduler/kernel wired; "
+    "generic WK4 compatibility absent; ten structural plants rejected",
+    "[classic-156] PASS: exact one-launch shape, source/tool/binary identity and full ACU capture "
+    "are fail-closed",
+    "[l143] PASS: standalone Marlin format + cadence + generated type + scheduler lifecycle; "
+    "generic WK4 compatibility is absent; no device result claimed",
+)
+
+RETIRED_CLAIMS = (
+    "shipping-xplane",
+    "L154",
+    "L155",
+    "indexed converter equals four template arms",
+)
 
 
 def main() -> int:
-    with tempfile.TemporaryDirectory(prefix="qz-l143-committed-") as raw:
-        out = Path(raw)
-        env = dict(os.environ, QUACTLIZE_L143_OUT=str(out))
-        proc = subprocess.run(["bash", str(RUNNER)], cwd=ROOT, env=env,
-                              text=True, stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT)
-        if proc.returncode:
-            print(f"[l143-committed] FAIL: generator rc={proc.returncode}\n{proc.stdout}")
+    proc = subprocess.run(
+        ["bash", str(RUNNER)], cwd=ROOT, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    if proc.returncode:
+        print(f"[l143-committed] FAIL: aggregate rc={proc.returncode}\n{proc.stdout}")
+        return 1
+
+    expected = EXPECTED.read_text()
+    if proc.stdout != expected:
+        print("[l143-committed] FAIL: regenerated standalone evidence differs from result SHA")
+        print(proc.stdout, end="")
+        return 1
+
+    if tuple(expected.splitlines()) != REQUIRED_LINES:
+        print("[l143-committed] FAIL: evidence is not the exact seven-line standalone contract")
+        return 1
+    if any(token in expected for token in RETIRED_CLAIMS):
+        print("[l143-committed] FAIL: retired generic-WK4 claim still authorizes the box")
+        return 1
+
+    # The aggregate is only an evidence compositor.  Its component gates own
+    # 3 + 7 + 10 independent red controls, printed in the committed lines
+    # above.  Require those counts literally so a future rewrite cannot turn a
+    # missing negative arm into an unchanged-looking PASS sentence.
+    for token in ("negative_controls=3/3_RED", "negative_controls=7/7_RED",
+                  "ten structural plants rejected"):
+        if expected.count(token) != 1:
+            print(f"[l143-committed] FAIL: negative-control closure drifted: {token}")
             return 1
-        got = (out / "l143.out").read_bytes()
-    wanted = EXPECTED.read_bytes()
-    if got != wanted:
-        print("[l143-committed] FAIL: generated output differs from result-SHA evidence")
-        return 1
 
-    # A self-comparison is not a negative control.  Each of these is a distinct
-    # wrong delivery map whose exact red count/hash is part of the committed
-    # output and must remain present exactly once.
-    text = wanted.decode()
-    reds = (
-        "production-order hash=ea96e6b4155759c3 shipping-diff=12288/16384 EXPECTED-RED",
-        "compact-order hash=17dfe6248fc38143 shipping-diff=15360/16384 EXPECTED-RED",
-        "first32x2 shipping-diff=16384/16384 clean=0 EXPECTED-RED",
-        "adjacent-nibble shipping-diff=8192/16384 pairs=8192 bad-pairs=14336 EXPECTED-RED",
-        "swapped-sources shipping-diff=16384/16384 pairs=8192 bad-pairs=8192 EXPECTED-RED",
+    print(
+        "[l143-committed] PASS: exact seven-line standalone evidence regenerated; "
+        "format/cadence/type/scheduler/isolation negative controls remain closed"
     )
-    if any(text.count(red) != 1 for red in reds):
-        print("[l143-committed] FAIL: one or more planted delivery maps lost its exact red")
-        return 1
-
-    # The delivery map alone cannot prove that the mainloop actually fills all
-    # operand registers it later consumes.  L154 binds the exact WK4 A/B copy
-    # extents to the exact fixture: its old-cadence arm must reproduce the
-    # eight observed ppu001 failures and exit red, while the repaired cadence
-    # must reproduce golden.
-    with tempfile.TemporaryDirectory(prefix="qz-l154-cadence-") as raw:
-        env = dict(os.environ, QUACTLIZE_L154_OUT=raw)
-        cadence = subprocess.run(["bash", str(CADENCE_RUNNER)], cwd=ROOT, env=env,
-                                 text=True, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT)
-    if cadence.returncode:
-        print(f"[l143-committed] FAIL: L154 cadence oracle rc={cadence.returncode}\n"
-              f"{cadence.stdout}")
-        return 1
-    required = (
-        "A_K_BLOCKS=2 B_K_BLOCKS=1 K_ATOM_PER_COPY=2",
-        "old-lower64=167,122,141,144,155,166,137,148, device=EXACT",
-        "fixed-all=277,328,283,286,321,292,303,306, golden=EXACT",
-        "L154 negative control: old single-A-block cadence reproduces device values and is red PASS",
-    )
-    if any(cadence.stdout.count(line) != 1 for line in required):
-        print("[l143-committed] FAIL: L154 causal output or its planted red drifted")
-        return 1
-    with tempfile.TemporaryDirectory(prefix="qz-l155-indexed-") as raw:
-        env = dict(os.environ, QUACTLIZE_L155_OUT=raw)
-        indexed = subprocess.run(["bash", str(INDEXED_RUNNER)], cwd=ROOT, env=env,
-                                 text=True, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT)
-    if indexed.returncode:
-        print(f"[l143-committed] FAIL: L155 indexed converter rc={indexed.returncode}\n"
-              f"{indexed.stdout}")
-        return 1
-    indexed_required = (
-        "indexed-vs-template outputs=128 bad=0 select-word-bad=0",
-        "planted high-bit=64 phase-bit=64 destination=64 EXPECTED-RED",
-        "L155 negative controls: high-bit/phase-bit/destination each exact-red PASS",
-    )
-    if any(indexed.stdout.count(line) != 1 for line in indexed_required):
-        print("[l143-committed] FAIL: L155 equality or one of its planted reds drifted")
-        return 1
-    print("[l143-committed] PASS: regenerated exact WK1 0/8192 map and five planted reds; "
-          "WK4 A cadence reproduces device failure and repaired golden; "
-          "indexed converter equals four template arms with three independent reds")
     return 0
 
 
