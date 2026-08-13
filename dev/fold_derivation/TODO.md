@@ -791,6 +791,44 @@ instruction breakdown from INBOX 150 and (2) removal of the box-run shipping-cod
 Fewer extraction instructions with unchanged wall time is a valid result and must be reported, not explained away or
 hidden by selecting a different shape.
 
+### TODO #56 — classic-aligned collective must not execute more instructions than standalone Marlin
+
+**Hard acceptance target.**  On the same PPU and the exact dense decode problem
+`M=1, N=K=4096, gs=128`, the quactlize classic-aligned kernel's total executed
+instruction count must be no greater than standalone
+`marlin_classic_ppu.cuh`.  This is a direct count: both kernels must execute
+exactly 65,536 `v.mma.f32.f16.m16n16k16`, so no invented normalization is
+allowed.
+
+The immutable pre-INBOX-155 reference is result SHA `744c21e` (the first
+numerically correct WK4 run after L154).  Its captured WK4 mix totals 2,934,743
+instructions versus 1,374,784 for the historical DP comparison, while MMA is
+identical.  The four runtime-cohort-switch signatures alone contribute about
+280k excess instructions relative to that comparison:
+
+    v.mov.v2s  106,023    v.cmp.i  37,803
+    s.lop.emsk  62,682    s.cbr    76,042
+
+INBOX 155 replaces that switch with the L142-derived register/byte-phase
+index.  Its immediate gate is that those four increments substantially
+disappear without local-memory spill, while exact output and the shipping
+artifact map remain unchanged.  Any remaining excess must be assigned, by
+measured opcode counts, to MMA, dequant, shared transport, address arithmetic,
+scalar control, or predicate/mask work.  A CuTe/collective tax may be recorded
+only as a measured and bounded category; “total is higher but the source is
+unknown” is not an acceptable result.
+
+The standalone baseline is deliberately still blank until the same device run
+captures, from one exact `Marlin<256,1,8,8,4,8>` launch, total and per-opcode
+executed instructions, registers/thread, and capacity/grid-delivered/achieved
+blocks per CU.  The final report has three columns: `744c21e before`, the
+post-155 kernel, and standalone classic.  A missing classic column stays
+`MISSING`; it must never be filled from the historical DP kernel or an
+estimate.  FP32-workspace traffic and further occupancy experiments are not
+alternate explanations for this item: the measured 2.13x instruction count
+already suffices, and doubling resident warps bought only 2.5% before the
+kernel hit its real two-block/CU cap.
+
 ### Where the GEMV does look good
 
 Shape [5], dense m=1 N=12288 K=4096, gs=128 ScaleOnly: `int4 native s32/t64 N4 C2` at 18.48 us and **50.8%

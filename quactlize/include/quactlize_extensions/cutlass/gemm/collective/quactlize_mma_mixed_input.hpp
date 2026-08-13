@@ -2065,19 +2065,43 @@ private:
   CUTLASS_DEVICE static void convert_int4_two_source(
       uint32_t const* source0, uint32_t const* source1,
       uint32_t* destination, int compute_warp_k) {
-    // Template dispatch avoids dynamic indexing into register-backed source
-    // arrays.  L142 proves every read and every production-fragment write.
-    switch (compute_warp_k) {
-      case 0: convert_int4_shadow_source<0>(source0, destination);
-              convert_int4_shadow_source<0>(source1, destination + 16); break;
-      case 1: convert_int4_shadow_source<1>(source0, destination);
-              convert_int4_shadow_source<1>(source1, destination + 16); break;
-      case 2: convert_int4_shadow_source<2>(source0, destination);
-              convert_int4_shadow_source<2>(source1, destination + 16); break;
-      case 3: convert_int4_shadow_source<3>(source0, destination);
-              convert_int4_shadow_source<3>(source1, destination + 16); break;
-      default: CUTE_GCC_UNREACHABLE;
-    }
+    // L142's four compile-time ChunkPlace arms factor exactly as
+    //
+    //   vreg = 2*vi + (warp_k >> 1),  pair = 2*(warp_k & 1) + ti,
+    //   destination_half2 = 4*NI + 2*vi + ti.
+    //
+    // The destination is therefore independent of the cohort.  Select the
+    // corresponding fixed register and byte phase as data, then run one copy
+    // of the T=0/1 emitter.  This is the classic shape: warp_k participates in
+    // address/data selection, never in control flow.  Do not use a runtime
+    // source[index] here: source is an SROA/register-backed fragment and a
+    // dynamic index may spill it.  The explicit fixed reads instead lower to
+    // a bounded mux.  L155 exhaustively equates this formula with all four old
+    // template arms and keeps high-bit, phase-bit and destination mistakes red.
+    using Emit = cutlass::MixGemmChunkEmit<4>;
+    uint32_t const cohort = uint32_t(compute_warp_k);
+    uint32_t const choose_odd_mask = 0u - ((cohort >> 1) & 1u);
+    uint32_t const phase_shift = (cohort & 1u) * 8u;
+
+    auto convert_source = [&] (uint32_t const* source, uint32_t* output) {
+      cute::for_each(cute::make_int_sequence<4>{}, [&] (auto ni) {
+        constexpr int NI = decltype(ni)::value;
+        uint32_t const even_lo = source[4 * NI + 0];
+        uint32_t const odd_lo  = source[4 * NI + 1];
+        uint32_t const even_hi = source[4 * NI + 2];
+        uint32_t const odd_hi  = source[4 * NI + 3];
+        uint32_t selected_lo = even_lo ^ ((even_lo ^ odd_lo) & choose_odd_mask);
+        uint32_t selected_hi = even_hi ^ ((even_hi ^ odd_hi) & choose_odd_mask);
+        selected_lo >>= phase_shift;
+        selected_hi >>= phase_shift;
+        output[4 * NI + 0] = Emit::template emit_value<0>(selected_lo);
+        output[4 * NI + 1] = Emit::template emit_value<1>(selected_lo);
+        output[4 * NI + 2] = Emit::template emit_value<0>(selected_hi);
+        output[4 * NI + 3] = Emit::template emit_value<1>(selected_hi);
+      });
+    };
+    convert_source(source0, destination);
+    convert_source(source1, destination + 16);
   }
 
   // FINE-grained scale (gs < B-copy-step K, i.e. Scale_TileK > K_BLOCK_MAX): a single copy step's K_ATOM_PER_COPY

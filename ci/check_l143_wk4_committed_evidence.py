@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Regenerate L143/L154 locally and pin delivery plus operand cadence.
+"""Regenerate L143/L154/L155 locally and pin WK4 delivery semantics.
 
 The PPU box cannot compile this host-only CuTe oracle with its nvcc/GCC13
 combination.  The box runner therefore copies the result-SHA's committed output
 instead of pretending to rerun it.  This local-tier check is the executable
 owner of that evidence and its red controls.  L154 additionally proves that
-the WK4 mainloop fills both A subblocks consumed by one amortized B copy.
+the WK4 mainloop fills both A subblocks consumed by one amortized B copy;
+L155 equates its branchless cohort indexing with all four old template arms.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 RUNNER = ROOT / "dev/fold_derivation/run_l143_wk4_production_delivery.sh"
 EXPECTED = ROOT / "dev/fold_derivation/l143_wk4_production_delivery.expected.txt"
 CADENCE_RUNNER = ROOT / "dev/fold_derivation/run_l154_wk4_a_cadence.sh"
+INDEXED_RUNNER = ROOT / "dev/fold_derivation/run_l155_wk4_indexed_converter.sh"
 
 
 def main() -> int:
@@ -75,8 +77,26 @@ def main() -> int:
     if any(cadence.stdout.count(line) != 1 for line in required):
         print("[l143-committed] FAIL: L154 causal output or its planted red drifted")
         return 1
+    with tempfile.TemporaryDirectory(prefix="qz-l155-indexed-") as raw:
+        env = dict(os.environ, QUACTLIZE_L155_OUT=raw)
+        indexed = subprocess.run(["bash", str(INDEXED_RUNNER)], cwd=ROOT, env=env,
+                                 text=True, stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT)
+    if indexed.returncode:
+        print(f"[l143-committed] FAIL: L155 indexed converter rc={indexed.returncode}\n"
+              f"{indexed.stdout}")
+        return 1
+    indexed_required = (
+        "indexed-vs-template outputs=128 bad=0 select-word-bad=0",
+        "planted high-bit=64 phase-bit=64 destination=64 EXPECTED-RED",
+        "L155 negative controls: high-bit/phase-bit/destination each exact-red PASS",
+    )
+    if any(indexed.stdout.count(line) != 1 for line in indexed_required):
+        print("[l143-committed] FAIL: L155 equality or one of its planted reds drifted")
+        return 1
     print("[l143-committed] PASS: regenerated exact WK1 0/8192 map and five planted reds; "
-          "WK4 A cadence reproduces device failure and repaired golden")
+          "WK4 A cadence reproduces device failure and repaired golden; "
+          "indexed converter equals four template arms with three independent reds")
     return 0
 
 

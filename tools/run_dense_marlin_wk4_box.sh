@@ -181,7 +181,7 @@ wk1_oracle_rc=${PIPESTATUS[0]}
 set -e
 record_command wk1-committed-production-delivery "$wk1_oracle_rc" "${WK1_ORACLE[@]}"
 [ "$wk1_oracle_rc" -eq 0 ] || fail 'WK1 committed production-delivery evidence is absent from the result SHA'
-grep -Fxq '[dense-marlin-wk4] PASS: isolated 1Mx2Nx4K type/shipping-artifact/CLI; historical target unchanged; thirteen structural plants rejected' "$WK1_LOG" \
+grep -Fxq '[dense-marlin-wk4] PASS: isolated 1Mx2Nx4K type/shipping-artifact/CLI; historical target unchanged; fifteen structural plants rejected' "$WK1_LOG" \
   || fail 'WK1 admission lacks the exact static target PASS'
 grep -Fxq 'L143 WK1 shipping map-diff=0 byte-diff=0 result=BIT-IDENTICAL' "$WK1_LOG" \
   || fail 'WK1 admission lacks the exact 0/8192 shipping byte-map result'

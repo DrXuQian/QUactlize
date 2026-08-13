@@ -21,6 +21,10 @@ BENCH = ROOT / "benchmarks/test_lowbit_dense_bench.cu"
 BUILD = ROOT / "build.sh"
 BOX = ROOT / "tools/run_dense_marlin_wk4_box.sh"
 XPLANE = ROOT / "quactlize/include/xplane_offline.hpp"
+MIX_CONVERT = ROOT / (
+    "quactlize/include/quactlize_extensions/cutlass/"
+    "quactlize_mix_gemm_convert.h"
+)
 COLLECTIVE = ROOT / (
     "quactlize/include/quactlize_extensions/cutlass/gemm/collective/"
     "quactlize_mma_mixed_input.hpp"
@@ -31,6 +35,8 @@ L139 = ROOT / "dev/fold_derivation/l139_marlin_warpk_reduce.cu"
 RUN_L139 = ROOT / "dev/fold_derivation/run_l139_marlin_warpk_reduce.sh"
 L154 = ROOT / "dev/fold_derivation/l154_wk4_a_cadence.cu"
 RUN_L154 = ROOT / "dev/fold_derivation/run_l154_wk4_a_cadence.sh"
+L155 = ROOT / "dev/fold_derivation/l155_wk4_indexed_converter.cu"
+RUN_L155 = ROOT / "dev/fold_derivation/run_l155_wk4_indexed_converter.sh"
 
 
 def exact(text: str, token: str, count: int, bad: list[str], label: str) -> None:
@@ -40,10 +46,11 @@ def exact(text: str, token: str, count: int, bad: list[str], label: str) -> None
 
 
 def audit(files: dict[str, str]) -> list[str]:
-    cm, unit, bench, build, box, xplane, collective, l142, l143, l139, run_l139, l154, run_l154 = (
+    cm, unit, bench, build, box, xplane, mix_convert, collective, l142, l143, l139, run_l139, l154, run_l154, l155, run_l155 = (
         files[name] for name in (
-            "cmake", "unit", "bench", "build", "box", "xplane",
-            "collective", "l142", "l143", "l139", "run_l139", "l154", "run_l154"
+            "cmake", "unit", "bench", "build", "box", "xplane", "mix_convert",
+            "collective", "l142", "l143", "l139", "run_l139", "l154", "run_l154",
+            "l155", "run_l155"
         )
     )
     bad: list[str] = []
@@ -198,6 +205,24 @@ def audit(files: dict[str, str]) -> list[str]:
     if "convert_int4_pair" in collective:
         bad.append("production WK4 path duplicated the shipping emitter's LOP3/FMA sequence")
     for token in (
+        "CUTLASS_DEVICE static uint32_t emit_value(uint32_t reg)",
+        "h2[at(T, V)] = emit_value<T>(reg);",
+    ):
+        if token not in mix_convert:
+            bad.append(f"value-only shipping emitter seam is missing {token!r}")
+    for token in (
+        "uint32_t const choose_odd_mask = 0u - ((cohort >> 1) & 1u);",
+        "uint32_t const phase_shift = (cohort & 1u) * 8u;",
+        "even_lo ^ ((even_lo ^ odd_lo) & choose_odd_mask)",
+        "selected_lo >>= phase_shift;",
+        "Emit::template emit_value<0>(selected_lo)",
+        "output[4 * NI + 3] = Emit::template emit_value<1>(selected_hi);",
+    ):
+        if token not in collective:
+            bad.append(f"branchless WK4 converter is missing {token!r}")
+    if "switch (compute_warp_k)" in collective:
+        bad.append("WK4 converter regressed to runtime cohort control flow")
+    for token in (
         "output_threads != CTA threads (64 != 256)",
         "fault == 4 ? kComputeThreads : kOutputThreads",
         "fault == 5 && t == last_k0 ? first_k0 : t",
@@ -230,6 +255,27 @@ def audit(files: dict[str, str]) -> list[str]:
     ):
         if token not in run_l154:
             bad.append(f"WK4 A-cadence negative runner is missing {token!r}")
+    for token in (
+        "map_diff(Variant::Good) == 0",
+        "selected_word_bad() == 0",
+        "map_diff(Variant::BadHighBit) == 64",
+        "map_diff(Variant::BadPhaseBit) == 64",
+        "map_diff(Variant::BadDestination) == 64",
+        "L155_BAD_HIGH_BIT",
+        "L155_BAD_PHASE_BIT",
+        "L155_BAD_DESTINATION",
+    ):
+        if token not in l155:
+            bad.append(f"WK4 indexed-converter oracle is missing {token!r}")
+    for token in (
+        '-D"L155_BAD_${name}=1"',
+        "HIGH_BIT:wk low bit selected the vreg column",
+        "PHASE_BIT:wk high bit selected the byte phase",
+        "DESTINATION:vi/ti destination axes were transposed",
+        "indexed-vs-template outputs=128 bad=0 select-word-bad=0",
+    ):
+        if token not in run_l155:
+            bad.append(f"WK4 indexed-converter runner is missing {token!r}")
     return bad
 
 
@@ -241,6 +287,7 @@ def main() -> int:
         "build": BUILD.read_text(),
         "box": BOX.read_text(),
         "xplane": XPLANE.read_text(),
+        "mix_convert": MIX_CONVERT.read_text(),
         "collective": COLLECTIVE.read_text(),
         "l142": L142.read_text(),
         "l143": L143.read_text(),
@@ -248,6 +295,8 @@ def main() -> int:
         "run_l139": RUN_L139.read_text(),
         "l154": L154.read_text(),
         "run_l154": RUN_L154.read_text(),
+        "l155": L155.read_text(),
+        "run_l155": RUN_L155.read_text(),
     }
     bad = audit(files)
 
@@ -287,6 +336,12 @@ def main() -> int:
         ("collective", "emitter-loses-semantic-K-mode",
          "Layout<Shape<Shape<_2, _2, _2>, _1, _4>",
          "Layout<Shape<Shape<_2, _2, _2>, _4>"),
+        ("collective", "indexed-converter-swaps-wk-high-bit",
+         "uint32_t const choose_odd_mask = 0u - ((cohort >> 1) & 1u);",
+         "uint32_t const choose_odd_mask = 0u - ((cohort & 1u));"),
+        ("collective", "indexed-converter-swaps-wk-phase-bit",
+         "uint32_t const phase_shift = (cohort & 1u) * 8u;",
+         "uint32_t const phase_shift = ((cohort >> 1) & 1u) * 8u;"),
         ("l142", "consumer-pairs-adjacent-nibbles",
          "int const d1 = source_slot(sf, ni, v, t + 4);",
          "int const d1 = source_slot(sf, ni, v, t + 1);"),
@@ -306,7 +361,7 @@ def main() -> int:
         return 1
     print(
         "[dense-marlin-wk4] PASS: isolated 1Mx2Nx4K type/shipping-artifact/CLI; "
-        "historical target unchanged; thirteen structural plants rejected"
+        "historical target unchanged; fifteen structural plants rejected"
     )
     return 0
 
