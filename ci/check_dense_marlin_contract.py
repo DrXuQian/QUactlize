@@ -11,6 +11,8 @@ This checker therefore composes the production-bound standalone proofs:
 
 * L167: classic packed-int4/scale format with independent inverse anchors;
 * L168: classic/Awesome cadence, fixed launch and 4->2->1 reduction trace;
+* L174: dedicated load/dequant/MMA source split, exhaustive W4 arithmetic and
+  Awesome-CuTe compute-cadence anchors;
 * L170: production ``MarlinSchedulerPPU`` ABI, exact coverage and q-lock life;
 * L173: production per-CTA state init and absolute-q/K segment rebasing;
 * the structural stack gate, including absence of generic WarpK seams.
@@ -37,6 +39,11 @@ CHECKS = (
         "cadence",
         ("bash", "dev/fold_derivation/run_l168_marlin_pipeline_trace.sh"),
         "[l168:runner] positive=PASS negative_controls=3/3_RED result=PASS",
+    ),
+    (
+        "compute",
+        ("bash", "dev/fold_derivation/run_l174_marlin_compute_contract.sh"),
+        "[l174:runner] positive=PASS negative_controls=4/4_RED result=PASS",
     ),
     (
         "scheduler",

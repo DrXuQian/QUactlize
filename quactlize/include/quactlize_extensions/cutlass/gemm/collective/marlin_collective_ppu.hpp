@@ -28,125 +28,13 @@
 #include "cutlass/cutlass.h"
 #include "cutlass/gemm/dispatch_policy.hpp"
 #include "cutlass/numeric_types.h"
+#include "quactlize_extensions/cutlass/gemm/collective/marlin_dequant_ppu.hpp"
+#include "quactlize_extensions/cutlass/gemm/collective/marlin_load_ppu.hpp"
+#include "quactlize_extensions/cutlass/gemm/collective/marlin_mma_ppu.hpp"
 
 namespace cutlass::gemm::collective {
 
-struct MarlinCpAsyncLoadPolicyPPU {};
-struct MarlinAiuLoadPolicyPPU {};
-
 namespace marlin_ppu_detail {
-
-struct alignas(16) Vector128 {
-  uint32_t x, y, z, w;
-};
-
-struct FragmentA {
-  __half2 value[4];
-};
-
-struct FragmentB {
-  __half2 value[2];
-};
-
-struct FragmentScale {
-  __half2 value[1];
-};
-
-template <int Lut>
-CUTLASS_DEVICE int lop3(int a, int b, int c) {
-  int result;
-  asm volatile("lop3.b32 %0, %1, %2, %3, %4;\n"
-               : "=r"(result)
-               : "r"(a), "r"(b), "r"(c), "n"(Lut));
-  return result;
-}
-
-CUTLASS_DEVICE FragmentB dequantize_biased_int4(int q) {
-  constexpr int kLo = 0x000f000f;
-  constexpr int kHi = 0x00f000f0;
-  constexpr int kExponent = 0x64006400;
-  int lo = lop3<(0xf0 & 0xcc) | 0xaa>(q, kLo, kExponent);
-  int hi = lop3<(0xf0 & 0xcc) | 0xaa>(q, kHi, kExponent);
-  constexpr int kSubtract = 0x64086408;
-  constexpr int kMultiply = 0x2c002c00;
-  constexpr int kAdd = 0xd480d480;
-  FragmentB result;
-  result.value[0] = __hsub2(
-      *reinterpret_cast<__half2*>(&lo),
-      *reinterpret_cast<__half2 const*>(&kSubtract));
-  result.value[1] = __hfma2(
-      *reinterpret_cast<__half2*>(&hi),
-      *reinterpret_cast<__half2 const*>(&kMultiply),
-      *reinterpret_cast<__half2 const*>(&kAdd));
-  return result;
-}
-
-CUTLASS_DEVICE void scale(FragmentB& fragment, FragmentScale const& scales, int half) {
-  __half const scalar = reinterpret_cast<__half const*>(&scales)[half];
-  __half2 const pair = __half2half2(scalar);
-  fragment.value[0] = __hmul2(fragment.value[0], pair);
-  fragment.value[1] = __hmul2(fragment.value[1], pair);
-}
-
-CUTLASS_DEVICE void cp_async_16(void* smem_ptr, void const* global_ptr) {
-  uint32_t const smem = uint32_t(__cvta_generic_to_shared(smem_ptr));
-  asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n"
-               :
-               : "r"(smem), "l"(global_ptr)
-               : "memory");
-}
-
-CUTLASS_DEVICE void cp_async_16_if(
-    void* smem_ptr, void const* global_ptr, bool predicate) {
-  // PPU lowers cp.async to an intrinsic.  Predicating the asm instruction itself can force a
-  // compatibility expansion, so the classic PPU port uses a uniform C++ branch around it.
-  if (predicate) {
-    cp_async_16(smem_ptr, global_ptr);
-  }
-}
-
-CUTLASS_DEVICE void cp_async_commit() {
-  asm volatile("cp.async.commit_group;\n" ::: "memory");
-}
-
-template <int Count>
-CUTLASS_DEVICE void cp_async_wait() {
-  asm volatile("cp.async.wait_group %0;\n" : : "n"(Count) : "memory");
-}
-
-CUTLASS_DEVICE void ldmatrix_a(FragmentA& fragment, void const* smem_ptr) {
-  uint32_t* a = reinterpret_cast<uint32_t*>(&fragment);
-  // PPU x4 returns v1/v2 in the opposite register order from the A operand.  Bind those
-  // outputs directly to a2/a1: no move or temporary is emitted.
-  asm volatile(
-      "ppu.ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
-      : "=r"(a[0]), "=r"(a[2]), "=r"(a[1]), "=r"(a[3])
-      : "l"(smem_ptr));
-}
-
-template <int NBlock, class Accumulator>
-CUTLASS_DEVICE void mma_n16(
-    FragmentA const& a, FragmentB const& b0, FragmentB const& b1,
-    Accumulator& accum) {
-  uint32_t const* av = reinterpret_cast<uint32_t const*>(&a);
-  uint32_t const b[4] = {
-      *reinterpret_cast<uint32_t const*>(&b0.value[0]),
-      *reinterpret_cast<uint32_t const*>(&b0.value[1]),
-      *reinterpret_cast<uint32_t const*>(&b1.value[0]),
-      *reinterpret_cast<uint32_t const*>(&b1.value[1]),
-  };
-  constexpr int base = 8 * NBlock;
-  asm volatile(
-      "ppu.mma.sync.aligned.m16n16k16.row.col.f32.f16.f16.f32 "
-      "{%0,%1,%2,%3,%4,%5,%6,%7}, {%8,%9,%10,%11}, "
-      "{%12,%13,%14,%15}, {%0,%1,%2,%3,%4,%5,%6,%7};"
-      : "+f"(accum(base + 0)), "+f"(accum(base + 1)),
-        "+f"(accum(base + 2)), "+f"(accum(base + 3)),
-        "+f"(accum(base + 4)), "+f"(accum(base + 5)),
-        "+f"(accum(base + 6)), "+f"(accum(base + 7))
-      : "r"(av[0]), "r"(av[1]), "r"(av[2]), "r"(av[3]),
-        "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]));
-}
 
 CUTLASS_HOST_DEVICE constexpr int ceil_div(int x, int y) {
   return (x + y - 1) / y;
@@ -405,12 +293,31 @@ class MarlinCollectivePPU {
     return {args.ptr_A, args.ptr_B, args.ptr_S, args.group_size};
   }
 
+  template <int NBlock, class Accumulator>
+  CUTLASS_DEVICE static void multiply_n_block(
+      marlin_ppu_detail::FragmentA const& fragment_a,
+      marlin_ppu_detail::Vector128 const& fragment_b_quant,
+      marlin_ppu_detail::FragmentScale const (&fragment_scale)[4],
+      Accumulator& accum) {
+    static_assert(NBlock >= 0 && NBlock < 4,
+                  "the fixed Marlin warp owns exactly four n16 blocks");
+    uint32_t const* quant =
+        reinterpret_cast<uint32_t const*>(&fragment_b_quant);
+    int const q = int(quant[NBlock]);
+    marlin_ppu_detail::FragmentB b0 =
+        marlin_ppu_detail::dequantize_biased_int4(q);
+    marlin_ppu_detail::FragmentB b1 =
+        marlin_ppu_detail::dequantize_biased_int4(q >> 8);
+    marlin_ppu_detail::scale(b0, fragment_scale[NBlock], 0);
+    marlin_ppu_detail::scale(b1, fragment_scale[NBlock], 1);
+    marlin_ppu_detail::mma_n16<NBlock>(fragment_a, b0, b1, accum);
+  }
+
   template <class Accumulator>
   CUTLASS_DEVICE static void run_segment(
       CtaState const& state, SegmentState const& segment,
       Accumulator& accum, SharedStorage& shared) {
     using marlin_ppu_detail::FragmentA;
-    using marlin_ppu_detail::FragmentB;
     using marlin_ppu_detail::FragmentScale;
     using marlin_ppu_detail::Vector128;
 
@@ -489,28 +396,16 @@ class MarlinCollectivePPU {
     };
 
     auto multiply = [&](int inner) {
-      uint32_t const* quant =
-          reinterpret_cast<uint32_t const*>(&fragment_b_quant[inner & 1]);
-      #pragma unroll
-      for (int n_block = 0; n_block < 4; ++n_block) {
-        int const q = int(quant[n_block]);
-        FragmentB b0 = marlin_ppu_detail::dequantize_biased_int4(q);
-        FragmentB b1 = marlin_ppu_detail::dequantize_biased_int4(q >> 8);
-        marlin_ppu_detail::scale(b0, fragment_scale[inner & 1][n_block], 0);
-        marlin_ppu_detail::scale(b1, fragment_scale[inner & 1][n_block], 1);
-        if (n_block == 0) {
-          marlin_ppu_detail::mma_n16<0>(fragment_a[inner & 1], b0, b1, accum);
-        }
-        else if (n_block == 1) {
-          marlin_ppu_detail::mma_n16<1>(fragment_a[inner & 1], b0, b1, accum);
-        }
-        else if (n_block == 2) {
-          marlin_ppu_detail::mma_n16<2>(fragment_a[inner & 1], b0, b1, accum);
-        }
-        else {
-          marlin_ppu_detail::mma_n16<3>(fragment_a[inner & 1], b0, b1, accum);
-        }
-      }
+      // Spell the four compile-time N blocks explicitly.  The sweep remains a compile-time axis;
+      // this fixed classic row must not pay a runtime dispatch or predicate for selecting a block.
+      multiply_n_block<0>(fragment_a[inner & 1], fragment_b_quant[inner & 1],
+                          fragment_scale[inner & 1], accum);
+      multiply_n_block<1>(fragment_a[inner & 1], fragment_b_quant[inner & 1],
+                          fragment_scale[inner & 1], accum);
+      multiply_n_block<2>(fragment_a[inner & 1], fragment_b_quant[inner & 1],
+                          fragment_scale[inner & 1], accum);
+      multiply_n_block<3>(fragment_a[inner & 1], fragment_b_quant[inner & 1],
+                          fragment_scale[inner & 1], accum);
     };
 
     #pragma unroll
