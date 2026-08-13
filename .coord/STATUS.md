@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-13 11:51:14 UTC
+    updated-at:     2026-08-13 12:24:39 UTC
     inbox-consumed: 166
-    working-on:     standalone Marlin-Cute-aligned PPU stack: fixed target and declared tactic authority closed; preparing the next standalone-only production seam
-    blocked-on:     no local implementation blocker; PPU instruction/traffic parity and timing remain device postconditions
-    local-gates:    standalone L167/L168/L169/L170/L172 evidence rebound; seven formerly generic Marlin gates PASS and explicitly retire pre-standalone evidence
-    last-commit:    2c5f59d Rebind Marlin gates to standalone stack
-    last-heartbeat: 288
+    working-on:     standalone Marlin-Cute alignment: move CTA-invariant mainloop state out of the 98-segment loop after restoring the production fragment/reduction oracle
+    blocked-on:     full 175-check tier cannot complete in current temp topology (/tmp space pressure; /dev/shm noexec; remote TMPDIR stalls); targeted standalone gates pass
+    local-gates:    L139 production TiledMma 256x32x4 exact; classic acc_i/acc_j and 4->2->1 raw equality; six causal plants RED
+    last-commit:    2d143c8 Restore standalone Marlin fragment oracle
+    last-heartbeat: 289
