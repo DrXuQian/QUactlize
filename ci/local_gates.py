@@ -246,6 +246,15 @@ SYNTAX = [
      "-DDENSE_AB_BITS=4 -DDENSE_AB_ARTIFACT_TK=64 -DDENSE_AB_TM=16 -DDENSE_AB_TN=128 "
      "-DDENSE_AB_TK=128 -DDENSE_AB_WM=16 -DDENSE_AB_WN=32 -DDENSE_AB_ST=3 "
      "-DDENSE_AB_BC=0 -DTILE_M=16 -DTILE_N=128 -DWARP_M=16 -DWARP_N=32 -DSTAGES=3"),
+    # Classic-aligned 2N x 4K has 256 compute threads but only a 64-thread K0
+    # output cohort.  Compile the real host verifier under that exact identity;
+    # the historical WK1 row above cannot expose a return to CTA-wide owners.
+    ("benchmarks/test_lowbit_dense_bench.cu",
+     "-DDENSE_MARLIN_WK4_AB=1 -DDENSE_MARLIN_AB=1 -DDENSE_STREAMK_AB=1 "
+     "-DBENCH_GS=128 -DBENCH_TSK=64 -DDENSE_AB_BITS=4 -DDENSE_AB_ARTIFACT_TK=64 "
+     "-DDENSE_AB_TM=16 -DDENSE_AB_TN=128 -DDENSE_AB_TK=128 -DDENSE_AB_WM=16 "
+     "-DDENSE_AB_WN=64 -DDENSE_AB_WARP_K=32 -DDENSE_AB_ST=4 -DDENSE_AB_BC=0 "
+     "-DTILE_M=16 -DTILE_N=128 -DWARP_M=16 -DWARP_N=64 -DSTAGES=4"),
     # Main mode only declares generated wrappers. This is one real unit-mode row, so shared tag/metric plumbing in
     # lowbit_dense_unit.inc is instantiated locally instead of waiting for hgcc on the box.
     ("dev/fold_derivation/test_lowbit_dense_unit.cu", ""),
@@ -1229,6 +1238,20 @@ def lint_dense_marlin_rejected_cohorts():
     return ("PASS" if rc == 0 else "FAIL"), verdict, dt
 
 
+def lint_dense_marlin_output_owners():
+    """WK4 verification must use the exact K0 output cohort and reject false owners."""
+    ok, why = nvcc_can_compile_device_cuda()
+    if not ok:
+        return "SKIP", f"Marlin output-owner proof unavailable: {why}", 0.0
+    script = DEV / "run_l139_marlin_warpk_reduce.sh"
+    if not script.is_file():
+        return "FAIL", f"missing {script.name}", 0.0
+    rc, log, dt = run(["bash", str(script)], cwd=str(ROOT))
+    lines = [line.strip() for line in log.splitlines() if line.strip()]
+    verdict = lines[-1] if lines else "l139 Marlin owner proof produced no output"
+    return ("PASS" if rc == 0 else "FAIL"), verdict, dt
+
+
 def lint_dense_arrangement_abi():
     """A folded artifact descriptor must select its exact reader and fail closed on every ABI mismatch."""
     script = DEV / "run_l138_dense_arrangement_abi.sh"
@@ -2047,6 +2070,7 @@ def main():
                 ("lint", "dense Marlin sweep has private sources, exact capable cohorts, and distinct provenance", lint_dense_marlin_sweep_contract),
                 ("lint", "Marlin A2 recovers every formerly filtered row with an exact cohort census", lint_dense_marlin_rejection_census),
                 ("lint", "each released Marlin cohort compiles and an inexact explicit cohort reds", lint_dense_marlin_rejected_cohorts),
+                ("lint", "dense Marlin verification uses the exact K0 output cohort", lint_dense_marlin_output_owners),
                 ("lint", "folded dense artifacts select an exact versioned reader and F2-to-F1 reds", lint_dense_arrangement_abi),
                 ("lint", "BC arrangement maps exhaustively equal the production writer and F2-to-F1 reds", lint_bc_arrangement_layout),
                 ("lint", "packed qtypes select distinct format binaries under fail-closed path precedence", lint_format_loader),

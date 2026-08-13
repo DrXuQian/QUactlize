@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-13 02:50:20 UTC
+    updated-at:     2026-08-13 03:04:03 UTC
     inbox-consumed: 148
-    working-on:     INBOX 143 and both separate INBOX 144 RTX5090 reports are complete and pushed; INBOX 147/148 are read and queued after this frozen measurement checkpoint
-    blocked-on:     none for INBOX 143/144; PPU conclusions are deliberately out of scope and every observed event GCD remains below the registered admissibility floor
-    local-gates:    formal Marlin raw PASS: 248 rows = 4 shapes x 2 states x 31, exact pass coverage, one repo/authority/binary/device and two explicit fixture identities; all four exact gates passed; medians and modeled rates independently reproduced; all eight event quantums fail closed UNKNOWN
-    last-commit:    39a782f Record the RTX5090 dense Marlin four-cell evidence
-    last-heartbeat: 257
+    working-on:     INBOX 148 owner verifier fix is locally closed and being committed for immediate box rerun; INBOX 147 remains queued
+    blocked-on:     device timing remains blocked until the corrected verifier is rerun; the diagnostic-only 27.340 us is explicitly not a result
+    local-gates:    exact WK4 syntax PASS; L139 256-CTA/64-output owner map exact-once; CTA-wide 8192-vs-2048 and 64-count owner-alias 32-hole/32-duplicate controls both red; dense StreamK/WK4/adjudicator contracts PASS; cap2 synthetic proves B1/B2 RUN and explicit B4/B6 NOT RUN
+    last-commit:    915c989 Update coordination after INBOX 143 and 144
+    last-heartbeat: 258

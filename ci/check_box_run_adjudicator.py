@@ -547,6 +547,23 @@ def main() -> None:
         check(b2["verdict"] == "DIAGNOSTIC" and b2["median_us"] == str(classic) and
               b2["decomposition"]["handoffs"] == 96,
               "per-rung timing/decomposition evidence was dropped from the adjudication")
+        cap2 = td / "cap2"
+        dense_bundle(cap2, classic, cap=2)
+        result = A.adjudicate_dense_bundle(loaded, cap2)
+        cap2_cells = {(x.get("warp_k"), x.get("blocks_per_cu")): x
+                      for x in result["cell_results"]}
+        check(result["registered_verdict"] == "CONVERGED_OR_BETTER" and
+              cap2_cells[(4, 2)]["verdict"] == "DIAGNOSTIC" and
+              cap2_cells[(4, 4)]["verdict"] == "NOT_RUN" and
+              cap2_cells[(4, 6)]["verdict"] == "NOT_RUN",
+              "occupancy_api=2 did not produce B1/B2 RUN plus explicit B4/B6 NOT RUN")
+        cap2_missing = td / "cap2-missing-not-run"
+        dense_bundle(cap2_missing, classic, cap=2)
+        (cap2_missing / "bpc4.not-run").unlink()
+        result = A.adjudicate_dense_bundle(loaded, cap2_missing)
+        check(result["registered_verdict"] == "VOID" and
+              any("WK4/B4" in x for x in result["reasons"]),
+              "occupancy_api=2 silently skipped a missing B4 NOT RUN artifact")
         bad_decomposition = td / "bad-decomposition"
         dense_bundle(bad_decomposition, classic)
         path = bad_decomposition / "bpc4.log"

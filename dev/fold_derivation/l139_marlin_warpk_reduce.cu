@@ -6,10 +6,13 @@
 // 2N x 1K output cohort, and then replays a shared-FP32 reduction.  No device
 // timing, barrier ordering, or cross-CTA fixup is modeled here.
 //
-// The three planted failures are load-bearing:
+// The five planted failures are load-bearing:
 //   1. use the wrong compact-thread projection for nonzero K cohorts;
 //   2. omit one of the four K cohorts;
 //   3. let the three non-survivor cohorts write output.
+//   4. regress the verifier to CTA-thread ownership (256 instead of 64);
+//   5. keep the 64-thread count but alias the last K0 owner onto the first,
+//      producing a duplicate and a hole that the count alone cannot see.
 // Each must make the exact raw-output contract red.
 
 #include <algorithm>
@@ -216,6 +219,71 @@ GeometryResult verify_geometry(
   return r;
 }
 
+// This is the same ownership question asked by the dense diagnostic: which
+// threads own the final C tile after CTA-local warp-K reduction?  The fixture
+// deliberately has output_threads != CTA threads (64 != 256), so a verifier
+// that silently returns to pre-warp-K ownership turns red before any device is
+// involved.
+struct OutputOwnerResult {
+  bool ok = true;
+  int declared_owner_threads = 0;
+  int selected_owner_threads = 0;
+  int arithmetic_mismatch = 0;
+  int lane_holes = 0;
+  int lane_duplicates = 0;
+  int coverage_holes = 0;
+  int coverage_duplicates = 0;
+};
+
+OutputOwnerResult verify_output_owners(
+    std::array<ThreadInfo, kComputeThreads> const& table, int fault) {
+  OutputOwnerResult r;
+  r.declared_owner_threads = fault == 4 ? kComputeThreads : kOutputThreads;
+  r.arithmetic_mismatch +=
+      r.declared_owner_threads * kFragmentSlots != kTileSlots;
+  std::array<int, kOutputThreads> lane_hits{};
+  std::array<int, kTileSlots> coverage{};
+
+  int first_k0 = -1;
+  int last_k0 = -1;
+  for (int t = 0; t < kComputeThreads; ++t) {
+    if (table[t].wk == 0) {
+      if (first_k0 < 0) first_k0 = t;
+      last_k0 = t;
+    }
+  }
+  for (int t = 0; t < kComputeThreads; ++t) {
+    auto const& owner = table[t];
+    bool const selected = fault == 4 || owner.wk == 0;
+    if (!selected) continue;
+    ++r.selected_owner_threads;
+    if (0 <= owner.compact && owner.compact < kOutputThreads) {
+      ++lane_hits[owner.compact];
+    }
+    else {
+      ++r.lane_duplicates;
+    }
+    int const coordinate_thread = fault == 5 && t == last_k0 ? first_k0 : t;
+    for (int logical : table[coordinate_thread].logical) {
+      if (0 <= logical && logical < kTileSlots) ++coverage[logical];
+      else ++r.coverage_duplicates;
+    }
+  }
+  for (int hits : lane_hits) {
+    r.lane_holes += hits == 0;
+    r.lane_duplicates += hits > 1 ? hits - 1 : 0;
+  }
+  for (int hits : coverage) {
+    r.coverage_holes += hits == 0;
+    r.coverage_duplicates += hits > 1 ? hits - 1 : 0;
+  }
+  r.ok = r.selected_owner_threads == r.declared_owner_threads &&
+         r.arithmetic_mismatch == 0 && r.lane_holes == 0 &&
+         r.lane_duplicates == 0 && r.coverage_holes == 0 &&
+         r.coverage_duplicates == 0;
+  return r;
+}
+
 float contribution(int logical, int wk) {
   // Integral values with a tiny bound make every partial and final FP32 sum
   // exactly representable.  Raw equality is therefore fixed before running.
@@ -316,8 +384,9 @@ ReductionResult simulate(
 int main() {
   auto table = make_thread_table();
   auto geometry = verify_geometry(table);
+  auto owners = verify_output_owners(table, L139_FAULT);
   auto reduction = simulate(table, L139_FAULT);
-  bool ok = geometry.ok && reduction.ok;
+  bool ok = geometry.ok && owners.ok && reduction.ok;
 
   std::printf(
       "L139 target=16x128x128 warp=16x64x32 topology=2Nx4K "
@@ -330,6 +399,15 @@ int main() {
       geometry.bad_compact_formula, geometry.bad_owner,
       geometry.bad_isomorphism, geometry.coverage_holes,
       geometry.coverage_duplicates);
+  std::printf(
+      "L139 output-owners fault=%d cta_threads=%d declared=%d selected=%d "
+      "stripes=%d tile=%d arithmetic_mismatch=%d lane_holes=%d "
+      "lane_duplicates=%d coverage_holes=%d coverage_duplicates=%d\n",
+      L139_FAULT, kComputeThreads, owners.declared_owner_threads,
+      owners.selected_owner_threads, kFragmentSlots, kTileSlots,
+      owners.arithmetic_mismatch, owners.lane_holes,
+      owners.lane_duplicates, owners.coverage_holes,
+      owners.coverage_duplicates);
   std::printf(
       "L139 reduction fault=%d raw_bitdiff=%d output_holes=%d "
       "output_duplicates=%d compact_coordinate_mismatches=%d\n",

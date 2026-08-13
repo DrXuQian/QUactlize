@@ -21,7 +21,7 @@ grep -q "L139 type PASS:" "${out}/types.out"
 "${out}/positive" | tee "${out}/positive.out"
 grep -q "L139 PASS:" "${out}/positive.out"
 
-for fault in 1 2 3; do
+for fault in 1 2 3 4 5; do
   "${base[@]}" -DL139_FAULT="${fault}" -o "${out}/fault_${fault}" "${src}"
   set +e
   "${out}/fault_${fault}" >"${out}/fault_${fault}.out" 2>&1
@@ -35,4 +35,9 @@ for fault in 1 2 3; do
   grep -q "L139 EXPECTED-RED fault=${fault}" "${out}/fault_${fault}.out"
 done
 
-echo "L139 negative controls: wrong compact map / missing K cohort / non-survivor output all red PASS"
+grep -q 'output-owners fault=4 cta_threads=256 declared=256 selected=256 stripes=32 tile=2048 arithmetic_mismatch=1' \
+  "${out}/fault_4.out"
+grep -Eq 'output-owners fault=5 cta_threads=256 declared=64 selected=64 stripes=32 tile=2048 arithmetic_mismatch=0 .*coverage_holes=[1-9][0-9]* coverage_duplicates=[1-9][0-9]*' \
+  "${out}/fault_5.out"
+
+echo "L139 negative controls: wrong compact map / missing K cohort / non-survivor output / CTA-owner regression / owner alias all red PASS"

@@ -27,6 +27,8 @@ COLLECTIVE = ROOT / (
 )
 L142 = ROOT / "dev/fold_derivation/l142_production_destination_map.cu"
 L143 = ROOT / "dev/fold_derivation/l143_wk4_production_delivery.cu"
+L139 = ROOT / "dev/fold_derivation/l139_marlin_warpk_reduce.cu"
+RUN_L139 = ROOT / "dev/fold_derivation/run_l139_marlin_warpk_reduce.sh"
 
 
 def exact(text: str, token: str, count: int, bad: list[str], label: str) -> None:
@@ -36,10 +38,10 @@ def exact(text: str, token: str, count: int, bad: list[str], label: str) -> None
 
 
 def audit(files: dict[str, str]) -> list[str]:
-    cm, unit, bench, build, box, xplane, collective, l142, l143 = (
+    cm, unit, bench, build, box, xplane, collective, l142, l143, l139, run_l139 = (
         files[name] for name in (
             "cmake", "unit", "bench", "build", "box", "xplane",
-            "collective", "l142", "l143"
+            "collective", "l142", "l143", "l139", "run_l139"
         )
     )
     bad: list[str] = []
@@ -128,6 +130,11 @@ def audit(files: dict[str, str]) -> list[str]:
         "test_lowbit_dense_marlin_wk4_ab is Marlin-only: pass --marlin",
         "test_lowbit_dense_marlin_wk4_ab requires --streamk_exact_fixture",
         "DP, persistent and Stream-K arms are not valid for a 4K-cohort CTA",
+        "int const output_threads = cta_threads / warp_k_cohorts;",
+        "partition.fixup_threads = output_threads;",
+        "if (int(cute::get<3>(vmnk)) != 0) continue;",
+        "output_threads * stripes != tile_elements",
+        "output_thread != physical_thread",
     ):
         if token not in bench:
             bad.append(f"aligned host route is missing {token!r}")
@@ -176,6 +183,22 @@ def audit(files: dict[str, str]) -> list[str]:
             bad.append(f"production direct-pair proof is missing {token!r}")
     if "convert_int4_pair" in collective:
         bad.append("production WK4 path duplicated the shipping emitter's LOP3/FMA sequence")
+    for token in (
+        "output_threads != CTA threads (64 != 256)",
+        "fault == 4 ? kComputeThreads : kOutputThreads",
+        "fault == 5 && t == last_k0 ? first_k0 : t",
+        "coverage_holes",
+        "coverage_duplicates",
+    ):
+        if token not in l139:
+            bad.append(f"WK4 owner-map oracle is missing {token!r}")
+    for token in (
+        "for fault in 1 2 3 4 5",
+        "output-owners fault=4 cta_threads=256 declared=256 selected=256",
+        "output-owners fault=5 cta_threads=256 declared=64 selected=64",
+    ):
+        if token not in run_l139:
+            bad.append(f"WK4 owner-map negative runner is missing {token!r}")
     return bad
 
 
@@ -190,6 +213,8 @@ def main() -> int:
         "collective": COLLECTIVE.read_text(),
         "l142": L142.read_text(),
         "l143": L143.read_text(),
+        "l139": L139.read_text(),
+        "run_l139": RUN_L139.read_text(),
     }
     bad = audit(files)
 

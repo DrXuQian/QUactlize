@@ -824,34 +824,74 @@ bool dense_map_accumulator_owners(DenseVerifyPartition& partition) {
   using TiledMma = typename Gemm::GemmKernel::TiledMma;
   using TileShape = typename Gemm::GemmKernel::TileShape;
   using ElementAccumulator = typename Gemm::GemmKernel::ElementAccumulator;
-  int const threads = int(Gemm::GemmKernel::MaxThreadsPerBlock);
+  int const cta_threads = int(Gemm::GemmKernel::MaxThreadsPerBlock);
   int const tile_elements = partition.tile_m * partition.tile_n;
   if (partition.tile_m != int(cute::size<0>(TileShape{})) ||
       partition.tile_n != int(cute::size<1>(TileShape{})) ||
-      threads <= 0 || tile_elements <= 0) {
+      cta_threads <= 0 || tile_elements <= 0) {
     std::fprintf(stderr,
                  "  [dense verify owners] fail-close: tactic and MMA tile disagree\n");
     return false;
   }
 
+  // A K-tiled CTA has several isomorphic compute cohorts for one output tile,
+  // but only K=0 survives the CTA-local reduction and enters fixup/epilogue.
+  // MaxThreadsPerBlock therefore describes compute ownership, not output
+  // ownership.  Derive the latter from the real VMNK layout exactly as the
+  // Marlin kernel does; WK=1 naturally degenerates to the full CTA.
+  TiledMma tiled_mma;
+  auto const thr_layout_vmnk = tiled_mma.get_thr_layout_vmnk();
+  int const warp_k_cohorts =
+      int(cute::size<3>(typename TiledMma::ThrLayoutVMNK{}));
+  if (warp_k_cohorts <= 0 || cta_threads % warp_k_cohorts != 0) {
+    std::fprintf(stderr,
+                 "  [dense verify owners] fail-close: CTA threads=%d are not "
+                 "an exact multiple of K cohorts=%d\n",
+                 cta_threads, warp_k_cohorts);
+    return false;
+  }
+  int const output_threads = cta_threads / warp_k_cohorts;
   partition.local_lane.assign(std::size_t(tile_elements), uint16_t(-1));
   partition.local_stripe.assign(std::size_t(tile_elements), uint16_t(-1));
-  partition.fixup_threads = threads;
+  partition.fixup_threads = output_threads;
   std::vector<uint8_t> coverage(std::size_t(tile_elements), 0);
+  std::vector<uint8_t> output_lane_coverage(
+      std::size_t(output_threads), uint8_t(0));
   auto identity = cute::make_identity_tensor(cute::take<0, 2>(TileShape{}));
-  TiledMma tiled_mma;
   auto accumulators = cute::make_fragment_like<ElementAccumulator>(
       cute::partition_fragment_C(tiled_mma, cute::take<0, 2>(TileShape{})));
   auto physical_to_fragment = cute::right_inverse(accumulators.layout());
   int const stripes = int(cute::size(accumulators));
-  if (threads * stripes != tile_elements) {
+  if (output_threads * stripes != tile_elements) {
     std::fprintf(stderr,
-                 "  [dense verify owners] fail-close: threads*stripes=%d != tile=%d\n",
-                 threads * stripes, tile_elements);
+                 "  [dense verify owners] fail-close: output_threads*stripes=%d "
+                 "!= tile=%d (cta_threads=%d K_cohorts=%d)\n",
+                 output_threads * stripes, tile_elements, cta_threads,
+                 warp_k_cohorts);
     return false;
   }
-  for (int lane = 0; lane < threads; ++lane) {
-    auto coordinates = tiled_mma.get_thread_slice(lane).partition_C(identity);
+  int selected_output_threads = 0;
+  for (int physical_thread = 0; physical_thread < cta_threads;
+       ++physical_thread) {
+    auto const vmnk = thr_layout_vmnk.get_flat_coord(physical_thread);
+    if (int(cute::get<3>(vmnk)) != 0) continue;
+    int const output_thread = int(thr_layout_vmnk(cute::make_coord(
+        cute::get<0>(vmnk), cute::get<1>(vmnk), cute::get<2>(vmnk),
+        cute::Int<0>{})));
+    // The active kernel indexes BlockStripedReduce by the physical K0 thread.
+    // If a future VMNK layout makes that cohort non-compact, this verifier must
+    // fail closed together with the kernel's matching assertion.
+    if (output_thread < 0 || output_thread >= output_threads ||
+        output_thread != physical_thread ||
+        output_lane_coverage[std::size_t(output_thread)]++) {
+      std::fprintf(stderr,
+                   "  [dense verify owners] fail-close: K0 output cohort is "
+                   "not a compact exact-once thread range\n");
+      return false;
+    }
+    ++selected_output_threads;
+    auto coordinates =
+        tiled_mma.get_thread_slice(physical_thread).partition_C(identity);
     if (int(cute::size(coordinates)) != stripes) return false;
     for (int stripe = 0; stripe < stripes; ++stripe) {
       auto mn = coordinates(physical_to_fragment(stripe));
@@ -862,16 +902,21 @@ bool dense_map_accumulator_owners(DenseVerifyPartition& partition) {
       }
       std::size_t const local = std::size_t(m) * partition.tile_n + n;
       if (coverage[local]++) return false;
-      partition.local_lane[local] = uint16_t(lane);
+      partition.local_lane[local] = uint16_t(output_thread);
       partition.local_stripe[local] = uint16_t(stripe);
     }
   }
-  if (std::find(coverage.begin(), coverage.end(), uint8_t(0)) != coverage.end()) {
+  if (selected_output_threads != output_threads ||
+      std::find(output_lane_coverage.begin(), output_lane_coverage.end(),
+                uint8_t(0)) != output_lane_coverage.end() ||
+      std::find(coverage.begin(), coverage.end(), uint8_t(0)) != coverage.end()) {
     return false;
   }
-  std::printf("  [dense verify owners] tile=%dx%d lanes=%d stripes/lane=%d "
+  std::printf("  [dense verify owners] tile=%dx%d cta_threads=%d "
+              "output_threads=%d K_cohorts=%d stripes/output_thread=%d "
               "coverage=exact-once\n",
-              partition.tile_m, partition.tile_n, threads, stripes);
+              partition.tile_m, partition.tile_n, cta_threads, output_threads,
+              warp_k_cohorts, stripes);
   return true;
 }
 
