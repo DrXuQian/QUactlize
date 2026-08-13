@@ -213,6 +213,7 @@ class MarlinKernelPPU {
   CUTLASS_DEVICE static void global_handoff(
       Accumulator& accum, Params const& params,
       typename TileScheduler::WorkTileInfo const& work,
+      bool first_peer, bool final_peer,
       int problem_m, int problem_n) {
     int const tid = int(threadIdx.x);
     if (tid >= int(OutputThreads)) {
@@ -221,8 +222,6 @@ class MarlinKernelPPU {
     __half* d = reinterpret_cast<__half*>(params.epilogue.ptr_D);
     int const warp_n = tid / 32;
     int const lane = tid % 32;
-    bool const first = TileScheduler::is_first_peer(work);
-    bool const last = TileScheduler::is_final_peer(work);
     #pragma unroll
     for (int n_block = 0; n_block < 4; ++n_block) {
       int const n_base = (int(work.N_idx) * 8 + warp_n * 4 + n_block) * 16;
@@ -232,10 +231,10 @@ class MarlinKernelPPU {
         int const col = n_base + acc_j(lane, value);
         if (row < problem_m && col < problem_n) {
           int64_t const offset = int64_t(row) * problem_n + col;
-          if (!first) {
+          if (!first_peer) {
             accum.fragments[n_block].value[value] += __half2float(d[offset]);
           }
-          if (!last) {
+          if (!final_peer) {
             d[offset] = __float2half(accum.fragments[n_block].value[value]);
           }
         }
@@ -356,6 +355,11 @@ class MarlinKernelPPU {
     auto cta_state = CollectiveMainloop::init_cta_state(
         params.mainloop, problem_m, problem_n, problem_k, tid);
     while (work.is_valid()) {
+      // Lower the cooperative state exactly once per segment.  In
+      // particular, an unsplit DP tile never enters the lock/D-chain path.
+      bool const split = TileScheduler::requires_handoff(work);
+      bool const first = TileScheduler::is_first_peer(work);
+      bool const final = TileScheduler::is_final_peer(work);
       Accumulator accum;
       // SegmentState contains every q/K-dependent address and ends its
       // lifetime before the cooperative.  CtaState alone survives reduction.
@@ -366,10 +370,15 @@ class MarlinKernelPPU {
       }
 
       thread_block_reduce(accum, shared);
-      TileScheduler::acquire_peer_turn(params.scheduler, work, tid);
-      global_handoff(accum, params, work, problem_m, problem_n);
-      TileScheduler::release_peer_turn(params.scheduler, work, tid);
-      if (TileScheduler::is_final_peer(work)) {
+      if (split) {
+        TileScheduler::acquire_peer_turn_assume_split(
+            params.scheduler, work, tid);
+        global_handoff(accum, params, work, first, final,
+                       problem_m, problem_n);
+        TileScheduler::release_peer_turn_assume_split(
+            params.scheduler, work, tid, final);
+      }
+      if (final) {
         write_result(accum, params, work, problem_m, problem_n, shared);
       }
       work = scheduler.get_next_work(work);

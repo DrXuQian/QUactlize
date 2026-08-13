@@ -392,26 +392,27 @@ public:
     return p.locks_;
   }
 
-  CUTLASS_DEVICE static void acquire_peer_turn(
+  // Device-only assume-split entry points.  The kernel owns the one cached
+  // Split/First/Final decision for a segment and calls these only from its
+  // split branch.  Re-testing Split here would put the same predicate back
+  // into each cooperative operation and would make an unsplit tile pay for a
+  // lock protocol it does not use.
+  CUTLASS_DEVICE static void acquire_peer_turn_assume_split(
       Params const& p, WorkTileInfo const& work, int thread_idx) {
-    if (requires_handoff(work)) {
-      CUTLASS_ASSERT(p.locks_ != nullptr);
-      int const lock = barrier_lock_index(work);
-      CUTLASS_ASSERT(lock >= 0);
-      Barrier::wait_eq(p.locks_, thread_idx, lock, peer_wait_value(work));
-    }
-  }
-
-  CUTLASS_DEVICE static void release_peer_turn(
-      Params const& p, WorkTileInfo const& work, int thread_idx) {
-    if (!requires_handoff(work)) {
-      return;
-    }
     CUTLASS_ASSERT(p.locks_ != nullptr);
     int const lock = barrier_lock_index(work);
     CUTLASS_ASSERT(lock >= 0);
-    PeerReleaseAction const action = peer_release_action(work);
-    if (action == PeerReleaseAction::Reset) {
+    Barrier::wait_eq(
+        p.locks_, thread_idx, lock, BarrierType(work.peer_idx));
+  }
+
+  CUTLASS_DEVICE static void release_peer_turn_assume_split(
+      Params const& p, WorkTileInfo const& work, int thread_idx,
+      bool final_peer) {
+    CUTLASS_ASSERT(p.locks_ != nullptr);
+    int const lock = barrier_lock_index(work);
+    CUTLASS_ASSERT(lock >= 0);
+    if (final_peer) {
       // Awesome-CuTe/classic Marlin reset the q lock with one thread after
       // the final peer's wait_eq acquisition.  Do not repeat that acquisition
       // through wait_eq_reset: it adds an atomic-CAS spin and another CTA
@@ -422,7 +423,7 @@ public:
         p.locks_[lock] = BarrierType(0);
       }
     }
-    else if (action == PeerReleaseAction::Arrive) {
+    else {
       Barrier::arrive_inc(p.locks_, thread_idx, lock, 1);
     }
   }

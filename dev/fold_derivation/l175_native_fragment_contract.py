@@ -137,7 +137,7 @@ def main() -> int:
         "Accumulatoraccum;",
         "CollectiveMainloop::run_segment(cta_state,segment,accum,shared.tensors.mainloop);",
         "thread_block_reduce(accum,shared);",
-        "global_handoff(accum,params,work,problem_m,problem_n);",
+        "global_handoff(accum,params,work,first,final,problem_m,problem_n);",
         "write_result(accum,params,work,problem_m,problem_n,shared);",
     ):
         if token not in k:
