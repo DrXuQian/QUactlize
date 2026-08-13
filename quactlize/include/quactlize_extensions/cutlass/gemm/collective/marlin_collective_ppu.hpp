@@ -245,8 +245,9 @@ class MarlinCollectivePPU {
     int const n_tile = int(work.N_idx);
     int const k_tile_begin = int(work.K_idx);
     int const k_tile_count = int(work.k_tile_count);
-    if (int(work.M_idx) != 0 || int(work.L_idx) != 0 || n_tile < 0 ||
-        n_tile >= state.problem_n / TileN || k_tile_begin < 0 ||
+    // The standalone dense scheduler admits exactly one M tile and L=1;
+    // those compile-time facts are deliberately absent from its hot work ABI.
+    if (n_tile < 0 || n_tile >= state.problem_n / TileN || k_tile_begin < 0 ||
         k_tile_count <= 0 ||
         k_tile_begin + k_tile_count > state.problem_k / TileK) {
       return segment;

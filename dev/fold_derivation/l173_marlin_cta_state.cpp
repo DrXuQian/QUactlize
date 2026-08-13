@@ -89,9 +89,9 @@ int main(int argc, char** argv) {
   auto l168_first = Scheduler::get_work_for_block(sched, 2);
   auto l168_second =
       Scheduler::fetch_next_work_for_params(sched, l168_first);
-  if (!(l168_first.output_tile_idx == 1 && l168_first.K_idx == 0 &&
+  if (!(l168_first.N_idx == 1 && l168_first.K_idx == 0 &&
         l168_first.k_tile_count == 13 &&
-        l168_second.output_tile_idx == 0 && l168_second.K_idx == 30 &&
+        l168_second.N_idx == 0 && l168_second.K_idx == 30 &&
         l168_second.k_tile_count == 2)) {
     return fail(plant, "L168 block-2 reverse-segment anchor changed");
   }
@@ -114,7 +114,7 @@ int main(int argc, char** argv) {
     auto cta = Main::init_cta_state(main_params, 1, 4096, 4096, 0);
     ++init_count;
     if (!cta.valid) return fail(plant, "production CTA init returned invalid");
-    uint32_t previous_q = work.output_tile_idx;
+    uint32_t previous_q = uint32_t(work.N_idx);
     bool first = true;
     typename Main::SegmentState prior{};
     while (work.is_valid()) {
@@ -122,24 +122,24 @@ int main(int argc, char** argv) {
       ++rebase_count;
       if (!segment.valid) return fail(plant, "production segment rebase invalid");
       if (!first) {
-        if (work.output_tile_idx >= previous_q) {
+        if (uint32_t(work.N_idx) >= previous_q) {
           return fail(plant, "reverse-q L168 anchor changed");
         }
         ++reverse_witness;
       }
-      previous_q = work.output_tile_idx;
+      previous_q = uint32_t(work.N_idx);
       first = false;
 
-      auto expected = classic_address(0, work.output_tile_idx, work.K_idx);
+      auto expected = classic_address(0, uint32_t(work.N_idx), work.K_idx);
       if (is_plant(plant, "init-per-segment")) ++init_count;
       if (is_plant(plant, "stale-rebase") && prior.valid) segment = prior;
       if (is_plant(plant, "drop-b-q")) {
-        int const delta = Main::BSharedStride * int(work.output_tile_idx);
+        int const delta = Main::BSharedStride * int(work.N_idx);
         for (int& offset : segment.b_global_read) offset -= delta;
       }
       if (is_plant(plant, "drop-scale-q")) {
         segment.scale_global_read -=
-            Main::ScaleSharedStride * int(work.output_tile_idx);
+            Main::ScaleSharedStride * int(work.N_idx);
       }
       if (is_plant(plant, "drop-a-k")) {
         segment.a_global_read -= Main::AGlobalOuter * int(work.K_idx);

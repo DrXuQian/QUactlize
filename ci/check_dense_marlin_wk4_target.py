@@ -173,13 +173,22 @@ def audit(files: dict[str, str]) -> list[str]:
     scheduler = files["scheduler"]
     for token in (
         "class MarlinSchedulerPPU", "uint32_t blocks_per_cu = 1",
-        "work.lock_idx = q;", "work.output_tile_idx - 1",
+        "sizeof(WorkTileInfo) == 20", "uint32_t peer_idx = 0",
+        "work.has_flag(WorkFlag::Split)",
+        "return work.is_valid() && work.N_idx >= 0 ? int(work.N_idx) : -1;",
+        "p.iters_per_block_ <= p.k_tiles_per_output_",
         "Barrier::wait_eq", "Barrier::arrive_inc",
         "PeerReleaseAction::Reset", "p.locks_[lock] = BarrierType(0)",
-        "sizeof(Params) == 40", "sizeof(WorkTileInfo) == 44",
+        "sizeof(Params) == 40",
     ):
         require(scheduler, token, "Marlin scheduler", bad)
-    for token in ("BlockStripedReduce", "Barrier::wait_eq_reset"):
+    for token in (
+        "BlockStripedReduce", "Barrier::wait_eq_reset",
+        "int32_t M_idx =", "int32_t L_idx =",
+        "uint32_t k_tiles_per_output =", "uint32_t slice_idx =",
+        "uint32_t output_tile_idx =", "uint32_t lock_idx =",
+        "uint32_t block_idx =", "bool valid =",
+    ):
         forbid(scheduler, token, "Marlin scheduler", bad)
 
     kernel = files["kernel"]
@@ -224,6 +233,14 @@ def audit(files: dict[str, str]) -> list[str]:
                   "run_l155_wk4_indexed_converter.sh"):
         forbid(aggregate, token, "standalone aggregate runner", bad)
 
+    l170 = files["l170"]
+    for token in (
+        "LEGACY_44_DESCRIPTOR RECOMPUTED_PREDICATE",
+        "-DL170_PLANT_${compile_plant}=1",
+        "hot=20B legacy-44B=RED local-lock=RED recomputed-predicate=RED",
+    ):
+        require(l170, token, "L170 descriptor runner", bad)
+
     return bad
 
 
@@ -254,8 +271,14 @@ def main() -> int:
          "step > 0; step = 0"),
         ("kernel", "output-cohort-becomes-cta", "OutputThreads == 64",
          "OutputThreads == 256"),
-        ("scheduler", "lock-becomes-local", "work.lock_idx = q;",
-         "work.lock_idx = work.N_idx;"),
+        ("scheduler", "lock-becomes-local",
+         "return work.is_valid() && work.N_idx >= 0 ? int(work.N_idx) : -1;",
+         "return work.is_valid() && work.N_idx >= 0 ? int(work.N_idx & 15) : -1;"),
+        ("scheduler", "legacy-44-byte-descriptor",
+         "sizeof(WorkTileInfo) == 20", "sizeof(WorkTileInfo) == 44"),
+        ("scheduler", "split-predicate-is-recomputed",
+         "return work.is_valid() && work.has_flag(WorkFlag::Split);",
+         "return work.is_valid() && !(is_first_peer(work) && is_final_peer(work));"),
         ("builder", "generic-k-cohort-returns",
          "cute::Layout<Shape<WarpOnM, WarpOnN, _1>>>,",
          "cute::Layout<Shape<WarpOnM, WarpOnN, WarpOnK>>>,"),
@@ -280,7 +303,7 @@ def main() -> int:
     print(
         "[dense-marlin-wk4] PASS: standalone format/collective/scheduler/kernel "
         "wired; standalone tactic authority consumed; generic WK4 compatibility "
-        "absent; eleven structural plants rejected"
+        "absent; thirteen structural plants rejected"
     )
     return 0
 

@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <type_traits>
 
 #include "quactlize_extensions/cutlass/gemm/kernel/marlin_scheduler_ppu.hpp"
 
@@ -20,6 +21,39 @@ using Scheduler = cutlass::gemm::kernel::marlin::MarlinSchedulerPPU<
 using Params = Scheduler::Params;
 using Work = Scheduler::WorkTileInfo;
 using Action = Scheduler::PeerReleaseAction;
+
+#if defined(L170_PLANT_LEGACY_44_DESCRIPTOR)
+struct DescriptorAbiWitness {
+  uint32_t legacy_words[11];
+};
+#else
+using DescriptorAbiWitness = Work;
+#endif
+
+static_assert(std::is_same_v<DescriptorAbiWitness, Work> &&
+                  sizeof(DescriptorAbiWitness) == 20 &&
+                  alignof(DescriptorAbiWitness) == 4,
+              "L170 rejects the legacy 44-byte work descriptor");
+
+constexpr bool cached_split_flag_is_authoritative() {
+  auto const p = Scheduler::make_params_for_tiles(1, 32, 1, 32, 72);
+  Work work = Scheduler::get_work_for_block(p, 2);
+  if (!work.is_valid() || !Scheduler::requires_handoff(work)) {
+    return false;
+  }
+  work.flags &= ~uint8_t(Scheduler::WorkFlag::Split);
+#if defined(L170_PLANT_RECOMPUTED_PREDICATE)
+  bool const observed = work.is_valid() &&
+                        !(Scheduler::is_first_peer(work) &&
+                          Scheduler::is_final_peer(work));
+#else
+  bool const observed = Scheduler::requires_handoff(work);
+#endif
+  return !observed;
+}
+
+static_assert(cached_split_flag_is_authoritative(),
+              "L170 requires the cached split predicate, not recomputation");
 
 namespace {
 
@@ -75,11 +109,11 @@ int main(int argc, char** argv) {
       continue;
     }
     ++active;
-    uint32_t previous_q = work.output_tile_idx;
+    uint32_t previous_q = uint32_t(work.N_idx);
     bool first_segment = true;
     while (work.is_valid()) {
       ++segments;
-      uint32_t const q = work.output_tile_idx;
+      uint32_t const q = uint32_t(work.N_idx);
       if (!first_segment) {
         if (q >= previous_q) {
           return fail(plant, "production traversal is not reverse-q");
@@ -97,7 +131,7 @@ int main(int argc, char** argv) {
       if (is_plant(plant, "wrong-slice")) {
         ++expected_slice;
       }
-      if (work.slice_idx != expected_slice ||
+      if (work.peer_idx != expected_slice ||
           Scheduler::peer_wait_value(work) != int(expected_slice)) {
         return fail(plant, "slice/wait ordinal mismatch");
       }
@@ -108,7 +142,7 @@ int main(int argc, char** argv) {
       if (Scheduler::barrier_lock_index(work) != expected_lock) {
         return fail(plant, "global q lock was aliased or changed");
       }
-      if (lock_state[q] != int(work.slice_idx)) {
+      if (lock_state[q] != int(work.peer_idx)) {
         return fail(plant, "peer arrived out of lock order");
       }
 
@@ -169,10 +203,10 @@ int main(int argc, char** argv) {
 
   Work w = Scheduler::get_work_for_block(p, 2);
   Work w2 = Scheduler::fetch_next_work_for_params(p, w);
-  if (!(w.output_tile_idx == 1 && w.K_idx == 0 &&
-        w.k_tile_count == 13 && w.slice_idx == 0 &&
-        w2.output_tile_idx == 0 && w2.K_idx == 30 &&
-        w2.k_tile_count == 2 && w2.slice_idx == 2 &&
+  if (!(w.N_idx == 1 && w.K_idx == 0 &&
+        w.k_tile_count == 13 && w.peer_idx == 0 &&
+        w2.N_idx == 0 && w2.K_idx == 30 &&
+        w2.k_tile_count == 2 && w2.peer_idx == 2 &&
         Scheduler::is_final_peer(w2))) {
     return fail(plant, "block-2 reverse-q witness changed");
   }

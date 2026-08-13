@@ -41,25 +41,31 @@ public:
   using Barrier = cutlass::Barrier;
   using BarrierType = typename Barrier::T;
 
-  // This is the compact device descriptor used by Awesome-CuTe's TileWorkDesc,
-  // plus the peer/lock ordinals required by its cooperative protocol.  Do not
-  // expose StripeCore::WorkTileInfo here: that generic audit record carries
-  // three uint64 linear cursors and makes the hot device traversal reconstruct
-  // the same stripe several times.
+  enum class WorkFlag : uint8_t {
+    Valid = 1u << 0,
+    FirstPeer = 1u << 1,
+    FinalPeer = 1u << 2,
+    Split = 1u << 3,
+  };
+
+  // Hot device descriptor.  Fixed dense M/L coordinates are compile-time
+  // facts, and global q is simultaneously N_idx, output-tile id and lock id;
+  // none is stored twice.  First/final/split are lowered once rather than
+  // re-derived at every cooperative call site.  There are no compatibility
+  // fields from the retired 44-byte descriptor in this hot ABI.
   struct WorkTileInfo {
-    int32_t M_idx = -1;
     int32_t N_idx = -1;
-    int32_t L_idx = -1;
     uint32_t K_idx = 0;
     uint32_t k_tile_count = 0;
-    uint32_t k_tiles_per_output = 0;
-    uint32_t slice_idx = 0;
-    uint32_t output_tile_idx = 0;
-    uint32_t lock_idx = 0;
-    uint32_t block_idx = 0;
-    bool valid = false;
+    uint32_t peer_idx = 0;
+    uint8_t flags = 0;
 
-    CUTLASS_HOST_DEVICE constexpr bool is_valid() const { return valid; }
+    CUTLASS_HOST_DEVICE constexpr bool has_flag(WorkFlag flag) const {
+      return (flags & uint8_t(flag)) != 0;
+    }
+    CUTLASS_HOST_DEVICE constexpr bool is_valid() const {
+      return has_flag(WorkFlag::Valid);
+    }
     CUTLASS_HOST_DEVICE static constexpr WorkTileInfo invalid_work_tile() {
       return {};
     }
@@ -125,19 +131,13 @@ public:
                 "standalone Marlin scheduler device ABI must stay compact");
   static_assert(std::is_standard_layout_v<WorkTileInfo> &&
                     std::is_trivially_copyable_v<WorkTileInfo> &&
-                    sizeof(WorkTileInfo) == 44 && alignof(WorkTileInfo) == 4 &&
-                    offsetof(WorkTileInfo, M_idx) == 0 &&
-                    offsetof(WorkTileInfo, N_idx) == 4 &&
-                    offsetof(WorkTileInfo, L_idx) == 8 &&
-                    offsetof(WorkTileInfo, K_idx) == 12 &&
-                    offsetof(WorkTileInfo, k_tile_count) == 16 &&
-                    offsetof(WorkTileInfo, k_tiles_per_output) == 20 &&
-                    offsetof(WorkTileInfo, slice_idx) == 24 &&
-                    offsetof(WorkTileInfo, output_tile_idx) == 28 &&
-                    offsetof(WorkTileInfo, lock_idx) == 32 &&
-                    offsetof(WorkTileInfo, block_idx) == 36 &&
-                    offsetof(WorkTileInfo, valid) == 40,
-                "standalone Marlin scheduler work descriptor ABI changed");
+                    sizeof(WorkTileInfo) == 20 && alignof(WorkTileInfo) == 4 &&
+                    offsetof(WorkTileInfo, N_idx) == 0 &&
+                    offsetof(WorkTileInfo, K_idx) == 4 &&
+                    offsetof(WorkTileInfo, k_tile_count) == 8 &&
+                    offsetof(WorkTileInfo, peer_idx) == 12 &&
+                    offsetof(WorkTileInfo, flags) == 16,
+                "standalone Marlin hot work descriptor ABI changed");
 
 private:
   Params scheduler_params_{};
@@ -151,13 +151,14 @@ private:
            p.k_tiles_per_output_ <= u32 && p.output_tiles_ <= u32 &&
            p.total_k_tiles_ <= u32 && p.grid_blocks_ <= u32 &&
            p.active_blocks_ <= u32 && p.iters_per_block_ <= u32 &&
+           p.iters_per_block_ <= p.k_tiles_per_output_ &&
            StripeCore::mul_u64(p.grid_blocks_, p.iters_per_block_, grid_span) &&
            grid_span <= u32;
   }
 
   // Direct transcription of Awesome-CuTe TileWorkDesc::init for the fixed
   // dense M/L contract.  K is the flattened fast dimension, q is global N,
-  // and the lowest-block/lowest-K peer owns slice_idx zero.
+  // and the lowest-block/lowest-K peer owns peer_idx zero.
   CUTLASS_HOST_DEVICE static constexpr WorkTileInfo make_reference_work(
       Params const& p, uint32_t block, uint32_t q,
       uint32_t block_begin, uint32_t block_end) {
@@ -176,20 +177,18 @@ private:
     }
 
     WorkTileInfo work;
-    work.M_idx = 0;
     work.N_idx = int32_t(q);
-    work.L_idx = 0;
     work.K_idx = segment_begin - q_begin;
     work.k_tile_count = segment_end - segment_begin;
-    work.k_tiles_per_output = kt;
-    work.slice_idx = block - first_peer;
-    work.output_tile_idx = q;
-    work.lock_idx = q;
-    work.block_idx = block;
-    work.valid = work.k_tile_count != 0;
+    work.peer_idx = block - first_peer;
     bool const first_k = work.K_idx == 0;
     bool const final_k = work.K_idx + work.k_tile_count == kt;
-    if (!work.valid || first_k != (work.slice_idx == 0) ||
+    bool const split = !(first_k && final_k);
+    work.flags = uint8_t(WorkFlag::Valid) |
+                 (first_k ? uint8_t(WorkFlag::FirstPeer) : uint8_t(0)) |
+                 (final_k ? uint8_t(WorkFlag::FinalPeer) : uint8_t(0)) |
+                 (split ? uint8_t(WorkFlag::Split) : uint8_t(0));
+    if (work.k_tile_count == 0 || first_k != (work.peer_idx == 0) ||
         final_k != (segment_end == q_end)) {
       return WorkTileInfo::invalid_work_tile();
     }
@@ -349,25 +348,22 @@ public:
 
   CUTLASS_HOST_DEVICE static constexpr bool requires_handoff(
       WorkTileInfo const& work) {
-    return work.is_valid() &&
-           (work.K_idx != 0 ||
-            work.K_idx + work.k_tile_count != work.k_tiles_per_output);
+    return work.is_valid() && work.has_flag(WorkFlag::Split);
   }
 
   CUTLASS_HOST_DEVICE static constexpr bool is_first_peer(
       WorkTileInfo const& work) {
-    return work.is_valid() && work.slice_idx == 0;
+    return work.is_valid() && work.has_flag(WorkFlag::FirstPeer);
   }
 
   CUTLASS_HOST_DEVICE static constexpr bool is_final_peer(
       WorkTileInfo const& work) {
-    return work.is_valid() &&
-           work.K_idx + work.k_tile_count == work.k_tiles_per_output;
+    return work.is_valid() && work.has_flag(WorkFlag::FinalPeer);
   }
 
   CUTLASS_HOST_DEVICE static constexpr BarrierType peer_wait_value(
       WorkTileInfo const& work) {
-    return requires_handoff(work) ? BarrierType(work.slice_idx) : BarrierType(0);
+    return requires_handoff(work) ? BarrierType(work.peer_idx) : BarrierType(0);
   }
 
   CUTLASS_HOST_DEVICE static constexpr PeerReleaseAction peer_release_action(
@@ -380,17 +376,15 @@ public:
 
   CUTLASS_HOST_DEVICE static constexpr uint64_t output_tile_index(
       WorkTileInfo const& work) {
-    return work.output_tile_idx;
+    return work.is_valid() ? uint64_t(work.N_idx) : uint64_t(-1);
   }
 
   CUTLASS_HOST_DEVICE static constexpr int barrier_lock_index(
       WorkTileInfo const& work) {
-    // MarlinStripeSchedulerCore has already rejected Q > INT_MAX.  Keeping
-    // this accessor tied to both fields makes a future local-N lock plant
-    // visible at the scheduler/cooperative seam.
-    return work.is_valid() && work.lock_idx == work.output_tile_idx
-        ? int(work.output_tile_idx)
-        : -1;
+    // MarlinStripeSchedulerCore has already rejected Q > INT_MAX.  The lock
+    // is derived from the one stored global q; there is no independent local
+    // coordinate that can silently alias another output tile.
+    return work.is_valid() && work.N_idx >= 0 ? int(work.N_idx) : -1;
   }
 
   CUTLASS_HOST_DEVICE static constexpr BarrierType* lock_workspace(
@@ -469,20 +463,24 @@ public:
 
   CUTLASS_HOST_DEVICE static constexpr WorkTileInfo fetch_next_work_for_params(
       Params const& p, WorkTileInfo const& work) {
-    if (!work.is_valid()) {
+    if (!p.valid_ || !work.is_valid() || work.N_idx <= 0 ||
+        work.K_idx != 0 || work.k_tile_count >= p.iters_per_block_) {
       return WorkTileInfo::invalid_work_tile();
     }
+    // G=max(Q,CU*B) guarantees I<=Kt.  Consequently a stripe touches at
+    // most two output tiles.  A reverse successor exists exactly when the
+    // high-q segment starts at K=0 but contains fewer than I cells.
     uint32_t const iters = uint32_t(p.iters_per_block_);
-    uint32_t const total = uint32_t(p.total_k_tiles_);
-    uint32_t const begin = work.block_idx * iters;
-    uint32_t const raw_end = begin + iters;
-    uint32_t const end = raw_end < total ? raw_end : total;
-    uint32_t const begin_q = begin / uint32_t(p.k_tiles_per_output_);
-    if (work.output_tile_idx <= begin_q) {
+    uint32_t const kt = uint32_t(p.k_tiles_per_output_);
+    uint32_t const remaining = iters - work.k_tile_count;
+    if (remaining == 0 || remaining >= kt) {
       return WorkTileInfo::invalid_work_tile();
     }
-    return make_reference_work(
-        p, work.block_idx, work.output_tile_idx - 1, begin, end);
+    uint32_t const q = uint32_t(work.N_idx) - 1;
+    uint32_t const q_begin = q * kt;
+    uint32_t const begin = q_begin + kt - remaining;
+    uint32_t const block = begin / iters;
+    return make_reference_work(p, block, q, begin, q_begin + kt);
   }
 
   CUTLASS_HOST_DEVICE constexpr WorkTileInfo get_next_work(
@@ -551,8 +549,7 @@ CUTLASS_HOST_DEVICE constexpr bool marlin_scheduler_ppu_reverse_reference(
     uint64_t expected_q = (end - 1) / p.k_tiles_per_output_;
     uint64_t const begin_q = begin / p.k_tiles_per_output_;
     while (true) {
-      if (!work.is_valid() || work.output_tile_idx != expected_q ||
-          work.lock_idx != expected_q ||
+      if (!work.is_valid() || uint32_t(work.N_idx) != expected_q ||
           Scheduler::barrier_lock_index(work) != int(expected_q)) {
         return false;
       }
@@ -597,8 +594,8 @@ CUTLASS_HOST_DEVICE constexpr bool marlin_scheduler_ppu_has_reverse_witness() {
     auto const reverse = Scheduler::get_work_for_block(p, block);
     if (forward.is_valid() && forward_second.is_valid()) {
       return reverse.is_valid() &&
-             reverse.output_tile_idx == forward_second.output_tile_idx &&
-             reverse.output_tile_idx > forward.output_tile_idx;
+             uint64_t(reverse.N_idx) == forward_second.output_tile_idx &&
+             uint64_t(reverse.N_idx) > forward.output_tile_idx;
     }
   }
   return false;
