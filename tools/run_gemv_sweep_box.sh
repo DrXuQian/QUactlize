@@ -23,6 +23,7 @@ CORES=${MOE_CORES:-72}
 SHA=$(git rev-parse HEAD)
 ACTLIZE_SHA=$(git -C "$ROOT/third_party/actlize" rev-parse HEAD)
 PROVENANCE_TOOL="$ROOT/tools/write_box_run_provenance.py"
+IDENTITY_PROBE_TOOL="$ROOT/tools/probe_box_identity.py"
 POLICY="$ROOT/dev/fold_derivation/BOX_RUN_PREREGISTRATION.md"
 SAMPLES=$(python3 "$PROVENANCE_TOOL" policy-sample-count --policy "$POLICY" --kind gemv)
 if [[ "$SAMPLES" -ne 20 ]]; then
@@ -30,28 +31,6 @@ if [[ "$SAMPLES" -ne 20 ]]; then
   exit 2
 fi
 export GEMV_SWEEP_SAMPLES="$SAMPLES"
-
-require_identity() {
-  local name="$1" value="${!1:-}" normalized
-  if [[ -z "$value" ]]; then
-    echo "[gemv-box] required explicit device identity $name is unset" >&2
-    exit 2
-  fi
-  normalized="${value,,}"
-  case "$normalized" in
-    unknown|unset|n/a|na|none)
-      echo "[gemv-box] required explicit device identity $name is not measured" >&2
-      exit 2 ;;
-  esac
-  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
-    echo "[gemv-box] required explicit device identity $name must be one line" >&2
-    exit 2
-  fi
-}
-for identity in QUACTLIZE_BOX_DEVICE_MODEL QUACTLIZE_BOX_PCI_IDENTITY \
-                QUACTLIZE_BOX_DRIVER_VERSION QUACTLIZE_BOX_SDK_COMPILER_IDENTITY; do
-  require_identity "$identity"
-done
 
 # The raw build identity below is only honest for an exact committed tree.
 if [[ -n $(git status --porcelain=v1 --untracked-files=all) ]]; then
@@ -83,6 +62,7 @@ COMMANDS_LOG="$ATTEMPT_ROOT/commands.jsonl"
 BUILD_ATTEMPT_LOG="$ATTEMPT_ROOT/build.log"
 SUBMODULE_STATUS_FILE="$ATTEMPT_ROOT/submodule-status.txt"
 RUN_IDENTITY_CANDIDATE="$ATTEMPT_ROOT/run-identity.json"
+IDENTITY_PROBE_FILE="$ATTEMPT_ROOT/identity-probe.json"
 printf '%s\n' "$SUBMODULE_STATUS" >"$SUBMODULE_STATUS_FILE"
 
 # Preserve this exact attempt without requiring an operator-side tee.  Restore
@@ -119,6 +99,7 @@ archive_attempt() {
     COMMANDS_LOG="$destination/commands.jsonl"
     BUILD_ATTEMPT_LOG="$destination/build.log"
     RUN_IDENTITY_CANDIDATE="$destination/run-identity.json"
+    IDENTITY_PROBE_FILE="$destination/identity-probe.json"
     ATTEMPT_ARCHIVED=1
   fi
   if [[ "$rc" -ne 0 && -n "${BIN_SHA:-}" && -s "$COMMANDS_LOG" ]]; then
@@ -131,6 +112,7 @@ archive_attempt() {
       --pci-identity "$QUACTLIZE_BOX_PCI_IDENTITY" \
       --driver-version "$QUACTLIZE_BOX_DRIVER_VERSION" \
       --sdk-compiler-identity "$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY" \
+      --identity-probe-file "$IDENTITY_PROBE_FILE" \
       --groups "$SWEEP_GROUPS" \
       --run-identity-file "$BASE/run-identity.json" \
       --commands-file "$COMMANDS_LOG" --runner-exit-status "$rc" \
@@ -165,6 +147,35 @@ record_command() {
   local role="$1" rc="$2"; shift 2
   python3 "$PROVENANCE_TOOL" record --path "$COMMANDS_LOG" \
     --role "$role" --exit-status "$rc" -- "$@"
+}
+
+identity_probe_get() {
+  python3 "$IDENTITY_PROBE_TOOL" get --file "$IDENTITY_PROBE_FILE" \
+    --field "$1" --part "$2"
+}
+
+resolve_box_identity() {
+  local -a cmd=(python3 "$IDENTITY_PROBE_TOOL" resolve --output "$IDENTITY_PROBE_FILE")
+  local rc
+  set +e
+  "${cmd[@]}"
+  rc=$?
+  set -e
+  record_command box-identity-probe "$rc" "${cmd[@]}"
+  if (( rc != 0 )); then
+    echo '[gemv-box] automatic box identity probe failed; no kernel was built or run' >&2
+    exit "$rc"
+  fi
+  QUACTLIZE_BOX_DEVICE_MODEL="$(identity_probe_get device_model value)"
+  QUACTLIZE_BOX_PCI_IDENTITY="$(identity_probe_get pci_identity value)"
+  QUACTLIZE_BOX_DRIVER_VERSION="$(identity_probe_get driver_version value)"
+  QUACTLIZE_BOX_SDK_COMPILER_IDENTITY="$(identity_probe_get sdk_compiler_identity value)"
+  QUACTLIZE_BOX_DEVICE_MODEL_SOURCE="$(identity_probe_get device_model source)"
+  QUACTLIZE_BOX_PCI_IDENTITY_SOURCE="$(identity_probe_get pci_identity source)"
+  QUACTLIZE_BOX_DRIVER_VERSION_SOURCE="$(identity_probe_get driver_version source)"
+  QUACTLIZE_BOX_SDK_COMPILER_IDENTITY_SOURCE="$(identity_probe_get sdk_compiler_identity source)"
+  export QUACTLIZE_BOX_DEVICE_MODEL QUACTLIZE_BOX_PCI_IDENTITY \
+    QUACTLIZE_BOX_DRIVER_VERSION QUACTLIZE_BOX_SDK_COMPILER_IDENTITY
 }
 
 verify_source_identity() {
@@ -233,6 +244,7 @@ promote_canonical_attempt() {
     --pci-identity "$QUACTLIZE_BOX_PCI_IDENTITY" \
     --driver-version "$QUACTLIZE_BOX_DRIVER_VERSION" \
     --sdk-compiler-identity "$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY" \
+    --identity-probe-file "$BASE/identity-probe.json" \
     --groups "$SWEEP_GROUPS" \
     --run-identity-file "$BASE/run-identity.json" \
     --commands-file "$commands_tmp" --runner-exit-status 0 \
@@ -247,8 +259,10 @@ promote_canonical_attempt() {
   mv "$provenance_tmp" "$BASE/provenance.json"
 }
 
+resolve_box_identity
 echo "[gemv-box] root-status=clean actlize-sha=$ACTLIZE_SHA samples=$SAMPLES"
 echo "[gemv-box] device-model=$QUACTLIZE_BOX_DEVICE_MODEL pci=$QUACTLIZE_BOX_PCI_IDENTITY driver=$QUACTLIZE_BOX_DRIVER_VERSION sdk=$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY"
+echo "[gemv-box] identity-sources device_model=$QUACTLIZE_BOX_DEVICE_MODEL_SOURCE pci_identity=$QUACTLIZE_BOX_PCI_IDENTITY_SOURCE driver_version=$QUACTLIZE_BOX_DRIVER_VERSION_SOURCE sdk_compiler_identity=$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY_SOURCE"
 echo "[gemv-box] sha=$SHA groups=$SWEEP_GROUPS build=$BUILD"
 
 # Building and selecting a binary are one transaction.  Holding this lock
@@ -307,6 +321,7 @@ python3 "$PROVENANCE_TOOL" write-identity \
   --pci-identity "$QUACTLIZE_BOX_PCI_IDENTITY" \
   --driver-version "$QUACTLIZE_BOX_DRIVER_VERSION" \
   --sdk-compiler-identity "$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY" \
+  --identity-probe-file "$IDENTITY_PROBE_FILE" \
   --groups "$SWEEP_GROUPS" \
   --protocol-sample-count "$SAMPLES" >/dev/null
 
@@ -327,11 +342,21 @@ if [[ -e "$BASE/run-identity.json" ]]; then
       echo "[gemv-box] resume identity mismatch; raw/progress were not touched" >&2
       exit 2
     }
+  [[ -s "$BASE/identity-probe.json" ]] || {
+    echo "[gemv-box] resume bundle lacks identity-probe.json" >&2
+    exit 2
+  }
+  cmp -s "$IDENTITY_PROBE_FILE" "$BASE/identity-probe.json" || {
+    echo "[gemv-box] resume identity probe evidence differs; raw/progress were not touched" >&2
+    exit 2
+  }
 elif [[ -d "$BASE" && -n $(find "$BASE" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
   echo "[gemv-box] refusing an existing bundle without immutable run-identity.json" >&2
   exit 2
 else
   mkdir -p "$BASE"
+  cp "$IDENTITY_PROBE_FILE" "$BASE/identity-probe.json.tmp.$$"
+  mv "$BASE/identity-probe.json.tmp.$$" "$BASE/identity-probe.json"
   cp "$RUN_IDENTITY_CANDIDATE" "$BASE/run-identity.json.tmp.$$"
   mv "$BASE/run-identity.json.tmp.$$" "$BASE/run-identity.json"
 fi

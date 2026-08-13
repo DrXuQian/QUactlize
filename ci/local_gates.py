@@ -1414,6 +1414,13 @@ def lint_box_runner_bundle_contract():
         "dense/GEMV runners own provenance, command journals and authoritative census")
 
 
+def lint_box_identity_probe():
+    """Box provenance must measure one device or fail without guessing."""
+    return _run_ci_script(
+        "check_box_identity_probe.py",
+        "box identity is atomic, source-labelled, and 0/multiple/empty probes fail closed")
+
+
 def lint_l143_wk4_committed_evidence():
     """The result-SHA WK1 admission must be reproducible locally with planted reds."""
     return _run_ci_script(
@@ -2054,6 +2061,7 @@ def main():
                 ("lint", "GEMV manifest, exact units and raw writer preserve one identity", lint_gemv_sweep_integration),
                 ("lint", "box results are judged only by the sealed preregistration", lint_box_run_adjudicator),
                 ("lint", "frozen box runners produce their adjudicator evidence", lint_box_runner_bundle_contract),
+                ("lint", "box identity is measured atomically and never guessed", lint_box_identity_probe),
                 ("lint", "L143 WK1 admission is executable committed evidence with planted reds", lint_l143_wk4_committed_evidence),
                 ("lint", "GEMV production converter reports normalized sm_120 extraction codegen", lint_gemv_lop3_codegen),
                 ("lint", "Q4_K PDF reconstruction preserves pack, topology and raw-event evidence", lint_q4k_pdf_ab_contract),

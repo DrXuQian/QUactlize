@@ -15,8 +15,10 @@ RUNNER_LOG="$ARTIFACT_ROOT/runner.log"
 COMMANDS_LOG="$ARTIFACT_ROOT/commands.jsonl"
 SUBMODULE_STATUS_FILE="$ARTIFACT_ROOT/submodule-status.txt"
 PROVENANCE_TOOL="$ROOT/tools/write_box_run_provenance.py"
+IDENTITY_PROBE_TOOL="$ROOT/tools/probe_box_identity.py"
 POLICY="$ROOT/dev/fold_derivation/BOX_RUN_PREREGISTRATION.md"
 RUN_IDENTITY_FILE="$ARTIFACT_ROOT/run-identity.json"
+IDENTITY_PROBE_FILE="$ARTIFACT_ROOT/identity-probe.json"
 
 # Preserve the complete runner stream inside the bundle instead of relying on
 # an operator-side tee.  The screen remains a live copy of the same bytes.
@@ -48,6 +50,7 @@ on_exit() {
       --pci-identity "$QUACTLIZE_BOX_PCI_IDENTITY" \
       --driver-version "$QUACTLIZE_BOX_DRIVER_VERSION" \
       --sdk-compiler-identity "$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY" \
+      --identity-probe-file "$IDENTITY_PROBE_FILE" \
       --run-identity-file "$RUN_IDENTITY_FILE" \
       --commands-file "$COMMANDS_LOG" --runner-exit-status "$rc" \
       --protocol-sample-count "$SAMPLES" -- "${ORIGINAL_ARGV[@]}" || true
@@ -63,21 +66,37 @@ fail() {
   exit 1
 }
 
-require_identity() {
-  local name="$1" value="${!1:-}" normalized
-  [ -n "$value" ] || fail "required explicit device identity $name is unset"
-  normalized="${value,,}"
-  case "$normalized" in
-    unknown|unset|n/a|na|none) fail "required explicit device identity $name is not measured" ;;
-  esac
-  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] \
-    || fail "required explicit device identity $name must be one line"
-}
-
 record_command() {
   local role="$1" rc="$2"; shift 2
   python3 "$PROVENANCE_TOOL" record --path "$COMMANDS_LOG" \
     --role "$role" --exit-status "$rc" -- "$@"
+}
+
+identity_probe_get() {
+  python3 "$IDENTITY_PROBE_TOOL" get --file "$IDENTITY_PROBE_FILE" \
+    --field "$1" --part "$2"
+}
+
+resolve_box_identity() {
+  local -a cmd=(python3 "$IDENTITY_PROBE_TOOL" resolve --output "$IDENTITY_PROBE_FILE")
+  local rc
+  set +e
+  "${cmd[@]}"
+  rc=$?
+  set -e
+  record_command box-identity-probe "$rc" "${cmd[@]}"
+  [ "$rc" -eq 0 ] || fail 'automatic box identity probe failed; no kernel was built or run'
+
+  QUACTLIZE_BOX_DEVICE_MODEL="$(identity_probe_get device_model value)"
+  QUACTLIZE_BOX_PCI_IDENTITY="$(identity_probe_get pci_identity value)"
+  QUACTLIZE_BOX_DRIVER_VERSION="$(identity_probe_get driver_version value)"
+  QUACTLIZE_BOX_SDK_COMPILER_IDENTITY="$(identity_probe_get sdk_compiler_identity value)"
+  QUACTLIZE_BOX_DEVICE_MODEL_SOURCE="$(identity_probe_get device_model source)"
+  QUACTLIZE_BOX_PCI_IDENTITY_SOURCE="$(identity_probe_get pci_identity source)"
+  QUACTLIZE_BOX_DRIVER_VERSION_SOURCE="$(identity_probe_get driver_version source)"
+  QUACTLIZE_BOX_SDK_COMPILER_IDENTITY_SOURCE="$(identity_probe_get sdk_compiler_identity source)"
+  export QUACTLIZE_BOX_DEVICE_MODEL QUACTLIZE_BOX_PCI_IDENTITY \
+    QUACTLIZE_BOX_DRIVER_VERSION QUACTLIZE_BOX_SDK_COMPILER_IDENTITY
 }
 
 verify_source_identity() {
@@ -111,10 +130,6 @@ find_one() {
 }
 
 [ "$#" -eq 0 ] || fail 'this runner accepts no positional arguments'
-for identity in QUACTLIZE_BOX_DEVICE_MODEL QUACTLIZE_BOX_PCI_IDENTITY \
-                QUACTLIZE_BOX_DRIVER_VERSION QUACTLIZE_BOX_SDK_COMPILER_IDENTITY; do
-  require_identity "$identity"
-done
 
 if [ -n "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all)" ]; then
   fail 'source tree is dirty; commit/stash every root and submodule change'
@@ -129,12 +144,16 @@ ROOT_SHA="$(git -C "$ROOT" rev-parse HEAD)"
 ACTLIZE_SHA="$(git -C "$ROOT/third_party/actlize" rev-parse HEAD)"
 SAMPLES="$(python3 "$PROVENANCE_TOOL" policy-sample-count --policy "$POLICY" --kind dense)"
 [ "$SAMPLES" -eq 20 ] || fail "dense harness supports exactly 20 samples, policy requests $SAMPLES"
+resolve_box_identity
 printf '[marlin-wk4] root-sha=%s\n' "$ROOT_SHA"
 printf '[marlin-wk4] root-status=clean\n'
 printf '[marlin-wk4] actlize-sha=%s\n' "$ACTLIZE_SHA"
 printf '[marlin-wk4] device-model=%s pci=%s driver=%s sdk=%s\n' \
   "$QUACTLIZE_BOX_DEVICE_MODEL" "$QUACTLIZE_BOX_PCI_IDENTITY" \
   "$QUACTLIZE_BOX_DRIVER_VERSION" "$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY"
+printf '[marlin-wk4] identity-sources device_model=%s pci_identity=%s driver_version=%s sdk_compiler_identity=%s\n' \
+  "$QUACTLIZE_BOX_DEVICE_MODEL_SOURCE" "$QUACTLIZE_BOX_PCI_IDENTITY_SOURCE" \
+  "$QUACTLIZE_BOX_DRIVER_VERSION_SOURCE" "$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY_SOURCE"
 printf '[marlin-wk4] artifacts=%s\n' "$ARTIFACT_ROOT"
 
 # WK1 is an admission control, not a timing cell.  The static target check runs
@@ -192,6 +211,7 @@ python3 "$PROVENANCE_TOOL" write-identity \
   --pci-identity "$QUACTLIZE_BOX_PCI_IDENTITY" \
   --driver-version "$QUACTLIZE_BOX_DRIVER_VERSION" \
   --sdk-compiler-identity "$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY" \
+  --identity-probe-file "$IDENTITY_PROBE_FILE" \
   --protocol-sample-count "$SAMPLES" >/dev/null
 
 COMMON=(--marlin --streamk_exact_fixture --m=1 --n=4096 --k=4096
@@ -298,6 +318,7 @@ python3 "$PROVENANCE_TOOL" write \
   --pci-identity "$QUACTLIZE_BOX_PCI_IDENTITY" \
   --driver-version "$QUACTLIZE_BOX_DRIVER_VERSION" \
   --sdk-compiler-identity "$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY" \
+  --identity-probe-file "$IDENTITY_PROBE_FILE" \
   --run-identity-file "$RUN_IDENTITY_FILE" \
   --commands-file "$COMMANDS_LOG" --runner-exit-status 0 \
   --protocol-sample-count "$SAMPLES" -- "${ORIGINAL_ARGV[@]}"

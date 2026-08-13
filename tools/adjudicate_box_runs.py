@@ -28,6 +28,12 @@ from typing import Any, Iterable
 
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+TOOLS_DIR = pathlib.Path(__file__).resolve().parent
+sys.dont_write_bytecode = True
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
+import box_identity_schema as identity_schema
+
 DEFAULT_POLICY = ROOT / "dev" / "fold_derivation" / "BOX_RUN_PREREGISTRATION.md"
 POLICY_BEGIN = "<!-- BOX_RUN_POLICY_V1_BEGIN -->"
 POLICY_END = "<!-- BOX_RUN_POLICY_V1_END -->"
@@ -35,6 +41,11 @@ MIRROR_BEGIN = "<!-- BOX_RUN_POLICY_MIRROR_V1_BEGIN -->"
 MIRROR_END = "<!-- BOX_RUN_POLICY_MIRROR_V1_END -->"
 POLICY_SCHEMA = "quactlize-box-run-policy-v1"
 DENSE_SCHEMA = "quactlize-dense-box-observation-v1"
+PROVENANCE_SCHEMA = "quactlize-box-run-provenance-v2"
+RUN_IDENTITY_SCHEMA = "quactlize-box-run-identity-v2"
+IDENTITY_PROBE_SCHEMA = identity_schema.SCHEMA
+IDENTITY_FIELDS = identity_schema.FIELDS
+IDENTITY_SOURCE_VALUES = identity_schema.SOURCES
 PUBLICATION_CODE_PATHS = (
     "tools/adjudicate_box_runs.py",
     "benchmarks/sweep_gemv_perf.py",
@@ -907,6 +918,7 @@ def adjudicate_gemv(loaded: LoadedPolicy, manifest_path: pathlib.Path | str,
 _PROVENANCE_FIELDS = (
     "schema", "root_sha", "root_status", "submodule_status", "actlize_sha", "binary_sha256",
     "device_model", "pci_identity", "driver_version", "sdk_compiler_identity",
+    "identity_sources", "identity_probe_sha256",
     "groups", "run_identity_sha256", "argv", "commands", "runner_exit_status",
     "protocol_sample_count",
 )
@@ -933,6 +945,9 @@ def _read_provenance(bundle: pathlib.Path) -> tuple[dict[str, Any], list[str]]:
             good = isinstance(item, list) and item and all(isinstance(x, str) for x in item)
         elif name == "commands":
             good = isinstance(item, list) and bool(item)
+        elif name == "identity_sources":
+            good = (isinstance(item, dict) and set(item) == set(IDENTITY_FIELDS) and
+                    all(source in IDENTITY_SOURCE_VALUES for source in item.values()))
         else:
             good = isinstance(item, str) and bool(item.strip())
         if not good:
@@ -940,12 +955,15 @@ def _read_provenance(bundle: pathlib.Path) -> tuple[dict[str, Any], list[str]]:
     if isinstance(value.get("binary_sha256"), str) and not re.fullmatch(
             r"[0-9a-f]{64}", value["binary_sha256"]):
         errors.append("provenance binary_sha256 is not a lowercase SHA-256")
+    if isinstance(value.get("identity_probe_sha256"), str) and not re.fullmatch(
+            r"[0-9a-f]{64}", value["identity_probe_sha256"]):
+        errors.append("provenance identity_probe_sha256 is not a lowercase SHA-256")
     if isinstance(value.get("root_sha"), str) and not re.fullmatch(
             r"[0-9a-f]{40,64}", value["root_sha"]):
         errors.append("provenance root_sha is not a full Git object ID")
     if value.get("runner_exit_status") != 0:
         errors.append("runner_exit_status is nonzero")
-    if value.get("schema") != "quactlize-box-run-provenance-v1":
+    if value.get("schema") != PROVENANCE_SCHEMA:
         errors.append("provenance schema differs")
     if (isinstance(value.get("protocol_sample_count"), int) and
             value["protocol_sample_count"] <= 0):
@@ -980,6 +998,7 @@ def _read_provenance(bundle: pathlib.Path) -> tuple[dict[str, Any], list[str]]:
 _RUN_IDENTITY_FIELDS = {
     "schema", "root_sha", "submodule_status", "actlize_sha", "binary_sha256",
     "device_model", "pci_identity", "driver_version", "sdk_compiler_identity",
+    "identity_sources", "identity_probe_sha256",
     "protocol_sample_count", "groups", "identity_sha256",
 }
 
@@ -992,14 +1011,14 @@ def _crosscheck_run_identity(bundle: pathlib.Path, provenance: dict[str, Any],
     except (OSError, json.JSONDecodeError, PolicyError) as exc:
         return [f"missing/unreadable run-identity.json: {exc}"]
     if not isinstance(identity, dict) or set(identity) != _RUN_IDENTITY_FIELDS:
-        return ["run-identity.json does not have the exact v1 schema"]
+        return ["run-identity.json does not have the exact v2 schema"]
     errors: list[str] = []
-    if identity.get("schema") != "quactlize-box-run-identity-v1":
+    if identity.get("schema") != RUN_IDENTITY_SCHEMA:
         errors.append("run-identity.json schema differs")
     for field in (
             "root_sha", "submodule_status", "actlize_sha", "binary_sha256",
             "device_model", "pci_identity", "driver_version", "sdk_compiler_identity",
-            "groups", "identity_sha256"):
+            "groups", "identity_probe_sha256", "identity_sha256"):
         value = identity.get(field)
         if not isinstance(value, str) or not value.strip():
             errors.append(f"run-identity field {field} is missing or malformed")
@@ -1016,11 +1035,18 @@ def _crosscheck_run_identity(bundle: pathlib.Path, provenance: dict[str, Any],
     if (isinstance(identity.get("binary_sha256"), str) and
             not re.fullmatch(r"[0-9a-f]{64}", identity["binary_sha256"])):
         errors.append("run-identity binary_sha256 is not a lowercase SHA-256")
+    if (isinstance(identity.get("identity_probe_sha256"), str) and
+            not re.fullmatch(r"[0-9a-f]{64}", identity["identity_probe_sha256"])):
+        errors.append("run-identity identity_probe_sha256 is not a lowercase SHA-256")
+    sources = identity.get("identity_sources")
+    if (not isinstance(sources, dict) or set(sources) != set(IDENTITY_FIELDS) or
+            any(source not in IDENTITY_SOURCE_VALUES for source in sources.values())):
+        errors.append("run-identity identity_sources is not the exact measured/operator map")
     for field in ("device_model", "pci_identity", "driver_version", "sdk_compiler_identity"):
         value = identity.get(field)
         if isinstance(value, str) and value.strip().lower() in {
                 "unknown", "unset", "n/a", "na", "none"}:
-            errors.append(f"run-identity {field} is not a measured explicit identity")
+            errors.append(f"run-identity {field} is not a concrete measured/operator identity")
     digest = identity.get("identity_sha256")
     payload = {key: value for key, value in identity.items() if key != "identity_sha256"}
     expected_digest = hashlib.sha256(_canonical(payload).encode()).hexdigest()
@@ -1032,11 +1058,37 @@ def _crosscheck_run_identity(bundle: pathlib.Path, provenance: dict[str, Any],
     for field in (
             "root_sha", "submodule_status", "actlize_sha", "binary_sha256",
             "device_model", "pci_identity", "driver_version", "sdk_compiler_identity",
-            "protocol_sample_count", "groups"):
+            "identity_sources", "identity_probe_sha256", "protocol_sample_count", "groups"):
         if identity.get(field) != provenance.get(field):
             errors.append(f"run-identity {field} differs from provenance")
     if digest != provenance.get("run_identity_sha256"):
         errors.append("run-identity digest differs from provenance run_identity_sha256")
+    return errors
+
+
+def _crosscheck_identity_probe(bundle: pathlib.Path,
+                               provenance: dict[str, Any]) -> list[str]:
+    path = bundle / "identity-probe.json"
+    try:
+        probe = json.loads(path.read_text(), object_pairs_hook=_pairs_without_duplicates,
+                           parse_constant=lambda token: (_ for _ in ()).throw(
+                               PolicyError(f"non-finite JSON value {token}")))
+    except (OSError, json.JSONDecodeError, PolicyError) as exc:
+        return [f"missing/unreadable identity-probe.json: {exc}"]
+    errors: list[str] = []
+    try:
+        values, sources = identity_schema.values_and_sources(probe)
+        canonical_probe = identity_schema.canonical_bytes(probe)
+    except identity_schema.IdentityProbeError as exc:
+        return [f"identity-probe evidence is self-contradictory: {exc}"]
+    for field in IDENTITY_FIELDS:
+        if values[field] != provenance.get(field):
+            errors.append(f"identity-probe {field} differs from provenance")
+    if sources != provenance.get("identity_sources"):
+        errors.append("identity-probe sources differ from provenance identity_sources")
+    digest = hashlib.sha256(canonical_probe).hexdigest()
+    if digest != provenance.get("identity_probe_sha256"):
+        errors.append("identity-probe canonical digest differs from provenance")
     return errors
 
 
@@ -1195,6 +1247,7 @@ def adjudicate_dense_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | st
     bundle = pathlib.Path(bundle_path)
     provenance, admission_errors = _read_provenance(bundle)
     admission_errors.extend(_crosscheck_provenance_files(bundle, provenance))
+    admission_errors.extend(_crosscheck_identity_probe(bundle, provenance))
     admission_errors.extend(_crosscheck_run_identity(
         bundle, provenance, "not-applicable"))
     sample_count = loaded.value["dense"]["sample_count"]
@@ -1205,7 +1258,8 @@ def adjudicate_dense_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | st
             not runner_argv[0].endswith("tools/run_dense_marlin_wk4_box.sh")):
         admission_errors.append("dense top-level runner argv is not the frozen entry point")
     commands = _commands_by_role(provenance)
-    for role in ("wk1-static-target", "wk1-committed-production-delivery", "device-build"):
+    for role in ("box-identity-probe", "wk1-static-target",
+                 "wk1-committed-production-delivery", "device-build"):
         rows = commands.get(role, [])
         if len(rows) != 1 or rows[0].get("exit_status") != 0:
             admission_errors.append(f"command journal lacks one successful {role}")
@@ -1307,7 +1361,8 @@ def adjudicate_dense_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | st
     parse_errors: list[str] = []
     unregistered: list[dict[str, Any]] = []
     registered_command_roles = {
-        "wk1-static-target", "wk1-committed-production-delivery", "device-build",
+        "box-identity-probe", "wk1-static-target",
+        "wk1-committed-production-delivery", "device-build",
         "dense-wk4-illegal-bpc",
         *(f"dense-wk4-bpc{bpc}" for bpc in (1, 2, 4, 6)),
     }
@@ -1479,7 +1534,7 @@ def adjudicate_dense_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | st
     result["cell_results"] = result.pop("cells")
     result["registered_verdict"] = result["verdict"]
     known = {
-        "provenance.json", "run-identity.json", "commands.jsonl",
+        "provenance.json", "run-identity.json", "identity-probe.json", "commands.jsonl",
         "submodule-status.txt", "runner.log",
         "build.log", "illegal-bpc.log", "wk1-admission.log", "l143",
         *(f"bpc{b}.log" for b in (1, 2, 4, 6)),
@@ -1499,6 +1554,7 @@ def adjudicate_gemv_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | str
     bundle = pathlib.Path(bundle_path)
     provenance, admission_errors = _read_provenance(bundle)
     admission_errors.extend(_crosscheck_provenance_files(bundle, provenance))
+    admission_errors.extend(_crosscheck_identity_probe(bundle, provenance))
     admission_errors.extend(_crosscheck_run_identity(bundle, provenance, "all"))
     samples = loaded.value["gemv"]["sample_count"]
     if provenance.get("protocol_sample_count") != samples:
@@ -1508,13 +1564,13 @@ def adjudicate_gemv_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | str
             not runner_argv[0].endswith("tools/run_gemv_sweep_box.sh")):
         admission_errors.append("GEMV top-level runner argv is not the frozen entry point")
     commands = _commands_by_role(provenance)
-    for role in ("device-build", "base-tactic-census", "manifest", "dry-run-audit",
+    for role in ("box-identity-probe", "device-build", "base-tactic-census", "manifest", "dry-run-audit",
                  "measured-sweep", "analyse", "analyse-completeness"):
         rows = commands.get(role, [])
         if not rows or rows[-1].get("exit_status") != 0:
             admission_errors.append(f"command journal lacks a final successful {role}")
     registered_command_roles = {
-        "device-build", "base-tactic-census", "manifest", "dry-run-audit",
+        "box-identity-probe", "device-build", "base-tactic-census", "manifest", "dry-run-audit",
         "measured-sweep", "analyse", "analyse-completeness",
     }
     unregistered_commands = [
@@ -1527,6 +1583,7 @@ def adjudicate_gemv_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | str
     required = ("manifest.json", "raw.jsonl", "progress.jsonl", "result.json", "run.log",
                 "base-census.json", "base-census-authority.log", "build.log", "runner.log",
                 "commands.jsonl", "submodule-status.txt", "run-identity.json",
+                "identity-probe.json",
                 "pending.audit.jsonl", "pending.summary.jsonl")
     for name in required:
         if not (bundle / name).is_file():

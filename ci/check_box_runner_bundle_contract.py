@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,8 @@ ROOT = Path(__file__).resolve().parent.parent
 DENSE = ROOT / "tools/run_dense_marlin_wk4_box.sh"
 GEMV = ROOT / "tools/run_gemv_sweep_box.sh"
 WRITER = ROOT / "tools/write_box_run_provenance.py"
+IDENTITY_PROBE = ROOT / "tools/probe_box_identity.py"
+IDENTITY_SCHEMA = ROOT / "tools/box_identity_schema.py"
 EXPORTER = ROOT / "tools/export_gemv_base_census.py"
 POLICY = ROOT / "dev/fold_derivation/BOX_RUN_PREREGISTRATION.md"
 
@@ -34,11 +37,17 @@ def source_contract(dense: str, gemv: str) -> None:
     )
     for name, text in (("dense", dense), ("gemv", gemv)):
         for identity in identities:
-            require(identity in text, f"{name} runner does not require {identity}")
+            require(identity in text, f"{name} runner lost {identity} provenance plumbing")
+        require("require_identity" not in text,
+                f"{name} runner still makes operator identity mandatory")
+        require("resolve_box_identity" in text and
+                "box-identity-probe" in text and "source" in text,
+                f"{name} runner does not measure and source-label identity")
         for token in ("status --porcelain=v1 --untracked-files=all",
                       "submodule status --recursive", "--root-status clean",
                       "--binary-sha256", "--commands-file", "runner.log",
-                      "policy-sample-count"):
+                      "policy-sample-count", "probe_box_identity.py",
+                      "identity-probe.json", "--identity-probe-file"):
             require(token in text, f"{name} runner lost {token!r}")
     for token in ("check_dense_marlin_wk4_target.py",
                   "l143_wk4_production_delivery.expected.txt",
@@ -78,6 +87,95 @@ def _fixture_repo(root: Path) -> Path:
     (repo / "tools").mkdir()
     shutil.copy2(GEMV, repo / "tools/run_gemv_sweep_box.sh")
     shutil.copy2(WRITER, repo / "tools/write_box_run_provenance.py")
+    shutil.copy2(IDENTITY_PROBE, repo / "tools/probe_box_identity.py")
+    shutil.copy2(IDENTITY_SCHEMA, repo / "tools/box_identity_schema.py")
+    # Exercise the runner against the production helper's exact resolve/get
+    # boundary without pretending this host has a PPU SDK.  The fixture helper
+    # is deliberately installed at the production path: a parallel test-only
+    # probe path would prove neither the runner wiring nor its fail-closed
+    # behavior before the first build.
+    _write(repo / "tools/probe_box_identity.py", r'''#!/usr/bin/env python3
+import argparse, json, os, pathlib, sys
+
+FIELDS = ("device_model", "pci_identity", "driver_version", "sdk_compiler_identity")
+ENVS = {
+    "device_model": "QUACTLIZE_BOX_DEVICE_MODEL",
+    "pci_identity": "QUACTLIZE_BOX_PCI_IDENTITY",
+    "driver_version": "QUACTLIZE_BOX_DRIVER_VERSION",
+    "sdk_compiler_identity": "QUACTLIZE_BOX_SDK_COMPILER_IDENTITY",
+}
+
+def fail(message):
+    print("box identity probe: " + message, file=sys.stderr)
+    raise SystemExit(2)
+
+def resolve(output):
+    mode = os.environ.get("FIXTURE_IDENTITY_MODE", "one")
+    if mode == "two":
+        fail("hggc runtime reports 2 visible devices; candidates: "
+             "ordinal=0 name='fixture-ppu-a' pci=0000:01:00.0 cu=72; "
+             "ordinal=1 name='fixture-ppu-b' pci=0000:02:00.0 cu=72. "
+             "Set CUDA_VISIBLE_DEVICES to exactly one ordinal and rerun; "
+             "operator identity strings do not disambiguate devices.")
+    if mode not in {"one", "empty"}:
+        fail("unknown fixture mode " + repr(mode))
+    if mode == "one":
+        values = {
+            "device_model": "fixture-ppu",
+            "pci_identity": "0000:01:00.0",
+            "driver_version": "fixture-driver",
+            "sdk_compiler_identity": "fixture-sdk",
+        }
+        identity = {field: {"value": values[field], "source": "measured"}
+                    for field in FIELDS}
+        device = {"status": "measured", "method": "fixture-hggc-runtime",
+                  "reason": "", "runtime_driver_version": values["driver_version"],
+                  "pci_measurement": "fixture", "driver_measurement": "fixture",
+                  "device_count": 1, "selected_ordinal": 0,
+                  "candidates": [{"ordinal": 0, "name": values["device_model"],
+                  "compute_capability": "10.0", "compute_units": 72,
+                  "pci_identity": values["pci_identity"]}], "property_errors": []}
+        sdk = {"status": "measured", "reason": "",
+               "sdk_root_authority": "fixture", "sdk_root": "/fixture-sdk",
+               "compiler_path": "/fixture-sdk/bin/hgcc",
+               "version_first_line": "fixture-sdk",
+               "identity_value": values["sdk_compiler_identity"]}
+    else:
+        values = {}
+        for field in FIELDS:
+            value = os.environ.get(ENVS[field], "").strip()
+            if not value:
+                fail(f"{field} could not be measured and {ENVS[field]} is not a "
+                     "usable operator fallback: value is empty")
+            values[field] = value
+        identity = {field: {"value": values[field], "source": "operator"}
+                    for field in FIELDS}
+        device = {"status": "unavailable", "method": "", "reason": "fixture-empty",
+                  "runtime_driver_version": "", "pci_measurement": "unavailable",
+                  "driver_measurement": "unavailable", "device_count": None,
+                  "selected_ordinal": None, "candidates": [], "property_errors": []}
+        sdk = {"status": "unavailable", "reason": "fixture-empty",
+               "sdk_root_authority": "", "sdk_root": "", "compiler_path": "",
+               "version_first_line": "", "identity_value": ""}
+    document = {"schema": "quactlize-box-identity-probe-v1",
+                "identity": identity, "device_probe": device,
+                "sdk_compiler_probe": sdk}
+    pathlib.Path(output).write_text(
+        json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n")
+
+def main():
+    parser = argparse.ArgumentParser(); sub = parser.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("resolve"); p.add_argument("--output", required=True)
+    p = sub.add_parser("get"); p.add_argument("--file", required=True)
+    p.add_argument("--field", choices=FIELDS, required=True)
+    p.add_argument("--part", choices=("value", "source"), required=True)
+    args = parser.parse_args()
+    if args.cmd == "resolve": resolve(args.output); return
+    value = json.loads(pathlib.Path(args.file).read_text())
+    print(value["identity"][args.field][args.part])
+
+if __name__ == "__main__": main()
+''', executable=True)
     _write(repo / "dev/fold_derivation/BOX_RUN_PREREGISTRATION.md", """
 <!-- BOX_RUN_POLICY_V1_BEGIN -->
 {"gemv":{"sample_count":20}}
@@ -154,16 +252,73 @@ raise SystemExit(2)
 
 def _runner_env(out: Path, **updates: str) -> dict[str, str]:
     env = dict(os.environ)
+    # A developer's shell must not accidentally turn an intended measured
+    # fixture into an operator fallback, or make the empty-probe negative green.
+    for name in ("QUACTLIZE_BOX_DEVICE_MODEL", "QUACTLIZE_BOX_PCI_IDENTITY",
+                 "QUACTLIZE_BOX_DRIVER_VERSION",
+                 "QUACTLIZE_BOX_SDK_COMPILER_IDENTITY"):
+        env.pop(name, None)
     env.update({
         "GEMV_SWEEP_DIR": str(out), "GEMV_SWEEP_BUILD_TIMEOUT_SECONDS": "30",
         "GEMV_SWEEP_DEADLINE_SECONDS": "30", "GEMV_SWEEP_SHAPE_TIMEOUT_SECONDS": "10",
-        "MOE_CORES": "1", "QUACTLIZE_BOX_DEVICE_MODEL": "fixture-ppu",
-        "QUACTLIZE_BOX_PCI_IDENTITY": "0000:01:00.0",
-        "QUACTLIZE_BOX_DRIVER_VERSION": "fixture-driver",
-        "QUACTLIZE_BOX_SDK_COMPILER_IDENTITY": "fixture-sdk",
+        "MOE_CORES": "1", "FIXTURE_IDENTITY_MODE": "one",
     })
     env.update(updates)
     return env
+
+
+def _operator_identity_env(**updates: str) -> dict[str, str]:
+    values = {
+        "FIXTURE_IDENTITY_MODE": "empty",
+        "QUACTLIZE_BOX_DEVICE_MODEL": "fixture-ppu",
+        "QUACTLIZE_BOX_PCI_IDENTITY": "0000:01:00.0",
+        "QUACTLIZE_BOX_DRIVER_VERSION": "fixture-driver",
+        "QUACTLIZE_BOX_SDK_COMPILER_IDENTITY": "fixture-sdk",
+    }
+    values.update(updates)
+    return values
+
+
+def _probe_digest(path: Path) -> str:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _write_probe(path: Path, values: dict[str, str], source: str) -> None:
+    fields = ("device_model", "pci_identity", "driver_version",
+              "sdk_compiler_identity")
+    require(set(values) == set(fields), "test probe values are incomplete")
+    measured = source == "measured"
+    document = {
+        "schema": "quactlize-box-identity-probe-v1",
+        "identity": {field: {"value": values[field], "source": source}
+                     for field in fields},
+        "device_probe": {
+            "status": "measured" if measured else "unavailable",
+            "method": "fixture", "reason": "" if measured else "fixture",
+            "runtime_driver_version": values["driver_version"] if measured else "",
+            "pci_measurement": "fixture" if measured else "unavailable",
+            "driver_measurement": "fixture" if measured else "unavailable",
+            "device_count": 1 if measured else None,
+            "selected_ordinal": 0 if measured else None,
+            "candidates": ([{"ordinal": 0, "name": values["device_model"],
+                             "compute_capability": "10.0", "compute_units": 72,
+                             "pci_identity": values["pci_identity"]}]
+                           if measured else []),
+            "property_errors": [],
+        },
+        "sdk_compiler_probe": {
+            "status": "measured" if measured else "unavailable",
+            "reason": "" if measured else "fixture",
+            "sdk_root_authority": "fixture" if measured else "",
+            "sdk_root": "/fixture/sdk" if measured else "",
+            "compiler_path": "/fixture/sdk/bin/hgcc" if measured else "",
+            "version_first_line": "fixture" if measured else "",
+            "identity_value": values["sdk_compiler_identity"] if measured else "",
+        },
+    }
+    _write(path, json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n")
 
 
 def _tree_digest(root: Path) -> dict[str, bytes]:
@@ -179,6 +334,65 @@ def transactional_runner_contract() -> None:
         repo = _fixture_repo(temp)
         runner = repo / "tools/run_gemv_sweep_box.sh"
 
+        # A successful device-count observation is authoritative.  Two visible
+        # candidates are ambiguity, not an invitation to trust hand-entered
+        # strings: even complete operator fallbacks must not select one.
+        two_out = temp / "two-devices"
+        two_updates = _operator_identity_env()
+        two_updates["FIXTURE_IDENTITY_MODE"] = "two"
+        two = subprocess.run([str(runner)], cwd=repo,
+                             env=_runner_env(two_out, **two_updates), text=True,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        require(two.returncode != 0 and "reports 2 visible devices" in two.stdout and
+                "ordinal=0" in two.stdout and "0000:01:00.0" in two.stdout and
+                "ordinal=1" in two.stdout and "0000:02:00.0" in two.stdout and
+                "operator identity strings do not disambiguate" in two.stdout,
+                "two visible devices did not fail closed and enumerate both candidates")
+        require(_tree_digest(two_out) == {},
+                "ambiguous automatic identity wrote a build or bundle artifact")
+
+        # Empty automatic results are not identities.  Without explicit
+        # fallback they fail before build; with all four fallbacks they publish
+        # non-empty values whose lower evidence grade remains visible.
+        empty_out = temp / "empty-no-fallback"
+        empty = subprocess.run(
+            [str(runner)], cwd=repo,
+            env=_runner_env(empty_out, FIXTURE_IDENTITY_MODE="empty"), text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        require(empty.returncode != 0 and "could not be measured" in empty.stdout and
+                "operator fallback" in empty.stdout,
+                "empty automatic identity neither failed nor requested operator fallback")
+        require(_tree_digest(empty_out) == {},
+                "empty automatic identity wrote an empty field into a bundle")
+
+        operator_out = temp / "operator-fallback"
+        operator = subprocess.run(
+            [str(runner)], cwd=repo,
+            env=_runner_env(operator_out, **_operator_identity_env()), text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        require(operator.returncode == 0,
+                "complete operator fallback did not run:\n" + operator.stdout)
+        operator_bases = list(operator_out.glob("*/*/*-samples20"))
+        require(len(operator_bases) == 1,
+                "operator fallback did not publish exactly one canonical BASE")
+        operator_base = operator_bases[0]
+        operator_identity = json.loads((operator_base / "run-identity.json").read_text())
+        operator_provenance = json.loads((operator_base / "provenance.json").read_text())
+        operator_probe = json.loads((operator_base / "identity-probe.json").read_text())
+        operator_sources = {field: "operator" for field in (
+            "device_model", "pci_identity", "driver_version", "sdk_compiler_identity")}
+        require(operator_identity["identity_sources"] == operator_sources and
+                operator_provenance["identity_sources"] == operator_sources,
+                "operator fallback was mislabeled as measured evidence")
+        require(all(operator_identity[field] and operator_provenance[field] and
+                    operator_probe["identity"][field]["value"]
+                    for field in operator_sources),
+                "operator fallback published an empty identity field")
+        operator_digest = _probe_digest(operator_base / "identity-probe.json")
+        require(operator_identity["identity_probe_sha256"] == operator_digest and
+                operator_provenance["identity_probe_sha256"] == operator_digest,
+                "operator fallback did not bind the exact probe evidence digest")
+
         # One successful run establishes the exact canonical shape, including
         # the explicit g++ base-census authority and immutable GROUPS field.
         success_out = temp / "success"
@@ -191,6 +405,15 @@ def transactional_runner_contract() -> None:
         base = bases[0]
         provenance = json.loads((base / "provenance.json").read_text())
         identity = json.loads((base / "run-identity.json").read_text())
+        measured_sources = {field: "measured" for field in (
+            "device_model", "pci_identity", "driver_version", "sdk_compiler_identity")}
+        require(identity["identity_sources"] == measured_sources and
+                provenance["identity_sources"] == measured_sources,
+                "single-device automatic identity was not labeled measured")
+        probe_digest = _probe_digest(base / "identity-probe.json")
+        require(identity["identity_probe_sha256"] == probe_digest and
+                provenance["identity_probe_sha256"] == probe_digest,
+                "canonical identity/provenance did not bind identity-probe.json")
         require(identity["groups"] == "all", "immutable identity did not bind exact GROUPS")
         require(provenance["groups"] == identity["groups"] and
                 provenance["run_identity_sha256"] == identity["identity_sha256"],
@@ -243,8 +466,9 @@ def transactional_runner_contract() -> None:
         sdk_mismatch = subprocess.run(
             [str(runner)], cwd=repo,
             env=_runner_env(
-                resume_out, QUACTLIZE_BOX_SDK_COMPILER_IDENTITY="other-sdk",
-                GEMV_SWEEP_REUSE_BUILD="0"),
+                resume_out, **_operator_identity_env(
+                    QUACTLIZE_BOX_SDK_COMPILER_IDENTITY="other-sdk",
+                    GEMV_SWEEP_REUSE_BUILD="0")),
             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         require(sdk_mismatch.returncode != 0 and
                 "resume identity mismatch" in sdk_mismatch.stdout,
@@ -259,7 +483,8 @@ def transactional_runner_contract() -> None:
         before_mismatch = _tree_digest(resume_base)
         mismatch = subprocess.run(
             [str(runner)], cwd=repo,
-            env=_runner_env(resume_out, QUACTLIZE_BOX_DEVICE_MODEL="other-ppu"),
+            env=_runner_env(resume_out, **_operator_identity_env(
+                QUACTLIZE_BOX_DEVICE_MODEL="other-ppu")),
             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         require(mismatch.returncode != 0 and "resume identity mismatch" in mismatch.stdout,
                 "device identity mismatch did not fail closed")
@@ -395,22 +620,38 @@ def dynamic_contract() -> None:
             "--role", "fixture", "--exit-status", "0", "--", "fixture-bin", "--x=1")
         submodules = out / "submodules.txt"
         submodules.write_text(" " + "0" * 40 + " third_party/actlize\n")
+        probe = out / "identity-probe.json"
+        probe_values = {
+            # Non-ASCII crosses helper -> writer -> immutable identity.  An
+            # ASCII-only fixture cannot detect a split canonical-hash rule.
+            "device_model": "fixture-设备",
+            "pci_identity": "0000:01:00.0",
+            "driver_version": "fixture-driver",
+            "sdk_compiler_identity": "fixture-sdk",
+        }
+        _write_probe(probe, probe_values, "measured")
         identity = out / "run-identity.json"
         identity_args = (
             sys.executable, str(WRITER), "write-identity", "--output", str(identity),
             "--root-sha", "1" * 40, "--submodule-status-file", str(submodules),
             "--actlize-sha", "0" * 40, "--binary-sha256", "2" * 64,
-            "--device-model", "fixture-device", "--pci-identity", "0000:01:00.0",
-            "--driver-version", "fixture-driver", "--sdk-compiler-identity", "fixture-sdk",
+            "--device-model", probe_values["device_model"],
+            "--pci-identity", probe_values["pci_identity"],
+            "--driver-version", probe_values["driver_version"],
+            "--sdk-compiler-identity", probe_values["sdk_compiler_identity"],
+            "--identity-probe-file", str(probe),
             "--protocol-sample-count", "20", "--groups", "all")
         run(*identity_args)
         provenance = out / "provenance.json"
         base = (sys.executable, str(WRITER), "write", "--output", str(provenance),
                 "--root-sha", "1" * 40, "--root-status", "clean",
                 "--submodule-status-file", str(submodules), "--actlize-sha", "0" * 40,
-                "--binary-sha256", "2" * 64, "--device-model", "fixture-device",
-                "--pci-identity", "0000:01:00.0", "--driver-version", "fixture-driver",
-                "--sdk-compiler-identity", "fixture-sdk", "--commands-file", str(commands),
+                "--binary-sha256", "2" * 64,
+                "--device-model", probe_values["device_model"],
+                "--pci-identity", probe_values["pci_identity"],
+                "--driver-version", probe_values["driver_version"],
+                "--sdk-compiler-identity", probe_values["sdk_compiler_identity"],
+                "--identity-probe-file", str(probe), "--commands-file", str(commands),
                 "--groups", "all", "--run-identity-file", str(identity),
                 "--runner-exit-status", "0", "--protocol-sample-count", "20", "--",
                 "tools/fixture-runner.sh")
@@ -420,8 +661,11 @@ def dynamic_contract() -> None:
         require(value["argv"] == ["tools/fixture-runner.sh"], "runner argv not exact")
         require(value["commands"][0]["argv"] == ["fixture-bin", "--x=1"],
                 "child argv not exact")
+        require(value["identity_sources"] == {field: "measured" for field in probe_values}
+                and value["identity_probe_sha256"] == _probe_digest(probe),
+                "writer did not publish the per-field source and exact probe digest")
         bad = list(base)
-        bad[bad.index("fixture-device")] = "UNKNOWN"
+        bad[bad.index(probe_values["device_model"])] = "UNKNOWN"
         run(*bad, ok=False)
 
         # Reuse is a paired authority, not "some build command" plus the last

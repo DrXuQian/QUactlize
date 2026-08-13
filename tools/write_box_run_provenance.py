@@ -4,8 +4,9 @@
 The shell runners use ``record`` after every material child command and
 ``write`` exactly once when the runner terminates.  Keeping JSON quoting here
 avoids turning shell-escaped diagnostic text into an accidental second schema.
-Device identity is deliberately supplied by explicit runner environment; this
-tool never guesses which accelerator an OS-level probe happened to enumerate.
+Device identity is supplied together with the probe artifact that measured it
+or recorded the operator fallback.  The values, their per-field evidence
+sources, and the canonical probe digest are one immutable identity.
 """
 
 from __future__ import annotations
@@ -16,14 +17,26 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 import tempfile
+
+
+TOOLS_DIR = Path(__file__).resolve().parent
+sys.dont_write_bytecode = True
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
+import box_identity_schema as identity_schema
 
 
 SHA_RE = re.compile(r"[0-9a-f]{40,64}\Z")
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 POLICY_BEGIN = "<!-- BOX_RUN_POLICY_V1_BEGIN -->"
 POLICY_END = "<!-- BOX_RUN_POLICY_V1_END -->"
-IDENTITY_SCHEMA = "quactlize-box-run-identity-v1"
+IDENTITY_SCHEMA = "quactlize-box-run-identity-v2"
+PROVENANCE_SCHEMA = "quactlize-box-run-provenance-v2"
+IDENTITY_PROBE_SCHEMA = identity_schema.SCHEMA
+IDENTITY_FIELDS = identity_schema.FIELDS
+IDENTITY_SOURCES = identity_schema.SOURCES
 
 
 def fail(message: str) -> "NoReturn":
@@ -39,10 +52,58 @@ def nonempty(value: str, name: str) -> str:
 def known_identity(value: str, name: str) -> str:
     value = nonempty(value, name)
     if value.strip().lower() in {"unknown", "unset", "n/a", "na", "none"}:
-        fail(f"{name} must be measured explicit identity, not {value!r}")
+        fail(f"{name} must be a concrete measured/operator identity, not {value!r}")
     if "\n" in value or "\r" in value or "\0" in value:
         fail(f"{name} must be a single-line identity")
     return value
+
+
+def _json_without_duplicates(text: str, path: Path) -> object:
+    def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in items:
+            if key in value:
+                fail(f"identity probe {path} has duplicate JSON key {key!r}")
+            value[key] = item
+        return value
+
+    try:
+        return json.loads(
+            text, object_pairs_hook=pairs,
+            parse_constant=lambda token: fail(
+                f"identity probe {path} contains non-finite JSON value {token}"))
+    except json.JSONDecodeError as exc:
+        fail(f"cannot parse identity probe {path}: {exc}")
+
+
+def read_identity_probe(path: Path) -> tuple[dict[str, str], dict[str, str], str]:
+    """Read and canonically bind the helper's exact identity evidence."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        fail(f"cannot read identity probe {path}: {exc}")
+    value = _json_without_duplicates(text, path)
+    try:
+        values, sources = identity_schema.values_and_sources(value)
+        canonical = identity_schema.canonical_bytes(value)
+    except identity_schema.IdentityProbeError as exc:
+        fail(f"identity probe {path} contradicts its evidence: {exc}")
+    return values, sources, hashlib.sha256(canonical).hexdigest()
+
+
+def identity_probe_for_args(args: argparse.Namespace) -> tuple[dict[str, str], dict[str, str], str]:
+    values, sources, digest = read_identity_probe(Path(args.identity_probe_file))
+    cli_values = {
+        "device_model": known_identity(args.device_model, "device_model"),
+        "pci_identity": known_identity(args.pci_identity, "pci_identity"),
+        "driver_version": known_identity(args.driver_version, "driver_version"),
+        "sdk_compiler_identity": known_identity(
+            args.sdk_compiler_identity, "sdk_compiler_identity"),
+    }
+    differing = [field for field in IDENTITY_FIELDS if cli_values[field] != values[field]]
+    if differing:
+        fail("CLI identity differs from identity probe in: " + ", ".join(differing))
+    return values, sources, digest
 
 
 def record(args: argparse.Namespace) -> int:
@@ -206,17 +267,16 @@ def identity_payload(args: argparse.Namespace) -> dict[str, object]:
     groups = nonempty(args.groups, "groups")
     if "\n" in groups or "\r" in groups or "\0" in groups:
         fail("groups must be one exact single-line build selection")
+    identity_values, identity_sources, identity_probe_sha256 = identity_probe_for_args(args)
     return {
         "schema": IDENTITY_SCHEMA,
         "root_sha": root_sha,
         "submodule_status": read_submodule_status(Path(args.submodule_status_file)),
         "actlize_sha": args.actlize_sha,
         "binary_sha256": binary_sha,
-        "device_model": known_identity(args.device_model, "device_model"),
-        "pci_identity": known_identity(args.pci_identity, "pci_identity"),
-        "driver_version": known_identity(args.driver_version, "driver_version"),
-        "sdk_compiler_identity": known_identity(
-            args.sdk_compiler_identity, "sdk_compiler_identity"),
+        **identity_values,
+        "identity_sources": identity_sources,
+        "identity_probe_sha256": identity_probe_sha256,
         "protocol_sample_count": args.protocol_sample_count,
         "groups": groups,
     }
@@ -256,14 +316,22 @@ def read_identity(path: Path) -> dict[str, object]:
     expected_keys = {
         "schema", "root_sha", "submodule_status", "actlize_sha",
         "binary_sha256", "device_model", "pci_identity", "driver_version",
-        "sdk_compiler_identity", "protocol_sample_count", "groups",
+        "sdk_compiler_identity", "identity_sources", "identity_probe_sha256",
+        "protocol_sample_count", "groups",
         "identity_sha256",
     }
     if not isinstance(value, dict) or set(value) != expected_keys:
-        fail(f"run identity {path} does not have the exact v1 schema")
+        fail(f"run identity {path} does not have the exact v2 schema")
     digest = value.pop("identity_sha256")
     if value.get("schema") != IDENTITY_SCHEMA or not isinstance(digest, str):
         fail(f"run identity {path} has an invalid schema or digest")
+    sources = value.get("identity_sources")
+    if (not isinstance(sources, dict) or set(sources) != set(IDENTITY_FIELDS) or
+            any(source not in IDENTITY_SOURCES for source in sources.values())):
+        fail(f"run identity {path} has an invalid identity_sources map")
+    if not isinstance(value.get("identity_probe_sha256"), str) or not SHA256_RE.fullmatch(
+            value["identity_probe_sha256"]):
+        fail(f"run identity {path} has an invalid identity_probe_sha256")
     if identity_digest(value) != digest:
         fail(f"run identity {path} digest does not match its contents")
     value["identity_sha256"] = digest
@@ -301,18 +369,13 @@ def write(args: argparse.Namespace) -> int:
         fail("runner_argv must be non-empty")
 
     value: dict[str, object] = {
-        "schema": "quactlize-box-run-provenance-v1",
+        "schema": PROVENANCE_SCHEMA,
         "root_sha": root_sha,
         "root_status": "clean",
         "submodule_status": submodule_status,
         "actlize_sha": args.actlize_sha,
         "binary_sha256": binary_sha,
-        "device_model": known_identity(args.device_model, "device_model"),
-        "pci_identity": known_identity(args.pci_identity, "pci_identity"),
-        "driver_version": known_identity(args.driver_version, "driver_version"),
-        "sdk_compiler_identity": known_identity(
-            args.sdk_compiler_identity, "sdk_compiler_identity"),
-        # ``argv`` stays the exact top-level runner argv consumed by the v1
+        # ``argv`` stays the exact top-level runner argv consumed by the v2
         # adjudicator.  ``commands`` closes the otherwise-unrepresentable
         # multi-command build/run/analyse provenance.
         "argv": runner_argv,
@@ -322,6 +385,11 @@ def write(args: argparse.Namespace) -> int:
     if args.protocol_sample_count <= 0:
         fail("protocol_sample_count must be positive")
     value["protocol_sample_count"] = args.protocol_sample_count
+
+    identity_values, identity_sources, identity_probe_sha256 = identity_probe_for_args(args)
+    value.update(identity_values)
+    value["identity_sources"] = identity_sources
+    value["identity_probe_sha256"] = identity_probe_sha256
 
     identity = read_identity(Path(args.run_identity_file))
     provenance_identity = {
@@ -334,6 +402,8 @@ def write(args: argparse.Namespace) -> int:
         "pci_identity": value["pci_identity"],
         "driver_version": value["driver_version"],
         "sdk_compiler_identity": value["sdk_compiler_identity"],
+        "identity_sources": value["identity_sources"],
+        "identity_probe_sha256": value["identity_probe_sha256"],
         "protocol_sample_count": args.protocol_sample_count,
         "groups": nonempty(args.groups, "groups"),
     }
@@ -400,6 +470,7 @@ def parser() -> argparse.ArgumentParser:
         target.add_argument("--pci-identity", required=True)
         target.add_argument("--driver-version", required=True)
         target.add_argument("--sdk-compiler-identity", required=True)
+        target.add_argument("--identity-probe-file", required=True)
         target.add_argument("--protocol-sample-count", type=int, required=True)
         target.add_argument("--groups", default="not-applicable")
 
@@ -424,6 +495,7 @@ def parser() -> argparse.ArgumentParser:
     out.add_argument("--pci-identity", required=True)
     out.add_argument("--driver-version", required=True)
     out.add_argument("--sdk-compiler-identity", required=True)
+    out.add_argument("--identity-probe-file", required=True)
     out.add_argument("--groups", default="not-applicable")
     out.add_argument("--run-identity-file", required=True)
     out.add_argument("--commands-file", required=True)

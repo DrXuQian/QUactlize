@@ -67,7 +67,7 @@ def write_policy(path: pathlib.Path, value: dict) -> A.LoadedPolicy:
 
 def provenance(commands: list[dict] | None = None) -> dict:
     return {
-        "schema": "quactlize-box-run-provenance-v1",
+        "schema": "quactlize-box-run-provenance-v2",
         "root_sha": "a" * 40, "root_status": "clean",
         "submodule_status": " " + "c" * 40 + " third_party/actlize (heads/fixture)",
         "actlize_sha": "c" * 40,
@@ -82,8 +82,40 @@ def provenance(commands: list[dict] | None = None) -> dict:
 
 def attach_run_identity(root: pathlib.Path, value: dict, groups: str) -> None:
     """Publish the independently hashed identity used by the real runners."""
+    probe = {
+        "schema": "quactlize-box-identity-probe-v1",
+        "identity": {
+            field: {"value": value[field], "source": "measured"}
+            for field in ("device_model", "pci_identity", "driver_version",
+                          "sdk_compiler_identity")
+        },
+        "device_probe": {
+            "status": "measured", "method": "fixture-hggc-runtime",
+            "reason": "", "runtime_driver_version": "fixture-driver",
+            "pci_measurement": "runtime-properties",
+            "driver_measurement": "runtime-api", "device_count": 1,
+            "selected_ordinal": 0,
+            "candidates": [{"ordinal": 0, "name": "fixture-ppu",
+                            "compute_capability": "10.0", "compute_units": 72,
+                            "pci_identity": "0000:00:00.0"}],
+            "property_errors": [],
+        },
+        "sdk_compiler_probe": {
+            "status": "measured", "reason": "",
+            "sdk_root_authority": "fixture", "sdk_root": "/fixture/sdk",
+            "compiler_path": "/fixture/sdk/bin/hgcc",
+            "version_first_line": "fixture-sdk",
+            "identity_value": "fixture-sdk",
+        },
+    }
+    (root / "identity-probe.json").write_text(json.dumps(probe))
+    sources = {field: probe["identity"][field]["source"]
+               for field in probe["identity"]}
+    probe_digest = hashlib.sha256(
+        json.dumps(probe, ensure_ascii=True, sort_keys=True,
+                   separators=(",", ":")).encode("utf-8")).hexdigest()
     payload = {
-        "schema": "quactlize-box-run-identity-v1",
+        "schema": "quactlize-box-run-identity-v2",
         "root_sha": value["root_sha"],
         "submodule_status": value["submodule_status"],
         "actlize_sha": value["actlize_sha"],
@@ -92,6 +124,8 @@ def attach_run_identity(root: pathlib.Path, value: dict, groups: str) -> None:
         "pci_identity": value["pci_identity"],
         "driver_version": value["driver_version"],
         "sdk_compiler_identity": value["sdk_compiler_identity"],
+        "identity_sources": sources,
+        "identity_probe_sha256": probe_digest,
         "protocol_sample_count": value["protocol_sample_count"],
         "groups": groups,
     }
@@ -100,6 +134,8 @@ def attach_run_identity(root: pathlib.Path, value: dict, groups: str) -> None:
     identity = dict(payload, identity_sha256=digest)
     (root / "run-identity.json").write_text(json.dumps(identity))
     value["groups"] = groups
+    value["identity_sources"] = sources
+    value["identity_probe_sha256"] = probe_digest
     value["run_identity_sha256"] = digest
 
 
@@ -119,6 +155,7 @@ def rewrite_run_identity(root: pathlib.Path, mutate, *, mirror_provenance: bool 
         for field in (
                 "root_sha", "submodule_status", "actlize_sha", "binary_sha256",
                 "device_model", "pci_identity", "driver_version", "sdk_compiler_identity",
+                "identity_sources", "identity_probe_sha256",
                 "protocol_sample_count", "groups"):
             provenance_value[field] = identity[field]
         provenance_value["run_identity_sha256"] = identity["identity_sha256"]
@@ -172,6 +209,8 @@ def dense_bundle(root: pathlib.Path, median: Decimal, *, wk1: bool = True,
                "--iterations": 20, "--mode": 1, "--alpha": 1, "--beta": 0}
     common = [f"{name}={value}" for name, value in problem.items()]
     commands = [
+        {"role": "box-identity-probe", "argv": ["python3", "probe.py"],
+         "exit_status": 0},
         {"role": "wk1-static-target", "argv": ["python3", "static.py"], "exit_status": 0},
         {"role": "wk1-committed-production-delivery",
          "argv": ["git", "-C", str(ROOT), "show",
@@ -279,6 +318,8 @@ def make_manifest(values: dict[str, list[str]]) -> tuple[dict, list[str]]:
 def gemv_bundle(root: pathlib.Path, manifest: dict, lines: list[str]) -> None:
     root.mkdir()
     commands = [
+        {"role": "box-identity-probe", "argv": ["python3", "probe.py"],
+         "exit_status": 0},
         {"role": "device-build", "argv": ["bash", "build.sh"], "exit_status": 0},
         {"role": "base-tactic-census", "argv": ["python3", "census.py"], "exit_status": 0},
         {"role": "manifest", "argv": ["fixture-bin", "--manifest-json"], "exit_status": 0},
@@ -396,6 +437,67 @@ def main() -> None:
         check(result["registered_verdict"] == "VOID" and
               any("run-identity.json" in x for x in result["reasons"]),
               "a dense bundle without immutable run identity was admitted")
+        tampered_probe_source = td / "tampered-dense-probe-source"
+        dense_bundle(tampered_probe_source, classic)
+        probe_path = tampered_probe_source / "identity-probe.json"
+        probe = json.loads(probe_path.read_text())
+        probe["identity"]["device_model"]["source"] = "operator"
+        probe_path.write_text(json.dumps(probe))
+        result = A.adjudicate_dense_bundle(loaded, tampered_probe_source)
+        check(result["registered_verdict"] == "VOID" and
+              any("identity-probe" in x and
+                  ("sources" in x or "digest" in x or "self-contradictory" in x)
+                  for x in result["reasons"]),
+              "a tampered measured/operator source was admitted")
+        tampered_probe_evidence = td / "tampered-dense-probe-evidence"
+        dense_bundle(tampered_probe_evidence, classic)
+        probe_path = tampered_probe_evidence / "identity-probe.json"
+        probe = json.loads(probe_path.read_text())
+        probe["device_probe"]["candidates"][0]["name"] = "planted-other-device"
+        probe_path.write_text(json.dumps(probe))
+        result = A.adjudicate_dense_bundle(loaded, tampered_probe_evidence)
+        check(result["registered_verdict"] == "VOID" and
+              any("identity-probe" in x and
+                  ("canonical digest" in x or "self-contradictory" in x)
+                  for x in result["reasons"]),
+              "tampered probe evidence bytes were admitted")
+        resigned_contradiction = td / "resigned-contradictory-probe"
+        dense_bundle(resigned_contradiction, classic)
+        probe_path = resigned_contradiction / "identity-probe.json"
+        probe = json.loads(probe_path.read_text())
+        probe["device_probe"]["device_count"] = 2
+        probe["device_probe"]["candidates"].append({
+            "ordinal": 1, "name": "other-visible-ppu",
+            "compute_capability": "10.0", "compute_units": 72,
+            "pci_identity": "0000:01:00.0",
+        })
+        probe_path.write_text(json.dumps(probe))
+        probe_digest = hashlib.sha256(
+            json.dumps(probe, ensure_ascii=True, sort_keys=True,
+                       separators=(",", ":")).encode()).hexdigest()
+        rewrite_run_identity(
+            resigned_contradiction,
+            lambda identity: identity.__setitem__(
+                "identity_probe_sha256", probe_digest),
+            mirror_provenance=True)
+        result = A.adjudicate_dense_bundle(loaded, resigned_contradiction)
+        check(result["registered_verdict"] == "VOID" and
+              any("self-contradictory" in x for x in result["reasons"]),
+              "a fully re-signed two-device probe claiming measured identity was admitted")
+        stale_v1_identity = td / "stale-v1-identity"
+        dense_bundle(stale_v1_identity, classic)
+        identity_path = stale_v1_identity / "run-identity.json"
+        identity = json.loads(identity_path.read_text())
+        identity["schema"] = "quactlize-box-run-identity-v1"
+        payload = {key: value for key, value in identity.items()
+                   if key != "identity_sha256"}
+        identity["identity_sha256"] = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        identity_path.write_text(json.dumps(identity))
+        result = A.adjudicate_dense_bundle(loaded, stale_v1_identity)
+        check(result["registered_verdict"] == "VOID" and
+              any("schema differs" in x for x in result["reasons"]),
+              "a re-signed v1 identity was admitted by the v2 reader")
         tampered_identity = td / "tampered-dense-run-identity"
         dense_bundle(tampered_identity, classic)
         rewrite_run_identity(
