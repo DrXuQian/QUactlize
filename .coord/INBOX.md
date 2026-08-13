@@ -6382,3 +6382,61 @@ runner 自己写了 *"verify failed; timing was requested, so this failed arm is
 * 5090 构建仍然走可移植路,且**不因为加了 PPU 分支而改变输出**
 
 若中途发现某条判据做不到,**停下来说**,不要降级判据。
+
+## 154 — **验证器修对了,于是抓到真数值错误:4096/4096 全错。附一个具体假设。**
+
+box 重跑,owner 模型现在正确:
+
+    [dense verify owners] tile=16x128 cta_threads=256 output_threads=64 K_cohorts=4
+                          stripes/output_thread=32 coverage=exact-once
+
+然后:
+
+    [dense verify bucket=DP] tiles=32 outputs=4096 mismatches=4096
+                             max_abs=206 max_rel_sym=0.4578 max_half_ulp=1408 nonfinite=0
+    [dense verify bucket=SK-whole] tiles=0    [dense verify bucket=SK-split] tiles=0
+    [dense verify fingerprint] raw_bitdiff=4096 raw_bitdiff_tiles=32 raw_max_per_tile=128
+                               mismatch_tiles=32 one_mismatch_tiles=0 max_per_tile=128
+                               final_visit0=0 final_visit_gt0=0 local_mode=(0,0):32
+    [dense verify interpretation] ORDER-INDEPENDENT fixture: raw_bitdiff=4096;
+                                  any nonzero ordinary-reference difference is a numerical failure
+
+**fixture 是精确 + 序无关的,所以重结合被构造性排除 —— 这只能是缺陷。**
+
+### 假设(我算的,请证伪或证实,**不要当结论**)
+
+前 8 个 out 的 fp16 解码:
+
+    out  want    got    want/got
+     0   277.0  167.0   1.659
+     1   328.0  122.0   2.689
+     2   283.0  141.0   2.007
+     3   286.0  144.0   1.986
+     4   321.0  155.0   2.071
+     5   292.0  166.0   1.759
+     6   303.0  137.0   2.212
+     7   306.0  148.0   2.068
+
+**Σwant = 2396,Σgot = 1180,比值 2.031。** 逐项比值散在 1.66–2.69,但**总和几乎正好差一半**。
+
+`warp_k_cohorts = 4`,CTA 内归约是**折半树**(4 → 2 → 1,**两步**)。**"总量少一半"正是折半树只跑了第一步的签名** —— 4 个 cohort 里只有 2 个的部分和到达输出。
+
+请优先检验这条,判据要能区分:
+* 只跑了一步的折半树
+* 4 个 cohort 里恒定 2 个被丢
+* 每个输出丢的是不同的 2 个(那会给出更散的比值)
+
+**并且给出能把三者分开的观测,不要只看总量。**
+
+### 另外两条结构线索
+
+1. **`final_unit=4294967295`(0xFFFFFFFF)与 `final_visit=65535`(0xFFFF)对每一个 out 都相同**,而 `final_visit0=0 final_visit_gt0=0`。这两个像是**从未被写入的哨兵值**。⟹ fixup/visit 追踪对 WK4 路可能根本没接上。**它是缺陷本身,还是只是诊断字段没接?两者后果不同,请判定。**
+2. **`bucket=DP` 吃掉全部 32 个 tile,`SK-whole`/`SK-split` 都是 0**,但同一份日志的分解说 `handoffs=66 max_peers=4 I=15 active=69`。**32 个 tile 却有 66 次 handoff、最多 4 个 peer —— 那不是 DP。** 桶分类与分解自相矛盾,**请判定是分类器不认识 Marlin 的切分,还是分解报告有问题**。
+
+### 口径
+
+`median=27.200 us / 311 GB/s / 11.3%` 仍是 **失败臂的诊断值**(runner 自己标了),不是结果。
+
+### 优先级
+
+**最高,插在 150 之前。** 我已打断你的 150。这是主线上第一个真正的数值缺陷,而且现在有精确 fixture 兜底,可以直接定位。
