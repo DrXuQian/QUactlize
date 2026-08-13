@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-13 10:07:55 UTC
+    updated-at:     2026-08-13 10:37:44 UTC
     inbox-consumed: 166
-    working-on:     standalone Marlin-Cute-aligned PPU stack: format/scheduler/cadence oracles closed; instantiate the independent kernel and wire the isolated fixed target
-    blocked-on:     no implementation blocker; PPU instruction-count parity remains a box-side postcondition after local structural/compile oracles close
-    local-gates:    L167 classic format PASS; L168 classic/Awesome cadence MATCH with 3/3 plants RED; new collective and scheduler headers compile independently
-    last-commit:    d0cc3e8 Checkpoint standalone traffic ledger (next checkpoint staged explicitly below)
-    last-heartbeat: 260
+    working-on:     standalone Marlin-Cute-aligned PPU stack: audit/fix the fixed target against classic/Awesome hot-path cadence, then remove the generic WK4 compatibility branch
+    blocked-on:     no local implementation blocker; PPU instruction/traffic parity and timing remain device postconditions
+    local-gates:    L167 format PASS; L168 cadence MATCH + 3/3 plants RED; L169 generated unit instantiates standalone collective/scheduler/kernel; StreamK contract PASS; wrong generic fragment order is 1536/2048 RED
+    last-commit:    0c135bc Checkpoint standalone Marlin kernel integration
+    last-heartbeat: 281
