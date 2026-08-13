@@ -87,6 +87,7 @@
 #include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_marlin.hpp"
 #if defined(DENSE_MARLIN_WK4_AB)
 #include "marlin_format_ppu.hpp"
+#include "marlin_tactic_space_ppu.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
 #include "quactlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp"
 #endif
@@ -350,6 +351,13 @@ struct Cfg {
 template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int St,
           int WarpK>
 struct StandaloneMarlinCfg {
+  static constexpr marlin_tactics_ppu::MarlinTacticPPU Tactic{
+      TM, TN, TK, WM, WN, WarpK, St,
+      marlin_tactics_ppu::MarlinLoadKindPPU::CpAsync};
+  static_assert(GroupSize == marlin_tactics_ppu::kMarlinGroupSize,
+                "standalone Marlin format authority is currently gs128");
+  static_assert(marlin_tactics_ppu::admitted(Tactic),
+                "standalone Marlin Cfg must be admitted by its own tactic authority");
   using CfgTile = Shape<cute::Int<TM>, cute::Int<TN>, cute::Int<TK>>;
   using CfgWarp = Shape<cute::Int<WM>, cute::Int<WN>, cute::Int<WarpK>>;
   using Epi = typename cutlass::epilogue::collective::CollectiveBuilder<

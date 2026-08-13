@@ -21,6 +21,7 @@ PATHS = {
     "unit": ROOT / "benchmarks/lowbit_dense_unit.inc",
     "bench": ROOT / "benchmarks/test_lowbit_dense_bench.cu",
     "format": ROOT / "quactlize/include/marlin_format_ppu.hpp",
+    "standalone_tactic": ROOT / "quactlize/include/marlin_tactic_space_ppu.hpp",
     "collective": ROOT / (
         "quactlize/include/quactlize_extensions/cutlass/gemm/collective/"
         "marlin_collective_ppu.hpp"
@@ -121,6 +122,9 @@ def audit(files: dict[str, str]) -> list[str]:
     bench = files["bench"]
     for token in (
         "struct StandaloneMarlinCfg",
+        '#include "marlin_tactic_space_ppu.hpp"',
+        "marlin_tactics_ppu::MarlinTacticPPU Tactic",
+        "marlin_tactics_ppu::admitted(Tactic)",
         "MarlinCollectivePPU<", "MarlinKernelPPU<",
         "quactlize::marlin::pack_biased_int4_bytes(",
         "quactlize::marlin::unpack_biased_int4_bytes(",
@@ -139,6 +143,14 @@ def audit(files: dict[str, str]) -> list[str]:
         "permute_gs128_scales", "unpermute_gs128_scales",
     ):
         require(fmt, token, "Marlin format", bad)
+
+    standalone_tactic = files["standalone_tactic"]
+    for token in (
+        "struct MarlinTacticPPU", "kMarlinClassicReferencePPU",
+        "constexpr bool admitted(", "static_assert(cartesian_size() == 60000",
+    ):
+        require(token=token, text=standalone_tactic,
+                owner="standalone tactic authority", bad=bad)
 
     collective = files["collective"]
     for token in (
@@ -229,6 +241,9 @@ def main() -> int:
          "using StandaloneCfg = Cfg<"),
         ("bench", "format-back-to-xplane", "quactlize::marlin::pack_biased_int4_bytes(",
          "xplane::place_derived_warp_k("),
+        ("bench", "cfg-bypasses-tactic-authority",
+         "static_assert(marlin_tactics_ppu::admitted(Tactic),",
+         "static_assert(true,"),
         ("collective", "layout-loses-k-cohorts",
          "cute::Layout<cute::Shape<cute::_1, cute::_2, cute::_4>>",
          "cute::Layout<cute::Shape<cute::_1, cute::_2, cute::_1>>"),
@@ -264,7 +279,8 @@ def main() -> int:
         return 1
     print(
         "[dense-marlin-wk4] PASS: standalone format/collective/scheduler/kernel "
-        "wired; generic WK4 compatibility absent; ten structural plants rejected"
+        "wired; standalone tactic authority consumed; generic WK4 compatibility "
+        "absent; eleven structural plants rejected"
     )
     return 0
 
