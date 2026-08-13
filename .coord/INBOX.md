@@ -6034,3 +6034,36 @@ C → A → B。C 最便宜且决定后两者的形状;B 的实现要等冻结�
 * 现有判读器对身份篡改的 VOID 规则不变。
 
 **这条做完立刻告诉我,用户在等。** 其余排队项(139-C 的实现、132B 第三臂)仍在冻结之后。
+
+## 143 — 用户要求参考 vLLM Marlin 的 sweep 轴。**排在 142 之后**(142 挡着上机)
+
+源在 `/root/ref5090/marlin/vllm-raw/csrc/libtorch_stable/moe/marlin_moe_wna16/ops.cu`。我先读了一遍,把要点放这里,**请你独立复核并给出我们的差集** —— 不要拿我这份当清单(我漏过一次)。
+
+### vLLM 的轴
+
+模板实例化(`get_marlin_kernel`):`a/b/c/s_type`、`thread_m_blocks`、`thread_n_blocks`、`thread_k_blocks`、**`m_block_size_8`(独立布尔)**、`has_act_order`、`has_zp`、`is_zp_float`、`group_blocks`、`threads`、`stages`。运行时另有 `exec_config_t = { blocks_per_sm, thread_config }`。
+
+### 它不 sweep,是手写 3 条优先级列表
+
+    small_batch: {128,128,256} {64,128,128} {128,64,128}     // thread_k, thread_n, num_threads
+    large_batch: {64,256,256}  {64,128,128} {128,64,128}
+
+`determine_exec_config` 取**第一个合法的**。**这和我们刚扔掉的 `ppu_dense_configs.inc` 5 行手写表是同一形状** —— TileM=8 就是这么被埋掉的(INBOX 127)。所以 vLLM 能告诉我们**有哪些轴**,不能告诉我们**怎么搜**。
+
+### `blocks_per_sm` 的定法,与我们的旋钮直接相关
+
+    cudaFuncGetAttributes(&attr, kernel);
+    reg_size    = max(attr.numRegs,1) * num_threads * 4;
+    allow_count = min(255*1024 / reg_size, max_shared_mem / (cache_size + 1536));
+    thread_m_blocks == 1 ? clamp(allow_count,1,4) : clamp(allow_count,1,2);
+
+**注意它的不一致:寄存器取自真实实例化 kernel 的 `attr.numRegs`,共享取自 host 公式 `get_kernel_cache_size`。** 同一个函数里两个证据等级 —— **正是你昨晚在我们这边证伪的那件事**(host 公式 262,144 vs 真实类型 262,160,差 16 B)。请在文档里点出这一点:**我们已经比它严,别退回去**。
+
+**decode 封顶 4 是硬编码常数**,不是测出来的最优;我们扫到 6,而我们自己的 occupancy 算术说寄存器限允许 6。这是个有用的外部参照点,但**不是判据**。
+
+### 请你交付
+
+1. **独立复核上面的轴清单**,补我漏的(我只读了 MoE 那个 ops.cu,dense 的 `gptq_marlin` 路可能还有别的轴)。
+2. **给差集三态**:我们有的 / 我们没有的 / **我们有而它没有的**。第三类同样重要 —— 若我们的轴更多,说明我们的搜索空间没退化。
+3. `has_act_order` 请定性:那是**功能缺口**(权重/激活重排语义)还是搜索轴?我判断是前者,请确认或推翻。
+4. **不要因为 vLLM 有某个轴就往我们的枚举里加。** 加轴的判据是"它能不能改变某个 shape 上的赢家",不是"别人有"。若某个轴在我们的架构上恒定或不可达,**写清楚为什么**,并按 [[observation-is-not-mechanism]] 让它成为 `static_assert` 而不是负面清单。
