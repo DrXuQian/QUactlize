@@ -427,10 +427,9 @@ class MarlinCollectivePPU {
     cute::clear(accum);
     a_global_read += kAGlobalOuter * (Stages - 1);
 
-    int pipe = 0;
     while (k_tiles_remaining > 0) {
       #pragma unroll
-      for (int stage = 0; stage < Stages;) {
+      for (int pipe = 0; pipe < Stages;) {
         #pragma unroll
         for (int inner = 0; inner < BInnerIters; ++inner) {
           load_registers(inner + 1, pipe % Stages);
@@ -451,10 +450,6 @@ class MarlinCollectivePPU {
       a_global_read += kAGlobalOuter * Stages;
     }
     marlin_ppu_detail::cp_async_wait<0>();
-    // The next phase aliases this 50,176-byte pipeline store with Marlin's
-    // CTA reduction/output staging.  cp.async.wait closes the async copy
-    // group, but it is not a CTA rendezvous.
-    __syncthreads();
   }
 };
 
