@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-13 11:13:58 UTC
+    updated-at:     2026-08-13 11:29:52 UTC
     inbox-consumed: 166
-    working-on:     standalone Marlin-Cute-aligned PPU stack: L167-L170 now form the active aggregate contract; migrating box/adjudicator evidence off retired generic-WK4 tokens
+    working-on:     standalone Marlin-Cute-aligned PPU stack: box/adjudicator now consume the exact L167-L170 standalone evidence; retiring stale generic-Marlin false-green gates before adding standalone sweep axes
     blocked-on:     no local implementation blocker; PPU instruction/traffic parity and timing remain device postconditions
-    local-gates:    standalone aggregate PASS (L167 format, L168 cadence, L169 generated type, L170 scheduler lifecycle); ten standalone/generic-isolation plants RED
-    last-commit:    7f608ad Rebind Marlin WK4 gate to standalone stack
-    last-heartbeat: 284
+    local-gates:    standalone aggregate + committed evidence + bundle transaction + mechanical adjudicator PASS; 3/7/10 component reds and six source plants close
+    last-commit:    46ca651 Migrate box protocol to standalone Marlin
+    last-heartbeat: 285
