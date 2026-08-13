@@ -12,6 +12,7 @@ This checker therefore composes the production-bound standalone proofs:
 * L167: classic packed-int4/scale format with independent inverse anchors;
 * L168: classic/Awesome cadence, fixed launch and 4->2->1 reduction trace;
 * L170: production ``MarlinSchedulerPPU`` ABI, exact coverage and q-lock life;
+* L173: production per-CTA state init and absolute-q/K segment rebasing;
 * the structural stack gate, including absence of generic WarpK seams.
 
 The wider tactic domain is owned separately by L172.  It is not silently
@@ -41,6 +42,11 @@ CHECKS = (
         "scheduler",
         ("bash", "dev/fold_derivation/run_l170_standalone_marlin_scheduler.sh"),
         "[l170:runner] positive=PASS negative_controls=7/7_RED result=PASS",
+    ),
+    (
+        "cta-state",
+        (sys.executable, "ci/check_l173_marlin_cta_state.py"),
+        "[l173-contract] PASS:",
     ),
     (
         "stack",

@@ -338,12 +338,24 @@ class MarlinKernelPPU {
 
     TileScheduler scheduler(params.scheduler);
     auto work = scheduler.get_current_work();
+    // An inactive physical CTA must not manufacture mainloop address state.
+    // This mirrors classic's early return before its pointer initialization
+    // and makes init-count a meaningful, locally checkable property.
+    if (!work.is_valid()) {
+      return;
+    }
+    auto cta_state = CollectiveMainloop::init_cta_state(
+        params.mainloop, problem_m, problem_n, problem_k, tid);
     while (work.is_valid()) {
       auto accum = cute::make_fragment_like<ElementAccumulator>(
           cute::partition_fragment_C(TiledMma{}, cute::take<0, 2>(TileShape{})));
-      CollectiveMainloop::run_segment(
-          params.mainloop, problem_m, problem_n, problem_k,
-          work, accum, shared.tensors.mainloop);
+      // SegmentState contains every q/K-dependent address and ends its
+      // lifetime before the cooperative.  CtaState alone survives reduction.
+      {
+        auto segment = CollectiveMainloop::rebase_segment(cta_state, work);
+        CollectiveMainloop::run_segment(
+            cta_state, segment, accum, shared.tensors.mainloop);
+      }
 
       thread_block_reduce(accum, shared);
       TileScheduler::acquire_peer_turn(params.scheduler, work, tid);
