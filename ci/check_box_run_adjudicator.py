@@ -173,6 +173,15 @@ def rewrite_provenance_commands(root: pathlib.Path, mutate) -> None:
                 for item in value["commands"]))
 
 
+STANDALONE_STATIC_PASS = (
+    "[dense-marlin-wk4] PASS: standalone format/collective/scheduler/kernel wired; "
+    "generic WK4 compatibility absent; ten structural plants rejected"
+)
+STANDALONE_EVIDENCE = (
+    ROOT / "dev/fold_derivation/l143_standalone_marlin.expected.txt"
+).read_text()
+
+
 def dense_log(median: Decimal, *, bpc: int = 1, cap: int = 6,
               low: Decimal | None = None, high: Decimal | None = None,
               prereq: bool = True) -> str:
@@ -184,8 +193,9 @@ def dense_log(median: Decimal, *, bpc: int = 1, cap: int = 6,
     low = median if low is None else low
     high = median if high is None else high
     return (
-        "  [dense marlin aligned artifact] batch=0 bytes=8388608 x "
-        "roundtrip_bad=0/16777216\n"
+        "  [dense marlin aligned artifact] batch=0 bytes=8388608 "
+        "placement=classic-marlin-u32 scale=classic-gs128-permuted "
+        "consumer_axis=WarpK32 roundtrip_bad=0/16777216\n"
         "  [streamk fixture exactness] fixture=a0-exact shape=1x4096x4096 x -> "
         "ORDER-INDEPENDENT+FP16-EXACT\n"
         f"  [dense marlin decomposition] real_cu=72 occupancy_api={cap} blocks_per_cu={bpc} "
@@ -201,7 +211,7 @@ def dense_log(median: Decimal, *, bpc: int = 1, cap: int = 6,
         "repeats=8 stable=1 all-bitexact=1 same-workspace=1 external-lock-reset=0\n")
 
 
-def dense_bundle(root: pathlib.Path, median: Decimal, *, wk1: bool = True,
+def dense_bundle(root: pathlib.Path, median: Decimal, *, standalone: bool = True,
                  prereq: bool = True, unknown: bool = False, cap: int = 6,
                  low: Decimal | None = None, high: Decimal | None = None) -> None:
     root.mkdir()
@@ -211,11 +221,12 @@ def dense_bundle(root: pathlib.Path, median: Decimal, *, wk1: bool = True,
     commands = [
         {"role": "box-identity-probe", "argv": ["python3", "probe.py"],
          "exit_status": 0},
-        {"role": "wk1-static-target", "argv": ["python3", "static.py"], "exit_status": 0},
-        {"role": "wk1-committed-production-delivery",
+        {"role": "standalone-static-target", "argv": ["python3", "static.py"],
+         "exit_status": 0},
+        {"role": "committed-standalone-evidence",
          "argv": ["git", "-C", str(ROOT), "show",
                   "a" * 40 + ":dev/fold_derivation/"
-                  "l143_wk4_production_delivery.expected.txt"],
+                  "l143_standalone_marlin.expected.txt"],
          "exit_status": 0},
         {"role": "device-build", "argv": ["bash", "build.sh"], "exit_status": 0},
     ]
@@ -241,7 +252,7 @@ def dense_bundle(root: pathlib.Path, median: Decimal, *, wk1: bool = True,
         f"[marlin-wk4] root-sha={p['root_sha']}\n"
         f"[marlin-wk4] actlize-sha={p['actlize_sha']}\n"
         f"[marlin-wk4] binary-sha256={p['binary_sha256']}\n"
-        "[marlin-wk4] PASS: classic-aligned WK4 consumer built on shipping bytes; "
+        "[marlin-wk4] PASS: standalone classic Marlin built on classic u32 bytes; "
         "supported B points passed exact output + 8-launch locks; over-cap B stayed NOT RUN\n")
     (root / "build.log").write_text("fixture build\n")
     (root / "illegal-bpc.log").write_text(
@@ -256,19 +267,16 @@ def dense_bundle(root: pathlib.Path, median: Decimal, *, wk1: bool = True,
                 f"[marlin-wk4] NOT RUN: B={bpc} exceeds Gemm::maximum_active_blocks()={cap}\n")
     if unknown:
         (root / "bpc3.log").write_text("unregistered diagnostic\n")
-    if wk1:
-        (root / "wk1-admission.log").write_text(
-            "[dense-marlin-wk4] PASS: isolated 1Mx2Nx4K type/shipping-artifact/CLI; "
-            "historical target unchanged; thirteen structural plants rejected\n"
-            "[marlin-wk4] wk1-evidence=committed-local-oracle source-sha=" + "a" * 40 +
-            " path=dev/fold_derivation/l143_wk4_production_delivery.expected.txt "
-            "fresh-box-execution=0\n"
-            "L143 direct-pair pairs=8192/8192 codes=16384/16384 "
-            "destinations=8192/8192 bad-pairs=0 formula-mismatch=0 bad-fragments=0 "
-            "map-diff=0 shipping-hash=b89b157b5b1bd6c3\n"
-            "L143 WK1 shipping map-diff=0 byte-diff=0 result=BIT-IDENTICAL\n"
-            "L143 shipping-pair-scatter=EXACT artifact-order=RED compact-order=RED "
-            "first32=RED wrong-pair=RED source-swap=RED WK1-BYTES=UNCHANGED result=PASS\n")
+    if standalone:
+        evidence_lines = STANDALONE_EVIDENCE.splitlines()
+        check(len(evidence_lines) == 7,
+              "standalone authority is not the exact seven-line contract")
+        (root / "local-evidence-admission.log").write_text(
+            STANDALONE_STATIC_PASS + "\n"
+            "[marlin-wk4] local-evidence=committed-standalone-oracle source-sha=" +
+            "a" * 40 +
+            " path=dev/fold_derivation/l143_standalone_marlin.expected.txt "
+            "fresh-box-execution=0\n" + STANDALONE_EVIDENCE)
 
 
 INCUMBENT = "int4/native/s16/t128/dense/m1/n8/c2"
@@ -412,6 +420,10 @@ def main() -> None:
             result = A.adjudicate_dense_bundle(loaded, bundle)
             check_three_sections(result, name)
             check(result["registered_verdict"] == expected, f"{name}: {result}")
+            check({(cell.get("warp_k"), cell.get("blocks_per_cu"))
+                   for cell in result["cell_results"]} ==
+                  {(4, 1), (4, 2), (4, 4), (4, 6)},
+                  f"{name}: dense publication contains non-WK4 pseudo-cells")
             if name == "boundary":
                 check(not result["boundary_unresolved"],
                       "a singleton exactly on the registered boundary was called crossing")
@@ -425,11 +437,11 @@ def main() -> None:
         check(result["registered_verdict"] == "PARTIAL" and result["boundary_unresolved"],
               "boundary-crossing band was not reported unresolved")
         bundle = td / "void"
-        dense_bundle(bundle, classic, wk1=False)
+        dense_bundle(bundle, classic, standalone=False)
         result = A.adjudicate_dense_bundle(loaded, bundle)
         check(result["registered_verdict"] == "VOID" and
-              any("wk1-admission" in x for x in result["reasons"]),
-              f"missing WK1 evidence did not void: {result}")
+              any("local-evidence-admission" in x for x in result["reasons"]),
+              f"missing standalone evidence did not void: {result}")
         missing_identity = td / "missing-dense-run-identity"
         dense_bundle(missing_identity, classic)
         (missing_identity / "run-identity.json").unlink()
@@ -518,16 +530,17 @@ def main() -> None:
         check(result["registered_verdict"] == "VOID" and
               any("differs from 'not-applicable'" in x for x in result["reasons"]),
               "a dense identity carrying a GEMV build selection was admitted")
-        false_wk1 = td / "false-wk1"
-        dense_bundle(false_wk1, classic)
-        text = (false_wk1 / "wk1-admission.log").read_text().replace(
-            "WK1-BYTES=UNCHANGED result=PASS", "WK1-BYTES=UNCHANGED result=FAIL")
-        (false_wk1 / "wk1-admission.log").write_text(text + "unrelated result=PASS\n")
-        result = A.adjudicate_dense_bundle(loaded, false_wk1)
-        check_three_sections(result, "false-wk1")
+        false_standalone = td / "false-standalone"
+        dense_bundle(false_standalone, classic)
+        path = false_standalone / "local-evidence-admission.log"
+        text = path.read_text().replace(
+            "negative_controls=7/7_RED", "negative_controls=6/7_RED")
+        path.write_text(text + "unrelated result=PASS\n")
+        result = A.adjudicate_dense_bundle(loaded, false_standalone)
+        check_three_sections(result, "false-standalone")
         check(result["registered_verdict"] == "VOID" and all(
             x["verdict"] == "NOT_ADJUDICATED" for x in result["cell_results"]),
-            "unrelated PASS masked a failed final WK1 line or interpretation continued after VOID")
+            "unrelated PASS masked failed standalone evidence or interpretation continued after VOID")
         missing_rung = td / "missing-rung"
         dense_bundle(missing_rung, classic)
         (missing_rung / "bpc4.log").unlink()
@@ -618,36 +631,36 @@ def main() -> None:
               any("B1 used an explicit override" in x for x in result["reasons"]),
               "an explicitly overridden B1 was accepted as the default path")
 
-        stale_wk1_role = td / "stale-wk1-role"
-        dense_bundle(stale_wk1_role, classic)
-        def restore_stale_wk1_role(rows):
+        stale_standalone_role = td / "stale-standalone-role"
+        dense_bundle(stale_standalone_role, classic)
+        def restore_stale_standalone_role(rows):
             next(row for row in rows
-                 if row["role"] == "wk1-committed-production-delivery")["role"] = \
-                "wk1-production-delivery"
-        rewrite_provenance_commands(stale_wk1_role, restore_stale_wk1_role)
-        result = A.adjudicate_dense_bundle(loaded, stale_wk1_role)
+                 if row["role"] == "committed-standalone-evidence")["role"] = \
+                "standalone-production-delivery"
+        rewrite_provenance_commands(stale_standalone_role, restore_stale_standalone_role)
+        result = A.adjudicate_dense_bundle(loaded, stale_standalone_role)
         check(result["registered_verdict"] == "VOID" and
-              any("wk1-committed-production-delivery" in x for x in result["reasons"]),
+              any("committed-standalone-evidence" in x for x in result["reasons"]),
               "the stale role that implied fresh box execution was admitted")
 
-        wrong_wk1_source = td / "wrong-wk1-source"
-        dense_bundle(wrong_wk1_source, classic)
-        def change_wk1_source(rows):
+        wrong_standalone_source = td / "wrong-standalone-source"
+        dense_bundle(wrong_standalone_source, classic)
+        def change_standalone_source(rows):
             next(row for row in rows
-                 if row["role"] == "wk1-committed-production-delivery")["argv"][-1] = \
+                 if row["role"] == "committed-standalone-evidence")["argv"][-1] = \
                 "a" * 40 + ":dev/fold_derivation/other.expected.txt"
-        rewrite_provenance_commands(wrong_wk1_source, change_wk1_source)
-        result = A.adjudicate_dense_bundle(loaded, wrong_wk1_source)
+        rewrite_provenance_commands(wrong_standalone_source, change_standalone_source)
+        result = A.adjudicate_dense_bundle(loaded, wrong_standalone_source)
         check(result["registered_verdict"] == "VOID" and
               any("exact result-SHA git show" in x for x in result["reasons"]),
-              "WK1 evidence from an unregistered result-SHA path was admitted")
+              "standalone evidence from an unregistered result-SHA path was admitted")
 
-        fake_box_wk1 = td / "fake-box-wk1"
-        dense_bundle(fake_box_wk1, classic)
-        path = fake_box_wk1 / "wk1-admission.log"
+        fake_box_standalone = td / "fake-box-standalone"
+        dense_bundle(fake_box_standalone, classic)
+        path = fake_box_standalone / "local-evidence-admission.log"
         path.write_text(path.read_text().replace(
             "fresh-box-execution=0", "fresh-box-execution=1", 1))
-        result = A.adjudicate_dense_bundle(loaded, fake_box_wk1)
+        result = A.adjudicate_dense_bundle(loaded, fake_box_standalone)
         check(result["registered_verdict"] == "VOID" and
               any("committed-not-box" in x for x in result["reasons"]),
               "committed host evidence was allowed to masquerade as a fresh box execution")
@@ -742,7 +755,7 @@ def main() -> None:
         dense_bundle(wrong_terminator, classic)
         path = wrong_terminator / "runner.log"
         path.write_text(path.read_text().replace(
-            "[marlin-wk4] PASS: classic-aligned WK4 consumer built on shipping bytes; "
+            "[marlin-wk4] PASS: standalone classic Marlin built on classic u32 bytes; "
             "supported B points passed exact output + 8-launch locks; over-cap B stayed NOT RUN",
             "[marlin-wk4] PASS: unrelated"))
         result = A.adjudicate_dense_bundle(loaded, wrong_terminator)
@@ -981,7 +994,7 @@ def main() -> None:
                       "DEFAULT_MIN_QUANTUM"):
         check(forbidden not in source, f"decision literal leaked into reader: {forbidden}")
     print("[box-run-adjudicator] PASS: dense converged/boundary/partial/no-recovery/VOID + "
-          "WK1/default-command/B-ladder/lock/submodule/cap controls; GEMV 20-sample "
+          "standalone/default-command/B-ladder/lock/submodule/cap controls; GEMV 20-sample "
           "resolved-changed/unchanged/unresolved + raw bands/base+expanded census + "
           "unregistered-observation separation; policy/prose/timer seal")
 

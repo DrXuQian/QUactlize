@@ -16,7 +16,7 @@ driver is a different experiment and is not merged with this one.
 <!-- BOX_RUN_POLICY_V1_BEGIN -->
 {
   "schema": "quactlize-box-run-policy-v1",
-  "prose_sha256": "97dee361f4a336b4ef392eddab1e64865021bde528eab513adf9d9c49dab416c",
+  "prose_sha256": "37460b8817cca8299f80947f8f189ce8087b32e21c6694c025b7c6fc500a8632",
   "dense": {
     "classic_anchor_us": "17.8",
     "historical_anchor_us": "21.14",
@@ -50,55 +50,18 @@ driver is a different experiment and is not merged with this one.
     },
     "required_prerequisites": [
       "correctness",
-      "shipping_artifact_roundtrip",
+      "classic_artifact_roundtrip",
       "exact_fixture",
       "lock_fingerprints_8_stable"
     ],
-    "wk1_admission": {
-      "byte_map_total": 8192,
-      "byte_map_diff": 0
+    "standalone_admission": {
+      "format": true,
+      "cadence": true,
+      "generated_type": true,
+      "scheduler_lifecycle": true,
+      "structural_contract": true
     },
     "cells": [
-      {
-        "warp_k": 1,
-        "blocks_per_cu": 1,
-        "role": "shipping_default_control"
-      },
-      {
-        "warp_k": 1,
-        "blocks_per_cu": 2,
-        "role": "scheduler_diagnostic"
-      },
-      {
-        "warp_k": 1,
-        "blocks_per_cu": 4,
-        "role": "scheduler_diagnostic"
-      },
-      {
-        "warp_k": 1,
-        "blocks_per_cu": 6,
-        "role": "scheduler_diagnostic"
-      },
-      {
-        "warp_k": 2,
-        "blocks_per_cu": 1,
-        "role": "compile_negative"
-      },
-      {
-        "warp_k": 2,
-        "blocks_per_cu": 2,
-        "role": "compile_negative"
-      },
-      {
-        "warp_k": 2,
-        "blocks_per_cu": 4,
-        "role": "compile_negative"
-      },
-      {
-        "warp_k": 2,
-        "blocks_per_cu": 6,
-        "role": "compile_negative"
-      },
       {
         "warp_k": 4,
         "blocks_per_cu": 1,
@@ -107,17 +70,17 @@ driver is a different experiment and is not merged with this one.
       {
         "warp_k": 4,
         "blocks_per_cu": 2,
-        "role": "occupancy_scheduler_diagnostic"
+        "role": "scheduler_diagnostic"
       },
       {
         "warp_k": 4,
         "blocks_per_cu": 4,
-        "role": "occupancy_scheduler_diagnostic"
+        "role": "scheduler_diagnostic"
       },
       {
         "warp_k": 4,
         "blocks_per_cu": 6,
-        "role": "occupancy_scheduler_diagnostic"
+        "role": "scheduler_diagnostic"
       }
     ]
   },
@@ -215,11 +178,11 @@ driver is a different experiment and is not merged with this one.
 <!-- BOX_RUN_POLICY_V1_END -->
 
 <!-- BOX_RUN_POLICY_MIRROR_V1_BEGIN -->
-policy_sha256=445b5c9eaf60fca421312408c98b73411d80e34b838055fb1f7939f6fc723eef
+policy_sha256=58cfd9dc16246334212c4668d76319485158911de3f3e36edbc9dbbb5a153e46
 dense anchors_us=17.8/21.14 recovered_fraction=0.75 derived_gap_us=3.34 derived_boundary_us=18.6350 samples=20
 dense problem={"group_size":128,"k":4096,"l":1,"m":1,"n":4096} decomposition={"k_tiles":32,"output_tiles":32} invocation={"flags":["--marlin","--streamk_exact_fixture"],"options":{"alpha":"1","beta":"0","mode":1}}
-dense primary=WK4/B1 cells=WK1/B1:shipping_default_control,WK1/B2:scheduler_diagnostic,WK1/B4:scheduler_diagnostic,WK1/B6:scheduler_diagnostic,WK2/B1:compile_negative,WK2/B2:compile_negative,WK2/B4:compile_negative,WK2/B6:compile_negative,WK4/B1:primary,WK4/B2:occupancy_scheduler_diagnostic,WK4/B4:occupancy_scheduler_diagnostic,WK4/B6:occupancy_scheduler_diagnostic
-dense prerequisites=correctness,shipping_artifact_roundtrip,exact_fixture,lock_fingerprints_8_stable wk1_byte_map=0/8192
+dense primary=WK4/B1 cells=WK4/B1:primary,WK4/B2:scheduler_diagnostic,WK4/B4:scheduler_diagnostic,WK4/B6:scheduler_diagnostic
+dense prerequisites=correctness,classic_artifact_roundtrip,exact_fixture,lock_fingerprints_8_stable standalone_admission={"cadence":true,"format":true,"generated_type":true,"scheduler_lifecycle":true,"structural_contract":true}
 gemv minimum_claimable_us=0.01 timer_normalization_us=0.001 samples=20  publication_partial_space=false resolution_rule={"max_unresolved_quanta":"1","require_disjoint_bands":true,"require_runner_up":true} incumbent_rules={"format_axes":{"int2":{"chunk":2,"cta_n":8,"layout":"native","step_k":16,"threads":128},"int4":{"chunk":2,"cta_n":8,"layout":"native","step_k":16,"threads":128},"q3":{"chunk":2,"cta_n":8,"layout":"native","step_k":32,"threads":64},"q6":{"chunk":2,"cta_n":8,"layout":"native","step_k":16,"threads":128}},"geometry_cta_m":{"D-4096":1,"D-EXT-K1024":1,"D-EXT-O":1,"D-EXT-Q":1,"H-G8-2048":1,"S068":1,"S069":1,"S070":1,"S071":1,"S072":2,"S073":2,"S074":2,"S075":2,"S076":3,"S077":3,"S078":3,"S079":3}}
 gemv base_census total=27360 legal=10260 pruned=17100 reasons=CTA_N_NOT_WHOLE_CHUNKS:6156,STEP_TOO_SMALL_FOR_SPARSEST_PLANE:10944
 gemv full_manifest jobs=86 total=165600 legal=63180 pruned=102420 reasons=CTA_N_NOT_WHOLE_CHUNKS:37908,STEP_TOO_SMALL_FOR_SPARSEST_PLANE:64512
@@ -254,7 +217,7 @@ dev/box_runs/<root-sha>/gemv-sweep/<binary-sha256>-samples20/
 ```
 
 For dense Marlin this means the build log, the top-level runner log, every
-`bpc*.log` or `bpc*.not-run`, `illegal-bpc.log`, `wk1-admission.log`,
+`bpc*.log` or `bpc*.not-run`, `illegal-bpc.log`, `local-evidence-admission.log`,
 `commands.jsonl`, and `submodule-status.txt`.  For GEMV it means
 `manifest.json`, `raw.jsonl`, `progress.jsonl`, `result.json`, `run.log`, the
 per-job `logs/` directory, the dry-run audit/summary, `base-census.json`,
@@ -267,13 +230,14 @@ written verdict JSON.  Each directory must also contain `provenance.json` with
 `pci_identity`, `driver_version`, `sdk_compiler_identity`, the complete `argv`,
 `runner_exit_status`, and `protocol_sample_count`.  The `commands` array is an
 exact copy of `commands.jsonl`, not a summary reconstructed after the run.
-Dense additionally carries `wk1-admission.log`.  Its L143 portion is the exact
-expected output of a locally executable host oracle, committed beneath the
-result SHA and retrieved with `git show <root_sha>:dev/fold_derivation/`
-`l143_wk4_production_delivery.expected.txt`; it is explicitly **not** a fresh
-box execution.  The local tier executes that oracle and byte-compares its output
-with the committed file, while the box contributes the separately recorded
-static target check.  Both frozen runners now synthesize
+Dense additionally carries `local-evidence-admission.log`.  Its seven lines are
+the exact output of the locally executable standalone format, cadence,
+generated-type, scheduler-lifecycle, structural, and profile contracts,
+committed beneath the result SHA and retrieved with
+`git show <root_sha>:dev/fold_derivation/l143_standalone_marlin.expected.txt`;
+they are explicitly **not** a fresh box execution.  The local tier regenerates
+that aggregate and byte-compares it with the committed file, while the box also
+runs the separately recorded static target check.  Both frozen runners now synthesize
 these files themselves and fail closed on a dirty root/submodule, missing
 identity, missing command evidence, or a non-20-sample policy.  Missing or
 inconsistent fields produce a named `VOID`.  Publication mode reads this policy
@@ -290,7 +254,8 @@ behind explicit `--fixture-mode` for the synthetic CI controls.
 
 The only primary shape is `M=1, N=4096, K=4096, L=1, gs=128`.  The queued
 target is the isolated ordinary-int4 `1M x 2N x 4K`, 256-thread, four-stage
-consumer using the shipping xplane artifact.  Its two fixed anchors are:
+standalone Marlin collective using classic u32 weight packing and the classic
+gs128 scale permutation.  Its two fixed anchors are:
 
 - standalone classic on the same PPU and shape: **17.8 us / 17.5% of
   nameplate**;
@@ -313,35 +278,26 @@ median.  This is a declared evidence limit, not permission to call the summary
 raw samples.  The 20-sample `[min,max]` band is printed beside the median.  If it crosses a
 classification boundary, retain the median category above but append
 `BOUNDARY-UNRESOLVED`; do not present the category as a resolved ordering.
-Correctness, shipping-artifact roundtrip, exact fixture, and all eight stable
+Correctness, classic-artifact roundtrip, exact fixture, and all eight stable
 lock fingerprints are prerequisites.  A timing from a failed prerequisite is
 discarded, even if it is fast.
 
 ### `(WarpK, blocks_per_cu)` matrix
 
-There are two different meanings of “default”: the shipping default topology
-is WK1/B1; inside the isolated aligned target, omitting the scheduler override
-is WK4/B1.  They must not be conflated.
+The retired generic-collective WK1 and WK2 cells are not reinterpreted as
+standalone measurements.  This protocol contains only the proved standalone
+WK4 topology; omitting the scheduler override is its B=1 default.
 
 | topology | B=1 | B=2 | B=4 | B=6 |
 |---|---|---|---|---|
-| WK1, historical `4N x 1K` | **shipping/default control** | scheduler-only diagnostic | scheduler-only diagnostic | scheduler-only diagnostic |
-| WK2 | compile-time negative; no timing | compile-time negative; no timing | compile-time negative; no timing | compile-time negative; no timing |
 | WK4, aligned `2N x 4K` | **primary queued result; aligned-target default** | occupancy/scheduler diagnostic | occupancy/scheduler diagnostic | occupancy/scheduler diagnostic |
 
 `run_dense_marlin_wk4_box.sh` produces the WK4 row only.  B=1 deliberately
 omits `--marlin-blocks-per-cu`; B=2/4/6 are explicit diagnostics and any value
-above `Gemm::maximum_active_blocks()` is `NOT RUN`, not a slow point.  WK2 is a
-deliberate compile-time negative in L142, not a missing measurement.  The box
-runner does not rerun L142, so the adjudicator labels these cells
-`PREREGISTERED_COMPILE_NEGATIVE_NOT_RERUN` rather than pretending they are fresh
-box evidence.
-
-The permanent WK1 controls must still say that the new axis leaves the shipping
-builder type and xplane bytes unchanged (`0/8192` byte-map differences).  If a
-WK1 device control is included, its output must be raw-bit-identical to the
-historical arm.  Any WK1 type/byte/output drift invalidates the whole WK4 batch:
-the experiment would then mix a changed baseline with a changed candidate.
+above `Gemm::maximum_active_blocks()` is `NOT RUN`, not a slow point.  Admission
+instead requires the result SHA's standalone L167--L170 aggregate and fresh
+static isolation contract.  Missing format, cadence, generated-type,
+scheduler-lifecycle, or structural evidence invalidates the whole batch.
 
 For every supported WK4 B point, the mechanical adjudication records
 median/min/max and `G/I/active/idle`, handoffs and max peers.  The optional ACU

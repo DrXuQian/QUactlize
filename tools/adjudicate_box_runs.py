@@ -46,6 +46,28 @@ RUN_IDENTITY_SCHEMA = "quactlize-box-run-identity-v2"
 IDENTITY_PROBE_SCHEMA = identity_schema.SCHEMA
 IDENTITY_FIELDS = identity_schema.FIELDS
 IDENTITY_SOURCE_VALUES = identity_schema.SOURCES
+STANDALONE_ADMISSION_FIELDS = (
+    "format",
+    "cadence",
+    "generated_type",
+    "scheduler_lifecycle",
+    "structural_contract",
+)
+STANDALONE_EVIDENCE_LINES = (
+    "[L167] PASS: independent classic/direct and Awesome-CuTe/permutation anchors agree; "
+    "asymmetric provider, byte, inverse, and negative controls proved",
+    "[l168:runner] positive=PASS negative_controls=3/3_RED result=PASS",
+    "[l169] PASS: generated-unit shape instantiates standalone Marlin collective/scheduler/kernel; "
+    "only the two explicit nvcc/PPU environmental diagnostics remain",
+    "[l170:runner] positive=PASS negative_controls=7/7_RED result=PASS",
+    "[dense-marlin-wk4] PASS: standalone format/collective/scheduler/kernel wired; "
+    "generic WK4 compatibility absent; ten structural plants rejected",
+    "[classic-156] PASS: exact one-launch shape, source/tool/binary identity and full ACU capture "
+    "are fail-closed",
+    "[l143] PASS: standalone Marlin format + cadence + generated type + scheduler lifecycle; "
+    "generic WK4 compatibility is absent; no device result claimed",
+)
+STANDALONE_STRUCTURE_LINE = STANDALONE_EVIDENCE_LINES[4]
 PUBLICATION_CODE_PATHS = (
     "tools/adjudicate_box_runs.py",
     "benchmarks/sweep_gemv_perf.py",
@@ -157,8 +179,7 @@ def render_policy_mirror(policy: dict[str, Any]) -> str:
         (f"dense primary=WK{dense['primary_cell']['warp_k']}/"
          f"B{dense['primary_cell']['blocks_per_cu']} cells={cells}"),
         ("dense prerequisites=" + ",".join(dense["required_prerequisites"]) +
-         f" wk1_byte_map={dense['wk1_admission']['byte_map_diff']}/"
-         f"{dense['wk1_admission']['byte_map_total']}"),
+         " standalone_admission=" + _canonical(dense["standalone_admission"])),
         ("gemv minimum_claimable_us=" + gemv["minimum_claimable_us"] +
          f" timer_normalization_us={gemv['timer_normalization_us']} "
          f"samples={gemv['sample_count']} "
@@ -207,7 +228,7 @@ def validate_policy(policy: Any) -> dict[str, Any]:
         top["dense"],
         ["classic_anchor_us", "historical_anchor_us", "converged_recovered_fraction",
          "sample_count", "problem", "decomposition", "invocation", "primary_cell",
-         "required_prerequisites", "wk1_admission", "cells"],
+         "required_prerequisites", "standalone_admission", "cells"],
         "policy.dense")
     classic = _decimal_string(dense["classic_anchor_us"], "policy.dense.classic_anchor_us")
     historical = _decimal_string(
@@ -252,10 +273,23 @@ def validate_policy(policy: Any) -> dict[str, Any]:
             any(not isinstance(x, str) or not x for x in prereqs) or
             len(set(prereqs)) != len(prereqs)):
         raise PolicyError("dense prerequisites must be unique non-empty strings")
-    wk1 = _expect_keys(dense["wk1_admission"], ["byte_map_total", "byte_map_diff"],
-                       "policy.dense.wk1_admission")
-    _integer(wk1["byte_map_total"], "wk1 byte_map_total", positive=True)
-    _integer(wk1["byte_map_diff"], "wk1 byte_map_diff")
+    expected_prereqs = [
+        "correctness",
+        "classic_artifact_roundtrip",
+        "exact_fixture",
+        "lock_fingerprints_8_stable",
+    ]
+    if prereqs != expected_prereqs:
+        raise PolicyError(
+            "dense standalone prerequisites must be exactly correctness/"
+            "classic_artifact_roundtrip/exact_fixture/lock_fingerprints_8_stable")
+    standalone = _expect_keys(
+        dense["standalone_admission"], STANDALONE_ADMISSION_FIELDS,
+        "policy.dense.standalone_admission")
+    for field in STANDALONE_ADMISSION_FIELDS:
+        if standalone[field] is not True:
+            raise PolicyError(
+                f"policy.dense.standalone_admission.{field} must be true")
     cells = dense["cells"]
     if not isinstance(cells, list) or not cells:
         raise PolicyError("dense cells must be a non-empty array")
@@ -276,6 +310,15 @@ def validate_policy(policy: Any) -> dict[str, Any]:
                 raise PolicyError("dense primary role disagrees with primary_cell")
     if primary_roles != 1 or primary_key not in seen:
         raise PolicyError("dense policy must contain exactly one declared primary cell")
+    expected_dense_cells = {(4, 1), (4, 2), (4, 4), (4, 6)}
+    if seen != expected_dense_cells:
+        raise PolicyError(
+            "dense standalone policy cells must be exactly WK4/B{1,2,4,6}")
+    if primary_key != (4, 1):
+        raise PolicyError("dense standalone primary must be WK4/B1")
+    if any(item["role"] not in ("primary", "scheduler_diagnostic") for item in cells):
+        raise PolicyError(
+            "dense standalone cells may only be primary or scheduler_diagnostic")
 
     gemv = _expect_keys(
         top["gemv"],
@@ -429,22 +472,22 @@ def adjudicate_dense(loaded: LoadedPolicy, observation: Any) -> dict[str, Any]:
 
     if observation.get("identity_valid") is not True:
         reasons.append("identity/provenance prerequisites did not close")
-    wk_obs = observation.get("wk1_admission")
-    wk_policy = policy["wk1_admission"]
-    wk1_ok = isinstance(wk_obs, dict)
-    if wk1_ok:
-        wk1_ok = (wk_obs.get("structural_identity") is True and
-                  wk_obs.get("byte_map_total") == wk_policy["byte_map_total"] and
-                  wk_obs.get("byte_map_diff") == wk_policy["byte_map_diff"])
-        if wk_obs.get("device_control_present") is True:
-            wk1_ok = wk1_ok and wk_obs.get("device_raw_bitdiff") == 0
-    if not wk1_ok:
-        reasons.append("WK1 structural/byte/device admission did not close")
+    standalone_obs = observation.get("standalone_admission")
+    standalone_policy = policy["standalone_admission"]
+    standalone_ok = (
+        isinstance(standalone_obs, dict) and
+        set(standalone_obs) == set(STANDALONE_ADMISSION_FIELDS) and
+        all(standalone_policy[field] is True and standalone_obs[field] is True
+            for field in STANDALONE_ADMISSION_FIELDS)
+    )
+    if not standalone_ok:
+        reasons.append("standalone format/cadence/type/scheduler/structural admission did not close")
 
-    # WK1 is an admission condition, not one more timing cell.  Once it fails,
-    # interpreting the candidate timings would attach a category to an experiment
-    # whose historical control changed.  Preserve only the raw identities/statuses.
-    if not wk1_ok or observation.get("identity_valid") is not True:
+    # The standalone proof chain is an admission condition, not one more timing
+    # cell.  Once it fails, interpreting candidate timings would attach a category
+    # to a binary whose format or execution contract is unproved.  Preserve only
+    # the raw identities/statuses.
+    if not standalone_ok or observation.get("identity_valid") is not True:
         raw = observation.get("cells")
         if not isinstance(raw, list):
             raw = []
@@ -511,20 +554,7 @@ def adjudicate_dense(loaded: LoadedPolicy, observation: Any) -> dict[str, Any]:
         status = raw.get("status")
         out = dict(base, role=role, status=status)
         cell_errors: list[str] = []
-        if role == "compile_negative":
-            if status != "PREREGISTERED_COMPILE_NEGATIVE_NOT_RERUN":
-                cell_errors.append("WK2 must remain the preregistered compile-negative control")
-            out["verdict"] = (
-                "PREREGISTERED_COMPILE_NEGATIVE_NOT_RERUN" if not cell_errors else "VOID")
-        elif wk == 1 and role == "shipping_default_control":
-            if status != "ADMISSION_CONTROL":
-                cell_errors.append("WK1/B1 must be the executable admission control")
-            out["verdict"] = "CONTROL" if not cell_errors else "VOID"
-        elif wk == 1:
-            if status != "NOT_IN_QUEUED_RUN":
-                cell_errors.append("WK1 scheduler diagnostic is outside this queued run")
-            out["verdict"] = "NOT_IN_QUEUED_RUN" if not cell_errors else "VOID"
-        elif status == "NOT_RUN":
+        if status == "NOT_RUN":
             if key == primary_key:
                 cell_errors.append("primary cell was not run")
                 out["verdict"] = "VOID"
@@ -580,8 +610,6 @@ def adjudicate_dense(loaded: LoadedPolicy, observation: Any) -> dict[str, Any]:
                         "boundary_unresolved": bool(crossed),
                         "crossed_boundaries": crossed,
                     })
-                elif role == "shipping_default_control":
-                    out["verdict"] = "CONTROL"
                 else:
                     out["verdict"] = "DIAGNOSTIC"
         if cell_errors:
@@ -1211,8 +1239,10 @@ def _dense_cell_from_log(path: pathlib.Path, bpc: int, policy: dict[str, Any]) -
         r"stable=1 same-workspace=1 external-lock-reset=0$", text, re.MULTILINE)
     checks = {
         "correctness": disposition == ["Passed"],
-        "shipping_artifact_roundtrip": bool(re.search(
-            r"^  \[dense marlin aligned artifact\].*roundtrip_bad=0/16777216$", text, re.MULTILINE)),
+        "classic_artifact_roundtrip": bool(re.search(
+            r"^  \[dense marlin aligned artifact\] batch=0 bytes=8388608 "
+            r"placement=classic-marlin-u32 scale=classic-gs128-permuted "
+            r"consumer_axis=WarpK32 roundtrip_bad=0/16777216$", text, re.MULTILINE)),
         "exact_fixture": bool(re.search(
             r"^  \[streamk fixture exactness\] fixture=a0-exact shape=1x4096x4096 .*"
             r"ORDER-INDEPENDENT\+FP16-EXACT$", text, re.MULTILINE)),
@@ -1258,22 +1288,22 @@ def adjudicate_dense_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | st
             not runner_argv[0].endswith("tools/run_dense_marlin_wk4_box.sh")):
         admission_errors.append("dense top-level runner argv is not the frozen entry point")
     commands = _commands_by_role(provenance)
-    for role in ("box-identity-probe", "wk1-static-target",
-                 "wk1-committed-production-delivery", "device-build"):
+    for role in ("box-identity-probe", "standalone-static-target",
+                 "committed-standalone-evidence", "device-build"):
         rows = commands.get(role, [])
         if len(rows) != 1 or rows[0].get("exit_status") != 0:
             admission_errors.append(f"command journal lacks one successful {role}")
-    committed_rows = commands.get("wk1-committed-production-delivery", [])
+    committed_rows = commands.get("committed-standalone-evidence", [])
     if len(committed_rows) == 1:
         committed_argv = committed_rows[0].get("argv", [])
         expected_object = (
             f"{provenance.get('root_sha')}:"
-            "dev/fold_derivation/l143_wk4_production_delivery.expected.txt")
+            "dev/fold_derivation/l143_standalone_marlin.expected.txt")
         if (len(committed_argv) != 5 or committed_argv[0] != "git" or
                 committed_argv[1] != "-C" or committed_argv[3] != "show" or
                 committed_argv[4] != expected_object):
             admission_errors.append(
-                "WK1 committed production-delivery command is not the exact result-SHA git show")
+                "committed standalone evidence command is not the exact result-SHA git show")
     runner = bundle / "runner.log"
     try:
         runner_text = runner.read_text()
@@ -1294,75 +1324,69 @@ def adjudicate_dense_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | st
     if len(binary_hits) != 1 or binary_hits[0] != provenance.get("binary_sha256"):
         admission_errors.append("runner binary SHA is missing/ambiguous or differs from provenance")
     runner_terminator = (
-        "[marlin-wk4] PASS: classic-aligned WK4 consumer built on shipping bytes; "
+        "[marlin-wk4] PASS: standalone classic Marlin built on classic u32 bytes; "
         "supported B points passed exact output + 8-launch locks; over-cap B stayed NOT RUN")
     if runner_text.splitlines().count(runner_terminator) != 1:
         admission_errors.append("exact unique runner PASS terminator is absent")
 
-    # WK1 is a locally executable oracle whose exact expected output is committed
-    # at the measured result SHA.  The box runner retrieves that immutable file;
-    # it does not pretend that the host-only CuTe oracle was freshly compiled or
-    # executed on the PPU box.  The evidence is still output, not a caller-provided
-    # boolean, and the command journal binds it to the result SHA above.
-    wk1_path = bundle / "wk1-admission.log"
+    # The standalone proof chain is locally executable and its exact seven-line
+    # output is committed at the measured result SHA.  The box runner retrieves
+    # that immutable output and separately executes the structural source gate;
+    # it does not pretend the host-only CuTe oracles ran on the PPU box.
+    evidence_path = bundle / "local-evidence-admission.log"
     try:
-        wk1_text = wk1_path.read_text()
+        evidence_text = evidence_path.read_text()
     except OSError as exc:
-        wk1_text = ""
-        admission_errors.append(f"missing/unreadable wk1-admission.log: {exc}")
+        evidence_text = ""
+        admission_errors.append(f"missing/unreadable local-evidence-admission.log: {exc}")
     committed_marker, marker_errors = _one_match(
-        wk1_text,
-        (r"^\[marlin-wk4\] wk1-evidence=committed-local-oracle source-sha=" +
+        evidence_text,
+        (r"^\[marlin-wk4\] local-evidence=committed-standalone-oracle source-sha=" +
          re.escape(str(provenance.get("root_sha"))) +
-         r" path=dev/fold_derivation/l143_wk4_production_delivery\.expected\.txt "
+         r" path=dev/fold_derivation/l143_standalone_marlin\.expected\.txt "
          r"fresh-box-execution=0$"),
-        "explicit committed-not-box L143 evidence marker")
-    wk1_map, map_errors = _one_match(
-        wk1_text,
-        r"^L143 WK1 shipping map-diff=(\d+) byte-diff=(\d+) result=BIT-IDENTICAL$",
-        "L143 WK1 byte-map result")
-    wk1_direct, direct_errors = _one_match(
-        wk1_text,
-        r"^L143 direct-pair pairs=(\d+)/(\d+) codes=16384/16384 "
-        r"destinations=8192/8192 bad-pairs=0 formula-mismatch=0 bad-fragments=0 "
-        r"map-diff=0 shipping-hash=[0-9a-f]{16}$",
-        "L143 direct-pair exhaustive result")
-    wk1_final, final_errors = _one_match(
-        wk1_text,
-        r"^L143 shipping-pair-scatter=EXACT artifact-order=RED compact-order=RED "
-        r"first32=RED wrong-pair=RED source-swap=RED WK1-BYTES=UNCHANGED result=PASS$",
-        "L143 final positive/negative result")
-    structure, structure_errors = _one_match(
-        wk1_text,
-        r"^\[dense-marlin-wk4\] PASS: isolated 1Mx2Nx4K "
-        r"type/shipping-artifact/CLI; historical target unchanged; "
-        r"thirteen structural plants rejected$",
-        "structural WK1/WK4 source gate")
-    admission_errors += marker_errors + map_errors + direct_errors + final_errors + structure_errors
-    wk1_policy = loaded.value["dense"]["wk1_admission"]
-    wk1_total = int(wk1_direct.group(2)) if wk1_direct is not None else None
-    wk1_ok = bool(
-        wk1_map is not None and int(wk1_map.group(1)) == wk1_policy["byte_map_diff"] and
-        int(wk1_map.group(2)) == wk1_policy["byte_map_diff"] and
-        wk1_direct is not None and int(wk1_direct.group(1)) == wk1_total ==
-        wk1_policy["byte_map_total"] and wk1_final is not None and structure is not None and
-        committed_marker is not None)
-    if not wk1_ok:
-        admission_errors.append("WK1 executable structural/byte-map admission evidence did not close")
+        "explicit committed-not-box standalone evidence marker")
+    admission_errors += marker_errors
 
-    raw_cells: list[dict[str, Any]] = [
-        {"warp_k": 1, "blocks_per_cu": 1, "status": "ADMISSION_CONTROL"},
-        *({"warp_k": 1, "blocks_per_cu": b, "status": "NOT_IN_QUEUED_RUN"}
-          for b in (2, 4, 6)),
-        *({"warp_k": 2, "blocks_per_cu": b,
-           "status": "PREREGISTERED_COMPILE_NEGATIVE_NOT_RERUN"}
-          for b in (1, 2, 4, 6)),
-    ]
+    committed_exact = False
+    if committed_marker is not None:
+        committed_tail = evidence_text[committed_marker.end():].lstrip("\n").splitlines()
+        committed_exact = tuple(committed_tail) == STANDALONE_EVIDENCE_LINES
+        if not committed_exact:
+            admission_errors.append(
+                "committed standalone evidence is not the exact seven-line contract")
+
+    evidence_counts = {
+        line: evidence_text.splitlines().count(line) for line in STANDALONE_EVIDENCE_LINES
+    }
+    for line in STANDALONE_EVIDENCE_LINES:
+        expected_count = 2 if line == STANDALONE_STRUCTURE_LINE else 1
+        if evidence_counts[line] != expected_count:
+            admission_errors.append(
+                f"standalone evidence line count={evidence_counts[line]} expected={expected_count}: "
+                f"{line}")
+
+    standalone_evidence = {
+        "format": committed_exact and evidence_counts[STANDALONE_EVIDENCE_LINES[0]] == 1,
+        "cadence": committed_exact and evidence_counts[STANDALONE_EVIDENCE_LINES[1]] == 1,
+        "generated_type": committed_exact and evidence_counts[STANDALONE_EVIDENCE_LINES[2]] == 1,
+        "scheduler_lifecycle": (
+            committed_exact and evidence_counts[STANDALONE_EVIDENCE_LINES[3]] == 1),
+        "structural_contract": (
+            committed_exact and evidence_counts[STANDALONE_STRUCTURE_LINE] == 2 and
+            evidence_counts[STANDALONE_EVIDENCE_LINES[5]] == 1 and
+            evidence_counts[STANDALONE_EVIDENCE_LINES[6]] == 1),
+    }
+    if (committed_marker is None or
+            not all(standalone_evidence[field] for field in STANDALONE_ADMISSION_FIELDS)):
+        admission_errors.append("standalone executable/committed admission evidence did not close")
+
+    raw_cells: list[dict[str, Any]] = []
     parse_errors: list[str] = []
     unregistered: list[dict[str, Any]] = []
     registered_command_roles = {
-        "box-identity-probe", "wk1-static-target",
-        "wk1-committed-production-delivery", "device-build",
+        "box-identity-probe", "standalone-static-target",
+        "committed-standalone-evidence", "device-build",
         "dense-wk4-illegal-bpc",
         *(f"dense-wk4-bpc{bpc}" for bpc in (1, 2, 4, 6)),
     }
@@ -1516,12 +1540,7 @@ def adjudicate_dense_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | st
     observation = {
         "schema": DENSE_SCHEMA,
         "identity_valid": not admission_errors,
-        "wk1_admission": {
-            "structural_identity": structure is not None,
-            "byte_map_total": wk1_total,
-            "byte_map_diff": (int(wk1_map.group(2)) if wk1_map is not None else None),
-            "device_control_present": False,
-        },
+        "standalone_admission": standalone_evidence,
         "cells": raw_cells,
     }
     result = adjudicate_dense(loaded, observation)
@@ -1536,7 +1555,7 @@ def adjudicate_dense_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | st
     known = {
         "provenance.json", "run-identity.json", "identity-probe.json", "commands.jsonl",
         "submodule-status.txt", "runner.log",
-        "build.log", "illegal-bpc.log", "wk1-admission.log", "l143",
+        "build.log", "illegal-bpc.log", "local-evidence-admission.log",
         *(f"bpc{b}.log" for b in (1, 2, 4, 6)),
         *(f"bpc{b}.not-run" for b in (2, 4, 6)),
     }

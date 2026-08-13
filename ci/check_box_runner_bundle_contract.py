@@ -49,13 +49,24 @@ def source_contract(dense: str, gemv: str) -> None:
                       "policy-sample-count", "probe_box_identity.py",
                       "identity-probe.json", "--identity-probe-file"):
             require(token in text, f"{name} runner lost {token!r}")
-    for token in ("check_dense_marlin_wk4_target.py",
-                  "l143_wk4_production_delivery.expected.txt",
-                  "wk1-committed-production-delivery",
-                  "fresh-box-execution=0",
-                  "L143 WK1 shipping map-diff=0 byte-diff=0 result=BIT-IDENTICAL",
-                  "thirteen structural plants rejected"):
-        require(token in dense, f"dense runner lost exact WK1 admission token {token!r}")
+    for token in (
+            "check_dense_marlin_wk4_target.py",
+            "l143_standalone_marlin.expected.txt",
+            "standalone-static-target",
+            "committed-standalone-evidence",
+            "local-evidence=committed-standalone-oracle",
+            "fresh-box-execution=0",
+            "[L167] PASS: independent classic/direct and Awesome-CuTe/permutation anchors agree",
+            "[l168:runner] positive=PASS negative_controls=3/3_RED result=PASS",
+            "[l169] PASS: generated-unit shape instantiates standalone Marlin collective/scheduler/kernel",
+            "[l170:runner] positive=PASS negative_controls=7/7_RED result=PASS",
+            "ten structural plants rejected",
+            "[classic-156] PASS: exact one-launch shape",
+            "[l143] PASS: standalone Marlin format + cadence + generated type + scheduler lifecycle",
+            "placement=classic-marlin-u32 scale=classic-gs128-permuted",
+            "PASS: standalone classic Marlin built on classic u32 bytes"):
+        require(token in dense,
+                f"dense runner lost standalone admission token {token!r}")
     for token in ("export_gemv_base_census.py", "base-census.json",
                   "bind-build-pair", "BUILD_ATTEMPT_LOG",
                   "promote_canonical_attempt",
@@ -708,8 +719,15 @@ def negative_controls(dense: str, gemv: str) -> None:
     plants = (
         (dense.replace("--root-status clean", "--root-status dirty"), gemv,
          "dense root-status plant"),
-        (dense.replace("l143_wk4_production_delivery.expected.txt", "missing-l143.txt", 1), gemv,
-         "dense WK1 oracle plant"),
+        (dense.replace("l143_standalone_marlin.expected.txt",
+                       "missing-standalone.txt", 1), gemv,
+         "dense standalone oracle plant"),
+        (dense.replace("committed-standalone-evidence",
+                       "unregistered-standalone-evidence", 1), gemv,
+         "dense standalone role plant"),
+        (dense.replace("placement=classic-marlin-u32",
+                       "placement=shipping-xplane", 1), gemv,
+         "dense classic artifact plant"),
         (dense, gemv.replace("export_gemv_base_census.py", "missing-exporter.py", 1),
          "GEMV census authority plant"),
         (dense, gemv.replace("policy-sample-count", "literal-sample-count", 1),
@@ -734,7 +752,8 @@ def main() -> int:
     except RuntimeError as exc:
         print(f"[box-runner-bundle] FAIL: {exc}")
         return 1
-    print("[box-runner-bundle] PASS: canonical transaction, identity-resume, build/BASE locks, final-clean and four source plants")
+    print("[box-runner-bundle] PASS: canonical transaction, identity-resume, "
+          "build/BASE locks, final-clean and six source plants")
     return 0
 
 

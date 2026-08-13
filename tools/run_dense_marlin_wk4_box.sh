@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Classic-aligned dense Marlin decode: shipping artifact + 2N x 4K consumer.
+# Classic-aligned dense Marlin decode: standalone classic format + 2N x 4K.
 # This target is Marlin-only.  It sweeps only scheduler blocks_per_cu; B values
 # above Gemm::maximum_active_blocks() are reported NOT RUN and the binary's
 # fail-closed upper bound is checked without launching a kernel.
@@ -156,37 +156,44 @@ printf '[marlin-wk4] identity-sources device_model=%s pci_identity=%s driver_ver
   "$QUACTLIZE_BOX_DRIVER_VERSION_SOURCE" "$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY_SOURCE"
 printf '[marlin-wk4] artifacts=%s\n' "$ARTIFACT_ROOT"
 
-# WK1 is an admission control, not a timing cell.  The static target check runs
-# on the box.  L143 is a host-only CuTe oracle that this box's nvcc/GCC13
-# combination cannot compile, so consume the exact output committed by the
-# result SHA instead of pretending that it was freshly executed here.  Its
-# executable owner is ci/check_l143_wk4_committed_evidence.py in the local tier.
-# Absence of either authority is VOID.
-WK1_LOG="$ARTIFACT_ROOT/wk1-admission.log"
-WK1_GATE=(python3 "$ROOT/ci/check_dense_marlin_wk4_target.py")
+# The standalone local evidence is an admission control, not a timing cell.
+# Its host/compile-time oracles cannot all run on this box's nvcc/GCC13 stack,
+# so consume the exact seven-line result-SHA evidence instead of pretending it
+# was freshly executed here.  ci/check_l143_wk4_committed_evidence.py owns its
+# regeneration in the local tier.  Absence of either authority is VOID.
+LOCAL_EVIDENCE_LOG="$ARTIFACT_ROOT/local-evidence-admission.log"
+LOCAL_GATE=(python3 "$ROOT/ci/check_dense_marlin_wk4_target.py")
 set +e
-"${WK1_GATE[@]}" 2>&1 | tee "$WK1_LOG"
-wk1_gate_rc=${PIPESTATUS[0]}
+"${LOCAL_GATE[@]}" 2>&1 | tee "$LOCAL_EVIDENCE_LOG"
+local_gate_rc=${PIPESTATUS[0]}
 set -e
-record_command wk1-static-target "$wk1_gate_rc" "${WK1_GATE[@]}"
-[ "$wk1_gate_rc" -eq 0 ] || fail 'WK1 static target admission failed'
+record_command standalone-static-target "$local_gate_rc" "${LOCAL_GATE[@]}"
+[ "$local_gate_rc" -eq 0 ] || fail 'standalone static target admission failed'
 
-WK1_EVIDENCE_PATH=dev/fold_derivation/l143_wk4_production_delivery.expected.txt
-WK1_ORACLE=(git -C "$ROOT" show "$ROOT_SHA:$WK1_EVIDENCE_PATH")
-printf '[marlin-wk4] wk1-evidence=committed-local-oracle source-sha=%s path=%s fresh-box-execution=0\n' \
-  "$ROOT_SHA" "$WK1_EVIDENCE_PATH" | tee -a "$WK1_LOG"
+LOCAL_EVIDENCE_PATH=dev/fold_derivation/l143_standalone_marlin.expected.txt
+LOCAL_ORACLE=(git -C "$ROOT" show "$ROOT_SHA:$LOCAL_EVIDENCE_PATH")
+printf '[marlin-wk4] local-evidence=committed-standalone-oracle source-sha=%s path=%s fresh-box-execution=0\n' \
+  "$ROOT_SHA" "$LOCAL_EVIDENCE_PATH" | tee -a "$LOCAL_EVIDENCE_LOG"
 set +e
-"${WK1_ORACLE[@]}" 2>&1 | tee -a "$WK1_LOG"
-wk1_oracle_rc=${PIPESTATUS[0]}
+"${LOCAL_ORACLE[@]}" 2>&1 | tee -a "$LOCAL_EVIDENCE_LOG"
+local_oracle_rc=${PIPESTATUS[0]}
 set -e
-record_command wk1-committed-production-delivery "$wk1_oracle_rc" "${WK1_ORACLE[@]}"
-[ "$wk1_oracle_rc" -eq 0 ] || fail 'WK1 committed production-delivery evidence is absent from the result SHA'
-grep -Fxq '[dense-marlin-wk4] PASS: isolated 1Mx2Nx4K type/shipping-artifact/CLI; historical target unchanged; fifteen structural plants rejected' "$WK1_LOG" \
-  || fail 'WK1 admission lacks the exact static target PASS'
-grep -Fxq 'L143 WK1 shipping map-diff=0 byte-diff=0 result=BIT-IDENTICAL' "$WK1_LOG" \
-  || fail 'WK1 admission lacks the exact 0/8192 shipping byte-map result'
-grep -Fxq 'L143 shipping-pair-scatter=EXACT artifact-order=RED compact-order=RED first32=RED wrong-pair=RED source-swap=RED WK1-BYTES=UNCHANGED result=PASS' "$WK1_LOG" \
-  || fail 'WK1 admission lacks the exact planted-negative closure'
+record_command committed-standalone-evidence "$local_oracle_rc" "${LOCAL_ORACLE[@]}"
+[ "$local_oracle_rc" -eq 0 ] || fail 'committed standalone evidence is absent from the result SHA'
+[ "$(grep -Fxc '[dense-marlin-wk4] PASS: standalone format/collective/scheduler/kernel wired; generic WK4 compatibility absent; ten structural plants rejected' "$LOCAL_EVIDENCE_LOG" || true)" -eq 2 ] \
+  || fail 'standalone admission lacks one fresh and one result-SHA static contract PASS'
+grep -Fxq '[L167] PASS: independent classic/direct and Awesome-CuTe/permutation anchors agree; asymmetric provider, byte, inverse, and negative controls proved' "$LOCAL_EVIDENCE_LOG" \
+  || fail 'standalone admission lacks the independently anchored classic format proof'
+grep -Fxq '[l168:runner] positive=PASS negative_controls=3/3_RED result=PASS' "$LOCAL_EVIDENCE_LOG" \
+  || fail 'standalone admission lacks the exact pipeline-cadence closure'
+grep -Fxq '[l169] PASS: generated-unit shape instantiates standalone Marlin collective/scheduler/kernel; only the two explicit nvcc/PPU environmental diagnostics remain' "$LOCAL_EVIDENCE_LOG" \
+  || fail 'standalone admission lacks the generated standalone type closure'
+grep -Fxq '[l170:runner] positive=PASS negative_controls=7/7_RED result=PASS' "$LOCAL_EVIDENCE_LOG" \
+  || fail 'standalone admission lacks the scheduler lifecycle closure'
+grep -Fxq '[classic-156] PASS: exact one-launch shape, source/tool/binary identity and full ACU capture are fail-closed' "$LOCAL_EVIDENCE_LOG" \
+  || fail 'standalone admission lacks the profile capture contract'
+grep -Fxq '[l143] PASS: standalone Marlin format + cadence + generated type + scheduler lifecycle; generic WK4 compatibility is absent; no device result claimed' "$LOCAL_EVIDENCE_LOG" \
+  || fail 'standalone admission lacks the exact aggregate conclusion'
 
 BUILD_CMD=(env PPU_BUILD_DIR="$BUILD_ROOT" PPU_ARCHS=ppu0010 TARGET="$TARGET"
   QUANT=int4 BENCH_GS=128 "$ROOT/build.sh")
@@ -241,10 +248,10 @@ run_point() {
   if [ "$rc" -ne 0 ]; then
     fail "B=$bpc returned nonzero"
   fi
-  grep -Fq '[dense-marlin-aligned] scheduler=marlin-only topology=1Mx2Nx4K cta_threads=256 output_cohort_threads=64 warp_k_extent=32 warp_k_cohorts=4 tile=16x128x128 warp=16x64x32 stages=4 bits=4 fold=1 artifact_tile_k=64 artifact=shipping-xplane consumer_axis=WarpK32' "$log" \
+  grep -Fq '[dense-marlin-aligned] scheduler=marlin-only topology=1Mx2Nx4K cta_threads=256 output_cohort_threads=64 warp_k_extent=32 warp_k_cohorts=4 tile=16x128x128 warp=16x64x32 stages=4 bits=4 fold=1 artifact=classic-marlin-u32 scale=classic-gs128-permuted load=cp.async consumer_axis=WarpK32' "$log" \
     || fail "B=$bpc did not print the exact compiled topology"
-  grep -Eq '^  \[dense marlin aligned artifact\] batch=0 bytes=8388608 placement=shipping-xplane consumer_axis=WarpK32 artifact_tile_k=64 roundtrip_bad=0/16777216$' "$log" \
-    || fail "B=$bpc did not consume and roundtrip the explicit WK4 consumer's shipping artifact"
+  grep -Eq '^  \[dense marlin aligned artifact\] batch=0 bytes=8388608 placement=classic-marlin-u32 scale=classic-gs128-permuted consumer_axis=WarpK32 roundtrip_bad=0/16777216$' "$log" \
+    || fail "B=$bpc did not consume and roundtrip the standalone classic artifact"
   grep -Eq '^  \[streamk fixture exactness\] fixture=a0-exact shape=1x4096x4096 .* -> ORDER-INDEPENDENT\+FP16-EXACT$' "$log" \
     || fail "B=$bpc did not use the exact decode fixture"
   grep -Eq "^  \\[dense marlin decomposition\\] real_cu=[0-9]+ occupancy_api=[0-9]+ blocks_per_cu=${bpc} Q=32 Kt=32 G=[0-9]+ I=[0-9]+ active=[0-9]+ idle=[0-9]+ handoffs=[0-9]+ max_peers=[0-9]+ workspace=[0-9]+$" "$log" \
@@ -300,7 +307,7 @@ grep -Fq -- "--marlin-blocks-per-cu=$ILLEGAL is outside the exact kernel occupan
 
 verify_source_identity
 
-printf '\n[marlin-wk4] PASS: classic-aligned WK4 consumer built on shipping bytes; supported B points passed exact output + 8-launch locks; over-cap B stayed NOT RUN\n'
+printf '\n[marlin-wk4] PASS: standalone classic Marlin built on classic u32 bytes; supported B points passed exact output + 8-launch locks; over-cap B stayed NOT RUN\n'
 printf '[marlin-wk4] runner_exit_status=0\n'
 printf '[marlin-wk4] artifacts preserved at %s\n' "$ARTIFACT_ROOT"
 
