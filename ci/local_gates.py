@@ -719,19 +719,20 @@ def lint_syntax_inventory():
 
 
 def lint_ppu_portability():
-    """PPU-reachable sources must be portable; exact NVIDIA-only islands must prove they are unreachable.
+    """Only the CMake-evaluated PPU source graph is subject to PPU portability.
 
-    A directory-wide scan once classified the RTX5090-only Q4_K reconstruction as PPU code and stopped all nine
-    boxdry rows before CMake.  The checker now owns a fail-closed applicability boundary: N/A files must retain
-    their NVIDIA build contract and must remain absent from the PPU CMake/include graph.  A new CUDA spelling in
-    real PPU code is still a FAIL, and planted source/include/CMake violations prove that on every invocation.
+    Directory membership is not a compile edge.  The checker runs the repository's real target-registration CMake,
+    follows project-owned includes from those opt-in translation units, and tests a fresh NVIDIA-only TU both before
+    and after registration.  No SDK is required for branch liveness, but without CMake the graph cannot be known and
+    the result is an explicit SKIP rather than a false PASS.
     """
     script = ROOT / "dev" / "fold_derivation" / "ppu_portability_check.py"
     if not script.is_file():
         return "FAIL", "ppu_portability_check.py is a repository gate and is missing", 0.0
     r = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, cwd=ROOT)
     line = next((l.strip() for l in (r.stdout + r.stderr).splitlines() if l.strip()), f"exit {r.returncode}")
-    return ("PASS" if r.returncode == 0 else "FAIL"), line, 0.0
+    status = {0: "PASS", 2: "SKIP"}.get(r.returncode, "FAIL")
+    return status, line, 0.0
 
 
 def lint_fixture_flags():

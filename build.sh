@@ -187,24 +187,24 @@ fi
 # registrations once named a helper that does not exist; nothing caught it until cmake ran on the box, which
 # costs a full pull-and-build to discover a typo.
 #
-# THE CHECKS ARE TOLD WHERE THINGS ARE rather than deriving it. All three assumed the pre-reorganisation layout, in
+# THE PATH-BASED CHECKS ARE TOLD WHERE THINGS ARE rather than deriving it. They once assumed the pre-reorganisation layout, in
 # which this script's directory held CMakeLists.txt, the headers and gemv_lowbit/ side by side. After the split into
 # quactlize/include, tests/ and benchmarks/ all three failed -- loudly, each with its own self-check ("the deny list
 # matches nothing", "the anchors moved"), which is the only reason the breakage was visible at all rather than three
 # checks quietly passing over an empty file set. Exporting the paths from the one place that already knows them
 # means they cannot drift from the overlay again.
 export QUACTLIZE_ROOT="$HERE"
-# dev/ IS IN THIS LIST WHEN IT EXISTS, because its top-level sources are overlaid onto the box (see the overlay step
-# below). The portability check's whole job is to cover what ships; listing a narrower set than the overlay copies is
-# the same drift this export was introduced to remove, one directory later.
+# dev/ IS IN THIS LIST WHEN IT EXISTS because the remaining path-based checks model the historical overlay.  The
+# portability check deliberately does NOT consume this directory list: it evaluates the real PPU CMake registrations
+# and follows their include graph.  Directory membership is not evidence that hgcc compiles a file.
 export QUACTLIZE_SRC_DIRS="${_src_dirs[*]}$([ -d "$HERE/dev" ] && echo " dev")"
 export QUACTLIZE_GEMV_DIR="$HERE/$_subdir_src"
 export QUACTLIZE_CMAKE="$HERE/quactlize/csrc/CMakeLists.txt.in"
 if [ -x "$HERE/dev/fold_derivation/cmake_calls_check.sh" ]; then
   "$HERE/dev/fold_derivation/cmake_calls_check.sh" || exit 1
 fi
-# NVIDIA-only spellings in box-built sources. The syntax check cannot see these: local nvcc has cuda_fp16.h
-# whether or not -D__HGGCCC__ is passed, so a wrong-platform include parses clean and only hgcc disagrees.
+# NVIDIA-only spellings in CMake-registered PPU sources.  The checker is SDK-free but evaluates the box's live
+# preprocessor branch; an unregistered NVIDIA benchmark is N/A, while registering that same TU is a planted FAIL.
 if [ -x "$HERE/dev/fold_derivation/ppu_portability_check.py" ]; then
   "$HERE/dev/fold_derivation/ppu_portability_check.py" || exit 1
 fi

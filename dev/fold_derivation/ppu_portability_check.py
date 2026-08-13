@@ -1,212 +1,408 @@
 #!/usr/bin/env python3
-"""Box-built sources must not name NVIDIA-only identifiers in code the box actually compiles.
+"""Reject NVIDIA-only spellings in the source graph of real PPU targets.
 
-WHY THIS EXISTS, AND WHY IT IS NOT A PLAIN GREP. syntax_check.sh reported 0 noise lines for these very files
-and the box then failed on `fatal error: cuda_fp16.h: No such file or directory`. It could not have caught it:
-local nvcc HAS cuda_fp16.h whether or not -D__HGGCCC__ is passed, so a wrong-platform INCLUDE parses fine and
-only the box disagrees. The same blind spot covers cudaStream_t in a signature and __halves2half2, an
-intrinsic that exists in CUDA and appears NOWHERE in actlize.
+Applicability is deliberately structural.  A file is checked only when the real
+``CMakeLists.txt.in`` registers it in a PPU executable/library, or a checked
+translation unit reaches it through a project-owned include edge.  Merely living
+under ``tests/``, ``benchmarks/`` or ``dev/`` does not make a file PPU code.
 
-A plain grep is not enough either, because the portable spelling is itself written as
-    #if defined(__HGGCCC__) ... #else <the CUDA one> #endif
-so the CUDA name is PRESENT in every correctly-ported file. The check therefore evaluates the same conditions
-the box does -- __HGGCCC__ defined, ENABLE_BF16 not -- and only reports hits in the live branches. That makes
-it exact rather than heuristic, and it is the difference between a check that is trusted and one that gets a
-growing exception list until it hides the next real hit.
+This distinction matters: an RTX5090-only benchmark used to stop every PPU build
+because the old checker enumerated directories before CMake.  Adding an exception
+for that filename fixed one island and guaranteed that the next island would fail
+in the same way.  Here CMake registration is the opt-in authority, so an
+unregistered NVIDIA TU is N/A while registering that same TU is a hard failure.
 
-Identifiers that exist in CUDA *and* in actlize are deliberately NOT on the list: half2, __hfma2, __hsub2,
-__hadd2, __hmul2, __half2half2, __shfl_xor_sync, __syncthreads, uint4, uint2, dim3, float2, __float2half and
-__half2float were all confirmed present in the actlize include tree, so they are portable.
+The check is SDK-free.  It evaluates the branch the box compiles
+(``__HGGCCC__`` defined and ``ENABLE_BF16`` undefined), so this property is fully
+local.  Missing CMake is an explicit SKIP (rc=2); a broken/empty source graph or a
+NVIDIA spelling in a reachable source is always FAIL (rc=1).
 """
-import os, re, sys
 
-DENY = re.compile(r'cuda_fp16\.h|cuda_bf16\.h|cuda_runtime\.h|cudaStream_t|cudaMalloc|cudaFree|cudaMemcpy'
-                  r'|cudaDeviceSynchronize|cudaGetLastError|cudaError_t|cudaSuccess|cudaEvent'
-                  r'|__halves2half2|__halves2bfloat162|__nv_bfloat')
-# gemv_rt.hpp's whole job is to straddle the two runtimes, so it names both by design.
-ALLOW = {'gemv_rt.hpp'}
-# THIS IS AN APPLICABILITY BOUNDARY, NOT A PORTABILITY EXCEPTION.  These files form one local RTX5090/sm_120
-# experiment.  They are built directly by benchmarks/q4k_pdf_5090_ab.py with nvcc and NVML; they are not sources
-# of any PPU CMake target.  Treating their CUDA API as a PPU failure stopped every boxdry check before CMake.
-#
-# A bare allow-list would be dangerous: if one of these files later became PPU-reachable, the exception would hide
-# exactly the regression this check exists to catch.  _nvidia_island_errors() therefore proves both sides on every
-# run: the island still has its NVIDIA-only build contract, and no PPU CMake/source edge reaches it.
-NVIDIA_ONLY_ISLAND = {
-    'benchmarks/q4k_pdf_5090_ab.cu',
-    'benchmarks/q4k_pdf_ab_fixture.hpp',
-    'benchmarks/q4k_pdf_reconstruction.cuh',
-    'dev/fold_derivation/l146_q4k_pdf_ab_fixture.cu',
-}
-# *_cuda_probe.* is a LOCAL CUDA harness by convention and is excluded from the overlay by build.sh, so it never
-# reaches hgcc. Skipping it here is not a weakening: the two rules have to agree, and if a probe loses the suffix it
-# starts being overlaid AND starts being reported here at the same moment.
-def _is_local_cuda_probe(path):
-    import re as _re
-    return _re.search(r'_cuda_probe\.[^.]+$', os.path.basename(path)) is not None
-# What the box defines. Anything guarded on something else is assumed live (conservative: reports more).
-DEFINED = {'__HGGCCC__'}
-UNDEFINED = {'ENABLE_BF16'}
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
 
 
-def _rel(root, path):
-    return os.path.relpath(os.path.abspath(path), os.path.abspath(root)).replace(os.sep, '/')
+DENY = re.compile(
+    r"cuda_fp16\.h|cuda_bf16\.h|cuda_runtime\.h|cudaStream_t|cudaMalloc|cudaFree|cudaMemcpy"
+    r"|cudaDeviceSynchronize|cudaGetLastError|cudaError_t|cudaSuccess|cudaEvent"
+    r"|__halves2half2|__halves2bfloat162|__nv_bfloat"
+)
+
+# These are the box's relevant preprocessing facts.  Unknown macros remain
+# unknown and both sides are scanned; known facts select exactly one side.
+DEFINED = {"__HGGCCC__"}
+UNDEFINED = {"ENABLE_BF16"}
+INCLUDE_RE = re.compile(r'^\s*#\s*include\s*["<]([^">]+)[">]')
 
 
-def _deny_hits(path):
-    return [(ln, text) for ln, text in live_lines(path) if DENY.search(text.split('//')[0])]
+class GraphError(RuntimeError):
+    pass
 
 
-def _nvidia_island_errors(root, ppu_candidates, cmake_text, runner_text=None):
-    """Prove the exact NVIDIA-only island remains N/A to PPU rather than silently exempting it."""
-    errors = []
-    for rel in sorted(NVIDIA_ONLY_ISLAND):
-        if not os.path.isfile(os.path.join(root, rel)):
-            errors.append(f"declared NVIDIA-only source vanished: {rel}")
+class GraphSkip(RuntimeError):
+    pass
 
-    runner = os.path.join(root, 'benchmarks/q4k_pdf_5090_ab.py')
-    if runner_text is None and os.path.isfile(runner):
-        runner_text = open(runner, errors='replace').read()
-    runner_text = runner_text or ''
-    for token in ('nvcc', '-arch=sm_120', '-lnvidia-ml', 'compute capability {cap}'):
-        if token not in runner_text:
-            errors.append(f"NVIDIA-only Q4_K contract lost {token!r}; its PPU N/A classification is stale")
 
-    # A source named by the PPU CMake authority is PPU-reachable even if the wide source scan still labels it an
-    # island.  Basenames are unique in this tree (overlay_targets_check proves that), so a basename is sufficient
-    # and also catches both relative and generated absolute spellings.
-    for rel in sorted(NVIDIA_ONLY_ISLAND):
-        base = os.path.basename(rel)
-        if re.search(r'(?<![A-Za-z0-9_])' + re.escape(base) + r'(?![A-Za-z0-9_])', cmake_text):
-            errors.append(f"declared NVIDIA-only source became PPU-CMake-reachable: {rel}")
+def _rel(root: Path, path: Path) -> str:
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return str(path.resolve())
 
-    island_bases = {os.path.basename(p) for p in NVIDIA_ONLY_ISLAND}
-    include = re.compile(r'^\s*#\s*include\s*[\"<]([^\">]+)[\">]', re.M)
-    for path in ppu_candidates:
-        rel = _rel(root, path)
-        if rel in NVIDIA_ONLY_ISLAND or not os.path.isfile(path):
-            continue
-        text = open(path, errors='replace').read()
-        reached = sorted({os.path.basename(m.group(1)) for m in include.finditer(text)} & island_bases)
-        if reached:
-            errors.append(f"PPU candidate {rel} includes NVIDIA-only island member(s): {', '.join(reached)}")
-    return errors
 
-def live_lines(path):
-    """Yield (lineno, text) for lines the box would compile, honouring #if/#else/#endif on the macros above."""
-    stack = []           # each entry: True (live) / False (dead) / None (unknown -> treat as live)
-    out = []
-    cond = re.compile(r'^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)$')
-    def truth(expr):
-        e = expr.strip()
-        for m in DEFINED:
-            if f'defined({m})' in e or e == m: return True
-        for m in UNDEFINED:
-            if f'defined({m})' in e or e == m: return False
+def _condition(expr: str) -> bool | None:
+    """Evaluate the small preprocessor subset needed for platform branches.
+
+    Returning None means an unrelated build option participates.  The caller
+    then keeps both branches live, which is conservative without misreading
+    ``!defined(__HGGCCC__)`` as the PPU branch.
+    """
+
+    unknown = False
+
+    def replace_defined(match: re.Match[str]) -> str:
+        nonlocal unknown
+        name = match.group(1) or match.group(2)
+        if name in DEFINED:
+            return "1"
+        if name in UNDEFINED:
+            return "0"
+        unknown = True
+        return "0"
+
+    value = re.sub(
+        r"defined\s*\(\s*([A-Za-z_]\w*)\s*\)|defined\s+([A-Za-z_]\w*)",
+        replace_defined,
+        expr,
+    )
+
+    def replace_identifier(match: re.Match[str]) -> str:
+        nonlocal unknown
+        name = match.group(0)
+        if name in UNDEFINED:
+            return "0"
+        # Knowing that a macro is defined does not reveal its numeric value.
+        # `#ifdef __HGGCCC__` is exact through replace_defined(), whereas
+        # `#if __HGGCCC__ >= 12` must keep both branches live unless the box's
+        # exact version value is part of this model.
+        unknown = True
+        return "0"
+
+    value = re.sub(r"\b[A-Za-z_]\w*\b", replace_identifier, value)
+    if unknown:
         return None
-    for i, line in enumerate(open(path, errors='replace'), 1):
-        m = cond.match(line)
-        if m:
-            kind, rest = m.group(1), m.group(2)
-            if kind in ('if', 'ifdef'):
-                stack.append(truth(rest.replace('defined', 'defined')) if kind == 'if' else truth(f'defined({rest.strip()})'))
-            elif kind == 'ifndef':
-                t = truth(f'defined({rest.strip()})')
-                stack.append(None if t is None else (not t))
-            elif kind == 'elif':
-                if stack: stack[-1] = truth(rest)
-            elif kind == 'else':
-                if stack: stack[-1] = None if stack[-1] is None else (not stack[-1])
-            elif kind == 'endif':
-                if stack: stack.pop()
+    value = value.replace("&&", " and ").replace("||", " or ")
+    value = re.sub(r"!(?!=)", " not ", value)
+    if not re.fullmatch(r"[\s0-9()<>!=&|+*/%.-]*(?:and|or|not)?[\s0-9()<>!=&|+*/%a-z.-]*", value):
+        return None
+    try:
+        return bool(eval(value, {"__builtins__": {}}, {}))  # noqa: S307: sanitized expression above
+    except (SyntaxError, TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def live_lines(path: Path):
+    """Yield lines that can be live under the box's known preprocessing facts."""
+
+    # Each frame stores [current_branch_possible, later_branch_possible].
+    stack: list[list[bool]] = []
+    conditional = re.compile(r"^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)$")
+    for lineno, line in enumerate(path.open(errors="replace"), 1):
+        match = conditional.match(line)
+        if match:
+            kind, rest = match.group(1), match.group(2).strip()
+            if kind in ("if", "ifdef", "ifndef"):
+                parent_possible = all(frame[0] for frame in stack)
+                if kind == "if":
+                    result = _condition(rest)
+                else:
+                    result = _condition(f"defined({rest})")
+                    if kind == "ifndef" and result is not None:
+                        result = not result
+                current = parent_possible and result is not False
+                remaining = parent_possible and result is not True
+                stack.append([current, remaining])
+            elif kind == "elif" and stack:
+                result = _condition(rest)
+                remaining = stack[-1][1]
+                stack[-1][0] = remaining and result is not False
+                stack[-1][1] = remaining and result is not True
+            elif kind == "else" and stack:
+                stack[-1][0] = stack[-1][1]
+                stack[-1][1] = False
+            elif kind == "endif" and stack:
+                stack.pop()
             continue
-        if all(s is not False for s in stack):
-            out.append((i, line.rstrip('\n')))
-    return out
+        if all(frame[0] for frame in stack):
+            yield lineno, line.rstrip("\n")
 
-def main():
-    # WHERE THE SOURCES ARE, told by build.sh so this cannot drift from what the overlay actually ships. The fallback
-    # is the repo layout, for running this by hand. It used to be "the directory above this one", which held every
-    # source before the tree split into quactlize/include, tests/ and benchmarks/ -- after the split this scanned an
-    # empty set, and only the vacuity self-check below made that visible instead of a silent pass.
-    root = os.environ.get('QUACTLIZE_ROOT') or os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    src_dirs = (os.environ.get('QUACTLIZE_SRC_DIRS') or 'quactlize/include tests benchmarks').split()
-    files = []
-    for d in src_dirs:
-        full = os.path.join(root, d)
-        if os.path.isdir(full):
-            files += [os.path.join(full, f) for f in sorted(os.listdir(full))
-                      if f.endswith(('.cu', '.cuh', '.hpp', '.h'))]
-    sub = os.environ.get('QUACTLIZE_GEMV_DIR') or os.path.join(root, 'quactlize/include/gemv_lowbit')
-    if os.path.isdir(sub):
-        files += [os.path.join(sub, f) for f in sorted(os.listdir(sub))
-                  if f.endswith(('.cu', '.cuh', '.hpp', '.h'))]
-    if not files:
-        print("  [FAIL] ppu_portability: scanned no files at all -- the source directories moved")
+
+def _cmake_driver(root: Path, extra_dirs: list[Path], suffix: str) -> str:
+    source_dirs = [
+        root / "tests",
+        root / "benchmarks",
+        root / "dev",
+        root / "quactlize/csrc/device",
+        root / "quactlize/csrc",
+    ] + extra_dirs
+    dirs = ";".join(str(path.resolve()) for path in source_dirs if path.is_dir())
+    authority = root / "quactlize/csrc/CMakeLists.txt.in"
+    # The lower-level CUTLASS functions are replaced only to record their
+    # resolved source arguments.  All registration, optional-target logic and
+    # generated-unit construction above them is the repository's real CMake.
+    return f'''cmake_minimum_required(VERSION 3.18)
+project(qz_ppu_source_graph NONE)
+set(QZ_ROOT "{root.resolve()}")
+set(QZ_SRC_DIRS "{dirs}")
+set(CUTLASS_PPU_ARCHS "ppu0010" CACHE STRING "PPU graph architecture" FORCE)
+set(_QZ_PPU_SOURCE_MANIFEST "${{CMAKE_BINARY_DIR}}/ppu_sources.txt")
+file(WRITE "${{_QZ_PPU_SOURCE_MANIFEST}}" "")
+
+function(_qz_record_ppu_sources)
+  foreach(_arg ${{ARGN}})
+    get_filename_component(_abs "${{_arg}}" ABSOLUTE BASE_DIR "${{CMAKE_CURRENT_SOURCE_DIR}}")
+    if(EXISTS "${{_abs}}" AND NOT IS_DIRECTORY "${{_abs}}")
+      file(APPEND "${{_QZ_PPU_SOURCE_MANIFEST}}" "${{_abs}}\\n")
+    endif()
+  endforeach()
+endfunction()
+function(cutlass_add_executable NAME)
+  _qz_record_ppu_sources(${{ARGN}})
+  add_custom_target(${{NAME}})
+endfunction()
+function(cutlass_add_library NAME)
+  _qz_record_ppu_sources(${{ARGN}})
+  add_custom_target(${{NAME}})
+endfunction()
+function(target_compile_definitions)
+endfunction()
+function(target_compile_options)
+endfunction()
+function(target_include_directories)
+endfunction()
+function(target_link_libraries)
+endfunction()
+function(set_target_properties)
+endfunction()
+function(add_dependencies)
+endfunction()
+
+include("{authority.resolve()}")
+{suffix}
+'''
+
+
+def _configured_roots(root: Path, workspace: Path, *, extra_dirs=None, suffix="") -> list[Path]:
+    cmake = shutil.which("cmake")
+    if not cmake:
+        raise GraphSkip("cmake is unavailable; the PPU source graph cannot be evaluated")
+    source = workspace / "source"
+    build = workspace / "build"
+    source.mkdir(parents=True)
+    (source / "CMakeLists.txt").write_text(
+        _cmake_driver(root, list(extra_dirs or []), suffix), encoding="utf-8"
+    )
+    result = subprocess.run(
+        [cmake, "-S", str(source), "-B", str(build)],
+        text=True,
+        capture_output=True,
+        cwd=root,
+    )
+    if result.returncode:
+        detail = "\n".join((result.stdout + result.stderr).splitlines()[-12:])
+        raise GraphError(f"CMake could not evaluate the PPU source graph:\n{detail}")
+    manifest = build / "ppu_sources.txt"
+    if not manifest.is_file():
+        raise GraphError("CMake completed without writing the PPU source manifest")
+    roots = sorted({Path(line).resolve() for line in manifest.read_text().splitlines() if line.strip()})
+    if not roots:
+        raise GraphError("CMake evaluated an empty PPU translation-unit graph")
+    missing = [path for path in roots if not path.is_file()]
+    if missing:
+        raise GraphError("CMake registered missing PPU source(s): " + ", ".join(map(str, missing[:8])))
+    return roots
+
+
+def _owned(path: Path, root: Path, generated_root: Path, extra_owners: list[Path]) -> bool:
+    resolved = path.resolve()
+    for owner in (root.resolve(), generated_root.resolve(), *(path.resolve() for path in extra_owners)):
+        try:
+            resolved.relative_to(owner)
+            break
+        except ValueError:
+            continue
+    else:
+        return False
+    # Vendor portability is governed by the pinned actlize boundary, not by
+    # this repository-owned source check.
+    try:
+        rel = resolved.relative_to(root.resolve())
+        if rel.parts and rel.parts[0] == "third_party":
+            return False
+    except ValueError:
+        pass
+    # A C/C++ include edge, rather than a suffix allow-list, determines
+    # reachability.  In particular production implementation lives in .inl;
+    # filtering it out would silently truncate an otherwise correct TU graph.
+    return resolved.is_file()
+
+
+def _include_dirs(root: Path, generated_root: Path, extra_dirs: list[Path]) -> list[Path]:
+    return [
+        root,
+        root / "quactlize/include",
+        root / "quactlize/include/gemv_lowbit",
+        root / "tests",
+        root / "benchmarks",
+        root / "dev",
+        root / "quactlize/csrc/device",
+        root / "quactlize/csrc",
+        generated_root,
+    ] + extra_dirs
+
+
+def _resolve_include(
+    name: str,
+    source: Path,
+    search: list[Path],
+    root: Path,
+    generated_root: Path,
+    extra_owners: list[Path],
+) -> Path | None:
+    candidates = []
+    for directory in [source.parent] + search:
+        candidate = (directory / name).resolve()
+        if candidate.is_file() and _owned(candidate, root, generated_root, extra_owners):
+            candidates.append(candidate)
+    unique = list(dict.fromkeys(candidates))
+    if not unique:
+        return None
+    if len(unique) > 1:
+        raise GraphError(
+            f"project include {name!r} from {_rel(root, source)} is ambiguous: "
+            + ", ".join(_rel(root, path) for path in unique)
+        )
+    return unique[0]
+
+
+def _scan_graph(root: Path, generated_root: Path, roots: list[Path], extra_dirs=None):
+    extra_owners = list(extra_dirs or [])
+    search = _include_dirs(root, generated_root, extra_owners)
+    pending = list(roots)
+    visited: set[Path] = set()
+    hits: list[tuple[Path, int, str]] = []
+    while pending:
+        path = pending.pop().resolve()
+        if path in visited:
+            continue
+        visited.add(path)
+        for lineno, text in live_lines(path):
+            code = text.split("//", 1)[0]
+            if DENY.search(code):
+                hits.append((path, lineno, text.strip()))
+            include = INCLUDE_RE.match(code)
+            if include:
+                reached = _resolve_include(
+                    include.group(1), path, search, root, generated_root, extra_owners
+                )
+                if reached is not None and reached not in visited:
+                    pending.append(reached)
+    return visited, hits
+
+
+def _print_hits(root: Path, hits) -> None:
+    for path, lineno, text in hits:
+        print(
+            f"  [FAIL] ppu_portability: {_rel(root, path)}:{lineno} is NVIDIA-only "
+            f"in a branch the box compiles:\n           {text}"
+        )
+
+
+def main() -> int:
+    root = Path(os.environ.get("QUACTLIZE_ROOT") or Path(__file__).resolve().parents[2]).resolve()
+    authority = root / "quactlize/csrc/CMakeLists.txt.in"
+    if not authority.is_file():
+        print(f"  [FAIL] ppu_portability: PPU CMake source authority is missing: {authority}")
         return 1
 
-    cmake = os.environ.get('QUACTLIZE_CMAKE') or os.path.join(root, 'quactlize/csrc/CMakeLists.txt.in')
-    if not os.path.isfile(cmake):
-        print(f"  [FAIL] ppu_portability: PPU CMake source authority is missing: {cmake}")
-        return 1
-    island_errors = _nvidia_island_errors(root, files, open(cmake, errors='replace').read())
-    if island_errors:
-        for error in island_errors:
-            print(f"  [FAIL] ppu_portability: {error}")
+    try:
+        with tempfile.TemporaryDirectory(prefix="qz-ppu-portability-") as temp_name:
+            temp = Path(temp_name)
+            # Structural three-arm control.  The filename is fresh and carries
+            # no repository convention: applicability changes only because the
+            # real quactlize_ppu_executable registration changes.
+            plant = temp / "plant"
+            plant.mkdir()
+            # Use a .cpp root and .inl include deliberately: both are shipping
+            # shapes, and a source/header suffix list once truncated each one.
+            subject = plant / "fresh_nvidia_only_151.cpp"
+            included_header = plant / "fresh_registered_nvidia_only_151.inl"
+            include_owner = plant / "fresh_registered_include_owner_151.cu"
+            subject.write_text(
+                "#if defined(__HGGCCC__)\n"
+                "cudaStream_t registered_stream;\n"
+                "#else\n"
+                "int registered_stream;\n"
+                "#endif\n",
+                encoding="utf-8",
+            )
+            included_header.write_text(
+                "#if defined(__HGGCCC__)\n#include <cuda_fp16.h>\n#endif\n",
+                encoding="utf-8",
+            )
+            include_owner.write_text('#include "fresh_registered_nvidia_only_151.inl"\n', encoding="utf-8")
+
+            # First evaluate the normal graph with the planted directory on the
+            # resolver path but without registering the subject.  This is the
+            # N/A arm for the exact same file registered below.
+            normal_workspace = temp / "normal"
+            roots = _configured_roots(root, normal_workspace, extra_dirs=[plant])
+            visited, hits = _scan_graph(
+                root, normal_workspace / "build", roots, extra_dirs=[plant]
+            )
+            if hits:
+                _print_hits(root, hits)
+                return 1
+            if subject.resolve() in visited:
+                raise GraphError("an unregistered fresh NVIDIA-only TU entered the opt-in PPU graph")
+
+            suffix = """
+quactlize_ppu_executable(qz_portability_registered_151 fresh_nvidia_only_151.cpp)
+quactlize_ppu_executable(qz_portability_include_151 fresh_registered_include_owner_151.cu)
+"""
+            planted_workspace = temp / "planted"
+            planted_roots = _configured_roots(
+                root, planted_workspace, extra_dirs=[plant], suffix=suffix
+            )
+            planted_visited, planted_hits = _scan_graph(
+                root, planted_workspace / "build", planted_roots, extra_dirs=[plant]
+            )
+            hit_paths = {path.resolve() for path, _, _ in planted_hits}
+            if subject.resolve() not in planted_visited or subject.resolve() not in hit_paths:
+                raise GraphError("the same NVIDIA-only TU did not fail after PPU registration")
+            if included_header.resolve() not in hit_paths:
+                raise GraphError("a live include from a registered PPU TU did not fail portability")
+
+            print(
+                "  [ok]   ppu_portability: "
+                f"{len(roots)} CMake-registered PPU TU(s), {len(visited)} reachable owned source(s); "
+                "fresh unregistered NVIDIA TU=N/A, the same PPU-live branch after registration and a live include=FAIL"
+            )
+            return 0
+    except GraphSkip as error:
+        print(f"  [SKIP] ppu_portability: {error}")
+        return 2
+    except GraphError as error:
+        print(f"  [FAIL] ppu_portability: {error}")
         return 1
 
-    bad = 0
-    for f in files:
-        if os.path.basename(f) in ALLOW: continue
-        if _is_local_cuda_probe(f): continue
-        if _rel(root, f) in NVIDIA_ONLY_ISLAND: continue
-        for ln, text in _deny_hits(f):
-            # `root`, not `here` -- there is no `here`. This line is in the FAILURE path, which had never run,
-            # so a NameError sat in the one branch whose whole job is to report a problem: the check could only
-            # ever pass or crash. Verified below by making it fire on purpose.
-            print(f"  [FAIL] ppu_portability: {os.path.relpath(f, root)}:{ln} is NVIDIA-only in a branch "
-                  f"the box compiles:\n           {text.strip()}")
-            bad = 1
 
-    # TWO SELF-CHECKS, because a portability check that silently stops matching is worse than none.
-    #
-    # (1) The deny list must still match REAL code somewhere. gemv_rt.hpp is the file that names both runtimes,
-    #     so it is the anchor -- but its cuda* names sit in the #else of #if defined(__HGGCCC__), i.e. in a DEAD
-    #     branch, so the anchor has to be checked against the raw text and not against the live subset. Getting
-    #     that backwards made this self-check fail on a correctly-ported tree the first time it ran.
-    rt = os.path.join(sub, 'gemv_rt.hpp')
-    if not (os.path.exists(rt) and DENY.search(open(rt, errors='replace').read())):
-        print("  [FAIL] ppu_portability: the deny list matches nothing even in gemv_rt.hpp -- vacuous check")
-        return 1
-    # (2) An UNCONDITIONAL cuda include in a PPU candidate must be reported.  This is a planted REAL source defect,
-    #     not a synthetic status string; it proves the island cannot turn a new PPU regression into N/A/SKIP.
-    import tempfile
-    with tempfile.TemporaryDirectory() as td:
-        probe = os.path.join(td, 'probe.cuh')
-        open(probe, 'w').write("#include <cuda_fp16.h>\nint x;\n")
-        if not _deny_hits(probe):
-            print("  [FAIL] ppu_portability: an unconditional cuda_fp16.h include is NOT reported -- the "
-                  "liveness filter is swallowing everything")
-            return 1
-        # (3) The N/A boundary itself must fail closed in both directions.  Registering an island TU with PPU CMake,
-        #     or including an island header from a PPU source, is a FAIL -- never an inherited exemption.
-        cmake_text = open(cmake, errors='replace').read()
-        planted_cmake = cmake_text + "\nq4k_pdf_5090_ab.cu\n"
-        if not any('became PPU-CMake-reachable' in e
-                   for e in _nvidia_island_errors(root, files, planted_cmake)):
-            print("  [FAIL] ppu_portability: registering the NVIDIA-only harness as a PPU source escaped")
-            return 1
-        edge = os.path.join(td, 'ppu_candidate.cuh')
-        open(edge, 'w').write('#include "q4k_pdf_reconstruction.cuh"\n')
-        if not any('includes NVIDIA-only island' in e
-                   for e in _nvidia_island_errors(root, files + [edge], cmake_text)):
-            print("  [FAIL] ppu_portability: a PPU include edge into the NVIDIA-only island escaped")
-            return 1
-    if not bad:
-        applicable = sum(_rel(root, f) not in NVIDIA_ONLY_ISLAND and not _is_local_cuda_probe(f)
-                         for f in files)
-        print(f"  [ok]   ppu_portability: {applicable} PPU candidates are portable; exact RTX5090 Q4_K "
-              f"island is N/A to PPU and proved unreachable; 3 planted boundary defects fail")
-    return bad
-
-sys.exit(main())
+if __name__ == "__main__":
+    sys.exit(main())
