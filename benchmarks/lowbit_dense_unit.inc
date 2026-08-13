@@ -44,8 +44,12 @@ static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
                     Kernel::MaxThreadsPerBlock == 256 &&
                     Kernel::OutputThreads == 64,
                 "classic alignment must be 1M x 2N x 4K = 8 warps with a 64-thread output cohort");
-  static_assert(Kernel::TileScheduler::FixupThreadCount == 64,
-                "cross-CTA fixup must use the exact surviving K0 cohort");
+  static_assert(Kernel::IsStandaloneMarlin,
+                "the classic-aligned row must instantiate the standalone Marlin kernel");
+  static_assert(std::is_same_v<typename Kernel::CollectiveMainloop,
+                               typename Cfg<GroupSize, TM, TN, TK, WM, WN,
+                                            ST, DENSE_AB_WARP_K>::MarlinMain>,
+                "the standalone kernel must consume the standalone Marlin collective");
   return run<G>(options, dense_tactic(cfg), "marlin");
 #else
 #if defined(DENSE_MARLIN_AB)

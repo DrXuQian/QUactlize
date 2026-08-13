@@ -26,6 +26,7 @@
 #include "cute/tensor.hpp"
 #include "cutlass/arch/arch.h"
 #include "cutlass/cutlass.h"
+#include "cutlass/gemm/dispatch_policy.hpp"
 #include "cutlass/numeric_types.h"
 
 namespace cutlass::gemm::collective {
@@ -123,10 +124,10 @@ CUTLASS_DEVICE void ldmatrix_a(FragmentA& fragment, void const* smem_ptr) {
       : "l"(smem_ptr));
 }
 
-template <class Accumulator>
+template <int NBlock, class Accumulator>
 CUTLASS_DEVICE void mma_n16(
     FragmentA const& a, FragmentB const& b0, FragmentB const& b1,
-    Accumulator& accum, int n_block) {
+    Accumulator& accum) {
   uint32_t const* av = reinterpret_cast<uint32_t const*>(&a);
   uint32_t const b[4] = {
       *reinterpret_cast<uint32_t const*>(&b0.value[0]),
@@ -134,7 +135,7 @@ CUTLASS_DEVICE void mma_n16(
       *reinterpret_cast<uint32_t const*>(&b1.value[0]),
       *reinterpret_cast<uint32_t const*>(&b1.value[1]),
   };
-  int const base = 8 * n_block;
+  constexpr int base = 8 * NBlock;
   asm volatile(
       "ppu.mma.sync.aligned.m16n16k16.row.col.f32.f16.f16.f32 "
       "{%0,%1,%2,%3,%4,%5,%6,%7}, {%8,%9,%10,%11}, "
@@ -170,6 +171,12 @@ class MarlinCollectivePPU {
   using ElementScale = cutlass::half_t;
   using ElementAccumulator = float;
   using ArchTag = cutlass::arch::PPU0010;
+  using DispatchPolicy = MainloopPPUAiu<Stages_, KernelAiuMultistageMixedInput>;
+  using TransformA = cute::identity;
+  using TransformB = cute::identity;
+  using GmemTiledCopyA = void;
+  using GmemTiledCopyB = void;
+  static constexpr bool SwapAB = false;
 
   static constexpr int Stages = Stages_;
   static constexpr int GroupSize = GroupSize_;
@@ -197,6 +204,10 @@ class MarlinCollectivePPU {
       cute::MMA_Atom<cute::PPU0010_16x16x16_F32F16F16F32_TN>,
       cute::Layout<cute::Shape<cute::_1, cute::_2, cute::_4>>,
       cute::Tile<cute::_16, cute::_32, cute::_64>>;
+  // TiledMma supplies the real 1M x 2N x 4K thread topology and the 32-value
+  // register extent.  The single PPU n16 instruction's C register map is the
+  // classic acc_i/acc_j map, not CuTe's NVIDIA two-n8 logical C partition;
+  // MarlinKernelPPU therefore owns that explicit output map.
   static_assert(cute::size(TiledMma{}) == Threads);
 
   static constexpr int KBlocks = TileK / 16;
@@ -220,21 +231,15 @@ class MarlinCollectivePPU {
 
   struct Arguments {
     ElementA const* ptr_A = nullptr;
-    StrideA dA{};
     ElementB const* ptr_B = nullptr;
-    StrideB dB{};
     ElementScale const* ptr_S = nullptr;
-    StrideScale dS{};
     int group_size = 0;
   };
 
   struct Params {
     ElementA const* ptr_A = nullptr;
-    StrideA dA{};
     ElementB const* ptr_B = nullptr;
-    StrideB dB{};
     ElementScale const* ptr_S = nullptr;
-    StrideScale dS{};
     int group_size = 0;
   };
 
@@ -245,7 +250,11 @@ class MarlinCollectivePPU {
     int64_t const n = int64_t(cute::get<1>(mnkl));
     int64_t const k = int64_t(cute::get<2>(mnkl));
     int64_t const l = int64_t(cute::get<3>(mnkl));
+    auto const aligned_16 = [](void const* ptr) {
+      return (reinterpret_cast<uintptr_t>(ptr) & uintptr_t(15)) == 0;
+    };
     return args.ptr_A != nullptr && args.ptr_B != nullptr && args.ptr_S != nullptr &&
+           aligned_16(args.ptr_A) && aligned_16(args.ptr_B) && aligned_16(args.ptr_S) &&
            args.group_size == GroupSize && m > 0 && m <= TileM && l == 1 &&
            n > 0 && n % 256 == 0 && k > 0 && k % TileK == 0;
   }
@@ -253,8 +262,7 @@ class MarlinCollectivePPU {
   template <class ProblemShape>
   static Params to_underlying_arguments(
       ProblemShape const&, Arguments const& args, void*) {
-    return {args.ptr_A, args.dA, args.ptr_B, args.dB,
-            args.ptr_S, args.dS, args.group_size};
+    return {args.ptr_A, args.ptr_B, args.ptr_S, args.group_size};
   }
 
   template <class Accumulator, class WorkTile>
@@ -395,7 +403,18 @@ class MarlinCollectivePPU {
         FragmentB b1 = marlin_ppu_detail::dequantize_biased_int4(q >> 8);
         marlin_ppu_detail::scale(b0, fragment_scale[inner & 1][n_block], 0);
         marlin_ppu_detail::scale(b1, fragment_scale[inner & 1][n_block], 1);
-        marlin_ppu_detail::mma_n16(fragment_a[inner & 1], b0, b1, accum, n_block);
+        if (n_block == 0) {
+          marlin_ppu_detail::mma_n16<0>(fragment_a[inner & 1], b0, b1, accum);
+        }
+        else if (n_block == 1) {
+          marlin_ppu_detail::mma_n16<1>(fragment_a[inner & 1], b0, b1, accum);
+        }
+        else if (n_block == 2) {
+          marlin_ppu_detail::mma_n16<2>(fragment_a[inner & 1], b0, b1, accum);
+        }
+        else {
+          marlin_ppu_detail::mma_n16<3>(fragment_a[inner & 1], b0, b1, accum);
+        }
       }
     };
 
@@ -432,6 +451,10 @@ class MarlinCollectivePPU {
       a_global_read += kAGlobalOuter * Stages;
     }
     marlin_ppu_detail::cp_async_wait<0>();
+    // The next phase aliases this 50,176-byte pipeline store with Marlin's
+    // CTA reduction/output staging.  cp.async.wait closes the async copy
+    // group, but it is not a CTA rendezvous.
+    __syncthreads();
   }
 };
 

@@ -77,6 +77,35 @@ public:
 private:
   Params scheduler_params_{};
 
+  CUTLASS_HOST_DEVICE static constexpr WorkTileInfo awesome_peer_order(
+      Params const& p, WorkTileInfo work) {
+    if (!work.is_valid() || p.iters_per_block_ == 0) {
+      return WorkTileInfo::invalid_work_tile();
+    }
+    uint64_t const q_begin = work.output_tile_idx * p.k_tiles_per_output_;
+    uint64_t const q_end = q_begin + p.k_tiles_per_output_;
+    uint64_t const first_peer = q_begin / p.iters_per_block_;
+    uint64_t const last_peer = (q_end - 1) / p.iters_per_block_;
+    if (work.block_idx < first_peer || work.block_idx > last_peer ||
+        last_peer - first_peer + 1 != work.slice_count) {
+      return WorkTileInfo::invalid_work_tile();
+    }
+    // Awesome-CuTe's wait_block is bidx-cur_tile_first_block: the lowest-K
+    // peer publishes first and the highest-K peer resets the lock.  The
+    // vendor integer core historically numbered that chain in reverse.  Keep
+    // its exact stripe decomposition, but normalize the cooperative protocol
+    // at this standalone seam.
+    work.slice_idx = uint32_t(work.block_idx - first_peer);
+    bool const first_k = work.K_idx == 0;
+    bool const final_k = uint64_t(work.K_idx) + work.k_tile_count ==
+                         p.k_tiles_per_output_;
+    if (first_k != (work.slice_idx == 0) ||
+        final_k != (work.slice_idx + 1 == work.slice_count)) {
+      return WorkTileInfo::invalid_work_tile();
+    }
+    return work;
+  }
+
   CUTLASS_HOST_DEVICE static constexpr Params invalid_params() {
     return {};
   }
@@ -309,8 +338,10 @@ public:
     // Work construction and peer arithmetic remain the core's; this wrapper
     // changes traversal only.
     StripeParams const& stripe = static_cast<StripeParams const&>(p);
-    WorkTileInfo const first = StripeCore::get_work_for_block(stripe, block_idx);
-    WorkTileInfo const second = StripeCore::fetch_next_work(stripe, first);
+    WorkTileInfo const first_core = StripeCore::get_work_for_block(stripe, block_idx);
+    WorkTileInfo const second_core = StripeCore::fetch_next_work(stripe, first_core);
+    WorkTileInfo const first = awesome_peer_order(p, first_core);
+    WorkTileInfo const second = awesome_peer_order(p, second_core);
     if (second.is_valid()) {
       // A third segment would mean the proven G/BPC invariant was changed.
       WorkTileInfo const third = StripeCore::fetch_next_work(stripe, second);
@@ -337,8 +368,8 @@ public:
       return WorkTileInfo::invalid_work_tile();
     }
     StripeParams const& stripe = static_cast<StripeParams const&>(p);
-    WorkTileInfo const first =
-        StripeCore::get_work_for_block(stripe, work.block_idx);
+    WorkTileInfo const first = awesome_peer_order(
+        p, StripeCore::get_work_for_block(stripe, work.block_idx));
     // If get_work_for_block() returned the second (higher-q) segment, the
     // core's first segment is the reference traversal's next tile.  A stripe
     // with one segment is already complete.

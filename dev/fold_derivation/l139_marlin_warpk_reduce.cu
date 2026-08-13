@@ -6,13 +6,17 @@
 // 2N x 1K output cohort, and then replays a shared-FP32 reduction.  No device
 // timing, barrier ordering, or cross-CTA fixup is modeled here.
 //
-// The five planted failures are load-bearing:
+// The six planted failures are load-bearing:
 //   1. use the wrong compact-thread projection for nonzero K cohorts;
 //   2. omit one of the four K cohorts;
 //   3. let the three non-survivor cohorts write output.
 //   4. regress the verifier to CTA-thread ownership (256 instead of 64);
 //   5. keep the 64-thread count but alias the last K0 owner onto the first,
 //      producing a duplicate and a hole that the count alone cannot see.
+//   6. substitute CuTe's generic tiled fragment-index order for the manual
+//      mainloop's four contiguous native m16n16 accumulator ranges.  Both
+//      maps are bijections, so exact-once coverage alone must stay green while
+//      the accumulator-to-coordinate association turns red.
 // Each must make the exact raw-output contract red.
 
 #include <algorithm>
@@ -233,7 +237,19 @@ struct OutputOwnerResult {
   int lane_duplicates = 0;
   int coverage_holes = 0;
   int coverage_duplicates = 0;
+  int association_mismatches = 0;
 };
+
+int classic_output_logical(int compact, int stripe) {
+  int const warp_n = compact / 32;
+  int const lane = compact % 32;
+  int const n_block = stripe / 8;
+  int const value = stripe % 8;
+  int const row = lane / 4 + 8 * (value >> 2);
+  int const col = 64 * warp_n + 16 * n_block +
+                  (lane & 3) + 4 * (value & 3);
+  return row * kTN + col;
+}
 
 OutputOwnerResult verify_output_owners(
     std::array<ThreadInfo, kComputeThreads> const& table, int fault) {
@@ -264,7 +280,12 @@ OutputOwnerResult verify_output_owners(
       ++r.lane_duplicates;
     }
     int const coordinate_thread = fault == 5 && t == last_k0 ? first_k0 : t;
-    for (int logical : table[coordinate_thread].logical) {
+    for (int stripe = 0; stripe < kFragmentSlots; ++stripe) {
+      int const logical = fault == 6
+          ? table[coordinate_thread].logical[stripe]
+          : classic_output_logical(table[coordinate_thread].compact, stripe);
+      int const expected = classic_output_logical(owner.compact, stripe);
+      r.association_mismatches += logical != expected;
       if (0 <= logical && logical < kTileSlots) ++coverage[logical];
       else ++r.coverage_duplicates;
     }
@@ -280,7 +301,7 @@ OutputOwnerResult verify_output_owners(
   r.ok = r.selected_owner_threads == r.declared_owner_threads &&
          r.arithmetic_mismatch == 0 && r.lane_holes == 0 &&
          r.lane_duplicates == 0 && r.coverage_holes == 0 &&
-         r.coverage_duplicates == 0;
+         r.coverage_duplicates == 0 && r.association_mismatches == 0;
   return r;
 }
 
@@ -402,12 +423,13 @@ int main() {
   std::printf(
       "L139 output-owners fault=%d cta_threads=%d declared=%d selected=%d "
       "stripes=%d tile=%d arithmetic_mismatch=%d lane_holes=%d "
-      "lane_duplicates=%d coverage_holes=%d coverage_duplicates=%d\n",
+      "lane_duplicates=%d coverage_holes=%d coverage_duplicates=%d "
+      "association_mismatches=%d\n",
       L139_FAULT, kComputeThreads, owners.declared_owner_threads,
       owners.selected_owner_threads, kFragmentSlots, kTileSlots,
       owners.arithmetic_mismatch, owners.lane_holes,
       owners.lane_duplicates, owners.coverage_holes,
-      owners.coverage_duplicates);
+      owners.coverage_duplicates, owners.association_mismatches);
   std::printf(
       "L139 reduction fault=%d raw_bitdiff=%d output_holes=%d "
       "output_duplicates=%d compact_coordinate_mismatches=%d\n",

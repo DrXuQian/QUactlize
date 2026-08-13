@@ -85,6 +85,11 @@
 #include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_persistent.hpp"
 #include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_streamk.hpp"
 #include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_marlin.hpp"
+#if defined(DENSE_MARLIN_WK4_AB)
+#include "marlin_format_ppu.hpp"
+#include "quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
+#include "quactlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp"
+#endif
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
 #include "ppu_mixed_policy.hpp"
 #include "bench_select.hpp"
@@ -330,11 +335,20 @@ struct Cfg {
   using StreamKGemm = cutlass::gemm::device::GemmUniversalAdapter<StreamKKernel>;
 #endif
 #if defined(DENSE_MARLIN_AB) || defined(DENSE_MARLIN_SWEEP)
-  // Marlin is a third, additive scheduler/cooperative.  It consumes the same
-  // mixed-input Main/Epi types as the DP and Stream-K arms; no format or
-  // converter type is rebuilt for this scheduler.
+#if defined(DENSE_MARLIN_WK4_AB)
+  using MarlinMain = cutlass::gemm::collective::MarlinCollectivePPU<
+      CfgTile, CfgWarp, St, GroupSize,
+      cutlass::detail::TagToStrideA_t<LayoutA>,
+      cutlass::detail::TagToStrideB_t<LayoutB>,
+      cute::Stride<cute::_1, int64_t, int64_t>>;
+  using MarlinKernel = cutlass::gemm::kernel::MarlinKernelPPU<
+      Shape<int,int,int,int>, MarlinMain, Epi>;
+#else
+  // Historical scheduler-only Marlin arms keep the generic collective.  The
+  // classic-aligned target above is a separate format/mainloop/kernel stack.
   using MarlinKernel = cutlass::gemm::kernel::MarlinMixedInputKernel<
       Shape<int,int,int,int>, Main, Epi>;
+#endif
   using MarlinGemm = cutlass::gemm::device::GemmUniversalAdapter<MarlinKernel>;
 #endif
 };
@@ -526,7 +540,8 @@ inline void print_dense_table_provenance() {
       "[dense-marlin-aligned] scheduler=marlin-only topology=1Mx2Nx4K "
       "cta_threads=256 output_cohort_threads=64 warp_k_extent=32 warp_k_cohorts=4 "
       "tile=16x128x128 warp=16x64x32 stages=4 bits=4 fold=1 "
-      "artifact_tile_k=64 artifact=shipping-xplane consumer_axis=WarpK32\n");
+      "artifact=classic-marlin-u32 scale=classic-gs128-permuted "
+      "load=cp.async consumer_axis=WarpK32\n");
 #endif
 #endif
 }
@@ -566,6 +581,9 @@ extern cutlass::HostTensor<QuantType, LayoutB> tensor_B;
 extern cutlass::HostTensor<QuantType, LayoutB> block_B_buff;
 extern cutlass::DeviceAllocation<ElementA> block_B_dq;
 extern cutlass::DeviceAllocation<ElementScale> block_scale;
+#if defined(DENSE_MARLIN_WK4_AB)
+extern cutlass::DeviceAllocation<ElementScale> block_scale_classic;
+#endif
 extern cutlass::DeviceAllocation<ElementZero> block_zero;
 extern cutlass::DeviceAllocation<ElementC> block_C;
 extern cutlass::DeviceAllocation<typename GemmConvertOnly::EpilogueOutputOp::ElementOutput> block_D;
@@ -586,6 +604,9 @@ cutlass::HostTensor<QuantType, LayoutB> tensor_B;
 cutlass::HostTensor<QuantType, LayoutB> block_B_buff;
 cutlass::DeviceAllocation<ElementA> block_B_dq;
 cutlass::DeviceAllocation<ElementScale> block_scale;
+#if defined(DENSE_MARLIN_WK4_AB)
+cutlass::DeviceAllocation<ElementScale> block_scale_classic;
+#endif
 cutlass::DeviceAllocation<ElementZero> block_zero;
 cutlass::DeviceAllocation<ElementC> block_C;
 cutlass::DeviceAllocation<typename GemmConvertOnly::EpilogueOutputOp::ElementOutput> block_D;
@@ -818,6 +839,14 @@ struct DenseVerifyPartition {
   bool classification_closed = false;
 };
 
+template <class Kernel, class = void>
+struct dense_is_standalone_marlin_kernel : std::false_type {};
+
+template <class Kernel>
+struct dense_is_standalone_marlin_kernel<
+    Kernel, std::void_t<decltype(Kernel::IsStandaloneMarlin)>>
+    : std::bool_constant<Kernel::IsStandaloneMarlin> {};
+
 #if defined(DENSE_STREAMK_AB)
 template <class Gemm>
 bool dense_map_accumulator_owners(DenseVerifyPartition& partition) {
@@ -860,7 +889,6 @@ bool dense_map_accumulator_owners(DenseVerifyPartition& partition) {
   auto identity = cute::make_identity_tensor(cute::take<0, 2>(TileShape{}));
   auto accumulators = cute::make_fragment_like<ElementAccumulator>(
       cute::partition_fragment_C(tiled_mma, cute::take<0, 2>(TileShape{})));
-  auto physical_to_fragment = cute::right_inverse(accumulators.layout());
   int const stripes = int(cute::size(accumulators));
   if (output_threads * stripes != tile_elements) {
     std::fprintf(stderr,
@@ -870,6 +898,23 @@ bool dense_map_accumulator_owners(DenseVerifyPartition& partition) {
                  warp_k_cohorts);
     return false;
   }
+  constexpr bool kStandaloneMarlin =
+      dense_is_standalone_marlin_kernel<typename Gemm::GemmKernel>::value;
+  if constexpr (kStandaloneMarlin) {
+    // The standalone mainloop binds four native PPU m16n16 instructions into
+    // contiguous accum[8*n_block + value] ranges.  Map that explicit register
+    // order rather than CuTe's tiled fragment-index order.  Only K0 survives
+    // the 4->2->1 CTA tree, and those 64 physical threads own one 16x128 tile.
+    if (cta_threads != 256 || output_threads != 64 ||
+        warp_k_cohorts != 4 || stripes != 32) {
+      std::fprintf(stderr,
+                   "  [dense verify owners] fail-close: standalone classic "
+                   "topology drifted from 256T/64 outputT/4K/32 stripes\n");
+      return false;
+    }
+  }
+
+  auto physical_to_fragment = cute::right_inverse(accumulators.layout());
   int selected_output_threads = 0;
   for (int physical_thread = 0; physical_thread < cta_threads;
        ++physical_thread) {
@@ -890,13 +935,26 @@ bool dense_map_accumulator_owners(DenseVerifyPartition& partition) {
       return false;
     }
     ++selected_output_threads;
-    auto coordinates =
-        tiled_mma.get_thread_slice(physical_thread).partition_C(identity);
-    if (int(cute::size(coordinates)) != stripes) return false;
     for (int stripe = 0; stripe < stripes; ++stripe) {
-      auto mn = coordinates(physical_to_fragment(stripe));
-      int const m = int(cute::get<0>(mn));
-      int const n = int(cute::get<1>(mn));
+      int m = 0;
+      int n = 0;
+      if constexpr (kStandaloneMarlin) {
+        int const warp_n = output_thread / 32;
+        int const lane = output_thread % 32;
+        int const n_block = stripe / 8;
+        int const value = stripe % 8;
+        m = lane / 4 + 8 * (value >> 2);
+        n = 64 * warp_n + 16 * n_block +
+            (lane & 3) + 4 * (value & 3);
+      }
+      else {
+        auto coordinates =
+            tiled_mma.get_thread_slice(physical_thread).partition_C(identity);
+        if (int(cute::size(coordinates)) != stripes) return false;
+        auto mn = coordinates(physical_to_fragment(stripe));
+        m = int(cute::get<0>(mn));
+        n = int(cute::get<1>(mn));
+      }
       if (m < 0 || m >= partition.tile_m || n < 0 || n >= partition.tile_n) {
         return false;
       }
@@ -914,9 +972,10 @@ bool dense_map_accumulator_owners(DenseVerifyPartition& partition) {
   }
   std::printf("  [dense verify owners] tile=%dx%d cta_threads=%d "
               "output_threads=%d K_cohorts=%d stripes/output_thread=%d "
-              "coverage=exact-once\n",
+              "%scoverage=exact-once\n",
               partition.tile_m, partition.tile_n, cta_threads, output_threads,
-              warp_k_cohorts, stripes);
+              warp_k_cohorts, stripes,
+              kStandaloneMarlin ? "mapping=classic-ppu-m16n16 " : "");
   return true;
 }
 
@@ -1392,6 +1451,9 @@ DenseFixtureEvidence initialize(Options const& options) {
   block_ref_D.reset(c_coord.product());
 
   block_scale.reset(scale_k * options.l * options.n);
+#if defined(DENSE_MARLIN_WK4_AB)
+  block_scale_classic.reset(scale_k * options.l * options.n);
+#endif
   block_zero.reset(scale_k * options.l * options.n);
 
   initialize_tensor(block_A, seed + 2022);
@@ -1611,6 +1673,23 @@ DenseFixtureEvidence initialize(Options const& options) {
   stride_S_ref = cutlass::make_cute_packed_stride(StrideS_ref{}, cute::make_shape(options.n, scale_k, options.l));
   auto layout_scale_zero = make_layout(shape_scale_zero);
 
+#if defined(DENSE_MARLIN_WK4_AB)
+  // Keep the reference on plain [group,N] scales.  The standalone Marlin
+  // consumer gets its own upstream-compatible 8x8-per-64-column transpose;
+  // sharing one buffer would make the golden depend on preprocessing order.
+  std::vector<ElementScale> plain_scale(block_scale.size());
+  std::vector<ElementScale> classic_scale(block_scale.size());
+  block_scale.copy_to_host(plain_scale.data());
+  if (!quactlize::marlin::permute_gs128_scales(
+          plain_scale.data(), plain_scale.size(),
+          classic_scale.data(), classic_scale.size(),
+          std::size_t(options.k), std::size_t(options.n))) {
+    std::fprintf(stderr, "classic Marlin gs128 scale permutation rejected the fixed target\n");
+    std::exit(1);
+  }
+  block_scale_classic.copy_from_host(classic_scale.data());
+#endif
+
   dequantize_weight(block_B_dq.get(), block_B.get(), layout_B, block_scale.get(), block_zero.get(), layout_scale_zero, options.g);
   
   int row = options.n;
@@ -1633,16 +1712,15 @@ DenseFixtureEvidence initialize(Options const& options) {
   }
   for (int b = 0; b < batch; b++) {
 #if defined(DENSE_MARLIN_WK4_AB)
-    // The classic-aligned 2N x 4K consumer has a proved direct-pair path from
-    // the shipping xplane bytes.  Keep the explicit WarpK API here: it records
-    // the exact consumer proof and fails closed for every unproved topology,
-    // even though this admitted arm deliberately produces shipping bytes.
+    // Standalone Marlin owns the classic uint32 physical representation.  It
+    // is intentionally independent of shipping xplane: logical [K,N] biased
+    // codes are the only common seam between the benchmark and this format.
     static_assert(cutlass::sizeof_bits<QuantType>::value == 4 &&
                       DENSE_AB_TM == 16 && DENSE_AB_TN == 128 &&
                       DENSE_AB_TK == 128 && DENSE_AB_WM == 16 &&
                       DENSE_AB_WN == 64 && DENSE_AB_WARP_K == 32 &&
                       DENSE_AB_ARTIFACT_TK == 64,
-                  "WK4 preprocessing is enabled only for the L142/L143-proved shipping-map int4 consumer");
+                  "standalone classic packing is enabled only for the fixed int4 target");
     std::vector<uint8_t> q(size_t(row) * col);
     auto logical_b = tensor_B.host_view();
     for (int k = 0; k < col; ++k) {
@@ -1655,21 +1733,22 @@ DenseFixtureEvidence initialize(Options const& options) {
       }
     }
     size_t const artifact_bytes = size_t(row) * col / 2;
-    int8_t* const dst = reinterpret_cast<int8_t*>(block_B_buff.host_data()) +
-                        size_t(b) * artifact_bytes;
-    xplane::place_derived_warp_k<4, 16, 128, 128, 16, 64, 1,
-                                 32, 64>(dst, q, row, col);
-    std::vector<uint8_t> recovered;
-    xplane::recover_derived_warp_k<4, 16, 128, 128, 16, 64, 1,
-                                   32, 64>(dst, recovered, row, col);
-    size_t roundtrip_bad = recovered.size() != q.size();
-    if (!roundtrip_bad) {
+    uint8_t* const dst = reinterpret_cast<uint8_t*>(block_B_buff.host_data()) +
+                         size_t(b) * artifact_bytes;
+    std::vector<uint8_t> recovered(q.size());
+    bool const packed = quactlize::marlin::pack_biased_int4_bytes(
+        q.data(), q.size(), dst, artifact_bytes, std::size_t(col), std::size_t(row));
+    bool const unpacked = packed && quactlize::marlin::unpack_biased_int4_bytes(
+        dst, artifact_bytes, recovered.data(), recovered.size(),
+        std::size_t(col), std::size_t(row));
+    size_t roundtrip_bad = unpacked ? 0 : q.size();
+    if (unpacked) {
       for (size_t i = 0; i < q.size(); ++i) roundtrip_bad += q[i] != recovered[i];
     }
     std::printf(
         "  [dense marlin aligned artifact] batch=%d bytes=%zu "
-        "placement=shipping-xplane consumer_axis=WarpK32 "
-        "artifact_tile_k=64 roundtrip_bad=%zu/%zu\n",
+        "placement=classic-marlin-u32 scale=classic-gs128-permuted "
+        "consumer_axis=WarpK32 roundtrip_bad=%zu/%zu\n",
         b, artifact_bytes, roundtrip_bad, q.size());
     if (roundtrip_bad != 0) {
       std::fprintf(stderr,
@@ -1690,9 +1769,26 @@ DenseFixtureEvidence initialize(Options const& options) {
 #endif
 
 /// Populates a Gemm::Arguments structure from the given commandline options
-template <typename Args>
+template <typename Args, bool StandaloneMarlin = false>
 Args args_from_options(Options const& options)
 {
+#if defined(DENSE_MARLIN_WK4_AB)
+  // This binary has one standalone ScaleOnly ABI.  Return before parsing the
+  // generic mode aggregates: merely compiling the ScaleZero aggregate would
+  // make a dead zero field look like part of Marlin's accepted contract.
+  if constexpr (StandaloneMarlin) {
+    return Args {
+      cutlass::gemm::GemmUniversalMode::kGemm,
+      {options.m, options.n, options.k, options.l},
+      {block_A.get(), block_B_buff.device_data(),
+       block_scale_classic.get(), options.g},
+      {{options.alpha, options.beta}, block_C.get(), stride_C_ref,
+       block_D.get(), stride_D_ref}
+    };
+  }
+  else
+#endif
+  {
 // Swap the A and B tensors, as well as problem shapes here.
   if (options.mode == GemmMode::ConvertOnly) {
     return Args {
@@ -1720,6 +1816,7 @@ Args args_from_options(Options const& options)
   } else {
     std::cerr << "Invalid mode " << options.mode << ". Must be 0, 1 or 2." << std::endl;
     exit(-1);
+  }
   }
 }
 
@@ -2548,7 +2645,10 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   Gemm gemm;
 
   // Create a structure of gemm kernel arguments suitable for invoking an instance of Gemm
-  auto arguments = args_from_options<typename Gemm::Arguments>(options);
+  constexpr bool kStandaloneMarlin =
+      dense_is_standalone_marlin_kernel<typename Gemm::GemmKernel>::value;
+  auto arguments =
+      args_from_options<typename Gemm::Arguments, kStandaloneMarlin>(options);
 
 #if defined(DENSE_STREAMK_AB)
   DenseVerifyPartition verify_partition;
@@ -3615,12 +3715,12 @@ int main(int argc, char const **args) {
       return 1;
     }
     if (options.mode != GemmMode::ScaleOnly || options.g != 128 ||
-        options.m != 1 || options.n <= 0 || options.n % DENSE_AB_TN != 0 ||
+        options.m != 1 || options.n <= 0 || options.n % 256 != 0 ||
         options.k != 4096 || options.l != 1 || options.alpha != 1.0f ||
         options.beta != 0.0f) {
       std::fprintf(
           stderr,
-          "classic-aligned decode requires --m=1 --n=<positive multiple of 128> "
+          "classic-aligned decode requires --m=1 --n=<positive multiple of 256> "
           "--k=4096 --l=1 --g=128 --mode=1 --alpha=1 --beta=0\n");
       return 1;
     }
