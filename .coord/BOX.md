@@ -1504,6 +1504,16 @@ progress or speed.
     git submodule update --init --recursive
     unset PPU_A_PACK PPU_B_CHUNK PPU_B_CHUNK_BISECT PPU_MAXREG PPU_DEFS
 
+    # Set these once from the machine's measured, single-line identities.
+    # They are intentionally not auto-guessed: choosing the wrong visible PPU
+    # would produce a complete-looking result for a different device.
+    : "${QUACTLIZE_BOX_DEVICE_MODEL:?set the exact device model, e.g. PPU-ZW810}"
+    : "${QUACTLIZE_BOX_PCI_IDENTITY:?set the exact PCI/BDF identity}"
+    : "${QUACTLIZE_BOX_DRIVER_VERSION:?set the loaded PPU driver version}"
+    : "${QUACTLIZE_BOX_SDK_COMPILER_IDENTITY:?set one-line SDK/compiler identity}"
+    export QUACTLIZE_BOX_DEVICE_MODEL QUACTLIZE_BOX_PCI_IDENTITY \
+      QUACTLIZE_BOX_DRIVER_VERSION QUACTLIZE_BOX_SDK_COMPILER_IDENTITY
+
     bash tools/run_dense_marlin_wk4_box.sh | tee /tmp/dense_marlin_wk4_box.log
     WK4_ROOT=$(sed -n 's/^\[marlin-wk4\] artifacts=//p' \
       /tmp/dense_marlin_wk4_box.log | tail -1)
@@ -1514,6 +1524,15 @@ progress or speed.
     test -n "$WK4_ROOT" && test -d "$WK4_ROOT"
     test -n "$WK4_BIN" && test -x "$WK4_BIN"
     test -n "$WK4_CAP"
+    python3 tools/adjudicate_box_runs.py \
+      --output "$WK4_ROOT/adjudication.json" dense-bundle "$WK4_ROOT"
+    python3 - "$WK4_ROOT/adjudication.json" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))
+print("dense registered verdict:", r["registered_verdict"])
+print("dense unregistered observations:", r["unregistered_observations"])
+raise SystemExit(r["registered_verdict"] == "VOID")
+PY
 
 The script runs B=1 without an explicit override (the default-compatibility
 arm), then B in `{2,4,6}` only when `B <= Gemm::maximum_active_blocks()` for
@@ -1585,6 +1604,12 @@ Start from the exact shared branch and make the output location explicit:
     git submodule update --init --recursive
     echo "gate-sha=$(git rev-parse HEAD)"
     export GEMV_SWEEP_DIR=/tmp/quactlize-gemv-sweep
+    : "${QUACTLIZE_BOX_DEVICE_MODEL:?reuse the measured dense-run device model}"
+    : "${QUACTLIZE_BOX_PCI_IDENTITY:?reuse the measured dense-run PCI/BDF identity}"
+    : "${QUACTLIZE_BOX_DRIVER_VERSION:?reuse the measured dense-run driver version}"
+    : "${QUACTLIZE_BOX_SDK_COMPILER_IDENTITY:?reuse the measured dense-run SDK/compiler identity}"
+    export QUACTLIZE_BOX_DEVICE_MODEL QUACTLIZE_BOX_PCI_IDENTITY \
+      QUACTLIZE_BOX_DRIVER_VERSION QUACTLIZE_BOX_SDK_COMPILER_IDENTITY
 
 The runner fails closed if the root or a submodule is dirty, or if a submodule
 does not equal the recorded gitlink.  It hashes the linked binary and keeps a
@@ -1611,7 +1636,22 @@ identities and do not establish cross-build compatibility.
     GEMV_SWEEP_GROUPS=all \
       GEMV_SWEEP_BUILD_TIMEOUT_SECONDS=7200 \
       GEMV_SWEEP_DEADLINE_SECONDS=7200 \
-      bash tools/run_gemv_sweep_box.sh
+      bash tools/run_gemv_sweep_box.sh | tee /tmp/gemv_sweep_full_box.log
+
+    GEMV_FULL_ROOT=$(sed -n 's/^\[gemv-box\] binary_sha256=.* out=//p' \
+      /tmp/gemv_sweep_full_box.log | tail -1)
+    test -n "$GEMV_FULL_ROOT" && test -d "$GEMV_FULL_ROOT"
+    python3 tools/adjudicate_box_runs.py \
+      --output "$GEMV_FULL_ROOT/adjudication.json" gemv-bundle "$GEMV_FULL_ROOT"
+    python3 - "$GEMV_FULL_ROOT/adjudication.json" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))
+print("GEMV registered verdict:", r["registered_verdict"])
+print("GEMV unresolved cells:", sum(
+    c.get("measurement_verdict") == "UNRESOLVED" for c in r["cell_results"]))
+print("GEMV unregistered observations:", r["unregistered_observations"])
+raise SystemExit(r["registered_verdict"] == "VOID")
+PY
 
 The script prints the exact binary, manifest, raw, progress and result paths.
 The full manifest is expected to say:

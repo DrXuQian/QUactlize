@@ -1400,6 +1400,20 @@ def lint_gemv_sweep_integration():
         "GEMV full/partial manifests share the exact-CtaM and raw-event runtime identity")
 
 
+def lint_box_run_adjudicator():
+    """Preregistered dense/GEMV box verdicts must be mechanical and planted-red."""
+    return _run_ci_script(
+        "check_box_run_adjudicator.py",
+        "box results use the sealed preregistration; convergence/partial/VOID plants pass")
+
+
+def lint_box_runner_bundle_contract():
+    """Frozen box runners must emit the exact evidence their adjudicator consumes."""
+    return _run_ci_script(
+        "check_box_runner_bundle_contract.py",
+        "dense/GEMV runners own provenance, command journals and authoritative census")
+
+
 def lint_gemv_lop3_codegen():
     """The real sm_120 shipping GEMV must report normalized extraction codegen, not mere LOP3 presence."""
     script = ROOT / "ci" / "check_gemv_lop3_codegen.py"
@@ -2031,6 +2045,8 @@ def main():
                 ("lint", "GEMV timing records one raw device-event pair per launch", lint_gemv_event_protocol),
                 ("lint", "GEMV bounded driver resumes without path or raw-prefix poisoning", lint_gemv_sweep_driver),
                 ("lint", "GEMV manifest, exact units and raw writer preserve one identity", lint_gemv_sweep_integration),
+                ("lint", "box results are judged only by the sealed preregistration", lint_box_run_adjudicator),
+                ("lint", "frozen box runners produce their adjudicator evidence", lint_box_runner_bundle_contract),
                 ("lint", "GEMV production converter reports normalized sm_120 extraction codegen", lint_gemv_lop3_codegen),
                 ("lint", "Q4_K PDF reconstruction preserves pack, topology and raw-event evidence", lint_q4k_pdf_ab_contract),
                 ("lint", "grouped Stream-K preserves q locks, worker/K decomposition, and timing", lint_grouped_streamk_contract),

@@ -1,0 +1,9 @@
+L143 direct-pair pairs=8192/8192 codes=16384/16384 destinations=8192/8192 bad-pairs=0 formula-mismatch=0 bad-fragments=0 map-diff=0 shipping-hash=b89b157b5b1bd6c3
+L143 production-order hash=ea96e6b4155759c3 shipping-diff=12288/16384 EXPECTED-RED
+L143 compact-order hash=17dfe6248fc38143 shipping-diff=15360/16384 EXPECTED-RED
+L143 first32x2 shipping-diff=16384/16384 clean=0 EXPECTED-RED
+L143 adjacent-nibble shipping-diff=8192/16384 pairs=8192 bad-pairs=14336 EXPECTED-RED
+L143 swapped-sources shipping-diff=16384/16384 pairs=8192 bad-pairs=8192 EXPECTED-RED
+L143 WK1 shipping map-diff=0 byte-diff=0 result=BIT-IDENTICAL
+L143 production-vs-compact-source-fragment-diff=0
+L143 shipping-pair-scatter=EXACT artifact-order=RED compact-order=RED first32=RED wrong-pair=RED source-swap=RED WK1-BYTES=UNCHANGED result=PASS

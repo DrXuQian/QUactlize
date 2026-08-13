@@ -6,15 +6,96 @@
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ORIGINAL_ARGV=("$0" "$@")
 TARGET=test_lowbit_dense_marlin_wk4_ab
 ARTIFACT_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/quactlize-dense-marlin-wk4.XXXXXX")"
 BUILD_ROOT="$ARTIFACT_ROOT/ppu0010"
 BUILD_LOG="$ARTIFACT_ROOT/build.log"
+RUNNER_LOG="$ARTIFACT_ROOT/runner.log"
+COMMANDS_LOG="$ARTIFACT_ROOT/commands.jsonl"
+SUBMODULE_STATUS_FILE="$ARTIFACT_ROOT/submodule-status.txt"
+PROVENANCE_TOOL="$ROOT/tools/write_box_run_provenance.py"
+POLICY="$ROOT/dev/fold_derivation/BOX_RUN_PREREGISTRATION.md"
+RUN_IDENTITY_FILE="$ARTIFACT_ROOT/run-identity.json"
+
+# Preserve the complete runner stream inside the bundle instead of relying on
+# an operator-side tee.  The screen remains a live copy of the same bytes.
+exec 3>&1 4>&2
+exec > >(tee "$RUNNER_LOG") 2>&1
+RUNNER_TEE_PID=$!
+RUNNER_STREAM_CLOSED=0
+
+finish_runner_stream() {
+  if [ "$RUNNER_STREAM_CLOSED" -eq 0 ]; then
+    exec 1>&3 2>&4
+    wait "$RUNNER_TEE_PID"
+    RUNNER_STREAM_CLOSED=1
+  fi
+}
+
+on_exit() {
+  local rc=$?
+  trap - EXIT
+  if [ "$rc" -ne 0 ] && [ -n "${BIN_SHA:-}" ] && [ -s "$COMMANDS_LOG" ] \
+      && [ -s "$RUN_IDENTITY_FILE" ]; then
+    printf '[marlin-wk4] runner_exit_status=%d\n' "$rc"
+    python3 "$PROVENANCE_TOOL" write \
+      --output "$ARTIFACT_ROOT/provenance.json" \
+      --root-sha "$ROOT_SHA" --root-status clean \
+      --submodule-status-file "$SUBMODULE_STATUS_FILE" \
+      --actlize-sha "$ACTLIZE_SHA" --binary-sha256 "$BIN_SHA" \
+      --device-model "$QUACTLIZE_BOX_DEVICE_MODEL" \
+      --pci-identity "$QUACTLIZE_BOX_PCI_IDENTITY" \
+      --driver-version "$QUACTLIZE_BOX_DRIVER_VERSION" \
+      --sdk-compiler-identity "$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY" \
+      --run-identity-file "$RUN_IDENTITY_FILE" \
+      --commands-file "$COMMANDS_LOG" --runner-exit-status "$rc" \
+      --protocol-sample-count "$SAMPLES" -- "${ORIGINAL_ARGV[@]}" || true
+  fi
+  finish_runner_stream
+  exit "$rc"
+}
+trap on_exit EXIT
 
 fail() {
   printf '[marlin-wk4] FAIL: %s\n' "$*" >&2
   printf '[marlin-wk4] artifacts preserved at %s\n' "$ARTIFACT_ROOT" >&2
   exit 1
+}
+
+require_identity() {
+  local name="$1" value="${!1:-}" normalized
+  [ -n "$value" ] || fail "required explicit device identity $name is unset"
+  normalized="${value,,}"
+  case "$normalized" in
+    unknown|unset|n/a|na|none) fail "required explicit device identity $name is not measured" ;;
+  esac
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] \
+    || fail "required explicit device identity $name must be one line"
+}
+
+record_command() {
+  local role="$1" rc="$2"; shift 2
+  python3 "$PROVENANCE_TOOL" record --path "$COMMANDS_LOG" \
+    --role "$role" --exit-status "$rc" -- "$@"
+}
+
+verify_source_identity() {
+  local current_root current_actlize current_submodules
+  if [ -n "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all)" ]; then
+    fail 'final source identity check found a dirty root or submodule tree'
+  fi
+  current_root="$(git -C "$ROOT" rev-parse HEAD)"
+  current_actlize="$(git -C "$ROOT/third_party/actlize" rev-parse HEAD)"
+  [ "$current_root" = "$ROOT_SHA" ] \
+    || fail "root HEAD changed during the run: $ROOT_SHA -> $current_root"
+  [ "$current_actlize" = "$ACTLIZE_SHA" ] \
+    || fail "actlize HEAD changed during the run: $ACTLIZE_SHA -> $current_actlize"
+  current_submodules="$(git -C "$ROOT" submodule status --recursive)"
+  cmp -s <(printf '%s\n' "$current_submodules") "$SUBMODULE_STATUS_FILE" \
+    || fail 'recursive submodule status changed during the run'
+  printf '[marlin-wk4] final-source-identity=EXACT root=%s actlize=%s\n' \
+    "$current_root" "$current_actlize"
 }
 
 find_one() {
@@ -29,20 +110,86 @@ find_one() {
   printf '%s\n' "${hits[0]}"
 }
 
-printf '[marlin-wk4] root-sha=%s\n' "$(git -C "$ROOT" rev-parse HEAD)"
-printf '[marlin-wk4] actlize-sha=%s\n' "$(git -C "$ROOT/third_party/actlize" rev-parse HEAD)"
+[ "$#" -eq 0 ] || fail 'this runner accepts no positional arguments'
+for identity in QUACTLIZE_BOX_DEVICE_MODEL QUACTLIZE_BOX_PCI_IDENTITY \
+                QUACTLIZE_BOX_DRIVER_VERSION QUACTLIZE_BOX_SDK_COMPILER_IDENTITY; do
+  require_identity "$identity"
+done
+
+if [ -n "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all)" ]; then
+  fail 'source tree is dirty; commit/stash every root and submodule change'
+fi
+git -C "$ROOT" submodule status --recursive >"$SUBMODULE_STATUS_FILE"
+if grep -Eq '^[+\-U]' "$SUBMODULE_STATUS_FILE"; then
+  cat "$SUBMODULE_STATUS_FILE" >&2
+  fail 'recursive submodule checkout differs from the recorded gitlink'
+fi
+
+ROOT_SHA="$(git -C "$ROOT" rev-parse HEAD)"
+ACTLIZE_SHA="$(git -C "$ROOT/third_party/actlize" rev-parse HEAD)"
+SAMPLES="$(python3 "$PROVENANCE_TOOL" policy-sample-count --policy "$POLICY" --kind dense)"
+[ "$SAMPLES" -eq 20 ] || fail "dense harness supports exactly 20 samples, policy requests $SAMPLES"
+printf '[marlin-wk4] root-sha=%s\n' "$ROOT_SHA"
+printf '[marlin-wk4] root-status=clean\n'
+printf '[marlin-wk4] actlize-sha=%s\n' "$ACTLIZE_SHA"
+printf '[marlin-wk4] device-model=%s pci=%s driver=%s sdk=%s\n' \
+  "$QUACTLIZE_BOX_DEVICE_MODEL" "$QUACTLIZE_BOX_PCI_IDENTITY" \
+  "$QUACTLIZE_BOX_DRIVER_VERSION" "$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY"
 printf '[marlin-wk4] artifacts=%s\n' "$ARTIFACT_ROOT"
 
-if ! env PPU_BUILD_DIR="$BUILD_ROOT" PPU_ARCHS=ppu0010 TARGET="$TARGET" \
-    QUANT=int4 BENCH_GS=128 "$ROOT/build.sh" 2>&1 | tee "$BUILD_LOG"; then
+# WK1 is an admission control, not a timing cell.  Run both independent local
+# authorities into one exact log before the device target; absence is VOID.
+WK1_LOG="$ARTIFACT_ROOT/wk1-admission.log"
+WK1_GATE=(python3 "$ROOT/ci/check_dense_marlin_wk4_target.py")
+set +e
+"${WK1_GATE[@]}" 2>&1 | tee "$WK1_LOG"
+wk1_gate_rc=${PIPESTATUS[0]}
+set -e
+record_command wk1-static-target "$wk1_gate_rc" "${WK1_GATE[@]}"
+[ "$wk1_gate_rc" -eq 0 ] || fail 'WK1 static target admission failed'
+
+WK1_ORACLE=(env QUACTLIZE_L143_OUT="$ARTIFACT_ROOT/l143" \
+  bash "$ROOT/dev/fold_derivation/run_l143_wk4_production_delivery.sh")
+set +e
+"${WK1_ORACLE[@]}" 2>&1 | tee -a "$WK1_LOG"
+wk1_oracle_rc=${PIPESTATUS[0]}
+set -e
+record_command wk1-production-delivery "$wk1_oracle_rc" "${WK1_ORACLE[@]}"
+[ "$wk1_oracle_rc" -eq 0 ] || fail 'WK1 executable production-delivery admission failed'
+grep -Fxq '[dense-marlin-wk4] PASS: isolated 1Mx2Nx4K type/shipping-artifact/CLI; historical target unchanged; thirteen structural plants rejected' "$WK1_LOG" \
+  || fail 'WK1 admission lacks the exact static target PASS'
+grep -Fxq 'L143 WK1 shipping map-diff=0 byte-diff=0 result=BIT-IDENTICAL' "$WK1_LOG" \
+  || fail 'WK1 admission lacks the exact 0/8192 shipping byte-map result'
+grep -Fxq 'L143 shipping-pair-scatter=EXACT artifact-order=RED compact-order=RED first32=RED wrong-pair=RED source-swap=RED WK1-BYTES=UNCHANGED result=PASS' "$WK1_LOG" \
+  || fail 'WK1 admission lacks the exact planted-negative closure'
+
+BUILD_CMD=(env PPU_BUILD_DIR="$BUILD_ROOT" PPU_ARCHS=ppu0010 TARGET="$TARGET"
+  QUANT=int4 BENCH_GS=128 "$ROOT/build.sh")
+set +e
+"${BUILD_CMD[@]}" 2>&1 | tee "$BUILD_LOG"
+build_rc=${PIPESTATUS[0]}
+set -e
+record_command device-build "$build_rc" "${BUILD_CMD[@]}"
+if [ "$build_rc" -ne 0 ]; then
   fail 'classic-aligned Marlin target failed to build'
 fi
 BIN="$(find_one 'classic-aligned Marlin binary' "$BUILD_ROOT" -type f \
     -name "$TARGET" -perm -u+x)"
+BIN_SHA="$(sha256sum "$BIN" | awk '{print $1}')"
 printf '[marlin-wk4] binary=%s\n' "$BIN"
+printf '[marlin-wk4] binary-sha256=%s\n' "$BIN_SHA"
+python3 "$PROVENANCE_TOOL" write-identity \
+  --output "$RUN_IDENTITY_FILE" \
+  --root-sha "$ROOT_SHA" --submodule-status-file "$SUBMODULE_STATUS_FILE" \
+  --actlize-sha "$ACTLIZE_SHA" --binary-sha256 "$BIN_SHA" \
+  --device-model "$QUACTLIZE_BOX_DEVICE_MODEL" \
+  --pci-identity "$QUACTLIZE_BOX_PCI_IDENTITY" \
+  --driver-version "$QUACTLIZE_BOX_DRIVER_VERSION" \
+  --sdk-compiler-identity "$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY" \
+  --protocol-sample-count "$SAMPLES" >/dev/null
 
 COMMON=(--marlin --streamk_exact_fixture --m=1 --n=4096 --k=4096
-        --l=1 --g=128 --mode=1 --alpha=1 --beta=0 --iterations=20)
+        --l=1 --g=128 --mode=1 --alpha=1 --beta=0 --iterations="$SAMPLES")
 
 run_point() {
   local bpc="$1" label="bpc${1}" log="$ARTIFACT_ROOT/bpc${1}.log"
@@ -52,7 +199,13 @@ run_point() {
   # historical call path stayed unchanged.
   if [ "$bpc" -ne 1 ]; then bflag=("--marlin-blocks-per-cu=$bpc"); fi
   printf '\n== classic-aligned Marlin B=%d ==\n' "$bpc"
-  if ! "$BIN" "${COMMON[@]}" "${bflag[@]}" 2>&1 | tee "$log"; then
+  local -a cmd=("$BIN" "${COMMON[@]}" "${bflag[@]}")
+  set +e
+  "${cmd[@]}" 2>&1 | tee "$log"
+  local rc=${PIPESTATUS[0]}
+  set -e
+  record_command "dense-wk4-bpc${bpc}" "$rc" "${cmd[@]}"
+  if [ "$rc" -ne 0 ]; then
     fail "B=$bpc returned nonzero"
   fi
   grep -Fq '[dense-marlin-aligned] scheduler=marlin-only topology=1Mx2Nx4K cta_threads=256 output_cohort_threads=64 warp_k_extent=32 warp_k_cohorts=4 tile=16x128x128 warp=16x64x32 stages=4 bits=4 fold=1 artifact_tile_k=64 artifact=shipping-xplane consumer_axis=WarpK32' "$log" \
@@ -97,14 +250,34 @@ done
 # the absence of the exact cap in the diagnostic is a fail-open ABI.
 ILLEGAL=$((CAP + 1))
 set +e
-"$BIN" "${COMMON[@]}" "--marlin-blocks-per-cu=$ILLEGAL" \
-  >"$ARTIFACT_ROOT/illegal-bpc.log" 2>&1
+ILLEGAL_CMD=("$BIN" "${COMMON[@]}" "--marlin-blocks-per-cu=$ILLEGAL")
+"${ILLEGAL_CMD[@]}" >"$ARTIFACT_ROOT/illegal-bpc.log" 2>&1
 illegal_rc=$?
 set -e
+record_command dense-wk4-illegal-bpc "$illegal_rc" "${ILLEGAL_CMD[@]}"
 [ "$illegal_rc" -ne 0 ] || fail "illegal B=$ILLEGAL unexpectedly returned success"
 grep -Fq -- "--marlin-blocks-per-cu=$ILLEGAL is outside the exact kernel occupancy range 1..$CAP" \
   "$ARTIFACT_ROOT/illegal-bpc.log" \
   || fail "illegal B=$ILLEGAL was not rejected by the exact runtime cap"
 
+verify_source_identity
+
 printf '\n[marlin-wk4] PASS: classic-aligned WK4 consumer built on shipping bytes; supported B points passed exact output + 8-launch locks; over-cap B stayed NOT RUN\n'
+printf '[marlin-wk4] runner_exit_status=0\n'
 printf '[marlin-wk4] artifacts preserved at %s\n' "$ARTIFACT_ROOT"
+
+python3 "$PROVENANCE_TOOL" write \
+  --output "$ARTIFACT_ROOT/provenance.json" \
+  --root-sha "$ROOT_SHA" --root-status clean \
+  --submodule-status-file "$SUBMODULE_STATUS_FILE" \
+  --actlize-sha "$ACTLIZE_SHA" --binary-sha256 "$BIN_SHA" \
+  --device-model "$QUACTLIZE_BOX_DEVICE_MODEL" \
+  --pci-identity "$QUACTLIZE_BOX_PCI_IDENTITY" \
+  --driver-version "$QUACTLIZE_BOX_DRIVER_VERSION" \
+  --sdk-compiler-identity "$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY" \
+  --run-identity-file "$RUN_IDENTITY_FILE" \
+  --commands-file "$COMMANDS_LOG" --runner-exit-status 0 \
+  --protocol-sample-count "$SAMPLES" -- "${ORIGINAL_ARGV[@]}"
+
+finish_runner_stream
+trap - EXIT
