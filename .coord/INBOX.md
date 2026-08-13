@@ -6901,3 +6901,55 @@ classic 的 8.91 MB 同样拆一遍,两边对照。**两个账都做完,差额�
 **162 的字节账仍是第一位。** 但这批候选配置正好能一次性回答 164 末尾那个问题 —— **3.07x 的共享流量是否随 `WarpN` / K-cohort 数变化**。
 
 **建议合并成一次编译批**:`(TM16|TM8) x (WN64|WN32) x (WK4|WK2|WK1)` 的合法组合,每个读 `numRegs` + 编译期共享 + 实例化是否成立。**只编不跑,本地或 boxdry 即可**,拿到之后再决定测哪几个。
+
+## 166 — **用户:先对齐 Marlin,现在还没对齐。停掉优化分支。**
+
+原话:*"我们还是先对齐 marlin 吧,现在还是没有对齐的。"*
+
+**他对,我漂了。** INBOX 163/164/165(TileK、WarpN、m8、occupancy 门槛)全部**暂停**,不要做。
+
+### 为什么说没对齐 —— 有证据,不是感觉
+
+`MARLIN_STANDALONE_ALIGNMENT.md` 里,**拓扑轴**已经关闭并有实测支撑(warp 网格、C fragment、CTA 内 K 归约、stages、共享大小、stripe;`v.mma` / `v.add.f32` 逐条相等;occupancy 相同;寄存器更省)。
+
+**但投递轴至今全是 `retained-different`:**
+
+    A global->shared    classic 手写 cp.async + XOR swizzle   我们 AIU .padz.swzl
+    A shared->register  classic 手写 lane map                 我们 CuTe/AIU copy atom
+    B global->shared    classic packed cp.async               我们 shipping xplane + AIU
+    scale/metadata      classic host permutation + per-stage  我们 metadata tensor/copy/fragment
+    mainloop 发射顺序   classic 手写四级                       我们 collective stage ring
+    epilogue 实现       classic K0 fp16 shared staging        我们 generic vector epilogue
+
+当初标 *"retained-different, no source-equivalence claim"* 是诚实的。**但那只说明我们没声称等价,不说明它没有代价。**
+
+**现在代价有数了:**
+
+    同样的 HBM(8.68 vs 8.82 MB)
+    共享路 3.07x(8.91 -> 27.33 MB)
+    L2->KVD 7.52x(41.34 -> 311.04 KB)
+    KVD 命中率 94.72% -> 25.37%
+    指令 1.32x,超出几乎全在标量地址/控制
+
+**这些代价长在投递轴上,不在拓扑轴上。** 所以 INBOX 162 的字节账**不是性能分析,它就是对齐工作本身** —— 它会指出哪一条 retained-different 值多少。
+
+### 本轮唯一任务
+
+**把 162 的字节账做完,并把结果直接写回 `MARLIN_STANDALONE_ALIGNMENT.md` 的对应轴上。**
+
+要求(重申 + 加强):
+
+1. **`27.33 MB` 拆成几笔,每笔对得上一个具体的读/写点**;`classic 的 8.91 MB` 同样拆一遍。**两个账都做完,差额自然显形。**
+2. **每一笔归到差异清单的哪一条轴上。** 若某笔归不到任何已列的轴,**那说明清单本身漏了一条 —— 立刻补进去**,这正是 129 那份清单的意义。
+3. **每条 `retained-different` 轴给出实测代价**(字节 / 指令 / 两者),把它从"我们没声称等价"升级为"**它值 X**"。
+4. **给出关闭顺序**:哪几条对齐后收益最大、改动最小。**不要一次全改。**
+
+### 不要做的
+
+* 不要动 TileK / stages / WarpN / TileM(163/164/165 全部暂停)
+* 不要扫 config
+* 不要以"调参能补回来"为由跳过任何一条轴 —— **用户明确要先对齐**
+
+### 一条判据
+
+对齐做到什么程度算够?**共享流量与 classic 同量级(不是 3x)、指令比接近 1.0x。** 到那时若仍慢,才是"PPU 上 classic 那套就只能这样",而**现在还没资格说这句话**。
