@@ -6821,3 +6821,51 @@ classic 的 8.91 MB 同样拆一遍,两边对照。**两个账都做完,差额�
 1. 把上面两条(5090 不可比、shm/reg 杠杆已用完)写进 `MARLIN_STANDALONE_ALIGNMENT.md` 或对应文档。
 2. **162 的字节账仍是最高优先级。**
 3. 账出来之后,**立刻给"形状要不要重新扫"的结论**,并说明理由属于上面哪一种。
+
+## 164 — **更正 163 第二条。用户对:occupancy 绝对值确实被 reg+shm 卡着。附完整门槛表**
+
+我在 163 里说"shm/reg 杠杆已用完"——**那只在"追平 classic"的意义上成立**。绝对意义上我们是 `3 blocks x 8 warps = 24 warps/CU = 37.5%`,离 `Max Warps per CU = 64` 还很远,而卡住的正是寄存器与共享。**这条更正请写进文档。**
+
+### 门槛表(`Registers per CU=131072`,`Shared per CU=262144`,`8 warps/CTA`)
+
+    要 N blocks/CU        寄存器上限     共享上限
+      3 (24 warps 37.5%)   R <= 170     shm <=  87,381
+      4 (32 warps 50.0%)   R <= 128     shm <=  65,536
+      5 (40 warps 62.5%)   R <= 102     shm <=  52,428
+      6 (48 warps 75.0%)   R <=  84     shm <=  43,690
+      8 (64 warps  100%)   R <=  64     shm <=  32,768
+
+    我们:  R=146 -> 3 blocks       shm=50,208 -> 5 blocks
+    classic: R=170 -> 3 blocks
+
+### 结论一:**降 TileK 对 occupancy 买不到任何东西**
+
+    stages=4 TK=128  shm=50,208 -> 共享允许  5 blocks
+    stages=4 TK=64   shm=25,104 -> 共享允许 10 blocks
+    stages=3 TK=64   shm=18,828 -> 共享允许 13 blocks
+
+**共享放宽到 10 甚至 13,寄存器仍然只给 3。** 共享要到 `R <= 102` 之后才重新成为绑定项。**所以不要先去动 TileK/stages —— 那是空转。**
+
+### 结论二:寄存器有一笔明确的账
+
+`frag_c = 32 fp32/thread`,**占 146 个里的 32 个(22%)**。它是 `WarpN=64` 的直接后果,而 `WarpN=64` 来自 `2N x 4K`(CTA_N=128 / 2 个 N-warp)。
+
+`WarpN` 回到 32(`4N x 2K`)⟹ `frag_c` 减半到 16 ⟹ **R ~ 130**,离 4 blocks 的门槛 128 只差 2。**请核这个估算**(还有别的寄存器随 warp 形状变吗?),并给出 `4N x 2K` 的实际 R。
+
+### 结论三:CTA 粒度在白白浪费 4 个 warp
+
+寄存器限本质是 **warps/CU** 限:
+
+    R=146 -> roundup(146*32,64)=4672 -> 131072/4672 = 28 warps/CU
+    CTA=8 warp: floor(28/8)=3 blocks -> 24 warps    <- 浪费 4
+    CTA=4 warp: floor(28/4)=7 blocks -> 28 warps    <- 不浪费
+
+**同样的寄存器预算,4-warp CTA 拿 28,8-warp CTA 只拿 24。** 而 8 warp 正是 `2N x 4K` 带来的。
+
+**对称性值得记**:历史 `4N x 1K` 臂也是 **24 warps/CU**(6 blocks x 4 warps,那次是共享卡的)。**两种配置殊途同归到 24 —— occupancy 从来没被真正抬起来过。**
+
+### 顺序:仍然先出 162 的字节账
+
+**但这次有了一个具体的对照假设**:若 3.07x 的共享流量随 `WarpN` / K-cohort 数变化,那它是形状固有的,`4N x 2K` 会同时改善流量和寄存器;若不随之变化,那是实现缺陷,先修再谈形状。
+
+**字节账应当顺便回答这个** —— 拆账时按"每 K-cohort / 每 N-warp"归一,这样形状依赖性直接可见。
