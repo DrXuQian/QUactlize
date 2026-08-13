@@ -22,10 +22,8 @@
 #include <cstdint>
 #include <cstddef>
 #include <algorithm>
-#include <stdexcept>
 #include "cute/tensor.hpp"
 #include "cute/atom/mma_atom.hpp"
-#include "cute/atom/mma_traits_ppu0010.hpp"
 #include "cute/atom/mma_traits_ppu0015.hpp"
 #include "cute/ppu_tensor_mix.hpp"
 #include "cute/arch/copy_ppu0010_aiu.hpp"
@@ -171,28 +169,6 @@ inline std::vector<int> plane_map() {
         }
   }
   return m;
-}
-
-// WarpK is a consumer topology axis, not automatically an artifact-format
-// axis.  Omitting it (or spelling WarpK==TK) is the shipping path.  L142/L143
-// prove that the one admitted 2N x 4K ordinary-int4 consumer selects pairs
-// directly from those same shipping bytes; the formerly inferred ea96/17df
-// permutations are both explicit red controls.  Keep the non-default call
-// explicit so an unproved consumer topology still fails closed.
-template <int Bits, int TM, int TN, int TK, int WM, int WN, int F,
-          int WarpK = TK, int ArtifactTileK = TK>
-inline std::vector<int> plane_map_warp_k() {
-  static_assert(WarpK > 0 && TK % WarpK == 0,
-                "WarpK must evenly divide tactic TileK");
-  if constexpr (WarpK == TK) {
-    return plane_map<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>();
-  } else {
-    static_assert(Bits == 4 && F == 1 && TM == 16 && TN == 128 &&
-                      TK == 128 && WM == 16 && WN == 64 && WarpK == 32 &&
-                      ArtifactTileK == 64,
-                  "non-default WarpK consumer mapping is proved only for the shipping-map ordinary-int4 2N x 4K target");
-    return plane_map<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>();
-  }
 }
 
 // The high plane's map, COMPOSED from plane 1's: for every slot the converter reads, record the logical element whose
@@ -380,21 +356,6 @@ inline void place_derived(int8_t* out, const std::vector<uint8_t>& q_kn, int N, 
       out, plane_map<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>(), q_kn, N, K);
 }
 
-// Offline writer for an explicitly declared K-warp consumer.  WarpK==TK is a
-// permanent compatibility arm.  The proved int4 2N x 4K arm also deliberately
-// resolves to the shipping bytes; the explicit API records that the consumer
-// topology was checked instead of silently generalising that fact.
-template <int Bits, int TM, int TN, int TK, int WM, int WN, int F,
-          int WarpK = TK, int ArtifactTileK = TK>
-inline void place_derived_warp_k(int8_t* out, const std::vector<uint8_t>& q_kn,
-                                 int N, int K) {
-  place_from_map<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>(
-      out,
-      plane_map_warp_k<Bits, TM, TN, TK, WM, WN, F, WarpK,
-                       ArtifactTileK>(),
-      q_kn, N, K);
-}
-
 // THE INVERSE IS PART OF THE FORMAT. A producer-only xplane buffer can be checked only by feeding it to a GEMM,
 // which mixes placement and compute defects. Walk the exact physical coordinates used by place_from_map and recover
 // the canonical [K,N] codes, so an offline artifact can be dequantised without launching the consumer. This is a
@@ -454,17 +415,6 @@ template <int Bits, int TM, int TN, int TK, int WM, int WN, int F, int ArtifactT
 inline void recover_derived(const int8_t* in, std::vector<uint8_t>& q_kn, int N, int K) {
   recover_from_map<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>(
       in, plane_map<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>(), q_kn, N, K);
-}
-
-template <int Bits, int TM, int TN, int TK, int WM, int WN, int F,
-          int WarpK = TK, int ArtifactTileK = TK>
-inline void recover_derived_warp_k(const int8_t* in,
-                                   std::vector<uint8_t>& q_kn, int N, int K) {
-  recover_from_map<Bits, TM, TN, TK, WM, WN, F, ArtifactTileK>(
-      in,
-      plane_map_warp_k<Bits, TM, TN, TK, WM, WN, F, WarpK,
-                       ArtifactTileK>(),
-      q_kn, N, K);
 }
 
 template <int LowBits, int HiBits, int TM, int TN, int TK, int WM, int WN,
