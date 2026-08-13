@@ -90,14 +90,17 @@ int main(int argc, char** argv) {
   char const* collective_path = option(argc, argv, "--collective=");
   char const* awesome_path = option(argc, argv, "--awesome=");
   char const* classic_path = option(argc, argv, "--classic=");
-  if (collective_path == nullptr || awesome_path == nullptr || classic_path == nullptr) {
-    return fail(plant, "three source paths are required");
+  char const* kernel_path = option(argc, argv, "--kernel=");
+  if (collective_path == nullptr || awesome_path == nullptr ||
+      classic_path == nullptr || kernel_path == nullptr) {
+    return fail(plant, "four source paths are required");
   }
 
   std::string const collective = read_file(collective_path);
   std::string const awesome = read_file(awesome_path);
   std::string const classic = read_file(classic_path);
-  if (collective.empty() || awesome.empty() || classic.empty()) {
+  std::string const kernel = read_file(kernel_path);
+  if (collective.empty() || awesome.empty() || classic.empty() || kernel.empty()) {
     return fail(plant, "one source anchor could not be read");
   }
 
@@ -122,11 +125,11 @@ int main(int argc, char** argv) {
   // Independent reference anchors.  These are formulas and load sites from
   // two separate implementations, not a second copy of the numeric ledger.
   for (char const* token : {
-           "constexpr int a_sh_stage = a_sh_stride * (16 * thread_m_blocks)",
-           "constexpr int b_sh_stage = b_sh_stride * thread_k_blocks",
-           "constexpr int b_sh_wr_iters = b_sh_stage / b_sh_wr_delta",
-           "bool s_sh_wr_pred = threadIdx.x < s_sh_stride",
-           "cp_async4_stream(&sh_b_stage[b_sh_wr_delta * i + b_sh_wr], B_ptr[i])",
+           "using G2SAcopyOp = SM80_CP_ASYNC_CACHEGLOBAL_ZFILL<cute::uint128_t>",
+           "using G2SBCopyOp = SM80_CP_ASYNC_CACHEGLOBAL_EVICT<cute::uint128_t>",
+           "using G2SScaleCopyAtom = Copy_Atom<G2SBCopyTraits, Atype>",
+           "copy(g2s_b_copy, g2s_tBgB_copy",
+           "copy_if(\n                g2s_s_copy",
        }) {
     if (!contains(awesome, token)) {
       return fail(plant, "Awesome-CuTe copy anchor drifted");
@@ -142,6 +145,25 @@ int main(int argc, char** argv) {
     if (!contains(classic, token)) {
       return fail(plant, "PPU-classic copy anchor drifted");
     }
+  }
+
+  std::size_t const handoff_begin = kernel.find("static void global_handoff(");
+  std::size_t const handoff_end = kernel.find("static void write_result(", handoff_begin);
+  if (handoff_begin == std::string::npos || handoff_end == std::string::npos ||
+      handoff_end <= handoff_begin) {
+    return fail(plant, "standalone handoff source scope drifted");
+  }
+  std::string const handoff = kernel.substr(handoff_begin, handoff_end - handoff_begin);
+  for (char const* token : {
+           "accum(index) += __half2float(d[offset])",
+           "d[offset] = __float2half(accum(index))",
+       }) {
+    if (!contains(handoff, token)) {
+      return fail(plant, "standalone scalar D-chain anchor drifted");
+    }
+  }
+  if (contains(handoff, "cp_async")) {
+    return fail(plant, "standalone D-chain unexpectedly contributes KVD-to-TSM traffic");
   }
 
   u64 a = kABytes;

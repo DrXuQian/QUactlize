@@ -49,6 +49,15 @@ physically produced once per CTA cell.  L171's causal plants make all four
 regressions red: A copied once per K cohort, duplicate two-source B production,
 stage-count-multiplied refills, and all-thread scale loads.
 
+Awesome-CuTe's cooperative is a deliberate medium difference after that equal
+mainloop ledger: a non-first peer cp.async-loads the prior fp16 C partial into
+shared memory.  At 66 peer edges this adds `66*128*2 = 16,896 B`, for an
+Awesome-CuTe total of 8,929,792 logical G2S bytes.  PPU classic and this
+standalone kernel instead load the fp16 D-chain directly into registers, so
+their cooperative contributes zero KVD-to-TSM bytes.  The standalone chain's
+logical D read+write traffic is 33,792 B, but it belongs to global/register
+traffic, not this counter direction.
+
 `MarlinAiuLoadPolicyPPU` is currently only a named future axis.  The admitted
 baseline statically requires `MarlinCpAsyncLoadPolicyPPU`; therefore an AIU
 experiment cannot silently change the classic comparison.  When enabled it

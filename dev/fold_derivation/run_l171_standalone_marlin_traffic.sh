@@ -16,7 +16,8 @@ nvcc "${flags[@]}" -o "${out}/l171" \
 
 args=(
   "--collective=${repo}/quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
-  "--awesome=${marlin_root}/ref/awesome-cute/gemm/marlin_gemm/marlin_official_kernel.cu"
+  "--kernel=${repo}/quactlize/include/quactlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp"
+  "--awesome=${marlin_root}/ref/awesome-cute/gemm/marlin_gemm/marlin_cute_trait.h"
   "--classic=${marlin_root}/marlin_classic_ppu.cuh"
 )
 "${out}/l171" "${args[@]}"
