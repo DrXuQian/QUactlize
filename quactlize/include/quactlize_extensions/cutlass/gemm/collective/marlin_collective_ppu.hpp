@@ -17,6 +17,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <type_traits>
 
 #include <cuda_fp16.h>
@@ -139,7 +140,6 @@ class MarlinCollectivePPU {
     ElementA const* ptr_A = nullptr;
     ElementB const* ptr_B = nullptr;
     ElementScale const* ptr_S = nullptr;
-    int group_size = 0;
   };
 
   // Classic computes the thread topology and all fixed source/destination
@@ -153,8 +153,6 @@ class MarlinCollectivePPU {
     marlin_ppu_detail::Vector128 const* a_thread_base = nullptr;
     marlin_ppu_detail::Vector128 const* b_thread_base = nullptr;
     marlin_ppu_detail::Vector128 const* scale_thread_base = nullptr;
-    int n_tiles = 0;
-    int k_tiles = 0;
     int tid = 0;
     int b_inner_delta = 0;
     int b_k_delta = 0;
@@ -164,7 +162,6 @@ class MarlinCollectivePPU {
     int scale_smem_read = 0;
     bool a_copy_pred = false;
     bool scale_copy_pred = false;
-    bool valid = false;
   };
 
   struct SegmentState {
@@ -172,7 +169,6 @@ class MarlinCollectivePPU {
     marlin_ppu_detail::Vector128 const* b[BInnerIters]{};
     marlin_ppu_detail::Vector128 const* scale = nullptr;
     int k_tiles_remaining = 0;
-    bool valid = false;
   };
 
   struct SharedBases {
@@ -210,10 +206,11 @@ class MarlinCollectivePPU {
       int tid) {
     CtaState state;
     state.tid = tid;
-    state.n_tiles = problem_n / TileN;
-    state.k_tiles = problem_k / TileK;
     int const a_global_stride = problem_k / 8;
-    int const b_global_stride = 16 * problem_n / 32;
+    // N is admitted only when it is divisible by 256.  Spell this as N/2:
+    // 16*N/32 has the same mathematical value but can overflow before the
+    // division for an otherwise representable host shape.
+    int const b_global_stride = problem_n / 2;
     state.b_inner_delta =
         b_global_stride * (Threads / BSharedStride);
     state.b_k_delta = b_global_stride * KBlocks;
@@ -234,24 +231,17 @@ class MarlinCollectivePPU {
     state.scale_smem_read = 8 * warp_n + lane / 4;
     state.a_copy_pred = a_shared_write < ASharedStride * problem_m;
     state.scale_copy_pred = tid < ScaleSharedStride;
-    state.valid = params.ptr_A != nullptr && params.ptr_B != nullptr &&
-                  params.ptr_S != nullptr && params.group_size == GroupSize &&
-                  problem_m > 0 && problem_m <= TileM && problem_n > 0 &&
-                  problem_n % 256 == 0 && problem_k > 0 &&
-                  problem_k % TileK == 0 && tid >= 0 && tid < Threads;
-    if (state.valid) {
-      auto const* a = reinterpret_cast<marlin_ppu_detail::Vector128 const*>(
-          params.ptr_A);
-      auto const* b = reinterpret_cast<marlin_ppu_detail::Vector128 const*>(
-          params.ptr_B);
-      auto const* scale =
-          reinterpret_cast<marlin_ppu_detail::Vector128 const*>(params.ptr_S);
-      state.a_thread_base =
-          a + a_global_stride * (tid / AGlobalOuter) + tid % AGlobalOuter;
-      state.b_thread_base =
-          b + b_global_stride * (tid / BSharedStride) + tid % BSharedStride;
-      state.scale_thread_base = scale + tid;
-    }
+    auto const* a = reinterpret_cast<marlin_ppu_detail::Vector128 const*>(
+        params.ptr_A);
+    auto const* b = reinterpret_cast<marlin_ppu_detail::Vector128 const*>(
+        params.ptr_B);
+    auto const* scale =
+        reinterpret_cast<marlin_ppu_detail::Vector128 const*>(params.ptr_S);
+    state.a_thread_base =
+        a + a_global_stride * (tid / AGlobalOuter) + tid % AGlobalOuter;
+    state.b_thread_base =
+        b + b_global_stride * (tid / BSharedStride) + tid % BSharedStride;
+    state.scale_thread_base = scale + tid;
     return state;
   }
 
@@ -259,20 +249,14 @@ class MarlinCollectivePPU {
   CUTLASS_HOST_DEVICE static SegmentState rebase_segment(
       CtaState const& state, WorkTile const& work) {
     SegmentState segment;
-    if (!state.valid || !work.is_valid()) {
-      return segment;
-    }
     int const n_tile = int(work.N_idx);
     int const k_tile_begin = int(work.K_idx);
     int const k_tile_count = int(work.k_tile_count);
-    // The standalone dense scheduler admits exactly one M tile and L=1;
-    // those compile-time facts are deliberately absent from its hot work ABI.
-    if (n_tile < 0 || n_tile >= state.n_tiles || k_tile_begin < 0 ||
-        k_tile_count <= 0 ||
-        k_tile_begin + k_tile_count > state.k_tiles) {
-      return segment;
-    }
-
+    // This is an assume-valid device seam.  Kernel Params are host-lowered
+    // only after the mainloop and scheduler contracts pass, and L170/L178
+    // exhaust every reachable q/K/count descriptor.  Repeating those bounds
+    // in every thread and segment is neither a real fail-close (run_segment
+    // cannot consume an invalid/empty SegmentState) nor part of classic.
     segment.a = state.a_thread_base + AGlobalOuter * k_tile_begin;
     marlin_ppu_detail::Vector128 const* b =
         state.b_thread_base + BSharedStride * n_tile +
@@ -284,8 +268,61 @@ class MarlinCollectivePPU {
     segment.scale = state.scale_thread_base + ScaleSharedStride * n_tile +
                     state.scale_k_delta * k_tile_begin;
     segment.k_tiles_remaining = k_tile_count;
-    segment.valid = true;
     return segment;
+  }
+
+  template <class ProblemShape>
+  static bool address_arithmetic_supported(ProblemShape const& problem_shape) {
+    auto mnkl = cute::append<4>(problem_shape, cute::Int<1>{});
+    int64_t const n_signed = int64_t(cute::get<1>(mnkl));
+    int64_t const k_signed = int64_t(cute::get<2>(mnkl));
+    if (n_signed <= 0 || k_signed <= 0) {
+      return false;
+    }
+    uint64_t const n = uint64_t(n_signed);
+    uint64_t const k = uint64_t(k_signed);
+    uint64_t const int_max = uint64_t(std::numeric_limits<int>::max());
+    auto const mul_fits_int = [int_max](uint64_t a, uint64_t b) {
+      return a == 0 || b <= int_max / a;
+    };
+    auto const mul_add_fits_int = [int_max](
+        uint64_t a, uint64_t b, uint64_t c) {
+      return c <= int_max && (a == 0 || b <= (int_max - c) / a);
+    };
+
+    uint64_t const n_tiles = n / uint64_t(TileN);
+    uint64_t const k_tiles = k / uint64_t(TileK);
+    uint64_t const a_global_stride = k / 8;
+    uint64_t const b_global_stride = n / 2;
+    uint64_t const scale_k_delta = n / 8;
+    uint64_t const last_n_tile = n_tiles == 0 ? 0 : n_tiles - 1;
+    uint64_t const last_k_tile = k_tiles == 0 ? 0 : k_tiles - 1;
+
+    if (!mul_fits_int(b_global_stride, KBlocks)) {
+      return false;
+    }
+    uint64_t const b_k_delta = b_global_stride * uint64_t(KBlocks);
+
+    // Every product below is evaluated as int in init_cta_state or
+    // rebase_segment.  Prove each one before Arguments are lowered so the
+    // assume-valid device path cannot acquire signed-overflow UB.
+    return
+        // Thread-local bases are formed by int multiply-add expressions.
+        mul_add_fits_int(
+            a_global_stride, Threads / AGlobalOuter - 1,
+            AGlobalOuter - 1) &&
+        mul_add_fits_int(
+            b_global_stride, Threads / BSharedStride - 1,
+            BSharedStride - 1) &&
+        // These values are materialized as int deltas in CtaState.
+        mul_fits_int(b_global_stride, Threads / BSharedStride) &&
+        // Segment q/K products are also evaluated as int before rebasing a
+        // pointer.  Checking their maxima covers every reachable descriptor.
+        mul_fits_int(uint64_t(BSharedStride), last_n_tile) &&
+        mul_fits_int(b_k_delta, last_k_tile) &&
+        mul_fits_int(uint64_t(ScaleSharedStride), last_n_tile) &&
+        mul_fits_int(scale_k_delta, last_k_tile) &&
+        mul_fits_int(uint64_t(AGlobalOuter), last_k_tile);
   }
 
   template <class ProblemShape>
@@ -301,13 +338,14 @@ class MarlinCollectivePPU {
     return args.ptr_A != nullptr && args.ptr_B != nullptr && args.ptr_S != nullptr &&
            aligned_16(args.ptr_A) && aligned_16(args.ptr_B) && aligned_16(args.ptr_S) &&
            args.group_size == GroupSize && m > 0 && m <= TileM && l == 1 &&
-           n > 0 && n % 256 == 0 && k > 0 && k % TileK == 0;
+           n > 0 && n % 256 == 0 && k > 0 && k % TileK == 0 &&
+           address_arithmetic_supported(problem_shape);
   }
 
   template <class ProblemShape>
   static Params to_underlying_arguments(
       ProblemShape const&, Arguments const& args, void*) {
-    return {args.ptr_A, args.ptr_B, args.ptr_S, args.group_size};
+    return {args.ptr_A, args.ptr_B, args.ptr_S};
   }
 
   template <int NBlock>

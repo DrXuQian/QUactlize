@@ -108,7 +108,7 @@ def main() -> int:
         "fragment_scale[inner&1],accum.fragments[1])",
         "fragment_scale[inner&1],accum.fragments[2])",
         "fragment_scale[inner&1],accum.fragments[3])",
-        "Accumulator&accum,SharedStorage&shared",
+        "SharedBasesconst&shared,Accumulator&accum",
     ):
         if token not in c:
             die(plant, f"collective exact-accumulator seam lacks {token!r}")
@@ -135,7 +135,7 @@ def main() -> int:
     for token in (
         "usingAccumulator=typenameCollectiveMainloop::Accumulator;",
         "Accumulatoraccum;",
-        "CollectiveMainloop::run_segment(cta_state,segment,accum,shared.tensors.mainloop);",
+        "CollectiveMainloop::run_segment(cta_state,segment,shared_bases,accum);",
         "thread_block_reduce(accum,shared);",
         "global_handoff(accum,params,work,first,final,problem_m,problem_n);",
         "write_result(accum,params,work,problem_m,problem_n,shared);",

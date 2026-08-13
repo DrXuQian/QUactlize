@@ -229,7 +229,7 @@ int main(int argc, char** argv) {
   typename Main::Params params{
       reinterpret_cast<cutlass::half_t const*>(a.data()),
       reinterpret_cast<cutlass::int4b_t const*>(b.data()),
-      reinterpret_cast<cutlass::half_t const*>(scale.data()), Main::GroupSize};
+      reinterpret_cast<cutlass::half_t const*>(scale.data())};
 
   typename Main::SharedStorage shared{};
   auto shared_bases = Main::make_shared_bases(shared);
@@ -271,8 +271,7 @@ int main(int argc, char** argv) {
       state.scale_copy_pred = tid < 32;
     }
 
-    if (!state.valid || state.n_tiles != kNTiles ||
-        state.k_tiles != kKTiles || state.tid != tid ||
+    if (state.tid != tid ||
         state.a_thread_base - a.data() != classic.a_thread ||
         state.b_thread_base - b.data() != classic.b_thread ||
         state.scale_thread_base - scale.data() != classic.scale_thread ||
@@ -314,7 +313,7 @@ int main(int argc, char** argv) {
           for (int i = 0; i < Main::BInnerIters; ++i) {
             b_matches = b_matches && segment.b[i] - b.data() == c.b[i];
           }
-          if (!segment.valid || segment.k_tiles_remaining != count ||
+          if (segment.k_tiles_remaining != count ||
               segment.a - a.data() != c.a || !b_matches ||
               segment.scale - scale.data() != c.scale) {
             return fail(plant, "production rebased pointers diverged from both references");

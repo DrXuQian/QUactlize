@@ -21,6 +21,7 @@
 #include "cutlass/gemm/gemm.h"
 #include "cutlass/kernel_hardware_info.hpp"
 #include "cutlass/utils.h"
+#include "quactlize_extensions/cutlass/gemm/kernel/marlin_output_map_ppu.hpp"
 #include "quactlize_extensions/cutlass/gemm/kernel/marlin_scheduler_ppu.hpp"
 
 namespace cutlass::gemm::kernel {
@@ -143,11 +144,13 @@ class MarlinKernelPPU {
            int64_t(cute::get<2>(args.epilogue.dD)) == m * n && l == 1;
   }
 
-  CUTLASS_DEVICE static int acc_i(int lane, int value) {
-    return lane / 4 + (((value >> 2) & 1) << 3);
-  }
-  CUTLASS_DEVICE static int acc_j(int lane, int value) {
-    return lane % 4 + ((value % 4) << 2);
+  static bool arguments_supported(
+      Arguments const& args, KernelHardwareInfo const& hw) {
+    return args.mode == GemmUniversalMode::kGemm && hw.cu_count > 0 &&
+           args.scheduler.blocks_per_cu <= MaxBlocksPerCu &&
+           CollectiveMainloop::can_implement(args.problem_shape, args.mainloop) &&
+           epilogue_contract(args) &&
+           TileScheduler::can_implement(args.problem_shape, hw, args.scheduler);
   }
 
   CUTLASS_DEVICE static void thread_block_reduce(
@@ -220,16 +223,20 @@ class MarlinKernelPPU {
       return;
     }
     __half* d = reinterpret_cast<__half*>(params.epilogue.ptr_D);
-    int const warp_n = tid / 32;
     int const lane = tid % 32;
     #pragma unroll
     for (int n_block = 0; n_block < 4; ++n_block) {
-      int const n_base = (int(work.N_idx) * 8 + warp_n * 4 + n_block) * 16;
+      int const n_base = marlin_ppu_detail::output_n_base(
+          int(work.N_idx), tid, n_block);
       #pragma unroll
       for (int value = 0; value < 8; ++value) {
-        int const row = acc_i(lane, value);
-        int const col = n_base + acc_j(lane, value);
-        if (row < problem_m && col < problem_n) {
+        int const row = marlin_ppu_detail::output_row(lane, value);
+        int const col = n_base +
+                        marlin_ppu_detail::output_col_offset(lane, value);
+        // q is a global N-tile ordinal and the admitted N is an exact
+        // multiple of TileN=128.  L179 proves the 64 output threads cover
+        // exactly [128*q,128*q+127], so only the M residue needs a guard.
+        if (row < problem_m) {
           int64_t const offset = int64_t(row) * problem_n + col;
           if (!first_peer) {
             accum.fragments[n_block].value[value] += __half2float(d[offset]);
@@ -252,15 +259,16 @@ class MarlinKernelPPU {
     __half* sh = reinterpret_cast<__half*>(shared.tensors.cooperative);
     __syncthreads();
     if (tid < int(OutputThreads)) {
-      int const warp_n = tid / 32;
       int const lane = tid % 32;
       #pragma unroll
       for (int n_block = 0; n_block < 4; ++n_block) {
-        int const n_base = warp_n * 64 + n_block * 16;
+        int const n_base = marlin_ppu_detail::output_n_base(
+            0, tid, n_block);
         #pragma unroll
         for (int value = 0; value < 8; ++value) {
-          int const row = acc_i(lane, value);
-          int const col = n_base + acc_j(lane, value);
+          int const row = marlin_ppu_detail::output_row(lane, value);
+          int const col = n_base +
+                          marlin_ppu_detail::output_col_offset(lane, value);
           if (row < problem_m) {
             sh[row * kRowStrideHalf + col] =
                 __float2half(accum.fragments[n_block].value[value]);
@@ -286,6 +294,7 @@ class MarlinKernelPPU {
  public:
   static Params to_underlying_arguments(Arguments const& args, void* workspace) {
     KernelHardwareInfo hw = real_hw_info(args);
+    bool const supported = arguments_supported(args, hw);
     return {
         args.mode,
         args.problem_shape,
@@ -294,18 +303,16 @@ class MarlinKernelPPU {
         CollectiveEpilogue::to_underlying_arguments(
             args.problem_shape, args.epilogue, nullptr),
         hw,
-        TileScheduler::to_underlying_arguments(
-            args.problem_shape, hw, args.scheduler, workspace),
+        supported
+            ? TileScheduler::to_underlying_arguments(
+                  args.problem_shape, hw, args.scheduler, workspace)
+            : TileSchedulerParams{},
     };
   }
 
   static bool can_implement(Arguments const& args) {
     KernelHardwareInfo hw = real_hw_info(args);
-    return args.mode == GemmUniversalMode::kGemm && hw.cu_count > 0 &&
-           args.scheduler.blocks_per_cu <= MaxBlocksPerCu &&
-           CollectiveMainloop::can_implement(args.problem_shape, args.mainloop) &&
-           epilogue_contract(args) &&
-           TileScheduler::can_implement(args.problem_shape, hw, args.scheduler);
+    return arguments_supported(args, hw);
   }
 
   static size_t get_workspace_size(Arguments const& args) {

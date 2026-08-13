@@ -89,11 +89,11 @@ def validate(collective: str, kernel: str) -> None:
         "Vector128 const* a_thread_base",
         "Vector128 const* b_thread_base",
         "Vector128 const* scale_thread_base",
-        "int n_tiles", "int k_tiles", "int tid",
+        "int tid",
         "int b_inner_delta", "int b_k_delta", "int scale_k_delta",
         "int a_smem_write", "int a_smem_read[BInnerIters]",
         "int scale_smem_read", "bool a_copy_pred",
-        "bool scale_copy_pred", "bool valid",
+        "bool scale_copy_pred",
     )
     for token in cta_required:
         if cta.count(token) != 1:
@@ -103,6 +103,7 @@ def validate(collective: str, kernel: str) -> None:
         "a_global_stride", "a_global_inner", "b_global_stride",
         "b_global_outer", "b_global_inner", "scale_global_stride",
         "a_predicate", "a_write_transformed", "a_read_transformed",
+        "n_tiles", "k_tiles", "bool valid",
     ):
         if forbidden in cta:
             raise ContractError(f"CtaState retained pre-hoist field: {forbidden}")
@@ -111,13 +112,13 @@ def validate(collective: str, kernel: str) -> None:
         "Vector128 const* a = nullptr",
         "Vector128 const* b[BInnerIters]",
         "Vector128 const* scale = nullptr",
-        "int k_tiles_remaining", "bool valid",
+        "int k_tiles_remaining",
     ):
         if segment.count(token) != 1:
             raise ContractError(f"SegmentState rebased pointer is not unique: {token}")
     for forbidden in (
         "n_tile", "k_tile_begin", "a_global_read", "b_global_read",
-        "scale_global_read",
+        "scale_global_read", "bool valid",
     ):
         if forbidden in segment:
             raise ContractError(f"SegmentState retained an integer rebase field: {forbidden}")

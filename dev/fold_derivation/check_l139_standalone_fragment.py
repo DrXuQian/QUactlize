@@ -41,6 +41,13 @@ def main() -> int:
         / "marlin_kernel_ppu.hpp",
     )
     parser.add_argument(
+        "--output-map",
+        type=pathlib.Path,
+        default=repo
+        / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel"
+        / "marlin_output_map_ppu.hpp",
+    )
+    parser.add_argument(
         "--classic",
         type=pathlib.Path,
         default=repo.parent / "marlin_classic_ppu.cuh",
@@ -53,6 +60,7 @@ def main() -> int:
         "oracle": args.oracle,
         "collective": args.collective,
         "kernel": args.kernel,
+        "output-map": args.output_map,
         "classic": args.classic,
     }.items():
         try:
@@ -64,6 +72,7 @@ def main() -> int:
     oracle = files["oracle"]
     collective = files["collective"]
     kernel = compact(files["kernel"])
+    output_map = compact(files["output-map"])
     classic = compact(files["classic"])
 
     for token in (
@@ -102,14 +111,25 @@ def main() -> int:
 
     for token in (
         "usingTiledMma=typenameCollectiveMainloop::TiledMma;",
-        "returnlane/4+(((value>>2)&1)<<3);",
-        "returnlane%4+((value%4)<<2);",
         "constexprintred_off=2;",
         "for(intstep=red_off;step>0;step/=2)",
         "intconstchunk=2*n_block+half;",
         "intconstvalue_base=4*half;",
         "accum.fragments[n_block].value[value_base+i]+=peer[i]+prior[i];",
         "accum.fragments[n_block].value[value_base+i]+=peer[i];",
+    ):
+        require(kernel, token, "kernel", failures)
+
+    for token in (
+        "returnlane/4+(((value>>2)&1)<<3);",
+        "returnlane%4+((value%4)<<2);",
+        "return(n_tile*8+warp_n*4+n_block)*16;",
+    ):
+        require(output_map, token, "output-map", failures)
+    for token in (
+        "marlin_ppu_detail::output_row(",
+        "marlin_ppu_detail::output_n_base(",
+        "marlin_ppu_detail::output_col_offset(",
     ):
         require(kernel, token, "kernel", failures)
 

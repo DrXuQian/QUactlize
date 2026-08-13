@@ -13,7 +13,9 @@ mixed-input collective.  It is one independent stack:
 | W4 dequant and grouped scale | `quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_dequant_ppu.hpp` |
 | native PPU n16 MMA / C registers | `quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_mma_ppu.hpp` |
 | stripe decomposition and global-q lock lifecycle | `quactlize/include/quactlize_extensions/cutlass/gemm/kernel/marlin_scheduler_ppu.hpp` |
+| K0 output-coordinate authority | `quactlize/include/quactlize_extensions/cutlass/gemm/kernel/marlin_output_map_ppu.hpp` |
 | 4->2->1 reduction, fp16 D-chain and final store | `quactlize/include/quactlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp` |
+| checked host Args->Params ownership | `quactlize/include/quactlize_extensions/cutlass/gemm/device/marlin_gemm_ppu.hpp` |
 
 The first admitted row is intentionally exact:
 
@@ -44,8 +46,9 @@ No device timing is inferred from the local proofs below.
 | CTA-local reduction | FP32 4->2->1 shared tree; K0 survives | same | **cadence and ownership closed**; L168 plus kernel contract. |
 | CTA stripe | K-fast, `G=max(Q,CU*B)`, reverse-q Awesome traversal, global q lock | same semantics; B=1 is default | **exact-once and lifecycle closed**; L170.  The three physically launched idle CTAs are explicitly invalid rather than allowed to construct an out-of-range descriptor. |
 | CTA/segment address state | final per-thread A/B/scale bases and shared coordinates are CTA invariants; a segment only rebases global q/K | same lifetime and pointer equations | **exhaustively source-closed**; L178 checks all 4,325,376 legal fixed-target segments against independent classic and Awesome-CuTe equations.  It also rejects byte/code pitch confusion, local-q rebasing, stale WK deltas, tight-smem substitution and reintroduced hot-loop topology arithmetic. |
+| host validity / checked lowering | classic validates the problem before launching; its device stripe consumes valid descriptors | the owned `MarlinGemmPPU` privately composes the raw adapter, rejects unsupported workspace/grid queries, installs Params only after a successful initialize, and deletes update/raw-Params launch seams | **host/source closed**; L179 checks three adjacent integer-overflow boundaries through production `can_implement`, revokes a prior installation after a failed reinitialize, and rejects 17 causal arithmetic/map/API plants.  `CtaState` and `SegmentState` therefore carry no duplicate `valid`, N-tile or K-tile fields. |
 | cross-CTA partial | ordered fp16 chain through D, only final peer writes result; an unsplit tile enters no lock/partial protocol | same | **source/ABI closed**; L177 proves 98 split acquire/handoff/release operations with 66 arrive and 32 reset, while the `Q>=CU` whole-tile case performs exactly zero cooperative calls.  Device memory-order progress remains pending. |
-| output | K0 stages fp16 into padded shared rows, all CTA threads coalesce the final write | same mechanism | **source closed; codegen/counter parity pending**. |
+| output | K0 stages fp16 into padded shared rows, all CTA threads coalesce the final write | same mechanism | **source/map closed; codegen/counter parity pending**.  Production handoff/final-store and L179 share one host/device constexpr K0 coordinate map; all 65,536 coordinates across 32 q tiles are in-range and exact-once, while L139 independently anchors that formula to classic.  This proves `col<N` redundant without inventing a second model. |
 | launch bounds / shared | `(256,2)`, 50,176 B | `(256,2)`, 50,176 B | **compile-closed**; actual registers, spills and blocks/CU remain device measurements. |
 
 The local byte ledger also normalizes the shared producer work to 4,352 B per
@@ -97,7 +100,10 @@ The hot scheduler descriptor is now 20 bytes (global q, K begin/count, peer
 ordinal and cached flags), rather than the earlier 44-byte compatibility
 record.  Split/first/final are consumed once in the kernel, and the shared
 stage bases plus final per-thread source/smem coordinates are constructed
-outside the segment loop.  These are source/combination facts, not a register
+outside the segment loop.  Unsupported host arguments lower to a zero-grid
+scheduler only inside the kernel ABI, while the shipping handle prevents that
+record from being launched or refreshed through raw Params/update APIs.  These
+are source/combination facts, not a register
 allocation claim: L176's exact shipping-symbol disassembly is still required
 to establish the resulting `s.mov`/`s.cmp`/branch counts and spills.
 

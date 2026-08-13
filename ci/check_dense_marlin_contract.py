@@ -20,6 +20,9 @@ This checker therefore composes the production-bound standalone proofs:
 * L177: one cached Split/First/Final decision and a zero-call unsplit handoff path;
 * L178: final per-thread CTA invariants, rebased source pointers and one-CTA
   shared bases, exhaustively matched to independent classic/Awesome formulas;
+* L179: checked host lowering owns all validity/overflow decisions, the
+  assume-valid device path shares one output map with its exhaustive oracle,
+  and raw Params/update seams are unavailable from the shipping handle;
 * the structural stack gate, including absence of generic WarpK seams.
 
 The wider tactic domain is owned separately by L172.  It is not silently
@@ -74,6 +77,12 @@ CHECKS = (
         "state-hoist",
         (sys.executable, "ci/check_l178_marlin_state_hoist.py"),
         "[l178-contract] PASS:",
+    ),
+    (
+        "checked-lowering",
+        ("bash", "dev/fold_derivation/run_l179_marlin_checked_lowering.sh"),
+        "[l179:runner] positive=geometry+source+handle-lifecycle "
+        "negative_controls=17/17_RED result=PASS",
     ),
     (
         "stack",

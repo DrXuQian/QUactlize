@@ -84,7 +84,7 @@ int main(int argc, char** argv) {
   typename Main::Params main_params{
       reinterpret_cast<cutlass::half_t const*>(a.data()),
       reinterpret_cast<cutlass::int4b_t const*>(b.data()),
-      reinterpret_cast<cutlass::half_t const*>(scale.data()), 128};
+      reinterpret_cast<cutlass::half_t const*>(scale.data())};
   auto const sched = Scheduler::make_params_for_tiles(1, 32, 1, 32, 72);
   if (!sched.valid_ || sched.active_blocks_ != 69 ||
       sched.grid_blocks_ != 72 || sched.iters_per_block_ != 15) {
@@ -111,22 +111,20 @@ int main(int argc, char** argv) {
     if (!work.is_valid()) {
       // This mirrors the production kernel's early return: no init call.
       if (is_plant(plant, "init-before-valid")) {
-        auto bad = Main::init_cta_state(main_params, 1, 4096, 4096, 0);
-        idle_init += bad.valid;
+        (void)Main::init_cta_state(main_params, 1, 4096, 4096, 0);
+        ++idle_init;
       }
       continue;
     }
 
     auto cta = Main::init_cta_state(main_params, 1, 4096, 4096, 0);
     ++init_count;
-    if (!cta.valid) return fail(plant, "production CTA init returned invalid");
     uint32_t previous_q = uint32_t(work.N_idx);
     bool first = true;
     typename Main::SegmentState prior{};
     while (work.is_valid()) {
       auto segment = Main::rebase_segment(cta, work);
       ++rebase_count;
-      if (!segment.valid) return fail(plant, "production segment rebase invalid");
       if (!first) {
         if (uint32_t(work.N_idx) >= previous_q) {
           return fail(plant, "reverse-q L168 anchor changed");
@@ -138,7 +136,7 @@ int main(int argc, char** argv) {
 
       auto expected = classic_address(0, uint32_t(work.N_idx), work.K_idx);
       if (is_plant(plant, "init-per-segment")) ++init_count;
-      if (is_plant(plant, "stale-rebase") && prior.valid) segment = prior;
+      if (is_plant(plant, "stale-rebase") && !first) segment = prior;
       if (is_plant(plant, "drop-b-q")) {
         int const delta = Main::BSharedStride * int(work.N_idx);
         for (auto& pointer : segment.b) pointer -= delta;

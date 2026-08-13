@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 L169 = ROOT / "dev/fold_derivation/l169_standalone_marlin_unit.cu"
 CMAKE = ROOT / "quactlize/csrc/CMakeLists.txt.in"
 UNIT = ROOT / "benchmarks/lowbit_dense_unit.inc"
+BENCH = ROOT / "benchmarks/test_lowbit_dense_bench.cu"
 COLLECTIVE = ROOT / (
     "quactlize/include/quactlize_extensions/cutlass/gemm/collective/"
     "marlin_collective_ppu.hpp"
@@ -33,11 +34,19 @@ KERNEL = ROOT / (
     "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/"
     "marlin_kernel_ppu.hpp"
 )
+OUTPUT_MAP = KERNEL.with_name("marlin_output_map_ppu.hpp")
+HANDLE = ROOT / (
+    "quactlize/include/quactlize_extensions/cutlass/gemm/device/"
+    "marlin_gemm_ppu.hpp"
+)
 SCHEDULER = KERNEL.with_name("marlin_scheduler_ppu.hpp")
 
 EXPECTED_FN = "lowbit_dense_cfg_tm16_tn128_tk128_wm16_wn64_st4_bc0"
 EXPECTED_ROW = (16, 128, 128, 16, 64, 4, 0)
-AUTHORITY = (L169, CMAKE, UNIT, COLLECTIVE, LOAD, DEQUANT, MMA, KERNEL, SCHEDULER)
+AUTHORITY = (
+    L169, CMAKE, UNIT, BENCH, COLLECTIVE, LOAD, DEQUANT, MMA,
+    KERNEL, OUTPUT_MAP, HANDLE, SCHEDULER,
+)
 
 
 class ContractError(RuntimeError):
@@ -177,6 +186,23 @@ def validate(texts: dict[Path, str], generated: Path | None) -> dict[str, object
         if forbidden in arm:
             raise ContractError(f"standalone wrapper reached generic kernel via {forbidden!r}")
 
+    bench = texts[BENCH]
+    for token in (
+        '#include "quactlize_extensions/cutlass/gemm/device/marlin_gemm_ppu.hpp"',
+        "using MarlinGemm = cutlass::gemm::device::MarlinGemmPPU<MarlinKernel>;",
+    ):
+        if token not in bench:
+            raise ContractError(f"shipping standalone Cfg lacks {token!r}")
+    handle = texts[HANDLE]
+    for token in (
+        "class MarlinCheckedHandlePPU", "bool installed_ = false",
+        "Status update(Arguments const&, void* = nullptr) = delete",
+        "static dim3 get_grid_shape(Params const&) = delete",
+        "using MarlinGemmPPU = detail::MarlinCheckedHandlePPU<",
+    ):
+        if token not in handle:
+            raise ContractError(f"owned host lowering lacks {token!r}")
+
     collective = texts[COLLECTIVE]
     for helper in (LOAD, DEQUANT, MMA):
         include = (
@@ -203,11 +229,22 @@ def validate(texts: dict[Path, str], generated: Path | None) -> dict[str, object
         raise ContractError(f"standalone multiply cadence is {calls}, expected [0,1,2,3]")
 
     kernel = texts[KERNEL]
+    output_map = texts[OUTPUT_MAP]
     mma = texts[MMA]
     if "using Accumulator = marlin_ppu_detail::MarlinAccumulatorPPU;" not in collective:
         raise ContractError("collective lost native Marlin accumulator alias")
     if "Accumulator accum;" not in kernel:
         raise ContractError("kernel no longer constructs the native accumulator directly")
+    if kernel.count(
+        '#include "quactlize_extensions/cutlass/gemm/kernel/marlin_output_map_ppu.hpp"'
+    ) != 1:
+        raise ContractError("kernel lost its authoritative output-map include")
+    for token in (
+        "constexpr int output_row(", "constexpr int output_n_base(",
+        "constexpr int output_col_offset(",
+    ):
+        if output_map.count(token) != 1:
+            raise ContractError(f"authoritative output map lacks {token!r}")
     if "FragmentC fragments[4];" not in mma or "float value[8];" not in mma:
         raise ContractError("native 4x8 FP32 accumulator layout drifted")
     joined = "\n".join((collective, mma, kernel))

@@ -89,6 +89,7 @@
 #include "marlin_format_ppu.hpp"
 #include "marlin_tactic_space_ppu.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
+#include "quactlize_extensions/cutlass/gemm/device/marlin_gemm_ppu.hpp"
 #include "quactlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp"
 #endif
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
@@ -371,7 +372,7 @@ struct StandaloneMarlinCfg {
       cute::Stride<cute::_1, int64_t, int64_t>>;
   using MarlinKernel = cutlass::gemm::kernel::MarlinKernelPPU<
       Shape<int,int,int,int>, MarlinMain, Epi>;
-  using MarlinGemm = cutlass::gemm::device::GemmUniversalAdapter<MarlinKernel>;
+  using MarlinGemm = cutlass::gemm::device::MarlinGemmPPU<MarlinKernel>;
 };
 #endif
 
