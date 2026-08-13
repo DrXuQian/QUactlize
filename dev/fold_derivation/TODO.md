@@ -725,7 +725,7 @@ differs slightly. So the time is set by per-ELEMENT work, not by bytes: **this k
 The %HBM column being in exact inverse bit-width order across the formats (q6 38.7 > i4 34.1 > i2 20.9 > i1
 14.1) is the same fact seen from the other side -- with the time pinned, %HBM only reports the bit width.
 
-### TODO #28 codegen verdict: still open, but the exact gap is 2.75 -> 1 on RTX 5090
+### TODO #28 codegen verdict: 2.75 -> 1 is an sm_120 result, not a PPU result
 
 L145 compiles the real shipping specialization (`int4/native`, StepK=16, 128 threads, dense M=1,
 CtaN=8, Chunk=2, gs=32, affine scale+zero) with nvcc 12.8 for sm_120 and disassembles the full kernel. Per
@@ -738,12 +738,58 @@ included in that extraction count.
 Therefore “the compiler already fused it because SASS contains LOP3” is false: those are two different LUTs
 implementing AND and OR, and nonzero shifts remain. #28's whole-word extraction premise is alive on RTX 5090,
 with an exact average target of **2.75 -> 1** (the nonzero-shift slots are 3 -> 1), not a blanket 3 -> 1.
-This is an NVIDIA codegen result, not a PPU result. No local hgcc/PPU assembler is available; the PPU side stays
-UNKNOWN until the same production instantiation is compiled and disassembled there. Run
-`dev/fold_derivation/run_l145_gemv_lop3_codegen.sh` to reproduce the sm_120 evidence.
+This is an NVIDIA codegen result, not a PPU result. Run
+`dev/fold_derivation/run_l145_gemv_lop3_codegen.sh` to reproduce the sm_120 evidence.  PPU must be measured from the
+same shipping GEMV instantiation with hgcc and the PPU disassembler; the result is the before baseline for TODO #55,
+not a go/no-go decision.
+
+The older PPU acu row at this file's "whole A line" section is not that baseline.  Its
+`v.shll 12.11 + v.lop3 8.17 + v.or 4.01 + v.bfi 2.06 + v.shrl 1.11 = 27.5/mma` was captured on the experimental
+A-in-register **collective** build.  The later "CORRECTED profile of the DEFAULT build" section explicitly withdraws
+it and reports a different collective mix (approximately four lop3 plus one shrl per atom).  Neither profile is the
+current shipping GEMV specialization.  The old row remains directional evidence that that historical PPU build did
+not fuse extraction; it is not a quantitative current-code baseline.
 
 **This also predicts split-K will not help**, for the same reason: split-K buys CTAs, and CTAs are not what is
 short. That prediction is exactly what test_moe_splitk_bench measures, so it is still worth running.
+
+### TODO #55 — ship target-dispatched fast dequant for PPU GEMV
+
+**Decision and target.**  The PPU GEMV must use the fast two-instruction decode below.  RTX 5090 keeps the portable
+dequant implementation selected by target, so a standalone portable call remains buildable.  This is committed work,
+not conditional on whether the PPU compiler happens to perform some partial fusion.  The PPU disassembly in INBOX 150
+is the frozen **before** measurement needed to attribute the change.
+
+**Reuse boundary.**  Reuse only `MixGemmEmit::emit_one`'s arithmetic core:
+
+    ppu.lop3.b32          x = (src & mask<T>) | 0x64006400
+    ppu.fma.rtte.f16x2    x = x * mul<T> + add<T>
+
+`mul<T>` absorbs the bit position (`bpos`) and `add<T>` absorbs the fp16 1024 magic plus `kBias`.  Do not reuse the
+tensor-core delivery layer: `emit`, `at`, and `keep` encode AIU/swzl fragment placement and B-chunk publication, while
+GEMV needs its own sequential destination mapping.  The fma does **not** apply per-group scale or zero.  It removes
+the magic value and integer-code bias; both portable and fast paths multiply/apply the per-group affine metadata
+afterward.
+
+The native and TileK artifacts use the same bit-width-specific `bpos` sequence and logical mapper, so the PPU route
+does not need two copies of artifact constants.  Artifact selection remains outside the arithmetic core.
+
+**Correctness seam.**  `gemv_converter.hpp` already owns an independent `RefRawConverter` oracle and a one-hot mapper
+probe.  Keep the oracle portable.  Today the one-hot probe is reached only as diagnostics after a random comparison
+has failed; enabling the fast route must promote it to an unconditional positive gate.  A silently permuted fast
+converter must fail even when a random fixture happens not to expose the permutation.
+
+**Bounded work.**  Production target dispatch, arithmetic extraction, and GEMV mapping are 80--120 LOC.  Wiring the
+unconditional oracle/one-hot positive gate is another 25--45 LOC.  Preconditions are (1) the current PPU per-pair
+instruction breakdown from INBOX 150 and (2) removal of the box-run shipping-code freeze.
+
+**Completion evidence.**  Report both quantities against the same shipping specialization and winning sweep shapes:
+
+1. the before/after per-half2 extraction breakdown and instruction-count reduction on PPU; and
+2. the before/after GEMV time on every sweep shape whose winner selects this specialization.
+
+Fewer extraction instructions with unchanged wall time is a valid result and must be reported, not explained away or
+hidden by selecting a different shape.
 
 ### Where the GEMV does look good
 

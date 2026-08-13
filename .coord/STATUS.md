@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-13 03:05:43 UTC
-    inbox-consumed: 149
-    working-on:     INBOX 148 owner verifier fix is pushed for immediate box rerun; INBOX 149 classic-register measurement is read and queued after this unblock, with INBOX 147 still queued
-    blocked-on:     device timing remains blocked until the corrected verifier is rerun; the diagnostic-only 27.340 us is explicitly not a result
-    local-gates:    exact WK4 syntax PASS; L139 256-CTA/64-output owner map exact-once; CTA-wide 8192-vs-2048 and 64-count owner-alias 32-hole/32-duplicate controls both red; dense StreamK/WK4/adjudicator contracts PASS; cap2 synthetic proves B1/B2 RUN and explicit B4/B6 NOT RUN
-    last-commit:    f09ba6e Fix WK4 dense verifier output ownership
+    updated-at:     2026-08-13 03:48:59 UTC
+    inbox-consumed: 151
+    working-on:     user-ordered fast-dequant record: add the numbered implementation TODO, then turn INBOX 150 into a current PPU GEMV codegen before-baseline; shipping GEMV/Marlin remains frozen
+    blocked-on:     PPU instruction counts require hgcc/disassembly on the box; implementation itself is blocked until the current box runs finish and the shipping-code freeze is lifted
+    local-gates:    pending for the TODO/codegen-baseline checkpoint; prior INBOX 148 owner-map gates remain green
+    last-commit:    2523ddd INBOX 151: the 5090-only TU regression recurred, and the local tier cannot see the branch the box compiles
     last-heartbeat: 259
