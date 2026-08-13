@@ -9,6 +9,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 bash "$repo/dev/fold_derivation/run_l168_marlin_pipeline_trace.sh"
+bash "$repo/dev/fold_derivation/run_l139_standalone_fragment_oracle.sh"
 python3 "$repo/ci/check_dense_marlin_wk4_target.py"
 
-echo '[L139] PASS: standalone 2N x 4K output cohort and 4->2->1 reduction cadence are source-anchored; flat-reduction causal plant and eleven standalone stack plants red; generic-builder TYPE_ONLY proof retired'
+echo '[L139] PASS: production TiledMma exhausts 256x32 ownership and raw 4->2->1 scratch cadence; classic/Awesome trace and eleven standalone stack plants close; generic-builder TYPE_ONLY proof retired'

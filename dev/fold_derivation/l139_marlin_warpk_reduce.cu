@@ -1,120 +1,117 @@
-// L139 -- host oracle for the classic-Marlin 2N x 4K CTA-local reduction.
+// L139 -- standalone-Marlin production C-fragment / K-cohort oracle.
 //
-// This is deliberately an integer/layout + exact-FP32 oracle.  It names the
-// real PPU0010 builder result for the intended 16x128x128 / w16x64x32 tactic,
-// projects each compute thread's VMNK coordinate onto the corresponding
-// 2N x 1K output cohort, and then replays a shared-FP32 reduction.  No device
-// timing, barrier ordering, or cross-CTA fixup is modeled here.
+// This oracle deliberately aliases MarlinCollectivePPU::TiledMma.  It does
+// not instantiate the retired generic mixed-input builder.  CuTe supplies the
+// production 1M x 2N x 4K thread topology and the 32-register fragment extent;
+// the native PPU m16n16 accumulator coordinates come from classic Marlin's
+// acc_i/acc_j contract, exactly as MarlinKernelPPU consumes them.
 //
-// The six planted failures are load-bearing:
-//   1. use the wrong compact-thread projection for nonzero K cohorts;
-//   2. omit one of the four K cohorts;
-//   3. let the three non-survivor cohorts write output.
-//   4. regress the verifier to CTA-thread ownership (256 instead of 64);
-//   5. keep the 64-thread count but alias the last K0 owner onto the first,
-//      producing a duplicate and a hole that the count alone cannot see.
-//   6. substitute CuTe's generic tiled fragment-index order for the manual
-//      mainloop's four contiguous native m16n16 accumulator ranges.  Both
-//      maps are bijections, so exact-once coverage alone must stay green while
-//      the accumulator-to-coordinate association turns red.
-// Each must make the exact raw-output contract red.
+// The positive arm proves, exhaustively over all 256 threads and 32 slots:
+//   * four K cohorts have one owner for every compact (N-warp,lane) id;
+//   * K0 is exactly 64 compact output threads, with 32 slots each;
+//   * every K cohort covers the 16x128 C tile exactly once and is coordinate-
+//     isomorphic to K0 under the classic acc_i/acc_j map;
+//   * the production shared-scratch address cadence reproduces classic's
+//     4 -> 2 -> 1 FP32 reduction with raw-bit equality.
+//
+// The generic CuTe partition_C map and a tempting compact row-major map are
+// measured, not accepted: both are bijections and both are wrong associations
+// for the native PPU accumulator.  Dedicated plants must turn each one red.
 
-#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <type_traits>
+#include <string_view>
 #include <vector>
 
-#include "cute/atom/mma_traits_ppu0010.hpp"
+#include <cuda_fp16.h>
+
+// Stock nvcc is used here as a host C++ compiler.  Without __HGGCCC__ the
+// production header's CUTLASS_DEVICE bodies are parsed as inline host bodies;
+// these declarations keep three uninstantiated device operations parseable.
+// The oracle never calls them.  Defining __HGGCCC__ instead is not viable:
+// stock nvcc then device-instantiates PPU CuTe helpers it cannot compile.
+__half2 l139_unreachable_hfma2(__half2, __half2, __half2);
+unsigned int l139_unreachable_cvta(void const*);
+struct L139UnreachableThreadIdx { int x = 0, y = 0, z = 0; };
+inline constexpr L139UnreachableThreadIdx l139_unreachable_thread_idx{};
+void l139_unreachable_syncthreads();
+#define __hfma2 l139_unreachable_hfma2
+#define __cvta_generic_to_shared l139_unreachable_cvta
+#define threadIdx l139_unreachable_thread_idx
+#define __syncthreads l139_unreachable_syncthreads
 #include "cute/tensor.hpp"
-#include "cutlass/numeric_types.h"
-#if defined(__HGGCCC__)
-#include "quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
-#include "quactlize_extensions/cutlass/gemm/collective/builders/quactlize_mma_builder.inl"
-#endif
+#include "quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
+#undef __syncthreads
+#undef threadIdx
+#undef __cvta_generic_to_shared
+#undef __hfma2
 
 namespace {
 using namespace cute;
 
-constexpr int kTM = 16;
-constexpr int kTN = 128;
-constexpr int kTK = 128;
-constexpr int kWM = 16;
-constexpr int kWN = 64;
-constexpr int kWarpK = 32;
-constexpr int kWOM = kTM / kWM;
-constexpr int kWON = kTN / kWN;
-constexpr int kWK = kTK / kWarpK;
-constexpr int kAtomK = 16;
-constexpr int kComputePermutationK = 64;
+using ProductionStrideA = Stride<int64_t, _1, int64_t>;
+using ProductionStrideB = Stride<int64_t, _1, int64_t>;
+using ProductionStrideScale = Stride<_1, int64_t, int64_t>;
+using ProductionCollective = cutlass::gemm::collective::MarlinCollectivePPU<
+    Shape<_16, _128, _128>, Shape<_16, _64, _32>, 4, 128,
+    ProductionStrideA, ProductionStrideB, ProductionStrideScale>;
+using ProductionMma = typename ProductionCollective::TiledMma;
+using ProductionFragment = decltype(make_fragment_like<float>(
+    partition_fragment_C(ProductionMma{}, Shape<_16, _128>{})));
 
-using TileShape = Shape<Int<kTM>, Int<kTN>, Int<kTK>>;
-using WarpShape = Shape<Int<kWM>, Int<kWN>, Int<kWarpK>>;
-using Atom = PPU0010_16x16x16_F32F16F16F32_TN;
-using ComputeMma = TiledMMA<
-    MMA_Atom<Atom>, Layout<Shape<Int<kWOM>, Int<kWON>, Int<kWK>>>,
-    Tile<_16, _32, Int<kComputePermutationK>>>;
+constexpr int kTileM = ProductionCollective::TileM;
+constexpr int kTileN = ProductionCollective::TileN;
+constexpr int kComputeThreads = size(ProductionMma{});
+constexpr int kWarpKCohorts = ProductionCollective::WarpOnK;
+constexpr int kOutputThreads = kComputeThreads / kWarpKCohorts;
+constexpr int kFragmentSlots = size(ProductionFragment{});
+constexpr int kTileSlots = kTileM * kTileN;
 
-#if defined(L139_TYPE_ONLY)
-using Built = cutlass::gemm::collective::quactlize_detail::get_tiled_mma<
-    cutlass::arch::PPU0010, cutlass::half_t, cutlass::half_t, float,
-    TileShape, WarpShape, Int<kComputePermutationK>>;
-static_assert(std::is_same_v<ComputeMma, typename Built::TiledMma>,
-    "the host oracle must name the builder's exact target TiledMMA type");
-#endif
-
-// The output cohort uses the same instruction, M/N warp ownership, and
-// compute permutation; it only projects the K cohort to zero.
-using OutputMma = TiledMMA<
-    MMA_Atom<Atom>, Layout<Shape<Int<kWOM>, Int<kWON>, _1>>,
-    Tile<_16, _32, Int<kComputePermutationK>>>;
-
-static_assert(std::is_same_v<Atom,
-    PPU0010_16x16x16_F32F16F16F32_TN>,
-    "L139 must track the real PPU0010 FP16/F32 MMA atom");
-static_assert(size(ComputeMma{}) == 256,
-    "classic-aligned target must be an eight-warp CTA");
-static_assert(size(OutputMma{}) == 64,
-    "only the 2N (K=0) cohort may enter fixup/epilogue");
-static_assert(size<3>(typename ComputeMma::ThrLayoutVMNK{}) == kWK,
-    "the builder must expose four real K cohorts");
-static_assert(decltype(ComputeMma{}.template permutation_mnk<2>()){} ==
-                  Int<kComputePermutationK>{},
-    "L139 must use the target compute permutation");
-
-using Fragment = decltype(make_fragment_like<float>(partition_fragment_C(
-    ComputeMma{}, make_shape(Int<kTM>{}, Int<kTN>{}))));
-constexpr int kComputeThreads = size(ComputeMma{});
-constexpr int kOutputThreads = size(OutputMma{});
-constexpr int kFragmentSlots = size(Fragment{});
-constexpr int kTileSlots = kTM * kTN;
-constexpr int kScratchCohorts = kWK - 1;
-constexpr int kScratchBytes =
-    kScratchCohorts * kTileSlots * int(sizeof(float));
-
-static_assert(kFragmentSlots == 32,
-    "the intended target owns 32 FP32 C registers per thread");
+static_assert(kTileM == 16 && kTileN == 128);
+static_assert(ProductionCollective::TileK == 128);
+static_assert(ProductionCollective::WarpM == 16 &&
+              ProductionCollective::WarpN == 64 &&
+              ProductionCollective::WarpK == 32);
+static_assert(kComputeThreads == 256 && kWarpKCohorts == 4);
+static_assert(kOutputThreads == 64 && kFragmentSlots == 32);
 static_assert(kOutputThreads * kFragmentSlots == kTileSlots);
-static_assert(kScratchBytes == 24576,
-    "three non-survivor FP32 tiles are the minimal all-live scratch");
+static_assert(size<0>(typename ProductionMma::ThrLayoutVMNK{}) == 32);
+static_assert(size<1>(typename ProductionMma::ThrLayoutVMNK{}) == 1);
+static_assert(size<2>(typename ProductionMma::ThrLayoutVMNK{}) == 2);
+static_assert(size<3>(typename ProductionMma::ThrLayoutVMNK{}) == 4);
 
-#if defined(L139_TYPE_ONLY)
-
-} // namespace
-
-int main() {
-  std::puts("L139 type PASS: host oracle TiledMMA is exactly the shipping builder target");
-  return 0;
+uint32_t raw(float x) {
+  uint32_t value = 0;
+  std::memcpy(&value, &x, sizeof(value));
+  return value;
 }
 
-#else
+constexpr int classic_acc_i(int lane, int value) {
+  return lane / 4 + (((value >> 2) & 1) << 3);
+}
 
-uint32_t bits(float x) {
-  uint32_t u = 0;
-  std::memcpy(&u, &x, sizeof(u));
-  return u;
+constexpr int classic_acc_j(int lane, int value) {
+  return lane % 4 + ((value % 4) << 2);
+}
+
+constexpr int classic_logical(int compact, int slot) {
+  int const warp_n = compact / 32;
+  int const lane = compact % 32;
+  int const n_block = slot / 8;
+  int const value = slot % 8;
+  int const row = classic_acc_i(lane, value);
+  int const col = 64 * warp_n + 16 * n_block +
+                  classic_acc_j(lane, value);
+  return row * kTileN + col;
+}
+
+// A compact stripe is a useful scratch layout, but it is not the PPU C
+// coordinate map.  Keeping the formula named prevents it from drifting back
+// into output ownership merely because it is a bijection of 2048 values.
+constexpr int compact_wrong_logical(int compact, int slot) {
+  return slot * kOutputThreads + compact;
 }
 
 struct ThreadInfo {
@@ -123,331 +120,359 @@ struct ThreadInfo {
   int n = -1;
   int wk = -1;
   int compact = -1;
-  std::array<int, kFragmentSlots> logical{};
+  std::array<int, kFragmentSlots> classic{};
+  std::array<int, kFragmentSlots> generic{};
+  std::array<int, kFragmentSlots> compact_wrong{};
 };
 
-int output_thread_from_vmnk(int v, int m, int n) {
-  auto output_layout = OutputMma{}.get_thr_layout_vmnk();
-  return int(output_layout(make_coord(v, m, n, 0)));
-}
-
 std::array<ThreadInfo, kComputeThreads> make_thread_table() {
-  std::array<ThreadInfo, kComputeThreads> out{};
-  auto identity = make_identity_tensor(make_shape(Int<kTM>{}, Int<kTN>{}));
-  auto compute_layout = ComputeMma{}.get_thr_layout_vmnk();
+  std::array<ThreadInfo, kComputeThreads> result{};
+  auto const topology = ProductionMma{}.get_thr_layout_vmnk();
+  auto identity = make_identity_tensor(Shape<_16, _128>{});
 
-  for (int t = 0; t < kComputeThreads; ++t) {
-    auto coord = compute_layout.get_flat_coord(t);
-    auto& x = out[t];
-    x.v = int(get<0>(coord));
-    x.m = int(get<1>(coord));
-    x.n = int(get<2>(coord));
-    x.wk = int(get<3>(coord));
-    x.compact = output_thread_from_vmnk(x.v, x.m, x.n);
+  for (int thread = 0; thread < kComputeThreads; ++thread) {
+    auto coord = topology.get_flat_coord(thread);
+    ThreadInfo& info = result[thread];
+    info.v = int(get<0>(coord));
+    info.m = int(get<1>(coord));
+    info.n = int(get<2>(coord));
+    info.wk = int(get<3>(coord));
+    info.compact = info.v + 32 * info.n;
 
-    auto part = ComputeMma{}.get_thread_slice(t).partition_C(identity);
-    Fragment fragment;
+    auto generic_partition =
+        ProductionMma{}.get_thread_slice(thread).partition_C(identity);
+    ProductionFragment fragment;
     auto physical_to_fragment = right_inverse(fragment.layout());
-    for (int i = 0; i < kFragmentSlots; ++i) {
-      auto c = part(physical_to_fragment(i));
-      int row = int(get<0>(c));
-      int col = int(get<1>(c));
-      x.logical[i] = row * kTN + col;
+    for (int slot = 0; slot < kFragmentSlots; ++slot) {
+      auto generic_coord = generic_partition(physical_to_fragment(slot));
+      info.classic[slot] = classic_logical(info.compact, slot);
+      info.generic[slot] = int(get<0>(generic_coord)) * kTileN +
+                           int(get<1>(generic_coord));
+      info.compact_wrong[slot] =
+          compact_wrong_logical(info.compact, slot);
     }
   }
-  return out;
+  return result;
 }
 
 struct GeometryResult {
-  bool ok = true;
-  int bad_compact_formula = 0;
-  int bad_owner = 0;
-  int bad_isomorphism = 0;
-  int coverage_holes = 0;
-  int coverage_duplicates = 0;
+  int bad_topology = 0;
+  int owner_holes = 0;
+  int owner_duplicates = 0;
+  int k0_threads = 0;
+  int cohort_holes = 0;
+  int cohort_duplicates = 0;
+  int cohort_coordinate_mismatches = 0;
+  int generic_coordinate_mismatches = 0;
+  int compact_coordinate_mismatches = 0;
+
+  bool ok() const {
+    return bad_topology == 0 && owner_holes == 0 &&
+           owner_duplicates == 0 && k0_threads == kOutputThreads &&
+           cohort_holes == 0 && cohort_duplicates == 0 &&
+           cohort_coordinate_mismatches == 0 &&
+           generic_coordinate_mismatches > 0 &&
+           compact_coordinate_mismatches > 0;
+  }
 };
 
 GeometryResult verify_geometry(
     std::array<ThreadInfo, kComputeThreads> const& table) {
-  GeometryResult r;
-  std::array<std::array<int, kWK>, kOutputThreads> owner{};
-  for (auto& row : owner) row.fill(-1);
-  std::array<std::array<int, kTileSlots>, kWK> coverage{};
-  for (auto& row : coverage) row.fill(0);
+  GeometryResult result;
+  std::array<std::array<int, kWarpKCohorts>, kOutputThreads> owner{};
+  for (auto& by_cohort : owner) by_cohort.fill(-1);
+  std::array<std::array<int, kTileSlots>, kWarpKCohorts> coverage{};
+  for (auto& by_logical : coverage) by_logical.fill(0);
 
-  for (int t = 0; t < kComputeThreads; ++t) {
-    auto const& x = table[t];
-    // For Layout<Shape<1,2,4>>, V is the lane-fast mode and N follows it.
-    // This equality is diagnostic only; the implementation contract above
-    // derives compact from OutputMma::ThrLayoutVMNK, not from this formula.
-    r.bad_compact_formula += x.compact != x.v + 32 * x.n;
-    bool valid = 0 <= x.compact && x.compact < kOutputThreads &&
-                 0 <= x.wk && x.wk < kWK;
+  for (int thread = 0; thread < kComputeThreads; ++thread) {
+    ThreadInfo const& info = table[thread];
+    bool const valid = info.v >= 0 && info.v < 32 && info.m == 0 &&
+                       info.n >= 0 && info.n < 2 && info.wk >= 0 &&
+                       info.wk < kWarpKCohorts && info.compact >= 0 &&
+                       info.compact < kOutputThreads;
     if (!valid) {
-      ++r.bad_owner;
+      ++result.bad_topology;
       continue;
     }
-    if (owner[x.compact][x.wk] >= 0) ++r.bad_owner;
-    owner[x.compact][x.wk] = t;
-    for (int logical : x.logical) {
-      if (0 <= logical && logical < kTileSlots) ++coverage[x.wk][logical];
-      else ++r.bad_owner;
+    if (info.wk == 0) ++result.k0_threads;
+    int& slot = owner[info.compact][info.wk];
+    if (slot >= 0) ++result.owner_duplicates;
+    slot = thread;
+    for (int i = 0; i < kFragmentSlots; ++i) {
+      int logical = info.classic[i];
+      if (logical < 0 || logical >= kTileSlots) {
+        ++result.bad_topology;
+      } else {
+        ++coverage[info.wk][logical];
+      }
+      result.generic_coordinate_mismatches +=
+          info.generic[i] != info.classic[i];
+      result.compact_coordinate_mismatches +=
+          info.compact_wrong[i] != info.classic[i];
     }
   }
 
   for (int compact = 0; compact < kOutputThreads; ++compact) {
-    int reference = owner[compact][0];
-    if (reference < 0) {
-      ++r.bad_owner;
+    int const k0 = owner[compact][0];
+    if (k0 < 0) {
+      ++result.owner_holes;
       continue;
     }
-    for (int wk = 0; wk < kWK; ++wk) {
-      int t = owner[compact][wk];
-      if (t < 0) {
-        ++r.bad_owner;
+    for (int wk = 0; wk < kWarpKCohorts; ++wk) {
+      int const thread = owner[compact][wk];
+      if (thread < 0) {
+        ++result.owner_holes;
         continue;
       }
-      for (int i = 0; i < kFragmentSlots; ++i)
-        r.bad_isomorphism += table[t].logical[i] !=
-                             table[reference].logical[i];
+      for (int slot = 0; slot < kFragmentSlots; ++slot) {
+        result.cohort_coordinate_mismatches +=
+            table[thread].classic[slot] != table[k0].classic[slot];
+      }
     }
   }
-  for (int wk = 0; wk < kWK; ++wk)
-    for (int x : coverage[wk]) {
-      r.coverage_holes += x == 0;
-      r.coverage_duplicates += x > 1 ? x - 1 : 0;
+  for (int wk = 0; wk < kWarpKCohorts; ++wk) {
+    for (int hits : coverage[wk]) {
+      result.cohort_holes += hits == 0;
+      result.cohort_duplicates += hits > 1 ? hits - 1 : 0;
     }
-  r.ok = r.bad_compact_formula == 0 && r.bad_owner == 0 &&
-         r.bad_isomorphism == 0 && r.coverage_holes == 0 &&
-         r.coverage_duplicates == 0;
-  return r;
+  }
+  return result;
 }
 
-// This is the same ownership question asked by the dense diagnostic: which
-// threads own the final C tile after CTA-local warp-K reduction?  The fixture
-// deliberately has output_threads != CTA threads (64 != 256), so a verifier
-// that silently returns to pre-warp-K ownership turns red before any device is
-// involved.
-struct OutputOwnerResult {
-  bool ok = true;
-  int declared_owner_threads = 0;
-  int selected_owner_threads = 0;
-  int arithmetic_mismatch = 0;
-  int lane_holes = 0;
-  int lane_duplicates = 0;
-  int coverage_holes = 0;
-  int coverage_duplicates = 0;
-  int association_mismatches = 0;
+enum class Fault {
+  None,
+  GenericLayout,
+  CompactLayout,
+  OmitCohort,
+  FlatReduction,
+  AllCohortsWrite,
+  DuplicateK0Owner,
 };
 
-int classic_output_logical(int compact, int stripe) {
-  int const warp_n = compact / 32;
-  int const lane = compact % 32;
-  int const n_block = stripe / 8;
-  int const value = stripe % 8;
-  int const row = lane / 4 + 8 * (value >> 2);
-  int const col = 64 * warp_n + 16 * n_block +
-                  (lane & 3) + 4 * (value & 3);
-  return row * kTN + col;
+char const* fault_name(Fault fault) {
+  switch (fault) {
+    case Fault::None: return "none";
+    case Fault::GenericLayout: return "generic-layout";
+    case Fault::CompactLayout: return "compact-layout";
+    case Fault::OmitCohort: return "omit-cohort";
+    case Fault::FlatReduction: return "flat-reduction";
+    case Fault::AllCohortsWrite: return "all-cohorts-write";
+    case Fault::DuplicateK0Owner: return "duplicate-k0-owner";
+  }
+  return "unknown";
 }
 
-OutputOwnerResult verify_output_owners(
-    std::array<ThreadInfo, kComputeThreads> const& table, int fault) {
-  OutputOwnerResult r;
-  r.declared_owner_threads = fault == 4 ? kComputeThreads : kOutputThreads;
-  r.arithmetic_mismatch +=
-      r.declared_owner_threads * kFragmentSlots != kTileSlots;
-  std::array<int, kOutputThreads> lane_hits{};
-  std::array<int, kTileSlots> coverage{};
-
-  int first_k0 = -1;
-  int last_k0 = -1;
-  for (int t = 0; t < kComputeThreads; ++t) {
-    if (table[t].wk == 0) {
-      if (first_k0 < 0) first_k0 = t;
-      last_k0 = t;
-    }
+Fault parse_fault(int argc, char** argv) {
+  constexpr std::string_view prefix = "--fault=";
+  for (int i = 1; i < argc; ++i) {
+    std::string_view arg(argv[i]);
+    if (arg.substr(0, prefix.size()) != prefix) continue;
+    std::string_view value = arg.substr(prefix.size());
+    if (value == "generic-layout") return Fault::GenericLayout;
+    if (value == "compact-layout") return Fault::CompactLayout;
+    if (value == "omit-cohort") return Fault::OmitCohort;
+    if (value == "flat-reduction") return Fault::FlatReduction;
+    if (value == "all-cohorts-write") return Fault::AllCohortsWrite;
+    if (value == "duplicate-k0-owner") return Fault::DuplicateK0Owner;
   }
-  for (int t = 0; t < kComputeThreads; ++t) {
-    auto const& owner = table[t];
-    bool const selected = fault == 4 || owner.wk == 0;
-    if (!selected) continue;
-    ++r.selected_owner_threads;
-    if (0 <= owner.compact && owner.compact < kOutputThreads) {
-      ++lane_hits[owner.compact];
-    }
-    else {
-      ++r.lane_duplicates;
-    }
-    int const coordinate_thread = fault == 5 && t == last_k0 ? first_k0 : t;
-    for (int stripe = 0; stripe < kFragmentSlots; ++stripe) {
-      int const logical = fault == 6
-          ? table[coordinate_thread].logical[stripe]
-          : classic_output_logical(table[coordinate_thread].compact, stripe);
-      int const expected = classic_output_logical(owner.compact, stripe);
-      r.association_mismatches += logical != expected;
-      if (0 <= logical && logical < kTileSlots) ++coverage[logical];
-      else ++r.coverage_duplicates;
-    }
-  }
-  for (int hits : lane_hits) {
-    r.lane_holes += hits == 0;
-    r.lane_duplicates += hits > 1 ? hits - 1 : 0;
-  }
-  for (int hits : coverage) {
-    r.coverage_holes += hits == 0;
-    r.coverage_duplicates += hits > 1 ? hits - 1 : 0;
-  }
-  r.ok = r.selected_owner_threads == r.declared_owner_threads &&
-         r.arithmetic_mismatch == 0 && r.lane_holes == 0 &&
-         r.lane_duplicates == 0 && r.coverage_holes == 0 &&
-         r.coverage_duplicates == 0 && r.association_mismatches == 0;
-  return r;
+  return Fault::None;
 }
 
-float contribution(int logical, int wk) {
-  // Integral values with a tiny bound make every partial and final FP32 sum
-  // exactly representable.  Raw equality is therefore fixed before running.
-  int magnitude = 1 + ((13 * logical + 7 * wk) % 31);
-  int sign = ((logical + 3 * wk) & 1) ? -1 : 1;
-  return float(sign * magnitude);
+// This fixture is exact in FP32 and makes coordinate association observable.
+float association_value(int logical, int wk) {
+  return float(1 + logical + kTileSlots * wk);
+}
+
+// This fixture deliberately distinguishes classic's raw addition cadence
+// from a flat reduction.  It is not used to prove mathematical equivalence;
+// it is used only to bind the exact 4 -> 2 -> 1 parenthesization.
+float cadence_value(int wk) {
+  constexpr float values[kWarpKCohorts] = {
+      16777216.0f, -16777216.0f, 0.25f, 0.25f};
+  return values[wk];
+}
+
+float classic_tree(std::array<float, kWarpKCohorts> value) {
+  float const upper_pair = value[3] + value[2];
+  float const upper_three = value[1] + upper_pair;
+  return value[0] + upper_three;
+}
+
+// Replay MarlinKernelPPU::thread_block_reduce at scalar-slot granularity:
+// cohorts 2 and 3 stage first; cohort 1 consumes both and stages their sum;
+// cohort 0 consumes the survivor.  The scratch indices are checked against
+// the production constants instead of being replaced by a generic reduce.
+float production_tree(
+    std::array<float, kWarpKCohorts> value, int compact, int slot) {
+  constexpr int kChunks = kFragmentSlots / 4;
+  constexpr int kRedOffset = 2;
+  constexpr int kRedSharedStride = kOutputThreads * 4 * 2;
+  constexpr int kRedSharedDelta = kOutputThreads;
+  static_assert(kChunks == 8 && kRedSharedStride == 512 &&
+                kRedSharedDelta == 64);
+
+  // Preserve both the Vector128 index and the scalar position within it.  The
+  // caller exhausts all 64 compact owners x 32 slots, so this walks every
+  // scratch address touched by each level rather than replaying one exemplar.
+  std::array<float, 4 * 2 * kRedSharedStride> scratch{};
+  int const chunk = slot / 4;
+  int const scalar = slot % 4;
+  auto scalar_index = [scalar](int vector_index) {
+    return 4 * vector_index + scalar;
+  };
+  for (int wk : {2, 3}) {
+    int const read = kRedSharedStride * wk + compact;
+    int const write = kRedSharedDelta * chunk +
+                      (read - kRedSharedStride * kRedOffset);
+    scratch[scalar_index(write)] = value[wk];
+  }
+  int const wk1_read = kRedSharedStride + compact;
+  int const wk1_write = wk1_read - kRedSharedStride;
+  int const chunk_offset = kRedSharedDelta * chunk;
+  float const peer = scratch[scalar_index(chunk_offset + wk1_read)];
+  float const prior = scratch[scalar_index(chunk_offset + wk1_write)];
+  value[1] += peer + prior;
+  scratch[scalar_index(chunk_offset + wk1_write)] = value[1];
+  value[0] += scratch[scalar_index(chunk_offset + compact)];
+  return value[0];
 }
 
 struct ReductionResult {
-  bool ok = true;
-  int raw_bitdiff = 0;
+  int association_raw_bitdiff = 0;
+  int cadence_raw_bitdiff = 0;
   int output_holes = 0;
   int output_duplicates = 0;
-  int compact_coordinate_mismatches = 0;
+  int stage2_writers = 0;
+  int stage1_writers = 0;
+  int survivor_writers = 0;
+
+  bool ok() const {
+    return association_raw_bitdiff == 0 && cadence_raw_bitdiff == 0 &&
+           output_holes == 0 && output_duplicates == 0 &&
+           stage2_writers == 2 * kOutputThreads * kFragmentSlots &&
+           stage1_writers == kOutputThreads * kFragmentSlots &&
+           survivor_writers == kOutputThreads * kFragmentSlots;
+  }
 };
 
-ReductionResult simulate(
-    std::array<ThreadInfo, kComputeThreads> const& table, int fault) {
-  std::vector<float> direct(kTileSlots, 0.0f);
-  std::vector<float> survivor(kTileSlots, 0.0f);
-  std::vector<float> scratch(kScratchCohorts * kTileSlots, 0.0f);
-  std::vector<int> output_hits(kTileSlots, 0);
-  ReductionResult r;
-
-  std::array<int, kOutputThreads> survivor_thread{};
-  survivor_thread.fill(-1);
-  for (int t = 0; t < kComputeThreads; ++t) {
-    auto const& x = table[t];
-    if (x.wk == 0 && 0 <= x.compact && x.compact < kOutputThreads)
-      survivor_thread[x.compact] = t;
-  }
-
-  for (int t = 0; t < kComputeThreads; ++t) {
-    auto const& x = table[t];
-    for (int i = 0; i < kFragmentSlots; ++i) {
-      int logical = x.logical[i];
-      direct[logical] += contribution(logical, x.wk);
-
-      int compact = x.compact;
-      if (fault == 1 && x.wk != 0)
-        compact = output_thread_from_vmnk(x.v, x.m, (x.n + 1) % kWON);
-      int stripe = i * kOutputThreads + compact;
-      r.compact_coordinate_mismatches += stripe < 0 || stripe >= kTileSlots ||
-          (stripe >= 0 && stripe < kTileSlots &&
-           table[t].logical[i] != table[compact].logical[i]);
-      if (stripe < 0 || stripe >= kTileSlots) continue;
-
-      if (x.wk == 0) survivor[stripe] = contribution(logical, x.wk);
-      else scratch[(x.wk - 1) * kTileSlots + stripe] =
-               contribution(logical, x.wk);
+ReductionResult verify_reduction(
+    std::array<ThreadInfo, kComputeThreads> const& table, Fault fault) {
+  std::array<std::array<int, kWarpKCohorts>, kOutputThreads> owner{};
+  for (auto& by_cohort : owner) by_cohort.fill(-1);
+  for (int thread = 0; thread < kComputeThreads; ++thread) {
+    ThreadInfo const& info = table[thread];
+    if (info.compact >= 0 && info.compact < kOutputThreads &&
+        info.wk >= 0 && info.wk < kWarpKCohorts) {
+      owner[info.compact][info.wk] = thread;
     }
   }
 
+  ReductionResult result;
+  std::array<int, kTileSlots> output_hits{};
   for (int compact = 0; compact < kOutputThreads; ++compact) {
-    int survivor_t = survivor_thread[compact];
-    if (survivor_t < 0) {
-      r.output_holes += kFragmentSlots;
-      continue;
+    if (fault == Fault::DuplicateK0Owner && compact == kOutputThreads - 1) {
+      owner[compact][0] = owner[0][0];
     }
-    auto const& x = table[survivor_t];
-    for (int i = 0; i < kFragmentSlots; ++i) {
-      int stripe = i * kOutputThreads + compact;
-      int last_wk = fault == 2 ? kWK - 1 : kWK;
-      for (int wk = 1; wk < last_wk; ++wk)
-        survivor[stripe] += scratch[(wk - 1) * kTileSlots + stripe];
-      int logical = x.logical[i];
-      ++output_hits[logical];
-      r.raw_bitdiff += bits(survivor[stripe]) != bits(direct[logical]);
+    for (int slot = 0; slot < kFragmentSlots; ++slot) {
+      std::array<float, kWarpKCohorts> association{};
+      std::array<float, kWarpKCohorts> reference{};
+      for (int wk = 0; wk < kWarpKCohorts; ++wk) {
+        int const thread = owner[compact][wk];
+        if (thread < 0) continue;
+        int logical = table[thread].classic[slot];
+        if (fault == Fault::GenericLayout) logical = table[thread].generic[slot];
+        if (fault == Fault::CompactLayout)
+          logical = table[thread].compact_wrong[slot];
+        association[wk] = association_value(logical, wk);
+        reference[wk] = association_value(
+            table[owner[compact][0]].classic[slot], wk);
+      }
+      if (fault == Fault::OmitCohort) association[3] = 0.0f;
+
+      float const expected_association = classic_tree(reference);
+      float const got_association = production_tree(association, compact, slot);
+      result.association_raw_bitdiff +=
+          raw(expected_association) != raw(got_association);
+
+      std::array<float, kWarpKCohorts> cadence{};
+      for (int wk = 0; wk < kWarpKCohorts; ++wk)
+        cadence[wk] = cadence_value(wk);
+      float const expected_cadence = classic_tree(cadence);
+      float got_cadence = production_tree(cadence, compact, slot);
+      if (fault == Fault::FlatReduction) {
+        got_cadence = ((cadence[0] + cadence[1]) + cadence[2]) + cadence[3];
+      }
+      result.cadence_raw_bitdiff += raw(expected_cadence) != raw(got_cadence);
+
+      int const output_thread = owner[compact][0];
+      int output_logical = output_thread >= 0
+          ? table[output_thread].classic[slot] : -1;
+      if (output_logical >= 0 && output_logical < kTileSlots) {
+        ++output_hits[output_logical];
+      }
+      if (fault == Fault::AllCohortsWrite) {
+        for (int wk = 1; wk < kWarpKCohorts; ++wk) {
+          int const thread = owner[compact][wk];
+          if (thread >= 0) ++output_hits[table[thread].classic[slot]];
+        }
+      }
+      result.stage2_writers += 2;
+      result.stage1_writers += 1;
+      result.survivor_writers += 1;
     }
   }
-
-  if (fault == 3) {
-    // Plant the forbidden behavior: every nonzero K cohort writes its own
-    // partial in addition to the reduced wk=0 survivor.
-    for (int t = 0; t < kComputeThreads; ++t) {
-      auto const& x = table[t];
-      if (x.wk == 0) continue;
-      for (int logical : x.logical) ++output_hits[logical];
-    }
-  }
-
   for (int hits : output_hits) {
-    r.output_holes += hits == 0;
-    r.output_duplicates += hits > 1 ? hits - 1 : 0;
+    result.output_holes += hits == 0;
+    result.output_duplicates += hits > 1 ? hits - 1 : 0;
   }
-  r.ok = r.raw_bitdiff == 0 && r.output_holes == 0 &&
-         r.output_duplicates == 0 &&
-         r.compact_coordinate_mismatches == 0;
-  return r;
+  return result;
 }
 
-} // namespace
+}  // namespace
 
-#ifndef L139_FAULT
-#define L139_FAULT 0
-#endif
-
-int main() {
-  auto table = make_thread_table();
-  auto geometry = verify_geometry(table);
-  auto owners = verify_output_owners(table, L139_FAULT);
-  auto reduction = simulate(table, L139_FAULT);
-  bool ok = geometry.ok && owners.ok && reduction.ok;
+int main(int argc, char** argv) {
+  Fault const fault = parse_fault(argc, argv);
+  auto const table = make_thread_table();
+  GeometryResult const geometry = verify_geometry(table);
+  ReductionResult const reduction = verify_reduction(table, fault);
+  bool const ok = geometry.ok() && reduction.ok();
 
   std::printf(
-      "L139 target=16x128x128 warp=16x64x32 topology=2Nx4K "
-      "threads=%d output_threads=%d frag=%d scratch_min=%dB\n",
-      kComputeThreads, kOutputThreads, kFragmentSlots, kScratchBytes);
+      "L139 production=MarlinCollectivePPU::TiledMma "
+      "tile=%dx%d topology=1Mx2Nx4K threads=%d k0=%d slots=%d\n",
+      kTileM, kTileN, kComputeThreads, geometry.k0_threads,
+      kFragmentSlots);
   std::printf(
-      "L139 compact=OutputThrLayoutVMNK(v,m,n,0)=v+32*n "
-      "formula_bad=%d owner_bad=%d isomorphism_bad=%d "
-      "coverage_holes=%d coverage_duplicates=%d\n",
-      geometry.bad_compact_formula, geometry.bad_owner,
-      geometry.bad_isomorphism, geometry.coverage_holes,
-      geometry.coverage_duplicates);
+      "L139 geometry topology_bad=%d owner_holes=%d owner_duplicates=%d "
+      "cohort_holes=%d cohort_duplicates=%d cohort_coord_bad=%d "
+      "generic_vs_classic=%d compact_vs_classic=%d\n",
+      geometry.bad_topology, geometry.owner_holes,
+      geometry.owner_duplicates, geometry.cohort_holes,
+      geometry.cohort_duplicates, geometry.cohort_coordinate_mismatches,
+      geometry.generic_coordinate_mismatches,
+      geometry.compact_coordinate_mismatches);
   std::printf(
-      "L139 output-owners fault=%d cta_threads=%d declared=%d selected=%d "
-      "stripes=%d tile=%d arithmetic_mismatch=%d lane_holes=%d "
-      "lane_duplicates=%d coverage_holes=%d coverage_duplicates=%d "
-      "association_mismatches=%d\n",
-      L139_FAULT, kComputeThreads, owners.declared_owner_threads,
-      owners.selected_owner_threads, kFragmentSlots, kTileSlots,
-      owners.arithmetic_mismatch, owners.lane_holes,
-      owners.lane_duplicates, owners.coverage_holes,
-      owners.coverage_duplicates, owners.association_mismatches);
-  std::printf(
-      "L139 reduction fault=%d raw_bitdiff=%d output_holes=%d "
-      "output_duplicates=%d compact_coordinate_mismatches=%d\n",
-      L139_FAULT, reduction.raw_bitdiff, reduction.output_holes,
-      reduction.output_duplicates, reduction.compact_coordinate_mismatches);
+      "L139 reduce fault=%s raw={association:%d cadence:%d} "
+      "output={holes:%d duplicates:%d} cadence_writers={%d,%d,%d}\n",
+      fault_name(fault), reduction.association_raw_bitdiff,
+      reduction.cadence_raw_bitdiff, reduction.output_holes,
+      reduction.output_duplicates, reduction.stage2_writers,
+      reduction.stage1_writers, reduction.survivor_writers);
 
-  if (L139_FAULT == 0) {
-    std::puts(ok ? "L139 PASS: real 2Nx4K C fragments are isomorphic and "
-                   "wk0 FP32 reduction is raw-bit exact"
-                 : "L139 FAIL: positive contract is red");
-    return ok ? 0 : 1;
-  }
-  if (ok) {
-    std::printf("L139 UNEXPECTED-GREEN fault=%d\n", L139_FAULT);
+  if (fault == Fault::None) {
+    if (!ok) {
+      std::puts("L139 FAIL: standalone production fragment contract is red");
+      return 1;
+    }
+    std::puts(
+        "L139 PASS: four classic acc_i/acc_j cohorts are exhaustive; "
+        "K0=64x32 and production 4->2->1 reduction are raw-bit exact");
     return 0;
   }
-  std::printf("L139 EXPECTED-RED fault=%d\n", L139_FAULT);
+  if (ok) {
+    std::printf("L139 UNEXPECTED-GREEN fault=%s\n", fault_name(fault));
+    return 0;
+  }
+  std::printf("L139 EXPECTED-RED fault=%s\n", fault_name(fault));
   return 2;
 }
-
-#endif
