@@ -370,8 +370,8 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path,
         "",
         "`GB/s*` 使用 Marlin 自己的 distinct bytes：A + biased-int4 B + fp16 scale(gs32) + D。",
         "warm 超过 100% 也只表示 cache-equivalent rate，不是 DRAM counter。cold event 每次读取互不",
-        "重叠的 B+scale replica；A 与 D 是同一 buffer（flush 后重用），所以 distinct 分子按一次 A/D",
-        "计费，并不冒充四个 operand 都逐 batch 复制。",
+        "重叠的 B+scale replica；A 与 D 各自复用同一份 buffer，所以每个 logical workload 的 modeled",
+        "分子各计一次 A/D，并不冒充四个 operand 都逐 batch 复制。",
     ]
     if (5120, 1024, "warm") in groups:
         archived = archived_dense(5120, 1024)
@@ -396,6 +396,9 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path,
             if delta <= floor
             else "PROTOCOL DRIFT OBSERVED (not a kernel regression verdict)"
         )
+        current_clocks = sorted({int(item["sm_clock_mhz"]) for item in rows})
+        archived_pre_clock = int(row["pre_sm_clock_mhz"])
+        archived_post_clock = int(row["post_sm_clock_mhz"])
         lines += [
             "",
             "## 旧协议交叉检查：K=5120, N=1024",
@@ -412,6 +415,13 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path,
             f"本次 warm: {median:.6f} us vs archived {float(result['median_us']):.6f} us; "
             f"delta={delta:.6f} us, current admissible resolution/work="
             f"{'UNKNOWN' if floor is None else f'{floor:.6f} us'}; **{verdict}**。",
+            "",
+            f"本次 {len(rows)} 个 adjacent clock snapshot 为 "
+            f"`{','.join(map(str, current_clocks))} MHz`；旧 {row['case_id']} 只记录运行前/后的 "
+            f"`{archived_pre_clock}/{archived_post_clock} MHz`。两种 scope 的 clock evidence "
+            "不可比较：它既不能证明新旧时钟条件相同，也不能排除时钟差异，更不能用于频率归一化。",
+            f"因此 `{median:.4f} vs {float(result['median_us']):.3f} us` 是一个"
+            "**事前判据未覆盖的观察**，不能归因 kernel drift。",
         ]
     anchor_rows = [archived_dense(8192, 5120), archived_dense(5120, 8192)]
     lines += [
