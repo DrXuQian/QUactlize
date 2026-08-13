@@ -13,6 +13,8 @@ This checker therefore composes the production-bound standalone proofs:
 * L168: classic/Awesome cadence, fixed launch and 4->2->1 reduction trace;
 * L174: dedicated load/dequant/MMA source split, exhaustive W4 arithmetic and
   Awesome-CuTe compute-cadence anchors;
+* L175: native PPU ``FragmentC[4]`` type/ABI, no generic CuTe C fragment or
+  whole-accumulator address escape, plus the independent L139 map/reduction;
 * L170: production ``MarlinSchedulerPPU`` ABI, exact coverage and q-lock life;
 * L173: production per-CTA state init and absolute-q/K segment rebasing;
 * the structural stack gate, including absence of generic WarpK seams.
@@ -44,6 +46,11 @@ CHECKS = (
         "compute",
         ("bash", "dev/fold_derivation/run_l174_marlin_compute_contract.sh"),
         "[l174:runner] positive=PASS negative_controls=4/4_RED result=PASS",
+    ),
+    (
+        "native-fragment",
+        ("bash", "dev/fold_derivation/run_l175_native_fragment_contract.sh"),
+        "[l175:runner] positive=source+compile+L139 negative_controls=3/3_RED wrong-layout-compile=RED result=PASS",
     ),
     (
         "scheduler",

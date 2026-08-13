@@ -106,8 +106,10 @@ def main() -> int:
         "returnlane%4+((value%4)<<2);",
         "constexprintred_off=2;",
         "for(intstep=red_off;step>0;step/=2)",
-        "accum(base+i)+=peer[i]+prior[i];",
-        "accum(4*chunk+i)+=peer[i];",
+        "intconstchunk=2*n_block+half;",
+        "intconstvalue_base=4*half;",
+        "accum.fragments[n_block].value[value_base+i]+=peer[i]+prior[i];",
+        "accum.fragments[n_block].value[value_base+i]+=peer[i];",
     ):
         require(kernel, token, "kernel", failures)
 

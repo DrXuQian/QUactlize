@@ -209,8 +209,11 @@ def main() -> int:
     for token in ("struct alignas(16) Vector128", "struct FragmentA", "cp.async.cg.shared.global", "ppu.ldmatrix.sync.aligned.m8n8.x4.shared.b16"):
         if token not in load:
             die(plant, f"load helper drifted: {token}")
-    if "void mma_n16(" not in mma or "constexpr int base = 8 * NBlock" not in mma:
-        die(plant, "MMA helper no longer binds NBlock to eight accumulator values")
+    if "void mma_n16(" not in mma or "FragmentC& accum" not in mma:
+        die(plant, "MMA helper no longer accepts one native FragmentC")
+    mma_operands = re.findall(r'"\+f"\s*\(accum\.value\[(\d)\]\)', mma)
+    if mma_operands != [str(i) for i in range(8)]:
+        die(plant, f"MMA helper no longer binds native value[0..7]: {mma_operands}")
 
     prod_dq = body(dequant, "FragmentB dequantize_biased_int4(int q)", plant)
     classic_dq = body(classic, "FragB dequant(int q)", plant)

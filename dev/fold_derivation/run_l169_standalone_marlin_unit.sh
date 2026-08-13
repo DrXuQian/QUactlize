@@ -26,9 +26,12 @@ cp "$collective_src" "$collective_probe"
 
 # Do not infer device-body instantiation from an unrelated warning or from an
 # environmental error's template stack.  Instead, put one uniquely named
-# failing assertion at the entrance to the production collective's
-# run_segment() in a TEMPORARY include overlay.  The source tree remains
-# untouched.  The exact generated TU must reach that assertion through:
+# call to a dependent failing helper at the entrance to the production
+# collective's run_segment() in a TEMPORARY include overlay.  Keeping the
+# assertion in a function template matters: a non-template member assertion
+# fires when the enclosing class is formed and would make the route-severed
+# control a false red.  The source tree remains untouched.  The exact generated
+# TU must instantiate the helper through:
 #   lowbit_dense_run_config -> run<G> -> maximum_active_blocks
 #     -> device_kernel -> MarlinKernelPPU::operator() -> run_segment().
 python3 - "$collective_probe" <<'PY'
@@ -37,6 +40,17 @@ import sys
 
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
+namespace = "namespace marlin_ppu_detail {"
+if text.count(namespace) != 1:
+    raise SystemExit("L169 marlin_ppu_detail namespace seam is not unique")
+helper = '''namespace marlin_ppu_detail {
+
+template <class L169Accumulator>
+CUTLASS_DEVICE void l169_device_body_marker(L169Accumulator const&) {
+  static_assert(sizeof(L169Accumulator) == 0,
+                "L169_DEVICE_BODY_INSTANTIATED");
+}'''
+text = text.replace(namespace, helper, 1)
 needle = """  CUTLASS_DEVICE static void run_segment(
       CtaState const& state, SegmentState const& segment,
       Accumulator& accum, SharedStorage& shared) {"""
@@ -44,8 +58,7 @@ if text.count(needle) != 1:
     raise SystemExit("L169 collective run_segment seam is not unique")
 plant = (
     needle
-    + '\n    static_assert(sizeof(Accumulator) == 0, '
-      '"L169_DEVICE_BODY_INSTANTIATED");'
+    + '\n    marlin_ppu_detail::l169_device_body_marker(accum);'
 )
 path.write_text(text.replace(needle, plant), encoding="utf-8")
 PY
@@ -92,6 +105,7 @@ if [[ -s "$unexpected" ]]; then
   exit 1
 fi
 for token in \
+  'L169Accumulator=cutlass::gemm::collective::marlin_ppu_detail::MarlinAccumulatorPPU' \
   'MarlinCollectivePPU<TileShape_, WarpShape_, Stages_, GroupSize_' \
   'TileShape_=cute::tuple<cute::_16, cute::_128, cute::_128>' \
   'WarpShape_=cute::tuple<cute::C<16>, cute::C<64>, cute::C<32>>' \
@@ -103,6 +117,7 @@ for token in \
   'instantiation of "Result lowbit_dense_run_config'; do
   grep -Fq "$token" "$tmp/positive.log" || {
     echo "[l169] FAIL: device-body instantiation chain lost $token" >&2
+    sed -n '1,80p' "$tmp/positive.log" >&2
     exit 1
   }
 done

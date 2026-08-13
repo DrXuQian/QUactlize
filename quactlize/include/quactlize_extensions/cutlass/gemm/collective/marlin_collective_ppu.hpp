@@ -58,6 +58,8 @@ class MarlinCollectivePPU {
   using ElementB = cutlass::int4b_t;
   using ElementScale = cutlass::half_t;
   using ElementAccumulator = float;
+  using FragmentC = marlin_ppu_detail::FragmentC;
+  using Accumulator = marlin_ppu_detail::MarlinAccumulatorPPU;
   using ArchTag = cutlass::arch::PPU0010;
   using DispatchPolicy = MainloopPPUAiu<Stages_, KernelAiuMultistageMixedInput>;
   using TransformA = cute::identity;
@@ -293,12 +295,12 @@ class MarlinCollectivePPU {
     return {args.ptr_A, args.ptr_B, args.ptr_S, args.group_size};
   }
 
-  template <int NBlock, class Accumulator>
+  template <int NBlock>
   CUTLASS_DEVICE static void multiply_n_block(
       marlin_ppu_detail::FragmentA const& fragment_a,
       marlin_ppu_detail::Vector128 const& fragment_b_quant,
       marlin_ppu_detail::FragmentScale const (&fragment_scale)[4],
-      Accumulator& accum) {
+      FragmentC& accum) {
     static_assert(NBlock >= 0 && NBlock < 4,
                   "the fixed Marlin warp owns exactly four n16 blocks");
     uint32_t const* quant =
@@ -313,7 +315,6 @@ class MarlinCollectivePPU {
     marlin_ppu_detail::mma_n16<NBlock>(fragment_a, b0, b1, accum);
   }
 
-  template <class Accumulator>
   CUTLASS_DEVICE static void run_segment(
       CtaState const& state, SegmentState const& segment,
       Accumulator& accum, SharedStorage& shared) {
@@ -399,13 +400,13 @@ class MarlinCollectivePPU {
       // Spell the four compile-time N blocks explicitly.  The sweep remains a compile-time axis;
       // this fixed classic row must not pay a runtime dispatch or predicate for selecting a block.
       multiply_n_block<0>(fragment_a[inner & 1], fragment_b_quant[inner & 1],
-                          fragment_scale[inner & 1], accum);
+                          fragment_scale[inner & 1], accum.fragments[0]);
       multiply_n_block<1>(fragment_a[inner & 1], fragment_b_quant[inner & 1],
-                          fragment_scale[inner & 1], accum);
+                          fragment_scale[inner & 1], accum.fragments[1]);
       multiply_n_block<2>(fragment_a[inner & 1], fragment_b_quant[inner & 1],
-                          fragment_scale[inner & 1], accum);
+                          fragment_scale[inner & 1], accum.fragments[2]);
       multiply_n_block<3>(fragment_a[inner & 1], fragment_b_quant[inner & 1],
-                          fragment_scale[inner & 1], accum);
+                          fragment_scale[inner & 1], accum.fragments[3]);
     };
 
     #pragma unroll
@@ -414,7 +415,13 @@ class MarlinCollectivePPU {
     }
     wait_stage();
     load_registers(0, 0);
-    cute::clear(accum);
+    #pragma unroll
+    for (int n_block = 0; n_block < 4; ++n_block) {
+      #pragma unroll
+      for (int value = 0; value < 8; ++value) {
+        accum.fragments[n_block].value[value] = 0.0f;
+      }
+    }
     a_global_read += AGlobalOuter * (Stages - 1);
 
     while (k_tiles_remaining > 0) {

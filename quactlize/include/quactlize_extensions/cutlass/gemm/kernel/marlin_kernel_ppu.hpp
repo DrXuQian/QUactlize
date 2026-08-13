@@ -38,6 +38,7 @@ class MarlinKernelPPU {
   using ElementA = typename CollectiveMainloop::ElementA;
   using ElementB = typename CollectiveMainloop::ElementB;
   using ElementAccumulator = typename CollectiveMainloop::ElementAccumulator;
+  using Accumulator = typename CollectiveMainloop::Accumulator;
   using StrideA = typename CollectiveMainloop::StrideA;
   using StrideB = typename CollectiveMainloop::StrideB;
   using MainloopArguments = typename CollectiveMainloop::Arguments;
@@ -149,7 +150,6 @@ class MarlinKernelPPU {
     return lane % 4 + ((value % 4) << 2);
   }
 
-  template <class Accumulator>
   CUTLASS_DEVICE static void thread_block_reduce(
       Accumulator& accum, SharedStorage& shared) {
     Vector128* sh = reinterpret_cast<Vector128*>(shared.tensors.cooperative);
@@ -164,41 +164,52 @@ class MarlinKernelPPU {
     for (int step = red_off; step > 0; step /= 2) {
       if (step <= red_idx && red_idx < 2 * step) {
         #pragma unroll
-        for (int chunk = 0; chunk < 8; ++chunk) {
-          int const write = red_sh_delta * chunk +
-                            (red_sh_rd - red_sh_stride * step);
-          int const base = 4 * chunk;
-          if (step < red_off) {
-            float const* peer = reinterpret_cast<float const*>(
-                &sh[red_sh_delta * chunk + red_sh_rd]);
-            float const* prior = reinterpret_cast<float const*>(&sh[write]);
-            #pragma unroll
-            for (int i = 0; i < 4; ++i) {
-              accum(base + i) += peer[i] + prior[i];
+        for (int n_block = 0; n_block < 4; ++n_block) {
+          #pragma unroll
+          for (int half = 0; half < 2; ++half) {
+            int const chunk = 2 * n_block + half;
+            int const value_base = 4 * half;
+            int const write = red_sh_delta * chunk +
+                              (red_sh_rd - red_sh_stride * step);
+            if (step < red_off) {
+              float const* peer = reinterpret_cast<float const*>(
+                  &sh[red_sh_delta * chunk + red_sh_rd]);
+              float const* prior = reinterpret_cast<float const*>(&sh[write]);
+              #pragma unroll
+              for (int i = 0; i < 4; ++i) {
+                accum.fragments[n_block].value[value_base + i] +=
+                    peer[i] + prior[i];
+              }
             }
+            *reinterpret_cast<float4*>(&sh[write]) = make_float4(
+                accum.fragments[n_block].value[value_base + 0],
+                accum.fragments[n_block].value[value_base + 1],
+                accum.fragments[n_block].value[value_base + 2],
+                accum.fragments[n_block].value[value_base + 3]);
           }
-          *reinterpret_cast<float4*>(&sh[write]) = make_float4(
-              accum(base + 0), accum(base + 1),
-              accum(base + 2), accum(base + 3));
         }
       }
       __syncthreads();
     }
     if (red_idx == 0) {
       #pragma unroll
-      for (int chunk = 0; chunk < 8; ++chunk) {
-        float const* peer = reinterpret_cast<float const*>(
-            &sh[red_sh_delta * chunk + red_sh_rd]);
+      for (int n_block = 0; n_block < 4; ++n_block) {
         #pragma unroll
-        for (int i = 0; i < 4; ++i) {
-          accum(4 * chunk + i) += peer[i];
+        for (int half = 0; half < 2; ++half) {
+          int const chunk = 2 * n_block + half;
+          int const value_base = 4 * half;
+          float const* peer = reinterpret_cast<float const*>(
+              &sh[red_sh_delta * chunk + red_sh_rd]);
+          #pragma unroll
+          for (int i = 0; i < 4; ++i) {
+            accum.fragments[n_block].value[value_base + i] += peer[i];
+          }
         }
       }
     }
     __syncthreads();
   }
 
-  template <class Accumulator>
   CUTLASS_DEVICE static void global_handoff(
       Accumulator& accum, Params const& params,
       typename TileScheduler::WorkTileInfo const& work,
@@ -219,21 +230,19 @@ class MarlinKernelPPU {
       for (int value = 0; value < 8; ++value) {
         int const row = acc_i(lane, value);
         int const col = n_base + acc_j(lane, value);
-        int const index = 8 * n_block + value;
         if (row < problem_m && col < problem_n) {
           int64_t const offset = int64_t(row) * problem_n + col;
           if (!first) {
-            accum(index) += __half2float(d[offset]);
+            accum.fragments[n_block].value[value] += __half2float(d[offset]);
           }
           if (!last) {
-            d[offset] = __float2half(accum(index));
+            d[offset] = __float2half(accum.fragments[n_block].value[value]);
           }
         }
       }
     }
   }
 
-  template <class Accumulator>
   CUTLASS_DEVICE static void write_result(
       Accumulator const& accum, Params const& params,
       typename TileScheduler::WorkTileInfo const& work,
@@ -255,7 +264,7 @@ class MarlinKernelPPU {
           int const col = n_base + acc_j(lane, value);
           if (row < problem_m) {
             sh[row * kRowStrideHalf + col] =
-                __float2half(accum(8 * n_block + value));
+                __float2half(accum.fragments[n_block].value[value]);
           }
         }
       }
@@ -347,8 +356,7 @@ class MarlinKernelPPU {
     auto cta_state = CollectiveMainloop::init_cta_state(
         params.mainloop, problem_m, problem_n, problem_k, tid);
     while (work.is_valid()) {
-      auto accum = cute::make_fragment_like<ElementAccumulator>(
-          cute::partition_fragment_C(TiledMma{}, cute::take<0, 2>(TileShape{})));
+      Accumulator accum;
       // SegmentState contains every q/K-dependent address and ends its
       // lifetime before the cooperative.  CtaState alone survives reduction.
       {

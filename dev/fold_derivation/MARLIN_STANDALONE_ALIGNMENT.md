@@ -8,7 +8,10 @@ mixed-input collective.  It is one independent stack:
 | Owner | Production file |
 |---|---|
 | packed W4 / gs128 artifact | `quactlize/include/marlin_format_ppu.hpp` |
-| copy, dequant and MMA cadence | `quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp` |
+| mainloop stage driver | `quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp` |
+| classic cp.async / A ldmatrix | `quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_load_ppu.hpp` |
+| W4 dequant and grouped scale | `quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_dequant_ppu.hpp` |
+| native PPU n16 MMA / C registers | `quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_mma_ppu.hpp` |
 | stripe decomposition and global-q lock lifecycle | `quactlize/include/quactlize_extensions/cutlass/gemm/kernel/marlin_scheduler_ppu.hpp` |
 | 4->2->1 reduction, fp16 D-chain and final store | `quactlize/include/quactlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp` |
 
@@ -35,6 +38,7 @@ No device timing is inferred from the local proofs below.
 | scale global-to-shared | 16 writers x 16 B = 256 B at each gs128/TileK128 cell | same | **source and byte-ledger closed**; L171. |
 | total logical global-to-shared | 8,704 B/cell x 1,024 cells = **8,912,896 B** | **8,912,896 B** | **model-closed, device counter pending**.  L171 anchors the three production load points to both reference sources; it does not claim cache-line traffic. |
 | shared-to-register / dequant | classic A x4 load, packed B vector load, two `lop3` biased-int4 converts and grouped scale | same source cadence; PPU x4 register order is bound explicitly | **local source-closed; generated opcode parity remains a device/toolchain postcondition**. |
+| C register ABI | PPU classic native `FragC[4]`, eight FP32 values per n16 instruction | exact `FragmentC[4]`, 128 B/thread; no generic CuTe C fragment or whole-accumulator flat view | **type/source/map closed**; L175 binds the production type and three causal plants, while L139 proves the generic CuTe C map differs at 6,144/8,192 coordinates and the classic map/reduction is raw-bit exact. |
 | MMA count | 64 n16 MMAs/cell on PPU | same | **65,536/launch locally fixed**; L168.  NVIDIA's reference expresses each n16 as two n8 instructions, so raw opcode counts must be normalized by output work. |
 | four-stage issue cadence | three-stage prologue attempts, wait/prime, two B inner iterations, rolling refill | same | **event-ledger closed**; L168, including causal missing-attempt and ordering plants. |
 | CTA-local reduction | FP32 4->2->1 shared tree; K0 survives | same | **cadence and ownership closed**; L168 plus kernel contract. |
@@ -78,6 +82,15 @@ classic symbol.  The remaining device-only questions are:
 3. lock acquire/release progress under repeated launches;
 4. KVD/TSM counters versus the 8,912,896-byte logical model; and
 5. numerical result and 17.8--19 us timing.
+
+The dequant source is independently bound to CalebDu/Awesome-CuTe commit
+`9f166294bd639cad712a531ac6a5e7aeb983ed37`: both use
+`D0,D1,S0,S1,M` within each logical n16 block.  The measured local PPU classic
+source uses the same constants and arithmetic but orders those calls
+`D0,S0,D1,S1,M`; L174 reports this difference rather than falsely calling all
+three sources instruction-for-instruction identical.  Only target disassembly
+can decide whether that source-order difference changes the final PPU opcode
+schedule.
 
 Any discrepancy is reported against those named postconditions.  It must not
 be attributed to the retired generic collective or repaired by putting Marlin
