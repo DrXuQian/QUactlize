@@ -110,7 +110,8 @@ int main(int argc, char** argv) {
   // writers determine the byte count above.
   for (char const* token : {
            "if (predicate) {",
-           "logical < ASharedStride * (problem_m - m_tile * TileM)",
+           "state.a_predicate[i] = logical < ASharedStride * problem_m",
+           "state.a_global_inner * i + a_global_read +",
            "for (int i = 0; i < BInnerIters; ++i)",
            "&b_stage[Threads * i + tid], b_pointer[i]",
            "if (tid < ScaleSharedStride)",
@@ -155,8 +156,8 @@ int main(int argc, char** argv) {
   }
   std::string const handoff = kernel.substr(handoff_begin, handoff_end - handoff_begin);
   for (char const* token : {
-           "accum(index) += __half2float(d[offset])",
-           "d[offset] = __float2half(accum(index))",
+           "accum.fragments[n_block].value[value] += __half2float(d[offset])",
+           "d[offset] = __float2half(accum.fragments[n_block].value[value])",
        }) {
     if (!contains(handoff, token)) {
       return fail(plant, "standalone scalar D-chain anchor drifted");
