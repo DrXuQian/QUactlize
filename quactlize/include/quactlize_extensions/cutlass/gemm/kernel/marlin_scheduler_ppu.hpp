@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <type_traits>
@@ -98,11 +99,45 @@ public:
     bool valid_ = false;
   };
 
-  static_assert(std::is_trivially_copyable_v<Arguments> &&
+  enum class PeerReleaseAction : uint8_t {
+    None,
+    Arrive,
+    Reset,
+  };
+
+  static_assert(std::is_standard_layout_v<Arguments> &&
+                    std::is_trivially_copyable_v<Arguments> &&
+                    sizeof(Arguments) == 4 && alignof(Arguments) == 4 &&
+                    offsetof(Arguments, blocks_per_cu) == 0,
+                "standalone Marlin scheduler Arguments ABI changed");
+  static_assert(std::is_standard_layout_v<Params> &&
                     std::is_trivially_copyable_v<Params>,
                 "standalone Marlin scheduler arguments must cross the host/device ABI unchanged");
-  static_assert(sizeof(Params) == 40 && alignof(Params) == alignof(BarrierType*),
+  static_assert(sizeof(Params) == 40 && alignof(Params) == alignof(BarrierType*) &&
+                    offsetof(Params, k_tiles_per_output_) == 0 &&
+                    offsetof(Params, output_tiles_) == 4 &&
+                    offsetof(Params, total_k_tiles_) == 8 &&
+                    offsetof(Params, grid_blocks_) == 12 &&
+                    offsetof(Params, active_blocks_) == 16 &&
+                    offsetof(Params, iters_per_block_) == 20 &&
+                    offsetof(Params, locks_) == 24 &&
+                    offsetof(Params, valid_) == 32,
                 "standalone Marlin scheduler device ABI must stay compact");
+  static_assert(std::is_standard_layout_v<WorkTileInfo> &&
+                    std::is_trivially_copyable_v<WorkTileInfo> &&
+                    sizeof(WorkTileInfo) == 44 && alignof(WorkTileInfo) == 4 &&
+                    offsetof(WorkTileInfo, M_idx) == 0 &&
+                    offsetof(WorkTileInfo, N_idx) == 4 &&
+                    offsetof(WorkTileInfo, L_idx) == 8 &&
+                    offsetof(WorkTileInfo, K_idx) == 12 &&
+                    offsetof(WorkTileInfo, k_tile_count) == 16 &&
+                    offsetof(WorkTileInfo, k_tiles_per_output) == 20 &&
+                    offsetof(WorkTileInfo, slice_idx) == 24 &&
+                    offsetof(WorkTileInfo, output_tile_idx) == 28 &&
+                    offsetof(WorkTileInfo, lock_idx) == 32 &&
+                    offsetof(WorkTileInfo, block_idx) == 36 &&
+                    offsetof(WorkTileInfo, valid) == 40,
+                "standalone Marlin scheduler work descriptor ABI changed");
 
 private:
   Params scheduler_params_{};
@@ -330,6 +365,19 @@ public:
            work.K_idx + work.k_tile_count == work.k_tiles_per_output;
   }
 
+  CUTLASS_HOST_DEVICE static constexpr BarrierType peer_wait_value(
+      WorkTileInfo const& work) {
+    return requires_handoff(work) ? BarrierType(work.slice_idx) : BarrierType(0);
+  }
+
+  CUTLASS_HOST_DEVICE static constexpr PeerReleaseAction peer_release_action(
+      WorkTileInfo const& work) {
+    return !requires_handoff(work)
+        ? PeerReleaseAction::None
+        : (is_final_peer(work) ? PeerReleaseAction::Reset
+                               : PeerReleaseAction::Arrive);
+  }
+
   CUTLASS_HOST_DEVICE static constexpr uint64_t output_tile_index(
       WorkTileInfo const& work) {
     return work.output_tile_idx;
@@ -356,7 +404,7 @@ public:
       CUTLASS_ASSERT(p.locks_ != nullptr);
       int const lock = barrier_lock_index(work);
       CUTLASS_ASSERT(lock >= 0);
-      Barrier::wait_eq(p.locks_, thread_idx, lock, BarrierType(work.slice_idx));
+      Barrier::wait_eq(p.locks_, thread_idx, lock, peer_wait_value(work));
     }
   }
 
@@ -368,7 +416,8 @@ public:
     CUTLASS_ASSERT(p.locks_ != nullptr);
     int const lock = barrier_lock_index(work);
     CUTLASS_ASSERT(lock >= 0);
-    if (is_final_peer(work)) {
+    PeerReleaseAction const action = peer_release_action(work);
+    if (action == PeerReleaseAction::Reset) {
       // Awesome-CuTe/classic Marlin reset the q lock with one thread after
       // the final peer's wait_eq acquisition.  Do not repeat that acquisition
       // through wait_eq_reset: it adds an atomic-CAS spin and another CTA
@@ -379,7 +428,7 @@ public:
         p.locks_[lock] = BarrierType(0);
       }
     }
-    else {
+    else if (action == PeerReleaseAction::Arrive) {
       Barrier::arrive_inc(p.locks_, thread_idx, lock, 1);
     }
   }
