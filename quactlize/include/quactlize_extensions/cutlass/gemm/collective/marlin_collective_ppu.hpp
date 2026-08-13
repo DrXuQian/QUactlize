@@ -142,46 +142,61 @@ class MarlinCollectivePPU {
     int group_size = 0;
   };
 
-  // Classic computes these lane-invariant and CTA-invariant terms once, then
-  // only rebases the three global sources when its stripe crosses an output
-  // tile.  Keep that lifetime explicit: CtaState survives the cooperative,
-  // while SegmentState is deliberately short-lived and must die before the
-  // CTA reduction.  Device numRegs is a post-build observation, not something
-  // this source-level separation pretends to prove.
+  // Classic computes the thread topology and all fixed source/destination
+  // coordinates once, then only rebases three source pointers when its stripe
+  // crosses an output tile.  Keep those lifetimes explicit: CtaState contains
+  // final per-thread invariants, SegmentState contains already-rebased source
+  // pointers, and SharedBases names the stage allocation exactly once per CTA.
+  // Device numRegs is a post-build observation, not something this
+  // source-level separation pretends to prove.
   struct CtaState {
-    marlin_ppu_detail::Vector128 const* ptr_A = nullptr;
-    marlin_ppu_detail::Vector128 const* ptr_B = nullptr;
-    marlin_ppu_detail::Vector128 const* ptr_S = nullptr;
-    int problem_n = 0;
-    int problem_k = 0;
+    marlin_ppu_detail::Vector128 const* a_thread_base = nullptr;
+    marlin_ppu_detail::Vector128 const* b_thread_base = nullptr;
+    marlin_ppu_detail::Vector128 const* scale_thread_base = nullptr;
+    int n_tiles = 0;
+    int k_tiles = 0;
     int tid = 0;
-    int a_global_stride = 0;
-    int a_global_inner = 0;
-    int b_global_stride = 0;
-    int b_global_outer = 0;
-    int b_global_inner = 0;
-    int scale_global_stride = 0;
-    bool a_predicate[ASharedWriteIters]{};
-    int a_write_transformed[ASharedWriteIters]{};
-    int a_read_transformed[BInnerIters]{};
+    int b_inner_delta = 0;
+    int b_k_delta = 0;
+    int scale_k_delta = 0;
+    int a_smem_write = 0;
+    int a_smem_read[BInnerIters]{};
+    int scale_smem_read = 0;
+    bool a_copy_pred = false;
+    bool scale_copy_pred = false;
     bool valid = false;
   };
 
   struct SegmentState {
-    int n_tile = 0;
-    int k_tile_begin = 0;
+    marlin_ppu_detail::Vector128 const* a = nullptr;
+    marlin_ppu_detail::Vector128 const* b[BInnerIters]{};
+    marlin_ppu_detail::Vector128 const* scale = nullptr;
     int k_tiles_remaining = 0;
-    int a_global_read = 0;
-    int b_global_read[BInnerIters]{};
-    int scale_global_read = 0;
     bool valid = false;
+  };
+
+  struct SharedBases {
+    marlin_ppu_detail::Vector128* a = nullptr;
+    marlin_ppu_detail::Vector128* b = nullptr;
+    marlin_ppu_detail::Vector128* scale = nullptr;
   };
 
   static_assert(std::is_standard_layout_v<CtaState> &&
                     std::is_trivially_copyable_v<CtaState> &&
                     std::is_standard_layout_v<SegmentState> &&
-                    std::is_trivially_copyable_v<SegmentState>,
+                    std::is_trivially_copyable_v<SegmentState> &&
+                    std::is_standard_layout_v<SharedBases> &&
+                    std::is_trivially_copyable_v<SharedBases>,
                 "standalone Marlin address state must stay register-local");
+
+  CUTLASS_HOST_DEVICE static SharedBases make_shared_bases(
+      SharedStorage& shared) {
+    SharedBases bases;
+    bases.a = shared.storage;
+    bases.b = bases.a + Stages * ASharedStage;
+    bases.scale = bases.b + Stages * BSharedStage;
+    return bases;
+  }
 
   CUTLASS_HOST_DEVICE static constexpr int transform_a_index(int index) {
     int const row = index / AGlobalOuter;
@@ -194,44 +209,49 @@ class MarlinCollectivePPU {
       Params const& params, int problem_m, int problem_n, int problem_k,
       int tid) {
     CtaState state;
-    state.ptr_A = reinterpret_cast<marlin_ppu_detail::Vector128 const*>(
-        params.ptr_A);
-    state.ptr_B = reinterpret_cast<marlin_ppu_detail::Vector128 const*>(
-        params.ptr_B);
-    state.ptr_S = reinterpret_cast<marlin_ppu_detail::Vector128 const*>(
-        params.ptr_S);
-    state.problem_n = problem_n;
-    state.problem_k = problem_k;
     state.tid = tid;
-    state.a_global_stride = problem_k / 8;
-    state.a_global_inner =
-        state.a_global_stride * (Threads / AGlobalOuter);
-    state.b_global_stride = 16 * problem_n / 32;
-    state.b_global_outer = state.b_global_stride * KBlocks;
-    state.b_global_inner =
-        state.b_global_stride * (Threads / BSharedStride);
-    state.scale_global_stride = problem_n / 8;
+    state.n_tiles = problem_n / TileN;
+    state.k_tiles = problem_k / TileK;
+    int const a_global_stride = problem_k / 8;
+    int const b_global_stride = 16 * problem_n / 32;
+    state.b_inner_delta =
+        b_global_stride * (Threads / BSharedStride);
+    state.b_k_delta = b_global_stride * KBlocks;
+    state.scale_k_delta = problem_n / 8;
     int const a_shared_write =
         ASharedStride * (tid / AGlobalOuter) + tid % AGlobalOuter;
     int const a_shared_read =
         ASharedStride * ((tid % 32) % 16) + (tid % 32) / 16 +
         2 * ((tid / 32) / (NBlocks / 4));
-    #pragma unroll
-    for (int i = 0; i < ASharedWriteIters; ++i) {
-      int const logical = ASharedWriteDelta * i + a_shared_write;
-      state.a_predicate[i] = logical < ASharedStride * problem_m;
-      state.a_write_transformed[i] = transform_a_index(logical);
-    }
+    state.a_smem_write = transform_a_index(a_shared_write);
     #pragma unroll
     for (int i = 0; i < BInnerIters; ++i) {
-      state.a_read_transformed[i] =
+      state.a_smem_read[i] =
           transform_a_index(ASharedReadOuter * i + a_shared_read);
     }
+    int const warp_n = (tid / 32) % (NBlocks / 4);
+    int const lane = tid % 32;
+    state.scale_smem_read = 8 * warp_n + lane / 4;
+    state.a_copy_pred = a_shared_write < ASharedStride * problem_m;
+    state.scale_copy_pred = tid < ScaleSharedStride;
     state.valid = params.ptr_A != nullptr && params.ptr_B != nullptr &&
                   params.ptr_S != nullptr && params.group_size == GroupSize &&
                   problem_m > 0 && problem_m <= TileM && problem_n > 0 &&
                   problem_n % 256 == 0 && problem_k > 0 &&
                   problem_k % TileK == 0 && tid >= 0 && tid < Threads;
+    if (state.valid) {
+      auto const* a = reinterpret_cast<marlin_ppu_detail::Vector128 const*>(
+          params.ptr_A);
+      auto const* b = reinterpret_cast<marlin_ppu_detail::Vector128 const*>(
+          params.ptr_B);
+      auto const* scale =
+          reinterpret_cast<marlin_ppu_detail::Vector128 const*>(params.ptr_S);
+      state.a_thread_base =
+          a + a_global_stride * (tid / AGlobalOuter) + tid % AGlobalOuter;
+      state.b_thread_base =
+          b + b_global_stride * (tid / BSharedStride) + tid % BSharedStride;
+      state.scale_thread_base = scale + tid;
+    }
     return state;
   }
 
@@ -247,29 +267,23 @@ class MarlinCollectivePPU {
     int const k_tile_count = int(work.k_tile_count);
     // The standalone dense scheduler admits exactly one M tile and L=1;
     // those compile-time facts are deliberately absent from its hot work ABI.
-    if (n_tile < 0 || n_tile >= state.problem_n / TileN || k_tile_begin < 0 ||
+    if (n_tile < 0 || n_tile >= state.n_tiles || k_tile_begin < 0 ||
         k_tile_count <= 0 ||
-        k_tile_begin + k_tile_count > state.problem_k / TileK) {
+        k_tile_begin + k_tile_count > state.k_tiles) {
       return segment;
     }
 
-    segment.n_tile = n_tile;
-    segment.k_tile_begin = k_tile_begin;
-    segment.k_tiles_remaining = k_tile_count;
-    segment.a_global_read =
-        state.a_global_stride * (state.tid / AGlobalOuter) +
-        state.tid % AGlobalOuter + AGlobalOuter * k_tile_begin;
-    int const b_global_read =
-        state.b_global_stride * (state.tid / BSharedStride) +
-        state.tid % BSharedStride + BSharedStride * n_tile +
-        state.b_global_outer * k_tile_begin;
+    segment.a = state.a_thread_base + AGlobalOuter * k_tile_begin;
+    marlin_ppu_detail::Vector128 const* b =
+        state.b_thread_base + BSharedStride * n_tile +
+        state.b_k_delta * k_tile_begin;
     #pragma unroll
     for (int i = 0; i < BInnerIters; ++i) {
-      segment.b_global_read[i] = state.b_global_inner * i + b_global_read;
+      segment.b[i] = b + state.b_inner_delta * i;
     }
-    segment.scale_global_read =
-        state.scale_global_stride * k_tile_begin +
-        ScaleSharedStride * n_tile + state.tid;
+    segment.scale = state.scale_thread_base + ScaleSharedStride * n_tile +
+                    state.scale_k_delta * k_tile_begin;
+    segment.k_tiles_remaining = k_tile_count;
     segment.valid = true;
     return segment;
   }
@@ -318,7 +332,7 @@ class MarlinCollectivePPU {
 
   CUTLASS_DEVICE static void run_segment(
       CtaState const& state, SegmentState const& segment,
-      Accumulator& accum, SharedStorage& shared) {
+      SharedBases const& shared, Accumulator& accum) {
     using marlin_ppu_detail::FragmentA;
     using marlin_ppu_detail::FragmentScale;
     using marlin_ppu_detail::Vector128;
@@ -326,21 +340,13 @@ class MarlinCollectivePPU {
     int const tid = state.tid;
     int k_tiles_remaining = segment.k_tiles_remaining;
 
-    auto const* a = state.ptr_A;
-    auto const* b = state.ptr_B;
-    auto const* scales = state.ptr_S;
-    Vector128* const smem = shared.storage;
-    Vector128* const smem_a = smem;
-    Vector128* const smem_b = smem_a + Stages * ASharedStage;
-    Vector128* const smem_scale = smem_b + Stages * BSharedStage;
-
-    int a_global_read = segment.a_global_read;
+    Vector128 const* a_pointer = segment.a;
     Vector128 const* b_pointer[BInnerIters];
     #pragma unroll
     for (int i = 0; i < BInnerIters; ++i) {
-      b_pointer[i] = b + segment.b_global_read[i];
+      b_pointer[i] = segment.b[i];
     }
-    int scale_global_read = segment.scale_global_read;
+    Vector128 const* scale_pointer = segment.scale;
 
     FragmentA fragment_a[2];
     marlin_ppu_detail::Vector128 fragment_b_quant[2];
@@ -348,29 +354,23 @@ class MarlinCollectivePPU {
 
     auto copy_stage = [&](int pipe, int a_offset, bool predicate) {
       if (predicate) {
-        Vector128* a_stage = smem_a + ASharedStage * pipe;
-        #pragma unroll
-        for (int i = 0; i < ASharedWriteIters; ++i) {
-          marlin_ppu_detail::cp_async_16_if(
-              &a_stage[state.a_write_transformed[i]],
-              &a[state.a_global_inner * i + a_global_read +
-                 AGlobalOuter * a_offset],
-              state.a_predicate[i]);
-        }
-        Vector128* b_stage = smem_b + BSharedStage * pipe;
+        Vector128* a_stage = shared.a + ASharedStage * pipe;
+        marlin_ppu_detail::cp_async_16_if(
+            &a_stage[state.a_smem_write],
+            &a_pointer[AGlobalOuter * a_offset], state.a_copy_pred);
+        Vector128* b_stage = shared.b + BSharedStage * pipe;
         #pragma unroll
         for (int i = 0; i < BInnerIters; ++i) {
           marlin_ppu_detail::cp_async_16(
               &b_stage[Threads * i + tid], b_pointer[i]);
-          b_pointer[i] += state.b_global_outer;
+          b_pointer[i] += state.b_k_delta;
         }
         // TileK == GroupSize in the admitted target, hence every pipeline stage begins a group.
-        if (tid < ScaleSharedStride) {
+        if (state.scale_copy_pred) {
           marlin_ppu_detail::cp_async_16(
-              &smem_scale[ScaleSharedStage * pipe + tid],
-              &scales[scale_global_read]);
+              &shared.scale[ScaleSharedStage * pipe + tid], scale_pointer);
         }
-        scale_global_read += state.scale_global_stride;
+        scale_pointer += state.scale_k_delta;
       }
       marlin_ppu_detail::cp_async_commit();
     };
@@ -381,18 +381,17 @@ class MarlinCollectivePPU {
     };
 
     auto load_registers = [&](int inner, int pipe) {
-      Vector128 const* scale_stage = smem_scale + ScaleSharedStage * pipe;
-      int const warp_n = (tid / 32) % (NBlocks / 4);
-      int const scale_read = 8 * warp_n + (tid % 32) / 4;
+      Vector128 const* scale_stage =
+          shared.scale + ScaleSharedStage * pipe;
       *reinterpret_cast<Vector128*>(&fragment_scale[inner & 1]) =
-          scale_stage[scale_read];
+          scale_stage[state.scale_smem_read];
 
-      Vector128 const* a_stage = smem_a + ASharedStage * pipe;
+      Vector128 const* a_stage = shared.a + ASharedStage * pipe;
       marlin_ppu_detail::ldmatrix_a(
           fragment_a[inner & 1],
-          &a_stage[state.a_read_transformed[inner % BInnerIters]]);
+          &a_stage[state.a_smem_read[inner % BInnerIters]]);
 
-      Vector128 const* b_stage = smem_b + BSharedStage * pipe;
+      Vector128 const* b_stage = shared.b + BSharedStage * pipe;
       fragment_b_quant[inner & 1] =
           b_stage[Threads * (inner % BInnerIters) + tid];
     };
@@ -423,7 +422,7 @@ class MarlinCollectivePPU {
         accum.fragments[n_block].value[value] = 0.0f;
       }
     }
-    a_global_read += AGlobalOuter * (Stages - 1);
+    a_pointer += AGlobalOuter * (Stages - 1);
 
     while (k_tiles_remaining > 0) {
       #pragma unroll
@@ -445,7 +444,7 @@ class MarlinCollectivePPU {
           break;
         }
       }
-      a_global_read += AGlobalOuter * Stages;
+      a_pointer += AGlobalOuter * Stages;
     }
     marlin_ppu_detail::cp_async_wait<0>();
   }

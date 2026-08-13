@@ -43,7 +43,8 @@ No device timing is inferred from the local proofs below.
 | four-stage issue cadence | three-stage prologue attempts, wait/prime, two B inner iterations, rolling refill | same | **event-ledger closed**; L168, including causal missing-attempt and ordering plants. |
 | CTA-local reduction | FP32 4->2->1 shared tree; K0 survives | same | **cadence and ownership closed**; L168 plus kernel contract. |
 | CTA stripe | K-fast, `G=max(Q,CU*B)`, reverse-q Awesome traversal, global q lock | same semantics; B=1 is default | **exact-once and lifecycle closed**; L170.  The three physically launched idle CTAs are explicitly invalid rather than allowed to construct an out-of-range descriptor. |
-| cross-CTA partial | ordered fp16 chain through D, only final peer writes result | same | **source/ABI closed; device memory-order progress pending**. |
+| CTA/segment address state | final per-thread A/B/scale bases and shared coordinates are CTA invariants; a segment only rebases global q/K | same lifetime and pointer equations | **exhaustively source-closed**; L178 checks all 4,325,376 legal fixed-target segments against independent classic and Awesome-CuTe equations.  It also rejects byte/code pitch confusion, local-q rebasing, stale WK deltas, tight-smem substitution and reintroduced hot-loop topology arithmetic. |
+| cross-CTA partial | ordered fp16 chain through D, only final peer writes result; an unsplit tile enters no lock/partial protocol | same | **source/ABI closed**; L177 proves 98 split acquire/handoff/release operations with 66 arrive and 32 reset, while the `Q>=CU` whole-tile case performs exactly zero cooperative calls.  Device memory-order progress remains pending. |
 | output | K0 stages fp16 into padded shared rows, all CTA threads coalesce the final write | same mechanism | **source closed; codegen/counter parity pending**. |
 | launch bounds / shared | `(256,2)`, 50,176 B | `(256,2)`, 50,176 B | **compile-closed**; actual registers, spills and blocks/CU remain device measurements. |
 
@@ -91,6 +92,14 @@ source uses the same constants and arithmetic but orders those calls
 three sources instruction-for-instruction identical.  Only target disassembly
 can decide whether that source-order difference changes the final PPU opcode
 schedule.
+
+The hot scheduler descriptor is now 20 bytes (global q, K begin/count, peer
+ordinal and cached flags), rather than the earlier 44-byte compatibility
+record.  Split/first/final are consumed once in the kernel, and the shared
+stage bases plus final per-thread source/smem coordinates are constructed
+outside the segment loop.  These are source/combination facts, not a register
+allocation claim: L176's exact shipping-symbol disassembly is still required
+to establish the resulting `s.mov`/`s.cmp`/branch counts and spills.
 
 Any discrepancy is reported against those named postconditions.  It must not
 be attributed to the retired generic collective or repaired by putting Marlin

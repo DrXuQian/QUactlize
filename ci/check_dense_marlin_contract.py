@@ -18,6 +18,8 @@ This checker therefore composes the production-bound standalone proofs:
 * L170: production ``MarlinSchedulerPPU`` ABI, exact coverage and q-lock life;
 * L173: production per-CTA state init and absolute-q/K segment rebasing;
 * L177: one cached Split/First/Final decision and a zero-call unsplit handoff path;
+* L178: final per-thread CTA invariants, rebased source pointers and one-CTA
+  shared bases, exhaustively matched to independent classic/Awesome formulas;
 * the structural stack gate, including absence of generic WarpK seams.
 
 The wider tactic domain is owned separately by L172.  It is not silently
@@ -67,6 +69,11 @@ CHECKS = (
         "handoff-lifecycle",
         (sys.executable, "ci/check_l177_marlin_handoff_lifecycle.py"),
         "[l177-contract] PASS:",
+    ),
+    (
+        "state-hoist",
+        (sys.executable, "ci/check_l178_marlin_state_hoist.py"),
+        "[l178-contract] PASS:",
     ),
     (
         "stack",

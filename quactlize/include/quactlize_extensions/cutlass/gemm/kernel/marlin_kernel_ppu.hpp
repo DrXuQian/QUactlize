@@ -354,6 +354,8 @@ class MarlinKernelPPU {
     }
     auto cta_state = CollectiveMainloop::init_cta_state(
         params.mainloop, problem_m, problem_n, problem_k, tid);
+    auto shared_bases = CollectiveMainloop::make_shared_bases(
+        shared.tensors.mainloop);
     while (work.is_valid()) {
       // Lower the cooperative state exactly once per segment.  In
       // particular, an unsplit DP tile never enters the lock/D-chain path.
@@ -366,7 +368,7 @@ class MarlinKernelPPU {
       {
         auto segment = CollectiveMainloop::rebase_segment(cta_state, work);
         CollectiveMainloop::run_segment(
-            cta_state, segment, accum, shared.tensors.mainloop);
+            cta_state, segment, shared_bases, accum);
       }
 
       thread_block_reduce(accum, shared);

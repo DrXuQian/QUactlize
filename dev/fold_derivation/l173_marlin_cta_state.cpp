@@ -6,9 +6,11 @@
 //   * L168's independently reconstructed reverse-q segment sequence.
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 #include "quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
 #include "quactlize_extensions/cutlass/gemm/kernel/marlin_scheduler_ppu.hpp"
@@ -45,9 +47,9 @@ int fail(char const* plant, char const* reason) {
 }
 
 struct ClassicAddress {
-  int a = 0;
-  std::array<int, Main::BInnerIters> b{};
-  int scale = 0;
+  std::ptrdiff_t a = 0;
+  std::array<std::ptrdiff_t, Main::BInnerIters> b{};
+  std::ptrdiff_t scale = 0;
 };
 
 ClassicAddress classic_address(int tid, uint32_t q, uint32_t k) {
@@ -75,10 +77,14 @@ ClassicAddress classic_address(int tid, uint32_t q, uint32_t k) {
 
 int main(int argc, char** argv) {
   char const* plant = plant_name(argc, argv);
+  using Vector128 = cutlass::gemm::collective::marlin_ppu_detail::Vector128;
+  std::vector<Vector128> a(8192);
+  std::vector<Vector128> b(524288);
+  std::vector<Vector128> scale(16624);
   typename Main::Params main_params{
-      reinterpret_cast<cutlass::half_t const*>(0x10000),
-      reinterpret_cast<cutlass::int4b_t const*>(0x20000),
-      reinterpret_cast<cutlass::half_t const*>(0x30000), 128};
+      reinterpret_cast<cutlass::half_t const*>(a.data()),
+      reinterpret_cast<cutlass::int4b_t const*>(b.data()),
+      reinterpret_cast<cutlass::half_t const*>(scale.data()), 128};
   auto const sched = Scheduler::make_params_for_tiles(1, 32, 1, 32, 72);
   if (!sched.valid_ || sched.active_blocks_ != 69 ||
       sched.grid_blocks_ != 72 || sched.iters_per_block_ != 15) {
@@ -135,30 +141,29 @@ int main(int argc, char** argv) {
       if (is_plant(plant, "stale-rebase") && prior.valid) segment = prior;
       if (is_plant(plant, "drop-b-q")) {
         int const delta = Main::BSharedStride * int(work.N_idx);
-        for (int& offset : segment.b_global_read) offset -= delta;
+        for (auto& pointer : segment.b) pointer -= delta;
       }
       if (is_plant(plant, "drop-scale-q")) {
-        segment.scale_global_read -=
+        segment.scale -=
             Main::ScaleSharedStride * int(work.N_idx);
       }
       if (is_plant(plant, "drop-a-k")) {
-        segment.a_global_read -= Main::AGlobalOuter * int(work.K_idx);
+        segment.a -= Main::AGlobalOuter * int(work.K_idx);
       }
       if (is_plant(plant, "drop-b-k")) {
-        int const delta = cta.b_global_outer * int(work.K_idx);
-        for (int& offset : segment.b_global_read) offset -= delta;
+        int const delta = cta.b_k_delta * int(work.K_idx);
+        for (auto& pointer : segment.b) pointer -= delta;
       }
       if (is_plant(plant, "drop-scale-k")) {
-        segment.scale_global_read -=
-            cta.scale_global_stride * int(work.K_idx);
+        segment.scale -= cta.scale_k_delta * int(work.K_idx);
       }
 
       bool b_matches = true;
       for (int i = 0; i < Main::BInnerIters; ++i) {
-        b_matches = b_matches && segment.b_global_read[i] == expected.b[i];
+        b_matches = b_matches && segment.b[i] - b.data() == expected.b[i];
       }
-      if (segment.a_global_read != expected.a || !b_matches ||
-          segment.scale_global_read != expected.scale) {
+      if (segment.a - a.data() != expected.a || !b_matches ||
+          segment.scale - scale.data() != expected.scale) {
         return fail(plant, "production rebase diverged from classic absolute q/K");
       }
       prior = segment;

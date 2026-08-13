@@ -110,12 +110,14 @@ int main(int argc, char** argv) {
   // writers determine the byte count above.
   for (char const* token : {
            "if (predicate) {",
-           "state.a_predicate[i] = logical < ASharedStride * problem_m",
-           "state.a_global_inner * i + a_global_read +",
+           "state.a_copy_pred = a_shared_write < ASharedStride * problem_m",
+           "state.a_thread_base =",
+           "&a_pointer[AGlobalOuter * a_offset]",
            "for (int i = 0; i < BInnerIters; ++i)",
            "&b_stage[Threads * i + tid], b_pointer[i]",
-           "if (tid < ScaleSharedStride)",
-           "&smem_scale[ScaleSharedStage * pipe + tid]",
+           "state.b_thread_base =",
+           "if (state.scale_copy_pred)",
+           "&shared.scale[ScaleSharedStage * pipe + tid]",
            "TileK == GroupSize",
        }) {
     if (!contains(collective, token)) {

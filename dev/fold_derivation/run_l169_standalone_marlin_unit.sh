@@ -53,7 +53,7 @@ CUTLASS_DEVICE void l169_device_body_marker(L169Accumulator const&) {
 text = text.replace(namespace, helper, 1)
 needle = """  CUTLASS_DEVICE static void run_segment(
       CtaState const& state, SegmentState const& segment,
-      Accumulator& accum, SharedStorage& shared) {"""
+      SharedBases const& shared, Accumulator& accum) {"""
 if text.count(needle) != 1:
     raise SystemExit("L169 collective run_segment seam is not unique")
 plant = (
@@ -171,7 +171,7 @@ import sys
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
 needle = """        CollectiveMainloop::run_segment(
-            cta_state, segment, accum, shared.tensors.mainloop);"""
+            cta_state, segment, shared_bases, accum);"""
 if text.count(needle) != 1:
     raise SystemExit("L169 kernel-to-collective call seam is not unique")
 plant = (
