@@ -23,6 +23,8 @@ This checker therefore composes the production-bound standalone proofs:
 * L179: checked host lowering owns all validity/overflow decisions, the
   assume-valid device path shares one output map with its exhaustive oracle,
   and raw Params/update seams are unavailable from the shipping handle;
+* L180: the public 40-byte scheduler Params lower once to a pointer-free
+  16-byte device traversal state with descriptor-identical behavior;
 * the structural stack gate, including absence of generic WarpK seams.
 
 The wider tactic domain is owned separately by L172.  It is not silently
@@ -83,6 +85,12 @@ CHECKS = (
         ("bash", "dev/fold_derivation/run_l179_marlin_checked_lowering.sh"),
         "[l179:runner] positive=geometry+source+handle-lifecycle "
         "negative_controls=17/17_RED result=PASS",
+    ),
+    (
+        "scheduler-hot-state",
+        ("bash", "dev/fold_derivation/run_l180_marlin_scheduler_hot_state.sh"),
+        "[l180:runner] positive=262144-schedule-equivalence "
+        "negative_controls=7/7_RED result=PASS",
     ),
     (
         "stack",

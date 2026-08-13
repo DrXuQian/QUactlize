@@ -105,6 +105,19 @@ public:
     bool valid_ = false;
   };
 
+  // Device traversal needs only the four integer quantities consumed while
+  // assigning stripes.  Workspace ownership and the host decomposition
+  // census remain in Params, but copying those cold fields into every CTA's
+  // scheduler object needlessly extends their live range.  Keep this state
+  // pointer-free: the cooperative lock path receives Params explicitly only
+  // for split work.
+  struct DeviceTraversalState {
+    uint32_t k_tiles_per_output_ = 0;
+    uint32_t output_tiles_ = 0;
+    uint32_t total_k_tiles_ = 0;
+    uint32_t iters_per_block_ = 0;
+  };
+
   enum class PeerReleaseAction : uint8_t {
     None,
     Arrive,
@@ -129,6 +142,15 @@ public:
                     offsetof(Params, locks_) == 24 &&
                     offsetof(Params, valid_) == 32,
                 "standalone Marlin scheduler device ABI must stay compact");
+  static_assert(std::is_standard_layout_v<DeviceTraversalState> &&
+                    std::is_trivially_copyable_v<DeviceTraversalState> &&
+                    sizeof(DeviceTraversalState) == 16 &&
+                    alignof(DeviceTraversalState) == 4 &&
+                    offsetof(DeviceTraversalState, k_tiles_per_output_) == 0 &&
+                    offsetof(DeviceTraversalState, output_tiles_) == 4 &&
+                    offsetof(DeviceTraversalState, total_k_tiles_) == 8 &&
+                    offsetof(DeviceTraversalState, iters_per_block_) == 12,
+                "standalone Marlin device traversal state ABI changed");
   static_assert(std::is_standard_layout_v<WorkTileInfo> &&
                     std::is_trivially_copyable_v<WorkTileInfo> &&
                     sizeof(WorkTileInfo) == 20 && alignof(WorkTileInfo) == 4 &&
@@ -140,7 +162,7 @@ public:
                 "standalone Marlin hot work descriptor ABI changed");
 
 private:
-  Params scheduler_params_{};
+  DeviceTraversalState traversal_state_{};
 
   CUTLASS_HOST_DEVICE static constexpr bool compact_core_params(
       StripeParams const& p) {
@@ -160,13 +182,13 @@ private:
   // dense M/L contract.  K is the flattened fast dimension, q is global N,
   // and the lowest-block/lowest-K peer owns peer_idx zero.
   CUTLASS_HOST_DEVICE static constexpr WorkTileInfo make_reference_work(
-      Params const& p, uint32_t block, uint32_t q,
+      DeviceTraversalState const& p, uint32_t block, uint32_t q,
       uint32_t block_begin, uint32_t block_end) {
+    uint32_t const kt = p.k_tiles_per_output_;
     if (block_begin >= block_end || q >= p.output_tiles_) {
       return WorkTileInfo::invalid_work_tile();
     }
-    uint32_t const kt = uint32_t(p.k_tiles_per_output_);
-    uint32_t const iters = uint32_t(p.iters_per_block_);
+    uint32_t const iters = p.iters_per_block_;
     uint32_t const q_begin = q * kt;
     uint32_t const q_end = q_begin + kt;
     uint32_t const segment_begin = block_begin > q_begin ? block_begin : q_begin;
@@ -220,7 +242,19 @@ private:
 public:
   CUTLASS_HOST_DEVICE constexpr MarlinSchedulerPPU() = default;
   CUTLASS_HOST_DEVICE constexpr explicit MarlinSchedulerPPU(Params const& p)
-      : scheduler_params_(p) {}
+      : traversal_state_(make_device_traversal_state(p)) {}
+
+  // Lower once at scheduler construction.  Invalid public Params become the
+  // all-zero state, so even an accidentally constructed scheduler remains
+  // fail-closed without carrying Params::valid_ through the hot traversal.
+  CUTLASS_HOST_DEVICE static constexpr DeviceTraversalState
+  make_device_traversal_state(Params const& p) {
+    return p.valid_
+        ? DeviceTraversalState{
+              p.k_tiles_per_output_, p.output_tiles_, p.total_k_tiles_,
+              p.iters_per_block_}
+        : DeviceTraversalState{};
+  }
 
   CUTLASS_HOST_DEVICE static constexpr bool arguments_supported(
       Arguments const& args) {
@@ -436,26 +470,36 @@ public:
   }
 
   CUTLASS_HOST_DEVICE static constexpr WorkTileInfo get_work_for_block(
+      DeviceTraversalState const& p, uint64_t block_idx) {
+    if (p.k_tiles_per_output_ == 0 || p.iters_per_block_ == 0 ||
+        block_idx > uint64_t(std::numeric_limits<uint32_t>::max())) {
+      return WorkTileInfo::invalid_work_tile();
+    }
+    uint32_t const block = uint32_t(block_idx);
+    uint32_t const iters = p.iters_per_block_;
+    uint32_t const total = p.total_k_tiles_;
+    uint64_t const begin_u64 = block_idx * uint64_t(iters);
+    if (begin_u64 >= total) {
+      return WorkTileInfo::invalid_work_tile();
+    }
+    uint32_t const begin = uint32_t(begin_u64);
+    uint32_t const raw_end = begin + iters;
+    uint32_t const end = raw_end < total ? raw_end : total;
+    uint32_t const end_q = (end - 1) / p.k_tiles_per_output_;
+    return make_reference_work(p, block, end_q, begin, end);
+  }
+
+  CUTLASS_HOST_DEVICE static constexpr WorkTileInfo get_work_for_block(
       Params const& p, uint64_t block_idx) {
     if (!p.valid_ || block_idx >= p.grid_blocks_) {
       return WorkTileInfo::invalid_work_tile();
     }
-    uint32_t const block = uint32_t(block_idx);
-    uint32_t const iters = uint32_t(p.iters_per_block_);
-    uint32_t const total = uint32_t(p.total_k_tiles_);
-    uint32_t const begin = block * iters;
-    if (begin >= total) {
-      return WorkTileInfo::invalid_work_tile();
-    }
-    uint32_t const raw_end = begin + iters;
-    uint32_t const end = raw_end < total ? raw_end : total;
-    uint32_t const end_q = (end - 1) / uint32_t(p.k_tiles_per_output_);
-    return make_reference_work(p, block, end_q, begin, end);
+    return get_work_for_block(make_device_traversal_state(p), block_idx);
   }
 
   CUTLASS_HOST_DEVICE constexpr WorkTileInfo get_work_for_block_index(
       uint64_t block_idx) const {
-    return get_work_for_block(scheduler_params_, block_idx);
+    return get_work_for_block(traversal_state_, block_idx);
   }
 
   CUTLASS_DEVICE WorkTileInfo get_current_work() const {
@@ -463,8 +507,9 @@ public:
   }
 
   CUTLASS_HOST_DEVICE static constexpr WorkTileInfo fetch_next_work_for_params(
-      Params const& p, WorkTileInfo const& work) {
-    if (!p.valid_ || !work.is_valid() || work.N_idx <= 0 ||
+      DeviceTraversalState const& p, WorkTileInfo const& work) {
+    if (p.k_tiles_per_output_ == 0 || p.iters_per_block_ == 0 ||
+        !work.is_valid() || work.N_idx <= 0 ||
         work.K_idx != 0 || work.k_tile_count >= p.iters_per_block_) {
       return WorkTileInfo::invalid_work_tile();
     }
@@ -484,9 +529,14 @@ public:
     return make_reference_work(p, block, q, begin, q_begin + kt);
   }
 
+  CUTLASS_HOST_DEVICE static constexpr WorkTileInfo fetch_next_work_for_params(
+      Params const& p, WorkTileInfo const& work) {
+    return fetch_next_work_for_params(make_device_traversal_state(p), work);
+  }
+
   CUTLASS_HOST_DEVICE constexpr WorkTileInfo get_next_work(
       WorkTileInfo const& work) const {
-    return fetch_next_work_for_params(scheduler_params_, work);
+    return fetch_next_work_for_params(traversal_state_, work);
   }
 
   CUTLASS_DEVICE auto fetch_next_work(WorkTileInfo const& work) const {

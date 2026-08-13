@@ -45,6 +45,7 @@ No device timing is inferred from the local proofs below.
 | four-stage issue cadence | three-stage prologue attempts, wait/prime, two B inner iterations, rolling refill | same | **event-ledger closed**; L168, including causal missing-attempt and ordering plants. |
 | CTA-local reduction | FP32 4->2->1 shared tree; K0 survives | same | **cadence and ownership closed**; L168 plus kernel contract. |
 | CTA stripe | K-fast, `G=max(Q,CU*B)`, reverse-q Awesome traversal, global q lock | same semantics; B=1 is default | **exact-once and lifecycle closed**; L170.  The three physically launched idle CTAs are explicitly invalid rather than allowed to construct an out-of-range descriptor. |
+| scheduler state lifetime | public launch/workspace ABI carries decomposition census and q-lock pointer; device traversal consumes only `Kt/Q/total/I` | public `Params` remains 40 B, while the shipping scheduler object lowers once to a pointer-free 16 B traversal state | **descriptor-equivalence closed**; L180 compares 262,144 production decompositions, 14,012,704 block lookups and 14,334,629 segment descriptors field-for-field, including invalid and out-of-grid work.  Seven production-causal controls reject cold `Params`, a lock pointer, four miswired words and an invalid-state bypass. |
 | CTA/segment address state | final per-thread A/B/scale bases and shared coordinates are CTA invariants; a segment only rebases global q/K | same lifetime and pointer equations | **exhaustively source-closed**; L178 checks all 4,325,376 legal fixed-target segments against independent classic and Awesome-CuTe equations.  It also rejects byte/code pitch confusion, local-q rebasing, stale WK deltas, tight-smem substitution and reintroduced hot-loop topology arithmetic. |
 | host validity / checked lowering | classic validates the problem before launching; its device stripe consumes valid descriptors | the owned `MarlinGemmPPU` privately composes the raw adapter, rejects unsupported workspace/grid queries, installs Params only after a successful initialize, and deletes update/raw-Params launch seams | **host/source closed**; L179 checks three adjacent integer-overflow boundaries through production `can_implement`, revokes a prior installation after a failed reinitialize, and rejects 17 causal arithmetic/map/API plants.  `CtaState` and `SegmentState` therefore carry no duplicate `valid`, N-tile or K-tile fields. |
 | cross-CTA partial | ordered fp16 chain through D, only final peer writes result; an unsplit tile enters no lock/partial protocol | same | **source/ABI closed**; L177 proves 98 split acquire/handoff/release operations with 66 arrive and 32 reset, while the `Q>=CU` whole-tile case performs exactly zero cooperative calls.  Device memory-order progress remains pending. |
@@ -96,16 +97,18 @@ three sources instruction-for-instruction identical.  Only target disassembly
 can decide whether that source-order difference changes the final PPU opcode
 schedule.
 
-The hot scheduler descriptor is now 20 bytes (global q, K begin/count, peer
-ordinal and cached flags), rather than the earlier 44-byte compatibility
-record.  Split/first/final are consumed once in the kernel, and the shared
-stage bases plus final per-thread source/smem coordinates are constructed
-outside the segment loop.  Unsupported host arguments lower to a zero-grid
-scheduler only inside the kernel ABI, while the shipping handle prevents that
-record from being launched or refreshed through raw Params/update APIs.  These
-are source/combination facts, not a register
-allocation claim: L176's exact shipping-symbol disassembly is still required
-to establish the resulting `s.mov`/`s.cmp`/branch counts and spills.
+The hot work descriptor is 20 bytes (global q, K begin/count, peer ordinal and
+cached flags), rather than the earlier 44-byte compatibility record.  The
+scheduler object separately carries only a 16-byte `Kt/Q/total/I` traversal
+state; the 40-byte public Params ABI, host census and lock pointer do not stay
+live in that object.  Split/first/final are consumed once in the kernel, and
+the shared stage bases plus final per-thread source/smem coordinates are
+constructed outside the segment loop.  Unsupported host arguments lower to a
+zero-grid scheduler only inside the kernel ABI, while the shipping handle
+prevents that record from being launched or refreshed through raw
+Params/update APIs.  These are source/combination facts, not a register or
+opcode claim: L176's exact shipping-symbol disassembly is still required to
+establish the resulting `s.mov`/`s.cmp`/branch counts and spills.
 
 Any discrepancy is reported against those named postconditions.  It must not
 be attributed to the retired generic collective or repaired by putting Marlin
