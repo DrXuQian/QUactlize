@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-13 11:40:26 UTC
+    updated-at:     2026-08-13 11:51:14 UTC
     inbox-consumed: 166
-    working-on:     standalone Marlin-Cute-aligned PPU stack: fixed traffic and 60,000-row declared tactic authority closed; rebinding stale generic-Marlin gates to standalone evidence
+    working-on:     standalone Marlin-Cute-aligned PPU stack: fixed target and declared tactic authority closed; preparing the next standalone-only production seam
     blocked-on:     no local implementation blocker; PPU instruction/traffic parity and timing remain device postconditions
-    local-gates:    L171 PASS with 4/4 RED; L172 declared=60000 unique=60000 admitted=1 classic-subspace=60 with 4/4 RED; Awesome cooperative traffic explicitly separated
-    last-commit:    eee0b83 Separate Awesome cooperative traffic from Marlin mainloop
-    last-heartbeat: 287
+    local-gates:    standalone L167/L168/L169/L170/L172 evidence rebound; seven formerly generic Marlin gates PASS and explicitly retire pre-standalone evidence
+    last-commit:    2c5f59d Rebind Marlin gates to standalone stack
+    last-heartbeat: 288
