@@ -60,7 +60,7 @@ def source_contract(dense: str, gemv: str) -> None:
             "[l168:runner] positive=PASS negative_controls=3/3_RED result=PASS",
             "[l169] PASS: generated-unit shape instantiates standalone Marlin collective/scheduler/kernel",
             "[l170:runner] positive=PASS negative_controls=7/7_RED result=PASS",
-            "ten structural plants rejected",
+            "eleven structural plants rejected",
             "[classic-156] PASS: exact one-launch shape",
             "[l143] PASS: standalone Marlin format + cadence + generated type + scheduler lifecycle",
             "placement=classic-marlin-u32 scale=classic-gs128-permuted",

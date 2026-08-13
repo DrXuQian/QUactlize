@@ -180,7 +180,7 @@ local_oracle_rc=${PIPESTATUS[0]}
 set -e
 record_command committed-standalone-evidence "$local_oracle_rc" "${LOCAL_ORACLE[@]}"
 [ "$local_oracle_rc" -eq 0 ] || fail 'committed standalone evidence is absent from the result SHA'
-[ "$(grep -Fxc '[dense-marlin-wk4] PASS: standalone format/collective/scheduler/kernel wired; generic WK4 compatibility absent; ten structural plants rejected' "$LOCAL_EVIDENCE_LOG" || true)" -eq 2 ] \
+[ "$(grep -Fxc '[dense-marlin-wk4] PASS: standalone format/collective/scheduler/kernel wired; standalone tactic authority consumed; generic WK4 compatibility absent; eleven structural plants rejected' "$LOCAL_EVIDENCE_LOG" || true)" -eq 2 ] \
   || fail 'standalone admission lacks one fresh and one result-SHA static contract PASS'
 grep -Fxq '[L167] PASS: independent classic/direct and Awesome-CuTe/permutation anchors agree; asymmetric provider, byte, inverse, and negative controls proved' "$LOCAL_EVIDENCE_LOG" \
   || fail 'standalone admission lacks the independently anchored classic format proof'
