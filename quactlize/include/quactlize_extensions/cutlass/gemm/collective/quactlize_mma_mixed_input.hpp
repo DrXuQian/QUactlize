@@ -1235,6 +1235,10 @@ public:
     // Size of the register pipeline
     auto K_BLOCK_MAX = size<2>(tCrB_copy_view);
     auto K_ATOM_PER_COPY = size<2>(tCrB_mma) / size<2>(tCrB_copy_view);
+    auto A_K_BLOCK_MAX = size<2>(tCrA_copy_view);
+    if constexpr (WarpKCohorts == 4) {
+      CUTE_STATIC_ASSERT_V(A_K_BLOCK_MAX == K_BLOCK_MAX * K_ATOM_PER_COPY);
+    }
 
     int initial_read_stage = 0;
     Tensor tCsA_p = tCsA(_,_,_,initial_read_stage);
@@ -1257,7 +1261,27 @@ public:
       // PPU_A_CUBE_H (fold_derivation/l77), so M does not live on mode 1 and a loop over it is a no-op. With
       // CUBE_H=1 cute instead moves mode 2 from basis 2 to basis 0 with stride 64 and halves the A register
       // fragment (ArrayEngine 128 -> 64, with a stride-0 component), i.e. it re-derives the geometry itself.
-      copy(smem_tiled_copy_A, tCsA_p(_,_,k_block), tCrA_copy_view(_,_,k_block));
+      // B can amortize one shadow load over more than one MMA K atom.  A does
+      // not share that cadence: its retiled copy has one block per atom.  The
+      // first 2N x 4K target exposed this distinction as B_K_BLOCKS=1,
+      // K_ATOM_PER_COPY=2, A_K_BLOCKS=2.  Indexing A with the B block loaded
+      // only the lower 64 K values, then consumed the unfilled upper fragment;
+      // L154 reproduces the resulting eight device values exactly.  Keep the
+      // single-atom arm textually identical to the shipping WK1 operation.
+      if constexpr (WarpKCohorts == 1) {
+        copy(smem_tiled_copy_A, tCsA_p(_,_,k_block),
+             tCrA_copy_view(_,_,k_block));
+      }
+      else {
+        static_assert(WarpKCohorts == 4,
+                      "multi-atom A cadence is proved only for four K cohorts");
+        cute::for_each(cute::make_int_sequence<decltype(K_ATOM_PER_COPY)::value>{},
+            [&] (auto a_atom) {
+          auto a_block = k_block * K_ATOM_PER_COPY + a_atom;
+          copy(smem_tiled_copy_A, tCsA_p(_,_,a_block),
+               tCrA_copy_view(_,_,a_block));
+        });
+      }
       transform_B_kblock<RealInternalElementB>(tCrB_copy_view, tCrB_copy_view_peer,
           tCrB_mma, partitioned_extra_info, k_block,
           K_ATOM_PER_COPY, copy_partitions_extra_info, read_stage, scale_pf,

@@ -29,6 +29,8 @@ L142 = ROOT / "dev/fold_derivation/l142_production_destination_map.cu"
 L143 = ROOT / "dev/fold_derivation/l143_wk4_production_delivery.cu"
 L139 = ROOT / "dev/fold_derivation/l139_marlin_warpk_reduce.cu"
 RUN_L139 = ROOT / "dev/fold_derivation/run_l139_marlin_warpk_reduce.sh"
+L154 = ROOT / "dev/fold_derivation/l154_wk4_a_cadence.cu"
+RUN_L154 = ROOT / "dev/fold_derivation/run_l154_wk4_a_cadence.sh"
 
 
 def exact(text: str, token: str, count: int, bad: list[str], label: str) -> None:
@@ -38,10 +40,10 @@ def exact(text: str, token: str, count: int, bad: list[str], label: str) -> None
 
 
 def audit(files: dict[str, str]) -> list[str]:
-    cm, unit, bench, build, box, xplane, collective, l142, l143, l139, run_l139 = (
+    cm, unit, bench, build, box, xplane, collective, l142, l143, l139, run_l139, l154, run_l154 = (
         files[name] for name in (
             "cmake", "unit", "bench", "build", "box", "xplane",
-            "collective", "l142", "l143", "l139", "run_l139"
+            "collective", "l142", "l143", "l139", "run_l139", "l154", "run_l154"
         )
     )
     bad: list[str] = []
@@ -181,6 +183,18 @@ def audit(files: dict[str, str]) -> list[str]:
         owner = collective if token in collective else l142 if token in l142 else l143
         if token not in owner:
             bad.append(f"production direct-pair proof is missing {token!r}")
+    for token in (
+        "auto A_K_BLOCK_MAX = size<2>(tCrA_copy_view);",
+        "CUTE_STATIC_ASSERT_V(A_K_BLOCK_MAX == K_BLOCK_MAX * K_ATOM_PER_COPY);",
+        "if constexpr (WarpKCohorts == 4) {\n      CUTE_STATIC_ASSERT_V(A_K_BLOCK_MAX == K_BLOCK_MAX * K_ATOM_PER_COPY);",
+        "if constexpr (WarpKCohorts == 1) {\n        copy(smem_tiled_copy_A, tCsA_p(_,_,k_block)",
+        "cute::make_int_sequence<decltype(K_ATOM_PER_COPY)::value>",
+        "auto a_block = k_block * K_ATOM_PER_COPY + a_atom;",
+        "tCsA_p(_,_,a_block)",
+        "tCrA_copy_view(_,_,a_block)",
+    ):
+        if token not in collective:
+            bad.append(f"WK4 A/B cadence repair is missing {token!r}")
     if "convert_int4_pair" in collective:
         bad.append("production WK4 path duplicated the shipping emitter's LOP3/FMA sequence")
     for token in (
@@ -199,6 +213,23 @@ def audit(files: dict[str, str]) -> list[str]:
     ):
         if token not in run_l139:
             bad.append(f"WK4 owner-map negative runner is missing {token!r}")
+    for token in (
+        "kABlocks == 2 && kBBlocks == 1 && kAtomsPerBCopy == 2",
+        "kSums.lower64",
+        "kDeviceGot",
+        "kSums.all",
+        "kGolden",
+        "L154_OLD_A_CADENCE",
+    ):
+        if token not in l154:
+            bad.append(f"WK4 A-cadence causal oracle is missing {token!r}")
+    for token in (
+        "-DL154_OLD_A_CADENCE=1",
+        "old-lower64=167,122,141,144,155,166,137,148, device=EXACT",
+        "fixed-all=277,328,283,286,321,292,303,306, golden=EXACT",
+    ):
+        if token not in run_l154:
+            bad.append(f"WK4 A-cadence negative runner is missing {token!r}")
     return bad
 
 
@@ -215,6 +246,8 @@ def main() -> int:
         "l143": L143.read_text(),
         "l139": L139.read_text(),
         "run_l139": RUN_L139.read_text(),
+        "l154": L154.read_text(),
+        "run_l154": RUN_L154.read_text(),
     }
     bad = audit(files)
 
