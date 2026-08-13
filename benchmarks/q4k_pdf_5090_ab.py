@@ -103,6 +103,9 @@ EXPECTED_ARMS = {
     "D-EXT-O": ["pdf_scalar_dense1", "pdf_pair_dense1", "ours_native_dense1"],
     "D-EXT-K1024": ["pdf_scalar_dense1", "pdf_pair_dense1", "ours_native_dense1"],
     "D-EXT-Q": ["pdf_scalar_dense1", "pdf_pair_dense1", "ours_native_dense1"],
+    "D-144-K1024-N1024": ["pdf_scalar_dense1", "pdf_pair_dense1", "ours_native_dense1"],
+    "D-144-K5120-N1024": ["pdf_scalar_dense1", "pdf_pair_dense1", "ours_native_dense1"],
+    "D-144-K5120-N5120": ["pdf_scalar_dense1", "pdf_pair_dense1", "ours_native_dense1"],
     "H-G8-2048": [
         "pdf_scalar_dense8", "pdf_pair_dense8", "ours_native_dense8", "ours_native_grouped1",
     ],
@@ -287,7 +290,11 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
             "samples": len(group), "row": group[0],
             "by_pass": {int(r["pass"]): timing_us(r) for r in group},
         }
-    canonical_shapes = ["D-EXT-O", "D-EXT-K1024", "D-EXT-Q", "H-G8-2048"]
+    canonical_shapes = [
+        "D-EXT-O", "D-EXT-K1024", "D-EXT-Q",
+        "D-144-K1024-N1024", "D-144-K5120-N1024", "D-144-K5120-N5120",
+        "H-G8-2048",
+    ]
     shape_order = [shape for shape in canonical_shapes if any(k[0] == shape for k in stats)]
     warm_batches = sorted({int(r["batch"]) for r in rows if r["cache_state"] == "warm"})
     warm_batch_text = "/".join(map(str, warm_batches))
@@ -332,8 +339,8 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
         "",
         "## 原始汇总",
         "",
-        "| shape | state | arm | batch | kernels/work | repr MiB | median us | min..max us | GB/s* | SM MHz median[min,max] | pending | observed GCD grid/work | admissible quantum/work |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| shape | state | arm | batch | kernels/work | repr MiB | median us | min..max us | GB/s* | % of 1792 nameplate* | SM MHz median[min,max] | pending | observed GCD grid/work | policy floor/work | admissible quantum/work |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for shape in shape_order:
         for state in ["weight_metadata_cold", "warm"]:
@@ -344,18 +351,19 @@ def summarize(raw: pathlib.Path, output: pathlib.Path, binary: pathlib.Path) -> 
                 batch = int(row["batch"])
                 observed = "UNKNOWN" if demonstrated is None else f"{float(demonstrated) / batch:.6f} us"
                 admissible = "UNKNOWN" if q is None else f"{float(q) / batch:.6f} us"
+                policy_floor = float(Decimal("0.5") / Decimal(batch))
                 gbs = float(row["distinct_bytes"]) / (s["median"] * 1e-6) / 1e9
                 lines.append(
                     f"| {shape} | {state} | {key[2]} | {batch} | {row['kernels_per_workload']} | "
                     f"{int(row['representation_bytes']) / 2**20:.3f} | {s['median']:.4f} | "
-                    f"{s['min']:.4f}..{s['max']:.4f} | {gbs:.1f} | "
+                    f"{s['min']:.4f}..{s['max']:.4f} | {gbs:.1f} | {100.0 * gbs / 1792.0:.2f}% | "
                     f"{s['clock']:.0f}[{s['clock_min']},{s['clock_max']}] | "
-                    f"{s['pending']}/{s['samples']} | {observed} | {admissible} |"
+                    f"{s['pending']}/{s['samples']} | {observed} | {policy_floor:.6f} us | {admissible} |"
                 )
             lines.append(f"<!-- timer {shape}/{state}: {qwhy} -->")
     lines += [
         "",
-        "`GB/s*` 用每个 arm 自己的 distinct representation + A + D。warm 行是 cache-equivalent rate，不是 DRAM 利用率。",
+        "`GB/s*` 用每个 arm 自己的 distinct representation + A + D；`% of 1792 nameplate*` 是该模型速率除以 RTX 5090 的 1792 GB/s 分母。warm 行是 cache-equivalent rate，不是硬件 DRAM counter 利用率。",
         "",
         "## 相对方向（事前判据）",
         "",

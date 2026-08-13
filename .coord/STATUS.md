@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-13 02:13:16 UTC
+    updated-at:     2026-08-13 02:19:36 UTC
     inbox-consumed: 144
-    working-on:     INBOX 143 complete; starting INBOX 144 under the active box freeze by extending only measurement fixtures/runners, with GEMV and Marlin results kept in separate cold/warm HBM tables and the existing 1024x5120 cell retained as a protocol-drift control
+    working-on:     INBOX 144 measurement source checkpoint: Q4_K/GEMV four-cell fixture and result schema are locally closed and ready for a clean-SHA formal RTX5090 run; the separate pinned-vLLM Marlin measurement-only harness is still being closed
     blocked-on:     PDF omits its complete launcher, packer, golden, timer, and uniquely identified metadata variant, so results remain a documented two-variant reconstruction rather than an exact-paper reproduction; PPU ranking remains deliberately unclaimed
-    local-gates:    INBOX 143 source hashes pinned; dense and MoE selectors independently read through generator/runtime boundaries; three-state diff records the first-legal versus max-residency distinction and classifies act-order as functionality rather than a tactic
-    last-commit:    9e5502b Record INBOX 142 completion
+    local-gates:    q4k protocol synthetic controls PASS; L146 raw/native representation gate PASS with 3/3 planted pack faults red; new four-cell source passed schema sentinel, 10 source plants, sm_120 compile/link, and a dirty-tree smoke whose numbers are explicitly non-evidence
+    last-commit:    c698a59 Audit vLLM Marlin search axes
     last-heartbeat: 255

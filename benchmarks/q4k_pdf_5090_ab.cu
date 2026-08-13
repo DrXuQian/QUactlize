@@ -349,6 +349,19 @@ Options parse_options(int argc, char** argv) {
   return o;
 }
 
+bool shape_selected(std::string const& selection, char const* id) {
+  if (selection.empty()) return true;
+  std::size_t start = 0;
+  while (start <= selection.size()) {
+    std::size_t const end = selection.find(',', start);
+    std::size_t const count = end == std::string::npos ? selection.size() - start : end - start;
+    if (selection.compare(start, count, id) == 0 && std::strlen(id) == count) return true;
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  return false;
+}
+
 std::uint32_t float_bits(float value) {
   std::uint32_t bits;
   std::memcpy(&bits, &value, sizeof(bits));
@@ -548,7 +561,7 @@ int main(int argc, char** argv) {
     write_header(f);
     bool ran = false;
     for (Shape const& shape : q4k_pdf_ab::kShapes) {
-      if (!options.shape.empty() && options.shape != shape.id) continue;
+      if (!shape_selected(options.shape, shape.id)) continue;
       ran = true;
       std::printf("BUILD-FIXTURE id=%s M=1 N=%d K=%d L=%d\n", shape.id, shape.n, shape.k, shape.l);
       HostProblem host = q4k_pdf_ab::make_problem(shape);

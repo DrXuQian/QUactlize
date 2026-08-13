@@ -34,6 +34,12 @@ inline constexpr Shape kShapes[] = {
     {"D-EXT-O", 1, 5120, 8192, 2, 8, 1, true},
     {"D-EXT-K1024", 1, 5120, 1024, 2, 8, 1, true},
     {"D-EXT-Q", 1, 8192, 5120, 4, 8, 1, true},
+    // INBOX 144's missing cells use the document's default 2x8x1 config.
+    // The PDF reports no winner for these shapes, so do not inherit the
+    // winner authority carried by D-EXT-K1024.
+    {"D-144-K1024-N1024", 1, 1024, 1024, 2, 8, 1, false},
+    {"D-144-K5120-N1024", 1, 1024, 5120, 2, 8, 1, false},
+    {"D-144-K5120-N5120", 1, 5120, 5120, 2, 8, 1, false},
     // The document contains no result for this shape.  It uses the documented
     // default rather than pretending a new configuration is a paper winner.
     {"H-G8-2048", 8, 2048, 2048, 2, 8, 1, false},
