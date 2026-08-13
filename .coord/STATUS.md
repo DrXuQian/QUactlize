@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-13 04:27:38 UTC
-    inbox-consumed: 152
-    working-on:     INBOX 151 complete: CMake registration is now the PPU portability authority; preparing the exact WK4 box rerun handoff and stopping before INBOX 150
-    blocked-on:     none for INBOX 151; PPU measurements remain device work for the user after this push
-    local-gates:    portability PASS (1862 registered TUs / 1951 reachable sources), same-TU N/A->FAIL and transitive .inl controls PASS; affected Marlin boxdry host link PASS; inbox freshness PASS; no-cmake is SKIP and --strict non-green
-    last-commit:    60be6aa Make PPU portability follow the build graph (implementation checkpoint; this STATUS-only commit follows)
-    last-heartbeat: 259
+    updated-at:     2026-08-13 06:53:11 UTC
+    inbox-consumed: 158
+    working-on:     INBOX 155 implementation complete: WK4 converter cohort is branchless register/phase data selection; standalone classic one-launch ACU baseline runner is ready for INBOX 156
+    blocked-on:     post-155 instruction mix/correctness and standalone classic total/opcode/numRegs/blocks-per-CU require the user's PPU box; no device result is claimed locally
+    local-gates:    L143 full chain PASS (WK1 0/8192, WK4 production map 0/16384); L155 four-arm equality plus three exact-red controls PASS; classic one-launch source/tool/binary/full-ACU contract and three plants PASS
+    last-commit:    9f6a0a5 Index WK4 conversion without cohort branches
+    last-heartbeat: 260
