@@ -6534,3 +6534,44 @@ box 重跑,owner 模型现在正确:
 2. 量 classic 的指令数 + `numRegs`(与 149 合并,一次上机)
 3. 按 155 改,复核是否达标
 4. 达不到就**逐类别报差在哪**,不要报"接近了"
+
+## 157 — **box PASS,第一次拿到可比的数;occupancy 被判死,155 成为主要嫌疑**
+
+`744c21e` 上重跑,`Disposition: Passed`,`runner_exit_status=0`。`0/4096` 错、8 次重跑逐位相同、`final-source-identity=EXACT`。B=4/B=6 显式 `NOT RUN: exceeds Gemm::maximum_active_blocks()=2`。
+
+### 数
+
+    B=1   28.70 us   295 GB/s (10.7%)   resident_warps/cu=8    valid_elements=8448   logical_RW=67584
+    B=2   27.98 us   304 GB/s (11.0%)   resident_warps/cu=16   valid_elements=12288  logical_RW=98304
+
+**驻留 warp 翻倍 → 时间只快 2.5%,而归约流量涨 45%。** 两边几乎抵消。
+
+    classic(锚点)   17.8 us   17.5%
+    历史 4N x 1K     21.14 us  14.5%
+    WK4 对齐 B=2     27.98 us  11.0%     <- 比 classic 慢 57%,比我们自己的历史臂慢 32%
+
+### 判读(按 `BOX_RUN_PREREGISTRATION.md`)
+
+**落在第三档(比 21.14 还差)⟹ 先查那两条未闭合项,不许新造解释。** 但其中一条已被这次跑部分关闭:
+
+* **`__launch_bounds__(256,2)` vs 我们 `MinBlocksPerMultiprocessor=1`**:classic 的 `(256,2)` 要的就是每 CU 至少 2 block,**我们刚在 B=2 上跑了它,值 2.5%** ⟹ occupancy 那一半**不值 10 us**,基本关闭。**编译器侧的寄存器上限效应那一半仍未测**,请说明能不能测。
+* **工具链 codegen 边界**:仍 UNKNOWN。
+
+### 未被注册覆盖的观察(证据等级要写清)
+
+INBOX 155 的运行时 `switch (compute_warp_k)` 是**事后发现**,按规矩进第三段。但请在文档里写明**两者证据等级不同**:
+
+* 两条 UNKNOWN 是**未测的假设**
+* 155 是**已测的机制**:`v.mov.v2s +41,415%`、`s.lop.emsk +1,360%`、`v.cmp.i +3,282%`、`Instruction Fetch 1.156`(首位 stall),而 `v.mma` **0%** 变化
+
+**且 `Memory 9.96%` 比旧臂还低** ⟹ 时间没花在搬数据上。**慢的那部分在指令,不在数据。**
+
+### 因此
+
+1. **occupancy 这条线可以收了。** 2× 驻留买 2.5%,而 `maximum_active_blocks()=2` 已经封顶。**不要再往 blocks_per_cu 上使劲**,也不要把它写成"还没充分利用"。
+2. **155 升为主线**,而且它直接服务 INBOX 156 那个硬目标(指令数不得多于 classic)。
+3. **156 的 classic 基线仍然缺** —— 现在更要紧了:我们比 classic 慢 57%,而唯一能把"慢在指令上"变成定量结论的,就是 classic 的指令分项。**请优先把那条 box 命令做出来**(与 149 的 `numRegs` 合并)。
+
+### 一条我要你判定的
+
+`logical_RW` B=1→B=2 涨 45%(67,584 → 98,304),`peer_excess` 66 → 96。**这个增长是 B=2 的固有代价,还是我们的归约比 classic 的 fp16 链更贵?** classic 走的是"fp16 chain through C itself",我们走 FP32 workspace(`MARLIN_STANDALONE_ALIGNMENT.md` 标为 retained-different, intentional)。**这条差异现在有没有可能是那 57% 的一部分?给判断,别默认它无关。**
