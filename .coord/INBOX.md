@@ -5970,3 +5970,37 @@ C → A → B。C 最便宜且决定后两者的形状;B 的实现要等冻结�
 3. 139-B 的 harness 设计(`ours_fully_quantized` 第三臂),不改出货 kernel
 
 **实现等冻结解除。** 若你判断某一步必然触及冻结代码,停下来先说。
+
+## 141 — 收紧 139-C:**要复用的是 `emit_one` 的两条算术,不是 `emit`/`at`/`keep` 那一层**
+
+用户又问了一次"GEMV 为什么不能复用 tensor-core 的反量化"。我把代码看细了,答案是**"不能复用"从来不成立,是"复用哪一层"没分清**。请按这个划分给工作量,别再把整个 converter 当一个不可分的块。
+
+### 可搬的:算术核心,2 条/对
+
+    lop3: x = (src & mask<T>) | 0x64006400
+    fma:  x = x * mul<T> + add<T>            // mul<T>=(15-bpos)<<10, add<T>=-(2^(10-bpos)+kBias)
+
+`mul<T>` 吸收**位置**(省掉移位),`add<T>` 吸收 **1024 magic 和 kBias**(int4 的 −8,省掉单独的 offset 减法),`lop3` 把 `&`+`|` 融成一条。
+
+**⚠ 纠正我之前的说法**:这条 fma **不施加 per-group 的 scale/zero**,它消的是 magic 和 bias。per-group scale 在两条路上都是之后单独乘的。所以这 2 条是"**提取 + 解码到 fp16 整数**",不是"提取 + 反量化"。**请在任何文档里都按这个说法写。**
+
+### 不可搬的:三样投递适配,都在那两条之外
+
+    at(t,v)    = MixGemmEmit<Bits>::index(t,v) -> Place::at_h2(e)
+    bpos_of(t) = (t % kPerLevel) * Bits ;  src = (T/kPerLevel) ? (reg>>8) : reg
+    keep(t,v)  = Chunk < 0 || Place::ka(...) == Chunk
+
+1. **`at(T,V)` 是为 AIU/swzl 的寄存器投递顺序定的,并由离线重排补偿。** GEMV 从全局内存按自己的布局读,这个 map 对它是错的 —— 它是**离线打包器为 tensor-core 路建的置换**。GEMV 需要自己的(顺序即可)。
+2. **`bpos_of` 与 `>>8` 编码了码在 32 位字里的具体摆法。** GEMV 的 `native` / `tileK` 两种 artifact 若摆法不同,这是**参数改动**,不是障碍 —— 但**请核实两种 artifact 各自的 `bpos` 序列,并说明是否需要两套常数**。
+3. **`keep`/`Place::ka` 是 PPU_B_CHUNK 的分块投递,GEMV 不需要**,直接不实例化。
+
+### 因此 139-C 的答复应当是
+
+给出**三段**工作量,而不是一个总数:
+* (a) 把 `emit_one` 的算术抽成不依赖 `at`/`keep` 的可复用单元(它已经几乎是了 —— 确认是否只需把 `h2[at(T,V)] = x` 换成传入的写出口)
+* (b) GEMV 侧的 mapper 与 `bpos` 常数(两种 artifact 各一套?)
+* (c) 挂进 `gemv_converter.hpp` 现有的 `RefRawConverter` oracle + one-hot mapper 探测
+
+**(c) 应该接近零工作量** —— 那个 oracle 存在的理由正是"mapper 靠探测发现而不是被信任",而 mapper 本来就是每条路不同的东西。若你发现 (c) 并不接近零,说明我对那个接缝的理解错了,**直接说**。
+
+冻结不变:只出分析与工作量,实现等用户跑完 box。
