@@ -137,8 +137,12 @@ printf '[marlin-wk4] device-model=%s pci=%s driver=%s sdk=%s\n' \
   "$QUACTLIZE_BOX_DRIVER_VERSION" "$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY"
 printf '[marlin-wk4] artifacts=%s\n' "$ARTIFACT_ROOT"
 
-# WK1 is an admission control, not a timing cell.  Run both independent local
-# authorities into one exact log before the device target; absence is VOID.
+# WK1 is an admission control, not a timing cell.  The static target check runs
+# on the box.  L143 is a host-only CuTe oracle that this box's nvcc/GCC13
+# combination cannot compile, so consume the exact output committed by the
+# result SHA instead of pretending that it was freshly executed here.  Its
+# executable owner is ci/check_l143_wk4_committed_evidence.py in the local tier.
+# Absence of either authority is VOID.
 WK1_LOG="$ARTIFACT_ROOT/wk1-admission.log"
 WK1_GATE=(python3 "$ROOT/ci/check_dense_marlin_wk4_target.py")
 set +e
@@ -148,14 +152,16 @@ set -e
 record_command wk1-static-target "$wk1_gate_rc" "${WK1_GATE[@]}"
 [ "$wk1_gate_rc" -eq 0 ] || fail 'WK1 static target admission failed'
 
-WK1_ORACLE=(env QUACTLIZE_L143_OUT="$ARTIFACT_ROOT/l143" \
-  bash "$ROOT/dev/fold_derivation/run_l143_wk4_production_delivery.sh")
+WK1_EVIDENCE_PATH=dev/fold_derivation/l143_wk4_production_delivery.expected.txt
+WK1_ORACLE=(git -C "$ROOT" show "$ROOT_SHA:$WK1_EVIDENCE_PATH")
+printf '[marlin-wk4] wk1-evidence=committed-local-oracle source-sha=%s path=%s fresh-box-execution=0\n' \
+  "$ROOT_SHA" "$WK1_EVIDENCE_PATH" | tee -a "$WK1_LOG"
 set +e
 "${WK1_ORACLE[@]}" 2>&1 | tee -a "$WK1_LOG"
 wk1_oracle_rc=${PIPESTATUS[0]}
 set -e
-record_command wk1-production-delivery "$wk1_oracle_rc" "${WK1_ORACLE[@]}"
-[ "$wk1_oracle_rc" -eq 0 ] || fail 'WK1 executable production-delivery admission failed'
+record_command wk1-committed-production-delivery "$wk1_oracle_rc" "${WK1_ORACLE[@]}"
+[ "$wk1_oracle_rc" -eq 0 ] || fail 'WK1 committed production-delivery evidence is absent from the result SHA'
 grep -Fxq '[dense-marlin-wk4] PASS: isolated 1Mx2Nx4K type/shipping-artifact/CLI; historical target unchanged; thirteen structural plants rejected' "$WK1_LOG" \
   || fail 'WK1 admission lacks the exact static target PASS'
 grep -Fxq 'L143 WK1 shipping map-diff=0 byte-diff=0 result=BIT-IDENTICAL' "$WK1_LOG" \
@@ -198,6 +204,13 @@ run_point() {
   # a default that merely equals an explicit override is not proof that the
   # historical call path stayed unchanged.
   if [ "$bpc" -ne 1 ]; then bflag=("--marlin-blocks-per-cu=$bpc"); fi
+  if [ "$bpc" -eq 1 ]; then
+    [ "${#bflag[@]}" -eq 0 ] || fail 'B=1 default arm unexpectedly carries an override'
+    printf '[marlin-wk4] B=1 path=historical-default explicit-blocks-per-cu-override=0\n'
+  else
+    [ "${#bflag[@]}" -eq 1 ] \
+      || fail "B=$bpc diagnostic arm lacks its unique override"
+  fi
   printf '\n== classic-aligned Marlin B=%d ==\n' "$bpc"
   local -a cmd=("$BIN" "${COMMON[@]}" "${bflag[@]}")
   set +e
@@ -220,9 +233,14 @@ run_point() {
     || fail "B=$bpc did not launch the 256-thread/8-warp kernel"
   grep -Eq '^  \[dense kernel-span-upper\] n=20 median=[0-9.]+ us .*distinct-event-pairs=20 .*includes-launch-idle=1 .*lock-reset-before-start=0$' "$log" \
     || fail "B=$bpc did not report 20 independent kernel spans"
-  local repeats
+  local repeats repeat repeat_count
   repeats="$(grep -Ec '^  \[dense marlin lock fingerprint\] repeat=[1-8]/8 raw_bitdiff=0 .* stable=1 same-workspace=1 external-lock-reset=0$' "$log" || true)"
   [ "$repeats" -eq 8 ] || fail "B=$bpc produced $repeats/8 stable lock fingerprints"
+  for repeat in 1 2 3 4 5 6 7 8; do
+    repeat_count="$(grep -Ec "^  \\[dense marlin lock fingerprint\\] repeat=${repeat}/8 raw_bitdiff=0 .* stable=1 same-workspace=1 external-lock-reset=0$" "$log" || true)"
+    [ "$repeat_count" -eq 1 ] \
+      || fail "B=$bpc lock fingerprint repeat=$repeat appeared $repeat_count times (expected exactly once)"
+  done
   grep -Eq '^  \[dense marlin lock protocol\] fixture_identity=a0-exact shape=1x4096x4096 repeats=8 stable=1 all-bitexact=1 same-workspace=1 external-lock-reset=0$' "$log" \
     || fail "B=$bpc did not close the lock protocol"
 }
@@ -266,6 +284,11 @@ printf '\n[marlin-wk4] PASS: classic-aligned WK4 consumer built on shipping byte
 printf '[marlin-wk4] runner_exit_status=0\n'
 printf '[marlin-wk4] artifacts preserved at %s\n' "$ARTIFACT_ROOT"
 
+# Close and join the runner stream before publishing provenance.json.  The
+# latter is the completion marker, so no observer can see a successful bundle
+# while runner.log is still in flight.
+finish_runner_stream
+
 python3 "$PROVENANCE_TOOL" write \
   --output "$ARTIFACT_ROOT/provenance.json" \
   --root-sha "$ROOT_SHA" --root-status clean \
@@ -278,6 +301,4 @@ python3 "$PROVENANCE_TOOL" write \
   --run-identity-file "$RUN_IDENTITY_FILE" \
   --commands-file "$COMMANDS_LOG" --runner-exit-status 0 \
   --protocol-sample-count "$SAMPLES" -- "${ORIGINAL_ARGV[@]}"
-
-finish_runner_stream
 trap - EXIT

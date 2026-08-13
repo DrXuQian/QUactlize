@@ -89,6 +89,98 @@ def read_commands(path: Path) -> list[dict[str, object]]:
     return commands
 
 
+def _successful_commands(path: Path, role: str) -> list[dict[str, object]]:
+    if not path.exists():
+        return []
+    return [item for item in read_commands(path)
+            if item["role"] == role and item["exit_status"] == 0]
+
+
+def _atomic_bytes_write(path: Path, data: bytes) -> None:
+    if not data:
+        fail(f"refusing an empty authority artifact for {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+            mode="wb", dir=path.parent, prefix=path.name + ".",
+            suffix=".tmp", delete=False) as stream:
+        temp_path = Path(stream.name)
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temp_path, path)
+
+
+def bind_build_pair(args: argparse.Namespace) -> int:
+    """Bind one successful build command and its sibling log to an attempt.
+
+    The attempts directory belongs to one already-verified immutable BASE.
+    Reuse may therefore inherit the log from a prior attempt, but only from the
+    same attempt as the unique successful command.  The command itself remains
+    owned by that prior attempt: copying it into the current journal would
+    falsely claim that this attempt executed the compiler and would duplicate
+    it when canonical journals are concatenated.  A run-global build log is
+    deliberately not an input: it could have been overwritten by a build whose
+    device/SDK identity was later rejected.
+    """
+    attempts = Path(args.attempts_dir)
+    commands_path = Path(args.commands_file)
+    build_log_path = Path(args.build_log)
+    role = args.role
+
+    current = _successful_commands(commands_path, role)
+    current_unique = {
+        json.dumps(item, sort_keys=True, separators=(",", ":")): item
+        for item in current
+    }
+    if current_unique:
+        if len(current_unique) != 1 or len(current) != 1:
+            fail(f"current attempt has multiple successful {role!r} commands")
+        try:
+            log_bytes = build_log_path.read_bytes()
+        except OSError as exc:
+            fail(f"current successful {role!r} command has no sibling build log: {exc}")
+        if not log_bytes:
+            fail(f"current successful {role!r} command has an empty sibling build log")
+        print("current:" + hashlib.sha256(log_bytes).hexdigest())
+        return 0
+
+    if build_log_path.exists():
+        fail("current attempt has a build log without a successful build command")
+
+    # Key by both the exact command record and log bytes.  Identical repeated
+    # pairs collapse, but two different logs or compiler invocations are
+    # ambiguous and fail closed rather than selecting by directory order.
+    candidates: dict[tuple[str, str], tuple[dict[str, object], bytes]] = {}
+    for attempt in sorted(path for path in attempts.iterdir() if path.is_dir()):
+        journal = attempt / "commands.jsonl"
+        if journal.resolve() == commands_path.resolve() or not journal.exists():
+            continue
+        successful = _successful_commands(journal, role)
+        if not successful:
+            continue
+        sibling_log = attempt / "build.log"
+        try:
+            log_bytes = sibling_log.read_bytes()
+        except OSError as exc:
+            fail(f"successful {role!r} command in {attempt} has no sibling build.log: {exc}")
+        if not log_bytes:
+            fail(f"successful {role!r} command in {attempt} has an empty build.log")
+        log_digest = hashlib.sha256(log_bytes).hexdigest()
+        for item in successful:
+            encoded = json.dumps(item, sort_keys=True, separators=(",", ":"))
+            candidates[(encoded, log_digest)] = (item, log_bytes)
+
+    if not candidates:
+        fail(f"no identity-matched successful {role!r} build-log/command pair")
+    if len(candidates) != 1:
+        fail(f"multiple distinct identity-matched {role!r} build-log/command pairs")
+
+    item, log_bytes = next(iter(candidates.values()))
+    _atomic_bytes_write(build_log_path, log_bytes)
+    print("inherited:" + hashlib.sha256(log_bytes).hexdigest())
+    return 0
+
+
 def read_submodule_status(path: Path) -> str:
     try:
         value = path.read_text(encoding="utf-8").rstrip("\n")
@@ -111,6 +203,9 @@ def identity_payload(args: argparse.Namespace) -> dict[str, object]:
         fail("binary_sha256 is not a lowercase SHA-256")
     if args.protocol_sample_count <= 0:
         fail("protocol_sample_count must be positive")
+    groups = nonempty(args.groups, "groups")
+    if "\n" in groups or "\r" in groups or "\0" in groups:
+        fail("groups must be one exact single-line build selection")
     return {
         "schema": IDENTITY_SCHEMA,
         "root_sha": root_sha,
@@ -123,6 +218,7 @@ def identity_payload(args: argparse.Namespace) -> dict[str, object]:
         "sdk_compiler_identity": known_identity(
             args.sdk_compiler_identity, "sdk_compiler_identity"),
         "protocol_sample_count": args.protocol_sample_count,
+        "groups": groups,
     }
 
 
@@ -160,7 +256,8 @@ def read_identity(path: Path) -> dict[str, object]:
     expected_keys = {
         "schema", "root_sha", "submodule_status", "actlize_sha",
         "binary_sha256", "device_model", "pci_identity", "driver_version",
-        "sdk_compiler_identity", "protocol_sample_count", "identity_sha256",
+        "sdk_compiler_identity", "protocol_sample_count", "groups",
+        "identity_sha256",
     }
     if not isinstance(value, dict) or set(value) != expected_keys:
         fail(f"run identity {path} does not have the exact v1 schema")
@@ -238,6 +335,7 @@ def write(args: argparse.Namespace) -> int:
         "driver_version": value["driver_version"],
         "sdk_compiler_identity": value["sdk_compiler_identity"],
         "protocol_sample_count": args.protocol_sample_count,
+        "groups": nonempty(args.groups, "groups"),
     }
     provenance_identity["identity_sha256"] = identity_digest(provenance_identity)
     if provenance_identity != identity:
@@ -245,6 +343,12 @@ def write(args: argparse.Namespace) -> int:
                            if identity[key] != provenance_identity[key])
         fail("provenance does not match immutable run identity in: " +
              ", ".join(differing))
+
+    # Publish the immutable identity digest and the exact build selection in
+    # canonical provenance.  The verifier must not need an adjacent mutable
+    # file merely to establish which GROUPS selection produced the result.
+    value["groups"] = provenance_identity["groups"]
+    value["run_identity_sha256"] = identity["identity_sha256"]
 
     atomic_json_write(Path(args.output), value)
     return 0
@@ -280,6 +384,13 @@ def parser() -> argparse.ArgumentParser:
     rec.add_argument("command", nargs=argparse.REMAINDER)
     rec.set_defaults(func=record)
 
+    inherit = sub.add_parser("bind-build-pair")
+    inherit.add_argument("--attempts-dir", required=True)
+    inherit.add_argument("--commands-file", required=True)
+    inherit.add_argument("--build-log", required=True)
+    inherit.add_argument("--role", default="device-build")
+    inherit.set_defaults(func=bind_build_pair)
+
     def add_identity_arguments(target: argparse.ArgumentParser) -> None:
         target.add_argument("--root-sha", required=True)
         target.add_argument("--submodule-status-file", required=True)
@@ -290,6 +401,7 @@ def parser() -> argparse.ArgumentParser:
         target.add_argument("--driver-version", required=True)
         target.add_argument("--sdk-compiler-identity", required=True)
         target.add_argument("--protocol-sample-count", type=int, required=True)
+        target.add_argument("--groups", default="not-applicable")
 
     identity = sub.add_parser("write-identity")
     identity.add_argument("--output", required=True)
@@ -312,6 +424,7 @@ def parser() -> argparse.ArgumentParser:
     out.add_argument("--pci-identity", required=True)
     out.add_argument("--driver-version", required=True)
     out.add_argument("--sdk-compiler-identity", required=True)
+    out.add_argument("--groups", default="not-applicable")
     out.add_argument("--run-identity-file", required=True)
     out.add_argument("--commands-file", required=True)
     out.add_argument("--runner-exit-status", type=int, required=True)

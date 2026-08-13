@@ -37,6 +37,14 @@ def check(ok: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def check_three_sections(result: dict, noun: str) -> None:
+    required = {"cell_results", "registered_verdict", "unregistered_observations"}
+    check(required <= set(result), f"{noun}: missing one of the three publication sections")
+    check(isinstance(result["cell_results"], list), f"{noun}: cell section is not an array")
+    check(isinstance(result["unregistered_observations"], list),
+          f"{noun}: unregistered-observation section is not an array")
+
+
 def replace_region(text: str, begin: str, end: str, body: str) -> str:
     _, start, stop = A._region(text, begin, end)
     return text[:start] + begin + "\n" + body + "\n" + end + text[stop:]
@@ -72,6 +80,51 @@ def provenance(commands: list[dict] | None = None) -> dict:
     }
 
 
+def attach_run_identity(root: pathlib.Path, value: dict, groups: str) -> None:
+    """Publish the independently hashed identity used by the real runners."""
+    payload = {
+        "schema": "quactlize-box-run-identity-v1",
+        "root_sha": value["root_sha"],
+        "submodule_status": value["submodule_status"],
+        "actlize_sha": value["actlize_sha"],
+        "binary_sha256": value["binary_sha256"],
+        "device_model": value["device_model"],
+        "pci_identity": value["pci_identity"],
+        "driver_version": value["driver_version"],
+        "sdk_compiler_identity": value["sdk_compiler_identity"],
+        "protocol_sample_count": value["protocol_sample_count"],
+        "groups": groups,
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    identity = dict(payload, identity_sha256=digest)
+    (root / "run-identity.json").write_text(json.dumps(identity))
+    value["groups"] = groups
+    value["run_identity_sha256"] = digest
+
+
+def rewrite_run_identity(root: pathlib.Path, mutate, *, mirror_provenance: bool = False) -> None:
+    """Mutate and re-sign identity; optionally make provenance agree with the lie."""
+    path = root / "run-identity.json"
+    identity = json.loads(path.read_text())
+    mutate(identity)
+    payload = {key: value for key, value in identity.items()
+               if key != "identity_sha256"}
+    identity["identity_sha256"] = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    path.write_text(json.dumps(identity))
+    if mirror_provenance:
+        provenance_path = root / "provenance.json"
+        provenance_value = json.loads(provenance_path.read_text())
+        for field in (
+                "root_sha", "submodule_status", "actlize_sha", "binary_sha256",
+                "device_model", "pci_identity", "driver_version", "sdk_compiler_identity",
+                "protocol_sample_count", "groups"):
+            provenance_value[field] = identity[field]
+        provenance_value["run_identity_sha256"] = identity["identity_sha256"]
+        provenance_path.write_text(json.dumps(provenance_value))
+
+
 def rewrite_provenance_commands(root: pathlib.Path, mutate) -> None:
     """Mutate the embedded and standalone command journals as one fact."""
     path = root / "provenance.json"
@@ -86,6 +139,7 @@ def rewrite_provenance_commands(root: pathlib.Path, mutate) -> None:
 def dense_log(median: Decimal, *, bpc: int = 1, cap: int = 6,
               low: Decimal | None = None, high: Decimal | None = None,
               prereq: bool = True) -> str:
+    dec = A._marlin_dense_decomposition(32, 32, 72, bpc)
     locks = "".join(
         f"  [dense marlin lock fingerprint] repeat={i}/8 raw_bitdiff=0 x stable=1 "
         "same-workspace=1 external-lock-reset=0\n" for i in range(1, 9))
@@ -98,7 +152,9 @@ def dense_log(median: Decimal, *, bpc: int = 1, cap: int = 6,
         "  [streamk fixture exactness] fixture=a0-exact shape=1x4096x4096 x -> "
         "ORDER-INDEPENDENT+FP16-EXACT\n"
         f"  [dense marlin decomposition] real_cu=72 occupancy_api={cap} blocks_per_cu={bpc} "
-        "Q=32 Kt=32 G=72 I=15 active=69 idle=3 handoffs=37 max_peers=3 workspace=1\n"
+        f"Q=32 Kt=32 G={dec['grid_ctas']} I={dec['stripe_iters']} "
+        f"active={dec['active_ctas']} idle={dec['idle_ctas']} "
+        f"handoffs={dec['handoffs']} max_peers={dec['max_peers']} workspace=1\n"
         f"  Disposition: {disposition}\n"
         f"  [dense kernel-span-upper] n=20 median={median} us mean={median} us "
         f"min={low} us max={high} us spread=(max-min)/mean=0.00% "
@@ -117,7 +173,11 @@ def dense_bundle(root: pathlib.Path, median: Decimal, *, wk1: bool = True,
     common = [f"{name}={value}" for name, value in problem.items()]
     commands = [
         {"role": "wk1-static-target", "argv": ["python3", "static.py"], "exit_status": 0},
-        {"role": "wk1-production-delivery", "argv": ["bash", "l143.sh"], "exit_status": 0},
+        {"role": "wk1-committed-production-delivery",
+         "argv": ["git", "-C", str(ROOT), "show",
+                  "a" * 40 + ":dev/fold_derivation/"
+                  "l143_wk4_production_delivery.expected.txt"],
+         "exit_status": 0},
         {"role": "device-build", "argv": ["bash", "build.sh"], "exit_status": 0},
     ]
     for bpc in (1, 2, 4, 6):
@@ -132,6 +192,7 @@ def dense_bundle(root: pathlib.Path, median: Decimal, *, wk1: bool = True,
                      "exit_status": 2})
     p = provenance(commands)
     p["argv"] = ["tools/run_dense_marlin_wk4_box.sh"]
+    attach_run_identity(root, p, "not-applicable")
     (root / "provenance.json").write_text(json.dumps(p))
     (root / "commands.jsonl").write_text(
         "".join(json.dumps(item, sort_keys=True, separators=(",", ":")) + "\n"
@@ -160,6 +221,9 @@ def dense_bundle(root: pathlib.Path, median: Decimal, *, wk1: bool = True,
         (root / "wk1-admission.log").write_text(
             "[dense-marlin-wk4] PASS: isolated 1Mx2Nx4K type/shipping-artifact/CLI; "
             "historical target unchanged; thirteen structural plants rejected\n"
+            "[marlin-wk4] wk1-evidence=committed-local-oracle source-sha=" + "a" * 40 +
+            " path=dev/fold_derivation/l143_wk4_production_delivery.expected.txt "
+            "fresh-box-execution=0\n"
             "L143 direct-pair pairs=8192/8192 codes=16384/16384 "
             "destinations=8192/8192 bad-pairs=0 formula-mismatch=0 bad-fragments=0 "
             "map-diff=0 shipping-hash=b89b157b5b1bd6c3\n"
@@ -195,6 +259,9 @@ def make_manifest(values: dict[str, list[str]]) -> tuple[dict, list[str]]:
     for record in parsed:
         if "shape" in record:
             record["shape"] = shape
+        if "run_id" in record:
+            record["run_id"] = (
+                "gemv-aaaaaaaaaaaa-bbbbbbbbbbbbbbbb-samples20")
         if record["rec"] == "run":
             record["build"] = f"{'a' * 40}/bin-sha256:{'b' * 64}/protocol:samples20"
     lines = [S.canonical(x) for x in parsed]
@@ -218,9 +285,12 @@ def gemv_bundle(root: pathlib.Path, manifest: dict, lines: list[str]) -> None:
         {"role": "dry-run-audit", "argv": ["python3", "sweep.py", "--dry-run"], "exit_status": 0},
         {"role": "measured-sweep", "argv": ["python3", "sweep.py", "run"], "exit_status": 0},
         {"role": "analyse", "argv": ["python3", "sweep.py", "analyse"], "exit_status": 0},
+        {"role": "analyse-completeness", "argv": ["python3", "-c", "check"],
+         "exit_status": 0},
     ]
     p = provenance(commands)
     p["argv"] = ["tools/run_gemv_sweep_box.sh"]
+    attach_run_identity(root, p, "all")
     (root / "provenance.json").write_text(json.dumps(p))
     (root / "commands.jsonl").write_text(
         "".join(json.dumps(item, sort_keys=True, separators=(",", ":")) + "\n"
@@ -282,9 +352,15 @@ def main() -> None:
             shutil.copy2(ROOT / relative, target)
         analyzer = drift / "benchmarks/sweep_gemv_perf.py"
         analyzer.write_text(analyzer.read_text() + "\n# planted two-quantum reinterpretation\n")
-        check(any("differs from result SHA" in error
+        check(any("benchmarks/sweep_gemv_perf.py differs from result SHA" in error
                   for error in A.publication_code_errors(sha, git_repo, drift)),
               "changed analyser was allowed to reinterpret an older bundle")
+        shutil.copy2(ROOT / "benchmarks/sweep_gemv_perf.py", analyzer)
+        reader = drift / "tools/adjudicate_box_runs.py"
+        reader.write_text(reader.read_text() + "\n# planted post-result threshold\n")
+        check(any("tools/adjudicate_box_runs.py differs from result SHA" in error
+                  for error in A.publication_code_errors(sha, git_repo, drift)),
+              "changed adjudicator was allowed to reinterpret an older bundle")
         for name, median, expected in (
                 ("converged", boundary - Decimal("0.1"), "CONVERGED_OR_BETTER"),
                 ("boundary", boundary, "CONVERGED_OR_BETTER"),
@@ -293,6 +369,7 @@ def main() -> None:
             bundle = td / name
             dense_bundle(bundle, median, unknown=(name == "converged"))
             result = A.adjudicate_dense_bundle(loaded, bundle)
+            check_three_sections(result, name)
             check(result["registered_verdict"] == expected, f"{name}: {result}")
             if name == "boundary":
                 check(not result["boundary_unresolved"],
@@ -312,12 +389,40 @@ def main() -> None:
         check(result["registered_verdict"] == "VOID" and
               any("wk1-admission" in x for x in result["reasons"]),
               f"missing WK1 evidence did not void: {result}")
+        missing_identity = td / "missing-dense-run-identity"
+        dense_bundle(missing_identity, classic)
+        (missing_identity / "run-identity.json").unlink()
+        result = A.adjudicate_dense_bundle(loaded, missing_identity)
+        check(result["registered_verdict"] == "VOID" and
+              any("run-identity.json" in x for x in result["reasons"]),
+              "a dense bundle without immutable run identity was admitted")
+        tampered_identity = td / "tampered-dense-run-identity"
+        dense_bundle(tampered_identity, classic)
+        rewrite_run_identity(
+            tampered_identity,
+            lambda identity: identity.__setitem__("device_model", "other-ppu"))
+        result = A.adjudicate_dense_bundle(loaded, tampered_identity)
+        check(result["registered_verdict"] == "VOID" and
+              any("device_model differs from provenance" in x
+                  for x in result["reasons"]),
+              "a re-signed dense identity that differs from provenance was admitted")
+        wrong_dense_groups = td / "wrong-dense-groups"
+        dense_bundle(wrong_dense_groups, classic)
+        rewrite_run_identity(
+            wrong_dense_groups,
+            lambda identity: identity.__setitem__("groups", "all"),
+            mirror_provenance=True)
+        result = A.adjudicate_dense_bundle(loaded, wrong_dense_groups)
+        check(result["registered_verdict"] == "VOID" and
+              any("differs from 'not-applicable'" in x for x in result["reasons"]),
+              "a dense identity carrying a GEMV build selection was admitted")
         false_wk1 = td / "false-wk1"
         dense_bundle(false_wk1, classic)
         text = (false_wk1 / "wk1-admission.log").read_text().replace(
             "WK1-BYTES=UNCHANGED result=PASS", "WK1-BYTES=UNCHANGED result=FAIL")
         (false_wk1 / "wk1-admission.log").write_text(text + "unrelated result=PASS\n")
         result = A.adjudicate_dense_bundle(loaded, false_wk1)
+        check_three_sections(result, "false-wk1")
         check(result["registered_verdict"] == "VOID" and all(
             x["verdict"] == "NOT_ADJUDICATED" for x in result["cell_results"]),
             "unrelated PASS masked a failed final WK1 line or interpretation continued after VOID")
@@ -338,8 +443,18 @@ def main() -> None:
         b2 = next(x for x in result["cell_results"]
                   if x.get("warp_k") == 4 and x.get("blocks_per_cu") == 2)
         check(b2["verdict"] == "DIAGNOSTIC" and b2["median_us"] == str(classic) and
-              b2["decomposition"]["handoffs"] == 37,
+              b2["decomposition"]["handoffs"] == 96,
               "per-rung timing/decomposition evidence was dropped from the adjudication")
+        bad_decomposition = td / "bad-decomposition"
+        dense_bundle(bad_decomposition, classic)
+        path = bad_decomposition / "bpc4.log"
+        path.write_text(path.read_text().replace(
+            "G=288 I=4 active=256 idle=32 handoffs=224 max_peers=8 workspace=1",
+            "G=999 I=999 active=999 idle=999 handoffs=999 max_peers=999 workspace=1"))
+        result = A.adjudicate_dense_bundle(loaded, bad_decomposition)
+        check(result["registered_verdict"] == "VOID" and
+              any("flat-stripe oracle" in x for x in result["reasons"]),
+              "self-consistent-looking but false per-rung decomposition was published")
         bad_illegal = td / "bad-illegal"
         dense_bundle(bad_illegal, classic)
         (bad_illegal / "illegal-bpc.log").write_text("generic failure\n")
@@ -384,6 +499,40 @@ def main() -> None:
               any("B1 used an explicit override" in x for x in result["reasons"]),
               "an explicitly overridden B1 was accepted as the default path")
 
+        stale_wk1_role = td / "stale-wk1-role"
+        dense_bundle(stale_wk1_role, classic)
+        def restore_stale_wk1_role(rows):
+            next(row for row in rows
+                 if row["role"] == "wk1-committed-production-delivery")["role"] = \
+                "wk1-production-delivery"
+        rewrite_provenance_commands(stale_wk1_role, restore_stale_wk1_role)
+        result = A.adjudicate_dense_bundle(loaded, stale_wk1_role)
+        check(result["registered_verdict"] == "VOID" and
+              any("wk1-committed-production-delivery" in x for x in result["reasons"]),
+              "the stale role that implied fresh box execution was admitted")
+
+        wrong_wk1_source = td / "wrong-wk1-source"
+        dense_bundle(wrong_wk1_source, classic)
+        def change_wk1_source(rows):
+            next(row for row in rows
+                 if row["role"] == "wk1-committed-production-delivery")["argv"][-1] = \
+                "a" * 40 + ":dev/fold_derivation/other.expected.txt"
+        rewrite_provenance_commands(wrong_wk1_source, change_wk1_source)
+        result = A.adjudicate_dense_bundle(loaded, wrong_wk1_source)
+        check(result["registered_verdict"] == "VOID" and
+              any("exact result-SHA git show" in x for x in result["reasons"]),
+              "WK1 evidence from an unregistered result-SHA path was admitted")
+
+        fake_box_wk1 = td / "fake-box-wk1"
+        dense_bundle(fake_box_wk1, classic)
+        path = fake_box_wk1 / "wk1-admission.log"
+        path.write_text(path.read_text().replace(
+            "fresh-box-execution=0", "fresh-box-execution=1", 1))
+        result = A.adjudicate_dense_bundle(loaded, fake_box_wk1)
+        check(result["registered_verdict"] == "VOID" and
+              any("committed-not-box" in x for x in result["reasons"]),
+              "committed host evidence was allowed to masquerade as a fresh box execution")
+
         conflicting_shape = td / "conflicting-shape-command"
         dense_bundle(conflicting_shape, classic)
         rewrite_provenance_commands(
@@ -394,6 +543,19 @@ def main() -> None:
         check(result["registered_verdict"] == "VOID" and
               any("--n=4096" in x for x in result["reasons"]),
               "a conflicting duplicate dense shape option was admitted")
+
+        extra_dense_command = td / "extra-dense-command"
+        dense_bundle(extra_dense_command, classic)
+        rewrite_provenance_commands(
+            extra_dense_command,
+            lambda rows: rows.append({"role": "unregistered-device-probe",
+                                      "argv": ["fixture-bin", "--probe"],
+                                      "exit_status": 0}))
+        result = A.adjudicate_dense_bundle(loaded, extra_dense_command)
+        check(result["registered_verdict"] == "CONVERGED_OR_BETTER" and
+              any(x.get("command_role") == "unregistered-device-probe"
+                  for x in result["unregistered_observations"]),
+              "an unregistered dense command was silently omitted from section three")
 
         bad_cap = td / "bad-cap-command"
         dense_bundle(bad_cap, classic)
@@ -503,6 +665,7 @@ def main() -> None:
         gb = td / "gemv"
         gemv_bundle(gb, manifest, lines)
         result = A.adjudicate_gemv_bundle(small_policy, gb)
+        check_three_sections(result, "gemv-resolved")
         check(result["registered_verdict"] == "ADJUDICATED", f"gemv: {result}")
         cell = result["cell_results"][0]
         check(cell["measurement_verdict"] == "RESOLVED" and
@@ -513,6 +676,23 @@ def main() -> None:
               cell["runner_up_evidence"]["raw_samples"] == 20 and
               len(cell["leader_evidence"]["raw_band_us"]) == 2,
               f"gemv changed cell: {cell}")
+        missing_gemv_identity = td / "missing-gemv-run-identity"
+        shutil.copytree(gb, missing_gemv_identity)
+        (missing_gemv_identity / "run-identity.json").unlink()
+        result = A.adjudicate_gemv_bundle(small_policy, missing_gemv_identity)
+        check(result["registered_verdict"] == "VOID" and
+              any("run-identity.json" in x for x in result["reasons"]),
+              "a GEMV bundle without immutable run identity was admitted")
+        wrong_gemv_groups = td / "wrong-gemv-groups"
+        shutil.copytree(gb, wrong_gemv_groups)
+        rewrite_run_identity(
+            wrong_gemv_groups,
+            lambda identity: identity.__setitem__("groups", "i4-native"),
+            mirror_provenance=True)
+        result = A.adjudicate_gemv_bundle(small_policy, wrong_gemv_groups)
+        check(result["registered_verdict"] == "VOID" and
+              any("differs from 'all'" in x for x in result["reasons"]),
+              "a bounded-group GEMV identity was admitted as a full sweep")
         (gb / "unregistered-note.txt").write_text("observation outside preregistration\n")
         result = A.adjudicate_gemv_bundle(small_policy, gb)
         check(result["registered_verdict"] == "ADJUDICATED" and
@@ -521,6 +701,19 @@ def main() -> None:
                   "reason": "not covered by preregistered bundle contract"}],
               "an unregistered observation was hidden or forced into a registered verdict")
         (gb / "unregistered-note.txt").unlink()
+
+        extra_gemv_command = td / "extra-gemv-command"
+        shutil.copytree(gb, extra_gemv_command)
+        rewrite_provenance_commands(
+            extra_gemv_command,
+            lambda rows: rows.append({"role": "unregistered-device-probe",
+                                      "argv": ["fixture-bin", "--probe"],
+                                      "exit_status": 0}))
+        result = A.adjudicate_gemv_bundle(small_policy, extra_gemv_command)
+        check(result["registered_verdict"] == "ADJUDICATED" and
+              any(x.get("command_role") == "unregistered-device-probe"
+                  for x in result["unregistered_observations"]),
+              "an unregistered GEMV command was silently omitted from section three")
 
         wrong_timer = copy.deepcopy(small)
         wrong_timer["gemv"]["timer_normalization_us"] = "0.002"
@@ -569,9 +762,10 @@ def main() -> None:
         qc = qr["cell_results"][0]
         check(qc["measurement_verdict"] == "UNRESOLVED" and
               qc["measurement_reasons"] == ["WITHIN_ONE_QUANTUM"] and
-              qc["leader_runner_gap_us"] == 0.01 and
-              qc["leader_evidence"]["raw_band_us"] == [1.0, 1.0] and
-              qc["runner_up_evidence"]["raw_band_us"] == [1.01, 1.01],
+              qc["registered_resolution"]["normalized_gap_us"] == "0.010" and
+              qc["registered_resolution"]["unresolved_limit_us"] == "0.01" and
+              qc["leader_evidence"]["raw_band_us"][1] <
+              qc["runner_up_evidence"]["raw_band_us"][0],
               f"non-overlap gap exactly at one quantum was resolved: {qc}")
 
         two_quanta = td / "gemv-two-quanta"
@@ -584,8 +778,23 @@ def main() -> None:
         tr = A.adjudicate_gemv_bundle(three_policy, two_quanta)
         tc = tr["cell_results"][0]
         check(tc["measurement_verdict"] == "RESOLVED" and
-              tc["leader_runner_gap_us"] == 0.02,
+              tc["registered_resolution"]["normalized_gap_us"] == "0.020",
               f"non-overlap gap above the registered quantum limit stayed unresolved: {tc}")
+
+        # The analyzer's convenience verdict uses its own one-quantum rule.
+        # Change only the sealed policy to two quanta: the exact same decoded
+        # facts must now be UNRESOLVED without becoming VOID.  This proves that
+        # analyzer labels are not a second adjudication authority.
+        two_limit = copy.deepcopy(three)
+        two_limit["gemv"]["resolution_rule"]["max_unresolved_quanta"] = "2"
+        two_limit_policy = write_policy(td / "two-limit.md", two_limit)
+        tlr = A.adjudicate_gemv_bundle(two_limit_policy, two_quanta)
+        tlc = tlr["cell_results"][0]
+        check(tlr["registered_verdict"] == "ADJUDICATED" and
+              tlc["measurement_verdict"] == "UNRESOLVED" and
+              tlc["measurement_reasons"] == ["WITHIN_REGISTERED_QUANTUM_LIMIT"] and
+              tlc["registered_resolution"]["unresolved_limit_us"] == "0.02",
+              "analyzer convenience verdict overrode the sealed two-quantum policy")
 
         # A three-sample/19-sample shortcut must never satisfy the registered 20-launch protocol.
         short = td / "gemv-short"
@@ -596,6 +805,37 @@ def main() -> None:
         check(sr["registered_verdict"] == "VOID" and
               any("expected_samples=19" in x for x in sr["reasons"]),
               "non-20-sample GEMV raw was admitted")
+
+        duplicate_attempt = td / "gemv-duplicate-attempt"
+        dm, dl = make_manifest({INCUMBENT: sample_series(Decimal("1.00")),
+                                CHALLENGER: sample_series(Decimal("1.40"))})
+        parsed = [json.loads(line) for line in dl]
+        second_attempt = []
+        for record in parsed:
+            if record.get("rec") in ("attempt", "sample"):
+                planted = copy.deepcopy(record)
+                planted["attempt_id"] = "1"
+                second_attempt.append(S.canonical(planted))
+        gemv_bundle(duplicate_attempt, dm, dl + second_attempt)
+        result = A.adjudicate_gemv_bundle(small_policy, duplicate_attempt)
+        check(result["registered_verdict"] == "VOID" and
+              any("more than one attempt" in x for x in result["reasons"]),
+              "two complete 20-sample attempts were merged into one candidate")
+
+        duplicate_run = td / "gemv-duplicate-run"
+        rm, rl = make_manifest({INCUMBENT: sample_series(Decimal("1.00")),
+                                CHALLENGER: sample_series(Decimal("1.40"))})
+        parsed = [json.loads(line) for line in rl]
+        second_run = []
+        for record in parsed:
+            planted = copy.deepcopy(record)
+            planted["run_id"] = "planted-second-run"
+            second_run.append(S.canonical(planted))
+        gemv_bundle(duplicate_run, rm, rl + second_run)
+        result = A.adjudicate_gemv_bundle(small_policy, duplicate_run)
+        check(result["registered_verdict"] == "VOID" and
+              any("exactly one run identity" in x for x in result["reasons"]),
+              "two raw run identities were co-ranked")
         bad_manifest = copy.deepcopy(manifest)
         bad_manifest["counts"] = {"total": 3, "legal": 2, "pruned": 1,
                                   "prune_reasons": {"PLANTED": 1}}

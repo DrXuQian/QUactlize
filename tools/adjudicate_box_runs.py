@@ -13,6 +13,7 @@ and Marlin implementation paths are frozen for the queued box measurements.
 from __future__ import annotations
 
 import argparse
+import collections
 import copy
 import hashlib
 import importlib.util
@@ -673,6 +674,16 @@ def _registered_incumbent(gemv_policy: dict[str, Any], shape_id: str, fmt: str,
 def _raw_protocol_errors(data: Any, gemv_policy: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     samples = gemv_policy["sample_count"]
+    if len(data.runs) != 1:
+        errors.append(
+            f"raw data must contain exactly one run identity, found {len(data.runs)}")
+    attempts_per_candidate = collections.Counter(
+        aid.candidate for aid in data.attempts)
+    for candidate, count in sorted(attempts_per_candidate.items(), key=lambda item: repr(item[0])):
+        if count != 1:
+            errors.append(
+                "raw candidate has more than one attempt: "
+                f"{candidate.shape_id}/{candidate.fmt}/{candidate.config_id} count={count}")
     for aid, attempt in data.attempts.items():
         if attempt.get("expected_samples") != samples:
             errors.append(
@@ -682,6 +693,28 @@ def _raw_protocol_errors(data: Any, gemv_policy: dict[str, Any]) -> list[str]:
             errors.append(
                 f"raw attempt {aid!r} has {len(data.samples.get(aid, {}))}/{samples} samples")
     return errors
+
+
+def _marlin_dense_decomposition(q: int, k_tiles: int, real_cu: int,
+                                blocks_per_cu: int) -> dict[str, int]:
+    """Independent integer oracle for Marlin's flat-(q,k) stripe geometry."""
+    total = q * k_tiles
+    grid = max(q, real_cu * blocks_per_cu)
+    stripe = (total + grid - 1) // grid
+    active = (total + stripe - 1) // stripe
+    peers = [
+        (((tile + 1) * k_tiles - 1) // stripe) -
+        ((tile * k_tiles) // stripe) + 1
+        for tile in range(q)
+    ]
+    return {
+        "grid_ctas": grid,
+        "stripe_iters": stripe,
+        "active_ctas": active,
+        "idle_ctas": grid - active,
+        "handoffs": sum(peer - 1 for peer in peers),
+        "max_peers": max(peers),
+    }
 
 
 def _candidate_evidence(candidate: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -695,7 +728,9 @@ def _candidate_evidence(candidate: dict[str, Any] | None) -> dict[str, Any] | No
     }
 
 
-def _registered_gemv_resolution(group: dict[str, Any], policy: dict[str, Any]) -> tuple[str, list[str]]:
+def _registered_gemv_resolution(
+        group: dict[str, Any], policy: dict[str, Any]
+) -> tuple[str, list[str], dict[str, Any]]:
     """Apply the JSON-registered resolution rule to analyser-produced facts.
 
     The analyser owns raw decoding and timer-lattice inference.  It does not own
@@ -704,6 +739,12 @@ def _registered_gemv_resolution(group: dict[str, Any], policy: dict[str, Any]) -
     """
     rule = policy["resolution_rule"]
     reasons: list[str] = []
+    facts: dict[str, Any] = {
+        "normalized_gap_us": None,
+        "quantum_us": None,
+        "max_unresolved_quanta": rule["max_unresolved_quanta"],
+        "unresolved_limit_us": None,
+    }
     runner = group.get("runner_up")
     if rule["require_runner_up"] and runner is None:
         reasons.append("NO_RUNNER_UP")
@@ -719,7 +760,13 @@ def _registered_gemv_resolution(group: dict[str, Any], policy: dict[str, Any]) -
         try:
             normalized = Decimal(str(gap)).quantize(
                 Decimal(policy["timer_normalization_us"]), rounding=ROUND_HALF_EVEN)
-            limit = Decimal(str(q_value)) * Decimal(rule["max_unresolved_quanta"])
+            q_decimal = Decimal(str(q_value))
+            limit = q_decimal * Decimal(rule["max_unresolved_quanta"])
+            facts.update({
+                "normalized_gap_us": _decimal_output(normalized),
+                "quantum_us": _decimal_output(q_decimal),
+                "unresolved_limit_us": _decimal_output(limit),
+            })
             if normalized <= limit:
                 reasons.append(
                     "WITHIN_ONE_QUANTUM" if rule["max_unresolved_quanta"] == "1"
@@ -728,7 +775,7 @@ def _registered_gemv_resolution(group: dict[str, Any], policy: dict[str, Any]) -
             reasons.append("GAP_OR_QUANTUM_MALFORMED")
     elif runner is not None and "QUANTUM_UNKNOWN" not in reasons:
         reasons.append("GAP_OR_QUANTUM_MISSING")
-    return ("UNRESOLVED" if reasons else "RESOLVED"), reasons
+    return ("UNRESOLVED" if reasons else "RESOLVED"), reasons, facts
 
 
 def adjudicate_gemv(loaded: LoadedPolicy, manifest_path: pathlib.Path | str,
@@ -802,15 +849,12 @@ def adjudicate_gemv(loaded: LoadedPolicy, manifest_path: pathlib.Path | str,
         expected_runner = ordered[1]["config_id"] if len(ordered) > 1 else None
         if group.get("leader") != expected_leader or group.get("runner_up") != expected_runner:
             reasons.append(f"analyser leader/runner ordering differs from raw medians for {shape_id}/{fmt}")
-        registered_measurement, registered_reasons = _registered_gemv_resolution(
+        registered_measurement, registered_reasons, registered_facts = _registered_gemv_resolution(
             group, gemv_policy)
-        analyser_reasons = sorted(group.get("reasons", []))
-        if (group.get("verdict") != registered_measurement or
-                analyser_reasons != sorted(registered_reasons)):
-            reasons.append(
-                f"analyser resolution differs from preregistered rule for {shape_id}/{fmt}: "
-                f"analyser={group.get('verdict')}/{analyser_reasons} "
-                f"registered={registered_measurement}/{sorted(registered_reasons)}")
+        # sweep_gemv_perf owns raw decoding, ranking facts, and timer-lattice
+        # inference.  Its convenience verdict/reasons are intentionally not an
+        # adjudication input: requiring agreement would make those hard-coded
+        # labels a second decision authority beside the sealed JSON policy.
         gap = group.get("leader_runner_gap_us")
         relative = None
         if leader is not None and gap is not None:
@@ -838,6 +882,7 @@ def adjudicate_gemv(loaded: LoadedPolicy, manifest_path: pathlib.Path | str,
             "leader_runner_relative_gap": relative,
             "leader_runner_bands_overlap": group["leader_runner_bands_overlap"],
             "resolution_floor": group["quantum"],
+            "registered_resolution": registered_facts,
             "incumbent": incumbent,
             "incumbent_unknown_reason": incumbent_unknown,
             "routing_verdict": routing,
@@ -862,7 +907,8 @@ def adjudicate_gemv(loaded: LoadedPolicy, manifest_path: pathlib.Path | str,
 _PROVENANCE_FIELDS = (
     "schema", "root_sha", "root_status", "submodule_status", "actlize_sha", "binary_sha256",
     "device_model", "pci_identity", "driver_version", "sdk_compiler_identity",
-    "argv", "commands", "runner_exit_status", "protocol_sample_count",
+    "groups", "run_identity_sha256", "argv", "commands", "runner_exit_status",
+    "protocol_sample_count",
 )
 
 
@@ -929,6 +975,69 @@ def _read_provenance(bundle: pathlib.Path) -> tuple[dict[str, Any], list[str]]:
                 (len(act_lines) != 1 or act_lines[0].lstrip().split(" ", 1)[0] != actlize)):
             errors.append("actlize_sha differs from recursive submodule status")
     return value, errors
+
+
+_RUN_IDENTITY_FIELDS = {
+    "schema", "root_sha", "submodule_status", "actlize_sha", "binary_sha256",
+    "device_model", "pci_identity", "driver_version", "sdk_compiler_identity",
+    "protocol_sample_count", "groups", "identity_sha256",
+}
+
+
+def _crosscheck_run_identity(bundle: pathlib.Path, provenance: dict[str, Any],
+                             expected_groups: str) -> list[str]:
+    path = bundle / "run-identity.json"
+    try:
+        identity = json.loads(path.read_text(), object_pairs_hook=_pairs_without_duplicates)
+    except (OSError, json.JSONDecodeError, PolicyError) as exc:
+        return [f"missing/unreadable run-identity.json: {exc}"]
+    if not isinstance(identity, dict) or set(identity) != _RUN_IDENTITY_FIELDS:
+        return ["run-identity.json does not have the exact v1 schema"]
+    errors: list[str] = []
+    if identity.get("schema") != "quactlize-box-run-identity-v1":
+        errors.append("run-identity.json schema differs")
+    for field in (
+            "root_sha", "submodule_status", "actlize_sha", "binary_sha256",
+            "device_model", "pci_identity", "driver_version", "sdk_compiler_identity",
+            "groups", "identity_sha256"):
+        value = identity.get(field)
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"run-identity field {field} is missing or malformed")
+    sample_count = identity.get("protocol_sample_count")
+    if (not isinstance(sample_count, int) or isinstance(sample_count, bool) or
+            sample_count <= 0):
+        errors.append("run-identity protocol_sample_count is missing or malformed")
+    if (isinstance(identity.get("root_sha"), str) and
+            not re.fullmatch(r"[0-9a-f]{40,64}", identity["root_sha"])):
+        errors.append("run-identity root_sha is not a full Git object ID")
+    if (isinstance(identity.get("actlize_sha"), str) and
+            not re.fullmatch(r"[0-9a-f]{40,64}", identity["actlize_sha"])):
+        errors.append("run-identity actlize_sha is not a full Git object ID")
+    if (isinstance(identity.get("binary_sha256"), str) and
+            not re.fullmatch(r"[0-9a-f]{64}", identity["binary_sha256"])):
+        errors.append("run-identity binary_sha256 is not a lowercase SHA-256")
+    for field in ("device_model", "pci_identity", "driver_version", "sdk_compiler_identity"):
+        value = identity.get(field)
+        if isinstance(value, str) and value.strip().lower() in {
+                "unknown", "unset", "n/a", "na", "none"}:
+            errors.append(f"run-identity {field} is not a measured explicit identity")
+    digest = identity.get("identity_sha256")
+    payload = {key: value for key, value in identity.items() if key != "identity_sha256"}
+    expected_digest = hashlib.sha256(_canonical(payload).encode()).hexdigest()
+    if not isinstance(digest, str) or digest != expected_digest:
+        errors.append("run-identity.json digest differs from its exact payload")
+    if identity.get("groups") != expected_groups:
+        errors.append(
+            f"run-identity groups={identity.get('groups')!r} differs from {expected_groups!r}")
+    for field in (
+            "root_sha", "submodule_status", "actlize_sha", "binary_sha256",
+            "device_model", "pci_identity", "driver_version", "sdk_compiler_identity",
+            "protocol_sample_count", "groups"):
+        if identity.get(field) != provenance.get(field):
+            errors.append(f"run-identity {field} differs from provenance")
+    if digest != provenance.get("run_identity_sha256"):
+        errors.append("run-identity digest differs from provenance run_identity_sha256")
+    return errors
 
 
 def _commands_by_role(provenance: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
@@ -1013,6 +1122,31 @@ def _dense_cell_from_log(path: pathlib.Path, bpc: int, policy: dict[str, Any]) -
             errors.append("decomposition Q differs from preregistered problem")
         if int(dec.group(5)) != expected_dec["k_tiles"]:
             errors.append("decomposition Kt differs from preregistered problem")
+        real_cu = int(dec.group(1))
+        occupancy_api = int(dec.group(2))
+        if real_cu <= 0 or occupancy_api <= 0:
+            errors.append("decomposition real_cu/occupancy_api must be positive")
+        elif bpc > occupancy_api:
+            errors.append(
+                f"decomposition B={bpc} exceeds occupancy_api={occupancy_api}")
+        else:
+            expected = _marlin_dense_decomposition(
+                expected_dec["output_tiles"], expected_dec["k_tiles"], real_cu, bpc)
+            names = (
+                ("grid_ctas", 6), ("stripe_iters", 7), ("active_ctas", 8),
+                ("idle_ctas", 9), ("handoffs", 10), ("max_peers", 11),
+            )
+            for name, group in names:
+                observed = int(dec.group(group))
+                if observed != expected[name]:
+                    errors.append(
+                        f"decomposition {name}={observed} differs from independent "
+                        f"flat-stripe oracle {expected[name]}")
+            workspace = int(dec.group(12))
+            split = expected["handoffs"] > 0
+            if split != (workspace > 0):
+                errors.append(
+                    "workspace zero/nonzero state disagrees with whether any tile is split")
     timing, found = _one_match(
         text,
         r"^  \[dense kernel-span-upper\] n=(\d+) median=([0-9.]+) us mean=([0-9.]+) us "
@@ -1061,6 +1195,8 @@ def adjudicate_dense_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | st
     bundle = pathlib.Path(bundle_path)
     provenance, admission_errors = _read_provenance(bundle)
     admission_errors.extend(_crosscheck_provenance_files(bundle, provenance))
+    admission_errors.extend(_crosscheck_run_identity(
+        bundle, provenance, "not-applicable"))
     sample_count = loaded.value["dense"]["sample_count"]
     if provenance.get("protocol_sample_count") != sample_count:
         admission_errors.append("dense provenance sample count differs from preregistration")
@@ -1069,10 +1205,21 @@ def adjudicate_dense_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | st
             not runner_argv[0].endswith("tools/run_dense_marlin_wk4_box.sh")):
         admission_errors.append("dense top-level runner argv is not the frozen entry point")
     commands = _commands_by_role(provenance)
-    for role in ("wk1-static-target", "wk1-production-delivery", "device-build"):
+    for role in ("wk1-static-target", "wk1-committed-production-delivery", "device-build"):
         rows = commands.get(role, [])
         if len(rows) != 1 or rows[0].get("exit_status") != 0:
             admission_errors.append(f"command journal lacks one successful {role}")
+    committed_rows = commands.get("wk1-committed-production-delivery", [])
+    if len(committed_rows) == 1:
+        committed_argv = committed_rows[0].get("argv", [])
+        expected_object = (
+            f"{provenance.get('root_sha')}:"
+            "dev/fold_derivation/l143_wk4_production_delivery.expected.txt")
+        if (len(committed_argv) != 5 or committed_argv[0] != "git" or
+                committed_argv[1] != "-C" or committed_argv[3] != "show" or
+                committed_argv[4] != expected_object):
+            admission_errors.append(
+                "WK1 committed production-delivery command is not the exact result-SHA git show")
     runner = bundle / "runner.log"
     try:
         runner_text = runner.read_text()
@@ -1098,13 +1245,24 @@ def adjudicate_dense_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | st
     if runner_text.splitlines().count(runner_terminator) != 1:
         admission_errors.append("exact unique runner PASS terminator is absent")
 
-    # WK1 evidence is executable output, not a caller-provided boolean.
+    # WK1 is a locally executable oracle whose exact expected output is committed
+    # at the measured result SHA.  The box runner retrieves that immutable file;
+    # it does not pretend that the host-only CuTe oracle was freshly compiled or
+    # executed on the PPU box.  The evidence is still output, not a caller-provided
+    # boolean, and the command journal binds it to the result SHA above.
     wk1_path = bundle / "wk1-admission.log"
     try:
         wk1_text = wk1_path.read_text()
     except OSError as exc:
         wk1_text = ""
         admission_errors.append(f"missing/unreadable wk1-admission.log: {exc}")
+    committed_marker, marker_errors = _one_match(
+        wk1_text,
+        (r"^\[marlin-wk4\] wk1-evidence=committed-local-oracle source-sha=" +
+         re.escape(str(provenance.get("root_sha"))) +
+         r" path=dev/fold_derivation/l143_wk4_production_delivery\.expected\.txt "
+         r"fresh-box-execution=0$"),
+        "explicit committed-not-box L143 evidence marker")
     wk1_map, map_errors = _one_match(
         wk1_text,
         r"^L143 WK1 shipping map-diff=(\d+) byte-diff=(\d+) result=BIT-IDENTICAL$",
@@ -1126,14 +1284,15 @@ def adjudicate_dense_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | st
         r"type/shipping-artifact/CLI; historical target unchanged; "
         r"thirteen structural plants rejected$",
         "structural WK1/WK4 source gate")
-    admission_errors += map_errors + direct_errors + final_errors + structure_errors
+    admission_errors += marker_errors + map_errors + direct_errors + final_errors + structure_errors
     wk1_policy = loaded.value["dense"]["wk1_admission"]
     wk1_total = int(wk1_direct.group(2)) if wk1_direct is not None else None
     wk1_ok = bool(
         wk1_map is not None and int(wk1_map.group(1)) == wk1_policy["byte_map_diff"] and
         int(wk1_map.group(2)) == wk1_policy["byte_map_diff"] and
         wk1_direct is not None and int(wk1_direct.group(1)) == wk1_total ==
-        wk1_policy["byte_map_total"] and wk1_final is not None and structure is not None)
+        wk1_policy["byte_map_total"] and wk1_final is not None and structure is not None and
+        committed_marker is not None)
     if not wk1_ok:
         admission_errors.append("WK1 executable structural/byte-map admission evidence did not close")
 
@@ -1147,6 +1306,18 @@ def adjudicate_dense_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | st
     ]
     parse_errors: list[str] = []
     unregistered: list[dict[str, Any]] = []
+    registered_command_roles = {
+        "wk1-static-target", "wk1-committed-production-delivery", "device-build",
+        "dense-wk4-illegal-bpc",
+        *(f"dense-wk4-bpc{bpc}" for bpc in (1, 2, 4, 6)),
+    }
+    unregistered.extend(
+        {"command_role": role, "argv": row.get("argv"),
+         "exit_status": row.get("exit_status"),
+         "reason": "command role is outside the preregistered dense bundle contract"}
+        for role, rows in sorted(commands.items()) if role not in registered_command_roles
+        for row in rows
+    )
     registered_keys = {(c["warp_k"], c["blocks_per_cu"])
                        for c in loaded.value["dense"]["cells"]}
     # B=1 owns the exact instantiated-kernel occupancy cap.  Every registered
@@ -1164,6 +1335,9 @@ def adjudicate_dense_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | st
     cap = int(caps[0]) if len(caps) == 1 else None
     if cap is None or cap <= 0:
         parse_errors.append("bpc1.log: exact occupancy_api cap is missing or ambiguous")
+    b1_decomposition = b1.get("decomposition", {})
+    b1_real_cu = b1_decomposition.get("real_cu")
+    b1_workspace = b1_decomposition.get("workspace")
 
     problem = loaded.value["dense"]["problem"]
     common_options = {
@@ -1230,6 +1404,16 @@ def adjudicate_dense_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | st
         if cap is not None and observed_cap != cap:
             parse_errors.append(
                 f"{path.name}: occupancy_api={observed_cap} differs from B1 cap={cap}")
+        observed_real_cu = cell.get("decomposition", {}).get("real_cu")
+        if b1_real_cu is not None and observed_real_cu != b1_real_cu:
+            parse_errors.append(
+                f"{path.name}: real_cu={observed_real_cu} differs from "
+                f"B1 real_cu={b1_real_cu}")
+        observed_workspace = cell.get("decomposition", {}).get("workspace")
+        if b1_workspace is not None and observed_workspace != b1_workspace:
+            parse_errors.append(
+                f"{path.name}: workspace={observed_workspace} differs from "
+                f"B1 workspace={b1_workspace}")
     for path in sorted(bundle.glob("bpc*.not-run")):
         match = re.fullmatch(r"bpc(\d+)\.not-run", path.name)
         if not match:
@@ -1295,7 +1479,8 @@ def adjudicate_dense_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | st
     result["cell_results"] = result.pop("cells")
     result["registered_verdict"] = result["verdict"]
     known = {
-        "provenance.json", "commands.jsonl", "submodule-status.txt", "runner.log",
+        "provenance.json", "run-identity.json", "commands.jsonl",
+        "submodule-status.txt", "runner.log",
         "build.log", "illegal-bpc.log", "wk1-admission.log", "l143",
         *(f"bpc{b}.log" for b in (1, 2, 4, 6)),
         *(f"bpc{b}.not-run" for b in (2, 4, 6)),
@@ -1314,6 +1499,7 @@ def adjudicate_gemv_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | str
     bundle = pathlib.Path(bundle_path)
     provenance, admission_errors = _read_provenance(bundle)
     admission_errors.extend(_crosscheck_provenance_files(bundle, provenance))
+    admission_errors.extend(_crosscheck_run_identity(bundle, provenance, "all"))
     samples = loaded.value["gemv"]["sample_count"]
     if provenance.get("protocol_sample_count") != samples:
         admission_errors.append("GEMV provenance sample count differs from preregistration")
@@ -1323,13 +1509,24 @@ def adjudicate_gemv_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | str
         admission_errors.append("GEMV top-level runner argv is not the frozen entry point")
     commands = _commands_by_role(provenance)
     for role in ("device-build", "base-tactic-census", "manifest", "dry-run-audit",
-                 "measured-sweep", "analyse"):
+                 "measured-sweep", "analyse", "analyse-completeness"):
         rows = commands.get(role, [])
         if not rows or rows[-1].get("exit_status") != 0:
             admission_errors.append(f"command journal lacks a final successful {role}")
+    registered_command_roles = {
+        "device-build", "base-tactic-census", "manifest", "dry-run-audit",
+        "measured-sweep", "analyse", "analyse-completeness",
+    }
+    unregistered_commands = [
+        {"command_role": role, "argv": row.get("argv"),
+         "exit_status": row.get("exit_status"),
+         "reason": "command role is outside the preregistered GEMV bundle contract"}
+        for role, rows in sorted(commands.items()) if role not in registered_command_roles
+        for row in rows
+    ]
     required = ("manifest.json", "raw.jsonl", "progress.jsonl", "result.json", "run.log",
                 "base-census.json", "base-census-authority.log", "build.log", "runner.log",
-                "commands.jsonl", "submodule-status.txt",
+                "commands.jsonl", "submodule-status.txt", "run-identity.json",
                 "pending.audit.jsonl", "pending.summary.jsonl")
     for name in required:
         if not (bundle / name).is_file():
@@ -1376,6 +1573,12 @@ def adjudicate_gemv_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | str
     try:
         sweep = _load_sweep_module()
         raw = sweep.load_raw([bundle / "raw.jsonl"])
+        expected_run_id = (
+            f"gemv-{str(provenance.get('root_sha'))[:12]}-"
+            f"{str(provenance.get('binary_sha256'))[:16]}-samples{samples}")
+        if set(raw.runs) != {expected_run_id}:
+            admission_errors.append(
+                f"raw run identity {sorted(raw.runs)!r} differs from {expected_run_id!r}")
         builds = {run.build for run in raw.runs.values()}
         expected = (f"{provenance.get('root_sha')}/bin-sha256:"
                     f"{provenance.get('binary_sha256')}/protocol:samples{samples}")
@@ -1392,7 +1595,7 @@ def adjudicate_gemv_bundle(loaded: LoadedPolicy, bundle_path: pathlib.Path | str
     # run.lock is an expected operational inode, not evidence and not an
     # unregistered observation.  Its contents never enter a verdict.
     registered_artifacts = set(required) | {"provenance.json", "logs", "run.lock"}
-    result["unregistered_observations"] = [
+    result["unregistered_observations"] = unregistered_commands + [
         {"artifact": path.name, "reason": "not covered by preregistered bundle contract"}
         for path in sorted(bundle.iterdir(), key=lambda p: p.name)
         if path.name not in registered_artifacts

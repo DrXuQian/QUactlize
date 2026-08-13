@@ -16,7 +16,7 @@ driver is a different experiment and is not merged with this one.
 <!-- BOX_RUN_POLICY_V1_BEGIN -->
 {
   "schema": "quactlize-box-run-policy-v1",
-  "prose_sha256": "a14408701a15a65da311a7e9837fe9ed8c7a260fb409fd79c24b2922010d2d95",
+  "prose_sha256": "97dee361f4a336b4ef392eddab1e64865021bde528eab513adf9d9c49dab416c",
   "dense": {
     "classic_anchor_us": "17.8",
     "historical_anchor_us": "21.14",
@@ -215,12 +215,12 @@ driver is a different experiment and is not merged with this one.
 <!-- BOX_RUN_POLICY_V1_END -->
 
 <!-- BOX_RUN_POLICY_MIRROR_V1_BEGIN -->
-policy_sha256=dd628f17c237176a9afd9148c6e33898eebbffb3d808ea3910795928a7a773fe
+policy_sha256=445b5c9eaf60fca421312408c98b73411d80e34b838055fb1f7939f6fc723eef
 dense anchors_us=17.8/21.14 recovered_fraction=0.75 derived_gap_us=3.34 derived_boundary_us=18.6350 samples=20
-dense problem={"group_size":128,"k":4096,"l":1,"m":1,"n":4096} decomposition={"k_tiles":32,"output_tiles":32}
+dense problem={"group_size":128,"k":4096,"l":1,"m":1,"n":4096} decomposition={"k_tiles":32,"output_tiles":32} invocation={"flags":["--marlin","--streamk_exact_fixture"],"options":{"alpha":"1","beta":"0","mode":1}}
 dense primary=WK4/B1 cells=WK1/B1:shipping_default_control,WK1/B2:scheduler_diagnostic,WK1/B4:scheduler_diagnostic,WK1/B6:scheduler_diagnostic,WK2/B1:compile_negative,WK2/B2:compile_negative,WK2/B4:compile_negative,WK2/B6:compile_negative,WK4/B1:primary,WK4/B2:occupancy_scheduler_diagnostic,WK4/B4:occupancy_scheduler_diagnostic,WK4/B6:occupancy_scheduler_diagnostic
 dense prerequisites=correctness,shipping_artifact_roundtrip,exact_fixture,lock_fingerprints_8_stable wk1_byte_map=0/8192
-gemv minimum_claimable_us=0.01 timer_normalization_us=0.001 samples=20  publication_partial_space=false incumbent_rules={"format_axes":{"int2":{"chunk":2,"cta_n":8,"layout":"native","step_k":16,"threads":128},"int4":{"chunk":2,"cta_n":8,"layout":"native","step_k":16,"threads":128},"q3":{"chunk":2,"cta_n":8,"layout":"native","step_k":32,"threads":64},"q6":{"chunk":2,"cta_n":8,"layout":"native","step_k":16,"threads":128}},"geometry_cta_m":{"D-4096":1,"D-EXT-K1024":1,"D-EXT-O":1,"D-EXT-Q":1,"H-G8-2048":1,"S068":1,"S069":1,"S070":1,"S071":1,"S072":2,"S073":2,"S074":2,"S075":2,"S076":3,"S077":3,"S078":3,"S079":3}}
+gemv minimum_claimable_us=0.01 timer_normalization_us=0.001 samples=20  publication_partial_space=false resolution_rule={"max_unresolved_quanta":"1","require_disjoint_bands":true,"require_runner_up":true} incumbent_rules={"format_axes":{"int2":{"chunk":2,"cta_n":8,"layout":"native","step_k":16,"threads":128},"int4":{"chunk":2,"cta_n":8,"layout":"native","step_k":16,"threads":128},"q3":{"chunk":2,"cta_n":8,"layout":"native","step_k":32,"threads":64},"q6":{"chunk":2,"cta_n":8,"layout":"native","step_k":16,"threads":128}},"geometry_cta_m":{"D-4096":1,"D-EXT-K1024":1,"D-EXT-O":1,"D-EXT-Q":1,"H-G8-2048":1,"S068":1,"S069":1,"S070":1,"S071":1,"S072":2,"S073":2,"S074":2,"S075":2,"S076":3,"S077":3,"S078":3,"S079":3}}
 gemv base_census total=27360 legal=10260 pruned=17100 reasons=CTA_N_NOT_WHOLE_CHUNKS:6156,STEP_TOO_SMALL_FOR_SPARSEST_PLANE:10944
 gemv full_manifest jobs=86 total=165600 legal=63180 pruned=102420 reasons=CTA_N_NOT_WHOLE_CHUNKS:37908,STEP_TOO_SMALL_FOR_SPARSEST_PLANE:64512
 gemv smoke_manifest jobs=18 total=18288 legal=11430 pruned=6858 reasons=CTA_N_NOT_WHOLE_CHUNKS:6858
@@ -267,13 +267,21 @@ written verdict JSON.  Each directory must also contain `provenance.json` with
 `pci_identity`, `driver_version`, `sdk_compiler_identity`, the complete `argv`,
 `runner_exit_status`, and `protocol_sample_count`.  The `commands` array is an
 exact copy of `commands.jsonl`, not a summary reconstructed after the run.
-Dense additionally carries `wk1-admission.log`, the executable L143 output
-establishing the shipping WK1 byte map.  Both frozen runners now synthesize
+Dense additionally carries `wk1-admission.log`.  Its L143 portion is the exact
+expected output of a locally executable host oracle, committed beneath the
+result SHA and retrieved with `git show <root_sha>:dev/fold_derivation/`
+`l143_wk4_production_delivery.expected.txt`; it is explicitly **not** a fresh
+box execution.  The local tier executes that oracle and byte-compares its output
+with the committed file, while the box contributes the separately recorded
+static target check.  Both frozen runners now synthesize
 these files themselves and fail closed on a dirty root/submodule, missing
 identity, missing command evidence, or a non-20-sample policy.  Missing or
 inconsistent fields produce a named `VOID`.  Publication mode reads this policy
 with `git show <root_sha>:<path>`, so a newer worktree cannot reinterpret an
-older binary.  `--policy` and the normalized observation adapter exist only
+older binary.  It also byte-compares both `tools/adjudicate_box_runs.py` and
+`benchmarks/sweep_gemv_perf.py` with those files at the result SHA; a changed
+reader or raw-event analyser must adjudicate from a clean checkout of that SHA,
+not silently reinterpret the old bundle.  `--policy` and the normalized observation adapter exist only
 behind explicit `--fixture-mode` for the synthetic CI controls.
 
 ## A1. Classic-aligned dense Marlin
@@ -363,10 +371,12 @@ sample bands, the median gap, and that shape's timer record:
 **0.01 us per shape**; it is not replaced after looking at the gap.
 
 - **Winner changes:** accept the new leader only when the full manifest is
-  complete and the analyser says `RESOLVED`: a runner-up exists, the raw bands
-  do not overlap, the timer quantum is known, and the gap is greater than one
-  quantum.  Otherwise report the observed leader but label it `UNRESOLVED`; it
-  is not a shipping-routing decision.
+  complete and the sealed JSON rule says `RESOLVED`: a runner-up exists, the
+  raw bands do not overlap, the timer quantum is known, and the gap is greater
+  than one quantum.  The analyser supplies decoded samples, ranking facts, and
+  the inferred quantum; its convenience verdict/reasons are not a second
+  decision authority.  Otherwise report the observed leader but label it
+  `UNRESOLVED`; it is not a shipping-routing decision.
 - **Winner does not change:** always report the runner-up and its absolute and
   relative gap.  If the bands overlap, the quantum is unknown, or the gap is at
   most one admitted quantum, the prior “winner” was never established at this

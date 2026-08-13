@@ -14,7 +14,7 @@ if [[ "$#" -ne 0 ]]; then
   exit 2
 fi
 
-GROUPS=${GEMV_SWEEP_GROUPS:-all}
+SWEEP_GROUPS=${GEMV_SWEEP_GROUPS:-all}
 OUT=${GEMV_SWEEP_DIR:-/tmp/quactlize-gemv-sweep}
 BUILD_TIMEOUT=${GEMV_SWEEP_BUILD_TIMEOUT_SECONDS:-7200}
 RUN_DEADLINE=${GEMV_SWEEP_DEADLINE_SECONDS:-7200}
@@ -59,18 +59,18 @@ if [[ -n $(git status --porcelain=v1 --untracked-files=all) ]]; then
   exit 2
 fi
 SUBMODULE_STATUS=$(git submodule status --recursive)
-if grep -Eq '^[+\-U]' <<<"$SUBMODULE_STATUS"; then
+if grep -Eq '^[+U-]' <<<"$SUBMODULE_STATUS"; then
   echo "[gemv-box] refusing a submodule checkout that differs from the recorded gitlink" >&2
   printf '%s\n' "$SUBMODULE_STATUS" >&2
   exit 2
 fi
 
-if [[ "$GROUPS" == all ]]; then
+if [[ "$SWEEP_GROUPS" == all ]]; then
   TAG=full
   BUILD_GROUP_ARGS=(env -u GEMV_GROUPS)
 else
-  TAG=${GROUPS//[^A-Za-z0-9_.-]/_}
-  BUILD_GROUP_ARGS=(env "GEMV_GROUPS=$GROUPS")
+  TAG=${SWEEP_GROUPS//[^A-Za-z0-9_.-]/_}
+  BUILD_GROUP_ARGS=(env "GEMV_GROUPS=$SWEEP_GROUPS")
 fi
 
 ROOT_RUN="$OUT/$SHA/$TAG"
@@ -80,6 +80,7 @@ ATTEMPT_ID="$(date -u +%Y%m%dT%H%M%S.%NZ).$$"
 ATTEMPT_ROOT="$(mktemp -d "$ROOT_RUN/.attempt.${ATTEMPT_ID}.XXXXXX")"
 RUNNER_ATTEMPT_LOG="$ATTEMPT_ROOT/runner.log"
 COMMANDS_LOG="$ATTEMPT_ROOT/commands.jsonl"
+BUILD_ATTEMPT_LOG="$ATTEMPT_ROOT/build.log"
 SUBMODULE_STATUS_FILE="$ATTEMPT_ROOT/submodule-status.txt"
 RUN_IDENTITY_CANDIDATE="$ATTEMPT_ROOT/run-identity.json"
 printf '%s\n' "$SUBMODULE_STATUS" >"$SUBMODULE_STATUS_FILE"
@@ -103,20 +104,23 @@ finish_runner_log() {
 }
 
 archive_attempt() {
-  local rc="$1" destination
-  [[ "$BASE_LOCK_HELD" -eq 1 && "$IDENTITY_ACCEPTED" -eq 1 \
-      && "$ATTEMPT_ARCHIVED" -eq 0 ]] || return 0
-  destination="$BASE/attempts/$ATTEMPT_ID"
-  if [[ -e "$destination" ]]; then
-    echo "[gemv-box] refusing duplicate attempt identity $ATTEMPT_ID" >&2
-    return 1
+  local rc="$1" destination="$ATTEMPT_ROOT"
+  [[ "$BASE_LOCK_HELD" -eq 1 && "$IDENTITY_ACCEPTED" -eq 1 ]] || return 0
+  if [[ "$ATTEMPT_ARCHIVED" -eq 0 ]]; then
+    destination="$BASE/attempts/$ATTEMPT_ID"
+    if [[ -e "$destination" ]]; then
+      echo "[gemv-box] refusing duplicate attempt identity $ATTEMPT_ID" >&2
+      return 1
+    fi
+    mv "$ATTEMPT_ROOT" "$destination"
+    ATTEMPT_ROOT="$destination"
+    RUNNER_ATTEMPT_LOG="$destination/runner.log"
+    SUBMODULE_STATUS_FILE="$destination/submodule-status.txt"
+    COMMANDS_LOG="$destination/commands.jsonl"
+    BUILD_ATTEMPT_LOG="$destination/build.log"
+    RUN_IDENTITY_CANDIDATE="$destination/run-identity.json"
+    ATTEMPT_ARCHIVED=1
   fi
-  mv "$ATTEMPT_ROOT" "$destination"
-  ATTEMPT_ROOT="$destination"
-  RUNNER_ATTEMPT_LOG="$destination/runner.log"
-  SUBMODULE_STATUS_FILE="$destination/submodule-status.txt"
-  COMMANDS_LOG="$destination/commands.jsonl"
-  RUN_IDENTITY_CANDIDATE="$destination/run-identity.json"
   if [[ "$rc" -ne 0 && -n "${BIN_SHA:-}" && -s "$COMMANDS_LOG" ]]; then
     python3 "$PROVENANCE_TOOL" write \
       --output "$destination/provenance.json" \
@@ -127,11 +131,11 @@ archive_attempt() {
       --pci-identity "$QUACTLIZE_BOX_PCI_IDENTITY" \
       --driver-version "$QUACTLIZE_BOX_DRIVER_VERSION" \
       --sdk-compiler-identity "$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY" \
+      --groups "$SWEEP_GROUPS" \
       --run-identity-file "$BASE/run-identity.json" \
       --commands-file "$COMMANDS_LOG" --runner-exit-status "$rc" \
       --protocol-sample-count "$SAMPLES" -- "${ORIGINAL_ARGV[@]}" || true
   fi
-  ATTEMPT_ARCHIVED=1
 }
 
 on_exit() {
@@ -142,6 +146,17 @@ on_exit() {
   fi
   finish_runner_log
   archive_attempt "$rc" || true
+  # Attempts rejected before immutable BASE identity acceptance (build-lock
+  # loser, identity mismatch, or an already-complete canonical bundle) are not
+  # evidence.  Remove only the exact mktemp directory created by this process;
+  # accepted attempts have already moved below BASE/attempts.
+  if [[ "$ATTEMPT_ARCHIVED" -eq 0 && -d "$ATTEMPT_ROOT" && ! -L "$ATTEMPT_ROOT" ]]; then
+    case "$ATTEMPT_ROOT" in
+      "$ROOT_RUN"/.attempt."$ATTEMPT_ID".*) rm -rf -- "$ATTEMPT_ROOT" ;;
+      *) printf '[gemv-box] refusing unsafe orphan-attempt cleanup target %s\n' \
+           "$ATTEMPT_ROOT" >&2 ;;
+    esac
+  fi
   exit "$rc"
 }
 trap on_exit EXIT
@@ -181,26 +196,60 @@ verify_source_identity() {
   echo "[gemv-box] final-source-identity=EXACT root=$current_root actlize=$current_actlize binary=$current_binary"
 }
 
-compose_canonical_journals() {
+promote_canonical_attempt() {
+  local provenance_tmp="$BASE/provenance.json.tmp.$$"
   local commands_tmp="$BASE/commands.jsonl.tmp.$$"
   local runner_tmp="$BASE/runner.log.tmp.$$"
+  local build_tmp="$BASE/build.log.tmp.$$"
+  local submodules_tmp="$BASE/submodule-status.txt.tmp.$$"
+  [[ -s "$COMMANDS_LOG" && -s "$RUNNER_ATTEMPT_LOG" && -s "$BUILD_ATTEMPT_LOG" ]] || {
+    echo "[gemv-box] refusing to publish an incomplete attempt journal" >&2
+    return 1
+  }
   : >"$commands_tmp"
   : >"$runner_tmp"
+  # raw/progress are resumable across attempts.  Their command authority must
+  # be equally cumulative: publishing only the last attempt would orphan the
+  # samples written by an earlier bounded failure.  Every directory below
+  # BASE/attempts already passed this BASE's immutable identity comparison.
   while IFS= read -r attempt; do
     [[ -s "$attempt/commands.jsonl" ]] && cat "$attempt/commands.jsonl" >>"$commands_tmp"
     [[ -s "$attempt/runner.log" ]] && cat "$attempt/runner.log" >>"$runner_tmp"
   done < <(find "$BASE/attempts" -mindepth 1 -maxdepth 1 -type d -print | LC_ALL=C sort)
   [[ -s "$commands_tmp" && -s "$runner_tmp" ]] || {
-    echo "[gemv-box] cannot promote an empty canonical journal" >&2
+    echo "[gemv-box] cumulative attempt journals are empty" >&2
     return 1
   }
+  # The build authority is attempt-local.  In a reuse attempt this is the
+  # unique command/log pair inherited only after BASE identity acceptance.
+  cp "$BUILD_ATTEMPT_LOG" "$build_tmp"
+  cp "$SUBMODULE_STATUS_FILE" "$submodules_tmp"
+  python3 "$PROVENANCE_TOOL" write \
+    --output "$provenance_tmp" \
+    --root-sha "$SHA" --root-status clean \
+    --submodule-status-file "$SUBMODULE_STATUS_FILE" \
+    --actlize-sha "$ACTLIZE_SHA" --binary-sha256 "$BIN_SHA" \
+    --device-model "$QUACTLIZE_BOX_DEVICE_MODEL" \
+    --pci-identity "$QUACTLIZE_BOX_PCI_IDENTITY" \
+    --driver-version "$QUACTLIZE_BOX_DRIVER_VERSION" \
+    --sdk-compiler-identity "$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY" \
+    --groups "$SWEEP_GROUPS" \
+    --run-identity-file "$BASE/run-identity.json" \
+    --commands-file "$commands_tmp" --runner-exit-status 0 \
+    --protocol-sample-count "$SAMPLES" -- "${ORIGINAL_ARGV[@]}"
+  # provenance.json is the completion marker and is moved last.  A failed
+  # attempt can therefore leave resumable raw/progress, but never a canonical
+  # successful journal or a false completed bundle.
   mv "$commands_tmp" "$BASE/commands.jsonl"
   mv "$runner_tmp" "$BASE/runner.log"
+  mv "$build_tmp" "$BASE/build.log"
+  mv "$submodules_tmp" "$BASE/submodule-status.txt"
+  mv "$provenance_tmp" "$BASE/provenance.json"
 }
 
 echo "[gemv-box] root-status=clean actlize-sha=$ACTLIZE_SHA samples=$SAMPLES"
 echo "[gemv-box] device-model=$QUACTLIZE_BOX_DEVICE_MODEL pci=$QUACTLIZE_BOX_PCI_IDENTITY driver=$QUACTLIZE_BOX_DRIVER_VERSION sdk=$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY"
-echo "[gemv-box] sha=$SHA groups=$GROUPS build=$BUILD"
+echo "[gemv-box] sha=$SHA groups=$SWEEP_GROUPS build=$BUILD"
 
 # Building and selecting a binary are one transaction.  Holding this lock
 # through the run also prevents a forced rebuild from replacing the inode after
@@ -223,17 +272,13 @@ if [[ "$REUSE_MODE" == 0 || ( "$REUSE_MODE" == auto && -z "$EXISTING_BIN" ) ]]; 
     PPU_BUILD_DIR="$BUILD" MOE_CORES="$CORES" JOBS="$CORES" TARGET=test_gemv_perf \
     ./build.sh)
   set +e
-  "${BUILD_CMD[@]}" 2>&1 | tee "$ROOT_RUN/build.log"
+  "${BUILD_CMD[@]}" 2>&1 | tee "$BUILD_ATTEMPT_LOG"
   BUILD_RC=${PIPESTATUS[0]}
   set -e
   record_command device-build "$BUILD_RC" "${BUILD_CMD[@]}"
   if (( BUILD_RC != 0 )); then exit "$BUILD_RC"; fi
 elif [[ "$REUSE_MODE" == 1 || "$REUSE_MODE" == auto ]]; then
   echo "[gemv-box] reusing the existing binary (set GEMV_SWEEP_REUSE_BUILD=0 to rebuild)"
-  [[ -s "$ROOT_RUN/build.log" ]] || {
-    echo "[gemv-box] refusing reused binary without its original build.log" >&2
-    exit 2
-  }
 else
   echo "[gemv-box] GEMV_SWEEP_REUSE_BUILD must be auto, 0, or 1" >&2
   exit 2
@@ -262,6 +307,7 @@ python3 "$PROVENANCE_TOOL" write-identity \
   --pci-identity "$QUACTLIZE_BOX_PCI_IDENTITY" \
   --driver-version "$QUACTLIZE_BOX_DRIVER_VERSION" \
   --sdk-compiler-identity "$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY" \
+  --groups "$SWEEP_GROUPS" \
   --protocol-sample-count "$SAMPLES" >/dev/null
 
 # The BASE lock lives outside BASE: creating BASE/run.lock before flock would
@@ -316,18 +362,23 @@ fi
 
 IDENTITY_ACCEPTED=1
 mkdir -p "$BASE/logs" "$BASE/attempts"
+archive_attempt 0
 
-# A reused executable is admissible only when an earlier attempt for this exact
-# immutable identity recorded the real build command.  A build.log by itself
-# cannot prove which command produced the selected bytes.
-if ! grep -Fq '"role":"device-build"' "$COMMANDS_LOG" 2>/dev/null \
-    && ! grep -FRq '"role":"device-build"' "$BASE/attempts" 2>/dev/null; then
-  echo "[gemv-box] binary has no identity-matched device-build journal; rebuild with GEMV_SWEEP_REUSE_BUILD=0" >&2
-  exit 2
-fi
+# A reused executable is admissible only when this immutable BASE contains one
+# unambiguous successful build command and its sibling attempt-local build log.
+# Forced rebuild output produced under a rejected SDK/device identity never
+# enters BASE/attempts and therefore cannot become canonical on a later resume.
+# Reuse inherits only the log bytes; the device-build command remains owned by
+# the prior attempt and appears exactly once when attempt journals are joined.
+python3 "$PROVENANCE_TOOL" bind-build-pair \
+  --attempts-dir "$BASE/attempts" --commands-file "$COMMANDS_LOG" \
+  --build-log "$BUILD_ATTEMPT_LOG" --role device-build || {
+    echo "[gemv-box] binary has no unique identity-matched device-build log/command pair; rebuild with GEMV_SWEEP_REUSE_BUILD=0" >&2
+    exit 2
+  }
 echo "[gemv-box] binary_sha256=$BIN_SHA protocol=$PROTOCOL out=$BASE"
 
-CENSUS_CMD=(python3 "$ROOT/tools/export_gemv_base_census.py"
+CENSUS_CMD=(env CXX=g++ python3 "$ROOT/tools/export_gemv_base_census.py"
   --output "$BASE/base-census.json" --authority-log "$BASE/base-census-authority.log")
 set +e
 "${CENSUS_CMD[@]}"
@@ -384,6 +435,29 @@ else
     "$RAW" --manifest "$PLAN" --output "$RESULT"
 fi
 
+# Analyse rc=0 is necessary but not sufficient for publication: bounded tools
+# may return a structurally valid partial result.  The canonical completion
+# marker is allowed only for an exact object with complete===true.
+RESULT_CHECK_RC=2
+RESULT_CHECK_CMD=(python3 -c '
+import json, sys
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception as exc:
+    print(f"[gemv-box] result completeness check failed: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+if not isinstance(value, dict) or value.get("complete") is not True:
+    print("[gemv-box] result is not a complete object; canonical publication refused", file=sys.stderr)
+    raise SystemExit(2)
+' "$RESULT")
+if (( ANALYSE_RC == 0 )); then
+  set +e
+  "${RESULT_CHECK_CMD[@]}"
+  RESULT_CHECK_RC=$?
+  set -e
+fi
+record_command analyse-completeness "$RESULT_CHECK_RC" "${RESULT_CHECK_CMD[@]}"
+
 python3 - "$PLAN" "$RUN_RC" "$ANALYSE_RC" <<'PY'
 import json, sys
 plan = json.load(open(sys.argv[1]))
@@ -397,28 +471,22 @@ echo "[gemv-box] binary=$BIN"
 echo "[gemv-box] build_id=$BUILD_ID run_id=$RUN_ID"
 echo "[gemv-box] manifest=$PLAN raw=$RAW progress=$PROGRESS result=$RESULT"
 FINAL_RC=$ANALYSE_RC
+if (( FINAL_RC == 0 && RESULT_CHECK_RC != 0 )); then FINAL_RC=$RESULT_CHECK_RC; fi
 if (( RUN_RC != 0 )); then
   echo "[gemv-box] bounded run incomplete; rerun the same command to resume" >&2
   FINAL_RC=$RUN_RC
 fi
 echo "[gemv-box] runner_exit_status=$FINAL_RC"
 
+if (( FINAL_RC != 0 )); then
+  exit "$FINAL_RC"
+fi
+verify_source_identity
+echo "[gemv-box] PASS: identity-stable finite sweep completed and canonical bundle may publish"
+
 # Close and join tee before materialising runner.log in the hash-qualified
 # bundle.  This guarantees the copied file is the exact complete stream.
 finish_runner_log
-cp "$ROOT_RUN/build.log" "$BASE/build.log"
-cp "$SUBMODULE_STATUS_FILE" "$BASE/submodule-status.txt"
-
-python3 "$PROVENANCE_TOOL" write \
-  --output "$BASE/provenance.json" \
-  --root-sha "$SHA" --root-status clean \
-  --submodule-status-file "$SUBMODULE_STATUS_FILE" \
-  --actlize-sha "$ACTLIZE_SHA" --binary-sha256 "$BIN_SHA" \
-  --device-model "$QUACTLIZE_BOX_DEVICE_MODEL" \
-  --pci-identity "$QUACTLIZE_BOX_PCI_IDENTITY" \
-  --driver-version "$QUACTLIZE_BOX_DRIVER_VERSION" \
-  --sdk-compiler-identity "$QUACTLIZE_BOX_SDK_COMPILER_IDENTITY" \
-  --commands-file "$COMMANDS_LOG" --runner-exit-status "$FINAL_RC" \
-  --protocol-sample-count "$SAMPLES" -- "${ORIGINAL_ARGV[@]}"
+promote_canonical_attempt
 trap - EXIT
-exit "$FINAL_RC"
+exit 0
