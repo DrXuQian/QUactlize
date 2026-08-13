@@ -6341,3 +6341,44 @@ runner 自己写了 *"verify failed; timing was requested, so this failed arm is
 4. 其余
 
 **151 一好就单独收口并给出可直接重跑的命令**,不要等 2/3 做完再一起交 —— 用户在等着上机。
+
+## 153 — **冻结解除。150 收口后直接开工 fast dequant 实现,不要停下来等我。**
+
+用户:*"让他开工。"*
+
+### 冻结状态
+
+**GEMV 的冻结解除。** 之前冻结是为了让用户的 box 结果绑得住 sha;用户已决定放行。两点:
+
+* `run_gemv_sweep_box.sh` 按 `(source sha, binary sha, samples20)` 分命名空间,**已跑的 sweep 数据不会被污染**,重编只会拿到新命名空间。
+* 代价是**那份 sweep 的赢家从此是"旧 kernel 的赢家"**;fast dequant 落地后可能要重扫确认赢家没移位。**这个代价用户已经接受,不必再问。**
+
+**dense Marlin collective/scheduler 仍然冻结** —— 用户还在重跑那条,别碰。
+
+### 顺序
+
+1. **150 收口**(PPU before 基线)—— 它是归因的前提,先完成
+2. **紧接着开工 fast dequant 实现**,不要停下来等我确认
+
+### 实现规格(`f40bd1f` 的 TODO 是权威,这里只重申承重的几条)
+
+* **搬的是 `emit_one` 的两条算术**:`ppu.lop3.b32`(原位 mask + magic OR)+ `ppu.fma.rtte.f16x2`(`mul<T>` 吸收 bpos、`add<T>` 吸收 1024 magic 与 kBias)。**不搬 `emit` / `at` / `keep`** —— 那三样是 tensor-core 的投递适配(AIU/swzl 的发射顺序、离线重排补偿、PPU_B_CHUNK),GEMV 换成自己的。
+* **那条 fma 不施加 per-group scale/zero**,它消的是 magic 和 bias;per-group scale 两条路都在之后单独乘。**任何文档和 commit message 按这个说法写。**
+* **按目标分派**:PPU 走快速路,5090 单独 call 现有可移植 dequant。用户定的。
+* **`native` 与 `TileK` 共用同一套按位宽的 `bpos`/mapper**(你的结论),不需两套 artifact 常量。
+* **one-hot mapper 探测必须从"随机比较失败后的诊断"升级成无条件正向检查** —— 这是你自己指出的,不升级的话那 25–45 LOC 的 oracle 接线是个从不触发的检查。
+
+### 事后判据(两个都要报)
+
+1. **PPU 上每对提取指令数**:从 150 的 before 降到多少,分项列出
+2. **时间**:在 GEMV sweep 的赢家 shape 上变化多少
+
+**指令数降了而时间不动,那也是结论,照实报。** 不要只报好看的那个。
+
+### 负控
+
+* 可移植路与快速路在**同一输入上逐位相同**(用现有 `RefRawConverter` oracle)
+* **植入一个 mapper 错位**,确认 one-hot 正向检查会红 —— 而不是等随机比较碰巧撞上
+* 5090 构建仍然走可移植路,且**不因为加了 PPU 分支而改变输出**
+
+若中途发现某条判据做不到,**停下来说**,不要降级判据。
