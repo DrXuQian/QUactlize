@@ -6649,3 +6649,34 @@ INBOX 156 的硬目标不变(指令数 ≤ classic)。**但现在有一个更近
 ### 优先级
 
 **classic 基线最要紧** —— 没有它,INBOX 156 那个硬目标(指令数 ≤ classic)无法判定,而我们现在离 classic 还有 46%。
+
+## 160 — `run_classic_marlin_156_box.sh` 的 acu 文件名不对:**写 `X.acurep`,读 `X`**
+
+用户把 `CLASSIC_ROOT` 指对之后,runner 走到导入这步炸了:
+
+    FileNotFoundError: '/tmp/classic-marlin-156.4UjkFK/classic.report'
+
+    :47  ACU_CMD=("$ACU" -f -o "$OUT/classic.report" --set full "$BIN")
+    :53  "$ACU" --import "$OUT/classic.report" ...
+
+**`acu -o X` 产出的是 `X.acurep`,不是 `X`。** 证据是用户 box 上那批遗留产物,全部双扩展名:`acu_dp.report.acurep`、`marlin.report.acurep`、`base.report.acurep`、`packfuse.report.acurep`、`swz.report.acurep`(见 INBOX 146 里那份清单)。
+
+### 要改
+
+1. **导入路径用 acu 实际产出的名字**。不要写死 `.acurep` 拼接就完事 —— **产出后先 `ls` 确认文件存在再导入**,并在缺失时打印目录内容。理由:文件名后缀是 acu 的行为,不是我们的约定,写死等于又押一个未验证的假设。
+2. `PRESERVE` 清单(`:63`)里的 `"classic.report"` 同步改。
+3. **加一条断言:导入前 `test -f`,失败时把 `ls -la "$OUT"` 打出来。** 现在是 Python 的 `FileNotFoundError` 冒到顶,操作者看不出是"acu 没跑成"还是"名字不对"。
+
+### 顺带把 159 的那条一起做
+
+**找不到 header 时打印找过哪些路径**(用户这次得自己 `find` 才知道该设 `CLASSIC_ROOT`)。默认值 `$ROOT/..` 猜错了,但接口是对的 —— 保留 env 覆盖,补上诊断。
+
+### 一条哈希要求
+
+用户 box 上的 header 在 `general/w4a16_gemm/marlin_ppu/marlin_classic_ppu.cuh`。**本地两份的 sha256 前缀都是 `5bcc5647371237b5`。**
+
+**runner 必须把 header 的哈希记进证据**,并与我们本地这份对照。理由:`17.8 us / 17.5%` 那个锚点出自这个文件 `:859` 的注释,**我们要比的是"产生了那个锚点的代码",不是"某个叫 classic 的东西"**。哈希不同就 FAIL 并说明,不要继续往下测。
+
+### 优先级
+
+**最高。** 156 的分母卡在这里,而我们现在离 classic 还有 46%(26.04 vs 17.8)。
