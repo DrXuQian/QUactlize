@@ -6099,3 +6099,29 @@ C → A → B。C 最便宜且决定后两者的形状;B 的实现要等冻结�
 
 * 若 `K=1024` 的利用率显著低于 `K=5120`(两条路都是),那是**已知形状效应**(setup 摊销),报出来即可,不必解释成缺陷。
 * 若某条路在 `K=5120` 上仍然低,那才是问题 —— **归一到每元素工作量**再谈,不要报绝对指令数。
+
+## 145 — 用户上机第一步就被挡住:脏树守卫**不打印是什么脏**
+
+    [marlin-wk4] FAIL: source tree is dirty; commit/stash every root and submodule change
+    [marlin-wk4] artifacts preserved at /tmp/quactlize-dense-marlin-wk4.pZmkVZ
+
+**守卫本身是对的**(脏树 ⟹ 结果绑不到 sha,这是我们自己的原则)。问题是它把诊断吞了,用户拿到这行之后无从下手。
+
+`tools/run_dense_marlin_wk4_box.sh:134-139` 的两半**不对称**:
+
+    :134  if [ -n "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all)" ]; then
+    :135    fail 'source tree is dirty; ...'         # 不打印
+    :137  git -C "$ROOT" submodule status --recursive >"$SUBMODULE_STATUS_FILE"
+    :138  if grep -Eq '^[+\-U]' "$SUBMODULE_STATUS_FILE"; then
+    :139    cat "$SUBMODULE_STATUS_FILE" >&2         # 子模块这半打印
+
+**子模块那半已经做对了,照它改根这半。** 两个 runner 都要(`run_gemv_sweep_box.sh` 若有同样守卫一并改)。
+
+### 要求
+
+1. **失败时打印完整的 `git status --porcelain=v1 --untracked-files=all` 输出**,以及 `git submodule foreach --recursive` 的逐个状态。用户不该为了知道"哪里脏"再手动跑一遍。
+2. **把未跟踪与已修改分开列**。`--untracked-files=all` 意味着上一次跑留下的产物就能挡住,而这两类的处置完全不同:产物可以 `git clean`,已修改的源码 stash 掉会**把真实改动藏起来,让结果绑到一个不含它们的 sha 上**。
+3. **顺手给出可直接执行的处置建议**,但**不要自动清理** —— 自动 `git clean -xdf` 会删掉别人正在改的东西。
+4. 若发现是我们自己的构建把产物写进了工作树(而不是用户手改),**那是个独立缺陷**:要么进 `.gitignore`,要么改成写到工作树外。**说清楚是哪一种**。
+
+**优先级:插在 143/144 之前**,这条挡着用户上机。做完立刻说。冻结范围不变(这只动 runner 脚本的诊断输出)。
