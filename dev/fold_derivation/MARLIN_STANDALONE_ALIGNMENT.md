@@ -1,66 +1,84 @@
 # Standalone Marlin alignment audit
 
-This audit binds one exact comparison.  It does not generalize from a generic
-"Marlin" name:
+## Current authority (post generic-path removal)
+
+The current comparison no longer routes a Marlin topology through the generic
+mixed-input collective.  It is one independent stack:
+
+| Owner | Production file |
+|---|---|
+| packed W4 / gs128 artifact | `quactlize/include/marlin_format_ppu.hpp` |
+| copy, dequant and MMA cadence | `quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp` |
+| stripe decomposition and global-q lock lifecycle | `quactlize/include/quactlize_extensions/cutlass/gemm/kernel/marlin_scheduler_ppu.hpp` |
+| 4->2->1 reduction, fp16 D-chain and final store | `quactlize/include/quactlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp` |
+
+The first admitted row is intentionally exact:
 
 ```
 M=1, N=4096, K=4096, L=1, gs=128
-CTA tile = 16x128x128
-classic = Marlin<256, 1, 8, 8, 4, 8>
-historical measured collective = Cfg<128,16,128,128,16,32,3>::MarlinKernel
-classic-aligned local target = Cfg<128,16,128,128,16,64,4,WarpK=32>::MarlinKernel
+CTA=16x128x128, warp=16x64x32, stages=4
+topology=1M x 2N x 4K, threads=256, load=classic cp.async
 ```
 
-The measured anchors are 17.8 us / 17.5% of nameplate for classic and
-21.14 us / 14.5% for the historical collective arm.  The aligned target has
-local front-end reachability/layout/reduction proof but no device result yet.  The 19% time gap must not be
-attributed to the CTA stripe scheduler until every row below is either aligned
-or retained as an explicit difference.
+The device anchors remain 17.8 us / 17.5% of nameplate for the local PPU
+classic kernel and 21.14 us / 14.5% for the retired generic `4N x 1K` arm.
+No device timing is inferred from the local proofs below.
 
-## INBOX 129 closure matrix
+## Current fixed-row closure matrix
 
-This table distinguishes “the target builds” from “the source differences are
-exhausted.”  `local-closed` means a checked host/layout/compile property, not a
-device performance claim.  `retained` means the aligned target deliberately
-keeps the shipping collective implementation instead of copying classic.
+| Axis | Awesome-CuTe / PPU classic | standalone stack | State / evidence |
+|---|---|---|---|
+| W4 artifact and gs128 scale permutation | classic Marlin packed u32 plus 8x8/64-column scale transpose | same representation | **double-anchored locally**; L167 compares independent classic and Awesome formulas, both inverses, and actual asymmetric bytes. |
+| CTA / warp topology | `16x128x128`, `16x64x32`, `1M x 2N x 4K`, 256 threads | same | **compile-closed**; L169 and the standalone target gate. |
+| A global-to-shared | one predicate-scoped 16-byte cp.async per valid A vector; XOR destination | same | **source and byte-ledger closed**; L171.  The M=1 residue transfers 256 B/cell, not a physical 16-row AIU cube. |
+| B global-to-shared | two 16-byte writes/thread = 8,192 B/cell | same | **source and byte-ledger closed**; L171.  There is one producer, not one per K cohort or per B consumer. |
+| scale global-to-shared | 16 writers x 16 B = 256 B at each gs128/TileK128 cell | same | **source and byte-ledger closed**; L171. |
+| total logical global-to-shared | 8,704 B/cell x 1,024 cells = **8,912,896 B** | **8,912,896 B** | **model-closed, device counter pending**.  L171 anchors the three production load points to both reference sources; it does not claim cache-line traffic. |
+| shared-to-register / dequant | classic A x4 load, packed B vector load, two `lop3` biased-int4 converts and grouped scale | same source cadence; PPU x4 register order is bound explicitly | **local source-closed; generated opcode parity remains a device/toolchain postcondition**. |
+| MMA count | 64 n16 MMAs/cell on PPU | same | **65,536/launch locally fixed**; L168.  NVIDIA's reference expresses each n16 as two n8 instructions, so raw opcode counts must be normalized by output work. |
+| four-stage issue cadence | three-stage prologue attempts, wait/prime, two B inner iterations, rolling refill | same | **event-ledger closed**; L168, including causal missing-attempt and ordering plants. |
+| CTA-local reduction | FP32 4->2->1 shared tree; K0 survives | same | **cadence and ownership closed**; L168 plus kernel contract. |
+| CTA stripe | K-fast, `G=max(Q,CU*B)`, reverse-q Awesome traversal, global q lock | same semantics; B=1 is default | **exact-once and lifecycle closed**; L170.  The three physically launched idle CTAs are explicitly invalid rather than allowed to construct an out-of-range descriptor. |
+| cross-CTA partial | ordered fp16 chain through D, only final peer writes result | same | **source/ABI closed; device memory-order progress pending**. |
+| output | K0 stages fp16 into padded shared rows, all CTA threads coalesce the final write | same mechanism | **source closed; codegen/counter parity pending**. |
+| launch bounds / shared | `(256,2)`, 50,176 B | `(256,2)`, 50,176 B | **compile-closed**; actual registers, spills and blocks/CU remain device measurements. |
 
-| Axis | standalone classic | historical `4N x 1K` arm | aligned `2N x 4K` target | State / evidence |
-|---|---|---|---|---|
-| CTA tile / MMA | `16x128x128`, FP16 m16, FP32 C | same | same | **local-closed**; real Cfg/L134. |
-| CTA warp topology | `2N x 4K`, 8 warps | `4N x 1K`, 4 warps | `2N x 4K`, 8 warps | **local-closed**; WK1 byte/type invariant plus WK4 target gate. |
-| C fragment | 32 FP32/thread/K cohort | 16 FP32/thread | 32 FP32/thread/K cohort | **local-closed**; L139 coordinate/raw-bit oracle. |
-| CTA-local K reduction | FP32 pairwise/shared tree; K0 survives | none | three K cohorts write scratch; K0 performs flat FP32 fan-in | **function local-closed, algorithm retained-different**; L139. |
-| Pipeline depth | 4 | 3 | 4 | **local-closed**; full-body target instantiation. |
-| Shared storage | 4 x 12,544 B = 50,176 B | 3 x 12,544 B = 37,632 B | 4 x 12,544 B = 50,176 B mainloop ring; the 3 x 2,048 x 4 B = 24,576 B reduction scratch aliases that ring in the kernel union, so it does not enlarge `SharedStorage` | **size local-closed, layout retained-different**. |
-| CTA stripe / launcher | K-fast; `G=max(Q,CU)` | same scheduler, default B1 | same | **local-closed**; L126/L133/L134 exact-once and global-q lock. |
-| Cross-CTA handoff | ordered fp16 chain through C | ordered predicated FP32 workspace | ordered predicated FP32 workspace | **retained-different** for precision and C/D/beta ABI; device memory order remains. |
-| A global-to-shared | manual cp.async + XOR | AIU `.padz.swzl` | AIU `.padz.swzl` | **retained-different**; no source-equivalence claim. |
-| A shared-to-register | classic manual lane map | CuTe/AIU copy atom | CuTe/AIU copy atom | **retained-different**; PPU ISA/codegen remains. |
-| B global-to-shared | classic packed cp.async | shipping xplane + AIU | shipping xplane + AIU | **retained-different mechanism**. |
-| `b_sh_wr_iters` / K-cohort coupling | two B write iterations; `warp_k` participates in the K addresses | no K cohort | WK4 branch derives two shadow consumers and four absolute K cohorts | **local-closed at the exact int4 target**; full-body WK4 gate plus L142/L143.  Merely changing `AtomLayout.K` remains a permanent red control. |
-| B register delivery | classic fragment/dequant order | fixed shadow load + `MixGemmEmit` | direct two-source WK4 consumer | **local-closed for exact int4 target**; L141/L142/L143, artifact bytes unchanged. |
-| Scale / metadata load | classic host permutation and per-stage scale load | shipping metadata tensor/copy/fragment path | shipping metadata tensor/copy/fragment path | **retained-different**; mathematical placement is covered locally, but representation, load sequence, and converter issue cost are not classic-identical. |
-| Epilogue | K0 fp16 shared staging/store | generic vector epilogue, all MMA threads | generic vector epilogue, exact K0 cohort | **cohort local-closed, implementation retained-different**. |
-| Launch contract | `__launch_bounds__(256,2)` | 128 threads, `MinBlocksPerMultiprocessor=1` | 256 threads, `MinBlocksPerMultiprocessor=1` | **known source difference; device-only consequence** (registers/spill/occupancy). |
-| Mainloop schedule | hand-written four-stage issue order | collective stage ring | collective four-stage ring | **retained-different**; instruction issue/stalls need device counters. |
-| Build / toolchain contract | standalone `nvcc -O3 -std=c++17 --expt-*`, ppu001 selected by the no-`-arch` path | repository CMake/toolchain | SDK hgcc device compile plus g++ host compile, `-arch=ppu_10`, HGGCRT/CUTLASS definitions | **classified UNKNOWN at device-codegen boundary**; target architecture intent agrees, compiler driver/flags/ABI do not. |
-| Shape / ABI | divisibility-oriented, M-parallel launches, overwrites C | residue/L/strides and C/D/beta | residue/L/strides and C/D/beta | **retained-different**; decode anchor is neutral, broader ABI must not be called classic-identical. |
-| Format/dequant | classic W4A16 gs128 representation | shipping converter/scale/zero/fold/two-plane | shipping formats unchanged | **explicitly outside INBOX 129 alignment scope**; no classic-equivalence claim. |
+The local byte ledger also normalizes the shared producer work to 4,352 B per
+N-warp and 2,176 B per K cohort.  Those are amortized shares: A and scale are
+physically produced once per CTA cell.  L171's causal plants make all four
+regressions red: A copied once per K cohort, duplicate two-source B production,
+stage-count-multiplied refills, and all-thread scale loads.
 
-The enumerated source checklist for the exact anchor's non-dequant alignment is
-therefore complete: there are **zero unclassified axes within that stated
-scope**.  This is classification, not source or performance equivalence.  What
-remains is not another source-reading task but six device questions: PPU
-ISA/codegen (including the different build contract), registers/spills,
-achieved occupancy, numerical execution, lock/memory-order progress, and
-timing/counters.
-If the aligned result does not approach `17.8 us / 17.5%`, attribution is
-restricted to the retained differences above: A/B movement, scale/metadata and
-converter work, the different CTA-local reduction tree, the FP32 cross-CTA
-workspace/ordering instead of the fp16 C-chain, generic epilogue,
-launch-bounds/build/register contract, and collective issue schedule.  Dequant
-instruction equivalence is a separate experiment, not a gap that may be
-silently folded into this checklist.
+`MarlinAiuLoadPolicyPPU` is currently only a named future axis.  The admitted
+baseline statically requires `MarlinCpAsyncLoadPolicyPPU`; therefore an AIU
+experiment cannot silently change the classic comparison.  When enabled it
+must live in this standalone collective, with its own byte-map and generated
+instruction oracle, rather than add branches to the generic collective.
+
+## What local equality does not establish
+
+The PPU compiler may lower the same source differently.  In particular, a
+`lop3` LUT can be printed as a target-specific logical mnemonic (including an
+XNOR-shaped form), and scheduler expressions can materialize extra `s.mov`,
+`s.cmp` or branches.  Their mere names are not additional algorithmic work;
+the fixed-shape disassembly must compare dynamic opcode counts against the PPU
+classic symbol.  The remaining device-only questions are:
+
+1. exact opcode counts and absence of accumulator spills;
+2. registers and achieved blocks/warps per CU;
+3. lock acquire/release progress under repeated launches;
+4. KVD/TSM counters versus the 8,912,896-byte logical model; and
+5. numerical result and 17.8--19 us timing.
+
+Any discrepancy is reported against those named postconditions.  It must not
+be attributed to the retired generic collective or repaired by putting Marlin
+branches back into that collective.
+
+## Historical pre-standalone audit (not current authority)
+
+Everything below records the superseded attempt to align the generic
+mixed-input collective.  It remains useful as failure history, but its
+`retained-different` labels do not describe the standalone stack above.
 
 ## Historical arm axis-by-axis audit
 
