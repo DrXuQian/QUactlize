@@ -361,28 +361,15 @@ struct MixGemmChunkEmit {
     return dup(uint32_t(0x8000u | ((25 - bpos<T>()) << 10) | (uint32_t(kBias) << bpos<T>())));
   }
 
-  // Return one converted half2 without assigning it a fragment position.
-  // Most callers still use emit_one() below, whose compile-time V is folded
-  // through ChunkPlace exactly as before.  The value-only seam lets a caller
-  // whose fragment position has already been proved independently reuse the
-  // same LOP3/FMA constants instead of cloning the dequantizer.  In
-  // particular, the classic-aligned WK4 consumer factors its runtime cohort
-  // into a register/byte-phase selection and then writes a fixed destination;
-  // L155 proves that factorization against all four compile-time Chunk arms.
-  template <int T>
-  CUTLASS_DEVICE static uint32_t emit_value(uint32_t reg) {
+  template <int T, int V>
+  CUTLASS_DEVICE static void emit_one(uint32_t reg, uint32_t* h2) {
     const uint32_t src = (T / kPerLevel) ? (reg >> 8) : reg;
     uint32_t x;
     asm volatile("ppu.lop3.b32 %0,%1,%2,%3,%4;\n"
                  : "=r"(x) : "r"(src), "n"(mask<T>()), "n"(0x64006400u), "n"(0xEAu));
     asm volatile("ppu.fma.rtte.f16x2 %0,%1,%2,%3;\n"
                  : "=r"(x) : "r"(x), "r"(mul<T>()), "r"(add<T>()));
-    return x;
-  }
-
-  template <int T, int V>
-  CUTLASS_DEVICE static void emit_one(uint32_t reg, uint32_t* h2) {
-    h2[at(T, V)] = emit_value<T>(reg);
+    h2[at(T, V)] = x;
   }
 
   template <int V>

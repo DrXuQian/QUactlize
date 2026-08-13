@@ -290,8 +290,7 @@ struct GroupKernels {
 // fpA_intB (../fpA_intB_standalone) do it. Cfg<> rebuilds the ScaleOnly (mode-1) type stack with a given
 // tile/warp/stages. Generated translation units instantiate the configs behind exported wrappers, and TileCfg
 // stores the matching wrapper pointer for runtime selection. This replaces the recompile-per-config sweep.sh.
-template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int St,
-          int WarpK = TK>
+template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int St>
 struct Cfg {
   // TK IS THE ROW'S TacticTileK, not the binary's. Until 2026-08-05 these three used the global TileShapeK,
   // because TileK was a build-time constant that also determined the bytes on disk. It no longer does: the artifact
@@ -301,7 +300,10 @@ struct Cfg {
   using CfgTile = Shape<cute::Int<TM>, cute::Int<TN>, cute::Int<TK>>;
   using CfgScale = Shape<cute::Int<TN>,
       cute::Int<ppu_group_schedule::scale_groups_v<TK, GroupSize>>>;
-  using CfgWarp = Shape<cute::Int<WM>, cute::Int<WN>, cute::Int<WarpK>>;
+  // The generic mixed-input collective remains an M/N-warp kernel.  Marlin's
+  // K-warp topology belongs to StandaloneMarlinCfg below and must never leak
+  // back into this type merely because both targets share a benchmark table.
+  using CfgWarp = Shape<cute::Int<WM>, cute::Int<WN>, cute::Int<TK>>;
   using Epi = typename cutlass::epilogue::collective::CollectiveBuilder<
       ArchTag, OperatorClass, CfgTile, CfgWarp, EpilogueTileType,
       ElementAccumulator, ElementAccumulator, ElementC, LayoutC, AlignmentC,
@@ -334,8 +336,26 @@ struct Cfg {
       Shape<int,int,int,int>, Main, Epi>;
   using StreamKGemm = cutlass::gemm::device::GemmUniversalAdapter<StreamKKernel>;
 #endif
-#if defined(DENSE_MARLIN_AB) || defined(DENSE_MARLIN_SWEEP)
+#if (defined(DENSE_MARLIN_AB) && !defined(DENSE_MARLIN_WK4_AB)) || \
+    defined(DENSE_MARLIN_SWEEP)
+  // Historical scheduler-only Marlin arms keep the generic collective.  The
+  // classic-aligned target below is a separate format/mainloop/kernel stack.
+  using MarlinKernel = cutlass::gemm::kernel::MarlinMixedInputKernel<
+      Shape<int,int,int,int>, Main, Epi>;
+  using MarlinGemm = cutlass::gemm::device::GemmUniversalAdapter<MarlinKernel>;
+#endif
+};
+
 #if defined(DENSE_MARLIN_WK4_AB)
+template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int St,
+          int WarpK>
+struct StandaloneMarlinCfg {
+  using CfgTile = Shape<cute::Int<TM>, cute::Int<TN>, cute::Int<TK>>;
+  using CfgWarp = Shape<cute::Int<WM>, cute::Int<WN>, cute::Int<WarpK>>;
+  using Epi = typename cutlass::epilogue::collective::CollectiveBuilder<
+      ArchTag, OperatorClass, CfgTile, CfgWarp, EpilogueTileType,
+      ElementAccumulator, ElementAccumulator, ElementC, LayoutC, AlignmentC,
+      ElementD, LayoutD, AlignmentD, EpilogueSchedule>::CollectiveOp;
   using MarlinMain = cutlass::gemm::collective::MarlinCollectivePPU<
       CfgTile, CfgWarp, St, GroupSize,
       cutlass::detail::TagToStrideA_t<LayoutA>,
@@ -343,15 +363,9 @@ struct Cfg {
       cute::Stride<cute::_1, int64_t, int64_t>>;
   using MarlinKernel = cutlass::gemm::kernel::MarlinKernelPPU<
       Shape<int,int,int,int>, MarlinMain, Epi>;
-#else
-  // Historical scheduler-only Marlin arms keep the generic collective.  The
-  // classic-aligned target above is a separate format/mainloop/kernel stack.
-  using MarlinKernel = cutlass::gemm::kernel::MarlinMixedInputKernel<
-      Shape<int,int,int,int>, Main, Epi>;
-#endif
   using MarlinGemm = cutlass::gemm::device::GemmUniversalAdapter<MarlinKernel>;
-#endif
 };
+#endif
 
 struct Options;
 struct Result;

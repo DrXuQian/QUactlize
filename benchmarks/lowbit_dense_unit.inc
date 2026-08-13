@@ -37,8 +37,9 @@ static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
                 "the first classic-aligned target is the exact int4 gs128 2N x 4K tactic");
   static_assert(DENSE_AB_WARP_K == 32,
                 "classic-aligned WarpK is the per-warp K extent 32");
-  using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST,
-                         DENSE_AB_WARP_K>::MarlinGemm;
+  using StandaloneCfg = StandaloneMarlinCfg<
+      GroupSize, TM, TN, TK, WM, WN, ST, DENSE_AB_WARP_K>;
+  using G = typename StandaloneCfg::MarlinGemm;
   using Kernel = typename G::GemmKernel;
   static_assert(Kernel::WarpKCohorts == 4 &&
                     Kernel::MaxThreadsPerBlock == 256 &&
@@ -47,8 +48,7 @@ static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
   static_assert(Kernel::IsStandaloneMarlin,
                 "the classic-aligned row must instantiate the standalone Marlin kernel");
   static_assert(std::is_same_v<typename Kernel::CollectiveMainloop,
-                               typename Cfg<GroupSize, TM, TN, TK, WM, WN,
-                                            ST, DENSE_AB_WARP_K>::MarlinMain>,
+                               typename StandaloneCfg::MarlinMain>,
                 "the standalone kernel must consume the standalone Marlin collective");
   return run<G>(options, dense_tactic(cfg), "marlin");
 #else
@@ -106,18 +106,22 @@ static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
 #else
 #define LOWBIT_DENSE_TAG_GS 16
 #endif
+template <int TM, int TN, int TK, int WM, int WN, int ST>
+constexpr int lowbit_dense_effective() {
 #if defined(DENSE_MARLIN_WK4_AB)
-#define LOWBIT_DENSE_CFG_WARP_K , DENSE_AB_WARP_K
+  // The standalone target owns neither the generic mixed-input policy nor its
+  // B-chunk descriptor.  Its one admitted classic format has no B-chunk axis.
+  return 0;
 #else
-#define LOWBIT_DENSE_CFG_WARP_K
+  using TagCfg = Cfg<LOWBIT_DENSE_TAG_GS,TM,TN,TK,WM,WN,ST>;
+  return TagCfg::Policy::Descriptor::atom_at_a_time ? 1 : 0;
 #endif
+}
 // The tag reads the instantiated policy descriptor.  The request macro is not evidence that the collective took
 // the path: ordinary/folded/two-plane builders expose one unified atom_at_a_time witness through Descriptor.
 #define LOWBIT_DENSE_DEFINE_WRAPPER(FN,TM,TN,TK,WM,WN,ST,BC) \
   int FN##_effective() { \
-    /* The tag's policy must be the policy the wrapper instantiates. */ \
-    using TagCfg = Cfg<LOWBIT_DENSE_TAG_GS,TM,TN,TK,WM,WN,ST LOWBIT_DENSE_CFG_WARP_K>; \
-    return TagCfg::Policy::Descriptor::atom_at_a_time ? 1 : 0; \
+    return lowbit_dense_effective<TM,TN,TK,WM,WN,ST>(); \
   } \
   char const* FN##_tag() { \
     static char tag[bench_measure::kTagBytes] = {}; \
@@ -144,4 +148,3 @@ LOWBIT_DENSE_UNIT_CONFIGS(LOWBIT_DENSE_DEFINE_WRAPPER)
 #undef LOWBIT_DENSE_CASE_32
 #undef LOWBIT_DENSE_CASE_16
 #undef LOWBIT_DENSE_TAG_GS
-#undef LOWBIT_DENSE_CFG_WARP_K

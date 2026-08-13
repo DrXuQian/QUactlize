@@ -331,13 +331,6 @@ struct get_tiled_mma {
       ? cute::get<0>(ClusterShape_MNK{}) : cute::get<0>(WarpShapeStage);
   static constexpr int requestedWarpN = CustomWarpShape
       ? cute::get<1>(ClusterShape_MNK{}) : cute::get<1>(WarpShapeStage);
-  // The third WarpShape mode used to be accepted and then silently replaced by
-  // one CTA-wide K cohort.  That made WarpShape.K look like a live contract
-  // while every generated type was Layout<M,N,1>.  Keep the legacy/default
-  // spelling (WarpK == BlockK -> one cohort) byte-for-byte, but make an
-  // explicitly smaller WarpK select the real (N,K) Marlin topology.
-  static constexpr int requestedWarpK = CustomWarpShape
-      ? cute::get<2>(ClusterShape_MNK{}) : blockK;
 
   // The m8 atom is a SHAPE refinement, not a dtype-wide replacement.  Resolve the requested warp before selecting
   // the instruction so the exact PPU0010 TM8/WM8 family can reach m8n16k16 while every established family remains
@@ -356,27 +349,22 @@ struct get_tiled_mma {
                 "requested WarpM must contain whole selected MMA atoms");
   static_assert(requestedWarpN >= InstN && requestedWarpN % InstN == 0,
                 "requested WarpN must contain whole selected MMA atoms");
-  static_assert(requestedWarpK >= InstK && requestedWarpK % InstK == 0,
-                "requested WarpK must contain whole selected MMA atoms");
-  static_assert(blockM % requestedWarpM == 0 && blockN % requestedWarpN == 0 &&
-                    blockK % requestedWarpK == 0,
+  static_assert(blockM % requestedWarpM == 0 && blockN % requestedWarpN == 0,
                 "requested warp shape must evenly divide the CTA tile");
   static constexpr int warpM = requestedWarpM;
   static constexpr int warpN = requestedWarpN;
-  static constexpr int warpK = requestedWarpK;
 
   using WarpOnM = Int<blockM / warpM>;
   using WarpOnN = Int<blockN / warpN>;
-  using WarpOnK = Int<blockK / warpK>;
 
   using PermutionK = cute::conditional_t<cute::is_void_v<PermutionK_>, Int<InstK>, PermutionK_>;
   static_assert(PermutionK{} % InstK == 0, "PermutionK must be multiple of InstK.");
 
   using TiledMma = cute::conditional_t<cute::is_void_v<PermutionK_>,
                       TiledMMA<MMA_Atom<MmaInst>,
-                              cute::Layout<Shape<WarpOnM, WarpOnN, WarpOnK>>>,
+                              cute::Layout<Shape<WarpOnM, WarpOnN, _1>>>,
                       TiledMMA<MMA_Atom<MmaInst>,
-                              cute::Layout<Shape<WarpOnM, WarpOnN, WarpOnK>>,
+                              cute::Layout<Shape<WarpOnM, WarpOnN, _1>>,
                               Tile<Int<blockM / warpM * InstM>, Int<blockN / warpN * InstN>, PermutionK>>>;
 };
 

@@ -1124,7 +1124,6 @@ public:
 
     using warpOnM = decltype(get<1>(tiled_mma.get_thr_layout_vmnk().shape()));
     using warpOnN = decltype(get<2>(tiled_mma.get_thr_layout_vmnk().shape()));
-    using warpOnK = decltype(get<3>(tiled_mma.get_thr_layout_vmnk().shape()));
     using PermutationM = decltype(tiled_mma.template permutation_mnk<0>());
     using PermutationN = decltype(tiled_mma.template permutation_mnk<1>());
 
@@ -1137,39 +1136,17 @@ public:
                   "main-M permutation must cover one compute atom per M warp");
     using ShadowPermutationM = Int<warpOnM() * 16>;
 
-    static constexpr int WarpKCohorts = int(warpOnK{});
-    static_assert(WarpKCohorts == 1 || WarpKCohorts == 4,
-                  "B two-source delivery is not yet proved for this K-cohort count");
-    // L138 proves that the classic 2N x 4K compute topology is not fed by a
-    // four-K-cohort int8 shadow.  Each compute fragment is assembled from two
-    // K2 shadow fragments with the SAME PermK=64.  WK=1 deliberately retains
-    // the old one-source type and code path below; do not merge these types
-    // into a formula whose WK1 spelling could drift.
-    using ShadowWarpOnK = cute::conditional_t<WarpKCohorts == 4, Int<2>, warpOnK>;
-    using ShadowPermutationK = cute::conditional_t<WarpKCohorts == 4, Int<64>, Int<32 * warpOnK()>>;
     using TiledMma_S8 = TiledMMA<
 #if defined(__HGGC_ARCH__) && __HGGC_ARCH__ == 100
         MMA_Atom<PPU0010_16x16x32_S32S8S8S32_TN>,
 #else
         MMA_Atom<PPU0015_16x16x32_S32S8S8S32_TN>,
 #endif
-        Layout<Shape<warpOnM, warpOnN, ShadowWarpOnK>>,
-        // The int8 shadow atom covers 32 logical K codes.  Its permutation
-        // must span every compute K cohort; changing AtomLayout.K alone leaves
-        // valid-looking fragments with holes (L123's stale-shadow negative).
-        Tile<ShadowPermutationM, PermutationN, ShadowPermutationK>>;
+        Layout<Shape<warpOnM, warpOnN,_1>>,
+        Tile<ShadowPermutationM, PermutationN, _32>>;
 
     TiledMma_S8 tiled_mma_s8;
-    auto compute_vmnk = tiled_mma.get_thr_layout_vmnk().get_flat_coord(thread_idx);
-    auto shadow_thread = [&] (int shadow_k) {
-      return int(tiled_mma_s8.get_thr_layout_vmnk()(make_coord(
-          get<0>(compute_vmnk), get<1>(compute_vmnk), get<2>(compute_vmnk), shadow_k)));
-    };
-    int const shadow_thread_0 = WarpKCohorts == 4 ? shadow_thread(0) : thread_idx;
-    int const shadow_thread_1 = WarpKCohorts == 4 ? shadow_thread(1) : shadow_thread_0;
-    int const compute_warp_k = int(get<3>(compute_vmnk));
-    auto thr_mma_s8 = tiled_mma_s8.get_thread_slice(shadow_thread_0);
-    auto thr_mma_s8_peer = tiled_mma_s8.get_thread_slice(shadow_thread_1);
+    auto thr_mma_s8 = tiled_mma_s8.get_thread_slice(thread_idx);
 
     auto smem_tiled_copy_A = make_tiled_copy_A(SmemCopyAtomA{}, tiled_mma);
     auto smem_thr_copy_A   = smem_tiled_copy_A.get_thread_slice(aiu_warp_group_thread_idx);
@@ -1180,18 +1157,12 @@ public:
     CUTE_STATIC_ASSERT_V(size<2>(tCsA) == size<2>(tCrA_copy_view));            // CPY_K
 
     auto sB_s8 = recast<int8_t>(sB);
-    Tensor tCrB_load = thr_mma_s8.partition_fragment_B(sB_s8(_,_,0));
-    Tensor tCrB_load_peer = thr_mma_s8_peer.partition_fragment_B(sB_s8(_,_,0));
+    Tensor tCrB_load =thr_mma_s8.partition_fragment_B(sB_s8(_,_,0));
 
     auto smem_tiled_copy_B = make_tiled_copy_B(SmemCopyAtomB{}, tiled_mma_s8);
-    auto smem_thr_copy_B   = smem_tiled_copy_B.get_thread_slice(
-        WarpKCohorts == 4 ? (shadow_thread_0 / 32) * 32 : aiu_warp_group_thread_idx);
+    auto smem_thr_copy_B   = smem_tiled_copy_B.get_thread_slice(aiu_warp_group_thread_idx);
     Tensor tCsB            = smem_thr_copy_B.partition_S(make_mix_tensor_like(sB_s8));             // (CPY,CPY_N,CPY_K,PIPE)
     Tensor tCrB_copy_view  = smem_thr_copy_B.retile_D(tCrB_load);                                  // (CPY,CPY_N,CPY_K)
-    auto smem_thr_copy_B_peer = smem_tiled_copy_B.get_thread_slice(
-        WarpKCohorts == 4 ? (shadow_thread_1 / 32) * 32 : aiu_warp_group_thread_idx);
-    Tensor tCsB_peer = smem_thr_copy_B_peer.partition_S(make_mix_tensor_like(sB_s8));
-    Tensor tCrB_copy_view_peer = smem_thr_copy_B_peer.retile_D(tCrB_load_peer);
     CUTE_STATIC_ASSERT_V(size<1>(tCsB) == size<1>(tCrB_copy_view));            // CPY_N
     CUTE_STATIC_ASSERT_V(size<2>(tCsB) == size<2>(tCrB_copy_view));            // CPY_K
 
@@ -1235,10 +1206,6 @@ public:
     // Size of the register pipeline
     auto K_BLOCK_MAX = size<2>(tCrB_copy_view);
     auto K_ATOM_PER_COPY = size<2>(tCrB_mma) / size<2>(tCrB_copy_view);
-    auto A_K_BLOCK_MAX = size<2>(tCrA_copy_view);
-    if constexpr (WarpKCohorts == 4) {
-      CUTE_STATIC_ASSERT_V(A_K_BLOCK_MAX == K_BLOCK_MAX * K_ATOM_PER_COPY);
-    }
 
     int initial_read_stage = 0;
     Tensor tCsA_p = tCsA(_,_,_,initial_read_stage);
@@ -1253,39 +1220,13 @@ public:
     auto prepare = [&] (auto k_block, int read_stage, auto) {
       copy_B_and_extra_info(smem_tiled_copy_B, tCsB, tCrB_copy_view,
           partitioned_extra_info, copy_partitions_extra_info, k_block, read_stage);
-      if constexpr (WarpKCohorts == 4) {
-        copy(smem_tiled_copy_B, tCsB_peer(_,_,k_block,read_stage),
-             tCrB_copy_view_peer(_,_,k_block));
-      }
       // NO M-PINNING LOOP HERE, and that is a measured decision. CPY_M = size<1>(tCsA) is 1 both with and without
       // PPU_A_CUBE_H (fold_derivation/l77), so M does not live on mode 1 and a loop over it is a no-op. With
       // CUBE_H=1 cute instead moves mode 2 from basis 2 to basis 0 with stride 64 and halves the A register
       // fragment (ArrayEngine 128 -> 64, with a stride-0 component), i.e. it re-derives the geometry itself.
-      // B can amortize one shadow load over more than one MMA K atom.  A does
-      // not share that cadence: its retiled copy has one block per atom.  The
-      // first 2N x 4K target exposed this distinction as B_K_BLOCKS=1,
-      // K_ATOM_PER_COPY=2, A_K_BLOCKS=2.  Indexing A with the B block loaded
-      // only the lower 64 K values, then consumed the unfilled upper fragment;
-      // L154 reproduces the resulting eight device values exactly.  Keep the
-      // single-atom arm textually identical to the shipping WK1 operation.
-      if constexpr (WarpKCohorts == 1) {
-        copy(smem_tiled_copy_A, tCsA_p(_,_,k_block),
-             tCrA_copy_view(_,_,k_block));
-      }
-      else {
-        static_assert(WarpKCohorts == 4,
-                      "multi-atom A cadence is proved only for four K cohorts");
-        cute::for_each(cute::make_int_sequence<decltype(K_ATOM_PER_COPY)::value>{},
-            [&] (auto a_atom) {
-          auto a_block = k_block * K_ATOM_PER_COPY + a_atom;
-          copy(smem_tiled_copy_A, tCsA_p(_,_,a_block),
-               tCrA_copy_view(_,_,a_block));
-        });
-      }
-      transform_B_kblock<RealInternalElementB>(tCrB_copy_view, tCrB_copy_view_peer,
-          tCrB_mma, partitioned_extra_info, k_block,
-          K_ATOM_PER_COPY, copy_partitions_extra_info, read_stage, scale_pf,
-          compute_warp_k);
+      copy(smem_tiled_copy_A, tCsA_p(_,_,k_block), tCrA_copy_view(_,_,k_block));
+      transform_B_kblock<RealInternalElementB>(tCrB_copy_view, tCrB_mma, partitioned_extra_info, k_block,
+          K_ATOM_PER_COPY, copy_partitions_extra_info, read_stage, scale_pf);
     };
     auto prefetch = [&] (auto k_tile, int write_stage) {
           auto k_iter_crd = cute::idx2crd(k_tile, k_iter_shape);
@@ -2038,72 +1979,6 @@ private:
   }
 
   /// Utilities to transform B.
-  template <int ComputeWarpK>
-  CUTLASS_DEVICE static void convert_int4_shadow_source(
-      uint32_t const* source, uint32_t* destination) {
-    static_assert(ComputeWarpK >= 0 && ComputeWarpK < 4);
-    // Reuse the existing MixGemmChunkEmit algebra and implementation.  The apparent production
-    // destination shape ((2,2,2),4) is NOT enough here: ChunkPlace assigns
-    // semantic roles to modes 1=N and 2=K, so omitting the singleton N mode
-    // makes ka() constant zero and silently selects only cohort 0.  This
-    // local 32-code view retains that semantic rank while preserving the
-    // exact production half2 strides.  L142 exhausts keep()/at() for all
-    // four cohorts and keeps the tempting rank-2 view as a red control.
-    using EmitFragLayout =
-        Layout<Shape<Shape<_2, _2, _2>, _1, _4>,
-               Stride<Stride<_1, _2, _4>, _0, _8>>;
-    using Emit = cutlass::MixGemmChunkEmit<
-        4, ComputeWarpK, 4, true, EmitFragLayout>;
-    static_assert(Emit::kHalf2 == 4,
-                  "one source contributes four production half2 values per N instance");
-    cute::for_each(cute::make_int_sequence<4>{}, [&] (auto ni) {
-      constexpr int NI = decltype(ni)::value;
-      Emit::emit(source + 4 * NI, destination + 4 * NI);
-    });
-  }
-
-  CUTLASS_DEVICE static void convert_int4_two_source(
-      uint32_t const* source0, uint32_t const* source1,
-      uint32_t* destination, int compute_warp_k) {
-    // L142's four compile-time ChunkPlace arms factor exactly as
-    //
-    //   vreg = 2*vi + (warp_k >> 1),  pair = 2*(warp_k & 1) + ti,
-    //   destination_half2 = 4*NI + 2*vi + ti.
-    //
-    // The destination is therefore independent of the cohort.  Select the
-    // corresponding fixed register and byte phase as data, then run one copy
-    // of the T=0/1 emitter.  This is the classic shape: warp_k participates in
-    // address/data selection, never in control flow.  Do not use a runtime
-    // source[index] here: source is an SROA/register-backed fragment and a
-    // dynamic index may spill it.  The explicit fixed reads instead lower to
-    // a bounded mux.  L155 exhaustively equates this formula with all four old
-    // template arms and keeps high-bit, phase-bit and destination mistakes red.
-    using Emit = cutlass::MixGemmChunkEmit<4>;
-    uint32_t const cohort = uint32_t(compute_warp_k);
-    uint32_t const choose_odd_mask = 0u - ((cohort >> 1) & 1u);
-    uint32_t const phase_shift = (cohort & 1u) * 8u;
-
-    auto convert_source = [&] (uint32_t const* source, uint32_t* output) {
-      cute::for_each(cute::make_int_sequence<4>{}, [&] (auto ni) {
-        constexpr int NI = decltype(ni)::value;
-        uint32_t const even_lo = source[4 * NI + 0];
-        uint32_t const odd_lo  = source[4 * NI + 1];
-        uint32_t const even_hi = source[4 * NI + 2];
-        uint32_t const odd_hi  = source[4 * NI + 3];
-        uint32_t selected_lo = even_lo ^ ((even_lo ^ odd_lo) & choose_odd_mask);
-        uint32_t selected_hi = even_hi ^ ((even_hi ^ odd_hi) & choose_odd_mask);
-        selected_lo >>= phase_shift;
-        selected_hi >>= phase_shift;
-        output[4 * NI + 0] = Emit::template emit_value<0>(selected_lo);
-        output[4 * NI + 1] = Emit::template emit_value<1>(selected_lo);
-        output[4 * NI + 2] = Emit::template emit_value<0>(selected_hi);
-        output[4 * NI + 3] = Emit::template emit_value<1>(selected_hi);
-      });
-    };
-    convert_source(source0, destination);
-    convert_source(source1, destination + 16);
-  }
-
   // FINE-grained scale (gs < B-copy-step K, i.e. Scale_TileK > K_BLOCK_MAX): a single copy step's K_ATOM_PER_COPY
   // mma atoms straddle MORE than one scale group, so one pre-loaded scale reg can't cover the step (and the coarse
   // GroupK = K_BLOCK_MAX/Scale_TileK is 0). Here each mma atom reloads ITS group's scale straight from smem:
@@ -2111,7 +1986,6 @@ private:
   // This needs tiled_copy_and_views (smem_tiled_copy_S + reg-copy dst views) + read_stage, so both are passed in.
   template <typename RealInternalElementB,
             class TCrB_load,
-            class TCrB_load_peer,
             class TCrB_mma,
             int K_ATOM_PER_COPY,
             class... Ts,
@@ -2121,7 +1995,6 @@ private:
   CUTLASS_DEVICE
   void transform_B_kblock(
     TCrB_load const& tCrB_load,
-    TCrB_load_peer const& tCrB_load_peer,
     TCrB_mma& tCrB_mma,
     cute::tuple<Ts...>& partitioned_extra_info,
     // KBlockT, NOT int: the callers already hold a static k_block (for_each gives Int<x>, and k_block_next is
@@ -2135,14 +2008,11 @@ private:
     int const read_stage,
     // The second scale/zero register set, or an empty tuple. A separate template parameter and NOT an extension of
     // the Ts... pack above: appending to cute::tuple<Ts...> fails deduction.
-    PfPack const& pf,
-    int compute_warp_k) {
+    PfPack const& pf) {
 
     static constexpr int K_BLOCK_STATIC = int(KBlockT{});
     Tensor cvt_in  = recast<RealInternalElementB>(tCrB_load(_, _, k_block));
     Tensor cvt_out = make_tensor(tCrB_mma(_, _, k_block * K_ATOM_PER_COPY).data(), cvt_in.layout());
-
-    constexpr int WarpKCohorts = int(size<3>(TiledMma{}.get_thr_layout_vmnk()));
 
     using CPY_VEC = Int<4 * 32 / sizeof_bits<RealInternalElementB>::value>;
 #if defined(PPU_B_DEQUANT_NOP) && (PPU_B_DEQUANT_NOP != 0)
@@ -2152,43 +2022,7 @@ private:
     // not need that crutch: it is a TSM_LD_SWZL implemented as asm volatile, so it survives its results going unused.
     (void)cvt_in; (void)cvt_out;
 #else
-    if constexpr (WarpKCohorts == 1) {
-      // Permanent compatibility arm.  This is the shipping converter call,
-      // kept as a distinct branch so adding K cohorts cannot perturb its
-      // source or destination layout.  L123/L143 pin the WK1 map and bytes;
-      // only the device build can compare the generated instruction stream.
-      convert_tensor(cvt_in, cvt_out, CPY_VEC{});
-    }
-    else {
-      static_assert(WarpKCohorts == 4,
-                    "two-source B delivery is not yet proved outside four K cohorts");
-      static_assert(std::is_same_v<RealInternalElementB, cutlass::int4b_t>,
-                    "two-source B delivery is first proved only for ordinary int4");
-      static_assert(size(decltype(cvt_in.layout()){}) == 128,
-                    "each K2 shadow source must hold 128 int4 codes");
-      static_assert(std::is_same_v<typename TCrB_load::layout_type,
-                    Layout<Shape<Shape<_16,_1>,_4,_1>,
-                           Stride<Stride<_1,_0>,_16,_0>>>,
-                    "K2 shadow bytes must be four contiguous uint32 vregs per N instance");
-      static_assert(std::is_same_v<typename TCrB_mma::layout_type,
-                    Layout<Shape<Shape<_2,_2,_2>,_4,_2>,
-                           Stride<Stride<_1,_2,_4>,_8,_32>>>,
-                    "two-source writes require the production (8,4,2):(...,8,32) fp16 fragment");
-
-      Tensor cvt_in_peer = recast<RealInternalElementB>(tCrB_load_peer(_, _, k_block));
-      uint32_t const* source0 = reinterpret_cast<uint32_t const*>(
-          raw_pointer_cast(cvt_in.data()));
-      uint32_t const* source1 = reinterpret_cast<uint32_t const*>(
-          raw_pointer_cast(cvt_in_peer.data()));
-      uint32_t* output = reinterpret_cast<uint32_t*>(
-          raw_pointer_cast(tCrB_mma(_, _, k_block * K_ATOM_PER_COPY).data()));
-
-      // The shipping xplane -- not an invented WK4 artifact -- anchors
-      // this direct pair consumer. L142 maps every actual source-word read and
-      // production-fragment write; whole Converter<32>, ea96 and compact-s16
-      // alternatives are permanent red controls.
-      convert_int4_two_source(source0, source1, output, compute_warp_k);
-    }
+    convert_tensor(cvt_in, cvt_out, CPY_VEC{});
 #endif
 
     constexpr int MMA_KA_ = decltype(cute::size<2>(tCrB_mma))::value;   // total mma-K atoms in the tile
