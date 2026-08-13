@@ -6250,3 +6250,37 @@ runner 自己写了 *"verify failed; timing was requested, so this failed arm is
 
 * **stages=4 是为对齐 classic 才改的。** 一旦对齐成立,`stages` 应当重新成为可扫的轴 —— 但**现在不要动**,那会破坏"WK1 逐位不变"的绑定。先测,后调。
 * 若 classic 的寄存器数读不到(工具链不支持),**说清楚读不到**,不要用估算替代 —— 那会让整条推理退回到猜测。
+
+## 150 — **139-A 现在是关键路径**:PPU 侧的 GEMV 提取代码生成没人量过,而它决定 139-C 值不值得写
+
+用户问"fast dequant 路径的命令",答案是**没有** —— 代码没写。但更要紧的是:**PPU 侧的探针也没有**。
+
+`dev/fold_derivation/run_l145_gemv_lop3_codegen.sh:2` 自己写着:
+
+> Compile and disassemble the REAL shipping int4 GEMV specialization **on NVIDIA sm_120**. … **not a PPU claim**.
+
+它用 `nvcc` / `nvdisasm`,那个 **2.75 条/对**只属于 5090。
+
+### 为什么这条是关键路径
+
+**PPU 有 `ppu.lop3`。如果 hgcc 本来就把 `((w>>s) & mask) | magic` 融成一条,139-C 的 80–120 LOC 根本不用写。** 我们现在是在一个**未测量的前提**上排了一项实现工作 —— 这正是我们反复防的那类错。
+
+### 要做
+
+给 l145 加一个 **PPU 目标臂**:用 SDK 的 hgcc + `-arch=ppu_10` 编出**同一个出货 int4 GEMV specialization**,反汇编,**按同样口径数每 half2 对的提取指令数**。
+
+* **只需编译 + 反汇编,不需要跑设备** —— 所以它属于 boxdry 那一类,不占 box 的运行时间。
+* **口径必须和 sm_120 臂一致**:同一个 specialization、同样的"每对"归一、同样把 `mask_lop3 / magic_lop3 / shifts / offset_hadd2` 分项列出。否则两个数没有共同分母。
+* **SKIP 的条件写清楚**:hgcc 或反汇编工具不可用时 SKIP 并说明,**不许当 PASS**(这是我们自己的规矩)。
+
+### 事前判据
+
+| PPU 侧结果 | 含义 |
+|---|---|
+| 已经是 1 条融合 lop3 | **139-C 不用做**,TODO #28 在 PPU 上关闭;5090 那 2.75 只是可移植路在 nvcc 上的表现 |
+| 和 5090 一样 ~2.75 条 | 139-C 成立,而且 80–120 LOC 有明确收益,可以排进冻结解除后的第一批 |
+| 介于两者之间 | 报实际分项,**不要四舍五入成上面两种** |
+
+### 优先级
+
+**排在 148 重跑之后、143/144 收尾之前。** 它便宜,而且**它的结果会决定后面一整项工作做不做** —— 这种测量应当尽早。
