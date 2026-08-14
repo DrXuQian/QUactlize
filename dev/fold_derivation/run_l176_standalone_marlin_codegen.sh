@@ -54,7 +54,7 @@ cleanup() {
 trap cleanup EXIT
 
 python3 "$SOURCE" --output "$tmp/source.json"
-for plant in generated-row generic-wrapper runtime-nblock flat-accumulator; do
+for plant in generated-row generic-wrapper runtime-nblock flat-accumulator missing-lineinfo; do
   set +e
   python3 "$SOURCE" --plant "$plant" >"$tmp/$plant.log" 2>&1
   rc=$?
@@ -71,7 +71,7 @@ if [[ "$MODE" == local ]]; then
   bash "$RUN169"
   bash "$RUN174"
   bash "$RUN175"
-  echo '[l176:local] PASS: exact generated route/source hashes/cadence/native fragment; 4/4 causal controls RED'
+  echo '[l176:local] PASS: exact generated route/source hashes/cadence/native fragment/lineinfo; 5/5 causal controls RED'
 else
   # L169/L174/L175 are local compile-time facts.  The PPU box's nvcc delegates
   # device preprocessing to ppu_clang++ and cannot compile their NVIDIA/stub
@@ -259,6 +259,10 @@ conflicts = sorted({token for token in tokens
                     and token not in required})
 if conflicts:
     raise SystemExit("L176 command audit: conflicting exact defines: " + ",".join(conflicts))
+if tokens.count("-lineinfo") != 1:
+    raise SystemExit(
+        f"L176 command audit: -lineinfo occurs {tokens.count('-lineinfo')} times, expected one"
+    )
 print(lines[0])
 PY
 

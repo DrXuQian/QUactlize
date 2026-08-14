@@ -725,7 +725,9 @@ quactlize_ppu_executable(
   test_lowbit_dense_marlin_wk4_ab
   "${_DENSE_MARLIN_WK4_MAIN}"
   "${_DENSE_MARLIN_WK4_SRC}"
-  DEV_COMPILE_FLAGS ${_DENSE_MARLIN_WK4_DEFS}
+  # L176 accepts opcode counts only when hgobjdump binds the exact inlined
+  # load/dequant/MMA/collective/kernel expressions to their source headers.
+  DEV_COMPILE_FLAGS -lineinfo ${_DENSE_MARLIN_WK4_DEFS}
 )
 target_compile_definitions(test_lowbit_dense_marlin_wk4_ab PRIVATE
   DENSE_MARLIN_WK4_AB=1 DENSE_MARLIN_AB=1 DENSE_STREAMK_AB=1

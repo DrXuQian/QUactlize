@@ -173,6 +173,12 @@ def apply_plant(plant: str, texts: dict[Path, str]) -> None:
             "Accumulator accum; auto* l176_flat = reinterpret_cast<float*>(&accum); (void)l176_flat;",
             1,
         )
+    elif plant == "missing-lineinfo":
+        texts[CMAKE] = texts[CMAKE].replace(
+            "DEV_COMPILE_FLAGS -lineinfo ${_DENSE_MARLIN_WK4_DEFS}",
+            "DEV_COMPILE_FLAGS ${_DENSE_MARLIN_WK4_DEFS}",
+            1,
+        )
     else:
         raise ContractError(f"unknown plant {plant}")
 
@@ -203,6 +209,7 @@ def validate(texts: dict[Path, str], generated: Path | None) -> dict[str, object
         "DENSE_MARLIN_WK4_AB=1",
         "DENSE_AB_WARP_K=${_DENSE_MARLIN_WK4_WARP_K}",
         "STAGES=${_DENSE_MARLIN_WK4_ST}",
+        "DEV_COMPILE_FLAGS -lineinfo ${_DENSE_MARLIN_WK4_DEFS}",
     ):
         if token not in cmake:
             raise ContractError(f"shipping generated-unit authority lacks {token!r}")
