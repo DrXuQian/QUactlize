@@ -116,7 +116,7 @@ CHECKS = (
         "pipe-roll-experiment",
         (sys.executable, "ci/check_l182_marlin_pipe_roll.py"),
         "[l182:local] PASS: default/outer-only/inner-control routes reach the exact m8 device body; "
-        "negative_controls=14/14_RED mixed-range=PASS; PPU static footprint/register/spill remains a mandatory box compile-only postcondition",
+        "negative_controls=15/15_RED mixed-range=PASS; PPU static footprint/register/spill remains a mandatory box compile-only postcondition",
     ),
     (
         "ppu-admission-boundary",

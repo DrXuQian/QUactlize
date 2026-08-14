@@ -18,7 +18,7 @@ IDENTITY_PROBE_TOOL="$ROOT/tools/probe_box_identity.py"
 fail() { printf '[marlin-m8-pipe-roll] FAIL: %s\n' "$*" >&2; exit 1; }
 [ "$#" -eq 0 ] || fail 'this runner accepts no positional arguments'
 [ -x "$REPORTER" ] || fail "missing executable reporter: $REPORTER"
-[ -x "$IDENTITY_PROBE_TOOL" ] || fail "missing executable identity probe: $IDENTITY_PROBE_TOOL"
+[ -r "$IDENTITY_PROBE_TOOL" ] || fail "missing readable identity probe: $IDENTITY_PROBE_TOOL"
 [ -n "$ACU" ] && [ -x "$ACU" ] || \
   fail 'ACU is unavailable; set ACU to the site acu executable'
 [ -z "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all)" ] || \

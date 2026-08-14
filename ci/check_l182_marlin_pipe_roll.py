@@ -83,6 +83,7 @@ def audit(files: dict[str, str]) -> list[str]:
         'for index in 0 1; do',
         'exec 9>"${OUT}.lock"',
         "flock -n 9",
+        '[ -r "$IDENTITY_PROBE_TOOL" ]',
         'resolve --output "$OUT/identity-probe.json"',
         "verify_source_identity",
         "binaries=3/3",
@@ -261,6 +262,7 @@ def main() -> int:
         ("runner", "bpc-broadened", "VALUES=(0 1 2)", "VALUES=(0 1 2)\nBPCS=(1 2)"),
         ("runner", "reporter-call-removed", 'python3 "$REPORTER"', 'true # reporter removed'),
         ("runner", "inner-control-executed", "for index in 0 1; do", "for index in 0 1 2; do"),
+        ("runner", "python-helper-required-executable", '[ -r "$IDENTITY_PROBE_TOOL" ]', '[ -x "$IDENTITY_PROBE_TOOL" ]'),
     )
     for owner, label, old, new in plants:
         if files[owner].count(old) != 1:
@@ -292,7 +294,7 @@ def main() -> int:
     print("[l182:local] exact-unit: " + ", ".join(witnesses))
     print(
         "[l182:local] PASS: default/outer-only/inner-control routes reach the exact m8 device body; "
-        "negative_controls=14/14_RED mixed-range=PASS; PPU static footprint/register/spill remains a mandatory box compile-only postcondition"
+        "negative_controls=15/15_RED mixed-range=PASS; PPU static footprint/register/spill remains a mandatory box compile-only postcondition"
     )
     return 0
 
