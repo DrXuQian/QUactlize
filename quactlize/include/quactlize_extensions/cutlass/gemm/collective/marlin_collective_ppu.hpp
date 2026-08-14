@@ -8,8 +8,9 @@
  * B representation and grouped-scale permutation are one contract; putting them behind branches in
  * the generic collective was both instruction-expensive and impossible to audit against Marlin.
  *
- * The first admitted specialization is the decode reference point
- *   Tile=16x128x128, Warp=16x64x32, 1M x 2N x 4K, 256 threads, Stages=4, W4 gs128.
+ * The first admitted family is the decode reference point
+ *   Tile={8,16}x128x128, Warp={8,16}x64x32, 1M x 2N x 4K,
+ *   256 threads, Stages=4, W4 gs128.
  * The template surface is retained so proven shapes can later become sweep axes.  Until each one has
  * a byte-map and instruction-cadence oracle it fails at compile time instead of silently selecting a
  * generic fallback.
@@ -63,8 +64,6 @@ class MarlinCollectivePPU {
   using ElementB = cutlass::int4b_t;
   using ElementScale = cutlass::half_t;
   using ElementAccumulator = float;
-  using FragmentC = marlin_ppu_detail::FragmentC;
-  using Accumulator = marlin_ppu_detail::MarlinAccumulatorPPU;
   using ArchTag = cutlass::arch::PPU0010;
   using DispatchPolicy = MainloopPPUAiu<Stages_, KernelAiuMultistageMixedInput>;
   using TransformA = cute::identity;
@@ -85,22 +84,37 @@ class MarlinCollectivePPU {
   static constexpr int WarpOnN = TileN / WarpN;
   static constexpr int WarpOnK = TileK / WarpK;
   static constexpr int Threads = 32 * WarpOnM * WarpOnN * WarpOnK;
+  static constexpr int InstructionM =
+      TileM == 8 && WarpM == 8 ? 8 : 16;
+  // The first m8 target is dense decode M=1.  Its ordinary shared-memory
+  // reader can alias all masked output rows back onto the one resident A row,
+  // so it stores neither the m16 physical tail nor seven logical padding rows.
+  static constexpr int AStoredRows = InstructionM == 8 ? 1 : TileM;
+  static constexpr int AccumulatorValues = InstructionM / 2;
+  static constexpr int AccumulatorHalves = AccumulatorValues / 4;
+  using FragmentC = marlin_ppu_detail::FragmentCFor<InstructionM>;
+  using Accumulator = marlin_ppu_detail::MarlinAccumulatorFor<InstructionM>;
 
   static_assert(cute::is_same_v<LoadPolicy, MarlinCpAsyncLoadPolicyPPU>,
                 "the first Marlin PPU baseline admits only classic cp.async loads");
-  static_assert(TileM == 16 && TileN == 128 && TileK == 128,
-                "MarlinCollectivePPU shape is not yet proved by the fixed-target oracle");
-  static_assert(WarpM == 16 && WarpN == 64 && WarpK == 32,
-                "MarlinCollectivePPU warp shape is not yet proved by the fixed-target oracle");
+  static_assert((TileM == 8 || TileM == 16) &&
+                    TileN == 128 && TileK == 128,
+                "first Marlin m8/m16 family keeps the classic N/K tile");
+  static_assert(WarpM == TileM && WarpN == 64 && WarpK == 32,
+                "first Marlin m8/m16 family is 1M x 2N x 4K");
   static_assert(Stages == 4 && GroupSize == 128 && Threads == 256,
                 "the first Marlin PPU baseline is s4, gs128 and 256 threads");
 
+  using MmaAtom = std::conditional_t<
+      InstructionM == 8,
+      cute::MMA_Atom<cute::PPU0010_8x16x16_F32F16F16F32_TN>,
+      cute::MMA_Atom<cute::PPU0010_16x16x16_F32F16F16F32_TN>>;
   using TiledMma = cute::TiledMMA<
-      cute::MMA_Atom<cute::PPU0010_16x16x16_F32F16F16F32_TN>,
+      MmaAtom,
       cute::Layout<cute::Shape<cute::_1, cute::_2, cute::_4>>,
-      cute::Tile<cute::_16, cute::_32, cute::_64>>;
-  // TiledMma supplies the real 1M x 2N x 4K thread topology and the 32-value
-  // register extent.  The single PPU n16 instruction's C register map is the
+      cute::Tile<cute::Int<InstructionM>, cute::_32, cute::_64>>;
+  // TiledMma supplies the real 1M x 2N x 4K thread topology.  The single PPU
+  // n16 instruction's C register map is the
   // classic acc_i/acc_j map, not CuTe's NVIDIA two-n8 logical C partition;
   // MarlinKernelPPU therefore owns that explicit output map.
   static_assert(cute::size(TiledMma{}) == Threads);
@@ -108,7 +122,7 @@ class MarlinCollectivePPU {
   static constexpr int KBlocks = TileK / 16;
   static constexpr int NBlocks = TileN / 16;
   static constexpr int ASharedStride = 16 * KBlocks / 8;
-  static constexpr int ASharedStage = ASharedStride * TileM;
+  static constexpr int ASharedStage = ASharedStride * AStoredRows;
   static constexpr int BSharedStride = 32 * NBlocks / 4;
   static constexpr int BSharedStage = BSharedStride * KBlocks;
   static constexpr int BInnerIters = BSharedStage / Threads;
@@ -121,7 +135,9 @@ class MarlinCollectivePPU {
       2 * ((Threads / 32) / (NBlocks / 4));
   static constexpr int ASharedWriteIters =
       marlin_ppu_detail::ceil_div(ASharedStage, ASharedWriteDelta);
-  static_assert(ASharedStage == 256 && BSharedStage == 512 &&
+  static_assert((InstructionM == 16 ? ASharedStage == 256
+                                    : ASharedStage == 16) &&
+                    BSharedStage == 512 &&
                     BInnerIters == 2 && ScaleSharedStage == 16 &&
                     AGlobalOuter == 16 && ASharedWriteDelta == 256 &&
                     ASharedReadOuter == 8 && ASharedWriteIters == 1);
@@ -130,8 +146,9 @@ class MarlinCollectivePPU {
     alignas(16) marlin_ppu_detail::Vector128 storage[
         Stages * (ASharedStage + BSharedStage + ScaleSharedStage)];
   };
-  static_assert(sizeof(SharedStorage) == 50176,
-                "fixed Marlin mainloop shared-memory ledger drifted");
+  static_assert(
+      sizeof(SharedStorage) == (InstructionM == 8 ? 34816 : 50176),
+      "standalone m8 must pack one decode A row; m16 keeps the classic ledger");
 
   struct Arguments {
     ElementA const* ptr_A = nullptr;
@@ -162,6 +179,8 @@ class MarlinCollectivePPU {
     int b_k_delta = 0;
     int scale_k_delta = 0;
     int a_smem_write = 0;
+    // m16 entries are Vector128 indices.  m8 entries are fp16 indices into
+    // its one-row packed stage because the PPU x2 provider window is 64 bits.
     int a_smem_read[BInnerIters]{};
     int scale_smem_read = 0;
     bool a_copy_pred = false;
@@ -224,16 +243,40 @@ class MarlinCollectivePPU {
     int const a_shared_read =
         ASharedStride * ((tid % 32) % 16) + (tid % 32) / 16 +
         2 * ((tid / 32) / (NBlocks / 4));
-    state.a_smem_write = transform_a_index(a_shared_write);
-    #pragma unroll
-    for (int i = 0; i < BInnerIters; ++i) {
-      state.a_smem_read[i] =
-          transform_a_index(ASharedReadOuter * i + a_shared_read);
+    if constexpr (InstructionM == 8) {
+      // Only row zero is resident.  A ppu x2 source lane `p` owns a 64-bit
+      // window at K = 4*(p%2) + 8*(p/16) within the current 16-wide atom.
+      // Output rows 1..7 are masked for M=1, so their providers deliberately
+      // alias the same safe packed row rather than requiring padding storage.
+      state.a_smem_write = tid % AGlobalOuter;
+      int const lane = tid % 32;
+      int const warp_k = (tid / 32) / WarpOnN;
+      #pragma unroll
+      for (int i = 0; i < BInnerIters; ++i) {
+        state.a_smem_read[i] =
+            warp_k * WarpK + i * 16 + 4 * (lane % 2) +
+            8 * (lane / 16);
+      }
+    } else {
+      state.a_smem_write = transform_a_index(a_shared_write);
+      #pragma unroll
+      for (int i = 0; i < BInnerIters; ++i) {
+        state.a_smem_read[i] =
+            transform_a_index(ASharedReadOuter * i + a_shared_read);
+      }
     }
     int const warp_n = (tid / 32) % (NBlocks / 4);
     int const lane = tid % 32;
     state.scale_smem_read = 8 * warp_n + lane / 4;
-    state.a_copy_pred = a_shared_write < ASharedStride * problem_m;
+    // A packed M=1 stage is one 128-half row: 256 B, exactly sixteen
+    // Vector128 transactions.  Threads 0..15 own those chunks once; all 256
+    // threads execute the same stage cadence and concurrently own the 512
+    // B-stage Vector128 transactions below.  Giving every thread an A
+    // transaction would copy the same row sixteen times, not add useful
+    // cooperation.
+    state.a_copy_pred = InstructionM == 8
+        ? (problem_m == 1 && tid < AGlobalOuter)
+        : (a_shared_write < ASharedStride * problem_m);
     state.scale_copy_pred = tid < ScaleSharedStride;
     auto const* a = reinterpret_cast<marlin_ppu_detail::Vector128 const*>(
         params.ptr_A);
@@ -241,11 +284,25 @@ class MarlinCollectivePPU {
         params.ptr_B);
     auto const* scale =
         reinterpret_cast<marlin_ppu_detail::Vector128 const*>(params.ptr_S);
-    state.a_thread_base =
-        a + a_global_stride * (tid / AGlobalOuter) + tid % AGlobalOuter;
+    if constexpr (InstructionM == 8) {
+      // Keep every inactive thread's pointer inside row zero.  cp_async_16_if
+      // still suppresses its transaction, but constructing an out-of-range
+      // pointer before evaluating the predicate would already be invalid C++.
+      state.a_thread_base = a + tid % AGlobalOuter;
+    } else {
+      state.a_thread_base =
+          a + a_global_stride * (tid / AGlobalOuter) + tid % AGlobalOuter;
+    }
     state.b_thread_base =
         b + b_global_stride * (tid / BSharedStride) + tid % BSharedStride;
-    state.scale_thread_base = scale + tid;
+    if constexpr (InstructionM == 8) {
+      // Keep the new path's inactive scale-copy threads inside the resident
+      // scale row.  The m16 branch below stays byte-for-byte source-compatible
+      // with the reference path for an attributable same-SHA comparison.
+      state.scale_thread_base = scale + tid % ScaleSharedStride;
+    } else {
+      state.scale_thread_base = scale + tid;
+    }
     return state;
   }
 
@@ -339,9 +396,10 @@ class MarlinCollectivePPU {
     auto const aligned_16 = [](void const* ptr) {
       return (reinterpret_cast<uintptr_t>(ptr) & uintptr_t(15)) == 0;
     };
+    bool const m_supported = InstructionM == 8 ? m == 1 : (m > 0 && m <= TileM);
     return args.ptr_A != nullptr && args.ptr_B != nullptr && args.ptr_S != nullptr &&
            aligned_16(args.ptr_A) && aligned_16(args.ptr_B) && aligned_16(args.ptr_S) &&
-           args.group_size == GroupSize && m > 0 && m <= TileM && l == 1 &&
+           args.group_size == GroupSize && m_supported && l == 1 &&
            n > 0 && n % 256 == 0 && k > 0 && k % TileK == 0 &&
            address_arithmetic_supported(problem_shape);
   }
@@ -354,7 +412,7 @@ class MarlinCollectivePPU {
 
   template <int NBlock>
   CUTLASS_DEVICE static void multiply_n_block(
-      marlin_ppu_detail::FragmentA const& fragment_a,
+      marlin_ppu_detail::FragmentAFor<InstructionM> const& fragment_a,
       marlin_ppu_detail::Vector128 const& fragment_b_quant,
       marlin_ppu_detail::FragmentScale const (&fragment_scale)[4],
       FragmentC& accum) {
@@ -369,13 +427,14 @@ class MarlinCollectivePPU {
         marlin_ppu_detail::dequantize_biased_int4(q >> 8);
     marlin_ppu_detail::scale(b0, fragment_scale[NBlock], 0);
     marlin_ppu_detail::scale(b1, fragment_scale[NBlock], 1);
-    marlin_ppu_detail::mma_n16<NBlock>(fragment_a, b0, b1, accum);
+    marlin_ppu_detail::mma_n16<InstructionM, NBlock>(
+        fragment_a, b0, b1, accum);
   }
 
   CUTLASS_DEVICE static void run_segment(
       CtaState const& state, SegmentState const& segment,
       SharedBases const& shared, Accumulator& accum) {
-    using marlin_ppu_detail::FragmentA;
+    using FragmentA = marlin_ppu_detail::FragmentAFor<InstructionM>;
     using marlin_ppu_detail::FragmentScale;
     using marlin_ppu_detail::Vector128;
 
@@ -429,9 +488,16 @@ class MarlinCollectivePPU {
           scale_stage[state.scale_smem_read];
 
       Vector128 const* a_stage = shared.a + ASharedStage * pipe;
-      marlin_ppu_detail::ldmatrix_a(
-          fragment_a[inner & 1],
-          &a_stage[state.a_smem_read[inner % BInnerIters]]);
+      if constexpr (InstructionM == 8) {
+        auto const* a_half = reinterpret_cast<ElementA const*>(a_stage);
+        marlin_ppu_detail::ldmatrix_a<InstructionM>(
+            fragment_a[inner & 1],
+            &a_half[state.a_smem_read[inner % BInnerIters]]);
+      } else {
+        marlin_ppu_detail::ldmatrix_a<InstructionM>(
+            fragment_a[inner & 1],
+            &a_stage[state.a_smem_read[inner % BInnerIters]]);
+      }
 
       Vector128 const* b_stage = shared.b + BSharedStage * pipe;
       fragment_b_quant[inner & 1] =
@@ -460,7 +526,7 @@ class MarlinCollectivePPU {
     #pragma unroll
     for (int n_block = 0; n_block < 4; ++n_block) {
       #pragma unroll
-      for (int value = 0; value < 8; ++value) {
+      for (int value = 0; value < AccumulatorValues; ++value) {
         accum.fragments[n_block].value[value] = 0.0f;
       }
     }

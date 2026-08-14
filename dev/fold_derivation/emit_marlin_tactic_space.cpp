@@ -93,6 +93,12 @@ int main(int argc, char** argv) {
       static_cast<unsigned long long>(kinds[1]),
       static_cast<unsigned long long>(kinds[2]),
       static_cast<unsigned long long>(kinds[3]));
-  std::puts("admitted=16,128,128,16,64,32,4,cp_async");
+  mt::for_each_declared([&](mt::MarlinTacticPPU c) {
+    if (mt::classify(c) == mt::MarlinTacticExclusionPPU::None) {
+      std::printf("admitted=%d,%d,%d,%d,%d,%d,%d,%s\n",
+                  c.tm, c.tn, c.tk, c.wm, c.wn, c.warp_k, c.stages,
+                  mt::load_kind_name(c.load));
+    }
+  });
   return 0;
 }

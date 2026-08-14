@@ -2,16 +2,32 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
-source_file="$repo/dev/fold_derivation/l169_standalone_marlin_unit.cu"
-defs='-DDENSE_MARLIN_WK4_AB=1 -DDENSE_MARLIN_AB=1 -DDENSE_STREAMK_AB=1 -DBENCH_GS=128 -DBENCH_TSK=64 -DDENSE_AB_BITS=4 -DDENSE_AB_ARTIFACT_TK=64 -DDENSE_AB_TM=16 -DDENSE_AB_TN=128 -DDENSE_AB_TK=128 -DDENSE_AB_WM=16 -DDENSE_AB_WN=64 -DDENSE_AB_WARP_K=32 -DDENSE_AB_ST=4 -DDENSE_AB_BC=0 -DTILE_M=16 -DTILE_N=128 -DWARP_M=16 -DWARP_N=64 -DSTAGES=4'
+variant="${QUACTLIZE_L169_VARIANT:-m16}"
+case "$variant" in
+  m16)
+    source_file="$repo/dev/fold_derivation/l169_standalone_marlin_unit.cu"
+    defs='-DDENSE_MARLIN_WK4_AB=1 -DDENSE_MARLIN_AB=1 -DDENSE_STREAMK_AB=1 -DBENCH_GS=128 -DBENCH_TSK=64 -DDENSE_AB_BITS=4 -DDENSE_AB_ARTIFACT_TK=64 -DDENSE_AB_TM=16 -DDENSE_AB_TN=128 -DDENSE_AB_TK=128 -DDENSE_AB_WM=16 -DDENSE_AB_WN=64 -DDENSE_AB_WARP_K=32 -DDENSE_AB_ST=4 -DDENSE_AB_BC=0 -DTILE_M=16 -DTILE_N=128 -DWARP_M=16 -DWARP_N=64 -DSTAGES=4'
+    expected_accumulator='L169Accumulator=cutlass::gemm::collective::marlin_ppu_detail::MarlinAccumulatorPPU'
+    expected_tile='TileShape_=cute::tuple<cute::_16, cute::_128, cute::_128>'
+    expected_warp='WarpShape_=cute::tuple<cute::C<16>, cute::C<64>, cute::C<32>>'
+    ;;
+  m8)
+    source_file="$repo/dev/fold_derivation/l181_standalone_marlin_m8_unit.cu"
+    defs='-DDENSE_MARLIN_WK4_AB=1 -DDENSE_MARLIN_M8_AB=1 -DDENSE_MARLIN_AB=1 -DDENSE_STREAMK_AB=1 -DBENCH_GS=128 -DBENCH_TSK=64 -DDENSE_AB_BITS=4 -DDENSE_AB_ARTIFACT_TK=64 -DDENSE_AB_TM=8 -DDENSE_AB_TN=128 -DDENSE_AB_TK=128 -DDENSE_AB_WM=8 -DDENSE_AB_WN=64 -DDENSE_AB_WARP_K=32 -DDENSE_AB_ST=4 -DDENSE_AB_BC=0 -DTILE_M=8 -DTILE_N=128 -DWARP_M=8 -DWARP_N=64 -DSTAGES=4'
+    expected_accumulator='L169Accumulator=cutlass::gemm::collective::marlin_ppu_detail::MarlinAccumulatorM8PPU'
+    expected_tile='TileShape_=cute::tuple<cute::C<8>, cute::C<128>, cute::C<128>>'
+    expected_warp='WarpShape_=cute::tuple<cute::C<8>, cute::C<64>, cute::C<32>>'
+    ;;
+  *) echo "[l169] FAIL: unknown variant '$variant'" >&2; exit 2 ;;
+esac
 
 command -v nvcc >/dev/null 2>&1 || {
   echo '[l169] FAIL: nvcc is required for the generated-unit compile oracle' >&2
   exit 1
 }
 
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+tmp="${QUACTLIZE_L169_OUT:-/workspace/quactlize-l169-${variant}}"
+mkdir -p "$tmp"
 
 overlay="$tmp/overlay"
 collective_rel=quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp
@@ -23,6 +39,8 @@ kernel_probe="$overlay/$kernel_rel"
 unit_probe="$overlay/lowbit_dense_unit.inc"
 mkdir -p "$(dirname "$collective_probe")" "$(dirname "$kernel_probe")"
 cp "$collective_src" "$collective_probe"
+cp "$kernel_src" "$kernel_probe"
+cp "$repo/benchmarks/lowbit_dense_unit.inc" "$unit_probe"
 
 # Do not infer device-body instantiation from an unrelated warning or from an
 # environmental error's template stack.  Instead, put one uniquely named
@@ -105,10 +123,10 @@ if [[ -s "$unexpected" ]]; then
   exit 1
 fi
 for token in \
-  'L169Accumulator=cutlass::gemm::collective::marlin_ppu_detail::MarlinAccumulatorPPU' \
+  "$expected_accumulator" \
   'MarlinCollectivePPU<TileShape_, WarpShape_, Stages_, GroupSize_' \
-  'TileShape_=cute::tuple<cute::_16, cute::_128, cute::_128>' \
-  'WarpShape_=cute::tuple<cute::C<16>, cute::C<64>, cute::C<32>>' \
+  "$expected_tile" \
+  "$expected_warp" \
   'Stages_=4, GroupSize_=128' \
   'LoadPolicy_=cutlass::gemm::collective::MarlinCpAsyncLoadPolicyPPU' \
   'MarlinKernelPPU<ProblemShape_' \
@@ -204,4 +222,8 @@ if [[ -s "$unexpected" ]]; then
   exit 1
 fi
 
-echo '[l169] PASS: generated wrapper reaches standalone Marlin kernel + collective device bodies; route-severed and collective-severed same-source controls suppress the exact marker'
+if [[ "$variant" == m16 ]]; then
+  echo '[l169] PASS: generated wrapper reaches standalone Marlin kernel + collective device bodies; route-severed and collective-severed same-source controls suppress the exact marker'
+else
+  echo '[l169] PASS: variant=m8 generated wrapper reaches standalone Marlin kernel + collective device bodies; route-severed and collective-severed same-source controls suppress the exact marker'
+fi

@@ -26,7 +26,7 @@ REQUIRED_LINES = (
     "[l170:runner] positive=PASS negative_controls=7/7_RED result=PASS",
     "[dense-marlin-wk4] PASS: standalone format/collective/scheduler/kernel wired; "
     "standalone tactic authority consumed; generic WK4 compatibility absent; "
-    "thirteen structural plants rejected",
+    "seventeen structural plants rejected",
     "[classic-156] PASS: exact one-launch shape, source/tool/binary identity and full ACU capture "
     "are fail-closed",
     "[l143] PASS: standalone Marlin format + cadence + generated type + scheduler lifecycle; "
@@ -74,11 +74,11 @@ def main() -> int:
         return 1
 
     # The aggregate is only an evidence compositor.  Its component gates own
-    # 3 + 7 + 13 independent red controls, printed in the committed lines
+    # 3 + 7 + 17 independent red controls, printed in the committed lines
     # above.  Require those counts literally so a future rewrite cannot turn a
     # missing negative arm into an unchanged-looking PASS sentence.
     for token in ("negative_controls=3/3_RED", "negative_controls=7/7_RED",
-                  "thirteen structural plants rejected"):
+                  "seventeen structural plants rejected"):
         if expected.count(token) != 1:
             print(f"[l143-committed] FAIL: negative-control closure drifted: {token}")
             return 1

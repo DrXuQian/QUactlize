@@ -139,9 +139,11 @@ def exhaustive_dequant(constants: tuple[int, ...], plant: str) -> None:
         die(plant, f"dequant sweep incomplete: {cases}/65536")
 
 
-def apply_plant(plant: str, collective: str, dequant: str) -> tuple[str, str]:
+def apply_plant(
+    plant: str, collective: str, load: str, dequant: str
+) -> tuple[str, str, str]:
     if plant == "none":
-        return collective, dequant
+        return collective, load, dequant
     if plant == "runtime-dispatch":
         marker = "    auto multiply = [&](int inner) {"
         collective = collective.replace(
@@ -168,9 +170,36 @@ def apply_plant(plant: str, collective: str, dequant: str) -> tuple[str, str]:
         if old not in collective:
             die(plant, "helper-order plant seam drifted")
         collective = collective.replace(old, new, 1)
+    elif plant == "m8-x4-fallback":
+        old = "ppu.ldmatrix.sync.aligned.m8n8.x2.shared.b16 {%0,%1}, [%2];"
+        new = "ppu.ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1}, [%2];"
+        if load.count(old) != 1:
+            die(plant, "m8 x2 opcode plant seam drifted")
+        load = load.replace(old, new, 1)
+    elif plant == "m8-discarded-destinations":
+        old = ': "=r"(a[0]), "=r"(a[1])\n      : "l"(smem_ptr));'
+        new = (
+            ': "=r"(a[0]), "=r"(a[1]), "=r"(discarded_v2), '
+            '"=r"(discarded_v3)\n      : "l"(smem_ptr));'
+        )
+        if load.count(old) != 1:
+            die(plant, "m8 discarded-destination plant seam drifted")
+        load = load.replace(old, new, 1)
+    elif plant == "m8-padded-a":
+        old = "static constexpr int AStoredRows = InstructionM == 8 ? 1 : TileM;"
+        new = "static constexpr int AStoredRows = InstructionM == 8 ? 8 : TileM;"
+        if collective.count(old) != 1:
+            die(plant, "m8 packed-A plant seam drifted")
+        collective = collective.replace(old, new, 1)
+    elif plant == "m8-broadens-m":
+        old = "bool const m_supported = InstructionM == 8 ? m == 1 : (m > 0 && m <= TileM);"
+        new = "bool const m_supported = m > 0 && m <= TileM;"
+        if collective.count(old) != 1:
+            die(plant, "m8 M=1 admission plant seam drifted")
+        collective = collective.replace(old, new, 1)
     else:
         die(plant, "unknown plant")
-    return collective, dequant
+    return collective, load, dequant
 
 
 def main() -> int:
@@ -185,7 +214,7 @@ def main() -> int:
     mma = read(MMA, plant)
     classic = read(CLASSIC, plant)
     awesome = read(AWESOME, plant)
-    collective, dequant = apply_plant(plant, collective, dequant)
+    collective, load, dequant = apply_plant(plant, collective, load, dequant)
 
     if sha(classic) != EXPECTED_CLASSIC_SHA or sha(awesome) != EXPECTED_AWESOME_SHA:
         die(plant, "classic or Awesome-CuTe source hash drifted; re-audit before accepting")
@@ -206,14 +235,52 @@ def main() -> int:
     for forbidden in ("struct FragmentB {", "lop3.b32", "cp.async.cg.shared.global", "void mma_n16("):
         if forbidden in collective:
             die(plant, f"primitive returned to monolithic collective: {forbidden}")
-    for token in ("struct alignas(16) Vector128", "struct FragmentA", "cp.async.cg.shared.global", "ppu.ldmatrix.sync.aligned.m8n8.x4.shared.b16"):
+    for token in (
+        "struct alignas(16) Vector128", "struct FragmentA",
+        "struct FragmentA8", "FragmentAFor",
+        "sizeof(FragmentA8) == 2 * sizeof(uint32_t)",
+        "sizeof(FragmentA) == 4 * sizeof(uint32_t)",
+        "cp.async.cg.shared.global",
+        "void ldmatrix_a_m16", "void ldmatrix_a_m8",
+    ):
         if token not in load:
             die(plant, f"load helper drifted: {token}")
-    if "void mma_n16(" not in mma or "FragmentC& accum" not in mma:
-        die(plant, "MMA helper no longer accepts one native FragmentC")
-    mma_operands = re.findall(r'"\+f"\s*\(accum\.value\[(\d)\]\)', mma)
-    if mma_operands != [str(i) for i in range(8)]:
-        die(plant, f"MMA helper no longer binds native value[0..7]: {mma_operands}")
+    m16_load = body(load, "CUTLASS_DEVICE void ldmatrix_a_m16(", plant)
+    m8_load = body(load, "CUTLASS_DEVICE void ldmatrix_a_m8(", plant)
+    m16_opcode = "ppu.ldmatrix.sync.aligned.m8n8.x4.shared.b16"
+    m8_opcode = "ppu.ldmatrix.sync.aligned.m8n8.x2.shared.b16"
+    if m16_load.count(m16_opcode) != 1 or m8_opcode in m16_load:
+        die(plant, "m16 load is not the unchanged one-x4/four-register path")
+    if ': "=r"(a[0]), "=r"(a[2]), "=r"(a[1]), "=r"(a[3])' not in m16_load:
+        die(plant, "m16 x4 register permutation drifted")
+    if m8_load.count(m8_opcode) != 1 or m16_opcode in m8_load:
+        die(plant, "m8 load is not the one-x2/two-register path")
+    if ': "=r"(a[0]), "=r"(a[1])' not in m8_load:
+        die(plant, "m8 x2 register destinations drifted")
+    if "discarded_" in m8_load or len(re.findall(r'"=r"\s*\(a\[\d\]\)', m8_load)) != 2:
+        die(plant, "m8 load regained discarded x4 outputs or a non-two-register ABI")
+
+    for token in (
+        "static constexpr int AStoredRows = InstructionM == 8 ? 1 : TileM;",
+        ": ASharedStage == 16) &&",
+        "sizeof(SharedStorage) == (InstructionM == 8 ? 34816 : 50176)",
+        "bool const m_supported = InstructionM == 8 ? m == 1 : (m > 0 && m <= TileM);",
+    ):
+        if token not in collective:
+            die(plant, f"m8 packed-A/M=1 contract drifted: {token}")
+    if ("void mma_n16(" not in mma or
+            "FragmentCFor<InstructionM>& accum" not in mma):
+        die(plant, "MMA helper no longer accepts its native m8/m16 FragmentC")
+    mma_body = body(mma, "CUTLASS_DEVICE void mma_n16(", plant)
+    if "if constexpr (InstructionM == 8)" not in mma_body or "} else {" not in mma_body:
+        die(plant, "MMA helper no longer compile-time selects the real m8/m16 atoms")
+    m8_scope, m16_scope = mma_body.split("} else {", 1)
+    m8_operands = re.findall(r'"\+f"\s*\(accum\.value\[(\d)\]\)', m8_scope)
+    m16_operands = re.findall(r'"\+f"\s*\(accum\.value\[(\d)\]\)', m16_scope)
+    if m8_operands != [str(i) for i in range(4)]:
+        die(plant, f"m8 MMA helper no longer binds native value[0..3]: {m8_operands}")
+    if m16_operands != [str(i) for i in range(8)]:
+        die(plant, f"m16 MMA helper no longer binds native value[0..7]: {m16_operands}")
 
     prod_dq = body(dequant, "FragmentB dequantize_biased_int4(int q)", plant)
     classic_dq = body(classic, "FragB dequant(int q)", plant)
@@ -247,7 +314,7 @@ def main() -> int:
             "dequantize_biased_int4(q >> 8)",
             "scale(b0, fragment_scale[NBlock], 0)",
             "scale(b1, fragment_scale[NBlock], 1)",
-            "mma_n16<NBlock>",
+            "mma_n16<InstructionM, NBlock>",
         ],
         plant,
         "production helper is not Awesome-CuTe D0,D1,S0,S1,M order",

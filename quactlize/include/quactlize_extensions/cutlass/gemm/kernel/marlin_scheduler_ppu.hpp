@@ -79,8 +79,9 @@ public:
                 "standalone Marlin scheduler requires a static CTA tile");
   static_assert(cute::is_static<ClusterShape>::value,
                 "standalone Marlin scheduler requires a static cluster");
-  static_assert(TileM == 16 && TileN == 128 && TileK == 128,
-                "the first standalone Marlin scheduler target is fixed at 16x128x128");
+  static_assert((TileM == 8 || TileM == 16) &&
+                    TileN == 128 && TileK == 128,
+                "the first standalone Marlin scheduler family is m8/m16 x128x128");
   static_assert(cute::size(ClusterShape{}) == 1,
                 "the first standalone Marlin scheduler does not support clusters");
   static_assert(std::is_same_v<BarrierType, int>,

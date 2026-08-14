@@ -123,6 +123,24 @@ def one(pattern: str, text: str, noun: str, flags: int = 0) -> re.Match[str]:
     return hits[0]
 
 
+def function_body(text: str, anchor: str, noun: str) -> str:
+    start = text.find(anchor)
+    if start < 0:
+        raise ContractError(f"{noun}: missing function anchor {anchor!r}")
+    brace = text.find("{", start)
+    if brace < 0:
+        raise ContractError(f"{noun}: missing opening brace")
+    depth = 0
+    for pos in range(brace, len(text)):
+        if text[pos] == "{":
+            depth += 1
+        elif text[pos] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : pos + 1]
+    raise ContractError(f"{noun}: unbalanced function body")
+
+
 def cmake_value(text: str, name: str) -> str:
     return one(
         rf"set\(\s*{re.escape(name)}\s+([^\s\)]+)\s*\)", text,
@@ -179,6 +197,33 @@ def apply_plant(plant: str, texts: dict[Path, str]) -> None:
             "DEV_COMPILE_FLAGS ${_DENSE_MARLIN_WK4_DEFS}",
             1,
         )
+    elif plant == "m8-x4-fallback":
+        old = "ppu.ldmatrix.sync.aligned.m8n8.x2.shared.b16 {%0,%1}, [%2];"
+        new = "ppu.ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1}, [%2];"
+        if texts[LOAD].count(old) != 1:
+            raise ContractError("m8 x2 opcode plant seam drifted")
+        texts[LOAD] = texts[LOAD].replace(old, new, 1)
+    elif plant == "m8-discarded-destinations":
+        old = ': "=r"(a[0]), "=r"(a[1])\n      : "l"(smem_ptr));'
+        new = (
+            ': "=r"(a[0]), "=r"(a[1]), "=r"(discarded_v2), '
+            '"=r"(discarded_v3)\n      : "l"(smem_ptr));'
+        )
+        if texts[LOAD].count(old) != 1:
+            raise ContractError("m8 discarded-output plant seam drifted")
+        texts[LOAD] = texts[LOAD].replace(old, new, 1)
+    elif plant == "m8-padded-a":
+        old = "static constexpr int AStoredRows = InstructionM == 8 ? 1 : TileM;"
+        new = "static constexpr int AStoredRows = InstructionM == 8 ? 8 : TileM;"
+        if texts[COLLECTIVE].count(old) != 1:
+            raise ContractError("m8 packed-A plant seam drifted")
+        texts[COLLECTIVE] = texts[COLLECTIVE].replace(old, new, 1)
+    elif plant == "m8-broadens-m":
+        old = "bool const m_supported = InstructionM == 8 ? m == 1 : (m > 0 && m <= TileM);"
+        new = "bool const m_supported = m > 0 && m <= TileM;"
+        if texts[COLLECTIVE].count(old) != 1:
+            raise ContractError("m8 M=1 admission plant seam drifted")
+        texts[COLLECTIVE] = texts[COLLECTIVE].replace(old, new, 1)
     else:
         raise ContractError(f"unknown plant {plant}")
 
@@ -256,6 +301,7 @@ def validate(texts: dict[Path, str], generated: Path | None) -> dict[str, object
             raise ContractError(f"owned host lowering lacks {token!r}")
 
     collective = texts[COLLECTIVE]
+    load = texts[LOAD]
     for helper in (LOAD, DEQUANT, MMA):
         include = (
             '#include "quactlize_extensions/cutlass/gemm/collective/'
@@ -280,11 +326,46 @@ def validate(texts: dict[Path, str], generated: Path | None) -> dict[str, object
     if calls != [0, 1, 2, 3]:
         raise ContractError(f"standalone multiply cadence is {calls}, expected [0,1,2,3]")
 
+    for token in (
+        "struct FragmentA {", "__half2 value[4];", "struct FragmentA8 {",
+        "__half2 value[2];", "FragmentAFor = std::conditional_t<",
+        "sizeof(FragmentA8) == 2 * sizeof(uint32_t)",
+        "sizeof(FragmentA) == 4 * sizeof(uint32_t)",
+    ):
+        if token not in load:
+            raise ContractError(f"standalone A-fragment source lacks {token!r}")
+    m16_load = function_body(
+        load, "CUTLASS_DEVICE void ldmatrix_a_m16(", "m16 A load"
+    )
+    m8_load = function_body(
+        load, "CUTLASS_DEVICE void ldmatrix_a_m8(", "m8 A load"
+    )
+    x4 = "ppu.ldmatrix.sync.aligned.m8n8.x4.shared.b16"
+    x2 = "ppu.ldmatrix.sync.aligned.m8n8.x2.shared.b16"
+    if m16_load.count(x4) != 1 or x2 in m16_load:
+        raise ContractError("m16 A load is not exactly the unchanged x4 path")
+    if ': "=r"(a[0]), "=r"(a[2]), "=r"(a[1]), "=r"(a[3])' not in m16_load:
+        raise ContractError("m16 x4 raw-register permutation drifted")
+    if m8_load.count(x2) != 1 or x4 in m8_load:
+        raise ContractError("m8 A load is not exactly the PPU plain-x2 path")
+    if ': "=r"(a[0]), "=r"(a[1])' not in m8_load:
+        raise ContractError("m8 x2 no longer publishes exactly a[0],a[1]")
+    if "discarded_" in m8_load or len(re.findall(r'"=r"\s*\(a\[\d\]\)', m8_load)) != 2:
+        raise ContractError("m8 A load regained x4/discarded destinations")
+    for token in (
+        "static constexpr int AStoredRows = InstructionM == 8 ? 1 : TileM;",
+        ": ASharedStage == 16) &&",
+        "sizeof(SharedStorage) == (InstructionM == 8 ? 34816 : 50176)",
+        "bool const m_supported = InstructionM == 8 ? m == 1 : (m > 0 && m <= TileM);",
+    ):
+        if token not in collective:
+            raise ContractError(f"m8 packed-A/M=1 source contract lacks {token!r}")
+
     kernel = texts[KERNEL]
     output_map = texts[OUTPUT_MAP]
     mma = texts[MMA]
-    if "using Accumulator = marlin_ppu_detail::MarlinAccumulatorPPU;" not in collective:
-        raise ContractError("collective lost native Marlin accumulator alias")
+    if "using Accumulator = marlin_ppu_detail::MarlinAccumulatorFor<InstructionM>;" not in collective:
+        raise ContractError("collective lost its atom-M-selected native Marlin accumulator alias")
     if "Accumulator accum;" not in kernel:
         raise ContractError("kernel no longer constructs the native accumulator directly")
     if kernel.count(
@@ -297,7 +378,8 @@ def validate(texts: dict[Path, str], generated: Path | None) -> dict[str, object
     ):
         if output_map.count(token) != 1:
             raise ContractError(f"authoritative output map lacks {token!r}")
-    if "FragmentC fragments[4];" not in mma or "float value[8];" not in mma:
+    if ("FragmentC fragments[4];" not in mma or "float value[8];" not in mma or
+            "FragmentC8 fragments[4];" not in mma or "float value[4];" not in mma):
         raise ContractError("native 4x8 FP32 accumulator layout drifted")
     joined = "\n".join((collective, mma, kernel))
     if re.search(
@@ -352,7 +434,10 @@ def validate(texts: dict[Path, str], generated: Path | None) -> dict[str, object
         "claims": {
             "generated_route": "standalone-only",
             "helper_cadence": "source-bound-by-L174",
-            "accumulator": "native-4x8-fp32",
+            "accumulator": "native-C:m16-4x8-fp32,m8-4x4-fp32",
+            "a_fragment": "m16-x4-4reg-16B,m8-plain-x2-2reg-8B",
+            "a_shared_bytes": "m16=50176,m8-M1-packed=34816",
+            "m8_problem_m": "exactly-1",
             "generic_fragment": "absent",
             "flat_accumulator_address_escape": "absent",
             "ppu_opcode_or_spill": "not-established-by-this-source-contract",
@@ -383,7 +468,8 @@ def main() -> int:
         args.output.write_text(encoded, encoding="utf-8")
     print(
         "[l176:source] PASS: shipping generated row + standalone wrapper + split helpers + "
-        "native 4x8 accumulator are hash-bound; PPU opcode/spill remains a disassembly postcondition"
+        "native m16/m8 C+A fragments and packed-M1 A ledger are hash-bound; "
+        "PPU opcode/spill remains a disassembly postcondition"
     )
     return 0
 

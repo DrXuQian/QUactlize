@@ -39,6 +39,12 @@ using Main = cutlass::gemm::collective::MarlinCollectivePPU<
     cute::Stride<int64_t, cute::_1, int64_t>,
     cute::Stride<int64_t, cute::_1, int64_t>,
     cute::Stride<cute::_1, int64_t, int64_t>>;
+using Main8 = cutlass::gemm::collective::MarlinCollectivePPU<
+    cute::Shape<cute::_8, cute::_128, cute::_128>,
+    cute::Shape<cute::_8, cute::_64, cute::_32>, 4, 128,
+    cute::Stride<int64_t, cute::_1, int64_t>,
+    cute::Stride<int64_t, cute::_1, int64_t>,
+    cute::Stride<cute::_1, int64_t, int64_t>>;
 using Vector128 = cutlass::gemm::collective::marlin_ppu_detail::Vector128;
 
 namespace {
@@ -73,6 +79,10 @@ int main(int argc, char** argv) {
       reinterpret_cast<cutlass::half_t const*>(a.data()),
       reinterpret_cast<cutlass::int4b_t const*>(b.data()),
       reinterpret_cast<cutlass::half_t const*>(scale.data()), 128};
+  Main8::Arguments args8{
+      reinterpret_cast<cutlass::half_t const*>(a.data()),
+      reinterpret_cast<cutlass::int4b_t const*>(b.data()),
+      reinterpret_cast<cutlass::half_t const*>(scale.data()), 128};
 
   auto const fixed = cute::make_shape(1, 4096, 4096, 1);
   using PackedD = cutlass::detail::TagToStrideC_t<cutlass::layout::RowMajor>;
@@ -86,6 +96,10 @@ int main(int argc, char** argv) {
   if (!Main::can_implement(fixed, args) ||
       !Main::address_arithmetic_supported(fixed)) {
     return fail(plant, "fixed production shape was rejected");
+  }
+  if (!Main8::can_implement(fixed, args8) ||
+      !Main8::address_arithmetic_supported(fixed)) {
+    return fail(plant, "fixed m8 production shape was rejected");
   }
   // These are the exact adjacent admitted/rejected multiples for the two int
   // products that dominate B rebasing.  They call production can_implement;
@@ -132,10 +146,10 @@ int main(int argc, char** argv) {
                 q, tid, n_block);
         for (int value = 0; value < 8; ++value) {
           int const row =
-              cutlass::gemm::kernel::marlin_ppu_detail::output_row(
+              cutlass::gemm::kernel::marlin_ppu_detail::output_row<16>(
                   lane, value);
           int col = n_base +
-                    cutlass::gemm::kernel::marlin_ppu_detail::output_col_offset(
+                    cutlass::gemm::kernel::marlin_ppu_detail::output_col_offset<16>(
                         lane, value);
           if (is_plant(plant, "col-plus-one") && q == kQ - 1 &&
               tid == 63 && n_block == 3 && value == 7) {
@@ -163,13 +177,52 @@ int main(int argc, char** argv) {
   if (coordinates != uint64_t(kQ) * Main::TileM * Main::TileN) {
     return fail(plant, "output-coordinate census drifted");
   }
+  uint64_t coordinates8 = 0;
+  for (int q = 0; q < kQ; ++q) {
+    std::array<uint8_t, Main8::TileM * Main8::TileN> seen{};
+    for (int tid = 0; tid < 64; ++tid) {
+      int const lane = tid % 32;
+      for (int n_block = 0; n_block < 4; ++n_block) {
+        int const n_base =
+            cutlass::gemm::kernel::marlin_ppu_detail::output_n_base(
+                q, tid, n_block);
+        for (int value = 0; value < Main8::AccumulatorValues; ++value) {
+          int const row =
+              cutlass::gemm::kernel::marlin_ppu_detail::output_row<8>(
+                  lane, value);
+          int const col = n_base +
+              cutlass::gemm::kernel::marlin_ppu_detail::output_col_offset<8>(
+                  lane, value);
+          int const local_col = col - q * Main8::TileN;
+          if (row < 0 || row >= Main8::TileM || local_col < 0 ||
+              local_col >= Main8::TileN || col < 0 || col >= kN) {
+            return fail(plant, "m8 output cohort escaped its global q tile");
+          }
+          int const cell = row * Main8::TileN + local_col;
+          if (++seen[cell] != 1) {
+            return fail(plant, "m8 output cohort duplicated a tile coordinate");
+          }
+          ++coordinates8;
+        }
+      }
+    }
+    for (uint8_t visits : seen) {
+      if (visits != 1) {
+        return fail(plant, "m8 output cohort left a tile-coordinate hole");
+      }
+    }
+  }
+  if (coordinates8 != uint64_t(kQ) * Main8::TileM * Main8::TileN) {
+    return fail(plant, "m8 output-coordinate census drifted");
+  }
   if (!is_plant(plant, "none")) {
     return fail(plant, "named coordinate plant missed its invariant");
   }
   std::printf(
       "[l179] PASS: fixed-shape=accepted overflow-boundaries=3/3 "
-      "packed-D=(4096,1,0) output-coordinates=%llu q=32 "
+      "packed-D=(4096,1,0) output-coordinates={m16:%llu,m8:%llu} q=32 "
       "range=[0,4095] exact-once=1\n",
-      static_cast<unsigned long long>(coordinates));
+      static_cast<unsigned long long>(coordinates),
+      static_cast<unsigned long long>(coordinates8));
   return 0;
 }

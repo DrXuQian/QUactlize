@@ -4,7 +4,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 oracle="${repo}/dev/fold_derivation/l175_native_fragment_contract.py"
 source_file="${repo}/dev/fold_derivation/l175_native_fragment_contract.cu"
-out="${QUACTLIZE_L175_OUT:-/tmp/quactlize_l175_native_fragment}"
+out="${QUACTLIZE_L175_OUT:-/workspace/quactlize-l175-native-fragment}"
 mkdir -p "${out}"
 
 python3 "${oracle}" | tee "${out}/source-positive.log"
@@ -24,10 +24,10 @@ common=(
 nvcc "${common[@]}" -o "${out}/l175" "${source_file}"
 "${out}/l175" | tee "${out}/type-positive.log"
 grep -Fq \
-  'L175 fragment_bytes=32 fragment_values=8 accumulator_bytes=128 accumulator_fragments=4 standard_layout=1 trivial=1 result=PASS' \
+  'L175 fragment_bytes=32 fragment_values=8 accumulator_bytes=128 accumulator_fragments=4 m8_fragment_bytes=16 m8_fragment_values=4 m8_accumulator_bytes=64 m8_accumulator_fragments=4 m16_a_bytes=16 m8_a_bytes=8 standard_layout=1 trivial=1 result=PASS' \
   "${out}/type-positive.log"
 
-plants=(generic-fragment whole-accum-reinterpret wrong-4x8-layout)
+plants=(generic-fragment whole-accum-reinterpret wrong-4x8-layout wrong-m8-a-registers)
 for plant in "${plants[@]}"; do
   set +e
   python3 "${oracle}" --plant="${plant}" >"${out}/${plant}.log" 2>&1
@@ -44,8 +44,8 @@ done
 # A dimension transposition preserves 128 bytes, so compile the real type
 # assertions through an include overlay.  This proves sizeof alone cannot make
 # the wrong 8x4 register association green.
-tmp="$(mktemp -d)"
-trap 'rm -rf "${tmp}"' EXIT
+tmp="${out}/wrong-layout-work"
+mkdir -p "${tmp}"
 rel=quactlize_extensions/cutlass/gemm/collective/marlin_mma_ppu.hpp
 mkdir -p "${tmp}/overlay/$(dirname "${rel}")"
 cp "${repo}/quactlize/include/${rel}" "${tmp}/overlay/${rel}"
@@ -95,4 +95,4 @@ grep -Fq \
   'L139 PASS: four classic acc_i/acc_j cohorts are exhaustive; K0=64x32 and production 4->2->1 reduction are raw-bit exact' \
   "${out}/l139.log"
 
-echo '[l175:runner] positive=source+compile+L139 negative_controls=3/3_RED wrong-layout-compile=RED result=PASS'
+echo '[l175:runner] positive=source+compile+L139 negative_controls=4/4_RED wrong-layout-compile=RED result=PASS'

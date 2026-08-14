@@ -93,7 +93,8 @@ int main(int argc, char** argv) {
   uint64_t declared = 0;
   uint64_t admitted = 0;
   uint64_t classic = 0;
-  mt::MarlinTacticPPU sole_admitted{};
+  bool saw_m8 = false;
+  bool saw_m16 = false;
 
   mt::for_each_declared([&](mt::MarlinTacticPPU original) {
     if (plant == Plant::DropLoadAxis &&
@@ -134,7 +135,10 @@ int main(int argc, char** argv) {
 
     if (exclusion == mt::MarlinTacticExclusionPPU::None) {
       ++admitted;
-      sole_admitted = original;
+      saw_m8 |= original == mt::MarlinTacticPPU{
+          8, 128, 128, 8, 64, 32, 4,
+          mt::MarlinLoadKindPPU::CpAsync};
+      saw_m16 |= original == mt::kMarlinClassicReferencePPU;
       admitted_tm.insert(original.tm);
       admitted_tn.insert(original.tn);
       admitted_tk.insert(original.tk);
@@ -168,10 +172,10 @@ int main(int argc, char** argv) {
     return fail(plant, "first-failure census does not close");
   if (classic != 60)
     return fail(plant, "classic subspace is not the independent 5x3x4 relation");
-  if (admitted != 1 || sole_admitted != mt::kMarlinClassicReferencePPU)
-    return fail(plant, "admission is not exactly the proved classic reference row");
-  if (admitted_tm.size() != 1 || admitted_tn.size() != 1 ||
-      admitted_tk.size() != 1 || admitted_wm.size() != 1 ||
+  if (admitted != 2 || !saw_m8 || !saw_m16)
+    return fail(plant, "admission is not exactly the proved paired m8/m16 family");
+  if (admitted_tm.size() != 2 || admitted_tn.size() != 1 ||
+      admitted_tk.size() != 1 || admitted_wm.size() != 2 ||
       admitted_wn.size() != 1 || admitted_warp_k.size() != 1 ||
       admitted_stages.size() != 1 || admitted_loads.size() != 1)
     return fail(plant, "an unproved standalone axis became active");
@@ -199,6 +203,6 @@ int main(int argc, char** argv) {
       static_cast<unsigned long long>(kinds[3]));
   std::puts(
       "[l172] axes: TM=5 TN=3 TK=4 WM=5 WN=4 WarpK=5 stages=5 load=2; "
-      "active-cardinality=1/1/1/1/1/1/1/1");
+      "active-cardinality=2/1/1/2/1/1/1/1 family=m8,m16");
   return 0;
 }

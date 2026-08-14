@@ -14,14 +14,11 @@ static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
   using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::MarlinGemm;
   using Kernel = typename G::GemmKernel;
   static_assert(Kernel::TileScheduler::fixup_thread_count_capable(
-                    Kernel::OutputThreads),
-                "the dense Marlin sweep requires a structurally capable output cohort");
+                    Kernel::MaxThreadsPerBlock),
+                "the generic dense Marlin sweep requires a structurally capable CTA cohort");
   static_assert(Kernel::TileScheduler::FixupThreadCount ==
-                    Kernel::OutputThreads,
-                "the dense Marlin sweep must preserve the exact output/fixup cohort");
-  static_assert(Kernel::MaxThreadsPerBlock ==
-                    Kernel::OutputThreads * Kernel::WarpKCohorts,
-                "the dense Marlin sweep must account for every K cohort in the CTA");
+                    Kernel::MaxThreadsPerBlock,
+                "the generic dense Marlin sweep must preserve its exact CTA/fixup cohort");
   return run<G>(options, dense_tactic(cfg), "marlin");
 #else
 #if defined(DENSE_MARLIN_WK4_AB)
@@ -32,9 +29,10 @@ static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
   // --marlin; keeping the wrapper compile-time Marlin-only prevents a future
   // CLI regression from silently launching one of those numerically invalid
   // alternatives.
-  static_assert(GroupSize == 128 && TM == 16 && TN == 128 && TK == 128 &&
-                    WM == 16 && WN == 64 && ST == 4,
-                "the first classic-aligned target is the exact int4 gs128 2N x 4K tactic");
+  static_assert(GroupSize == 128 &&
+                    ((TM == 8 && WM == 8) || (TM == 16 && WM == 16)) &&
+                    TN == 128 && TK == 128 && WN == 64 && ST == 4,
+                "the first standalone family changes only the real m8/m16 M atom");
   static_assert(DENSE_AB_WARP_K == 32,
                 "classic-aligned WarpK is the per-warp K extent 32");
   using StandaloneCfg = StandaloneMarlinCfg<
@@ -44,7 +42,9 @@ static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
   static_assert(Kernel::WarpKCohorts == 4 &&
                     Kernel::MaxThreadsPerBlock == 256 &&
                     Kernel::OutputThreads == 64,
-                "classic alignment must be 1M x 2N x 4K = 8 warps with a 64-thread output cohort");
+                "standalone m8/m16 must be 1M x 2N x 4K = 8 warps with a 64-thread output cohort");
+  static_assert(Kernel::InstructionM == TM,
+                "the compiled PPU instruction M must match the tactic M atom");
   static_assert(Kernel::IsStandaloneMarlin,
                 "the classic-aligned row must instantiate the standalone Marlin kernel");
   static_assert(std::is_same_v<typename Kernel::CollectiveMainloop,

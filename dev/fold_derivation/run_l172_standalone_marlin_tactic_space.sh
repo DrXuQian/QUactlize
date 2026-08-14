@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
-out="${QUACTLIZE_L172_OUT:-/tmp/quactlize_l172}"
+out="${QUACTLIZE_L172_OUT:-/workspace/quactlize-l172}"
 mkdir -p "$out"
 
 "${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror \

@@ -1449,7 +1449,7 @@ def lint_l143_wk4_committed_evidence():
     """The result-SHA WK1 admission must be reproducible locally with planted reds."""
     return _run_ci_script(
         "check_l143_wk4_committed_evidence.py",
-        "L143 committed evidence regenerates exactly and five wrong delivery maps red")
+        "L143 committed evidence regenerates exactly and seventeen structural plants red")
 
 
 def lint_gemv_lop3_codegen():
@@ -2022,6 +2022,9 @@ def main():
                  ("test_lowbit_dense_streamk_ab", "DENSE_STREAMK_AB=1")),
                 ("boxdry", "dense Marlin target reaches its isolated DP/Stream-K/Marlin object graph and host link",
                  ("test_lowbit_dense_marlin_ab", "DENSE_MARLIN_AB=1")),
+                ("boxdry", "dense standalone Marlin m8 target reaches its generated object graph and host link",
+                 ("test_lowbit_dense_marlin_m8_ab", "DENSE_MARLIN_WK4_AB=1",
+                  "DENSE_MARLIN_M8_AB=1", "DENSE_MARLIN_AB=1")),
                 ("boxdry", "generated-unit undefined reference is rejected by the real host link",
                  ("test_lowbit_dense_streamk_ab", "DENSE_STREAMK_AB=1",
                   "BOX_DRYRUN_PLANT_LINK_FAILURE=1", "BOX_DRYRUN_EXPECT_LINK_FAILURE=1")),

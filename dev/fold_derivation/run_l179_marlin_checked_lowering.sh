@@ -2,8 +2,8 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-tmp="$(mktemp -d /tmp/quactlize-l179.XXXXXX)"
-trap 'rm -rf "${tmp}"' EXIT
+tmp="${QUACTLIZE_L179_OUT:-/workspace/quactlize-l179}"
+mkdir -p "${tmp}"
 
 host_flags=(-std=c++17 -x cu -arch=sm_80 -w --expt-relaxed-constexpr
   -I "${repo}/dev/fold_derivation/stub_inc"

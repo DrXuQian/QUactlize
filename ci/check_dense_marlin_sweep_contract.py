@@ -6,7 +6,7 @@ There is intentionally no production standalone sweep target yet.  The old
 kernel and must not be reported as evidence for ``MarlinCollectivePPU``.
 
 This gate proves the honest intermediate state: the standalone Cartesian
-authority is exhaustive and causally checked, one fixed row is admitted, all
+authority is exhaustive and causally checked, one paired m8/m16 family is admitted, all
 other rows have one named first-failure reason, and no benchmark currently
 claims that this authority is a production sweep.  When a standalone target is
 added this gate must be extended; turning the historical target green is not a
@@ -86,8 +86,8 @@ def main() -> int:
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
     required = (
-        "declared=60000 unique=60000 admitted=1 classic_subspace=60",
-        "active-cardinality=1/1/1/1/1/1/1/1",
+        "declared=60000 unique=60000 admitted=2 classic_subspace=60",
+        "active-cardinality=2/1/1/2/1/1/1/1 family=m8,m16",
         "negative_controls=4/4_RED emitter=PASS result=PASS",
     )
     if run.returncode != 0 or any(token not in run.stdout for token in required):
@@ -99,8 +99,8 @@ def main() -> int:
 
     print(
         "[dense-marlin-sweep-contract] PASS: standalone authority "
-        "declared=60000 admitted=1 classic-subspace=60; fixed target consumes "
-        "the sole admitted row; each rejected row has one reason; "
+        "declared=60000 admitted=2 classic-subspace=60; fixed targets consume "
+        "the exact paired m8/m16 family; each rejected row has one reason; "
         "multirow-production-sweep=NOT_IMPLEMENTED; "
         "DENSE_MARLIN_SWEEP=PRE_STANDALONE_NOT_EVIDENCE"
     )

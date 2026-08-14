@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-out="${QUACTLIZE_L139_STANDALONE_OUT:-/tmp/quactlize_l139_standalone_fragment}"
+out="${QUACTLIZE_L139_STANDALONE_OUT:-/workspace/quactlize-l139-standalone-fragment}"
 mkdir -p "${out}"
 
 python3 "${repo}/dev/fold_derivation/check_l139_standalone_fragment.py"

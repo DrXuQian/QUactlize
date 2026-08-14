@@ -85,12 +85,12 @@
 #include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_persistent.hpp"
 #include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_streamk.hpp"
 #include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_marlin.hpp"
+#include "quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
+#include "quactlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp"
 #if defined(DENSE_MARLIN_WK4_AB)
 #include "marlin_format_ppu.hpp"
 #include "marlin_tactic_space_ppu.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
 #include "quactlize_extensions/cutlass/gemm/device/marlin_gemm_ppu.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp"
 #endif
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
 #include "ppu_mixed_policy.hpp"
@@ -465,9 +465,15 @@ inline bench_measure::Tactic dense_fixed_tactic() {
 // experiments, not truncated tactic searches; a separate registry identity prevents a
 // one-row result from being mistaken for the winner of the full dense table.
 #if defined(DENSE_MARLIN_WK4_AB)
+#if defined(DENSE_MARLIN_M8_AB)
+#define LOWBIT_DENSE_TABLE_FILE                 "marlin-m8-wk4-standalone-single-row"
+#define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    "marlin-m8-wk4-standalone"
+#define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  "marlin-m8-wk4-standalone"
+#else
 #define LOWBIT_DENSE_TABLE_FILE                 "marlin-wk4-aligned-single-row"
 #define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    "marlin-wk4-aligned"
 #define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  "marlin-wk4-aligned"
+#endif
 #elif defined(DENSE_MARLIN_AB)
 #define LOWBIT_DENSE_TABLE_FILE                 "marlin-ab-single-row"
 #define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    "marlin-ab"
@@ -554,17 +560,24 @@ inline void print_dense_table_provenance() {
               LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64, LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64);
 #if defined(DENSE_MARLIN_WK4_AB)
   static_assert(cutlass::sizeof_bits<QuantType>::value == 4 &&
-                    DENSE_AB_ARTIFACT_TK == 64 && DENSE_AB_TM == 16 &&
+                    DENSE_AB_ARTIFACT_TK == 64 &&
+                    (DENSE_AB_TM == 8 || DENSE_AB_TM == 16) &&
                     DENSE_AB_TN == 128 && DENSE_AB_TK == 128 &&
-                    DENSE_AB_WM == 16 && DENSE_AB_WN == 64 &&
+                    DENSE_AB_WM == DENSE_AB_TM && DENSE_AB_WN == 64 &&
                     DENSE_AB_WARP_K == 32 && DENSE_AB_ST == 4,
-                "classic-aligned provenance must describe its exact compiled type");
+                "standalone provenance must describe its exact compiled m8/m16 type");
   std::printf(
-      "[dense-marlin-aligned] scheduler=marlin-only topology=1Mx2Nx4K "
+      "[dense-marlin-aligned] family=%s scheduler=marlin-only topology=1Mx2Nx4K "
       "cta_threads=256 output_cohort_threads=64 warp_k_extent=32 warp_k_cohorts=4 "
-      "tile=16x128x128 warp=16x64x32 stages=4 bits=4 fold=1 "
+      "instruction=m%dn16k16 tile=%dx128x128 warp=%dx64x32 stages=4 bits=4 fold=1 "
       "artifact=classic-marlin-u32 scale=classic-gs128-permuted "
-      "load=cp.async consumer_axis=WarpK32\n");
+      "stored_a_rows=%d a_copy_threads=%d a_load=%s load=cp.async "
+      "consumer_axis=WarpK32\n",
+      DENSE_AB_TM == 8 ? "ppu-m8-extension" : "classic-m16-reference",
+      DENSE_AB_TM, DENSE_AB_TM, DENSE_AB_WM,
+      DENSE_AB_TM == 8 ? 1 : 16,
+      DENSE_AB_TM == 8 ? 16 : 256,
+      DENSE_AB_TM == 8 ? "plain-x2" : "plain-x4");
 #endif
 #endif
 }
@@ -928,11 +941,16 @@ bool dense_map_accumulator_owners(DenseVerifyPartition& partition) {
     // contiguous accum[8*n_block + value] ranges.  Map that explicit register
     // order rather than CuTe's tiled fragment-index order.  Only K0 survives
     // the 4->2->1 CTA tree, and those 64 physical threads own one 16x128 tile.
+    constexpr int kInstructionM = Gemm::GemmKernel::InstructionM;
+    constexpr int kAccumulatorValues = Gemm::GemmKernel::AccumulatorValues;
     if (cta_threads != 256 || output_threads != 64 ||
-        warp_k_cohorts != 4 || stripes != 32) {
+        warp_k_cohorts != 4 ||
+        (kInstructionM != 8 && kInstructionM != 16) ||
+        stripes != 4 * kAccumulatorValues) {
       std::fprintf(stderr,
-                   "  [dense verify owners] fail-close: standalone classic "
-                   "topology drifted from 256T/64 outputT/4K/32 stripes\n");
+                   "  [dense verify owners] fail-close: standalone m%d "
+                   "topology drifted from 256T/64 outputT/4K/%d stripes\n",
+                   kInstructionM, 4 * kAccumulatorValues);
       return false;
     }
   }
@@ -962,11 +980,15 @@ bool dense_map_accumulator_owners(DenseVerifyPartition& partition) {
       int m = 0;
       int n = 0;
       if constexpr (kStandaloneMarlin) {
+        constexpr int kInstructionM = Gemm::GemmKernel::InstructionM;
+        constexpr int kAccumulatorValues =
+            Gemm::GemmKernel::AccumulatorValues;
         int const warp_n = output_thread / 32;
         int const lane = output_thread % 32;
-        int const n_block = stripe / 8;
-        int const value = stripe % 8;
-        m = lane / 4 + 8 * (value >> 2);
+        int const n_block = stripe / kAccumulatorValues;
+        int const value = stripe % kAccumulatorValues;
+        m = lane / 4 +
+            (kInstructionM == 16 ? 8 * (value >> 2) : 0);
         n = 64 * warp_n + 16 * n_block +
             (lane & 3) + 4 * (value & 3);
       }
@@ -993,12 +1015,17 @@ bool dense_map_accumulator_owners(DenseVerifyPartition& partition) {
       std::find(coverage.begin(), coverage.end(), uint8_t(0)) != coverage.end()) {
     return false;
   }
+  char const* mapping = "";
+  if constexpr (kStandaloneMarlin) {
+    mapping = Gemm::GemmKernel::InstructionM == 8
+                  ? "mapping=ppu-m8n16 "
+                  : "mapping=classic-ppu-m16n16 ";
+  }
   std::printf("  [dense verify owners] tile=%dx%d cta_threads=%d "
               "output_threads=%d K_cohorts=%d stripes/output_thread=%d "
               "%scoverage=exact-once\n",
               partition.tile_m, partition.tile_n, cta_threads, output_threads,
-              warp_k_cohorts, stripes,
-              kStandaloneMarlin ? "mapping=classic-ppu-m16n16 " : "");
+              warp_k_cohorts, stripes, mapping);
   return true;
 }
 
@@ -1739,11 +1766,12 @@ DenseFixtureEvidence initialize(Options const& options) {
     // is intentionally independent of shipping xplane: logical [K,N] biased
     // codes are the only common seam between the benchmark and this format.
     static_assert(cutlass::sizeof_bits<QuantType>::value == 4 &&
-                      DENSE_AB_TM == 16 && DENSE_AB_TN == 128 &&
-                      DENSE_AB_TK == 128 && DENSE_AB_WM == 16 &&
+                      (DENSE_AB_TM == 8 || DENSE_AB_TM == 16) &&
+                      DENSE_AB_TN == 128 && DENSE_AB_TK == 128 &&
+                      DENSE_AB_WM == DENSE_AB_TM &&
                       DENSE_AB_WN == 64 && DENSE_AB_WARP_K == 32 &&
                       DENSE_AB_ARTIFACT_TK == 64,
-                  "standalone classic packing is enabled only for the fixed int4 target");
+                  "standalone classic packing is independent of the m8/m16 M atom");
     std::vector<uint8_t> q(size_t(row) * col);
     auto logical_b = tensor_B.host_view();
     for (int k = 0; k < col; ++k) {
@@ -3726,14 +3754,14 @@ int main(int argc, char const **args) {
         options.streamk_gate || options.streamk_split_gate) {
       std::fprintf(
           stderr,
-          "test_lowbit_dense_marlin_wk4_ab is Marlin-only: pass --marlin; "
+          "standalone Marlin m8/m16 target is Marlin-only: pass --marlin; "
           "DP, persistent and Stream-K arms are not valid for a 4K-cohort CTA\n");
       return 1;
     }
     if (!options.streamk_exact_fixture) {
       std::fprintf(
           stderr,
-          "test_lowbit_dense_marlin_wk4_ab requires --streamk_exact_fixture "
+          "standalone Marlin m8/m16 target requires --streamk_exact_fixture "
           "so every measured point also runs the 8-launch bit-exact lock fingerprint\n");
       return 1;
     }

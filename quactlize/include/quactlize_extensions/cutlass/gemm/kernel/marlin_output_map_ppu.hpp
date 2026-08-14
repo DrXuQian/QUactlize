@@ -13,8 +13,11 @@ namespace cutlass::gemm::kernel::marlin_ppu_detail {
 // The K0 cohort is the only cohort that hands off or writes output.  Keep its
 // map host/device constexpr so production and the exhaustive L179 proof share
 // one seam rather than maintaining two mutually-consistent implementations.
+template <int InstructionM>
 CUTLASS_HOST_DEVICE constexpr int output_row(int lane, int value) {
-  return lane / 4 + (((value >> 2) & 1) << 3);
+  static_assert(InstructionM == 8 || InstructionM == 16);
+  return lane / 4 +
+         (InstructionM == 16 ? (((value >> 2) & 1) << 3) : 0);
 }
 
 CUTLASS_HOST_DEVICE constexpr int output_n_base(
@@ -23,7 +26,9 @@ CUTLASS_HOST_DEVICE constexpr int output_n_base(
   return (n_tile * 8 + warp_n * 4 + n_block) * 16;
 }
 
+template <int InstructionM>
 CUTLASS_HOST_DEVICE constexpr int output_col_offset(int lane, int value) {
+  static_assert(InstructionM == 8 || InstructionM == 16);
   return lane % 4 + ((value % 4) << 2);
 }
 

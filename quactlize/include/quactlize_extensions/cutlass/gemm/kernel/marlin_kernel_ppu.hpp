@@ -70,14 +70,20 @@ class MarlinKernelPPU {
   static constexpr uint32_t WarpKCohorts = CollectiveMainloop::WarpOnK;
   static constexpr uint32_t OutputThreads =
       MaxThreadsPerBlock / WarpKCohorts;
+  static constexpr int InstructionM = CollectiveMainloop::InstructionM;
+  static constexpr int AccumulatorValues =
+      CollectiveMainloop::AccumulatorValues;
+  static constexpr int AccumulatorHalves =
+      CollectiveMainloop::AccumulatorHalves;
   static constexpr bool IsDenseMarlin = true;
   static constexpr bool IsStandaloneMarlin = true;
 
   static_assert(cute::rank(ProblemShape{}) == 4,
                 "standalone Marlin requires dense <M,N,K,L>");
-  static_assert(MaxThreadsPerBlock == 256 && WarpKCohorts == 4 &&
+  static_assert((InstructionM == 8 || InstructionM == 16) &&
+                    MaxThreadsPerBlock == 256 && WarpKCohorts == 4 &&
                     OutputThreads == 64,
-                "first standalone Marlin target is 1M x 2N x 4K");
+                "first standalone Marlin m8/m16 family is 1M x 2N x 4K");
   static_assert(std::is_same_v<ElementAccumulator, float> &&
                     std::is_same_v<ElementCompute, float>,
                 "Marlin CTA reduction is FP32");
@@ -96,8 +102,9 @@ class MarlinKernelPPU {
     } tensors;
   };
   static constexpr int SharedStorageSize = sizeof(SharedStorage);
-  static_assert(SharedStorageSize == 50176,
-                "standalone Marlin shared ledger drifted from classic");
+  static_assert(
+      SharedStorageSize == (InstructionM == 8 ? 34816 : 50176),
+      "standalone Marlin shared ledger drifted from packed-m8/classic-m16");
 
   struct Arguments {
     GemmUniversalMode mode{};
@@ -171,7 +178,8 @@ class MarlinKernelPPU {
     int const tid = int(threadIdx.x);
     constexpr int red_off = 2;
     int const red_idx = tid / int(OutputThreads);
-    constexpr int red_sh_stride = int(OutputThreads) * 4 * 2;
+    constexpr int red_sh_stride =
+        int(OutputThreads) * 4 * AccumulatorHalves;
     constexpr int red_sh_delta = int(OutputThreads);
     int const red_sh_rd = red_sh_stride * red_idx + tid % int(OutputThreads);
 
@@ -181,8 +189,8 @@ class MarlinKernelPPU {
         #pragma unroll
         for (int n_block = 0; n_block < 4; ++n_block) {
           #pragma unroll
-          for (int half = 0; half < 2; ++half) {
-            int const chunk = 2 * n_block + half;
+          for (int half = 0; half < AccumulatorHalves; ++half) {
+            int const chunk = AccumulatorHalves * n_block + half;
             int const value_base = 4 * half;
             int const write = red_sh_delta * chunk +
                               (red_sh_rd - red_sh_stride * step);
@@ -210,8 +218,8 @@ class MarlinKernelPPU {
       #pragma unroll
       for (int n_block = 0; n_block < 4; ++n_block) {
         #pragma unroll
-        for (int half = 0; half < 2; ++half) {
-          int const chunk = 2 * n_block + half;
+        for (int half = 0; half < AccumulatorHalves; ++half) {
+          int const chunk = AccumulatorHalves * n_block + half;
           int const value_base = 4 * half;
           float const* peer = reinterpret_cast<float const*>(
               &sh[red_sh_delta * chunk + red_sh_rd]);
@@ -241,10 +249,12 @@ class MarlinKernelPPU {
       int const n_base = marlin_ppu_detail::output_n_base(
           int(work.N_idx), tid, n_block);
       #pragma unroll
-      for (int value = 0; value < 8; ++value) {
-        int const row = marlin_ppu_detail::output_row(lane, value);
+      for (int value = 0; value < AccumulatorValues; ++value) {
+        int const row =
+            marlin_ppu_detail::output_row<InstructionM>(lane, value);
         int const col = n_base +
-                        marlin_ppu_detail::output_col_offset(lane, value);
+                        marlin_ppu_detail::output_col_offset<InstructionM>(
+                            lane, value);
         // q is a global N-tile ordinal and the admitted N is an exact
         // multiple of TileN=128.  L179 proves the 64 output threads cover
         // exactly [128*q,128*q+127], so only the M residue needs a guard.
@@ -277,10 +287,12 @@ class MarlinKernelPPU {
         int const n_base = marlin_ppu_detail::output_n_base(
             0, tid, n_block);
         #pragma unroll
-        for (int value = 0; value < 8; ++value) {
-          int const row = marlin_ppu_detail::output_row(lane, value);
+        for (int value = 0; value < AccumulatorValues; ++value) {
+          int const row =
+              marlin_ppu_detail::output_row<InstructionM>(lane, value);
           int const col = n_base +
-                          marlin_ppu_detail::output_col_offset(lane, value);
+                          marlin_ppu_detail::output_col_offset<InstructionM>(
+                              lane, value);
           if (row < problem_m) {
             sh[row * kRowStrideHalf + col] =
                 __float2half(accum.fragments[n_block].value[value]);

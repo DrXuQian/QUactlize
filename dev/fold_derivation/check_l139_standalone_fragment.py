@@ -105,7 +105,7 @@ def main() -> int:
         "class MarlinCollectivePPU",
         "using TiledMma = cute::TiledMMA<",
         "cute::Layout<cute::Shape<cute::_1, cute::_2, cute::_4>>",
-        "cute::Tile<cute::_16, cute::_32, cute::_64>",
+        "cute::Tile<cute::Int<InstructionM>, cute::_32, cute::_64>",
     ):
         require(collective, token, "collective", failures)
 
@@ -113,7 +113,7 @@ def main() -> int:
         "usingTiledMma=typenameCollectiveMainloop::TiledMma;",
         "constexprintred_off=2;",
         "for(intstep=red_off;step>0;step/=2)",
-        "intconstchunk=2*n_block+half;",
+        "intconstchunk=AccumulatorHalves*n_block+half;",
         "intconstvalue_base=4*half;",
         "accum.fragments[n_block].value[value_base+i]+=peer[i]+prior[i];",
         "accum.fragments[n_block].value[value_base+i]+=peer[i];",
@@ -121,15 +121,15 @@ def main() -> int:
         require(kernel, token, "kernel", failures)
 
     for token in (
-        "returnlane/4+(((value>>2)&1)<<3);",
+        "returnlane/4+(InstructionM==16?(((value>>2)&1)<<3):0);",
         "returnlane%4+((value%4)<<2);",
         "return(n_tile*8+warp_n*4+n_block)*16;",
     ):
         require(output_map, token, "output-map", failures)
     for token in (
-        "marlin_ppu_detail::output_row(",
+        "marlin_ppu_detail::output_row<InstructionM>(",
         "marlin_ppu_detail::output_n_base(",
-        "marlin_ppu_detail::output_col_offset(",
+        "marlin_ppu_detail::output_col_offset<InstructionM>(",
     ):
         require(kernel, token, "kernel", failures)
 

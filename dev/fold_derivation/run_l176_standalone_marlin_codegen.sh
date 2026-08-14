@@ -44,17 +44,13 @@ for path in "$SOURCE" "$REPORT" "$RUN169" "$RUN174" "$RUN175" "$COMMITTED_CHECK"
   [[ -f "$path" ]] || { echo "[l176] FAIL: missing $path" >&2; exit 1; }
 done
 
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/quactlize-l176-local.XXXXXX")"
-cleanup() {
-  case "$tmp" in
-    /tmp/quactlize-l176-local.*|/dev/shm/quactlize-l176-local.*) rm -rf -- "$tmp" ;;
-    *) echo "[l176] WARN: refusing to remove unexpected temp path $tmp" >&2 ;;
-  esac
-}
-trap cleanup EXIT
+tmp="${QUACTLIZE_L176_WORK:-/workspace/quactlize-l176-local}"
+mkdir -p "$tmp"
 
 python3 "$SOURCE" --output "$tmp/source.json"
-for plant in generated-row generic-wrapper runtime-nblock flat-accumulator missing-lineinfo; do
+for plant in \
+  generated-row generic-wrapper runtime-nblock flat-accumulator missing-lineinfo \
+  m8-x4-fallback m8-discarded-destinations m8-padded-a m8-broadens-m; do
   set +e
   python3 "$SOURCE" --plant "$plant" >"$tmp/$plant.log" 2>&1
   rc=$?
@@ -71,7 +67,7 @@ if [[ "$MODE" == local ]]; then
   bash "$RUN169"
   bash "$RUN174"
   bash "$RUN175"
-  echo '[l176:local] PASS: exact generated route/source hashes/cadence/native fragment/lineinfo; 5/5 causal controls RED'
+  echo '[l176:local] PASS: exact generated route/source hashes/cadence/native m16+m8 fragments/packed-M1 ledger/lineinfo; 9/9 causal controls RED'
 else
   # L169/L174/L175 are local compile-time facts.  The PPU box's nvcc delegates
   # device preprocessing to ppu_clang++ and cannot compile their NVIDIA/stub
@@ -124,11 +120,11 @@ if [[ -n "$hgcc" ]]; then compiler_identity="$($hgcc --version 2>&1 | head -n 1 
 if [[ -z "$hgcc" || -z "$hgobjdump" || -z "$compiler_identity" || "$compiler_identity" == *stub* ]]; then
   if [[ "$MODE" == ppu10 ]]; then
     echo "[l176:ppu] SKIP: real hgcc + hgobjdump unavailable (hgcc=${hgcc:-<none>} identity=${compiler_identity:-<none>} hgobjdump=${hgobjdump:-<none>})"
-    echo 'L176 box command: PPU_SDK=/path/to/sdk bash dev/fold_derivation/run_l176_standalone_marlin_codegen.sh --target ppu10 --output /tmp/quactlize-l176-ppu'
+    echo 'L176 box command: PPU_SDK=/path/to/sdk bash dev/fold_derivation/run_l176_standalone_marlin_codegen.sh --target ppu10 --output /workspace/quactlize-l176-ppu'
     exit 3
   fi
   echo "[l176:ppu] SKIP: real hgcc + hgobjdump unavailable; no PPU opcode or backend-spill claim was made"
-  echo 'L176 box command: PPU_SDK=/path/to/sdk bash dev/fold_derivation/run_l176_standalone_marlin_codegen.sh --target ppu10 --output /tmp/quactlize-l176-ppu'
+  echo 'L176 box command: PPU_SDK=/path/to/sdk bash dev/fold_derivation/run_l176_standalone_marlin_codegen.sh --target ppu10 --output /workspace/quactlize-l176-ppu'
   exit 0
 fi
 
@@ -165,7 +161,8 @@ grep -Eq -- '(^|[[:space:],])-isa([,[:space:]]|$)|--dump-isa' <<<"$help_text" ||
 }
 
 if [[ -z "$OUTPUT" ]]; then
-  OUTPUT="$(mktemp -d "${TMPDIR:-/tmp}/quactlize-l176-ppu.XXXXXX")"
+  OUTPUT="/workspace/quactlize-l176-ppu"
+  mkdir -p "$OUTPUT"
 else
   OUTPUT="$(readlink -m "$OUTPUT")"
   if [[ -e "$OUTPUT" && ! -d "$OUTPUT" ]]; then

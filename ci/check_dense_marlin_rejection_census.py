@@ -19,7 +19,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 
@@ -32,27 +31,29 @@ def main() -> int:
         print(f"[dense-marlin-rejection-census] FAIL: missing {RUNNER.relative_to(ROOT)}")
         return 1
 
-    with tempfile.TemporaryDirectory(prefix="quactlize-l172-census-") as tmp:
-        env = dict(os.environ)
-        env["QUACTLIZE_L172_OUT"] = tmp
-        run = subprocess.run(
-            ["bash", str(RUNNER)], cwd=ROOT, env=env, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    out = Path(os.environ.get(
+        "QUACTLIZE_L172_CENSUS_OUT", "/workspace/quactlize-l172-census"))
+    out.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    env["QUACTLIZE_L172_OUT"] = str(out)
+    run = subprocess.run(
+        ["bash", str(RUNNER)], cwd=ROOT, env=env, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    census_path = out / "census.txt"
+    if run.returncode != 0 or not census_path.is_file():
+        print(
+            "[dense-marlin-rejection-census] FAIL: L172 did not emit its census\n"
+            + run.stdout[-2000:], file=sys.stderr,
         )
-        census_path = Path(tmp) / "census.txt"
-        if run.returncode != 0 or not census_path.is_file():
-            print(
-                "[dense-marlin-rejection-census] FAIL: L172 did not emit its census\n"
-                + run.stdout[-2000:], file=sys.stderr,
-            )
-            return 1
-        census = census_path.read_text()
+        return 1
+    census = census_path.read_text()
 
     header = re.search(
         r"schema=marlin-tactic-space-ppu-v1 declared=(\d+) admitted=(\d+) "
         r"classic_subspace=(\d+)", census,
     )
-    admitted_row = re.search(r"^admitted=(.+)$", census, re.M)
+    admitted_rows = set(re.findall(r"^admitted=(.+)$", census, re.M))
     kind_line = re.search(
         r"kind\.ADMITTED=(\d+) kind\.HARDWARE_OR_ISA=(\d+) "
         r"kind\.RESOURCE_LIMIT=(\d+) kind\.CURRENT_IMPLEMENTATION=(\d+)",
@@ -63,24 +64,28 @@ def main() -> int:
         for name, count in re.findall(r"^reason\.([A-Z0-9_]+)=(\d+)$", census, re.M)
     }
     bad: list[str] = []
-    if not header or tuple(map(int, header.groups())) != (60000, 1, 60):
-        bad.append("schema/cardinality is not declared=60000 admitted=1 classic=60")
+    if not header or tuple(map(int, header.groups())) != (60000, 2, 60):
+        bad.append("schema/cardinality is not declared=60000 admitted=2 classic=60")
     if not kind_line:
         bad.append("missing four-way exclusion-kind census")
         kinds = ()
     else:
         kinds = tuple(map(int, kind_line.groups()))
-        if sum(kinds) != 60000 or kinds[0] != 1:
+        if sum(kinds) != 60000 or kinds[0] != 2:
             bad.append(f"kind census does not close: {kinds}")
         if any(value == 0 for value in kinds[1:]):
             bad.append(f"one named rejection class is empty: {kinds}")
-    if sum(reasons.values()) != 60000 or reasons.get("NONE") != 1:
+    if sum(reasons.values()) != 60000 or reasons.get("NONE") != 2:
         bad.append(
             f"first-failure reason census does not close: sum={sum(reasons.values())} "
             f"NONE={reasons.get('NONE')}"
         )
-    if not admitted_row or admitted_row.group(1) != "16,128,128,16,64,32,4,cp_async":
-        bad.append("the sole admitted row is not the proved classic reference")
+    expected_rows = {
+        "8,128,128,8,64,32,4,cp_async",
+        "16,128,128,16,64,32,4,cp_async",
+    }
+    if admitted_rows != expected_rows:
+        bad.append(f"admitted rows differ: {sorted(admitted_rows)}")
     if "negative_controls=4/4_RED emitter=PASS result=PASS" not in run.stdout:
         bad.append("L172 causal controls did not all turn red")
 
@@ -95,7 +100,7 @@ def main() -> int:
     print("[dense-marlin-rejection-census] reasons: " + nonzero_reasons)
     print(
         "[dense-marlin-rejection-census] PASS: standalone declared=60000 "
-        f"admitted=1 rejected=59999 grouped={{hardware:{kinds[1]},"
+        f"admitted=2 rejected=59998 grouped={{hardware:{kinds[1]},"
         f"resource:{kinds[2]},current:{kinds[3]}}}; first-failure sum exact; "
         "generic-A2-4790=PRE_STANDALONE_NOT_EVIDENCE"
     )

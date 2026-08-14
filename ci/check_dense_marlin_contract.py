@@ -25,6 +25,11 @@ This checker therefore composes the production-bound standalone proofs:
   and raw Params/update seams are unavailable from the shipping handle;
 * L180: the public 40-byte scheduler Params lower once to a pointer-free
   16-byte device traversal state with descriptor-identical behavior;
+* L181: the dense-M1 PPU m8 extension packs one A row, assigns its sixteen
+  16-byte vectors exactly once, uses the PPU-specific plain-x2 provider map,
+  halves the output/accumulator extent, and leaves the B/scale artifact
+  byte-identical to m16;
+* L169-m8: that exact m8 production row reaches a generated device body;
 * the structural stack gate, including absence of generic WarpK seams.
 
 The wider tactic domain is owned separately by L172.  It is not silently
@@ -53,12 +58,12 @@ CHECKS = (
     (
         "compute",
         ("bash", "dev/fold_derivation/run_l174_marlin_compute_contract.sh"),
-        "[l174:runner] positive=PASS negative_controls=4/4_RED result=PASS",
+        "[l174:runner] positive=PASS negative_controls=8/8_RED result=PASS",
     ),
     (
         "native-fragment",
         ("bash", "dev/fold_derivation/run_l175_native_fragment_contract.sh"),
-        "[l175:runner] positive=source+compile+L139 negative_controls=3/3_RED wrong-layout-compile=RED result=PASS",
+        "[l175:runner] positive=source+compile+L139 negative_controls=4/4_RED wrong-layout-compile=RED result=PASS",
     ),
     (
         "scheduler",
@@ -91,6 +96,21 @@ CHECKS = (
         ("bash", "dev/fold_derivation/run_l180_marlin_scheduler_hot_state.sh"),
         "[l180:runner] positive=262144-schedule-equivalence "
         "negative_controls=7/7_RED result=PASS",
+    ),
+    (
+        "m8-extension",
+        ("bash", "dev/fold_derivation/run_l181_standalone_marlin_m8.sh"),
+        "[l181:runner] positive=6-contracts negative=10/10_RED source=PASS result=PASS",
+    ),
+    (
+        "m8-generated-body",
+        (
+            "bash", "-c",
+            "QUACTLIZE_L169_VARIANT=m8 "
+            "QUACTLIZE_L169_OUT=/workspace/quactlize-l169-m8-contract "
+            "bash dev/fold_derivation/run_l169_standalone_marlin_unit.sh",
+        ),
+        "[l169] PASS: variant=m8 generated wrapper reaches standalone Marlin kernel + collective device bodies",
     ),
     (
         "ppu-admission-boundary",
@@ -133,7 +153,7 @@ def main() -> int:
     print("[dense-marlin-contract] evidence: " + " | ".join(evidence))
     print(
         "[dense-marlin-contract] PASS: standalone format/collective/"
-        "scheduler/kernel fixed target is bound; retired generic Marlin is not "
+        "scheduler/kernel m16 baseline and m8 PPU extension are bound; retired generic Marlin is not "
         "accepted as evidence; broader production sweep is outside this gate"
     )
     return 0

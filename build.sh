@@ -166,7 +166,8 @@ if [ "$TARGET" = "test_lowbit_dense_bench" ] ||
    [ "$TARGET" = "test_lowbit_dense_persistent_ab" ] ||
    [ "$TARGET" = "test_lowbit_dense_streamk_ab" ] ||
    [ "$TARGET" = "test_lowbit_dense_marlin_ab" ] ||
-   [ "$TARGET" = "test_lowbit_dense_marlin_wk4_ab" ]; then
+   [ "$TARGET" = "test_lowbit_dense_marlin_wk4_ab" ] ||
+   [ "$TARGET" = "test_lowbit_dense_marlin_m8_ab" ]; then
   # FAIL BEFORE HGCC. A stale generated table otherwise presents as an unrelated CollectiveMma/GemmUniversal
   # template failure, and a bench-side startup banner cannot help because no binary was produced. Rebuild the
   # emitter in a temporary directory and compare its exact output; this validates without making generation a

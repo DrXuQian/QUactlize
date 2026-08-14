@@ -11,6 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MMA = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_mma_ppu.hpp"
+LOAD = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_load_ppu.hpp"
 COLLECTIVE = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
 KERNEL = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp"
 
@@ -38,9 +39,11 @@ def one_replace(text: str, old: str, new: str, plant: str) -> str:
     return text.replace(old, new, 1)
 
 
-def apply_plant(plant: str, mma: str, collective: str, kernel: str) -> tuple[str, str, str]:
+def apply_plant(
+    plant: str, mma: str, load_text: str, collective: str, kernel: str
+) -> tuple[str, str, str, str]:
     if plant == "none":
-        return mma, collective, kernel
+        return mma, load_text, collective, kernel
     if plant == "generic-fragment":
         needle = "Accumulator accum;"
         replacement = """auto accum = cute::make_fragment_like<ElementAccumulator>(
@@ -59,9 +62,11 @@ def apply_plant(plant: str, mma: str, collective: str, kernel: str) -> tuple[str
         mma = one_replace(
             mma, "FragmentC fragments[4];", "FragmentC fragments[8];", plant
         )
+    elif plant == "wrong-m8-a-registers":
+        load_text = one_replace(load_text, "__half2 value[2];", "__half2 value[4];", plant)
     else:
         die(plant, "unknown plant")
-    return mma, collective, kernel
+    return mma, load_text, collective, kernel
 
 
 def extract_struct(text: str, name: str, plant: str) -> str:
@@ -87,23 +92,46 @@ def main() -> int:
     plant = args.plant
 
     mma = load(MMA, plant)
+    load_text = load(LOAD, plant)
     collective = load(COLLECTIVE, plant)
     kernel = load(KERNEL, plant)
-    mma, collective, kernel = apply_plant(plant, mma, collective, kernel)
+    mma, load_text, collective, kernel = apply_plant(
+        plant, mma, load_text, collective, kernel
+    )
 
     fragment = compact(extract_struct(mma, "FragmentC", plant))
     accumulator = compact(extract_struct(mma, "MarlinAccumulatorPPU", plant))
+    fragment8 = compact(extract_struct(mma, "FragmentC8", plant))
+    accumulator8 = compact(extract_struct(mma, "MarlinAccumulatorM8PPU", plant))
     if fragment != "floatvalue[8];":
         die(plant, f"FragmentC is not exactly float value[8]: {fragment!r}")
     if accumulator != "FragmentCfragments[4];":
         die(plant, f"Accumulator is not exactly FragmentC fragments[4]: {accumulator!r}")
+    if fragment8 != "floatvalue[4];":
+        die(plant, f"FragmentC8 is not exactly float value[4]: {fragment8!r}")
+    if accumulator8 != "FragmentC8fragments[4];":
+        die(plant, f"m8 accumulator is not exactly FragmentC8 fragments[4]: {accumulator8!r}")
+    fragment_a16 = compact(extract_struct(load_text, "FragmentA", plant))
+    fragment_a8 = compact(extract_struct(load_text, "FragmentA8", plant))
+    if fragment_a16 != "__half2value[4];":
+        die(plant, f"m16 A fragment is not exactly four registers: {fragment_a16!r}")
+    if fragment_a8 != "__half2value[2];":
+        die(plant, f"m8 A fragment is not exactly two registers: {fragment_a8!r}")
+    load_compact = compact(load_text)
+    for token in (
+        "usingFragmentAFor=std::conditional_t<InstructionM==8,FragmentA8,FragmentA>;",
+        "sizeof(FragmentA8)==2*sizeof(uint32_t)",
+        "sizeof(FragmentA)==4*sizeof(uint32_t)",
+    ):
+        if token not in load_compact:
+            die(plant, f"A-fragment type contract lacks {token!r}")
 
     c = compact(collective)
     for token in (
-        "usingFragmentC=marlin_ppu_detail::FragmentC;",
-        "usingAccumulator=marlin_ppu_detail::MarlinAccumulatorPPU;",
+        "usingFragmentC=marlin_ppu_detail::FragmentCFor<InstructionM>;",
+        "usingAccumulator=marlin_ppu_detail::MarlinAccumulatorFor<InstructionM>;",
         "FragmentC&accum",
-        "mma_n16<NBlock>(fragment_a,b0,b1,accum)",
+        "mma_n16<InstructionM,NBlock>(fragment_a,b0,b1,accum)",
         "fragment_scale[inner&1],accum.fragments[0])",
         "fragment_scale[inner&1],accum.fragments[1])",
         "fragment_scale[inner&1],accum.fragments[2])",
@@ -122,14 +150,12 @@ def main() -> int:
             die(plant, f"collective retained generic C-fragment seam {forbidden!r}")
 
     m = compact(mma)
-    if "voidmma_n16(" not in m or "FragmentC&accum" not in m:
-        die(plant, "MMA does not accept exactly one native FragmentC")
-    operands = re.findall(r'"\+f"\(accum\.value\[(\d)\]\)', mma)
+    if "voidmma_n16(" not in m or "FragmentCFor<InstructionM>&accum" not in m:
+        die(plant, "MMA does not select the exact native fragment by atom M")
+    m16_branch = mma.split("} else {", 1)[1]
+    operands = re.findall(r'"\+f"\s*\(accum\.value\[(\d)\]\)', m16_branch)
     if operands != [str(i) for i in range(8)]:
-        # Normal source spells the constraint before the expression.
-        operands = re.findall(r'"\+f"\s*\(accum\.value\[(\d)\]\)', mma)
-    if operands != [str(i) for i in range(8)]:
-        die(plant, f"native MMA operands are not value[0..7]: {operands}")
+        die(plant, f"native m16 MMA operands are not value[0..7]: {operands}")
 
     k = compact(kernel)
     for token in (
@@ -146,7 +172,7 @@ def main() -> int:
         if forbidden in k:
             die(plant, f"kernel rebuilt a generic C fragment via {forbidden}")
 
-    joined = "\n".join((mma, collective, kernel))
+    joined = "\n".join((mma, load_text, collective, kernel))
     whole_flat = re.compile(
         r"reinterpret_cast\s*<\s*(?:const\s+)?float\s*\*\s*>\s*\(\s*&?\s*accum\b"
     )
@@ -156,7 +182,8 @@ def main() -> int:
         die(plant, "whole accumulator escaped through a container pointer API")
 
     print(
-        "[l175:source] fragment=4x8-fp32 bytes=128 aliases=exact "
+        "[l175:source] fragments=C(m16:4x8-fp32/128B,m8:4x4-fp32/64B) "
+        "A(m16:4-reg/16B,m8:2-reg/8B) aliases=exact "
         "generic-fragment=ABSENT flat-address-escape=ABSENT result=PASS"
     )
     return 0

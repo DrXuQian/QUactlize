@@ -26,6 +26,10 @@ PATHS = {
         "quactlize/include/quactlize_extensions/cutlass/gemm/collective/"
         "marlin_collective_ppu.hpp"
     ),
+    "load": ROOT / (
+        "quactlize/include/quactlize_extensions/cutlass/gemm/collective/"
+        "marlin_load_ppu.hpp"
+    ),
     "scheduler": ROOT / (
         "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/"
         "marlin_scheduler_ppu.hpp"
@@ -101,6 +105,8 @@ def audit(files: dict[str, str]) -> list[str]:
         "set(_DENSE_MARLIN_WK4_ST 4)",
         "test_lowbit_dense_marlin_wk4_ab",
         "DENSE_MARLIN_WK4_AB=1",
+        "test_lowbit_dense_marlin_m8_ab",
+        "DENSE_MARLIN_M8_AB=1",
     ):
         require(new, token, "standalone target", bad)
 
@@ -130,7 +136,7 @@ def audit(files: dict[str, str]) -> list[str]:
         "quactlize::marlin::unpack_biased_int4_bytes(",
         "quactlize::marlin::permute_gs128_scales(",
         "artifact=classic-marlin-u32 scale=classic-gs128-permuted",
-        "test_lowbit_dense_marlin_wk4_ab is Marlin-only: pass --marlin",
+        "standalone Marlin m8/m16 target is Marlin-only: pass --marlin",
         "return final_result.passed ? 0 : 1;",
     ):
         require(bench, token, "standalone benchmark route", bad)
@@ -157,9 +163,14 @@ def audit(files: dict[str, str]) -> list[str]:
         "class MarlinCollectivePPU", "MarlinCpAsyncLoadPolicyPPU",
         "cute::is_same_v<LoadPolicy, MarlinCpAsyncLoadPolicyPPU>",
         "cute::Layout<cute::Shape<cute::_1, cute::_2, cute::_4>>",
-        "WarpM == 16 && WarpN == 64 && WarpK == 32",
+        "WarpM == TileM && WarpN == 64 && WarpK == 32",
+        "TileM == 8 || TileM == 16",
+        "static constexpr int AStoredRows = InstructionM == 8 ? 1 : TileM",
+        ": ASharedStage == 16) &&",
         "Stages == 4 && GroupSize == 128 && Threads == 256",
-        "sizeof(SharedStorage) == 50176", "dequantize_biased_int4",
+        "sizeof(SharedStorage) == (InstructionM == 8 ? 34816 : 50176)",
+        "bool const m_supported = InstructionM == 8 ? m == 1 : (m > 0 && m <= TileM);",
+        "dequantize_biased_int4",
         "for (int pipe = 0; pipe < Stages;)",
     ):
         require(collective, token, "Marlin collective", bad)
@@ -169,6 +180,37 @@ def audit(files: dict[str, str]) -> list[str]:
         "switch (compute_warp_k)",
     ):
         forbid(collective, token, "Marlin collective", bad)
+
+    load = files["load"]
+    for token in (
+        "struct FragmentA {", "__half2 value[4];",
+        "struct FragmentA8 {", "__half2 value[2];",
+        "FragmentAFor = std::conditional_t<InstructionM == 8, FragmentA8, FragmentA>",
+        "sizeof(FragmentA8) == 2 * sizeof(uint32_t)",
+        "sizeof(FragmentA) == 4 * sizeof(uint32_t)",
+    ):
+        require(load, token, "Marlin load", bad)
+    m16_begin = load.find("CUTLASS_DEVICE void ldmatrix_a_m16(")
+    m8_begin = load.find("CUTLASS_DEVICE void ldmatrix_a_m8(")
+    dispatch_begin = load.find("template <int InstructionM>", m8_begin)
+    if not (0 <= m16_begin < m8_begin < dispatch_begin):
+        bad.append("Marlin load: cannot isolate m16/x4 and m8/x2 bodies")
+        m16_load = m8_load = ""
+    else:
+        m16_load = load[m16_begin:m8_begin]
+        m8_load = load[m8_begin:dispatch_begin]
+    x4 = "ppu.ldmatrix.sync.aligned.m8n8.x4.shared.b16"
+    x2 = "ppu.ldmatrix.sync.aligned.m8n8.x2.shared.b16"
+    if m16_load.count(x4) != 1 or x2 in m16_load:
+        bad.append("Marlin load: m16 is not exactly the unchanged x4 path")
+    if ': "=r"(a[0]), "=r"(a[2]), "=r"(a[1]), "=r"(a[3])' not in m16_load:
+        bad.append("Marlin load: m16 x4 register permutation drifted")
+    if m8_load.count(x2) != 1 or x4 in m8_load:
+        bad.append("Marlin load: m8 is not exactly the plain x2 path")
+    if ': "=r"(a[0]), "=r"(a[1])' not in m8_load:
+        bad.append("Marlin load: m8 no longer publishes exactly two registers")
+    if "discarded_" in m8_load:
+        bad.append("Marlin load: m8 regained discarded x4 destinations")
 
     scheduler = files["scheduler"]
     for token in (
@@ -267,6 +309,18 @@ def main() -> int:
         ("collective", "load-policy-switches-to-aiu",
          "cute::is_same_v<LoadPolicy, MarlinCpAsyncLoadPolicyPPU>",
          "cute::is_same_v<LoadPolicy, MarlinAiuLoadPolicyPPU>"),
+        ("collective", "m8-restores-padded-a",
+         "static constexpr int AStoredRows = InstructionM == 8 ? 1 : TileM;",
+         "static constexpr int AStoredRows = InstructionM == 8 ? 8 : TileM;"),
+        ("collective", "m8-broadens-M-admission",
+         "bool const m_supported = InstructionM == 8 ? m == 1 : (m > 0 && m <= TileM);",
+         "bool const m_supported = m > 0 && m <= TileM;"),
+        ("load", "m8-falls-back-to-x4",
+         "ppu.ldmatrix.sync.aligned.m8n8.x2.shared.b16",
+         "ppu.ldmatrix.sync.aligned.m8n8.x4.shared.b16"),
+        ("load", "m8-regains-discarded-destinations",
+         ': "=r"(a[0]), "=r"(a[1])\n      : "l"(smem_ptr));',
+         ': "=r"(a[0]), "=r"(a[1]), "=r"(discarded_v2), "=r"(discarded_v3)\n      : "l"(smem_ptr));'),
         ("kernel", "reduction-becomes-flat", "step > 0; step /= 2",
          "step > 0; step = 0"),
         ("kernel", "output-cohort-becomes-cta", "OutputThreads == 64",
@@ -303,7 +357,7 @@ def main() -> int:
     print(
         "[dense-marlin-wk4] PASS: standalone format/collective/scheduler/kernel "
         "wired; standalone tactic authority consumed; generic WK4 compatibility "
-        "absent; thirteen structural plants rejected"
+        "absent; seventeen structural plants rejected"
     )
     return 0
 

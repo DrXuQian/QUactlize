@@ -133,9 +133,9 @@ def main() -> int:
         if output_map.count(token) != 1:
             errors.append(f"authoritative output map lacks {token}")
     for token, count in (
-        ("marlin_ppu_detail::output_row(", 2),
+        ("marlin_ppu_detail::output_row<InstructionM>(", 2),
         ("marlin_ppu_detail::output_n_base(", 2),
-        ("marlin_ppu_detail::output_col_offset(", 2),
+        ("marlin_ppu_detail::output_col_offset<InstructionM>(", 2),
     ):
         if kernel.count(token) != count:
             errors.append(f"production output path consumes {token} {kernel.count(token)} times, expected {count}")
