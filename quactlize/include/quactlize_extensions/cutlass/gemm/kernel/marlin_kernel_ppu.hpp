@@ -63,14 +63,16 @@ class MarlinKernelPPU {
   using TileSchedulerParams = typename TileScheduler::Params;
 
   static constexpr uint32_t MaxThreadsPerBlock = CollectiveMainloop::Threads;
-  // Match classic's __launch_bounds__(256,2).  The fixed 50,176-byte shared
-  // store and this bound are also the admitted BPC ceiling for the first target.
+  static constexpr int InstructionM = CollectiveMainloop::InstructionM;
+  // Match classic's __launch_bounds__(256,2).  This is a minimum-residency
+  // code-generation request, not a maximum launch grid.  Packed m8 consumes
+  // 34,816 B/CTA and the exact kernel occupancy API reports three CTA/CU;
+  // classic m16 remains capped at its established two.
   static constexpr uint32_t MinBlocksPerMultiprocessor = 2;
-  static constexpr uint32_t MaxBlocksPerCu = 2;
+  static constexpr uint32_t MaxBlocksPerCu = InstructionM == 8 ? 3 : 2;
   static constexpr uint32_t WarpKCohorts = CollectiveMainloop::WarpOnK;
   static constexpr uint32_t OutputThreads =
       MaxThreadsPerBlock / WarpKCohorts;
-  static constexpr int InstructionM = CollectiveMainloop::InstructionM;
   static constexpr int AccumulatorValues =
       CollectiveMainloop::AccumulatorValues;
   static constexpr int AccumulatorHalves =

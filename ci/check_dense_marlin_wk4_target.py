@@ -63,6 +63,7 @@ PATHS = {
     "l169": ROOT / "dev/fold_derivation/run_l169_standalone_marlin_unit.sh",
     "l170": ROOT / "dev/fold_derivation/run_l170_standalone_marlin_scheduler.sh",
     "box": ROOT / "tools/run_dense_marlin_wk4_box.sh",
+    "m8_box": ROOT / "tools/run_dense_marlin_m8_acu_box.sh",
 }
 
 
@@ -143,6 +144,11 @@ def audit(files: dict[str, str]) -> list[str]:
         "quactlize::marlin::permute_gs128_scales(",
         "artifact=classic-marlin-u32 scale=classic-gs128-permuted",
         "standalone Marlin m8/m16 target is Marlin-only: pass --marlin",
+        "if (options.marlin_profile_subject_only) {",
+        "if (!host_exact_profile) {",
+        "block_B.copy_to_host(tensor_B.host_data());",
+        "[dense marlin ACU subject-only] instruction=m%dn16k16",
+        "subject_launches=1 device_reference=0 lock_fingerprints=0",
         "return final_result.passed ? 0 : 1;",
     ):
         require(bench, token, "standalone benchmark route", bad)
@@ -242,6 +248,7 @@ def audit(files: dict[str, str]) -> list[str]:
     kernel = files["kernel"]
     for token in (
         "class MarlinKernelPPU", "IsStandaloneMarlin = true",
+        "MaxBlocksPerCu = InstructionM == 8 ? 3 : 2",
         "MaxThreadsPerBlock == 256 && WarpKCohorts == 4",
         "OutputThreads == 64", "for (int step = red_off; step > 0; step /= 2)",
         "thread_block_reduce(accum, shared);",
@@ -251,6 +258,16 @@ def audit(files: dict[str, str]) -> list[str]:
         require(kernel, token, "Marlin kernel", bad)
     for token in ("BlockStripedReduce", "TileScheduler::fixup"):
         forbid(kernel, token, "Marlin kernel", bad)
+
+    m8_box = files["m8_box"]
+    for token in (
+        "for bpc in 1 2 3; do",
+        "if [ \"$bpc\" -ne 1 ]; then",
+        "--marlin-profile-subject-only",
+        "subject_launches=1 device_reference=0 lock_fingerprints=0",
+        "each report contains one m8 subject launch and no m16 GemmRef",
+    ):
+        require(m8_box, token, "m8 ACU runner", bad)
 
     generic_forbidden = {
         "builder": ("requestedWarpK", "WarpOnK"),

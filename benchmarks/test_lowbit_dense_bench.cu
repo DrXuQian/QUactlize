@@ -683,6 +683,7 @@ struct Options {
   bool streamk_gate = false;     // --streamk_gate: require the independent CPU-FP32/fixup gate
   bool streamk_split_gate = false; // --streamk_split_gate: require an actually split output tile
   bool streamk_exact_fixture = false; // --streamk_exact_fixture: use the exact-by-construction A0 inputs on every arm
+  bool marlin_profile_subject_only = false; // --marlin-profile-subject-only: one standalone launch, no device reference/fingerprint
   int marlin_blocks_per_cu = 1; // --marlin-blocks-per-cu: scheduler-owned CTA/CU sweep, default is legacy 1
 
   // Parses the command line
@@ -715,6 +716,8 @@ struct Options {
     streamk_gate   = cmd.check_cmd_line_flag("streamk_gate");
     streamk_split_gate = cmd.check_cmd_line_flag("streamk_split_gate");
     streamk_exact_fixture = cmd.check_cmd_line_flag("streamk_exact_fixture");
+    marlin_profile_subject_only =
+        cmd.check_cmd_line_flag("marlin-profile-subject-only");
     cmd.get_cmd_line_argument("marlin-blocks-per-cu", marlin_blocks_per_cu);
     if (streamk_gate || streamk_split_gate) streamk = true;
   }
@@ -748,6 +751,7 @@ struct Options {
         << "  --marlin-blocks-per-cu=<n>  Marlin launch multiplier (1..this kernel's runtime occupancy; default 1).\n";
 #if defined(DENSE_MARLIN_WK4_AB)
     out << "  --streamk_exact_fixture     Required: exact decode fixture for 8-launch lock fingerprints.\n"
+        << "  --marlin-profile-subject-only  ACU-only: launch the standalone subject once; skip device reference and fingerprints.\n"
         << "  build identity              Marlin-only 1M x 2N x 4K / 256-thread / WarpK4; DP and Stream-K are rejected.\n";
 #endif
 #endif
@@ -1506,13 +1510,25 @@ DenseFixtureEvidence initialize(Options const& options) {
 #endif
   block_zero.reset(scale_k * options.l * options.n);
 
-  initialize_tensor(block_A, seed + 2022);
-  initialize_quant_tensor(block_B, seed + 2021);
-  initialize_tensor(block_C, seed + 2020);
-  initialize_scale(block_scale, options);
-  initialize_zero(block_zero, options);
-
-  block_B.copy_to_host(tensor_B.host_data());
+  bool const host_exact_profile =
+#if defined(DENSE_MARLIN_WK4_AB)
+      options.marlin_profile_subject_only && options.streamk_exact_fixture;
+#else
+      false;
+#endif
+  // The exact fixture below overwrites every A/B/C/scale/zero element from
+  // host data.  In the ACU-only process, running device random-fill kernels
+  // first would pollute the application instruction mix despite contributing
+  // no input bit.  The normal correctness process retains the established
+  // initialization path and independently validates every BPC.
+  if (!host_exact_profile) {
+    initialize_tensor(block_A, seed + 2022);
+    initialize_quant_tensor(block_B, seed + 2021);
+    initialize_tensor(block_C, seed + 2020);
+    initialize_scale(block_scale, options);
+    initialize_zero(block_zero, options);
+    block_B.copy_to_host(tensor_B.host_data());
+  }
 
 #if defined(DENSE_STREAMK_AB)
   if (options.streamk_gate) {
@@ -1740,7 +1756,14 @@ DenseFixtureEvidence initialize(Options const& options) {
   block_scale_classic.copy_from_host(classic_scale.data());
 #endif
 
-  dequantize_weight(block_B_dq.get(), block_B.get(), layout_B, block_scale.get(), block_zero.get(), layout_scale_zero, options.g);
+  // block_B_dq is consumed only by GemmRef.  The subject-only ACU path returns
+  // before that reference, so launching the dequantizer would contaminate the
+  // report with a kernel unrelated to the standalone m8 subject.
+  if (!host_exact_profile) {
+    dequantize_weight(block_B_dq.get(), block_B.get(), layout_B,
+                      block_scale.get(), block_zero.get(),
+                      layout_scale_zero, options.g);
+  }
   
   int row = options.n;
   int col = options.k;
@@ -3064,6 +3087,23 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
 #endif
 
+#if defined(DENSE_MARLIN_WK4_AB)
+  // ACU must measure the subject, not the correctness harness.  The ordinary
+  // path below launches a vendor m16 GemmRef and eight more subject launches
+  // for the lock fingerprint; aggregating that process made an m8 report look
+  // like m16.  The box runner establishes full correctness first in a separate
+  // process, then uses this fail-closed arm for exactly one standalone launch.
+  if (options.marlin_profile_subject_only) {
+    CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
+    result.passed = true;
+    std::printf(
+        "  [dense marlin ACU subject-only] instruction=m%dn16k16 "
+        "blocks_per_cu=%d subject_launches=1 device_reference=0 lock_fingerprints=0\n",
+        Gemm::GemmKernel::InstructionM, options.marlin_blocks_per_cu);
+    return result;
+  }
+#endif
+
   // Check if output from kernel and reference kernel are equal or not
   DenseReplayEvidence replay_evidence;
 #if defined(DENSE_STREAMK_AB)
@@ -3743,6 +3783,15 @@ int main(int argc, char const **args) {
   options.parse(argc, args);
   print_dense_table_provenance();
 
+#if !defined(DENSE_MARLIN_WK4_AB)
+  if (!options.help && options.marlin_profile_subject_only) {
+    std::fprintf(
+        stderr,
+        "--marlin-profile-subject-only is available only in the exact standalone Marlin m8/m16 target\n");
+    return 1;
+  }
+#endif
+
 #if defined(DENSE_MARLIN_WK4_AB)
   // This binary contains one classic-aligned Marlin type.  Its four K
   // cohorts require the CTA-local reduction in MarlinMixedInputKernel, so a
@@ -3787,6 +3836,12 @@ int main(int argc, char const **args) {
       std::fprintf(stderr, "--marlin-blocks-per-cu must be positive\n");
       return 1;
     }
+    if (options.marlin_profile_subject_only && options.iterations != 0) {
+      std::fprintf(
+          stderr,
+          "--marlin-profile-subject-only requires --iterations=0; it launches the subject exactly once\n");
+      return 1;
+    }
   }
 #elif defined(DENSE_MARLIN_SWEEP)
   // This binary's registry and every generated wrapper are compile-time
@@ -3795,7 +3850,8 @@ int main(int argc, char const **args) {
   // and save must be rejected rather than aliasing DP samples/tactics.
   if (options.persistent || options.streamk || options.marlin ||
       options.streamk_gate || options.streamk_split_gate ||
-      options.streamk_exact_fixture || options.marlin_blocks_per_cu != 1) {
+      options.streamk_exact_fixture || options.marlin_profile_subject_only ||
+      options.marlin_blocks_per_cu != 1) {
     std::fprintf(stderr,
                  "test_lowbit_dense_marlin_sweep fixes scheduler=marlin at build time; "
                  "runtime scheduler flags and --marlin-blocks-per-cu are unsupported\n");
@@ -3820,6 +3876,7 @@ int main(int argc, char const **args) {
 #elif !defined(DENSE_SCHEDULER_AB)
   if (options.persistent || options.streamk || options.marlin || options.streamk_gate ||
       options.streamk_split_gate || options.streamk_exact_fixture ||
+      options.marlin_profile_subject_only ||
       options.marlin_blocks_per_cu != 1) {
     std::fprintf(stderr,
                  "scheduler A/B flags are available only in the dedicated dense scheduler targets; "
