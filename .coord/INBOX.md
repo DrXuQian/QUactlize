@@ -6953,3 +6953,54 @@ classic 的 8.91 MB 同样拆一遍,两边对照。**两个账都做完,差额�
 ### 一条判据
 
 对齐做到什么程度算够?**共享流量与 classic 同量级(不是 3x)、指令比接近 1.0x。** 到那时若仍慢,才是"PPU 上 classic 那套就只能这样",而**现在还没资格说这句话**。
+
+---
+
+## 167 — **更正:int4 的 fast dequant 是 vendor 的,不是我们的;而 `gemv_lowbit` 在重写它**
+
+用户问了两件事,答案连在一起。
+
+### 一、FULLY_QUANTIZED 用谁的转换器
+
+`quactlize_mix_gemm_convert.h:38-48` 自己写着:actlize 的七个转换器**一个都没被重定义**,原样使用。所以:
+
+| 宽度 | 特化 | 谁的 |
+|---|---|---|
+| `int4b_t` (8/32) | `MixGemmNumericArrayConverter<half_t,int4b_t,8>` | **actlize,未改** |
+| `int8_t` (4/16) | 同上 | **actlize,未改** |
+| `uint8_t`/`uint2b_t`/`uint1b_t` | `:447/:470/:492/:557` | 我们的(vendor 无此宽度) |
+| native GEMV | `MixGemmByte4ToHalf` | 我们的,但是 vendor `int8_t` 那条的逐指令复刻 |
+
+**我此前把 tensor-core 的转换器说成 `emit_one`,对 int4 这个主格式是错的。** vendor 的 int4 路是:
+
+    i4s >> 8                                    // 1 条 C 层移位,覆盖 8 个码
+    ppu.lop3.b32       x4    (i4s & 0x000f000f) | 0x64006400,immLut=0xEA
+    ppu.sub.f16x2      x2    - 0x64086408
+    ppu.fma.rtte.f16x2 x2    * 0x2c002c00 (1/16) + 0xd480d480 (-72)
+    => 8 条 / 8 码 = 1 条/code,且反量化的一半已含在内
+
+### 二、为什么两条 GEMV 的 dequant 不同 —— 是表示,不是作者
+
+* **native GEMV 吃字节对齐的码。** `vecdot_kernel_code4` 先 `lo | (high<<2)`(Q3)/`<<4`(Q5/Q6) **把每个码拼成整字节**(`gguf_vecdot.hpp:495` 注释原话 "while they are still byte-packed"),`ppu.prmt.b32` 按字节边界选,因此可用。
+* **`gemv_lowbit` 吃 sub-byte 码平面**,`RawConverter<Bits>` 是宽度模板,`Bits=2` 时一个 word 16 个码。**prmt 够不着,这一条是对的。**
+* 时间线是辅因不是原因:`gemv_converter.hpp` 08-01、`gguf_vecdot.hpp` 08-02、共享 converter 文件 **08-06** —— 写这两条 GEMV 时还没有可共享的东西。
+
+### 三、但这恰恰否掉了"所以只能 shift+and+or"
+
+**vendor 的 int4 转换器处理的就是 sub-byte 紧打的 nibble**:一条 lop3 拿两个码、位置不动,高 nibble 的 16 倍由那条**反正要做的** fma 用 `1/16` 吃掉,零字节对齐要求。
+
+⟹ `gemv_lowbit` 在 `Bits=4` 上是在用更差的指令重写 vendor 已解决的问题;`Bits=2/1` 的对应形式是我们自己的 `MixGemmChunkEmit`,已在 fold / 2plane collective 里跑。**两个机制都在树里,缺的是接线。**
+
+### 要求
+
+TODO #58 已按此改写(性质 / 事前判据 / 三条负控 / 范围限制都在任务描述里)。三点强调:
+
+1. **源码级指令数先报**,它与编译器无关;PPU codegen 是第二步,**工具链缺就 SKIP 不许假设**。
+2. 负控 (3):`Bits=1/2` 的常数与 int4 不同,**照抄 int4 magic 必须被 oracle 判红,而且要演示这一点**,不能只说"会红"。
+3. `gemv_converter.hpp:86-91` 那个 one-hot 探测 oracle 是现成的验证接缝,**不要另造**。
+
+### 一个必须先答的排序问题
+
+native GEMV(raw GGUF,0.5625 B/权重,prmt)和 resident GEMV(`sf-gemv` artifact,0.625 B/权重含常驻 scale+zero,本任务这条)**两条都出货**,走哪条是 #35 planner 的离线格式决定,不是 kernel 决定。而 **native 在 PPU 上从没测过**(`HANDOFF_gguf_pipeline.md:83` "PPU performance remains unmeasured")。
+
+**若 native 本就更快,本任务是在优化一条该退役的路。** 两个 kernel 都在,同 shape 跑一次即可分辨。**先跑这一次,再决定做不做 #58。**
