@@ -100,6 +100,11 @@ CHECKS = (
         "hgcc/hgobjdump build; negative_controls=7/7_RED",
     ),
     (
+        "ppu-portability",
+        (sys.executable, "dev/fold_derivation/ppu_portability_check.py"),
+        "[ok]   ppu_portability:",
+    ),
+    (
         "stack",
         (sys.executable, "ci/check_dense_marlin_wk4_target.py"),
         "generic WK4 compatibility absent;",

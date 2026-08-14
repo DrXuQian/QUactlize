@@ -20,7 +20,11 @@
 #include <limits>
 #include <type_traits>
 
+#if defined(__HGGCCC__)
+#include <hggc_fp16.h>
+#else
 #include <cuda_fp16.h>
+#endif
 
 #include "cute/atom/mma_atom.hpp"
 #include "cute/atom/mma_traits_ppu0010.hpp"

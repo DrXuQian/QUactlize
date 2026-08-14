@@ -14,7 +14,11 @@
 #include <cstdint>
 #include <type_traits>
 
+#if defined(__HGGCCC__)
+#include <hggc_fp16.h>
+#else
 #include <cuda_fp16.h>
+#endif
 
 #include "cute/tensor.hpp"
 #include "cutlass/cutlass.h"
