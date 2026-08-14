@@ -3,11 +3,6 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 variant="${QUACTLIZE_L169_VARIANT:-m16}"
-handoff_hack="${QUACTLIZE_L169_HANDOFF_HACK:-0}"
-case "$handoff_hack" in
-  0|1|2) ;;
-  *) echo "[l169] FAIL: unknown handoff diagnostic '$handoff_hack'" >&2; exit 2 ;;
-esac
 case "$variant" in
   m16)
     source_file="$repo/dev/fold_derivation/l169_standalone_marlin_unit.cu"
@@ -28,9 +23,6 @@ case "$variant" in
     ;;
   *) echo "[l169] FAIL: unknown variant '$variant'" >&2; exit 2 ;;
 esac
-if [[ "$handoff_hack" != 0 ]]; then
-  defs+=" -DPPU_MARLIN_HANDOFF_HACK=$handoff_hack"
-fi
 
 command -v nvcc >/dev/null 2>&1 || {
   echo '[l169] FAIL: nvcc is required for the generated-unit compile oracle' >&2
@@ -236,5 +228,5 @@ fi
 if [[ "$variant" == m16 ]]; then
   echo '[l169] PASS: generated wrapper reaches standalone Marlin kernel + collective device bodies; route-severed and collective-severed same-source controls suppress the exact marker'
 else
-  echo "[l169] PASS: variant=m8 handoff_hack=$handoff_hack generated wrapper reaches standalone Marlin kernel + collective device bodies; route-severed and collective-severed same-source controls suppress the exact marker"
+  echo '[l169] PASS: variant=m8 generated wrapper reaches standalone Marlin kernel + collective device bodies; route-severed and collective-severed same-source controls suppress the exact marker'
 fi

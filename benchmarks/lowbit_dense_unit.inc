@@ -45,8 +45,6 @@ static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
                 "standalone m8/m16 must be 1M x 2N x 4K = 8 warps with a 64-thread output cohort");
   static_assert(Kernel::InstructionM == TM,
                 "the compiled PPU instruction M must match the tactic M atom");
-  static_assert(int(Kernel::HandoffMode) == PPU_MARLIN_HANDOFF_HACK,
-                "the generated standalone unit must carry the requested compile-time handoff diagnostic mode");
   static_assert(Kernel::IsStandaloneMarlin,
                 "the classic-aligned row must instantiate the standalone Marlin kernel");
   static_assert(std::is_same_v<typename Kernel::CollectiveMainloop,

@@ -64,7 +64,6 @@ PATHS = {
     "l170": ROOT / "dev/fold_derivation/run_l170_standalone_marlin_scheduler.sh",
     "box": ROOT / "tools/run_dense_marlin_wk4_box.sh",
     "m8_box": ROOT / "tools/run_dense_marlin_m8_acu_box.sh",
-    "nosync_box": ROOT / "tools/run_dense_marlin_m8_nosync_acu_box.sh",
 }
 
 
@@ -150,8 +149,6 @@ def audit(files: dict[str, str]) -> list[str]:
         "block_B.copy_to_host(tensor_B.host_data());",
         "[dense marlin ACU subject-only] instruction=m%dn16k16",
         "subject_launches=1 device_reference=0 lock_fingerprints=0",
-        "handoff=%s peer_sync=%s local_cta_sync=enabled numerical_correctness=%s",
-        "PPU_MARLIN_HANDOFF_HACK=%d is a numerically invalid ACU diagnostic",
         "return final_result.passed ? 0 : 1;",
     ):
         require(bench, token, "standalone benchmark route", bad)
@@ -271,18 +268,8 @@ def audit(files: dict[str, str]) -> list[str]:
         "thread_block_reduce(accum, shared);",
         "TileScheduler::acquire_peer_turn", "global_handoff(accum",
         "TileScheduler::release_peer_turn", "write_result(accum",
-        "#define PPU_MARLIN_HANDOFF_HACK 0",
-        "enum class MarlinHandoffModePPU",
-        "HasOrderedPeerSync",
-        "HandoffMode != MarlinHandoffModePPU::FinalLocalOnly",
-        "if constexpr (HasOrderedPeerSync)",
-        "if constexpr (HasGlobalHandoff)",
     ):
         require(kernel, token, "Marlin kernel", bad)
-    if kernel.count("if constexpr (HasOrderedPeerSync)") != 2:
-        bad.append("Marlin kernel: acquire/release are not both governed by the exact ordered-sync predicate")
-    if kernel.count("if constexpr (HasGlobalHandoff)") != 1:
-        bad.append("Marlin kernel: D-chain is not governed by one exact global-handoff predicate")
     for token in ("BlockStripedReduce", "TileScheduler::fixup"):
         forbid(kernel, token, "Marlin kernel", bad)
 
@@ -298,19 +285,6 @@ def audit(files: dict[str, str]) -> list[str]:
         "each report contains one m8 subject launch and no m16 GemmRef",
     ):
         require(m8_box, token, "m8 ACU runner", bad)
-
-    nosync_box = files["nosync_box"]
-    for token in (
-        "MODES=(ordered racy-d-chain final-local)",
-        "BPCS=(1 2 3)",
-        'PPU_DEFS="PPU_MARLIN_HANDOFF_HACK=$hack"',
-        "is a numerically invalid ACU diagnostic",
-        "numerical_correctness=$expected_correctness",
-        "! grep -Fq 'Disposition:'",
-        "CAPTURED: ordered/racy-d-chain/final-local x BPC1/2/3",
-        "diagnostic reports make no numerical correctness claim",
-    ):
-        require(nosync_box, token, "no-sync ACU runner", bad)
 
     generic_forbidden = {
         "builder": ("requestedWarpK", "WarpOnK"),
@@ -348,15 +322,6 @@ def audit(files: dict[str, str]) -> list[str]:
         "hot=20B legacy-44B=RED local-lock=RED recomputed-predicate=RED",
     ):
         require(l170, token, "L170 descriptor runner", bad)
-
-    l169 = files["l169"]
-    for token in (
-        'handoff_hack="${QUACTLIZE_L169_HANDOFF_HACK:-0}"',
-        '0|1|2) ;;',
-        'defs+=" -DPPU_MARLIN_HANDOFF_HACK=$handoff_hack"',
-        'variant=m8 handoff_hack=$handoff_hack',
-    ):
-        require(l169, token, "L169 handoff compile oracle", bad)
 
     return bad
 
@@ -403,12 +368,6 @@ def main() -> int:
          "step > 0; step = 0"),
         ("kernel", "output-cohort-becomes-cta", "OutputThreads == 64",
          "OutputThreads == 256"),
-        ("kernel", "diagnostic-default-becomes-racy",
-         "#define PPU_MARLIN_HANDOFF_HACK 0",
-         "#define PPU_MARLIN_HANDOFF_HACK 1"),
-        ("kernel", "racy-mode-also-loses-d-chain",
-         "HandoffMode != MarlinHandoffModePPU::FinalLocalOnly",
-         "HandoffMode == MarlinHandoffModePPU::OrderedDChain"),
         ("scheduler", "lock-becomes-local",
          "return work.is_valid() && work.N_idx >= 0 ? int(work.N_idx) : -1;",
          "return work.is_valid() && work.N_idx >= 0 ? int(work.N_idx & 15) : -1;"),
@@ -427,9 +386,6 @@ def main() -> int:
         ("m8_box", "acu-report-resolution-accepts-ambiguity",
          '[ "${#report_candidates[@]}" -eq 1 ]',
          '[ "${#report_candidates[@]}" -ge 1 ]'),
-        ("nosync_box", "diagnostic-runner-claims-pass",
-         "CAPTURED: ordered/racy-d-chain/final-local x BPC1/2/3",
-         "PASS: ordered/racy-d-chain/final-local x BPC1/2/3"),
     )
     for owner, label, old, new in plants:
         if files[owner].count(old) != 1:
@@ -447,7 +403,7 @@ def main() -> int:
     print(
         "[dense-marlin-wk4] PASS: standalone format/collective/scheduler/kernel "
         "wired; standalone tactic authority consumed; generic WK4 compatibility "
-        f"absent; {len(plants)} structural plants rejected"
+        "absent; nineteen structural plants rejected"
     )
     return 0
 

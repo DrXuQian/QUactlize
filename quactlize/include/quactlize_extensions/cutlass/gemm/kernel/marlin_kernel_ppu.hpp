@@ -30,30 +30,6 @@
 
 namespace cutlass::gemm::kernel {
 
-// Diagnostic builds only; the default value is the shipping ordered D-chain.
-//
-//   PPU_DEFS=PPU_MARLIN_HANDOFF_HACK=1 TARGET=test_lowbit_dense_marlin_m8_ab ./build.sh
-//     removes only the cross-CTA lock acquire/release and leaves the racy fp16
-//     D-chain in place.
-//   PPU_DEFS=PPU_MARLIN_HANDOFF_HACK=2 TARGET=test_lowbit_dense_marlin_m8_ab ./build.sh
-//     also removes the D-chain, leaving only the final peer's local partial.
-//
-// Both nonzero modes are deliberately numerically invalid.  They exist to
-// separate lock polling from D-chain/segment cost under ACU; the benchmark
-// host boundary admits them only for a one-launch subject-only profile.
-#ifndef PPU_MARLIN_HANDOFF_HACK
-#define PPU_MARLIN_HANDOFF_HACK 0
-#endif
-static_assert(PPU_MARLIN_HANDOFF_HACK >= 0 &&
-                  PPU_MARLIN_HANDOFF_HACK <= 2,
-              "PPU_MARLIN_HANDOFF_HACK must be 0 (ordered), 1 (racy D-chain), or 2 (final-local)");
-
-enum class MarlinHandoffModePPU : uint8_t {
-  OrderedDChain = 0,
-  RacyDChain = 1,
-  FinalLocalOnly = 2,
-};
-
 template <class ProblemShape_, class MarlinCollective_, class CollectiveEpilogue_>
 class MarlinKernelPPU {
  public:
@@ -103,12 +79,6 @@ class MarlinKernelPPU {
       CollectiveMainloop::AccumulatorHalves;
   static constexpr bool IsDenseMarlin = true;
   static constexpr bool IsStandaloneMarlin = true;
-  static constexpr MarlinHandoffModePPU HandoffMode =
-      static_cast<MarlinHandoffModePPU>(PPU_MARLIN_HANDOFF_HACK);
-  static constexpr bool HasOrderedPeerSync =
-      HandoffMode == MarlinHandoffModePPU::OrderedDChain;
-  static constexpr bool HasGlobalHandoff =
-      HandoffMode != MarlinHandoffModePPU::FinalLocalOnly;
 
   static_assert(cute::rank(ProblemShape{}) == 4,
                 "standalone Marlin requires dense <M,N,K,L>");
@@ -436,18 +406,12 @@ class MarlinKernelPPU {
 
       thread_block_reduce(accum, shared);
       if (split) {
-        if constexpr (HasOrderedPeerSync) {
-          TileScheduler::acquire_peer_turn_assume_split(
-              params.scheduler, work, tid);
-        }
-        if constexpr (HasGlobalHandoff) {
-          global_handoff(accum, params, work, first, final,
-                         problem_m, problem_n);
-        }
-        if constexpr (HasOrderedPeerSync) {
-          TileScheduler::release_peer_turn_assume_split(
-              params.scheduler, work, tid, final);
-        }
+        TileScheduler::acquire_peer_turn_assume_split(
+            params.scheduler, work, tid);
+        global_handoff(accum, params, work, first, final,
+                       problem_m, problem_n);
+        TileScheduler::release_peer_turn_assume_split(
+            params.scheduler, work, tid, final);
       }
       if (final) {
         write_result(accum, params, work, problem_m, problem_n, shared);
