@@ -7391,3 +7391,171 @@ D1/D2/D3/D5 的 config 串 `native`/`tileK` 来自 `gemv_lowbit/gemv_tactic_spac
 * **只改 `:536` 一处 pragma。** 不动 Stages 的值、不动 `multiply_n_block` 的四份手写、不动 inner 展开。
 * 只在 **bpc1** 上做。bpc2/bpc3 是另一个变量,混在一起就归因不了。
 * 与 171/172 无依赖,可并行,也可在它们之前做 —— 它比四路对照便宜得多(一个 pragma + 一次 acu)。
+
+---
+
+## 174 — **split-K:五组实测,四条假说被证伪,真正该做的只剩一个 40 行的探针**
+
+全部数据来自**本机 5090**(容器内直连)跑 **vLLM 原始 Marlin**(`/root/ref5090/marlin/vllm-raw/csrc`,`vllm_commit 11ba93f3646d4c5476c3b3fd56835589701f0fb1`,我本机 `-arch=sm_120` 编的),以及用户交来的参考 Q4_K SIMT GEMV。**没有一条来自我们的 PPU 端口** —— 它只能在 PPU 上编。
+
+### 一、(N,K) 效率曲面(冷缓存,gs=32,`weight_metadata_cold`)
+
+    冷 %HBM (峰值 1792)
+    K\N        4096      8192     16384     32768
+    512       16.5%    27.5%     51.9%     50.9%
+    1024      28.7%    42.8%     61.0%     66.7%
+    2048      42.2%    55.5%     72.8%     78.9%
+    4096      56.8%    68.7%     81.8%     85.9%
+
+**两个轴都是单调向好,没有内部峰值。**固定 N 把 K 从 512 拉到 4096:+58%;固定 K 把 N 从 4096 拉到 32768:+51%。**两者同量级。**
+
+### 二、reshape(把 K 换成 N)是零和的
+
+沿 `N·K = 16,777,216` 的等工作量对角线 —— **这正是 split-K reshape 在做的事**:
+
+    S=1  (4096, 4096)   56.8%
+    S=2  (8192, 2048)   55.5%   ← 反而降
+    S=4  (16384,1024)   61.0%   ← 峰,+7.4%
+    S=8  (32768, 512)   50.9%   ← 掉
+
+**多出来的 tile 收益几乎被变浅的 K 抵消。净 +7.4%,而一次 reduce kernel 的 launch 大概率吃光。**
+
+### 三、但 C-chain 本身在某些 shape 上确实很贵
+
+vLLM Marlin 自带 `use_atomic_add` 开关(`kernel.h:19`,`marlin_template.h:268` —— **运行期 kernel 参数,不是模板参数**,`marlin_fullrun.cu:405/463` 写死为 false)。翻转它 = 同 kernel、同 shape,**只换归约方式**:
+
+    n=4096  k=4096   锁链 7.232   原子 7.168    −0.9%
+    n=16384 k=1024   锁链 7.360   原子 7.744    +5.2%   ← 原子反而慢
+    n=5120  k=5120   锁链 9.088   原子 7.232   −20.4%   ★
+    (三组 val_err 全 0)
+
+**⟹ 「无锁 > 有锁」不普适,但最好情形值 20.4%。**
+
+### 四、我的四条假说,逐条被上面的数打掉
+
+    「grid 72→216 能救 occupancy」        bpc2 已慢 10.7%,加 block 只是把 peer 链拉长      ✗
+    「C-chain 几乎免费(18 次轮询/CTA)」  n=k=5120 换原子加快 20.4%                       ✗ 反向
+    「取指 stall 来自恢复点(barrier)」    见第五节:barrier 33× 只 +1.3%                  ✗
+    「取指 stall 来自大展开体」            见第五节:静态足迹 3.2× 只 +0.7%                ✗
+
+**共同的错法:每次都拿一个便宜的代理量(轮询次数、barrier 数、静态条数)代替真正的代价。**
+
+### 五、受控 2×2:barrier 和静态足迹都几乎免费
+
+在参考 Q4_K GEMV 上加两个**互相独立**的编译期旋钮(工作量、寄存器都不变):
+
+    unroll  额外barrier/chunk  静态指令   CtaN2 冷 µs   相对
+    1       0                    496       7.738        —
+    1       8(共 33 次)         504       7.842       +1.3%
+    4       0                   1576       7.792       +0.7%
+    4       8                   1616       7.863       +1.6%
+    (四组数值门全过 0.00053,寄存器恒为 63/64)
+
+**⟹ PPU acu 上那个 42.9% 的 instruction fetch,不是这两个机制造成的。** 剩下的候选只有两个,且都只能在 PPU 上分辨:**(a) PPU 前端相对其执行资源偏弱;(b) 12.4% 占用率下没有别的 warp 可藏取指。**
+
+⟹ **INBOX 173(缩展开体)的前提已被第五节证伪,建议直接撤回,不要执行。**
+
+### 六、分类学(避免继续用错名字)
+
+    Marlin C-chain          生产者就地改 D,lock 按 peer 序          1 次 launch
+    actlize stream-K 默认   FP32 workspace,wait_eq(K_idx)           1 次
+    actlize separate_reduction  **同 launch 内的专职归约 CTA**        1 次   ← 不是第二个 kernel
+                            (`ppu_tile_scheduler_stream_k.hpp:101/113/283/397`)
+    CUTLASS 2.x GemmSplitKParallel  独立 ReduceSplitK kernel          2 次
+    用户提案                 独立 reduce kernel                       2 次
+
+**stream-K 是「怎么分配工作」,不在这条轴上,可与任一归约模式组合。**
+
+### 七、一个可能已经存在的机制 —— 先读,别再写成「不可能」
+
+`marlin_scheduler_ppu.hpp`:
+
+    :177   p.iters_per_block_ <= p.k_tiles_per_output_        ← guard 允许取等号
+    :207   first_k = (K_idx == 0);  final_k = ...
+    :209   bool const split = !(first_k && final_k);          ← 两者都真 ⟹ split=false
+    kernel :442/:446 只在 split 分支调 acquire/release
+
+**⟹ 令 `iters_per_block_ == k_tiles_per_output_`,每个 block 独吞一个 tile 的完整 K,`split=false`,锁 / fence / wbinv 全部不执行。机制可能已经在,缺的是 host 侧怎么定 `grid_blocks_`。** 这一条**必须先读了再说** —— 我今天已经把「没接线」写成「不可能」四次。
+
+### 八、TODO(只批这一个)
+
+**一次性探针,只测时间,不实现任何东西。**
+
+* **性质**:在 PPU 上,把分解设成「每 block 独吞一个输出 tile 的完整 K」(P=1,零锁),配合 reshape 出来的更宽 N,测它相对现有默认的时间。
+* **改动**:host 侧分解规则 ~20-40 行,**可丢弃**。不写 reduce kernel、不做离线重排、不动 ABI、不加 tactic 轴。
+* **跑**:`M=1, N=16384, K=1024`(S=4 的形状,128 tile / 72 CU = 1.78 波) vs 现有默认 `M=1, N=4096, K=4096`(16.96 µs)。
+* **事前判据**:报 `时间 / %HBM / tiles-per-CU / 每 tile 的 k 步数 / 权重每核每周期` 五列。**数值会是错的(没有 reduce),不看数值。**
+* **负控**:S=1 必须复现 16.96 µs ±3%;对不上说明 harness 变了,先修 harness。
+* **范围限制**:**不许顺手实现 reduce kernel 或 tactic 轴。** 探针没赢就停。
+* **顺带产出**:PPU 在 P=1 时的每核每周期产出 —— 不管后续做不做,这个数都有用。
+
+### 九、跨机对照(供归因时对齐分母用)
+
+    5090 参考GEMV   170 核   峰值BW/核 10.54   实测BW/核  7.16   68.0%   权重/核/周期 4.62
+    5070 参考GEMV    48 核             14.00              10.79   77.1%                6.95
+    PPU  Marlin      72 核             38.4                7.11   18.5%                8.08
+    H800 Marlin     132 核             25.4                4.32   18.4%                5.18
+
+**%HBM 在跨机比较里没有意义** —— 它是「每核产出 ÷ 每核带宽」,而后者三台差 3.6×。**唯一可比的是「权重/核/周期」,PPU 最高。**
+三组独立数据一致地给出 **吞吐 ≈ 核心数^0.6~0.7**:问题太小,机器越大越浪费。
+
+---
+
+## 175 — **RTX 5070 远程测量方法(可复用),以及一个我自己犯的分母错**
+
+用户提供了一台 RTX 5070 用于测量。**凭据不记录在本文件里(仓库会 push),向用户索取。**
+
+### 一、那台机器的实际情况
+
+    GPU        RTX 5070   48 SM   48 MB L2   12 GB GDDR7   峰值 672 GB/s(192-bit × 28 Gbps)
+    计算能力    sm_120     ← 与我们本机 5090 相同
+    系统       Windows 10.0.26200,SSH 默认 shell = cmd.exe(中文 GBK,输出会乱码)
+    nvcc/ncu/nsys   Windows 侧**都没有**
+    WSL        有(Ubuntu,kernel 6.6.114.1-microsoft-standard-WSL2),里面**也没有** CUDA toolkit
+
+### 二、承重的一条:不需要在对方机器上装任何东西
+
+**5070 和我们本机 5090 都是 sm_120 ⟹ 本机编好的二进制直接搬过去就能跑。** nvcc 默认静态链接 cudart,`libcuda.so` 由 WSL 的驱动提供(`/usr/lib/wsl/lib`)。
+
+### 三、两个坑,和绕法
+
+**坑 1:`wsl.exe` 在 OpenSSH 服务下跑得起来(rc=0)但输出回不来。**
+这是 WSL 需要交互式用户会话导致的。**绕法:让 WSL 内部把输出写到 Windows 盘,再从 cmd 读。**
+
+    ssh …  'wsl -- bash -c "…命令… > /mnt/c/Users/<user>/out.txt 2>&1"'
+    ssh …  'type C:\Users\<user>\out.txt'
+
+**坑 2:`wsl -l -q` 之类返回空,会被误判成「没装发行版」。** 它的输出是 UTF-16,穿过 SSH 变空。**不要据此下结论**(我据此判过一次「没有 WSL」,是错的)。
+
+### 四、可复用配方
+
+    # 1  送二进制(本机 -arch=sm_120 编好的)
+    sshpass -p '<pw>' scp -o StrictHostKeyChecking=no -P <port> ./bench '<user>@<host>:C:/Users/<user>/bench'
+
+    # 2  在 WSL 里复制到 Linux 文件系统再执行(/mnt/c 上执行位可能丢)
+    ssh … 'wsl -- bash -c "cp /mnt/c/Users/<user>/bench /tmp/bench && chmod +x /tmp/bench && /tmp/bench <args> > /mnt/c/Users/<user>/out.txt 2>&1"'
+
+    # 3  读回
+    ssh … 'type C:\Users\<user>\out.txt'
+
+### 五、我犯的错:分母写死
+
+我的探针 `bench.cu` 把峰值带宽硬编码成 `1792.0`(5090 的)。**在 5070 上跑出来的 `%HBM` 那一列整列是错的**,真实值要除以 672 —— 21.0% 实为 56.0%,28.9% 实为 77.1%。
+
+**任何跨设备的 harness 都必须从设备推导峰值带宽**,例如 `2 × memoryClockRate(kHz) × memoryBusWidth/8`,而不是写常数。这正是 [[verification-failure-shapes]] 里「前置检查测身份不测能力」的同一类:数字打印出来了,但它测的不是它声称的东西。
+
+### 六、这台机器上已取得的数(冷缓存,轮转 12 份权重 = 2.25× L2)
+
+参考 Q4_K SIMT GEMV,`M=1 N=4096 K=4096`,Q4_K 原生 gs=32:
+
+    config              L2 常驻 µs    轮转 µs    轮转 GB/s   %HBM(672)
+    CtaN1 Wn8 Wk1        19.823       25.094      376.1       56.0%
+    CtaN2 Wn8 Wk1        16.669       24.209      389.8       58.0%
+    CtaN4 Wn8 Wk1        15.935       18.212      518.2       77.1%   ★
+    CtaN1 Wn8 Wk4        25.784       25.077      376.3       56.0%
+
+**最优 config 与 5090 不同**(5090 是 CtaN2,5070 是 CtaN4)—— 配置最优点随核心数移动,不能跨机沿用。
+
+### 七、仍然拿不到的
+
+**计数器(ncu)。** Windows 侧没装,WSL 里也没装;装 CUDA toolkit ~3 GB,且 **ncu 在 WSL 上的计数器支持历来受限**,装完未必能用。**在明确需要计数器之前不要让用户装。**
