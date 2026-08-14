@@ -7300,3 +7300,94 @@ D1/D2/D3/D5 的 config 串 `native`/`tileK` 来自 `gemv_lowbit/gemv_tactic_spac
     PPU 臂                             ← 大概率不需要
 
 **先编一次 `-arch=ppu_10`,把「四条到底行不行」用编译器回答,再决定要不要动任何一行 asm。**
+
+---
+
+## 173 — **主循环的直线体是 893 条、每 warp 只进 3.56 次;`:536` 的 pipe 展开不承重,可以卷**
+
+针对 bpc1(16.96 µs)那份 acu 里 **Instruction Fetch 占全部 stall 周期 42.9%** 这件事。下面前两节是读出来的,第三节是我的假说,**这个实验的价值恰恰在于它能证伪它**。
+
+### 一、展开的四层,以及直线体有多大
+
+`quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp`
+
+    :535   while (k_tiles_remaining > 0)                    ROLLED —— 唯一卷着的一层
+    :536-7   #pragma unroll for (pipe = 0; pipe < Stages;)  ×4    Stages=4
+    :538-9     #pragma unroll for (inner < BInnerIters)     ×2    BInnerIters=2
+    :540         load_registers(inner+1, pipe % Stages)           → :484-505
+    :541-7       if (inner == BInnerIters-2) copy_stage/wait      → :456-482
+    :548         multiply(inner)                                  → :507-518
+    :508-517       multiply_n_block<0..3>  手写四份,不是循环      ×4   ← 第四层
+
+**直线体 = Stages × BInnerIters × NBlocks = 4 × 2 × 4 = 32 条 mma。**
+
+### 二、两条独立推导互相印证(源码结构 vs bpc1 的 acu)
+
+    每 warp 指令数    1,826,440 / (72 CTA × 8 warp) = 3,171
+    每 warp mma       65,536 / 576                  = 113.8
+    每条 mma 指令     3,171 / 113.8                 = 27.9
+    直线体大小        32 × 27.9                     = 893 条
+
+    进入次数(acu)    113.8 / 32                            = 3.56
+    进入次数(调度)   (32 n-tile × 32 k-tile) / 72 CTA / 4  = 3.56   ← 精确相等
+
+**一个 893 条的直线体,每个 warp 只进 3.56 次。** 冷取指摊不掉。
+
+### 三、我的假说(可证伪,这正是要测的)
+
+取指成为首位 stall,是因为**静态足迹大 + 复用距离等于整个展开体 + 进入次数少**,而不是因为动态指令多。对照:GEMV 动态指令也很多(ALU 受限),但它是小体滚动循环,不 stall。
+
+**若这个实验把足迹缩 4× 而 fetch stall 不动 ⟹ 我这套解释是错的,回头找别的原因。** 请把这条当成实验的主要产出,不是附带。
+
+### 四、能动的是哪一层 —— 关键区分
+
+**`pipe` 只索引 shared/global 指针;`inner` 索引寄存器数组。**
+
+    pipe 的全部用途(都是指针偏移,卷起来无害)
+      shared.a     + ASharedStage * pipe            :458  :490
+      shared.b     + BSharedStage * pipe            :462  :502
+      shared.scale + ScaleSharedStage * pipe        :472  :486
+      a_pointer[AGlobalOuter * a_offset]            :461   (a_offset = pipe)
+
+    inner 的全部用途(都是寄存器数组下标,卷起来必然 spill)
+      fragment_a[inner & 1]                         :494  :510-517
+      fragment_b_quant[inner & 1]                   :503
+      fragment_scale[inner & 1]                     :487  :510-517
+      state.a_smem_read[inner % BInnerIters]        :495  :499
+
+⟹ **`:538` 的 inner 展开承重,不许动。`:536` 的 pipe 展开不承重。**
+
+### 五、实验
+
+把 `:536` 的 `#pragma unroll` 改成 `#pragma unroll 1`(必要时再试 `2`),**其余一个字不改**。
+
+    直线体    893 → 223 条        4×
+    语义      不变:Stages / BInnerIters / 输出映射 / 分块 全部不动
+    证明门    不触发 —— PipelineDepthUnproved 管的是 Stages 的**值**,不是它展不展开
+
+### 六、性质
+
+在 `marlin-m8-tm8-tn128-tk128-wn64-wk32-bpc1` 上,主循环的静态指令足迹下降约 4×,**数值结果逐位不变**,寄存器数不增加、无 spill。
+
+### 七、事前判据(**不看指令总数**)
+
+卷起来会**多**出循环计数与分支,动态指令数会涨。按指令数判读会得出相反结论。要看的是:
+
+* **(a) 数值**:现有 exact fixture 逐位相同(`Disposition: Passed` + 8/8 lock fingerprint,与 `run_dense_marlin_m8_acu_box.sh` 同一套)。
+* **(b) 寄存器**:`Regs` 不高于 124,`spill stores/loads` 为 0。**任一不满足,实验立即作废** —— pipe 若意外触发 spill,测的就不是足迹了。
+* **(c) 主指标**:`Instruction Fetch` 占全部 stall 周期的份额(bpc1 基线 42.9%)。
+* **(d) 副指标**:`Stall Sync`(基线 23.6%)。`wait_stage()` 的 `__syncthreads()`(:481)进入了卷起来的循环体 —— inner 仍全展开,故 `inner==0` 是编译期常量、barrier 调用仍一致,但**必须实测确认它没变差**。
+* **(e) I-cache 命中率(若 acu 有)**:这是分「容量型」和「带宽型」的唯一判别式,一并抓。
+* **(f) 时间**:仅作参考,不作判据。
+
+### 八、负控
+
+1. **把 `:538` 的 inner 也改成 `#pragma unroll 1`,判据 (b) 必须判红**(应出现 spill)。证明 (b) 这条真的能抓到寄存器数组落地,而不是一个从不失败的检查。
+2. **`#pragma unroll 1` 之后必须确认编译器真的没展开** —— 用 `nvdisasm`/`cuobjdump` 数主循环段的静态条数,期望 ~893 → ~223。**只改 pragma 不验证足迹,等于没做实验**:nvcc 可以忽略它。
+3. 基线与实验必须同一 sha、同一 clean worktree(`git worktree add --detach <sha>`),理由见 [[gate-results-need-a-sha]]。
+
+### 九、范围限制
+
+* **只改 `:536` 一处 pragma。** 不动 Stages 的值、不动 `multiply_n_block` 的四份手写、不动 inner 展开。
+* 只在 **bpc1** 上做。bpc2/bpc3 是另一个变量,混在一起就归因不了。
+* 与 171/172 无依赖,可并行,也可在它们之前做 —— 它比四路对照便宜得多(一个 pragma + 一次 acu)。
