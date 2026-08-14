@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-14 05:17:01 UTC
+    updated-at:     2026-08-14 06:48:29 UTC
     inbox-consumed: 169
-    working-on:     fixed the ACU artifact contract: site ACU appends .acurep to -o, so the runner now resolves base vs base.acurep and requires exactly one rather than declaring a produced report missing
-    blocked-on:     clean BPC1/2/3 subject-only ACU reports; the existing BPC1 .acurep is valid but the aborted bundle did not reach BPC2/3
-    local-gates:    runner bash syntax PASS; standalone target contract PASS with 19/19 structural plants including ambiguous report resolution; composed Marlin contract PASS
-    last-commit:    Accept the site ACU report suffix explicitly
+    working-on:     standalone m8 Marlin no-sync ACU diagnostic is committed and pushed: ordered D-chain, racy D-chain, and final-local arms across BPC1/2/3
+    blocked-on:     box ACU capture of the nine mode x BPC reports; nonzero modes are intentionally numerically invalid diagnostics
+    local-gates:    three real generated-unit device-body variants PASS; standalone target contract PASS with 22/22 structural plants; runner syntax and switch-route gate PASS
+    last-commit:    48d6f1b bench: add standalone Marlin no-sync ACU diagnostic
     last-heartbeat: 306
