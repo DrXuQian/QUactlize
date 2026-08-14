@@ -36,17 +36,6 @@ identity_probe_get() {
     --field "$1" --part "$2"
 }
 
-python3 "$IDENTITY_PROBE_TOOL" resolve --output "$OUT/identity-probe.json" || \
-  fail 'automatic box identity probe failed; no binary was built or profiled'
-DEVICE_MODEL="$(identity_probe_get device_model value)"
-PCI_IDENTITY="$(identity_probe_get pci_identity value)"
-DRIVER_VERSION="$(identity_probe_get driver_version value)"
-SDK_IDENTITY_PROBED="$(identity_probe_get sdk_compiler_identity value)"
-DEVICE_MODEL_SOURCE="$(identity_probe_get device_model source)"
-PCI_IDENTITY_SOURCE="$(identity_probe_get pci_identity source)"
-DRIVER_VERSION_SOURCE="$(identity_probe_get driver_version source)"
-SDK_IDENTITY_SOURCE="$(identity_probe_get sdk_compiler_identity source)"
-
 resolve_executable() {
   local candidate="$1"
   [ -n "$candidate" ] || return 1
@@ -77,6 +66,22 @@ objdump_identity="$($hgobjdump --version 2>&1 | head -n 1 || true)"
   fail 'hgcc identity is empty or a stub'
 [ -n "$objdump_identity" ] && [[ "$objdump_identity" != *stub* ]] || \
   fail 'hgobjdump identity is empty or a stub'
+
+# The identity probe cannot infer the SDK root merely because hgcc happens to
+# be on PATH.  Resolve that authority first, then pass it explicitly.  Keep
+# the probe's temporary host build below this /workspace bundle as well.
+env TMPDIR="$OUT" PPU_SDK="$sdk_root" PPU_HOME= PPU_SDK_SITE_DEFAULT= \
+  python3 "$IDENTITY_PROBE_TOOL" resolve --output "$OUT/identity-probe.json" || \
+  fail "automatic box identity probe failed with resolved PPU_SDK=$sdk_root; no binary was built or profiled"
+DEVICE_MODEL="$(identity_probe_get device_model value)"
+PCI_IDENTITY="$(identity_probe_get pci_identity value)"
+DRIVER_VERSION="$(identity_probe_get driver_version value)"
+SDK_IDENTITY_PROBED="$(identity_probe_get sdk_compiler_identity value)"
+DEVICE_MODEL_SOURCE="$(identity_probe_get device_model source)"
+PCI_IDENTITY_SOURCE="$(identity_probe_get pci_identity source)"
+DRIVER_VERSION_SOURCE="$(identity_probe_get driver_version source)"
+SDK_IDENTITY_SOURCE="$(identity_probe_get sdk_compiler_identity source)"
+
 acu_real="$(readlink -f "$ACU")"
 acu_identity="$($acu_real --version 2>&1 | head -n 1 || true)"
 [ -n "$acu_identity" ] || acu_identity='version-unreported'
