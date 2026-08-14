@@ -66,7 +66,7 @@ has its own hash in `identity.txt`.  The public dispatch is exercised specifical
 | arm | median us | weight GB/s | % peak | regs | local bytes/thread | barriers |
 |---|---:|---:|---:|---:|---:|---:|
 | PDF winner, CtaN2/Wn4/Wk1 | 7.793333 | 1210.930 | 67.57 | 64 | 0 | 1 |
-| generic BC after native metadata, RPW8/T64 | 12.833333 | 735.365 | 41.033 | 40 | 0 | 0 |
+| generic BC after the combined whole-word reader update, RPW8/T64 | 12.833333 | 735.365 | 41.033 | 40 | 0 | 0 |
 | **public shipping BC, A64 CtaN2/Wn4/Wk1** | **7.625333** | **1237.609** | **69.058** | **63** | **0** | **1** |
 
 The production ratio is `0.978443`, so the resident-artifact route is **2.16% faster** than the exact PDF reference
@@ -106,7 +106,7 @@ This is not merely a large source body.  It creates almost all of the old kernel
 The native production metadata decoder instead uses native half/half2 operations through the shared
 `gguf_bc_q4_reader.hpp`; it does not numerically convert a `cutlass::half_t` through the portable software
 implementation.  Its complete winner
-kernel is **432 static instructions**, versus 496 for PDF, with the same 64 registers, no spill, and one barrier.
+kernel is **432 static instructions**, versus 496 for PDF, with 63 versus 64 registers, no spill, and one barrier.
 Thus the reader can be instruction-competitive without changing one resident byte.
 
 The counts can be reproduced without performance-counter permission:

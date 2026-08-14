@@ -39,6 +39,29 @@ namespace gguf_scale::bc_vecdot::q4_reader {
 #define QUACTLIZE_BC_Q4_DEVICE inline
 #endif
 
+// The shipping Q4 kernels intentionally use 16-byte vector loads for the
+// activation, resident code, and packed-unit planes. cudaMalloc/DevBuf bases
+// satisfy this, but the public device-pointer ABI also accepts caller-owned
+// suballocations. Keep the actual predicate beside the loads so the ABI entry
+// can reject a sliced pointer instead of relying on allocator folklore.
+static constexpr uintptr_t kVectorLoadAlignment = 16;
+
+QUACTLIZE_BC_Q4_HD bool vector_load_pointer_is_aligned(void const* pointer) {
+  return pointer != nullptr &&
+         (reinterpret_cast<uintptr_t>(pointer) & (kVectorLoadAlignment - 1)) == 0;
+}
+
+QUACTLIZE_BC_Q4_HD bool vector_load_contract(void const* activation,
+                                             void const* low,
+                                             void const* units) {
+  return vector_load_pointer_is_aligned(activation) &&
+         vector_load_pointer_is_aligned(low) &&
+         vector_load_pointer_is_aligned(units);
+}
+
+static_assert((kVectorLoadAlignment & (kVectorLoadAlignment - 1)) == 0,
+              "Q4 vector-load alignment must remain a power of two");
+
 template <int ArtifactTileK>
 struct Q4WordPlan {
   static_assert(ArtifactTileK == 32 || ArtifactTileK == 64 ||

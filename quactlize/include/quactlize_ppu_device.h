@@ -25,6 +25,8 @@ int quactlize_ppu_gemv_lowbit_dev_v1(
 
 // The placed low/high planes and packed units are the same artifact consumed by quactlize_ppu_bc_gemv.
 // experts==0 selects dense and requires total_rows==1. Grouped offsets are cumulative int[experts+1].
+// For Q4_K (qtype=12), x, low, and units must each be 16-byte aligned because the shipping reader uses vector
+// global loads. Both device entries below return 25 before enqueue when that contract is not met.
 int quactlize_ppu_bc_gemv_dev_v1(uint16_t const* x,
                                  uint8_t const* low, uint8_t const* high, uint8_t const* units,
                                  int const* offsets, float* out,

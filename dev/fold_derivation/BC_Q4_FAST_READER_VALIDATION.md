@@ -34,6 +34,12 @@ The three authorities are deliberately different:
 The same exhaustive loop also requires every group base to satisfy `group_byte % alignof(uint32_t) == 0`.
 This is a separate shipping precondition: nibble closure alone would not justify the consumer's aligned word load.
 
+The public device-pointer ABI has a stronger boundary condition for Q4: `x`, `low`, and `units` must each be
+16-byte aligned because the measured topology issues `float4`/`uint4` global loads.  L187 exercises the shared
+production predicate with one aligned tuple and three independently misaligned inputs.  Both public BC device
+entries consume that predicate and return 25 before enqueue; the source gate removes one entry's check as a
+negative control and requires the resulting half-wired ABI to fail.
+
 The comparison count is **1,048,576**, not a representative sample. `Q4WordPlan::code_from_pair_lane` also binds
 the production pair/lane ownership to the scalar nibble value. The sm120 device probe instantiates actual
 `code_at` and `dequantize_word`; its SASS must contain balanced low/high `LOP3.LUT` and `HFMA2` arithmetic levels
@@ -49,6 +55,8 @@ from the other.
   must disagree with the scalar address oracle at every checked coordinate.
 * `missing-denominator` omits A256 after deriving the expected count from `arrangement_supported_v`. It must report
   `3/4` and fail; coverage cannot be improved by shrinking a handwritten denominator.
+* The ABI seam plant removes the Q4 alignment check from exactly one of the two public device entries.  It must fail
+  even though the other entry and the shared predicate remain intact.
 
 Both controls must return nonzero and print `PLANTED_RED ... DETECTED`. A control that exits successfully is itself
 a gate failure.

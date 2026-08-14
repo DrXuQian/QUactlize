@@ -81,6 +81,22 @@ uint64_t check_native_metadata() {
   return bad;
 }
 
+uint64_t check_public_pointer_alignment() {
+  alignas(16) std::array<uint8_t, 64> storage{};
+  uint64_t bad = 0;
+  bad += !q4::vector_load_contract(storage.data(), storage.data() + 16,
+                                   storage.data() + 32);
+  // Each input is independently load-bearing: a predicate that accidentally
+  // checks only one or two fields must fail this control.
+  bad += q4::vector_load_contract(storage.data() + 2, storage.data() + 16,
+                                  storage.data() + 32);
+  bad += q4::vector_load_contract(storage.data(), storage.data() + 1,
+                                  storage.data() + 32);
+  bad += q4::vector_load_contract(storage.data(), storage.data() + 16,
+                                  storage.data() + 1);
+  return bad;
+}
+
 template <int ArtifactTileK>
 int check_arrangement(bool plant_wrong_permutation, uint64_t& checked, uint64_t& address_bad,
                       uint64_t& value_bad, uint64_t& alignment_bad,
@@ -183,6 +199,7 @@ int main(int argc, char** argv) {
 
   uint64_t checked = 0, address_bad = 0, value_bad = 0, alignment_bad = 0, roundtrip_bad = 0;
   uint64_t const metadata_bad = check_native_metadata();
+  uint64_t const pointer_alignment_bad = check_public_pointer_alignment();
   std::array<uint64_t, 4> hashes{};
   int observed = 0;
   check_arrangement<32>(wrong, checked, address_bad, value_bad, alignment_bad, roundtrip_bad, hashes[0]); ++observed;
@@ -195,18 +212,20 @@ int main(int argc, char** argv) {
   int const denominator = production_q4_denominator();
   bool const coverage_ok = observed == denominator;
   std::printf("L187 mode=%s arrangements=%d/%d coordinates=%llu address_bad=%llu value_bad=%llu "
-              "alignment_bad=%llu metadata_bad=%llu/32768 roundtrip_bad=%llu "
+              "alignment_bad=%llu metadata_bad=%llu/32768 pointer_alignment_bad=%llu/4 roundtrip_bad=%llu "
               "hashes=%016llx,%016llx,%016llx,%016llx\n",
               mode, observed, denominator, static_cast<unsigned long long>(checked),
               static_cast<unsigned long long>(address_bad), static_cast<unsigned long long>(value_bad),
               static_cast<unsigned long long>(alignment_bad),
               static_cast<unsigned long long>(metadata_bad),
+              static_cast<unsigned long long>(pointer_alignment_bad),
               static_cast<unsigned long long>(roundtrip_bad),
               static_cast<unsigned long long>(hashes[0]), static_cast<unsigned long long>(hashes[1]),
               static_cast<unsigned long long>(hashes[2]), static_cast<unsigned long long>(hashes[3]));
 
   if (wrong) {
-    bool const red = coverage_ok && alignment_bad == 0 && metadata_bad == 0 && roundtrip_bad == 0 &&
+    bool const red = coverage_ok && alignment_bad == 0 && metadata_bad == 0 &&
+                     pointer_alignment_bad == 0 && roundtrip_bad == 0 &&
                      address_bad == checked && address_bad != 0;
     std::printf("PLANTED_RED wrong-permutation %s\n", red ? "DETECTED" : "ESCAPED");
     return red ? 1 : 0;
@@ -217,7 +236,7 @@ int main(int argc, char** argv) {
     return red ? 1 : 0;
   }
   bool const pass = coverage_ok && address_bad == 0 && value_bad == 0 && alignment_bad == 0 && metadata_bad == 0 &&
-                    roundtrip_bad == 0 &&
+                    pointer_alignment_bad == 0 && roundtrip_bad == 0 &&
                     checked == uint64_t(denominator) * kCodes;
   std::printf("L187 %s: shipping Q4 whole-word reader equals code_at/production writer over the full domain\n",
               pass ? "PASS" : "FAIL");

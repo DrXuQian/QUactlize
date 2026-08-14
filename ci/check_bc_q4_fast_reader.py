@@ -14,6 +14,8 @@ READER = ROOT / "quactlize/include/gguf_bc_q4_reader.hpp"
 BC = ROOT / "quactlize/include/gguf_bc_vecdot.hpp"
 KERNEL = ROOT / "quactlize/include/gguf_bc_q4_gemv.hpp"
 DOC = ROOT / "dev/fold_derivation/BC_Q4_FAST_READER_VALIDATION.md"
+BACKEND = ROOT / "quactlize/csrc/device/ppu_backend.cu"
+DEVICE_ABI = ROOT / "quactlize/include/quactlize_ppu_device.h"
 
 
 def require(text: str, needle: str, owner: str) -> None:
@@ -34,6 +36,16 @@ def require_shipping_hot_path(text: str) -> None:
             )
 
 
+def require_device_alignment_seam(backend: str, device_abi: str) -> None:
+    check = "!gguf_scale::bc_vecdot::q4_reader::vector_load_contract(x, low, units)) return 25;"
+    if backend.count(check) != 2:
+        raise SystemExit(
+            "[bc-q4-fast-reader] FAIL: both public BC device entries must fail-close Q4 vector alignment"
+        )
+    require(device_abi, "x, low, and units must each be 16-byte aligned", "public BC device ABI")
+    require(device_abi, "return 25 before enqueue", "public BC device ABI")
+
+
 def main() -> int:
     source = SOURCE.read_text()
     runner = RUNNER.read_text()
@@ -41,18 +53,20 @@ def main() -> int:
     bc = BC.read_text()
     kernel = KERNEL.read_text()
     doc = DOC.read_text()
+    backend = BACKEND.read_text()
+    device_abi = DEVICE_ABI.read_text()
 
     for token in (
         "place_derived<4", "recover_derived<4", "xplane_physical_code<KType::Q4_K",
         "q4_group_byte_offset<ArtifactTileK>", "physical_nibble_from_logical_k",
         "alignment_bad",
         "wrong-permutation", "missing-denominator", "checked == uint64_t(denominator) * kCodes",
-        "device_binding_probe", "dequantize_word",
+        "device_binding_probe", "dequantize_word", "pointer_alignment_bad",
     ):
         require(source, token, "L187 oracle")
     for token in (
         "Q4WordPlan", "logical_k_from_physical_nibble", "physical_nibble_from_logical_k",
-        "dequantize_word",
+        "dequantize_word", "kVectorLoadAlignment = 16", "vector_load_contract",
     ):
         require(reader, token, "shipping Q4 reader")
     for token in (
@@ -61,6 +75,17 @@ def main() -> int:
     ):
         require(bc, token, "shipping BC consumer")
     require_shipping_hot_path(bc)
+    require_device_alignment_seam(backend, device_abi)
+    # Remove the check from one ABI entry while leaving the other untouched.
+    # The semantic gate must reject that exact half-wired state.
+    alignment_check = "!gguf_scale::bc_vecdot::q4_reader::vector_load_contract(x, low, units)) return 25;"
+    planted_backend = backend.replace(alignment_check, "false) return 25;", 1)
+    try:
+        require_device_alignment_seam(planted_backend, device_abi)
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit("[bc-q4-fast-reader] FAIL: one-entry alignment-check plant was not rejected")
     # This plant proves the structural regression classifier itself is live.
     planted = bc.replace("auto const metadata = q4_reader::load_metadata(unit);",
                          "auto const metadata = packed_unit::unit_group_sb<T,0>(unit,0,0);", 1)

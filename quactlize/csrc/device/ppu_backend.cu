@@ -457,6 +457,11 @@ extern "C" int quactlize_ppu_bc_gemv_dev_v1(uint16_t const* x,
                                                void* stream) {
   if (!x || !low || !units || !out || total_rows <= 0 || n <= 0 || n % 256 || k <= 0 || k % 256 ||
       experts < 0 || (experts > 0 && (!offsets || max_rows <= 0)) || (experts == 0 && total_rows != 1)) return 13;
+  // Q4's whole-word reader uses float4/uint4 global loads. Public device
+  // pointers need not originate at an allocation base, so reject a sliced
+  // pointer before launch rather than allowing an undefined vector load.
+  if (qtype == 12 &&
+      !gguf_scale::bc_vecdot::q4_reader::vector_load_contract(x, low, units)) return 25;
   ppu_gemv::rt_clear_error();
   gemv_stream_t const s = static_cast<gemv_stream_t>(stream);
 #define RUN(T) (gguf_scale::bc_vecdot::Traits<KType::T>::Hi && !high ? 14 : \
@@ -476,6 +481,8 @@ extern "C" int quactlize_ppu_bc_gemv_for_arrangement_dev_v1(
       experts < 0 || (experts > 0 && (!offsets || max_rows <= 0)) || (experts == 0 && total_rows != 1) ||
       !arrangement || arrangement->version != QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V1 ||
       arrangement->artifact_tile_k <= 0 || k % arrangement->artifact_tile_k) return 13;
+  if (qtype == 12 &&
+      !gguf_scale::bc_vecdot::q4_reader::vector_load_contract(x, low, units)) return 25;
   ppu_gemv::rt_clear_error();
   gemv_stream_t const s = static_cast<gemv_stream_t>(stream);
 #define RUN(T) (arrangement->bits != gguf_scale::bc_vecdot::Traits<KType::T>::Lo || \
