@@ -107,6 +107,12 @@ def audit(files: dict[str, str]) -> list[str]:
         "DENSE_MARLIN_WK4_AB=1",
         "test_lowbit_dense_marlin_m8_ab",
         "DENSE_MARLIN_M8_AB=1",
+        "set(_DENSE_MARLIN_M8_SCAFFOLD_TM ${_DENSE_MARLIN_WK4_TM})",
+        "set(_DENSE_MARLIN_M8_SCAFFOLD_WM ${_DENSE_MARLIN_WK4_WM})",
+        "-DDENSE_AB_TM=${_DENSE_MARLIN_M8_TM}",
+        "-DDENSE_AB_WM=${_DENSE_MARLIN_M8_WM}",
+        "-DTILE_M=${_DENSE_MARLIN_M8_SCAFFOLD_TM}",
+        "-DWARP_M=${_DENSE_MARLIN_M8_SCAFFOLD_WM}",
     ):
         require(new, token, "standalone target", bad)
 

@@ -13,7 +13,10 @@ case "$variant" in
     ;;
   m8)
     source_file="$repo/dev/fold_derivation/l181_standalone_marlin_m8_unit.cu"
-    defs='-DDENSE_MARLIN_WK4_AB=1 -DDENSE_MARLIN_M8_AB=1 -DDENSE_MARLIN_AB=1 -DDENSE_STREAMK_AB=1 -DBENCH_GS=128 -DBENCH_TSK=64 -DDENSE_AB_BITS=4 -DDENSE_AB_ARTIFACT_TK=64 -DDENSE_AB_TM=8 -DDENSE_AB_TN=128 -DDENSE_AB_TK=128 -DDENSE_AB_WM=8 -DDENSE_AB_WN=64 -DDENSE_AB_WARP_K=32 -DDENSE_AB_ST=4 -DDENSE_AB_BC=0 -DTILE_M=8 -DTILE_N=128 -DWARP_M=8 -DWARP_N=64 -DSTAGES=4'
+    # DENSE_AB_* is the real standalone m8 row.  TILE_M/WARP_M only feed
+    # unused legacy vendor helper aliases in the shared benchmark TU; keep
+    # those m16 so the oracle matches the production target's two authorities.
+    defs='-DDENSE_MARLIN_WK4_AB=1 -DDENSE_MARLIN_M8_AB=1 -DDENSE_MARLIN_AB=1 -DDENSE_STREAMK_AB=1 -DBENCH_GS=128 -DBENCH_TSK=64 -DDENSE_AB_BITS=4 -DDENSE_AB_ARTIFACT_TK=64 -DDENSE_AB_TM=8 -DDENSE_AB_TN=128 -DDENSE_AB_TK=128 -DDENSE_AB_WM=8 -DDENSE_AB_WN=64 -DDENSE_AB_WARP_K=32 -DDENSE_AB_ST=4 -DDENSE_AB_BC=0 -DTILE_M=16 -DTILE_N=128 -DWARP_M=16 -DWARP_N=64 -DSTAGES=4'
     expected_accumulator='L169Accumulator=cutlass::gemm::collective::marlin_ppu_detail::MarlinAccumulatorM8PPU'
     expected_tile='TileShape_=cute::tuple<cute::C<8>, cute::C<128>, cute::C<128>>'
     expected_warp='WarpShape_=cute::tuple<cute::C<8>, cute::C<64>, cute::C<32>>'

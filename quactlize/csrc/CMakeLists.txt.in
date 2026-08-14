@@ -749,6 +749,14 @@ target_compile_options(test_lowbit_dense_marlin_wk4_ab PRIVATE -w)
 # dense-M1 row packs its sole A row and consumes it with plain x2.
 set(_DENSE_MARLIN_M8_TM 8)
 set(_DENSE_MARLIN_M8_WM 8)
+# test_lowbit_dense_bench.cu also declares legacy vendor DP/no-scale helper
+# aliases even though this target can only dispatch the standalone Marlin row.
+# That vendor builder is m16-only: feeding its unused scaffolding TILE_M=8 makes
+# cute::shape_div(8,16) dynamic in the PPU front end.  Keep those global helper
+# knobs at their proven m16 values; DENSE_AB_* and the generated X-macro row
+# below remain the sole authority for the real m8 kernel instantiated and run.
+set(_DENSE_MARLIN_M8_SCAFFOLD_TM ${_DENSE_MARLIN_WK4_TM})
+set(_DENSE_MARLIN_M8_SCAFFOLD_WM ${_DENSE_MARLIN_WK4_WM})
 set(_DENSE_MARLIN_M8_FN
   "lowbit_dense_cfg_tm${_DENSE_MARLIN_M8_TM}_tn${_DENSE_MARLIN_WK4_TN}_tk${_DENSE_MARLIN_WK4_TK}_wm${_DENSE_MARLIN_M8_WM}_wn${_DENSE_MARLIN_WK4_WN}_st${_DENSE_MARLIN_WK4_ST}_bc0")
 set(_DENSE_MARLIN_M8_SRC
@@ -775,8 +783,8 @@ set(_DENSE_MARLIN_M8_DEFS
   -DDENSE_AB_TK=${_DENSE_MARLIN_WK4_TK} -DDENSE_AB_WM=${_DENSE_MARLIN_M8_WM}
   -DDENSE_AB_WN=${_DENSE_MARLIN_WK4_WN} -DDENSE_AB_WARP_K=${_DENSE_MARLIN_WK4_WARP_K}
   -DDENSE_AB_ST=${_DENSE_MARLIN_WK4_ST} -DDENSE_AB_BC=0
-  -DTILE_M=${_DENSE_MARLIN_M8_TM} -DTILE_N=${_DENSE_MARLIN_WK4_TN}
-  -DWARP_M=${_DENSE_MARLIN_M8_WM} -DWARP_N=${_DENSE_MARLIN_WK4_WN}
+  -DTILE_M=${_DENSE_MARLIN_M8_SCAFFOLD_TM} -DTILE_N=${_DENSE_MARLIN_WK4_TN}
+  -DWARP_M=${_DENSE_MARLIN_M8_SCAFFOLD_WM} -DWARP_N=${_DENSE_MARLIN_WK4_WN}
   -DSTAGES=${_DENSE_MARLIN_WK4_ST})
 quactlize_ppu_executable(
   test_lowbit_dense_marlin_m8_ab
@@ -793,8 +801,8 @@ target_compile_definitions(test_lowbit_dense_marlin_m8_ab PRIVATE
   DENSE_AB_TK=${_DENSE_MARLIN_WK4_TK} DENSE_AB_WM=${_DENSE_MARLIN_M8_WM}
   DENSE_AB_WN=${_DENSE_MARLIN_WK4_WN} DENSE_AB_WARP_K=${_DENSE_MARLIN_WK4_WARP_K}
   DENSE_AB_ST=${_DENSE_MARLIN_WK4_ST} DENSE_AB_BC=0
-  TILE_M=${_DENSE_MARLIN_M8_TM} TILE_N=${_DENSE_MARLIN_WK4_TN}
-  WARP_M=${_DENSE_MARLIN_M8_WM} WARP_N=${_DENSE_MARLIN_WK4_WN}
+  TILE_M=${_DENSE_MARLIN_M8_SCAFFOLD_TM} TILE_N=${_DENSE_MARLIN_WK4_TN}
+  WARP_M=${_DENSE_MARLIN_M8_SCAFFOLD_WM} WARP_N=${_DENSE_MARLIN_WK4_WN}
   STAGES=${_DENSE_MARLIN_WK4_ST})
 target_compile_options(test_lowbit_dense_marlin_m8_ab PRIVATE -w)
 # Root-cause cross-check is now a RUNTIME flag on this same binary (--xcheck): it runs the grouped kernel (L=1)
