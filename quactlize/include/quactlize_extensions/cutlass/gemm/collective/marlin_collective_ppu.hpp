@@ -40,6 +40,20 @@
 
 namespace cutlass::gemm::collective {
 
+// Same-SHA outer-pipeline footprint experiment for the exact standalone m8
+// target.  Mode 0 is the shipping spelling and remains the default.  Mode 1
+// rolls only the outer `pipe` loop; the register-indexed inner loop stays
+// fully unrolled.  Mode 2 is a compile/disassembly-only causal control that
+// rolls both loops and must violate the <=124-register/no-spill admission
+// criterion before mode 1 is profiled.
+//
+//   PPU_DEFS=PPU_MARLIN_PIPE_ROLL=1 TARGET=test_lowbit_dense_marlin_m8_ab ./build.sh
+#ifndef PPU_MARLIN_PIPE_ROLL
+#define PPU_MARLIN_PIPE_ROLL 0
+#endif
+static_assert(PPU_MARLIN_PIPE_ROLL >= 0 && PPU_MARLIN_PIPE_ROLL <= 2,
+              "PPU_MARLIN_PIPE_ROLL must be 0 (baseline), 1 (outer only), or 2 (outer+inner control)");
+
 namespace marlin_ppu_detail {
 
 CUTLASS_HOST_DEVICE constexpr int ceil_div(int x, int y) {
@@ -84,6 +98,9 @@ class MarlinCollectivePPU {
   static constexpr int WarpOnN = TileN / WarpN;
   static constexpr int WarpOnK = TileK / WarpK;
   static constexpr int Threads = 32 * WarpOnM * WarpOnN * WarpOnK;
+  static constexpr int PipeRollMode = PPU_MARLIN_PIPE_ROLL;
+  static constexpr bool OuterPipeRolled = PipeRollMode != 0;
+  static constexpr bool InnerLoopRolled = PipeRollMode == 2;
   static constexpr int InstructionM =
       TileM == 8 && WarpM == 8 ? 8 : 16;
   // The first m8 target is dense decode M=1.  Its ordinary shared-memory
@@ -533,9 +550,17 @@ class MarlinCollectivePPU {
     a_pointer += AGlobalOuter * (Stages - 1);
 
     while (k_tiles_remaining > 0) {
+#if PPU_MARLIN_PIPE_ROLL == 0
       #pragma unroll
+#else
+      #pragma unroll 1
+#endif
       for (int pipe = 0; pipe < Stages;) {
+#if PPU_MARLIN_PIPE_ROLL == 2
+        #pragma unroll 1
+#else
         #pragma unroll
+#endif
         for (int inner = 0; inner < BInnerIters; ++inner) {
           load_registers(inner + 1, pipe % Stages);
           if (inner == BInnerIters - 2) {

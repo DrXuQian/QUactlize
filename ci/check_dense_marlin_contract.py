@@ -110,7 +110,13 @@ CHECKS = (
             "QUACTLIZE_L169_OUT=/workspace/quactlize-l169-m8-contract "
             "bash dev/fold_derivation/run_l169_standalone_marlin_unit.sh",
         ),
-        "[l169] PASS: variant=m8 generated wrapper reaches standalone Marlin kernel + collective device bodies",
+        "[l169] PASS: variant=m8 pipe_roll=0 generated wrapper reaches standalone Marlin kernel + collective device bodies",
+    ),
+    (
+        "pipe-roll-experiment",
+        (sys.executable, "ci/check_l182_marlin_pipe_roll.py"),
+        "[l182:local] PASS: default/outer-only/inner-control routes reach the exact m8 device body; "
+        "negative_controls=14/14_RED mixed-range=PASS; PPU static footprint/register/spill remains a mandatory box compile-only postcondition",
     ),
     (
         "ppu-admission-boundary",

@@ -45,6 +45,9 @@ static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
                 "standalone m8/m16 must be 1M x 2N x 4K = 8 warps with a 64-thread output cohort");
   static_assert(Kernel::InstructionM == TM,
                 "the compiled PPU instruction M must match the tactic M atom");
+  static_assert(Kernel::CollectiveMainloop::PipeRollMode ==
+                    PPU_MARLIN_PIPE_ROLL,
+                "the generated standalone unit must carry the requested pipe-roll mode");
   static_assert(Kernel::IsStandaloneMarlin,
                 "the classic-aligned row must instantiate the standalone Marlin kernel");
   static_assert(std::is_same_v<typename Kernel::CollectiveMainloop,

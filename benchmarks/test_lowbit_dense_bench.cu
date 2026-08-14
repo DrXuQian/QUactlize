@@ -116,6 +116,11 @@ using namespace cute;
 #define DENSE_NAMED_SCHEDULER 1
 #endif
 
+#if PPU_MARLIN_PIPE_ROLL != 0 && \
+    (!defined(DENSE_MARLIN_WK4_AB) || !defined(DENSE_MARLIN_M8_AB))
+#error "PPU_MARLIN_PIPE_ROLL is scoped to the exact standalone Marlin target"
+#endif
+
 
 // This is just an example, so we use a regular enum so we can compare directly to the command-line int.
 enum GemmMode {
@@ -3105,8 +3110,12 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
       result.passed = true;
       std::printf(
           "  [dense marlin ACU subject-only] instruction=m%dn16k16 "
-          "blocks_per_cu=%d subject_launches=1 device_reference=0 lock_fingerprints=0\n",
-          Gemm::GemmKernel::InstructionM, options.marlin_blocks_per_cu);
+          "blocks_per_cu=%d pipe_roll=%d outer_pipe_rolled=%d inner_loop_rolled=%d "
+          "subject_launches=1 device_reference=0 lock_fingerprints=0\n",
+          Gemm::GemmKernel::InstructionM, options.marlin_blocks_per_cu,
+          Gemm::CollectiveMainloop::PipeRollMode,
+          int(Gemm::CollectiveMainloop::OuterPipeRolled),
+          int(Gemm::CollectiveMainloop::InnerLoopRolled));
       return result;
     }
     else {
