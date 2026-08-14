@@ -20,6 +20,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 L169 = ROOT / "dev/fold_derivation/l169_standalone_marlin_unit.cu"
+BUILD = ROOT / "build.sh"
+ROOT_CMAKE = ROOT / "CMakeLists.txt"
+PPU_CMAKE = ROOT / "quactlize/csrc/CMakeLists.txt"
 CMAKE = ROOT / "quactlize/csrc/CMakeLists.txt.in"
 UNIT = ROOT / "benchmarks/lowbit_dense_unit.inc"
 BENCH = ROOT / "benchmarks/test_lowbit_dense_bench.cu"
@@ -44,8 +47,13 @@ SCHEDULER = KERNEL.with_name("marlin_scheduler_ppu.hpp")
 EXPECTED_FN = "lowbit_dense_cfg_tm16_tn128_tk128_wm16_wn64_st4_bc0"
 EXPECTED_ROW = (16, 128, 128, 16, 64, 4, 0)
 AUTHORITY = (
-    L169, CMAKE, UNIT, BENCH, COLLECTIVE, LOAD, DEQUANT, MMA,
+    L169, BUILD, ROOT_CMAKE, PPU_CMAKE, CMAKE, UNIT, BENCH,
+    COLLECTIVE, LOAD, DEQUANT, MMA,
     KERNEL, OUTPUT_MAP, HANDLE, SCHEDULER,
+)
+SUBMODULE_AUTHORITY = (
+    ROOT / "third_party/actlize",
+    ROOT / "third_party/cutlass",
 )
 
 
@@ -68,6 +76,43 @@ def read_all() -> dict[Path, str]:
             result[path] = path.read_text(encoding="utf-8")
         except OSError as exc:
             raise ContractError(f"cannot read {rel(path)}: {exc}") from exc
+    return result
+
+
+def run_git(*args: str, cwd: Path = ROOT) -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(cwd), *args], text=True,
+            stderr=subprocess.STDOUT,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = getattr(exc, "output", "") or str(exc)
+        raise ContractError(
+            f"git {' '.join(args)} failed under {cwd}: {detail.strip()}"
+        ) from exc
+
+
+def submodule_authority() -> dict[str, str]:
+    """Bind vendor headers to clean worktrees at the result-SHA gitlinks."""
+    result: dict[str, str] = {}
+    for path in SUBMODULE_AUTHORITY:
+        relative = rel(path)
+        tree = run_git("ls-tree", "HEAD", "--", relative)
+        match = re.fullmatch(
+            rf"160000 commit ([0-9a-f]{{40}})\t{re.escape(relative)}", tree
+        )
+        if match is None:
+            raise ContractError(f"{relative}: result SHA has no unique gitlink: {tree!r}")
+        expected = match.group(1)
+        actual = run_git("rev-parse", "HEAD", cwd=path)
+        if actual != expected:
+            raise ContractError(
+                f"{relative}: checkout {actual} differs from gitlink {expected}"
+            )
+        dirty = run_git("status", "--porcelain=v1", "--untracked-files=all", cwd=path)
+        if dirty:
+            raise ContractError(f"{relative}: vendor worktree is dirty: {dirty!r}")
+        result[relative] = actual
     return result
 
 
@@ -273,12 +318,8 @@ def validate(texts: dict[Path, str], generated: Path | None) -> dict[str, object
             "bytes": len(data),
         }
 
-    try:
-        git_sha = subprocess.check_output(
-            ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True
-        ).strip()
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise ContractError(f"cannot resolve repository SHA: {exc}") from exc
+    git_sha = run_git("rev-parse", "HEAD")
+    submodules = submodule_authority()
     files = {
         rel(path): {
             "sha256": digest(texts[path].encode()),
@@ -289,6 +330,7 @@ def validate(texts: dict[Path, str], generated: Path | None) -> dict[str, object
     return {
         "schema": "quactlize.l176.standalone-marlin-source.v1",
         "git_sha": git_sha,
+        "submodules": submodules,
         "generated_row": {
             "function": EXPECTED_FN,
             "tile": [16, 128, 128],

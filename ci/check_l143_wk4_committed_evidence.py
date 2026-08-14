@@ -8,6 +8,7 @@ format, pipeline cadence, generated standalone type and scheduler lifecycle.
 """
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 import subprocess
 
@@ -25,7 +26,7 @@ REQUIRED_LINES = (
     "[l170:runner] positive=PASS negative_controls=7/7_RED result=PASS",
     "[dense-marlin-wk4] PASS: standalone format/collective/scheduler/kernel wired; "
     "standalone tactic authority consumed; generic WK4 compatibility absent; "
-    "eleven structural plants rejected",
+    "thirteen structural plants rejected",
     "[classic-156] PASS: exact one-launch shape, source/tool/binary identity and full ACU capture "
     "are fail-closed",
     "[l143] PASS: standalone Marlin format + cadence + generated type + scheduler lifecycle; "
@@ -41,19 +42,29 @@ RETIRED_CLAIMS = (
 
 
 def main() -> int:
-    proc = subprocess.run(
-        ["bash", str(RUNNER)], cwd=ROOT, text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-    )
-    if proc.returncode:
-        print(f"[l143-committed] FAIL: aggregate rc={proc.returncode}\n{proc.stdout}")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--committed-only", action="store_true")
+    parser.add_argument("--evidence", type=Path, default=EXPECTED)
+    args = parser.parse_args()
+
+    try:
+        expected = args.evidence.read_text()
+    except OSError as exc:
+        print(f"[l143-committed] FAIL: cannot read evidence: {exc}")
         return 1
 
-    expected = EXPECTED.read_text()
-    if proc.stdout != expected:
-        print("[l143-committed] FAIL: regenerated standalone evidence differs from result SHA")
-        print(proc.stdout, end="")
-        return 1
+    if not args.committed_only:
+        proc = subprocess.run(
+            ["bash", str(RUNNER)], cwd=ROOT, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        if proc.returncode:
+            print(f"[l143-committed] FAIL: aggregate rc={proc.returncode}\n{proc.stdout}")
+            return 1
+        if proc.stdout != expected:
+            print("[l143-committed] FAIL: regenerated standalone evidence differs from result SHA")
+            print(proc.stdout, end="")
+            return 1
 
     if tuple(expected.splitlines()) != REQUIRED_LINES:
         print("[l143-committed] FAIL: evidence is not the exact seven-line standalone contract")
@@ -63,17 +74,18 @@ def main() -> int:
         return 1
 
     # The aggregate is only an evidence compositor.  Its component gates own
-    # 3 + 7 + 11 independent red controls, printed in the committed lines
+    # 3 + 7 + 13 independent red controls, printed in the committed lines
     # above.  Require those counts literally so a future rewrite cannot turn a
     # missing negative arm into an unchanged-looking PASS sentence.
     for token in ("negative_controls=3/3_RED", "negative_controls=7/7_RED",
-                  "eleven structural plants rejected"):
+                  "thirteen structural plants rejected"):
         if expected.count(token) != 1:
             print(f"[l143-committed] FAIL: negative-control closure drifted: {token}")
             return 1
 
     print(
-        "[l143-committed] PASS: exact seven-line standalone evidence regenerated; "
+        "[l143-committed] PASS: exact seven-line standalone evidence "
+        f"{'validated' if args.committed_only else 'regenerated'}; "
         "format/cadence/type/scheduler/isolation negative controls remain closed"
     )
     return 0

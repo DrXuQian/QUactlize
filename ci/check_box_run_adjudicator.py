@@ -176,7 +176,7 @@ def rewrite_provenance_commands(root: pathlib.Path, mutate) -> None:
 STANDALONE_STATIC_PASS = (
     "[dense-marlin-wk4] PASS: standalone format/collective/scheduler/kernel wired; "
     "standalone tactic authority consumed; generic WK4 compatibility absent; "
-    "eleven structural plants rejected"
+    "thirteen structural plants rejected"
 )
 STANDALONE_EVIDENCE = (
     ROOT / "dev/fold_derivation/l143_standalone_marlin.expected.txt"

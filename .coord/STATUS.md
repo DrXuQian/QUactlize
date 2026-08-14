@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-13 14:43:22 UTC
+    updated-at:     2026-08-14 01:13:08 UTC
     inbox-consumed: 166
-    working-on:     standalone Marlin-Cute alignment: local scheduler/state lifetime is closed; next compare the exact shipping PPU symbol against classic for opcode/register/spill parity
-    blocked-on:     PPU opcode/register/spill parity requires real hgcc+hgobjdump; local L176 explicitly SKIPs that postcondition rather than using nvcc/fake SDK
-    local-gates:    L180 public-Params=40B/device-state=16B, 262144 schedules and 14334629 segment descriptors exact-equal, 7/7 plants RED; composed standalone gate and L176-local PASS, PPU explicit SKIP
-    last-commit:    Compact standalone Marlin device traversal state
-    last-heartbeat: 299
+    working-on:     L176 box boundary closed: ppu10 consumes result-SHA local evidence, then independently builds/links/disassembles the exact shipping target with SDK-owned tools; checkpointing for rerun
+    blocked-on:     PPU opcode/register/spill parity requires the user's real hgcc+hgobjdump rerun; local CUDA/stub oracles are intentionally not executable on the box mixed frontend
+    local-gates:    L143 evidence exact; L176 local PASS; composed dense-Marlin contract PASS; PPU boundary 7/7 plants RED; build/CMake + actlize/cutlass authority and override-free SDK tools sealed
+    last-commit:    Separate local Marlin admission from PPU codegen
+    last-heartbeat: 301

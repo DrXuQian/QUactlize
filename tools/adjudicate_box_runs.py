@@ -62,7 +62,7 @@ STANDALONE_EVIDENCE_LINES = (
     "[l170:runner] positive=PASS negative_controls=7/7_RED result=PASS",
     "[dense-marlin-wk4] PASS: standalone format/collective/scheduler/kernel wired; "
     "standalone tactic authority consumed; generic WK4 compatibility absent; "
-    "eleven structural plants rejected",
+    "thirteen structural plants rejected",
     "[classic-156] PASS: exact one-launch shape, source/tool/binary identity and full ACU capture "
     "are fail-closed",
     "[l143] PASS: standalone Marlin format + cadence + generated type + scheduler lifecycle; "

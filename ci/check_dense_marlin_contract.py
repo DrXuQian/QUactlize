@@ -93,6 +93,13 @@ CHECKS = (
         "negative_controls=7/7_RED result=PASS",
     ),
     (
+        "ppu-admission-boundary",
+        (sys.executable, "ci/check_l176_ppu_admission_boundary.py"),
+        "[l176-boundary] PASS: local L169/L174/L175 execute only in local mode; "
+        "PPU mode consumes result-SHA evidence before an override-free SDK-owned "
+        "hgcc/hgobjdump build; negative_controls=7/7_RED",
+    ),
+    (
         "stack",
         (sys.executable, "ci/check_dense_marlin_wk4_target.py"),
         "generic WK4 compatibility absent;",

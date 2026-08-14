@@ -38,7 +38,9 @@ REPORT="$HERE/l176_standalone_marlin_codegen_report.py"
 RUN169="$HERE/run_l169_standalone_marlin_unit.sh"
 RUN174="$HERE/run_l174_marlin_compute_contract.sh"
 RUN175="$HERE/run_l175_native_fragment_contract.sh"
-for path in "$SOURCE" "$REPORT" "$RUN169" "$RUN174" "$RUN175"; do
+COMMITTED_CHECK="$ROOT/ci/check_l143_wk4_committed_evidence.py"
+COMMITTED_EVIDENCE_REL=dev/fold_derivation/l143_standalone_marlin.expected.txt
+for path in "$SOURCE" "$REPORT" "$RUN169" "$RUN174" "$RUN175" "$COMMITTED_CHECK"; do
   [[ -f "$path" ]] || { echo "[l176] FAIL: missing $path" >&2; exit 1; }
 done
 
@@ -52,9 +54,6 @@ cleanup() {
 trap cleanup EXIT
 
 python3 "$SOURCE" --output "$tmp/source.json"
-bash "$RUN169"
-bash "$RUN174"
-bash "$RUN175"
 for plant in generated-row generic-wrapper runtime-nblock flat-accumulator; do
   set +e
   python3 "$SOURCE" --plant "$plant" >"$tmp/$plant.log" 2>&1
@@ -67,7 +66,27 @@ for plant in generated-row generic-wrapper runtime-nblock flat-accumulator; do
     exit 1
   }
 done
-echo '[l176:local] PASS: exact generated route/source hashes/cadence/native fragment; 4/4 causal controls RED'
+
+if [[ "$MODE" == local ]]; then
+  bash "$RUN169"
+  bash "$RUN174"
+  bash "$RUN175"
+  echo '[l176:local] PASS: exact generated route/source hashes/cadence/native fragment; 4/4 causal controls RED'
+else
+  # L169/L174/L175 are local compile-time facts.  The PPU box's nvcc delegates
+  # device preprocessing to ppu_clang++ and cannot compile their NVIDIA/stub
+  # fixture (hggc_fp8.h/GCC13 are known incompatible seams).  Consume the
+  # exact evidence committed at the result SHA; do not turn a non-executable
+  # host oracle into a fresh box PASS.  The real generated unit is still built,
+  # linked and disassembled below with hgcc/hgobjdump.
+  committed="$tmp/l143-committed-evidence.txt"
+  git -C "$ROOT" show "HEAD:$COMMITTED_EVIDENCE_REL" >"$committed" || {
+    echo '[l176:ppu] FAIL: result SHA lacks committed standalone admission evidence' >&2
+    exit 1
+  }
+  python3 "$COMMITTED_CHECK" --committed-only --evidence "$committed"
+  echo "[l176:ppu-admission] PASS: local compile oracles consumed from result SHA $(git -C "$ROOT" rev-parse HEAD); fresh-box-execution=0"
+fi
 
 resolve_executable() {
   local candidate="$1"
@@ -124,6 +143,22 @@ sdk_hgcc="$(resolve_executable "$sdk_root/bin/hgcc" || true)"
   echo "[l176:ppu] FAIL: hgcc '$hgcc' is not owned by SDK '$sdk_root'" >&2
   exit 1
 }
+sdk_hgobjdump="$(resolve_executable "$sdk_root/bin/hgobjdump" || true)"
+[[ -n "$sdk_hgobjdump" && "$sdk_hgobjdump" == "$hgobjdump" ]] || {
+  echo "[l176:ppu] FAIL: hgobjdump '$hgobjdump' is not owned by SDK '$sdk_root'" >&2
+  exit 1
+}
+hgobjdump_identity="$($hgobjdump --version 2>&1 | head -n 1 || true)"
+[[ -n "$hgobjdump_identity" && "$hgobjdump_identity" != *stub* ]] || {
+  echo "[l176:ppu] FAIL: hgobjdump identity is empty or a stub: ${hgobjdump_identity:-<none>}" >&2
+  exit 1
+}
+hgcc_sha256="$(sha256sum "$hgcc" | awk '{print $1}')"
+hgobjdump_sha256="$(sha256sum "$hgobjdump" | awk '{print $1}')"
+[[ "$hgcc_sha256" =~ ^[0-9a-f]{64}$ && "$hgobjdump_sha256" =~ ^[0-9a-f]{64}$ ]] || {
+  echo '[l176:ppu] FAIL: SDK tool hashes are not canonical SHA-256 values' >&2
+  exit 1
+}
 help_text="$($hgobjdump -h 2>&1 || true)"
 grep -Eq -- '(^|[[:space:],])-isa([,[:space:]]|$)|--dump-isa' <<<"$help_text" || {
   echo "[l176:ppu] SKIP: $hgobjdump has no ISA disassembly mode"; exit 3;
@@ -153,15 +188,29 @@ data = json.load(open(sys.argv[1]))
 print(*data["source_files"].keys(), sep="\n")
 PY
 )
-dirty="$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all -- "${source_paths[@]}" || true)"
+if ! dirty="$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all -- "${source_paths[@]}")"; then
+  echo '[l176:ppu] FAIL: git could not establish source-authority cleanliness' >&2
+  exit 1
+fi
 if [[ -n "$dirty" ]]; then
   echo '[l176:ppu] FAIL: a source that owns the exact symbol differs from HEAD:' >&2
   printf '%s\n' "$dirty" >&2
   exit 1
 fi
 
-env PPU_SDK="$sdk_root" PPU_BUILD_DIR="$build" PPU_ARCHS=ppu0010 \
-  TARGET=test_lowbit_dense_marlin_wk4_ab JOBS=1 "$ROOT/build.sh" \
+# This is an exact codegen probe, not a tuning entry point.  Neutralize every
+# public build override that can add flags or select a second configuration;
+# otherwise PPU_DEFS/CFLAGS from an operator shell can produce a binary that
+# still contains all required tokens but is not the result-SHA target.
+env -u CMAKE_GENERATOR -u CMAKE_TOOLCHAIN_FILE -u CC -u CXX \
+  PPU_SDK="$sdk_root" PPU_HOME= PPU_SDK_SITE_DEFAULT= \
+  PPU_BUILD_DIR="$build" PPU_ARCHS=ppu0010 \
+  TARGET=test_lowbit_dense_marlin_wk4_ab JOBS=1 \
+  PPU_DEFS= PPU_EXTRA_DEFS= CFLAGS= CXXFLAGS= CPPFLAGS= LDFLAGS= \
+  TILE_M=16 TILE_N=128 WARP_M=16 WARP_N=64 STAGES=4 \
+  QUANT=int4 TSK=64 BENCH_GS=128 LOWBIT_DENSE_CONFIGS_PER_UNIT=1 \
+  MOE_FORMATS= MOE_TM_LIST= MOE_TN_LIST= MOE_WM_LIST= MOE_STAGES= \
+  MOE_CORES= GEMV_GROUPS= "$ROOT/build.sh" \
   >"$OUTPUT/build.log" 2>&1 || {
     first="$(grep -m1 -E 'fatal error:|error:|CMake Error|\[FAIL\]' "$OUTPUT/build.log" || tail -n 1 "$OUTPUT/build.log")"
     echo "[l176:ppu] FAIL: exact shipping target did not build: $first" >&2
@@ -189,14 +238,27 @@ arches = [x for x in tokens if x.startswith("-arch=")]
 if arches != ["-arch=ppu_10"]:
     raise SystemExit(f"L176 command audit: arch flags are {arches}")
 required = {
-    "-DDENSE_MARLIN_WK4_AB=1", "-DBENCH_GS=128",
+    "-DDENSE_MARLIN_WK4_AB=1", "-DDENSE_MARLIN_AB=1",
+    "-DDENSE_STREAMK_AB=1", "-DBENCH_GS=128", "-DBENCH_TSK=64",
+    "-DDENSE_AB_BITS=4", "-DDENSE_AB_ARTIFACT_TK=64",
     "-DDENSE_AB_TM=16", "-DDENSE_AB_TN=128", "-DDENSE_AB_TK=128",
     "-DDENSE_AB_WM=16", "-DDENSE_AB_WN=64", "-DDENSE_AB_WARP_K=32",
     "-DDENSE_AB_ST=4", "-DDENSE_AB_BC=0",
+    "-DTILE_M=16", "-DTILE_N=128", "-DWARP_M=16", "-DWARP_N=64",
+    "-DSTAGES=4",
 }
 missing = sorted(required - set(tokens))
 if missing:
     raise SystemExit("L176 command audit: missing " + ",".join(missing))
+wrong_count = sorted(token for token in required if tokens.count(token) != 1)
+if wrong_count:
+    raise SystemExit("L176 command audit: exact defines are not unique: " + ",".join(wrong_count))
+keys = {token.split("=", 1)[0] for token in required}
+conflicts = sorted({token for token in tokens
+                    if token.startswith("-D") and token.split("=", 1)[0] in keys
+                    and token not in required})
+if conflicts:
+    raise SystemExit("L176 command audit: conflicting exact defines: " + ",".join(conflicts))
 print(lines[0])
 PY
 
@@ -249,7 +311,10 @@ cmp "$OUTPUT/source.before.json" "$OUTPUT/source.after.json" || {
   echo "binary_sha256=$(sha256sum "$bin" | awk '{print $1}')"
   echo "hgcc=$hgcc"
   echo "hgcc_identity=$compiler_identity"
+  echo "hgcc_sha256=$hgcc_sha256"
   echo "hgobjdump=$hgobjdump"
+  echo "hgobjdump_identity=$hgobjdump_identity"
+  echo "hgobjdump_sha256=$hgobjdump_sha256"
   echo 'arch=-arch=ppu_10'
   echo "symbol=$symbol"
   echo 'executed_device_code=0'
