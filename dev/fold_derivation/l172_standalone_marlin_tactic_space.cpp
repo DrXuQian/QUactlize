@@ -15,7 +15,7 @@ namespace {
 enum class Plant {
   None,
   DropLoadAxis,
-  AdmitStage3,
+  DropStage5,
   CollapseWarpK,
   BroadenClassicWarpK,
 };
@@ -23,7 +23,7 @@ enum class Plant {
 Plant parse_plant(char const* text) {
   if (text == nullptr || *text == '\0') return Plant::None;
   if (!std::strcmp(text, "drop-load-axis")) return Plant::DropLoadAxis;
-  if (!std::strcmp(text, "admit-stage3")) return Plant::AdmitStage3;
+  if (!std::strcmp(text, "drop-stage5")) return Plant::DropStage5;
   if (!std::strcmp(text, "collapse-warp-k")) return Plant::CollapseWarpK;
   if (!std::strcmp(text, "broaden-classic-warp-k"))
     return Plant::BroadenClassicWarpK;
@@ -34,7 +34,7 @@ char const* plant_name(Plant plant) {
   switch (plant) {
     case Plant::None: return "none";
     case Plant::DropLoadAxis: return "drop-load-axis";
-    case Plant::AdmitStage3: return "admit-stage3";
+    case Plant::DropStage5: return "drop-stage5";
     case Plant::CollapseWarpK: return "collapse-warp-k";
     case Plant::BroadenClassicWarpK: return "broaden-classic-warp-k";
   }
@@ -115,11 +115,9 @@ int main(int argc, char** argv) {
     mt::MarlinTacticPPU classified = original;
     if (plant == Plant::CollapseWarpK) classified.warp_k = 32;
     auto exclusion = mt::classify(classified);
-    if (plant == Plant::AdmitStage3 &&
-        original == mt::MarlinTacticPPU{
-                        16, 128, 128, 16, 64, 32, 3,
-                        mt::MarlinLoadKindPPU::CpAsync}) {
-      exclusion = mt::MarlinTacticExclusionPPU::None;
+    if (plant == Plant::DropStage5 && original.stages == 5 &&
+        exclusion == mt::MarlinTacticExclusionPPU::None) {
+      exclusion = mt::MarlinTacticExclusionPPU::PipelineDepthUnproved;
     }
     ++reasons[static_cast<std::size_t>(exclusion)];
     ++kinds[static_cast<std::size_t>(mt::exclusion_kind(exclusion))];
@@ -172,12 +170,13 @@ int main(int argc, char** argv) {
     return fail(plant, "first-failure census does not close");
   if (classic != 60)
     return fail(plant, "classic subspace is not the independent 5x3x4 relation");
-  if (admitted != 2 || !saw_m8 || !saw_m16)
-    return fail(plant, "admission is not exactly the proved paired m8/m16 family");
+  if (admitted != 10 || !saw_m8 || !saw_m16)
+    return fail(plant,
+                "admission is not exactly the proved m8/m16 x s2..s6 family");
   if (admitted_tm.size() != 2 || admitted_tn.size() != 1 ||
       admitted_tk.size() != 1 || admitted_wm.size() != 2 ||
       admitted_wn.size() != 1 || admitted_warp_k.size() != 1 ||
-      admitted_stages.size() != 1 || admitted_loads.size() != 1)
+      admitted_stages.size() != 5 || admitted_loads.size() != 1)
     return fail(plant, "an unproved standalone axis became active");
 
   // Both broad categories must be populated.  A zero bucket here would mean
@@ -203,6 +202,6 @@ int main(int argc, char** argv) {
       static_cast<unsigned long long>(kinds[3]));
   std::puts(
       "[l172] axes: TM=5 TN=3 TK=4 WM=5 WN=4 WarpK=5 stages=5 load=2; "
-      "active-cardinality=2/1/1/2/1/1/1/1 family=m8,m16");
+      "active-cardinality=2/1/1/2/1/1/5/1 family=m8,m16 stages=s2..s6");
   return 0;
 }

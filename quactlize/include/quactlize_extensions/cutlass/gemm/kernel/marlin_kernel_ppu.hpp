@@ -64,6 +64,7 @@ class MarlinKernelPPU {
 
   static constexpr uint32_t MaxThreadsPerBlock = CollectiveMainloop::Threads;
   static constexpr int InstructionM = CollectiveMainloop::InstructionM;
+  static constexpr int Stages = CollectiveMainloop::Stages;
   // Match classic's __launch_bounds__(256,2).  This is a minimum-residency
   // code-generation request, not a maximum launch grid.  Packed m8 consumes
   // 34,816 B/CTA and the exact kernel occupancy API reports three CTA/CU;
@@ -105,8 +106,12 @@ class MarlinKernelPPU {
   };
   static constexpr int SharedStorageSize = sizeof(SharedStorage);
   static_assert(
-      SharedStorageSize == (InstructionM == 8 ? 34816 : 50176),
-      "standalone Marlin shared ledger drifted from packed-m8/classic-m16");
+      SharedStorageSize == sizeof(typename CollectiveMainloop::SharedStorage),
+      "the cooperative union must not inflate the mainloop's stage ledger");
+  static_assert(
+      Stages != 4 ||
+          SharedStorageSize == (InstructionM == 8 ? 34816 : 50176),
+      "the shipping s4 shared ledger must remain byte-identical");
 
   struct Arguments {
     GemmUniversalMode mode{};

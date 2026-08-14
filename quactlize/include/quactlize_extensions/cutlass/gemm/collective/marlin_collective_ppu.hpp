@@ -10,13 +10,14 @@
  *
  * The first admitted family is the decode reference point
  *   Tile={8,16}x128x128, Warp={8,16}x64x32, 1M x 2N x 4K,
- *   256 threads, Stages=4, W4 gs128.
+ *   256 threads, Stages={2,3,4,5,6}, W4 gs128.
  * The template surface is retained so proven shapes can later become sweep axes.  Until each one has
  * a byte-map and instruction-cadence oracle it fails at compile time instead of silently selecting a
  * generic fallback.
  **************************************************************************************************/
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <type_traits>
@@ -119,8 +120,9 @@ class MarlinCollectivePPU {
                 "first Marlin m8/m16 family keeps the classic N/K tile");
   static_assert(WarpM == TileM && WarpN == 64 && WarpK == 32,
                 "first Marlin m8/m16 family is 1M x 2N x 4K");
-  static_assert(Stages == 4 && GroupSize == 128 && Threads == 256,
-                "the first Marlin PPU baseline is s4, gs128 and 256 threads");
+  static_assert(Stages >= 2 && Stages <= 6 &&
+                    GroupSize == 128 && Threads == 256,
+                "standalone Marlin admits the proved s2..s6 ring, gs128 and 256 threads");
 
   using MmaAtom = std::conditional_t<
       InstructionM == 8,
@@ -164,8 +166,15 @@ class MarlinCollectivePPU {
         Stages * (ASharedStage + BSharedStage + ScaleSharedStage)];
   };
   static_assert(
-      sizeof(SharedStorage) == (InstructionM == 8 ? 34816 : 50176),
-      "standalone m8 must pack one decode A row; m16 keeps the classic ledger");
+      sizeof(SharedStorage) ==
+          std::size_t(Stages) *
+              std::size_t(ASharedStage + BSharedStage + ScaleSharedStage) *
+              sizeof(marlin_ppu_detail::Vector128),
+      "standalone shared storage must scale exactly with the pipeline depth");
+  static_assert(
+      Stages != 4 ||
+          sizeof(SharedStorage) == (InstructionM == 8 ? 34816 : 50176),
+      "the shipping s4 shared ledger must remain byte-identical");
 
   struct Arguments {
     ElementA const* ptr_A = nullptr;

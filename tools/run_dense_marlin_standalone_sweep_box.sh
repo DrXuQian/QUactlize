@@ -46,8 +46,14 @@ printf '\n' >>"$OUT/list.command"
 "${LIST[@]}" 2>&1 | tee "$OUT/list.log"
 grep -Fq 'scheduler=standalone-marlin' "$OUT/list.log" || \
   fail 'binary did not identify the standalone-Marlin table'
+grep -Fq 'rows=10' "$OUT/list.log" || \
+  fail 'binary did not expose the ten admitted TM x stage rows'
 grep -Fq 'warp 8x64x32' "$OUT/list.log" || fail 'm8/WarpK32 row is missing'
 grep -Fq 'warp 16x64x32' "$OUT/list.log" || fail 'm16/WarpK32 row is missing'
+for stages in 2 3 4 5 6; do
+  grep -Fq "stages $stages" "$OUT/list.log" || \
+    fail "the admitted stage-$stages row is missing"
+done
 
 # Run each occupancy point as its own experiment.  In particular, never append
 # BPC2 records to the BPC1 JSONL: a downstream analyser must not be able to
@@ -120,7 +126,7 @@ run_sweep 2
   printf 'root_sha=%s\n' "$ROOT_SHA"
   printf 'target=%s\n' "$TARGET"
   printf 'shape=M1,N4096,K4096,L1,gs128\n'
-  printf 'scope=admitted-m8-m16,TN128,TK128,WN64,WarpK32,S4\n'
+  printf 'scope=admitted-m8-m16,TN128,TK128,WN64,WarpK32,S2-S6\n'
   printf 'blocks_per_cu=1,2\nrepetitions=%s\n' "$REPS"
   printf 'binary=%s\n' "$BIN"
 } >"$OUT/manifest.txt"

@@ -37,19 +37,19 @@ authority = Path(sys.argv[1]).read_text()
 out = Path(sys.argv[2])
 rows = [line for line in authority.splitlines(keepends=True)
         if line.startswith("  X(")]
-if len(rows) != 2:
+if len(rows) != 10:
     raise SystemExit(
-        f"[l172:header] FAIL: expected two authority rows, found {len(rows)}")
+        f"[l172:header] FAIL: expected ten authority rows, found {len(rows)}")
 
 missing = authority.replace(
-    "#define MARLIN_STANDALONE_CFG_ROWS 2",
-    "#define MARLIN_STANDALONE_CFG_ROWS 1",
+    "#define MARLIN_STANDALONE_CFG_ROWS 10",
+    "#define MARLIN_STANDALONE_CFG_ROWS 9",
     1,
 ).replace(rows[0], "", 1)
 extra_row = rows[-1].rstrip("\n") + " \\\n"
 extra = authority.replace(
-    "#define MARLIN_STANDALONE_CFG_ROWS 2",
-    "#define MARLIN_STANDALONE_CFG_ROWS 3",
+    "#define MARLIN_STANDALONE_CFG_ROWS 10",
+    "#define MARLIN_STANDALONE_CFG_ROWS 11",
     1,
 ).replace(rows[-1], extra_row + rows[-1], 1)
 
@@ -62,7 +62,7 @@ for name, candidate in plants.items():
     print(f"[l172:header:red] plant={name} caught=1 result=RED")
 PY
 
-plants=(drop-load-axis admit-stage3 collapse-warp-k broaden-classic-warp-k)
+plants=(drop-load-axis drop-stage5 collapse-warp-k broaden-classic-warp-k)
 for plant in "${plants[@]}"; do
   log="$out/plant-${plant}.log"
   set +e

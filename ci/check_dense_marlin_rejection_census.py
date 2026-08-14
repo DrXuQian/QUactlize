@@ -64,29 +64,31 @@ def main() -> int:
         for name, count in re.findall(r"^reason\.([A-Z0-9_]+)=(\d+)$", census, re.M)
     }
     bad: list[str] = []
-    if not header or tuple(map(int, header.groups())) != (60000, 2, 60):
-        bad.append("schema/cardinality is not declared=60000 admitted=2 classic=60")
+    if not header or tuple(map(int, header.groups())) != (60000, 10, 60):
+        bad.append("schema/cardinality is not declared=60000 admitted=10 classic=60")
     if not kind_line:
         bad.append("missing four-way exclusion-kind census")
         kinds = ()
     else:
         kinds = tuple(map(int, kind_line.groups()))
-        if sum(kinds) != 60000 or kinds[0] != 2:
+        if sum(kinds) != 60000 or kinds[0] != 10:
             bad.append(f"kind census does not close: {kinds}")
         if any(value == 0 for value in kinds[1:]):
             bad.append(f"one named rejection class is empty: {kinds}")
-    if sum(reasons.values()) != 60000 or reasons.get("NONE") != 2:
+    if sum(reasons.values()) != 60000 or reasons.get("NONE") != 10:
         bad.append(
             f"first-failure reason census does not close: sum={sum(reasons.values())} "
             f"NONE={reasons.get('NONE')}"
         )
     expected_rows = {
-        "8,128,128,8,64,32,4,cp_async",
-        "16,128,128,16,64,32,4,cp_async",
+        f"{tm},128,128,{tm},64,32,{stages},cp_async"
+        for tm in (8, 16)
+        for stages in range(2, 7)
     }
     if admitted_rows != expected_rows:
         bad.append(f"admitted rows differ: {sorted(admitted_rows)}")
-    if "negative_controls=4/4_RED emitter=PASS result=PASS" not in run.stdout:
+    if "negative_controls=4/4_RED emitter=PASS header=BYTE_IDENTICAL " \
+            "header_negative_controls=2/2_RED result=PASS" not in run.stdout:
         bad.append("L172 causal controls did not all turn red")
 
     if bad:
@@ -100,7 +102,7 @@ def main() -> int:
     print("[dense-marlin-rejection-census] reasons: " + nonzero_reasons)
     print(
         "[dense-marlin-rejection-census] PASS: standalone declared=60000 "
-        f"admitted=2 rejected=59998 grouped={{hardware:{kinds[1]},"
+        f"admitted=10 rejected=59990 grouped={{hardware:{kinds[1]},"
         f"resource:{kinds[2]},current:{kinds[3]}}}; first-failure sum exact; "
         "generic-A2-4790=PRE_STANDALONE_NOT_EVIDENCE"
     )

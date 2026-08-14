@@ -129,6 +129,13 @@ def audit(files: dict[str, str]) -> list[str]:
     standalone_arm = unit.split("#if defined(DENSE_MARLIN_WK4_AB)", 1)[-1].split(
         "#else", 1
     )[0]
+    require(
+        standalone_arm,
+        "using StandaloneCfg = StandaloneMarlinCfg<\n"
+        "      GroupSize, TM, TN, TK, WM, WN, ST, DENSE_AB_WARP_K>;",
+        "generated fixed-WK4 standalone wrapper",
+        bad,
+    )
     for token in ("StreamKGemm", "PersistentGemm", "::Gemm;"):
         forbid(standalone_arm, token, "generated standalone wrapper", bad)
 
@@ -193,7 +200,9 @@ def audit(files: dict[str, str]) -> list[str]:
         "TileM == 8 || TileM == 16",
         "static constexpr int AStoredRows = InstructionM == 8 ? 1 : TileM",
         ": ASharedStage == 16) &&",
-        "Stages == 4 && GroupSize == 128 && Threads == 256",
+        "Stages >= 2 && Stages <= 6 &&",
+        "GroupSize == 128 && Threads == 256",
+        "Stages != 4 ||",
         "sizeof(SharedStorage) == (InstructionM == 8 ? 34816 : 50176)",
         "bool const m_supported = InstructionM == 8 ? m == 1 : (m > 0 && m <= TileM);",
         "dequantize_biased_int4",
@@ -336,8 +345,11 @@ def main() -> int:
     bad = audit(files)
 
     plants = (
-        ("unit", "wrapper-back-to-generic", "using StandaloneCfg = StandaloneMarlinCfg<",
-         "using StandaloneCfg = Cfg<"),
+        ("unit", "wrapper-back-to-generic",
+         "using StandaloneCfg = StandaloneMarlinCfg<\n"
+         "      GroupSize, TM, TN, TK, WM, WN, ST, DENSE_AB_WARP_K>;",
+         "using StandaloneCfg = Cfg<\n"
+         "      GroupSize, TM, TN, TK, WM, WN, ST>;"),
         ("bench", "format-back-to-xplane", "quactlize::marlin::pack_biased_int4_bytes(",
          "xplane::place_derived_warp_k("),
         ("bench", "cfg-bypasses-tactic-authority",

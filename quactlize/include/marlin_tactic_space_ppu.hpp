@@ -211,7 +211,7 @@ constexpr char const* exclusion_clause(MarlinTacticExclusionPPU exclusion) {
     case MarlinTacticExclusionPPU::AiuLoadUnproved:
       return "AIU load is declared but has no standalone Marlin byte/cadence proof yet";
     case MarlinTacticExclusionPPU::PipelineDepthUnproved:
-      return "only the classic four-stage cadence is proved by the standalone oracle";
+      return "the standalone ring proof admits pipeline depths 2 through 6";
     case MarlinTacticExclusionPPU::ClassicOutputMapUnproved:
       return "the standalone final-output and reduction maps are proved for matched m8/m16 M atoms with WarpN64";
     case MarlinTacticExclusionPPU::ClassicMainloopGeometryUnproved:
@@ -365,7 +365,7 @@ constexpr MarlinTacticExclusionPPU classify(MarlinTacticPPU tactic) {
   if (tactic.load != MarlinLoadKindPPU::CpAsync) {
     return MarlinTacticExclusionPPU::AiuLoadUnproved;
   }
-  if (tactic.stages != 4) {
+  if (tactic.stages < 2 || tactic.stages > 6) {
     return MarlinTacticExclusionPPU::PipelineDepthUnproved;
   }
   bool const proved_m_atom =
@@ -411,6 +411,14 @@ static_assert(is_classic_subspace(kMarlinClassicReferencePPU));
 static_assert(admitted(kMarlinClassicReferencePPU));
 static_assert(admitted(MarlinTacticPPU{
     8, 128, 128, 8, 64, 32, 4, MarlinLoadKindPPU::CpAsync}));
+static_assert(admitted(MarlinTacticPPU{
+    8, 128, 128, 8, 64, 32, 2, MarlinLoadKindPPU::CpAsync}));
+static_assert(admitted(MarlinTacticPPU{
+    8, 128, 128, 8, 64, 32, 6, MarlinLoadKindPPU::CpAsync}));
+static_assert(admitted(MarlinTacticPPU{
+    16, 128, 128, 16, 64, 32, 3, MarlinLoadKindPPU::CpAsync}));
+static_assert(admitted(MarlinTacticPPU{
+    16, 128, 128, 16, 64, 32, 5, MarlinLoadKindPPU::CpAsync}));
 static_assert(shared_bytes(kMarlinClassicReferencePPU) == 50176);
 static_assert(shared_bytes(MarlinTacticPPU{
                   8, 128, 128, 8, 64, 32, 4,
@@ -424,7 +432,7 @@ static_assert(classify(MarlinTacticPPU{
                   MarlinLoadKindPPU::Aiu}) ==
               MarlinTacticExclusionPPU::AiuLoadUnproved);
 static_assert(classify(MarlinTacticPPU{
-                  16, 128, 128, 16, 64, 32, 3,
+                  16, 128, 128, 16, 64, 32, 1,
                   MarlinLoadKindPPU::CpAsync}) ==
               MarlinTacticExclusionPPU::PipelineDepthUnproved);
 static_assert(classify(MarlinTacticPPU{
