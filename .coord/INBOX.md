@@ -7773,14 +7773,44 @@ stub 是诚实的,不是假实现:
 
 kernel 内部完成 S 路 split-K,达到 `(32768,512)` 的分解;**权重零重排**;**端到端(GEMM + 归约)**的输出与 `S=1` **逐位相同**。
 
-### 五、改动
+### 五、改动 —— **主体是 scheduler,kernel 那一处是净删除,collective 不动**
 
-    ① collective 变体   epilogue 写 fp32 partial 到 workspace;不写 D、不读 D、不拿锁
-                        mainloop / dequant / MMA / load **全部复用**        ~40-60 行
-    ② scheduler         slice 成为分解的一维,grid = n_tiles × S
-                        删掉 peer/lock 那一整套                             ~50-70 行
-    ③ 归约 v1           **独立 reduce kernel** —— 最简单、最好验
-                        S=8/N=4096 时:128 KB 读 + 8 KB 写,本体 ~1 µs       ~70-100 行
+**(2026-08-14 用户更正:我原先把它写成"加一个 collective 变体",错了。`WorkTileInfo` 本来就带
+`K_idx` / `k_tile_count`,mainloop 从调度器拿"走哪段 K",它不关心这段是"某 tile 的第 3 条带"
+还是"slice 3"。⟹ collective 一个字不用改。)**
+
+    ① scheduler(主体)  分解从「grid-stride 扫平坦 tile 队列 + peer/lock」
+                        变成「grid = (n_tiles, S),每个 block 独占一个 (n_tile, slice)」
+                        删 acquire_peer_turn_assume_split / release_peer_turn_assume_split
+                        (scheduler:438-464)。**这是简化,不是增复杂度**      ~50-80 行,多为删
+
+    ② kernel epilogue   global_handoff(kernel:268-310)现在做:
+                          acquire → 可能读 D → 加 → 可能写 D → release,末位再跑 epilogue
+                        改成只做:
+                          workspace[slice][…] = fp32 accumulator
+                        **不 acquire、不读、不 release、不做 epilogue 数学**  ~净删 30 / 加 15
+                        这就是 CUTLASS 2.x 的做法:GemmSplitKParallel 的 epilogue 用
+                        `epilogue::thread::Convert`(只存)而不是 `LinearCombination`,
+                        因为线性组合必须在归约之后做。
+
+    ③ reduce kernel     新文件:读 S 份 fp32 → 求和 → **alpha/bias/fp16 转换**(从 ② 搬出来的)
+                        S=8/N=4096 时:128 KB 读 + 8 KB 写,本体 ~1 µs        ~70-100 行
+
+    ④ device            workspace 尺寸 + 两次 launch                         ~30-40 行
+
+**零改动清单(谁动了谁要在报告里说明理由):**
+
+    marlin_collective_ppu.hpp(mainloop / dequant / MMA / load)   零
+    thread_block_reduce(CTA 内 warp-K 归约)                      零
+    marlin_output_map_ppu.hpp(输出映射)                          零
+    离线权重格式 / artifact                                        零
+    tactic space                                                   零
+
+**一个顺带的好处:** `global_handoff` 里那段
+`s.wait 全排空 → s.blksyn.defer(占全部采样 31.71%) → smem.fence.sys → 3 条 wbinv`
+之所以存在,是因为 **peer 之间要通过内存互相看见**。split-K parallel 下**没有 peer** ——
+每个 slice 写自己的槽,谁也不读谁 ⟹ **那整段可见性序列在 GEMM kernel 里直接消失**,由 kernel 边界代劳。
+(这可能已经是用户测到的 7.4 µs 里的一部分:(32768,512) 是 256 tile / 72 CU,P=1,C-chain 本来就没触发。)
 
 **归约 v1 故意选最笨的那个。** 预算是 `17 − 7.4 = 9.6 µs`,有这么大空间时先求「对且赢」不求最优;而且独立 kernel 能把 **launch 开销单独量出来**,那个数后面优化归约时还要用。
 **优化归约(last-peer-wins / 原子加)是第二步,单独立项,不在本条。**
