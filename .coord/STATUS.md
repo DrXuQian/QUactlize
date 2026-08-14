@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-14 04:53:26 UTC
+    updated-at:     2026-08-14 05:07:28 UTC
     inbox-consumed: 169
-    working-on:     m8 ACU capture separated from the m16 device reference: BPC1/2/3 each gets its own full correctness process followed by one subject-only m8 launch
-    blocked-on:     box ACU reports for the clean BPC1/2/3 subject-only captures
-    local-gates:    standalone/composed contracts, L169, L181 and exact m8 multi-TU boxdry PASS; profile flag returns before GemmRef/fingerprints and host exact fixture bypasses device fill/dequant helpers
-    last-commit:    Isolate m8 ACU subject from correctness kernels
-    last-heartbeat: 304
+    working-on:     fixed the m8 ACU box compile: the target-wide profile arm now looks up InstructionM only for a compile-time-proved standalone Marlin kernel, while generic GemmUniversal instantiations fail closed without that member lookup
+    blocked-on:     box rebuild and clean BPC1/2/3 subject-only ACU reports
+    local-gates:    standalone/composed contracts, L169 and L181 PASS; the if-constexpr-to-runtime-if plant is rejected; exact m8 multi-TU boxdry PASS (1/1, 96.6s)
+    last-commit:    Guard m8 ACU identity to standalone kernels
+    last-heartbeat: 305

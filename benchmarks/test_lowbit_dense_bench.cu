@@ -3093,14 +3093,30 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   // for the lock fingerprint; aggregating that process made an m8 report look
   // like m16.  The box runner establishes full correctness first in a separate
   // process, then uses this fail-closed arm for exactly one standalone launch.
+  //
+  // This source file also instantiates run<Gemm> for the legacy generic
+  // GemmUniversal scaffolding.  That kernel deliberately has no InstructionM
+  // member.  Keep the member lookup behind if constexpr: merely putting the
+  // runtime option inside this preprocessor arm once made the PPU frontend
+  // instantiate GemmUniversal::InstructionM before any kernel could run.
   if (options.marlin_profile_subject_only) {
-    CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
-    result.passed = true;
-    std::printf(
-        "  [dense marlin ACU subject-only] instruction=m%dn16k16 "
-        "blocks_per_cu=%d subject_launches=1 device_reference=0 lock_fingerprints=0\n",
-        Gemm::GemmKernel::InstructionM, options.marlin_blocks_per_cu);
-    return result;
+    if constexpr (kStandaloneMarlin) {
+      CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
+      result.passed = true;
+      std::printf(
+          "  [dense marlin ACU subject-only] instruction=m%dn16k16 "
+          "blocks_per_cu=%d subject_launches=1 device_reference=0 lock_fingerprints=0\n",
+          Gemm::GemmKernel::InstructionM, options.marlin_blocks_per_cu);
+      return result;
+    }
+    else {
+      std::fprintf(
+          stderr,
+          "--marlin-profile-subject-only reached a non-standalone kernel; "
+          "refusing to profile a generic/reference launch\n");
+      result.passed = false;
+      return result;
+    }
   }
 #endif
 

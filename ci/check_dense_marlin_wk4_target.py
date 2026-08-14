@@ -152,6 +152,20 @@ def audit(files: dict[str, str]) -> list[str]:
         "return final_result.passed ? 0 : 1;",
     ):
         require(bench, token, "standalone benchmark route", bad)
+    profile_begin = bench.find("if (options.marlin_profile_subject_only) {")
+    profile_end = bench.find("\n#endif", profile_begin)
+    if profile_begin < 0 or profile_end <= profile_begin:
+        bad.append("standalone benchmark route: cannot isolate ACU subject-only arm")
+        profile_arm = ""
+    else:
+        profile_arm = bench[profile_begin:profile_end]
+    for token in (
+        "if constexpr (kStandaloneMarlin) {",
+        "Gemm::GemmKernel::InstructionM",
+        "--marlin-profile-subject-only reached a non-standalone kernel",
+        "result.passed = false;",
+    ):
+        require(profile_arm, token, "standalone ACU type guard", bad)
     for token in ("place_derived_warp_k", "recover_derived_warp_k"):
         forbid(bench, token, "standalone benchmark route", bad)
 
@@ -326,6 +340,9 @@ def main() -> int:
         ("bench", "cfg-bypasses-tactic-authority",
          "static_assert(marlin_tactics_ppu::admitted(Tactic),",
          "static_assert(true,"),
+        ("bench", "acu-member-lookup-escapes-standalone-type-guard",
+         "if (options.marlin_profile_subject_only) {\n    if constexpr (kStandaloneMarlin) {",
+         "if (options.marlin_profile_subject_only) {\n    if (kStandaloneMarlin) {"),
         ("collective", "layout-loses-k-cohorts",
          "cute::Layout<cute::Shape<cute::_1, cute::_2, cute::_4>>",
          "cute::Layout<cute::Shape<cute::_1, cute::_2, cute::_1>>"),
@@ -380,7 +397,7 @@ def main() -> int:
     print(
         "[dense-marlin-wk4] PASS: standalone format/collective/scheduler/kernel "
         "wired; standalone tactic authority consumed; generic WK4 compatibility "
-        "absent; seventeen structural plants rejected"
+        "absent; eighteen structural plants rejected"
     )
     return 0
 
