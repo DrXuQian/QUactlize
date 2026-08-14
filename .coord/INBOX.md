@@ -7244,3 +7244,59 @@ D1/D2/D3/D5 的 config 串 `native`/`tileK` 来自 `gemv_lowbit/gemv_tactic_spac
 * **PPU 臂若工具链缺就 SKIP,不许用 nvcc 假装。**(与 L176 同一条纪律。)
 * 不动 ①②④ 的实现;这一轮只加测量。
 * 与 170(删 `gemv_lowbit`)的顺序:**171 先跑完并留下 ② 的基线数,170 的第三节 A/B 才有依据。** 见 170。
+
+---
+
+## 172 — **更正 171 第一节和「PPU 臂要改的四条」:PPU 吃裸 NVIDIA PTX,参考 kernel 大概率零改动就能编**
+
+用户指出 *"PPU 兼容 nvidia 的指令"*。我核了,**他是对的,171 里那段是错的,别照做**。
+
+### 证据 —— 就在有 acu 数据的那个 kernel 里
+
+    marlin_load_ppu.hpp:52     asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ...)
+    marlin_load_ppu.hpp:69     asm volatile("cp.async.commit_group;\n" ...)
+    marlin_dequant_ppu.hpp     助记符只有一个:  "lop3.b32        ← 不是 ppu.lop3.b32
+
+这就是 `marlin-m8-tm8-tn128-tk128-wn64-wk32-bpc1`,PPU-ZW810 上跑出 16.96 µs、acu 里 `v.lop3.i 262,144` 的那个 kernel。**裸 `lop3.b32` 和裸 `cp.async.*` 在 PPU 上编得过、跑得动、已量到。**
+
+全树的 asm 助记符普查也显示**两种拼法并存**:
+
+    ppu.sub.f16x2  ×2      lop3.b32               ×1
+    ppu.prmt.b32   ×2      cp.async.cg.shared.global ×1
+    ppu.lop3.b32   ×2      cp.async.commit_group  ×1
+    ppu.fma.rtte.f16x2 ×2  cp.async.wait_group    ×1
+
+**`lop3.b32` 同时以两种拼法存在于 PPU 侧代码** ⟹ `ppu.` 前缀是可选的,不是必需的。
+
+而 actlize 那个 `#if defined(__HGGC_ARCH__)` guard 的注释说的是**反方向**的事 —— *"`ppu.prmt.b32` 和 `ppu.sub.f16x2` **不是 PTX**,任何 nvcc 编译会死在 ptxas"* —— 它保护的是 **nvcc 路**,不是说裸 PTX 在 PPU 上不行。**我把这条读反了。**
+
+### 我错在哪(值得记,不只是改掉)
+
+我从「别处有 `ppu.` 前缀」推出「PPU 汇编器会拒裸 PTX」,**没有去看 PPU 侧有没有在用裸的**。而答案在我两轮前**已经引用过的同一个文件**里 —— 我当时贴了 `cp_async_16` 的函数名,却没看它 asm 里写的是什么。
+
+这是 [[blocker-mechanism-vs-wiring]] 的第四次:**把「这里没这么用」写成「不可能这么用」。**
+
+### 对 171 的具体修订
+
+* **删掉「PPU 臂要改的四条」整节。** 不需要 `prmt.b32 → ppu.prmt.b32` 那四个替换。
+* **171 第一节里「PPU 臂要换 ppu. 前缀那四条」一句作废。**
+* `.coord/ref_q4k_gemv_simt.cuh` 文件头里同样的话也作废(文件是用户逐字给的,那句注释是我加的)。
+
+### 仍然未证的一点 —— 不要当成已证
+
+裸 `lop3.b32` 和 `cp.async.*` 我有直接证据;**裸 `prmt.b32` / `sub.f16x2` / `fma.rn.f16x2` 在 PPU 上没有直接证据**,我们树里只有 `ppu.` 版。三条注记:
+
+1. PPU 是 SM80-PTX 兼容的,这三条都是标准 SM80 PTX,预期能编。
+2. `fma.rn.f16x2` vs `ppu.fma.rtte.f16x2`:`.rn` 与 `.rtte` 是同一个舍入模式的两种拼法,预期等价 —— 但**这是预期,不是实测**。
+3. **判别代价极低:编一次就知道。** 不要再用推理决定,直接编。
+
+### 于是 171 的实际工作量小了一截
+
+原本我说「box 上不能编,要先做 PPU 臂」。**这句作废。** 现在缺的只有:
+
+    driver(main + 数据 + launch)      ← 没有
+    build target 注册进 build.sh        ← 没有
+    run_*_box.sh(按 run_dense_marlin_m8_acu_box.sh 的约定) ← 没有
+    PPU 臂                             ← 大概率不需要
+
+**先编一次 `-arch=ppu_10`,把「四条到底行不行」用编译器回答,再决定要不要动任何一行 asm。**
