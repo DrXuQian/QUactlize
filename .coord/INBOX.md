@@ -7559,3 +7559,92 @@ vLLM Marlin 自带 `use_atomic_add` 开关(`kernel.h:19`,`marlin_template.h:268`
 ### 七、仍然拿不到的
 
 **计数器(ncu)。** Windows 侧没装,WSL 里也没装;装 CUDA toolkit ~3 GB,且 **ncu 在 WSL 上的计数器支持历来受限**,装完未必能用。**在明确需要计数器之前不要让用户装。**
+
+---
+
+## 176 — **在 5090 上把我们的 GEMV 和 PDF 参考实现同机对跑,目标是赢过它。三个阻塞我已经拆掉了**
+
+用户定的:把 fully-quantized 的 GEMV 也放到 5090 上测,和用户交来的那份 Q4_K SIMT GEMV 参考实现(PDF,`.coord/ref_q4k_gemv_simt.cuh`)同机同 shape 对比,**要赢过它**。
+
+这条直接服务 `dev/fold_derivation/TODO.md:756` 的 **TODO #55**(为 PPU GEMV 出货 fast dequant)——它的完成证据要求 before/after 的每对指令拆解和时间,而**同机对照能先给出"目标值"**。
+
+### 一、三个我已经验证掉的阻塞(别再花时间)
+
+**① 我们的 GEMV 没有 `ppu.` 前缀要脱。**
+
+    quactlize/include/gguf_vecdot.hpp      859 行,inline asm 数量 = 0
+    quactlize/include/gguf_bc_vecdot.hpp   304 行,inline asm 数量 = 0
+
+`ppu.` 那套在**张量核**的转换器里(`fast_numeric_conversion_for_mix_gemm.h`),不在 GEMV 路上。GEMV 的提取是 `gemv_converter.hpp:70` 的 `((w >> (p*Bits)) & kMask) | kMagic`,纯 C++。
+
+**② 唯一的阻塞是 `actlize/cutlass/half.h:64` 的无条件 `#include <hggc_fp16.h>`,而 stub 树里已经有。**
+
+已验证可编(产出 10,880 B 目标文件):
+
+    nvcc -std=c++17 -arch=sm_120 --expt-relaxed-constexpr \
+      -Iquactlize/include -Iquactlize/include/gemv_lowbit \
+      -Ithird_party/actlize/include -Idev/fold_derivation/stub_inc \
+      -c <tu>.cu -o <tu>.o
+
+stub 是诚实的,不是假实现:
+
+    // dev/fold_derivation/stub_inc/hggc_fp16.h 全文
+    #pragma once
+    #include <cuda_fp16.h>
+    using half = __half;
+
+**③ PDF 那份在 NVIDIA 上要改 4 处,不是前缀问题。**
+`sub.f16x2` / `fma.rn.f16x2` 在 NVIDIA PTX 上**不接受立即数**,而 PPU 接受(反汇编里就是 `v.add.f16x2 vreg12, vreg12, 0xe408e408`)。改法是 4 处 `"n"(MAGIC)` → `"r"(MAGIC)`。**这本身是 TODO #55 里"按 target 分派"要处理的一个具体差异,而 #55 目前没记它。**
+
+### 二、输入格式不对等 —— 决定了先跑哪一组
+
+    PDF 的 kernel        block_q4_K 原生 GGUF(144 B / 256 权重)
+    gguf_vecdot          **原生 GGUF**                     ← 同输入,先跑这组 ★
+    gguf_bc_vecdot       xplane artifact(位平面 + 重排 scale 单元)  ← 需要离线打包器,第二组
+
+**第一组必须是 `gguf_vecdot::vecdot_rows_kernel`(`gguf_vecdot.hpp:606`)对 PDF 的 kernel** —— 同输入格式、同 shape、同机器,只差 kernel 本身。`gguf_bc_vecdot` 那组要先把 artifact 造出来,是独立一步,**不要混进第一组**。
+
+### 三、要打败的目标值(我已经在本机 5090 和用户的 5070 上量到)
+
+参考实现,`M=1 N=4096 K=4096`,Q4_K 原生 gs=32,**冷缓存(轮转 23 份权重 = 2.16× L2)**:
+
+    机器    最佳 config      冷 µs     GB/s    %HBM        寄存器  spill  barrier
+    5090    CtaN2 Wn8 Wk1    7.748     1218    68.0%/1792   64     0      1
+    5070    CtaN4 Wn8 Wk1   18.212      518    77.1%/ 672   64     0      1
+
+**最优 config 随机器变**(5090 是 CtaN2,5070 是 CtaN4),所以两边都要各自扫。
+
+它的精度特性(**是它的代价,不是 bug**):超块内用 `half2` 累加 256 个乘积 ——
+
+    正激活   0.00053 相对误差
+    带符号   0.05556          ← 5.6%
+    我们的 GEMV 是 fp32 累加,没有这个代价
+
+### 四、性质
+
+在同一台机器、同一 shape、同一冷 fixture 下,我们的 `gguf_vecdot` 与 PDF 参考实现各自给出**时间、GB/s、%HBM、寄存器、spill、barrier、数值误差**,且两者对同一个 oracle 通过。
+
+### 五、事前判据
+
+* **(a) 数值**:两条都对**官方 `gguf` 包的 `dequantize`** 验(既有 oracle),不是互相对比。**必须同时报正激活和带符号两种**——带符号那一列是累加精度的读数,不是失败。
+* **(b) fixture**:冷,靠**轮转多份权重超过 2× L2**,不用合成 flush(真实推理就是这么驱逐的)。`bench.cu`(scratchpad,已验证)可以直接抄。
+* **(c) 峰值带宽必须从设备推导**,不许写常数 —— 我的 `bench.cu` 写死 1792,导致 5070 上整列 %HBM 报错。用 `2 × memoryClockRate × memoryBusWidth/8`。
+* **(d) 报表**:一行一条路,列 = `time / GB/s / %HBM / regs / spill / barriers / err_pos / err_signed / grid / threads`。
+* **(e) 赢的定义**:同 shape 冷缓存下时间更短。**抽取指令更少而时间不变也要报**(TODO #55 已有这条纪律),不许换 shape 藏。
+
+### 六、负控
+
+1. **把 PDF 那份的 lop3 常数换成 int8 那套 magic,(a) 必须判红。** 转换器被静默置换是这个项目付过两次学费的失败形态。
+2. **把我们这条的 `kMagic` 改一位,(a) 必须判红。**
+3. **只跑一条路时,另一行必须显示 SKIP 并带原因,不许空着。**
+
+### 七、范围限制
+
+* 第一组**只比 `gguf_vecdot` 和 PDF**。`gguf_bc_vecdot`(artifact 路)是第二步,要先有打包器。
+* **不要在这一步实现 TODO #55 的 fast dequant。** 这一步是量"目标值"和"我们现在差多少",实现是下一步。
+* PDF 那份是**参考,不是候选出货路**,不要接进任何 routing。
+* 5090 的 config 最优点不能沿用到 PPU([[ppu-gemv-gs32-occupancy]]:5090 不能代理 PPU 性能)。
+
+### 八、给 TODO #55 补的一条边界
+
+#55 的"复用边界"现在只区分**算术内核**(lop3+fma)和**投递层**(emit/at/keep)。**累加精度是第三样东西,不在任何一边。** 只取抽取、保留 fp32 累加 ⟹ 不继承那 5.6%;整段照搬 ⟹ 继承。**这句该写进 #55。**
