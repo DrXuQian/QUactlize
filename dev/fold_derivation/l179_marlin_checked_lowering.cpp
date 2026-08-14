@@ -15,6 +15,7 @@
 #include <vector>
 
 #include <cuda_fp16.h>
+#include "cutlass/util/packed_stride.hpp"
 
 __half2 l179_unreachable_hfma2(__half2, __half2, __half2);
 unsigned int l179_unreachable_cvta(void const*);
@@ -74,6 +75,14 @@ int main(int argc, char** argv) {
       reinterpret_cast<cutlass::half_t const*>(scale.data()), 128};
 
   auto const fixed = cute::make_shape(1, 4096, 4096, 1);
+  using PackedD = cutlass::detail::TagToStrideC_t<cutlass::layout::RowMajor>;
+  auto const packed_d = cutlass::make_cute_packed_stride(
+      PackedD{}, cute::make_shape(1, 4096, 1));
+  if (int64_t(cute::get<0>(packed_d)) != 4096 ||
+      int64_t(cute::get<1>(packed_d)) != 1 ||
+      int64_t(cute::get<2>(packed_d)) != 0) {
+    return fail(plant, "L=1 packed D stride is not (N,1,0)");
+  }
   if (!Main::can_implement(fixed, args) ||
       !Main::address_arithmetic_supported(fixed)) {
     return fail(plant, "fixed production shape was rejected");
@@ -159,7 +168,8 @@ int main(int argc, char** argv) {
   }
   std::printf(
       "[l179] PASS: fixed-shape=accepted overflow-boundaries=3/3 "
-      "output-coordinates=%llu q=32 range=[0,4095] exact-once=1\n",
+      "packed-D=(4096,1,0) output-coordinates=%llu q=32 "
+      "range=[0,4095] exact-once=1\n",
       static_cast<unsigned long long>(coordinates));
   return 0;
 }

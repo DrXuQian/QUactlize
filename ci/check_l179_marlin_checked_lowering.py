@@ -54,6 +54,15 @@ def planted(
         kernel = kernel.replace(
             "supported\n            ? TileScheduler::to_underlying_arguments(",
             "true\n            ? TileScheduler::to_underlying_arguments(", 1)
+    elif plant == "noncanonical-batch-stride":
+        kernel = kernel.replace(
+            "(int64_t(cute::get<2>(args.epilogue.dD)) == 0 ||\n"
+            "            int64_t(cute::get<2>(args.epilogue.dD)) == m * n) &&\n"
+            "           l == 1;",
+            "int64_t(cute::get<2>(args.epilogue.dD)) == m * n &&\n"
+            "           l == 1;",
+            1,
+        )
     elif plant == "col-guard":
         kernel = kernel.replace("if (row < problem_m) {", "if (row < problem_m && col < problem_n) {", 1)
     elif plant == "unchecked-workspace":
@@ -108,6 +117,9 @@ def main() -> int:
         "bool const supported = arguments_supported(args, hw);",
         "supported\n            ? TileScheduler::to_underlying_arguments(",
         ": TileSchedulerParams{}",
+        "(int64_t(cute::get<2>(args.epilogue.dD)) == 0 ||\n"
+        "            int64_t(cute::get<2>(args.epilogue.dD)) == m * n) &&\n"
+        "           l == 1;",
     ):
         if token not in kernel:
             errors.append(f"kernel checked-lowering lacks {token}")

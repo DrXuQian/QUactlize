@@ -145,7 +145,15 @@ class MarlinKernelPPU {
            float(args.epilogue.thread.beta) == 0.0f &&
            int64_t(cute::get<0>(args.epilogue.dD)) == n &&
            int64_t(cute::get<1>(args.epilogue.dD)) == 1 &&
-           int64_t(cute::get<2>(args.epilogue.dD)) == m * n && l == 1;
+           // make_cute_packed_stride canonicalizes the unused batch pitch to
+           // zero when L==1.  A caller may also retain the natural M*N pitch;
+           // the two are semantically identical because this kernel rejects
+           // L>1.  Requiring only M*N rejects the exact shipping stride before
+           // scheduler lowering and manufactures an all-zero (Q,Kt,G)
+           // fail-close instead of launching the kernel.
+           (int64_t(cute::get<2>(args.epilogue.dD)) == 0 ||
+            int64_t(cute::get<2>(args.epilogue.dD)) == m * n) &&
+           l == 1;
   }
 
   static bool arguments_supported(

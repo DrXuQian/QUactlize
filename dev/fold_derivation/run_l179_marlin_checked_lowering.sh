@@ -115,7 +115,7 @@ PY
 done
 
 python3 "${repo}/ci/check_l179_marlin_checked_lowering.py"
-for plant in device-valid unchecked-lowering col-guard unchecked-workspace raw-adapter; do
+for plant in device-valid unchecked-lowering noncanonical-batch-stride col-guard unchecked-workspace raw-adapter; do
   set +e
   python3 "${repo}/ci/check_l179_marlin_checked_lowering.py" --plant="${plant}" \
     >"${tmp}/${plant}.source.log" 2>&1
