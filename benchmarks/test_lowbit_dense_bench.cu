@@ -116,6 +116,10 @@ using namespace cute;
 #define DENSE_NAMED_SCHEDULER 1
 #endif
 
+#if PPU_MARLIN_HANDOFF_HACK != 0 && !defined(DENSE_MARLIN_WK4_AB)
+#error "PPU_MARLIN_HANDOFF_HACK is diagnostic-only and may compile only the exact standalone Marlin target"
+#endif
+
 
 // This is just an example, so we use a regular enum so we can compare directly to the command-line int.
 enum GemmMode {
@@ -3105,8 +3109,26 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
       result.passed = true;
       std::printf(
           "  [dense marlin ACU subject-only] instruction=m%dn16k16 "
-          "blocks_per_cu=%d subject_launches=1 device_reference=0 lock_fingerprints=0\n",
-          Gemm::GemmKernel::InstructionM, options.marlin_blocks_per_cu);
+          "blocks_per_cu=%d subject_launches=1 device_reference=0 lock_fingerprints=0 "
+          "handoff=%s peer_sync=%s local_cta_sync=enabled numerical_correctness=%s "
+          "diagnostic_only=%d\n",
+          Gemm::GemmKernel::InstructionM, options.marlin_blocks_per_cu,
+          Gemm::GemmKernel::HandoffMode ==
+                  cutlass::gemm::kernel::MarlinHandoffModePPU::OrderedDChain
+              ? "ordered-d-chain"
+              : Gemm::GemmKernel::HandoffMode ==
+                        cutlass::gemm::kernel::MarlinHandoffModePPU::RacyDChain
+                    ? "racy-d-chain"
+                    : "final-local",
+          Gemm::GemmKernel::HasOrderedPeerSync ? "enabled" : "disabled",
+          Gemm::GemmKernel::HandoffMode ==
+                  cutlass::gemm::kernel::MarlinHandoffModePPU::OrderedDChain
+              ? "NOT_EVALUATED_PROFILE_ONLY"
+              : Gemm::GemmKernel::HandoffMode ==
+                        cutlass::gemm::kernel::MarlinHandoffModePPU::RacyDChain
+                    ? "INVALID_DATA_RACE"
+                    : "INVALID_MISSING_PEERS",
+          Gemm::GemmKernel::HasOrderedPeerSync ? 0 : 1);
       return result;
     }
     else {
@@ -3815,6 +3837,16 @@ int main(int argc, char const **args) {
   // than a useful A/B arm.  Fail at the host boundary and keep the generated
   // wrapper compile-time Marlin-only as the second line of defence.
   if (!options.help && !options.list_configs) {
+#if PPU_MARLIN_HANDOFF_HACK != 0
+    if (!options.marlin_profile_subject_only) {
+      std::fprintf(
+          stderr,
+          "PPU_MARLIN_HANDOFF_HACK=%d is a numerically invalid ACU diagnostic; "
+          "it requires --marlin-profile-subject-only --iterations=0 and cannot run verification\n",
+          PPU_MARLIN_HANDOFF_HACK);
+      return 1;
+    }
+#endif
     if (!options.marlin || options.persistent || options.streamk ||
         options.streamk_gate || options.streamk_split_gate) {
       std::fprintf(
