@@ -9,8 +9,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET=test_lowbit_dense_marlin_standalone_sweep
 ROOT_SHA="$(git -C "$ROOT" rev-parse HEAD)"
 SHORT_SHA="$(git -C "$ROOT" rev-parse --short=12 HEAD)"
-OUT="${MARLIN_STANDALONE_SWEEP_OUT:-/workspace/quactlize-dense-marlin-standalone-sweep-${SHORT_SHA}}"
 REPS="${BENCH_REPS:-5}"
+SWEEP_N="${MARLIN_SWEEP_N:-4096}"
+SWEEP_K="${MARLIN_SWEEP_K:-4096}"
+INSTRUCTION_M="${MARLIN_SWEEP_INSTRUCTION_M:-0}"
+OUT="${MARLIN_STANDALONE_SWEEP_OUT:-/workspace/quactlize-dense-marlin-sweep-n${SWEEP_N}-k${SWEEP_K}-im${INSTRUCTION_M}-${SHORT_SHA}}"
 
 fail() {
   printf '[marlin-standalone-sweep] FAIL: %s\n' "$*" >&2
@@ -18,6 +21,14 @@ fail() {
 }
 
 [ "$#" -eq 0 ] || fail 'this runner accepts no positional arguments'
+[[ "$SWEEP_N" =~ ^[1-9][0-9]*$ ]] && [ $((SWEEP_N % 256)) -eq 0 ] || \
+  fail "MARLIN_SWEEP_N must be a positive multiple of 256 (got $SWEEP_N)"
+[[ "$SWEEP_K" =~ ^[1-9][0-9]*$ ]] && [ $((SWEEP_K % 128)) -eq 0 ] || \
+  fail "MARLIN_SWEEP_K must be a positive multiple of 128 (got $SWEEP_K)"
+case "$INSTRUCTION_M" in
+  0|8|16) ;;
+  *) fail "MARLIN_SWEEP_INSTRUCTION_M must be 0, 8, or 16 (got $INSTRUCTION_M)" ;;
+esac
 if [ -e "$OUT" ] && [ -n "$(find "$OUT" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
   fail "output directory is not empty: $OUT (choose MARLIN_STANDALONE_SWEEP_OUT for a new run)"
 fi
@@ -107,7 +118,8 @@ run_sweep() {
   local verdict="$OUT/${label}.verdict"
   local -a sweep=("$BIN" --search_configs --streamk_exact_fixture
                   "--marlin-blocks-per-cu=$bpc"
-                  --m=1 --n=4096 --k=4096 --l=1 --g=128 --mode=1
+                  "--instruction-m=$INSTRUCTION_M"
+                  --m=1 "--n=$SWEEP_N" "--k=$SWEEP_K" --l=1 --g=128 --mode=1
                   --alpha=1 --beta=0 --iterations=20)
 
   printf 'BENCH_REPS=%q BENCH_JSONL=%q ' "$REPS" "$samples" >"$OUT/${label}.command"
@@ -141,6 +153,8 @@ run_sweep() {
 
   grep -Fq "blocks_per_cu=${bpc}" "$log" || \
     fail "BPC${bpc} did not reach any scheduler-owned decomposition"
+  grep -Fq "instruction_m=${INSTRUCTION_M}" "$log" || \
+    fail "BPC${bpc} did not record its instruction-M filter"
   grep -E '^==== (WINNER|UNRESOLVED):' "$log" >"$verdict" || \
     fail "BPC${bpc} did not produce a ranking verdict"
   [ "$(wc -l <"$verdict")" -eq 1 ] || \
@@ -161,8 +175,13 @@ run_sweep 2
 {
   printf 'root_sha=%s\n' "$ROOT_SHA"
   printf 'target=%s\n' "$TARGET"
-  printf 'shape=M1,N4096,K4096,L1,gs128\n'
-  printf 'scope=all-rows-in-committed-standalone-authority\n'
+  printf 'shape=M1,N%s,K%s,L1,gs128\n' "$SWEEP_N" "$SWEEP_K"
+  printf 'instruction_m_filter=%s\n' "$INSTRUCTION_M"
+  if [ "$INSTRUCTION_M" -eq 0 ]; then
+    printf 'scope=all-rows-in-committed-standalone-authority\n'
+  else
+    printf 'scope=committed-standalone-rows-with-instruction-m%s\n' "$INSTRUCTION_M"
+  fi
   sed 's/^/axis_/' "$OUT/axis-manifest.txt"
   printf 'blocks_per_cu=1,2\nrepetitions=%s\n' "$REPS"
   printf 'binary=%s\n' "$BIN"

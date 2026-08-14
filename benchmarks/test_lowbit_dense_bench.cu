@@ -717,6 +717,10 @@ struct Options {
   bool streamk_exact_fixture = false; // --streamk_exact_fixture: use the exact-by-construction A0 inputs on every arm
   bool marlin_profile_subject_only = false; // --marlin-profile-subject-only: one standalone launch, no device reference/fingerprint
   int marlin_blocks_per_cu = 1; // --marlin-blocks-per-cu: scheduler-owned CTA/CU sweep, default is legacy 1
+  // Standalone-sweep-only runtime filter.  Zero preserves the historical
+  // all-row sweep; 8/16 select the real instruction M encoded by each
+  // generated row without changing the compiled tactic authority.
+  int marlin_instruction_m = 0;
 
   // Parses the command line
   void parse(int argc, char const **args) {
@@ -751,6 +755,7 @@ struct Options {
     marlin_profile_subject_only =
         cmd.check_cmd_line_flag("marlin-profile-subject-only");
     cmd.get_cmd_line_argument("marlin-blocks-per-cu", marlin_blocks_per_cu);
+    cmd.get_cmd_line_argument("instruction-m", marlin_instruction_m);
     if (streamk_gate || streamk_split_gate) streamk = true;
   }
 
@@ -795,6 +800,7 @@ struct Options {
     out << "  scheduler=standalone-marlin Fixed at build time; --search_configs compares the "
            "generated standalone Marlin rows.\n"
         << "  --marlin-blocks-per-cu=<n>  Fixed across the sweep and checked against each exact kernel's occupancy.\n"
+        << "  --instruction-m=<0|8|16>    Filter generated rows by real MMA instruction M (0=all, default).\n"
         << "  --streamk_exact_fixture     Required: exact decode fixture plus repeated lock fingerprints.\n";
 #endif
 
@@ -1725,14 +1731,22 @@ DenseFixtureEvidence initialize(Options const& options) {
     static_assert(sizeof(kExactFixtureZeros) / sizeof(kExactFixtureZeros[0]) == 1 &&
                       kExactFixtureZeros[0] == 0,
                   "ScaleOnly A0 must not claim a load-bearing zero plane");
-    if (options.k / options.g != kExactFixtureNonzerosPerRow) {
+#if defined(DENSE_MARLIN_STANDALONE_SWEEP)
+    // The standalone sweep admits every positive K multiple of gs.  Keep one
+    // exactly representable nonzero in every real scale group so the same
+    // fixture remains order-independent at K=1024 as well as K=4096.
+    int const exact_fixture_nonzeros_per_row = scale_k;
+#else
+    int const exact_fixture_nonzeros_per_row = kExactFixtureNonzerosPerRow;
+    if (options.k / options.g != exact_fixture_nonzeros_per_row) {
       std::fprintf(stderr,
                    "--streamk_exact_fixture requires K/gs=%d (got %d/%d)\n",
-                   kExactFixtureNonzerosPerRow, options.k, options.g);
+                   exact_fixture_nonzeros_per_row, options.k, options.g);
       std::exit(1);
     }
+#endif
     for (int m = 0; m < options.m; ++m) {
-      for (int kg = 0; kg < kExactFixtureNonzerosPerRow; ++kg) {
+      for (int kg = 0; kg < exact_fixture_nonzeros_per_row; ++kg) {
         int const within_group = (17 * m + 29 * kg) % options.g;
         int const k = kg * options.g + within_group;
         // B's sign band below depends only on K.  Align A's sign with it so
@@ -1790,7 +1804,7 @@ DenseFixtureEvidence initialize(Options const& options) {
     }
     double const max_output = double(max_nonzeros) * max_abs_a * max_weight;
     fixture_evidence.order_independent = integer_a && integer_weights &&
-        max_nonzeros == kExactFixtureNonzerosPerRow &&
+        max_nonzeros == exact_fixture_nonzeros_per_row &&
         max_output <= std::ldexp(1.0, 24);
     fixture_evidence.fp16_output_exact = fixture_evidence.order_independent &&
         options.alpha == 1.0f && options.beta == 0.0f &&
@@ -3901,6 +3915,14 @@ int main(int argc, char const **args) {
   options.parse(argc, args);
   print_dense_table_provenance();
 
+#if !defined(DENSE_MARLIN_STANDALONE_SWEEP)
+  if (!options.help && options.marlin_instruction_m != 0) {
+    std::fprintf(stderr,
+                 "--instruction-m is available only in the standalone Marlin sweep target\n");
+    return 1;
+  }
+#endif
+
 #if !defined(DENSE_MARLIN_WK4_AB)
   if (!options.help && options.marlin_profile_subject_only) {
     std::fprintf(
@@ -3935,12 +3957,12 @@ int main(int argc, char const **args) {
     }
     if (options.mode != GemmMode::ScaleOnly || options.g != 128 ||
         options.m != 1 || options.n <= 0 || options.n % 256 != 0 ||
-        options.k != 4096 || options.l != 1 || options.alpha != 1.0f ||
+        options.k <= 0 || options.k % 128 != 0 || options.l != 1 || options.alpha != 1.0f ||
         options.beta != 0.0f) {
       std::fprintf(
           stderr,
           "standalone Marlin decode sweep requires --m=1 "
-          "--n=<positive multiple of 256> --k=4096 --l=1 --g=128 "
+          "--n=<positive multiple of 256> --k=<positive multiple of 128> --l=1 --g=128 "
           "--mode=1 --alpha=1 --beta=0\n");
       return 1;
     }
@@ -3959,6 +3981,12 @@ int main(int argc, char const **args) {
     }
     if (options.marlin_blocks_per_cu < 1) {
       std::fprintf(stderr, "--marlin-blocks-per-cu must be positive\n");
+      return 1;
+    }
+    if (options.marlin_instruction_m != 0 &&
+        options.marlin_instruction_m != 8 &&
+        options.marlin_instruction_m != 16) {
+      std::fprintf(stderr, "--instruction-m must be 0, 8, or 16\n");
       return 1;
     }
   }
@@ -4218,10 +4246,10 @@ int main(int argc, char const **args) {
     char build[160];
 #if defined(DENSE_MARLIN_STANDALONE_SWEEP)
     std::snprintf(build, sizeof build,
-                  "bits=%d TSK=%d gs=%d scheduler=standalone-marlin bpc=%d rows=%d",
+                  "bits=%d TSK=%d gs=%d scheduler=standalone-marlin bpc=%d rows=%d instruction_m=%d",
                   int(cutlass::sizeof_bits<QuantType>::value), TileShapeK,
                   options.g, options.marlin_blocks_per_cu,
-                  kLowbitDenseConfigRows);
+                  kLowbitDenseConfigRows, options.marlin_instruction_m);
 #elif defined(DENSE_MARLIN_SWEEP)
     std::snprintf(build, sizeof build, "bits=%d TSK=%d gs=%d scheduler=%s",
                   int(cutlass::sizeof_bits<QuantType>::value), TileShapeK, options.g,
@@ -4233,11 +4261,34 @@ int main(int argc, char const **args) {
     bench_floor::banner();
     bench_samples::run_header(dense_sample_family(), build, reps);
 
+#if defined(DENSE_MARLIN_STANDALONE_SWEEP)
+    int eligible_rows = 0;
+    for (auto const& c : supported_configs()) {
+      int const row_instruction_m = (c.tm == 8 && c.wm == 8) ? 8 : 16;
+      eligible_rows += options.marlin_instruction_m == 0 ||
+                       row_instruction_m == options.marlin_instruction_m;
+    }
+    if (eligible_rows == 0) {
+      std::fprintf(stderr,
+                   "standalone Marlin instruction-M filter selected zero rows\n");
+      return 1;
+    }
+    std::printf("  [standalone sweep filter] instruction_m=%d eligible_rows=%d compiled_rows=%d\n",
+                options.marlin_instruction_m, eligible_rows,
+                kLowbitDenseConfigRows);
+#endif
     std::printf("%-18s %-10s %s\n", "CONFIG", "TFLOP/s", "status");
     Best best; best.tag[0] = '\0'; best.us = 1e18;
     for (int rep = 0; rep < reps; ++rep) {
       if (reps > 1) std::printf("\n  --- pass %d/%d ---\n", rep + 1, reps);
       for (auto const& c : supported_configs()) {
+#if defined(DENSE_MARLIN_STANDALONE_SWEEP)
+        int const row_instruction_m = (c.tm == 8 && c.wm == 8) ? 8 : 16;
+        if (options.marlin_instruction_m != 0 &&
+            row_instruction_m != options.marlin_instruction_m) {
+          continue;
+        }
+#endif
         // NAME THE CANDIDATE BEFORE LAUNCHING IT. A device assert takes the whole process, and every other
         // report of which config ran happens AFTER run_config() returns -- so without this, the row that killed
         // a sweep is not named anywhere and "reproduce it by name" has nothing to work from. Both channels get

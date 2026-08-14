@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import os
 from pathlib import Path
 
 
@@ -84,6 +85,12 @@ def main() -> int:
         "lowbit_dense_marlin_cfg_tm##TM##_tn##TN##_tk##TK",
         "_wk##WK##_st##ST",
         "TileCfg{LOWBIT_DENSE_TAG_SYMBOL",
+        'cmd.get_cmd_line_argument("instruction-m", marlin_instruction_m)',
+        "row_instruction_m = (c.tm == 8 && c.wm == 8) ? 8 : 16",
+        "row_instruction_m != options.marlin_instruction_m",
+        "eligible_rows=%d compiled_rows=%d",
+        "options.k % 128 != 0",
+        "exact_fixture_nonzeros_per_row = scale_k",
     ):
         if token not in bench:
             bad.append(f"standalone benchmark registry lacks {token!r}")
@@ -138,6 +145,11 @@ def main() -> int:
         "--search_configs",
         "--streamk_exact_fixture",
         '"--marlin-blocks-per-cu=$bpc"',
+        '"--instruction-m=$INSTRUCTION_M"',
+        'MARLIN_SWEEP_N:-4096',
+        'MARLIN_SWEEP_K:-4096',
+        'MARLIN_SWEEP_INSTRUCTION_M:-0',
+        'instruction_m_filter=%s',
         "run_sweep 1",
         "run_sweep 2",
         "bpc2.samples.jsonl",
@@ -148,6 +160,30 @@ def main() -> int:
     for forbidden in ("mktemp", "probe_box_identity", "--csv"):
         if forbidden in box_runner:
             bad.append(f"standalone box runner uses forbidden {forbidden!r}")
+
+    # These are execution controls, not source-shape assertions: each invalid
+    # runtime axis must fail before creating an output directory or reaching a
+    # build.  A future parser that silently rounds a shape/filter makes this
+    # gate red rather than producing a mislabeled sweep bundle.
+    runtime_negative_controls = (
+        ({"MARLIN_SWEEP_N": "4097"}, "MARLIN_SWEEP_N must be a positive multiple of 256"),
+        ({"MARLIN_SWEEP_K": "1000"}, "MARLIN_SWEEP_K must be a positive multiple of 128"),
+        ({"MARLIN_SWEEP_INSTRUCTION_M": "7"}, "MARLIN_SWEEP_INSTRUCTION_M must be 0, 8, or 16"),
+    )
+    negative_red = 0
+    for overlay, marker in runtime_negative_controls:
+        env = os.environ.copy()
+        env.update(overlay)
+        trial = subprocess.run(
+            ["bash", str(BOX_RUNNER)], cwd=ROOT, env=env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        if trial.returncode != 0 and marker in trial.stdout:
+            negative_red += 1
+        else:
+            bad.append(
+                f"runtime negative control {overlay} did not fail at its exact boundary"
+            )
 
     generated = GENERATED_HEADER.read_text()
     generated_rows = [line for line in generated.splitlines()
@@ -209,7 +245,8 @@ def main() -> int:
         "generic-DENSE_MARLIN_SWEEP=NOT_EVIDENCE; generated-header=BYTE_IDENTICAL; "
         "missing/extra-row-controls=2/2_RED; stage-ring-controls=3/3_RED; "
         "each rejected row has one reason; "
-        "box-runner=BPC1/BPC2+EXACT+SEARCH+OVERCAP-NOT-RUN"
+        "box-runner=BPC1/BPC2+EXACT+SEARCH+N/K/InstructionM+OVERCAP-NOT-RUN; "
+        f"runtime-axis-negative-controls={negative_red}/3_RED"
     )
     return 0
 
