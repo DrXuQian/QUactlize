@@ -64,6 +64,9 @@ class MarlinKernelPPU {
 
   static constexpr uint32_t MaxThreadsPerBlock = CollectiveMainloop::Threads;
   static constexpr int InstructionM = CollectiveMainloop::InstructionM;
+  static constexpr int TileM = CollectiveMainloop::TileM;
+  static constexpr int TileN = CollectiveMainloop::TileN;
+  static constexpr int TileK = CollectiveMainloop::TileK;
   static constexpr int Stages = CollectiveMainloop::Stages;
   // Match classic's __launch_bounds__(256,2).  This is a minimum-residency
   // code-generation request, not a maximum launch grid.  Packed m8 consumes
@@ -74,6 +77,8 @@ class MarlinKernelPPU {
   static constexpr uint32_t WarpKCohorts = CollectiveMainloop::WarpOnK;
   static constexpr uint32_t OutputThreads =
       MaxThreadsPerBlock / WarpKCohorts;
+  static constexpr int NBlocksPerWarp =
+      CollectiveMainloop::NBlocksPerWarp;
   static constexpr int AccumulatorValues =
       CollectiveMainloop::AccumulatorValues;
   static constexpr int AccumulatorHalves =
@@ -84,9 +89,13 @@ class MarlinKernelPPU {
   static_assert(cute::rank(ProblemShape{}) == 4,
                 "standalone Marlin requires dense <M,N,K,L>");
   static_assert((InstructionM == 8 || InstructionM == 16) &&
-                    MaxThreadsPerBlock == 256 && WarpKCohorts == 4 &&
-                    OutputThreads == 64,
-                "first standalone Marlin m8/m16 family is 1M x 2N x 4K");
+                    (MaxThreadsPerBlock == 128 ||
+                     MaxThreadsPerBlock == 256) &&
+                    (WarpKCohorts == 2 || WarpKCohorts == 4 ||
+                     WarpKCohorts == 8) &&
+                    OutputThreads == uint32_t(CollectiveMainloop::WarpOnN * 32) &&
+                    NBlocksPerWarp * CollectiveMainloop::WarpOnN == TileN / 16,
+                "standalone Marlin output cohort must match its N/K warp topology");
   static_assert(std::is_same_v<ElementAccumulator, float> &&
                     std::is_same_v<ElementCompute, float>,
                 "Marlin CTA reduction is FP32");
@@ -94,22 +103,38 @@ class MarlinKernelPPU {
                     sizeof(ElementD) == sizeof(__half),
                 "Marlin D-chain is fp16");
 
-  // The first 16 KiB is enough for classic's reduction tree; the same store
-  // then stages 4,352 B of padded row-major output.  Both alias the mainloop
-  // only after its final cp.async wait + CTA barrier.
+  static constexpr int ReductionStorageBytes =
+      int(WarpKCohorts / 2) * TileM * TileN * int(sizeof(float));
+  static constexpr int OutputStorageBytes =
+      2 * TileM * (TileN + 8);
+  static constexpr int MainloopStorageBytes =
+      int(sizeof(typename CollectiveMainloop::SharedStorage));
+  static constexpr int CooperativeStorageBytes =
+      MainloopStorageBytes > ReductionStorageBytes
+          ? (MainloopStorageBytes > OutputStorageBytes
+                 ? MainloopStorageBytes
+                 : OutputStorageBytes)
+          : (ReductionStorageBytes > OutputStorageBytes
+                 ? ReductionStorageBytes
+                 : OutputStorageBytes);
+
+  // The reduction tree and row-major output stage reuse the mainloop lifetime,
+  // but low-stage WN128 shapes can require more bytes than the cp.async ring.
+  // Size the union from the exact largest consumer instead of assuming the
+  // mainloop always dominates.
   struct SharedStorage {
     union {
       typename CollectiveMainloop::SharedStorage mainloop;
       alignas(16) unsigned char cooperative[
-          sizeof(typename CollectiveMainloop::SharedStorage)];
+          CooperativeStorageBytes];
     } tensors;
   };
   static constexpr int SharedStorageSize = sizeof(SharedStorage);
   static_assert(
-      SharedStorageSize == sizeof(typename CollectiveMainloop::SharedStorage),
-      "the cooperative union must not inflate the mainloop's stage ledger");
+      SharedStorageSize == CooperativeStorageBytes,
+      "the cooperative union must equal max(mainloop,reduction,output)");
   static_assert(
-      Stages != 4 ||
+      Stages != 4 || TileN != 128 || TileK != 128 ||
           SharedStorageSize == (InstructionM == 8 ? 34816 : 50176),
       "the shipping s4 shared ledger must remain byte-identical");
 
@@ -183,10 +208,10 @@ class MarlinKernelPPU {
       Accumulator& accum, SharedStorage& shared) {
     Vector128* sh = reinterpret_cast<Vector128*>(shared.tensors.cooperative);
     int const tid = int(threadIdx.x);
-    constexpr int red_off = 2;
+    constexpr int red_off = int(WarpKCohorts) / 2;
     int const red_idx = tid / int(OutputThreads);
     constexpr int red_sh_stride =
-        int(OutputThreads) * 4 * AccumulatorHalves;
+        int(OutputThreads) * NBlocksPerWarp * AccumulatorHalves;
     constexpr int red_sh_delta = int(OutputThreads);
     int const red_sh_rd = red_sh_stride * red_idx + tid % int(OutputThreads);
 
@@ -194,7 +219,7 @@ class MarlinKernelPPU {
     for (int step = red_off; step > 0; step /= 2) {
       if (step <= red_idx && red_idx < 2 * step) {
         #pragma unroll
-        for (int n_block = 0; n_block < 4; ++n_block) {
+        for (int n_block = 0; n_block < NBlocksPerWarp; ++n_block) {
           #pragma unroll
           for (int half = 0; half < AccumulatorHalves; ++half) {
             int const chunk = AccumulatorHalves * n_block + half;
@@ -223,7 +248,7 @@ class MarlinKernelPPU {
     }
     if (red_idx == 0) {
       #pragma unroll
-      for (int n_block = 0; n_block < 4; ++n_block) {
+      for (int n_block = 0; n_block < NBlocksPerWarp; ++n_block) {
         #pragma unroll
         for (int half = 0; half < AccumulatorHalves; ++half) {
           int const chunk = AccumulatorHalves * n_block + half;
@@ -252,8 +277,9 @@ class MarlinKernelPPU {
     __half* d = reinterpret_cast<__half*>(params.epilogue.ptr_D);
     int const lane = tid % 32;
     #pragma unroll
-    for (int n_block = 0; n_block < 4; ++n_block) {
-      int const n_base = marlin_ppu_detail::output_n_base(
+    for (int n_block = 0; n_block < NBlocksPerWarp; ++n_block) {
+      int const n_base = marlin_ppu_detail::output_n_base<
+          TileN, NBlocksPerWarp>(
           int(work.N_idx), tid, n_block);
       #pragma unroll
       for (int value = 0; value < AccumulatorValues; ++value) {
@@ -262,9 +288,8 @@ class MarlinKernelPPU {
         int const col = n_base +
                         marlin_ppu_detail::output_col_offset<InstructionM>(
                             lane, value);
-        // q is a global N-tile ordinal and the admitted N is an exact
-        // multiple of TileN=128.  L179 proves the 64 output threads cover
-        // exactly [128*q,128*q+127], so only the M residue needs a guard.
+        // q is a global N-tile ordinal.  The output cohort covers exactly
+        // [TileN*q, TileN*q+TileN-1], so only the M residue needs a guard.
         if (row < problem_m) {
           int64_t const offset = int64_t(row) * problem_n + col;
           if (!first_peer) {
@@ -282,16 +307,17 @@ class MarlinKernelPPU {
       Accumulator const& accum, Params const& params,
       typename TileScheduler::WorkTileInfo const& work,
       int problem_m, int problem_n, SharedStorage& shared) {
-    constexpr int kRowStrideHalf = 136;
-    constexpr int kVectorsPerRow = 16;
+    constexpr int kRowStrideHalf = TileN + 8;
+    constexpr int kVectorsPerRow = TileN / 8;
     int const tid = int(threadIdx.x);
     __half* sh = reinterpret_cast<__half*>(shared.tensors.cooperative);
     __syncthreads();
     if (tid < int(OutputThreads)) {
       int const lane = tid % 32;
       #pragma unroll
-      for (int n_block = 0; n_block < 4; ++n_block) {
-        int const n_base = marlin_ppu_detail::output_n_base(
+      for (int n_block = 0; n_block < NBlocksPerWarp; ++n_block) {
+        int const n_base = marlin_ppu_detail::output_n_base<
+            TileN, NBlocksPerWarp>(
             0, tid, n_block);
         #pragma unroll
         for (int value = 0; value < AccumulatorValues; ++value) {
@@ -309,9 +335,11 @@ class MarlinKernelPPU {
     }
     __syncthreads();
 
-    int const row = tid / kVectorsPerRow;
-    int const vector_col = tid % kVectorsPerRow;
-    if (row < problem_m) {
+    int const total_vectors = problem_m * kVectorsPerRow;
+    for (int vector = tid; vector < total_vectors;
+         vector += int(MaxThreadsPerBlock)) {
+      int const row = vector / kVectorsPerRow;
+      int const vector_col = vector % kVectorsPerRow;
       auto const* src = reinterpret_cast<Vector128 const*>(
           sh + row * kRowStrideHalf) + vector_col;
       auto* dst = reinterpret_cast<Vector128*>(params.epilogue.ptr_D) +

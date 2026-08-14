@@ -32,6 +32,18 @@ struct MarlinAccumulatorM8PPU {
   FragmentC8 fragments[4];
 };
 
+// Keep the shipping four-n16 aggregates as named concrete types.  They are
+// part of the compiled-row ABI and several compile gates intentionally compare
+// them by type, not merely by sizeof.  Wider WarpN topologies need more native
+// n16 fragments per output warp, so only the non-shipping counts use this
+// parameterized aggregate.
+template <class Fragment, int NBlocks>
+struct MarlinAccumulatorNPPU {
+  static_assert(NBlocks > 0,
+                "a standalone Marlin output warp must own an n16 block");
+  Fragment fragments[NBlocks];
+};
+
 template <int InstructionM>
 using FragmentCFor = std::conditional_t<InstructionM == 8, FragmentC8, FragmentC>;
 
@@ -39,10 +51,23 @@ template <int InstructionM>
 using MarlinAccumulatorFor = std::conditional_t<
     InstructionM == 8, MarlinAccumulatorM8PPU, MarlinAccumulatorPPU>;
 
+template <int InstructionM, int NBlocks>
+using MarlinAccumulatorForN = std::conditional_t<
+    NBlocks == 4,
+    MarlinAccumulatorFor<InstructionM>,
+    MarlinAccumulatorNPPU<FragmentCFor<InstructionM>, NBlocks>>;
+
 static_assert(sizeof(FragmentC8) == 4 * sizeof(float));
 static_assert(sizeof(FragmentC) == 8 * sizeof(float));
 static_assert(sizeof(MarlinAccumulatorM8PPU) == 16 * sizeof(float));
 static_assert(sizeof(MarlinAccumulatorPPU) == 32 * sizeof(float));
+static_assert(std::is_same_v<
+                  MarlinAccumulatorForN<8, 4>, MarlinAccumulatorM8PPU> &&
+              std::is_same_v<
+                  MarlinAccumulatorForN<16, 4>, MarlinAccumulatorPPU>,
+              "WN64 must retain the exact shipping accumulator types");
+static_assert(sizeof(MarlinAccumulatorForN<8, 8>) == 32 * sizeof(float));
+static_assert(sizeof(MarlinAccumulatorForN<16, 8>) == 64 * sizeof(float));
 
 template <int InstructionM, int NBlock>
 CUTLASS_DEVICE void mma_n16(
@@ -51,8 +76,8 @@ CUTLASS_DEVICE void mma_n16(
     FragmentCFor<InstructionM>& accum) {
   static_assert(InstructionM == 8 || InstructionM == 16,
                 "standalone Marlin supports the real PPU m8/m16 atoms only");
-  static_assert(NBlock >= 0 && NBlock < 4,
-                "the fixed Marlin warp owns exactly four n16 blocks");
+  static_assert(NBlock >= 0 && NBlock < 8,
+                "the proved Marlin WarpN domain owns four or eight n16 blocks");
   uint32_t const* av = reinterpret_cast<uint32_t const*>(&a);
   uint32_t const b[4] = {
       *reinterpret_cast<uint32_t const*>(&b0.value[0]),

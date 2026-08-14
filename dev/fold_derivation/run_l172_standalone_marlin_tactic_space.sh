@@ -37,19 +37,19 @@ authority = Path(sys.argv[1]).read_text()
 out = Path(sys.argv[2])
 rows = [line for line in authority.splitlines(keepends=True)
         if line.startswith("  X(")]
-if len(rows) != 10:
+if len(rows) != 70:
     raise SystemExit(
-        f"[l172:header] FAIL: expected ten authority rows, found {len(rows)}")
+        f"[l172:header] FAIL: expected seventy authority rows, found {len(rows)}")
 
 missing = authority.replace(
-    "#define MARLIN_STANDALONE_CFG_ROWS 10",
-    "#define MARLIN_STANDALONE_CFG_ROWS 9",
+    "#define MARLIN_STANDALONE_CFG_ROWS 70",
+    "#define MARLIN_STANDALONE_CFG_ROWS 69",
     1,
 ).replace(rows[0], "", 1)
 extra_row = rows[-1].rstrip("\n") + " \\\n"
 extra = authority.replace(
-    "#define MARLIN_STANDALONE_CFG_ROWS 10",
-    "#define MARLIN_STANDALONE_CFG_ROWS 11",
+    "#define MARLIN_STANDALONE_CFG_ROWS 70",
+    "#define MARLIN_STANDALONE_CFG_ROWS 71",
     1,
 ).replace(rows[-1], extra_row + rows[-1], 1)
 

@@ -145,7 +145,9 @@ def apply_plant(
     if plant == "none":
         return collective, load, dequant
     if plant == "runtime-dispatch":
-        marker = "    auto multiply = [&](int inner) {"
+        marker = "    auto multiply = [&](auto inner_c) {"
+        if collective.count(marker) != 1:
+            die(plant, "runtime-dispatch plant seam drifted")
         collective = collective.replace(
             marker, marker + "\n      for (int n_block = 0; n_block < 4; ++n_block) {}",
             1,

@@ -20,10 +20,14 @@ CUTLASS_HOST_DEVICE constexpr int output_row(int lane, int value) {
          (InstructionM == 16 ? (((value >> 2) & 1) << 3) : 0);
 }
 
+template <int TileN, int NBlocksPerWarp = 4>
 CUTLASS_HOST_DEVICE constexpr int output_n_base(
     int n_tile, int output_thread, int n_block) {
+  static_assert(TileN >= 64 && TileN % 64 == 0);
+  static_assert(NBlocksPerWarp == 4 || NBlocksPerWarp == 8);
   int const warp_n = output_thread / 32;
-  return (n_tile * 8 + warp_n * 4 + n_block) * 16;
+  return n_tile * TileN +
+         (warp_n * NBlocksPerWarp + n_block) * 16;
 }
 
 template <int InstructionM>

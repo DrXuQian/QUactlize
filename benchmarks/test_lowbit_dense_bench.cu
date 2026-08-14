@@ -979,20 +979,27 @@ bool dense_map_accumulator_owners(DenseVerifyPartition& partition) {
   constexpr bool kStandaloneMarlin =
       dense_is_standalone_marlin_kernel<typename Gemm::GemmKernel>::value;
   if constexpr (kStandaloneMarlin) {
-    // The standalone mainloop binds four native PPU m16n16 instructions into
-    // contiguous accum[8*n_block + value] ranges.  Map that explicit register
-    // order rather than CuTe's tiled fragment-index order.  Only K0 survives
-    // the 4->2->1 CTA tree, and those 64 physical threads own one 16x128 tile.
+    // The standalone mainloop binds NBlocksPerWarp native PPU m16n16
+    // instructions into contiguous accum[value*n_block] ranges.  Map that
+    // explicit register order rather than CuTe's tiled fragment-index order.
+    // Only K0 survives the CTA tree; its exact output cohort is derived from
+    // the compiled WN/WK row rather than the historical 256T/64T/4K point.
     constexpr int kInstructionM = Gemm::GemmKernel::InstructionM;
     constexpr int kAccumulatorValues = Gemm::GemmKernel::AccumulatorValues;
-    if (cta_threads != 256 || output_threads != 64 ||
-        warp_k_cohorts != 4 ||
+    constexpr int kNBlocksPerWarp = Gemm::GemmKernel::NBlocksPerWarp;
+    constexpr int kWarpOnN =
+        Gemm::GemmKernel::CollectiveMainloop::WarpOnN;
+    if (output_threads != 32 * kWarpOnN ||
         (kInstructionM != 8 && kInstructionM != 16) ||
-        stripes != 4 * kAccumulatorValues) {
+        (kNBlocksPerWarp != 4 && kNBlocksPerWarp != 8) ||
+        stripes != kNBlocksPerWarp * kAccumulatorValues) {
       std::fprintf(stderr,
                    "  [dense verify owners] fail-close: standalone m%d "
-                   "topology drifted from 256T/64 outputT/4K/%d stripes\n",
-                   kInstructionM, 4 * kAccumulatorValues);
+                   "topology disagrees with outputT=%d Nwarps=%d "
+                   "nblocks/warp=%d stripes=%d/%d\n",
+                   kInstructionM, output_threads, kWarpOnN,
+                   kNBlocksPerWarp, stripes,
+                   kNBlocksPerWarp * kAccumulatorValues);
       return false;
     }
   }
@@ -1025,13 +1032,15 @@ bool dense_map_accumulator_owners(DenseVerifyPartition& partition) {
         constexpr int kInstructionM = Gemm::GemmKernel::InstructionM;
         constexpr int kAccumulatorValues =
             Gemm::GemmKernel::AccumulatorValues;
+        constexpr int kNBlocksPerWarp =
+            Gemm::GemmKernel::NBlocksPerWarp;
         int const warp_n = output_thread / 32;
         int const lane = output_thread % 32;
         int const n_block = stripe / kAccumulatorValues;
         int const value = stripe % kAccumulatorValues;
         m = lane / 4 +
             (kInstructionM == 16 ? 8 * (value >> 2) : 0);
-        n = 64 * warp_n + 16 * n_block +
+        n = 16 * kNBlocksPerWarp * warp_n + 16 * n_block +
             (lane & 3) + 4 * (value & 3);
       }
       else {
@@ -1859,13 +1868,19 @@ DenseFixtureEvidence initialize(Options const& options) {
     // Standalone Marlin owns the classic uint32 physical representation.  It
     // is intentionally independent of shipping xplane: logical [K,N] biased
     // codes are the only common seam between the benchmark and this format.
+#if defined(DENSE_MARLIN_WK4_AB)
     static_assert(cutlass::sizeof_bits<QuantType>::value == 4 &&
                       (DENSE_AB_TM == 8 || DENSE_AB_TM == 16) &&
                       DENSE_AB_TN == 128 && DENSE_AB_TK == 128 &&
                       DENSE_AB_WM == DENSE_AB_TM &&
                       DENSE_AB_WN == 64 && DENSE_AB_WARP_K == 32 &&
                       DENSE_AB_ARTIFACT_TK == 64,
-                  "standalone classic packing is independent of the m8/m16 M atom");
+                  "the historical WK4 A/B target must remain byte-identical");
+#else
+    static_assert(cutlass::sizeof_bits<QuantType>::value == 4 &&
+                      DENSE_AB_ARTIFACT_TK == 64,
+                  "the standalone sweep shares one classic-u32 W4/TK64 artifact");
+#endif
     std::vector<uint8_t> q(size_t(row) * col);
     auto logical_b = tensor_B.host_view();
     for (int k = 0; k < col; ++k) {
@@ -1893,11 +1908,15 @@ DenseFixtureEvidence initialize(Options const& options) {
     std::printf(
         "  [dense marlin aligned artifact] batch=%d bytes=%zu "
         "placement=classic-marlin-u32 scale=classic-gs128-permuted "
+#if defined(DENSE_MARLIN_WK4_AB)
         "consumer_axis=WarpK32 roundtrip_bad=%zu/%zu\n",
+#else
+        "consumer_axis=generated-row-WarpN/WarpK roundtrip_bad=%zu/%zu\n",
+#endif
         b, artifact_bytes, roundtrip_bad, q.size());
     if (roundtrip_bad != 0) {
       std::fprintf(stderr,
-                   "classic-aligned WK4 consumer artifact failed its host roundtrip\n");
+                   "classic-u32 standalone consumer artifact failed its host roundtrip\n");
       std::exit(1);
     }
 #else

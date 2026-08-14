@@ -132,13 +132,17 @@ def main() -> int:
     ):
         if output_map.count(token) != 1:
             errors.append(f"authoritative output map lacks {token}")
+    kernel_compact = "".join(kernel.split())
     for token, count in (
         ("marlin_ppu_detail::output_row<InstructionM>(", 2),
-        ("marlin_ppu_detail::output_n_base(", 2),
+        ("marlin_ppu_detail::output_n_base<TileN,NBlocksPerWarp>(", 2),
         ("marlin_ppu_detail::output_col_offset<InstructionM>(", 2),
     ):
-        if kernel.count(token) != count:
-            errors.append(f"production output path consumes {token} {kernel.count(token)} times, expected {count}")
+        if kernel_compact.count(token) != count:
+            errors.append(
+                f"production output path consumes {token} "
+                f"{kernel_compact.count(token)} times, expected {count}"
+            )
     for token in (
         "class MarlinCheckedHandlePPU", "using RawGemm = RawGemm_",
         "using MarlinGemmPPU = detail::MarlinCheckedHandlePPU<",

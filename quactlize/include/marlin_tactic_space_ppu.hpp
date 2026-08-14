@@ -199,7 +199,7 @@ constexpr char const* exclusion_clause(MarlinTacticExclusionPPU exclusion) {
     case MarlinTacticExclusionPPU::SharedMemoryCapacity:
       return "A+B+scale stages exceed the PPU 256 KiB block shared-memory limit";
     case MarlinTacticExclusionPPU::ACopyVectorCoverage:
-      return "classic 16-byte A copies do not partition exactly across the CTA threads";
+      return "classic 16-byte A copies do not form whole-row CTA rounds";
     case MarlinTacticExclusionPPU::BCopyVectorCoverage:
       return "classic 16-byte B copies do not partition exactly across the CTA threads";
     case MarlinTacticExclusionPPU::BInnerIterations:
@@ -207,15 +207,15 @@ constexpr char const* exclusion_clause(MarlinTacticExclusionPPU exclusion) {
     case MarlinTacticExclusionPPU::AccumulatorRegisterCeiling:
       return "the FP32 output fragment exceeds the 192-value per-thread admission ceiling";
     case MarlinTacticExclusionPPU::GroupScaleTileMismatch:
-      return "the first gs128 loader proves one scale group per K tile only";
+      return "the gs128 loader requires an integral one/two-tile group cadence";
     case MarlinTacticExclusionPPU::AiuLoadUnproved:
       return "AIU load is declared but has no standalone Marlin byte/cadence proof yet";
     case MarlinTacticExclusionPPU::PipelineDepthUnproved:
       return "the standalone ring proof admits pipeline depths 2 through 6";
     case MarlinTacticExclusionPPU::ClassicOutputMapUnproved:
-      return "the standalone final-output and reduction maps are proved for matched m8/m16 M atoms with WarpN64";
+      return "the standalone final-output and reduction maps lack a proved WarpN/WarpK topology";
     case MarlinTacticExclusionPPU::ClassicMainloopGeometryUnproved:
-      return "the standalone copy/dequant/MMA cadence is proved only for TileN128/TileK128/WarpK32";
+      return "the standalone copy/dequant/MMA cadence lacks a proved TN/TK/WN/WarpK geometry";
     case MarlinTacticExclusionPPU::Count:
       return "sentinel";
   }
@@ -265,8 +265,28 @@ constexpr int64_t shared_bytes_per_stage(MarlinTacticPPU tactic) {
          int64_t(2) * tactic.tn;
 }
 
-constexpr int64_t shared_bytes(MarlinTacticPPU tactic) {
+constexpr int64_t mainloop_shared_bytes(MarlinTacticPPU tactic) {
   return shared_bytes_per_stage(tactic) * tactic.stages;
+}
+
+constexpr int64_t reduction_shared_bytes(MarlinTacticPPU tactic) {
+  int const cohorts = warp_k_cohorts(tactic);
+  return cohorts > 0
+             ? int64_t(cohorts / 2) * tactic.tm * tactic.tn * int(sizeof(float))
+             : 0;
+}
+
+constexpr int64_t output_shared_bytes(MarlinTacticPPU tactic) {
+  return int64_t(2) * tactic.tm * (tactic.tn + 8);
+}
+
+constexpr int64_t shared_bytes(MarlinTacticPPU tactic) {
+  int64_t const mainloop = mainloop_shared_bytes(tactic);
+  int64_t const reduction = reduction_shared_bytes(tactic);
+  int64_t const output = output_shared_bytes(tactic);
+  return mainloop > reduction
+             ? (mainloop > output ? mainloop : output)
+             : (reduction > output ? reduction : output);
 }
 
 constexpr int a_stage_vectors(MarlinTacticPPU tactic) {
@@ -331,23 +351,12 @@ constexpr MarlinTacticExclusionPPU classify(MarlinTacticPPU tactic) {
   int const threads = cta_threads(tactic);
   int const a_quantum = tactic.tk / 8;
   int const a_vectors = a_stage_vectors(tactic);
-  // A is copied in 16-byte vectors.  Full-m16 happens to assign one vector
-  // to every CTA thread, but that is not an ownership requirement: the M=1
-  // packed-m8 stage has only 16 distinct vectors and deliberately uses one
-  // half-warp.  Requiring `a_vectors % threads == 0` would either reject that
-  // exact cover or force 16 redundant copies of every A byte.  The current
-  // one-iteration producer instead requires a non-empty whole-row vector
-  // domain that fits within the CTA; source binding and L181 prove the active
-  // prefix covers it exactly once.  Preserve the original full-CTA/multi-pass
-  // classification for the rest of the declared space; only the one-row
-  // representation has a smaller-than-CTA producer domain.
-  bool const full_cta_cover = threads > 0 && a_vectors % threads == 0;
-  bool const packed_row_prefix_cover =
-      stored_a_rows(tactic) == 1 && a_vectors == a_quantum &&
-      a_vectors <= threads;
+  // A is copied in 16-byte vectors.  The producer partitions its vector
+  // domain in ceil(a_vectors/threads) rounds with a predicated final round:
+  // TN64/TK128 m16 needs two rounds, while packed-m8 and TN256/TK64 use an
+  // active prefix.  Whole-row thread quanta make every case exact-once.
   if (a_quantum <= 0 || threads % a_quantum || a_vectors <= 0 ||
-      a_vectors % a_quantum ||
-      (!full_cta_cover && !packed_row_prefix_cover)) {
+      a_vectors % a_quantum) {
     return MarlinTacticExclusionPPU::ACopyVectorCoverage;
   }
   if (b_stage_vectors(tactic) % threads) {
@@ -371,10 +380,19 @@ constexpr MarlinTacticExclusionPPU classify(MarlinTacticPPU tactic) {
   bool const proved_m_atom =
       (tactic.tm == 8 && tactic.wm == 8) ||
       (tactic.tm == 16 && tactic.wm == 16);
-  if (!proved_m_atom || tactic.wn != 64) {
+  bool const proved_output_warp_n = tactic.wn == 64 || tactic.wn == 128;
+  if (!proved_m_atom || !proved_output_warp_n) {
     return MarlinTacticExclusionPPU::ClassicOutputMapUnproved;
   }
-  if (tactic.tn != 128 || tactic.tk != 128 || tactic.warp_k != 32) {
+  bool const proved_geometry =
+      (tactic.tn == 64 && tactic.tk == 128) ||
+      (tactic.tn == 128 &&
+       (tactic.tk == 64 || tactic.tk == 128)) ||
+      (tactic.tn == 256 && tactic.tk == 64);
+  bool const proved_warp_topology =
+      (tactic.wn == 64 && tactic.warp_k == 32) ||
+      (tactic.wn == 128 && tactic.warp_k == 16);
+  if (!proved_geometry || !proved_warp_topology) {
     return MarlinTacticExclusionPPU::ClassicMainloopGeometryUnproved;
   }
   return MarlinTacticExclusionPPU::None;
@@ -419,11 +437,40 @@ static_assert(admitted(MarlinTacticPPU{
     16, 128, 128, 16, 64, 32, 3, MarlinLoadKindPPU::CpAsync}));
 static_assert(admitted(MarlinTacticPPU{
     16, 128, 128, 16, 64, 32, 5, MarlinLoadKindPPU::CpAsync}));
+static_assert(admitted(MarlinTacticPPU{
+    8, 64, 128, 8, 64, 32, 2, MarlinLoadKindPPU::CpAsync}));
+static_assert(admitted(MarlinTacticPPU{
+    16, 64, 128, 16, 64, 32, 6, MarlinLoadKindPPU::CpAsync}));
+static_assert(admitted(MarlinTacticPPU{
+    8, 128, 64, 8, 64, 32, 2, MarlinLoadKindPPU::CpAsync}));
+static_assert(admitted(MarlinTacticPPU{
+    16, 128, 64, 16, 64, 32, 6, MarlinLoadKindPPU::CpAsync}));
+static_assert(admitted(MarlinTacticPPU{
+    8, 256, 64, 8, 64, 32, 2, MarlinLoadKindPPU::CpAsync}));
+static_assert(admitted(MarlinTacticPPU{
+    16, 256, 64, 16, 64, 32, 6, MarlinLoadKindPPU::CpAsync}));
+static_assert(admitted(MarlinTacticPPU{
+    8, 128, 64, 8, 128, 16, 2, MarlinLoadKindPPU::CpAsync}));
+static_assert(admitted(MarlinTacticPPU{
+    16, 128, 128, 16, 128, 16, 4, MarlinLoadKindPPU::CpAsync}));
+static_assert(admitted(MarlinTacticPPU{
+    16, 256, 64, 16, 128, 16, 6, MarlinLoadKindPPU::CpAsync}));
 static_assert(shared_bytes(kMarlinClassicReferencePPU) == 50176);
+static_assert(mainloop_shared_bytes(kMarlinClassicReferencePPU) == 50176);
 static_assert(shared_bytes(MarlinTacticPPU{
                   8, 128, 128, 8, 64, 32, 4,
                   MarlinLoadKindPPU::CpAsync}) == 34816,
               "m8 decode must retain exactly one packed A row");
+static_assert(mainloop_shared_bytes(MarlinTacticPPU{
+                  16, 128, 128, 16, 128, 16, 2,
+                  MarlinLoadKindPPU::CpAsync}) == 25088 &&
+              reduction_shared_bytes(MarlinTacticPPU{
+                  16, 128, 128, 16, 128, 16, 2,
+                  MarlinLoadKindPPU::CpAsync}) == 32768 &&
+              shared_bytes(MarlinTacticPPU{
+                  16, 128, 128, 16, 128, 16, 2,
+                  MarlinLoadKindPPU::CpAsync}) == 32768,
+              "WN128 low-stage admission must include K-cohort reduction storage");
 static_assert(cta_warps(kMarlinClassicReferencePPU) == 8 &&
               cta_threads(kMarlinClassicReferencePPU) == 256 &&
               warp_k_cohorts(kMarlinClassicReferencePPU) == 4);
@@ -442,6 +489,10 @@ static_assert(classify(MarlinTacticPPU{
 static_assert(classify(MarlinTacticPPU{
                   16, 128, 128, 16, 128, 32, 4,
                   MarlinLoadKindPPU::CpAsync}) ==
-              MarlinTacticExclusionPPU::ClassicOutputMapUnproved);
+              MarlinTacticExclusionPPU::ClassicMainloopGeometryUnproved);
+static_assert(classify(MarlinTacticPPU{
+                  16, 64, 128, 16, 128, 16, 4,
+                  MarlinLoadKindPPU::CpAsync}) ==
+              MarlinTacticExclusionPPU::WarpDoesNotDivideTile);
 
 }  // namespace marlin_tactics_ppu

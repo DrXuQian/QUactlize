@@ -159,7 +159,8 @@ LoadMetric verify_plain_x2_row0(Plant plant) {
   // Only r=0 is semantically live for the admitted M=1 target.  Providers
   // for masked rows deliberately alias this packed row.  The production
   // pointer formula below must therefore reconstruct K=2*a+8*j+h for both
-  // 16-wide inner steps without reaching byte 256.
+  // 16-wide inner steps without reaching byte 256.  B's producer enumerates
+  // those steps inner-major, then K-cohort; A must use the same order.
   LoadMetric result;
   for (int warp_k = 0; warp_k < kKCohorts; ++warp_k) {
     for (int inner = 0; inner < kBInnerIters; ++inner) {
@@ -167,7 +168,8 @@ LoadMetric verify_plain_x2_row0(Plant plant) {
         for (int reg = 0; reg < 2; ++reg) {
           int provider = a / 2 + 16 * reg;
           int word = a % 2;
-          int source_base = warp_k * kWarpK + inner * 16 +
+          int const k_base = (inner * kKCohorts + warp_k) * 16;
+          int source_base = k_base +
                             4 * (provider % 2) + 8 * (provider / 16);
 
           if (plant == Plant::NvidiaProvider) {
@@ -176,15 +178,14 @@ LoadMetric verify_plain_x2_row0(Plant plant) {
             // describe PPU x2's redistributed 64-bit provider window.
             int const bad_row = provider % 8;
             int const bad_base_word = ((provider / 8) * 4) % 8;
-            source_base = warp_k * kWarpK + inner * 16 +
+            source_base = k_base +
                           bad_row * 16 + 2 * bad_base_word;
           }
           if (plant == Plant::ShiftedWord) word ^= 1;
 
           for (int half = 0; half < 2; ++half) {
             int const got = source_base + 2 * word + half;
-            int const want = warp_k * kWarpK + inner * 16 +
-                             2 * a + 8 * reg + half;
+            int const want = k_base + 2 * a + 8 * reg + half;
             ++result.values;
             result.mismatches += got != want;
             int const byte_begin = got * int(sizeof(uint16_t));

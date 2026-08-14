@@ -153,15 +153,15 @@ def main() -> int:
     generated_rows = [line for line in generated.splitlines()
                       if line.startswith("  X(")]
     for token in (
-        "#define MARLIN_STANDALONE_CFG_ROWS 10",
+        "#define MARLIN_STANDALONE_CFG_ROWS 70",
         "#define MARLIN_STANDALONE_CFG_LIST(X, B)",
         "Schema: X(TM,TN,TK,WM,WN,WarpK,ST,LoadToken,B).",
     ):
         if token not in generated:
             bad.append(f"generated standalone registry lacks {token!r}")
-    if len(generated_rows) != 10:
+    if len(generated_rows) != 70:
         bad.append(
-            "generated standalone registry does not contain exactly ten admitted rows"
+            "generated standalone registry does not contain exactly seventy admitted rows"
         )
 
     if bad:
@@ -173,8 +173,8 @@ def main() -> int:
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
     required = (
-        "declared=60000 unique=60000 admitted=10 classic_subspace=60",
-        "active-cardinality=2/1/1/2/1/1/5/1 family=m8,m16 stages=s2..s6",
+        "declared=60000 unique=60000 admitted=70 classic_subspace=60",
+        "active-cardinality=2/3/2/2/2/2/5/1 family=m8,m16 geometries=7 stages=s2..s6",
         "negative_controls=4/4_RED emitter=PASS header=BYTE_IDENTICAL ",
         "header_negative_controls=2/2_RED result=PASS",
     )
@@ -203,8 +203,8 @@ def main() -> int:
 
     print(
         "[dense-marlin-sweep-contract] PASS: standalone authority "
-        "declared=60000 admitted=10 classic-subspace=60; production generated "
-        "wrappers consume m8/m16 x s2..s6; production-target=" + TARGET + "; "
+        "declared=60000 admitted=70 classic-subspace=60; production generated "
+        "wrappers consume m8/m16 x seven-TN/TK/WN/WK-geometries x s2..s6; production-target=" + TARGET + "; "
         "generated-unit-row-abi=TM,TN,TK,WM,WN,WarpK,ST,Load; "
         "generic-DENSE_MARLIN_SWEEP=NOT_EVIDENCE; generated-header=BYTE_IDENTICAL; "
         "missing/extra-row-controls=2/2_RED; stage-ring-controls=3/3_RED; "

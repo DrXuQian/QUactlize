@@ -92,7 +92,7 @@ plant = sys.argv[2]
 text = path.read_text()
 changes = {
     "output-row": ("return lane / 4 +", "return lane / 8 +"),
-    "output-n-base": ("n_tile * 8 +", "n_tile * 4 +"),
+    "output-n-base": ("n_tile * TileN +", "(n_tile + 1) * TileN +"),
     "output-col-offset": ("((value % 4) << 2)", "((value % 4) << 1)"),
 }
 needle, replacement = changes[plant]

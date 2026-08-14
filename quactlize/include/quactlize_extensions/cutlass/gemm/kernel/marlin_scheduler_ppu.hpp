@@ -29,7 +29,7 @@ namespace cutlass::gemm::kernel::marlin {
 //
 // The first target is intentionally narrow.  It admits the classic dense
 // decode geometry (one partial M tile, compact full N/K tiles, L == 1) for the
-// fixed 16x128x128 CTA tile.  General residue, grouped and batched shapes must
+// classic-geometry m8/m16 CTA tiles.  General residue, grouped and batched shapes must
 // add an explicit contract rather than silently inheriting this scheduler.
 template <class TileShape_, class ClusterShape_>
 class MarlinSchedulerPPU {
@@ -79,9 +79,12 @@ public:
                 "standalone Marlin scheduler requires a static CTA tile");
   static_assert(cute::is_static<ClusterShape>::value,
                 "standalone Marlin scheduler requires a static cluster");
-  static_assert((TileM == 8 || TileM == 16) &&
-                    TileN == 128 && TileK == 128,
-                "the first standalone Marlin scheduler family is m8/m16 x128x128");
+  static_assert(
+      (TileM == 8 || TileM == 16) &&
+          ((TileN == 64 && TileK == 128) ||
+           (TileN == 128 && (TileK == 64 || TileK == 128)) ||
+           (TileN == 256 && TileK == 64)),
+      "standalone Marlin scheduler geometry lacks an exact stripe proof");
   static_assert(cute::size(ClusterShape{}) == 1,
                 "the first standalone Marlin scheduler does not support clusters");
   static_assert(std::is_same_v<BarrierType, int>,

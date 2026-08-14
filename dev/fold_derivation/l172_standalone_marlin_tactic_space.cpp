@@ -170,12 +170,12 @@ int main(int argc, char** argv) {
     return fail(plant, "first-failure census does not close");
   if (classic != 60)
     return fail(plant, "classic subspace is not the independent 5x3x4 relation");
-  if (admitted != 10 || !saw_m8 || !saw_m16)
+  if (admitted != 70 || !saw_m8 || !saw_m16)
     return fail(plant,
-                "admission is not exactly the proved m8/m16 x s2..s6 family");
-  if (admitted_tm.size() != 2 || admitted_tn.size() != 1 ||
-      admitted_tk.size() != 1 || admitted_wm.size() != 2 ||
-      admitted_wn.size() != 1 || admitted_warp_k.size() != 1 ||
+                "admission is not exactly the proved 70-row m8/m16 TN/TK/WN/WarpK x s2..s6 family");
+  if (admitted_tm.size() != 2 || admitted_tn.size() != 3 ||
+      admitted_tk.size() != 2 || admitted_wm.size() != 2 ||
+      admitted_wn.size() != 2 || admitted_warp_k.size() != 2 ||
       admitted_stages.size() != 5 || admitted_loads.size() != 1)
     return fail(plant, "an unproved standalone axis became active");
 
@@ -202,6 +202,6 @@ int main(int argc, char** argv) {
       static_cast<unsigned long long>(kinds[3]));
   std::puts(
       "[l172] axes: TM=5 TN=3 TK=4 WM=5 WN=4 WarpK=5 stages=5 load=2; "
-      "active-cardinality=2/1/1/2/1/1/5/1 family=m8,m16 stages=s2..s6");
+      "active-cardinality=2/3/2/2/2/2/5/1 family=m8,m16 geometries=7 stages=s2..s6");
   return 0;
 }

@@ -129,13 +129,14 @@ def main() -> int:
     c = compact(collective)
     for token in (
         "usingFragmentC=marlin_ppu_detail::FragmentCFor<InstructionM>;",
-        "usingAccumulator=marlin_ppu_detail::MarlinAccumulatorFor<InstructionM>;",
+        "usingAccumulator=marlin_ppu_detail::MarlinAccumulatorForN<InstructionM,NBlocksPerWarp>;",
         "FragmentC&accum",
         "mma_n16<InstructionM,NBlock>(fragment_a,b0,b1,accum)",
-        "fragment_scale[inner&1],accum.fragments[0])",
-        "fragment_scale[inner&1],accum.fragments[1])",
-        "fragment_scale[inner&1],accum.fragments[2])",
-        "fragment_scale[inner&1],accum.fragments[3])",
+        "constexprintaccum_base=4*(inner%BLoadsPerKInner);",
+        "fragment_scale[inner&1],accum.fragments[accum_base+0])",
+        "fragment_scale[inner&1],accum.fragments[accum_base+1])",
+        "fragment_scale[inner&1],accum.fragments[accum_base+2])",
+        "fragment_scale[inner&1],accum.fragments[accum_base+3])",
         "SharedBasesconst&shared,Accumulator&accum",
     ):
         if token not in c:

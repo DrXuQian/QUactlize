@@ -142,7 +142,7 @@ int main(int argc, char** argv) {
       int const lane = tid % 32;
       for (int n_block = 0; n_block < 4; ++n_block) {
         int const n_base =
-            cutlass::gemm::kernel::marlin_ppu_detail::output_n_base(
+            cutlass::gemm::kernel::marlin_ppu_detail::output_n_base<128>(
                 q, tid, n_block);
         for (int value = 0; value < 8; ++value) {
           int const row =
@@ -184,7 +184,7 @@ int main(int argc, char** argv) {
       int const lane = tid % 32;
       for (int n_block = 0; n_block < 4; ++n_block) {
         int const n_base =
-            cutlass::gemm::kernel::marlin_ppu_detail::output_n_base(
+            cutlass::gemm::kernel::marlin_ppu_detail::output_n_base<128>(
                 q, tid, n_block);
         for (int value = 0; value < Main8::AccumulatorValues; ++value) {
           int const row =

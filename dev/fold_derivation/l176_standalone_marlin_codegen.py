@@ -364,8 +364,11 @@ def validate(texts: dict[Path, str], generated: Path | None) -> dict[str, object
     kernel = texts[KERNEL]
     output_map = texts[OUTPUT_MAP]
     mma = texts[MMA]
-    if "using Accumulator = marlin_ppu_detail::MarlinAccumulatorFor<InstructionM>;" not in collective:
-        raise ContractError("collective lost its atom-M-selected native Marlin accumulator alias")
+    if ("using Accumulator = marlin_ppu_detail::MarlinAccumulatorForN<" not in collective or
+            "InstructionM, NBlocksPerWarp>;" not in collective):
+        raise ContractError(
+            "collective lost its atom-M/N-selected native Marlin accumulator alias"
+        )
     if "Accumulator accum;" not in kernel:
         raise ContractError("kernel no longer constructs the native accumulator directly")
     if kernel.count(

@@ -64,25 +64,34 @@ def main() -> int:
         for name, count in re.findall(r"^reason\.([A-Z0-9_]+)=(\d+)$", census, re.M)
     }
     bad: list[str] = []
-    if not header or tuple(map(int, header.groups())) != (60000, 10, 60):
-        bad.append("schema/cardinality is not declared=60000 admitted=10 classic=60")
+    if not header or tuple(map(int, header.groups())) != (60000, 70, 60):
+        bad.append("schema/cardinality is not declared=60000 admitted=70 classic=60")
     if not kind_line:
         bad.append("missing four-way exclusion-kind census")
         kinds = ()
     else:
         kinds = tuple(map(int, kind_line.groups()))
-        if sum(kinds) != 60000 or kinds[0] != 10:
+        if sum(kinds) != 60000 or kinds[0] != 70:
             bad.append(f"kind census does not close: {kinds}")
         if any(value == 0 for value in kinds[1:]):
             bad.append(f"one named rejection class is empty: {kinds}")
-    if sum(reasons.values()) != 60000 or reasons.get("NONE") != 10:
+    if sum(reasons.values()) != 60000 or reasons.get("NONE") != 70:
         bad.append(
             f"first-failure reason census does not close: sum={sum(reasons.values())} "
             f"NONE={reasons.get('NONE')}"
         )
     expected_rows = {
-        f"{tm},128,128,{tm},64,32,{stages},cp_async"
+        f"{tm},{tn},{tk},{tm},{wn},{wk},{stages},cp_async"
         for tm in (8, 16)
+        for tn, tk, wn, wk in (
+            (64, 128, 64, 32),
+            (128, 64, 64, 32),
+            (128, 64, 128, 16),
+            (128, 128, 64, 32),
+            (128, 128, 128, 16),
+            (256, 64, 64, 32),
+            (256, 64, 128, 16),
+        )
         for stages in range(2, 7)
     }
     if admitted_rows != expected_rows:
@@ -102,7 +111,7 @@ def main() -> int:
     print("[dense-marlin-rejection-census] reasons: " + nonzero_reasons)
     print(
         "[dense-marlin-rejection-census] PASS: standalone declared=60000 "
-        f"admitted=10 rejected=59990 grouped={{hardware:{kinds[1]},"
+        f"admitted=70 rejected=59930 grouped={{hardware:{kinds[1]},"
         f"resource:{kinds[2]},current:{kinds[3]}}}; first-failure sum exact; "
         "generic-A2-4790=PRE_STANDALONE_NOT_EVIDENCE"
     )

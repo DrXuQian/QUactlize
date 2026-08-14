@@ -102,11 +102,15 @@ for token in (
 
 init = body(collective, "static CtaState init_cta_state")
 for token in (
-    "state.a_smem_write = tid % AGlobalOuter;",
-    "warp_k * WarpK + i * 16 + 4 * (lane % 2) +",
+    "int const linear = a_producer_linear(i, tid);",
+    "bool const active = a_producer_active(linear, problem_m);",
+    "state.a_smem_write[i] = transform_a_index(active ? linear : 0);",
+    "state.a_copy_pred[i] = active;",
+    "int const k_inner = i / BLoadsPerKInner;",
+    "int const k_block = k_inner * WarpOnK + warp_k;",
+    "k_block * 16 + 4 * (lane % 2) +",
     "8 * (lane / 16)",
-    "problem_m == 1 && tid < AGlobalOuter",
-    "state.a_thread_base = a + tid % AGlobalOuter;",
+    "state.a_thread_base[i] = a + a_global_stride * (active ? row : 0) + col;",
     "state.scale_thread_base = scale + tid % ScaleSharedStride;",
 ):
     if token not in init:
@@ -118,7 +122,8 @@ for token in (
     "&b_stage[Threads * i + tid]",
     "b_pointer[i]",
     "auto const* a_half = reinterpret_cast<ElementA const*>(a_stage);",
-    "&a_half[state.a_smem_read[inner % BInnerIters]]",
+    "constexpr int slot = inner % BInnerIters;",
+    "&a_half[state.a_smem_read[slot]]",
 ):
     if token not in run:
         raise SystemExit(f"[l181:source] FAIL: all-thread-B/x2-read seam missing: {token}")
@@ -134,7 +139,7 @@ if copy_stage.count("&b_stage[Threads * i + tid]") != 1:
 
 reduce = body(kernel, "static void thread_block_reduce")
 for token in (
-    "int(OutputThreads) * 4 * AccumulatorHalves",
+    "int(OutputThreads) * NBlocksPerWarp * AccumulatorHalves",
     "for (int step = red_off; step > 0; step /= 2)",
     "for (int half = 0; half < AccumulatorHalves; ++half)",
 ):

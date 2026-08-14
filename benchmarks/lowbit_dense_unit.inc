@@ -20,6 +20,14 @@ static Result lowbit_dense_run_standalone_marlin(
   static_assert(Kernel::InstructionM ==
                     marlin_tactics_ppu::instruction_m(StandaloneCfg::Tactic),
                 "the emitted tactic and compiled PPU instruction M disagree");
+  static bool printed_consumer_axis = false;
+  if (!printed_consumer_axis) {
+    std::printf(
+        "[dense marlin consumer] tile=%dx%dx%d warp=%dx%dx%d "
+        "artifact=classic-marlin-u32 scale=classic-gs128-permuted\n",
+        TM, TN, TK, WM, WN, WarpK);
+    printed_consumer_axis = true;
+  }
   return run<G>(options, dense_tactic(cfg), "marlin");
 }
 
