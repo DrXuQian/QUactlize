@@ -7648,3 +7648,78 @@ stub 是诚实的,不是假实现:
 ### 八、给 TODO #55 补的一条边界
 
 #55 的"复用边界"现在只区分**算术内核**(lop3+fma)和**投递层**(emit/at/keep)。**累加精度是第三样东西,不在任何一边。** 只取抽取、保留 fp32 累加 ⟹ 不继承那 5.6%;整段照搬 ⟹ 继承。**这句该写进 #55。**
+
+---
+
+## 177 — **把 C-chain 换成 last-peer-wins:去掉 epilogue 的串行 S 段,不损失逐位可复现**
+
+用户要加 split-K 的归约改造。**这一条和 174 §8 那个 reshape 探针正交** —— Marlin **现在就已经在切 K**(PPU 上 P≈2.25 个 peer/tile),所以本条**不改 shape、不改分块**,只把已有的归约方式从「按 peer 序串行交接」换成「谁最后到谁收尾」。
+
+### 一、要做的是哪一种,以及为什么不是另一种
+
+    D  C-chain(现状)   peer k 必须等 peer k−1 做完 epilogue     epilogue 串行 S 段
+    B  last-peer-wins    谁都不等;最后到的那个读全部 partial 求和  串行 1 段   ← **本条只做这个**
+    C  直接原子加进 D    零串行段,连 barrier 都不要                非确定性   ← **本条不做**
+
+**B 是无条件净赢**:把串行段从 S 压到 1,而**逐位可复现性一分不损**——归约循环按 `p = 0..S-1` 固定顺序求和,每个 partial 的值与到达顺序无关;变的只是「哪个 CTA 执行了那段循环」。
+
+**C 另有 20.4% 的上限**(5090 上 `use_atomic_add` 在 n=k=5120 实测),但它放弃逐位可复现,会让现有的
+`[dense marlin lock fingerprint] repeat=1..8/8 raw_bitdiff=0` 必红。**那是产品决策,单独立项,不要塞进这次改动。**
+
+### 二、动手前必须先读的两件事(我今天把「没接线」写成「不可能」四次)
+
+1. **`marlin_scheduler_ppu.hpp:26-28` 明写**:*"it has no accumulator type and **cannot name, allocate, or index an FP32 partial tile**"*。这是一句**设计声明**。本条要推翻它 ⟹ **那三行注释必须同步改写**,不能留着自相矛盾。
+2. **ABI 被 static_assert 钉死**:`:131-143` 钉 `offsetof(Params, grid_blocks_)==12 / active_blocks_==16 / iters_per_block_==20 / locks_==24`,`:161` 钉 `offsetof(WorkTileInfo, peer_idx)==12`。`locks_(BarrierType*) → partials_(float*)` 同宽可保住偏移;**但 `max_peers` 这个新量往哪放,会动到这套断言**。先想清楚再写。
+
+### 三、改动清单
+
+    scheduler   删 acquire_peer_turn_assume_split / release_peer_turn_assume_split(:438-464,~28 行)
+                locks_ → 两块 workspace:partials_(float*) 和 counters_(uint32*)
+                加 partial_slot(work) 与 counter_index(work)
+                导出 max_peers_per_tile 给 host 算 workspace 大小              ~50-70 行
+
+    kernel      global_handoff(:268-310)→ write_partial_then_maybe_reduce
+                  1. workspace[tile][peer] = 自己的 fp32 accumulator
+                  2. **复用 C-chain 现在就在发的那套可见性序列**
+                     (s.wait 全计数器 + smem.fence.sys + smem/vmem.wbinv,见 d000da80-dab8)
+                     ⚠ **不要自己发明 fence** —— PPU 的内存模型我们没有独立依据,
+                        照抄现在能工作的那一串
+                  3. thread 0: old = atomicAdd(&counters[tile], 1)
+                  4. if (old == S-1) { 按 p=0..S-1 固定顺序求和;跑现有 epilogue;
+                                       **把 counters[tile] 复位成 0** }
+                删 :442/:446 的两个调用点                                       ~60-90 行
+
+    device      workspace 尺寸 = max_peers × n_tiles × TileN × 4 B
+                (N=4096/TileN=128/S=3 时 = 49 KB) + counters n_tiles × 4 B
+                counters 的复位沿用现有 lock 复位的纪律(final peer 自己清)      ~30-40 行
+                                                                               ─────────
+                                                                    生产 ~140-200 行
+
+    输出映射 marlin_output_map_ppu.hpp(39 行)**原样复用**,只换元素类型和加一个 slot stride。
+    collective(mainloop / dequant / MMA / load)、thread_block_reduce、离线格式、tactic space:**零改动**。
+
+### 四、性质
+
+在 `M=1, N=K=4096, gs=128` 上,输出与现有 C-chain 路**逐位相同**;epilogue 的跨 CTA 串行段从 `S` 降到 `1`;
+`counters` 在 kernel 结束时全为 0(可重复启动)。
+
+### 五、事前判据
+
+* **(a) 逐位相同**:与 C-chain 路 `raw_bitdiff=0`。**这是硬判据不是容差** —— B 本来就该逐位相同,不同就是实现错了。
+* **(b) 8 次重复仍逐位一致**:现有 `[dense marlin lock fingerprint] repeat=1..8/8` 必须继续全绿。
+* **(c) acu**:`d000da88` 那条 `s.blksyn.defer`(现占全部采样 **31.71%**)的占比必须下降。**主指标是它,不是时间。**
+* **(d) 时间**:报,但不作判据 —— 预期收益是「串行 S→1」,S≈2.25 时理论上限约 −17%,实际可能被别的 stall 顶上来。
+* **(e) counters 复位**:连续 8 次启动不清 workspace,结果必须一致(证明 final peer 真的复位了)。
+
+### 六、负控(三条都要演示)
+
+1. **把 `partial_slot` 改成对所有 peer 返回同一个槽** ⟹ (a) 必须红。证明槽索引真的在被检查。
+2. **把 `old == S-1` 改成 `old == 0`**(第一个而不是最后一个收尾)⟹ (a) 必须红。证明"最后"这个条件有牙。
+3. **删掉第 2 步的可见性序列** ⟹ (a) 或 (b) 必须红。若两条都绿,说明测试没有制造出跨 CTA 竞争,**测试本身要先加强**。
+
+### 七、范围限制
+
+* **不做 C(原子加)。** 它是单独一条,且要先决定逐位可复现能不能放弃。
+* **不改 shape、不改 TileN、不动 tactic space。** 本条只换归约方式,分解保持原样。
+* **不要自己发明 fence 序列**,照抄现在 epilogue 里能工作的那一串。
+* 与 174 §8 的 reshape 探针**互不依赖**,谁先做都行;**但不要合并成一次改动**,否则归因不了。
