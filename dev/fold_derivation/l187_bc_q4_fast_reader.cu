@@ -86,14 +86,17 @@ uint64_t check_public_pointer_alignment() {
   uint64_t bad = 0;
   bad += !q4::vector_load_contract(storage.data(), storage.data() + 16,
                                    storage.data() + 32);
-  // Each input is independently load-bearing: a predicate that accidentally
-  // checks only one or two fields must fail this control.
-  bad += q4::vector_load_contract(storage.data() + 2, storage.data() + 16,
-                                  storage.data() + 32);
-  bad += q4::vector_load_contract(storage.data(), storage.data() + 1,
-                                  storage.data() + 32);
-  bad += q4::vector_load_contract(storage.data(), storage.data() + 16,
-                                  storage.data() + 1);
+  // Each input and every nonzero residue are independently load-bearing. In
+  // particular offset 8 distinguishes the required 16-byte contract from a
+  // superficially plausible but insufficient 8-byte check.
+  for (int offset = 1; offset < int(q4::kVectorLoadAlignment); ++offset) {
+    bad += q4::vector_load_contract(storage.data() + offset, storage.data() + 16,
+                                    storage.data() + 32);
+    bad += q4::vector_load_contract(storage.data(), storage.data() + 16 + offset,
+                                    storage.data() + 32);
+    bad += q4::vector_load_contract(storage.data(), storage.data() + 16,
+                                    storage.data() + 32 + offset);
+  }
   return bad;
 }
 
@@ -212,7 +215,7 @@ int main(int argc, char** argv) {
   int const denominator = production_q4_denominator();
   bool const coverage_ok = observed == denominator;
   std::printf("L187 mode=%s arrangements=%d/%d coordinates=%llu address_bad=%llu value_bad=%llu "
-              "alignment_bad=%llu metadata_bad=%llu/32768 pointer_alignment_bad=%llu/4 roundtrip_bad=%llu "
+              "alignment_bad=%llu metadata_bad=%llu/32768 pointer_alignment_bad=%llu/46 roundtrip_bad=%llu "
               "hashes=%016llx,%016llx,%016llx,%016llx\n",
               mode, observed, denominator, static_cast<unsigned long long>(checked),
               static_cast<unsigned long long>(address_bad), static_cast<unsigned long long>(value_bad),

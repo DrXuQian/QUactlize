@@ -55,21 +55,21 @@ metadata arithmetic, activation delivery, and accumulator shape together.
 
 ### Production-bound rerun
 
-The final run was compiled from code commit `17ee232e06a18392979989e97f3fd9b3bb5609b4`; each production source also
+The final run was compiled from code commit `c6b30af9a6445bb5c625164712b23a98c23e7927`; each production source also
 has its own hash in `identity.txt`.  The public dispatch is exercised specifically by the winning shipping arm.
 
-* artifacts: `/workspace/quactlize-q4k-pdf-vs-bc-5090-17ee232`
-* binary SHA256: `6952e52366180f3e5a3086fc50f5a1f370ee60c4b0cfaec5b10600fe2f8a0da3`
-* result SHA256: `bc3deac794eb0fe3a97c29b29abe8e807a6b0aaeda0ab811b8f94f714cb3961f`
+* artifacts: `/workspace/quactlize-q4k-pdf-vs-bc-5090-c6b30af`
+* binary SHA256: `a25ece984309bc2f55a931407cfac4d14db11c86e3669847a1fbab7989de3206`
+* result SHA256: `a1e5e0d39705e86e0bcdc5a672a6fe4add806325a2a60f08e5df7d7331811bd0`
 * protocol: 31 event samples, 24 cold copies = `2.25x` L2, packing outside timing
 
 | arm | median us | weight GB/s | % peak | regs | local bytes/thread | barriers |
 |---|---:|---:|---:|---:|---:|---:|
 | PDF winner, CtaN2/Wn4/Wk1 | 7.793333 | 1210.930 | 67.57 | 64 | 0 | 1 |
-| generic BC after the combined whole-word reader update, RPW8/T64 | 12.833333 | 735.365 | 41.033 | 40 | 0 | 0 |
-| **public shipping BC, A64 CtaN2/Wn4/Wk1** | **7.625333** | **1237.609** | **69.058** | **63** | **0** | **1** |
+| generic BC after the combined whole-word reader update, RPW8/T64 | 12.825334 | 735.824 | 41.059 | 40 | 0 | 0 |
+| **public shipping BC, A64 CtaN2/Wn4/Wk1** | **7.622667** | **1238.042** | **69.082** | **63** | **0** | **1** |
 
-The production ratio is `0.978443`, so the resident-artifact route is **2.16% faster** than the exact PDF reference
+The production ratio is `0.978101`, so the resident-artifact route is **2.19% faster** than the exact PDF reference
 in the same binary.  Positive activation is bit-exact to the independent golden; signed activation remains
 `rel_l2=0.000710245423`.  The wrong PDF magic control is 32/32 red, the legacy-artifact plant reaches all 12 legacy
 configs, the one-bit shipping magic plant is 24/24 red, and a deliberately omitted arm is an explicit SKIP.

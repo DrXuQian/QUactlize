@@ -36,12 +36,40 @@ def require_shipping_hot_path(text: str) -> None:
             )
 
 
+def function_body(source: str, name: str) -> str:
+    marker = f'extern "C" int {name}('
+    start = source.find(marker)
+    if start < 0:
+        raise SystemExit(f"[bc-q4-fast-reader] FAIL: backend lost public entry {name}")
+    brace = source.find("{", start)
+    if brace < 0:
+        raise SystemExit(f"[bc-q4-fast-reader] FAIL: backend entry {name} has no body")
+    depth = 0
+    for index in range(brace, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[brace : index + 1]
+    raise SystemExit(f"[bc-q4-fast-reader] FAIL: backend entry {name} has an unterminated body")
+
+
 def require_device_alignment_seam(backend: str, device_abi: str) -> None:
     check = "!gguf_scale::bc_vecdot::q4_reader::vector_load_contract(x, low, units)) return 25;"
-    if backend.count(check) != 2:
-        raise SystemExit(
-            "[bc-q4-fast-reader] FAIL: both public BC device entries must fail-close Q4 vector alignment"
-        )
+    for name in (
+        "quactlize_ppu_bc_gemv_dev_v1",
+        "quactlize_ppu_bc_gemv_for_arrangement_dev_v1",
+    ):
+        body = function_body(backend, name)
+        if body.count(check) != 1:
+            raise SystemExit(
+                f"[bc-q4-fast-reader] FAIL: {name} must own exactly one Q4 vector-alignment check"
+            )
+        if body.find(check) > body.find("ppu_gemv::rt_clear_error()") or body.find(check) > body.find("#define RUN"):
+            raise SystemExit(
+                f"[bc-q4-fast-reader] FAIL: {name} checks alignment after launch preparation"
+            )
     require(device_abi, "x, low, and units must each be 16-byte aligned", "public BC device ABI")
     require(device_abi, "return 25 before enqueue", "public BC device ABI")
 

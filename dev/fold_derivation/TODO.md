@@ -779,8 +779,8 @@ shipping topology red.
 **Status.**  The RTX 5090 A64 dense route is implemented.  The pre-fast shipping reader measured about 38.7 us at
 M=1,N=K=4096; the combined native-metadata and whole-word reader update reduced the generic topology to about 12.8 us.
 No metadata-only device A/B was taken, so that intermediate timing is not a single-cause attribution.  The production PDF-style topology
-then measured **7.625333 us** versus the raw-GGUF PDF reference's **7.793333 us** in the same 31-sample binary
-(`0.978443`, 2.16% faster), while preserving the resident bytes.  It uses fp32 accumulation across superblocks; the PDF arm's half accumulation
+then measured **7.622667 us** versus the raw-GGUF PDF reference's **7.793333 us** in the same 31-sample binary
+(`0.978101`, 2.19% faster), while preserving the resident bytes.  It uses fp32 accumulation across superblocks; the PDF arm's half accumulation
 precision is a third axis, separate from code extraction and delivery.
 
 **Still open.**  PPU compilation/disassembly and before/after ACU time for this exact shipping BC path remain a box

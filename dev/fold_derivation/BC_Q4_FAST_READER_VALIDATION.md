@@ -36,7 +36,7 @@ This is a separate shipping precondition: nibble closure alone would not justify
 
 The public device-pointer ABI has a stronger boundary condition for Q4: `x`, `low`, and `units` must each be
 16-byte aligned because the measured topology issues `float4`/`uint4` global loads.  L187 exercises the shared
-production predicate with one aligned tuple and three independently misaligned inputs.  Both public BC device
+production predicate with one aligned tuple and all offsets 1 through 15 for each input independently.  Both public BC device
 entries consume that predicate and return 25 before enqueue; the source gate removes one entry's check as a
 negative control and requires the resulting half-wired ABI to fail.
 
