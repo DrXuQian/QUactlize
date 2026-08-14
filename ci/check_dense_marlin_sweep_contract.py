@@ -135,7 +135,11 @@ def main() -> int:
         "--list_configs",
         "--search_configs",
         "--streamk_exact_fixture",
-        "--marlin-blocks-per-cu=1",
+        '"--marlin-blocks-per-cu=$bpc"',
+        "run_sweep 1",
+        "run_sweep 2",
+        "bpc2.samples.jsonl",
+        "NOT RUN: BPC%d exceeds every admitted kernel occupancy cap",
     ):
         if token not in box_runner:
             bad.append(f"standalone box runner lacks {token!r}")
@@ -186,7 +190,7 @@ def main() -> int:
         "generated-unit-row-abi=TM,TN,TK,WM,WN,WarpK,ST,Load; "
         "generic-DENSE_MARLIN_SWEEP=NOT_EVIDENCE; generated-header=BYTE_IDENTICAL; "
         "missing/extra-row-controls=2/2_RED; each rejected row has one reason; "
-        "box-runner=BPC1+EXACT+SEARCH"
+        "box-runner=BPC1/BPC2+EXACT+SEARCH+OVERCAP-NOT-RUN"
     )
     return 0
 
