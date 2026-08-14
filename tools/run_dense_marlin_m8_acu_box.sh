@@ -65,15 +65,24 @@ for bpc in 1 2 3; do
   [ "$(grep -Ec '^  \[dense marlin lock fingerprint\] repeat=[1-8]/8 raw_bitdiff=0 .* stable=1 same-workspace=1 external-lock-reset=0$' "$correctness_log" || true)" -eq 8 ] \
     || fail "8-launch lock fingerprint failed for blocks_per_cu=$bpc"
 
-  report="$OUT/marlin-m8-tm8-tn128-tk128-wn64-wk32-bpc${bpc}.report"
+  # ACU releases differ in whether -o names the final file or a basename to
+  # which the tool appends .acurep.  Give it the stable basename, then require
+  # exactly one of those two documented spellings.  A glob would be unsafe:
+  # it could silently consume a stale/partial report from another invocation.
+  report_base="$OUT/marlin-m8-tm8-tn128-tk128-wn64-wk32-bpc${bpc}.report"
   log="$OUT/acu-bpc${bpc}.log"
   cmd="$OUT/acu-bpc${bpc}.command"
-  ACU_CMD=("$ACU" -f -o "$report" --set full "$BIN" "${ARGS[@]}"
+  ACU_CMD=("$ACU" -f -o "$report_base" --set full "$BIN" "${ARGS[@]}"
            --marlin-profile-subject-only "${bpc_flag[@]}")
   printf '%q ' "${ACU_CMD[@]}" >"$cmd"
   printf '\n' >>"$cmd"
   "${ACU_CMD[@]}" 2>&1 | tee "$log"
-  [ -s "$report" ] || fail "ACU produced no report for blocks_per_cu=$bpc"
+  report_candidates=()
+  [ -s "$report_base" ] && report_candidates+=("$report_base")
+  [ -s "${report_base}.acurep" ] && report_candidates+=("${report_base}.acurep")
+  [ "${#report_candidates[@]}" -eq 1 ] || \
+    fail "ACU produced ${#report_candidates[@]} unambiguous report files for blocks_per_cu=$bpc (expected exactly one of $report_base or ${report_base}.acurep)"
+  report="${report_candidates[0]}"
   grep -Fq 'family=ppu-m8-extension' "$log" \
     || fail "profiled process did not identify m8 for blocks_per_cu=$bpc"
   grep -Fq "[dense marlin ACU subject-only] instruction=m8n16k16 blocks_per_cu=$bpc subject_launches=1 device_reference=0 lock_fingerprints=0" "$log" \

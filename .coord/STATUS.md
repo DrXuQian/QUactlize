@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-14 05:07:28 UTC
+    updated-at:     2026-08-14 05:17:01 UTC
     inbox-consumed: 169
-    working-on:     fixed the m8 ACU box compile: the target-wide profile arm now looks up InstructionM only for a compile-time-proved standalone Marlin kernel, while generic GemmUniversal instantiations fail closed without that member lookup
-    blocked-on:     box rebuild and clean BPC1/2/3 subject-only ACU reports
-    local-gates:    standalone/composed contracts, L169 and L181 PASS; the if-constexpr-to-runtime-if plant is rejected; exact m8 multi-TU boxdry PASS (1/1, 96.6s)
-    last-commit:    Guard m8 ACU identity to standalone kernels
-    last-heartbeat: 305
+    working-on:     fixed the ACU artifact contract: site ACU appends .acurep to -o, so the runner now resolves base vs base.acurep and requires exactly one rather than declaring a produced report missing
+    blocked-on:     clean BPC1/2/3 subject-only ACU reports; the existing BPC1 .acurep is valid but the aborted bundle did not reach BPC2/3
+    local-gates:    runner bash syntax PASS; standalone target contract PASS with 19/19 structural plants including ambiguous report resolution; composed Marlin contract PASS
+    last-commit:    Accept the site ACU report suffix explicitly
+    last-heartbeat: 306

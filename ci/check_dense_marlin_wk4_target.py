@@ -278,6 +278,9 @@ def audit(files: dict[str, str]) -> list[str]:
         "for bpc in 1 2 3; do",
         "if [ \"$bpc\" -ne 1 ]; then",
         "--marlin-profile-subject-only",
+        "report_candidates=()",
+        '[ -s "${report_base}.acurep" ] && report_candidates+=("${report_base}.acurep")',
+        '[ "${#report_candidates[@]}" -eq 1 ]',
         "subject_launches=1 device_reference=0 lock_fingerprints=0",
         "each report contains one m8 subject launch and no m16 GemmRef",
     ):
@@ -380,6 +383,9 @@ def main() -> int:
          "int convert_int4_two_source;\n  /// Utilities to transform B."),
         ("xplane", "generic-warpk-api-returns", "namespace xplane {",
          "namespace xplane {\nint plane_map_warp_k;"),
+        ("m8_box", "acu-report-resolution-accepts-ambiguity",
+         '[ "${#report_candidates[@]}" -eq 1 ]',
+         '[ "${#report_candidates[@]}" -ge 1 ]'),
     )
     for owner, label, old, new in plants:
         if files[owner].count(old) != 1:
@@ -397,7 +403,7 @@ def main() -> int:
     print(
         "[dense-marlin-wk4] PASS: standalone format/collective/scheduler/kernel "
         "wired; standalone tactic authority consumed; generic WK4 compatibility "
-        "absent; eighteen structural plants rejected"
+        "absent; nineteen structural plants rejected"
     )
     return 0
 
