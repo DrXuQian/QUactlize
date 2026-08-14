@@ -14,6 +14,12 @@
 // is an error, never a request to reinterpret it as the registry default.
 
 #include <cstdint>
+#include "gguf_bc_q4_reader.hpp"
+#if !defined(__HGGCCC__)
+#if defined(__CUDACC__)
+#include "gguf_bc_q4_gemv.hpp"
+#endif
+#endif
 #include "gguf_vecdot.hpp"
 #include "gguf_packed_unit.hpp"
 #include "gemv_lowbit/gemv_common.hpp"
@@ -99,7 +105,12 @@ template <int Bits, int ArtifactTileK> struct FoldForPlane {
 template <int ArtifactTileK> struct FoldForPlane<0, ArtifactTileK> { static constexpr int value = 1; };
 
 template <KType T, bool High, int ArtifactTileK>
-CUTLASS_HOST_DEVICE int64_t xplane_physical_code(int n, int k, int num_cols) {
+#if defined(__CUDACC__) || defined(__HGGCCC__)
+__host__ __device__ __forceinline__
+#else
+inline
+#endif
+int64_t xplane_physical_code(int n, int k, int num_cols) {
   static_assert(arrangement_supported_v<T, ArtifactTileK>, "BC reader instantiated for unsupported artifact map");
   constexpr int LB = Traits<T>::Lo, HB = Traits<T>::Hi;
   constexpr int Bits = High ? HB : LB;
@@ -151,6 +162,38 @@ __device__ __forceinline__ int code_at(uint8_t const* low, uint8_t const* high, 
   return q;
 }
 
+// The resident P4x32 Q4 group is four consecutive uint32 words for all four
+// supported artifact tile widths, including folded A=32.  This is deliberately
+// the closed form of the writer, not a call to xplane_physical_code: retaining
+// that scalar inverse here would rerun its fourteen-position permutation once
+// per group in source and make zero position terms depend on compiler
+// simplification.  L187 exhausts this expression against both the production
+// writer and the scalar inverse.  It is a structural bound, not a measured
+// latency claim.
+//
+// A>=64 is the ordinary interleave-256 artifact.  A32 is folded by two and has
+// a distinct row/run order; its five shift/mask terms are the F2 branch reduced
+// at a 32-code group base.  Do not project either formula onto another fold.
+template <int ArtifactTileK>
+#if defined(__CUDACC__) || defined(__HGGCCC__)
+__host__ __device__ __forceinline__
+#else
+inline
+#endif
+int64_t q4_group_byte_offset(int n, int k, int num_cols) {
+  using Plan = q4_reader::Q4WordPlan<ArtifactTileK>;
+  static_assert(Plan::kCodes == 32 && Plan::kWords == 4 && Plan::kCodesPerWord == 8,
+                "Q4 whole-word geometry drifted");
+  if constexpr (ArtifactTileK >= 64) {
+    return (int64_t(k >> 8) * num_cols + n) * 128 + ((k & 255) >> 1);
+  } else {
+    static_assert(ArtifactTileK == 32, "unproved folded Q4 group address");
+    return int64_t(k >> 7) * num_cols * 64 + int64_t(n >> 6) * 4096 +
+           int64_t(n & 31) * 128 + int64_t((n >> 5) & 1) * 16 +
+           int64_t((k >> 5) & 3) * 32;
+  }
+}
+
 template <KType T, int ArtifactTileK>
 __device__ __forceinline__ vecdot::VecdotCode4 code4(
     uint8_t const* low, uint8_t const* high, int n, int k, int num_cols) {
@@ -162,11 +205,19 @@ __device__ __forceinline__ vecdot::VecdotCode4 code4(
   return vecdot::vecdot_code4_from_bytes<T>(bytes);
 }
 
-// An unfolded Q4 placed group is physically contiguous but its logical K is an 8x4 transpose. Vector-load logical x once,
-// read the code group as four aligned words, and permute only registers. This is the measured implementation:
-// per-code inverse lookups were 55x slower, while this ties raw cold latency at N=K=2048 and wins at saturated N.
+// A placed Q4 group is physically four consecutive words while logical K is
+// the fixed P4x32 permutation.  Decode each entire word through the target
+// dialect (PPU `ppu.lop3/fma.rtte`, NVIDIA `lop3/fma.rn`) and permute only the
+// activation register reads.  No per-code xplane address arithmetic remains.
+// The natural LOP3 pairs are (physical p, p+4), rather than the old PRMT
+// reader's adjacent-nibble pairs.  Both cover exactly the same 32 products;
+// because the accumulator is fp16 this is nonetheless a different association,
+// so the signed-activation accuracy arm is a required performance-gate output,
+// not something inferred from the exact code/address proof.
+template <int ArtifactTileK>
 __device__ __forceinline__ half q4_group(uint8_t const* low_group, vecdot::VecdotActivation const* x_group,
-                                         float scale, float zero) {
+                                         half scale, half zero) {
+  using Plan = q4_reader::Q4WordPlan<ArtifactTileK>;
   half2 logical_x[16];
   CUTLASS_PRAGMA_UNROLL
   for (int j = 0; j < 16; ++j) logical_x[j] = vecdot::vecdot_load_activation2(x_group + 2*j);
@@ -174,21 +225,23 @@ __device__ __forceinline__ half q4_group(uint8_t const* low_group, vecdot::Vecdo
   CUTLASS_PRAGMA_UNROLL
   for (int word = 0; word < 4; ++word) {
     uint32_t const packed = *reinterpret_cast<uint32_t const*>(low_group + word * 4);
-    auto const qlo = vecdot::vecdot_code4_from_bytes<KType::Q4_K>(packed & 0x0f0f0f0fu);
-    auto const qhi = vecdot::vecdot_code4_from_bytes<KType::Q4_K>((packed >> 4) & 0x0f0f0f0fu);
+    auto const quant = q4_reader::dequantize_word(packed);
     CUTLASS_PRAGMA_UNROLL
-    for (int byte = 0; byte < 4; ++byte) {
-      int const p0 = 8*word + 2*byte, p1 = p0 + 1;
-      int const k0 = (p0 & 3) * 8 + (p0 >> 2), k1 = (p1 & 3) * 8 + (p1 >> 2);
-      cutlass::half_t const h0 = qlo[byte], h1 = qhi[byte];
-      half2 const hq = vecdot::vecdot_half2_from_halves(h0.to_half(), h1.to_half());
+    for (int pair = 0; pair < 4; ++pair) {
+      int const p0 = 8 * word + Plan::physical_nibble_from_pair_lane(pair, 0);
+      int const p1 = 8 * word + Plan::physical_nibble_from_pair_lane(pair, 1);
+      int const k0 = Plan::logical_k_from_physical_nibble(p0);
+      int const k1 = Plan::logical_k_from_physical_nibble(p1);
       half2 const hx = vecdot::vecdot_half2_from_halves(
           (k0 & 1) ? logical_x[k0/2].y : logical_x[k0/2].x,
           (k1 & 1) ? logical_x[k1/2].y : logical_x[k1/2].x);
-      qx = __hfma2(hq, hx, qx); sx = __hadd2(sx, hx);
+      qx = __hfma2(quant.pair[pair], hx, qx); sx = __hadd2(sx, hx);
     }
   }
-  return vecdot::vecdot_apply_group_half<true>(qx, sx, scale, -zero);
+  half2 const sums = vecdot::vecdot_half2_from_halves(
+      vecdot::vecdot_half2_horizontal(qx), vecdot::vecdot_half2_horizontal(sx));
+  half2 const affine = vecdot::vecdot_half2_from_halves(scale, zero);
+  return vecdot::vecdot_half2_horizontal(__hmul2(sums, affine));
 }
 
 template <KType T>
@@ -235,18 +288,23 @@ __global__ void rows_kernel(uint8_t const* low, uint8_t const* high, uint8_t con
         ? eu + ((int64_t(sb / U::kSbPerUnit) * rows + r) * U::kUnitTotal)
         : eu;
     int const sb_in_unit = sb % U::kSbPerUnit;
-    // The four-word Q4 shortcut relies on one unfolded 32-code run being contiguous.  A=32 is F2 and is a legal
-    // producer arrangement, but its group crosses folded rows; use the general arrangement-aware code4 path there.
-    if constexpr (T == KType::Q4_K && FoldForPlane<4, ArtifactTileK>::value == 1) {
+    // Every supported Q4 resident arrangement has the proved four-word P4x32
+    // closure.  Q4 never silently falls back to per-code address arithmetic.
+    if constexpr (T == KType::Q4_K) {
+      static_assert(Groups == 8 && GroupSize == 32 && Traits<T>::Hi == 0,
+                    "Q4 whole-word reader requires the packed-unit 8x32 single-plane contract");
+      static_assert(U::kSbPerUnit == 1 && U::kUnitTotal == 16,
+                    "Q4 native metadata reader requires one aligned 16-byte unit per superblock");
+      auto const metadata = q4_reader::load_metadata(unit);
       CUTLASS_PRAGMA_UNROLL
       for (int pair = row_lane; pair < Groups/2; pair += LanesPerRow) {
         int const g0=2*pair,g1=g0+1;
-        auto const sz0=packed_unit::unit_group_sb<T,0>(unit,sb_in_unit,g0);
-        auto const sz1=packed_unit::unit_group_sb<T,0>(unit,sb_in_unit,g1);
-        int64_t const p0=xplane_physical_code<T,false,ArtifactTileK>(r,sb*256+g0*32,rows);
-        int64_t const p1=xplane_physical_code<T,false,ArtifactTileK>(r,sb*256+g1*32,rows);
-        half const v0=active?q4_group(elo+p0/2,row_x+sb*256+g0*32,float(sz0.scale),float(sz0.zero)):__float2half(0.f);
-        half const v1=active?q4_group(elo+p1/2,row_x+sb*256+g1*32,float(sz1.scale),float(sz1.zero)):__float2half(0.f);
+        auto const sz0=q4_reader::decode_scale_zero(metadata,g0);
+        auto const sz1=q4_reader::decode_scale_zero(metadata,g1);
+        int64_t const p0=q4_group_byte_offset<ArtifactTileK>(r,sb*256+g0*32,rows);
+        int64_t const p1=q4_group_byte_offset<ArtifactTileK>(r,sb*256+g1*32,rows);
+        half const v0=active?q4_group<ArtifactTileK>(elo+p0,row_x+sb*256+g0*32,sz0.scale,sz0.zero):__float2half(0.f);
+        half const v1=active?q4_group<ArtifactTileK>(elo+p1,row_x+sb*256+g1*32,sz1.scale,sz1.zero):__float2half(0.f);
         lane_acc=__hadd2(lane_acc,vecdot::vecdot_half2_from_halves(v0,v1));
       }
     } else {
@@ -292,6 +350,21 @@ template <KType T, int ArtifactTileK, bool Grouped>
 void launch(uint8_t const* low,uint8_t const* high,uint8_t const* units,
             vecdot::VecdotActivation const* x,int const* offsets,float* out,
             int n,int bpr,int experts,int max_rows,gemv_stream_t stream=nullptr){
+#if !defined(__HGGCCC__)
+#if defined(__CUDACC__)
+  // Stock CUDA gets the independently measured Q4/A64 dense topology.  It
+  // consumes the same resident bytes as prefill; only the reader/work
+  // ownership changes.  PPU, grouped mode, other formats/arrangements and K
+  // tails retain the generic route until their own device evidence exists.
+  if constexpr (T == KType::Q4_K && ArtifactTileK == 64 && !Grouped &&
+                vecdot::kVecdotFp16Activation) {
+    if (::gguf_scale::bc_q4_gemv::launch_default(
+            reinterpret_cast<half const*>(x), low, units,
+            out, 1, unsigned(n), unsigned(bpr * 256), stream))
+      return;
+  }
+#endif
+#endif
   switch(rows_per_warp<T>(n,bpr)){
     case 1:launch_fixed<T,ArtifactTileK,1,Grouped>(low,high,units,x,offsets,out,n,bpr,experts,max_rows,stream);break;
     case 2:launch_fixed<T,ArtifactTileK,2,Grouped>(low,high,units,x,offsets,out,n,bpr,experts,max_rows,stream);break;
