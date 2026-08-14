@@ -30,12 +30,27 @@ struct Tactic {
   int tm = 0, tn = 0, tk = 0, wm = 0, wn = 0, stages = 0;
   int bc_requested = 0, bc_effective = 0;
   bool abcast = false;
+  // Standalone Marlin adds a real K-warp extent.  Zero keeps every existing
+  // DP/grouped tag byte-for-byte unchanged; a positive value is part of the
+  // tactic identity and must never be recovered from a display string.
+  int warp_k = 0;
 };
 
 // Canonical public syntax is the existing MOE_ONLY syntax. `schema == nullptr` is the dense spelling; the
 // geometry and every row axis are otherwise byte-for-byte the same. Dense's old compact selector remains an
 // accepted input alias in its caller, but all new reports and cache writes use this form.
 inline int format_tag(char* out, std::size_t cap, Tactic const& c) {
+  if (c.warp_k > 0) {
+    if (c.schema && *c.schema)
+      return std::snprintf(out, cap, "%s %dx%d:%d w%dx%dx%d s%d bc%d->%d%s",
+                           c.schema, c.tm, c.tn, c.tk, c.wm, c.wn, c.warp_k,
+                           c.stages, c.bc_requested, c.bc_effective,
+                           c.abcast ? " B" : "");
+    return std::snprintf(out, cap, "%dx%d:%d w%dx%dx%d s%d bc%d->%d%s",
+                         c.tm, c.tn, c.tk, c.wm, c.wn, c.warp_k,
+                         c.stages, c.bc_requested, c.bc_effective,
+                         c.abcast ? " B" : "");
+  }
   if (c.schema && *c.schema)
     return std::snprintf(out, cap, "%s %dx%d:%d w%dx%d s%d bc%d->%d%s",
                          c.schema, c.tm, c.tn, c.tk, c.wm, c.wn, c.stages,

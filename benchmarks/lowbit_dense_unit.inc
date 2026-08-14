@@ -3,6 +3,50 @@
 #define LOWBIT_DENSE_UNIT_BUILD 1
 #include "test_lowbit_dense_bench.cu"
 
+#if defined(DENSE_MARLIN_STANDALONE_SWEEP)
+
+template <int GroupSize, int TM, int TN, int TK, int WM, int WN,
+          int WarpK, int ST>
+static Result lowbit_dense_run_standalone_marlin(
+    Options& options, TileCfg const& cfg) {
+  using StandaloneCfg = StandaloneMarlinCfg<
+      GroupSize, TM, TN, TK, WM, WN, ST, WarpK>;
+  using G = typename StandaloneCfg::MarlinGemm;
+  using Kernel = typename G::GemmKernel;
+  static_assert(Kernel::IsStandaloneMarlin,
+                "standalone sweep rows must instantiate MarlinKernelPPU");
+  static_assert(Kernel::CollectiveMainloop::WarpK == WarpK,
+                "the generated WarpK row must reach the production collective");
+  static_assert(Kernel::InstructionM ==
+                    marlin_tactics_ppu::instruction_m(StandaloneCfg::Tactic),
+                "the emitted tactic and compiled PPU instruction M disagree");
+  return run<G>(options, dense_tactic(cfg), "marlin");
+}
+
+#define LOWBIT_DENSE_DEFINE_STANDALONE_WRAPPER(FN,TM,TN,TK,WM,WN,WK,ST,LOAD) \
+  int FN##_effective() { return 0; } \
+  char const* FN##_tag() { \
+    static char tag[bench_measure::kTagBytes] = {}; \
+    if (!tag[0]) { \
+      bench_measure::Tactic tactic{nullptr,TM,TN,TK,WM,WN,ST,0,0,false}; \
+      tactic.warp_k = WK; \
+      bench_measure::format_tag(tag, sizeof tag, tactic); \
+    } \
+    return tag; \
+  } \
+  Result FN(Options& options, TileCfg const& cfg) { \
+    if (options.g != marlin_tactics_ppu::kMarlinGroupSize) { \
+      std::fprintf(stderr, "standalone Marlin supports gs128, got %d\n", options.g); \
+      return {}; \
+    } \
+    return lowbit_dense_run_standalone_marlin<128,TM,TN,TK,WM,WN,WK,ST>(options, cfg); \
+  }
+
+LOWBIT_DENSE_UNIT_CONFIGS(LOWBIT_DENSE_DEFINE_STANDALONE_WRAPPER)
+#undef LOWBIT_DENSE_DEFINE_STANDALONE_WRAPPER
+
+#else
+
 template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int ST>
 static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
 #if defined(DENSE_MARLIN_SWEEP)
@@ -151,3 +195,5 @@ LOWBIT_DENSE_UNIT_CONFIGS(LOWBIT_DENSE_DEFINE_WRAPPER)
 #undef LOWBIT_DENSE_CASE_32
 #undef LOWBIT_DENSE_CASE_16
 #undef LOWBIT_DENSE_TAG_GS
+
+#endif  // DENSE_MARLIN_STANDALONE_SWEEP

@@ -805,6 +805,126 @@ target_compile_definitions(test_lowbit_dense_marlin_m8_ab PRIVATE
   WARP_M=${_DENSE_MARLIN_M8_SCAFFOLD_WM} WARP_N=${_DENSE_MARLIN_WK4_WN}
   STAGES=${_DENSE_MARLIN_WK4_ST})
 target_compile_options(test_lowbit_dense_marlin_m8_ab PRIVATE -w)
+
+# Independent standalone-Marlin tactic sweep.  Do not feed these rows through
+# the historical DENSE_MARLIN_SWEEP target: that target instantiates the
+# generic mixed-input collective and therefore cannot establish anything
+# about MarlinCollectivePPU/MarlinKernelPPU.  This table has its own row ABI;
+# WarpK and the load token are first-class fields and every generated symbol
+# carries WarpK so two K-cohort topologies cannot alias at link time.
+qz_resolve_sources(_DENSE_MARLIN_STANDALONE_TABLE
+                   marlin_standalone_configs.inc)
+list(GET _DENSE_MARLIN_STANDALONE_TABLE 0
+     _DENSE_MARLIN_STANDALONE_TABLE)
+get_filename_component(_DENSE_MARLIN_STANDALONE_TABLE
+                       "${_DENSE_MARLIN_STANDALONE_TABLE}" ABSOLUTE
+                       BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+qz_parse_marlin_tactic_xmacro(_DENSE_MARLIN_STANDALONE_ROWS
+  FILE "${_DENSE_MARLIN_STANDALONE_TABLE}"
+  LIST_MACRO MARLIN_STANDALONE_CFG_LIST
+  COUNT_MACRO MARLIN_STANDALONE_CFG_ROWS)
+list(LENGTH _DENSE_MARLIN_STANDALONE_ROWS
+     _DENSE_MARLIN_STANDALONE_ROW_COUNT)
+if(_DENSE_MARLIN_STANDALONE_ROW_COUNT EQUAL 0)
+  message(FATAL_ERROR
+    "standalone Marlin tactic authority admitted zero rows; refusing an empty green sweep")
+endif()
+
+# One row per private TU.  The table is small today, and preserving this
+# boundary makes each rejected production type name the exact row rather than
+# letting one template failure poison a batch.  PPUToolchain keys device
+# objects by source path, so neither these units nor this main may share paths
+# with the fixed m8/m16 binaries above.
+set(_DENSE_MARLIN_STANDALONE_GEN_DIR
+    "${CMAKE_CURRENT_BINARY_DIR}/lowbit_dense_marlin_standalone_sweep_units")
+file(MAKE_DIRECTORY "${_DENSE_MARLIN_STANDALONE_GEN_DIR}")
+set(_DENSE_MARLIN_STANDALONE_UNIT_SRCS "")
+set(_DENSE_MARLIN_STANDALONE_GENERATED_ROWS 0)
+foreach(_row IN LISTS _DENSE_MARLIN_STANDALONE_ROWS)
+  string(REPLACE "," ";" _fields "${_row}")
+  list(LENGTH _fields _field_count)
+  if(NOT _field_count EQUAL 8)
+    message(FATAL_ERROR
+      "internal standalone Marlin row '${_row}' has ${_field_count} fields, expected 8")
+  endif()
+  list(GET _fields 0 _tm)
+  list(GET _fields 1 _tn)
+  list(GET _fields 2 _tk)
+  list(GET _fields 3 _wm)
+  list(GET _fields 4 _wn)
+  list(GET _fields 5 _wk)
+  list(GET _fields 6 _st)
+  list(GET _fields 7 _load)
+  if(NOT _load STREQUAL "CP_ASYNC")
+    message(FATAL_ERROR
+      "standalone Marlin row '${_row}' names unsupported load token '${_load}'")
+  endif()
+  set(_fn
+      "lowbit_dense_marlin_cfg_tm${_tm}_tn${_tn}_tk${_tk}_wm${_wm}_wn${_wn}_wk${_wk}_st${_st}")
+  set(_src
+      "${_DENSE_MARLIN_STANDALONE_GEN_DIR}/${_fn}.cu")
+  file(WRITE "${_src}.in"
+    "// GENERATED from marlin_standalone_configs.inc -- one production standalone-Marlin row.\n"
+    "#ifdef PPU_B_CHUNK\n#undef PPU_B_CHUNK\n#endif\n"
+    "#define PPU_B_CHUNK 0\n"
+    "#define LOWBIT_DENSE_UNIT_CONFIGS(X) \\\n"
+    "  X(${_fn},${_tm},${_tn},${_tk},${_wm},${_wn},${_wk},${_st},${_load})\n"
+    "#include \"lowbit_dense_unit.inc\"\n")
+  execute_process(COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                  "${_src}.in" "${_src}")
+  list(APPEND _DENSE_MARLIN_STANDALONE_UNIT_SRCS "${_src}")
+  math(EXPR _DENSE_MARLIN_STANDALONE_GENERATED_ROWS
+       "${_DENSE_MARLIN_STANDALONE_GENERATED_ROWS} + 1")
+endforeach()
+if(NOT _DENSE_MARLIN_STANDALONE_GENERATED_ROWS EQUAL
+       _DENSE_MARLIN_STANDALONE_ROW_COUNT)
+  message(FATAL_ERROR
+    "standalone Marlin generator emitted ${_DENSE_MARLIN_STANDALONE_GENERATED_ROWS} wrappers for ${_DENSE_MARLIN_STANDALONE_ROW_COUNT} parsed rows")
+endif()
+
+qz_resolve_sources(_DENSE_MARLIN_STANDALONE_MAIN_SOURCE
+                   test_lowbit_dense_bench.cu)
+list(GET _DENSE_MARLIN_STANDALONE_MAIN_SOURCE 0
+     _DENSE_MARLIN_STANDALONE_MAIN_SOURCE)
+set(_DENSE_MARLIN_STANDALONE_MAIN
+    "${CMAKE_CURRENT_BINARY_DIR}/test_lowbit_dense_marlin_standalone_sweep_main.cu")
+configure_file("${_DENSE_MARLIN_STANDALONE_MAIN_SOURCE}"
+               "${_DENSE_MARLIN_STANDALONE_MAIN}" COPYONLY)
+
+# The main TU still declares unused vendor helper aliases.  Keep their global
+# scaffold at the proven m16 row while DENSE_AB_* and each generated X-macro
+# row remain the sole authority for the production standalone kernels.  The
+# artifact is fixed to shipping W4/gs128/TK64; tactic TK is an independent row
+# field and must not leak into BENCH_TSK.
+set(_DENSE_MARLIN_STANDALONE_DEFS
+  -DDENSE_MARLIN_STANDALONE_SWEEP=1
+  -DDENSE_MARLIN_AB=1 -DDENSE_STREAMK_AB=1
+  -DBENCH_GS=128 -DBENCH_TSK=64
+  -DDENSE_AB_BITS=4 -DDENSE_AB_ARTIFACT_TK=64
+  -DDENSE_AB_TM=16 -DDENSE_AB_TN=128 -DDENSE_AB_TK=128
+  -DDENSE_AB_WM=16 -DDENSE_AB_WN=64 -DDENSE_AB_WARP_K=32
+  -DDENSE_AB_ST=4 -DDENSE_AB_BC=0
+  -DTILE_M=16 -DTILE_N=128 -DWARP_M=16 -DWARP_N=64 -DSTAGES=4)
+quactlize_ppu_executable(
+  test_lowbit_dense_marlin_standalone_sweep
+  "${_DENSE_MARLIN_STANDALONE_MAIN}"
+  ${_DENSE_MARLIN_STANDALONE_UNIT_SRCS}
+  DEV_COMPILE_FLAGS -lineinfo ${_DENSE_MARLIN_STANDALONE_DEFS}
+)
+target_compile_definitions(test_lowbit_dense_marlin_standalone_sweep PRIVATE
+  DENSE_MARLIN_STANDALONE_SWEEP=1
+  DENSE_MARLIN_AB=1 DENSE_STREAMK_AB=1
+  BENCH_GS=128 BENCH_TSK=64
+  DENSE_AB_BITS=4 DENSE_AB_ARTIFACT_TK=64
+  DENSE_AB_TM=16 DENSE_AB_TN=128 DENSE_AB_TK=128
+  DENSE_AB_WM=16 DENSE_AB_WN=64 DENSE_AB_WARP_K=32
+  DENSE_AB_ST=4 DENSE_AB_BC=0
+  TILE_M=16 TILE_N=128 WARP_M=16 WARP_N=64 STAGES=4)
+target_compile_options(test_lowbit_dense_marlin_standalone_sweep PRIVATE -w)
+message(STATUS
+  "Standalone Marlin tactic sweep: ${_DENSE_MARLIN_STANDALONE_ROW_COUNT} private generated row units; "
+  "artifact=W4/gs128/TK64, scheduler=standalone-marlin")
+
 # Root-cause cross-check is now a RUNTIME flag on this same binary (--xcheck): it runs the grouped kernel (L=1)
 # on the verified bench data (block_A / shuffled block_B_buff / block_scale) and compares vs block_ref_D and the
 # mixed kernel's block_D. No separate target / no -D (the two-stage PPU build did not propagate -DMOEG_XCHECK to

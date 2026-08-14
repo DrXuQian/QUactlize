@@ -30,6 +30,7 @@ int main() {
   s.n = 4096; s.k = 4096; s.gs = 32;
   s.experts = 0; s.rows = 2048; s.mmax = 2048;
   s.tm = 64; s.tn = 64; s.tk = 64; s.wm = 64; s.wn = 32; s.st = 3;
+  s.warp_k = 32;
   s.pass = 0;
   // The pair that MUST cancel: a candidate that launched and finished.
   bench_samples::attempt(s);
@@ -39,9 +40,10 @@ int main() {
   s.launch_min_us = 205.0; s.launch_max_us = 215.0; s.launch_spread_pct = 4.8;
   bench_samples::emit(s);
   // The one that must NOT: a candidate that launched and died. Nothing follows it, exactly as a device assert
-  // would leave the file.
+  // would leave the file. WarpK is THE ONLY changed identity field: if either writer or reader omits it, this
+  // attempt incorrectly cancels against the successful WarpK=32 sample above and the negative control goes green.
   bench_samples::Sample d = s;
-  d.tm = 16; d.tn = 16; d.wm = 16; d.wn = 16; d.st = 2; d.us = 0.0;
+  d.warp_k = 64; d.us = 0.0;
   bench_samples::attempt(d);
   // And the THIRD outcome: tried, and the bench said no. It must resolve its attempt exactly as a sample does,
   // or a healthy sweep containing one unsupported config reports a dead run.
@@ -94,7 +96,7 @@ def main() -> int:
             return fail(f"expected exactly 1 unfinished attempt (the excluded one must NOT count), "
                         f"got {len(stopped)}: {stopped}")
         # And it must be the RIGHT one: matching must key on the identity, not merely count.
-        if (stopped[0].get("tm"), stopped[0].get("st")) != (16, 2):
+        if (stopped[0].get("tm"), stopped[0].get("warp_k"), stopped[0].get("st")) != (64, 64, 3):
             return fail(f"the wrong attempt was reported as unfinished: {stopped[0]}")
 
         # The completed pair must agree on every IDENTITY field. Device-event MoE samples legitimately add a
@@ -115,7 +117,7 @@ def main() -> int:
             return fail("the attempt record carries a `us`; nothing is measured before the launch")
 
     print(f"[attempt-roundtrip] PASS -- actual bytes parse, event timing fields round-trip, the finished pair "
-          f"cancels, the dead candidate is named (tm=16 st=2), and all identity fields agree")
+          f"cancels, WarpK alone distinguishes the dead candidate (warp_k=64), and all identity fields agree")
     return 0
 
 

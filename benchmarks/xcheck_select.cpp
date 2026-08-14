@@ -44,14 +44,21 @@ bool num_field(std::string const& l, char const* key, double& out) {
 
 std::string config_name(std::string const& l) {
   std::string schema;
-  double tm, tn, tk, wm, wn, st, bc;
+  double tm, tn, tk, wm, wn, st, bc, warp_k = 0;
   if (!str_field(l, "schema", schema) || !num_field(l, "tm", tm) || !num_field(l, "tn", tn) ||
       !num_field(l, "tk", tk) || !num_field(l, "wm", wm) || !num_field(l, "wn", wn) ||
       !num_field(l, "st", st) || !num_field(l, "bc", bc))
     return "";
-  char buf[96];
-  std::snprintf(buf, sizeof buf, "%s %dx%dx%d:%dx%d:s%d bc%d", schema.c_str(), int(tm), int(tn), int(tk),
-                int(wm), int(wn), int(st), int(bc));
+  // Missing is the legacy identity. Positive WarpK is an additional tactic axis and must not be grouped with
+  // another K cohort merely because all of TM/TN/TK/WM/WN match.
+  (void)num_field(l, "warp_k", warp_k);
+  char buf[112];
+  if (warp_k > 0)
+    std::snprintf(buf, sizeof buf, "%s %dx%dx%d:%dx%dx%d:s%d bc%d", schema.c_str(), int(tm), int(tn), int(tk),
+                  int(wm), int(wn), int(warp_k), int(st), int(bc));
+  else
+    std::snprintf(buf, sizeof buf, "%s %dx%dx%d:%dx%d:s%d bc%d", schema.c_str(), int(tm), int(tn), int(tk),
+                  int(wm), int(wn), int(st), int(bc));
   return buf;
 }
 

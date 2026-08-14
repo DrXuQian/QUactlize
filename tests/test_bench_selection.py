@@ -148,6 +148,20 @@ def test_bc_request_is_a_config_axis_but_bc_eff_is_export_only(tmp_path, xcheck_
     assert y["leader"].endswith("bc0")
 
 
+def test_warp_k_is_a_config_axis_without_renaming_legacy_rows(tmp_path, xcheck_bin):
+    """Standalone Marlin's WarpK must separate candidates; a missing/zero field is the old spelling."""
+    lines = ['{"rec":"run","bench":"planted","build":"b","reps":3}']
+    for pass_i in range(3):
+        lines.append(_sample("f", LEADER, pass_i, 100.0 + pass_i, warp_k=32))
+        lines.append(_sample("f", LEADER, pass_i, 200.0 + pass_i, warp_k=64))
+    p = tmp_path / "warp-k.jsonl"
+    p.write_text("\n".join(lines) + "\n")
+    c, y = _cpp_verdict(xcheck_bin, p), _py_verdict(p)
+    assert y["candidates"] == 2, "different WarpK rows collapsed into repeats of one candidate"
+    assert c["leader"] == y["leader"]
+    assert ":64x64x32:s3" in y["leader"]
+
+
 # ---------------------------------------------------------------------------------------------------------
 # THE FORMAT CONTRACT between bench_samples.hpp and analyse.py. The tests above plant JSON from Python, so they
 # check the DECISION and not the WIRE. That gap already bit once: json.dumps' default `": "` produced a file the
@@ -185,15 +199,35 @@ def test_emitter_output_is_readable_by_the_analyser(tmp_path):
 
     out = tmp_path / "run.jsonl"
     subprocess.run([str(exe)], env={"BENCH_JSONL": str(out), "PATH": "/usr/bin:/bin"}, check=True)
-    assert out.is_file() and out.read_text().count("\n") == 7, "expected a run header and six samples"
+    assert out.is_file(), "emitter did not create its output"
+    raw = out.read_text()
+    assert raw.count("\n") == 7, "expected a run header and six samples"
+    assert '"warp_k"' not in raw, "legacy emitters must preserve their byte shape when WarpK is absent"
 
     v = _py_verdict(out)
     assert v["passes"] == 3
     assert v["candidates"] == 2
-    assert v["leader"].startswith("i4 64x128"), "the analyser must read the emitter's field names"
+    assert v["leader"] == "i4 64x128x64:64x64:s3 bc0", \
+        "the analyser must read the emitter's fields without renaming a legacy row"
     # The two candidates were planted to overlap, so a round trip that reports SEPARATED means the analyser is
     # reading numbers it did not get from this file.
     assert len(v["ties"]) == 1
+
+
+def test_emitter_round_trips_positive_warp_k(tmp_path):
+    cxx = shutil.which("c++") or shutil.which("g++")
+    if not cxx:
+        pytest.skip("no host C++ compiler")
+    src = tmp_path / "emit-warp-k.cpp"
+    src.write_text(EMITTER.replace("s.pass = p;", "s.warp_k = (c.tm == 64 ? 32 : 64); s.pass = p;"))
+    exe = tmp_path / "emit-warp-k"
+    subprocess.run([cxx, "-std=c++17", "-I", str(ROOT / "benchmarks"), str(src), "-o", str(exe)], check=True)
+    out = tmp_path / "warp-k.jsonl"
+    subprocess.run([str(exe)], env={"BENCH_JSONL": str(out), "PATH": "/usr/bin:/bin"}, check=True)
+    records = [json.loads(line) for line in out.read_text().splitlines() if '"rec":"s"' in line]
+    assert {r["warp_k"] for r in records} == {32, 64}
+    v = _py_verdict(out)
+    assert v["candidates"] == 2 and "x32:s3" in v["leader"]
 
 
 def test_unset_bench_jsonl_writes_nothing(tmp_path):

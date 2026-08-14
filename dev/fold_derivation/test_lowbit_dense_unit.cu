@@ -4,7 +4,13 @@
 #ifndef PPU_B_CHUNK
 #define PPU_B_CHUNK 0
 #endif
-#if defined(DENSE_MARLIN_SWEEP)
+#if defined(DENSE_MARLIN_STANDALONE_SWEEP)
+// One exact row from the independent eight-field standalone authority.  WarpK
+// and the load token must reach the generated unit; the retired generic
+// Marlin wrapper below is not evidence for this branch.
+#define LOWBIT_DENSE_UNIT_CONFIGS(X) \
+  X(lowbit_dense_marlin_standalone_probe,8,128,128,8,64,32,4,CP_ASYNC)
+#elif defined(DENSE_MARLIN_SWEEP)
 // One row that is present in the committed int4 table and survives the exact
 // two/four-warp Marlin filter.  Unlike the A/B arm below, the generated sweep
 // wrapper has no runtime scheduler switch: this branch compiles that distinct

@@ -87,7 +87,8 @@
 #include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_marlin.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
 #include "quactlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp"
-#if defined(DENSE_MARLIN_WK4_AB)
+#if defined(DENSE_MARLIN_WK4_AB) || defined(DENSE_MARLIN_STANDALONE_SWEEP)
+#define DENSE_STANDALONE_MARLIN 1
 #include "marlin_format_ppu.hpp"
 #include "marlin_tactic_space_ppu.hpp"
 #include "quactlize_extensions/cutlass/gemm/device/marlin_gemm_ppu.hpp"
@@ -109,7 +110,8 @@ using namespace cute;
 #if defined(DENSE_PERSISTENT_AB) || defined(DENSE_STREAMK_AB) || defined(DENSE_MARLIN_AB)
 #define DENSE_SCHEDULER_AB 1
 #endif
-#if defined(DENSE_SCHEDULER_AB) || defined(DENSE_MARLIN_SWEEP)
+#if defined(DENSE_SCHEDULER_AB) || defined(DENSE_MARLIN_SWEEP) || \
+    defined(DENSE_MARLIN_STANDALONE_SWEEP)
 // DENSE_SCHEDULER_AB owns the one-row mechanism binaries.  The full Marlin
 // sweep is deliberately not one of them (it owns a filtered committed table),
 // but it still needs the named-scheduler occupancy/grid/provenance path.
@@ -353,7 +355,7 @@ struct Cfg {
 #endif
 };
 
-#if defined(DENSE_MARLIN_WK4_AB)
+#if defined(DENSE_STANDALONE_MARLIN)
 template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int St,
           int WarpK>
 struct StandaloneMarlinCfg {
@@ -389,11 +391,14 @@ struct TileCfg {
   char const* name;
   int tm, tn, tk, wm, wn, st, b_chunk, b_chunk_effective;
   LowbitDenseWrapper wrapper;
+  int warp_k = 0;
 };
 
 inline bench_measure::Tactic dense_tactic(TileCfg const& c) {
-  return {nullptr, c.tm, c.tn, c.tk, c.wm, c.wn, c.st,
-          c.b_chunk, c.b_chunk_effective, false};
+  bench_measure::Tactic tactic{nullptr, c.tm, c.tn, c.tk, c.wm, c.wn, c.st,
+                              c.b_chunk, c.b_chunk_effective, false};
+  tactic.warp_k = c.warp_k;
+  return tactic;
 }
 
 inline bench_measure::Tactic dense_convert_tactic() {
@@ -428,7 +433,19 @@ inline bench_measure::Tactic dense_fixed_tactic() {
 #if !defined(LOWBIT_DENSE_UNIT_BUILD)
 #include "bench_samples.hpp"
 #include "bench_floor.cuh"
-#if defined(DENSE_MARLIN_SWEEP)
+#if defined(DENSE_MARLIN_STANDALONE_SWEEP)
+// This table is generated directly from marlin_tactic_space_ppu.hpp.  It is
+// not the historical generic-collective Marlin table below: every row names
+// WarpK and instantiates MarlinCollectivePPU + MarlinKernelPPU.
+#include "marlin_standalone_configs.inc"
+#define LOWBIT_DENSE_TABLE_FILE                 "marlin_standalone_configs.inc"
+#define LOWBIT_DENSE_TABLE_CFG_BITS             4
+#define LOWBIT_DENSE_TABLE_CFG_ARTIFACT_TILEK   64
+#define LOWBIT_DENSE_TABLE_CFG_ROWS             MARLIN_STANDALONE_CFG_ROWS
+#define LOWBIT_DENSE_TABLE_CFG_LIST             MARLIN_STANDALONE_CFG_LIST
+#define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    "marlin-tactic-space-ppu-v1"
+#define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  "emit_marlin_tactic_space--header"
+#elif defined(DENSE_MARLIN_SWEEP)
 // A second registry over the SAME committed table: CMake emits rows whose
 // final Marlin kernel has a warp-aligned CTA cohort in [32,1024].  The named
 // kernel independently proves the exact accumulator/cohort binding.  Keep the
@@ -534,14 +551,24 @@ static_assert(cutlass::sizeof_bits<QuantType>::value == LOWBIT_DENSE_TABLE_CFG_B
               TileShapeK == LOWBIT_DENSE_TABLE_CFG_ARTIFACT_TILEK,
               "the selected dense config table was generated for a different (bits, TileK) than this binary. Regenerate "
               LOWBIT_DENSE_TABLE_FILE " with the exact command stamped in its provenance header");
+#if defined(DENSE_MARLIN_STANDALONE_SWEEP)
+#define LOWBIT_DENSE_COUNT_ROW(TM,TN,TK,WM,WN,WK,ST,LOAD,_UNUSED) + 1
+#else
 #define LOWBIT_DENSE_COUNT_ROW(TM,TN,TK,WM,WN,ST,BC,_UNUSED) + 1
+#endif
 inline constexpr int kLowbitDenseConfigRows = 0 LOWBIT_DENSE_TABLE_CFG_LIST(LOWBIT_DENSE_COUNT_ROW, );
 #undef LOWBIT_DENSE_COUNT_ROW
 static_assert(kLowbitDenseConfigRows == LOWBIT_DENSE_TABLE_CFG_ROWS,
               "the selected dense config table's row-count provenance does not match its X-macro list; regenerate it");
 
 inline void print_dense_table_provenance() {
-#if defined(DENSE_MARLIN_SWEEP)
+#if defined(DENSE_MARLIN_STANDALONE_SWEEP)
+  std::printf(
+      "[dense-table] scheduler=standalone-marlin file=%s rows=%d "
+      "schema=TM,TN,TK,WM,WN,WarpK,ST,Load "
+      "artifact=classic-marlin-u32 gs=128 bits=4 artifact_tk=64\n",
+      LOWBIT_DENSE_TABLE_FILE, kLowbitDenseConfigRows);
+#elif defined(DENSE_MARLIN_SWEEP)
   static_assert(LOWBIT_DENSE_MARLIN_SWEEP_SOURCE_ROWS == LOWBIT_DENSE_MARLIN_SOURCE_ROWS,
                 "the Marlin filter header and committed source table disagree");
   static_assert(LOWBIT_DENSE_MARLIN_SWEEP_FILTERED_ROWS +
@@ -622,7 +649,7 @@ extern cutlass::HostTensor<QuantType, LayoutB> tensor_B;
 extern cutlass::HostTensor<QuantType, LayoutB> block_B_buff;
 extern cutlass::DeviceAllocation<ElementA> block_B_dq;
 extern cutlass::DeviceAllocation<ElementScale> block_scale;
-#if defined(DENSE_MARLIN_WK4_AB)
+#if defined(DENSE_STANDALONE_MARLIN)
 extern cutlass::DeviceAllocation<ElementScale> block_scale_classic;
 #endif
 extern cutlass::DeviceAllocation<ElementZero> block_zero;
@@ -645,7 +672,7 @@ cutlass::HostTensor<QuantType, LayoutB> tensor_B;
 cutlass::HostTensor<QuantType, LayoutB> block_B_buff;
 cutlass::DeviceAllocation<ElementA> block_B_dq;
 cutlass::DeviceAllocation<ElementScale> block_scale;
-#if defined(DENSE_MARLIN_WK4_AB)
+#if defined(DENSE_STANDALONE_MARLIN)
 cutlass::DeviceAllocation<ElementScale> block_scale_classic;
 #endif
 cutlass::DeviceAllocation<ElementZero> block_zero;
@@ -763,6 +790,12 @@ struct Options {
 #if defined(DENSE_MARLIN_SWEEP)
     out << "  scheduler=marlin            Fixed at build time for every compiled table row; "
            "runtime scheduler flags and ordinary dense tactic caches are rejected.\n";
+#endif
+#if defined(DENSE_MARLIN_STANDALONE_SWEEP)
+    out << "  scheduler=standalone-marlin Fixed at build time; --search_configs compares the "
+           "generated standalone Marlin rows.\n"
+        << "  --marlin-blocks-per-cu=<n>  Fixed across the sweep and checked against each exact kernel's occupancy.\n"
+        << "  --streamk_exact_fixture     Required: exact decode fixture plus repeated lock fingerprints.\n";
 #endif
 
     out
@@ -1351,6 +1384,38 @@ class DenseKernelEventBatch {
 #if !defined(LOWBIT_DENSE_UNIT_BUILD)
 // Main names only exported wrappers. Cfg<>::Gemm appears in lowbit_dense_unit.inc, so expanding this table-driven
 // registry does not serialize template instantiation in the main translation unit. Every field participates in
+#if defined(DENSE_MARLIN_STANDALONE_SWEEP)
+#define LOWBIT_DENSE_SYMBOL_I(TM,TN,TK,WM,WN,WK,ST,LOAD) \
+  lowbit_dense_marlin_cfg_tm##TM##_tn##TN##_tk##TK##_wm##WM##_wn##WN##_wk##WK##_st##ST
+#define LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,WK,ST,LOAD) \
+  LOWBIT_DENSE_SYMBOL_I(TM,TN,TK,WM,WN,WK,ST,LOAD)
+#define LOWBIT_DENSE_TAG_SYMBOL_I(TM,TN,TK,WM,WN,WK,ST,LOAD) \
+  lowbit_dense_marlin_cfg_tm##TM##_tn##TN##_tk##TK##_wm##WM##_wn##WN##_wk##WK##_st##ST##_tag
+#define LOWBIT_DENSE_TAG_SYMBOL(TM,TN,TK,WM,WN,WK,ST,LOAD) \
+  LOWBIT_DENSE_TAG_SYMBOL_I(TM,TN,TK,WM,WN,WK,ST,LOAD)
+#define LOWBIT_DENSE_BC_EFF_SYMBOL_I(TM,TN,TK,WM,WN,WK,ST,LOAD) \
+  lowbit_dense_marlin_cfg_tm##TM##_tn##TN##_tk##TK##_wm##WM##_wn##WN##_wk##WK##_st##ST##_effective
+#define LOWBIT_DENSE_BC_EFF_SYMBOL(TM,TN,TK,WM,WN,WK,ST,LOAD) \
+  LOWBIT_DENSE_BC_EFF_SYMBOL_I(TM,TN,TK,WM,WN,WK,ST,LOAD)
+#define LOWBIT_DENSE_DECLARE(TM,TN,TK,WM,WN,WK,ST,LOAD,_UNUSED) \
+  Result LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,WK,ST,LOAD)(Options&, TileCfg const&); \
+  char const* LOWBIT_DENSE_TAG_SYMBOL(TM,TN,TK,WM,WN,WK,ST,LOAD)(); \
+  int LOWBIT_DENSE_BC_EFF_SYMBOL(TM,TN,TK,WM,WN,WK,ST,LOAD)();
+LOWBIT_DENSE_TABLE_CFG_LIST(LOWBIT_DENSE_DECLARE, )
+#undef LOWBIT_DENSE_DECLARE
+
+inline std::vector<TileCfg> const& supported_configs() {
+  static std::vector<TileCfg> const configs = {
+#define LOWBIT_DENSE_REGISTRY_ROW(TM,TN,TK,WM,WN,WK,ST,LOAD,_UNUSED) \
+    TileCfg{LOWBIT_DENSE_TAG_SYMBOL(TM,TN,TK,WM,WN,WK,ST,LOAD)(), \
+            TM,TN,TK,WM,WN,ST,0,0, \
+            &LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,WK,ST,LOAD),WK},
+    LOWBIT_DENSE_TABLE_CFG_LIST(LOWBIT_DENSE_REGISTRY_ROW, )
+#undef LOWBIT_DENSE_REGISTRY_ROW
+  };
+  return configs;
+}
+#else
 #define LOWBIT_DENSE_SYMBOL_I(TM,TN,TK,WM,WN,ST,BC) \
   lowbit_dense_cfg_tm##TM##_tn##TN##_tk##TK##_wm##WM##_wn##WN##_st##ST##_bc##BC
 #define LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,BC) LOWBIT_DENSE_SYMBOL_I(TM,TN,TK,WM,WN,ST,BC)
@@ -1378,6 +1443,7 @@ inline std::vector<TileCfg> const& supported_configs() {
   };
   return configs;
 }
+#endif
 #undef LOWBIT_DENSE_TAG_SYMBOL
 #undef LOWBIT_DENSE_TAG_SYMBOL_I
 #undef LOWBIT_DENSE_BC_EFF_SYMBOL
@@ -1510,13 +1576,13 @@ DenseFixtureEvidence initialize(Options const& options) {
   block_ref_D.reset(c_coord.product());
 
   block_scale.reset(scale_k * options.l * options.n);
-#if defined(DENSE_MARLIN_WK4_AB)
+#if defined(DENSE_STANDALONE_MARLIN)
   block_scale_classic.reset(scale_k * options.l * options.n);
 #endif
   block_zero.reset(scale_k * options.l * options.n);
 
   bool const host_exact_profile =
-#if defined(DENSE_MARLIN_WK4_AB)
+#if defined(DENSE_STANDALONE_MARLIN)
       options.marlin_profile_subject_only && options.streamk_exact_fixture;
 #else
       false;
@@ -1744,7 +1810,7 @@ DenseFixtureEvidence initialize(Options const& options) {
   stride_S_ref = cutlass::make_cute_packed_stride(StrideS_ref{}, cute::make_shape(options.n, scale_k, options.l));
   auto layout_scale_zero = make_layout(shape_scale_zero);
 
-#if defined(DENSE_MARLIN_WK4_AB)
+#if defined(DENSE_STANDALONE_MARLIN)
   // Keep the reference on plain [group,N] scales.  The standalone Marlin
   // consumer gets its own upstream-compatible 8x8-per-64-column transpose;
   // sharing one buffer would make the golden depend on preprocessing order.
@@ -1789,7 +1855,7 @@ DenseFixtureEvidence initialize(Options const& options) {
     exit(-1);
   }
   for (int b = 0; b < batch; b++) {
-#if defined(DENSE_MARLIN_WK4_AB)
+#if defined(DENSE_STANDALONE_MARLIN)
     // Standalone Marlin owns the classic uint32 physical representation.  It
     // is intentionally independent of shipping xplane: logical [K,N] biased
     // codes are the only common seam between the benchmark and this format.
@@ -1851,7 +1917,7 @@ DenseFixtureEvidence initialize(Options const& options) {
 template <typename Args, bool StandaloneMarlin = false>
 Args args_from_options(Options const& options)
 {
-#if defined(DENSE_MARLIN_WK4_AB)
+#if defined(DENSE_STANDALONE_MARLIN)
   // This binary has one standalone ScaleOnly ABI.  Return before parsing the
   // generic mode aggregates: merely compiling the ScaleZero aggregate would
   // make a dead zero field look like part of Marlin's accepted contract.
@@ -3092,7 +3158,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
 #endif
 
-#if defined(DENSE_MARLIN_WK4_AB)
+#if defined(DENSE_STANDALONE_MARLIN)
   // ACU must measure the subject, not the correctness harness.  The ordinary
   // path below launches a vendor m16 GemmRef and eight more subject launches
   // for the lock fingerprint; aggregating that process made an m8 report look
@@ -3637,7 +3703,9 @@ inline char const* dense_fixture(Options const& o) {
 }
 
 inline char const* dense_sample_family() {
-#if defined(DENSE_MARLIN_SWEEP)
+#if defined(DENSE_MARLIN_STANDALONE_SWEEP)
+  return "standalone_marlin_w4a16";
+#elif defined(DENSE_MARLIN_SWEEP)
   return "cutlass_w4a16_marlin";
 #else
   return "cutlass_w4a16";
@@ -3645,7 +3713,9 @@ inline char const* dense_sample_family() {
 }
 
 inline char const* dense_distribution() {
-#if defined(DENSE_MARLIN_SWEEP)
+#if defined(DENSE_MARLIN_STANDALONE_SWEEP)
+  return "dense-standalone-marlin-v1";
+#elif defined(DENSE_MARLIN_SWEEP)
   return "dense-marlin-v1";
 #else
   return "dense-v1";
@@ -3662,6 +3732,10 @@ TileCfg find_config(std::string const& name) {
     // Compatibility input only. Before dense and MoE shared one formatter, dense persisted this compact form in
     // --tactic caches and accepted it through --config. New output uses the canonical tag, but old measurements
     // remain reproducible rather than becoming unreadable overnight.
+    // The compact spelling predates WarpK and therefore cannot identify a
+    // standalone row.  Accepting it here would make two future WarpK values
+    // alias and silently select whichever row happens to be first.
+    if (c.warp_k > 0) continue;
     char legacy[bench_measure::kTagBytes];
     std::snprintf(legacy, sizeof legacy, "%dx%dx%d:%dx%d:s%d:bc%d->%d",
                   c.tm, c.tn, c.tk, c.wm, c.wn, c.st, c.b_chunk, c.b_chunk_effective);
@@ -3817,7 +3891,59 @@ int main(int argc, char const **args) {
   }
 #endif
 
-#if defined(DENSE_MARLIN_WK4_AB)
+#if defined(DENSE_MARLIN_STANDALONE_SWEEP)
+  // Every generated wrapper in this binary is the standalone Marlin
+  // scheduler/cooperative. Runtime scheduler flags therefore cannot select
+  // another arm. The exact fixture and lock fingerprint remain admission
+  // evidence for every timed row, while --search_configs is the point of this
+  // target rather than an invalid generic-tactic operation.
+  if (!options.help && !options.list_configs) {
+    if (options.persistent || options.streamk || options.marlin ||
+        options.streamk_gate || options.streamk_split_gate ||
+        options.marlin_profile_subject_only) {
+      std::fprintf(
+          stderr,
+          "standalone Marlin sweep fixes its scheduler at build time; "
+          "runtime scheduler/profile flags are rejected\n");
+      return 1;
+    }
+    if (!options.streamk_exact_fixture) {
+      std::fprintf(
+          stderr,
+          "standalone Marlin sweep requires --streamk_exact_fixture so every "
+          "candidate carries exact numerical and repeated-lock evidence\n");
+      return 1;
+    }
+    if (options.mode != GemmMode::ScaleOnly || options.g != 128 ||
+        options.m != 1 || options.n <= 0 || options.n % 256 != 0 ||
+        options.k != 4096 || options.l != 1 || options.alpha != 1.0f ||
+        options.beta != 0.0f) {
+      std::fprintf(
+          stderr,
+          "standalone Marlin decode sweep requires --m=1 "
+          "--n=<positive multiple of 256> --k=4096 --l=1 --g=128 "
+          "--mode=1 --alpha=1 --beta=0\n");
+      return 1;
+    }
+    if (options.xcheck || !options.tactic_file.empty() ||
+        !options.save_tactic_file.empty()) {
+      std::fprintf(
+          stderr,
+          "standalone Marlin sweep rejects xcheck and ordinary tactic cache "
+          "load/save; use --config or --search_configs\n");
+      return 1;
+    }
+    if (options.search_configs && !options.config.empty()) {
+      std::fprintf(stderr,
+                   "--search_configs and --config are mutually exclusive\n");
+      return 1;
+    }
+    if (options.marlin_blocks_per_cu < 1) {
+      std::fprintf(stderr, "--marlin-blocks-per-cu must be positive\n");
+      return 1;
+    }
+  }
+#elif defined(DENSE_MARLIN_WK4_AB)
   // This binary contains one classic-aligned Marlin type.  Its four K
   // cohorts require the CTA-local reduction in MarlinMixedInputKernel, so a
   // DP, persistent or Stream-K launch would be numerically invalid rather
@@ -4008,15 +4134,22 @@ int main(int argc, char const **args) {
     std::printf("compiled CUTLASS W%dA16 tile configs scheduler=%s "
                 "(group sizes 16, 32, 64, 128):\n",
                 int(cutlass::sizeof_bits<QuantType>::value),
-#if defined(DENSE_MARLIN_SWEEP)
+#if defined(DENSE_MARLIN_STANDALONE_SWEEP)
+                "standalone-marlin"
+#elif defined(DENSE_MARLIN_SWEEP)
                 "marlin"
 #else
                 "default"
 #endif
     );
-    for (auto const& c : supported_configs())
-      std::printf("  %-22s  tile %dx%dx%d  warp %dx%d  stages %d\n",
-                  c.name, c.tm, c.tn, c.tk, c.wm, c.wn, c.st);
+    for (auto const& c : supported_configs()) {
+      if (c.warp_k > 0)
+        std::printf("  %-30s  tile %dx%dx%d  warp %dx%dx%d  stages %d\n",
+                    c.name, c.tm, c.tn, c.tk, c.wm, c.wn, c.warp_k, c.st);
+      else
+        std::printf("  %-22s  tile %dx%dx%d  warp %dx%d  stages %d\n",
+                    c.name, c.tm, c.tn, c.tk, c.wm, c.wn, c.st);
+    }
     return 0;
   }
 
@@ -4064,7 +4197,13 @@ int main(int argc, char const **args) {
     // explicitly NOT a ranking -- the verdict lines below say so rather than printing something that reads like one.
     const int reps = bench_measure::read_reps();
     char build[160];
-#if defined(DENSE_MARLIN_SWEEP)
+#if defined(DENSE_MARLIN_STANDALONE_SWEEP)
+    std::snprintf(build, sizeof build,
+                  "bits=%d TSK=%d gs=%d scheduler=standalone-marlin bpc=%d rows=%d",
+                  int(cutlass::sizeof_bits<QuantType>::value), TileShapeK,
+                  options.g, options.marlin_blocks_per_cu,
+                  kLowbitDenseConfigRows);
+#elif defined(DENSE_MARLIN_SWEEP)
     std::snprintf(build, sizeof build, "bits=%d TSK=%d gs=%d scheduler=%s",
                   int(cutlass::sizeof_bits<QuantType>::value), TileShapeK, options.g,
                   "marlin");
@@ -4090,6 +4229,7 @@ int main(int argc, char const **args) {
         _a.n = options.n; _a.k = options.k; _a.gs = options.g;
         _a.experts = 0; _a.rows = options.m; _a.mmax = options.m;
         _a.tm = c.tm; _a.tn = c.tn; _a.tk = c.tk; _a.wm = c.wm; _a.wn = c.wn; _a.st = c.st;
+        _a.warp_k = c.warp_k;
         _a.bc = c.b_chunk; _a.bc_eff = c.b_chunk_effective;
         _a.pass = rep;
         bench_samples::attempt(_a);
@@ -4152,7 +4292,7 @@ int main(int argc, char const **args) {
                   "     too small for the loop to be measuring the kernel rather than the launch rate.\n",
                   bench_floor::us());
     Result const winner_result = run_config(options, find_config(best.tag));
-#if defined(DENSE_MARLIN_SWEEP)
+#if defined(DENSE_MARLIN_STANDALONE_SWEEP) || defined(DENSE_MARLIN_SWEEP)
     // A scheduler-specific sweep is evidence only if the selected Marlin arm
     // itself passes; do not inherit the ordinary bench's historical rc=0
     // convention for a failed final launch.
@@ -4172,7 +4312,7 @@ int main(int argc, char const **args) {
   }
   if (name.empty()) name = supported_configs().front().name;
   Result const final_result = run_config(options, find_config(name));
-#if defined(DENSE_MARLIN_WK4_AB)
+#if defined(DENSE_MARLIN_STANDALONE_SWEEP) || defined(DENSE_MARLIN_WK4_AB)
   // Unlike the historical generic dense bench, this is a correctness and
   // performance gate for one exact kernel.  A failed artifact roundtrip,
   // golden, occupancy check or 8-launch lock fingerprint is the process rc.

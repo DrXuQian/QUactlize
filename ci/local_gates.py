@@ -255,6 +255,14 @@ SYNTAX = [
      "-DDENSE_AB_TM=16 -DDENSE_AB_TN=128 -DDENSE_AB_TK=128 -DDENSE_AB_WM=16 "
      "-DDENSE_AB_WN=64 -DDENSE_AB_WARP_K=32 -DDENSE_AB_ST=4 -DDENSE_AB_BC=0 "
      "-DTILE_M=16 -DTILE_N=128 -DWARP_M=16 -DWARP_N=64 -DSTAGES=4"),
+    # Independent multirow standalone-Marlin registry: unlike the fixed A/B
+    # target, this must parse the eight-field generated table and search it.
+    ("benchmarks/test_lowbit_dense_bench.cu",
+     "-DDENSE_MARLIN_STANDALONE_SWEEP=1 -DDENSE_MARLIN_AB=1 -DDENSE_STREAMK_AB=1 "
+     "-DBENCH_GS=128 -DBENCH_TSK=64 -DDENSE_AB_BITS=4 -DDENSE_AB_ARTIFACT_TK=64 "
+     "-DDENSE_AB_TM=16 -DDENSE_AB_TN=128 -DDENSE_AB_TK=128 -DDENSE_AB_WM=16 "
+     "-DDENSE_AB_WN=64 -DDENSE_AB_WARP_K=32 -DDENSE_AB_ST=4 -DDENSE_AB_BC=0 "
+     "-DTILE_M=16 -DTILE_N=128 -DWARP_M=16 -DWARP_N=64 -DSTAGES=4"),
     # Main mode only declares generated wrappers. This is one real unit-mode row, so shared tag/metric plumbing in
     # lowbit_dense_unit.inc is instantiated locally instead of waiting for hgcc on the box.
     ("dev/fold_derivation/test_lowbit_dense_unit.cu", ""),
@@ -274,6 +282,12 @@ SYNTAX = [
     ("dev/fold_derivation/test_lowbit_dense_unit.cu",
      "-DDENSE_MARLIN_SWEEP=1 -DBENCH_GS=128 -DBENCH_TSK=64 "
      "-DTILE_M=16 -DTILE_N=128 -DWARP_M=16 -DWARP_N=32 -DSTAGES=3"),
+    ("dev/fold_derivation/test_lowbit_dense_unit.cu",
+     "-DDENSE_MARLIN_STANDALONE_SWEEP=1 -DDENSE_MARLIN_AB=1 -DDENSE_STREAMK_AB=1 "
+     "-DBENCH_GS=128 -DBENCH_TSK=64 -DDENSE_AB_BITS=4 -DDENSE_AB_ARTIFACT_TK=64 "
+     "-DDENSE_AB_TM=16 -DDENSE_AB_TN=128 -DDENSE_AB_TK=128 -DDENSE_AB_WM=16 "
+     "-DDENSE_AB_WN=64 -DDENSE_AB_WARP_K=32 -DDENSE_AB_ST=4 -DDENSE_AB_BC=0 "
+     "-DTILE_M=16 -DTILE_N=128 -DWARP_M=16 -DWARP_N=64 -DSTAGES=4"),
     # One real committed row from every CTA-warp cohort released by A2.  The
     # ordinary DP and Marlin arms must both compile; run_l131 also requires an
     # intentionally inexact explicit cohort to fail at the authored binding.
@@ -2025,6 +2039,9 @@ def main():
                 ("boxdry", "dense standalone Marlin m8 target reaches its generated object graph and host link",
                  ("test_lowbit_dense_marlin_m8_ab", "DENSE_MARLIN_WK4_AB=1",
                   "DENSE_MARLIN_M8_AB=1", "DENSE_MARLIN_AB=1")),
+                ("boxdry", "dense standalone Marlin sweep links every admitted private row unit",
+                 ("test_lowbit_dense_marlin_standalone_sweep",
+                  "DENSE_MARLIN_STANDALONE_SWEEP=1", "BENCH_GS=128")),
                 ("boxdry", "generated-unit undefined reference is rejected by the real host link",
                  ("test_lowbit_dense_streamk_ab", "DENSE_STREAMK_AB=1",
                   "BOX_DRYRUN_PLANT_LINK_FAILURE=1", "BOX_DRYRUN_EXPECT_LINK_FAILURE=1")),

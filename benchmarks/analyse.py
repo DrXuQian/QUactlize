@@ -33,15 +33,20 @@ import sys
 # every pair gets read as two REPEATS of one candidate -- which is worse than losing the distinction, because the
 # tie logic would then report a spread between two different kernels as measurement noise.
 #
+# `warp_k` is an OPTIONAL WIRE FIELD but a REQUIRED NORMALIZED KEY. Records written before standalone Marlin had
+# no K-cohort axis, and load() normalizes those to zero. A positive value is a real tactic axis: omitting it from
+# the key would collapse otherwise-identical WarpK rows into repeats of one candidate.
+#
 # `bc_eff` is deliberately NOT a key: it is derived (the collective grants chunking only for bits in {1,2} with a
 # fragment that is exactly one delivery), so a refused request compiles to the same kernel as bc=0. It stays in the
 # exported record for diagnostics, but must not leak into config_name either -- that name is also used for grouping.
-CONFIG_KEYS = ("schema", "tm", "tn", "tk", "wm", "wn", "st", "bc")
+CONFIG_KEYS = ("schema", "tm", "tn", "tk", "wm", "wn", "warp_k", "st", "bc")
 FIXTURE_KEYS = ("fixture", "dist", "n", "k", "gs", "experts", "rows", "mmax")
 
 
 def config_name(s: dict) -> str:
-    return f"{s['schema']} {s['tm']}x{s['tn']}x{s['tk']}:{s['wm']}x{s['wn']}:s{s['st']} bc{s['bc']}"
+    warp = f"x{s['warp_k']}" if int(s.get("warp_k", 0)) > 0 else ""
+    return f"{s['schema']} {s['tm']}x{s['tn']}x{s['tk']}:{s['wm']}x{s['wn']}{warp}:s{s['st']} bc{s['bc']}"
 
 
 def load(text: str):
@@ -80,6 +85,7 @@ def load(text: str):
             # so the candidate reads as having died when it completed -- a false alarm on a healthy sweep, which
             # is how a warning stops being read. Checked here so it is reported at the LINE rather than surfacing
             # later as an inexplicable count.
+            r.setdefault("warp_k", 0)  # legacy records predate the standalone-Marlin WarpK axis
             missing = [k for k in CONFIG_KEYS + FIXTURE_KEYS + ("pass",) if k not in r]
             if missing:
                 bad.append(f"line {n}: attempt missing {','.join(missing)}")
@@ -89,6 +95,7 @@ def load(text: str):
         elif kind == "x":
             # TRIED AND EXCLUDED. Carries `why`, and it is the only record that says an option was reachable and
             # rejected -- which is what a pruning decision needs and what absence cannot supply.
+            r.setdefault("warp_k", 0)
             missing = [k for k in CONFIG_KEYS + FIXTURE_KEYS + ("pass", "why") if k not in r]
             if missing:
                 bad.append(f"line {n}: exclusion missing {','.join(missing)}")
@@ -96,6 +103,7 @@ def load(text: str):
                 r["_build"] = current_build
                 excludeds.append(r)
         elif kind == "s":
+            r.setdefault("warp_k", 0)
             missing = [k for k in CONFIG_KEYS + FIXTURE_KEYS + ("pass", "us") if k not in r]
             if missing:
                 bad.append(f"line {n}: sample missing {','.join(missing)}")
@@ -170,11 +178,14 @@ def prune_report(samples, excludeds, tol=0.05):
 
     cfg_fields = {}
     for s in samples:
-        cfg_fields[config_name(s)] = {k: s[k] for k in ("tm", "tn", "tk", "wm", "wn", "st")}
+        cfg_fields[config_name(s)] = {k: s[k] for k in ("tm", "tn", "tk", "wm", "wn", "warp_k", "st")}
     winners = {min(d, key=d.get) for d in per_fix.values()}
 
     axis_rows = []
-    for axis in ("tm", "tn", "wm", "wn", "st"):
+    # Preserve the legacy prune report when no sample opted into WarpK. Once one does, it is a real sweep axis
+    # and must appear in the keep/drop census just like WarpM/WarpN.
+    axes = ("tm", "tn", "wm", "wn") + (("warp_k",) if any(f["warp_k"] > 0 for f in cfg_fields.values()) else ()) + ("st",)
+    for axis in axes:
         for val in sorted({f[axis] for f in cfg_fields.values()}):
             hit = lambda c, a=axis, v=val: cfg_fields[c][a] == v
             wins = sum(1 for w in winners if hit(w))

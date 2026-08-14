@@ -33,6 +33,10 @@ struct Sample {
   int n, k, gs;
   int experts, rows, mmax;  // MoE; mmax decides which compact-A capacities are reachable, so it is not optional
   int tm, tn, tk, wm, wn, st;
+  // The CTA's K extent per warp cohort. Zero is the legacy "there is no warp-K axis" spelling. Keeping zero as
+  // the default lets every existing emitter preserve its byte-for-byte record shape, while standalone Marlin
+  // rows opt in with a positive value and cannot collapse distinct WarpK tactics in the durable sample file.
+  int warp_k = 0;
   // PPU_B_CHUNK, AS TWO FIELDS, because it is two different facts. `bc` is what the ROW asked for -- it became a
   // tactic row field on 2026-08-07 and is no longer a property of the build, so it cannot live in run_header's
   // `build` string any more. `bc_eff` is what the collective's capability predicate actually granted: chunking
@@ -106,10 +110,11 @@ inline void attempt(Sample const& s) {
   std::fprintf(f,
       "{\"rec\":\"a\",\"fixture\":\"%s\",\"dist\":\"%s\",\"schema\":\"%s\","
       "\"n\":%d,\"k\":%d,\"gs\":%d,\"experts\":%d,\"rows\":%d,\"mmax\":%d,"
-      "\"tm\":%d,\"tn\":%d,\"tk\":%d,\"wm\":%d,\"wn\":%d,\"st\":%d,"
-      "\"bc\":%d,\"bc_eff\":%d,\"pass\":%d}\n",
+      "\"tm\":%d,\"tn\":%d,\"tk\":%d,\"wm\":%d,\"wn\":%d,\"st\":%d",
       s.fixture, s.dist, s.schema, s.n, s.k, s.gs, s.experts, s.rows, s.mmax,
-      s.tm, s.tn, s.tk, s.wm, s.wn, s.st, s.bc, s.bc_eff, s.pass);
+      s.tm, s.tn, s.tk, s.wm, s.wn, s.st);
+  if (s.warp_k > 0) std::fprintf(f, ",\"warp_k\":%d", s.warp_k);
+  std::fprintf(f, ",\"bc\":%d,\"bc_eff\":%d,\"pass\":%d}\n", s.bc, s.bc_eff, s.pass);
   std::fflush(f);
 }
 
@@ -119,10 +124,12 @@ inline void emit(Sample const& s) {
   std::fprintf(f,
       "{\"rec\":\"s\",\"fixture\":\"%s\",\"dist\":\"%s\",\"schema\":\"%s\","
       "\"n\":%d,\"k\":%d,\"gs\":%d,\"experts\":%d,\"rows\":%d,\"mmax\":%d,"
-      "\"tm\":%d,\"tn\":%d,\"tk\":%d,\"wm\":%d,\"wn\":%d,\"st\":%d,"
-      "\"bc\":%d,\"bc_eff\":%d,\"pass\":%d,\"us\":%.6f",
+      "\"tm\":%d,\"tn\":%d,\"tk\":%d,\"wm\":%d,\"wn\":%d,\"st\":%d",
       s.fixture, s.dist, s.schema, s.n, s.k, s.gs, s.experts, s.rows, s.mmax,
-      s.tm, s.tn, s.tk, s.wm, s.wn, s.st, s.bc, s.bc_eff, s.pass, s.us);
+      s.tm, s.tn, s.tk, s.wm, s.wn, s.st);
+  if (s.warp_k > 0) std::fprintf(f, ",\"warp_k\":%d", s.warp_k);
+  std::fprintf(f, ",\"bc\":%d,\"bc_eff\":%d,\"pass\":%d,\"us\":%.6f",
+               s.bc, s.bc_eff, s.pass, s.us);
   if (s.timing) {
     std::fprintf(f,
         ",\"timing\":\"%s\",\"wall_us\":%.6f,\"launches\":%d,"
@@ -155,10 +162,12 @@ inline void excluded(Sample const& s, char const* why) {
   std::fprintf(f,
       "{\"rec\":\"x\",\"fixture\":\"%s\",\"dist\":\"%s\",\"schema\":\"%s\","
       "\"n\":%d,\"k\":%d,\"gs\":%d,\"experts\":%d,\"rows\":%d,\"mmax\":%d,"
-      "\"tm\":%d,\"tn\":%d,\"tk\":%d,\"wm\":%d,\"wn\":%d,\"st\":%d,"
-      "\"bc\":%d,\"bc_eff\":%d,\"pass\":%d,\"why\":\"%s\"}\n",
+      "\"tm\":%d,\"tn\":%d,\"tk\":%d,\"wm\":%d,\"wn\":%d,\"st\":%d",
       s.fixture, s.dist, s.schema, s.n, s.k, s.gs, s.experts, s.rows, s.mmax,
-      s.tm, s.tn, s.tk, s.wm, s.wn, s.st, s.bc, s.bc_eff, s.pass, reason);
+      s.tm, s.tn, s.tk, s.wm, s.wn, s.st);
+  if (s.warp_k > 0) std::fprintf(f, ",\"warp_k\":%d", s.warp_k);
+  std::fprintf(f, ",\"bc\":%d,\"bc_eff\":%d,\"pass\":%d,\"why\":\"%s\"}\n",
+               s.bc, s.bc_eff, s.pass, reason);
   std::fflush(f);
 }
 

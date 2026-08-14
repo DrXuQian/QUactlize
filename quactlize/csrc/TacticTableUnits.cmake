@@ -159,6 +159,87 @@ function(qz_parse_tactic_xmacro OUT_ROWS)
   set(${OUT_ROWS} "${_rows}" PARENT_SCOPE)
 endfunction()
 
+# Parse the independent standalone-Marlin table.  Its row ABI is deliberately
+# not the generic seven-integer tactic ABI: WarpK and the load policy are real
+# axes and dropping either would recreate the old "field exists but is never
+# enumerated" failure.  The only currently emitted load token is CP_ASYNC;
+# admitting another token requires both this source parser and the production
+# wrapper to name it.
+function(qz_parse_marlin_tactic_xmacro OUT_ROWS)
+  cmake_policy(SET CMP0007 NEW)
+  cmake_parse_arguments(PARSE "" "FILE;LIST_MACRO;COUNT_MACRO" "" ${ARGN})
+  foreach(_arg FILE LIST_MACRO COUNT_MACRO)
+    if(NOT PARSE_${_arg})
+      message(FATAL_ERROR "qz_parse_marlin_tactic_xmacro: ${_arg} is required")
+    endif()
+  endforeach()
+  get_filename_component(_file "${PARSE_FILE}" ABSOLUTE
+                         BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+  if(NOT EXISTS "${_file}")
+    message(FATAL_ERROR
+      "qz_parse_marlin_tactic_xmacro: table does not exist: ${_file}")
+  endif()
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_file}")
+  qz_parse_tactic_scalar(_declared_count FILE "${_file}"
+                         MACRO "${PARSE_COUNT_MACRO}")
+
+  file(READ "${_file}" _text)
+  string(REPLACE "\\" "@QZ_MARLIN_BACKSLASH@" _text "${_text}")
+  string(REPLACE "\r" "" _text "${_text}")
+  string(REPLACE "\n" ";" _lines "${_text}")
+  set(_expected_decl "#define ${PARSE_LIST_MACRO}(X, B) \\")
+  set(_decls 0)
+  set(_in_rows FALSE)
+  set(_done FALSE)
+  set(_rows "")
+  set(_row_re "^[ \t]*X\\(([0-9]+),([0-9]+),([0-9]+),([0-9]+),([0-9]+),([0-9]+),([0-9]+),(CP_ASYNC),B\\)[ \t]*$")
+  foreach(_line IN LISTS _lines)
+    string(REPLACE "@QZ_MARLIN_BACKSLASH@" "\\" _line "${_line}")
+    if(_line MATCHES "^#define[ \t]+${PARSE_LIST_MACRO}\\(")
+      math(EXPR _decls "${_decls} + 1")
+      if(NOT _line STREQUAL _expected_decl)
+        message(FATAL_ERROR
+          "${_file}: malformed ${PARSE_LIST_MACRO} declaration '${_line}'")
+      endif()
+      set(_in_rows TRUE)
+      continue()
+    endif()
+    if(NOT _in_rows OR _done)
+      continue()
+    endif()
+    string(REGEX MATCH "\\\\$" _continues "${_line}")
+    if(_continues)
+      string(REGEX REPLACE "\\\\$" "" _row_text "${_line}")
+    else()
+      set(_row_text "${_line}")
+    endif()
+    if(NOT _row_text MATCHES "${_row_re}")
+      message(FATAL_ERROR
+        "${_file}: malformed standalone Marlin row '${_line}'; expected X(TM,TN,TK,WM,WN,WarpK,ST,CP_ASYNC,B)")
+    endif()
+    set(_row
+      "${CMAKE_MATCH_1},${CMAKE_MATCH_2},${CMAKE_MATCH_3},${CMAKE_MATCH_4},${CMAKE_MATCH_5},${CMAKE_MATCH_6},${CMAKE_MATCH_7},${CMAKE_MATCH_8}")
+    list(FIND _rows "${_row}" _duplicate)
+    if(NOT _duplicate EQUAL -1)
+      message(FATAL_ERROR "${_file}: duplicate standalone Marlin row '${_row}'")
+    endif()
+    list(APPEND _rows "${_row}")
+    if(NOT _continues)
+      set(_done TRUE)
+    endif()
+  endforeach()
+  if(NOT _decls EQUAL 1 OR NOT _done)
+    message(FATAL_ERROR
+      "${_file}: expected exactly one terminated ${PARSE_LIST_MACRO}, got declarations=${_decls} terminated=${_done}")
+  endif()
+  list(LENGTH _rows _parsed_count)
+  if(NOT _parsed_count EQUAL _declared_count)
+    message(FATAL_ERROR
+      "${_file}: parsed ${_parsed_count} standalone rows, declared ${_declared_count}")
+  endif()
+  set(${OUT_ROWS} "${_rows}" PARENT_SCOPE)
+endfunction()
+
 # Split a tuple list into batches. Each output element contains one or more
 # tuples joined by '|', which is outside the decimal/comma row grammar.
 function(qz_batch_tactic_rows OUT_BATCHES ROWS_VAR BATCH_SIZE)
