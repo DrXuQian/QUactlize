@@ -13,12 +13,10 @@ TARGET=test_lowbit_dense_marlin_m8_ab
 ACU="${ACU:-$(command -v acu || true)}"
 OUT="${MARLIN_M8_PIPE_ROLL_OUT:-/workspace/quactlize-dense-marlin-m8-pipe-roll-acu}"
 REPORTER="$ROOT/dev/fold_derivation/l182_marlin_pipe_roll_report.py"
-IDENTITY_PROBE_TOOL="$ROOT/tools/probe_box_identity.py"
 
 fail() { printf '[marlin-m8-pipe-roll] FAIL: %s\n' "$*" >&2; exit 1; }
 [ "$#" -eq 0 ] || fail 'this runner accepts no positional arguments'
 [ -x "$REPORTER" ] || fail "missing executable reporter: $REPORTER"
-[ -r "$IDENTITY_PROBE_TOOL" ] || fail "missing readable identity probe: $IDENTITY_PROBE_TOOL"
 [ -n "$ACU" ] && [ -x "$ACU" ] || \
   fail 'ACU is unavailable; set ACU to the site acu executable'
 [ -z "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all)" ] || \
@@ -30,11 +28,6 @@ if [ -e "$OUT" ] && [ -n "$(find "$OUT" -mindepth 1 -maxdepth 1 -print -quit)" ]
   fail "output directory is not empty: $OUT"
 fi
 mkdir -p "$OUT"
-
-identity_probe_get() {
-  python3 "$IDENTITY_PROBE_TOOL" get --file "$OUT/identity-probe.json" \
-    --field "$1" --part "$2"
-}
 
 resolve_executable() {
   local candidate="$1"
@@ -66,21 +59,6 @@ objdump_identity="$($hgobjdump --version 2>&1 | head -n 1 || true)"
   fail 'hgcc identity is empty or a stub'
 [ -n "$objdump_identity" ] && [[ "$objdump_identity" != *stub* ]] || \
   fail 'hgobjdump identity is empty or a stub'
-
-# The identity probe cannot infer the SDK root merely because hgcc happens to
-# be on PATH.  Resolve that authority first, then pass it explicitly.  Keep
-# the probe's temporary host build below this /workspace bundle as well.
-env TMPDIR="$OUT" PPU_SDK="$sdk_root" PPU_HOME= PPU_SDK_SITE_DEFAULT= \
-  python3 "$IDENTITY_PROBE_TOOL" resolve --output "$OUT/identity-probe.json" || \
-  fail "automatic box identity probe failed with resolved PPU_SDK=$sdk_root; no binary was built or profiled"
-DEVICE_MODEL="$(identity_probe_get device_model value)"
-PCI_IDENTITY="$(identity_probe_get pci_identity value)"
-DRIVER_VERSION="$(identity_probe_get driver_version value)"
-SDK_IDENTITY_PROBED="$(identity_probe_get sdk_compiler_identity value)"
-DEVICE_MODEL_SOURCE="$(identity_probe_get device_model source)"
-PCI_IDENTITY_SOURCE="$(identity_probe_get pci_identity source)"
-DRIVER_VERSION_SOURCE="$(identity_probe_get driver_version source)"
-SDK_IDENTITY_SOURCE="$(identity_probe_get sdk_compiler_identity source)"
 
 acu_real="$(readlink -f "$ACU")"
 acu_identity="$($acu_real --version 2>&1 | head -n 1 || true)"
@@ -316,11 +294,7 @@ verify_source_identity
   printf 'hgcc_identity=%s\nhgobjdump_identity=%s\n' "$compiler_identity" "$objdump_identity"
   printf 'acu=%s\nacu_identity=%s\nacu_sha256=%s\n' \
     "$acu_real" "$acu_identity" "$(sha256sum "$acu_real" | awk '{print $1}')"
-  printf 'device_model=%s\ndevice_model_source=%s\n' "$DEVICE_MODEL" "$DEVICE_MODEL_SOURCE"
-  printf 'pci_identity=%s\npci_identity_source=%s\n' "$PCI_IDENTITY" "$PCI_IDENTITY_SOURCE"
-  printf 'driver_version=%s\ndriver_version_source=%s\n' "$DRIVER_VERSION" "$DRIVER_VERSION_SOURCE"
-  printf 'sdk_compiler_identity=%s\nsdk_compiler_identity_source=%s\n' \
-    "$SDK_IDENTITY_PROBED" "$SDK_IDENTITY_SOURCE"
+  printf 'device_identity_probe=not-part-of-this-same-process-mechanism-A/B\n'
 } >"$OUT/manifest.txt"
 find "$OUT" -type f ! -name bundle.sha256 -print0 | sort -z | \
   xargs -0 sha256sum >"$OUT/bundle.sha256"

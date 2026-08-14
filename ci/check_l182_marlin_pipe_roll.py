@@ -83,9 +83,6 @@ def audit(files: dict[str, str]) -> list[str]:
         'for index in 0 1; do',
         'exec 9>"${OUT}.lock"',
         "flock -n 9",
-        '[ -r "$IDENTITY_PROBE_TOOL" ]',
-        'env TMPDIR="$OUT" PPU_SDK="$sdk_root" PPU_HOME= PPU_SDK_SITE_DEFAULT=',
-        'resolve --output "$OUT/identity-probe.json"',
         "verify_source_identity",
         "binaries=3/3",
         'for repeat in 1 2 3 4 5 6 7 8; do',
@@ -107,12 +104,6 @@ def audit(files: dict[str, str]) -> list[str]:
         bad.append("box runner must invoke the exact reporter once")
     elif runner.index('python3 "$REPORTER"') > runner.index('ACU_CMD=('):
         bad.append("box runner can profile before the static codegen admission gate")
-    sdk_ready = 'sdk_root="$(cd "$sdk_root" && pwd)"'
-    identity_call = 'python3 "$IDENTITY_PROBE_TOOL" resolve'
-    if sdk_ready not in runner or identity_call not in runner:
-        bad.append("box identity probe lost its resolved SDK ordering seam")
-    elif runner.index(sdk_ready) > runner.index(identity_call):
-        bad.append("box identity probe runs before the SDK authority is resolved")
     return bad
 
 
@@ -269,8 +260,6 @@ def main() -> int:
         ("runner", "bpc-broadened", "VALUES=(0 1 2)", "VALUES=(0 1 2)\nBPCS=(1 2)"),
         ("runner", "reporter-call-removed", 'python3 "$REPORTER"', 'true # reporter removed'),
         ("runner", "inner-control-executed", "for index in 0 1; do", "for index in 0 1 2; do"),
-        ("runner", "python-helper-required-executable", '[ -r "$IDENTITY_PROBE_TOOL" ]', '[ -x "$IDENTITY_PROBE_TOOL" ]'),
-        ("runner", "identity-lost-resolved-sdk", 'env TMPDIR="$OUT" PPU_SDK="$sdk_root" PPU_HOME= PPU_SDK_SITE_DEFAULT=', 'env TMPDIR="$OUT"'),
     )
     for owner, label, old, new in plants:
         if files[owner].count(old) != 1:
@@ -302,7 +291,7 @@ def main() -> int:
     print("[l182:local] exact-unit: " + ", ".join(witnesses))
     print(
         "[l182:local] PASS: default/outer-only/inner-control routes reach the exact m8 device body; "
-        "negative_controls=16/16_RED mixed-range=PASS; PPU static footprint/register/spill remains a mandatory box compile-only postcondition"
+        "negative_controls=14/14_RED mixed-range=PASS; PPU static footprint/register/spill remains a mandatory box compile-only postcondition"
     )
     return 0
 
