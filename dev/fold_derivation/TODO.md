@@ -1875,3 +1875,37 @@ Q4_K's scale channel is therefore closed, with every layer either measured or de
 All three layout-level routes are now spent: widening (prior work, no-op), padding (-9.7% here), prefetching
 (+0.7% here). What is left changes the algorithm (affine on the accumulator, computed 2x worse at gs=32) or the
 format. The 18.8% is intrinsic to (gs=32, affine, this mma's B TV layout).
+
+### TODO #57 — fixed-grid 5070/H800 Marlin A/B: separate hardware from over-decomposition
+
+**Question.**  The current warm event result for dense W4A16 `M=1, N=K=4096, gs=128` is faster on RTX 5070
+than the reported H800 result.  That is not yet a hardware comparison: the launcher uses a device-sized grid, so
+the same 1,024 `(n_tile,k_tile)` cells are decomposed differently.  The 5070 run used `G=48`; an H800-sized grid
+can create roughly 2.5x as many inter-CTA handoffs.  The PPU `G=72 -> 144` A/B already proves that extra CTAs can
+leave MMA/dequant work unchanged while increasing dynamic instructions and latency.
+
+**Experiment (run on both devices, same source/binary inputs and exact tactic).**
+
+* Pin W4A16, `M=1, N=K=4096, gs=128`, `threads=256, tm=1, tn=8, tk=8, stages=4,
+  group_blocks=8`; record the actual MMA opcode rather than inferring it from `m8=true`.
+* Measure both devices at the same two grids: `G=48` and `G=H800_SM_COUNT` (read the latter from the machine; do
+  not hard-code 114).  A grid larger than the 5070 SM count is intentional.
+* For every cell report `I=ceil(1024/G)`, active CTAs, exact handoff count and max peers.  Also record selected
+  kernel config, source SHA, binary hash, GPU/driver, clocks and resource limits.
+* Measure **warm same-buffer** and **cold cache-flushed** event latency separately, with raw samples and median.
+  NCU counters are a separate run: report DRAM read/write bytes, DRAM throughput, L2 hit rate, occupancy and the
+  stall breakdown.  Never use NCU-instrumented duration as the event latency or combine counters from one cache
+  regime with timing from another.
+
+**Pre-registered interpretation.**
+
+1. H800 overtakes at fixed `G=48`, while its device-sized grid loses: the reversal is launcher
+   over-decomposition/synchronization, not inferior H800 hardware.
+2. The ordering changes between warm and cold at fixed grid: cache residency/timing protocol is causal.
+3. H800 remains slower at identical grid and cache state: only then inspect target codegen, clocks and per-SM
+   request generation.  Do not explain it with peak HBM bandwidth alone.
+
+**Required controls.**  Same logical bytes and numerical output; `G=48` must produce the same decomposition on
+both machines; changing only `G` must leave MMA count unchanged; reported `% peak` must always be accompanied by
+absolute GB/s and its counter/model provenance.  The existing 5070 `11.872 us` warm timing and `581.69 GB/s /
+88.06%` NCU result are two different executions and must remain separate baselines.
