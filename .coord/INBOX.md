@@ -7004,3 +7004,43 @@ TODO #58 已按此改写(性质 / 事前判据 / 三条负控 / 范围限制都�
 native GEMV(raw GGUF,0.5625 B/权重,prmt)和 resident GEMV(`sf-gemv` artifact,0.625 B/权重含常驻 scale+zero,本任务这条)**两条都出货**,走哪条是 #35 planner 的离线格式决定,不是 kernel 决定。而 **native 在 PPU 上从没测过**(`HANDOFF_gguf_pipeline.md:83` "PPU performance remains unmeasured")。
 
 **若 native 本就更快,本任务是在优化一条该退役的路。** 两个 kernel 都在,同 shape 跑一次即可分辨。**先跑这一次,再决定做不做 #58。**
+
+---
+
+## 168 — **更正 167 第二节:两条 GEMV 都吃紧打格式,谁都不是字节对齐的**
+
+用户问:"native gemv 吃原始格式,lowbit 吃 shuffle 后的格式,那怎么会一个对齐一个不对齐?逻辑上都是对齐的。" **他对,167 那一节我把输出当成了输入。**
+
+`gguf_scale_layout.hpp:46-49`:
+
+    constexpr uint32_t kMask = uint32_t((1 << Width_) - 1) * 0x01010101u;   // Width=4 -> 0x0F0F0F0F
+    return (word >> Base::shift_of(c)) & kMask;                             // shift_of 是亚字节移位
+
+**一条移位 + 一条与,一次 SWAR 把 4 个码同时摊到 4 个字节。** GGUF 原生 Q4_K 是 2 nibble/byte,和 `sf-gemv` 一样紧打;native GEMV 能用 prmt 是**它自己先花 2 条指令摊出来的**,不是格式送的。
+
+### 重算(到"fp16 值、magic 已减",不含 scale 乘)
+
+| | 摊字节 | 转 fp16 | 合计/码 |
+|---|---|---|---|
+| native GEMV | `>>` + `&`(4 码 / 2 条) | 2 prmt + 2 sub | **1.5** |
+| `gemv_lowbit` | 不摊 | (`>>`+`&`+`\|`) x4 | **1.5**,且 magic 未减 |
+| vendor int4 | 不摊 | 1 `>>` + 4 lop3 + 2 sub + 2 fma | **1.125** |
+
+**两条 GEMV 每码指令数一样。** native 那 2 条 SWAR 把 prmt 的便宜正好吃回去。167 里"因为格式对齐所以能用 prmt"作废;**机制(prmt 需要字节边界)仍成立,归因作废。**
+
+### 于是候选变成三条,不是一条
+
+    A  gemv_lowbit 换 vendor lop3 形式        1.125 /码   artifact 不动,改动最小
+    B  离线就摊成字节 + prmt                  1.0   /码   码平面 x2(int4 -> 1 B/码)
+    C  改吃 native 路,退役 sf-gemv artifact   1.5   /码   省掉一整个离线格式
+
+**B 是用户这个问题逼出来的**:`sf-gemv` 是我们离线产的,布局本来就归我们定,没有理由必须紧打。
+
+**B 的范围限制(必须守住)**:[[ppu-gemv-alu-bound-not-bandwidth]] 量到 i1/i2/i4 字节差 2.5x、时间差 1.1%,**那是 0.125-0.5 B/码的区间**;1.0 B/码在测量范围外,**是外推不是结论**。B 必须自带带宽实测,不许引用那条记忆当依据。
+
+### 要求
+
+1. 三条都算源码级指令数(逐 `Bits`),**A/B/C 同表**,不要只报选中的那条。
+2. **B 先跑带宽点**:同 shape 把码平面从 0.5 B/码抬到 1.0 B/码,只测时间,不改转换器 —— 这一步就能判 B 死活,且不用写转换器。
+3. C 依赖 167 末尾那个 native-vs-resident 的排序判断,**不要与 A/B 并行开工**。
+4. 167 的三条负控与范围限制原样适用。
