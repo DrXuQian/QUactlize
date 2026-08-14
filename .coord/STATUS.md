@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-14 07:42:58 UTC
+    updated-at:     2026-08-14 08:38:30 UTC
     inbox-consumed: 173
-    working-on:     INBOX 173 committed: same-SHA BPC1 baseline vs outer-pipe-roll ACU runner; default mode unchanged, inner-roll is compile/disassembly-only negative
-    blocked-on:     box hgobjdump resource/static-footprint admission followed by baseline/outer-roll ACU capture
-    local-gates:    PASS: 16/16 pipe-roll negative controls, including readable Python helper and identity probe ordered after explicit SDK resolution
-    last-commit:    f9de613 Resolve PPU SDK before box identity probe
+    working-on:     standalone Marlin production sweep target closed locally; first admitted sweep is exact TM8 vs TM16 at fixed TN128/TK128/WN64/WarpK32/BPC1
+    blocked-on:     box execution of tools/run_dense_marlin_standalone_sweep_box.sh
+    local-gates:    PASS: 2/2 real syntax instantiations; admitted table BYTE_IDENTICAL + 6 RED controls; private multi-TU boxdry link; WarpK sample identity negative; overlay/CMake contracts
+    last-commit:    f0d0905 Add standalone Marlin tactic sweep
     last-heartbeat: 306
