@@ -727,7 +727,7 @@ The %HBM column being in exact inverse bit-width order across the formats (q6 38
 
 ### TODO #28 codegen verdict: 2.75 -> 1 is an sm_120 result, not a PPU result
 
-L145 compiles the real shipping specialization (`int4/native`, StepK=16, 128 threads, dense M=1,
+L145 compiles the standalone `gemv_lowbit` specialization (`int4/native`, StepK=16, 128 threads, dense M=1,
 CtaN=8, Chunk=2, gs=32, affine scale+zero) with nvcc 12.8 for sm_120 and disassembles the full kernel. Per
 K-loop iteration and thread it converts 128 weights = 64 half2 pairs. Final SASS contains 64 mask
 `LOP3.LUT`, 64 separate magic-OR `LOP3.LUT`, and 48 shifts (16 each at 4, 8, and 12 bits). Slot p=0 therefore
@@ -740,7 +740,8 @@ implementing AND and OR, and nonzero shifts remain. #28's whole-word extraction 
 with an exact average target of **2.75 -> 1** (the nonzero-shift slots are 3 -> 1), not a blanket 3 -> 1.
 This is an NVIDIA codegen result, not a PPU result. Run
 `dev/fold_derivation/run_l145_gemv_lop3_codegen.sh` to reproduce the sm_120 evidence.  PPU must be measured from the
-same shipping GEMV instantiation with hgcc and the PPU disassembler; the result is the before baseline for TODO #55,
+same `gemv_lowbit` instantiation with hgcc and the PPU disassembler.  It is not a baseline for the shipping
+`gguf_bc_vecdot` path in TODO #55,
 not a go/no-go decision.
 
 The older PPU acu row at this file's "whole A line" section is not that baseline.  Its
@@ -753,43 +754,39 @@ not fuse extraction; it is not a quantitative current-code baseline.
 **This also predicts split-K will not help**, for the same reason: split-K buys CTAs, and CTAs are not what is
 short. That prediction is exactly what test_moe_splitk_bench measures, so it is still worth running.
 
-### TODO #55 — ship target-dispatched fast dequant for PPU GEMV
+### TODO #55 — shipping `gguf_bc_vecdot` whole-word fast dequant
 
-**Decision and target.**  The PPU GEMV must use the fast two-instruction decode below.  RTX 5090 keeps the portable
-dequant implementation selected by target, so a standalone portable call remains buildable.  This is committed work,
-not conditional on whether the PPU compiler happens to perform some partial fusion.  The PPU disassembly in INBOX 150
-is the frozen **before** measurement needed to attribute the change.
+**Target and format constraint.**  Decode consumes the same resident xplane Q4 codes and packed metadata units as
+prefill.  It must not create a raw-GGUF copy or change placement π.  The reader now loads one resident 32-bit word and
+produces four half2 pairs through target-selected arithmetic: NVIDIA uses `lop3.b32 + fma.rn.f16x2`; PPU uses
+`ppu.lop3.b32 + ppu.fma.rtte.f16x2`.  The fma removes the 1024 fp16 magic.  Per-group scale and affine zero remain a
+separate native-half operation after code extraction.
 
-**Reuse boundary.**  Reuse only `MixGemmEmit::emit_one`'s arithmetic core:
+The arithmetic is semantically the `MixGemmEmit::emit_one` core, but the shipping reader owns an explicit
+`Q4PairConstants` implementation rather than calling the tensor-core delivery layer.  `emit`, `at`, and `keep` encode
+AIU/swzl placement and are deliberately not reused.  Q4 A={32,64,128,256} share the proved P4x32 within-word
+permutation; A32 has a different folded group-base formula.  The measured CUDA production topology is admitted only
+for dense A64, fp16 activation, N divisible by 8, K divisible by 1024 and K<=8192.  Every other case keeps the generic
+arrangement-aware reader.
 
-    ppu.lop3.b32          x = (src & mask<T>) | 0x64006400
-    ppu.fma.rtte.f16x2    x = x * mul<T> + add<T>
+**Correctness seam.**  L187 binds the fast reader to three independent authorities: `place_derived/recover_derived`
+for the producer bytes, scalar `code_at/xplane_physical_code` for the old address oracle, and the new word plan.  It
+exhausts 1,048,576 coordinates across A32/64/128/256, requires exact address/value/alignment and metadata agreement,
+and carries wrong-permutation and missing-denominator plants.  The 5090 benchmark additionally runs positive and
+signed activation gates and invokes the public A64 dispatch.  A one-bit fast-dequant magic plant must make every
+shipping topology red.
 
-`mul<T>` absorbs the bit position (`bpos`) and `add<T>` absorbs the fp16 1024 magic plus `kBias`.  Do not reuse the
-tensor-core delivery layer: `emit`, `at`, and `keep` encode AIU/swzl fragment placement and B-chunk publication, while
-GEMV needs its own sequential destination mapping.  The fma does **not** apply per-group scale or zero.  It removes
-the magic value and integer-code bias; both portable and fast paths multiply/apply the per-group affine metadata
-afterward.
+**Status.**  The RTX 5090 A64 dense route is implemented.  The pre-fast shipping reader measured about 38.7 us at
+M=1,N=K=4096; native metadata alone reduced the generic topology to about 12.8 us.  The production PDF-style topology
+then measured **7.625333 us** versus the raw-GGUF PDF reference's **7.793333 us** in the same 31-sample binary
+(`0.978443`, 2.16% faster), while preserving the resident bytes.  It uses fp32 accumulation across superblocks; the PDF arm's half accumulation
+precision is a third axis, separate from code extraction and delivery.
 
-The native and TileK artifacts use the same bit-width-specific `bpos` sequence and logical mapper, so the PPU route
-does not need two copies of artifact constants.  Artifact selection remains outside the arithmetic core.
-
-**Correctness seam.**  `gemv_converter.hpp` already owns an independent `RefRawConverter` oracle and a one-hot mapper
-probe.  Keep the oracle portable.  Today the one-hot probe is reached only as diagnostics after a random comparison
-has failed; enabling the fast route must promote it to an unconditional positive gate.  A silently permuted fast
-converter must fail even when a random fixture happens not to expose the permutation.
-
-**Bounded work.**  Production target dispatch, arithmetic extraction, and GEMV mapping are 80--120 LOC.  Wiring the
-unconditional oracle/one-hot positive gate is another 25--45 LOC.  Preconditions are (1) the current PPU per-pair
-instruction breakdown from INBOX 150 and (2) removal of the box-run shipping-code freeze.
-
-**Completion evidence.**  Report both quantities against the same shipping specialization and winning sweep shapes:
-
-1. the before/after per-half2 extraction breakdown and instruction-count reduction on PPU; and
-2. the before/after GEMV time on every sweep shape whose winner selects this specialization.
-
-Fewer extraction instructions with unchanged wall time is a valid result and must be reported, not explained away or
-hidden by selecting a different shape.
+**Still open.**  PPU compilation/disassembly and before/after ACU time for this exact shipping BC path remain a box
+boundary; L145/INBOX 150 measured a different `gemv_lowbit` target and cannot be reused as its baseline.  Other formats,
+grouped ownership, and CUDA topology beyond the admitted A64 dense domain require their own gates.  Completion on PPU
+still requires both per-half2 opcode counts and wall time; fewer instructions with unchanged time remains a valid
+result rather than something to hide by selecting another shape.
 
 ### TODO #56 — classic-aligned collective must not execute more instructions than standalone Marlin
 
