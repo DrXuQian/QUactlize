@@ -7113,3 +7113,66 @@ D1/D2/D3/D5 的 config 串 `native`/`tileK` 来自 `gemv_lowbit/gemv_tactic_spac
 1. "int4 的 fast dequant 是我们的" —— **是 actlize 的,原样未改**;我们只补了 vendor 没有的 `uint8/uint2b_t/uint1b_t`。
 2. "native GEMV 吃字节对齐的格式" —— **两条都吃紧打格式**;native 自己花 1 shift + 1 and 摊出字节。
 3. "`gemv_lowbit` 是出货的 decode 路" —— **② 才是**。
+
+---
+
+## 170 — **用户决定:删掉 scale-first 的 SIMT GEMV(`gemv_lowbit`)。它不是死代码,删除会动路由**
+
+用户原话:*"scale first 的 simt 的 gemv 在我们中间没有任何路径会调用,删掉吧。"*
+
+### 一、前提核实过了,在语义层成立
+
+`quactlize/formats.py:185-200` 自己写着理由:
+
+> *"'forbidden' is about STORED bytes, not about bytes that exist for the duration of one call. Prefill can convert scales into a transient workspace… **decode cannot, because the planes would have to be resident for every token.**"*
+>
+> `fp16_planes="auto"` → `planes_ok = not needs_native_scale(qtype)`,而 `auto` 是 *"the right default for a resident weight"*。
+
+`needs_native_scale` 对**每一个 k-quant 都为真** ⟹ **消费常驻 fp16 平面的那条路,对任何 GGUF k-quant 的 decode 都不可选。** `sf-gemv(*)` artifact 结构性地进不了 decode。
+
+### 二、但它不是无引用代码。逐处清单
+
+    出货 .so     csrc/device/ppu_backend.cu:348 / 527 / 541 / 555      4 个 extern "C"
+    torch 扩展   csrc/preprocess/thop/ppu_backend.cpp:110              dlopen 取符号 → s.api.gemv_lowbit
+ ★  路由         csrc/device/ppu_dense_backend.cu:566                  !fully_quantized 时调 _config_valid_v1
+    构建         csrc/CMakeLists.txt:34-40, 93                         gemv_lowbit/ 被特判为「必须整体拷贝」
+    测试         tests/test_gguf_golden.py:786  tests/test_gguf_routes.py:260
+    CI           ci/check_gemv_tactic_space.py:157  ci/local_gates.py:1803
+    benchmark    benchmarks/decode_routes_cuda_probe.cu  benchmarks/q4k_pdf_5090_ab.cu
+    stub         dev/fold_derivation/l140_fake_ppu_backend.cpp  dev/fold_derivation/q36_ppu_loader_stub.cpp
+    实现         quactlize/include/gemv_lowbit/(11 个文件)
+
+**★ 那一行是重点:`ppu_dense_backend` 的路由判断当前依赖它的 admissibility。删除会改变路由行为,不只是移除死代码。** 这条必须当作行为变更来验,不能当清理。
+
+### 三、一个必须先决定的损失
+
+**BACKTEST 的 D1/D2/D3/D5 是这个 kernel 测出来的**(config 串 `native`/`tileK` 来自 `gemv_lowbit/gemv_tactic_space.hpp:97`,`N4 C2` 是 `gemv_kernel` 的 `CtaN`/`Chunk`)。删掉之后这四行不可复现,而 **D1(int4,16.05 µs / 47.4%)是目前唯一可复现的 SIMT decode 锚点**,今天整场 Marlin-vs-SIMT 的比较都挂在它上面。
+
+    A  保留四行 + 标 "kernel removed at <sha>",SIMT 锚点改挂 gguf_bc_vecdot
+       —— 但 bc_vecdot 现在没有基线数(#28 的第一步正是补它)
+    B  先在 box 上补 bc_vecdot 的同 shape 基线,再删
+
+**claude 建议 B**,理由是 A 会留下一个「删完之后没有任何可复现 SIMT decode 数」的空档,Marlin 的对照会悬空。**但这是可以推翻的建议 —— 若你判断 A 更好,说明理由即可,不必等。**
+
+### 四、性质
+
+删除后:**没有 build target、没有 ABI 符号、没有路由判断依赖 scale-first GEMV;且每个 k-quant 的 decode 路由结果与删除前逐条相同**(因为它本来就没被选中过)。
+
+### 五、事前判据
+
+* **(a)** 完整本地 gate 全绿(PASS/SKIP/FAIL 三个数都报)。
+* **(b)** 出货 `.so` 不再导出任何 `quactlize_ppu_gemv_lowbit*` 符号 —— **用 `nm` 验产物,不是审源码**。
+* **(c)** `ppu_dense_backend` 对现有 route 测试矩阵的每个 `(qtype, shape)`,给出与删除前**逐条相同**的路由决定。前后对比,不是人工审查。
+
+### 六、负控(三条都要演示,不能只声称)
+
+1. **植入一个调用点,构建或 gate 必须红。** 证明移除检查有牙,而不是「没人调所以没报错」。
+2. **route 测试矩阵里必须至少有一个用例此前真的执行到 `_config_valid_v1`。** 一个都没有 ⟹ 矩阵根本没覆盖被删的代码,(c) 就是空判据 —— **那必须先补矩阵再删**。
+3. **BACKTEST 里引用该 kernel 的行,在没有显式标记时必须被 config checker 判红。** 否则四行会静默变成不可复现却看起来正常。
+
+### 七、范围限制
+
+* **不动 `gguf_vecdot`(native GEMV)和 `gguf_bc_vecdot`(出货 decode)。**
+* **不删 `SCALE_FIRST` scheme 本身** —— prefill 的 pre-pass 路在用它(`fp16_planes="workspace"`,raw GGUF → 临时 fp16 平面)。要删的只是**常驻 GEMV 消费者**:`gemv_lowbit/`、`sf-gemv(*)` artifact 的产出与消费、以及那 4 个 ABI。
+* **D1/D2/D3/D5 的处理按第三节 A/B 选定后再执行,不许顺手删表。**
+* TODO #58 随之关闭(它本来就是针对这条路的,见 169)。
