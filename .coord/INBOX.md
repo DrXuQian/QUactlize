@@ -7176,3 +7176,71 @@ D1/D2/D3/D5 的 config 串 `native`/`tileK` 来自 `gemv_lowbit/gemv_tactic_spac
 * **不删 `SCALE_FIRST` scheme 本身** —— prefill 的 pre-pass 路在用它(`fp16_planes="workspace"`,raw GGUF → 临时 fp16 平面)。要删的只是**常驻 GEMV 消费者**:`gemv_lowbit/`、`sf-gemv(*)` artifact 的产出与消费、以及那 4 个 ABI。
 * **D1/D2/D3/D5 的处理按第三节 A/B 选定后再执行,不许顺手删表。**
 * TODO #58 随之关闭(它本来就是针对这条路的,见 169)。
+
+---
+
+## 171 — **接入用户给的 Q4_K SIMT GEMV 参考实现,做同 shape 的四路对照**
+
+用户交来一份完整的 Q4_K SIMT GEMV(来自本 session 早先那份 PDF),要求*"添加到我们的测试中,我要对比同样的 shape 下的 simt 的性能"*。
+
+**源码逐字放在 `.coord/ref_q4k_gemv_simt.cuh`** —— **不是 claude 写的,也没有进源码树**。放哪(`benchmarks/` 还是 `tests/`)、PPU 臂长什么样、外面的 harness 怎么搭,**都由你定**。它没被审过也没被编过。
+
+### 一、它是什么
+
+    输入      block_q4_K 原生 GGUF(144 B / 256 权重),零 artifact
+    算术      纯 SIMT,无张量核
+    dequant   prmt + 4×lop3 + 2×sub.f16x2 + 2×fma.rn.f16x2 / 8 码
+              —— 与 actlize MixGemmNumericArrayConverter<half_t,int4b_t,8> 逐条相同,
+                 也与 acu instruction mix 里量到的 Marlin dequant 账逐条相同
+    分块      8 lane / super-block,4 super-block / warp,1024 元素 / warp / 轮
+    模板      CTA_N(列/warp)、WARPS_N、WARPS_K(CTA 内切 K)
+    shared    整行激活常驻,k * sizeof(half) 字节
+    epilogue  32-lane 蝶形 + WARPS_K>1 时走 shared
+
+**它用的是 NVIDIA PTX 助记符**(`prmt.b32` / `lop3.b32` / `sub.f16x2` / `fma.rn.f16x2`),sm_120 可直接编;PPU 臂要换成 `ppu.` 前缀那四条 —— **这套序列我们已经有验证过的实现,不用重新推常数**。
+
+### 二、为什么现在特别值得做
+
+它和我们已有的三条 GEMV 拼起来,是**一个 shape 上的四路对照**,而这正是这个 session 反复卡住的地方:
+
+    ①  gguf_vecdot.hpp:606        SIMT  原生 GGUF   SWAR + prmt 转换器          我们的
+    ②  gguf_bc_vecdot.hpp:201     SIMT  xplane artifact  逐码 14 位置换 + prmt   我们的,出货
+    ③  ref_q4k_gemv_simt.cuh      SIMT  原生 GGUF   lop3 转换器,整行激活入 shared  用户给的
+    ④  standalone Marlin          张量核  GPTQ packed  lop3 转换器               我们的
+
+**① 和 ③ 吃同一个输入格式,只差转换器和激活摆放** ⟹ 它直接量出 #28 那条「整字/lop3 提取值多少」的上界,而且不用先写 kernel。
+
+### 三、必须先说清楚的一个不对等 —— 不许糊过去
+
+**格式不同,字节不同:**
+
+    Q4_K 原生       144 B / 256 权重 = 4.500 bit/权重   N=K=4096 → 9.437 MB
+    Marlin int4 gs128  0.5 B + 2/128 B                  N=K=4096 → 8.651 MB
+                                                        (acu 实测 DRAM 8.68 MB,对上)
+    ⟹ Q4_K 多搬 9.1% 字节
+
+所以**同 shape ≠ 同字节**。报数时必须同时给字节和 %HBM,**不许只报 µs 就说谁快**。这正是 [[align-before-attributing]] 那条:差集非空时归因无效。
+
+### 四、性质
+
+在同一台机器、同一 shape、同一计时纪律下,四条路各自给出**时间、搬运字节、%HBM**,且数值都对同一个 oracle 通过。任何跨路比较必须**同时**给出格式差异的字节账。
+
+### 五、事前判据
+
+* **(a) 数值**:对 **官方 `gguf` Python 包的 `dequantize`** 验(既有 oracle),不是对我们自己的 parser。至少覆盖 `DECODE_GEMV_RESULTS` 现有的用例形状。
+* **(b) 计时纪律**:与 BACKTEST 现有 GEMV 行同一套(cuda-graph / acu,不是墙钟)。注意 [[timer-quantisation-hides-effects]]。
+* **(c) 报表**:一行一条路,列 = `time / bytes / %HBM / grid / threads / regs / shared`。**grid 和 shared 必须在表里**,因为四条路差别极大(Marlin 72 CTA × 256 线程;③ 在 M=1,N=4096,CTA_N=1,WARPS_N=8 时是 512 CTA × 256 线程)。
+* **(d) shape**:至少含 **M=1, N=K=4096** —— 那是 Marlin acu 那次的 shape,也是唯一能和 `marlin-m8-tm8-tn128-tk128-wn64-wk32-bpc1`(16.96 µs)直接对齐的点。
+
+### 六、负控
+
+1. **植入一个错误的 `get_scale_min_k4_w` 位选(把 `j>=4` 的 `b2 & 0x0F` 改成 `b2 >> 4`),(a) 必须判红。** 证明 oracle 真的在看 scale 而不只是在看形状。
+2. **把 ③ 的 lop3 常数换成 int8 那套 magic,(a) 必须判红。** 转换器被静默置换是这个项目付过两次学费的失败形态。
+3. **只跑一条路时,表里其余行必须显示 SKIP 并带原因,不能空着。** 空行会被读成 0 或「未测但没关系」。
+
+### 七、范围限制
+
+* **③ 是参考实现,不是候选出货路。** 本任务只要它的数,不要把它接进任何 routing。
+* **PPU 臂若工具链缺就 SKIP,不许用 nvcc 假装。**(与 L176 同一条纪律。)
+* 不动 ①②④ 的实现;这一轮只加测量。
+* 与 170(删 `gemv_lowbit`)的顺序:**171 先跑完并留下 ② 的基线数,170 的第三节 A/B 才有依据。** 见 170。
