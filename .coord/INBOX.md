@@ -7044,3 +7044,72 @@ native GEMV(raw GGUF,0.5625 B/权重,prmt)和 resident GEMV(`sf-gemv` artifact,0
 2. **B 先跑带宽点**:同 shape 把码平面从 0.5 B/码抬到 1.0 B/码,只测时间,不改转换器 —— 这一步就能判 B 死活,且不用写转换器。
 3. C 依赖 167 末尾那个 native-vs-resident 的排序判断,**不要与 A/B 并行开工**。
 4. 167 的三条负控与范围限制原样适用。
+
+---
+
+## 169 — **更正 167/168 的靶子:出货的 decode GEMV 是 `gguf_bc_vecdot`,不是 `gemv_lowbit`**
+
+167 和 168 都把优化对象写成 `gemv_lowbit`。**错了。** 与用户逐条核完源码后的完整结论如下,167/168 中与本条冲突的部分作废。
+
+### 一、树里有三条出货 GEMV(外加一条串行 oracle),此前只数了两条
+
+| | kernel | 输入 | 提取 | 转 fp16 |
+|---|---|---|---|---|
+| ① | `gguf_vecdot.hpp:606 vecdot_rows_kernel` | **原始 GGUF** | `extract_word` SWAR:`(w >> shift_of(c)) & 0x0F0F0F0F`,**1 shift+1 and 出 4 码** | `MixGemmByte4ToHalf`(2 prmt + 2 sub / 4 码) |
+| ② | `gguf_bc_vecdot.hpp:201 rows_kernel` | **merged BC artifact**(xplane 码平面 + packed scale unit) | `code_at`→`plane_code`:**每码**重跑 14 位置换 + 一次字节载入;`q4_group` 快路仅 unfolded Q4 | 同 ①,**已是快路** |
+| ③ | `gemv_lowbit/gemv_kernel.hpp:46` | `sf-gemv(*)` artifact | `RawConverter<Bits>`:`((w>>(p*Bits))&kMask)\|kMagic`,3 条/对 | `\|kMagic` 构造,offset 另减 |
+
+(`gguf_vecdot.hpp:384` 是串行 oracle;`:783/:826/:846` 是 dequantize kernel,都不出货。)
+
+### 二、② 才是出货路,两条独立证据
+
+1. **一个权重文件。** ② 读的就是 tensor-core prefill 那份 xplane 摆放 —— 文件头自陈 *"the CUDA consumer and offline producer have one reviewable mapping object"*,对齐 `xplane::{plane_map, tile_map_hi}`。① 要另配原始 GGUF,③ 要另配 `sf-gemv` artifact。
+2. **只有 ② 有 artifact-descriptor ABI**:`quactlize_ppu_bc_gemv_for_arrangement_v1` / `_dev_v1`。
+
+### 三、于是 BACKTEST 的 GEMV 数全部不是出货 kernel 的
+
+D1/D2/D3/D5 的 config 串 `native`/`tileK` 来自 `gemv_lowbit/gemv_tactic_space.hpp:97`,`N4 C2` 是 `gemv_kernel` 的 `CtaN`/`Chunk` —— **全是 ③**;D4/D6-D9 是 tensor-core。
+
+**⟹ `D1 16.05 us / 47.4%` 不是出货 decode 的数。② 在 BACKTEST 里没有行。调优做在了不出货的那条上。**
+
+### 四、出货路上贵的是提取,不是反量化
+
+② 的转 fp16 已经是 prmt 那条(`vecdot_code4_from_bytes`),**与 ① 相同**。三条 GEMV 里没有一条用 lop3;而 tensor-core 的 int4 用的是 actlize 未改的 lop3 版(1 `>>` + 4 lop3 + 2 sub + 2 fma / 8 码 ≈ 1.125 条/码含反量化)。
+
+**所以"给 GEMV 接 fast dequant"对出货路基本无效。** TODO #28 的标题 —— *"code_at is 52-62% of the GEMV"* —— 一直就是关于这个 kernel 的。
+
+### 五、格式对 prefill 是零成本,对 GEMV 也不必贵
+
+* **prefill 免费且不是自由选择**:π = `frag.layout()⁻¹` 把索引搬到离线,AIU bulk load → swzl → 寄存器内容直接是 converter 固定发射顺序期望的顺序,kernel 内 per-code 地址算术为 0;而 π 由 converter 的发射顺序钉死,不能为了 decode 改。
+* **摆放是 GF(2)-线性位置换**,不是任意散列:`for bit<14: if (local & (1<<bit)) slot |= P::get(bit)`。GEMV 的 k 循环里 `n` 固定、`k` 只低几位变,**置换是循环不变量**。
+* **已有反例**:`q4_group` 注释 —— *"An unfolded Q4 placed group is **physically contiguous** but its logical K is an **8x4 transpose**. ... read the code group as **four aligned words**, and permute only registers. ... per-code inverse lookups were **55x slower**."*
+
+**⟹ 贵的是通用 reader,不是格式。**
+
+### 六、性质与判据
+
+**性质。** 对每个受支持的 `(T, ArtifactTileK, High)`,GEMV 沿 k 读一行时,提取的每码指令数不得随位置换的复杂度增长 —— 置换必须被提出 k 循环,退化成"整字载入 + 循环不变的寄存器置换"。凡做不到的组合,**必须显式列出并说明为什么**,不许静默落回 `code_at`。
+
+**这是可判定的,不是赌。** `ArrangementSlotPermutation` 是显式对象:"连续 CPW 个 k 是否落在同一 32-bit 字内、字内置换是什么",对每个组合**离线枚举一次**即可判定。**这一步不需要 box。** 怎么做由你定,但**先给出可行性表再写 kernel** —— 它直接决定 #28 是"推广"还是"只对部分格式成立"。
+
+**事前判据。**
+* (a) **源码级**:每码指令数,逐 `(T, ArtifactTileK)`,改前/改后同表。与编译器无关,先报这个。
+* (b) **覆盖**:走快读的 `(T, ArtifactTileK, High)` 组合数 / 受支持组合总数。分母来自 `arrangement_supported_v` 的枚举,**不是手写清单**。
+* (c) **box 实测**:② 同 shape 的时间。**注意 ② 现在没有基线**,所以第一次跑要先补 baseline 再谈提升。
+
+**负控。**
+1. 快读与 `code_at` 必须在同一测试里逐码比对,**全部受支持组合、全部 (n,k)**,不是抽样。`code_at` 保留为 oracle,不许删。
+2. 植入一个**字内置换错一位**的故障,必须判红。这是 `q4_group` 那类"physically contiguous 但逻辑 K 是转置"的实际失败形态。
+3. 对 (b) 的分母植入一个"少枚举一个受支持组合"的故障,必须判红 —— 否则覆盖率可以靠缩分母刷。
+
+**范围限制。**
+* 不动 π,不动离线摆放,不动 artifact 字节。**prefill 的零成本性质是硬约束。**
+* 不碰 ① 和 ③;它们是否退役是另一件事(见 167 末尾),本任务不预设。
+* 2.75 条/对是 sm_120 的;PPU codegen 未测。本任务的 (a) 是源码级计数,**不许把它说成 PPU 实测**。
+* TODO #58 与出货路无关(见第四节),**不要顺手做**。
+
+### 七、我在这轮里说错并已作废的三条(别继承)
+
+1. "int4 的 fast dequant 是我们的" —— **是 actlize 的,原样未改**;我们只补了 vendor 没有的 `uint8/uint2b_t/uint1b_t`。
+2. "native GEMV 吃字节对齐的格式" —— **两条都吃紧打格式**;native 自己花 1 shift + 1 and 摊出字节。
+3. "`gemv_lowbit` 是出货的 decode 路" —— **② 才是**。
