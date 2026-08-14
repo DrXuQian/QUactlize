@@ -33,6 +33,14 @@ static Result lowbit_dense_run_standalone_marlin(
 
 #define LOWBIT_DENSE_DEFINE_STANDALONE_WRAPPER(FN,TM,TN,TK,WM,WN,WK,ST,LOAD) \
   int FN##_effective() { return 0; } \
+  int FN##_instruction_m() { \
+    using StandaloneCfg = StandaloneMarlinCfg<128,TM,TN,TK,WM,WN,ST,WK>; \
+    using Kernel = typename StandaloneCfg::MarlinGemm::GemmKernel; \
+    static_assert(Kernel::InstructionM == \
+                      marlin_tactics_ppu::instruction_m(StandaloneCfg::Tactic), \
+                  "standalone registry instruction M must come from the compiled atom"); \
+    return Kernel::InstructionM; \
+  } \
   char const* FN##_tag() { \
     static char tag[bench_measure::kTagBytes] = {}; \
     if (!tag[0]) { \
@@ -177,6 +185,16 @@ constexpr int lowbit_dense_effective() {
 #define LOWBIT_DENSE_DEFINE_WRAPPER(FN,TM,TN,TK,WM,WN,ST,BC) \
   int FN##_effective() { \
     return lowbit_dense_effective<TM,TN,TK,WM,WN,ST>(); \
+  } \
+  int FN##_instruction_m() { \
+    using TagCfg = Cfg<LOWBIT_DENSE_TAG_GS,TM,TN,TK,WM,WN,ST>; \
+    using TiledMma = typename TagCfg::Main::TiledMma; \
+    constexpr int atom_m = int(cute::size<0>(typename TiledMma::AtomShape_MNK{})); \
+    static_assert(atom_m == 8 || atom_m == 16, \
+                  "ordinary dense registry requires a real PPU m8/m16 atom"); \
+    static_assert(atom_m == ((TM == 8 && WM == 8) ? 8 : 16), \
+                  "ordinary dense row fields and compiled TiledMma atom disagree"); \
+    return atom_m; \
   } \
   char const* FN##_tag() { \
     static char tag[bench_measure::kTagBytes] = {}; \

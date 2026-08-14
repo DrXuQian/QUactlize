@@ -86,8 +86,8 @@ def main() -> int:
         "_wk##WK##_st##ST",
         "TileCfg{LOWBIT_DENSE_TAG_SYMBOL",
         'cmd.get_cmd_line_argument("instruction-m", marlin_instruction_m)',
-        "row_instruction_m = (c.tm == 8 && c.wm == 8) ? 8 : 16",
-        "row_instruction_m != options.marlin_instruction_m",
+        "c.instruction_m != options.marlin_instruction_m",
+        "LOWBIT_DENSE_INST_M_SYMBOL",
         "eligible_rows=%d compiled_rows=%d",
         "options.k % 128 != 0",
         "exact_fixture_nonzeros_per_row = scale_k",
@@ -103,6 +103,7 @@ def main() -> int:
         "Kernel::IsStandaloneMarlin",
         "Kernel::CollectiveMainloop::WarpK == WarpK",
         "LOWBIT_DENSE_UNIT_CONFIGS(LOWBIT_DENSE_DEFINE_STANDALONE_WRAPPER)",
+        "FN##_instruction_m()",
     ):
         if token not in unit:
             bad.append(f"standalone generated-unit wrapper lacks {token!r}")

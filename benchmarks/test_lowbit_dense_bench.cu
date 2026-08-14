@@ -392,6 +392,9 @@ struct TileCfg {
   int tm, tn, tk, wm, wn, st, b_chunk, b_chunk_effective;
   LowbitDenseWrapper wrapper;
   int warp_k = 0;
+  // Exported by the generated unit from the instantiated TiledMma atom.  It
+  // is deliberately not inferred from tm/wm in the runtime registry.
+  int instruction_m = 0;
 };
 
 inline bench_measure::Tactic dense_tactic(TileCfg const& c) {
@@ -717,9 +720,9 @@ struct Options {
   bool streamk_exact_fixture = false; // --streamk_exact_fixture: use the exact-by-construction A0 inputs on every arm
   bool marlin_profile_subject_only = false; // --marlin-profile-subject-only: one standalone launch, no device reference/fingerprint
   int marlin_blocks_per_cu = 1; // --marlin-blocks-per-cu: scheduler-owned CTA/CU sweep, default is legacy 1
-  // Standalone-sweep-only runtime filter.  Zero preserves the historical
-  // all-row sweep; 8/16 select the real instruction M encoded by each
-  // generated row without changing the compiled tactic authority.
+  // Runtime filter for the ordinary dense and standalone-Marlin tactic
+  // sweeps. Zero preserves the historical all-row sweep. Named scheduler A/B
+  // targets reject it: their one/fixed tables are not tactic searches.
   int marlin_instruction_m = 0;
 
   // Parses the command line
@@ -774,6 +777,9 @@ struct Options {
       << "  --alpha=<f32>               Epilogue scalar alpha\n"
       << "  --beta=<f32>                Epilogue scalar beta\n\n"
       << "  --iterations=<int>          Number of profiling iterations to perform.\n\n";
+#if !defined(DENSE_NAMED_SCHEDULER)
+    out << "  --instruction-m=<0|8|16>  Filter ordinary dense rows by the compiled MMA atom M (0=all).\n";
+#endif
 #if defined(DENSE_SCHEDULER_AB) && !defined(DENSE_MARLIN_WK4_AB)
     out << "  --persistent                Use the dense persistent scheduler A/B arm.\n";
 #endif
@@ -1412,10 +1418,15 @@ class DenseKernelEventBatch {
   lowbit_dense_marlin_cfg_tm##TM##_tn##TN##_tk##TK##_wm##WM##_wn##WN##_wk##WK##_st##ST##_effective
 #define LOWBIT_DENSE_BC_EFF_SYMBOL(TM,TN,TK,WM,WN,WK,ST,LOAD) \
   LOWBIT_DENSE_BC_EFF_SYMBOL_I(TM,TN,TK,WM,WN,WK,ST,LOAD)
+#define LOWBIT_DENSE_INST_M_SYMBOL_I(TM,TN,TK,WM,WN,WK,ST,LOAD) \
+  lowbit_dense_marlin_cfg_tm##TM##_tn##TN##_tk##TK##_wm##WM##_wn##WN##_wk##WK##_st##ST##_instruction_m
+#define LOWBIT_DENSE_INST_M_SYMBOL(TM,TN,TK,WM,WN,WK,ST,LOAD) \
+  LOWBIT_DENSE_INST_M_SYMBOL_I(TM,TN,TK,WM,WN,WK,ST,LOAD)
 #define LOWBIT_DENSE_DECLARE(TM,TN,TK,WM,WN,WK,ST,LOAD,_UNUSED) \
   Result LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,WK,ST,LOAD)(Options&, TileCfg const&); \
   char const* LOWBIT_DENSE_TAG_SYMBOL(TM,TN,TK,WM,WN,WK,ST,LOAD)(); \
-  int LOWBIT_DENSE_BC_EFF_SYMBOL(TM,TN,TK,WM,WN,WK,ST,LOAD)();
+  int LOWBIT_DENSE_BC_EFF_SYMBOL(TM,TN,TK,WM,WN,WK,ST,LOAD)(); \
+  int LOWBIT_DENSE_INST_M_SYMBOL(TM,TN,TK,WM,WN,WK,ST,LOAD)();
 LOWBIT_DENSE_TABLE_CFG_LIST(LOWBIT_DENSE_DECLARE, )
 #undef LOWBIT_DENSE_DECLARE
 
@@ -1424,7 +1435,8 @@ inline std::vector<TileCfg> const& supported_configs() {
 #define LOWBIT_DENSE_REGISTRY_ROW(TM,TN,TK,WM,WN,WK,ST,LOAD,_UNUSED) \
     TileCfg{LOWBIT_DENSE_TAG_SYMBOL(TM,TN,TK,WM,WN,WK,ST,LOAD)(), \
             TM,TN,TK,WM,WN,ST,0,0, \
-            &LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,WK,ST,LOAD),WK},
+            &LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,WK,ST,LOAD),WK, \
+            LOWBIT_DENSE_INST_M_SYMBOL(TM,TN,TK,WM,WN,WK,ST,LOAD)()},
     LOWBIT_DENSE_TABLE_CFG_LIST(LOWBIT_DENSE_REGISTRY_ROW, )
 #undef LOWBIT_DENSE_REGISTRY_ROW
   };
@@ -1440,10 +1452,14 @@ inline std::vector<TileCfg> const& supported_configs() {
 #define LOWBIT_DENSE_BC_EFF_SYMBOL_I(TM,TN,TK,WM,WN,ST,BC) \
   lowbit_dense_cfg_tm##TM##_tn##TN##_tk##TK##_wm##WM##_wn##WN##_st##ST##_bc##BC##_effective
 #define LOWBIT_DENSE_BC_EFF_SYMBOL(TM,TN,TK,WM,WN,ST,BC) LOWBIT_DENSE_BC_EFF_SYMBOL_I(TM,TN,TK,WM,WN,ST,BC)
+#define LOWBIT_DENSE_INST_M_SYMBOL_I(TM,TN,TK,WM,WN,ST,BC) \
+  lowbit_dense_cfg_tm##TM##_tn##TN##_tk##TK##_wm##WM##_wn##WN##_st##ST##_bc##BC##_instruction_m
+#define LOWBIT_DENSE_INST_M_SYMBOL(TM,TN,TK,WM,WN,ST,BC) LOWBIT_DENSE_INST_M_SYMBOL_I(TM,TN,TK,WM,WN,ST,BC)
 #define LOWBIT_DENSE_DECLARE(TM,TN,TK,WM,WN,ST,BC,_UNUSED) \
   Result LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(Options&, TileCfg const&); \
   char const* LOWBIT_DENSE_TAG_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(); \
-  int LOWBIT_DENSE_BC_EFF_SYMBOL(TM,TN,TK,WM,WN,ST,BC)();
+  int LOWBIT_DENSE_BC_EFF_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(); \
+  int LOWBIT_DENSE_INST_M_SYMBOL(TM,TN,TK,WM,WN,ST,BC)();
 LOWBIT_DENSE_TABLE_CFG_LIST(LOWBIT_DENSE_DECLARE, )
 #undef LOWBIT_DENSE_DECLARE
 
@@ -1452,7 +1468,8 @@ inline std::vector<TileCfg> const& supported_configs() {
 #define LOWBIT_DENSE_REGISTRY_ROW(TM,TN,TK,WM,WN,ST,BC,_UNUSED) \
     TileCfg{LOWBIT_DENSE_TAG_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(), TM, TN, TK, WM, WN, ST, BC, \
             LOWBIT_DENSE_BC_EFF_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(), \
-            &LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,BC)},
+            &LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,BC), 0, \
+            LOWBIT_DENSE_INST_M_SYMBOL(TM,TN,TK,WM,WN,ST,BC)()},
     LOWBIT_DENSE_TABLE_CFG_LIST(LOWBIT_DENSE_REGISTRY_ROW, )
 #undef LOWBIT_DENSE_REGISTRY_ROW
   };
@@ -1463,6 +1480,8 @@ inline std::vector<TileCfg> const& supported_configs() {
 #undef LOWBIT_DENSE_TAG_SYMBOL_I
 #undef LOWBIT_DENSE_BC_EFF_SYMBOL
 #undef LOWBIT_DENSE_BC_EFF_SYMBOL_I
+#undef LOWBIT_DENSE_INST_M_SYMBOL
+#undef LOWBIT_DENSE_INST_M_SYMBOL_I
 #undef LOWBIT_DENSE_SYMBOL
 #undef LOWBIT_DENSE_SYMBOL_I
 #endif
@@ -3915,10 +3934,17 @@ int main(int argc, char const **args) {
   options.parse(argc, args);
   print_dense_table_provenance();
 
-#if !defined(DENSE_MARLIN_STANDALONE_SWEEP)
+#if defined(DENSE_NAMED_SCHEDULER) && !defined(DENSE_MARLIN_STANDALONE_SWEEP)
   if (!options.help && options.marlin_instruction_m != 0) {
     std::fprintf(stderr,
-                 "--instruction-m is available only in the standalone Marlin sweep target\n");
+                 "--instruction-m is available only in the ordinary dense or standalone Marlin sweep targets\n");
+    return 1;
+  }
+#else
+  if (!options.help && options.marlin_instruction_m != 0 &&
+      options.marlin_instruction_m != 8 &&
+      options.marlin_instruction_m != 16) {
+    std::fprintf(stderr, "--instruction-m must be 0, 8, or 16\n");
     return 1;
   }
 #endif
@@ -3981,12 +4007,6 @@ int main(int argc, char const **args) {
     }
     if (options.marlin_blocks_per_cu < 1) {
       std::fprintf(stderr, "--marlin-blocks-per-cu must be positive\n");
-      return 1;
-    }
-    if (options.marlin_instruction_m != 0 &&
-        options.marlin_instruction_m != 8 &&
-        options.marlin_instruction_m != 16) {
-      std::fprintf(stderr, "--instruction-m must be 0, 8, or 16\n");
       return 1;
     }
   }
@@ -4191,11 +4211,13 @@ int main(int argc, char const **args) {
     );
     for (auto const& c : supported_configs()) {
       if (c.warp_k > 0)
-        std::printf("  %-30s  tile %dx%dx%d  warp %dx%dx%d  stages %d\n",
-                    c.name, c.tm, c.tn, c.tk, c.wm, c.wn, c.warp_k, c.st);
+        std::printf("  %-30s  tile %dx%dx%d  warp %dx%dx%d  stages %d  instruction=m%d\n",
+                    c.name, c.tm, c.tn, c.tk, c.wm, c.wn, c.warp_k, c.st,
+                    c.instruction_m);
       else
-        std::printf("  %-22s  tile %dx%dx%d  warp %dx%d  stages %d\n",
-                    c.name, c.tm, c.tn, c.tk, c.wm, c.wn, c.st);
+        std::printf("  %-22s  tile %dx%dx%d  warp %dx%d  stages %d  instruction=m%d\n",
+                    c.name, c.tm, c.tn, c.tk, c.wm, c.wn, c.st,
+                    c.instruction_m);
     }
     return 0;
   }
@@ -4255,25 +4277,25 @@ int main(int argc, char const **args) {
                   int(cutlass::sizeof_bits<QuantType>::value), TileShapeK, options.g,
                   "marlin");
 #else
-    std::snprintf(build, sizeof build, "bits=%d TSK=%d gs=%d",
-                  int(cutlass::sizeof_bits<QuantType>::value), TileShapeK, options.g);
+    std::snprintf(build, sizeof build, "bits=%d TSK=%d gs=%d instruction_m=%d",
+                  int(cutlass::sizeof_bits<QuantType>::value), TileShapeK,
+                  options.g, options.marlin_instruction_m);
 #endif
     bench_floor::banner();
     bench_samples::run_header(dense_sample_family(), build, reps);
 
-#if defined(DENSE_MARLIN_STANDALONE_SWEEP)
+#if defined(DENSE_MARLIN_STANDALONE_SWEEP) || !defined(DENSE_NAMED_SCHEDULER)
     int eligible_rows = 0;
     for (auto const& c : supported_configs()) {
-      int const row_instruction_m = (c.tm == 8 && c.wm == 8) ? 8 : 16;
       eligible_rows += options.marlin_instruction_m == 0 ||
-                       row_instruction_m == options.marlin_instruction_m;
+                       c.instruction_m == options.marlin_instruction_m;
     }
     if (eligible_rows == 0) {
       std::fprintf(stderr,
-                   "standalone Marlin instruction-M filter selected zero rows\n");
+                   "dense instruction-M filter selected zero compiled rows\n");
       return 1;
     }
-    std::printf("  [standalone sweep filter] instruction_m=%d eligible_rows=%d compiled_rows=%d\n",
+    std::printf("  [dense sweep filter] instruction_m=%d eligible_rows=%d compiled_rows=%d\n",
                 options.marlin_instruction_m, eligible_rows,
                 kLowbitDenseConfigRows);
 #endif
@@ -4282,10 +4304,9 @@ int main(int argc, char const **args) {
     for (int rep = 0; rep < reps; ++rep) {
       if (reps > 1) std::printf("\n  --- pass %d/%d ---\n", rep + 1, reps);
       for (auto const& c : supported_configs()) {
-#if defined(DENSE_MARLIN_STANDALONE_SWEEP)
-        int const row_instruction_m = (c.tm == 8 && c.wm == 8) ? 8 : 16;
+#if defined(DENSE_MARLIN_STANDALONE_SWEEP) || !defined(DENSE_NAMED_SCHEDULER)
         if (options.marlin_instruction_m != 0 &&
-            row_instruction_m != options.marlin_instruction_m) {
+            c.instruction_m != options.marlin_instruction_m) {
           continue;
         }
 #endif
@@ -4381,7 +4402,18 @@ int main(int argc, char const **args) {
     if (!name.empty()) std::printf("[tactic] %s -> %s\n", tactic_key(options).c_str(), name.c_str());
   }
   if (name.empty()) name = supported_configs().front().name;
-  Result const final_result = run_config(options, find_config(name));
+  TileCfg const selected = find_config(name);
+#if defined(DENSE_MARLIN_STANDALONE_SWEEP) || !defined(DENSE_NAMED_SCHEDULER)
+  if (options.marlin_instruction_m != 0 &&
+      selected.instruction_m != options.marlin_instruction_m) {
+    std::fprintf(stderr,
+                 "config '%s' compiles instruction m%d, rejected by --instruction-m=%d\n",
+                 selected.name, selected.instruction_m,
+                 options.marlin_instruction_m);
+    return 1;
+  }
+#endif
+  Result const final_result = run_config(options, selected);
 #if defined(DENSE_MARLIN_STANDALONE_SWEEP) || defined(DENSE_MARLIN_WK4_AB)
   // Unlike the historical generic dense bench, this is a correctness and
   // performance gate for one exact kernel.  A failed artifact roundtrip,
