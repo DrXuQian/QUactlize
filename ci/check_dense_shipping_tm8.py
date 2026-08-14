@@ -42,6 +42,7 @@ def source_errors(backend: str) -> list[str]:
         "kProducerExclusion",
         "ID == kDefaultDenseConfig ||",
         "ID == kDecodeDefaultDenseConfig",
+        "(DenseConfigId::ID == kDecodeDefaultDenseConfig), QueryOnly",
         "find_dense_config(char const* name, int m, DenseConfigId& config)",
         "ppu_dense_shipping::find_config(name, m, config)",
         "resolve_dense_config(char const* name, int m)",
@@ -188,7 +189,7 @@ def main() -> int:
         ("DenseSpace::kernel_exclusion(kTactic)", "DenseSpace::topology_exclusion(kTactic, Stages)"),
         ("resolve_dense_config(config_name, m)", "resolve_dense_config(config_name)"),
         ("find_dense_config(config_name, m, config)", "find_dense_config(config_name, config)"),
-        ("ID == kDecodeDefaultDenseConfig", "false"),
+        ("(DenseConfigId::ID == kDecodeDefaultDenseConfig), QueryOnly", "false, QueryOnly"),
     )
     for old, new in backend_plants:
         if old not in backend:

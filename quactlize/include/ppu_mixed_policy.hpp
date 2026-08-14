@@ -197,6 +197,65 @@ struct MainloopPolicy {
       Stages, AiuInterleaved>;
 };
 
+// Independent dense-M==1 A provider.  This intentionally does not add a parameter to MainloopPolicy: callers that
+// omit this type continue to instantiate the exact old KernelAiuFold schedule, CollectiveOp and GemmKernel.  Only
+// the ordinary unfolded one-plane collective is admitted here; folded and two-plane paths keep their existing A
+// provider until separately proved.
+template <int APackRows, QuantMode Mode, class BaseSchedule,
+          class TileShape, class ScaleTileShape, class WarpShape,
+          int Stages, bool AiuInterleaved, class ElementB = cutlass::int4b_t,
+          int ArtifactTileK_ = 0>
+struct PackedAMainloopPolicy
+    : MainloopPolicy<Mode, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
+                     Stages, AiuInterleaved, ElementB, void, ArtifactTileK_> {
+private:
+  using Ordinary = MainloopPolicy<Mode, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
+                                  Stages, AiuInterleaved, ElementB, void, ArtifactTileK_>;
+public:
+  static_assert(APackRows == 1,
+                "the first shipping packed-A provider is deliberately the exact dense M==1 path");
+  static constexpr int PackedARows = APackRows;
+  static_assert(Ordinary::ArtifactLowFold == 1 && Ordinary::HighBits == 0,
+                "packed-A shipping seam is ordinary unfolded one-plane only");
+  static_assert(int(cute::size<0>(TileShape{})) == 8 && int(cute::size<0>(WarpShape{})) == 8,
+                "packed-A shipping seam is bound to the exact TM8/WM8 m8 instruction family");
+
+  using ElementA = typename Ordinary::ElementA;
+  using ElementScale = typename Ordinary::ElementScale;
+  using ElementZero = typename Ordinary::ElementZero;
+  using LayoutA = typename Ordinary::LayoutA;
+  using LayoutB = typename Ordinary::LayoutB;
+  static constexpr int AlignmentA = Ordinary::AlignmentA;
+  static constexpr int AlignmentB = Ordinary::AlignmentB;
+  static constexpr int LowBits = Ordinary::LowBits;
+  static constexpr int HighBits = Ordinary::HighBits;
+  static constexpr int TacticTileK = Ordinary::TacticTileK;
+  static constexpr int ArtifactTileK = Ordinary::ArtifactTileK;
+  static constexpr int ArtifactLowFold = Ordinary::ArtifactLowFold;
+  static constexpr int ArtifactHighFold = Ordinary::ArtifactHighFold;
+  static constexpr int TileK = Ordinary::TileK;
+  static constexpr int LowFold = Ordinary::LowFold;
+  static constexpr int HighFold = Ordinary::HighFold;
+
+  using KernelSchedule = cutlass::gemm::KernelAiuPackedA<APackRows, typename Ordinary::KernelSchedule>;
+  using ElementBInfo = typename Ordinary::ElementBInfo;
+  using CollectiveBuilderType = cutlass::gemm::collective::CollectiveBuilder<
+      cutlass::arch::PPU0010, cutlass::arch::OpClassTensorOp,
+      ElementA, LayoutA, AlignmentA, ElementBInfo, LayoutB, AlignmentB, float,
+      cute::tuple<TileShape, ScaleTileShape>, WarpShape, cute::Int<Stages>, KernelSchedule>;
+  static_assert(CollectiveBuilderType::ArtifactTileK == ArtifactTileK,
+                "packed-A wrapper must preserve the resident B artifact contract");
+  using CollectiveOp = typename CollectiveBuilderType::CollectiveOp;
+
+  static constexpr bool PackedRowA = true;
+  using AProvider = PackedRowAProvider;
+  using BProvider = OrdinaryBProvider;
+  using Descriptor = MixedPolicyDescriptor<CollectiveOp, BaseSchedule, KernelSchedule, ElementBInfo,
+      LayoutA, LayoutB, TileShape, ScaleTileShape, WarpShape, AProvider, BProvider,
+      Mode, LowBits, HighBits, TacticTileK, ArtifactTileK, ArtifactLowFold, ArtifactHighFold,
+      Stages, AiuInterleaved>;
+};
+
 // One guard for every adapter. TacticSpace is a public route name (DenseSpace or GroupedSpace); both are aliases of
 // the one legality generator, while the instantiated mainloop and delivery checks remain one shared contract. Scale
 // copy coverage is asserted by the mainloop's shared capped plan, where its concrete CTA and copy layout are known.

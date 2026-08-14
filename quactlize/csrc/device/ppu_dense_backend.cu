@@ -235,6 +235,7 @@ int launch_grouped_config(
 
 template <class Low, class High, int GroupSize, int TacticTileK, int ArtifactTileK, bool PackedScale,
           int TileM, int TileN, int WarpM, int WarpN, int Stages,
+          bool UseM1PackedA = false,
           bool QueryOnly = false, bool RequireUniversalFallback = false>
 int launch_dense_tactic(uint16_t const* act, uint8_t const* low, uint8_t const* high,
                         void const* scale, uint16_t const* zero, uint16_t* out,
@@ -261,10 +262,34 @@ int launch_dense_tactic(uint16_t const* act, uint8_t const* low, uint8_t const* 
   } else {
   constexpr int ScaleGroups = ppu_group_schedule::scale_groups_v<TacticTileK, GroupSize>;
   using Tile = cute::Shape<cute::C<TileM>, cute::C<TileN>, cute::C<TacticTileK>>;
+  using ScaleTile = cute::Shape<cute::C<TileN>, cute::C<ScaleGroups>>;
   using Warp = cute::Shape<cute::C<WarpM>, cute::C<WarpN>, cute::C<TacticTileK>>;
+  constexpr bool kOrdinaryOnePlane =
+      std::is_void_v<High> &&
+      fold::delivery_fold_v<ppu_mixed_policy::element_bits_v<Low>, ArtifactTileK> == 1;
+  if constexpr (UseM1PackedA && kOrdinaryOnePlane) {
+    // Runtime M selects between two compile-time kernel types.  The list-valid query and the real launch both enter
+    // this exact function, so neither can silently inspect the ordinary type and launch the packed one (or vice
+    // versa).  M=2..7 falls through to the unchanged DenseKernelTypes instantiation below.
+    if (m == 1) {
+      using PackedKernelTypes = fpa_intb_ppu::DensePackedAKernelTypes<1,
+          QM::FinegrainedScaleZero, ppu_group_schedule::FinegrainedSchedule<GroupSize>,
+          Tile, ScaleTile, Warp, Stages, true, Low, ArtifactTileK>;
+      bool const launched = fpa_intb_ppu::generic_launcher<QM::FinegrainedScaleZero,
+          ppu_group_schedule::FinegrainedSchedule<GroupSize>,
+          Tile, ScaleTile, Warp, Stages, true,
+          Low, High, PackedScale, QueryOnly, RequireUniversalFallback, ArtifactTileK,
+          PackedKernelTypes>(
+              reinterpret_cast<half_t const*>(act), reinterpret_cast<Low const*>(low),
+              reinterpret_cast<half_t const*>(scale), reinterpret_cast<half_t const*>(zero),
+              reinterpret_cast<half_t*>(out),
+              m, n, k, GroupSize, 1, static_cast<char*>(workspace), workspace_bytes, stream);
+      return launched ? 0 : 31;
+    }
+  }
   bool const launched = fpa_intb_ppu::generic_launcher<QM::FinegrainedScaleZero,
       ppu_group_schedule::FinegrainedSchedule<GroupSize>,
-      Tile, cute::Shape<cute::C<TileN>, cute::C<ScaleGroups>>, Warp, Stages, true,
+      Tile, ScaleTile, Warp, Stages, true,
       Low, High, PackedScale, QueryOnly, RequireUniversalFallback, ArtifactTileK>(
           reinterpret_cast<half_t const*>(act), reinterpret_cast<Low const*>(low),
           reinterpret_cast<half_t const*>(scale), reinterpret_cast<half_t const*>(zero),
@@ -288,7 +313,8 @@ int launch_dense_config(DenseConfigId config, uint16_t const* act, uint8_t const
 #define QUACTLIZE_PPU_DENSE_CONFIG_CASE(ID, NAME, TM, TN, WM, WN, STAGES) \
     case DenseConfigId::ID: \
       return launch_dense_tactic<Low, High, GroupSize, TacticTileK, ArtifactTileK, PackedScale, \
-                                 TM, TN, WM, WN, STAGES, QueryOnly, \
+                                 TM, TN, WM, WN, STAGES, \
+                                 (DenseConfigId::ID == kDecodeDefaultDenseConfig), QueryOnly, \
                                  (DenseConfigId::ID == kDefaultDenseConfig || \
                                   DenseConfigId::ID == kDecodeDefaultDenseConfig)>( \
           act, low, high, scale, zero, out, m, n, k, workspace, workspace_bytes, stream);

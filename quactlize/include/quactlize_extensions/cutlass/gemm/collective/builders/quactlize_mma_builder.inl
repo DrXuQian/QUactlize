@@ -174,6 +174,35 @@ template <
   using SmemLayoutAtom = Layout<Shape<_8, AiuContElemSize>, Stride<AiuContElemSize, _1>>;
 };
 
+// Compile-time packed-row A variant used only by the independent dense M==1 schedule.  The physical write/read
+// cube remains Block_MN=16 and the projected m8 read remains x4->x2; only the distance between physical cube bases
+// changes.  Keeping this as a separate type leaves every existing MixGemm_AIU_Operand instantiation untouched.
+template <
+  int Rows,
+  typename Element,
+  typename Block_MN,
+  typename Block_K,
+  bool Swap
+> struct MixGemm_AIU_OperandPackedA {
+  using Ordinary = MixGemm_AIU_Operand<Element, false, Block_MN, Block_K, Swap>;
+  static_assert(cute::is_same_v<Element, cutlass::half_t>,
+                "packed-row A currently supports the shipping fp16 A operand only");
+  static_assert(Rows == 1 && Block_MN{} == 16,
+                "dense M==1 packed A retains the physical 16-row PPU0010 cube");
+
+  using AiuContElemSize = typename Ordinary::AiuContElemSize;
+  static constexpr int InstNum = Ordinary::InstNum;
+  static constexpr int kCubePitchA = detail::aPackPitchForRows(Rows);
+  using GmemTiledCopy = typename Ordinary::GmemTiledCopy;
+  using SmemCopyOp = PPU0010_TSM_LD_SWZL<
+      Element, Block_MN{}, AiuContElemSize{}, Swap, false, InstNum, kCubePitchA>;
+  using SmemCopyAtom = Copy_Atom<SmemCopyOp, Element>;
+  using SmemCopyOpM8 = PPU0010_TSM_LD_SWZL_M8<
+      Element, Block_MN{}, AiuContElemSize{}, Swap, false, InstNum, kCubePitchA>;
+  using SmemCopyAtomM8 = Copy_Atom<SmemCopyOpM8, Element>;
+  using SmemLayoutAtom = typename Ordinary::SmemLayoutAtom;
+};
+
 template <
   typename Block_MN,
   typename Block_K,
@@ -481,6 +510,8 @@ public:
   // legacy KernelAiuFold spelling predates an explicit artifact contract; for those callers A falls back to T.
   static constexpr int ArtifactTileK =
       fold_schedule_traits<KernelScheduleType>::ArtifactTileK;
+  static constexpr int ScheduledAPackRows =
+      a_provider_schedule_traits<KernelScheduleType>::Rows;
   static constexpr int blockM = cute::get<0>(TileShape_MNK{});
   static constexpr int blockN = cute::get<1>(TileShape_MNK{});
   static constexpr int blockK = cute::get<2>(TileShape_MNK{});
@@ -498,9 +529,14 @@ public:
   static_assert(MmaInstM != 8 || physicalBlockM == 16,
                 "m8 must retain the physical 16-row A write/read cube");
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
+  static_assert(ScheduledAPackRows == 0,
+                "do not combine the legacy global PPU_A_PACK experiment with a typed packed-A schedule");
   static_assert(MmaInstM != 8,
                 "PPU_A_PACK is disabled for m8: logical TileM=8 does not equal the physical 16-row A cube");
 #endif
+  static_assert(ScheduledAPackRows == 0 ||
+                    (ScheduledAPackRows == 1 && MmaInstM == 8 && physicalBlockM == 16),
+                "typed packed-A schedule must be the exact physical16/logical8 M==1 provider");
 
   using PhysicalATileShape_MNK = Shape<Int<physicalBlockM>, Int<blockN>, Int<blockK>>;
   static constexpr int PipelineStages = quactlize_ppu_detail::compute_stage_count_or_override<quactlize_ppu_detail::ppu10000_smem_capacity_bytes,
@@ -586,8 +622,11 @@ public:
   // m8 is LOGICAL only.  PPU0010's AIU write and swzl read still operate on a physical 16-row cube; `.padz` fills
   // rows outside the real problem.  The collective exposes only the first logical eight rows to the MMA fragment,
   // but the descriptor, write payload and shared allocation all follow this physical operand.
-  using DefaultOperandA = quactlize_detail::MixGemm_AIU_Operand<
+  using OrdinaryOperandA = quactlize_detail::MixGemm_AIU_Operand<
       RealInternalElementA, false, Int<physicalBlockM>, Int<blockK>, true>;
+  using DefaultOperandA = cute::conditional_t<ScheduledAPackRows == 0, OrdinaryOperandA,
+      quactlize_detail::MixGemm_AIU_OperandPackedA<
+          ScheduledAPackRows, RealInternalElementA, Int<physicalBlockM>, Int<blockK>, true>>;
   // ContigShape_ is the seam between the two spans: the operand keeps FullBlockK for its total extent and InstNum,
   // while size(ArtifactContigShape) supplies CopyBlockK to the per-cube AIU/swizzle derivation.
   using ArtifactContigShape = Shape<Int<ArtifactLowFold>, Int<EffectiveArtifactTileK>>;

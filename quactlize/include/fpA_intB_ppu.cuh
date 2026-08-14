@@ -100,6 +100,45 @@ struct DenseKernelTypes {
   static constexpr size_t SharedStorageSize = GemmKernel::SharedStorageSize;
 };
 
+// A second, explicit type authority for the shipping M==1 packed-row provider.  DenseKernelTypes above is not
+// parameterised or rewritten, so every M>1/default instantiation retains its exact schedule, collective and kernel
+// type.  This new authority is ordinary unfolded one-plane only by construction in PackedAMainloopPolicy.
+template <int APackRows, QuantMode QuantOp, class BaseSchedule,
+          class TileShape, class ScaleTileShape, class WarpShape, int Stages, bool AiuInterleaved,
+          class ElementB = cutlass::int4b_t, int ArtifactTileK = 0>
+struct DensePackedAKernelTypes {
+  using MainloopPolicy = ppu_mixed_policy::PackedAMainloopPolicy<
+      APackRows, QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
+      Stages, AiuInterleaved, ElementB, ArtifactTileK>;
+  using ElementA = typename MainloopPolicy::ElementA;
+  using ElementC = cutlass::half_t;
+  using LayoutC = cutlass::layout::RowMajor;
+  using ElementD = cutlass::half_t;
+  using LayoutD = cutlass::layout::RowMajor;
+  static constexpr int AlignmentC = 128 / cutlass::sizeof_bits<ElementC>::value;
+  static constexpr int AlignmentD = 128 / cutlass::sizeof_bits<ElementD>::value;
+  using ElementAccumulator = float;
+  using OperatorClass = cutlass::arch::OpClassTensorOp;
+  using ClusterShape = WarpShape;
+  using EpilogueSchedule = cutlass::epilogue::EpilogueSimtVectorizedWithoutEvt;
+  using EpilogueTileType = cutlass::epilogue::collective::EpilogueTileAuto;
+  using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
+      cutlass::arch::PPU0010, OperatorClass, TileShape, ClusterShape, EpilogueTileType,
+      ElementAccumulator, ElementAccumulator, ElementC, LayoutC, AlignmentC,
+      ElementD, LayoutD, AlignmentD, EpilogueSchedule>::CollectiveOp;
+  using CollectiveMainloop = typename MainloopPolicy::CollectiveOp;
+  static_assert(
+      cute::size<0>(typename CollectiveEpilogue::SmemLayout{}) ==
+          cute::size<0>(typename CollectiveMainloop::TiledMma::AtomShape_MNK{}) *
+              cute::size<1>(typename CollectiveMainloop::TiledMma::ThrLayoutVMNK{}),
+      "dense M==1 packed-A epilogue must retain exact m8 output ownership");
+  using GemmKernel = cutlass::gemm::kernel::GemmUniversal<
+      cute::Shape<int, int, int, int>, CollectiveMainloop, CollectiveEpilogue,
+      cutlass::gemm::SplitKSerialScheduler>;
+  using Gemm = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
+  static constexpr size_t SharedStorageSize = GemmKernel::SharedStorageSize;
+};
+
 // One instantiation: fp16 x a packed 1/2/4-bit B plane, optionally with a second high plane. The ElementBInfo tuple
 // is the same seam moe_grouped_ppu uses: a fourth tuple element makes CollectiveBuilder select the already-existing
 // two-plane collective. There is no dense-specific second collective or converter to maintain here.
@@ -107,7 +146,7 @@ template <QuantMode QuantOp, class BaseSchedule,
           class TileShape, class ScaleTileShape, class WarpShape, int Stages, bool AiuInterleaved,
           class ElementB = cutlass::int4b_t, class PlaneB2 = void, bool ExpectPackedScale = false,
           bool QueryOnly = false, bool RequireUniversalFallback = false,
-          int ArtifactTileK = 0>
+          int ArtifactTileK = 0, class KernelTypesOverride = void>
 bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
                       const cutlass::half_t* scales, const cutlass::half_t* zeros, cutlass::half_t* D,
                       int m, int n, int k, int group_size, int split_k,
@@ -115,12 +154,14 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
                       const PlaneB2* B2 = nullptr) {
   using KernelTypes = DenseKernelTypes<QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
                                        Stages, AiuInterleaved, ElementB, PlaneB2, ArtifactTileK>;
-  using MainloopPolicy = typename KernelTypes::MainloopPolicy;
+  using SelectedKernelTypes = std::conditional_t<std::is_void_v<KernelTypesOverride>,
+                                                  KernelTypes, KernelTypesOverride>;
+  using MainloopPolicy = typename SelectedKernelTypes::MainloopPolicy;
   using ElementA = typename MainloopPolicy::ElementA;
-  using ElementC = typename KernelTypes::ElementC;
-  using ElementD = typename KernelTypes::ElementD;
-  using ElementAccumulator = typename KernelTypes::ElementAccumulator;
-  using CollectiveMainloop = typename KernelTypes::CollectiveMainloop;
+  using ElementC = typename SelectedKernelTypes::ElementC;
+  using ElementD = typename SelectedKernelTypes::ElementD;
+  using ElementAccumulator = typename SelectedKernelTypes::ElementAccumulator;
+  using CollectiveMainloop = typename SelectedKernelTypes::CollectiveMainloop;
 
   // FULLY_QUANTIZED is an INSTANTIATION of the shared mainloop, not a dense-specific decoder. Make that selection
   // compile-time observable at its call site: a flagged binary that accidentally falls back to fp16 scale planes
@@ -132,8 +173,11 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
                   "fully-quantized dense requires the shared packed-scale mainloop at this tile shape");
   }
 
+  // Retain the historical default authority as an independently named type.  Existing source/type gates use this
+  // exact alias to prove that the default/M>1 construction was not silently rewritten by the M==1 extension.
   using GemmKernel = typename KernelTypes::GemmKernel;
-  using Gemm = typename KernelTypes::Gemm;
+  using ActiveGemmKernel = typename SelectedKernelTypes::GemmKernel;
+  using Gemm = typename SelectedKernelTypes::Gemm;
 
   // This is the exact compiled type, including packed-unit staging, scale padding/swizzles and experimental A
   // layouts. The host arithmetic in ppu_tactic_space.hpp deliberately remains useful for emitting a broad finite
@@ -146,9 +190,14 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
   static_assert(!RequireUniversalFallback,
                 "PPU_A_PACK=R is bounded to M<=R and cannot be the universal dense fallback");
 #endif
-  if constexpr (GemmKernel::SharedStorageSize > ppu_tactics::kBlockSmemBytes) {
+  if constexpr (ActiveGemmKernel::SharedStorageSize > ppu_tactics::kBlockSmemBytes) {
     return false;
   } else {
+  if constexpr (!std::is_void_v<KernelTypesOverride>) {
+    static_assert(MainloopPolicy::PackedARows == 1,
+                  "the independent shipping override must remain the exact M==1 packed-A provider");
+    if (m != 1) return false;
+  }
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
   // The packed writer materialises rows [0,R); all later accumulator rows are padding. Dense used to have no
   // matching runtime guard at all, so the row-0 provider could silently launch at M>1 while grouped rejected it.
@@ -164,10 +213,10 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
     return true;
   } else {
 
-  using StrideA = typename GemmKernel::StrideA;
-  using StrideB = typename GemmKernel::StrideB;
-  using StrideC = typename GemmKernel::StrideC;
-  using StrideD = typename GemmKernel::StrideD;
+  using StrideA = typename ActiveGemmKernel::StrideA;
+  using StrideB = typename ActiveGemmKernel::StrideB;
+  using StrideC = typename ActiveGemmKernel::StrideC;
+  using StrideD = typename ActiveGemmKernel::StrideD;
   using StrideS = typename CollectiveMainloop::StrideScale;
 
   // The same minimum-delivery fold the grouped consumer uses. A folded resident B is physically

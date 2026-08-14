@@ -316,48 +316,52 @@ public:
   // using InternalElementB = cute::conditional_t<!SwapAB, ConvertedElementB, ConvertedElementA>;
 
   using RealInternalElementA = cute::conditional_t<!SwapAB, ElementA, ElementB>;
-  // PPU_A_PACK=R geometry, all read off fold_derivation/l84-l86 rather than extrapolated from row 0. Every real row
+  static constexpr int LogicalTileM = int(size<0>(TileShape{}));
+  static constexpr int PhysicalATileM = LogicalTileM < 16 ? 16 : LogicalTileM;
+  // Packed-A geometry, all read off fold_derivation/l84-l86 rather than extrapolated from row 0. Every real row
   // occupies four 16-half runs. l85 searches all R-row collisions across eight cubes/stages and selects the first
   // 128-B-aligned clean pitch; l86 supplies the odd-cache-line half-run swap needed by the writer. The last cube is
-  // still READ to its full natural span, so that remains the allocation tail.
-  static constexpr int kACubeH      = shape<0>(TileShape{});                  // CUBE_H = Block_MN = TileM for A
+  // still READ to its full natural span, so that remains the allocation tail.  For logical m8, the authority is the
+  // physical 16-row atom, never TileShape.M=8.
+  static constexpr int kACubeH      = PhysicalATileM;                         // physical PPU0010 A cube height
   static constexpr int kACubeW      = 64;                                    // AiuContElemSize for fp16
   static constexpr int kASlices     = kACubeW / 16;                          // 8 words per slice
+  static constexpr int kScheduledAPackRows =
+      a_provider_schedule_traits<KernelSchedule>::Rows;
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
-  static constexpr int kAPackRows   = PPU_A_PACK;
+  static constexpr int kLegacyAPackRows = PPU_A_PACK;
 #else
-  static constexpr int kAPackRows   = 1;                                    // keeps flag-off type arithmetic valid
+  static constexpr int kLegacyAPackRows = 0;
 #endif
+  static_assert(kScheduledAPackRows == 0 || kLegacyAPackRows == 0,
+                "typed packed-A schedule and legacy PPU_A_PACK cannot both own the A provider");
+  static constexpr int kAPackRows =
+      kScheduledAPackRows > 0 ? kScheduledAPackRows : kLegacyAPackRows;
+  static constexpr bool kPackedA = kAPackRows > 0;
+  static constexpr int kAPackGeometryRows = kPackedA ? kAPackRows : 1;
   // Every selected pitch is a 64-half/128-B multiple. Besides aligning every cube base, that makes the whole A span
   // a 128-B multiple so smem_b, which immediately follows it, retains the PPU0010 AIU load's required alignment.
   // The old tight row-0 pitch made smem_b start at a merely 16-B-aligned address and faulted on the box.
-  static constexpr int kAPackPitch  = detail::aPackPitchForRows(kAPackRows); // halfs; model-derived R function
+  static constexpr int kAPackPitch  = detail::aPackPitchForRows(kAPackGeometryRows); // halfs; model-derived R
   static constexpr int kACubes      = shape<2>(TileShape{}) / kACubeW;       // cubes per stage = InstNum
   // Rounded up to 64 halfs so smem_b starts 128-B aligned whatever the cube geometry is.
   static constexpr int kAPackSpanRaw = kAPackPitch * (kACubes * DispatchPolicy::Stages - 1) + kACubeH * kACubeW;
   static constexpr int kAPackSpan    = ((kAPackSpanRaw + 63) / 64) * 64;
-  static constexpr int kAWrThreads   = kACubes * kAPackRows * kASlices * 2;  // cube x row x run x 2 half-runs
-  // One row's run offsets, derived directly from ppu_tsm_ld_swzl_sim. vreg_line_idx selects the 4-row cache line;
-  // vreg_vec_idx and slice_start_vec select one of its four 8-word runs. The odd-line XOR swaps the two 4-word
-  // half-runs but does not change their union's start; copy_A_packed_rows applies that swap to h separately.
-  CUTLASS_HOST_DEVICE static constexpr int aPackRunOff(int row, int s) {
-    int const ssv = (((s & 1) << 1) + ((s & 2) >> 1)) * 2;                    // 0, 4, 2, 6
-    int const line = row / 4;
-    int const run_vec = (2 * (row % 4) + ssv) % 8;
-    return 2 * (kACubeH * 8 * s + line * 32 + run_vec * 4);                  // halfs
-  }
+  static constexpr int kAWrThreads   = kACubes * kAPackGeometryRows * kASlices * 2;
+  // The run-start arithmetic is a single production authority in detail/ppu_a_pack.hpp. Odd cache lines swap the
+  // two 4-word half-runs but do not change their union's start; copy_A_packed_rows applies that swap to h separately.
   // l85's collision check. Defined here, ASSERTED in mma(): a static_assert in the class body calls a member of an
   // incomplete class, which EDG accepts and hgcc rejects with "no type named 'SharedStorage'".
   CUTLASS_HOST_DEVICE static constexpr bool aPackDisjoint() {
     int const n = kACubes * DispatchPolicy::Stages;
     for (int i = 0; i < n; ++i)
       for (int j = i + 1; j < n; ++j)
-        for (int row_i = 0; row_i < kAPackRows; ++row_i)
-          for (int row_j = 0; row_j < kAPackRows; ++row_j)
+        for (int row_i = 0; row_i < kAPackGeometryRows; ++row_i)
+          for (int row_j = 0; row_j < kAPackGeometryRows; ++row_j)
             for (int a = 0; a < kASlices; ++a)
               for (int b = 0; b < kASlices; ++b) {
-                int const x = kAPackPitch * i + aPackRunOff(row_i, a);
-                int const y = kAPackPitch * j + aPackRunOff(row_j, b);
+                int const x = kAPackPitch * i + detail::aPackRunOffsetHalfs(kACubeH, row_i, a);
+                int const y = kAPackPitch * j + detail::aPackRunOffsetHalfs(kACubeH, row_j, b);
                 if (x < y + 16 && y < x + 16) return false;
               }
     return true;
@@ -441,8 +445,6 @@ public:
   //   * SmemLayoutA exposes only TileM rows to partition_fragment_A and the projected A2 copy atom.
   // The logical view's stage stride is the PHYSICAL stage span.  A compact 8-row staged layout would put stage i+1
   // halfway through stage i's cube -- a silent cross-stage alias even though its shape and cosize look plausible.
-  static constexpr int LogicalTileM = int(size<0>(TileShape{}));
-  static constexpr int PhysicalATileM = LogicalTileM < 16 ? 16 : LogicalTileM;
   using SmemLayoutACompact = decltype(tile_to_shape(
       InternalSmemLayoutAtomA{},
       make_shape(shape<0>(TileShape{}), shape<2>(TileShape{}), Int<DispatchPolicy::Stages>{})));
@@ -737,12 +739,9 @@ public:
   {
     static constexpr int scale_elements = elements_per_smem_scale();
     static constexpr int zero_elements = elements_per_smem_zero();
-#if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
     // Packed: the cubes overlap, so the allocation is the packed span, not cosize of the logical tile.
-    cute::ArrayEngine<RealInternalElementA, kAPackSpan> smem_a;
-#else
-    cute::ArrayEngine<RealInternalElementA, cute::cosize_v<SmemLayoutAPhysical>> smem_a;
-#endif
+    cute::ArrayEngine<RealInternalElementA,
+        kPackedA ? kAPackSpan : cute::cosize_v<SmemLayoutAPhysical>> smem_a;
     // If this member is ever resized or removed, note that smem_b follows it directly and array_aligned defaults
     // to 16-B alignment: at the full size (cosize*2 B, a multiple of 32) smem_b happens to land 32-B aligned,
     // which PPU0010's AIU load requires (align_bytes = 32 in gemm_operands.hpp). Shrinking smem_a to one element
@@ -919,12 +918,7 @@ public:
     Tensor mA_mkl = make_tensor(make_gmem_ptr(a_expert_base),
                                 make_shape(M,K,cute::Int<1>{}), mainloop_params.dA);                            // (m,k,1)
     auto gA_logical = [&] {
-#if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
-      constexpr bool plain_a_copy = true;
-#else
-      constexpr bool plain_a_copy = false;
-#endif
-      if constexpr (plain_a_copy) {
+      if constexpr (kPackedA) {
         // PLAIN, not make_mix_tensor_like: that wrapper carries (ptr, coordinate) for the AIU descriptor and has NO
         // addressable strides (l74), so &gA(...) yields a meaningless address. The packed-row provider writes A with
         // cp.async and therefore needs real strides.
@@ -1025,21 +1019,21 @@ public:
     auto k_iter_shape = cute::shape<2>(gB);
 
     // Construct shared memory tiles
-#if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
+    if constexpr (kPackedA) {
     // l85's collision check, as a body-level assert. It CANNOT sit in the class body: it calls a member of the
     // same class, which is still incomplete there -- nvcc's EDG front end accepts that and hgcc rejects it with
     // "no type named 'SharedStorage'", which is how the local gate passed and the box build failed.
     static_assert(kAPackRows >= 1 && kAPackRows <= 8,
-                  "PPU_A_PACK=R currently supports 1 <= R <= 8 across compiled TileM cube geometries");
-    static_assert(kAPackRows <= kACubeH, "PPU_A_PACK=R cannot exceed A's cube height");
-    static_assert(aPackDisjoint(), "PPU_A_PACK: packed first-R-row runs collide -- fix the derived pitch");
-    static_assert(kACubeW == 64, "PPU_A_PACK: run offsets assume AiuContElemSize == 64 halfs");
+                  "packed-A provider supports 1 <= R <= 8 across compiled physical cube geometries");
+    static_assert(kAPackRows <= LogicalTileM, "packed-A provider cannot publish more rows than logical TileM");
+    static_assert(aPackDisjoint(), "packed-A provider runs collide -- fix the derived pitch");
+    static_assert(kACubeW == 64, "packed-A run offsets assume AiuContElemSize == 64 halfs");
     static_assert(kAPackPitch % 64 == 0 && kAPackSpan % 64 == 0,
-                  "PPU_A_PACK: every cube base and the complete A span must remain 128-B aligned");
+                  "packed-A: every cube base and the complete A span must remain 128-B aligned");
     // The read's pitch and the write's call the same detail::aPackPitchForRows(), so they cannot diverge the way
     // they did when each side carried its own literal.
-    static_assert(int(cute::size<0>(TileShape{})) == kACubeH, "PPU_A_PACK: CUBE_H must be TileM");
-#endif
+    static_assert(PhysicalATileM == kACubeH, "packed-A cube authority must be the physical m8/m16 footprint");
+    }
     SharedStorage& storage = *reinterpret_cast<SharedStorage*>(smem_buf);
     Tensor sA = make_tensor(make_smem_ptr(storage.smem_a.begin()), SmemLayoutA{}); // (BLK_M_LOGICAL,BLK_K,PIPE)
     Tensor sA_physical = make_tensor(
@@ -1068,12 +1062,11 @@ public:
     Tensor tBgB = gmem_thr_copy_B.partition_S(gB);                             // (BCPY,BCPY_N,BCPY_K,k)
     Tensor tBsB = gmem_thr_copy_B.partition_D(sB);                             // (BCPY,BCPY_N,BCPY_K,PIPE)
     auto copy_A_and_B = [&] (auto k_tile, auto k_iter_crd, int pipe) {
-#if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
-      copy_aiu(gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd), tBsB(_,_,_,pipe), warp_idx);
-      copy_A_packed_rows<kAPackRows>(
-          gA, storage.smem_a.begin(), k_tile, pipe, thread_idx, gmem_tiled_copy_A.desc_.dim_h);
-#else
-      {
+      if constexpr (kPackedA) {
+        copy_aiu(gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd), tBsB(_,_,_,pipe), warp_idx);
+        copy_A_packed_rows<kAPackRows>(
+            gA, storage.smem_a.begin(), k_tile, pipe, thread_idx, gmem_tiled_copy_A.desc_.dim_h);
+      } else {
         auto gmem_thr_copy_A = gmem_tiled_copy_A.get_slice(thread_idx);
         Tensor tAgA = gmem_thr_copy_A.partition_S(gA);                         // (ACPY,ACPY_M,ACPY_K,k)
         Tensor tAsA = gmem_thr_copy_A.partition_D(sA_physical);                // (ACPY,ACPY_M_PHYS,ACPY_K,PIPE)
@@ -1083,7 +1076,6 @@ public:
           warp_idx
         );
       }
-#endif
     };
 
     // Start async loads for all pipes but the last
@@ -1925,7 +1917,6 @@ private:
      }
     }
   }
-#if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
   /// A's first R rows into the PACKED cube layout. Each row has four contiguous 16-half runs at the offsets l86
   /// exported. Logical k advances inside each 8-half transfer; odd cache lines swap the two transfers in a run.
   /// cp.async and not the AIU: the AIU write is .padz and would write each cube's 15 zero rows over its packed
@@ -1950,11 +1941,11 @@ private:
       auto const& gsrc = *reinterpret_cast<cute::uint128_t const*>(
           &gA(row, c * kACubeW + run * 16 + h * 8, k_tile));
       auto&       sdst = *reinterpret_cast<cute::uint128_t*>(
-          smem_a + kAPackPitch * (c + kACubes * pipe) + aPackRunOff(row, run) + physical_h * 8);
+          smem_a + kAPackPitch * (c + kACubes * pipe) +
+          detail::aPackRunOffsetHalfs(kACubeH, row, run) + physical_h * 8);
       PPU_CP_ASYNC_CACHEGLOBAL_ZFILL<cute::uint128_t>::copy(gsrc, sdst, row < valid_rows);
     }
   }
-#endif
 
   // PPU_B_DEQUANT_NOP -- TIMING ONLY, RESULTS ARE DELIBERATELY WRONG. It answers the one question the packed-scale
   // NOP cannot: how much of the 20.11 us baseline is the int4->fp16 dequant pipeline itself? That chain is 1,898,496

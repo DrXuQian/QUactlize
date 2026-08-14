@@ -51,6 +51,27 @@ struct KernelAiuFold {
   static constexpr int ArtifactTileK = ArtifactTileK_;
   using BaseSchedule = BaseSchedule_;
 };
+
+// A provider choice is orthogonal to the resident-B fold contract.  Keep it in a distinct wrapper instead of
+// adding another defaulted argument to KernelAiuFold: every existing schedule type (and therefore every M>1
+// shipping kernel type) remains exactly the type it was before the M==1 packed-row provider existed.  The wrapper
+// is introduced only by ppu_mixed_policy::PackedAMainloopPolicy.
+template<int Rows_, class WrappedSchedule_>
+struct KernelAiuPackedA {
+  static_assert(Rows_ > 0, "KernelAiuPackedA requires a positive compile-time row count");
+  static constexpr int Rows = Rows_;
+  using WrappedSchedule = WrappedSchedule_;
+};
+
+template<class T> struct a_provider_schedule_traits {
+  static constexpr int Rows = 0;
+  using Wrapped = T;
+};
+template<int Rows_, class WrappedSchedule_>
+struct a_provider_schedule_traits<KernelAiuPackedA<Rows_, WrappedSchedule_>> {
+  static constexpr int Rows = Rows_;
+  using Wrapped = WrappedSchedule_;
+};
 // A zero fold means that no artifact contract was supplied. The builder retains its legacy derivation only for such
 // direct CollectiveBuilder users; the shared quactlize policy always supplies both folds when either plane is folded.
 template<class T> struct fold_schedule_traits {
@@ -67,6 +88,19 @@ struct fold_schedule_traits<KernelAiuFold<LowFold, B, HighFold, ArtifactTileK_>>
   static constexpr int ArtifactHighFold = HighFold;
   static constexpr int ArtifactTileK = ArtifactTileK_;
   using Base = B;
+};
+template<int Rows_, class WrappedSchedule_>
+struct fold_schedule_traits<KernelAiuPackedA<Rows_, WrappedSchedule_>> {
+private:
+  using WrappedTraits = fold_schedule_traits<WrappedSchedule_>;
+public:
+  static constexpr int FoldF = WrappedTraits::FoldF;
+  static constexpr int ArtifactLowFold = WrappedTraits::ArtifactLowFold;
+  static constexpr int ArtifactHighFold = WrappedTraits::ArtifactHighFold;
+  static constexpr int ArtifactTileK = WrappedTraits::ArtifactTileK;
+  // Preserve the A-provider wrapper after removing the artifact-fold wrapper.  This lets the ordinary one-plane
+  // dispatch keep its exact group-size schedule while CollectiveMma can still see Rows at compile time.
+  using Base = KernelAiuPackedA<Rows_, typename WrappedTraits::Base>;
 };
 
 //////////////////////////////////////////////////////////////////////////////
@@ -129,6 +163,15 @@ struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuMultistageMixe
   using kContinous = kContinous_;
   using Schedule = KernelAiuMultistageMixedInput;
   using ClusterShape = Shape<_1,_1,_1>;
+};
+
+// Forward every ordinary schedule property (notably StaticGroupSize) and add only the independent A-provider
+// identity.  This remains a MainloopQuactlizeMixedInput specialisation, so the existing collective is reused rather
+// than copied and no folded/two-plane collective is touched.
+template<int Stages_, class kContinous_, int Rows_, class WrappedSchedule_>
+struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuPackedA<Rows_, WrappedSchedule_>>
+    : MainloopQuactlizeMixedInput<Stages_, kContinous_, WrappedSchedule_> {
+  static constexpr int AProviderRows = Rows_;
 };
 
 //////////////////////////////////////////////////////////////////////////////
