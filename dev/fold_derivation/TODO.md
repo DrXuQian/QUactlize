@@ -1907,3 +1907,58 @@ leave MMA/dequant work unchanged while increasing dynamic instructions and laten
 both machines; changing only `G` must leave MMA count unchanged; reported `% peak` must always be accompanied by
 absolute GB/s and its counter/model provenance.  The existing 5070 `11.872 us` warm timing and `581.69 GB/s /
 88.06%` NCU result are two different executions and must remain separate baselines.
+
+### TODO #58 — extend fixed Split-K parallel to every shipping precision and fully-quantized format
+
+**Current completed slice.**  Commit `4bd3def` closes the M=1 packed-A, one-plane W4 `FinegrainedScaleOnly`,
+`gs=128`, TK64-xplane path.  It reuses the shipping mixed-input mainloop, writes ordered FP32 partial planes, and
+dispatches the EPA=2 M=1 reducer for S=2/4/8.  This is not evidence that the remaining formats are wired: the
+prepared handle is deliberately one-plane and the sweep denominator is the W4 ScaleOnly table.
+
+**Goal.**  Make fixed Split-K a scheduler/output-phase axis, not a W4 special case.  Cover every precision and
+format that ships through the dense decode/prefill authority:
+
+* one-plane int4/int2/int1, including ScaleOnly and ScaleZero modes;
+* two-plane Q3/Q5/Q6 and their independent low/high folds;
+* folded artifacts and both B-chunk modes without changing their resident byte maps;
+* the fully-quantized path, including its quantized-A metadata, scale/zero conventions and complete post-reduction
+  epilogue semantics.
+
+The format collective remains the authority for A/B/S/Z/B2 conversion and MMA.  Split-K may change only the
+K-range scheduler and the output phase: each slice writes FP32 partials, then the shared fixed-order primitive
+performs `s=0,1,...,S-1` and applies the format's final conversion/epilogue exactly once.  No new offline artifact
+is allowed merely to enable Split-K.  The existing generic reducer remains the correctness fallback, and the
+EPA=2 M=1 body remains the standalone fast path wherever its alignment/shape contract holds.
+
+**Fully-quantized is a separate proof obligation, not a typedef substitution.**  Its producer must be formed from
+the exact shipping fully-quantized mainloop and its reduction must preserve the shipping accumulator type,
+alpha/bias/output-scale ordering and destination type.  Accepting a fully-quantized argument while silently using
+the mixed-input epilogue is a hard failure.  If any shipping fully-quantized accumulator is not FP32, add a typed
+partial ABI rather than reinterpreting it as the current FP32 workspace.
+
+**Local, exhaustive admission gates.**
+
+1. Generate the denominator as `(format, bits, low_fold, high_fold, BChunk, tactic, S)` from the shipping tables;
+   no hand-written winner rows.  Every rejected cell must carry a named reason.
+2. For every admitted cell, prove the S=1 type is exactly the existing shipping type and S=2/4/8 reuse the exact
+   same collective/mainloop.  Artifact byte maps and roundtrips must be invariant with S.
+3. On an order-independent exact fixture, exhaustively prove `(output_tile, k_tile)` coverage exactly once and
+   raw-bit equality after reduction.  Include ScaleOnly/ScaleZero, each two-plane family, every fold and the
+   fully-quantized A/B metadata path.
+4. Retain the M1 reducer controls from L189/L194: unique output signatures plus poisoned D, tail/weak-alignment
+   fallback, S4-to-S2 dispatcher RED and an oversized-grid fail-close.  Add one format-seam RED per family (swap a
+   fold, omit B2, omit quantized-A metadata); each must fail numerically or at admission, never SKIP/PASS.
+5. Keep producer, reducer-only and full-E2E timing in one invocation and print `fast_path_selected`; producer-only
+   timing may not be reported as the product result.
+
+**PPU acceptance.**  Sweep S independently for every format because the optimum is device- and tactic-specific.
+For each winning cell report S=1 versus S>1 full-E2E latency, raw-bit correctness, reducer-only latency, vector-load
+codegen/spill and saturated reducer-body bandwidth.  The body target remains at least 80% of a matched measured
+memory roof (90% goal); the shipping N=4096 reducer is only 40--136 KiB and is therefore judged against its matching
+launch floor, not against a misleading nameplate `%HBM`.  After all standalone formats close, reuse
+`reduce_fp32_aligned_fixed_partition_order` in a last-arriver epilogue to remove the second launch without changing
+the fixed arithmetic order.
+
+**Done means:** every shipping precision and the fully-quantized format appears in the generated denominator,
+passes its local exact/negative controls, builds with the real PPU toolchain, and has a recorded PPU S-curve.  Until
+then, documentation and tactic selection must continue to label the current implementation as W4 one-plane only.
