@@ -62,6 +62,9 @@ SPECIALISATION_OWNERS = {
     "contig_elems": "quactlize's own, in quactlize_detail::aiu_detail",
     "ScaleSwizzleFor": "quactlize's own primary template",
     "MaybeScaleSwizzle": "quactlize's own primary template",
+    "a_provider_schedule_traits":
+        "quactlize owns both this primary template and its KernelAiuPackedA specialisation; actlize defines "
+        "neither name, so no vendor argument list can overlap",
 }
 
 # A DELIBERATELY SMALL SCANNER, not a C++ parser. It tracks `namespace A::B {` and brace depth so a name is

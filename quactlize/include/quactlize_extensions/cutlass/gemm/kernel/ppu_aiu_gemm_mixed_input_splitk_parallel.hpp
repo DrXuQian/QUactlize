@@ -13,9 +13,12 @@
  *   plane = slice (dense v1 is L==1)
  *   slice = one equal-length contiguous interval of absolute K-tile coordinates
  *
- * No semaphore, peer fixup, D read, or final linear combination exists here.  Each CTA writes its
- * accumulator to a distinct FP32 plane through CollectivePartialEpilogue.  A second kernel performs
- * the ordered reduction and the shipping output epilogue.
+ * Every CTA writes its accumulator to a distinct FP32 plane through
+ * CollectivePartialEpilogue.  The default SeparateKernelCompletion policy has
+ * no semaphore, peer fixup, D read, or final linear combination; a second
+ * kernel performs its ordered reduction.  An explicitly selected completion
+ * policy may append a post-store actual-last protocol without changing the
+ * mainloop or partial ABI.
  *
  * CollectivePartialEpilogue follows actlize's EpilogueParallel protocol:
  *   - ElementD is exactly the mainloop accumulator type (FP32 in shipping kernels),
@@ -41,6 +44,7 @@
 
 #include "cute/tensor.hpp"
 
+#include "quactlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_last_arriver.hpp"
 #include "quactlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_partition.hpp"
 
 namespace cutlass::gemm::kernel {
@@ -48,14 +52,17 @@ namespace cutlass::gemm::kernel {
 template <
     class ProblemShape_,
     class CollectiveMainloop_,
-    class CollectivePartialEpilogue_>
+    class CollectivePartialEpilogue_,
+    class CompletionPolicy_ = fixed_splitk::SeparateKernelCompletion>
 class GemmUniversalMixedInputSplitKParallel {
  public:
   using ProblemShape = ProblemShape_;
   using CollectiveMainloop = CollectiveMainloop_;
   using CollectivePartialEpilogue = CollectivePartialEpilogue_;
+  using CompletionPolicy = CompletionPolicy_;
   // GemmUniversalAdapter expects this conventional alias.  It names the partial-store epilogue,
-  // not the final output epilogue, which belongs to the separate reduction kernel.
+  // not the final output phase, which belongs either to the separate reduction kernel or to the
+  // caller-selected completion policy.
   using CollectiveEpilogue = CollectivePartialEpilogue;
 
   static_assert(cute::rank(ProblemShape{}) == 3 || cute::rank(ProblemShape{}) == 4,
@@ -99,6 +106,7 @@ class GemmUniversalMixedInputSplitKParallel {
     union SharedTensorStorage {
       typename CollectiveMainloop::SharedStorage mainloop;
       typename CollectivePartialEpilogue::SharedStorage partial_epilogue;
+      typename CompletionPolicy::SharedStorage completion;
     } tensors;
   };
 
@@ -113,6 +121,7 @@ class GemmUniversalMixedInputSplitKParallel {
     PartialEpilogueArguments partial_epilogue{};
     int split_k_slices{1};
     KernelHardwareInfo hw_info{};
+    typename CompletionPolicy::Arguments completion{};
   };
 
   struct Params {
@@ -121,6 +130,7 @@ class GemmUniversalMixedInputSplitKParallel {
     MainloopParams mainloop;
     PartialEpilogueParams partial_epilogue;
     fixed_splitk::Params partition;
+    typename CompletionPolicy::Params completion;
   };
 
  private:
@@ -223,7 +233,9 @@ class GemmUniversalMixedInputSplitKParallel {
             args.problem_shape, args.mainloop, workspace),
         CollectivePartialEpilogue::to_underlying_arguments(
             partial_shape, args.partial_epilogue, workspace),
-        partition};
+        partition,
+        CompletionPolicy::to_underlying_arguments(
+            problem_shape, partition, args.completion)};
   }
 
   static bool
@@ -241,6 +253,11 @@ class GemmUniversalMixedInputSplitKParallel {
       return false;  // includes supported S, Kt>=S, and the v1 Kt%S contract
     }
     if (!compact_partial_abi(args)) {
+      return false;
+    }
+    if (!CompletionPolicy::can_implement(
+            args.problem_shape, partition, args.completion,
+            args.partial_epilogue, TileShape{})) {
       return false;
     }
     // Mixed cp.async mainloops prime Stages-1 tiles.  Reject a decomposition that would
@@ -338,7 +355,7 @@ class GemmUniversalMixedInputSplitKParallel {
 
     uint64_t const n_tiles = uint64_t(gridDim.y);
     uint64_t const q = uint64_t(m_coord) * n_tiles + uint64_t(n_coord);
-    fixed_splitk::Work const work =
+    fixed_splitk::FixedSplitKWork const work =
         fixed_splitk::work_for(params.partition, q, slice);
     if (!fixed_splitk::work_matches_params(params.partition, work)) {
       return;
@@ -363,6 +380,9 @@ class GemmUniversalMixedInputSplitKParallel {
                      tiled_mma, residue_mnk, thread_idx,
                      reinterpret_cast<char*>(
                          &shared_storage.tensors.partial_epilogue));
+    CompletionPolicy::after_partial(
+        params.completion, work, thread_idx, TileShape{},
+        shared_storage.tensors.completion);
   }
 };
 

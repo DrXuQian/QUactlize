@@ -153,11 +153,14 @@ for spec in 0:4 10:4 11:4 50:1; do
     "${units}/dense_splitk_sweep_unit_${index}.cu" "${rows}"
 done
 
-# A controlled overlay changes only PreparedOnePlaneLauncher::run().  The
-# exact generated unit-0 must instantiate both calls once for each of its four
-# rows.  This is stronger than merely seeing the Prepared type in a stack: it
-# proves the producer and reducer run body is reached.  The overlay is wholly
-# under /workspace and never edits the shipping header.
+# A controlled overlay changes only the two PreparedOnePlaneLauncher run
+# entrypoints.  The exact generated unit-0 must instantiate the permanent
+# two-launch producer/reducer oracle once for each of its four rows.  Each
+# exact-warm TU must separately instantiate the actual-last fused entrypoint
+# for its real packed-A ScaleOnly/ArtifactTK64 row.  This is stronger than
+# merely seeing the Prepared type in a stack, and avoids proving only L190's
+# hand-written proof row.  The overlay is generated under the selected output
+# directory and never edits the shipping header.
 overlay="${out}/marker-overlay"
 mkdir "${overlay}"
 cp "${repo}/quactlize/include/dense_splitk_parallel_ppu.cuh" \
@@ -177,7 +180,16 @@ plant = needle + '''
                   "L193_PREPARED_PRODUCER_BODY_INSTANTIATED");
     static_assert(sizeof(Reduction) == 0,
                   "L193_PREPARED_REDUCER_BODY_INSTANTIATED");'''
-path.write_text(text.replace(needle, plant, 1), encoding="utf-8")
+text = text.replace(needle, plant, 1)
+
+fused_needle = '''  cutlass::Status run_fused_last_arriver(hggcStream_t stream = nullptr) {'''
+if text.count(fused_needle) != 1:
+    raise SystemExit("L193 PreparedOnePlaneLauncher::run_fused_last_arriver seam is not unique")
+fused_plant = fused_needle + '''
+    static_assert(sizeof(FusedGemm) == 0,
+                  "L193_PREPARED_FUSED_BODY_INSTANTIATED");'''
+text = text.replace(fused_needle, fused_plant, 1)
+path.write_text(text, encoding="utf-8")
 PY
 
 marker_log="${out}/body-marker.log"
@@ -206,4 +218,40 @@ if [[ "${marker_rc}" -eq 0 ]] || [[ "${producer_count}" -ne 4 ]] || \
   exit 1
 fi
 
-echo "[l193] PASS: real L192 main + exact warm A/B TUs + boundary units completed nvcc -cuda; only known CuTe environment errors; producer/reducer run bodies=4/4; artifacts=${out}"
+check_fused_marker() {
+  local label="$1" source="$2"
+  local log="${out}/${label}-fused-marker.log"
+  local artifact="${out}/${label}-fused-marker.cu.cpp"
+  set +e
+  nvcc -I "${overlay}" "${flags[@]}" -o "${artifact}" \
+    "${source}" >"${log}" 2>&1
+  local rc=$?
+  set -e
+  require_complete_frontend "${label}-fused-marker" "${log}" "${artifact}" "${rc}"
+
+  local fused_count errors unexpected
+  fused_count="$(grep -Fc 'error: static assertion failed with "L193_PREPARED_FUSED_BODY_INSTANTIATED"' "${log}" || true)"
+  errors="${out}/${label}-fused-marker.errors"
+  unexpected="${out}/${label}-fused-marker.unexpected"
+  diagnostic_lines "${log}" >"${errors}"
+  grep -Fv 'identifier "cute::_" is undefined in device code' "${errors}" \
+    | grep -Fv 'identifier "cute::product" is undefined in device code' \
+    | grep -Fv 'error: static assertion failed with "L193_PREPARED_PRODUCER_BODY_INSTANTIATED"' \
+    | grep -Fv 'error: static assertion failed with "L193_PREPARED_REDUCER_BODY_INSTANTIATED"' \
+    | grep -Fv 'error: static assertion failed with "L193_PREPARED_FUSED_BODY_INSTANTIATED"' \
+    >"${unexpected}" || true
+  if [[ "${rc}" -eq 0 ]] || [[ "${fused_count}" -ne 1 ]] || \
+     [[ -s "${unexpected}" ]]; then
+    echo "[l193] FAIL: ${label} fused-body witness drifted: fused=${fused_count} rc=${rc}" >&2
+    sed -n '1,40p' "${unexpected}" >&2
+    return 1
+  fi
+  echo "[l193] ${label}: packed-A fused run body=1/1"
+}
+
+check_fused_marker exact-warm-tn64 \
+  "${repo}/benchmarks/dense_splitk_exact_warm_ab_tn64.cu"
+check_fused_marker exact-warm-tn128 \
+  "${repo}/benchmarks/dense_splitk_exact_warm_ab_tn128.cu"
+
+echo "[l193] PASS: real L192 main + exact warm A/B TUs + boundary units completed nvcc -cuda; only known CuTe environment errors; producer/reducer run bodies=4/4; packed-A fused bodies=1/1+1/1; artifacts=${out}"

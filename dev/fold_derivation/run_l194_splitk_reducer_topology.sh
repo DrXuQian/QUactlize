@@ -41,7 +41,7 @@ fi
 "${binary}" | tee "${out}/run.log"
 run_rc=${PIPESTATUS[0]}
 if [[ ${run_rc} -ne 0 ]] ||
-   ! grep -Fq '[l194] PASS: legacy, 12 vector topology cases and 3 production-fast cases are raw-bit exact' "${out}/run.log"; then
+   ! grep -Fq '[l194] PASS: legacy, 12 vector topology, 3 production-fast and 3 fused-volatile fixed-order cases are raw-bit exact' "${out}/run.log"; then
   echo "[l194] FAIL: live topology sweep did not close"
   exit 1
 fi

@@ -40,6 +40,25 @@ __host__ __device__ float partial_value(int split, int column) {
 
 __global__ void empty_kernel() {}
 
+template <int Partitions>
+__global__ void volatile_fixed_order_kernel(
+    float const* workspace, cutlass::half_t* output) {
+  constexpr int EPA = 2;
+  int const column =
+      (int(blockIdx.x) * int(blockDim.x) + int(threadIdx.x)) * EPA;
+  if (column >= kN) return;
+  auto accumulator =
+      splitk::reduce_fp32_volatile_fixed_partition_order<EPA, Partitions>(
+          workspace, kN, column);
+  cutlass::NumericArrayConverter<cutlass::half_t, float, EPA> convert;
+  auto converted = convert(accumulator);
+  using Output = cutlass::AlignedArray<cutlass::half_t, EPA>;
+  Output packed;
+  packed[0] = converted[0];
+  packed[1] = converted[1];
+  *reinterpret_cast<Output*>(output + column) = packed;
+}
+
 bool cuda_ok(cudaError_t status, char const* what) {
   if (status == cudaSuccess) return true;
   std::fprintf(stderr, "[l194] CUDA FAIL: %s: %s\n", what,
@@ -192,6 +211,23 @@ bool run_production_fast_case(
   return bad == 0 && us > 0 && empty_us > 0;
 }
 
+template <int Partitions>
+bool run_volatile_case(
+    float* workspace, cutlass::half_t* output,
+    std::vector<cutlass::half_t> const& expected) {
+  constexpr int EPA = 2;
+  dim3 const block(32, 1, 1);
+  dim3 const grid(kN / (32 * EPA), 1, 1);
+  volatile_fixed_order_kernel<Partitions><<<grid, block>>>(workspace, output);
+  if (cudaDeviceSynchronize() != cudaSuccess) return false;
+  int const bad = check_output(output, expected);
+  std::printf(
+      "L194_FUSED_VOLATILE S=%d EPA=2 grid=%u block=%u "
+      "fixed_order=0..S-1 bad=%d\n",
+      Partitions, grid.x, block.x, bad);
+  return bad == 0;
+}
+
 }  // namespace
 
 int main() {
@@ -228,6 +264,12 @@ int main() {
     failures += !run_vector_case<8>(partitions, workspace, output, expected);
     failures +=
         !run_production_fast_case(partitions, workspace, output, expected);
+    switch (partitions) {
+      case 2: failures += !run_volatile_case<2>(workspace, output, expected); break;
+      case 4: failures += !run_volatile_case<4>(workspace, output, expected); break;
+      case 8: failures += !run_volatile_case<8>(workspace, output, expected); break;
+      default: ++failures; break;
+    }
   }
 
   cudaFree(output);
@@ -237,7 +279,7 @@ int main() {
     return 1;
   }
   std::printf(
-      "[l194] PASS: legacy, 12 vector topology cases and 3 production-fast "
-      "cases are raw-bit exact\n");
+      "[l194] PASS: legacy, 12 vector topology, 3 production-fast and 3 "
+      "fused-volatile fixed-order cases are raw-bit exact\n");
   return 0;
 }

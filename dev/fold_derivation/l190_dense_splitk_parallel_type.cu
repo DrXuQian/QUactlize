@@ -31,6 +31,7 @@ using Shipping = fpa_intb_ppu::DenseKernelTypes<
     cutlass::int4b_t, void, 128>;
 using Split = dense_splitk_parallel_ppu::KernelTypes<Shipping, Tile, Warp>;
 using SplitKernel = typename Split::GemmKernel;
+using FusedKernel = typename Split::FusedGemmKernel;
 
 using ExpectedShippingKernel = cutlass::gemm::kernel::GemmUniversal<
     Shape<int, int, int, int>, typename Shipping::CollectiveMainloop,
@@ -47,6 +48,10 @@ static_assert(std::is_same_v<typename Shipping::GemmKernel,
               "L190_S1_MUST_REMAIN_THE_HISTORICAL_SHIPPING_KERNEL_TYPE");
 static_assert(!std::is_same_v<SplitKernel, typename Shipping::GemmKernel>,
               "L190_S8_PRODUCER_MUST_NOT_REPLACE_THE_S1_SHIPPING_TYPE");
+static_assert(!std::is_same_v<FusedKernel, SplitKernel> &&
+                  std::is_same_v<typename FusedKernel::CollectiveMainloop,
+                                 typename SplitKernel::CollectiveMainloop>,
+              "L190_FUSED_MUST_CHANGE_ONLY_THE_COMPLETION_POLICY");
 static_assert(size<0>(typename Shipping::CollectiveMainloop::TiledMma::AtomShape_MNK{}) == 8 &&
                   size<1>(typename Shipping::CollectiveMainloop::TiledMma::AtomShape_MNK{}) == 16 &&
                   size<2>(typename Shipping::CollectiveMainloop::TiledMma::AtomShape_MNK{}) == 16,
@@ -61,10 +66,17 @@ static_assert(Split::BlockM == 8 && Split::BlockN == 128 &&
 // GemmUniversalMixedInputSplitKParallel::operator(), including proof-row load_init/mainloop and the
 // owned FP32 partial epilogue.  No device code is executed by this gate.
 #if !defined(L190_SEVER_DEVICE_BODY)
+#if defined(L190_FORCE_FUSED_DEVICE_BODY)
+__global__ void l190_force_splitk_device_body(FusedKernel::Params params) {
+  extern __shared__ char smem[];
+  FusedKernel{}(params, smem);
+}
+#else
 __global__ void l190_force_splitk_device_body(SplitKernel::Params params) {
   extern __shared__ char smem[];
   SplitKernel{}(params, smem);
 }
+#endif
 #endif
 
 bool host_contract() {
@@ -111,6 +123,14 @@ bool host_contract() {
   bool const workspace_exact = workspace_ok && outer_plan_ok &&
       workspace == 131072 && plan.partial_bytes == workspace &&
       plan.alignment == 16 && plan.preferred_fast_alignment == 128;
+  dense_splitk_parallel_ppu::WorkspacePlan fused_plan;
+  bool const fused_plan_ok = dense_splitk_parallel_ppu::
+      query_fused_workspace_plan(M, N, S, Split::BlockM, Split::BlockN,
+                                 fused_plan) &&
+      fused_plan.partial_bytes == 131072 &&
+      fused_plan.counter_offset == 131072 &&
+      fused_plan.counter_bytes == 128 && fused_plan.total_bytes == 131200 &&
+      fused_plan.output_tiles == 32 && fused_plan.alignment == 128;
 
   std::printf(
       "[l190] proof_row=ordinary-int4-gs128 winner_binding=UNRESOLVED "
@@ -120,7 +140,7 @@ bool host_contract() {
       grid.x, grid.y, grid.z,
       static_cast<unsigned long long>(partition.work_units),
       partition.k_tiles_per_split, workspace);
-  return grid_ok && partition_ok && workspace_exact;
+  return grid_ok && partition_ok && workspace_exact && fused_plan_ok;
 }
 
 #if defined(L190_ADMISSION_PROBE)
@@ -163,18 +183,48 @@ bool admission_contract() {
   args.split_k_slices = S;
   bool const accepted = SplitKernel::can_implement(args);
 
+  typename FusedKernel::Arguments fused_args{};
+  fused_args.mode = args.mode;
+  fused_args.problem_shape = args.problem_shape;
+  fused_args.mainloop = args.mainloop;
+  fused_args.partial_epilogue = args.partial_epilogue;
+  fused_args.split_k_slices = args.split_k_slices;
+  auto* final_d = reinterpret_cast<cutlass::half_t*>(uintptr_t{0x40000});
+  auto* counters = reinterpret_cast<int32_t*>(uintptr_t{0x50000});
+  fused_args.completion = {
+      destination, final_d, counters, M, N, N, 32, S};
+  bool const fused_accepted = FusedKernel::can_implement(fused_args);
+
 #if defined(L190_PLANT_BAD_STRIDE)
-  std::printf("[l190:admission] plant=bad-stride accepted=%d expected=0\n",
-              int(accepted));
-  return !accepted;
+  std::printf("[l190:admission] plant=bad-stride accepted=%d fused=%d expected=0/0\n",
+              int(accepted), int(fused_accepted));
+  return !accepted && !fused_accepted;
 #elif defined(L190_PLANT_UNALIGNED)
-  std::printf("[l190:admission] plant=unaligned accepted=%d expected=0\n",
-              int(accepted));
-  return !accepted;
+  std::printf("[l190:admission] plant=unaligned accepted=%d fused=%d expected=0/0\n",
+              int(accepted), int(fused_accepted));
+  return !accepted && !fused_accepted;
 #else
-  std::printf("[l190:admission] plant=none accepted=%d expected=1\n",
-              int(accepted));
-  return accepted;
+  auto mismatched = fused_args;
+  mismatched.completion.partials =
+      reinterpret_cast<float const*>(uintptr_t{0x60000});
+  auto destination_overlap = fused_args;
+  destination_overlap.completion.destination =
+      reinterpret_cast<cutlass::half_t*>(destination);
+  auto counter_overlap = fused_args;
+  counter_overlap.completion.counters =
+      reinterpret_cast<int32_t*>(reinterpret_cast<char*>(destination) + 128);
+  bool const mismatch_rejected = !FusedKernel::can_implement(mismatched);
+  bool const destination_overlap_rejected =
+      !FusedKernel::can_implement(destination_overlap);
+  bool const counter_overlap_rejected =
+      !FusedKernel::can_implement(counter_overlap);
+  std::printf(
+      "[l190:admission] plant=none accepted=%d fused=%d "
+      "pointer-mismatch=%d D-overlap=%d counter-overlap=%d expected=1/1/1/1/1\n",
+      int(accepted), int(fused_accepted), int(mismatch_rejected),
+      int(destination_overlap_rejected), int(counter_overlap_rejected));
+  return accepted && fused_accepted && mismatch_rejected &&
+      destination_overlap_rejected && counter_overlap_rejected;
 #endif
 }
 #endif

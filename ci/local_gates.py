@@ -1194,6 +1194,42 @@ def lint_dense_shipping_tm8():
         "dense TM8 ships six stages, closes exact 51/9 cells, and owns the M<8 empty-config default")
 
 
+def lint_fixed_splitk_last_arriver():
+    """Actual-last completion must close both its exhaustive protocol and production source sequence."""
+    script = DEV / "run_l196_fixed_splitk_last_arriver.sh"
+    if not script.is_file():
+        return "FAIL", f"missing {script.name}", 0.0
+    rc, log, dt = run(["bash", str(script)], cwd=str(ROOT))
+    lines = [line.strip() for line in log.splitlines() if line.strip()]
+    host = next((line for line in lines if line.startswith("[l196] PASS")), "")
+    source = next((line for line in lines if line.startswith("[l196:source] PASS")), "")
+    if rc != 0 or not host or not source:
+        return "FAIL", (lines[-1] if lines else f"l196 exited {rc}"), dt
+    return "PASS", host.removeprefix("[l196] PASS ") + "; source-sequence=PASS", dt
+
+
+def lint_fixed_splitk_production_type():
+    """The separate and fused completion policies must reach one real shipping mainloop body."""
+    ok, why = nvcc_can_compile_device_cuda()
+    if not ok:
+        return "SKIP", f"fixed Split-K device-body proof unavailable: {why}", 0.0
+    script = DEV / "run_l190_dense_splitk_parallel_type.sh"
+    if not script.is_file():
+        return "FAIL", f"missing {script.name}", 0.0
+    rc, log, dt = run(["bash", str(script)], cwd=str(ROOT))
+    lines = [line.strip() for line in log.splitlines() if line.strip()]
+    verdict = next((line for line in reversed(lines) if line.startswith("[l190] PASS")), "")
+    return ("PASS" if rc == 0 and verdict else "FAIL"), (
+        verdict or (lines[-1] if lines else f"l190 exited {rc}")), dt
+
+
+def lint_dense_splitk_sweep_contract():
+    """The generated sweep and exact fused canary must share one fail-closed output contract."""
+    return _run_ci_script(
+        "check_dense_splitk_sweep_contract.py",
+        "dense Split-K sweep binds its denominator, two-launch oracle and actual-last canary")
+
+
 def lint_streamk_tail_plan():
     """INBOX 122's scan must include attributed zero, medium, and extreme last waves."""
     return _run_ci_script(
@@ -2088,6 +2124,9 @@ def main():
                 ("lint", "MoE events bracket only gemm.run and retain the host-wall audit", lint_moe_event_timing),
                 ("lint", "dense Stream-K shares worker/K decomposition and resets locks before timing", lint_dense_streamk_contract),
                 ("lint", "dense TM8 family and M<8 default share one exhaustive shipping authority", lint_dense_shipping_tm8),
+                ("lint", "fixed Split-K actual-last is unique, ordered, reusable, and source-bound", lint_fixed_splitk_last_arriver),
+                ("lint", "fixed Split-K separate and fused types reach the same production mainloop", lint_fixed_splitk_production_type),
+                ("lint", "dense Split-K sweep binds its oracle and fused exact canary", lint_dense_splitk_sweep_contract),
                 ("lint", "Stream-K tail scan covers attributed zero, medium, and extreme waves", lint_streamk_tail_plan),
                 ("lint", "dense Marlin keeps K-fast stripes, reverse q locks, and the scheduler-owned grid", lint_dense_marlin_contract),
                 ("lint", "dense Marlin exhausts the declared deployment domain without sampling", lint_dense_marlin_exhaustive),

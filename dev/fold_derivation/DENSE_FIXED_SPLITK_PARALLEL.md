@@ -25,11 +25,14 @@ time that omits the reduction is not a result.
   `[S][M][N]`, so the reducer reads `partial[s*M*N + m*N + n]`.
 - `S==1` delegates to the historical shipping launcher and kernel type.  It is
   not reconstructed through the new path.
-- The main kernel has no semaphore, atomic, D read, or final epilogue.  Stream
-  ordering is the only producer/consumer edge between the two kernels.
+- Under the default `SeparateKernelCompletion` policy, the main kernel has no
+  semaphore, atomic, D read, or final epilogue.  Stream ordering is the only
+  producer/consumer edge between the two kernels.  The explicitly selected
+  actual-last policy adds only its completion protocol after the identical
+  partial store.
 
-The deliberately simple two-kernel implementation is both the first usable
-path and the permanent arithmetic oracle for a later fused path.
+The deliberately simple two-kernel implementation remains the permanent
+arithmetic oracle for the fused path.
 
 ## Why this is a separate thin kernel
 
@@ -54,7 +57,7 @@ ABI merely to describe one dense matrix.  It also cannot preserve the required
 S==1 type identity.  That route is useful as an independent geometry model,
 not as the minimum production change.
 
-## Future fused fixup
+## Actual-last fused fixup
 
 The fused protocol must not appoint a particular peer as reducer.  In
 particular, giving the last logical peer less GEMM work does not make it the
@@ -91,9 +94,25 @@ interval, provided the host oracle proves exact-once `(q,k_tile)` coverage and
 the device consumes the same descriptor.  It must not duplicate the K
 arithmetic in the epilogue.
 
-Counter reuse requires an explicit lifecycle.  The first implementation should
-zero counters before launch; generation-tagged counters are a later launch-cost
+The first implementation now exists as an explicit completion-policy kernel
+axis.  It appends one 32-bit counter per global output tile to the established
+FP32 partial workspace, uses a fetch-old arrival, and lets only the actual last
+physical peer run the existing fixed `s=0..S-1` arithmetic.  There is no spin
+or appointed logical final peer.  Its first admission is deliberately narrow:
+compact FP16 `M=1`, full TileN stripes, and `S in {2,4,8}`.  `run()` remains the
+two-launch oracle; callers must opt into `run_fused_last_arriver()` until the
+device canary closes.
+
+Counter reuse has an explicit lifecycle.  Initialization zeros the counters;
+the actual-last CTA resets its own q slot only after all output threads finish.
+The exact canary reuses one workspace for eight launches without an external
+reset and requires raw-bit equality plus every counter byte returning to zero
+after every launch.  Generation-tagged counters are a later launch-cost
 optimization, not part of the correctness protocol.
+
+The prepared handle is single-stream and single-in-flight: initialization,
+counter reset, and every fused launch must use the same stream identity.  Two
+handles must not concurrently alias one workspace from different streams.
 
 ## Required proofs
 
@@ -212,12 +231,15 @@ dense benchmark default):
    `EpilogueSimtVectorized` type;
 2. current shipping ordinary reshape (`...WithoutEvt`);
 3. typed packed-A reshape at that same shape;
-4. typed packed-A internal `(1,4096,4096),S=8` producer only.
+4. typed packed-A internal `(1,4096,4096),S=8` producer only;
+5. the same internal problem through the one-launch actual-last fused path.
 
 The two geometries have the same CTA and K-step count for each TN.  A complete
 producer+reducer launch is checked in raw FP16 bits before and after timing;
 producer-only is a diagnostic seam and is structurally forbidden from the
-cold ranking control flow.  Historical reproduction is admitted only within a
+cold ranking control flow.  The fused arm must additionally pass eight
+same-workspace launches with raw-bit output identity and zero completion
+counters after every launch.  Historical reproduction is admitted only within a
 frozen +/-3% envelope around 7.854/7.696 us; otherwise the process returns
 nonzero as `DRIFTED`.  The final delta is labelled a combined internal Split-K
 producer delta (scheduler, descriptors and FP32 partial epilogue; reducer

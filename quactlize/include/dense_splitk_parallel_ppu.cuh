@@ -7,12 +7,14 @@
  * This file is intentionally separate from fpA_intB_ppu.cuh.  The shipping S=1 launcher continues
  * to instantiate its historical GemmUniversal<..., SplitKSerialScheduler> type.  An explicit
  * S>1 caller opts into this header, which reuses that shipping type's mainloop verbatim and changes
- * only the output phase: FP32 partial planes followed by one ordered reduction kernel.
+ * only the output phase: FP32 partial planes followed either by the permanent ordered-reducer
+ * oracle or by an explicit actual-last completion policy.
  **************************************************************************************************/
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <type_traits>
 
 #include "fpA_intB_ppu.cuh"
@@ -29,6 +31,10 @@ namespace dense_splitk_parallel_ppu {
 
 struct WorkspacePlan {
   size_t partial_bytes = 0;
+  size_t counter_offset = 0;
+  size_t counter_bytes = 0;
+  size_t total_bytes = 0;
+  uint64_t output_tiles = 0;
   size_t alignment = 16;
   size_t preferred_fast_alignment = 128;
 };
@@ -57,8 +63,41 @@ inline bool query_workspace_plan(
   if (split_k_slices == 1) {
     return rows > 0 && columns > 0;
   }
-  return cutlass::gemm::device::splitk_parallel::fp32_workspace_size(
+  bool const ok = cutlass::gemm::device::splitk_parallel::fp32_workspace_size(
       rows, columns, split_k_slices, plan.partial_bytes);
+  plan.total_bytes = plan.partial_bytes;
+  return ok;
+}
+
+// The fused policy appends one completion counter per global output tile.
+// Tile geometry is explicit because q belongs to the producer scheduler, not
+// merely to the logical M*N output tensor.
+inline bool query_fused_workspace_plan(
+    int64_t rows, int64_t columns, int split_k_slices,
+    int tile_m, int tile_n, WorkspacePlan& plan) {
+  if (!query_workspace_plan(rows, columns, split_k_slices, plan) ||
+      split_k_slices <= 1 || tile_m <= 0 || tile_n <= 0) {
+    return false;
+  }
+  // Avoid the usual (extent + tile - 1) spelling here: the public query is a
+  // fail-close ABI seam and must remain defined even at INT64_MAX.
+  uint64_t const m_tiles = uint64_t(1 + (rows - 1) / tile_m);
+  uint64_t const n_tiles = uint64_t(1 + (columns - 1) / tile_n);
+  if (m_tiles == 0 || n_tiles == 0 ||
+      m_tiles > (std::numeric_limits<uint64_t>::max)() / n_tiles) {
+    return false;
+  }
+  auto const completion = cutlass::gemm::kernel::fixed_splitk::
+      make_completion_workspace(plan.partial_bytes, m_tiles * n_tiles);
+  if (!completion.is_valid()) {
+    return false;
+  }
+  plan.counter_offset = completion.counter_offset;
+  plan.counter_bytes = completion.counter_bytes;
+  plan.total_bytes = completion.total_bytes;
+  plan.output_tiles = completion.output_tiles;
+  plan.alignment = cutlass::gemm::kernel::fixed_splitk::kCompletionAlignment;
+  return true;
 }
 
 // actlize's EpilogueParallel predates the CUTLASS-3 adapter metadata aliases.  Do not edit the
@@ -125,6 +164,15 @@ struct KernelTypes {
       CollectivePartialEpilogue>;
   using Gemm = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
 
+  using FusedCompletion = cutlass::gemm::kernel::fixed_splitk::
+      LastArriverM1Fp16Completion<2>;
+  using FusedGemmKernel = cutlass::gemm::kernel::
+      GemmUniversalMixedInputSplitKParallel<
+          cute::Shape<int, int, int, int>, CollectiveMainloop,
+          CollectivePartialEpilogue, FusedCompletion>;
+  using FusedGemm = cutlass::gemm::device::GemmUniversalAdapter<
+      FusedGemmKernel>;
+
   // M=1 uses one 32-thread CTA per 64-column stripe and compile-time S=2/4/8
   // chains.  Wider M, tails, custom D strides and weaker alignment retain the
   // checked generic reducer as a fail-closed fallback inside this handle.
@@ -137,6 +185,9 @@ struct KernelTypes {
   static_assert(std::is_same_v<typename GemmKernel::CollectiveMainloop,
                                typename ShippingKernel::CollectiveMainloop>,
                 "fixed Split-K must not rebuild or substitute the shipping mainloop");
+  static_assert(std::is_same_v<typename FusedGemmKernel::CollectiveMainloop,
+                               typename ShippingKernel::CollectiveMainloop>,
+                "last-arriver completion must not rebuild the shipping mainloop");
 };
 
 // A reusable one-plane handle whose initialization is deliberately separate
@@ -144,7 +195,9 @@ struct KernelTypes {
 // compatible one-shot API.  Performance sweeps use this handle so host-side
 // argument lowering and initialize() cannot be charged to a 7--17 us device
 // span.  S==1 still instantiates and runs ShippingTypes::Gemm verbatim; S>1
-// instantiates the same mainloop behind the FP32-partial kernel.
+// instantiates the same mainloop behind the FP32-partial kernel.  run() remains
+// the two-launch arithmetic oracle; run_fused_last_arriver() is the one-launch
+// device canary and cannot silently replace it.
 template <class ShippingTypes, class TileShape, class WarpShape>
 class PreparedOnePlaneLauncher {
  public:
@@ -154,6 +207,8 @@ class PreparedOnePlaneLauncher {
   using SplitTypes = KernelTypes<ShippingTypes, TileShape, WarpShape>;
   using SplitKernel = typename SplitTypes::GemmKernel;
   using SplitGemm = typename SplitTypes::Gemm;
+  using FusedKernel = typename SplitTypes::FusedGemmKernel;
+  using FusedGemm = typename SplitTypes::FusedGemm;
   using Reduction = typename SplitTypes::Reduction;
   using ElementB = typename ShippingTypes::CollectiveMainloop::ElementB;
   using StrideScale = typename ShippingTypes::CollectiveMainloop::StrideScale;
@@ -161,9 +216,14 @@ class PreparedOnePlaneLauncher {
  private:
   ShippingGemm shipping_{};
   SplitGemm split_{};
+  FusedGemm fused_{};
   Reduction reduction_{};
   int splits_ = 0;
   bool initialized_ = false;
+  bool fused_initialized_ = false;
+  int32_t* fused_counters_ = nullptr;
+  size_t fused_counter_bytes_ = 0;
+  hggcStream_t fused_stream_ = nullptr;
 
   static bool record(hggcEvent_t event, hggcStream_t stream) {
     return event != nullptr && hggcEventRecord(event, stream) == hggcSuccess;
@@ -177,8 +237,10 @@ class PreparedOnePlaneLauncher {
   static_assert(ShippingTypes::SharedStorageSize <=
                     ppu_tactics::kBlockSmemBytes &&
                     SplitKernel::SharedStorageSize <=
+                    ppu_tactics::kBlockSmemBytes &&
+                    FusedKernel::SharedStorageSize <=
                     ppu_tactics::kBlockSmemBytes,
-                "prepared shipping/partial kernels must fit the compiled PPU smem limit");
+                "prepared shipping/partial/fused kernels must fit the compiled PPU smem limit");
   static_assert(ppu_mixed_policy::kernel_policy_valid_v<
                     fpa_intb_ppu::TacticSpace, MainloopPolicy>,
                 "prepared fixed Split-K must retain the shipping dense tactic guard");
@@ -193,6 +255,10 @@ class PreparedOnePlaneLauncher {
       int split_k_slices, char* workspace, size_t workspace_bytes,
       hggcStream_t stream = nullptr) {
     initialized_ = false;
+    fused_initialized_ = false;
+    fused_counters_ = nullptr;
+    fused_counter_bytes_ = 0;
+    fused_stream_ = nullptr;
     splits_ = 0;
     if (m != MainloopPolicy::PackedARows || n <= 0 || k <= 0 || group_size <= 0 ||
         A == nullptr || B == nullptr || scales == nullptr || D == nullptr) {
@@ -245,6 +311,12 @@ class PreparedOnePlaneLauncher {
         workspace == nullptr || workspace_bytes < workspace_plan.partial_bytes) {
       return false;
     }
+    WorkspacePlan fused_workspace_plan;
+    bool const fused_workspace_available = query_fused_workspace_plan(
+        m, n, split_k_slices,
+        int(cute::size<0>(TileShape{})), int(cute::size<1>(TileShape{})),
+        fused_workspace_plan) &&
+        workspace_bytes >= fused_workspace_plan.total_bytes;
 
     using SplitStrideA = typename SplitKernel::StrideA;
     using SplitStrideB = typename SplitKernel::StrideB;
@@ -272,6 +344,30 @@ class PreparedOnePlaneLauncher {
             cutlass::Status::kSuccess) {
       return false;
     }
+    if (fused_workspace_available) {
+      int32_t* counters = reinterpret_cast<int32_t*>(
+          workspace + fused_workspace_plan.counter_offset);
+      typename FusedGemm::Arguments fused_args{
+          cutlass::gemm::GemmUniversalMode::kGemm,
+          {m, n, k, 1},
+          {A, split_sA, B, split_sB, scales, sS, group_size, zeros},
+          {partials, sP, partials, sP},
+          split_k_slices};
+      fused_args.completion = {
+          partials, D, counters, m, n, n,
+          fused_workspace_plan.output_tiles, split_k_slices};
+      if (FusedGemm::can_implement(fused_args) == cutlass::Status::kSuccess &&
+          FusedGemm::get_workspace_size(fused_args) == 0 &&
+          fused_.initialize(fused_args, nullptr, stream) ==
+              cutlass::Status::kSuccess &&
+          hggcMemsetAsync(counters, 0, fused_workspace_plan.counter_bytes,
+                          stream) == hggcSuccess) {
+        fused_initialized_ = true;
+        fused_counters_ = counters;
+        fused_counter_bytes_ = fused_workspace_plan.counter_bytes;
+        fused_stream_ = stream;
+      }
+    }
     splits_ = split_k_slices;
     initialized_ = true;
     return true;
@@ -283,6 +379,18 @@ class PreparedOnePlaneLauncher {
     cutlass::Status const main_status = split_.run(stream);
     if (main_status != cutlass::Status::kSuccess) return main_status;
     return reduction_.run(stream);
+  }
+
+  // One-launch production candidate.  It shares the exact producer mainloop
+  // and partial ABI with run(), but the actual last physical peer performs the
+  // fixed-order reduction before retiring.  Keeping this explicit until the
+  // device canary closes preserves run() as the two-launch arithmetic oracle.
+  cutlass::Status run_fused_last_arriver(hggcStream_t stream = nullptr) {
+    if (!initialized_ || splits_ <= 1 || !fused_initialized_ ||
+        stream != fused_stream_) {
+      return cutlass::Status::kErrorInvalidProblem;
+    }
+    return fused_.run(stream);
   }
 
   // Diagnostic seam used to compare the partial-producing phase with an
@@ -310,6 +418,22 @@ class PreparedOnePlaneLauncher {
   bool reduction_fast_path_selected_for_diagnostics() const {
     return initialized_ && splits_ > 1 &&
         reduction_.fast_path_selected_for_diagnostics();
+  }
+
+  bool fused_last_arriver_selected_for_diagnostics() const {
+    return initialized_ && splits_ > 1 && fused_initialized_;
+  }
+
+  cutlass::Status reset_fused_counters_for_diagnostics(
+      hggcStream_t stream = nullptr) {
+    if (!fused_initialized_ || fused_counters_ == nullptr ||
+        fused_counter_bytes_ == 0 || stream != fused_stream_) {
+      return cutlass::Status::kErrorInvalidProblem;
+    }
+    return hggcMemsetAsync(
+               fused_counters_, 0, fused_counter_bytes_, stream) == hggcSuccess
+        ? cutlass::Status::kSuccess
+        : cutlass::Status::kErrorInternal;
   }
 
   cutlass::Status run_with_events(

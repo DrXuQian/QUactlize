@@ -739,10 +739,10 @@ Therefore “the compiler already fused it because SASS contains LOP3” is fals
 implementing AND and OR, and nonzero shifts remain. #28's whole-word extraction premise is alive on RTX 5090,
 with an exact average target of **2.75 -> 1** (the nonzero-shift slots are 3 -> 1), not a blanket 3 -> 1.
 This is an NVIDIA codegen result, not a PPU result. Run
-`dev/fold_derivation/run_l145_gemv_lop3_codegen.sh` to reproduce the sm_120 evidence.  PPU must be measured from the
-same `gemv_lowbit` instantiation with hgcc and the PPU disassembler.  It is not a baseline for the shipping
-`gguf_bc_vecdot` path in TODO #55,
-not a go/no-go decision.
+`dev/fold_derivation/run_l145_gemv_lop3_codegen.sh` to reproduce the sm_120 evidence.  A PPU arm for this L145
+`gemv_lowbit` specialization is intentionally retired: it is not the shipping decode path and therefore cannot
+serve as the before-baseline for `gguf_bc_vecdot` in TODO #55.  Any PPU before/after claim must bind that shipping
+`rows_kernel` specialization directly.  L145 remains NVIDIA-only evidence, not a go/no-go decision.
 
 The older PPU acu row at this file's "whole A line" section is not that baseline.  Its
 `v.shll 12.11 + v.lop3 8.17 + v.or 4.01 + v.bfi 2.06 + v.shrl 1.11 = 27.5/mma` was captured on the experimental
@@ -1955,9 +1955,10 @@ partial ABI rather than reinterpreting it as the current FP32 workspace.
 For each winning cell report S=1 versus S>1 full-E2E latency, raw-bit correctness, reducer-only latency, vector-load
 codegen/spill and saturated reducer-body bandwidth.  The body target remains at least 80% of a matched measured
 memory roof (90% goal); the shipping N=4096 reducer is only 40--136 KiB and is therefore judged against its matching
-launch floor, not against a misleading nameplate `%HBM`.  After all standalone formats close, reuse
-`reduce_fp32_aligned_fixed_partition_order` in a last-arriver epilogue to remove the second launch without changing
-the fixed arithmetic order.
+launch floor, not against a misleading nameplate `%HBM`.  The W4 one-plane path now has an explicit actual-last
+completion-policy candidate using the same fixed `s=0..S-1` arithmetic and leaving the two-launch path as its
+oracle.  Each additional format must prove fused completion against its own exact shipping producer/epilogue
+semantics; it may not inherit the W4 proof by typedef.
 
 **Done means:** every shipping precision and the fully-quantized format appears in the generated denominator,
 passes its local exact/negative controls, builds with the real PPU toolchain, and has a recorded PPU S-curve.  Until

@@ -26,7 +26,7 @@ struct Census {
   uint64_t errors = 0;
 };
 
-fs::Work apply_plant(fs::Work work, Plant plant) {
+fs::FixedSplitKWork apply_plant(fs::FixedSplitKWork work, Plant plant) {
   switch (plant) {
     case Plant::None:
       break;
@@ -74,7 +74,8 @@ Census validate(fs::Params const& params, Plant plant) {
   }
 
   for (uint64_t linear = 0; linear < work_limit; ++linear) {
-    fs::Work work = apply_plant(fs::work_for_linear(params, linear), plant);
+    fs::FixedSplitKWork work =
+        apply_plant(fs::work_for_linear(params, linear), plant);
     ++out.descriptors;
     if (!fs::work_matches_params(params, work)) {
       ++out.errors;

@@ -31,7 +31,7 @@ namespace cutlass::gemm::kernel::fixed_splitk {
 // coalesced reduction, whereas the work queue is q-major.  A future
 // last-arriver protocol can use q as its completion-counter slot and
 // peer_count as its terminal arrival value without changing this descriptor.
-struct Work {
+struct FixedSplitKWork {
   static constexpr uint64_t InvalidQ = std::numeric_limits<uint64_t>::max();
   static constexpr uint64_t InvalidLogicalWorkId =
       std::numeric_limits<uint64_t>::max();
@@ -62,22 +62,22 @@ struct Work {
     return q;
   }
 
-  QUACTLIZE_FIXED_SPLITK_HOST_DEVICE static constexpr Work invalid() {
+  QUACTLIZE_FIXED_SPLITK_HOST_DEVICE static constexpr FixedSplitKWork invalid() {
     return {};
   }
 };
 
-static_assert(std::is_standard_layout_v<Work> &&
-                  std::is_trivially_copyable_v<Work>,
-              "fixed Split-K Work must cross the host/device ABI unchanged");
-static_assert(sizeof(Work) == 32 && alignof(Work) == 8 &&
-                  offsetof(Work, q) == 0 &&
-                  offsetof(Work, k_begin) == 8 &&
-                  offsetof(Work, k_count) == 12 &&
-                  offsetof(Work, peer_idx) == 16 &&
-                  offsetof(Work, peer_count) == 20 &&
-                  offsetof(Work, logical_work_id) == 24,
-              "fixed Split-K Work ABI changed");
+static_assert(std::is_standard_layout_v<FixedSplitKWork> &&
+                  std::is_trivially_copyable_v<FixedSplitKWork>,
+              "fixed Split-K work must cross the host/device ABI unchanged");
+static_assert(sizeof(FixedSplitKWork) == 32 && alignof(FixedSplitKWork) == 8 &&
+                  offsetof(FixedSplitKWork, q) == 0 &&
+                  offsetof(FixedSplitKWork, k_begin) == 8 &&
+                  offsetof(FixedSplitKWork, k_count) == 12 &&
+                  offsetof(FixedSplitKWork, peer_idx) == 16 &&
+                  offsetof(FixedSplitKWork, peer_count) == 20 &&
+                  offsetof(FixedSplitKWork, logical_work_id) == 24,
+              "fixed Split-K work ABI changed");
 
 struct Params {
   uint64_t output_tiles = 0;
@@ -150,19 +150,19 @@ QUACTLIZE_FIXED_SPLITK_HOST_DEVICE constexpr uint64_t linear_work_id(
     Params const& params, uint64_t q, uint32_t peer_idx) {
   if (!params.is_valid() || q >= params.output_tiles ||
       peer_idx >= params.splits) {
-    return Work::InvalidLogicalWorkId;
+    return FixedSplitKWork::InvalidLogicalWorkId;
   }
   return q * uint64_t(params.splits) + peer_idx;
 }
 
-QUACTLIZE_FIXED_SPLITK_HOST_DEVICE constexpr Work work_for(
+QUACTLIZE_FIXED_SPLITK_HOST_DEVICE constexpr FixedSplitKWork work_for(
     Params const& params, uint64_t q, uint32_t peer_idx) {
   uint64_t const linear = linear_work_id(params, q, peer_idx);
-  if (linear == Work::InvalidLogicalWorkId) {
-    return Work::invalid();
+  if (linear == FixedSplitKWork::InvalidLogicalWorkId) {
+    return FixedSplitKWork::invalid();
   }
 
-  return Work{q,
+  return FixedSplitKWork{q,
               peer_idx * params.k_tiles_per_split,
               params.k_tiles_per_split,
               peer_idx,
@@ -170,10 +170,10 @@ QUACTLIZE_FIXED_SPLITK_HOST_DEVICE constexpr Work work_for(
               linear};
 }
 
-QUACTLIZE_FIXED_SPLITK_HOST_DEVICE constexpr Work work_for_linear(
+QUACTLIZE_FIXED_SPLITK_HOST_DEVICE constexpr FixedSplitKWork work_for_linear(
     Params const& params, uint64_t linear) {
   if (!params.is_valid() || linear >= params.work_units) {
-    return Work::invalid();
+    return FixedSplitKWork::invalid();
   }
   uint64_t const q = linear / params.splits;
   uint32_t const peer_idx = uint32_t(linear % params.splits);
@@ -184,7 +184,7 @@ QUACTLIZE_FIXED_SPLITK_HOST_DEVICE constexpr Work work_for_linear(
 // arithmetic.  The oracle additionally proves global exact-once coverage; this
 // predicate is the cheap per-work counterpart suitable for future kernels.
 QUACTLIZE_FIXED_SPLITK_HOST_DEVICE constexpr bool work_matches_params(
-    Params const& params, Work const& work) {
+    Params const& params, FixedSplitKWork const& work) {
   if (!params.is_valid() || !work.is_valid() ||
       work.q >= params.output_tiles ||
       work.peer_count != params.splits ||

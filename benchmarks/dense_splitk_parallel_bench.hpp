@@ -104,11 +104,17 @@ struct ExactWarmAbResult {
   double packed_internal_producer_us = 0;
   double packed_internal_reducer_us = 0;
   double packed_internal_full_us = 0;
+  double packed_internal_fused_us = 0;
   uint64_t historical_reshape_bad = 0;
   uint64_t shipping_ordinary_reshape_bad = 0;
   uint64_t packed_reshape_bad = 0;
   uint64_t packed_internal_bad = 0;
+  uint64_t packed_internal_fused_bad = 0;
   bool packed_internal_fast_reducer = false;
+  bool packed_internal_fused_selected = false;
+  bool packed_internal_fused_counters_zero = false;
+  int packed_internal_fused_slices_passes = 0;
+  int packed_internal_fused_reuse_passes = 0;
   bool post_timing_correct = false;
 };
 
@@ -263,7 +269,7 @@ inline bool inspect_workspace_redzone(
   return true;
 }
 
-inline bool reset_canaries(DeviceInputs const& inputs) {
+inline bool reset_output_canaries(DeviceInputs const& inputs) {
   std::vector<half_t> guards(inputs.output_storage_elements,
                              half_t::bitcast(uint16_t(0x7e00)));
   std::fill(guards.begin(),
@@ -273,7 +279,11 @@ inline bool reset_canaries(DeviceInputs const& inputs) {
             guards.end(), half_t::bitcast(kOutputRightCanary));
   return hggcMemcpy(inputs.output_storage, guards.data(),
                     guards.size() * sizeof(half_t),
-                    hggcMemcpyHostToDevice) == hggcSuccess &&
+                    hggcMemcpyHostToDevice) == hggcSuccess;
+}
+
+inline bool reset_canaries(DeviceInputs const& inputs) {
+  return reset_output_canaries(inputs) &&
       hggcMemset(inputs.workspace_storage, kWorkspaceCanary,
                  inputs.workspace_storage_bytes) == hggcSuccess;
 }
@@ -698,6 +708,8 @@ bool run_exact_warm_ab(
   HistoricalGemm historical;
   ShippingOrdinaryGemm shipping_ordinary;
   Prepared packed_reshape;
+  Prepared packed_internal_s2;
+  Prepared packed_internal_s4;
   Prepared packed_internal;
   if (HistoricalGemm::can_implement(historical_args) != cutlass::Status::kSuccess ||
       HistoricalGemm::get_workspace_size(historical_args) != 0 ||
@@ -717,19 +729,36 @@ bool run_exact_warm_ab(
           internal.a, reinterpret_cast<int4_t const*>(internal.resident_b),
           internal.scales, internal.zeros, output_ptr(internal), internal.rows,
           internal.columns, internal.inner, internal.group_size, 8,
+          workspace_ptr(internal), workspace_bytes(internal), nullptr) ||
+      !packed_internal_s2.initialize(
+          internal.a, reinterpret_cast<int4_t const*>(internal.resident_b),
+          internal.scales, internal.zeros, output_ptr(internal), internal.rows,
+          internal.columns, internal.inner, internal.group_size, 2,
+          workspace_ptr(internal), workspace_bytes(internal), nullptr) ||
+      !packed_internal_s4.initialize(
+          internal.a, reinterpret_cast<int4_t const*>(internal.resident_b),
+          internal.scales, internal.zeros, output_ptr(internal), internal.rows,
+          internal.columns, internal.inner, internal.group_size, 4,
           workspace_ptr(internal), workspace_bytes(internal), nullptr)) {
     return false;
   }
 
-  dense_splitk_parallel_ppu::WorkspacePlan reshape_plan, internal_plan;
+  dense_splitk_parallel_ppu::WorkspacePlan reshape_plan, internal_s2_plan,
+      internal_s4_plan, internal_plan;
   if (!dense_splitk_parallel_ppu::query_workspace_plan(
           reshape.rows, reshape.columns, 1, reshape_plan) ||
-      !dense_splitk_parallel_ppu::query_workspace_plan(
-          internal.rows, internal.columns, 8, internal_plan)) {
+      !dense_splitk_parallel_ppu::query_fused_workspace_plan(
+          internal.rows, internal.columns, 2, TM, TN, internal_s2_plan) ||
+      !dense_splitk_parallel_ppu::query_fused_workspace_plan(
+          internal.rows, internal.columns, 4, TM, TN, internal_s4_plan) ||
+      !dense_splitk_parallel_ppu::query_fused_workspace_plan(
+          internal.rows, internal.columns, 8, TM, TN, internal_plan)) {
     return false;
   }
   auto validate = [](DeviceInputs const& inputs, std::size_t plan_bytes,
-                     auto&& launch, uint64_t& raw_bad) {
+                     std::size_t counter_offset, std::size_t counter_bytes,
+                     auto&& launch, uint64_t& raw_bad,
+                     bool* counters_zero = nullptr) {
     CellResult observed;
     std::vector<half_t> host_output;
     std::vector<char> host_workspace;
@@ -738,6 +767,17 @@ bool run_exact_warm_ab(
         hggcDeviceSynchronize() == hggcSuccess &&
         inspect_output(inputs, observed, host_output) &&
         inspect_workspace_redzone(inputs, plan_bytes, observed, host_workspace);
+    if (counters_zero != nullptr) {
+      *counters_zero = ok && counter_bytes != 0 &&
+          counter_offset + counter_bytes <= plan_bytes;
+      if (*counters_zero) {
+        auto first = host_workspace.begin() + std::ptrdiff_t(
+            kWorkspaceGuardBytes + counter_offset);
+        *counters_zero = std::all_of(
+            first, first + std::ptrdiff_t(counter_bytes),
+            [](char value) { return value == 0; });
+      }
+    }
     raw_bad = observed.raw_bad;
     return ok && observed.raw_bad == 0 && observed.output_redzone &&
         observed.workspace_redzone;
@@ -754,17 +794,131 @@ bool run_exact_warm_ab(
   auto packed_internal_reducer = [&] {
     return packed_internal.run_reducer_only_for_diagnostics(nullptr);
   };
+  auto packed_internal_fused = [&] {
+    return packed_internal.run_fused_last_arriver(nullptr);
+  };
+  auto packed_internal_fused_validation = [&] {
+    cutlass::Status const reset =
+        packed_internal.reset_fused_counters_for_diagnostics(nullptr);
+    return reset == cutlass::Status::kSuccess
+        ? packed_internal.run_fused_last_arriver(nullptr)
+        : reset;
+  };
+  auto packed_internal_s2_fused_validation = [&] {
+    cutlass::Status const reset =
+        packed_internal_s2.reset_fused_counters_for_diagnostics(nullptr);
+    return reset == cutlass::Status::kSuccess
+        ? packed_internal_s2.run_fused_last_arriver(nullptr)
+        : reset;
+  };
+  auto packed_internal_s4_fused_validation = [&] {
+    cutlass::Status const reset =
+        packed_internal_s4.reset_fused_counters_for_diagnostics(nullptr);
+    return reset == cutlass::Status::kSuccess
+        ? packed_internal_s4.run_fused_last_arriver(nullptr)
+        : reset;
+  };
   result.packed_internal_fast_reducer =
       packed_internal.reduction_fast_path_selected_for_diagnostics();
+  result.packed_internal_fused_selected =
+      packed_internal_s2.fused_last_arriver_selected_for_diagnostics() &&
+      packed_internal_s4.fused_last_arriver_selected_for_diagnostics() &&
+      packed_internal.fused_last_arriver_selected_for_diagnostics();
 
-  if (!validate(reshape, reshape_plan.partial_bytes, historical_launch,
+  // Reuse the same counter allocation without an operator-side memset.  Each
+  // launch must both reproduce the exact output and retire every q counter to
+  // zero before the next launch.  This is distinct from validate(), whose
+  // explicit reset establishes a known first-launch precondition.
+  auto validate_fused_reuse = [&] {
+    if (!reset_canaries(internal) ||
+        packed_internal.reset_fused_counters_for_diagnostics(nullptr) !=
+            cutlass::Status::kSuccess) {
+      return false;
+    }
+    result.packed_internal_fused_reuse_passes = 0;
+    for (int repetition = 0; repetition < 8; ++repetition) {
+      CellResult observed;
+      std::vector<half_t> host_output;
+      std::vector<char> host_workspace;
+      // Poison this launch's observable D and every partial plane while
+      // deliberately preserving the completion counters.  A missing D store
+      // or missing peer partial must not inherit the previous correct launch.
+      if (!reset_output_canaries(internal) ||
+          hggcMemset(
+              internal.workspace_storage + kWorkspaceGuardBytes,
+              kWorkspaceCanary, internal_plan.partial_bytes) != hggcSuccess ||
+          packed_internal.run_fused_last_arriver(nullptr) !=
+              cutlass::Status::kSuccess ||
+          hggcDeviceSynchronize() != hggcSuccess ||
+          !inspect_output(internal, observed, host_output) ||
+          !inspect_workspace_redzone(
+              internal, internal_plan.total_bytes, observed, host_workspace) ||
+          observed.raw_bad != 0 || !observed.output_redzone ||
+          !observed.workspace_redzone) {
+        return false;
+      }
+      auto first = host_workspace.begin() + std::ptrdiff_t(
+          kWorkspaceGuardBytes + internal_plan.counter_offset);
+      if (!std::all_of(
+              first,
+              first + std::ptrdiff_t(internal_plan.counter_bytes),
+              [](char value) { return value == 0; })) {
+        return false;
+      }
+      ++result.packed_internal_fused_reuse_passes;
+    }
+    return true;
+  };
+
+  if (!validate(reshape, reshape_plan.partial_bytes, 0, 0, historical_launch,
                 result.historical_reshape_bad) ||
-      !validate(reshape, reshape_plan.partial_bytes, shipping_ordinary_launch,
+      !validate(reshape, reshape_plan.partial_bytes, 0, 0,
+                shipping_ordinary_launch,
                 result.shipping_ordinary_reshape_bad) ||
-      !validate(reshape, reshape_plan.partial_bytes, packed_reshape_launch,
+      !validate(reshape, reshape_plan.partial_bytes, 0, 0,
+                packed_reshape_launch,
                 result.packed_reshape_bad) ||
-      !validate(internal, internal_plan.partial_bytes, packed_internal_full,
+      !validate(internal, internal_plan.partial_bytes, 0, 0,
+                packed_internal_full,
                 result.packed_internal_bad) ||
+      !result.packed_internal_fused_selected) {
+    return false;
+  }
+
+  uint64_t fused_s2_bad = 0, fused_s4_bad = 0, fused_s8_bad = 0;
+  bool fused_s2_counters_zero = false, fused_s4_counters_zero = false,
+       fused_s8_counters_zero = false;
+  result.packed_internal_fused_slices_passes = 0;
+  if (!validate(internal, internal_s2_plan.total_bytes,
+                internal_s2_plan.counter_offset,
+                internal_s2_plan.counter_bytes,
+                packed_internal_s2_fused_validation, fused_s2_bad,
+                &fused_s2_counters_zero)) {
+    return false;
+  }
+  ++result.packed_internal_fused_slices_passes;
+  if (!validate(internal, internal_s4_plan.total_bytes,
+                internal_s4_plan.counter_offset,
+                internal_s4_plan.counter_bytes,
+                packed_internal_s4_fused_validation, fused_s4_bad,
+                &fused_s4_counters_zero)) {
+    return false;
+  }
+  ++result.packed_internal_fused_slices_passes;
+  if (!validate(internal, internal_plan.total_bytes,
+                internal_plan.counter_offset, internal_plan.counter_bytes,
+                packed_internal_fused_validation, fused_s8_bad,
+                &fused_s8_counters_zero)) {
+    return false;
+  }
+  ++result.packed_internal_fused_slices_passes;
+  result.packed_internal_fused_bad =
+      fused_s2_bad + fused_s4_bad + fused_s8_bad;
+  result.packed_internal_fused_counters_zero =
+      fused_s2_counters_zero && fused_s4_counters_zero &&
+      fused_s8_counters_zero;
+
+  if (!validate_fused_reuse() ||
       !measure_warm_aggregate_for_diagnostics(
           historical_launch, iterations, result.historical_reshape_us) ||
       !measure_warm_aggregate_for_diagnostics(
@@ -780,23 +934,36 @@ bool run_exact_warm_ab(
           result.packed_internal_reducer_us) ||
       !measure_warm_aggregate_for_diagnostics(
           packed_internal_full, iterations,
-          result.packed_internal_full_us)) {
+          result.packed_internal_full_us) ||
+      !measure_warm_aggregate_for_diagnostics(
+          packed_internal_fused, iterations,
+          result.packed_internal_fused_us)) {
     return false;
   }
 
   uint64_t historical_post_bad = 0, shipping_ordinary_post_bad = 0,
-           packed_reshape_post_bad = 0, packed_internal_post_bad = 0;
+           packed_reshape_post_bad = 0, packed_internal_post_bad = 0,
+           packed_internal_fused_post_bad = 0;
+  bool fused_post_counters_zero = false;
   result.post_timing_correct =
-      validate(reshape, reshape_plan.partial_bytes, historical_launch,
+      validate(reshape, reshape_plan.partial_bytes, 0, 0, historical_launch,
                historical_post_bad) &&
-      validate(reshape, reshape_plan.partial_bytes, shipping_ordinary_launch,
+      validate(reshape, reshape_plan.partial_bytes, 0, 0,
+               shipping_ordinary_launch,
                shipping_ordinary_post_bad) &&
-      validate(reshape, reshape_plan.partial_bytes, packed_reshape_launch,
+      validate(reshape, reshape_plan.partial_bytes, 0, 0,
+               packed_reshape_launch,
                packed_reshape_post_bad) &&
-      validate(internal, internal_plan.partial_bytes, packed_internal_full,
+      validate(internal, internal_plan.partial_bytes, 0, 0,
+               packed_internal_full,
                packed_internal_post_bad) &&
+      validate(internal, internal_plan.total_bytes,
+               internal_plan.counter_offset, internal_plan.counter_bytes,
+               packed_internal_fused_validation,
+               packed_internal_fused_post_bad, &fused_post_counters_zero) &&
       historical_post_bad == 0 && shipping_ordinary_post_bad == 0 &&
-      packed_reshape_post_bad == 0 && packed_internal_post_bad == 0;
+      packed_reshape_post_bad == 0 && packed_internal_post_bad == 0 &&
+      packed_internal_fused_post_bad == 0 && fused_post_counters_zero;
   return result.post_timing_correct;
 }
 

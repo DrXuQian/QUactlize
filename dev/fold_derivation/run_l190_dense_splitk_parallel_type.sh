@@ -134,7 +134,7 @@ fi
 # epilogue.  These strings come from the compiler's instantiation stack, not a
 # parallel type-name model maintained by this script.
 for token in \
-  'GemmUniversalMixedInputSplitKParallel<ProblemShape_, CollectiveMainloop_, CollectivePartialEpilogue_>::operator()' \
+  'GemmUniversalMixedInputSplitKParallel<ProblemShape_, CollectiveMainloop_, CollectivePartialEpilogue_, CompletionPolicy_>::operator()' \
   'Stages=3, kContinous=cute::C<256>' \
   'PPU0010_8x16x16_F32F16F16F32_TN' \
   'ElementBOptionalTuple=cute::tuple<cutlass::int4b_t, cutlass::half_t, cutlass::half_t>' \
@@ -143,6 +143,35 @@ for token in \
   grep -Fq "${token}" "${out}/device-positive.log" || {
     echo "[l190] FAIL: exact device-body instantiation chain lost: ${token}" >&2
     sed -n '1,120p' "${out}/device-positive.log" >&2
+    exit 1
+  }
+done
+
+# Same exact proof row, but select the fused completion policy.  This forces
+# the last-arriver policy, volatile fixed-order reader and counter reset through
+# the real generated kernel body rather than proving only that their types parse.
+fused_rc="$(compile_device_probe device-fused-positive -DL190_FORCE_FUSED_DEVICE_BODY=1)"
+if [[ "${fused_rc}" -eq 0 ]] || \
+    [[ "$(grep -Fc "${marker}" "${out}/device-fused-positive.log" || true)" -ne 1 ]]; then
+  echo '[l190] FAIL: fused wrapper did not reach the exact production device body once' >&2
+  sed -n '1,120p' "${out}/device-fused-positive.log" >&2
+  exit 1
+fi
+fused_unexpected="${out}/device-fused-positive-unexpected.log"
+grep -E ': (error|fatal error|catastrophic error):' "${out}/device-fused-positive.log" \
+  | grep -Fv "${marker}" >"${fused_unexpected}" || true
+if [[ -s "${fused_unexpected}" ]]; then
+  echo '[l190] FAIL: fused device-body witness carried an unrelated compiler error' >&2
+  sed -n '1,100p' "${fused_unexpected}" >&2
+  exit 1
+fi
+for token in \
+  'CompletionPolicy_=cutlass::gemm::kernel::fixed_splitk::LastArriverM1Fp16Completion<2>' \
+  'PPU0010_8x16x16_F32F16F16F32_TN' \
+  'CollectivePartialEpilogue_=dense_splitk_parallel_ppu::AdapterVisiblePartialEpilogue'; do
+  grep -Fq "${token}" "${out}/device-fused-positive.log" || {
+    echo "[l190] FAIL: fused device-body instantiation chain lost: ${token}" >&2
+    sed -n '1,140p' "${out}/device-fused-positive.log" >&2
     exit 1
   }
 done
@@ -162,4 +191,4 @@ if grep -Fq 'L190_SPLITK_DEVICE_BODY_INSTANTIATED' "${out}/device-route-severed.
   exit 1
 fi
 
-echo "[l190] PASS: host proof-row type/grid/workspace exact; S8 device body reached once; route-severed control clean; artifacts=${out}"
+echo "[l190] PASS: host proof-row type/grid/workspace exact; separate and fused S8 device bodies each reached once; route-severed control clean; artifacts=${out}"

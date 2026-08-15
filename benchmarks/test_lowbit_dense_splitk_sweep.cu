@@ -379,10 +379,10 @@ int main(int argc, char** argv) {
     cutlass::DeviceAllocation<half_t> internal_output(
         2 * kOutputGuardElements + internal_fixture.golden.size());
     dense_splitk_parallel_ppu::WorkspacePlan internal_plan;
-    if (!dense_splitk_parallel_ppu::query_workspace_plan(
-            kM, kN, 8, internal_plan)) return 1;
+    if (!dense_splitk_parallel_ppu::query_fused_workspace_plan(
+            kM, kN, 8, 8, 64, internal_plan)) return 1;
     cutlass::DeviceAllocation<char> internal_workspace(
-        2 * kWorkspaceGuardBytes + internal_plan.partial_bytes);
+        2 * kWorkspaceGuardBytes + internal_plan.total_bytes);
     internal_a.copy_from_host(internal_fixture.a.data());
     CUTLASS_PPU_CHECK(hggcMemcpy(
         internal_b.get(), internal_fixture.resident_b.data(),
@@ -468,12 +468,14 @@ int main(int argc, char** argv) {
           "packedA_internal_S8_producer=%.6f_us "
           "packedA_internal_S8_reducer_only=%.6f_us "
           "packedA_internal_S8_full_e2e=%.6f_us "
-          "fast_path_selected=%d "
+          "packedA_internal_S8_fused_e2e=%.6f_us "
+          "fast_path_selected=%d fused_last_arriver_selected=%d "
+          "fused_counters_zero=%d fused_slices=%d/3 fused_reuse=%d/8 "
           "historical_to_shipping_delta=%+.6f_us provider_delta=%+.6f_us "
           "internal_split_producer_delta=%+.6f_us "
           "reducer=EXCLUDED_FROM_DELTA "
           "total_delta=%+.6f_us conservation_error=%+.9f_us/%s "
-          "bad=%llu/%llu/%llu/%llu post_timing=%s\n",
+          "bad=%llu/%llu/%llu/%llu/%llu post_timing=%s\n",
           request.tn, 32768 / request.tn,
           (4096 / request.tn) * 8,
           result.historical_reshape_us, request.historical_us,
@@ -483,7 +485,12 @@ int main(int argc, char** argv) {
           result.packed_internal_producer_us,
           result.packed_internal_reducer_us,
           result.packed_internal_full_us,
+          result.packed_internal_fused_us,
           int(result.packed_internal_fast_reducer),
+          int(result.packed_internal_fused_selected),
+          int(result.packed_internal_fused_counters_zero),
+          result.packed_internal_fused_slices_passes,
+          result.packed_internal_fused_reuse_passes,
           historical_to_shipping_delta, provider_delta, internal_split_producer_delta,
           total_delta, delta_conservation_error,
           delta_conserved ? "PASS" : "FAIL",
@@ -492,12 +499,18 @@ int main(int argc, char** argv) {
               result.shipping_ordinary_reshape_bad),
           static_cast<unsigned long long>(result.packed_reshape_bad),
           static_cast<unsigned long long>(result.packed_internal_bad),
+          static_cast<unsigned long long>(result.packed_internal_fused_bad),
           result.post_timing_correct ? "RAW-BIT/PASS" : "FAIL");
       all_ok = all_ok && ok && historical_admitted && delta_conserved &&
           result.packed_internal_fast_reducer &&
+          result.packed_internal_fused_selected &&
+          result.packed_internal_fused_counters_zero &&
+          result.packed_internal_fused_slices_passes == 3 &&
+          result.packed_internal_fused_reuse_passes == 8 &&
           result.post_timing_correct && result.historical_reshape_bad == 0 &&
           result.shipping_ordinary_reshape_bad == 0 &&
-          result.packed_reshape_bad == 0 && result.packed_internal_bad == 0;
+          result.packed_reshape_bad == 0 && result.packed_internal_bad == 0 &&
+          result.packed_internal_fused_bad == 0;
     }
     return all_ok ? 0 : 1;
   }

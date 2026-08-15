@@ -127,6 +127,33 @@ reduce_fp32_aligned_fixed_partition_order(
   return accumulator;
 }
 
+// Cross-CTA actual-last form.  The arithmetic order is byte-for-byte the same
+// as the standalone primitive above; volatile loads are the consumer side of
+// the producer-store -> threadfence -> fetch-old arrival protocol.  Keep this
+// overload scalar and explicit until PPU codegen proves a volatile vector load
+// with the same acquire/visibility semantics.
+template <int ElementsPerAccess, int Partitions>
+CUTLASS_DEVICE Array<float, ElementsPerAccess>
+reduce_fp32_volatile_fixed_partition_order(
+    float const volatile* workspace, int64_t partition_stride,
+    int64_t element_offset) {
+  static_assert(ElementsPerAccess == 1 || ElementsPerAccess == 2 ||
+                    ElementsPerAccess == 4 || ElementsPerAccess == 8);
+  static_assert(Partitions == 2 || Partitions == 4 || Partitions == 8);
+  Array<float, ElementsPerAccess> accumulator;
+  accumulator.clear();
+  CUTLASS_PRAGMA_UNROLL
+  for (int split = 0; split < Partitions; ++split) {
+    float const volatile* partial = workspace +
+        int64_t(split) * partition_stride + element_offset;
+    CUTLASS_PRAGMA_UNROLL
+    for (int lane = 0; lane < ElementsPerAccess; ++lane) {
+      accumulator[lane] += partial[lane];
+    }
+  }
+  return accumulator;
+}
+
 template <int ElementsPerAccess>
 class PpuMixedInputSplitKParallelReductionKernel {
  public:
