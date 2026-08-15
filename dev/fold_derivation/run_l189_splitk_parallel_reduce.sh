@@ -56,4 +56,20 @@ if ! grep -Fq '[l189] PASS: live reduction and all admission controls' "${out}/r
   exit 1
 fi
 
+sanitizer="$(command -v compute-sanitizer 2>/dev/null || true)"
+if [[ -n "${sanitizer}" ]]; then
+  "${sanitizer}" --tool memcheck --error-exitcode=99 "${binary}" \
+    >"${out}/memcheck.log" 2>&1
+  sanitizer_rc=$?
+  if [[ ${sanitizer_rc} -ne 0 ]] ||
+     ! grep -Fq 'ERROR SUMMARY: 0 errors' "${out}/memcheck.log"; then
+    echo "[l189] FAIL: reducer memory-safety gate returned rc=${sanitizer_rc}"
+    tail -n 60 "${out}/memcheck.log"
+    exit 1
+  fi
+  echo "[l189] memcheck PASS: 0 errors"
+else
+  echo "[l189] memcheck SKIP: compute-sanitizer is unavailable"
+fi
+
 echo "[l189] PASS: ${arch} compiled and ran; artifacts=${out}"

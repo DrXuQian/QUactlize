@@ -329,10 +329,13 @@ bool run_one_split(
   std::size_t const expected_workspace =
       splits == 1 ? 0 : std::size_t(splits) * kM * kN * sizeof(float);
   if (plan.partial_bytes != expected_workspace || plan.alignment != 16 ||
+      plan.preferred_fast_alignment != 128 ||
       plan.partial_bytes > max_workspace_bytes) {
     std::fprintf(stderr,
-                 "[splitk S=%d] workspace contract drifted: got=%zu align=%zu expected=%zu\n",
-                 splits, plan.partial_bytes, plan.alignment, expected_workspace);
+                 "[splitk S=%d] workspace contract drifted: got=%zu align=%zu "
+                 "preferred=%zu expected=%zu\n",
+                 splits, plan.partial_bytes, plan.alignment,
+                 plan.preferred_fast_alignment, expected_workspace);
     return false;
   }
 

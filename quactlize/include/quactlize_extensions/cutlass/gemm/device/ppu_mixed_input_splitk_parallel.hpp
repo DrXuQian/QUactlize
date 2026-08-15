@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
 #include <utility>
 
 #include "cutlass/array.h"
@@ -89,6 +90,38 @@ CUTLASS_DEVICE Array<float, ElementsPerAccess> reduce_fp32_fixed_s_order(
       if (lane < valid_elements) {
         accumulator[lane] += partial[lane];
       }
+    }
+  }
+  return accumulator;
+}
+
+// Vector/aligned fixed-S form shared by the standalone M=1 reducer and a
+// future last-arriver epilogue.  The caller owns admission/alignment; the
+// arithmetic contract is exactly s=0,1,...,Partitions-1 with no atomics or
+// reassociation.
+template <int ElementsPerAccess, int Partitions>
+CUTLASS_DEVICE Array<float, ElementsPerAccess>
+reduce_fp32_aligned_fixed_partition_order(
+    float const* workspace, int64_t partition_stride,
+    int64_t element_offset) {
+  static_assert(ElementsPerAccess == 1 || ElementsPerAccess == 2 ||
+                    ElementsPerAccess == 4 || ElementsPerAccess == 8);
+  static_assert(Partitions == 2 || Partitions == 4 || Partitions == 8);
+  using FragmentWorkspace = AlignedArray<float, ElementsPerAccess>;
+  FragmentWorkspace partial[Partitions];
+  float const* plane = workspace + element_offset;
+  CUTLASS_PRAGMA_UNROLL
+  for (int split = 0; split < Partitions; ++split) {
+    partial[split] = *reinterpret_cast<FragmentWorkspace const*>(plane);
+    plane += partition_stride;
+  }
+  Array<float, ElementsPerAccess> accumulator;
+  accumulator.clear();
+  CUTLASS_PRAGMA_UNROLL
+  for (int split = 0; split < Partitions; ++split) {
+    CUTLASS_PRAGMA_UNROLL
+    for (int lane = 0; lane < ElementsPerAccess; ++lane) {
+      accumulator[lane] += partial[split][lane];
     }
   }
   return accumulator;
@@ -328,6 +361,186 @@ class PpuMixedInputSplitKParallelReduction {
   }
 
   Params const& params() const = delete;
+};
+
+// M=1 hot path.  The generic reducer above was intentionally written for up
+// to four rows per CTA; at M=1 that shape launches four warps but immediately
+// retires three of them.  This kernel instead maps one full warp to one
+// contiguous output stripe.  S is a template argument, so the exact 2/4/8
+// load/add chain is fully expanded and remains in canonical increasing order.
+struct PpuMixedInputSplitKParallelM1FastReductionParams {
+  float const* workspace = nullptr;
+  half_t* destination = nullptr;
+  int64_t partition_stride = 0;
+};
+static_assert(std::is_standard_layout_v<
+                  PpuMixedInputSplitKParallelM1FastReductionParams> &&
+              std::is_trivially_copyable_v<
+                  PpuMixedInputSplitKParallelM1FastReductionParams>);
+static_assert(sizeof(PpuMixedInputSplitKParallelM1FastReductionParams) == 24 &&
+              alignof(PpuMixedInputSplitKParallelM1FastReductionParams) == 8 &&
+              offsetof(PpuMixedInputSplitKParallelM1FastReductionParams,
+                       workspace) == 0 &&
+              offsetof(PpuMixedInputSplitKParallelM1FastReductionParams,
+                       destination) == 8 &&
+              offsetof(PpuMixedInputSplitKParallelM1FastReductionParams,
+                       partition_stride) == 16,
+              "host and device must share the exact fast-reducer Params ABI");
+
+template <int ElementsPerAccess, int Partitions>
+class PpuMixedInputSplitKParallelM1FastReductionKernel {
+ public:
+  static_assert(ElementsPerAccess == 1 || ElementsPerAccess == 2 ||
+                    ElementsPerAccess == 4 || ElementsPerAccess == 8,
+                "vector alignment is proved only for power-of-two widths");
+  static_assert(Partitions == 2 || Partitions == 4 || Partitions == 8);
+  static constexpr int kThreads = 32;
+  static constexpr int kColumnsPerCta = kThreads * ElementsPerAccess;
+
+  using Params = PpuMixedInputSplitKParallelM1FastReductionParams;
+
+  struct SharedStorage {};
+
+  CUTLASS_HOST_DEVICE
+  static dim3 block_shape() { return dim3(kThreads, 1, 1); }
+
+  CUTLASS_HOST_DEVICE
+  static dim3 grid_shape(int64_t columns) {
+    return dim3(unsigned(columns / kColumnsPerCta), 1, 1);
+  }
+
+  CUTLASS_DEVICE
+  void operator()(Params const& params, SharedStorage&) {
+    int64_t const column =
+        (int64_t(blockIdx.x) * kThreads + int64_t(threadIdx.x)) *
+        ElementsPerAccess;
+    using FragmentAccumulator = Array<float, ElementsPerAccess>;
+    using FragmentOutput = AlignedArray<half_t, ElementsPerAccess>;
+    FragmentAccumulator const accumulator =
+        reduce_fp32_aligned_fixed_partition_order<
+            ElementsPerAccess, Partitions>(
+            params.workspace, params.partition_stride, column);
+
+    NumericArrayConverter<half_t, float, ElementsPerAccess,
+                          FloatRoundStyle::round_to_nearest>
+        convert;
+    Array<half_t, ElementsPerAccess> const converted = convert(accumulator);
+    FragmentOutput output;
+    CUTLASS_PRAGMA_UNROLL
+    for (int lane = 0; lane < ElementsPerAccess; ++lane) {
+      output[lane] = converted[lane];
+    }
+    *reinterpret_cast<FragmentOutput*>(params.destination + column) = output;
+  }
+};
+
+// Checked dispatcher for the M=1 specialization.  It deliberately retains the
+// old reducer as a complete fallback: tails, wider M, weaker alignment, custom
+// D stride and HostAdapter builds preserve their previous admitted behavior.
+template <int ElementsPerAccess = 2>
+class PpuMixedInputSplitKParallelM1FastReduction {
+ public:
+  using Fallback = PpuMixedInputSplitKParallelReduction<8>;
+  using Arguments = typename Fallback::Arguments;
+  using KernelS2 = PpuMixedInputSplitKParallelM1FastReductionKernel<
+      ElementsPerAccess, 2>;
+  using KernelS4 = PpuMixedInputSplitKParallelM1FastReductionKernel<
+      ElementsPerAccess, 4>;
+  using KernelS8 = PpuMixedInputSplitKParallelM1FastReductionKernel<
+      ElementsPerAccess, 8>;
+  using Params = typename KernelS2::Params;
+
+ private:
+  Fallback fallback_{};
+  Params params_{};
+  int64_t columns_ = 0;
+  int partitions_ = 0;
+  bool installed_ = false;
+  bool fast_ = false;
+
+  static bool fast_admissible(Arguments const& args) {
+    constexpr int ColumnsPerCta = KernelS2::kColumnsPerCta;
+    uint64_t const ctas = args.columns > 0
+        ? uint64_t(args.columns) / uint64_t(ColumnsPerCta)
+        : 0;
+    return args.rows == 1 && args.destination_stride == args.columns &&
+        args.columns > 0 && args.columns % ColumnsPerCta == 0 &&
+        ctas > 0 &&
+        ctas <= uint64_t((std::numeric_limits<unsigned>::max)()) &&
+        (args.split_k_slices == 2 || args.split_k_slices == 4 ||
+         args.split_k_slices == 8) &&
+        reinterpret_cast<uintptr_t>(args.workspace) % 128 == 0 &&
+        reinterpret_cast<uintptr_t>(args.destination) % 16 == 0;
+  }
+
+  template <class Kernel>
+  Status launch(hggcStream_t stream) {
+    dim3 const grid = Kernel::grid_shape(columns_);
+    dim3 const block = Kernel::block_shape();
+    typename Kernel::Params kernel_params{
+        params_.workspace, params_.destination, params_.partition_stride};
+    cutlass::arch::synclog_setup();
+    cutlass::Kernel<Kernel><<<grid, block, 0, stream>>>(kernel_params);
+    hggcError_t const result = hggcGetLastError();
+    return result == hggcSuccess ? Status::kSuccess
+                                 : Status::kErrorInternal;
+  }
+
+ public:
+  static size_t get_workspace_size(Arguments const& args) {
+    return Fallback::get_workspace_size(args);
+  }
+
+  static Status can_implement(Arguments const& args) {
+    return Fallback::can_implement(args);
+  }
+
+  Status initialize(Arguments const& args) {
+    installed_ = false;
+    fast_ = false;
+    Status const status = fallback_.initialize(args);
+    if (status != Status::kSuccess) return status;
+    params_ = Params{args.workspace, args.destination, args.rows * args.columns};
+    columns_ = args.columns;
+    partitions_ = args.split_k_slices;
+#if !CUTLASS_ENABLE_HOST_ADAPTER
+    fast_ = fast_admissible(args);
+#endif
+    installed_ = true;
+    return Status::kSuccess;
+  }
+
+  Status run(
+      hggcStream_t stream = nullptr, HostAdapter* host_adapter = nullptr,
+      int32_t kernel_index = 0) {
+    if (!installed_) return Status::kErrorInvalidProblem;
+    if constexpr (CUTLASS_ENABLE_HOST_ADAPTER) {
+      return fallback_.run(stream, host_adapter, kernel_index);
+    } else {
+      if (!fast_ || host_adapter != nullptr) {
+        return fallback_.run(stream, host_adapter, kernel_index);
+      }
+      switch (partitions_) {
+        case 2: return launch<KernelS2>(stream);
+        case 4: return launch<KernelS4>(stream);
+        case 8: return launch<KernelS8>(stream);
+        default: return Status::kErrorInvalidProblem;
+      }
+    }
+  }
+
+  Status run(
+      Arguments const& args, hggcStream_t stream = nullptr,
+      HostAdapter* host_adapter = nullptr, int32_t kernel_index = 0) {
+    Status const status = initialize(args);
+    return status == Status::kSuccess
+        ? run(stream, host_adapter, kernel_index)
+        : status;
+  }
+
+  bool fast_path_selected_for_diagnostics() const {
+    return installed_ && fast_;
+  }
 };
 
 // Explicit same-stream two-launch seam.  MainLaunch must enqueue the mixed-input GEMM on the stream

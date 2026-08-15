@@ -108,6 +108,8 @@ def audit(
         "run_exact_warm_ab(",
         "measure_warm_aggregate_for_diagnostics(",
         "packed_internal.run_producer_only_for_diagnostics(nullptr)",
+        "packed_internal.run_reducer_only_for_diagnostics(nullptr)",
+        "result.packed_internal_fast_reducer",
         "cutlass::epilogue::EpilogueSimtVectorized>::CollectiveOp",
         "historical Cfg default scheduler must remain void",
         "result.shipping_ordinary_reshape_us",
@@ -125,6 +127,10 @@ def audit(
         "cutlass::Status run(",
         "run_with_events(",
         "run_producer_only_for_diagnostics(",
+        "run_reducer_only_for_diagnostics(",
+        "reduction_fast_path_selected_for_diagnostics()",
+        "PpuMixedInputSplitKParallelM1FastReduction<",
+        "ReductionElementsPerAccess = 2",
         "S==1 still instantiates and runs ShippingTypes::Gemm verbatim",
         "prepared S==1 and S>1 handles must share the exact mainloop",
         "prepared fixed Split-K must retain the shipping dense tactic guard",
@@ -163,6 +169,11 @@ def audit(
         "historical_admission=%s range=[%.6f,%.6f]_us",
         "result.packed_reshape_us - result.shipping_ordinary_reshape_us",
         "result.packed_internal_producer_us - result.packed_reshape_us",
+        "packedA_internal_S8_reducer_only=%.6f_us",
+        "packedA_internal_S8_full_e2e=%.6f_us",
+        "fast_path_selected=%d",
+        "reducer=EXCLUDED_FROM_DELTA",
+        "result.packed_internal_fast_reducer &&\n          result.post_timing_correct",
         "all_ok = all_ok && ok && historical_admitted && delta_conserved",
         "conservation_error=%+.9f_us/%s",
     ):
@@ -206,7 +217,7 @@ def audit(
         "tee \"$run_log\"",
         "EXACT_WARM_AB",
         "--exact-warm-ab",
-        "exact_same_address_warm_aggregate_historical_vs_shipping_ordinary_vs_packedA_reshape_vs_internal_S8_producer",
+        "exact_same_address_warm_aggregate_historical_vs_shipping_ordinary_vs_packedA_reshape_vs_internal_S8_producer_reducer_and_e2e",
         'timed_iterations="${ITERATIONS:-100}"',
     ):
         require(runner, token, "box runner", bad)
@@ -272,6 +283,14 @@ def main() -> int:
         1,
     )
     controls.append(("producer-only-leaked-into-ranking", rows, splits, planted))
+    planted = dict(files)
+    planted["handle"] = planted["handle"].replace(
+        "PpuMixedInputSplitKParallelM1FastReduction<",
+        "PpuMixedInputSplitKParallelReduction<",
+        1,
+    )
+    controls.append(("production-alias-regressed-to-generic-reducer",
+                     rows, splits, planted))
     for name, token, owner in (
         ("lost-exact-warm-cli", "--exact-warm-ab", "main"),
         ("lost-producer-only-seam", "run_producer_only_for_diagnostics(", "handle"),
@@ -279,6 +298,9 @@ def main() -> int:
         ("lost-exact-tn128-tu", "run_exact_warm_ab<8,128,", "exact_tn128"),
         ("lost-historical-anchor", "constexpr ExactRequest requests[]{{64, 7.854}, {128, 7.696}}", "main"),
         ("lost-historical-admission", "all_ok = all_ok && ok && historical_admitted && delta_conserved", "main"),
+        ("lost-fast-runtime-admission",
+         "result.packed_internal_fast_reducer &&\n          result.post_timing_correct",
+         "main"),
     ):
         planted = dict(files)
         planted[owner] = planted[owner].replace(token, "PLANTED_ABSENT")

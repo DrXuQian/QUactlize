@@ -102,10 +102,13 @@ struct ExactWarmAbResult {
   double shipping_ordinary_reshape_us = 0;
   double packed_reshape_us = 0;
   double packed_internal_producer_us = 0;
+  double packed_internal_reducer_us = 0;
+  double packed_internal_full_us = 0;
   uint64_t historical_reshape_bad = 0;
   uint64_t shipping_ordinary_reshape_bad = 0;
   uint64_t packed_reshape_bad = 0;
   uint64_t packed_internal_bad = 0;
+  bool packed_internal_fast_reducer = false;
   bool post_timing_correct = false;
 };
 
@@ -748,6 +751,11 @@ bool run_exact_warm_ab(
   auto packed_internal_producer = [&] {
     return packed_internal.run_producer_only_for_diagnostics(nullptr);
   };
+  auto packed_internal_reducer = [&] {
+    return packed_internal.run_reducer_only_for_diagnostics(nullptr);
+  };
+  result.packed_internal_fast_reducer =
+      packed_internal.reduction_fast_path_selected_for_diagnostics();
 
   if (!validate(reshape, reshape_plan.partial_bytes, historical_launch,
                 result.historical_reshape_bad) ||
@@ -766,7 +774,13 @@ bool run_exact_warm_ab(
           packed_reshape_launch, iterations, result.packed_reshape_us) ||
       !measure_warm_aggregate_for_diagnostics(
           packed_internal_producer, iterations,
-          result.packed_internal_producer_us)) {
+          result.packed_internal_producer_us) ||
+      !measure_warm_aggregate_for_diagnostics(
+          packed_internal_reducer, iterations,
+          result.packed_internal_reducer_us) ||
+      !measure_warm_aggregate_for_diagnostics(
+          packed_internal_full, iterations,
+          result.packed_internal_full_us)) {
     return false;
   }
 

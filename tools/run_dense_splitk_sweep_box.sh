@@ -104,7 +104,7 @@ main() {
       printf 'untracked_source_sha256=NONE\n'
     fi
     if [ "${EXACT_WARM_AB:-0}" = 1 ]; then
-      printf 'timing_protocol=exact_same_address_warm_aggregate_historical_vs_shipping_ordinary_vs_packedA_reshape_vs_internal_S8_producer\n'
+      printf 'timing_protocol=exact_same_address_warm_aggregate_historical_vs_shipping_ordinary_vs_packedA_reshape_vs_internal_S8_producer_reducer_and_e2e\n'
     else
       printf 'cold_protocol=full_B_plus_scale_rotation_over_max_2.16xL2_128MiB\n'
     fi

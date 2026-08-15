@@ -466,8 +466,12 @@ int main(int argc, char** argv) {
           "historical_admission=%s range=[%.6f,%.6f]_us "
           "shipping_ordinary_reshape=%.6f_us packedA_reshape=%.6f_us "
           "packedA_internal_S8_producer=%.6f_us "
+          "packedA_internal_S8_reducer_only=%.6f_us "
+          "packedA_internal_S8_full_e2e=%.6f_us "
+          "fast_path_selected=%d "
           "historical_to_shipping_delta=%+.6f_us provider_delta=%+.6f_us "
-          "internal_split_producer_delta=%+.6f_us reducer=EXCLUDED "
+          "internal_split_producer_delta=%+.6f_us "
+          "reducer=EXCLUDED_FROM_DELTA "
           "total_delta=%+.6f_us conservation_error=%+.9f_us/%s "
           "bad=%llu/%llu/%llu/%llu post_timing=%s\n",
           request.tn, 32768 / request.tn,
@@ -477,6 +481,9 @@ int main(int argc, char** argv) {
           historical_low, historical_high,
           result.shipping_ordinary_reshape_us, result.packed_reshape_us,
           result.packed_internal_producer_us,
+          result.packed_internal_reducer_us,
+          result.packed_internal_full_us,
+          int(result.packed_internal_fast_reducer),
           historical_to_shipping_delta, provider_delta, internal_split_producer_delta,
           total_delta, delta_conservation_error,
           delta_conserved ? "PASS" : "FAIL",
@@ -487,6 +494,7 @@ int main(int argc, char** argv) {
           static_cast<unsigned long long>(result.packed_internal_bad),
           result.post_timing_correct ? "RAW-BIT/PASS" : "FAIL");
       all_ok = all_ok && ok && historical_admitted && delta_conserved &&
+          result.packed_internal_fast_reducer &&
           result.post_timing_correct && result.historical_reshape_bad == 0 &&
           result.shipping_ordinary_reshape_bad == 0 &&
           result.packed_reshape_bad == 0 && result.packed_internal_bad == 0;

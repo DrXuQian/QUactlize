@@ -110,7 +110,7 @@ bool host_contract() {
       M, N, S, plan);
   bool const workspace_exact = workspace_ok && outer_plan_ok &&
       workspace == 131072 && plan.partial_bytes == workspace &&
-      plan.alignment == 16;
+      plan.alignment == 16 && plan.preferred_fast_alignment == 128;
 
   std::printf(
       "[l190] proof_row=ordinary-int4-gs128 winner_binding=UNRESOLVED "

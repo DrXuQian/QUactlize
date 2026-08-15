@@ -30,6 +30,7 @@ namespace dense_splitk_parallel_ppu {
 struct WorkspacePlan {
   size_t partial_bytes = 0;
   size_t alignment = 16;
+  size_t preferred_fast_alignment = 128;
 };
 
 // Optional attribution seam for a prepared launch.  Ranking must use run(),
@@ -124,11 +125,13 @@ struct KernelTypes {
       CollectivePartialEpilogue>;
   using Gemm = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
 
-  // Eight FP32 values (32 B) per reduction thread.  The custom checked reducer handles the N tail
-  // explicitly; unlike the legacy CUTLASS2 device handle, it cannot silently vector-load past N.
-  static constexpr int ReductionElementsPerAccess = 8;
+  // M=1 uses one 32-thread CTA per 64-column stripe and compile-time S=2/4/8
+  // chains.  Wider M, tails, custom D strides and weaker alignment retain the
+  // checked generic reducer as a fail-closed fallback inside this handle.
+  static constexpr int ReductionElementsPerAccess = 2;
   using Reduction = cutlass::gemm::device::splitk_parallel::
-      PpuMixedInputSplitKParallelReduction<ReductionElementsPerAccess>;
+      PpuMixedInputSplitKParallelM1FastReduction<
+          ReductionElementsPerAccess>;
 
   static_assert(std::is_same_v<typename CollectivePartialEpilogue::ElementD, float>);
   static_assert(std::is_same_v<typename GemmKernel::CollectiveMainloop,
@@ -290,6 +293,23 @@ class PreparedOnePlaneLauncher {
       hggcStream_t stream = nullptr) {
     if (!initialized_) return cutlass::Status::kErrorInvalidProblem;
     return splits_ == 1 ? shipping_.run(stream) : split_.run(stream);
+  }
+
+  // The workspace is immutable after the producer returns, so repeating this
+  // launch measures the standalone reduction without manufacturing another
+  // producer.  It is diagnostic-only: production correctness still belongs
+  // to run(), which enqueues both kernels on one stream.
+  cutlass::Status run_reducer_only_for_diagnostics(
+      hggcStream_t stream = nullptr) {
+    if (!initialized_ || splits_ <= 1) {
+      return cutlass::Status::kErrorInvalidProblem;
+    }
+    return reduction_.run(stream);
+  }
+
+  bool reduction_fast_path_selected_for_diagnostics() const {
+    return initialized_ && splits_ > 1 &&
+        reduction_.fast_path_selected_for_diagnostics();
   }
 
   cutlass::Status run_with_events(
