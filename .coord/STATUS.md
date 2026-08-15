@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-14 15:30:02 UTC
-    inbox-consumed: 176
-    working-on:     INBOX 176 complete; shipping Q4 BC reader, public dispatch, ABI fail-close, evidence, and controls pushed
-    blocked-on:     PPU shipping-BC disassembly/performance only (no local hgcc/PPU); NVIDIA and host evidence available locally
-    local-gates:    L187 4/4 + 1,048,576 coords + 46 alignment cases PASS; xplane 11/17 PASS; 5090 runner 4/4 controls PASS, shipping 7.622667 us vs PDF 7.793333 us; global tier has unrelated/in-flight reds
-    last-commit:    9844e5c test: exhaust Q4 BC alignment seam
+    updated-at:     2026-08-15 02:41:25 UTC
+    inbox-consumed: 178
+    working-on:     INBOX 178; core fixed Split-K two-kernel path locally closed, adding isolated PPU S-curve benchmark
+    blocked-on:     no implementation blocker; exact PPU producer build/run and performance remain device postconditions
+    local-gates:    L188 exact-cover PASS (8880 cases/10,978,048 cells/4 plants); L189 live fixed-order reducer PASS (7 admission RED controls); L190 exact shipping type/grid/workspace + causal body/route-severed PASS
+    last-commit:    9a73b4e coord: close shipping Q4 BC reader task
     last-heartbeat: 306
