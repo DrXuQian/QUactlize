@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-15 11:39:16 UTC
+    updated-at:     2026-08-15 14:55:52 UTC
     inbox-consumed: 178
-    working-on:     TODO #58 records expansion of fixed-S Split-K to every shipping precision and fully-quantized formats
-    blocked-on:     implementation beyond the completed W4 one-plane slice is explicitly future work under TODO #58
-    local-gates:    L189 fast S2/S4/S8 + tail/alignment/grid fallback raw-bit PASS and memcheck 0; L194 production fast 1.61us vs legacy S8 2.22us with named dispatcher RED; L195 saturated EPA2 1707 GB/s = 95.26% local 5090 nameplate; split-K contract PASS with 25 RED controls
-    last-commit:    c068fb7 docs: register full-format fixed split-k expansion
-    last-heartbeat: 313
+    working-on:     W4 one-plane fixed Split-K actual-last completion is committed; preparing the PPU correctness/performance canary
+    blocked-on:     PPU cross-CTA release/acquire visibility and fused latency are device postconditions; other formats remain TODO #58
+    local-gates:    L188 8,880 decompositions PASS; L196 40,346 arrival permutations + 13 RED controls PASS; L190 separate/fused production bodies PASS; L193 exact TN64/TN128 generated bodies PASS; L194 S2/S4/S8 raw-bit + dispatcher RED PASS; Q3/Q6 pytest 2/2 PASS
+    last-commit:    d3b255d perf: fuse fixed split-k completion into last CTA
+    last-heartbeat: 314
