@@ -146,3 +146,49 @@ path also pays one reduction launch and FP32 partial traffic.  The hard success
 condition is that a correct `S>1` end-to-end row beats its admitted S==1
 control.  A plausible target remains 8.5--12 us (about 1.4--2.0x), but no split
 count becomes a default until that PPU curve is measured.
+
+## Final PPU winning-config sweep
+
+`test_lowbit_dense_splitk_sweep` does not inherit a historical winner.  Its
+source authority is the committed 1,772-row int4/ArtifactTK64 dense tactic
+table.  It mechanically selects all 201 rows admitted by the shipping M=1
+packed-A route (`TM=WM=8`, `BC=0`) and crosses each compiled tactic at runtime
+with `S={1,2,4,8}`.  Thus the PPU winner is selected from 804 explicit cells,
+not from a hand-written shortlist:
+
+- 684 cells are structurally runnable (`S1=201`, `S2=195`, `S4=168`,
+  `S8=120`);
+- 120 cells are printed as `INADMISSIBLE_PIPELINE_DEPTH`, never silently
+  dropped;
+- the 201 kernel types are emitted into 51 generated translation units, while
+  `S` remains a runtime axis so it does not manufacture four copies of every
+  mainloop type.
+
+Every runnable cell consumes an exact, order-independent gs128 ScaleOnly
+fixture and must match the host golden in raw FP16 bits.  Its ranking event
+contains the complete shipping S=1 launch or the complete producer+reducer
+sequence; producer/reducer midpoint events are diagnostic only.  Full B plus
+scale artifacts rotate over at least `max(2.16*L2,128 MiB)`, and the 804-cell
+execution order is reproducibly shuffled so clock drift cannot privilege one
+split count.
+
+After the first pass, the best eight S=1 and best eight S>1 rows are rerun in
+one independently shuffled, arm-interleaved schedule.  A median ordering is
+not enough to declare a winner: the confirmed S>1 sample envelope must be
+wholly below the confirmed S=1 envelope.  Overlap is printed as `UNRESOLVED`.
+The global S=1 median must
+also reproduce the registered cold baseline in `[16.49,17.51] us`; otherwise
+the environment is drifted and the performance result remains
+`UNADJUDICATED`.
+
+Run the complete PPU search with:
+
+```bash
+JOBS=16 ITERATIONS=7 WARMUP_ROTATIONS=1 CORRECTNESS_REPEATS=1 \
+  COLD_BUDGET_MIB=512 bash tools/run_dense_splitk_sweep_box.sh
+```
+
+The runner creates a unique `/workspace` result bundle, refuses to overwrite
+an existing bundle, records the binary/table/worktree identities, and preserves
+the raw sample log.  No measured winning configuration is claimed in this
+document until that device postcondition completes.

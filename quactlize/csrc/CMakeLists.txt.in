@@ -2184,3 +2184,154 @@ quactlize_ppu_executable(
   test_lowbit_dense_splitk_parallel.cu
 )
 target_compile_options(test_lowbit_dense_splitk_parallel PRIVATE -w)
+
+# Final dense fixed Split-K performance search.  This is not a hand-written
+# winner table: parse the committed int4/ArtifactTK64 dense authority, retain
+# exactly the rows accepted by DensePackedAKernelTypes<1> (TM=WM=8, ordinary
+# one-plane, bc0), and cross every generated wrapper with runtime S=1/2/4/8.
+# S remains runtime data, so 201 tactic types produce 51 compiler units rather
+# than 804 duplicate instantiations.
+qz_resolve_sources(_DENSE_SPLITK_TABLE lowbit_dense_configs.inc)
+list(GET _DENSE_SPLITK_TABLE 0 _DENSE_SPLITK_TABLE)
+get_filename_component(_DENSE_SPLITK_TABLE "${_DENSE_SPLITK_TABLE}" ABSOLUTE
+                       BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+qz_parse_tactic_xmacro(_DENSE_SPLITK_SOURCE_ROWS
+  FILE "${_DENSE_SPLITK_TABLE}"
+  LIST_MACRO LOWBIT_DENSE_CFG_LIST
+  COUNT_MACRO LOWBIT_DENSE_CFG_ROWS)
+set(_DENSE_SPLITK_ROWS "")
+foreach(_row IN LISTS _DENSE_SPLITK_SOURCE_ROWS)
+  string(REPLACE "," ";" _fields "${_row}")
+  list(LENGTH _fields _field_count)
+  if(NOT _field_count EQUAL 7)
+    message(FATAL_ERROR
+      "dense fixed Split-K row '${_row}' has ${_field_count} fields, expected 7")
+  endif()
+  list(GET _fields 0 _tm)
+  list(GET _fields 3 _wm)
+  list(GET _fields 6 _bc)
+  if(_tm EQUAL 8 AND _wm EQUAL 8 AND _bc EQUAL 0)
+    list(APPEND _DENSE_SPLITK_ROWS "${_row}")
+  endif()
+endforeach()
+list(LENGTH _DENSE_SPLITK_SOURCE_ROWS _DENSE_SPLITK_SOURCE_ROW_COUNT)
+list(LENGTH _DENSE_SPLITK_ROWS _DENSE_SPLITK_ROW_COUNT)
+if(NOT _DENSE_SPLITK_SOURCE_ROW_COUNT EQUAL 1772 OR
+   NOT _DENSE_SPLITK_ROW_COUNT EQUAL 201)
+  message(FATAL_ERROR
+    "dense fixed Split-K authority drifted: source=${_DENSE_SPLITK_SOURCE_ROW_COUNT} "
+    "packedA=${_DENSE_SPLITK_ROW_COUNT}; expected 1772/201")
+endif()
+
+set(_DENSE_SPLITK_CONFIG_HEADER
+    "${CMAKE_CURRENT_BINARY_DIR}/dense_splitk_sweep_configs.inc")
+set(_DENSE_SPLITK_CONFIG_ROWS
+    "#define DENSE_SPLITK_SWEEP_CONFIGS(X) \\\n")
+set(_DENSE_SPLITK_CONFIG_INDEX 0)
+foreach(_row IN LISTS _DENSE_SPLITK_ROWS)
+  string(REPLACE "," ";" _fields "${_row}")
+  list(GET _fields 0 _tm)
+  list(GET _fields 1 _tn)
+  list(GET _fields 2 _tk)
+  list(GET _fields 3 _wm)
+  list(GET _fields 4 _wn)
+  list(GET _fields 5 _st)
+  list(GET _fields 6 _bc)
+  set(_fn
+      "dense_splitk_cfg_tm${_tm}_tn${_tn}_tk${_tk}_wm${_wm}_wn${_wn}_st${_st}_bc${_bc}")
+  math(EXPR _DENSE_SPLITK_CONFIG_INDEX
+       "${_DENSE_SPLITK_CONFIG_INDEX} + 1")
+  if(_DENSE_SPLITK_CONFIG_INDEX LESS _DENSE_SPLITK_ROW_COUNT)
+    set(_continuation " \\\n")
+  else()
+    set(_continuation "\n")
+  endif()
+  set(_DENSE_SPLITK_CONFIG_ROWS
+      "${_DENSE_SPLITK_CONFIG_ROWS}  X(${_fn},${_tm},${_tn},${_tk},${_wm},${_wn},${_st},${_bc})${_continuation}")
+endforeach()
+file(WRITE "${_DENSE_SPLITK_CONFIG_HEADER}.in"
+  "// GENERATED from the committed int4 dense tactic authority -- do not edit.\n"
+  "#include \"lowbit_dense_configs.inc\"\n"
+  "#define DENSE_SPLITK_SWEEP_SOURCE_ROWS ${_DENSE_SPLITK_SOURCE_ROW_COUNT}\n"
+  "#define DENSE_SPLITK_SWEEP_ROWS ${_DENSE_SPLITK_ROW_COUNT}\n"
+  "#define DENSE_SPLITK_SWEEP_SPACE_FNV1A64 LOWBIT_DENSE_CFG_SPACE_FNV1A64\n"
+  "#define DENSE_SPLITK_SWEEP_EMITTER_FNV1A64 LOWBIT_DENSE_CFG_EMITTER_FNV1A64\n"
+  "${_DENSE_SPLITK_CONFIG_ROWS}")
+execute_process(COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_DENSE_SPLITK_CONFIG_HEADER}.in"
+                "${_DENSE_SPLITK_CONFIG_HEADER}")
+
+set(DENSE_SPLITK_CONFIGS_PER_UNIT "4" CACHE STRING
+    "M1 packed-A fixed Split-K tactic wrappers per generated unit")
+qz_batch_tactic_rows(_DENSE_SPLITK_BATCHES _DENSE_SPLITK_ROWS
+                     "${DENSE_SPLITK_CONFIGS_PER_UNIT}")
+set(_DENSE_SPLITK_GEN_DIR
+    "${CMAKE_CURRENT_BINARY_DIR}/dense_splitk_sweep_units")
+file(MAKE_DIRECTORY "${_DENSE_SPLITK_GEN_DIR}")
+set(_DENSE_SPLITK_UNIT_SRCS "")
+set(_DENSE_SPLITK_GENERATED_ROWS 0)
+set(_DENSE_SPLITK_UNIT_INDEX 0)
+foreach(_batch IN LISTS _DENSE_SPLITK_BATCHES)
+  string(REPLACE "|" ";" _batch_rows "${_batch}")
+  list(LENGTH _batch_rows _batch_count)
+  set(_unit_rows "#define DENSE_SPLITK_UNIT_CONFIGS(X) \\\n")
+  set(_batch_index 0)
+  foreach(_row IN LISTS _batch_rows)
+    string(REPLACE "," ";" _fields "${_row}")
+    list(GET _fields 0 _tm)
+    list(GET _fields 1 _tn)
+    list(GET _fields 2 _tk)
+    list(GET _fields 3 _wm)
+    list(GET _fields 4 _wn)
+    list(GET _fields 5 _st)
+    list(GET _fields 6 _bc)
+    set(_fn
+        "dense_splitk_cfg_tm${_tm}_tn${_tn}_tk${_tk}_wm${_wm}_wn${_wn}_st${_st}_bc${_bc}")
+    math(EXPR _batch_index "${_batch_index} + 1")
+    math(EXPR _DENSE_SPLITK_GENERATED_ROWS
+         "${_DENSE_SPLITK_GENERATED_ROWS} + 1")
+    if(_batch_index LESS _batch_count)
+      set(_continuation " \\\n")
+    else()
+      set(_continuation "\n")
+    endif()
+    set(_unit_rows
+        "${_unit_rows}  X(${_fn},${_tm},${_tn},${_tk},${_wm},${_wn},${_st},${_bc})${_continuation}")
+  endforeach()
+  set(_src
+      "${_DENSE_SPLITK_GEN_DIR}/dense_splitk_sweep_unit_${_DENSE_SPLITK_UNIT_INDEX}.cu")
+  file(WRITE "${_src}.in"
+    "// GENERATED -- ${_batch_count} committed M1 packed-A Split-K rows.\n"
+    "#ifdef PPU_B_CHUNK\n#undef PPU_B_CHUNK\n#endif\n"
+    "#define PPU_B_CHUNK 0\n"
+    "${_unit_rows}"
+    "#include \"dense_splitk_parallel_unit.inc\"\n")
+  execute_process(COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                  "${_src}.in" "${_src}")
+  list(APPEND _DENSE_SPLITK_UNIT_SRCS "${_src}")
+  math(EXPR _DENSE_SPLITK_UNIT_INDEX
+       "${_DENSE_SPLITK_UNIT_INDEX} + 1")
+endforeach()
+if(NOT _DENSE_SPLITK_GENERATED_ROWS EQUAL _DENSE_SPLITK_ROW_COUNT)
+  message(FATAL_ERROR
+    "dense fixed Split-K generated ${_DENSE_SPLITK_GENERATED_ROWS} wrappers "
+    "for ${_DENSE_SPLITK_ROW_COUNT} authority rows")
+endif()
+
+qz_resolve_sources(_DENSE_SPLITK_MAIN_SOURCE
+                   test_lowbit_dense_splitk_sweep.cu)
+list(GET _DENSE_SPLITK_MAIN_SOURCE 0 _DENSE_SPLITK_MAIN_SOURCE)
+set(_DENSE_SPLITK_MAIN
+    "${CMAKE_CURRENT_BINARY_DIR}/test_lowbit_dense_splitk_sweep_main.cu")
+configure_file("${_DENSE_SPLITK_MAIN_SOURCE}"
+               "${_DENSE_SPLITK_MAIN}" COPYONLY)
+quactlize_ppu_executable(
+  test_lowbit_dense_splitk_sweep
+  "${_DENSE_SPLITK_MAIN}"
+  ${_DENSE_SPLITK_UNIT_SRCS}
+)
+target_compile_options(test_lowbit_dense_splitk_sweep PRIVATE -w)
+message(STATUS
+  "Dense fixed Split-K sweep: source=${_DENSE_SPLITK_SOURCE_ROW_COUNT} "
+  "packedA=${_DENSE_SPLITK_ROW_COUNT} wrappers=${_DENSE_SPLITK_GENERATED_ROWS} "
+  "units=${_DENSE_SPLITK_UNIT_INDEX} runtime_cells=804")

@@ -168,12 +168,20 @@ if [ "$TARGET" = "test_lowbit_dense_bench" ] ||
    [ "$TARGET" = "test_lowbit_dense_streamk_ab" ] ||
    [ "$TARGET" = "test_lowbit_dense_marlin_ab" ] ||
    [ "$TARGET" = "test_lowbit_dense_marlin_wk4_ab" ] ||
-   [ "$TARGET" = "test_lowbit_dense_marlin_m8_ab" ]; then
+   [ "$TARGET" = "test_lowbit_dense_marlin_m8_ab" ] ||
+   [ "$TARGET" = "test_lowbit_dense_splitk_sweep" ]; then
   # FAIL BEFORE HGCC. A stale generated table otherwise presents as an unrelated CollectiveMma/GemmUniversal
   # template failure, and a bench-side startup banner cannot help because no binary was produced. Rebuild the
   # emitter in a temporary directory and compare its exact output; this validates without making generation a
   # compile-order dependency or maintaining a second runtime/dispatch list.
   python3 "$HERE/ci/check_dense_tactic_table.py" || exit 1
+fi
+if [ "$TARGET" = "test_lowbit_dense_splitk_sweep" ]; then
+  # The target is generated from a strict subset of the dense authority.  Run
+  # its denominator/multi-TU/cold-ranking contract before asking hgcc to build
+  # 51 expensive units, so a stale filter cannot masquerade as a compiler
+  # failure or silently remove the eventual winner.
+  python3 "$HERE/ci/check_dense_splitk_sweep_contract.py" || exit 1
 fi
 if [ -z "$PPU_SDK_ROOT" ]; then
   echo "[build.sh] PPU_SDK is not set and there is no site default." >&2
