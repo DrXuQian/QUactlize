@@ -91,6 +91,22 @@ struct DeviceInputs {
   char* workspace_storage = nullptr;
   std::size_t workspace_storage_bytes = 0;
   half_t const* golden = nullptr;   // host pointer, kM*kN values
+  int rows = kM;
+  int columns = kN;
+  int inner = kK;
+  int group_size = kGroupSize;
+};
+
+struct ExactWarmAbResult {
+  double historical_reshape_us = 0;
+  double shipping_ordinary_reshape_us = 0;
+  double packed_reshape_us = 0;
+  double packed_internal_producer_us = 0;
+  uint64_t historical_reshape_bad = 0;
+  uint64_t shipping_ordinary_reshape_bad = 0;
+  uint64_t packed_reshape_bad = 0;
+  uint64_t packed_internal_bad = 0;
+  bool post_timing_correct = false;
 };
 
 struct CellResult {
@@ -200,7 +216,10 @@ inline bool inspect_output(
                  hggcMemcpyDeviceToHost) != hggcSuccess) {
     return false;
   }
-  if (host_storage.size() != 2 * kOutputGuardElements + std::size_t(kM) * kN) {
+  std::size_t const output_elements =
+      std::size_t(inputs.rows) * std::size_t(inputs.columns);
+  if (inputs.rows <= 0 || inputs.columns <= 0 ||
+      host_storage.size() != 2 * kOutputGuardElements + output_elements) {
     return false;
   }
   result.output_redzone = true;
@@ -212,10 +231,10 @@ inline bool inspect_output(
   }
   half_t const* output = host_storage.data() + kOutputGuardElements;
   result.raw_bad = 0;
-  for (std::size_t i = 0; i < std::size_t(kM) * kN; ++i) {
+  for (std::size_t i = 0; i < output_elements; ++i) {
     result.raw_bad += output[i].raw() != inputs.golden[i].raw();
   }
-  result.fingerprint = fnv1a_half_bits(output, std::size_t(kM) * kN);
+  result.fingerprint = fnv1a_half_bits(output, output_elements);
   return true;
 }
 
@@ -293,7 +312,9 @@ bool run_row(DeviceInputs const& inputs, Options const& options,
   static_assert(size<0>(typename Shipping::CollectiveMainloop::TiledMma::AtomShape_MNK{}) == 8,
                 "every sweep row must compile the m8n16k16 PPU atom");
 
-  if (inputs.cold_copies <= 0 || inputs.resident_b == nullptr ||
+  if (inputs.rows != kM || inputs.columns != kN || inputs.inner != kK ||
+      inputs.group_size != kGroupSize || inputs.cold_copies <= 0 ||
+      inputs.resident_b == nullptr ||
       inputs.scales == nullptr || inputs.output_storage == nullptr ||
       inputs.workspace_storage == nullptr || inputs.golden == nullptr) {
     return false;
@@ -534,6 +555,235 @@ bool run_row(DeviceInputs const& inputs, Options const& options,
     result.state = CellState::Measured;
   }
   return row_ok;
+}
+
+template <class Launch>
+bool measure_warm_aggregate_for_diagnostics(
+    Launch&& launch, int iterations, double& average_us) {
+  average_us = 0;
+  if (iterations <= 0 || launch() != cutlass::Status::kSuccess ||
+      hggcDeviceSynchronize() != hggcSuccess) {
+    return false;
+  }
+  PpuTimer timer;
+  timer.start();
+  for (int iteration = 0; iteration < iterations; ++iteration) {
+    if (launch() != cutlass::Status::kSuccess) return false;
+  }
+  timer.stop();
+  float const elapsed_ms = timer.elapsed_millis();
+  if (!std::isfinite(elapsed_ms) || elapsed_ms <= 0) return false;
+  average_us = double(elapsed_ms) * 1000.0 / double(iterations);
+  return true;
+}
+
+// Exact warm-resident A/B for the reshape claim.  This deliberately lives in
+// the generated row TU: both ordinary and packed-A types are built from the
+// same committed tactic, so a host-only reconstruction cannot silently compare
+// a different mainloop.  The production sweep remains cold and continues to
+// call run(); this seam is diagnostic only.
+template <int TM, int TN, int TK, int WM, int WN, int Stages, int BChunk>
+bool run_exact_warm_ab(
+    DeviceInputs const& reshape, DeviceInputs const& internal,
+    int iterations, ExactWarmAbResult& result) {
+  using namespace cute;
+  using Schedule = ppu_group_schedule::FinegrainedSchedule<kGroupSize>;
+  using TileShape = Shape<Int<TM>, Int<TN>, Int<TK>>;
+  using ScaleTile = Shape<Int<TN>,
+      Int<ppu_group_schedule::scale_groups_v<TK, kGroupSize>>>;
+  using WarpShape = Shape<Int<WM>, Int<WN>, Int<TK>>;
+  using ShippingOrdinary = fpa_intb_ppu::DenseKernelTypes<
+      QuantMode::FinegrainedScaleOnly, Schedule, TileShape, ScaleTile,
+      WarpShape, Stages, true, int4_t, void, kArtifactTileK>;
+  using Packed = fpa_intb_ppu::DensePackedAKernelTypes<
+      1, QuantMode::FinegrainedScaleOnly, Schedule, TileShape, ScaleTile,
+      WarpShape, Stages, true, int4_t, kArtifactTileK>;
+  using Prepared = dense_splitk_parallel_ppu::PreparedOnePlaneLauncher<
+      Packed, TileShape, WarpShape>;
+  using ShippingOrdinaryGemm = typename ShippingOrdinary::Gemm;
+  using ShippingOrdinaryKernel = typename ShippingOrdinary::GemmKernel;
+  using OrdinaryMainloop = typename ShippingOrdinary::CollectiveMainloop;
+
+  // The historical 7.854/7.696-us rows came from test_lowbit_dense_bench's
+  // Cfg<...>, which used the default (void) scheduler and
+  // EpilogueSimtVectorized.  The current shipping ordinary authority uses
+  // SplitKSerialScheduler and ...WithoutEvt.  Rebuild the historical pair
+  // while reusing the identical production mainloop; otherwise a timing miss
+  // could be falsely charged to packed-A or the parallel Split-K producer.
+  using HistoricalEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
+      cutlass::arch::PPU0010, cutlass::arch::OpClassTensorOp,
+      TileShape, WarpShape,
+      cutlass::epilogue::collective::EpilogueTileAuto,
+      float, float,
+      cutlass::half_t, cutlass::layout::RowMajor,
+      128 / cutlass::sizeof_bits<cutlass::half_t>::value,
+      cutlass::half_t, cutlass::layout::RowMajor,
+      128 / cutlass::sizeof_bits<cutlass::half_t>::value,
+      cutlass::epilogue::EpilogueSimtVectorized>::CollectiveOp;
+  using HistoricalKernelDefault = cutlass::gemm::kernel::GemmUniversal<
+      Shape<int, int, int, int>, OrdinaryMainloop, HistoricalEpilogue>;
+  using HistoricalKernelExplicitVoid = cutlass::gemm::kernel::GemmUniversal<
+      Shape<int, int, int, int>, OrdinaryMainloop, HistoricalEpilogue,
+      void>;
+  static_assert(std::is_same_v<HistoricalKernelDefault, HistoricalKernelExplicitVoid>,
+                "historical Cfg default scheduler must remain void");
+  using HistoricalGemm =
+      cutlass::gemm::device::GemmUniversalAdapter<HistoricalKernelDefault>;
+
+  static_assert(TM == 8 && WM == 8 && BChunk == 0,
+                "reshape A/B is bounded to the committed M1 bc0 domain");
+  static_assert(std::is_same_v<typename Packed::CollectiveMainloop,
+                               typename Prepared::SplitTypes::CollectiveMainloop>,
+                "internal producer must retain the exact packed-A mainloop");
+  if (iterations <= 0 || reshape.rows != 1 || reshape.columns != 32768 ||
+      reshape.inner != 512 || reshape.group_size != kGroupSize ||
+      internal.rows != kM || internal.columns != kN || internal.inner != kK ||
+      internal.group_size != kGroupSize || reshape.cold_copies != 1 ||
+      internal.cold_copies != 1) {
+    return false;
+  }
+
+  auto output_ptr = [](DeviceInputs const& inputs) {
+    return inputs.output_storage + kOutputGuardElements;
+  };
+  auto workspace_ptr = [](DeviceInputs const& inputs) {
+    return inputs.workspace_storage + kWorkspaceGuardBytes;
+  };
+  auto workspace_bytes = [](DeviceInputs const& inputs) {
+    return inputs.workspace_storage_bytes - 2 * kWorkspaceGuardBytes;
+  };
+
+  using StrideA = typename ShippingOrdinaryKernel::StrideA;
+  using StrideB = typename ShippingOrdinaryKernel::StrideB;
+  using StrideC = typename ShippingOrdinaryKernel::StrideC;
+  using StrideD = typename ShippingOrdinaryKernel::StrideD;
+  using StrideScale = typename OrdinaryMainloop::StrideScale;
+  constexpr int LowFold = ShippingOrdinary::MainloopPolicy::ArtifactLowFold;
+  StrideA sA = cutlass::make_cute_packed_stride(
+      StrideA{}, make_shape(reshape.rows, reshape.inner, 1));
+  StrideB sB = cutlass::make_cute_packed_stride(
+      StrideB{}, make_shape(reshape.columns / LowFold,
+                            reshape.inner * LowFold, 1));
+  StrideC sC = cutlass::make_cute_packed_stride(
+      StrideC{}, make_shape(reshape.rows, reshape.columns, 1));
+  StrideD sD = cutlass::make_cute_packed_stride(
+      StrideD{}, make_shape(reshape.rows, reshape.columns, 1));
+  StrideScale sS = cutlass::make_cute_packed_stride(
+      StrideScale{}, make_shape(
+          reshape.columns, reshape.inner / reshape.group_size, 1));
+  typename HistoricalGemm::Arguments historical_args{
+      cutlass::gemm::GemmUniversalMode::kGemm,
+      {reshape.rows, reshape.columns, reshape.inner, 1},
+      {reshape.a, sA,
+       reinterpret_cast<int4_t const*>(reshape.resident_b), sB,
+       reshape.scales, sS, reshape.group_size, reshape.zeros},
+      {{typename ShippingOrdinary::ElementAccumulator(1.f),
+        typename ShippingOrdinary::ElementAccumulator(0.f)},
+       static_cast<typename ShippingOrdinary::ElementC*>(nullptr), sC,
+       output_ptr(reshape), sD}};
+  typename ShippingOrdinaryGemm::Arguments shipping_ordinary_args{
+      cutlass::gemm::GemmUniversalMode::kGemm,
+      {reshape.rows, reshape.columns, reshape.inner, 1},
+      {reshape.a, sA,
+       reinterpret_cast<int4_t const*>(reshape.resident_b), sB,
+       reshape.scales, sS, reshape.group_size, reshape.zeros},
+      {{typename ShippingOrdinary::ElementAccumulator(1.f),
+        typename ShippingOrdinary::ElementAccumulator(0.f)},
+       static_cast<typename ShippingOrdinary::ElementC*>(nullptr), sC,
+       output_ptr(reshape), sD},
+      1};
+  HistoricalGemm historical;
+  ShippingOrdinaryGemm shipping_ordinary;
+  Prepared packed_reshape;
+  Prepared packed_internal;
+  if (HistoricalGemm::can_implement(historical_args) != cutlass::Status::kSuccess ||
+      HistoricalGemm::get_workspace_size(historical_args) != 0 ||
+      historical.initialize(historical_args, nullptr, nullptr) !=
+          cutlass::Status::kSuccess ||
+      ShippingOrdinaryGemm::can_implement(shipping_ordinary_args) !=
+          cutlass::Status::kSuccess ||
+      ShippingOrdinaryGemm::get_workspace_size(shipping_ordinary_args) != 0 ||
+      shipping_ordinary.initialize(shipping_ordinary_args, nullptr, nullptr) !=
+          cutlass::Status::kSuccess ||
+      !packed_reshape.initialize(
+          reshape.a, reinterpret_cast<int4_t const*>(reshape.resident_b),
+          reshape.scales, reshape.zeros, output_ptr(reshape), reshape.rows,
+          reshape.columns, reshape.inner, reshape.group_size, 1,
+          workspace_ptr(reshape), workspace_bytes(reshape), nullptr) ||
+      !packed_internal.initialize(
+          internal.a, reinterpret_cast<int4_t const*>(internal.resident_b),
+          internal.scales, internal.zeros, output_ptr(internal), internal.rows,
+          internal.columns, internal.inner, internal.group_size, 8,
+          workspace_ptr(internal), workspace_bytes(internal), nullptr)) {
+    return false;
+  }
+
+  dense_splitk_parallel_ppu::WorkspacePlan reshape_plan, internal_plan;
+  if (!dense_splitk_parallel_ppu::query_workspace_plan(
+          reshape.rows, reshape.columns, 1, reshape_plan) ||
+      !dense_splitk_parallel_ppu::query_workspace_plan(
+          internal.rows, internal.columns, 8, internal_plan)) {
+    return false;
+  }
+  auto validate = [](DeviceInputs const& inputs, std::size_t plan_bytes,
+                     auto&& launch, uint64_t& raw_bad) {
+    CellResult observed;
+    std::vector<half_t> host_output;
+    std::vector<char> host_workspace;
+    bool const ok = reset_canaries(inputs) &&
+        launch() == cutlass::Status::kSuccess &&
+        hggcDeviceSynchronize() == hggcSuccess &&
+        inspect_output(inputs, observed, host_output) &&
+        inspect_workspace_redzone(inputs, plan_bytes, observed, host_workspace);
+    raw_bad = observed.raw_bad;
+    return ok && observed.raw_bad == 0 && observed.output_redzone &&
+        observed.workspace_redzone;
+  };
+  auto historical_launch = [&] { return historical.run(nullptr); };
+  auto shipping_ordinary_launch = [&] {
+    return shipping_ordinary.run(nullptr);
+  };
+  auto packed_reshape_launch = [&] { return packed_reshape.run(nullptr); };
+  auto packed_internal_full = [&] { return packed_internal.run(nullptr); };
+  auto packed_internal_producer = [&] {
+    return packed_internal.run_producer_only_for_diagnostics(nullptr);
+  };
+
+  if (!validate(reshape, reshape_plan.partial_bytes, historical_launch,
+                result.historical_reshape_bad) ||
+      !validate(reshape, reshape_plan.partial_bytes, shipping_ordinary_launch,
+                result.shipping_ordinary_reshape_bad) ||
+      !validate(reshape, reshape_plan.partial_bytes, packed_reshape_launch,
+                result.packed_reshape_bad) ||
+      !validate(internal, internal_plan.partial_bytes, packed_internal_full,
+                result.packed_internal_bad) ||
+      !measure_warm_aggregate_for_diagnostics(
+          historical_launch, iterations, result.historical_reshape_us) ||
+      !measure_warm_aggregate_for_diagnostics(
+          shipping_ordinary_launch, iterations,
+          result.shipping_ordinary_reshape_us) ||
+      !measure_warm_aggregate_for_diagnostics(
+          packed_reshape_launch, iterations, result.packed_reshape_us) ||
+      !measure_warm_aggregate_for_diagnostics(
+          packed_internal_producer, iterations,
+          result.packed_internal_producer_us)) {
+    return false;
+  }
+
+  uint64_t historical_post_bad = 0, shipping_ordinary_post_bad = 0,
+           packed_reshape_post_bad = 0, packed_internal_post_bad = 0;
+  result.post_timing_correct =
+      validate(reshape, reshape_plan.partial_bytes, historical_launch,
+               historical_post_bad) &&
+      validate(reshape, reshape_plan.partial_bytes, shipping_ordinary_launch,
+               shipping_ordinary_post_bad) &&
+      validate(reshape, reshape_plan.partial_bytes, packed_reshape_launch,
+               packed_reshape_post_bad) &&
+      validate(internal, internal_plan.partial_bytes, packed_internal_full,
+               packed_internal_post_bad) &&
+      historical_post_bad == 0 && shipping_ordinary_post_bad == 0 &&
+      packed_reshape_post_bad == 0 && packed_internal_post_bad == 0;
+  return result.post_timing_correct;
 }
 
 }  // namespace dense_splitk_sweep

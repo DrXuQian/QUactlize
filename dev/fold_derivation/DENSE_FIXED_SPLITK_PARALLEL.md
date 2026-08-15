@@ -192,3 +192,42 @@ The runner creates a unique `/workspace` result bundle, refuses to overwrite
 an existing bundle, records the binary/table/worktree identities, and preserves
 the raw sample log.  No measured winning configuration is claimed in this
 document until that device postcondition completes.
+
+## Exact reshape reproduction diagnostic
+
+The later recovery of the original `7.854 us` and `7.696 us` output exposed
+three variables that the cold sweep did not hold constant.  The ordinary dense
+benchmark had already warmed one B/scale allocation and then averaged repeated
+launches at the same address; it used the ordinary A provider, while the split
+sweep uses the typed packed-A provider.  Also, xplane placement contains the
+runtime N stride, so `(32768,512)` and `(4096,4096)` are separately packed
+resident artifacts rather than one byte buffer reinterpreted for free.
+
+`EXACT_WARM_AB=1` therefore builds two exact committed configurations
+(`TN=64/128,TK=128,WN=16,stages=2`) and reports four timings under one
+same-address aggregate timer (100 launches by default, matching the standard
+dense benchmark default):
+
+1. historical ordinary reshape `(1,32768,512),S=1` with the original
+   `EpilogueSimtVectorized` type;
+2. current shipping ordinary reshape (`...WithoutEvt`);
+3. typed packed-A reshape at that same shape;
+4. typed packed-A internal `(1,4096,4096),S=8` producer only.
+
+The two geometries have the same CTA and K-step count for each TN.  A complete
+producer+reducer launch is checked in raw FP16 bits before and after timing;
+producer-only is a diagnostic seam and is structurally forbidden from the
+cold ranking control flow.  Historical reproduction is admitted only within a
+frozen +/-3% envelope around 7.854/7.696 us; otherwise the process returns
+nonzero as `DRIFTED`.  The final delta is labelled a combined internal Split-K
+producer delta (scheduler, descriptors and FP32 partial epilogue; reducer
+excluded), not a pure partial-store cost. Run it with:
+
+```bash
+EXACT_WARM_AB=1 ITERATIONS=100 JOBS=16 \
+  bash tools/run_dense_splitk_sweep_box.sh
+```
+
+The existing `SPAN_CURVE=1` arm separately reports cold-copy producer spans,
+including these exact two configurations.  Warm and cold numbers are never
+merged into one ranking.

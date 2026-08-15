@@ -43,6 +43,11 @@ DENSE_SPLITK_SWEEP_CONFIGS(DENSE_SPLITK_DECLARE)
 #undef DENSE_SPLITK_DECLARE
 }  // namespace dense_splitk_sweep_generated
 
+namespace dense_splitk_sweep_exact {
+bool tn64(DeviceInputs const&, DeviceInputs const&, int, ExactWarmAbResult&);
+bool tn128(DeviceInputs const&, DeviceInputs const&, int, ExactWarmAbResult&);
+}  // namespace dense_splitk_sweep_exact
+
 namespace {
 
 std::vector<RegistryRow> const& registry() {
@@ -66,6 +71,7 @@ struct Cli {
   double ce_ghz = 1.70;
   double hbm_gbs = 2766.0;
   bool span_curve = false;
+  bool exact_warm_ab = false;
 };
 
 bool parse_positive_int(char const* text, int& value) {
@@ -108,6 +114,8 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
       if (end == v || *end != '\0' || !(cli.hbm_gbs > 0)) return false;
     } else if (!std::strcmp(argv[i], "--span-curve")) {
       cli.span_curve = true;
+    } else if (!std::strcmp(argv[i], "--exact-warm-ab")) {
+      cli.exact_warm_ab = true;
     } else {
       return false;
     }
@@ -150,29 +158,29 @@ struct Fixture {
   bool exact = false;
 };
 
-Fixture make_fixture() {
+Fixture make_fixture(int n = kN, int k = kK) {
   Fixture f;
-  constexpr int scale_k = kK / kGroupSize;
-  f.a.assign(std::size_t(kM) * kK, half_t(0.f));
-  f.scales.resize(std::size_t(scale_k) * kN);
-  f.golden.resize(std::size_t(kM) * kN);
+  int const scale_k = k / kGroupSize;
+  f.a.assign(std::size_t(kM) * k, half_t(0.f));
+  f.scales.resize(std::size_t(scale_k) * n);
+  f.golden.resize(std::size_t(kM) * n);
   std::vector<int> active_k(scale_k);
   for (int kg = 0; kg < scale_k; ++kg) {
     active_k[kg] = kg * kGroupSize + ((29 * kg + 17) % kGroupSize);
     f.a[std::size_t(active_k[kg])] = half_t(1.f);
-    for (int n = 0; n < kN; ++n) {
-      f.scales[std::size_t(kg) * kN + n] =
-          half_t(float(1 << ((5 * kg + 3 * n) % 3)));
+    for (int column = 0; column < n; ++column) {
+      f.scales[std::size_t(kg) * n + column] =
+          half_t(float(1 << ((5 * kg + 3 * column) % 3)));
     }
   }
 
-  std::vector<uint8_t> canonical(std::size_t(kK) * kN);
-  std::vector<int8_t> packed(std::size_t(kK) * kN / 2, int8_t(0));
-  for (int n = 0; n < kN; ++n) {
-    for (int k = 0; k < kK; ++k) {
-      int const q = signed_q_at(k, n);
-      canonical[std::size_t(k) * kN + n] = uint8_t((q + 8) & 15);
-      std::size_t const linear = std::size_t(n) * kK + k;
+  std::vector<uint8_t> canonical(std::size_t(k) * n);
+  std::vector<int8_t> packed(std::size_t(k) * n / 2, int8_t(0));
+  for (int column = 0; column < n; ++column) {
+    for (int inner = 0; inner < k; ++inner) {
+      int const q = signed_q_at(inner, column);
+      canonical[std::size_t(inner) * n + column] = uint8_t((q + 8) & 15);
+      std::size_t const linear = std::size_t(column) * k + inner;
       auto* byte = reinterpret_cast<uint8_t*>(packed.data()) + linear / 2;
       *byte |= uint8_t(q & 15) << (4 * (linear & 1));
     }
@@ -180,7 +188,7 @@ Fixture make_fixture() {
   f.resident_b.resize(packed.size());
   preprocess_weights_for_mixed_gemm<false, 256>(
       f.resident_b.data(), packed.data(),
-      {std::size_t(kK), std::size_t(kN)},
+      {std::size_t(k), std::size_t(n)},
       QuantTypeClass::PACKED_INT4_WEIGHT_ONLY);
 
   // Independent layout anchor: one explicit TK64 xplane writer must produce
@@ -188,10 +196,10 @@ Fixture make_fixture() {
   // logical code.  The sweep changes only the reader tactic.
   std::vector<int8_t> anchored(f.resident_b.size());
   xplane::place_derived<4, 8, 128, 64, 8, 32, 1, 64>(
-      anchored.data(), canonical, kN, kK);
+      anchored.data(), canonical, n, k);
   std::vector<uint8_t> recovered(canonical.size(), 0xff);
   xplane::recover_derived<4, 8, 128, 64, 8, 32, 1, 64>(
-      anchored.data(), recovered, kN, kK);
+      anchored.data(), recovered, n, k);
   std::size_t byte_diff = 0, roundtrip_bad = 0;
   for (std::size_t i = 0; i < anchored.size(); ++i)
     byte_diff += anchored[i] != f.resident_b[i];
@@ -200,22 +208,22 @@ Fixture make_fixture() {
   f.artifact_ok = byte_diff == 0 && roundtrip_bad == 0;
 
   int max_output = 0;
-  for (int n = 0; n < kN; ++n) {
+  for (int column = 0; column < n; ++column) {
     int sum = 0;
     for (int kg = 0; kg < scale_k; ++kg) {
-      sum += signed_q_at(active_k[kg], n) *
-          int(float(f.scales[std::size_t(kg) * kN + n]));
+      sum += signed_q_at(active_k[kg], column) *
+          int(float(f.scales[std::size_t(kg) * n + column]));
     }
     max_output = std::max(max_output, std::abs(sum));
-    f.golden[std::size_t(n)] = half_t(float(sum));
+    f.golden[std::size_t(column)] = half_t(float(sum));
   }
   int const conservative_bound = scale_k * 8 * 4;
   f.exact = conservative_bound < (1 << 11) && max_output < (1 << 11);
   std::printf(
-      "[splitk fixture] mode=ScaleOnly gs=128 artifact=TK64-xplane "
+      "[splitk fixture] shape=1x%dx%d mode=ScaleOnly gs=128 artifact=TK64-xplane "
       "shipping_byte_diff=%zu/%zu roundtrip_bad=%zu/%zu "
       "integer_bound=%d max_output=%d -> %s\n",
-      byte_diff, anchored.size(), roundtrip_bad, recovered.size(),
+      n, k, byte_diff, anchored.size(), roundtrip_bad, recovered.size(),
       conservative_bound, max_output,
       f.artifact_ok && f.exact ? "ORDER-INDEPENDENT+FP16-EXACT" : "FAIL");
   return f;
@@ -307,7 +315,7 @@ int main(int argc, char** argv) {
         "usage: %s [--iterations=N] [--warmup-rotations=N] "
         "[--correctness-repeats=N] [--cold-budget-mib=N] "
         "[--l2-bytes=N] [--cu=N] [--ce-ghz=F] [--hbm-gbs=F] "
-        "[--span-curve]\n",
+        "[--span-curve] [--exact-warm-ab]\n",
         argv[0]);
     return 2;
   }
@@ -339,6 +347,152 @@ int main(int argc, char** argv) {
       "effective_cu=%d effective_l2=%lld\n",
       device, detected_cu, static_cast<long long>(detected_l2),
       cli.cu, static_cast<long long>(cli.l2_bytes));
+
+  if (cli.exact_warm_ab) {
+    Fixture const reshape_fixture = make_fixture(32768, 512);
+    Fixture const internal_fixture = make_fixture(kN, kK);
+    if (!reshape_fixture.artifact_ok || !reshape_fixture.exact ||
+        !internal_fixture.artifact_ok || !internal_fixture.exact) {
+      return 1;
+    }
+
+    cutlass::DeviceAllocation<half_t> reshape_a(reshape_fixture.a.size());
+    cutlass::DeviceAllocation<uint8_t> reshape_b(
+        reshape_fixture.resident_b.size());
+    cutlass::DeviceAllocation<half_t> reshape_scales(
+        reshape_fixture.scales.size());
+    cutlass::DeviceAllocation<half_t> reshape_output(
+        2 * kOutputGuardElements + reshape_fixture.golden.size());
+    cutlass::DeviceAllocation<char> reshape_workspace(
+        2 * kWorkspaceGuardBytes);
+    reshape_a.copy_from_host(reshape_fixture.a.data());
+    CUTLASS_PPU_CHECK(hggcMemcpy(
+        reshape_b.get(), reshape_fixture.resident_b.data(),
+        reshape_fixture.resident_b.size(), hggcMemcpyHostToDevice));
+    reshape_scales.copy_from_host(reshape_fixture.scales.data());
+
+    cutlass::DeviceAllocation<half_t> internal_a(internal_fixture.a.size());
+    cutlass::DeviceAllocation<uint8_t> internal_b(
+        internal_fixture.resident_b.size());
+    cutlass::DeviceAllocation<half_t> internal_scales(
+        internal_fixture.scales.size());
+    cutlass::DeviceAllocation<half_t> internal_output(
+        2 * kOutputGuardElements + internal_fixture.golden.size());
+    dense_splitk_parallel_ppu::WorkspacePlan internal_plan;
+    if (!dense_splitk_parallel_ppu::query_workspace_plan(
+            kM, kN, 8, internal_plan)) return 1;
+    cutlass::DeviceAllocation<char> internal_workspace(
+        2 * kWorkspaceGuardBytes + internal_plan.partial_bytes);
+    internal_a.copy_from_host(internal_fixture.a.data());
+    CUTLASS_PPU_CHECK(hggcMemcpy(
+        internal_b.get(), internal_fixture.resident_b.data(),
+        internal_fixture.resident_b.size(), hggcMemcpyHostToDevice));
+    internal_scales.copy_from_host(internal_fixture.scales.data());
+
+    DeviceInputs reshape_inputs{
+        reshape_a.get(), reshape_b.get(), reshape_scales.get(), nullptr,
+        reshape_fixture.resident_b.size(), reshape_fixture.scales.size(), 1,
+        reshape_output.get(), reshape_output.size(), reshape_workspace.get(),
+        reshape_workspace.size(), reshape_fixture.golden.data(),
+        1, 32768, 512, kGroupSize};
+    DeviceInputs internal_inputs{
+        internal_a.get(), internal_b.get(), internal_scales.get(), nullptr,
+        internal_fixture.resident_b.size(), internal_fixture.scales.size(), 1,
+        internal_output.get(), internal_output.size(), internal_workspace.get(),
+        internal_workspace.size(), internal_fixture.golden.data(),
+        kM, kN, kK, kGroupSize};
+
+    struct ExactRequest {
+      int tn;
+      double historical_us;
+    };
+    // Frozen before the reproduction run.  This is the same +/-3% environment
+    // admission used by INBOX 178 for the 17-us S1 anchor: a correctness-green
+    // run outside it is DRIFTED, not a successful reproduction.
+    constexpr double kHistoricalRelativeTolerance = 0.03;
+    constexpr ExactRequest requests[]{{64, 7.854}, {128, 7.696}};
+    bool all_ok = true;
+    std::printf(
+        "[splitk exact warm A/B] protocol=one-prepared-address "
+        "aggregate-timer iterations=%d external=1x32768x512/S1 "
+        "internal=1x4096x4096/S8 artifact=shape-specific-xplane-repack\n",
+        cli.iterations);
+    for (ExactRequest const& request : requests) {
+      auto const found = std::find_if(
+          registry().begin(), registry().end(), [&](RegistryRow const& row) {
+            return row.tm == 8 && row.tn == request.tn && row.tk == 128 &&
+                row.wm == 8 && row.wn == 16 && row.stages == 2 &&
+                row.b_chunk == 0;
+          });
+      if (found == registry().end()) {
+        std::fprintf(stderr,
+            "[splitk exact warm A/B] missing committed TN%d row\n",
+            request.tn);
+        all_ok = false;
+        continue;
+      }
+      ExactWarmAbResult result;
+      bool ok = false;
+      if (request.tn == 64) {
+        ok = dense_splitk_sweep_exact::tn64(
+            reshape_inputs, internal_inputs, cli.iterations, result);
+      } else if (request.tn == 128) {
+        ok = dense_splitk_sweep_exact::tn128(
+            reshape_inputs, internal_inputs, cli.iterations, result);
+      }
+      double const historical_low =
+          request.historical_us * (1.0 - kHistoricalRelativeTolerance);
+      double const historical_high =
+          request.historical_us * (1.0 + kHistoricalRelativeTolerance);
+      bool const historical_admitted = ok &&
+          result.historical_reshape_us >= historical_low &&
+          result.historical_reshape_us <= historical_high;
+      double const historical_to_shipping_delta = result.shipping_ordinary_reshape_us -
+          result.historical_reshape_us;
+      double const provider_delta = result.packed_reshape_us - result.shipping_ordinary_reshape_us;
+      double const internal_split_producer_delta =
+          result.packed_internal_producer_us - result.packed_reshape_us;
+      double const total_delta = result.packed_internal_producer_us -
+          result.historical_reshape_us;
+      double const delta_conservation_error =
+          (historical_to_shipping_delta + provider_delta + internal_split_producer_delta) -
+          total_delta;
+      bool const delta_conserved =
+          std::abs(delta_conservation_error) <= 1.0e-9;
+      std::printf(
+          "EXACT_WARM_AB cfg=8x%dx128_w8x16_s2_bc0 "
+          "external_cta=%d internal_cta=%d k_steps=4 "
+          "historical_ordinary_reshape=%.6f_us historical=%.6f_us "
+          "historical_admission=%s range=[%.6f,%.6f]_us "
+          "shipping_ordinary_reshape=%.6f_us packedA_reshape=%.6f_us "
+          "packedA_internal_S8_producer=%.6f_us "
+          "historical_to_shipping_delta=%+.6f_us provider_delta=%+.6f_us "
+          "internal_split_producer_delta=%+.6f_us reducer=EXCLUDED "
+          "total_delta=%+.6f_us conservation_error=%+.9f_us/%s "
+          "bad=%llu/%llu/%llu/%llu post_timing=%s\n",
+          request.tn, 32768 / request.tn,
+          (4096 / request.tn) * 8,
+          result.historical_reshape_us, request.historical_us,
+          historical_admitted ? "ADMITTED" : "DRIFTED",
+          historical_low, historical_high,
+          result.shipping_ordinary_reshape_us, result.packed_reshape_us,
+          result.packed_internal_producer_us,
+          historical_to_shipping_delta, provider_delta, internal_split_producer_delta,
+          total_delta, delta_conservation_error,
+          delta_conserved ? "PASS" : "FAIL",
+          static_cast<unsigned long long>(result.historical_reshape_bad),
+          static_cast<unsigned long long>(
+              result.shipping_ordinary_reshape_bad),
+          static_cast<unsigned long long>(result.packed_reshape_bad),
+          static_cast<unsigned long long>(result.packed_internal_bad),
+          result.post_timing_correct ? "RAW-BIT/PASS" : "FAIL");
+      all_ok = all_ok && ok && historical_admitted && delta_conserved &&
+          result.post_timing_correct && result.historical_reshape_bad == 0 &&
+          result.shipping_ordinary_reshape_bad == 0 &&
+          result.packed_reshape_bad == 0 && result.packed_internal_bad == 0;
+    }
+    return all_ok ? 0 : 1;
+  }
 
   Fixture const fixture = make_fixture();
   if (!fixture.artifact_ok || !fixture.exact) return 1;
@@ -404,6 +558,8 @@ int main(int argc, char** argv) {
         {8, 128, 256, 8, 16, 3, 0, 4, "best-e2e-S4"},
         {8, 128, 256, 8, 32, 2, 0, 8, "best-e2e-S8"},
         {8, 128, 128, 8, 32, 3, 0, 8, "reshape-matched-S8"},
+        {8, 64, 128, 8, 16, 2, 0, 8, "exact-reshape-TN64-S8"},
+        {8, 128, 128, 8, 16, 2, 0, 8, "exact-reshape-TN128-S8"},
     };
     std::printf(
         "[splitk span curve] mode=producer-reducer-median samples=7 "

@@ -23,6 +23,8 @@ UNIT = ROOT / "benchmarks/dense_splitk_parallel_unit.inc"
 HANDLE = ROOT / "quactlize/include/dense_splitk_parallel_ppu.cuh"
 CMAKE = ROOT / "quactlize/csrc/CMakeLists.txt.in"
 RUNNER = ROOT / "tools/run_dense_splitk_sweep_box.sh"
+EXACT_TN64 = ROOT / "benchmarks/dense_splitk_exact_warm_ab_tn64.cu"
+EXACT_TN128 = ROOT / "benchmarks/dense_splitk_exact_warm_ab_tn128.cu"
 
 ROW_RE = re.compile(
     r"^\s*X\((\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),B\)\s*\\?\s*$",
@@ -103,8 +105,18 @@ def audit(
         "PreparedOnePlaneLauncher::run()",
         "a skipped launch",
         "result.fingerprint != stable_fingerprint",
+        "run_exact_warm_ab(",
+        "measure_warm_aggregate_for_diagnostics(",
+        "packed_internal.run_producer_only_for_diagnostics(nullptr)",
+        "cutlass::epilogue::EpilogueSimtVectorized>::CollectiveOp",
+        "historical Cfg default scheduler must remain void",
+        "result.shipping_ordinary_reshape_us",
     ):
         require(bench, token, "per-row shipping type", bad)
+    ranking = bench[bench.find("bool run_row("):bench.find(
+        "bool measure_warm_aggregate_for_diagnostics(")]
+    forbid(ranking, "run_producer_only_for_diagnostics",
+           "production cold ranking", bad)
 
     handle = files["handle"]
     for token in (
@@ -112,6 +124,7 @@ def audit(
         "bool initialize(",
         "cutlass::Status run(",
         "run_with_events(",
+        "run_producer_only_for_diagnostics(",
         "S==1 still instantiates and runs ShippingTypes::Gemm verbatim",
         "prepared S==1 and S>1 handles must share the exact mainloop",
         "prepared fixed Split-K must retain the shipping dense tactic guard",
@@ -140,6 +153,18 @@ def audit(
         "empty-launch attribution failed",
         "namespace dense_splitk_sweep_generated {",
         "&dense_splitk_sweep_generated::FN",
+        "--exact-warm-ab",
+        "EXACT_WARM_AB cfg=8x%dx128_w8x16_s2_bc0",
+        "artifact=shape-specific-xplane-repack",
+        "dense_splitk_sweep_exact::tn64",
+        "dense_splitk_sweep_exact::tn128",
+        "constexpr double kHistoricalRelativeTolerance = 0.03",
+        "constexpr ExactRequest requests[]{{64, 7.854}, {128, 7.696}}",
+        "historical_admission=%s range=[%.6f,%.6f]_us",
+        "result.packed_reshape_us - result.shipping_ordinary_reshape_us",
+        "result.packed_internal_producer_us - result.packed_reshape_us",
+        "all_ok = all_ok && ok && historical_admitted && delta_conserved",
+        "conservation_error=%+.9f_us/%s",
     ):
         require(main, token, "sweep driver", bad)
     forbid(main, "marlin-wk4-aligned-single-row", "sweep driver", bad)
@@ -161,6 +186,8 @@ def audit(
         "NOT _DENSE_SPLITK_ROW_COUNT EQUAL 201",
         "DENSE_SPLITK_CONFIGS_PER_UNIT \"4\"",
         "test_lowbit_dense_splitk_sweep",
+        "dense_splitk_exact_warm_ab_tn64.cu",
+        "dense_splitk_exact_warm_ab_tn128.cu",
         "runtime_cells=804",
     ):
         require(block, token, "CMake generator", bad)
@@ -177,10 +204,23 @@ def audit(
         "third_party/actlize is dirty",
         "full_B_plus_scale_rotation_over_max_2.16xL2_128MiB",
         "tee \"$run_log\"",
+        "EXACT_WARM_AB",
+        "--exact-warm-ab",
+        "exact_same_address_warm_aggregate_historical_vs_shipping_ordinary_vs_packedA_reshape_vs_internal_S8_producer",
+        'timed_iterations="${ITERATIONS:-100}"',
     ):
         require(runner, token, "box runner", bad)
     for token in ("mktemp", "/tmp/"):
         forbid(runner, token, "box runner", bad)
+
+    for owner in ("exact_tn64", "exact_tn128"):
+        exact = files[owner]
+        for token in (
+            "#define PPU_B_CHUNK 0",
+            "run_exact_warm_ab<8,",
+            "dense_splitk_sweep_exact",
+        ):
+            require(exact, token, owner, bad)
     return bad
 
 
@@ -191,6 +231,8 @@ def main() -> int:
         "bench": BENCH.read_text(), "main": MAIN.read_text(),
         "unit": UNIT.read_text(), "handle": HANDLE.read_text(),
         "cmake": CMAKE.read_text(), "runner": RUNNER.read_text(),
+        "exact_tn64": EXACT_TN64.read_text(),
+        "exact_tn128": EXACT_TN128.read_text(),
     }
     splits = (1, 2, 4, 8)
     bad = audit(rows, splits, files)
@@ -221,7 +263,36 @@ def main() -> int:
         ("lost-arch-binding", "PPU_ARCHS=ppu0010", "runner"),
     ):
         planted = dict(files)
-        planted[owner] = planted[owner].replace(token, "PLANTED_ABSENT", 1)
+        planted[owner] = planted[owner].replace(token, "PLANTED_ABSENT")
+        controls.append((name, rows, splits, planted))
+    planted = dict(files)
+    planted["bench"] = planted["bench"].replace(
+        "handle->run(nullptr)",
+        "handle->run_producer_only_for_diagnostics(nullptr)",
+        1,
+    )
+    controls.append(("producer-only-leaked-into-ranking", rows, splits, planted))
+    for name, token, owner in (
+        ("lost-exact-warm-cli", "--exact-warm-ab", "main"),
+        ("lost-producer-only-seam", "run_producer_only_for_diagnostics(", "handle"),
+        ("lost-exact-tn64-tu", "run_exact_warm_ab<8,64,", "exact_tn64"),
+        ("lost-exact-tn128-tu", "run_exact_warm_ab<8,128,", "exact_tn128"),
+        ("lost-historical-anchor", "constexpr ExactRequest requests[]{{64, 7.854}, {128, 7.696}}", "main"),
+        ("lost-historical-admission", "all_ok = all_ok && ok && historical_admitted && delta_conserved", "main"),
+    ):
+        planted = dict(files)
+        planted[owner] = planted[owner].replace(token, "PLANTED_ABSENT")
+        controls.append((name, rows, splits, planted))
+    for name, old, new in (
+        ("swapped-provider-delta",
+         "result.packed_reshape_us - result.shipping_ordinary_reshape_us",
+         "result.shipping_ordinary_reshape_us - result.packed_reshape_us"),
+        ("swapped-internal-delta",
+         "result.packed_internal_producer_us - result.packed_reshape_us",
+         "result.packed_reshape_us - result.packed_internal_producer_us"),
+    ):
+        planted = dict(files)
+        planted["main"] = planted["main"].replace(old, new, 1)
         controls.append((name, rows, splits, planted))
     escaped = 0
     for name, planted_rows, planted_splits, planted_files in controls:

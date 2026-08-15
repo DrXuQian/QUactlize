@@ -282,6 +282,16 @@ class PreparedOnePlaneLauncher {
     return reduction_.run(stream);
   }
 
+  // Diagnostic seam used to compare the partial-producing phase with an
+  // externally reshaped GEMM under one timing protocol.  Production callers
+  // must keep using run(): deliberately exposing the producer here must not
+  // turn a missing reduction into a plausible final result.
+  cutlass::Status run_producer_only_for_diagnostics(
+      hggcStream_t stream = nullptr) {
+    if (!initialized_) return cutlass::Status::kErrorInvalidProblem;
+    return splits_ == 1 ? shipping_.run(stream) : split_.run(stream);
+  }
+
   cutlass::Status run_with_events(
       SplitKParallelSpanEvents& events, hggcStream_t stream = nullptr) {
     events.recorded = false;

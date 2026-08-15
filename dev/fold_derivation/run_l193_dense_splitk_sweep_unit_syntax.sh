@@ -142,6 +142,10 @@ compile_exact() {
 # TK128->TK256 transition, deep TK256 pipeline depths, and the final one-row
 # maximum-TN/TK/WN batch.  These are production-generated sources, not models.
 compile_exact main "${main}" 0
+compile_exact exact-warm-tn64 \
+  "${repo}/benchmarks/dense_splitk_exact_warm_ab_tn64.cu" 0
+compile_exact exact-warm-tn128 \
+  "${repo}/benchmarks/dense_splitk_exact_warm_ab_tn128.cu" 0
 for spec in 0:4 10:4 11:4 50:1; do
   index="${spec%%:*}"
   rows="${spec##*:}"
@@ -202,4 +206,4 @@ if [[ "${marker_rc}" -eq 0 ]] || [[ "${producer_count}" -ne 4 ]] || \
   exit 1
 fi
 
-echo "[l193] PASS: real L192 main + boundary units completed nvcc -cuda; only known CuTe environment errors; producer/reducer run bodies=4/4; artifacts=${out}"
+echo "[l193] PASS: real L192 main + exact warm A/B TUs + boundary units completed nvcc -cuda; only known CuTe environment errors; producer/reducer run bodies=4/4; artifacts=${out}"

@@ -2321,6 +2321,9 @@ endif()
 qz_resolve_sources(_DENSE_SPLITK_MAIN_SOURCE
                    test_lowbit_dense_splitk_sweep.cu)
 list(GET _DENSE_SPLITK_MAIN_SOURCE 0 _DENSE_SPLITK_MAIN_SOURCE)
+qz_resolve_sources(_DENSE_SPLITK_EXACT_AB_SOURCES
+                   dense_splitk_exact_warm_ab_tn64.cu
+                   dense_splitk_exact_warm_ab_tn128.cu)
 set(_DENSE_SPLITK_MAIN
     "${CMAKE_CURRENT_BINARY_DIR}/test_lowbit_dense_splitk_sweep_main.cu")
 configure_file("${_DENSE_SPLITK_MAIN_SOURCE}"
@@ -2328,6 +2331,7 @@ configure_file("${_DENSE_SPLITK_MAIN_SOURCE}"
 quactlize_ppu_executable(
   test_lowbit_dense_splitk_sweep
   "${_DENSE_SPLITK_MAIN}"
+  ${_DENSE_SPLITK_EXACT_AB_SOURCES}
   ${_DENSE_SPLITK_UNIT_SRCS}
 )
 target_compile_options(test_lowbit_dense_splitk_sweep PRIVATE -w)
