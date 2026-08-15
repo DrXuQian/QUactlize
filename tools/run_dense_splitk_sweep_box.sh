@@ -108,6 +108,7 @@ main() {
       "--cold-budget-mib=${COLD_BUDGET_MIB:-512}" \
       "--ce-ghz=${CE_GHZ:-1.70}" \
       "--hbm-gbs=${HBM_GBS:-2766}"
+    [ "${SPAN_CURVE:-0}" = 1 ] && printf ' %q' "--span-curve"
     [ -n "${L2_BYTES:-}" ] && printf ' %q' "--l2-bytes=$L2_BYTES"
     [ -n "${CU_COUNT:-}" ] && printf ' %q' "--cu=$CU_COUNT"
     printf '\n'
@@ -122,6 +123,7 @@ main() {
     "--ce-ghz=${CE_GHZ:-1.70}"
     "--hbm-gbs=${HBM_GBS:-2766}"
   )
+  [ "${SPAN_CURVE:-0}" = 1 ] && args+=("--span-curve")
   [ -n "${L2_BYTES:-}" ] && args+=("--l2-bytes=$L2_BYTES")
   [ -n "${CU_COUNT:-}" ] && args+=("--cu=$CU_COUNT")
   "$binary" "${args[@]}" 2>&1 | tee "$run_log"

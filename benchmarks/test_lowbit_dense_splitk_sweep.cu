@@ -65,6 +65,7 @@ struct Cli {
   int cu = 0;
   double ce_ghz = 1.70;
   double hbm_gbs = 2766.0;
+  bool span_curve = false;
 };
 
 bool parse_positive_int(char const* text, int& value) {
@@ -105,6 +106,8 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
       char* end = nullptr;
       cli.hbm_gbs = std::strtod(v, &end);
       if (end == v || *end != '\0' || !(cli.hbm_gbs > 0)) return false;
+    } else if (!std::strcmp(argv[i], "--span-curve")) {
+      cli.span_curve = true;
     } else {
       return false;
     }
@@ -303,7 +306,8 @@ int main(int argc, char** argv) {
     std::fprintf(stderr,
         "usage: %s [--iterations=N] [--warmup-rotations=N] "
         "[--correctness-repeats=N] [--cold-budget-mib=N] "
-        "[--l2-bytes=N] [--cu=N] [--ce-ghz=F] [--hbm-gbs=F]\n",
+        "[--l2-bytes=N] [--cu=N] [--ce-ghz=F] [--hbm-gbs=F] "
+        "[--span-curve]\n",
         argv[0]);
     return 2;
   }
@@ -388,6 +392,68 @@ int main(int argc, char** argv) {
       fixture.resident_b.size(), fixture.scales.size(), cold_copies,
       d_output.get(), d_output.size(), d_workspace.get(), d_workspace.size(),
       fixture.golden.data()};
+
+  if (cli.span_curve) {
+    struct RequestedSpan {
+      int tm, tn, tk, wm, wn, stages, b_chunk, split;
+      char const* role;
+    };
+    constexpr RequestedSpan requested[] = {
+        {8, 16, 256, 8, 16, 4, 0, 1, "best-e2e-S1"},
+        {8, 32, 256, 8, 16, 3, 0, 2, "best-e2e-S2"},
+        {8, 128, 256, 8, 16, 3, 0, 4, "best-e2e-S4"},
+        {8, 128, 256, 8, 32, 2, 0, 8, "best-e2e-S8"},
+        {8, 128, 128, 8, 32, 3, 0, 8, "reshape-matched-S8"},
+    };
+    std::printf(
+        "[splitk span curve] mode=producer-reducer-median samples=7 "
+        "correctness_repeats=8 selection=bound-to-72cu-full-sweep\n");
+    bool all_ok = true;
+    for (RequestedSpan const& request : requested) {
+      auto const found = std::find_if(
+          registry().begin(), registry().end(), [&](RegistryRow const& row) {
+            return row.tm == request.tm && row.tn == request.tn &&
+                row.tk == request.tk && row.wm == request.wm &&
+                row.wn == request.wn && row.stages == request.stages &&
+                row.b_chunk == request.b_chunk;
+          });
+      if (found == registry().end()) {
+        std::fprintf(stderr,
+            "[splitk span curve] missing requested row role=%s\n",
+            request.role);
+        all_ok = false;
+        continue;
+      }
+      Options diagnostic;
+      diagnostic.only_split = request.split;
+      diagnostic.measure = false;
+      diagnostic.correctness_repeats = 8;
+      diagnostic.diagnose_spans = true;
+      diagnostic.span_repeats = 7;
+      RowResult result;
+      bool const call_ok = found->run(inputs, diagnostic, result);
+      std::size_t const split_index = std::size_t(
+          std::find(kSplits.begin(), kSplits.end(), request.split) -
+          kSplits.begin());
+      CellResult const& cell = result.cells[split_index];
+      bool const ok = call_ok && cell.state == CellState::Measured &&
+          cell.raw_bad == 0 && cell.span_recorded && cell.span_samples == 7;
+      std::printf(
+          "SPAN_CURVE role=%s cfg=%dx%dx%d_w%dx%d_s%d_bc%d S=%d "
+          "producer_median=%.6f_us producer_range=[%.6f,%.6f]_us "
+          "reducer=%s%.6f_us reducer_range=%s[%.6f,%.6f]_us "
+          "span_samples=%d correctness=%s\n",
+          request.role, found->tm, found->tn, found->tk, found->wm,
+          found->wn, found->stages, found->b_chunk, request.split,
+          cell.producer_us, cell.producer_min_us, cell.producer_max_us,
+          request.split == 1 ? "NA/" : "", cell.reducer_us,
+          request.split == 1 ? "NA/" : "", cell.reducer_min_us,
+          cell.reducer_max_us, cell.span_samples, ok ? "RAW-BIT/PASS" : "FAIL");
+      all_ok = all_ok && ok;
+    }
+    return all_ok ? 0 : 1;
+  }
+
   Options options;
   options.iterations = cli.iterations;
   options.warmup_rotations = cli.warmup_rotations;

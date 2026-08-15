@@ -75,6 +75,7 @@ struct Options {
   int only_split = 0;              // zero means all four
   bool measure = true;
   bool diagnose_spans = false;
+  int span_repeats = 1;
 };
 
 struct DeviceInputs {
@@ -111,6 +112,11 @@ struct CellResult {
   double e2e_max_us = 0;
   double producer_us = 0;
   double reducer_us = 0;
+  double producer_min_us = 0;
+  double producer_max_us = 0;
+  double reducer_min_us = 0;
+  double reducer_max_us = 0;
+  int span_samples = 0;
   bool span_recorded = false;
   bool output_redzone = false;
   bool workspace_redzone = false;
@@ -468,26 +474,60 @@ bool run_row(DeviceInputs const& inputs, Options const& options,
     }
 
     if (options.diagnose_spans) {
-      EventTriple events;
-      cutlass::Status const status = prepared.front()->run_with_events(
-          events.events, nullptr);
-      if (status != cutlass::Status::kSuccess ||
-          !events.events.recorded ||
-          hggcEventSynchronize(events.events.reducer_stop) != hggcSuccess ||
-          !elapsed_us(events.events.producer_start,
-                      events.events.producer_stop, result.producer_us)) {
-        result.state = CellState::TimingFailed;
-        row_ok = false;
-        continue;
+      int const span_repeats = std::max(options.span_repeats, 1);
+      std::vector<double> producer_samples;
+      std::vector<double> reducer_samples;
+      producer_samples.reserve(std::size_t(span_repeats));
+      reducer_samples.reserve(std::size_t(span_repeats));
+      bool spans_ok = true;
+      for (int repeat = 0; repeat < span_repeats; ++repeat) {
+        EventTriple events;
+        // Start after the copies consumed by the correctness gate.  On the
+        // normal >=2.16x-L2 rotation this gives each span a distinct B/scale
+        // artifact instead of repeatedly timing prepared.front().
+        std::size_t const copy = options.span_repeats == 1
+            ? std::size_t(0)
+            : std::size_t(
+                  (options.correctness_repeats + repeat) % inputs.cold_copies);
+        cutlass::Status const status = prepared[copy]->run_with_events(
+            events.events, nullptr);
+        double producer = 0, reducer = 0;
+        if (status != cutlass::Status::kSuccess ||
+            !events.events.recorded ||
+            hggcEventSynchronize(events.events.reducer_stop) != hggcSuccess ||
+            !elapsed_us(events.events.producer_start,
+                        events.events.producer_stop, producer) ||
+            (splits > 1 &&
+             !elapsed_us(events.events.producer_stop,
+                         events.events.reducer_stop, reducer))) {
+          spans_ok = false;
+          break;
+        }
+        producer_samples.push_back(producer);
+        if (splits > 1) reducer_samples.push_back(reducer);
       }
-      if (splits > 1) {
-        if (!elapsed_us(events.events.producer_stop,
-                        events.events.reducer_stop, result.reducer_us)) {
+      if (!spans_ok || producer_samples.empty()) {
           result.state = CellState::TimingFailed;
           row_ok = false;
           continue;
-        }
       }
+      auto summarize = [](std::vector<double> samples, double& median,
+                          double& minimum, double& maximum) {
+        std::sort(samples.begin(), samples.end());
+        minimum = samples.front();
+        maximum = samples.back();
+        median = samples.size() & 1
+            ? samples[samples.size() / 2]
+            : 0.5 * (samples[samples.size() / 2 - 1] +
+                     samples[samples.size() / 2]);
+      };
+      summarize(producer_samples, result.producer_us,
+                result.producer_min_us, result.producer_max_us);
+      if (splits > 1) {
+        summarize(reducer_samples, result.reducer_us,
+                  result.reducer_min_us, result.reducer_max_us);
+      }
+      result.span_samples = span_repeats;
       result.span_recorded = true;
     }
 
