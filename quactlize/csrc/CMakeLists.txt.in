@@ -2173,3 +2173,14 @@ quactlize_ppu_executable(
 if(TARGET test_width_acu)
   target_compile_options(test_width_acu PRIVATE -w)
 endif()
+
+# Dense fixed Split-K v1 correctness canary: one explicit M==1 packed-A row,
+# with S=1 as the historical provider and S=2/4/8 as independent FP32-partial
+# producer/reducer paths.  It is not the unresolved 17 us sweep winner and is
+# kept out of the tactic registry until a bound PPU curve establishes one.
+# Build: TARGET=test_lowbit_dense_splitk_parallel ./build.sh
+quactlize_ppu_executable(
+  test_lowbit_dense_splitk_parallel
+  test_lowbit_dense_splitk_parallel.cu
+)
+target_compile_options(test_lowbit_dense_splitk_parallel PRIVATE -w)

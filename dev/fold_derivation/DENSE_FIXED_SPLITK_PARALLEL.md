@@ -31,6 +31,29 @@ time that omits the reduction is not a result.
 The deliberately simple two-kernel implementation is both the first usable
 path and the permanent arithmetic oracle for a later fused path.
 
+## Why this is a separate thin kernel
+
+CUTLASS 2.x `GemmSplitKParallel` supplies the right protocol shape (contiguous
+K slices, split-major FP32 workspace, then a reducer), but its producer is tied
+to legacy `Mma::IteratorA/B`.  It cannot consume the shipping C3 mixed
+`load_init()` tuple carrying B/S/Z/B2, fold/xplane, and packed-A semantics.
+Likewise, the public `kGemmSplitKParallel` enum does not make a C3
+`GemmUniversalAdapter` launch a reducer.
+
+The existing Stream-K kernel does reuse the right collective, but its dynamic
+work units, q locks, `BlockStripedReduce`, and final-peer epilogue are exactly
+the semantics fixed Split-K is replacing.  Turning it into independent planes
+would change more code than a thin producer shell.  Version 1 therefore reuses
+only the shipping collective and the useful CUTLASS 2.x two-launch protocol;
+it does not copy or modify the converter, loader, or mainloop.
+
+Encoding the slices as a uniform grouped/MoE GEMM was also rejected for v1.
+It can manufacture the same arithmetic partition, but introduces pointer
+arrays, group-prefix decoding, zero/ragged-group rules, and a different public
+ABI merely to describe one dense matrix.  It also cannot preserve the required
+S==1 type identity.  That route is useful as an independent geometry model,
+not as the minimum production change.
+
 ## Future fused fixup
 
 The fused protocol must not appoint a particular peer as reducer.  In
@@ -78,7 +101,7 @@ Local proofs:
 
 - exhaustive exact-once `(q,k_tile)` coverage and unique partial slots;
 - `S==1` shipping type identity;
-- exact shipping mainloop reuse for `S>1`;
+- exact caller-supplied production mainloop-type reuse for `S>1`;
 - workspace size/stride overflow rejection;
 - fixed-order reduction, FP16 tail predication, and same-stream launch order;
 - planted errors in split count, K start/count, slot identity, order, and
@@ -91,3 +114,35 @@ Device postconditions:
 - repeated output fingerprints;
 - for the fused version, completion-counter reset/reuse and release/acquire
   visibility under repeated launches.
+
+## First device canary (registered before measurement)
+
+`test_lowbit_dense_splitk_parallel` fixes one explicit M==1 packed-A proof row
+and one exact, order-independent `M=1,N=K=4096,gs=128` fixture.  It runs
+`S=1,2,4,8`; all four arms must match the same host golden in raw FP16 bits on
+eight separately poisoned launches and retain the workspace and output
+redzones.  Its end-to-end event time for `S>1` contains both launches.
+
+This row is **not** registered as the winner behind the historical ~17 us
+measurement.  That measurement did not preserve the complete config string or
+kernel identity in the repository, and current M==1 production dispatch also
+selects a packed-A provider.  Treating an arbitrary TK128 proof row as that
+winner would make a failed admission look like a performance result.  The
+canary therefore prints `PERF-UNADJUDICATED`; its warm, single-artifact timings
+are observations only.
+
+The target performance experiment becomes admissible only after it binds all
+of the following in one artifact bundle:
+
+- the exact independently swept winner's kernel and full config string;
+- the same M==1 provider used by that production route;
+- a cold-cache rotation matching the ~17 us baseline conditions;
+- S==1 within 3% of that same-binary baseline;
+- end-to-end, producer, and reducer launch times.
+
+Once those are bound, the externally reshaped `(32768,512)` result (~7.4 us)
+remains a geometry proxy rather than a promised Split-K result: the internal
+path also pays one reduction launch and FP32 partial traffic.  The hard success
+condition is that a correct `S>1` end-to-end row beats its admitted S==1
+control.  A plausible target remains 8.5--12 us (about 1.4--2.0x), but no split
+count becomes a default until that PPU curve is measured.

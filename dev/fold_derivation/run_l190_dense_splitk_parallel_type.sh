@@ -32,7 +32,7 @@ nvcc "${base_flags[@]}" -DL190_SEVER_DEVICE_BODY=1 \
 }
 "${host_binary}" | tee "${out}/host-run.log"
 grep -Fq \
-  '[l190:host] PASS: exact shipping mainloop retained; S8 grid/workspace exact; S1 authority unchanged' \
+  '[l190:host] PASS: explicit proof-row mainloop retained; S8 grid/workspace exact; S1 authority unchanged' \
   "${out}/host-run.log" || {
   echo '[l190] FAIL: host executable returned without the complete contract' >&2
   exit 1
@@ -130,7 +130,7 @@ if [[ -s "${unexpected}" ]]; then
   exit 1
 fi
 
-# Bind the witness to the exact shipping row and the owned FP32 partial
+# Bind the witness to the explicit proof row and the owned FP32 partial
 # epilogue.  These strings come from the compiler's instantiation stack, not a
 # parallel type-name model maintained by this script.
 for token in \
@@ -162,4 +162,4 @@ if grep -Fq 'L190_SPLITK_DEVICE_BODY_INSTANTIATED' "${out}/device-route-severed.
   exit 1
 fi
 
-echo "[l190] PASS: host type/grid/workspace exact; production S8 device body reached once; route-severed control clean; artifacts=${out}"
+echo "[l190] PASS: host proof-row type/grid/workspace exact; S8 device body reached once; route-severed control clean; artifacts=${out}"

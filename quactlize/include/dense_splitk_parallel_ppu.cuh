@@ -149,6 +149,11 @@ bool generic_launcher(
             A, B, scales, zeros, D, m, n, k, group_size, 1,
             workspace, workspace_bytes, stream, B2);
   }
+  // Preserve the historical S==1 authority above, but reject an invalid
+  // divisor before the new path constructs its metadata shape.
+  if (group_size <= 0) {
+    return false;
+  }
   WorkspacePlan workspace_plan;
   if (!query_workspace_plan(m, n, split_k_slices, workspace_plan) ||
       workspace == nullptr || workspace_bytes < workspace_plan.partial_bytes) {

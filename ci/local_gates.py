@@ -222,6 +222,10 @@ SYNTAX = [
     # The DENSE bench, likewise ungated until 2026-08-04. It now carries a generated config table and a
     # static_assert tying that table to the binary's (bits, TileK); this row is what makes a stale table fail
     # here instead of producing a sweep over tactics the binary cannot select.
+    # Fixed Split-K is an independent target and instantiates the M==1 packed-A
+    # provider plus its FP32 partial producer/reducer.  The ordinary dense rows
+    # below cannot make a dependent error in that new kernel body visible.
+    ("benchmarks/test_lowbit_dense_splitk_parallel.cu", ""),
     ("benchmarks/test_lowbit_dense_bench.cu", ""),
     ("benchmarks/test_lowbit_dense_bench.cu", "-DBENCH_UINT2"),
     ("benchmarks/test_lowbit_dense_bench.cu", "-DBENCH_UINT1"),

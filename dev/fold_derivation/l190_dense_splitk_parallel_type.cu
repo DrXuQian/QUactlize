@@ -1,10 +1,11 @@
-// L190 -- exact shipping-mainloop type and device-body gate for dense fixed Split-K parallel.
+// L190 -- explicit proof-row mainloop type and device-body gate for dense fixed Split-K parallel.
 //
 // This translation unit deliberately constructs the producer through
 // dense_splitk_parallel_ppu::KernelTypes.  It does not reconstruct the new kernel or its partial
 // epilogue in parallel with production.  The S==1 control is reconstructed independently because
-// its whole purpose is to prove that the historical shipping authority remains the old
-// GemmUniversal<..., SplitKSerialScheduler> type.
+// its whole purpose is to prove that S==1 for this row remains the old
+// GemmUniversal<..., SplitKSerialScheduler> type.  This row is not asserted to
+// be the dispatcher-selected M==1 winner.
 
 #include <cstdint>
 #include <cstdio>
@@ -40,7 +41,7 @@ static_assert(std::is_same_v<typename Split::CollectiveMainloop,
                              typename Shipping::CollectiveMainloop> &&
                   std::is_same_v<typename SplitKernel::CollectiveMainloop,
                                  typename Shipping::CollectiveMainloop>,
-              "L190_SPLITK_MAINLOOP_MUST_BE_BYTE_IDENTICAL_TO_SHIPPING");
+              "L190_SPLITK_MAINLOOP_MUST_BE_BYTE_IDENTICAL_TO_PROOF_ROW");
 static_assert(std::is_same_v<typename Shipping::GemmKernel,
                              ExpectedShippingKernel>,
               "L190_S1_MUST_REMAIN_THE_HISTORICAL_SHIPPING_KERNEL_TYPE");
@@ -57,7 +58,7 @@ static_assert(Split::BlockM == 8 && Split::BlockN == 128 &&
               "L190_MUST_NAME_THE_EXACT_M8_TN128_TK128_GS128_ROW");
 
 // A concrete global wrapper is stronger than forming KernelTypes: it forces the front end through
-// GemmUniversalMixedInputSplitKParallel::operator(), including shipping load_init/mainloop and the
+// GemmUniversalMixedInputSplitKParallel::operator(), including proof-row load_init/mainloop and the
 // owned FP32 partial epilogue.  No device code is executed by this gate.
 #if !defined(L190_SEVER_DEVICE_BODY)
 __global__ void l190_force_splitk_device_body(SplitKernel::Params params) {
@@ -112,7 +113,8 @@ bool host_contract() {
       plan.alignment == 16;
 
   std::printf(
-      "[l190] shipping=ordinary-int4-gs128 tile=8x128x128 warp=8x32x128 "
+      "[l190] proof_row=ordinary-int4-gs128 winner_binding=UNRESOLVED "
+      "tile=8x128x128 warp=8x32x128 "
       "S1=historical grid=%ux%ux%u units=%llu k/peer=%u workspace=%zu "
       "device_body=ODR-USED\n",
       grid.x, grid.y, grid.z,
@@ -193,7 +195,7 @@ int main() {
     return 1;
   }
   std::puts(
-      "[l190:host] PASS: exact shipping mainloop retained; S8 grid/workspace exact; "
+      "[l190:host] PASS: explicit proof-row mainloop retained; S8 grid/workspace exact; "
       "S1 authority unchanged");
   return 0;
 #endif
