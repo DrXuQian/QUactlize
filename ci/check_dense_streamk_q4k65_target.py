@@ -215,7 +215,8 @@ def audit(files: dict[str, str]) -> list[str]:
     for token in (
         "TARGET=test_lowbit_dense_streamk_q4k65_ab",
         "QUANT=int4 BENCH_GS=32",
-        "CONFIG='64x64:64 w64x32 s3 bc0->0'",
+        "CONFIG='64x64x64:64x32:s3:bc0->0'",
+        "CONFIG_LABEL='64x64:64 w64x32 s3 bc0->0'",
         "--m=2048 --n=4096 --k=4096 --l=1 --g=32 --mode=1",
         "--alpha=1 --beta=0 --config=\"$CONFIG\"",
         "tile 64x64x64  warp 64x32  stages 3  instruction=m16$",
@@ -277,6 +278,10 @@ def self_test(files: dict[str, str]) -> list[str]:
     must_fail(
         "cross-device baseline admitted", "runner",
         "if cu != 72:", "if cu != 32:")
+    must_fail(
+        "space-bearing report tag used as selector", "runner",
+        "CONFIG='64x64x64:64x32:s3:bc0->0'",
+        "CONFIG='64x64:64 w64x32 s3 bc0->0'")
     return failures
 
 
@@ -299,7 +304,7 @@ def main() -> int:
         "[q4k65-streamk-contract] PASS: 107b unchanged; isolated gs32 "
         "64x64x64/w64x32/s3 m16 target shares Main/Epi; normal admission "
         f"precedes forced Stream-K; exact max|D|={max_output} <= 2^11; "
-        "five same-source negative controls red")
+        "six same-source negative controls red")
     return 0
 
 

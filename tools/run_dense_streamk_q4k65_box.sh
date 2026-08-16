@@ -15,7 +15,11 @@ LIST_LOG="$ARTIFACT_ROOT/config.log"
 BASELINE_LOG="$ARTIFACT_ROOT/normal-historical-fixture.log"
 NORMAL_LOG="$ARTIFACT_ROOT/normal-exact-fixture.log"
 STREAMK_LOG="$ARTIFACT_ROOT/streamk-exact-fixture.log"
-CONFIG='64x64:64 w64x32 s3 bc0->0'
+# The public report tag contains spaces, but cutlass::CommandLine tokenizes the
+# value again.  Use the retained compact input alias; the output is still
+# required below to print the canonical `64x64:64 w64x32 s3 bc0->0` identity.
+CONFIG='64x64x64:64x32:s3:bc0->0'
+CONFIG_LABEL='64x64:64 w64x32 s3 bc0->0'
 
 fail() {
   printf '[q4k65-streamk] FAIL: %s\n' "$*" >&2
@@ -31,7 +35,8 @@ esac
 mkdir -p "$ARTIFACT_ROOT" "$BUILD_ROOT"
 
 printf '[q4k65-streamk] sha=%s artifacts=%s\n' "$SHA" "$ARTIFACT_ROOT"
-printf '[q4k65-streamk] anchor=scale_first M=2048 N=4096 K=4096 gs=32 cfg=%s historical=209.27us/65.7%%MFU\n' "$CONFIG"
+printf '[q4k65-streamk] anchor=scale_first M=2048 N=4096 K=4096 gs=32 input_cfg=%s report_cfg=%s historical=209.27us/65.7%%MFU\n' \
+  "$CONFIG" "$CONFIG_LABEL"
 
 if ! env PPU_BUILD_DIR="$BUILD_ROOT" PPU_ARCHS=ppu0010 TARGET="$TARGET" \
     QUANT=int4 BENCH_GS=32 "$ROOT/build.sh" 2>&1 | tee "$BUILD_LOG"; then
