@@ -1921,8 +1921,8 @@ format that ships through the dense decode/prefill authority:
 * one-plane int4/int2/int1, including ScaleOnly and ScaleZero modes;
 * two-plane Q3/Q5/Q6 and their independent low/high folds;
 * folded artifacts and both B-chunk modes without changing their resident byte maps;
-* the fully-quantized path, including its quantized-A metadata, scale/zero conventions and complete post-reduction
-  epilogue semantics.
+* the fully-quantized path, whose current shipping ABI keeps A in FP16 and packs the GGUF scale/zero metadata,
+  including its packed-unit conventions and complete post-reduction epilogue semantics.
 
 The format collective remains the authority for A/B/S/Z/B2 conversion and MMA.  Split-K may change only the
 K-range scheduler and the output phase: each slice writes FP32 partials, then the shared fixed-order primitive
@@ -1974,11 +1974,12 @@ last holds the 128/256-thread producer CTA's register and smem quotas through
 finalization.  This phase-specific resource allocation is a structural two-
 launch advantage independent of launch overhead.
 
-**Fully-quantized is a separate proof obligation, not a typedef substitution.**  Its producer must be formed from
-the exact shipping fully-quantized mainloop and its reduction must preserve the shipping accumulator type,
-alpha/bias/output-scale ordering and destination type.  Accepting a fully-quantized argument while silently using
-the mixed-input epilogue is a hard failure.  If any shipping fully-quantized accumulator is not FP32, add a typed
-partial ABI rather than reinterpreting it as the current FP32 workspace.
+**Fully-quantized is a separate proof obligation, not a typedef substitution.**  In the current dense shipping ABI
+"fully-quantized" means raw packed GGUF S/Z units behind the mainloop's metadata channel; A is still FP16.  Its
+producer must be formed from that exact packed-metadata shipping mainloop and its reduction must preserve the
+shipping accumulator type, alpha/bias/output-scale ordering and destination type.  Accepting packed units while
+silently using the fp16 scale/zero-plane collective is a hard failure.  If a future shipping path quantizes A or
+uses a non-FP32 accumulator, add a typed partial ABI rather than reinterpreting it as the current FP32 workspace.
 
 **Local, exhaustive admission gates.**
 
@@ -1988,10 +1989,10 @@ partial ABI rather than reinterpreting it as the current FP32 workspace.
    same collective/mainloop.  Artifact byte maps and roundtrips must be invariant with S.
 3. On an order-independent exact fixture, exhaustively prove `(output_tile, k_tile)` coverage exactly once and
    raw-bit equality after reduction.  Include ScaleOnly/ScaleZero, each two-plane family, every fold and the
-   fully-quantized A/B metadata path.
+   fully-quantized FP16-A/packed-B plus packed-S/Z metadata path.
 4. Retain the M1 reducer controls from L189/L194: unique output signatures plus poisoned D, tail/weak-alignment
    fallback, S4-to-S2 dispatcher RED and an oversized-grid fail-close.  Add one format-seam RED per family (swap a
-   fold, omit B2, omit quantized-A metadata); each must fail numerically or at admission, never SKIP/PASS.
+   fold, omit B2, omit a packed S/Z metadata unit); each must fail numerically or at admission, never SKIP/PASS.
 5. Keep producer, reducer-only and full-E2E timing in one invocation and print `fast_path_selected`; producer-only
    timing may not be reported as the product result.
 
