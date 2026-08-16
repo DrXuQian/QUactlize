@@ -190,6 +190,54 @@ struct KernelTypes {
                 "last-arriver completion must not rebuild the shipping mainloop");
 };
 
+// The one-plane metadata pointer is part of the format ABI, not an optional
+// value that Split-K may reinterpret.  Bind the check to the real shipping
+// collective's conversion mode so the S==1 delegation and S>1 producer accept
+// exactly the same ScaleOnly/ScaleZero argument shape.  In particular, a
+// plausible all-zero result must not let a missing ScaleZero plane pass.
+template <class ShippingTypes>
+inline bool one_plane_metadata_arguments_valid(
+    void const* zeros) {
+  using MainloopPolicy = typename ShippingTypes::MainloopPolicy;
+  using CollectiveMainloop = typename ShippingTypes::CollectiveMainloop;
+  static_assert(MainloopPolicy::HighBits == 0,
+                "one-plane metadata admission cannot classify a B2 tuple");
+  static_assert(
+      bool(CollectiveMainloop::has_zero_channel) ==
+          ppu_mixed_policy::has_zero(
+              MainloopPolicy::Descriptor::quant_mode),
+      "shipping collective and descriptor disagree on the zero channel");
+  return CollectiveMainloop::has_zero_channel ? zeros != nullptr
+                                               : zeros == nullptr;
+}
+
+template <class ShippingTypes>
+inline bool one_plane_metadata_arguments_valid(
+    typename ShippingTypes::CollectiveMainloop::Arguments const& mainloop) {
+  return one_plane_metadata_arguments_valid<ShippingTypes>(mainloop.ptr_Z);
+}
+
+// A shipping mainloop with a positive StaticGroupSize has already selected a
+// concrete scale layout and conversion schedule.  The runtime argument may not
+// silently describe a different metadata plane.  Zero/-1 retain their existing
+// runtime/per-column meanings, while every launcher still rejects non-positive
+// runtime group sizes.
+template <class ShippingTypes>
+inline bool shipping_group_size_arguments_valid(int group_size) {
+  using DispatchPolicy =
+      typename ShippingTypes::CollectiveMainloop::DispatchPolicy;
+  constexpr int StaticGroupSize = DispatchPolicy::StaticGroupSize;
+  return group_size > 0 &&
+      (StaticGroupSize <= 0 || group_size == StaticGroupSize);
+}
+
+template <class ShippingTypes>
+inline bool shipping_group_size_arguments_valid(
+    typename ShippingTypes::CollectiveMainloop::Arguments const& mainloop) {
+  return shipping_group_size_arguments_valid<ShippingTypes>(
+      mainloop.group_size);
+}
+
 // A reusable one-plane handle whose initialization is deliberately separate
 // from device timing.  The old generic_launcher below remains the source-
 // compatible one-shot API.  Performance sweeps use this handle so host-side
@@ -265,8 +313,12 @@ class PreparedOnePlaneLauncher {
     fused_counter_bytes_ = 0;
     fused_stream_ = nullptr;
     splits_ = 0;
-    if (m != MainloopPolicy::PackedARows || n <= 0 || k <= 0 || group_size <= 0 ||
+    if (m != MainloopPolicy::PackedARows || n <= 0 || k <= 0 ||
+        !shipping_group_size_arguments_valid<ShippingTypes>(group_size) ||
         A == nullptr || B == nullptr || scales == nullptr || D == nullptr) {
+      return false;
+    }
+    if (!one_plane_metadata_arguments_valid<ShippingTypes>(zeros)) {
       return false;
     }
 
@@ -518,6 +570,16 @@ bool generic_launcher(
       std::is_void_v<ShippingTypesOverride>, DefaultShippingTypes,
       ShippingTypesOverride>;
 
+  using MainloopPolicy = typename ShippingTypes::MainloopPolicy;
+  if (!shipping_group_size_arguments_valid<ShippingTypes>(group_size)) {
+    return false;
+  }
+  if constexpr (MainloopPolicy::HighBits == 0) {
+    if (!one_plane_metadata_arguments_valid<ShippingTypes>(zeros)) {
+      return false;
+    }
+  }
+
   if (split_k_slices == 1) {
     return fpa_intb_ppu::generic_launcher<
         QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape, Stages,
@@ -526,18 +588,12 @@ bool generic_launcher(
             A, B, scales, zeros, D, m, n, k, group_size, 1,
             workspace, workspace_bytes, stream, B2);
   }
-  // Preserve the historical S==1 authority above, but reject an invalid
-  // divisor before the new path constructs its metadata shape.
-  if (group_size <= 0) {
-    return false;
-  }
   WorkspacePlan workspace_plan;
   if (!query_workspace_plan(m, n, split_k_slices, workspace_plan) ||
       workspace == nullptr || workspace_bytes < workspace_plan.partial_bytes) {
     return false;
   }
 
-  using MainloopPolicy = typename ShippingTypes::MainloopPolicy;
   using SplitTypes = KernelTypes<ShippingTypes, TileShape, WarpShape>;
   using Gemm = typename SplitTypes::Gemm;
   using GemmKernel = typename SplitTypes::GemmKernel;
