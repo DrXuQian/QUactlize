@@ -20,6 +20,7 @@ STREAMK_LOG="$ARTIFACT_ROOT/streamk-exact-fixture.log"
 # required below to print the canonical `64x64:64 w64x32 s3 bc0->0` identity.
 CONFIG='64x64x64:64x32:s3:bc0->0'
 CONFIG_LABEL='64x64:64 w64x32 s3 bc0->0'
+CONTINUE_ON_BASELINE_DRIFT="${CONTINUE_ON_BASELINE_DRIFT:-0}"
 
 fail() {
   printf '[q4k65-streamk] FAIL: %s\n' "$*" >&2
@@ -30,6 +31,10 @@ fail() {
 case "$ARTIFACT_ROOT" in
   /workspace/*) ;;
   *) fail "OUT must name a directory below /workspace (got $ARTIFACT_ROOT)" ;;
+esac
+case "$CONTINUE_ON_BASELINE_DRIFT" in
+  0|1) ;;
+  *) fail "CONTINUE_ON_BASELINE_DRIFT must be 0 or 1" ;;
 esac
 
 mkdir -p "$ARTIFACT_ROOT" "$BUILD_ROOT"
@@ -76,10 +81,12 @@ printf '\n== historical normal-scheduler admission ==\n'
 if ! "$BIN" "${COMMON[@]}" --iterations=100 2>&1 | tee "$BASELINE_LOG"; then
   fail 'normal historical-fixture arm failed correctness or timing'
 fi
-python3 - "$BASELINE_LOG" <<'PY' || fail 'normal arm did not reproduce the registered 65% anchor'
+python3 - "$BASELINE_LOG" "$CONTINUE_ON_BASELINE_DRIFT" <<'PY' || \
+  fail 'normal arm did not reproduce the registered 65% anchor'
 import pathlib, re, sys
 
 text = pathlib.Path(sys.argv[1]).read_text()
+continue_on_drift = sys.argv[2] == "1"
 aggregates = re.findall(
     r"\[dense historical aggregate\] n=100 average=([0-9.]+) us "
     r"protocol=PpuTimer-aggregate reference=209\.27us", text)
@@ -110,7 +117,10 @@ print(f"Q4K65_BASELINE measured_cu={cu} occupancy_api={ctas_per_cu} "
       f"runtime={us:.3f}_us MFU={mfu:.3f}% "
       f"registered=209.27_us/65.7% range=[{lo:.3f},{hi:.3f}] verdict={verdict}")
 if verdict != "ADMITTED":
-    raise SystemExit("normal baseline drifted beyond the preregistered +/-3% window")
+    if not continue_on_drift:
+        raise SystemExit("normal baseline drifted beyond the preregistered +/-3% window")
+    print("Q4K65_BASELINE_OVERRIDE historical_anchor=DRIFTED "
+          "subject_result_scope=CURRENT-SHA-UNANCHORED")
 PY
 
 printf '\n== exact normal control ==\n'
@@ -125,11 +135,13 @@ if ! "$BIN" "${COMMON[@]}" --iterations=20 --streamk_exact_fixture --streamk \
   fail 'forced Stream-K subject failed, was not exercised, or was not classifiable'
 fi
 
-python3 - "$NORMAL_LOG" "$STREAMK_LOG" <<'PY' || fail 'normal/Stream-K adjudication failed'
+python3 - "$NORMAL_LOG" "$STREAMK_LOG" "$BASELINE_LOG" <<'PY' || \
+  fail 'normal/Stream-K adjudication failed'
 import math, pathlib, re, sys
 
 normal = pathlib.Path(sys.argv[1]).read_text()
 streamk = pathlib.Path(sys.argv[2]).read_text()
+baseline = pathlib.Path(sys.argv[3]).read_text()
 exact = (r"\[streamk fixture exactness\] fixture=q4k65-exact "
          r"shape=2048x4096x4096 .* max\|D\|=2048 .* -> "
          r"ORDER-INDEPENDENT\+FP16-EXACT")
@@ -194,6 +206,12 @@ flops = 2.0 * 2048 * 4096 * 4096
 normal_mfu = flops / (normal_us * 1e-6) / 500.0e12 * 100.0
 streamk_mfu = flops / (streamk_us * 1e-6) / 500.0e12 * 100.0
 speedup = normal_us / streamk_us
+baseline_match = re.findall(
+    r"\[dense historical aggregate\] n=100 average=([0-9.]+) us ", baseline)
+if len(baseline_match) != 1:
+    raise SystemExit("historical aggregate identity is missing from final adjudication")
+baseline_us = float(baseline_match[0])
+anchor = "ADMITTED" if 209.27 * 0.97 <= baseline_us <= 209.27 * 1.03 else "DRIFTED"
 print(f"Q4K65_GEOMETRY Q={q} "
       f"normal_workers={normal_workers} normal_waves={normal_waves} "
       f"normal_tail={normal_tail}/{normal_workers} normal_tail_fill={normal_tail_fill:.3f}% "
@@ -205,8 +223,11 @@ print(f"Q4K65_GEOMETRY Q={q} "
       f"split_tiles={split} peer_excess={peers} workspace={workspace}")
 print(f"Q4K65_AB normal={normal_us:.3f}_us/{normal_mfu:.3f}%MFU "
       f"streamk={streamk_us:.3f}_us/{streamk_mfu:.3f}%MFU "
-      f"speedup={speedup:.5f}x correctness=RAW-BIT/PASS")
-print("Q4K65_VERDICT " + ("STREAMK-WINS" if streamk_us < normal_us else "NORMAL-WINS"))
+      f"speedup={speedup:.5f}x correctness=RAW-BIT/PASS "
+      f"historical_anchor={anchor}")
+winner = "STREAMK-WINS" if streamk_us < normal_us else "NORMAL-WINS"
+scope = "ANCHORED" if anchor == "ADMITTED" else "CURRENT-SHA-UNANCHORED"
+print(f"Q4K65_VERDICT {winner} scope={scope}")
 PY
 
 printf '[q4k65-streamk] PASS; artifacts: %s\n' "$ARTIFACT_ROOT"

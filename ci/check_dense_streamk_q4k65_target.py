@@ -230,7 +230,10 @@ def audit(files: dict[str, str]) -> list[str]:
         "scheduler=non-persistent\\] logical_cta=(\\d+) cu=(\\d+) ",
         "if cu != 72:",
         "expected historical 72-CU box",
-        r"\[dense historical aggregate\] n=100 average=([0-9.]+) us ",
+        'CONTINUE_ON_BASELINE_DRIFT="${CONTINUE_ON_BASELINE_DRIFT:-0}"',
+        "Q4K65_BASELINE_OVERRIDE historical_anchor=DRIFTED ",
+        "subject_result_scope=CURRENT-SHA-UNANCHORED",
+        'scope = "ANCHORED" if anchor == "ADMITTED" else "CURRENT-SHA-UNANCHORED"',
         "protocol=PpuTimer-aggregate reference=209\\.27us",
         'spans = re.findall(r"\\[dense kernel-span-upper\\]", text)',
         "len(aggregates) != 1 or len(spans) != 0",
@@ -239,6 +242,12 @@ def audit(files: dict[str, str]) -> list[str]:
         "Disposition: Passed (whole-K reference bit-exact; fixup replay closed)",
     ):
         require_once(runner, token, "Q4_K65 box runner", bad)
+    historical_aggregate_pattern = (
+        r"\[dense historical aggregate\] n=100 average=([0-9.]+) us ")
+    if runner.count(historical_aggregate_pattern) != 2:
+        bad.append(
+            "Q4_K65 box runner: historical aggregate must be consumed once "
+            "at admission and once at final scope adjudication")
     ordered_once(runner, (
         "== historical normal-scheduler admission ==",
         '"$BIN" "${COMMON[@]}" --iterations=100 2>&1 | tee "$BASELINE_LOG"',
@@ -295,6 +304,10 @@ def self_test(files: dict[str, str]) -> list[str]:
         "historical aggregate silently becomes a per-launch median", "bench",
         "protocol=PpuTimer-aggregate reference=209.27us",
         "protocol=per-launch-median reference=209.27us")
+    must_fail(
+        "baseline drift override loses its unanchored label", "runner",
+        "subject_result_scope=CURRENT-SHA-UNANCHORED",
+        "subject_result_scope=ANCHORED")
     return failures
 
 
@@ -317,7 +330,7 @@ def main() -> int:
         "[q4k65-streamk-contract] PASS: 107b unchanged; isolated gs32 "
         "64x64x64/w64x32/s3 m16 target shares Main/Epi; normal admission "
         f"precedes forced Stream-K; exact max|D|={max_output} <= 2^11; "
-        "seven same-source negative controls red")
+        "eight same-source negative controls red")
     return 0
 
 
