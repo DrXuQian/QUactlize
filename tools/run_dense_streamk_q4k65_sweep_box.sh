@@ -13,8 +13,9 @@ main() {
   local root target sha short stamp out build_root build_log list_log
   local sweep_log samples analysis_log analysis_json command_file manifest
   local binary rc source_rows eligible_rows filtered_rows reps iterations jobs
+  local axis_failures axis_failure_summary axis_stage axis_status_file tee_rc
   local streamk_bpc streamk_bpc_spec bpc_label
-  local -a _bins sweep streamk_bpcs
+  local -a _bins sweep streamk_bpcs pipeline_rc
   local -A seen_bpc=()
 
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
@@ -231,12 +232,16 @@ PY
   source_rows=1772; eligible_rows=577; filtered_rows=1195
   printf 'source_rows=%s\neligible_rows=%s\nfiltered_rows=%s\n' \
     "$source_rows" "$eligible_rows" "$filtered_rows" >>"$manifest"
+  axis_status_file="$out/axis-status.tsv"
+  printf 'blocks_per_cu\tstatus\trc\tstage\n' >"$axis_status_file"
 
   # Build once, then run each requested worker-grid axis into its own closed
   # evidence set.  Keeping JSONL/analyser inputs separate avoids folding two
   # scheduler decompositions into one tactic identity, while avoiding a full
   # 577-row rebuild for BPC=2 versus BPC=3.
-  for streamk_bpc in "${streamk_bpcs[@]}"; do
+  run_axis() {
+    streamk_bpc="$1"
+    axis_stage="setup"
     bpc_label="bpc${streamk_bpc}"
     sweep_log="$out/sweep-${bpc_label}.log"
     samples="$out/samples-${bpc_label}.jsonl"
@@ -244,33 +249,44 @@ PY
     analysis_json="$out/analysis-${bpc_label}.json"
     command_file="$out/command-${bpc_label}.sh"
     printf '[q4k65-streamk-sweep] axis blocks_per_cu=%s begin\n' "$streamk_bpc"
-  sweep=("$binary" --search_configs --streamk --streamk_exact_fixture
-    --m=2048 --n=4096 --k=4096 --l=1 --g=32 --mode=1
-    --alpha=1 --beta=0 "--iterations=$iterations"
-    "--streamk-blocks-per-cu=$streamk_bpc")
-  {
-    printf 'BENCH_REPS=%q BENCH_JSONL=%q ' "$reps" "$samples"
-    printf '%q ' "${sweep[@]}"
-    printf '\n'
-  } >"$command_file"
+    sweep=("$binary" --search_configs --streamk --streamk_exact_fixture
+      --m=2048 --n=4096 --k=4096 --l=1 --g=32 --mode=1
+      --alpha=1 --beta=0 "--iterations=$iterations"
+      "--streamk-blocks-per-cu=$streamk_bpc")
+    {
+      printf 'BENCH_REPS=%q BENCH_JSONL=%q ' "$reps" "$samples"
+      printf '%q ' "${sweep[@]}"
+      printf '\n'
+    } >"$command_file"
 
-  BENCH_REPS="$reps" BENCH_JSONL="$samples" \
-    "${sweep[@]}" 2>&1 | tee "$sweep_log"
-  rc=${PIPESTATUS[0]}
-  if [ "$rc" -ne 0 ]; then
-    printf '[q4k65-streamk-sweep] FAIL: sweep returned rc=%d\n' "$rc" >&2
-    printf '[q4k65-streamk-sweep] artifacts: %s\n' "$out" >&2
-    return "$rc"
-  fi
+    axis_stage="sweep"
+    BENCH_REPS="$reps" BENCH_JSONL="$samples" \
+      "${sweep[@]}" 2>&1 | tee "$sweep_log"
+    pipeline_rc=("${PIPESTATUS[@]}")
+    rc=${pipeline_rc[0]}
+    tee_rc=${pipeline_rc[1]}
+    if [ "$tee_rc" -ne 0 ]; then
+      printf '[q4k65-streamk-sweep] FAIL: tee could not persist bpc=%s log, rc=%d\n' \
+        "$streamk_bpc" "$tee_rc" >&2
+      return 74
+    fi
+    if [ "$rc" -ne 0 ]; then
+      printf '[q4k65-streamk-sweep] FAIL: sweep returned rc=%d\n' "$rc" >&2
+      printf '[q4k65-streamk-sweep] artifacts: %s\n' "$out" >&2
+      return "$rc"
+    fi
+  axis_stage="sample-presence"
   if [ ! -s "$samples" ]; then
     printf '[q4k65-streamk-sweep] FAIL: sweep emitted no durable samples\n' >&2
     return 1
   fi
+  axis_stage="correctness-log"
   if grep -Fq 'Disposition: Failed' "$sweep_log"; then
     printf '[q4k65-streamk-sweep] FAIL: an exact-fixture candidate printed a numerical failure\n' >&2
     return 1
   fi
-  python3 - "$samples" "$reps" "$eligible_rows" "$out/sample-closure.json" \
+  axis_stage="sample-closure"
+  python3 - "$samples" "$reps" "$eligible_rows" "$out/sample-closure-${bpc_label}.json" \
     "$sweep_log" "$streamk_bpc" <<'PY' || return 1
 import collections
 import json
@@ -392,17 +408,20 @@ PY
     return "$rc"
   fi
 
+  axis_stage="analyse-text"
   if ! python3 "$root/benchmarks/analyse.py" "$samples" >"$analysis_log" 2>&1; then
     cat "$analysis_log" >&2
     printf '[q4k65-streamk-sweep] FAIL: common analyser refused the durable sample set\n' >&2
     return 1
   fi
+  axis_stage="analyse-json"
   if ! python3 "$root/benchmarks/analyse.py" "$samples" --json >"$analysis_json" 2>&1; then
     cat "$analysis_json" >&2
     printf '[q4k65-streamk-sweep] FAIL: common JSON analyser refused the durable sample set\n' >&2
     return 1
   fi
   cat "$analysis_log"
+  axis_stage="verdict"
   python3 - "$analysis_json" <<'PY' || return 1
 import json, pathlib, sys
 rows = json.loads(pathlib.Path(sys.argv[1]).read_text())
@@ -427,11 +446,34 @@ PY
     printf '%s_samples_sha256=%s\n' "$bpc_label" "$(sha256sum "$samples" | awk '{print $1}')"
     printf '%s_sweep_log_sha256=%s\n' "$bpc_label" "$(sha256sum "$sweep_log" | awk '{print $1}')"
     printf '%s_analysis_json_sha256=%s\n' "$bpc_label" "$(sha256sum "$analysis_json" | awk '{print $1}')"
+    printf '%s_sample_closure_sha256=%s\n' "$bpc_label" "$(sha256sum "$out/sample-closure-${bpc_label}.json" | awk '{print $1}')"
   } >>"$manifest"
-    printf '[q4k65-streamk-sweep] axis blocks_per_cu=%s PASS\n' "$streamk_bpc"
+    axis_stage="complete"
+  }
+
+  axis_failures=0
+  axis_failure_summary=""
+  for streamk_bpc in "${streamk_bpcs[@]}"; do
+    if run_axis "$streamk_bpc"; then
+      printf '%s\tPASS\t0\tcomplete\n' "$streamk_bpc" >>"$axis_status_file"
+      printf '[q4k65-streamk-sweep] axis blocks_per_cu=%s PASS\n' "$streamk_bpc"
+    else
+      rc=$?
+      axis_failures=$((axis_failures + 1))
+      axis_failure_summary="${axis_failure_summary}${axis_failure_summary:+,}bpc${streamk_bpc}:rc${rc}"
+      printf '%s\tFAIL\t%s\t%s\n' "$streamk_bpc" "$rc" "$axis_stage" >>"$axis_status_file"
+      printf '[q4k65-streamk-sweep] axis blocks_per_cu=%s FAIL rc=%d; continuing remaining axes\n' \
+        "$streamk_bpc" "$rc" >&2
+    fi
   done
   find "$out" -type f ! -path "$out/build/*" ! -name bundle-files.sha256 -print0 | \
     sort -z | xargs -0 sha256sum >"$out/bundle-files.sha256"
+  if [ "$axis_failures" -ne 0 ]; then
+    printf '[q4k65-streamk-sweep] FAIL: %d axis/axes failed (%s); successful axes remain valid independent bundles\n' \
+      "$axis_failures" "$axis_failure_summary" >&2
+    printf '[q4k65-streamk-sweep] artifacts: %s\n' "$out" >&2
+    return 1
+  fi
   printf '[q4k65-streamk-sweep] PASS; artifacts: %s\n' "$out"
 }
 

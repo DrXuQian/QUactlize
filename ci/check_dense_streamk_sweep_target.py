@@ -352,6 +352,12 @@ def audit(files: dict[str, str]) -> list[str]:
         "--alpha=1 --beta=0",
         'streamk_bpc_spec="${STREAMK_BLOCKS_PER_CU_LIST:-${STREAMK_BLOCKS_PER_CU:-0}}"',
         'for streamk_bpc in "${streamk_bpcs[@]}"; do',
+        'run_axis() {',
+        'continuing remaining axes',
+        'successful axes remain valid independent bundles',
+        'axis_status_file="$out/axis-status.tsv"',
+        'sample-closure-${bpc_label}.json',
+        'pipeline_rc=("${PIPESTATUS[@]}")',
         '"--streamk-blocks-per-cu=$streamk_bpc"',
         "streamk_blocks_per_cu_zero_semantics=legacy-exact-maximum-occupancy",
         "grid/workspace authority split",
@@ -360,6 +366,26 @@ def audit(files: dict[str, str]) -> list[str]:
         require(runner, token, "box sweep runner", bad)
     for token in ("/tmp/", "mktemp", "probe_box_identity"):
         forbid(runner, token, "workspace-only box sweep runner", bad)
+    if runner.count('sample-closure-${bpc_label}.json') != 2:
+        bad.append(
+            "per-axis sample closure must appear exactly once as producer and once as manifest hash"
+        )
+
+    outer = unique_section(
+        runner,
+        "  axis_failures=0\n",
+        "  find \"$out\" -type f",
+        "axis-independent runner loop",
+        bad,
+    )
+    for token in (
+        'for streamk_bpc in "${streamk_bpcs[@]}"; do',
+        'if run_axis "$streamk_bpc"; then',
+        'axis_failures=$((axis_failures + 1))',
+        'continuing remaining axes',
+    ):
+        require(outer, token, "axis-independent runner loop", bad)
+    forbid(outer, 'return "$rc"', "axis-independent runner loop", bad)
 
     return bad
 
@@ -423,6 +449,18 @@ def negative_controls(files: dict[str, str]) -> list[str]:
             "runner",
             '    "--streamk-blocks-per-cu=$streamk_bpc")',
             '    )',
+        ),
+        (
+            "restore fail-fast outer axis loop",
+            "runner",
+            "      rc=$?\n      axis_failures=$((axis_failures + 1))",
+            "      rc=$?\n      return \"$rc\"\n      axis_failures=$((axis_failures + 1))",
+        ),
+        (
+            "reuse one closure across axes",
+            "runner",
+            'python3 - "$samples" "$reps" "$eligible_rows" "$out/sample-closure-${bpc_label}.json" \\',
+            'python3 - "$samples" "$reps" "$eligible_rows" "$out/sample-closure.json" \\',
         ),
     ]
     for label, owner, old, new in cases:
@@ -490,7 +528,7 @@ def main() -> int:
         "stages=2:132/3:131/4:119/6:108/8:87 "
         "tile_m=16:88/32:175/64:199/128:97/256:18; "
         "private direct-StreamK target + provenance + runner bound; "
-        "9/9 same-source negative controls red"
+        "11/11 same-source negative controls red"
     )
     return 0
 
