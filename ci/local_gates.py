@@ -1187,6 +1187,13 @@ def lint_dense_streamk_contract():
         "dense Stream-K worker/K/fixup/timing seams and the exact fixture are pinned")
 
 
+def lint_dense_streamk_q4k65_target():
+    """The historical gs32 row must remain an isolated, normal-first scheduler A/B."""
+    return _run_ci_script(
+        "check_dense_streamk_q4k65_target.py",
+        "Q4_K65 target, exact fixture, admission order, and 107b isolation are pinned")
+
+
 def lint_dense_shipping_tm8():
     """The complete m8 family must share exact compiled legality and one shape-default authority."""
     return _run_ci_script(
@@ -2174,6 +2181,9 @@ def main():
                   "WARP_M=32", "WARP_N=32", "STAGES=2", "BENCH_GS=32")),
                 ("boxdry", "dense Stream-K target reaches its isolated object graph and host link",
                  ("test_lowbit_dense_streamk_ab", "DENSE_STREAMK_AB=1")),
+                ("boxdry", "Q4_K65 Stream-K A/B reaches its isolated object graph and host link",
+                 ("test_lowbit_dense_streamk_q4k65_ab", "DENSE_STREAMK_AB=1",
+                  "DENSE_STREAMK_Q4K65_AB=1", "BENCH_GS=32")),
                 ("boxdry", "dense Marlin target reaches its isolated DP/Stream-K/Marlin object graph and host link",
                  ("test_lowbit_dense_marlin_ab", "DENSE_MARLIN_AB=1")),
                 ("boxdry", "dense standalone Marlin m8 target reaches its generated object graph and host link",
@@ -2223,6 +2233,7 @@ def main():
                 ("lint", "dense and MoE consume one named measurement layer", lint_bench_measurement_shared),
                 ("lint", "MoE events bracket only gemm.run and retain the host-wall audit", lint_moe_event_timing),
                 ("lint", "dense Stream-K shares worker/K decomposition and resets locks before timing", lint_dense_streamk_contract),
+                ("lint", "Q4_K65 normal admission precedes an exact same-row forced Stream-K A/B", lint_dense_streamk_q4k65_target),
                 ("lint", "dense TM8 family and M<8 default share one exhaustive shipping authority", lint_dense_shipping_tm8),
                 ("lint", "fixed Split-K actual-last/publish diagnostic is ordered, reusable, and source-bound", lint_fixed_splitk_last_arriver),
                 ("lint", "fixed Split-K separate and completion modes reach the same production mainloop", lint_fixed_splitk_production_type),

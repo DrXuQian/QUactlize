@@ -504,9 +504,15 @@ inline bench_measure::Tactic dense_fixed_tactic() {
 #define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    "marlin-ab"
 #define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  "marlin-ab"
 #elif defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_Q4K65_AB)
+#define LOWBIT_DENSE_TABLE_FILE                 "streamk-q4k65-ab-single-row"
+#define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    "streamk-q4k65-ab"
+#define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  "streamk-q4k65-ab"
+#else
 #define LOWBIT_DENSE_TABLE_FILE                 "streamk-ab-single-row"
 #define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    "streamk-ab"
 #define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  "streamk-ab"
+#endif
 #else
 #define LOWBIT_DENSE_TABLE_FILE                 "persistent-ab-single-row"
 #define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    "persistent-ab"
@@ -867,6 +873,11 @@ struct DenseReplayEvidence {
 inline constexpr int kExactFixtureNonzerosPerRow = 32;
 inline constexpr int kExactFixtureScales[] = {1, 2, 4};
 inline constexpr int kExactFixtureZeros[] = {0};
+// This experiment has 128 gs32 groups.  One nonzero per group makes every
+// absolute-K slice observable; scales {1,2} keep the exact worst-case output
+// at 128*1*16=2048, the fp16 integer boundary.
+inline constexpr int kQ4K65ExactFixtureNonzerosPerRow = 128;
+inline constexpr int kQ4K65ExactFixtureScales[] = {1, 2};
 
 enum class DenseVerifyBucket : uint8_t {
   DataParallel = 0,
@@ -1737,20 +1748,36 @@ DenseFixtureEvidence initialize(Options const& options) {
     }
   }
   else if (options.streamk_exact_fixture) {
-    // The actual A0 correctness fixture, deliberately separate from the tiny
-    // --streamk_gate fixture above.  Every row has one +/-1 in each gs128
-    // group, so every split peer sees useful work; scales and int4 codes vary
-    // by both absolute K and N.  Products and all subset sums are integers.
+    // The actual scheduler A/B correctness fixture, deliberately separate
+    // from the tiny --streamk_gate fixture above.  Every row has one +/-1 in
+    // each real scale group (32 gs128 groups in 107b; 128 gs32 groups in the
+    // Q4_K65 target), so every split peer sees useful work.  Products and all
+    // subset sums are integers.
     std::vector<ElementA> host_a(block_A.size(), ElementA(0));
     std::vector<ElementC> host_c(block_C.size(), ElementC(0));
     std::vector<ElementScale> host_scale(block_scale.size());
     std::vector<ElementZero> host_zero(block_zero.size(), ElementZero(0));
+#if defined(DENSE_STREAMK_Q4K65_AB)
+    static_assert(sizeof(kQ4K65ExactFixtureScales) /
+                          sizeof(kQ4K65ExactFixtureScales[0]) == 2,
+                  "the Q4_K 65% fixture scale cycle is part of its checked construction");
+#else
     static_assert(sizeof(kExactFixtureScales) / sizeof(kExactFixtureScales[0]) == 3,
                   "the exact A0 scale cycle is part of its checked construction");
+#endif
     static_assert(sizeof(kExactFixtureZeros) / sizeof(kExactFixtureZeros[0]) == 1 &&
                       kExactFixtureZeros[0] == 0,
                   "ScaleOnly A0 must not claim a load-bearing zero plane");
-#if defined(DENSE_MARLIN_STANDALONE_SWEEP)
+#if defined(DENSE_STREAMK_Q4K65_AB)
+    int const exact_fixture_nonzeros_per_row =
+        kQ4K65ExactFixtureNonzerosPerRow;
+    if (options.k / options.g != exact_fixture_nonzeros_per_row) {
+      std::fprintf(stderr,
+                   "Q4_K65 --streamk_exact_fixture requires K/gs=%d (got %d/%d)\n",
+                   exact_fixture_nonzeros_per_row, options.k, options.g);
+      std::exit(1);
+    }
+#elif defined(DENSE_MARLIN_STANDALONE_SWEEP)
     // The standalone sweep admits every positive K multiple of gs.  Keep one
     // exactly representable nonzero in every real scale group so the same
     // fixture remains order-independent at K=1024 as well as K=4096.
@@ -1777,7 +1804,11 @@ DenseFixtureEvidence initialize(Options const& options) {
     }
     for (int kg = 0; kg < scale_k; ++kg) {
       for (int n = 0; n < options.n; ++n) {
+#if defined(DENSE_STREAMK_Q4K65_AB)
+        int const scale = kQ4K65ExactFixtureScales[(5 * kg + 3 * n) % 2];
+#else
         int const scale = kExactFixtureScales[(5 * kg + 3 * n) % 3];
+#endif
         host_scale[size_t(kg) * options.n + n] = ElementScale(float(scale));
       }
     }
@@ -1828,6 +1859,17 @@ DenseFixtureEvidence initialize(Options const& options) {
     fixture_evidence.fp16_output_exact = fixture_evidence.order_independent &&
         options.alpha == 1.0f && options.beta == 0.0f &&
         max_output <= std::ldexp(1.0, 11);
+#if defined(DENSE_STREAMK_Q4K65_AB)
+    std::printf(
+        "  [streamk fixture exactness] fixture=q4k65-exact shape=%dx%dx%d "
+        "nonzeros/row=%d integer_A=%d integer_weights=%d max|A|=%g max|w|=%g max|D|=%g "
+        "vs fp32=2^24 fp16=2^11 -> %s\n",
+        options.m, options.n, options.k, max_nonzeros, int(integer_a),
+        int(integer_weights), max_abs_a, max_weight, max_output,
+        fixture_evidence.order_independent && fixture_evidence.fp16_output_exact
+            ? "ORDER-INDEPENDENT+FP16-EXACT"
+            : "ROUNDS/INVALID (do not classify ordinary-reference differences)");
+#else
     std::printf(
         "  [streamk fixture exactness] fixture=a0-exact shape=%dx%dx%d "
         "nonzeros/row=%d integer_A=%d integer_weights=%d max|A|=%g max|w|=%g max|D|=%g "
@@ -1837,6 +1879,7 @@ DenseFixtureEvidence initialize(Options const& options) {
         fixture_evidence.order_independent && fixture_evidence.fp16_output_exact
             ? "ORDER-INDEPENDENT+FP16-EXACT"
             : "ROUNDS/INVALID (do not classify ordinary-reference differences)");
+#endif
   }
   else {
     std::printf("  [streamk fixture exactness] fixture=random shape=%dx%dx%d -> "
@@ -4154,12 +4197,20 @@ int main(int argc, char const **args) {
   }
   if (options.streamk_exact_fixture &&
       (
-#if defined(DENSE_MARLIN_AB)
+#if defined(DENSE_STREAMK_Q4K65_AB)
+       options.m != 2048 || options.n != 4096 ||
+#elif defined(DENSE_MARLIN_AB)
        (options.m != 1 && options.m != 2048) ||
 #else
        options.m != 2048 ||
 #endif
        options.k != 4096 || options.l != 1 ||
+#if defined(DENSE_STREAMK_Q4K65_AB)
+       options.g != 32 || options.alpha != 1.0f || options.beta != 0.0f)) {
+    std::fprintf(stderr,
+                 "Q4_K65 --streamk_exact_fixture requires --m=2048 --n=4096 "
+                 "--k=4096 --l=1 --g=32 --alpha=1 --beta=0\n");
+#else
        options.g != 128 || options.alpha != 1.0f || options.beta != 0.0f)) {
     std::fprintf(stderr,
 #if defined(DENSE_MARLIN_AB)
@@ -4168,6 +4219,7 @@ int main(int argc, char const **args) {
                  "--streamk_exact_fixture requires --m=2048 --k=4096 --l=1 "
 #endif
                  "--g=128 --alpha=1 --beta=0 (N may adapt to runtime workers)\n");
+#endif
     return 1;
   }
   if (options.streamk_split_gate && options.iterations != 0) {

@@ -166,6 +166,7 @@ if [ "$TARGET" = "test_lowbit_dense_bench" ] ||
    [ "$TARGET" = "test_lowbit_dense_marlin_standalone_sweep" ] ||
    [ "$TARGET" = "test_lowbit_dense_persistent_ab" ] ||
    [ "$TARGET" = "test_lowbit_dense_streamk_ab" ] ||
+   [ "$TARGET" = "test_lowbit_dense_streamk_q4k65_ab" ] ||
    [ "$TARGET" = "test_lowbit_dense_marlin_ab" ] ||
    [ "$TARGET" = "test_lowbit_dense_marlin_wk4_ab" ] ||
    [ "$TARGET" = "test_lowbit_dense_marlin_m8_ab" ] ||

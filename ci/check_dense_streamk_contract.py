@@ -303,7 +303,14 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         if timing.count("for (int iter = 0; iter < options.iterations; ++iter)") != 2:
             bad.append("Stream-K target must have one record loop and one post-sync query loop")
     try:
-        warmup = section(bench, "  // Create the whole pool before warmup", "\n  // Check if output from kernel")
+        # Stop at the standalone-Marlin subject-only arm.  That arm owns a
+        # second synchronization for its one-launch ACU contract; counting it
+        # as part of Stream-K's common warmup once made this source-only gate
+        # red even though the event interval itself was unchanged.
+        warmup = section(
+            bench,
+            "  // Create the whole pool before warmup",
+            "\n#if defined(DENSE_STANDALONE_MARLIN)")
     except ValueError as e:
         bad.append(str(e))
     else:
