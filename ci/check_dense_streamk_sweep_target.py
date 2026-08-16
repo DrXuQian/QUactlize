@@ -387,6 +387,20 @@ def audit(files: dict[str, str]) -> list[str]:
         require(outer, token, "axis-independent runner loop", bad)
     forbid(outer, 'return "$rc"', "axis-independent runner loop", bad)
 
+    bench = files["bench"]
+    settle_token = "    const int ties = settle(best);\n"
+    empty_token = (
+        "    if (best.tag[0] == '\\0') { std::fprintf(stderr, "
+        '"no config passed\\n"); return 1; }\n'
+    )
+    if bench.count(settle_token) != 1 or bench.count(empty_token) != 1:
+        bad.append("dense selection must have one settle and one empty-result guard")
+    elif bench.index(settle_token) > bench.index(empty_token):
+        bad.append(
+            "dense selection tests an unresolved Best before settle(best); "
+            "a fully passing sweep would report no config passed"
+        )
+
     return bad
 
 
@@ -462,6 +476,18 @@ def negative_controls(files: dict[str, str]) -> list[str]:
             'python3 - "$samples" "$reps" "$eligible_rows" "$out/sample-closure-${bpc_label}.json" \\',
             'python3 - "$samples" "$reps" "$eligible_rows" "$out/sample-closure.json" \\',
         ),
+        (
+            "test unresolved leader before settle",
+            "bench",
+            "    const int ties = settle(best);\n"
+            "    // upd() deliberately accumulates complete per-pass sample vectors; it no\n"
+            "    // longer mutates the provisional leader.  Resolve those vectors before\n"
+            "    // testing whether any candidate passed.  Checking best.tag first makes a\n"
+            "    // fully green sweep end in the contradictory \"no config passed\" state.\n"
+            "    if (best.tag[0] == '\\0') { std::fprintf(stderr, \"no config passed\\n\"); return 1; }\n",
+            "    if (best.tag[0] == '\\0') { std::fprintf(stderr, \"no config passed\\n\"); return 1; }\n"
+            "    const int ties = settle(best);\n",
+        ),
     ]
     for label, owner, old, new in cases:
         changed = dict(files)
@@ -528,7 +554,7 @@ def main() -> int:
         "stages=2:132/3:131/4:119/6:108/8:87 "
         "tile_m=16:88/32:175/64:199/128:97/256:18; "
         "private direct-StreamK target + provenance + runner bound; "
-        "11/11 same-source negative controls red"
+        "12/12 same-source negative controls red"
     )
     return 0
 

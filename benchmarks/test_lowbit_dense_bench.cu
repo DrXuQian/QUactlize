@@ -4667,8 +4667,12 @@ int main(int argc, char const **args) {
       }
     }
     bench_samples::flush();
-    if (best.tag[0] == '\0') { std::fprintf(stderr, "no config passed\n"); return 1; }
     const int ties = settle(best);
+    // upd() deliberately accumulates complete per-pass sample vectors; it no
+    // longer mutates the provisional leader.  Resolve those vectors before
+    // testing whether any candidate passed.  Checking best.tag first makes a
+    // fully green sweep end in the contradictory "no config passed" state.
+    if (best.tag[0] == '\0') { std::fprintf(stderr, "no config passed\n"); return 1; }
     const double best_tf = 2.0 * double(options.m) * options.n * options.k * options.l /
                            (best.us * 1e-6) / 1e12;
     // WRITE A TACTIC ONLY FROM A RESOLVED SWEEP. The comment below says an unresolved one is "a wrong answer
