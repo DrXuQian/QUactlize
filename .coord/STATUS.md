@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-16 07:24:00 UTC
+    updated-at:     2026-08-16 08:25:27 UTC
     inbox-consumed: 178
-    working-on:     fixed Split-K production selector reachability plus unified local-gate registration
+    working-on:     local fixed Split-K format work complete; packaging the W4 production selector and all-format host/compiler proofs
     blocked-on:     no device result claimed; automatic S defaults fail closed to S1 until a profile-bound winner is supplied
-    local-gates:    L197 24/24 routes + 16/16 RED PASS; L198 38,320 cells / 33,004 admitted / 5,316 named rejects PASS; L199 3,520-cell full runner PASS (1,220 admitted / 2,300 named rejects), independent root rerun in flight
-    last-commit:    98e0a89 Cover multiformat fixed Split-K types
-    last-heartbeat: 317
+    local-gates:    L197+L200 PASS; L198 38,320/33,004/5,316 PASS; L199 3,520/1,220/2,300 + 11/11 bodies PASS; pytest 250 PASS/37 device SKIP; L139 freshness rebuilt and PASS
+    last-commit:    0d3c724 Document fixed Split-K format support boundary
+    last-heartbeat: 320
