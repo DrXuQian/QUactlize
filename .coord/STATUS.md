@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-16 08:25:27 UTC
+    updated-at:     2026-08-16 11:24:31 UTC
     inbox-consumed: 178
-    working-on:     local fixed Split-K format work complete; packaging the W4 production selector and all-format host/compiler proofs
-    blocked-on:     no device result claimed; automatic S defaults fail closed to S1 until a profile-bound winner is supplied
-    local-gates:    L197+L200 PASS; L198 38,320/33,004/5,316 PASS; L199 3,520/1,220/2,300 + 11/11 bodies PASS; pytest 250 PASS/37 device SKIP; L139 freshness rebuilt and PASS
-    last-commit:    0d3c724 Document fixed Split-K format support boundary
-    last-heartbeat: 320
+    working-on:     Q4K65 normal-versus-forced-Stream-K target and runner complete; awaiting the same-device box verdict
+    blocked-on:     device timing only; no Q4K65 Stream-K performance result is claimed before the box run
+    local-gates:    Q4K65 contract PASS (4 negatives); isolated multi-TU configure/compile/host-link PASS; 107b 45 negatives PASS; exact fixture/switch macros/table/PPU portability PASS
+    last-commit:    4ddb859 Add Q4K65 normal versus Stream-K experiment
+    last-heartbeat: 322
