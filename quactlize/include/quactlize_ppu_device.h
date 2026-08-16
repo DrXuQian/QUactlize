@@ -9,6 +9,50 @@
 extern "C" {
 #endif
 
+// Complete, versioned profile identity for the one shipping dense W4 fixed
+// Split-K route.  The launch symbol itself fixes ScaleOnly fp16 metadata and a
+// resident xplane-TK64 artifact; retaining those fields in the profile is what
+// lets a stale row fail closed instead of inheriting the current binary's
+// interpretation.  Boolean fields accept only 0 or 1.
+#define QUACTLIZE_PPU_DENSE_W4_SPLITK_PROFILE_SCHEMA_V1 1
+#define QUACTLIZE_PPU_DENSE_W4_SPLITK_QUANT_SCALE_ONLY 0
+#define QUACTLIZE_PPU_DENSE_W4_SPLITK_QUANT_SCALE_ZERO 1
+#define QUACTLIZE_PPU_DENSE_W4_SPLITK_METADATA_FP16_PLANES 0
+#define QUACTLIZE_PPU_DENSE_W4_SPLITK_METADATA_PACKED_UNITS 1
+#define QUACTLIZE_PPU_DENSE_W4_SPLITK_ARTIFACT_RESIDENT_XPLANE 0
+#define QUACTLIZE_PPU_DENSE_W4_SPLITK_ARTIFACT_OTHER 1
+
+typedef struct quactlize_ppu_dense_w4_splitk_key_v1 {
+  int32_t rows;
+  int32_t columns;
+  int32_t inner;
+  int32_t low_bits;
+  int32_t high_bits;
+  int32_t group_size;
+  int32_t quant_semantics;
+  int32_t metadata_storage;
+  int32_t has_zero_plane;
+  int32_t artifact_layout;
+  int32_t artifact_tile_k;
+  int32_t artifact_low_fold;
+  int32_t artifact_high_fold;
+  int32_t artifact_b_chunk;
+  int32_t tactic_tile_m;
+  int32_t tactic_tile_n;
+  int32_t tactic_tile_k;
+  int32_t tactic_warp_m;
+  int32_t tactic_warp_n;
+  int32_t tactic_stages;
+  int32_t packed_a_rows;
+  int32_t aiu_interleaved;
+} quactlize_ppu_dense_w4_splitk_key_v1;
+
+typedef struct quactlize_ppu_dense_w4_splitk_profile_v1 {
+  uint32_t schema_version;
+  quactlize_ppu_dense_w4_splitk_key_v1 key;
+  int32_t selected_s;
+} quactlize_ppu_dense_w4_splitk_profile_v1;
+
 // All data pointers name device memory. stream is the caller's native hggc/CUDA stream handle cast to void*;
 // nullptr selects the runtime default stream. A zero return means the kernel was enqueued, not completed.
 // The caller retains every allocation and must enforce stream lifetime and dependency ordering.
@@ -22,6 +66,29 @@ int quactlize_ppu_gemv_lowbit_dev_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high,
     uint16_t const* scale, uint16_t const* zero, uint16_t* out,
     int m, int n, int k, int group_size, int qtype, void* stream, char const* config_name);
+
+// Dense symmetric W4A16 tensor-core route over the resident int4 xplane-TK64
+// artifact and native fp16 gs128 scales.  It is deliberately separate from
+// dense_lowbit's GGUF Q4_K ScaleZero/gs32 contract and from the packed-unit
+// fully-quantized entries below.
+//
+// A null, stale, malformed, mismatched or explicit-S1 profile selects the
+// historical Shipping::Gemm S1 path.  S={2,4,8} is admitted only when the
+// complete profile key matches the measured exact-warm
+// TM8/TN64/TK128-WM8/WN16/s2 production type (over ArtifactTK64) and the launch
+// workspace is large enough and 128-byte aligned.  The query returns the FP32
+// partial bytes for an admitted parallel profile, zero for an S1 fallback, and
+// -1 for a problem outside the fixed M1/N256/K256 ABI or on size overflow.
+// A successful device entry only enqueues work on stream.
+int64_t quactlize_ppu_dense_w4_splitk_workspace_bytes_v1(
+    int m, int n, int k,
+    quactlize_ppu_dense_w4_splitk_profile_v1 const* profile);
+int quactlize_ppu_dense_w4_splitk_dev_v1(
+    uint16_t const* act, uint8_t const* weight_xplane,
+    uint16_t const* scales, uint16_t* out,
+    int m, int n, int k, void* workspace, int64_t workspace_bytes,
+    void* stream,
+    quactlize_ppu_dense_w4_splitk_profile_v1 const* profile);
 
 // The placed low/high planes and packed units are the same artifact consumed by quactlize_ppu_bc_gemv.
 // experts==0 selects dense and requires total_rows==1. Grouped offsets are cumulative int[experts+1].

@@ -26,6 +26,12 @@
 #include "moe_grouped_ppu.cuh"
 #include "gemv_lowbit/gemv_rt.hpp"
 #include "ppu_dense_shipping_policy.hpp"
+#if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 12
+#define QUACTLIZE_PPU_DENSE_W4_SPLITK_ENABLED 1
+#include "ppu_dense_w4_splitk_launch.cuh"
+#else
+#define QUACTLIZE_PPU_DENSE_W4_SPLITK_ENABLED 0
+#endif
 #include "ppu_format_config.hpp"
 #include "ppu_grouped_configs.inc"
 #include "ppu_placed_arrangement.hpp"
@@ -843,6 +849,58 @@ extern "C" int32_t quactlize_ppu_list_valid_grouped_fully_quantized_configs_v2(
     int total_rows, int n, int k, int group_size, int experts, int max_rows, int qtype) {
   return list_valid_grouped_configs_v2(
       configs, capacity, total_rows, n, k, group_size, experts, max_rows, qtype);
+}
+
+extern "C" int64_t quactlize_ppu_dense_w4_splitk_workspace_bytes_v1(
+    int m, int n, int k,
+    quactlize_ppu_dense_w4_splitk_profile_v1 const* profile) {
+#if QUACTLIZE_PPU_DENSE_W4_SPLITK_ENABLED
+  return ppu_dense_w4_splitk::query_workspace_bytes(m, n, k, profile);
+#else
+  (void)m; (void)n; (void)k; (void)profile;
+  return -1;
+#endif
+}
+
+extern "C" int quactlize_ppu_dense_w4_splitk_dev_v1(
+    uint16_t const* act, uint8_t const* weight_xplane,
+    uint16_t const* scales, uint16_t* out,
+    int m, int n, int k, void* workspace, int64_t workspace_bytes,
+    void* stream,
+    quactlize_ppu_dense_w4_splitk_profile_v1 const* profile) {
+#if QUACTLIZE_PPU_DENSE_W4_SPLITK_ENABLED
+  if (!act || !weight_xplane || !scales || !out ||
+      !ppu_dense_w4_splitk::problem_is_in_fixed_abi(m, n, k)) {
+    return 30;
+  }
+  std::size_t const usable_workspace_bytes = workspace_bytes > 0
+      ? static_cast<std::size_t>(workspace_bytes) : 0;
+  auto const selected = ppu_dense_w4_splitk::select_profile(
+      m, n, k, reinterpret_cast<std::uintptr_t>(workspace),
+      usable_workspace_bytes, profile);
+
+  ppu_gemv::rt_clear_error();
+  hggcStream_t const launch_stream = static_cast<hggcStream_t>(stream);
+  ppu_dense_w4_splitk::Prepared prepared;
+  if (!ppu_dense_w4_splitk::prepare_selected<>(
+          selected, prepared,
+          reinterpret_cast<half_t const*>(act),
+          reinterpret_cast<cutlass::int4b_t const*>(weight_xplane),
+          reinterpret_cast<half_t const*>(scales),
+          reinterpret_cast<half_t*>(out), m, n, k,
+          static_cast<char*>(workspace), usable_workspace_bytes,
+          launch_stream)) {
+    return 31;
+  }
+  if (prepared.run(launch_stream) != cutlass::Status::kSuccess) return 31;
+  return ppu_gemv::rt_check_launch("dense W4 fixed Split-K enqueue")
+      ? 0 : ppu_gemv::kRuntimeError;
+#else
+  (void)act; (void)weight_xplane; (void)scales; (void)out;
+  (void)m; (void)n; (void)k; (void)workspace; (void)workspace_bytes;
+  (void)stream; (void)profile;
+  return 33;
+#endif
 }
 
 extern "C" int quactlize_ppu_dense_lowbit_config_v1(
