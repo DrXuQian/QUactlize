@@ -1910,10 +1910,15 @@ absolute GB/s and its counter/model provenance.  The existing 5070 `11.872 us` w
 
 ### TODO #58 — extend fixed Split-K parallel to every shipping precision and fully-quantized format
 
-**Current completed slice.**  Commit `4bd3def` closes the M=1 packed-A, one-plane W4 `FinegrainedScaleOnly`,
-`gs=128`, TK64-xplane path.  It reuses the shipping mixed-input mainloop, writes ordered FP32 partial planes, and
-dispatches the EPA=2 M=1 reducer for S=2/4/8.  This is not evidence that the remaining formats are wired: the
-prepared handle is deliberately one-plane and the sweep denominator is the W4 ScaleOnly table.
+**Current local state.**  The M=1 packed-A, one-plane W4 `FinegrainedScaleOnly`, `gs=128`, TK64-xplane path is
+exported through the versioned, fail-closed production C ABI in `9eafb04`; its measured production tactic is
+TM8/TN64/TK128/WM8/WN16/stages2 and its profile may select S=2/4/8 while every absent, stale, malformed, or
+wrong-key row takes the literal S1 shipping type.  L198 (`89f2a62`) closes the complete one-plane int4/int2/int1
+ScaleOnly/ScaleZero type and coverage matrix locally.  Corrected L199 (`3175146`) closes Q2/Q3/Q4/Q5/Q6 fp16
+ScaleZero and packed-S/Z metadata types locally, including two-plane folds, the real decode-default packed-A
+provider, and requested/effective BChunk semantics.  These compiler/host proofs are not PPU results: only W4 has
+an exported selector, and no additional format is a profiled/default S>1 route until its device correctness and
+full S-curve are recorded.
 
 **Goal.**  Make fixed Split-K a scheduler/output-phase axis, not a W4 special case.  Cover every precision and
 format that ships through the dense decode/prefill authority:
@@ -2016,5 +2021,8 @@ must avoid the publication cost, prove its exact shipping producer/epilogue sema
 time win.
 
 **Done means:** every shipping precision and the fully-quantized format appears in the generated denominator,
-passes its local exact/negative controls, builds with the real PPU toolchain, and has a recorded PPU S-curve.  Until
-then, documentation and tactic selection must continue to label the current implementation as W4 one-plane only.
+passes its local exact/negative controls, builds with the real PPU toolchain, and has a recorded PPU S-curve.  The
+generated local denominator and exact/negative controls are now present; real PPU builds, per-format correctness,
+S-curves, and non-W4 production selectors remain open.  Until those close, tactic selection must continue to label
+only the explicit W4 one-plane profile as production-reachable Split-K and must not infer support from local type
+formation alone.
