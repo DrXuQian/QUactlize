@@ -79,8 +79,15 @@ spans = re.findall(r"\[dense kernel-span-upper\] n=100 median=([0-9.]+) us", tex
 rows = re.findall(
     r"\[CUTLASS w4 gs=32 cfg=64x64:64 w64x32 s3 bc0->0 "
     r"scheduler=non-persistent\] M=2048\s+([0-9.]+) us", text)
-if len(spans) != 1 or len(rows) != 1 or "  Disposition: Passed" not in text:
-    raise SystemExit("missing unique normal timing/config/PASS evidence")
+occupancy = re.findall(
+    r"\[dense scheduler=non-persistent\] logical_cta=2048 cu=(\d+) "
+    r"occupancy_api=(\d+)", text)
+if (len(spans) != 1 or len(rows) != 1 or len(occupancy) != 1 or
+        "  Disposition: Passed" not in text):
+    raise SystemExit("missing unique normal timing/config/occupancy/PASS evidence")
+cu, ctas_per_cu = map(int, occupancy[0])
+if cu != 72:
+    raise SystemExit(f"expected historical 72-CU box, measured cu={cu}; refusing cross-device admission")
 us = float(spans[0])
 if abs(us - float(rows[0])) > 0.01:
     raise SystemExit(f"normal timing lines disagree: span={us} report={rows[0]}")
@@ -88,7 +95,8 @@ reference = 209.27
 lo, hi = reference * 0.97, reference * 1.03
 mfu = (2.0 * 2048 * 4096 * 4096) / (us * 1e-6) / 500.0e12 * 100.0
 verdict = "ADMITTED" if lo <= us <= hi else "DRIFTED"
-print(f"Q4K65_BASELINE runtime={us:.3f}_us MFU={mfu:.3f}% "
+print(f"Q4K65_BASELINE measured_cu={cu} occupancy_api={ctas_per_cu} "
+      f"runtime={us:.3f}_us MFU={mfu:.3f}% "
       f"registered=209.27_us/65.7% range=[{lo:.3f},{hi:.3f}] verdict={verdict}")
 if verdict != "ADMITTED":
     raise SystemExit("normal baseline drifted beyond the preregistered +/-3% window")

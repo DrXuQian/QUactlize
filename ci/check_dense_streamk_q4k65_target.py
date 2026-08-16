@@ -222,6 +222,8 @@ def audit(files: dict[str, str]) -> list[str]:
         "fixture=q4k65-exact ",
         "max\\|D\\|=2048 ",
         "scheduler=non-persistent\\] logical_cta=(\\d+) cu=(\\d+) ",
+        "if cu != 72:",
+        "expected historical 72-CU box",
         "actual=(\\w+) real_cu=(\\d+)",
         "normal_workers=",
         "Disposition: Passed (whole-K reference bit-exact; fixup replay closed)",
@@ -272,6 +274,9 @@ def self_test(files: dict[str, str]) -> list[str]:
         "fp16 exact bound exceeded", "bench",
         "kQ4K65ExactFixtureScales[] = {1, 2};",
         "kQ4K65ExactFixtureScales[] = {1, 2, 4};")
+    must_fail(
+        "cross-device baseline admitted", "runner",
+        "if cu != 72:", "if cu != 32:")
     return failures
 
 
@@ -294,7 +299,7 @@ def main() -> int:
         "[q4k65-streamk-contract] PASS: 107b unchanged; isolated gs32 "
         "64x64x64/w64x32/s3 m16 target shares Main/Epi; normal admission "
         f"precedes forced Stream-K; exact max|D|={max_output} <= 2^11; "
-        "four same-source negative controls red")
+        "five same-source negative controls red")
     return 0
 
 
