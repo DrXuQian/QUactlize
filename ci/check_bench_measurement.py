@@ -157,6 +157,41 @@ def over_peak_must_not_drop_the_row(texts: dict[str, str]) -> list[str]:
     return problems
 
 
+def dense_selection_must_settle_before_admission(texts: dict[str, str]) -> list[str]:
+    """The dense caller must resolve accumulated samples before testing ``Best.tag``.
+
+    ``upd()`` intentionally appends samples without maintaining a provisional
+    leader.  Consequently an empty tag before ``settle(best)`` means only
+    "not settled", not "no row passed".  This is a caller-ordering contract;
+    the host probe for ``bench_select.hpp`` alone cannot catch it because that
+    probe already calls ``settle`` in the correct order.
+    """
+
+    rel = "benchmarks/test_lowbit_dense_bench.cu"
+    body = uncomment(texts.get(rel, ""))
+    settles = list(re.finditer(r"\bsettle\s*\(\s*best\s*\)", body))
+    admissions = list(re.finditer(
+        r"\bif\s*\(\s*best\.tag\s*\[\s*0\s*\]\s*==\s*'\\0'\s*\)",
+        body,
+    ))
+    problems: list[str] = []
+    if len(settles) != 1:
+        problems.append(
+            f"{rel}: expected one dense settle(best) call, found {len(settles)}"
+        )
+    if len(admissions) != 1:
+        problems.append(
+            f"{rel}: expected one empty-winner admission check, found {len(admissions)}"
+        )
+    if len(settles) == 1 and len(admissions) == 1:
+        if settles[0].start() > admissions[0].start():
+            problems.append(
+                f"{rel}: checks Best.tag before settle(best); passing rows remain "
+                "only in Best.seen and are falsely reported as 'no config passed'"
+            )
+    return problems
+
+
 def audit(texts: dict[str, str]) -> list[str]:
     problems: list[str] = []
     for rel, needles in CONSUMERS.items():
@@ -186,6 +221,7 @@ def audit(texts: dict[str, str]) -> list[str]:
                         f"different machine than the dense and MoE ones")
 
     problems += over_peak_must_not_drop_the_row(texts)
+    problems += dense_selection_must_settle_before_admission(texts)
 
     dense = texts.get("benchmarks/test_lowbit_dense_bench.cu", "")
     if not under_preprocessor_guard(
@@ -227,6 +263,8 @@ int main(int argc, char** argv) {
   bench_measure::Tactic slower{"i4",32,64,64,32,32,3,0,0,false};
   bench_measure::Tactic leader{"i4",64,128,64,64,32,3,0,0,false};
   upd(best, slower, 200.0); upd(best, leader, 100.0);
+  if (best.tag[0] != '\0')
+    return fail("upd unexpectedly resolved a provisional winner before settle");
   settle(best);
   if (!best.has_tactic || best.tactic.tm != 64 || best.tactic.tn != 128)
     return fail("selection discarded the structured winning tactic");
@@ -440,6 +478,28 @@ def main() -> int:
         "benchmarks/test_lowbit_dense_bench.cu"].replace(guard_open, "#if 1\n#if defined(PPU_B_CHUNK)", 1)
     if not audit(planted):
         print("[bench-measurement] FAIL: fixed bc witness was accepted outside the generated-unit guard")
+        return 1
+    controls += 1
+
+    # Same caller, same statements, only their order is wrong.  This is the
+    # exact regression that made a sweep with passing rows print
+    # ``no config passed``: upd() had populated Best.seen, but Best.tag is
+    # deliberately unresolved until settle(best).
+    dense_source = texts["benchmarks/test_lowbit_dense_bench.cu"]
+    settle_line = "    const int ties = settle(best);\n"
+    admission_line = (
+        "    if (best.tag[0] == '\\0') { std::fprintf(stderr, "
+        '"no config passed\\n"); return 1; }\n'
+    )
+    if dense_source.count(settle_line) != 1 or dense_source.count(admission_line) != 1:
+        print("[bench-measurement] FAIL: cannot plant settle/admission ordering control")
+        return 1
+    reordered = dense_source.replace(settle_line, "", 1)
+    reordered = reordered.replace(admission_line, admission_line + settle_line, 1)
+    planted = dict(texts)
+    planted["benchmarks/test_lowbit_dense_bench.cu"] = reordered
+    if not audit(planted):
+        print("[bench-measurement] FAIL: pre-settle empty-winner admission was accepted")
         return 1
     controls += 1
 
