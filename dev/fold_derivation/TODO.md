@@ -1944,17 +1944,30 @@ is about 0.21% of the measured 64 MiB L2, but it is a non-load-bearing note;
 the earlier approximately 1.845 us empty-launch result used a different timing
 scope and is not comparable.
 
-The 2.25 ratio between the two actual-last penalties is merely consistent
+The 2.25 ratio between the two actual-last penalties was merely consistent
 with the 2.0 producer-CTA ratio: TN, producer resources, and producer time
-changed too.  The registered discriminator therefore runs the same actual-
-last kernel and resource allocation with a CTA-uniform diagnostic bit that
-skips only peer reduction and D output.  It must match producer partial bytes,
-leave poisoned D untouched, retire counters to zero, and stay out of
-production ranking.  Its `publish_only - producer_only` delta directly
-measures the publication protocol at fixed TN.  Until that PPU measurement
-exists, per-CTA publication cost is a hypothesis, not the verdict's premise.
-Two-launch is selected by the direct correct E2E comparison regardless of
-attribution; actual-last remains an explicit correctness counterfactual.
+changed too.  Commit `91cfb715` closed the registered discriminator with the
+same actual-last kernel and resource allocation, using a CTA-uniform runtime
+bit to skip only peer reduction and D output.  Producer partial bytes matched,
+poisoned D remained untouched, and every counter retired to zero.  At fixed
+TN the measured `publish_only - producer_only` deltas were 1.8764 us for 512
+CTAs (`TN64`) and 1.5644 us for 256 CTAs (`TN128`); the remaining same-binary
+terminal reduction/D deltas were only 0.6978 and 0.6056 us.  The former is the
+incremental implementation tax of carrying and executing the publication
+path, not a pure atomic/fence cycle count: producer-only is a distinct
+completion-policy kernel type, while publish-only and actual-last are two
+runtime modes of the same fused type.  Publication-path implementation cost
+therefore accounts for about 72% of each actual-last tail and is already
+comparable to the complete 1.759--1.769 us separate reducer.
+
+The publication delta grows only 20% when CTA count doubles, so the stronger
+"all cost is linear per producer CTA" model is rejected.  The result supports
+a large weakly-CTA-scaling component and a smaller shape/count-dependent one;
+cross-TN attribution remains confounded, so no marginal per-CTA coefficient
+is inferred.  Correct two-launch E2E measured
+9.6830/9.8824 us versus 10.4594/10.3096 us actual-last.  Two-launch remains
+selected by direct correct E2E; actual-last and publish-only remain explicit
+counterfactual diagnostics and never enter production ranking.
 
 The separate path also permits a dedicated 32-thread reducer, while actual-
 last holds the 128/256-thread producer CTA's register and smem quotas through
@@ -1985,8 +1998,9 @@ partial ABI rather than reinterpreting it as the current FP32 workspace.
 **PPU acceptance.**  Sweep S independently for every format because the optimum is device- and tactic-specific.
 For each winning cell report S=1 versus S>1 full-E2E latency, raw-bit correctness, reducer-only latency, vector-load
 codegen/spill and saturated reducer-body bandwidth.  The body target remains at least 80% of a matched measured
-memory roof (90% goal); the shipping N=4096 reducer is only 40--136 KiB and is therefore judged against its matching
-launch floor, not against a misleading nameplate `%HBM`.  The W4 one-plane actual-last candidate has now been
+memory roof (90% goal); the shipping N=4096 reducer is only 40--136 KiB, so until a truly matched empty/setup
+control exists it is judged by absolute E2E time and its logical-byte lower bound, not by a mismatched launch floor
+or a misleading nameplate `%HBM`.  The W4 one-plane actual-last candidate has now been
 measured and rejected as the default despite passing correctness; the two-launch path is both the arithmetic oracle
 and the selected completion policy.  Do not require each additional format to implement fused completion merely
 because W4 proved it.  A known one-launch alternative is direct `atomicAdd` into a zero-initialized FP32 D, which

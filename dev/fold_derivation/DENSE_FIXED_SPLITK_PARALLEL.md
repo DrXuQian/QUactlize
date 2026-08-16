@@ -160,10 +160,47 @@ the final D epilogue.  Both arms therefore retain the same register/smem
 allocation and pay the same uniform branch.  Its output is intentionally
 invalid, must leave poisoned D untouched, and must never enter production
 ranking.  The reported `publish_protocol_delta = publish_only - producer_only`
-directly measures the protocol at fixed TN; `actual_last - publish_only`
-isolates the terminal reduction/D portion.  Until that device diagnostic runs,
-the per-CTA publication cost is a supported hypothesis rather than a direct
-measurement.
+measures the incremental implementation cost of enabling the complete
+publication path at fixed TN.  Publish-only and actual-last are runtime modes
+of the same fused kernel type, but producer-only is the separate-completion
+producer type.  The first delta can therefore include code-footprint/resource
+effects from carrying that path; it is not a cycle count for only the dynamic
+atomic/fence instructions.  In contrast, `actual_last - publish_only` is the
+same-binary isolation of the terminal reduction/D portion.
+
+That discriminator ran on commit `91cfb715` with the same exact, warm,
+200-iteration fixture.  All structural controls passed: the publish-only arm
+selected the intended mode, reproduced every producer partial byte, left the
+poisoned D untouched, and returned every counter to zero.
+
+| row | producer only | publish only | publication delta | actual last | terminal reduce/D delta |
+|---|---:|---:|---:|---:|---:|
+| `TN64,TK128,WN16,s2` (512 CTAs) | 7.8852 us | 9.7616 us | **1.8764 us** | 10.4594 us | **0.6978 us** |
+| `TN128,TK128,WN16,s2` (256 CTAs) | 8.1396 us | 9.7040 us | **1.5644 us** | 10.3096 us | **0.6056 us** |
+
+Thus enabling the publication path, before reading peer partials or writing
+D, adds 1.56--1.88 us in this implementation.  It accounts for about 72% of
+the complete fused tail in both rows; terminal ordered reduction and D
+contribute the remaining
+approximately 0.61--0.70 us.  Publication alone is already comparable to the
+complete 1.759--1.769 us separate reducer.  This directly closes the
+implementation-level attribution that the earlier two-row E2E subtraction
+could only suggest; it does not attribute individual cycles within that path.
+
+The 512-CTA publication delta is 0.3120 us (20%) larger than the 256-CTA
+delta, far less than proportional to the 2x CTA count.  The measurement
+therefore rejects the stronger claim that the whole protocol cost is a linear
+per-producer-CTA tax.  It establishes a large weakly-CTA-scaling component
+plus a smaller shape/count-dependent component.  Because TN, CTA count, and
+producer type/code footprint are not independent here, these two rows cannot
+separate fixed setup, resource, and marginal per-CTA causes; no per-CTA
+coefficient is inferred.
+
+In the same invocation, correct two-launch E2E was 9.6830/9.8824 us versus
+10.4594/10.3096 us actual-last: actual-last lost by 0.7764 us (8.02%) and
+0.4272 us (4.32%).  The direct protocol measurement strengthens rather than
+changes the selected policy: keep the separate reducer; retain actual-last
+and publish-only only as counterfactual diagnostic arms.
 
 None of this attribution is required for selection: under the same raw-bit
 correctness contract, `run()` and the two-launch policy win the direct end-to-
