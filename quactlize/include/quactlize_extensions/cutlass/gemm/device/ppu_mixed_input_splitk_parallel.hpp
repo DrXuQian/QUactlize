@@ -128,10 +128,11 @@ reduce_fp32_aligned_fixed_partition_order(
 }
 
 // Cross-CTA actual-last form.  The arithmetic order is byte-for-byte the same
-// as the standalone primitive above; volatile loads are the consumer side of
-// the producer-store -> threadfence -> fetch-old arrival protocol.  Keep this
-// overload scalar and explicit until PPU codegen proves a volatile vector load
-// with the same acquire/visibility semantics.
+// as the standalone primitive above.  Ordering comes from the producer-store
+// -> threadfence -> fetch-old arrival plus the explicit acquire in the
+// completion policy; volatile only prevents the compiler from reusing a peer
+// load.  Keep this overload scalar and explicit unless a replacement proves
+// both the same visibility contract and a device-time win.
 template <int ElementsPerAccess, int Partitions>
 CUTLASS_DEVICE Array<float, ElementsPerAccess>
 reduce_fp32_volatile_fixed_partition_order(

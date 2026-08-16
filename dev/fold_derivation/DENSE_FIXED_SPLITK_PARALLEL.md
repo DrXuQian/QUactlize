@@ -114,6 +114,40 @@ The prepared handle is single-stream and single-in-flight: initialization,
 counter reset, and every fused launch must use the same stream identity.  Two
 handles must not concurrently alias one workspace from different streams.
 
+### First PPU verdict: keep the separate reducer
+
+The actual-last protocol is correct on PPU, but it is not the performance
+policy for the first W4 path.  On the exact warm `M=1,N=K=4096,S=8` fixture,
+all three admitted slice counts (`S=2/4/8`) passed in raw FP16 bits, every
+completion counter returned to zero, and one workspace was reused for eight
+launches.  The performance comparison nevertheless rejected fusion:
+
+| row | producer | separate reducer | two-launch E2E | actual-last E2E | fused minus separate |
+|---|---:|---:|---:|---:|---:|
+| `TN64,TK128,WN16,s2` | 7.8906 us | 1.7702 us | 9.6550 us | 10.3808 us | +0.7258 us (+7.52%) |
+| `TN128,TK128,WN16,s2` | 8.1310 us | 1.7684 us | 9.8894 us | 10.2118 us | +0.3224 us (+3.26%) |
+
+The producer writes `S*N*sizeof(float) = 128 KiB` of FP32 partials and the
+reducer writes an 8 KiB FP16 destination.  The complete 136 KiB logical
+reduction transfer is about 0.21% of the measured 64 MiB L2.  The reducer is
+launched immediately after the producer on the same stream, so the kernel
+boundary supplies producer-to-consumer ordering and the just-written partials
+are expected to be L2-hot.  This is an inference from size, ordering, and
+timing rather than a claimed DRAM-counter measurement.  It is strongly
+supported by the reducer-only 1.77 us being indistinguishable from the
+measured approximately 1.85 us empty-launch floor.
+
+Fusion removes that launch boundary but makes every producer CTA execute the
+publication protocol: CTA synchronization, a device visibility fence, a
+second CTA synchronization, and one completion atomic.  Only the actual last
+CTA reduces.  The fused penalty almost halves when the producer count halves
+from 512 (`TN64`) to 256 (`TN128`), while the reduction element count is
+unchanged.  That is the signature of a per-producer-CTA protocol tax, not of
+expensive partial data movement.  Therefore `run()` and the two-launch policy
+remain the selected performance path.  `run_fused_last_arriver()` remains a
+correctness oracle and an explicit counterfactual; it must not become the
+default without a new disjoint performance win.
+
 ## Required proofs
 
 Local proofs:
@@ -232,7 +266,9 @@ dense benchmark default):
 2. current shipping ordinary reshape (`...WithoutEvt`);
 3. typed packed-A reshape at that same shape;
 4. typed packed-A internal `(1,4096,4096),S=8` producer only;
-5. the same internal problem through the one-launch actual-last fused path.
+5. the same internal problem through the permanent two-launch
+   producer-plus-reducer path, with reducer-only time also printed;
+6. the same internal problem through the one-launch actual-last fused path.
 
 The two geometries have the same CTA and K-step count for each TN.  A complete
 producer+reducer launch is checked in raw FP16 bits before and after timing;

@@ -1930,6 +1930,19 @@ performs `s=0,1,...,S-1` and applies the format's final conversion/epilogue exac
 is allowed merely to enable Split-K.  The existing generic reducer remains the correctness fallback, and the
 EPA=2 M=1 body remains the standalone fast path wherever its alignment/shape contract holds.
 
+**Completion-policy result for the completed W4 slice.**  The PPU exact warm
+canary closed actual-last correctness (S2/S4/S8 raw-bit equality, zeroed
+counters, and eight-launch workspace reuse), but rejected it for performance.
+At S8, `TN64` measured 9.6550 us for producer plus the separate reducer versus
+10.3808 us fused; `TN128` measured 9.8894 versus 10.2118 us.  The separate
+reducer itself was 1.768--1.770 us, at the approximately 1.85 us empty-launch
+floor, while its 136 KiB logical transfer is only about 0.21% of the measured
+64 MiB L2.  The likely mechanism is an L2-hot kernel-boundary handoff versus a
+fence/barrier/atomic tax paid by every producer CTA; this cache statement is a
+size/timing inference, not a DRAM-counter claim.  Two-launch is therefore the
+selected policy.  Actual-last remains an explicit correctness counterfactual,
+not an optimization waiting to be enabled.
+
 **Fully-quantized is a separate proof obligation, not a typedef substitution.**  Its producer must be formed from
 the exact shipping fully-quantized mainloop and its reduction must preserve the shipping accumulator type,
 alpha/bias/output-scale ordering and destination type.  Accepting a fully-quantized argument while silently using
@@ -1955,10 +1968,11 @@ partial ABI rather than reinterpreting it as the current FP32 workspace.
 For each winning cell report S=1 versus S>1 full-E2E latency, raw-bit correctness, reducer-only latency, vector-load
 codegen/spill and saturated reducer-body bandwidth.  The body target remains at least 80% of a matched measured
 memory roof (90% goal); the shipping N=4096 reducer is only 40--136 KiB and is therefore judged against its matching
-launch floor, not against a misleading nameplate `%HBM`.  The W4 one-plane path now has an explicit actual-last
-completion-policy candidate using the same fixed `s=0..S-1` arithmetic and leaving the two-launch path as its
-oracle.  Each additional format must prove fused completion against its own exact shipping producer/epilogue
-semantics; it may not inherit the W4 proof by typedef.
+launch floor, not against a misleading nameplate `%HBM`.  The W4 one-plane actual-last candidate has now been
+measured and rejected as the default despite passing correctness; the two-launch path is both the arithmetic oracle
+and the selected completion policy.  Do not require each additional format to implement fused completion merely
+because W4 proved it.  A future fused variant must first state a mechanism that avoids the measured per-producer-CTA
+publication tax, then prove its own exact shipping producer/epilogue semantics and a disjoint device-time win.
 
 **Done means:** every shipping precision and the fully-quantized format appears in the generated denominator,
 passes its local exact/negative controls, builds with the real PPU toolchain, and has a recorded PPU S-curve.  Until

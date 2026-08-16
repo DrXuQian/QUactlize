@@ -381,10 +381,11 @@ class PreparedOnePlaneLauncher {
     return reduction_.run(stream);
   }
 
-  // One-launch production candidate.  It shares the exact producer mainloop
-  // and partial ABI with run(), but the actual last physical peer performs the
-  // fixed-order reduction before retiring.  Keeping this explicit until the
-  // device canary closes preserves run() as the two-launch arithmetic oracle.
+  // One-launch diagnostic counterfactual.  It shares the exact producer
+  // mainloop and partial ABI with run(), but the actual last physical peer
+  // performs the fixed-order reduction before retiring.  The PPU canary
+  // closed correctness and rejected performance (3.26--7.52% slower), so
+  // run() remains both the arithmetic oracle and the selected policy.
   cutlass::Status run_fused_last_arriver(hggcStream_t stream = nullptr) {
     if (!initialized_ || splits_ <= 1 || !fused_initialized_ ||
         stream != fused_stream_) {
