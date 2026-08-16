@@ -2026,3 +2026,79 @@ generated local denominator and exact/negative controls are now present; real PP
 S-curves, and non-W4 production selectors remain open.  Until those close, tactic selection must continue to label
 only the explicit W4 one-plane profile as production-reachable Split-K and must not infer support from local type
 formation alone.
+
+### TODO #59 — real-GGUF shape sweep, two-pipeline prefill selector, and Stream-K wave-quantization closure
+
+**Priority decision (2026-08-16).**  Decode performance is now close enough to the current target that the next
+performance main line is not another synthetic decode retune.  It is prefill: first build a selector from every
+real checkpoint shape, then add Stream-K to remove the last-wave quantization which tile tuning cannot reach (the
+mechanism already isolated in **#10**).  This TODO records the product sweep needed for the future llama.cpp
+integration; it does not turn the model-derived benchmark rows into a second shape authority.
+
+**Shape authority.**  Read the target GGUF tensor directory and enumerate every two-dimensional K-quant tensor
+which the llama.cpp graph sends to matmul.  GGUF reports `(K,N)` while this repository records `(M,N,K)`; normalize
+once at ingestion, retain tensor names/layer aliases, and deduplicate only by the full
+`(route,qtype,N,K,arrangement)` identity.  Unknown quantized 2-D tensor roles are a named `UNKNOWN_ROUTE`, never a
+silent omission.  The current 11 model-derived dense `(N,K)` geometries are seed/coverage expectations, not the
+final denominator; the checkpoint wins whenever the two disagree.  Keep separate manifests for:
+
+* `dense-real-m1` (`M=1`, decode selector);
+* `dense-real-batch` (`M in {2,4}`, measured crossover rather than a hard-coded phase boundary);
+* `dense-real-prefill` (`M in {64,2048,4096}` initially);
+* dense diagnostic controls such as `(1,4096,4096)` and `(1,32768,512)`, which never vote for a production winner;
+* grouped/MoE, whose `E/active/ragged-route` identity must not be deduplicated with a dense tensor having the same
+  `(N,K)`.
+
+**One checkpoint representation, two prefill competitors.**  The resident checkpoint artifact is the
+fully-quantized `(low, optional-high, packed-metadata-units)` representation.  Prefill must not be assumed to use
+ScaleFirst merely because ScaleFirst currently has the best measurements.  For every real prefill cell, sweep and
+rank these complete pipelines against the same resident bytes, activation, output, stream and correctness oracle:
+
+1. `FQ -> dequant-scale prepass -> ScaleFirst mixed-input GEMM`; and
+2. `FQ -> direct fully-quantized GEMM`.
+
+Pipeline 1 is two kernels.  Its ranked time includes the scale prepass and both launches; workspace allocation is
+excluded only when the production ABI preallocates it, in which case the workspace byte count is part of the
+profile.  It does not materialize the whole fp16 weight: it expands the packed metadata into consumer-ready fp16
+scale/zero planes while the code planes remain packed.  Before treating the resident code planes as a ScaleFirst
+view, prove byte-map identity for that exact `(qtype,arrangement)`; otherwise include the required repack in E2E or
+emit `INCOMPATIBLE_SHARED_ARTIFACT`.  A cached-scale experiment is a separate memory/lifetime policy and must not be
+mixed with the per-invocation prepass result.
+
+The registry identities to preserve are:
+
+| qtype | ScaleFirst TileK (prefill consumer) | FullyQuantized TileK (resident/direct consumer) |
+|---|---:|---:|
+| Q2_K | 128 | 256 |
+| Q3_K | 256 | 256 |
+| Q4_K | 64 | 256 |
+| Q5_K | 256 | 256 |
+| Q6_K | 128 | 128 |
+
+Decode ranks direct consumers of the fully-quantized artifact (placed GEMV, direct tensor-core S1, and each
+device-proved fixed Split-K profile).  It does not pay a ScaleFirst prepass by default, but an explicit measured
+counterexample may win.  TODO **#58** remains the admission boundary for non-W4 fixed Split-K: local type formation
+does not make an unmeasured S>1 route production-reachable.
+
+**Complete candidate accounting.**  Generate tactics from the shipping emitter/config tables, not handwritten
+winner rows.  Every denominator cell ends as `MEASURED`, `INADMISSIBLE:<named reason>`, or
+`BUILD_REJECT:<compiler evidence>`; "lost" and "was never generated" must remain distinguishable.  Layout,
+ArtifactTileK, fold, high plane and metadata ABI are artifact identity, not runtime tactic axes.  The profile key
+contains device/build/config-space hashes, route, qtype/quant semantics/group size, metadata storage, complete
+arrangement descriptor and `(M,N,K,L)`.  The value contains the winning pipeline, tactic, effective BChunk,
+scheduler/S, reducer, raw samples, resolution floor, runner-up gap, correctness result and workspace bytes.
+
+**Prefill Stream-K axis.**  Once the two baseline pipelines exist, add DP versus Stream-K as a scheduler choice on
+the exact winning ScaleFirst and fully-quantized collectives; do not create a third dequant/converter family.
+Stream-K owns only work decomposition, global output-tile identity and cooperative fixup.  Its purpose here is to
+recover the measured last-wave tail when the ordinary grid spans more than one wave.  The ranked number is full
+E2E (including scale prepass when applicable and every fixup/reduction operation), and S1/DP must reproduce the
+existing shipping path.  Report tile count, physical workers, theoretical last-wave waste, actual handoffs and
+full latency so a win can be attributed to wave-quantization recovery rather than a changed layout or arithmetic
+kernel.
+
+**Done means:** a GGUF-derived manifest proves its denominator complete; every real tensor shape has separately
+adjudicated decode and prefill rows; prefill directly compares `prepass+ScaleFirst` with direct FullyQuantized;
+Stream-K is swept on PPU for the prefill rows and selected only where full E2E wins; missing/stale profiles fail
+closed to the exact shipping fallback; and llama.cpp can consume the versioned selector without remembering a
+layout, fold, qtype or phase out of band.
