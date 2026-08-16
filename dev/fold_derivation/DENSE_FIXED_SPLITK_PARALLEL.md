@@ -34,6 +34,65 @@ time that omits the reduction is not a result.
 The deliberately simple two-kernel implementation remains the permanent
 arithmetic oracle for the fused path.
 
+## Local support matrix and evidence
+
+“Local support” here means that the shipping type, argument ABI, admission
+denominator, scheduler coverage, and planted negative controls are closed by a
+host/compiler gate.  By itself it does **not** mean that an exported backend
+ABI can select the path, that it is a production default, or that its PPU
+performance has been measured.  L200 below is the separate proof that closes
+the exported W4 edge.
+
+All admitted `S>1` cells below retain the exact shipping collective and write
+FP32 partials for the separate fixed-order reducer; `S==1` retains the exact
+historical shipping kernel type.  No gate creates a second resident weight
+artifact merely to enable Split-K.
+
+| local gate | locally covered domain | executable evidence | fail-closed boundary |
+|---|---|---|---|
+| L197 + L200 W4 selector/production | `M=1`, packed-A W4 (`4+0`), `FinegrainedScaleOnly`, fp16 scale plane with no zero plane, `gs=128`, resident xplane `ArtifactTileK=64`, `BC=0`, profile `S={1,2,4,8}`.  The exported production type is exactly `TM8/TN64/TK128/WM8/WN16/stages2` over ArtifactTK64. | L197 has 24 policy controls: profiled S2/S4/S8 take fixed Split-K and 21 controls retain the shipping S1 edge.  L200 adds a 22-field/96-byte C-v1 profile, 35 exported-route controls, 22/22 single-field key negatives, the Q4/default build-island backend call edge, exact S1/mainloop identity, and an instantiated/severed backend-to-`PreparedOnePlaneLauncher::initialize` witness. | Missing/stale/malformed profiles, unsupported keys, invalid partitions, and insufficient or misaligned workspace take the literal S1 edge.  L197 requires ten runtime and six source REDs; L200 requires eighteen source REDs.  The Q2 build island exports fail-closed symbols without instantiating W4, and the pre-existing GGUF Q4_K ScaleZero/gs32 ABI remains unchanged. |
+| L198 one-plane family | int4/A64/BC0, int2/A128/BC0+1, and int1/A256/BC0+1; both `ScaleOnly` and `ScaleZero`; `S={1,2,4,8}`.  The complete type matrix uses the shipping gs32 arm and an additional real gs16 pair closes the static/runtime group-size seam. | All 4,790 committed shipping rows are crossed with two modes and four split counts: 38,320 cells, 33,004 admitted and 5,316 named pipeline-depth rejects.  Admitted cells close 8,187,072 unique `(q,peer)` slots, 78,703,616 exact-once `(q,k_tile)` visits, 231,028 raw-FP16-bit checks, BC0/BC1 type witnesses, exact S1 identity, exact S>1 collective reuse, and the FP32 partial ABI. | ScaleOnly accepts only null Z; ScaleZero requires non-null Z.  Static gs16/32 accept only their matching runtime group size.  Six host plants, four format compile plants, and eleven source plants must RED.  This gate makes no gs64 claim. |
+| L199 multiformat family | Shipping Q2/Q3/Q4/Q5/Q6 crossed with fp16 `ScaleZero` planes or packed S/Z units, requested `BC={0,1}`, and `S={1,2,4,8}`; includes one- and two-plane artifacts and independent low/high folds | Twenty format/metadata/BChunk arms contain 3,520 explicit cells: 1,220 admitted and 2,300 named rejects.  Every admitted cell binds the registry-selected shipping type, exact S1/S>1 collective identity, FP32 partial/accumulator, FP16 destination, exact-once K coverage, and matching static gs16/32.  Eleven compiler witnesses reach the production body: five packed BC0, three two-plane scale BC0, and three two-plane packed BC1; packed Q2/Q4 decode-default witnesses use the real M1 packed-A provider, while one-plane scale body evidence remains with L198. | Requested/effective BChunk is explicit: Q2 is `1/0`, Q4 is `1/REJECT`, and Q3/Q5/Q6 are `1/1`.  Missing/unexpected B2, fold or metadata-mode drift, invalid Z/packed metadata, wrong group size, and replacing the Q2/Q4 decode-default packed-A provider are REDs.  Five compile controls must RED. |
+
+In L199, “fully-quantized” names the metadata ABI: A remains FP16,
+the applicable low/high B planes remain packed quantized weights, and the raw
+packed GGUF S/Z units travel through the mainloop metadata channel with
+`ptr_Z == nullptr`.
+It does not mean that A is quantized.  The accumulator and Split-K partials are
+FP32 and the shipping destination is FP16; accepting packed units through the
+fp16-plane collective is a hard failure.
+
+### Production reachability status
+
+L197 closes the reusable policy/profile contract; L200 independently closes
+the public `quactlize_ppu_dense_w4_splitk_*_v1` C ABI, Q4 build island, exact
+production type, backend prepare call, and enqueue edge.  A production caller
+can therefore explicitly supply a complete profile and reach S2/S4/S8 through
+that versioned symbol.  Null, stale, malformed, wrong-key, or explicit-S1
+profiles invoke the literal historical shipping S1 type.  This is an explicit
+W4 API, not a silent redirection of the legacy GGUF Q4_K entry, and no
+unprofiled S>1 default is claimed.
+
+### Registered local gates
+
+The three combined verdicts are registered in `ci/local_gates.py`:
+
+```bash
+./ci/local_gates.py -k "fixed Split-K W4 selector and exported C ABI"
+./ci/local_gates.py -k "fixed Split-K one-plane shipping formats"
+./ci/local_gates.py -k "fixed Split-K multiformat metadata ABIs"
+```
+
+Each first probes whether `nvcc` can compile the CUDA/CUTLASS device stack and,
+when it can, runs the corresponding real runner.  The selector verdict requires
+both L197 and L200; the other verdicts require L198 and corrected L199.  An
+absent or incompatible device compiler is an explicit `SKIP` with its
+diagnostic, never an assumed `PASS`; `--strict` makes such an invocation
+non-green.  These gates compile device-body witnesses where stated and execute
+host oracles, but they do not launch the new format matrix or the exported W4
+entry on a PPU.  Per-format PPU correctness and full end-to-end S-curves,
+reducer timings, and any unprofiled default selection therefore remain pending.
+
 ## Why this is a separate thin kernel
 
 CUTLASS 2.x `GemmSplitKParallel` supplies the right protocol shape (contiguous

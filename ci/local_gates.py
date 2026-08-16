@@ -26,7 +26,7 @@ Three kinds of check:
   ./ci/local_gates.py --list     show what would run
   ./ci/local_gates.py -k q4k     run only matching names
 """
-import argparse, json, os, re, subprocess, sys, time
+import argparse, json, os, re, shutil, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -1230,6 +1230,106 @@ def lint_dense_splitk_sweep_contract():
         "dense Split-K sweep binds its denominator, two-launch oracle and actual-last canary")
 
 
+def _run_fixed_splitk_runner(script_name: str, out_env: str,
+                             verdict_prefix: str):
+    """Run one real fixed-SplitK compiler runner and require its final verdict."""
+    script = DEV / script_name
+    if not script.is_file():
+        return "FAIL", f"missing {script.name}", 0.0
+    OUT.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env[out_env] = str(OUT / script.stem)
+    rc, log, dt = run(["bash", str(script)], cwd=str(ROOT), env=env)
+    lines = [line.strip() for line in log.splitlines() if line.strip()]
+    verdict = next((line for line in reversed(lines)
+                    if line.startswith(verdict_prefix)), "")
+    if rc != 0 or not verdict:
+        return "FAIL", (lines[-1] if lines else f"{script.name} exited {rc}"), dt
+    return "PASS", verdict, dt
+
+
+def lint_dense_splitk_shipping_selector():
+    """W4 policy and exported C ABI must fail closed around one production type."""
+    if shutil.which(NVCC[0]) is None:
+        return "SKIP", "W4 fixed Split-K selector proof needs nvcc, which is not on PATH", 0.0
+    ok, why = nvcc_can_compile_device_cuda()
+    if not ok:
+        return "SKIP", f"W4 fixed Split-K selector proof needs a CUDA device compiler: {why}", 0.0
+    # Each checker runs its named concrete compiler runner.  Require both the
+    # reusable L197 policy/type contract and L200's exported backend C-ABI edge;
+    # neither verdict may stand in for the other.
+    policy_runner = DEV / "run_l197_dense_splitk_shipping_selector.sh"
+    policy_checker = ROOT / "ci" / "check_dense_splitk_shipping_selector.py"
+    production_runner = DEV / "run_l200_dense_w4_splitk_production.sh"
+    production_checker = ROOT / "ci" / "check_dense_w4_splitk_production.py"
+    required = (policy_runner, policy_checker, production_runner,
+                production_checker)
+    missing = next((path for path in required if not path.is_file()), None)
+    if missing is not None:
+        return "FAIL", f"missing {missing.relative_to(ROOT)}", 0.0
+    policy_rc, policy_log, policy_dt = run(
+        [sys.executable, str(policy_checker)], cwd=str(ROOT))
+    policy_lines = [line.strip() for line in policy_log.splitlines()
+                    if line.strip()]
+    policy_verdict = next((line for line in reversed(policy_lines)
+                           if line.startswith(
+                               "[dense-splitk-shipping-selector] PASS")), "")
+    if policy_rc != 0 or not policy_verdict:
+        return "FAIL", (policy_lines[-1] if policy_lines
+                         else f"{policy_checker.name} exited {policy_rc}"), policy_dt
+    production_rc, production_log, production_dt = run(
+        [sys.executable, str(production_checker)], cwd=str(ROOT))
+    production_lines = [line.strip() for line in production_log.splitlines()
+                        if line.strip()]
+    production_verdict = next((line for line in reversed(production_lines)
+                               if line.startswith(
+                                   "[dense-w4-splitk-production] PASS")), "")
+    if production_rc != 0 or not production_verdict:
+        return "FAIL", (production_lines[-1] if production_lines
+                         else f"{production_checker.name} exited {production_rc}"), (
+                             policy_dt + production_dt)
+    return ("PASS", policy_verdict + " | " + production_verdict,
+            policy_dt + production_dt)
+
+
+def lint_dense_splitk_oneplane_formats():
+    """Every shipping one-plane row must retain its exact type and FP32 partial ABI."""
+    if shutil.which(NVCC[0]) is None:
+        return "SKIP", "one-plane fixed Split-K type proof needs nvcc, which is not on PATH", 0.0
+    ok, why = nvcc_can_compile_device_cuda()
+    if not ok:
+        return "SKIP", f"one-plane fixed Split-K type proof needs a CUDA device compiler: {why}", 0.0
+    checker = ROOT / "ci" / "check_dense_splitk_oneplane.py"
+    if not checker.is_file():
+        return "FAIL", f"missing {checker.relative_to(ROOT)}", 0.0
+    source_rc, source_log, source_dt = run(
+        [sys.executable, str(checker)], cwd=str(ROOT))
+    source_lines = [line.strip() for line in source_log.splitlines() if line.strip()]
+    source_verdict = next((line for line in reversed(source_lines)
+                           if line.startswith("[dense-splitk-oneplane] PASS")), "")
+    if source_rc != 0 or not source_verdict:
+        return "FAIL", (source_lines[-1] if source_lines
+                         else f"{checker.name} exited {source_rc}"), source_dt
+    status, runner_verdict, runner_dt = _run_fixed_splitk_runner(
+        "run_l198_dense_splitk_oneplane.sh", "QUACTLIZE_L198_OUT",
+        "[l198:runner] PASS")
+    if status != "PASS":
+        return status, runner_verdict, source_dt + runner_dt
+    return "PASS", source_verdict + " | " + runner_verdict, source_dt + runner_dt
+
+
+def lint_dense_splitk_multiformat_types():
+    """All qtypes, metadata ABIs and BChunk arms must bind real shipping collectives."""
+    if shutil.which(NVCC[0]) is None:
+        return "SKIP", "multiformat fixed Split-K type proof needs nvcc, which is not on PATH", 0.0
+    ok, why = nvcc_can_compile_device_cuda()
+    if not ok:
+        return "SKIP", f"multiformat fixed Split-K type proof needs a CUDA device compiler: {why}", 0.0
+    return _run_fixed_splitk_runner(
+        "run_l199_dense_splitk_multiformat_type.sh", "QUACTLIZE_L199_OUT",
+        "[l199] PASS:")
+
+
 def lint_streamk_tail_plan():
     """INBOX 122's scan must include attributed zero, medium, and extreme last waves."""
     return _run_ci_script(
@@ -2127,6 +2227,9 @@ def main():
                 ("lint", "fixed Split-K actual-last/publish diagnostic is ordered, reusable, and source-bound", lint_fixed_splitk_last_arriver),
                 ("lint", "fixed Split-K separate and completion modes reach the same production mainloop", lint_fixed_splitk_production_type),
                 ("lint", "dense Split-K sweep binds its oracle and fused exact canary", lint_dense_splitk_sweep_contract),
+                ("lint", "fixed Split-K W4 selector and exported C ABI fail closed", lint_dense_splitk_shipping_selector),
+                ("lint", "fixed Split-K one-plane shipping formats retain exact types", lint_dense_splitk_oneplane_formats),
+                ("lint", "fixed Split-K multiformat metadata ABIs retain exact types", lint_dense_splitk_multiformat_types),
                 ("lint", "Stream-K tail scan covers attributed zero, medium, and extreme waves", lint_streamk_tail_plan),
                 ("lint", "dense Marlin keeps K-fast stripes, reverse q locks, and the scheduler-owned grid", lint_dense_marlin_contract),
                 ("lint", "dense Marlin exhausts the declared deployment domain without sampling", lint_dense_marlin_exhaustive),
