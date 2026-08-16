@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-16 11:33:21 UTC
+    updated-at:     2026-08-16 11:44:23 UTC
     inbox-consumed: 178
-    working-on:     Q4K65 normal-versus-forced-Stream-K target and runner complete; awaiting the same-device box verdict
-    blocked-on:     device timing only; no Q4K65 Stream-K performance result is claimed before the box run
-    local-gates:    Q4K65 contract PASS (6 negatives, including space-bearing selector and 32-CU drift); isolated multi-TU configure/compile/host-link PASS; 107b 45 negatives PASS
-    last-commit:    dd3459e Use compact config selector in Q4K65 runner
-    last-heartbeat: 324
+    working-on:     Q4K65 historical admission restored to its original aggregate-average protocol; exact normal/Stream-K A/B retains common per-launch medians
+    blocked-on:     rerun on the 72-CU box; the prior 217.040-us red used a non-comparable per-launch median against the 209.27-us aggregate anchor
+    local-gates:    Q4K65 contract PASS (7 negatives); isolated multi-TU configure/compile/host-link PASS 99.3s; 107b 45 negatives, exact fixture, switch macros PASS
+    last-commit:    5c3f258 coord: record Q4K65 selector fix
+    last-heartbeat: 325

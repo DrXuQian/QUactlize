@@ -206,6 +206,11 @@ def audit(files: dict[str, str]) -> list[str]:
         "int const q = ((k >> 3) & 1) ? (-8 + code) : code;",
         "max_output <= std::ldexp(1.0, 24)",
         "max_output <= std::ldexp(1.0, 11)",
+        "[dense historical aggregate] n=%d average=%.3f us ",
+        "protocol=PpuTimer-aggregate reference=209.27us",
+        "bool const q4k65_historical_timing =",
+        "!options.streamk_exact_fixture && !options.streamk;",
+        "[dense kernel-span-upper] n=%zu median=%.3f us mean=%.3f us ",
     ):
         require_once(bench, token, "Q4_K65 benchmark contract", bad)
     bound = exact_bound(bench, bad)
@@ -225,6 +230,10 @@ def audit(files: dict[str, str]) -> list[str]:
         "scheduler=non-persistent\\] logical_cta=(\\d+) cu=(\\d+) ",
         "if cu != 72:",
         "expected historical 72-CU box",
+        r"\[dense historical aggregate\] n=100 average=([0-9.]+) us ",
+        "protocol=PpuTimer-aggregate reference=209\\.27us",
+        'spans = re.findall(r"\\[dense kernel-span-upper\\]", text)',
+        "len(aggregates) != 1 or len(spans) != 0",
         "actual=(\\w+) real_cu=(\\d+)",
         "normal_workers=",
         "Disposition: Passed (whole-K reference bit-exact; fixup replay closed)",
@@ -282,6 +291,10 @@ def self_test(files: dict[str, str]) -> list[str]:
         "space-bearing report tag used as selector", "runner",
         "CONFIG='64x64x64:64x32:s3:bc0->0'",
         "CONFIG='64x64:64 w64x32 s3 bc0->0'")
+    must_fail(
+        "historical aggregate silently becomes a per-launch median", "bench",
+        "protocol=PpuTimer-aggregate reference=209.27us",
+        "protocol=per-launch-median reference=209.27us")
     return failures
 
 
@@ -304,7 +317,7 @@ def main() -> int:
         "[q4k65-streamk-contract] PASS: 107b unchanged; isolated gs32 "
         "64x64x64/w64x32/s3 m16 target shares Main/Epi; normal admission "
         f"precedes forced Stream-K; exact max|D|={max_output} <= 2^11; "
-        "six same-source negative controls red")
+        "seven same-source negative controls red")
     return 0
 
 

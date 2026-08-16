@@ -3521,6 +3521,29 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   // Run profiling loop
   if (options.iterations > 0)
   {
+#if defined(DENSE_STREAMK_Q4K65_AB)
+    // Historical admission must use the same aggregate-average protocol as
+    // the ordinary dense binary that produced 209.27 us.  Exact normal/SK A/B
+    // below deliberately retains distinct per-launch events and a median.
+    bool const q4k65_historical_timing =
+        !options.streamk_exact_fixture && !options.streamk;
+    if (q4k65_historical_timing) {
+      PpuTimer timer;
+      timer.start();
+      for (int iter = 0; iter < options.iterations; ++iter) {
+        CUTLASS_CHECK(gemm.run());
+      }
+      timer.stop();
+      result.avg_runtime_ms =
+          double(timer.elapsed_millis()) / double(options.iterations);
+      std::printf(
+          "  [dense historical aggregate] n=%d average=%.3f us "
+          "protocol=PpuTimer-aggregate reference=209.27us\n",
+          options.iterations, result.avg_runtime_ms * 1.0e3);
+    }
+    else
+#endif
+    {
 #if defined(DENSE_STREAMK_AB)
     // One distinct event pair per launch for every arm in this binary.  A
     // Stream-K launch leaves its turnstile lock at the completed K count, so
@@ -3580,6 +3603,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
     float elapsed_ms = timer.elapsed_millis();
     result.avg_runtime_ms = double(elapsed_ms) / double(options.iterations);
 #endif
+    }
 
     // Compute runtime-normalized throughput.  The 107b target uses the median
     // of independent kernel spans; the existing targets retain their mean.
@@ -3587,7 +3611,14 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
 
     std::cout << "  Problem Size: " << options.m << 'x' << options.n << 'x' << options.k << 'x' << options.l << std::endl;
 #if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_Q4K65_AB)
+    if (q4k65_historical_timing)
+      std::cout << "  Avg runtime: " << result.avg_runtime_ms << " ms" << std::endl;
+    else
+      std::cout << "  Median runtime: " << result.avg_runtime_ms << " ms" << std::endl;
+#else
     std::cout << "  Median runtime: " << result.avg_runtime_ms << " ms" << std::endl;
+#endif
 #else
     std::cout << "  Avg runtime: " << result.avg_runtime_ms << " ms" << std::endl;
 #endif
