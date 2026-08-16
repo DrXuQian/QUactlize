@@ -300,8 +300,9 @@ public:
     Tensor gA = get<0>(load_inputs);
     Tensor gB = get<1>(load_inputs);
 
-    auto m_max = M - size<0>(gA) * m_idx;
-    auto n_max = N - size<0>(gB) * n_idx;
+    // gA/gB describe physical transfer shapes; output residue follows the logical CTA tile.
+    auto m_max = M - size<0>(blk_shape) * m_idx;
+    auto n_max = N - size<1>(blk_shape) * n_idx;
     auto k_res = K - size<1>(gA) * size<2>(gA);
     auto residue_mnk = make_tuple(m_max, n_max, k_res);
 

@@ -1748,6 +1748,13 @@ def lint_mixed_argument_contract():
         "three mixed-input collectives share dA outer-base and logical-N residue seams")
 
 
+def lint_mixed_logical_m_residue():
+    """Output M/N residues must use logical tiles even when m8 widens physical A."""
+    return _run_ci_script(
+        "check_mixed_logical_m_residue.py",
+        "nine mixed-input kernels use logical M/N residues and loaded-A K")
+
+
 def lint_subbyte_units():
     """Physical bytes, logical codes and scheduler K tiles must not alias units."""
     return _run_ci_script(
@@ -2289,6 +2296,7 @@ def main():
                 ("lint", "G5 maps caller slots through real experts before naming oracles and output rows", lint_g5_harness_slot_contract),
                 ("lint", "caller dS changes all three shipping S/Z metadata address maps", lint_metadata_stride_contract),
                 ("lint", "mixed-input outer bases and residues honor caller/logical coordinates", lint_mixed_argument_contract),
+                ("lint", "all mixed-input kernels derive output M/N residue from logical CTA tiles", lint_mixed_logical_m_residue),
                 ("lint", "sub-byte logical codes and packed bytes never share an unlabeled owner", lint_subbyte_units),
                 ("lint", "ppu001 plain LDSM fails in C++ before its unproved assembler path", lint_plain_ldsm_failclosed),
                 ("lint", "quactlize_extensions adds to actlize rather than redefining it", lint_extension_additive),

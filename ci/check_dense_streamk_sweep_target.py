@@ -3,9 +3,10 @@
 
 The device run owns numerical correctness and performance.  This local gate
 owns a different question: does the binary enumerate every currently
-compilable int4/gs32 Stream-K row from the committed dense authority, and do
-all generated wrappers instantiate StreamKGemm rather than silently falling
-back to the ordinary DP kernel?
+compilable prefill (TM>=16) int4/gs32 Stream-K row from the committed dense
+authority, excluding the decode-only TM8 atom family, and do all generated
+wrappers instantiate StreamKGemm rather than silently falling back to the
+ordinary DP kernel?
 
 The denominator is derived here from ``lowbit_dense_configs.inc``.  It is not
 copied from the generated registry or from the runner, since agreement between
@@ -51,20 +52,33 @@ class Census:
     stage4: int
     stage6: int
     stage8: int
+    tm16: int
+    tm32: int
+    tm64: int
+    tm128: int
+    tm256: int
 
 
 EXPECTED = Census(
     source=1772,
-    eligible=665,
-    filtered=1107,
-    threads64=293,
-    threads128=372,
-    stage2=150,
-    stage3=149,
-    stage4=137,
-    stage6=125,
-    stage8=104,
+    eligible=577,
+    filtered=1195,
+    threads64=248,
+    threads128=329,
+    stage2=132,
+    stage3=131,
+    stage4=119,
+    stage6=108,
+    stage8=87,
+    tm16=88,
+    tm32=175,
+    tm64=199,
+    tm128=97,
+    tm256=18,
 )
+
+DECODE_ONLY_TM8_ROW = (8, 32, 64, 8, 16, 2, 0)
+PREFILL_TM16_ROW = (16, 32, 64, 16, 16, 2, 0)
 
 
 def parse_rows(text: str) -> list[tuple[int, int, int, int, int, int, int]]:
@@ -81,7 +95,7 @@ def cta_threads(row: tuple[int, ...]) -> int:
 def eligible_rows(rows: list[tuple[int, ...]]) -> list[tuple[int, ...]]:
     return [
         row for row in rows
-        if cta_threads(row) in (64, 128) and row[5] - 1 <= 8
+        if row[0] >= 16 and cta_threads(row) in (64, 128) and row[5] - 1 <= 8
     ]
 
 
@@ -89,6 +103,7 @@ def census(rows: list[tuple[int, ...]]) -> Census:
     admitted = eligible_rows(rows)
     threads = Counter(cta_threads(row) for row in admitted)
     stages = Counter(row[5] for row in admitted)
+    tile_ms = Counter(row[0] for row in admitted)
     return Census(
         source=len(rows),
         eligible=len(admitted),
@@ -100,6 +115,11 @@ def census(rows: list[tuple[int, ...]]) -> Census:
         stage4=stages[4],
         stage6=stages[6],
         stage8=stages[8],
+        tm16=tile_ms[16],
+        tm32=tile_ms[32],
+        tm64=tile_ms[64],
+        tm128=tile_ms[128],
+        tm256=tile_ms[256],
     )
 
 
@@ -152,6 +172,16 @@ def audit(files: dict[str, str]) -> list[str]:
     if got != EXPECTED:
         bad.append(f"authority census: got {got}, expected {EXPECTED}")
     admitted = eligible_rows(rows) if got is not None else []
+    if DECODE_ONLY_TM8_ROW not in rows:
+        bad.append("authority witness: the concrete decode-only TM8 row disappeared")
+    elif DECODE_ONLY_TM8_ROW in admitted:
+        bad.append("authority witness: decode-only TM8 was admitted to the prefill sweep")
+    if PREFILL_TM16_ROW not in rows:
+        bad.append("authority witness: the concrete prefill TM16 row disappeared")
+    elif PREFILL_TM16_ROW not in admitted:
+        bad.append("authority witness: the m16 prefill control was filtered out")
+    if any(row[0] < 16 for row in admitted):
+        bad.append("authority census: a TM<16 row entered the prefill sweep")
     if any(row[6] != 0 for row in admitted):
         bad.append("authority census: a Stream-K-admitted int4 row unexpectedly uses B-chunk")
 
@@ -168,6 +198,7 @@ def audit(files: dict[str, str]) -> list[str]:
         "LIST_MACRO LOWBIT_DENSE_CFG_LIST",
         "COUNT_MACRO LOWBIT_DENSE_CFG_ROWS",
         'math(EXPR _DENSE_STREAMK_CTA_THREADS\n       "${_DENSE_STREAMK_M_WARPS} * ${_DENSE_STREAMK_N_WARPS} * 32")',
+        "(_tm GREATER_EQUAL 16)",
         "(_DENSE_STREAMK_CTA_THREADS EQUAL 64)",
         "(_DENSE_STREAMK_CTA_THREADS EQUAL 128)",
         'math(EXPR _DENSE_STREAMK_STARTUP_STAGES "${_st} - 1")',
@@ -233,6 +264,7 @@ def audit(files: dict[str, str]) -> list[str]:
     for token in (
         '"[dense-table] scheduler=streamk file=%s rows=%d source_rows=%d "',
         '"eligible_rows=%d filtered_rows=%d gs=32 "',
+        '"shape_scope=prefill-TM>=16 "',
         '"cohort_capability=exact-cta-threads-64-or-128 "',
         '"startup_capability=Stages-1<=8 source_space_fnv1a64=%s "',
         "LOWBIT_DENSE_STREAMK_SWEEP_FILTERED_ROWS +",
@@ -259,6 +291,8 @@ def audit(files: dict[str, str]) -> list[str]:
         bad,
     )
     for token in (
+        'static_assert(TM >= 16,',
+        '"the dense Stream-K prefill sweep excludes decode-only TM8"',
         "using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::StreamKGemm;",
         'return run<G>(options, dense_tactic(cfg), "streamk");',
     ):
@@ -297,10 +331,12 @@ def audit(files: dict[str, str]) -> list[str]:
         "target=test_lowbit_dense_streamk_sweep",
         "scheduler=streamk",
         "source_rows=1772",
-        "eligible_rows=665",
-        "filtered_rows=1107",
-        "threads=64:293,128:372",
-        "stages=2:150,3:149,4:137,6:125,8:104",
+        "eligible_rows=577",
+        "filtered_rows=1195",
+        "threads=64:248,128:329",
+        "stages=2:132,3:131,4:119,6:108,8:87",
+        "tile_m=16:88,32:175,64:199,128:97,256:18",
+        "prefill_tm_min=16",
         "--streamk_exact_fixture",
         "--m=2048 --n=4096 --k=4096 --l=1 --g=32 --mode=1",
         "--alpha=1 --beta=0",
@@ -324,6 +360,18 @@ def mutate_once(text: str, old: str, new: str, label: str) -> str:
 def negative_controls(files: dict[str, str]) -> list[str]:
     failures: list[str] = []
     cases: list[tuple[str, str, str, str]] = [
+        (
+            "admit decode-only TM8",
+            "cmake",
+            "(_tm GREATER_EQUAL 16)",
+            "(_tm GREATER_EQUAL 8)",
+        ),
+        (
+            "drop prefill TM16 control",
+            "cmake",
+            "(_tm GREATER_EQUAL 16)",
+            "(_tm GREATER_EQUAL 32)",
+        ),
         (
             "wrong CTA cohort",
             "cmake",
@@ -411,9 +459,10 @@ def main() -> int:
         "[dense-streamk-sweep-contract] PASS: "
         f"source={got.source} eligible={got.eligible} filtered={got.filtered} "
         f"threads=64:{got.threads64}/128:{got.threads128} "
-        "stages=2:150/3:149/4:137/6:125/8:104; "
+        "stages=2:132/3:131/4:119/6:108/8:87 "
+        "tile_m=16:88/32:175/64:199/128:97/256:18; "
         "private direct-StreamK target + provenance + runner bound; "
-        "5/5 same-source negative controls red"
+        "7/7 same-source negative controls red"
     )
     return 0
 

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Build and sweep the complete int4/gs32 dense Stream-K tactic registry at the
-# Q4_K65 prefill shape.  This is a scheduler-specific binary: every generated
-# wrapper is StreamKGemm, while --streamk is retained as explicit operator
-# intent rather than as a runtime selector.
+# Build and sweep the complete prefill (TM>=16) int4/gs32 dense Stream-K tactic
+# registry at the Q4_K65 prefill shape.  Decode-only TM8 is intentionally out
+# of scope.  This is a scheduler-specific binary: every generated wrapper is
+# StreamKGemm, while --streamk is retained as explicit operator intent rather
+# than as a runtime selector.
 #
 # Durable evidence lives below /workspace.  The 209.30 us exact-normal result
 # is printed as context only; it is not an admission threshold for this sweep.
@@ -69,6 +70,7 @@ main() {
     printf 'actlize_sha=%s\n' "$(git -C "$root/third_party/actlize" rev-parse HEAD)"
     printf 'target=%s\n' "$target"
     printf 'shape=M2048,N4096,K4096,L1,gs32,ScaleOnly\n'
+    printf 'sweep_scope=prefill\nprefill_tm_min=16\n'
     printf 'fixture=q4k65-exact,order-independent+fp16-exact\n'
     printf 'scheduler=streamk,build-time-direct-wrapper\n'
     printf 'bench_reps=%s\niterations=%s\njobs=%s\n' "$reps" "$iterations" "$jobs"
@@ -127,9 +129,10 @@ text = pathlib.Path(sys.argv[1]).read_text()
 provenance = re.findall(
     r"^\[dense-table\] scheduler=streamk .* rows=(\d+) source_rows=(\d+) "
     r"eligible_rows=(\d+) filtered_rows=(\d+) gs=32 .*"
+    r"shape_scope=prefill-TM>=16 .*"
     r"cohort_capability=exact-cta-threads-64-or-128 .*"
     r"startup_capability=Stages-1<=8 .*?$", text, re.M)
-if provenance != [("665", "1772", "665", "1107")]:
+if provenance != [("577", "1772", "577", "1195")]:
     raise SystemExit(f"[q4k65-streamk-sweep] FAIL: bad/duplicate provenance: {provenance}")
 row_re = re.compile(
     r"^  (?P<name>.+?)\s{2,}tile (?P<tm>\d+)x(?P<tn>\d+)x(?P<tk>\d+)  "
@@ -142,9 +145,9 @@ for m in row_re.finditer(text):
         raise SystemExit(f"[q4k65-streamk-sweep] FAIL: non-integral topology: {d}")
     d["threads"] = 32 * (d["tm"] // d["wm"]) * (d["tn"] // d["wn"])
     rows.append(d)
-if len(rows) != 665:
-    raise SystemExit(f"[q4k65-streamk-sweep] FAIL: list has {len(rows)} rows, expected 665")
-if len({r["name"] for r in rows}) != 665:
+if len(rows) != 577:
+    raise SystemExit(f"[q4k65-streamk-sweep] FAIL: list has {len(rows)} rows, expected 577")
+if len({r["name"] for r in rows}) != 577:
     raise SystemExit("[q4k65-streamk-sweep] FAIL: config names are not unique")
 name_re = re.compile(
     r"^(\d+)x(\d+):(\d+) w(\d+)x(\d+) s(\d+) bc(\d+)->(\d+)$")
@@ -159,6 +162,10 @@ for row in rows:
     if bc_eff != 0:
         raise SystemExit(f"[q4k65-streamk-sweep] FAIL: int4 row unexpectedly grants B-chunk: {row['name']}")
     listed.add((tm, tn, tk, wm, wn, st, bc))
+if any(row["tm"] < 16 for row in rows):
+    raise SystemExit("[q4k65-streamk-sweep] FAIL: decode-only TM8 entered the prefill registry")
+if not any(row["tm"] == 16 for row in rows):
+    raise SystemExit("[q4k65-streamk-sweep] FAIL: prefill registry lost its TM16 control")
 authority_text = pathlib.Path(sys.argv[3]).read_text()
 authority = [tuple(map(int, m.groups())) for m in re.finditer(
     r"^\s*X\((\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),B\)",
@@ -167,33 +174,40 @@ if len(authority) != 1772:
     raise SystemExit(f"[q4k65-streamk-sweep] FAIL: source authority has {len(authority)} rows")
 expected = {
     r for r in authority
-    if 32 * (r[0] // r[3]) * (r[1] // r[4]) in (64, 128) and r[5] - 1 <= 8
+    if r[0] >= 16 and
+       32 * (r[0] // r[3]) * (r[1] // r[4]) in (64, 128) and
+       r[5] - 1 <= 8
 }
-if len(expected) != 665 or listed != expected:
+if len(expected) != 577 or listed != expected:
     raise SystemExit(
         f"[q4k65-streamk-sweep] FAIL: listed registry is not the exact independently filtered authority "
         f"missing={len(expected-listed)} extra={len(listed-expected)}")
 thread_counts = collections.Counter(r["threads"] for r in rows)
 stage_counts = collections.Counter(r["st"] for r in rows)
-if thread_counts != {64: 293, 128: 372}:
+tile_m_counts = collections.Counter(r["tm"] for r in rows)
+if thread_counts != {64: 248, 128: 329}:
     raise SystemExit(f"[q4k65-streamk-sweep] FAIL: CTA cohort census {dict(thread_counts)}")
-if stage_counts != {2: 150, 3: 149, 4: 137, 6: 125, 8: 104}:
+if stage_counts != {2: 132, 3: 131, 4: 119, 6: 108, 8: 87}:
     raise SystemExit(f"[q4k65-streamk-sweep] FAIL: stage census {dict(stage_counts)}")
+if tile_m_counts != {16: 88, 32: 175, 64: 199, 128: 97, 256: 18}:
+    raise SystemExit(f"[q4k65-streamk-sweep] FAIL: prefill TileM census {dict(tile_m_counts)}")
 out = {
-    "source_rows": 1772, "eligible_rows": 665, "filtered_rows": 1107,
+    "source_rows": 1772, "eligible_rows": 577, "filtered_rows": 1195,
     "cta_threads": dict(sorted(thread_counts.items())),
-    "stages": dict(sorted(stage_counts.items())), "rows": rows,
+    "stages": dict(sorted(stage_counts.items())),
+    "tile_m": dict(sorted(tile_m_counts.items())), "rows": rows,
 }
 pathlib.Path(sys.argv[2]).write_text(json.dumps(out, indent=2) + "\n")
-print("[q4k65-streamk-sweep] config census PASS: source=1772 eligible=665 "
-      "filtered=1107 threads=64:293,128:372 stages=2:150,3:149,4:137,6:125,8:104")
+print("[q4k65-streamk-sweep] config census PASS: source=1772 eligible=577 "
+      "filtered=1195 threads=64:248,128:329 stages=2:132,3:131,4:119,6:108,8:87 "
+      "tile_m=16:88,32:175,64:199,128:97,256:18")
 PY
   rc=$?
   if [ "$rc" -ne 0 ]; then
     printf '[q4k65-streamk-sweep] artifacts: %s\n' "$out" >&2
     return "$rc"
   fi
-  source_rows=1772; eligible_rows=665; filtered_rows=1107
+  source_rows=1772; eligible_rows=577; filtered_rows=1195
 
   sweep=("$binary" --search_configs --streamk --streamk_exact_fixture
     --m=2048 --n=4096 --k=4096 --l=1 --g=32 --mode=1
@@ -252,6 +266,10 @@ if len(attempts) != expected_reps * expected_rows:
     raise SystemExit(f"[q4k65-streamk-sweep] FAIL: attempts={len(attempts)}, expected {expected_reps*expected_rows}")
 if len({key(x) for x in attempts}) != len(attempts):
     raise SystemExit("[q4k65-streamk-sweep] FAIL: duplicate attempt identity")
+if any(x.get("tm", 0) < 16 for x in attempts):
+    raise SystemExit("[q4k65-streamk-sweep] FAIL: decode-only TM8 was attempted by the prefill sweep")
+if not any(x.get("tm") == 16 for x in attempts):
+    raise SystemExit("[q4k65-streamk-sweep] FAIL: prefill sweep made no TM16 control attempt")
 done_s, done_x = {key(x) for x in samples}, {key(x) for x in excluded}
 if done_s & done_x:
     raise SystemExit("[q4k65-streamk-sweep] FAIL: one attempt is both sampled and excluded")

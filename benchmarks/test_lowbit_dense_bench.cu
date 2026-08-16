@@ -458,9 +458,10 @@ inline bench_measure::Tactic dense_fixed_tactic() {
 #define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  "emit_marlin_tactic_space--header"
 #elif defined(DENSE_STREAMK_SWEEP)
 // A private registry over the committed int4 table.  CMake admits only rows
-// whose final Stream-K kernel has an exact 64/128-thread CTA/fixup cohort and
-// lies within the reviewed Stages-1<=8 startup envelope.  Keep source-table
-// provenance while making the scheduler identity and row census explicit.
+// with prefill TM>=16 whose final Stream-K kernel has an exact 64/128-thread
+// CTA/fixup cohort and lies within the reviewed Stages-1<=8 startup envelope.
+// Keep source-table provenance while making the scheduler identity and row
+// census explicit; decode-only TM8 belongs to a separate experiment.
 #include "lowbit_dense_configs.inc"
 #include "lowbit_dense_streamk_sweep_configs.inc"
 #define LOWBIT_DENSE_TABLE_FILE                 "scheduler=streamk;source=lowbit_dense_configs.inc"
@@ -610,6 +611,7 @@ inline void print_dense_table_provenance() {
                 "the Stream-K source/eligible/filtered census does not close");
   std::printf("[dense-table] scheduler=streamk file=%s rows=%d source_rows=%d "
               "eligible_rows=%d filtered_rows=%d gs=32 "
+              "shape_scope=prefill-TM>=16 "
               "cohort_capability=exact-cta-threads-64-or-128 "
               "startup_capability=Stages-1<=8 source_space_fnv1a64=%s "
               "source_emitter_fnv1a64=%s\n",
@@ -834,7 +836,7 @@ struct Options {
 #if defined(DENSE_STREAMK_SWEEP)
     out << "  --streamk                   Required intent marker; every compiled row is already Stream-K.\n"
         << "  --streamk_exact_fixture     Required gs32 order-independent fixture and raw-bit fixup replay.\n"
-        << "  scheduler=streamk           Fixed at build time; search spans the filtered committed int4 table.\n";
+        << "  scheduler=streamk           Fixed at build time; prefill search spans TM>=16 rows of the filtered committed int4 table.\n";
 #elif defined(DENSE_STREAMK_AB) && !defined(DENSE_MARLIN_WK4_AB)
     out << "  --streamk                   Use deterministic dense Stream-K (splits=1).\n"
         << "  --streamk_gate              Also require fixup witness + CPU FP32 golden.\n"

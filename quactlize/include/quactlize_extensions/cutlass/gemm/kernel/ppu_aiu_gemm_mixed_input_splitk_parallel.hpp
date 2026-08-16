@@ -343,8 +343,9 @@ class GemmUniversalMixedInputSplitKParallel {
     Tensor gA = get<0>(load_inputs);
     Tensor gB = get<1>(load_inputs);
 
-    auto const m_max_coord = M - size<0>(gA) * m_coord;
-    auto const n_max_coord = N - size<0>(gB) * n_coord;
+    // gA/gB describe physical transfer shapes; output residue follows the logical CTA tile.
+    auto const m_max_coord = M - size<0>(blk_shape) * m_coord;
+    auto const n_max_coord = N - size<1>(blk_shape) * n_coord;
     auto const k_residue = K - size<1>(gA) * size<2>(gA);
     auto const residue_mnk = make_tuple(m_max_coord, n_max_coord, k_residue);
 

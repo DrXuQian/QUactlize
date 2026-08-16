@@ -139,10 +139,13 @@ EXTENSIONS = {
         "enable_if gains `&& !isGroupProblemShape_v<ProblemShape_>` so the grouped shape can select a different "
         "specialisation; narrows this arm only where another one now exists. It also probes for an optional "
         "collective can_implement(problem,args) admission seam; legacy actlize collectives have no such member "
-        "and retain the prior true default",
+        "and retain the prior true default. Output M/N residue now follows logical TileShape, permitting a "
+        "collective's physical load tensors to widen/fold those axes; legacy equal-extent callers are unchanged",
     "include/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_splitk_serial.hpp":
         "probes for the same optional collective can_implement(problem,args) admission seam as the ordinary "
-        "dense wrapper; SFINAE leaves every legacy actlize collective on its previous true default",
+        "dense wrapper; SFINAE leaves every legacy actlize collective on its previous true default. Output M/N "
+        "residue follows logical TileShape so physical load tensors may widen/fold those axes; legacy "
+        "equal-extent callers are unchanged",
     "include/cutlass/gemm/kernel/tile_scheduler_params.h":
         "default-compatible Stream-K ParamsT<MinIters>: the legacy Params alias remains exactly ParamsT<8>, "
         "while an explicit specialization lets host decomposition use a shorter reviewed K stripe",

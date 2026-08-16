@@ -476,9 +476,10 @@ class GroupMarlinMixedInputKernel {
           real_problem_shape, real_blk_coord, params.mainloop);
       Tensor gA = get<0>(load_inputs);
       Tensor gB = get<1>(load_inputs);
+      // gA/gB describe physical transfer shapes; output residue follows the logical CTA tile.
       auto residue_mnk = make_tuple(
-          M - size<0>(gA) * m_idx,
-          N - size<0>(gB) * n_idx,
+          M - size<0>(blk_shape) * m_idx,
+          N - size<1>(blk_shape) * n_idx,
           K - size<1>(gA) * size<2>(gA));
 
       TiledMma tiled_mma;

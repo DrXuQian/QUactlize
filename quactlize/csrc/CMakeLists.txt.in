@@ -352,9 +352,11 @@ qz_parse_tactic_xmacro(_DENSE_STREAMK_SWEEP_SOURCE_TABLE_ROWS
 
 # StreamKMixedInputKernel binds its named-barrier/fixup cohort to the exact CTA
 # size and currently admits only 64 or 128 threads.  Its reviewed partial-work
-# startup envelope is DispatchPolicy::Stages-1 <= 8.  Mirror both compile-time
-# constraints here so an unsupported row is counted as filtered rather than
-# failing hundreds of compiler invocations into the build; every wrapper below
+# startup envelope is DispatchPolicy::Stages-1 <= 8.  This is a prefill sweep:
+# TM8 is the decode-only m8 atom family, so retain TM>=16 and leave the m16
+# family as the smallest prefill control.  Mirror all three constraints here so
+# an unsupported/out-of-scope row is counted as filtered rather than failing
+# hundreds of compiler invocations into the build; every wrapper below
 # independently reasserts the final kernel contract.
 set(_LOWBIT_DENSE_STREAMK_SWEEP_ROWS "")
 foreach(_row IN LISTS _DENSE_STREAMK_SWEEP_SOURCE_TABLE_ROWS)
@@ -381,7 +383,8 @@ foreach(_row IN LISTS _DENSE_STREAMK_SWEEP_SOURCE_TABLE_ROWS)
   math(EXPR _DENSE_STREAMK_CTA_THREADS
        "${_DENSE_STREAMK_M_WARPS} * ${_DENSE_STREAMK_N_WARPS} * 32")
   math(EXPR _DENSE_STREAMK_STARTUP_STAGES "${_st} - 1")
-  if(((_DENSE_STREAMK_CTA_THREADS EQUAL 64) OR
+  if((_tm GREATER_EQUAL 16) AND
+     ((_DENSE_STREAMK_CTA_THREADS EQUAL 64) OR
       (_DENSE_STREAMK_CTA_THREADS EQUAL 128)) AND
      (_DENSE_STREAMK_STARTUP_STAGES LESS_EQUAL 8))
     list(APPEND _LOWBIT_DENSE_STREAMK_SWEEP_ROWS "${_row}")
@@ -419,7 +422,7 @@ foreach(_row IN LISTS _LOWBIT_DENSE_STREAMK_SWEEP_ROWS)
       "${_DENSE_STREAMK_SWEEP_CONFIG_ROWS}  X(${_row},A)${_continuation}")
 endforeach()
 file(WRITE "${_DENSE_STREAMK_SWEEP_CONFIG_HEADER}.in"
-  "// GENERATED from lowbit_dense_configs.inc; scheduler=streamk, gs=32, exact CTA threads 64/128, Stages-1<=8.\n"
+  "// GENERATED from lowbit_dense_configs.inc; scheduler=streamk, prefill TM>=16, gs=32, exact CTA threads 64/128, Stages-1<=8.\n"
   "#define LOWBIT_DENSE_STREAMK_SWEEP_SOURCE_ROWS ${_LOWBIT_DENSE_STREAMK_SWEEP_SOURCE_ROWS}\n"
   "#define LOWBIT_DENSE_STREAMK_SWEEP_ROWS ${_LOWBIT_DENSE_STREAMK_SWEEP_ELIGIBLE_ROWS}\n"
   "#define LOWBIT_DENSE_STREAMK_SWEEP_FILTERED_ROWS ${_LOWBIT_DENSE_STREAMK_SWEEP_FILTERED_ROWS}\n"
@@ -542,7 +545,7 @@ target_compile_options(test_lowbit_dense_streamk_sweep PRIVATE -w)
 list(LENGTH _DENSE_STREAMK_SWEEP_UNIT_SRCS
      _DENSE_STREAMK_SWEEP_UNIT_COUNT)
 message(STATUS
-  "Dense Stream-K sweep (lowbit_dense_configs.inc, gs32): source_rows=${_LOWBIT_DENSE_STREAMK_SWEEP_SOURCE_ROWS} "
+  "Dense Stream-K prefill sweep (lowbit_dense_configs.inc, TM>=16, gs32): source_rows=${_LOWBIT_DENSE_STREAMK_SWEEP_SOURCE_ROWS} "
   "eligible_rows=${_LOWBIT_DENSE_STREAMK_SWEEP_ELIGIBLE_ROWS} filtered_rows=${_LOWBIT_DENSE_STREAMK_SWEEP_FILTERED_ROWS}; "
   "${_DENSE_STREAMK_SWEEP_UNIT_COUNT} private generated units")
 

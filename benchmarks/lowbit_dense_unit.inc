@@ -72,6 +72,8 @@ static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
   // drift fails compilation.
   static_assert(GroupSize == 32,
                 "the first dense Stream-K sweep is fixed to gs32");
+  static_assert(TM >= 16,
+                "the dense Stream-K prefill sweep excludes decode-only TM8");
   using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::StreamKGemm;
   using Kernel = typename G::GemmKernel;
   using DispatchPolicy = typename Kernel::DispatchPolicy;
