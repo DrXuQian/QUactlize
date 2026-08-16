@@ -129,7 +129,10 @@ public:
     EpilogueArguments epilogue{};
     KernelHardwareInfo hw_info{};       // real device/CU count
     TileSchedulerArguments scheduler{};
-    int ctas_per_cu = 0;                // occupancy of this exact kernel
+    // Selected physical worker-grid multiplier. The caller may choose any
+    // value in 1..maximum_active_blocks(); it is not necessarily the resource
+    // ceiling. This one value owns lowering, workspace and launch-grid shape.
+    int ctas_per_cu = 0;
     // Optional gate POD; null on every performance/shipping run. witness[] is
     // [requires_fixup, final-epilogue, separate-reduction].  Capture metadata
     // is active only when its magic is exact.

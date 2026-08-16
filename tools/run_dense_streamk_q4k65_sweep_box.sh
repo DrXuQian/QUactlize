@@ -13,7 +13,9 @@ main() {
   local root target sha short stamp out build_root build_log list_log
   local sweep_log samples analysis_log analysis_json command_file manifest
   local binary rc source_rows eligible_rows filtered_rows reps iterations jobs
-  local -a _bins sweep
+  local streamk_bpc streamk_bpc_spec bpc_label
+  local -a _bins sweep streamk_bpcs
+  local -A seen_bpc=()
 
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
   target=test_lowbit_dense_streamk_sweep
@@ -34,9 +36,31 @@ main() {
   reps="${BENCH_REPS:-2}"
   iterations="${ITERATIONS:-7}"
   jobs="${JOBS:-16}"
+  # 0 preserves the historical behavior (each tactic uses its exact maximum
+  # occupancy).  Positive values select the physical worker grid CU*BPC;
+  # unsupported tactic cells are recorded, never silently clamped.
+  if [ -n "${STREAMK_BLOCKS_PER_CU+x}" ] &&
+     [ -n "${STREAMK_BLOCKS_PER_CU_LIST+x}" ]; then
+    printf '[q4k65-streamk-sweep] FAIL: set only one of STREAMK_BLOCKS_PER_CU or STREAMK_BLOCKS_PER_CU_LIST\n' >&2
+    return 2
+  fi
+  streamk_bpc_spec="${STREAMK_BLOCKS_PER_CU_LIST:-${STREAMK_BLOCKS_PER_CU:-0}}"
+  read -r -a streamk_bpcs <<<"$streamk_bpc_spec"
   case "$reps" in ''|*[!0-9]*) printf '[q4k65-streamk-sweep] FAIL: BENCH_REPS must be an integer >=2\n' >&2; return 2 ;; esac
   case "$iterations" in ''|*[!0-9]*) printf '[q4k65-streamk-sweep] FAIL: ITERATIONS must be a positive integer\n' >&2; return 2 ;; esac
   case "$jobs" in ''|*[!0-9]*) printf '[q4k65-streamk-sweep] FAIL: JOBS must be a positive integer\n' >&2; return 2 ;; esac
+  if [ "${#streamk_bpcs[@]}" -eq 0 ]; then
+    printf '[q4k65-streamk-sweep] FAIL: Stream-K blocks/CU axis is empty\n' >&2
+    return 2
+  fi
+  for streamk_bpc in "${streamk_bpcs[@]}"; do
+    case "$streamk_bpc" in ''|*[!0-9]*) printf '[q4k65-streamk-sweep] FAIL: every blocks/CU value must be 0 or a positive integer: %s\n' "$streamk_bpc" >&2; return 2 ;; esac
+    if [ -n "${seen_bpc[$streamk_bpc]+x}" ]; then
+      printf '[q4k65-streamk-sweep] FAIL: duplicate blocks/CU value: %s\n' "$streamk_bpc" >&2
+      return 2
+    fi
+    seen_bpc[$streamk_bpc]=1
+  done
   if [ "$reps" -lt 2 ] || [ "$iterations" -lt 1 ] || [ "$jobs" -lt 1 ]; then
     printf '[q4k65-streamk-sweep] FAIL: require BENCH_REPS>=2, ITERATIONS>=1, JOBS>=1\n' >&2
     return 2
@@ -58,11 +82,6 @@ main() {
   build_root="$out/build"
   build_log="$out/build.log"
   list_log="$out/configs.log"
-  sweep_log="$out/sweep.log"
-  samples="$out/samples.jsonl"
-  analysis_log="$out/analysis.txt"
-  analysis_json="$out/analysis.json"
-  command_file="$out/command.sh"
   manifest="$out/manifest.txt"
 
   {
@@ -73,6 +92,8 @@ main() {
     printf 'sweep_scope=prefill\nprefill_tm_min=16\n'
     printf 'fixture=q4k65-exact,order-independent+fp16-exact\n'
     printf 'scheduler=streamk,build-time-direct-wrapper\n'
+    printf 'streamk_blocks_per_cu_values=%s\n' "${streamk_bpcs[*]}"
+    printf 'streamk_blocks_per_cu_zero_semantics=legacy-exact-maximum-occupancy\n'
     printf 'bench_reps=%s\niterations=%s\njobs=%s\n' "$reps" "$iterations" "$jobs"
     printf 'normal_exact_context_us=209.30\nnormal_exact_context_is_gate=0\n'
   } >"$manifest"
@@ -86,8 +107,8 @@ main() {
     printf 'driver_modules_begin\n'; (lsmod 2>/dev/null | grep -Ei 'hgg|ppu|metax' || true); printf 'driver_modules_end\n'
   } >"$out/device.txt"
 
-  printf '[q4k65-streamk-sweep] sha=%s out=%s reps=%s iterations=%s\n' \
-    "$sha" "$out" "$reps" "$iterations"
+  printf '[q4k65-streamk-sweep] sha=%s out=%s reps=%s iterations=%s blocks_per_cu_values=%s\n' \
+    "$sha" "$out" "$reps" "$iterations" "${streamk_bpcs[*]}"
   printf '[q4k65-streamk-sweep] context-only normal-exact=209.30 us (not an admission gate)\n'
 
   env PPU_BUILD_DIR="$build_root" PPU_ARCHS=ppu0010 TARGET="$target" \
@@ -208,10 +229,25 @@ PY
     return "$rc"
   fi
   source_rows=1772; eligible_rows=577; filtered_rows=1195
+  printf 'source_rows=%s\neligible_rows=%s\nfiltered_rows=%s\n' \
+    "$source_rows" "$eligible_rows" "$filtered_rows" >>"$manifest"
 
+  # Build once, then run each requested worker-grid axis into its own closed
+  # evidence set.  Keeping JSONL/analyser inputs separate avoids folding two
+  # scheduler decompositions into one tactic identity, while avoiding a full
+  # 577-row rebuild for BPC=2 versus BPC=3.
+  for streamk_bpc in "${streamk_bpcs[@]}"; do
+    bpc_label="bpc${streamk_bpc}"
+    sweep_log="$out/sweep-${bpc_label}.log"
+    samples="$out/samples-${bpc_label}.jsonl"
+    analysis_log="$out/analysis-${bpc_label}.txt"
+    analysis_json="$out/analysis-${bpc_label}.json"
+    command_file="$out/command-${bpc_label}.sh"
+    printf '[q4k65-streamk-sweep] axis blocks_per_cu=%s begin\n' "$streamk_bpc"
   sweep=("$binary" --search_configs --streamk --streamk_exact_fixture
     --m=2048 --n=4096 --k=4096 --l=1 --g=32 --mode=1
-    --alpha=1 --beta=0 "--iterations=$iterations")
+    --alpha=1 --beta=0 "--iterations=$iterations"
+    "--streamk-blocks-per-cu=$streamk_bpc")
   {
     printf 'BENCH_REPS=%q BENCH_JSONL=%q ' "$reps" "$samples"
     printf '%q ' "${sweep[@]}"
@@ -235,7 +271,7 @@ PY
     return 1
   fi
   python3 - "$samples" "$reps" "$eligible_rows" "$out/sample-closure.json" \
-    "$sweep_log" <<'PY' || return 1
+    "$sweep_log" "$streamk_bpc" <<'PY' || return 1
 import collections
 import json
 import pathlib
@@ -243,11 +279,13 @@ import re
 import sys
 
 path, expected_reps, expected_rows, outpath = pathlib.Path(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), pathlib.Path(sys.argv[4])
+requested_bpc = int(sys.argv[6])
 records = [json.loads(x) for x in path.read_text().splitlines() if x.strip()]
 runs = [x for x in records if x.get("rec") == "run"]
 if (len(runs) != 1 or runs[0].get("reps") != expected_reps or
         runs[0].get("bench") != "cutlass_w4a16_streamk" or
-        "scheduler=streamk" not in runs[0].get("build", "")):
+        "scheduler=streamk" not in runs[0].get("build", "") or
+        f"blocks_per_cu={requested_bpc}" not in runs[0].get("build", "")):
     raise SystemExit(f"[q4k65-streamk-sweep] FAIL: run header is not one scheduler=streamk/reps={expected_reps} record: {runs}")
 required = ("schema", "tm", "tn", "tk", "wm", "wn", "st", "bc", "fixture", "dist", "n", "k", "gs", "experts", "rows", "mmax", "pass")
 def key(x): return tuple(x.get(k, 0 if k == "warp_k" else None) for k in required + ("warp_k",))
@@ -290,17 +328,29 @@ if any(by_pass[p] != by_pass[0] for p in range(expected_reps)):
     raise SystemExit("[q4k65-streamk-sweep] FAIL: compiled candidate set changed between passes")
 if any(sampled_by_pass[p] != sampled_by_pass[0] or excluded_by_pass[p] != excluded_by_pass[0] for p in range(expected_reps)):
     raise SystemExit("[q4k65-streamk-sweep] FAIL: sampled/excluded status changed between passes")
-bad_exclusions = [x for x in excluded if "Stream-K" not in x.get("why", "") or "NOT EXERCISED" not in x.get("why", "")]
+grid_exclusions = [x for x in excluded if x.get("why") == "Stream-K blocks-per-CU exceeds exact kernel occupancy"]
+no_seam_exclusions = [x for x in excluded if x.get("why") == "Stream-K split path NOT EXERCISED for this shape"]
+bad_exclusions = [x for x in excluded if x not in grid_exclusions and x not in no_seam_exclusions]
 if bad_exclusions:
-    raise SystemExit(f"[q4k65-streamk-sweep] FAIL: exclusion is not an explicit no-seam outcome: {bad_exclusions[:2]}")
+    raise SystemExit(f"[q4k65-streamk-sweep] FAIL: unregistered exclusion outcome: {bad_exclusions[:2]}")
 for x in samples:
     if (x.get("schema"), x.get("n"), x.get("k"), x.get("gs"), x.get("experts"), x.get("rows"), x.get("mmax")) != ("i4", 4096, 4096, 32, 0, 2048, 2048):
         raise SystemExit(f"[q4k65-streamk-sweep] FAIL: sample escaped fixed fixture: {x}")
     if x.get("dist") != "dense-streamk-v1" or not (isinstance(x.get("us"), (int, float)) and x["us"] > 0):
         raise SystemExit(f"[q4k65-streamk-sweep] FAIL: sample lost Stream-K distribution/positive timing: {x}")
 log = pathlib.Path(sys.argv[5]).read_text()
-actual_kinds = collections.Counter(re.findall(
-    r"\[dense streamk decomposition\] actual=(StreamK|DataParallel|SplitK)\b", log))
+decompositions = re.findall(
+    r"\[dense streamk decomposition\] actual=(StreamK|DataParallel|SplitK) "
+    r"real_cu=(\d+) occupancy_api=(\d+) blocks_per_cu=(\d+) workers=(\d+) scheduler_workers=(\d+)", log)
+actual_kinds = collections.Counter(x[0] for x in decompositions)
+for kind, cu, occupancy, selected, workers, scheduler_workers in decompositions:
+    cu, occupancy, selected, workers, scheduler_workers = map(int, (cu, occupancy, selected, workers, scheduler_workers))
+    expected_selected = occupancy if requested_bpc == 0 else requested_bpc
+    if selected != expected_selected or selected > occupancy or workers != cu * selected or scheduler_workers != workers:
+        raise SystemExit(
+            f"[q4k65-streamk-sweep] FAIL: grid/workspace authority split "
+            f"kind={kind} cu={cu} occupancy={occupancy} selected={selected} "
+            f"workers={workers} scheduler_workers={scheduler_workers} requested={requested_bpc}")
 actual_streamk = actual_kinds["StreamK"]
 actual_dp = actual_kinds["DataParallel"]
 exercised = len(re.findall(r"\[dense streamk split gate\] EXERCISED\b", log))
@@ -311,24 +361,28 @@ exact_fixture = len(re.findall(
 # Search launches every candidate once per pass and launches the selected
 # leader once more after ranking.  A durable sample is legal only if its own
 # lowered scheduler contained a real peer seam.
-if sum(actual_kinds.values()) != len(attempts) + 1 or actual_kinds["SplitK"] != 0:
+supported_attempts = len(attempts) - len(grid_exclusions)
+if sum(actual_kinds.values()) != supported_attempts + 1 or actual_kinds["SplitK"] != 0:
     raise SystemExit(
         f"[q4k65-streamk-sweep] FAIL: decomposition witnesses={dict(actual_kinds)}, "
-        f"expected {len(attempts)+1} StreamK/DataParallel and zero fixed-SplitK")
+        f"expected {supported_attempts+1} supported StreamK/DataParallel and zero fixed-SplitK")
 # Sampled rows plus the final leader must be genuine StreamK.  An excluded
 # no-seam row may lower either to a StreamK whole-K assignment or to pure DP;
 # both are recorded as NOT EXERCISED rather than being mislabeled as samples.
-if actual_streamk < len(samples) + 1 or actual_dp > len(excluded):
+if actual_streamk < len(samples) + 1 or actual_dp > len(no_seam_exclusions):
     raise SystemExit(
         f"[q4k65-streamk-sweep] FAIL: decomposition/outcome binding disagrees "
-        f"StreamK={actual_streamk}>={len(samples)+1} DataParallel={actual_dp}<={len(excluded)}")
+        f"StreamK={actual_streamk}>={len(samples)+1} DataParallel={actual_dp}<={len(no_seam_exclusions)}")
 if exact_fixture != len(attempts) + 1:
     raise SystemExit(f"[q4k65-streamk-sweep] FAIL: exact-fixture witnesses={exact_fixture}, expected {len(attempts)+1}")
-if exercised != len(samples) + 1 or not_exercised != len(excluded):
+if exercised != len(samples) + 1 or not_exercised != len(no_seam_exclusions):
     raise SystemExit(
         f"[q4k65-streamk-sweep] FAIL: split-gate/sample binding disagrees "
-        f"exercised={exercised}/{len(samples)+1} not_exercised={not_exercised}/{len(excluded)}")
-summary = {"reps": expected_reps, "attempts": len(attempts), "samples": len(samples), "exclusions": len(excluded), "successful_configs": len(sampled_by_pass[0]), "excluded_configs": len(excluded_by_pass[0])}
+        f"exercised={exercised}/{len(samples)+1} not_exercised={not_exercised}/{len(no_seam_exclusions)}")
+summary = {"reps": expected_reps, "requested_blocks_per_cu": requested_bpc,
+           "attempts": len(attempts), "samples": len(samples), "exclusions": len(excluded),
+           "grid_exclusions": len(grid_exclusions), "no_seam_exclusions": len(no_seam_exclusions),
+           "successful_configs": len(sampled_by_pass[0]), "excluded_configs": len(excluded_by_pass[0])}
 outpath.write_text(json.dumps(summary, indent=2) + "\n")
 print("[q4k65-streamk-sweep] sample closure PASS: " + " ".join(f"{k}={v}" for k, v in summary.items()))
 PY
@@ -370,11 +424,12 @@ PY
   fi
 
   {
-    printf 'source_rows=%s\neligible_rows=%s\nfiltered_rows=%s\n' "$source_rows" "$eligible_rows" "$filtered_rows"
-    printf 'samples_sha256=%s\n' "$(sha256sum "$samples" | awk '{print $1}')"
-    printf 'sweep_log_sha256=%s\n' "$(sha256sum "$sweep_log" | awk '{print $1}')"
-    printf 'analysis_json_sha256=%s\n' "$(sha256sum "$analysis_json" | awk '{print $1}')"
+    printf '%s_samples_sha256=%s\n' "$bpc_label" "$(sha256sum "$samples" | awk '{print $1}')"
+    printf '%s_sweep_log_sha256=%s\n' "$bpc_label" "$(sha256sum "$sweep_log" | awk '{print $1}')"
+    printf '%s_analysis_json_sha256=%s\n' "$bpc_label" "$(sha256sum "$analysis_json" | awk '{print $1}')"
   } >>"$manifest"
+    printf '[q4k65-streamk-sweep] axis blocks_per_cu=%s PASS\n' "$streamk_bpc"
+  done
   find "$out" -type f ! -path "$out/build/*" ! -name bundle-files.sha256 -print0 | \
     sort -z | xargs -0 sha256sum >"$out/bundle-files.sha256"
   printf '[q4k65-streamk-sweep] PASS; artifacts: %s\n' "$out"

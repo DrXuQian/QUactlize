@@ -279,6 +279,16 @@ def audit(files: dict[str, str]) -> list[str]:
         "defined(DENSE_MARLIN_STANDALONE_SWEEP) || defined(DENSE_STREAMK_SWEEP)",
         "#if defined(DENSE_STREAMK_Q4K65_AB) || defined(DENSE_STREAMK_SWEEP)",
         "fixture=streamk-sweep-gs32-exact",
+        "int streamk_blocks_per_cu = 0;",
+        'cmd.get_cmd_line_argument("streamk-blocks-per-cu", streamk_blocks_per_cu);',
+        "ctas_per_cu = dense_streamk_selected_blocks_per_cu(",
+        "static_assert(dense_streamk_selected_blocks_per_cu(0, 8) == 8);",
+        "static_assert(dense_streamk_selected_blocks_per_cu(2, 8) == 2);",
+        "static_assert(dense_streamk_selected_blocks_per_cu(3, 8) == 3);",
+        "arguments.ctas_per_cu = ctas_per_cu;",
+        "occupancy_failure.scheduler_grid_supported = false;",
+        '"blocks_per_cu=%d "',
+        '"Stream-K blocks-per-CU exceeds exact kernel occupancy"',
     ):
         require(bench, token, "Stream-K semantic instrumentation", bad)
 
@@ -340,6 +350,12 @@ def audit(files: dict[str, str]) -> list[str]:
         "--streamk_exact_fixture",
         "--m=2048 --n=4096 --k=4096 --l=1 --g=32 --mode=1",
         "--alpha=1 --beta=0",
+        'streamk_bpc_spec="${STREAMK_BLOCKS_PER_CU_LIST:-${STREAMK_BLOCKS_PER_CU:-0}}"',
+        'for streamk_bpc in "${streamk_bpcs[@]}"; do',
+        '"--streamk-blocks-per-cu=$streamk_bpc"',
+        "streamk_blocks_per_cu_zero_semantics=legacy-exact-maximum-occupancy",
+        "grid/workspace authority split",
+        "grid_exclusions",
     ):
         require(runner, token, "box sweep runner", bad)
     for token in ("/tmp/", "mktemp", "probe_box_identity"):
@@ -395,6 +411,18 @@ def negative_controls(files: dict[str, str]) -> list[str]:
             "bench",
             '"[dense-table] scheduler=streamk file=%s rows=%d source_rows=%d "',
             '"[dense-table] scheduler=non-persistent file=%s rows=%d source_rows=%d "',
+        ),
+        (
+            "disconnect selected grid from scheduler arguments",
+            "bench",
+            "arguments.ctas_per_cu = ctas_per_cu;",
+            "arguments.ctas_per_cu = occupancy_ctas_per_cu;",
+        ),
+        (
+            "drop runner grid selection",
+            "runner",
+            '    "--streamk-blocks-per-cu=$streamk_bpc")',
+            '    )',
         ),
     ]
     for label, owner, old, new in cases:
@@ -462,7 +490,7 @@ def main() -> int:
         "stages=2:132/3:131/4:119/6:108/8:87 "
         "tile_m=16:88/32:175/64:199/128:97/256:18; "
         "private direct-StreamK target + provenance + runner bound; "
-        "7/7 same-source negative controls red"
+        "9/9 same-source negative controls red"
     )
     return 0
 

@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-16 13:38:20 UTC
+    updated-at:     2026-08-16 14:22:11 UTC
     inbox-consumed: 178
-    working-on:     logical-vs-physical mixed-input residue fix locally closed; prefill Stream-K sweep is TM>=16 and ready for device rerun
-    blocked-on:     real PPU correctness/performance rerun only
-    local-gates:    residue 9/9 + 36/36 plants PASS; sweep 1772->577/1195 + 7/7 plants PASS; affected dense/StreamK/TM8 syntax PASS; full 190-tier has 21 unrelated environment/stale-evidence failures
-    last-commit:    6277240 Add full dense Stream-K tactic sweep; actlize a38f2bfb pushed
+    working-on:     dense Stream-K physical worker grid made selectable as CU*BPC, with explicit BPC=2/3 and legacy auto=max occupancy
+    blocked-on:     real PPU BPC2/BPC3 correctness/performance sweeps only
+    local-gates:    grid/workspace single-authority source contracts PASS; sweep 1772->577/1195 + 9/9 plants PASS; direct nvcc syntax attempt produced no usable local result
+    last-commit:    6db7dee Fix mixed-input logical residue strides; actlize a38f2bfb pushed
     last-heartbeat: 329

@@ -769,6 +769,11 @@ struct Options {
   bool streamk_split_gate = false; // --streamk_split_gate: require an actually split output tile
   bool streamk_exact_fixture = false; // --streamk_exact_fixture: use the exact-by-construction A0 inputs on every arm
   bool marlin_profile_subject_only = false; // --marlin-profile-subject-only: one standalone launch, no device reference/fingerprint
+  // Zero preserves the historical Stream-K launch contract: use this exact
+  // kernel's maximum_active_blocks().  A positive value is an explicit
+  // physical worker-grid multiplier (real CU * blocks/CU), and is admitted
+  // only when it does not exceed the exact kernel occupancy.
+  int streamk_blocks_per_cu = 0;
   int marlin_blocks_per_cu = 1; // --marlin-blocks-per-cu: scheduler-owned CTA/CU sweep, default is legacy 1
   // Runtime filter for the ordinary dense and standalone-Marlin tactic
   // sweeps. Zero preserves the historical all-row sweep. Named scheduler A/B
@@ -807,6 +812,7 @@ struct Options {
     streamk_exact_fixture = cmd.check_cmd_line_flag("streamk_exact_fixture");
     marlin_profile_subject_only =
         cmd.check_cmd_line_flag("marlin-profile-subject-only");
+    cmd.get_cmd_line_argument("streamk-blocks-per-cu", streamk_blocks_per_cu);
     cmd.get_cmd_line_argument("marlin-blocks-per-cu", marlin_blocks_per_cu);
     cmd.get_cmd_line_argument("instruction-m", marlin_instruction_m);
     if (streamk_gate || streamk_split_gate) streamk = true;
@@ -836,12 +842,14 @@ struct Options {
 #if defined(DENSE_STREAMK_SWEEP)
     out << "  --streamk                   Required intent marker; every compiled row is already Stream-K.\n"
         << "  --streamk_exact_fixture     Required gs32 order-independent fixture and raw-bit fixup replay.\n"
+        << "  --streamk-blocks-per-cu=<n> Physical worker-grid multiplier (1..exact occupancy; 0=legacy maximum).\n"
         << "  scheduler=streamk           Fixed at build time; prefill search spans TM>=16 rows of the filtered committed int4 table.\n";
 #elif defined(DENSE_STREAMK_AB) && !defined(DENSE_MARLIN_WK4_AB)
     out << "  --streamk                   Use deterministic dense Stream-K (splits=1).\n"
         << "  --streamk_gate              Also require fixup witness + CPU FP32 golden.\n"
         << "  --streamk_split_gate        Fail closed unless lowered Params contain a real cross-CTA seam.\n"
-        << "  --streamk_exact_fixture     Fill the actual A0 arm with sparse integer inputs whose sums are order-independent.\n";
+        << "  --streamk_exact_fixture     Fill the actual A0 arm with sparse integer inputs whose sums are order-independent.\n"
+        << "  --streamk-blocks-per-cu=<n> Physical worker-grid multiplier (1..exact occupancy; 0=legacy maximum).\n";
 #endif
 #if defined(DENSE_MARLIN_AB)
     out << "  --marlin                    Use the independent Marlin CTA-stripe scheduler.\n"
@@ -898,6 +906,10 @@ struct Result
   // driver may continue on to the actual Stream-K subject, while process rc=3
   // prevents NOT CLASSIFIABLE from being consumed as correctness evidence.
   bool verification_classified = true;
+  // A requested Stream-K worker multiplier above this exact kernel's runtime
+  // occupancy is an unavailable candidate, not numerical evidence.  Search
+  // records it as an explicit exclusion; a single-config run remains red.
+  bool scheduler_grid_supported = true;
 
 };
 
@@ -2832,6 +2844,18 @@ struct dense_is_marlin_gemm<
     Gemm, std::void_t<decltype(Gemm::GemmKernel::IsDenseMarlin)>>
     : std::bool_constant<Gemm::GemmKernel::IsDenseMarlin> {};
 
+constexpr int dense_streamk_selected_blocks_per_cu(
+    int requested, int occupancy_api) {
+  return requested == 0 ? occupancy_api : requested;
+}
+
+// The new axis is opt-in.  Zero must remain the exact old host argument, while
+// the two requested non-pure-persistent grids are literal CU multipliers (not
+// occupancy_api*2/3 and not silently clamped values).
+static_assert(dense_streamk_selected_blocks_per_cu(0, 8) == 8);
+static_assert(dense_streamk_selected_blocks_per_cu(2, 8) == 2);
+static_assert(dense_streamk_selected_blocks_per_cu(3, 8) == 3);
+
 #if defined(DENSE_MARLIN_AB)
 // The integer/algebraic proof closes Marlin's decomposition locally.  The one
 // scheduler property that remains device-only is the ordered peer handoff:
@@ -2989,27 +3013,54 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   int current_device = 0;
   CUTLASS_PPU_CHECK(hggcGetDevice(&current_device));
   int const cu_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(current_device);
-  int const ctas_per_cu = Gemm::maximum_active_blocks();
+  int const occupancy_ctas_per_cu = Gemm::maximum_active_blocks();
+  // Keep the resource ceiling and the selected worker-grid multiplier as two
+  // different facts.  Stream-K lowering consumes the latter; using the
+  // occupancy ceiling later for grid/workspace checks would make the host
+  // decomposition disagree with the device work-loop.
+  int ctas_per_cu = occupancy_ctas_per_cu;
   Result occupancy_failure;
-  if (cu_count <= 0 || ctas_per_cu <= 0) {
+  if (cu_count <= 0 || occupancy_ctas_per_cu <= 0) {
     std::fprintf(stderr,
                  "[dense scheduler=%s] invalid runtime occupancy: cu=%d cta_per_cu=%d\n",
-                 scheduler_kind, cu_count, ctas_per_cu);
+                 scheduler_kind, cu_count, occupancy_ctas_per_cu);
     occupancy_failure.passed = false;
     return occupancy_failure;
   }
   arguments.hw_info = cutlass::KernelHardwareInfo{current_device, cu_count};
+  if constexpr (dense_is_streamk_gemm<Gemm>::value) {
+    if (options.streamk_blocks_per_cu < 0) {
+      std::fprintf(stderr,
+                   "[dense scheduler=streamk] --streamk-blocks-per-cu must be "
+                   "0 (legacy maximum) or positive\n");
+      occupancy_failure.passed = false;
+      occupancy_failure.scheduler_grid_supported = false;
+      return occupancy_failure;
+    }
+    ctas_per_cu = dense_streamk_selected_blocks_per_cu(
+        options.streamk_blocks_per_cu, occupancy_ctas_per_cu);
+    if (ctas_per_cu > occupancy_ctas_per_cu) {
+      std::fprintf(
+          stderr,
+          "[dense scheduler=streamk] --streamk-blocks-per-cu=%d exceeds "
+          "this exact kernel's occupancy_api=%d; grid multiplier NOT AVAILABLE\n",
+          ctas_per_cu, occupancy_ctas_per_cu);
+      occupancy_failure.passed = false;
+      occupancy_failure.scheduler_grid_supported = false;
+      return occupancy_failure;
+    }
+  }
   if constexpr (dense_has_persistent_ctas<decltype(arguments)>::value) {
     arguments.ctas_per_cu = ctas_per_cu;
   }
   if constexpr (dense_is_marlin_gemm<Gemm>::value) {
     if (options.marlin_blocks_per_cu < 1 ||
-        options.marlin_blocks_per_cu > ctas_per_cu) {
+        options.marlin_blocks_per_cu > occupancy_ctas_per_cu) {
       std::fprintf(
           stderr,
           "[dense scheduler=marlin] --marlin-blocks-per-cu=%d is outside "
           "the exact kernel occupancy range 1..%d\n",
-          options.marlin_blocks_per_cu, ctas_per_cu);
+          options.marlin_blocks_per_cu, occupancy_ctas_per_cu);
       occupancy_failure.passed = false;
       return occupancy_failure;
     }
@@ -3076,10 +3127,12 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
     char const* actual = sk.divmod_splits_.divisor > 1 ? "SplitK" :
                          (sk.sk_tiles_ > 0 && sk.sk_units_ > 0 ? "StreamK" : "DataParallel");
     std::printf(
-        "  [dense streamk decomposition] actual=%s real_cu=%d ctas_per_cu=%d "
+        "  [dense streamk decomposition] actual=%s real_cu=%d occupancy_api=%d "
+        "blocks_per_cu=%d "
         "workers=%llu scheduler_workers=%d sk_tiles=%u sk_units=%u dp_units=%llu "
         "units=%llu splits=%d separate=%u workspace=%zu\n",
-        actual, cu_count, ctas_per_cu, static_cast<unsigned long long>(workers),
+        actual, cu_count, occupancy_ctas_per_cu, ctas_per_cu,
+        static_cast<unsigned long long>(workers),
         params.scheduler_hw_info.cu_count, sk.sk_tiles_, sk.sk_units_,
         static_cast<unsigned long long>(dp_units),
         static_cast<unsigned long long>(sk.units_per_problem_),
@@ -3141,7 +3194,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
         "  [dense marlin decomposition] real_cu=%d occupancy_api=%d "
         "blocks_per_cu=%d Q=%llu Kt=%llu G=%llu I=%llu active=%llu "
         "idle=%llu handoffs=%llu max_peers=%llu workspace=%zu\n",
-        cu_count, ctas_per_cu, options.marlin_blocks_per_cu,
+        cu_count, occupancy_ctas_per_cu, options.marlin_blocks_per_cu,
         static_cast<unsigned long long>(ms.output_tiles_),
         static_cast<unsigned long long>(ms.k_tiles_per_output_),
         static_cast<unsigned long long>(ms.grid_blocks_),
@@ -3163,10 +3216,11 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
       "grid=(%u,%u,%u) physical_cta=%llu block_threads=%u warps/cta=%d "
       "resident_warps/cu=%d\n",
       scheduler_kind, static_cast<unsigned long long>(logical_ctas), cu_count,
-      ctas_per_cu, physical_grid.x, physical_grid.y, physical_grid.z,
+      occupancy_ctas_per_cu, physical_grid.x, physical_grid.y, physical_grid.z,
       static_cast<unsigned long long>(physical_ctas),
       unsigned(Gemm::GemmKernel::MaxThreadsPerBlock), warps_per_cta,
-      ctas_per_cu * warps_per_cta);
+      (dense_is_streamk_gemm<Gemm>::value ? ctas_per_cu : occupancy_ctas_per_cu) *
+          warps_per_cta);
   std::printf(
       "  [dense smem scheduler=%s] main=%zu epi=%zu union=%zu "
       "overlap-sum-counterfactual=%zu shared-only-cta/cu=%zu->%zu\n",
@@ -4098,6 +4152,12 @@ int main(int argc, char const **args) {
   }
 #endif
 
+  if (!options.help && options.streamk_blocks_per_cu < 0) {
+    std::fprintf(stderr,
+                 "--streamk-blocks-per-cu must be 0 (legacy maximum) or positive\n");
+    return 1;
+  }
+
 #if defined(DENSE_MARLIN_STANDALONE_SWEEP)
   // Every generated wrapper in this binary is the standalone Marlin
   // scheduler/cooperative. Runtime scheduler flags therefore cannot select
@@ -4107,7 +4167,8 @@ int main(int argc, char const **args) {
   if (!options.help && !options.list_configs) {
     if (options.persistent || options.streamk || options.marlin ||
         options.streamk_gate || options.streamk_split_gate ||
-        options.marlin_profile_subject_only) {
+        options.marlin_profile_subject_only ||
+        options.streamk_blocks_per_cu != 0) {
       std::fprintf(
           stderr,
           "standalone Marlin sweep fixes its scheduler at build time; "
@@ -4158,7 +4219,8 @@ int main(int argc, char const **args) {
   // wrapper compile-time Marlin-only as the second line of defence.
   if (!options.help && !options.list_configs) {
     if (!options.marlin || options.persistent || options.streamk ||
-        options.streamk_gate || options.streamk_split_gate) {
+        options.streamk_gate || options.streamk_split_gate ||
+        options.streamk_blocks_per_cu != 0) {
       std::fprintf(
           stderr,
           "standalone Marlin m8/m16 target is Marlin-only: pass --marlin; "
@@ -4254,7 +4316,8 @@ int main(int argc, char const **args) {
   if (options.persistent || options.streamk || options.marlin ||
       options.streamk_gate || options.streamk_split_gate ||
       options.streamk_exact_fixture || options.marlin_profile_subject_only ||
-      options.marlin_blocks_per_cu != 1) {
+      options.marlin_blocks_per_cu != 1 ||
+      options.streamk_blocks_per_cu != 0) {
     std::fprintf(stderr,
                  "test_lowbit_dense_marlin_sweep fixes scheduler=marlin at build time; "
                  "runtime scheduler flags and --marlin-blocks-per-cu are unsupported\n");
@@ -4280,7 +4343,8 @@ int main(int argc, char const **args) {
   if (options.persistent || options.streamk || options.marlin || options.streamk_gate ||
       options.streamk_split_gate || options.streamk_exact_fixture ||
       options.marlin_profile_subject_only ||
-      options.marlin_blocks_per_cu != 1) {
+      options.marlin_blocks_per_cu != 1 ||
+      options.streamk_blocks_per_cu != 0) {
     std::fprintf(stderr,
                  "scheduler A/B flags are available only in the dedicated dense scheduler targets; "
                  "the ordinary dense sweep is unchanged\n");
@@ -4301,6 +4365,11 @@ int main(int argc, char const **args) {
   if (!options.marlin && options.marlin_blocks_per_cu != 1) {
     std::fprintf(stderr,
                  "--marlin-blocks-per-cu is valid only with --marlin\n");
+    return 1;
+  }
+  if (!options.streamk && options.streamk_blocks_per_cu != 0) {
+    std::fprintf(stderr,
+                 "--streamk-blocks-per-cu is valid only with --streamk\n");
     return 1;
   }
   if ((options.persistent || options.streamk || options.marlin ||
@@ -4474,9 +4543,10 @@ int main(int argc, char const **args) {
                   kLowbitDenseConfigRows, options.marlin_instruction_m);
 #elif defined(DENSE_STREAMK_SWEEP)
     std::snprintf(build, sizeof build,
-                  "bits=%d TSK=%d gs=%d scheduler=streamk rows=%d",
+                  "bits=%d TSK=%d gs=%d scheduler=streamk blocks_per_cu=%d rows=%d",
                   int(cutlass::sizeof_bits<QuantType>::value), TileShapeK,
-                  options.g, kLowbitDenseConfigRows);
+                  options.g, options.streamk_blocks_per_cu,
+                  kLowbitDenseConfigRows);
 #elif defined(DENSE_MARLIN_SWEEP)
     std::snprintf(build, sizeof build, "bits=%d TSK=%d gs=%d scheduler=%s",
                   int(cutlass::sizeof_bits<QuantType>::value), TileShapeK, options.g,
@@ -4535,6 +4605,19 @@ int main(int argc, char const **args) {
         Result r = run_config(options, c);
         if (!r.passed) {
 #if defined(DENSE_STREAMK_SWEEP)
+          // A requested CU multiplier is a candidate capability, not a
+          // correctness property.  Some tactics have a lower exact runtime
+          // occupancy; record those cells as explicitly unavailable instead
+          // of either clamping them or mislabelling them as numerical red.
+          if (!r.scheduler_grid_supported) {
+            bench_samples::excluded(
+                _a, "Stream-K blocks-per-CU exceeds exact kernel occupancy");
+            if (!rep)
+              std::printf("%-10s %s\n", "-", "excluded (grid multiplier exceeds exact occupancy)");
+            else
+              std::printf("\n");
+            continue;
+          }
           // No-seam lowering is a property of this shape/occupancy and is a
           // legitimate sweep exclusion, not a kernel failure.  Every other
           // Stream-K failure is correctness evidence and must stop the sweep;

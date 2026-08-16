@@ -360,7 +360,13 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         streamk_exit = ""
 
     for token in (
-        "actual=%s real_cu=%d ctas_per_cu=%d",
+        "actual=%s real_cu=%d occupancy_api=%d ",
+        '"blocks_per_cu=%d "',
+        "ctas_per_cu = dense_streamk_selected_blocks_per_cu(",
+        "static_assert(dense_streamk_selected_blocks_per_cu(0, 8) == 8);",
+        "static_assert(dense_streamk_selected_blocks_per_cu(2, 8) == 2);",
+        "static_assert(dense_streamk_selected_blocks_per_cu(3, 8) == 3);",
+        "arguments.ctas_per_cu = ctas_per_cu;",
         "params.scheduler_hw_info.cu_count == int(workers)",
         "witness[0] == 8 && witness[1] == 1 && witness[2] == 0",
         "outputs=%zu bad=%d bitdiff=%d",
@@ -375,6 +381,8 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
     ):
         if bench.count(token) != 1:
             bad.append(f"bench must contain exactly one {token!r}")
+    if bench.count("occupancy_failure.scheduler_grid_supported = false;") != 2:
+        bad.append("Stream-K grid selection must fail closed for negative and over-occupancy requests")
     for token in (
         "if (!final_result.split_path_exercised) return 2;",
         "if (!final_result.verification_classified) return 3;",
