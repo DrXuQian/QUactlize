@@ -105,14 +105,19 @@ struct ExactWarmAbResult {
   double packed_internal_reducer_us = 0;
   double packed_internal_full_us = 0;
   double packed_internal_fused_us = 0;
+  double packed_internal_publish_only_us = 0;
   uint64_t historical_reshape_bad = 0;
   uint64_t shipping_ordinary_reshape_bad = 0;
   uint64_t packed_reshape_bad = 0;
   uint64_t packed_internal_bad = 0;
   uint64_t packed_internal_fused_bad = 0;
+  uint64_t packed_internal_publish_only_partial_byte_diff = 0;
   bool packed_internal_fast_reducer = false;
   bool packed_internal_fused_selected = false;
+  bool packed_internal_publish_only_selected = false;
   bool packed_internal_fused_counters_zero = false;
+  bool packed_internal_publish_only_counters_zero = false;
+  bool packed_internal_publish_only_d_untouched = false;
   int packed_internal_fused_slices_passes = 0;
   int packed_internal_fused_reuse_passes = 0;
   bool post_timing_correct = false;
@@ -797,6 +802,9 @@ bool run_exact_warm_ab(
   auto packed_internal_fused = [&] {
     return packed_internal.run_fused_last_arriver(nullptr);
   };
+  auto packed_internal_publish_only = [&] {
+    return packed_internal.run_publish_protocol_only_for_diagnostics(nullptr);
+  };
   auto packed_internal_fused_validation = [&] {
     cutlass::Status const reset =
         packed_internal.reset_fused_counters_for_diagnostics(nullptr);
@@ -824,6 +832,67 @@ bool run_exact_warm_ab(
       packed_internal_s2.fused_last_arriver_selected_for_diagnostics() &&
       packed_internal_s4.fused_last_arriver_selected_for_diagnostics() &&
       packed_internal.fused_last_arriver_selected_for_diagnostics();
+  result.packed_internal_publish_only_selected =
+      packed_internal.publish_protocol_only_selected_for_diagnostics();
+
+  // This timing-only arm must prove that it is the same producer plus the
+  // exact publication lifecycle, not a second approximate model.  Compare its
+  // FP32 partial bytes with producer-only, require the terminal counter reset,
+  // and require every D element to retain the poison value because the same
+  // compiled kernel was told to skip final reduction/output.
+  auto validate_publish_only = [&] {
+    CellResult producer_observed, publish_observed;
+    std::vector<half_t> producer_output, publish_output;
+    std::vector<char> producer_workspace, publish_workspace;
+    if (!reset_canaries(internal) ||
+        packed_internal_producer() != cutlass::Status::kSuccess ||
+        hggcDeviceSynchronize() != hggcSuccess ||
+        !inspect_output(internal, producer_observed, producer_output) ||
+        !inspect_workspace_redzone(
+            internal, internal_plan.total_bytes, producer_observed,
+            producer_workspace) ||
+        !producer_observed.output_redzone ||
+        !producer_observed.workspace_redzone ||
+        !reset_canaries(internal) ||
+        packed_internal.reset_fused_counters_for_diagnostics(nullptr) !=
+            cutlass::Status::kSuccess ||
+        packed_internal_publish_only() != cutlass::Status::kSuccess ||
+        hggcDeviceSynchronize() != hggcSuccess ||
+        !inspect_output(internal, publish_observed, publish_output) ||
+        !inspect_workspace_redzone(
+            internal, internal_plan.total_bytes, publish_observed,
+            publish_workspace) ||
+        !publish_observed.output_redzone ||
+        !publish_observed.workspace_redzone) {
+      return false;
+    }
+    auto const producer_partial = producer_workspace.begin() +
+        std::ptrdiff_t(kWorkspaceGuardBytes);
+    auto const publish_partial = publish_workspace.begin() +
+        std::ptrdiff_t(kWorkspaceGuardBytes);
+    result.packed_internal_publish_only_partial_byte_diff =
+        uint64_t(std::inner_product(
+            producer_partial,
+            producer_partial + std::ptrdiff_t(internal_plan.partial_bytes),
+            publish_partial, uint64_t(0), std::plus<uint64_t>{},
+            [](char lhs, char rhs) { return uint64_t(lhs != rhs); }));
+    half_t const* published_d =
+        publish_output.data() + kOutputGuardElements;
+    std::size_t const output_elements =
+        std::size_t(internal.rows) * std::size_t(internal.columns);
+    result.packed_internal_publish_only_d_untouched = std::all_of(
+        published_d, published_d + output_elements,
+        [](half_t value) { return value.raw() == uint16_t(0x7e00); });
+    auto const counter_first = publish_workspace.begin() + std::ptrdiff_t(
+        kWorkspaceGuardBytes + internal_plan.counter_offset);
+    result.packed_internal_publish_only_counters_zero = std::all_of(
+        counter_first,
+        counter_first + std::ptrdiff_t(internal_plan.counter_bytes),
+        [](char value) { return value == 0; });
+    return result.packed_internal_publish_only_partial_byte_diff == 0 &&
+        result.packed_internal_publish_only_d_untouched &&
+        result.packed_internal_publish_only_counters_zero;
+  };
 
   // Reuse the same counter allocation without an operator-side memset.  Each
   // launch must both reproduce the exact output and retire every q counter to
@@ -918,7 +987,7 @@ bool run_exact_warm_ab(
       fused_s2_counters_zero && fused_s4_counters_zero &&
       fused_s8_counters_zero;
 
-  if (!validate_fused_reuse() ||
+  if (!validate_fused_reuse() || !validate_publish_only() ||
       !measure_warm_aggregate_for_diagnostics(
           historical_launch, iterations, result.historical_reshape_us) ||
       !measure_warm_aggregate_for_diagnostics(
@@ -937,7 +1006,12 @@ bool run_exact_warm_ab(
           result.packed_internal_full_us) ||
       !measure_warm_aggregate_for_diagnostics(
           packed_internal_fused, iterations,
-          result.packed_internal_fused_us)) {
+          result.packed_internal_fused_us) ||
+      packed_internal.reset_fused_counters_for_diagnostics(nullptr) !=
+          cutlass::Status::kSuccess ||
+      !measure_warm_aggregate_for_diagnostics(
+          packed_internal_publish_only, iterations,
+          result.packed_internal_publish_only_us)) {
     return false;
   }
 
@@ -957,6 +1031,7 @@ bool run_exact_warm_ab(
       validate(internal, internal_plan.partial_bytes, 0, 0,
                packed_internal_full,
                packed_internal_post_bad) &&
+      validate_publish_only() &&
       validate(internal, internal_plan.total_bytes,
                internal_plan.counter_offset, internal_plan.counter_bytes,
                packed_internal_fused_validation,

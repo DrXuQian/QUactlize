@@ -192,7 +192,7 @@ bool admission_contract() {
   auto* final_d = reinterpret_cast<cutlass::half_t*>(uintptr_t{0x40000});
   auto* counters = reinterpret_cast<int32_t*>(uintptr_t{0x50000});
   fused_args.completion = {
-      destination, final_d, counters, M, N, N, 32, S};
+      destination, final_d, counters, M, N, N, 32, S, 1};
   bool const fused_accepted = FusedKernel::can_implement(fused_args);
 
 #if defined(L190_PLANT_BAD_STRIDE)
@@ -213,17 +213,26 @@ bool admission_contract() {
   auto counter_overlap = fused_args;
   counter_overlap.completion.counters =
       reinterpret_cast<int32_t*>(reinterpret_cast<char*>(destination) + 128);
+  auto publish_only = fused_args;
+  publish_only.completion.perform_final_reduction = 0;
+  auto invalid_mode = fused_args;
+  invalid_mode.completion.perform_final_reduction = 2;
   bool const mismatch_rejected = !FusedKernel::can_implement(mismatched);
   bool const destination_overlap_rejected =
       !FusedKernel::can_implement(destination_overlap);
   bool const counter_overlap_rejected =
       !FusedKernel::can_implement(counter_overlap);
+  bool const publish_only_accepted = FusedKernel::can_implement(publish_only);
+  bool const invalid_mode_rejected = !FusedKernel::can_implement(invalid_mode);
   std::printf(
       "[l190:admission] plant=none accepted=%d fused=%d "
-      "pointer-mismatch=%d D-overlap=%d counter-overlap=%d expected=1/1/1/1/1\n",
-      int(accepted), int(fused_accepted), int(mismatch_rejected),
+      "publish-only=%d invalid-mode=%d pointer-mismatch=%d D-overlap=%d "
+      "counter-overlap=%d expected=1/1/1/1/1/1/1\n",
+      int(accepted), int(fused_accepted), int(publish_only_accepted),
+      int(invalid_mode_rejected), int(mismatch_rejected),
       int(destination_overlap_rejected), int(counter_overlap_rejected));
-  return accepted && fused_accepted && mismatch_rejected &&
+  return accepted && fused_accepted && publish_only_accepted &&
+      invalid_mode_rejected && mismatch_rejected &&
       destination_overlap_rejected && counter_overlap_rejected;
 #endif
 }

@@ -452,6 +452,12 @@ int main(int argc, char** argv) {
       double const provider_delta = result.packed_reshape_us - result.shipping_ordinary_reshape_us;
       double const internal_split_producer_delta =
           result.packed_internal_producer_us - result.packed_reshape_us;
+      double const publish_protocol_delta =
+          result.packed_internal_publish_only_us -
+          result.packed_internal_producer_us;
+      double const terminal_reduce_d_delta =
+          result.packed_internal_fused_us -
+          result.packed_internal_publish_only_us;
       double const total_delta = result.packed_internal_producer_us -
           result.historical_reshape_us;
       double const delta_conservation_error =
@@ -469,8 +475,14 @@ int main(int argc, char** argv) {
           "packedA_internal_S8_reducer_only=%.6f_us "
           "packedA_internal_S8_full_e2e=%.6f_us "
           "packedA_internal_S8_fused_e2e=%.6f_us "
+          "packedA_internal_S8_publish_only=%.6f_us "
+          "publish_protocol_delta=%+.6f_us "
+          "terminal_reduce_D_delta=%+.6f_us "
           "fast_path_selected=%d fused_last_arriver_selected=%d "
           "fused_counters_zero=%d fused_slices=%d/3 fused_reuse=%d/8 "
+          "publish_only_selected=%d publish_only_partial_byte_diff=%llu "
+          "publish_only_D=UNTOUCHED/%s publish_only_counters_zero=%d "
+          "publish_only_scope=TIMING_ONLY_OUTPUT_INTENTIONALLY_INVALID "
           "historical_to_shipping_delta=%+.6f_us provider_delta=%+.6f_us "
           "internal_split_producer_delta=%+.6f_us "
           "reducer=EXCLUDED_FROM_DELTA "
@@ -486,11 +498,19 @@ int main(int argc, char** argv) {
           result.packed_internal_reducer_us,
           result.packed_internal_full_us,
           result.packed_internal_fused_us,
+          result.packed_internal_publish_only_us,
+          publish_protocol_delta,
+          terminal_reduce_d_delta,
           int(result.packed_internal_fast_reducer),
           int(result.packed_internal_fused_selected),
           int(result.packed_internal_fused_counters_zero),
           result.packed_internal_fused_slices_passes,
           result.packed_internal_fused_reuse_passes,
+          int(result.packed_internal_publish_only_selected),
+          static_cast<unsigned long long>(
+              result.packed_internal_publish_only_partial_byte_diff),
+          result.packed_internal_publish_only_d_untouched ? "PASS" : "FAIL",
+          int(result.packed_internal_publish_only_counters_zero),
           historical_to_shipping_delta, provider_delta, internal_split_producer_delta,
           total_delta, delta_conservation_error,
           delta_conserved ? "PASS" : "FAIL",
@@ -507,6 +527,10 @@ int main(int argc, char** argv) {
           result.packed_internal_fused_counters_zero &&
           result.packed_internal_fused_slices_passes == 3 &&
           result.packed_internal_fused_reuse_passes == 8 &&
+          result.packed_internal_publish_only_selected &&
+          result.packed_internal_publish_only_partial_byte_diff == 0 &&
+          result.packed_internal_publish_only_d_untouched &&
+          result.packed_internal_publish_only_counters_zero &&
           result.post_timing_correct && result.historical_reshape_bad == 0 &&
           result.shipping_ordinary_reshape_bad == 0 &&
           result.packed_reshape_bad == 0 && result.packed_internal_bad == 0 &&

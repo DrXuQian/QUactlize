@@ -1934,14 +1934,32 @@ EPA=2 M=1 body remains the standalone fast path wherever its alignment/shape con
 canary closed actual-last correctness (S2/S4/S8 raw-bit equality, zeroed
 counters, and eight-launch workspace reuse), but rejected it for performance.
 At S8, `TN64` measured 9.6550 us for producer plus the separate reducer versus
-10.3808 us fused; `TN128` measured 9.8894 versus 10.2118 us.  The separate
-reducer itself was 1.768--1.770 us, at the approximately 1.85 us empty-launch
-floor, while its 136 KiB logical transfer is only about 0.21% of the measured
-64 MiB L2.  The likely mechanism is an L2-hot kernel-boundary handoff versus a
-fence/barrier/atomic tax paid by every producer CTA; this cache statement is a
-size/timing inference, not a DRAM-counter claim.  Two-launch is therefore the
-selected policy.  Actual-last remains an explicit correctness counterfactual,
-not an optimization waiting to be enabled.
+10.3808 us actual-last; `TN128` measured 9.8894 versus 10.2118 us.  The
+separate reducer itself was 1.768--1.770 us.  Its 139,264 B (136 KiB) logical
+transfer costs only 0.05035 us at 2,766 GB/s and 0.27853 us even at the
+measured 500 GB/s decode reference: 2.84% and 15.74% of 1.77 us.  Thus byte
+volume cannot explain most reducer time, without assuming anything about
+cache state.  An L2-hot same-stream handoff remains plausible because 136 KiB
+is about 0.21% of the measured 64 MiB L2, but it is a non-load-bearing note;
+the earlier approximately 1.845 us empty-launch result used a different timing
+scope and is not comparable.
+
+The 2.25 ratio between the two actual-last penalties is merely consistent
+with the 2.0 producer-CTA ratio: TN, producer resources, and producer time
+changed too.  The registered discriminator therefore runs the same actual-
+last kernel and resource allocation with a CTA-uniform diagnostic bit that
+skips only peer reduction and D output.  It must match producer partial bytes,
+leave poisoned D untouched, retire counters to zero, and stay out of
+production ranking.  Its `publish_only - producer_only` delta directly
+measures the publication protocol at fixed TN.  Until that PPU measurement
+exists, per-CTA publication cost is a hypothesis, not the verdict's premise.
+Two-launch is selected by the direct correct E2E comparison regardless of
+attribution; actual-last remains an explicit correctness counterfactual.
+
+The separate path also permits a dedicated 32-thread reducer, while actual-
+last holds the 128/256-thread producer CTA's register and smem quotas through
+finalization.  This phase-specific resource allocation is a structural two-
+launch advantage independent of launch overhead.
 
 **Fully-quantized is a separate proof obligation, not a typedef substitution.**  Its producer must be formed from
 the exact shipping fully-quantized mainloop and its reduction must preserve the shipping accumulator type,
@@ -1971,8 +1989,15 @@ memory roof (90% goal); the shipping N=4096 reducer is only 40--136 KiB and is t
 launch floor, not against a misleading nameplate `%HBM`.  The W4 one-plane actual-last candidate has now been
 measured and rejected as the default despite passing correctness; the two-launch path is both the arithmetic oracle
 and the selected completion policy.  Do not require each additional format to implement fused completion merely
-because W4 proved it.  A future fused variant must first state a mechanism that avoids the measured per-producer-CTA
-publication tax, then prove its own exact shipping producer/epilogue semantics and a disjoint device-time win.
+because W4 proved it.  A known one-launch alternative is direct `atomicAdd` into a zero-initialized FP32 D, which
+removes counter/fence/last-arriver publication but introduces shape-dependent atomic contention.  Same-kernel RTX
+5090 Marlin measurements were `7.232 -> 7.168 us` at `(N,K)=(4096,4096)`, `7.360 -> 7.744 us` at
+`(16384,1024)`, and `9.088 -> 7.232 us` at `(5120,5120)` (lock chain to atomic).  Its performance mechanism is
+known; it is excluded from the deterministic path because inter-CTA atomic order cannot preserve fixed-order FP32
+RAW-BIT results.  It may only be an explicit opt-in with a separately preregistered tolerance gate, FP32-D
+initialization/ownership ABI, and timed final FP16 conversion when required.  A future deterministic fused variant
+must avoid the publication cost, prove its exact shipping producer/epilogue semantics, and show a disjoint device-
+time win.
 
 **Done means:** every shipping precision and the fully-quantized format appears in the generated denominator,
 passes its local exact/negative controls, builds with the real PPU toolchain, and has a recorded PPU S-curve.  Until

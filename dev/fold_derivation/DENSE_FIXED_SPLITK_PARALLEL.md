@@ -99,9 +99,9 @@ axis.  It appends one 32-bit counter per global output tile to the established
 FP32 partial workspace, uses a fetch-old arrival, and lets only the actual last
 physical peer run the existing fixed `s=0..S-1` arithmetic.  There is no spin
 or appointed logical final peer.  Its first admission is deliberately narrow:
-compact FP16 `M=1`, full TileN stripes, and `S in {2,4,8}`.  `run()` remains the
-two-launch oracle; callers must opt into `run_fused_last_arriver()` until the
-device canary closes.
+compact FP16 `M=1`, full TileN stripes, and `S in {2,4,8}`.  `run()` remains
+the selected two-launch oracle; callers may invoke
+`run_fused_last_arriver()` only as the explicit measured counterfactual.
 
 Counter reuse has an explicit lifecycle.  Initialization zeros the counters;
 the actual-last CTA resets its own q slot only after all output threads finish.
@@ -127,26 +127,90 @@ launches.  The performance comparison nevertheless rejected fusion:
 | `TN64,TK128,WN16,s2` | 7.8906 us | 1.7702 us | 9.6550 us | 10.3808 us | +0.7258 us (+7.52%) |
 | `TN128,TK128,WN16,s2` | 8.1310 us | 1.7684 us | 9.8894 us | 10.2118 us | +0.3224 us (+3.26%) |
 
-The producer writes `S*N*sizeof(float) = 128 KiB` of FP32 partials and the
-reducer writes an 8 KiB FP16 destination.  The complete 136 KiB logical
-reduction transfer is about 0.21% of the measured 64 MiB L2.  The reducer is
-launched immediately after the producer on the same stream, so the kernel
-boundary supplies producer-to-consumer ordering and the just-written partials
-are expected to be L2-hot.  This is an inference from size, ordering, and
-timing rather than a claimed DRAM-counter measurement.  It is strongly
-supported by the reducer-only 1.77 us being indistinguishable from the
-measured approximately 1.85 us empty-launch floor.
+The producer writes `S*N*sizeof(float) = 128 KiB` of FP32 partials.  The
+reducer reads those partials and writes an 8 KiB FP16 destination, for
+`139,264 B` (`136 KiB`) of logical reducer traffic.  At the 2,766 GB/s PPU HBM
+peak that byte count corresponds to `0.05035 us`; even at the measured 500
+GB/s decode reference it corresponds to only `0.27853 us`.  Those are
+respectively 2.84% and 15.74% of the measured approximately 1.77 us reducer
+time.  The small reducer is therefore dominated by fixed launch/kernel setup
+rather than by its byte volume; this conclusion does not require a cache-
+residency assumption.
 
-Fusion removes that launch boundary but makes every producer CTA execute the
-publication protocol: CTA synchronization, a device visibility fence, a
-second CTA synchronization, and one completion atomic.  Only the actual last
-CTA reduces.  The fused penalty almost halves when the producer count halves
-from 512 (`TN64`) to 256 (`TN128`), while the reduction element count is
-unchanged.  That is the signature of a per-producer-CTA protocol tax, not of
-expensive partial data movement.  Therefore `run()` and the two-launch policy
-remain the selected performance path.  `run_fused_last_arriver()` remains a
-correctness oracle and an explicit counterfactual; it must not become the
-default without a new disjoint performance win.
+Because the reducer follows the producer immediately on the same stream and
+its 136 KiB working set is only about 0.21% of the measured 64 MiB L2, an
+L2-hot handoff remains plausible.  It is only a cache note pending counter
+evidence, not part of the device verdict.  The earlier approximately 1.845 us
+empty-launch result used a different timing scope and is not used to support
+this claim.
+
+Subtracting the producer observations gives combined publication-plus-
+reduction tails of 2.4902 us (`TN64`) and 2.0808 us (`TN128`), both larger than
+the approximately 1.77 us separate reducer.  The fused-minus-separate penalty
+ratio is 2.25 while the producer-CTA ratio is 2.0.  This is consistent with a
+per-producer-CTA component, but does not isolate one: changing `TN64` to
+`TN128` also changes tile geometry, producer resources, and the measured
+producer time (7.8906 versus 8.1310 us).
+
+The registered discriminator is a timing-only arm of the *same compiled
+actual-last kernel*.  It performs the identical partial store and complete
+publication lifecycle, including terminal acquire and counter reset, but a
+CTA-uniform runtime bit deliberately skips peer reads, ordered reduction, and
+the final D epilogue.  Both arms therefore retain the same register/smem
+allocation and pay the same uniform branch.  Its output is intentionally
+invalid, must leave poisoned D untouched, and must never enter production
+ranking.  The reported `publish_protocol_delta = publish_only - producer_only`
+directly measures the protocol at fixed TN; `actual_last - publish_only`
+isolates the terminal reduction/D portion.  Until that device diagnostic runs,
+the per-CTA publication cost is a supported hypothesis rather than a direct
+measurement.
+
+None of this attribution is required for selection: under the same raw-bit
+correctness contract, `run()` and the two-launch policy win the direct end-to-
+end comparison.  `run_fused_last_arriver()` remains a correct counterfactual
+rather than the default.
+
+The separate reducer also has a structural advantage independent of launch
+overhead.  It is a dedicated 32-thread kernel, whereas the actual-last role
+must finish inside a producer CTA while that CTA's mainloop thread count,
+register allocation, and shared-memory allocation remain reserved until
+retirement.  The measured `TN64` and `TN128` producer CTAs have 128 and 256
+threads respectively.  A conventional monolithic kernel cannot re-provision
+those resources as a lightweight one-warp CTA midway through execution.  Two
+launches therefore provide phase-specific resource allocation, not merely a
+kernel boundary.
+
+### Direct atomic FP32 accumulation is a distinct opt-in policy
+
+A concrete one-launch mechanism that removes the publication protocol is
+already known: every producer CTA can `atomicAdd` its contribution directly
+into a zero-initialized FP32 D.  It has no completion counter, visibility
+fence, or last-arriver reduction; it trades that protocol for contended atomic
+RMWs.  A same-kernel RTX 5090 vLLM Marlin A/B, changing only the reduction
+policy, measured:
+
+| N | K | lock chain | atomic | atomic delta |
+|---:|---:|---:|---:|---:|
+| 4096 | 4096 | 7.232 us | 7.168 us | -0.9% |
+| 16384 | 1024 | 7.360 us | 7.744 us | +5.2% |
+| 5120 | 5120 | 9.088 us | 7.232 us | -20.4% |
+
+The last shape was stable over four repetitions (median 9.12 to 7.57 us).
+The lock-chain minimum, approximately 7.63 us, was already close to the atomic
+median, approximately 7.57 us, suggesting that the large gain removes tail
+latency or variance rather than improving the best case.  This is shape-
+dependent RTX 5090 evidence, not a PPU performance result.
+
+Inter-CTA atomic order is unspecified, and FP32 addition is not associative.
+This policy therefore cannot guarantee the fixed peer-index order or raw-bit
+reproducibility required by the current gate.  It is excluded from the
+deterministic path because of that contract, not because its performance
+mechanism is unknown.  Any implementation must be explicit opt-in and use a
+separate, pre-declared tolerance-based correctness gate; it must not weaken or
+silently pass the existing RAW-BIT gate.  It is also not a drop-in ABI for the
+current compact FP16 D: an atomic path must specify FP32 D initialization,
+workspace/output ownership, and the final FP16 conversion (including its
+time) when FP16 remains the public destination.
 
 ## Required proofs
 
@@ -167,6 +231,8 @@ Device postconditions:
 - repeated output fingerprints;
 - for the fused version, completion-counter reset/reuse and release/acquire
   visibility under repeated launches.
+- for the publication-only discriminator, producer-partial byte identity,
+  poisoned-D preservation, zero counters, and an explicit timing-only label.
 
 ## First device canary (registered before measurement)
 
@@ -257,7 +323,7 @@ runtime N stride, so `(32768,512)` and `(4096,4096)` are separately packed
 resident artifacts rather than one byte buffer reinterpreted for free.
 
 `EXACT_WARM_AB=1` therefore builds two exact committed configurations
-(`TN=64/128,TK=128,WN=16,stages=2`) and reports four timings under one
+(`TN=64/128,TK=128,WN=16,stages=2`) and reports seven arms under one
 same-address aggregate timer (100 launches by default, matching the standard
 dense benchmark default):
 
@@ -268,14 +334,19 @@ dense benchmark default):
 4. typed packed-A internal `(1,4096,4096),S=8` producer only;
 5. the same internal problem through the permanent two-launch
    producer-plus-reducer path, with reducer-only time also printed;
-6. the same internal problem through the one-launch actual-last fused path.
+6. the same internal problem through the one-launch actual-last fused path;
+7. the same compiled actual-last kernel with final reduction/D disabled,
+   labelled as an intentionally invalid timing-only output.
 
 The two geometries have the same CTA and K-step count for each TN.  A complete
 producer+reducer launch is checked in raw FP16 bits before and after timing;
 producer-only is a diagnostic seam and is structurally forbidden from the
 cold ranking control flow.  The fused arm must additionally pass eight
 same-workspace launches with raw-bit output identity and zero completion
-counters after every launch.  Historical reproduction is admitted only within a
+counters after every launch.  The publication-only arm must reproduce
+producer partial bytes, leave D poison
+untouched, and reset every counter; it cannot participate in correctness or
+winner ranking.  Historical reproduction is admitted only within a
 frozen +/-3% envelope around 7.854/7.696 us; otherwise the process returns
 nonzero as `DRIFTED`.  The final delta is labelled a combined internal Split-K
 producer delta (scheduler, descriptors and FP32 partial epilogue; reducer

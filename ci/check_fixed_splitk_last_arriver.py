@@ -22,6 +22,10 @@ def valid_policy(text: str, reducer: str) -> bool:
         "ppu.ld.global.acquire.gpu.b32",
         "shared.published_count = load_acquire(",
         "uint32_t(shared.published_count) != work.peer_count",
+        "args.perform_final_reduction > 1",
+        "if (params.perform_final_reduction != 0)",
+        "sizeof(Params) == 56",
+        "offsetof(Params, perform_final_reduction) == 48",
         "reduce_fp32_volatile_fixed_partition_order<",
         "atomicExch(",
         "case 2: reduce_tile<2>",
@@ -67,12 +71,13 @@ def valid_policy(text: str, reducer: str) -> bool:
     acquire = text.find("shared.published_count = load_acquire(", decide)
     published = text.find(
         "uint32_t(shared.published_count) != work.peer_count", acquire)
-    reduce = text.find("switch (work.peer_count)", published)
+    mode = text.find("if (params.perform_final_reduction != 0)", published)
+    reduce = text.find("switch (work.peer_count)", mode)
     reset = text.find("atomicExch(", reduce)
     return -1 not in (
-        after, fence, arrive, decide, acquire, published, reduce, reset
+        after, fence, arrive, decide, acquire, published, mode, reduce, reset
     ) and (
-        after < fence < arrive < decide < acquire < published < reduce < reset
+        after < fence < arrive < decide < acquire < published < mode < reduce < reset
     )
 
 
@@ -94,6 +99,10 @@ def main() -> int:
         "LastArriverM1Fp16Completion<2>",
         "run_fused_last_arriver",
         "reset_fused_counters_for_diagnostics",
+        "run_publish_protocol_only_for_diagnostics",
+        "publish_protocol_only_selected_for_diagnostics",
+        "FusedGemm publish_only_{}",
+        "publish_only_args.completion.perform_final_reduction = false",
         "if (splits_ == 1) return shipping_.run(stream);",
         "query_fused_workspace_plan",
     )
@@ -128,6 +137,10 @@ def main() -> int:
         "unbound-partials": policy.replace(
             "static_cast<void const*>(partial.ptr_D)",
             "static_cast<void const*>(args.partials)", 1),
+        "mode-ignored": policy.replace(
+            "if (params.perform_final_reduction != 0)", "if (true)", 1),
+        "invalid-mode-admitted": policy.replace(
+            "args.perform_final_reduction > 1 ||", "/* planted */", 1),
     }
     escaped = [
         name for name, planted in plants.items()
@@ -149,7 +162,8 @@ def main() -> int:
         return 1
     print(
         "[l196:source] PASS: partial->fence->fetch-old->actual-last->"
-        "acquire->volatile fixed-order reduce->reset; plants=13 EXPECTED_RED"
+        "acquire->runtime final-mode->volatile fixed-order reduce->reset; "
+        "plants=15 EXPECTED_RED"
     )
     return 0
 

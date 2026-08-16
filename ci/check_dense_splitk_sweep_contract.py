@@ -110,6 +110,12 @@ def audit(
         "packed_internal.run_producer_only_for_diagnostics(nullptr)",
         "packed_internal.run_reducer_only_for_diagnostics(nullptr)",
         "packed_internal.run_fused_last_arriver(nullptr)",
+        "packed_internal.run_publish_protocol_only_for_diagnostics(nullptr)",
+        "packed_internal_publish_only_partial_byte_diff",
+        "packed_internal_publish_only_d_untouched",
+        "packed_internal_publish_only_counters_zero",
+        "producer_partial + std::ptrdiff_t(internal_plan.partial_bytes)",
+        "value.raw() == uint16_t(0x7e00)",
         "packed_internal_fused_slices_passes",
         "packed_internal_fused_reuse_passes",
         "reset_output_canaries(internal)",
@@ -123,6 +129,8 @@ def audit(
         "bool measure_warm_aggregate_for_diagnostics(")]
     forbid(ranking, "run_producer_only_for_diagnostics",
            "production cold ranking", bad)
+    forbid(ranking, "run_publish_protocol_only_for_diagnostics",
+           "production cold ranking", bad)
 
     handle = files["handle"]
     for token in (
@@ -133,6 +141,10 @@ def audit(
         "run_producer_only_for_diagnostics(",
         "run_reducer_only_for_diagnostics(",
         "run_fused_last_arriver(",
+        "run_publish_protocol_only_for_diagnostics(",
+        "publish_protocol_only_selected_for_diagnostics()",
+        "FusedGemm publish_only_{}",
+        "publish_only_args.completion.perform_final_reduction = false",
         "reset_fused_counters_for_diagnostics(",
         "stream != fused_stream_",
         "reduction_fast_path_selected_for_diagnostics()",
@@ -179,6 +191,12 @@ def audit(
         "packedA_internal_S8_reducer_only=%.6f_us",
         "packedA_internal_S8_full_e2e=%.6f_us",
         "packedA_internal_S8_fused_e2e=%.6f_us",
+        "packedA_internal_S8_publish_only=%.6f_us",
+        "publish_protocol_delta=%+.6f_us",
+        "terminal_reduce_D_delta=%+.6f_us",
+        "publish_only_selected=%d publish_only_partial_byte_diff=%llu",
+        "publish_only_D=UNTOUCHED/%s publish_only_counters_zero=%d",
+        "publish_only_scope=TIMING_ONLY_OUTPUT_INTENTIONALLY_INVALID",
         "fast_path_selected=%d",
         "fused_last_arriver_selected=%d",
         "fused_counters_zero=%d fused_slices=%d/3 fused_reuse=%d/8",
@@ -188,6 +206,10 @@ def audit(
         "result.packed_internal_fused_counters_zero &&",
         "result.packed_internal_fused_slices_passes == 3",
         "result.packed_internal_fused_reuse_passes == 8",
+        "result.packed_internal_publish_only_selected &&",
+        "result.packed_internal_publish_only_partial_byte_diff == 0",
+        "result.packed_internal_publish_only_d_untouched &&",
+        "result.packed_internal_publish_only_counters_zero &&",
         "all_ok = all_ok && ok && historical_admitted && delta_conserved",
         "conservation_error=%+.9f_us/%s",
     ):
@@ -231,11 +253,16 @@ def audit(
         "tee \"$run_log\"",
         "EXACT_WARM_AB",
         "--exact-warm-ab",
-        "exact_same_address_warm_aggregate_historical_vs_shipping_ordinary_vs_packedA_reshape_vs_internal_S8_producer_two_launch_and_actual_last_fused_e2e",
+        "exact_same_address_warm_aggregate_historical_vs_shipping_ordinary_vs_packedA_reshape_vs_internal_S8_producer_two_launch_actual_last_fused_and_publish_protocol_only",
         "fused_last_arriver_selected=1",
         "fused_counters_zero=1",
         "fused_slices=3/3",
         "fused_reuse=8/8",
+        "publish_only_selected=1",
+        "publish_only_partial_byte_diff=0",
+        "publish_only_D=UNTOUCHED/PASS",
+        "publish_only_counters_zero=1",
+        "publish_only_scope=TIMING_ONLY_OUTPUT_INTENTIONALLY_INVALID",
         'timed_iterations="${ITERATIONS:-100}"',
     ):
         require(runner, token, "box runner", bad)
@@ -302,6 +329,13 @@ def main() -> int:
     )
     controls.append(("producer-only-leaked-into-ranking", rows, splits, planted))
     planted = dict(files)
+    planted["bench"] = planted["bench"].replace(
+        "handle->run(nullptr)",
+        "handle->run_publish_protocol_only_for_diagnostics(nullptr)",
+        1,
+    )
+    controls.append(("publish-only-leaked-into-ranking", rows, splits, planted))
+    planted = dict(files)
     planted["handle"] = planted["handle"].replace(
         "PpuMixedInputSplitKParallelM1FastReduction<",
         "PpuMixedInputSplitKParallelReduction<",
@@ -323,6 +357,10 @@ def main() -> int:
         ("lost-fused-slices", "result.packed_internal_fused_slices_passes == 3", "main"),
         ("lost-fused-reuse", "result.packed_internal_fused_reuse_passes == 8", "main"),
         ("lost-fused-counter-zero", "result.packed_internal_fused_counters_zero &&", "main"),
+        ("lost-publish-selected", "result.packed_internal_publish_only_selected &&", "main"),
+        ("lost-publish-partial-match", "result.packed_internal_publish_only_partial_byte_diff == 0", "main"),
+        ("lost-publish-D-poison", "result.packed_internal_publish_only_d_untouched &&", "main"),
+        ("lost-publish-counter-zero", "result.packed_internal_publish_only_counters_zero &&", "main"),
     ):
         planted = dict(files)
         planted[owner] = planted[owner].replace(token, "PLANTED_ABSENT")

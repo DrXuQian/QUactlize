@@ -217,10 +217,14 @@ class PreparedOnePlaneLauncher {
   ShippingGemm shipping_{};
   SplitGemm split_{};
   FusedGemm fused_{};
+  // Same exact kernel type as fused_; only the runtime completion argument
+  // differs, so the diagnostic cannot change registers, smem, or occupancy.
+  FusedGemm publish_only_{};
   Reduction reduction_{};
   int splits_ = 0;
   bool initialized_ = false;
   bool fused_initialized_ = false;
+  bool publish_only_initialized_ = false;
   int32_t* fused_counters_ = nullptr;
   size_t fused_counter_bytes_ = 0;
   hggcStream_t fused_stream_ = nullptr;
@@ -240,7 +244,7 @@ class PreparedOnePlaneLauncher {
                     ppu_tactics::kBlockSmemBytes &&
                     FusedKernel::SharedStorageSize <=
                     ppu_tactics::kBlockSmemBytes,
-                "prepared shipping/partial/fused kernels must fit the compiled PPU smem limit");
+                "prepared shipping/partial/completion kernels must fit the compiled PPU smem limit");
   static_assert(ppu_mixed_policy::kernel_policy_valid_v<
                     fpa_intb_ppu::TacticSpace, MainloopPolicy>,
                 "prepared fixed Split-K must retain the shipping dense tactic guard");
@@ -256,6 +260,7 @@ class PreparedOnePlaneLauncher {
       hggcStream_t stream = nullptr) {
     initialized_ = false;
     fused_initialized_ = false;
+    publish_only_initialized_ = false;
     fused_counters_ = nullptr;
     fused_counter_bytes_ = 0;
     fused_stream_ = nullptr;
@@ -355,14 +360,23 @@ class PreparedOnePlaneLauncher {
           split_k_slices};
       fused_args.completion = {
           partials, D, counters, m, n, n,
-          fused_workspace_plan.output_tiles, split_k_slices};
+          fused_workspace_plan.output_tiles, split_k_slices, true};
+      typename FusedGemm::Arguments publish_only_args = fused_args;
+      publish_only_args.completion = fused_args.completion;
+      publish_only_args.completion.perform_final_reduction = false;
       if (FusedGemm::can_implement(fused_args) == cutlass::Status::kSuccess &&
           FusedGemm::get_workspace_size(fused_args) == 0 &&
           fused_.initialize(fused_args, nullptr, stream) ==
               cutlass::Status::kSuccess &&
+          FusedGemm::can_implement(publish_only_args) ==
+              cutlass::Status::kSuccess &&
+          FusedGemm::get_workspace_size(publish_only_args) == 0 &&
+          publish_only_.initialize(publish_only_args, nullptr, stream) ==
+              cutlass::Status::kSuccess &&
           hggcMemsetAsync(counters, 0, fused_workspace_plan.counter_bytes,
                           stream) == hggcSuccess) {
         fused_initialized_ = true;
+        publish_only_initialized_ = true;
         fused_counters_ = counters;
         fused_counter_bytes_ = fused_workspace_plan.counter_bytes;
         fused_stream_ = stream;
@@ -394,6 +408,21 @@ class PreparedOnePlaneLauncher {
     return fused_.run(stream);
   }
 
+  // Timing-only diagnostic.  It executes the same producer and complete
+  // actual-last publication lifecycle, including terminal acquire and counter
+  // reset, through the same compiled kernel type and resource allocation.  A
+  // CTA-uniform diagnostic bit skips peer reduction and D stores.  Its output
+  // is intentionally invalid and this seam is forbidden from production
+  // ranking.
+  cutlass::Status run_publish_protocol_only_for_diagnostics(
+      hggcStream_t stream = nullptr) {
+    if (!initialized_ || splits_ <= 1 || !publish_only_initialized_ ||
+        stream != fused_stream_) {
+      return cutlass::Status::kErrorInvalidProblem;
+    }
+    return publish_only_.run(stream);
+  }
+
   // Diagnostic seam used to compare the partial-producing phase with an
   // externally reshaped GEMM under one timing protocol.  Production callers
   // must keep using run(): deliberately exposing the producer here must not
@@ -423,6 +452,10 @@ class PreparedOnePlaneLauncher {
 
   bool fused_last_arriver_selected_for_diagnostics() const {
     return initialized_ && splits_ > 1 && fused_initialized_;
+  }
+
+  bool publish_protocol_only_selected_for_diagnostics() const {
+    return initialized_ && splits_ > 1 && publish_only_initialized_;
   }
 
   cutlass::Status reset_fused_counters_for_diagnostics(

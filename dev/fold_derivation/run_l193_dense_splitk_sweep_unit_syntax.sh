@@ -189,6 +189,15 @@ fused_plant = fused_needle + '''
     static_assert(sizeof(FusedGemm) == 0,
                   "L193_PREPARED_FUSED_BODY_INSTANTIATED");'''
 text = text.replace(fused_needle, fused_plant, 1)
+
+publish_needle = '''  cutlass::Status run_publish_protocol_only_for_diagnostics(
+      hggcStream_t stream = nullptr) {'''
+if text.count(publish_needle) != 1:
+    raise SystemExit("L193 PreparedOnePlaneLauncher publish-only seam is not unique")
+publish_plant = publish_needle + '''
+    static_assert(sizeof(FusedGemm) == 0,
+                  "L193_PREPARED_PUBLISH_ONLY_BODY_INSTANTIATED");'''
+text = text.replace(publish_needle, publish_plant, 1)
 path.write_text(text, encoding="utf-8")
 PY
 
@@ -229,8 +238,9 @@ check_fused_marker() {
   set -e
   require_complete_frontend "${label}-fused-marker" "${log}" "${artifact}" "${rc}"
 
-  local fused_count errors unexpected
+  local fused_count publish_count errors unexpected
   fused_count="$(grep -Fc 'error: static assertion failed with "L193_PREPARED_FUSED_BODY_INSTANTIATED"' "${log}" || true)"
+  publish_count="$(grep -Fc 'error: static assertion failed with "L193_PREPARED_PUBLISH_ONLY_BODY_INSTANTIATED"' "${log}" || true)"
   errors="${out}/${label}-fused-marker.errors"
   unexpected="${out}/${label}-fused-marker.unexpected"
   diagnostic_lines "${log}" >"${errors}"
@@ -239,14 +249,16 @@ check_fused_marker() {
     | grep -Fv 'error: static assertion failed with "L193_PREPARED_PRODUCER_BODY_INSTANTIATED"' \
     | grep -Fv 'error: static assertion failed with "L193_PREPARED_REDUCER_BODY_INSTANTIATED"' \
     | grep -Fv 'error: static assertion failed with "L193_PREPARED_FUSED_BODY_INSTANTIATED"' \
+    | grep -Fv 'error: static assertion failed with "L193_PREPARED_PUBLISH_ONLY_BODY_INSTANTIATED"' \
     >"${unexpected}" || true
   if [[ "${rc}" -eq 0 ]] || [[ "${fused_count}" -ne 1 ]] || \
+     [[ "${publish_count}" -ne 1 ]] || \
      [[ -s "${unexpected}" ]]; then
-    echo "[l193] FAIL: ${label} fused-body witness drifted: fused=${fused_count} rc=${rc}" >&2
+    echo "[l193] FAIL: ${label} completion-body witness drifted: fused=${fused_count} publish=${publish_count} rc=${rc}" >&2
     sed -n '1,40p' "${unexpected}" >&2
     return 1
   fi
-  echo "[l193] ${label}: packed-A fused run body=1/1"
+  echo "[l193] ${label}: packed-A fused/publish-only run bodies=1/1+1/1"
 }
 
 check_fused_marker exact-warm-tn64 \
@@ -254,4 +266,4 @@ check_fused_marker exact-warm-tn64 \
 check_fused_marker exact-warm-tn128 \
   "${repo}/benchmarks/dense_splitk_exact_warm_ab_tn128.cu"
 
-echo "[l193] PASS: real L192 main + exact warm A/B TUs + boundary units completed nvcc -cuda; only known CuTe environment errors; producer/reducer run bodies=4/4; packed-A fused bodies=1/1+1/1; artifacts=${out}"
+echo "[l193] PASS: real L192 main + exact warm A/B TUs + boundary units completed nvcc -cuda; only known CuTe environment errors; producer/reducer run bodies=4/4; packed-A fused/publish bodies=1/1+1/1 per row; artifacts=${out}"

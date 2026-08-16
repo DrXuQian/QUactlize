@@ -104,7 +104,7 @@ main() {
       printf 'untracked_source_sha256=NONE\n'
     fi
     if [ "${EXACT_WARM_AB:-0}" = 1 ]; then
-      printf 'timing_protocol=exact_same_address_warm_aggregate_historical_vs_shipping_ordinary_vs_packedA_reshape_vs_internal_S8_producer_two_launch_and_actual_last_fused_e2e\n'
+      printf 'timing_protocol=exact_same_address_warm_aggregate_historical_vs_shipping_ordinary_vs_packedA_reshape_vs_internal_S8_producer_two_launch_actual_last_fused_and_publish_protocol_only\n'
     else
       printf 'cold_protocol=full_B_plus_scale_rotation_over_max_2.16xL2_128MiB\n'
     fi
@@ -161,13 +161,18 @@ main() {
       case "$exact_line" in *"fused_counters_zero=1"*) ;; *) exact_schema_bad=1 ;; esac
       case "$exact_line" in *"fused_slices=3/3"*) ;; *) exact_schema_bad=1 ;; esac
       case "$exact_line" in *"fused_reuse=8/8"*) ;; *) exact_schema_bad=1 ;; esac
+      case "$exact_line" in *"publish_only_selected=1"*) ;; *) exact_schema_bad=1 ;; esac
+      case "$exact_line" in *"publish_only_partial_byte_diff=0"*) ;; *) exact_schema_bad=1 ;; esac
+      case "$exact_line" in *"publish_only_D=UNTOUCHED/PASS"*) ;; *) exact_schema_bad=1 ;; esac
+      case "$exact_line" in *"publish_only_counters_zero=1"*) ;; *) exact_schema_bad=1 ;; esac
+      case "$exact_line" in *"publish_only_scope=TIMING_ONLY_OUTPUT_INTENTIONALLY_INVALID"*) ;; *) exact_schema_bad=1 ;; esac
       case "$exact_line" in *"post_timing=RAW-BIT/PASS"*) ;; *) exact_schema_bad=1 ;; esac
     done < <(grep '^EXACT_WARM_AB ' "$run_log" || true)
     if [ "$exact_schema_bad" -ne 0 ]; then
-      echo "[splitk-sweep] FAIL: exact fused output schema/correctness contract is incomplete"
+      echo "[splitk-sweep] FAIL: exact completion diagnostic schema/correctness contract is incomplete"
       return 2
     fi
-    printf 'exact_fused_schema=2/2 PASS\n' >>"$manifest"
+    printf 'exact_completion_schema=2/2 PASS\n' >>"$manifest"
   fi
   echo "[splitk-sweep] PASS; artifacts: $out"
 }

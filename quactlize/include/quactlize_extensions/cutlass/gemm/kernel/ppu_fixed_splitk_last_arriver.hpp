@@ -66,6 +66,7 @@ struct LastArriverM1Fp16Completion {
     int64_t destination_stride = 0;
     uint64_t counter_count = 0;
     int partitions = 0;
+    uint32_t perform_final_reduction = 1;
   };
 
   struct Params {
@@ -75,6 +76,7 @@ struct LastArriverM1Fp16Completion {
     int64_t columns = 0;
     int64_t partition_stride = 0;
     uint64_t counter_count = 0;
+    uint32_t perform_final_reduction = 1;
   };
 
   struct SharedStorage {
@@ -85,13 +87,14 @@ struct LastArriverM1Fp16Completion {
   static_assert(std::is_standard_layout_v<Params> &&
                     std::is_trivially_copyable_v<Params>);
   static_assert(std::is_trivially_copyable_v<SharedStorage>);
-  static_assert(sizeof(Params) == 48 && alignof(Params) == 8 &&
+  static_assert(sizeof(Params) == 56 && alignof(Params) == 8 &&
                     offsetof(Params, partials) == 0 &&
                     offsetof(Params, destination) == 8 &&
                     offsetof(Params, counters) == 16 &&
                     offsetof(Params, columns) == 24 &&
                     offsetof(Params, partition_stride) == 32 &&
-                    offsetof(Params, counter_count) == 40,
+                    offsetof(Params, counter_count) == 40 &&
+                    offsetof(Params, perform_final_reduction) == 48,
                 "fused completion Params ABI drifted");
 
  private:
@@ -140,6 +143,7 @@ struct LastArriverM1Fp16Completion {
         TileN % ElementsPerAccess != 0 || args.rows != rows ||
         args.columns != columns || args.destination_stride != columns ||
         args.partitions != int(partition.splits) ||
+        args.perform_final_reduction > 1 ||
         args.counter_count != partition.output_tiles ||
         partition.output_tiles != uint64_t(columns / TileN) ||
         args.partials == nullptr || args.destination == nullptr ||
@@ -172,7 +176,8 @@ struct LastArriverM1Fp16Completion {
   static Params to_underlying_arguments(
       ProblemShape const&, fixed_splitk::Params const&, Arguments const& args) {
     return Params{args.partials, args.destination, args.counters, args.columns,
-                  args.rows * args.columns, args.counter_count};
+                  args.rows * args.columns, args.counter_count,
+                  args.perform_final_reduction};
   }
 
  private:
@@ -237,15 +242,21 @@ struct LastArriverM1Fp16Completion {
       return;
     }
 
-    constexpr int TileN = int(cute::size<1>(TileShape{}));
-    switch (work.peer_count) {
-      case 2: reduce_tile<2>(params, work, thread_idx, TileN); break;
-      case 4: reduce_tile<4>(params, work, thread_idx, TileN); break;
-      case 8: reduce_tile<8>(params, work, thread_idx, TileN); break;
-      default: return;
+    // The timing-only false arm deliberately remains in this same kernel type.
+    // Both measurements therefore have identical register/smem allocation and
+    // pay the same CTA-uniform branch; only peer reduction and D publication
+    // are skipped.
+    if (params.perform_final_reduction != 0) {
+      constexpr int TileN = int(cute::size<1>(TileShape{}));
+      switch (work.peer_count) {
+        case 2: reduce_tile<2>(params, work, thread_idx, TileN); break;
+        case 4: reduce_tile<4>(params, work, thread_idx, TileN); break;
+        case 8: reduce_tile<8>(params, work, thread_idx, TileN); break;
+        default: return;
+      }
     }
 
-    // All output stores and peer reads finish before the slot is reusable.
+    // All optional output stores/peer reads finish before the slot is reusable.
     // A subsequent launch on the same stream cannot overlap this reset.
     __syncthreads();
     if (thread_idx == 0) {
