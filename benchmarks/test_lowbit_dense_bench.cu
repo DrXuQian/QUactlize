@@ -107,14 +107,22 @@
 
 using namespace cute;
 
+#if defined(DENSE_STREAMK_AB) || defined(DENSE_STREAMK_SWEEP)
+// Shared correctness/timing instrumentation.  DENSE_STREAMK_AB retains its
+// one-row runtime A/B identity; DENSE_STREAMK_SWEEP owns a private filtered
+// table and direct StreamKGemm wrappers, but deliberately reuses the proven
+// partition replay, exact fixture, distinct-event, and lock-reset machinery.
+#define DENSE_STREAMK_INSTRUMENTED 1
+#endif
 #if defined(DENSE_PERSISTENT_AB) || defined(DENSE_STREAMK_AB) || defined(DENSE_MARLIN_AB)
 #define DENSE_SCHEDULER_AB 1
 #endif
 #if defined(DENSE_SCHEDULER_AB) || defined(DENSE_MARLIN_SWEEP) || \
-    defined(DENSE_MARLIN_STANDALONE_SWEEP)
+    defined(DENSE_MARLIN_STANDALONE_SWEEP) || defined(DENSE_STREAMK_SWEEP)
 // DENSE_SCHEDULER_AB owns the one-row mechanism binaries.  The full Marlin
-// sweep is deliberately not one of them (it owns a filtered committed table),
-// but it still needs the named-scheduler occupancy/grid/provenance path.
+// and Stream-K sweeps are deliberately not among them (each owns a filtered
+// committed table), but they still need the named-scheduler occupancy/grid
+// and provenance path.
 #define DENSE_NAMED_SCHEDULER 1
 #endif
 
@@ -337,10 +345,10 @@ struct Cfg {
       Shape<int,int,int,int>, Main, Epi>;
   using PersistentGemm = cutlass::gemm::device::GemmUniversalAdapter<PersistentKernel>;
 #endif
-#if defined(DENSE_STREAMK_AB) || defined(DENSE_MARLIN_AB)
-  // Keep the four-warp Stream-K hard gate in a separate target.  Merely naming
-  // this type in 107a's 64/256-thread rows would make their valid persistent
-  // controls fail a constraint that belongs only to Stream-K fixup.
+#if defined(DENSE_STREAMK_INSTRUMENTED) || defined(DENSE_MARLIN_AB)
+  // Keep the Stream-K 64/128-thread hard gate out of 107a.  The filtered sweep
+  // and one-row A/B targets are the only binaries that may name this type;
+  // 107a's otherwise-valid 256-thread persistent rows must remain independent.
   using StreamKKernel = cutlass::gemm::kernel::StreamKMixedInputKernel<
       Shape<int,int,int,int>, Main, Epi>;
   using StreamKGemm = cutlass::gemm::device::GemmUniversalAdapter<StreamKKernel>;
@@ -448,6 +456,21 @@ inline bench_measure::Tactic dense_fixed_tactic() {
 #define LOWBIT_DENSE_TABLE_CFG_LIST             MARLIN_STANDALONE_CFG_LIST
 #define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    "marlin-tactic-space-ppu-v1"
 #define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  "emit_marlin_tactic_space--header"
+#elif defined(DENSE_STREAMK_SWEEP)
+// A private registry over the committed int4 table.  CMake admits only rows
+// whose final Stream-K kernel has an exact 64/128-thread CTA/fixup cohort and
+// lies within the reviewed Stages-1<=8 startup envelope.  Keep source-table
+// provenance while making the scheduler identity and row census explicit.
+#include "lowbit_dense_configs.inc"
+#include "lowbit_dense_streamk_sweep_configs.inc"
+#define LOWBIT_DENSE_TABLE_FILE                 "scheduler=streamk;source=lowbit_dense_configs.inc"
+#define LOWBIT_DENSE_TABLE_CFG_BITS             LOWBIT_DENSE_CFG_BITS
+#define LOWBIT_DENSE_TABLE_CFG_ARTIFACT_TILEK   LOWBIT_DENSE_CFG_ARTIFACT_TILEK
+#define LOWBIT_DENSE_STREAMK_SOURCE_ROWS        LOWBIT_DENSE_CFG_ROWS
+#define LOWBIT_DENSE_TABLE_CFG_ROWS             LOWBIT_DENSE_STREAMK_SWEEP_ROWS
+#define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    LOWBIT_DENSE_CFG_SPACE_FNV1A64
+#define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  LOWBIT_DENSE_CFG_EMITTER_FNV1A64
+#define LOWBIT_DENSE_TABLE_CFG_LIST             LOWBIT_DENSE_STREAMK_SWEEP_CONFIGS
 #elif defined(DENSE_MARLIN_SWEEP)
 // A second registry over the SAME committed table: CMake emits rows whose
 // final Marlin kernel has a warp-aligned CTA cohort in [32,1024].  The named
@@ -577,6 +600,25 @@ inline void print_dense_table_provenance() {
       "schema=TM,TN,TK,WM,WN,WarpK,ST,Load "
       "artifact=classic-marlin-u32 gs=128 bits=4 artifact_tk=64\n",
       LOWBIT_DENSE_TABLE_FILE, kLowbitDenseConfigRows);
+#elif defined(DENSE_STREAMK_SWEEP)
+  static_assert(LOWBIT_DENSE_STREAMK_SWEEP_SOURCE_ROWS ==
+                    LOWBIT_DENSE_STREAMK_SOURCE_ROWS,
+                "the Stream-K filter header and committed int4 source table disagree");
+  static_assert(LOWBIT_DENSE_STREAMK_SWEEP_FILTERED_ROWS +
+                    LOWBIT_DENSE_STREAMK_SWEEP_ROWS ==
+                    LOWBIT_DENSE_STREAMK_SWEEP_SOURCE_ROWS,
+                "the Stream-K source/eligible/filtered census does not close");
+  std::printf("[dense-table] scheduler=streamk file=%s rows=%d source_rows=%d "
+              "eligible_rows=%d filtered_rows=%d gs=32 "
+              "cohort_capability=exact-cta-threads-64-or-128 "
+              "startup_capability=Stages-1<=8 source_space_fnv1a64=%s "
+              "source_emitter_fnv1a64=%s\n",
+              LOWBIT_DENSE_TABLE_FILE, kLowbitDenseConfigRows,
+              LOWBIT_DENSE_STREAMK_SWEEP_SOURCE_ROWS,
+              LOWBIT_DENSE_STREAMK_SWEEP_ROWS,
+              LOWBIT_DENSE_STREAMK_SWEEP_FILTERED_ROWS,
+              LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64,
+              LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64);
 #elif defined(DENSE_MARLIN_SWEEP)
   static_assert(LOWBIT_DENSE_MARLIN_SWEEP_SOURCE_ROWS == LOWBIT_DENSE_MARLIN_SOURCE_ROWS,
                 "the Marlin filter header and committed source table disagree");
@@ -789,7 +831,11 @@ struct Options {
 #if defined(DENSE_SCHEDULER_AB) && !defined(DENSE_MARLIN_WK4_AB)
     out << "  --persistent                Use the dense persistent scheduler A/B arm.\n";
 #endif
-#if defined(DENSE_STREAMK_AB) && !defined(DENSE_MARLIN_WK4_AB)
+#if defined(DENSE_STREAMK_SWEEP)
+    out << "  --streamk                   Required intent marker; every compiled row is already Stream-K.\n"
+        << "  --streamk_exact_fixture     Required gs32 order-independent fixture and raw-bit fixup replay.\n"
+        << "  scheduler=streamk           Fixed at build time; search spans the filtered committed int4 table.\n";
+#elif defined(DENSE_STREAMK_AB) && !defined(DENSE_MARLIN_WK4_AB)
     out << "  --streamk                   Use deterministic dense Stream-K (splits=1).\n"
         << "  --streamk_gate              Also require fixup witness + CPU FP32 golden.\n"
         << "  --streamk_split_gate        Fail closed unless lowered Params contain a real cross-CTA seam.\n"
@@ -948,7 +994,7 @@ struct dense_is_standalone_marlin_kernel<
     Kernel, std::void_t<decltype(Kernel::IsStandaloneMarlin)>>
     : std::bool_constant<Kernel::IsStandaloneMarlin> {};
 
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_INSTRUMENTED)
 template <class Gemm>
 bool dense_map_accumulator_owners(DenseVerifyPartition& partition) {
   using TiledMma = typename Gemm::GemmKernel::TiledMma;
@@ -1646,7 +1692,7 @@ DenseFixtureEvidence initialize(Options const& options) {
     block_B.copy_to_host(tensor_B.host_data());
   }
 
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_INSTRUMENTED)
   if (options.streamk_gate) {
     // A K-asymmetric, nonzero fixture whose scales change every gs128 group.
     // Random input would usually expose a wrong absolute K iterator, but it
@@ -1751,13 +1797,13 @@ DenseFixtureEvidence initialize(Options const& options) {
     // The actual scheduler A/B correctness fixture, deliberately separate
     // from the tiny --streamk_gate fixture above.  Every row has one +/-1 in
     // each real scale group (32 gs128 groups in 107b; 128 gs32 groups in the
-    // Q4_K65 target), so every split peer sees useful work.  Products and all
-    // subset sums are integers.
+    // Q4_K65 and Stream-K sweep targets), so every split peer sees useful work.
+    // Products and all subset sums are integers.
     std::vector<ElementA> host_a(block_A.size(), ElementA(0));
     std::vector<ElementC> host_c(block_C.size(), ElementC(0));
     std::vector<ElementScale> host_scale(block_scale.size());
     std::vector<ElementZero> host_zero(block_zero.size(), ElementZero(0));
-#if defined(DENSE_STREAMK_Q4K65_AB)
+#if defined(DENSE_STREAMK_Q4K65_AB) || defined(DENSE_STREAMK_SWEEP)
     static_assert(sizeof(kQ4K65ExactFixtureScales) /
                           sizeof(kQ4K65ExactFixtureScales[0]) == 2,
                   "the Q4_K 65% fixture scale cycle is part of its checked construction");
@@ -1768,12 +1814,16 @@ DenseFixtureEvidence initialize(Options const& options) {
     static_assert(sizeof(kExactFixtureZeros) / sizeof(kExactFixtureZeros[0]) == 1 &&
                       kExactFixtureZeros[0] == 0,
                   "ScaleOnly A0 must not claim a load-bearing zero plane");
-#if defined(DENSE_STREAMK_Q4K65_AB)
+#if defined(DENSE_STREAMK_Q4K65_AB) || defined(DENSE_STREAMK_SWEEP)
     int const exact_fixture_nonzeros_per_row =
         kQ4K65ExactFixtureNonzerosPerRow;
     if (options.k / options.g != exact_fixture_nonzeros_per_row) {
       std::fprintf(stderr,
+#if defined(DENSE_STREAMK_Q4K65_AB)
                    "Q4_K65 --streamk_exact_fixture requires K/gs=%d (got %d/%d)\n",
+#else
+                   "gs32 --streamk_exact_fixture requires K/gs=%d (got %d/%d)\n",
+#endif
                    exact_fixture_nonzeros_per_row, options.k, options.g);
       std::exit(1);
     }
@@ -1804,7 +1854,7 @@ DenseFixtureEvidence initialize(Options const& options) {
     }
     for (int kg = 0; kg < scale_k; ++kg) {
       for (int n = 0; n < options.n; ++n) {
-#if defined(DENSE_STREAMK_Q4K65_AB)
+#if defined(DENSE_STREAMK_Q4K65_AB) || defined(DENSE_STREAMK_SWEEP)
         int const scale = kQ4K65ExactFixtureScales[(5 * kg + 3 * n) % 2];
 #else
         int const scale = kExactFixtureScales[(5 * kg + 3 * n) % 3];
@@ -1862,6 +1912,16 @@ DenseFixtureEvidence initialize(Options const& options) {
 #if defined(DENSE_STREAMK_Q4K65_AB)
     std::printf(
         "  [streamk fixture exactness] fixture=q4k65-exact shape=%dx%dx%d "
+        "nonzeros/row=%d integer_A=%d integer_weights=%d max|A|=%g max|w|=%g max|D|=%g "
+        "vs fp32=2^24 fp16=2^11 -> %s\n",
+        options.m, options.n, options.k, max_nonzeros, int(integer_a),
+        int(integer_weights), max_abs_a, max_weight, max_output,
+        fixture_evidence.order_independent && fixture_evidence.fp16_output_exact
+            ? "ORDER-INDEPENDENT+FP16-EXACT"
+            : "ROUNDS/INVALID (do not classify ordinary-reference differences)");
+#elif defined(DENSE_STREAMK_SWEEP)
+    std::printf(
+        "  [streamk fixture exactness] fixture=streamk-sweep-gs32-exact shape=%dx%dx%d "
         "nonzeros/row=%d integer_A=%d integer_weights=%d max|A|=%g max|w|=%g max|D|=%g "
         "vs fp32=2^24 fp16=2^11 -> %s\n",
         options.m, options.n, options.k, max_nonzeros, int(integer_a),
@@ -2070,7 +2130,7 @@ bool verify(const Options &options, DenseFixtureEvidence const& fixture_evidence
             DenseVerifyPartition const* partition,
             DenseVerifyState* diagnostic_state = nullptr);
 bool verify_streamk_cpu_fp32(const Options &options);
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_INSTRUMENTED)
 template <class Gemm>
 DenseReplayEvidence verify_streamk_same_order_partial_replay(
     const Options& options, DenseVerifyPartition const& partition,
@@ -2500,7 +2560,7 @@ bool verify_streamk_cpu_fp32(const Options &options) {
 }
 #endif
 
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_INSTRUMENTED)
 // The broad reference above deliberately uses a whole-K GEMM.  A Stream-K
 // split changes FP32 parenthesization before the half epilogue, so disagreement
 // with that reference is not by itself a kernel defect.  This gate captures
@@ -2890,7 +2950,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   auto arguments =
       args_from_options<typename Gemm::Arguments, kStandaloneMarlin>(options);
 
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_INSTRUMENTED)
   DenseVerifyPartition verify_partition;
   verify_partition.is_streamk = dense_is_streamk_gemm<Gemm>::value;
   verify_partition.tile_m = tactic.tm;
@@ -2954,7 +3014,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
     arguments.scheduler.blocks_per_cu =
         uint32_t(options.marlin_blocks_per_cu);
   }
-#if defined(DENSE_STREAMK_AB) || defined(DENSE_MARLIN_AB)
+#if defined(DENSE_STREAMK_INSTRUMENTED) || defined(DENSE_MARLIN_AB)
   using StreamKDiagnosticState =
       typename dense_streamk_diagnostic_type<Gemm>::type;
   cutlass::DeviceAllocation<StreamKDiagnosticState> streamk_diagnostics;
@@ -3003,7 +3063,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   constexpr size_t kSharedPerCu = 256u << 10;
   size_t const union_shared_ctas = union_bytes ? kSharedPerCu / union_bytes : 0;
   size_t const sum_shared_ctas = overlap_sum_bytes ? kSharedPerCu / overlap_sum_bytes : 0;
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_INSTRUMENTED)
   if constexpr (dense_is_streamk_gemm<Gemm>::value) {
     using SchedulerParams = typename Gemm::GemmKernel::TileSchedulerParams;
     auto const params = Gemm::GemmKernel::to_underlying_arguments(arguments, workspace.get());
@@ -3169,7 +3229,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   if (gemm.can_implement(arguments) != cutlass::Status::kSuccess) { result.passed = false; return result; }
   if (gemm.initialize(arguments, workspace.get()) != cutlass::Status::kSuccess) { result.passed = false; return result; }
 
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_INSTRUMENTED)
   if constexpr (dense_is_streamk_gemm<Gemm>::value) {
     static_assert(!Gemm::CollectiveMainloop::SwapAB,
                   "107b DP/SK diagnostic maps the unswapped dense output-tile axes");
@@ -3232,7 +3292,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
 #endif
 
   // Correctness / Warmup iteration
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_INSTRUMENTED)
   // Create the whole pool before warmup so first-use event initialization
   // cannot perturb timed launch 1. Pair zero belongs only to warmup; every
   // timed launch below owns a distinct remaining pair.
@@ -3244,11 +3304,11 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   CUTLASS_PPU_CHECK(hggcMemset(block_D.get(), 0xff,
                               block_D.size() * sizeof(typename Gemm::ElementD)));
 #endif
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_INSTRUMENTED)
   CUTLASS_PPU_CHECK(hggcEventRecord(streamk_events.at(0).start, nullptr));
 #endif
   CUTLASS_CHECK(gemm.run());
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_INSTRUMENTED)
   CUTLASS_PPU_CHECK(hggcEventRecord(streamk_events.at(0).stop, nullptr));
   CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
 #endif
@@ -3292,7 +3352,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
 
   // Check if output from kernel and reference kernel are equal or not
   DenseReplayEvidence replay_evidence;
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_INSTRUMENTED)
   DenseVerifyState ordinary_diagnostic_state =
       DenseVerifyState::NotClassifiable;
   result.passed = verify(
@@ -3304,7 +3364,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
 #else
   result.passed = verify(options, fixture_evidence, nullptr);
 #endif
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_INSTRUMENTED)
   if constexpr (dense_is_streamk_gemm<Gemm>::value) {
     // This is the fixup oracle for the actual Stream-K arm, including
     // fixed/adaptive A0.  It says whether production fixup matches the captured
@@ -3508,7 +3568,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   }
 
   if (!result.passed) {
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_INSTRUMENTED)
     if (options.streamk_gate) return result;
 #endif
     // A failed numerical arm remains failed.  When timing was explicitly
@@ -3544,7 +3604,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
     else
 #endif
     {
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_INSTRUMENTED)
     // One distinct event pair per launch for every arm in this binary.  A
     // Stream-K launch leaves its turnstile lock at the completed K count, so
     // reset scheduler workspace on the same stream before (and outside) the
@@ -3610,7 +3670,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
     result.gflops = options.gflops(result.avg_runtime_ms / 1000.0);
 
     std::cout << "  Problem Size: " << options.m << 'x' << options.n << 'x' << options.k << 'x' << options.l << std::endl;
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_INSTRUMENTED)
 #if defined(DENSE_STREAMK_Q4K65_AB)
     if (q4k65_historical_timing)
       std::cout << "  Avg runtime: " << result.avg_runtime_ms << " ms" << std::endl;
@@ -3648,7 +3708,7 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
     // which says the re-reads are cache-served, not that the kernel is bandwidth-bound.
     char tag[bench_measure::kTagBytes];
     bench_measure::format_tag(tag, sizeof tag, tactic);
-#if defined(DENSE_STREAMK_AB)
+#if defined(DENSE_STREAMK_INSTRUMENTED)
     if constexpr (dense_is_streamk_gemm<Gemm>::value) {
       const double Mm = options.m, Nn = options.n, Kk = options.k;
       const double bq = double(sizeof_bits<QuantType>::value) / 8.0;
@@ -3831,6 +3891,8 @@ inline char const* dense_fixture(Options const& o) {
 inline char const* dense_sample_family() {
 #if defined(DENSE_MARLIN_STANDALONE_SWEEP)
   return "standalone_marlin_w4a16";
+#elif defined(DENSE_STREAMK_SWEEP)
+  return "cutlass_w4a16_streamk";
 #elif defined(DENSE_MARLIN_SWEEP)
   return "cutlass_w4a16_marlin";
 #else
@@ -3841,6 +3903,8 @@ inline char const* dense_sample_family() {
 inline char const* dense_distribution() {
 #if defined(DENSE_MARLIN_STANDALONE_SWEEP)
   return "dense-standalone-marlin-v1";
+#elif defined(DENSE_STREAMK_SWEEP)
+  return "dense-streamk-v1";
 #elif defined(DENSE_MARLIN_SWEEP)
   return "dense-marlin-v1";
 #else
@@ -4135,6 +4199,51 @@ int main(int argc, char const **args) {
       return 1;
     }
   }
+#elif defined(DENSE_STREAMK_SWEEP)
+  // Every private wrapper is compile-time StreamKGemm.  Keep --streamk as a
+  // required intent marker so a sweep command cannot be mistaken for the
+  // ordinary DP table, and require the order-independent gs32 fixture because
+  // raw-bit partial replay is the numerical admission evidence for each row.
+  if (!options.help && !options.list_configs) {
+    if (!options.streamk || !options.streamk_exact_fixture) {
+      std::fprintf(
+          stderr,
+          "test_lowbit_dense_streamk_sweep requires --streamk "
+          "--streamk_exact_fixture for every measured row\n");
+      return 1;
+    }
+    if (options.persistent || options.marlin || options.streamk_gate ||
+        options.streamk_split_gate || options.marlin_profile_subject_only ||
+        options.marlin_blocks_per_cu != 1) {
+      std::fprintf(
+          stderr,
+          "test_lowbit_dense_streamk_sweep fixes scheduler=streamk at build time; "
+          "other scheduler/gate/profile flags are unsupported\n");
+      return 1;
+    }
+    if (options.mode != GemmMode::ScaleOnly || options.g != 32 ||
+        options.m != 2048 || options.n != 4096 || options.k != 4096 ||
+        options.l != 1 || options.alpha != 1.0f || options.beta != 0.0f) {
+      std::fprintf(
+          stderr,
+          "dense Stream-K sweep exact fixture requires --m=2048 --n=4096 "
+          "--k=4096 --l=1 --g=32 --mode=1 --alpha=1 --beta=0\n");
+      return 1;
+    }
+    if (options.xcheck || !options.tactic_file.empty() ||
+        !options.save_tactic_file.empty()) {
+      std::fprintf(
+          stderr,
+          "dense Stream-K sweep rejects xcheck and ordinary tactic cache "
+          "load/save; use --config or --search_configs\n");
+      return 1;
+    }
+    if (options.search_configs && !options.config.empty()) {
+      std::fprintf(stderr,
+                   "--search_configs and --config are mutually exclusive\n");
+      return 1;
+    }
+  }
 #elif defined(DENSE_MARLIN_SWEEP)
   // This binary's registry and every generated wrapper are compile-time
   // Marlin.  Runtime scheduler flags would only create a false identity, and
@@ -4281,6 +4390,11 @@ int main(int argc, char const **args) {
 
   // --list_configs: enumerate the compiled tactics and exit.
   if (options.list_configs) {
+#if defined(DENSE_STREAMK_SWEEP)
+    std::printf("compiled CUTLASS W%dA16 tile configs scheduler=streamk "
+                "(group size 32):\n",
+                int(cutlass::sizeof_bits<QuantType>::value));
+#else
     std::printf("compiled CUTLASS W%dA16 tile configs scheduler=%s "
                 "(group sizes 16, 32, 64, 128):\n",
                 int(cutlass::sizeof_bits<QuantType>::value),
@@ -4292,6 +4406,7 @@ int main(int argc, char const **args) {
                 "default"
 #endif
     );
+#endif
     for (auto const& c : supported_configs()) {
       if (c.warp_k > 0)
         std::printf("  %-30s  tile %dx%dx%d  warp %dx%dx%d  stages %d  instruction=m%d\n",
@@ -4355,6 +4470,11 @@ int main(int argc, char const **args) {
                   int(cutlass::sizeof_bits<QuantType>::value), TileShapeK,
                   options.g, options.marlin_blocks_per_cu,
                   kLowbitDenseConfigRows, options.marlin_instruction_m);
+#elif defined(DENSE_STREAMK_SWEEP)
+    std::snprintf(build, sizeof build,
+                  "bits=%d TSK=%d gs=%d scheduler=streamk rows=%d",
+                  int(cutlass::sizeof_bits<QuantType>::value), TileShapeK,
+                  options.g, kLowbitDenseConfigRows);
 #elif defined(DENSE_MARLIN_SWEEP)
     std::snprintf(build, sizeof build, "bits=%d TSK=%d gs=%d scheduler=%s",
                   int(cutlass::sizeof_bits<QuantType>::value), TileShapeK, options.g,
@@ -4412,11 +4532,40 @@ int main(int argc, char const **args) {
 
         Result r = run_config(options, c);
         if (!r.passed) {
+#if defined(DENSE_STREAMK_SWEEP)
+          // No-seam lowering is a property of this shape/occupancy and is a
+          // legitimate sweep exclusion, not a kernel failure.  Every other
+          // Stream-K failure is correctness evidence and must stop the sweep;
+          // silently pruning it would rank only the rows whose bugs happened
+          // not to surface.
+          if (!r.split_path_exercised) {
+            bench_samples::excluded(
+                _a, "Stream-K split path NOT EXERCISED for this shape");
+            if (!rep)
+              std::printf("%-10s %s\n", "-", "excluded (Stream-K split path NOT EXERCISED for this shape)");
+            else
+              std::printf("\n");
+            continue;
+          }
+          if (!r.verification_classified) {
+            bench_samples::excluded(
+                _a, "Stream-K verification NOT CLASSIFIABLE");
+            bench_samples::flush();
+            std::printf("%-10s %s\n", "-", "FAILED (Stream-K verification NOT CLASSIFIABLE)");
+            return 3;
+          }
+          bench_samples::excluded(
+              _a, "Stream-K numerical/fixup verification FAILED");
+          bench_samples::flush();
+          std::printf("%-10s %s\n", "-", "FAILED (Stream-K numerical/fixup verification)");
+          return 1;
+#else
           // RECORDED, NOT JUST PRINTED. "tried and rejected" is evidence for pruning and is distinguishable
           // from a crash only if it lands in the file; without it, unfinished() reports this as a dead run.
           bench_samples::excluded(_a, "bench reported not-passed (unsupported for this shape, or failed)");
           if (!rep) std::printf("%-10s %s\n", "-", "skipped (unsupported/failed)"); else std::printf("\n");
           continue;
+#endif
         }
         const double tf = r.gflops / 1e3;
         // SECONDS, NOT TFLOP/s, IS WHAT GETS COMPARED. The selection works on a time, so converting once here
@@ -4466,7 +4615,11 @@ int main(int argc, char const **args) {
                   "     too small for the loop to be measuring the kernel rather than the launch rate.\n",
                   bench_floor::us());
     Result const winner_result = run_config(options, find_config(best.tag));
-#if defined(DENSE_MARLIN_STANDALONE_SWEEP) || defined(DENSE_MARLIN_SWEEP)
+#if defined(DENSE_STREAMK_SWEEP)
+    if (!winner_result.split_path_exercised) return 2;
+    if (!winner_result.verification_classified) return 3;
+    return winner_result.passed ? 0 : 1;
+#elif defined(DENSE_MARLIN_STANDALONE_SWEEP) || defined(DENSE_MARLIN_SWEEP)
     // A scheduler-specific sweep is evidence only if the selected Marlin arm
     // itself passes; do not inherit the ordinary bench's historical rc=0
     // convention for a failed final launch.
@@ -4502,7 +4655,7 @@ int main(int argc, char const **args) {
   // performance gate for one exact kernel.  A failed artifact roundtrip,
   // golden, occupancy check or 8-launch lock fingerprint is the process rc.
   return final_result.passed ? 0 : 1;
-#elif defined(DENSE_STREAMK_AB)
+#elif defined(DENSE_STREAMK_SWEEP) || defined(DENSE_STREAMK_AB)
   // The 107b target is a mechanism/numerical gate, not a sweep that may skip
   // an unsupported candidate.  Propagate every decomposition, witness,
   // golden, event, or correctness failure to the operator and automation.

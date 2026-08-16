@@ -162,6 +162,7 @@ if [ "$TARGET" = "test_lowbit_moe_bench" ] && [ "${MOE_ALLOW_ALL_FORMAT_MONOLITH
   fi
 fi
 if [ "$TARGET" = "test_lowbit_dense_bench" ] ||
+   [ "$TARGET" = "test_lowbit_dense_streamk_sweep" ] ||
    [ "$TARGET" = "test_lowbit_dense_marlin_sweep" ] ||
    [ "$TARGET" = "test_lowbit_dense_marlin_standalone_sweep" ] ||
    [ "$TARGET" = "test_lowbit_dense_persistent_ab" ] ||
@@ -183,6 +184,12 @@ if [ "$TARGET" = "test_lowbit_dense_splitk_sweep" ]; then
   # 51 expensive units, so a stale filter cannot masquerade as a compiler
   # failure or silently remove the eventual winner.
   python3 "$HERE/ci/check_dense_splitk_sweep_contract.py" || exit 1
+fi
+if [ "$TARGET" = "test_lowbit_dense_streamk_sweep" ]; then
+  # This target is a filtered scheduler-specific registry rather than the
+  # ordinary dense table.  Prove its independent denominator and direct
+  # StreamKGemm wrappers before spending 168 PPU compiler invocations.
+  python3 "$HERE/ci/check_dense_streamk_sweep_target.py" || exit 1
 fi
 if [ -z "$PPU_SDK_ROOT" ]; then
   echo "[build.sh] PPU_SDK is not set and there is no site default." >&2

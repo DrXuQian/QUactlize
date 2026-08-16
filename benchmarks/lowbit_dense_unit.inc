@@ -65,7 +65,28 @@ LOWBIT_DENSE_UNIT_CONFIGS(LOWBIT_DENSE_DEFINE_STANDALONE_WRAPPER)
 
 template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int ST>
 static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
-#if defined(DENSE_MARLIN_SWEEP)
+#if defined(DENSE_STREAMK_SWEEP)
+  // This executable is a compile-time Stream-K table, not a DP table plus a
+  // runtime scheduler switch.  CMake filters the committed int4 authority;
+  // retain exact final-kernel witnesses in every private wrapper so registry
+  // drift fails compilation.
+  static_assert(GroupSize == 32,
+                "the first dense Stream-K sweep is fixed to gs32");
+  using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::StreamKGemm;
+  using Kernel = typename G::GemmKernel;
+  using DispatchPolicy = typename Kernel::DispatchPolicy;
+  static_assert(Kernel::IsDenseStreamK,
+                "the Stream-K sweep wrapper must instantiate the named scheduler kernel");
+  static_assert(Kernel::MaxThreadsPerBlock == 64u ||
+                    Kernel::MaxThreadsPerBlock == 128u,
+                "the Stream-K sweep requires an exact supported CTA cohort");
+  static_assert(Kernel::TileScheduler::FixupThreadCount ==
+                    Kernel::MaxThreadsPerBlock,
+                "the Stream-K sweep must preserve its exact CTA/fixup cohort");
+  static_assert(DispatchPolicy::Stages - 1 <= 8,
+                "the Stream-K sweep exceeds the reviewed startup envelope");
+  return run<G>(options, dense_tactic(cfg), "streamk");
+#elif defined(DENSE_MARLIN_SWEEP)
   // This executable is a Marlin table, not a DP table plus a runtime switch.
   // CMake filters the committed rows before generating these wrappers; retain
   // the production scheduler's structural capability here so a future

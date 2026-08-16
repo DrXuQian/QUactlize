@@ -46,6 +46,25 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
           box_gate: str, barrier: str) -> list[str]:
     bad: list[str] = []
 
+    # The one-row 107b gate and the full-table sweep share the same numerical
+    # instrumentation, but not the same registry or dispatch semantics.  Pin
+    # the umbrella to exactly those two owners; checking only for an umbrella
+    # substring would let a third target inherit gate-only workspace traffic.
+    try:
+        umbrella = section(
+            bench,
+            "#if defined(DENSE_STREAMK_AB) || defined(DENSE_STREAMK_SWEEP)",
+            "\n#endif")
+    except ValueError as e:
+        bad.append(str(e))
+        umbrella = ""
+    if umbrella.count("#define DENSE_STREAMK_INSTRUMENTED 1") != 1 or \
+       bench.count("#define DENSE_STREAMK_INSTRUMENTED 1") != 1:
+        bad.append("Stream-K instrumentation umbrella is not owned exactly by AB+sweep")
+    for foreign_owner in ("DENSE_MARLIN", "DENSE_PERSISTENT", "BENCH_"):
+        if foreign_owner in umbrella:
+            bad.append(f"Stream-K instrumentation umbrella admits foreign owner {foreign_owner}")
+
     for token in (
         "using TileSchedulerTag = StreamKScheduler;",
         "static_assert(!isGroupProblemShape_v<ProblemShape>",
@@ -324,7 +343,7 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
     try:
         streamk_metrics = section(
             bench,
-            "#if defined(DENSE_STREAMK_AB)\n"
+            "#if defined(DENSE_STREAMK_INSTRUMENTED)\n"
             "    if constexpr (dense_is_streamk_gemm<Gemm>::value) {",
             "    } else if constexpr (dense_is_marlin_gemm<Gemm>::value) {")
     except ValueError as e:
@@ -333,7 +352,7 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
     try:
         streamk_exit = section(
             bench,
-            "#elif defined(DENSE_STREAMK_AB)\n"
+            "#elif defined(DENSE_STREAMK_SWEEP) || defined(DENSE_STREAMK_AB)\n"
             "  // The 107b target is a mechanism/numerical gate",
             "#elif defined(DENSE_MARLIN_SWEEP)")
     except ValueError as e:
@@ -385,8 +404,28 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
     unit_row = "X(lowbit_dense_streamk_probe,64,128,64,64,32,2,0)"
     if unit.count(unit_row) != 1:
         bad.append("local unit does not instantiate the isolated 128-thread Stream-K row")
-    if dispatch.count("using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::StreamKGemm;") != 1:
-        bad.append("generated unit dispatch does not select the Stream-K named kernel")
+    try:
+        direct_sweep = section(
+            dispatch, "#if defined(DENSE_STREAMK_SWEEP)",
+            "#elif defined(DENSE_MARLIN_SWEEP)")
+        runtime_ab = section(
+            dispatch,
+            "#if defined(DENSE_STREAMK_AB)\n  if (options.streamk) {",
+            "#endif\n#if defined(DENSE_SCHEDULER_AB)")
+    except ValueError as e:
+        bad.append(str(e))
+        direct_sweep = runtime_ab = ""
+    streamk_alias = (
+        "using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::StreamKGemm;"
+    )
+    if direct_sweep.count(streamk_alias) != 1 or \
+       direct_sweep.count('return run<G>(options, dense_tactic(cfg), "streamk");') != 1:
+        bad.append("full sweep does not directly instantiate exactly one StreamKGemm wrapper")
+    if "options.streamk" in direct_sweep or "::Gemm;" in direct_sweep:
+        bad.append("full sweep direct wrapper retains a runtime/DP fallback")
+    if runtime_ab.count(streamk_alias) != 1 or \
+       runtime_ab.count('return run<G>(options, dense_tactic(cfg), "streamk");') != 1:
+        bad.append("107b runtime arm no longer selects exactly one StreamKGemm")
     for token in (
         "test_lowbit_dense_streamk_ab",
         "set(_DENSE_SK_TM 64)", "set(_DENSE_SK_TN 128)", "set(_DENSE_SK_TK 64)",
@@ -537,6 +576,14 @@ def main() -> int:
 
     # Each plant is valid-enough source text whose failure would otherwise be silent.
     plants = [
+        (1, "#if defined(DENSE_STREAMK_AB) || defined(DENSE_STREAMK_SWEEP)",
+         "#if defined(DENSE_STREAMK_AB) || defined(DENSE_MARLIN_SWEEP)",
+         "instrumentation umbrella remains owned by AB plus full Stream-K sweep"),
+        (3, "#if defined(DENSE_STREAMK_SWEEP)\n"
+         "  // This executable is a compile-time Stream-K table",
+         "#if defined(DENSE_STREAMK_SWEEP_DISABLED)\n"
+         "  // This executable is a compile-time Stream-K table",
+         "full sweep retains its direct compile-time StreamKGemm wrapper"),
         (0, "static_assert(TileScheduler::FixupThreadCount == MaxThreadsPerBlock",
          "static_assert(TileScheduler::FixupThreadCount != MaxThreadsPerBlock",
          "exact fixup cohort"),

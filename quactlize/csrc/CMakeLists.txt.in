@@ -335,6 +335,217 @@ target_compile_definitions(test_lowbit_dense_bench PRIVATE
   TILE_M=${TILE_M} TILE_N=${TILE_N} WARP_M=${WARP_M} WARP_N=${WARP_N} STAGES=${STAGES} ${_QUANT_DEFS})
 target_compile_options(test_lowbit_dense_bench PRIVATE -w)
 
+# Full committed-table dense Stream-K sweep.  This target is deliberately an
+# int4/gs32 scheduler identity of its own: it neither reuses the ordinary DP
+# units nor the one-row Stream-K A/B registry.  Parse the int4 authority
+# independently of BENCH_QUANT so configuring another ordinary dense format
+# cannot silently change what this target means.
+qz_resolve_sources(_DENSE_STREAMK_SWEEP_TABLE lowbit_dense_configs.inc)
+list(GET _DENSE_STREAMK_SWEEP_TABLE 0 _DENSE_STREAMK_SWEEP_TABLE)
+get_filename_component(_DENSE_STREAMK_SWEEP_TABLE
+                       "${_DENSE_STREAMK_SWEEP_TABLE}" ABSOLUTE
+                       BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+qz_parse_tactic_xmacro(_DENSE_STREAMK_SWEEP_SOURCE_TABLE_ROWS
+  FILE "${_DENSE_STREAMK_SWEEP_TABLE}"
+  LIST_MACRO LOWBIT_DENSE_CFG_LIST
+  COUNT_MACRO LOWBIT_DENSE_CFG_ROWS)
+
+# StreamKMixedInputKernel binds its named-barrier/fixup cohort to the exact CTA
+# size and currently admits only 64 or 128 threads.  Its reviewed partial-work
+# startup envelope is DispatchPolicy::Stages-1 <= 8.  Mirror both compile-time
+# constraints here so an unsupported row is counted as filtered rather than
+# failing hundreds of compiler invocations into the build; every wrapper below
+# independently reasserts the final kernel contract.
+set(_LOWBIT_DENSE_STREAMK_SWEEP_ROWS "")
+foreach(_row IN LISTS _DENSE_STREAMK_SWEEP_SOURCE_TABLE_ROWS)
+  string(REPLACE "," ";" _fields "${_row}")
+  list(LENGTH _fields _field_count)
+  if(NOT _field_count EQUAL 7)
+    message(FATAL_ERROR
+      "internal Stream-K sweep row '${_row}' has ${_field_count} fields, expected 7")
+  endif()
+  list(GET _fields 0 _tm)
+  list(GET _fields 1 _tn)
+  list(GET _fields 3 _wm)
+  list(GET _fields 4 _wn)
+  list(GET _fields 5 _st)
+  math(EXPR _DENSE_STREAMK_M_REMAINDER "${_tm} % ${_wm}")
+  math(EXPR _DENSE_STREAMK_N_REMAINDER "${_tn} % ${_wn}")
+  if(NOT _DENSE_STREAMK_M_REMAINDER EQUAL 0 OR
+     NOT _DENSE_STREAMK_N_REMAINDER EQUAL 0)
+    message(FATAL_ERROR
+      "dense table row '${_row}' has non-integral CTA warp topology; cannot classify Stream-K legality")
+  endif()
+  math(EXPR _DENSE_STREAMK_M_WARPS "${_tm} / ${_wm}")
+  math(EXPR _DENSE_STREAMK_N_WARPS "${_tn} / ${_wn}")
+  math(EXPR _DENSE_STREAMK_CTA_THREADS
+       "${_DENSE_STREAMK_M_WARPS} * ${_DENSE_STREAMK_N_WARPS} * 32")
+  math(EXPR _DENSE_STREAMK_STARTUP_STAGES "${_st} - 1")
+  if(((_DENSE_STREAMK_CTA_THREADS EQUAL 64) OR
+      (_DENSE_STREAMK_CTA_THREADS EQUAL 128)) AND
+     (_DENSE_STREAMK_STARTUP_STAGES LESS_EQUAL 8))
+    list(APPEND _LOWBIT_DENSE_STREAMK_SWEEP_ROWS "${_row}")
+  endif()
+endforeach()
+list(LENGTH _DENSE_STREAMK_SWEEP_SOURCE_TABLE_ROWS
+     _LOWBIT_DENSE_STREAMK_SWEEP_SOURCE_ROWS)
+list(LENGTH _LOWBIT_DENSE_STREAMK_SWEEP_ROWS
+     _LOWBIT_DENSE_STREAMK_SWEEP_ELIGIBLE_ROWS)
+math(EXPR _LOWBIT_DENSE_STREAMK_SWEEP_FILTERED_ROWS
+     "${_LOWBIT_DENSE_STREAMK_SWEEP_SOURCE_ROWS} - ${_LOWBIT_DENSE_STREAMK_SWEEP_ELIGIBLE_ROWS}")
+if(_LOWBIT_DENSE_STREAMK_SWEEP_ELIGIBLE_ROWS EQUAL 0)
+  message(FATAL_ERROR
+    "dense Stream-K sweep filtered every row from lowbit_dense_configs.inc; refusing an empty green target")
+endif()
+
+# The copied main includes a private registry generated from exactly the rows
+# whose wrappers are emitted below.  Keeping it in the binary directory makes
+# it impossible for a source-tree ordinary registry to satisfy the include.
+set(_DENSE_STREAMK_SWEEP_CONFIG_HEADER
+    "${CMAKE_CURRENT_BINARY_DIR}/lowbit_dense_streamk_sweep_configs.inc")
+set(_DENSE_STREAMK_SWEEP_CONFIG_ROWS
+    "#define LOWBIT_DENSE_STREAMK_SWEEP_CONFIGS(X,A) \\\n")
+set(_DENSE_STREAMK_SWEEP_CONFIG_INDEX 0)
+foreach(_row IN LISTS _LOWBIT_DENSE_STREAMK_SWEEP_ROWS)
+  math(EXPR _DENSE_STREAMK_SWEEP_CONFIG_INDEX
+       "${_DENSE_STREAMK_SWEEP_CONFIG_INDEX} + 1")
+  if(_DENSE_STREAMK_SWEEP_CONFIG_INDEX LESS
+     _LOWBIT_DENSE_STREAMK_SWEEP_ELIGIBLE_ROWS)
+    set(_continuation " \\\n")
+  else()
+    set(_continuation "\n")
+  endif()
+  set(_DENSE_STREAMK_SWEEP_CONFIG_ROWS
+      "${_DENSE_STREAMK_SWEEP_CONFIG_ROWS}  X(${_row},A)${_continuation}")
+endforeach()
+file(WRITE "${_DENSE_STREAMK_SWEEP_CONFIG_HEADER}.in"
+  "// GENERATED from lowbit_dense_configs.inc; scheduler=streamk, gs=32, exact CTA threads 64/128, Stages-1<=8.\n"
+  "#define LOWBIT_DENSE_STREAMK_SWEEP_SOURCE_ROWS ${_LOWBIT_DENSE_STREAMK_SWEEP_SOURCE_ROWS}\n"
+  "#define LOWBIT_DENSE_STREAMK_SWEEP_ROWS ${_LOWBIT_DENSE_STREAMK_SWEEP_ELIGIBLE_ROWS}\n"
+  "#define LOWBIT_DENSE_STREAMK_SWEEP_FILTERED_ROWS ${_LOWBIT_DENSE_STREAMK_SWEEP_FILTERED_ROWS}\n"
+  "${_DENSE_STREAMK_SWEEP_CONFIG_ROWS}")
+execute_process(COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_DENSE_STREAMK_SWEEP_CONFIG_HEADER}.in"
+                "${_DENSE_STREAMK_SWEEP_CONFIG_HEADER}")
+
+# One generated TU still owns one PPU_B_CHUNK value.  Use private paths because
+# PPUToolchain keys device objects by source path, not by target plus flags.
+set(_DENSE_STREAMK_SWEEP_BATCH_RECORDS "")
+foreach(_batch_bc IN ITEMS 0 1)
+  set(_DENSE_STREAMK_SWEEP_ROWS_BC "")
+  foreach(_row IN LISTS _LOWBIT_DENSE_STREAMK_SWEEP_ROWS)
+    string(REPLACE "," ";" _fields "${_row}")
+    list(GET _fields 6 _bc)
+    if(_bc STREQUAL _batch_bc)
+      list(APPEND _DENSE_STREAMK_SWEEP_ROWS_BC "${_row}")
+    endif()
+  endforeach()
+  if(_DENSE_STREAMK_SWEEP_ROWS_BC)
+    qz_batch_tactic_rows(_DENSE_STREAMK_SWEEP_BATCHES_BC
+                         _DENSE_STREAMK_SWEEP_ROWS_BC
+                         "${LOWBIT_DENSE_CONFIGS_PER_UNIT}")
+    foreach(_batch IN LISTS _DENSE_STREAMK_SWEEP_BATCHES_BC)
+      list(APPEND _DENSE_STREAMK_SWEEP_BATCH_RECORDS
+           "${_batch_bc}@${_batch}")
+    endforeach()
+  endif()
+endforeach()
+
+set(_DENSE_STREAMK_SWEEP_GEN_DIR
+    "${CMAKE_CURRENT_BINARY_DIR}/lowbit_dense_streamk_sweep_units")
+file(MAKE_DIRECTORY "${_DENSE_STREAMK_SWEEP_GEN_DIR}")
+set(_DENSE_STREAMK_SWEEP_UNIT_SRCS "")
+set(_DENSE_STREAMK_SWEEP_GENERATED_ROWS 0)
+set(_DENSE_STREAMK_SWEEP_UNIT_INDEX 0)
+foreach(_batch_record IN LISTS _DENSE_STREAMK_SWEEP_BATCH_RECORDS)
+  string(REPLACE "@" ";" _batch_record_fields "${_batch_record}")
+  list(GET _batch_record_fields 0 _batch_bc)
+  list(GET _batch_record_fields 1 _batch)
+  string(REPLACE "|" ";" _batch_rows "${_batch}")
+  list(LENGTH _batch_rows _batch_count)
+  set(_unit_rows "#define LOWBIT_DENSE_UNIT_CONFIGS(X) \\\n")
+  set(_batch_index 0)
+  foreach(_row IN LISTS _batch_rows)
+    string(REPLACE "," ";" _fields "${_row}")
+    list(LENGTH _fields _field_count)
+    if(NOT _field_count EQUAL 7)
+      message(FATAL_ERROR
+        "internal Stream-K batch row '${_row}' has ${_field_count} fields, expected 7")
+    endif()
+    list(GET _fields 0 _tm)
+    list(GET _fields 1 _tn)
+    list(GET _fields 2 _tk)
+    list(GET _fields 3 _wm)
+    list(GET _fields 4 _wn)
+    list(GET _fields 5 _st)
+    list(GET _fields 6 _bc)
+    if(NOT _bc STREQUAL _batch_bc)
+      message(FATAL_ERROR
+        "dense Stream-K batch bc${_batch_bc} contains row '${_row}' with bc${_bc}")
+    endif()
+    set(_fn "lowbit_dense_cfg_tm${_tm}_tn${_tn}_tk${_tk}_wm${_wm}_wn${_wn}_st${_st}_bc${_bc}")
+    math(EXPR _batch_index "${_batch_index} + 1")
+    math(EXPR _DENSE_STREAMK_SWEEP_GENERATED_ROWS
+         "${_DENSE_STREAMK_SWEEP_GENERATED_ROWS} + 1")
+    if(_batch_index LESS _batch_count)
+      set(_continuation " \\\n")
+    else()
+      set(_continuation "\n")
+    endif()
+    set(_unit_rows
+        "${_unit_rows}  X(${_fn},${_tm},${_tn},${_tk},${_wm},${_wn},${_st},${_bc})${_continuation}")
+  endforeach()
+  set(_src
+      "${_DENSE_STREAMK_SWEEP_GEN_DIR}/lowbit_dense_streamk_sweep_unit_bc${_batch_bc}_${_DENSE_STREAMK_SWEEP_UNIT_INDEX}.cu")
+  file(WRITE "${_src}.in"
+    "// GENERATED by CMakeLists.txt -- ${_batch_count} scheduler=streamk wrappers.\n"
+    "#ifdef PPU_B_CHUNK\n#undef PPU_B_CHUNK\n#endif\n"
+    "#define PPU_B_CHUNK ${_batch_bc}\n"
+    "${_unit_rows}"
+    "#include \"lowbit_dense_unit.inc\"\n")
+  execute_process(COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                  "${_src}.in" "${_src}")
+  list(APPEND _DENSE_STREAMK_SWEEP_UNIT_SRCS "${_src}")
+  math(EXPR _DENSE_STREAMK_SWEEP_UNIT_INDEX
+       "${_DENSE_STREAMK_SWEEP_UNIT_INDEX} + 1")
+endforeach()
+if(NOT _DENSE_STREAMK_SWEEP_GENERATED_ROWS EQUAL
+       _LOWBIT_DENSE_STREAMK_SWEEP_ELIGIBLE_ROWS)
+  message(FATAL_ERROR
+    "dense Stream-K generator emitted ${_DENSE_STREAMK_SWEEP_GENERATED_ROWS} wrappers for ${_LOWBIT_DENSE_STREAMK_SWEEP_ELIGIBLE_ROWS} eligible rows")
+endif()
+
+qz_resolve_sources(_DENSE_STREAMK_SWEEP_MAIN_SOURCE test_lowbit_dense_bench.cu)
+list(GET _DENSE_STREAMK_SWEEP_MAIN_SOURCE 0
+     _DENSE_STREAMK_SWEEP_MAIN_SOURCE)
+set(_DENSE_STREAMK_SWEEP_MAIN
+    "${CMAKE_CURRENT_BINARY_DIR}/test_lowbit_dense_streamk_sweep_main.cu")
+configure_file("${_DENSE_STREAMK_SWEEP_MAIN_SOURCE}"
+               "${_DENSE_STREAMK_SWEEP_MAIN}" COPYONLY)
+# Do not inherit BENCH_QUANT/BENCH_TSK/BENCH_GS from the ordinary target: this
+# target's authority is always the committed int4/TK64 table and gs32.
+set(_DENSE_STREAMK_SWEEP_DEFS
+  -DDENSE_STREAMK_SWEEP=1 -DBENCH_GS=32
+  -DTILE_M=${TILE_M} -DTILE_N=${TILE_N}
+  -DWARP_M=${WARP_M} -DWARP_N=${WARP_N} -DSTAGES=${STAGES})
+quactlize_ppu_executable(
+  test_lowbit_dense_streamk_sweep
+  "${_DENSE_STREAMK_SWEEP_MAIN}"
+  ${_DENSE_STREAMK_SWEEP_UNIT_SRCS}
+  DEV_COMPILE_FLAGS ${_DENSE_STREAMK_SWEEP_DEFS}
+)
+target_compile_definitions(test_lowbit_dense_streamk_sweep PRIVATE
+  DENSE_STREAMK_SWEEP=1 BENCH_GS=32
+  TILE_M=${TILE_M} TILE_N=${TILE_N}
+  WARP_M=${WARP_M} WARP_N=${WARP_N} STAGES=${STAGES})
+target_compile_options(test_lowbit_dense_streamk_sweep PRIVATE -w)
+list(LENGTH _DENSE_STREAMK_SWEEP_UNIT_SRCS
+     _DENSE_STREAMK_SWEEP_UNIT_COUNT)
+message(STATUS
+  "Dense Stream-K sweep (lowbit_dense_configs.inc, gs32): source_rows=${_LOWBIT_DENSE_STREAMK_SWEEP_SOURCE_ROWS} "
+  "eligible_rows=${_LOWBIT_DENSE_STREAMK_SWEEP_ELIGIBLE_ROWS} filtered_rows=${_LOWBIT_DENSE_STREAMK_SWEEP_FILTERED_ROWS}; "
+  "${_DENSE_STREAMK_SWEEP_UNIT_COUNT} private generated units")
+
 # Full committed-table Marlin sweep.  This is a second scheduler identity over
 # the resident dense table, not a runtime arm of test_lowbit_dense_bench.
 # Marlin's cooperative is parameterized by the exact CTA cohort.  Admit every
