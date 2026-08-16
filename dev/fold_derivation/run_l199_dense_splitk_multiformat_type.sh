@@ -142,12 +142,44 @@ for spec in \
     exit 1
   }
 done
-for qtype in 11 13 14; do
-  grep -Fq 'bchunk=1/1' "${out}/q${qtype}-packed-bc1.run.log" || {
-    echo "[l199] FAIL: q${qtype} packed BChunk=1 never reached the exact collective" >&2
+
+# BChunk is a requested/effective pair.  Q2's currently admitted one-plane
+# collectives remain 1/0, Q4 is a named unsupported tactic, and every two-plane
+# family must make the request effective for every admitted row.
+for metadata in scale packed; do
+  grep -Fq ' bchunk=1 effective=0 ' "${out}/q10-${metadata}-bc1.run.log" || {
+    echo "[l199] FAIL: q10 ${metadata} did not report requested/effective BChunk=1/0" >&2
     exit 1
   }
+  if grep ' ADMITTED$' "${out}/q10-${metadata}-bc1.run.log" | grep -Fv 'bchunk=1/0' >/dev/null; then
+    echo "[l199] FAIL: q10 ${metadata} falsely advertised an effective BChunk cell" >&2
+    exit 1
+  fi
+  grep -Fq ' bchunk=1 effective=REJECT ' "${out}/q12-${metadata}-bc1.run.log" || {
+    echo "[l199] FAIL: q12 ${metadata} did not report requested/effective BChunk=1/REJECT" >&2
+    exit 1
+  }
+  grep -Fq 'single-plane PPU_B_CHUNK requires a 1- or 2-bit format' \
+    "${out}/q12-${metadata}-bc1.run.log" || {
+    echo "[l199] FAIL: q12 ${metadata} lacks the named BChunk rejection" >&2
+    exit 1
+  }
+  for qtype in 11 13 14; do
+    grep -Fq ' bchunk=1 effective=1 ' "${out}/q${qtype}-${metadata}-bc1.run.log" || {
+      echo "[l199] FAIL: q${qtype} ${metadata} did not report effective BChunk=1" >&2
+      exit 1
+    }
+    if grep ' ADMITTED$' "${out}/q${qtype}-${metadata}-bc1.run.log" | \
+        grep -Fv 'bchunk=1/1' >/dev/null; then
+      echo "[l199] FAIL: q${qtype} ${metadata} admitted an ineffective BChunk cell" >&2
+      exit 1
+    fi
+  done
 done
+if [[ "$(printf '%s\n' "${summaries[@]}" | grep -Fc ' bchunk=0 effective=0 ')" -ne 10 ]]; then
+  echo '[l199] FAIL: a BC0 arm reported a nonzero or mixed effective state' >&2
+  exit 1
+fi
 
 # Compile-time REDs: one variable changes at each owned type seam.
 compile_red() {
@@ -173,6 +205,19 @@ compile_red packed-mode-drift \
   'packed-unit and fp16-plane metadata call sites must name the selected shipping collective' \
   -DL199_QTYPE=11 -DL199_PACKED_METADATA=1 -DPPU_B_CHUNK=0 \
   -DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT=3 -DL199_PLANT_METADATA_MODE=1
+compile_red decode-default-ordinary \
+  'L199_DECODE_DEFAULT_PACKED_A_SHIPPING_SEAM' \
+  -DL199_QTYPE=10 -DL199_PACKED_METADATA=1 -DPPU_B_CHUNK=0 \
+  -DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT=2 \
+  -DL199_PLANT_DECODE_DEFAULT_ORDINARY=1
+for qtype in 10 12; do
+  compile_red "device-q${qtype}-decode-default-ordinary" \
+    'L199_DEVICE_DECODE_DEFAULT_PACKED_A_SEAM' \
+    "-DL199_QTYPE=${qtype}" -DL199_PACKED_METADATA=1 -DPPU_B_CHUNK=0 \
+    -DPPU_PACKED_SCALE=1 "-DPPU_PACKED_FORMAT=$(packed_format_for_qtype "${qtype}")" \
+    -DL199_FORCE_DEVICE_BODY=1 -DL199_EXPECT_EFFECTIVE_BCHUNK=0 \
+    -DL199_PLANT_DEVICE_DECODE_DEFAULT_ORDINARY=1
+done
 
 # Device-body witness.  The temporary overlay plants one dependent assertion
 # at the entrance to the real fixed-SplitK operator.  All five packed formats
@@ -212,53 +257,52 @@ device_flags=(
   -cuda -x cu
 )
 marker='error: static assertion failed with "L199_MULTIFORMAT_DEVICE_BODY_INSTANTIATED"'
-for metadata in scale packed; do
+run_device_probe() {
+  local qtype="$1" metadata="$2" requested="$3" effective="$4"
+  local label="device-q${qtype}-${metadata}-bc${requested}"
+  local defs=("-DL199_QTYPE=${qtype}" "-DPPU_B_CHUNK=${requested}"
+              "-DL199_EXPECT_EFFECTIVE_BCHUNK=${effective}")
   if [[ "${metadata}" == packed ]]; then
-    device_qtypes=(10 11 12 13 14)
+    defs+=( -DL199_PACKED_METADATA=1 -DPPU_PACKED_SCALE=1
+            "-DPPU_PACKED_FORMAT=$(packed_format_for_qtype "${qtype}")" )
   else
-    device_qtypes=(11 13 14)
+    defs+=( -DL199_PACKED_METADATA=0 )
   fi
-  for qtype in "${device_qtypes[@]}"; do
-    label="device-q${qtype}-${metadata}"
-    defs=("-DL199_QTYPE=${qtype}" -DPPU_B_CHUNK=0)
-    if [[ "${metadata}" == packed ]]; then
-      defs+=( -DL199_PACKED_METADATA=1 -DPPU_PACKED_SCALE=1
-              "-DPPU_PACKED_FORMAT=$(packed_format_for_qtype "${qtype}")" )
-    else
-      defs+=( -DL199_PACKED_METADATA=0 )
-    fi
-    set +e
-    nvcc "${device_flags[@]}" "${defs[@]}" "${source_file}" \
-      -o "${out}/${label}.cu.cpp" >"${out}/${label}.log" 2>&1
-    rc=$?
-    set -e
-    if [[ "${rc}" -eq 0 ]] || \
-       [[ "$(grep -Fc "${marker}" "${out}/${label}.log" || true)" -ne 1 ]]; then
-      echo "[l199] FAIL: ${label} did not reach the exact production device body once" >&2
-      tail -n 100 "${out}/${label}.log" >&2
+  set +e
+  nvcc "${device_flags[@]}" "${defs[@]}" "${source_file}" \
+    -o "${out}/${label}.cu.cpp" >"${out}/${label}.log" 2>&1
+  local rc=$?
+  set -e
+  if [[ "${rc}" -eq 0 ]] || \
+     [[ "$(grep -Fc "${marker}" "${out}/${label}.log" || true)" -ne 1 ]]; then
+    echo "[l199] FAIL: ${label} did not reach the exact production device body once" >&2
+    tail -n 100 "${out}/${label}.log" >&2
+    exit 1
+  fi
+  local unexpected="${out}/${label}.unexpected"
+  grep -E ': (error|fatal error|catastrophic error):' "${out}/${label}.log" \
+    | grep -Fv "${marker}" >"${unexpected}" || true
+  if [[ -s "${unexpected}" ]]; then
+    echo "[l199] FAIL: ${label} carried an unrelated device diagnostic" >&2
+    sed -n '1,60p' "${unexpected}" >&2
+    exit 1
+  fi
+  for token in \
+    'GemmUniversalMixedInputSplitKParallel<ProblemShape_, CollectiveMainloop_, CollectivePartialEpilogue_' \
+    'CollectivePartialEpilogue_=dense_splitk_parallel_ppu::AdapterVisiblePartialEpilogue' \
+    'AcConvert<float, 1, float'; do
+    grep -Fq "${token}" "${out}/${label}.log" || {
+      echo "[l199] FAIL: ${label} lost production instantiation token ${token}" >&2
+      tail -n 120 "${out}/${label}.log" >&2
       exit 1
-    fi
-    unexpected="${out}/${label}.unexpected"
-    grep -E ': (error|fatal error|catastrophic error):' "${out}/${label}.log" \
-      | grep -Fv "${marker}" >"${unexpected}" || true
-    if [[ -s "${unexpected}" ]]; then
-      echo "[l199] FAIL: ${label} carried an unrelated device diagnostic" >&2
-      sed -n '1,60p' "${unexpected}" >&2
-      exit 1
-    fi
-    for token in \
-      'GemmUniversalMixedInputSplitKParallel<ProblemShape_, CollectiveMainloop_, CollectivePartialEpilogue_' \
-      'CollectivePartialEpilogue_=dense_splitk_parallel_ppu::AdapterVisiblePartialEpilogue' \
-      'AcConvert<float, 1, float'; do
-      grep -Fq "${token}" "${out}/${label}.log" || {
-        echo "[l199] FAIL: ${label} lost production instantiation token ${token}" >&2
-        tail -n 120 "${out}/${label}.log" >&2
-        exit 1
-      }
-    done
-    echo "[l199:device] ${label} exact production body reached"
+    }
   done
-done
+  echo "[l199:device] ${label} exact production body reached requested/effective=${requested}/${effective}"
+}
+
+for qtype in 11 13 14; do run_device_probe "${qtype}" scale 0 0; done
+for qtype in 10 11 12 13 14; do run_device_probe "${qtype}" packed 0 0; done
+for qtype in 11 13 14; do run_device_probe "${qtype}" packed 1 1; done
 
 # Source-authority audit for the semantics that cannot be inferred from the
 # host exact fixture.  This checks the shipping constructor itself: packed
@@ -291,4 +335,4 @@ if missing:
 print("[l199:source] PASS: fully-quantized=packed-S/Z, A=fp16, ptr_Z=null; one DenseKernelTypes authority")
 PY
 
-echo "[l199] PASS: denominator=3520 admitted=${admitted} rejected=${rejected}; all Q2/Q3/Q4/Q5/Q6 scale+packed real types/host admission; packed device bodies=5, two-plane scale bodies=3 (one-plane scale bodies belong to L198); REDs closed; artifacts=${out}"
+echo "[l199] PASS: denominator=3520 admitted=${admitted} rejected=${rejected}; all Q2/Q3/Q4/Q5/Q6 scale+packed real types/host admission; BChunk requested/effective Q2=1/0 Q4=1/REJECT Q3/Q5/Q6=1/1; device bodies=11 (packed BC0=5, two-plane scale BC0=3, two-plane packed BC1=3); REDs closed; artifacts=${out}"

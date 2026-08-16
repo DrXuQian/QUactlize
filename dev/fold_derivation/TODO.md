@@ -1920,7 +1920,8 @@ format that ships through the dense decode/prefill authority:
 
 * one-plane int4/int2/int1, including ScaleOnly and ScaleZero modes;
 * two-plane Q3/Q5/Q6 and their independent low/high folds;
-* folded artifacts and both B-chunk modes without changing their resident byte maps;
+* folded artifacts and the requested/effective B-chunk state without changing resident byte maps; an inert request
+  is not B-chunk capability, and an unsupported width remains a named rejection;
 * the fully-quantized path, whose current shipping ABI keeps A in FP16 and packs the GGUF scale/zero metadata,
   including its packed-unit conventions and complete post-reduction epilogue semantics.
 

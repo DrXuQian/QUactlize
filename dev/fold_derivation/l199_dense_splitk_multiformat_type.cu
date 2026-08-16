@@ -137,9 +137,36 @@ using WitnessSchedule = ppu_group_schedule::FinegrainedSchedule<Selected::GroupS
 using WitnessTile = cute::Shape<cute::_8, cute::_128, cute::C<kWitnessTacticTileK>>;
 using WitnessScaleTile = cute::Shape<cute::_128, cute::C<kWitnessScaleGroups>>;
 using WitnessWarp = cute::Shape<cute::_8, cute::_32, cute::C<kWitnessTacticTileK>>;
-using WitnessShipping = fpa_intb_ppu::DenseKernelTypes<
+// Production gives exactly one M==1/config combination an independent A
+// provider: ShortWideM8S3 with an ordinary unfolded one-plane B.  The packed
+// Q2/Q4 witnesses deliberately name that exact backend branch; the two-plane
+// witnesses remain ordinary DenseKernelTypes.
+constexpr bool kWitnessBackendUsesPackedA =
+    kPackedMetadata && std::is_void_v<High> &&
+    ppu_mixed_policy::element_bits_v<Low> != 0 &&
+    fold::delivery_fold_v<ppu_mixed_policy::element_bits_v<Low>,
+                          kWitnessArtifactTileK> == 1;
+constexpr int kWitnessStages = kWitnessBackendUsesPackedA ? 3 : 2;
+using WitnessOrdinaryShipping = fpa_intb_ppu::DenseKernelTypes<
     QM::FinegrainedScaleZero, WitnessSchedule, WitnessTile, WitnessScaleTile,
-    WitnessWarp, 2, true, Low, High, kWitnessArtifactTileK>;
+    WitnessWarp, kWitnessStages, true, Low, High, kWitnessArtifactTileK>;
+using WitnessPackedAShipping = fpa_intb_ppu::DensePackedAKernelTypes<
+    1, QM::FinegrainedScaleZero, WitnessSchedule, WitnessTile,
+    WitnessScaleTile, WitnessWarp, kWitnessStages, true, Low,
+    kWitnessArtifactTileK>;
+#if defined(L199_PLANT_DEVICE_DECODE_DEFAULT_ORDINARY)
+constexpr bool kWitnessSelectsPackedA = false;
+#else
+constexpr bool kWitnessSelectsPackedA = kWitnessBackendUsesPackedA;
+#endif
+using WitnessShipping = std::conditional_t<
+    kWitnessSelectsPackedA, WitnessPackedAShipping,
+    WitnessOrdinaryShipping>;
+constexpr bool kWitnessActualPackedA = std::is_same_v<
+    typename WitnessShipping::MainloopPolicy::Descriptor::AProviderType,
+    ppu_mixed_policy::PackedRowAProvider>;
+static_assert(kWitnessActualPackedA == kWitnessBackendUsesPackedA,
+              "L199_DEVICE_DECODE_DEFAULT_PACKED_A_SEAM");
 using WitnessSplit = dense_splitk_parallel_ppu::KernelTypes<
     WitnessShipping, WitnessTile, WitnessWarp>;
 using WitnessKernel = typename WitnessSplit::GemmKernel;
@@ -148,6 +175,14 @@ static_assert(std::is_same_v<typename WitnessKernel::CollectiveMainloop,
 static_assert(dense_splitk_parallel_ppu::MainloopUsesPackedMetadata<
                   typename WitnessShipping::CollectiveMainloop>::value ==
               kPackedMetadata);
+#ifndef L199_EXPECT_EFFECTIVE_BCHUNK
+#error "device-body witness must name the expected effective BChunk state"
+#endif
+constexpr bool kWitnessEffectiveBChunk =
+    ppu_mixed_policy::AtomAtATimeConversion<
+        typename WitnessShipping::CollectiveMainloop>::value;
+static_assert(kWitnessEffectiveBChunk == bool(L199_EXPECT_EFFECTIVE_BCHUNK),
+              "L199_DEVICE_BCHUNK_EFFECTIVE_SEAM");
 
 __global__ void l199_force_multiformat_device_body(
     WitnessKernel::Params params) {
@@ -203,6 +238,9 @@ struct Census {
   uint64_t fold_reds = 0;
   uint64_t metadata_reds = 0;
   uint64_t group_reds = 0;
+  uint64_t bchunk_effective_on = 0;
+  uint64_t bchunk_effective_off = 0;
+  uint64_t bchunk_named_rejects = 0;
   uint64_t failures = 0;
 };
 
@@ -281,7 +319,8 @@ bool exact_fixture(int splits, uint64_t& qk_cells) {
   return true;
 }
 
-template <int ArtifactTileK, int TM, int TN, int WM, int WN, int Stages>
+template <int ArtifactTileK, ppu_dense_shipping::ConfigId ConfigId,
+          int TM, int TN, int WM, int WN, int Stages>
 void typed_config(Census& census, char const* config_name) {
   constexpr int TacticTileK = kPackedMetadata
       ? kFormat.fully_quantized_tile_k : kFormat.scale_first_tile_k;
@@ -300,10 +339,15 @@ void typed_config(Census& census, char const* config_name) {
         ? Reject::Kernel : Reject::Producer;
     auto const exclusion = kernel_exclusion != ppu_tactics::Exclusion::None
         ? kernel_exclusion : producer_exclusion;
+    if constexpr (kernel_exclusion ==
+                  ppu_tactics::Exclusion::BChunkUnsupportedBits) {
+      census.bchunk_named_rejects += kSplits.size();
+    }
     for (int split : kSplits) {
       ++census.cells;
       ++census.rejected;
-      std::printf("[l199:cell] q=%d metadata=%s A=%d config=%s bchunk=%d S=%d REJECT %s\n",
+      std::printf("[l199:cell] q=%d metadata=%s A=%d config=%s "
+                  "bchunk=%d/REJECT S=%d REJECT %s\n",
                   L199_QTYPE, kPackedMetadata ? "packed" : "scale-zero",
                   ArtifactTileK, config_name, PPU_B_CHUNK, split,
                   reject_name(reject, exclusion));
@@ -315,9 +359,28 @@ void typed_config(Census& census, char const* config_name) {
     using ScaleTile = cute::Shape<cute::C<TN>, cute::C<ScaleGroups>>;
     using Warp = cute::Shape<cute::C<WM>, cute::C<WN>, cute::C<TacticTileK>>;
     using Schedule = ppu_group_schedule::FinegrainedSchedule<Selected::GroupSize>;
-    using Shipping = fpa_intb_ppu::DenseKernelTypes<
+    using OrdinaryShipping = fpa_intb_ppu::DenseKernelTypes<
         QM::FinegrainedScaleZero, Schedule, Tile, ScaleTile, Warp, Stages,
         true, Low, High, ArtifactTileK>;
+    using PackedAShipping = fpa_intb_ppu::DensePackedAKernelTypes<
+        1, QM::FinegrainedScaleZero, Schedule, Tile, ScaleTile, Warp, Stages,
+        true, Low, ArtifactTileK>;
+    constexpr bool backend_uses_packed_a =
+        ConfigId == ppu_dense_shipping::kDecodeDefault && kM == 1 &&
+        std::is_void_v<High> &&
+        ppu_tactics::artifact_low_fold(candidate) == 1;
+#if defined(L199_PLANT_DECODE_DEFAULT_ORDINARY)
+    constexpr bool select_packed_a = false;
+#else
+    constexpr bool select_packed_a = backend_uses_packed_a;
+#endif
+    using Shipping = std::conditional_t<
+        select_packed_a, PackedAShipping, OrdinaryShipping>;
+    constexpr bool actual_packed_a = std::is_same_v<
+        typename Shipping::MainloopPolicy::Descriptor::AProviderType,
+        ppu_mixed_policy::PackedRowAProvider>;
+    static_assert(actual_packed_a == backend_uses_packed_a,
+                  "L199_DECODE_DEFAULT_PACKED_A_SHIPPING_SEAM");
     using Split = dense_splitk_parallel_ppu::KernelTypes<Shipping, Tile, Warp>;
     using ExpectedShippingKernel = cutlass::gemm::kernel::GemmUniversal<
         cute::Shape<int, int, int, int>, typename Shipping::CollectiveMainloop,
@@ -346,6 +409,9 @@ void typed_config(Census& census, char const* config_name) {
         dense_splitk_parallel_ppu::MainloopUsesPackedMetadata<
             typename Shipping::CollectiveMainloop>::value == kPackedMetadata,
         "metadata ABI must match the selected shipping collective");
+    constexpr bool effective_bchunk =
+        ppu_mixed_policy::AtomAtATimeConversion<
+            typename Shipping::CollectiveMainloop>::value;
 
     constexpr bool shipping_fits =
         Shipping::SharedStorageSize <= ppu_tactics::kBlockSmemBytes;
@@ -356,9 +422,11 @@ void typed_config(Census& census, char const* config_name) {
       for (int split : kSplits) {
         ++census.cells;
         ++census.rejected;
-        std::printf("[l199:cell] q=%d metadata=%s A=%d config=%s bchunk=%d S=%d REJECT %s\n",
+        std::printf("[l199:cell] q=%d metadata=%s A=%d config=%s "
+                    "bchunk=%d/%d S=%d REJECT %s\n",
                     L199_QTYPE, kPackedMetadata ? "packed" : "scale-zero",
-                    ArtifactTileK, config_name, PPU_B_CHUNK, split,
+                    ArtifactTileK, config_name, PPU_B_CHUNK,
+                    int(effective_bchunk), split,
                     reject_name(Reject::ShippingSharedStorage,
                                 ppu_tactics::Exclusion::None));
       }
@@ -381,9 +449,11 @@ void typed_config(Census& census, char const* config_name) {
 
       if (reject != Reject::None) {
         ++census.rejected;
-        std::printf("[l199:cell] q=%d metadata=%s A=%d config=%s bchunk=%d S=%d REJECT %s\n",
+        std::printf("[l199:cell] q=%d metadata=%s A=%d config=%s "
+                    "bchunk=%d/%d S=%d REJECT %s\n",
                     L199_QTYPE, kPackedMetadata ? "packed" : "scale-zero",
-                    ArtifactTileK, config_name, PPU_B_CHUNK, split,
+                    ArtifactTileK, config_name, PPU_B_CHUNK,
+                    int(effective_bchunk), split,
                     reject_name(reject, ppu_tactics::Exclusion::None));
         continue;
       }
@@ -531,12 +601,16 @@ void typed_config(Census& census, char const* config_name) {
       else if (!exact) reject = Reject::ExactCoverage;
       if (reject != Reject::None) {
         ++census.failures;
-        std::printf("[l199:cell] q=%d metadata=%s A=%d config=%s bchunk=%d S=%d FALSE_GREEN %s\n",
+        std::printf("[l199:cell] q=%d metadata=%s A=%d config=%s "
+                    "bchunk=%d/%d S=%d FALSE_GREEN %s\n",
                     L199_QTYPE, kPackedMetadata ? "packed" : "scale-zero",
-                    ArtifactTileK, config_name, PPU_B_CHUNK, split,
+                    ArtifactTileK, config_name, PPU_B_CHUNK,
+                    int(effective_bchunk), split,
                     reject_name(reject, ppu_tactics::Exclusion::None));
       } else {
         ++census.admitted;
+        if constexpr (effective_bchunk) ++census.bchunk_effective_on;
+        else ++census.bchunk_effective_off;
         census.exact_qk += qk;
         std::printf("[l199:cell] q=%d metadata=%s A=%d folds=%d/%d config=%s "
                     "bchunk=%d/%d S=%d checksum=%llu ADMITTED\n",
@@ -544,8 +618,7 @@ void typed_config(Census& census, char const* config_name) {
                     ArtifactTileK, Shipping::MainloopPolicy::ArtifactLowFold,
                     Shipping::MainloopPolicy::ArtifactHighFold, config_name,
                     PPU_B_CHUNK,
-                    int(ppu_mixed_policy::AtomAtATimeConversion<
-                            typename Shipping::CollectiveMainloop>::value), split,
+                    int(effective_bchunk), split,
                     static_cast<unsigned long long>(
                         logical_fixture_checksum<TM, TN, TacticTileK>()));
       }
@@ -561,7 +634,8 @@ void artifact_census(Census& census) {
 #define L199_REJECT_CONFIG(ID, NAME, TM, TN, WM, WN, STAGES)                 \
     for (int split : kSplits) {                                              \
       ++census.cells; ++census.rejected;                                     \
-      std::printf("[l199:cell] q=%d metadata=%s A=%d config=%s bchunk=%d "  \
+      std::printf("[l199:cell] q=%d metadata=%s A=%d config=%s "          \
+                  "bchunk=%d/REJECT "                                    \
                   "S=%d REJECT %s\n",                                      \
                   L199_QTYPE, kPackedMetadata ? "packed" : "scale-zero",   \
                   ArtifactTileK, NAME, PPU_B_CHUNK, split,                   \
@@ -570,8 +644,9 @@ void artifact_census(Census& census) {
     QUACTLIZE_PPU_DENSE_CONFIGS(L199_REJECT_CONFIG)
 #undef L199_REJECT_CONFIG
   } else {
-#define L199_TYPED_CONFIG(ID, NAME, TM, TN, WM, WN, STAGES) \
-    typed_config<ArtifactTileK, TM, TN, WM, WN, STAGES>(census, NAME);
+#define L199_TYPED_CONFIG(ID, NAME, TM, TN, WM, WN, STAGES)                 \
+    typed_config<ArtifactTileK, ppu_dense_shipping::ConfigId::ID,           \
+                 TM, TN, WM, WN, STAGES>(census, NAME);
     QUACTLIZE_PPU_DENSE_CONFIGS(L199_TYPED_CONFIG)
 #undef L199_TYPED_CONFIG
   }
@@ -588,23 +663,34 @@ int main() {
 
   constexpr uint64_t expected_cells =
       kArtifactTileK.size() * ppu_dense_shipping::kConfigs.size() * kSplits.size();
-  constexpr bool expected_all_rejected =
-      PPU_B_CHUNK != 0 &&
-      ppu_mixed_policy::element_bits_v<High> == 0 &&
-      ppu_mixed_policy::element_bits_v<Low> != 1 &&
-      ppu_mixed_policy::element_bits_v<Low> != 2;
+  constexpr int expected_effective_bchunk = PPU_B_CHUNK == 0 ? 0 :
+      (L199_QTYPE == 10 ? 0 : (L199_QTYPE == 12 ? -1 : 1));
+  bool const bchunk_state_ok = expected_effective_bchunk < 0
+      ? census.admitted == 0 && census.bchunk_named_rejects != 0
+      : census.admitted != 0 &&
+          (expected_effective_bchunk != 0
+               ? census.bchunk_effective_on == census.admitted &&
+                     census.bchunk_effective_off == 0
+               : census.bchunk_effective_off == census.admitted &&
+                     census.bchunk_effective_on == 0);
+  char const* effective_bchunk_name = census.admitted == 0 ? "REJECT" :
+      (census.bchunk_effective_on == census.admitted ? "1" :
+       census.bchunk_effective_off == census.admitted ? "0" : "MIXED");
   bool const pass = census.cells == expected_cells &&
       census.cells == census.admitted + census.rejected &&
       census.admitted == census.typed &&
-      (census.admitted != 0 || expected_all_rejected) &&
+      bchunk_state_ok &&
       census.failures == 0;
   std::printf(
-      "[l199] %s q=%d metadata=%s bchunk=%d cells=%llu admitted=%llu "
+      "[l199] %s q=%d metadata=%s bchunk=%d effective=%s "
+      "cells=%llu admitted=%llu "
       "rejected=%llu typed=%llu exact_qk=%llu b2_reds=%llu fold_reds=%llu "
-      "metadata_reds=%llu group_reds=%llu failures=%llu "
+      "metadata_reds=%llu group_reds=%llu bchunk_named_rejects=%llu "
+      "failures=%llu "
       "A=fp16 Acc=fp32 D=fp16\n",
       pass ? "PASS" : "FAIL", L199_QTYPE,
       kPackedMetadata ? "packed" : "scale-zero", PPU_B_CHUNK,
+      effective_bchunk_name,
       static_cast<unsigned long long>(census.cells),
       static_cast<unsigned long long>(census.admitted),
       static_cast<unsigned long long>(census.rejected),
@@ -614,6 +700,7 @@ int main() {
       static_cast<unsigned long long>(census.fold_reds),
       static_cast<unsigned long long>(census.metadata_reds),
       static_cast<unsigned long long>(census.group_reds),
+      static_cast<unsigned long long>(census.bchunk_named_rejects),
       static_cast<unsigned long long>(census.failures));
   return pass ? 0 : 1;
 }
