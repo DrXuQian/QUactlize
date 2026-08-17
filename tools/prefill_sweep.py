@@ -155,6 +155,58 @@ def load_registry() -> dict[int, dict]:
     return format_registry()
 
 
+def qtype_name(qtype: int) -> str:
+    """Return the repository's semantic GGUF name, independent of route support.
+
+    The shipping ScaleFirst registry intentionally contains only Q2_K..Q6_K.
+    Using that registry as the *name* authority turned recognized Q8_0 (ggml
+    type 8) into the misleading string ``qtype-8``.  Format identity and this
+    route's capability are separate facts.
+    """
+    from quactlize.formats import QuantType
+    try:
+        return QuantType(int(qtype)).name
+    except ValueError:
+        return f"UNKNOWN_QTYPE_{int(qtype)}"
+
+
+def support_summary(cells: list[dict]) -> dict:
+    supported = sum(c["support"]["state"] == "SUPPORTED" for c in cells)
+    by_state: dict[str, int] = {}
+    by_reason: dict[str, int] = {}
+    for cell in cells:
+        support = cell["support"]
+        by_state[support["state"]] = by_state.get(support["state"], 0) + 1
+        code = support["reason_code"]
+        by_reason[code] = by_reason.get(code, 0) + 1
+    return {
+        "total_cells": len(cells),
+        "supported_cells": supported,
+        "unsupported_cells": len(cells) - supported,
+        "by_state": by_state,
+        "by_reason_code": by_reason,
+    }
+
+
+def plan_admission(plan: dict) -> tuple[bool, str]:
+    """Validate the recorded count and decide whether a binary may be built.
+
+    This is shared by the runner admission command and ``measure`` so bypassing
+    the shell script cannot turn an all-unsupported plan into a benchmark run.
+    """
+    if plan.get("schema") != PLAN_SCHEMA:
+        raise ValueError(f"not a {PLAN_SCHEMA} plan")
+    actual = support_summary(plan.get("cells", []))
+    recorded = plan.get("support_summary")
+    if recorded != actual:
+        raise ValueError(f"plan support_summary disagrees with cells: recorded={recorded}, actual={actual}")
+    if actual["supported_cells"] == 0:
+        return False, (f"NO_SUPPORTED_CELLS: supported=0 unsupported={actual['unsupported_cells']} "
+                       f"total={actual['total_cells']}; no binary may be built or measured")
+    return True, (f"SUPPORTED_CELLS_PRESENT: supported={actual['supported_cells']} "
+                  f"unsupported={actual['unsupported_cells']} total={actual['total_cells']}")
+
+
 def build_plan(spec_path: pathlib.Path, gguf_path: pathlib.Path) -> dict:
     spec = json.loads(spec_path.read_text())
     if spec.get("schema") != SUPPORTED_SPEC_SCHEMA:
@@ -234,14 +286,30 @@ def build_plan(spec_path: pathlib.Path, gguf_path: pathlib.Path) -> dict:
         qtype = int(tensor["qtype"])
         row = registry.get(qtype)
         family = FAMILY_BY_QTYPE.get(qtype)
+        semantic_name = qtype_name(qtype)
         if row is None:
-            support = {"state": "UNSUPPORTED", "reason": f"GGUF qtype {qtype} is absent from the PPU format registry"}
+            support = {
+                "state": "UNSUPPORTED",
+                "reason_code": "QTYPE_NOT_IN_CURRENT_SCALEFIRST_REGISTRY",
+                "reason": (f"{semantic_name} (GGUF qtype {qtype}) is recognized from the tensor header but is "
+                           "not registered for the current PPU ScaleFirst benchmark route"),
+            }
         elif family is None:
-            support = {"state": "UNSUPPORTED", "reason": f"{row['name']} has no semantic row family in test_scalefirst_bench"}
+            support = {
+                "state": "UNSUPPORTED",
+                "reason_code": "NO_BENCHMARK_ROW_FAMILY",
+                "reason": f"{row['name']} has no semantic row family in test_scalefirst_bench",
+            }
         elif denominators.get(family, 0) == 0:
-            support = {"state": "UNSUPPORTED", "reason": f"row family {family} has an empty source denominator"}
+            support = {
+                "state": "UNSUPPORTED",
+                "reason_code": "EMPTY_SOURCE_DENOMINATOR",
+                "reason": f"row family {family} has an empty source denominator",
+            }
         else:
-            support = {"state": "SUPPORTED", "family": family,
+            support = {"state": "SUPPORTED", "reason_code": "REGISTERED_ROW_FAMILY",
+                       "reason": f"{row['name']} maps to nonempty benchmark row family {family}",
+                       "family": family,
                        "source_denominator": denominators[family]}
         for m in m_values:
             cell = {
@@ -251,7 +319,7 @@ def build_plan(spec_path: pathlib.Path, gguf_path: pathlib.Path) -> dict:
                 "selected_layer": int(tensor_layer) if tensor_layer is not None else None,
                 "qtype_source": "GGUF-tensor-header",
                 "qtype": qtype,
-                "format": row["name"] if row else f"qtype-{qtype}",
+                "format": semantic_name,
                 "m": m, "n": actual_n, "k": actual_k,
                 "group_size": row["group_size"] if row else None,
                 "planes": [row["low_bits"], row["high_bits"]] if row else None,
@@ -264,6 +332,7 @@ def build_plan(spec_path: pathlib.Path, gguf_path: pathlib.Path) -> dict:
                 "support": support,
             }
             cells.append(cell)
+    summary = support_summary(cells)
     return {
         "schema": PLAN_SCHEMA,
         "model": spec["model"],
@@ -276,6 +345,7 @@ def build_plan(spec_path: pathlib.Path, gguf_path: pathlib.Path) -> dict:
         "candidate_source": str(BENCH_SOURCE.resolve()),
         "candidate_source_sha256": sha256_file(BENCH_SOURCE),
         "candidate_denominators": denominators,
+        "support_summary": summary,
         "tensor_selection": {
             "policy": "lowest numeric layer present in every declared projection at the declared geometry",
             "selected_layer": int(selected_layer) if selected_layer is not None else None,
@@ -526,6 +596,9 @@ def measure(plan_path: pathlib.Path, binary: pathlib.Path, out: pathlib.Path,
     plan = json.loads(plan_path.read_text())
     if plan.get("schema") != PLAN_SCHEMA:
         raise ValueError(f"{plan_path}: not a {PLAN_SCHEMA} plan")
+    admitted, admission = plan_admission(plan)
+    if not admitted:
+        raise ValueError(admission)
     if repeats < 2:
         raise ValueError("repeats must be >=2; one averaged pass cannot establish a ranking band")
     if out.exists():
@@ -680,9 +753,9 @@ def measure(plan_path: pathlib.Path, binary: pathlib.Path, out: pathlib.Path,
     return 1 if any_failure else 0
 
 
-def write_synthetic_gguf(path: pathlib.Path) -> None:
+def write_synthetic_gguf(path: pathlib.Path, tensors: list[tuple[str, list[int], int]] | None = None) -> None:
     """A tiny v3 header used by --self-test; contains no tensor payload."""
-    tensors = [
+    tensors = tensors or [
         # Hybrid control: block 0 is Gated DeltaNet and must not be mistaken
         # for a full-attention q projection merely because its shape is close.
         ("blk.0.attn_qkv.weight", [2048, 8192], 12),
@@ -719,6 +792,9 @@ def self_test() -> int:
         assert len(plan["cells"]) == 8
         assert [c["qtype"] for c in plan["cells"][::2]] == [12, 10, 13, 14]
         assert all(c["support"]["state"] == "SUPPORTED" for c in plan["cells"])
+        assert plan["support_summary"]["supported_cells"] == 8
+        assert plan["support_summary"]["unsupported_cells"] == 0
+        assert plan_admission(plan)[0]
         assert plan["cells"][0]["qtype_source"] == "GGUF-tensor-header"
         assert plan["tensor_selection"]["selected_layer"] == 3
         assert all(c["selected_layer"] == 3 for c in plan["cells"])
@@ -783,10 +859,54 @@ def self_test() -> int:
         assert decisions[0]["disposition"] == "CONFLICT/UNRESOLVED"
         assert decisions[0]["artifact_selection"] is None
         assert decisions[0]["minimax_diagnostic"] is not None
+
+        # Full Q8_0 negative: qtype 8 is a known GGUF identity, not an alias
+        # for Q4_K and not a reason to compile a benchmark that has no row for
+        # it.  The plan and its provenance survive; admission blocks both the
+        # runner's build and a direct measure invocation.
+        q8_gguf = td / "all-q8.gguf"
+        write_synthetic_gguf(q8_gguf, [
+            ("blk.3.attn_q.weight", [2048, 8192], 8),
+            ("blk.3.attn_k.weight", [2048, 512], 8),
+            ("blk.3.attn_v.weight", [2048, 512], 8),
+            ("blk.3.attn_output.weight", [4096, 2048], 8),
+        ])
+        q8_plan = build_plan(ROOT / "benchmarks" / "prefill_qwen35_a3b_smoke.json", q8_gguf)
+        assert len(q8_plan["cells"]) == 8
+        assert all(c["format"] == "Q8_0" for c in q8_plan["cells"])
+        assert all(c["support"]["state"] == "UNSUPPORTED" for c in q8_plan["cells"])
+        assert all(c["support"]["reason_code"] == "QTYPE_NOT_IN_CURRENT_SCALEFIRST_REGISTRY"
+                   for c in q8_plan["cells"])
+        assert q8_plan["support_summary"] == {
+            "total_cells": 8,
+            "supported_cells": 0,
+            "unsupported_cells": 8,
+            "by_state": {"UNSUPPORTED": 8},
+            "by_reason_code": {"QTYPE_NOT_IN_CURRENT_SCALEFIRST_REGISTRY": 8},
+        }
+        admitted, reason = plan_admission(q8_plan)
+        assert not admitted and reason.startswith("NO_SUPPORTED_CELLS:")
+        q8_plan_path = td / "all-q8-plan.json"
+        q8_plan_path.write_text(json.dumps(q8_plan, sort_keys=True) + "\n")
+        admission_proc = subprocess.run(
+            [sys.executable, str(pathlib.Path(__file__).resolve()), "admit", "--plan", str(q8_plan_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
+        assert admission_proc.returncode == 3
+        assert "NO_SUPPORTED_CELLS" in admission_proc.stdout
+        blocked_results = td / "must-not-be-created"
+        try:
+            measure(q8_plan_path, td / "must-not-be-executed", blocked_results,
+                    repeats=2, timeout=1, peak_tflops=500.0, hbm_gbs=2766.0)
+        except ValueError as e:
+            assert "NO_SUPPORTED_CELLS" in str(e)
+        else:
+            raise AssertionError("an all-Q8_0 plan reached measurement")
+        assert not blocked_results.exists()
     finally:
         shutil.rmtree(td)
     print("[prefill-sweep:self-test] PASS: hybrid blk0-GDN/blk3-attention selection, GGUF qtype/dim authority, "
-          "q4 semantic tag, FoldN negative, Q3 legacy exclusion, denominator fail-close, and cross-M conflict")
+          "q4 semantic tag, FoldN negative, Q3 legacy exclusion, denominator fail-close, cross-M conflict, "
+          "and all-Q8_0 NO_SUPPORTED_CELLS pre-build admission")
     return 0
 
 
@@ -805,6 +925,8 @@ def main() -> int:
     p.add_argument("--timeout", type=int, default=1800)
     p.add_argument("--peak-tflops", type=float, default=500.0)
     p.add_argument("--hbm-gbs", type=float, default=2766.0)
+    p = sub.add_parser("admit")
+    p.add_argument("--plan", type=pathlib.Path, required=True)
     sub.add_parser("self-test")
     a = ap.parse_args()
     try:
@@ -818,9 +940,17 @@ def main() -> int:
                 print(f"{cell['id']:<8} {cell['tensor']:<34} {cell['format']:<5} "
                       f"M/N/K={cell['m']}/{cell['n']}/{cell['k']} "
                       f"fold={cell['canonical_scale_first_arrangement']['fold_n'] if cell['canonical_scale_first_arrangement'] else '-'} "
-                      f"{cell['support']['state']}")
-            print(f"[prefill-sweep] plan={a.output} cells={len(plan['cells'])}")
+                      f"{cell['support']['state']} reason={cell['support']['reason_code']}:"
+                      f"{cell['support']['reason']}")
+            summary = plan["support_summary"]
+            print(f"[prefill-sweep] plan={a.output} cells={summary['total_cells']} "
+                  f"supported={summary['supported_cells']} unsupported={summary['unsupported_cells']}")
             return 0
+        if a.command == "admit":
+            plan = json.loads(a.plan.read_text())
+            admitted, reason = plan_admission(plan)
+            print(f"[prefill-sweep] {reason}")
+            return 0 if admitted else 3
         return measure(a.plan, a.bin, a.out, a.repeats, a.timeout, a.peak_tflops, a.hbm_gbs)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as e:
         print(f"[prefill-sweep] FAIL: {e}", file=sys.stderr)

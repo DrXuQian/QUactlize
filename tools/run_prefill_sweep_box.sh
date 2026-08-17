@@ -50,6 +50,17 @@ main() {
     printf 'candidate_scope=finite-manual-test_scalefirst_bench-row-families\n'
   } >"$out/provenance.txt"
 
+  # Admission is deliberately after plan + provenance are durable and before
+  # build.  A checkpoint whose selected tensors are all Q8_0 must leave useful
+  # evidence while compiling/running exactly nothing.
+  python3 "$root/tools/prefill_sweep.py" admit --plan "$plan" 2>&1 | tee "$out/admission.log"
+  rc=${PIPESTATUS[0]}
+  if [ "$rc" -ne 0 ]; then
+    printf '[prefill-sweep] NO_SUPPORTED_CELLS: no binary was built or measured\n' >&2
+    printf '[prefill-sweep] artifacts: %s\n' "$out" >&2
+    return "$rc"
+  fi
+
   env PPU_BUILD_DIR="$build_root" PPU_ARCHS=ppu0010 TARGET=test_scalefirst_bench \
     JOBS="${JOBS:-16}" "$root/build.sh" 2>&1 | tee "$build_log"
   rc=${PIPESTATUS[0]}
