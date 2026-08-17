@@ -9,7 +9,7 @@
 set -uo pipefail
 
 main() {
-  local root spec gguf sha short stamp out build_root build_log plan binary rc proof_log
+  local root spec gguf sha short stamp out build_root build_log plan binary rc proof_log proof_evidence
   local -a bins
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
   spec="${PREFILL_SPEC:-$root/benchmarks/prefill_qwen35_a3b_smoke.json}"
@@ -36,6 +36,7 @@ main() {
   build_root="$out/build"
   build_log="$out/build.log"
   proof_log="$out/l208-q8-layout.log"
+  proof_evidence="$out/l208-q8-layout.expected.txt"
 
   # This result must bind to the named SHA, not merely to whatever source
   # bytes happened to be in a dirty checkout.  Unrelated work may coexist,
@@ -47,6 +48,8 @@ main() {
     benchmarks/test_scalefirst_bench.cu benchmarks/prefill_q8_candidates.inc
     dev/fold_derivation/l208_q8_emit_layout.cu
     dev/fold_derivation/run_l208_q8_emit_layout.sh
+    dev/fold_derivation/l208_q8_emit_layout.expected.txt
+    ci/check_l208_q8_committed_evidence.py
     quactlize/include/quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h
     quactlize/include/xplane_offline.hpp quactlize/include/ppu_format_config.inc
   )
@@ -72,11 +75,25 @@ main() {
   fi
 
   python3 "$root/tools/prefill_sweep.py" self-test || return 2
-  QUACTLIZE_L208_OUT="$out/l208" bash "$root/dev/fold_derivation/run_l208_q8_emit_layout.sh" \
-    2>&1 | tee "$proof_log"
+  # L208 is a host/CUDA compile-time oracle.  The PPU box's `nvcc` delegates
+  # device preprocessing to ppu_clang++, where the repository's stub headers
+  # cannot be mixed with the real SDK (all-stub lacks hggc_fp8; all-real hits
+  # the CUDA/GCC13 seam; mixing them hits __assert).  Consume the exact local
+  # evidence from the result SHA instead.  The production target below is
+  # still compiled fresh by hgcc, so this does not replace device admission.
+  git -C "$root" show "$sha:dev/fold_derivation/l208_q8_emit_layout.expected.txt" \
+    >"$proof_evidence" || {
+    printf '[prefill-sweep] FAIL: result SHA lacks committed L208 evidence\n' >&2
+    return 2
+  }
+  {
+    printf '[prefill-sweep] l208-evidence=committed-local-oracle source-sha=%s fresh-box-execution=0\n' "$sha"
+    python3 "$root/ci/check_l208_q8_committed_evidence.py" \
+      --committed-only --evidence "$proof_evidence"
+  } 2>&1 | tee "$proof_log"
   rc=${PIPESTATUS[0]}
   if [ "$rc" -ne 0 ]; then
-    printf '[prefill-sweep] FAIL: Q8 layout authority L208 returned rc=%d; no binary was built\n' "$rc" >&2
+    printf '[prefill-sweep] FAIL: committed Q8 layout authority L208 returned rc=%d; no binary was built\n' "$rc" >&2
     return "$rc"
   fi
   python3 "$root/tools/prefill_sweep.py" plan --spec "$spec" --gguf "$gguf" --output "$plan" \
@@ -92,6 +109,8 @@ main() {
     printf 'spec=%s\n' "$spec"
     printf 'timing_scope=ScaleFirst-GEMM-only;prepass-and-direct-FQ-excluded\n'
     printf 'candidate_scope=finite-manual-row-families;q8-authority=benchmarks/prefill_q8_candidates.inc\n'
+    printf 'l208_evidence=%s\n' "$proof_evidence"
+    printf 'l208_evidence_sha256=%s\n' "$(sha256sum "$proof_evidence" | awk '{print $1}')"
     printf 'l208_log=%s\n' "$proof_log"
     printf 'l208_log_sha256=%s\n' "$(sha256sum "$proof_log" | awk '{print $1}')"
   } >"$out/provenance.txt"

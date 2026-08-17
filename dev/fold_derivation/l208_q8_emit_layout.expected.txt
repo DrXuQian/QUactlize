@@ -1,0 +1,12 @@
+[l208 emit] inputs=16 mismatch=0 holes=0 duplicates=0 map=0,2,1,3,8,10,9,11,4,6,5,7,12,14,13,15
+[l208 placement] candidates=18 canonical=A32/F1 fixture=128x256 unset=0 out_of_range=0 holes=0 duplicates=0 roundtrip_bad=0/589824 byte_diff=0/589824
+[l208 q8-value] signed_codes=256 scales=4 checks=1024 bias_bad=0 value_bad=0 semantics=W=d*q
+[l208] PASS emit=PASS placement=PASS q8_value=PASS
+[l208 emit] inputs=16 mismatch=1 holes=1 duplicates=1 map=0,3,1,3,8,10,9,11,4,6,5,7,12,14,13,15
+[l208 placement] candidates=18 canonical=A32/F1 fixture=128x256 unset=0 out_of_range=0 holes=0 duplicates=0 roundtrip_bad=0/589824 byte_diff=0/589824
+[l208 q8-value] signed_codes=256 scales=4 checks=1024 bias_bad=0 value_bad=0 semantics=W=d*q
+[l208] FAIL emit=FAIL placement=PASS q8_value=PASS
+[l208 placement] candidates=17 canonical=A32/F1 fixture=128x256 unset=0 out_of_range=0 holes=0 duplicates=0 roundtrip_bad=0/557056 byte_diff=0/557056
+[l208 q8-value] signed_codes=256 scales=4 checks=1024 bias_bad=0 value_bad=0 semantics=W=d*q
+[l208] FAIL emit=PASS placement=FAIL q8_value=PASS
+[l208-runner] PASS emission=16/16 placement=18x(exact-once+roundtrip+A32-byte-identical) q8_value=1024/1024 wrong_perm=EXPECTED_RED missing_candidate=EXPECTED_RED
