@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-17 02:58:26 UTC
+    updated-at:     2026-08-17 03:30:23 UTC
     inbox-consumed: 178
-    working-on:     tail-min-peers Stream-K committed; awaiting same-run exact DP versus G288 PPU timing
-    blocked-on:     PPU only: G288 keeps DP=1728/SK=320 and changes whole/split/peer 0/320/456 -> 64/256/256
-    local-gates:    L201 4616/4616 exact/min-peer and five plants red; L120 + 48/10/14 contract plants PASS; fixed Q4K65 and all 167 sweep units compile+link PASS; full tier 169 PASS/22 unrelated existing FAIL
-    last-commit:    306d166 Bind tail topology to its adjudication branch (implementation abb95dc, actlize e8938928)
-    last-heartbeat: 335
+    working-on:     persistent-DP grid experiment complete; awaiting Q4K65 G72..576 PPU timing bundle
+    blocked-on:     PPU timing only; no local blocker
+    local-gates:    L202 9/9 grids exact-once + 5/5 plants red; persistent source checker 10/10 plants red; Stream-K/Q4K65 contracts and switch macros PASS; persistent syntax + exact Q4K65 compile/link PASS
+    last-commit:    0b3293b Add exact grid axis to persistent DP
+    last-heartbeat: 337
