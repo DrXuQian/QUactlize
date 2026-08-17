@@ -96,6 +96,7 @@
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
 #include "ppu_mixed_policy.hpp"
 #include "bench_select.hpp"
+#include "scalefirst_persistent_policy.hpp"
 
 // Cross-check hook: pull in the grouped mixed-input launcher so we can run it (L=1) on THIS file's own verified
 // data via a runtime --xcheck flag. Always included (no compile-time guard): the two-stage PPU host/device
@@ -114,7 +115,8 @@ using namespace cute;
 // partition replay, exact fixture, distinct-event, and lock-reset machinery.
 #define DENSE_STREAMK_INSTRUMENTED 1
 #endif
-#if defined(DENSE_PERSISTENT_AB) || defined(DENSE_STREAMK_AB) || defined(DENSE_MARLIN_AB)
+#if defined(DENSE_PERSISTENT_AB) || defined(DENSE_Q8_PERSISTENT_SWEEP) || \
+    defined(DENSE_STREAMK_AB) || defined(DENSE_MARLIN_AB)
 #define DENSE_SCHEDULER_AB 1
 #endif
 #if defined(DENSE_SCHEDULER_AB) || defined(DENSE_MARLIN_SWEEP) || \
@@ -147,7 +149,14 @@ enum GemmMode {
 // commented alternative). The dense harness additionally uses the same group-size schedule selector as the
 // shipping dense and grouped launchers, so runtime --g selects a matching compile-time scale tile and policy.
 using MmaType = cutlass::half_t;
-#ifdef BENCH_UINT1
+#ifdef BENCH_INT8
+using QuantType = int8_t;                            // Q8_0 ScaleFirst: signed q, resident byte q+128
+#ifndef BENCH_TSK
+#define BENCH_TSK 32                                 // one canonical 32-byte int8 delivery
+#endif
+constexpr int TileShapeK = BENCH_TSK;
+#include "xplane_offline.hpp"
+#elif defined(BENCH_UINT1)
 using QuantType = cutlass::uint1b_t;                 // W1A16 perf bench (build: QUANT=uint1 ... ./build.sh)
 #ifndef BENCH_TSK
 #define BENCH_TSK 256                                 // int1 needs TK%256==0 (AIU 32B min: TK*1/8 % 32 == 0)
@@ -395,6 +404,7 @@ struct Options;
 struct Result;
 struct TileCfg;
 using LowbitDenseWrapper = Result (*)(Options&, TileCfg const&);
+using LowbitDenseOccupancy = int (*)();
 struct TileCfg {
   char const* name;
   int tm, tn, tk, wm, wn, st, b_chunk, b_chunk_effective;
@@ -403,6 +413,11 @@ struct TileCfg {
   // Exported by the generated unit from the instantiated TiledMma atom.  It
   // is deliberately not inferred from tm/wm in the runtime registry.
   int instruction_m = 0;
+  // Only scheduler-capable generated targets populate this.  The Q8
+  // ScaleFirst sweep uses the exact final PersistentGemm resource query to
+  // derive its per-tactic grid denominator; a tile-model estimate is not an
+  // admissible substitute.
+  LowbitDenseOccupancy persistent_occupancy = nullptr;
 };
 
 inline bench_measure::Tactic dense_tactic(TileCfg const& c) {
@@ -509,6 +524,18 @@ inline bench_measure::Tactic dense_fixed_tactic() {
 #define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    LOWBIT_DENSE_MARLIN_SOURCE_SPACE
 #define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  LOWBIT_DENSE_MARLIN_SOURCE_EMITTER
 #define LOWBIT_DENSE_TABLE_CFG_LIST             LOWBIT_DENSE_MARLIN_SWEEP_CONFIGS
+#elif defined(DENSE_Q8_PERSISTENT_SWEEP)
+// Full unpruned I8 registry emitted by the shared host-readable tactic space.
+// The old 172-row prefill_q8_candidates.inc remains a bounded smoke/oracle
+// family and is not an admissible denominator for a winner claim.
+#include "lowbit_dense_i8_configs.inc"
+#define LOWBIT_DENSE_TABLE_FILE                 "scheduler=np+persistent;source=lowbit_dense_i8_configs.inc"
+#define LOWBIT_DENSE_TABLE_CFG_BITS             8
+#define LOWBIT_DENSE_TABLE_CFG_ARTIFACT_TILEK   LOWBIT_DENSE_I8_CFG_ARTIFACT_TILEK
+#define LOWBIT_DENSE_TABLE_CFG_ROWS             LOWBIT_DENSE_I8_CFG_ROWS
+#define LOWBIT_DENSE_TABLE_CFG_SPACE_FNV1A64    LOWBIT_DENSE_I8_CFG_SPACE_FNV1A64
+#define LOWBIT_DENSE_TABLE_CFG_EMITTER_FNV1A64  LOWBIT_DENSE_I8_CFG_EMITTER_FNV1A64
+#define LOWBIT_DENSE_TABLE_CFG_LIST             LOWBIT_DENSE_I8_CFG_LIST
 #elif defined(DENSE_SCHEDULER_AB)
 // Each scheduler A/B target deliberately instantiates exactly one row.  These are mechanism
 // experiments, not truncated tactic searches; a separate registry identity prevents a
@@ -601,6 +628,15 @@ inline void print_dense_table_provenance() {
       "schema=TM,TN,TK,WM,WN,WarpK,ST,Load "
       "artifact=classic-marlin-u32 gs=128 bits=4 artifact_tk=64\n",
       LOWBIT_DENSE_TABLE_FILE, kLowbitDenseConfigRows);
+#elif defined(DENSE_Q8_PERSISTENT_SWEEP)
+  std::printf(
+      "[dense-table] scheduler=np+persistent file=%s rows=%d source_rows=%d "
+      "bits=8 gs=32 artifact_tk=32 fold_n=1 source_space_fnv1a64=%s "
+      "tactic_tk=32,64,128,256 stages=2,3,4,6,8,12 heuristic_pruned=0 "
+      "grid_space=Q-CU-occupancy-capacity+balanced-v1\n",
+      LOWBIT_DENSE_TABLE_FILE, kLowbitDenseConfigRows,
+      LOWBIT_DENSE_I8_CFG_ROWS,
+      LOWBIT_DENSE_I8_CFG_SPACE_FNV1A64);
 #elif defined(DENSE_STREAMK_SWEEP)
   static_assert(LOWBIT_DENSE_STREAMK_SWEEP_SOURCE_ROWS ==
                     LOWBIT_DENSE_STREAMK_SOURCE_ROWS,
@@ -761,6 +797,7 @@ struct Options {
   std::string save_tactic_file;  // write the searched winner to a cache
   bool list_configs = false;
   bool search_configs = false;
+  bool q8_persistent_policy_sweep = false;
   bool xcheck = false;           // --xcheck: run the grouped kernel (L=1) on this run's verified data and compare
   bool persistent = false;       // --persistent: 107a A/B target only; select serial persistent work loop
   bool streamk = false;          // --streamk: 107b target only; select deterministic dense Stream-K
@@ -809,6 +846,8 @@ struct Options {
     cmd.get_cmd_line_argument("save_tactic", save_tactic_file);
     list_configs   = cmd.check_cmd_line_flag("list_configs");
     search_configs = cmd.check_cmd_line_flag("search_configs");
+    q8_persistent_policy_sweep =
+        cmd.check_cmd_line_flag("q8-persistent-policy-sweep");
     xcheck         = cmd.check_cmd_line_flag("xcheck");
     persistent     = cmd.check_cmd_line_flag("persistent");
     streamk        = cmd.check_cmd_line_flag("streamk");
@@ -859,6 +898,10 @@ struct Options {
 #if defined(DENSE_SCHEDULER_AB) && !defined(DENSE_MARLIN_WK4_AB)
     out << "  --persistent                Use the dense persistent scheduler A/B arm.\n"
         << "  --persistent-grid-ctas=<n> Pure-DP exact physical grid (0=CU*occupancy default).\n";
+#endif
+#if defined(DENSE_Q8_PERSISTENT_SWEEP)
+    out << "  --q8-persistent-policy-sweep  Exhaust non-persistent plus the deduplicated "
+           "capacity/balanced persistent grid denominator for every Q8 row.\n";
 #endif
 #if defined(DENSE_STREAMK_SWEEP)
     out << "  --streamk                   Required intent marker; every compiled row is already Stream-K.\n"
@@ -1551,21 +1594,43 @@ inline std::vector<TileCfg> const& supported_configs() {
 #define LOWBIT_DENSE_INST_M_SYMBOL_I(TM,TN,TK,WM,WN,ST,BC) \
   lowbit_dense_cfg_tm##TM##_tn##TN##_tk##TK##_wm##WM##_wn##WN##_st##ST##_bc##BC##_instruction_m
 #define LOWBIT_DENSE_INST_M_SYMBOL(TM,TN,TK,WM,WN,ST,BC) LOWBIT_DENSE_INST_M_SYMBOL_I(TM,TN,TK,WM,WN,ST,BC)
+#define LOWBIT_DENSE_OCC_SYMBOL_I(TM,TN,TK,WM,WN,ST,BC) \
+  lowbit_dense_cfg_tm##TM##_tn##TN##_tk##TK##_wm##WM##_wn##WN##_st##ST##_bc##BC##_persistent_occupancy
+#define LOWBIT_DENSE_OCC_SYMBOL(TM,TN,TK,WM,WN,ST,BC) \
+  LOWBIT_DENSE_OCC_SYMBOL_I(TM,TN,TK,WM,WN,ST,BC)
+#if defined(DENSE_Q8_PERSISTENT_SWEEP)
+#define LOWBIT_DENSE_DECLARE(TM,TN,TK,WM,WN,ST,BC,_UNUSED) \
+  Result LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(Options&, TileCfg const&); \
+  char const* LOWBIT_DENSE_TAG_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(); \
+  int LOWBIT_DENSE_BC_EFF_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(); \
+  int LOWBIT_DENSE_INST_M_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(); \
+  int LOWBIT_DENSE_OCC_SYMBOL(TM,TN,TK,WM,WN,ST,BC)();
+#else
 #define LOWBIT_DENSE_DECLARE(TM,TN,TK,WM,WN,ST,BC,_UNUSED) \
   Result LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(Options&, TileCfg const&); \
   char const* LOWBIT_DENSE_TAG_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(); \
   int LOWBIT_DENSE_BC_EFF_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(); \
   int LOWBIT_DENSE_INST_M_SYMBOL(TM,TN,TK,WM,WN,ST,BC)();
+#endif
 LOWBIT_DENSE_TABLE_CFG_LIST(LOWBIT_DENSE_DECLARE, )
 #undef LOWBIT_DENSE_DECLARE
 
 inline std::vector<TileCfg> const& supported_configs() {
   static std::vector<TileCfg> const configs = {
+#if defined(DENSE_Q8_PERSISTENT_SWEEP)
+#define LOWBIT_DENSE_REGISTRY_ROW(TM,TN,TK,WM,WN,ST,BC,_UNUSED) \
+    TileCfg{LOWBIT_DENSE_TAG_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(), TM, TN, TK, WM, WN, ST, BC, \
+            LOWBIT_DENSE_BC_EFF_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(), \
+            &LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,BC), 0, \
+            LOWBIT_DENSE_INST_M_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(), \
+            &LOWBIT_DENSE_OCC_SYMBOL(TM,TN,TK,WM,WN,ST,BC)},
+#else
 #define LOWBIT_DENSE_REGISTRY_ROW(TM,TN,TK,WM,WN,ST,BC,_UNUSED) \
     TileCfg{LOWBIT_DENSE_TAG_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(), TM, TN, TK, WM, WN, ST, BC, \
             LOWBIT_DENSE_BC_EFF_SYMBOL(TM,TN,TK,WM,WN,ST,BC)(), \
             &LOWBIT_DENSE_SYMBOL(TM,TN,TK,WM,WN,ST,BC), 0, \
             LOWBIT_DENSE_INST_M_SYMBOL(TM,TN,TK,WM,WN,ST,BC)()},
+#endif
     LOWBIT_DENSE_TABLE_CFG_LIST(LOWBIT_DENSE_REGISTRY_ROW, )
 #undef LOWBIT_DENSE_REGISTRY_ROW
   };
@@ -1578,6 +1643,8 @@ inline std::vector<TileCfg> const& supported_configs() {
 #undef LOWBIT_DENSE_BC_EFF_SYMBOL_I
 #undef LOWBIT_DENSE_INST_M_SYMBOL
 #undef LOWBIT_DENSE_INST_M_SYMBOL_I
+#undef LOWBIT_DENSE_OCC_SYMBOL
+#undef LOWBIT_DENSE_OCC_SYMBOL_I
 #undef LOWBIT_DENSE_SYMBOL
 #undef LOWBIT_DENSE_SYMBOL_I
 #endif
@@ -2096,10 +2163,33 @@ DenseFixtureEvidence initialize(Options const& options) {
     }
 #else
     int64_t batch_offset = b * row * col;
+#if defined(BENCH_INT8)
+    // Q8_0 keeps one canonical A32/F1 artifact across every tactic row.  The
+    // generic preprocess call below takes a historical interleave-256 knob;
+    // using it here would silently benchmark a different resident format from
+    // the Q8 ScaleFirst writer proved by L208.  Build the exact same canonical
+    // bytes as test_scalefirst_bench: logical signed q -> resident q+128,
+    // followed by the independently round-tripped A32 xplane placement.
+    static_assert(kArtifactTileK == 32,
+                  "Q8 ScaleFirst persistent sweep requires canonical ArtifactTileK=32");
+    std::vector<uint8_t> biased(size_t(row) * col);
+    auto logical_b = tensor_B.host_view();
+    for (int k = 0; k < col; ++k) {
+      for (int n = 0; n < row; ++n) {
+        int const signed_q = int(logical_b.at({k, b * row + n}));
+        biased[size_t(k) * row + n] = uint8_t(signed_q + 128);
+      }
+    }
+    auto* const dst = reinterpret_cast<int8_t*>(block_B_buff.host_data()) +
+                      batch_offset;
+    xplane::place_derived<8, 8, 16, 32, 8, 16, 1, 32>(
+        dst, biased, row, col);
+#else
     // preprocess_weights_for_mixed_gemm<is_rowmajor, -1>((int8_t*)(&block_B_buff.host_data()[batch_offset]),
     preprocess_weights_for_mixed_gemm<is_rowmajor, 256>((int8_t*)(&block_B_buff.host_data()[batch_offset]),
         (int8_t*)(&tensor_B.host_data()[batch_offset]),
         {static_cast<size_t>(col), static_cast<size_t>(row)}, quant_type);
+#endif
 #endif
   }
   block_B_buff.sync_device();
@@ -4079,7 +4169,8 @@ Result run_scale_zero(Options& options) {
 // written before the launch, once for the sample written after -- and two spellings of "which run is this" that
 // can disagree is the defect the attempt record exists to avoid in the first place.
 inline char const* dense_schema() {
-  return cutlass::sizeof_bits<QuantType>::value == 4 ? "i4"
+  return cutlass::sizeof_bits<QuantType>::value == 8 ? "i8"
+       : cutlass::sizeof_bits<QuantType>::value == 4 ? "i4"
        : cutlass::sizeof_bits<QuantType>::value == 2 ? "i2" : "i1";
 }
 
@@ -4094,6 +4185,8 @@ inline char const* dense_fixture(Options const& o) {
 inline char const* dense_sample_family() {
 #if defined(DENSE_MARLIN_STANDALONE_SWEEP)
   return "standalone_marlin_w4a16";
+#elif defined(DENSE_Q8_PERSISTENT_SWEEP)
+  return "cutlass_q8a16_scalefirst_np_persistent";
 #elif defined(DENSE_STREAMK_SWEEP)
   return "cutlass_w4a16_streamk";
 #elif defined(DENSE_MARLIN_SWEEP)
@@ -4106,6 +4199,8 @@ inline char const* dense_sample_family() {
 inline char const* dense_distribution() {
 #if defined(DENSE_MARLIN_STANDALONE_SWEEP)
   return "dense-standalone-marlin-v1";
+#elif defined(DENSE_Q8_PERSISTENT_SWEEP)
+  return "dense-q8-scalefirst-persistent-v1";
 #elif defined(DENSE_STREAMK_SWEEP)
   return "dense-streamk-v1";
 #elif defined(DENSE_MARLIN_SWEEP)
@@ -4118,6 +4213,167 @@ inline char const* dense_distribution() {
 Result run_config(Options& options, TileCfg const& cfg) {
   return cfg.wrapper(options, cfg);
 }
+
+#if defined(DENSE_Q8_PERSISTENT_SWEEP)
+inline uint64_t dense_ceil_div_u64(uint64_t value, uint64_t divisor) {
+  return quactlize::scalefirst_policy::ceil_div(value, divisor);
+}
+
+// One finite policy denominator, derived from the final kernel's exact
+// occupancy.  For every b=1..occupancy it contains both:
+//   capacity = min(Q, CU*b)
+//   balanced = ceil(Q / ceil(Q/(CU*b)))
+// Equal grids are one measured cell carrying both provenance masks.  In
+// particular Q=2048, CU=72, occupancy=8 contains G=576 (capacity,b=8) and
+// G=512 (balanced,b=8); dropping either is a denominator failure.
+std::vector<quactlize::scalefirst_policy::GridChoice> q8_persistent_grid_space(
+    uint64_t q, int cu, int occupancy) {
+  if (q == 0 || cu <= 0 || occupancy <= 0 || occupancy > 63) {
+    std::fprintf(stderr,
+                 "Q8 grid-space invalid inputs Q=%llu CU=%d occupancy=%d\n",
+                 static_cast<unsigned long long>(q), cu, occupancy);
+    std::exit(1);
+  }
+  auto out = quactlize::scalefirst_policy::grid_space(q, cu, occupancy);
+  if (out.empty()) {
+    std::fprintf(stderr, "Q8 grid-space construction failed\n");
+    std::exit(1);
+  }
+  return out;
+}
+
+struct Q8PolicyCell {
+  std::size_t config_index = 0;
+  bool persistent = false;
+  quactlize::scalefirst_policy::GridChoice grid{};
+  uint64_t q = 0;
+  int cu = 0;
+  int occupancy = 0;
+};
+
+int run_q8_persistent_policy_sweep(Options& options) {
+  int device = 0;
+  CUTLASS_PPU_CHECK(hggcGetDevice(&device));
+  int const cu = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(device);
+  if (cu <= 0) {
+    std::fprintf(stderr, "Q8 policy sweep could not measure a positive CU count\n");
+    return 1;
+  }
+  auto const& configs = supported_configs();
+  std::vector<Q8PolicyCell> cells;
+  for (std::size_t index = 0; index < configs.size(); ++index) {
+    auto const& cfg = configs[index];
+    if (!cfg.persistent_occupancy) {
+      std::fprintf(stderr, "Q8 row %s has no final-kernel occupancy authority\n", cfg.name);
+      return 1;
+    }
+    int const occupancy = cfg.persistent_occupancy();
+    uint64_t const q = uint64_t(cute::ceil_div(options.m, cfg.tm)) *
+                       uint64_t(cute::ceil_div(options.n, cfg.tn)) *
+                       uint64_t(options.l);
+    if (occupancy <= 0 || occupancy > 63 || q == 0 ||
+        q > uint64_t(std::numeric_limits<int>::max())) {
+      std::fprintf(stderr,
+                   "Q8 row %s has invalid Q/occupancy Q=%llu occupancy=%d\n",
+                   cfg.name, static_cast<unsigned long long>(q), occupancy);
+      return 1;
+    }
+    cells.push_back(Q8PolicyCell{index, false, {}, q, cu, occupancy});
+    for (auto const& grid : q8_persistent_grid_space(q, cu, occupancy)) {
+      cells.push_back(Q8PolicyCell{index, true, grid, q, cu, occupancy});
+    }
+  }
+  std::size_t const denominator = cells.size();
+  int const reps = bench_measure::read_reps();
+  std::printf(
+      "Q8_POLICY_DENOMINATOR source_rows=%zu algorithms=np+capacity+balanced "
+      "dedup_cells=%zu reps=%d shape=%dx%dx%d CU=%d "
+      "policy=capacity:min(Q,CU*b);balanced:ceil(Q/ceil(Q/(CU*b)));b=1..occupancy\n",
+      configs.size(), denominator, reps, options.m, options.n, options.k, cu);
+  std::size_t measured = 0;
+  bool const saved_persistent = options.persistent;
+  int const saved_grid = options.persistent_grid_ctas;
+  for (int rep = 0; rep < reps; ++rep) {
+    // Reverse alternate passes.  Every cell is still present exactly once per
+    // pass, while first/last position is not permanently attached to one
+    // candidate under thermal drift.
+    for (std::size_t order = 0; order < cells.size(); ++order) {
+      std::size_t const cell_index = (rep & 1) ? cells.size() - 1 - order : order;
+      auto const& cell = cells[cell_index];
+      auto const& cfg = configs[cell.config_index];
+      options.persistent = cell.persistent;
+      options.persistent_grid_ctas = cell.persistent ? cell.grid.grid : 0;
+      std::printf(
+          "Q8_POLICY_ATTEMPT cell=%zu/%zu rep=%d/%d config=%s algorithm=%s "
+          "grid=%d Q=%llu CU=%d occupancy=%d capacity_b_mask=0x%llx "
+          "balanced_b_mask=0x%llx\n",
+          cell_index + 1, denominator, rep + 1, reps, cfg.name,
+          cell.persistent ? "persistent" : "non-persistent",
+          cell.persistent ? cell.grid.grid : int(cell.q),
+          static_cast<unsigned long long>(cell.q), cell.cu, cell.occupancy,
+          static_cast<unsigned long long>(cell.grid.capacity_b_mask),
+          static_cast<unsigned long long>(cell.grid.balanced_b_mask));
+      std::fflush(stdout);
+      Result const result = run_config(options, cfg);
+      if (!result.passed || !result.scheduler_grid_supported) {
+        std::fprintf(
+            stderr,
+            "Q8_POLICY_FAIL cell=%zu config=%s algorithm=%s grid=%d "
+            "passed=%d grid_supported=%d\n",
+            cell_index + 1, cfg.name,
+            cell.persistent ? "persistent" : "non-persistent",
+            cell.persistent ? cell.grid.grid : int(cell.q),
+            int(result.passed), int(result.scheduler_grid_supported));
+        options.persistent = saved_persistent;
+        options.persistent_grid_ctas = saved_grid;
+        return 1;
+      }
+      double const us = result.avg_runtime_ms * 1.0e3;
+      double const tflops = result.gflops / 1.0e3;
+      double const mfu = tflops / 500.0 * 100.0;
+      double const distinct_bytes =
+          double(options.m) * options.k * 2.0 +
+          double(options.n) * options.k +
+          double(options.n) * dense_ceil_div_u64(options.k, 32) * 2.0 +
+          double(options.m) * options.n * 2.0;
+      double const distinct_gbs = distinct_bytes / (us * 1.0e3);
+      double const mbu = distinct_gbs / bench_measure::kHbmGBPerSecond * 100.0;
+      char const* const policies = !cell.persistent ? "non-persistent" :
+          (cell.grid.capacity_b_mask && cell.grid.balanced_b_mask ?
+               "capacity+balanced" :
+               (cell.grid.capacity_b_mask ? "capacity" : "balanced"));
+      char record[1024];
+      int const record_size = quactlize::scalefirst_policy::format_q8_policy_cell(
+          record, sizeof record, options.m, options.n, options.k,
+          cell.persistent ? "persistent" : "non-persistent", policies,
+          cell.persistent ? cell.grid.grid : int(cell.q), cfg.name, rep,
+          us, mfu, mbu, static_cast<unsigned long long>(cell.q), cell.cu,
+          cell.occupancy,
+          static_cast<unsigned long long>(cell.grid.capacity_b_mask),
+          static_cast<unsigned long long>(cell.grid.balanced_b_mask), denominator);
+      if (record_size <= 0 || std::size_t(record_size) >= sizeof record) {
+        std::fprintf(stderr, "Q8 policy record formatting overflow\n");
+        options.persistent = saved_persistent;
+        options.persistent_grid_ctas = saved_grid;
+        return 1;
+      }
+      std::fputs(record, stdout);
+      ++measured;
+    }
+  }
+  options.persistent = saved_persistent;
+  options.persistent_grid_ctas = saved_grid;
+  std::size_t const expected_samples = denominator * std::size_t(reps);
+  bool const complete = measured == expected_samples;
+  std::printf(
+      "Q8_POLICY_COMPLETE status=%s denominator=%zu measured_cells=%zu "
+      "sample_denominator=%zu measured_samples=%zu missing=%zu\n",
+      complete ? "COMPLETE" : "INCOMPLETE", denominator, denominator,
+      expected_samples, measured,
+      expected_samples >= measured ? expected_samples - measured : 0);
+  return complete ? 0 : 1;
+}
+#endif
 
 TileCfg find_config(std::string const& name) {
   for (auto const& c : supported_configs()) {
@@ -4620,6 +4876,38 @@ int main(int argc, char const **args) {
 #endif
 #endif
 
+#if defined(DENSE_Q8_PERSISTENT_SWEEP)
+  if (!options.help && options.q8_persistent_policy_sweep) {
+    if (options.search_configs || !options.config.empty() ||
+        !options.tactic_file.empty() || !options.save_tactic_file.empty() ||
+        options.xcheck || options.persistent || options.streamk ||
+        options.marlin || options.persistent_grid_ctas != 0) {
+      std::fprintf(
+          stderr,
+          "--q8-persistent-policy-sweep owns the full tactic/grid loop; "
+          "individual search/config/cache/scheduler flags are mutually exclusive\n");
+      return 1;
+    }
+    if (options.mode != GemmMode::ScaleOnly || options.g != 32 ||
+        options.m <= 0 || options.n <= 0 || options.k <= 0 ||
+        options.k % 32 != 0 || options.l != 1 ||
+        options.alpha != 1.0f || options.beta != 0.0f ||
+        options.iterations <= 0) {
+      std::fprintf(
+          stderr,
+          "Q8 policy sweep requires positive M/N/K, K%%32=0, --l=1 --g=32 "
+          "--mode=1 --alpha=1 --beta=0 and positive iterations\n");
+      return 1;
+    }
+  }
+#else
+  if (!options.help && options.q8_persistent_policy_sweep) {
+    std::fprintf(stderr,
+                 "--q8-persistent-policy-sweep is available only in the full I8 target\n");
+    return 1;
+  }
+#endif
+
   if (options.help) {
     options.print_usage(std::cout) << std::endl;
     return 0;
@@ -4627,7 +4915,10 @@ int main(int argc, char const **args) {
 
   // --list_configs: enumerate the compiled tactics and exit.
   if (options.list_configs) {
-#if defined(DENSE_STREAMK_SWEEP)
+#if defined(DENSE_Q8_PERSISTENT_SWEEP)
+    std::printf("compiled CUTLASS W8A16 ScaleFirst configs scheduler=np+persistent "
+                "(group size 32, artifact A32/F1):\n");
+#elif defined(DENSE_STREAMK_SWEEP)
     std::printf("compiled CUTLASS W%dA16 tile configs scheduler=streamk "
                 "(group size 32):\n",
                 int(cutlass::sizeof_bits<QuantType>::value));
@@ -4665,7 +4956,7 @@ int main(int argc, char const **args) {
   // The tactic path is ScaleOnly (mode 1). Modes 0/2 keep the original fixed-config run.
   if (options.mode != GemmMode::ScaleOnly) {
     if (options.mode == GemmMode::ConvertOnly) {
-#if defined(BENCH_UINT1) || defined(BENCH_UINT2)
+#if defined(BENCH_INT8) || defined(BENCH_UINT1) || defined(BENCH_UINT2)
       std::fprintf(stderr, "mode 0 (no-scale convert) is available only in the int4 dense binary; "
                            "this W%d binary searches scale-only tactics\n",
                    int(cutlass::sizeof_bits<QuantType>::value));
@@ -4678,6 +4969,12 @@ int main(int argc, char const **args) {
     return 0;
   }
   std::cout << (options.g == options.k ? "PPU1.0 per-column scale mode.\n" : "PPU1.0 group scale mode.\n");
+
+#if defined(DENSE_Q8_PERSISTENT_SWEEP)
+  if (options.q8_persistent_policy_sweep) {
+    return run_q8_persistent_policy_sweep(options);
+  }
+#endif
 
   // Root-cause cross-check (runtime --xcheck): run the VERIFIED mixed kernel once (fills block_ref_D + the
   // shuffled block_B_buff), then run the grouped kernel L=1 on that exact data and compare. Bypasses tactics.
@@ -4707,6 +5004,11 @@ int main(int argc, char const **args) {
                   int(cutlass::sizeof_bits<QuantType>::value), TileShapeK,
                   options.g, options.marlin_blocks_per_cu,
                   kLowbitDenseConfigRows, options.marlin_instruction_m);
+#elif defined(DENSE_Q8_PERSISTENT_SWEEP)
+    std::snprintf(build, sizeof build,
+                  "bits=8 TSK=32 gs=32 scheduler=%s grid=%d rows=%d artifact=A32F1",
+                  options.persistent ? "persistent" : "non-persistent",
+                  options.persistent_grid_ctas, kLowbitDenseConfigRows);
 #elif defined(DENSE_STREAMK_SWEEP)
     std::snprintf(build, sizeof build,
                   "bits=%d TSK=%d gs=%d scheduler=streamk policy=%s blocks_per_cu=%d rows=%d",
@@ -4771,7 +5073,21 @@ int main(int argc, char const **args) {
 
         Result r = run_config(options, c);
         if (!r.passed) {
-#if defined(DENSE_STREAMK_SWEEP)
+#if defined(DENSE_Q8_PERSISTENT_SWEEP)
+          if (!r.scheduler_grid_supported) {
+            bench_samples::excluded(
+                _a, "persistent grid exceeds this tactic's exact Q/occupancy bound");
+            if (!rep)
+              std::printf("%-10s %s\n", "-", "excluded (persistent grid unavailable)");
+            else
+              std::printf("\n");
+            continue;
+          }
+          bench_samples::excluded(_a, "Q8 persistent numerical verification FAILED");
+          bench_samples::flush();
+          std::printf("%-10s %s\n", "-", "FAILED (Q8 persistent numerical verification)");
+          return 1;
+#elif defined(DENSE_STREAMK_SWEEP)
           // A requested CU multiplier is a candidate capability, not a
           // correctness property.  Some tactics have a lower exact runtime
           // occupancy; record those cells as explicitly unavailable instead
@@ -4875,6 +5191,8 @@ int main(int argc, char const **args) {
     if (!winner_result.split_path_exercised) return 2;
     if (!winner_result.verification_classified) return 3;
     return winner_result.passed ? 0 : 1;
+#elif defined(DENSE_Q8_PERSISTENT_SWEEP)
+    return winner_result.passed ? 0 : 1;
 #elif defined(DENSE_MARLIN_STANDALONE_SWEEP) || defined(DENSE_MARLIN_SWEEP)
     // A scheduler-specific sweep is evidence only if the selected Marlin arm
     // itself passes; do not inherit the ordinary bench's historical rc=0
@@ -4917,6 +5235,8 @@ int main(int argc, char const **args) {
   // golden, event, or correctness failure to the operator and automation.
   if (!final_result.split_path_exercised) return 2;
   if (!final_result.verification_classified) return 3;
+  return final_result.passed ? 0 : 1;
+#elif defined(DENSE_Q8_PERSISTENT_SWEEP)
   return final_result.passed ? 0 : 1;
 #elif defined(DENSE_MARLIN_SWEEP)
   if (!final_result.passed) return 1;

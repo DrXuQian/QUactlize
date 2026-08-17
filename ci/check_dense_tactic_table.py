@@ -5,8 +5,8 @@ import argparse
 import hashlib
 import os
 import re
+import shutil
 import subprocess
-import tempfile
 from itertools import zip_longest
 from pathlib import Path
 
@@ -67,7 +67,8 @@ M_MAX_RE = re.compile(r"--m-max=(\d+)", re.M)
 # surviving members alone produces a file with no SKIPPED line, i.e. a different file, which is exactly the
 # "declared args do not reproduce the table" failure this gate exists to catch. It caught it on itself.
 SKIPPED_RE = re.compile(r"^//\s+tactic_tk SKIPPED \(no legal grid under TacticSpace\):\s+([\d ]+)\s*$", re.M)
-OUTPUT_RE = re.compile(r"^//\s+/tmp/emit_tactic\b.*>\s+(\S+\.inc)\s*$", re.M)
+OUTPUT_RE = re.compile(
+    r"^//\s+/workspace/quactlize-tactic-gen/emit_tactic\b.*>\s+(\S+\.inc)\s*$", re.M)
 
 
 def declared_args(text: str):
@@ -129,8 +130,10 @@ def fail(message: str, argv=None, table=None) -> int:
     out = table or "benchmarks/lowbit_dense_configs.inc"
     print(f"[dense-table] ERROR: {message}")
     print("[dense-table] regenerate from the repository root:")
-    print("  c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic && \\")
-    print(f"  /tmp/emit_tactic {args} > {out}")
+    print("  mkdir -p /workspace/quactlize-tactic-gen && \\")
+    print("  c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp \\")
+    print("    -o /workspace/quactlize-tactic-gen/emit_tactic && \\")
+    print(f"  /workspace/quactlize-tactic-gen/emit_tactic {args} > {out}")
     return 1
 
 
@@ -147,6 +150,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--table", type=Path, default=DEFAULT_TABLE,
                         help="table to validate (default: the committed dense table)")
+    parser.add_argument(
+        "--q8-metadata-negative", action="store_true",
+        help="also prove the legacy gs16/two-plane Q8 metadata charge removes exactly 48 rows")
     args = parser.parse_args()
     table = args.table.resolve()
 
@@ -193,8 +199,12 @@ def main() -> int:
         return fail(f"{table} emitter hash is {stamped_emitter}, current emit_tactic_configs.cpp is {current_emitter}", argv, table)
 
     compiler = os.environ.get("CXX", "c++")
-    with tempfile.TemporaryDirectory(prefix="quactlize-dense-table-") as temp_dir:
-        binary = Path(temp_dir) / "emit_tactic"
+    temp_dir = Path("/workspace") / f"quactlize-dense-table-check-{os.getpid()}"
+    if temp_dir.exists():
+        return fail(f"refusing to reuse stale checker directory {temp_dir}", argv, table)
+    temp_dir.mkdir(parents=True)
+    try:
+        binary = temp_dir / "emit_tactic"
         built = subprocess.run(
             [compiler, "-std=c++17", f"-I{ROOT / 'quactlize' / 'include'}", str(EMITTER), "-o", str(binary)],
             cwd=ROOT, capture_output=True, text=True)
@@ -207,6 +217,31 @@ def main() -> int:
             return fail(f"current emitter rejected the table's own declared arguments "
                         f"({' '.join(argv)}): {detail[-1] if detail else 'no diagnostic'}", argv, table)
         expected = emitted.stdout
+        if args.q8_metadata_negative:
+            if "--format=i8" not in argv:
+                return fail("--q8-metadata-negative requires the I8 table", argv, table)
+            planted = subprocess.run(
+                [str(binary), *argv, "--plant-q8-legacy-metadata"],
+                cwd=ROOT, capture_output=True)
+            if planted.returncode:
+                detail = planted.stderr.decode(errors="replace").strip().splitlines()
+                return fail(
+                    "I8 legacy-metadata negative control did not run: "
+                    f"{detail[-1] if detail else 'no diagnostic'}", argv, table)
+            planted_rows = len(re.findall(rb'^\s*X\(', planted.stdout, re.M))
+            live_rows = len(re.findall(rb'^\s*X\(', expected, re.M))
+            witness = b"  X(16,128,128,16,16,12,0,B)"
+            if live_rows != 2501 or planted_rows != 2453 or live_rows - planted_rows != 48:
+                return fail(
+                    "I8 metadata negative changed the wrong denominator: "
+                    f"live={live_rows} planted={planted_rows} delta={live_rows - planted_rows}",
+                    argv, table)
+            if witness not in expected or witness in planted.stdout:
+                return fail(
+                    "I8 metadata negative did not remove the stage-12 A32 witness "
+                    "16x128x128/w16x16", argv, table)
+    finally:
+        shutil.rmtree(temp_dir)
 
     if actual != expected:
         return fail(
@@ -216,6 +251,9 @@ def main() -> int:
 
     print(f"[dense-table] verified {declared} rows={listed_rows} space_fnv1a64={current_space} "
           f"emitter_fnv1a64={current_emitter}; exact regeneration matches")
+    if args.q8_metadata_negative:
+        print("[dense-table] Q8 metadata negative: live=2501 legacy-gs16-two-plane=2453 "
+              "delta=48; stage-12 A32 witness removed as required")
     return 0
 
 

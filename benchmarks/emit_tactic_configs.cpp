@@ -18,11 +18,12 @@
 // The rules come from ppu_tactic_space.hpp -- the same header both launchers static_assert against -- so this
 // program has no copy of the legality predicate, only of the pruning policy it is asked to apply.
 //
-//   c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic
-//   /tmp/emit_tactic <bits> <tile_k> [--space=dense|grouped] [stage ...]
+//   mkdir -p /workspace/quactlize-tactic-gen
+//   c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /workspace/quactlize-tactic-gen/emit_tactic
+//   /workspace/quactlize-tactic-gen/emit_tactic <bits> <tile_k> [--space=dense|grouped] [stage ...]
 //                                                        > benchmarks/lowbit_<space>_configs.inc
 //
-// bits is the LOW plane width (1, 2 or 4); tile_k must match the binary's BENCH_TSK. Both are build-time
+// bits is the LOW plane width (1, 2, 4 or 8); tile_k must match the binary's BENCH_TSK. Both are build-time
 // constants of the bench, which is why the table is generated per binary rather than filtered at run time:
 // instantiating a config for the wrong TileK costs compile time and can never be selected.
 #include <algorithm>
@@ -78,6 +79,11 @@ bool g_prune = false;
 int g_m_max = 0;
 // Selected by --format=<name>; null means the positional single-plane lookup.
 char const* g_format = nullptr;
+// Checker-only negative control.  It intentionally restores the historical
+// gs16/two-metadata-plane charge for I8 so the exact-regeneration gate can
+// prove that the Q8 denominator changes (2501 -> 2453 today).  Production
+// regenerate commands never carry this flag.
+bool g_plant_q8_legacy_metadata = false;
 
 // THERE WAS A --space=quarantined HERE, AND ITS REMOVAL IS THE POINT. It emitted the COMPLEMENT of the dense
 // space -- only the rows dense refused -- so that the sub-four-warp geometry holding the measured int4 optimum
@@ -97,7 +103,7 @@ char const* g_format = nullptr;
 // regeneration command as the current one, so neither a build log nor a failed template instantiation identified
 // which tactic space had produced it. Hash the two source inputs whose semantics determine the emitted rows. The
 // exact-regeneration gate separately rebuilds this emitter before comparing output; these hashes are identifiers,
-// not a claim that a previously compiled /tmp/emit_tactic is current.
+// not a claim that a previously compiled /workspace/quactlize-tactic-gen/emit_tactic is current.
 constexpr char kSpaceSource[] = "quactlize/include/ppu_tactic_space.hpp";
 constexpr char kEmitterSource[] = "benchmarks/emit_tactic_configs.cpp";
 
@@ -234,9 +240,17 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
   for (int st : g_stages) {
   {
     std::vector<Candidate> legal;
-    for (auto const& c : ok)
-      if (TacticSpace::topology_exclusion(c, st) == Exclusion::None)
+    for (auto const& c : ok) {
+      bool admitted = TacticSpace::topology_exclusion(c, st) == Exclusion::None;
+      if (admitted && g_plant_q8_legacy_metadata &&
+          c.spec.format == Format::I8 &&
+          legacy_two_plane_per_stage_smem(c, physical_a_rows(c)) * st >
+              kBlockSmemBytes) {
+        admitted = false;
+      }
+      if (admitted)
         legal.push_back(c);
+    }
 
     for (auto const& c : legal) {
       bool const p = primary(legal, c);
@@ -303,8 +317,9 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
               static_cast<unsigned long long>(emitter_hash));
   std::printf("//\n");
   std::printf("// Regenerate after changing ppu_tactic_space.hpp or the pruning policy:\n");
-  std::printf("//   c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic &&\\\n");
-  std::printf("//   /tmp/emit_tactic %d %d --space=%s --tactic-tk=", bits, artifact_tk, space_name);
+  std::printf("//   mkdir -p /workspace/quactlize-tactic-gen &&\\\n");
+  std::printf("//   c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /workspace/quactlize-tactic-gen/emit_tactic &&\\\n");
+  std::printf("//   /workspace/quactlize-tactic-gen/emit_tactic %d %d --space=%s --tactic-tk=", bits, artifact_tk, space_name);
   for (size_t j = 0; j < tactic_tks.size(); ++j) std::printf("%s%d", j ? "," : "", tactic_tks[j]);
   std::printf(" --prune=%s", g_prune ? "primary-guard" : "none");
   if (g_m_max > 0) std::printf(" --m-max=%d", g_m_max);
@@ -354,7 +369,7 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
 int main(int argc, char** argv) {
   if (argc < 3) {
     std::fprintf(stderr,
-                 "usage: emit_tactic_configs <bits:1|2|4> <tile_k> [--space=dense|grouped] [stage ...]\n"
+                 "usage: emit_tactic_configs <bits:1|2|4|8> <tile_k> [--space=dense|grouped] [stage ...]\n"
                  "  --space defaults to dense and selects only the table label/prefix. stages default to 2 3 4.\n");
     return 2;
   }
@@ -366,6 +381,10 @@ int main(int argc, char** argv) {
   for (int i = 3; i < argc; ++i) {
     if (std::strncmp(argv[i], "--space=", 8) == 0) { space = argv[i] + 8; continue; }
     if (std::strncmp(argv[i], "--format=", 9) == 0) { g_format = argv[i] + 9; continue; }
+    if (std::strcmp(argv[i], "--plant-q8-legacy-metadata") == 0) {
+      g_plant_q8_legacy_metadata = true;
+      continue;
+    }
     if (std::strcmp(argv[i], "--prune=primary-guard") == 0) { g_prune = true; continue; }
     if (std::strcmp(argv[i], "--prune=none") == 0) { g_prune = false; continue; }
     if (std::strncmp(argv[i], "--m-max=", 8) == 0) { g_m_max = std::atoi(argv[i] + 8); continue; }
@@ -413,6 +432,11 @@ int main(int argc, char** argv) {
   }
 
   if (g_tactic_tks.empty()) g_tactic_tks.push_back(tk);   // no --tactic-tk: the artifact's own, as before
+  if (g_plant_q8_legacy_metadata && spec->format != Format::I8) {
+    std::fprintf(stderr,
+                 "--plant-q8-legacy-metadata is a checker-only I8 negative control\n");
+    return 2;
+  }
 
   // ONE MACRO PREFIX PER (SPACE, FORMAT). Several tables can be consumed by one build system, and every one is
   // well-formed in isolation, so sharing LOWBIT_DENSE_CFG_LIST or LOWBIT_GROUPED_CFG_LIST would silently let the

@@ -9,11 +9,12 @@
 //                     row field: one weight file, many readers.
 //   stages: 2 3 4 6 8 12   <- what this table COVERS; a winner outside it cannot be found by a sweep using it
 //   ppu_b_chunk: 0 1   <- requested mode; each bench tag reports requested->actually effective
-//   provenance: rows=540 space_fnv1a64=cc7e34e5f55c4456 emitter_fnv1a64=5e766c533b52cf2e
+//   provenance: rows=540 space_fnv1a64=efe4b38eb7c471e5 emitter_fnv1a64=39e767d0297071e4
 //
 // Regenerate after changing ppu_tactic_space.hpp or the pruning policy:
-//   c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic &&\
-//   /tmp/emit_tactic 2 128 --space=grouped --tactic-tk=32,64,128,256 --prune=none --m-max=3 --format=i2 2 3 4 6 8 12 > benchmarks/lowbit_grouped_i2_decode_configs.inc
+//   mkdir -p /workspace/quactlize-tactic-gen &&\
+//   c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /workspace/quactlize-tactic-gen/emit_tactic &&\
+//   /workspace/quactlize-tactic-gen/emit_tactic 2 128 --space=grouped --tactic-tk=32,64,128,256 --prune=none --m-max=3 --format=i2 2 3 4 6 8 12 > benchmarks/lowbit_grouped_i2_decode_configs.inc
 //
 // The second X argument carries the dispatch BODY through the list; supported_configs() passes
 // nothing for it. That is what lets ONE list feed both the runtime table and the compile-time
@@ -21,8 +22,8 @@
 #define LOWBIT_GROUPED_I2_CFG_BITS  2
 #define LOWBIT_GROUPED_I2_CFG_ARTIFACT_TILEK 128
 #define LOWBIT_GROUPED_I2_CFG_ROWS  540
-#define LOWBIT_GROUPED_I2_CFG_SPACE_FNV1A64   "cc7e34e5f55c4456"
-#define LOWBIT_GROUPED_I2_CFG_EMITTER_FNV1A64 "5e766c533b52cf2e"
+#define LOWBIT_GROUPED_I2_CFG_SPACE_FNV1A64   "efe4b38eb7c471e5"
+#define LOWBIT_GROUPED_I2_CFG_EMITTER_FNV1A64 "39e767d0297071e4"
 
 #define LOWBIT_GROUPED_I2_CFG_LIST(X, B) \
   X(8,16,128,8,16,2,0,B) \

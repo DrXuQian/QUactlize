@@ -5,11 +5,12 @@
 //                     row field: one weight file, many readers.
 //   stages: 2 3 4 6 8 12   <- what this table COVERS; a winner outside it cannot be found by a sweep using it
 //   ppu_b_chunk: 0 1   <- requested mode; each bench tag reports requested->actually effective
-//   provenance: rows=1772 space_fnv1a64=cc7e34e5f55c4456 emitter_fnv1a64=5e766c533b52cf2e
+//   provenance: rows=1772 space_fnv1a64=efe4b38eb7c471e5 emitter_fnv1a64=39e767d0297071e4
 //
 // Regenerate after changing ppu_tactic_space.hpp or the pruning policy:
-//   c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /tmp/emit_tactic &&\
-//   /tmp/emit_tactic 4 64 --space=dense --tactic-tk=32,64,128,256 --prune=none 2 3 4 6 8 12 > benchmarks/lowbit_dense_configs.inc
+//   mkdir -p /workspace/quactlize-tactic-gen &&\
+//   c++ -std=c++17 -Iquactlize/include benchmarks/emit_tactic_configs.cpp -o /workspace/quactlize-tactic-gen/emit_tactic &&\
+//   /workspace/quactlize-tactic-gen/emit_tactic 4 64 --space=dense --tactic-tk=32,64,128,256 --prune=none 2 3 4 6 8 12 > benchmarks/lowbit_dense_configs.inc
 //
 // The second X argument carries the dispatch BODY through the list; supported_configs() passes
 // nothing for it. That is what lets ONE list feed both the runtime table and the compile-time
@@ -17,8 +18,8 @@
 #define LOWBIT_DENSE_CFG_BITS  4
 #define LOWBIT_DENSE_CFG_ARTIFACT_TILEK 64
 #define LOWBIT_DENSE_CFG_ROWS  1772
-#define LOWBIT_DENSE_CFG_SPACE_FNV1A64   "cc7e34e5f55c4456"
-#define LOWBIT_DENSE_CFG_EMITTER_FNV1A64 "5e766c533b52cf2e"
+#define LOWBIT_DENSE_CFG_SPACE_FNV1A64   "efe4b38eb7c471e5"
+#define LOWBIT_DENSE_CFG_EMITTER_FNV1A64 "39e767d0297071e4"
 
 #define LOWBIT_DENSE_CFG_LIST(X, B) \
   X(8,16,64,8,16,2,0,B) \

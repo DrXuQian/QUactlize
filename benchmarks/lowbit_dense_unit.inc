@@ -238,6 +238,19 @@ constexpr int lowbit_dense_effective() {
   }
 LOWBIT_DENSE_UNIT_CONFIGS(LOWBIT_DENSE_DEFINE_WRAPPER)
 
+#if defined(DENSE_Q8_PERSISTENT_SWEEP)
+// Runtime occupancy is part of the grid denominator.  Export it from the
+// exact final PersistentGemm instantiation rather than reconstructing a
+// register/smem model in the host runner.
+#define LOWBIT_DENSE_DEFINE_PERSISTENT_OCCUPANCY(FN,TM,TN,TK,WM,WN,ST,BC) \
+  int FN##_persistent_occupancy() { \
+    using G = typename Cfg<LOWBIT_DENSE_TAG_GS,TM,TN,TK,WM,WN,ST>::PersistentGemm; \
+    return G::maximum_active_blocks(); \
+  }
+LOWBIT_DENSE_UNIT_CONFIGS(LOWBIT_DENSE_DEFINE_PERSISTENT_OCCUPANCY)
+#undef LOWBIT_DENSE_DEFINE_PERSISTENT_OCCUPANCY
+#endif
+
 #undef LOWBIT_DENSE_DEFINE_WRAPPER
 #undef LOWBIT_DENSE_CASE_128
 #undef LOWBIT_DENSE_CASE_64

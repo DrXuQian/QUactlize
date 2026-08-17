@@ -335,6 +335,105 @@ target_compile_definitions(test_lowbit_dense_bench PRIVATE
   TILE_M=${TILE_M} TILE_N=${TILE_N} WARP_M=${WARP_M} WARP_N=${WARP_N} STAGES=${STAGES} ${_QUANT_DEFS})
 target_compile_options(test_lowbit_dense_bench PRIVATE -w)
 
+# Q8_0 ScaleFirst scheduler sweep.  Unlike the 172-row bounded smoke table,
+# this target consumes the shared tactic-space emitter's complete LEGAL,
+# unpruned I8 denominator: ArtifactTK32; TacticTK=32/64/128/256;
+# stages=2/3/4/6/8/12.  It adds only the scheduler/grid algorithm axis.
+qz_resolve_sources(_DENSE_Q8_PERSISTENT_SOURCE lowbit_dense_i8_configs.inc)
+list(GET _DENSE_Q8_PERSISTENT_SOURCE 0 _DENSE_Q8_PERSISTENT_SOURCE)
+get_filename_component(_DENSE_Q8_PERSISTENT_SOURCE
+  "${_DENSE_Q8_PERSISTENT_SOURCE}" ABSOLUTE
+  BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+qz_parse_tactic_xmacro(_DENSE_Q8_PERSISTENT_ROWS
+  FILE "${_DENSE_Q8_PERSISTENT_SOURCE}"
+  LIST_MACRO LOWBIT_DENSE_I8_CFG_LIST
+  COUNT_MACRO LOWBIT_DENSE_I8_CFG_ROWS)
+list(LENGTH _DENSE_Q8_PERSISTENT_ROWS _DENSE_Q8_PERSISTENT_ROW_COUNT)
+if(NOT _DENSE_Q8_PERSISTENT_ROW_COUNT EQUAL 2501)
+  message(FATAL_ERROR
+    "Q8 full unpruned denominator drifted: ${_DENSE_Q8_PERSISTENT_ROW_COUNT}, expected 2501; regenerate and review")
+endif()
+qz_batch_tactic_rows(_DENSE_Q8_PERSISTENT_BATCHES
+  _DENSE_Q8_PERSISTENT_ROWS "${LOWBIT_DENSE_CONFIGS_PER_UNIT}")
+set(_DENSE_Q8_PERSISTENT_GEN_DIR
+  "${CMAKE_CURRENT_BINARY_DIR}/lowbit_dense_q8_persistent_units")
+file(MAKE_DIRECTORY "${_DENSE_Q8_PERSISTENT_GEN_DIR}")
+set(_DENSE_Q8_PERSISTENT_UNIT_SRCS "")
+set(_DENSE_Q8_PERSISTENT_GENERATED_ROWS 0)
+set(_DENSE_Q8_PERSISTENT_UNIT_INDEX 0)
+foreach(_batch IN LISTS _DENSE_Q8_PERSISTENT_BATCHES)
+  string(REPLACE "|" ";" _batch_rows "${_batch}")
+  list(LENGTH _batch_rows _batch_count)
+  set(_unit_rows "#define LOWBIT_DENSE_UNIT_CONFIGS(X) \\\n")
+  set(_batch_index 0)
+  foreach(_row IN LISTS _batch_rows)
+    string(REPLACE "," ";" _fields "${_row}")
+    list(GET _fields 0 _tm)
+    list(GET _fields 1 _tn)
+    list(GET _fields 2 _tk)
+    list(GET _fields 3 _wm)
+    list(GET _fields 4 _wn)
+    list(GET _fields 5 _st)
+    list(GET _fields 6 _bc)
+    if(NOT _bc EQUAL 0)
+      message(FATAL_ERROR "Q8 ScaleFirst row '${_row}' unexpectedly requests B-chunk")
+    endif()
+    set(_fn
+      "lowbit_dense_cfg_tm${_tm}_tn${_tn}_tk${_tk}_wm${_wm}_wn${_wn}_st${_st}_bc0")
+    math(EXPR _batch_index "${_batch_index} + 1")
+    math(EXPR _DENSE_Q8_PERSISTENT_GENERATED_ROWS
+      "${_DENSE_Q8_PERSISTENT_GENERATED_ROWS} + 1")
+    if(_batch_index LESS _batch_count)
+      set(_continuation " \\\n")
+    else()
+      set(_continuation "\n")
+    endif()
+    set(_unit_rows
+      "${_unit_rows}  X(${_fn},${_row})${_continuation}")
+  endforeach()
+  set(_src
+    "${_DENSE_Q8_PERSISTENT_GEN_DIR}/lowbit_dense_q8_persistent_unit_${_DENSE_Q8_PERSISTENT_UNIT_INDEX}.cu")
+  file(WRITE "${_src}.in"
+    "// GENERATED: ${_batch_count} Q8 ScaleFirst non-persistent/persistent wrappers.\n"
+    "#ifdef PPU_B_CHUNK\n#undef PPU_B_CHUNK\n#endif\n"
+    "#define PPU_B_CHUNK 0\n"
+    "${_unit_rows}"
+    "#include \"lowbit_dense_unit.inc\"\n")
+  execute_process(COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${_src}.in" "${_src}")
+  list(APPEND _DENSE_Q8_PERSISTENT_UNIT_SRCS "${_src}")
+  math(EXPR _DENSE_Q8_PERSISTENT_UNIT_INDEX
+    "${_DENSE_Q8_PERSISTENT_UNIT_INDEX} + 1")
+endforeach()
+if(NOT _DENSE_Q8_PERSISTENT_GENERATED_ROWS EQUAL _DENSE_Q8_PERSISTENT_ROW_COUNT)
+  message(FATAL_ERROR
+    "Q8 persistent generator emitted ${_DENSE_Q8_PERSISTENT_GENERATED_ROWS}/${_DENSE_Q8_PERSISTENT_ROW_COUNT} rows")
+endif()
+
+qz_resolve_sources(_DENSE_Q8_PERSISTENT_MAIN_SOURCE test_lowbit_dense_bench.cu)
+list(GET _DENSE_Q8_PERSISTENT_MAIN_SOURCE 0 _DENSE_Q8_PERSISTENT_MAIN_SOURCE)
+set(_DENSE_Q8_PERSISTENT_MAIN
+  "${CMAKE_CURRENT_BINARY_DIR}/test_scalefirst_q8_persistent_sweep_main.cu")
+configure_file("${_DENSE_Q8_PERSISTENT_MAIN_SOURCE}"
+  "${_DENSE_Q8_PERSISTENT_MAIN}" COPYONLY)
+set(_DENSE_Q8_PERSISTENT_DEFS
+  -DDENSE_Q8_PERSISTENT_SWEEP=1 -DBENCH_INT8=1 -DBENCH_GS=32 -DBENCH_TSK=32
+  -DTILE_M=${TILE_M} -DTILE_N=${TILE_N}
+  -DWARP_M=${WARP_M} -DWARP_N=${WARP_N} -DSTAGES=${STAGES})
+quactlize_ppu_executable(
+  test_scalefirst_q8_persistent_sweep
+  "${_DENSE_Q8_PERSISTENT_MAIN}"
+  ${_DENSE_Q8_PERSISTENT_UNIT_SRCS}
+  DEV_COMPILE_FLAGS ${_DENSE_Q8_PERSISTENT_DEFS})
+target_compile_definitions(test_scalefirst_q8_persistent_sweep PRIVATE
+  DENSE_Q8_PERSISTENT_SWEEP=1 BENCH_INT8=1 BENCH_GS=32 BENCH_TSK=32
+  TILE_M=${TILE_M} TILE_N=${TILE_N}
+  WARP_M=${WARP_M} WARP_N=${WARP_N} STAGES=${STAGES})
+target_compile_options(test_scalefirst_q8_persistent_sweep PRIVATE -w)
+list(LENGTH _DENSE_Q8_PERSISTENT_UNIT_SRCS _DENSE_Q8_PERSISTENT_UNIT_COUNT)
+message(STATUS
+  "Q8 ScaleFirst full scheduler sweep: source=${_DENSE_Q8_PERSISTENT_ROW_COUNT} eligible=${_DENSE_Q8_PERSISTENT_GENERATED_ROWS} heuristic_pruned=0; ${_DENSE_Q8_PERSISTENT_UNIT_COUNT} private units")
+
 # Full committed-table dense Stream-K sweep.  This target is deliberately an
 # int4/gs32 scheduler identity of its own: it neither reuses the ordinary DP
 # units nor the one-row Stream-K A/B registry.  Parse the int4 authority

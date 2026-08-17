@@ -162,6 +162,7 @@ if [ "$TARGET" = "test_lowbit_moe_bench" ] && [ "${MOE_ALLOW_ALL_FORMAT_MONOLITH
   fi
 fi
 if [ "$TARGET" = "test_lowbit_dense_bench" ] ||
+   [ "$TARGET" = "test_scalefirst_q8_persistent_sweep" ] ||
    [ "$TARGET" = "test_lowbit_dense_streamk_sweep" ] ||
    [ "$TARGET" = "test_lowbit_dense_marlin_sweep" ] ||
    [ "$TARGET" = "test_lowbit_dense_marlin_standalone_sweep" ] ||
@@ -176,7 +177,12 @@ if [ "$TARGET" = "test_lowbit_dense_bench" ] ||
   # template failure, and a bench-side startup banner cannot help because no binary was produced. Rebuild the
   # emitter in a temporary directory and compare its exact output; this validates without making generation a
   # compile-order dependency or maintaining a second runtime/dispatch list.
-  python3 "$HERE/ci/check_dense_tactic_table.py" || exit 1
+  if [ "$TARGET" = "test_scalefirst_q8_persistent_sweep" ]; then
+    python3 "$HERE/ci/check_dense_tactic_table.py" \
+      --table "$HERE/benchmarks/lowbit_dense_i8_configs.inc" || exit 1
+  else
+    python3 "$HERE/ci/check_dense_tactic_table.py" || exit 1
+  fi
 fi
 if [ "$TARGET" = "test_lowbit_dense_splitk_sweep" ]; then
   # The target is generated from a strict subset of the dense authority.  Run

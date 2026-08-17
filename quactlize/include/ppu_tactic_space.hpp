@@ -21,22 +21,40 @@ inline constexpr int64_t kBlockSmemBytes = 262144;
 // supported group and therefore the worst case for metadata footprint.
 inline constexpr int kMinimumRuntimeGroupSize = 16;
 
-enum class Format { I1, I2, I4, Q3_K, Q5_K, Q6_K };
+enum class Format { I1, I2, I4, I8, Q3_K, Q5_K, Q6_K };
 
 struct FormatSpec {
   Format format;
   char const* name;
   int low_bits;
   int high_bits;
+  // Metadata residency is part of format legality, not a heuristic.  The
+  // historical low-bit families keep the conservative runtime ladder
+  // (gs16, scale+zero); Q8_0 is fixed gs32 ScaleOnly and therefore owns one
+  // fp16 metadata plane.
+  int minimum_group_size;
+  int metadata_planes;
+
+  constexpr FormatSpec(Format format_, char const* name_, int low_bits_,
+                       int high_bits_,
+                       int minimum_group_size_ = kMinimumRuntimeGroupSize,
+                       int metadata_planes_ = 2)
+      : format(format_), name(name_), low_bits(low_bits_),
+        high_bits(high_bits_), minimum_group_size(minimum_group_size_),
+        metadata_planes(metadata_planes_) {}
 };
 
 // The finite domain for the 025 sweep. Artifact folds are derived from (bits, ArtifactTileK), never selected. The
 // consumer's TacticTileK is independent: it changes kernel geometry without changing stored bytes. Stage and split-K
 // are tactic axes too; Stage=2 is used below as the existence test because it is the shallowest supported pipeline.
-inline constexpr std::array<FormatSpec, 6> kFormats{{
+inline constexpr std::array<FormatSpec, 7> kFormats{{
     {Format::I1, "i1", 1, 0},
     {Format::I2, "i2", 2, 0},
     {Format::I4, "i4", 4, 0},
+    // Q8_0 ScaleFirst stores signed int8 codes as resident q+128 bytes and a
+    // separate fp16 scale per 32 weights.  Its one canonical artifact is
+    // ArtifactTileK=32/FoldN=1; TacticTileK remains a reader axis.
+    {Format::I8, "i8", 8, 0, 32, 1},
     {Format::Q3_K, ppu_formats::for_qtype(11).name,
                    ppu_formats::for_qtype(11).low_bits, ppu_formats::for_qtype(11).high_bits},
     {Format::Q5_K, ppu_formats::for_qtype(13).name,
@@ -207,18 +225,49 @@ constexpr Exclusion common_non_smem_exclusion(Candidate c) {
 constexpr int64_t common_per_stage_smem(Candidate c, int a_rows) {
   return int64_t(a_rows) * c.tactic_tile_k * 2
        + int64_t(c.tn) * c.tactic_tile_k * (c.spec.low_bits + c.spec.high_bits) / 8
-       + int64_t(c.tn) * (c.tactic_tile_k / kMinimumRuntimeGroupSize) * 2 * 2;
+       + int64_t(c.tn) *
+             ((c.tactic_tile_k + c.spec.minimum_group_size - 1) /
+              c.spec.minimum_group_size) *
+             2 * c.spec.metadata_planes;
 }
 
 constexpr Exclusion common_topology_exclusion(Candidate c, int stages = 2) {
   if (auto const e = common_non_smem_exclusion(c); e != Exclusion::None) return e;
 
-  // Match moe_ok's conservative stage-2 existence test exactly. Fold cancels from B bytes; scale+zero is sized for
-  // the smallest runtime group (16), because a too-loose filter produces a fake winner when initialize fails.
+  // Fold cancels from B bytes.  Metadata uses the format-owned contract:
+  // historical families retain the conservative gs16 scale+zero ladder,
+  // while fixed-gs32 Q8_0 charges its one ScaleOnly fp16 plane.  Applying the
+  // historical two-plane assumption to Q8 would silently delete legal rows.
   if (common_per_stage_smem(c, physical_a_rows(c)) * stages > kBlockSmemBytes)
     return Exclusion::MinimumStageSmem;
   return Exclusion::None;
 }
+
+// Denominator negative for Q8 metadata ownership.  This row fits only under
+// the real fixed-gs32/one-plane contract; planting the historical
+// gs16/scale+zero charge removes it.  The emitter's committed denominator
+// check therefore has an independently named witness rather than merely
+// observing that the final count is nonzero.
+constexpr int64_t legacy_two_plane_per_stage_smem(Candidate c, int a_rows) {
+  return int64_t(a_rows) * c.tactic_tile_k * 2
+       + int64_t(c.tn) * c.tactic_tile_k *
+             (c.spec.low_bits + c.spec.high_bits) / 8
+       + int64_t(c.tn) *
+             ((c.tactic_tile_k + kMinimumRuntimeGroupSize - 1) /
+              kMinimumRuntimeGroupSize) * 2 * 2;
+}
+inline constexpr FormatSpec kQ8MetadataControl{
+    Format::I8, "q8-metadata-control", 8, 0, 32, 1};
+inline constexpr Candidate kQ8MetadataOnePlaneOnly{
+    kQ8MetadataControl, 16, 128, 128, 16, 16, 32};
+static_assert(common_topology_exclusion(kQ8MetadataOnePlaneOnly, 12) ==
+                  Exclusion::None,
+              "Q8 fixed-gs32 one-plane row must remain in the legal denominator");
+static_assert(legacy_two_plane_per_stage_smem(
+                  kQ8MetadataOnePlaneOnly,
+                  physical_a_rows(kQ8MetadataOnePlaneOnly)) * 12 >
+                  kBlockSmemBytes,
+              "negative plant: the old gs16/two-plane charge must remove the Q8 witness");
 
 constexpr Exclusion common_producer_exclusion(Candidate c) {
   // These are independent producer limits. The artifact-aware producer ABI names ArtifactTileK directly, and its
