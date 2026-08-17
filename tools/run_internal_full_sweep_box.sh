@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the two independent internal-sweep components, then publish three
+# Run the two independent internal-sweep components, then publish four
 # fail-closed leaderboards.  This orchestration layer never builds or selects a
 # shipping kernel itself; each component runner owns its exact finite graph.
 set -uo pipefail
@@ -66,7 +66,12 @@ main() {
     printf 'fully_quantized_runner=%s\n' "$fq_runner"
     printf 'fully_quantized_runner_sha256=%s\n' "$(sha256sum "$fq_runner" | awk '{print $1}')"
     printf 'merger_sha256=%s\n' "$(sha256sum "$root/tools/merge_internal_full_sweep.py" | awk '{print $1}')"
-    printf 'gguf=%s\n' "${GGUF:-UNSET}"
+    printf 'gguf_set=%s\n' "${GGUF_SET:-UNSET}"
+    if [ -n "${GGUF_SET:-}" ] && [ -f "${GGUF_SET:-}" ]; then
+      printf 'gguf_set_file_sha256=%s\n' "$(sha256sum "$GGUF_SET" | awk '{print $1}')"
+    else
+      printf 'gguf_set_file_sha256=UNSET\n'
+    fi
     printf 'internal_sweep_spec=%s\n' "${INTERNAL_SWEEP_SPEC:-UNSET}"
   } >"$out/orchestration.provenance.txt"
 

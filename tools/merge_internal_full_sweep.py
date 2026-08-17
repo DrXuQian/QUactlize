@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Fail-closed merger for the three internal full-sweep leaderboards.
+"""Fail-closed merger for the four internal full-sweep leaderboards.
 
 This file is deliberately independent of every shipping kernel and collective.
 It consumes one ScaleFirst component summary and one FullyQuantized component
-summary, validates their finite denominators, then publishes three *separate*
+summary, validates their finite denominators, then publishes four *separate*
 leaderboards:
 
   1. ScaleFirst full output (non-persistent and persistent grid policies),
-  2. FullyQuantized full output (placed BC GEMV and tensor-core S=1), and
-  3. FullyQuantized fixed Split-K producer only (S=2/4/8; reducer excluded).
+  2. ScaleFirst fixed Split-K producer only (S=2/4/8; reducer excluded),
+  3. FullyQuantized full output (placed BC GEMV and tensor-core S=1), and
+  4. FullyQuantized fixed Split-K producer only (S=2/4/8; reducer excluded).
 
 The merger never repairs a partial run.  Runtime/correctness failures and lost
 cells belong in a component's top-level ``failures``/``missing`` lists and make
@@ -27,6 +28,7 @@ import json
 import math
 import pathlib
 import re
+import string
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -38,6 +40,7 @@ SCHEMA = "quactlize.internal_full_sweep.v1"
 VALID_STATES = {"MEASURED", "INADMISSIBLE", "BUILD_REJECT", "UNSUPPORTED"}
 RANKING_GROUPS = (
     "SCALEFIRST_FULL_OUTPUT",
+    "SCALEFIRST_SPLITK_PRODUCER_ONLY",
     "FULLY_QUANTIZED_FULL_OUTPUT",
     "FULLY_QUANTIZED_SPLITK_PRODUCER_ONLY",
 )
@@ -45,6 +48,12 @@ FULL_OUTPUT = "FULL_OUTPUT"
 PRODUCER_ONLY = "PRODUCER_ONLY_REDUCER_EXCLUDED"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+STABLE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+SHAPE_DIRECTORY_FIELDS = {
+    "dense": {"m", "n", "k", "group_size"},
+    "grouped": {
+        "m", "n", "k", "group_size", "experts", "active", "ragged_profile"},
+}
 
 
 class ContractError(ValueError):
@@ -147,6 +156,106 @@ def normalize_fold(cell: dict[str, Any]) -> dict[str, int]:
     }
 
 
+def normalize_workload_identity(cell: dict[str, Any]) -> dict[str, Any]:
+    model_id = str(required(cell, "model_id"))
+    if not STABLE_ID_RE.fullmatch(model_id):
+        raise ContractError(
+            f"model_id must be a stable folder-safe identifier, got {model_id!r}")
+    tp = cell.get("tp", {})
+    if not isinstance(tp, dict):
+        raise ContractError("tp must be an object when present")
+    tp_world = integer(tp.get("world", cell.get("tp_world")), "tp_world", 1)
+    tp_rank = integer(tp.get("rank", cell.get("tp_rank")), "tp_rank", 0)
+    if tp_rank >= tp_world:
+        raise ContractError(f"tp_rank={tp_rank} must be below tp_world={tp_world}")
+    tp_partition = str(tp.get("partition", cell.get("tp_partition", "")))
+    if not tp_partition:
+        raise ContractError("tp_partition must be a nonempty measured/manifest identity")
+    problem_route = str(required(cell, "problem_route", "workload_route", "problem_kind")).lower()
+    if problem_route not in {"dense", "grouped"}:
+        raise ContractError(f"problem_route must be dense or grouped, got {problem_route!r}")
+    shape_id = str(required(cell, "shape_id"))
+    if not STABLE_ID_RE.fullmatch(shape_id):
+        raise ContractError(f"shape_id must be stable and folder-safe, got {shape_id!r}")
+    raw_sources = required(cell, "source_tensors")
+    if not isinstance(raw_sources, list) or not raw_sources or not all(
+            isinstance(item, str) and item for item in raw_sources):
+        raise ContractError("source_tensors must be a nonempty string array")
+    source_tensors = sorted(set(raw_sources))
+    raw_group_size = required(cell, "group_size", "gs")
+    group_size: int | str
+    if isinstance(raw_group_size, str) and raw_group_size.upper() == "UNKNOWN":
+        group_size = "UNKNOWN"
+    else:
+        # Numeric zero is not an "unknown" sentinel: it would publish the
+        # misleading path g0.  Future/unsupported qtypes spell UNKNOWN.
+        group_size = integer(raw_group_size, "group_size", 1)
+    grouped: dict[str, Any] | None = None
+    if problem_route == "grouped":
+        raw_grouped = cell.get("grouped", {})
+        if not isinstance(raw_grouped, dict):
+            raise ContractError("grouped identity must be an object")
+
+        def known_or_integer(name: str, *aliases: str) -> int | str:
+            value = raw_grouped.get(name)
+            if value is None:
+                for alias in aliases:
+                    value = cell.get(alias)
+                    if value is not None:
+                        break
+            if value is None or str(value).upper() == "UNKNOWN":
+                return "UNKNOWN"
+            return integer(value, f"grouped.{name}", 0)
+
+        expert_count = known_or_integer("experts", "experts", "E")
+        active = known_or_integer("active", "active_experts", "active")
+        if isinstance(expert_count, int) and isinstance(active, int) and active > expert_count:
+            raise ContractError(
+                f"grouped.active={active} exceeds grouped.experts={expert_count}")
+        ragged_value = raw_grouped.get("ragged", cell.get("ragged", "UNKNOWN"))
+        ragged = str(ragged_value).lower() if ragged_value is not None else "unknown"
+        if not ragged:
+            ragged = "unknown"
+        grouped = {"experts": expert_count, "active": active, "ragged": ragged}
+    return {
+        "model_id": model_id,
+        "shape_id": shape_id,
+        "source_tensors": source_tensors,
+        "tp_world": tp_world,
+        "tp_rank": tp_rank,
+        "tp_partition": tp_partition,
+        "problem_route": problem_route,
+        "group_size": group_size,
+        "grouped": grouped,
+    }
+
+
+def normalize_shape_directory(value: Any, source: str) -> dict[str, str]:
+    if not isinstance(value, dict) or set(value) != set(SHAPE_DIRECTORY_FIELDS):
+        raise ContractError(f"{source}: shape_directory must define dense and grouped")
+    result: dict[str, str] = {}
+    formatter = string.Formatter()
+    for route, required_fields in SHAPE_DIRECTORY_FIELDS.items():
+        template = value[route]
+        if not isinstance(template, str) or not template:
+            raise ContractError(f"{source}: shape_directory.{route} must be nonempty text")
+        try:
+            parsed = list(formatter.parse(template))
+        except ValueError as exc:
+            raise ContractError(
+                f"{source}: invalid shape_directory.{route}: {exc}") from exc
+        fields = {field for _, field, _, _ in parsed if field is not None}
+        if fields != required_fields:
+            raise ContractError(
+                f"{source}: shape_directory.{route} fields={sorted(fields)}, "
+                f"expected={sorted(required_fields)}")
+        if any(conversion is not None or format_spec for _, _, format_spec, conversion in parsed):
+            raise ContractError(
+                f"{source}: shape_directory.{route} may not use conversions/format specs")
+        result[route] = template
+    return result
+
+
 def normalize_algorithm(component: str, cell: dict[str, Any]) -> tuple[str, str, str, int]:
     raw = str(required(cell, "algorithm")).strip()
     token = raw.lower().replace("_", "-")
@@ -157,7 +266,21 @@ def normalize_algorithm(component: str, cell: dict[str, Any]) -> tuple[str, str,
             algorithm = "SCALEFIRST_NONPERSISTENT"
         elif token in {"persistent", "scale-first-persistent"}:
             algorithm = "SCALEFIRST_PERSISTENT"
+        elif token in {
+                "splitk", "split-k", "fixed-splitk", "scale-first-splitk",
+                "scale-first-fixed-splitk"}:
+            if split not in {2, 4, 8}:
+                raise ContractError(f"ScaleFirst fixed Split-K producer S must be 2/4/8, got {split}")
+            return (f"SCALEFIRST_SPLITK_S{split}",
+                    "SCALEFIRST_SPLITK_PRODUCER_ONLY", PRODUCER_ONLY, split)
         else:
+            match = re.fullmatch(r"(?:scale-first-)?(?:fixed-)?splitk-s(2|4|8)", token)
+            if match:
+                encoded = int(match.group(1))
+                if split != encoded:
+                    raise ContractError(f"algorithm {raw} contradicts S={split}")
+                return (f"SCALEFIRST_SPLITK_S{split}",
+                        "SCALEFIRST_SPLITK_PRODUCER_ONLY", PRODUCER_ONLY, split)
             raise ContractError(f"unknown ScaleFirst algorithm {raw!r}")
         if split != 1:
             raise ContractError("ScaleFirst full-output board cannot contain Split-K S>1")
@@ -202,9 +325,27 @@ def normalize_provenance(doc: dict[str, Any], path: pathlib.Path) -> dict[str, A
     source_hashes = required(provenance, "source_hashes")
     binary_hashes = required(provenance, "binary_hashes")
     shape_manifest_sha256 = str(required(provenance, "shape_manifest_sha256"))
-    gguf_sha256 = str(required(provenance, "gguf_sha256"))
-    if not SHA256_RE.fullmatch(shape_manifest_sha256) or not SHA256_RE.fullmatch(gguf_sha256):
-        raise ContractError(f"{path}: shape_manifest_sha256/gguf_sha256 must be lowercase sha256")
+    gguf_hashes = required(provenance, "gguf_hashes")
+    gguf_set_sha256 = str(required(provenance, "gguf_set_sha256"))
+    shape_directory = normalize_shape_directory(
+        required(provenance, "shape_directory"), str(path))
+    if not SHA256_RE.fullmatch(shape_manifest_sha256) or not SHA256_RE.fullmatch(gguf_set_sha256):
+        raise ContractError(
+            f"{path}: shape_manifest_sha256/gguf_set_sha256 must be lowercase sha256")
+    if not isinstance(gguf_hashes, dict) or not gguf_hashes:
+        raise ContractError(f"{path}: gguf_hashes must be a nonempty model-id -> sha256 map")
+    bad_gguf = {
+        key: value for key, value in gguf_hashes.items()
+        if not isinstance(key, str) or not STABLE_ID_RE.fullmatch(key) or
+        not isinstance(value, str) or not SHA256_RE.fullmatch(value)
+    }
+    if bad_gguf:
+        raise ContractError(f"{path}: gguf_hashes contains invalid stable ids/hashes: {bad_gguf}")
+    computed_set_sha256 = hashlib.sha256(
+        canonical_json(gguf_hashes).encode("utf-8")).hexdigest()
+    if gguf_set_sha256 != computed_set_sha256:
+        raise ContractError(
+            f"{path}: gguf_set_sha256 does not hash the canonical gguf_hashes map")
     for name, hashes in (("source_hashes", source_hashes), ("binary_hashes", binary_hashes)):
         if not isinstance(hashes, dict) or not hashes:
             raise ContractError(f"{path}: {name} must be a nonempty object")
@@ -217,7 +358,9 @@ def normalize_provenance(doc: dict[str, Any], path: pathlib.Path) -> dict[str, A
         "actlize_sha": actlize_sha,
         "device": device,
         "shape_manifest_sha256": shape_manifest_sha256,
-        "gguf_sha256": gguf_sha256,
+        "gguf_hashes": gguf_hashes,
+        "gguf_set_sha256": gguf_set_sha256,
+        "shape_directory": shape_directory,
         "source_hashes": source_hashes,
         "binary_hashes": binary_hashes,
         "component_summary": str(path.resolve()),
@@ -244,6 +387,7 @@ def normalize_cell(component: str, source_schema: str, cell: dict[str, Any], ord
         raise ContractError(f"cell {ordinal} is not an object")
     status, reason = normalize_status(cell)
     shape = normalize_shape(cell)
+    workload = normalize_workload_identity(cell)
     algorithm, ranking_group, expected_scope, split = normalize_algorithm(component, cell)
     stated_scope = cell.get("metric_scope", cell.get("timing_scope"))
     if stated_scope is not None:
@@ -276,6 +420,7 @@ def normalize_cell(component: str, source_schema: str, cell: dict[str, Any], ord
     grid = cell.get("grid", "n/a")
     identity = {
         "component": component,
+        **workload,
         "qtype": qtype,
         "shape": shape,
         "layout": layout,
@@ -293,6 +438,7 @@ def normalize_cell(component: str, source_schema: str, cell: dict[str, Any], ord
         "cell_id": cell_id,
         "source_schema": source_schema,
         "component": component,
+        **workload,
         "ranking_group": ranking_group,
         "metric_scope": expected_scope,
         "status": status,
@@ -396,17 +542,22 @@ def load_component(path: pathlib.Path, expected_component: str) -> Component:
                 key: canonical_stated.get(key, 0) for key in VALID_STATES}:
             raise ContractError(f"{path}: status_counts disagree with cells")
     provenance = normalize_provenance(doc, path)
+    cell_models = {cell["model_id"] for cell in cells}
+    provenance_models = set(provenance["gguf_hashes"])
+    if cell_models != provenance_models:
+        raise ContractError(
+            f"{path}: component model denominator differs from gguf_hashes: "
+            f"cells={sorted(cell_models)} provenance={sorted(provenance_models)}")
     return Component(component, schema, denominator, counts, cells, provenance)
 
 
 def ranking_key(cell: dict[str, Any]) -> tuple[Any, ...]:
     shape = cell["shape"]
-    # Tensor identity prevents equal geometries with different roles from
-    # silently sharing a winner.  An empty tensor is valid for synthetic
-    # diagnostic shapes and falls back to route + geometry.
-    tensor_identity = cell["tensor"] or cell["route"]
     return (
-        cell["ranking_group"], cell["qtype"], tensor_identity,
+        cell["ranking_group"], cell["model_id"], cell["tp_world"],
+        cell["tp_rank"], cell["tp_partition"], cell["problem_route"],
+        canonical_json(cell["grouped"]), cell["group_size"],
+        cell["shape_id"], cell["qtype"],
         shape["m"], shape["n"], shape["k"], shape["l"],
     )
 
@@ -414,7 +565,10 @@ def ranking_key(cell: dict[str, Any]) -> tuple[Any, ...]:
 def comparison_identity(cell: dict[str, Any]) -> tuple[Any, ...]:
     shape = cell["shape"]
     return (
-        cell["component"], cell["qtype"], cell["tensor"] or cell["route"],
+        cell["component"], cell["model_id"], cell["tp_world"],
+        cell["tp_rank"], cell["tp_partition"], cell["problem_route"],
+        canonical_json(cell["grouped"]), cell["group_size"],
+        cell["shape_id"], cell["qtype"],
         shape["m"], shape["n"], shape["k"], shape["l"],
     )
 
@@ -424,7 +578,10 @@ def validate_algorithm_denominators(cells: list[dict[str, Any]]) -> None:
     for cell in cells:
         grouped[comparison_identity(cell)].append(cell)
     required = {
-        "scale_first": {"SCALEFIRST_NONPERSISTENT", "SCALEFIRST_PERSISTENT"},
+        "scale_first": {
+            "SCALEFIRST_NONPERSISTENT", "SCALEFIRST_PERSISTENT",
+            "SCALEFIRST_SPLITK_S2", "SCALEFIRST_SPLITK_S4", "SCALEFIRST_SPLITK_S8",
+        },
         "fully_quantized": {
             "FQ_BC_GEMV", "FQ_TC_S1", "FQ_TC_SPLITK_S2",
             "FQ_TC_SPLITK_S4", "FQ_TC_SPLITK_S8",
@@ -444,9 +601,16 @@ def validate_algorithm_denominators(cells: list[dict[str, Any]]) -> None:
             persistent_policies = {
                 cell["policy"] for cell in identity_cells
                 if cell["algorithm"] == "SCALEFIRST_PERSISTENT"}
+            witnessed_persistent_policies: set[str] = set()
+            for policy in persistent_policies:
+                token = policy.lower().replace("_", "-")
+                if token in {"capacity", "capacity+balanced", "balanced+capacity"}:
+                    witnessed_persistent_policies.add("capacity")
+                if token in {"balanced", "capacity+balanced", "balanced+capacity"}:
+                    witnessed_persistent_policies.add("balanced")
             if "non-persistent" not in np_policies:
                 raise ContractError(f"ScaleFirst non-persistent policy missing for {identity}")
-            if not {"capacity", "balanced"}.issubset(persistent_policies):
+            if not {"capacity", "balanced"}.issubset(witnessed_persistent_policies):
                 raise ContractError(
                     f"ScaleFirst persistent capacity/balanced policy missing for {identity}: "
                     f"got={sorted(persistent_policies)}")
@@ -465,9 +629,18 @@ def make_decisions(cells: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
         counts = Counter(cell["status"] for cell in candidates)
         decisions.append({
             "ranking_group": key[0],
-            "qtype": key[1],
-            "tensor_or_route": key[2],
-            "shape": {"m": key[3], "n": key[4], "k": key[5], "l": key[6]},
+            "model_id": key[1],
+            "tp_world": key[2],
+            "tp_rank": key[3],
+            "tp_partition": key[4],
+            "problem_route": key[5],
+            "grouped": json.loads(key[6]),
+            "group_size": key[7],
+            "shape_id": key[8],
+            "qtype": key[9],
+            "source_tensors": sorted({
+                tensor for cell in candidates for tensor in cell["source_tensors"]}),
+            "shape": {"m": key[10], "n": key[11], "k": key[12], "l": key[13]},
             "disposition": "RESOLVED" if winner else "NO_MEASURED_CANDIDATE",
             "candidate_denominator": len(candidates),
             "candidate_status_counts": {state: counts.get(state, 0) for state in sorted(VALID_STATES)},
@@ -504,8 +677,15 @@ def merge_components(scale: Component, fq: Component) -> dict[str, Any]:
         raise ContractError("component measured device identities differ")
     if scale.provenance["shape_manifest_sha256"] != fq.provenance["shape_manifest_sha256"]:
         raise ContractError("component shape-manifest hashes differ")
-    if scale.provenance["gguf_sha256"] != fq.provenance["gguf_sha256"]:
-        raise ContractError("component GGUF hashes differ")
+    if canonical_json(scale.provenance["shape_directory"]) != canonical_json(
+            fq.provenance["shape_directory"]):
+        raise ContractError("component shape-directory authorities differ")
+    if scale.provenance["gguf_set_sha256"] != fq.provenance["gguf_set_sha256"]:
+        raise ContractError("component GGUF-set digests differ")
+    if canonical_json(scale.provenance["gguf_hashes"]) != canonical_json(
+            fq.provenance["gguf_hashes"]):
+        raise ContractError(
+            "component GGUF member maps differ even though their set digest may match")
     cells = scale.cells + fq.cells
     ids = [cell["cell_id"] for cell in cells]
     if len(ids) != len(set(ids)):
@@ -539,8 +719,10 @@ def merge_components(scale: Component, fq: Component) -> dict[str, Any]:
         "created_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "status": "COMPLETE",
         "ranking_rule": (
-            "rank by median_us only within (ranking_group,qtype,tensor-or-route,M,N,K,L); "
-            "the three ranking groups never compete"),
+            "rank by median_us only within (ranking_group,model,TP,problem-route,"
+            "grouped-identity,group-size,shape-id,qtype,M,N,K,L); "
+            "the four ranking groups never compete"),
+        "shape_directory": copy.deepcopy(scale.provenance["shape_directory"]),
         "denominator": {
             "total_cells": len(cells),
             "component_cells": {
@@ -561,8 +743,11 @@ def merge_components(scale: Component, fq: Component) -> dict[str, Any]:
 
 
 CELL_COLUMNS = (
-    "cell_id", "ranking_group", "metric_scope", "status", "reason", "qtype",
-    "tensor", "route", "M", "N", "K", "L", "layout", "FoldN_low",
+    "cell_id", "ranking_group", "metric_scope", "status", "reason",
+    "model_id", "shape_id", "source_tensors", "tp_world", "tp_rank",
+    "tp_partition", "problem_route", "group_size", "grouped", "qtype",
+    "tensor", "route", "M", "N", "K", "L",
+    "layout", "FoldN_low",
     "FoldN_high", "ArtifactTileK", "algorithm", "config", "S", "policy",
     "grid", "median_us", "MFU_pct", "MBU_pct", "MBU_kind", "raw_samples_us",
     "correctness", "workspace_bytes",
@@ -586,6 +771,12 @@ def cells_tsv(cells: list[dict[str, Any]]) -> str:
         row = {
             "cell_id": cell["cell_id"], "ranking_group": cell["ranking_group"],
             "metric_scope": cell["metric_scope"], "status": cell["status"], "reason": cell["reason"],
+            "model_id": cell["model_id"], "shape_id": cell["shape_id"],
+            "source_tensors": tsv_value(cell["source_tensors"]),
+            "tp_world": cell["tp_world"],
+            "tp_rank": cell["tp_rank"], "tp_partition": cell["tp_partition"],
+            "problem_route": cell["problem_route"], "group_size": cell["group_size"],
+            "grouped": tsv_value(cell["grouped"]),
             "qtype": cell["qtype"], "tensor": cell["tensor"], "route": cell["route"],
             "M": shape["m"], "N": shape["n"], "K": shape["k"], "L": shape["l"],
             "layout": tsv_value(cell["layout"]),
@@ -604,7 +795,9 @@ def cells_tsv(cells: list[dict[str, Any]]) -> str:
 
 
 WINNER_COLUMNS = (
-    "ranking_group", "qtype", "tensor_or_route", "M", "N", "K", "L",
+    "ranking_group", "model_id", "tp_world", "tp_rank", "tp_partition",
+    "problem_route", "group_size", "grouped", "shape_id", "source_tensors",
+    "qtype", "M", "N", "K", "L",
     "disposition", "candidate_denominator", "candidate_status_counts", "measured_candidates",
     "winner_cell_id", "winner_algorithm", "winner_config",
     "winner_layout", "winner_FoldN", "winner_S", "winner_grid", "winner_median_us",
@@ -621,7 +814,13 @@ def winners_tsv(winners: list[dict[str, Any]]) -> str:
         shape = winner["shape"]
         writer.writerow({
             "ranking_group": winner["ranking_group"], "qtype": winner["qtype"],
-            "tensor_or_route": winner["tensor_or_route"], "M": shape["m"], "N": shape["n"],
+            "model_id": winner["model_id"], "tp_world": winner["tp_world"],
+            "tp_rank": winner["tp_rank"], "tp_partition": winner["tp_partition"],
+            "problem_route": winner["problem_route"], "group_size": winner["group_size"],
+            "grouped": tsv_value(winner["grouped"]),
+            "shape_id": winner["shape_id"],
+            "source_tensors": tsv_value(winner["source_tensors"]),
+            "M": shape["m"], "N": shape["n"],
             "K": shape["k"], "L": shape["l"], "disposition": winner["disposition"],
             "candidate_denominator": winner["candidate_denominator"],
             "candidate_status_counts": tsv_value(winner["candidate_status_counts"]),
@@ -641,6 +840,79 @@ def winners_tsv(winners: list[dict[str, Any]]) -> str:
     return stream.getvalue()
 
 
+def safe_segment(value: Any, field: str) -> str:
+    text_value = str(value)
+    if not STABLE_ID_RE.fullmatch(text_value):
+        raise ContractError(f"{field} is not folder-safe: {text_value!r}")
+    return text_value
+
+
+def shape_folder_name(cell: dict[str, Any], templates: dict[str, str]) -> str:
+    shape = cell["shape"]
+    route = cell["problem_route"]
+    grouped = cell.get("grouped") or {}
+    values = {
+        "m": shape["m"], "n": shape["n"], "k": shape["k"],
+        "group_size": cell["group_size"],
+        "experts": grouped.get("experts", "UNKNOWN"),
+        "active": grouped.get("active", "UNKNOWN"),
+        "ragged_profile": safe_segment(
+            grouped.get("ragged", "unknown"), "grouped.ragged"),
+    }
+    try:
+        rendered = templates[route].format_map(values)
+    except (KeyError, ValueError) as exc:
+        raise ContractError(f"cannot render shape_directory.{route}: {exc}") from exc
+    return safe_segment(rendered, f"shape_directory.{route} output")
+
+
+def materialize_model_folders(out: pathlib.Path, result: dict[str, Any]) -> list[dict[str, Any]]:
+    templates = normalize_shape_directory(
+        result.get("shape_directory"), "merged result")
+    by_shape: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for cell in result["cells"]:
+        by_shape[(cell["model_id"], shape_folder_name(cell, templates))].append(cell)
+    decisions_by_shape: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for decision in result["leaderboard_decisions"]:
+        probe = {
+            "shape": decision["shape"], "group_size": decision["group_size"],
+            "problem_route": decision["problem_route"], "grouped": decision["grouped"],
+        }
+        decisions_by_shape[(
+            decision["model_id"], shape_folder_name(probe, templates))].append(decision)
+
+    manifest: list[dict[str, Any]] = []
+    models_root = out / "models"
+    models_root.mkdir()
+    for (model_id, folder), scoped_cells in sorted(by_shape.items()):
+        model_dir = models_root / safe_segment(model_id, "model_id")
+        model_dir.mkdir(exist_ok=True)
+        shape_dir = model_dir / folder
+        shape_dir.mkdir()
+        scoped_decisions = decisions_by_shape[(model_id, folder)]
+        (shape_dir / "cells.tsv").write_text(cells_tsv(scoped_cells))
+        (shape_dir / "winners.tsv").write_text(winners_tsv(scoped_decisions))
+        scope = {
+            "model_id": model_id,
+            "shape_folder": folder,
+            "problem_routes": sorted({cell["problem_route"] for cell in scoped_cells}),
+            "tp_partitions": sorted({
+                (cell["tp_world"], cell["tp_rank"], cell["tp_partition"])
+                for cell in scoped_cells}),
+            "qtypes": sorted({str(cell["qtype"]) for cell in scoped_cells}),
+            "cell_count": len(scoped_cells),
+            "decision_count": len(scoped_decisions),
+        }
+        (shape_dir / "scope.json").write_text(
+            json.dumps(scope, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+        manifest.append({
+            "model_id": model_id, "shape_folder": folder,
+            "path": str(shape_dir.relative_to(out)),
+            "cell_count": len(scoped_cells), "decision_count": len(scoped_decisions),
+        })
+    return manifest
+
+
 def ensure_workspace_child(path: pathlib.Path) -> pathlib.Path:
     workspace = pathlib.Path("/workspace").resolve(strict=True)
     candidate = path.resolve(strict=False)
@@ -651,6 +923,7 @@ def ensure_workspace_child(path: pathlib.Path) -> pathlib.Path:
 
 def synthetic_doc(component: str) -> dict[str, Any]:
     zero = "0" * 64
+    gguf_hashes = {"model-a": "6" * 64}
     provenance = {
         "root_sha": "1" * 40,
         "actlize_sha": "2" * 40,
@@ -658,9 +931,20 @@ def synthetic_doc(component: str) -> dict[str, Any]:
         "source_hashes": {"authority": zero},
         "binary_hashes": {component: "3" * 64},
         "shape_manifest_sha256": "5" * 64,
-        "gguf_sha256": "6" * 64,
+        "gguf_hashes": gguf_hashes,
+        "gguf_set_sha256": hashlib.sha256(
+            canonical_json(gguf_hashes).encode("utf-8")).hexdigest(),
+        "shape_directory": {
+            "dense": "m{m}_n{n}_k{k}_g{group_size}",
+            "grouped": (
+                "m{m}_n{n}_k{k}_g{group_size}_e{experts}_a{active}_{ragged_profile}"),
+        },
     }
     common = {
+        "model_id": "model-a", "tp_world": 1, "tp_rank": 0,
+        "tp_partition": "replicated", "problem_route": "dense", "group_size": 32,
+        "shape_id": "dense-m1-n4096-k4096-g32",
+        "source_tensors": ["blk.0.attn_q.weight"],
         "qtype": "Q4_K", "tensor": "blk.0.attn_q.weight",
         "shape": {"m": 1, "n": 4096, "k": 4096, "l": 1},
         "layout": {"name": "xplane-q4-a64-f1"}, "FoldN": [1, 1],
@@ -676,6 +960,12 @@ def synthetic_doc(component: str) -> dict[str, Any]:
                  median_us=9.8, raw_samples_us=[9.7, 9.8, 9.9]),
             dict(common, algorithm="persistent", policy="balanced", grid=64,
                  median_us=9.9, raw_samples_us=[9.8, 9.9, 10.0]),
+            dict(common, algorithm="scale-first-splitk", S=2, metric_scope=PRODUCER_ONLY,
+                 config="sf-split2", median_us=8.7, raw_samples_us=[8.6, 8.7, 8.8]),
+            dict(common, algorithm="scale-first-splitk", S=4, metric_scope=PRODUCER_ONLY,
+                 config="sf-split4", median_us=8.4, raw_samples_us=[8.3, 8.4, 8.5]),
+            dict(common, algorithm="scale-first-splitk", S=8, metric_scope=PRODUCER_ONLY,
+                 config="sf-split8", median_us=8.6, raw_samples_us=[8.5, 8.6, 8.7]),
         ]
     else:
         cells = [
@@ -748,11 +1038,11 @@ def self_test() -> None:
     scale = component_from_doc(scale_doc, "scale_first")
     fq = component_from_doc(fq_doc, "fully_quantized")
     merged = merge_components(scale, fq)
-    assert merged["denominator"]["total_cells"] == 13
+    assert merged["denominator"]["total_cells"] == 16
     assert merged["denominator"]["status_counts"] == {
-        "BUILD_REJECT": 1, "INADMISSIBLE": 1, "MEASURED": 6, "UNSUPPORTED": 5}
+        "BUILD_REJECT": 1, "INADMISSIBLE": 1, "MEASURED": 9, "UNSUPPORTED": 5}
     assert {winner["ranking_group"] for winner in merged["winners"]} == set(RANKING_GROUPS)
-    assert len(merged["leaderboard_decisions"]) == 5
+    assert len(merged["leaderboard_decisions"]) == 6
     q8 = [decision for decision in merged["leaderboard_decisions"] if decision["qtype"] == "Q8_0"]
     assert len(q8) == 2 and all(item["disposition"] == "NO_MEASURED_CANDIDATE" for item in q8)
     assert sum(item["candidate_denominator"] for item in q8) == 5
@@ -761,6 +1051,37 @@ def self_test() -> None:
     assert fq_full["winner_algorithm"] == "FQ_BC_GEMV"
     assert fq_full["runner_up_algorithm"] == "FQ_TC_S1"
     assert "\trunner_up_gap_us\t" in winners_tsv(merged["leaderboard_decisions"]).splitlines()[0]
+
+    layer_a = copy.deepcopy(scale.cells[0])
+    layer_b = copy.deepcopy(layer_a)
+    layer_b["cell_id"] = "same-shape-other-layer"
+    layer_b["tensor"] = "blk.17.attn_q.weight"
+    layer_b["source_tensors"] = ["blk.17.attn_q.weight"]
+    assert ranking_key(layer_a) == ranking_key(layer_b)
+    dedup = make_decisions([layer_a, layer_b])
+    assert len(dedup) == 1
+    assert dedup[0]["source_tensors"] == [
+        "blk.0.attn_q.weight", "blk.17.attn_q.weight"]
+    for label, mutation in (
+            ("qtype", {"qtype": "Q5_K"}),
+            ("TP", {"tp_world": 2, "tp_partition": "n-shard"}),
+            ("route", {
+                "problem_route": "grouped",
+                "grouped": {"experts": 256, "active": 8, "ragged": "one-heavy"}})):
+        isolated = copy.deepcopy(layer_a)
+        isolated.update(mutation)
+        assert ranking_key(layer_a) != ranking_key(isolated), label
+
+    changed_templates = copy.deepcopy(merged["shape_directory"])
+    changed_templates["dense"] = "shape-m{m}_n{n}_k{k}_g{group_size}"
+    original_folder = shape_folder_name(layer_a, merged["shape_directory"])
+    changed_folder = shape_folder_name(layer_a, changed_templates)
+    assert original_folder != changed_folder and changed_folder.startswith("shape-")
+    mismatched_template = component_from_doc(fq_doc, "fully_quantized")
+    mismatched_template.provenance["shape_directory"]["dense"] = (
+        "shape-m{m}_n{n}_k{k}_g{group_size}")
+    expect_red("shape-directory authority mismatch", lambda: merge_components(
+        scale, mismatched_template))
 
     dropped = copy.deepcopy(fq_doc)
     dropped["cells"].pop()
@@ -772,6 +1093,13 @@ def self_test() -> None:
     omitted["status_counts"] = dict(Counter(cell["status"] for cell in omitted["cells"]))
     expect_red("whole algorithm omitted", lambda: merge_components(
         scale, component_from_doc(omitted, "fully_quantized")))
+    omitted_sf = copy.deepcopy(scale_doc)
+    omitted_sf["cells"] = [cell for cell in omitted_sf["cells"]
+                           if not (cell["algorithm"] == "scale-first-splitk" and cell.get("S") == 4)]
+    omitted_sf["expected_cells"] = len(omitted_sf["cells"])
+    omitted_sf["status_counts"] = dict(Counter(cell["status"] for cell in omitted_sf["cells"]))
+    expect_red("whole ScaleFirst S4 algorithm omitted", lambda: merge_components(
+        component_from_doc(omitted_sf, "scale_first"), fq))
     unknown = copy.deepcopy(fq_doc)
     unknown["cells"][0]["status"] = "MISSING"
     expect_red("unknown terminal status", lambda: component_from_doc(unknown, "fully_quantized"))
@@ -781,6 +1109,22 @@ def self_test() -> None:
     mismatched = component_from_doc(fq_doc, "fully_quantized")
     mismatched.provenance["device"] = {"uuid": "PPU-other", "cu": 72, "driver": "test"}
     expect_red("mixed device provenance", lambda: merge_components(scale, mismatched))
+    same_digest_other_member = component_from_doc(fq_doc, "fully_quantized")
+    same_digest_other_member.provenance["gguf_hashes"] = {"model-b": "6" * 64}
+    # Deliberately preserve the old digest: exact member-map comparison, not a
+    # caller-supplied aggregate token, must catch the substitution.
+    expect_red("same GGUF-set digest but different member map", lambda: merge_components(
+        scale, same_digest_other_member))
+    missing_gguf_member = component_from_doc(fq_doc, "fully_quantized")
+    scale_with_two_models = copy.deepcopy(scale)
+    scale_with_two_models.provenance["gguf_hashes"] = {
+        "model-a": "6" * 64, "model-b": "7" * 64}
+    # Again forge equality of the aggregate digest so only the exact map check
+    # can reject the missing model.
+    scale_with_two_models.provenance["gguf_set_sha256"] = (
+        missing_gguf_member.provenance["gguf_set_sha256"])
+    expect_red("same GGUF-set digest but one model missing", lambda: merge_components(
+        scale_with_two_models, missing_gguf_member))
     no_runner = copy.deepcopy(fq_doc)
     tc_s1 = next(cell for cell in no_runner["cells"]
                  if cell["qtype"] == "Q4_K" and cell["algorithm"] == "tc-s1")
@@ -792,9 +1136,9 @@ def self_test() -> None:
     full = next(winner for winner in merged_one["winners"]
                 if winner["ranking_group"] == "FULLY_QUANTIZED_FULL_OUTPUT")
     assert full["runner_up_cell_id"] is None
-    print("[internal-full-sweep:self-test] PASS positive=3-separated-leaderboards "
-          "negative=missing-cell+missing-algorithm+unknown-state+scope-mix+device-mix "
-          "runner-up=BOUND")
+    print("[internal-full-sweep:self-test] PASS positive=4-separated-leaderboards+shape-layer-dedup "
+          "negative=missing-cell+missing-fq-algorithm+missing-scalefirst-s4+unknown-state+scope-mix+device-mix+gguf-map-substitution+gguf-member-loss "
+          "shape-template-mismatch+identity-isolation runner-up=BOUND")
 
 
 def main() -> int:
@@ -817,6 +1161,7 @@ def main() -> int:
         fq = load_component(args.fully_quantized.resolve(strict=True), "fully_quantized")
         result = merge_components(scale, fq)
         out.mkdir(parents=True, exist_ok=False)
+        result["model_outputs"] = materialize_model_folders(out, result)
         (out / "summary.json").write_text(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
         (out / "cells.tsv").write_text(cells_tsv(result["cells"]))
         (out / "winners.tsv").write_text(winners_tsv(result["leaderboard_decisions"]))
