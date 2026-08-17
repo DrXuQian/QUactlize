@@ -588,9 +588,9 @@ def candidate_layout(candidate: dict, cell: dict) -> dict:
     # The old non-folded I2/BC macros consume the legacy interleave-256 buffer.
     # Every explicitly folded row and every q4/q5/q6 row calls xplane with TK.
     legacy = family in ("i2", "BC") and not annotation
-    # Q8_0's resident file identity is one canonical 32-code/32-byte
-    # delivery.  TacticTileK remains a reader axis and may concatenate A32
-    # deliveries without changing the bytes on disk.
+    # Q8_0 uses one canonical 32-code/32-byte K delivery. TacticTileK and
+    # WON=TileN/max(WarpN,16) remain reader axes: L208 proves exact ownership,
+    # roundtrip, and byte identity across the emitted WON=1/2/4 classes.
     artifact_tk = (32 if family == "q8" else 256 if legacy else candidate["tk"])
     folds = [fold_for(low_bits, artifact_tk), fold_for(high_bits, artifact_tk) if high_bits else 1]
 
@@ -632,7 +632,7 @@ def candidate_layout(candidate: dict, cell: dict) -> dict:
     if family == "q8":
         layout_class = "xplane-q8-a32-f1:l208"
         class_basis = ("dev/fold_derivation/l208_q8_emit_layout.cu: vendor int8 emission anchor + "
-                       "byte-identical production placement over every emitted q8 tactic")
+                       "exact placement roundtrip and byte identity across emitted WON=1/2/4 readers")
         resident_artifact_tk = 32
     elif folds == [1, 1] and artifact_tk <= 256:
         layout_class = f"xplane-tile-free-f1-le256:bits={low_bits}+{high_bits}"
@@ -671,6 +671,7 @@ def candidate_layout(candidate: dict, cell: dict) -> dict:
         "low_bits": low_bits,
         "high_bits": high_bits,
         "fold_n": folds,
+        "placement_axes": {},
         "descriptor": descriptor,
         "descriptor_sha256": hashlib.sha256(descriptor.encode()).hexdigest(),
         "measured_descriptor": measured_descriptor,
@@ -910,6 +911,8 @@ def measure(plan_path: pathlib.Path, binary: pathlib.Path, out: pathlib.Path,
         "binary": str(binary.resolve()),
         "binary_sha256": sha256_file(binary),
         "overall": "INCOMPLETE" if any_failure else "COMPLETE",
+        "timing_scope": "same-address warm ScaleFirst GEMM; metadata prepass and direct FullyQuantized excluded",
+        "mbu_scope": "distinct-byte model divided by HBM nameplate; not a device traffic counter",
         "results": all_results,
         "layout_decisions": decisions,
     }
@@ -1008,6 +1011,12 @@ def self_test() -> int:
         assert all(c["selected_layer"] == 3 for c in plan["cells"])
         assert plan["cells"][0]["tensor"] == "blk.3.attn_q.weight"
         assert (plan["cells"][0]["n"], plan["cells"][0]["k"]) == (8192, 2048)
+        overnight = build_plan(ROOT / "benchmarks" / "qwen35_a3b_q8_overnight.json", gguf)
+        assert len(overnight["cells"]) == 12
+        assert sorted({c["m"] for c in overnight["cells"]}) == [1, 64, 2048]
+        assert overnight["support_summary"]["total_cells"] == 12
+        assert overnight["support_summary"]["supported_cells"] == 12
+        assert overnight["support_summary"]["unsupported_cells"] == 0
         sample = "    q4 64x64:64 w32x32 s3 [F=1]   12.50 us | 1.0 TFLOP/s\n"
         rows = parse_candidates(sample, "q4")
         assert len(rows) == 1 and rows[0]["tk"] == 64
@@ -1120,6 +1129,8 @@ def self_test() -> int:
             "    q8 64x64:32 w32x32 s2 [A=32 F=1] 10.0 us | 1.0 TFLOP/s\n", "q8")[0]
         q8_layout = candidate_layout(q8_row, q8_plan["cells"][0])
         assert q8_layout["artifact_tile_k"] == 32 and q8_layout["fold_n"] == [1, 1]
+        assert q8_layout["layout_class"] == "xplane-q8-a32-f1:l208"
+        assert q8_layout["placement_axes"] == {}
         assert q8_layout["scale_first_contract_match"] and not q8_layout["shipping_registry_match"]
         q8_metrics = traffic(q8_plan["cells"][0], 10.0, 500.0, 2766.0)
         assert q8_metrics["metadata_planes"] == 1
@@ -1170,7 +1181,7 @@ def self_test() -> int:
             assert "fixture identity/exactness" in str(e)
         else:
             raise AssertionError("Q8 rows without an invocation-bound exact fixture were accepted")
-        # Q8's A32 token is an ABI assertion, not decoration.  Missing,
+        # Q8's A32/F1 tokens are ABI assertions, not decoration. Missing,
         # conflicting, duplicate, or extra tokens must all fail closed.
         for bad_annotation in ("", "A=64 F=1", "A=32 F=2",
                                "A=32 A=32 F=1", "A=32 F=1 X=7"):

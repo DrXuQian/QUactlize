@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-17 08:57:46 UTC
+    updated-at:     2026-08-17 12:58:45 UTC
     inbox-consumed: 178
-    working-on:     Q8 prefill box rerun unblocked: box consumes exact result-SHA L208 evidence, then hgcc freshly builds the shipping target
-    blocked-on:     PPU must compile/run the 18 Q8 rows and return per-cell correctness/timing; local nvcc/stub oracle is intentionally not executable on that box
-    local-gates:    L208 exact 12-line regeneration PASS with four causal REDs; committed-only PASS; test_scalefirst_bench unified build graph dry-link PASS (1 hgcc object)
-    last-commit:    7dc1de7 Keep Q8 local oracle out of PPU box builds
+    working-on:     performance-first overnight Q8 decode+prefill sweep: 12 independent cells x 172 reader tactics, no cross-cell tactic/layout constraint
+    blocked-on:     PPU box must compile the expanded shipping target and measure the 2,064 candidate-cells; local production hgcc execution is unavailable
+    local-gates:    planner self-test PASS; L208 exact 172-row ownership/roundtrip/WON1-2-4 byte proof PASS with causal REDs; Python/shell syntax and diff-check PASS
+    last-commit:    3d8789f coord: record Q8 box preflight boundary (overnight expansion not yet committed)
     last-heartbeat: 349

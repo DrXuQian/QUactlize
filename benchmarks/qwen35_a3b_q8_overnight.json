@@ -1,0 +1,39 @@
+{
+  "schema": "quactlize-prefill-smoke-v1",
+  "model": "Qwen3.5-35B-A3B",
+  "scope": "first-common-full-attention-layer-decode-and-prefill-performance-envelope",
+  "m_values": [1, 64, 2048],
+  "projections": [
+    {
+      "name": "q",
+      "tensor_pattern": "^blk\\.(?P<layer>[0-9]+)\\.attn_q\\.weight$",
+      "n": 8192,
+      "k": 2048
+    },
+    {
+      "name": "k",
+      "tensor_pattern": "^blk\\.(?P<layer>[0-9]+)\\.attn_k\\.weight$",
+      "n": 512,
+      "k": 2048
+    },
+    {
+      "name": "v",
+      "tensor_pattern": "^blk\\.(?P<layer>[0-9]+)\\.attn_v\\.weight$",
+      "n": 512,
+      "k": 2048
+    },
+    {
+      "name": "o",
+      "tensor_pattern": "^blk\\.(?P<layer>[0-9]+)\\.attn_output\\.weight$",
+      "n": 2048,
+      "k": 4096
+    }
+  ],
+  "notes": [
+    "Performance-first overnight envelope: per-cell winners may use different tactics and, where a format exposes them, different resident layouts.",
+    "Timing is the same-address warm ScaleFirst GEMM upper envelope; distinct MBU is a byte model, not a DRAM counter.",
+    "M=1 is dense decode; M=64 and M=2048 are the small/large prefill bands.",
+    "The selected full-attention layer and qtype come from the GGUF header; K and V remain separate tensor identities even though their geometry is equal.",
+    "For the controlled Q8_0 route the currently proved resident-layout domain contains A32/F1 only; absence of a second Q8 layout is reported rather than invented."
+  ]
+}

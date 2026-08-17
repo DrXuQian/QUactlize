@@ -298,9 +298,8 @@ int main(int argc, char** argv) {
       q8biased[i] = uint8_t(q + 128);
     }
   }
-  // Build the offline artifact exactly once.  Every Q8 tactic below reads this same device pointer; a candidate may
-  // not move the writer along with itself and thereby hide an incompatible reader.  L208 proves all 18 readers are
-  // byte-identical to this canonical A32/F1 placement before this benchmark can admit them.
+  // Q8 performance-first sweep. L208 independently proves exact ownership + roundtrip and byte identity across
+  // all emitted WON=1/2/4 readers, so one A32/F1 artifact is sufficient without constraining per-cell tactics.
   std::vector<int8_t> B8((size_t)K*N);
   xplane::place_derived<8,64,64,32,32,32,1,32>(B8.data(), q8biased, N, K);
   // Exact numerical witness for every Q8 row.  Each output row selects four distinct K positions with A=+/-2^-7,
@@ -386,9 +385,9 @@ int main(int argc, char** argv) {
        bQ6{"",1e18}, bQ5{"",1e18};
 
   std::printf("  --- Q8_0 ScaleOnly gs32 (canonical resident ArtifactTK32/FoldN1) ---\n");
-  // Finite 18-row family. It spans the intended layout/tactic axes rather than cloning one presumed winner:
-  // tactic TK 32/64/128; TN 64/128; all w32x32, w64x32, w32x64, w64x64 shapes; stages 2/3; TM 32/64.
-  // Every row consumes the SAME A32/F1 resident ABI above, so the sweep may pick a tactic without repacking weights.
+  // Bounded performance-envelope family. Its shared authority spells the denominator and pruning policy, including
+  // decode-only TM8 and the wider prefill axes. L208 proves all rows consume the same A32/F1 resident bytes, while
+  // the sweep remains free to pick a different tactic per cell.
 #define PREFILL_Q8_CANDIDATE(TM,TN,TK,WM,WN,S) Q8(TM,TN,TK,WM,WN,S);
 #include "prefill_q8_candidates.inc"
 

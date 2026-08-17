@@ -7,11 +7,11 @@
 //      Its int8x4 leaf emits source bytes (0,2,1,3), and its x16 wrapper places source groups (0,2,1,3).
 //      `converter_emit()` transcribes those two explicit assignments, not MixGemmEmit's formula, and exhaustively
 //      compares all 16 source positions.
-//   2. PLACEMENT BIJECTION.  One canonical Q8_0 artifact delivery is 32 signed bytes, hence ArtifactTileK=32 and
-//      FoldN=1.  Every one of the benchmark's 18 tactic rows from the shared candidate authority must own every
-//      (n,k) exactly once, round-trip
-//      a nonzero, aperiodic byte fixture, and produce bytes identical to the one canonical (64,64,32) w32x32 writer.
-//      The benchmark can therefore upload that artifact once and vary only the reader.
+//   2. PLACEMENT BIJECTION.  One Q8_0 K delivery is 32 signed bytes, hence ArtifactTileK=32 and FoldN=1.
+//      Every row in the benchmark's bounded performance-envelope authority must own every (n,k) exactly once,
+//      round-trip a nonzero, aperiodic byte fixture, and produce bytes identical to one independent A32/F1 anchor.
+//      The authority deliberately includes WON=TileN/max(WarpN,16) values 1, 2 and 4; their anchors are compared
+//      pairwise. Equality is measured evidence that WON remains a reader axis here, not an assumed invariant.
 //   3. VALUE SEMANTICS.  GGUF Q8_0 stores signed q and fp16 d with W=d*q.  The resident converter consumes the
 //      byte representation of q+128 and subtracts 128.  All 256 q values and four exactly representable fp16 scales
 //      are checked, so signed-char reinterpretation cannot silently change the contract.
@@ -79,7 +79,8 @@ struct PlacementTotals {
   int holes = 0;
   int duplicates = 0;
   int roundtrip_bad = 0;
-  long long byte_diff = 0;
+  long long within_class_byte_diff = 0;
+  int won1 = 0, won2 = 0, won4 = 0;
 };
 
 template <int TM, int TN, int TK, int WM, int WN, int Stages>
@@ -87,6 +88,9 @@ bool check_candidate(std::vector<uint8_t> const& source,
                      std::vector<int8_t> const& canonical,
                      int N, int K, PlacementTotals& totals) {
   constexpr int FoldN = 1, ArtifactTileK = 32;
+  constexpr int WON = TN / (WN < 16 ? 16 : WN);
+  static_assert(WON == 1 || WON == 2 || WON == 4,
+                "the bounded Q8 envelope must name one of its proved WON layout classes");
   auto const map = xplane::plane_map<8, TM, TN, TK, WM, WN, FoldN, ArtifactTileK>();
   std::vector<int> owners(size_t(TN) * TK, 0);
   int map_out_of_range = 0;
@@ -114,29 +118,42 @@ bool check_candidate(std::vector<uint8_t> const& source,
       resident.data(), recovered, N, K);
   int roundtrip_bad = 0;
   for (size_t i = 0; i < source.size(); ++i) roundtrip_bad += source[i] != recovered[i];
-  long long byte_diff = 0;
-  for (size_t i = 0; i < resident.size(); ++i) byte_diff += resident[i] != canonical[i];
+  long long within_class_byte_diff = 0;
+  for (size_t i = 0; i < resident.size(); ++i)
+    within_class_byte_diff += resident[i] != canonical[i];
 
   std::printf(
       "[l208 placement-row] geometry=%dx%dx%d_w%dx%d_s%d artifact_tk=%d fold_n=%d "
       "map_entries=%zu logical=%d unset=%d out_of_range=%d holes=%d duplicates=%d "
-      "roundtrip_bad=%d/%zu byte_diff_vs_A32=%lld/%zu\n",
+      "roundtrip_bad=%d/%zu won=%d byte_diff_within_class=%lld/%zu\n",
       TM, TN, TK, WM, WN, Stages, ArtifactTileK, FoldN, map.size(), TN * TK,
       map_unset, map_out_of_range, holes, duplicates, roundtrip_bad, source.size(),
-      byte_diff, resident.size());
+      WON, within_class_byte_diff, resident.size());
   ++totals.candidates;
   totals.map_unset += map_unset;
   totals.map_out_of_range += map_out_of_range;
   totals.holes += holes;
   totals.duplicates += duplicates;
   totals.roundtrip_bad += roundtrip_bad;
-  totals.byte_diff += byte_diff;
+  totals.within_class_byte_diff += within_class_byte_diff;
+  if constexpr (WON == 1) ++totals.won1;
+  if constexpr (WON == 2) ++totals.won2;
+  if constexpr (WON == 4) ++totals.won4;
   return map_unset == 0 && map_out_of_range == 0 && holes == 0 && duplicates == 0 &&
-         roundtrip_bad == 0 && byte_diff == 0;
+         roundtrip_bad == 0 && within_class_byte_diff == 0;
+}
+
+long long byte_diff(std::vector<int8_t> const& a, std::vector<int8_t> const& b) {
+  long long result = 0;
+  for (size_t i = 0; i < a.size(); ++i) result += a[i] != b[i];
+  return result;
 }
 
 bool check_placement() {
-  constexpr int N = 128, K = 256;
+  // This fixture must cover the largest emitted TN/TK. The former N=128
+  // made every TN256 row vacuous (zero N tiles), which is exactly the kind of
+  // internally green but unexercised proof this oracle exists to prevent.
+  constexpr int N = 512, K = 512;
   // Avoid zero: place_from_map deliberately skips zero bits, so a zero-valued hole is not a useful witness.
   std::vector<uint8_t> source(size_t(N) * K);
   uint32_t state = 0x243f6a88u;
@@ -147,25 +164,38 @@ bool check_placement() {
     source[i] = uint8_t(1 + state % 255u);
   }
 
-  // The independent resident identity used by every benchmark row: a single ArtifactTK32/FoldN1 delivery.  The
-  // candidate tactic is allowed to concatenate several deliveries but not to change these bytes.
-  std::vector<int8_t> canonical(size_t(N) * K, int8_t(0));
-  xplane::place_derived<8, 64, 64, 32, 32, 32, 1, 32>(canonical.data(), source, N, K);
+  // Build one independent A32/F1 anchor per emitted WON value. The candidate
+  // rows are checked against won2 (the original shipping witness), while the
+  // pairwise comparison below independently decides whether WON changes bytes.
+  std::vector<int8_t> canonical_won1(size_t(N) * K, int8_t(0));
+  std::vector<int8_t> canonical_won2(size_t(N) * K, int8_t(0));
+  std::vector<int8_t> canonical_won4(size_t(N) * K, int8_t(0));
+  xplane::place_derived<8, 8, 16, 32, 8, 16, 1, 32>(canonical_won1.data(), source, N, K);
+  xplane::place_derived<8, 16, 64, 32, 16, 32, 1, 32>(canonical_won2.data(), source, N, K);
+  xplane::place_derived<8, 16, 64, 32, 16, 16, 1, 32>(canonical_won4.data(), source, N, K);
+  long long const diff12 = byte_diff(canonical_won1, canonical_won2);
+  long long const diff14 = byte_diff(canonical_won1, canonical_won4);
+  long long const diff24 = byte_diff(canonical_won2, canonical_won4);
 
   PlacementTotals totals;
   bool ok = true;
 #define PREFILL_Q8_CANDIDATE(TM,TN,TK,WM,WN,S) \
-  ok &= check_candidate<TM,TN,TK,WM,WN,S>(source, canonical, N, K, totals);
+  ok &= check_candidate<TM,TN,TK,WM,WN,S>(source, canonical_won2, N, K, totals);
 #include "prefill_q8_candidates.inc"
 
   std::printf(
-      "[l208 placement] candidates=%d canonical=A32/F1 fixture=%dx%d "
-      "unset=%d out_of_range=%d holes=%d duplicates=%d roundtrip_bad=%d/%zu byte_diff=%lld/%zu\n",
-      totals.candidates, N, K, totals.map_unset, totals.map_out_of_range,
+      "[l208 placement] candidates=%d canonical=A32/F1 fixture=%dx%d won_classes=3 "
+      "resident_layout_classes=1 won1=%d won2=%d won4=%d class_pair_byte_diff=%lld/%lld/%lld "
+      "unset=%d out_of_range=%d holes=%d duplicates=%d roundtrip_bad=%d/%zu "
+      "within_class_byte_diff=%lld/%zu\n",
+      totals.candidates, N, K, totals.won1, totals.won2, totals.won4,
+      diff12, diff14, diff24, totals.map_unset, totals.map_out_of_range,
       totals.holes, totals.duplicates, totals.roundtrip_bad,
-      source.size() * size_t(totals.candidates), totals.byte_diff,
-      canonical.size() * size_t(totals.candidates));
-  return ok && totals.candidates == 18;
+      source.size() * size_t(totals.candidates), totals.within_class_byte_diff,
+      source.size() * size_t(totals.candidates));
+  return ok && totals.candidates == PREFILL_Q8_EXPECTED_ROWS &&
+         totals.won1 > 0 && totals.won2 > 0 && totals.won4 > 0 &&
+         diff12 == 0 && diff14 == 0 && diff24 == 0;
 }
 
 bool check_q8_value_semantics() {

@@ -23,6 +23,7 @@ EXPECTED = ROOT / "dev/fold_derivation/l208_q8_emit_layout.expected.txt"
 BOX_RUNNER = ROOT / "tools/run_prefill_sweep_box.sh"
 ACTLIZE_CMAKE = ROOT / "third_party/actlize/CMakeLists.txt"
 PPU_TOOLCHAIN = ROOT / "third_party/actlize/cmake/PPUToolchain.cmake"
+Q8_CANDIDATES = ROOT / "benchmarks/prefill_q8_candidates.inc"
 
 PREFIXES = (
     "[l208 emit] ",
@@ -43,20 +44,33 @@ def canonical_lines(output: str) -> list[str]:
     return lines
 
 
-def validate(lines: list[str]) -> str | None:
+def candidate_denominator(source: str) -> int:
+    declared = []
+    active = 0
+    for line in source.splitlines():
+        if line.startswith("#define PREFILL_Q8_EXPECTED_ROWS "):
+            declared.append(int(line.split()[-1]))
+        if line.startswith("PREFILL_Q8_CANDIDATE("):
+            active += 1
+    if len(declared) != 1 or declared[0] != active or active <= 0:
+        raise ValueError(f"Q8 denominator authority disagrees: declared={declared} active={active}")
+    return active
+
+
+def validate(lines: list[str], expected_rows: int) -> str | None:
     if len(lines) != 12:
         return f"expected 12 canonical lines, found {len(lines)}"
     required_once = (
         "mismatch=1 holes=1 duplicates=1",
-        "candidates=17 canonical=A32/F1",
+        f"candidates={expected_rows - 1} canonical=A32/F1",
         "wrong_perm=EXPECTED_RED",
         "missing_candidate=EXPECTED_RED",
     )
     for token in required_once:
         if sum(token in line for line in lines) != 1:
             return f"negative-control closure drifted: {token}"
-    if sum("candidates=18 canonical=A32/F1" in line for line in lines) != 2:
-        return "positive 18-row denominator is not present in both relevant arms"
+    if sum(f"candidates={expected_rows} canonical=A32/F1" in line for line in lines) != 2:
+        return f"positive {expected_rows}-row denominator is not present in both relevant arms"
     if sum("checks=1024 bias_bad=0 value_bad=0" in line for line in lines) != 3:
         return "Q8 value oracle did not run in all three arms"
     return None
@@ -95,10 +109,14 @@ def main() -> int:
 
     try:
         expected_lines = args.evidence.read_text().splitlines()
+        expected_rows = candidate_denominator(Q8_CANDIDATES.read_text())
     except OSError as exc:
         print(f"[l208-committed] FAIL: cannot read evidence: {exc}")
         return 1
-    why = validate(expected_lines)
+    except ValueError as exc:
+        print(f"[l208-committed] FAIL: {exc}")
+        return 1
+    why = validate(expected_lines, expected_rows)
     if why:
         print(f"[l208-committed] FAIL: committed evidence is malformed: {why}")
         return 1
@@ -172,7 +190,7 @@ def main() -> int:
             print("\n".join(proc.stdout.splitlines()[-80:]))
             return 1
         actual_lines = canonical_lines(proc.stdout)
-        why = validate(actual_lines)
+        why = validate(actual_lines, expected_rows)
         if why:
             print(f"[l208-committed] FAIL: regenerated evidence is malformed: {why}")
             return 1
@@ -184,7 +202,7 @@ def main() -> int:
     mode = "validated" if args.committed_only else "regenerated"
     print(
         f"[l208-committed] PASS: exact 12-line Q8 evidence {mode}; "
-        "18-row layout/value proof and four causal RED controls remain closed"
+        f"{expected_rows}-row layout/value proof and four causal RED controls remain closed"
     )
     return 0
 

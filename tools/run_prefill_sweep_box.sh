@@ -1,18 +1,24 @@
 #!/usr/bin/env bash
-# First real-format prefill smoke sweep: q/k/v/o of the first complete
-# full-attention layer in the actual
-# Qwen3.5-35B-A3B GGUF, for M=64 and M=2048.  qtype comes from the GGUF
-# tensor header.  The finite denominator is the explicitly tagged semantic
-# rows in test_scalefirst_bench plus Q8's shared candidate manifest; this
-# script does not call that a full generated
-# tactic sweep and does not time the scale prepass or direct-FQ arm.
+# Real-format q/k/v/o sweep for the M values named by the committed spec.
+# qtype comes from the GGUF tensor header. The bounded denominator is the
+# explicitly tagged semantic rows in test_scalefirst_bench plus Q8's shared
+# candidate manifest. This is a performance envelope, not a claim that every
+# generated tactic exists, and it does not time the scale prepass/direct-FQ arm.
 set -uo pipefail
 
 main() {
-  local root spec gguf sha short stamp out build_root build_log plan binary rc proof_log proof_evidence
+  local root spec spec_rel gguf sha short stamp out build_root build_log plan binary rc proof_log proof_evidence
   local -a bins
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
   spec="${PREFILL_SPEC:-$root/benchmarks/prefill_qwen35_a3b_smoke.json}"
+  spec="$(realpath -e -- "$spec")" || {
+    printf '[prefill-sweep] FAIL: spec does not exist: %s\n' "${PREFILL_SPEC:-$root/benchmarks/prefill_qwen35_a3b_smoke.json}" >&2
+    return 2
+  }
+  case "$spec" in
+    "$root"/*) spec_rel="${spec#"$root"/}" ;;
+    *) printf '[prefill-sweep] FAIL: spec must be a committed repository file: %s\n' "$spec" >&2; return 2 ;;
+  esac
   gguf="${GGUF:-/sim/eec/shared/AI_workspace/llm-models/Qwen3.5-35B-A3B-Q4_K_M-GGUF/Qwen3.5-35B-A3B-Q4_K_M.gguf}"
   sha="$(git -C "$root" rev-parse HEAD)" || return 2
   short="${sha:0:8}"
@@ -39,12 +45,25 @@ main() {
   proof_evidence="$out/l208-q8-layout.expected.txt"
 
   # This result must bind to the named SHA, not merely to whatever source
-  # bytes happened to be in a dirty checkout.  Unrelated work may coexist,
-  # but every planner/build/layout authority used by this runner must be the
-  # committed version.
+  # bytes happened to be in a dirty checkout. A partial include-graph list
+  # cannot establish that property: a dirty transitive collective or CMake
+  # file changes the binary just as surely as this runner does. Require the
+  # complete tracked root and actlize trees to match their named commits.
+  if ! git -C "$root" diff --quiet HEAD -- ||
+     ! git -C "$root" diff --cached --quiet HEAD --; then
+    printf '[prefill-sweep] FAIL: tracked source differs from root SHA %s\n' "$sha" >&2
+    git -C "$root" status --short >&2
+    return 2
+  fi
+  if ! git -C "$root/third_party/actlize" diff --quiet HEAD -- ||
+     ! git -C "$root/third_party/actlize" diff --cached --quiet HEAD --; then
+    printf '[prefill-sweep] FAIL: tracked actlize source differs from its named SHA\n' >&2
+    git -C "$root/third_party/actlize" status --short >&2
+    return 2
+  fi
   local -a authorities=(
     tools/prefill_sweep.py tools/run_prefill_sweep_box.sh
-    benchmarks/prefill_qwen35_a3b_smoke.json
+    "$spec_rel"
     benchmarks/test_scalefirst_bench.cu benchmarks/prefill_q8_candidates.inc
     dev/fold_derivation/l208_q8_emit_layout.cu
     dev/fold_derivation/run_l208_q8_emit_layout.sh
@@ -108,7 +127,12 @@ main() {
     printf 'gguf=%s\n' "$gguf"
     printf 'spec=%s\n' "$spec"
     printf 'timing_scope=ScaleFirst-GEMM-only;prepass-and-direct-FQ-excluded\n'
-    printf 'candidate_scope=finite-manual-row-families;q8-authority=benchmarks/prefill_q8_candidates.inc\n'
+    printf 'cache_scope=same-address-warm-upper-envelope;distinct-MBU-is-a-traffic-model-not-a-counter\n'
+    printf 'candidate_scope=bounded-performance-envelope;q8-authority=benchmarks/prefill_q8_candidates.inc\n'
+    printf 'host=%s\n' "$(hostname)"
+    printf 'kernel=%s\n' "$(uname -srmo)"
+    printf 'hgcc=%s\n' "$(command -v hgcc 2>/dev/null || printf UNAVAILABLE)"
+    printf 'hgcc_version_begin\n'; hgcc --version 2>&1 || true; printf 'hgcc_version_end\n'
     printf 'l208_evidence=%s\n' "$proof_evidence"
     printf 'l208_evidence_sha256=%s\n' "$(sha256sum "$proof_evidence" | awk '{print $1}')"
     printf 'l208_log=%s\n' "$proof_log"
