@@ -2557,6 +2557,17 @@ quactlize_ppu_executable(
 )
 target_compile_options(test_lowbit_dense_splitk_parallel PRIVATE -w)
 
+# Generated FullyQuantized S1/Split-K component shards.  The block is inert
+# unless the runner supplies FQ_SWEEP_GENERATED_DIR and its exact tuple
+# identity; keeping it in a separate fragment prevents this diagnostic target
+# from changing any shipping target's source graph.
+include("${CMAKE_CURRENT_LIST_DIR}/fq_internal_sweep.cmake.in")
+
+# Generated all-format ScaleFirst NP/persistent/Split-K component shards.
+# This diagnostic graph is inert unless its runner supplies an exact generated
+# tuple authority and does not alter any shipping target.
+include("${CMAKE_CURRENT_LIST_DIR}/scalefirst_internal_sweep.cmake.in")
+
 # Final dense fixed Split-K performance search.  This is not a hand-written
 # winner table: parse the committed int4/ArtifactTK64 dense authority, retain
 # exactly the rows accepted by DensePackedAKernelTypes<1> (TM=WM=8, ordinary

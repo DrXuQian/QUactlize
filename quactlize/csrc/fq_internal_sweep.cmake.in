@@ -1,0 +1,70 @@
+# FullyQuantized internal sweep target.
+#
+# This fragment is intentionally independent from the large shipping-target
+# graph in CMakeLists.txt.in.  The runner generates one exact
+# (qtype, ArtifactTileK, BChunk) registry and a sharded list of real compiled
+# Shipping/Split types, then points this fragment at that one authority.  It
+# must be included only after qz_resolve_sources() and
+# quactlize_ppu_executable() have been defined.
+
+if(FQ_SWEEP_GENERATED_DIR)
+  foreach(_required IN ITEMS
+      FQ_SWEEP_QTYPE FQ_SWEEP_ARTIFACT_TK FQ_SWEEP_BCHUNK
+      FQ_SWEEP_PACKED_FORMAT)
+    if(NOT DEFINED ${_required} OR "${${_required}}" STREQUAL "")
+      message(FATAL_ERROR
+        "FullyQuantized internal sweep: ${_required} is required when "
+        "FQ_SWEEP_GENERATED_DIR is set")
+    endif()
+  endforeach()
+
+  get_filename_component(_FQ_SWEEP_GENERATED_DIR
+    "${FQ_SWEEP_GENERATED_DIR}" ABSOLUTE)
+  if(NOT EXISTS "${_FQ_SWEEP_GENERATED_DIR}/units.cmake" OR
+     NOT EXISTS "${_FQ_SWEEP_GENERATED_DIR}/fq_tc_registry.inc" OR
+     NOT EXISTS "${_FQ_SWEEP_GENERATED_DIR}/manifest.json")
+    message(FATAL_ERROR
+      "FullyQuantized internal sweep: generated authority is incomplete: "
+      "${_FQ_SWEEP_GENERATED_DIR}")
+  endif()
+  include("${_FQ_SWEEP_GENERATED_DIR}/units.cmake")
+
+  qz_resolve_sources(_FQ_SWEEP_MAIN
+    test_fully_quantized_internal_sweep.cu)
+  qz_resolve_sources(_FQ_SWEEP_LAYOUT_SOURCE
+    ppu_dense_layout.cu)
+  list(GET _FQ_SWEEP_MAIN 0 _FQ_SWEEP_MAIN)
+  list(GET _FQ_SWEEP_LAYOUT_SOURCE 0 _FQ_SWEEP_LAYOUT_SOURCE)
+
+  set(_FQ_SWEEP_DEVICE_DEFS
+    "-I${_FQ_SWEEP_GENERATED_DIR}"
+    "-DFQ_SWEEP_QTYPE=${FQ_SWEEP_QTYPE}"
+    "-DFQ_SWEEP_ARTIFACT_TK=${FQ_SWEEP_ARTIFACT_TK}"
+    "-DFQ_SWEEP_BCHUNK=${FQ_SWEEP_BCHUNK}"
+    "-DPPU_PACKED_SCALE=1"
+    "-DPPU_PACKED_FORMAT=${FQ_SWEEP_PACKED_FORMAT}"
+    "-DPPU_B_CHUNK=${FQ_SWEEP_BCHUNK}")
+
+  quactlize_ppu_executable(
+    test_fully_quantized_internal_sweep
+    "${_FQ_SWEEP_MAIN}"
+    "${_FQ_SWEEP_LAYOUT_SOURCE}"
+    ${FQ_TC_GENERATED_UNIT_SOURCES}
+    DEV_COMPILE_FLAGS ${_FQ_SWEEP_DEVICE_DEFS})
+  target_include_directories(test_fully_quantized_internal_sweep PRIVATE
+    "${_FQ_SWEEP_GENERATED_DIR}")
+  target_compile_definitions(test_fully_quantized_internal_sweep PRIVATE
+    FQ_SWEEP_QTYPE=${FQ_SWEEP_QTYPE}
+    FQ_SWEEP_ARTIFACT_TK=${FQ_SWEEP_ARTIFACT_TK}
+    FQ_SWEEP_BCHUNK=${FQ_SWEEP_BCHUNK}
+    PPU_PACKED_SCALE=1
+    PPU_PACKED_FORMAT=${FQ_SWEEP_PACKED_FORMAT}
+    PPU_B_CHUNK=${FQ_SWEEP_BCHUNK})
+  target_compile_options(test_fully_quantized_internal_sweep PRIVATE -w)
+
+  list(LENGTH FQ_TC_GENERATED_UNIT_SOURCES _FQ_SWEEP_UNIT_COUNT)
+  message(STATUS
+    "FullyQuantized internal sweep: q=${FQ_SWEEP_QTYPE} "
+    "A=${FQ_SWEEP_ARTIFACT_TK} bc=${FQ_SWEEP_BCHUNK} "
+    "format=${FQ_SWEEP_PACKED_FORMAT} units=${_FQ_SWEEP_UNIT_COUNT}")
+endif()

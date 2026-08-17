@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
-"""Bind the internal full-sweep axis census to its source authorities.
+"""Bind the internal full-sweep axis census to component source authorities.
 
-This checker has two deliberately different modes:
-
-* ``--self-test`` proves the source census and its planted negatives; it is a
-  green local check.
-* ``--audit-current`` asks whether today's top-level runners already cover the
-  complete census.  It is expected to remain red until the integration gaps
-  printed by this program are closed.  A historical default is never promoted
-  to a complete axis merely to make this mode green.
+``--audit-current`` consumes the ScaleFirst/FullyQuantized matrix and analyzer
+contracts directly.  It deliberately does not infer coverage from a committed
+legal-table row count: legal rows alone erase static rejects, unsupported
+formats, and runtime algorithm expansion from the denominator.
 """
 
 from __future__ import annotations
@@ -16,6 +12,7 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import importlib
 import itertools
 import pathlib
 import re
@@ -27,15 +24,15 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 TACTIC = ROOT / "quactlize/include/ppu_tactic_space.hpp"
 FORMAT = ROOT / "quactlize/include/ppu_format_config.inc"
 FORMAT_HPP = ROOT / "quactlize/include/ppu_format_config.hpp"
-EMITTER = ROOT / "benchmarks/emit_tactic_configs.cpp"
-Q8_TABLE = ROOT / "benchmarks/lowbit_dense_i8_configs.inc"
+SF_MATRIX = ROOT / "tools/scalefirst_internal_matrix.py"
+SF_EMITTER = ROOT / "tools/emit_scalefirst_internal_superset.cpp"
 SF_RUNNER = ROOT / "tools/run_scalefirst_internal_sweep_box.sh"
 SF_ANALYZER = ROOT / "tools/analyze_scalefirst_internal_sweep.py"
 FQ_MATRIX = ROOT / "tools/fully_quantized_internal_matrix.py"
 FQ_EMITTER = ROOT / "tools/emit_fully_quantized_splitk_superset.cpp"
 FQ_BENCH = ROOT / "benchmarks/test_fully_quantized_internal_sweep.cu"
 FQ_RUNNER = ROOT / "tools/run_fully_quantized_internal_sweep_box.sh"
-FQ_PLAN_RUNNER = ROOT / "tools/run_fully_quantized_internal_matrix.sh"
+FQ_ANALYZER = ROOT / "tools/analyze_fully_quantized_internal_sweep.py"
 BC = ROOT / "quactlize/include/gguf_bc_vecdot.hpp"
 BC_Q4 = ROOT / "quactlize/include/gguf_bc_q4_gemv.hpp"
 OLD_GEMV = ROOT / "quactlize/include/gemv_lowbit/gemv_tactic_space.hpp"
@@ -148,6 +145,7 @@ def source_census() -> dict:
     artifacts = {8: (32,)}
     artifacts.update({q: supported_artifacts(q, matrix_artifacts) for q in format_rows()})
     return {
+        "qtypes": (8, 10, 11, 12, 13, 14),
         "compile_axes": axes,
         "raw_topology_per_format_artifact": count,
         "raw_topology_sha256": digest,
@@ -161,32 +159,17 @@ def source_census() -> dict:
 
 
 def require_source_structure(census: dict) -> None:
-    emitter = text(EMITTER)
+    sf_emitter = text(SF_EMITTER)
     fq_emitter = text(FQ_EMITTER)
     for loop in ("kTileM", "kTileN", "kWarpM", "kWarpN", "kBChunkModes"):
-        if f": {loop})" not in emitter:
+        if f": {loop})" not in sf_emitter:
             raise CensusError(f"ScaleFirst emitter no longer loops over {loop}")
         if f": {loop})" not in fq_emitter:
             raise CensusError(f"FQ emitter no longer loops over {loop}")
-    if "for (int tactic_tk : tactic_tks)" not in emitter:
-        raise CensusError("ScaleFirst emitter no longer loops over explicit TacticTileK values")
+    if "for (int tactic_tk : kTileK)" not in sf_emitter:
+        raise CensusError("ScaleFirst emitter no longer loops over shared TacticTileK values")
     if "for (int tactic_tk : kTileK)" not in fq_emitter:
         raise CensusError("FQ emitter no longer loops over the shared TacticTileK axis")
-    # Historical defaults are deliberately present, but they are not the full
-    # experiment ladder.  The committed full Q8 table must spell the latter.
-    if "std::vector<int> g_stages{2, 3, 4};" not in emitter:
-        raise CensusError("historical stage default moved; re-audit its non-authority status")
-    table = text(Q8_TABLE)
-    match = re.search(r"^//\s+stages:\s+([0-9 ]+)\s+<-", table, re.M)
-    if match is None:
-        raise CensusError("Q8 table lacks an explicit stage coverage stamp")
-    table_stages = tuple(map(int, match.group(1).split()))
-    if table_stages != census["compile_axes"]["stages"]:
-        raise CensusError(
-            f"full Q8 stage stamp {table_stages} differs from experiment ladder "
-            f"{census['compile_axes']['stages']}")
-    if "--prune=none" not in table or "--tactic-tk=32,64,128,256" not in table:
-        raise CensusError("Q8 table regeneration command silently narrows legal tactics")
     if "artifact_tile_k_supported" not in text(FORMAT_HPP):
         raise CensusError("finite artifact producer ABI disappeared")
 
@@ -210,36 +193,319 @@ def require_source_structure(census: dict) -> None:
         raise CensusError("legacy gemv_lowbit CTA_N axis moved; reclassify it")
 
 
-def current_runner_gaps(census: dict) -> list[str]:
-    gaps: list[str] = []
+def bash_int_array(source: str, name: str) -> tuple[int, ...]:
+    match = re.search(rf"\b{re.escape(name)}=\((?P<body>[^)]*)\)", source)
+    if match is None:
+        raise CensusError(f"runner no longer declares {name}")
+    values = tuple(map(int, re.findall(r"\b\d+\b", match.group("body"))))
+    if not values or len(values) != len(set(values)):
+        raise CensusError(f"runner axis {name} is empty or duplicated: {values}")
+    return values
+
+
+def component_modules():
+    tools = str(ROOT / "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    importlib.invalidate_caches()
+    modules = (
+        importlib.import_module("scalefirst_internal_matrix"),
+        importlib.import_module("analyze_scalefirst_internal_sweep"),
+        importlib.import_module("fully_quantized_internal_matrix"),
+        importlib.import_module("analyze_fully_quantized_internal_sweep"),
+    )
+    expected = (SF_MATRIX, SF_ANALYZER, FQ_MATRIX, FQ_ANALYZER)
+    for module, path in zip(modules, expected):
+        if pathlib.Path(module.__file__).resolve() != path.resolve():
+            raise CensusError(
+                f"component import {module.__name__} resolved to {module.__file__}, "
+                f"expected {path.relative_to(ROOT)}")
+    if modules[1].matrix is not modules[0] or modules[3].matrix is not modules[2]:
+        raise CensusError("analyzer and checker imported different matrix authorities")
+    return modules
+
+
+def unsupported_fixture(grouped: bool) -> dict:
+    if not grouped:
+        return {
+            "qtype": 20, "m": 1, "n": 1, "k": 256,
+            "tensor": "future", "format": "IQ4_X",
+            "model_id": "future-model", "tp_world": 2, "tp_rank": 0,
+            "partition": "n",
+        }
+    return {
+        "qtype": 12, "M": 8, "N": 4096, "K": 4096,
+        "tensor": "experts", "format": "Q4_K", "model_id": "moe",
+        "route": "grouped_fully_quantized", "route_class": "grouped",
+        "E": 256, "active": 8, "ragged": "one-heavy",
+    }
+
+
+def terminal_signature(rows: list[dict]) -> tuple[tuple[str, int, str, str], ...]:
+    return tuple(sorted((str(row["algorithm"]), int(row["S"]),
+                         str(row["status"]), str(row["problem_route"]))
+                        for row in rows))
+
+
+def current_contract_signature(census: dict) -> dict:
+    sf_matrix, sf_analyzer, fq_matrix, fq_analyzer = component_modules()
+    sf = sf_matrix.make_manifest(False)
+    fq = fq_matrix.make_manifest(False)
+
+    sf_pairs = {(int(row["qtype"]), int(row["artifact_tile_k"])): row
+                for row in sf["pairs"]}
+    sf_supported_pairs = {
+        key for key, row in sf_pairs.items()
+        if row["artifact_route"] == "SUPPORTED"
+    }
+    sf_grouped = tuple(sorted(
+        (int(row["qtype"]), str(row["algorithm"]), str(row["status"]),
+         str(row["reason"])) for row in sf["grouped_routes"]))
+    sf_descriptors = tuple(
+        (str(algorithm), int(split), str(scope), str(policy), int(grid))
+        for algorithm, split, scope, policy, grid
+        in sf_analyzer.algorithm_descriptors())
+
+    fq_q8 = next(fmt for fmt in fq_matrix.parse_formats() if fmt.qtype == 8)
+    fq_q8_cells = fq_matrix.expanded_cells([fq_q8])
+    fq_algorithms = tuple(
+        (str(fq_matrix.algorithm(split)["name"]), int(split),
+         str(fq_matrix.algorithm(split)["metric_scope"]))
+        for split in fq_matrix.SPLITS)
+
+    sf_unknown = sf_analyzer.unsupported_cells(
+        unsupported_fixture(False), "QTYPE_NOT_IN_SCALEFIRST_REGISTRY")
+    sf_unknown_grouped = sf_analyzer.unsupported_cells(
+        unsupported_fixture(True), "NO_GROUPED_SCALEFIRST_SWEEP_KERNEL")
+    fq_unknown = fq_analyzer.unsupported_cells(unsupported_fixture(False))
+    fq_unknown_grouped = fq_analyzer.unsupported_cells(
+        unsupported_fixture(True),
+        "GROUPED_FULLY_QUANTIZED_SWEEP_NOT_REGISTERED")
+
     sf_runner = text(SF_RUNNER)
-    sf_analyzer = text(SF_ANALYZER)
-    q8_table = text(Q8_TABLE)
-    if "Full Q8_0 ScaleFirst" in sf_runner and "format=Q8_0 qtype=8" in sf_runner:
-        gaps.append("ScaleFirst top-level runner is Q8/A32-only; qtypes 10--14 and their supported ArtifactTileK candidates are absent")
-    if "algorithm=np+capacity+balanced" in sf_runner and "splitk" not in sf_runner.lower():
-        gaps.append("ScaleFirst runner has no fixed Split-K S2/S4/S8 producer denominator")
-    if "noncanonical measured status" in sf_analyzer and "INADMISSIBLE" not in sf_analyzer:
-        gaps.append("ScaleFirst analyzer consumes only legal measured rows; raw static rejects do not occupy terminal denominator cells")
-    rows = re.findall(r"^\s*X\((\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),B\)", q8_table, re.M)
-    if len(rows) != 2501:
-        gaps.append(f"committed Q8 legal table count is {len(rows)}, expected audited 2501")
-    else:
-        values = [tuple(map(int, row)) for row in rows]
-        if {row[4] for row in values} != {16, 32, 64}:
-            gaps.append("Q8 legal table unexpectedly changed its WN subset; re-audit static rejects")
-        # The raw source axes contain WN128 and BChunk1.  Their absence from a
-        # legal table is correct, but a *full denominator* must name the rejects.
-        gaps.append(
-            f"ScaleFirst publishes {len(rows)} legal Q8 rows, not all "
-            f"{census['raw_topology_per_format_artifact']} raw coordinates with rejection reasons")
-    if not FQ_RUNNER.is_file():
-        gaps.append("default FullyQuantized device runner is absent; top-level falls back to a plan-only matrix")
-    if "SUPPORT_MATRIX_ONLY_NO_DEVICE_PERFORMANCE" in text(FQ_PLAN_RUNNER):
-        gaps.append("FullyQuantized fallback cannot produce measured component cells or a mergeable COMPLETE summary")
-    if "GGUF_SET" not in sf_runner:
-        gaps.append("ScaleFirst component runner has no multi-GGUF/model_id+TP+grouped input interface")
-    return gaps
+    sf_analyzer_source = text(SF_ANALYZER)
+    fq_runner = text(FQ_RUNNER)
+    fq_analyzer_source = text(FQ_ANALYZER)
+    return {
+        "sf_schema": sf.get("schema"),
+        "fq_schema": fq.get("schema"),
+        "sf_qtypes": tuple(sorted(int(row["qtype"]) for row in sf["formats"])),
+        "fq_qtypes": tuple(sorted(int(row["qtype"]) for row in fq["formats"])),
+        "sf_all_pairs": tuple(sorted(sf_pairs)),
+        "sf_supported_pairs": tuple(sorted(sf_supported_pairs)),
+        "sf_pair_raw_rows": tuple(sorted(
+            (key, int(row["raw_tactic_rows"])) for key, row in sf_pairs.items())),
+        "sf_pair_status_totals": tuple(sorted(
+            (key, sum(map(int, row["status_counts"].values())))
+            for key, row in sf_pairs.items())),
+        "sf_pair_static_rejects": sum(
+            int(row["status_counts"].get("STATIC_REJECT", 0))
+            for row in sf_pairs.values()),
+        "sf_supported_raw": int(sf["denominator"]["supported_raw_tactic_rows"]),
+        "sf_supported_pair_count": int(
+            sf["denominator"]["supported_format_artifact_pairs"]),
+        "sf_axes": {name: tuple(values) for name, values in sf["axes"].items()},
+        "sf_descriptors": sf_descriptors,
+        "sf_metric_boards": dict(sf["metric_boards"]),
+        "sf_grouped": sf_grouped,
+        "sf_unknown": terminal_signature(sf_unknown),
+        "sf_unknown_grouped": terminal_signature(sf_unknown_grouped),
+        "fq_axes": {name: tuple(values) if isinstance(values, list) else values
+                    for name, values in fq["axes"].items()},
+        "fq_algorithms": fq_algorithms,
+        "fq_bc_algorithm": str(fq_matrix.BC_ALGORITHM),
+        "fq_bc_rpw": tuple(map(int, fq_matrix.BC_ROWS_PER_WARP)),
+        "fq_q8": tuple(sorted(
+            (str(row["algorithm"]), row.get("split_k_slices"),
+             str(row["status"])) for row in fq_q8_cells)),
+        "fq_total": int(fq["denominator"]["total_support_cells"]),
+        "fq_status_total": sum(map(int, fq["status_counts"].values())),
+        "fq_static_rejects": int(fq["status_counts"].get("STATIC_REJECT", 0)),
+        "fq_unsupported": int(fq["status_counts"].get("UNSUPPORTED", 0)),
+        "fq_unknown": terminal_signature(fq_unknown),
+        "fq_unknown_grouped": terminal_signature(fq_unknown_grouped),
+        "sf_runner_artifacts": bash_int_array(sf_runner, "artifacts"),
+        "sf_runner_bchunks": bash_int_array(sf_runner, "bchunks"),
+        "fq_runner_qtypes": bash_int_array(fq_runner, "qtypes"),
+        "fq_runner_artifacts": bash_int_array(fq_runner, "artifacts"),
+        "fq_runner_bchunks": bash_int_array(fq_runner, "bchunks"),
+        "sf_runner_graph": all(marker in sf_runner for marker in (
+            "--list-plan", "gen_scalefirst_internal_units.py",
+            "test_scalefirst_internal_sweep",
+            "analyze_scalefirst_internal_sweep.py")),
+        "fq_runner_graph": all(marker in fq_runner for marker in (
+            "gen_fully_quantized_splitk_producer_units.py",
+            "test_fully_quantized_internal_sweep",
+            "analyze_fully_quantized_internal_sweep.py")),
+        "sf_reject_publication": all(marker in sf_analyzer_source for marker in (
+            'manifest["non_typed_rows"]', "terminal_from_static")),
+        "fq_reject_publication": all(marker in fq_analyzer_source for marker in (
+            'base["status"] in {"STATIC_REJECT", "UNSUPPORTED"}',
+            'status="INADMISSIBLE" if base["status"] == "STATIC_REJECT"')),
+        "sf_unsupported_publication": all(
+            marker in sf_analyzer_source for marker in (
+                "if is_grouped(plan_cell):",
+                '"NO_GROUPED_SCALEFIRST_SWEEP_KERNEL"',
+                "if fmt is None:", '"QTYPE_NOT_IN_SCALEFIRST_REGISTRY"')),
+        "fq_unsupported_publication": all(
+            marker in fq_analyzer_source for marker in (
+                "if is_grouped(plan_cell):",
+                '"GROUPED_FULLY_QUANTIZED_SWEEP_NOT_REGISTERED"',
+                "if qtype not in VALID_QTYPES:")),
+    }
+
+
+def require_current_contract(census: dict, contract: dict) -> None:
+    expected_qtypes = census["qtypes"]
+    if contract["sf_schema"] != "quactlize.scalefirst_internal_support.v2":
+        raise CensusError(f"ScaleFirst matrix schema drifted: {contract['sf_schema']}")
+    if contract["fq_schema"] != "quactlize-fq-internal-support-v2":
+        raise CensusError(f"FullyQuantized matrix schema drifted: {contract['fq_schema']}")
+    require_equal("ScaleFirst qtypes", contract["sf_qtypes"], expected_qtypes)
+    require_equal("FullyQuantized qtypes", contract["fq_qtypes"], expected_qtypes)
+
+    artifact_axis = census["compile_axes"]["tactic_tile_k"]
+    expected_all_pairs = tuple(sorted(itertools.product(expected_qtypes,
+                                                        artifact_axis)))
+    expected_supported_pairs = tuple(sorted(
+        (qtype, artifact)
+        for qtype, artifacts in census["artifact_tile_k_by_qtype"].items()
+        for artifact in artifacts))
+    require_equal("ScaleFirst all format/artifact pairs",
+                  contract["sf_all_pairs"], expected_all_pairs)
+    require_equal("ScaleFirst supported format/artifact pairs",
+                  contract["sf_supported_pairs"], expected_supported_pairs)
+    if contract["sf_supported_pair_count"] != 18:
+        raise CensusError(
+            f"supported format/artifact count is {contract['sf_supported_pair_count']}, expected 18")
+    raw = census["raw_topology_per_format_artifact"]
+    if any(value != raw for _, value in contract["sf_pair_raw_rows"]):
+        raise CensusError("ScaleFirst matrix erased a raw topology coordinate")
+    if contract["sf_pair_raw_rows"] != contract["sf_pair_status_totals"]:
+        raise CensusError("ScaleFirst terminal status counts do not cover every raw row")
+    if contract["sf_supported_raw"] != 18 * raw or \
+            contract["sf_pair_static_rejects"] <= 0:
+        raise CensusError("ScaleFirst raw rejects no longer occupy the denominator")
+
+    shared_axis_map = {
+        "tile_m": "tile_m", "tile_n": "tile_n",
+        "tactic_tile_k": "tactic_tile_k", "warp_m": "warp_m",
+        "warp_n": "warp_n", "stages": "stages",
+        "bchunk_requested": "bchunk",
+    }
+    for source_name, sf_name in shared_axis_map.items():
+        require_equal(f"ScaleFirst shared axis {source_name}",
+                      tuple(contract["sf_axes"].get(sf_name, ())),
+                      census["compile_axes"][source_name])
+    require_equal("ScaleFirst ArtifactTileK",
+                  tuple(contract["sf_axes"].get("artifact_tile_k", ())),
+                  artifact_axis)
+    require_equal("ScaleFirst fixed Split-K",
+                  tuple(contract["sf_axes"].get("fixed_split_k", ())),
+                  (2, 4, 8))
+    expected_sf_descriptors = (
+        ("non-persistent", 1, "FULL_OUTPUT", "non-persistent", 0),
+        ("persistent", 1, "FULL_OUTPUT", "capacity+balanced", 0),
+        ("scale-first-splitk", 2, "PRODUCER_ONLY_REDUCER_EXCLUDED",
+         "fixed-split-k", 0),
+        ("scale-first-splitk", 4, "PRODUCER_ONLY_REDUCER_EXCLUDED",
+         "fixed-split-k", 0),
+        ("scale-first-splitk", 8, "PRODUCER_ONLY_REDUCER_EXCLUDED",
+         "fixed-split-k", 0),
+    )
+    require_equal("ScaleFirst runtime algorithms", contract["sf_descriptors"],
+                  expected_sf_descriptors)
+    if contract["sf_metric_boards"] != {
+            "NONPERSISTENT": "FULL_OUTPUT",
+            "PERSISTENT": "FULL_OUTPUT_CAPACITY_AND_BALANCED_GRIDS",
+            "SPLITK_S2_S4_S8": "PRODUCER_ONLY_NOT_PRODUCT_E2E"}:
+        raise CensusError("ScaleFirst metric boards lost NP/P-capacity+balanced/S2/S4/S8")
+
+    expected_sf_grouped = tuple(sorted(
+        (qtype, algorithm, "UNSUPPORTED", "NO_GROUPED_SCALEFIRST_SWEEP_KERNEL")
+        for qtype in expected_qtypes
+        for algorithm in ("NONPERSISTENT", "PERSISTENT",
+                          "SPLITK_S2_PRODUCER", "SPLITK_S4_PRODUCER",
+                          "SPLITK_S8_PRODUCER")))
+    require_equal("ScaleFirst grouped terminals", contract["sf_grouped"],
+                  expected_sf_grouped)
+    # Spell the two route variants separately; duplicating one fixture cannot
+    # accidentally satisfy both unknown-qtype and grouped coverage.
+    expected_sf_unknown = tuple(sorted(
+        (algorithm, split, "UNSUPPORTED", "dense")
+        for algorithm, split in (("non-persistent", 1), ("persistent", 1),
+                                 ("scale-first-splitk", 2),
+                                 ("scale-first-splitk", 4),
+                                 ("scale-first-splitk", 8))))
+    expected_sf_group_unknown = tuple(
+        (algorithm, split, status, "grouped")
+        for algorithm, split, status, _ in expected_sf_unknown)
+    require_equal("ScaleFirst unknown-qtype terminals", contract["sf_unknown"],
+                  expected_sf_unknown)
+    require_equal("ScaleFirst grouped-workload terminals",
+                  contract["sf_unknown_grouped"], expected_sf_group_unknown)
+
+    require_equal("FullyQuantized stages",
+                  tuple(contract["fq_axes"].get("stages", ())),
+                  census["compile_axes"]["stages"])
+    require_equal("FullyQuantized BChunk",
+                  tuple(contract["fq_axes"].get("bchunk_requested", ())),
+                  census["compile_axes"]["bchunk_requested"])
+    require_equal("FullyQuantized TacticTileK",
+                  tuple(contract["fq_axes"].get("tactic_tile_k", ())),
+                  artifact_axis)
+    require_equal("FullyQuantized ArtifactTileK",
+                  tuple(contract["fq_axes"].get("artifact_tile_k", ())),
+                  artifact_axis)
+    require_equal("FullyQuantized split-K", tuple(
+        contract["fq_axes"].get("split_k_slices", ())), (1, 2, 4, 8))
+    require_equal("FullyQuantized TC algorithms", contract["fq_algorithms"], (
+        ("FQ_S1", 1, "FULL_END_TO_END_SHIPPING_RESULT"),
+        ("SPLITK_S2_PRODUCER", 2,
+         "PRODUCER_ONLY_DIAGNOSTIC_NOT_A_PRODUCT_RESULT"),
+        ("SPLITK_S4_PRODUCER", 4,
+         "PRODUCER_ONLY_DIAGNOSTIC_NOT_A_PRODUCT_RESULT"),
+        ("SPLITK_S8_PRODUCER", 8,
+         "PRODUCER_ONLY_DIAGNOSTIC_NOT_A_PRODUCT_RESULT")))
+    if contract["fq_bc_algorithm"] != "PLACED_BC_GEMV_FULL_OUTPUT":
+        raise CensusError("FullyQuantized BC full-output algorithm disappeared")
+    require_equal("FullyQuantized BC RowsPerWarp", contract["fq_bc_rpw"],
+                  (1, 2, 4, 8))
+    require_equal("FullyQuantized Q8 unsupported denominator", contract["fq_q8"], (
+        ("FQ_S1", 1, "UNSUPPORTED"),
+        ("PLACED_BC_GEMV_FULL_OUTPUT", None, "UNSUPPORTED"),
+        ("SPLITK_S2_PRODUCER", 2, "UNSUPPORTED"),
+        ("SPLITK_S4_PRODUCER", 4, "UNSUPPORTED"),
+        ("SPLITK_S8_PRODUCER", 8, "UNSUPPORTED")))
+    if contract["fq_total"] != contract["fq_status_total"] or \
+            contract["fq_static_rejects"] <= 0 or contract["fq_unsupported"] != 5:
+        raise CensusError("FullyQuantized static/unsupported rows escaped its denominator")
+
+    expected_fq_unknown = tuple(sorted((
+        ("bc-gemv", 1, "UNSUPPORTED", "dense"),
+        ("tc-s1", 1, "UNSUPPORTED", "dense"),
+        ("tc-splitk", 2, "UNSUPPORTED", "dense"),
+        ("tc-splitk", 4, "UNSUPPORTED", "dense"),
+        ("tc-splitk", 8, "UNSUPPORTED", "dense"))))
+    expected_fq_grouped = tuple(
+        (algorithm, split, status, "grouped")
+        for algorithm, split, status, _ in expected_fq_unknown)
+    require_equal("FullyQuantized unknown-qtype terminals", contract["fq_unknown"],
+                  expected_fq_unknown)
+    require_equal("FullyQuantized grouped terminals",
+                  contract["fq_unknown_grouped"], expected_fq_grouped)
+
+    for name in ("sf_runner_artifacts", "fq_runner_artifacts"):
+        require_equal(name, contract[name], artifact_axis)
+    for name in ("sf_runner_bchunks", "fq_runner_bchunks"):
+        require_equal(name, contract[name], (0, 1))
+    require_equal("FullyQuantized runner qtypes", contract["fq_runner_qtypes"],
+                  (10, 11, 12, 13, 14))
+    for name in ("sf_runner_graph", "fq_runner_graph",
+                 "sf_reject_publication", "fq_reject_publication",
+                 "sf_unsupported_publication", "fq_unsupported_publication"):
+        if not contract[name]:
+            raise CensusError(f"component runtime graph lost contract seam {name}")
 
 
 def expect_red(label: str, callback) -> None:
@@ -258,6 +524,8 @@ def require_equal(label: str, got: tuple[int, ...], want: tuple[int, ...]) -> No
 def self_test() -> None:
     census = source_census()
     require_source_structure(census)
+    contract = current_contract_signature(census)
+    require_current_contract(census, contract)
     assert census["raw_topology_per_format_artifact"] == 23040
     assert sum(len(v) for v in census["artifact_tile_k_by_qtype"].values()) == 18
     axes = census["compile_axes"]
@@ -282,10 +550,30 @@ def self_test() -> None:
         "ScaleFirst algorithms",
         tuple(x for x in census["scale_first_algorithms"] if "S4" not in x),
         census["scale_first_algorithms"]))
+    planted_contract = dict(contract)
+    planted_contract["sf_descriptors"] = tuple(
+        row for row in contract["sf_descriptors"] if row[1] != 4)
+    expect_red("current ScaleFirst S4 terminal omitted",
+               lambda: require_current_contract(census, planted_contract))
+    planted_contract = dict(contract)
+    planted_contract["fq_bc_rpw"] = (1, 2, 4)
+    expect_red("current BC RowsPerWarp=8 omitted",
+               lambda: require_current_contract(census, planted_contract))
+    planted_contract = dict(contract)
+    planted_contract["fq_static_rejects"] = 0
+    expect_red("current raw rejects erased",
+               lambda: require_current_contract(census, planted_contract))
+    planted_contract = dict(contract)
+    planted_contract["fq_unknown_grouped"] = tuple(
+        row for row in contract["fq_unknown_grouped"] if row[1] != 8)
+    expect_red("current grouped unsupported S8 omitted",
+               lambda: require_current_contract(census, planted_contract))
     print("[internal-axis-census:self-test] PASS "
           f"raw_per_format_artifact={census['raw_topology_per_format_artifact']} "
           f"artifact_pairs={sum(len(v) for v in census['artifact_tile_k_by_qtype'].values())} "
-          "source_axes=BOUND negatives=stage-s6+bchunk1+artifact-set+bc-rpw+scalefirst-s4")
+          "source_axes=BOUND current_contract=BOUND "
+          "negatives=stage-s6+bchunk1+artifact-set+bc-rpw+scalefirst-s4+"
+          "runtime-s4+runtime-rpw8+raw-reject+grouped-s8")
 
 
 def audit_current() -> int:
@@ -300,13 +588,19 @@ def audit_current() -> int:
     print(f"[internal-axis-census] SOURCE raw_per_format_artifact="
           f"{census['raw_topology_per_format_artifact']} "
           f"sha256={census['raw_topology_sha256']}")
-    gaps = current_runner_gaps(census)
-    for index, gap in enumerate(gaps, 1):
-        print(f"[internal-axis-census] GAP {index}: {gap}")
-    if gaps:
-        print(f"[internal-axis-census] INCOMPLETE gaps={len(gaps)}")
-        return 3
-    print("[internal-axis-census] PASS runner denominator covers the source census")
+    contract = current_contract_signature(census)
+    require_current_contract(census, contract)
+    print("[internal-axis-census] SCALEFIRST "
+          "qtypes=8,10,11,12,13,14 pairs=18/24 "
+          "algorithms=NP+P(capacity+balanced)+S2/S4/S8-producer "
+          f"raw_rejects={contract['sf_pair_static_rejects']}")
+    print("[internal-axis-census] FULLY_QUANTIZED "
+          "qtypes=8,10,11,12,13,14 "
+          "algorithms=BC-RPW1/2/4/8+TC-S1/S2/S4/S8 "
+          f"raw_rejects={contract['fq_static_rejects']} "
+          f"unsupported={contract['fq_unsupported']}")
+    print("[internal-axis-census] COMPLETE source axes, component matrices, "
+          "runners, raw rejects, and grouped/unknown terminals agree")
     return 0
 
 

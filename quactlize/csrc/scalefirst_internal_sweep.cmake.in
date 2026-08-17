@@ -1,0 +1,55 @@
+# Generated all-format ScaleFirst NP/persistent/Split-K shard.
+# Inert unless the runner supplies the exact generated tuple authority.
+if(SCALEFIRST_SWEEP_GENERATED_DIR)
+  foreach(_required IN ITEMS SCALEFIRST_SWEEP_QTYPE
+      SCALEFIRST_SWEEP_ARTIFACT_TK SCALEFIRST_SWEEP_BCHUNK)
+    if(NOT DEFINED ${_required} OR "${${_required}}" STREQUAL "")
+      message(FATAL_ERROR
+        "ScaleFirst internal sweep: ${_required} is required with "
+        "SCALEFIRST_SWEEP_GENERATED_DIR")
+    endif()
+  endforeach()
+  get_filename_component(_SCALEFIRST_SWEEP_GENERATED_DIR
+    "${SCALEFIRST_SWEEP_GENERATED_DIR}" ABSOLUTE)
+  foreach(_file IN ITEMS units.cmake scalefirst_registry.inc manifest.json)
+    if(NOT EXISTS "${_SCALEFIRST_SWEEP_GENERATED_DIR}/${_file}")
+      message(FATAL_ERROR
+        "ScaleFirst generated authority lacks ${_file}: "
+        "${_SCALEFIRST_SWEEP_GENERATED_DIR}")
+    endif()
+  endforeach()
+  include("${_SCALEFIRST_SWEEP_GENERATED_DIR}/units.cmake")
+
+  qz_resolve_sources(_SCALEFIRST_SWEEP_MAIN
+    test_scalefirst_internal_sweep.cu)
+  qz_resolve_sources(_SCALEFIRST_SWEEP_LAYOUT_SOURCE
+    ppu_dense_layout.cu)
+  list(GET _SCALEFIRST_SWEEP_MAIN 0 _SCALEFIRST_SWEEP_MAIN)
+  list(GET _SCALEFIRST_SWEEP_LAYOUT_SOURCE 0 _SCALEFIRST_SWEEP_LAYOUT_SOURCE)
+  set(_SCALEFIRST_SWEEP_DEVICE_DEFS
+    "-I${_SCALEFIRST_SWEEP_GENERATED_DIR}"
+    "-DSCALEFIRST_SWEEP_QTYPE=${SCALEFIRST_SWEEP_QTYPE}"
+    "-DSCALEFIRST_SWEEP_ARTIFACT_TK=${SCALEFIRST_SWEEP_ARTIFACT_TK}"
+    "-DSCALEFIRST_SWEEP_BCHUNK=${SCALEFIRST_SWEEP_BCHUNK}"
+    "-DPPU_PACKED_SCALE=0"
+    "-DPPU_B_CHUNK=${SCALEFIRST_SWEEP_BCHUNK}")
+  quactlize_ppu_executable(
+    test_scalefirst_internal_sweep
+    "${_SCALEFIRST_SWEEP_MAIN}"
+    "${_SCALEFIRST_SWEEP_LAYOUT_SOURCE}"
+    ${SCALEFIRST_GENERATED_UNIT_SOURCES}
+    DEV_COMPILE_FLAGS ${_SCALEFIRST_SWEEP_DEVICE_DEFS})
+  target_include_directories(test_scalefirst_internal_sweep PRIVATE
+    "${_SCALEFIRST_SWEEP_GENERATED_DIR}")
+  target_compile_definitions(test_scalefirst_internal_sweep PRIVATE
+    SCALEFIRST_SWEEP_QTYPE=${SCALEFIRST_SWEEP_QTYPE}
+    SCALEFIRST_SWEEP_ARTIFACT_TK=${SCALEFIRST_SWEEP_ARTIFACT_TK}
+    SCALEFIRST_SWEEP_BCHUNK=${SCALEFIRST_SWEEP_BCHUNK}
+    PPU_PACKED_SCALE=0 PPU_B_CHUNK=${SCALEFIRST_SWEEP_BCHUNK})
+  target_compile_options(test_scalefirst_internal_sweep PRIVATE -w)
+  list(LENGTH SCALEFIRST_GENERATED_UNIT_SOURCES _SCALEFIRST_UNIT_COUNT)
+  message(STATUS
+    "ScaleFirst internal sweep: q=${SCALEFIRST_SWEEP_QTYPE} "
+    "A=${SCALEFIRST_SWEEP_ARTIFACT_TK} bc=${SCALEFIRST_SWEEP_BCHUNK} "
+    "units=${_SCALEFIRST_UNIT_COUNT}")
+endif()

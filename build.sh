@@ -320,7 +320,11 @@ rm -rf "$BUILD" && mkdir -p "$BUILD" && cd "$BUILD"
 # available. Keep this explicit list in lockstep with the cache variables advertised by CMake; the advice gate
 # below checks the link so a new printed knob cannot become another accepted-but-dropped environment variable.
 _SWEEP_VARS=()
-for _v in MOE_FORMATS MOE_TM_LIST MOE_TN_LIST MOE_WM_LIST MOE_STAGES MOE_CORES GEMV_GROUPS; do
+for _v in MOE_FORMATS MOE_TM_LIST MOE_TN_LIST MOE_WM_LIST MOE_STAGES MOE_CORES GEMV_GROUPS \
+          FQ_SWEEP_GENERATED_DIR FQ_SWEEP_QTYPE FQ_SWEEP_ARTIFACT_TK \
+          FQ_SWEEP_BCHUNK FQ_SWEEP_PACKED_FORMAT \
+          SCALEFIRST_SWEEP_GENERATED_DIR SCALEFIRST_SWEEP_QTYPE \
+          SCALEFIRST_SWEEP_ARTIFACT_TK SCALEFIRST_SWEEP_BCHUNK; do
   if [ -n "${!_v:-}" ]; then _SWEEP_VARS+=("-D$_v=${!_v}"); echo "[build.sh] $_v=${!_v}"; fi
 done
 # NO GOOGLETEST CLONE. actlize's CMakeLists.txt:423 clones github.com/google/googletest when

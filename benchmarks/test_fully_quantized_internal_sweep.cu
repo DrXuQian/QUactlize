@@ -1,0 +1,375 @@
+// One generated build covers one (qtype, ArtifactTileK, BChunk) tuple and any
+// number of runtime M,N,K shapes.  The orchestration runner merges all tuples,
+// static rejects and the four explicit Q8 unsupported cells into one exact
+// denominator.
+
+#include <algorithm>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <string>
+#include <vector>
+
+#include "cutlass/util/device_memory.h"
+#include "fully_quantized_splitk_producer_bench.hpp"
+#include "gguf_bc_vecdot.hpp"
+#include "gguf_packed_unit.hpp"
+
+#include "fq_tc_registry.inc"
+
+#ifndef FQ_SWEEP_QTYPE
+#error "FQ_SWEEP_QTYPE must match the generated registry"
+#endif
+#ifndef FQ_SWEEP_ARTIFACT_TK
+#error "FQ_SWEEP_ARTIFACT_TK must match the generated registry"
+#endif
+#ifndef FQ_SWEEP_BCHUNK
+#error "FQ_SWEEP_BCHUNK must match the generated registry"
+#endif
+static_assert(FQ_SWEEP_QTYPE == FQ_TC_GENERATED_QTYPE);
+static_assert(FQ_SWEEP_ARTIFACT_TK == FQ_TC_GENERATED_ARTIFACT_TK);
+static_assert(FQ_SWEEP_BCHUNK == FQ_TC_GENERATED_BCHUNK);
+
+extern "C" int quactlize_ppu_prepare_dense_for_tile(
+    uint8_t const*, uint8_t const*, uint8_t*, uint8_t*,
+    int, int, int, int);
+extern "C" int quactlize_ppu_recover_dense_for_tile(
+    uint8_t const*, uint8_t const*, uint8_t*, uint8_t*,
+    int, int, int, int);
+
+namespace fq_internal_sweep_generated {
+#define FQ_TC_DECLARE(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP)                  \
+  bool FN(fq_internal_sweep::DeviceInputs const&,                      \
+          fq_internal_sweep::Options const&,                           \
+          fq_internal_sweep::RowResult&);
+FQ_TC_REGISTRY_ROWS(FQ_TC_DECLARE)
+#undef FQ_TC_DECLARE
+}
+
+namespace {
+
+using namespace fq_internal_sweep;
+
+std::vector<RegistryRow> registry() {
+  return {
+#define FQ_TC_REGISTER(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP)                 \
+    {#FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,                                 \
+     &fq_internal_sweep_generated::FN},
+    FQ_TC_REGISTRY_ROWS(FQ_TC_REGISTER)
+#undef FQ_TC_REGISTER
+  };
+}
+
+template <int Q> struct KTypeFor;
+template <> struct KTypeFor<10> { static constexpr auto value = gguf_scale::KType::Q2_K; };
+template <> struct KTypeFor<11> { static constexpr auto value = gguf_scale::KType::Q3_K; };
+template <> struct KTypeFor<12> { static constexpr auto value = gguf_scale::KType::Q4_K; };
+template <> struct KTypeFor<13> { static constexpr auto value = gguf_scale::KType::Q5_K; };
+template <> struct KTypeFor<14> { static constexpr auto value = gguf_scale::KType::Q6_K; };
+
+struct Shape { int m=1,n=4096,k=4096; };
+
+bool parse_shape(char const* text, Shape& out) {
+  char tail = 0;
+  return std::sscanf(text, "%dx%dx%d%c", &out.m, &out.n, &out.k, &tail) == 3 &&
+      out.m > 0 && out.n > 0 && out.k > 0;
+}
+
+struct Cli {
+  int iterations = 7;
+  int repeats = 2;
+  std::vector<Shape> shapes;
+};
+
+bool parse_cli(int argc, char** argv, Cli& cli) {
+  for (int i = 1; i < argc; ++i) {
+    if (!std::strncmp(argv[i], "--shape=", 8)) {
+      Shape shape;
+      if (!parse_shape(argv[i] + 8, shape)) return false;
+      cli.shapes.push_back(shape);
+    } else if (!std::strncmp(argv[i], "--iterations=", 13)) {
+      cli.iterations = std::atoi(argv[i] + 13);
+    } else if (!std::strncmp(argv[i], "--correctness-repeats=", 22)) {
+      cli.repeats = std::atoi(argv[i] + 22);
+    } else return false;
+  }
+  if (cli.shapes.empty()) cli.shapes.push_back({1,4096,4096});
+  return cli.iterations > 0 && cli.repeats > 0;
+}
+
+int code_value(int qtype, int n, int k) {
+  int logical = ((13 * n + 7 * k + 3) & 7) - 3;
+  switch (qtype) {
+    case 10: return logical & 3;
+    case 11: return std::max(0, std::min(7, logical + 4));
+    case 12: return logical & 15;
+    case 13: return logical & 31;
+    case 14: return std::max(0, std::min(63, logical + 32));
+  }
+  return 0;
+}
+
+int decoded_value(int qtype, int code) {
+  return qtype == 11 ? code - 4 : qtype == 14 ? code - 32 : code;
+}
+
+void put_native(std::vector<uint8_t>& plane, int bits, int n, int k,
+                int N, int K, int code) {
+  std::uint64_t const bit = (std::uint64_t(n) * K + k) * bits;
+  plane[bit >> 3] |= std::uint8_t(code << (bit & 7));
+}
+
+template <gguf_scale::KType T>
+std::vector<uint8_t> make_units(int n, int k) {
+  using U = gguf_scale::packed_unit::Unit<T>;
+  int const superblocks = k / 256;
+  int const num_units = superblocks / U::kSbPerUnit;
+  std::vector<uint8_t> units(
+      std::size_t(num_units) * n * U::kUnitTotal, uint8_t(0));
+  int constexpr scale_code = T == gguf_scale::KType::Q3_K ? 33 : 1;
+  for (int u = 0; u < num_units; ++u)
+    for (int col = 0; col < n; ++col) {
+      uint8_t* unit = units.data() +
+          (std::int64_t(u) * n + col) * U::kUnitTotal;
+      for (int sb = 0; sb < U::kSbPerUnit; ++sb) {
+        uint8_t* p = unit + sb * U::kSbBytes;
+        auto one = half_t(1.f).raw();
+        p[0] = uint8_t(one); p[1] = uint8_t(one >> 8);
+        if constexpr (U::kHasMin) { p[2] = 0; p[3] = 0; }
+        for (int g = 0; g < U::kGroups; ++g) {
+          gguf_scale::packed_unit::put_code<T>(p, g, 0, scale_code);
+          if constexpr (U::kHasMin)
+            gguf_scale::packed_unit::put_code<T>(p, g, 1, 0);
+        }
+      }
+    }
+  return units;
+}
+
+struct Fixture {
+  std::vector<half_t> a, golden;
+  std::vector<uint8_t> low_native, high_native, low, high, units;
+  bool exact = false, roundtrip = false;
+};
+
+Fixture make_fixture(Shape shape) {
+  constexpr int qtype = FQ_SWEEP_QTYPE;
+  constexpr int low_bits = qtype == 10 || qtype == 11 ? 2 : 4;
+  constexpr int high_bits = qtype == 11 || qtype == 13 ? 1 : qtype == 14 ? 2 : 0;
+  Fixture f;
+  f.a.assign(std::size_t(shape.m) * shape.k, half_t(0.f));
+  f.golden.resize(std::size_t(shape.m) * shape.n);
+  f.low_native.assign(std::size_t(shape.n) * shape.k * low_bits / 8, 0);
+  f.high_native.assign(high_bits ? std::size_t(shape.n) * shape.k * high_bits / 8 : 0, 0);
+  f.low.resize(f.low_native.size());
+  f.high.resize(f.high_native.size());
+  std::vector<int> active;
+  int const superblocks = shape.k / 256;
+  int const active_superblocks = std::min(superblocks, 32);
+  for (int sample = 0; sample < active_superblocks; ++sample) {
+    // A bounded exact fixture must remain exact for the largest model K, but
+    // it must not accidentally exercise only the first Split-K slice.  Spread
+    // at most 32 nonzeros across the whole K range; Q6 then stays below 992,
+    // safely inside fp16's unit-spaced integer interval.
+    int const sb = (sample * superblocks) / active_superblocks;
+    int const k = sb * 256 + ((37 * sb + 11) & 255);
+    active.push_back(k);
+    for (int m = 0; m < shape.m; ++m)
+      f.a[std::size_t(m) * shape.k + k] = half_t((m + sb) & 1 ? -1.f : 1.f);
+  }
+  for (int n = 0; n < shape.n; ++n)
+    for (int k = 0; k < shape.k; ++k) {
+      int const code = code_value(qtype, n, k);
+      put_native(f.low_native, low_bits, n, k, shape.n, shape.k,
+                 code & ((1 << low_bits) - 1));
+      if constexpr (high_bits != 0)
+        put_native(f.high_native, high_bits, n, k, shape.n, shape.k,
+                   code >> low_bits);
+    }
+  if (quactlize_ppu_prepare_dense_for_tile(
+          f.low_native.data(), high_bits ? f.high_native.data() : nullptr,
+          f.low.data(), high_bits ? f.high.data() : nullptr,
+          shape.n, shape.k, qtype, FQ_SWEEP_ARTIFACT_TK) != 0) return f;
+  std::vector<uint8_t> low_back(f.low_native.size()), high_back(f.high_native.size());
+  f.roundtrip = quactlize_ppu_recover_dense_for_tile(
+      f.low.data(), high_bits ? f.high.data() : nullptr,
+      low_back.data(), high_bits ? high_back.data() : nullptr,
+      shape.n, shape.k, qtype, FQ_SWEEP_ARTIFACT_TK) == 0 &&
+      low_back == f.low_native && high_back == f.high_native;
+  if constexpr (qtype == 10) f.units = make_units<gguf_scale::KType::Q2_K>(shape.n, shape.k);
+  if constexpr (qtype == 11) f.units = make_units<gguf_scale::KType::Q3_K>(shape.n, shape.k);
+  if constexpr (qtype == 12) f.units = make_units<gguf_scale::KType::Q4_K>(shape.n, shape.k);
+  if constexpr (qtype == 13) f.units = make_units<gguf_scale::KType::Q5_K>(shape.n, shape.k);
+  if constexpr (qtype == 14) f.units = make_units<gguf_scale::KType::Q6_K>(shape.n, shape.k);
+  int max_abs = 0;
+  for (int m = 0; m < shape.m; ++m)
+    for (int n = 0; n < shape.n; ++n) {
+      int sum = 0;
+      for (int k : active)
+        sum += int(float(f.a[std::size_t(m) * shape.k + k])) *
+            decoded_value(qtype, code_value(qtype, n, k));
+      max_abs = std::max(max_abs, std::abs(sum));
+      f.golden[std::size_t(m) * shape.n + n] = half_t(float(sum));
+    }
+  f.exact = max_abs < 2048;
+  return f;
+}
+
+template <int QType, int ArtifactTileK, int RowsPerWarp>
+bool run_bc(Shape shape, uint8_t const* low, uint8_t const* high,
+            uint8_t const* units, half_t const* a, float* output,
+            std::vector<half_t> const& golden, int iterations,
+            CellResult& result, std::uint64_t& bad) {
+  if (shape.m != 1) return false;
+  constexpr auto T = KTypeFor<QType>::value;
+  int const bpr = shape.k / 256;
+  auto launch = [&] {
+    gguf_scale::bc_vecdot::launch_fixed<T, ArtifactTileK, RowsPerWarp, false>(
+        low, high, units,
+        reinterpret_cast<gguf_scale::vecdot::VecdotActivation const*>(a),
+        nullptr, output, shape.n, bpr, 1, 1, nullptr);
+    return cutlass::Status::kSuccess;
+  };
+  if (launch() != cutlass::Status::kSuccess ||
+      hggcDeviceSynchronize() != hggcSuccess) return false;
+  std::vector<float> host(std::size_t(shape.n));
+  if (hggcMemcpy(host.data(), output, host.size() * sizeof(float),
+                 hggcMemcpyDeviceToHost) != hggcSuccess) return false;
+  bad = 0;
+  for (int n = 0; n < shape.n; ++n)
+    bad += host[std::size_t(n)] != float(golden[std::size_t(n)]);
+  if (bad || !fq_internal_sweep::measure(launch, iterations, result)) return false;
+  return true;
+}
+
+void print_samples(std::vector<double> const& samples) {
+  std::printf("[");
+  for (std::size_t i = 0; i < samples.size(); ++i)
+    std::printf("%s%.9f", i ? "," : "", samples[i]);
+  std::printf("]");
+}
+
+template <int QType, int ArtifactTileK>
+bool run_bc_family(Shape shape, uint8_t const* low, uint8_t const* high,
+                   uint8_t const* units, half_t const* a, float* output,
+                   std::vector<half_t> const& golden, int iterations) {
+  constexpr auto T = KTypeFor<QType>::value;
+  if constexpr (!gguf_scale::bc_vecdot::arrangement_supported_v<
+                    T, ArtifactTileK>) {
+    // Static-reject cells are supplied by the matrix authority.  Emitting a
+    // runtime record here would both instantiate an illegal reader and create
+    // an unconsumed extra key in the analyzer.
+    return true;
+  } else {
+    bool family_ok = true;
+#define FQ_RUN_BC_RPW(RPW) do {                                        \
+    CellResult bc_result; std::uint64_t bad = 0;                        \
+    bool const supported = shape.m == 1;                               \
+    bool const ok = supported &&                                       \
+        run_bc<QType,ArtifactTileK,RPW>(                               \
+            shape, low, high, units, a, output, golden,                 \
+            iterations, bc_result, bad);                               \
+    constexpr int threads = QType == 12 && RPW == 4 ? 128 : 256;       \
+    std::printf(                                                       \
+        "FQ_BC_CELL q=%d A=%d shape=%dx%dx%d rpw=%d threads=%d "      \
+        "scope=FULL_OUTPUT state=%s us=%.9f raw_bad=%llu samples=",   \
+        QType, ArtifactTileK, shape.m, shape.n, shape.k, RPW, threads, \
+        !supported ? "UNSUPPORTED_M_NOT_1" : ok ? "MEASURED" : "FAILED", \
+        bc_result.median_us, static_cast<unsigned long long>(bad));     \
+    print_samples(bc_result.samples_us);                               \
+    std::printf("\n");                                                \
+    family_ok = family_ok && (!supported || ok);                       \
+  } while (false)
+    FQ_RUN_BC_RPW(1);
+    FQ_RUN_BC_RPW(2);
+    FQ_RUN_BC_RPW(4);
+    FQ_RUN_BC_RPW(8);
+#undef FQ_RUN_BC_RPW
+    return family_ok;
+  }
+}
+
+int run_shape(Shape shape, Cli const& cli) {
+  Fixture fixture = make_fixture(shape);
+  if (!fixture.exact || !fixture.roundtrip) {
+    std::fprintf(stderr,
+        "FQ_FIXTURE_FAIL q=%d A=%d shape=%dx%dx%d exact=%d roundtrip=%d\n",
+        FQ_SWEEP_QTYPE, FQ_SWEEP_ARTIFACT_TK, shape.m, shape.n, shape.k,
+        int(fixture.exact), int(fixture.roundtrip));
+    return 1;
+  }
+  cutlass::DeviceAllocation<half_t> dA(fixture.a.size());
+  cutlass::DeviceAllocation<uint8_t> dLow(fixture.low.size());
+  cutlass::DeviceAllocation<uint8_t> dHigh(std::max<std::size_t>(fixture.high.size(), 1));
+  cutlass::DeviceAllocation<uint8_t> dUnits(fixture.units.size());
+  cutlass::DeviceAllocation<half_t> dOut(std::size_t(shape.m) * shape.n);
+  cutlass::DeviceAllocation<float> dBcOut(std::size_t(shape.n));
+  std::size_t const partial_bytes = std::size_t(shape.m) * shape.n * 8 * sizeof(float);
+  cutlass::DeviceAllocation<char> dWorkspace(std::max<std::size_t>(partial_bytes, 1));
+  dA.copy_from_host(fixture.a.data()); dLow.copy_from_host(fixture.low.data());
+  if (!fixture.high.empty()) dHigh.copy_from_host(fixture.high.data());
+  dUnits.copy_from_host(fixture.units.data());
+  DeviceInputs inputs{
+      dA.get(), dLow.get(), fixture.high.empty() ? nullptr : dHigh.get(),
+      dUnits.get(), dOut.get(), dWorkspace.get(), partial_bytes,
+      fixture.golden.data(), shape.m, shape.n, shape.k};
+  Options options{cli.iterations, cli.repeats, 0, true};
+  bool all_runtime_ok = true;
+  auto rows = registry();
+  for (auto const& entry : rows) {
+    RowResult result;
+    bool const ok = entry.run(inputs, options, result);
+    all_runtime_ok = all_runtime_ok && ok;
+    for (auto const& cell : result.cells) {
+      char const* scope = cell.split == 1 ? "FULL_OUTPUT" :
+          "PRODUCER_ONLY_REDUCER_UNTIMED_CORRECTNESS";
+      std::printf(
+          "FQ_TC_CELL q=%d A=%d bchunk=%d shape=%dx%dx%d symbol=%s "
+          "tm=%d tn=%d tk=%d wm=%d wn=%d stages=%d provider=%s S=%d scope=%s "
+          "provider_capacity_rows=%d "
+          "state=%s us=%.9f raw_bad=%llu reducer_untimed=%d "
+          "shipping_smem=%zu split_smem=%zu partial_bytes=%zu samples=",
+          entry.qtype, entry.artifact_tile_k, entry.bchunk,
+          shape.m, shape.n, shape.k, entry.symbol,
+          entry.tm, entry.tn, entry.tk, entry.wm, entry.wn, entry.stages,
+          entry.a_provider ? "packed-row" : "standard-aiu",
+          cell.split, scope, cell.a_provider_capacity_rows,
+          state_name(cell.state), cell.median_us,
+          static_cast<unsigned long long>(cell.raw_bad),
+          int(cell.reducer_correctness_untimed), cell.shipping_smem,
+          cell.split_smem, cell.partial_bytes);
+      print_samples(cell.samples_us);
+      std::printf("\n");
+    }
+  }
+  if constexpr (FQ_SWEEP_BCHUNK == 0) {
+    all_runtime_ok = all_runtime_ok &&
+        run_bc_family<FQ_SWEEP_QTYPE,FQ_SWEEP_ARTIFACT_TK>(
+            shape, dLow.get(), fixture.high.empty() ? nullptr : dHigh.get(),
+            dUnits.get(), dA.get(), dBcOut.get(), fixture.golden,
+            cli.iterations);
+  }
+  std::printf("FQ_SHAPE_DONE q=%d A=%d bchunk=%d shape=%dx%dx%d "
+              "typed_rows=%zu status=%s\n",
+              FQ_SWEEP_QTYPE, FQ_SWEEP_ARTIFACT_TK, FQ_SWEEP_BCHUNK,
+              shape.m, shape.n, shape.k, rows.size(),
+              all_runtime_ok ? "PASS" : "FAIL");
+  return all_runtime_ok ? 0 : 1;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  Cli cli;
+  if (!parse_cli(argc, argv, cli)) {
+    std::fprintf(stderr,
+        "usage: %s [--shape=MxNxK ...] [--iterations=N] "
+        "[--correctness-repeats=N]\n", argv[0]);
+    return 2;
+  }
+  int rc = 0;
+  for (auto shape : cli.shapes) rc |= run_shape(shape, cli);
+  return rc;
+}
