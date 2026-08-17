@@ -161,12 +161,19 @@ def resolve_binding(path: pathlib.Path) -> list[pathlib.Path]:
     if path.is_file():
         match = SPLIT_RE.fullmatch(path.name)
         if match:
-            siblings = list(path.parent.glob(
-                f"{match.group('prefix')}-?????-of-{match.group('count')}.gguf"))
+            siblings = []
+            for sibling in path.parent.iterdir():
+                sibling_match = SPLIT_RE.fullmatch(sibling.name)
+                if (sibling.is_file() and sibling_match and
+                        sibling_match.group("prefix") == match.group("prefix") and
+                        sibling_match.group("count") == match.group("count")):
+                    siblings.append(sibling)
             return split_group(siblings)
         return split_group([path])
     if path.is_dir():
-        return split_group(path.glob("*.gguf"))
+        return split_group(
+            child for child in path.iterdir()
+            if child.is_file() and child.suffix.lower() == ".gguf")
     raise ResolveError(f"binding path does not exist: {path}")
 
 
