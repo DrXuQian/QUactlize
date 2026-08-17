@@ -243,10 +243,17 @@ def audit(files: dict[str, str]) -> list[str]:
         'tail-min-peers) STREAMK_POLICY_FLAG=(--streamk-tail-min-peers)',
         '"${STREAMK_POLICY_FLAG[@]}"',
         'if requested_policy in ("tail-only", "tail-min-peers"):',
-        '"whole": 64,',
-        '"split": 256,',
-        '"peers": 256,',
-        '"valid": 256 * 64 * 64,',
+        'topology = ({\n'
+        '        "whole": 0,\n'
+        '        "split": q % workers,\n'
+        '        "peers": 456,\n'
+        '        "valid": 456 * 64 * 64,\n'
+        '    } if requested_policy == "tail-only" else {\n'
+        '        "whole": 64,\n'
+        '        "split": 256,\n'
+        '        "peers": 256,\n'
+        '        "valid": 256 * 64 * 64,\n'
+        '    })',
         '"workspace": 5_244_160,',
         "normal_workers=",
         "Disposition: Passed (whole-K reference bit-exact; fixup replay closed)",
@@ -322,6 +329,30 @@ def self_test(files: dict[str, str]) -> list[str]:
     must_fail(
         "minimum-peer topology count drifts", "runner",
         '"peers": 256,', '"peers": 255,')
+    must_fail(
+        "tail topology branches are swapped", "runner",
+        'topology = ({\n'
+        '        "whole": 0,\n'
+        '        "split": q % workers,\n'
+        '        "peers": 456,\n'
+        '        "valid": 456 * 64 * 64,\n'
+        '    } if requested_policy == "tail-only" else {\n'
+        '        "whole": 64,\n'
+        '        "split": 256,\n'
+        '        "peers": 256,\n'
+        '        "valid": 256 * 64 * 64,\n'
+        '    })',
+        'topology = ({\n'
+        '        "whole": 64,\n'
+        '        "split": 256,\n'
+        '        "peers": 256,\n'
+        '        "valid": 256 * 64 * 64,\n'
+        '    } if requested_policy == "tail-only" else {\n'
+        '        "whole": 0,\n'
+        '        "split": q % workers,\n'
+        '        "peers": 456,\n'
+        '        "valid": 456 * 64 * 64,\n'
+        '    })')
     return failures
 
 
@@ -344,7 +375,7 @@ def main() -> int:
         "[q4k65-streamk-contract] PASS: 107b unchanged; isolated gs32 "
         "64x64x64/w64x32/s3 m16 target shares Main/Epi; normal admission "
         f"precedes forced Stream-K; exact max|D|={max_output} <= 2^11; "
-        "nine same-source negative controls red")
+        "ten same-source negative controls red")
     return 0
 
 
