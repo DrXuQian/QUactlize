@@ -74,11 +74,17 @@ def main() -> int:
     require(runner, "TARGET=quactlize_ppu", "shipping shared-library build", failures)
     require(runner, "run_l203_chunked_gdn_oracle.sh", "L203 semantic authority", failures)
     require(runner, "l205_chunked_gdn_cuda_adapter.cu", "local CUDA adapter compile", failures)
+    require(runner, '--box selects shipping PPU execution', "box/local device-authority split", failures)
+    require(runner, "QZ_GDN_BOX_PREFLIGHT_ONLY", "box-mode negative-control seam", failures)
     require(cuda_adapter, "PpuChunkedGdnKernel<Arguments, Traits>", "exact scalar kernel type", failures)
     require(cuda_adapter, "scratch[blockIdx.x]", "global test scratch seam", failures)
     require(cuda_adapter, "Kernel::MaxThreadsPerBlock", "shipping block geometry", failures)
     if "/tmp" in runner or "mktemp" in runner:
         failures.append("runner must not use /tmp or mktemp")
+    box_branch = runner.find('if [[ "$MODE" == "--box" ]]')
+    cuda_invocation = runner.find('"$NVCC" -std=c++17')
+    if box_branch < 0 or cuda_invocation < 0 or box_branch > cuda_invocation:
+        failures.append("box mode must exclude the NVIDIA CUDA invocation before it can be reached")
 
     if failures:
         for failure in failures:

@@ -4,7 +4,17 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MODE="${1:---local}"
 OUT="${OUT:-/workspace/quactlize-l205-ppu-chunked-gdn}"
+NVCC="${NVCC:-nvcc}"
+NVIDIA_SMI="${NVIDIA_SMI:-nvidia-smi}"
 mkdir -p "$OUT"
+
+case "$MODE" in
+  --local|--box) ;;
+  *)
+    echo "usage: $0 [--local|--box]" >&2
+    exit 2
+    ;;
+esac
 
 python3 "$ROOT/dev/fold_derivation/check_l205_chunked_gdn_harness.py"
 L203_BUILD_ROOT="$OUT/l203" bash "$ROOT/dev/fold_derivation/run_l203_chunked_gdn_oracle.sh"
@@ -24,15 +34,22 @@ echo "[L205 local] PASS: public-header/runtime compile contract; object=$OUT/tes
 # 101376 bytes/block).  The adapter executes the unchanged scalar collective
 # body with that ledger in global scratch.  This is a correctness launch, not
 # a performance proxy for the PPU shared-memory path.
-if [[ "${QZ_GDN_SKIP_CUDA:-0}" == 1 ]]; then
+if [[ "$MODE" == "--box" ]]; then
+  # A PPU box can expose commands named nvcc/nvidia-smi even though nvcc's
+  # device preprocessing is delegated to ppu_clang++. That mixed toolchain is
+  # not the NVIDIA correctness arm and used to fail on optional SDK headers
+  # before the shipping hgcc build was even reached. Box mode owns exactly one
+  # device authority: build.sh + hgcc + the PPU runtime below.
+  echo "[L205 CUDA] SKIP: --box selects shipping PPU execution; NVIDIA reference belongs to --local"
+elif [[ "${QZ_GDN_SKIP_CUDA:-0}" == 1 ]]; then
   echo "[L205 CUDA] SKIP: QZ_GDN_SKIP_CUDA=1"
-elif ! command -v nvcc >/dev/null 2>&1; then
+elif ! command -v "$NVCC" >/dev/null 2>&1; then
   echo "[L205 CUDA] SKIP: nvcc is unavailable"
-elif ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi -L >/dev/null 2>&1; then
+elif ! command -v "$NVIDIA_SMI" >/dev/null 2>&1 || ! "$NVIDIA_SMI" -L >/dev/null 2>&1; then
   echo "[L205 CUDA] SKIP: no NVIDIA device is visible"
 else
   CUDA_ARCH="${QZ_GDN_CUDA_ARCH:-sm_120}"
-  nvcc -std=c++17 -O3 -arch="$CUDA_ARCH" --expt-relaxed-constexpr \
+  "$NVCC" -std=c++17 -O3 -arch="$CUDA_ARCH" --expt-relaxed-constexpr \
     -DQZ_GDN_CUDA_RUNTIME=1 -DCUTLASS_USE_PACKED_TUPLE=1 \
     -I"$ROOT/quactlize/include" \
     -I"$ROOT/third_party/actlize/include" \
@@ -49,9 +66,9 @@ if [[ "$MODE" == "--local" ]]; then
   echo "[L205 device] SKIP: --local selected; PPU execution requires --box"
   exit 0
 fi
-if [[ "$MODE" != "--box" ]]; then
-  echo "usage: $0 [--local|--box]" >&2
-  exit 2
+if [[ "${QZ_GDN_BOX_PREFLIGHT_ONLY:-0}" == 1 ]]; then
+  echo "[L205 box preflight] PASS: local CUDA tools were not consulted"
+  exit 0
 fi
 
 PPU_SDK_ROOT="${PPU_SDK:-${PPU_HOME:-${PPU_SDK_SITE_DEFAULT:-/usr/local/PPU_SDK}}}"

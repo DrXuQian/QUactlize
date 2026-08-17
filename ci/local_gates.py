@@ -1470,6 +1470,31 @@ def lint_ppu_chunked_gdn_abi_harness():
         return "FAIL", "L205 paired WY zero/nonzero device arms were not both raw-bit exact", dt
     if log.count(honest_scope) != 1:
         return "FAIL", "L205 local arm did not state that device execution remains a box postcondition", dt
+
+    # Same-file, one-variable negative control: only MODE changes.  /bin/false
+    # stands in for the box's misleading command named nvcc; if the --box arm
+    # consults it at all, `set -e` turns this preflight red before its witness.
+    # This is the exact failure that previously prevented the shipping hgcc
+    # build from being reached on PPU boxes.
+    box_env = os.environ.copy()
+    box_env.update({
+        "NVCC": "/bin/false",
+        "NVIDIA_SMI": "/bin/true",
+        "QZ_GDN_BOX_PREFLIGHT_ONLY": "1",
+        "OUT": "/workspace/quactlize-l205-box-mode-preflight",
+    })
+    box_rc, box_log, box_dt = run(
+        ["bash", str(script), "--box"], cwd=str(ROOT), env=box_env)
+    dt += box_dt
+    box_skip = (
+        "[L205 CUDA] SKIP: --box selects shipping PPU execution; "
+        "NVIDIA reference belongs to --local"
+    )
+    box_witness = "[L205 box preflight] PASS: local CUDA tools were not consulted"
+    if box_rc != 0 or box_log.count(box_skip) != 1 or box_log.count(box_witness) != 1:
+        lines = [line.strip() for line in box_log.splitlines() if line.strip()]
+        return "FAIL", (lines[-1] if lines else "L205 box mode consulted local CUDA tools"), dt
+
     if log.count(cuda_witness) == 1:
         return "PASS", "public ABI harness exact; full scalar body executed on local CUDA", dt
     cuda_skip = next((line.strip() for line in log.splitlines()
