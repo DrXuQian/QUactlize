@@ -97,6 +97,28 @@ def validate_catalog(doc: Any, source: str) -> dict[str, Any]:
     shape_directory = doc.get("shape_directory")
     if not isinstance(shape_directory, dict) or set(shape_directory) != {"dense", "grouped"}:
         raise ResolveError(f"{source}: shape_directory must define dense and grouped")
+    workload_axes = doc.get("workload_axes")
+    if not isinstance(workload_axes, dict) or set(workload_axes) != {"dense", "grouped"}:
+        raise ResolveError(f"{source}: workload_axes must define dense and grouped")
+    dense_axes = workload_axes["dense"]
+    grouped_axes = workload_axes["grouped"]
+    for owner, field in ((dense_axes, "decode_m"), (dense_axes, "prefill_m"),
+                         (grouped_axes, "decode_tokens"),
+                         (grouped_axes, "prefill_tokens")):
+        values = owner.get(field) if isinstance(owner, dict) else None
+        if (not isinstance(values, list) or not values or
+                any(isinstance(value, bool) or not isinstance(value, int) or value <= 0
+                    for value in values) or len(values) != len(set(values))):
+            raise ResolveError(f"{source}: invalid workload axis {field}={values!r}")
+    if grouped_axes.get("expert_count_source") != "gguf:{architecture}.expert_count":
+        raise ResolveError(f"{source}: grouped expert_count_source is not GGUF-owned")
+    if grouped_axes.get("top_k_source") != "gguf:{architecture}.expert_used_count":
+        raise ResolveError(f"{source}: grouped top_k_source is not GGUF-owned")
+    profiles = grouped_axes.get("ragged_profiles")
+    if (not isinstance(profiles, list) or not profiles or
+            any(not isinstance(value, str) or not MODEL_ID_RE.fullmatch(value)
+                for value in profiles) or len(profiles) != len(set(profiles))):
+        raise ResolveError(f"{source}: invalid versioned ragged_profiles={profiles!r}")
     return doc
 
 
@@ -270,6 +292,20 @@ def self_test() -> None:
         "role_partition_axis"]["attn_o"] == "k"
     assert catalog["tp_policies"]["qwen-tensor-parallel-v1"][
         "role_partition_axis"]["moe_expert_up"] == "n"
+    assert catalog["workload_axes"]["grouped"]["top_k_source"] == (
+        "gguf:{architecture}.expert_used_count")
+    assert catalog["workload_axes"]["grouped"]["ragged_profiles"] == [
+        "token-topk-hot16x4-wor-sm64-s44-v1"]
+
+    planted_old_semantics = json.loads(json.dumps(catalog))
+    grouped = planted_old_semantics["workload_axes"]["grouped"]
+    grouped["active_expert_source"] = grouped.pop("top_k_source")
+    try:
+        validate_catalog(planted_old_semantics, "planted-active-means-top-k")
+    except ResolveError as exc:
+        assert "top_k_source" in str(exc)
+    else:
+        raise AssertionError("expert_used_count was accepted as active-expert authority")
 
     # Split grouping is tested without creating files: its filename arithmetic
     # is factored here and header-level split metadata has an independent

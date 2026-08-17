@@ -14,8 +14,8 @@
       "decode_tokens": [1, 2, 4],
       "prefill_tokens": [64, 2048, 4096],
       "expert_count_source": "gguf:{architecture}.expert_count",
-      "active_expert_source": "gguf:{architecture}.expert_used_count",
-      "ragged_profiles": ["balanced-active", "one-heavy"],
+      "top_k_source": "gguf:{architecture}.expert_used_count",
+      "ragged_profiles": ["token-topk-hot16x4-wor-sm64-s44-v1"],
       "routing_trace_extension": "optional-versioned-input"
     }
   },
