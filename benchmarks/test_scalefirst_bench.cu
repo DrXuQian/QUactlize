@@ -104,8 +104,11 @@ static void report(const char* tag, double us) {
   std::printf("    %-28s %8.2f us | %6.1f TFLOP/s (%4.1f%% MFU)\n", tag, us, tf, 100.0*tf*1e12/500.0e12);
 }
 
-struct Best { char tag[32]; double us; };
-static void upd(Best& b, const char* t, double u) { if (u < b.us) { b.us = u; std::snprintf(b.tag, 32, "%s", t); } }
+struct Best { char tag[32]; double us; int rows; };
+static void upd(Best& b, const char* t, double u) {
+  ++b.rows;
+  if (u < b.us) { b.us = u; std::snprintf(b.tag, 32, "%s", t); }
+}
 
 // B-concat (2 planes): TK must be 256 (int1 plane). Vary TileM / TileN / stages to trade A-smem for occupancy.
 #define BC(TM,TN,TK,WM,WN,S) do { \
@@ -181,6 +184,21 @@ static void upd(Best& b, const char* t, double u) { if (u < b.us) { b.us = u; st
       M,N,K,1,gs, shpd->get(), shpv->data(), offdev->get(), ws->get(), wsb, nullptr); }, 30); \
   report("i4 " #TM "x" #TN ":" #TK " w" #WM "x" #WN " s" #S, u); upd(bI4, #TM "x" #TN ":" #TK " s" #S, u); } while (0)
 
+// Q4_K is not the ScaleOnly int4 ceiling above.  It carries an affine zero plane at gs=32, so a prefill sweep that
+// relabels I4 as Q4_K ranks a different collective and can choose the wrong offline layout.  Build the code plane
+// from the row's real production map and time FinegrainedScaleZero explicitly; the wrapper script consumes the
+// `q4` tag and never has to infer semantics from the element width.
+#define Q4(TM,TN,TK,WM,WN,S) do { \
+  std::vector<int8_t> b_((size_t)K*N/2); \
+  xplane::place_derived<4,TM,TN,TK,WM,WN,1>(b_.data(), q4, N, K); \
+  cutlass::DeviceAllocation<int4_t> bb_((size_t)K*N); \
+  bb_.copy_from_host(reinterpret_cast<int4_t const*>(b_.data())); \
+  double u = time_it([&]{ moe_grouped_ppu::filter_and_run<QM::FinegrainedScaleZero,TM,TN,TK,WM,WN,S,int4_t>( \
+      dA->get(), bb_.get(), dSc->get(), dZr->get(), pd->get(), sd->get(), gm->get(), \
+      M,N,K,1,gs, shpd->get(), shpv->data(), offdev->get(), ws->get(), wsb, nullptr); }, 30); \
+  report("q4 " #TM "x" #TN ":" #TK " w" #WM "x" #WN " s" #S " [F=1]", u); \
+  upd(bQ4, #TM "x" #TN ":" #TK " w" #WM "x" #WN " s" #S " F1", u); } while (0)
+
 // int1 alone WITH its own fold. The "TK must be 256" note on the i1 sweep below is STALE for the same reason the
 // B-concat one was: per-plane fold reaches Block_K 128 (F=2) and 64 (F=4). It matters a lot here -- the recorded int1
 // optimum is (64,128,64) w64x64 s2 at 215.62 us / 63.7% MFU, i.e. TK=64, so a TK=256-only sweep reports 26.7% and
@@ -255,7 +273,8 @@ int main(int argc, char** argv) {
   dA=&A_; dSc=&S_; dZr=&Z_; dD=&D_; dDhi=&Dh_; dBlo=&Blo_; dBhi=&Bhi_; dB4=&B4_; shpd=&shpd_;
   pd=&pd_; pd2=&pd2_; sd=&sd_; gm=&gm_; offdev=&off_; ws=&ws_; shpv=&shp;
 
-  Best bBC{"",1e18}, bI2{"",1e18}, bI1{"",1e18}, bI4{"",1e18}, bQ6{"",1e18}, bQ5{"",1e18};
+  Best bBC{"",1e18}, bI2{"",1e18}, bI1{"",1e18}, bI4{"",1e18}, bQ4{"",1e18},
+       bQ6{"",1e18}, bQ5{"",1e18};
 
   std::printf("  --- B-concat sweep (TK locked 256; smaller TileM / fewer stages cut A-smem to lift occupancy) ---\n");
   BC(64,64,256,32,32,3);   // baseline (acu: 12.5% occ, shared-limited)
@@ -267,6 +286,20 @@ int main(int argc, char** argv) {
   BC(16,128,256,16,32,3);  // very small M
   BC(16,64,256,16,32,3);   // TileM=16 min, keep A-smem floor
   BC(16,256,256,16,32,3);  // TileM=16 + widest N: tiny A-smem, big tile area (best occ/reuse trade)
+
+  std::printf("  --- Q3 canonical TK256 with the correct cross-plane high map ---\n");
+  // The BC rows above are retained only as historical timing controls: their high plane was independently packed
+  // with the single-plane map.  These BCF/F1,F1 twins execute the same kernel geometries on the production
+  // place_derived + place_int1 bytes and are the only TK256 rows eligible for offline-layout selection.
+  BCF(64, 64,256,32,32,3,1,1);
+  BCF(64, 64,256,32,32,2,1,1);
+  BCF(32, 64,256,32,32,3,1,1);
+  BCF(32, 64,256,32,32,2,1,1);
+  BCF(32, 32,256,32,32,3,1,1);
+  BCF(32,128,256,32,32,3,1,1);
+  BCF(16,128,256,16,32,3,1,1);
+  BCF(16, 64,256,16,32,3,1,1);
+  BCF(16,256,256,16,32,3,1,1);
 
   std::printf("  --- B-concat with PER-PLANE FOLD (Block_K 128: int2 F=1, int1 F=2 -- A-smem halved) ---\n");
   // Block_K=128: int2 needs no fold (32 B run), int1 folds by 2.
@@ -351,6 +384,17 @@ int main(int argc, char** argv) {
   I4(128,64,64,64,32,3);
   I4(64,64,128,64,32,3);
 
+  std::printf("  --- Q4_K = int4 + affine zero (ScaleZero, gs=32 shipping semantics) ---\n");
+  Q4(64, 64, 64,32,32,3);
+  Q4(32, 64, 64,32,32,3);
+  Q4(64,128, 64,32,64,3);
+  Q4(64, 64,128,32,32,3);
+  Q4(64, 64, 64,64,32,3);
+  Q4(64, 64, 64,64,32,2);
+  Q4(64,128, 64,64,32,3);
+  Q4(128,64, 64,64,32,3);
+  Q4(64, 64,128,64,32,3);
+
   std::printf("  --- int1 single-plane sweep (TK 256 unfolded, then FOLDED 128/64) ---\n");
   I1(32,128,256,32,32,3);
   I1(64,64,256,32,32,3);
@@ -411,11 +455,17 @@ int main(int argc, char** argv) {
   std::printf("  int2      best: %-16s %8.2f us\n", bI2.tag, bI2.us);
   std::printf("  int1      best: %-16s %8.2f us\n", bI1.tag, bI1.us);
   std::printf("  int4 CEIL best: %-16s %8.2f us  <- fold target; int2/int1-fold ceiling\n", bI4.tag, bI4.us);
+  std::printf("  Q4_K ScaleZero best: %-16s %8.2f us\n", bQ4.tag, bQ4.us);
   std::printf("  Q6 (int4+int2)  best: %-16s %8.2f us   vs int4 alone %.2fx\n", bQ6.tag, bQ6.us, bQ6.us / bI4.us);
   std::printf("  Q5 (int4+int1)  best: %-16s %8.2f us   vs int4 alone %.2fx\n", bQ5.tag, bQ5.us, bQ5.us / bI4.us);
+  std::printf("  PREFILL_ROW_DENOMINATOR q2=%d q3=%d q4=%d q5=%d q6=%d\n",
+              bI2.rows, bBC.rows, bQ4.rows, bQ5.rows, bQ6.rows);
   double A = bI2.us + bI1.us;
   std::printf("  A-concat (best int2 + best int1, the honest sum): %8.2f us\n", A);
   std::printf("  => B-concat / A-concat = %.2fx  (%s)\n", bBC.us / A,
               bBC.us < A ? "B-concat wins" : "A-concat wins -- 2 lean GEMMs beat 1 shared-limited GEMM");
-  return 0;
+  int const launch_failures = moe_grouped_ppu::moeg_fail_count();
+  std::printf("  PREFILL_LAUNCH_STATUS failures=%d verdict=%s\n",
+              launch_failures, launch_failures == 0 ? "PASS" : "FAIL");
+  return launch_failures == 0 ? 0 : 1;
 }

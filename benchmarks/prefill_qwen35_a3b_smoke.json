@@ -1,0 +1,36 @@
+{
+  "schema": "quactlize-prefill-smoke-v1",
+  "model": "Qwen3.5-35B-A3B",
+  "scope": "dense-attention-layer0",
+  "m_values": [64, 2048],
+  "projections": [
+    {
+      "name": "q",
+      "tensor_pattern": "^blk\\.0\\.attn_q\\.weight$",
+      "n": 4096,
+      "k": 2048
+    },
+    {
+      "name": "k",
+      "tensor_pattern": "^blk\\.0\\.attn_k\\.weight$",
+      "n": 512,
+      "k": 2048
+    },
+    {
+      "name": "v",
+      "tensor_pattern": "^blk\\.0\\.attn_v\\.weight$",
+      "n": 512,
+      "k": 2048
+    },
+    {
+      "name": "o",
+      "tensor_pattern": "^blk\\.0\\.attn_output\\.weight$",
+      "n": 2048,
+      "k": 4096
+    }
+  ],
+  "notes": [
+    "The JSON supplies only geometry and tensor selectors. qtype is intentionally absent and must come from the GGUF tensor header.",
+    "Layer 0 is a smoke slice, not evidence that every layer has the same qtype in a mixed Q4_K_M checkpoint."
+  ]
+}
