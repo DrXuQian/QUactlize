@@ -1,36 +1,37 @@
 {
   "schema": "quactlize-prefill-smoke-v1",
   "model": "Qwen3.5-35B-A3B",
-  "scope": "dense-attention-layer0",
+  "scope": "first-common-full-attention-layer",
   "m_values": [64, 2048],
   "projections": [
     {
       "name": "q",
-      "tensor_pattern": "^blk\\.0\\.attn_q\\.weight$",
-      "n": 4096,
+      "tensor_pattern": "^blk\\.(?P<layer>[0-9]+)\\.attn_q\\.weight$",
+      "n": 8192,
       "k": 2048
     },
     {
       "name": "k",
-      "tensor_pattern": "^blk\\.0\\.attn_k\\.weight$",
+      "tensor_pattern": "^blk\\.(?P<layer>[0-9]+)\\.attn_k\\.weight$",
       "n": 512,
       "k": 2048
     },
     {
       "name": "v",
-      "tensor_pattern": "^blk\\.0\\.attn_v\\.weight$",
+      "tensor_pattern": "^blk\\.(?P<layer>[0-9]+)\\.attn_v\\.weight$",
       "n": 512,
       "k": 2048
     },
     {
       "name": "o",
-      "tensor_pattern": "^blk\\.0\\.attn_output\\.weight$",
+      "tensor_pattern": "^blk\\.(?P<layer>[0-9]+)\\.attn_output\\.weight$",
       "n": 2048,
       "k": 4096
     }
   ],
   "notes": [
     "The JSON supplies only geometry and tensor selectors. qtype is intentionally absent and must come from the GGUF tensor header.",
-    "Layer 0 is a smoke slice, not evidence that every layer has the same qtype in a mixed Q4_K_M checkpoint."
+    "Qwen3.5 is hybrid: layer 0 need not be a full-attention layer. The planner chooses the lowest layer id present in all four q/k/v/o projections with the declared geometry.",
+    "One selected full-attention layer is a smoke slice, not evidence that every layer has the same qtype in a mixed Q4_K_M checkpoint."
   ]
 }

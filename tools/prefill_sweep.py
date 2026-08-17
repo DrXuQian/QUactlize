@@ -169,27 +169,68 @@ def build_plan(spec_path: pathlib.Path, gguf_path: pathlib.Path) -> dict:
     headers = gguf_tensor_headers(gguf_path)
     registry = load_registry()
     denominators = source_denominators()
-    cells = []
+    # Resolve all projection names before creating cells.  Hybrid models such
+    # as Qwen3.5 do not promise that block 0 is a full-attention block, so the
+    # manifest captures a numeric layer id and we choose the lowest layer that
+    # has q/k/v/o together at the declared geometry.  Independent "first q"
+    # and "first k" choices are forbidden: they could silently splice layers.
+    resolved = []
     for projection in projections:
         pattern = projection.get("tensor_pattern", "")
         try:
             rx = re.compile(pattern)
         except re.error as e:
             raise ValueError(f"bad tensor_pattern {pattern!r}: {e}") from e
-        matches = [t for t in headers if rx.fullmatch(t["name"])]
-        if len(matches) != 1:
-            names = [t["name"] for t in matches[:8]]
-            raise ValueError(f"{projection.get('name')}: pattern {pattern!r} matched {len(matches)} tensors: {names}")
-        tensor = matches[0]
-        if len(tensor["dims"]) != 2:
-            raise ValueError(f"{tensor['name']}: expected a 2-D weight, got dims={tensor['dims']}")
-        # GGUF dimension order is K,N for llama.cpp dense weights.
-        actual_n, actual_k = int(tensor["dims"][1]), int(tensor["dims"][0])
         expected = int(projection["n"]), int(projection["k"])
-        if (actual_n, actual_k) != expected:
+        name_matches = []
+        for tensor in headers:
+            match = rx.fullmatch(tensor["name"])
+            if match:
+                name_matches.append((tensor, match))
+        geometry_matches = []
+        for tensor, match in name_matches:
+            if len(tensor["dims"]) != 2:
+                continue
+            # GGUF dimension order is K,N for llama.cpp dense weights.
+            actual_n, actual_k = int(tensor["dims"][1]), int(tensor["dims"][0])
+            if (actual_n, actual_k) == expected:
+                geometry_matches.append((tensor, match.groupdict().get("layer")))
+        if not geometry_matches:
+            same_shape = [t["name"] for t in headers
+                          if len(t["dims"]) == 2 and
+                          (int(t["dims"][1]), int(t["dims"][0])) == expected][:12]
+            named = [{"name": t["name"], "dims": t["dims"]} for t, _ in name_matches[:12]]
+            attention = [t["name"] for t in headers if "attn" in t["name"]][:20]
             raise ValueError(
-                f"{tensor['name']}: GGUF says N,K={actual_n},{actual_k}; spec says {expected}. "
-                "The checkpoint header wins; update the geometry spec before measuring.")
+                f"{projection.get('name')}: pattern {pattern!r} has no tensor with N,K={expected}; "
+                f"name_matches={named}; same_shape_candidates={same_shape}; attention_name_examples={attention}")
+        resolved.append((projection, geometry_matches))
+
+    if all(all(layer is not None for _, layer in matches) for _, matches in resolved):
+        layer_sets = [{layer for _, layer in matches} for _, matches in resolved]
+        common_layers = set.intersection(*layer_sets)
+        if not common_layers:
+            detail = {projection["name"]: sorted({layer for _, layer in matches}, key=int)
+                      for projection, matches in resolved}
+            raise ValueError(f"projection patterns have no common full-attention layer: {detail}")
+        selected_layer = min(common_layers, key=int)
+    else:
+        if any(len(matches) != 1 for _, matches in resolved):
+            detail = {projection["name"]: [t["name"] for t, _ in matches]
+                      for projection, matches in resolved}
+            raise ValueError(f"patterns without a named layer capture must resolve uniquely: {detail}")
+        selected_layer = None
+
+    cells = []
+    selected_tensors = {}
+    for projection, matches in resolved:
+        selected = [(tensor, layer) for tensor, layer in matches
+                    if selected_layer is None or layer == selected_layer]
+        if len(selected) != 1:
+            raise ValueError(f"{projection['name']}: layer {selected_layer!r} resolves to {len(selected)} tensors")
+        tensor, tensor_layer = selected[0]
+        selected_tensors[projection["name"]] = tensor["name"]
+        actual_n, actual_k = int(tensor["dims"][1]), int(tensor["dims"][0])
         qtype = int(tensor["qtype"])
         row = registry.get(qtype)
         family = FAMILY_BY_QTYPE.get(qtype)
@@ -207,6 +248,7 @@ def build_plan(spec_path: pathlib.Path, gguf_path: pathlib.Path) -> dict:
                 "id": f"{projection['name']}-m{m}",
                 "projection": projection["name"],
                 "tensor": tensor["name"],
+                "selected_layer": int(tensor_layer) if tensor_layer is not None else None,
                 "qtype_source": "GGUF-tensor-header",
                 "qtype": qtype,
                 "format": row["name"] if row else f"qtype-{qtype}",
@@ -234,6 +276,11 @@ def build_plan(spec_path: pathlib.Path, gguf_path: pathlib.Path) -> dict:
         "candidate_source": str(BENCH_SOURCE.resolve()),
         "candidate_source_sha256": sha256_file(BENCH_SOURCE),
         "candidate_denominators": denominators,
+        "tensor_selection": {
+            "policy": "lowest numeric layer present in every declared projection at the declared geometry",
+            "selected_layer": int(selected_layer) if selected_layer is not None else None,
+            "tensors": selected_tensors,
+        },
         "timing_scope": "ScaleFirst GEMM only; metadata prepass and direct FullyQuantized GEMM excluded",
         "denominator_scope": "finite manual row families in test_scalefirst_bench; not the generated full tactic space",
         "cells": cells,
@@ -636,10 +683,15 @@ def measure(plan_path: pathlib.Path, binary: pathlib.Path, out: pathlib.Path,
 def write_synthetic_gguf(path: pathlib.Path) -> None:
     """A tiny v3 header used by --self-test; contains no tensor payload."""
     tensors = [
-        ("blk.0.attn_q.weight", [2048, 4096], 12),
-        ("blk.0.attn_k.weight", [2048, 512], 10),
-        ("blk.0.attn_v.weight", [2048, 512], 13),
-        ("blk.0.attn_output.weight", [4096, 2048], 14),
+        # Hybrid control: block 0 is Gated DeltaNet and must not be mistaken
+        # for a full-attention q projection merely because its shape is close.
+        ("blk.0.attn_qkv.weight", [2048, 8192], 12),
+        ("blk.0.attn_gate.weight", [2048, 4096], 12),
+        # First full-attention layer in the real Qwen3.5 checkpoint.
+        ("blk.3.attn_q.weight", [2048, 8192], 12),
+        ("blk.3.attn_k.weight", [2048, 512], 10),
+        ("blk.3.attn_v.weight", [2048, 512], 13),
+        ("blk.3.attn_output.weight", [4096, 2048], 14),
     ]
     with path.open("wb") as f:
         f.write(b"GGUF" + struct.pack("<IQQ", 3, len(tensors), 0))
@@ -668,6 +720,10 @@ def self_test() -> int:
         assert [c["qtype"] for c in plan["cells"][::2]] == [12, 10, 13, 14]
         assert all(c["support"]["state"] == "SUPPORTED" for c in plan["cells"])
         assert plan["cells"][0]["qtype_source"] == "GGUF-tensor-header"
+        assert plan["tensor_selection"]["selected_layer"] == 3
+        assert all(c["selected_layer"] == 3 for c in plan["cells"])
+        assert plan["cells"][0]["tensor"] == "blk.3.attn_q.weight"
+        assert (plan["cells"][0]["n"], plan["cells"][0]["k"]) == (8192, 2048)
         sample = "    q4 64x64:64 w32x32 s3 [F=1]   12.50 us | 1.0 TFLOP/s\n"
         rows = parse_candidates(sample, "q4")
         assert len(rows) == 1 and rows[0]["tk"] == 64
@@ -714,7 +770,7 @@ def self_test() -> int:
         def cand(name, layout, us):
             return {"config": name, "median_us": us,
                     "layout": {"layout_class": layout}}
-        base = {"tensor": "blk.0.attn_q.weight", "qtype": 12, "n": 4096, "k": 2048}
+        base = {"tensor": "blk.3.attn_q.weight", "qtype": 12, "n": 8192, "k": 2048}
         a64, b64 = cand("a64", "layout-A", 10.0), cand("b64", "layout-B", 11.0)
         a2k, b2k = cand("a2k", "layout-A", 12.0), cand("b2k", "layout-B", 10.0)
         planted = [
@@ -729,8 +785,8 @@ def self_test() -> int:
         assert decisions[0]["minimax_diagnostic"] is not None
     finally:
         shutil.rmtree(td)
-    print("[prefill-sweep:self-test] PASS: GGUF qtype/dim authority, q4 semantic tag, FoldN negative, "
-          "Q3 legacy exclusion, denominator fail-close, and cross-M conflict")
+    print("[prefill-sweep:self-test] PASS: hybrid blk0-GDN/blk3-attention selection, GGUF qtype/dim authority, "
+          "q4 semantic tag, FoldN negative, Q3 legacy exclusion, denominator fail-close, and cross-M conflict")
     return 0
 
 
