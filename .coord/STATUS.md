@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-16 23:17:26 UTC
+    updated-at:     2026-08-17 02:16:30 UTC
     inbox-consumed: 178
-    working-on:     BPC1 false no-config verdict fixed; ready for one-build BPC1/BPC2/BPC3/BPC4 PPU rerun
-    blocked-on:     real PPU timing/ranking for the four worker-grid axes only
-    local-gates:    runner bash syntax PASS; sweep 1772->577/1195 + 12/12 plants PASS; shared Stream-K contract 47 plants PASS; bench selection pytest 8 PASS; shared measurement gate PASS with 40 planted controls; BPC1 host lowering 577/577 exact-once with real seams
-    last-commit:    37b190f Guard dense selection settlement order
-    last-heartbeat: 333
+    working-on:     DP-major tail-only Stream-K committed and ready for the fixed Q4K65 PPU A/B
+    blocked-on:     PPU timing only: compare tail-only DP=1728/SK=320 against legacy Stream-K 217.08us and persistent-DP 208.54us
+    local-gates:    L201 4616/4616 and 26,928,768 qk cells exact/nonempty, 3/3 plants red; production C++ census matches 4212 preferred + 404 fallback; shared contract 48 plants, sweep contract 14 plants, Q4K65/full-sweep boxdry links PASS
+    last-commit:    308d256 Add DP-major tail-only Stream-K mode (actlize f012b7d6)
+    last-heartbeat: 335
