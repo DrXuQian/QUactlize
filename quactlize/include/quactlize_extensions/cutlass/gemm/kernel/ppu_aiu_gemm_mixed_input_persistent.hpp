@@ -90,6 +90,10 @@ public:
     // Keep it separate from the real CU count: CU*occupancy is a physical worker count,
     // not a different piece of hardware.
     int ctas_per_cu = 0;
+    // Optional exact physical-grid override. Zero preserves the historical
+    // min(logical tiles, CU*ctas_per_cu) launch. Keeping this separate from a
+    // CU multiplier admits balanced grids such as 512 CTAs on a 72-CU box.
+    uint32_t grid_ctas_override = 0;
   };
 
   struct Params {
@@ -100,6 +104,7 @@ public:
     KernelHardwareInfo hw_info{};
     TileSchedulerParams scheduler{};
     int ctas_per_cu = 0;
+    uint32_t grid_ctas_override = 0;
   };
 
   static Params to_underlying_arguments(Arguments const& args, void* workspace) {
@@ -128,11 +133,28 @@ public:
         hw_info,
         scheduler,
         args.ctas_per_cu,
+        args.grid_ctas_override,
     };
   }
 
   static bool can_implement(Arguments const& args) {
+    int cu_count = args.hw_info.cu_count;
+    if (cu_count <= 0) {
+      cu_count = KernelHardwareInfo::query_device_multiprocessor_count(
+          args.hw_info.device_id);
+    }
+    uint64_t const resident_capacity = cu_count > 0 && args.ctas_per_cu > 0
+        ? uint64_t(cu_count) * uint64_t(args.ctas_per_cu) : 0;
+    auto problem_shape_mnkl = cute::append<4>(args.problem_shape, cute::Int<1>{});
+    dim3 const logical_grid = TileScheduler::get_tiled_cta_shape_mnl(
+        problem_shape_mnkl, TileShape{}, ClusterShape{});
+    uint64_t const logical_tiles = uint64_t(logical_grid.x) *
+        uint64_t(logical_grid.y) * uint64_t(logical_grid.z);
+    bool const grid_supported = args.grid_ctas_override == 0 ||
+        (uint64_t(args.grid_ctas_override) <= resident_capacity &&
+         uint64_t(args.grid_ctas_override) <= logical_tiles);
     return args.mode == GemmUniversalMode::kGemm && args.ctas_per_cu > 0 &&
+           grid_supported &&
            CollectiveMainloop::can_implement(args.problem_shape, args.mainloop) &&
            TileScheduler::can_implement(args.scheduler);
   }
@@ -153,7 +175,11 @@ public:
     uint64_t const resident_workers =
         uint64_t(params.hw_info.cu_count) * uint64_t(params.ctas_per_cu);
     uint64_t const logical_tiles = params.scheduler.blocks_per_problem_;
-    uint64_t const workers = resident_workers < logical_tiles ? resident_workers : logical_tiles;
+    uint64_t const requested_workers = params.grid_ctas_override != 0
+        ? uint64_t(params.grid_ctas_override)
+        : resident_workers;
+    uint64_t const workers = requested_workers < logical_tiles
+        ? requested_workers : logical_tiles;
 
     // Match StaticPersistentTileScheduler's linear block-id convention.  ClusterShape is 1,
     // so one long physical dimension is sufficient and no cluster rounding is involved.

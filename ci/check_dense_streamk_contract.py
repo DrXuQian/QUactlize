@@ -389,8 +389,20 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
     ):
         if bench.count(token) != 1:
             bad.append(f"bench must contain exactly one {token!r}")
-    if bench.count("occupancy_failure.scheduler_grid_supported = false;") != 2:
-        bad.append("Stream-K grid selection must fail closed for negative and over-occupancy requests")
+    try:
+        streamk_grid_selection = section(
+            bench,
+            "  if constexpr (dense_is_streamk_gemm<Gemm>::value) {\n"
+            "    if (options.streamk_blocks_per_cu < 0)",
+            "  if constexpr (dense_has_persistent_ctas<decltype(arguments)>::value) {")
+    except ValueError as e:
+        bad.append(str(e))
+    else:
+        if streamk_grid_selection.count(
+                "occupancy_failure.scheduler_grid_supported = false;") != 2:
+            bad.append(
+                "Stream-K grid selection must fail closed for its negative "
+                "and over-occupancy requests")
     for token in (
         "if (!final_result.split_path_exercised) return 2;",
         "if (!final_result.verification_classified) return 3;",

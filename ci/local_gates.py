@@ -1195,6 +1195,13 @@ def lint_dense_streamk_q4k65_target():
         "Q4_K65 target, exact fixture, admission order, and 107b isolation are pinned")
 
 
+def lint_dense_persistent_grid_contract():
+    """Absolute persistent-DP grids must preserve exact grid-stride ownership."""
+    return _run_ci_script(
+        "check_dense_persistent_grid_contract.py",
+        "persistent DP absolute-grid CLI, lowering, exhaustive ownership, and controls are pinned")
+
+
 def lint_dense_streamk_sweep_target():
     """The complete gs32 sweep must retain its independently derived denominator and named kernel."""
     return _run_ci_script(
@@ -2277,6 +2284,7 @@ def main():
                 ("lint", "MoE events bracket only gemm.run and retain the host-wall audit", lint_moe_event_timing),
                 ("lint", "dense Stream-K shares worker/K decomposition and resets locks before timing", lint_dense_streamk_contract),
                 ("lint", "Q4_K65 normal admission precedes an exact same-row forced Stream-K A/B", lint_dense_streamk_q4k65_target),
+                ("lint", "persistent DP absolute grids retain exact whole-tile ownership", lint_dense_persistent_grid_contract),
                 ("lint", "full dense Stream-K sweep has an exact denominator and no DP fallback", lint_dense_streamk_sweep_target),
                 ("lint", "dense TM8 family and M<8 default share one exhaustive shipping authority", lint_dense_shipping_tm8),
                 ("lint", "fixed Split-K actual-last/publish diagnostic is ordered, reusable, and source-bound", lint_fixed_splitk_last_arriver),

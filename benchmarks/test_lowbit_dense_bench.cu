@@ -776,6 +776,10 @@ struct Options {
   // physical worker-grid multiplier (real CU * blocks/CU), and is admitted
   // only when it does not exceed the exact kernel occupancy.
   int streamk_blocks_per_cu = 0;
+  // Pure-DP persistent-only physical grid override. Zero preserves the exact
+  // historical CU*occupancy grid; a positive value names an absolute CTA
+  // count so non-CU-multiple balanced grids can be measured.
+  int persistent_grid_ctas = 0;
   int marlin_blocks_per_cu = 1; // --marlin-blocks-per-cu: scheduler-owned CTA/CU sweep, default is legacy 1
   // Runtime filter for the ordinary dense and standalone-Marlin tactic
   // sweeps. Zero preserves the historical all-row sweep. Named scheduler A/B
@@ -818,6 +822,7 @@ struct Options {
     marlin_profile_subject_only =
         cmd.check_cmd_line_flag("marlin-profile-subject-only");
     cmd.get_cmd_line_argument("streamk-blocks-per-cu", streamk_blocks_per_cu);
+    cmd.get_cmd_line_argument("persistent-grid-ctas", persistent_grid_ctas);
     cmd.get_cmd_line_argument("marlin-blocks-per-cu", marlin_blocks_per_cu);
     cmd.get_cmd_line_argument("instruction-m", marlin_instruction_m);
     if (streamk_gate || streamk_split_gate || streamk_tail_only ||
@@ -852,7 +857,8 @@ struct Options {
     out << "  --instruction-m=<0|8|16>  Filter ordinary dense rows by the compiled MMA atom M (0=all).\n";
 #endif
 #if defined(DENSE_SCHEDULER_AB) && !defined(DENSE_MARLIN_WK4_AB)
-    out << "  --persistent                Use the dense persistent scheduler A/B arm.\n";
+    out << "  --persistent                Use the dense persistent scheduler A/B arm.\n"
+        << "  --persistent-grid-ctas=<n> Pure-DP exact physical grid (0=CU*occupancy default).\n";
 #endif
 #if defined(DENSE_STREAMK_SWEEP)
     out << "  --streamk                   Required intent marker; every compiled row is already Stream-K.\n"
@@ -2847,6 +2853,14 @@ template <class T>
 struct dense_has_persistent_ctas<
     T, std::void_t<decltype(std::declval<T&>().ctas_per_cu)>> : std::true_type {};
 
+template <class T, class = void>
+struct dense_has_persistent_grid_override : std::false_type {};
+
+template <class T>
+struct dense_has_persistent_grid_override<
+    T, std::void_t<decltype(std::declval<T&>().grid_ctas_override)>>
+    : std::true_type {};
+
 template <class Gemm, class = void>
 struct dense_is_streamk_gemm : std::false_type {};
 
@@ -3046,6 +3060,11 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
     occupancy_failure.passed = false;
     return occupancy_failure;
   }
+  uint64_t const logical_ctas_for_grid =
+      uint64_t(cute::ceil_div(options.m, tactic.tm)) *
+      uint64_t(cute::ceil_div(options.n, tactic.tn)) * uint64_t(options.l);
+  uint64_t const resident_grid_capacity =
+      uint64_t(cu_count) * uint64_t(occupancy_ctas_per_cu);
   arguments.hw_info = cutlass::KernelHardwareInfo{current_device, cu_count};
   if constexpr (dense_is_streamk_gemm<Gemm>::value) {
     if (options.streamk_blocks_per_cu < 0) {
@@ -3071,6 +3090,27 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
   }
   if constexpr (dense_has_persistent_ctas<decltype(arguments)>::value) {
     arguments.ctas_per_cu = ctas_per_cu;
+  }
+  if constexpr (dense_has_persistent_grid_override<decltype(arguments)>::value) {
+    uint64_t const maximum_exact_grid =
+        std::min(logical_ctas_for_grid, resident_grid_capacity);
+    if (options.persistent_grid_ctas < 0 ||
+        uint64_t(options.persistent_grid_ctas) > maximum_exact_grid) {
+      std::fprintf(
+          stderr,
+          "[dense scheduler=persistent] --persistent-grid-ctas=%d is outside "
+          "the exact resident range 0..%llu (Q=%llu CU=%d occupancy=%d); "
+          "grid NOT AVAILABLE\n",
+          options.persistent_grid_ctas,
+          static_cast<unsigned long long>(maximum_exact_grid),
+          static_cast<unsigned long long>(logical_ctas_for_grid), cu_count,
+          occupancy_ctas_per_cu);
+      occupancy_failure.passed = false;
+      occupancy_failure.scheduler_grid_supported = false;
+      return occupancy_failure;
+    }
+    arguments.grid_ctas_override =
+        uint32_t(options.persistent_grid_ctas);
   }
   if constexpr (dense_is_marlin_gemm<Gemm>::value) {
     if (options.marlin_blocks_per_cu < 1 ||
@@ -3294,18 +3334,70 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
       return grid_failure;
     }
   } else if constexpr (dense_has_persistent_ctas<decltype(arguments)>::value) {
-    uint64_t const expected = std::min(
-        logical_ctas, uint64_t(cu_count) * uint64_t(ctas_per_cu));
+    uint64_t const resident_capacity =
+        uint64_t(cu_count) * uint64_t(ctas_per_cu);
+    uint64_t const default_grid = std::min(logical_ctas, resident_capacity);
+    uint64_t const expected = options.persistent_grid_ctas > 0
+        ? uint64_t(options.persistent_grid_ctas) : default_grid;
     if (physical_ctas != expected) {
       std::fprintf(stderr,
-                   "persistent grid mismatch: got %llu CTA, expected min(%llu,%d*%d)=%llu\n",
+                   "persistent grid mismatch: got %llu CTA, requested=%d "
+                   "default=min(%llu,%d*%d)=%llu resolved=%llu\n",
                    static_cast<unsigned long long>(physical_ctas),
+                   options.persistent_grid_ctas,
                    static_cast<unsigned long long>(logical_ctas), cu_count,
-                   ctas_per_cu, static_cast<unsigned long long>(expected));
+                   ctas_per_cu, static_cast<unsigned long long>(default_grid),
+                   static_cast<unsigned long long>(expected));
       Result grid_failure;
       grid_failure.passed = false;
       return grid_failure;
     }
+    uint64_t const short_work = logical_ctas / expected;
+    uint64_t const long_workers = logical_ctas % expected;
+    uint64_t const long_work = short_work + uint64_t(long_workers != 0);
+    uint64_t const short_workers = expected - long_workers;
+    uint64_t const worker_empty = long_work * expected - logical_ctas;
+    uint64_t const baseline_capacity_rounds =
+        (logical_ctas + resident_capacity - 1) / resident_capacity;
+    uint64_t const baseline_capacity_empty =
+        baseline_capacity_rounds * resident_capacity - logical_ctas;
+    uint64_t const effective_capacity_empty =
+        long_work * resident_capacity - logical_ctas;
+    uint64_t const grid_ctas_per_cu_floor = expected / uint64_t(cu_count);
+    uint64_t const grid_ctas_per_cu_remainder = expected % uint64_t(cu_count);
+    uint64_t const grid_ctas_per_cu_ceil = grid_ctas_per_cu_floor +
+        uint64_t(grid_ctas_per_cu_remainder != 0);
+    std::printf(
+        "  [dense persistent grid] requested=%d resolved=%llu default=%llu "
+        "resident_capacity=%llu Q=%llu short_work=%llu long_work=%llu "
+        "short_workers=%llu long_workers=%llu worker_empty=%llu "
+        "worker_balance_overhead=%.6f%% resident_grid_fraction=%.6f%% "
+        "grid_ctas_per_cu=%llu+%llu/%d ceil=%llu "
+        "grid_warps_per_cu_avg=%.6f baseline_capacity_rounds=%llu "
+        "baseline_capacity_empty=%llu baseline_wave_overhead=%.6f%% "
+        "effective_capacity_empty=%llu effective_capacity_overhead=%.6f%% "
+        "coverage=grid-stride-exact-once\n",
+        options.persistent_grid_ctas,
+        static_cast<unsigned long long>(expected),
+        static_cast<unsigned long long>(default_grid),
+        static_cast<unsigned long long>(resident_capacity),
+        static_cast<unsigned long long>(logical_ctas),
+        static_cast<unsigned long long>(short_work),
+        static_cast<unsigned long long>(long_work),
+        static_cast<unsigned long long>(short_workers),
+        static_cast<unsigned long long>(long_workers),
+        static_cast<unsigned long long>(worker_empty),
+        logical_ctas ? 100.0 * double(worker_empty) / double(logical_ctas) : 0.0,
+        resident_capacity ? 100.0 * double(expected) / double(resident_capacity) : 0.0,
+        static_cast<unsigned long long>(grid_ctas_per_cu_floor),
+        static_cast<unsigned long long>(grid_ctas_per_cu_remainder), cu_count,
+        static_cast<unsigned long long>(grid_ctas_per_cu_ceil),
+        cu_count ? double(expected * uint64_t(warps_per_cta)) / double(cu_count) : 0.0,
+        static_cast<unsigned long long>(baseline_capacity_rounds),
+        static_cast<unsigned long long>(baseline_capacity_empty),
+        logical_ctas ? 100.0 * double(baseline_capacity_empty) / double(logical_ctas) : 0.0,
+        static_cast<unsigned long long>(effective_capacity_empty),
+        logical_ctas ? 100.0 * double(effective_capacity_empty) / double(logical_ctas) : 0.0);
   } else if (physical_ctas != logical_ctas) {
     std::fprintf(stderr,
                  "non-persistent grid mismatch: got %llu CTA for %llu logical tiles\n",
@@ -4218,6 +4310,17 @@ int main(int argc, char const **args) {
   if (!options.help && options.streamk_blocks_per_cu < 0) {
     std::fprintf(stderr,
                  "--streamk-blocks-per-cu must be 0 (legacy maximum) or positive\n");
+    return 1;
+  }
+  if (!options.help && options.persistent_grid_ctas < 0) {
+    std::fprintf(stderr,
+                 "--persistent-grid-ctas must be 0 (CU*occupancy default) or positive\n");
+    return 1;
+  }
+  if (!options.help && options.persistent_grid_ctas != 0 &&
+      !options.persistent) {
+    std::fprintf(stderr,
+                 "--persistent-grid-ctas is valid only with --persistent\n");
     return 1;
   }
 
