@@ -242,6 +242,10 @@ bool check_inverse() {
 bool check_scheduler_and_admission() {
   using Traits = PpuChunkedGdnTraits<64, 128, 128>;
   using Scheduler = PpuChunkedGdnScheduler<Traits>;
+  static_assert(
+      Scheduler::ceil_div(std::numeric_limits<std::int32_t>::max(), 64) ==
+          33554432,
+      "scheduler ceil-div must not overflow at INT32_MAX");
   std::uint16_t dummy16 = 0;
   float dummy32 = 0.0f;
   PpuChunkedGdnArguments<std::uint16_t> a{};
@@ -265,6 +269,12 @@ bool check_scheduler_and_admission() {
   a.cu_seqlens = nullptr;
   a.problem.num_v_heads = 5;
   ok &= can_implement_ppu_chunked_gdn<Traits>(a) == PpuChunkedGdnStatus::kUnsupportedHeadMapping;
+  a.problem = PpuChunkedGdnProblem{
+      std::numeric_limits<std::int32_t>::max(), 1,
+      std::numeric_limits<std::int32_t>::max(),
+      std::numeric_limits<std::int32_t>::max(),
+      std::numeric_limits<std::int32_t>::max(), 128, 128, 64};
+  ok &= can_implement_ppu_chunked_gdn<Traits>(a) == PpuChunkedGdnStatus::kInvalidProblem;
   std::printf("[L203 scheduler] work_tiles=18 exact_once=%d gva_map=3:1 fail_closed=%d %s\n",
               ok ? 1 : 0, ok ? 1 : 0, ok ? "PASS" : "FAIL");
   return ok;

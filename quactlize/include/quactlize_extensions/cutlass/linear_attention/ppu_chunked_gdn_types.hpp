@@ -12,15 +12,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
-#if !defined(CUTLASS_HOST_DEVICE)
-#  if defined(__CUDACC__) || defined(__HIPCC__)
-#    define QZ_GDN_HOST_DEVICE __host__ __device__
-#  else
-#    define QZ_GDN_HOST_DEVICE
-#  endif
-#else
+#if defined(__CUDACC__) || defined(__HIPCC__) || defined(__HGGCCC__)
+#  define QZ_GDN_HOST_DEVICE __host__ __device__
+#elif defined(CUTLASS_HOST_DEVICE)
 #  define QZ_GDN_HOST_DEVICE CUTLASS_HOST_DEVICE
+#else
+#  define QZ_GDN_HOST_DEVICE
 #endif
 
 namespace cutlass::linear_attention {
@@ -33,6 +32,7 @@ enum class PpuChunkedGdnStatus : std::int32_t {
   kUnsupportedChunkSize = 4,
   kUnsupportedHeadMapping = 5,
   kInvalidSequenceLayout = 6,
+  kMisalignedPointer = 7,
 };
 
 // Public inputs use the standard packed-token convention:
@@ -103,11 +103,15 @@ struct PpuChunkedGdnTraits {
 template <class Traits>
 struct PpuChunkedGdnScheduler {
   QZ_GDN_HOST_DEVICE static constexpr std::int32_t ceil_div(std::int32_t x, std::int32_t y) {
-    return (x + y - 1) / y;
+    return x / y + (x % y != 0);
   }
 
   QZ_GDN_HOST_DEVICE static constexpr std::int32_t grid_size(PpuChunkedGdnProblem const& p) {
-    return p.num_sequences * p.num_v_heads;
+    std::int64_t const grid =
+        std::int64_t(p.num_sequences) * std::int64_t(p.num_v_heads);
+    return grid > 0 && grid <= std::numeric_limits<std::int32_t>::max()
+               ? std::int32_t(grid)
+               : 0;
   }
 
   // A work tile owns the complete recurrence chain for one (sequence,V-head).
@@ -116,7 +120,8 @@ struct PpuChunkedGdnScheduler {
   QZ_GDN_HOST_DEVICE static constexpr PpuChunkedGdnWorkTileInfo
   work(std::int32_t linear_block, PpuChunkedGdnProblem const& p) {
     PpuChunkedGdnWorkTileInfo w{};
-    if (linear_block < 0 || linear_block >= grid_size(p) || p.num_v_heads <= 0 ||
+    std::int32_t const grid = grid_size(p);
+    if (linear_block < 0 || grid <= 0 || linear_block >= grid || p.num_v_heads <= 0 ||
         p.num_qk_heads <= 0 || p.num_v_heads % p.num_qk_heads != 0 ||
         p.sequence_length <= 0) {
       return w;
@@ -125,7 +130,12 @@ struct PpuChunkedGdnScheduler {
     w.sequence_idx = linear_block / p.num_v_heads;
     w.v_head_idx = linear_block % p.num_v_heads;
     w.qk_head_idx = w.v_head_idx / value_heads_per_qk_head;
-    w.token_begin = w.sequence_idx * p.sequence_length;
+    std::int64_t const token_begin =
+        std::int64_t(w.sequence_idx) * std::int64_t(p.sequence_length);
+    if (token_begin < 0 || token_begin > std::numeric_limits<std::int32_t>::max()) {
+      return PpuChunkedGdnWorkTileInfo{};
+    }
+    w.token_begin = std::int32_t(token_begin);
     w.token_count = p.sequence_length;
     w.chunk_count = ceil_div(w.token_count, Traits::ChunkSize);
     w.valid = true;
@@ -141,9 +151,27 @@ can_implement_ppu_chunked_gdn(Arguments const& args) {
       args.gamma_log2_cumsum == nullptr || args.beta == nullptr || args.output == nullptr) {
     return PpuChunkedGdnStatus::kNullPointer;
   }
+  std::int64_t const token_count =
+      std::int64_t(p.num_sequences) * std::int64_t(p.sequence_length);
+  std::int64_t const grid_count =
+      std::int64_t(p.num_sequences) * std::int64_t(p.num_v_heads);
   if (p.total_tokens <= 0 || p.num_sequences <= 0 || p.sequence_length <= 0 ||
-      p.total_tokens != p.num_sequences * p.sequence_length || p.num_qk_heads <= 0 ||
+      token_count != std::int64_t(p.total_tokens) || p.num_qk_heads <= 0 ||
       p.num_v_heads <= 0) {
+    return PpuChunkedGdnStatus::kInvalidProblem;
+  }
+  if (grid_count <= 0 || grid_count > std::numeric_limits<std::int32_t>::max()) {
+    return PpuChunkedGdnStatus::kInvalidProblem;
+  }
+  std::int64_t const qk_row_elements =
+      std::int64_t(p.num_qk_heads) * std::int64_t(Traits::HeadSizeK);
+  std::int64_t const vo_row_elements =
+      std::int64_t(p.num_v_heads) * std::int64_t(Traits::HeadSizeV);
+  if (qk_row_elements <= 0 || vo_row_elements <= 0 ||
+      std::int64_t(p.total_tokens) >
+          std::numeric_limits<std::int64_t>::max() / qk_row_elements ||
+      std::int64_t(p.total_tokens) >
+          std::numeric_limits<std::int64_t>::max() / vo_row_elements) {
     return PpuChunkedGdnStatus::kInvalidProblem;
   }
   if (p.head_size_k != Traits::HeadSizeK || p.head_size_v != Traits::HeadSizeV) {

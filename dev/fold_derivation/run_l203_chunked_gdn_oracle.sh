@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-BUILD_ROOT=/workspace/quactlize-l203-chunked-gdn
+BUILD_ROOT="${L203_BUILD_ROOT:-/workspace/quactlize-l203-chunked-gdn}"
 mkdir -p "$BUILD_ROOT"
 
 "${CXX:-g++}" -std=c++17 -O2 -Wall -Wextra -Werror \
