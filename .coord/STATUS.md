@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-17 05:37:11 UTC
+    updated-at:     2026-08-17 06:01:10 UTC
     inbox-consumed: 178
-    working-on:     PPU chunked-GDN v1 committed; waiting only for the PPU box postcondition
-    blocked-on:     PPU AIU/shared-memory execution is the remaining device-only postcondition
-    local-gates:    GDN PASS 4/4; pytest 249 passed / 37 skipped / 1 stale-_C refusal; full tier 189/196 with seven non-GDN reds
-    last-commit:    b6a8b61 Add standalone PPU chunked GDN v1
-    last-heartbeat: 346
+    working-on:     prefill smoke sweep committed; waiting for the PPU box measurements
+    blocked-on:     direct-FQ prefill still lacks a formal perf harness; current sweep is ScaleFirst GEMM-only
+    local-gates:    prefill self-test + mock 8-cell E2E PASS; placed-artifact ABI pytest 17/17; py_compile/bash -n/diff-check PASS
+    last-commit:    2488cdb Add real-format prefill smoke sweep
+    last-heartbeat: 347
