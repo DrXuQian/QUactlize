@@ -84,6 +84,7 @@ namespace cutlass
 //     int1  CodesPerVreg=32  code bits -> 2, 8, 16, 32, 1     vreg -> 64, 4
 //     int2  CodesPerVreg=16  code bits -> 2, 8, 16, 1          vreg -> 32, 4
 //     int4  CodesPerVreg= 8  code bits -> 2, 8, 1              vreg -> 16, 4
+//     int8  CodesPerVreg= 4  code bits -> 2, 1                 vreg ->  8, 4
 // int4 looks structurally different in the source -- four base-8 calls, result_ptr[0,2,1,3], a 4-element block swap
 // -- only because it folds the vreg into a GLOBAL code index. Split it back out (vreg = c/8, code = c%8) and it is
 // the same map.
@@ -91,7 +92,7 @@ namespace cutlass
 // NO LONGER DESCRIPTIVE. int2 and int1 now index h2[] THROUGH MixGemmEmit<Bits>::index(t, v)/2, and int4 -- whose
 // composed base8-o-permutation-o-block-swap form is all risk to rewrite on the 55.9% production path -- is PINNED to
 // it by a static_assert instead. So a new bit width inherits a map that is bijective by construction and agrees with
-// three existing converters, rather than being hand-derived again. That hand-derivation is where the int2
+// the existing converters, rather than being hand-derived again. That hand-derivation is where the int2
 // sigma_n = n & ~8 bug came from. The point was
 // a single source of truth for offline placement generators, which previously each re-derived this by hand.
 // Validated 0 mismatch against all three converters' own mask constants and sub-vector permutations in
@@ -103,8 +104,9 @@ namespace cutlass
 template <int Bits>
 struct MixGemmEmit {
   static constexpr int kCodesPerVreg = 32 / Bits;
-  static constexpr int kNumCodeBits  = (Bits == 1) ? 5 : (Bits == 2) ? 4 : (Bits == 4) ? 3 : 0;
-  static_assert(kNumCodeBits != 0, "MixGemmEmit: only 1/2/4-bit codes");
+  static constexpr int kNumCodeBits  =
+      (Bits == 1) ? 5 : (Bits == 2) ? 4 : (Bits == 4) ? 3 : (Bits == 8) ? 2 : 0;
+  static_assert(kNumCodeBits != 0, "MixGemmEmit: only 1/2/4/8-bit codes");
 
   // THIS IS A cute LAYOUT, not a closed-form loop. It used to be the loop; the formula is a sum of per-bit weights,
   // which is precisely what a Layout is, and expressing it as one lets it COMPOSE with the other layouts in the

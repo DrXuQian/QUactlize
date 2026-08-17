@@ -75,9 +75,10 @@ static std::vector<int8_t> pack_plane(const std::vector<uint8_t>& q) {
 }
 
 // globals filled in main, so the sweep macros stay short
-static cutlass::DeviceAllocation<half_t>  *dA, *dSc, *dZr, *dD, *dDhi;
+static cutlass::DeviceAllocation<half_t>  *dA, *dSc, *dZr, *dD, *dDhi, *dA8, *dSc8;
 static cutlass::DeviceAllocation<uint2_t> *dBlo;
 static cutlass::DeviceAllocation<int4_t>  *dB4;
+static cutlass::DeviceAllocation<int8_t>  *dB8;
 static cutlass::DeviceAllocation<uint1_t> *dBhi;
 static cutlass::DeviceAllocation<GS>       *shpd;
 static cutlass::DeviceAllocation<half_t*>  *pd, *pd2;
@@ -86,6 +87,32 @@ static cutlass::DeviceAllocation<int>      *gm, *offdev;
 static cutlass::DeviceAllocation<char>     *ws;
 static std::vector<GS>                     *shpv;
 static size_t                               wsb;
+static std::vector<half_t>                  q8_reference;
+static int                                  q8_correctness_failures;
+
+static bool verify_q8_output(char const* tag) {
+  std::vector<half_t> got((size_t)M * N);
+  dDhi->copy_to_host(got.data());
+  size_t bad = 0, first = got.size();
+  for (int m = 0; m < M; ++m) for (int n = 0; n < N; ++n) {
+    size_t const index = size_t(m) * N + n;
+    if (got[index].raw() != q8_reference[index].raw()) {
+      if (first == got.size()) first = index;
+      ++bad;
+    }
+  }
+  if (bad) {
+    std::printf("  Q8_CORRECTNESS config=%s bad=%zu/%zu first=%zu got=0x%04x want=0x%04x "
+                "fixture=ORDER-INDEPENDENT+FP16-EXACT verdict=FAIL\n",
+                tag, bad, got.size(), first, unsigned(got[first].raw()),
+                unsigned(q8_reference[first].raw()));
+    ++q8_correctness_failures;
+    return false;
+  }
+  std::printf("  Q8_CORRECTNESS config=%s bad=0/%zu "
+              "fixture=ORDER-INDEPENDENT+FP16-EXACT verdict=PASS\n", tag, got.size());
+  return true;
+}
 
 template <class Fn> static double time_it(Fn fn, int iters) {
   for (int i = 0; i < 3; ++i) fn();
@@ -184,6 +211,22 @@ static void upd(Best& b, const char* t, double u) {
       M,N,K,1,gs, shpd->get(), shpv->data(), offdev->get(), ws->get(), wsb, nullptr); }, 30); \
   report("i4 " #TM "x" #TN ":" #TK " w" #WM "x" #WN " s" #S, u); upd(bI4, #TM "x" #TN ":" #TK " s" #S, u); } while (0)
 
+// Q8_0 ScaleFirst: one signed int8 code and one fp16 multiplicative scale per 32 weights, no zero plane.
+//
+// The resident code is NOT raw signed q. actlize's int8 converter constructs 1024+byte and subtracts 1152, so its
+// byte contract is q+128. L208 independently pins the converter's complete x16 emission permutation, proves
+// MixGemmEmit<8>, and closes place/recover for the canonical 32-byte delivery. ArtifactTileK=32/FoldN=1 is therefore
+// explicit in both the writer and consumer below; allowing it to default to the tactic TK would make TK an accidental
+// offline-format axis again.
+#define Q8(TM,TN,TK,WM,WN,S) do { \
+  char const* q8_tag_ = #TM "x" #TN ":" #TK "_w" #WM "x" #WN "_s" #S; \
+  double u = time_it([&]{ moe_grouped_ppu::filter_and_run<QM::FinegrainedScaleOnly,TM,TN,TK,WM,WN,S,int8_t,void,false,32>( \
+      dA8->get(), dB8->get(), dSc8->get(), nullptr, pd2->get(), sd->get(), gm->get(), \
+      M,N,K,1,32, shpd->get(), shpv->data(), offdev->get(), ws->get(), wsb, nullptr); }, 30); \
+  report("q8 " #TM "x" #TN ":" #TK " w" #WM "x" #WN " s" #S " [A=32 F=1]", u); \
+  verify_q8_output(q8_tag_); \
+  upd(bQ8, #TM "x" #TN ":" #TK " w" #WM "x" #WN " s" #S " A32F1", u); } while (0)
+
 // Q4_K is not the ScaleOnly int4 ceiling above.  It carries an affine zero plane at gs=32, so a prefill sweep that
 // relabels I4 as Q4_K ranks a different collective and can choose the wrong offline layout.  Build the code plane
 // from the row's real production map and time FinegrainedScaleZero explicitly; the wrapper script consumes the
@@ -226,7 +269,11 @@ int main(int argc, char** argv) {
   N = argc > 2 ? atoi(argv[2]) : 4096;
   K = argc > 3 ? atoi(argv[3]) : 4096;
   gs = argc > 4 ? atoi(argv[4]) : 16;
-  scale_k = K / gs;
+  // Most rows consume the command-line group size; Q8_0 has a fixed gs=32 contract.  One allocation backs both
+  // families, so size it for the denser metadata grid instead of letting a CLI gs>32 under-allocate the Q8 row.
+  int const cli_scale_k = K / gs;
+  int const q8_scale_k = K / 32;
+  scale_k = cli_scale_k > q8_scale_k ? cli_scale_k : q8_scale_k;
   flops = 2.0 * M * N * K;
   std::printf("[q3-bconcat-bench] M=%d N=%d K=%d gs=%d  (config sweep; PEAK=500 TFLOP/s; wall-clock==acu here)\n",
               M, N, K, gs);
@@ -237,9 +284,66 @@ int main(int argc, char** argv) {
   auto Bhi = pack_plane<8, QuantTypeClass::PACKED_INT1_WEIGHT_ONLY>(high);
 
   cutlass::DeviceAllocation<half_t> A_((size_t)M*K), S_((size_t)scale_k*N), Z_((size_t)scale_k*N),
+                                    A8_((size_t)M*K), S8_((size_t)q8_scale_k*N),
                                     D_((size_t)M*N), Dh_((size_t)M*N);
   cutlass::DeviceAllocation<uint2_t> Blo_((size_t)K*N);
   std::vector<uint8_t> q4((size_t)K*N); for (size_t i=0;i<q4.size();++i) q4[i]=(uint8_t)(i%16);
+  // Q8_0's GGUF code is signed. The resident byte is q+128, and the device converter removes that bias. Use an
+  // aperiodic full-byte fixture rather than identical/per-column codes, which could hide a placement permutation.
+  std::vector<uint8_t> q8biased((size_t)K*N);
+  { uint32_t state = 0x243f6a88u;
+    for (size_t i = 0; i < q8biased.size(); ++i) {
+      state ^= state << 13; state ^= state >> 17; state ^= state << 5;
+      int const q = int(state & 255u) - 128;
+      q8biased[i] = uint8_t(q + 128);
+    }
+  }
+  // Build the offline artifact exactly once.  Every Q8 tactic below reads this same device pointer; a candidate may
+  // not move the writer along with itself and thereby hide an incompatible reader.  L208 proves all 18 readers are
+  // byte-identical to this canonical A32/F1 placement before this benchmark can admit them.
+  std::vector<int8_t> B8((size_t)K*N);
+  xplane::place_derived<8,64,64,32,32,32,1,32>(B8.data(), q8biased, N, K);
+  // Exact numerical witness for every Q8 row.  Each output row selects four distinct K positions with A=+/-2^-7,
+  // while every (K/32,N) scale is independently chosen from {1,2,4}.
+  // This is deliberately NOT a constant-A dot product: a wrong K permutation must change the answer instead of
+  // preserving the column sum, and a wrong gs32/scale address must change it too.  Every product and every FP32
+  // partial is an exact multiple of 2^-7.  Four int8 terms times a maximum scale of four give an integer coefficient
+  // bounded by 2048, so every result is exactly representable in fp16 as well.  Raw-bit disagreement therefore
+  // cannot be reassociation or epilogue rounding.
+  std::vector<half_t> q8_a((size_t)M * K, half_t(0.0f));
+  std::vector<half_t> q8_scales((size_t)q8_scale_k * N);
+  for (int g = 0; g < q8_scale_k; ++g) for (int n = 0; n < N; ++n)
+    q8_scales[size_t(g) * N + n] = half_t(float(1 << ((g * 17 + n * 29 + 1) % 3)));
+  q8_reference.resize((size_t)M * N);
+  int q8_unique_bad = 0, q8_fp16_exact_bad = 0;
+  for (int m = 0; m < M; ++m) {
+    int positions[4];
+    int signs[4];
+    for (int t = 0; t < 4; ++t) {
+      // K is a power of two in the declared sweep and 509 is odd, hence these four positions are distinct.
+      positions[t] = (m * 131 + t * 509) % K;
+      signs[t] = ((m * 17 + t * 13) & 1) ? -1 : 1;
+      q8_a[size_t(m) * K + positions[t]] = half_t(float(signs[t]) / 128.0f);
+    }
+    for (int i = 0; i < 4; ++i) for (int j = i + 1; j < 4; ++j)
+      q8_unique_bad += positions[i] == positions[j];
+    for (int n = 0; n < N; ++n) {
+      int sum = 0;
+      for (int t = 0; t < 4; ++t) {
+        int const scale = 1 << (((positions[t] / 32) * 17 + n * 29 + 1) % 3);
+        sum += signs[t] * scale * (int(q8biased[size_t(positions[t]) * N + n]) - 128);
+      }
+      float const exact = float(sum) / 128.0f;
+      half_t const rounded(exact);
+      q8_reference[size_t(m) * N + n] = rounded;
+      q8_fp16_exact_bad += float(rounded) != exact;
+    }
+  }
+  bool const q8_fixture_ok = q8_unique_bad == 0 && q8_fp16_exact_bad == 0;
+  std::printf("  Q8_FIXTURE shape=%dx%dx%d selected_k_per_row=4 unique_bad=%d "
+              "fp16_exact_bad=%d scale_values=3 fixture=ORDER-INDEPENDENT+FP16-EXACT verdict=%s\n",
+              M, N, K, q8_unique_bad, q8_fp16_exact_bad, q8_fixture_ok ? "PASS" : "FAIL");
+  q8_correctness_failures += !q8_fixture_ok;
   // Q6/Q5 planes: low = q & 15 for BOTH (int4), high = q >> 4 with 2 bits for Q6 and 1 for Q5. Full code range, so the
   // top plane is actually exercised rather than sitting at zero.
   std::vector<uint8_t> q65lo((size_t)K*N), q65hi2((size_t)K*N), q65hi1((size_t)K*N);
@@ -251,9 +355,13 @@ int main(int argc, char** argv) {
   }
   auto B4 = pack_plane<2, QuantTypeClass::PACKED_INT4_WEIGHT_ONLY>(q4);
   cutlass::DeviceAllocation<int4_t> B4_((size_t)K*N); B4_.copy_from_host(reinterpret_cast<int4_t const*>(B4.data()));
+  cutlass::DeviceAllocation<int8_t> B8_((size_t)K*N); B8_.copy_from_host(B8.data());
   cutlass::DeviceAllocation<uint1_t> Bhi_((size_t)K*N);
-  { std::vector<half_t> a((size_t)M*K, half_t(0.01f)), s((size_t)scale_k*N, half_t(0.05f)), z((size_t)scale_k*N, half_t(-0.2f));
+  { std::vector<half_t> a((size_t)M*K, half_t(0.01f)),
+                         s((size_t)scale_k*N, half_t(0.05f)),
+                         z((size_t)scale_k*N, half_t(-0.2f));
     A_.copy_from_host(a.data()); S_.copy_from_host(s.data()); Z_.copy_from_host(z.data()); }
+  { A8_.copy_from_host(q8_a.data()); S8_.copy_from_host(q8_scales.data()); }
   Blo_.copy_from_host(reinterpret_cast<uint2_t const*>(Blo.data()));
   Bhi_.copy_from_host(reinterpret_cast<uint1_t const*>(Bhi.data()));
 
@@ -270,11 +378,19 @@ int main(int argc, char** argv) {
   wsb = (size_t)cutlass::ceil_div(M,16)*cutlass::ceil_div(N,64)*64;
   cutlass::DeviceAllocation<char> ws_(wsb);
 
-  dA=&A_; dSc=&S_; dZr=&Z_; dD=&D_; dDhi=&Dh_; dBlo=&Blo_; dBhi=&Bhi_; dB4=&B4_; shpd=&shpd_;
+  dA=&A_; dSc=&S_; dZr=&Z_; dD=&D_; dDhi=&Dh_; dA8=&A8_; dSc8=&S8_;
+  dBlo=&Blo_; dBhi=&Bhi_; dB4=&B4_; dB8=&B8_; shpd=&shpd_;
   pd=&pd_; pd2=&pd2_; sd=&sd_; gm=&gm_; offdev=&off_; ws=&ws_; shpv=&shp;
 
-  Best bBC{"",1e18}, bI2{"",1e18}, bI1{"",1e18}, bI4{"",1e18}, bQ4{"",1e18},
+  Best bBC{"",1e18}, bI2{"",1e18}, bI1{"",1e18}, bI4{"",1e18}, bQ4{"",1e18}, bQ8{"",1e18},
        bQ6{"",1e18}, bQ5{"",1e18};
+
+  std::printf("  --- Q8_0 ScaleOnly gs32 (canonical resident ArtifactTK32/FoldN1) ---\n");
+  // Finite 18-row family. It spans the intended layout/tactic axes rather than cloning one presumed winner:
+  // tactic TK 32/64/128; TN 64/128; all w32x32, w64x32, w32x64, w64x64 shapes; stages 2/3; TM 32/64.
+  // Every row consumes the SAME A32/F1 resident ABI above, so the sweep may pick a tactic without repacking weights.
+#define PREFILL_Q8_CANDIDATE(TM,TN,TK,WM,WN,S) Q8(TM,TN,TK,WM,WN,S);
+#include "prefill_q8_candidates.inc"
 
   std::printf("  --- B-concat sweep (TK locked 256; smaller TileM / fewer stages cut A-smem to lift occupancy) ---\n");
   BC(64,64,256,32,32,3);   // baseline (acu: 12.5% occ, shared-limited)
@@ -455,16 +571,17 @@ int main(int argc, char** argv) {
   std::printf("  int2      best: %-16s %8.2f us\n", bI2.tag, bI2.us);
   std::printf("  int1      best: %-16s %8.2f us\n", bI1.tag, bI1.us);
   std::printf("  int4 CEIL best: %-16s %8.2f us  <- fold target; int2/int1-fold ceiling\n", bI4.tag, bI4.us);
+  std::printf("  Q8_0 ScaleOnly best: %-16s %8.2f us\n", bQ8.tag, bQ8.us);
   std::printf("  Q4_K ScaleZero best: %-16s %8.2f us\n", bQ4.tag, bQ4.us);
   std::printf("  Q6 (int4+int2)  best: %-16s %8.2f us   vs int4 alone %.2fx\n", bQ6.tag, bQ6.us, bQ6.us / bI4.us);
   std::printf("  Q5 (int4+int1)  best: %-16s %8.2f us   vs int4 alone %.2fx\n", bQ5.tag, bQ5.us, bQ5.us / bI4.us);
-  std::printf("  PREFILL_ROW_DENOMINATOR q2=%d q3=%d q4=%d q5=%d q6=%d\n",
-              bI2.rows, bBC.rows, bQ4.rows, bQ5.rows, bQ6.rows);
+  std::printf("  PREFILL_ROW_DENOMINATOR q2=%d q3=%d q4=%d q5=%d q6=%d q8=%d\n",
+              bI2.rows, bBC.rows, bQ4.rows, bQ5.rows, bQ6.rows, bQ8.rows);
   double A = bI2.us + bI1.us;
   std::printf("  A-concat (best int2 + best int1, the honest sum): %8.2f us\n", A);
   std::printf("  => B-concat / A-concat = %.2fx  (%s)\n", bBC.us / A,
               bBC.us < A ? "B-concat wins" : "A-concat wins -- 2 lean GEMMs beat 1 shared-limited GEMM");
-  int const launch_failures = moe_grouped_ppu::moeg_fail_count();
+  int const launch_failures = moe_grouped_ppu::moeg_fail_count() + q8_correctness_failures;
   std::printf("  PREFILL_LAUNCH_STATUS failures=%d verdict=%s\n",
               launch_failures, launch_failures == 0 ? "PASS" : "FAIL");
   return launch_failures == 0 ? 0 : 1;

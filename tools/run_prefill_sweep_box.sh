@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# First real-format prefill smoke sweep: q/k/v/o of layer 0 in the actual
+# First real-format prefill smoke sweep: q/k/v/o of the first complete
+# full-attention layer in the actual
 # Qwen3.5-35B-A3B GGUF, for M=64 and M=2048.  qtype comes from the GGUF
 # tensor header.  The finite denominator is the explicitly tagged semantic
-# rows in test_scalefirst_bench; this script does not call that a full generated
+# rows in test_scalefirst_bench plus Q8's shared candidate manifest; this
+# script does not call that a full generated
 # tactic sweep and does not time the scale prepass or direct-FQ arm.
 set -uo pipefail
 
 main() {
-  local root spec gguf sha short stamp out build_root build_log plan binary rc
+  local root spec gguf sha short stamp out build_root build_log plan binary rc proof_log
   local -a bins
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
   spec="${PREFILL_SPEC:-$root/benchmarks/prefill_qwen35_a3b_smoke.json}"
@@ -33,8 +35,50 @@ main() {
   plan="$out/plan.json"
   build_root="$out/build"
   build_log="$out/build.log"
+  proof_log="$out/l208-q8-layout.log"
+
+  # This result must bind to the named SHA, not merely to whatever source
+  # bytes happened to be in a dirty checkout.  Unrelated work may coexist,
+  # but every planner/build/layout authority used by this runner must be the
+  # committed version.
+  local -a authorities=(
+    tools/prefill_sweep.py tools/run_prefill_sweep_box.sh
+    benchmarks/prefill_qwen35_a3b_smoke.json
+    benchmarks/test_scalefirst_bench.cu benchmarks/prefill_q8_candidates.inc
+    dev/fold_derivation/l208_q8_emit_layout.cu
+    dev/fold_derivation/run_l208_q8_emit_layout.sh
+    quactlize/include/quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h
+    quactlize/include/xplane_offline.hpp quactlize/include/ppu_format_config.inc
+  )
+  if ! git -C "$root" diff --quiet HEAD -- "${authorities[@]}" ||
+     ! git -C "$root" diff --cached --quiet HEAD -- "${authorities[@]}"; then
+    printf '[prefill-sweep] FAIL: a prefill authority differs from committed SHA %s\n' "$sha" >&2
+    git -C "$root" status --short -- "${authorities[@]}" >&2
+    return 2
+  fi
+  for authority in "${authorities[@]}"; do
+    git -C "$root" ls-files --error-unmatch "$authority" >/dev/null 2>&1 || {
+      printf '[prefill-sweep] FAIL: authority is not tracked by SHA %s: %s\n' "$sha" "$authority" >&2
+      return 2
+    }
+  done
+  local vendor_converter=include/cutlass/fast_numeric_conversion_for_mix_gemm.h
+  if ! git -C "$root/third_party/actlize" diff --quiet HEAD -- "$vendor_converter" ||
+     ! git -C "$root/third_party/actlize" diff --cached --quiet HEAD -- "$vendor_converter" ||
+     ! git -C "$root/third_party/actlize" ls-files --error-unmatch "$vendor_converter" >/dev/null 2>&1; then
+    printf '[prefill-sweep] FAIL: actlize int8 converter authority is dirty or untracked: %s\n' \
+      "$vendor_converter" >&2
+    return 2
+  fi
 
   python3 "$root/tools/prefill_sweep.py" self-test || return 2
+  QUACTLIZE_L208_OUT="$out/l208" bash "$root/dev/fold_derivation/run_l208_q8_emit_layout.sh" \
+    2>&1 | tee "$proof_log"
+  rc=${PIPESTATUS[0]}
+  if [ "$rc" -ne 0 ]; then
+    printf '[prefill-sweep] FAIL: Q8 layout authority L208 returned rc=%d; no binary was built\n' "$rc" >&2
+    return "$rc"
+  fi
   python3 "$root/tools/prefill_sweep.py" plan --spec "$spec" --gguf "$gguf" --output "$plan" \
     2>&1 | tee "$out/plan.log"
   rc=${PIPESTATUS[0]}
@@ -47,12 +91,14 @@ main() {
     printf 'gguf=%s\n' "$gguf"
     printf 'spec=%s\n' "$spec"
     printf 'timing_scope=ScaleFirst-GEMM-only;prepass-and-direct-FQ-excluded\n'
-    printf 'candidate_scope=finite-manual-test_scalefirst_bench-row-families\n'
+    printf 'candidate_scope=finite-manual-row-families;q8-authority=benchmarks/prefill_q8_candidates.inc\n'
+    printf 'l208_log=%s\n' "$proof_log"
+    printf 'l208_log_sha256=%s\n' "$(sha256sum "$proof_log" | awk '{print $1}')"
   } >"$out/provenance.txt"
 
   # Admission is deliberately after plan + provenance are durable and before
-  # build.  A checkpoint whose selected tensors are all Q8_0 must leave useful
-  # evidence while compiling/running exactly nothing.
+  # build.  A checkpoint for which every selected format lacks a proved row
+  # family must leave useful evidence while compiling/running exactly nothing.
   python3 "$root/tools/prefill_sweep.py" admit --plan "$plan" 2>&1 | tee "$out/admission.log"
   rc=${PIPESTATUS[0]}
   if [ "$rc" -ne 0 ]; then

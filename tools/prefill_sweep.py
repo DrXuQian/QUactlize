@@ -12,7 +12,8 @@ Every measured row therefore has three independently visible identities:
   * the exact finite candidate denominator present in
     benchmarks/test_scalefirst_bench.cu.
 
-The timing scope is ScaleFirst GEMM only.  It does NOT include the metadata
+The finite denominator is read from the benchmark source and, for Q8_0, its
+shared candidate manifest.  The timing scope is ScaleFirst GEMM only.  It does NOT include the metadata
 prepass and does NOT measure direct FullyQuantized GEMM.  Those missing arms are
 reported in the plan rather than silently filled with a timing from a different
 route.
@@ -35,17 +36,26 @@ from typing import BinaryIO
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+PLANNER_SOURCE = pathlib.Path(__file__).resolve()
 
-PLAN_SCHEMA = "quactlize-prefill-plan-v1"
+PLAN_SCHEMA = "quactlize-prefill-plan-v2"
 RESULT_SCHEMA = "quactlize-prefill-scale-first-result-v1"
 SUPPORTED_SPEC_SCHEMA = "quactlize-prefill-smoke-v1"
 BENCH_SOURCE = ROOT / "benchmarks" / "test_scalefirst_bench.cu"
+Q8_CANDIDATE_SOURCE = ROOT / "benchmarks" / "prefill_q8_candidates.inc"
 REGISTRY_SOURCE = ROOT / "quactlize" / "include" / "ppu_format_config.inc"
+Q8_ORACLE_SOURCE = ROOT / "dev" / "fold_derivation" / "l208_q8_emit_layout.cu"
+Q8_ORACLE_RUNNER = ROOT / "dev" / "fold_derivation" / "run_l208_q8_emit_layout.sh"
+MIX_EMIT_SOURCE = (ROOT / "quactlize" / "include" / "quactlize_extensions" / "cutlass" /
+                   "quactlize_mix_gemm_convert.h")
+XPLANE_SOURCE = ROOT / "quactlize" / "include" / "xplane_offline.hpp"
+VENDOR_INT8_CONVERTER = (ROOT / "third_party" / "actlize" / "include" / "cutlass" /
+                         "fast_numeric_conversion_for_mix_gemm.h")
 
 # This maps a GGUF semantic format to an explicitly tagged row family.  In
 # particular Q4_K maps to q4, never to the ScaleOnly i4 ceiling.
-FAMILY_BY_QTYPE = {10: "i2", 11: "BC", 12: "q4", 13: "q5", 14: "q6"}
-DENOMINATOR_KEY_BY_QTYPE = {10: "q2", 11: "q3", 12: "q4", 13: "q5", 14: "q6"}
+FAMILY_BY_QTYPE = {8: "q8", 10: "i2", 11: "BC", 12: "q4", 13: "q5", 14: "q6"}
+DENOMINATOR_KEY_BY_QTYPE = {8: "q8", 10: "q2", 11: "q3", 12: "q4", 13: "q5", 14: "q6"}
 
 SCALAR_SIZES = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4,
                 7: 1, 10: 8, 11: 8, 12: 8}
@@ -110,8 +120,41 @@ def gguf_tensor_headers(path: pathlib.Path) -> list[dict]:
         return out
 
 
-def source_denominators(source: pathlib.Path = BENCH_SOURCE) -> dict[str, int]:
-    """Count calls, not comments or macro definitions, in the one measured source."""
+Q8_CANDIDATE_RE = re.compile(
+    r"^PREFILL_Q8_CANDIDATE\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,"
+    r"\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$")
+
+
+def q8_candidate_tuples(source: pathlib.Path = Q8_CANDIDATE_SOURCE) -> list[tuple[int, ...]]:
+    """Parse the shared authority strictly; an ignored active line is a missing candidate."""
+    rows = []
+    for lineno, line in enumerate(source.read_text().splitlines(), 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("//", "#")):
+            continue
+        match = Q8_CANDIDATE_RE.fullmatch(stripped)
+        if not match:
+            raise ValueError(f"{source}:{lineno}: unparsed active Q8 candidate line: {stripped!r}")
+        rows.append(tuple(map(int, match.groups())))
+    if len(set(rows)) != len(rows):
+        raise ValueError(f"{source}: duplicate Q8 candidate tuple")
+    if not rows:
+        raise ValueError(f"{source}: empty Q8 candidate authority")
+    return rows
+
+
+def q8_candidate_manifest(source: pathlib.Path = Q8_CANDIDATE_SOURCE) -> dict:
+    rows = q8_candidate_tuples(source)
+    canonical = json.dumps(rows, separators=(",", ":"))
+    return {"schema": "quactlize-q8-prefill-candidates-v1", "count": len(rows),
+            "tuples_tm_tn_tk_wm_wn_stages": [list(row) for row in rows],
+            "tuple_sha256": hashlib.sha256(canonical.encode()).hexdigest(),
+            "source": str(source.resolve()), "source_sha256": sha256_file(source)}
+
+
+def source_denominators(source: pathlib.Path = BENCH_SOURCE,
+                        q8_source: pathlib.Path = Q8_CANDIDATE_SOURCE) -> dict[str, int]:
+    """Count calls in the measured source authorities, never a mirrored number."""
     prefixes = {
         "i2": ("I2(", "I2F("),
         "BC": ("BC(", "BCF("),
@@ -127,6 +170,7 @@ def source_denominators(source: pathlib.Path = BENCH_SOURCE) -> dict[str, int]:
         for family, starts in prefixes.items():
             if any(s.startswith(p) for p in starts):
                 counts[family] += 1
+    counts["q8"] = len(q8_candidate_tuples(q8_source))
     return counts
 
 
@@ -136,6 +180,40 @@ def sha256_file(path: pathlib.Path) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def recorded_source_hashes() -> list[dict]:
+    sources = (PLANNER_SOURCE, BENCH_SOURCE, Q8_CANDIDATE_SOURCE,
+               Q8_ORACLE_SOURCE, Q8_ORACLE_RUNNER, MIX_EMIT_SOURCE,
+               XPLANE_SOURCE, VENDOR_INT8_CONVERTER)
+    return [{"path": str(path.resolve()), "sha256": sha256_file(path)} for path in sources]
+
+
+def verify_recorded_sources(plan: dict) -> None:
+    """Bind plan, later build, and direct measure to the same source bytes."""
+    recorded = plan.get("source_authorities")
+    expected_paths = [str(path.resolve()) for path in
+                      (PLANNER_SOURCE, BENCH_SOURCE, Q8_CANDIDATE_SOURCE,
+                       Q8_ORACLE_SOURCE, Q8_ORACLE_RUNNER, MIX_EMIT_SOURCE,
+                       XPLANE_SOURCE, VENDOR_INT8_CONVERTER)]
+    if not isinstance(recorded, list) or [item.get("path") for item in recorded] != expected_paths:
+        raise ValueError("plan source_authorities is missing, reordered, or names a different authority set")
+    for item in recorded:
+        path = pathlib.Path(item["path"])
+        got = sha256_file(path)
+        if got != item.get("sha256"):
+            raise ValueError(f"source authority changed after plan: {path} {item.get('sha256')} -> {got}")
+    registry_path = pathlib.Path(plan.get("registry", ""))
+    if registry_path.resolve() != REGISTRY_SOURCE.resolve():
+        raise ValueError(f"plan registry path is not this checkout's authority: {registry_path}")
+    registry_hash = sha256_file(REGISTRY_SOURCE)
+    if registry_hash != plan.get("registry_sha256"):
+        raise ValueError(f"registry authority changed after plan: {plan.get('registry_sha256')} -> {registry_hash}")
+    if plan.get("q8_candidate_manifest") != q8_candidate_manifest():
+        raise ValueError("Q8 candidate manifest changed after plan")
+    spec = pathlib.Path(plan.get("spec", ""))
+    if sha256_file(spec) != plan.get("spec_sha256"):
+        raise ValueError(f"prefill spec changed after plan: {spec}")
 
 
 def fold_for(bits: int, tile_k: int) -> int:
@@ -153,6 +231,38 @@ def load_registry() -> dict[int, dict]:
     # Parse the shipping X-macro instead of mirroring qtype semantics here.
     from tools.pack_gguf import format_registry
     return format_registry()
+
+
+def controlled_scalefirst_row(qtype: int) -> dict | None:
+    """Describe a proved ScaleFirst-only route without forging a shipping FQ row.
+
+    Q8_0 is not a K-quant format and therefore does not belong in
+    ``ppu_format_config.inc``: that registry also promises a native packed
+    metadata/FullyQuantized reader.  Its existing int8 collective plus L208's
+    independently anchored A32 xplane producer are sufficient for the
+    controlled resident GEMM leg measured here.  This does not claim that a
+    checkpoint Q8 block split/reorder producer is wired.
+    """
+    if qtype != 8:
+        return None
+    from quactlize.formats import BLOCKS, QuantType
+    layout = BLOCKS[QuantType.Q8_0]
+    if (layout.weights, layout.block_bytes, layout.scale_meta_bytes,
+            layout.group_size, layout.has_min) != (32, 34, 2, 32, False):
+        raise ValueError(f"Q8_0 block-layout authority drifted: {layout}")
+    return {
+        "name": "Q8_0",
+        "qtype": 8,
+        "low_bits": 8,
+        "high_bits": 0,
+        "group_size": layout.group_size,
+        "scale_first_tile_k": 32,
+        "metadata_fp16_planes": 1,
+        "quant_mode": "FinegrainedScaleOnly",
+        "route_scope": "CONTROLLED_RESIDENT_SCALEFIRST_GEMM_ONLY",
+        "registry_backed": False,
+        "layout_authority": "L208 vendor-int8-emission+xplane-A32-F1",
+    }
 
 
 def qtype_name(qtype: int) -> str:
@@ -196,6 +306,7 @@ def plan_admission(plan: dict) -> tuple[bool, str]:
     """
     if plan.get("schema") != PLAN_SCHEMA:
         raise ValueError(f"not a {PLAN_SCHEMA} plan")
+    verify_recorded_sources(plan)
     actual = support_summary(plan.get("cells", []))
     recorded = plan.get("support_summary")
     if recorded != actual:
@@ -221,6 +332,7 @@ def build_plan(spec_path: pathlib.Path, gguf_path: pathlib.Path) -> dict:
     headers = gguf_tensor_headers(gguf_path)
     registry = load_registry()
     denominators = source_denominators()
+    q8_manifest = q8_candidate_manifest()
     # Resolve all projection names before creating cells.  Hybrid models such
     # as Qwen3.5 do not promise that block 0 is a full-attention block, so the
     # manifest captures a numeric layer id and we choose the lowest layer that
@@ -284,7 +396,8 @@ def build_plan(spec_path: pathlib.Path, gguf_path: pathlib.Path) -> dict:
         selected_tensors[projection["name"]] = tensor["name"]
         actual_n, actual_k = int(tensor["dims"][1]), int(tensor["dims"][0])
         qtype = int(tensor["qtype"])
-        row = registry.get(qtype)
+        registry_row = registry.get(qtype)
+        row = registry_row or controlled_scalefirst_row(qtype)
         family = FAMILY_BY_QTYPE.get(qtype)
         semantic_name = qtype_name(qtype)
         if row is None:
@@ -307,8 +420,13 @@ def build_plan(spec_path: pathlib.Path, gguf_path: pathlib.Path) -> dict:
                 "reason": f"row family {family} has an empty source denominator",
             }
         else:
-            support = {"state": "SUPPORTED", "reason_code": "REGISTERED_ROW_FAMILY",
-                       "reason": f"{row['name']} maps to nonempty benchmark row family {family}",
+            controlled = not bool(row.get("registry_backed", registry_row is not None))
+            support = {"state": "SUPPORTED",
+                       "reason_code": ("CONTROLLED_SCALEFIRST_ROW_FAMILY" if controlled
+                                       else "REGISTERED_ROW_FAMILY"),
+                       "reason": (f"{row['name']} maps to independently anchored ScaleFirst-only row family {family}"
+                                  if controlled else
+                                  f"{row['name']} maps to nonempty benchmark row family {family}"),
                        "family": family,
                        "source_denominator": denominators[family]}
         for m in m_values:
@@ -323,6 +441,11 @@ def build_plan(spec_path: pathlib.Path, gguf_path: pathlib.Path) -> dict:
                 "m": m, "n": actual_n, "k": actual_k,
                 "group_size": row["group_size"] if row else None,
                 "planes": [row["low_bits"], row["high_bits"]] if row else None,
+                "quant_mode": row.get("quant_mode", "FinegrainedScaleZero") if row else None,
+                "metadata_fp16_planes": row.get("metadata_fp16_planes", 2) if row else None,
+                "route_scope": row.get("route_scope", "REGISTERED_KQUANT_SCALEFIRST") if row else None,
+                "registry_backed": bool(row.get("registry_backed", registry_row is not None)) if row else False,
+                "layout_authority": row.get("layout_authority", "ppu_format_config.inc+xplane") if row else None,
                 "canonical_scale_first_arrangement": ({
                     "artifact_tile_k": row["scale_first_tile_k"],
                     "fold_n": [fold_for(row["low_bits"], row["scale_first_tile_k"]),
@@ -340,10 +463,13 @@ def build_plan(spec_path: pathlib.Path, gguf_path: pathlib.Path) -> dict:
         "gguf": str(gguf_path.resolve()),
         "gguf_size": gguf_path.stat().st_size,
         "spec": str(spec_path.resolve()),
+        "spec_sha256": sha256_file(spec_path),
         "registry": str(REGISTRY_SOURCE.resolve()),
         "registry_sha256": sha256_file(REGISTRY_SOURCE),
         "candidate_source": str(BENCH_SOURCE.resolve()),
         "candidate_source_sha256": sha256_file(BENCH_SOURCE),
+        "source_authorities": recorded_source_hashes(),
+        "q8_candidate_manifest": q8_manifest,
         "candidate_denominators": denominators,
         "support_summary": summary,
         "tensor_selection": {
@@ -352,13 +478,16 @@ def build_plan(spec_path: pathlib.Path, gguf_path: pathlib.Path) -> dict:
             "tensors": selected_tensors,
         },
         "timing_scope": "ScaleFirst GEMM only; metadata prepass and direct FullyQuantized GEMM excluded",
+        "input_materialization_scope": (
+            "GGUF supplies tensor identity/qtype/shape only; benchmark payloads are controlled synthetic resident "
+            "artifacts; checkpoint block split/reorder is not timed or claimed wired"),
         "denominator_scope": "finite manual row families in test_scalefirst_bench; not the generated full tactic space",
         "cells": cells,
     }
 
 
 CANDIDATE_RE = re.compile(
-    r"^\s*(?P<family>BC|i2|q4|q5|q6)\s+"
+    r"^\s*(?P<family>BC|i2|q4|q5|q6|q8)\s+"
     r"(?P<tm>\d+)x(?P<tn>\d+):(?P<tk>\d+)\s+"
     r"w(?P<wm>\d+)x(?P<wn>\d+)\s+s(?P<st>\d+)"
     r"(?:\s+\(ScaleOnly\))?"
@@ -387,14 +516,21 @@ def parse_candidates(text: str, family: str) -> list[dict]:
 
 
 DENOMINATOR_RE = re.compile(
-    r"^\s*PREFILL_ROW_DENOMINATOR\s+q2=(\d+)\s+q3=(\d+)\s+q4=(\d+)\s+q5=(\d+)\s+q6=(\d+)\s*$",
+    r"^\s*PREFILL_ROW_DENOMINATOR\s+q2=(\d+)\s+q3=(\d+)\s+q4=(\d+)\s+q5=(\d+)\s+q6=(\d+)\s+q8=(\d+)\s*$",
     re.M,
 )
 LAUNCH_STATUS_RE = re.compile(
     r"^\s*PREFILL_LAUNCH_STATUS\s+failures=(\d+)\s+verdict=(PASS|FAIL)\s*$", re.M)
+Q8_CORRECTNESS_RE = re.compile(
+    r"^\s*Q8_CORRECTNESS\s+config=(\S+)\s+bad=(\d+)/(\d+)\s+"
+    r"fixture=(\S+)\s+verdict=(PASS|FAIL)\s*$", re.M)
+Q8_FIXTURE_RE = re.compile(
+    r"^\s*Q8_FIXTURE\s+shape=(\d+)x(\d+)x(\d+)\s+selected_k_per_row=(\d+)\s+"
+    r"unique_bad=(\d+)\s+fp16_exact_bad=(\d+)\s+scale_values=(\d+)\s+"
+    r"fixture=(\S+)\s+verdict=(PASS|FAIL)\s*$", re.M)
 
 
-def runtime_contract(text: str, cell: dict, parsed_rows: int) -> int:
+def runtime_contract(text: str, cell: dict, parsed_rows: int | list[dict]) -> int:
     """Return the runtime denominator, requiring the bench's fail-closed footer exactly once."""
     denoms = DENOMINATOR_RE.findall(text)
     if len(denoms) != 1:
@@ -402,16 +538,47 @@ def runtime_contract(text: str, cell: dict, parsed_rows: int) -> int:
     statuses = LAUNCH_STATUS_RE.findall(text)
     if statuses != [("0", "PASS")]:
         raise ValueError(f"launch status is not exactly failures=0/PASS: {statuses}")
-    keys = ("q2", "q3", "q4", "q5", "q6")
+    keys = ("q2", "q3", "q4", "q5", "q6", "q8")
     values = dict(zip(keys, map(int, denoms[0])))
     key = DENOMINATOR_KEY_BY_QTYPE[int(cell["qtype"])]
     denominator = values[key]
-    if parsed_rows != denominator:
-        raise ValueError(f"parsed {parsed_rows} {key} rows but runtime denominator is {denominator}")
+    parsed_count = len(parsed_rows) if isinstance(parsed_rows, list) else parsed_rows
+    if parsed_count != denominator:
+        raise ValueError(f"parsed {parsed_count} {key} rows but runtime denominator is {denominator}")
     source_expected = int(cell["support"]["source_denominator"])
     if denominator != source_expected:
         raise ValueError(
             f"runtime denominator {denominator} disagrees with source-call authority {source_expected} for {key}")
+    if int(cell["qtype"]) == 8:
+        if not isinstance(parsed_rows, list):
+            raise ValueError("Q8 runtime contract requires parsed tuple identities, not only a row count")
+        emitted = [(row["tm"], row["tn"], row["tk"], row["wm"], row["wn"], row["st"])
+                   for row in parsed_rows]
+        authority = q8_candidate_tuples()
+        if emitted != authority:
+            missing = sorted(set(authority) - set(emitted))
+            extra = sorted(set(emitted) - set(authority))
+            raise ValueError(
+                f"Q8 runtime tuple sequence differs from shared authority: missing={missing} extra={extra} "
+                f"same_members={set(emitted) == set(authority)}")
+        correctness = Q8_CORRECTNESS_RE.findall(text)
+        expected_tags = [f"{tm}x{tn}:{tk}_w{wm}x{wn}_s{st}"
+                         for tm, tn, tk, wm, wn, st in authority]
+        got_tags = [tag for tag, _, _, _, _ in correctness]
+        if got_tags != expected_tags:
+            raise ValueError(
+                f"Q8 correctness witness sequence differs from candidate authority: "
+                f"got={got_tags} expected={expected_tags}")
+        expected_total = int(cell["m"]) * int(cell["n"])
+        if any(int(bad) != 0 or int(total) != expected_total or
+               fixture != "ORDER-INDEPENDENT+FP16-EXACT" or verdict != "PASS"
+               for _, bad, total, fixture, verdict in correctness):
+            raise ValueError(f"Q8 correctness witness is red: {correctness}")
+        fixture_rows = Q8_FIXTURE_RE.findall(text)
+        expected_fixture = [(str(cell["m"]), str(cell["n"]), str(cell["k"]),
+                             "4", "0", "0", "3", "ORDER-INDEPENDENT+FP16-EXACT", "PASS")]
+        if fixture_rows != expected_fixture:
+            raise ValueError(f"Q8 fixture identity/exactness is not bound to this invocation: {fixture_rows}")
     return denominator
 
 
@@ -421,14 +588,34 @@ def candidate_layout(candidate: dict, cell: dict) -> dict:
     # The old non-folded I2/BC macros consume the legacy interleave-256 buffer.
     # Every explicitly folded row and every q4/q5/q6 row calls xplane with TK.
     legacy = family in ("i2", "BC") and not annotation
-    artifact_tk = 256 if legacy else candidate["tk"]
+    # Q8_0's resident file identity is one canonical 32-code/32-byte
+    # delivery.  TacticTileK remains a reader axis and may concatenate A32
+    # deliveries without changing the bytes on disk.
+    artifact_tk = (32 if family == "q8" else 256 if legacy else candidate["tk"])
     folds = [fold_for(low_bits, artifact_tk), fold_for(high_bits, artifact_tk) if high_bits else 1]
 
     # The source prints the folds it instantiated.  A parser/layout mismatch is
     # a failed result, not a plausible descriptor attached to different bytes.
+    annotation_words = annotation.split()
+    annotation_pairs = [re.fullmatch(r"([A-Za-z][A-Za-z0-9]*)=(\d+)", word)
+                        for word in annotation_words]
+    if any(pair is None for pair in annotation_pairs):
+        raise ValueError(f"{candidate['config']}: malformed layout annotation {annotation!r}")
     printed = {}
-    for key, value in re.findall(r"(F|F1|F2)=(\d+)", annotation):
+    for pair in annotation_pairs:
+        assert pair is not None
+        key, value = pair.groups()
+        if key in printed:
+            raise ValueError(f"{candidate['config']}: duplicate layout token {key}")
         printed[key] = int(value)
+    if family == "q8":
+        # Q8 is the only family whose tactic TK is deliberately different
+        # from its artifact TK.  Therefore A=32 is a required measured token,
+        # not a value the planner may silently infer after parsing a row that
+        # omitted or contradicted it.
+        if printed != {"A": 32, "F": 1}:
+            raise ValueError(
+                f"{candidate['config']}: Q8 layout annotation must be exactly A=32 F=1, got {annotation!r}")
     if "F" in printed and printed["F"] != folds[0]:
         raise ValueError(f"{candidate['config']}: printed F={printed['F']} but descriptor derives {folds[0]}")
     if "F1" in printed and printed["F1"] != folds[0]:
@@ -442,7 +629,12 @@ def candidate_layout(candidate: dict, cell: dict) -> dict:
     # conservatively distinct down to producer function and full tile/warp
     # geometry; equal FoldN is explicitly insufficient evidence of equal
     # resident bytes.
-    if folds == [1, 1] and artifact_tk <= 256:
+    if family == "q8":
+        layout_class = "xplane-q8-a32-f1:l208"
+        class_basis = ("dev/fold_derivation/l208_q8_emit_layout.cu: vendor int8 emission anchor + "
+                       "byte-identical production placement over every emitted q8 tactic")
+        resident_artifact_tk = 32
+    elif folds == [1, 1] and artifact_tk <= 256:
         layout_class = f"xplane-tile-free-f1-le256:bits={low_bits}+{high_bits}"
         class_basis = "dev/fold_derivation/l115_artifact_tactic_code_slots.cu verified tile-free F1<=256"
         resident_artifact_tk = canonical["artifact_tile_k"]
@@ -451,7 +643,7 @@ def candidate_layout(candidate: dict, cell: dict) -> dict:
             producer_map = "place_derived+place_int1"
         elif family in ("q5", "q6"):
             producer_map = "place_derived+place_hi"
-        elif family in ("i2", "q4"):
+        elif family in ("i2", "q4", "q8"):
             producer_map = "place_derived"
         else:
             producer_map = "legacy-interleave256"
@@ -467,6 +659,8 @@ def candidate_layout(candidate: dict, cell: dict) -> dict:
         producer = "xplane-place_derived+place_int1"
     elif family in ("q5", "q6"):
         producer = "xplane-place_derived+place_hi"
+    elif family == "q8":
+        producer = "xplane-place_derived-q8-a32"
     else:
         producer = "xplane-place_derived"
     eligible = not (family == "BC" and legacy)
@@ -483,8 +677,14 @@ def candidate_layout(candidate: dict, cell: dict) -> dict:
         "layout_class": layout_class,
         "layout_class_basis": class_basis,
         "resident_byte_hash": "NOT_EMITTED",
-        "shipping_registry_match": resident_artifact_tk == canonical["artifact_tile_k"] and folds == canonical["fold_n"],
-        "shipping_registry_exact_measured_map": artifact_tk == canonical["artifact_tile_k"] and folds == canonical["fold_n"],
+        "shipping_registry_match": (bool(cell.get("registry_backed")) and
+                                    resident_artifact_tk == canonical["artifact_tile_k"] and
+                                    folds == canonical["fold_n"]),
+        "shipping_registry_exact_measured_map": (bool(cell.get("registry_backed")) and
+                                                   artifact_tk == canonical["artifact_tile_k"] and
+                                                   folds == canonical["fold_n"]),
+        "scale_first_contract_match": (resident_artifact_tk == canonical["artifact_tile_k"] and
+                                       folds == canonical["fold_n"]),
         "selection_eligible": eligible,
         "selection_exclusion": ("known-wrong Q3 high-plane single-plane producer map; "
                                 "BCF/place_int1 is the semantic authority"
@@ -496,8 +696,8 @@ def traffic(cell: dict, us: float, peak_tflops: float, hbm_gbs: float) -> dict:
     m, n, k, gs = (int(cell[x]) for x in ("m", "n", "k", "group_size"))
     low_bits, high_bits = cell["planes"]
     code = n * k * (low_bits + high_bits) // 8
-    # The measured ScaleZero path materialises fp16 scale and fp16 zero.
-    metadata = n * (k // gs) * 4
+    metadata_planes = int(cell["metadata_fp16_planes"])
+    metadata = n * (k // gs) * 2 * metadata_planes
     act, out = m * k * 2, m * n * 2
     distinct = code + metadata + act + out
     tflops = 2.0 * m * n * k / us / 1.0e6
@@ -507,12 +707,14 @@ def traffic(cell: dict, us: float, peak_tflops: float, hbm_gbs: float) -> dict:
         "tflops": tflops,
         "mfu_percent": 100.0 * tflops / peak_tflops,
         "distinct_bytes": distinct,
-        "byte_breakdown": {"codes": code, "fp16_scale_zero": metadata, "activation": act, "output": out},
+        "byte_breakdown": {"codes": code, "fp16_metadata": metadata,
+                           "activation": act, "output": out},
+        "metadata_planes": metadata_planes,
         "distinct_gbs": gbs,
         "mbu_percent": 100.0 * gbs / hbm_gbs,
         "peak_tflops": peak_tflops,
         "hbm_gbs": hbm_gbs,
-        "traffic_scope": "one distinct ScaleFirst resident weight + fp16 A/D; cache reuse not multiplied by tiles",
+        "traffic_scope": "one distinct ScaleFirst resident weight + declared fp16 metadata planes + fp16 A/D; cache reuse not multiplied by tiles",
     }
 
 
@@ -635,7 +837,7 @@ def measure(plan_path: pathlib.Path, binary: pathlib.Path, out: pathlib.Path,
                 break
             rows = parse_candidates(text, family)
             try:
-                runtime_expected = runtime_contract(text, cell, len(rows))
+                runtime_expected = runtime_contract(text, cell, rows)
             except ValueError as e:
                 failure = f"repeat {repeat}: {e}"
                 break
@@ -703,6 +905,8 @@ def measure(plan_path: pathlib.Path, binary: pathlib.Path, out: pathlib.Path,
         "schema": RESULT_SCHEMA,
         "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "plan": str(plan_path.resolve()),
+        "plan_sha256": sha256_file(plan_path),
+        "q8_candidate_tuple_sha256": plan["q8_candidate_manifest"]["tuple_sha256"],
         "binary": str(binary.resolve()),
         "binary_sha256": sha256_file(binary),
         "overall": "INCOMPLETE" if any_failure else "COMPLETE",
@@ -715,7 +919,11 @@ def measure(plan_path: pathlib.Path, binary: pathlib.Path, out: pathlib.Path,
         "source_summary": str((out / "summary.json").resolve()),
         "selection_rule": "one resident layout per tensor across all measured M values",
         "decisions": decisions,
-        "missing_comparison_arms": ["ScaleFirst metadata prepass", "direct FullyQuantized prefill GEMM"],
+        "missing_comparison_arms": [
+            "ScaleFirst metadata prepass",
+            "Q8_0 GGUF block to resident A32 code/scale split-reorder producer",
+            "direct FullyQuantized prefill GEMM",
+        ],
     }
     (out / "offline_layout_plan.json").write_text(json.dumps(offline_plan, indent=2, sort_keys=True) + "\n")
     lines = ["cell\tformat\tM\tN\tK\tdisposition\tleader\tmedian_us\tMFU_pct\t"
@@ -816,7 +1024,7 @@ def self_test() -> int:
             raise AssertionError("wrong printed FoldN was accepted")
         d = source_denominators()
         footer = (f"  PREFILL_ROW_DENOMINATOR q2={d['i2']} q3={d['BC']} q4={d['q4']} "
-                  f"q5={d['q5']} q6={d['q6']}\n"
+                  f"q5={d['q5']} q6={d['q6']} q8={d['q8']}\n"
                   "  PREFILL_LAUNCH_STATUS failures=0 verdict=PASS\n")
         q4_cell = plan["cells"][0]
         assert runtime_contract(footer, q4_cell, d["q4"]) == d["q4"]
@@ -860,10 +1068,9 @@ def self_test() -> int:
         assert decisions[0]["artifact_selection"] is None
         assert decisions[0]["minimax_diagnostic"] is not None
 
-        # Full Q8_0 negative: qtype 8 is a known GGUF identity, not an alias
-        # for Q4_K and not a reason to compile a benchmark that has no row for
-        # it.  The plan and its provenance survive; admission blocks both the
-        # runner's build and a direct measure invocation.
+        # Q8_0 is a controlled ScaleFirst-only positive route.  It is not
+        # inserted into the K-quant/FullyQuantized registry: support rests on
+        # L208's vendor-converter emission anchor and A32 xplane roundtrip.
         q8_gguf = td / "all-q8.gguf"
         write_synthetic_gguf(q8_gguf, [
             ("blk.3.attn_q.weight", [2048, 8192], 8),
@@ -874,39 +1081,145 @@ def self_test() -> int:
         q8_plan = build_plan(ROOT / "benchmarks" / "prefill_qwen35_a3b_smoke.json", q8_gguf)
         assert len(q8_plan["cells"]) == 8
         assert all(c["format"] == "Q8_0" for c in q8_plan["cells"])
-        assert all(c["support"]["state"] == "UNSUPPORTED" for c in q8_plan["cells"])
-        assert all(c["support"]["reason_code"] == "QTYPE_NOT_IN_CURRENT_SCALEFIRST_REGISTRY"
+        assert all(c["support"]["state"] == "SUPPORTED" for c in q8_plan["cells"])
+        assert all(c["support"]["reason_code"] == "CONTROLLED_SCALEFIRST_ROW_FAMILY"
+                   for c in q8_plan["cells"])
+        assert all(not c["registry_backed"] and
+                   c["route_scope"] == "CONTROLLED_RESIDENT_SCALEFIRST_GEMM_ONLY"
+                   for c in q8_plan["cells"])
+        assert all(c["quant_mode"] == "FinegrainedScaleOnly" and c["metadata_fp16_planes"] == 1
+                   for c in q8_plan["cells"])
+        assert all(c["canonical_scale_first_arrangement"] == {"artifact_tile_k": 32, "fold_n": [1, 1]}
                    for c in q8_plan["cells"])
         assert q8_plan["support_summary"] == {
             "total_cells": 8,
-            "supported_cells": 0,
-            "unsupported_cells": 8,
-            "by_state": {"UNSUPPORTED": 8},
-            "by_reason_code": {"QTYPE_NOT_IN_CURRENT_SCALEFIRST_REGISTRY": 8},
+            "supported_cells": 8,
+            "unsupported_cells": 0,
+            "by_state": {"SUPPORTED": 8},
+            "by_reason_code": {"CONTROLLED_SCALEFIRST_ROW_FAMILY": 8},
         }
         admitted, reason = plan_admission(q8_plan)
+        assert admitted and reason.startswith("SUPPORTED_CELLS_PRESENT:")
+        tampered_hash_plan = json.loads(json.dumps(q8_plan))
+        tampered_hash_plan["source_authorities"][1]["sha256"] = "0" * 64
+        try:
+            plan_admission(tampered_hash_plan)
+        except ValueError as e:
+            assert "source authority changed after plan" in str(e)
+        else:
+            raise AssertionError("tampered Q8 source hash was admitted")
+        tampered_manifest_plan = json.loads(json.dumps(q8_plan))
+        tampered_manifest_plan["q8_candidate_manifest"]["tuples_tm_tn_tk_wm_wn_stages"][0][0] += 1
+        try:
+            plan_admission(tampered_manifest_plan)
+        except ValueError as e:
+            assert "candidate manifest changed after plan" in str(e)
+        else:
+            raise AssertionError("tampered Q8 tuple manifest was admitted")
+        q8_row = parse_candidates(
+            "    q8 64x64:32 w32x32 s2 [A=32 F=1] 10.0 us | 1.0 TFLOP/s\n", "q8")[0]
+        q8_layout = candidate_layout(q8_row, q8_plan["cells"][0])
+        assert q8_layout["artifact_tile_k"] == 32 and q8_layout["fold_n"] == [1, 1]
+        assert q8_layout["scale_first_contract_match"] and not q8_layout["shipping_registry_match"]
+        q8_metrics = traffic(q8_plan["cells"][0], 10.0, 500.0, 2766.0)
+        assert q8_metrics["metadata_planes"] == 1
+        assert q8_metrics["byte_breakdown"]["fp16_metadata"] == 8192 * (2048 // 32) * 2
+        q8_runtime_rows = [
+            {"tm": tm, "tn": tn, "tk": tk, "wm": wm, "wn": wn, "st": st}
+            for tm, tn, tk, wm, wn, st in q8_candidate_tuples()
+        ]
+        q8_expected_outputs = int(q8_plan["cells"][0]["m"]) * int(q8_plan["cells"][0]["n"])
+        q8_correctness_text = "".join(
+            f"  Q8_CORRECTNESS config={tm}x{tn}:{tk}_w{wm}x{wn}_s{st} "
+            f"bad=0/{q8_expected_outputs} fixture=ORDER-INDEPENDENT+FP16-EXACT verdict=PASS\n"
+            for tm, tn, tk, wm, wn, st in q8_candidate_tuples())
+        q8_fixture_text = (
+            f"  Q8_FIXTURE shape={q8_plan['cells'][0]['m']}x{q8_plan['cells'][0]['n']}x"
+            f"{q8_plan['cells'][0]['k']} selected_k_per_row=4 unique_bad=0 fp16_exact_bad=0 "
+            "scale_values=3 fixture=ORDER-INDEPENDENT+FP16-EXACT verdict=PASS\n")
+        q8_footer = q8_fixture_text + q8_correctness_text + footer
+        assert runtime_contract(q8_footer, q8_plan["cells"][0], q8_runtime_rows) == d["q8"]
+        q8_reordered = list(q8_runtime_rows)
+        q8_reordered[0], q8_reordered[1] = q8_reordered[1], q8_reordered[0]
+        try:
+            runtime_contract(q8_footer, q8_plan["cells"][0], q8_reordered)
+        except ValueError as e:
+            assert "tuple sequence differs" in str(e) and "same_members=True" in str(e)
+        else:
+            raise AssertionError("reordered Q8 runtime tuples were accepted")
+        try:
+            runtime_contract(footer, q8_plan["cells"][0], q8_runtime_rows)
+        except ValueError as e:
+            assert "correctness witness sequence differs" in str(e)
+        else:
+            raise AssertionError("Q8 rows without numerical witnesses were accepted")
+        for planted in (
+                q8_fixture_text + q8_correctness_text.replace(
+                    f"bad=0/{q8_expected_outputs}", "bad=0/0", 1) + footer,
+                q8_fixture_text + q8_correctness_text.replace(
+                    "fixture=ORDER-INDEPENDENT+FP16-EXACT", "fixture=ROUNDS-UNKNOWN", 1) + footer):
+            try:
+                runtime_contract(planted, q8_plan["cells"][0], q8_runtime_rows)
+            except ValueError as e:
+                assert "correctness witness is red" in str(e)
+            else:
+                raise AssertionError("Q8 zero-denominator or wrong-fixture witness was accepted")
+        try:
+            runtime_contract(q8_correctness_text + footer, q8_plan["cells"][0], q8_runtime_rows)
+        except ValueError as e:
+            assert "fixture identity/exactness" in str(e)
+        else:
+            raise AssertionError("Q8 rows without an invocation-bound exact fixture were accepted")
+        # Q8's A32 token is an ABI assertion, not decoration.  Missing,
+        # conflicting, duplicate, or extra tokens must all fail closed.
+        for bad_annotation in ("", "A=64 F=1", "A=32 F=2",
+                               "A=32 A=32 F=1", "A=32 F=1 X=7"):
+            bad_q8 = dict(q8_row, annotation=bad_annotation,
+                          config=f"q8-negative-[{bad_annotation}]")
+            try:
+                candidate_layout(bad_q8, q8_plan["cells"][0])
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"bad Q8 layout annotation was accepted: {bad_annotation!r}")
+
+        # The pre-build fail-close remains independently live.  Use Q5_1,
+        # which is a recognized GGUF identity but has neither this controlled
+        # Q8 route nor a registered K-quant row.
+        unsupported_gguf = td / "all-unsupported.gguf"
+        write_synthetic_gguf(unsupported_gguf, [
+            ("blk.3.attn_q.weight", [2048, 8192], 7),
+            ("blk.3.attn_k.weight", [2048, 512], 7),
+            ("blk.3.attn_v.weight", [2048, 512], 7),
+            ("blk.3.attn_output.weight", [4096, 2048], 7),
+        ])
+        unsupported_plan = build_plan(
+            ROOT / "benchmarks" / "prefill_qwen35_a3b_smoke.json", unsupported_gguf)
+        assert all(c["format"] == "Q5_1" and c["support"]["state"] == "UNSUPPORTED"
+                   for c in unsupported_plan["cells"])
+        admitted, reason = plan_admission(unsupported_plan)
         assert not admitted and reason.startswith("NO_SUPPORTED_CELLS:")
-        q8_plan_path = td / "all-q8-plan.json"
-        q8_plan_path.write_text(json.dumps(q8_plan, sort_keys=True) + "\n")
+        unsupported_plan_path = td / "all-unsupported-plan.json"
+        unsupported_plan_path.write_text(json.dumps(unsupported_plan, sort_keys=True) + "\n")
         admission_proc = subprocess.run(
-            [sys.executable, str(pathlib.Path(__file__).resolve()), "admit", "--plan", str(q8_plan_path)],
+            [sys.executable, str(pathlib.Path(__file__).resolve()), "admit", "--plan", str(unsupported_plan_path)],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
         assert admission_proc.returncode == 3
         assert "NO_SUPPORTED_CELLS" in admission_proc.stdout
         blocked_results = td / "must-not-be-created"
         try:
-            measure(q8_plan_path, td / "must-not-be-executed", blocked_results,
+            measure(unsupported_plan_path, td / "must-not-be-executed", blocked_results,
                     repeats=2, timeout=1, peak_tflops=500.0, hbm_gbs=2766.0)
         except ValueError as e:
             assert "NO_SUPPORTED_CELLS" in str(e)
         else:
-            raise AssertionError("an all-Q8_0 plan reached measurement")
+            raise AssertionError("an all-unsupported plan reached measurement")
         assert not blocked_results.exists()
     finally:
         shutil.rmtree(td)
     print("[prefill-sweep:self-test] PASS: hybrid blk0-GDN/blk3-attention selection, GGUF qtype/dim authority, "
           "q4 semantic tag, FoldN negative, Q3 legacy exclusion, denominator fail-close, cross-M conflict, "
-          "and all-Q8_0 NO_SUPPORTED_CELLS pre-build admission")
+          "controlled Q8_0 ScaleFirst admission, and all-unsupported pre-build admission")
     return 0
 
 
