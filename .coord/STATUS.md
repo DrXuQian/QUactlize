@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-17 06:09:04 UTC
+    updated-at:     2026-08-17 08:22:45 UTC
     inbox-consumed: 178
-    working-on:     prefill manifest corrected for Qwen3.5 hybrid blk0-GDN / first common full-attention layer
-    blocked-on:     direct-FQ prefill still lacks a formal perf harness; current sweep is ScaleFirst GEMM-only
-    local-gates:    hybrid-layer self-test + mock 8-cell E2E PASS; placed-artifact ABI pytest 17/17; pycompile/bash-n/diff-check PASS
-    last-commit:    96f33df Select the first real Qwen full-attention layer
+    working-on:     Q8_0 controlled resident ScaleFirst route complete; 8 attention cells now admit one 18-row A32/F1 family
+    blocked-on:     PPU must compile all 18 exact rows and run the invocation-bound raw-bit fixture before timing is admitted
+    local-gates:    L208 18-row 0/589824 + 1024/1024 PASS and two exact REDs; planner self-test PASS; policy 1/1; scale coverage 5/5; ABI/formats/layouts 87/87; full tier 188/196 (8 pre-existing state/evidence reds, including stale _C)
+    last-commit:    6580d34 Add controlled Q8 prefill sweep route
     last-heartbeat: 348
