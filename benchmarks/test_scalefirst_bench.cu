@@ -27,6 +27,7 @@
 //   Build: TARGET=test_q3_bconcat_bench ./build.sh ; run: ./<bin> [M] [N] [K] [gs]  (defaults 2048 4096 4096 16)
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 #include <cstdint>
 #include "cutlass/util/device_memory.h"
@@ -269,6 +270,16 @@ int main(int argc, char** argv) {
   N = argc > 2 ? atoi(argv[2]) : 4096;
   K = argc > 3 ? atoi(argv[3]) : 4096;
   gs = argc > 4 ? atoi(argv[4]) : 16;
+  // A result consumer may isolate Q8 so an unrelated format cannot veto its
+  // launch-status contract.  The no-selector invocation preserves the
+  // historical all-family benchmark byte for byte.
+  char const* const only_family = argc > 5 ? argv[5] : nullptr;
+  if (only_family && std::strcmp(only_family, "q8") != 0) {
+    std::fprintf(stderr, "unsupported family selector %s (currently only q8 is isolated)\n", only_family);
+    return 2;
+  }
+  bool const run_q8 = !only_family || std::strcmp(only_family, "q8") == 0;
+  bool const run_other_families = !only_family;
   // Most rows consume the command-line group size; Q8_0 has a fixed gs=32 contract.  One allocation backs both
   // families, so size it for the denser metadata grid instead of letting a CLI gs>32 under-allocate the Q8 row.
   int const cli_scale_k = K / gs;
@@ -384,13 +395,16 @@ int main(int argc, char** argv) {
   Best bBC{"",1e18}, bI2{"",1e18}, bI1{"",1e18}, bI4{"",1e18}, bQ4{"",1e18}, bQ8{"",1e18},
        bQ6{"",1e18}, bQ5{"",1e18};
 
+  if (run_q8) {
   std::printf("  --- Q8_0 ScaleOnly gs32 (canonical resident ArtifactTK32/FoldN1) ---\n");
   // Bounded performance-envelope family. Its shared authority spells the denominator and pruning policy, including
   // decode-only TM8 and the wider prefill axes. L208 proves all rows consume the same A32/F1 resident bytes, while
   // the sweep remains free to pick a different tactic per cell.
 #define PREFILL_Q8_CANDIDATE(TM,TN,TK,WM,WN,S) Q8(TM,TN,TK,WM,WN,S);
 #include "prefill_q8_candidates.inc"
+  }
 
+  if (run_other_families) {
   std::printf("  --- B-concat sweep (TK locked 256; smaller TileM / fewer stages cut A-smem to lift occupancy) ---\n");
   BC(64,64,256,32,32,3);   // baseline (acu: 12.5% occ, shared-limited)
   BC(64,64,256,32,32,2);   // stages 3->2 : smem x2/3
@@ -564,22 +578,30 @@ int main(int argc, char** argv) {
   Q65("q5", bQ5, 1, uint1_t, 64,256, 64,64,64,2,4);
   Q65("q5", bQ5, 1, uint1_t, 64,256, 64,64,64,3,4);
   Q65("q5", bQ5, 1, uint1_t, 32,128, 64,32,64,2,4);
+  }
 
   std::printf("  ================= VERDICT =================\n");
+  if (run_other_families) {
   std::printf("  B-concat  best: %-16s %8.2f us\n", bBC.tag, bBC.us);
   std::printf("  int2      best: %-16s %8.2f us\n", bI2.tag, bI2.us);
   std::printf("  int1      best: %-16s %8.2f us\n", bI1.tag, bI1.us);
   std::printf("  int4 CEIL best: %-16s %8.2f us  <- fold target; int2/int1-fold ceiling\n", bI4.tag, bI4.us);
-  std::printf("  Q8_0 ScaleOnly best: %-16s %8.2f us\n", bQ8.tag, bQ8.us);
+  }
+  if (run_q8)
+    std::printf("  Q8_0 ScaleOnly best: %-16s %8.2f us\n", bQ8.tag, bQ8.us);
+  if (run_other_families) {
   std::printf("  Q4_K ScaleZero best: %-16s %8.2f us\n", bQ4.tag, bQ4.us);
   std::printf("  Q6 (int4+int2)  best: %-16s %8.2f us   vs int4 alone %.2fx\n", bQ6.tag, bQ6.us, bQ6.us / bI4.us);
   std::printf("  Q5 (int4+int1)  best: %-16s %8.2f us   vs int4 alone %.2fx\n", bQ5.tag, bQ5.us, bQ5.us / bI4.us);
+  }
   std::printf("  PREFILL_ROW_DENOMINATOR q2=%d q3=%d q4=%d q5=%d q6=%d q8=%d\n",
               bI2.rows, bBC.rows, bQ4.rows, bQ5.rows, bQ6.rows, bQ8.rows);
+  if (run_other_families) {
   double A = bI2.us + bI1.us;
   std::printf("  A-concat (best int2 + best int1, the honest sum): %8.2f us\n", A);
   std::printf("  => B-concat / A-concat = %.2fx  (%s)\n", bBC.us / A,
               bBC.us < A ? "B-concat wins" : "A-concat wins -- 2 lean GEMMs beat 1 shared-limited GEMM");
+  }
   int const launch_failures = moe_grouped_ppu::moeg_fail_count() + q8_correctness_failures;
   std::printf("  PREFILL_LAUNCH_STATUS failures=%d verdict=%s\n",
               launch_failures, launch_failures == 0 ? "PASS" : "FAIL");

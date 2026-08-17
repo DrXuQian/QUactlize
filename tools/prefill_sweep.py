@@ -794,6 +794,15 @@ def layout_decisions(results: list[dict]) -> list[dict]:
     return decisions
 
 
+def benchmark_command(binary: pathlib.Path, cell: dict) -> list[str]:
+    """Build one invocation, isolating a family only when the bench supports it."""
+    command = [str(binary), str(cell["m"]), str(cell["n"]), str(cell["k"]),
+               str(cell["group_size"])]
+    if cell["support"]["family"] == "q8":
+        command.append("q8")
+    return command
+
+
 def measure(plan_path: pathlib.Path, binary: pathlib.Path, out: pathlib.Path,
             repeats: int, timeout: int, peak_tflops: float, hbm_gbs: float) -> int:
     plan = json.loads(plan_path.read_text())
@@ -820,7 +829,10 @@ def measure(plan_path: pathlib.Path, binary: pathlib.Path, out: pathlib.Path,
         expected = int(cell["support"]["source_denominator"])
         repeat_rows, failure = [], None
         for repeat in range(repeats):
-            command = [str(binary), str(cell["m"]), str(cell["n"]), str(cell["k"]), str(cell["group_size"])]
+            # Q8's expanded overnight family is judged by its own launches.
+            # Without this selector an unrelated Q2--Q6 failure can veto a Q8
+            # cell even though none of those rows enters its denominator.
+            command = benchmark_command(binary, cell)
             try:
                 proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                       text=True, timeout=timeout, check=False)
@@ -1109,6 +1121,11 @@ def self_test() -> int:
         }
         admitted, reason = plan_admission(q8_plan)
         assert admitted and reason.startswith("SUPPORTED_CELLS_PRESENT:")
+        fake_binary = pathlib.Path("/workspace/fake-prefill-binary")
+        assert benchmark_command(fake_binary, q8_plan["cells"][0]) == [
+            str(fake_binary), "64", "8192", "2048", "32", "q8"]
+        assert benchmark_command(fake_binary, plan["cells"][0]) == [
+            str(fake_binary), "64", "8192", "2048", "32"]
         tampered_hash_plan = json.loads(json.dumps(q8_plan))
         tampered_hash_plan["source_authorities"][1]["sha256"] = "0" * 64
         try:
@@ -1148,8 +1165,20 @@ def self_test() -> int:
             f"  Q8_FIXTURE shape={q8_plan['cells'][0]['m']}x{q8_plan['cells'][0]['n']}x"
             f"{q8_plan['cells'][0]['k']} selected_k_per_row=4 unique_bad=0 fp16_exact_bad=0 "
             "scale_values=3 fixture=ORDER-INDEPENDENT+FP16-EXACT verdict=PASS\n")
-        q8_footer = q8_fixture_text + q8_correctness_text + footer
+        q8_only_footer = (
+            f"  PREFILL_ROW_DENOMINATOR q2=0 q3=0 q4=0 q5=0 q6=0 q8={d['q8']}\n"
+            "  PREFILL_LAUNCH_STATUS failures=0 verdict=PASS\n")
+        q8_footer = q8_fixture_text + q8_correctness_text + q8_only_footer
         assert runtime_contract(q8_footer, q8_plan["cells"][0], q8_runtime_rows) == d["q8"]
+        try:
+            runtime_contract(q8_footer.replace(
+                "PREFILL_LAUNCH_STATUS failures=0 verdict=PASS",
+                "PREFILL_LAUNCH_STATUS failures=1 verdict=FAIL"),
+                q8_plan["cells"][0], q8_runtime_rows)
+        except ValueError as e:
+            assert "launch status is not exactly failures=0/PASS" in str(e)
+        else:
+            raise AssertionError("a Q8 launch failure was admitted")
         q8_reordered = list(q8_runtime_rows)
         q8_reordered[0], q8_reordered[1] = q8_reordered[1], q8_reordered[0]
         try:
@@ -1166,9 +1195,9 @@ def self_test() -> int:
             raise AssertionError("Q8 rows without numerical witnesses were accepted")
         for planted in (
                 q8_fixture_text + q8_correctness_text.replace(
-                    f"bad=0/{q8_expected_outputs}", "bad=0/0", 1) + footer,
+                    f"bad=0/{q8_expected_outputs}", "bad=0/0", 1) + q8_only_footer,
                 q8_fixture_text + q8_correctness_text.replace(
-                    "fixture=ORDER-INDEPENDENT+FP16-EXACT", "fixture=ROUNDS-UNKNOWN", 1) + footer):
+                    "fixture=ORDER-INDEPENDENT+FP16-EXACT", "fixture=ROUNDS-UNKNOWN", 1) + q8_only_footer):
             try:
                 runtime_contract(planted, q8_plan["cells"][0], q8_runtime_rows)
             except ValueError as e:
@@ -1176,7 +1205,8 @@ def self_test() -> int:
             else:
                 raise AssertionError("Q8 zero-denominator or wrong-fixture witness was accepted")
         try:
-            runtime_contract(q8_correctness_text + footer, q8_plan["cells"][0], q8_runtime_rows)
+            runtime_contract(q8_correctness_text + q8_only_footer,
+                             q8_plan["cells"][0], q8_runtime_rows)
         except ValueError as e:
             assert "fixture identity/exactness" in str(e)
         else:

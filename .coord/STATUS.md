@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-17 12:59:30 UTC
+    updated-at:     2026-08-17 13:16:13 UTC
     inbox-consumed: 178
-    working-on:     performance-first overnight Q8 decode+prefill sweep: 12 independent cells x 172 reader tactics, no cross-cell tactic/layout constraint
-    blocked-on:     PPU box must compile the expanded shipping target and measure the 2,064 candidate-cells; local production hgcc execution is unavailable
-    local-gates:    planner self-test PASS; L208 exact 172-row ownership/roundtrip/WON1-2-4 byte proof PASS with causal REDs; Python/shell syntax and diff-check PASS
-    last-commit:    93b19ef Expand Q8 decode and prefill performance sweep
+    working-on:     full internal sweep: ScaleFirst scheduler/grid x tactic and FullyQuantized algorithm x tactic, with separate leaderboards
+    blocked-on:     PPU box is required only for final timing; local denominator, generation, correctness, and fail-closed contracts are being completed first
+    local-gates:    root disk 44% used after recoverable migration; Q8 isolated-family planner self-test/Python compile/diff-check PASS
+    last-commit:    9638784 coord: record overnight Q8 sweep handoff
     last-heartbeat: 349
