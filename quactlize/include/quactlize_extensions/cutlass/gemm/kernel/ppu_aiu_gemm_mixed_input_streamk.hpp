@@ -229,7 +229,8 @@ public:
            CollectiveMainloop::can_implement(args.problem_shape, args.mainloop) &&
            args.scheduler.splits == 1 &&
            args.scheduler.reduction_mode == TileSchedulerParams::ReductionMode::Deterministic &&
-           args.scheduler.decomposition_mode == TileSchedulerParams::DecompositionMode::StreamK &&
+           (args.scheduler.decomposition_mode == TileSchedulerParams::DecompositionMode::StreamK ||
+            args.scheduler.decomposition_mode == TileSchedulerParams::DecompositionMode::StreamKTail) &&
            TileScheduler::can_implement(args.scheduler);
   }
 

@@ -1351,6 +1351,31 @@ def lint_streamk_tail_plan():
         "Stream-K scan shapes derive from runtime workers and print Q/W/tail per row")
 
 
+def lint_streamk_tail_oracle():
+    """The committed dense domain must admit an exact, nonempty DP-major tail partition.
+
+    L201 is a Python/boundary oracle, not one of the nvcc-compiled ``GATES``.
+    Registering it as a lint keeps the device-free exhaustive proof in the full
+    local tier.  Require its unique terminal witness as well as rc=0: otherwise
+    a runner that stops after printing only an anchor would look green.
+    """
+    script = DEV / "run_l201_streamk_tail_oracle.sh"
+    if not script.is_file():
+        return "FAIL", f"missing {script.name}", 0.0
+    rc, log, dt = run(["bash", str(script)], cwd=str(ROOT))
+    witness = (
+        "[l201] PASS: 1772=577+1195 authority; 4616=4212 preferred+404 "
+        "exact-divisor fallback; every admitted (q,k) cell exact-once and "
+        "nonempty; legacy two-wave anchor unchanged; negative-controls=3/3_RED"
+    )
+    if rc != 0:
+        lines = [line.strip() for line in log.splitlines() if line.strip()]
+        return "FAIL", (lines[-1] if lines else f"{script.name} exited {rc}"), dt
+    if log.count(witness) != 1:
+        return "FAIL", "L201 exited zero without its unique exhaustive PASS witness", dt
+    return "PASS", "4616 tail partitions exact/nonempty; three planted policies red", dt
+
+
 def lint_dense_marlin_contract():
     """Marlin must remain an additive K-fast scheduler with its own peer protocol and launch guard."""
     return _run_ci_script(
@@ -2259,6 +2284,7 @@ def main():
                 ("lint", "fixed Split-K one-plane shipping formats retain exact types", lint_dense_splitk_oneplane_formats),
                 ("lint", "fixed Split-K multiformat metadata ABIs retain exact types", lint_dense_splitk_multiformat_types),
                 ("lint", "Stream-K tail scan covers attributed zero, medium, and extreme waves", lint_streamk_tail_plan),
+                ("lint", "dense Stream-K tail partitions exhaust the committed BPC domain", lint_streamk_tail_oracle),
                 ("lint", "dense Marlin keeps K-fast stripes, reverse q locks, and the scheduler-owned grid", lint_dense_marlin_contract),
                 ("lint", "dense Marlin exhausts the declared deployment domain without sampling", lint_dense_marlin_exhaustive),
                 ("lint", "the real dense Marlin Cfg emits the proved raw-shape and unit seams", lint_dense_marlin_codegen),

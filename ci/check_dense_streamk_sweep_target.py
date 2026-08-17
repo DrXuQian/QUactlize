@@ -351,6 +351,9 @@ def audit(files: dict[str, str]) -> list[str]:
         "--m=2048 --n=4096 --k=4096 --l=1 --g=32 --mode=1",
         "--alpha=1 --beta=0",
         'streamk_bpc_spec="${STREAMK_BLOCKS_PER_CU_LIST:-${STREAMK_BLOCKS_PER_CU:-0}}"',
+        'streamk_policy="${STREAMK_POLICY:-two-wave}"',
+        'tail-only) streamk_policy_flag=(--streamk-tail-only)',
+        'streamk_policy=%s',
         'for streamk_bpc in "${streamk_bpcs[@]}"; do',
         'run_axis() {',
         'continuing remaining axes',
@@ -359,6 +362,11 @@ def audit(files: dict[str, str]) -> list[str]:
         'sample-closure-${bpc_label}.json',
         'pipeline_rc=("${PIPESTATUS[@]}")',
         '"--streamk-blocks-per-cu=$streamk_bpc"',
+        'sweep+=("${streamk_policy_flag[@]}")',
+        'f"policy={requested_policy}" not in runs[0].get("build", "")',
+        'if policy != requested_policy or selected != expected_selected',
+        'if requested_policy == "tail-only" and not (',
+        'sk_tiles < workers and dp_units % workers == 0',
         "streamk_blocks_per_cu_zero_semantics=legacy-exact-maximum-occupancy",
         "grid/workspace authority split",
         "grid_exclusions",
@@ -465,6 +473,18 @@ def negative_controls(files: dict[str, str]) -> list[str]:
             '    )',
         ),
         (
+            "drop runner tail-policy selection",
+            "runner",
+            '    sweep+=("${streamk_policy_flag[@]}")',
+            '    : # planted: tail policy is parsed but never reaches the binary',
+        ),
+        (
+            "drop runner tail-partition validation",
+            "runner",
+            '    if requested_policy == "tail-only" and not (',
+            '    if False and not (',
+        ),
+        (
             "restore fail-fast outer axis loop",
             "runner",
             "      rc=$?\n      axis_failures=$((axis_failures + 1))",
@@ -554,7 +574,7 @@ def main() -> int:
         "stages=2:132/3:131/4:119/6:108/8:87 "
         "tile_m=16:88/32:175/64:199/128:97/256:18; "
         "private direct-StreamK target + provenance + runner bound; "
-        "12/12 same-source negative controls red"
+        "14/14 same-source negative controls red"
     )
     return 0
 

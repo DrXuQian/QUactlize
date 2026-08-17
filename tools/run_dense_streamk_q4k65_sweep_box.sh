@@ -14,8 +14,8 @@ main() {
   local sweep_log samples analysis_log analysis_json command_file manifest
   local binary rc source_rows eligible_rows filtered_rows reps iterations jobs
   local axis_failures axis_failure_summary axis_stage axis_status_file tee_rc
-  local streamk_bpc streamk_bpc_spec bpc_label
-  local -a _bins sweep streamk_bpcs pipeline_rc
+  local streamk_bpc streamk_bpc_spec bpc_label streamk_policy
+  local -a _bins sweep streamk_bpcs pipeline_rc streamk_policy_flag
   local -A seen_bpc=()
 
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
@@ -37,6 +37,13 @@ main() {
   reps="${BENCH_REPS:-2}"
   iterations="${ITERATIONS:-7}"
   jobs="${JOBS:-16}"
+  streamk_policy="${STREAMK_POLICY:-two-wave}"
+  streamk_policy_flag=()
+  case "$streamk_policy" in
+    two-wave) ;;
+    tail-only) streamk_policy_flag=(--streamk-tail-only) ;;
+    *) printf '[q4k65-streamk-sweep] FAIL: STREAMK_POLICY must be two-wave or tail-only\n' >&2; return 2 ;;
+  esac
   # 0 preserves the historical behavior (each tactic uses its exact maximum
   # occupancy).  Positive values select the physical worker grid CU*BPC;
   # unsupported tactic cells are recorded, never silently clamped.
@@ -93,6 +100,7 @@ main() {
     printf 'sweep_scope=prefill\nprefill_tm_min=16\n'
     printf 'fixture=q4k65-exact,order-independent+fp16-exact\n'
     printf 'scheduler=streamk,build-time-direct-wrapper\n'
+    printf 'streamk_policy=%s\n' "$streamk_policy"
     printf 'streamk_blocks_per_cu_values=%s\n' "${streamk_bpcs[*]}"
     printf 'streamk_blocks_per_cu_zero_semantics=legacy-exact-maximum-occupancy\n'
     printf 'bench_reps=%s\niterations=%s\njobs=%s\n' "$reps" "$iterations" "$jobs"
@@ -108,8 +116,8 @@ main() {
     printf 'driver_modules_begin\n'; (lsmod 2>/dev/null | grep -Ei 'hgg|ppu|metax' || true); printf 'driver_modules_end\n'
   } >"$out/device.txt"
 
-  printf '[q4k65-streamk-sweep] sha=%s out=%s reps=%s iterations=%s blocks_per_cu_values=%s\n' \
-    "$sha" "$out" "$reps" "$iterations" "${streamk_bpcs[*]}"
+  printf '[q4k65-streamk-sweep] sha=%s out=%s reps=%s iterations=%s policy=%s blocks_per_cu_values=%s\n' \
+    "$sha" "$out" "$reps" "$iterations" "$streamk_policy" "${streamk_bpcs[*]}"
   printf '[q4k65-streamk-sweep] context-only normal-exact=209.30 us (not an admission gate)\n'
 
   env PPU_BUILD_DIR="$build_root" PPU_ARCHS=ppu0010 TARGET="$target" \
@@ -253,6 +261,7 @@ PY
       --m=2048 --n=4096 --k=4096 --l=1 --g=32 --mode=1
       --alpha=1 --beta=0 "--iterations=$iterations"
       "--streamk-blocks-per-cu=$streamk_bpc")
+    sweep+=("${streamk_policy_flag[@]}")
     {
       printf 'BENCH_REPS=%q BENCH_JSONL=%q ' "$reps" "$samples"
       printf '%q ' "${sweep[@]}"
@@ -287,7 +296,7 @@ PY
   fi
   axis_stage="sample-closure"
   python3 - "$samples" "$reps" "$eligible_rows" "$out/sample-closure-${bpc_label}.json" \
-    "$sweep_log" "$streamk_bpc" <<'PY' || return 1
+    "$sweep_log" "$streamk_bpc" "$streamk_policy" <<'PY' || return 1
 import collections
 import json
 import pathlib
@@ -296,11 +305,13 @@ import sys
 
 path, expected_reps, expected_rows, outpath = pathlib.Path(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), pathlib.Path(sys.argv[4])
 requested_bpc = int(sys.argv[6])
+requested_policy = sys.argv[7]
 records = [json.loads(x) for x in path.read_text().splitlines() if x.strip()]
 runs = [x for x in records if x.get("rec") == "run"]
 if (len(runs) != 1 or runs[0].get("reps") != expected_reps or
         runs[0].get("bench") != "cutlass_w4a16_streamk" or
         "scheduler=streamk" not in runs[0].get("build", "") or
+        f"policy={requested_policy}" not in runs[0].get("build", "") or
         f"blocks_per_cu={requested_bpc}" not in runs[0].get("build", "")):
     raise SystemExit(f"[q4k65-streamk-sweep] FAIL: run header is not one scheduler=streamk/reps={expected_reps} record: {runs}")
 required = ("schema", "tm", "tn", "tk", "wm", "wn", "st", "bc", "fixture", "dist", "n", "k", "gs", "experts", "rows", "mmax", "pass")
@@ -357,16 +368,26 @@ for x in samples:
 log = pathlib.Path(sys.argv[5]).read_text()
 decompositions = re.findall(
     r"\[dense streamk decomposition\] actual=(StreamK|DataParallel|SplitK) "
-    r"real_cu=(\d+) occupancy_api=(\d+) blocks_per_cu=(\d+) workers=(\d+) scheduler_workers=(\d+)", log)
+    r"policy=(two-wave|tail-only) "
+    r"real_cu=(\d+) occupancy_api=(\d+) blocks_per_cu=(\d+) workers=(\d+) scheduler_workers=(\d+) "
+    r"sk_tiles=(\d+) sk_units=(\d+) dp_units=(\d+) units=(\d+)", log)
 actual_kinds = collections.Counter(x[0] for x in decompositions)
-for kind, cu, occupancy, selected, workers, scheduler_workers in decompositions:
-    cu, occupancy, selected, workers, scheduler_workers = map(int, (cu, occupancy, selected, workers, scheduler_workers))
+for kind, policy, cu, occupancy, selected, workers, scheduler_workers, sk_tiles, sk_units, dp_units, units in decompositions:
+    cu, occupancy, selected, workers, scheduler_workers, sk_tiles, sk_units, dp_units, units = map(
+        int, (cu, occupancy, selected, workers, scheduler_workers, sk_tiles, sk_units, dp_units, units))
     expected_selected = occupancy if requested_bpc == 0 else requested_bpc
-    if selected != expected_selected or selected > occupancy or workers != cu * selected or scheduler_workers != workers:
+    if policy != requested_policy or selected != expected_selected or selected > occupancy or workers != cu * selected or scheduler_workers != workers:
         raise SystemExit(
             f"[q4k65-streamk-sweep] FAIL: grid/workspace authority split "
             f"kind={kind} cu={cu} occupancy={occupancy} selected={selected} "
             f"workers={workers} scheduler_workers={scheduler_workers} requested={requested_bpc}")
+    if requested_policy == "tail-only" and not (
+            sk_tiles < workers and dp_units % workers == 0 and
+            units == dp_units + sk_units):
+        raise SystemExit(
+            f"[q4k65-streamk-sweep] FAIL: printed tail policy is not a DP-wave prefix plus "
+            f"one residual SK region kind={kind} W={workers} SK={sk_tiles}/{sk_units} "
+            f"DP={dp_units} units={units}")
 actual_streamk = actual_kinds["StreamK"]
 actual_dp = actual_kinds["DataParallel"]
 exercised = len(re.findall(r"\[dense streamk split gate\] EXERCISED\b", log))

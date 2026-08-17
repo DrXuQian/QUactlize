@@ -21,6 +21,8 @@ STREAMK_LOG="$ARTIFACT_ROOT/streamk-exact-fixture.log"
 CONFIG='64x64x64:64x32:s3:bc0->0'
 CONFIG_LABEL='64x64:64 w64x32 s3 bc0->0'
 CONTINUE_ON_BASELINE_DRIFT="${CONTINUE_ON_BASELINE_DRIFT:-0}"
+STREAMK_POLICY="${STREAMK_POLICY:-two-wave}"
+STREAMK_POLICY_FLAG=()
 
 fail() {
   printf '[q4k65-streamk] FAIL: %s\n' "$*" >&2
@@ -36,10 +38,16 @@ case "$CONTINUE_ON_BASELINE_DRIFT" in
   0|1) ;;
   *) fail "CONTINUE_ON_BASELINE_DRIFT must be 0 or 1" ;;
 esac
+case "$STREAMK_POLICY" in
+  two-wave) ;;
+  tail-only) STREAMK_POLICY_FLAG=(--streamk-tail-only) ;;
+  *) fail "STREAMK_POLICY must be two-wave or tail-only" ;;
+esac
 
 mkdir -p "$ARTIFACT_ROOT" "$BUILD_ROOT"
 
 printf '[q4k65-streamk] sha=%s artifacts=%s\n' "$SHA" "$ARTIFACT_ROOT"
+printf '[q4k65-streamk] policy=%s\n' "$STREAMK_POLICY"
 printf '[q4k65-streamk] anchor=scale_first M=2048 N=4096 K=4096 gs=32 input_cfg=%s report_cfg=%s historical=209.27us/65.7%%MFU\n' \
   "$CONFIG" "$CONFIG_LABEL"
 
@@ -131,17 +139,19 @@ fi
 
 printf '\n== exact forced hybrid Stream-K subject ==\n'
 if ! "$BIN" "${COMMON[@]}" --iterations=20 --streamk_exact_fixture --streamk \
+    "${STREAMK_POLICY_FLAG[@]}" \
     2>&1 | tee "$STREAMK_LOG"; then
   fail 'forced Stream-K subject failed, was not exercised, or was not classifiable'
 fi
 
-python3 - "$NORMAL_LOG" "$STREAMK_LOG" "$BASELINE_LOG" <<'PY' || \
+python3 - "$NORMAL_LOG" "$STREAMK_LOG" "$BASELINE_LOG" "$STREAMK_POLICY" <<'PY' || \
   fail 'normal/Stream-K adjudication failed'
 import math, pathlib, re, sys
 
 normal = pathlib.Path(sys.argv[1]).read_text()
 streamk = pathlib.Path(sys.argv[2]).read_text()
 baseline = pathlib.Path(sys.argv[3]).read_text()
+requested_policy = sys.argv[4]
 exact = (r"\[streamk fixture exactness\] fixture=q4k65-exact "
          r"shape=2048x4096x4096 .* max\|D\|=2048 .* -> "
          r"ORDER-INDEPENDENT\+FP16-EXACT")
@@ -165,8 +175,9 @@ def timing(text, scheduler):
 normal_us = timing(normal, "non-persistent")
 streamk_us = timing(streamk, "streamk")
 decomp = re.findall(
-    r"\[dense streamk decomposition\] actual=(\w+) real_cu=(\d+) "
-    r"ctas_per_cu=(\d+) workers=(\d+) scheduler_workers=(\d+) "
+    r"\[dense streamk decomposition\] actual=(\w+) policy=(two-wave|tail-only) "
+    r"real_cu=(\d+) occupancy_api=(\d+) blocks_per_cu=(\d+) "
+    r"workers=(\d+) scheduler_workers=(\d+) "
     r"sk_tiles=(\d+) sk_units=(\d+) dp_units=(\d+) units=(\d+) "
     r"splits=(\d+) separate=(\d+) workspace=(\d+)", streamk)
 partition = re.findall(
@@ -179,9 +190,9 @@ normal_occ = re.findall(
     normal)
 if len(decomp) != 1 or len(partition) != 1 or len(normal_occ) != 1:
     raise SystemExit("normal occupancy or Stream-K decomposition/partition evidence is missing or duplicated")
-actual, cu, cpcu, workers, sched_workers, sk_tiles, sk_units, dp_units, units, splits, separate, workspace = decomp[0]
-cu, cpcu, workers, sched_workers, sk_tiles, sk_units, dp_units, units, splits, separate, workspace = map(
-    int, (cu, cpcu, workers, sched_workers, sk_tiles, sk_units, dp_units, units, splits, separate, workspace))
+actual, policy, cu, occupancy, cpcu, workers, sched_workers, sk_tiles, sk_units, dp_units, units, splits, separate, workspace = decomp[0]
+cu, occupancy, cpcu, workers, sched_workers, sk_tiles, sk_units, dp_units, units, splits, separate, workspace = map(
+    int, (cu, occupancy, cpcu, workers, sched_workers, sk_tiles, sk_units, dp_units, units, splits, separate, workspace))
 dp, whole, split, peers, valid, qk = map(int, partition[0])
 q = 2048
 normal_q, normal_cu, normal_cpcu, gx, gy, gz, normal_physical = map(
@@ -196,10 +207,32 @@ waves = math.ceil(q / workers)
 tail_fill = 100.0 * tail / workers
 dp_padding = 100.0 * (waves * workers - q) / q
 if not (normal_q == q == normal_physical and gx * gy * gz == q and
-        actual == "StreamK" and workers == cu * cpcu == sched_workers and
+        actual == "StreamK" and policy == requested_policy and
+        workers == cu * cpcu == sched_workers and cpcu == occupancy and
         sk_tiles > 0 and sk_units > 0 and split > 0 and peers > 0 and
         valid > 0 and splits == 1 and separate == 0):
     raise SystemExit(f"forced Stream-K was not genuinely exercised: decomp={decomp[0]} partition={partition[0]}")
+if requested_policy == "tail-only":
+    expected = {
+        "sk_tiles": q % workers,
+        "sk_units": workers,
+        "dp_units": q - (q % workers),
+        "units": (q - (q % workers)) + workers,
+        "dp": q - (q % workers),
+        "whole": 0,
+        "split": q % workers,
+        "peers": 456,
+        "valid": 456 * 64 * 64,
+        "qk": (q % workers) * 64,
+    }
+    got = {"sk_tiles": sk_tiles, "sk_units": sk_units,
+           "dp_units": dp_units, "units": units, "dp": dp,
+           "whole": whole, "split": split, "peers": peers,
+           "valid": valid, "qk": qk}
+    if got != expected:
+        raise SystemExit(
+            f"tail-only lowering is not the preregistered DP-major partition: "
+            f"got={got} expected={expected}")
 if "Disposition: Passed (whole-K reference bit-exact; fixup replay closed)" not in streamk:
     raise SystemExit("Stream-K lacks its raw-bit whole-K/fixup PASS")
 flops = 2.0 * 2048 * 4096 * 4096
@@ -213,6 +246,7 @@ if len(baseline_match) != 1:
 baseline_us = float(baseline_match[0])
 anchor = "ADMITTED" if 209.27 * 0.97 <= baseline_us <= 209.27 * 1.03 else "DRIFTED"
 print(f"Q4K65_GEOMETRY Q={q} "
+      f"policy={policy} "
       f"normal_workers={normal_workers} normal_waves={normal_waves} "
       f"normal_tail={normal_tail}/{normal_workers} normal_tail_fill={normal_tail_fill:.3f}% "
       f"normal_dp_padding={normal_padding:.3f}% "
@@ -222,7 +256,7 @@ print(f"Q4K65_GEOMETRY Q={q} "
       f"dp_units={dp_units} sk_tiles={sk_tiles} sk_units={sk_units} "
       f"split_tiles={split} peer_excess={peers} workspace={workspace}")
 print(f"Q4K65_AB normal={normal_us:.3f}_us/{normal_mfu:.3f}%MFU "
-      f"streamk={streamk_us:.3f}_us/{streamk_mfu:.3f}%MFU "
+      f"streamk_{policy}={streamk_us:.3f}_us/{streamk_mfu:.3f}%MFU "
       f"speedup={speedup:.5f}x correctness=RAW-BIT/PASS "
       f"historical_anchor={anchor}")
 winner = "STREAMK-WINS" if streamk_us < normal_us else "NORMAL-WINS"

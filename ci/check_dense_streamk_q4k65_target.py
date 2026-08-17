@@ -237,7 +237,11 @@ def audit(files: dict[str, str]) -> list[str]:
         "protocol=PpuTimer-aggregate reference=209\\.27us",
         'spans = re.findall(r"\\[dense kernel-span-upper\\]", text)',
         "len(aggregates) != 1 or len(spans) != 0",
-        "actual=(\\w+) real_cu=(\\d+)",
+        "actual=(\\w+) policy=(two-wave|tail-only) ",
+        'STREAMK_POLICY="${STREAMK_POLICY:-two-wave}"',
+        'tail-only) STREAMK_POLICY_FLAG=(--streamk-tail-only)',
+        '"${STREAMK_POLICY_FLAG[@]}"',
+        'if requested_policy == "tail-only":',
         "normal_workers=",
         "Disposition: Passed (whole-K reference bit-exact; fixup replay closed)",
     ):
@@ -256,6 +260,7 @@ def audit(files: dict[str, str]) -> list[str]:
         '    2>&1 | tee "$NORMAL_LOG"',
         "== exact forced hybrid Stream-K subject ==",
         '"$BIN" "${COMMON[@]}" --iterations=20 --streamk_exact_fixture --streamk \\\n'
+        '    "${STREAMK_POLICY_FLAG[@]}" \\\n'
         '    2>&1 | tee "$STREAMK_LOG"',
         "Q4K65_VERDICT ",
     ), "normal-before-Stream-K admission", bad)

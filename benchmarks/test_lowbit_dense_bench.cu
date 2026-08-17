@@ -764,6 +764,7 @@ struct Options {
   bool xcheck = false;           // --xcheck: run the grouped kernel (L=1) on this run's verified data and compare
   bool persistent = false;       // --persistent: 107a A/B target only; select serial persistent work loop
   bool streamk = false;          // --streamk: 107b target only; select deterministic dense Stream-K
+  bool streamk_tail_only = false; // --streamk-tail-only: keep complete waves DP; split only the residual wave
   bool marlin = false;           // --marlin: select the independent Marlin stripe scheduler/cooperative
   bool streamk_gate = false;     // --streamk_gate: require the independent CPU-FP32/fixup gate
   bool streamk_split_gate = false; // --streamk_split_gate: require an actually split output tile
@@ -806,6 +807,7 @@ struct Options {
     xcheck         = cmd.check_cmd_line_flag("xcheck");
     persistent     = cmd.check_cmd_line_flag("persistent");
     streamk        = cmd.check_cmd_line_flag("streamk");
+    streamk_tail_only = cmd.check_cmd_line_flag("streamk-tail-only");
     marlin         = cmd.check_cmd_line_flag("marlin");
     streamk_gate   = cmd.check_cmd_line_flag("streamk_gate");
     streamk_split_gate = cmd.check_cmd_line_flag("streamk_split_gate");
@@ -815,7 +817,7 @@ struct Options {
     cmd.get_cmd_line_argument("streamk-blocks-per-cu", streamk_blocks_per_cu);
     cmd.get_cmd_line_argument("marlin-blocks-per-cu", marlin_blocks_per_cu);
     cmd.get_cmd_line_argument("instruction-m", marlin_instruction_m);
-    if (streamk_gate || streamk_split_gate) streamk = true;
+    if (streamk_gate || streamk_split_gate || streamk_tail_only) streamk = true;
   }
 
   /// Prints the usage statement.
@@ -841,11 +843,13 @@ struct Options {
 #endif
 #if defined(DENSE_STREAMK_SWEEP)
     out << "  --streamk                   Required intent marker; every compiled row is already Stream-K.\n"
+        << "  --streamk-tail-only         Keep all complete waves DP and Stream-K only the residual output tiles.\n"
         << "  --streamk_exact_fixture     Required gs32 order-independent fixture and raw-bit fixup replay.\n"
         << "  --streamk-blocks-per-cu=<n> Physical worker-grid multiplier (1..exact occupancy; 0=legacy maximum).\n"
         << "  scheduler=streamk           Fixed at build time; prefill search spans TM>=16 rows of the filtered committed int4 table.\n";
 #elif defined(DENSE_STREAMK_AB) && !defined(DENSE_MARLIN_WK4_AB)
     out << "  --streamk                   Use deterministic dense Stream-K (splits=1).\n"
+        << "  --streamk-tail-only         Keep all complete waves DP and Stream-K only the residual output tiles.\n"
         << "  --streamk_gate              Also require fixup witness + CPU FP32 golden.\n"
         << "  --streamk_split_gate        Fail closed unless lowered Params contain a real cross-CTA seam.\n"
         << "  --streamk_exact_fixture     Fill the actual A0 arm with sparse integer inputs whose sums are order-independent.\n"
@@ -3076,7 +3080,9 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
     arguments.scheduler.splits = 1;
     arguments.scheduler.max_swizzle_size = 1;
     arguments.scheduler.reduction_mode = SchedulerParams::ReductionMode::Deterministic;
-    arguments.scheduler.decomposition_mode = SchedulerParams::DecompositionMode::StreamK;
+    arguments.scheduler.decomposition_mode = options.streamk_tail_only
+        ? SchedulerParams::DecompositionMode::StreamKTail
+        : SchedulerParams::DecompositionMode::StreamK;
     if (options.streamk_gate) {
       streamk_diagnostics.reset(1);
       StreamKDiagnosticState host_diagnostics{};
@@ -3127,24 +3133,39 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
     char const* actual = sk.divmod_splits_.divisor > 1 ? "SplitK" :
                          (sk.sk_tiles_ > 0 && sk.sk_units_ > 0 ? "StreamK" : "DataParallel");
     std::printf(
-        "  [dense streamk decomposition] actual=%s real_cu=%d occupancy_api=%d "
+        "  [dense streamk decomposition] actual=%s policy=%s real_cu=%d occupancy_api=%d "
         "blocks_per_cu=%d "
         "workers=%llu scheduler_workers=%d sk_tiles=%u sk_units=%u dp_units=%llu "
         "units=%llu splits=%d separate=%u workspace=%zu\n",
-        actual, cu_count, occupancy_ctas_per_cu, ctas_per_cu,
+        actual, options.streamk_tail_only ? "tail-only" : "two-wave",
+        cu_count, occupancy_ctas_per_cu, ctas_per_cu,
         static_cast<unsigned long long>(workers),
         params.scheduler_hw_info.cu_count, sk.sk_tiles_, sk.sk_units_,
         static_cast<unsigned long long>(dp_units),
         static_cast<unsigned long long>(sk.units_per_problem_),
         sk.divmod_splits_.divisor, sk.separate_reduction_units_, workspace_size);
+    bool const tail_dp_fallback = options.streamk_tail_only &&
+        sk.sk_tiles_ == 0 && sk.sk_units_ == 0;
+    uint64_t const expected_tail_tiles = logical_ctas % workers;
+    bool const tail_policy_matches = !options.streamk_tail_only ||
+        (uint64_t(sk.sk_tiles_) == expected_tail_tiles &&
+         dp_units == logical_ctas - expected_tail_tiles &&
+         uint64_t(sk.units_per_problem_) == dp_units + uint64_t(sk.sk_units_) &&
+         ((expected_tail_tiles == 0) == tail_dp_fallback));
     bool const valid_decomposition =
-        sk.sk_tiles_ > 0 && sk.sk_units_ > 0 &&
+        ((sk.sk_tiles_ > 0 && sk.sk_units_ > 0) || tail_dp_fallback) &&
         sk.divmod_splits_.divisor == 1 && sk.separate_reduction_units_ == 0 &&
         params.scheduler_hw_info.cu_count == int(workers) &&
-        sk.reduction_mode_ == SchedulerParams::ReductionMode::Deterministic;
+        sk.reduction_mode_ == SchedulerParams::ReductionMode::Deterministic &&
+        tail_policy_matches;
     if (!valid_decomposition) {
       std::fprintf(stderr,
-                   "dense Stream-K fail-close: requested deterministic StreamK but actual decomposition/worker contract differs\n");
+                   "dense Stream-K fail-close: requested deterministic policy but actual "
+                   "decomposition/worker contract differs "
+                   "(logical=%llu expected_tail=%llu got_tail=%u got_dp=%llu)\n",
+                   static_cast<unsigned long long>(logical_ctas),
+                   static_cast<unsigned long long>(expected_tail_tiles),
+                   sk.sk_tiles_, static_cast<unsigned long long>(dp_units));
       Result decomposition_failure;
       decomposition_failure.passed = false;
       return decomposition_failure;
@@ -3293,9 +3314,26 @@ Result run(Options &options, bench_measure::Tactic tactic = dense_convert_tactic
     // object from a rejected request is not decomposition evidence.
     auto const diagnostic_params =
         Gemm::GemmKernel::to_underlying_arguments(arguments, workspace.get());
+    bool const lowered_tail_dp = options.streamk_tail_only &&
+        diagnostic_params.scheduler.sk_tiles_ == 0 &&
+        diagnostic_params.scheduler.sk_units_ == 0;
     verify_partition.classification_closed =
-        owner_map_closed && dense_classify_streamk_tiles(
-            verify_partition, diagnostic_params.scheduler);
+        owner_map_closed && (lowered_tail_dp || dense_classify_streamk_tiles(
+            verify_partition, diagnostic_params.scheduler));
+    // StreamKTail is an opt-in policy over the existing flattened-K device
+    // mapper.  Some short-K tactic/worker combinations make that mapper's
+    // MinIters boundary repair collapse a work unit to zero.  The host mirror
+    // is exact integer arithmetic and runs before the first subject launch;
+    // never send an unclassified tail-only mapping to the device.
+    if (options.streamk_tail_only && !verify_partition.classification_closed) {
+      std::fprintf(
+          stderr,
+          "dense tail-only Stream-K fail-close: lowered work-unit intervals "
+          "did not form an exact nonempty (q,k) partition\n");
+      result.passed = false;
+      result.verification_classified = false;
+      return result;
+    }
     // Every Stream-K arm that claims numerical evidence must actually contain
     // a peer seam.  This used to guard only --streamk_split_gate, so fixed A0
     // could print an ordinary Failed disposition while the same-order replay
@@ -4543,9 +4581,10 @@ int main(int argc, char const **args) {
                   kLowbitDenseConfigRows, options.marlin_instruction_m);
 #elif defined(DENSE_STREAMK_SWEEP)
     std::snprintf(build, sizeof build,
-                  "bits=%d TSK=%d gs=%d scheduler=streamk blocks_per_cu=%d rows=%d",
+                  "bits=%d TSK=%d gs=%d scheduler=streamk policy=%s blocks_per_cu=%d rows=%d",
                   int(cutlass::sizeof_bits<QuantType>::value), TileShapeK,
-                  options.g, options.streamk_blocks_per_cu,
+                  options.g, options.streamk_tail_only ? "tail-only" : "two-wave",
+                  options.streamk_blocks_per_cu,
                   kLowbitDenseConfigRows);
 #elif defined(DENSE_MARLIN_SWEEP)
     std::snprintf(build, sizeof build, "bits=%d TSK=%d gs=%d scheduler=%s",

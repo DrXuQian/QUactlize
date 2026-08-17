@@ -73,10 +73,14 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         "static_assert(DispatchPolicy::Stages - 1 <= 8",
         "args.scheduler.splits == 1",
         "TileSchedulerParams::ReductionMode::Deterministic",
-        "TileSchedulerParams::DecompositionMode::StreamK",
     ):
         if header.count(token) != 1:
             bad.append(f"kernel must contain exactly one {token!r}")
+    tail_admission = (
+        "(args.scheduler.decomposition_mode == TileSchedulerParams::DecompositionMode::StreamK ||\n"
+        "            args.scheduler.decomposition_mode == TileSchedulerParams::DecompositionMode::StreamKTail)")
+    if header.count(tail_admission) != 1:
+        bad.append("kernel must admit exactly the legacy and tail-only Stream-K enum values")
     if "should_perform_separate_reduction" in header:
         bad.append("107b must not wire the disabled separate-reduction path")
     for token, count in (
@@ -360,7 +364,7 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         streamk_exit = ""
 
     for token in (
-        "actual=%s real_cu=%d occupancy_api=%d ",
+        "actual=%s policy=%s real_cu=%d occupancy_api=%d ",
         '"blocks_per_cu=%d "',
         "ctas_per_cu = dense_streamk_selected_blocks_per_cu(",
         "static_assert(dense_streamk_selected_blocks_per_cu(0, 8) == 8);",
@@ -368,6 +372,9 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
         "static_assert(dense_streamk_selected_blocks_per_cu(3, 8) == 3);",
         "arguments.ctas_per_cu = ctas_per_cu;",
         "params.scheduler_hw_info.cu_count == int(workers)",
+        "uint64_t const expected_tail_tiles = logical_ctas % workers;",
+        "uint64_t(sk.sk_tiles_) == expected_tail_tiles &&",
+        "dp_units == logical_ctas - expected_tail_tiles &&",
         "witness[0] == 8 && witness[1] == 1 && witness[2] == 0",
         "outputs=%zu bad=%d bitdiff=%d",
         "[dense kernel-span-upper]",
@@ -690,6 +697,9 @@ def main() -> int:
          "true /* planted comparator bypass */", "same comparator for bucket and disposition"),
         (1, "dense_map_accumulator_owners<Gemm>(verify_partition)",
          "true /* planted owner-map bypass */", "real MMA lane/stripe inverse"),
+        (1, "uint64_t const expected_tail_tiles = logical_ctas % workers;",
+         "uint64_t const expected_tail_tiles = logical_ctas;",
+         "tail-only lowering must equal the unique residual wave"),
         (1, "final_visit[q] = uint16_t(last_local_tile - local);",
          "final_visit[q] = uint16_t(0);", "persistent final-peer visit ordinal"),
         (2, "X(lowbit_dense_streamk_probe,64,128,64,64,32,2,0)",
