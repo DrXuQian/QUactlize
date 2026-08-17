@@ -1385,6 +1385,33 @@ def lint_streamk_tail_oracle():
     return "PASS", "4616 tail partitions exact/nonempty/min-peer; five planted policies red", dt
 
 
+def lint_ppu_chunked_gdn_oracle():
+    """The PPU GDN chunk algebra must equal an independent token recurrence.
+
+    L203 is deliberately host-only.  It exhausts the admitted chunk/tail grid,
+    binds one full 64x128x128 production specialization, proves the blocked
+    unit-lower inverse, and requires four semantic plants to turn red.  The
+    device compiler gate is separate: absence of a PPU SDK cannot weaken this
+    algebraic claim.
+    """
+    script = DEV / "run_l203_chunked_gdn_oracle.sh"
+    if not script.is_file():
+        return "FAIL", f"missing {script.name}", 0.0
+    rc, log, dt = run(["bash", str(script)], cwd=str(ROOT))
+    witness = (
+        "[L203] PASS: pure-C++ GDN recurrence == chunk/WY; "
+        "inverse/scheduler/tails/plants closed"
+    )
+    if rc != 0:
+        lines = [line.strip() for line in log.splitlines() if line.strip()]
+        return "FAIL", (lines[-1] if lines else f"{script.name} exited {rc}"), dt
+    if log.count(witness) != 1:
+        return "FAIL", "L203 exited zero without its unique complete PASS witness", dt
+    if log.count("EXPECTED_RED/PASS") != 4:
+        return "FAIL", "L203 did not exercise all four predeclared semantic plants", dt
+    return "PASS", "85 chunk cases + production 64x128x128 equal token recurrence; four plants red", dt
+
+
 def lint_dense_marlin_contract():
     """Marlin must remain an additive K-fast scheduler with its own peer protocol and launch guard."""
     return _run_ci_script(
@@ -2295,6 +2322,7 @@ def main():
                 ("lint", "fixed Split-K multiformat metadata ABIs retain exact types", lint_dense_splitk_multiformat_types),
                 ("lint", "Stream-K tail scan covers attributed zero, medium, and extreme waves", lint_streamk_tail_plan),
                 ("lint", "dense Stream-K tail partitions exhaust the committed BPC domain", lint_streamk_tail_oracle),
+                ("lint", "PPU chunked GDN recurrence and WY algebra agree on every admitted tail", lint_ppu_chunked_gdn_oracle),
                 ("lint", "dense Marlin keeps K-fast stripes, reverse q locks, and the scheduler-owned grid", lint_dense_marlin_contract),
                 ("lint", "dense Marlin exhausts the declared deployment domain without sampling", lint_dense_marlin_exhaustive),
                 ("lint", "the real dense Marlin Cfg emits the proved raw-shape and unit seams", lint_dense_marlin_codegen),
