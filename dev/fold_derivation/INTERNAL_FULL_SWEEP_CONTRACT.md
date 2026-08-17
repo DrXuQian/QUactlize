@@ -98,21 +98,51 @@ device traffic counter.
 
 ## Runner and outputs
 
-After the two component runners exist, the complete box invocation is:
+The production entry point resolves the three catalog models, reads their
+actual GGUF headers, freezes that inventory inside the output bundle, and then
+invokes both component runners.  A fresh box invocation is:
 
 ```bash
+export QWEN35_35B_A3B_Q4_K_M_GGUF=/workspace/models/Qwen3.5-35B-A3B-Q4_K_M
+export QWEN3_32B_Q4_K_M_GGUF=/workspace/models/Qwen3-32B-Q4_K_M
+export QWEN35_122B_A10B_Q4_K_M_GGUF=/workspace/models/Qwen3.5-122B-A10B-Q4_K_M
+
 OUT=/workspace/quactlize-internal-full-sweep-$(git rev-parse --short HEAD)-$(date -u +%Y%m%dT%H%M%SZ) \
-GGUF_SET=/path/to/three-model-gguf-set.json \
-INTERNAL_SWEEP_SPEC=/path/to/committed-shape-manifest.json \
-JOBS=16 BENCH_REPS=3 \
+JOBS=16 ITERATIONS=7 CORRECTNESS_REPEATS=2 \
 bash tools/run_internal_full_sweep_box.sh
 ```
 
-`SCALEFIRST_RUNNER`, `FULLY_QUANTIZED_RUNNER`, and the two `*_SUMMARY_REL`
-variables are development seams only.  Production runs use their repository
-defaults.  All paths are strict `/workspace` children, created with `mkdir`;
-the runner uses neither `/tmp` nor `mktemp` and refuses to overwrite an old
-bundle.
+Each binding may be one GGUF file or one complete standard split directory.
+The resolver fails on an incomplete or mixed shard family.  To continue an
+interrupted run, reuse the exact `OUT` with `RESUME=1`; the frozen catalog,
+resolved file set, inventory, runner hashes and source identity must still
+match.  A changed authority is rejected before either component executes.
+The catalog itself is copied into `inputs/catalog.json`; after that first
+atomic write the bundle is self-contained, so a vanished external catalog is
+not required for resume.  If an external catalog is still readable, its bytes
+must match the frozen copy.  Imported resolved/inventory files are accepted
+only when their exact ordered model membership, TP policy, catalog hash and
+GGUF member map match that frozen catalog; a one-model import cannot satisfy
+the three-model production catalog.
+
+`INTERNAL_SWEEP_CATALOG`, `GGUF_SET`, and `INTERNAL_SWEEP_SPEC` import
+prebuilt authorities for development only.  `SCALEFIRST_RUNNER`,
+`FULLY_QUANTIZED_RUNNER`, and the two `*_SUMMARY_REL` variables are likewise
+development seams.  Any override requires explicit
+`INTERNAL_SWEEP_DEV_MODE=1`; that bundle records
+`publication_mode=development` and prints `DEVELOPMENT-COMPLETE`, never the
+production `PASS` witness.  Production uses the checked-in three-model
+catalog, its binding environments, and repository component defaults.  All paths are strict
+`/workspace` children, created with `mkdir`; the runner uses neither `/tmp`
+nor `mktemp` and refuses an existing bundle unless `RESUME=1` is explicit.
+Every orchestration attempt has a unique ID.  Both component summaries must
+publish that ID in provenance, so a zero-returning/no-op runner cannot reuse a
+summary from an earlier attempt.  Merge output is built under the attempt
+directory and renamed into place only after validation.  A pre-existing
+partial `results/` tree is preserved under that attempt rather than blocking
+recovery.  `completion.json` binds both component summaries and a deterministic
+recursive manifest of every file under `results/`; an exact completed resume
+validates the whole tree and returns idempotently without rerunning device work.
 
 The durable outputs are:
 
@@ -160,3 +190,14 @@ decision while qtype, TP, route, and grouped changes remain isolated, and that
 a catalog template change changes the rendered folder.  All ten planted
 contract failures must be rejected.  Device execution remains the component runners'
 responsibility; this local test proves only the publication contract.
+
+`python3 -B ci/check_internal_full_sweep_runner.py` additionally runs the real
+catalog resolver and GGUF parser on a synthetic GGUF, feeds hash-bound fake
+device summaries through the production orchestration and merger, and
+requires all four boards under `results/models/<model>/<shape>/`.  Its
+negative changes only the catalog before a resume and must fail before either
+component executes.  Additional negatives require: exact three-model
+membership, stale-summary rejection through the attempt ID, self-contained
+completed resume after deleting the external catalog, recovery from a
+pre-existing result tree, truncated immutable provenance rejection, and a
+failed authority write stopping before measurement.
