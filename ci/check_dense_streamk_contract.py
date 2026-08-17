@@ -78,9 +78,10 @@ def audit(header: str, bench: str, unit: str, dispatch: str, cmake: str,
             bad.append(f"kernel must contain exactly one {token!r}")
     tail_admission = (
         "(args.scheduler.decomposition_mode == TileSchedulerParams::DecompositionMode::StreamK ||\n"
-        "            args.scheduler.decomposition_mode == TileSchedulerParams::DecompositionMode::StreamKTail)")
+        "            args.scheduler.decomposition_mode == TileSchedulerParams::DecompositionMode::StreamKTail ||\n"
+        "            args.scheduler.decomposition_mode == TileSchedulerParams::DecompositionMode::StreamKTailMinPeers)")
     if header.count(tail_admission) != 1:
-        bad.append("kernel must admit exactly the legacy and tail-only Stream-K enum values")
+        bad.append("kernel must admit exactly legacy, tail-only, and tail-min-peers Stream-K modes")
     if "should_perform_separate_reduction" in header:
         bad.append("107b must not wire the disabled separate-reduction path")
     for token, count in (

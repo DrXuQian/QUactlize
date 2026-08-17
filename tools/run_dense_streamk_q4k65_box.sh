@@ -41,7 +41,8 @@ esac
 case "$STREAMK_POLICY" in
   two-wave) ;;
   tail-only) STREAMK_POLICY_FLAG=(--streamk-tail-only) ;;
-  *) fail "STREAMK_POLICY must be two-wave or tail-only" ;;
+  tail-min-peers) STREAMK_POLICY_FLAG=(--streamk-tail-min-peers) ;;
+  *) fail "STREAMK_POLICY must be two-wave, tail-only, or tail-min-peers" ;;
 esac
 
 mkdir -p "$ARTIFACT_ROOT" "$BUILD_ROOT"
@@ -175,7 +176,7 @@ def timing(text, scheduler):
 normal_us = timing(normal, "non-persistent")
 streamk_us = timing(streamk, "streamk")
 decomp = re.findall(
-    r"\[dense streamk decomposition\] actual=(\w+) policy=(two-wave|tail-only) "
+    r"\[dense streamk decomposition\] actual=(\w+) policy=(two-wave|tail-only|tail-min-peers) "
     r"real_cu=(\d+) occupancy_api=(\d+) blocks_per_cu=(\d+) "
     r"workers=(\d+) scheduler_workers=(\d+) "
     r"sk_tiles=(\d+) sk_units=(\d+) dp_units=(\d+) units=(\d+) "
@@ -212,26 +213,35 @@ if not (normal_q == q == normal_physical and gx * gy * gz == q and
         sk_tiles > 0 and sk_units > 0 and split > 0 and peers > 0 and
         valid > 0 and splits == 1 and separate == 0):
     raise SystemExit(f"forced Stream-K was not genuinely exercised: decomp={decomp[0]} partition={partition[0]}")
-if requested_policy == "tail-only":
-    expected = {
+if requested_policy in ("tail-only", "tail-min-peers"):
+    common = {
         "sk_tiles": q % workers,
         "sk_units": workers,
         "dp_units": q - (q % workers),
         "units": (q - (q % workers)) + workers,
         "dp": q - (q % workers),
+        "qk": (q % workers) * 64,
+        "workspace": 5_244_160,
+    }
+    topology = ({
         "whole": 0,
         "split": q % workers,
         "peers": 456,
         "valid": 456 * 64 * 64,
-        "qk": (q % workers) * 64,
-    }
+    } if requested_policy == "tail-only" else {
+        "whole": 64,
+        "split": 256,
+        "peers": 256,
+        "valid": 256 * 64 * 64,
+    })
+    expected = {**common, **topology}
     got = {"sk_tiles": sk_tiles, "sk_units": sk_units,
            "dp_units": dp_units, "units": units, "dp": dp,
            "whole": whole, "split": split, "peers": peers,
-           "valid": valid, "qk": qk}
+           "valid": valid, "qk": qk, "workspace": workspace}
     if got != expected:
         raise SystemExit(
-            f"tail-only lowering is not the preregistered DP-major partition: "
+            f"{requested_policy} lowering is not the preregistered DP-major partition: "
             f"got={got} expected={expected}")
 if "Disposition: Passed (whole-K reference bit-exact; fixup replay closed)" not in streamk:
     raise SystemExit("Stream-K lacks its raw-bit whole-K/fixup PASS")

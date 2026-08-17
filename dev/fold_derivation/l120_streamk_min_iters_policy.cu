@@ -81,6 +81,8 @@ static_assert(int(Params8::DecompositionMode::SplitK) == 2);
 static_assert(int(Params8::DecompositionMode::StreamK) == 3);
 static_assert(int(Params8::DecompositionMode::StreamKTail) == 4,
               "tail-only must append without renumbering shipping modes");
+static_assert(int(Params8::DecompositionMode::StreamKTailMinPeers) == 5,
+              "tail-min-peers must append without renumbering existing modes");
 
 // A policy specialization must not change the payload ABI.  Params travel from host lowering into device code;
 // a size/alignment change here would turn an apparently source-compatible default into a binary contract change.
@@ -135,10 +137,15 @@ int main() {
       TailQ, TailW, 1, TailKt, Params8::DecompositionMode::StreamK);
   auto tail_tiles = Params8::get_num_sk_tiles(
       TailQ, TailW, 1, TailKt, Params8::DecompositionMode::StreamKTail);
+  auto min_peer_tiles = Params8::get_num_sk_tiles(
+      TailQ, TailW, 1, TailKt,
+      Params8::DecompositionMode::StreamKTailMinPeers);
   auto tail_units = Params8::get_num_sk_units(
       cutlass::gemm::GemmCoord(1, 1, 1), TailW, tail_tiles, TailKt);
   auto tail_groups = Params8::get_stream_k_tail_safe_groups(
       8, tail_tiles, tail_units, TailKt);
+  auto min_peer_groups = Params8::get_stream_k_tail_min_peer_groups(
+      min_peer_tiles, tail_units, TailKt);
   uint32_t fallback_bindings = 0;
   for (auto const& signature : TailFallbackCases) {
     uint32_t const selected = Params8::get_stream_k_tail_safe_groups(
@@ -153,6 +160,7 @@ int main() {
   uint64_t production_sk_tiles = 0;
   uint64_t production_sk_units = 0;
   uint32_t production_groups[145] = {};
+  uint32_t production_min_peer_groups[289] = {};
   bool production_domain_ok = true;
   for (auto const& config : DenseConfigs) {
     uint32_t const threads = 32 * (config.tm / config.wm) * (config.tn / config.wn);
@@ -173,6 +181,8 @@ int main() {
       bool const preferred_exact = Params8::stream_k_tail_intervals_cover_exactly(
           8, sk, units, kt);
       uint32_t const groups = Params8::get_stream_k_tail_safe_groups(8, sk, units, kt);
+      uint32_t const min_groups = Params8::get_stream_k_tail_min_peer_groups(
+          sk, units, kt);
       production_preferred += preferred_exact;
       production_fallback += !preferred_exact;
       production_dp_tiles += q - sk;
@@ -183,7 +193,16 @@ int main() {
       } else {
         ++production_groups[groups];
       }
-      production_domain_ok &= sk == q % workers && groups != 0;
+      if (min_groups >= sizeof(production_min_peer_groups) /
+                            sizeof(production_min_peer_groups[0])) {
+        production_domain_ok = false;
+      } else {
+        ++production_min_peer_groups[min_groups];
+      }
+      production_domain_ok &= sk == q % workers && groups != 0 &&
+          min_groups != 0 &&
+          Params8::stream_k_tail_intervals_cover_exactly(
+              min_groups, sk, units, kt, true);
     }
   }
   constexpr struct { uint32_t groups, count; } ExpectedGroupCensus[] = {
@@ -200,10 +219,29 @@ int main() {
   for (uint32_t count : production_groups) {
     production_domain_ok &= count == 0;
   }
+  constexpr struct { uint32_t groups, count; } ExpectedMinPeerGroupCensus[] = {
+      {8, 52}, {12, 39}, {16, 234}, {18, 123}, {24, 64}, {32, 449},
+      {36, 419}, {48, 60}, {54, 146}, {63, 60}, {64, 434}, {72, 243},
+      {80, 15}, {90, 141}, {96, 35}, {104, 36}, {108, 583},
+      {126, 70}, {128, 134}, {136, 50}, {144, 167}, {152, 3},
+      {160, 18}, {180, 383}, {208, 50}, {216, 292}, {252, 30},
+      {256, 10}, {288, 276},
+  };
+  uint32_t expected_min_peer_total = 0;
+  for (auto const& expected : ExpectedMinPeerGroupCensus) {
+    production_domain_ok &=
+        production_min_peer_groups[expected.groups] == expected.count;
+    expected_min_peer_total += expected.count;
+    production_min_peer_groups[expected.groups] = 0;
+  }
+  for (uint32_t count : production_min_peer_groups) {
+    production_domain_ok &= count == 0;
+  }
   production_domain_ok &= sizeof(DenseConfigs) / sizeof(DenseConfigs[0]) == 1772;
   production_domain_ok &= eligible_rows == 577 && production_attempts == 4616;
   production_domain_ok &= production_preferred == 4212 && production_fallback == 404;
   production_domain_ok &= expected_group_total == production_attempts;
+  production_domain_ok &= expected_min_peer_total == production_attempts;
   production_domain_ok &= production_dp_tiles == 18973008 &&
                           production_sk_tiles == 671408 &&
                           production_sk_units == 1240056;
@@ -218,14 +256,15 @@ int main() {
   ok &= b.at_min_heuristic_tiles == 0 && b.at_min_forced_tiles == 128 && b.at_min_forced_units == 128;
   ok &= b.above_min_heuristic_tiles == 128 && b.above_min_forced_tiles == 128 &&
         b.above_min_forced_units == 192;
-  ok &= legacy_tiles == 896 && tail_tiles == 320 && tail_units == 576 &&
-        tail_groups == 8;
+  ok &= legacy_tiles == 896 && tail_tiles == 320 &&
+        min_peer_tiles == tail_tiles && tail_units == 576 &&
+        tail_groups == 8 && min_peer_groups == 288;
   ok &= fallback_bindings == sizeof(TailFallbackCases) / sizeof(TailFallbackCases[0]);
   ok &= production_domain_ok;
   std::printf("L120 legacy=min8 size=%zu align=%zu trivial=%d; "
               "S068 min8 heuristic_tiles=%u forced_tiles=%u forced_units=%llu; "
               "min2 heuristic_tiles=%u forced_tiles=%u forced_units=%llu; "
-              "Q2048/W576/Kt64 legacy/tail=%u/%u tail_units=%llu groups=%u; "
+              "Q2048/W576/Kt64 legacy/tail=%u/%u tail_units=%llu groups=%u min-peer-groups=%u; "
               "fallback-bindings=%u/%zu; "
               "production-domain=%u/%u preferred/fallback=%u/%u; "
               "boundary=%s\n",
@@ -234,6 +273,7 @@ int main() {
               b.heuristic_tiles, b.forced_tiles, static_cast<unsigned long long>(b.forced_units),
               legacy_tiles, tail_tiles,
               static_cast<unsigned long long>(tail_units), tail_groups,
+              min_peer_groups,
               fallback_bindings,
               sizeof(TailFallbackCases) / sizeof(TailFallbackCases[0]),
               eligible_rows, production_attempts,

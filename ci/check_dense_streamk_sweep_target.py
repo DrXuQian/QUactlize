@@ -353,6 +353,7 @@ def audit(files: dict[str, str]) -> list[str]:
         'streamk_bpc_spec="${STREAMK_BLOCKS_PER_CU_LIST:-${STREAMK_BLOCKS_PER_CU:-0}}"',
         'streamk_policy="${STREAMK_POLICY:-two-wave}"',
         'tail-only) streamk_policy_flag=(--streamk-tail-only)',
+        'tail-min-peers) streamk_policy_flag=(--streamk-tail-min-peers)',
         'streamk_policy=%s',
         'for streamk_bpc in "${streamk_bpcs[@]}"; do',
         'run_axis() {',
@@ -365,7 +366,7 @@ def audit(files: dict[str, str]) -> list[str]:
         'sweep+=("${streamk_policy_flag[@]}")',
         'f"policy={requested_policy}" not in runs[0].get("build", "")',
         'if policy != requested_policy or selected != expected_selected',
-        'if requested_policy == "tail-only" and not (',
+        'if requested_policy in ("tail-only", "tail-min-peers") and not (',
         'sk_tiles < workers and dp_units % workers == 0',
         "streamk_blocks_per_cu_zero_semantics=legacy-exact-maximum-occupancy",
         "grid/workspace authority split",
@@ -481,7 +482,7 @@ def negative_controls(files: dict[str, str]) -> list[str]:
         (
             "drop runner tail-partition validation",
             "runner",
-            '    if requested_policy == "tail-only" and not (',
+            '    if requested_policy in ("tail-only", "tail-min-peers") and not (',
             '    if False and not (',
         ),
         (

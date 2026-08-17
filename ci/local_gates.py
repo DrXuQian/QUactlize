@@ -511,6 +511,7 @@ def lint_streamk_min_zero_fires():
     rc, log, dt = run(NVCC + ["-D__HGGCCC__", "--expt-relaxed-constexpr",
                               "-DL120_SELECTED_MIN=0", "-I", str(STUB), "-I", str(ACT),
                               "-I", str(ACT_UTIL), "-I", str(ROOT / "quactlize/include"),
+                              "-I", str(ROOT / "benchmarks"),
                               "-c", "-o", str(planted), str(src)])
     expected = "Stream-K requires at least one K tile per work unit"
     if rc == 0:
@@ -1366,14 +1367,15 @@ def lint_streamk_tail_oracle():
     witness = (
         "[l201] PASS: 1772=577+1195 authority; 4616=4212 preferred+404 "
         "exact-divisor fallback; every admitted (q,k) cell exact-once and "
-        "nonempty; legacy two-wave anchor unchanged; negative-controls=3/3_RED"
+        "nonempty; min-peer lower bound attained on 4616/4616; legacy two-wave "
+        "anchor unchanged; negative-controls=5/5_RED"
     )
     if rc != 0:
         lines = [line.strip() for line in log.splitlines() if line.strip()]
         return "FAIL", (lines[-1] if lines else f"{script.name} exited {rc}"), dt
     if log.count(witness) != 1:
         return "FAIL", "L201 exited zero without its unique exhaustive PASS witness", dt
-    return "PASS", "4616 tail partitions exact/nonempty; three planted policies red", dt
+    return "PASS", "4616 tail partitions exact/nonempty/min-peer; five planted policies red", dt
 
 
 def lint_dense_marlin_contract():

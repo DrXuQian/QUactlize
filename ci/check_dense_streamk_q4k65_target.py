@@ -237,11 +237,17 @@ def audit(files: dict[str, str]) -> list[str]:
         "protocol=PpuTimer-aggregate reference=209\\.27us",
         'spans = re.findall(r"\\[dense kernel-span-upper\\]", text)',
         "len(aggregates) != 1 or len(spans) != 0",
-        "actual=(\\w+) policy=(two-wave|tail-only) ",
+        "actual=(\\w+) policy=(two-wave|tail-only|tail-min-peers) ",
         'STREAMK_POLICY="${STREAMK_POLICY:-two-wave}"',
         'tail-only) STREAMK_POLICY_FLAG=(--streamk-tail-only)',
+        'tail-min-peers) STREAMK_POLICY_FLAG=(--streamk-tail-min-peers)',
         '"${STREAMK_POLICY_FLAG[@]}"',
-        'if requested_policy == "tail-only":',
+        'if requested_policy in ("tail-only", "tail-min-peers"):',
+        '"whole": 64,',
+        '"split": 256,',
+        '"peers": 256,',
+        '"valid": 256 * 64 * 64,',
+        '"workspace": 5_244_160,',
         "normal_workers=",
         "Disposition: Passed (whole-K reference bit-exact; fixup replay closed)",
     ):
@@ -313,6 +319,9 @@ def self_test(files: dict[str, str]) -> list[str]:
         "baseline drift override loses its unanchored label", "runner",
         "subject_result_scope=CURRENT-SHA-UNANCHORED",
         "subject_result_scope=ANCHORED")
+    must_fail(
+        "minimum-peer topology count drifts", "runner",
+        '"peers": 256,', '"peers": 255,')
     return failures
 
 
@@ -335,7 +344,7 @@ def main() -> int:
         "[q4k65-streamk-contract] PASS: 107b unchanged; isolated gs32 "
         "64x64x64/w64x32/s3 m16 target shares Main/Epi; normal admission "
         f"precedes forced Stream-K; exact max|D|={max_output} <= 2^11; "
-        "eight same-source negative controls red")
+        "nine same-source negative controls red")
     return 0
 
 

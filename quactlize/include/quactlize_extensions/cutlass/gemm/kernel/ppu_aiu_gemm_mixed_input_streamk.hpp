@@ -230,7 +230,8 @@ public:
            args.scheduler.splits == 1 &&
            args.scheduler.reduction_mode == TileSchedulerParams::ReductionMode::Deterministic &&
            (args.scheduler.decomposition_mode == TileSchedulerParams::DecompositionMode::StreamK ||
-            args.scheduler.decomposition_mode == TileSchedulerParams::DecompositionMode::StreamKTail) &&
+            args.scheduler.decomposition_mode == TileSchedulerParams::DecompositionMode::StreamKTail ||
+            args.scheduler.decomposition_mode == TileSchedulerParams::DecompositionMode::StreamKTailMinPeers) &&
            TileScheduler::can_implement(args.scheduler);
   }
 

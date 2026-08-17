@@ -42,7 +42,8 @@ main() {
   case "$streamk_policy" in
     two-wave) ;;
     tail-only) streamk_policy_flag=(--streamk-tail-only) ;;
-    *) printf '[q4k65-streamk-sweep] FAIL: STREAMK_POLICY must be two-wave or tail-only\n' >&2; return 2 ;;
+    tail-min-peers) streamk_policy_flag=(--streamk-tail-min-peers) ;;
+    *) printf '[q4k65-streamk-sweep] FAIL: STREAMK_POLICY must be two-wave, tail-only, or tail-min-peers\n' >&2; return 2 ;;
   esac
   # 0 preserves the historical behavior (each tactic uses its exact maximum
   # occupancy).  Positive values select the physical worker grid CU*BPC;
@@ -368,7 +369,7 @@ for x in samples:
 log = pathlib.Path(sys.argv[5]).read_text()
 decompositions = re.findall(
     r"\[dense streamk decomposition\] actual=(StreamK|DataParallel|SplitK) "
-    r"policy=(two-wave|tail-only) "
+    r"policy=(two-wave|tail-only|tail-min-peers) "
     r"real_cu=(\d+) occupancy_api=(\d+) blocks_per_cu=(\d+) workers=(\d+) scheduler_workers=(\d+) "
     r"sk_tiles=(\d+) sk_units=(\d+) dp_units=(\d+) units=(\d+)", log)
 actual_kinds = collections.Counter(x[0] for x in decompositions)
@@ -381,7 +382,7 @@ for kind, policy, cu, occupancy, selected, workers, scheduler_workers, sk_tiles,
             f"[q4k65-streamk-sweep] FAIL: grid/workspace authority split "
             f"kind={kind} cu={cu} occupancy={occupancy} selected={selected} "
             f"workers={workers} scheduler_workers={scheduler_workers} requested={requested_bpc}")
-    if requested_policy == "tail-only" and not (
+    if requested_policy in ("tail-only", "tail-min-peers") and not (
             sk_tiles < workers and dp_units % workers == 0 and
             units == dp_units + sk_units):
         raise SystemExit(

@@ -131,6 +131,33 @@ EXPECTED_AGGREGATE = {
     "all_sk_tuples": 26,
 }
 
+# Independent minimum-peer policy: same tail extent and unit count, but every
+# repaired work-unit interval is confined to one output tile.  Therefore its
+# peer-range count is exactly U and peer_excess attains the lower bound U-S.
+EXPECTED_MIN_PEER_GROUP_CENSUS = {
+    8: 52, 12: 39, 16: 234, 18: 123, 24: 64, 32: 449, 36: 419,
+    48: 60, 54: 146, 63: 60, 64: 434, 72: 243, 80: 15, 90: 141,
+    96: 35, 104: 36, 108: 583, 126: 70, 128: 134, 136: 50,
+    144: 167, 152: 3, 160: 18, 180: 383, 208: 50, 216: 292,
+    252: 30, 256: 10, 288: 276,
+}
+EXPECTED_MIN_PEER_AGGREGATE = {
+    "dp_tiles": 18_973_008,
+    "sk_tiles": 671_408,
+    "sk_units": 1_240_056,
+    "qk_cells": 26_928_768,
+    "whole_tiles": 308_368,
+    "split_tiles": 363_040,
+    "peer_excess": 568_648,
+    "peer_ranges": 1_240_056,
+    "valid_fixup_elements": 2_123_874_304,
+    "reduction_bytes": 10_601_857_024,
+    "barrier_bytes": 2_806_144,
+    "workspace_bytes": 10_604_663_168,
+    "logical_fixup_rw_bytes": 16_990_994_432,
+    "all_sk_tuples": 26,
+}
+
 
 ROW_RE = re.compile(
     r"^\s*X\((\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),B\)",
@@ -235,6 +262,7 @@ class AuditPolicy:
     tile_selector: Callable[[int, int], int]
     use_safe_group_fallback: bool = True
     admit_collapsed_preferred: bool = False
+    min_peer_groups: bool = False
 
 
 @dataclasses.dataclass
@@ -420,6 +448,25 @@ def select_safe_groups(
     return 0, True
 
 
+def plan_is_tile_local(plan: BoundaryPlan, kt: int) -> bool:
+    return plan.exact_nonempty and all(
+        begin // kt == (end - 1) // kt
+        for boundaries in plan.boundaries
+        for begin, end in zip(boundaries, boundaries[1:])
+    )
+
+
+def select_min_peer_groups(sk_tiles: int, units: int, kt: int) -> int:
+    """Largest exact divisor attaining peer_excess == U-S."""
+    for candidate in range(min(sk_tiles, units), 0, -1):
+        if units % candidate:
+            continue
+        plan = make_boundary_plan(sk_tiles, units, kt, candidate)
+        if plan_is_tile_local(plan, kt):
+            return candidate
+    return 0
+
+
 def expand_partition(
     sk_tiles: int, units: int, kt: int, plan: BoundaryPlan
 ) -> PartitionEvidence:
@@ -566,7 +613,12 @@ def audit_domain(
                 result.preferred_empty_units += preferred_plan.empty_units
                 result.preferred_empty_histogram[preferred_plan.empty_units] += 1
 
-            if policy.admit_collapsed_preferred:
+            if policy.min_peer_groups:
+                selected_groups = select_min_peer_groups(
+                    selected_tiles, units, kt
+                )
+                used_fallback = selected_groups != preferred
+            elif policy.admit_collapsed_preferred:
                 selected_groups = preferred
                 used_fallback = False
             elif policy.use_safe_group_fallback:
@@ -584,7 +636,7 @@ def audit_domain(
                 ):
                     return result
                 continue
-            if preferred_plan.exact_nonempty and (
+            if not policy.min_peer_groups and preferred_plan.exact_nonempty and (
                 selected_groups != preferred or used_fallback
             ):
                 if reject(
@@ -618,6 +670,18 @@ def audit_domain(
             if evidence.peer_ranges != selected_tiles + evidence.peer_excess:
                 if reject("peer-range/excess identity did not close"):
                     return result
+            if policy.min_peer_groups and not (
+                plan_is_tile_local(final_plan, kt)
+                and evidence.peer_ranges == units
+                and evidence.peer_excess == units - selected_tiles
+            ):
+                if reject(
+                    "minimum-peer lower bound not attained: "
+                    f"config={config_index} bpc={bpc} S={selected_tiles} "
+                    f"U={units} G={selected_groups} peers={evidence.peer_excess}"
+                ):
+                    return result
+                continue
 
             if used_fallback:
                 result.fallback += 1
@@ -749,6 +813,8 @@ def prove_fixed_anchors() -> None:
     tail_units = sk_units(tail_sk, kt, workers)
     old = anchor_partition(old_sk, old_units, kt, 8)
     tail = anchor_partition(tail_sk, tail_units, kt, 8)
+    min_peer_groups = select_min_peer_groups(tail_sk, tail_units, kt)
+    min_peer = anchor_partition(tail_sk, tail_units, kt, min_peer_groups)
     old_expected = (896, 576, 1152, 440, 456, 456, 57_344)
     tail_expected = (320, 576, 1728, 0, 320, 456, 20_480)
     old_got = (
@@ -777,6 +843,19 @@ def prove_fixed_anchors() -> None:
         raise AssertionError(
             f"tail-only anchor drifted: got={tail_got} expected={tail_expected}"
         )
+    min_peer_got = (
+        min_peer_groups,
+        min_peer.whole_tiles,
+        min_peer.split_tiles,
+        min_peer.peer_excess,
+        min_peer.peer_ranges,
+    )
+    min_peer_expected = (288, 64, 256, 256, 576)
+    if min_peer_got != min_peer_expected:
+        raise AssertionError(
+            "tail-min-peers anchor drifted: "
+            f"got={min_peer_got} expected={min_peer_expected}"
+        )
     if workspace_components(old_sk, 64, 64) != (
         14_680_064,
         3_584,
@@ -798,6 +877,11 @@ def prove_fixed_anchors() -> None:
         "[l201 anchor] tail-only "
         "Q=2048 W=576 Kt=64 G=8 DP=1728 SK=320 U=576 "
         "whole=0 split=320 peer_excess=456 qk=20480 workspace=5244160"
+    )
+    print(
+        "[l201 anchor] tail-min-peers "
+        "Q=2048 W=576 Kt=64 G=288 DP=1728 SK=320 U=576 "
+        "whole=64 split=256 peer_excess=256 qk=20480 workspace=5244160"
     )
 
 
@@ -900,6 +984,85 @@ def main() -> int:
         "q-lock-range=[0,SK) DP-lock-touches=0 bounds=PASS"
     )
 
+    min_peer = audit_domain(
+        configs,
+        AuditPolicy(
+            "tail-min-peers", tail_tiles, min_peer_groups=True
+        ),
+        fixed_expectations=False,
+        fail_fast=False,
+    )
+    min_checks = (
+        (min_peer.ok, "minimum-peer audit"),
+        (min_peer.rejected == 0, "minimum-peer rejection census"),
+        (
+            dict(min_peer.final_groups) == EXPECTED_MIN_PEER_GROUP_CENSUS,
+            "minimum-peer group census",
+        ),
+        (
+            {key: min_peer.aggregate[key] for key in EXPECTED_MIN_PEER_AGGREGATE}
+            == EXPECTED_MIN_PEER_AGGREGATE,
+            "minimum-peer aggregate",
+        ),
+        (
+            min_peer.min_interval == MIN_SK_ITERS
+            and min_peer.max_interval == 64,
+            "minimum-peer interval bounds",
+        ),
+        (
+            sum(min_peer.final_groups.values()) == EXPECTED_TUPLES,
+            "minimum-peer denominator closure",
+        ),
+    )
+    failed_min_checks = [label for passed, label in min_checks if not passed]
+    if failed_min_checks:
+        raise AssertionError(
+            "minimum-peer production domain changed: "
+            + ", ".join(failed_min_checks)
+            + (f" errors={min_peer.errors}" if min_peer.errors else "")
+        )
+    min_group_text = ",".join(
+        f"{group}:{count}"
+        for group, count in sorted(min_peer.final_groups.items())
+    )
+    print(
+        "[l201 min-peer] "
+        f"tuples={min_peer.attempts} rejected={min_peer.rejected} "
+        f"groups={{{min_group_text}}} whole={min_peer.aggregate['whole_tiles']} "
+        f"split={min_peer.aggregate['split_tiles']} "
+        f"peer_excess={min_peer.aggregate['peer_excess']} "
+        f"peer_ranges={min_peer.aggregate['peer_ranges']} "
+        f"valid_fixup_elements={min_peer.aggregate['valid_fixup_elements']} "
+        f"logical_rw={min_peer.aggregate['logical_fixup_rw_bytes']}"
+    )
+
+    # Removing the tile-local admission condition admits the old G=8 anchor.
+    # It is exact, but has 456 rather than the theoretical-minimum 256 peers.
+    old_plan = make_boundary_plan(320, 576, 64, 8)
+    old_evidence = expand_partition(320, 576, 64, old_plan)
+    if not (old_plan.exact_nonempty and not plan_is_tile_local(old_plan, 64)
+            and old_evidence.peer_excess == 456):
+        raise AssertionError("minimum-peer G8 negative control did not turn red")
+    print(
+        "[l201 negative] min-peer-without-tile-local=RED "
+        "reason='G8 exact but peer_excess=456 != U-S=256'"
+    )
+
+    short_domain = audit_domain(
+        configs[:-1],
+        AuditPolicy(
+            "tail-min-peers-missing-row", tail_tiles, min_peer_groups=True
+        ),
+        fixed_expectations=False,
+        fail_fast=False,
+    )
+    if not any("attempt denominator" in error for error in short_domain.errors):
+        raise AssertionError("minimum-peer denominator negative control stayed green")
+    print(
+        "[l201 negative] min-peer-denominator-minus-one-row=RED "
+        "reason='attempt denominator'"
+    )
+
     require_negative_control(
         configs,
         AuditPolicy("two-wave-masquerades-as-tail", legacy_two_wave_tiles),
@@ -927,7 +1090,8 @@ def main() -> int:
     print(
         "[l201] PASS: 1772=577+1195 authority; 4616=4212 preferred+404 "
         "exact-divisor fallback; every admitted (q,k) cell exact-once and "
-        "nonempty; legacy two-wave anchor unchanged; negative-controls=3/3_RED"
+        "nonempty; min-peer lower bound attained on 4616/4616; legacy two-wave "
+        "anchor unchanged; negative-controls=5/5_RED"
     )
     return 0
 
