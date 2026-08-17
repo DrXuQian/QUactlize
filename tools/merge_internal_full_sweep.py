@@ -594,6 +594,26 @@ def validate_algorithm_denominators(cells: list[dict[str, Any]]) -> None:
         if missing:
             raise ContractError(
                 f"algorithm denominator incomplete for {identity}: missing={sorted(missing)}")
+        # Q8 has no shipping FullyQuantized reader.  Its finite denominator is
+        # therefore exactly five visible UNSUPPORTED cells (BC, TC-S1, and
+        # TC-S2/S4/S8), not an arbitrary number of unsupported variants.  A
+        # set-only check would accept an extra fabricated cell and make a
+        # closed-looking denominator larger after the fact.
+        qtype_token = str(identity_cells[0]["qtype"]).upper().replace("-", "_")
+        if component == "fully_quantized" and qtype_token in {"8", "Q8", "Q8_0"}:
+            counts = Counter(cell["algorithm"] for cell in identity_cells)
+            expected_counts = {
+                "FQ_BC_GEMV": 1,
+                "FQ_TC_S1": 1,
+                "FQ_TC_SPLITK_S2": 1,
+                "FQ_TC_SPLITK_S4": 1,
+                "FQ_TC_SPLITK_S8": 1,
+            }
+            if counts != expected_counts or any(
+                    cell["status"] != "UNSUPPORTED" for cell in identity_cells):
+                raise ContractError(
+                    f"Q8 FullyQuantized denominator must be exactly five "
+                    f"UNSUPPORTED cells for {identity}: got={dict(counts)}")
         if component == "scale_first":
             np_policies = {
                 cell["policy"] for cell in identity_cells
@@ -1100,6 +1120,17 @@ def self_test() -> None:
     omitted_sf["status_counts"] = dict(Counter(cell["status"] for cell in omitted_sf["cells"]))
     expect_red("whole ScaleFirst S4 algorithm omitted", lambda: merge_components(
         component_from_doc(omitted_sf, "scale_first"), fq))
+    extra_q8 = copy.deepcopy(fq_doc)
+    planted = copy.deepcopy(next(
+        cell for cell in extra_q8["cells"]
+        if cell["qtype"] == "Q8_0" and cell["algorithm"] == "tc-s1"))
+    planted["config"] = "unsupported-q8-extra-tc-s1"
+    extra_q8["cells"].append(planted)
+    extra_q8["expected_cells"] = len(extra_q8["cells"])
+    extra_q8["status_counts"] = dict(Counter(
+        cell["status"] for cell in extra_q8["cells"]))
+    expect_red("extra Q8 unsupported cell", lambda: merge_components(
+        scale, component_from_doc(extra_q8, "fully_quantized")))
     unknown = copy.deepcopy(fq_doc)
     unknown["cells"][0]["status"] = "MISSING"
     expect_red("unknown terminal status", lambda: component_from_doc(unknown, "fully_quantized"))
@@ -1137,7 +1168,7 @@ def self_test() -> None:
                 if winner["ranking_group"] == "FULLY_QUANTIZED_FULL_OUTPUT")
     assert full["runner_up_cell_id"] is None
     print("[internal-full-sweep:self-test] PASS positive=4-separated-leaderboards+shape-layer-dedup "
-          "negative=missing-cell+missing-fq-algorithm+missing-scalefirst-s4+unknown-state+scope-mix+device-mix+gguf-map-substitution+gguf-member-loss "
+          "negative=missing-cell+missing-fq-algorithm+missing-scalefirst-s4+extra-q8-cell+unknown-state+scope-mix+device-mix+gguf-map-substitution+gguf-member-loss "
           "shape-template-mismatch+identity-isolation runner-up=BOUND")
 
 

@@ -151,10 +151,12 @@ plant:
 7. equal claimed GGUF-set digests with a substituted member map;
 8. equal claimed GGUF-set digests with one model missing; and
 9. differing shape-directory authorities despite otherwise matching
-   provenance.
+   provenance; and
+10. a sixth Q8 FullyQuantized cell added after forging the declared
+    denominator closed (Q8 owns exactly BC + TC S1/S2/S4/S8, all unsupported).
 
 It also proves that two layer names sharing one `shape_id` merge into one
 decision while qtype, TP, route, and grouped changes remain isolated, and that
-a catalog template change changes the rendered folder.  All nine planted
+a catalog template change changes the rendered folder.  All ten planted
 contract failures must be rejected.  Device execution remains the component runners'
 responsibility; this local test proves only the publication contract.
