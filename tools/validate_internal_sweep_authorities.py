@@ -236,17 +236,38 @@ def validate(catalog_path: pathlib.Path, resolved_path: pathlib.Path,
         for index, row in enumerate(rows):
             model_id = row["model_id"]
             expected_world = resolved_models[expected_ids.index(model_id)]["tp_world_size"]
-            world = (row.get("tp_world") if collection == "sweep_shapes"
-                     else (row.get("tp") or {}).get("world_size")
-                     if collection in {"cells", "tensors"} else None)
-            if world != expected_world:
-                raise AuthorityError(
-                    f"inventory {collection}[{index}] TP world differs for {model_id}: "
-                    f"{world!r} != {expected_world}")
             if collection in {"cells", "tensors"} and \
                     row.get("fileset_sha256") != filesets[model_id]:
                 raise AuthorityError(
                     f"inventory {collection}[{index}] fileset differs for {model_id}")
+            if collection == "sweep_shapes":
+                world = row.get("tp_world")
+            elif collection == "cells":
+                world = (row.get("tp") or {}).get("world_size")
+            else:
+                matmul = row.get("matmul_tensor")
+                if not isinstance(matmul, bool):
+                    raise AuthorityError(
+                        f"inventory tensors[{index}] has invalid matmul_tensor={matmul!r}")
+                tp = row.get("tp")
+                requires_tp_shape = matmul or row.get("role") == "UNCLASSIFIED"
+                if tp is None and not requires_tp_shape:
+                    if row.get("route_class") not in {"embedding", "non_matmul"}:
+                        raise AuthorityError(
+                            f"inventory tensors[{index}] omits TP identity for an unknown route")
+                    # Lookup/non-matmul visibility rows do not publish a local
+                    # GEMM shape.  Their model membership already binds the TP
+                    # world, and inventing a per-row partition would be false
+                    # authority.
+                    continue
+                if not isinstance(tp, dict):
+                    raise AuthorityError(
+                        f"inventory tensors[{index}] lacks required TP identity")
+                world = tp.get("world_size")
+            if world != expected_world:
+                raise AuthorityError(
+                    f"inventory {collection}[{index}] TP world differs for {model_id}: "
+                    f"{world!r} != {expected_world}")
 
     cell_ids = [row.get("cell_id") for row in cells]
     shape_ids = [row.get("shape_id") for row in shapes]

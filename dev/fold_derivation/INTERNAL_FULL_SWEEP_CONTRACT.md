@@ -102,6 +102,10 @@ whereas `tensors[]` and `rank2_or_rank3_logical_tensor_count` contain only
 rank-2/3 rows that can participate in matrix/lookup/non-matmul routing.  The
 authority validator checks both identities independently; it never equates
 the all-rank count with the rank-2/3 publication.
+Within `tensors[]`, matrix rows and unclassified rank-2/3 rows carry an
+explicit per-row TP shape.  Visibility-only `embedding`/`non_matmul` rows do
+not invent a matrix partition: their TP world is owned by the enclosing model
+authority, and they generate no sweep cell.
 
 ## Runner and outputs
 

@@ -112,6 +112,9 @@ def run() -> None:
              ("qwen35moe.expert_used_count", 2)],
             [("blk.0.attn_q.weight", (256, 32), 12),
              ("blk.0.ffn_up_exps.weight", (256, 32, 4), 12),
+             # Visibility-only GET_ROWS row: model TP identity applies, but it
+             # must not invent a per-row matrix partition/shape.
+             ("token_embd.weight", (256, 32), 12),
              # A real model contains non-matrix ranks.  Keep one here so the
              # validator cannot equate all-rank logical_tensor_count with the
              # deliberately rank-2/3-only tensors[] publication.
@@ -201,6 +204,9 @@ def run() -> None:
             bool(row.get("matmul_tensor")) for row in extra_ranked_row["tensors"])
         extra_ranked_row["unclassified_tensor_count"] = sum(
             row.get("role") == "UNCLASSIFIED" for row in extra_ranked_row["tensors"])
+        missing_matmul_tp = copy.deepcopy(spec)
+        next(row for row in missing_matmul_tp["tensors"]
+             if row["matmul_tensor"])["tp"] = None
         for label, planted, needle in (
                 ("empty-denominator",
                  {**spec, "cells": [], "sweep_shapes": [], "tensors": []},
@@ -209,6 +215,8 @@ def run() -> None:
                  "rank-2/3 tensor count differs from tensor rows"),
                 ("extra-rank2-row", extra_ranked_row,
                  "rank-2/3 tensor count differs from tensor rows"),
+                ("missing-matmul-tp", missing_matmul_tp,
+                 "lacks required TP identity"),
                 ("tp-drift",
                  {**spec, "models": [{**spec["models"][0], "tp_world_size": 999}]},
                  "tp_world_size differs")):
