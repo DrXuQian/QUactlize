@@ -535,14 +535,19 @@ def _fileset_sha256(shards: list[dict[str, Any]]) -> str:
 def _metadata_authorities(shards: list[dict[str, Any]], model_id: str) -> tuple[str, str, dict[str, Any]]:
     first = shards[0]["header"]
     first_fingerprints = first["metadata_fingerprints"]
-    for shard in shards[1:]:
+    first_keys = set(first_fingerprints)
+    for ordinal, shard in enumerate(shards[1:], start=1):
         current = shard["header"]["metadata_fingerprints"]
-        if set(current) != set(first_fingerprints):
-            missing = sorted(set(first_fingerprints) - set(current))
-            extra = sorted(set(current) - set(first_fingerprints))
+        # Standard split GGUFs use shard zero as the metadata authority and
+        # may omit descriptive/model metadata from later shards.  A later
+        # shard may repeat a shard-zero key (which must agree), but it may not
+        # introduce a second authority that shard zero did not declare.
+        extra = sorted(set(current) - first_keys)
+        if extra:
             raise InventoryError(
-                f"{model_id}: shard metadata key mismatch missing={missing[:20]} extra={extra[:20]}")
-        for key in first_fingerprints:
+                f"{model_id}: shard {ordinal} introduces metadata keys absent "
+                f"from shard 0: {extra[:20]}")
+        for key in current:
             if key == "split.no":
                 if current[key]["value_type"] != first_fingerprints[key]["value_type"]:
                     raise InventoryError(f"{model_id}: split.no metadata type differs across shards")
@@ -1438,7 +1443,12 @@ def self_test() -> dict[str, Any]:
         ("blk.0.attn_q.weight", (256, 8), 12),
         ("blk.0.ffn_gate_up_exps.weight", (256, 16, 4), 12),
     ])
-    shard1 = _synthetic_gguf(common + [("split.no", 1)], [
+    shard1_split_metadata = [
+        ("split.count", 2),
+        ("split.tensors.count", 6),
+        ("split.no", 1),
+    ]
+    shard1 = _synthetic_gguf(shard1_split_metadata, [
         ("blk.1.attn_q.weight", (256, 8), 12),
         ("blk.0.ffn_down_exps.weight", (512, 8, 4), 12),
         ("blk.0.ssm_conv1d.weight", (4, 32), 1),
@@ -1729,6 +1739,15 @@ def self_test() -> dict[str, Any]:
     ])
     _expect_error(lambda: run_with_payloads({1: metadata_mismatch}),
                   "metadata 'general.name' differs")
+    unexpected_later_authority = _synthetic_gguf(
+        shard1_split_metadata + [("general.repo_url", "unexpected-later-authority")], [
+            ("blk.1.attn_q.weight", (256, 8), 12),
+            ("blk.0.ffn_down_exps.weight", (512, 8, 4), 12),
+            ("blk.0.ssm_conv1d.weight", (4, 32), 1),
+            ("token_embd.weight", (256, 32), 12),
+        ])
+    _expect_error(lambda: run_with_payloads({1: unexpected_later_authority}),
+                  "introduces metadata keys absent from shard 0")
     duplicate_metadata = _synthetic_gguf(common + [("general.name", "duplicate"),
                                                     ("split.no", 0)], [])
     _expect_error(lambda: read_gguf_header(io.BytesIO(duplicate_metadata), "duplicate-metadata"),
@@ -1762,7 +1781,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.self_test:
             self_test()
-            print("[gguf-inventory-v2:self-test] PASS: multi-shard metadata/count/name "
+            print("[gguf-inventory-v2:self-test] PASS: shard-zero metadata authority/subset "
+                  "inheritance plus multi-shard count/name "
                   "fail-close; dense/grouped/unclassified visibility; GGUF E/top-k + pinned "
                   "routing fixture; tied LM-head; TP-local/rank/block admission; canonical "
                   "downstream provenance and dedup identity")

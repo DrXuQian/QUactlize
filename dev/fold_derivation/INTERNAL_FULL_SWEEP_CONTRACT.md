@@ -117,6 +117,11 @@ The resolver fails on an incomplete or mixed shard family.  To continue an
 interrupted run, reuse the exact `OUT` with `RESUME=1`; the frozen catalog,
 resolved file set, inventory, runner hashes and source identity must still
 match.  A changed authority is rejected before either component executes.
+For a split family, shard zero owns model metadata.  Later shards may omit
+those descriptive/model keys, as standard GGUF writers do; any key they repeat
+must match shard zero byte-for-byte, they may not introduce a new metadata
+authority, and every shard must still carry a complete, consistent `split.*`
+identity.
 The catalog itself is copied into `inputs/catalog.json`; after that first
 atomic write the bundle is self-contained, so a vanished external catalog is
 not required for resume.  If an external catalog is still readable, its bytes
