@@ -156,7 +156,9 @@ def normalize_fold(cell: dict[str, Any]) -> dict[str, int]:
     }
 
 
-def normalize_workload_identity(cell: dict[str, Any]) -> dict[str, Any]:
+def normalize_workload_identity(cell: dict[str, Any], *,
+                                allow_not_applicable_group: bool = False
+                                ) -> dict[str, Any]:
     model_id = str(required(cell, "model_id"))
     if not STABLE_ID_RE.fullmatch(model_id):
         raise ContractError(
@@ -187,9 +189,11 @@ def normalize_workload_identity(cell: dict[str, Any]) -> dict[str, Any]:
     if isinstance(raw_group_size, str) and raw_group_size.upper() == "UNKNOWN":
         group_size = "UNKNOWN"
     else:
-        # Numeric zero is not an "unknown" sentinel: it would publish the
-        # misleading path g0.  Future/unsupported qtypes spell UNKNOWN.
-        group_size = integer(raw_group_size, "group_size", 1)
+        group_size = integer(raw_group_size, "group_size", 0)
+        if group_size == 0 and not allow_not_applicable_group:
+            raise ContractError(
+                "group_size=0 is only valid for a terminal UNSUPPORTED "
+                "non-group-quantized qtype")
     grouped: dict[str, Any] | None = None
     if problem_route == "grouped":
         raw_grouped = cell.get("grouped", {})
@@ -387,7 +391,8 @@ def normalize_cell(component: str, source_schema: str, cell: dict[str, Any], ord
         raise ContractError(f"cell {ordinal} is not an object")
     status, reason = normalize_status(cell)
     shape = normalize_shape(cell)
-    workload = normalize_workload_identity(cell)
+    workload = normalize_workload_identity(
+        cell, allow_not_applicable_group=(status == "UNSUPPORTED"))
     algorithm, ranking_group, expected_scope, split = normalize_algorithm(component, cell)
     stated_scope = cell.get("metric_scope", cell.get("timing_scope"))
     if stated_scope is not None:
@@ -1072,6 +1077,19 @@ def self_test() -> None:
     assert fq_full["runner_up_algorithm"] == "FQ_TC_S1"
     assert "\trunner_up_gap_us\t" in winners_tsv(merged["leaderboard_decisions"]).splitlines()[0]
 
+    unsupported_g0 = copy.deepcopy(scale_doc["cells"][0])
+    unsupported_g0.update(
+        group_size=0, status="UNSUPPORTED", reason="QTYPE_NOT_REGISTERED")
+    for key in ("raw_samples_us", "median_us", "MFU_pct",
+                "distinct_MBU_model_pct", "correctness"):
+        unsupported_g0.pop(key, None)
+    assert normalize_cell(
+        "scale_first", scale_doc["schema"], unsupported_g0, 0)["group_size"] == 0
+    measured_g0 = copy.deepcopy(scale_doc["cells"][0])
+    measured_g0["group_size"] = 0
+    expect_red("measured g0", lambda: normalize_cell(
+        "scale_first", scale_doc["schema"], measured_g0, 0))
+
     layer_a = copy.deepcopy(scale.cells[0])
     layer_b = copy.deepcopy(layer_a)
     layer_b["cell_id"] = "same-shape-other-layer"
@@ -1167,7 +1185,7 @@ def self_test() -> None:
     full = next(winner for winner in merged_one["winners"]
                 if winner["ranking_group"] == "FULLY_QUANTIZED_FULL_OUTPUT")
     assert full["runner_up_cell_id"] is None
-    print("[internal-full-sweep:self-test] PASS positive=4-separated-leaderboards+shape-layer-dedup "
+    print("[internal-full-sweep:self-test] PASS positive=4-separated-leaderboards+shape-layer-dedup+unsupported-g0 "
           "negative=missing-cell+missing-fq-algorithm+missing-scalefirst-s4+extra-q8-cell+unknown-state+scope-mix+device-mix+gguf-map-substitution+gguf-member-loss "
           "shape-template-mismatch+identity-isolation runner-up=BOUND")
 

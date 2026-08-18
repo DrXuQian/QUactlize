@@ -151,9 +151,13 @@ def _inventory_group_size(spec: dict[str, Any], qtype: int) -> int | str:
     known = traits.get("quant_group_size_known")
     group = traits.get("quant_group_size")
     if known is True:
-        if isinstance(group, bool) or not isinstance(group, int) or group <= 0:
+        if isinstance(group, bool) or not isinstance(group, int) or group < 0:
             raise ValueError(
                 f"inventory-v2 qtype {qtype} declares invalid group size {group!r}")
+        # Zero is the explicit, known "not quantized in groups" value for
+        # F32/F16/BF16-style GGUF types.  It remains visible in the finite
+        # denominator as g0, but these quantized components must terminate it
+        # as UNSUPPORTED rather than compile or rank it.
         return group
     if known is False and group == 0:
         return "UNKNOWN"
@@ -1188,6 +1192,8 @@ def self_test() -> int:
                     "fileset_sha256": gguf_hashes["future-model"],
                     "tp_world_size": 2}],
         "qtype_counts": {
+            "0": {"traits": {"quant_group_size": 0,
+                                "quant_group_size_known": True}},
             "20": {"traits": {"quant_group_size": 32,
                                 "quant_group_size_known": True}},
         },
@@ -1205,13 +1211,25 @@ def self_test() -> int:
                                   ("2" * 64, source_b, 4))],
     }
     inventory["deduplicated_shape_count"] = len(inventory["sweep_shapes"])
+    inventory["sweep_shapes"].append({
+        **inventory["sweep_shapes"][0],
+        "dedup_key": "3" * 64,
+        "sources": [["future-f32", "attn_q", "4" * 64]],
+        "source_tensors": ["future-f32"],
+        "qtype": 0,
+        "M": 8,
+        "shape_directory": "m8_n1_k256_g0",
+        "status": "UNSUPPORTED",
+        "reason": "QTYPE_NOT_REGISTERED",
+    })
+    inventory["deduplicated_shape_count"] = len(inventory["sweep_shapes"])
     materialized = _materialize_spec(
         inventory, pathlib.Path("/workspace/synthetic-inventory-v2.json"),
         "b" * 64)
     assert materialized["schema"] == PLAN_SCHEMA
-    assert [cell["m"] for cell in materialized["cells"]] == [1, 4]
-    assert all(cell["tp_rank"] == 0 and cell["group_size"] == 32
-               for cell in materialized["cells"])
+    assert [cell["m"] for cell in materialized["cells"]] == [1, 4, 8]
+    assert [cell["group_size"] for cell in materialized["cells"]] == [32, 32, 0]
+    assert all(cell["tp_rank"] == 0 for cell in materialized["cells"])
     assert expected_generated_shards(materialized["cells"]) == set()
     orphan_model = json.loads(json.dumps(inventory))
     orphan_model["models"].append({
@@ -1344,7 +1362,8 @@ def self_test() -> int:
             raise AssertionError("deleted run.rc stayed green")
     finally:
         shutil.rmtree(authority_root)
-    print("[fq-internal:self-test] PASS parser, reducer-closure/scope RED, "
+    print("[fq-internal:self-test] PASS parser, qtype0-g0 terminal UNSUPPORTED, "
+          "reducer-closure/scope RED, "
           "packed-A M>1 INADMISSIBLE, future/grouped 5-algorithm "
           "UNSUPPORTED_FQ with model/TP/ragged identity, shared-merger schema "
           "bridge, exact inventory-v2 field mapping, inventory-v1/missing-TP "

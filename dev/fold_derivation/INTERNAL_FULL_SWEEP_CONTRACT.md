@@ -96,6 +96,12 @@ carries raw samples, median, MFU, MBU and correctness.  MBU must state its kind
 (for example `DISTINCT_BYTE_MODEL`); a model is not silently relabelled as a
 device traffic counter.
 
+`group_size=0` is a distinct, known value for unquantized GGUF types such as
+F32/F16/BF16: group quantization is not applicable.  It is not the `UNKNOWN`
+sentinel.  Both quantized sweep components retain each such shape in their
+finite denominator as terminal `UNSUPPORTED`; no `g0` cell may be compiled,
+measured, or ranked.
+
 Inventory counts deliberately have two denominators: `logical_tensor_count`
 includes every physical tensor rank plus a materialized tied-output alias,
 whereas `tensors[]` and `rank2_or_rank3_logical_tensor_count` contain only
