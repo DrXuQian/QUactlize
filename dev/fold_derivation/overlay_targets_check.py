@@ -38,7 +38,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.environ.get("QUACTLIZE_ROOT") or os.path.abspath(os.path.join(HERE, "..", ".."))
@@ -131,7 +130,12 @@ def main():
         print("  [FAIL] overlay_targets: the manifest has no CMakeLists.txt -- nothing would configure")
         return 1
 
-    work = tempfile.mkdtemp(prefix="quactlize-overlay-")
+    workspace = os.environ.get("QUACTLIZE_ARTIFACT_ROOT", "/workspace")
+    work = os.path.join(workspace, f"quactlize-overlay-{os.getpid()}")
+    if os.path.lexists(work):
+        print(f"  [FAIL] overlay_targets: refusing pre-existing scratch path {work}")
+        return 1
+    os.makedirs(work)
     src, bld = os.path.join(work, "src"), os.path.join(work, "b")
     os.makedirs(src)
     try:
@@ -146,9 +150,13 @@ def main():
         # at the exact committed authority in the real checkout; copying 540
         # rows into the scratch tree would create a second apparent truth.
         authority = os.path.join(ROOT, "benchmarks", "gemv_tactic_units.cmake")
+        component_authority = os.environ.get(
+            "QZ_INTERNAL_SWEEP_CMAKE_AUTHORITY",
+            os.path.join(ROOT, "quactlize", "csrc"))
         r = subprocess.run(
             ["cmake", "-S", src, "-B", bld,
-             f"-DGEMV_TACTIC_AUTHORITY={authority}"],
+             f"-DGEMV_TACTIC_AUTHORITY={authority}",
+             f"-DQZ_INTERNAL_SWEEP_CMAKE_AUTHORITY={component_authority}"],
             capture_output=True, text=True)
         created = []
         tf = os.path.join(bld, "created_targets.txt")

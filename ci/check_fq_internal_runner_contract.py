@@ -207,8 +207,14 @@ def check(runner: str, generator: str, cmake: str, build: str,
         raise ValueError("generated device units are absent from the target source graph")
     if "test_fully_quantized_internal_sweep" not in cmake:
         raise ValueError("FullyQuantized executable target is absent")
-    if root_cmake.count('include("${CMAKE_CURRENT_LIST_DIR}/fq_internal_sweep.cmake.in")') != 1:
-        raise ValueError("root CMake must include the FQ fragment exactly once")
+    if (root_cmake.count(
+            'include("${QZ_INTERNAL_SWEEP_CMAKE_AUTHORITY}/fq_internal_sweep.cmake.in")') != 1 or
+            root_cmake.count(
+            'include("${QZ_INTERNAL_SWEEP_CMAKE_AUTHORITY}/scalefirst_internal_sweep.cmake.in")') != 1 or
+            'QZ_INTERNAL_SWEEP_CMAKE_AUTHORITY must be an absolute' not in root_cmake or
+            'internal-sweep CMake authority lacks ${_qz_internal_sweep_fragment}' not in root_cmake):
+        raise ValueError(
+            "root CMake does not bind both internal-sweep fragments to one fail-closed authority")
     for variable in (
         "FQ_SWEEP_GENERATED_DIR", "FQ_SWEEP_QTYPE", "FQ_SWEEP_ARTIFACT_TK",
         "FQ_SWEEP_BCHUNK", "FQ_SWEEP_PACKED_FORMAT",
@@ -224,9 +230,12 @@ def check(runner: str, generator: str, cmake: str, build: str,
     if ('plan_source_sha' not in runner or 'spec_sha' not in runner or
             'differs from materialized plan' not in runner):
         raise ValueError("runner resume no longer binds the current inventory bytes")
-    if ('["placed_bc"]["compiled_in_bchunk0"]' not in runner or
-            'static-only shard=' not in runner):
-        raise ValueError("runner lost the all-static shard guard")
+    empty_guard = 'if [ "$typed" -eq 0 ]; then'
+    if (runner.count(empty_guard) != 1 or
+            'static-only shard=%s; no binary required typed=0' not in runner or
+            runner.index(empty_guard) > runner.index(
+                "build shard=%s typed=%s")):
+        raise ValueError("runner lost the typed-zero no-binary guard")
     if ('if output.exists():' not in runner or
             'previous.get("generated_shards")' not in runner or
             'source-hashes authority changed on resume' not in runner):
@@ -454,6 +463,37 @@ def main() -> int:
     else:
         raise AssertionError("deleted per-shard run commit stayed green")
 
+    # Negative 11 restores the exact empty-shard failure from the real
+    # three-model run: q12-a32-bc0 had typed_rows=0, yet the runner entered
+    # build.sh.  Removing only the typed-zero branch must be detected before a
+    # compiler can turn an empty runtime graph into an unrelated build red.
+    planted_empty_build = texts["runner"].replace(
+        'if [ "$typed" -eq 0 ]; then', 'if false; then', 1)
+    try:
+        check(planted_empty_build, texts["generator"], texts["cmake"],
+              texts["build"], texts["root_cmake"], texts["analyzer"])
+    except ValueError as error:
+        if "typed-zero" not in str(error):
+            raise
+    else:
+        raise AssertionError("typed-zero shard calling build stayed green")
+
+    # Negative 12 deletes only one of the two fragment includes from the root
+    # CMake graph.  A valid FQ fragment does not excuse a missing ScaleFirst
+    # fragment (or vice versa); the overlay must bind the pair to one source
+    # authority rather than silently configure a partial graph.
+    planted_fragment = texts["root_cmake"].replace(
+        'include("${QZ_INTERNAL_SWEEP_CMAKE_AUTHORITY}/scalefirst_internal_sweep.cmake.in")',
+        '', 1)
+    try:
+        check(texts["runner"], texts["generator"], texts["cmake"],
+              texts["build"], planted_fragment, texts["analyzer"])
+    except ValueError as error:
+        if "both internal-sweep fragments" not in str(error):
+            raise
+    else:
+        raise AssertionError("missing component fragment stayed green")
+
     # Exercise the runner's exact pre-run resume decision.  The analyzer already
     # deletes run.rc dynamically; cover all three committed sidecars here, both
     # missing and replaced, and require rejection rather than a fresh benchmark.
@@ -464,7 +504,7 @@ def main() -> int:
           "include, generated unit graph, five build variables, no-device "
           "fail-close, inventory/run/device resume identity, all-static guard, "
           "published generated/direct-source authority, parent-shard binding, "
-          "atomic authorities, and producer-only disclosure; ten seam plus "
+          "atomic authorities, and producer-only disclosure; twelve seam plus "
           "six dynamic run-sidecar and one delete-binary negative red")
     return 0
 

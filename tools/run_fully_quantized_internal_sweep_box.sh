@@ -392,12 +392,16 @@ doc["generated_shards"][shard] = digest
 atomic_write(authority, json.dumps(doc, indent=2, sort_keys=True) + "\n")
 PY
         typed="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["denominator"]["typed_rows"])' "$manifest")" || return 2
-        bc_supported="$(python3 -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["placed_bc"]["compiled_in_bchunk0"]))' "$manifest")" || return 2
-        # bchunk=0 owns BC only for an arrangement accepted by the placed
-        # reader.  Q3/Q5 A32 and Q6 A256 are genuinely all-static shards.
-        if [ "$typed" -eq 0 ] && { [ "$bc" -ne 0 ] || [ "$bc_supported" -eq 0 ]; }; then
-          printf '[fq-internal] static-only shard=%s; no binary required typed=%s bc=%s\n' \
-            "$shard" "$typed" "$bc_supported"
+        # A generated shard is still source/denominator authority when every
+        # row is a named static rejection, but it has no device type to
+        # instantiate and therefore no runtime graph.  Building such a shard
+        # creates an empty generated target and, worse, lets unrelated build
+        # failures masquerade as a rejected tactic.  The manifest's typed
+        # denominator is the sole capability boundary for every format/bchunk
+        # combination; do not special-case the reason it reached zero.
+        if [ "$typed" -eq 0 ]; then
+          printf '[fq-internal] static-only shard=%s; no binary required typed=0\n' \
+            "$shard"
           continue
         fi
         binary="$out/build/$shard/ppu_targets/test_fully_quantized_internal_sweep"

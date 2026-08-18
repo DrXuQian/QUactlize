@@ -2557,16 +2557,37 @@ quactlize_ppu_executable(
 )
 target_compile_options(test_lowbit_dense_splitk_parallel PRIVATE -w)
 
+# Generated internal-sweep fragments have one source authority.  A production
+# configure finds them beside this file; the SDK-free flat-overlay checker
+# explicitly points this variable back at that same committed directory rather
+# than copying a second apparent authority into its scratch source tree.
+if(NOT DEFINED QZ_INTERNAL_SWEEP_CMAKE_AUTHORITY OR
+   "${QZ_INTERNAL_SWEEP_CMAKE_AUTHORITY}" STREQUAL "")
+  set(QZ_INTERNAL_SWEEP_CMAKE_AUTHORITY "${CMAKE_CURRENT_LIST_DIR}")
+endif()
+if(NOT IS_ABSOLUTE "${QZ_INTERNAL_SWEEP_CMAKE_AUTHORITY}")
+  message(FATAL_ERROR
+    "QZ_INTERNAL_SWEEP_CMAKE_AUTHORITY must be an absolute source-authority directory; got '${QZ_INTERNAL_SWEEP_CMAKE_AUTHORITY}'")
+endif()
+foreach(_qz_internal_sweep_fragment IN ITEMS
+    fq_internal_sweep.cmake.in scalefirst_internal_sweep.cmake.in)
+  if(NOT EXISTS
+      "${QZ_INTERNAL_SWEEP_CMAKE_AUTHORITY}/${_qz_internal_sweep_fragment}")
+    message(FATAL_ERROR
+      "internal-sweep CMake authority lacks ${_qz_internal_sweep_fragment}: ${QZ_INTERNAL_SWEEP_CMAKE_AUTHORITY}")
+  endif()
+endforeach()
+
 # Generated FullyQuantized S1/Split-K component shards.  The block is inert
 # unless the runner supplies FQ_SWEEP_GENERATED_DIR and its exact tuple
 # identity; keeping it in a separate fragment prevents this diagnostic target
 # from changing any shipping target's source graph.
-include("${CMAKE_CURRENT_LIST_DIR}/fq_internal_sweep.cmake.in")
+include("${QZ_INTERNAL_SWEEP_CMAKE_AUTHORITY}/fq_internal_sweep.cmake.in")
 
 # Generated all-format ScaleFirst NP/persistent/Split-K component shards.
 # This diagnostic graph is inert unless its runner supplies an exact generated
 # tuple authority and does not alter any shipping target.
-include("${CMAKE_CURRENT_LIST_DIR}/scalefirst_internal_sweep.cmake.in")
+include("${QZ_INTERNAL_SWEEP_CMAKE_AUTHORITY}/scalefirst_internal_sweep.cmake.in")
 
 # Final dense fixed Split-K performance search.  This is not a hand-written
 # winner table: parse the committed int4/ArtifactTK64 dense authority, retain
