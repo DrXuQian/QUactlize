@@ -242,7 +242,11 @@ def resolve(catalog_path: pathlib.Path, output: pathlib.Path,
                 f"or set {env_name}")
         if not binding.is_absolute():
             raise ResolveError(f"{model_id}: {env_name} path is not absolute: {binding}")
-        files = resolve_binding(binding)
+        try:
+            files = resolve_binding(binding)
+        except ResolveError as exc:
+            raise ResolveError(
+                f"{model_id}: {env_name}={binding}: {exc}") from exc
         file_rows = [
             {"path": str(path), "size": path.stat().st_size,
              "sha256": sha256_file(path)} for path in files

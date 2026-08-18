@@ -103,9 +103,9 @@ actual GGUF headers, freezes that inventory inside the output bundle, and then
 invokes both component runners.  A fresh box invocation is:
 
 ```bash
-export QWEN35_35B_A3B_Q4_K_M_GGUF=/workspace/models/Qwen3.5-35B-A3B-Q4_K_M
-export QWEN3_32B_Q4_K_M_GGUF=/workspace/models/Qwen3-32B-Q4_K_M
-export QWEN35_122B_A10B_Q4_K_M_GGUF=/workspace/models/Qwen3.5-122B-A10B-Q4_K_M
+export QWEN35_35B_A3B_Q4_K_M_GGUF=/workspace/models/Qwen3.5-35B-A3B-Q4_K_M-GGUF/Qwen3.5-35B-A3B-Q4_K_M.gguf
+export QWEN3_32B_Q4_K_M_GGUF=/workspace/models/Qwen3-32B-Q4_K_M_GGUF/Qwen3-32B-Q4_K_M.gguf
+export QWEN35_122B_A10B_Q4_K_M_GGUF=/workspace/models/Qwen3.5-122B-A10B-GGUF-Q4_K_M/Q4_K_M
 
 OUT=/workspace/quactlize-internal-full-sweep-$(git rev-parse --short HEAD)-$(date -u +%Y%m%dT%H%M%SZ) \
 JOBS=16 ITERATIONS=7 CORRECTNESS_REPEATS=2 \
