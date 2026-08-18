@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-18 01:42:50 UTC
+    updated-at:     2026-08-18 01:49:58 UTC
     inbox-consumed: 178
-    working-on:     real three-shard Qwen3.5-122B inventory unblocked; standard shard-zero metadata authority is now accepted fail-closed
-    blocked-on:     PPU box owns the real GGUF files and final timing; resume the preserved sweep bundle after pulling 8100206
-    local-gates:    PASS: inventory shard-zero/subset positive; repeated-value/new-authority/split identity negatives; GGUF bridge; full runner resume contract; axis census COMPLETE
-    last-commit:    8100206 Accept standard split GGUF metadata inheritance
+    working-on:     real three-model authority validation unblocked by separating all-rank logical counts from rank-2/3 published tensor rows
+    blocked-on:     PPU box owns final timing; resume the preserved bundle after pulling 1c87b51
+    local-gates:    PASS: full runner with a planted rank-1 tensor; missing and extra rank-2/3 row negatives red; GGUF downstream bridge PASS
+    last-commit:    1c87b51 Separate all-rank and matrix tensor authorities
     last-heartbeat: 352
