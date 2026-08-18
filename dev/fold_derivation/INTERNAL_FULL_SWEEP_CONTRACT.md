@@ -96,6 +96,13 @@ carries raw samples, median, MFU, MBU and correctness.  MBU must state its kind
 (for example `DISTINCT_BYTE_MODEL`); a model is not silently relabelled as a
 device traffic counter.
 
+Inventory counts deliberately have two denominators: `logical_tensor_count`
+includes every physical tensor rank plus a materialized tied-output alias,
+whereas `tensors[]` and `rank2_or_rank3_logical_tensor_count` contain only
+rank-2/3 rows that can participate in matrix/lookup/non-matmul routing.  The
+authority validator checks both identities independently; it never equates
+the all-rank count with the rank-2/3 publication.
+
 ## Runner and outputs
 
 The production entry point resolves the three catalog models, reads their

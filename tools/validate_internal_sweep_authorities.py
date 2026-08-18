@@ -139,12 +139,38 @@ def validate(catalog_path: pathlib.Path, resolved_path: pathlib.Path,
                 raise AuthorityError(
                     f"{model_id}: inventory model {field} differs from resolved authority")
         for field in ("observed_tensor_count", "logical_tensor_count",
-                      "matrix_tensor_count"):
+                      "matrix_tensor_count", "unclassified_rank2_or_rank3_count"):
             value = row.get(field)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise AuthorityError(f"{model_id}: invalid inventory {field}={value!r}")
         if row["observed_tensor_count"] == 0:
             raise AuthorityError(f"{model_id}: inventory observed no GGUF tensors")
+        rank_counts = row.get("rank_counts")
+        if not isinstance(rank_counts, dict) or not rank_counts:
+            raise AuthorityError(f"{model_id}: inventory rank_counts is missing")
+        parsed_rank_counts: dict[int, int] = {}
+        for raw_rank, raw_count in rank_counts.items():
+            try:
+                rank = int(raw_rank)
+            except (TypeError, ValueError) as exc:
+                raise AuthorityError(
+                    f"{model_id}: invalid tensor rank key {raw_rank!r}") from exc
+            if (rank <= 0 or isinstance(raw_count, bool) or
+                    not isinstance(raw_count, int) or raw_count < 0 or
+                    rank in parsed_rank_counts):
+                raise AuthorityError(
+                    f"{model_id}: invalid rank_counts entry {raw_rank!r}:{raw_count!r}")
+            parsed_rank_counts[rank] = raw_count
+        if sum(parsed_rank_counts.values()) != row["observed_tensor_count"]:
+            raise AuthorityError(
+                f"{model_id}: rank_counts do not describe observed tensors")
+        tied_alias = row.get("tied_output_alias_materialized")
+        if not isinstance(tied_alias, bool):
+            raise AuthorityError(
+                f"{model_id}: tied_output_alias_materialized is not boolean")
+        if row["logical_tensor_count"] != row["observed_tensor_count"] + int(tied_alias):
+            raise AuthorityError(
+                f"{model_id}: logical tensor count does not describe physical tensors/alias")
 
     collections_by_name: dict[str, list[dict[str, Any]]] = {}
     for collection in ("cells", "sweep_shapes", "tensors"):
@@ -168,6 +194,7 @@ def validate(catalog_path: pathlib.Path, resolved_path: pathlib.Path,
     count_fields = {
         "model_count": len(inventory_models),
         "tensor_count": len(tensors),
+        "rank2_or_rank3_logical_tensor_count": len(tensors),
         "expanded_cell_count": len(cells),
         "deduplicated_shape_count": len(shapes),
         "physical_tensor_count": sum(row["observed_tensor_count"]
@@ -182,10 +209,27 @@ def validate(catalog_path: pathlib.Path, resolved_path: pathlib.Path,
                 f"inventory {field} does not describe rows: {spec.get(field)!r} != {expected}")
 
     tensor_counts = collections.Counter(row["model_id"] for row in tensors)
+    matrix_counts = collections.Counter(
+        row["model_id"] for row in tensors if bool(row.get("matmul_tensor")))
+    unclassified_counts = collections.Counter(
+        row["model_id"] for row in tensors if row.get("role") == "UNCLASSIFIED")
     for model in inventory_models:
-        if tensor_counts[model["model_id"]] != model["logical_tensor_count"]:
+        rank_counts = {int(rank): count for rank, count in model["rank_counts"].items()}
+        # tensors[] intentionally publishes only rank-2/3 rows.  A tied
+        # output is one additional logical rank-2 row backed by token_embd;
+        # logical_tensor_count itself includes every physical rank.
+        expected_tensor_rows = (rank_counts.get(2, 0) + rank_counts.get(3, 0) +
+                                int(model["tied_output_alias_materialized"]))
+        model_id = model["model_id"]
+        if tensor_counts[model_id] != expected_tensor_rows:
             raise AuthorityError(
-                f"{model['model_id']}: logical tensor count differs from tensor rows")
+                f"{model_id}: rank-2/3 tensor count differs from tensor rows")
+        if matrix_counts[model_id] != model["matrix_tensor_count"]:
+            raise AuthorityError(
+                f"{model_id}: matrix tensor count differs from tensor rows")
+        if unclassified_counts[model_id] != model["unclassified_rank2_or_rank3_count"]:
+            raise AuthorityError(
+                f"{model_id}: unclassified tensor count differs from tensor rows")
 
     for collection, rows in (("cells", cells), ("sweep_shapes", shapes),
                              ("tensors", tensors)):

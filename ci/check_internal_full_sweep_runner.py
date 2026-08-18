@@ -111,7 +111,11 @@ def run() -> None:
              ("qwen35moe.expert_count", 4),
              ("qwen35moe.expert_used_count", 2)],
             [("blk.0.attn_q.weight", (256, 32), 12),
-             ("blk.0.ffn_up_exps.weight", (256, 32, 4), 12)]))
+             ("blk.0.ffn_up_exps.weight", (256, 32, 4), 12),
+             # A real model contains non-matrix ranks.  Keep one here so the
+             # validator cannot equate all-rank logical_tensor_count with the
+             # deliberately rank-2/3-only tensors[] publication.
+             ("blk.0.attn_norm.weight", (32,), 1)]))
 
         catalog = json.loads((ROOT / "benchmarks/internal_sweep_models.json").read_text())
         catalog["workload_axes"]["dense"] = {"decode_m": [1], "prefill_m": [64]}
@@ -179,10 +183,32 @@ def run() -> None:
         assert spec["provenance"]["gguf_hashes"] == {
             "model-a": frozen["models"][0]["fileset_sha256"]}
         validator = ROOT / "tools/validate_internal_sweep_authorities.py"
+        missing_ranked_row = copy.deepcopy(spec)
+        missing_ranked_row["tensors"].pop()
+        missing_ranked_row["tensor_count"] = len(missing_ranked_row["tensors"])
+        missing_ranked_row["rank2_or_rank3_logical_tensor_count"] = len(
+            missing_ranked_row["tensors"])
+        missing_ranked_row["matrix_tensor_count"] = sum(
+            bool(row.get("matmul_tensor")) for row in missing_ranked_row["tensors"])
+        missing_ranked_row["unclassified_tensor_count"] = sum(
+            row.get("role") == "UNCLASSIFIED" for row in missing_ranked_row["tensors"])
+        extra_ranked_row = copy.deepcopy(spec)
+        extra_ranked_row["tensors"].append(copy.deepcopy(extra_ranked_row["tensors"][0]))
+        extra_ranked_row["tensor_count"] = len(extra_ranked_row["tensors"])
+        extra_ranked_row["rank2_or_rank3_logical_tensor_count"] = len(
+            extra_ranked_row["tensors"])
+        extra_ranked_row["matrix_tensor_count"] = sum(
+            bool(row.get("matmul_tensor")) for row in extra_ranked_row["tensors"])
+        extra_ranked_row["unclassified_tensor_count"] = sum(
+            row.get("role") == "UNCLASSIFIED" for row in extra_ranked_row["tensors"])
         for label, planted, needle in (
                 ("empty-denominator",
                  {**spec, "cells": [], "sweep_shapes": [], "tensors": []},
                  "does not describe rows"),
+                ("missing-rank2-row", missing_ranked_row,
+                 "rank-2/3 tensor count differs from tensor rows"),
+                ("extra-rank2-row", extra_ranked_row,
+                 "rank-2/3 tensor count differs from tensor rows"),
                 ("tp-drift",
                  {**spec, "models": [{**spec["models"][0], "tp_world_size": 999}]},
                  "tp_world_size differs")):
@@ -371,7 +397,8 @@ def run() -> None:
         print("[internal-full-sweep-runner:self-test] PASS: one-command catalog -> "
               "GGUF inventory -> four boards -> model/shape folder; self-contained "
               "idempotent/partial resume; production/dev isolation; model-set/"
-              "inventory-count+TP/component-authority/results-manifest/stale-summary/"
+              "all-rank-vs-rank2/3 inventory count +/- negatives+TP/component-authority/"
+              "results-manifest/stale-summary/"
               "grouped-identity/catalog-drift/provenance/write negatives red")
     finally:
         # The target is one exact PID-named /workspace child created above.
