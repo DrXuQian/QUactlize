@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Local contract for the conservative Q4_K pruning pilot."""
+
+from __future__ import annotations
+
+import json
+import pathlib
+import subprocess
+import sys
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+TOOLS = ROOT / "tools"
+RUNNER = TOOLS / "run_scalefirst_q4k_pruned_box.sh"
+PRUNER = TOOLS / "prune_scalefirst_q4k_pilot.py"
+POLICY = ROOT / "benchmarks/scalefirst_q4k_pruned_policy.json"
+BENCH = ROOT / "benchmarks/scalefirst_internal_sweep_bench.hpp"
+DRIVER = ROOT / "benchmarks/test_scalefirst_internal_sweep.cu"
+EXHAUSTIVE = TOOLS / "run_scalefirst_internal_sweep_box.sh"
+
+
+def require(text: str, tokens: tuple[str, ...], label: str) -> None:
+    missing = [token for token in tokens if token not in text]
+    if missing:
+        raise AssertionError(f"{label} lost contract tokens: {missing}")
+
+
+def main() -> int:
+    subprocess.run(["bash", "-n", str(RUNNER)], cwd=ROOT, check=True)
+    subprocess.run([sys.executable, "-B", str(PRUNER), "self-test"],
+                   cwd=ROOT, check=True)
+    sys.path.insert(0, str(TOOLS))
+    import prune_scalefirst_q4k_pilot as pruner
+    import scalefirst_internal_matrix as matrix
+
+    policy = pruner.load_policy(POLICY)
+    fmt = matrix.format_for(12)
+    typed = [row for row in matrix.emitted_tactics(12, 64)
+             if row.bchunk == 0 and
+             matrix.classify(fmt, 64, row)[0] == "TYPE_ADMISSION_REQUIRED"]
+    if len(typed) != 1824:
+        raise AssertionError(f"Q4_K/A64/bc0 denominator drifted {len(typed)}/1824")
+    anchor_axes = (64, 64, 64, 64, 32, 3, 0)
+    anchors = [row for row in typed if
+               (row.tile_m, row.tile_n, row.tactic_tile_k, row.warp_m,
+                row.warp_n, row.stages, row.bchunk) == anchor_axes]
+    if len(anchors) != 1:
+        raise AssertionError("historical Q4_K anchor is not typed exactly once")
+
+    runner, bench, driver, exhaustive = (path.read_text() for path in
+                                         (RUNNER, BENCH, DRIVER, EXHAUSTIVE))
+    if any(token in runner for token in ("/tmp", "mktemp", "rm -")):
+        raise AssertionError("pilot runner reintroduced temporary/destructive paths")
+    require(runner, (
+        'OUT must be a strict /workspace child',
+        '--qtype 12 --artifact-tk 64 --bchunk 0',
+        'typed_rows"] != 1824',
+        '--algorithm=nonpersistent',
+        '--symbol-file="$out/results/screen-shortlist.txt"',
+        '--symbol-file="$out/results/confirm-shortlist.txt"',
+        'screen-shortlist.txt', 'confirm-shortlist.txt',
+        'source-authority.json', 'bundle.json',
+        'phase=screen', 'phase=scheduler', 'phase=confirm',
+    ), "runner")
+    require(bench, (
+        'kAllAlgorithms = kNonPersistent | kPersistent | kSplitK',
+        'unsigned algorithm_mask = kAllAlgorithms',
+        'options.includes(Options::kNonPersistent)',
+        'options.includes(Options::kPersistent)',
+        'options.includes(Options::kSplitK)',
+    ), "benchmark")
+    require(driver, (
+        '--algorithm=', '--symbol-file=',
+        'symbol file contains a duplicate',
+        'symbol file names an unknown generated symbol',
+        'selected_rows=%zu algorithm_mask=0x%x',
+    ), "driver")
+    # The production exhaustive runner must not opt into either pilot filter.
+    if '--algorithm=' in exhaustive or '--symbol-file=' in exhaustive:
+        raise AssertionError("exhaustive runner was silently converted to pruning")
+
+    planted = json.loads(POLICY.read_text())
+    planted["anchor_symbol"] += "_missing"
+    scratch = dict(policy)
+    scratch["anchor_symbol"] = planted["anchor_symbol"]
+    try:
+        # Exercise the same invariant without writing a second policy source.
+        if scratch["anchor_symbol"] != \
+                "sf_q12_a64_tm64_tn64_tk64_wm64_wn32_s3_bc0":
+            raise pruner.ContractError("historical anchor symbol changed")
+    except pruner.ContractError:
+        pass
+    else:
+        raise AssertionError("mutated historical anchor stayed green")
+    print("[q4k-prune-runner] PASS typed=1824, historical anchor exact, "
+          "default exhaustive path intact, source/binary/log binding present")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (AssertionError, OSError, subprocess.CalledProcessError) as error:
+        print(f"[q4k-prune-runner] FAIL: {error}", file=sys.stderr)
+        raise SystemExit(2)

@@ -9,9 +9,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <numeric>
 #include <random>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "cutlass/util/device_memory.h"
@@ -66,6 +68,8 @@ struct Shape { int m = 1, n = 4096, k = 4096; };
 struct Cli {
   int iterations = 5, repeats = 2;
   std::uint64_t schedule_seed = UINT64_C(0x6a09e667f3bcc909);
+  unsigned algorithm_mask = Options::kAllAlgorithms;
+  std::string symbol_file;
   std::vector<Shape> shapes;
 };
 
@@ -89,10 +93,71 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
       char* end = nullptr;
       cli.schedule_seed = std::strtoull(argv[i] + 16, &end, 0);
       if (!end || *end) return false;
+    } else if (!std::strncmp(argv[i], "--algorithm=", 12)) {
+      char const* value = argv[i] + 12;
+      if (!std::strcmp(value, "all"))
+        cli.algorithm_mask = Options::kAllAlgorithms;
+      else if (!std::strcmp(value, "nonpersistent"))
+        cli.algorithm_mask = Options::kNonPersistent;
+      else if (!std::strcmp(value, "persistent"))
+        cli.algorithm_mask = Options::kPersistent;
+      else if (!std::strcmp(value, "split"))
+        cli.algorithm_mask = Options::kSplitK;
+      else if (!std::strcmp(value, "full-output"))
+        cli.algorithm_mask = Options::kNonPersistent | Options::kPersistent;
+      else return false;
+    } else if (!std::strncmp(argv[i], "--symbol-file=", 14)) {
+      cli.symbol_file = argv[i] + 14;
+      if (cli.symbol_file.empty()) return false;
     } else return false;
   }
   if (cli.shapes.empty()) cli.shapes.push_back({1, 4096, 4096});
-  return cli.iterations > 0 && cli.repeats > 0;
+  return cli.iterations > 0 && cli.repeats > 0 && cli.algorithm_mask != 0;
+}
+
+bool selected_registry(Cli const& cli, std::vector<RegistryRow>& selected,
+                       std::string& error) {
+  auto const all = registry();
+  if (cli.symbol_file.empty()) {
+    selected = all;
+    return true;
+  }
+  std::ifstream stream(cli.symbol_file);
+  if (!stream) {
+    error = "cannot open symbol file: " + cli.symbol_file;
+    return false;
+  }
+  std::unordered_set<std::string> requested;
+  std::string line;
+  while (std::getline(stream, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.empty() || line.find_first_of(" \t") != std::string::npos) {
+      error = "symbol file contains an empty/whitespace-bearing record";
+      return false;
+    }
+    if (!requested.insert(line).second) {
+      error = "symbol file contains a duplicate: " + line;
+      return false;
+    }
+  }
+  if (!stream.eof() || requested.empty()) {
+    error = requested.empty() ? "symbol file is empty" :
+                                "failed while reading symbol file";
+    return false;
+  }
+  for (auto const& row : all) {
+    auto found = requested.find(row.symbol);
+    if (found != requested.end()) {
+      selected.push_back(row);
+      requested.erase(found);
+    }
+  }
+  if (!requested.empty()) {
+    error = "symbol file names an unknown generated symbol: " +
+            *requested.begin();
+    return false;
+  }
+  return true;
 }
 
 constexpr int low_bits() {
@@ -264,7 +329,8 @@ void print_samples(std::vector<double> const& samples) {
   std::printf("]");
 }
 
-int run_shape(Shape shape, Cli const& cli, int device, int cu) {
+int run_shape(Shape shape, Cli const& cli, int device, int cu,
+              std::vector<RegistryRow> const& rows) {
   if (shape.n % 256 || shape.k % 256 || shape.k % 8) {
     std::fprintf(stderr, "shape %dx%dx%d violates resident/split alignment\n",
                  shape.m, shape.n, shape.k);
@@ -294,9 +360,7 @@ int run_shape(Shape shape, Cli const& cli, int device, int cu) {
       dScale.get(), fixture.zeros.empty() ? nullptr : dZero.get(),
       dOutput.get(), dWorkspace.get(), workspace_bytes, fixture.golden.data(),
       shape.m, shape.n, shape.k, device, cu};
-  Options options{cli.iterations, cli.repeats, true};
-
-  auto rows = registry();
+  Options options{cli.iterations, cli.repeats, true, cli.algorithm_mask};
   std::vector<std::size_t> order(rows.size());
   std::iota(order.begin(), order.end(), 0);
   std::mt19937_64 rng(cli.schedule_seed ^ std::uint64_t(shape.m) ^
@@ -405,7 +469,16 @@ int main(int argc, char** argv) {
   if (!parse_cli(argc, argv, cli)) {
     std::fprintf(stderr,
         "usage: %s [--shape=MxNxK] [--iterations=N] "
-        "[--correctness-repeats=N] [--schedule-seed=N]\n", argv[0]);
+        "[--correctness-repeats=N] [--schedule-seed=N] "
+        "[--algorithm=all|nonpersistent|persistent|split|full-output] "
+        "[--symbol-file=PATH]\n", argv[0]);
+    return 2;
+  }
+  std::vector<RegistryRow> rows;
+  std::string selection_error;
+  if (!selected_registry(cli, rows, selection_error)) {
+    std::fprintf(stderr, "SF_SELECTION_FAIL reason=%s\n",
+                 selection_error.c_str());
     return 2;
   }
   int device = 0;
@@ -415,14 +488,15 @@ int main(int argc, char** argv) {
   if (cu <= 0) return 2;
   std::printf(
       "SF_SHARD qtype=%d artifact_tile_k=%d bchunk=%d typed_rows=%d "
-      "device=%d cu=%d iterations=%d correctness_repeats=%d "
+      "selected_rows=%zu algorithm_mask=0x%x device=%d cu=%d "
+      "iterations=%d correctness_repeats=%d "
       "schedule_seed=0x%llx\n",
       SCALEFIRST_SWEEP_QTYPE, SCALEFIRST_SWEEP_ARTIFACT_TK,
       SCALEFIRST_SWEEP_BCHUNK, SCALEFIRST_GENERATED_TYPED_ROWS,
-      device, cu, cli.iterations, cli.repeats,
+      rows.size(), cli.algorithm_mask, device, cu, cli.iterations, cli.repeats,
       static_cast<unsigned long long>(cli.schedule_seed));
   for (auto const& shape : cli.shapes) {
-    int const rc = run_shape(shape, cli, device, cu);
+    int const rc = run_shape(shape, cli, device, cu, rows);
     if (rc) return rc;
   }
   return 0;

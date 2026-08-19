@@ -74,6 +74,20 @@ struct Options {
   int iterations = 5;
   int correctness_repeats = 2;
   bool measure = true;
+  // The exhaustive runner leaves this at kAllAlgorithms.  The Q4_K pruning
+  // pilot uses the same compiled shipping types but measures one algorithm
+  // family at a time; this is a runtime filter, never a type-space filter.
+  enum Algorithm : unsigned {
+    kNonPersistent = 1u << 0,
+    kPersistent = 1u << 1,
+    kSplitK = 1u << 2,
+    kAllAlgorithms = kNonPersistent | kPersistent | kSplitK,
+  };
+  unsigned algorithm_mask = kAllAlgorithms;
+
+  bool includes(Algorithm algorithm) const {
+    return (algorithm_mask & unsigned(algorithm)) != 0;
+  }
 };
 
 struct DeviceInputs {
@@ -380,15 +394,19 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
         cell.split = split;
         cell.state = State::M8DecodeOnly;
       };
-      add_terminal("NONPERSISTENT", "FULL_OUTPUT", 1, "ordinary");
-      add_terminal("PERSISTENT", "FULL_OUTPUT", 1,
-                   "capacity+balanced");
-      add_terminal("SPLITK_S2_PRODUCER",
-                   "PRODUCER_ONLY_NOT_PRODUCT_E2E", 2, "fixed-split-k");
-      add_terminal("SPLITK_S4_PRODUCER",
-                   "PRODUCER_ONLY_NOT_PRODUCT_E2E", 4, "fixed-split-k");
-      add_terminal("SPLITK_S8_PRODUCER",
-                   "PRODUCER_ONLY_NOT_PRODUCT_E2E", 8, "fixed-split-k");
+      if (options.includes(Options::kNonPersistent))
+        add_terminal("NONPERSISTENT", "FULL_OUTPUT", 1, "ordinary");
+      if (options.includes(Options::kPersistent))
+        add_terminal("PERSISTENT", "FULL_OUTPUT", 1,
+                     "capacity+balanced");
+      if (options.includes(Options::kSplitK)) {
+        add_terminal("SPLITK_S2_PRODUCER",
+                     "PRODUCER_ONLY_NOT_PRODUCT_E2E", 2, "fixed-split-k");
+        add_terminal("SPLITK_S4_PRODUCER",
+                     "PRODUCER_ONLY_NOT_PRODUCT_E2E", 4, "fixed-split-k");
+        add_terminal("SPLITK_S8_PRODUCER",
+                     "PRODUCER_ONLY_NOT_PRODUCT_E2E", 8, "fixed-split-k");
+      }
       return true;
     }
   }
@@ -405,7 +423,7 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
       StrideD{}, cute::make_shape(in.m, in.n, 1));
 
   // Ordinary full-output S1.
-  {
+  if (options.includes(Options::kNonPersistent)) {
     auto& cell = make_cell("NONPERSISTENT", "FULL_OUTPUT");
     cell.policy = "ordinary";
     cell.grid = ((in.m + TM - 1) / TM) * ((in.n + TN - 1) / TN);
@@ -431,7 +449,7 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
 
   // Persistent full-output S1.  The exact final kernel supplies occupancy;
   // capacity/balanced grids are deduplicated by the shared policy.
-  {
+  if (options.includes(Options::kPersistent)) {
     int const occupancy = PersistentGemm::maximum_active_blocks();
     std::uint64_t const q = std::uint64_t((in.m + TM - 1) / TM) *
                             std::uint64_t((in.n + TN - 1) / TN);
@@ -478,6 +496,7 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
   }
 
   // Fixed Split-K producer-only board.
+  if (options.includes(Options::kSplitK))
   for (int splits : std::array<int, 3>{{2, 4, 8}}) {
     auto& cell = make_cell(splits == 2 ? "SPLITK_S2_PRODUCER" :
                            splits == 4 ? "SPLITK_S4_PRODUCER" :

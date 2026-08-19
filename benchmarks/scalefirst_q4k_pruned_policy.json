@@ -1,0 +1,40 @@
+{
+  "schema": "quactlize.scalefirst_q4k_pruned_policy.v1",
+  "name": "q4k65-historical-anchor",
+  "qtype": 12,
+  "artifact_tile_k": 64,
+  "bchunk": 0,
+  "shape": [
+    2048,
+    4096,
+    4096
+  ],
+  "anchor_symbol": "sf_q12_a64_tm64_tn64_tk64_wm64_wn32_s3_bc0",
+  "screen": {
+    "algorithm": "NONPERSISTENT",
+    "iterations": 2,
+    "correctness_repeats": 1,
+    "top_n": 32,
+    "relative_to_leader": 1.20,
+    "top_per_axis_value": 2,
+    "top_per_q": 2,
+    "retain_if_relative_spread_exceeds": 0.05
+  },
+  "scheduler": {
+    "iterations": 1,
+    "correctness_repeats": 1,
+    "top_n_per_board": 8,
+    "relative_to_leader": 1.05
+  },
+  "confirm": {
+    "iterations": 7,
+    "correctness_repeats": 2,
+    "unresolved_if_sample_envelopes_overlap": true
+  },
+  "boards": [
+    "FULL_OUTPUT",
+    "SPLITK_S2_PRODUCER",
+    "SPLITK_S4_PRODUCER",
+    "SPLITK_S8_PRODUCER"
+  ]
+}
