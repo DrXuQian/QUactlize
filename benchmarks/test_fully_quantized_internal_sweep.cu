@@ -330,6 +330,8 @@ int run_shape(Shape shape, Cli const& cli) {
           "tm=%d tn=%d tk=%d wm=%d wn=%d stages=%d provider=%s S=%d scope=%s "
           "provider_capacity_rows=%d "
           "state=%s us=%.9f raw_bad=%llu reducer_untimed=%d "
+          "failure_step=%s failure_repeat=%d first_bad=%zu "
+          "first_want=0x%04x first_got=0x%04x "
           "shipping_smem=%zu split_smem=%zu partial_bytes=%zu samples=",
           entry.qtype, entry.artifact_tile_k, entry.bchunk,
           shape.m, shape.n, shape.k, entry.symbol,
@@ -338,7 +340,10 @@ int run_shape(Shape shape, Cli const& cli) {
           cell.split, scope, cell.a_provider_capacity_rows,
           state_name(cell.state), cell.median_us,
           static_cast<unsigned long long>(cell.raw_bad),
-          int(cell.reducer_correctness_untimed), cell.shipping_smem,
+          int(cell.reducer_correctness_untimed), cell.failure_step,
+          cell.failure_repeat, cell.first_bad_index,
+          unsigned(cell.first_bad_want), unsigned(cell.first_bad_got),
+          cell.shipping_smem,
           cell.split_smem, cell.partial_bytes);
       print_samples(cell.samples_us);
       std::printf("\n");

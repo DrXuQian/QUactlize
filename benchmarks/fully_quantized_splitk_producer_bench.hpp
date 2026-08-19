@@ -87,6 +87,11 @@ struct CellResult {
   bool reducer_correctness_untimed = false;
   std::uint64_t raw_bad = 0;
   std::uint64_t fingerprint = 0;
+  std::size_t first_bad_index = std::size_t(-1);
+  std::uint16_t first_bad_want = 0;
+  std::uint16_t first_bad_got = 0;
+  char const* failure_step = "NONE";
+  int failure_repeat = -1;
   std::size_t shipping_smem = 0;
   std::size_t split_smem = 0;
   std::size_t partial_bytes = 0;
@@ -250,8 +255,20 @@ inline bool inspect(DeviceInputs const& in, CellResult& out) {
   if (hggcMemcpy(host.data(), in.output, count * sizeof(half_t),
                  hggcMemcpyDeviceToHost) != hggcSuccess) return false;
   out.raw_bad = 0;
-  for (std::size_t i = 0; i < count; ++i)
-    out.raw_bad += host[i].raw() != in.golden[i].raw();
+  out.first_bad_index = std::size_t(-1);
+  out.first_bad_want = out.first_bad_got = 0;
+  for (std::size_t i = 0; i < count; ++i) {
+    auto const got = host[i].raw();
+    auto const want = in.golden[i].raw();
+    if (got != want) {
+      if (out.raw_bad == 0) {
+        out.first_bad_index = i;
+        out.first_bad_want = want;
+        out.first_bad_got = got;
+      }
+      ++out.raw_bad;
+    }
+  }
   out.fingerprint = hash_half(host.data(), count);
   return true;
 }
@@ -365,18 +382,30 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
         bool correct = true;
         std::uint64_t fingerprint = 0;
         for (int repeat = 0; repeat < options.correctness_repeats; ++repeat) {
-          if (launch() != cutlass::Status::kSuccess ||
-              hggcDeviceSynchronize() != hggcSuccess || !inspect(in, result) ||
-              result.raw_bad != 0 ||
+          result.failure_repeat = repeat;
+          if (launch() != cutlass::Status::kSuccess) {
+            result.failure_step = "CORRECTNESS_LAUNCH"; correct = false; break;
+          }
+          if (hggcDeviceSynchronize() != hggcSuccess) {
+            result.failure_step = "CORRECTNESS_SYNCHRONIZE"; correct = false; break;
+          }
+          if (!inspect(in, result)) {
+            result.failure_step = "CORRECTNESS_OUTPUT_COPY"; correct = false; break;
+          }
+          if (result.raw_bad != 0 ||
               (repeat && result.fingerprint != fingerprint)) {
+            result.failure_step = result.raw_bad ? "RAW_FP16_MISMATCH" :
+                                                   "FINGERPRINT_MISMATCH";
             correct = false; break;
           }
           fingerprint = result.fingerprint;
         }
         if (!correct) { result.state = State::Correctness; row_ok = false; continue; }
         if (options.measure && !measure(launch, options.iterations, result)) {
+          result.failure_step = "TIMING";
           result.state = State::Timing; row_ok = false; continue;
         }
+        result.failure_step = "NONE"; result.failure_repeat = -1;
         result.state = State::Measured;
         continue;
       }
@@ -431,10 +460,20 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
         bool correct = true;
         std::uint64_t fingerprint = 0;
         for (int repeat = 0; repeat < options.correctness_repeats; ++repeat) {
-          if (full_launch() != cutlass::Status::kSuccess ||
-              hggcDeviceSynchronize() != hggcSuccess || !inspect(in, result) ||
-              result.raw_bad != 0 ||
+          result.failure_repeat = repeat;
+          if (full_launch() != cutlass::Status::kSuccess) {
+            result.failure_step = "CORRECTNESS_FULL_LAUNCH"; correct = false; break;
+          }
+          if (hggcDeviceSynchronize() != hggcSuccess) {
+            result.failure_step = "CORRECTNESS_SYNCHRONIZE"; correct = false; break;
+          }
+          if (!inspect(in, result)) {
+            result.failure_step = "CORRECTNESS_OUTPUT_COPY"; correct = false; break;
+          }
+          if (result.raw_bad != 0 ||
               (repeat && result.fingerprint != fingerprint)) {
+            result.failure_step = result.raw_bad ? "RAW_FP16_MISMATCH" :
+                                                   "FINGERPRINT_MISMATCH";
             correct = false; break;
           }
           fingerprint = result.fingerprint;
@@ -443,6 +482,7 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
         result.reducer_correctness_untimed = true;
         if (options.measure &&
             !measure(producer_launch, options.iterations, result)) {
+          result.failure_step = "PRODUCER_TIMING";
           result.state = State::Timing; row_ok = false; continue;
         }
         // Timing is producer-only, but the final timed partial must still
@@ -450,8 +490,11 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
         if (reducer.run(nullptr) != cutlass::Status::kSuccess ||
             hggcDeviceSynchronize() != hggcSuccess || !inspect(in, result) ||
             result.raw_bad != 0 || result.fingerprint != fingerprint) {
+          result.failure_step = result.raw_bad ? "POST_TIMING_RAW_FP16_MISMATCH" :
+                                                "POST_TIMING_REDUCER_OR_COPY";
           result.state = State::Correctness; row_ok = false; continue;
         }
+        result.failure_step = "NONE"; result.failure_repeat = -1;
         result.state = State::Measured;
       }
     }

@@ -40,6 +40,10 @@ def check_m8_shape_admission(bench: str, analyzer: str) -> None:
         raise ValueError(f"FQ benchmark lost TM8 decode-only admission: {missing}")
     if '"M8_DECODE_ONLY_M_GE_8"' not in analyzer:
         raise ValueError("FQ analyzer lost TM8 decode-only terminal")
+    for token in ("first_bad_index", "RAW_FP16_MISMATCH",
+                  "CORRECTNESS_SYNCHRONIZE"):
+        if token not in bench:
+            raise ValueError(f"FQ benchmark lost exact failure witness: {token}")
 
 
 def resume_validator_source(runner: str) -> str:
