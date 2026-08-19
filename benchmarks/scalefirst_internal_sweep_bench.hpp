@@ -25,6 +25,7 @@
 #include "cutlass/util/device_memory.h"
 #include "dense_splitk_multiformat_ppu.cuh"
 #include "helper.h"
+#include "ppu_dense_shipping_policy.hpp"
 #include "ppu_group_schedule.hpp"
 #include "scalefirst_persistent_policy.hpp"
 #include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_persistent.hpp"
@@ -41,6 +42,7 @@ enum class State : int {
   SplitSharedStorage,
   SplitPartition,
   PipelineDepth,
+  M8DecodeOnly,
   Occupancy,
   CanImplement,
   Initialize,
@@ -57,6 +59,7 @@ inline char const* state_name(State state) {
     case State::SplitSharedStorage: return "INADMISSIBLE_SPLIT_SMEM";
     case State::SplitPartition: return "INADMISSIBLE_SPLIT_PARTITION";
     case State::PipelineDepth: return "INADMISSIBLE_PIPELINE_DEPTH";
+    case State::M8DecodeOnly: return "INADMISSIBLE_M8_DECODE_ONLY";
     case State::Occupancy: return "INADMISSIBLE_OCCUPANCY";
     case State::CanImplement: return "INADMISSIBLE_CAN_IMPLEMENT";
     case State::Initialize: return "INITIALIZE_FAIL";
@@ -100,6 +103,11 @@ struct CellResult {
   bool reducer_correctness_untimed = false;
   std::uint64_t raw_bad = 0;
   std::uint64_t fingerprint = 0;
+  std::size_t first_bad_index = std::size_t(-1);
+  std::uint16_t first_bad_want = 0;
+  std::uint16_t first_bad_got = 0;
+  char const* failure_step = "NONE";
+  int failure_repeat = -1;
   std::size_t shipping_smem = 0;
   std::size_t persistent_smem = 0;
   std::size_t split_smem = 0;
@@ -241,9 +249,19 @@ inline bool inspect(DeviceInputs const& in, CellResult& result) {
   if (hggcMemcpy(host.data(), in.output, host.size() * sizeof(half_t),
                  hggcMemcpyDeviceToHost) != hggcSuccess) return false;
   std::uint64_t hash = UINT64_C(1469598103934665603), bad = 0;
+  result.first_bad_index = std::size_t(-1);
+  result.first_bad_want = result.first_bad_got = 0;
   for (std::size_t i = 0; i < host.size(); ++i) {
     auto bits = host[i].raw();
-    bad += bits != in.golden[i].raw();
+    auto const want = in.golden[i].raw();
+    if (bits != want) {
+      if (bad == 0) {
+        result.first_bad_index = i;
+        result.first_bad_want = want;
+        result.first_bad_got = bits;
+      }
+      ++bad;
+    }
     hash ^= std::uint8_t(bits); hash *= UINT64_C(1099511628211);
     hash ^= std::uint8_t(bits >> 8); hash *= UINT64_C(1099511628211);
   }
@@ -280,18 +298,37 @@ bool validate_and_measure(DeviceInputs const& in, Options const& options,
                           Launch&& launch, CellResult& result) {
   std::uint64_t first = 0;
   for (int repeat = 0; repeat < options.correctness_repeats; ++repeat) {
-    if (launch() != cutlass::Status::kSuccess ||
-        hggcDeviceSynchronize() != hggcSuccess || !inspect(in, result) ||
-        result.raw_bad != 0 || (repeat && result.fingerprint != first)) {
+    result.failure_repeat = repeat;
+    if (launch() != cutlass::Status::kSuccess) {
+      result.failure_step = "CORRECTNESS_LAUNCH";
+      result.state = State::Launch;
+      return false;
+    }
+    if (hggcDeviceSynchronize() != hggcSuccess) {
+      result.failure_step = "CORRECTNESS_SYNCHRONIZE";
+      result.state = State::Launch;
+      return false;
+    }
+    if (!inspect(in, result)) {
+      result.failure_step = "CORRECTNESS_OUTPUT_COPY";
+      result.state = State::Launch;
+      return false;
+    }
+    if (result.raw_bad != 0 || (repeat && result.fingerprint != first)) {
+      result.failure_step = result.raw_bad ? "RAW_FP16_MISMATCH" :
+                                             "FINGERPRINT_MISMATCH";
       result.state = State::Correctness;
       return false;
     }
     first = result.fingerprint;
   }
   if (options.measure && !measure(launch, options.iterations, result)) {
+    result.failure_step = "TIMING";
     result.state = State::Timing;
     return false;
   }
+  result.failure_step = "NONE";
+  result.failure_repeat = -1;
   result.state = State::Measured;
   return true;
 }
@@ -319,6 +356,43 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
     return false;
   }
 
+  auto make_cell = [&](char const* algorithm, char const* scope) -> CellResult& {
+    row.cells.emplace_back();
+    auto& cell = row.cells.back();
+    cell.algorithm = algorithm; cell.metric_scope = scope;
+    cell.shipping_smem = T::Shipping::SharedStorageSize;
+    cell.persistent_smem = PersistentKernel::SharedStorageSize;
+    cell.split_smem = SplitKernel::SharedStorageSize;
+    return cell;
+  };
+
+  // The shipping shape authority selects the native m8 family only below M=8.
+  // Do not launch that decode-only physical-A path for a prefill shape.  Keep
+  // all five runtime algorithm coordinates as named terminal records so the
+  // exhaustive denominator cannot confuse "inadmissible" with "not emitted".
+  if constexpr (TM == 8) {
+    if (ppu_dense_shipping::default_config_for_m(in.m) !=
+        ppu_dense_shipping::kDecodeDefault) {
+      auto add_terminal = [&](char const* algorithm, char const* scope,
+                              int split, char const* policy) {
+        auto& cell = make_cell(algorithm, scope);
+        cell.policy = policy;
+        cell.split = split;
+        cell.state = State::M8DecodeOnly;
+      };
+      add_terminal("NONPERSISTENT", "FULL_OUTPUT", 1, "ordinary");
+      add_terminal("PERSISTENT", "FULL_OUTPUT", 1,
+                   "capacity+balanced");
+      add_terminal("SPLITK_S2_PRODUCER",
+                   "PRODUCER_ONLY_NOT_PRODUCT_E2E", 2, "fixed-split-k");
+      add_terminal("SPLITK_S4_PRODUCER",
+                   "PRODUCER_ONLY_NOT_PRODUCT_E2E", 4, "fixed-split-k");
+      add_terminal("SPLITK_S8_PRODUCER",
+                   "PRODUCER_ONLY_NOT_PRODUCT_E2E", 8, "fixed-split-k");
+      return true;
+    }
+  }
+
   auto mainloop = T::Prepared::make_mainloop_arguments(
       in.a, reinterpret_cast<typename T::Low const*>(in.low), in.scales,
       in.zeros, in.m, in.n, in.k, F::GroupSize,
@@ -329,15 +403,6 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
       StrideC{}, cute::make_shape(in.m, in.n, 1));
   StrideD sD = cutlass::make_cute_packed_stride(
       StrideD{}, cute::make_shape(in.m, in.n, 1));
-  auto make_cell = [&](char const* algorithm, char const* scope) -> CellResult& {
-    row.cells.emplace_back();
-    auto& cell = row.cells.back();
-    cell.algorithm = algorithm; cell.metric_scope = scope;
-    cell.shipping_smem = T::Shipping::SharedStorageSize;
-    cell.persistent_smem = PersistentKernel::SharedStorageSize;
-    cell.split_smem = SplitKernel::SharedStorageSize;
-    return cell;
-  };
 
   // Ordinary full-output S1.
   {

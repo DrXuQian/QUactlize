@@ -52,6 +52,7 @@ EXPECTED_SOURCE_HASHES = {
     "quactlize/include/gguf_bc_vecdot.hpp",
     "quactlize/include/gguf_packed_unit.hpp",
     "quactlize/include/ppu_format_config.inc",
+    "quactlize/include/ppu_dense_shipping_policy.hpp",
     "quactlize/include/ppu_group_schedule.hpp",
     "quactlize/include/ppu_tactic_space.hpp",
     "tests/helper.h",
@@ -752,7 +753,7 @@ def dynamic_status(row: dict[str, str], split: int) -> tuple[str, str]:
     inadmissible = {
         "SHIPPING_SHARED_STORAGE", "SPLIT_SHARED_STORAGE", "SPLIT_PARTITION",
         "INADMISSIBLE_PIPELINE_DEPTH", "REAL_CAN_IMPLEMENT",
-        "PACKED_A_DECODE_ONLY_M_NOT_1",
+        "M8_DECODE_ONLY_M_GE_8", "PACKED_A_DECODE_ONLY_M_NOT_1",
     }
     if state in inadmissible:
         return "INADMISSIBLE", state
@@ -1157,6 +1158,9 @@ def self_test() -> int:
     packed_wrong_band = dict(row, state="PACKED_A_DECODE_ONLY_M_NOT_1")
     assert dynamic_status(packed_wrong_band, 4) == (
         "INADMISSIBLE", "PACKED_A_DECODE_ONLY_M_NOT_1")
+    m8_prefill = dict(row, state="M8_DECODE_ONLY_M_GE_8")
+    assert dynamic_status(m8_prefill, 4) == (
+        "INADMISSIBLE", "M8_DECODE_ONLY_M_GE_8")
     gguf_hashes = {"future-model": "a" * 64}
     resolved_set_sha = "c" * 64
     source_a = "d" * 64

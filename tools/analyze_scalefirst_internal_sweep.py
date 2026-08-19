@@ -51,6 +51,7 @@ EXPECTED_SOURCE_HASHES = {
     "quactlize/include/dense_splitk_parallel_ppu.cuh",
     "quactlize/include/ppu_format_config.inc",
     "quactlize/include/ppu_group_schedule.hpp",
+    "quactlize/include/ppu_dense_shipping_policy.hpp",
     "quactlize/include/ppu_tactic_space.hpp",
     "quactlize/include/scalefirst_persistent_policy.hpp",
     "tests/helper.h",
@@ -916,6 +917,34 @@ def self_test() -> int:
     validated = [_validated_runtime_cell([row], 1) for row in records]
     _validate_row_algorithms(validated, shape=(2048, 4096, 4096), cu=72,
                              tile_m=64, tile_n=64)
+    # A compiled TM8 type is decode-only.  Prefill retains the exact five
+    # algorithm coordinates as named inadmissible terminals rather than
+    # launching the physical-A specialization or dropping denominator rows.
+    m8_records = []
+    for algorithm, scope, policy, split in (
+            ("NONPERSISTENT", FULL, "ordinary", 1),
+            ("PERSISTENT", FULL, "capacity+balanced", 1),
+            ("SPLITK_S2_PRODUCER", "PRODUCER_ONLY_NOT_PRODUCT_E2E",
+             "fixed-split-k", 2),
+            ("SPLITK_S4_PRODUCER", "PRODUCER_ONLY_NOT_PRODUCT_E2E",
+             "fixed-split-k", 4),
+            ("SPLITK_S8_PRODUCER", "PRODUCER_ONLY_NOT_PRODUCT_E2E",
+             "fixed-split-k", 8)):
+        m8_records.append(dict(
+            common, algorithm=algorithm, metric_scope=scope, policy=policy,
+            split=split, grid=0, occupancy=0, capacity_b_mask="0x0",
+            balanced_b_mask="0x0", status="INADMISSIBLE",
+            reason="INADMISSIBLE_M8_DECODE_ONLY", sample_us=0.0))
+    m8_validated = [_validated_runtime_cell([row], 1) for row in m8_records]
+    _validate_row_algorithms(m8_validated, shape=(2048, 4096, 4096), cu=72,
+                             tile_m=8, tile_n=128)
+    planted_m8_reason = dict(m8_records[0], reason="MEASURED")
+    try:
+        _validated_runtime_cell([planted_m8_reason], 1)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unnamed TM8 prefill exclusion stayed green")
     # Negative 1: missing S4 must be red even when arithmetic is otherwise closed.
     try:
         _validate_row_algorithms(
@@ -966,7 +995,9 @@ def self_test() -> int:
     else:
         raise AssertionError("wrong persistent grid stayed green")
     print("[scalefirst-internal:self-test] PASS exact NP/P(all-b)/S2/S4/S8; "
-          "negative=missing-S4+raw-bit+extra-algorithm+drop-P-grid+wrong-grid")
+          "TM8-prefill=5xINADMISSIBLE_M8_DECODE_ONLY; "
+          "negative=unnamed-TM8+missing-S4+raw-bit+extra-algorithm+"
+          "drop-P-grid+wrong-grid")
     return 0
 
 

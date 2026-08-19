@@ -18,6 +18,7 @@
 #include "cutlass/cutlass.h"
 #include "dense_splitk_multiformat_ppu.cuh"
 #include "helper.h"
+#include "ppu_dense_shipping_policy.hpp"
 #include "ppu_group_schedule.hpp"
 
 namespace fq_internal_sweep {
@@ -33,6 +34,7 @@ enum class State : int {
   SplitSharedStorage,
   SplitPartition,
   PipelineDepth,
+  M8DecodeOnly,
   PackedADecodeOnly,
   CanImplement,
   Initialize,
@@ -48,6 +50,7 @@ inline char const* state_name(State state) {
     case State::SplitSharedStorage: return "SPLIT_SHARED_STORAGE";
     case State::SplitPartition: return "SPLIT_PARTITION";
     case State::PipelineDepth: return "INADMISSIBLE_PIPELINE_DEPTH";
+    case State::M8DecodeOnly: return "M8_DECODE_ONLY_M_GE_8";
     case State::PackedADecodeOnly: return "PACKED_A_DECODE_ONLY_M_NOT_1";
     case State::CanImplement: return "REAL_CAN_IMPLEMENT";
     case State::Initialize: return "INITIALIZE";
@@ -316,6 +319,13 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
     result.split_smem = SplitKernel::SharedStorageSize;
     result.a_provider_capacity_rows = Types::a_provider_capacity_rows;
     if (options.only_split && options.only_split != splits) continue;
+    if constexpr (TM == 8) {
+      if (ppu_dense_shipping::default_config_for_m(in.m) !=
+          ppu_dense_shipping::kDecodeDefault) {
+        result.state = State::M8DecodeOnly;
+        continue;
+      }
+    }
     if constexpr (use_packed_a) {
       if (in.m != 1) {
         result.state = State::PackedADecodeOnly;

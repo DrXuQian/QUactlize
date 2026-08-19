@@ -312,8 +312,25 @@ int run_shape(Shape shape, Cli const& cli, int device, int cu) {
                 registry_row.symbol);
     std::fflush(stdout);
     if (!registry_row.run(inputs, options, result)) {
-      std::fprintf(stderr, "SF_FATAL symbol=%s shape=%dx%dx%d\n",
-                   registry_row.symbol, shape.m, shape.n, shape.k);
+      if (result.cells.empty()) {
+        std::fprintf(stderr,
+                     "SF_FATAL symbol=%s shape=%dx%dx%d algorithm=NONE "
+                     "state=INPUT_OR_SETUP step=BEFORE_CELL\n",
+                     registry_row.symbol, shape.m, shape.n, shape.k);
+      } else {
+        auto const& failed = result.cells.back();
+        std::fprintf(
+            stderr,
+            "SF_FATAL symbol=%s shape=%dx%dx%d algorithm=%s state=%s "
+            "step=%s repeat=%d raw_bad=%llu first_bad=%zu "
+            "want=0x%04x got=0x%04x\n",
+            registry_row.symbol, shape.m, shape.n, shape.k,
+            failed.algorithm, state_name(failed.state), failed.failure_step,
+            failed.failure_repeat,
+            static_cast<unsigned long long>(failed.raw_bad),
+            failed.first_bad_index, unsigned(failed.first_bad_want),
+            unsigned(failed.first_bad_got));
+      }
       return 1;
     }
     runtime_cells += result.cells.size();

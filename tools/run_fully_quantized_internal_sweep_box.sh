@@ -143,6 +143,7 @@ PY
       "$root/quactlize/include/dense_splitk_parallel_ppu.cuh" \
       "$root/quactlize/include/gguf_bc_vecdot.hpp" \
       "$root/quactlize/include/gguf_packed_unit.hpp" \
+      "$root/quactlize/include/ppu_dense_shipping_policy.hpp" \
       "$root/quactlize/include/ppu_format_config.inc" \
       "$root/quactlize/include/ppu_group_schedule.hpp" \
       "$root/quactlize/include/ppu_tactic_space.hpp" \
@@ -220,6 +221,7 @@ paths = [
  "quactlize/include/gguf_bc_vecdot.hpp",
  "quactlize/include/gguf_packed_unit.hpp",
  "quactlize/include/ppu_format_config.inc",
+ "quactlize/include/ppu_dense_shipping_policy.hpp",
  "quactlize/include/ppu_group_schedule.hpp",
  "quactlize/include/ppu_tactic_space.hpp",
  "tests/helper.h",

@@ -162,6 +162,7 @@ paths=[
 "quactlize/include/dense_splitk_multiformat_ppu.cuh",
 "quactlize/include/dense_splitk_parallel_ppu.cuh",
 "quactlize/include/ppu_format_config.inc","quactlize/include/ppu_group_schedule.hpp",
+"quactlize/include/ppu_dense_shipping_policy.hpp",
 "quactlize/include/ppu_tactic_space.hpp","quactlize/include/scalefirst_persistent_policy.hpp",
 "tests/helper.h","tools/analyze_fully_quantized_internal_sweep.py",
 "tools/analyze_scalefirst_internal_sweep.py","tools/emit_scalefirst_internal_superset.cpp",

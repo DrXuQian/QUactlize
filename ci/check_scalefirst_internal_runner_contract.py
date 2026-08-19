@@ -16,6 +16,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 TOOLS = ROOT / "tools"
 RUNNER = TOOLS / "run_scalefirst_internal_sweep_box.sh"
 ANALYZER = TOOLS / "analyze_scalefirst_internal_sweep.py"
+BENCH = ROOT / "benchmarks/scalefirst_internal_sweep_bench.hpp"
+DRIVER = ROOT / "benchmarks/test_scalefirst_internal_sweep.cu"
 
 
 def run(command: list[str], *, expect: int = 0) -> subprocess.CompletedProcess[str]:
@@ -28,7 +30,7 @@ def run(command: list[str], *, expect: int = 0) -> subprocess.CompletedProcess[s
     return result
 
 
-def check_contract(runner: str, analyzer: str) -> None:
+def check_contract(runner: str, analyzer: str, bench: str, driver: str) -> None:
     if any(token in runner for token in ("/tmp", "mktemp", "rm -")):
         raise AssertionError("runner reintroduced /tmp, mktemp, or destructive cleanup")
     required = (
@@ -69,11 +71,29 @@ def check_contract(runner: str, analyzer: str) -> None:
     if runner.index('--binary-shard "$shard" --binary-evidence 1') > \
             runner.index("build shard=%s typed=%s"):
         raise AssertionError("resume binary admission occurs after rebuild branch")
+    bench_required = (
+        '#include "ppu_dense_shipping_policy.hpp"',
+        'ppu_dense_shipping::default_config_for_m(in.m)',
+        'ppu_dense_shipping::kDecodeDefault',
+        'INADMISSIBLE_M8_DECODE_ONLY',
+        'PRODUCER_ONLY_NOT_PRODUCT_E2E',
+    )
+    missing = [token for token in bench_required if token not in bench]
+    if missing:
+        raise AssertionError(f"benchmark lost TM8 shape admission: {missing}")
+    driver_required = (
+        'step=%s repeat=%d raw_bad=%llu first_bad=%zu',
+        'want=0x%04x got=0x%04x',
+    )
+    missing = [token for token in driver_required if token not in driver]
+    if missing:
+        raise AssertionError(f"driver lost fail-closed witness: {missing}")
 
 
-def expect_contract_red(runner: str, analyzer: str, needle: str) -> None:
+def expect_contract_red(runner: str, analyzer: str, bench: str, driver: str,
+                        needle: str) -> None:
     try:
-        check_contract(runner, analyzer)
+        check_contract(runner, analyzer, bench, driver)
     except AssertionError as error:
         if needle not in str(error):
             raise
@@ -88,19 +108,26 @@ def main() -> int:
          "self-test"])
     text = RUNNER.read_text()
     analyzer_text = ANALYZER.read_text()
-    check_contract(text, analyzer_text)
+    bench_text = BENCH.read_text()
+    driver_text = DRIVER.read_text()
+    check_contract(text, analyzer_text, bench_text, driver_text)
 
     # Three structural negatives keep resume fail-closed when an authority is
     # deleted without changing the otherwise-valid runner/analyzer.
     expect_contract_red(text.replace(
         'binary/run evidence exists but plan.json is missing',
-        'plan missing', 1), analyzer_text, "plan.json")
+        'plan missing', 1), analyzer_text, bench_text, driver_text, "plan.json")
     expect_contract_red(text.replace(
         '        run_commit="$out/raw/$shard/run.commit.json"\n', '', 1),
-        analyzer_text, "run_commit")
+        analyzer_text, bench_text, driver_text, "run_commit")
     expect_contract_red(text, analyzer_text.replace(
         '            "run_commit_sha256": sha256(commit_path),\n', '', 1),
-        "run_commit_sha256")
+        bench_text, driver_text, "run_commit_sha256")
+    expect_contract_red(
+        text, analyzer_text,
+        bench_text.replace('INADMISSIBLE_M8_DECODE_ONLY',
+                           'INADMISSIBLE_TILE_M', 1),
+        driver_text, "INADMISSIBLE_M8_DECODE_ONLY")
 
     # Generator denominator negative: removing one typed row must fail before
     # any compiler/device work.  The explicit /workspace child obeys the same

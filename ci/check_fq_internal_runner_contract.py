@@ -22,9 +22,24 @@ DIRECT_SOURCES = (
     "quactlize/include/dense_splitk_parallel_ppu.cuh",
     "quactlize/include/gguf_bc_vecdot.hpp",
     "quactlize/include/gguf_packed_unit.hpp",
+    "quactlize/include/ppu_dense_shipping_policy.hpp",
     "quactlize/include/ppu_group_schedule.hpp",
     "tests/helper.h",
 )
+
+
+def check_m8_shape_admission(bench: str, analyzer: str) -> None:
+    required = (
+        '#include "ppu_dense_shipping_policy.hpp"',
+        'ppu_dense_shipping::default_config_for_m(in.m)',
+        'ppu_dense_shipping::kDecodeDefault',
+        'M8_DECODE_ONLY_M_GE_8',
+    )
+    missing = [token for token in required if token not in bench]
+    if missing:
+        raise ValueError(f"FQ benchmark lost TM8 decode-only admission: {missing}")
+    if '"M8_DECODE_ONLY_M_GE_8"' not in analyzer:
+        raise ValueError("FQ analyzer lost TM8 decode-only terminal")
 
 
 def resume_validator_source(runner: str) -> str:
@@ -332,6 +347,20 @@ def main() -> int:
     }
     texts = {name: path.read_text() for name, path in paths.items()}
     check(**texts)
+    bench = (ROOT / "benchmarks/fully_quantized_splitk_producer_bench.hpp").read_text()
+    check_m8_shape_admission(bench, texts["analyzer"])
+
+    # Same compiled row, same analyzer: changing only the shape-admission
+    # terminal must be caught.  Different fixture files would not isolate the
+    # contract variable that failed on the real M=64 sweep.
+    planted_m8 = bench.replace("M8_DECODE_ONLY_M_GE_8", "M8_ANY_M", 1)
+    try:
+        check_m8_shape_admission(planted_m8, texts["analyzer"])
+    except ValueError as error:
+        if "TM8" not in str(error):
+            raise
+    else:
+        raise AssertionError("TM8 prefill admission plant stayed green")
 
     # Negative 1 changes only the accepted generator flag.  This is the exact
     # seam that previously let a runner survive local review yet fail before
