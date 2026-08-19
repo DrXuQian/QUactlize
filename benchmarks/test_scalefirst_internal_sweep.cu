@@ -33,6 +33,9 @@
 static_assert(SCALEFIRST_SWEEP_QTYPE == SCALEFIRST_GENERATED_QTYPE);
 static_assert(SCALEFIRST_SWEEP_ARTIFACT_TK == SCALEFIRST_GENERATED_ARTIFACT_TK);
 static_assert(SCALEFIRST_SWEEP_BCHUNK == SCALEFIRST_GENERATED_BCHUNK);
+static_assert(SCALEFIRST_SWEEP_QTYPE != 8 ||
+                  SCALEFIRST_SWEEP_ARTIFACT_TK == 32,
+              "Q8 has one canonical A32 artifact");
 
 extern "C" int quactlize_ppu_prepare_dense_for_tile(
     std::uint8_t const*, std::uint8_t const*, std::uint8_t*, std::uint8_t*,
@@ -262,9 +265,8 @@ Fixture make_fixture(Shape shape) {
       if constexpr (HB != 0)
         put_native(f.high_native, HB, n, k, shape.k, code >> LB);
     }
-  if constexpr (SCALEFIRST_SWEEP_QTYPE == 8) {
-    static_assert(SCALEFIRST_SWEEP_ARTIFACT_TK == 32,
-                  "Q8 has one canonical A32 artifact");
+#if SCALEFIRST_SWEEP_QTYPE == 8
+  {
     xplane::place_derived<8,64,64,32,32,32,1,32>(
         reinterpret_cast<std::int8_t*>(f.low.data()), kmajor,
         shape.n, shape.k);
@@ -273,7 +275,9 @@ Fixture make_fixture(Shape shape) {
         reinterpret_cast<std::int8_t const*>(f.low.data()), back,
         shape.n, shape.k);
     f.roundtrip = back == kmajor;
-  } else {
+  }
+#else
+  {
     if (quactlize_ppu_prepare_dense_for_tile(
             f.low_native.data(), HB ? f.high_native.data() : nullptr,
             f.low.data(), HB ? f.high.data() : nullptr,
@@ -288,6 +292,7 @@ Fixture make_fixture(Shape shape) {
         SCALEFIRST_SWEEP_ARTIFACT_TK) == 0 &&
         low_back == f.low_native && high_back == f.high_native;
   }
+#endif
   if constexpr (HB == 0) {
     f.high_plane_covered = true;
   } else {

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -23,6 +24,37 @@ def require(text: str, tokens: tuple[str, ...], label: str) -> None:
     missing = [token for token in tokens if token not in text]
     if missing:
         raise AssertionError(f"{label} lost contract tokens: {missing}")
+
+
+def check_q8_artifact_contract(driver: str) -> None:
+    match = re.search(
+        r'static_assert\((SCALEFIRST_SWEEP_QTYPE\s*!=\s*8\s*\|\|\s*'
+        r'SCALEFIRST_SWEEP_ARTIFACT_TK\s*==\s*32)\s*,\s*'
+        r'"Q8 has one canonical A32 artifact"\s*\);', driver)
+    if match is None:
+        raise AssertionError("driver lost the exact Q8 artifact implication")
+    expression = match.group(1)
+
+    def compile_case(qtype: int, artifact: int) -> subprocess.CompletedProcess[str]:
+        source = (f"#define SCALEFIRST_SWEEP_QTYPE {qtype}\n"
+                  f"#define SCALEFIRST_SWEEP_ARTIFACT_TK {artifact}\n"
+                  f"static_assert({expression}, "
+                  '"Q8 has one canonical A32 artifact");\n')
+        return subprocess.run(
+            ["c++", "-std=c++17", "-x", "c++", "-fsyntax-only", "-"],
+            input=source, text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, cwd=ROOT)
+
+    for qtype, artifact in ((12, 64), (8, 32)):
+        result = compile_case(qtype, artifact)
+        if result.returncode != 0:
+            raise AssertionError(
+                f"valid qtype/artifact {qtype}/A{artifact} failed:\n"
+                + result.stdout)
+    planted = compile_case(8, 64)
+    if planted.returncode == 0 or "Q8 has one canonical A32 artifact" not in \
+            planted.stdout:
+        raise AssertionError("Q8/A64 negative did not fail with the bound reason")
 
 
 def main() -> int:
@@ -49,6 +81,7 @@ def main() -> int:
 
     runner, bench, driver, exhaustive = (path.read_text() for path in
                                          (RUNNER, BENCH, DRIVER, EXHAUSTIVE))
+    check_q8_artifact_contract(driver)
     if any(token in runner for token in ("/tmp", "mktemp", "rm -")):
         raise AssertionError("pilot runner reintroduced temporary/destructive paths")
     require(runner, (
@@ -74,6 +107,9 @@ def main() -> int:
         'symbol file contains a duplicate',
         'symbol file names an unknown generated symbol',
         'selected_rows=%zu algorithm_mask=0x%x',
+        'SCALEFIRST_SWEEP_QTYPE != 8 ||',
+        'SCALEFIRST_SWEEP_ARTIFACT_TK == 32',
+        '#if SCALEFIRST_SWEEP_QTYPE == 8',
     ), "driver")
     # The production exhaustive runner must not opt into either pilot filter.
     if '--algorithm=' in exhaustive or '--symbol-file=' in exhaustive:
