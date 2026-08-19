@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-18 04:27:12 UTC
+    updated-at:     2026-08-19 05:02:00 UTC
     inbox-consumed: 178
-    working-on:     internal full sweep resumes after typed-zero FQ shards became no-binary authorities and overlay CMake bound both component fragments to one committed source directory
-    blocked-on:     PPU box owns the fresh full-sweep run; the failed e7eaf48 bundle cannot resume after source authority changed, so use a new OUT at 87da171
-    local-gates:    targeted PASS: FQ/ScaleFirst runner contracts, real overlay configure (51 targets), typed-zero and missing-fragment plants red; full tier 186/197 with 11 pre-existing dirty/stale-contract reds, including stale quactlize/_C pytest
-    last-commit:    87da171 Skip empty sweep shards and bind CMake fragments
-    last-heartbeat: 353
+    working-on:     full internal sweep now records TM8 as decode-only for every ScaleFirst/FullyQuantized prefill algorithm coordinate instead of launching the physical-A specialization
+    blocked-on:     fresh PPU bundle must rerun from de04230; 081495f ScaleFirst stopped on TM8 at M=2048 and its FQ bundle is already runtime-red, so neither failed evidence bundle is resumable
+    local-gates:    targeted PASS: ScaleFirst/FQ analyzer self-tests and runner contracts; five-coordinate TM8 denominator and unnamed-reason/source-seam negatives red
+    last-commit:    de04230 Keep decode-only TM8 out of prefill sweeps
+    last-heartbeat: 354
