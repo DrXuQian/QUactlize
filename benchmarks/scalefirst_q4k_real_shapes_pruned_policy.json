@@ -1,0 +1,40 @@
+{
+  "schema": "quactlize.scalefirst_q4k_real_shapes_policy.v1",
+  "name": "real-gguf-q4k-prefill-shape-specific",
+  "qtype": 12,
+  "format": "Q4_K",
+  "quant_mode": "FinegrainedScaleZero",
+  "group_size": 32,
+  "artifact_tile_k": [32, 64, 128, 256],
+  "bchunk": 0,
+  "problem_route": "dense",
+  "minimum_m": 8,
+  "prefill_m": [64, 2048, 4096],
+  "screen": {
+    "algorithm": "NONPERSISTENT",
+    "iterations": 2,
+    "correctness_repeats": 1,
+    "top_n": 32,
+    "relative_to_leader": 1.20,
+    "top_per_axis_value": 2,
+    "top_per_q": 2,
+    "retain_if_relative_spread_exceeds": 0.05
+  },
+  "scheduler": {
+    "iterations": 1,
+    "correctness_repeats": 1,
+    "top_n_per_board": 8,
+    "relative_to_leader": 1.05
+  },
+  "confirm": {
+    "iterations": 7,
+    "correctness_repeats": 2,
+    "unresolved_if_sample_envelopes_overlap": true
+  },
+  "boards": [
+    "FULL_OUTPUT",
+    "SPLITK_S2_PRODUCER",
+    "SPLITK_S4_PRODUCER",
+    "SPLITK_S8_PRODUCER"
+  ]
+}

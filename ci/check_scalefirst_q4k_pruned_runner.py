@@ -13,8 +13,11 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TOOLS = ROOT / "tools"
 RUNNER = TOOLS / "run_scalefirst_q4k_pruned_box.sh"
+REAL_RUNNER = TOOLS / "run_scalefirst_q4k_real_shapes_pruned_box.sh"
 PRUNER = TOOLS / "prune_scalefirst_q4k_pilot.py"
+PLANNER = TOOLS / "plan_scalefirst_q4k_real_shapes.py"
 POLICY = ROOT / "benchmarks/scalefirst_q4k_pruned_policy.json"
+REAL_POLICY = ROOT / "benchmarks/scalefirst_q4k_real_shapes_pruned_policy.json"
 BENCH = ROOT / "benchmarks/scalefirst_internal_sweep_bench.hpp"
 DRIVER = ROOT / "benchmarks/test_scalefirst_internal_sweep.cu"
 EXHAUSTIVE = TOOLS / "run_scalefirst_internal_sweep_box.sh"
@@ -59,10 +62,14 @@ def check_q8_artifact_contract(driver: str) -> None:
 
 def main() -> int:
     subprocess.run(["bash", "-n", str(RUNNER)], cwd=ROOT, check=True)
+    subprocess.run(["bash", "-n", str(REAL_RUNNER)], cwd=ROOT, check=True)
     subprocess.run([sys.executable, "-B", str(PRUNER), "self-test"],
+                   cwd=ROOT, check=True)
+    subprocess.run([sys.executable, "-B", str(PLANNER), "self-test"],
                    cwd=ROOT, check=True)
     sys.path.insert(0, str(TOOLS))
     import prune_scalefirst_q4k_pilot as pruner
+    import plan_scalefirst_q4k_real_shapes as planner
     import scalefirst_internal_matrix as matrix
 
     policy = pruner.load_policy(POLICY)
@@ -79,8 +86,9 @@ def main() -> int:
     if len(anchors) != 1:
         raise AssertionError("historical Q4_K anchor is not typed exactly once")
 
-    runner, bench, driver, exhaustive = (path.read_text() for path in
-                                         (RUNNER, BENCH, DRIVER, EXHAUSTIVE))
+    runner, real_runner, bench, driver, exhaustive = (
+        path.read_text() for path in
+        (RUNNER, REAL_RUNNER, BENCH, DRIVER, EXHAUSTIVE))
     check_q8_artifact_contract(driver)
     if any(token in runner for token in ("/tmp", "mktemp", "rm -")):
         raise AssertionError("pilot runner reintroduced temporary/destructive paths")
@@ -111,6 +119,60 @@ def main() -> int:
         'SCALEFIRST_SWEEP_ARTIFACT_TK == 32',
         '#if SCALEFIRST_SWEEP_QTYPE == 8',
     ), "driver")
+    master = planner.load_master(REAL_POLICY)
+    if master["artifact_tile_k"] != [32, 64, 128, 256] or \
+            master["prefill_m"] != [64, 2048, 4096]:
+        raise AssertionError("real-shape format/layout/workload denominator changed")
+    dynamic = planner.cell_policy(master, {
+        "artifact_tile_k": 32, "shape": [64, 4096, 4096],
+        "cell_key": "a32/m64_n4096_k4096_g32"})
+    pruner.validate_policy(dynamic)
+    planted_layout = json.loads(json.dumps(dynamic))
+    planted_layout["layout"]["fold_n"]["low"] = 1
+    try:
+        pruner.validate_policy(planted_layout)
+    except pruner.ContractError:
+        pass
+    else:
+        raise AssertionError("wrong FoldN in shape policy stayed green")
+    expected_by_artifact = {32: 2340, 64: 1824, 128: 1036, 256: 401}
+    for artifact, expected in expected_by_artifact.items():
+        rows = [row for row in matrix.emitted_tactics(12, artifact)
+                if row.bchunk == 0 and
+                matrix.classify(fmt, artifact, row)[0] ==
+                "TYPE_ADMISSION_REQUIRED"]
+        if len(rows) != expected:
+            raise AssertionError(
+                f"Q4_K/A{artifact} typed denominator drifted "
+                f"{len(rows)}/{expected}")
+    if any(token in real_runner for token in
+           ("/tmp", "mktemp", "probe_box_identity", "rm -")):
+        raise AssertionError(
+            "real-shape runner reintroduced temp/probe/destructive seams")
+    require(real_runner, (
+        'INTERNAL_SWEEP_SPEC must name the COMPLETE inventory-v2 JSON',
+        'for artifact in 32 64 128 256',
+        '32) expected=2340', '64) expected=1824',
+        '128) expected=1036', '256) expected=401',
+        '--algorithm=nonpersistent', '--algorithm=all',
+        '--symbol-file="$result_dir/screen-shortlist.txt"',
+        '--symbol-file="$result_dir/confirm-shortlist.txt"',
+        'phase=screen full-typed-graph', 'phase=scheduler shortlist=',
+        'phase=confirm shortlist=', '--models-root "$out/models"',
+        'source-authority.json', 'binary-hashes.json', 'commit.json',
+        'bundle.json', 'resume bundle lost plan.json',
+        'incomplete uncommitted evidence',
+    ), "real-shape runner")
+    require(bench, (
+        'KTileDoesNotDivide', 'INADMISSIBLE_K_TILE_DOES_NOT_DIVIDE',
+        'if (in.k % TK)', 'add_shape_terminals(State::KTileDoesNotDivide)',
+    ), "shape-specific TileK terminal")
+    require(PLANNER.read_text(), (
+        'expected = {(artifact, key) for artifact in ARTIFACTS for key in keys}',
+        'drop-one shape/layout negative stayed green',
+        'models_root / model_id / key / "summary.json"',
+        'DECODE_NOT_SCALEFIRST_PREFILL', 'OUTSIDE_REGISTERED_PREFILL_M',
+    ), "real-shape planner")
     # The production exhaustive runner must not opt into either pilot filter.
     if '--algorithm=' in exhaustive or '--symbol-file=' in exhaustive:
         raise AssertionError("exhaustive runner was silently converted to pruning")
@@ -128,8 +190,9 @@ def main() -> int:
         pass
     else:
         raise AssertionError("mutated historical anchor stayed green")
-    print("[q4k-prune-runner] PASS typed=1824, historical anchor exact, "
-          "default exhaustive path intact, source/binary/log binding present")
+    print("[q4k-prune-runner] PASS pilot anchor exact; real Q4_K "
+          "A32/A64/A128/A256 denominators bound; shape-specific TileK "
+          "terminal, model folders, and three-phase authority present")
     return 0
 
 

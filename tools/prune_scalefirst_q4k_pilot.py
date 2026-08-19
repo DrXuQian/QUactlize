@@ -23,6 +23,7 @@ from typing import Any, Iterable
 
 
 POLICY_SCHEMA = "quactlize.scalefirst_q4k_pruned_policy.v1"
+SHAPE_POLICY_SCHEMA = "quactlize.scalefirst_q4k_shape_policy.v1"
 RESULT_SCHEMA = "quactlize.scalefirst_q4k_pruned_result.v1"
 CELL_PREFIX = "SF_CELL "
 SHARD_PREFIX = "SF_SHARD "
@@ -84,19 +85,43 @@ def finite_ratio(value: Any, name: str, *, minimum: float = 0.) -> float:
     return result
 
 
-def load_policy(path: pathlib.Path) -> dict[str, Any]:
-    policy = json.loads(path.read_text())
-    if policy.get("schema") != POLICY_SCHEMA:
-        raise ContractError(f"policy must use {POLICY_SCHEMA}")
-    if policy.get("qtype") != 12 or policy.get("artifact_tile_k") != 64 or \
+def validate_policy(policy: dict[str, Any]) -> dict[str, Any]:
+    schema = policy.get("schema")
+    if schema not in {POLICY_SCHEMA, SHAPE_POLICY_SCHEMA}:
+        raise ContractError(
+            f"policy must use {POLICY_SCHEMA} or {SHAPE_POLICY_SCHEMA}")
+    artifact = policy.get("artifact_tile_k")
+    if policy.get("qtype") != 12 or artifact not in {32, 64, 128, 256} or \
             policy.get("bchunk") != 0:
-        raise ContractError("pilot policy must remain Q4_K/A64/bc0")
+        raise ContractError("policy must remain Q4_K/A{32,64,128,256}/bc0")
     shape = policy.get("shape")
-    if shape != [2048, 4096, 4096]:
-        raise ContractError("pilot shape must remain the historical Q4_K anchor")
-    if policy.get("anchor_symbol") != \
-            "sf_q12_a64_tm64_tn64_tk64_wm64_wn32_s3_bc0":
-        raise ContractError("historical anchor symbol changed")
+    if not isinstance(shape, list) or len(shape) != 3 or \
+            any(isinstance(value, bool) or not isinstance(value, int) or
+                value <= 0 for value in shape):
+        raise ContractError("policy shape must contain three positive integers")
+    if schema == POLICY_SCHEMA:
+        if artifact != 64 or shape != [2048, 4096, 4096] or \
+                policy.get("anchor_symbol") != \
+                "sf_q12_a64_tm64_tn64_tk64_wm64_wn32_s3_bc0":
+            raise ContractError("historical pilot identity changed")
+    else:
+        if shape[0] < 8:
+            raise ContractError("real-shape ScaleFirst policy is prefill-only (M>=8)")
+        if policy.get("format") != "Q4_K" or \
+                policy.get("quant_mode") != "FinegrainedScaleZero" or \
+                policy.get("group_size") != 32:
+            raise ContractError("real-shape policy lost Q4_K ScaleZero/gs32 semantics")
+        if policy.get("anchor_symbol") not in (None, ""):
+            raise ContractError("real-shape policy may not inherit one shape's anchor")
+        fold_low = 2 if artifact == 32 else 1
+        expected_layout = {
+            "name": f"xplane-q4k-a{artifact}-f{fold_low}x1-scalefirst-fp16",
+            "artifact_tile_k": artifact,
+            "fold_n": {"low": fold_low, "high": 1},
+            "metadata": "FP16_SCALE_ZERO_PLANES",
+        }
+        if policy.get("layout") != expected_layout:
+            raise ContractError("real-shape policy layout/FoldN identity differs")
     screen, scheduler, confirm = (policy.get(name) for name in
                                   ("screen", "scheduler", "confirm"))
     if not all(isinstance(value, dict) for value in
@@ -126,6 +151,10 @@ def load_policy(path: pathlib.Path) -> dict[str, Any]:
     return policy
 
 
+def load_policy(path: pathlib.Path) -> dict[str, Any]:
+    return validate_policy(json.loads(path.read_text()))
+
+
 def load_manifest(path: pathlib.Path, policy: dict[str, Any]
                   ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     manifest = json.loads(path.read_text())
@@ -151,11 +180,12 @@ def load_manifest(path: pathlib.Path, policy: dict[str, Any]
     denominator = manifest.get("denominator", {})
     if denominator.get("typed_rows") != len(by_symbol):
         raise ContractError("manifest typed denominator differs from rows")
-    anchor = policy["anchor_symbol"]
-    if anchor not in by_symbol:
-        raise ContractError("historical winning config is absent from typed graph")
-    if tactic_name(by_symbol[anchor]) != ANCHOR_CONFIG:
-        raise ContractError("historical anchor axes changed")
+    anchor = policy.get("anchor_symbol")
+    if anchor:
+        if anchor not in by_symbol:
+            raise ContractError("historical winning config is absent from typed graph")
+        if tactic_name(by_symbol[anchor]) != ANCHOR_CONFIG:
+            raise ContractError("historical anchor axes changed")
     return by_symbol, manifest
 
 
@@ -234,8 +264,10 @@ def load_log(path: pathlib.Path, manifest_rows: dict[str, dict[str, Any]],
         raise ContractError(f"{path}: unregistered algorithm entered phase")
     grouped: dict[tuple[Any, ...], list[dict[str, Any]]] = collections.defaultdict(list)
     for row in cells:
-        if row.get("shape") != shape_text or row.get("qtype") != 12 or \
-                row.get("artifact_tile_k") != 64 or row.get("bchunk") != 0:
+        if row.get("shape") != shape_text or \
+                row.get("qtype") != policy["qtype"] or \
+                row.get("artifact_tile_k") != policy["artifact_tile_k"] or \
+                row.get("bchunk") != policy["bchunk"]:
             raise ContractError(f"{path}: cell identity differs")
         symbol = str(row["symbol"])
         if row.get("config") != tactic_name(manifest_rows[symbol]):
@@ -337,10 +369,11 @@ def select_screen(manifest_rows: dict[str, dict[str, Any]],
     for symbol in ordered:
         if candidates[symbol]["spread"] > noisy:
             add_reason(selected, symbol, "UNCERTAIN_SCREEN_SPREAD")
-    anchor = policy["anchor_symbol"]
-    if anchor not in candidates:
-        raise ContractError("historical anchor was not measurable in screen")
-    add_reason(selected, anchor, "HISTORICAL_ANCHOR")
+    anchor = policy.get("anchor_symbol")
+    if anchor:
+        if anchor not in candidates:
+            raise ContractError("historical anchor was not measurable in screen")
+        add_reason(selected, anchor, "HISTORICAL_ANCHOR")
     selected_order = [symbol for symbol in ordered if symbol in selected]
     for axis in AXES:
         for value in {manifest_rows[symbol][axis] for symbol in candidates}:
@@ -353,8 +386,9 @@ def select_screen(manifest_rows: dict[str, dict[str, Any]],
     return {
         "leader": {"symbol": ordered[0], "config": tactic_name(manifest_rows[ordered[0]]),
                    **candidates[ordered[0]]},
-        "anchor": {"symbol": anchor, "config": tactic_name(manifest_rows[anchor]),
-                   **candidates[anchor]},
+        "anchor": None if not anchor else {
+            "symbol": anchor, "config": tactic_name(manifest_rows[anchor]),
+            **candidates[anchor]},
         "selected_symbols": selected_order,
         "selected": [{"symbol": symbol, "config": tactic_name(manifest_rows[symbol]),
                       "reasons": sorted(selected[symbol]), **candidates[symbol]}
@@ -417,8 +451,9 @@ def select_scheduler(manifest_rows: dict[str, dict[str, Any]],
             "measured_cells": len(ordered),
             "retained_cells": len(retained),
         }
-    anchor = policy["anchor_symbol"]
-    add_reason(selected, anchor, "HISTORICAL_ANCHOR")
+    anchor = policy.get("anchor_symbol")
+    if anchor:
+        add_reason(selected, anchor, "HISTORICAL_ANCHOR")
     order = {symbol: index for index, symbol in enumerate(manifest_rows)}
     selected_symbols = sorted(selected, key=lambda symbol: order[symbol])
     return {
@@ -458,43 +493,52 @@ def adjudicate(manifest_rows: dict[str, dict[str, Any]],
                                                           cell_label(cell)))
         winner = ordered[0]
         runner_up = ordered[1] if len(ordered) > 1 else None
+        anchor_symbol = policy.get("anchor_symbol")
         anchor_cells = [cell for cell in ordered
-                        if cell["symbol"] == policy["anchor_symbol"]]
-        if not anchor_cells:
+                        if anchor_symbol and cell["symbol"] == anchor_symbol]
+        if anchor_symbol and not anchor_cells:
             raise ContractError(f"confirm lost historical anchor on {board}")
-        anchor = min(anchor_cells, key=lambda cell: (cell["median_us"],
-                                                      cell_label(cell)))
+        anchor = None if not anchor_cells else min(
+            anchor_cells, key=lambda cell: (cell["median_us"], cell_label(cell)))
         overlap = bool(runner_up and
                        max(float(winner["min_us"]), float(runner_up["min_us"])) <=
                        min(float(winner["max_us"]), float(runner_up["max_us"])))
         summaries[board] = {
             "verdict": "UNRESOLVED" if overlap else "RESOLVED",
             "winner": {"cell": cell_label(winner), "symbol": winner["symbol"],
-                       "config": winner["config"], "median_us": winner["median_us"],
+                       "config": winner["config"],
+                       "algorithm": winner["algorithm"],
+                       "grid": winner["grid"], "policy": winner["policy"],
+                       "occupancy": winner["occupancy"],
+                       "median_us": winner["median_us"],
                        "range_us": [winner["min_us"], winner["max_us"]],
                        **metrics(float(winner["median_us"]))},
             "runner_up": None if runner_up is None else {
                 "cell": cell_label(runner_up), "symbol": runner_up["symbol"],
                 "config": runner_up["config"],
+                "algorithm": runner_up["algorithm"],
+                "grid": runner_up["grid"], "policy": runner_up["policy"],
+                "occupancy": runner_up["occupancy"],
                 "median_us": runner_up["median_us"],
                 "range_us": [runner_up["min_us"], runner_up["max_us"]],
                 "gap_us": float(runner_up["median_us"]) -
                           float(winner["median_us"])},
-            "historical_anchor": {
+            "historical_anchor": None if anchor is None else {
                 "cell": cell_label(anchor), "config": anchor["config"],
                 "median_us": anchor["median_us"],
                 "speedup_of_winner": float(anchor["median_us"]) /
                                      float(winner["median_us"])},
             "measured_cells": len(ordered),
         }
+    anchor_symbol = policy.get("anchor_symbol")
     anchor_cells = [cell for cell in groups.values()
-                    if cell["symbol"] == policy["anchor_symbol"] and
+                    if anchor_symbol and cell["symbol"] == anchor_symbol and
                     cell["status"] == "MEASURED"]
-    if not anchor_cells:
+    if anchor_symbol and not anchor_cells:
         raise ContractError("confirm lost historical anchor")
     return {"boards": summaries,
-            "anchor_best_median_us": min(float(cell["median_us"])
-                                         for cell in anchor_cells),
+            "anchor_best_median_us": None if not anchor_cells else min(
+                float(cell["median_us"]) for cell in anchor_cells),
             "confirmed_symbols": len({cell["symbol"] for cell in groups.values()}),
             "confirmed_cells": sum(len(cells) for cells in boards.values())}
 
@@ -556,8 +600,15 @@ def self_test() -> None:
     if board_of({"metric_scope": "PRODUCER_ONLY_NOT_PRODUCT_E2E",
                  "algorithm": "SPLITK_S2_PRODUCER"}) == FULL:
         raise AssertionError("producer-only cell entered full-output board")
+    shape_policy = dict(policy)
+    shape_policy["anchor_symbol"] = None
+    anchorless = select_screen(rows, groups, shape_policy)
+    if anchorless["anchor"] is not None or \
+            "HISTORICAL_ANCHOR" in anchorless["selected"][0]["reasons"]:
+        raise AssertionError("shape-specific policy inherited historical anchor")
     print("[q4k-prune:self-test] PASS threshold, axis/noise sentinel, "
-          "missing-coordinate RED, and producer/full-output isolation")
+          "missing-coordinate RED, anchorless shape policy, and "
+          "producer/full-output isolation")
 
 
 def main() -> int:
@@ -632,7 +683,9 @@ def main() -> int:
                   f"{winner['range_us'][1]:.6f}]_us "
                   f"MFU={winner['MFU_pct_500TF']:.3f}% "
                   f"distinct_MBU={winner['distinct_MBU_pct_2766GBs']:.3f}% "
-                  f"speedup_vs_anchor={anchor['speedup_of_winner']:.6f}x "
+                  f"grid={winner['grid']} policy={winner['policy']} "
+                  f"speedup_vs_anchor="
+                  f"{('NA' if anchor is None else format(anchor['speedup_of_winner'], '.6f') + 'x')} "
                   f"runner_gap="
                   f"{runner_gap}")
     return 0

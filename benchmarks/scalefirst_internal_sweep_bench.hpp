@@ -42,6 +42,7 @@ enum class State : int {
   SplitSharedStorage,
   SplitPartition,
   PipelineDepth,
+  KTileDoesNotDivide,
   M8DecodeOnly,
   Occupancy,
   CanImplement,
@@ -59,6 +60,8 @@ inline char const* state_name(State state) {
     case State::SplitSharedStorage: return "INADMISSIBLE_SPLIT_SMEM";
     case State::SplitPartition: return "INADMISSIBLE_SPLIT_PARTITION";
     case State::PipelineDepth: return "INADMISSIBLE_PIPELINE_DEPTH";
+    case State::KTileDoesNotDivide:
+      return "INADMISSIBLE_K_TILE_DOES_NOT_DIVIDE";
     case State::M8DecodeOnly: return "INADMISSIBLE_M8_DECODE_ONLY";
     case State::Occupancy: return "INADMISSIBLE_OCCUPANCY";
     case State::CanImplement: return "INADMISSIBLE_CAN_IMPLEMENT";
@@ -364,7 +367,7 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
 
   row.cells.clear();
   if (!in.a || !in.low || !in.scales || !in.output || !in.workspace ||
-      !in.golden || in.m <= 0 || in.n <= 0 || in.k <= 0 || in.k % TK ||
+      !in.golden || in.m <= 0 || in.n <= 0 || in.k <= 0 ||
       in.cu <= 0 || (!std::is_void_v<High> && !in.high) ||
       (ppu_mixed_policy::has_zero(F::Mode) ? !in.zeros : bool(in.zeros))) {
     return false;
@@ -380,6 +383,37 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
     return cell;
   };
 
+  // Shape admission is a runtime coordinate, not a process-level setup
+  // failure.  Real model dimensions need not admit every compiled TileK.
+  // Emit the complete requested algorithm denominator with one named terminal
+  // per coordinate so a shape-specific shortlist can distinguish "cannot
+  // run" from "was never screened".
+  auto add_shape_terminals = [&](State state) {
+    auto add = [&](char const* algorithm, char const* scope, int split,
+                   char const* policy) {
+      auto& cell = make_cell(algorithm, scope);
+      cell.policy = policy;
+      cell.split = split;
+      cell.state = state;
+    };
+    if (options.includes(Options::kNonPersistent))
+      add("NONPERSISTENT", "FULL_OUTPUT", 1, "ordinary");
+    if (options.includes(Options::kPersistent))
+      add("PERSISTENT", "FULL_OUTPUT", 1, "capacity+balanced");
+    if (options.includes(Options::kSplitK)) {
+      add("SPLITK_S2_PRODUCER", "PRODUCER_ONLY_NOT_PRODUCT_E2E", 2,
+          "fixed-split-k");
+      add("SPLITK_S4_PRODUCER", "PRODUCER_ONLY_NOT_PRODUCT_E2E", 4,
+          "fixed-split-k");
+      add("SPLITK_S8_PRODUCER", "PRODUCER_ONLY_NOT_PRODUCT_E2E", 8,
+          "fixed-split-k");
+    }
+  };
+  if (in.k % TK) {
+    add_shape_terminals(State::KTileDoesNotDivide);
+    return true;
+  }
+
   // The shipping shape authority selects the native m8 family only below M=8.
   // Do not launch that decode-only physical-A path for a prefill shape.  Keep
   // all five runtime algorithm coordinates as named terminal records so the
@@ -387,26 +421,7 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
   if constexpr (TM == 8) {
     if (ppu_dense_shipping::default_config_for_m(in.m) !=
         ppu_dense_shipping::kDecodeDefault) {
-      auto add_terminal = [&](char const* algorithm, char const* scope,
-                              int split, char const* policy) {
-        auto& cell = make_cell(algorithm, scope);
-        cell.policy = policy;
-        cell.split = split;
-        cell.state = State::M8DecodeOnly;
-      };
-      if (options.includes(Options::kNonPersistent))
-        add_terminal("NONPERSISTENT", "FULL_OUTPUT", 1, "ordinary");
-      if (options.includes(Options::kPersistent))
-        add_terminal("PERSISTENT", "FULL_OUTPUT", 1,
-                     "capacity+balanced");
-      if (options.includes(Options::kSplitK)) {
-        add_terminal("SPLITK_S2_PRODUCER",
-                     "PRODUCER_ONLY_NOT_PRODUCT_E2E", 2, "fixed-split-k");
-        add_terminal("SPLITK_S4_PRODUCER",
-                     "PRODUCER_ONLY_NOT_PRODUCT_E2E", 4, "fixed-split-k");
-        add_terminal("SPLITK_S8_PRODUCER",
-                     "PRODUCER_ONLY_NOT_PRODUCT_E2E", 8, "fixed-split-k");
-      }
+      add_shape_terminals(State::M8DecodeOnly);
       return true;
     }
   }
