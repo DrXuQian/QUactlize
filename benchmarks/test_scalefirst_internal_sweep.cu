@@ -92,7 +92,9 @@ enum class TagRound {
   None,
   Even,
   Odd,
-  Stage
+  Stage,
+  EvenNext,
+  OddNext
 };
 
 char const* fixture_name(FixtureMode mode) {
@@ -124,6 +126,8 @@ char const* tag_round_name(TagRound round) {
     case TagRound::Even: return "even";
     case TagRound::Odd: return "odd";
     case TagRound::Stage: return "stage";
+    case TagRound::EvenNext: return "even-next";
+    case TagRound::OddNext: return "odd-next";
   }
   return "unknown";
 }
@@ -233,6 +237,10 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
         cli.tag_round = TagRound::Odd;
       else if (!std::strcmp(value, "stage"))
         cli.tag_round = TagRound::Stage;
+      else if (!std::strcmp(value, "even-next"))
+        cli.tag_round = TagRound::EvenNext;
+      else if (!std::strcmp(value, "odd-next"))
+        cli.tag_round = TagRound::OddNext;
       else return false;
     } else if (!std::strcmp(argv[i], "--fixture-binding")) {
       cli.fixture_binding = true;
@@ -444,18 +452,24 @@ Fixture make_fixture(Shape shape, FixtureMode mode, TagRound tag_round) {
   std::vector<std::vector<int>> active_by_m(std::size_t(shape.m));
   // Ordinary diagnostic fixtures use one exact nonzero in each K eighth.
   // Coordinate-tag fixtures instead use one A=1 impulse per M row.  Even and
-  // odd rounds cover all 128 local K coordinates; stage covers all 40 TK128
+  // odd rounds cover all 128 local K coordinates; even-next/odd-next repeat
+  // those coordinates in the second TK128 tile; stage covers all 40 TK128
   // tiles of the exact 64x1024x5120 target.  The output is therefore the tag
   // attached to the B coordinate actually paired with that A coordinate.
   std::array<int, 8> active{};
   if (is_tag_fixture(mode)) {
-    if (shape.m != 64 || shape.k < 128 || tag_round == TagRound::None)
+    bool const next_tile = tag_round == TagRound::EvenNext ||
+                           tag_round == TagRound::OddNext;
+    if (shape.m != 64 || shape.k < (next_tile ? 256 : 128) ||
+        tag_round == TagRound::None)
       return f;
     int const k_tiles = shape.k / 128;
     f.probe_k.resize(std::size_t(shape.m));
     for (int m = 0; m < shape.m; ++m) {
       int k = tag_round == TagRound::Even ? 2 * m :
               tag_round == TagRound::Odd ? 2 * m + 1 :
+              tag_round == TagRound::EvenNext ? 128 + 2 * m :
+              tag_round == TagRound::OddNext ? 129 + 2 * m :
               (m % k_tiles) * 128 + 11;
       f.probe_k[std::size_t(m)] = k;
       active_by_m[std::size_t(m)].push_back(k);
@@ -834,7 +848,7 @@ int main(int argc, char** argv) {
         "[--fixture=exact|code-only|scale-only|zero-only|metadata-only|transport-only|"
         "scale-{group,n}-tag|zero-{group,n}-tag|"
         "code-k{0,1,2,3}-tag|code-n{0,1,2}-tag] "
-        "[--tag-round=even|odd|stage] [--fixture-binding] "
+        "[--tag-round=even|odd|stage|even-next|odd-next] [--fixture-binding] "
         "[--symbol-file=PATH]\n", argv[0]);
     return 2;
   }

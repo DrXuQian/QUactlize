@@ -9,6 +9,7 @@ combines those parts without assuming the implementation's mapping.
 from __future__ import annotations
 
 import argparse
+import collections
 import dataclasses
 import math
 import pathlib
@@ -18,6 +19,7 @@ import sys
 
 
 K_ROUNDS = ("even", "odd", "stage")
+TAIL_ROUNDS = ("even-next", "odd-next")
 CODE_K_MODES = tuple(f"code-k{i}-tag" for i in range(4))
 CODE_N_MODES = tuple(f"code-n{i}-tag" for i in range(3))
 SCALE_GROUP_MODE = "scale-group-tag"
@@ -29,6 +31,7 @@ METADATA_MODES = (
 )
 TAG_MODES = METADATA_MODES + CODE_K_MODES + CODE_N_MODES
 REQUIRED = {(mode, round_) for mode in TAG_MODES for round_ in K_ROUNDS}
+TAIL_REQUIRED = {(SCALE_N_MODE, round_) for round_ in TAIL_ROUNDS}
 COUNT = 64
 K = 5120
 N = 1024
@@ -72,6 +75,10 @@ def probe_k(round_: str, row: int) -> int:
         return 2 * row + 1
     if round_ == "stage":
         return (row % (K // 128)) * 128 + 11
+    if round_ == "even-next":
+        return 128 + 2 * row
+    if round_ == "odd-next":
+        return 129 + 2 * row
     raise EvidenceError(f"unknown tag round {round_!r}")
 
 
@@ -95,7 +102,7 @@ def parse_text(text: str, label: str) -> Record:
     marker = one_match(
         re.compile(
             r"^SF_FIXTURE mode=(?P<mode>[a-z0-9-]+) first_golden=0x[0-9a-f]{4} "
-            r"tag_round=(?P<round>even|odd|stage) probe_count=64 "
+            r"tag_round=(?P<round>even|odd|stage|even-next|odd-next) probe_count=64 "
             r"probe_fnv=[0-9a-f]{16} .* roundtrip=1 exact=1 isolation=1$",
             re.MULTILINE,
         ),
@@ -313,6 +320,71 @@ def adjudicate(records: dict[tuple[str, str], Record]) -> tuple[str, list[str]]:
     return verdict, lines
 
 
+def summarize_raw(values: tuple[int, ...]) -> str:
+    counts = collections.Counter(values)
+    return ",".join(
+        f"0x{bits:04x}:{count}" for bits, count in sorted(counts.items())
+    )
+
+
+def adjudicate_tail(
+    records: dict[tuple[str, str], Record],
+) -> tuple[str, list[str], list[str]]:
+    """Classify the same local TK128 coordinates one K tile later.
+
+    The original device table lost rows 48..63 in both even/odd rounds,
+    exactly local K=96..127.  Moving those impulses by +128 distinguishes a
+    recurring final-delivery failure from a first-tile prologue/lifetime
+    failure without changing the shipping specialization.
+    """
+    got_keys = set(records)
+    if got_keys != TAIL_REQUIRED:
+        missing = sorted(TAIL_REQUIRED - got_keys)
+        extra = sorted(got_keys - TAIL_REQUIRED)
+        raise EvidenceError(
+            f"tail denominator mismatch missing={missing} extra={extra}"
+        )
+    lines = ["round\trow\tprobe_k\tgot\twant\tstatus"]
+    summaries: list[str] = []
+    full_counts: list[int] = []
+    prefix_counts: list[int] = []
+    tail_counts: list[int] = []
+    for round_ in TAIL_ROUNDS:
+        record = records[(SCALE_N_MODE, round_)]
+        full = prefix = tail = 0
+        for row, (got, want) in enumerate(zip(record.rows, record.row_want)):
+            exact = got == want
+            full += int(exact)
+            if row < 48:
+                prefix += int(exact)
+            else:
+                tail += int(exact)
+            lines.append(
+                f"{round_}\t{row}\t{probe_k(round_, row)}\t"
+                f"0x{got:04x}\t0x{want:04x}\t"
+                f"{'IDENTITY' if exact else 'MISMATCH'}"
+            )
+        full_counts.append(full)
+        prefix_counts.append(prefix)
+        tail_counts.append(tail)
+        summaries.append(
+            f"Q4_A32_TAIL_ROUND round={round_} identity={full}/64 "
+            f"prefix={prefix}/48 tail={tail}/16 "
+            f"tail_got={summarize_raw(record.rows[48:])}"
+        )
+    if full_counts == [64, 64]:
+        verdict = "NEXT_TILE_LIVE"
+    elif prefix_counts == [48, 48] and tail_counts == [0, 0]:
+        verdict = "EVERY_TILE_LAST_DELIVERY_BAD"
+    else:
+        verdict = "MIXED"
+    lines.append(
+        "summary\t-\t-\t-\t-\t" + verdict +
+        f" full={sum(full_counts)}/128 tail={sum(tail_counts)}/32"
+    )
+    return verdict, lines, summaries
+
+
 def identity_records() -> dict[tuple[str, str], Record]:
     out: dict[tuple[str, str], Record] = {}
     for mode, round_ in sorted(REQUIRED):
@@ -342,6 +414,17 @@ def identity_records() -> dict[tuple[str, str], Record]:
             cols.append(half_bits(float(value)))
         out[(mode, round_)] = Record(
             mode, round_, tuple(rows), tuple(rows), tuple(cols), tuple(cols)
+        )
+    return out
+
+
+def tail_identity_records() -> dict[tuple[str, str], Record]:
+    out: dict[tuple[str, str], Record] = {}
+    rows = tuple(half_bits(1.0) for _ in range(COUNT))
+    cols = tuple(half_bits(float(n + 1)) for n in range(COUNT))
+    for round_ in TAIL_ROUNDS:
+        out[(SCALE_N_MODE, round_)] = Record(
+            SCALE_N_MODE, round_, rows, rows, cols, cols
         )
     return out
 
@@ -407,10 +490,36 @@ def self_test() -> None:
         pass
     else:
         raise EvidenceError("marker/data round mismatch did not fail closed")
+    next_fixture = parse_fixture.replace(
+        "tag_round=even", "tag_round=even-next"
+    )
+    parse_text(next_fixture, "next-tile-round")
+
+    tail_records = tail_identity_records()
+    verdict, _, _ = adjudicate_tail(tail_records)
+    if verdict != "NEXT_TILE_LIVE":
+        raise EvidenceError("next-tile identity fixture did not remain live")
+    recurring = dict(tail_records)
+    for key, old in tuple(recurring.items()):
+        rows = list(old.rows)
+        rows[48:] = [half_bits(0.0)] * 16
+        recurring[key] = dataclasses.replace(old, rows=tuple(rows))
+    verdict, _, _ = adjudicate_tail(recurring)
+    if verdict != "EVERY_TILE_LAST_DELIVERY_BAD":
+        raise EvidenceError("recurring final-delivery plant was not classified")
+    missing_tail = dict(tail_records)
+    del missing_tail[(SCALE_N_MODE, "odd-next")]
+    try:
+        adjudicate_tail(missing_tail)
+    except EvidenceError:
+        pass
+    else:
+        raise EvidenceError("missing shifted-tail round did not fail closed")
     print(
         "[q4-a32-tags:self-test] PASS: identity; one-bit B and independent "
         "zero-map plants=NONIDENTITY; missing denominator, wrong round and "
-        "marker/data mismatch=RED"
+        "marker/data mismatch=RED; shifted-tail live/recurring classified "
+        "and missing shifted round=RED"
     )
 
 
@@ -419,6 +528,7 @@ def main() -> int:
     parser.add_argument("logs", nargs="*", type=pathlib.Path)
     parser.add_argument("--out", type=pathlib.Path)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--tail-bisect", action="store_true")
     args = parser.parse_args()
     try:
         if args.self_test or (not args.logs and args.out is None):
@@ -433,9 +543,21 @@ def main() -> int:
             if key in records:
                 raise EvidenceError(f"duplicate tag combination {key}")
             records[key] = record
-        verdict, lines = adjudicate(records)
+        if args.tail_bisect:
+            verdict, lines, summaries = adjudicate_tail(records)
+        else:
+            verdict, lines = adjudicate(records)
+            summaries = []
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        if args.tail_bisect:
+            for summary in summaries:
+                print(summary)
+            print(
+                f"Q4_A32_TAIL_BISECT verdict={verdict} "
+                f"table={args.out}"
+            )
+            return 0
         summary = lines[-1].split("\t")[-1]
         print(f"Q4_A32_COORDINATE_MAP verdict={verdict} {summary} table={args.out}")
         observations = [

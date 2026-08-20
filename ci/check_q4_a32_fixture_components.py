@@ -28,6 +28,7 @@ TAG_MODES = (
     "code-n0-tag", "code-n1-tag", "code-n2-tag",
 )
 TAG_ROUNDS = ("even", "odd", "stage")
+TAIL_TAG_ROUNDS = ("even-next", "odd-next")
 
 
 def half_bits(value: Fraction) -> int:
@@ -116,7 +117,7 @@ def audit(bench: str, runner: str) -> list[str]:
         bad.append("six-arm component verdict is not emitted")
     tag_specs = set(re.findall(
         r"\b(scale-(?:group|n)-tag|zero-(?:group|n)-tag|"
-        r"code-[kn][0-3]-tag):(even|odd|stage)\b",
+        r"code-[kn][0-3]-tag):(even|odd|stage)(?!-next)\b",
         runner,
     ))
     expected_tag_specs = {
@@ -128,6 +129,25 @@ def audit(bench: str, runner: str) -> list[str]:
             f"missing={sorted(expected_tag_specs - tag_specs)} "
             f"extra={sorted(tag_specs - expected_tag_specs)}"
         )
+    tail_specs = set(re.findall(
+        r"\b(scale-n-tag):(even-next|odd-next)\b", runner,
+    ))
+    expected_tail_specs = {
+        ("scale-n-tag", round_) for round_ in TAIL_TAG_ROUNDS
+    }
+    if tail_specs != expected_tail_specs:
+        bad.append(
+            "shifted-tail runner denominator drifted "
+            f"missing={sorted(expected_tail_specs - tail_specs)} "
+            f"extra={sorted(tail_specs - expected_tail_specs)}"
+        )
+    for token in (
+        "Q4_A32_TAIL_BISECT", "--tail-bisect",
+        "tag_round == TagRound::EvenNext ? 128 + 2 * m",
+        "tag_round == TagRound::OddNext ? 129 + 2 * m",
+    ):
+        if token not in runner and token not in bench:
+            bad.append(f"shifted-tail bisection lost {token}")
     for token in (
         "return (k >> 0) & 15", "return (k >> 4) & 15",
         "return (k >> 8) & 15", "return (k >> 12) & 15",
@@ -161,6 +181,8 @@ def main() -> int:
          "missing zero fingerprint"),
         (bench, runner.replace("code-k3-tag:stage", "", 1),
          "missing coordinate-tag denominator"),
+        (bench, runner.replace("scale-n-tag:odd-next", "", 1),
+         "missing shifted-tail round"),
         (bench.replace("return (k >> 12) & 15", "return (k >> 11) & 15", 1),
          runner, "wrong coordinate-tag bit"),
     )

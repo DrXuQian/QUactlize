@@ -276,6 +276,41 @@ exact.  A one-bit code-map plant is
 infrastructure failure.  The probe changes only this benchmark and emits raw
 output; it does not alter the collective, artifact writer, or sweep path.
 
+The PPU table at `8a2d8d5` returned:
+
+```text
+SUMMARY UNDECODABLE identity=1344/1536,decoded=1344/1536
+```
+
+Every decoded B-K, B-N, scale-group, scale-N, zero-group, and zero-N
+coordinate is the identity.  The complete 192-point deficit is exactly six
+maps times two rounds times rows 48--63.  In `even`/`odd`, those rows are
+local K `96..127` of the first TK128 tile: the fourth 32K delivery and its last
+two MMA K atoms.  B and both metadata channels disappear at the same cadence.
+
+This result falsifies a global folded placement/scatter permutation and an
+independent scale/zero coordinate-loader defect.  It does not yet identify a
+unique source line.  The remaining distinction is runtime cadence: either
+every TK128 tile loses its last 32K delivery, or only the first tile loses it
+through prologue/stage lifetime.  `even-next` and `odd-next` move the same 128
+local coordinates to the second tile.  This is two diagnostic launches, not
+a new sweep:
+
+```bash
+cd /sim/eec/shared/junfu.qx/quactlize
+git pull --ff-only origin develop
+
+OUT=/workspace/quactlize-q4-a32-tail-bisect-$(git rev-parse --short HEAD)-$(date -u +%Y%m%dT%H%M%SZ)
+Q4_A32_TAIL_BISECT=1 JOBS=16 OUT="$OUT" \
+  bash tools/run_scalefirst_q4_a32_exact_box.sh
+echo "artifacts: $OUT"
+```
+
+`NEXT_TILE_LIVE` isolates the defect to first-tile prologue/lifetime;
+`EVERY_TILE_LAST_DELIVERY_BAD` isolates a repeated fourth-delivery cadence;
+anything else is reported as `MIXED`.  The analyzer stores all 128 raw points
+but prints only the two round summaries and the verdict.
+
 ```bash
 cd /sim/eec/shared/junfu.qx/quactlize
 git pull --ff-only origin develop
@@ -297,17 +332,15 @@ The scale and zero fragments are already built through the shared
 metadata address.  Rewriting that loader in more CuTe syntax would not close
 the unproved seam.
 
-The remaining seam is the join from the physical folded B delivery to the
-logical MMA fragment.  `ppu_mma_aiu_fold.hpp` constructs a logical `(N,K)`
-register destination, but `transform_B_kblock` places converter results into
-that destination through `MixGemmArtifactScatter::group_base` and raw pointers.
-The offline writer derives its map from `right_inverse(frag.layout())`; the
-production join is therefore still a second, positional statement of the
-same ownership contract.  A wrong delivery/fold-group/atom order there has
-exactly the observed masking behavior: coordinate-varying code and metadata
-fail, while constant code/scale/zero passes.  This is the leading seam, not a
-verdict: the six independent device maps above must identify which coordinate
-actually moves before that production code is changed.
+The join from the physical folded B delivery to the logical MMA fragment is
+still expressed positionally through `MixGemmArtifactScatter::group_base` and
+raw pointers, while the offline writer derives its map from
+`right_inverse(frag.layout())`.  That duplication remains a maintainability
+issue, but it is no longer the leading explanation for this incident: L217
+proved the composed map and the device tags found no decoded nonidentity
+coordinate.  The live defect is instead bounded to the common fourth-delivery
+cadence where B, scale, and zero all become absent/undecodable.  Do not rewrite
+the placement formula from the aggregate six-arm sums.
 
 ## Disproved register-index hypothesis
 
@@ -444,6 +477,7 @@ Fill this table by appending evidence; do not alter the admission rule above.
 | `79fba86` | PPU | **FAIL**, three-arm locus `COMMON_PIPELINE_OR_MULTIPLE_DEFECTS`; 26,368 / 65,536 / 61,184 bad | `/workspace/quactlize-q4-a32-bisect-79fba86-20260820T081739Z` |
 | `7dad9ac` | PPU | **VOID**, failing metadata arm carried code-only host golden (`0x4000`, required `0xc100`) | artifact path not supplied |
 | `789d25f` | PPU | **FAIL**, transport passes; code/scale/zero/metadata/exact fail with independently bound fixture identities | `/workspace/quactlize-q4-a32-components-789d25f-20260820T091036Z` |
+| `8a2d8d5` | PPU | **DIAGNOSTIC**, 1,344/1,536 identity; all 192 undecodable points are first-tile local K `96..127` across all six maps | artifact path not supplied |
 
 ## Reusable folded-artifact decision tree
 

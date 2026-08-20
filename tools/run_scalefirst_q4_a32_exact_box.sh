@@ -150,6 +150,56 @@ run_coordinate_map() {
   printf '[q4-a32-tags] DIAGNOSTIC_COMPLETE: exact device coordinate map captured; artifacts=%s\n' "$out"
 }
 
+run_tail_bisect() {
+  local root="$1" binary="$2" out="$3" spec mode round log rc
+  local marker_count rows_count cols_count
+  local -a logs=()
+  local -a specs=(scale-n-tag:even-next scale-n-tag:odd-next)
+  python3 -B "$root/ci/adjudicate_q4_a32_coordinate_tags.py" --self-test ||
+    return 2
+  for spec in "${specs[@]}"; do
+    mode="${spec%%:*}"
+    round="${spec##*:}"
+    log="$out/results/${mode}-${round}.log"
+    set +e
+    "$binary" --shape=64x1024x5120 --iterations=1 \
+      --correctness-repeats=1 --algorithm=nonpersistent \
+      --fixture="$mode" --tag-round="$round" --fixture-binding \
+      >"$log" 2>&1
+    rc=$?
+    set -e
+    marker_count="$(grep -Ec "^SF_FIXTURE mode=${mode} first_golden=0x[0-9a-f]{4} tag_round=${round} probe_count=64 probe_fnv=[0-9a-f]{16} .* roundtrip=1 exact=1 isolation=1$" "$log" || true)"
+    rows_count="$(grep -Ec "^SF_TAG_ROWS mode=${mode} tag_round=${round} n=0 count=64 " "$log" || true)"
+    cols_count="$(grep -Ec "^SF_TAG_COLS mode=${mode} tag_round=${round} m=0 count=64 " "$log" || true)"
+    if [ "$marker_count" -ne 1 ] || [ "$rows_count" -ne 1 ] ||
+       [ "$cols_count" -ne 1 ]; then
+      printf '[q4-a32-tail] FAIL: %s marker/dump denominator=%s/%s/%s\n' \
+        "$spec" "$marker_count" "$rows_count" "$cols_count" >&2
+      tail -80 "$log" >&2
+      return 1
+    fi
+    if [ "$rc" -eq 0 ]; then
+      grep -q "^SF_COMPLETE status=COMPLETE .*fixture_mode=${mode} " "$log" || {
+        printf '[q4-a32-tail] FAIL: %s returned zero without COMPLETE\n' "$spec" >&2
+        tail -80 "$log" >&2
+        return 1
+      }
+    else
+      grep -q '^SF_FATAL .*state=RAW_FP16_MISMATCH step=RAW_FP16_MISMATCH' "$log" || {
+        printf '[q4-a32-tail] FAIL: %s rc=%s was not a numeric observation\n' \
+          "$spec" "$rc" >&2
+        tail -80 "$log" >&2
+        return 1
+      }
+    fi
+    logs+=("$log")
+  done
+  python3 -B "$root/ci/adjudicate_q4_a32_coordinate_tags.py" \
+    --tail-bisect --out "$out/results/tail-bisect.tsv" "${logs[@]}" ||
+    return $?
+  printf '[q4-a32-tail] DIAGNOSTIC_COMPLETE: shifted final-delivery slice captured; artifacts=%s\n' "$out"
+}
+
 main() {
   local root sha short stamp out generated build binary log symbol rc fixtures
   local fixture arm state code_state scale_state zero_state metadata_state
@@ -201,6 +251,15 @@ main() {
   printf '%s\n' "$sha" >"$out/results/git.sha"
   printf '[q4-a32-exact] sha=%s symbol=%s binary=%s\n' "$sha" "$symbol" "$binary"
 
+  if [ "${Q4_A32_COORDINATE_MAP:-0}" = 1 ] &&
+     [ "${Q4_A32_TAIL_BISECT:-0}" = 1 ]; then
+    printf '[q4-a32-exact] FAIL: coordinate map and tail bisection are mutually exclusive\n' >&2
+    return 2
+  fi
+  if [ "${Q4_A32_TAIL_BISECT:-0}" = 1 ]; then
+    run_tail_bisect "$root" "$binary" "$out"
+    return $?
+  fi
   if [ "${Q4_A32_COORDINATE_MAP:-0}" = 1 ]; then
     run_coordinate_map "$root" "$binary" "$out"
     return $?
