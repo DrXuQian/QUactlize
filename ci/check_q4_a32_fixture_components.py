@@ -156,26 +156,22 @@ def audit(bench: str, runner: str) -> list[str]:
             bad.append(f"shifted-tail bisection lost {token}")
     closure_tokens = (
         "Q4_A32_CLOSURE",
-        "legacy-both 'PPU_Q4_A32_LEGACY_RAW_SCATTER=1 PPU_Q4_A32_LEGACY_PREPARE_ORDER=1'",
-        "typed-old-order 'PPU_Q4_A32_LEGACY_PREPARE_ORDER=1'",
-        "raw-consume-first 'PPU_Q4_A32_LEGACY_RAW_SCATTER=1'",
+        "legacy-b-indexed-a 'PPU_MIXED_LEGACY_B_INDEXED_A_COPY=1'",
         "candidate ''",
-        'run_tail_bisect "$root" "$legacy" "$out"',
-        'run_exact_variant "$legacy" "$out" legacy-both',
-        'run_exact_variant "$typed_old" "$out" typed-old-order',
-        'run_exact_variant "$raw_first" "$out" raw-consume-first',
+        'run_exact_variant "$legacy" "$out" legacy-b-indexed-a',
         'run_exact_variant "$candidate" "$out" candidate',
-        'legacy_signature_present "$out/results/exact-legacy-both.log"',
+        'legacy_signature_present "$out/results/exact-legacy-b-indexed-a.log"',
         'if [ "$candidate_state" != PASS ]',
+        "driver=PREPARE_FIRST b_converter=UNCHANGED",
     )
     for token in closure_tokens:
         if token not in compact_runner:
             bad.append(f"one-box closure lost {token}")
     if compact_runner.count(
-            'build_exact_variant "$root" "$generated" "$out"') != 4:
-        bad.append("one-box closure does not build exactly four factorial arms")
-    if compact_runner.count("run_exact_variant") != 5:  # definition + four calls
-        bad.append("one-box closure does not run exactly four exact arms")
+            'build_exact_variant "$root" "$generated" "$out"') != 2:
+        bad.append("one-box closure does not build exactly two A-schedule arms")
+    if compact_runner.count("run_exact_variant") != 3:  # definition + two calls
+        bad.append("one-box closure does not run exactly two exact arms")
     for token in (
         "return (k >> 0) & 15", "return (k >> 4) & 15",
         "return (k >> 8) & 15", "return (k >> 12) & 15",
@@ -212,8 +208,8 @@ def main() -> int:
         (bench, runner.replace("code-k1-tag:odd-next", "", 1),
          "missing shifted-tail absolute-K combination"),
         (bench, runner.replace(
-            'run_exact_variant "$raw_first" "$out" raw-consume-first',
-            "true", 1), "missing one factorial exact arm"),
+            'run_exact_variant "$legacy" "$out" legacy-b-indexed-a',
+            "true", 1), "missing A-schedule negative arm"),
         (bench.replace("return (k >> 12) & 15", "return (k >> 11) & 15", 1),
          runner, "wrong coordinate-tag bit"),
     )
@@ -227,7 +223,7 @@ def main() -> int:
         f"{mode}=0x{first_golden(mode):04x}" for mode in MODES)
     print("[q4-a32-fixtures] PASS: " + rendered +
           "; wrong-golden/missing-component/missing-fingerprint/"
-          "missing-tag/missing-factorial-arm/wrong-tag-bit plants red")
+          "missing-tag/missing-A-schedule-arm/wrong-tag-bit plants red")
     return 0
 
 

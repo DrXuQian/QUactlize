@@ -71,6 +71,7 @@
 #include "cutlass/gemm/collective/collective_mma.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_argument_contract.hpp"
+#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_a_schedule.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"
 #include "cutlass/detail/collective.hpp"
 
@@ -766,6 +767,14 @@ public:
     // Size of the register pipeline
     auto K_BLOCK_MAX = size<2>(tCrB_copy_view);
     auto K_ATOM_PER_COPY = size<2>(tCrB_mma) / size<2>(tCrB_copy_view);
+    auto A_BLOCK_MAX = size<2>(tCrA_copy_view);
+    auto MMA_K_ATOMS = size<2>(tCrA);
+    using ARegisterSchedule = detail::MixedARegisterSchedule<
+        decltype(MMA_K_ATOMS)::value, decltype(A_BLOCK_MAX)::value,
+        decltype(K_BLOCK_MAX)::value>;
+    static_assert(ARegisterSchedule::BAtomsPerCopy ==
+                      decltype(K_ATOM_PER_COPY)::value,
+                  "B delivery and MMA atom partitions must agree");
 #if defined(PPU_Q4_A32_EXACT_TYPE_PROBE) && (PPU_Q4_A32_EXACT_TYPE_PROBE != 0)
     static_assert(decltype(K_BLOCK_MAX)::value == 4,
                   "the exact Q4/A32 row must retain four resident B deliveries per K tile");
@@ -801,10 +810,17 @@ public:
       tCsB_p = tCsB(_,_,_,stage);
     };
     auto publish = [] (int) {};
-    auto prepare = [&] (auto k_block, int read_stage, auto) {
+    // A and B are independently retiled copy views.  Their CPY_K extents are
+    // not interchangeable: in the first Q4/A32 failure B had four deliveries
+    // while one A delivery populated the entire eight-atom A fragment.  Using
+    // B's k_block directly on A therefore named the same stride-zero A view
+    // four times and overwrote live current-tile A at the d3 -> next-d0 wrap.
+    //
+    auto prepare = [&] (auto k_block, int read_stage, auto prime) {
       copy_B_and_extra_info(smem_tiled_copy_B, tCsB, tCrB_copy_view,
           partitioned_extra_info, copy_partitions_extra_info, k_block, read_stage);
-      copy(smem_tiled_copy_A, tCsA_p(_,_,k_block), tCrA_copy_view(_,_,k_block));
+      detail::prepare_mixed_a_for_b<ARegisterSchedule>(
+          smem_tiled_copy_A, tCsA_p, tCrA_copy_view, k_block, prime);
       if constexpr (!kBChunk) {
         transform_B_kblock<RealInternalElementB>(tCrB_copy_view, tCrB_mma, partitioned_extra_info, k_block,
             K_ATOM_PER_COPY, copy_partitions_extra_info, read_stage);
@@ -873,30 +889,15 @@ public:
             cute::gemm(tiled_mma, tCrA(_,_,atom_idx), tCrB_mma(_,_,atom_idx), accum);
           }
         }
+        // At the only overlapping wrap, retain B's look-ahead conversion but
+        // defer the one whole-fragment A load until current d3 is dead.  No
+        // barrier, scheduler transition, or MMA moves; matching-granularity
+        // rows compile this branch away.
+        detail::finish_mixed_a_after_consume<ARegisterSchedule>(
+            smem_tiled_copy_A, tCsA_p, tCrA_copy_view, k_block);
     };
 
-    // The Q4/A32/F2 multi-delivery row is the first device-positive case that
-    // crosses a register-delivery wrap.  Consume its current delivery before
-    // preparing delivery zero of the next tile, so no live Q4/scale/zero
-    // fragment spans that write.  The legacy order remains buildable only as
-    // the exact device negative arm; ordinary and two-plane collectives keep
-    // their established cadence through the driver's default policy.
-    constexpr bool kQ4A32FoldedMultiDelivery =
-        cutlass::sizeof_bits<RealInternalElementB>::value == 4 &&
-        FoldF == 2 &&
-        (cute::size<1>(InternalSmemLayoutAtomB{}) / FoldF) == 32 &&
-        decltype(K_BLOCK_MAX)::value == 4;
-#if defined(PPU_Q4_A32_EXACT_TYPE_PROBE) && (PPU_Q4_A32_EXACT_TYPE_PROBE != 0)
-    static_assert(kQ4A32FoldedMultiDelivery,
-                  "the exact Q4/A32 row must select its folded cadence policy");
-#endif
-#if defined(PPU_Q4_A32_LEGACY_PREPARE_ORDER) && (PPU_Q4_A32_LEGACY_PREPARE_ORDER != 0)
-    constexpr bool kConsumeBeforePrepare = false;
-#else
-    constexpr bool kConsumeBeforePrepare = kQ4A32FoldedMultiDelivery;
-#endif
-    detail::run_mixed_pipeline<DispatchPolicy::Stages, kConsumeBeforePrepare>(
-        K_BLOCK_MAX, k_tile_iter, k_tile_count,
+    detail::run_mixed_pipeline<DispatchPolicy::Stages>(K_BLOCK_MAX, k_tile_iter, k_tile_count,
         bind_read, publish, prepare, prefetch, consume);
   }
 
@@ -1182,7 +1183,6 @@ private:
   template <class SmemTiledCopy,
             class TensorSmemView,
             class TensorCopyView,
-            class KBlock,
             class... Ts,
             class... Us
             >
@@ -1193,62 +1193,32 @@ private:
     TensorCopyView& tCrB_copy_view,
     cute::tuple<Ts...> const& partitioned_mma_extra_info,
     cute::tuple<Us...> const& tiled_copy_and_views,
-    KBlock const& k_block,
+    int k_block,
     int read_stage) {
 
-    constexpr int KBlockIndex = KBlock::value;
-    constexpr int KBM_ = decltype(cute::size<2>(tCrB_copy_view))::value;
-    constexpr bool kExactQ4A32 =
-        cutlass::sizeof_bits<RealInternalElementB>::value == 4 &&
-        FoldF == 2 && KBM_ == 4 &&
-        (cute::size<1>(InternalSmemLayoutAtomB{}) / FoldF) == 32;
-    if constexpr (kExactQ4A32) {
-      copy(smem_tiled_copy_B,
-           tCsB(_,_,cute::Int<KBlockIndex>{},read_stage),
-           tCrB_copy_view(_,_,cute::Int<KBlockIndex>{}));
-    } else {
-      // Preserve the established lowering for every other folded family.  The
-      // static KBlock identity was already disproved as a general fix and is
-      // retained only where the typed Q4/A32 destination requires it.
-      int const k_block_runtime = KBlockIndex;
-      copy(smem_tiled_copy_B, tCsB(_,_,k_block_runtime,read_stage),
-           tCrB_copy_view(_,_,k_block_runtime));
-    }
+    copy(smem_tiled_copy_B, tCsB(_,_,k_block,read_stage), tCrB_copy_view(_,_,k_block));
 
     // COARSE scale path: gs spans >= one full B copy step (Scale_TileK <= K_BLOCK_MAX), so one scale group
     // covers >=1 whole copy steps -> load it here, once per GroupK steps. The FINE case (gs < copy-step K, e.g.
     // gs=32 with a 64-K single-step copy -> Scale_TileK > K_BLOCK_MAX) makes GroupK=0 (a div-by-zero) and one
     // group can't cover the whole step; there the scale is loaded PER mma-atom in transform_B_kblock instead.
+    constexpr int KBM_ = decltype(cute::size<2>(tCrB_copy_view))::value;
     using ScalePolicy = typename MetadataPolicy::template Coarse<KBM_>;
     if constexpr (ScalePolicy::active) {
-      if constexpr (kExactQ4A32) {
-        if constexpr (ScalePolicy::starts_group(KBlockIndex)) {
-          if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
-            // nothing to do
-          } else if constexpr (ModeHasScales) {
-            MetadataPolicy::reload(
-                partitioned_mma_extra_info, tiled_copy_and_views,
-                ScalePolicy::group(KBlockIndex), read_stage);
-          } else {
-            static_assert(cutlass::detail::dependent_false<KernelSchedule>,
-                          "COARSE scale copy requires a scale-bearing conversion mode");
-          }
-        }
-      } else {
-        int const k_block_runtime = KBlockIndex;
-        if (ScalePolicy::starts_group(k_block_runtime)) {
-          if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
-            // nothing to do
-          } else if constexpr (ModeHasScales) {
-            MetadataPolicy::reload(
-                partitioned_mma_extra_info, tiled_copy_and_views,
-                ScalePolicy::group(k_block_runtime), read_stage);
-          } else {
-            static_assert(cutlass::detail::dependent_false<KernelSchedule>,
-                          "COARSE scale copy requires a scale-bearing conversion mode");
-          }
-        }
+     if (ScalePolicy::starts_group(k_block)) {
+      // We are starting a new group k-tile so copy the scale
+      if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
+        // nothing to do
       }
+      else if constexpr (ModeHasScales) {
+        MetadataPolicy::reload(partitioned_mma_extra_info, tiled_copy_and_views,
+                               ScalePolicy::group(k_block), read_stage);
+      }
+      else {
+        static_assert(cutlass::detail::dependent_false<KernelSchedule>,
+                      "COARSE scale copy requires a scale-bearing conversion mode");
+      }
+     }
     }
   }
   /// Utilities to transform B.
@@ -1288,7 +1258,6 @@ private:
             class TCrB_load,
             class TCrB_mma,
             int K_ATOM_PER_COPY,
-            class KBlock,
             class... Ts,
             class CopyViews>
   CUTLASS_DEVICE
@@ -1296,32 +1265,14 @@ private:
     TCrB_load const& tCrB_load,
     TCrB_mma& tCrB_mma,
     cute::tuple<Ts...> const& partitioned_extra_info,
-    KBlock const& k_block,
+    int const k_block,
     cute::Int<K_ATOM_PER_COPY> k_atom,
     CopyViews const& tiled_copy_and_views,
     int const read_stage) {
 
-    constexpr int KBlockIndex = KBlock::value;
+    Tensor cvt_in = recast<RealInternalElementB>(tCrB_load(_, _, k_block));
+    using CPY_VEC = Int<4 * 32 / sizeof_bits<RealInternalElementB>::value>;
     constexpr int KBM_ = decltype(cute::size<2>(tCrB_load))::value;    // K_BLOCK_MAX (32 B deliveries)
-    constexpr int Bits = sizeof_bits<RealInternalElementB>::value;
-    constexpr bool kExactQ4A32 =
-        Bits == 4 && FoldF == 2 && KBM_ == 4 &&
-        (cute::size<1>(InternalSmemLayoutAtomB{}) / FoldF) == 32;
-#if defined(PPU_Q4_A32_EXACT_TYPE_PROBE) && (PPU_Q4_A32_EXACT_TYPE_PROBE != 0)
-    static_assert(kExactQ4A32,
-                  "the exact Q4/A32 row must select its typed scatter");
-#endif
-    Tensor cvt_in = [&] {
-      if constexpr (kExactQ4A32) {
-        return recast<RealInternalElementB>(
-            tCrB_load(_, _, cute::Int<KBlockIndex>{}));
-      } else {
-        int const k_block_runtime = KBlockIndex;
-        return recast<RealInternalElementB>(
-            tCrB_load(_, _, k_block_runtime));
-      }
-    }();
-    using CPY_VEC = Int<4 * 32 / Bits>;
 
     if constexpr (FoldF > 1 && KBM_ > 1) {
       // At T>A a folded tactic has several resident deliveries.  One converter result is ordered as F contiguous
@@ -1329,78 +1280,30 @@ private:
       // tCrB_mma(_,_,k_block*K_ATOM_PER_COPY) base advances by an MMA-atom stride (32 halfs in the first failing
       // cases), then writes VEC=64/128 consecutive halfs; deliveries overlap and leave the tail unwritten.
       //
-      // Emit each fold group directly into its disjoint destination run.  The
-      // old implementation first erased that run to a raw pointer.  On the
-      // exact Q4/A32 device row, the first tile's final delivery was the only
-      // unreadable coordinate range.  A K-invariant shifted probe proved the
-      // next tile was live but could not distinguish fresh B/metadata from a
-      // stale or forward-clobbered value.  Host maps cannot validate register
-      // lifetime after the raw-pointer seam; the exact 2x2 device arm remains
-      // the verdict.
-      //
-      // Q4 now retains delivery/fold/instance as a CuTe half2 layout through
-      // the store.  The opcode emitter is unchanged.  Every other
-      // width/geometry retains the old path until it has its own
-      // device-positive folded row.
+      // Emit each fold group directly into its disjoint destination run.  This is the same half2 emitter used by the
+      // wide converter, with no VEC-sized temporary register array.  MixGemmArtifactScatter is also the offline
+      // inverse's source of truth and statically proves the complete destination is bijective and half2-safe.
+      constexpr int Bits = sizeof_bits<RealInternalElementB>::value;
       using Scatter = cutlass::MixGemmArtifactScatter<Bits, FoldF, KBM_>;
       using EmitLayout = typename Scatter::EmitLayout;
       constexpr int NumIterations = decltype(cute::size(cvt_in))::value / CPY_VEC::value;
       static_assert(decltype(cute::size(cvt_in))::value % CPY_VEC::value == 0,
                     "each N instance must contain a complete converter vector");
-      if constexpr (kExactQ4A32) {
-        cute::for_each(cute::make_int_sequence<NumIterations>{}, [&] (auto iteration) {
-          constexpr int II = decltype(iteration)::value;
-          auto const* src = reinterpret_cast<uint32_t const*>(
-              raw_pointer_cast(cvt_in(_, cute::Int<II>{}).data()));
-          cute::for_each(cute::make_int_sequence<FoldF>{}, [&] (auto fold_group) {
-            constexpr int FG = decltype(fold_group)::value;
-#if defined(PPU_Q4_A32_LEGACY_RAW_SCATTER) && (PPU_Q4_A32_LEGACY_RAW_SCATTER != 0)
-            constexpr bool kLegacyRawScatter = true;
-#else
-            constexpr bool kLegacyRawScatter = false;
-#endif
-            if constexpr (!kLegacyRawScatter) {
-              using H2Layout = typename Scatter::template Half2Layout<NumIterations>;
-              auto tCrB_h2_storage = recast<uint32_t>(tCrB_mma);
-              Tensor tCrB_h2 = make_tensor(tCrB_h2_storage.data(), H2Layout{});
-              cutlass::MixGemmChunkEmit<Bits, FG, FoldF, true, EmitLayout>::emit_to(
-                  src, [&] (auto group_h2, uint32_t value) {
-                    tCrB_h2(group_h2, cute::Int<KBlockIndex>{},
-                             cute::Int<FG>{}, cute::Int<II>{}) = value;
-                  });
-            } else {
-              auto* dst = raw_pointer_cast(tCrB_mma.data());
-              auto* group_dst = reinterpret_cast<uint32_t*>(
-                  dst + Scatter::group_base(FG, KBlockIndex, II));
-              cutlass::MixGemmChunkEmit<Bits, FG, FoldF, true, EmitLayout>::emit(
-                  src, group_dst);
-            }
-          });
+      auto* dst = raw_pointer_cast(tCrB_mma.data());
+      CUTLASS_PRAGMA_UNROLL
+      for (int ii = 0; ii < NumIterations; ++ii) {
+        auto const* src = reinterpret_cast<uint32_t const*>(raw_pointer_cast(cvt_in(_, ii).data()));
+        cute::for_each(cute::make_int_sequence<FoldF>{}, [&] (auto fold_group) {
+          constexpr int FG = decltype(fold_group)::value;
+          auto* group_dst = reinterpret_cast<uint32_t*>(
+              dst + Scatter::group_base(FG, k_block, ii));
+          cutlass::MixGemmChunkEmit<Bits, FG, FoldF, true, EmitLayout>::emit(src, group_dst);
         });
-      } else {
-        // All other folded formats retain their established positional path.
-        int const k_block_runtime = KBlockIndex;
-        auto* dst = raw_pointer_cast(tCrB_mma.data());
-        CUTLASS_PRAGMA_UNROLL
-        for (int ii = 0; ii < NumIterations; ++ii) {
-          auto const* src = reinterpret_cast<uint32_t const*>(
-              raw_pointer_cast(cvt_in(_, ii).data()));
-          cute::for_each(cute::make_int_sequence<FoldF>{}, [&] (auto fold_group) {
-            constexpr int FG = decltype(fold_group)::value;
-            auto* group_dst = reinterpret_cast<uint32_t*>(
-                dst + Scatter::group_base(FG, k_block_runtime, ii));
-            cutlass::MixGemmChunkEmit<Bits, FG, FoldF, true, EmitLayout>::emit(
-                src, group_dst);
-          });
-        }
       }
     } else {
       // Legacy folded tiles have one delivery; unfolded tiles already carry delivery in cvt_in's N-instance layout.
       // Keep their generated converter/write path byte-for-byte unchanged.
-      int const k_block_runtime = KBlockIndex;
-      Tensor cvt_out = make_tensor(
-          tCrB_mma(_, _, k_block_runtime * K_ATOM_PER_COPY).data(),
-          cvt_in.layout());
+      Tensor cvt_out = make_tensor(tCrB_mma(_, _, k_block * K_ATOM_PER_COPY).data(), cvt_in.layout());
       convert_tensor(cvt_in, cvt_out, CPY_VEC{});
     }
 
@@ -1414,23 +1317,11 @@ private:
     // The four hand-rolled branches (FINE x zero) collapsed into one call: the per-atom rule now lives in
     // apply_scale_atom and both this function and transform_B_atom go through it.
     if constexpr (ModeHasScales) {
-      if constexpr (kExactQ4A32) {
-        cute::for_each(cute::make_int_sequence<K_ATOM_PER_COPY>{}, [&] (auto atom) {
-          constexpr int atom_idx = KBlockIndex * K_ATOM_PER_COPY +
-                                   decltype(atom)::value;
-          apply_scale_atom<FINE, APG_>(
-              tCrB_mma(_, _, cute::Int<atom_idx>{}), partitioned_extra_info,
-              tiled_copy_and_views, atom_idx, read_stage);
-        });
-      } else {
-        int const k_block_runtime = KBlockIndex;
-        CUTLASS_PRAGMA_UNROLL
-        for (int i = 0; i < K_ATOM_PER_COPY; ++i) {
-          int const atom_idx = k_block_runtime * K_ATOM_PER_COPY + i;
-          apply_scale_atom<FINE, APG_>(
-              tCrB_mma(_, _, atom_idx), partitioned_extra_info,
-              tiled_copy_and_views, atom_idx, read_stage);
-        }
+      CUTLASS_PRAGMA_UNROLL
+      for (int i = 0; i < K_ATOM_PER_COPY; ++i) {
+        const int atom_idx = k_block * K_ATOM_PER_COPY + i;
+        apply_scale_atom<FINE, APG_>(tCrB_mma(_, _, atom_idx), partitioned_extra_info,
+                                     tiled_copy_and_views, atom_idx, read_stage);
       }
     }
   }

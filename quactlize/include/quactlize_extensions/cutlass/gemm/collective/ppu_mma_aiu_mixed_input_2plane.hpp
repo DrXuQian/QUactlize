@@ -69,6 +69,7 @@
 #include "cutlass/gemm/collective/collective_mma.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_argument_contract.hpp"
+#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_a_schedule.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_2plane_source_layout.hpp"
 #include "cutlass/detail/collective.hpp"
@@ -950,6 +951,14 @@ public:
     CUTE_STATIC_ASSERT_V(size<2>(tCrB_mma) % size<2>(tCrB_copy_view) == _0{});
     auto K_ATOM_PER_COPY = size<2>(tCrB_mma) / size<2>(tCrB_copy_view);
     CUTE_STATIC_ASSERT_V(K_BLOCK_MAX * K_ATOM_PER_COPY == size<2>(tCrB_mma));
+    auto A_BLOCK_MAX = size<2>(tCrA_copy_view);
+    auto MMA_K_ATOMS = size<2>(tCrA);
+    using ARegisterSchedule = detail::MixedARegisterSchedule<
+        decltype(MMA_K_ATOMS)::value, decltype(A_BLOCK_MAX)::value,
+        decltype(K_BLOCK_MAX)::value>;
+    static_assert(ARegisterSchedule::BAtomsPerCopy ==
+                      decltype(K_ATOM_PER_COPY)::value,
+                  "B delivery and MMA atom partitions must agree");
     // ONE plane-2 k_block feeds P2_DIV plane-1 k_blocks: plane 2 is the DENSER plane (same BYTES per copy, 2x the
     // codes at half the bit width), so its CPY_K is P2_DIV times smaller. transform_B_kblock derives the same
     // ratio to pick which half of the plane-2 registers a given plane-1 k_block owns.
@@ -1025,7 +1034,8 @@ public:
       if constexpr (!kBChunk || decltype(is_prime)::value) {
         copy(smem_tiled_copy_B2, tCsB2(_,_,Int<kP2Slot>{},read_stage), tCrB2_copy_view(_,_,Int<kP2Slot>{}));
       }
-      copy(smem_tiled_copy_A, tCsA_p(_,_,k_block), tCrA_copy_view(_,_,k_block));
+      detail::prepare_mixed_a_for_b<ARegisterSchedule>(
+          smem_tiled_copy_A, tCsA_p, tCrA_copy_view, k_block, is_prime);
       // Chunked: the mma loop converts each atom just before its gemm, so there is nothing to do for the whole step.
       if constexpr (!kBChunk) {
         transform_B_kblock<RealInternalElementB>(tCrB_copy_view, tCrB2_copy_view, tCrB_mma, partitioned_extra_info,
@@ -1073,6 +1083,8 @@ public:
             cute::gemm(tiled_mma, tCrA(_,_,atom_idx), tCrB_mma(_,_,atom_idx), accum);
           }
         }
+        detail::finish_mixed_a_after_consume<ARegisterSchedule>(
+            smem_tiled_copy_A, tCsA_p, tCrA_copy_view, k_block);
     };
 
     detail::run_mixed_pipeline<DispatchPolicy::Stages>(K_BLOCK_MAX, k_tile_iter, k_tile_count,

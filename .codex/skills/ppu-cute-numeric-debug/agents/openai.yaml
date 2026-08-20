@@ -1,0 +1,4 @@
+interface:
+  display_name: "PPU CuTe Numeric Debug"
+  short_description: "Isolate PPU CuTe numeric and layout mismatches"
+  default_prompt: "Use $ppu-cute-numeric-debug to isolate this PPU CuTe numeric mismatch before changing performance-sensitive code."

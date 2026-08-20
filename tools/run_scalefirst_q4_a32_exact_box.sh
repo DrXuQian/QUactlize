@@ -283,44 +283,25 @@ run_tail_bisect() {
 
 run_closure() {
   local root="$1" generated="$2" out="$3"
-  local legacy typed_old raw_first candidate label binary state
-  local legacy_state typed_state raw_state candidate_state tail_count
+  local legacy candidate legacy_state candidate_state
 
-  # A 2x2 factorial in one box invocation separates the two remaining seams:
-  # destination representation (raw vs typed) and lifetime order
-  # (prepare-first vs consume-first).  This costs four one-row builds but no
-  # extra operator round trip, and avoids calling a passing compound patch a
-  # unique root cause.
-  legacy="$(build_exact_variant "$root" "$generated" "$out" legacy-both \
-    'PPU_Q4_A32_LEGACY_RAW_SCATTER=1 PPU_Q4_A32_LEGACY_PREPARE_ORDER=1')" || return $?
-  typed_old="$(build_exact_variant "$root" "$generated" "$out" typed-old-order \
-    'PPU_Q4_A32_LEGACY_PREPARE_ORDER=1')" || return $?
-  raw_first="$(build_exact_variant "$root" "$generated" "$out" raw-consume-first \
-    'PPU_Q4_A32_LEGACY_RAW_SCATTER=1')" || return $?
+  # The real CuTe layouts now uniquely identify the seam: B has four register
+  # deliveries while A has one stride-zero CPY_K view.  Keep the B converter
+  # and the prepare-first driver byte-for-byte unchanged; vary only whether A
+  # incorrectly reuses B's coordinate or uses the shared MMA-K schedule.
+  legacy="$(build_exact_variant "$root" "$generated" "$out" legacy-b-indexed-a \
+    'PPU_MIXED_LEGACY_B_INDEXED_A_COPY=1')" || return $?
   candidate="$(build_exact_variant "$root" "$generated" "$out" candidate '')" || return $?
 
-  printf '[q4-a32-closure] variants=4 legacy=%s typed_old=%s raw_first=%s candidate=%s\n' \
-    "$legacy" "$typed_old" "$raw_first" "$candidate"
-  run_tail_bisect "$root" "$legacy" "$out" || return $?
-  tail_count="$(grep -Ec '^Q4_A32_TAIL_BISECT verdict=(NEXT_TILE_FRESH|PREVIOUS_TILE_STALE|NEXT_DELIVERY_CLOBBER|MIXED) ' \
-    "$out/results/tail-bisect-verdict.log" || true)"
-  if [ "$tail_count" -ne 1 ]; then
-    printf '[q4-a32-closure] FAIL: absolute-K tail verdict denominator=%s, want 1\n' \
-      "$tail_count" >&2
-    return 1
-  fi
-
-  run_exact_variant "$legacy" "$out" legacy-both || return $?
-  run_exact_variant "$typed_old" "$out" typed-old-order || return $?
-  run_exact_variant "$raw_first" "$out" raw-consume-first || return $?
+  printf '[q4-a32-closure] variants=2 legacy=%s candidate=%s\n' \
+    "$legacy" "$candidate"
+  run_exact_variant "$legacy" "$out" legacy-b-indexed-a || return $?
   run_exact_variant "$candidate" "$out" candidate || return $?
-  legacy_state="$(cat "$out/results/exact-legacy-both.state")"
-  typed_state="$(cat "$out/results/exact-typed-old-order.state")"
-  raw_state="$(cat "$out/results/exact-raw-consume-first.state")"
+  legacy_state="$(cat "$out/results/exact-legacy-b-indexed-a.state")"
   candidate_state="$(cat "$out/results/exact-candidate.state")"
 
   if [ "$legacy_state" != NUMERIC_FAIL ] ||
-     ! legacy_signature_present "$out/results/exact-legacy-both.log"; then
+     ! legacy_signature_present "$out/results/exact-legacy-b-indexed-a.log"; then
     printf '[q4-a32-closure] FAIL: legacy negative did not reproduce raw_bad=61184, first -3 -> -18; batch is not comparable\n' >&2
     return 1
   fi
@@ -329,10 +310,9 @@ run_closure() {
       "$candidate_state" >&2
     return 1
   fi
-  printf 'Q4_A32_CLOSURE verdict=PASS legacy=%s typed_old_order=%s raw_consume_first=%s candidate=%s tail=%s\n' \
-    "$legacy_state" "$typed_state" "$raw_state" "$candidate_state" \
-    "$(sed -n 's/^Q4_A32_TAIL_BISECT verdict=\([^ ]*\) .*/\1/p' "$out/results/tail-bisect-verdict.log")"
-  printf '[q4-a32-closure] PASS: historical signature reproduced and candidate is raw-bit exact; artifacts=%s\n' "$out"
+  printf 'Q4_A32_CLOSURE verdict=PASS legacy_b_indexed_a=%s candidate=%s driver=PREPARE_FIRST b_converter=UNCHANGED\n' \
+    "$legacy_state" "$candidate_state"
+  printf '[q4-a32-closure] PASS: historical signature reproduced and the shared A schedule is raw-bit exact; artifacts=%s\n' "$out"
 }
 
 main() {

@@ -49,6 +49,7 @@
 #include "cutlass/gemm/collective/collective_mma.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_argument_contract.hpp"
+#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_a_schedule.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"
 #include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_a_pack.hpp"
 #include "cutlass/detail/collective.hpp"
@@ -1198,6 +1199,14 @@ public:
     // Size of the register pipeline
     auto K_BLOCK_MAX = size<2>(tCrB_copy_view);
     auto K_ATOM_PER_COPY = size<2>(tCrB_mma) / size<2>(tCrB_copy_view);
+    auto A_BLOCK_MAX = size<2>(tCrA_copy_view);
+    auto MMA_K_ATOMS = size<2>(tCrA);
+    using ARegisterSchedule = detail::MixedARegisterSchedule<
+        decltype(MMA_K_ATOMS)::value, decltype(A_BLOCK_MAX)::value,
+        decltype(K_BLOCK_MAX)::value>;
+    static_assert(ARegisterSchedule::BAtomsPerCopy ==
+                      decltype(K_ATOM_PER_COPY)::value,
+                  "B delivery and MMA atom partitions must agree");
 
     int initial_read_stage = 0;
     Tensor tCsA_p = tCsA(_,_,_,initial_read_stage);
@@ -1209,14 +1218,15 @@ public:
     auto publish = [&] (int stage) {
       packed_decode_stage<kPackedScaleOn>(storage, stage, thread_idx, scale_residue_n);
     };
-    auto prepare = [&] (auto k_block, int read_stage, auto) {
+    auto prepare = [&] (auto k_block, int read_stage, auto prime) {
       copy_B_and_extra_info(smem_tiled_copy_B, tCsB, tCrB_copy_view,
           partitioned_extra_info, copy_partitions_extra_info, k_block, read_stage);
       // NO M-PINNING LOOP HERE, and that is a measured decision. CPY_M = size<1>(tCsA) is 1 both with and without
       // PPU_A_CUBE_H (fold_derivation/l77), so M does not live on mode 1 and a loop over it is a no-op. With
       // CUBE_H=1 cute instead moves mode 2 from basis 2 to basis 0 with stride 64 and halves the A register
       // fragment (ArrayEngine 128 -> 64, with a stride-0 component), i.e. it re-derives the geometry itself.
-      copy(smem_tiled_copy_A, tCsA_p(_,_,k_block), tCrA_copy_view(_,_,k_block));
+      detail::prepare_mixed_a_for_b<ARegisterSchedule>(
+          smem_tiled_copy_A, tCsA_p, tCrA_copy_view, k_block, prime);
       transform_B_kblock<RealInternalElementB>(tCrB_copy_view, tCrB_mma, partitioned_extra_info, k_block,
           K_ATOM_PER_COPY, copy_partitions_extra_info, read_stage, scale_pf);
     };
@@ -1235,6 +1245,8 @@ public:
           // gemm for one tiled_mma atom on K
           cute::gemm(tiled_mma, tCrA(_,_,atom_idx), tCrB_mma(_,_,atom_idx), accum);
         }
+        detail::finish_mixed_a_after_consume<ARegisterSchedule>(
+            smem_tiled_copy_A, tCsA_p, tCrA_copy_view, k_block);
     };
 
     detail::run_mixed_pipeline<DispatchPolicy::Stages>(K_BLOCK_MAX, k_tile_iter, k_tile_count,

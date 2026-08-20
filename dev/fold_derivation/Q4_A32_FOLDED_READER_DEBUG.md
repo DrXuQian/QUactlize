@@ -1,583 +1,233 @@
 # Q4_K/A32 folded-reader numeric incident
 
-This is the durable debug record for the first real-shape Q4_K ScaleFirst
-failure on an `ArtifactTileK=32` folded artifact.  It is intentionally kept
-beside the layout oracles: the incident depends on production CuTe layouts,
-the generated tactic authority, and one exact PPU specialization, so it is a
-repository playbook rather than a general debugging skill.
+This is the case record for the first real-shape Q4_K ScaleFirst failure on an
+`ArtifactTileK=32` folded artifact.  The reusable workflow lives in
+`.codex/skills/ppu-cute-numeric-debug`; this file keeps only the evidence and
+the exact production fix for this incident.
 
-## Status and binding
+## Binding and final root cause
 
 | Item | Binding |
 |---|---|
 | First observed revision | `851a374` |
-| Disproved candidate | `981afaa` (`fix Q4 A32 folded reader register indexing`) |
 | Format | GGUF Q4_K, `qtype=12`, `gs=32`, `bchunk=0` |
 | Artifact | `ArtifactTileK=32`, folded `F=2` |
 | Problem | `M=64, N=1024, K=5120` |
 | Exact tactic | `64x64x128_w16x32_s8_bc0` |
 | Exact symbol | `sf_q12_a32_tm64_tn64_tk128_wm16_wn32_s8_bc0` |
-| Local verdict | Offline maps are exact; L219 proves the typed half2 destination and makes the historical cadence red under a constructive d3-to-next-d0 alias |
-| PPU numeric verdict | `eb7d95c` disproved static indexing as a sole fix; `5bf61dd` proves the second tile is live but its scale-N tag is K-invariant; final 2x2 closure is pending |
+| Stable failure | `raw_bad=61184/65536`, first `0xc200 -> 0xcc80` (`-3 -> -18`) |
+| Root oracle | `dev/fold_derivation/l220_q4_a32_prepare_consume_layout.cu` |
+| Root cause | B's four-delivery coordinate was reused to index A's one-block, stride-zero copy view |
 
-Do not rewrite the device verdict from a host proof.  The remaining seam
-crosses runtime cp.async/pipeline/codegen behavior; only the exact device
-specialization closes the numeric claim.
-
-## Failure record
-
-The first full-graph failure was already a raw-bit correctness failure, not a
-performance anomaly:
+This is not a bad CuTe layout.  It is an invalid join between two independently
+retiled CuTe views:
 
 ```text
-SF_ATTEMPT shape=64x1024x5120 ...
-  symbol=sf_q12_a32_tm32_tn32_tk64_wm16_wn16_s3_bc0
-SF_FATAL ... state=RAW_FP16_MISMATCH raw_bad=65536
-  first_bad=0 want=0xc200 got=0xd000
+B CPY_K extent = 4
+A CPY_K extent = 1, stride = 0
+MMA K atoms    = 8
 ```
 
-After the conservative candidate filter exposed the target used for the exact
-diagnostic runner, the stable signature was:
+The old mainloop called the A copy with B's `k_block` (`0..3`).  Only zero is
+in A's logical CPY_K domain.  Physically all four coordinates alias the same
+whole A fragment.  At the final-delivery wrap, preparing next-tile B delivery
+zero therefore also reloaded all of A before current-tile delivery three had
+consumed its final 16 A values.
+
+## Constructive proof with the real layouts
+
+L220 composes the exact production `partition_fragment_A/B`, tiled-copy
+`retile_D`, and MMA-K modes.  Its result is:
 
 ```text
-SF_SHARD qtype=12 artifact_tile_k=32 bchunk=0 typed_rows=490 ...
-SF_ATTEMPT shape=64x1024x5120 ordinal=1/490
-  symbol=sf_q12_a32_tm64_tn64_tk128_wm16_wn32_s8_bc0
-SF_FATAL ... state=RAW_FP16_MISMATCH raw_bad=61184
-  first_bad=0 want=0xc200 got=0xcc80
+L220 A-fragment size=64 cosize=64
+  layout=((_2,_2,_2),_1,_8):((_1,_2,_4),_0,_8)
+L220 A-copy-view size=64 cosize=64
+  layout=((_8,_8),_1,_1):((_1,_8),_0,_0)
+L220 B-fragment size=128 cosize=128
+  layout=((_2,_2,_2),_2,_8):((_1,_2,_4),_64,_8)
+L220 wrap d3->d0 A_copy_K=1 A_prepare=64 A_consume=16
+  A_overlap=16 B_prepare=32 B_consume=32 B_overlap=0
+L220 schedule A_blocks=1 B_blocks=4 A_atoms=8 B_atoms=2
+  loads/tile=1 delay-wrap=1 post-consume=1 matching-unchanged=1
+L220 verdict=A_PREPARE_OVERWRITES_LIVE_D3
 ```
 
-`0xc200` is fp16 `-3`; `0xcc80` is fp16 `-18`.  The count means that 4,352 of
-65,536 outputs happened to agree.  Neither the count nor that ratio identifies
-the broken map.  Timing from this arm is invalid because the arm failed exact
-correctness.
+The important discriminator is `A_overlap=16` with `B_overlap=0`.  It rules
+out the earlier theory that B scatter itself overlapped delivery zero and
+delivery three.  The collision is A-only.
 
-The sparse exact fixture uses eight active K positions:
+The actual pipeline chronology is:
 
-```text
-11, 688, 1365, 2042, 2719, 3396, 4073, 4750
-```
+1. Prime B delivery 0 and the one whole A block for the current K tile.
+2. Prepare B deliveries 1, 2 and 3 while consuming the preceding delivery;
+   A needs no additional load.
+3. At current delivery 3, bind the next shared stage and prepare next B0.
+4. Do **not** reload A yet; consume current B3 with current A atoms 6 and 7.
+5. Reload the one whole A block from the next stage after B3 is dead.
 
-Its integer bound makes the fp16 result order-independent and exact.  That
-removes reassociation as an explanation before inspecting any layout.
+No barrier, stage transition, B conversion, or MMA order changes.
 
-## Debug rule: stop the sweep at the first numeric failure
+## Why earlier observations looked broader
 
-The full sweep is the wrong tool after `RAW_FP16_MISMATCH`.  It mixes thousands
-of types and makes every rerun expensive.  The incident was reduced to one
-generated row while retaining the full candidate authority:
+The six component fixtures at `789d25f` reported:
 
-1. Pin revision, qtype, artifact, tactic, shape, fixture, and raw fingerprint.
-2. Generate the exact symbol from the normal authority with
-   `--select-symbol`; do not hand-write a second row authority.
-3. Compile one specialization and run one shape.
-4. Resume a screen only after that row is raw-bit exact.
-
-The generated manifest records both the full authority denominator and
-`compiled_rows=1`.  An unknown symbol is a required red negative; a typo must
-not silently produce an empty green target.
-
-## What was proved and excluded
-
-The investigation followed the physical chain instead of comparing two copies
-of the same high-level layout.
-
-| Layer | Oracle | What it establishes | Constructive negative |
-|---|---|---|---|
-| shared-to-register ownership | `l123_warp_nk_topology.cu` | Exact Q4/A32 `partition_S -> retile_D -> converter -> MMA fragment` ownership; no missing or duplicate slot | stale shadow `PermK` and multiplied folded compute `PermK` are red |
-| metadata | `l211_q4_a32_metadata_map.cu` | All `(stage, group, n)` scale/zero values reach the expected fragment slots | encoded stage/group/n makes broadcast, rotation, or flattened-stage alias red |
-| global-to-shared address | `l212_q4_a32_gmem_map.cu` | Every 32-byte quantum selected by the production operand has the independently computed artifact address | swapping descriptor `(coord_w, coord_h)` roles is red |
-| output signature | `l213_q4_a32_failure_signature.cu` | Correct scatter reproduces raw-bit output; a delivery-major scatter corrupts it | one planted destination permutation is red |
-| exact shipping type/body | `l214_q4_a32_exact_type.cu` | The exact generated `RowTypes<12,32,64,64,128,16,32,8,0>` reaches the full kernel body | unexpected non-vendor compile diagnostics are red |
-| metadata apply composition | `l216_q4_a32_metadata_apply_map.cu` | Every converted code is paired with scale/zero from the same logical N | rotating metadata N by one is red |
-| exact composed code reader | `l217_q4_a32_exact_composed_reader.cu` | Offline artifact slot through AIU destination, real tiled smem, TSM load, converter/scatter and MMA logical `(n,k)` is a bijection | rotating logical N by one is red |
-| metadata global-to-shared | `l218_q4_a32_metadata_gmem_smem_map.cu` | All 40 K tiles and 10,240 values map through the production capped cp.async tiled copy to the intended stage/group/N slot | transposing source N/group is red |
-| component device bisection | `FIXTURES=transport-only,code-only,scale-only,zero-only,metadata-only,exact tools/run_scalefirst_q4_a32_exact_box.sh` | Separates common transport, code reader, scale, zero, metadata interaction and exact failures in one specialization | every arm's prelaunch fixture identity must bind before a numeric classification |
-| final device value | default single-exact mode of the same runner | The shipping PPU specialization is numerically exact | any nonzero `raw_bad`, missing one-row marker, or nonzero process status is red |
-
-Recorded local positives:
-
-```text
-L123 Q4-A32-F2 WN=32 WK=1 entries=8192
-  slot-diff=0 stored-byte-diff=0 cross-physical-row=0
-  max-delta=1 max-vreg=1 pair-owner-bad=0 PASS
-
-L211 metadata-map correct=1048576/1048576 bad=0
-L211 Q4-A32 TM64/TN64/TK128/WM16/WN32/S8 flat=EXACT map=EXACT PASS
-
-L212 distinct=160/160 swapped-coordinate-negative=RED result=PASS
-
-L213 correct raw_bad=0 first=0;
-  delivery-major raw_bad=65536 first=1.5 PASS
-
-L214 exact q12/A32/64x64x128-w16x32-s8 body=REACHED
-  vendor-asm-baseline=84 nonvendor=0 result=PASS
-
-L216 metadata-apply same-N=32768/32768 bad=0 map_uncovered=0
-  owner_conflicts=0; rotate-N-negative=64512/65536 result=PASS
-
-L217 exact-reader map_diff=0/8192 owner_bad=0 predicted_raw_bad=0
-  rotate-N-negative=64512 result=PASS
-
-L218 metadata-gmem-smem tiles=40 values=10240 physical-duplicate=8 positive=EXACT
-  transpose-negative=RED result=PASS
-```
-
-The exact L212 ABI detail matters: `coord_` is `(coord_w, coord_h)`, not
-logical `(n, k)`.  Its flattened code address is
-`coord_h * 256 + coord_w`.  Treating coordinate names as logical axes creates
-a plausible but false map.
-
-### Hypotheses ruled out before editing production code
-
-- The producer artifact round trip was exact, but that only proves
-  producer/inverse agreement.  It does not prove the shipping reader.
-- Exhaustive simple subsets and multiplicities `{0,1,2}` of the eight active
-  K stages, constrained to total eight, cannot reproduce the observed output
-  signature.
-- Missing or permuted whole K blocks cannot reproduce the signature.
-- A delivery-major destination transpose is detectably wrong, but its planted
-  signature does not match the device failure.
-- Metadata global-to-shared delivery and shared-to-register application are
-  exact under independently encoded oracles.
-- Global-to-shared copy quanta are exact and unique under an arithmetic address
-  oracle that does not call the producer placement function.
-- The full offline-artifact-to-MMA code path is exact under a composed oracle;
-  it reports `map_diff=0/8192` and exact-once ownership.
-
-Consequently an offline placement change is not supported by the evidence.
-The remaining seam is device-dynamic: actual cp.async issue/publication,
-runtime pipeline stage reuse, or PPU lowering of the otherwise exact reader.
-The exact tactic has 256 CTA threads but only 32 metadata-copy slots.  At
-`79fba86`, production wrapped the thread id and issued eight identical clears
-and asynchronous writes per logical slot.  That was statically complete, but
-its device behavior was not proved by an address oracle.  The next experiment
-replaces it with one physical publisher per proved slot without changing any
-address, stage, converter, or MMA mapping.
-
-## Three-arm device result and what it establishes
-
-The exact/code-only/metadata-only run at `79fba86` classified the failure as
-`COMMON_PIPELINE_OR_MULTIPLE_DEFECTS`:
-
-| Arm | raw_bad | first want -> got |
-|---|---:|---|
-| code-only | 26,368 / 65,536 | `0x4000 -> 0xc580` |
-| metadata-only | 65,536 / 65,536 | `0xc100 -> 0xc780` |
-| exact | 61,184 / 65,536 | `0xc200 -> 0xcc80` |
-
-Metadata-only holds every decoded code at one, so a pure code permutation
-cannot explain that arm.  Code-only holds scale at one and zero at zero, so a
-pure metadata-coordinate permutation cannot explain that arm.  Together they
-reject an offline-format-only explanation, but do **not** prove that one defect
-explains both arms; two device-lowering defects remain possible.
-
-The exact type probe now pins `K_BLOCK_MAX=4` and
-`K_ATOM_PER_COPY=2`.  A tempting ring-stage explanation was inspected and
-rejected before editing the driver: this row has `bchunk=0`, so B conversion
-and metadata application happen in `prepare`; `consume` only issues MMA.
-Moving the consume-stage token cannot change this row and is not its fix.
-
-## Exact-owner metadata publication experiment
-
-`ScaleCopyPlan` now publishes both the physical-owner predicate and the
-logical-slot map.  The folded collective uses the first 32 physical threads
-to clear and publish the 32 Q4/A32 metadata slots exactly once; the remaining
-224 threads issue no metadata write.  All threads retain the same shared
-consumer path and synchronization cadence.
-
-The local evidence is constructive rather than an idempotence assumption:
-
-- L114 exhausts the exact plan: owner protocol is 256 values, 256 visits,
-  zero duplicates, one hit each.  The old protocol is 256 values, 2,048
-  visits, 1,792 duplicates, eight hits each and is required to report red.
-- L218 applies the owner protocol to all 40 K tiles and 10,240 metadata values;
-  the old 8x wrap and the source-coordinate transpose are independent red
-  controls.
-- The production-seam lint binds owner-only clear plus both preload and
-  steady-state async issue points, then plants an all-thread publisher and
-  requires it to fail.
-
-This is still a **candidate cause** until the same three device arms run.  If
-metadata-only turns green while code-only remains red, it has isolated the
-metadata defect and there is a second B-reader defect.  If all three turn
-green, repeated publication was the common root.  If none changes, the
-experiment is falsified and must be reverted rather than retained as a
-plausible cleanup.
-
-The first rerun at `7dad9ac` is not admissible as that verdict.  Its line
-labeled `metadata-only` reported `want=0x4000`, but the pinned metadata-only
-fixture's host golden at output zero is necessarily `0xc100` (-2.5); `0x4000`
-is the code-only golden (+2).  A device kernel can change `got`, never the host
-`want`.  The old runner printed the fixture identity only after a successful
-row, then attached the shell loop's label to a failing row.  It therefore
-could not detect this contradiction and incorrectly retained the broad
-`COMMON_PIPELINE_OR_MULTIPLE_DEFECTS` label.  Do not use the apparent
-65,536-to-26,368 metadata change as kernel evidence.
-
-The closure runner now emits `SF_FIXTURE` before launch and binds mode, first
-golden and byte fingerprints for A, native/placed code, scale, zero and the
-complete golden.  A wrong mode or the observed code-golden metadata plant is
-`INFRA_FAIL`, not `NUMERIC_FAIL`.  It also decomposes the path with six arms:
-
-| Arm | Varied quantity | Pinned output-zero golden |
-|---|---|---:|
-| transport-only | no B quantity; eight same-sign A impulses | `0x4400` (+4) |
-| code-only | code | `0x4000` (+2) |
-| scale-only | scale | `0x3800` (+0.5) |
-| zero-only | zero | `0xc200` (-3) |
-| metadata-only | scale and zero | `0xc100` (-2.5) |
-| exact | code, scale and zero | `0xc200` (-3) |
-
-`transport-only` is the branch point.  Failure there localizes the common A
-load/stage/MMA/output path and the next experiment is one active K impulse at
-a time.  A pass there makes code, scale and zero arms independent reader/apply
-tests; only the failing component may then be instrumented.
-
-The admissible six-arm run at `789d25f` took that branch:
-
-| Arm | Device result | First output (want -> got) |
+| Arm | Result | First output |
 |---|---:|---:|
-| transport-only | PASS, `0 / 65,536` bad | `+4 -> +4` |
-| code-only | FAIL, `26,368 / 65,536` bad | `+2 -> -5.5` |
-| scale-only | FAIL, `65,536 / 65,536` bad | `+0.5 -> 0` |
-| zero-only | FAIL, `43,712 / 65,536` bad | `-3 -> -7.5` |
-| metadata-only | FAIL, `65,536 / 65,536` bad | `-2.5 -> -7.5` |
-| exact | FAIL, `61,184 / 65,536` bad | `-3 -> -18` |
+| transport-only | PASS | `+4 -> +4` |
+| code-only | FAIL, 26,368 bad | `+2 -> -5.5` |
+| scale-only | FAIL, 65,536 bad | `+0.5 -> 0` |
+| zero-only | FAIL, 43,712 bad | `-3 -> -7.5` |
+| metadata-only | FAIL, 65,536 bad | `-2.5 -> -7.5` |
+| exact | FAIL, 61,184 bad | `-3 -> -18` |
 
-Every arm bound its own A/native-code/placed-code/scale/zero/golden hashes
-before launch and reported `roundtrip=1 exact=1 isolation=1`.  Therefore this
-is not evidence against the offline transform's invertibility.  It falsifies
-the stronger claim that the device reader consumes those invertible bytes and
-metadata at the same logical coordinates.  Constant code/scale/zero hide that
-coordinate seam, which is why transport passes.  At output zero the
-metadata-only and zero-only observed values are equal; the varied scale term
-there contributes zero after the device's actual pairing.  That is a
-coordinate observation, not yet proof that every scale load is absent.
+`transport-only` made A K-invariant, so overwriting current A with next-tile A
+was invisible.  Every other arm varied A by K segment and exposed the same A
+lifetime failure.  Those results did not imply independent code, scale and
+zero defects.
 
-### Device coordinate tags
-
-Do not choose another candidate FoldN formula from those six aggregate sums.
-The exact binary now has a diagnostic-only coordinate probe.  Each of 64 M
-rows activates one A coordinate.  `even` and `odd` exhaust the 128 local K
-positions; `stage` crosses all 40 TK128 tiles.  Independent launches encode:
-
-- four nibbles of the B code's source K and three nibbles of its source N;
-- the scale source group as `scale = group + 1` and its source N as
-  `scale = n + 1`;
-- the zero source group as `zero = group + 1` and its source N as
-  `zero = n + 1`.
-
-All tags are exactly representable in fp16.  The adjudicator reports all six
-maps separately; it assumes neither that B and metadata share a permutation
-nor that scale and zero share one.  Its 1,536-coordinate denominator is
-exact.  A one-bit code-map plant is
-`NONIDENTITY`, and a missing combination or marker/data round mismatch is an
-infrastructure failure.  The probe changes only this benchmark and emits raw
-output; it does not alter the collective, artifact writer, or sweep path.
-
-The PPU table at `8a2d8d5` returned:
+The one-box experiment at `7a1b4d8` then showed:
 
 ```text
-SUMMARY UNDECODABLE identity=1344/1536,decoded=1344/1536
+legacy=NUMERIC_FAIL
+typed_old_order=NUMERIC_FAIL
+raw_consume_first=PASS
+candidate=PASS
+tail=PREVIOUS_TILE_STALE
 ```
 
-Every decoded B-K, B-N, scale-group, scale-N, zero-group, and zero-N
-coordinate is the identity.  The complete 192-point deficit is exactly six
-maps times two rounds times rows 48--63.  In `even`/`odd`, those rows are
-local K `96..127` of the first TK128 tile: the fourth 32K delivery and its last
-two MMA K atoms.  B and both metadata channels disappear at the same cadence.
+That experiment proved the failure was cadence-sensitive, but it did not make
+consume-first the right production fix.  Moving all preparation after consume
+also moves valid B look-ahead and can cost performance.  L220 supplies the
+missing operand-level proof: only the one A reload must move.
 
-This result falsifies a global folded placement/scatter permutation and an
-independent scale/zero coordinate-loader defect.  It does not yet identify a
-unique source line.  `even-next` and `odd-next` moved the same coordinates to
-the second tile.  At `5bf61dd`, both rounds reported `identity=64/64`, including
-all 16 final-delivery rows, and were initially summarized as `NEXT_TILE_LIVE`.
+## Production fix
 
-That label was too strong.  The arm used `scale-n-tag`, whose value depends on
-N and is invariant in K.  It proves that the second-tile A/output path is live,
-but a stale previous-tile scale, the correct scale, and a forward-clobbering
-next-delivery scale all carry the same value.  It cannot classify B or metadata
-freshness.
+`detail/ppu_mixed_a_schedule.hpp` relates A and B through their common MMA-K
+atom space.  It never treats one view's CPY_K coordinate as a coordinate in
+the other view.
 
-The closure therefore repeats the shifted round with four independent modes:
-scale-N as the invariant control, scale-group and zero-group as absolute
-K-group tags, and code-K1 as an independent absolute-K nibble.  Its exact
-denominator is 4 modes x 2 rounds x 64 rows.  The only registered verdicts are
-`NEXT_TILE_FRESH`, `PREVIOUS_TILE_STALE`, `NEXT_DELIVERY_CLOBBER`, and `MIXED`.
-A missing mode/round or a fixture `want` inconsistent with its registered
-absolute K is an infrastructure failure, not a device result.
+- Each A block is loaded once, immediately before the first B delivery that
+  consumes one of its MMA-K atoms.
+- When A has one whole-fragment block and B has multiple deliveries, only the
+  steady-state B-last to next-B0 A reload is delayed until after consume.
+- Equal A/B copy granularities retain the ordinary prepare-first schedule.
+- `PPU_MIXED_LEGACY_B_INDEXED_A_COPY=1` is an exact device negative that
+  restores the historical cross-view indexing and must reproduce the stable
+  failure signature.
+
+The same invalid direct A indexing syntax existed in the ordinary, folded and
+two-plane collectives.  All three now use the shared schedule.  This does not
+claim that every format previously failed: rows with matching A/B copy
+granularity were unaffected.  It removes the mechanism from all three paths
+instead of special-casing Q4/A32.
+
+## Removed superseded code
+
+The following diagnostic candidate code is deliberately absent from the final
+hot path:
+
+- typed half2 scatter (`Half2Layout`, `emit_to`);
+- the pipeline-wide `ConsumeBeforePrepare` policy;
+- Q4-only raw/typed and prepare/consume switches;
+- L219's synthetic typed-cadence oracle and its source checker.
+
+The B converter, dequant emitter and shared pipeline driver are restored
+source-identically to the pre-candidate revision `5bf61dd`.  The final delta is
+only the A scheduling seam plus its proof and exact negative.
+
+## Performance invariants
+
+For the exact Q4/A32 row:
+
+- old A TSM loads per K tile: 4 aliases of the same 64-value destination;
+- new A TSM loads per K tile: 1;
+- B loads/conversion: unchanged;
+- MMA count/order: unchanged;
+- barriers and cp.async waits: unchanged;
+- runtime branches: none; all schedule decisions are `if constexpr`;
+- equal-granularity rows: compile to their existing prepare-first behavior.
+
+Source invariants are not a device timing verdict.  After raw-bit closure,
+record latency, registers, spill and ACU instruction mix.  A correctness-
+failing arm never supplies performance evidence.
+
+## Local validation
+
+Use persistent output under `/workspace`:
+
+```bash
+cd /sim/eec/shared/junfu.qx/quactlize
+mkdir -p /workspace/quactlize-q4-a32-oracles
+
+python3 -B ci/check_mixed_a_register_schedule.py
+python3 -B ci/check_q4_a32_fixture_components.py
+
+python3 -B ci/local_gates.py -k l220_q4_a32_prepare_consume_layout --strict
+python3 -B ci/local_gates.py -k test_fold_int2.cu --strict
+python3 -B ci/local_gates.py -k test_fpA_kquant_dense.cu --strict
+python3 -B ci/local_gates.py -k test_q3_bconcat_real.cu --strict
+```
+
+The three compile gates cover folded, ordinary and two-plane collective
+instantiation.  The schedule checker plants a wrong wrap condition, bypasses
+each required hook, and reintroduces direct B-coordinate indexing of A.
+
+## Exact PPU closure
+
+Run only the failed row before resuming a sweep:
 
 ```bash
 cd /sim/eec/shared/junfu.qx/quactlize
 git pull --ff-only origin develop
 
-OUT=/workspace/quactlize-q4-a32-coordinate-map-$(git rev-parse --short HEAD)-$(date -u +%Y%m%dT%H%M%SZ) \
-Q4_A32_COORDINATE_MAP=1 JOBS=16 \
-  bash tools/run_scalefirst_q4_a32_exact_box.sh
-```
-
-The result is `results/coordinate-map.tsv`.  `NONIDENTITY` is a successful
-diagnostic verdict; missing/duplicate evidence is not.  Only after this table
-names the actual source coordinates should production indexing change.
-
-### What is and is not CuTe-derived
-
-The scale and zero fragments are already built through the shared
-`MetadataPolicy`: the folded collective calls
-`thr_mma.partition_fragment_B(scale_tile)` rather than hand-computing a
-metadata address.  Rewriting that loader in more CuTe syntax would not close
-the unproved seam.
-
-The join from the physical folded B delivery to the logical MMA fragment is
-still expressed positionally through `MixGemmArtifactScatter::group_base` and
-raw pointers, while the offline writer derives its map from
-`right_inverse(frag.layout())`.  That duplication remains a maintainability
-issue, but it is no longer the leading explanation for this incident: L217
-proved the composed map and the device tags found no decoded nonidentity
-coordinate.  The live defect is instead bounded to the common fourth-delivery
-cadence where B, scale, and zero all become absent/undecodable.  Do not rewrite
-the placement formula from the aggregate six-arm sums.
-
-## Disproved register-index hypothesis
-
-`detail::run_mixed_pipeline` supplies `k_block` as a compile-time
-`cute::Int<k_block>`.  Two helper boundaries erased that type:
-
-```cpp
-copy_B_and_extra_info(..., int k_block, ...)
-transform_B_kblock(..., int k_block, ...)
-```
-
-The folded `FoldF > 1 && KBM > 1` path then indexed CuTe register fragments
-through runtime integers and raw pointers.  The inner MMA atom loop had the
-same dependency hidden behind `#pragma unroll`.
-
-An unroll pragma is not a type-level guarantee.  Host layout proofs can show
-that the intended indices form a bijection while PPU codegen still lowers a
-dynamic register-array subscript differently.  This is a real source-hygiene
-issue: the pipeline already owned a static index and the helper interface
-discarded it.
-
-However, the exact PPU row at `eb7d95c` (which contains `981afaa`) reproduced
-the original signature byte for byte: `raw_bad=61184`, first `-3 -> -18`.
-Therefore static-index erasure is neither the root cause nor a fix for this
-incident.  It must not be used as the explanation for a later closure.  The
-new candidate retains compile-time KBlock only because the typed CuTe
-destination needs a compile-time coordinate; that is a prerequisite, not a
-renewed causal claim.
-
-## Candidate change in `981afaa`
-
-The patch preserves compile-time identity across the entire register path:
-
-1. `copy_B_and_extra_info` and `transform_B_kblock` are templated on `KBlock`
-   and use `KBlock::value`.
-2. Every `tCsB`, `tCrB_load`, `tCrB_mma`, scale, and MMA-atom index derived
-   from K block is a `cute::Int<>`.
-3. Compile-time `cute::for_each(make_int_sequence<...>)` replaces loops whose
-   indices address register-backed tensors.
-4. Folded multi-delivery int4 converts one complete 32-code delivery with the
-   already-shipping
-   `MixGemmNumericArrayConverter<half_t, int4b_t, 32>`.
-5. Converted elements land through the independently proved
-   `MixGemmArtifactScatter::flat(E, KBlockIndex, II)` map.
-6. Other bit widths retain their existing chunk emitter; legacy one-delivery
-   and unfolded paths remain on their previous converter/write path.
-
-The change is deliberately narrower than rewriting the artifact or changing
-fold, but its device result is negative.  Keep its source-hygiene merit and
-its incident causality separate; the latter has been constructively rejected.
-The six component arms at `789d25f` and the shifted-tail observations through
-`5bf61dd` were therefore taken from the restored historical implementation.
-
-## One-box typed-scatter/cadence closure
-
-The remaining production candidate changes two independently selectable
-seams, without changing the artifact, copies, MMA count, barriers, stage-ring
-advance, scale/zero arithmetic, or output:
-
-1. The Q4 folded emitter keeps its destination as a CuTe half2 tensor with
-   named `(half2-in-group, delivery, fold, instance)` modes through the final
-   store.  The existing two-opcode emitter is unchanged.
-2. For the exact Q4/A32/F2/four-delivery family, current delivery is consumed
-   before the next delivery is prepared.  In particular, delivery three is
-   dead before next-tile delivery zero is written.
-
-L219 establishes two host-bounded facts.  All 64 half2 destinations agree
-with `MixGemmArtifactScatter`, are exact-once, and delivery three is disjoint
-from delivery zero.  Under an explicit d3-to-next-d0 register-alias plant, the
-historical prepare-before-consume order corrupts all 16 live values while
-consume-before-prepare corrupts none.  A zero delivery-stride plant produces
-48 duplicate destinations.  This does not prove PPU register allocation; it
-makes the proposed lifetime rule and its negative falsifiable locally.
-
-The box runner builds a 2x2 factorial from the same generated shipping row:
-
-| Variant | Destination | Cadence |
-|---|---|---|
-| `legacy-both` | raw | prepare then consume |
-| `typed-old-order` | typed CuTe | prepare then consume |
-| `raw-consume-first` | raw | consume then prepare |
-| `candidate` | typed CuTe | consume then prepare |
-
-The batch is admitted only if `legacy-both` exactly reproduces
-`raw_bad=61184`, first `-3 -> -18`.  The two middle arms identify which seam
-matters.  The batch closes only when `candidate` is raw-bit exact.  Binary
-hashes, git SHA, all absolute-K tail logs, the 2x2 exact logs, and the final
-verdict are stored below one `/workspace` artifact directory.
-
-```bash
-cd /sim/eec/shared/junfu.qx/quactlize
-git pull --ff-only origin develop
-
-OUT=/workspace/quactlize-q4-a32-closure-$(git rev-parse --short HEAD)-$(date -u +%Y%m%dT%H%M%SZ)
-Q4_A32_CLOSURE=1 JOBS=16 OUT="$OUT" \
+OUT=/workspace/quactlize-q4-a32-a-schedule-$(git rev-parse --short HEAD)-$(date -u +%Y%m%dT%H%M%SZ)
+Q4_A32_CLOSURE=1 ITERATIONS=1 CORRECTNESS_REPEATS=8 JOBS=16 OUT="$OUT" \
   bash tools/run_scalefirst_q4_a32_exact_box.sh
 echo "artifacts: $OUT"
 ```
 
-## Local reproduction
-
-Use a persistent directory below `/workspace`; none of these checks needs a
-PPU.  L123, L211-L213, and L216-L218 are ordinary nvcc host executables with the
-repository CuTe headers.  Run L123 directly here: its general-purpose shell
-runner also contains unrelated shipping-builder type-equivalence admissions,
-which are not part of this incident's evidence.  L214 deliberately expects the
-known vendor asm diagnostics and rejects any additional diagnostic.
-
-```bash
-cd /sim/eec/shared/junfu.qx/quactlize
-
-mkdir -p /workspace/quactlize-q4-a32-oracles
-INC=(-Idev/fold_derivation/stub_inc -Ithird_party/actlize/include \
-     -Ithird_party/actlize/tools/util/include -Iquactlize/include \
-     -Itests -Ibenchmarks -Idev/fold_derivation)
-
-nvcc -std=c++17 -arch=sm_80 -w "${INC[@]}" \
-  dev/fold_derivation/l123_warp_nk_topology.cu \
-  -o /workspace/quactlize-q4-a32-oracles/l123
-/workspace/quactlize-q4-a32-oracles/l123
-
-for id in 211 212 213 216 217 218 219; do
-  nvcc -std=c++17 -arch=sm_80 -w "${INC[@]}" \
-    "dev/fold_derivation/l${id}_q4_a32_"*.cu \
-    -o "/workspace/quactlize-q4-a32-oracles/l${id}"
-  "/workspace/quactlize-q4-a32-oracles/l${id}"
-done
-
-QUACTLIZE_L214_OUT=/workspace/quactlize-l214-q4-a32-exact \
-  bash dev/fold_derivation/run_l214_q4_a32_exact_type.sh
-
-python3 -B ci/check_q4_a32_fixture_components.py
-python3 -B ci/adjudicate_q4_a32_coordinate_tags.py --self-test
-python3 -B ci/check_q4_a32_typed_cadence.py
-```
-
-If a toolchain glob selects more than one source, invoke each oracle by its
-exact filename.  The evidence is the per-oracle marker, not merely a zero
-shell status.
-
-## Exact PPU closure
-
-Run only the failed row; do not restart the full sweep first:
-
-```bash
-cd /sim/eec/shared/junfu.qx/quactlize
-git pull --ff-only origin develop
-
-OUT=/workspace/quactlize-q4-a32-components-$(git rev-parse --short HEAD)-$(date -u +%Y%m%dT%H%M%SZ) \
-FIXTURES=transport-only,code-only,scale-only,zero-only,metadata-only,exact \
-ITERATIONS=1 CORRECTNESS_REPEATS=8 JOBS=16 \
-  bash tools/run_scalefirst_q4_a32_exact_box.sh
-```
-
-The six arms compile the exact shipping row once.  The final three retain the
-historical broad classifier, while transport/scale/zero make that result
-actionable:
-
-- code-only fail, metadata-only pass: code reader or B pipeline;
-- code-only pass, metadata-only fail: metadata load/apply;
-- both isolated arms pass but exact fails: interaction or stage reuse;
-- both isolated arms fail: common pipeline or multiple defects.
-
-Admission requires all of the following from the same bundle:
+Admission requires, in the same bundle:
 
 ```text
-git.sha == the intended revision
-manifest selection.mode == exact-symbol
-manifest selection.compiled_rows == 1
-exactly one SF_FIXTURE marker with the registered mode, first golden and input hashes
-SF_COMPLETE status=COMPLETE shape=64x1024x5120 typed_rows=1
-every measured row contains raw_bad":0
-[q4-a32-exact] PASS
+legacy-b-indexed-a = NUMERIC_FAIL
+legacy signature   = raw_bad=61184, first -3 -> -18
+candidate          = PASS with raw_bad=0
+driver             = PREPARE_FIRST
+B converter        = UNCHANGED
 ```
 
-The runner stores the generated authority, build log, binary SHA-256, Git SHA,
-and exact output below `OUT`.  A compile-only pass is not numeric closure.
+The legacy arm proves the fixture and binary still recognize this exact bug;
+the candidate arm proves the replacement closes it.  Missing evidence is not
+a pass.
 
-### Device verdict log
+## Historical device evidence
 
-Fill this table by appending evidence; do not alter the admission rule above.
+| Revision | Verdict | What it established |
+|---|---|---|
+| `eb7d95c` | FAIL, exact old signature | static-index cleanup alone was not a fix |
+| `79fba86` | diagnostic | code/metadata/exact all fail, broad locus only |
+| `7dad9ac` | VOID | fixture label and host golden contradicted each other |
+| `789d25f` | diagnostic | transport constant-A arm masks the defect; varied-A arms fail |
+| `8a2d8d5` | diagnostic | missing values concentrate in final 32-K delivery |
+| `5bf61dd` | diagnostic | second tile is live; original tag was K-invariant |
+| `7a1b4d8` | diagnostic | consume-first masks the failure; typed scatter is irrelevant |
 
-| Revision | Device | Result | Artifact directory |
-|---|---|---|---|
-| `eb7d95c` | PPU | **FAIL**, identical `61184`, first `-3 -> -18` | `/workspace/quactlize-q4-a32-exact-eb7d95c-20260820T070953Z` |
-| `79fba86` | PPU | **FAIL**, three-arm locus `COMMON_PIPELINE_OR_MULTIPLE_DEFECTS`; 26,368 / 65,536 / 61,184 bad | `/workspace/quactlize-q4-a32-bisect-79fba86-20260820T081739Z` |
-| `7dad9ac` | PPU | **VOID**, failing metadata arm carried code-only host golden (`0x4000`, required `0xc100`) | artifact path not supplied |
-| `789d25f` | PPU | **FAIL**, transport passes; code/scale/zero/metadata/exact fail with independently bound fixture identities | `/workspace/quactlize-q4-a32-components-789d25f-20260820T091036Z` |
-| `8a2d8d5` | PPU | **DIAGNOSTIC**, 1,344/1,536 identity; all 192 undecodable points are first-tile local K `96..127` across all six maps | artifact path not supplied |
+## Design rule for future collectives
 
-## Reusable folded-artifact decision tree
-
-For the next folded-reader mismatch, use this order:
-
-1. **Classify the fixture.** Establish exact/order-independent output or keep
-   numerical tolerance separate from layout diagnosis.
-2. **Bind one row.** Record SHA, symbol, all tactic axes, artifact axes, shape,
-   fixture seed, raw mismatch count, first mismatch, and fingerprint.
-3. **Prove producer bytes.** Compare shipping artifact bytes and round trip,
-   but do not mistake producer/inverse agreement for reader correctness.
-4. **Prove global-to-shared coordinates.** Decode the descriptor ABI against
-   independent arithmetic; include a coordinate-role negative.
-5. **Prove shared-to-register ownership.** Compose real `partition_S`,
-   `retile_D`, converter emission, and MMA fragment ownership.  Check
-   exact-once coverage and a wrong-layout negative.
-6. **Prove metadata independently.** Encode stage, group, and N into values so
-   aliasing cannot remain invisible.
-7. **Classify candidate scatters constructively.** Plant one map change at a
-   time and compare the complete failure signature, not just a total count.
-8. **Audit static identity.** Trace `cute::Int<>` indices across helper APIs.
-   Any register-backed tensor index that becomes `int` is suspect even if a
-   nearby pragma says unroll.
-9. **Compile the exact production type/body.** A reduced type is insufficient;
-   bind the generated shipping row.
-10. **Run one exact device row.** Only raw-bit closure permits the wider sweep
-    to resume.
-
-## Things not to do
-
-- Do not report latency, MBU, or MFU from a correctness-failing arm.
-- Do not rerun thousands of configurations to diagnose one exact-row failure.
-- Do not infer a map from `raw_bad`, a ratio, or the first output value.
-- Do not use the artifact round-trip as the consumer oracle.
-- Do not let the oracle call the same placement helper it is checking.
-- Do not assume `#pragma unroll` preserves a compile-time register index.
-- Do not call a host type/body compilation a PPU numeric result.
-- Do not broaden the fix to other widths until each width has its own positive
-  and wrong-map negative.
+For independently created CuTe views, equal shape labels do not establish a
+shared coordinate system.  Compose them through a common semantic space (here
+MMA-K atoms), and prove physical prepare/consume overlap with real production
+layouts.  Never compare rebased subview offsets without adding each subview's
+base offset; that can make distinct physical slots look identical.
 
 ## Source inventory
 
-- `dev/fold_derivation/l123_warp_nk_topology.cu`
-- `dev/fold_derivation/l211_q4_a32_metadata_map.cu`
-- `dev/fold_derivation/l212_q4_a32_gmem_map.cu`
-- `dev/fold_derivation/l213_q4_a32_failure_signature.cu`
-- `dev/fold_derivation/l214_q4_a32_exact_type.cu`
-- `dev/fold_derivation/l216_q4_a32_metadata_apply_map.cu`
-- `dev/fold_derivation/l217_q4_a32_exact_composed_reader.cu`
-- `dev/fold_derivation/l218_q4_a32_metadata_gmem_smem_map.cu`
-- `dev/fold_derivation/run_l214_q4_a32_exact_type.sh`
-- `tools/gen_scalefirst_internal_units.py`
+- `dev/fold_derivation/l220_q4_a32_prepare_consume_layout.cu`
+- `ci/check_mixed_a_register_schedule.py`
+- `ci/check_q4_a32_fixture_components.py`
 - `tools/run_scalefirst_q4_a32_exact_box.sh`
+- `quactlize/include/quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_a_schedule.hpp`
+- `quactlize/include/quactlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp`
 - `quactlize/include/quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp`
+- `quactlize/include/quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp`
