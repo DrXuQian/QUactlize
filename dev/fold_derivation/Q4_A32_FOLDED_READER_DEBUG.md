@@ -234,6 +234,81 @@ load/stage/MMA/output path and the next experiment is one active K impulse at
 a time.  A pass there makes code, scale and zero arms independent reader/apply
 tests; only the failing component may then be instrumented.
 
+The admissible six-arm run at `789d25f` took that branch:
+
+| Arm | Device result | First output (want -> got) |
+|---|---:|---:|
+| transport-only | PASS, `0 / 65,536` bad | `+4 -> +4` |
+| code-only | FAIL, `26,368 / 65,536` bad | `+2 -> -5.5` |
+| scale-only | FAIL, `65,536 / 65,536` bad | `+0.5 -> 0` |
+| zero-only | FAIL, `43,712 / 65,536` bad | `-3 -> -7.5` |
+| metadata-only | FAIL, `65,536 / 65,536` bad | `-2.5 -> -7.5` |
+| exact | FAIL, `61,184 / 65,536` bad | `-3 -> -18` |
+
+Every arm bound its own A/native-code/placed-code/scale/zero/golden hashes
+before launch and reported `roundtrip=1 exact=1 isolation=1`.  Therefore this
+is not evidence against the offline transform's invertibility.  It falsifies
+the stronger claim that the device reader consumes those invertible bytes and
+metadata at the same logical coordinates.  Constant code/scale/zero hide that
+coordinate seam, which is why transport passes.  At output zero the
+metadata-only and zero-only observed values are equal; the varied scale term
+there contributes zero after the device's actual pairing.  That is a
+coordinate observation, not yet proof that every scale load is absent.
+
+### Device coordinate tags
+
+Do not choose another candidate FoldN formula from those six aggregate sums.
+The exact binary now has a diagnostic-only coordinate probe.  Each of 64 M
+rows activates one A coordinate.  `even` and `odd` exhaust the 128 local K
+positions; `stage` crosses all 40 TK128 tiles.  Independent launches encode:
+
+- four nibbles of the B code's source K and three nibbles of its source N;
+- the scale source group as `scale = group + 1` and its source N as
+  `scale = n + 1`;
+- the zero source group as `zero = group + 1` and its source N as
+  `zero = n + 1`.
+
+All tags are exactly representable in fp16.  The adjudicator reports all six
+maps separately; it assumes neither that B and metadata share a permutation
+nor that scale and zero share one.  Its 1,536-coordinate denominator is
+exact.  A one-bit code-map plant is
+`NONIDENTITY`, and a missing combination or marker/data round mismatch is an
+infrastructure failure.  The probe changes only this benchmark and emits raw
+output; it does not alter the collective, artifact writer, or sweep path.
+
+```bash
+cd /sim/eec/shared/junfu.qx/quactlize
+git pull --ff-only origin develop
+
+OUT=/workspace/quactlize-q4-a32-coordinate-map-$(git rev-parse --short HEAD)-$(date -u +%Y%m%dT%H%M%SZ) \
+Q4_A32_COORDINATE_MAP=1 JOBS=16 \
+  bash tools/run_scalefirst_q4_a32_exact_box.sh
+```
+
+The result is `results/coordinate-map.tsv`.  `NONIDENTITY` is a successful
+diagnostic verdict; missing/duplicate evidence is not.  Only after this table
+names the actual source coordinates should production indexing change.
+
+### What is and is not CuTe-derived
+
+The scale and zero fragments are already built through the shared
+`MetadataPolicy`: the folded collective calls
+`thr_mma.partition_fragment_B(scale_tile)` rather than hand-computing a
+metadata address.  Rewriting that loader in more CuTe syntax would not close
+the unproved seam.
+
+The remaining seam is the join from the physical folded B delivery to the
+logical MMA fragment.  `ppu_mma_aiu_fold.hpp` constructs a logical `(N,K)`
+register destination, but `transform_B_kblock` places converter results into
+that destination through `MixGemmArtifactScatter::group_base` and raw pointers.
+The offline writer derives its map from `right_inverse(frag.layout())`; the
+production join is therefore still a second, positional statement of the
+same ownership contract.  A wrong delivery/fold-group/atom order there has
+exactly the observed masking behavior: coordinate-varying code and metadata
+fail, while constant code/scale/zero passes.  This is the leading seam, not a
+verdict: the six independent device maps above must identify which coordinate
+actually moves before that production code is changed.
+
 ## Disproved register-index hypothesis
 
 `detail::run_mixed_pipeline` supplies `k_block` as a compile-time
@@ -368,6 +443,7 @@ Fill this table by appending evidence; do not alter the admission rule above.
 | `eb7d95c` | PPU | **FAIL**, identical `61184`, first `-3 -> -18` | `/workspace/quactlize-q4-a32-exact-eb7d95c-20260820T070953Z` |
 | `79fba86` | PPU | **FAIL**, three-arm locus `COMMON_PIPELINE_OR_MULTIPLE_DEFECTS`; 26,368 / 65,536 / 61,184 bad | `/workspace/quactlize-q4-a32-bisect-79fba86-20260820T081739Z` |
 | `7dad9ac` | PPU | **VOID**, failing metadata arm carried code-only host golden (`0x4000`, required `0xc100`) | artifact path not supplied |
+| `789d25f` | PPU | **FAIL**, transport passes; code/scale/zero/metadata/exact fail with independently bound fixture identities | `/workspace/quactlize-q4-a32-components-789d25f-20260820T091036Z` |
 
 ## Reusable folded-artifact decision tree
 

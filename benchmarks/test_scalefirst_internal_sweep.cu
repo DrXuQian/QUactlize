@@ -75,7 +75,24 @@ enum class FixtureMode {
   ScaleOnly,
   ZeroOnly,
   MetadataOnly,
-  TransportOnly
+  TransportOnly,
+  ScaleGroupTag,
+  ScaleNTag,
+  ZeroGroupTag,
+  ZeroNTag,
+  CodeK0Tag,
+  CodeK1Tag,
+  CodeK2Tag,
+  CodeK3Tag,
+  CodeN0Tag,
+  CodeN1Tag,
+  CodeN2Tag
+};
+enum class TagRound {
+  None,
+  Even,
+  Odd,
+  Stage
 };
 
 char const* fixture_name(FixtureMode mode) {
@@ -86,8 +103,45 @@ char const* fixture_name(FixtureMode mode) {
     case FixtureMode::ZeroOnly: return "zero-only";
     case FixtureMode::MetadataOnly: return "metadata-only";
     case FixtureMode::TransportOnly: return "transport-only";
+    case FixtureMode::ScaleGroupTag: return "scale-group-tag";
+    case FixtureMode::ScaleNTag: return "scale-n-tag";
+    case FixtureMode::ZeroGroupTag: return "zero-group-tag";
+    case FixtureMode::ZeroNTag: return "zero-n-tag";
+    case FixtureMode::CodeK0Tag: return "code-k0-tag";
+    case FixtureMode::CodeK1Tag: return "code-k1-tag";
+    case FixtureMode::CodeK2Tag: return "code-k2-tag";
+    case FixtureMode::CodeK3Tag: return "code-k3-tag";
+    case FixtureMode::CodeN0Tag: return "code-n0-tag";
+    case FixtureMode::CodeN1Tag: return "code-n1-tag";
+    case FixtureMode::CodeN2Tag: return "code-n2-tag";
   }
   return "unknown";
+}
+
+char const* tag_round_name(TagRound round) {
+  switch (round) {
+    case TagRound::None: return "none";
+    case TagRound::Even: return "even";
+    case TagRound::Odd: return "odd";
+    case TagRound::Stage: return "stage";
+  }
+  return "unknown";
+}
+
+constexpr bool is_tag_fixture(FixtureMode mode) {
+  return mode == FixtureMode::ScaleGroupTag || mode == FixtureMode::ScaleNTag ||
+         mode == FixtureMode::ZeroGroupTag || mode == FixtureMode::ZeroNTag ||
+         mode == FixtureMode::CodeK0Tag || mode == FixtureMode::CodeK1Tag ||
+         mode == FixtureMode::CodeK2Tag || mode == FixtureMode::CodeK3Tag ||
+         mode == FixtureMode::CodeN0Tag || mode == FixtureMode::CodeN1Tag ||
+         mode == FixtureMode::CodeN2Tag;
+}
+
+constexpr bool is_code_tag(FixtureMode mode) {
+  return mode == FixtureMode::CodeK0Tag || mode == FixtureMode::CodeK1Tag ||
+         mode == FixtureMode::CodeK2Tag || mode == FixtureMode::CodeK3Tag ||
+         mode == FixtureMode::CodeN0Tag || mode == FixtureMode::CodeN1Tag ||
+         mode == FixtureMode::CodeN2Tag;
 }
 
 struct Cli {
@@ -95,6 +149,7 @@ struct Cli {
   std::uint64_t schedule_seed = UINT64_C(0x6a09e667f3bcc909);
   unsigned algorithm_mask = Options::kAllAlgorithms;
   FixtureMode fixture_mode = FixtureMode::Exact;
+  TagRound tag_round = TagRound::None;
   bool fixture_binding = false;
   std::string symbol_file;
   std::vector<Shape> shapes;
@@ -147,6 +202,37 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
         cli.fixture_mode = FixtureMode::MetadataOnly;
       else if (!std::strcmp(value, "transport-only"))
         cli.fixture_mode = FixtureMode::TransportOnly;
+      else if (!std::strcmp(value, "scale-group-tag"))
+        cli.fixture_mode = FixtureMode::ScaleGroupTag;
+      else if (!std::strcmp(value, "scale-n-tag"))
+        cli.fixture_mode = FixtureMode::ScaleNTag;
+      else if (!std::strcmp(value, "zero-group-tag"))
+        cli.fixture_mode = FixtureMode::ZeroGroupTag;
+      else if (!std::strcmp(value, "zero-n-tag"))
+        cli.fixture_mode = FixtureMode::ZeroNTag;
+      else if (!std::strcmp(value, "code-k0-tag"))
+        cli.fixture_mode = FixtureMode::CodeK0Tag;
+      else if (!std::strcmp(value, "code-k1-tag"))
+        cli.fixture_mode = FixtureMode::CodeK1Tag;
+      else if (!std::strcmp(value, "code-k2-tag"))
+        cli.fixture_mode = FixtureMode::CodeK2Tag;
+      else if (!std::strcmp(value, "code-k3-tag"))
+        cli.fixture_mode = FixtureMode::CodeK3Tag;
+      else if (!std::strcmp(value, "code-n0-tag"))
+        cli.fixture_mode = FixtureMode::CodeN0Tag;
+      else if (!std::strcmp(value, "code-n1-tag"))
+        cli.fixture_mode = FixtureMode::CodeN1Tag;
+      else if (!std::strcmp(value, "code-n2-tag"))
+        cli.fixture_mode = FixtureMode::CodeN2Tag;
+      else return false;
+    } else if (!std::strncmp(argv[i], "--tag-round=", 12)) {
+      char const* value = argv[i] + 12;
+      if (!std::strcmp(value, "even"))
+        cli.tag_round = TagRound::Even;
+      else if (!std::strcmp(value, "odd"))
+        cli.tag_round = TagRound::Odd;
+      else if (!std::strcmp(value, "stage"))
+        cli.tag_round = TagRound::Stage;
       else return false;
     } else if (!std::strcmp(argv[i], "--fixture-binding")) {
       cli.fixture_binding = true;
@@ -156,7 +242,11 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
     } else return false;
   }
   if (cli.shapes.empty()) cli.shapes.push_back({1, 4096, 4096});
-  return cli.iterations > 0 && cli.repeats > 0 && cli.algorithm_mask != 0;
+  bool const tag_contract = is_tag_fixture(cli.fixture_mode) ?
+      cli.tag_round != TagRound::None && cli.fixture_binding :
+      cli.tag_round == TagRound::None;
+  return cli.iterations > 0 && cli.repeats > 0 && cli.algorithm_mask != 0 &&
+         tag_contract;
 }
 
 bool selected_registry(Cli const& cli, std::vector<RegistryRow>& selected,
@@ -262,21 +352,45 @@ int code_for_decoded_one() {
   return 0;
 }
 
+int code_for_decoded_zero() {
+  switch (SCALEFIRST_SWEEP_QTYPE) {
+    case 8: return 128;
+    case 10: return 0;
+    case 11: return 4;
+    case 12: return 8;
+    case 13: return 8;
+    case 14: return 32;
+  }
+  return 0;
+}
+
 constexpr bool fixture_uses_constant_code(FixtureMode mode) {
-  return mode != FixtureMode::Exact && mode != FixtureMode::CodeOnly;
+  return mode != FixtureMode::Exact && mode != FixtureMode::CodeOnly &&
+         !is_code_tag(mode);
 }
 
 constexpr bool fixture_uses_varied_scale(FixtureMode mode) {
   return mode == FixtureMode::Exact || mode == FixtureMode::ScaleOnly ||
-         mode == FixtureMode::MetadataOnly;
+         mode == FixtureMode::MetadataOnly ||
+         mode == FixtureMode::ScaleGroupTag || mode == FixtureMode::ScaleNTag;
 }
 
 constexpr bool fixture_uses_varied_zero(FixtureMode mode) {
   return mode == FixtureMode::Exact || mode == FixtureMode::ZeroOnly ||
-         mode == FixtureMode::MetadataOnly;
+         mode == FixtureMode::MetadataOnly ||
+         mode == FixtureMode::ZeroGroupTag || mode == FixtureMode::ZeroNTag;
 }
 
 int fixture_code(FixtureMode mode, int n, int k) {
+  if (mode == FixtureMode::ZeroGroupTag || mode == FixtureMode::ZeroNTag)
+    return code_for_decoded_zero();
+  if (mode == FixtureMode::CodeK0Tag) return (k >> 0) & 15;
+  if (mode == FixtureMode::CodeK1Tag) return (k >> 4) & 15;
+  if (mode == FixtureMode::CodeK2Tag) return (k >> 8) & 15;
+  if (mode == FixtureMode::CodeK3Tag) return (k >> 12) & 15;
+  if (mode == FixtureMode::CodeN0Tag) return (n >> 0) & 15;
+  if (mode == FixtureMode::CodeN1Tag) return (n >> 4) & 15;
+  if (mode == FixtureMode::CodeN2Tag) return (n >> 8) & 15;
   return fixture_uses_constant_code(mode) ? code_for_decoded_one() :
                                             code_value(n, k);
 }
@@ -290,6 +404,7 @@ void put_native(std::vector<std::uint8_t>& plane, int bits, int n, int k,
 struct Fixture {
   std::vector<half_t> a, scales, zeros, golden;
   std::vector<std::uint8_t> low_native, high_native, low, high;
+  std::vector<int> probe_k;
   bool exact = false, roundtrip = false, high_plane_covered = false;
   bool isolation_covered = false;
 };
@@ -309,9 +424,13 @@ std::uint64_t fixture_hash(std::vector<T> const& values) {
   return fnv1a_bytes(values.data(), values.size() * sizeof(T));
 }
 
-Fixture make_fixture(Shape shape, FixtureMode mode) {
+Fixture make_fixture(Shape shape, FixtureMode mode, TagRound tag_round) {
   Fixture f;
   int constexpr LB = low_bits(), HB = high_bits(), GS = group_size();
+  if (is_tag_fixture(mode) &&
+      (SCALEFIRST_SWEEP_QTYPE != 12 ||
+       SCALEFIRST_SWEEP_ARTIFACT_TK != 32 || !has_zero()))
+    return f;
   std::size_t const codes = std::size_t(shape.n) * shape.k;
   f.a.assign(std::size_t(shape.m) * shape.k, half_t(0.f));
   f.scales.resize(std::size_t(shape.k / GS) * shape.n);
@@ -322,29 +441,54 @@ Fixture make_fixture(Shape shape, FixtureMode mode) {
   f.low.resize(f.low_native.size());
   f.high.resize(f.high_native.size());
 
-  // One exact nonzero in each of the eight K eighths.  A=+/-0.5,
-  // scale in {1,2,4}, zero in {-3,0,3}; every partial and final value is an
-  // exact half-integer bounded far below fp16's exact range.
+  std::vector<std::vector<int>> active_by_m(std::size_t(shape.m));
+  // Ordinary diagnostic fixtures use one exact nonzero in each K eighth.
+  // Coordinate-tag fixtures instead use one A=1 impulse per M row.  Even and
+  // odd rounds cover all 128 local K coordinates; stage covers all 40 TK128
+  // tiles of the exact 64x1024x5120 target.  The output is therefore the tag
+  // attached to the B coordinate actually paired with that A coordinate.
   std::array<int, 8> active{};
-  for (int s = 0; s < 8; ++s) {
-    int const begin = s * shape.k / 8;
-    int const span = shape.k / 8;
-    active[s] = begin + ((37 * s + 11) % span);
-    for (int m = 0; m < shape.m; ++m)
-      f.a[std::size_t(m) * shape.k + active[s]] =
-          half_t(mode == FixtureMode::TransportOnly ?
-                     ((m & 1) ? -0.5f : 0.5f) :
-                     (((m + s) & 1) ? -0.5f : 0.5f));
+  if (is_tag_fixture(mode)) {
+    if (shape.m != 64 || shape.k < 128 || tag_round == TagRound::None)
+      return f;
+    int const k_tiles = shape.k / 128;
+    f.probe_k.resize(std::size_t(shape.m));
+    for (int m = 0; m < shape.m; ++m) {
+      int k = tag_round == TagRound::Even ? 2 * m :
+              tag_round == TagRound::Odd ? 2 * m + 1 :
+              (m % k_tiles) * 128 + 11;
+      f.probe_k[std::size_t(m)] = k;
+      active_by_m[std::size_t(m)].push_back(k);
+      f.a[std::size_t(m) * shape.k + k] = half_t(1.f);
+    }
+  } else {
+    for (int s = 0; s < 8; ++s) {
+      int const begin = s * shape.k / 8;
+      int const span = shape.k / 8;
+      active[s] = begin + ((37 * s + 11) % span);
+      for (int m = 0; m < shape.m; ++m) {
+        active_by_m[std::size_t(m)].push_back(active[s]);
+        f.a[std::size_t(m) * shape.k + active[s]] =
+            half_t(mode == FixtureMode::TransportOnly ?
+                       ((m & 1) ? -0.5f : 0.5f) :
+                       (((m + s) & 1) ? -0.5f : 0.5f));
+      }
+    }
   }
   for (int g = 0; g < shape.k / GS; ++g)
     for (int n = 0; n < shape.n; ++n) {
-      f.scales[std::size_t(g) * shape.n + n] = half_t(
-          !fixture_uses_varied_scale(mode) ? 1.f :
-          float(1 << ((17 * g + 29 * n + 1) % 3)));
-      if constexpr (has_zero())
-        f.zeros[std::size_t(g) * shape.n + n] = half_t(
-            !fixture_uses_varied_zero(mode) ? 0.f :
-            float(((11 * g + 7 * n) % 3 - 1) * 3));
+      float scale = !fixture_uses_varied_scale(mode) ? 1.f :
+                    float(1 << ((17 * g + 29 * n + 1) % 3));
+      if (mode == FixtureMode::ScaleGroupTag) scale = float(g + 1);
+      if (mode == FixtureMode::ScaleNTag) scale = float(n + 1);
+      f.scales[std::size_t(g) * shape.n + n] = half_t(scale);
+      if constexpr (has_zero()) {
+        float zero = !fixture_uses_varied_zero(mode) ? 0.f :
+                     float(((11 * g + 7 * n) % 3 - 1) * 3);
+        if (mode == FixtureMode::ZeroGroupTag) zero = float(g + 1);
+        if (mode == FixtureMode::ZeroNTag) zero = float(n + 1);
+        f.zeros[std::size_t(g) * shape.n + n] = half_t(zero);
+      }
     }
 
   std::vector<std::uint8_t> kmajor(codes);
@@ -380,13 +524,31 @@ Fixture make_fixture(Shape shape, FixtureMode mode) {
       f.zeros.begin(), f.zeros.end(), [](half_t value) {
         return float(value) == 0.f;
       });
-  bool const code_covered = fixture_uses_constant_code(mode) ?
-      code_is_one : code_varied;
-  bool const scale_covered = fixture_uses_varied_scale(mode) ?
-      scale_varied : scale_is_one;
-  bool const zero_covered = fixture_uses_varied_zero(mode) ?
-      zero_varied : zero_is_zero;
-  f.isolation_covered = code_covered && scale_covered && zero_covered;
+  if (is_tag_fixture(mode)) {
+    bool const code_is_zero = std::all_of(
+        kmajor.begin(), kmajor.end(), [](std::uint8_t code) {
+          return int(code) == code_for_decoded_zero();
+        });
+    bool const scale_tag = mode == FixtureMode::ScaleGroupTag ||
+                           mode == FixtureMode::ScaleNTag;
+    bool const zero_tag = mode == FixtureMode::ZeroGroupTag ||
+                          mode == FixtureMode::ZeroNTag;
+    bool const tag_code_ok = scale_tag ? code_is_one :
+                             zero_tag ? code_is_zero :
+                             code_varied;
+    bool const tag_scale_ok = scale_tag ? scale_varied : scale_is_one;
+    bool const tag_zero_ok = zero_tag ? zero_varied : zero_is_zero;
+    f.isolation_covered = f.probe_k.size() == std::size_t(shape.m) &&
+                          tag_code_ok && tag_scale_ok && tag_zero_ok;
+  } else {
+    bool const code_covered = fixture_uses_constant_code(mode) ?
+        code_is_one : code_varied;
+    bool const scale_covered = fixture_uses_varied_scale(mode) ?
+        scale_varied : scale_is_one;
+    bool const zero_covered = fixture_uses_varied_zero(mode) ?
+        zero_varied : zero_is_zero;
+    f.isolation_covered = code_covered && scale_covered && zero_covered;
+  }
 #if SCALEFIRST_SWEEP_QTYPE == 8
   {
     xplane::place_derived<8,64,64,32,32,32,1,32>(
@@ -431,7 +593,7 @@ Fixture make_fixture(Shape shape, FixtureMode mode) {
   for (int m = 0; m < shape.m; ++m)
     for (int n = 0; n < shape.n; ++n) {
       float sum = 0;
-      for (int k : active) {
+      for (int k : active_by_m[std::size_t(m)]) {
         int const g = k / GS;
         float const scale = float(f.scales[std::size_t(g) * shape.n + n]);
         float const zero = has_zero() ?
@@ -460,6 +622,38 @@ void print_samples(std::vector<double> const& samples) {
   std::printf("]");
 }
 
+bool dump_tag_output(cutlass::DeviceAllocation<half_t> const& output,
+                     Fixture const& fixture, Shape shape,
+                     FixtureMode mode, TagRound round) {
+  std::vector<half_t> host(std::size_t(shape.m) * shape.n);
+  if (hggcMemcpy(host.data(), output.get(), host.size() * sizeof(half_t),
+                 hggcMemcpyDeviceToHost) != hggcSuccess)
+    return false;
+  int const row_count = std::min(shape.m, 64);
+  int const col_count = std::min(shape.n, 64);
+  std::printf("SF_TAG_ROWS mode=%s tag_round=%s n=0 count=%d got=",
+              fixture_name(mode), tag_round_name(round), row_count);
+  for (int m = 0; m < row_count; ++m)
+    std::printf("%s%04x", m ? "," : "",
+                unsigned(host[std::size_t(m) * shape.n].raw()));
+  std::printf(" want=");
+  for (int m = 0; m < row_count; ++m)
+    std::printf("%s%04x", m ? "," : "",
+                unsigned(fixture.golden[std::size_t(m) * shape.n].raw()));
+  std::printf("\n");
+  std::printf("SF_TAG_COLS mode=%s tag_round=%s m=0 count=%d got=",
+              fixture_name(mode), tag_round_name(round), col_count);
+  for (int n = 0; n < col_count; ++n)
+    std::printf("%s%04x", n ? "," : "", unsigned(host[std::size_t(n)].raw()));
+  std::printf(" want=");
+  for (int n = 0; n < col_count; ++n)
+    std::printf("%s%04x", n ? "," : "",
+                unsigned(fixture.golden[std::size_t(n)].raw()));
+  std::printf("\n");
+  std::fflush(stdout);
+  return true;
+}
+
 int run_shape(Shape shape, Cli const& cli, int device, int cu,
               std::vector<RegistryRow> const& rows) {
   if (shape.n % 256 || shape.k % 256 || shape.k % 8) {
@@ -467,15 +661,18 @@ int run_shape(Shape shape, Cli const& cli, int device, int cu,
                  shape.m, shape.n, shape.k);
     return 2;
   }
-  Fixture fixture = make_fixture(shape, cli.fixture_mode);
+  Fixture fixture = make_fixture(shape, cli.fixture_mode, cli.tag_round);
   if (cli.fixture_binding) {
     std::printf(
-        "SF_FIXTURE mode=%s first_golden=0x%04x "
+        "SF_FIXTURE mode=%s first_golden=0x%04x tag_round=%s "
+        "probe_count=%zu probe_fnv=%016llx "
         "a_fnv=%016llx low_native_fnv=%016llx low_placed_fnv=%016llx "
         "scale_fnv=%016llx zero_fnv=%016llx golden_fnv=%016llx "
         "roundtrip=%d exact=%d isolation=%d\n",
         fixture_name(cli.fixture_mode),
         fixture.golden.empty() ? 0u : unsigned(fixture.golden[0].raw()),
+        tag_round_name(cli.tag_round), fixture.probe_k.size(),
+        static_cast<unsigned long long>(fixture_hash(fixture.probe_k)),
         static_cast<unsigned long long>(fixture_hash(fixture.a)),
         static_cast<unsigned long long>(fixture_hash(fixture.low_native)),
         static_cast<unsigned long long>(fixture_hash(fixture.low)),
@@ -527,7 +724,18 @@ int run_shape(Shape shape, Cli const& cli, int device, int cu,
                 shape.m, shape.n, shape.k, ordinal + 1, order.size(),
                 registry_row.symbol);
     std::fflush(stdout);
-    if (!registry_row.run(inputs, options, result)) {
+    bool const row_ok = registry_row.run(inputs, options, result);
+    if (is_tag_fixture(cli.fixture_mode) && !result.cells.empty() &&
+        (row_ok || result.cells.back().raw_bad != 0) &&
+        !dump_tag_output(dOutput, fixture, shape, cli.fixture_mode,
+                         cli.tag_round)) {
+      std::fprintf(stderr,
+                   "SF_FATAL symbol=%s shape=%dx%dx%d algorithm=TAG-DUMP "
+                   "state=OUTPUT_COPY step=TAG_OUTPUT_COPY\n",
+                   registry_row.symbol, shape.m, shape.n, shape.k);
+      return 1;
+    }
+    if (!row_ok) {
       if (result.cells.empty()) {
         std::fprintf(stderr,
                      "SF_FATAL symbol=%s shape=%dx%dx%d algorithm=NONE "
@@ -623,8 +831,10 @@ int main(int argc, char** argv) {
         "usage: %s [--shape=MxNxK] [--iterations=N] "
         "[--correctness-repeats=N] [--schedule-seed=N] "
         "[--algorithm=all|nonpersistent|persistent|split|full-output] "
-        "[--fixture=exact|code-only|scale-only|zero-only|metadata-only|transport-only] "
-        "[--fixture-binding] "
+        "[--fixture=exact|code-only|scale-only|zero-only|metadata-only|transport-only|"
+        "scale-{group,n}-tag|zero-{group,n}-tag|"
+        "code-k{0,1,2,3}-tag|code-n{0,1,2}-tag] "
+        "[--tag-round=even|odd|stage] [--fixture-binding] "
         "[--symbol-file=PATH]\n", argv[0]);
     return 2;
   }

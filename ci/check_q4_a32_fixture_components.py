@@ -22,6 +22,12 @@ MODES = (
     "transport-only", "code-only", "scale-only", "zero-only",
     "metadata-only", "exact",
 )
+TAG_MODES = (
+    "scale-group-tag", "scale-n-tag", "zero-group-tag", "zero-n-tag",
+    "code-k0-tag", "code-k1-tag", "code-k2-tag", "code-k3-tag",
+    "code-n0-tag", "code-n1-tag", "code-n2-tag",
+)
+TAG_ROUNDS = ("even", "odd", "stage")
 
 
 def half_bits(value: Fraction) -> int:
@@ -55,7 +61,7 @@ def function_modes(source: str, name: str) -> set[str] | None:
         source, re.S)
     if not match:
         return None
-    return set(re.findall(r"FixtureMode::([A-Za-z]+)", match.group(1)))
+    return set(re.findall(r"FixtureMode::([A-Za-z0-9]+)", match.group(1)))
 
 
 def audit(bench: str, runner: str) -> list[str]:
@@ -65,19 +71,25 @@ def audit(bench: str, runner: str) -> list[str]:
         bad.append("fixture denominator is not six")
 
     scale_modes = function_modes(bench, "fixture_uses_varied_scale")
-    if scale_modes != {"Exact", "ScaleOnly", "MetadataOnly"}:
+    if scale_modes != {
+        "Exact", "ScaleOnly", "MetadataOnly", "ScaleGroupTag", "ScaleNTag"
+    }:
         bad.append(f"varied-scale modes drifted: {scale_modes}")
     zero_modes = function_modes(bench, "fixture_uses_varied_zero")
-    if zero_modes != {"Exact", "ZeroOnly", "MetadataOnly"}:
+    if zero_modes != {
+        "Exact", "ZeroOnly", "MetadataOnly", "ZeroGroupTag", "ZeroNTag"
+    }:
         bad.append(f"varied-zero modes drifted: {zero_modes}")
     constant_modes = function_modes(bench, "fixture_uses_constant_code")
     if constant_modes != {"Exact", "CodeOnly"} or \
-            "mode != FixtureMode::Exact && mode != FixtureMode::CodeOnly" not in bench:
+            "mode != FixtureMode::Exact && mode != FixtureMode::CodeOnly" not in bench or \
+            "!is_code_tag(mode)" not in bench:
         bad.append("constant-code complement drifted")
 
     for token in (
         "a_fnv=", "low_native_fnv=", "low_placed_fnv=", "scale_fnv=",
-        "zero_fnv=", "golden_fnv=", "first_golden=0x%04x",
+        "zero_fnv=", "golden_fnv=", "probe_fnv=", "tag_round=%s",
+        "first_golden=0x%04x",
     ):
         if token not in bench:
             bad.append(f"prelaunch fixture binding lost {token}")
@@ -102,6 +114,31 @@ def audit(bench: str, runner: str) -> list[str]:
         bad.append("runner no longer requires exactly one prelaunch identity marker")
     if "Q4_A32_COMPONENTS transport_only=" not in runner:
         bad.append("six-arm component verdict is not emitted")
+    tag_specs = set(re.findall(
+        r"\b(scale-(?:group|n)-tag|zero-(?:group|n)-tag|"
+        r"code-[kn][0-3]-tag):(even|odd|stage)\b",
+        runner,
+    ))
+    expected_tag_specs = {
+        (mode, round_) for mode in TAG_MODES for round_ in TAG_ROUNDS
+    }
+    if tag_specs != expected_tag_specs:
+        bad.append(
+            "coordinate-tag runner denominator drifted "
+            f"missing={sorted(expected_tag_specs - tag_specs)} "
+            f"extra={sorted(tag_specs - expected_tag_specs)}"
+        )
+    for token in (
+        "return (k >> 0) & 15", "return (k >> 4) & 15",
+        "return (k >> 8) & 15", "return (k >> 12) & 15",
+        "return (n >> 0) & 15", "return (n >> 4) & 15",
+        "return (n >> 8) & 15", "scale = float(g + 1)",
+        "scale = float(n + 1)", "zero = float(g + 1)",
+        "zero = float(n + 1)", "SF_TAG_ROWS mode=%s",
+        "SF_TAG_COLS mode=%s",
+    ):
+        if token not in bench:
+            bad.append(f"coordinate-tag fixture lost {token}")
     return bad
 
 
@@ -122,6 +159,10 @@ def main() -> int:
          "missing scale-only component"),
         (bench.replace(" zero_fnv=%016llx", "", 1), runner,
          "missing zero fingerprint"),
+        (bench, runner.replace("code-k3-tag:stage", "", 1),
+         "missing coordinate-tag denominator"),
+        (bench.replace("return (k >> 12) & 15", "return (k >> 11) & 15", 1),
+         runner, "wrong coordinate-tag bit"),
     )
     for planted_bench, planted_runner, label in plants:
         if not audit(planted_bench, planted_runner):
@@ -132,7 +173,8 @@ def main() -> int:
     rendered = ", ".join(
         f"{mode}=0x{first_golden(mode):04x}" for mode in MODES)
     print("[q4-a32-fixtures] PASS: " + rendered +
-          "; wrong-golden/missing-component/missing-fingerprint plants red")
+          "; wrong-golden/missing-component/missing-fingerprint/"
+          "missing-tag/wrong-tag-bit plants red")
     return 0
 
 

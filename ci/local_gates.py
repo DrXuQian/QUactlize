@@ -505,6 +505,13 @@ def lint_q4_a32_fixture_components():
         "Q4/A32 six-arm fixtures and their prelaunch identity are bound")
 
 
+def lint_q4_a32_coordinate_tags():
+    """The device coordinate decoder needs an exact arm denominator and planted map reds."""
+    return _run_ci_script(
+        "adjudicate_q4_a32_coordinate_tags.py",
+        "Q4/A32 tags independently recover B, scale and zero coordinates")
+
+
 def lint_device_probe_scope():
     """A device-compiler SKIP may only guard a check that actually invokes a device compiler."""
     # THE GUARD IS ITSELF A WAY TO LOSE A CHECK. `nvcc_can_compile_device_cuda()` exists so an environment that
@@ -2464,6 +2471,7 @@ def main():
                 ("lint", "l114_scale_copy_coverage: uncapped layout fails the shared witness", lint_scale_copy_coverage_fires),
                 ("lint", "fold metadata publication uses one proved physical owner", lint_fold_metadata_single_owner),
                 ("lint", "Q4/A32 component fixtures fail closed on a wrong host golden", lint_q4_a32_fixture_components),
+                ("lint", "Q4/A32 device coordinate tags have an exact denominator and planted reds", lint_q4_a32_coordinate_tags),
                 ("lint", "a device-compiler SKIP only guards checks that reach a compiler", lint_device_probe_scope),
                 ("lint", "Stream-K minimum policy rejects an empty K stripe", lint_streamk_min_zero_fires),
                 ("lint", "all mixed collectives use one stage-ring driver", lint_mixed_pipeline_shared),
