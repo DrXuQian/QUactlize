@@ -31,7 +31,8 @@ METADATA_MODES = (
 )
 TAG_MODES = METADATA_MODES + CODE_K_MODES + CODE_N_MODES
 REQUIRED = {(mode, round_) for mode in TAG_MODES for round_ in K_ROUNDS}
-TAIL_REQUIRED = {(SCALE_N_MODE, round_) for round_ in TAIL_ROUNDS}
+TAIL_MODES = (SCALE_N_MODE, SCALE_GROUP_MODE, ZERO_GROUP_MODE, "code-k1-tag")
+TAIL_REQUIRED = {(mode, round_) for mode in TAIL_MODES for round_ in TAIL_ROUNDS}
 COUNT = 64
 K = 5120
 N = 1024
@@ -327,6 +328,19 @@ def summarize_raw(values: tuple[int, ...]) -> str:
     )
 
 
+def tail_value(mode: str, k: int) -> int:
+    """Raw fp16 output for one shifted-tail fixture at n=0 and A=1."""
+    if mode == SCALE_N_MODE:
+        value = 1
+    elif mode in (SCALE_GROUP_MODE, ZERO_GROUP_MODE):
+        value = k // 32 + 1
+    elif mode == "code-k1-tag":
+        value = ((k >> 4) & 15) - 8
+    else:
+        raise EvidenceError(f"unknown shifted-tail mode {mode!r}")
+    return half_bits(float(value))
+
+
 def adjudicate_tail(
     records: dict[tuple[str, str], Record],
 ) -> tuple[str, list[str], list[str]]:
@@ -344,43 +358,75 @@ def adjudicate_tail(
         raise EvidenceError(
             f"tail denominator mismatch missing={missing} extra={extra}"
         )
-    lines = ["round\trow\tprobe_k\tgot\twant\tstatus"]
+    lines = [
+        "mode\tround\trow\tprobe_k\tgot\twant\tstatus\t"
+        "previous_tile\tnext_delivery"
+    ]
     summaries: list[str] = []
-    full_counts: list[int] = []
-    prefix_counts: list[int] = []
-    tail_counts: list[int] = []
-    for round_ in TAIL_ROUNDS:
-        record = records[(SCALE_N_MODE, round_)]
-        full = prefix = tail = 0
-        for row, (got, want) in enumerate(zip(record.rows, record.row_want)):
-            exact = got == want
-            full += int(exact)
-            if row < 48:
-                prefix += int(exact)
-            else:
-                tail += int(exact)
-            lines.append(
-                f"{round_}\t{row}\t{probe_k(round_, row)}\t"
-                f"0x{got:04x}\t0x{want:04x}\t"
-                f"{'IDENTITY' if exact else 'MISMATCH'}"
+    identity = prefix_identity = tail_identity = 0
+    previous_tail = next_tail = 0
+    total = len(TAIL_MODES) * len(TAIL_ROUNDS) * COUNT
+    tail_total = len(TAIL_MODES) * len(TAIL_ROUNDS) * 16
+    sensitive_tail_total = (len(TAIL_MODES) - 1) * len(TAIL_ROUNDS) * 16
+    for mode in TAIL_MODES:
+        for round_ in TAIL_ROUNDS:
+            record = records[(mode, round_)]
+            full = prefix = tail = previous = next_delivery = 0
+            for row, (got, want) in enumerate(zip(record.rows, record.row_want)):
+                k = probe_k(round_, row)
+                expected = tail_value(mode, k)
+                if want != expected:
+                    raise EvidenceError(
+                        f"{mode}/{round_}/row{row}: fixture want 0x{want:04x} "
+                        f"does not match registered tag 0x{expected:04x}"
+                    )
+                exact = got == want
+                previous_value = tail_value(mode, k - 128)
+                next_value = tail_value(mode, k + 32)
+                is_previous = row >= 48 and mode != SCALE_N_MODE and got == previous_value
+                is_next = row >= 48 and mode != SCALE_N_MODE and got == next_value
+                full += int(exact)
+                identity += int(exact)
+                if row < 48:
+                    prefix += int(exact)
+                    prefix_identity += int(exact)
+                else:
+                    tail += int(exact)
+                    tail_identity += int(exact)
+                    previous += int(is_previous)
+                    next_delivery += int(is_next)
+                    previous_tail += int(is_previous)
+                    next_tail += int(is_next)
+                lines.append(
+                    f"{mode}\t{round_}\t{row}\t{k}\t"
+                    f"0x{got:04x}\t0x{want:04x}\t"
+                    f"{'IDENTITY' if exact else 'MISMATCH'}\t"
+                    f"{int(is_previous)}\t{int(is_next)}"
+                )
+            summaries.append(
+                f"Q4_A32_TAIL_ROUND mode={mode} round={round_} "
+                f"identity={full}/64 prefix={prefix}/48 tail={tail}/16 "
+                f"previous={previous}/16 next_delivery={next_delivery}/16 "
+                f"tail_got={summarize_raw(record.rows[48:])}"
             )
-        full_counts.append(full)
-        prefix_counts.append(prefix)
-        tail_counts.append(tail)
-        summaries.append(
-            f"Q4_A32_TAIL_ROUND round={round_} identity={full}/64 "
-            f"prefix={prefix}/48 tail={tail}/16 "
-            f"tail_got={summarize_raw(record.rows[48:])}"
-        )
-    if full_counts == [64, 64]:
-        verdict = "NEXT_TILE_LIVE"
-    elif prefix_counts == [48, 48] and tail_counts == [0, 0]:
-        verdict = "EVERY_TILE_LAST_DELIVERY_BAD"
+    prefix_total = len(TAIL_MODES) * len(TAIL_ROUNDS) * 48
+    if identity == total:
+        verdict = "NEXT_TILE_FRESH"
+    elif (prefix_identity == prefix_total and
+          tail_identity == 2 * 16 and  # scale-n is intentionally K-invariant.
+          previous_tail == sensitive_tail_total):
+        verdict = "PREVIOUS_TILE_STALE"
+    elif (prefix_identity == prefix_total and
+          tail_identity == 2 * 16 and
+          next_tail == sensitive_tail_total):
+        verdict = "NEXT_DELIVERY_CLOBBER"
     else:
         verdict = "MIXED"
     lines.append(
-        "summary\t-\t-\t-\t-\t" + verdict +
-        f" full={sum(full_counts)}/128 tail={sum(tail_counts)}/32"
+        "summary\t-\t-\t-\t-\t-\t" + verdict +
+        f"\tidentity={identity}/{total};tail={tail_identity}/{tail_total};"
+        f"previous={previous_tail}/{sensitive_tail_total};"
+        f"next={next_tail}/{sensitive_tail_total}"
     )
     return verdict, lines, summaries
 
@@ -420,12 +466,20 @@ def identity_records() -> dict[tuple[str, str], Record]:
 
 def tail_identity_records() -> dict[tuple[str, str], Record]:
     out: dict[tuple[str, str], Record] = {}
-    rows = tuple(half_bits(1.0) for _ in range(COUNT))
-    cols = tuple(half_bits(float(n + 1)) for n in range(COUNT))
-    for round_ in TAIL_ROUNDS:
-        out[(SCALE_N_MODE, round_)] = Record(
-            SCALE_N_MODE, round_, rows, rows, cols, cols
-        )
+    for mode in TAIL_MODES:
+        for round_ in TAIL_ROUNDS:
+            rows = tuple(
+                tail_value(mode, probe_k(round_, row)) for row in range(COUNT)
+            )
+            # Column values are not adjudicated by the shifted-tail classifier,
+            # but retain the real fixture contract so parser plants stay useful.
+            cols = tuple(
+                half_bits(float(n + 1)) if mode == SCALE_N_MODE else rows[0]
+                for n in range(COUNT)
+            )
+            out[(mode, round_)] = Record(
+                mode, round_, rows, rows, cols, cols
+            )
     return out
 
 
@@ -497,18 +551,36 @@ def self_test() -> None:
 
     tail_records = tail_identity_records()
     verdict, _, _ = adjudicate_tail(tail_records)
-    if verdict != "NEXT_TILE_LIVE":
-        raise EvidenceError("next-tile identity fixture did not remain live")
-    recurring = dict(tail_records)
-    for key, old in tuple(recurring.items()):
-        rows = list(old.rows)
-        rows[48:] = [half_bits(0.0)] * 16
-        recurring[key] = dataclasses.replace(old, rows=tuple(rows))
-    verdict, _, _ = adjudicate_tail(recurring)
-    if verdict != "EVERY_TILE_LAST_DELIVERY_BAD":
-        raise EvidenceError("recurring final-delivery plant was not classified")
+    if verdict != "NEXT_TILE_FRESH":
+        raise EvidenceError("next-tile identity fixture did not remain fresh")
+    previous = dict(tail_records)
+    forward = dict(tail_records)
+    for planted, offset in ((previous, -128), (forward, 32)):
+        for key, old in tuple(planted.items()):
+            mode, round_ = key
+            if mode == SCALE_N_MODE:
+                continue
+            rows = list(old.rows)
+            for row in range(48, COUNT):
+                rows[row] = tail_value(mode, probe_k(round_, row) + offset)
+            planted[key] = dataclasses.replace(old, rows=tuple(rows))
+    verdict, _, _ = adjudicate_tail(previous)
+    if verdict != "PREVIOUS_TILE_STALE":
+        raise EvidenceError("previous-tile stale plant was not classified")
+    verdict, _, _ = adjudicate_tail(forward)
+    if verdict != "NEXT_DELIVERY_CLOBBER":
+        raise EvidenceError("next-delivery overwrite plant was not classified")
+    mixed = dict(tail_records)
+    key = (SCALE_GROUP_MODE, "even-next")
+    old = mixed[key]
+    rows = list(old.rows)
+    rows[63] = half_bits(37.0)
+    mixed[key] = dataclasses.replace(old, rows=tuple(rows))
+    verdict, _, _ = adjudicate_tail(mixed)
+    if verdict != "MIXED":
+        raise EvidenceError("single wrong shifted-tail tag was not MIXED")
     missing_tail = dict(tail_records)
-    del missing_tail[(SCALE_N_MODE, "odd-next")]
+    del missing_tail[("code-k1-tag", "odd-next")]
     try:
         adjudicate_tail(missing_tail)
     except EvidenceError:
@@ -518,8 +590,8 @@ def self_test() -> None:
     print(
         "[q4-a32-tags:self-test] PASS: identity; one-bit B and independent "
         "zero-map plants=NONIDENTITY; missing denominator, wrong round and "
-        "marker/data mismatch=RED; shifted-tail live/recurring classified "
-        "and missing shifted round=RED"
+        "marker/data mismatch=RED; shifted-tail fresh/previous/forward/MIXED "
+        "classified and missing shifted combination=RED"
     )
 
 

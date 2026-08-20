@@ -25,7 +25,8 @@ struct MixedPipelineDriver {};
 //
 // Keeping the consume-stage token here is correctness-critical. Both deferred B providers once read scale or plane-2
 // data from the post-advance stage when K_BLOCK_MAX == 1.
-template <int Stages, class KBlockMax, class KTileIterator,
+template <int Stages, bool ConsumeBeforePrepare = false,
+          class KBlockMax, class KTileIterator,
           class BindRead, class Publish, class Prepare, class Prefetch, class Consume>
 CUTLASS_DEVICE void run_mixed_pipeline(
     KBlockMax const&,
@@ -63,6 +64,16 @@ CUTLASS_DEVICE void run_mixed_pipeline(
 
       int const consume_stage = smem_pipe_read;
       auto k_block_next = (k_block + cute::Int<1>{}) % cute::Int<KBlocks>{};
+      // The ordinary and two-plane paths retain their established look-ahead
+      // cadence.  A folded multi-delivery reader may instead consume the
+      // current register delivery before writing the next one.  This is a
+      // compile-time policy, not a runtime branch: it removes the only live
+      // range that crosses a wrap-around prepare (last delivery -> next
+      // tile's delivery zero), while preserving the same copies, MMA count,
+      // barriers and stage-ring transitions.
+      if constexpr (ConsumeBeforePrepare) {
+        consume(k_block, consume_stage);
+      }
       prepare(k_block_next, smem_pipe_read, cute::Int<0>{});
 
       if constexpr (decltype(k_block)::value == 0) {
@@ -79,7 +90,9 @@ CUTLASS_DEVICE void run_mixed_pipeline(
         smem_pipe_read = (smem_pipe_read == Stages) ? 0 : smem_pipe_read;
       }
 
-      consume(k_block, consume_stage);
+      if constexpr (!ConsumeBeforePrepare) {
+        consume(k_block, consume_stage);
+      }
     });
   }
 

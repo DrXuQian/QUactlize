@@ -28,6 +28,9 @@ TAG_MODES = (
     "code-n0-tag", "code-n1-tag", "code-n2-tag",
 )
 TAG_ROUNDS = ("even", "odd", "stage")
+TAIL_TAG_MODES = (
+    "scale-n-tag", "scale-group-tag", "zero-group-tag", "code-k1-tag",
+)
 TAIL_TAG_ROUNDS = ("even-next", "odd-next")
 
 
@@ -67,6 +70,7 @@ def function_modes(source: str, name: str) -> set[str] | None:
 
 def audit(bench: str, runner: str) -> list[str]:
     bad: list[str] = []
+    compact_runner = re.sub(r"\s+", " ", re.sub(r"\\\s+", " ", runner))
     expected = {mode: first_golden(mode) for mode in MODES}
     if len(expected) != 6:
         bad.append("fixture denominator is not six")
@@ -130,10 +134,12 @@ def audit(bench: str, runner: str) -> list[str]:
             f"extra={sorted(tag_specs - expected_tag_specs)}"
         )
     tail_specs = set(re.findall(
-        r"\b(scale-n-tag):(even-next|odd-next)\b", runner,
+        r"\b(scale-(?:group|n)-tag|zero-group-tag|code-k1-tag):"
+        r"(even-next|odd-next)\b", runner,
     ))
     expected_tail_specs = {
-        ("scale-n-tag", round_) for round_ in TAIL_TAG_ROUNDS
+        (mode, round_) for mode in TAIL_TAG_MODES
+        for round_ in TAIL_TAG_ROUNDS
     }
     if tail_specs != expected_tail_specs:
         bad.append(
@@ -148,6 +154,28 @@ def audit(bench: str, runner: str) -> list[str]:
     ):
         if token not in runner and token not in bench:
             bad.append(f"shifted-tail bisection lost {token}")
+    closure_tokens = (
+        "Q4_A32_CLOSURE",
+        "legacy-both 'PPU_Q4_A32_LEGACY_RAW_SCATTER=1 PPU_Q4_A32_LEGACY_PREPARE_ORDER=1'",
+        "typed-old-order 'PPU_Q4_A32_LEGACY_PREPARE_ORDER=1'",
+        "raw-consume-first 'PPU_Q4_A32_LEGACY_RAW_SCATTER=1'",
+        "candidate ''",
+        'run_tail_bisect "$root" "$legacy" "$out"',
+        'run_exact_variant "$legacy" "$out" legacy-both',
+        'run_exact_variant "$typed_old" "$out" typed-old-order',
+        'run_exact_variant "$raw_first" "$out" raw-consume-first',
+        'run_exact_variant "$candidate" "$out" candidate',
+        'legacy_signature_present "$out/results/exact-legacy-both.log"',
+        'if [ "$candidate_state" != PASS ]',
+    )
+    for token in closure_tokens:
+        if token not in compact_runner:
+            bad.append(f"one-box closure lost {token}")
+    if compact_runner.count(
+            'build_exact_variant "$root" "$generated" "$out"') != 4:
+        bad.append("one-box closure does not build exactly four factorial arms")
+    if compact_runner.count("run_exact_variant") != 5:  # definition + four calls
+        bad.append("one-box closure does not run exactly four exact arms")
     for token in (
         "return (k >> 0) & 15", "return (k >> 4) & 15",
         "return (k >> 8) & 15", "return (k >> 12) & 15",
@@ -181,8 +209,11 @@ def main() -> int:
          "missing zero fingerprint"),
         (bench, runner.replace("code-k3-tag:stage", "", 1),
          "missing coordinate-tag denominator"),
-        (bench, runner.replace("scale-n-tag:odd-next", "", 1),
-         "missing shifted-tail round"),
+        (bench, runner.replace("code-k1-tag:odd-next", "", 1),
+         "missing shifted-tail absolute-K combination"),
+        (bench, runner.replace(
+            'run_exact_variant "$raw_first" "$out" raw-consume-first',
+            "true", 1), "missing one factorial exact arm"),
         (bench.replace("return (k >> 12) & 15", "return (k >> 11) & 15", 1),
          runner, "wrong coordinate-tag bit"),
     )
@@ -196,7 +227,7 @@ def main() -> int:
         f"{mode}=0x{first_golden(mode):04x}" for mode in MODES)
     print("[q4-a32-fixtures] PASS: " + rendered +
           "; wrong-golden/missing-component/missing-fingerprint/"
-          "missing-tag/wrong-tag-bit plants red")
+          "missing-tag/missing-factorial-arm/wrong-tag-bit plants red")
     return 0
 
 

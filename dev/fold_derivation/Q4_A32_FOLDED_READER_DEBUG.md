@@ -17,8 +17,8 @@ repository playbook rather than a general debugging skill.
 | Problem | `M=64, N=1024, K=5120` |
 | Exact tactic | `64x64x128_w16x32_s8_bc0` |
 | Exact symbol | `sf_q12_a32_tm64_tn64_tk128_wm16_wn32_s8_bc0` |
-| Local verdict | Offline artifact and all statically composable reader/metadata maps are exact; root cause remains device-dynamic |
-| PPU numeric verdict | `eb7d95c` reproduced the identical `61184`, `-3 -> -18` signature; `981afaa` is not the cause or fix |
+| Local verdict | Offline maps are exact; L219 proves the typed half2 destination and makes the historical cadence red under a constructive d3-to-next-d0 alias |
+| PPU numeric verdict | `eb7d95c` disproved static indexing as a sole fix; `5bf61dd` proves the second tile is live but its scale-N tag is K-invariant; final 2x2 closure is pending |
 
 Do not rewrite the device verdict from a host proof.  The remaining seam
 crosses runtime cp.async/pipeline/codegen behavior; only the exact device
@@ -290,26 +290,23 @@ two MMA K atoms.  B and both metadata channels disappear at the same cadence.
 
 This result falsifies a global folded placement/scatter permutation and an
 independent scale/zero coordinate-loader defect.  It does not yet identify a
-unique source line.  The remaining distinction is runtime cadence: either
-every TK128 tile loses its last 32K delivery, or only the first tile loses it
-through prologue/stage lifetime.  `even-next` and `odd-next` move the same 128
-local coordinates to the second tile.  This is two diagnostic launches, not
-a new sweep:
+unique source line.  `even-next` and `odd-next` moved the same coordinates to
+the second tile.  At `5bf61dd`, both rounds reported `identity=64/64`, including
+all 16 final-delivery rows, and were initially summarized as `NEXT_TILE_LIVE`.
 
-```bash
-cd /sim/eec/shared/junfu.qx/quactlize
-git pull --ff-only origin develop
+That label was too strong.  The arm used `scale-n-tag`, whose value depends on
+N and is invariant in K.  It proves that the second-tile A/output path is live,
+but a stale previous-tile scale, the correct scale, and a forward-clobbering
+next-delivery scale all carry the same value.  It cannot classify B or metadata
+freshness.
 
-OUT=/workspace/quactlize-q4-a32-tail-bisect-$(git rev-parse --short HEAD)-$(date -u +%Y%m%dT%H%M%SZ)
-Q4_A32_TAIL_BISECT=1 JOBS=16 OUT="$OUT" \
-  bash tools/run_scalefirst_q4_a32_exact_box.sh
-echo "artifacts: $OUT"
-```
-
-`NEXT_TILE_LIVE` isolates the defect to first-tile prologue/lifetime;
-`EVERY_TILE_LAST_DELIVERY_BAD` isolates a repeated fourth-delivery cadence;
-anything else is reported as `MIXED`.  The analyzer stores all 128 raw points
-but prints only the two round summaries and the verdict.
+The closure therefore repeats the shifted round with four independent modes:
+scale-N as the invariant control, scale-group and zero-group as absolute
+K-group tags, and code-K1 as an independent absolute-K nibble.  Its exact
+denominator is 4 modes x 2 rounds x 64 rows.  The only registered verdicts are
+`NEXT_TILE_FRESH`, `PREVIOUS_TILE_STALE`, `NEXT_DELIVERY_CLOBBER`, and `MIXED`.
+A missing mode/round or a fixture `want` inconsistent with its registered
+absolute K is an infrastructure failure, not a device result.
 
 ```bash
 cd /sim/eec/shared/junfu.qx/quactlize
@@ -365,7 +362,10 @@ discarded it.
 However, the exact PPU row at `eb7d95c` (which contains `981afaa`) reproduced
 the original signature byte for byte: `raw_bad=61184`, first `-3 -> -18`.
 Therefore static-index erasure is neither the root cause nor a fix for this
-incident.  It must not be used as the explanation for a later closure.
+incident.  It must not be used as the explanation for a later closure.  The
+new candidate retains compile-time KBlock only because the typed CuTe
+destination needs a compile-time coordinate; that is a prerequisite, not a
+renewed causal claim.
 
 ## Candidate change in `981afaa`
 
@@ -388,9 +388,54 @@ The patch preserves compile-time identity across the entire register path:
 The change is deliberately narrower than rewriting the artifact or changing
 fold, but its device result is negative.  Keep its source-hygiene merit and
 its incident causality separate; the latter has been constructively rejected.
-The diagnostic tree therefore restores `ppu_mma_aiu_fold.hpp` byte-for-byte
-to `851a374` before running the three fixture arms; a disproved candidate must
-not become part of the new baseline merely because it is plausible.
+The six component arms at `789d25f` and the shifted-tail observations through
+`5bf61dd` were therefore taken from the restored historical implementation.
+
+## One-box typed-scatter/cadence closure
+
+The remaining production candidate changes two independently selectable
+seams, without changing the artifact, copies, MMA count, barriers, stage-ring
+advance, scale/zero arithmetic, or output:
+
+1. The Q4 folded emitter keeps its destination as a CuTe half2 tensor with
+   named `(half2-in-group, delivery, fold, instance)` modes through the final
+   store.  The existing two-opcode emitter is unchanged.
+2. For the exact Q4/A32/F2/four-delivery family, current delivery is consumed
+   before the next delivery is prepared.  In particular, delivery three is
+   dead before next-tile delivery zero is written.
+
+L219 establishes two host-bounded facts.  All 64 half2 destinations agree
+with `MixGemmArtifactScatter`, are exact-once, and delivery three is disjoint
+from delivery zero.  Under an explicit d3-to-next-d0 register-alias plant, the
+historical prepare-before-consume order corrupts all 16 live values while
+consume-before-prepare corrupts none.  A zero delivery-stride plant produces
+48 duplicate destinations.  This does not prove PPU register allocation; it
+makes the proposed lifetime rule and its negative falsifiable locally.
+
+The box runner builds a 2x2 factorial from the same generated shipping row:
+
+| Variant | Destination | Cadence |
+|---|---|---|
+| `legacy-both` | raw | prepare then consume |
+| `typed-old-order` | typed CuTe | prepare then consume |
+| `raw-consume-first` | raw | consume then prepare |
+| `candidate` | typed CuTe | consume then prepare |
+
+The batch is admitted only if `legacy-both` exactly reproduces
+`raw_bad=61184`, first `-3 -> -18`.  The two middle arms identify which seam
+matters.  The batch closes only when `candidate` is raw-bit exact.  Binary
+hashes, git SHA, all absolute-K tail logs, the 2x2 exact logs, and the final
+verdict are stored below one `/workspace` artifact directory.
+
+```bash
+cd /sim/eec/shared/junfu.qx/quactlize
+git pull --ff-only origin develop
+
+OUT=/workspace/quactlize-q4-a32-closure-$(git rev-parse --short HEAD)-$(date -u +%Y%m%dT%H%M%SZ)
+Q4_A32_CLOSURE=1 JOBS=16 OUT="$OUT" \
+  bash tools/run_scalefirst_q4_a32_exact_box.sh
+echo "artifacts: $OUT"
+```
 
 ## Local reproduction
 
@@ -414,7 +459,7 @@ nvcc -std=c++17 -arch=sm_80 -w "${INC[@]}" \
   -o /workspace/quactlize-q4-a32-oracles/l123
 /workspace/quactlize-q4-a32-oracles/l123
 
-for id in 211 212 213 216 217 218; do
+for id in 211 212 213 216 217 218 219; do
   nvcc -std=c++17 -arch=sm_80 -w "${INC[@]}" \
     "dev/fold_derivation/l${id}_q4_a32_"*.cu \
     -o "/workspace/quactlize-q4-a32-oracles/l${id}"
@@ -423,6 +468,10 @@ done
 
 QUACTLIZE_L214_OUT=/workspace/quactlize-l214-q4-a32-exact \
   bash dev/fold_derivation/run_l214_q4_a32_exact_type.sh
+
+python3 -B ci/check_q4_a32_fixture_components.py
+python3 -B ci/adjudicate_q4_a32_coordinate_tags.py --self-test
+python3 -B ci/check_q4_a32_typed_cadence.py
 ```
 
 If a toolchain glob selects more than one source, invoke each oracle by its

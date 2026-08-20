@@ -177,6 +177,21 @@ struct MixGemmArtifactScatter {
       cute::Shape<cute::Int<Group>, cute::_1, cute::Int<Fold>>,
       cute::Stride<cute::_1, cute::Int<Group>, cute::Int<Group>>>;
 
+  // A CuTe view of the destination in the exact unit written by the PPU
+  // emitter: half2.  Keeping delivery/fold/instance as named modes makes the
+  // register owner visible to the compiler.  The folded collective used to
+  // turn the whole fragment into a raw half pointer, add a positional offset,
+  // cast that offset to uint32_t*, and only then emit.  That is extensionally
+  // the same address map in host C++, but it erases the register modes at the
+  // device-code boundary.
+  template <int Instances>
+  using Half2Layout = cute::Layout<
+      cute::Shape<cute::Int<Group / 2>, cute::Int<Deliveries>,
+                  cute::Int<Fold>, cute::Int<Instances>>,
+      cute::Stride<cute::_1, cute::Int<Group / 2>,
+                   cute::Int<Deliveries * Group / 2>,
+                   cute::Int<Deliveries * VEC / 2>>>;
+
   static constexpr int flat(int e, int delivery, int n_instance = 0) {
     return n_instance * Deliveries * VEC
          + (e / Group) * Deliveries * Group
@@ -363,27 +378,36 @@ struct MixGemmChunkEmit {
     return dup(uint32_t(0x8000u | ((25 - bpos<T>()) << 10) | (uint32_t(kBias) << bpos<T>())));
   }
 
-  template <int T, int V>
-  CUTLASS_DEVICE static void emit_one(uint32_t reg, uint32_t* h2) {
+  template <int T, int V, class Store>
+  CUTLASS_DEVICE static void emit_one_to(uint32_t reg, Store& store) {
     const uint32_t src = (T / kPerLevel) ? (reg >> 8) : reg;
     uint32_t x;
     asm volatile("ppu.lop3.b32 %0,%1,%2,%3,%4;\n"
                  : "=r"(x) : "r"(src), "n"(mask<T>()), "n"(0x64006400u), "n"(0xEAu));
     asm volatile("ppu.fma.rtte.f16x2 %0,%1,%2,%3;\n"
                  : "=r"(x) : "r"(x), "r"(mul<T>()), "r"(add<T>()));
-    h2[at(T, V)] = x;
+    store(cute::Int<at(T, V)>{}, x);
   }
 
-  template <int V>
-  CUTLASS_DEVICE static void emit_v(uint32_t reg, uint32_t* h2) {
+  template <int V, class Store>
+  CUTLASS_DEVICE static void emit_v_to(uint32_t reg, Store& store) {
     cute::for_each(cute::make_int_sequence<kPairsPerVreg>{}, [&] (auto t) {
       constexpr int T = decltype(t)::value;
-      if constexpr (keep(T, V)) emit_one<T, V>(reg, h2);
+      if constexpr (keep(T, V)) emit_one_to<T, V>(reg, store);
     });
   }
 
+  template <class Store>
+  CUTLASS_DEVICE static void emit_to(uint32_t const* s, Store&& store_arg) {
+    auto& store = store_arg;
+    emit_v_to<0>(s[0], store); emit_v_to<1>(s[1], store);
+    emit_v_to<2>(s[2], store); emit_v_to<3>(s[3], store);
+  }
+
   CUTLASS_DEVICE static void emit(uint32_t const* s, uint32_t* h2) {
-    emit_v<0>(s[0], h2); emit_v<1>(s[1], h2); emit_v<2>(s[2], h2); emit_v<3>(s[3], h2);
+    emit_to(s, [&] (auto index, uint32_t value) {
+      h2[decltype(index)::value] = value;
+    });
   }
 };
 

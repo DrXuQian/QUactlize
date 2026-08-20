@@ -150,6 +150,11 @@ GATES = [
     ("l121_grouped_streamk_wrapper", []),
     ("l122_streamk_fixup_cohort", []),
     ("l146_q4k_pdf_ab_fixture", []),
+    # Q4_K/A32's device-only failure sits at a register-delivery wrap.  This
+    # host gate proves the typed half2 destination is exact-once and that the
+    # historical prepare-before-consume cadence turns red under a constructive
+    # d3->next-d0 alias while consume-before-prepare remains correct.
+    ("l219_q4_a32_typed_cadence", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -510,6 +515,13 @@ def lint_q4_a32_coordinate_tags():
     return _run_ci_script(
         "adjudicate_q4_a32_coordinate_tags.py",
         "Q4/A32 tags independently recover B, scale and zero coordinates")
+
+
+def lint_q4_a32_typed_cadence():
+    """Bind the exact folded reader's typed destination and cadence policy."""
+    return _run_ci_script(
+        "check_q4_a32_typed_cadence.py",
+        "Q4/A32 typed half2 scatter and consume-first policy are source-bound")
 
 
 def lint_device_probe_scope():
@@ -2472,6 +2484,7 @@ def main():
                 ("lint", "fold metadata publication uses one proved physical owner", lint_fold_metadata_single_owner),
                 ("lint", "Q4/A32 component fixtures fail closed on a wrong host golden", lint_q4_a32_fixture_components),
                 ("lint", "Q4/A32 device coordinate tags have an exact denominator and planted reds", lint_q4_a32_coordinate_tags),
+                ("lint", "Q4/A32 typed half2 destination and cadence controls are source-bound", lint_q4_a32_typed_cadence),
                 ("lint", "a device-compiler SKIP only guards checks that reach a compiler", lint_device_probe_scope),
                 ("lint", "Stream-K minimum policy rejects an empty K stripe", lint_streamk_min_zero_fires),
                 ("lint", "all mixed collectives use one stage-ring driver", lint_mixed_pipeline_shared),
