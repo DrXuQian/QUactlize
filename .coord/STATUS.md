@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-20 10:11:37 UTC
+    updated-at:     2026-08-20 11:21:15 UTC
     inbox-consumed: 178
-    working-on:     Q4_K/A32 coordinate probe published; awaiting six-map PPU table before changing the folded reader
-    blocked-on:     final root-cause formula awaits the one-build/33-launch PPU coordinate table
-    local-gates:    targeted PASS: exact 1536-coordinate denominator and planted negatives; exact shipping row preprocesses; full tier 171 PASS / 1 SKIP / 27 pre-existing environment-or-baseline FAIL
-    last-commit:    a338d03 Diagnose Q4 A32 device coordinate mapping
+    working-on:     Q4_K/A32 fault isolated to first-tile local K96..127; two-launch shifted-tail cadence bisection ready for PPU
+    blocked-on:     unique source-line diagnosis awaits whether second-tile local K96..127 is live or repeats the loss
+    local-gates:    PASS 2/2 Q4/A32; shifted-tail live/recurring and missing-round negatives PASS; exact row preprocesses with even-next/odd-next
+    last-commit:    0b7deab Bisect Q4 A32 final delivery lifetime
     last-heartbeat: 369
