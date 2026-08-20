@@ -11,18 +11,18 @@ repository playbook rather than a general debugging skill.
 | Item | Binding |
 |---|---|
 | First observed revision | `851a374` |
-| Source fix | `981afaa` (`fix Q4 A32 folded reader register indexing`) |
+| Disproved candidate | `981afaa` (`fix Q4 A32 folded reader register indexing`) |
 | Format | GGUF Q4_K, `qtype=12`, `gs=32`, `bchunk=0` |
 | Artifact | `ArtifactTileK=32`, folded `F=2` |
 | Problem | `M=64, N=1024, K=5120` |
 | Exact tactic | `64x64x128_w16x32_s8_bc0` |
 | Exact symbol | `sf_q12_a32_tm64_tn64_tk128_wm16_wn32_s8_bc0` |
-| Local verdict | The register-indexing seam is identified, fixed, and covered by independent host/type oracles |
-| PPU numeric verdict | **PENDING** until the exact one-row runner reports `raw_bad=0` |
+| Local verdict | Offline artifact and all statically composable reader/metadata maps are exact; root cause remains device-dynamic |
+| PPU numeric verdict | `eb7d95c` reproduced the identical `61184`, `-3 -> -18` signature; `981afaa` is not the cause or fix |
 
-Do not rewrite the pending verdict from a host proof.  The defect crossed a
-PPU register-codegen boundary; only the exact device specialization closes the
-numeric claim.
+Do not rewrite the device verdict from a host proof.  The remaining seam
+crosses runtime cp.async/pipeline/codegen behavior; only the exact device
+specialization closes the numeric claim.
 
 ## Failure record
 
@@ -89,7 +89,11 @@ of the same high-level layout.
 | global-to-shared address | `l212_q4_a32_gmem_map.cu` | Every 32-byte quantum selected by the production operand has the independently computed artifact address | swapping descriptor `(coord_w, coord_h)` roles is red |
 | output signature | `l213_q4_a32_failure_signature.cu` | Correct scatter reproduces raw-bit output; a delivery-major scatter corrupts it | one planted destination permutation is red |
 | exact shipping type/body | `l214_q4_a32_exact_type.cu` | The exact generated `RowTypes<12,32,64,64,128,16,32,8,0>` reaches the full kernel body | unexpected non-vendor compile diagnostics are red |
-| final device value | `tools/run_scalefirst_q4_a32_exact_box.sh` | The shipping PPU specialization is numerically exact | any nonzero `raw_bad`, missing one-row marker, or nonzero process status is red |
+| metadata apply composition | `l216_q4_a32_metadata_apply_map.cu` | Every converted code is paired with scale/zero from the same logical N | rotating metadata N by one is red |
+| exact composed code reader | `l217_q4_a32_exact_composed_reader.cu` | Offline artifact slot through AIU destination, real tiled smem, TSM load, converter/scatter and MMA logical `(n,k)` is a bijection | rotating logical N by one is red |
+| metadata global-to-shared | `l218_q4_a32_metadata_gmem_smem_map.cu` | All 40 K tiles and 10,240 values map through the production capped cp.async tiled copy to the intended stage/group/N slot | transposing source N/group is red |
+| three-arm device bisection | `FIXTURES=code-only,metadata-only,exact tools/run_scalefirst_q4_a32_exact_box.sh` | Separates code-reader, metadata, and interaction failures in one compiled specialization | every arm must be classifiable; infrastructure cannot become a numeric bucket |
+| final device value | default single-exact mode of the same runner | The shipping PPU specialization is numerically exact | any nonzero `raw_bad`, missing one-row marker, or nonzero process status is red |
 
 Recorded local positives:
 
@@ -108,6 +112,15 @@ L213 correct raw_bad=0 first=0;
 
 L214 exact q12/A32/64x64x128-w16x32-s8 body=REACHED
   vendor-asm-baseline=84 nonvendor=0 result=PASS
+
+L216 metadata-apply same-N=32768/32768 bad=0 map_uncovered=0
+  owner_conflicts=0; rotate-N-negative=64512/65536 result=PASS
+
+L217 exact-reader map_diff=0/8192 owner_bad=0 predicted_raw_bad=0
+  rotate-N-negative=64512 result=PASS
+
+L218 metadata-gmem-smem tiles=40 values=10240 physical-duplicate=8 positive=EXACT
+  transpose-negative=RED result=PASS
 ```
 
 The exact L212 ABI detail matters: `coord_` is `(coord_w, coord_h)`, not
@@ -125,16 +138,23 @@ a plausible but false map.
 - Missing or permuted whole K blocks cannot reproduce the signature.
 - A delivery-major destination transpose is detectably wrong, but its planted
   signature does not match the device failure.
-- Metadata stage/group/N delivery is exact under an independently encoded
-  oracle.
+- Metadata global-to-shared delivery and shared-to-register application are
+  exact under independently encoded oracles.
 - Global-to-shared copy quanta are exact and unique under an arithmetic address
   oracle that does not call the producer placement function.
+- The full offline-artifact-to-MMA code path is exact under a composed oracle;
+  it reports `map_diff=0/8192` and exact-once ownership.
 
-Consequently the remaining seam was after the proved load ownership and before
-MMA consumption: indexing of register-backed fragments in the real device
-body.
+Consequently an offline placement change is not supported by the evidence.
+The remaining seam is device-dynamic: actual cp.async issue/publication,
+runtime pipeline stage reuse, or PPU lowering of the otherwise exact reader.
+The exact tactic has 256 CTA threads but only 32 metadata-copy slots; production
+wraps the thread id and issues eight identical writes per logical slot.  That
+is statically complete, but its device behavior is not proved by an address
+oracle.  The three fixture arms below distinguish this metadata path from the
+code reader before another production edit.
 
-## Root seam
+## Disproved register-index hypothesis
 
 `detail::run_mixed_pipeline` supplies `k_block` as a compile-time
 `cute::Int<k_block>`.  Two helper boundaries erased that type:
@@ -150,14 +170,16 @@ same dependency hidden behind `#pragma unroll`.
 
 An unroll pragma is not a type-level guarantee.  Host layout proofs can show
 that the intended indices form a bijection while PPU codegen still lowers a
-dynamic register-array subscript differently.  This is a real source defect:
-the pipeline already owned a static index and the helper interface discarded
-it.
+dynamic register-array subscript differently.  This is a real source-hygiene
+issue: the pipeline already owned a static index and the helper interface
+discarded it.
 
-The source-level defect and its fix are closed.  Its causal attribution to the
-observed PPU values remains provisional until the exact device row passes.
+However, the exact PPU row at `eb7d95c` (which contains `981afaa`) reproduced
+the original signature byte for byte: `raw_bad=61184`, first `-3 -> -18`.
+Therefore static-index erasure is neither the root cause nor a fix for this
+incident.  It must not be used as the explanation for a later closure.
 
-## Fix in `981afaa`
+## Candidate change in `981afaa`
 
 The patch preserves compile-time identity across the entire register path:
 
@@ -175,14 +197,17 @@ The patch preserves compile-time identity across the entire register path:
 6. Other bit widths retain their existing chunk emitter; legacy one-delivery
    and unfolded paths remain on their previous converter/write path.
 
-This is deliberately narrower than rewriting the artifact or changing fold.
-The artifact bytes and offline layout were already exact; the reader lost
-static identity while consuming them.
+The change is deliberately narrower than rewriting the artifact or changing
+fold, but its device result is negative.  Keep its source-hygiene merit and
+its incident causality separate; the latter has been constructively rejected.
+The diagnostic tree therefore restores `ppu_mma_aiu_fold.hpp` byte-for-byte
+to `851a374` before running the three fixture arms; a disproved candidate must
+not become part of the new baseline merely because it is plausible.
 
 ## Local reproduction
 
 Use a persistent directory below `/workspace`; none of these checks needs a
-PPU.  L123 and L211-L213 are ordinary nvcc host executables with the
+PPU.  L123, L211-L213, and L216-L218 are ordinary nvcc host executables with the
 repository CuTe headers.  Run L123 directly here: its general-purpose shell
 runner also contains unrelated shipping-builder type-equivalence admissions,
 which are not part of this incident's evidence.  L214 deliberately expects the
@@ -201,7 +226,7 @@ nvcc -std=c++17 -arch=sm_80 -w "${INC[@]}" \
   -o /workspace/quactlize-q4-a32-oracles/l123
 /workspace/quactlize-q4-a32-oracles/l123
 
-for id in 211 212 213; do
+for id in 211 212 213 216 217 218; do
   nvcc -std=c++17 -arch=sm_80 -w "${INC[@]}" \
     "dev/fold_derivation/l${id}_q4_a32_"*.cu \
     -o "/workspace/quactlize-q4-a32-oracles/l${id}"
@@ -212,9 +237,9 @@ QUACTLIZE_L214_OUT=/workspace/quactlize-l214-q4-a32-exact \
   bash dev/fold_derivation/run_l214_q4_a32_exact_type.sh
 ```
 
-If a toolchain glob selects more than one source, invoke L211, L212, and L213
-by their exact filenames instead.  The evidence is the per-oracle marker, not
-merely a zero shell status.
+If a toolchain glob selects more than one source, invoke each oracle by its
+exact filename.  The evidence is the per-oracle marker, not merely a zero
+shell status.
 
 ## Exact PPU closure
 
@@ -224,10 +249,18 @@ Run only the failed row; do not restart the full sweep first:
 cd /sim/eec/shared/junfu.qx/quactlize
 git pull --ff-only origin develop
 
-OUT=/workspace/quactlize-q4-a32-exact-981afaa-$(date -u +%Y%m%dT%H%M%SZ) \
-ITERATIONS=3 CORRECTNESS_REPEATS=8 JOBS=16 \
+OUT=/workspace/quactlize-q4-a32-bisect-$(git rev-parse --short HEAD)-$(date -u +%Y%m%dT%H%M%SZ) \
+FIXTURES=code-only,metadata-only,exact \
+ITERATIONS=1 CORRECTNESS_REPEATS=8 JOBS=16 \
   bash tools/run_scalefirst_q4_a32_exact_box.sh
 ```
+
+The three arms compile the exact shipping row once:
+
+- code-only fail, metadata-only pass: code reader or B pipeline;
+- code-only pass, metadata-only fail: metadata load/apply;
+- both isolated arms pass but exact fails: interaction or stage reuse;
+- both isolated arms fail: common pipeline or multiple defects.
 
 Admission requires all of the following from the same bundle:
 
@@ -249,7 +282,7 @@ Fill this table by appending evidence; do not alter the admission rule above.
 
 | Revision | Device | Result | Artifact directory |
 |---|---|---|---|
-| `981afaa` | PPU | **PENDING** | pending exact runner |
+| `eb7d95c` | PPU | **FAIL**, identical `61184`, first `-3 -> -18` | `/workspace/quactlize-q4-a32-exact-eb7d95c-20260820T070953Z` |
 
 ## Reusable folded-artifact decision tree
 
@@ -297,6 +330,9 @@ For the next folded-reader mismatch, use this order:
 - `dev/fold_derivation/l212_q4_a32_gmem_map.cu`
 - `dev/fold_derivation/l213_q4_a32_failure_signature.cu`
 - `dev/fold_derivation/l214_q4_a32_exact_type.cu`
+- `dev/fold_derivation/l216_q4_a32_metadata_apply_map.cu`
+- `dev/fold_derivation/l217_q4_a32_exact_composed_reader.cu`
+- `dev/fold_derivation/l218_q4_a32_metadata_gmem_smem_map.cu`
 - `dev/fold_derivation/run_l214_q4_a32_exact_type.sh`
 - `tools/gen_scalefirst_internal_units.py`
 - `tools/run_scalefirst_q4_a32_exact_box.sh`
