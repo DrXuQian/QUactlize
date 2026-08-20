@@ -46,8 +46,8 @@ constexpr int encoded(int global_group, int n) {
   return global_group * 10000 + n;
 }
 
-bool one_tile(int k_tile, bool transpose_negative, bool physical_replay,
-              int& shown) {
+bool one_tile(int k_tile, bool transpose_negative, int physical_threads,
+              int expected_hits, int& shown) {
   // Production metadata ABI is (N,scale_k) with strides (1,N).  Identity
   // values retain those logical coordinates while local_tile applies the
   // exact ScaleTile and k-tile rest decomposition.
@@ -60,9 +60,8 @@ bool one_tile(int k_tile, bool transpose_negative, bool physical_replay,
   std::vector<int> hits(cosize(Storage{}), 0);
   bool ok = true;
   GmemCopy copy;
-  int const physical_threads = physical_replay ? CtaThreads : Plan::thread_slots;
   for (int physical = 0; physical < physical_threads; ++physical) {
-    int const slot = physical % Plan::thread_slots;
+    int const slot = Plan::logical_slot(physical);
     auto thr = copy.get_slice(slot);
     auto src = thr.partition_S(gS);
     auto dst = thr.partition_D(sS);
@@ -86,8 +85,6 @@ bool one_tile(int k_tile, bool transpose_negative, bool physical_replay,
     for (int n = 0; n < TN; ++n) {
       int const address = int(Storage{}(n, group, stage));
       int const want = encoded(k_tile * Groups + group, n);
-      int const expected_hits = physical_replay ?
-          CtaThreads / Plan::thread_slots : 1;
       if (hits[address] != expected_hits || resident[address] != want) {
         ok = false;
         if (shown++ < 12) {
@@ -115,18 +112,23 @@ bool run() {
   int shown = 0;
   bool positive = true;
   for (int kt = 0; kt < KTiles; ++kt)
-    positive &= one_tile(kt, false, true, shown);
+    positive &= one_tile(kt, false, Plan::thread_slots, 1, shown);
 
+  int legacy_shown = 12;
+  bool const legacy_wrap_false_green =
+      one_tile(1, false, CtaThreads, 1, legacy_shown);
+  bool const legacy_wrap_red = !legacy_wrap_false_green;
   int negative_shown = 0;
   bool const transposed_false_green =
-      one_tile(1, true, false, negative_shown);
+      one_tile(1, true, Plan::thread_slots, 1, negative_shown);
   bool const negative_red = !transposed_false_green;
-  bool const ok = positive && negative_red;
+  bool const ok = positive && legacy_wrap_red && negative_red;
   std::printf(
-      "L218 metadata-gmem-smem tiles=%d values=%d physical-duplicate=%d "
-      "positive=%s transpose-negative=%s result=%s\n",
-      KTiles, KTiles * TN * Groups, CtaThreads / Plan::thread_slots,
+      "L218 metadata-gmem-smem tiles=%d values=%d owners=%d/%d "
+      "positive=%s legacy-wrap-negative=%s transpose-negative=%s result=%s\n",
+      KTiles, KTiles * TN * Groups, Plan::thread_slots, CtaThreads,
       positive ? "EXACT" : "FAIL",
+      legacy_wrap_red ? "RED" : "FALSE-GREEN",
       negative_red ? "RED" : "FALSE-GREEN", ok ? "PASS" : "FAIL");
   return ok;
 }

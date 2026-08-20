@@ -9,6 +9,7 @@
 
 #define PPU_PACKED_SCALE 0
 #define PPU_B_CHUNK 0
+#define PPU_Q4_A32_EXACT_TYPE_PROBE 1
 #define SCALEFIRST_TYPE_ONLY 1
 #define SCALEFIRST_UNIT_ROWS(X)                                      \
   X(sf_q12_a32_tm64_tn64_tk128_wm16_wn32_s8_bc0,                    \

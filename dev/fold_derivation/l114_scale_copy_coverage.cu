@@ -32,6 +32,7 @@ using RealAtom = Copy_Atom<PPU_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>, cutlass::h
 using Plan8 = md::ScaleCopyPlan<128, 8, 64>;
 using Plan16 = md::ScaleCopyPlan<128, 16, 64>;
 using Plan256 = md::ScaleCopyPlan<128, 8, 256>;
+using Q4A32Plan = md::ScaleCopyPlan<64, 4, 256>;
 static_assert(Plan8::thread_layout_h_uncapped == 16 && Plan8::thread_layout_h == 8 &&
               Plan8::thread_layout_w == 8 && Plan8::values_per_thread == 16 &&
               Plan8::thread_slots == 64 && Plan8::Coverage::value);
@@ -41,6 +42,10 @@ static_assert(Plan16::thread_layout_h_uncapped == 16 && Plan16::thread_layout_h 
 static_assert(Plan256::thread_layout_h_uncapped == 16 && Plan256::thread_layout_h == 16 &&
               Plan256::thread_layout_w == 8 && Plan256::values_per_thread == 8 &&
               Plan256::thread_slots == 128 && Plan256::Coverage::value);
+static_assert(Q4A32Plan::thread_layout_h == 8 &&
+              Q4A32Plan::thread_layout_w == 4 &&
+              Q4A32Plan::values_per_thread == 8 &&
+              Q4A32Plan::thread_slots == 32 && Q4A32Plan::Coverage::value);
 
 struct CopyStats {
   int unique = 0;
@@ -51,7 +56,9 @@ struct CopyStats {
   int max_hits = 0;
 };
 
-template <class Plan, int ScaleGroups, int PhysicalThreads, bool Wrap>
+enum class Protocol { RawAll, WrappedAll, OwnersOnly };
+
+template <class Plan, Protocol P>
 CopyStats copy_stats() {
   using ScaleCopy = decltype(make_tiled_copy(
       RealAtom{},
@@ -63,12 +70,19 @@ CopyStats copy_stats() {
   // Production constructs an N-contiguous (N,scale_k,L) tensor and local_tiles (TileN,ScaleTileK). Model two such
   // K tiles so partition_S must retain the same rest mode the real copy() iterates, then inspect interior tile zero.
   auto scale = make_counting_tensor(make_layout(
-      make_shape(Int<128>{}, Int<2 * ScaleGroups>{}), make_stride(_1{}, Int<128>{})));
-  auto tiled_scale = local_tile(scale, make_shape(Int<128>{}, Int<ScaleGroups>{}), make_coord(0, _));
-  std::array<unsigned char, 128 * ScaleGroups> seen{};
+      make_shape(Int<Plan::tile_n>{}, Int<2 * Plan::tile_k>{}),
+      make_stride(_1{}, Int<Plan::tile_n>{})));
+  auto tiled_scale = local_tile(
+      scale, make_shape(Int<Plan::tile_n>{}, Int<Plan::tile_k>{}),
+      make_coord(0, _));
+  std::array<unsigned char, Plan::tile_n * Plan::tile_k> seen{};
   CopyStats stats;
-  for (int thread = 0; thread < PhysicalThreads; ++thread) {
-    int const logical_thread = Wrap ? thread % Plan::thread_slots : thread;
+  for (int thread = 0; thread < Plan::cta_threads; ++thread) {
+    if constexpr (P == Protocol::OwnersOnly) {
+      if (!Plan::owns_physical_thread(thread)) continue;
+    }
+    int const logical_thread = P == Protocol::RawAll ?
+        thread : Plan::logical_slot(thread);
     auto part = ScaleCopy{}.get_slice(logical_thread).partition_S(tiled_scale);
     auto tile0 = part(_, _, _, 0);
     for (int i = 0; i < int(size(tile0)); ++i) {
@@ -97,14 +111,20 @@ void print_stats(char const* label, CopyStats const& stats) {
 }
 
 int main() {
-  auto const sk8 = copy_stats<Plan8, 8, 64, true>();
-  auto const sk16 = copy_stats<Plan16, 16, 64, true>();
-  auto const cta256_raw = copy_stats<Plan256, 8, 256, false>();
-  auto const cta256_wrap = copy_stats<Plan256, 8, 256, true>();
-  print_stats("real-atom SK8 CTA64 wrapped", sk8);
-  print_stats("real-atom SK16 CTA64 wrapped", sk16);
+  auto const sk8 = copy_stats<Plan8, Protocol::OwnersOnly>();
+  auto const sk16 = copy_stats<Plan16, Protocol::OwnersOnly>();
+  auto const cta256_raw = copy_stats<Plan256, Protocol::RawAll>();
+  auto const cta256_owner = copy_stats<Plan256, Protocol::OwnersOnly>();
+  auto const cta256_wrap = copy_stats<Plan256, Protocol::WrappedAll>();
+  auto const q4a32_owner = copy_stats<Q4A32Plan, Protocol::OwnersOnly>();
+  auto const q4a32_legacy = copy_stats<Q4A32Plan, Protocol::WrappedAll>();
+  print_stats("real-atom SK8 CTA64 owners", sk8);
+  print_stats("real-atom SK16 CTA64 owners", sk16);
   print_stats("real-atom SK8 CTA256 raw", cta256_raw);
-  print_stats("real-atom SK8 CTA256 wrapped", cta256_wrap);
+  print_stats("real-atom SK8 CTA256 owners", cta256_owner);
+  print_stats("real-atom SK8 CTA256 legacy-wrapped", cta256_wrap);
+  print_stats("Q4/A32 CTA256 owners", q4a32_owner);
+  print_stats("Q4/A32 CTA256 legacy-wrapped", q4a32_legacy);
 
   bool const sk8_full = sk8.unique == 1024 && sk8.visits == 1024 && sk8.duplicates == 0 &&
                         sk8.oob == 0 && sk8.min_hits == 1 && sk8.max_hits == 1;
@@ -114,14 +134,33 @@ int main() {
   bool const raw_walks_out = cta256_raw.unique == 1024 && cta256_raw.visits == 1024 &&
                              cta256_raw.duplicates == 0 && cta256_raw.oob == 1024 &&
                              cta256_raw.min_hits == 1 && cta256_raw.max_hits == 1;
-  // The production modulo makes the surplus 128 threads repeat the complete tile, with no new addresses.
-  bool const wrap_is_idempotent = cta256_wrap.unique == 1024 && cta256_wrap.visits == 2048 &&
-                                  cta256_wrap.duplicates == 1024 && cta256_wrap.oob == 0 &&
-                                  cta256_wrap.min_hits == 2 && cta256_wrap.max_hits == 2;
-  std::printf("[l114] coverage: SK8=%s SK16=%s CTA256-raw-oob=%s CTA256-wrap-duplicate=%s\n",
+  bool const owner_exact = cta256_owner.unique == 1024 && cta256_owner.visits == 1024 &&
+                           cta256_owner.duplicates == 0 && cta256_owner.oob == 0 &&
+                           cta256_owner.min_hits == 1 && cta256_owner.max_hits == 1;
+  // The old modulo protocol reaches the right addresses but violates the
+  // publication contract: the same async destination has two physical
+  // publishers here and eight at the exact Q4/A32 row.
+  bool const wrap_negative = cta256_wrap.unique == 1024 && cta256_wrap.visits == 2048 &&
+                             cta256_wrap.duplicates == 1024 && cta256_wrap.oob == 0 &&
+                             cta256_wrap.min_hits == 2 && cta256_wrap.max_hits == 2;
+  bool const q4a32_exact = q4a32_owner.unique == 256 && q4a32_owner.visits == 256 &&
+                           q4a32_owner.duplicates == 0 && q4a32_owner.oob == 0 &&
+                           q4a32_owner.min_hits == 1 && q4a32_owner.max_hits == 1;
+  bool const q4a32_legacy_red = q4a32_legacy.unique == 256 &&
+                                q4a32_legacy.visits == 2048 &&
+                                q4a32_legacy.duplicates == 1792 &&
+                                q4a32_legacy.oob == 0 &&
+                                q4a32_legacy.min_hits == 8 &&
+                                q4a32_legacy.max_hits == 8;
+  std::printf("[l114] coverage: SK8=%s SK16=%s CTA256-raw-oob=%s "
+              "CTA256-owner=%s legacy-wrap=%s Q4A32-owner=%s Q4A32-legacy=%s\n",
               sk8_full ? "FULL" : "FAIL", sk16_full ? "FULL" : "FAIL",
-              raw_walks_out ? "LOCKED" : "FAIL", wrap_is_idempotent ? "LOCKED" : "FAIL");
-  return sk8_full && sk16_full && raw_walks_out && wrap_is_idempotent ? 0 : 1;
+              raw_walks_out ? "LOCKED" : "FAIL", owner_exact ? "EXACT" : "FAIL",
+              wrap_negative ? "RED" : "FALSE-GREEN",
+              q4a32_exact ? "EXACT" : "FAIL",
+              q4a32_legacy_red ? "RED" : "FALSE-GREEN");
+  return sk8_full && sk16_full && raw_walks_out && owner_exact &&
+         wrap_negative && q4a32_exact && q4a32_legacy_red ? 0 : 1;
 }
 
 #else

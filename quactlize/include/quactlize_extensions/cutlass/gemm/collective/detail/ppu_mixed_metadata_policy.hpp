@@ -94,6 +94,22 @@ struct ScaleCopyPlan {
   static constexpr int thread_layout_w = TileK;
   static constexpr int values_per_thread = TileN / thread_layout_h;
   static constexpr int thread_slots = thread_layout_h * thread_layout_w;
+  static constexpr int tile_n = TileN;
+  static constexpr int tile_k = TileK;
+  static constexpr int cta_threads = CtaThreads;
+
+  // CuTe's tiled copy is indexed by logical copy slot, while the kernel is
+  // launched with every physical CTA thread.  Surplus physical threads are
+  // consumers only: issuing the same asynchronous shared-memory write from
+  // each of them is neither required for coverage nor part of the copy
+  // contract.  Keep the ownership and slot mapping beside the coverage proof
+  // so a collective cannot silently reintroduce modulo-replayed publishers.
+  CUTE_HOST_DEVICE static constexpr bool owns_physical_thread(int thread) {
+    return thread >= 0 && thread < thread_slots;
+  }
+  CUTE_HOST_DEVICE static constexpr int logical_slot(int thread) {
+    return thread % thread_slots;
+  }
   using Coverage = ScaleCopyCoverage<TileN, TileK, CtaThreads, thread_layout_h,
                                      values_per_thread, AtomValues>;
   static_assert(Coverage::value,

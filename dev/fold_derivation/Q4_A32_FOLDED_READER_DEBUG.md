@@ -148,11 +148,62 @@ a plausible but false map.
 Consequently an offline placement change is not supported by the evidence.
 The remaining seam is device-dynamic: actual cp.async issue/publication,
 runtime pipeline stage reuse, or PPU lowering of the otherwise exact reader.
-The exact tactic has 256 CTA threads but only 32 metadata-copy slots; production
-wraps the thread id and issues eight identical writes per logical slot.  That
-is statically complete, but its device behavior is not proved by an address
-oracle.  The three fixture arms below distinguish this metadata path from the
-code reader before another production edit.
+The exact tactic has 256 CTA threads but only 32 metadata-copy slots.  At
+`79fba86`, production wrapped the thread id and issued eight identical clears
+and asynchronous writes per logical slot.  That was statically complete, but
+its device behavior was not proved by an address oracle.  The next experiment
+replaces it with one physical publisher per proved slot without changing any
+address, stage, converter, or MMA mapping.
+
+## Three-arm device result and what it establishes
+
+The exact/code-only/metadata-only run at `79fba86` classified the failure as
+`COMMON_PIPELINE_OR_MULTIPLE_DEFECTS`:
+
+| Arm | raw_bad | first want -> got |
+|---|---:|---|
+| code-only | 26,368 / 65,536 | `0x4000 -> 0xc580` |
+| metadata-only | 65,536 / 65,536 | `0xc100 -> 0xc780` |
+| exact | 61,184 / 65,536 | `0xc200 -> 0xcc80` |
+
+Metadata-only holds every decoded code at one, so a pure code permutation
+cannot explain that arm.  Code-only holds scale at one and zero at zero, so a
+pure metadata-coordinate permutation cannot explain that arm.  Together they
+reject an offline-format-only explanation, but do **not** prove that one defect
+explains both arms; two device-lowering defects remain possible.
+
+The exact type probe now pins `K_BLOCK_MAX=4` and
+`K_ATOM_PER_COPY=2`.  A tempting ring-stage explanation was inspected and
+rejected before editing the driver: this row has `bchunk=0`, so B conversion
+and metadata application happen in `prepare`; `consume` only issues MMA.
+Moving the consume-stage token cannot change this row and is not its fix.
+
+## Exact-owner metadata publication experiment
+
+`ScaleCopyPlan` now publishes both the physical-owner predicate and the
+logical-slot map.  The folded collective uses the first 32 physical threads
+to clear and publish the 32 Q4/A32 metadata slots exactly once; the remaining
+224 threads issue no metadata write.  All threads retain the same shared
+consumer path and synchronization cadence.
+
+The local evidence is constructive rather than an idempotence assumption:
+
+- L114 exhausts the exact plan: owner protocol is 256 values, 256 visits,
+  zero duplicates, one hit each.  The old protocol is 256 values, 2,048
+  visits, 1,792 duplicates, eight hits each and is required to report red.
+- L218 applies the owner protocol to all 40 K tiles and 10,240 metadata values;
+  the old 8x wrap and the source-coordinate transpose are independent red
+  controls.
+- The production-seam lint binds owner-only clear plus both preload and
+  steady-state async issue points, then plants an all-thread publisher and
+  requires it to fail.
+
+This is still a **candidate cause** until the same three device arms run.  If
+metadata-only turns green while code-only remains red, it has isolated the
+metadata defect and there is a second B-reader defect.  If all three turn
+green, repeated publication was the common root.  If none changes, the
+experiment is falsified and must be reverted rather than retained as a
+plausible cleanup.
 
 ## Disproved register-index hypothesis
 
@@ -283,6 +334,7 @@ Fill this table by appending evidence; do not alter the admission rule above.
 | Revision | Device | Result | Artifact directory |
 |---|---|---|---|
 | `eb7d95c` | PPU | **FAIL**, identical `61184`, first `-3 -> -18` | `/workspace/quactlize-q4-a32-exact-eb7d95c-20260820T070953Z` |
+| `79fba86` | PPU | **FAIL**, three-arm locus `COMMON_PIPELINE_OR_MULTIPLE_DEFECTS`; 26,368 / 65,536 / 61,184 bad | `/workspace/quactlize-q4-a32-bisect-79fba86-20260820T081739Z` |
 
 ## Reusable folded-artifact decision tree
 

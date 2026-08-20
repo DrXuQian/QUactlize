@@ -453,6 +453,50 @@ def lint_scale_copy_coverage_fires():
     return "PASS", "shared witness rejects the old uncapped Q3/Q5 scale-copy layout", dt
 
 
+def lint_fold_metadata_single_owner():
+    """The folded shipping body must use ScaleCopyPlan's exact owner set."""
+    path = (ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/"
+            "ppu_mma_aiu_fold.hpp")
+    if not path.is_file():
+        return "FAIL", f"missing {path}", 0.0
+
+    def violations(text):
+        required = [
+            (r"ScaleCopyPlan::owns_physical_thread\s*\(\s*thread_idx\s*\)", 1,
+             "one physical-owner decision"),
+            (r"ScaleCopyPlan::logical_slot\s*\(\s*thread_idx\s*\)", 1,
+             "one logical-slot mapping"),
+            (r"copy_async_extra_info\s*\([^;]*metadata_copy_owner\s*\)\s*;", 2,
+             "owner flag at preload and steady-state async issue"),
+            (r"if\s*\(\s*!metadata_copy_owner\s*\)\s*return\s*;", 1,
+             "non-owner async early return"),
+            (r"if\s*\(\s*metadata_copy_owner\s*\)\s*clear\s*\(\s*tSsS\s*\)\s*;", 1,
+             "owner-only scale clear"),
+            (r"if\s*\(\s*metadata_copy_owner\s*\)\s*clear\s*\(\s*tZsZ\s*\)\s*;", 1,
+             "owner-only zero clear"),
+        ]
+        hits = []
+        for pattern, expected, label in required:
+            actual = len(re.findall(pattern, text, re.S))
+            if actual != expected:
+                hits.append(f"{label}: {actual} != {expected}")
+        if re.search(r"thread_idx\s*%\s*\(\s*Scale_GmemCopyThrLayoutH", text):
+            hits.append("legacy modulo-replayed publisher is live")
+        return hits
+
+    source = path.read_text()
+    hits = violations(source)
+    if hits:
+        return "FAIL", "; ".join(hits[:4]), 0.0
+
+    planted = source.replace(
+        "ScaleCopyPlan::owns_physical_thread(thread_idx)", "true", 1)
+    if not violations(planted):
+        return "FAIL", "single-owner guard accepted a planted all-thread publisher", 0.0
+    return ("PASS",
+            "fold clear and both async issue points use one proved owner; all-thread plant red",
+            0.0)
+
 
 def lint_device_probe_scope():
     """A device-compiler SKIP may only guard a check that actually invokes a device compiler."""
@@ -2411,6 +2455,7 @@ def main():
                 ("lint", "dense/grouped tactic names alias one generator and route output agrees", lint_tactic_spaces_agree),
                 ("lint", "dense/grouped mixed policy descriptor parity fires on planted drift", lint_mixed_policy_parity_fires),
                 ("lint", "l114_scale_copy_coverage: uncapped layout fails the shared witness", lint_scale_copy_coverage_fires),
+                ("lint", "fold metadata publication uses one proved physical owner", lint_fold_metadata_single_owner),
                 ("lint", "a device-compiler SKIP only guards checks that reach a compiler", lint_device_probe_scope),
                 ("lint", "Stream-K minimum policy rejects an empty K stripe", lint_streamk_min_zero_fires),
                 ("lint", "all mixed collectives use one stage-ring driver", lint_mixed_pipeline_shared),

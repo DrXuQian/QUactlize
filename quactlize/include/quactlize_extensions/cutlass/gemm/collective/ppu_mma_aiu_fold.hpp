@@ -625,12 +625,17 @@ public:
         make_smem_ptr(storage.smem_a.begin()), SmemLayoutAPhysical{});              // (BLK_M_PHYSICAL,BLK_K,PIPE)
     Tensor sB = make_tensor(make_smem_ptr(storage.smem_b.begin()), SmemLayoutB{}); // (BLK_N,BLK_K,PIPE)
 
-    // A legal plan can have fewer logical copy slots than physical CTA threads; that behavior predates the H cap.
-    // Raw CuTe get_slice does not wrap, so map surplus threads back onto valid slots. Coverage's slots<=CTA,
-    // whole-atom and full-tile invariants make the repeated transfers idempotent instead of hiding a missing owner.
-    // L114 locks the CTA256 raw-oob/wrapped-duplicate distinction.
+    // A legal plan can have fewer logical copy slots than physical CTA
+    // threads.  Exactly one physical owner publishes each proved slot;
+    // surplus threads still construct a valid slice because they consume the
+    // shared tile later, but they issue no clear or asynchronous write.  The
+    // former modulo replay issued eight same-address publications at the
+    // exact Q4/A32 row.  L114/L218 retain that protocol as a must-red negative.
+    bool const metadata_copy_owner =
+        ScaleCopyPlan::owns_physical_thread(thread_idx);
     auto extra_input_partitions = partition_extra_inputs(
-        mainloop_params, load_inputs, storage, thread_idx % (Scale_GmemCopyThrLayoutH{} * Scale_GmemCopyThrLayoutW{}));
+        mainloop_params, load_inputs, storage,
+        ScaleCopyPlan::logical_slot(thread_idx), metadata_copy_owner);
 
     CUTE_STATIC_ASSERT_V(size<0>(gA) == size<0>(sA_physical));                 // BLK_M_PHYSICAL
     CUTE_STATIC_ASSERT_V(size<1>(gA) == size<1>(sA_physical));                 // BLK_K
@@ -662,7 +667,8 @@ public:
         gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd), tBsB(_,_,_,k_pipe),
         warp_idx
       );
-      copy_async_extra_info(mainloop_params, extra_input_partitions, *k_tile_iter, k_pipe);
+      copy_async_extra_info(mainloop_params, extra_input_partitions,
+                            *k_tile_iter, k_pipe, metadata_copy_owner);
       cp_async_fence();
       --k_tile_count;
       if (k_tile_count > 0) { ++k_tile_iter; }
@@ -760,6 +766,12 @@ public:
     // Size of the register pipeline
     auto K_BLOCK_MAX = size<2>(tCrB_copy_view);
     auto K_ATOM_PER_COPY = size<2>(tCrB_mma) / size<2>(tCrB_copy_view);
+#if defined(PPU_Q4_A32_EXACT_TYPE_PROBE) && (PPU_Q4_A32_EXACT_TYPE_PROBE != 0)
+    static_assert(decltype(K_BLOCK_MAX)::value == 4,
+                  "the exact Q4/A32 row must retain four resident B deliveries per K tile");
+    static_assert(decltype(K_ATOM_PER_COPY)::value == 2,
+                  "the exact Q4/A32 row must consume two MMA K atoms from each delivery");
+#endif
     // PPU_MMA_PROBE=1: print the two numbers any per-atom / chunked B scheme depends on, from the DEFAULT build.
     // Added because writing them as static_asserts and then building the dependent code on top is backwards -- the
     // assert makes a wrong assumption loud but not cheap, and it would only fire after the whole chunked path had
@@ -805,7 +817,8 @@ public:
             gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd), tBsB(_,_,_,write_stage),
             warp_idx
           );
-          copy_async_extra_info(mainloop_params, extra_input_partitions, k_tile, write_stage);
+          copy_async_extra_info(mainloop_params, extra_input_partitions,
+                                k_tile, write_stage, metadata_copy_owner);
     };
     auto consume = [&] (auto k_block, int b_consume_stage) {
         // N-FOLD: IDENTICAL to the unfolded mainloop. The fold lives only in the load layer -- gmem/smem are
@@ -911,8 +924,10 @@ private:
         Params const& mainloop_params,
         cute::tuple<Ts...>& extra_input_partitions,
         int k_idx,
-        int write_stage) {
+        int write_stage,
+        bool metadata_copy_owner) {
     if constexpr (ModeHasScales) {
+      if (!metadata_copy_owner) return;
       auto tSgS = get<0>(extra_input_partitions);
       auto tSsS = get<1>(extra_input_partitions);
       auto tScS = get<2>(extra_input_partitions);
@@ -954,7 +969,8 @@ private:
         Params const& mainloop_params,
         cute::tuple<Ts...> const& load_inputs,
         SharedStorage& shared_tensors,
-        int const thread_idx) {
+        int const thread_idx,
+        bool metadata_copy_owner) {
     if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
       return cute::tuple{};
     }
@@ -969,7 +985,7 @@ private:
       Tensor tSgS = gmem_thr_copy_scale.partition_S(gS);
       Tensor tSsS = gmem_thr_copy_scale.partition_D(sS);
       Tensor tScS = gmem_thr_copy_scale.partition_S(cS);
-      clear(tSsS);
+      if (metadata_copy_owner) clear(tSsS);
       // init scale_residue_k
       scale_residue_k = mainloop_params.scale_k - get<1>(tScS(0,0,0));
       scale_valid = get<0>(tScS(0,0,0)) < scale_residue_n;
@@ -985,7 +1001,7 @@ private:
 
         Tensor tZgZ = gmem_thr_copy_zero.partition_S(gZ);
         Tensor tZsZ = gmem_thr_copy_zero.partition_D(sZ);
-        clear(tZsZ);
+        if (metadata_copy_owner) clear(tZsZ);
 
         return cute::make_tuple(tSgS, tSsS, tScS, tZgZ, tZsZ);
       }
