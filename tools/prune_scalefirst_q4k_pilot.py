@@ -119,6 +119,10 @@ def validate_policy(policy: dict[str, Any]) -> dict[str, Any]:
             "artifact_tile_k": artifact,
             "fold_n": {"low": fold_low, "high": 1},
             "metadata": "FP16_SCALE_ZERO_PLANES",
+            "reader_contract": (
+                "Q4_A32_CANONICAL_TN_EQ_2WN_WN_GE_32"
+                if artifact == 32 else "UNFOLDED_TACTIC_INVARIANT"
+            ),
         }
         if policy.get("layout") != expected_layout:
             raise ContractError("real-shape policy layout/FoldN identity differs")

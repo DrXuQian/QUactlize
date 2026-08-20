@@ -105,6 +105,15 @@ def layout_identity(artifact: int) -> dict[str, Any]:
         "artifact_tile_k": artifact,
         "fold_n": {"low": fold_low, "high": 1},
         "metadata": "FP16_SCALE_ZERO_PLANES",
+        # FoldN alone is not a complete consumer contract for the folded A32
+        # bytes.  The canonical producer map is shared by exactly the two
+        # currently exposed reader classes TN64/WN32 and TN128/WN64.  Keep
+        # this next to the offline identity so a report cannot imply that an
+        # arbitrary FoldN=2 tactic read the measured artifact.
+        "reader_contract": (
+            "Q4_A32_CANONICAL_TN_EQ_2WN_WN_GE_32"
+            if artifact == 32 else "UNFOLDED_TACTIC_INVARIANT"
+        ),
     }
 
 
@@ -308,6 +317,7 @@ def summarize(plan_path: pathlib.Path, results_root: pathlib.Path,
                          "FoldN_low": winner["layout"]["fold_n"]["low"],
                          "FoldN_high": winner["layout"]["fold_n"]["high"],
                          "layout": winner["layout"]["name"],
+                         "reader_contract": winner["layout"]["reader_contract"],
                          "config": winner["config"],
                          "algorithm": winner["algorithm"],
                          "grid": winner["grid"], "policy": winner["policy"],

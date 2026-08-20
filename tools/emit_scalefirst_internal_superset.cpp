@@ -61,6 +61,8 @@ char const* exclusion_name(Exclusion exclusion) {
     case Exclusion::MinimumStageSmem: return "MINIMUM_STAGE_SMEM";
     case Exclusion::ProducerWarpN: return "PRODUCER_WARP_N";
     case Exclusion::ProducerMap: return "PRODUCER_MAP";
+    case Exclusion::ProducerConsumerLayout:
+      return "PRODUCER_CONSUMER_LAYOUT";
     case Exclusion::BChunkUnsupportedBits: return "BCHUNK_UNSUPPORTED_BITS";
   }
   return "UNKNOWN";

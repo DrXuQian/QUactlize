@@ -21,6 +21,7 @@ REAL_POLICY = ROOT / "benchmarks/scalefirst_q4k_real_shapes_pruned_policy.json"
 BENCH = ROOT / "benchmarks/scalefirst_internal_sweep_bench.hpp"
 DRIVER = ROOT / "benchmarks/test_scalefirst_internal_sweep.cu"
 EXHAUSTIVE = TOOLS / "run_scalefirst_internal_sweep_box.sh"
+L210 = ROOT / "dev/fold_derivation/run_l210_q4_a32_consumer_layout.sh"
 
 
 def require(text: str, tokens: tuple[str, ...], label: str) -> None:
@@ -67,6 +68,7 @@ def main() -> int:
                    cwd=ROOT, check=True)
     subprocess.run([sys.executable, "-B", str(PLANNER), "self-test"],
                    cwd=ROOT, check=True)
+    subprocess.run(["bash", str(L210)], cwd=ROOT, check=True)
     sys.path.insert(0, str(TOOLS))
     import prune_scalefirst_q4k_pilot as pruner
     import plan_scalefirst_q4k_real_shapes as planner
@@ -135,7 +137,15 @@ def main() -> int:
         pass
     else:
         raise AssertionError("wrong FoldN in shape policy stayed green")
-    expected_by_artifact = {32: 2340, 64: 1824, 128: 1036, 256: 401}
+    planted_reader = json.loads(json.dumps(dynamic))
+    planted_reader["layout"]["reader_contract"] = "FOLD_ONLY"
+    try:
+        pruner.validate_policy(planted_reader)
+    except pruner.ContractError:
+        pass
+    else:
+        raise AssertionError("wrong A32 reader contract stayed green")
+    expected_by_artifact = {32: 490, 64: 1824, 128: 1036, 256: 401}
     for artifact, expected in expected_by_artifact.items():
         rows = [row for row in matrix.emitted_tactics(12, artifact)
                 if row.bchunk == 0 and
@@ -152,7 +162,7 @@ def main() -> int:
     require(real_runner, (
         'INTERNAL_SWEEP_SPEC must name the COMPLETE inventory-v2 JSON',
         'for artifact in 32 64 128 256',
-        '32) expected=2340', '64) expected=1824',
+        '32) expected=490', '64) expected=1824',
         '128) expected=1036', '256) expected=401',
         '--algorithm=nonpersistent', '--algorithm=all',
         '--symbol-file="$result_dir/screen-shortlist.txt"',
@@ -171,6 +181,7 @@ def main() -> int:
         'expected = {(artifact, key) for artifact in ARTIFACTS for key in keys}',
         'drop-one shape/layout negative stayed green',
         'models_root / model_id / key / "summary.json"',
+        '"reader_contract": winner["layout"]["reader_contract"]',
         'DECODE_NOT_SCALEFIRST_PREFILL', 'OUTSIDE_REGISTERED_PREFILL_M',
     ), "real-shape planner")
     # The production exhaustive runner must not opt into either pilot filter.

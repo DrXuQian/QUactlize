@@ -98,6 +98,7 @@ enum class Exclusion {
   MinimumStageSmem,
   ProducerWarpN,
   ProducerMap,
+  ProducerConsumerLayout,
   BChunkUnsupportedBits,
 };
 
@@ -119,6 +120,8 @@ constexpr char const* exclusion_clause(Exclusion e) {
     case Exclusion::MinimumStageSmem: return "the conservative gs16 scale+zero footprint exceeds the 256KB block limit";
     case Exclusion::ProducerWarpN: return "the offline producer exposes only consumer-validated WarpN values through 64";
     case Exclusion::ProducerMap: return "the Q6 offline producer inverse at ArtifactTileK=256 is incomplete";
+    case Exclusion::ProducerConsumerLayout:
+      return "the tactic's folded B reader does not decode the canonical resident artifact byte map";
     case Exclusion::BChunkUnsupportedBits: return "single-plane PPU_B_CHUNK requires a 1- or 2-bit format";
   }
   return "unknown exclusion";
@@ -274,8 +277,44 @@ constexpr Exclusion common_producer_exclusion(Candidate c) {
   // A256 inverse remains incomplete even though the A128/T256 consumer is now a complete resident-owner bijection.
   if (c.wn > 64) return Exclusion::ProducerWarpN;
   if (has_q6_plane_pair(c) && c.artifact_tile_k == 256) return Exclusion::ProducerMap;
+  // Q4/A32 is a folded one-plane artifact.  FoldN=2 is necessary but not a
+  // complete byte-layout descriptor: the reader's physical N tiling also
+  // enters plane_map().  The canonical producer is TN64/WN32; exhaustive
+  // cross-recovery over the finite TN/WN axes establishes exactly two
+  // compatible reader classes under the current WN<=64 producer boundary:
+  //
+  //     TN64/WN32 and TN128/WN64  <=>  TN == 2*WN, WN >= 32.
+  //
+  // TN32/WN16 is worse than merely a different permutation: Ng=TN/F=16
+  // while RPI=32, so Ng/RPI is zero and its derived consumer map has no
+  // entries.  It was nevertheless admitted by FoldN|TN + delivery capacity,
+  // producing the device-observed 65536/65536 wrong outputs.  Do not infer a
+  // rule for Q2 or two-plane artifacts here: their maps have different
+  // equivalence classes and retain their existing independently proved gates.
+  if (c.spec.low_bits == 4 && c.spec.high_bits == 0 &&
+      c.artifact_tile_k == 32 &&
+      (c.wn < 32 || c.tn != 2 * c.wn))
+    return Exclusion::ProducerConsumerLayout;
   return Exclusion::None;
 }
+
+// Constructive controls for the exact device failure.  The negative remains
+// kernel-legal so only the producer/consumer byte-layout seam can reject it;
+// the two positives are the complete equivalence class exposed by WN<=64.
+inline constexpr FormatSpec kQ4A32LayoutControl{Format::I4, "q4-a32-layout-control", 4, 0, 32, 2};
+inline constexpr Candidate kQ4A32EmptyConsumer{
+    kQ4A32LayoutControl, 32, 32, 64, 16, 16, 32, 0};
+inline constexpr Candidate kQ4A32CanonicalConsumer{
+    kQ4A32LayoutControl, 64, 64, 64, 32, 32, 32, 0};
+inline constexpr Candidate kQ4A32ScaledConsumer{
+    kQ4A32LayoutControl, 64, 128, 256, 32, 64, 32, 0};
+static_assert(common_kernel_exclusion(kQ4A32EmptyConsumer) == Exclusion::None &&
+              common_producer_exclusion(kQ4A32EmptyConsumer) ==
+                  Exclusion::ProducerConsumerLayout,
+              "the exact TN32/WN16 Q4/A32 device failure must be a named static reject");
+static_assert(common_producer_exclusion(kQ4A32CanonicalConsumer) == Exclusion::None &&
+              common_producer_exclusion(kQ4A32ScaledConsumer) == Exclusion::None,
+              "both canonical Q4/A32 reader equivalence classes must remain admitted");
 
 // Compile-time controls for the distinction this header owns. A fixed TK64 artifact is legal under larger tactics,
 // including Q3's independent (low,high)=(2,4) folds; a tactic that cannot be partitioned into whole artifact K-blocks

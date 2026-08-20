@@ -98,7 +98,12 @@ paths=[
  "benchmarks/scalefirst_q4k_pruned_policy.json",
  "benchmarks/scalefirst_q4k_real_shapes_pruned_policy.json",
  "ci/check_scalefirst_q4k_pruned_runner.py",
+ "dev/fold_derivation/l210_q4_a32_consumer_layout.cu",
+ "dev/fold_derivation/run_l210_q4_a32_consumer_layout.sh",
+ "quactlize/csrc/device/ppu_dense_layout.cu",
  "quactlize/csrc/scalefirst_internal_sweep.cmake.in",
+ "quactlize/include/ppu_tactic_space.hpp",
+ "quactlize/include/xplane_offline.hpp",
  "tools/analyze_fully_quantized_internal_sweep.py",
  "tools/gen_scalefirst_internal_units.py",
  "tools/plan_scalefirst_q4k_real_shapes.py",
@@ -154,7 +159,7 @@ PY
 
   for artifact in 32 64 128 256; do
     case "$artifact" in
-      32) expected=2340 ;;
+      32) expected=490 ;;
       64) expected=1824 ;;
       128) expected=1036 ;;
       256) expected=401 ;;
