@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import pathlib
 import re
@@ -22,6 +23,61 @@ BENCH = ROOT / "benchmarks/scalefirst_internal_sweep_bench.hpp"
 DRIVER = ROOT / "benchmarks/test_scalefirst_internal_sweep.cu"
 EXHAUSTIVE = TOOLS / "run_scalefirst_internal_sweep_box.sh"
 L210 = ROOT / "dev/fold_derivation/run_l210_q4_a32_consumer_layout.sh"
+L210_EXPECTED = ROOT / "dev/fold_derivation/l210_q4_a32_consumer_layout.expected.txt"
+
+
+L210_ROW = re.compile(
+    r"^\[l210 row\] name=(\S+) tm=(\d+) tn=(\d+) tk=(\d+) wm=(\d+) wn=(\d+) "
+    r"rule=([01]) compatible=([01]) byte_bad=(\d+)/(\d+) code_bad=(\d+)/(\d+)$")
+L210_SUMMARY = (
+    "[l210] PASS rows=10 positives=4 negatives=6 "
+    "exact_device_byte_bad=32768/32768 "
+    "exact_device_code_bad=65536/65536 one_bit_corruption_bad=1"
+)
+
+
+def l210_canonical_lines(output: str) -> list[str]:
+    return [line for line in output.splitlines()
+            if line.startswith("[l210 row] ") or line.startswith("[l210] ")]
+
+
+def validate_l210(lines: list[str]) -> str | None:
+    if len(lines) != 11 or lines[-1] != L210_SUMMARY:
+        return "expected exact ten-row census plus PASS summary"
+    expected_names = {
+        "canonical-a", "canonical-large-t", "scaled-a", "scaled-large-t",
+        "exact-device-failure", "physical-n-too-small", "too-many-n-warps",
+        "too-few-n-warps", "second-reader-instance", "larger-tile-same-wn",
+    }
+    seen = set()
+    positives = negatives = 0
+    for line in lines[:-1]:
+        match = L210_ROW.fullmatch(line)
+        if match is None:
+            return f"malformed row: {line}"
+        name = match.group(1)
+        if name in seen or name not in expected_names:
+            return f"unexpected or duplicate row {name}"
+        seen.add(name)
+        rule, compatible = map(int, match.group(7, 8))
+        byte_bad, byte_total, code_bad, code_total = map(
+            int, match.group(9, 10, 11, 12))
+        if byte_total != 32768 or code_total != 65536 or rule != compatible:
+            return f"denominator/rule closure differs for {name}"
+        if compatible:
+            positives += 1
+            if byte_bad or code_bad:
+                return f"positive reader {name} is not byte/code exact"
+        else:
+            negatives += 1
+            if byte_bad == 0 or code_bad == 0:
+                return f"negative reader {name} did not turn red"
+        if name == "exact-device-failure" and \
+                (byte_bad != byte_total or code_bad != code_total):
+            return "exact device failure is no longer all-byte/all-code red"
+    if seen != expected_names or positives != 4 or negatives != 6:
+        return "reader-class denominator differs"
+    return None
 
 
 def require(text: str, tokens: tuple[str, ...], label: str) -> None:
@@ -62,13 +118,38 @@ def check_q8_artifact_contract(driver: str) -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--committed-only", action="store_true")
+    parser.add_argument("--evidence", type=pathlib.Path, default=L210_EXPECTED)
+    args = parser.parse_args()
     subprocess.run(["bash", "-n", str(RUNNER)], cwd=ROOT, check=True)
     subprocess.run(["bash", "-n", str(REAL_RUNNER)], cwd=ROOT, check=True)
     subprocess.run([sys.executable, "-B", str(PRUNER), "self-test"],
                    cwd=ROOT, check=True)
     subprocess.run([sys.executable, "-B", str(PLANNER), "self-test"],
                    cwd=ROOT, check=True)
-    subprocess.run(["bash", str(L210)], cwd=ROOT, check=True)
+    expected_lines = args.evidence.read_text().splitlines()
+    why = validate_l210(expected_lines)
+    if why:
+        raise AssertionError(f"committed L210 evidence is malformed: {why}")
+    planted_l210 = list(expected_lines)
+    planted_l210[4] = planted_l210[4].replace(
+        "code_bad=65536/65536", "code_bad=65535/65536")
+    if validate_l210(planted_l210) is None:
+        raise AssertionError("L210 one-code denominator defect stayed green")
+    if not args.committed_only:
+        proc = subprocess.run(
+            ["bash", str(L210)], cwd=ROOT, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        print(proc.stdout, end="")
+        if proc.returncode:
+            raise AssertionError(f"L210 local oracle returned rc={proc.returncode}")
+        actual_lines = l210_canonical_lines(proc.stdout)
+        why = validate_l210(actual_lines)
+        if why:
+            raise AssertionError(f"fresh L210 evidence is malformed: {why}")
+        if actual_lines != expected_lines:
+            raise AssertionError("fresh L210 evidence differs from result SHA")
     sys.path.insert(0, str(TOOLS))
     import prune_scalefirst_q4k_pilot as pruner
     import plan_scalefirst_q4k_real_shapes as planner
@@ -169,6 +250,9 @@ def main() -> int:
         '--symbol-file="$result_dir/confirm-shortlist.txt"',
         'phase=screen full-typed-graph', 'phase=scheduler shortlist=',
         'phase=confirm shortlist=', '--models-root "$out/models"',
+        'l210_q4_a32_consumer_layout.expected.txt',
+        '--committed-only --evidence "$l210_evidence"',
+        'Never paper over this with a fake fp8 SDK header',
         'source-authority.json', 'binary-hashes.json', 'commit.json',
         'bundle.json', 'resume bundle lost plan.json',
         'incomplete uncommitted evidence',
@@ -201,9 +285,11 @@ def main() -> int:
         pass
     else:
         raise AssertionError("mutated historical anchor stayed green")
+    evidence_mode = "committed" if args.committed_only else "fresh-local"
     print("[q4k-prune-runner] PASS pilot anchor exact; real Q4_K "
           "A32/A64/A128/A256 denominators bound; shape-specific TileK "
-          "terminal, model folders, and three-phase authority present")
+          "terminal, model folders, and three-phase authority present; "
+          f"L210={evidence_mode}")
     return 0
 
 

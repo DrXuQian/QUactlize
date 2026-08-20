@@ -16,7 +16,7 @@ main() {
   local root workspace_root sha short stamp out resume inventory master
   local frozen_inventory frozen_master plan jobs per_unit base_seed rc
   local artifact expected generated manifest build_dir binary build_log
-  local source_authority plan_rows ordinal artifact_evidence
+  local source_authority l210_evidence plan_rows ordinal artifact_evidence
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
   workspace_root="$(realpath -e /workspace)" || {
     printf '[q4k-real-shapes] FAIL: /workspace is unavailable\n' >&2
@@ -99,6 +99,7 @@ paths=[
  "benchmarks/scalefirst_q4k_real_shapes_pruned_policy.json",
  "ci/check_scalefirst_q4k_pruned_runner.py",
  "dev/fold_derivation/l210_q4_a32_consumer_layout.cu",
+ "dev/fold_derivation/l210_q4_a32_consumer_layout.expected.txt",
  "dev/fold_derivation/run_l210_q4_a32_consumer_layout.sh",
  "quactlize/csrc/device/ppu_dense_layout.cu",
  "quactlize/csrc/scalefirst_internal_sweep.cmake.in",
@@ -133,9 +134,33 @@ else:
  os.replace(temporary,out)
 PY
 
+  # L210 is an NVIDIA-nvcc/stub host oracle.  On this PPU box the executable
+  # named nvcc delegates device preprocessing to ppu_clang++ and cannot run
+  # that fixture (it asks for hggc_fp8.h).  Consume the exact locally-generated
+  # evidence from the result SHA; the shipping target is still built fresh by
+  # hgcc below.  Never paper over this with a fake fp8 SDK header.
+  l210_evidence="$out/inputs/l210_q4_a32_consumer_layout.expected.txt"
+  python3 -B - "$root" "$sha" "$l210_evidence" "$resume" <<'PY' || return 2
+import os,pathlib,subprocess,sys
+root,commit,out=pathlib.Path(sys.argv[1]),sys.argv[2],pathlib.Path(sys.argv[3])
+resume=sys.argv[4]=="1"
+rel="dev/fold_derivation/l210_q4_a32_consumer_layout.expected.txt"
+data=subprocess.check_output(["git","-C",str(root),"show",f"{commit}:{rel}"])
+if out.exists():
+ if out.read_bytes()!=data: raise SystemExit("L210 committed evidence differs inside bundle")
+elif resume:
+ raise SystemExit("resume bundle lost L210 committed evidence")
+else:
+ temporary=out.with_name(f".{out.name}.current.{os.getpid()}")
+ with temporary.open("wb") as stream:
+  stream.write(data); stream.flush(); os.fsync(stream.fileno())
+ os.replace(temporary,out)
+PY
+
   python3 -B "$root/tools/prune_scalefirst_q4k_pilot.py" self-test || return 2
   python3 -B "$root/tools/plan_scalefirst_q4k_real_shapes.py" self-test || return 2
-  python3 -B "$root/ci/check_scalefirst_q4k_pruned_runner.py" || return 2
+  python3 -B "$root/ci/check_scalefirst_q4k_pruned_runner.py" \
+    --committed-only --evidence "$l210_evidence" || return 2
 
   if [ ! -s "$plan" ]; then
     if [ "$resume" = 1 ]; then

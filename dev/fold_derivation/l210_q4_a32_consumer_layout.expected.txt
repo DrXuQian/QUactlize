@@ -1,0 +1,11 @@
+[l210 row] name=canonical-a tm=64 tn=64 tk=32 wm=32 wn=32 rule=1 compatible=1 byte_bad=0/32768 code_bad=0/65536
+[l210 row] name=canonical-large-t tm=16 tn=64 tk=256 wm=16 wn=32 rule=1 compatible=1 byte_bad=0/32768 code_bad=0/65536
+[l210 row] name=scaled-a tm=64 tn=128 tk=32 wm=32 wn=64 rule=1 compatible=1 byte_bad=0/32768 code_bad=0/65536
+[l210 row] name=scaled-large-t tm=128 tn=128 tk=256 wm=64 wn=64 rule=1 compatible=1 byte_bad=0/32768 code_bad=0/65536
+[l210 row] name=exact-device-failure tm=32 tn=32 tk=64 wm=16 wn=16 rule=0 compatible=0 byte_bad=32768/32768 code_bad=65536/65536
+[l210 row] name=physical-n-too-small tm=64 tn=32 tk=64 wm=32 wn=32 rule=0 compatible=0 byte_bad=16384/32768 code_bad=32768/65536
+[l210 row] name=too-many-n-warps tm=64 tn=64 tk=64 wm=32 wn=16 rule=0 compatible=0 byte_bad=32768/32768 code_bad=65536/65536
+[l210 row] name=too-few-n-warps tm=64 tn=64 tk=64 wm=32 wn=64 rule=0 compatible=0 byte_bad=16384/32768 code_bad=32768/65536
+[l210 row] name=second-reader-instance tm=64 tn=128 tk=64 wm=32 wn=32 rule=0 compatible=0 byte_bad=16384/32768 code_bad=32768/65536
+[l210 row] name=larger-tile-same-wn tm=64 tn=256 tk=64 wm=32 wn=64 rule=0 compatible=0 byte_bad=16384/32768 code_bad=32768/65536
+[l210] PASS rows=10 positives=4 negatives=6 exact_device_byte_bad=32768/32768 exact_device_code_bad=65536/65536 one_bit_corruption_bad=1
