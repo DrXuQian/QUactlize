@@ -6,6 +6,11 @@
 > scale-broadcast prediction and its retraction, and the two wrong framings of N-chunking. What was deleted was
 > prose; every number below was measured on ppu001.
 
+The Q4_K/A32 folded-reader numeric incident has a separate, SHA-bound playbook:
+[`Q4_A32_FOLDED_READER_DEBUG.md`](Q4_A32_FOLDED_READER_DEBUG.md).  It records the original raw-bit failure,
+the independent L123/L211-L214 evidence ladder, the compile-time register-index seam, the source fix, and the
+single-row PPU closure command.  Use that sequence before restarting a full sweep after any folded-reader error.
+
 
 Four standalone programs. **None of them needs the box** — that is the point. They replace probe-fitting on
 ppu001 with a derivation you can re-run in seconds, and they agree with every configuration ever measured there.
