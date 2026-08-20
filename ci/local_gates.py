@@ -498,6 +498,13 @@ def lint_fold_metadata_single_owner():
             0.0)
 
 
+def lint_q4_a32_fixture_components():
+    """A failing PPU row must retain its independently derived host fixture identity."""
+    return _run_ci_script(
+        "check_q4_a32_fixture_components.py",
+        "Q4/A32 six-arm fixtures and their prelaunch identity are bound")
+
+
 def lint_device_probe_scope():
     """A device-compiler SKIP may only guard a check that actually invokes a device compiler."""
     # THE GUARD IS ITSELF A WAY TO LOSE A CHECK. `nvcc_can_compile_device_cuda()` exists so an environment that
@@ -2456,6 +2463,7 @@ def main():
                 ("lint", "dense/grouped mixed policy descriptor parity fires on planted drift", lint_mixed_policy_parity_fires),
                 ("lint", "l114_scale_copy_coverage: uncapped layout fails the shared witness", lint_scale_copy_coverage_fires),
                 ("lint", "fold metadata publication uses one proved physical owner", lint_fold_metadata_single_owner),
+                ("lint", "Q4/A32 component fixtures fail closed on a wrong host golden", lint_q4_a32_fixture_components),
                 ("lint", "a device-compiler SKIP only guards checks that reach a compiler", lint_device_probe_scope),
                 ("lint", "Stream-K minimum policy rejects an empty K stripe", lint_streamk_min_zero_fires),
                 ("lint", "all mixed collectives use one stage-ring driver", lint_mixed_pipeline_shared),

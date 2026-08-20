@@ -69,13 +69,23 @@ std::vector<RegistryRow> registry() {
 }
 
 struct Shape { int m = 1, n = 4096, k = 4096; };
-enum class FixtureMode { Exact, CodeOnly, MetadataOnly };
+enum class FixtureMode {
+  Exact,
+  CodeOnly,
+  ScaleOnly,
+  ZeroOnly,
+  MetadataOnly,
+  TransportOnly
+};
 
 char const* fixture_name(FixtureMode mode) {
   switch (mode) {
     case FixtureMode::Exact: return "exact";
     case FixtureMode::CodeOnly: return "code-only";
+    case FixtureMode::ScaleOnly: return "scale-only";
+    case FixtureMode::ZeroOnly: return "zero-only";
     case FixtureMode::MetadataOnly: return "metadata-only";
+    case FixtureMode::TransportOnly: return "transport-only";
   }
   return "unknown";
 }
@@ -85,6 +95,7 @@ struct Cli {
   std::uint64_t schedule_seed = UINT64_C(0x6a09e667f3bcc909);
   unsigned algorithm_mask = Options::kAllAlgorithms;
   FixtureMode fixture_mode = FixtureMode::Exact;
+  bool fixture_binding = false;
   std::string symbol_file;
   std::vector<Shape> shapes;
 };
@@ -128,9 +139,17 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
         cli.fixture_mode = FixtureMode::Exact;
       else if (!std::strcmp(value, "code-only"))
         cli.fixture_mode = FixtureMode::CodeOnly;
+      else if (!std::strcmp(value, "scale-only"))
+        cli.fixture_mode = FixtureMode::ScaleOnly;
+      else if (!std::strcmp(value, "zero-only"))
+        cli.fixture_mode = FixtureMode::ZeroOnly;
       else if (!std::strcmp(value, "metadata-only"))
         cli.fixture_mode = FixtureMode::MetadataOnly;
+      else if (!std::strcmp(value, "transport-only"))
+        cli.fixture_mode = FixtureMode::TransportOnly;
       else return false;
+    } else if (!std::strcmp(argv[i], "--fixture-binding")) {
+      cli.fixture_binding = true;
     } else if (!std::strncmp(argv[i], "--symbol-file=", 14)) {
       cli.symbol_file = argv[i] + 14;
       if (cli.symbol_file.empty()) return false;
@@ -243,9 +262,23 @@ int code_for_decoded_one() {
   return 0;
 }
 
+constexpr bool fixture_uses_constant_code(FixtureMode mode) {
+  return mode != FixtureMode::Exact && mode != FixtureMode::CodeOnly;
+}
+
+constexpr bool fixture_uses_varied_scale(FixtureMode mode) {
+  return mode == FixtureMode::Exact || mode == FixtureMode::ScaleOnly ||
+         mode == FixtureMode::MetadataOnly;
+}
+
+constexpr bool fixture_uses_varied_zero(FixtureMode mode) {
+  return mode == FixtureMode::Exact || mode == FixtureMode::ZeroOnly ||
+         mode == FixtureMode::MetadataOnly;
+}
+
 int fixture_code(FixtureMode mode, int n, int k) {
-  return mode == FixtureMode::MetadataOnly ? code_for_decoded_one() :
-                                             code_value(n, k);
+  return fixture_uses_constant_code(mode) ? code_for_decoded_one() :
+                                            code_value(n, k);
 }
 
 void put_native(std::vector<std::uint8_t>& plane, int bits, int n, int k,
@@ -260,6 +293,21 @@ struct Fixture {
   bool exact = false, roundtrip = false, high_plane_covered = false;
   bool isolation_covered = false;
 };
+
+std::uint64_t fnv1a_bytes(void const* data, std::size_t bytes) {
+  auto const* p = static_cast<std::uint8_t const*>(data);
+  std::uint64_t hash = UINT64_C(1469598103934665603);
+  for (std::size_t i = 0; i < bytes; ++i) {
+    hash ^= p[i];
+    hash *= UINT64_C(1099511628211);
+  }
+  return hash;
+}
+
+template <class T>
+std::uint64_t fixture_hash(std::vector<T> const& values) {
+  return fnv1a_bytes(values.data(), values.size() * sizeof(T));
+}
 
 Fixture make_fixture(Shape shape, FixtureMode mode) {
   Fixture f;
@@ -284,16 +332,18 @@ Fixture make_fixture(Shape shape, FixtureMode mode) {
     active[s] = begin + ((37 * s + 11) % span);
     for (int m = 0; m < shape.m; ++m)
       f.a[std::size_t(m) * shape.k + active[s]] =
-          half_t(((m + s) & 1) ? -0.5f : 0.5f);
+          half_t(mode == FixtureMode::TransportOnly ?
+                     ((m & 1) ? -0.5f : 0.5f) :
+                     (((m + s) & 1) ? -0.5f : 0.5f));
   }
   for (int g = 0; g < shape.k / GS; ++g)
     for (int n = 0; n < shape.n; ++n) {
       f.scales[std::size_t(g) * shape.n + n] = half_t(
-          mode == FixtureMode::CodeOnly ? 1.f :
+          !fixture_uses_varied_scale(mode) ? 1.f :
           float(1 << ((17 * g + 29 * n + 1) % 3)));
       if constexpr (has_zero())
         f.zeros[std::size_t(g) * shape.n + n] = half_t(
-            mode == FixtureMode::CodeOnly ? 0.f :
+            !fixture_uses_varied_zero(mode) ? 0.f :
             float(((11 * g + 7 * n) % 3 - 1) * 3));
     }
 
@@ -330,11 +380,13 @@ Fixture make_fixture(Shape shape, FixtureMode mode) {
       f.zeros.begin(), f.zeros.end(), [](half_t value) {
         return float(value) == 0.f;
       });
-  f.isolation_covered =
-      mode == FixtureMode::Exact ? code_varied && scale_varied && zero_varied :
-      mode == FixtureMode::CodeOnly ?
-          code_varied && scale_is_one && zero_is_zero :
-          code_is_one && scale_varied && zero_varied;
+  bool const code_covered = fixture_uses_constant_code(mode) ?
+      code_is_one : code_varied;
+  bool const scale_covered = fixture_uses_varied_scale(mode) ?
+      scale_varied : scale_is_one;
+  bool const zero_covered = fixture_uses_varied_zero(mode) ?
+      zero_varied : zero_is_zero;
+  f.isolation_covered = code_covered && scale_covered && zero_covered;
 #if SCALEFIRST_SWEEP_QTYPE == 8
   {
     xplane::place_derived<8,64,64,32,32,32,1,32>(
@@ -365,9 +417,9 @@ Fixture make_fixture(Shape shape, FixtureMode mode) {
 #endif
   if constexpr (HB == 0) {
     f.high_plane_covered = true;
-  } else if (mode == FixtureMode::MetadataOnly) {
-    // This arm intentionally holds the decoded code constant; high-plane
-    // coverage belongs to exact/code-only, not to the metadata isolation.
+  } else if (fixture_uses_constant_code(mode)) {
+    // These arms intentionally hold the decoded code constant; high-plane
+    // coverage belongs to exact/code-only, not to component isolation.
     f.high_plane_covered = true;
   } else {
     f.high_plane_covered = std::any_of(
@@ -416,6 +468,24 @@ int run_shape(Shape shape, Cli const& cli, int device, int cu,
     return 2;
   }
   Fixture fixture = make_fixture(shape, cli.fixture_mode);
+  if (cli.fixture_binding) {
+    std::printf(
+        "SF_FIXTURE mode=%s first_golden=0x%04x "
+        "a_fnv=%016llx low_native_fnv=%016llx low_placed_fnv=%016llx "
+        "scale_fnv=%016llx zero_fnv=%016llx golden_fnv=%016llx "
+        "roundtrip=%d exact=%d isolation=%d\n",
+        fixture_name(cli.fixture_mode),
+        fixture.golden.empty() ? 0u : unsigned(fixture.golden[0].raw()),
+        static_cast<unsigned long long>(fixture_hash(fixture.a)),
+        static_cast<unsigned long long>(fixture_hash(fixture.low_native)),
+        static_cast<unsigned long long>(fixture_hash(fixture.low)),
+        static_cast<unsigned long long>(fixture_hash(fixture.scales)),
+        static_cast<unsigned long long>(fixture_hash(fixture.zeros)),
+        static_cast<unsigned long long>(fixture_hash(fixture.golden)),
+        int(fixture.roundtrip), int(fixture.exact),
+        int(fixture.isolation_covered));
+    std::fflush(stdout);
+  }
   if (!fixture.roundtrip || !fixture.exact || !fixture.high_plane_covered ||
       !fixture.isolation_covered) {
     std::fprintf(stderr,
@@ -553,7 +623,8 @@ int main(int argc, char** argv) {
         "usage: %s [--shape=MxNxK] [--iterations=N] "
         "[--correctness-repeats=N] [--schedule-seed=N] "
         "[--algorithm=all|nonpersistent|persistent|split|full-output] "
-        "[--fixture=exact|code-only|metadata-only] "
+        "[--fixture=exact|code-only|scale-only|zero-only|metadata-only|transport-only] "
+        "[--fixture-binding] "
         "[--symbol-file=PATH]\n", argv[0]);
     return 2;
   }

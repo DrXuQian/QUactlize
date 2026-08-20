@@ -92,7 +92,7 @@ of the same high-level layout.
 | metadata apply composition | `l216_q4_a32_metadata_apply_map.cu` | Every converted code is paired with scale/zero from the same logical N | rotating metadata N by one is red |
 | exact composed code reader | `l217_q4_a32_exact_composed_reader.cu` | Offline artifact slot through AIU destination, real tiled smem, TSM load, converter/scatter and MMA logical `(n,k)` is a bijection | rotating logical N by one is red |
 | metadata global-to-shared | `l218_q4_a32_metadata_gmem_smem_map.cu` | All 40 K tiles and 10,240 values map through the production capped cp.async tiled copy to the intended stage/group/N slot | transposing source N/group is red |
-| three-arm device bisection | `FIXTURES=code-only,metadata-only,exact tools/run_scalefirst_q4_a32_exact_box.sh` | Separates code-reader, metadata, and interaction failures in one compiled specialization | every arm must be classifiable; infrastructure cannot become a numeric bucket |
+| component device bisection | `FIXTURES=transport-only,code-only,scale-only,zero-only,metadata-only,exact tools/run_scalefirst_q4_a32_exact_box.sh` | Separates common transport, code reader, scale, zero, metadata interaction and exact failures in one specialization | every arm's prelaunch fixture identity must bind before a numeric classification |
 | final device value | default single-exact mode of the same runner | The shipping PPU specialization is numerically exact | any nonzero `raw_bad`, missing one-row marker, or nonzero process status is red |
 
 Recorded local positives:
@@ -205,6 +205,35 @@ green, repeated publication was the common root.  If none changes, the
 experiment is falsified and must be reverted rather than retained as a
 plausible cleanup.
 
+The first rerun at `7dad9ac` is not admissible as that verdict.  Its line
+labeled `metadata-only` reported `want=0x4000`, but the pinned metadata-only
+fixture's host golden at output zero is necessarily `0xc100` (-2.5); `0x4000`
+is the code-only golden (+2).  A device kernel can change `got`, never the host
+`want`.  The old runner printed the fixture identity only after a successful
+row, then attached the shell loop's label to a failing row.  It therefore
+could not detect this contradiction and incorrectly retained the broad
+`COMMON_PIPELINE_OR_MULTIPLE_DEFECTS` label.  Do not use the apparent
+65,536-to-26,368 metadata change as kernel evidence.
+
+The closure runner now emits `SF_FIXTURE` before launch and binds mode, first
+golden and byte fingerprints for A, native/placed code, scale, zero and the
+complete golden.  A wrong mode or the observed code-golden metadata plant is
+`INFRA_FAIL`, not `NUMERIC_FAIL`.  It also decomposes the path with six arms:
+
+| Arm | Varied quantity | Pinned output-zero golden |
+|---|---|---:|
+| transport-only | no B quantity; eight same-sign A impulses | `0x4400` (+4) |
+| code-only | code | `0x4000` (+2) |
+| scale-only | scale | `0x3800` (+0.5) |
+| zero-only | zero | `0xc200` (-3) |
+| metadata-only | scale and zero | `0xc100` (-2.5) |
+| exact | code, scale and zero | `0xc200` (-3) |
+
+`transport-only` is the branch point.  Failure there localizes the common A
+load/stage/MMA/output path and the next experiment is one active K impulse at
+a time.  A pass there makes code, scale and zero arms independent reader/apply
+tests; only the failing component may then be instrumented.
+
 ## Disproved register-index hypothesis
 
 `detail::run_mixed_pipeline` supplies `k_block` as a compile-time
@@ -300,13 +329,15 @@ Run only the failed row; do not restart the full sweep first:
 cd /sim/eec/shared/junfu.qx/quactlize
 git pull --ff-only origin develop
 
-OUT=/workspace/quactlize-q4-a32-bisect-$(git rev-parse --short HEAD)-$(date -u +%Y%m%dT%H%M%SZ) \
-FIXTURES=code-only,metadata-only,exact \
+OUT=/workspace/quactlize-q4-a32-components-$(git rev-parse --short HEAD)-$(date -u +%Y%m%dT%H%M%SZ) \
+FIXTURES=transport-only,code-only,scale-only,zero-only,metadata-only,exact \
 ITERATIONS=1 CORRECTNESS_REPEATS=8 JOBS=16 \
   bash tools/run_scalefirst_q4_a32_exact_box.sh
 ```
 
-The three arms compile the exact shipping row once:
+The six arms compile the exact shipping row once.  The final three retain the
+historical broad classifier, while transport/scale/zero make that result
+actionable:
 
 - code-only fail, metadata-only pass: code reader or B pipeline;
 - code-only pass, metadata-only fail: metadata load/apply;
@@ -319,6 +350,7 @@ Admission requires all of the following from the same bundle:
 git.sha == the intended revision
 manifest selection.mode == exact-symbol
 manifest selection.compiled_rows == 1
+exactly one SF_FIXTURE marker with the registered mode, first golden and input hashes
 SF_COMPLETE status=COMPLETE shape=64x1024x5120 typed_rows=1
 every measured row contains raw_bad":0
 [q4-a32-exact] PASS
@@ -335,6 +367,7 @@ Fill this table by appending evidence; do not alter the admission rule above.
 |---|---|---|---|
 | `eb7d95c` | PPU | **FAIL**, identical `61184`, first `-3 -> -18` | `/workspace/quactlize-q4-a32-exact-eb7d95c-20260820T070953Z` |
 | `79fba86` | PPU | **FAIL**, three-arm locus `COMMON_PIPELINE_OR_MULTIPLE_DEFECTS`; 26,368 / 65,536 / 61,184 bad | `/workspace/quactlize-q4-a32-bisect-79fba86-20260820T081739Z` |
+| `7dad9ac` | PPU | **VOID**, failing metadata arm carried code-only host golden (`0x4000`, required `0xc100`) | artifact path not supplied |
 
 ## Reusable folded-artifact decision tree
 
