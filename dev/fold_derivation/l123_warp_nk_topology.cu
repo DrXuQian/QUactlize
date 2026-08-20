@@ -321,6 +321,11 @@ struct FoldCase {
 using I2Case=FoldCase<2,64,2>;
 using Q3LowCase=FoldCase<2,128,2>;
 using Q3HighCase=FoldCase<1,128,4>;
+struct Q4A32Case {
+  static constexpr int bits=4,tm=64,tn=64,tk=128,wm=16,fold=2,artifact_tk=32;
+  static constexpr int base_permk=cutlass::MixGemmMmaPermK<bits,tk,fold>::value;
+  using Element=cutlass::uint4b_t;
+};
 
 template <class C,int WN,int WK>
 struct FoldPair {
@@ -638,6 +643,36 @@ int main(){
   ok&=i2_wn_slot==8192&&i2_wn_bytes==2048;
   std::printf("L123 int2-F2 WN-baseline-slot-diff=%zu WN-baseline-stored-byte-diff=%zu\n",
               i2_wn_slot,i2_wn_bytes);
+
+  auto q4a32base=xplane::plane_map<4,64,64,128,16,32,2,32>();
+  auto q4a32=single_plane_delivery<Q4A32Case,32,1>();
+  ok&=fold_row<Q4A32Case,32,1>("Q4-A32-F2",q4a32,q4a32base);
+  {
+    using P=FoldPair<Q4A32Case,32,1>;
+    auto s16=make_tensor(make_smem_ptr((cutlass::half_t*)nullptr),
+        make_layout(Shape<Int<Q4A32Case::tn>,Int<Q4A32Case::tk>>{},
+                    Stride<Int<Q4A32Case::tk>,_1>{}));
+    auto frag=typename P::Mma{}.get_thread_slice(0).partition_fragment_B(s16);
+    using S=FoldShadow<Q4A32Case,32,1>;
+    auto s8=make_tensor(make_smem_ptr((int8_t*)nullptr),
+        make_layout(Shape<Int<S::CTV::Ng>,Int<S::CTV::FullRowB>>{},
+                    Stride<Int<S::CTV::FullRowB>,_1>{}));
+    auto load=typename S::Mma{}.get_thread_slice(0).partition_fragment_B(s8);
+    auto copy=make_tiled_copy_B(Copy_Atom<typename S::Op,int8_t>{},typename S::Mma{});
+    auto view=copy.get_thread_slice(0).retile_D(load);
+    std::printf("L123 Q4-A32 fragment size=%d cosize=%d layout=", int(size(frag)),
+                int(cosize(frag.layout())));
+    print(frag.layout()); std::printf("\n");
+    std::printf("L123 Q4-A32 load size=%d cosize=%d K_BLOCK=%d layout=", int(size(load)),
+                int(cosize(load.layout())),int(size<2>(load)));
+    print(load.layout()); std::printf("\n");
+    std::printf("L123 Q4-A32 copy-view size=%d cosize=%d K_BLOCK=%d layout=", int(size(view)),
+                int(cosize(view.layout())),int(size<2>(view)));
+    print(view.layout()); std::printf("\n");
+    std::printf("L123 Q4-A32 fragment offsets=");
+    for(int i=0;i<int(size(frag));++i)std::printf("%s%d",i?",":"",int(frag.layout()(i)));
+    std::printf("\n");
+  }
 
   auto q3lo64=xplane::plane_map<2,16,128,256,16,64,2,64>();
   auto q3lo128=xplane::plane_map<2,16,128,256,16,128,2,64>();

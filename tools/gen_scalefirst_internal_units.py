@@ -60,7 +60,8 @@ def row_json(qtype: int, artifact: int, row: matrix.Tactic,
 
 
 def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
-             per_unit: int, drop_last: bool) -> dict:
+             per_unit: int, drop_last: bool,
+             select_symbol: str | None = None) -> dict:
     fmt = matrix.format_for(qtype)
     if artifact not in matrix.ARTIFACT_TILE_K:
         raise ValueError("artifact-tk must be 32,64,128,256")
@@ -79,6 +80,14 @@ def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
     if len(eligible) != expected:
         raise RuntimeError(
             f"typed denominator {len(eligible)}/{expected}; candidate missing")
+
+    authority_eligible = eligible
+    if select_symbol is not None:
+        eligible = [row for row in authority_eligible
+                    if symbol(qtype, artifact, row) == select_symbol]
+        if len(eligible) != 1:
+            raise RuntimeError(
+                f"selected symbol is not one exact typed row: {select_symbol}")
 
     registry = (
         "// GENERATED -- exact all-format ScaleFirst typed registry.\n"
@@ -123,7 +132,7 @@ def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
         },
         "denominator": {
             "raw_rows": len(raw), "typed_rows": len(eligible),
-            "non_typed_rows": len(raw) - len(eligible),
+            "non_typed_rows": len(raw) - len(authority_eligible),
             "persistent_grid_rows": "runtime exact occupancy expansion",
         },
         "typed_rows": [row_json(qtype, artifact, row,
@@ -140,6 +149,13 @@ def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
             "tactic_space": matrix.sha256(matrix.TACTIC_SPACE),
         },
     }
+    if select_symbol is not None:
+        manifest["selection"] = {
+            "mode": "exact-symbol",
+            "symbol": select_symbol,
+            "authority_typed_rows": len(authority_eligible),
+            "compiled_rows": 1,
+        }
     write(out / "manifest.json", json.dumps(manifest, indent=2,
                                               sort_keys=True) + "\n")
     return manifest
@@ -152,13 +168,15 @@ def main() -> int:
     parser.add_argument("--bchunk", type=int, required=True)
     parser.add_argument("--out-dir", type=pathlib.Path, required=True)
     parser.add_argument("--per-unit", type=int, default=4)
+    parser.add_argument("--select-symbol",
+                        help="compile exactly one typed row (diagnostic only)")
     parser.add_argument("--plant-drop-last", action="store_true",
                         help=argparse.SUPPRESS)
     args = parser.parse_args()
     try:
         manifest = generate(args.qtype, args.artifact_tk, args.bchunk,
                             args.out_dir, args.per_unit,
-                            args.plant_drop_last)
+                            args.plant_drop_last, args.select_symbol)
         den = manifest["denominator"]
         print("[scalefirst-generate] " + " ".join(
             f"{key}={value}" for key, value in manifest["identity"].items()) +

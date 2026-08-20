@@ -852,13 +852,19 @@ public:
             cute::gemm(tiled_mma, tCrA(_,_,atom_idx), tCrB_one, accum);
           });
         } else {
-          CUTLASS_PRAGMA_UNROLL
-          for (int k_loop = 0; k_loop < K_ATOM_PER_COPY; k_loop++) {
+          // Both coordinates index register-backed fragments.  Preserve the
+          // pipeline driver's Int<k_block> all the way through the inner atom
+          // loop instead of asking PPU codegen to lower a dynamic register
+          // array subscript after an unroll pragma.
+          cute::for_each(
+              cute::make_int_sequence<decltype(K_ATOM_PER_COPY)::value>{},
+              [&] (auto k_loop) {
             auto atom_idx = k_block * K_ATOM_PER_COPY + k_loop;
             cute::transform(tCrA(_,_,atom_idx), TransformA{});
             cute::transform(tCrB_mma(_,_,atom_idx), TransformB{});
-            cute::gemm(tiled_mma, tCrA(_,_,atom_idx), tCrB_mma(_,_,atom_idx), accum);
-          }
+            cute::gemm(tiled_mma, tCrA(_,_,atom_idx),
+                       tCrB_mma(_,_,atom_idx), accum);
+          });
         }
     };
 
@@ -1145,6 +1151,7 @@ private:
   template <class SmemTiledCopy,
             class TensorSmemView,
             class TensorCopyView,
+            class KBlock,
             class... Ts,
             class... Us
             >
@@ -1155,10 +1162,14 @@ private:
     TensorCopyView& tCrB_copy_view,
     cute::tuple<Ts...> const& partitioned_mma_extra_info,
     cute::tuple<Us...> const& tiled_copy_and_views,
-    int k_block,
+    KBlock const& k_block,
     int read_stage) {
 
-    copy(smem_tiled_copy_B, tCsB(_,_,k_block,read_stage), tCrB_copy_view(_,_,k_block));
+    constexpr int KBlockIndex = KBlock::value;
+
+    copy(smem_tiled_copy_B,
+         tCsB(_,_,cute::Int<KBlockIndex>{},read_stage),
+         tCrB_copy_view(_,_,cute::Int<KBlockIndex>{}));
 
     // COARSE scale path: gs spans >= one full B copy step (Scale_TileK <= K_BLOCK_MAX), so one scale group
     // covers >=1 whole copy steps -> load it here, once per GroupK steps. The FINE case (gs < copy-step K, e.g.
@@ -1167,14 +1178,14 @@ private:
     constexpr int KBM_ = decltype(cute::size<2>(tCrB_copy_view))::value;
     using ScalePolicy = typename MetadataPolicy::template Coarse<KBM_>;
     if constexpr (ScalePolicy::active) {
-     if (ScalePolicy::starts_group(k_block)) {
+     if constexpr (ScalePolicy::starts_group(KBlockIndex)) {
       // We are starting a new group k-tile so copy the scale
       if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
         // nothing to do
       }
       else if constexpr (ModeHasScales) {
         MetadataPolicy::reload(partitioned_mma_extra_info, tiled_copy_and_views,
-                               ScalePolicy::group(k_block), read_stage);
+                               ScalePolicy::group(KBlockIndex), read_stage);
       }
       else {
         static_assert(cutlass::detail::dependent_false<KernelSchedule>,
@@ -1220,6 +1231,7 @@ private:
             class TCrB_load,
             class TCrB_mma,
             int K_ATOM_PER_COPY,
+            class KBlock,
             class... Ts,
             class CopyViews>
   CUTLASS_DEVICE
@@ -1227,12 +1239,14 @@ private:
     TCrB_load const& tCrB_load,
     TCrB_mma& tCrB_mma,
     cute::tuple<Ts...> const& partitioned_extra_info,
-    int const k_block,
+    KBlock const& k_block,
     cute::Int<K_ATOM_PER_COPY> k_atom,
     CopyViews const& tiled_copy_and_views,
     int const read_stage) {
 
-    Tensor cvt_in = recast<RealInternalElementB>(tCrB_load(_, _, k_block));
+    constexpr int KBlockIndex = KBlock::value;
+    Tensor cvt_in = recast<RealInternalElementB>(
+        tCrB_load(_, _, cute::Int<KBlockIndex>{}));
     using CPY_VEC = Int<4 * 32 / sizeof_bits<RealInternalElementB>::value>;
     constexpr int KBM_ = decltype(cute::size<2>(tCrB_load))::value;    // K_BLOCK_MAX (32 B deliveries)
 
@@ -1242,9 +1256,15 @@ private:
       // tCrB_mma(_,_,k_block*K_ATOM_PER_COPY) base advances by an MMA-atom stride (32 halfs in the first failing
       // cases), then writes VEC=64/128 consecutive halfs; deliveries overlap and leave the tail unwritten.
       //
-      // Emit each fold group directly into its disjoint destination run.  This is the same half2 emitter used by the
-      // wide converter, with no VEC-sized temporary register array.  MixGemmArtifactScatter is also the offline
-      // inverse's source of truth and statically proves the complete destination is bijective and half2-safe.
+      // Keep every register-array subscript compile-time.  This path used to
+      // erase the driver's Int<k_block> to a runtime int and then index the
+      // register-backed fragment through a raw pointer.  The host ownership
+      // proof cannot validate that PPU codegen seam.
+      //
+      // For int4, convert one complete 32-code delivery with the established
+      // shipping converter, then apply the independently proved artifact
+      // scatter.  The direct chunk emitter is extensionally equal in C++, but
+      // had no folded-A32 PPU numeric positive.  Other widths retain it.
       constexpr int Bits = sizeof_bits<RealInternalElementB>::value;
       using Scatter = cutlass::MixGemmArtifactScatter<Bits, FoldF, KBM_>;
       using EmitLayout = typename Scatter::EmitLayout;
@@ -1252,20 +1272,37 @@ private:
       static_assert(decltype(cute::size(cvt_in))::value % CPY_VEC::value == 0,
                     "each N instance must contain a complete converter vector");
       auto* dst = raw_pointer_cast(tCrB_mma.data());
-      CUTLASS_PRAGMA_UNROLL
-      for (int ii = 0; ii < NumIterations; ++ii) {
-        auto const* src = reinterpret_cast<uint32_t const*>(raw_pointer_cast(cvt_in(_, ii).data()));
-        cute::for_each(cute::make_int_sequence<FoldF>{}, [&] (auto fold_group) {
-          constexpr int FG = decltype(fold_group)::value;
-          auto* group_dst = reinterpret_cast<uint32_t*>(
-              dst + Scatter::group_base(FG, k_block, ii));
-          cutlass::MixGemmChunkEmit<Bits, FG, FoldF, true, EmitLayout>::emit(src, group_dst);
-        });
-      }
+      cute::for_each(cute::make_int_sequence<NumIterations>{}, [&] (auto iteration) {
+        constexpr int II = decltype(iteration)::value;
+        if constexpr (Bits == 4) {
+          using SrcArray = cutlass::Array<RealInternalElementB, CPY_VEC::value>;
+          using DstElement = typename TCrB_mma::value_type;
+          using Converter = cutlass::MixGemmNumericArrayConverter<
+              DstElement, RealInternalElementB, CPY_VEC::value>;
+          auto const* src_array = reinterpret_cast<SrcArray const*>(
+              raw_pointer_cast(cvt_in(_, cute::Int<II>{}).data()));
+          auto converted = Converter::convert(*src_array);
+          cute::for_each(cute::make_int_sequence<CPY_VEC::value>{}, [&] (auto element) {
+            constexpr int E = decltype(element)::value;
+            dst[Scatter::flat(E, KBlockIndex, II)] = converted[E];
+          });
+        } else {
+          auto const* src = reinterpret_cast<uint32_t const*>(
+              raw_pointer_cast(cvt_in(_, cute::Int<II>{}).data()));
+          cute::for_each(cute::make_int_sequence<FoldF>{}, [&] (auto fold_group) {
+            constexpr int FG = decltype(fold_group)::value;
+            auto* group_dst = reinterpret_cast<uint32_t*>(
+                dst + Scatter::group_base(FG, KBlockIndex, II));
+            cutlass::MixGemmChunkEmit<Bits, FG, FoldF, true, EmitLayout>::emit(src, group_dst);
+          });
+        }
+      });
     } else {
       // Legacy folded tiles have one delivery; unfolded tiles already carry delivery in cvt_in's N-instance layout.
       // Keep their generated converter/write path byte-for-byte unchanged.
-      Tensor cvt_out = make_tensor(tCrB_mma(_, _, k_block * K_ATOM_PER_COPY).data(), cvt_in.layout());
+      Tensor cvt_out = make_tensor(
+          tCrB_mma(_, _, cute::Int<KBlockIndex * K_ATOM_PER_COPY>{}).data(),
+          cvt_in.layout());
       convert_tensor(cvt_in, cvt_out, CPY_VEC{});
     }
 
@@ -1279,12 +1316,12 @@ private:
     // The four hand-rolled branches (FINE x zero) collapsed into one call: the per-atom rule now lives in
     // apply_scale_atom and both this function and transform_B_atom go through it.
     if constexpr (ModeHasScales) {
-      CUTLASS_PRAGMA_UNROLL
-      for (int i = 0; i < K_ATOM_PER_COPY; ++i) {
-        const int atom_idx = k_block * K_ATOM_PER_COPY + i;
-        apply_scale_atom<FINE, APG_>(tCrB_mma(_, _, atom_idx), partitioned_extra_info,
+      cute::for_each(cute::make_int_sequence<K_ATOM_PER_COPY>{}, [&] (auto atom) {
+        constexpr int atom_idx = KBlockIndex * K_ATOM_PER_COPY +
+                                 decltype(atom)::value;
+        apply_scale_atom<FINE, APG_>(tCrB_mma(_, _, cute::Int<atom_idx>{}), partitioned_extra_info,
                                      tiled_copy_and_views, atom_idx, read_stage);
-      }
+      });
     }
   }
 
