@@ -124,7 +124,42 @@ doc={"schema":"quactlize.scalefirst_q4k_real_shapes_source.v1",
      "files":{rel:hashlib.sha256((root/rel).read_bytes()).hexdigest()
               for rel in paths}}
 if out.exists():
- if json.loads(out.read_text())!=doc: raise SystemExit("source authority changed on resume")
+ previous=json.loads(out.read_text())
+ if previous!=doc:
+  if not resume: raise SystemExit("source authority changed outside resume")
+  analysis_only={
+   "ci/check_scalefirst_q4k_pruned_runner.py",
+   "tools/plan_scalefirst_q4k_real_shapes.py",
+   "tools/prune_scalefirst_q4k_pilot.py",
+   "tools/run_scalefirst_q4k_real_shapes_pruned_box.sh",
+  }
+  old_files=previous.get("files",{}); new_files=doc["files"]
+  changed={name for name in set(old_files)|set(new_files)
+           if old_files.get(name)!=new_files.get(name)}
+  if not changed or not changed<=analysis_only:
+   raise SystemExit("resume source authority changed outside analysis-only seam: "+
+                    repr(sorted(changed)))
+  migration=out.with_name("source-authority-resume.json")
+  migration_doc={
+   "schema":"quactlize.scalefirst_q4k_analysis_resume.v1",
+   "measurement_git_sha":previous.get("git_sha"),
+   "resume_git_sha":commit,
+   "changed_analysis_files":sorted(changed),
+   "measurement_source_sha256":hashlib.sha256(
+       json.dumps(previous,sort_keys=True,separators=(",",":")).encode()).hexdigest(),
+   "resume_source_sha256":hashlib.sha256(
+       json.dumps(doc,sort_keys=True,separators=(",",":")).encode()).hexdigest(),
+   "compiled_binary_identity":"MUST_MATCH_FROZEN_BINARY_HASHES",
+  }
+  if migration.exists():
+   if json.loads(migration.read_text())!=migration_doc:
+    raise SystemExit("analysis-only resume authority changed")
+  else:
+   temporary=migration.with_name(f".{migration.name}.current.{os.getpid()}")
+   with temporary.open("w") as stream:
+    json.dump(migration_doc,stream,indent=2,sort_keys=True); stream.write("\n")
+    stream.flush(); os.fsync(stream.fileno())
+   os.replace(temporary,migration)
 elif resume: raise SystemExit("resume bundle lost source authority")
 else:
  temporary=out.with_name(f".{out.name}.current.{os.getpid()}")
@@ -310,10 +345,40 @@ PY
       printf '[q4k-real-shapes] resume A%s %s committed=PASS\n' "$artifact" "$shape_key"
       continue
     fi
-    if find "$raw_dir" "$result_dir" -mindepth 1 -type f -print -quit | grep -q .; then
-      printf '[q4k-real-shapes] FAIL: incomplete uncommitted evidence at A%s/%s; use a fresh OUT\n' \
-        "$artifact" "$shape_key" >&2
-      return 2
+    if find "$raw_dir" "$result_dir" -mindepth 1 -print -quit | grep -q .; then
+      if [ "$resume" != 1 ]; then
+        printf '[q4k-real-shapes] FAIL: incomplete uncommitted evidence at A%s/%s requires RESUME=1\n' \
+          "$artifact" "$shape_key" >&2
+        return 2
+      fi
+      python3 -B - "$raw_dir" "$result_dir" <<'PY' || return 2
+import pathlib,sys
+raw,result=map(pathlib.Path,sys.argv[1:3])
+raw_allowed={"screen.log","scheduler.log","confirm.log"}
+result_allowed={"screen.json","screen-shortlist.txt","scheduler.json",
+                "confirm-shortlist.txt","summary.json","winners.txt"}
+for directory,allowed in ((raw,raw_allowed),(result,result_allowed)):
+ for path in directory.iterdir():
+  if path.is_symlink() or not path.is_file() or path.name not in allowed:
+   raise SystemExit(f"unregistered incomplete evidence member: {path}")
+for name in ("screen.log","scheduler.log","confirm.log"):
+ path=raw/name
+ if path.exists() and path.stat().st_size==0:
+  raise SystemExit(f"empty phase log cannot be resumed: {path}")
+if (raw/"scheduler.log").exists() and not (raw/"screen.log").exists():
+ raise SystemExit("scheduler log exists without screen log")
+if (raw/"confirm.log").exists() and not (raw/"scheduler.log").exists():
+ raise SystemExit("confirm log exists without scheduler log")
+dependencies={
+ "screen.json":"screen.log", "screen-shortlist.txt":"screen.log",
+ "scheduler.json":"scheduler.log", "confirm-shortlist.txt":"scheduler.log",
+ "summary.json":"confirm.log", "winners.txt":"confirm.log"}
+for output,input_name in dependencies.items():
+ if (result/output).exists() and not (raw/input_name).exists():
+  raise SystemExit(f"{output} exists without {input_name}")
+PY
+      printf '[q4k-real-shapes] resume incomplete A%s %s from recorded phase logs\n' \
+        "$artifact" "$shape_key"
     fi
     read -r screen_iterations screen_repeats scheduler_iterations \
       scheduler_repeats confirm_iterations confirm_repeats < <(
@@ -326,36 +391,46 @@ p=json.load(open(sys.argv[1])); print(
 PY
       ) || return 2
     local cell_seed=$((base_seed + ordinal * 4 + artifact))
-    printf '[q4k-real-shapes] cell=%d A%s shape=%s phase=screen full-typed-graph\n' \
-      "$ordinal" "$artifact" "$shape"
-    "$binary" --shape="$shape" --algorithm=nonpersistent \
-      --iterations="$screen_iterations" \
-      --correctness-repeats="$screen_repeats" \
-      --schedule-seed="$cell_seed" >"$raw_dir/screen.log" 2>&1
-    rc=$?
-    if [ "$rc" -ne 0 ]; then
-      printf '[q4k-real-shapes] FAIL: A%s/%s screen rc=%d\n' "$artifact" "$shape_key" "$rc" >&2
-      tail -100 "$raw_dir/screen.log" >&2
-      return "$rc"
+    if [ ! -s "$raw_dir/screen.log" ]; then
+      printf '[q4k-real-shapes] cell=%d A%s shape=%s phase=screen full-typed-graph\n' \
+        "$ordinal" "$artifact" "$shape"
+      "$binary" --shape="$shape" --algorithm=nonpersistent \
+        --iterations="$screen_iterations" \
+        --correctness-repeats="$screen_repeats" \
+        --schedule-seed="$cell_seed" >"$raw_dir/screen.log" 2>&1
+      rc=$?
+      if [ "$rc" -ne 0 ]; then
+        printf '[q4k-real-shapes] FAIL: A%s/%s screen rc=%d\n' "$artifact" "$shape_key" "$rc" >&2
+        tail -100 "$raw_dir/screen.log" >&2
+        return "$rc"
+      fi
+    else
+      printf '[q4k-real-shapes] cell=%d A%s shape=%s phase=screen reuse-complete-log\n' \
+        "$ordinal" "$artifact" "$shape"
     fi
     python3 -B "$root/tools/prune_scalefirst_q4k_pilot.py" screen \
       --policy "$policy" --manifest "$manifest" --log "$raw_dir/screen.log" \
       --output "$result_dir/screen.json" \
       --symbols-output "$result_dir/screen-shortlist.txt" || return 2
 
-    printf '[q4k-real-shapes] cell=%d A%s shape=%s phase=scheduler shortlist=%s\n' \
-      "$ordinal" "$artifact" "$shape" \
-      "$(wc -l < "$result_dir/screen-shortlist.txt")"
-    "$binary" --shape="$shape" --algorithm=all \
-      --symbol-file="$result_dir/screen-shortlist.txt" \
-      --iterations="$scheduler_iterations" \
-      --correctness-repeats="$scheduler_repeats" \
-      --schedule-seed="$((cell_seed + 1))" >"$raw_dir/scheduler.log" 2>&1
-    rc=$?
-    if [ "$rc" -ne 0 ]; then
-      printf '[q4k-real-shapes] FAIL: A%s/%s scheduler rc=%d\n' "$artifact" "$shape_key" "$rc" >&2
-      tail -100 "$raw_dir/scheduler.log" >&2
-      return "$rc"
+    if [ ! -s "$raw_dir/scheduler.log" ]; then
+      printf '[q4k-real-shapes] cell=%d A%s shape=%s phase=scheduler shortlist=%s\n' \
+        "$ordinal" "$artifact" "$shape" \
+        "$(wc -l < "$result_dir/screen-shortlist.txt")"
+      "$binary" --shape="$shape" --algorithm=all \
+        --symbol-file="$result_dir/screen-shortlist.txt" \
+        --iterations="$scheduler_iterations" \
+        --correctness-repeats="$scheduler_repeats" \
+        --schedule-seed="$((cell_seed + 1))" >"$raw_dir/scheduler.log" 2>&1
+      rc=$?
+      if [ "$rc" -ne 0 ]; then
+        printf '[q4k-real-shapes] FAIL: A%s/%s scheduler rc=%d\n' "$artifact" "$shape_key" "$rc" >&2
+        tail -100 "$raw_dir/scheduler.log" >&2
+        return "$rc"
+      fi
+    else
+      printf '[q4k-real-shapes] cell=%d A%s shape=%s phase=scheduler reuse-complete-log\n' \
+        "$ordinal" "$artifact" "$shape"
     fi
     python3 -B "$root/tools/prune_scalefirst_q4k_pilot.py" scheduler \
       --policy "$policy" --manifest "$manifest" \
@@ -364,19 +439,24 @@ PY
       --output "$result_dir/scheduler.json" \
       --symbols-output "$result_dir/confirm-shortlist.txt" || return 2
 
-    printf '[q4k-real-shapes] cell=%d A%s shape=%s phase=confirm shortlist=%s\n' \
-      "$ordinal" "$artifact" "$shape" \
-      "$(wc -l < "$result_dir/confirm-shortlist.txt")"
-    "$binary" --shape="$shape" --algorithm=all \
-      --symbol-file="$result_dir/confirm-shortlist.txt" \
-      --iterations="$confirm_iterations" \
-      --correctness-repeats="$confirm_repeats" \
-      --schedule-seed="$((cell_seed + 2))" >"$raw_dir/confirm.log" 2>&1
-    rc=$?
-    if [ "$rc" -ne 0 ]; then
-      printf '[q4k-real-shapes] FAIL: A%s/%s confirm rc=%d\n' "$artifact" "$shape_key" "$rc" >&2
-      tail -100 "$raw_dir/confirm.log" >&2
-      return "$rc"
+    if [ ! -s "$raw_dir/confirm.log" ]; then
+      printf '[q4k-real-shapes] cell=%d A%s shape=%s phase=confirm shortlist=%s\n' \
+        "$ordinal" "$artifact" "$shape" \
+        "$(wc -l < "$result_dir/confirm-shortlist.txt")"
+      "$binary" --shape="$shape" --algorithm=all \
+        --symbol-file="$result_dir/confirm-shortlist.txt" \
+        --iterations="$confirm_iterations" \
+        --correctness-repeats="$confirm_repeats" \
+        --schedule-seed="$((cell_seed + 2))" >"$raw_dir/confirm.log" 2>&1
+      rc=$?
+      if [ "$rc" -ne 0 ]; then
+        printf '[q4k-real-shapes] FAIL: A%s/%s confirm rc=%d\n' "$artifact" "$shape_key" "$rc" >&2
+        tail -100 "$raw_dir/confirm.log" >&2
+        return "$rc"
+      fi
+    else
+      printf '[q4k-real-shapes] cell=%d A%s shape=%s phase=confirm reuse-complete-log\n' \
+        "$ordinal" "$artifact" "$shape"
     fi
     python3 -B "$root/tools/prune_scalefirst_q4k_pilot.py" confirm \
       --policy "$policy" --manifest "$manifest" \

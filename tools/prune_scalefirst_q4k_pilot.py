@@ -426,21 +426,55 @@ def cell_label(cell: dict[str, Any]) -> str:
             f"policy={cell['policy']}")
 
 
+def partition_boards(groups: dict[tuple[Any, ...], dict[str, Any]],
+                     policy: dict[str, Any]
+                     ) -> tuple[dict[str, list[dict[str, Any]]],
+                                dict[str, list[dict[str, Any]]]]:
+    """Separate a complete emitted board census from its measurable subset.
+
+    A board with zero MEASURED cells is not the same thing as an absent board:
+    the former is a legitimate shape/layout verdict when every emitted cell is
+    terminal, while the latter means the log denominator was truncated.  The
+    per-symbol algorithm check in load_log already proves each terminal record
+    exists; keep that evidence visible instead of dropping it here.
+    """
+    observed: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
+    measured: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
+    for cell in groups.values():
+        board = board_of(cell)
+        observed[board].append(cell)
+        if cell["status"] == "MEASURED":
+            measured[board].append(cell)
+    if set(observed) != set(policy["boards"]):
+        raise ContractError(
+            f"emitted board denominator differs: {sorted(observed)}")
+    return observed, measured
+
+
+def terminal_census(cells: list[dict[str, Any]]) -> dict[str, int]:
+    return dict(sorted(collections.Counter(
+        str(cell["reason"]) for cell in cells
+        if cell["status"] != "MEASURED").items()))
+
+
 def select_scheduler(manifest_rows: dict[str, dict[str, Any]],
                      groups: dict[tuple[Any, ...], dict[str, Any]],
                      policy: dict[str, Any]) -> dict[str, Any]:
-    boards: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
-    for cell in groups.values():
-        if cell["status"] == "MEASURED":
-            boards[board_of(cell)].append(cell)
-    if set(boards) != set(policy["boards"]):
-        raise ContractError(f"scheduler board denominator differs: {sorted(boards)}")
+    emitted, boards = partition_boards(groups, policy)
     selected: dict[str, set[str]] = {}
     summaries: dict[str, Any] = {}
     rule = policy["scheduler"]
     for board in policy["boards"]:
         ordered = sorted(boards[board], key=lambda cell: (cell["min_us"],
                                                           cell_label(cell)))
+        if not ordered:
+            summaries[board] = {
+                "state": "UNAVAILABLE", "leader": None,
+                "measured_cells": 0, "retained_cells": 0,
+                "terminal_cells": len(emitted[board]),
+                "terminal_reasons": terminal_census(emitted[board]),
+            }
+            continue
         best = float(ordered[0]["min_us"])
         retained = [cell for index, cell in enumerate(ordered)
                     if index < int(rule["top_n_per_board"]) or
@@ -449,11 +483,14 @@ def select_scheduler(manifest_rows: dict[str, dict[str, Any]],
         for cell in retained:
             add_reason(selected, str(cell["symbol"]), f"BOARD:{board}")
         summaries[board] = {
+            "state": "MEASURED",
             "leader": {"cell": cell_label(ordered[0]),
                        "config": ordered[0]["config"],
                        "sample_us": ordered[0]["min_us"]},
             "measured_cells": len(ordered),
             "retained_cells": len(retained),
+            "terminal_cells": len(emitted[board]) - len(ordered),
+            "terminal_reasons": terminal_census(emitted[board]),
         }
     anchor = policy.get("anchor_symbol")
     if anchor:
@@ -470,6 +507,9 @@ def select_scheduler(manifest_rows: dict[str, dict[str, Any]],
         "denominator": {"input_symbols": len({cell["symbol"]
                                                 for cell in groups.values()}),
                         "measured_cells": sum(len(cells) for cells in boards.values()),
+                        "terminal_cells": sum(
+                            len(emitted[board]) - len(boards[board])
+                            for board in policy["boards"]),
                         "selected_symbols": len(selected_symbols)},
     }
 
@@ -477,12 +517,7 @@ def select_scheduler(manifest_rows: dict[str, dict[str, Any]],
 def adjudicate(manifest_rows: dict[str, dict[str, Any]],
                groups: dict[tuple[Any, ...], dict[str, Any]],
                policy: dict[str, Any]) -> dict[str, Any]:
-    boards: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
-    for cell in groups.values():
-        if cell["status"] == "MEASURED":
-            boards[board_of(cell)].append(cell)
-    if set(boards) != set(policy["boards"]):
-        raise ContractError("confirm board denominator differs")
+    emitted, boards = partition_boards(groups, policy)
     summaries: dict[str, Any] = {}
     m, n, k = map(int, policy["shape"])
     distinct_bytes = (m * k * 2 + n * k * .5 +
@@ -495,6 +530,15 @@ def adjudicate(manifest_rows: dict[str, dict[str, Any]],
     for board in policy["boards"]:
         ordered = sorted(boards[board], key=lambda cell: (cell["median_us"],
                                                           cell_label(cell)))
+        if not ordered:
+            summaries[board] = {
+                "verdict": "UNAVAILABLE", "winner": None,
+                "runner_up": None, "historical_anchor": None,
+                "measured_cells": 0,
+                "terminal_cells": len(emitted[board]),
+                "terminal_reasons": terminal_census(emitted[board]),
+            }
+            continue
         winner = ordered[0]
         runner_up = ordered[1] if len(ordered) > 1 else None
         anchor_symbol = policy.get("anchor_symbol")
@@ -533,6 +577,8 @@ def adjudicate(manifest_rows: dict[str, dict[str, Any]],
                 "speedup_of_winner": float(anchor["median_us"]) /
                                      float(winner["median_us"])},
             "measured_cells": len(ordered),
+            "terminal_cells": len(emitted[board]) - len(ordered),
+            "terminal_reasons": terminal_census(emitted[board]),
         }
     anchor_symbol = policy.get("anchor_symbol")
     anchor_cells = [cell for cell in groups.values()
@@ -544,7 +590,10 @@ def adjudicate(manifest_rows: dict[str, dict[str, Any]],
             "anchor_best_median_us": None if not anchor_cells else min(
                 float(cell["median_us"]) for cell in anchor_cells),
             "confirmed_symbols": len({cell["symbol"] for cell in groups.values()}),
-            "confirmed_cells": sum(len(cells) for cells in boards.values())}
+            "confirmed_cells": sum(len(cells) for cells in boards.values()),
+            "terminal_cells": sum(
+                len(emitted[board]) - len(boards[board])
+                for board in policy["boards"])}
 
 
 def publish(path: pathlib.Path, symbols_path: pathlib.Path | None,
@@ -604,6 +653,50 @@ def self_test() -> None:
     if board_of({"metric_scope": "PRODUCER_ONLY_NOT_PRODUCT_E2E",
                  "algorithm": "SPLITK_S2_PRODUCER"}) == FULL:
         raise AssertionError("producer-only cell entered full-output board")
+    scheduler_policy = {
+        "shape": [2048, 4096, 4096], "anchor_symbol": None,
+        "boards": [FULL, "SPLITK_S2_PRODUCER",
+                   "SPLITK_S4_PRODUCER", "SPLITK_S8_PRODUCER"],
+        "scheduler": {"top_n_per_board": 1,
+                      "relative_to_leader": 1.05},
+    }
+    def scheduler_cell(algorithm: str, status: str = "MEASURED"
+                       ) -> dict[str, Any]:
+        producer = algorithm.startswith("SPLITK_")
+        return {
+            **cell("a", [10.]), "algorithm": algorithm,
+            "metric_scope": ("PRODUCER_ONLY_NOT_PRODUCT_E2E"
+                             if producer else FULL),
+            "status": status,
+            "reason": ("MEASURED" if status == "MEASURED" else
+                       "INADMISSIBLE_K_TILE_DOES_NOT_DIVIDE"),
+        }
+    scheduler_groups = {
+        (name,): scheduler_cell(name, "TERMINAL" if name ==
+                                "SPLITK_S8_PRODUCER" else "MEASURED")
+        for name in ("NONPERSISTENT", "PERSISTENT",
+                     "SPLITK_S2_PRODUCER", "SPLITK_S4_PRODUCER",
+                     "SPLITK_S8_PRODUCER")
+    }
+    scheduler_result = select_scheduler(rows, scheduler_groups,
+                                        scheduler_policy)
+    if scheduler_result["boards"]["SPLITK_S8_PRODUCER"]["state"] != \
+            "UNAVAILABLE" or \
+            scheduler_result["boards"]["SPLITK_S8_PRODUCER"][
+                "terminal_cells"] != 1:
+        raise AssertionError("all-terminal S8 board was not preserved")
+    confirm_result = adjudicate(rows, scheduler_groups, scheduler_policy)
+    if confirm_result["boards"]["SPLITK_S8_PRODUCER"]["verdict"] != \
+            "UNAVAILABLE":
+        raise AssertionError("confirm lost the all-terminal S8 verdict")
+    try:
+        missing_s8 = dict(scheduler_groups)
+        del missing_s8[("SPLITK_S8_PRODUCER",)]
+        select_scheduler(rows, missing_s8, scheduler_policy)
+    except ContractError:
+        pass
+    else:
+        raise AssertionError("actually missing S8 board stayed green")
     shape_policy = dict(policy)
     shape_policy["anchor_symbol"] = None
     anchorless = select_screen(rows, groups, shape_policy)
@@ -611,8 +704,9 @@ def self_test() -> None:
             "HISTORICAL_ANCHOR" in anchorless["selected"][0]["reasons"]:
         raise AssertionError("shape-specific policy inherited historical anchor")
     print("[q4k-prune:self-test] PASS threshold, axis/noise sentinel, "
-          "missing-coordinate RED, anchorless shape policy, and "
-          "producer/full-output isolation")
+          "missing-coordinate RED, anchorless shape policy, "
+          "producer/full-output isolation, all-terminal S8=UNAVAILABLE, "
+          "and actually-missing-S8=RED")
 
 
 def main() -> int:
@@ -675,6 +769,17 @@ def main() -> int:
         for board in policy["boards"]:
             result = payload["boards"][board]
             winner = result["winner"]
+            if winner is None:
+                reasons = ",".join(
+                    f"{name}:{count}" for name, count in
+                    result["terminal_reasons"].items())
+                print(f"Q4K_PRUNED_WINNER board={board} "
+                      f"verdict=UNAVAILABLE config=NA algorithm={board} "
+                      f"median=NA range=NA MFU=NA distinct_MBU=NA "
+                      f"grid=NA policy=NA speedup_vs_anchor=NA "
+                      f"runner_gap=NA terminal_cells="
+                      f"{result['terminal_cells']} reasons={reasons}")
+                continue
             runner = result["runner_up"]
             anchor = result["historical_anchor"]
             runner_gap = "NA" if runner is None else \

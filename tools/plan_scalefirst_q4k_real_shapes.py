@@ -263,6 +263,26 @@ def winner_candidates(summary: dict[str, Any], artifact: int,
     return candidates
 
 
+def unavailable_board(shape: dict[str, Any], key: str, board: str,
+                      layout_terminals: dict[str, Any]
+                      ) -> tuple[dict[str, Any], dict[str, Any]]:
+    result = {
+        "verdict": "UNAVAILABLE", "winner": None, "runner_up": None,
+        "confirmed_candidate_count": 0,
+        "layout_terminals": layout_terminals,
+    }
+    row = {
+        "shape_key": key, "M": shape["m"], "N": shape["n"],
+        "K": shape["k"], "board": board, "verdict": "UNAVAILABLE",
+        "ArtifactTileK": "", "FoldN_low": "", "FoldN_high": "",
+        "layout": "", "reader_contract": "", "config": "",
+        "algorithm": board, "grid": "", "policy": "",
+        "median_us": "", "MFU_pct": "", "distinct_MBU_pct": "",
+        "runner_gap_us": "",
+    }
+    return result, row
+
+
 def summarize(plan_path: pathlib.Path, results_root: pathlib.Path,
               output: pathlib.Path, tsv: pathlib.Path,
               models_root: pathlib.Path) -> dict[str, Any]:
@@ -293,9 +313,22 @@ def summarize(plan_path: pathlib.Path, results_root: pathlib.Path,
         boards = {}
         for board in BOARDS:
             candidates = []
+            layout_terminals = {}
             for artifact in ARTIFACTS:
+                board_result = cell_results[(key, artifact)]["boards"][board]
+                if board_result.get("winner") is None:
+                    layout_terminals[str(artifact)] = {
+                        "terminal_cells": board_result.get("terminal_cells", 0),
+                        "terminal_reasons": board_result.get(
+                            "terminal_reasons", {}),
+                    }
                 candidates += winner_candidates(
                     cell_results[(key, artifact)], artifact, board)
+            if not candidates:
+                boards[board], row = unavailable_board(
+                    shape, key, board, layout_terminals)
+                rows.append(row)
+                continue
             candidates.sort(key=lambda item: (float(item["median_us"]),
                                                item["artifact_tile_k"],
                                                item["cell"]))
@@ -401,8 +434,18 @@ def self_test() -> None:
         pass
     else:
         raise AssertionError("drop-one shape/layout negative stayed green")
+    unavailable, row = unavailable_board(
+        plan["shapes"][0], plan["shapes"][0]["shape_key"],
+        "SPLITK_S8_PRODUCER",
+        {"32": {"terminal_cells": 3,
+                "terminal_reasons": {"K_TILE_DOES_NOT_DIVIDE": 3}}})
+    if unavailable["winner"] is not None or \
+            unavailable["verdict"] != "UNAVAILABLE" or \
+            row["ArtifactTileK"] != "" or row["median_us"] != "":
+        raise AssertionError("cross-layout all-terminal board was not explicit")
     print("[q4k-real-shapes:self-test] PASS shape-specific aggregation, "
-          "decode/grouped/qtype exclusions, and drop-one cross-product RED")
+          "decode/grouped/qtype exclusions, drop-one cross-product RED, "
+          "and cross-layout all-terminal board=UNAVAILABLE")
 
 
 def main() -> int:

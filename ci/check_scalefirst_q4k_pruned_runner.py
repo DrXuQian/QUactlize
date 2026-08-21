@@ -254,8 +254,15 @@ def main() -> int:
         '--committed-only --evidence "$l210_evidence"',
         'Never paper over this with a fake fp8 SDK header',
         'source-authority.json', 'binary-hashes.json', 'commit.json',
+        'source-authority-resume.json',
+        'compiled_binary_identity', 'analysis_only',
         'bundle.json', 'resume bundle lost plan.json',
         'incomplete uncommitted evidence',
+        'resume incomplete A%s %s from recorded phase logs',
+        'phase=screen reuse-complete-log',
+        'phase=scheduler reuse-complete-log',
+        'phase=confirm reuse-complete-log',
+        'unregistered incomplete evidence member',
     ), "real-shape runner")
     require(bench, (
         'KTileDoesNotDivide', 'INADMISSIBLE_K_TILE_DOES_NOT_DIVIDE',
@@ -266,8 +273,15 @@ def main() -> int:
         'drop-one shape/layout negative stayed green',
         'models_root / model_id / key / "summary.json"',
         '"reader_contract": winner["layout"]["reader_contract"]',
+        'def unavailable_board(',
+        'cross-layout all-terminal board was not explicit',
         'DECODE_NOT_SCALEFIRST_PREFILL', 'OUTSIDE_REGISTERED_PREFILL_M',
     ), "real-shape planner")
+    require((TOOLS / "prune_scalefirst_q4k_pilot.py").read_text(), (
+        'def partition_boards(', '"state": "UNAVAILABLE"',
+        'all-terminal S8 board was not preserved',
+        'actually missing S8 board stayed green',
+    ), "all-terminal versus missing-board adjudication")
     # The production exhaustive runner must not opt into either pilot filter.
     if '--algorithm=' in exhaustive or '--symbol-file=' in exhaustive:
         raise AssertionError("exhaustive runner was silently converted to pruning")
@@ -287,8 +301,9 @@ def main() -> int:
         raise AssertionError("mutated historical anchor stayed green")
     evidence_mode = "committed" if args.committed_only else "fresh-local"
     print("[q4k-prune-runner] PASS pilot anchor exact; real Q4_K "
-          "A32/A64/A128/A256 denominators bound; shape-specific TileK "
-          "terminal, model folders, and three-phase authority present; "
+          "A32/A64/A128/A256 denominators bound; all-terminal board is "
+          "UNAVAILABLE while missing records stay red; analysis-only "
+          "phase resume, model folders, and three-phase authority present; "
           f"L210={evidence_mode}")
     return 0
 
