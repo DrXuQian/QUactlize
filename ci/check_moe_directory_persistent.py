@@ -81,6 +81,11 @@ def violations(src: dict[str, str]) -> list[str]:
             "untracked-files.tar.gz" in runner and
             "source-bundle.sha256" in runner and
             "binary.sha256" in runner,
+        "box restriction preserves the smallest legal decode sentinel":
+            "MOE_TM_LIST='8;64'" in runner and
+            "MOE_TN_LIST=64" in runner and
+            "MOE_WM_LIST='8;64'" in runner and
+            "MOE_STAGES=3" in runner,
     }
     out.extend(name for name, ok in requirements.items() if not ok)
 
@@ -112,6 +117,7 @@ def self_test(src: dict[str, str]) -> list[str]:
         ("drop scheduler identity", "scheduler=%s timing=%s", "timing=%s"),
         ("collapse span label", "event-scheduler-span-upper-v1", "event-kernel-span-upper-v1"),
         ("drop source bundle", "tracked-worktree.patch", "tracked-worktree.missing"),
+        ("drop band-coverage sentinel", "MOE_TM_LIST='8;64'", "MOE_TM_LIST=64"),
         ("move build after GEMM", "gemm.run(stream);", "gemm.run(stream);\n  // plant\n"),
         ("add format logic", "namespace cutlass::gemm::kernel {",
          "namespace cutlass::gemm::kernel {\n// xplane converter plant"),
@@ -122,7 +128,7 @@ def self_test(src: dict[str, str]) -> list[str]:
             "directory" if "record" in name else (
                 "benchmark" if "identity" in name else (
                     "harness" if "span" in name else (
-                        "runner" if "bundle" in name else "launcher"))))
+                        "runner" if "bundle" in name or "band-coverage" in name else "launcher"))))
         if old not in planted[target]:
             failures.append(f"self-test plant seam missing: {name}")
             continue
@@ -154,7 +160,8 @@ def main() -> int:
             print(f"[moe-directory-contract] FAIL: {item}", file=sys.stderr)
         return 1
     print("[moe-directory-contract] PASS: driver-only port, common collective/epilogue, "
-          "16-byte directory, scheduler/source-bound identity, measured build order, and seven negative plants")
+          "16-byte directory, scheduler/source-bound identity, dual-band build coverage, measured build order, "
+          "and eight negative plants")
     return 0
 
 

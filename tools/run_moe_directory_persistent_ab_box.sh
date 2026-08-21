@@ -47,9 +47,16 @@ build_and_run() {
   local build_log="$dir/build.log" run_log="$dir/run.log" bin
   mkdir -p "$dir" "$build"
 
+  # The five public MOE_* filters apply to BOTH registered bands in one CMake
+  # configure.  TM64/WM64 is the full-band row under test, but the bounded-M
+  # decode table deliberately has no TM64 or WM64 row; restricting both axes
+  # to 64 therefore makes the correctly fail-closed generator reject an empty
+  # decode target before this full-band target can build.  Keep the smallest
+  # legal decode sentinel (TM8/WM8) in the compile graph.  MOE_ONLY below still
+  # selects exactly ROW, so neither A/B arm executes the sentinel.
   if ! (cd "$ROOT" && env \
       PPU_BUILD_DIR="$build" PPU_ARCHS=ppu0010 TARGET=test_lowbit_moe_bench \
-      MOE_FORMATS=i4 MOE_TM_LIST=64 MOE_TN_LIST=64 MOE_WM_LIST=64 MOE_STAGES=3 \
+      MOE_FORMATS=i4 MOE_TM_LIST='8;64' MOE_TN_LIST=64 MOE_WM_LIST='8;64' MOE_STAGES=3 \
       PPU_DEFS="LOWBIT_QMODE=1 PPU_MOE_PERSISTENT=$enabled" JOBS="$JOBS" \
       bash build.sh) >"$build_log" 2>&1; then
     tail -120 "$build_log" >&2
