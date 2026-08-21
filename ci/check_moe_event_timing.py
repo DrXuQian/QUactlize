@@ -4,7 +4,9 @@
 This is intentionally a source-order gate.  The defect is an interval boundary: all code compiles if the start
 event drifts above initialize or the blocking prefix copy, and every output remains numerically correct while the
 performance number becomes wall/setup time again.  A device-free gate can prove the ordering and batching protocol;
-the PPU run in BOX.md owns the numerical 11.1 us anchor.
+the PPU run owns the numerical anchor.  The non-persistent arm measures only
+GEMM; the directory-persistent arm also measures its device-side directory
+builder, which is scheduler work rather than host setup.
 """
 
 from __future__ import annotations
@@ -35,17 +37,20 @@ def audit(launcher: str, harness: str, main: str) -> list[str]:
         "gemm.initialize(args, workspace, stream)",
         "hggcMemcpy(workspace, pfx.data()",
         "hggcEventRecord(kernel_span->start, stream)",
+        "moe_directory::launch_build",
         "gemm.run(stream)",
         "hggcEventRecord(kernel_span->stop, stream)",
     ]
     if any(launch.count(x) != 1 for x in ordered):
         bad.append("launch interval anchors are missing or duplicated")
     elif [launch.index(x) for x in ordered] != sorted(launch.index(x) for x in ordered):
-        bad.append("launch order is not initialize -> blocking H2D -> start -> run -> stop")
-    if all(x in launch for x in ordered[2:]):
-        bracket = launch.split(ordered[2], 1)[1].split(ordered[4], 1)[0]
+        bad.append("launch order is not initialize -> blocking H2D -> start -> device directory -> run -> stop")
+    if all(x in launch for x in (ordered[2], ordered[-1])):
+        bracket = launch.split(ordered[2], 1)[1].split(ordered[-1], 1)[0]
         if any(x in bracket for x in ("Synchronize", "hggcMemcpy", "gemm.initialize")):
             bad.append("the start/run/stop device interval contains setup, a copy, or synchronization")
+    if "if constexpr (UsePersistent)" not in launch or "directory launch arguments rejected" not in launch:
+        bad.append("device directory build is not guarded by the persistent scheduler type")
     if "kernel_span->recorded = true" not in launch:
         bad.append("successful stop event does not mark the pair queryable")
     if launcher.count("false,kernel_span)") != 1:
@@ -97,8 +102,10 @@ def audit(launcher: str, harness: str, main: str) -> list[str]:
         bad.append("both row families must retain the matching host wall in selection state")
     if harness.count("moe_abcast(), _kev)") != 2:
         bad.append("both row families must pass their per-launch event pair")
-    if "timing = \"event-kernel-span-upper-v1\"" not in harness:
-        bad.append("sample records do not name the new timing protocol")
+    if ("s.timing = moe_timing_identity();" not in harness or
+            "event-kernel-span-upper-v1" not in harness or
+            "event-scheduler-span-upper-v1" not in harness):
+        bad.append("sample records do not distinguish kernel-only and directory+scheduler timing")
     if "if (timing.expected > 0 && !timing.complete())" not in harness or "no wall fallback" not in harness:
         bad.append("an incomplete event batch can fall back to wall instead of being excluded")
     if harness.count("else { moe_excluded(") != 2 or "incomplete device-event batch" not in harness:
@@ -112,11 +119,12 @@ def audit(launcher: str, harness: str, main: str) -> list[str]:
         if report.count(primary) != 1:
             bad.append("report metrics do not select complete event span as primary with ACU wall as the only fallback")
 
-    if "event-kernel-span-upper-v1" not in main or "acu-cold-host-wall-v1" not in main or "timing=%s" not in main:
+    if ("moe_timing_identity()" not in main or "acu-cold-host-wall-v1" not in main or
+            "timing=%s" not in main or "scheduler=%s" not in main):
         bad.append("run identity would allow old wall-us and new event-us samples to merge")
     if "bench_floor::launch_bound(e.wall_us)" not in main:
         bad.append("host launch floor is not compared with the same-clock host wall")
-    for label in ("kernel-span-upper", "host-wall", "spread=(max-min)/mean"):
+    for label in ("kernel-span-upper", "scheduler-span-upper", "host-wall", "spread=(max-min)/mean"):
         if label not in harness + main:
             bad.append(f"output no longer labels {label!r}")
     return bad
@@ -169,6 +177,12 @@ def main() -> int:
         print("[moe-event-timing] FAIL: primary-time gate accepted a wall fallback")
         return 1
 
+    planted_protocol = harness.replace(
+        '"event-scheduler-span-upper-v1"', '"event-kernel-span-upper-v1"', 1)
+    if not audit(launcher, planted_protocol, main_src):
+        print("[moe-event-timing] FAIL: protocol gate accepted scheduler span mislabeled as kernel-only")
+        return 1
+
     planted_incomplete = harness.replace(
         "if (timing.expected > 0 && !timing.complete())",
         "if (false && timing.expected > 0 && !timing.complete())", 1)
@@ -188,6 +202,21 @@ def main() -> int:
         print("[moe-event-timing] FAIL: interval gate accepted a synchronization inside start/run/stop")
         return 1
 
+    # Moving directory construction above the start event makes the subject
+    # appear faster without changing one output bit.  That is a distinct
+    # regression from moving the old blocking host prefix into the interval.
+    persistent_begin = launcher.find("  if constexpr (UsePersistent) {", launcher.find("THE MEASURED INTERVAL"))
+    run_begin = launcher.find("  gemm.run(stream);", persistent_begin)
+    if persistent_begin < 0 or run_begin < 0:
+        print("[moe-event-timing] FAIL: cannot plant directory-boundary negative")
+        return 1
+    persistent_block = launcher[persistent_begin:run_begin]
+    planted_directory = launcher[:persistent_begin] + launcher[run_begin:]
+    planted_directory = planted_directory.replace(start_block, persistent_block + start_block, 1)
+    if not audit(planted_directory, harness, main_src):
+        print("[moe-event-timing] FAIL: interval gate accepted directory construction outside the subject span")
+        return 1
+
     planted_zero = harness.replace(
         "if (!std::isfinite(us) || us <= 0.0) continue;",
         "if (false && (!std::isfinite(us) || us <= 0.0)) continue;", 1)
@@ -203,7 +232,8 @@ def main() -> int:
         return 1
 
     print("[moe-event-timing] PASS -- setup < start < run < stop, one warmup + batched events, "
-          "event us primary, wall audit retained; eight planted regressions rejected")
+          "device-directory cost retained for persistent arm, event us primary, wall audit retained; "
+          "ten planted regressions rejected")
     return 0
 
 

@@ -78,12 +78,27 @@ MoeOutputWitness moe_output_witness(const Band& bd) {
   CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
   unsigned int h[2] = {0, 0};
   cutlass::device_memory::copy_to_host(h, bd.d_output_witness, 2);
+  if (std::getenv("MOE_OUTPUT_HASH") != nullptr) {
+    std::vector<half_t> output(bd.d_elems);
+    cutlass::device_memory::copy_to_host(output.data(), bd.dD, bd.d_elems);
+    uint64_t hash = UINT64_C(1469598103934665603);
+    auto const* bytes = reinterpret_cast<unsigned char const*>(output.data());
+    for (size_t i = 0; i < output.size() * sizeof(half_t); ++i) {
+      hash ^= uint64_t(bytes[i]);
+      hash *= UINT64_C(1099511628211);
+    }
+    std::printf("[lowbit-moe output] raw_bytes=%zu fnv1a64=%016llx\n",
+                output.size() * sizeof(half_t),
+                static_cast<unsigned long long>(hash));
+  }
   return {h[0] == 0, h[1] != 0};
 }
 
 int main(int argc, char** argv) {
   // FIRST, before any allocation: a device switch after the context exists is not a switch.
   bench_device::bind_from_env();
+  std::printf("[lowbit-moe] scheduler=%s directory_build_in_span=%d\n",
+              moe_scheduler_name(), int(moe_grouped_ppu::kPersistentBuild));
   Band bd{};
   bd.L    = argc > 1 ? atoi(argv[1]) : (MOE_TABLE_DECODE ? 256 : 64);
   bd.Rows = argc > 2 ? atoi(argv[2]) : (MOE_TABLE_DECODE ? 4 : 128);
@@ -200,7 +215,11 @@ int main(int argc, char** argv) {
   cutlass::DeviceAllocation<DStride> sd(bd.L);    sd.copy_from_host(sdh.data());
   cutlass::DeviceAllocation<int> gm(bd.L);        gm.copy_from_host(gmh.data());
   cutlass::DeviceAllocation<int> offdev(bd.L);    offdev.copy_from_host(bd.offs.data());
-  const size_t wsb = (size_t)cutlass::ceil_div(bd.Mmax,16)*cutlass::ceil_div(bd.N,64)*(size_t)bd.L*64;
+  size_t const legacy_wsb = (size_t)cutlass::ceil_div(bd.Mmax,16)
+                          * cutlass::ceil_div(bd.N,64)*(size_t)bd.L*64;
+  size_t const directory_wsb =
+      quactlize::moe_directory::workspace_bytes(bd.Mmax, bd.L, 8);
+  const size_t wsb = std::max(legacy_wsb, directory_wsb);
   cutlass::DeviceAllocation<char> ws(wsb);
   bd.dA = dA.get(); bd.dSc = dSc.get(); bd.dZr = dZr.get();
   bd.dD = dD.get(); bd.d_elems = (size_t)bd.total * bd.N; bd.d_output_witness = d_output_witness.get();
@@ -221,17 +240,25 @@ int main(int argc, char** argv) {
   if (moe_verbose()) bench_floor::banner();
   if (moe_acu())
     std::printf("  [timing] MOE_ACU=1 bypasses device-event sampling: one cold host-wall launch, not a timing\n");
+  else if (moe_grouped_ppu::kPersistentBuild)
+    std::printf("  [timing] primary us = device-event scheduler-span upper bound around device-directory-build + gemm.run"
+                " (includes launch/idle; not profiler kernel-only)\n"
+                "           audit = instrumented host-wall over the same launches;"
+                " per-launch spread=(max-min)/mean, warmup excluded\n");
   else
     std::printf("  [timing] primary us = device-event kernel-span upper bound around gemm.run"
                 " (includes launch/idle; not profiler kernel-only)\n"
                 "           audit = instrumented host-wall over the same launches;"
                 " per-launch spread=(max-min)/mean, warmup excluded\n");
-  char build_identity[192];
-  char const* timing_identity = moe_acu() ? "acu-cold-host-wall-v1" : "event-kernel-span-upper-v1";
+  char build_identity[224];
+  char const* scheduler_identity = moe_scheduler_name();
+  char const* timing_identity = moe_acu()
+      ? "acu-cold-host-wall-v1"
+      : moe_timing_identity();
   std::snprintf(build_identity, sizeof build_identity,
-                "PPU_B_CHUNK=row-axis %s table-band=%s table-m-max=%d hdr-rev=%d timing=%s",
+                "PPU_B_CHUNK=row-axis %s table-band=%s table-m-max=%d hdr-rev=%d scheduler=%s timing=%s",
                 LOWBIT_QMODE_STR, MOE_TABLE_BAND_STR, MOE_TABLE_M_MAX,
-                LOWBIT_MOE_BENCH_REV, timing_identity);
+                LOWBIT_MOE_BENCH_REV, scheduler_identity, timing_identity);
   bench_samples::run_header(MOE_TABLE_BENCH_STR, build_identity, reps);
   for (int r = 0; r < reps; ++r) {
     moe_pass() = r;
@@ -309,9 +336,9 @@ int main(int argc, char** argv) {
       std::printf("  %-4s %-30s %8.2f us ACU-cold-host-wall | NOT A PERFORMANCE NUMBER%s\n",
                   moe_fmt_names[ord[i]], e.tag, e.wall_us, verdict);
     else
-      std::printf("  %-4s %-30s %8.3f us kernel-span-upper | host-wall %8.3f us |"
+      std::printf("  %-4s %-30s %8.3f us %s | host-wall %8.3f us |"
                   " %6.1f TF/s (%4.1f%% MFU) msk=%.0f%%%s%s\n",
-                  moe_fmt_names[ord[i]], e.tag, e.us, e.wall_us,
+                  moe_fmt_names[ord[i]], e.tag, e.us, moe_span_label(), e.wall_us,
                   tf, bench_measure::mfu_pct(tf), 100.0 * msk, lb, verdict);
     if (*lb && moe_verbose())
       std::printf("       %s host-wall is within 3x the host empty-launch floor (%.2f us)\n",

@@ -1250,6 +1250,37 @@ def lint_moe_event_timing():
     return _run_ci_script("check_moe_event_timing.py", "MoE event interval and batching protocol are pinned")
 
 
+def lint_moe_directory_contract():
+    """Directory scheduling must be driver-only and cover every ragged tile exactly once."""
+    status, detail, dt = _run_ci_script(
+        "check_moe_directory_persistent.py",
+        "persistent directory changes only the driver and retains its measured boundary")
+    if status != "PASS":
+        return status, detail, dt
+    script = DEV / "run_l215_moe_block_directory.sh"
+    rc, log, host_dt = run(["bash", str(script)], cwd=str(ROOT))
+    marker = "[l215] PASS: TileM=8/16/32 ragged+zero+tail coverage exact-once"
+    if rc != 0 or marker not in log:
+        lines = [line.strip() for line in log.splitlines() if line.strip()]
+        return "FAIL", (lines[-1] if lines else f"{script.name} exited {rc}"), dt + host_dt
+    return "PASS", "driver-only source contract and exact-once ragged mapping; ten negatives red", dt + host_dt
+
+
+def lint_moe_directory_shipping_type():
+    """The real Q4 grouped collective must instantiate through the persistent driver."""
+    ok, why = nvcc_can_compile_device_cuda()
+    if not ok:
+        return "SKIP", f"MoE persistent device-body proof unavailable: {why}", 0.0
+    script = DEV / "run_l216_moe_directory_shipping_type.sh"
+    env = dict(os.environ, QUACTLIZE_L216_OUT="/workspace/quactlize-l216-moe-directory-type-tier")
+    rc, log, dt = run(["bash", str(script)], cwd=str(ROOT), env=env)
+    marker = "[l216] PASS: Q4 ScaleOnly 64x64x64-w64x32-s3 uses exact shipping collective"
+    if rc != 0 or marker not in log or "nonvendor=0" not in log:
+        lines = [line.strip() for line in log.splitlines() if line.strip()]
+        return "FAIL", (lines[-1] if lines else f"{script.name} exited {rc}"), dt
+    return "PASS", "exact Q4 shipping collective reaches persistent body; nonvendor diagnostics zero", dt
+
+
 def lint_dense_streamk_contract():
     """107b must share worker decomposition, use absolute K, and reset locks outside each event."""
     return _run_ci_script(
@@ -2505,7 +2536,9 @@ def main():
                 ("lint", "advertised build inputs have a build.sh/CMake route", lint_build_advice),
                 ("lint", "advertised MoE restrictions change generated code", lint_moe_build_knobs),
                 ("lint", "dense and MoE consume one named measurement layer", lint_bench_measurement_shared),
-                ("lint", "MoE events bracket only gemm.run and retain the host-wall audit", lint_moe_event_timing),
+                ("lint", "MoE events exclude host setup but retain persistent device-directory cost", lint_moe_event_timing),
+                ("lint", "MoE persistent directory is driver-only and exact-once over ragged tiles", lint_moe_directory_contract),
+                ("lint", "MoE persistent driver instantiates the exact Q4 shipping collective", lint_moe_directory_shipping_type),
                 ("lint", "dense Stream-K shares worker/K decomposition and resets locks before timing", lint_dense_streamk_contract),
                 ("lint", "Q4_K65 normal admission precedes an exact same-row forced Stream-K A/B", lint_dense_streamk_q4k65_target),
                 ("lint", "persistent DP absolute grids retain exact whole-tile ownership", lint_dense_persistent_grid_contract),

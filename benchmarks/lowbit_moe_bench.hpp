@@ -175,6 +175,19 @@ struct Band {
 // have no other way to know which pass they are in.
 inline int& moe_pass() { static int p = 0; return p; }
 
+inline constexpr char const* moe_scheduler_name() {
+  return moe_grouped_ppu::kPersistentBuild ? "persistent-directory" : "non-persistent";
+}
+
+inline constexpr char const* moe_span_label() {
+  return moe_grouped_ppu::kPersistentBuild ? "scheduler-span-upper" : "kernel-span-upper";
+}
+
+inline constexpr char const* moe_timing_identity() {
+  return moe_grouped_ppu::kPersistentBuild
+      ? "event-scheduler-span-upper-v1" : "event-kernel-span-upper-v1";
+}
+
 // The distribution NAMED and VERSIONED. "ragged" is not reproducible and does not say how ragged; a name that
 // changes when the generator changes is what stops an old log from being reinterpreted under new rules.
 inline char const* moe_dist_name(int mode) {
@@ -230,7 +243,7 @@ inline void moe_sample(const Band& bd, char const* schema,
   bench_samples::Sample s = moe_identity(bd, schema, tm, tn, tk, wm, wn, st, bc, bc_eff);
   s.us = us;
   if (launches > 0) {
-    s.timing = "event-kernel-span-upper-v1";
+    s.timing = moe_timing_identity();
     s.wall_us = wall_us;
     s.launches = launches;
     s.launch_min_us = launch_min_us;
@@ -527,11 +540,12 @@ inline void report(const Band& bd, const char* tag, MoeTiming const& timing, ben
   char core[256];
   bench_measure::format_metrics(core, sizeof core, metrics);
   if (timing.complete()) {
-    std::printf("    %-30s %8.3f us kernel-span-upper | host-wall %8.3f us |"
+    std::printf("    %-30s %8.3f us %s | host-wall %8.3f us |"
                 " n=%d min=%7.3f max=%7.3f spread=%5.1f%% | %s |"
                 " mt=%-5lld msk=%4.1f%% skw=%.1fx S=%4.1f%% |"
                 " blk %-2d wrp/CU %-3d grid_wrp/CU %5.1f cta=%-5ld wav=%4.2f run=%-7s kit=%-3ld\n",
-                tag, us, timing.wall_us, timing.samples, timing.min_us, timing.max_us, timing.spread_pct,
+                tag, us, moe_span_label(), timing.wall_us,
+                timing.samples, timing.min_us, timing.max_us, timing.spread_pct,
                 core, mt, 100.0 * masked, skew, 100.0 * s_share,
                 blk, blk * warps, wcu_grid, ctas, waves, run_s, kit);
   } else {

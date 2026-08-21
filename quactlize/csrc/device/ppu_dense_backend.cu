@@ -171,8 +171,16 @@ GroupedWorkspaceLayout grouped_workspace_layout(int max_rows, int n, int experts
   layout.out_strides = cursor; cursor = align16(cursor + sizeof(DS) * size_t(experts));
   layout.rows = cursor; cursor = align16(cursor + sizeof(int) * size_t(experts));
   layout.kernel = cursor;
-  layout.kernel_bytes = size_t(cutlass::ceil_div(max_rows, 16)) * cutlass::ceil_div(n, 64)
-                      * size_t(experts) * 64;
+  size_t const legacy_scheduler_bytes =
+      size_t(cutlass::ceil_div(max_rows, 16)) * cutlass::ceil_div(n, 64)
+      * size_t(experts) * 64;
+  // The selected grouped config is not known at the public workspace-query ABI.
+  // TileM=8 is the smallest admitted grouped tile, hence the largest possible
+  // directory.  Keep the old workspace bound as well: the non-persistent path
+  // continues to use it for its ragged prefix and existing callers see one ABI.
+  size_t const persistent_directory_bytes =
+      quactlize::moe_directory::workspace_bytes(max_rows, experts, 8);
+  layout.kernel_bytes = std::max(legacy_scheduler_bytes, persistent_directory_bytes);
   layout.total = layout.kernel + layout.kernel_bytes;
   return layout;
 }
@@ -203,7 +211,8 @@ int launch_grouped_tactic(
   bool const launched = moe_grouped_ppu::launch<QuantOp,
                           ppu_group_schedule::FinegrainedSchedule<GroupSize>,
                           Tile, Scale, Warp, Stages, true, Low, High, PackedScale,
-                          QueryOnly, RequireUniversalFallback, TileK>(
+                          QueryOnly, RequireUniversalFallback, TileK,
+                          moe_grouped_ppu::kPersistentBuild>(
       reinterpret_cast<half_t const*>(act), reinterpret_cast<Low const*>(low),
       reinterpret_cast<half_t const*>(scale), reinterpret_cast<half_t const*>(zero),
       out_ptrs, out_strides, rows, max_rows, n, k, experts, GroupSize,

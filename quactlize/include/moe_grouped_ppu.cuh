@@ -28,6 +28,7 @@
 #include "ppu_mixed_policy.hpp"
 #include "cutlass/epilogue/collective/builders/ppu_builder.inl"
 #include "ppu_aiu_gemm_mixed_input_group.hpp"   // the new grouped mixed-input GemmUniversal specialization
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_group_persistent.hpp"
 
 #include "cutlass/epilogue/fusion/operations.hpp"
 #include "cutlass/detail/layout.hpp"
@@ -38,6 +39,12 @@
 namespace moe_grouped_ppu {
 using namespace cute;
 using TacticSpace = ppu_tactics::GroupedSpace;
+
+#if defined(PPU_MOE_PERSISTENT) && (PPU_MOE_PERSISTENT != 0)
+inline constexpr bool kPersistentBuild = true;
+#else
+inline constexpr bool kPersistentBuild = false;
+#endif
 
 // Public per-expert output-stride element type for the ptr-array (contiguous) epilogue. RowMajor D, and the
 // BATCH stride is static _0 (the epilogue indexes ptr_D[l] per expert, so the batch/L stride is unused) --
@@ -59,7 +66,10 @@ using MixedMainloopPolicy = ppu_mixed_policy::MainloopPolicy<QuantOp, BaseSchedu
 using GroupShape = cute::Shape<int,int,int>;                            // per-expert [M,N,K]
 using GroupProblemShape = cutlass::gemm::GroupProblemShape<GroupShape>;
 
-// Optional, non-owning event pair used by a benchmark to bracket ONLY Gemm::run(). Ownership stays with the
+// Optional, non-owning event pair used by a benchmark to bracket the selected scheduler path.  The historical
+// non-persistent path brackets ONLY Gemm::run(); the directory-persistent path deliberately includes the one-CTA
+// directory build immediately followed by Gemm::run(), because that build is part of its end-to-end scheduler cost.
+// Ownership stays with the
 // caller: a timed batch needs one pair per launch so all per-launch spans can be queried after one final device
 // synchronisation rather than serialising the workload launch by launch. `recorded` is a fail-closed handshake --
 // can_implement/initialize may reject before either event exists in the stream, and such a pair must never be
@@ -83,7 +93,8 @@ template <QuantMode QuantOp, class BaseSchedule,
           class PlaneB2 = void,                // bit-plane concat: 2nd (high) B plane; void = single plane
           bool ExpectPackedScale = false,
           bool QueryOnly = false, bool RequireUniversalFallback = false,
-          int ArtifactTileK = 0>
+          int ArtifactTileK = 0,
+          bool UsePersistent = false>
 bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* scales,
             const cutlass::half_t* zeros,
             cutlass::half_t** ptr_D,        // device [L] per-expert output base pointers (contiguous: D+offs[e]*N)
@@ -161,8 +172,15 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
                   "fully-quantized grouped requires the shared packed-scale mainloop at this tile shape");
   }
 
-  // GroupProblemShape -> hits ppu_aiu_gemm_mixed_input_group.hpp's specialization.
-  using GemmKernel = cutlass::gemm::kernel::GemmUniversal<GroupProblemShape, CollectiveMainloop, CollectiveEpilogue>;
+  // Keep the original GemmUniversal specialization as an exact control.  The
+  // persistent branch changes only the tile driver; both instantiate these same
+  // CollectiveMainloop and CollectiveEpilogue types.
+  using NonPersistentKernel =
+      cutlass::gemm::kernel::GemmUniversal<GroupProblemShape, CollectiveMainloop, CollectiveEpilogue>;
+  using PersistentKernel =
+      cutlass::gemm::kernel::GroupPersistentMixedInputKernel<
+          GroupProblemShape, CollectiveMainloop, CollectiveEpilogue>;
+  using GemmKernel = std::conditional_t<UsePersistent, PersistentKernel, NonPersistentKernel>;
   using Gemm = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
   // Query the exact instantiated type rather than reconstructing its storage from the public tile coordinates.
   // Packed-unit staging and optional A/scale layouts all contribute to this value. The normal launch shares the
@@ -298,10 +316,47 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
       args.mainloop.dB2_valid = true;
     }
   }
-  args.group_M = group_M;
-  // THE K-TILE COUNT MUST DIVIDE BY splitk. The kernel's k_tile_count is a ceil, so an indivisible count lets the
-  // last slice step past the end of the coordinate space -- refused here rather than left to mainloop predication.
-  {
+  constexpr int TMv = int(cute::size<0>(TileShape{}));
+  constexpr int TNv = int(cute::size<1>(TileShape{}));
+  quactlize::moe_directory::View directory{};
+  if constexpr (UsePersistent) {
+    if (splitk != 1) {
+      std::printf("[moe_grouped persistent] splitk=%d is a separate scheduler axis; first port requires S=1\n",
+                  splitk);
+      ++moeg_fail_count();
+      return false;
+    }
+    directory = quactlize::moe_directory::make_view(workspace, workspace_bytes, m, L, TMv);
+    if (group_M == nullptr || directory.header == nullptr) {
+      std::printf("[moe_grouped persistent] directory workspace unavailable: need=%zu have=%zu experts=%d Mmax=%d TM=%d\n",
+                  quactlize::moe_directory::workspace_bytes(m, L, TMv), workspace_bytes, L, m, TMv);
+      ++moeg_fail_count();
+      return false;
+    }
+    args.directory_header = directory.header;
+    args.directory_entries = directory.entries;
+    args.logical_work_upper = uint64_t(directory.capacity) * uint64_t(cute::ceil_div(n, TNv));
+    args.ctas_per_cu = Gemm::maximum_active_blocks();
+    if (args.ctas_per_cu <= 0) {
+      std::printf("[moe_grouped persistent] exact kernel occupancy query failed: %d\n", args.ctas_per_cu);
+      ++moeg_fail_count();
+      return false;
+    }
+    if (char const* value = std::getenv("MOEG_PERSISTENT_GRID_CTAS")) {
+      long const parsed = std::strtol(value, nullptr, 10);
+      if (parsed <= 0 || uint64_t(parsed) > args.logical_work_upper) {
+        std::printf("[moe_grouped persistent] grid override %ld outside [1,%llu]\n",
+                    parsed, static_cast<unsigned long long>(args.logical_work_upper));
+        ++moeg_fail_count();
+        return false;
+      }
+      args.grid_ctas_override = uint32_t(parsed);
+    }
+    args.splitk = 1;
+  } else {
+    args.group_M = group_M;
+    // THE K-TILE COUNT MUST DIVIDE BY splitk. The kernel's k_tile_count is a ceil, so an indivisible count lets the
+    // last slice step past the end of the coordinate space -- refused here rather than left to mainloop predication.
     int const TKv = int(cute::size<2>(TileShape{}));
     int const kt = (k + TKv - 1) / TKv;
     if (splitk > 1 && kt % splitk != 0) {
@@ -310,12 +365,10 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
       ++moeg_fail_count();
       return false;
     }
-  }
-  args.splitk = splitk;
-  // O(1) decode hint: if every expert has the SAME #m-tiles (ceil(M_e/TM)), the kernel uses blockIdx.z (no scan).
-  // MOEG_FORCE3D (diagnostic): force the 3D Mmax grid + blockIdx.z decode even for ragged (small experts idle)
-  // to isolate whether the ragged gap is the O(L) scan (jumps -> yes) or load-imbalance (unchanged -> no).
-  { int const TMv = int(cute::size<0>(TileShape{}));
+    args.splitk = splitk;
+    // O(1) decode hint: if every expert has the SAME #m-tiles (ceil(M_e/TM)), the kernel uses blockIdx.z (no scan).
+    // MOEG_FORCE3D (diagnostic): force the 3D Mmax grid + blockIdx.z decode even for ragged (small experts idle)
+    // to isolate whether the ragged gap is the O(L) scan (jumps -> yes) or load-imbalance (unchanged -> no).
     if (group_shapes_host != nullptr) {
       int const mt0 = int(cute::ceil_div(int(cute::get<0>(group_shapes_host[0])), TMv));
       int mt_max = mt0; bool uni = true;
@@ -331,8 +384,8 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
       // bound for a conservative 3D grid; the kernel already rejects tiles beyond each device-resident M_e.
       args.mtiles_uniform = int(cute::ceil_div(m, TMv));
     }
+    if (const char* e = std::getenv("MOEG_PROBE")) args.probe = std::atoi(e);
   }
-  if (const char* e = std::getenv("MOEG_PROBE")) args.probe = std::atoi(e);   // routing probe (test_moe_grouped_probe)
 
   Gemm gemm;
   auto st = gemm.can_implement(args);
@@ -340,26 +393,38 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   size_t need = gemm.get_workspace_size(args);
   if (need > workspace_bytes) { std::printf("[moe_grouped] workspace %zu > %zu\n", need, workspace_bytes); ++moeg_fail_count(); return false; }
   if (gemm.initialize(args, workspace, stream) != cutlass::Status::kSuccess) { std::printf("[moe_grouped] init failed\n"); ++moeg_fail_count(); return false; }
-  // Ragged O(log L) decode: write the m-tile prefix [L+1] into the workspace (the non-persistent kernel does
-  // NOT use the scheduler workspace, so it's free). AFTER initialize (no clobber), BEFORE run. Uniform path
-  // (mtiles_uniform>0) uses blockIdx.z and ignores this. Blocking copy -> ordered before run; L+1 ints, tiny.
-  if (args.mtiles_uniform == 0 && workspace != nullptr && !prefix_ready) {
-    int const TMv = int(cute::size<0>(TileShape{}));
-    if (group_shapes_host != nullptr) {
-      std::vector<int> pfx(L + 1); pfx[0] = 0;
-      for (int e = 0; e < L; ++e)
-        pfx[e + 1] = pfx[e] + int(cute::ceil_div(int(cute::get<0>(group_shapes_host[e])), TMv));
-      hggcMemcpy(workspace, pfx.data(), sizeof(int) * (L + 1), hggcMemcpyHostToDevice);
+  if constexpr (!UsePersistent) {
+    // Ragged O(log L) decode: write the m-tile prefix [L+1] into the workspace (the non-persistent kernel does
+    // NOT use the scheduler workspace, so it's free). AFTER initialize (no clobber), BEFORE run. Uniform path
+    // (mtiles_uniform>0) uses blockIdx.z and ignores this. Blocking copy -> ordered before run; L+1 ints, tiny.
+    if (args.mtiles_uniform == 0 && workspace != nullptr && !prefix_ready) {
+      if (group_shapes_host != nullptr) {
+        std::vector<int> pfx(L + 1); pfx[0] = 0;
+        for (int e = 0; e < L; ++e)
+          pfx[e + 1] = pfx[e] + int(cute::ceil_div(int(cute::get<0>(group_shapes_host[e])), TMv));
+        hggcMemcpy(workspace, pfx.data(), sizeof(int) * (L + 1), hggcMemcpyHostToDevice);
+      }
     }
   }
   // THE MEASURED INTERVAL STARTS HERE. initialize is launcher/setup work and the ragged prefix above is a
-  // blocking H2D copy; both dominated the old host timer at decode. Recording on run's own stream excludes those
-  // operations. The device span can still include launch scheduling and idle time, so it is an upper bound on a
-  // profiler's kernel-only duration, not a synonym for it.
+  // blocking H2D copy; both dominated the old host timer at decode. The persistent branch has no host prefix and
+  // includes its device directory build below. The device span can still include launch scheduling and idle time,
+  // so it is an upper bound on a profiler's kernel-only duration, not a synonym for it.
   if (kernel_span != nullptr) {
     hggcError_t const err = hggcEventRecord(kernel_span->start, stream);
     if (err != hggcSuccess) {
       std::printf("[moe_grouped] start-event record failed: %s\n", hggcGetErrorString(err));
+      ++moeg_fail_count();
+      return false;
+    }
+  }
+  if constexpr (UsePersistent) {
+    // Directory construction is part of the end-to-end scheduler cost and is
+    // therefore deliberately inside the event interval.  It is ordered before
+    // GEMM by the same stream and introduces no host synchronisation.
+    if (!quactlize::moe_directory::launch_build<TMv>(
+            group_M, group_row_offsets, m, L, directory, stream)) {
+      std::printf("[moe_grouped persistent] directory launch arguments rejected\n");
       ++moeg_fail_count();
       return false;
     }
@@ -395,7 +460,7 @@ void filter_and_run(const cutlass::half_t* A, const ElementB* B, const cutlass::
   const bool il = (n % 256 == 0 && k % 256 == 0);
   // Artifact folds come from ArtifactTileK; TK here is TacticTileK and changes only the consumer geometry. A larger
   // tactic keeps the resident physical (N/F, F*K) descriptors instead of re-deriving F and switching providers.
-  #define MOEG_CALL(SCH, STK, IL) launch<QuantOp, SCH, TileShape, cute::Shape<cute::Int<TN>, STK>, WarpShape, Stages, IL, ElementB, PlaneB2, ExpectPackedScale, false, false, ArtifactTileK>( \
+  #define MOEG_CALL(SCH, STK, IL) launch<QuantOp, SCH, TileShape, cute::Shape<cute::Int<TN>, STK>, WarpShape, Stages, IL, ElementB, PlaneB2, ExpectPackedScale, false, false, ArtifactTileK, kPersistentBuild>( \
       A,B,scales,zeros,ptr_D,stride_D,group_M,m,n,k,L,group_size,gsd,gsh,group_row_offsets,ws,ws_bytes,stream,B2,k_full,prefix_ready,splitk,false,kernel_span)
   // COLLECTIVE CONSTRAINT (SK = Scale_TileK = ceil(TK/gs) = #scale groups per K-tile):
   //   Scale_TileK <= mma_K_atoms (= TK/16), i.e. gs >= 16, so each scale group covers >=1 mma atom. The collective
