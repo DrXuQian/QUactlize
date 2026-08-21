@@ -122,7 +122,7 @@ New/changed files worth knowing:
 
 | file | what |
 |---|---|
-| `quactlize/include/quactlize_extensions/cutlass/gguf_packed_scale.h` (was in actlize until 2026-08-06) | the 16 B unit's bit map and decode: `PackBits`, `bit_of`, `code_of`, `code_from_words<Bit>`, `put_code`, `int_to_half_small`, `head_of_words`, `group_of_words<G,ScaleBias,HasMin,ZMul>`. Lives in actlize because the mainloop needs it; the harness header re-exports it so the map exists **once**. |
+| `quactlize/include/actlize_extensions/cutlass/gguf_packed_scale.h` (was in actlize until 2026-08-06) | the 16 B unit's bit map and decode: `PackBits`, `bit_of`, `code_of`, `code_from_words<Bit>`, `put_code`, `int_to_half_small`, `head_of_words`, `group_of_words<G,ScaleBias,HasMin,ZMul>`. Lives in actlize because the mainloop needs it; the harness header re-exports it so the map exists **once**. |
 | `actlize/.../ppu_mma_aiu_multistage_mixed_input.hpp` | `SmemLayoutScaleRawStaged`, `GmemTiledCopyScalePacked`, `packed_decode_stage`, `kPackedScaleOn`, `kPackedZMul` |
 | `actlize/include/cutlass/detail/collective.hpp` | `detail::NoZero` + `strip_no_zero_t` — how the 2-plane tuple says "no zero" while keeping the second plane at index 3 |
 | `gguf_scale_layout.hpp` | per-format `Traits`: `kScaleBits/kMinBits/kGroups/kBlockBytes/kHasMin/kSigned/**kScaleBias**` |

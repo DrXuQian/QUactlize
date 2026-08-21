@@ -41,8 +41,8 @@ tmp="${QUACTLIZE_L169_OUT:-/workspace/quactlize-l169-${variant}}"
 mkdir -p "$tmp"
 
 overlay="$tmp/overlay"
-collective_rel=quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp
-kernel_rel=quactlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp
+collective_rel=actlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp
+kernel_rel=actlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp
 collective_src="$repo/quactlize/include/$collective_rel"
 collective_probe="$overlay/$collective_rel"
 kernel_src="$repo/quactlize/include/$kernel_rel"

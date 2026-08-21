@@ -22,7 +22,7 @@
 #include "cute/atom/mma_traits_ppu0010.hpp"
 #include "cute/tensor.hpp"
 #include "cutlass/numeric_types.h"
-#include "quactlize_extensions/cutlass/gemm/kernel/ppu_accumulator_residue_mask.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_accumulator_residue_mask.hpp"
 #include "l124_cases.inc"
 
 namespace {

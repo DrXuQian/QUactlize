@@ -27,7 +27,7 @@
 
 // ArtifactTileK=64 with TacticTileK=256 selects the folded schedule even at
 // F=1; the consumer must name its optional collective explicitly.
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
 
 namespace {
 

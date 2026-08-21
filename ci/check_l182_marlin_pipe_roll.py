@@ -12,7 +12,7 @@ import time
 
 
 ROOT = Path(__file__).resolve().parent.parent
-COLLECTIVE = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
+COLLECTIVE = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
 UNIT = ROOT / "benchmarks/lowbit_dense_unit.inc"
 BENCH = ROOT / "benchmarks/test_lowbit_dense_bench.cu"
 L169 = ROOT / "dev/fold_derivation/run_l169_standalone_marlin_unit.sh"

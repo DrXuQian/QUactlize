@@ -8,7 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_argument_contract.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_argument_contract.hpp"
 
 namespace arg = cutlass::gemm::collective::detail;
 

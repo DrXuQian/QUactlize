@@ -153,11 +153,11 @@ fi
     "$ROOT/tools/run_ppu_chunked_gdn_perf_box.sh" \
     "$ROOT/quactlize/include/quactlize_ppu_linear_attention.h" \
     "$ROOT/quactlize/csrc/device/ppu_chunked_gdn_backend.cu" \
-    "$ROOT/quactlize/include/quactlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_types.hpp" \
-    "$ROOT/quactlize/include/quactlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_inverse.hpp" \
-    "$ROOT/quactlize/include/quactlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_aiu.cuh" \
-    "$ROOT/quactlize/include/quactlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_kernel.cuh" \
-    "$ROOT/quactlize/include/quactlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_collective.cuh" \
+    "$ROOT/quactlize/include/actlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_types.hpp" \
+    "$ROOT/quactlize/include/actlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_inverse.hpp" \
+    "$ROOT/quactlize/include/actlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_aiu.cuh" \
+    "$ROOT/quactlize/include/actlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_kernel.cuh" \
+    "$ROOT/quactlize/include/actlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_collective.cuh" \
     "$LIB" "$BIN"
 } | tee "$OUT/binary-identity.txt"
 

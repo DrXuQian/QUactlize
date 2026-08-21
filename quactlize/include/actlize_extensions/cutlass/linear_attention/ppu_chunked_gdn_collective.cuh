@@ -21,8 +21,8 @@
 
 #include "cutlass/bfloat16.h"
 #include "cutlass/cutlass.h"
-#include "quactlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_aiu.cuh"
-#include "quactlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_types.hpp"
+#include "actlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_aiu.cuh"
+#include "actlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_types.hpp"
 
 // actlize's CUTLASS_DEVICE intentionally follows hgcc's compilation macros.
 // Keep the independently runnable CUDA reference a real device function when

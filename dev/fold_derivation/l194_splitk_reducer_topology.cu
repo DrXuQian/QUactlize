@@ -17,7 +17,7 @@
 #include "cutlass/reduction/device/reduce_split_k.h"
 #include "cutlass/reduction/kernel/reduce_split_k.h"
 #include "cutlass/reduction/thread/reduction_operators.h"
-#include "quactlize_extensions/cutlass/gemm/device/ppu_mixed_input_splitk_parallel.hpp"
+#include "actlize_extensions/cutlass/gemm/device/ppu_mixed_input_splitk_parallel.hpp"
 
 namespace splitk = cutlass::gemm::device::splitk_parallel;
 

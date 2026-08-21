@@ -18,9 +18,9 @@ from benchmarks.workloads import MODELS  # noqa: E402
 TABLES = tuple(sorted((ROOT / "benchmarks").glob("lowbit_grouped*configs.inc")))
 RUNNER = ROOT / "dev/fold_derivation/run_l136_grouped_marlin_exhaustive.sh"
 ORACLE = ROOT / "dev/fold_derivation/l136_grouped_marlin_exhaustive.cu"
-GEOMETRY = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_grouped_ragged_geometry.hpp"
+GEOMETRY = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_grouped_ragged_geometry.hpp"
 CORE = ROOT / "third_party/actlize/include/cutlass/gemm/kernel/ppu_tile_scheduler_marlin_core.hpp"
-KERNEL = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_group_marlin.hpp"
+KERNEL = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_group_marlin.hpp"
 TYPES = ROOT / "dev/fold_derivation/l135_grouped_marlin_types.cu"
 
 
@@ -111,7 +111,7 @@ def main() -> int:
                 print(f"[grouped-marlin-exhaustive] FAIL: cannot plant {label}")
                 return 1
             root = tmp / label
-            target = root / "quactlize_extensions/cutlass/gemm/kernel"
+            target = root / "actlize_extensions/cutlass/gemm/kernel"
             target.mkdir(parents=True)
             (target / GEOMETRY.name).write_text(geometry_source.replace(old, new, 1))
             red = run(manifest, geometry_override=str(root))

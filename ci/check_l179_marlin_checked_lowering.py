@@ -9,10 +9,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-COLLECTIVE = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
-KERNEL = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp"
-OUTPUT_MAP = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/marlin_output_map_ppu.hpp"
-HANDLE = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/device/marlin_gemm_ppu.hpp"
+COLLECTIVE = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
+KERNEL = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp"
+OUTPUT_MAP = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel/marlin_output_map_ppu.hpp"
+HANDLE = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/device/marlin_gemm_ppu.hpp"
 BENCH = ROOT / "benchmarks/test_lowbit_dense_bench.cu"
 
 

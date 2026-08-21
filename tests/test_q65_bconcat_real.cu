@@ -32,7 +32,7 @@
 
 // This executable instantiates the optional two-plane collective directly. The base umbrella deliberately does not
 // include optional specializations, so naming only the launcher leaves CollectiveMma at its failing primary template.
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 
 // SELF-DESCRIBING RUN. Whether PPU_B_CHUNK was active has now been undeterminable from the build output twice: the
 // device compiles are add_custom_command with a COMMENT so make.log holds no compile line, and the build.sh line that

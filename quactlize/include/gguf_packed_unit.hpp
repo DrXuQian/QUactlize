@@ -1,7 +1,7 @@
 #pragma once
 // THE PACKED SCALE UNIT, GENERALISED PAST Q4_K. One trait per format; the staging skeleton reads the trait.
 //
-// WHAT WAS HARDCODED. quactlize_extensions/cutlass/gguf_packed_scale.h describes exactly one unit -- 16 bytes,
+// WHAT WAS HARDCODED. actlize_extensions/cutlass/gguf_packed_scale.h describes exactly one unit -- 16 bytes,
 // d and dmin in the first
 // four, eight groups of (6-bit scale, 6-bit min) split into two self-contained halves -- and the collective is built
 // on those numbers: kPackedScaleUnit = 16, one 128-bit cp.async, Scale_TileK == 8, four 32-bit words, 6-bit

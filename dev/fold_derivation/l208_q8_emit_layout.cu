@@ -24,7 +24,7 @@
 #include <vector>
 
 #include "cutlass/half.h"
-#include "quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
+#include "actlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
 #include "xplane_offline.hpp"
 
 namespace {

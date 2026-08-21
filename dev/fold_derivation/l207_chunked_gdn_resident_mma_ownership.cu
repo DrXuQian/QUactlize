@@ -11,7 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 
-#include "quactlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_collective.cuh"
+#include "actlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_collective.cuh"
 
 #if !defined(__HGGCCC__)
 #error "L207 must instantiate the production __HGGCCC__ CollectiveBuilder branch"

@@ -9,8 +9,8 @@
 // carries the generated declarations. That bench was given the two optional collectives and this file was not, so
 // this target has the same latent "Could not find a mainloop specialization" waiting in it -- unfired only because
 // nothing has built it since the umbrella split.
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 
 template <int Dummy>
 static void unit_body(Band const& bd, SkCtx const& cx, SkBest& b1, SkBest& bS) {

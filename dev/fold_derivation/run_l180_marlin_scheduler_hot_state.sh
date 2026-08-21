@@ -12,7 +12,7 @@ flags=(-std=c++17 -x cu -arch=sm_80 -w --expt-relaxed-constexpr
   -I "${repo}/third_party/actlize/tools/util/include"
   -I "${repo}/quactlize/include")
 source="${repo}/dev/fold_derivation/l180_marlin_scheduler_hot_state.cpp"
-rel=quactlize_extensions/cutlass/gemm/kernel/marlin_scheduler_ppu.hpp
+rel=actlize_extensions/cutlass/gemm/kernel/marlin_scheduler_ppu.hpp
 production="${repo}/quactlize/include/${rel}"
 
 nvcc "${flags[@]}" -o "${tmp}/positive" "${source}"

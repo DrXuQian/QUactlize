@@ -21,7 +21,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-WRAPPER = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_group_streamk.hpp"
+WRAPPER = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_group_streamk.hpp"
 BUILDER = ROOT / "quactlize/include/moe_grouped_streamk_ppu.cuh"
 TEST = ROOT / "tests/test_moe_grouped_streamk.cu"
 L121 = ROOT / "dev/fold_derivation/l121_grouped_streamk_wrapper.cu"

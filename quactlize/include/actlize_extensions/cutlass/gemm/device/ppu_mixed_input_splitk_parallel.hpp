@@ -29,7 +29,7 @@
 #include "cutlass/numeric_conversion.h"
 #include "cutlass/numeric_types.h"
 #include "cutlass/ppu_host_adapter.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_partition.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_partition.hpp"
 
 namespace cutlass::gemm::device::splitk_parallel {
 

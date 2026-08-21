@@ -28,7 +28,7 @@
 #include "ppu_dense_shipping_policy.hpp"
 #include "ppu_group_schedule.hpp"
 #include "scalefirst_persistent_policy.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_persistent.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_persistent.hpp"
 
 namespace scalefirst_internal_sweep {
 

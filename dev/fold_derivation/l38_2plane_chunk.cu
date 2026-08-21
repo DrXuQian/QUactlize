@@ -15,7 +15,7 @@
 #include "cutlass/fast_numeric_conversion_for_mix_gemm.h"
 #include <cstdio>
 #include <vector>
-#include "quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
+#include "actlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
 using namespace cute;
 using cutlass::MixGemmEmit; using cutlass::MixGemmChunkEmit;
 

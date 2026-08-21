@@ -22,8 +22,8 @@
 #include <type_traits>
 
 #include "dense_splitk_parallel_ppu.cuh"
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 
 namespace dense_splitk_parallel_ppu {
 

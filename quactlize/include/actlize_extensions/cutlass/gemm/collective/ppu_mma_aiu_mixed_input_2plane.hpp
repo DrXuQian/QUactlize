@@ -55,10 +55,10 @@
 #include "cutlass/cutlass.h"
 #include "cutlass/gemm/dispatch_policy.hpp"
 // quactlize's mainloop policies; this collective specialises CollectiveMma on one of them.
-#include "quactlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp"
-#include "quactlize_extensions/cutlass/detail/quactlize_mixed_dtype.hpp"
-#include "quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
-#include "quactlize_extensions/cutlass/gguf_packed_scale.h"
+#include "actlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp"
+#include "actlize_extensions/cutlass/detail/quactlize_mixed_dtype.hpp"
+#include "actlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
+#include "actlize_extensions/cutlass/gguf_packed_scale.h"
 
 #include "cute/algorithm/functional.hpp"
 #include "cute/atom/mma_atom.hpp"
@@ -67,11 +67,11 @@
 #include "cute/numeric/arithmetic_tuple.hpp"
 
 #include "cutlass/gemm/collective/collective_mma.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_argument_contract.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_a_schedule.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_2plane_source_layout.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_argument_contract.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_a_schedule.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_2plane_source_layout.hpp"
 #include "cutlass/detail/collective.hpp"
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -85,7 +85,7 @@ namespace cutlass::gemm::collective {
 // template parameters, because CollectiveMma's parameter list is fixed by its primary template.
 // A dedicated wrapper is required -- do NOT use cute::is_tuple: a cute Layout (which SmemLayoutAtomB_ is) is
 // itself tuple-like, so is_tuple would be a false positive.
-// BPlanes MOVED to quactlize_extensions/cutlass/detail/quactlize_mixed_dtype.hpp on 2026-08-06. It is the ABI
+// BPlanes MOVED to actlize_extensions/cutlass/detail/quactlize_mixed_dtype.hpp on 2026-08-06. It is the ABI
 // between the builder and this collective, not part of this collective: quactlize_mma_builder.inl NAMES it while
 // selecting atoms, so leaving it here made the builder -- which every consumer needs -- depend on the two-plane
 // header, which only Q3/Q5/Q6 consumers need. Found by the compiler the moment the umbrella stopped listing this

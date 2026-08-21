@@ -22,7 +22,7 @@
 #include <type_traits>
 
 #include "m8n16_g5_contract.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
 
 namespace md = cutlass::gemm::collective::detail;
 using Shipping = m8n16_g5_contract::M8;
@@ -100,7 +100,7 @@ int main() {
 #include "cutlass/numeric_types.h"
 #include "grouped_schedule_decode.hpp"
 #include "m8n16_g5_layout_spec.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
 
 namespace md = cutlass::gemm::collective::detail;
 namespace spec = m8n16_g5_layout_spec;

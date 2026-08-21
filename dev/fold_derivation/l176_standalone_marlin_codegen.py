@@ -27,19 +27,19 @@ CMAKE = ROOT / "quactlize/csrc/CMakeLists.txt.in"
 UNIT = ROOT / "benchmarks/lowbit_dense_unit.inc"
 BENCH = ROOT / "benchmarks/test_lowbit_dense_bench.cu"
 COLLECTIVE = ROOT / (
-    "quactlize/include/quactlize_extensions/cutlass/gemm/collective/"
+    "quactlize/include/actlize_extensions/cutlass/gemm/collective/"
     "marlin_collective_ppu.hpp"
 )
 LOAD = COLLECTIVE.with_name("marlin_load_ppu.hpp")
 DEQUANT = COLLECTIVE.with_name("marlin_dequant_ppu.hpp")
 MMA = COLLECTIVE.with_name("marlin_mma_ppu.hpp")
 KERNEL = ROOT / (
-    "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/"
+    "quactlize/include/actlize_extensions/cutlass/gemm/kernel/"
     "marlin_kernel_ppu.hpp"
 )
 OUTPUT_MAP = KERNEL.with_name("marlin_output_map_ppu.hpp")
 HANDLE = ROOT / (
-    "quactlize/include/quactlize_extensions/cutlass/gemm/device/"
+    "quactlize/include/actlize_extensions/cutlass/gemm/device/"
     "marlin_gemm_ppu.hpp"
 )
 SCHEDULER = KERNEL.with_name("marlin_scheduler_ppu.hpp")
@@ -285,7 +285,7 @@ def validate(texts: dict[Path, str], generated: Path | None) -> dict[str, object
 
     bench = texts[BENCH]
     for token in (
-        '#include "quactlize_extensions/cutlass/gemm/device/marlin_gemm_ppu.hpp"',
+        '#include "actlize_extensions/cutlass/gemm/device/marlin_gemm_ppu.hpp"',
         "using MarlinGemm = cutlass::gemm::device::MarlinGemmPPU<MarlinKernel>;",
     ):
         if token not in bench:
@@ -304,7 +304,7 @@ def validate(texts: dict[Path, str], generated: Path | None) -> dict[str, object
     load = texts[LOAD]
     for helper in (LOAD, DEQUANT, MMA):
         include = (
-            '#include "quactlize_extensions/cutlass/gemm/collective/'
+            '#include "actlize_extensions/cutlass/gemm/collective/'
             f'{helper.name}"'
         )
         if collective.count(include) != 1:
@@ -372,7 +372,7 @@ def validate(texts: dict[Path, str], generated: Path | None) -> dict[str, object
     if "Accumulator accum;" not in kernel:
         raise ContractError("kernel no longer constructs the native accumulator directly")
     if kernel.count(
-        '#include "quactlize_extensions/cutlass/gemm/kernel/marlin_output_map_ppu.hpp"'
+        '#include "actlize_extensions/cutlass/gemm/kernel/marlin_output_map_ppu.hpp"'
     ) != 1:
         raise ContractError("kernel lost its authoritative output-map include")
     for token in (

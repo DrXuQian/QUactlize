@@ -15,11 +15,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-HELPER = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
+HELPER = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
 COLLECTIVES = (
-    ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp",
-    ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp",
-    ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp",
+    ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp",
+    ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp",
+    ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp",
 )
 ORACLE = ROOT / "dev/fold_derivation/l127_metadata_stride.cu"
 RUNNER = ROOT / "dev/fold_derivation/run_l127_metadata_stride.sh"

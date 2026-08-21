@@ -6,7 +6,7 @@
 #include "cutlass/device_kernel.h"
 #include "gemv_lowbit/gemv_rt.hpp"
 #include "quactlize_ppu_linear_attention.h"
-#include "quactlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_kernel.cuh"
+#include "actlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_kernel.cuh"
 
 namespace {
 

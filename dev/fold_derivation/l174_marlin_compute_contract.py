@@ -28,10 +28,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MARLIN_ROOT = ROOT.parent
-COLLECTIVE = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
-LOAD = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_load_ppu.hpp"
-DEQUANT = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_dequant_ppu.hpp"
-MMA = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_mma_ppu.hpp"
+COLLECTIVE = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
+LOAD = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/marlin_load_ppu.hpp"
+DEQUANT = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/marlin_dequant_ppu.hpp"
+MMA = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/marlin_mma_ppu.hpp"
 CLASSIC = MARLIN_ROOT / "marlin_classic_ppu.cuh"
 AWESOME = MARLIN_ROOT / "ref/awesome-cute/gemm/marlin_gemm/marlin_cute_trait.h"
 
@@ -232,7 +232,7 @@ def main() -> int:
     for include in (
         "marlin_load_ppu.hpp", "marlin_dequant_ppu.hpp", "marlin_mma_ppu.hpp",
     ):
-        if collective.count(f'#include "quactlize_extensions/cutlass/gemm/collective/{include}"') != 1:
+        if collective.count(f'#include "actlize_extensions/cutlass/gemm/collective/{include}"') != 1:
             die(plant, f"standalone helper include is not unique: {include}")
     for forbidden in ("struct FragmentB {", "lop3.b32", "cp.async.cg.shared.global", "void mma_n16("):
         if forbidden in collective:

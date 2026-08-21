@@ -24,7 +24,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 PATHS = {
     "bench": ROOT / "benchmarks" / "test_lowbit_dense_bench.cu",
     "kernel": ROOT / "quactlize" / "include" /
-        "quactlize_extensions" / "cutlass" / "gemm" / "kernel" /
+        "actlize_extensions" / "cutlass" / "gemm" / "kernel" /
         "ppu_aiu_gemm_mixed_input_persistent.hpp",
     "oracle": ROOT / "dev" / "fold_derivation" /
         "l202_persistent_absolute_grid_oracle.py",

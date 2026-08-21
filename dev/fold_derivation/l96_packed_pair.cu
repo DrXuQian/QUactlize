@@ -23,7 +23,7 @@
 #include <cstdint>
 #include <cstring>
 #include "cute/tensor.hpp"
-#include "quactlize_extensions/cutlass/gguf_packed_scale.h"
+#include "actlize_extensions/cutlass/gguf_packed_scale.h"
 
 using cutlass::half_t;
 using namespace cutlass::gguf_packed;

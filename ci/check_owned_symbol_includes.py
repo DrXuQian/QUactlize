@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Every file naming a quactlize_extensions type must have the defining header in its include closure.
+"""Every file naming a actlize_extensions type must have the defining header in its include closure.
 
     python3 ci/check_owned_symbol_includes.py
 
@@ -15,7 +15,7 @@ defining the type, and then the box build died on
 -- two of twenty-nine, because a compiler stops. Fixing what the log shows and rebuilding is a twenty-nine round
 trip on a machine that takes minutes per build.
 
-THE SYMBOLS ARE DERIVED, NOT LISTED. They come from scanning quactlize_extensions for namespace-scope
+THE SYMBOLS ARE DERIVED, NOT LISTED. They come from scanning actlize_extensions for namespace-scope
 definitions, so a type added there is covered the day it is added. A hand-written list would have to be updated
 by the same person who forgot the include, at the same moment.
 
@@ -41,7 +41,7 @@ import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-EXT = ROOT / "quactlize" / "include" / "quactlize_extensions"
+EXT = ROOT / "quactlize" / "include" / "actlize_extensions"
 ACTLIZE = ROOT / "third_party" / "actlize"
 SEARCH_ROOTS = ("quactlize", "benchmarks", "tests", "dev")
 SUFFIXES = (".cu", ".cuh", ".hpp", ".h")
@@ -68,7 +68,7 @@ IGNORE = {"CollectiveMma", "CollectiveBuilder", "MixGemmNumericArrayConverter", 
 
 
 def ambiguous_names(files) -> set:
-    """Names ALSO defined outside quactlize_extensions -- this checker cannot speak about them.
+    """Names ALSO defined outside actlize_extensions -- this checker cannot speak about them.
 
     It matches bare names, so it cannot tell `gguf_scale::GroupScale` (defined in gguf_scale_decode.hpp) from
     `cutlass::gguf_packed::GroupScale` (ours). Two unrelated types with one spelling is a fact about this
@@ -150,7 +150,7 @@ def main() -> int:
         for n in defined_names(h) - IGNORE:
             owner.setdefault(n, h)
     if len(owner) < 5:
-        print(f"[owned-includes] ERROR: only {len(owner)} owned type(s) found under quactlize_extensions; the "
+        print(f"[owned-includes] ERROR: only {len(owner)} owned type(s) found under actlize_extensions; the "
               f"scan is broken and a green verdict would mean nothing")
         return 1
 

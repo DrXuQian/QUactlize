@@ -459,7 +459,7 @@ def lint_scale_copy_coverage_fires():
 
 def lint_fold_metadata_single_owner():
     """The folded shipping body must use ScaleCopyPlan's exact owner set."""
-    path = (ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/"
+    path = (ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/"
             "ppu_mma_aiu_fold.hpp")
     if not path.is_file():
         return "FAIL", f"missing {path}", 0.0
@@ -606,7 +606,7 @@ def lint_mixed_pipeline_shared():
     # THE COLLECTIVES LEFT actlize ON 2026-08-06. This used to read them out of the submodule, where two of the
     # three no longer exist and the third is upstream's, which has no shared driver at all. It failed loudly
     # rather than passing, but a gate pointed at the wrong tree tests nothing either way.
-    base = ROOT / "quactlize" / "include" / "quactlize_extensions" / "cutlass" / "gemm" / "collective"
+    base = ROOT / "quactlize" / "include" / "actlize_extensions" / "cutlass" / "gemm" / "collective"
     sources = {}
     for rel in rels:
         path = base / rel
@@ -617,7 +617,7 @@ def lint_mixed_pipeline_shared():
     def violations(texts):
         hits = []
         for rel, text in texts.items():
-            if text.count('#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"') != 1:
+            if text.count('#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"') != 1:
                 hits.append(f"{rel}: shared-driver include count != 1")
             if text.count("using PipelineDriver = detail::MixedPipelineDriver;") != 1:
                 hits.append(f"{rel}: pipeline type witness count != 1")
@@ -699,7 +699,7 @@ def lint_ppu_asm_device_guard():
     # hgcc and could silently select the slower scalar fallback, so only NEW uses are rejected locally.
     # The file moved out of actlize on 2026-08-06; the exemption follows it, or its one box-proven arm reads as
     # a new violation.
-    proven_exemptions = {"quactlize/include/quactlize_extensions/cutlass/gguf_packed_scale.h"}
+    proven_exemptions = {"quactlize/include/actlize_extensions/cutlass/gguf_packed_scale.h"}
     compiler_only = re.compile(r"^\s*#(?:if|elif).*__HGGCCC__.*!\s*defined\s*\(\s*__NVCC__\s*\)")
     for root in roots:
         if not root.exists():
@@ -2038,19 +2038,26 @@ def lint_actlize_pristine():
     return _run_ci_script("check_actlize_pristine.py", "actlize carries no quactlize work")
 
 
+def lint_actlize_extension_namespace():
+    """The extension include root has one canonical owner and the retired root cannot return."""
+    return _run_ci_script(
+        "check_actlize_extension_namespace.py",
+        "actlize_extensions is the only active first-party extension include root")
+
+
 def lint_extension_additive():
-    """quactlize_extensions must ADD to actlize, never redefine it or overlap its specialisations.
+    """actlize_extensions must ADD to actlize, never redefine it or overlap its specialisations.
 
     The dangerous half is the overlap: a partial specialisation whose constraint intersects a vendor one is
     ambiguous only for the argument lists a build instantiates, so a table that never reaches the overlap
     compiles green. quactlize's builder claimed six of actlize's schedule tags for months without a diagnostic,
     because its copy REPLACED actlize's in the include list rather than joining it.
     """
-    return _run_ci_script("check_extension_additive.py", "quactlize_extensions adds rather than redefines")
+    return _run_ci_script("check_extension_additive.py", "actlize_extensions adds rather than redefines")
 
 
 def lint_owned_symbol_includes():
-    """A file naming a quactlize_extensions type must reach its defining header, per a real include closure.
+    """A file naming a actlize_extensions type must reach its defining header, per a real include closure.
 
     WRITTEN AFTER THE BOX CAUGHT IT, which is the whole point. The extraction repointed the 17 files that
     included actlize's umbrella and missed the ones reaching the same types through DIRECT includes of specific
@@ -2556,7 +2563,8 @@ def main():
                 ("lint", "all mixed-input kernels derive output M/N residue from logical CTA tiles", lint_mixed_logical_m_residue),
                 ("lint", "sub-byte logical codes and packed bytes never share an unlabeled owner", lint_subbyte_units),
                 ("lint", "ppu001 plain LDSM fails in C++ before its unproved assembler path", lint_plain_ldsm_failclosed),
-                ("lint", "quactlize_extensions adds to actlize rather than redefining it", lint_extension_additive),
+                ("lint", "actlize_extensions is the only active extension include root", lint_actlize_extension_namespace),
+                ("lint", "actlize_extensions adds to actlize rather than redefining it", lint_extension_additive),
                 ("lint", "every file naming a quactlize type reaches its defining header", lint_owned_symbol_includes),
                 ("lint", "every listed GGUF format has the collective its row implies", lint_format_table_buildable),
                 ("lint", "includes the CMake generator writes into generated sources resolve", lint_generated_include_edges),

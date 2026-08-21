@@ -51,7 +51,7 @@ from pathlib import Path
 import sys
 
 repo = Path(sys.argv[1])
-root = repo / "quactlize/include/quactlize_extensions/cutlass/gemm"
+root = repo / "quactlize/include/actlize_extensions/cutlass/gemm"
 load = (root / "collective/marlin_load_ppu.hpp").read_text()
 collective = (root / "collective/marlin_collective_ppu.hpp").read_text()
 kernel = (root / "kernel/marlin_kernel_ppu.hpp").read_text()

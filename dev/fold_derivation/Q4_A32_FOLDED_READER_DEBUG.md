@@ -251,7 +251,7 @@ base offset; that can make distinct physical slots look identical.
 - `ci/check_mixed_a_register_schedule.py`
 - `ci/check_q4_a32_fixture_components.py`
 - `tools/run_scalefirst_q4_a32_exact_box.sh`
-- `quactlize/include/quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_a_schedule.hpp`
-- `quactlize/include/quactlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp`
-- `quactlize/include/quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp`
-- `quactlize/include/quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp`
+- `quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_a_schedule.hpp`
+- `quactlize/include/actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp`
+- `quactlize/include/actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp`
+- `quactlize/include/actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp`

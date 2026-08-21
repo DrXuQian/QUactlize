@@ -30,7 +30,7 @@ set -e
 # Production-causal arithmetic controls: change one real guard in a temporary
 # include overlay, rebuild the same oracle, and require the adjacent first-
 # invalid production boundary to become accepted.
-collective_rel=quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp
+collective_rel=actlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp
 collective_src="${repo}/quactlize/include/${collective_rel}"
 for spec in \
   'drop-b-k-product:production b_k_delta*K boundary was removed' \
@@ -76,7 +76,7 @@ done
 # The map is also a production seam.  Mutate each helper independently in an
 # overlay; the exhaustive census must reject it for a coordinate reason, not
 # merely because a named plant was supplied.
-map_rel=quactlize_extensions/cutlass/gemm/kernel/marlin_output_map_ppu.hpp
+map_rel=actlize_extensions/cutlass/gemm/kernel/marlin_output_map_ppu.hpp
 map_src="${repo}/quactlize/include/${map_rel}"
 for plant in output-row output-n-base output-col-offset; do
   overlay="${tmp}/overlay-${plant}"

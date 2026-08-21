@@ -21,7 +21,7 @@
 #include "cutlass/gemm/kernel/gemm_universal.hpp"
 #include "cutlass/utils.h"
 #include "cute/tensor.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/ppu_accumulator_residue_mask.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_accumulator_residue_mask.hpp"
 
 namespace cutlass::gemm::kernel {
 

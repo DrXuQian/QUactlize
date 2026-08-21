@@ -10,7 +10,7 @@
 #include "m8n16_g5_layout_spec.hpp"
 #include "ppu_group_schedule.hpp"
 #include "ppu_mixed_policy.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/builders/quactlize_mma_builder.inl"
+#include "actlize_extensions/cutlass/gemm/collective/builders/quactlize_mma_builder.inl"
 
 namespace m8n16_g5_contract {
 

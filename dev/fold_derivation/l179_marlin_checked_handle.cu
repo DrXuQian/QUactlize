@@ -7,7 +7,7 @@
 #include <cstdio>
 #include <type_traits>
 
-#include "quactlize_extensions/cutlass/gemm/device/marlin_gemm_ppu.hpp"
+#include "actlize_extensions/cutlass/gemm/device/marlin_gemm_ppu.hpp"
 
 struct L179Kernel {};
 struct L179Tile {};

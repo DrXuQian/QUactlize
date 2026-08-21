@@ -59,8 +59,8 @@
 #include "cutlass/cutlass.h"
 #include "cutlass/gemm/dispatch_policy.hpp"
 // quactlize's mainloop policies; this collective specialises CollectiveMma on one of them.
-#include "quactlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp"
-#include "quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
+#include "actlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp"
+#include "actlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
 
 #include "cute/algorithm/functional.hpp"
 #include "cute/atom/mma_atom.hpp"
@@ -69,10 +69,10 @@
 #include "cute/numeric/arithmetic_tuple.hpp"
 
 #include "cutlass/gemm/collective/collective_mma.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_argument_contract.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_a_schedule.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_argument_contract.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_a_schedule.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"
 #include "cutlass/detail/collective.hpp"
 
 /////////////////////////////////////////////////////////////////////////////////////////////////

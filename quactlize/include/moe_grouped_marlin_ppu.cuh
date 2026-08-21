@@ -25,7 +25,7 @@
 #include "ppu_group_schedule.hpp"
 #include "ppu_mixed_policy.hpp"
 #include "ppu_tactic_space.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_group_marlin.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_group_marlin.hpp"
 
 namespace moe_grouped_marlin_ppu {
 

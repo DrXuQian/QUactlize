@@ -8,10 +8,10 @@ import sys
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-POLICY = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_last_arriver.hpp"
-KERNEL = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_splitk_parallel.hpp"
+POLICY = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_last_arriver.hpp"
+KERNEL = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_splitk_parallel.hpp"
 DENSE = ROOT / "quactlize/include/dense_splitk_parallel_ppu.cuh"
-REDUCER = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/device/ppu_mixed_input_splitk_parallel.hpp"
+REDUCER = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/device/ppu_mixed_input_splitk_parallel.hpp"
 
 
 def valid_policy(text: str, reducer: str) -> bool:

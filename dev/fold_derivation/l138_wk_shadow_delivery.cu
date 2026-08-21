@@ -30,8 +30,8 @@
 #include "cute/tensor.hpp"
 #include "cute/atom/mma_atom.hpp"
 #include "cutlass/numeric_types.h"
-#include "quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_2plane_source_layout.hpp"
+#include "actlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_2plane_source_layout.hpp"
 #include "xplane_offline.hpp"
 
 struct L138F16Atom {};

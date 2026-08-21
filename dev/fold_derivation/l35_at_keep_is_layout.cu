@@ -17,7 +17,7 @@
 //   nvcc -std=c++17 -Istub_inc -I../../../../third_party/actlize/include l35_at_keep_is_layout.cu -o l35 && ./l35
 #include "cutlass/fast_numeric_conversion_for_mix_gemm.h"
 #include <cstdio>
-#include "quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
+#include "actlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
 using cutlass::MixGemmEmit; using cutlass::MixGemmChunkEmit;
 int main(){
   constexpr int MMA_K=4, NPAIR=16; long bad=0;

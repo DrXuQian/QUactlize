@@ -73,8 +73,8 @@ sha256sum "$hgcc" "$hgobjdump" >"$OUT/sdk-tools.sha256"
 sha256sum "$acu_real" >"$OUT/acu.sha256"
 
 SOURCE_PATHS=(
-  quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp
-  quactlize/include/quactlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp
+  quactlize/include/actlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp
+  quactlize/include/actlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp
   benchmarks/lowbit_dense_unit.inc
   benchmarks/test_lowbit_dense_bench.cu
   quactlize/csrc/CMakeLists.txt.in
@@ -193,7 +193,7 @@ done
   fail 'baseline and outer-roll binaries are byte-identical; the compiler route was not exercised'
 
 python3 "$REPORTER" \
-  --source "$ROOT/quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp" \
+  --source "$ROOT/quactlize/include/actlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp" \
   --baseline-line "${LINES[0]}" --baseline-resource "${RESOURCES[0]}" \
   --outer-roll-line "${LINES[1]}" --outer-roll-resource "${RESOURCES[1]}" \
   --inner-roll-control-line "${LINES[2]}" \

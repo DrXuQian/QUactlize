@@ -18,7 +18,7 @@ __half2 l186_unreachable_hfma2(__half2, __half2, __half2);
 unsigned int l186_unreachable_cvta(void const*);
 #define __hfma2 l186_unreachable_hfma2
 #define __cvta_generic_to_shared l186_unreachable_cvta
-#include "quactlize_extensions/cutlass/gemm/collective/marlin_mma_ppu.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/marlin_mma_ppu.hpp"
 #undef __cvta_generic_to_shared
 #undef __hfma2
 

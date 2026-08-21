@@ -518,10 +518,10 @@ sed 's/^/           /' "$log"
 # Compile REAL generated multi-include sources against a tiny host stub. The ordinary local syntax gate uses a zero-unit
 # dispatcher and therefore cannot see helper-name collisions or a UNIT_* macro leaking from one shape into the next.
 fixture="$OUT/reentrant"
-mkdir -p "$fixture/quactlize_extensions/cutlass/gemm/collective"
+mkdir -p "$fixture/actlize_extensions/cutlass/gemm/collective"
 cp "$HERE/../../benchmarks/moe_bench_unit.inc" "$fixture/moe_bench_unit.inc"
-touch "$fixture/quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
-touch "$fixture/quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
+touch "$fixture/actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+touch "$fixture/actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 cat >"$fixture/lowbit_moe_bench.hpp" <<'STUB'
 #pragma once
 struct Band {};

@@ -35,7 +35,7 @@
 #include "cute/atom/mma_atom.hpp"
 #include "cute/atom/mma_traits_ppu0010.hpp"
 #include "cutlass/fast_numeric_conversion_for_mix_gemm.h"
-#include "quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
+#include "actlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
 
 using namespace cute;
 

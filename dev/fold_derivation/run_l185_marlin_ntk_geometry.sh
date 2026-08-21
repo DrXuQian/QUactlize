@@ -33,7 +33,7 @@ done
 # assertion, proving that a parameterized thread layout with a stale
 # permutation cannot pass as a real axis.
 overlay="$out/overlay-fixed-permutation"
-rel=quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp
+rel=actlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp
 mkdir -p "$overlay/$(dirname "$rel")"
 cp "$repo/quactlize/include/$rel" "$overlay/$rel"
 python3 - "$overlay/$rel" <<'PY'
@@ -74,7 +74,7 @@ fi
 # TN128/TK64 cadence.
 unit_source="$repo/dev/fold_derivation/l185_marlin_ntk_generated_unit.cu"
 unit_overlay="$out/overlay-generated-unit"
-unit_collective_rel=quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp
+unit_collective_rel=actlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp
 unit_collective="$unit_overlay/$unit_collective_rel"
 unit_wrapper="$unit_overlay/lowbit_dense_unit.inc"
 mkdir -p "$(dirname "$unit_collective")"

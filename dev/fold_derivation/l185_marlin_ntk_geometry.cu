@@ -26,8 +26,8 @@ void l185_unreachable_syncthreads();
 #define threadIdx l185_unreachable_thread_idx
 #define __syncthreads l185_unreachable_syncthreads
 #include "marlin_tactic_space_ppu.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/marlin_output_map_ppu.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/marlin_output_map_ppu.hpp"
 #undef __syncthreads
 #undef threadIdx
 #undef __cvta_generic_to_shared

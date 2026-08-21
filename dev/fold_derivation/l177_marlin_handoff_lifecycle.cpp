@@ -16,7 +16,7 @@
 #include <cstdio>
 #include <cstring>
 
-#include "quactlize_extensions/cutlass/gemm/kernel/marlin_scheduler_ppu.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/marlin_scheduler_ppu.hpp"
 
 using Scheduler = cutlass::gemm::kernel::marlin::MarlinSchedulerPPU<
     cute::Shape<cute::_16, cute::_128, cute::_128>,

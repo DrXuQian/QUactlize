@@ -13,7 +13,7 @@
 #include <sstream>
 #include <string>
 
-#include "quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
 
 using Main = cutlass::gemm::collective::MarlinCollectivePPU<
     cute::Shape<cute::_16, cute::_128, cute::_128>,

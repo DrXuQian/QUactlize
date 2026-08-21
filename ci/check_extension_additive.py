@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Every type quactlize_extensions defines must be a NEW name, or a specialisation on a name quactlize owns.
+"""Every type actlize_extensions defines must be a NEW name, or a specialisation on a name quactlize owns.
 
     python3 ci/check_extension_additive.py
 
@@ -19,7 +19,7 @@ instead of joining it. The moment the two coexisted it was six ambiguous special
 
 WHAT IT CHECKS, and where each is decided:
 
-  1. No name defined at namespace scope in quactlize_extensions is also defined in actlize, UNLESS it is a
+  1. No name defined at namespace scope in actlize_extensions is also defined in actlize, UNLESS it is a
      specialisation (`struct X<...>`), which is an addition by construction.
   2. Every specialisation of a template actlize also specialises is declared in SPECIALISATION_OWNERS with the
      reason its constraint cannot overlap. That list is short on purpose: it is the set of places where "additive"
@@ -35,7 +35,7 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-EXT = ROOT / "quactlize" / "include" / "quactlize_extensions"
+EXT = ROOT / "quactlize" / "include" / "actlize_extensions"
 ACTLIZE = ROOT / "third_party" / "actlize"
 
 # Templates that BOTH trees specialise. Each needs an argument-level reason the two constraints are disjoint,

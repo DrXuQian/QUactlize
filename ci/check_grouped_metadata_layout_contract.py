@@ -9,8 +9,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PATHS = (
-    ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp",
-    ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp",
+    ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp",
+    ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp",
     ROOT / "quactlize/include/ppu_aiu_gemm_mixed_input_group.hpp",
     ROOT / "quactlize/include/grouped_schedule_decode.hpp",
     ROOT / "tests/m8n16_g5_layout_spec.hpp",

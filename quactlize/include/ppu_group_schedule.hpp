@@ -1,7 +1,7 @@
 #pragma once
 
 #include "cutlass/gemm/dispatch_policy.hpp"
-#include "quactlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp"
+#include "actlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp"
 
 // One definition of the fine-grained group-size ladder used by dense, grouped and the shipping backend.
 // The schedule tag controls scale-tile reload cadence; ScaleGroups controls how many groups a K tile covers.

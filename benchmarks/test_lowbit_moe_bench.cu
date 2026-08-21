@@ -34,8 +34,8 @@
 // The optional collectives this file INSTANTIATES. quactlize_actlize.hpp carries the base only, so a
 // consumer names the specialisation it needs; omitting it makes CollectiveMma incomplete, which the
 // compiler reports by naming the exact instantiation.
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 
 #include "bench_device.hpp"
 // PPU_B_CHUNK is a generated-unit row field. main owns no global mode; each result tag prints request->effective.

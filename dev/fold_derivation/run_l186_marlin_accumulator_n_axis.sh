@@ -27,7 +27,7 @@ grep -Fq \
 
 # Negative 1: keeping the same bytes but routing N=4 through a different
 # aggregate type must fail.  This distinguishes type identity from sizeof.
-rel=quactlize_extensions/cutlass/gemm/collective/marlin_mma_ppu.hpp
+rel=actlize_extensions/cutlass/gemm/collective/marlin_mma_ppu.hpp
 identity_overlay="${out}/identity-overlay"
 mkdir -p "${identity_overlay}/$(dirname "${rel}")"
 cp "${repo}/quactlize/include/${rel}" "${identity_overlay}/${rel}"

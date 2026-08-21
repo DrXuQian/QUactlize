@@ -8,7 +8,7 @@
 //   SPLITK_ONLY=<substring>  run only rows whose tag contains this
 //   SPLITK_ACU=1             ONE COLD launch per row (a capture, not a timing)
 #include <cstring>
-#include "quactlize_extensions/cutlass/gguf_packed_scale.h"
+#include "actlize_extensions/cutlass/gguf_packed_scale.h"
 #include "moe_splitk_bench_common.hpp"
 #include "moe_router_fixture.hpp"
 #include "moe_splitk_units.inc"     // GENERATED: unit declarations + splitk_run_all()
@@ -16,8 +16,8 @@
 // The optional collectives this file INSTANTIATES. quactlize_actlize.hpp carries the base only, so a
 // consumer names the specialisation it needs; omitting it makes CollectiveMma incomplete, which the
 // compiler reports by naming the exact instantiation.
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 
 #include "bench_device.hpp"
 int main(int argc, char** argv) {

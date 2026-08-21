@@ -23,8 +23,8 @@
 #include "cutlass/gemm/kernel/ppu_tile_scheduler_marlin.hpp"
 #include "cutlass/utils.h"
 #include "cute/tensor.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/ppu_accumulator_residue_mask.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/ppu_grouped_ragged_geometry.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_accumulator_residue_mask.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_grouped_ragged_geometry.hpp"
 
 namespace cutlass::gemm::kernel {
 

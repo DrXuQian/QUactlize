@@ -16,8 +16,8 @@
 #include <string>
 #include <vector>
 
-#include "quactlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_inverse.hpp"
-#include "quactlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_types.hpp"
+#include "actlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_inverse.hpp"
+#include "actlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_types.hpp"
 
 namespace {
 

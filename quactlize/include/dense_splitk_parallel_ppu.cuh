@@ -24,8 +24,8 @@
 #include "cutlass/gemm/config/gemm_operands.hpp"
 #include "cutlass/gemm/device/gemm_universal_adapter.h"
 
-#include "quactlize_extensions/cutlass/gemm/device/ppu_mixed_input_splitk_parallel.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_splitk_parallel.hpp"
+#include "actlize_extensions/cutlass/gemm/device/ppu_mixed_input_splitk_parallel.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_splitk_parallel.hpp"
 
 namespace dense_splitk_parallel_ppu {
 

@@ -24,7 +24,7 @@
 #include "cutlass/gemm/kernel/ppu_tile_scheduler_stream_k.hpp"
 #include "cutlass/utils.h"
 #include "cute/tensor.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/ppu_accumulator_residue_mask.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_accumulator_residue_mask.hpp"
 
 namespace cutlass::gemm::kernel {
 

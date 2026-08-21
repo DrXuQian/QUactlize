@@ -29,7 +29,7 @@
 #include "cute/arch/copy_ppu0010_aiu.hpp"
 #include "cute/atom/copy_traits_ppu0010_aiu.hpp"
 #include "cutlass/fast_numeric_conversion_for_mix_gemm.h"
-#include "quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
+#include "actlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
 
 namespace xplane {
 

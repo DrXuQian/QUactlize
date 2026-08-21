@@ -27,8 +27,8 @@
 // known here, but FOLD is not a property of the format -- it comes out of the tactic (ArtifactLowFold), which this
 // file cannot see. Picking one header per unit would need the fold predicate at preprocessor level; the sweep builds
 // every shape anyway, so there is nothing to save.
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 
 #define MOE_UNIT_STR2_(x) #x
 #define MOE_UNIT_STR_(x)  MOE_UNIT_STR2_(x)

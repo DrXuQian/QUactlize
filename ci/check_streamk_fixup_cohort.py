@@ -20,11 +20,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 VENDOR = ROOT / "third_party/actlize/include/cutlass/gemm/kernel/ppu_tile_scheduler_stream_k.hpp"
 DENSE = ROOT / (
-    "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/"
+    "quactlize/include/actlize_extensions/cutlass/gemm/kernel/"
     "ppu_aiu_gemm_mixed_input_streamk.hpp"
 )
 GROUPED = ROOT / (
-    "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/"
+    "quactlize/include/actlize_extensions/cutlass/gemm/kernel/"
     "ppu_aiu_gemm_mixed_input_group_streamk.hpp"
 )
 L122 = ROOT / "dev/fold_derivation/l122_streamk_fixup_cohort.cu"

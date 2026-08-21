@@ -31,7 +31,7 @@
 #include "helper.h"
 #include "unfused_weight_dequantize.hpp"
 #include "moe_grouped_ppu.cuh"
-#include "quactlize_extensions/cutlass/gguf_packed_scale.h"
+#include "actlize_extensions/cutlass/gguf_packed_scale.h"
 #include "rwmoep_loader.hpp"
 
 using cutlass::half_t;

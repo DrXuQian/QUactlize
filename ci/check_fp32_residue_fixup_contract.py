@@ -10,9 +10,9 @@ ROOT = Path(__file__).resolve().parent.parent
 PATHS = (
     ROOT / "third_party/actlize/include/cutlass/block_striped.h",
     ROOT / "third_party/actlize/include/cutlass/gemm/kernel/ppu_tile_scheduler_stream_k.hpp",
-    ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_streamk.hpp",
-    ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_group_streamk.hpp",
-    ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_accumulator_residue_mask.hpp",
+    ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_streamk.hpp",
+    ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_group_streamk.hpp",
+    ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_accumulator_residue_mask.hpp",
     ROOT / "dev/fold_derivation/l124_fp32_residue_mask.cu",
 )
 

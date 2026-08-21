@@ -82,16 +82,16 @@
 #include "unfused_weight_dequantize.hpp"
 
 #include "quactlize_actlize.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_persistent.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_streamk.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_marlin.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_persistent.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_streamk.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_marlin.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp"
 #if defined(DENSE_MARLIN_WK4_AB) || defined(DENSE_MARLIN_STANDALONE_SWEEP)
 #define DENSE_STANDALONE_MARLIN 1
 #include "marlin_format_ppu.hpp"
 #include "marlin_tactic_space_ppu.hpp"
-#include "quactlize_extensions/cutlass/gemm/device/marlin_gemm_ppu.hpp"
+#include "actlize_extensions/cutlass/gemm/device/marlin_gemm_ppu.hpp"
 #endif
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
 #include "ppu_mixed_policy.hpp"
@@ -453,8 +453,8 @@ inline bench_measure::Tactic dense_fixed_tactic() {
 // The optional collectives this file INSTANTIATES. quactlize_actlize.hpp carries the base only, so a
 // consumer names the specialisation it needs; omitting it makes CollectiveMma incomplete, which the
 // compiler reports by naming the exact instantiation.
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 
 #if !defined(LOWBIT_DENSE_UNIT_BUILD)
 #include "bench_samples.hpp"

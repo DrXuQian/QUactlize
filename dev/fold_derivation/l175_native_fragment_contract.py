@@ -10,10 +10,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MMA = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_mma_ppu.hpp"
-LOAD = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_load_ppu.hpp"
-COLLECTIVE = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
-KERNEL = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp"
+MMA = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/marlin_mma_ppu.hpp"
+LOAD = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/marlin_load_ppu.hpp"
+COLLECTIVE = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
+KERNEL = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp"
 
 
 def die(plant: str, reason: str) -> "NoReturn":

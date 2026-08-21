@@ -8,14 +8,14 @@ mixed-input collective.  It is one independent stack:
 | Owner | Production file |
 |---|---|
 | packed W4 / gs128 artifact | `quactlize/include/marlin_format_ppu.hpp` |
-| mainloop stage driver | `quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp` |
-| classic cp.async / A ldmatrix | `quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_load_ppu.hpp` |
-| W4 dequant and grouped scale | `quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_dequant_ppu.hpp` |
-| native PPU n16 MMA / C registers | `quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_mma_ppu.hpp` |
-| stripe decomposition and global-q lock lifecycle | `quactlize/include/quactlize_extensions/cutlass/gemm/kernel/marlin_scheduler_ppu.hpp` |
-| K0 output-coordinate authority | `quactlize/include/quactlize_extensions/cutlass/gemm/kernel/marlin_output_map_ppu.hpp` |
-| 4->2->1 reduction, fp16 D-chain and final store | `quactlize/include/quactlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp` |
-| checked host Args->Params ownership | `quactlize/include/quactlize_extensions/cutlass/gemm/device/marlin_gemm_ppu.hpp` |
+| mainloop stage driver | `quactlize/include/actlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp` |
+| classic cp.async / A ldmatrix | `quactlize/include/actlize_extensions/cutlass/gemm/collective/marlin_load_ppu.hpp` |
+| W4 dequant and grouped scale | `quactlize/include/actlize_extensions/cutlass/gemm/collective/marlin_dequant_ppu.hpp` |
+| native PPU n16 MMA / C registers | `quactlize/include/actlize_extensions/cutlass/gemm/collective/marlin_mma_ppu.hpp` |
+| stripe decomposition and global-q lock lifecycle | `quactlize/include/actlize_extensions/cutlass/gemm/kernel/marlin_scheduler_ppu.hpp` |
+| K0 output-coordinate authority | `quactlize/include/actlize_extensions/cutlass/gemm/kernel/marlin_output_map_ppu.hpp` |
+| 4->2->1 reduction, fp16 D-chain and final store | `quactlize/include/actlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp` |
+| checked host Args->Params ownership | `quactlize/include/actlize_extensions/cutlass/gemm/device/marlin_gemm_ppu.hpp` |
 
 The first admitted row is intentionally exact:
 

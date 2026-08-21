@@ -19,7 +19,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-HEADER = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_streamk.hpp"
+HEADER = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_streamk.hpp"
 BENCH = ROOT / "benchmarks/test_lowbit_dense_bench.cu"
 UNIT = ROOT / "dev/fold_derivation/test_lowbit_dense_unit.cu"
 DISPATCH = ROOT / "benchmarks/lowbit_dense_unit.inc"

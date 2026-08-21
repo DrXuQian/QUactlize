@@ -35,7 +35,7 @@
 //
 // THE PROBE ASKS FOR THE SDK HEADER, NOT FOR OUR OWN. It used to ask for `cutlass/gguf_packed_scale.h`, which
 // worked as a proxy only because that path existed solely inside actlize: finding it meant actlize's cutlass was
-// on the include path, and actlize's cutlass is what needs the SDK. The header moved into quactlize_extensions/
+// on the include path, and actlize's cutlass is what needs the SDK. The header moved into actlize_extensions/
 // on 2026-08-06, where it is ALWAYS findable -- so probing for it answers "yes" on a host build with no SDK,
 // pulls actlize's cutlass in, and the host compile dies on `int4`/`uint4` from <vector_types.h>. Asking for
 // <hggc_fp16.h> states the real condition instead of a proxy that stopped being one.
@@ -46,7 +46,7 @@
 #if defined(__has_include)
 #  if __has_include(<hggc_fp16.h>)
 #    define GGUF_SCALE_HAVE_PACKED 1
-#    include "quactlize_extensions/cutlass/gguf_packed_scale.h"
+#    include "actlize_extensions/cutlass/gguf_packed_scale.h"
 #  endif
 #endif
 
@@ -135,7 +135,7 @@ CUTLASS_HOST_DEVICE constexpr float bytes_per_group_per_col_fp16() {
 }
 
 
-// THE PACKED UNIT AND ITS DECODE LIVE IN quactlize_extensions/cutlass/gguf_packed_scale.h, next to the mainloop
+// THE PACKED UNIT AND ITS DECODE LIVE IN actlize_extensions/cutlass/gguf_packed_scale.h, next to the mainloop
 // that needs them. (They were inside the actlize submodule until 2026-08-06, when quactlize's kernels moved out of
 // the fork.) This header re-exports them so existing callers (fold_derivation/l94, the offline harnesses) are
 // unchanged, and so there is exactly ONE definition of the bit map -- copying it here is the failure this work keeps

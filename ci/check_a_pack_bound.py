@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-COLLECTIVE = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp"
+COLLECTIVE = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp"
 CONSUMER = ROOT / "benchmarks/test_lowbit_dense_bench.cu"
 STUBS = ROOT / "dev/fold_derivation/stub_inc"
 ACTLIZE = ROOT / "third_party/actlize"

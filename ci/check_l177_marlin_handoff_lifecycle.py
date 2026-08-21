@@ -9,8 +9,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-KERNEL = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp"
-SCHEDULER = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/marlin_scheduler_ppu.hpp"
+KERNEL = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp"
+SCHEDULER = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel/marlin_scheduler_ppu.hpp"
 RUNNER = ROOT / "dev/fold_derivation/run_l177_marlin_handoff_lifecycle.sh"
 
 

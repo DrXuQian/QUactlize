@@ -89,7 +89,7 @@ def compile_case(defs, extra_flags, include_root=None, quactlize_root=None):
 # actlize's copy after that date fires zero times and reads as "device bodies are not instantiated" -- the exact
 # false conclusion this control exists to prevent, now reachable by the control itself being stale. It is relative
 # to quactlize/include, not actlize/include, and the mirror below follows.
-MAINLOOP = "quactlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp"
+MAINLOOP = "actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp"
 PLANT_MSG = "PLANTED-IN-DEVICE-BODY"
 
 

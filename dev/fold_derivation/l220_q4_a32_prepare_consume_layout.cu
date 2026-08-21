@@ -12,7 +12,7 @@
 #include <array>
 #include <cstdio>
 
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_a_schedule.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_a_schedule.hpp"
 
 namespace {
 

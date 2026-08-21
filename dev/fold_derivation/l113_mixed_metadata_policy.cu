@@ -5,7 +5,7 @@
 #include <cstdio>
 #include <type_traits>
 
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
 
 namespace md = cutlass::gemm::collective::detail;
 

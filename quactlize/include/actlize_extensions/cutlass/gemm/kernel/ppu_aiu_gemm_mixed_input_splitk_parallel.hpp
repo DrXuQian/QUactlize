@@ -44,8 +44,8 @@
 
 #include "cute/tensor.hpp"
 
-#include "quactlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_last_arriver.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_partition.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_last_arriver.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_partition.hpp"
 
 namespace cutlass::gemm::kernel {
 

@@ -13,7 +13,7 @@
 
 #include "cutlass/bfloat16.h"
 #include "cutlass/cutlass.h"
-#include "quactlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_collective.cuh"
+#include "actlize_extensions/cutlass/linear_attention/ppu_chunked_gdn_collective.cuh"
 
 #if defined(__CUDACC__) && !defined(__HGGCCC__)
 #define QZ_PPU_GDN_KERNEL_DEVICE __device__ __forceinline__

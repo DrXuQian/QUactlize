@@ -30,21 +30,21 @@ def main() -> int:
         "--collective",
         type=pathlib.Path,
         default=repo
-        / "quactlize/include/quactlize_extensions/cutlass/gemm/collective"
+        / "quactlize/include/actlize_extensions/cutlass/gemm/collective"
         / "marlin_collective_ppu.hpp",
     )
     parser.add_argument(
         "--kernel",
         type=pathlib.Path,
         default=repo
-        / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel"
+        / "quactlize/include/actlize_extensions/cutlass/gemm/kernel"
         / "marlin_kernel_ppu.hpp",
     )
     parser.add_argument(
         "--output-map",
         type=pathlib.Path,
         default=repo
-        / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel"
+        / "quactlize/include/actlize_extensions/cutlass/gemm/kernel"
         / "marlin_output_map_ppu.hpp",
     )
     parser.add_argument(

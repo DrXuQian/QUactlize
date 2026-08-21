@@ -50,9 +50,9 @@ fi
 # four-plane body.  Re-routing only that case to S=2 must reproduce a numeric
 # failure; a generic-only benchmark would incorrectly remain green here.
 plant_root="${out}/plant"
-plant_header="${plant_root}/quactlize_extensions/cutlass/gemm/device/ppu_mixed_input_splitk_parallel.hpp"
+plant_header="${plant_root}/actlize_extensions/cutlass/gemm/device/ppu_mixed_input_splitk_parallel.hpp"
 mkdir -p "$(dirname "${plant_header}")"
-plant_source="${repo}/quactlize/include/quactlize_extensions/cutlass/gemm/device/ppu_mixed_input_splitk_parallel.hpp"
+plant_source="${repo}/quactlize/include/actlize_extensions/cutlass/gemm/device/ppu_mixed_input_splitk_parallel.hpp"
 plant_anchor='case 4: return launch<KernelS4>(stream);'
 plant_anchor_count="$(grep -Foc "${plant_anchor}" "${plant_source}")"
 if [[ "${plant_anchor_count}" != 1 ]]; then

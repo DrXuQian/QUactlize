@@ -8,11 +8,11 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 DETAIL = ROOT / (
-    "quactlize/include/quactlize_extensions/cutlass/gemm/collective/"
+    "quactlize/include/actlize_extensions/cutlass/gemm/collective/"
     "detail/ppu_mixed_a_schedule.hpp"
 )
 COLLECTIVES = tuple(
-    ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective" / name
+    ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective" / name
     for name in (
         "quactlize_mma_mixed_input.hpp",
         "ppu_mma_aiu_fold.hpp",

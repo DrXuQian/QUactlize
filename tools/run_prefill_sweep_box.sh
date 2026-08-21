@@ -69,7 +69,7 @@ main() {
     dev/fold_derivation/run_l208_q8_emit_layout.sh
     dev/fold_derivation/l208_q8_emit_layout.expected.txt
     ci/check_l208_q8_committed_evidence.py
-    quactlize/include/quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h
+    quactlize/include/actlize_extensions/cutlass/quactlize_mix_gemm_convert.h
     quactlize/include/xplane_offline.hpp quactlize/include/ppu_format_config.inc
   )
   if ! git -C "$root" diff --quiet HEAD -- "${authorities[@]}" ||

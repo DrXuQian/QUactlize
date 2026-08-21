@@ -22,7 +22,7 @@
 #include <vector>
 
 #include "ppu_tactic_space.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_partition.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_partition.hpp"
 
 #include "lowbit_dense_configs.inc"
 #include "lowbit_dense_i2_configs.inc"

@@ -16,7 +16,7 @@
 
 #include "cute/atom/mma_traits_ppu0010.hpp"
 #include "cute/tensor.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_a_pack.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_a_pack.hpp"
 
 namespace {
 using namespace cute;

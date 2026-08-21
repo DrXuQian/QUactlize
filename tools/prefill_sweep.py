@@ -46,7 +46,7 @@ Q8_CANDIDATE_SOURCE = ROOT / "benchmarks" / "prefill_q8_candidates.inc"
 REGISTRY_SOURCE = ROOT / "quactlize" / "include" / "ppu_format_config.inc"
 Q8_ORACLE_SOURCE = ROOT / "dev" / "fold_derivation" / "l208_q8_emit_layout.cu"
 Q8_ORACLE_RUNNER = ROOT / "dev" / "fold_derivation" / "run_l208_q8_emit_layout.sh"
-MIX_EMIT_SOURCE = (ROOT / "quactlize" / "include" / "quactlize_extensions" / "cutlass" /
+MIX_EMIT_SOURCE = (ROOT / "quactlize" / "include" / "actlize_extensions" / "cutlass" /
                    "quactlize_mix_gemm_convert.h")
 XPLANE_SOURCE = ROOT / "quactlize" / "include" / "xplane_offline.hpp"
 VENDOR_INT8_CONVERTER = (ROOT / "third_party" / "actlize" / "include" / "cutlass" /

@@ -8,7 +8,7 @@
 #include <type_traits>
 
 #include "moe_grouped_streamk_ppu.cuh"
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
 
 namespace {
 

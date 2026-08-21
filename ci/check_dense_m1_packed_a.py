@@ -7,11 +7,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-DISPATCH = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp"
+DISPATCH = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp"
 POLICY = ROOT / "quactlize/include/ppu_mixed_policy.hpp"
-BUILDER = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/builders/quactlize_mma_builder.inl"
-COLLECTIVE = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp"
-PACK_DETAIL = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/detail/ppu_a_pack.hpp"
+BUILDER = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/builders/quactlize_mma_builder.inl"
+COLLECTIVE = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp"
+PACK_DETAIL = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/ppu_a_pack.hpp"
 LAUNCHER = ROOT / "quactlize/include/fpA_intB_ppu.cuh"
 BACKEND = ROOT / "quactlize/csrc/device/ppu_dense_backend.cu"
 TYPE_ORACLE = ROOT / "dev/fold_derivation/l186_dense_m1_packed_a.cu"

@@ -31,19 +31,19 @@
 
 // quactlize's extensions. Order is dependency order: tags and support headers before the collectives that
 // specialise on them, and the builder last because it names all three collectives.
-#include "quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
-#include "quactlize_extensions/cutlass/gguf_packed_scale.h"
-#include "quactlize_extensions/cutlass/detail/quactlize_mixed_dtype.hpp"
-#include "quactlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/builders/quactlize_mma_builder.inl"
+#include "actlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
+#include "actlize_extensions/cutlass/gguf_packed_scale.h"
+#include "actlize_extensions/cutlass/detail/quactlize_mixed_dtype.hpp"
+#include "actlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/builders/quactlize_mma_builder.inl"
 
 // THE TWO OPTIONAL COLLECTIVES ARE NOT HERE, and their absence is the point.
 //
-//     quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp                (N-fold)
-//     quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp  (Q3/Q5/Q6)
+//     actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp                (N-fold)
+//     actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp  (Q3/Q5/Q6)
 //
 // A consumer that instantiates a folded or two-plane config includes the one it needs. Listing both here made
 // every consumer carry both, which is fine for a repository that always builds everything and wrong for one

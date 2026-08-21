@@ -30,7 +30,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 TABLE = ROOT / "quactlize" / "include" / "ppu_format_config.inc"
-EXT = ROOT / "quactlize" / "include" / "quactlize_extensions" / "cutlass" / "gemm" / "collective"
+EXT = ROOT / "quactlize" / "include" / "actlize_extensions" / "cutlass" / "gemm" / "collective"
 
 # What a row's own fields imply about the collective it needs. Keyed on a predicate over the parsed row, so a new
 # format is covered the day it is added rather than the day someone remembers to extend a list.

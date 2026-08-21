@@ -17,7 +17,7 @@
 
 #include "moe_router_fixture.hpp"
 #include "cutlass/gemm/kernel/ppu_tile_scheduler_marlin_core.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/ppu_grouped_ragged_geometry.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_grouped_ragged_geometry.hpp"
 
 using Core = cutlass::gemm::kernel::detail::MarlinStripeSchedulerCore;
 using Geometry = cutlass::gemm::kernel::detail::GroupedRaggedOutputTiles;

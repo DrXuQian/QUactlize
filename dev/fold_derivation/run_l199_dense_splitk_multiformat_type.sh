@@ -224,7 +224,7 @@ done
 # and the three two-plane scale-zero formats must reach it exactly once;
 # normal host arms above contain no marker and therefore form the route-severed controls.
 overlay="${out}/overlay"
-kernel_rel='quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_splitk_parallel.hpp'
+kernel_rel='actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_splitk_parallel.hpp'
 mkdir -p "${overlay}/$(dirname "${kernel_rel}")"
 cp "${repo}/quactlize/include/dense_splitk_multiformat_ppu.cuh" "${overlay}/"
 cp "${repo}/quactlize/include/dense_splitk_parallel_ppu.cuh" "${overlay}/"

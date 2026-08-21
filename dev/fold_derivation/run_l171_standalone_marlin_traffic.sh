@@ -15,8 +15,8 @@ nvcc "${flags[@]}" -o "${out}/l171" \
   "${repo}/dev/fold_derivation/l171_standalone_marlin_traffic.cpp"
 
 args=(
-  "--collective=${repo}/quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
-  "--kernel=${repo}/quactlize/include/quactlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp"
+  "--collective=${repo}/quactlize/include/actlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
+  "--kernel=${repo}/quactlize/include/actlize_extensions/cutlass/gemm/kernel/marlin_kernel_ppu.hpp"
   "--awesome=${marlin_root}/ref/awesome-cute/gemm/marlin_gemm/marlin_cute_trait.h"
   "--classic=${marlin_root}/marlin_classic_ppu.cuh"
 )

@@ -43,7 +43,7 @@ grep -Fq \
 # edited.  Reaching this marker proves that the concrete wrapper instantiated
 # GemmUniversalMixedInputSplitKParallel::operator(), not merely KernelTypes.
 overlay="${out}/overlay"
-kernel_rel='quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_splitk_parallel.hpp'
+kernel_rel='actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_splitk_parallel.hpp'
 kernel_probe="${overlay}/${kernel_rel}"
 mkdir -p "$(dirname "${kernel_probe}")"
 cp "${repo}/quactlize/include/dense_splitk_parallel_ppu.cuh" \

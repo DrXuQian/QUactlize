@@ -41,8 +41,8 @@
 // This test instantiates folded single-plane and folded two-plane collectives directly.  The launcher umbrella
 // deliberately carries only the base collective; each consumer must name the optional specializations it uses.
 // Omitting these headers leaves CollectiveMma at its failing primary template, which is not a valid syntax gate.
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 
 // SELF-DESCRIBING RUN. Whether PPU_B_CHUNK was active has now been undeterminable from the build output twice: the
 // device compiles are add_custom_command with a COMMENT so make.log holds no compile line, and the build.sh line that

@@ -24,7 +24,7 @@ THE TWO PROPERTIES, and why neither alone is enough:
 THE ALLOW-LIST HAS TWO TIERS, and they answer to different standards. A FIX has to be right about actlize --
 nvcc/EDG portability, true whether or not quactlize exists. An EXTENSION has to be harmless to actlize -- it
 widens a vendor facility unreachable from outside the file, and stays backwards compatible for actlize's own
-callers. Anything expressible as an addition belongs in quactlize_extensions and in NEITHER tier. Adding a file
+callers. Anything expressible as an addition belongs in actlize_extensions and in NEITHER tier. Adding a file
 to either is a claim of the corresponding kind and should be argued in the commit message, not typed in quietly.
 
 IT COMPARES THE WORKING TREE, not HEAD. What gets compiled is what is on disk, and an uncommitted edit to a
@@ -58,7 +58,7 @@ OWNED = [
     "KernelAiuMultistageMixedInputFinegrainedGs32",  # gs=32 schedule (Q4_0/Q4_1/Q4_K-as-AWQ)
     "KernelAiuMultistageMixedInputFinegrainedGs16",  # gs=16 schedule (Q2/Q3/Q6 k-quants)
     "GgufPackedScale",                   # the packed k-quant scale format
-    "quactlize_extensions",              # any include path into our tree
+    "actlize_extensions",              # any include path into our tree
 ]
 
 # Files actlize is allowed to differ from v1.0.0 in. TWO KINDS, kept apart because they answer to different
@@ -241,7 +241,7 @@ def main() -> int:
             print(f"    {path}:{lineno}  {name}   {text}")
         if len(leaks) > 25:
             print(f"    ... and {len(leaks) - 25} more")
-        print("    These belong in quactlize/include/quactlize_extensions/. Moving them is the fix; adding them")
+        print("    These belong in quactlize/include/actlize_extensions/. Moving them is the fix; adding them")
         print("    to OWNED's exceptions is not -- there are none, deliberately.")
     else:
         print(f"[actlize-pristine] PASS symbols: none of the {len(OWNED)} owned names appear in actlize")
@@ -253,7 +253,7 @@ def main() -> int:
             print(f"[actlize-pristine] FAIL: {len(unexpected)} file(s) differ from {BASELINE} without being fixes:")
             for p in unexpected:
                 print(f"    {p}")
-            print("    Either the change is quactlize's and belongs in quactlize_extensions, or it is a genuine")
+            print("    Either the change is quactlize's and belongs in actlize_extensions, or it is a genuine")
             print("    actlize correction and belongs in ALLOWED with the reason spelled out.")
         if missing:
             print(f"[actlize-pristine] NOTE: {len(missing)} allow-listed file(s) no longer differ from "

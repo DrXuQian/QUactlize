@@ -660,7 +660,7 @@ scatter -- value -> n, which is the map l94 already computes from partition_S(id
 * **2** SharedStorage's scale member becomes bytes over the packed tile and **the zero tile drops to zero elements** --
   `mn` rides in the same unit. Gate: `MOEG_SMEM=1`'s SharedStorageSize must fall by exactly the zero tile.
 * **3a** the decode moved INTO actlize as `cutlass/gguf_packed_scale.h`, and back out to
-  `quactlize_extensions/cutlass/gguf_packed_scale.h` on 2026-08-06 (PackBits, code_of, put_code,
+  `actlize_extensions/cutlass/gguf_packed_scale.h` on 2026-08-06 (PackBits, code_of, put_code,
   int_to_half_small, `group_of<ScaleBias, HasMin>`), because the mainloop needs it and the mainloop is there; the harness
   header re-exports it, so l94 still gates the shipped code and the bit map exists once. Plus `load_packed_units`,
   `decode_packed_group`, `packed_fill`, and `(sSp, tCcS)` APPENDED to the extra-info tuple (never inserted -- every

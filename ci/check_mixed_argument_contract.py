@@ -9,11 +9,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-HELPER = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_argument_contract.hpp"
+HELPER = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_argument_contract.hpp"
 COLLECTIVES = (
-    ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp",
-    ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp",
-    ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp",
+    ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp",
+    ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp",
+    ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp",
 )
 ORACLE = ROOT / "dev/fold_derivation/l128_mixed_argument_contract.cu"
 RUNNER = ROOT / "dev/fold_derivation/run_l128_mixed_argument_contract.sh"
@@ -23,15 +23,15 @@ ADMISSION_RUNNER = ROOT / "dev/fold_derivation/run_l129_mixed_argument_admission
 KERNELS = (
     ROOT / "third_party/actlize/include/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input.hpp",
     ROOT / "third_party/actlize/include/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_splitk_serial.hpp",
-    ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_persistent.hpp",
-    ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_streamk.hpp",
-    ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_marlin.hpp",
+    ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_persistent.hpp",
+    ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_streamk.hpp",
+    ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_marlin.hpp",
     ROOT / "quactlize/include/ppu_aiu_gemm_mixed_input_group.hpp",
-    ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_group_streamk.hpp",
+    ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_group_streamk.hpp",
 )
 GROUP_SCHEDULE = ROOT / "quactlize/include/ppu_group_schedule.hpp"
-DISPATCH_POLICY = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp"
-MMA_BUILDER = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/collective/builders/quactlize_mma_builder.inl"
+DISPATCH_POLICY = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp"
+MMA_BUILDER = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/builders/quactlize_mma_builder.inl"
 
 
 def flat(text: str) -> str:

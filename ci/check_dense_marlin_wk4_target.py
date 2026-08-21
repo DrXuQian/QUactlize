@@ -23,35 +23,35 @@ PATHS = {
     "format": ROOT / "quactlize/include/marlin_format_ppu.hpp",
     "standalone_tactic": ROOT / "quactlize/include/marlin_tactic_space_ppu.hpp",
     "collective": ROOT / (
-        "quactlize/include/quactlize_extensions/cutlass/gemm/collective/"
+        "quactlize/include/actlize_extensions/cutlass/gemm/collective/"
         "marlin_collective_ppu.hpp"
     ),
     "load": ROOT / (
-        "quactlize/include/quactlize_extensions/cutlass/gemm/collective/"
+        "quactlize/include/actlize_extensions/cutlass/gemm/collective/"
         "marlin_load_ppu.hpp"
     ),
     "scheduler": ROOT / (
-        "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/"
+        "quactlize/include/actlize_extensions/cutlass/gemm/kernel/"
         "marlin_scheduler_ppu.hpp"
     ),
     "kernel": ROOT / (
-        "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/"
+        "quactlize/include/actlize_extensions/cutlass/gemm/kernel/"
         "marlin_kernel_ppu.hpp"
     ),
     "builder": ROOT / (
-        "quactlize/include/quactlize_extensions/cutlass/gemm/collective/"
+        "quactlize/include/actlize_extensions/cutlass/gemm/collective/"
         "builders/quactlize_mma_builder.inl"
     ),
     "generic_collective": ROOT / (
-        "quactlize/include/quactlize_extensions/cutlass/gemm/collective/"
+        "quactlize/include/actlize_extensions/cutlass/gemm/collective/"
         "quactlize_mma_mixed_input.hpp"
     ),
     "generic_converter": ROOT / (
-        "quactlize/include/quactlize_extensions/cutlass/"
+        "quactlize/include/actlize_extensions/cutlass/"
         "quactlize_mix_gemm_convert.h"
     ),
     "generic_kernel": ROOT / (
-        "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/"
+        "quactlize/include/actlize_extensions/cutlass/gemm/kernel/"
         "ppu_aiu_gemm_mixed_input_marlin.hpp"
     ),
     "tactic": ROOT / "quactlize/include/ppu_tactic_space.hpp",

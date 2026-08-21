@@ -47,22 +47,22 @@ SITES = (
         "third_party/actlize/include/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_splitk_serial.hpp",
         "get<0>(blk_coord_mnkl)", "get<1>(blk_coord_mnkl)"),
     Site(
-        "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_persistent.hpp",
+        "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_persistent.hpp",
         "m_coord", "n_coord"),
     Site(
-        "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_streamk.hpp",
+        "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_streamk.hpp",
         "m_coord", "n_coord"),
     Site(
-        "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_marlin.hpp",
+        "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_marlin.hpp",
         "m_coord", "n_coord"),
     Site(
-        "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_splitk_parallel.hpp",
+        "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_splitk_parallel.hpp",
         "m_coord", "n_coord"),
     Site(
-        "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_group_streamk.hpp",
+        "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_group_streamk.hpp",
         "m_idx", "n_idx"),
     Site(
-        "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_group_marlin.hpp",
+        "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_group_marlin.hpp",
         "m_idx", "n_idx"),
     Site(
         "quactlize/include/ppu_aiu_gemm_mixed_input_group.hpp",
@@ -115,7 +115,7 @@ def discover_sites() -> set[str]:
     """Find the mixed-input kernel bodies that actually construct residues."""
     roots = (
         ROOT / "third_party/actlize/include/cutlass/gemm/kernel",
-        ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel",
+        ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel",
     )
     found: set[str] = set()
     for directory in roots:

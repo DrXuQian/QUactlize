@@ -17,7 +17,7 @@
 #include "cute/arch/copy_ppu.hpp"
 #include "cute/atom/copy_traits_ppu.hpp"
 #include "cutlass/numeric_types.h"
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
 
 using namespace cute;
 namespace md = cutlass::gemm::collective::detail;
@@ -169,8 +169,8 @@ int main() {
 #include <type_traits>
 
 #include "ppu_mixed_policy.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 
 using namespace cute;
 using Q = ppu_mixed_policy::QuantMode;

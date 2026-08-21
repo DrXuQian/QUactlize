@@ -11,7 +11,7 @@ mkdir -p "${out}"
   -o "${out}/l183_marlin_stage_ring"
 
 args=(
-  "--production=${repo}/quactlize/include/quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
+  "--production=${repo}/quactlize/include/actlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
   "--classic=${repo}/../marlin_classic_ppu.cuh"
 )
 "${out}/l183_marlin_stage_ring" "${args[@]}"

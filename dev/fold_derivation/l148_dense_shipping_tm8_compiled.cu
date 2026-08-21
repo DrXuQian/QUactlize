@@ -9,8 +9,8 @@
 #include "fpA_intB_ppu.cuh"
 #include "ppu_dense_shipping_policy.hpp"
 #include "ppu_format_config.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 
 namespace {
 

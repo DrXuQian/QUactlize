@@ -151,7 +151,7 @@ is part of this representation.
 
 ## Evidence authority
 
-- `quactlize/include/quactlize_extensions/cutlass/gguf_packed_scale.h` owns the
+- `quactlize/include/actlize_extensions/cutlass/gguf_packed_scale.h` owns the
   selected 16-byte layout, the raw-layout round-trip anchor, and the measured
   15-to-11 opcode reduction for the packed-pair decoder.
 - `dev/fold_derivation/Q4K_PDF_5090_AB.md` owns the 5090 representation sizes,

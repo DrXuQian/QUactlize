@@ -11,8 +11,8 @@
 
 #include "cutlass/cutlass.h"
 
-#include "quactlize_extensions/cutlass/gemm/collective/marlin_dequant_ppu.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/marlin_load_ppu.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/marlin_dequant_ppu.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/marlin_load_ppu.hpp"
 
 namespace cutlass::gemm::collective::marlin_ppu_detail {
 

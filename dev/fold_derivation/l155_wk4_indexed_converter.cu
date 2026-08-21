@@ -17,7 +17,7 @@
 #include <cstdio>
 
 #include "cute/tensor.hpp"
-#include "quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
+#include "actlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
 
 namespace {
 using namespace cute;

@@ -38,7 +38,7 @@
 // preprocesses without __HGGCCC__ and so could not see a guarded include at all -- breaks `setup.py build_ext`
 // outright.
 #if defined(__CUDACC__) || defined(__HGGCCC__)
-#include "quactlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
+#include "actlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
 #endif
 #include "gguf_scale_layout.hpp"   // brings cute/tensor.hpp, so cute::Layout is available as a destination
 #include "cute/atom/copy_atom.hpp"

@@ -13,9 +13,9 @@
 
 // quactlize's: the dispatch policies this builder selects, and the NoZero marker its ScaleOnly 2-plane arm parks
 // in the zero slot. Both were inside actlize headers until 2026-08-06.
-#include "quactlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp"
-#include "quactlize_extensions/cutlass/detail/quactlize_mixed_dtype.hpp"
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_a_pack.hpp"
+#include "actlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp"
+#include "actlize_extensions/cutlass/detail/quactlize_mixed_dtype.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_a_pack.hpp"
 
 #define ENABLE_AIU 1
 

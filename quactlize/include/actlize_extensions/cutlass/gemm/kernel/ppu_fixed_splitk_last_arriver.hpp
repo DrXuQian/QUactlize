@@ -17,9 +17,9 @@
 #include "cutlass/numeric_types.h"
 #include "cute/tensor.hpp"
 
-#include "quactlize_extensions/cutlass/gemm/device/ppu_mixed_input_splitk_parallel.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_completion_protocol.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_partition.hpp"
+#include "actlize_extensions/cutlass/gemm/device/ppu_mixed_input_splitk_parallel.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_completion_protocol.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_partition.hpp"
 
 namespace cutlass::gemm::kernel::fixed_splitk {
 

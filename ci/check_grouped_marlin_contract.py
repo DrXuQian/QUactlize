@@ -7,9 +7,9 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-KERNEL = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_group_marlin.hpp"
+KERNEL = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_group_marlin.hpp"
 BUILDER = ROOT / "quactlize/include/moe_grouped_marlin_ppu.cuh"
-GEOMETRY = ROOT / "quactlize/include/quactlize_extensions/cutlass/gemm/kernel/ppu_grouped_ragged_geometry.hpp"
+GEOMETRY = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_grouped_ragged_geometry.hpp"
 TYPES = ROOT / "dev/fold_derivation/l135_grouped_marlin_types.cu"
 
 

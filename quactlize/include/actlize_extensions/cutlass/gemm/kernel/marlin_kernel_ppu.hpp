@@ -25,8 +25,8 @@
 #include "cutlass/gemm/gemm.h"
 #include "cutlass/kernel_hardware_info.hpp"
 #include "cutlass/utils.h"
-#include "quactlize_extensions/cutlass/gemm/kernel/marlin_output_map_ppu.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/marlin_scheduler_ppu.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/marlin_output_map_ppu.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/marlin_scheduler_ppu.hpp"
 
 namespace cutlass::gemm::kernel {
 

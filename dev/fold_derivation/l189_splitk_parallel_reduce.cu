@@ -12,7 +12,7 @@
 #include <limits>
 #include <vector>
 
-#include "quactlize_extensions/cutlass/gemm/device/ppu_mixed_input_splitk_parallel.hpp"
+#include "actlize_extensions/cutlass/gemm/device/ppu_mixed_input_splitk_parallel.hpp"
 
 namespace splitk = cutlass::gemm::device::splitk_parallel;
 

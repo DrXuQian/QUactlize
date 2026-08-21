@@ -13,7 +13,7 @@
 #include "cute/arch/copy_ppu.hpp"
 #include "cute/atom/copy_traits_ppu.hpp"
 #include "cutlass/numeric_types.h"
-#include "quactlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
 
 using namespace cute;
 

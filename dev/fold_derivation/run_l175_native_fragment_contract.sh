@@ -46,7 +46,7 @@ done
 # the wrong 8x4 register association green.
 tmp="${out}/wrong-layout-work"
 mkdir -p "${tmp}"
-rel=quactlize_extensions/cutlass/gemm/collective/marlin_mma_ppu.hpp
+rel=actlize_extensions/cutlass/gemm/collective/marlin_mma_ppu.hpp
 mkdir -p "${tmp}/overlay/$(dirname "${rel}")"
 cp "${repo}/quactlize/include/${rel}" "${tmp}/overlay/${rel}"
 python3 - "${tmp}/overlay/${rel}" <<'PY'

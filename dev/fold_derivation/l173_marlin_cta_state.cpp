@@ -12,8 +12,8 @@
 #include <cstring>
 #include <vector>
 
-#include "quactlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
-#include "quactlize_extensions/cutlass/gemm/kernel/marlin_scheduler_ppu.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/marlin_collective_ppu.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/marlin_scheduler_ppu.hpp"
 
 using Tile = cute::Shape<cute::_16, cute::_128, cute::_128>;
 using Warp = cute::Shape<cute::_16, cute::_64, cute::_32>;
