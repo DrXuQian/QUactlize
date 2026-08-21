@@ -1,9 +1,9 @@
 # codex status
 
-    updated-at:     2026-08-20 13:45:42 UTC
+    updated-at:     2026-08-21 01:11:29 UTC
     inbox-consumed: 178
-    working-on:     Q4_K/A32 real-layout A schedule committed; exact two-arm PPU closure next
-    blocked-on:     final PPU two-arm numeric closure only
-    local-gates:    affected scope PASS: L220 1/1, fold 2/2, ordinary 1/1, two-plane 1/1, mixed-A/fixture/skill/self-test; full stale diagnostic worktree=172 PASS/1 SKIP/28 unrelated baseline FAIL (dense hash/reference/extensions)
-    last-commit:    525fd50 Fix mixed A register lifetime; PPU closure pending
-    last-heartbeat: 377
+    working-on:     Q4_K/A32 numeric incident CLOSED at bf20f3e; next work may resume sweep/performance measurement
+    blocked-on:     none for Q4_K/A32 correctness; device timing/ACU remains a separate performance measurement
+    local-gates:    affected scope PASS plus PPU two-arm PASS: legacy exact signature reproduced, candidate raw-bit exact, prepare-first/B-converter unchanged; full stale diagnostic worktree remains 172 PASS/1 SKIP/28 unrelated baseline FAIL
+    last-commit:    bf20f3e coord: record mixed A cleanup checkpoint
+    last-heartbeat: 378

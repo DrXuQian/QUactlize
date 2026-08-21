@@ -18,6 +18,8 @@ the exact production fix for this incident.
 | Stable failure | `raw_bad=61184/65536`, first `0xc200 -> 0xcc80` (`-3 -> -18`) |
 | Root oracle | `dev/fold_derivation/l220_q4_a32_prepare_consume_layout.cu` |
 | Root cause | B's four-delivery coordinate was reused to index A's one-block, stride-zero copy view |
+| PPU closure | `bf20f3e`: legacy negative reproduces the exact failure; shared A schedule is raw-bit exact |
+| Artifact | `/workspace/quactlize-q4-a32-a-schedule-bf20f3e-20260821T010609Z` |
 
 This is not a bad CuTe layout.  It is an invalid join between two independently
 retiled CuTe views:
@@ -173,9 +175,30 @@ The three compile gates cover folded, ordinary and two-plane collective
 instantiation.  The schedule checker plants a wrong wrap condition, bypasses
 each required hook, and reintroduces direct B-coordinate indexing of A.
 
-## Exact PPU closure
+## Exact PPU closure: PASS
 
-Run only the failed row before resuming a sweep:
+The two-arm batch on `bf20f3e` closed on the PPU:
+
+```text
+Q4_A32_CLOSURE verdict=PASS
+  legacy_b_indexed_a=NUMERIC_FAIL
+  candidate=PASS
+  driver=PREPARE_FIRST
+  b_converter=UNCHANGED
+[q4-a32-closure] PASS: historical signature reproduced and the shared A
+  schedule is raw-bit exact
+```
+
+Artifact:
+
+```text
+/workspace/quactlize-q4-a32-a-schedule-bf20f3e-20260821T010609Z
+```
+
+This is the required constructive closure: the legacy macro reproduced
+`raw_bad=61184`, first `-3 -> -18`, while the default candidate returned
+`raw_bad=0` in the same fixture/binary-generation protocol.  No second root-
+cause box iteration is required.  Preserve the command for regression use:
 
 ```bash
 cd /sim/eec/shared/junfu.qx/quactlize
@@ -212,6 +235,7 @@ a pass.
 | `8a2d8d5` | diagnostic | missing values concentrate in final 32-K delivery |
 | `5bf61dd` | diagnostic | second tile is live; original tag was K-invariant |
 | `7a1b4d8` | diagnostic | consume-first masks the failure; typed scatter is irrelevant |
+| `bf20f3e` | **PASS** | exact legacy A-index negative fails and the shared MMA-K A schedule is raw-bit exact |
 
 ## Design rule for future collectives
 
