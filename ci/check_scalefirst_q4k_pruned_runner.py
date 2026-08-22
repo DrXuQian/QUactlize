@@ -17,6 +17,7 @@ RUNNER = TOOLS / "run_scalefirst_q4k_pruned_box.sh"
 REAL_RUNNER = TOOLS / "run_scalefirst_q4k_real_shapes_pruned_box.sh"
 PRUNER = TOOLS / "prune_scalefirst_q4k_pilot.py"
 PLANNER = TOOLS / "plan_scalefirst_q4k_real_shapes.py"
+POSTPROCESS = TOOLS / "analyze_scalefirst_q4k_real_shapes.py"
 POLICY = ROOT / "benchmarks/scalefirst_q4k_pruned_policy.json"
 REAL_POLICY = ROOT / "benchmarks/scalefirst_q4k_real_shapes_pruned_policy.json"
 BENCH = ROOT / "benchmarks/scalefirst_internal_sweep_bench.hpp"
@@ -127,6 +128,8 @@ def main() -> int:
     subprocess.run([sys.executable, "-B", str(PRUNER), "self-test"],
                    cwd=ROOT, check=True)
     subprocess.run([sys.executable, "-B", str(PLANNER), "self-test"],
+                   cwd=ROOT, check=True)
+    subprocess.run([sys.executable, "-B", str(POSTPROCESS), "self-test"],
                    cwd=ROOT, check=True)
     expected_lines = args.evidence.read_text().splitlines()
     why = validate_l210(expected_lines)
@@ -282,6 +285,13 @@ def main() -> int:
         'all-terminal S8 board was not preserved',
         'actually missing S8 board stayed green',
     ), "all-terminal versus missing-board adjudication")
+    require(POSTPROCESS.read_text(), (
+        'one common ArtifactTileK per (N,K,gs) across measured M',
+        'PRODUCER_ONLY_NO_REDUCER_E2E',
+        'recordable only when both offline layout and within-layout config are RESOLVED',
+        'missing screen candidate stayed green',
+        'worst_regret_if_dropped', 'm_only_config_evidence',
+    ), "bound Q4_K postprocessor")
     # The production exhaustive runner must not opt into either pilot filter.
     if '--algorithm=' in exhaustive or '--symbol-file=' in exhaustive:
         raise AssertionError("exhaustive runner was silently converted to pruning")
@@ -303,7 +313,8 @@ def main() -> int:
     print("[q4k-prune-runner] PASS pilot anchor exact; real Q4_K "
           "A32/A64/A128/A256 denominators bound; all-terminal board is "
           "UNAVAILABLE while missing records stay red; analysis-only "
-          "phase resume, model folders, and three-phase authority present; "
+          "phase resume, model folders, three-phase authority, and bound "
+          "offline-layout/heuristic/winner postprocessing present; "
           f"L210={evidence_mode}")
     return 0
 
