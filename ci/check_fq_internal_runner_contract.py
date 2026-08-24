@@ -31,8 +31,8 @@ DIRECT_SOURCES = (
 def check_m8_shape_admission(bench: str, analyzer: str) -> None:
     required = (
         '#include "ppu_dense_shipping_policy.hpp"',
-        'ppu_dense_shipping::default_config_for_m(in.m)',
-        'ppu_dense_shipping::kDecodeDefault',
+        'int tm8_max_m = ppu_dense_shipping::kDecodeDefaultExclusiveM - 1;',
+        'if (in.m > options.tm8_max_m)',
         'M8_DECODE_ONLY_M_GE_8',
     )
     missing = [token for token in required if token not in bench]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Materialize real-GGUF Q4_K decode shapes for M={1,2,4,8,16}.
+"""Materialize real-GGUF Q4_K decode shapes for M={1,2,4,8}.
 
 The inventory owns model/tensor/qtype/N/K/TP identity.  This planner only
 expands the registered decode-M axis.  It deliberately does not consume the
@@ -28,7 +28,7 @@ from quactlize import formats as qformats
 POLICY_SCHEMA = "quactlize.fq_q4k_decode_real_shapes_policy.v1"
 PLAN_SCHEMA = "quactlize.fq_q4k_decode_real_shapes_plan.v1"
 ARTIFACTS = (32, 64, 128, 256)
-DECODE_M = (1, 2, 4, 8, 16)
+DECODE_M = (1, 2, 4, 8)
 
 
 class PlanError(ValueError):
@@ -303,8 +303,8 @@ def self_test() -> None:
     plan = build_plan(materialized, policy, "a" * 64)
     plan["policy_sha256"] = "b" * 64
     validate_plan(plan)
-    if plan["family_count"] != 1 or plan["shape_count"] != 5 or \
-            plan["cell_count"] != 20:
+    if plan["family_count"] != 1 or plan["shape_count"] != 4 or \
+            plan["cell_count"] != 16:
         raise AssertionError("decode M/layout cross product differs")
     refs = plan["shapes"][0]["references"]
     if refs[0].get("inventory_cell_ids") != ["1" * 64, "2" * 64]:
@@ -322,7 +322,7 @@ def self_test() -> None:
     else:
         raise AssertionError("missing decode M stayed green")
     print("[fq-q4k-decode-plan:self-test] PASS: inventory-owned real families, "
-          "exact M=1/2/4/8/16 expansion, per-layer source coalescing, and "
+          "exact M=1/2/4/8 expansion, per-layer source coalescing, and "
           "canonical fold2/fold1 byte classes")
 
 

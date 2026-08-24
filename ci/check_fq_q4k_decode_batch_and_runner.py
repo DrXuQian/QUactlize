@@ -11,10 +11,12 @@ KERNEL = ROOT / "quactlize/include/gguf_bc_vecdot.hpp"
 BACKEND = ROOT / "quactlize/csrc/device/ppu_backend.cu"
 THOP = ROOT / "quactlize/csrc/preprocess/thop/gguf_prepass_ops.cpp"
 BENCH = ROOT / "benchmarks/test_fully_quantized_internal_sweep.cu"
+TC_BENCH = ROOT / "benchmarks/fully_quantized_splitk_producer_bench.hpp"
 POLICY = ROOT / "benchmarks/fq_q4k_decode_real_shapes_policy.json"
 PLAN = ROOT / "tools/plan_fq_q4k_decode_real_shapes.py"
 ANALYZE = ROOT / "tools/analyze_fq_q4k_decode_real_shapes.py"
 RUNNER = ROOT / "tools/run_fq_q4k_decode_real_shapes_box.sh"
+GENERATOR = ROOT / "tools/gen_fully_quantized_splitk_producer_units.py"
 
 
 class CheckError(ValueError):
@@ -22,7 +24,8 @@ class CheckError(ValueError):
 
 
 def check(kernel: str, backend: str, thop: str, bench: str,
-          policy: str, plan: str, analyze: str, runner: str) -> None:
+          policy: str, plan: str, analyze: str, runner: str,
+          generator: str, tc_bench: str) -> None:
     kernel_needles = (
         "int const dense_batch_row = Grouped ? 0 : int(blockIdx.y);",
         "int const activation_row = active ? gathered_row : 0;",
@@ -45,13 +48,15 @@ def check(kernel: str, backend: str, thop: str, bench: str,
         "nullptr, output, shape.n, bpr, 1, shape.m, nullptr",
         '"native-grid-y-m-lt8"',
         '"UNSUPPORTED_M_GE_8"',
+        '"--tm8-max-m="',
+        "cli.tm8_max_m",
     )
     if any(token not in bench for token in bench_needles):
         raise CheckError("benchmark does not measure native M<8 SIMT output")
-    if '"decode_m": [1, 2, 4, 8, 16]' not in policy or \
+    if '"decode_m": [1, 2, 4, 8]' not in policy or \
             '"bc_batch_policy": "native-grid-y-m-lt8"' not in policy:
         raise CheckError("policy lost the exact decode/SIMT denominator")
-    if "DECODE_M = (1, 2, 4, 8, 16)" not in plan:
+    if "DECODE_M = (1, 2, 4, 8)" not in plan:
         raise CheckError("planner lost one decode M")
     analyze_needles = (
         "m * n * split * int(model[\"partial_element_bytes\"])",
@@ -63,7 +68,8 @@ def check(kernel: str, backend: str, thop: str, bench: str,
     if any(token not in analyze for token in analyze_needles):
         raise CheckError("analysis mixes producer-only, reducer, or SIMT scope")
     runner_needles = (
-        "--only-split=1 --bc-mode=all",
+        "--only-split=1",
+        "--bc-mode=all",
         "phase=scheduler",
         "--bc-mode=skip",
         "--bc-mode=only",
@@ -74,21 +80,47 @@ def check(kernel: str, backend: str, thop: str, bench: str,
         "analyze_fq_q4k_decode_real_shapes.py\" finalize",
         "ppu_packed_metadata_ownership.hpp",
         "quactlize_mma_mixed_input.hpp",
+        "--tile-m-filter 8",
+        "--tm8-max-m=8",
+        "tensor_core=TM8/WM8/M<=8/source-typed-denominator-retained",
     )
     if any(token not in runner for token in runner_needles):
         raise CheckError("runner does not execute screen/scheduler/TC/SIMT phases")
+    if runner.count("--tile-m-filter 8") != 1 or \
+            runner.count("--tm8-max-m=8") != 3:
+        raise CheckError("decode TM8 selection/admission call denominator changed")
+    generator_needles = (
+        'parser.add_argument("--tile-m-filter"',
+        "r.tile_m == tile_m_filter",
+        '"source_typed_rows": len(source_eligible)',
+        '"selection_reject_rows": len(selection_rejects)',
+    )
+    if any(token not in generator for token in generator_needles):
+        raise CheckError("decode TileM filter lost its complete source denominator")
+    if generator.count("r.tile_m == tile_m_filter") != 2:
+        raise CheckError("decode TileM selection/count predicates diverged")
+    tc_bench_needles = (
+        "int tm8_max_m = ppu_dense_shipping::kDecodeDefaultExclusiveM - 1;",
+        "in.m > options.tm8_max_m",
+    )
+    if any(token not in tc_bench for token in tc_bench_needles):
+        raise CheckError("TM8 runtime admission is not bound to the decode M ceiling")
 
 
 def main() -> int:
     texts = [path.read_text() for path in
-             (KERNEL, BACKEND, THOP, BENCH, POLICY, PLAN, ANALYZE, RUNNER)]
+             (KERNEL, BACKEND, THOP, BENCH, POLICY, PLAN, ANALYZE, RUNNER,
+              GENERATOR, TC_BENCH)]
     check(*texts)
     plants = [
         (0, ",max_rows,Grouped?experts:1);", ",1,Grouped?experts:1);"),
         (0, "out + (active ? int64_t(gathered_row) * rows : 0)", "out"),
         (3, "shape.m < 8", "shape.m <= 8"),
-        (4, '"decode_m": [1, 2, 4, 8, 16]', '"decode_m": [1, 2, 4, 16]'),
+        (4, '"decode_m": [1, 2, 4, 8]', '"decode_m": [1, 2, 4]'),
         (6, '"PRODUCER_PLUS_MODELED_REDUCER"', '"PRODUCER_ONLY"'),
+        (7, "--tile-m-filter 8", "--tile-m-filter 16"),
+        (7, "--tm8-max-m=8", "--tm8-max-m=7"),
+        (8, "r.tile_m == tile_m_filter", "True"),
     ]
     for index, old, new in plants:
         planted = list(texts)
@@ -101,8 +133,8 @@ def main() -> int:
             pass
         else:
             raise CheckError(f"negative control stayed green: {old} -> {new}")
-    print("[fq-q4k-decode:self-test] PASS: native one-launch M<8 SIMT, "
-          "exact M denominator, phase separation, and five negative plants")
+    print("[fq-q4k-decode:self-test] PASS: M=1/2/4/8, TM8-only TC, native "
+          "one-launch M<8 SIMT, phase separation, and eight negative plants")
     return 0
 
 

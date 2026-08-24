@@ -66,6 +66,7 @@ struct Options {
   int correctness_repeats = 2;
   int only_split = 0;
   bool measure = true;
+  int tm8_max_m = ppu_dense_shipping::kDecodeDefaultExclusiveM - 1;
 };
 
 struct DeviceInputs {
@@ -345,8 +346,7 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
     result.a_provider_capacity_rows = Types::a_provider_capacity_rows;
     if (options.only_split && options.only_split != splits) continue;
     if constexpr (TM == 8) {
-      if (ppu_dense_shipping::default_config_for_m(in.m) !=
-          ppu_dense_shipping::kDecodeDefault) {
+      if (in.m > options.tm8_max_m) {
         result.state = State::M8DecodeOnly;
         continue;
       }

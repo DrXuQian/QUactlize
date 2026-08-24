@@ -83,6 +83,7 @@ struct Cli {
   int iterations = 7;
   int repeats = 2;
   int only_split = 0;
+  int tm8_max_m = ppu_dense_shipping::kDecodeDefaultExclusiveM - 1;
   enum class BcMode { All, Skip, Only } bc_mode = BcMode::All;
   std::string symbols_file;
   std::vector<Shape> shapes;
@@ -100,6 +101,8 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
       cli.repeats = std::atoi(argv[i] + 22);
     } else if (!std::strncmp(argv[i], "--only-split=", 13)) {
       cli.only_split = std::atoi(argv[i] + 13);
+    } else if (!std::strncmp(argv[i], "--tm8-max-m=", 12)) {
+      cli.tm8_max_m = std::atoi(argv[i] + 12);
     } else if (!std::strncmp(argv[i], "--symbols-file=", 15)) {
       cli.symbols_file = argv[i] + 15;
     } else if (!std::strncmp(argv[i], "--bc-mode=", 10)) {
@@ -111,7 +114,7 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
     } else return false;
   }
   if (cli.shapes.empty()) cli.shapes.push_back({1,4096,4096});
-  return cli.iterations > 0 && cli.repeats > 0 &&
+  return cli.iterations > 0 && cli.repeats > 0 && cli.tm8_max_m > 0 &&
       (cli.only_split == 0 || cli.only_split == 1 || cli.only_split == 2 ||
        cli.only_split == 4 || cli.only_split == 8) &&
       !(cli.bc_mode == Cli::BcMode::Only && cli.only_split != 0);
@@ -356,7 +359,8 @@ int run_shape(Shape shape, Cli const& cli,
       dA.get(), dLow.get(), fixture.high.empty() ? nullptr : dHigh.get(),
       dUnits.get(), dOut.get(), dWorkspace.get(), partial_bytes,
       fixture.golden.data(), shape.m, shape.n, shape.k};
-  Options options{cli.iterations, cli.repeats, cli.only_split, true};
+  Options options{cli.iterations, cli.repeats, cli.only_split, true,
+                  cli.tm8_max_m};
   bool all_runtime_ok = true;
   std::printf("FQ_SHARD q=%d A=%d bchunk=%d shape=%dx%dx%d "
               "typed_rows=%zu selected_rows=%zu only_split=%d bc_mode=%s "
@@ -429,7 +433,8 @@ int main(int argc, char** argv) {
     std::fprintf(stderr,
         "usage: %s [--shape=MxNxK ...] [--iterations=N] "
         "[--correctness-repeats=N] [--only-split=0|1|2|4|8] "
-        "[--symbols-file=PATH] [--bc-mode=all|skip|only]\n", argv[0]);
+        "[--tm8-max-m=N] [--symbols-file=PATH] "
+        "[--bc-mode=all|skip|only]\n", argv[0]);
     return 2;
   }
   auto const all_rows = registry();

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Real-GGUF Q4_K decode sweep for M=1/2/4/8/16.
+# Real-GGUF Q4_K decode sweep for M=1/2/4/8.
 #
 # Phase 1 screens every compiled TC S1 tactic and all four native-batch SIMT
 # RPW candidates.  Phase 2 expands only the retained TC symbols across
@@ -174,7 +174,8 @@ main() {
       mkdir -p "$generated" || return 2
       python3 -B "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
         --qtype 12 --artifact-tk "$artifact" --bchunk 0 \
-        --per-unit "$per_unit" --out-dir "$generated" || return 2
+        --tile-m-filter 8 --per-unit "$per_unit" \
+        --out-dir "$generated" || return 2
     fi
     local generated_sha generated_authority="$out/generated/a${artifact}.sha256"
     generated_sha="$({
@@ -226,7 +227,8 @@ main() {
       printf '[fq-q4k-decode] A=%s shape=%sx%sx%s phase=screen typed=%s\n' \
         "$artifact" "$m" "$n" "$k" "$typed"
       run_phase "$screen_log" "$binary" --shape="${m}x${n}x${k}" \
-        --iterations=2 --correctness-repeats=1 --only-split=1 --bc-mode=all || return $?
+        --iterations=2 --correctness-repeats=1 --only-split=1 \
+        --tm8-max-m=8 --bc-mode=all || return $?
       python3 -B "$root/tools/analyze_fq_q4k_decode_real_shapes.py" screen \
         --manifest "$manifest" --log "$screen_log" --policy "$policy" \
         --symbols-output "$directory/screen-symbols.txt" \
@@ -236,7 +238,8 @@ main() {
         printf '[fq-q4k-decode] A=%s shape=%sx%sx%s phase=scheduler\n' "$artifact" "$m" "$n" "$k"
         run_phase "$scheduler_log" "$binary" --shape="${m}x${n}x${k}" \
           --iterations=1 --correctness-repeats=1 \
-          --symbols-file="$directory/screen-symbols.txt" --bc-mode=skip || return $?
+          --symbols-file="$directory/screen-symbols.txt" \
+          --tm8-max-m=8 --bc-mode=skip || return $?
         python3 -B "$root/tools/analyze_fq_q4k_decode_real_shapes.py" scheduler \
           --manifest "$manifest" --log "$scheduler_log" \
           --screen-symbols "$directory/screen-symbols.txt" --policy "$policy" \
@@ -245,7 +248,8 @@ main() {
         printf '[fq-q4k-decode] A=%s shape=%sx%sx%s phase=confirm-tc\n' "$artifact" "$m" "$n" "$k"
         run_phase "$confirm_tc_log" "$binary" --shape="${m}x${n}x${k}" \
           --iterations=7 --correctness-repeats=2 \
-          --symbols-file="$directory/confirm-symbols.txt" --bc-mode=skip || return $?
+          --symbols-file="$directory/confirm-symbols.txt" \
+          --tm8-max-m=8 --bc-mode=skip || return $?
       fi
       printf '[fq-q4k-decode] A=%s shape=%sx%sx%s phase=confirm-simt\n' "$artifact" "$m" "$n" "$k"
       run_phase "$confirm_bc_log" "$binary" --shape="${m}x${n}x${k}" \
@@ -266,6 +270,7 @@ main() {
     printf 'policy_sha256=%s\nplan_sha256=%s\nsource_state_sha256=%s\n' \
       "$(sha256sum "$policy" | awk '{print $1}')" "$plan_sha" "$source_state"
     printf 'simt=M<8/native-grid-y/one-launch\n'
+    printf 'tensor_core=TM8/WM8/M<=8/source-typed-denominator-retained\n'
     printf 'splitk_reducer=80%%-of-2766GBps/zero-launch\n'
     printf 'summary_sha256=%s\n' "$(sha256sum "$out/results/summary.json" | awk '{print $1}')"
   } > "$out/provenance.txt" || return 2

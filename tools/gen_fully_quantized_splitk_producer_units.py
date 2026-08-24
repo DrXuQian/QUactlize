@@ -10,6 +10,9 @@ shared storage and ``can_implement`` for each runtime shape.
 One invocation owns exactly one (qtype, ArtifactTileK, PPU_B_CHUNK) tuple.
 That makes the translation-unit policy explicit and gives a shard a stable,
 resume-safe identity.  S={1,2,4,8} is runtime data, not four duplicate types.
+An optional TileM selection records both the complete source-typed denominator
+and every excluded legal row; decode can therefore compile TM8 only without
+pretending the generic tactic space was smaller.
 """
 
 from __future__ import annotations
@@ -73,7 +76,8 @@ def row_json(qtype: int, artifact: int, row: matrix.Tactic,
 
 
 def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
-             per_unit: int, drop_last: bool) -> dict:
+             per_unit: int, drop_last: bool,
+             tile_m_filter: int | None = None) -> dict:
     formats = {fmt.qtype: fmt for fmt in matrix.parse_formats()}
     if qtype not in (10, 11, 12, 13, 14):
         raise ValueError("qtype must be one of the shipping FQ formats 10..14")
@@ -83,6 +87,9 @@ def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
         raise ValueError("bchunk must be 0 or 1")
     if per_unit <= 0:
         raise ValueError("per-unit must be positive")
+    if tile_m_filter is not None and tile_m_filter not in (
+            8, 16, 32, 64, 128, 256):
+        raise ValueError("tile-m-filter must be one of 8,16,32,64,128,256")
 
     raw_rows = [r for r in matrix.emitted_tactics(qtype, artifact)
                 if r.bchunk == bchunk]
@@ -105,18 +112,27 @@ def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
         all_rows.append((row, 0))
         if matrix.packed_a_provider_candidate(fmt, row, artifact):
             all_rows.append((row, 1))
-    eligible = [(r, ap) for r, ap in all_rows if row_admitted(r)]
+    source_eligible = [(r, ap) for r, ap in all_rows if row_admitted(r)]
+    eligible = [(r, ap) for r, ap in source_eligible
+                if tile_m_filter is None or r.tile_m == tile_m_filter]
+    selection_rejects = [(r, ap) for r, ap in source_eligible
+                         if tile_m_filter is not None and
+                         r.tile_m != tile_m_filter]
     static_rejects = [(r, ap) for r, ap in all_rows if not row_admitted(r)]
     if drop_last and eligible:
         eligible.pop()
 
-    expected_eligible = sum(row_admitted(r) for r, _ in all_rows)
+    expected_eligible = sum(
+        row_admitted(r) and
+        (tile_m_filter is None or r.tile_m == tile_m_filter)
+        for r, _ in all_rows)
     if len(eligible) != expected_eligible:
         raise RuntimeError(
             "generated typed denominator "
             f"{len(eligible)}/{expected_eligible}; a candidate row is missing")
-    if len(eligible) + len(static_rejects) != len(all_rows):
-        raise RuntimeError("eligible/static partition is not exact")
+    if len(eligible) + len(selection_rejects) + len(static_rejects) != \
+            len(all_rows):
+        raise RuntimeError("selected/source-eligible/static partition is not exact")
 
     # Registry is included only by the host main.  It has the complete typed
     # identities while manifest.json retains all static rejects.
@@ -177,13 +193,28 @@ def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
         entry["reason"] = reason
         rejects.append(entry)
 
+    identity = {
+        "qtype": qtype,
+        "format": formats[qtype].name,
+        "artifact_tile_k": artifact,
+        "bchunk": bchunk,
+    }
+    if tile_m_filter is not None:
+        identity["tile_m_filter"] = tile_m_filter
+    selected_reject_rows = []
+    for row, a_provider in selection_rejects:
+        entry = row_json(qtype, artifact, row, a_provider)
+        entry["reason"] = f"TILE_M_FILTER_NE_{tile_m_filter}"
+        selected_reject_rows.append(entry)
+
     manifest = {
         "schema": "quactlize-fq-tc-generated-shard-v2",
-        "identity": {
-            "qtype": qtype,
-            "format": formats[qtype].name,
-            "artifact_tile_k": artifact,
-            "bchunk": bchunk,
+        "identity": identity,
+        "selection": {
+            "tile_m_filter": tile_m_filter,
+            "source_typed_rows": len(source_eligible),
+            "selected_typed_rows": len(eligible),
+            "selection_reject_rows": len(selection_rejects),
         },
         "runtime": {
             "splits": list(matrix.SPLITS),
@@ -206,13 +237,16 @@ def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
         "denominator": {
             "raw_topology_rows": len(raw_rows),
             "provider_expanded_rows": len(all_rows),
+            "source_typed_rows": len(source_eligible),
             "typed_rows": len(eligible),
+            "selection_reject_rows": len(selection_rejects),
             "static_reject_rows": len(static_rejects),
             "runtime_tc_cells": len(all_rows) * len(matrix.SPLITS),
             "typed_runtime_tc_cells": len(eligible) * len(matrix.SPLITS),
         },
         "typed_rows": [row_json(qtype, artifact, row, ap)
                        for row, ap in eligible],
+        "selection_rejects": selected_reject_rows,
         "static_rejects": rejects,
         "units": units,
         "registry": str(out / "fq_tc_registry.inc"),
@@ -236,19 +270,23 @@ def main() -> int:
     parser.add_argument("--bchunk", type=int, required=True)
     parser.add_argument("--out-dir", type=pathlib.Path, required=True)
     parser.add_argument("--per-unit", type=int, default=1)
+    parser.add_argument("--tile-m-filter", type=int,
+                        help="compile one TileM while retaining the source denominator")
     parser.add_argument("--plant-drop-last", action="store_true",
                         help=argparse.SUPPRESS)
     args = parser.parse_args()
     try:
         manifest = generate(args.qtype, args.artifact_tk, args.bchunk,
                             args.out_dir, args.per_unit,
-                            args.plant_drop_last)
+                            args.plant_drop_last, args.tile_m_filter)
         den = manifest["denominator"]
         print("[fq-tc-generate] " + " ".join(
             f"{k}={v}" for k, v in manifest["identity"].items()) +
             f" raw={den['raw_topology_rows']} "
             f"provider_expanded={den['provider_expanded_rows']} "
+            f"source_typed={den['source_typed_rows']} "
             f"typed={den['typed_rows']} "
+            f"selection_reject={den['selection_reject_rows']} "
             f"static_reject={den['static_reject_rows']} "
             f"units={len(manifest['units'])}")
         return 0

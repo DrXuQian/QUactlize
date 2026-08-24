@@ -1,11 +1,11 @@
 {
   "schema": "quactlize.fq_q4k_decode_real_shapes_policy.v1",
-  "name": "real-gguf-q4k-decode-m1-m16",
+  "name": "real-gguf-q4k-decode-m1-m8",
   "qtype": 12,
   "format": "Q4_K",
   "quant_mode": "FinegrainedScaleZero",
   "group_size": 32,
-  "decode_m": [1, 2, 4, 8, 16],
+  "decode_m": [1, 2, 4, 8],
   "artifact_tile_k": [32, 64, 128, 256],
   "bchunk": 0,
   "problem_route": "dense",
