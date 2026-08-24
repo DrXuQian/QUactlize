@@ -20,6 +20,10 @@ from check_fq_split_workspace_probe import (
 
 
 VALID_SPLITS = (2, 4)
+PROVIDER_NAMES = {
+    AP0: "standard-aiu",
+    AP1: "packed-row",
+}
 
 
 def probe_groups(text: str) -> dict[tuple[str, str], list[dict[str, str]]]:
@@ -54,11 +58,12 @@ def probe_groups(text: str) -> dict[tuple[str, str], list[dict[str, str]]]:
     return grouped
 
 
-def direct_summary(text: str) -> tuple[int, int]:
+def direct_summary(text: str) -> tuple[int, int, set[tuple[str, str]]]:
     cells = records(text, "FQ_TC_CELL ")
     exact_cells(cells)
     failures = 0
     valid = 0
+    failed_cells: set[tuple[str, str]] = set()
     for row in cells:
         split = int(row["S"])
         state = row.get("state")
@@ -72,16 +77,74 @@ def direct_summary(text: str) -> tuple[int, int]:
             continue
         if state == "RAW_FP16_MISMATCH" and bad > 0:
             failures += 1
+            failed_cells.add((row["symbol"], row["S"]))
             first = nonnegative(row, "first_bad")
             if first >= 1024 or first % 32:
                 raise ValueError(f"direct mismatch lost stripe origin: {row}")
             continue
         raise ValueError(f"unexpected direct state: {row}")
-    return valid, failures
+    return valid, failures, failed_cells
+
+
+def optional_nonnegative(row: dict[str, str], key: str,
+                         default: int = 0) -> int:
+    value = row.get(key)
+    if value is None:
+        return default
+    parsed = int(value, 0)
+    if parsed < 0:
+        raise ValueError(f"{key} must be nonnegative: {row}")
+    return parsed
+
+
+def summarize_samples(samples: list[dict[str, str]],
+                      require_legacy_stripe: bool) -> dict[str, object]:
+    result: dict[str, object] = {
+        "samples": 0,
+        "bad_samples": 0,
+        "partial_bad": 0,
+        "canary": 0,
+        "host_bad": 0,
+        "sync_bad": 0,
+        "observed_bad": 0,
+        "local_n_half_mask": 0,
+        "bad_plane_mask": 0,
+        "stripe_origins": set(),
+    }
+    for row in samples:
+        result["samples"] += 1
+        partial_bad = nonnegative(row, "partial_value_raw_bad")
+        result["partial_bad"] += partial_bad
+        result["canary"] += nonnegative(row, "canary_words")
+        result["host_bad"] += nonnegative(row, "host_reduce_raw_bad")
+        result["sync_bad"] += nonnegative(row, "sync_only_raw_bad")
+        result["observed_bad"] += nonnegative(
+            row, "observed_reducer_raw_bad")
+        if not partial_bad:
+            continue
+        result["bad_samples"] += 1
+        index = nonnegative(row, "partial_first_bad_index")
+        if require_legacy_stripe and index % 32:
+            raise ValueError(
+                f"legacy partial mismatch lost 32-output stripe origin: {row}")
+        local_n = index % 64
+        result["local_n_half_mask"] |= 1 << (local_n // 32)
+        result["stripe_origins"].add(local_n)
+        plane_mask = optional_nonnegative(row, "partial_bad_plane_mask")
+        if not plane_mask:
+            first_plane = optional_nonnegative(
+                row, "partial_first_bad_plane", default=64)
+            if first_plane < 64:
+                plane_mask = 1 << first_plane
+        result["bad_plane_mask"] |= plane_mask
+    return result
 
 
 def probe_summary(groups: dict[tuple[str, str], list[dict[str, str]]],
-                  require_legacy_stripe: bool) -> dict[str, int]:
+                  require_legacy_stripe: bool) -> tuple[
+                      dict[str, object],
+                      dict[tuple[str, str], dict[str, object]],
+                  ]:
     result = {
         "samples": 0,
         "bad_samples": 0,
@@ -92,34 +155,52 @@ def probe_summary(groups: dict[tuple[str, str], list[dict[str, str]]],
         "observed_bad": 0,
         "local_n_half_mask": 0,
     }
-    for samples in groups.values():
-        for row in samples:
-            result["samples"] += 1
-            partial_bad = nonnegative(row, "partial_value_raw_bad")
-            result["partial_bad"] += partial_bad
-            result["canary"] += nonnegative(row, "canary_words")
-            result["host_bad"] += nonnegative(row, "host_reduce_raw_bad")
-            result["sync_bad"] += nonnegative(row, "sync_only_raw_bad")
-            result["observed_bad"] += nonnegative(
-                row, "observed_reducer_raw_bad")
-            if partial_bad:
-                result["bad_samples"] += 1
-                index = nonnegative(row, "partial_first_bad_index")
-                if require_legacy_stripe and index % 32:
-                    raise ValueError(
-                        f"legacy partial mismatch lost 32-output stripe origin: {row}")
-                result["local_n_half_mask"] |= 1 << ((index % 64) // 32)
-    return result
+    per_cell = {
+        key: summarize_samples(samples, require_legacy_stripe)
+        for key, samples in groups.items()
+    }
+    for cell in per_cell.values():
+        for key in result:
+            if key == "local_n_half_mask":
+                result[key] |= int(cell[key])
+            else:
+                result[key] += int(cell[key])
+    return result, per_cell
+
+
+def print_cells(variant: str,
+                cells: dict[tuple[str, str], dict[str, object]],
+                direct_failed: set[tuple[str, str]]) -> None:
+    for (symbol, split), cell in sorted(
+            cells.items(), key=lambda item: (PROVIDER_NAMES[item[0][0]],
+                                             int(item[0][1]))):
+        origins = sorted(cell["stripe_origins"])
+        origin_text = ",".join(str(value) for value in origins) or "NONE"
+        print(
+            f"FQ_PACKED_OWNER_CELL variant={variant} "
+            f"provider={PROVIDER_NAMES[symbol]} S={split} "
+            f"samples={cell['samples']} bad_samples={cell['bad_samples']} "
+            f"partial_value_raw_bad={cell['partial_bad']} "
+            f"bad_plane_mask=0x{int(cell['bad_plane_mask']):x} "
+            f"local_n_half_mask=0x{int(cell['local_n_half_mask']):x} "
+            f"stripe_origins={origin_text} "
+            f"canary_words={cell['canary']} "
+            f"host_reduce_raw_bad={cell['host_bad']} "
+            f"sync_only_raw_bad={cell['sync_bad']} "
+            f"observed_reducer_raw_bad={cell['observed_bad']} "
+            f"direct_failed={int((symbol, split) in direct_failed)}")
 
 
 def check(legacy_direct: str, legacy_probe: str,
           candidate_direct: str, candidate_probe: str) -> str:
     legacy_groups = probe_groups(legacy_probe)
     candidate_groups = probe_groups(candidate_probe)
-    legacy = probe_summary(legacy_groups, True)
-    candidate = probe_summary(candidate_groups, False)
-    legacy_valid, legacy_direct_failures = direct_summary(legacy_direct)
-    candidate_valid, candidate_direct_failures = direct_summary(candidate_direct)
+    legacy, legacy_cells = probe_summary(legacy_groups, True)
+    candidate, candidate_cells = probe_summary(candidate_groups, False)
+    legacy_valid, legacy_direct_failures, legacy_direct_failed = direct_summary(
+        legacy_direct)
+    candidate_valid, candidate_direct_failures, candidate_direct_failed = direct_summary(
+        candidate_direct)
     if legacy_valid != 6 or candidate_valid != 6:
         raise ValueError("direct valid-cell denominator differs")
     if not legacy["partial_bad"] or not legacy["bad_samples"]:
@@ -150,6 +231,8 @@ def check(legacy_direct: str, legacy_probe: str,
         f"sync_only_raw_bad={candidate['sync_bad']} "
         f"observed_reducer_raw_bad={candidate['observed_bad']} "
         f"direct_failures={candidate_direct_failures}")
+    print_cells("legacy-modulo-all", legacy_cells, legacy_direct_failed)
+    print_cells("owner-only", candidate_cells, candidate_direct_failed)
     print(
         "FQ_PACKED_OWNER_VERDICT "
         f"verdict={verdict} legacy_stripe_origin=32-ALIGNED/PASS "

@@ -55,6 +55,7 @@ def check(collective: str, ownership: str, oracle: str,
     if runner.count("PPU_PACKED_METADATA_OWNER_ONLY=1") != 2:
         raise CheckError("runner must bind and verify the candidate define exactly twice")
     require("checker", checker, (
+        'FQ_PACKED_OWNER_CELL variant=',
         'verdict = "OWNER_RACE_CLOSED_ALL_EXACT"',
         'verdict = "OWNER_RACE_CLOSED_DIRECT_GAP_REMAINS"',
         'verdict = "OWNER_ONLY_REFUTED"',
@@ -74,6 +75,7 @@ def main() -> int:
         (3, "PPU_PACKED_METADATA_OWNER_ONLY=1",
          "PPU_PACKED_METADATA_OWNER_ONLY=0"),
         (4, "index % 32", "index % 16"),
+        (4, "FQ_PACKED_OWNER_CELL variant=", "FQ_PACKED_OWNER_BUCKET variant="),
     )
     for index, old, new in plants:
         changed = list(texts)
