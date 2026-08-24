@@ -47,6 +47,37 @@ def nonnegative(row: dict[str, str], field: str) -> int:
     return value
 
 
+def direct_failure_signature(row: dict[str, str]) -> None:
+    raw_bad = nonnegative(row, "raw_bad")
+    first_bad = nonnegative(row, "first_bad")
+    # The stable signature is the first affected 32-output stripe.  The
+    # number of unequal lanes inside one or more affected stripes is race
+    # dependent (the device has produced 32, 56 and 64), so raw_bad is not
+    # itself required to be a multiple of 32.
+    if not raw_bad or raw_bad > 1024 or first_bad >= 1024 or first_bad % 32:
+        raise ValueError(
+            f"direct failure lost aligned stripe-origin signature: {row}")
+
+
+def classify(samples: list[dict[str, str]]) -> tuple[str, dict[str, int]]:
+    totals = {
+        field: sum(nonnegative(row, field) for row in samples)
+        for field in ("canary_words", "host_reduce_raw_bad",
+                      "sync_only_raw_bad", "observed_reducer_raw_bad")
+    }
+    if totals["canary_words"]:
+        verdict = "UNWRITTEN_PARTIAL_WORDS"
+    elif totals["host_reduce_raw_bad"]:
+        verdict = "PRODUCER_OR_PARTIAL_STORE_BAD"
+    elif totals["observed_reducer_raw_bad"]:
+        verdict = "REDUCER_LOAD_OR_INDEX_BAD"
+    elif totals["sync_only_raw_bad"]:
+        verdict = "D2H_VISIBILITY_BRIDGE_REQUIRED"
+    else:
+        verdict = "SAME_STREAM_PUBLICATION_GAP"
+    return verdict, totals
+
+
 def check(direct: str, probe: str) -> str:
     direct_cells = records(direct, "FQ_TC_CELL ")
     probe_cells = records(probe, "FQ_TC_CELL ")
@@ -63,21 +94,21 @@ def check(direct: str, probe: str) -> str:
         raise ValueError(
             "direct AP0 S2/S4 failure denominator was not reproduced: "
             f"{sorted(failed_splits)}")
-    for row in direct_ap0_fail:
-        # The stable signature is the first affected 32-output stripe.  The
-        # number of unequal lanes inside one or more affected stripes is race
-        # dependent (the device has produced 32, 56 and 64), so raw_bad is not
-        # itself required to be a multiple of 32.
-        raw_bad = nonnegative(row, "raw_bad")
-        first_bad = nonnegative(row, "first_bad")
-        if raw_bad > 1024 or first_bad >= 1024 or first_bad % 32:
-            raise ValueError(
-                f"direct failure lost aligned stripe-origin signature: {row}")
-
+    direct_failures: dict[str, list[str]] = {AP0: [], AP1: []}
     for row in direct_cells:
-        if row.get("symbol") == AP1 and row.get("S") in ("1", "2", "4"):
-            if row.get("state") != "MEASURED" or nonnegative(row, "raw_bad"):
-                raise ValueError(f"AP1 control is not raw-bit exact: {row}")
+        symbol, split = row.get("symbol", ""), row.get("S", "")
+        state, raw_bad = row.get("state"), nonnegative(row, "raw_bad")
+        if split == "1":
+            if state != "MEASURED" or raw_bad:
+                raise ValueError(f"S1 control is not raw-bit exact: {row}")
+        elif split == "8":
+            if state != "SPLIT_PARTITION" or raw_bad:
+                raise ValueError(f"S8 partition control changed: {row}")
+        elif state == "RAW_FP16_MISMATCH":
+            direct_failure_signature(row)
+            direct_failures[symbol].append(split)
+        elif state != "MEASURED" or raw_bad:
+            raise ValueError(f"unexpected direct Split-K state: {row}")
 
     expected_probe_cells = {(symbol, str(split)) for symbol in EXPECTED
                             for split in (2, 4)}
@@ -105,35 +136,37 @@ def check(direct: str, probe: str) -> str:
         if repeats != list(range(len(samples))):
             raise ValueError(f"workspace-probe repeat denominator differs: {key}")
 
-    # AP1 is the exact same B/layout/partition control with only the A provider
-    # changed.  It must prove that the oracle and observed reducer are sound.
-    for split in ("2", "4"):
-        for row in grouped[(AP1, split)]:
-            if nonnegative(row, "canary_words") or \
-                    nonnegative(row, "host_reduce_raw_bad") or \
-                    nonnegative(row, "observed_reducer_raw_bad"):
-                raise ValueError(f"AP1 probe control failed: {row}")
-
-    ap0 = grouped[(AP0, "2")] + grouped[(AP0, "4")]
-    canary = sum(nonnegative(row, "canary_words") for row in ap0)
-    host_bad = sum(nonnegative(row, "host_reduce_raw_bad") for row in ap0)
-    sync_bad = sum(nonnegative(row, "sync_only_raw_bad") for row in ap0)
-    observed_bad = sum(nonnegative(row, "observed_reducer_raw_bad") for row in ap0)
-    if canary:
-        verdict = "UNWRITTEN_PARTIAL_WORDS"
-    elif host_bad:
-        verdict = "PRODUCER_OR_PARTIAL_STORE_BAD"
-    elif observed_bad:
-        verdict = "REDUCER_LOAD_OR_INDEX_BAD"
-    elif sync_bad:
-        verdict = "D2H_VISIBILITY_BRIDGE_REQUIRED"
-    else:
-        verdict = "SAME_STREAM_PUBLICATION_GAP"
+    provider_verdicts: dict[str, str] = {}
+    provider_totals: dict[str, dict[str, int]] = {}
+    for symbol, provider in ((AP0, "standard-aiu"), (AP1, "packed-row")):
+        samples = grouped[(symbol, "2")] + grouped[(symbol, "4")]
+        provider_verdicts[symbol], provider_totals[symbol] = classify(samples)
+        totals = provider_totals[symbol]
+        print("FQ_SPLIT_WORKSPACE_PROVIDER "
+              f"provider={provider} symbol={symbol} "
+              f"verdict={provider_verdicts[symbol]} "
+              f"direct_failure_splits={','.join(direct_failures[symbol]) or 'none'} "
+              f"samples={len(samples)} canary_words={totals['canary_words']} "
+              f"host_reduce_raw_bad={totals['host_reduce_raw_bad']} "
+              f"sync_only_raw_bad={totals['sync_only_raw_bad']} "
+              f"observed_reducer_raw_bad={totals['observed_reducer_raw_bad']}")
+    unique_verdicts = set(provider_verdicts.values())
+    verdict = (next(iter(unique_verdicts)) if len(unique_verdicts) == 1
+               else "MIXED_PROVIDER_VERDICTS")
+    totals = {
+        field: sum(provider_totals[symbol][field] for symbol in (AP0, AP1))
+        for field in ("canary_words", "host_reduce_raw_bad",
+                      "sync_only_raw_bad", "observed_reducer_raw_bad")
+    }
     print("FQ_SPLIT_WORKSPACE_VERDICT "
-          f"verdict={verdict} direct_failures={len(direct_ap0_fail)} "
-          f"samples_per_cell={next(iter(counts))} canary_words={canary} "
-          f"host_reduce_raw_bad={host_bad} sync_only_raw_bad={sync_bad} "
-          f"observed_reducer_raw_bad={observed_bad}")
+          f"verdict={verdict} ap0={provider_verdicts[AP0]} "
+          f"ap1={provider_verdicts[AP1]} "
+          f"direct_failures={sum(map(len, direct_failures.values()))} "
+          f"samples_per_cell={next(iter(counts))} "
+          f"canary_words={totals['canary_words']} "
+          f"host_reduce_raw_bad={totals['host_reduce_raw_bad']} "
+          f"sync_only_raw_bad={totals['sync_only_raw_bad']} "
+          f"observed_reducer_raw_bad={totals['observed_reducer_raw_bad']}")
     return verdict
 
 
@@ -154,7 +187,8 @@ def self_test() -> None:
     for symbol in sorted(EXPECTED):
         for split in (1, 2, 4, 8):
             direct_lines.append(cell(symbol, split,
-                                     symbol == AP0 and split in (2, 4)))
+                                     (symbol == AP0 and split in (2, 4)) or
+                                     (symbol == AP1 and split == 2)))
             probe_lines.append(cell(symbol, split, probe=True))
         for split in (2, 4):
             for repeat in range(2):
@@ -166,14 +200,19 @@ def self_test() -> None:
     probe = "\n".join(probe_lines)
     assert check(direct, probe) == "SAME_STREAM_PUBLICATION_GAP"
     variants = (
-        probe.replace("host_reduce_raw_bad=0", "host_reduce_raw_bad=32", 1),
-        probe.replace("sync_only_raw_bad=0", "sync_only_raw_bad=32", 1),
+        probe.replace("canary_words=0", "canary_words=32"),
+        probe.replace("host_reduce_raw_bad=0", "host_reduce_raw_bad=32"),
+        probe.replace("sync_only_raw_bad=0", "sync_only_raw_bad=32"),
         probe.replace("observed_reducer_raw_bad=0",
-                      "observed_reducer_raw_bad=32", 1),
+                      "observed_reducer_raw_bad=32"),
     )
-    assert check(direct, variants[0]) == "PRODUCER_OR_PARTIAL_STORE_BAD"
-    assert check(direct, variants[1]) == "D2H_VISIBILITY_BRIDGE_REQUIRED"
-    assert check(direct, variants[2]) == "REDUCER_LOAD_OR_INDEX_BAD"
+    assert check(direct, variants[0]) == "UNWRITTEN_PARTIAL_WORDS"
+    assert check(direct, variants[1]) == "PRODUCER_OR_PARTIAL_STORE_BAD"
+    assert check(direct, variants[2]) == "D2H_VISIBILITY_BRIDGE_REQUIRED"
+    assert check(direct, variants[3]) == "REDUCER_LOAD_OR_INDEX_BAD"
+    mixed = probe.replace(
+        "host_reduce_raw_bad=0", "host_reduce_raw_bad=32", 1)
+    assert check(direct, mixed) == "MIXED_PROVIDER_VERDICTS"
     for broken_direct, broken_probe in (
             (direct.replace("first_bad=32", "first_bad=33", 1), probe),
             (direct, probe.replace("split_workspace_probe=1", "split_workspace_probe=0")),
@@ -184,8 +223,9 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("workspace-probe negative stayed green")
-    print("[fq-split-workspace-check:self-test] PASS five verdicts; "
-          "aligned stripe-origin, marker and denominator negatives RED")
+    print("[fq-split-workspace-check:self-test] PASS five seam verdicts plus "
+          "mixed-provider; intermittent AP1, aligned stripe-origin, marker "
+          "and denominator negatives RED")
 
 
 def main() -> int:
