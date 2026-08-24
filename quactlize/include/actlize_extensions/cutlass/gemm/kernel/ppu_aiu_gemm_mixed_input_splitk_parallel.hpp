@@ -48,6 +48,14 @@
 #include "actlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_last_arriver.hpp"
 #include "actlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_partition.hpp"
 #include "actlize_extensions/cutlass/gemm/kernel/detail/ppu_splitk_direct_accumulator_store.hpp"
+#if defined(PPU_SPLITK_SHARED_SYNC_POLICY)
+#include "actlize_extensions/cutlass/gemm/kernel/detail/ppu_splitk_shared_epilogue_sync_probe.hpp"
+#endif
+
+#if defined(PPU_SPLITK_SHARED_SYNC_POLICY) && \
+    defined(PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE)
+#error "select either the shared synchronization probe or the vendor legacy epilogue"
+#endif
 
 namespace cutlass::gemm::kernel {
 
@@ -377,7 +385,17 @@ class GemmUniversalMixedInputSplitKParallel {
     int const plane = int(work.peer_idx);
     auto const partial_shape = make_shape(M, N, K, int(params.partition.splits));
     auto const partial_coord = make_coord(m_coord, n_coord, _, Int<0>{});
-#if defined(PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE) && \
+#if defined(PPU_SPLITK_SHARED_SYNC_POLICY)
+    // Diagnostic-only exact clone of the historical shared R2S/S2R path.
+    // PPU_SPLITK_SHARED_SYNC_POLICY changes only its two synchronization
+    // calls, allowing barrier selection to be causally adjudicated.
+    detail::store_splitk_accumulators_shared_sync_probe<
+        PPU_SPLITK_SHARED_SYNC_POLICY, CollectivePartialEpilogue>(
+        params.partial_epilogue, plane, partial_shape, blk_shape,
+        partial_coord, accumulators, tiled_mma, residue_mnk, thread_idx,
+        reinterpret_cast<char*>(
+            &shared_storage.tensors.partial_epilogue));
+#elif defined(PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE) && \
     (PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE != 0)
     // Exact historical negative for the PPU raw-bit closure.  The generic
     // output epilogue redistributes FP32 accumulators through shared memory;

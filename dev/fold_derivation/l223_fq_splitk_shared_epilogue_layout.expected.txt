@@ -1,0 +1,4 @@
+L223_SHARED_EPILOGUE_LAYOUT writers=512 holes=0 duplicates=0 r2s_conflicts=0 readers=512 reader_holes=0 reader_duplicates=0 s2r_coord_bad=0 s2r_value_bad=0 verdict=PASS
+L223_SHARED_EPILOGUE_LAYOUT writers=512 holes=0 duplicates=0 r2s_conflicts=0 readers=512 reader_holes=0 reader_duplicates=0 s2r_coord_bad=512 s2r_value_bad=512 verdict=FAIL
+L223_SHARED_EPILOGUE_LAYOUT writers=512 holes=0 duplicates=0 r2s_conflicts=0 readers=512 reader_holes=256 reader_duplicates=256 s2r_coord_bad=0 s2r_value_bad=0 verdict=FAIL
+[l223] PASS: exact legacy R2S/S2R map plus value-coordinate and owner negatives
