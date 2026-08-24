@@ -2,9 +2,8 @@
 // Exact runtime ABI for generated FullyQuantized tensor-core sweep shards.
 //
 // S==1 measures the complete shipping epilogue.  S>1 measures only the
-// producer kernel.  Every timed producer is followed by the existing
-// deterministic reducer, submitted outside the producer event span, so its
-// partial workspace is consumed before reuse.  Consequently a producer-only
+// producer kernel; an untimed invocation of the existing deterministic
+// reducer is mandatory before and after timing.  Consequently a producer-only
 // row can never be ranked as a product result against S1 or BC GEMV.
 
 #include <algorithm>
@@ -12,6 +11,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <numeric>
 #include <type_traits>
 #include <vector>
@@ -21,7 +21,6 @@
 #include "helper.h"
 #include "ppu_dense_shipping_policy.hpp"
 #include "ppu_group_schedule.hpp"
-#include "splitk_producer_timing.hpp"
 
 namespace fq_internal_sweep {
 
@@ -43,6 +42,7 @@ enum class State : int {
   Launch,
   Correctness,
   Timing,
+  WorkspaceProbe,
 };
 
 inline char const* state_name(State state) {
@@ -59,6 +59,7 @@ inline char const* state_name(State state) {
     case State::Launch: return "LAUNCH";
     case State::Correctness: return "RAW_FP16_MISMATCH";
     case State::Timing: return "TIMING";
+    case State::WorkspaceProbe: return "WORKSPACE_PROBE_COMPLETE";
   }
   return "UNKNOWN";
 }
@@ -69,10 +70,24 @@ struct Options {
   int only_split = 0;
   bool measure = true;
   int tm8_max_m = ppu_dense_shipping::kDecodeDefaultExclusiveM - 1;
-  // Diagnostic negative.  The historical protocol synchronized/destroyed
-  // the producer stop event before enqueueing the reducer.  Keep it only to
-  // reproduce that publication-gap signature; ranked runs use ordered close.
-  bool legacy_split_timing = false;
+  // Diagnostic only: do not time or rank the cell.  Observe the producer's
+  // FP32 planes on the host, reduce those bytes in fixed split order, then
+  // launch the real reducer after the observation boundary.  This separates
+  // partial production from cross-kernel visibility without changing either
+  // shipping kernel.
+  bool split_workspace_probe = false;
+};
+
+struct WorkspaceProbeSample {
+  int repeat = -1;
+  std::uint64_t sync_only_raw_bad = 0;
+  std::uint64_t canary_words = 0;
+  std::uint64_t host_reduce_raw_bad = 0;
+  std::size_t host_first_bad_index = std::size_t(-1);
+  std::uint16_t host_first_bad_want = 0;
+  std::uint16_t host_first_bad_got = 0;
+  std::uint64_t partial_fingerprint = 0;
+  std::uint64_t observed_reducer_raw_bad = 0;
 };
 
 struct DeviceInputs {
@@ -107,6 +122,7 @@ struct CellResult {
   double min_us = 0;
   double max_us = 0;
   std::vector<double> samples_us;
+  std::vector<WorkspaceProbeSample> workspace_probe_samples;
 };
 
 struct RowResult {
@@ -264,6 +280,19 @@ inline std::uint64_t hash_half(half_t const* values, std::size_t count) {
   return hash;
 }
 
+inline std::uint64_t hash_float_bits(float const* values, std::size_t count) {
+  std::uint64_t hash = UINT64_C(1469598103934665603);
+  for (std::size_t i = 0; i < count; ++i) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, values + i, sizeof(bits));
+    for (int byte = 0; byte < 4; ++byte) {
+      hash ^= std::uint8_t(bits >> (8 * byte));
+      hash *= UINT64_C(1099511628211);
+    }
+  }
+  return hash;
+}
+
 inline bool inspect(DeviceInputs const& in, CellResult& out) {
   std::size_t const count = std::size_t(in.m) * in.n;
   std::vector<half_t> host(count);
@@ -286,6 +315,38 @@ inline bool inspect(DeviceInputs const& in, CellResult& out) {
   }
   out.fingerprint = hash_half(host.data(), count);
   return true;
+}
+
+inline void inspect_host_partials(
+    DeviceInputs const& in, int splits, std::vector<float> const& partials,
+    WorkspaceProbeSample& sample) {
+  std::size_t const count = std::size_t(in.m) * in.n;
+  sample.canary_words = 0;
+  for (float value : partials) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    sample.canary_words += bits == UINT32_C(0xa5a5a5a5);
+  }
+  sample.partial_fingerprint = hash_float_bits(partials.data(), partials.size());
+  sample.host_reduce_raw_bad = 0;
+  sample.host_first_bad_index = std::size_t(-1);
+  sample.host_first_bad_want = sample.host_first_bad_got = 0;
+  for (std::size_t index = 0; index < count; ++index) {
+    float accumulator = 0.f;
+    for (int split = 0; split < splits; ++split) {
+      accumulator += partials[std::size_t(split) * count + index];
+    }
+    std::uint16_t const got = half_t(accumulator).raw();
+    std::uint16_t const want = in.golden[index].raw();
+    if (got != want) {
+      if (sample.host_reduce_raw_bad == 0) {
+        sample.host_first_bad_index = index;
+        sample.host_first_bad_want = want;
+        sample.host_first_bad_got = got;
+      }
+      ++sample.host_reduce_raw_bad;
+    }
+  }
 }
 
 template <class Launch>
@@ -471,6 +532,67 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
           auto status = producer.run(nullptr);
           return status == cutlass::Status::kSuccess ? reducer.run(nullptr) : status;
         };
+        if (options.split_workspace_probe) {
+          bool probe_api_ok = true;
+          result.workspace_probe_samples.reserve(
+              std::size_t(options.correctness_repeats));
+          std::vector<float> host_partials(plan.partial_bytes / sizeof(float));
+          for (int repeat = 0; repeat < options.correctness_repeats; ++repeat) {
+            WorkspaceProbeSample sample;
+            sample.repeat = repeat;
+
+            // Arm 1 inserts only a device-wide completion boundary between the
+            // producer and reducer.  It never observes or rewrites the planes.
+            if (hggcMemset(in.workspace, 0xa5, plan.partial_bytes) != hggcSuccess ||
+                producer_launch() != cutlass::Status::kSuccess ||
+                hggcDeviceSynchronize() != hggcSuccess ||
+                reducer.run(nullptr) != cutlass::Status::kSuccess ||
+                hggcDeviceSynchronize() != hggcSuccess ||
+                !inspect(in, result)) {
+              result.failure_step = "WORKSPACE_PROBE_SYNC_ONLY_API";
+              result.failure_repeat = repeat;
+              probe_api_ok = false;
+              break;
+            }
+            sample.sync_only_raw_bad = result.raw_bad;
+
+            // Arm 2 copies the exact producer bytes to the host before the
+            // reducer runs.  The host performs the same s=0..S-1 FP32 order;
+            // this is the producer-workspace oracle.  The subsequent real
+            // reducer tells us whether host observation changed visibility.
+            if (hggcMemset(in.workspace, 0xa5, plan.partial_bytes) != hggcSuccess ||
+                producer_launch() != cutlass::Status::kSuccess ||
+                hggcDeviceSynchronize() != hggcSuccess ||
+                hggcMemcpy(host_partials.data(), partials, plan.partial_bytes,
+                           hggcMemcpyDeviceToHost) != hggcSuccess) {
+              result.failure_step = "WORKSPACE_PROBE_PARTIAL_COPY";
+              result.failure_repeat = repeat;
+              probe_api_ok = false;
+              break;
+            }
+            inspect_host_partials(in, splits, host_partials, sample);
+            if (reducer.run(nullptr) != cutlass::Status::kSuccess ||
+                hggcDeviceSynchronize() != hggcSuccess ||
+                !inspect(in, result)) {
+              result.failure_step = "WORKSPACE_PROBE_OBSERVED_REDUCER_API";
+              result.failure_repeat = repeat;
+              probe_api_ok = false;
+              break;
+            }
+            sample.observed_reducer_raw_bad = result.raw_bad;
+            result.workspace_probe_samples.push_back(sample);
+          }
+          if (!probe_api_ok) {
+            result.state = State::Timing;
+            row_ok = false;
+            continue;
+          }
+          result.reducer_correctness_untimed = true;
+          result.failure_step = "WORKSPACE_PROBE_COMPLETE";
+          result.failure_repeat = -1;
+          result.state = State::WorkspaceProbe;
+          continue;
+        }
         bool correct = true;
         std::uint64_t fingerprint = 0;
         for (int repeat = 0; repeat < options.correctness_repeats; ++repeat) {
@@ -494,51 +616,19 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
         }
         if (!correct) { result.state = State::Correctness; row_ok = false; continue; }
         result.reducer_correctness_untimed = true;
-        if (options.measure) {
-          if (options.legacy_split_timing) {
-            if (!measure(producer_launch, options.iterations, result)) {
-              result.failure_step = "PRODUCER_TIMING";
-              result.state = State::Timing; row_ok = false; continue;
-            }
-            // Exact historical negative: the reducer is enqueued only after
-            // measure() has synchronized and destroyed the producer event.
-            if (reducer.run(nullptr) != cutlass::Status::kSuccess ||
-                hggcDeviceSynchronize() != hggcSuccess ||
-                !inspect(in, result) || result.raw_bad != 0 ||
-                result.fingerprint != fingerprint) {
-              result.failure_step = result.raw_bad
-                  ? "POST_TIMING_RAW_FP16_MISMATCH"
-                  : "POST_TIMING_REDUCER_OR_COPY";
-              result.state = State::Correctness; row_ok = false; continue;
-            }
-          } else {
-            auto timing = splitk_producer_timing::measure(
-                producer_launch, [&] { return reducer.run(nullptr); },
-                options.iterations);
-            result.failure_repeat = timing.failure_repeat;
-            result.failure_step =
-                splitk_producer_timing::failure_name(timing.failure);
-            if (timing.failure != splitk_producer_timing::Failure::None) {
-              result.state = splitk_producer_timing::is_launch_failure(
-                                 timing.failure)
-                  ? State::Launch : State::Timing;
-              row_ok = false;
-              continue;
-            }
-            result.samples_us = std::move(timing.samples_us);
-            result.min_us = timing.min_us;
-            result.max_us = timing.max_us;
-            result.median_us = timing.median_us;
-            if (!inspect(in, result) || result.raw_bad != 0 ||
-                result.fingerprint != fingerprint) {
-              result.failure_step = result.raw_bad
-                  ? "ORDERED_CLOSE_RAW_FP16_MISMATCH"
-                  : "ORDERED_CLOSE_REDUCER_OR_COPY";
-              result.state = State::Correctness;
-              row_ok = false;
-              continue;
-            }
-          }
+        if (options.measure &&
+            !measure(producer_launch, options.iterations, result)) {
+          result.failure_step = "PRODUCER_TIMING";
+          result.state = State::Timing; row_ok = false; continue;
+        }
+        // Timing is producer-only, but the final timed partial must still
+        // close through the real reducer and reproduce the exact output.
+        if (reducer.run(nullptr) != cutlass::Status::kSuccess ||
+            hggcDeviceSynchronize() != hggcSuccess || !inspect(in, result) ||
+            result.raw_bad != 0 || result.fingerprint != fingerprint) {
+          result.failure_step = result.raw_bad ? "POST_TIMING_RAW_FP16_MISMATCH" :
+                                                "POST_TIMING_REDUCER_OR_COPY";
+          result.state = State::Correctness; row_ok = false; continue;
         }
         result.failure_step = "NONE"; result.failure_repeat = -1;
         result.state = State::Measured;

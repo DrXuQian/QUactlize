@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select the exact AP0/AP1 rows for the Q4_K Split-K timing closure."""
+"""Select the exact AP0/AP1 rows for the Q4_K Split-K workspace closure."""
 
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ def materialize(source: pathlib.Path, output: pathlib.Path) -> None:
         copied.append(str(destination.resolve()))
         rows.append(row)
     registry = (
-        "// GENERATED -- exact Q4_K Split-K timing closure.\n"
+        "// GENERATED -- exact Q4_K Split-K workspace closure.\n"
         "#define FQ_TC_GENERATED_QTYPE 12\n"
         "#define FQ_TC_GENERATED_ARTIFACT_TK 64\n"
         "#define FQ_TC_GENERATED_BCHUNK 0\n"
@@ -81,14 +81,14 @@ def materialize(source: pathlib.Path, output: pathlib.Path) -> None:
         "#define FQ_TC_GENERATED_TYPED_ROWS 2\n" + registry_macro(rows))
     (output / "fq_tc_registry.inc").write_text(registry)
     (output / "units.cmake").write_text(
-        "# GENERATED -- exact Q4_K Split-K timing closure.\n"
+        "# GENERATED -- exact Q4_K Split-K workspace closure.\n"
         "set(FQ_TC_GENERATED_UNIT_SOURCES\n" +
         "".join(f'  "{path}"\n' for path in copied) +
         ")\n"
         f'set(FQ_TC_GENERATED_REGISTRY "{(output / "fq_tc_registry.inc").resolve()}")\n'
         f'set(FQ_TC_GENERATED_MANIFEST "{(output / "manifest.json").resolve()}")\n')
     closure = {
-        "schema": "quactlize.fq-split-timing-closure.v1",
+        "schema": "quactlize.fq-split-workspace-closure.v1",
         "source_manifest": str(manifest_path.resolve()),
         "source_typed_denominator": len(manifest["typed_rows"]),
         "selection_denominator": len(rows),
@@ -98,7 +98,7 @@ def materialize(source: pathlib.Path, output: pathlib.Path) -> None:
     }
     (output / "manifest.json").write_text(
         json.dumps(closure, indent=2, sort_keys=True) + "\n")
-    print("[fq-split-timing-select] PASS "
+    print("[fq-split-workspace-select] PASS "
           f"source_typed={len(manifest['typed_rows'])} selected={len(rows)} "
           f"output={output}")
 
@@ -131,7 +131,7 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("selector negative stayed green")
-    print("[fq-split-timing-select:self-test] PASS exact AP0/AP1; "
+    print("[fq-split-workspace-select:self-test] PASS exact AP0/AP1; "
           "missing-row and identity negatives RED")
 
 
@@ -150,7 +150,7 @@ def main() -> int:
             materialize(args.source_dir.resolve(), args.out_dir.resolve())
         return 0
     except (AssertionError, OSError, ValueError) as error:
-        print(f"[fq-split-timing-select] FAIL: {error}", file=sys.stderr)
+        print(f"[fq-split-workspace-select] FAIL: {error}", file=sys.stderr)
         return 2
 
 
