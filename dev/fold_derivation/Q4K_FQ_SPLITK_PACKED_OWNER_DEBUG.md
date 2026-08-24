@@ -103,6 +103,12 @@ the completed accumulator directly through the production TiledMma
 and rotated-fragment negatives are in
 `l222_fq_splitk_direct_accumulator_store.cu`.
 
+The PPU box's `nvcc` delegates device preprocessing to `ppu_clang++`, enables
+the HGGC FP8 include path, and cannot execute this NVIDIA/stub host oracle
+without mixing incompatible SDK headers.  The box runner therefore validates
+the exact committed L222 output from the result SHA instead of inventing an
+`hggc_fp8.h` stub.  Both device arms are still built fresh with `hgcc`.
+
 The hash-bound two-build diagnostic emits one of:
 
 - `MAINLOOP_ACCUMULATOR_CORRUPTION_CONFIRMED`;

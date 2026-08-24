@@ -6,6 +6,7 @@ set -uo pipefail
 main() {
   local root workspace_root sha short stamp out jobs repeats
   local full generated arm defs build_dir build_log binary direct_log probe_log
+  local l222_evidence
   local build_rc direct_rc probe_rc
 
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
@@ -36,10 +37,25 @@ main() {
   esac
   mkdir -p "$out/generated/full" "$out/generated/closure" "$out/results" || return 2
 
-  "$root/dev/fold_derivation/run_l222_fq_splitk_direct_accumulator_store.sh" || return 2
+  # The box's executable named nvcc delegates device preprocessing to
+  # ppu_clang++, which enables PPU FP8 and then cannot find hggc_fp8.h in the
+  # NVIDIA/stub fixture.  Do not add a fake header: it would shadow the real
+  # SDK.  Consume the exact local CuTe oracle generated and committed at this
+  # result SHA; both real PPU arms below are still compiled fresh by hgcc.
+  l222_evidence="$out/results/l222-committed-evidence.log"
+  git -C "$root" show \
+    "$sha:dev/fold_derivation/l222_fq_splitk_direct_accumulator_store.expected.txt" \
+    >"$l222_evidence" || {
+      printf '[fq-accumulator-bisect] FAIL: result SHA lacks committed L222 evidence\n' >&2
+      return 2
+    }
   python3 -B "$root/tools/select_fq_split_timing_closure.py" --self-test || return 2
   python3 -B "$root/tools/check_fq_split_accumulator_bisect.py" --self-test || return 2
   python3 -B "$root/ci/check_fq_split_accumulator_bisect.py" || return 2
+  python3 -B "$root/ci/check_fq_split_accumulator_bisect.py" \
+    --committed-only --evidence "$l222_evidence" || return 2
+  printf 'FQ_ACCUMULATOR_BISECT_ORACLE mode=committed-local-oracle source_sha=%s fresh_box_execution=0\n' \
+    "$sha"
   python3 -B "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
     --qtype 12 --artifact-tk 64 --bchunk 0 --tile-m-filter 8 \
     --per-unit 1 --out-dir "$out/generated/full" || return 2

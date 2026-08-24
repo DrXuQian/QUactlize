@@ -1,0 +1,4 @@
+L222_DIRECT_ACCUMULATOR_STORE visits=576 expected=576 holes=0 duplicates=0 value_bad=0 invalid_touched=0 verdict=PASS
+L222_DIRECT_ACCUMULATOR_STORE visits=576 expected=576 holes=432 duplicates=144 value_bad=432 invalid_touched=0 verdict=FAIL
+L222_DIRECT_ACCUMULATOR_STORE visits=576 expected=576 holes=0 duplicates=0 value_bad=576 invalid_touched=0 verdict=FAIL
+[l222] PASS: exact direct store plus duplicate-owner and register-coordinate negatives
