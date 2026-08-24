@@ -8,7 +8,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <limits>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -80,6 +82,9 @@ bool parse_shape(char const* text, Shape& out) {
 struct Cli {
   int iterations = 7;
   int repeats = 2;
+  int only_split = 0;
+  enum class BcMode { All, Skip, Only } bc_mode = BcMode::All;
+  std::string symbols_file;
   std::vector<Shape> shapes;
 };
 
@@ -93,10 +98,43 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
       cli.iterations = std::atoi(argv[i] + 13);
     } else if (!std::strncmp(argv[i], "--correctness-repeats=", 22)) {
       cli.repeats = std::atoi(argv[i] + 22);
+    } else if (!std::strncmp(argv[i], "--only-split=", 13)) {
+      cli.only_split = std::atoi(argv[i] + 13);
+    } else if (!std::strncmp(argv[i], "--symbols-file=", 15)) {
+      cli.symbols_file = argv[i] + 15;
+    } else if (!std::strncmp(argv[i], "--bc-mode=", 10)) {
+      char const* mode = argv[i] + 10;
+      if (!std::strcmp(mode, "all")) cli.bc_mode = Cli::BcMode::All;
+      else if (!std::strcmp(mode, "skip")) cli.bc_mode = Cli::BcMode::Skip;
+      else if (!std::strcmp(mode, "only")) cli.bc_mode = Cli::BcMode::Only;
+      else return false;
     } else return false;
   }
   if (cli.shapes.empty()) cli.shapes.push_back({1,4096,4096});
-  return cli.iterations > 0 && cli.repeats > 0;
+  return cli.iterations > 0 && cli.repeats > 0 &&
+      (cli.only_split == 0 || cli.only_split == 1 || cli.only_split == 2 ||
+       cli.only_split == 4 || cli.only_split == 8) &&
+      !(cli.bc_mode == Cli::BcMode::Only && cli.only_split != 0);
+}
+
+bool select_registry(Cli const& cli, std::vector<RegistryRow> const& all,
+                     std::vector<RegistryRow>& selected) {
+  if (cli.symbols_file.empty()) {
+    selected = all;
+    return true;
+  }
+  std::ifstream stream(cli.symbols_file);
+  if (!stream) return false;
+  std::set<std::string> wanted;
+  std::string line;
+  while (std::getline(stream, line)) {
+    if (line.empty() || line.find_first_of(" \t\r") != std::string::npos ||
+        !wanted.insert(line).second) return false;
+  }
+  if (wanted.empty()) return false;
+  for (auto const& row : all)
+    if (wanted.erase(row.symbol)) selected.push_back(row);
+  return wanted.empty() && !selected.empty();
 }
 
 int code_value(int qtype, int n, int k) {
@@ -222,24 +260,23 @@ bool run_bc(Shape shape, uint8_t const* low, uint8_t const* high,
             uint8_t const* units, half_t const* a, float* output,
             std::vector<half_t> const& golden, int iterations,
             CellResult& result, std::uint64_t& bad) {
-  if (shape.m != 1) return false;
   constexpr auto T = KTypeFor<QType>::value;
   int const bpr = shape.k / 256;
   auto launch = [&] {
     gguf_scale::bc_vecdot::launch_fixed<T, ArtifactTileK, RowsPerWarp, false>(
         low, high, units,
         reinterpret_cast<gguf_scale::vecdot::VecdotActivation const*>(a),
-        nullptr, output, shape.n, bpr, 1, 1, nullptr);
+        nullptr, output, shape.n, bpr, 1, shape.m, nullptr);
     return cutlass::Status::kSuccess;
   };
   if (launch() != cutlass::Status::kSuccess ||
       hggcDeviceSynchronize() != hggcSuccess) return false;
-  std::vector<float> host(std::size_t(shape.n));
+  std::vector<float> host(std::size_t(shape.m) * shape.n);
   if (hggcMemcpy(host.data(), output, host.size() * sizeof(float),
                  hggcMemcpyDeviceToHost) != hggcSuccess) return false;
   bad = 0;
-  for (int n = 0; n < shape.n; ++n)
-    bad += host[std::size_t(n)] != float(golden[std::size_t(n)]);
+  for (std::size_t index = 0; index < host.size(); ++index)
+    bad += host[index] != float(golden[index]);
   if (bad || !fq_internal_sweep::measure(launch, iterations, result)) return false;
   return true;
 }
@@ -266,7 +303,7 @@ bool run_bc_family(Shape shape, uint8_t const* low, uint8_t const* high,
     bool family_ok = true;
 #define FQ_RUN_BC_RPW(RPW) do {                                        \
     CellResult bc_result; std::uint64_t bad = 0;                        \
-    bool const supported = shape.m == 1;                               \
+    bool const supported = shape.m < 8;                               \
     bool const ok = supported &&                                       \
         run_bc<QType,ArtifactTileK,RPW>(                               \
             shape, low, high, units, a, output, golden,                 \
@@ -274,9 +311,11 @@ bool run_bc_family(Shape shape, uint8_t const* low, uint8_t const* high,
     constexpr int threads = QType == 12 && RPW == 4 ? 128 : 256;       \
     std::printf(                                                       \
         "FQ_BC_CELL q=%d A=%d shape=%dx%dx%d rpw=%d threads=%d "      \
-        "scope=FULL_OUTPUT state=%s us=%.9f raw_bad=%llu samples=",   \
+        "scope=FULL_OUTPUT launches=%d batch_policy=%s "               \
+        "state=%s us=%.9f raw_bad=%llu samples=",                     \
         QType, ArtifactTileK, shape.m, shape.n, shape.k, RPW, threads, \
-        !supported ? "UNSUPPORTED_M_NOT_1" : ok ? "MEASURED" : "FAILED", \
+        supported ? 1 : 0, "native-grid-y-m-lt8",                     \
+        !supported ? "UNSUPPORTED_M_GE_8" : ok ? "MEASURED" : "FAILED", \
         bc_result.median_us, static_cast<unsigned long long>(bad));     \
     print_samples(bc_result.samples_us);                               \
     std::printf("\n");                                                \
@@ -291,7 +330,9 @@ bool run_bc_family(Shape shape, uint8_t const* low, uint8_t const* high,
   }
 }
 
-int run_shape(Shape shape, Cli const& cli) {
+int run_shape(Shape shape, Cli const& cli,
+              std::vector<RegistryRow> const& rows,
+              std::size_t typed_rows) {
   Fixture fixture = make_fixture(shape);
   if (!fixture.exact || !fixture.roundtrip) {
     std::fprintf(stderr,
@@ -305,7 +346,7 @@ int run_shape(Shape shape, Cli const& cli) {
   cutlass::DeviceAllocation<uint8_t> dHigh(std::max<std::size_t>(fixture.high.size(), 1));
   cutlass::DeviceAllocation<uint8_t> dUnits(fixture.units.size());
   cutlass::DeviceAllocation<half_t> dOut(std::size_t(shape.m) * shape.n);
-  cutlass::DeviceAllocation<float> dBcOut(std::size_t(shape.n));
+  cutlass::DeviceAllocation<float> dBcOut(std::size_t(shape.m) * shape.n);
   std::size_t const partial_bytes = std::size_t(shape.m) * shape.n * 8 * sizeof(float);
   cutlass::DeviceAllocation<char> dWorkspace(std::max<std::size_t>(partial_bytes, 1));
   dA.copy_from_host(fixture.a.data()); dLow.copy_from_host(fixture.low.data());
@@ -315,14 +356,23 @@ int run_shape(Shape shape, Cli const& cli) {
       dA.get(), dLow.get(), fixture.high.empty() ? nullptr : dHigh.get(),
       dUnits.get(), dOut.get(), dWorkspace.get(), partial_bytes,
       fixture.golden.data(), shape.m, shape.n, shape.k};
-  Options options{cli.iterations, cli.repeats, 0, true};
+  Options options{cli.iterations, cli.repeats, cli.only_split, true};
   bool all_runtime_ok = true;
-  auto rows = registry();
-  for (auto const& entry : rows) {
+  std::printf("FQ_SHARD q=%d A=%d bchunk=%d shape=%dx%dx%d "
+              "typed_rows=%zu selected_rows=%zu only_split=%d bc_mode=%s "
+              "bc_batch=native-grid-y-m-lt8 iterations=%d correctness_repeats=%d\n",
+              FQ_SWEEP_QTYPE, FQ_SWEEP_ARTIFACT_TK, FQ_SWEEP_BCHUNK,
+              shape.m, shape.n, shape.k, typed_rows, rows.size(),
+              cli.only_split,
+              cli.bc_mode == Cli::BcMode::All ? "all" :
+              cli.bc_mode == Cli::BcMode::Skip ? "skip" : "only",
+              cli.iterations, cli.repeats);
+  if (cli.bc_mode != Cli::BcMode::Only) for (auto const& entry : rows) {
     RowResult result;
     bool const ok = entry.run(inputs, options, result);
     all_runtime_ok = all_runtime_ok && ok;
     for (auto const& cell : result.cells) {
+      if (cell.split == 0) continue;
       char const* scope = cell.split == 1 ? "FULL_OUTPUT" :
           "PRODUCER_ONLY_REDUCER_UNTIMED_CORRECTNESS";
       std::printf(
@@ -350,16 +400,23 @@ int run_shape(Shape shape, Cli const& cli) {
     }
   }
   if constexpr (FQ_SWEEP_BCHUNK == 0) {
+    if (cli.bc_mode != Cli::BcMode::Skip) {
     all_runtime_ok = all_runtime_ok &&
         run_bc_family<FQ_SWEEP_QTYPE,FQ_SWEEP_ARTIFACT_TK>(
             shape, dLow.get(), fixture.high.empty() ? nullptr : dHigh.get(),
             dUnits.get(), dA.get(), dBcOut.get(), fixture.golden,
             cli.iterations);
+    }
   }
   std::printf("FQ_SHAPE_DONE q=%d A=%d bchunk=%d shape=%dx%dx%d "
-              "typed_rows=%zu status=%s\n",
+              "typed_rows=%zu selected_rows=%zu only_split=%d bc_mode=%s "
+              "bc_batch=native-grid-y-m-lt8 iterations=%d status=%s\n",
               FQ_SWEEP_QTYPE, FQ_SWEEP_ARTIFACT_TK, FQ_SWEEP_BCHUNK,
-              shape.m, shape.n, shape.k, rows.size(),
+              shape.m, shape.n, shape.k, typed_rows, rows.size(),
+              cli.only_split,
+              cli.bc_mode == Cli::BcMode::All ? "all" :
+              cli.bc_mode == Cli::BcMode::Skip ? "skip" : "only",
+              cli.iterations,
               all_runtime_ok ? "PASS" : "FAIL");
   return all_runtime_ok ? 0 : 1;
 }
@@ -371,10 +428,20 @@ int main(int argc, char** argv) {
   if (!parse_cli(argc, argv, cli)) {
     std::fprintf(stderr,
         "usage: %s [--shape=MxNxK ...] [--iterations=N] "
-        "[--correctness-repeats=N]\n", argv[0]);
+        "[--correctness-repeats=N] [--only-split=0|1|2|4|8] "
+        "[--symbols-file=PATH] [--bc-mode=all|skip|only]\n", argv[0]);
     return 2;
   }
+  auto const all_rows = registry();
+  std::vector<RegistryRow> selected_rows;
+  if (!select_registry(cli, all_rows, selected_rows)) {
+    std::fprintf(stderr, "FQ_SELECTION_FAIL typed_rows=%zu symbols_file=%s\n",
+                 all_rows.size(), cli.symbols_file.c_str());
+    return 2;
+  }
+  if (cli.bc_mode == Cli::BcMode::Only) selected_rows.clear();
   int rc = 0;
-  for (auto shape : cli.shapes) rc |= run_shape(shape, cli);
+  for (auto shape : cli.shapes)
+    rc |= run_shape(shape, cli, selected_rows, all_rows.size());
   return rc;
 }

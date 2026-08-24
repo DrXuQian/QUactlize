@@ -125,7 +125,12 @@ def gguf_vecdot_moe(blocks, x, row_offsets, qtype: int):
 
 
 def gguf_gemv_bc(a, low, high, units, qtype: int):
-    """CUDA-core GEMV over the merged form: placed code planes plus packed scale units. -> fp32 [1, N]."""
+    """SIMT decode over placed code planes plus packed scale units.
+
+    Dense ``a`` has shape ``[M,K]`` with ``1 <= M < 8``.  All rows share the
+    resident weight artifact and execute in one native grid-y batched launch;
+    the result is fp32 ``[M,N]``.
+    """
     return _ops().gguf_gemv_bc(a, low, high, units, qtype)
 
 

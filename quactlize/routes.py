@@ -391,7 +391,11 @@ def dequantize_scale_from_units(units: torch.Tensor, qtype: int, zmul: Optional[
 
 
 def matmul_bc_gemv(a: torch.Tensor, artifact, qtype: int) -> torch.Tensor:
-    """DECODE OFF THE MERGED FORM: the CUDA-core GEMV reading placed code planes plus packed units.
+    """DECODE OFF THE MERGED FORM: SIMT reads placed code planes plus packed units.
+
+    Dense ``a`` is ``[M,K]`` for ``1 <= M < 8``.  Batch rows are native
+    grid-y work in one launch and share one resident weight artifact; this is
+    not a Python loop over M independent GEMV launches.
 
     This is what removes raw GGUF from residency. Until it existed the decode path read raw blocks while the
     tensor-core paths read the placed planes, so a deployment that wanted both had to keep two arrangements of

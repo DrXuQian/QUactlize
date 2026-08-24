@@ -132,7 +132,9 @@ int native_moe(uint8_t const* blocks, uint16_t const* x, int const* offsets, flo
 
 // The merged BC resident artifact: xplane-placed low/high codes plus byte-neutral packed scale units. The CUDA-core
 // decode path consumes those exact bytes; unlike SCALE_FIRST it neither materialises nor reads fp16 affine planes.
-// experts==0 is one dense decode row. Grouped mode uses the same gathered-row/offset contract as native_moe.
+// experts==0 is one dense decode batch with 1..7 rows. grid.y owns the batch
+// row, so this remains one launch and one shared resident weight artifact.
+// Grouped mode uses the same gathered-row/offset contract as native_moe.
 template <KType T, int ArtifactTileK>
 int bc_gemv_device(uint16_t const* x, uint8_t const* low, uint8_t const* high, uint8_t const* units,
                    int const* offsets, float* out, int total_rows, int n, int k, int experts, int max_rows,
@@ -143,7 +145,7 @@ int bc_gemv_device(uint16_t const* x, uint8_t const* low, uint8_t const* high, u
                                            offsets, out, n, bpr, experts, max_rows, stream);
   } else {
     gguf_scale::bc_vecdot::launch<T, ArtifactTileK, false>(low, high, units, reinterpret_cast<VecdotActivation const*>(x),
-                                            nullptr, out, n, bpr, 1, 1, stream);
+                                            nullptr, out, n, bpr, 1, total_rows, stream);
   }
   return ppu_gemv::rt_check_launch(experts > 0 ? "BC MoE GEMV enqueue" : "BC dense GEMV enqueue")
       ? 0 : ppu_gemv::kRuntimeError;
@@ -419,7 +421,8 @@ extern "C" int quactlize_ppu_bc_gemv(uint16_t const* x, uint8_t const* low, uint
                                        uint8_t const* units, int const* offsets, float* out,
                                        int total_rows, int n, int k, int experts, int max_rows, int qtype) {
   if (!x || !low || !units || !out || total_rows <= 0 || n <= 0 || n % 256 || k <= 0 || k % 256 ||
-      experts < 0 || (experts > 0 && (!offsets || max_rows <= 0)) || (experts == 0 && total_rows != 1)) return 13;
+      experts < 0 || (experts > 0 && (!offsets || max_rows <= 0)) ||
+      (experts == 0 && total_rows >= 8)) return 13;
 #define RUN(T) (gguf_scale::bc_vecdot::Traits<KType::T>::Hi && !high ? 14 : \
                 ((k / 256) % gguf_scale::packed_unit::Unit<KType::T>::kSbPerUnit ? 15 : \
                  bc_gemv<KType::T,gguf_scale::bc_vecdot::Traits<KType::T>::DefaultArtifactTileK>( \
@@ -435,7 +438,8 @@ extern "C" int quactlize_ppu_bc_gemv_for_arrangement_v1(
     int total_rows, int n, int k, int experts, int max_rows, int qtype,
     quactlize_ppu_placed_arrangement_v1 const* arrangement) {
   if (!x || !low || !units || !out || total_rows <= 0 || n <= 0 || n % 256 || k <= 0 || k % 256 ||
-      experts < 0 || (experts > 0 && (!offsets || max_rows <= 0)) || (experts == 0 && total_rows != 1) ||
+      experts < 0 || (experts > 0 && (!offsets || max_rows <= 0)) ||
+      (experts == 0 && total_rows >= 8) ||
       !arrangement || arrangement->version != QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V1 ||
       arrangement->artifact_tile_k <= 0 || k % arrangement->artifact_tile_k) return 13;
 #define RUN(T) (arrangement->bits != gguf_scale::bc_vecdot::Traits<KType::T>::Lo || \
@@ -456,7 +460,8 @@ extern "C" int quactlize_ppu_bc_gemv_dev_v1(uint16_t const* x,
                                                int total_rows, int n, int k, int experts, int max_rows, int qtype,
                                                void* stream) {
   if (!x || !low || !units || !out || total_rows <= 0 || n <= 0 || n % 256 || k <= 0 || k % 256 ||
-      experts < 0 || (experts > 0 && (!offsets || max_rows <= 0)) || (experts == 0 && total_rows != 1)) return 13;
+      experts < 0 || (experts > 0 && (!offsets || max_rows <= 0)) ||
+      (experts == 0 && total_rows >= 8)) return 13;
   // Q4's whole-word reader uses float4/uint4 global loads. Public device
   // pointers need not originate at an allocation base, so reject a sliced
   // pointer before launch rather than allowing an undefined vector load.
@@ -478,7 +483,8 @@ extern "C" int quactlize_ppu_bc_gemv_for_arrangement_dev_v1(
     int const* offsets, float* out, int total_rows, int n, int k, int experts, int max_rows, int qtype,
     quactlize_ppu_placed_arrangement_v1 const* arrangement, void* stream) {
   if (!x || !low || !units || !out || total_rows <= 0 || n <= 0 || n % 256 || k <= 0 || k % 256 ||
-      experts < 0 || (experts > 0 && (!offsets || max_rows <= 0)) || (experts == 0 && total_rows != 1) ||
+      experts < 0 || (experts > 0 && (!offsets || max_rows <= 0)) ||
+      (experts == 0 && total_rows >= 8) ||
       !arrangement || arrangement->version != QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V1 ||
       arrangement->artifact_tile_k <= 0 || k % arrangement->artifact_tile_k) return 13;
   if (qtype == 12 &&

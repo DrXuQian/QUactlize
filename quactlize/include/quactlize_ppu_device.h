@@ -91,7 +91,8 @@ int quactlize_ppu_dense_w4_splitk_dev_v1(
     quactlize_ppu_dense_w4_splitk_profile_v1 const* profile);
 
 // The placed low/high planes and packed units are the same artifact consumed by quactlize_ppu_bc_gemv.
-// experts==0 selects dense and requires total_rows==1. Grouped offsets are cumulative int[experts+1].
+// experts==0 selects one-launch dense SIMT decode and requires 1<=total_rows<8;
+// grid.y owns the activation/output row. Grouped offsets are cumulative int[experts+1].
 // For Q4_K (qtype=12), x, low, and units must each be 16-byte aligned because the shipping reader uses vector
 // global loads. Both device entries below return 25 before enqueue when that contract is not met.
 int quactlize_ppu_bc_gemv_dev_v1(uint16_t const* x,

@@ -259,18 +259,22 @@ __global__ void rows_kernel(uint8_t const* low, uint8_t const* high, uint8_t con
   constexpr int Groups = U::kGroups, GroupSize = 256 / Groups;
   constexpr bool HasMin = U::kHasMin;
   int const expert = Grouped ? int(blockIdx.z) : 0;
-  int const route_in_expert = Grouped ? int(blockIdx.y) : 0;
+  // Dense decode batches share one resident weight matrix.  Give each
+  // activation/output row its own grid-y plane instead of paying M host
+  // launches.  Grouped mode keeps its existing routed-row interpretation.
+  int const dense_batch_row = Grouped ? 0 : int(blockIdx.y);
+  int const route_in_expert = Grouped ? int(blockIdx.y) : dense_batch_row;
   int const route_begin = Grouped ? row_offsets[expert] : 0;
-  int const route_rows = Grouped ? row_offsets[expert+1] - route_begin : 1;
-  int const gathered_row = route_begin + route_in_expert;
+  int const route_rows = Grouped ? row_offsets[expert+1] - route_begin : int(gridDim.y);
+  int const gathered_row = Grouped ? route_begin + route_in_expert : dense_batch_row;
   int const warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
   int const lane = threadIdx.x & 31;
   int const row_in_warp = lane / LanesPerRow, row_lane = lane & (LanesPerRow-1);
   int const r = warp * RowsPerWarp + row_in_warp;
   bool const active = r < rows && route_in_expert < route_rows;
-  int const activation_row = active ? (Grouped ? gathered_row : 0) : 0;
+  int const activation_row = active ? gathered_row : 0;
   auto const* row_x = x + int64_t(activation_row) * blocks_per_row * 256;
-  float* row_out = out + (Grouped && active ? int64_t(gathered_row) * rows : 0);
+  float* row_out = out + (active ? int64_t(gathered_row) * rows : 0);
   int64_t const lo_per = int64_t(rows) * blocks_per_row * 256 * Traits<T>::Lo / 8;
   int64_t const hi_per = int64_t(rows) * blocks_per_row * 256 * Traits<T>::Hi / 8;
   int const num_units = blocks_per_row / U::kSbPerUnit;
@@ -342,7 +346,9 @@ void launch_fixed(uint8_t const* low,uint8_t const* high,uint8_t const* units,
   // enough independent blocks to saturate cold delivery; eight-warp CTAs measured 5.2-5.7% behind raw over 64
   // distinct cold 2048x2048 layers. Threads=128 removed that gap while also taking warm BC 0.9-1.4% ahead of raw.
   constexpr int Threads=(T==KType::Q4_K&&RowsPerWarp==4)?128:256;
-  dim3 grid(vecdot::vecdot_grid_size<T,RowsPerWarp>(n,Threads),Grouped?max_rows:1,Grouped?experts:1);
+  // In dense mode max_rows is the decode batch M.  Existing M=1 callers are
+  // launch compatible; M=2..7 gain native one-launch batching.
+  dim3 grid(vecdot::vecdot_grid_size<T,RowsPerWarp>(n,Threads),max_rows,Grouped?experts:1);
   rows_kernel<T,ArtifactTileK,RowsPerWarp,Grouped><<<grid,Threads,0,stream>>>(low,high,units,x,out,n,bpr,offsets);
 }
 
@@ -360,7 +366,7 @@ void launch(uint8_t const* low,uint8_t const* high,uint8_t const* units,
                 vecdot::kVecdotFp16Activation) {
     if (::gguf_scale::bc_q4_gemv::launch_default(
             reinterpret_cast<half const*>(x), low, units,
-            out, 1, unsigned(n), unsigned(bpr * 256), stream))
+            out, unsigned(max_rows), unsigned(n), unsigned(bpr * 256), stream))
       return;
   }
 #endif

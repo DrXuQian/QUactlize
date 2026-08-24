@@ -51,8 +51,8 @@ struct Api {
   int (*prepare_units)(uint8_t const* blocks, uint8_t* units, int n, int k, int qtype);
   int (*prepare_units_grouped)(uint8_t const* blocks, uint8_t* units,
                                int n, int k, int experts, int qtype);
-  // Merged BC artifact -> CUDA-core fp16-activation/fp32-output GEMV. experts==0 is exactly one dense decode row;
-  // otherwise offsets is [E+1] and out is [total_rows,n]. Optional while older device libraries remain loadable.
+  // Merged BC artifact -> CUDA-core fp16-activation/fp32-output decode. experts==0 is one native grid-y batch
+  // with 1..7 rows; otherwise offsets is [E+1] and out is [total_rows,n]. Optional for older device libraries.
   int (*bc_gemv)(uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
                  int const* row_offsets, float* out,
                  int total_rows, int n, int k, int experts, int max_rows, int qtype);

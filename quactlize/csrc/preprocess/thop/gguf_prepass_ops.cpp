@@ -528,7 +528,7 @@ torch::Tensor gguf_gemv_bc_impl(torch::Tensor a, torch::Tensor low, torch::Tenso
                 "single-plane format must have an empty high plane");
   }
 
-  int experts = 0, max_rows = 1;
+  int experts = 0, max_rows = int(a.size(0));
   int const* off = nullptr;
   int64_t const num_units = (k / 256) / meta[3];
   if (grouped) {
@@ -550,7 +550,8 @@ torch::Tensor gguf_gemv_bc_impl(torch::Tensor a, torch::Tensor low, torch::Tenso
       max_rows = std::max(max_rows, off[e + 1] - off[e]);
     }
   } else {
-    TORCH_CHECK(a.size(0) == 1, "dense BC decode is GEMV and requires exactly one activation row");
+    TORCH_CHECK(a.size(0) > 0 && a.size(0) < 8,
+                "dense BC SIMT decode requires 1..7 activation rows; got ", a.size(0));
     TORCH_CHECK(artifact_experts == 1, "dense BC artifact must have one expert dimension");
     TORCH_CHECK(units.dim() == 3 && units.size(0) == num_units &&
                 units.size(1) == n && units.size(2) == meta[2],
