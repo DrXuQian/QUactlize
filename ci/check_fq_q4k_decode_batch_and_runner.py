@@ -64,6 +64,10 @@ def check(kernel: str, backend: str, thop: str, bench: str,
         '"SIMT_BC"',
         '"PRODUCER_PLUS_MODELED_REDUCER"',
         "if shape[0] >= 8:",
+        "TC_SPLITS = (1, 2, 4, 8)",
+        '(row["symbol"], row["S_int"]) for row in tc)',
+        'row["S_int"] == expected_split',
+        'unselected split produced a non-census row',
     )
     if any(token not in analyze for token in analyze_needles):
         raise CheckError("analysis mixes producer-only, reducer, or SIMT scope")
@@ -83,6 +87,10 @@ def check(kernel: str, backend: str, thop: str, bench: str,
         "--tile-m-filter 8",
         "--tm8-max-m=8",
         "tensor_core=TM8/WM8/M<=8/source-typed-denominator-retained",
+        "analysis-only resume requires an empty original source.patch",
+        "resume source authority changed outside analysis-only seam",
+        '"compiled_binary_identity":"MUST_MATCH_FROZEN_BINARY_HASHES"',
+        "measurement_source_state_sha256",
     )
     if any(token not in runner for token in runner_needles):
         raise CheckError("runner does not execute screen/scheduler/TC/SIMT phases")
@@ -118,8 +126,12 @@ def main() -> int:
         (3, "shape.m < 8", "shape.m <= 8"),
         (4, '"decode_m": [1, 2, 4, 8]', '"decode_m": [1, 2, 4]'),
         (6, '"PRODUCER_PLUS_MODELED_REDUCER"', '"PRODUCER_ONLY"'),
+        (6, "TC_SPLITS = (1, 2, 4, 8)", "TC_SPLITS = (1,)"),
+        (6, 'row["S_int"] == expected_split', 'True'),
         (7, "--tile-m-filter 8", "--tile-m-filter 16"),
         (7, "--tm8-max-m=8", "--tm8-max-m=7"),
+        (7, '"compiled_binary_identity":"MUST_MATCH_FROZEN_BINARY_HASHES"',
+         '"compiled_binary_identity":"UNBOUND"'),
         (8, "r.tile_m == tile_m_filter", "True"),
     ]
     for index, old, new in plants:
@@ -134,7 +146,8 @@ def main() -> int:
         else:
             raise CheckError(f"negative control stayed green: {old} -> {new}")
     print("[fq-q4k-decode:self-test] PASS: M=1/2/4/8, TM8-only TC, native "
-          "one-launch M<8 SIMT, phase separation, and eight negative plants")
+          "one-launch M<8 SIMT, phase/census separation, analysis-only resume "
+          "binding, and eleven negative plants")
     return 0
 
 

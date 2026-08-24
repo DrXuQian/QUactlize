@@ -134,8 +134,103 @@ main() {
   } | sha256sum | awk '{print $1}')" || return 2
   saved_source="$out/source-state.sha256"
   if [ -s "$saved_source" ] && [ "$(cat "$saved_source")" != "$source_state" ]; then
-    printf '[fq-q4k-decode] FAIL: source/inventory/policy authority changed on resume\n' >&2
-    return 2
+    # The phase log is measurement evidence, while this analyzer only decides
+    # which already-printed census rows advance.  Permit a resume across an
+    # analysis-only commit iff the exact legacy source hash can be reconstructed
+    # from an ancestor, the original run was clean, and no measurement source
+    # changed.  Generated and binary hashes are checked again below.
+    python3 -B - "$root" "$inventory" "$policy" "$saved_source" \
+      "$out/source.patch" "$out/source-analysis-resume.json" "$source_state" <<'PY' || return 2
+import hashlib,json,os,pathlib,subprocess,sys
+root=pathlib.Path(sys.argv[1]); inventory=pathlib.Path(sys.argv[2])
+policy=pathlib.Path(sys.argv[3]); saved=pathlib.Path(sys.argv[4])
+source_patch=pathlib.Path(sys.argv[5]); audit=pathlib.Path(sys.argv[6])
+current_state=sys.argv[7]
+authority_rel=[
+ "benchmarks/test_fully_quantized_internal_sweep.cu",
+ "benchmarks/fully_quantized_splitk_producer_bench.hpp",
+ "benchmarks/fully_quantized_splitk_producer_unit.inc",
+ "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/ppu_packed_metadata_ownership.hpp",
+ "quactlize/include/actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp",
+ "quactlize/include/dense_splitk_multiformat_ppu.cuh",
+ "quactlize/include/dense_splitk_parallel_ppu.cuh",
+ "quactlize/include/gguf_bc_vecdot.hpp",
+ "quactlize/include/gguf_bc_q4_reader.hpp",
+ "quactlize/include/gguf_packed_unit.hpp",
+ "quactlize/include/ppu_dense_shipping_policy.hpp",
+ "quactlize/include/ppu_format_config.inc",
+ "quactlize/include/ppu_group_schedule.hpp",
+ "quactlize/include/ppu_tactic_space.hpp",
+ "quactlize/csrc/fq_internal_sweep.cmake.in",
+ "tools/plan_fq_q4k_decode_real_shapes.py",
+ "tools/analyze_fq_q4k_decode_real_shapes.py",
+ "tools/archive_scalefirst_q4k_prefill.py",
+ "tools/emit_fully_quantized_splitk_superset.cpp",
+ "tools/fully_quantized_internal_matrix.py",
+ "tools/gen_fully_quantized_splitk_producer_units.py",
+ "tools/run_fq_q4k_decode_real_shapes_box.sh",
+ "ci/check_fq_q4k_decode_batch_and_runner.py",
+ "build.sh"]
+analysis_only={
+ "tools/analyze_fq_q4k_decode_real_shapes.py",
+ "tools/run_fq_q4k_decode_real_shapes_box.sh",
+ "ci/check_fq_q4k_decode_batch_and_runner.py"}
+if not source_patch.is_file() or source_patch.stat().st_size:
+ raise SystemExit("analysis-only resume requires an empty original source.patch")
+dirty=subprocess.check_output(
+ ["git","-C",str(root),"status","--porcelain","--"]+authority_rel,
+ text=True)
+if dirty:
+ raise SystemExit("analysis-only resume authority is dirty:\n"+dirty)
+saved_state=saved.read_text().strip()
+actlize=subprocess.check_output(
+ ["git","-C",str(root/"third_party/actlize"),"rev-parse","HEAD"],
+ text=True).strip()
+paths=[inventory,policy]+[root/rel for rel in authority_rel]
+def committed_bytes(commit, path):
+ try: rel=path.relative_to(root).as_posix()
+ except ValueError: return path.read_bytes()
+ return subprocess.check_output(["git","-C",str(root),"show",f"{commit}:{rel}"])
+def legacy_state(commit):
+ payload=bytearray(f"{commit}\n{actlize}\n".encode())
+ for path in paths:
+  digest=hashlib.sha256(committed_bytes(commit,path)).hexdigest()
+  payload.extend(f"{digest}  {path}\n".encode())
+ return hashlib.sha256(payload).hexdigest()
+ancestors=subprocess.check_output(
+ ["git","-C",str(root),"rev-list","--first-parent","--max-count=64","HEAD"],
+ text=True).splitlines()
+measurement_commit=next((commit for commit in ancestors
+                         if legacy_state(commit)==saved_state),None)
+if measurement_commit is None:
+ raise SystemExit("source/inventory/policy authority changed on resume")
+current_commit=ancestors[0]
+changed=set(subprocess.check_output(
+ ["git","-C",str(root),"diff","--name-only",measurement_commit,current_commit],
+ text=True).splitlines())
+if not changed or not changed<=analysis_only:
+ raise SystemExit("resume source authority changed outside analysis-only seam: "+
+                  repr(sorted(changed)))
+document={
+ "schema":"quactlize.fq_q4k_decode_analysis_resume.v1",
+ "measurement_git_sha":measurement_commit,
+ "resume_git_sha":current_commit,
+ "changed_analysis_files":sorted(changed),
+ "measurement_source_state_sha256":saved_state,
+ "analysis_source_state_sha256":current_state,
+ "compiled_binary_identity":"MUST_MATCH_FROZEN_BINARY_HASHES"}
+if audit.exists():
+ if json.loads(audit.read_text())!=document:
+  raise SystemExit("analysis-only resume audit changed")
+else:
+ temporary=audit.with_name(f".{audit.name}.current.{os.getpid()}")
+ with temporary.open("w") as stream:
+  json.dump(document,stream,indent=2,sort_keys=True); stream.write("\n")
+  stream.flush(); os.fsync(stream.fileno())
+ os.replace(temporary,audit)
+print("[fq-q4k-decode] analysis-only resume "
+      f"measurement_sha={measurement_commit} resume_sha={current_commit}")
+PY
   fi
   if [ ! -s "$saved_source" ]; then
     atomic_text "$saved_source" "$source_state" || return 2
@@ -267,8 +362,9 @@ main() {
     printf 'schema=quactlize.fq_q4k_decode_real_shapes.run.v1\n'
     printf 'root_sha=%s\nactlize_sha=%s\n' "$sha" "$(git -C "$root/third_party/actlize" rev-parse HEAD)"
     printf 'inventory=%s\ninventory_sha256=%s\n' "$inventory" "$(sha256sum "$inventory" | awk '{print $1}')"
-    printf 'policy_sha256=%s\nplan_sha256=%s\nsource_state_sha256=%s\n' \
-      "$(sha256sum "$policy" | awk '{print $1}')" "$plan_sha" "$source_state"
+    printf 'policy_sha256=%s\nplan_sha256=%s\nmeasurement_source_state_sha256=%s\nanalysis_source_state_sha256=%s\n' \
+      "$(sha256sum "$policy" | awk '{print $1}')" "$plan_sha" \
+      "$(cat "$saved_source")" "$source_state"
     printf 'simt=M<8/native-grid-y/one-launch\n'
     printf 'tensor_core=TM8/WM8/M<=8/source-typed-denominator-retained\n'
     printf 'splitk_reducer=80%%-of-2766GBps/zero-launch\n'

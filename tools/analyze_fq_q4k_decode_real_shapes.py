@@ -36,6 +36,7 @@ SHARD_PREFIX = "FQ_SHARD "
 DONE_PREFIX = "FQ_SHAPE_DONE "
 AXES = ("tile_m", "tile_n", "tactic_tile_k", "warp_m", "warp_n",
         "stages", "bchunk", "a_provider")
+TC_SPLITS = (1, 2, 4, 8)
 
 
 class ContractError(ValueError):
@@ -205,13 +206,24 @@ def load_log(path: pathlib.Path, *, artifact: int,
                 raise ContractError(f"{path}: median does not match samples")
     if expected_symbols is not None:
         expected = set(expected_symbols)
-        observed = collections.Counter(row["symbol"] for row in tc)
-        expected_s = ({expected_split} if expected_split else {1, 2, 4, 8})
-        wanted = {(symbol, split) for symbol in expected for split in expected_s}
-        got = {(row["symbol"], row["S_int"]) for row in tc}
-        if got != wanted or len(tc) != len(wanted) or \
-                any(symbol not in expected for symbol in observed):
+        # --only-split controls execution, not the printed denominator.  Every
+        # selected symbol always emits the complete S=1/2/4/8 capability
+        # census; only the requested split is allowed to become MEASURED.
+        wanted = collections.Counter(
+            (symbol, split) for symbol in expected for split in TC_SPLITS)
+        observed = collections.Counter(
+            (row["symbol"], row["S_int"]) for row in tc)
+        if observed != wanted:
             raise ContractError(f"{path}: selected TC denominator differs")
+        if expected_split in TC_SPLITS:
+            for row in tc:
+                if row["S_int"] == expected_split:
+                    continue
+                if row["state"] != "REAL_CAN_IMPLEMENT" or \
+                        row["us_float"] != 0.0 or row["raw_bad_int"] != 0 or \
+                        row["samples_list"]:
+                    raise ContractError(
+                        f"{path}: unselected split produced a non-census row")
     m = expected_shape[0]
     for row in bc:
         if row.get("batch_policy") != "native-grid-y-m-lt8":
@@ -244,7 +256,8 @@ def select_screen(manifest_path: pathlib.Path, log_path: pathlib.Path,
     tc, _, _ = load_log(log_path, artifact=artifact, expected_shape=shape,
                         expected_symbols=rows, expected_split=1,
                         expected_bc_mode="all")
-    measured = {row["symbol"]: row for row in tc if row["state"] == "MEASURED"}
+    measured = {row["symbol"]: row for row in tc
+                if row["S_int"] == 1 and row["state"] == "MEASURED"}
     if rows and not measured:
         raise ContractError("screen has no measured tensor-core row")
     screen = policy["screen"]
@@ -649,8 +662,44 @@ def self_test() -> None:
             "typed_rows=0 selected_rows=0 only_split=1 bc_mode=all "
             "bc_batch=native-grid-y-m-lt8 iterations=2 status=PASS")
         return "\n".join(lines) + "\n"
+    def tc_screen_log(*, drop: tuple[str, int] | None = None,
+                      duplicate: tuple[str, int] | None = None,
+                      measure_extra: tuple[str, int] | None = None) -> str:
+        symbols = ("tc_alpha", "tc_beta")
+        lines = [
+            "FQ_SHARD q=12 A=64 bchunk=0 shape=1x1024x5120 "
+            "typed_rows=2 selected_rows=2 only_split=1 bc_mode=all "
+            "bc_batch=native-grid-y-m-lt8 iterations=2 correctness_repeats=1"
+        ]
+        for symbol in symbols:
+            for split in TC_SPLITS:
+                if drop == (symbol, split):
+                    continue
+                measured = split == 1 or measure_extra == (symbol, split)
+                state = "MEASURED" if measured else "REAL_CAN_IMPLEMENT"
+                us = "1.100000000" if measured else "0.000000000"
+                samples = "[1.000000000,1.200000000]" if measured else "[]"
+                row = (
+                    "FQ_TC_CELL q=12 A=64 bchunk=0 shape=1x1024x5120 "
+                    f"symbol={symbol} tm=8 tn=64 tk=256 wm=8 wn=64 stages=3 "
+                    f"provider=standard-aiu S={split} scope="
+                    f"{'FULL_OUTPUT' if split == 1 else 'PRODUCER_ONLY_REDUCER_UNTIMED_CORRECTNESS'} "
+                    f"provider_capacity_rows=0 state={state} us={us} raw_bad=0 "
+                    "reducer_untimed=0 failure_step=NONE failure_repeat=-1 "
+                    "first_bad=18446744073709551615 first_want=0x0000 "
+                    "first_got=0x0000 shipping_smem=1 split_smem=1 "
+                    f"partial_bytes=0 samples={samples}")
+                lines.append(row)
+                if duplicate == (symbol, split):
+                    lines.append(row)
+        lines.append(
+            "FQ_SHAPE_DONE q=12 A=64 bchunk=0 shape=1x1024x5120 "
+            "typed_rows=2 selected_rows=2 only_split=1 bc_mode=all "
+            "bc_batch=native-grid-y-m-lt8 iterations=2 status=PASS")
+        return "\n".join(lines) + "\n"
     with tempfile.TemporaryDirectory() as temporary:
-        path = pathlib.Path(temporary) / "bc.log"
+        root = pathlib.Path(temporary)
+        path = root / "bc.log"
         path.write_text(bc_log(4, "MEASURED"))
         load_log(path, artifact=32, expected_shape=(4, 1024, 5120),
                  expected_symbols=[], expected_split=1, expected_bc_mode="all")
@@ -662,9 +711,34 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("M=8 SIMT negative control stayed green")
+        tc_path = root / "tc.log"
+        symbols = ("tc_alpha", "tc_beta")
+        tc_path.write_text(tc_screen_log())
+        tc_rows, _, _ = load_log(
+            tc_path, artifact=64, expected_shape=(1, 1024, 5120),
+            expected_symbols=symbols, expected_split=1, expected_bc_mode="all")
+        if len(tc_rows) != len(symbols) * len(TC_SPLITS) or \
+                sum(row["state"] == "MEASURED" for row in tc_rows) != len(symbols):
+            raise AssertionError("TC census and measured denominators were mixed")
+        negative_logs = (
+            tc_screen_log(drop=("tc_alpha", 8)),
+            tc_screen_log(duplicate=("tc_alpha", 8)),
+            tc_screen_log(measure_extra=("tc_alpha", 2)),
+        )
+        for index, log in enumerate(negative_logs):
+            tc_path.write_text(log)
+            try:
+                load_log(tc_path, artifact=64, expected_shape=(1, 1024, 5120),
+                         expected_symbols=symbols, expected_split=1,
+                         expected_bc_mode="all")
+            except ContractError:
+                pass
+            else:
+                raise AssertionError(f"TC denominator negative {index} stayed green")
     print("[fq-q4k-decode-analysis:self-test] PASS: 80%-HBM reducer bytes, "
           "confirmation-envelope fail-close, native M4 SIMT, M8 negative, "
-          "and canonical layout classes")
+          "complete S1/S2/S4/S8 census separated from S1 measurement, three "
+          "TC denominator negatives, and canonical layout classes")
 
 
 def main() -> int:
