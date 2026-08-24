@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import pathlib
 import shlex
 import sys
@@ -251,6 +253,10 @@ def check(direct: str, probe: str) -> str:
 
 
 def self_test() -> None:
+    def quiet_check(direct: str, probe: str) -> str:
+        with contextlib.redirect_stdout(io.StringIO()):
+            return check(direct, probe)
+
     def cell(symbol: str, split: int, fail: bool = False,
              probe: bool = False) -> str:
         state = "SPLIT_PARTITION" if split == 8 else \
@@ -285,7 +291,7 @@ def self_test() -> None:
                     f"observed_reducer_raw_bad=0")
     direct = "\n".join(direct_lines)
     probe = "\n".join(probe_lines)
-    assert check(direct, probe) == "SAME_STREAM_PUBLICATION_GAP"
+    assert quiet_check(direct, probe) == "SAME_STREAM_PUBLICATION_GAP"
     variants = (
         probe.replace("canary_words=0", "canary_words=32"),
         probe.replace(
@@ -301,10 +307,10 @@ def self_test() -> None:
         probe.replace("observed_reducer_raw_bad=0",
                       "observed_reducer_raw_bad=32"),
     )
-    assert check(direct, variants[0]) == "UNWRITTEN_PARTIAL_WORDS"
-    assert check(direct, variants[1]) == "PRODUCER_PARTIAL_VALUE_BAD"
-    assert check(direct, variants[2]) == "D2H_VISIBILITY_BRIDGE_REQUIRED"
-    assert check(direct, variants[3]) == "REDUCER_LOAD_OR_INDEX_BAD"
+    assert quiet_check(direct, variants[0]) == "UNWRITTEN_PARTIAL_WORDS"
+    assert quiet_check(direct, variants[1]) == "PRODUCER_PARTIAL_VALUE_BAD"
+    assert quiet_check(direct, variants[2]) == "D2H_VISIBILITY_BRIDGE_REQUIRED"
+    assert quiet_check(direct, variants[3]) == "REDUCER_LOAD_OR_INDEX_BAD"
     mixed = probe.replace(
         "partial_value_raw_bad=0 partial_bad_plane_mask=0x0 "
         "partial_first_bad_plane=-1 "
@@ -314,7 +320,7 @@ def self_test() -> None:
         "partial_first_bad_plane=0 partial_first_bad_index=32 "
         "partial_first_bad_want=0x3f800000 "
         "partial_first_bad_got=0x40000000", 1)
-    assert check(direct, mixed) == "MIXED_PROVIDER_VERDICTS"
+    assert quiet_check(direct, mixed) == "MIXED_PROVIDER_VERDICTS"
     for broken_direct, broken_probe in (
             (direct.replace("first_bad=32", "first_bad=33", 1), probe),
             (direct, probe.replace("split_workspace_probe=1", "split_workspace_probe=0")),
@@ -323,7 +329,7 @@ def self_test() -> None:
             (direct, probe.replace(" partial_value_raw_bad=0", "", 1)),
             (direct, "\n".join(probe.splitlines()[:-1]))):
         try:
-            check(broken_direct, broken_probe)
+            quiet_check(broken_direct, broken_probe)
         except ValueError:
             pass
         else:
