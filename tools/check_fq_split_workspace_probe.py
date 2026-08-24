@@ -47,6 +47,13 @@ def nonnegative(row: dict[str, str], field: str) -> int:
     return value
 
 
+def integer(row: dict[str, str], field: str) -> int:
+    try:
+        return int(row[field], 0)
+    except (KeyError, ValueError) as error:
+        raise ValueError(f"invalid {field}: {row}") from error
+
+
 def direct_failure_signature(row: dict[str, str]) -> None:
     raw_bad = nonnegative(row, "raw_bad")
     first_bad = nonnegative(row, "first_bad")
@@ -59,23 +66,58 @@ def direct_failure_signature(row: dict[str, str]) -> None:
             f"direct failure lost aligned stripe-origin signature: {row}")
 
 
-def classify(samples: list[dict[str, str]]) -> tuple[str, dict[str, int]]:
+def summarize(samples: list[dict[str, str]], splits: int) -> dict[str, int]:
     totals = {
         field: sum(nonnegative(row, field) for row in samples)
         for field in ("canary_words", "host_reduce_raw_bad",
-                      "sync_only_raw_bad", "observed_reducer_raw_bad")
+                      "partial_value_raw_bad", "sync_only_raw_bad",
+                      "observed_reducer_raw_bad")
     }
+    totals["partial_bad_plane_mask"] = 0
+    totals["partial_first_bad_plane"] = -1
+    totals["partial_first_bad_index"] = -1
+    totals["partial_first_bad_want"] = 0
+    totals["partial_first_bad_got"] = 0
+    for row in samples:
+        bad = nonnegative(row, "partial_value_raw_bad")
+        mask = nonnegative(row, "partial_bad_plane_mask")
+        plane = integer(row, "partial_first_bad_plane")
+        index = nonnegative(row, "partial_first_bad_index")
+        want = nonnegative(row, "partial_first_bad_want")
+        got = nonnegative(row, "partial_first_bad_got")
+        if mask & ~((1 << splits) - 1):
+            raise ValueError(f"partial bad-plane mask exceeds S={splits}: {row}")
+        if bad:
+            if not mask or plane < 0 or plane >= splits or not (mask & (1 << plane)):
+                raise ValueError(f"partial mismatch lost plane identity: {row}")
+            if index >= 1024 or want == got:
+                raise ValueError(f"partial mismatch lost exact value identity: {row}")
+            if totals["partial_first_bad_plane"] < 0:
+                totals["partial_first_bad_plane"] = plane
+                totals["partial_first_bad_index"] = index
+                totals["partial_first_bad_want"] = want
+                totals["partial_first_bad_got"] = got
+        elif mask or plane != -1 or index != 2**64 - 1 or want or got:
+            raise ValueError(f"clean partial sample carries mismatch residue: {row}")
+        totals["partial_bad_plane_mask"] |= mask
+    return totals
+
+
+def classify(totals: dict[str, int]) -> str:
     if totals["canary_words"]:
         verdict = "UNWRITTEN_PARTIAL_WORDS"
+    elif totals["partial_value_raw_bad"]:
+        verdict = "PRODUCER_PARTIAL_VALUE_BAD"
     elif totals["host_reduce_raw_bad"]:
-        verdict = "PRODUCER_OR_PARTIAL_STORE_BAD"
+        raise ValueError(
+            "host reduction differs although every exact partial plane matches")
     elif totals["observed_reducer_raw_bad"]:
         verdict = "REDUCER_LOAD_OR_INDEX_BAD"
     elif totals["sync_only_raw_bad"]:
         verdict = "D2H_VISIBILITY_BRIDGE_REQUIRED"
     else:
         verdict = "SAME_STREAM_PUBLICATION_GAP"
-    return verdict, totals
+    return verdict
 
 
 def check(direct: str, probe: str) -> str:
@@ -118,6 +160,11 @@ def check(direct: str, probe: str) -> str:
         raise ValueError("workspace-probe completion denominator differs")
     if "split_workspace_probe=1" not in probe:
         raise ValueError("probe-mode marker missing")
+    oracle = records(probe, "FQ_WORKSPACE_ORACLE ")
+    if len(oracle) != 1 or oracle[0].get("exact") != "1":
+        raise ValueError("exact partial-workspace oracle marker differs")
+    for split in (1, 2, 4, 8):
+        nonnegative(oracle[0], f"S{split}")
 
     rows = records(probe, "FQ_WORKSPACE_PROBE ")
     grouped: dict[tuple[str, str], list[dict[str, str]]] = {}
@@ -139,15 +186,46 @@ def check(direct: str, probe: str) -> str:
     provider_verdicts: dict[str, str] = {}
     provider_totals: dict[str, dict[str, int]] = {}
     for symbol, provider in ((AP0, "standard-aiu"), (AP1, "packed-row")):
-        samples = grouped[(symbol, "2")] + grouped[(symbol, "4")]
-        provider_verdicts[symbol], provider_totals[symbol] = classify(samples)
+        split_totals: list[dict[str, int]] = []
+        split_verdicts: list[str] = []
+        provider_sample_count = 0
+        for split in (2, 4):
+            samples = grouped[(symbol, str(split))]
+            provider_sample_count += len(samples)
+            totals = summarize(samples, split)
+            split_totals.append(totals)
+            split_verdict = classify(totals)
+            split_verdicts.append(split_verdict)
+            print("FQ_SPLIT_WORKSPACE_SLICE "
+                  f"provider={provider} symbol={symbol} S={split} "
+                  f"verdict={split_verdict} samples={len(samples)} "
+                  f"partial_value_raw_bad={totals['partial_value_raw_bad']} "
+                  f"bad_plane_mask=0x{totals['partial_bad_plane_mask']:x} "
+                  f"first_plane={totals['partial_first_bad_plane']} "
+                  f"first_index={totals['partial_first_bad_index']} "
+                  f"first_want=0x{totals['partial_first_bad_want']:08x} "
+                  f"first_got=0x{totals['partial_first_bad_got']:08x} "
+                  f"host_reduce_raw_bad={totals['host_reduce_raw_bad']} "
+                  f"sync_only_raw_bad={totals['sync_only_raw_bad']} "
+                  f"observed_reducer_raw_bad={totals['observed_reducer_raw_bad']}")
+        provider_totals[symbol] = {
+            field: sum(totals[field] for totals in split_totals)
+            for field in ("canary_words", "host_reduce_raw_bad",
+                          "partial_value_raw_bad", "sync_only_raw_bad",
+                          "observed_reducer_raw_bad")
+        }
+        provider_verdicts[symbol] = (split_verdicts[0]
+                                     if len(set(split_verdicts)) == 1
+                                     else "MIXED_SPLIT_VERDICTS")
         totals = provider_totals[symbol]
         print("FQ_SPLIT_WORKSPACE_PROVIDER "
               f"provider={provider} symbol={symbol} "
               f"verdict={provider_verdicts[symbol]} "
               f"direct_failure_splits={','.join(direct_failures[symbol]) or 'none'} "
-              f"samples={len(samples)} canary_words={totals['canary_words']} "
+              f"samples={provider_sample_count} "
+              f"canary_words={totals['canary_words']} "
               f"host_reduce_raw_bad={totals['host_reduce_raw_bad']} "
+              f"partial_value_raw_bad={totals['partial_value_raw_bad']} "
               f"sync_only_raw_bad={totals['sync_only_raw_bad']} "
               f"observed_reducer_raw_bad={totals['observed_reducer_raw_bad']}")
     unique_verdicts = set(provider_verdicts.values())
@@ -156,7 +234,8 @@ def check(direct: str, probe: str) -> str:
     totals = {
         field: sum(provider_totals[symbol][field] for symbol in (AP0, AP1))
         for field in ("canary_words", "host_reduce_raw_bad",
-                      "sync_only_raw_bad", "observed_reducer_raw_bad")
+                      "partial_value_raw_bad", "sync_only_raw_bad",
+                      "observed_reducer_raw_bad")
     }
     print("FQ_SPLIT_WORKSPACE_VERDICT "
           f"verdict={verdict} ap0={provider_verdicts[AP0]} "
@@ -165,6 +244,7 @@ def check(direct: str, probe: str) -> str:
           f"samples_per_cell={next(iter(counts))} "
           f"canary_words={totals['canary_words']} "
           f"host_reduce_raw_bad={totals['host_reduce_raw_bad']} "
+          f"partial_value_raw_bad={totals['partial_value_raw_bad']} "
           f"sync_only_raw_bad={totals['sync_only_raw_bad']} "
           f"observed_reducer_raw_bad={totals['observed_reducer_raw_bad']}")
     return verdict
@@ -183,7 +263,10 @@ def self_test() -> None:
         return (f"FQ_TC_CELL symbol={symbol} S={split} state={state} "
                 f"raw_bad={bad} first_bad={first}")
 
-    direct_lines, probe_lines = [], ["FQ_SHARD split_workspace_probe=1"]
+    direct_lines, probe_lines = [], [
+        "FQ_SHARD split_workspace_probe=1",
+        "FQ_WORKSPACE_ORACLE exact=1 S1=0x1 S2=0x2 S4=0x4 S8=0x8",
+    ]
     for symbol in sorted(EXPECTED):
         for split in (1, 2, 4, 8):
             direct_lines.append(cell(symbol, split,
@@ -195,27 +278,49 @@ def self_test() -> None:
                 probe_lines.append(
                     f"FQ_WORKSPACE_PROBE symbol={symbol} S={split} "
                     f"repeat={repeat} sync_only_raw_bad=0 canary_words=0 "
-                    f"host_reduce_raw_bad=0 observed_reducer_raw_bad=0")
+                    f"host_reduce_raw_bad=0 partial_value_raw_bad=0 "
+                    f"partial_bad_plane_mask=0x0 partial_first_bad_plane=-1 "
+                    f"partial_first_bad_index={2**64 - 1} "
+                    f"partial_first_bad_want=0x0 partial_first_bad_got=0x0 "
+                    f"observed_reducer_raw_bad=0")
     direct = "\n".join(direct_lines)
     probe = "\n".join(probe_lines)
     assert check(direct, probe) == "SAME_STREAM_PUBLICATION_GAP"
     variants = (
         probe.replace("canary_words=0", "canary_words=32"),
-        probe.replace("host_reduce_raw_bad=0", "host_reduce_raw_bad=32"),
+        probe.replace(
+            "partial_value_raw_bad=0 partial_bad_plane_mask=0x0 "
+            "partial_first_bad_plane=-1 "
+            f"partial_first_bad_index={2**64 - 1} "
+            "partial_first_bad_want=0x0 partial_first_bad_got=0x0",
+            "partial_value_raw_bad=32 partial_bad_plane_mask=0x1 "
+            "partial_first_bad_plane=0 partial_first_bad_index=32 "
+            "partial_first_bad_want=0x3f800000 "
+            "partial_first_bad_got=0x40000000"),
         probe.replace("sync_only_raw_bad=0", "sync_only_raw_bad=32"),
         probe.replace("observed_reducer_raw_bad=0",
                       "observed_reducer_raw_bad=32"),
     )
     assert check(direct, variants[0]) == "UNWRITTEN_PARTIAL_WORDS"
-    assert check(direct, variants[1]) == "PRODUCER_OR_PARTIAL_STORE_BAD"
+    assert check(direct, variants[1]) == "PRODUCER_PARTIAL_VALUE_BAD"
     assert check(direct, variants[2]) == "D2H_VISIBILITY_BRIDGE_REQUIRED"
     assert check(direct, variants[3]) == "REDUCER_LOAD_OR_INDEX_BAD"
     mixed = probe.replace(
-        "host_reduce_raw_bad=0", "host_reduce_raw_bad=32", 1)
+        "partial_value_raw_bad=0 partial_bad_plane_mask=0x0 "
+        "partial_first_bad_plane=-1 "
+        f"partial_first_bad_index={2**64 - 1} "
+        "partial_first_bad_want=0x0 partial_first_bad_got=0x0",
+        "partial_value_raw_bad=32 partial_bad_plane_mask=0x1 "
+        "partial_first_bad_plane=0 partial_first_bad_index=32 "
+        "partial_first_bad_want=0x3f800000 "
+        "partial_first_bad_got=0x40000000", 1)
     assert check(direct, mixed) == "MIXED_PROVIDER_VERDICTS"
     for broken_direct, broken_probe in (
             (direct.replace("first_bad=32", "first_bad=33", 1), probe),
             (direct, probe.replace("split_workspace_probe=1", "split_workspace_probe=0")),
+            (direct, probe.replace("FQ_WORKSPACE_ORACLE exact=1", "FQ_WORKSPACE_ORACLE exact=0")),
+            (direct, probe.replace("partial_bad_plane_mask=0x0", "partial_bad_plane_mask=0x8", 1)),
+            (direct, probe.replace(" partial_value_raw_bad=0", "", 1)),
             (direct, "\n".join(probe.splitlines()[:-1]))):
         try:
             check(broken_direct, broken_probe)
@@ -223,9 +328,9 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("workspace-probe negative stayed green")
-    print("[fq-split-workspace-check:self-test] PASS five seam verdicts plus "
-          "mixed-provider; intermittent AP1, aligned stripe-origin, marker "
-          "and denominator negatives RED")
+    print("[fq-split-workspace-check:self-test] PASS exact per-plane oracle, "
+          "five seam verdicts plus mixed-provider; intermittent AP1, aligned "
+          "stripe-origin, marker/mask and denominator negatives RED")
 
 
 def main() -> int:

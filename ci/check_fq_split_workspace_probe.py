@@ -33,7 +33,11 @@ def check(bench: str, main: str, runner: str, checker: str,
         "producer_launch()",
         "hggcDeviceSynchronize()",
         "hggcMemcpy(host_partials.data(), partials, plan.partial_bytes,",
-        "inspect_host_partials(in, splits, host_partials, sample);",
+        "inspect_host_partials(in, splits, host_partials, sample)",
+        "expected_partials[offset]",
+        "sample.partial_value_raw_bad",
+        "sample.partial_bad_plane_mask",
+        'result.failure_step = "WORKSPACE_PROBE_PARTIAL_ORACLE";',
         "sample.sync_only_raw_bad = result.raw_bad;",
         "sample.observed_reducer_raw_bad = result.raw_bad;",
         'result.failure_step = "WORKSPACE_PROBE_COMPLETE";',
@@ -45,6 +49,11 @@ def check(bench: str, main: str, runner: str, checker: str,
     require("main", main, (
         '"--split-workspace-probe"',
         '"FQ_WORKSPACE_PROBE q=%d A=%d shape=%dx%dx%d symbol=%s "',
+        '"FQ_WORKSPACE_ORACLE exact=1 S1=0x%016llx S2=0x%016llx "',
+        "make_fixture(shape, cli.split_workspace_probe)",
+        "if (build_partial_golden)",
+        "f.partial_golden[slot][offset] += float(contribution);",
+        '"partial_value_raw_bad=%llu partial_bad_plane_mask=0x%x "',
         '"bc_batch=native-grid-y-m-lt8 split_workspace_probe=%d "',
         '"iterations=%d correctness_repeats=%d\\n"',
     ))
@@ -55,12 +64,15 @@ def check(bench: str, main: str, runner: str, checker: str,
         "check_fq_split_workspace_probe.py",
     ))
     require("checker", checker, (
-        'verdict = "PRODUCER_OR_PARTIAL_STORE_BAD"',
+        'verdict = "PRODUCER_PARTIAL_VALUE_BAD"',
         'verdict = "SAME_STREAM_PUBLICATION_GAP"',
         'verdict = "D2H_VISIBILITY_BRIDGE_REQUIRED"',
         'verdict = "REDUCER_LOAD_OR_INDEX_BAD"',
+        '"FQ_SPLIT_WORKSPACE_SLICE "',
         '"FQ_SPLIT_WORKSPACE_PROVIDER "',
         '"MIXED_PROVIDER_VERDICTS"',
+        '"exact partial-workspace oracle marker differs"',
+        "partial mismatch lost plane identity",
         "direct AP0 S2/S4 failure denominator was not reproduced",
     ))
     require("selector", selector, (
@@ -76,8 +88,13 @@ def main() -> int:
     plants = (
         (0, "sample.sync_only_raw_bad = result.raw_bad;",
          "sample.sync_only_raw_bad = 0;"),
-        (0, "inspect_host_partials(in, splits, host_partials, sample);",
+        (0, "inspect_host_partials(in, splits, host_partials, sample)",
          "/* lost host oracle */"),
+        (0, "expected_partials[offset]", "expected_partials[0]"),
+        (1, "f.partial_golden[slot][offset] += float(contribution);",
+         "/* lost independent slice golden */"),
+        (1, "make_fixture(shape, cli.split_workspace_probe)",
+         "make_fixture(shape, true)"),
         (1, '"--split-workspace-probe"', '"--lost-workspace-probe"'),
         (2, "workspace-probe.log", "workspace-lost.log"),
         (3, 'verdict = "SAME_STREAM_PUBLICATION_GAP"',
@@ -95,9 +112,10 @@ def main() -> int:
             pass
         else:
             raise CheckError(f"negative stayed green: {old}")
-    print("[fq-split-workspace-probe:self-test] PASS: producer bytes, "
-          "sync-only/host-observed reducer arms, exact AP0/AP1 denominator, "
-          "and six negatives")
+    print("[fq-split-workspace-probe:self-test] PASS: independent exact "
+          "per-split golden, producer bytes, sync-only/host-observed reducer "
+          "arms, diagnostic-only allocation, exact AP0/AP1 denominator, "
+          "and nine negatives")
     return 0
 
 

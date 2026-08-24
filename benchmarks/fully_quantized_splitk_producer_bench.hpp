@@ -87,6 +87,12 @@ struct WorkspaceProbeSample {
   std::uint16_t host_first_bad_want = 0;
   std::uint16_t host_first_bad_got = 0;
   std::uint64_t partial_fingerprint = 0;
+  std::uint64_t partial_value_raw_bad = 0;
+  std::uint32_t partial_bad_plane_mask = 0;
+  int partial_first_bad_plane = -1;
+  std::size_t partial_first_bad_index = std::size_t(-1);
+  std::uint32_t partial_first_bad_want = 0;
+  std::uint32_t partial_first_bad_got = 0;
   std::uint64_t observed_reducer_raw_bad = 0;
 };
 
@@ -98,6 +104,10 @@ struct DeviceInputs {
   half_t* output = nullptr;
   char* workspace = nullptr;
   std::size_t workspace_bytes = 0;
+  // Host-only, independent exact FP32 goldens in split-major [S][M][N]
+  // order.  Slot i corresponds to kSplits[i].  The producer never receives
+  // these pointers; they exist only for the diagnostic D2H oracle.
+  std::array<float const*, kSplits.size()> partial_golden{};
   half_t const* golden = nullptr;  // host pointer, m*n values
   int m = 0, n = 0, k = 0;
 };
@@ -317,10 +327,20 @@ inline bool inspect(DeviceInputs const& in, CellResult& out) {
   return true;
 }
 
-inline void inspect_host_partials(
+inline bool inspect_host_partials(
     DeviceInputs const& in, int splits, std::vector<float> const& partials,
     WorkspaceProbeSample& sample) {
   std::size_t const count = std::size_t(in.m) * in.n;
+  auto split_it = std::find(kSplits.begin(), kSplits.end(), splits);
+  if (split_it == kSplits.end() ||
+      partials.size() != std::size_t(splits) * count) {
+    return false;
+  }
+  std::size_t const split_slot = std::size_t(split_it - kSplits.begin());
+  float const* expected_partials = in.partial_golden[split_slot];
+  if (expected_partials == nullptr) {
+    return false;
+  }
   sample.canary_words = 0;
   for (float value : partials) {
     std::uint32_t bits = 0;
@@ -328,6 +348,28 @@ inline void inspect_host_partials(
     sample.canary_words += bits == UINT32_C(0xa5a5a5a5);
   }
   sample.partial_fingerprint = hash_float_bits(partials.data(), partials.size());
+  sample.partial_value_raw_bad = 0;
+  sample.partial_bad_plane_mask = 0;
+  sample.partial_first_bad_plane = -1;
+  sample.partial_first_bad_index = std::size_t(-1);
+  sample.partial_first_bad_want = sample.partial_first_bad_got = 0;
+  for (int split = 0; split < splits; ++split) {
+    for (std::size_t index = 0; index < count; ++index) {
+      std::size_t const offset = std::size_t(split) * count + index;
+      float const got = partials[offset];
+      float const want = expected_partials[offset];
+      if (got != want) {
+        if (sample.partial_value_raw_bad == 0) {
+          sample.partial_first_bad_plane = split;
+          sample.partial_first_bad_index = index;
+          std::memcpy(&sample.partial_first_bad_want, &want, sizeof(want));
+          std::memcpy(&sample.partial_first_bad_got, &got, sizeof(got));
+        }
+        sample.partial_bad_plane_mask |= std::uint32_t(1) << split;
+        ++sample.partial_value_raw_bad;
+      }
+    }
+  }
   sample.host_reduce_raw_bad = 0;
   sample.host_first_bad_index = std::size_t(-1);
   sample.host_first_bad_want = sample.host_first_bad_got = 0;
@@ -347,6 +389,7 @@ inline void inspect_host_partials(
       ++sample.host_reduce_raw_bad;
     }
   }
+  return true;
 }
 
 template <class Launch>
@@ -570,7 +613,12 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
               probe_api_ok = false;
               break;
             }
-            inspect_host_partials(in, splits, host_partials, sample);
+            if (!inspect_host_partials(in, splits, host_partials, sample)) {
+              result.failure_step = "WORKSPACE_PROBE_PARTIAL_ORACLE";
+              result.failure_repeat = repeat;
+              probe_api_ok = false;
+              break;
+            }
             if (reducer.run(nullptr) != cutlass::Status::kSuccess ||
                 hggcDeviceSynchronize() != hggcSuccess ||
                 !inspect(in, result)) {
