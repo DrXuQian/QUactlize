@@ -32,12 +32,17 @@ from typing import Any
 
 import plan_scalefirst_q4k_real_shapes as planner
 
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from quactlize import formats as qformats
 
-ANALYSIS_SCHEMA = "quactlize.scalefirst_q4k_real_shapes_analysis.v1"
+
+ANALYSIS_SCHEMA = "quactlize.scalefirst_q4k_real_shapes_analysis.v2"
 BUNDLE_SCHEMA = "quactlize.scalefirst_q4k_real_shapes_bundle.v1"
-OFFLINE_SCHEMA = "quactlize.scalefirst_q4k_offline_layout_decisions.v1"
+OFFLINE_SCHEMA = "quactlize.scalefirst_q4k_offline_layout_decisions.v2"
 HEURISTIC_SCHEMA = "quactlize.scalefirst_q4k_heuristic_evidence.v1"
-REGISTRY_SCHEMA = "quactlize.scalefirst_q4k_winner_registry.v1"
+REGISTRY_SCHEMA = "quactlize.scalefirst_q4k_winner_registry.v2"
 AXES = ("tile_m", "tile_n", "tactic_tile_k", "warp_m", "warp_n",
         "stages", "bchunk")
 
@@ -241,19 +246,53 @@ def measured_board(cell_summaries: dict[tuple[str, int], dict[str, Any]],
             "winner": winner, "runner_up": result.get("runner_up")}
 
 
-def physical_layout_class(artifact: int) -> dict[str, str]:
-    if artifact == 32:
-        return {
-            "name": "xplane-q4k-fold2-a32",
-            "basis": "FoldN=2; physically distinct from the unfolded class",
+def physical_layout_class(artifact: int) -> dict[str, Any]:
+    """Canonical xplane byte identity, not a CuTe debug-print string.
+
+    L105 groups complete stored buffers and L115 compares the complete logical
+    owner -> physical slot map.  Together they prove one normalized F=1 class
+    inside the interleave-256/A<=256 domain.  Folded arrangements stay bound
+    to their exact producer descriptor unless an equally strong byte-map
+    witness merges them.
+    """
+    if artifact not in planner.ARTIFACTS:
+        raise AnalysisError(f"unregistered ArtifactTileK {artifact}")
+    arrangement = qformats.PlacedArrangement(4, artifact, 0)
+    tile_free = arrangement.layout_is_tile_free() and artifact <= 256
+    if tile_free:
+        name = "xplane-q4k-tile-free-f1-le256"
+        identity = {
+            "schema": "quactlize.xplane_canonical_mapping.v1",
+            "producer": "xplane::place_derived",
+            "logical_code_planes": [4],
+            "fold_n": [1],
+            "interleave_codes": 256,
+            "equivalence_domain": {"artifact_tile_k": [64, 128, 256]},
         }
-    if artifact in (64, 128, 256):
-        return {
-            "name": "xplane-q4k-tile-free-f1-le256",
-            "basis": ("dev/fold_derivation/l115_artifact_tactic_code_slots.cu: "
-                      "F=1/TK<=256 byte class; ArtifactTileK remains a reader/copy descriptor, not a repack class"),
+        basis = (
+            "L105 exact stored-byte class plus L115 exact logical-owner/"
+            "physical-slot parity for F=1, ArtifactTileK<=256")
+    else:
+        name = f"xplane-q4k-fold{arrangement.fold}-a{artifact}"
+        identity = {
+            "schema": "quactlize.xplane_canonical_mapping.v1",
+            "producer": "xplane::place_derived",
+            "logical_code_planes": [4],
+            "artifact_tile_k": artifact,
+            "fold_n": [arrangement.fold],
+            "interleave_codes": 256,
         }
-    raise AnalysisError(f"unregistered ArtifactTileK {artifact}")
+        basis = (
+            "exact folded producer descriptor; no exact byte-map authority "
+            "merges it with another descriptor")
+    encoded = canonical(identity).encode("utf-8")
+    return {
+        "name": name,
+        "mapping_sha256": hashlib.sha256(encoded).hexdigest(),
+        "canonical_mapping_identity": identity,
+        "cute_debug_string_role": "DIAGNOSTIC_ONLY_NOT_CANONICAL",
+        "basis": basis,
+    }
 
 
 def regret_interval(candidate: dict[str, Any], all_candidates: list[dict[str, Any]]
@@ -265,6 +304,31 @@ def regret_interval(candidate: dict[str, Any], all_candidates: list[dict[str, An
     best_low = min(float(item["winner"]["range_us"][0])
                    for item in all_candidates)
     return max(0., low / best_high - 1.), max(0., high / best_low - 1.)
+
+
+def ranked_decision(scored: list[dict[str, Any]]) -> tuple[
+        str, dict[str, Any] | None, dict[str, Any] | None,
+        dict[str, Any] | None]:
+    """Return verdict, objective runner, and the interval blocker.
+
+    `scored` is already ordered by the registered point objective.  Resolution
+    is stronger than merely beating that objective runner: the selected upper
+    envelope must be below every alternative lower envelope.  A noisy third
+    place must therefore keep the decision unresolved.
+    """
+    if not scored:
+        return "NO_COMMON_LAYOUT", None, None, None
+    selected = scored[0]
+    runner = scored[1] if len(scored) > 1 else None
+    alternatives = scored[1:]
+    blocker = (None if not alternatives else min(
+        alternatives, key=lambda item: (
+            float(item["max_regret_interval"][0]),
+            float(item["max_regret"]), float(item["mean_regret"]))))
+    verdict = ("RESOLVED" if blocker is None or
+               float(selected["max_regret_interval"][1]) <
+               float(blocker["max_regret_interval"][0]) else "UNRESOLVED")
+    return verdict, selected, runner, blocker
 
 
 def offline_layout_decisions(inputs: dict[str, Any]) -> list[dict[str, Any]]:
@@ -323,16 +387,60 @@ def offline_layout_decisions(inputs: dict[str, Any]) -> list[dict[str, Any]]:
         scored.sort(key=lambda item: (item["max_regret"],
                                       item["mean_regret"],
                                       item["artifact_tile_k"]))
-        if not scored:
-            verdict = "NO_COMMON_LAYOUT"
-            selected = runner = None
-        else:
-            selected = scored[0]
-            runner = scored[1] if len(scored) > 1 else None
-            verdict = ("RESOLVED" if runner is None or
-                       float(selected["max_regret_interval"][1]) <
-                       float(runner["max_regret_interval"][0]) else
-                       "UNRESOLVED")
+        verdict, selected, runner, resolution_competitor = \
+            ranked_decision(scored)
+        # Physical bytes and the resident reader/copy descriptor are separate
+        # decisions.  Within the proven F=1 class A64/A128/A256 can select
+        # different readers per M without asking the offline packer for three
+        # copies.  Score those byte classes directly; do not inherit a
+        # descriptor tie as a fake repack ambiguity.
+        physical_scores = []
+        class_ids = sorted({physical_layout_class(artifact)["mapping_sha256"]
+                            for artifact in planner.ARTIFACTS})
+        for class_id in class_ids:
+            per_m, regrets, lowers, uppers, used_artifacts = [], [], [], [], set()
+            for shape in shapes:
+                key = str(shape["shape_key"])
+                candidates = per_shape[key]
+                in_class = [item for item in candidates
+                            if physical_layout_class(item["artifact_tile_k"])[
+                                "mapping_sha256"] == class_id]
+                if not in_class:
+                    break
+                item = min(in_class, key=lambda value: (
+                    float(value["winner"]["median_us"]),
+                    value["artifact_tile_k"]))
+                best = min(float(value["winner"]["median_us"])
+                           for value in candidates)
+                median = float(item["winner"]["median_us"])
+                lower, upper = regret_interval(item, candidates)
+                regrets.append(median / best - 1.)
+                lowers.append(lower); uppers.append(upper)
+                used_artifacts.add(item["artifact_tile_k"])
+                per_m.append({"M": int(shape["m"]),
+                              "reader_artifact_tile_k": item["artifact_tile_k"],
+                              "median_us": median, "regret": regrets[-1],
+                              "regret_interval": [lower, upper],
+                              "config": item["winner"]["config"],
+                              "algorithm": item["winner"]["algorithm"]})
+            if len(per_m) == len(shapes):
+                exemplar = next(physical_layout_class(artifact)
+                                for artifact in planner.ARTIFACTS
+                                if physical_layout_class(artifact)[
+                                    "mapping_sha256"] == class_id)
+                physical_scores.append({
+                    "physical_layout_class": exemplar,
+                    "reader_artifact_tile_k_used": sorted(used_artifacts),
+                    "max_regret": max(regrets),
+                    "mean_regret": statistics.mean(regrets),
+                    "max_regret_interval": [max(lowers), max(uppers)],
+                    "per_m": per_m,
+                })
+        physical_scores.sort(key=lambda item: (
+            item["max_regret"], item["mean_regret"],
+            item["physical_layout_class"]["mapping_sha256"]))
+        physical_verdict, physical_selected, physical_runner, \
+            physical_resolution_competitor = ranked_decision(physical_scores)
         point_winners = {}
         point_winner_classes = {}
         for shape in shapes:
@@ -344,7 +452,8 @@ def offline_layout_decisions(inputs: dict[str, Any]) -> list[dict[str, Any]]:
                 item["artifact_tile_k"] for item in candidates
                 if float(item["winner"]["median_us"]) == best)
             point_winner_classes[str(shape["m"])] = sorted({
-                physical_layout_class(item["artifact_tile_k"])["name"]
+                physical_layout_class(item["artifact_tile_k"])[
+                    "mapping_sha256"]
                 for item in candidates
                 if float(item["winner"]["median_us"]) == best})
         references = sorted({canonical(reference): reference
@@ -358,9 +467,18 @@ def offline_layout_decisions(inputs: dict[str, Any]) -> list[dict[str, Any]]:
                           "per_m_point_physical_layout_classes": point_winner_classes,
                           "descriptor_winner_changes_with_m": len({tuple(value)
                                 for value in point_winners.values()}) > 1,
-                          "physical_layout_winner_changes_with_m": len({tuple(value)
+                          "xplane_byte_class_winner_changes_with_m": len({tuple(value)
                                 for value in point_winner_classes.values()}) > 1,
+                          "xplane_byte_class_decision": {
+                              "verdict": physical_verdict,
+                              "selected": physical_selected,
+                              "runner_up": physical_runner,
+                              "resolution_competitor":
+                                  physical_resolution_competitor,
+                              "all_scores": physical_scores,
+                          },
                           "selected": selected, "runner_up": runner,
+                          "resolution_competitor": resolution_competitor,
                           "all_common_layout_scores": scored,
                           "references": references})
     return decisions
@@ -569,6 +687,8 @@ def winner_registry(inputs: dict[str, Any], decisions: list[dict[str, Any]]
                               board_result["verdict"])
             recordable = (decision["verdict"] == "RESOLVED" and
                           config_verdict == "RESOLVED")
+            physical_decision = decision["xplane_byte_class_decision"]
+            physical_selected = physical_decision.get("selected")
             axes = ({axis: None for axis in AXES} if winner is None else
                     {axis: int(manifests[artifact][winner["symbol"]][axis])
                      for axis in AXES})
@@ -597,13 +717,16 @@ def winner_registry(inputs: dict[str, Any], decisions: list[dict[str, Any]]
                         "metric_scope": ("FULL_OUTPUT" if board == "FULL_OUTPUT"
                                          else "PRODUCER_ONLY_NO_REDUCER_E2E"),
                         "offline_layout_verdict": decision["verdict"],
+                        "xplane_byte_class_verdict": physical_decision["verdict"],
+                        "xplane_byte_class_recordable":
+                            physical_decision["verdict"] == "RESOLVED",
                         "config_verdict": config_verdict,
                         "recordable": recordable,
                         "artifact_tile_k": artifact,
                         "layout": (None if artifact is None else
                                    planner.layout_identity(artifact)),
-                        "physical_layout_class": (None if artifact is None else
-                                                  physical_layout_class(artifact)),
+                        "physical_layout_class": (None if physical_selected is None else
+                            physical_selected["physical_layout_class"]),
                         "config": None if winner is None else winner["config"],
                         "algorithm": None if winner is None else winner["algorithm"],
                         "grid": None if winner is None else winner["grid"],
@@ -623,21 +746,41 @@ def flatten_offline(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = []
     for item in decisions:
         selected, runner = item.get("selected"), item.get("runner_up")
+        resolution_competitor = item.get("resolution_competitor")
+        physical_decision = item["xplane_byte_class_decision"]
+        physical_selected = physical_decision.get("selected")
+        physical_competitor = physical_decision.get("resolution_competitor")
         rows.append({"N": item["N"], "K": item["K"],
                      "group_size": item["group_size"],
                      "M_values": ",".join(map(str, item["M_values"])),
-                     "verdict": item["verdict"],
+                     "descriptor_verdict": item["verdict"],
+                     "xplane_byte_class_verdict": physical_decision["verdict"],
                      "descriptor_winner_changes_with_m":
                          item["descriptor_winner_changes_with_m"],
-                     "physical_layout_winner_changes_with_m":
-                         item["physical_layout_winner_changes_with_m"],
+                     "xplane_byte_class_winner_changes_with_m":
+                         item["xplane_byte_class_winner_changes_with_m"],
                      "ArtifactTileK": "" if selected is None else
                          selected["artifact_tile_k"],
                      "FoldN_low": "" if selected is None else
                          selected["layout"]["fold_n"]["low"],
                      "layout": "" if selected is None else selected["layout"]["name"],
-                     "physical_layout_class": "" if selected is None else
-                         selected["physical_layout_class"]["name"],
+                     "physical_layout_class": "" if physical_selected is None else
+                         physical_selected["physical_layout_class"]["name"],
+                     "xplane_mapping_sha256": "" if physical_selected is None else
+                         physical_selected["physical_layout_class"][
+                             "mapping_sha256"],
+                     "xplane_reader_ArtifactTileK_used": "" if
+                         physical_selected is None else ",".join(map(
+                             str, physical_selected[
+                                 "reader_artifact_tile_k_used"])),
+                     "physical_max_regret": "" if physical_selected is None else
+                         physical_selected["max_regret"],
+                     "physical_max_regret_low": "" if
+                         physical_selected is None else
+                         physical_selected["max_regret_interval"][0],
+                     "physical_max_regret_high": "" if
+                         physical_selected is None else
+                         physical_selected["max_regret_interval"][1],
                      "max_regret": "" if selected is None else selected["max_regret"],
                      "max_regret_low": "" if selected is None else
                          selected["max_regret_interval"][0],
@@ -646,7 +789,13 @@ def flatten_offline(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
                      "runner_ArtifactTileK": "" if runner is None else
                          runner["artifact_tile_k"],
                      "runner_max_regret": "" if runner is None else
-                         runner["max_regret"]})
+                         runner["max_regret"],
+                     "resolution_competitor_ArtifactTileK": "" if
+                         resolution_competitor is None else
+                         resolution_competitor["artifact_tile_k"],
+                     "xplane_resolution_competitor": "" if
+                         physical_competitor is None else
+                         physical_competitor["physical_layout_class"]["name"]})
     return rows
 
 
@@ -669,13 +818,16 @@ def flatten_registry(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         result.append({key: row[key] for key in (
             "model_id", "tensor", "tp_world", "tp_rank", "tp_partition",
             "M", "N", "K", "group_size", "board", "metric_scope",
-            "offline_layout_verdict", "config_verdict", "recordable")}
+            "offline_layout_verdict", "xplane_byte_class_verdict",
+            "xplane_byte_class_recordable", "config_verdict", "recordable")}
             | {"ArtifactTileK": "" if layout is None else
                    layout["artifact_tile_k"],
                "FoldN_low": "" if layout is None else layout["fold_n"]["low"],
                "layout": "" if layout is None else layout["name"],
                "physical_layout_class": "" if physical is None else
                    physical["name"],
+               "xplane_mapping_sha256": "" if physical is None else
+                   physical["mapping_sha256"],
                "config": row["config"] or "", "algorithm": row["algorithm"] or "",
                "grid": "" if row["grid"] is None else row["grid"],
                "policy": row["policy"] or "",
@@ -695,35 +847,61 @@ def report_text(inputs: dict[str, Any], decisions: list[dict[str, Any]],
                 registry: list[dict[str, Any]]) -> str:
     lines = []
     authority: Authority = inputs["authority"]
-    verdicts = collections.Counter(item["verdict"] for item in decisions)
-    artifacts = collections.Counter(
+    descriptor_verdicts = collections.Counter(item["verdict"]
+                                               for item in decisions)
+    physical_verdicts = collections.Counter(
+        item["xplane_byte_class_decision"]["verdict"] for item in decisions)
+    descriptors = collections.Counter(
         item["selected"]["artifact_tile_k"] for item in decisions
         if item.get("selected") is not None)
+    physical_classes = collections.Counter(
+        item["xplane_byte_class_decision"]["selected"][
+            "physical_layout_class"]["name"] for item in decisions
+        if item["xplane_byte_class_decision"].get("selected") is not None)
     descriptor_changes = sum(bool(item["descriptor_winner_changes_with_m"])
                              for item in decisions)
-    physical_changes = sum(bool(item["physical_layout_winner_changes_with_m"])
+    physical_changes = sum(bool(item["xplane_byte_class_winner_changes_with_m"])
                            for item in decisions)
     lines.append("Q4K_POSTPROCESS "
                  f"measurement_sha={authority.bundle.get('git_sha')} "
                  f"shapes={inputs['plan']['shape_count']} "
                  f"layout_cells={inputs['plan']['cell_count']} "
                  f"tensor_families={len(decisions)}")
-    lines.append("OFFLINE_CENSUS verdicts=" + canonical(dict(sorted(verdicts.items()))) +
-                 " selected_A=" + canonical(dict(sorted(artifacts.items()))) +
+    lines.append("OFFLINE_CENSUS descriptor_verdicts=" +
+                 canonical(dict(sorted(descriptor_verdicts.items()))) +
+                 " xplane_byte_class_verdicts=" +
+                 canonical(dict(sorted(physical_verdicts.items()))) +
+                 " selected_descriptor_A=" +
+                 canonical(dict(sorted(descriptors.items()))) +
+                 " selected_xplane_byte_class=" +
+                 canonical(dict(sorted(physical_classes.items()))) +
                  f" per_M_descriptor_changes={descriptor_changes} "
-                 f"per_M_physical_layout_changes={physical_changes}")
+                 f"per_M_xplane_byte_class_changes={physical_changes}")
     for item in sorted(decisions,
                        key=lambda value: (-float(value["selected"]["max_regret"])
                                           if value.get("selected") else float("inf"),
                                           value["N"], value["K"]))[:12]:
         selected = item.get("selected")
+        physical_decision = item["xplane_byte_class_decision"]
+        physical = physical_decision.get("selected")
+        descriptor_blocker = item.get("resolution_competitor")
+        physical_blocker = physical_decision.get("resolution_competitor")
         lines.append("OFFLINE_HOT "
-                     f"N={item['N']} K={item['K']} verdict={item['verdict']} "
+                     f"N={item['N']} K={item['K']} "
+                     f"descriptor_verdict={item['verdict']} "
+                     f"xplane_byte_class_verdict={physical_decision['verdict']} "
                      f"perM_descriptor_change={int(item['descriptor_winner_changes_with_m'])} "
-                     f"perM_physical_change={int(item['physical_layout_winner_changes_with_m'])} "
-                     f"A={('NA' if selected is None else selected['artifact_tile_k'])} "
-                     f"max_regret={('NA' if selected is None else format(selected['max_regret'], '.6f'))} "
-                     f"interval={('NA' if selected is None else canonical(selected['max_regret_interval']))}")
+                     f"perM_xplane_byte_class_change={int(item['xplane_byte_class_winner_changes_with_m'])} "
+                     f"descriptor_A={('NA' if selected is None else selected['artifact_tile_k'])} "
+                     f"descriptor_blocker_A={('NA' if descriptor_blocker is None else descriptor_blocker['artifact_tile_k'])} "
+                     f"descriptor_max_regret={('NA' if selected is None else format(selected['max_regret'], '.6f'))} "
+                     f"descriptor_interval={('NA' if selected is None else canonical(selected['max_regret_interval']))} "
+                     f"xplane_byte_class={('NA' if physical is None else physical['physical_layout_class']['name'])} "
+                     f"xplane_mapping_sha256={('NA' if physical is None else physical['physical_layout_class']['mapping_sha256'])} "
+                     f"xplane_blocker_class={('NA' if physical_blocker is None else physical_blocker['physical_layout_class']['name'])} "
+                     f"xplane_reader_A={('NA' if physical is None else canonical(physical['reader_artifact_tile_k_used']))} "
+                     f"xplane_class_max_regret={('NA' if physical is None else format(physical['max_regret'], '.6f'))} "
+                     f"xplane_class_interval={('NA' if physical is None else canonical(physical['max_regret_interval']))}")
     for row in heuristics["m_only_config_evidence"]:
         lines.append("HEURISTIC_M_ONLY "
                      f"A={row['artifact_tile_k']} M={row['M']} cells={row['cells']} "
@@ -738,8 +916,12 @@ def report_text(inputs: dict[str, Any], decisions: list[dict[str, Any]],
                      f"coverage={row['mode_config_coverage']:.3f} "
                      f"algorithms={canonical(row['algorithm_counts'])}")
     recordable = sum(bool(row["recordable"]) for row in registry)
-    lines.append(f"WINNER_REGISTRY rows={len(registry)} recordable={recordable} "
-                 f"held_back={len(registry)-recordable}")
+    physical_recordable = sum(bool(row["xplane_byte_class_recordable"])
+                              for row in registry)
+    lines.append(f"WINNER_REGISTRY rows={len(registry)} "
+                 f"xplane_byte_class_recordable={physical_recordable} "
+                 f"deployment_recordable={recordable} "
+                 f"deployment_held_back={len(registry)-recordable}")
     lines.append("SCOPE FULL_OUTPUT is product E2E; SPLITK boards are producer-only and cannot be compared with FULL_OUTPUT or recorded as product latency")
     return "\n".join(lines) + "\n"
 
@@ -756,11 +938,11 @@ def analyze(bundle: pathlib.Path, output: pathlib.Path, threshold: float) -> Non
     registry = winner_registry(inputs, decisions)
     authority: Authority = inputs["authority"]
     offline_doc = {"schema": OFFLINE_SCHEMA,
-                   "selection_rule": "one common ArtifactTileK per (N,K,gs) across measured M; minimize maximum median regret, then mean regret; resolution requires non-overlapping conservative max-regret envelopes",
-                   "physical_class_rule": "ArtifactTileK is a resident reader/copy descriptor. For Q4_K, A32/FoldN=2 is one physical byte class; A64/A128/A256 share the proven tile-free F=1/TK<=256 byte class and do not imply three repacks",
+                   "descriptor_selection_rule": "one common ArtifactTileK per (N,K,gs) across measured M; minimize maximum median regret, then mean regret; resolution requires non-overlapping conservative max-regret envelopes",
+                   "physical_class_rule": "Score one physical byte class per (N,K,gs) across measured M. ArtifactTileK is a resident reader/copy descriptor: Q4_K A32/FoldN=2 is one class, while A64/A128/A256 share the proven tile-free F=1/TK<=256 class and may use different readers per M without repacking",
                    "decisions": decisions}
     registry_doc = {"schema": REGISTRY_SCHEMA,
-                    "recording_rule": "recordable only when both offline layout and within-layout config are RESOLVED; producer-only boards remain explicitly scoped",
+                    "recording_rule": "physical bytes are recordable when the physical class is RESOLVED; a deployment winner is recordable only when both the ArtifactTileK descriptor and within-layout config are RESOLVED; producer-only boards remain explicitly scoped",
                     "rows": registry}
     analyzer_path = pathlib.Path(__file__).resolve()
     try:
@@ -829,11 +1011,53 @@ def self_test() -> None:
         {"plan": {"shapes": shapes}, "cell_summaries": cells})
     if len(decisions) != 1 or decisions[0]["selected"]["artifact_tile_k"] != 64 or \
             not decisions[0]["descriptor_winner_changes_with_m"] or \
-            not decisions[0]["physical_layout_winner_changes_with_m"]:
+            not decisions[0]["xplane_byte_class_winner_changes_with_m"]:
         raise AssertionError("minimax/common-layout selection differs")
     if physical_layout_class(64) != physical_layout_class(128) or \
             physical_layout_class(32) == physical_layout_class(64):
         raise AssertionError("physical FoldN class collapsed/separated incorrectly")
+    # A reader-descriptor tie inside one proven byte class must not become a
+    # fake offline-repack tie.  A64 wins one M and A128 wins the other; their
+    # conservative descriptor envelopes overlap, while the shared F=1 bytes
+    # remain cleanly separated from A32/F=2.
+    tied_values = {
+        ("m64", 32): 14., ("m64", 64): 10.,
+        ("m64", 128): 10.05, ("m64", 256): 10.10,
+        ("m2048", 32): 14., ("m2048", 64): 10.05,
+        ("m2048", 128): 10., ("m2048", 256): 10.10,
+    }
+    tied_cells = {
+        (key, artifact): {"boards": {"FULL_OUTPUT": board(
+            tied_values[(key, artifact)])}}
+        for key in ("m64", "m2048") for artifact in planner.ARTIFACTS
+    }
+    tied = offline_layout_decisions(
+        {"plan": {"shapes": shapes}, "cell_summaries": tied_cells})[0]
+    byte_decision = tied["xplane_byte_class_decision"]
+    if tied["verdict"] != "UNRESOLVED" or \
+            byte_decision["verdict"] != "RESOLVED" or \
+            byte_decision["selected"]["physical_layout_class"]["name"] != \
+            "xplane-q4k-tile-free-f1-le256" or \
+            byte_decision["selected"]["reader_artifact_tile_k_used"] != \
+            [64, 128]:
+        raise AssertionError(
+            "reader descriptor ambiguity infected the xplane byte decision")
+    # The point-objective runner may be cleanly separated while a noisier
+    # third place still overlaps.  Looking only at row two is fail-open.
+    planted_scores = [
+        {"max_regret": 0., "mean_regret": 0.,
+         "max_regret_interval": [0., .02]},
+        {"max_regret": .03, "mean_regret": .03,
+         "max_regret_interval": [.03, .04]},
+        {"max_regret": .05, "mean_regret": .05,
+         "max_regret_interval": [.01, .50]},
+    ]
+    planted_verdict, _, planted_runner, planted_blocker = \
+        ranked_decision(planted_scores)
+    if planted_verdict != "UNRESOLVED" or \
+            planted_runner is not planted_scores[1] or \
+            planted_blocker is not planted_scores[2]:
+        raise AssertionError("noisy third-place interval stayed green")
     # Dropping an essential value must be red while a dominated value is safe.
     manifest = {
         "a": {"symbol": "a", "tile_m": 8, "tile_n": 64,
@@ -865,7 +1089,8 @@ def self_test() -> None:
         pass
     else:
         raise AssertionError("missing screen candidate stayed green")
-    print("[q4k-postprocess:self-test] PASS minimax cross-M layout, "
+    print("[q4k-postprocess:self-test] PASS minimax cross-M descriptor, "
+          "descriptor-tie/byte-class separation, noisy-third-place RED, "
           "essential/dominated axis regret, and missing denominator RED")
 
 

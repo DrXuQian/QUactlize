@@ -288,7 +288,13 @@ def main() -> int:
     require(POSTPROCESS.read_text(), (
         'one common ArtifactTileK per (N,K,gs) across measured M',
         'PRODUCER_ONLY_NO_REDUCER_E2E',
-        'recordable only when both offline layout and within-layout config are RESOLVED',
+        'physical bytes are recordable when the physical class is RESOLVED',
+        'deployment winner is recordable only when both the ArtifactTileK descriptor and within-layout config are RESOLVED',
+        'reader descriptor ambiguity infected the xplane byte decision',
+        'noisy third-place interval stayed green',
+        'xplane_byte_class_winner_changes_with_m',
+        'quactlize.xplane_canonical_mapping.v1',
+        'cute_debug_string_role', 'mapping_sha256',
         'missing screen candidate stayed green',
         'worst_regret_if_dropped', 'm_only_config_evidence',
     ), "bound Q4_K postprocessor")
