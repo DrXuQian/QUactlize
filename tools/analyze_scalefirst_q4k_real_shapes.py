@@ -38,11 +38,11 @@ if str(ROOT) not in sys.path:
 from quactlize import formats as qformats
 
 
-ANALYSIS_SCHEMA = "quactlize.scalefirst_q4k_real_shapes_analysis.v2"
+ANALYSIS_SCHEMA = "quactlize.scalefirst_q4k_real_shapes_analysis.v3"
 BUNDLE_SCHEMA = "quactlize.scalefirst_q4k_real_shapes_bundle.v1"
 OFFLINE_SCHEMA = "quactlize.scalefirst_q4k_offline_layout_decisions.v2"
 HEURISTIC_SCHEMA = "quactlize.scalefirst_q4k_heuristic_evidence.v1"
-REGISTRY_SCHEMA = "quactlize.scalefirst_q4k_winner_registry.v2"
+REGISTRY_SCHEMA = "quactlize.scalefirst_q4k_winner_registry.v3"
 AXES = ("tile_m", "tile_n", "tactic_tile_k", "warp_m", "warp_n",
         "stages", "bchunk")
 
@@ -666,6 +666,10 @@ def decision_by_nk(decisions: list[dict[str, Any]]) -> dict[tuple[int, int, int]
     return result
 
 
+def is_product_e2e_recordable(board: str, board_recordable: bool) -> bool:
+    return board_recordable and board == "FULL_OUTPUT"
+
+
 def winner_registry(inputs: dict[str, Any], decisions: list[dict[str, Any]]
                    ) -> list[dict[str, Any]]:
     manifests = inputs["manifests"]
@@ -687,6 +691,8 @@ def winner_registry(inputs: dict[str, Any], decisions: list[dict[str, Any]]
                               board_result["verdict"])
             recordable = (decision["verdict"] == "RESOLVED" and
                           config_verdict == "RESOLVED")
+            product_e2e_recordable = is_product_e2e_recordable(
+                board, recordable)
             physical_decision = decision["xplane_byte_class_decision"]
             physical_selected = physical_decision.get("selected")
             axes = ({axis: None for axis in AXES} if winner is None else
@@ -722,6 +728,7 @@ def winner_registry(inputs: dict[str, Any], decisions: list[dict[str, Any]]
                             physical_decision["verdict"] == "RESOLVED",
                         "config_verdict": config_verdict,
                         "recordable": recordable,
+                        "product_e2e_recordable": product_e2e_recordable,
                         "artifact_tile_k": artifact,
                         "layout": (None if artifact is None else
                                    planner.layout_identity(artifact)),
@@ -819,7 +826,8 @@ def flatten_registry(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "model_id", "tensor", "tp_world", "tp_rank", "tp_partition",
             "M", "N", "K", "group_size", "board", "metric_scope",
             "offline_layout_verdict", "xplane_byte_class_verdict",
-            "xplane_byte_class_recordable", "config_verdict", "recordable")}
+            "xplane_byte_class_recordable", "config_verdict", "recordable",
+            "product_e2e_recordable")}
             | {"ArtifactTileK": "" if layout is None else
                    layout["artifact_tile_k"],
                "FoldN_low": "" if layout is None else layout["fold_n"]["low"],
@@ -916,12 +924,15 @@ def report_text(inputs: dict[str, Any], decisions: list[dict[str, Any]],
                      f"coverage={row['mode_config_coverage']:.3f} "
                      f"algorithms={canonical(row['algorithm_counts'])}")
     recordable = sum(bool(row["recordable"]) for row in registry)
+    product_e2e_recordable = sum(bool(row["product_e2e_recordable"])
+                                 for row in registry)
     physical_recordable = sum(bool(row["xplane_byte_class_recordable"])
                               for row in registry)
     lines.append(f"WINNER_REGISTRY rows={len(registry)} "
                  f"xplane_byte_class_recordable={physical_recordable} "
-                 f"deployment_recordable={recordable} "
-                 f"deployment_held_back={len(registry)-recordable}")
+                 f"board_scoped_recordable={recordable} "
+                 f"product_e2e_recordable={product_e2e_recordable} "
+                 f"board_scoped_held_back={len(registry)-recordable}")
     lines.append("SCOPE FULL_OUTPUT is product E2E; SPLITK boards are producer-only and cannot be compared with FULL_OUTPUT or recorded as product latency")
     return "\n".join(lines) + "\n"
 
@@ -942,7 +953,7 @@ def analyze(bundle: pathlib.Path, output: pathlib.Path, threshold: float) -> Non
                    "physical_class_rule": "Score one physical byte class per (N,K,gs) across measured M. ArtifactTileK is a resident reader/copy descriptor: Q4_K A32/FoldN=2 is one class, while A64/A128/A256 share the proven tile-free F=1/TK<=256 class and may use different readers per M without repacking",
                    "decisions": decisions}
     registry_doc = {"schema": REGISTRY_SCHEMA,
-                    "recording_rule": "physical bytes are recordable when the physical class is RESOLVED; a deployment winner is recordable only when both the ArtifactTileK descriptor and within-layout config are RESOLVED; producer-only boards remain explicitly scoped",
+                    "recording_rule": "physical bytes are recordable when the physical class is RESOLVED; a board-scoped winner is recordable only when both the ArtifactTileK descriptor and within-layout config are RESOLVED; product_e2e_recordable additionally requires FULL_OUTPUT, while producer-only boards remain explicitly scoped",
                     "rows": registry}
     analyzer_path = pathlib.Path(__file__).resolve()
     try:
@@ -1058,6 +1069,10 @@ def self_test() -> None:
             planted_runner is not planted_scores[1] or \
             planted_blocker is not planted_scores[2]:
         raise AssertionError("noisy third-place interval stayed green")
+    if not is_product_e2e_recordable("FULL_OUTPUT", True) or \
+            is_product_e2e_recordable("SPLITK_S4_PRODUCER", True) or \
+            is_product_e2e_recordable("FULL_OUTPUT", False):
+        raise AssertionError("producer-only board became product E2E")
     # Dropping an essential value must be red while a dominated value is safe.
     manifest = {
         "a": {"symbol": "a", "tile_m": 8, "tile_n": 64,
