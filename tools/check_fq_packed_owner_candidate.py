@@ -81,7 +81,7 @@ def direct_summary(text: str) -> tuple[int, int]:
 
 
 def probe_summary(groups: dict[tuple[str, str], list[dict[str, str]]],
-                  require_legacy_boundary: bool) -> dict[str, int]:
+                  require_legacy_stripe: bool) -> dict[str, int]:
     result = {
         "samples": 0,
         "bad_samples": 0,
@@ -90,6 +90,7 @@ def probe_summary(groups: dict[tuple[str, str], list[dict[str, str]]],
         "host_bad": 0,
         "sync_bad": 0,
         "observed_bad": 0,
+        "local_n_half_mask": 0,
     }
     for samples in groups.values():
         for row in samples:
@@ -104,9 +105,10 @@ def probe_summary(groups: dict[tuple[str, str], list[dict[str, str]]],
             if partial_bad:
                 result["bad_samples"] += 1
                 index = nonnegative(row, "partial_first_bad_index")
-                if require_legacy_boundary and index % 64 != 32:
+                if require_legacy_stripe and index % 32:
                     raise ValueError(
-                        f"legacy partial mismatch left local-N=32 boundary: {row}")
+                        f"legacy partial mismatch lost 32-output stripe origin: {row}")
+                result["local_n_half_mask"] |= 1 << ((index % 64) // 32)
     return result
 
 
@@ -137,6 +139,7 @@ def check(legacy_direct: str, legacy_probe: str,
         f"samples={legacy['samples']} bad_samples={legacy['bad_samples']} "
         f"partial_value_raw_bad={legacy['partial_bad']} "
         f"canary_words={legacy['canary']} "
+        f"local_n_half_mask=0x{legacy['local_n_half_mask']:x} "
         f"direct_failures={legacy_direct_failures}")
     print(
         "FQ_PACKED_OWNER_ARM variant=owner-only "
@@ -149,7 +152,7 @@ def check(legacy_direct: str, legacy_probe: str,
         f"direct_failures={candidate_direct_failures}")
     print(
         "FQ_PACKED_OWNER_VERDICT "
-        f"verdict={verdict} legacy_boundary=LOCAL_N32/PASS "
+        f"verdict={verdict} legacy_stripe_origin=32-ALIGNED/PASS "
         "changed_semantic=PHYSICAL_PACKED_METADATA_PUBLISHERS_ONLY")
     return verdict
 
@@ -183,8 +186,10 @@ def self_test() -> None:
                 probe.append(cell(symbol, split, probe=True))
             for split in VALID_SPLITS:
                 for repeat in range(8):
-                    bad = partial_bad and symbol == AP0 and split == 2 and repeat == 0
-                    index = 33 if wrong_boundary and bad else 32
+                    bad = (partial_bad and symbol == AP0 and split == 2 and
+                           repeat in (0, 1))
+                    index = (33 if wrong_boundary and bad and repeat == 0 else
+                             320 if bad and repeat == 1 else 32)
                     probe.append(
                         f"FQ_WORKSPACE_PROBE symbol={symbol} S={split} "
                         f"repeat={repeat} canary_words=0 "
@@ -220,7 +225,7 @@ def self_test() -> None:
     else:
         raise AssertionError("missing sample stayed green")
     print("[fq-packed-owner-check:self-test] PASS causal, remaining-gap and "
-          "refuted verdicts; local-N boundary and denominator negatives RED")
+          "refuted verdicts; 32-stripe origin and denominator negatives RED")
 
 
 def main() -> int:

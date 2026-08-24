@@ -58,7 +58,7 @@ def check(collective: str, ownership: str, oracle: str,
         'verdict = "OWNER_RACE_CLOSED_ALL_EXACT"',
         'verdict = "OWNER_RACE_CLOSED_DIRECT_GAP_REMAINS"',
         'verdict = "OWNER_ONLY_REFUTED"',
-        'index % 64 != 32',
+        'index % 32',
     ))
 
 
@@ -73,7 +73,7 @@ def main() -> int:
          "read_duplicate_writer_overlap == 0"),
         (3, "PPU_PACKED_METADATA_OWNER_ONLY=1",
          "PPU_PACKED_METADATA_OWNER_ONLY=0"),
-        (4, "index % 64 != 32", "index % 64 != 0"),
+        (4, "index % 32", "index % 16"),
     )
     for index, old, new in plants:
         changed = list(texts)
@@ -85,7 +85,7 @@ def main() -> int:
         else:
             raise CheckError(f"negative stayed green: {old}")
     print("[fq-packed-owner-source:self-test] PASS: exact guard count, real-layout "
-          "duplicate negative, build define and local-N boundary; five plants RED")
+          "duplicate negative, build define and 32-stripe origin; five plants RED")
     return 0
 
 

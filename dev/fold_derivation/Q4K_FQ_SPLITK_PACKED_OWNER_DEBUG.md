@@ -23,8 +23,11 @@ AP1 S4  partial_value_raw_bad=32   first index=160 plane=0   3 -> -2
 ```
 
 Canaries are intact.  The bad counts are 9, 22 and 1 complete 32-output
-stripes.  All first indices satisfy `index % TileN == 32`; this is the start of
-the second metadata-decoder warp, not an arbitrary epilogue coordinate.
+stripes.  Those first three samples all started at `index % TileN == 32`, the
+second metadata-decoder warp.  A later legacy repeat produced 64 bad outputs
+starting at index 320: still exactly 32-stripe aligned, but local N=0.  Thus
+the stable signature is the 32-output stripe origin, not one fixed TN64 half.
+The earlier local-N=32 claim was a three-sample overfit.
 
 ## Real CuTe ownership result
 
@@ -38,10 +41,12 @@ owner-only: 1024 byte destinations, 1024 visits, every byte has 1 publisher
 ```
 
 The legacy second publisher overlaps every byte read by the 64 decoder owner
-threads.  In particular, warp 3 republishes columns 32..63 while decoder warp
-1 reads those columns after only its own per-thread `cp_async_wait`.  The CTA
-barrier comes after decode, so it cannot order that overlap.  The executable
-oracle is `l221_packed_metadata_publishers.cu`; its modulo-all arm is the exact
+threads: warp 2 republishes columns 0..31 while decoder warp 0 reads them, and
+warp 3 does the same to columns 32..63 while decoder warp 1 reads them.  Each
+decoder has waited only for its own copy; the CTA barrier comes after decode
+and cannot order either overlap.  Which 32-column half loses is therefore a
+scheduling outcome.  The executable oracle is
+`l221_packed_metadata_publishers.cu`; its modulo-all arm is the exact
 duplicate-owner negative.
 
 This does not yet prove that the physical overlap causes the PPU value
