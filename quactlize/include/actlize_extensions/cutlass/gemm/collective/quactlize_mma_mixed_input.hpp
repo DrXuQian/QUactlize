@@ -275,6 +275,15 @@ public:
       int(Scale_TileN), int(Scale_NumThreads)>;
   static constexpr int kPackedOwnerThreads = PackedMetadataOwnership::owner_threads;
   static constexpr int kPackedColsPerThread = PackedMetadataOwnership::columns_per_thread;
+#if defined(PPU_PACKED_METADATA_OWNER_ONLY) && (PPU_PACKED_METADATA_OWNER_ONLY != 0)
+  static constexpr bool kPackedMetadataOwnerOnly = true;
+#else
+  static constexpr bool kPackedMetadataOwnerOnly = false;
+#endif
+#if defined(PPU_PACKED_SPLIT_GROUPS) && (PPU_PACKED_SPLIT_GROUPS != 0)
+  static_assert(!kPackedMetadataOwnerOnly,
+                "owner-only packed metadata copy cannot feed duplicate-owner split-group decode");
+#endif
   // Keep one metadata column as the value tile. When TileN exceeds the owner
   // count, CuTe expresses the additional columns in the partition's rest
   // mode; widening the value tile would instead cross a column boundary
@@ -741,6 +750,7 @@ public:
   static constexpr bool has_zero_channel    = (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero);
   static constexpr int packed_scale_copy_threads = kPackedOwnerThreads;
   static constexpr int packed_scale_columns_per_thread = kPackedColsPerThread;
+  static constexpr bool packed_scale_owner_only = kPackedMetadataOwnerOnly;
   // Type-level witness for launchers and sweep inventory. Zero means this collective uses the ordinary TileM-row
   // AIU A tile; positive values are the maximum real M accepted by the compact plain-copy path.
   using FusedScaleWordLayout = SmemLayoutScaleFusedWord;   // 32-bit slots, stride 1 in n: the conflict-free store
@@ -1055,6 +1065,13 @@ public:
     // Raw CuTe get_slice does not wrap, so map surplus threads back onto valid slots. Coverage's slots<=CTA,
     // whole-atom and full-tile invariants make the repeated transfers idempotent instead of hiding a missing owner.
     // L114 locks the CTA256 raw-oob/wrapped-duplicate distinction.
+    // Diagnostic seam for the exact TN64/CTA128 Split-K failure.  Legacy maps
+    // every physical thread modulo the 64 packed-copy slices.  The candidate
+    // suppresses only the surplus publishers; its predicate is warp-uniform
+    // on this row and is compile-time true in the untouched legacy build.
+    bool const packed_metadata_copy_owner =
+        !kPackedMetadataOwnerOnly ||
+        PackedMetadataOwnership::owns_physical_thread(thread_idx);
     auto extra_input_partitions = partition_extra_inputs(
         mainloop_params, load_inputs, storage, thread_idx % (Scale_GmemCopyThrLayoutH{} * Scale_GmemCopyThrLayoutW{}));
 
@@ -1094,7 +1111,8 @@ public:
     for (int k_pipe = 0; k_pipe < DispatchPolicy::Stages-1; ++k_pipe) {
       auto k_iter_crd = cute::idx2crd(*k_tile_iter, k_iter_shape);
       copy_A_and_B(*k_tile_iter, k_iter_crd, k_pipe);
-      copy_async_extra_info(mainloop_params, extra_input_partitions, *k_tile_iter, k_pipe);
+      copy_async_extra_info(mainloop_params, extra_input_partitions, *k_tile_iter, k_pipe,
+                            packed_metadata_copy_owner);
       cp_async_fence();
       --k_tile_count;
       if (k_tile_count > 0) { ++k_tile_iter; }
@@ -1243,7 +1261,8 @@ public:
     auto prefetch = [&] (auto k_tile, int write_stage) {
           auto k_iter_crd = cute::idx2crd(k_tile, k_iter_shape);
           copy_A_and_B(k_tile, k_iter_crd, write_stage);
-          copy_async_extra_info(mainloop_params, extra_input_partitions, k_tile, write_stage);
+          copy_async_extra_info(mainloop_params, extra_input_partitions, k_tile, write_stage,
+                                packed_metadata_copy_owner);
     };
     auto consume = [&] (auto k_block, int) {
         CUTLASS_PRAGMA_UNROLL
@@ -1301,7 +1320,8 @@ private:
         Params const& mainloop_params,
         cute::tuple<Ts...>& extra_input_partitions,
         int k_idx,
-        int write_stage) {
+        int write_stage,
+        bool packed_metadata_copy_owner) {
     if constexpr (ModeHasScales) {
       auto tSgS = get<0>(extra_input_partitions);
       auto tSsS = get<1>(extra_input_partitions);
@@ -1315,12 +1335,22 @@ private:
       // per-column path
       if constexpr(DispatchPolicy::StaticGroupSize == -1) {
         // Packed: ONE cp.async of the gguf's own bytes into staging. The decode is at the barrier, in mma().
-        if constexpr (kPackedScaleOn)
-          detail::copy_packed_metadata_if<kPackedColsPerThread>(
-              mainloop_params.gmem_tiled_copy_scale_packed, scale_valid_pk, scale_residue_n,
-              get<kPkG>(extra_input_partitions)(_,_,_,0),
-              get<kPkG+1>(extra_input_partitions)(_,_,_,write_stage),
-              get<kPkC>(extra_input_partitions));
+        if constexpr (kPackedScaleOn) {
+          if constexpr (kPackedMetadataOwnerOnly) {
+            if (packed_metadata_copy_owner)
+              detail::copy_packed_metadata_if<kPackedColsPerThread>(
+                  mainloop_params.gmem_tiled_copy_scale_packed, scale_valid_pk, scale_residue_n,
+                  get<kPkG>(extra_input_partitions)(_,_,_,0),
+                  get<kPkG+1>(extra_input_partitions)(_,_,_,write_stage),
+                  get<kPkC>(extra_input_partitions));
+          } else {
+            detail::copy_packed_metadata_if<kPackedColsPerThread>(
+                mainloop_params.gmem_tiled_copy_scale_packed, scale_valid_pk, scale_residue_n,
+                get<kPkG>(extra_input_partitions)(_,_,_,0),
+                get<kPkG+1>(extra_input_partitions)(_,_,_,write_stage),
+                get<kPkC>(extra_input_partitions));
+          }
+        }
         else
           copy(mainloop_params.gmem_tiled_copy_scale, tSgS(_,_,_,0), tSsS(_,_,_,write_stage));
         // NOT under kPackedScaleOn: `mn` rides in the scale unit, and smem_zero is zero elements there, so issuing
@@ -1345,15 +1375,25 @@ private:
         }
         // kPackedScaleOn picks the predicate that belongs to the copy actually being issued.
         if ((kPackedScaleOn || scale_valid) && (scale_load_k * Scale_TileK < scale_residue_k)) {
-          if constexpr (kPackedScaleOn)
+          if constexpr (kPackedScaleOn) {
             // scale_load_k IS ALREADY A TILE INDEX (partition_S leaves the last mode selecting which block of
             // Scale_TileK groups a call loads), and one k-tile is one superblock, so it indexes superblocks directly and
             // must NOT be divided. The k bound above already encoded that reading.
-            detail::copy_packed_metadata_if<kPackedColsPerThread>(
-                mainloop_params.gmem_tiled_copy_scale_packed, scale_valid_pk, scale_residue_n,
-                get<kPkG>(extra_input_partitions)(_,_,_,scale_load_k),
-                get<kPkG+1>(extra_input_partitions)(_,_,_,write_stage),
-                get<kPkC>(extra_input_partitions));
+            if constexpr (kPackedMetadataOwnerOnly) {
+              if (packed_metadata_copy_owner)
+                detail::copy_packed_metadata_if<kPackedColsPerThread>(
+                    mainloop_params.gmem_tiled_copy_scale_packed, scale_valid_pk, scale_residue_n,
+                    get<kPkG>(extra_input_partitions)(_,_,_,scale_load_k),
+                    get<kPkG+1>(extra_input_partitions)(_,_,_,write_stage),
+                    get<kPkC>(extra_input_partitions));
+            } else {
+              detail::copy_packed_metadata_if<kPackedColsPerThread>(
+                  mainloop_params.gmem_tiled_copy_scale_packed, scale_valid_pk, scale_residue_n,
+                  get<kPkG>(extra_input_partitions)(_,_,_,scale_load_k),
+                  get<kPkG+1>(extra_input_partitions)(_,_,_,write_stage),
+                  get<kPkC>(extra_input_partitions));
+            }
+          }
           else
             copy(mainloop_params.gmem_tiled_copy_scale, tSgS(_,_,_,scale_load_k), tSsS(_,_,_,write_stage));
           if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero && !kPackedScaleOn) {
