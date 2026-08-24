@@ -351,6 +351,22 @@ static_assert(common_kernel_exclusion(
                   Candidate{kArtifactFoldControlI2, 8, 32, 64, 16, 32, 64}) == Exclusion::AtomAlignment,
               "TM8 must not fall back silently to the m16 atom");
 
+// WN is not part of the m8 selector.  Pin all currently producer-supported N
+// warp widths on one exact TM8/WM8 Q4 row so a future correctness workaround
+// cannot hide a metadata bug by narrowing the WN axis.
+inline constexpr FormatSpec kM8WarpNControl{Format::I4, "m8-warp-n-control", 4, 0};
+inline constexpr Candidate kM8WarpN16Control{kM8WarpNControl, 8, 64, 256, 8, 16, 64};
+inline constexpr Candidate kM8WarpN32Control{kM8WarpNControl, 8, 64, 256, 8, 32, 64};
+inline constexpr Candidate kM8WarpN64Control{kM8WarpNControl, 8, 64, 256, 8, 64, 64};
+static_assert(common_kernel_exclusion(kM8WarpN16Control) == Exclusion::None &&
+              common_kernel_exclusion(kM8WarpN32Control) == Exclusion::None &&
+              common_kernel_exclusion(kM8WarpN64Control) == Exclusion::None,
+              "TM8/WM8 must retain every generically legal WarpN width");
+static_assert(common_producer_exclusion(kM8WarpN16Control) == Exclusion::None &&
+              common_producer_exclusion(kM8WarpN32Control) == Exclusion::None &&
+              common_producer_exclusion(kM8WarpN64Control) == Exclusion::None,
+              "the producer must not impose a TM8-specific WarpN restriction");
+
 // Paired controls for the field-ownership regression. l115's shipping witness is exactly
 //   Q6_K high A=128 T=256 tile=64x128x256 warp=64x64 F=1/1
 // and requires logical=32768/32768, duplicates=unset=0, owner_diff=writer_diff=0 and COMPLETE. That discharges the

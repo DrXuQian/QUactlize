@@ -14,6 +14,10 @@ the smallest performance-preserving production change.
 Read `references/q4-a32-case.md` when the failure resembles a mixed A/B
 register-delivery or prepare/consume lifetime problem.
 
+Read `references/packed-metadata-owner-deficit.md` when the first bad output is
+an N-column boundary, especially when TileN exceeds the CTA thread count or a
+packed scale/zero channel is decoded before its publishing barrier.
+
 ## Workflow
 
 ### 1. Freeze one exact row

@@ -466,6 +466,17 @@ def self_test() -> None:
             rows = emitted_tactics(qtype, artifact)
             assert len(rows) == 23040
             assert {row.tactic_tile_k for row in rows} == set(TACTIC_TILE_K)
+    # TM8 selects the m8 atom through WM8 only.  WN remains a generic tactic
+    # axis; all producer-supported widths must survive on the exact Q4/A64
+    # decode family instead of using WN pruning as a correctness workaround.
+    q4_a64 = emitted_tactics(12, 64)
+    m8_wn = {
+        row.warp_n for row in q4_a64
+        if (row.tile_m, row.tile_n, row.tactic_tile_k, row.warp_m,
+            row.stages, row.bchunk, row.source_status) ==
+           (8, 64, 256, 8, 3, 0, "TYPE_ADMISSION_REQUIRED")
+    }
+    assert m8_wn == {16, 32, 64}
     expected_supported_bc = 5 * 4 * 4
     expected_bc = expected_supported_bc + 1  # physical cell list includes Q8 sentinel
     expected_standard = 5 * 4 * 23040 * 4
@@ -523,6 +534,7 @@ def self_test() -> None:
     print("[fq-internal-matrix:self-test] PASS formats=6 tensor_fq=5 "
           f"cells={len(cells)} raw_axes=BOUND fq_smem=DEFERRED_TO_COMPILED_TYPE "
           "tacticTK=FULL_SHARED_SPACE/default-marked "
+          "TM8=WM8/WN16+32+64 "
           "bc=80-supported+1-q8-sentinel/68-legal-rpw-expanded "
           "q8=5xUNSUPPORTED metric_scope=BOUND")
 

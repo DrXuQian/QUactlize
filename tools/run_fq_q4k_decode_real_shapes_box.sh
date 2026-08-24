@@ -110,6 +110,8 @@ main() {
       "$root/benchmarks/test_fully_quantized_internal_sweep.cu" \
       "$root/benchmarks/fully_quantized_splitk_producer_bench.hpp" \
       "$root/benchmarks/fully_quantized_splitk_producer_unit.inc" \
+      "$root/quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/ppu_packed_metadata_ownership.hpp" \
+      "$root/quactlize/include/actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp" \
       "$root/quactlize/include/dense_splitk_multiformat_ppu.cuh" \
       "$root/quactlize/include/dense_splitk_parallel_ppu.cuh" \
       "$root/quactlize/include/gguf_bc_vecdot.hpp" \

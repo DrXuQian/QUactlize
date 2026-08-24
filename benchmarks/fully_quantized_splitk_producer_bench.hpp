@@ -191,6 +191,7 @@ struct TcRowTypes {
   using SplitGemm = typename Split::Gemm;
   using SplitKernel = typename Split::GemmKernel;
   using Reduction = typename Split::Reduction;
+  using Mainloop = typename Shipping::CollectiveMainloop;
   static constexpr int a_provider_capacity_rows =
       PackedAProviderCapacity<typename Shipping::MainloopPolicy>::value;
 
@@ -199,6 +200,13 @@ struct TcRowTypes {
   static_assert(dense_splitk_parallel_ppu::MainloopUsesPackedMetadata<
                     typename Shipping::CollectiveMainloop>::value,
                 "FQ benchmark must instantiate the packed-unit collective");
+  static_assert(Mainloop::packed_scale_copy_threads *
+                    Mainloop::packed_scale_columns_per_thread == TN,
+                "packed metadata owner slices must cover every TileN column");
+  static_assert(!(TM == 8 && WM == 8 && TN == 64 && WN == 64) ||
+                    (Mainloop::packed_scale_copy_threads == 32 &&
+                     Mainloop::packed_scale_columns_per_thread == 2),
+                "the exact TM8/WM8/WN64 family must use 32 two-column metadata owners");
   static_assert(std::is_same_v<typename SplitKernel::CollectiveMainloop,
                                typename Shipping::CollectiveMainloop>,
                 "fixed Split-K must reuse the exact S1 collective");

@@ -72,6 +72,8 @@ def check(kernel: str, backend: str, thop: str, bench: str,
         ".uncommitted.",
         ".failed.",
         "analyze_fq_q4k_decode_real_shapes.py\" finalize",
+        "ppu_packed_metadata_ownership.hpp",
+        "quactlize_mma_mixed_input.hpp",
     )
     if any(token not in runner for token in runner_needles):
         raise CheckError("runner does not execute screen/scheduler/TC/SIMT phases")

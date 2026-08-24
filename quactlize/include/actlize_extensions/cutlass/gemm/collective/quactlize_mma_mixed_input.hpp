@@ -49,6 +49,7 @@
 #include "cutlass/gemm/collective/collective_mma.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_argument_contract.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_packed_metadata_ownership.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_a_schedule.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_a_pack.hpp"
@@ -270,8 +271,15 @@ public:
   // ppu.cp.async ACCEPTS 4, 8 OR 16 BYTES AND NOTHING ELSE (cute/arch/copy_ppu.hpp:262), so the width is the largest
   // of those that divides the unit: 16 for Q4_K and 4 for Q2_K. Q3/Q6's paired 28/36-byte transport lives in the
   // two-plane collective that owns their weight shapes, not in this file.
-  static constexpr int kPackedColsPerThread = 1;
-  static constexpr int kPackedCopySpan = kPackedColsPerThread * kPackedScaleUnit;
+  using PackedMetadataOwnership = detail::PackedMetadataColumnOwnership<
+      int(Scale_TileN), int(Scale_NumThreads)>;
+  static constexpr int kPackedOwnerThreads = PackedMetadataOwnership::owner_threads;
+  static constexpr int kPackedColsPerThread = PackedMetadataOwnership::columns_per_thread;
+  // Keep one metadata column as the value tile. When TileN exceeds the owner
+  // count, CuTe expresses the additional columns in the partition's rest
+  // mode; widening the value tile would instead cross a column boundary
+  // inside one copy atom and duplicate the rest-mode traversal.
+  static constexpr int kPackedCopySpan = kPackedScaleUnit;
   static_assert(kPackedCopySpan % 4 == 0,
                 "an active single-plane packed unit must divide into legal ppu.cp.async transfers");
   static_assert(int(Scale_TileN) % kPackedColsPerThread == 0,
@@ -287,8 +295,8 @@ public:
 
   using GmemTiledCopyScalePacked = decltype(
     make_tiled_copy(Copy_Atom<PPU_CP_ASYNC_CACHEGLOBAL<PackedCopyElem>, uint8_t>{},
-                    Layout<Shape <Int<Scale_TileN / kPackedColsPerThread>, _1>>{},   // one thread per column GROUP
-                    Layout<Shape <_1, Int<kPackedCopySpan>>>{}));    // its whole span, however many ops that takes
+                    Layout<Shape <Int<kPackedOwnerThreads>, _1>>{},  // the owner threads that physically exist
+                    Layout<Shape <_1, Int<kPackedScaleUnit>>>{}));   // exactly one complete metadata column unit
   // The staged view, which is what SharedStorage actually holds: stage s starts at s * TN * 16 bytes.
   using SmemLayoutScalePackedStaged =
       Layout<Shape <Int<Scale_TileN>, Int<kPackedScaleUnit>, Int<DispatchPolicy::Stages>>,
@@ -731,6 +739,8 @@ public:
   static constexpr bool is_fused_scale_zero = kFusedScaleZero;
   static constexpr bool is_packed_scale     = kPackedScaleOn;
   static constexpr bool has_zero_channel    = (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero);
+  static constexpr int packed_scale_copy_threads = kPackedOwnerThreads;
+  static constexpr int packed_scale_columns_per_thread = kPackedColsPerThread;
   // Type-level witness for launchers and sweep inventory. Zero means this collective uses the ordinary TileM-row
   // AIU A tile; positive values are the maximum real M accepted by the compact plain-copy path.
   using FusedScaleWordLayout = SmemLayoutScaleFusedWord;   // 32-bit slots, stride 1 in n: the conflict-free store
@@ -1301,12 +1311,16 @@ private:
       // this work the most time.
       // (tSgSp, tSsSp): 3,4 for ScaleOnly and 5,6 for ScaleZero. Named ONCE so the two sites cannot disagree.
       static constexpr int kPkG = (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) ? 5 : 3;
+      static constexpr int kPkC = kPkG + 2;
       // per-column path
       if constexpr(DispatchPolicy::StaticGroupSize == -1) {
         // Packed: ONE cp.async of the gguf's own bytes into staging. The decode is at the barrier, in mma().
         if constexpr (kPackedScaleOn)
-          copy(mainloop_params.gmem_tiled_copy_scale_packed,
-               get<kPkG>(extra_input_partitions)(_,_,_,0), get<kPkG+1>(extra_input_partitions)(_,_,_,write_stage));
+          detail::copy_packed_metadata_if<kPackedColsPerThread>(
+              mainloop_params.gmem_tiled_copy_scale_packed, scale_valid_pk, scale_residue_n,
+              get<kPkG>(extra_input_partitions)(_,_,_,0),
+              get<kPkG+1>(extra_input_partitions)(_,_,_,write_stage),
+              get<kPkC>(extra_input_partitions));
         else
           copy(mainloop_params.gmem_tiled_copy_scale, tSgS(_,_,_,0), tSsS(_,_,_,write_stage));
         // NOT under kPackedScaleOn: `mn` rides in the scale unit, and smem_zero is zero elements there, so issuing
@@ -1330,14 +1344,16 @@ private:
           scale_load_k = k_idx / mainloop_params.reload_factor; // This will always be 0 when group_size == K.
         }
         // kPackedScaleOn picks the predicate that belongs to the copy actually being issued.
-        if ((kPackedScaleOn ? scale_valid_pk : scale_valid) && (scale_load_k * Scale_TileK < scale_residue_k)) {
+        if ((kPackedScaleOn || scale_valid) && (scale_load_k * Scale_TileK < scale_residue_k)) {
           if constexpr (kPackedScaleOn)
             // scale_load_k IS ALREADY A TILE INDEX (partition_S leaves the last mode selecting which block of
             // Scale_TileK groups a call loads), and one k-tile is one superblock, so it indexes superblocks directly and
             // must NOT be divided. The k bound above already encoded that reading.
-            copy(mainloop_params.gmem_tiled_copy_scale_packed,
-                 get<kPkG>(extra_input_partitions)(_,_,_,scale_load_k),
-                 get<kPkG+1>(extra_input_partitions)(_,_,_,write_stage));
+            detail::copy_packed_metadata_if<kPackedColsPerThread>(
+                mainloop_params.gmem_tiled_copy_scale_packed, scale_valid_pk, scale_residue_n,
+                get<kPkG>(extra_input_partitions)(_,_,_,scale_load_k),
+                get<kPkG+1>(extra_input_partitions)(_,_,_,write_stage),
+                get<kPkC>(extra_input_partitions));
           else
             copy(mainloop_params.gmem_tiled_copy_scale, tSgS(_,_,_,scale_load_k), tSsS(_,_,_,write_stage));
           if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero && !kPackedScaleOn) {
@@ -1373,29 +1389,29 @@ private:
       Tensor tScS = gmem_thr_copy_scale.partition_S(cS);
 
       // THE PACKED g2s, partitioned beside the fp16 one and appended to the tuple for the same return-type reason as
-      // gSp. One thread per column, its whole 16 B unit: l94 (6) measured this as a fully coalesced 2048 B burst.
+      // gSp. One value tile is one complete metadata column.  The owner-thread mode may be narrower than TileN;
+      // CuTe then puts the additional columns in the slice's rest mode (owner t gets t, t+owners, ...).
       static constexpr int kPackedLoadIdx =
           (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) ? 4 : 3;
       Tensor sSraw = make_tensor(make_smem_ptr(shared_tensors.smem_scale_raw.begin()), SmemLayoutScaleRawStaged{});
-      // THE MODULO IS NOT COSMETIC. cute does NOT wrap an out-of-range thread index, and this copy's thread layout is
-      // Scale_TileN wide (128) while get_slice is called by all size(TiledMma) = 256 threads. fold_derivation/l97
-      // measured where the extras land on the real layout: thread 128 partitions at byte 2048 of a 4096-byte staging
-      // tile whose stage stride is Scale_TileN*16 = 2048 -- i.e. EXACTLY stage 1's first byte -- and thread 255 at
-      // 4080. So while stage 0 is being copied, half the CTA writes over stage 1; while stage 1 is being copied, the
-      // same half writes PAST the whole allocation, and smem_scale_raw is the last member of SharedStorage.
+      // THE MODULO IS NOT COSMETIC. cute does NOT wrap an out-of-range thread index.  get_slice is called by every
+      // TiledMma thread, while this copy has min(TileN, CTA threads) owner slices.  Without the modulo, extra CTA
+      // threads partition beyond the value tile and can alias the next stage or leave the allocation entirely.
       //
       // That is an unconditional out-of-bounds write, and its damage depends on whether the clobbered stage is read
       // before the real copy overwrites it -- which is what an intermittent, partial, build-sensitive failure looks
       // like. rowC went bad=128, bad=724, then MATCH with no semantic source change, and restoring "=r" did not bring
       // it back, so the constraint was never the cause.
       //
-      // `% n` rather than a guard, because it is the idiom this file already uses for exactly this
-      // (GmemTiledCopyACp at the A cp.async path): the extra threads then redundantly copy the same bytes from the
-      // same source to the same destination, which is benign, instead of partitioning outside the tile.
+      // `% owners` rather than a guard preserves the established duplicate-owner path when the CTA is wider than N.
+      // When the CTA is narrower than N there are no extra threads; each real owner instead carries multiple columns
+      // in its CuTe rest mode.
       auto gmem_thr_copy_raw = mainloop_params.gmem_tiled_copy_scale_packed.get_slice(
           thread_idx % int(cute::size(GmemTiledCopyScalePacked{})));
       Tensor tSgSp = gmem_thr_copy_raw.partition_S(cute::get<kPackedLoadIdx>(load_inputs));
       Tensor tSsSp = gmem_thr_copy_raw.partition_D(sSraw);
+      Tensor cSp   = make_identity_tensor(make_shape(Int<Scale_TileN>{}, Int<kPackedScaleUnit>{}));
+      Tensor tScSp = gmem_thr_copy_raw.partition_S(cSp);
 
       clear(tSsS);      // both paths: the loader also relies on out-of-range columns staying zero
 
@@ -1412,13 +1428,11 @@ private:
       // From the PACKED partition's own identity tensor rather than from thread_idx arithmetic: the guard and the
       // partition it guards then come from one object, which is the only form of this that cannot drift.
       if constexpr (kPackedScaleOn) {
-        Tensor cSp   = make_identity_tensor(make_shape(Int<Scale_TileN>{}, Int<kPackedScaleUnit>{}));
-        Tensor tScSp = gmem_thr_copy_raw.partition_S(cSp);
         scale_valid_pk = get<0>(tScSp(0,0,0)) < scale_residue_n;
       }
 
       if constexpr (KernelConversionMode == ConversionMode::ConvertAndScale) {
-        return cute::make_tuple(tSgS, tSsS, tScS, tSgSp, tSsSp);
+        return cute::make_tuple(tSgS, tSsS, tScS, tSgSp, tSsSp, tScSp);
       }
       else if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) {
         Tensor sZ  = make_tensor(make_smem_ptr(zero_smem_base(shared_tensors)), SmemLayoutScaleSZ{});
@@ -1431,7 +1445,7 @@ private:
         // Same reason as the copies: with the packed path on, smem_zero holds zero elements.
         if constexpr (!kPackedScaleOn) clear(tZsZ);
 
-        return cute::make_tuple(tSgS, tSsS, tScS, tZgZ, tZsZ, tSgSp, tSsSp);
+        return cute::make_tuple(tSgS, tSsS, tScS, tZgZ, tZsZ, tSgSp, tSsSp, tScSp);
       }
       else {
         static_assert(cutlass::detail::dependent_false<KernelSchedule>,
@@ -1553,9 +1567,9 @@ private:
   // is what the previous attempt did, multiplies the work by the number of lanes sharing a column (four, per l94 (7))
   // times the warps -- measured as ~1.4M extra ALU against 0.27M shared loads saved, and LSU was only 6% busy.
   //
-  // Here: one thread per column reads its 16 B unit (d, dmin and all 8 groups' 6-bit codes), decodes with the bit
-  // positions as compile-time constants, and stores the fp16 scale and zero. 64 columns x 8 groups = 512 decodes per CTA
-  // per k-tile, against 2048 for the per-lane version.
+  // Here: each owner thread reads every complete 16 B column unit in its TiledCopy slice (d, dmin and all 8 groups'
+  // 6-bit codes), decodes with compile-time bit positions, and stores fp16 scale and zero. 64 columns x 8 groups =
+  // 512 decodes per CTA per k-tile, independent of whether 32 or 64 threads own those columns.
   //
   // WHAT IT COSTS: this channel is no longer cp.async, because arithmetic between gmem and smem is exactly what cp.async
   // cannot do. The load is issued where the cp.async used to be and the barrier that already guards the stage
@@ -1585,11 +1599,10 @@ private:
       Tensor sSZw = make_tensor(make_smem_ptr(reinterpret_cast<uint32_t*>(storage.smem_scale.begin())),
                                 SmemLayoutScaleFusedWord{});
       (void)sSZw;
-      // ONE THREAD PER COLUMN, AND THAT IS A CORRECTNESS CONSTRAINT, NOT A CHOICE. cp_async_wait is PER THREAD and the
-      // __syncthreads that publishes this stage comes AFTER this function, so between the wait and the sync a thread
-      // may only read bytes IT ITSELF copied. GmemTiledCopyScalePacked's thread layout is
-      // Layout<Shape<Int<Scale_TileN>,_1>> with a 16 B value layout -- thread t copies column t -- so thread t reading
-      // column t is exactly the guarantee the wait gives, and reading any other column is a race.
+      // ONE OWNER SLICE, ITS OWN COLUMN SET. cp_async_wait is PER THREAD and the __syncthreads that publishes this
+      // stage comes AFTER this function, so a thread may only read bytes its own TiledCopy slice issued. When the CTA
+      // is narrower than TileN, that slice owns columns t, t+owners, ...; the shared PackedMetadataOwnership type is
+      // the sole copy/decode map.
       //
       // MEASURED, NOT ARGUED: a version of this loop paired two adjacent columns per thread to turn the 2 B store into
       // a 4 B one (worth ~0.6%: acu put the scalar form at +71,680 tsm.st with +73,728 bank conflicts and 1.83
@@ -1632,15 +1645,19 @@ private:
 #endif
       constexpr int kHalfG = kGrp / 2;
 
-      // ONE THREAD, ITS OWN COLUMNS. With kPackedColsPerThread > 1 the copy gave thread t the span starting at
-      // t * cpt, so t decodes exactly that span -- which is why this is ownership-safe where reading a neighbour's
-      // column was not. At cpt == 1 this is the original loop unchanged.
+      // ONE THREAD, ITS OWN COLUMNS. At cpt == 1 this is the original loop unchanged. For cpt > 1 the TiledCopy value
+      // mode repeats outside the owner-thread mode, so owner t receives t + sub*owners -- not adjacent columns.
       constexpr int kCPT = kPackedColsPerThread;
-      for (int base = (kSplitGroups ? (thread_idx % kTN) : thread_idx) * kCPT; base < kTN;
-           base += (kSplitGroups ? kTN : kThreads) * kCPT)
+      if (!kSplitGroups && thread_idx >= kOwnTh) return;
+      // Keep the established cpt==1/non-split arithmetic byte-for-byte: its
+      // owner is just thread_idx. Modulo is needed only for the duplicate
+      // split-groups path; cpt>1 has no duplicate CTA threads.
+      int owner = thread_idx;
+      if constexpr (kSplitGroups) owner = PackedMetadataOwnership::copy_owner(thread_idx);
+      else if constexpr (kCPT > 1) owner = PackedMetadataOwnership::copy_owner(thread_idx);
+      CUTLASS_PRAGMA_UNROLL
       for (int sub = 0; sub < kCPT; ++sub) {
-        int const n = base + sub;
-        if (n >= kTN) break;
+        int const n = PackedMetadataOwnership::column(owner, sub);
         if (n >= residue_n) continue;                        // the same N bound the fp16 path predicates on
         uint8_t const* unit = reinterpret_cast<uint8_t const*>(&sRaw(n, cute::Int<0>{}, stage));
         uint32_t u[kPackedUnitWords];
@@ -1734,7 +1751,7 @@ private:
           }
         };
         if constexpr (kSplitGroups) {
-          if (thread_idx < kTN)
+          if (thread_idx < kOwnTh)
             cute::for_each(cute::make_int_sequence<kHalfG>{},
                            [&] (auto i_) { decode_group(cute::Int<decltype(i_)::value>{}); });
           else

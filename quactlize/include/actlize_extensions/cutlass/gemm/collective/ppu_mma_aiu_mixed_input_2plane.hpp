@@ -69,6 +69,7 @@
 #include "cutlass/gemm/collective/collective_mma.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_argument_contract.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_packed_metadata_ownership.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_a_schedule.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_2plane_source_layout.hpp"
@@ -297,9 +298,14 @@ public:
   static constexpr int kPackedTilesPerSb = kPackedTileDividesSb ? PackedUnit::kGroups / int(Scale_TileK) : 1;
   static constexpr int kPackedTilesPerUnit = kPackedSbPerUnit * kPackedTilesPerSb;
 
+  using PackedMetadataOwnership = detail::PackedMetadataColumnOwnership<
+      int(Scale_TileN), int(Scale_NumThreads)>;
+  static constexpr int kPackedOwnerThreads = PackedMetadataOwnership::owner_threads;
+  static constexpr int kPackedColsPerThread = PackedMetadataOwnership::columns_per_thread;
+
   // Q5 is one legal 16-byte cp.async per column; Q3/Q6 are seven/nine 4-byte copies of their byte-neutral 28/36-byte
-  // paired units. The value layout keeps every copy owned by the same thread/column, so the pre-publication decode
-  // never reads a neighbour's cp.async transaction.
+  // paired units. The value tile remains exactly one complete column. If owners < TileN, CuTe carries additional
+  // columns in the slice rest mode, so pre-publication decode still reads only transactions issued by that owner.
   static_assert(!kPackedScaleOn || (kPackedScaleUnit % 4 == 0),
                 "the selected two-plane packed unit must divide into legal 4/8/16-byte cp.async transfers");
   static constexpr int kPackedCopyBytes = (kPackedScaleUnit % 16 == 0) ? 16
@@ -308,7 +314,9 @@ public:
                          cute::conditional_t<kPackedCopyBytes == 8, uint64_t, uint32_t>>;
   using GmemTiledCopyScalePacked = decltype(
       make_tiled_copy(Copy_Atom<PPU_CP_ASYNC_CACHEGLOBAL<PackedCopyElem>, uint8_t>{},
-                      Layout<Shape<Int<Scale_TileN>, _1>>{},
+                      Layout<Shape<Int<kPackedOwnerThreads>, _1>>{},
+                      // One column is one value tile. Additional columns owned
+                      // by a narrow CTA live in the partition rest mode.
                       Layout<Shape<_1, Int<kPackedScaleUnit>>>{}));
   using SmemLayoutScaleRawStaged =
       Layout<Shape<Int<Scale_TileN>, Int<kPackedScaleUnit>, Int<DispatchPolicy::Stages>>,
@@ -503,6 +511,8 @@ private:
 public:
   // Type-level witness used by the dense/grouped launchers: packed bytes must never silently enter the fp16 path.
   static constexpr bool is_packed_scale = kPackedScaleOn;
+  static constexpr int packed_scale_copy_threads = kPackedOwnerThreads;
+  static constexpr int packed_scale_columns_per_thread = kPackedColsPerThread;
 
   struct SharedStorage
   {
@@ -1206,13 +1216,16 @@ private:
       auto tScS = get<2>(extra_input_partitions);
       static constexpr int kPkG =
           (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) ? 5 : 3;
+      static constexpr int kPkC = kPkG + 2;
       // per-column path
       if constexpr(DispatchPolicy::StaticGroupSize == -1) {
         if constexpr (kPackedScaleOn) {
           packed_tile_in_unit[write_stage] = 0;
-          copy(mainloop_params.gmem_tiled_copy_scale_packed,
-               get<kPkG>(extra_input_partitions)(_,_,_,0),
-               get<kPkG + 1>(extra_input_partitions)(_,_,_,write_stage));
+          detail::copy_packed_metadata_if<kPackedColsPerThread>(
+              mainloop_params.gmem_tiled_copy_scale_packed, scale_valid_pk, scale_residue_n,
+              get<kPkG>(extra_input_partitions)(_,_,_,0),
+              get<kPkG + 1>(extra_input_partitions)(_,_,_,write_stage),
+              get<kPkC>(extra_input_partitions));
         } else
           copy(mainloop_params.gmem_tiled_copy_scale, tSgS(_,_,_,0), tSsS(_,_,_,write_stage));
         if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero && !kPackedScaleOn) {
@@ -1232,13 +1245,15 @@ private:
         else {
           scale_load_k = k_idx / mainloop_params.reload_factor; // This will always be 0 when group_size == K.
         }
-        if ((kPackedScaleOn ? scale_valid_pk : scale_valid) &&
+        if ((kPackedScaleOn || scale_valid) &&
             (scale_load_k * Scale_TileK < scale_residue_k)) {
           if constexpr (kPackedScaleOn) {
             packed_tile_in_unit[write_stage] = scale_load_k % kPackedTilesPerUnit;
-            copy(mainloop_params.gmem_tiled_copy_scale_packed,
-                 get<kPkG>(extra_input_partitions)(_,_,_,scale_load_k / kPackedTilesPerUnit),
-                 get<kPkG + 1>(extra_input_partitions)(_,_,_,write_stage));
+            detail::copy_packed_metadata_if<kPackedColsPerThread>(
+                mainloop_params.gmem_tiled_copy_scale_packed, scale_valid_pk, scale_residue_n,
+                get<kPkG>(extra_input_partitions)(_,_,_,scale_load_k / kPackedTilesPerUnit),
+                get<kPkG + 1>(extra_input_partitions)(_,_,_,write_stage),
+                get<kPkC>(extra_input_partitions));
           } else
             copy(mainloop_params.gmem_tiled_copy_scale,
                  tSgS(_,_,_,scale_load_k), tSsS(_,_,_,write_stage));
@@ -1282,6 +1297,8 @@ private:
           thread_idx % int(cute::size(GmemTiledCopyScalePacked{})));
       Tensor tSgSp = gmem_thr_copy_raw.partition_S(cute::get<kPackedLoadIdx>(load_inputs));
       Tensor tSsSp = gmem_thr_copy_raw.partition_D(sSraw);
+      Tensor cSp = make_identity_tensor(make_shape(Int<Scale_TileN>{}, Int<kPackedScaleUnit>{}));
+      Tensor tScSp = gmem_thr_copy_raw.partition_S(cSp);
       clear(tSsS);
       // init scale_residue_k
       if constexpr (kPackedScaleOn)
@@ -1290,13 +1307,11 @@ private:
         scale_residue_k = mainloop_params.scale_k - get<1>(tScS(0,0,0));
       scale_valid = get<0>(tScS(0,0,0)) < scale_residue_n;
       if constexpr (kPackedScaleOn) {
-        Tensor cSp = make_identity_tensor(make_shape(Int<Scale_TileN>{}, Int<kPackedScaleUnit>{}));
-        Tensor tScSp = gmem_thr_copy_raw.partition_S(cSp);
         scale_valid_pk = get<0>(tScSp(0,0,0)) < scale_residue_n;
       }
 
       if constexpr (KernelConversionMode == ConversionMode::ConvertAndScale) {
-        return cute::make_tuple(tSgS, tSsS, tScS, tSgSp, tSsSp);
+        return cute::make_tuple(tSgS, tSsS, tScS, tSgSp, tSsSp, tScSp);
       }
       else if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) {
         Tensor sZ  = make_tensor(make_smem_ptr(shared_tensors.smem_zero.begin()), SmemLayoutScale{});
@@ -1308,7 +1323,7 @@ private:
         Tensor tZsZ = gmem_thr_copy_zero.partition_D(sZ);
         if constexpr (!kPackedScaleOn) clear(tZsZ);
 
-        return cute::make_tuple(tSgS, tSsS, tScS, tZgZ, tZsZ, tSgSp, tSsSp);
+        return cute::make_tuple(tSgS, tSsS, tScS, tZgZ, tZsZ, tSgSp, tSsSp, tScSp);
       }
       else {
         static_assert(cutlass::detail::dependent_false<KernelSchedule>,
@@ -1385,40 +1400,47 @@ private:
   CUTLASS_DEVICE static void
   packed_decode_stage(Storage& storage, int stage, int tile_in_unit, int thread_idx, int64_t residue_n) {
     if constexpr (On) {
-      if (thread_idx >= int(Scale_TileN) || thread_idx >= residue_n) return;
+      if (thread_idx >= kPackedOwnerThreads) return;
       Tensor sRaw = make_tensor(make_smem_ptr(storage.smem_scale_raw.begin()), SmemLayoutScaleRawStaged{});
       Tensor sS = make_tensor(make_smem_ptr(storage.smem_scale.begin()), SmemLayoutScale{});
       Tensor sZ = make_tensor(make_smem_ptr(storage.smem_zero.begin()), SmemLayoutScale{});
-      uint8_t const* paired = reinterpret_cast<uint8_t const*>(
-          &sRaw(thread_idx, cute::Int<0>{}, stage));
-      // The tile coordinate is runtime pipeline state, while group bit positions must remain compile-time constants.
-      // Enumerating the at-most-four positions gives both: one branch executes, and every selected group is a template
-      // argument to the same shared decoder used by the single-plane collective.
-      for_each(make_int_sequence<kPackedTilesPerUnit>{}, [&](auto tile_) {
-        constexpr int Tile = decltype(tile_)::value;
-        if (tile_in_unit != Tile) return;
-        constexpr int Sb = Tile / kPackedTilesPerSb;
-        constexpr int GroupBase = (Tile % kPackedTilesPerSb) * int(Scale_TileK);
-        uint8_t const* unit = paired + Sb * kPackedSbBytes;
-        uint32_t words[kPackedUnitWords];
-        CUTLASS_PRAGMA_UNROLL
-        for (int w = 0; w < kPackedUnitWords; ++w) {
-          uint32_t word = 0;
+      // A CTA may have fewer threads than N columns. Each owner decodes the same strided column set its one TiledCopy
+      // slice issued; using the shared ownership type here prevents transport and publication from drifting.
+      for_each(make_int_sequence<kPackedColsPerThread>{}, [&](auto sub_) {
+        constexpr int Sub = decltype(sub_)::value;
+        int const n = PackedMetadataOwnership::column(thread_idx, Sub);
+        if (int64_t(n) >= residue_n) return;
+        uint8_t const* paired = reinterpret_cast<uint8_t const*>(
+            &sRaw(n, cute::Int<0>{}, stage));
+        // The tile coordinate is runtime pipeline state, while group bit positions must remain compile-time constants.
+        // Enumerating the at-most-four positions gives both: one branch executes, and every selected group is a template
+        // argument to the same shared decoder used by the single-plane collective.
+        for_each(make_int_sequence<kPackedTilesPerUnit>{}, [&](auto tile_) {
+          constexpr int Tile = decltype(tile_)::value;
+          if (tile_in_unit != Tile) return;
+          constexpr int Sb = Tile / kPackedTilesPerSb;
+          constexpr int GroupBase = (Tile % kPackedTilesPerSb) * int(Scale_TileK);
+          uint8_t const* unit = paired + Sb * kPackedSbBytes;
+          uint32_t words[kPackedUnitWords];
           CUTLASS_PRAGMA_UNROLL
-          for (int b = 0; b < 4; ++b) {
-            int const idx = 4 * w + b;
-            if (idx < kPackedSbBytes) word |= uint32_t(unit[idx]) << (8 * b);
+          for (int w = 0; w < kPackedUnitWords; ++w) {
+            uint32_t word = 0;
+            CUTLASS_PRAGMA_UNROLL
+            for (int b = 0; b < 4; ++b) {
+              int const idx = 4 * w + b;
+              if (idx < kPackedSbBytes) word |= uint32_t(unit[idx]) << (8 * b);
+            }
+            words[w] = word;
           }
-          words[w] = word;
-        }
-        auto const head = cutlass::gguf_packed::head_of_words(words);
-        for_each(make_int_sequence<int(Scale_TileK)>{}, [&](auto g_) {
-          constexpr int G = decltype(g_)::value;
-          constexpr int UnitG = GroupBase + G;
-          auto const sz = cutlass::gguf_packed::group_of_words<
-              UnitG, PackedUnit::kScaleBias, PackedUnit::kHasMin, kPackedZMul, kPackedFmt>(words, head);
-          sS(thread_idx, cute::Int<G>{}, stage) = sz.scale;
-          sZ(thread_idx, cute::Int<G>{}, stage) = sz.zero;
+          auto const head = cutlass::gguf_packed::head_of_words(words);
+          for_each(make_int_sequence<int(Scale_TileK)>{}, [&](auto g_) {
+            constexpr int G = decltype(g_)::value;
+            constexpr int UnitG = GroupBase + G;
+            auto const sz = cutlass::gguf_packed::group_of_words<
+                UnitG, PackedUnit::kScaleBias, PackedUnit::kHasMin, kPackedZMul, kPackedFmt>(words, head);
+            sS(n, cute::Int<G>{}, stage) = sz.scale;
+            sZ(n, cute::Int<G>{}, stage) = sz.zero;
+          });
         });
       });
     }
