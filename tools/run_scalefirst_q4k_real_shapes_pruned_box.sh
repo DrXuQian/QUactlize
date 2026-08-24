@@ -4,8 +4,9 @@
 # Each ArtifactTileK layout is compiled once.  Every real dense prefill shape
 # first screens the complete typed layout graph with ordinary NP, then expands
 # scheduler choices only for the audited shortlist, and finally confirms that
-# shape's retained rows.  Split-K boards are producer-only by construction and
-# never compete with FULL_OUTPUT.
+# shape's retained rows.  Raw Split-K boards remain producer-only.  The bound
+# postprocessor separately combines their measured producer span with the
+# registered 80%-bandwidth, zero-launch reducer model for deployment ranking.
 set -uo pipefail
 
 main() {

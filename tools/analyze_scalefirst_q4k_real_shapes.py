@@ -31,6 +31,7 @@ import sys
 from typing import Any
 
 import plan_scalefirst_q4k_real_shapes as planner
+import prune_scalefirst_q4k_pilot as pruner
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -38,13 +39,24 @@ if str(ROOT) not in sys.path:
 from quactlize import formats as qformats
 
 
-ANALYSIS_SCHEMA = "quactlize.scalefirst_q4k_real_shapes_analysis.v4"
+ANALYSIS_SCHEMA = "quactlize.scalefirst_q4k_real_shapes_analysis.v5"
 BUNDLE_SCHEMA = "quactlize.scalefirst_q4k_real_shapes_bundle.v1"
-OFFLINE_SCHEMA = "quactlize.scalefirst_q4k_offline_layout_decisions.v3"
+OFFLINE_SCHEMA = "quactlize.scalefirst_q4k_offline_layout_decisions.v4"
 HEURISTIC_SCHEMA = "quactlize.scalefirst_q4k_heuristic_evidence.v1"
-REGISTRY_SCHEMA = "quactlize.scalefirst_q4k_winner_registry.v4"
+REGISTRY_SCHEMA = "quactlize.scalefirst_q4k_winner_registry.v5"
 AXES = ("tile_m", "tile_n", "tactic_tile_k", "warp_m", "warp_n",
         "stages", "bchunk")
+MODELED_PRODUCT_BOARD = "MODELED_E2E_REDUCER_80PCT_NO_LAUNCH"
+REDUCER_BANDWIDTH_FRACTION = .80
+REDUCER_NAMEPLATE_GBS = 2766.
+REDUCER_EFFECTIVE_GBS = REDUCER_BANDWIDTH_FRACTION * REDUCER_NAMEPLATE_GBS
+SPLIT_BY_ALGORITHM = {
+    "SPLITK_S2_PRODUCER": 2,
+    "SPLITK_S4_PRODUCER": 4,
+    "SPLITK_S8_PRODUCER": 8,
+}
+CONFIRM_ALGORITHMS = {"NONPERSISTENT", "PERSISTENT",
+                      *SPLIT_BY_ALGORITHM}
 
 
 class AnalysisError(ValueError):
@@ -178,6 +190,218 @@ def result_path(artifact: int, shape_key: str, name: str) -> str:
     return f"results/a{artifact}/{shape_key}/{name}"
 
 
+def reducer_model(m: int, n: int, split: int,
+                  observed_partial_bytes: int | None = None
+                  ) -> dict[str, Any]:
+    """Model only the reducer's traffic; the measured producer owns its write.
+
+    The producer timing already includes the FP32 partial-workspace write.
+    Therefore the reducer adds one FP32 workspace read plus one FP16 output
+    write.  Counting two workspace passes here would double-count the producer
+    write which is already present in the measured span.
+    """
+    if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0
+           for value in (m, n)) or split not in (2, 4, 8):
+        raise AnalysisError(
+            f"invalid reducer geometry M={m} N={n} S={split}")
+    partial_bytes = m * n * split * 4
+    if observed_partial_bytes is not None and (
+            isinstance(observed_partial_bytes, bool) or
+            not isinstance(observed_partial_bytes, int) or
+            observed_partial_bytes != partial_bytes):
+        raise AnalysisError(
+            f"Split-K partial byte authority differs: "
+            f"observed={observed_partial_bytes!r} expected={partial_bytes}")
+    output_bytes = m * n * 2
+    logical_bytes = partial_bytes + output_bytes
+    modeled_us = logical_bytes / (REDUCER_EFFECTIVE_GBS * 1.e3)
+    return {
+        "split": split,
+        "partial_workspace_read_bytes": partial_bytes,
+        "fp16_output_write_bytes": output_bytes,
+        "logical_read_write_bytes": logical_bytes,
+        "nameplate_gbs": REDUCER_NAMEPLATE_GBS,
+        "bandwidth_fraction": REDUCER_BANDWIDTH_FRACTION,
+        "effective_gbs": REDUCER_EFFECTIVE_GBS,
+        "launch_us": 0.,
+        "modeled_us": modeled_us,
+        "traffic_scope": "REDUCER_READ_FP32_PARTIAL_PLUS_WRITE_FP16_D",
+        "producer_workspace_write": "ALREADY_INCLUDED_IN_MEASURED_PRODUCER",
+    }
+
+
+def q4k_product_metrics(m: int, n: int, k: int, us: float
+                        ) -> dict[str, float]:
+    if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0
+           for value in (m, n, k)) or k % 32 or \
+            not math.isfinite(us) or us <= 0:
+        raise AnalysisError("invalid Q4_K product metric geometry/time")
+    distinct_bytes = (m * k * 2 + n * k * .5 + n * (k // 32) * 4 +
+                      m * n * 2)
+    tflops = (2. * m * n * k) / (us * 1.e6)
+    return {
+        "MFU_pct_500TF": tflops / 500. * 100.,
+        "distinct_MBU_pct_2766GBs":
+            distinct_bytes / (us * 1.e3) / REDUCER_NAMEPLATE_GBS * 100.,
+    }
+
+
+def modeled_product_candidate(cell: dict[str, Any], m: int, n: int, k: int
+                              ) -> dict[str, Any]:
+    if cell.get("status") != "MEASURED":
+        raise AnalysisError("terminal cell entered modeled product candidates")
+    algorithm = str(cell.get("algorithm"))
+    producer_us = float(cell.get("median_us"))
+    producer_low = float(cell.get("min_us"))
+    producer_high = float(cell.get("max_us"))
+    if any(not math.isfinite(value) or value <= 0
+           for value in (producer_us, producer_low, producer_high)) or \
+            not producer_low <= producer_us <= producer_high:
+        raise AnalysisError(f"invalid producer envelope for {algorithm}")
+    if algorithm in ("NONPERSISTENT", "PERSISTENT"):
+        if cell.get("metric_scope") != "FULL_OUTPUT" or \
+                int(cell.get("split", -1)) != 1 or \
+                int(cell.get("partial_bytes", -1)) != 0:
+            raise AnalysisError(
+                f"S=1 product cell has split/metric drift: {algorithm}")
+        model = {
+            "split": 1, "partial_workspace_read_bytes": 0,
+            "fp16_output_write_bytes": 0, "logical_read_write_bytes": 0,
+            "nameplate_gbs": REDUCER_NAMEPLATE_GBS,
+            "bandwidth_fraction": REDUCER_BANDWIDTH_FRACTION,
+            "effective_gbs": REDUCER_EFFECTIVE_GBS,
+            "launch_us": 0., "modeled_us": 0.,
+            "traffic_scope": "NO_SEPARATE_REDUCER",
+            "producer_workspace_write": "NOT_APPLICABLE",
+        }
+        source_board = "FULL_OUTPUT"
+    elif algorithm in SPLIT_BY_ALGORITHM:
+        split = SPLIT_BY_ALGORITHM[algorithm]
+        if cell.get("metric_scope") != "PRODUCER_ONLY_NOT_PRODUCT_E2E" or \
+                int(cell.get("split", -1)) != split:
+            raise AnalysisError(
+                f"{algorithm} lost producer-only/split identity")
+        if cell.get("reducer_correctness_untimed") not in (1, True):
+            raise AnalysisError(
+                f"{algorithm} lacks untimed reducer correctness closure")
+        model = reducer_model(m, n, split, cell.get("partial_bytes"))
+        source_board = algorithm
+    else:
+        raise AnalysisError(f"unregistered product candidate {algorithm}")
+    reducer_us = float(model["modeled_us"])
+    e2e_us = producer_us + reducer_us
+    result = {
+        "cell": pruner.cell_label(cell),
+        "symbol": str(cell["symbol"]), "config": str(cell["config"]),
+        "algorithm": algorithm, "source_board": source_board,
+        "grid": int(cell["grid"]), "policy": str(cell["policy"]),
+        "occupancy": int(cell["occupancy"]),
+        "split": int(model["split"]),
+        "producer_median_us": producer_us,
+        "producer_range_us": [producer_low, producer_high],
+        "modeled_reducer_us": reducer_us,
+        "modeled_reducer": model,
+        "median_us": e2e_us,
+        "range_us": [producer_low + reducer_us,
+                     producer_high + reducer_us],
+        "metric_scope": MODELED_PRODUCT_BOARD,
+        "timing_kind": "MEASURED_PRODUCER_PLUS_MODELED_REDUCER",
+        **q4k_product_metrics(m, n, k, e2e_us),
+    }
+    return result
+
+
+def adjudicate_time_candidates(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    if not candidates:
+        return {"verdict": "UNAVAILABLE", "winner": None,
+                "runner_up": None, "resolution_competitor": None,
+                "confirmed_candidate_count": 0}
+    ordered = sorted(candidates, key=lambda item: (
+        float(item["median_us"]), str(item.get("cell", "")),
+        int(item.get("artifact_tile_k", 0))))
+    winner = ordered[0]
+    runner = ordered[1] if len(ordered) > 1 else None
+    alternatives = ordered[1:]
+    blocker = (None if not alternatives else min(
+        alternatives, key=lambda item: (
+            float(item["range_us"][0]), float(item["median_us"]),
+            str(item.get("cell", "")))))
+    resolved = (blocker is None or
+                float(winner["range_us"][1]) <
+                float(blocker["range_us"][0]))
+    runner_payload = None if runner is None else {
+        **runner,
+        "gap_us": float(runner["median_us"]) -
+                  float(winner["median_us"]),
+    }
+    return {
+        "verdict": "RESOLVED" if resolved else "UNRESOLVED",
+        "winner": winner,
+        "runner_up": runner_payload,
+        "resolution_competitor": blocker,
+        "confirmed_candidate_count": len(ordered),
+    }
+
+
+def modeled_product_board(groups: dict[tuple[Any, ...], dict[str, Any]],
+                          m: int, n: int, k: int) -> dict[str, Any]:
+    observed: collections.Counter[str] = collections.Counter()
+    measured: collections.Counter[str] = collections.Counter()
+    candidates = []
+    for cell in groups.values():
+        board = pruner.board_of(cell)
+        observed[board] += 1
+        if cell.get("status") == "MEASURED":
+            measured[board] += 1
+            candidates.append(modeled_product_candidate(cell, m, n, k))
+    if set(observed) != set(planner.BOARDS):
+        raise AnalysisError(
+            f"modeled product board denominator differs: {sorted(observed)}")
+    result = adjudicate_time_candidates(candidates)
+    result.update({
+        "board": MODELED_PRODUCT_BOARD,
+        "metric_scope": MODELED_PRODUCT_BOARD,
+        "timing_kind": "MEASURED_PRODUCER_PLUS_MODELED_REDUCER",
+        "source_board_census": dict(sorted(observed.items())),
+        "measured_source_board_census": dict(sorted(measured.items())),
+        "reducer_assumptions": {
+            "bandwidth_fraction": REDUCER_BANDWIDTH_FRACTION,
+            "nameplate_gbs": REDUCER_NAMEPLATE_GBS,
+            "effective_gbs": REDUCER_EFFECTIVE_GBS,
+            "launch_us": 0.,
+            "logical_bytes": "M*N*S*4 + M*N*2",
+            "double_count_guard":
+                "producer FP32 partial write stays only in measured producer",
+        },
+    })
+    return result
+
+
+def verify_confirm_summary(result: dict[str, Any],
+                           rebuilt: dict[str, Any]) -> None:
+    """Bind the published winners to the raw confirm log without schema lockstep."""
+    keys = ("verdict", "measured_cells", "terminal_cells",
+            "terminal_reasons")
+    winner_keys = ("cell", "symbol", "config", "algorithm", "grid",
+                   "policy", "occupancy", "median_us", "range_us")
+    runner_keys = ("cell", "symbol", "config", "algorithm", "grid",
+                   "policy", "occupancy", "median_us", "range_us")
+    for board in planner.BOARDS:
+        published = result["boards"][board]
+        replayed = rebuilt["boards"][board]
+        if any(published.get(key) != replayed.get(key) for key in keys):
+            raise AnalysisError(
+                f"published {board} census/verdict differs from raw confirm log")
+        for name, fields in (("winner", winner_keys),
+                             ("runner_up", runner_keys)):
+            left, right = published.get(name), replayed.get(name)
+            if (left is None) != (right is None) or (
+                    left is not None and any(left.get(field) != right.get(field)
+                                             for field in fields)):
+                raise AnalysisError(
+                    f"published {board} {name} differs from raw confirm log")
+
+
 def load_inputs(bundle: pathlib.Path) -> dict[str, Any]:
     authority = Authority(bundle)
     plan_path = authority.path("plan.json")
@@ -194,6 +418,8 @@ def load_inputs(bundle: pathlib.Path) -> dict[str, Any]:
     cell_summaries: dict[tuple[str, int], dict[str, Any]] = {}
     screens: dict[tuple[str, int], dict[str, Any]] = {}
     schedulers: dict[tuple[str, int], dict[str, Any]] = {}
+    confirm_groups: dict[tuple[str, int],
+                         dict[tuple[Any, ...], dict[str, Any]]] = {}
     for cell in plan["cells"]:
         key = str(cell["shape_key"])
         artifact = int(cell["artifact_tile_k"])
@@ -225,14 +451,50 @@ def load_inputs(bundle: pathlib.Path) -> dict[str, Any]:
         if any(row.get("symbol") not in manifests[artifact]
                for row in candidates):
             raise AnalysisError(f"screen candidate outside manifest for {key}/A{artifact}")
+        policy_path = authority.path(str(cell["policy"]))
+        policy = pruner.load_policy(policy_path)
+        shortlist = pruner.read_symbols(authority.path(
+            result_path(artifact, key, "confirm-shortlist.txt")))
+        groups = pruner.load_log(
+            authority.path(f"raw/a{artifact}/{key}/confirm.log"),
+            manifests[artifact], policy, shortlist,
+            algorithms=CONFIRM_ALGORITHMS,
+            iterations=int(policy["confirm"]["iterations"]))
+        rebuilt = pruner.adjudicate(manifests[artifact], groups, policy)
+        verify_confirm_summary(result, rebuilt)
         cell_summaries[(key, artifact)] = result
         screens[(key, artifact)] = screen
         schedulers[(key, artifact)] = scheduler
+        confirm_groups[(key, artifact)] = groups
     if len(cell_summaries) != int(plan["cell_count"]):
         raise AnalysisError("loaded cell denominator differs")
+    modeled_boards = {}
+    shapes = {str(item["shape_key"]): item for item in plan["shapes"]}
+    for (key, artifact), groups in confirm_groups.items():
+        shape = shapes[key]
+        modeled_boards[(key, artifact)] = modeled_product_board(
+            groups, int(shape["m"]), int(shape["n"]), int(shape["k"]))
+    modeled_shape_boards = {}
+    for key in shapes:
+        candidates = []
+        for artifact in planner.ARTIFACTS:
+            item = modeled_boards[(key, artifact)]
+            if item.get("winner") is not None:
+                candidates.append({"artifact_tile_k": artifact,
+                                   "layout": planner.layout_identity(artifact),
+                                   "within_layout_verdict": item["verdict"],
+                                   **item["winner"]})
+        modeled_shape_boards[key] = adjudicate_time_candidates(candidates)
+        if modeled_shape_boards[key].get("winner") is not None and \
+                modeled_shape_boards[key]["winner"][
+                    "within_layout_verdict"] != "RESOLVED":
+            modeled_shape_boards[key]["verdict"] = "UNRESOLVED"
     return {"authority": authority, "plan": plan, "summary": summary,
             "manifests": manifests, "cell_summaries": cell_summaries,
-            "screens": screens, "schedulers": schedulers}
+            "screens": screens, "schedulers": schedulers,
+            "confirm_groups": confirm_groups,
+            "modeled_boards": modeled_boards,
+            "modeled_shape_boards": modeled_shape_boards}
 
 
 def measured_board(cell_summaries: dict[tuple[str, int], dict[str, Any]],
@@ -244,6 +506,17 @@ def measured_board(cell_summaries: dict[tuple[str, int], dict[str, Any]],
         return None
     return {"artifact_tile_k": artifact, "verdict": result["verdict"],
             "winner": winner, "runner_up": result.get("runner_up")}
+
+
+def deployment_board(modeled_boards: dict[tuple[str, int], dict[str, Any]],
+                     key: str, artifact: int) -> dict[str, Any] | None:
+    result = modeled_boards[(key, artifact)]
+    winner = result.get("winner")
+    if winner is None:
+        return None
+    return {"artifact_tile_k": artifact, "verdict": result["verdict"],
+            "winner": winner, "runner_up": result.get("runner_up"),
+            "resolution_competitor": result.get("resolution_competitor")}
 
 
 def physical_layout_class(artifact: int) -> dict[str, Any]:
@@ -351,7 +624,7 @@ def layer_key(layer: dict[str, Any]) -> tuple[str, int, int, str, str]:
 
 def offline_layout_decisions(inputs: dict[str, Any]) -> list[dict[str, Any]]:
     plan = inputs["plan"]
-    cell_summaries = inputs["cell_summaries"]
+    modeled_boards = inputs["modeled_boards"]
     grouped: dict[tuple[str, int, int, str, str], list[dict[str, Any]]] = \
         collections.defaultdict(list)
     identities: dict[tuple[str, int, int, str, str], dict[str, Any]] = {}
@@ -394,12 +667,11 @@ def offline_layout_decisions(inputs: dict[str, Any]) -> list[dict[str, Any]]:
         for shape in shapes:
             shape_key = str(shape["shape_key"])
             per_shape[shape_key] = [value for artifact in planner.ARTIFACTS
-                              if (value := measured_board(
-                                  cell_summaries, shape_key, artifact,
-                                  "FULL_OUTPUT")) is not None]
+                              if (value := deployment_board(
+                                  modeled_boards, shape_key, artifact)) is not None]
             if not per_shape[shape_key]:
                 raise AnalysisError(
-                    f"FULL_OUTPUT has no layout for {shape_key}")
+                    f"modeled product E2E has no layout for {shape_key}")
         scored = []
         for artifact in planner.ARTIFACTS:
             if any(not any(item["artifact_tile_k"] == artifact
@@ -425,6 +697,14 @@ def offline_layout_decisions(inputs: dict[str, Any]) -> list[dict[str, Any]]:
                               "regret_interval": [lower, upper],
                               "config": item["winner"]["config"],
                               "algorithm": item["winner"]["algorithm"],
+                              "split": item["winner"]["split"],
+                              "producer_median_us": item["winner"][
+                                  "producer_median_us"],
+                              "modeled_reducer_us": item["winner"][
+                                  "modeled_reducer_us"],
+                              "modeled_reducer_logical_bytes": item[
+                                  "winner"]["modeled_reducer"][
+                                      "logical_read_write_bytes"],
                               "within_layout_verdict": item["verdict"]})
             scored.append({"artifact_tile_k": artifact,
                            "layout": planner.layout_identity(artifact),
@@ -471,7 +751,12 @@ def offline_layout_decisions(inputs: dict[str, Any]) -> list[dict[str, Any]]:
                               "median_us": median, "regret": regrets[-1],
                               "regret_interval": [lower, upper],
                               "config": item["winner"]["config"],
-                              "algorithm": item["winner"]["algorithm"]})
+                              "algorithm": item["winner"]["algorithm"],
+                              "split": item["winner"]["split"],
+                              "producer_median_us": item["winner"][
+                                  "producer_median_us"],
+                              "modeled_reducer_us": item["winner"][
+                                  "modeled_reducer_us"]})
             if len(per_m) == len(shapes):
                 exemplar = next(physical_layout_class(artifact)
                                 for artifact in planner.ARTIFACTS
@@ -507,6 +792,7 @@ def offline_layout_decisions(inputs: dict[str, Any]) -> list[dict[str, Any]]:
                 if float(item["winner"]["median_us"]) == best})
         decisions.append({"layer": layer,
                           "N": n, "K": k, "group_size": group_size,
+                          "selection_board": MODELED_PRODUCT_BOARD,
                           "M_values": m_values,
                           "shape_keys_by_M": {
                               str(int(shape["m"])): str(shape["shape_key"])
@@ -705,13 +991,16 @@ def confirmed_patterns(inputs: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def is_product_e2e_recordable(board: str, board_recordable: bool) -> bool:
-    return board_recordable and board == "FULL_OUTPUT"
+    return board_recordable and board in {"FULL_OUTPUT",
+                                          MODELED_PRODUCT_BOARD}
 
 
 def winner_registry(inputs: dict[str, Any], decisions: list[dict[str, Any]]
                    ) -> list[dict[str, Any]]:
     manifests = inputs["manifests"]
     cell_summaries = inputs["cell_summaries"]
+    modeled_boards = inputs["modeled_boards"]
+    modeled_shape_boards = inputs["modeled_shape_boards"]
     root_shapes = {str(item["shape_key"]): item
                    for item in inputs["summary"]["shapes"]}
     if len(root_shapes) != len(inputs["summary"]["shapes"]):
@@ -734,10 +1023,14 @@ def winner_registry(inputs: dict[str, Any], decisions: list[dict[str, Any]]
             root_shape = root_shapes.get(shape_key)
             if root_shape is None:
                 raise AnalysisError(f"root summary lacks {shape_key}")
-            for board in planner.BOARDS:
-                board_result = (None if artifact is None else
-                                cell_summaries[(shape_key, artifact)][
-                                    "boards"][board])
+            for board in (*planner.BOARDS, MODELED_PRODUCT_BOARD):
+                if artifact is None:
+                    board_result = None
+                elif board == MODELED_PRODUCT_BOARD:
+                    board_result = modeled_boards[(shape_key, artifact)]
+                else:
+                    board_result = cell_summaries[(shape_key, artifact)][
+                        "boards"][board]
                 winner = (None if board_result is None else
                           board_result.get("winner"))
                 runner = (None if board_result is None else
@@ -751,17 +1044,43 @@ def winner_registry(inputs: dict[str, Any], decisions: list[dict[str, Any]]
                 axes = ({axis: None for axis in AXES} if winner is None else
                         {axis: int(manifests[artifact][winner["symbol"]][axis])
                          for axis in AXES})
-                cross_winner = root_shape["boards"][board].get("winner")
+                cross_winner = (modeled_shape_boards[shape_key].get("winner")
+                                if board == MODELED_PRODUCT_BOARD else
+                                root_shape["boards"][board].get("winner"))
                 regret = (None if winner is None or cross_winner is None else
                           float(winner["median_us"]) /
                           float(cross_winner["median_us"]) - 1.)
+                if board == MODELED_PRODUCT_BOARD:
+                    metric_scope = MODELED_PRODUCT_BOARD
+                    timing_kind = "MEASURED_PRODUCER_PLUS_MODELED_REDUCER"
+                elif board == "FULL_OUTPUT":
+                    metric_scope = "MEASURED_PRODUCT_E2E"
+                    timing_kind = "MEASURED_PRODUCT_E2E"
+                else:
+                    metric_scope = "PRODUCER_ONLY_NOT_PRODUCT_E2E"
+                    timing_kind = "MEASURED_PRODUCER_ONLY"
+                split = None
+                producer_us = None
+                reducer_us = None
+                reducer_bytes = None
+                if winner is not None:
+                    split = int(winner.get(
+                        "split", SPLIT_BY_ALGORITHM.get(
+                            str(winner["algorithm"]), 1)))
+                    if board == MODELED_PRODUCT_BOARD:
+                        producer_us = winner["producer_median_us"]
+                        reducer_us = winner["modeled_reducer_us"]
+                        reducer_bytes = winner["modeled_reducer"][
+                            "logical_read_write_bytes"]
+                    elif board == "FULL_OUTPUT":
+                        producer_us = winner["median_us"]
                 rows.append({
                         **layer,
                         "M": m, "N": decision["N"], "K": decision["K"],
                         "group_size": decision["group_size"],
                         "board": board,
-                        "metric_scope": ("FULL_OUTPUT" if board == "FULL_OUTPUT"
-                                         else "PRODUCER_ONLY_NO_REDUCER_E2E"),
+                        "metric_scope": metric_scope,
+                        "timing_kind": timing_kind,
                         "offline_layout_verdict": decision["verdict"],
                         "xplane_byte_class_verdict": physical_decision["verdict"],
                         "xplane_byte_class_recordable":
@@ -769,6 +1088,10 @@ def winner_registry(inputs: dict[str, Any], decisions: list[dict[str, Any]]
                         "config_verdict": config_verdict,
                         "recordable": recordable,
                         "product_e2e_recordable": product_e2e_recordable,
+                        "measured_product_e2e_recordable":
+                            recordable and board == "FULL_OUTPUT",
+                        "modeled_product_e2e_recordable":
+                            recordable and board == MODELED_PRODUCT_BOARD,
                         "artifact_tile_k": artifact,
                         "layout": (None if artifact is None else
                                    planner.layout_identity(artifact)),
@@ -779,6 +1102,10 @@ def winner_registry(inputs: dict[str, Any], decisions: list[dict[str, Any]]
                         "grid": None if winner is None else winner["grid"],
                         "policy": None if winner is None else winner["policy"],
                         "median_us": None if winner is None else winner["median_us"],
+                        "split": split,
+                        "producer_median_us": producer_us,
+                        "modeled_reducer_us": reducer_us,
+                        "modeled_reducer_logical_bytes": reducer_bytes,
                         "MFU_pct": None if winner is None else winner["MFU_pct_500TF"],
                         "distinct_MBU_pct": (None if winner is None else
                                              winner["distinct_MBU_pct_2766GBs"]),
@@ -847,6 +1174,52 @@ def flatten_offline(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
+def flatten_deployment_scores(decisions: list[dict[str, Any]]
+                              ) -> list[dict[str, Any]]:
+    rows = []
+    for item in decisions:
+        selected = item.get("selected")
+        physical_selected = item["xplane_byte_class_decision"].get("selected")
+        selected_artifact = (None if selected is None else
+                             int(selected["artifact_tile_k"]))
+        selected_mapping = (None if physical_selected is None else
+                            physical_selected["physical_layout_class"][
+                                "mapping_sha256"])
+        for score in item["all_common_layout_scores"]:
+            artifact = int(score["artifact_tile_k"])
+            physical = score["physical_layout_class"]
+            for per_m in score["per_m"]:
+                rows.append({
+                    **item["layer"],
+                    "M": per_m["M"], "N": item["N"], "K": item["K"],
+                    "group_size": item["group_size"],
+                    "ArtifactTileK": artifact,
+                    "FoldN_low": score["layout"]["fold_n"]["low"],
+                    "layout": score["layout"]["name"],
+                    "physical_layout_class": physical["name"],
+                    "xplane_mapping_sha256": physical["mapping_sha256"],
+                    "descriptor_selected": artifact == selected_artifact,
+                    "physical_class_selected":
+                        physical["mapping_sha256"] == selected_mapping,
+                    "offline_descriptor_verdict": item["verdict"],
+                    "offline_physical_class_verdict": item[
+                        "xplane_byte_class_decision"]["verdict"],
+                    "within_layout_verdict": per_m["within_layout_verdict"],
+                    "algorithm": per_m["algorithm"],
+                    "split": per_m["split"],
+                    "config": per_m["config"],
+                    "producer_median_us": per_m["producer_median_us"],
+                    "modeled_reducer_us": per_m["modeled_reducer_us"],
+                    "modeled_reducer_logical_bytes": per_m[
+                        "modeled_reducer_logical_bytes"],
+                    "modeled_e2e_us": per_m["median_us"],
+                    "regret": per_m["regret"],
+                    "regret_low": per_m["regret_interval"][0],
+                    "regret_high": per_m["regret_interval"][1],
+                })
+    return rows
+
+
 def flatten_axis(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{**row,
              "worst_regret_if_dropped": ("INF" if math.isinf(
@@ -866,9 +1239,11 @@ def flatten_registry(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         result.append({key: row[key] for key in (
             "model_id", "tensor", "tp_world", "tp_rank", "tp_partition",
             "M", "N", "K", "group_size", "board", "metric_scope",
+            "timing_kind",
             "offline_layout_verdict", "xplane_byte_class_verdict",
             "xplane_byte_class_recordable", "config_verdict", "recordable",
-            "product_e2e_recordable")}
+            "product_e2e_recordable", "measured_product_e2e_recordable",
+            "modeled_product_e2e_recordable")}
             | {"ArtifactTileK": "" if layout is None else
                    layout["artifact_tile_k"],
                "FoldN_low": "" if layout is None else layout["fold_n"]["low"],
@@ -881,6 +1256,14 @@ def flatten_registry(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                "grid": "" if row["grid"] is None else row["grid"],
                "policy": row["policy"] or "",
                "median_us": "" if row["median_us"] is None else row["median_us"],
+               "split": "" if row["split"] is None else row["split"],
+               "producer_median_us": ("" if row["producer_median_us"] is None
+                                        else row["producer_median_us"]),
+               "modeled_reducer_us": ("" if row["modeled_reducer_us"] is None
+                                        else row["modeled_reducer_us"]),
+               "modeled_reducer_logical_bytes": ("" if row[
+                   "modeled_reducer_logical_bytes"] is None else row[
+                       "modeled_reducer_logical_bytes"]),
                "MFU_pct": "" if row["MFU_pct"] is None else row["MFU_pct"],
                "distinct_MBU_pct": ("" if row["distinct_MBU_pct"] is None else
                                     row["distinct_MBU_pct"]),
@@ -941,6 +1324,26 @@ def report_text(inputs: dict[str, Any], decisions: list[dict[str, Any]],
                  f"measurement_families={len(measurement_families)} "
                  f"layer_decisions={len(decisions)} "
                  f"decision_signatures={len(grouped_decisions)}")
+    lines.append("DEPLOYMENT_MODEL "
+                 f"board={MODELED_PRODUCT_BOARD} "
+                 f"reducer_bandwidth_fraction={REDUCER_BANDWIDTH_FRACTION:.2f} "
+                 f"nameplate_gbs={REDUCER_NAMEPLATE_GBS:.1f} "
+                 f"effective_gbs={REDUCER_EFFECTIVE_GBS:.1f} "
+                 "launch_us=0 logical_bytes=M*N*S*4+M*N*2 "
+                 "producer_partial_write=ALREADY_IN_MEASURED_PRODUCER")
+    deployment_splits = collections.Counter()
+    deployment_algorithms = collections.Counter()
+    for item in decisions:
+        selected = item.get("selected")
+        if selected is None:
+            continue
+        for per_m in selected["per_m"]:
+            deployment_splits[str(per_m["split"])] += 1
+            deployment_algorithms[str(per_m["algorithm"])] += 1
+    lines.append("DEPLOYMENT_WINNER_CENSUS layer_M_choices="
+                 f"{sum(deployment_splits.values())} splits="
+                 f"{canonical(dict(sorted(deployment_splits.items())))} "
+                 f"algorithms={canonical(dict(sorted(deployment_algorithms.items())))}")
     lines.append("OFFLINE_CENSUS layer_descriptor_verdicts=" +
                  canonical(dict(sorted(descriptor_verdicts.items()))) +
                  " layer_xplane_byte_class_verdicts=" +
@@ -995,14 +1398,20 @@ def report_text(inputs: dict[str, Any], decisions: list[dict[str, Any]],
     recordable = sum(bool(row["recordable"]) for row in registry)
     product_e2e_recordable = sum(bool(row["product_e2e_recordable"])
                                  for row in registry)
+    measured_product_recordable = sum(
+        bool(row["measured_product_e2e_recordable"]) for row in registry)
+    modeled_product_recordable = sum(
+        bool(row["modeled_product_e2e_recordable"]) for row in registry)
     physical_recordable = sum(bool(row["xplane_byte_class_recordable"])
                               for row in registry)
     lines.append(f"WINNER_REGISTRY rows={len(registry)} "
                  f"xplane_byte_class_recordable={physical_recordable} "
                  f"board_scoped_recordable={recordable} "
                  f"product_e2e_recordable={product_e2e_recordable} "
+                 f"measured_product_e2e_recordable={measured_product_recordable} "
+                 f"modeled_product_e2e_recordable={modeled_product_recordable} "
                  f"board_scoped_held_back={len(registry)-recordable}")
-    lines.append("SCOPE FULL_OUTPUT is product E2E; SPLITK boards are producer-only and cannot be compared with FULL_OUTPUT or recorded as product latency")
+    lines.append("SCOPE raw SPLITK boards remain producer-only; offline/deployment selection uses measured producer + reducer traffic at 80% of 2766 GB/s with zero reducer launch time. The composite is modeled product E2E, never relabeled as measured product E2E")
     return "\n".join(lines) + "\n"
 
 
@@ -1020,11 +1429,20 @@ def analyze(bundle: pathlib.Path, output: pathlib.Path, threshold: float) -> Non
     offline_doc = {"schema": OFFLINE_SCHEMA,
                    "decision_key": "one concrete (model_id,tp_world,tp_rank,tp_partition,tensor); different layers are never storage-coupled merely because N/K match",
                    "measurement_dedup_rule": "identical (M,N,K,gs,format,device) cells reuse one timing result, but measurement reuse does not merge per-layer offline decisions",
-                   "descriptor_selection_rule": "one common ArtifactTileK per layer across measured M; minimize maximum median regret, then mean regret; resolution requires non-overlapping conservative max-regret envelopes",
+                   "descriptor_selection_rule": "one common ArtifactTileK per layer across measured M; each M/layout first selects the best measured S=1 product or Split-K producer plus modeled reducer; minimize maximum modeled-product median regret, then mean regret; resolution requires non-overlapping conservative max-regret envelopes",
+                   "deployment_timing_scope": MODELED_PRODUCT_BOARD,
+                   "reducer_model": {
+                       "nameplate_gbs": REDUCER_NAMEPLATE_GBS,
+                       "bandwidth_fraction": REDUCER_BANDWIDTH_FRACTION,
+                       "effective_gbs": REDUCER_EFFECTIVE_GBS,
+                       "launch_us": 0.,
+                       "logical_bytes": "M*N*S*4 + M*N*2",
+                       "byte_accounting": "read FP32 partial workspace once and write FP16 D once; producer workspace write is already measured",
+                   },
                    "physical_class_rule": "Score one physical byte class per layer across that layer's measured M values. ArtifactTileK is a resident reader/copy descriptor: Q4_K A32/FoldN=2 is one class, while A64/A128/A256 share the proven tile-free F=1/TK<=256 class and may use different readers per M without repacking",
                    "decisions": decisions}
     registry_doc = {"schema": REGISTRY_SCHEMA,
-                    "recording_rule": "physical bytes are recordable when the physical class is RESOLVED; a board-scoped winner is recordable only when both the ArtifactTileK descriptor and within-layout config are RESOLVED; product_e2e_recordable additionally requires FULL_OUTPUT, while producer-only boards remain explicitly scoped",
+                    "recording_rule": "physical bytes are recordable when the physical class is RESOLVED; a board-scoped winner is recordable only when both the ArtifactTileK descriptor and within-layout config are RESOLVED; measured_product_e2e_recordable requires FULL_OUTPUT, modeled_product_e2e_recordable requires the explicit 80%-bandwidth/zero-launch composite, and raw Split-K boards remain producer-only",
                     "rows": registry}
     analyzer_path = pathlib.Path(__file__).resolve()
     try:
@@ -1039,6 +1457,7 @@ def analyze(bundle: pathlib.Path, output: pathlib.Path, threshold: float) -> Non
         "source_bundle_sha256": digest(authority.bundle_path),
         "analyzer_git_sha": git_sha,
         "analyzer_sha256": digest(analyzer_path),
+        "deployment_reducer_model": offline_doc["reducer_model"],
         "verified_input_members": sorted(authority.verified),
         "offline_layout": offline_doc,
         "heuristics": heuristics,
@@ -1051,6 +1470,9 @@ def analyze(bundle: pathlib.Path, output: pathlib.Path, threshold: float) -> Non
     offline_rows = flatten_offline(decisions)
     atomic_tsv(output / "offline-layout-decisions.tsv", offline_rows,
                list(offline_rows[0]))
+    deployment_rows = flatten_deployment_scores(decisions)
+    atomic_tsv(output / "modeled-deployment-layout-scores.tsv",
+               deployment_rows, list(deployment_rows[0]))
     atomic_json(output / "heuristic-evidence.json", heuristics)
     axis_rows = flatten_axis(heuristics["axis_value_evidence"])
     atomic_tsv(output / "axis-pruning-evidence.tsv", axis_rows,
@@ -1088,9 +1510,12 @@ def self_test() -> None:
         return {"verdict": "RESOLVED", "winner": {
             "median_us": us, "range_us": [us * .99, us * 1.01],
             "symbol": "c", "config": "c", "algorithm": "NONPERSISTENT",
+            "source_board": "FULL_OUTPUT", "split": 1,
+            "producer_median_us": us, "modeled_reducer_us": 0.,
+            "modeled_reducer": {"logical_read_write_bytes": 0},
             "grid": 1, "policy": "ordinary", "MFU_pct_500TF": 1.,
             "distinct_MBU_pct_2766GBs": 1.}, "runner_up": None}
-    cells = {}
+    modeled_cells = {}
     values = {("m64", 32): 10., ("m64", 64): 11.,
               ("m2048", 32): 12., ("m2048", 64): 10.}
     for key in ("m64", "m2048"):
@@ -1098,9 +1523,9 @@ def self_test() -> None:
             result = (board(values[(key, artifact)]) if artifact in (32, 64)
                       else {"verdict": "UNAVAILABLE", "winner": None,
                             "runner_up": None})
-            cells[(key, artifact)] = {"boards": {"FULL_OUTPUT": result}}
+            modeled_cells[(key, artifact)] = result
     decisions = offline_layout_decisions(
-        {"plan": {"shapes": shapes}, "cell_summaries": cells})
+        {"plan": {"shapes": shapes}, "modeled_boards": modeled_cells})
     by_tensor = {item["layer"]["tensor"]: item for item in decisions}
     if len(decisions) != 2 or \
             by_tensor["layer0"]["selected"]["artifact_tile_k"] != 64 or \
@@ -1115,7 +1540,7 @@ def self_test() -> None:
     try:
         offline_layout_decisions({
             "plan": {"shapes": [shapes[0], duplicate_m]},
-            "cell_summaries": cells,
+            "modeled_boards": modeled_cells,
         })
     except AnalysisError as error:
         if "repeats a measured M" not in str(error):
@@ -1124,8 +1549,7 @@ def self_test() -> None:
         raise AssertionError(
             "one layer accepted two offline decisions for the same M")
     registry_cells = {}
-    for cell_key, cell in cells.items():
-        full = cell["boards"]["FULL_OUTPUT"]
+    for cell_key, full in modeled_cells.items():
         registry_cells[cell_key] = {
             "boards": {name: full for name in planner.BOARDS}}
     manifest_row = {axis: 1 for axis in AXES}
@@ -1134,6 +1558,7 @@ def self_test() -> None:
         for artifact in planner.ARTIFACTS
     }
     summary_shapes = []
+    modeled_shape_boards = {}
     for shape in shapes:
         root_winner = min(
             (registry_cells[(shape["shape_key"], artifact)]
@@ -1147,13 +1572,23 @@ def self_test() -> None:
             "boards": {name: {"winner": root_winner}
                        for name in planner.BOARDS},
         })
+        modeled_shape_boards[shape["shape_key"]] = adjudicate_time_candidates([
+            {"artifact_tile_k": artifact,
+             "within_layout_verdict": modeled_cells[
+                 (shape["shape_key"], artifact)]["verdict"],
+             **modeled_cells[(shape["shape_key"], artifact)]["winner"]}
+            for artifact in planner.ARTIFACTS
+            if modeled_cells[(shape["shape_key"], artifact)].get("winner")
+        ])
     registry = winner_registry({
         "manifests": manifests,
         "cell_summaries": registry_cells,
+        "modeled_boards": modeled_cells,
+        "modeled_shape_boards": modeled_shape_boards,
         "summary": {"shapes": summary_shapes},
     }, decisions)
     registry_layers = collections.Counter(row["tensor"] for row in registry)
-    if registry_layers != {"layer0": 8, "layer1": 4} or \
+    if registry_layers != {"layer0": 10, "layer1": 5} or \
             {row["artifact_tile_k"] for row in registry
              if row["tensor"] == "layer0"} != {64} or \
             {row["artifact_tile_k"] for row in registry
@@ -1174,12 +1609,11 @@ def self_test() -> None:
         ("m2048", 128): 10., ("m2048", 256): 10.10,
     }
     tied_cells = {
-        (key, artifact): {"boards": {"FULL_OUTPUT": board(
-            tied_values[(key, artifact)])}}
+        (key, artifact): board(tied_values[(key, artifact)])
         for key in ("m64", "m2048") for artifact in planner.ARTIFACTS
     }
     tied = next(item for item in offline_layout_decisions(
-        {"plan": {"shapes": shapes}, "cell_summaries": tied_cells})
+        {"plan": {"shapes": shapes}, "modeled_boards": tied_cells})
                 if item["layer"]["tensor"] == "layer0")
     byte_decision = tied["xplane_byte_class_decision"]
     if tied["verdict"] != "UNRESOLVED" or \
@@ -1207,9 +1641,88 @@ def self_test() -> None:
             planted_blocker is not planted_scores[2]:
         raise AssertionError("noisy third-place interval stayed green")
     if not is_product_e2e_recordable("FULL_OUTPUT", True) or \
+            not is_product_e2e_recordable(MODELED_PRODUCT_BOARD, True) or \
             is_product_e2e_recordable("SPLITK_S4_PRODUCER", True) or \
             is_product_e2e_recordable("FULL_OUTPUT", False):
         raise AssertionError("producer-only board became product E2E")
+    exact_model = reducer_model(1, 4096, 8, 131072)
+    if exact_model["logical_read_write_bytes"] != 139264 or \
+            not math.isclose(exact_model["modeled_us"],
+                             139264 / (2212.8 * 1.e3), rel_tol=1.e-15) or \
+            exact_model["logical_read_write_bytes"] == 2 * 131072 + 8192:
+        raise AssertionError("reducer byte/time model double-counted producer write")
+
+    def raw_cell(algorithm: str, us: float | None,
+                 *, correctness: int = 1,
+                 partial_override: int | None = None) -> dict[str, Any]:
+        split = SPLIT_BY_ALGORITHM.get(algorithm, 1)
+        measured = us is not None
+        partial = (0 if split == 1 else 1 * 4096 * split * 4)
+        if partial_override is not None:
+            partial = partial_override
+        return {
+            "symbol": f"symbol-{algorithm}", "config": "config",
+            "algorithm": algorithm,
+            "metric_scope": ("FULL_OUTPUT" if split == 1 else
+                             "PRODUCER_ONLY_NOT_PRODUCT_E2E"),
+            "policy": "ordinary" if split == 1 else "fixed-split-k",
+            "split": split, "grid": 1, "occupancy": 1,
+            "capacity_b_mask": "0x0", "balanced_b_mask": "0x0",
+            "status": "MEASURED" if measured else "INADMISSIBLE",
+            "reason": "MEASURED" if measured else "PIPELINE_DEPTH",
+            "partial_bytes": partial,
+            "reducer_correctness_untimed": correctness if measured else 0,
+            "median_us": us, "min_us": None if us is None else us - .001,
+            "max_us": None if us is None else us + .001,
+        }
+
+    def raw_groups(split2_us: float | None,
+                   *, correctness: int = 1,
+                   partial_override: int | None = None
+                   ) -> dict[tuple[Any, ...], dict[str, Any]]:
+        values = [raw_cell("NONPERSISTENT", 10.),
+                  raw_cell("SPLITK_S2_PRODUCER", split2_us,
+                           correctness=correctness,
+                           partial_override=partial_override),
+                  raw_cell("SPLITK_S4_PRODUCER", None),
+                  raw_cell("SPLITK_S8_PRODUCER", None)]
+        return {(cell["algorithm"],): cell for cell in values}
+
+    # Raw producer 9.99 us looks faster than S=1, but its modeled reducer makes
+    # the product slower.  A 9.90 us producer still wins.  This proves Split-K
+    # participates without pretending producer-only time is product latency.
+    modeled_loss = modeled_product_board(raw_groups(9.99), 1, 4096, 4096)
+    modeled_win = modeled_product_board(raw_groups(9.90), 1, 4096, 4096)
+    fallback = modeled_product_board(raw_groups(None), 1, 4096, 4096)
+    if modeled_loss["winner"]["split"] != 1 or \
+            modeled_win["winner"]["split"] != 2 or \
+            fallback["winner"]["split"] != 1:
+        raise AssertionError("modeled Split-K/S=1 ranking or fallback differs")
+    for planted, label in (
+            (raw_groups(9.90, correctness=0), "missing reducer correctness"),
+            (raw_groups(9.90, partial_override=32764),
+             "wrong partial byte denominator")):
+        try:
+            modeled_product_board(planted, 1, 4096, 4096)
+        except AnalysisError:
+            pass
+        else:
+            raise AssertionError(f"{label} stayed green")
+    missing_board = raw_groups(9.90)
+    del missing_board[("SPLITK_S8_PRODUCER",)]
+    try:
+        modeled_product_board(missing_board, 1, 4096, 4096)
+    except AnalysisError:
+        pass
+    else:
+        raise AssertionError("missing modeled source board stayed green")
+    time_candidates = [
+        {"median_us": 10., "range_us": [9.99, 10.01], "cell": "a"},
+        {"median_us": 10.1, "range_us": [10.08, 10.12], "cell": "b"},
+        {"median_us": 10.2, "range_us": [9.98, 10.5], "cell": "c"},
+    ]
+    if adjudicate_time_candidates(time_candidates)["verdict"] != "UNRESOLVED":
+        raise AssertionError("modeled noisy third-place interval stayed green")
     # Dropping an essential value must be red while a dominated value is safe.
     manifest = {
         "a": {"symbol": "a", "tile_m": 8, "tile_n": 64,
@@ -1244,6 +1757,8 @@ def self_test() -> None:
     print("[q4k-postprocess:self-test] PASS per-layer minimax cross-M "
           "descriptor, same-shape layer isolation, duplicate-M RED, "
           "descriptor-tie/byte-class separation, noisy-third-place RED, "
+          "80%-bandwidth/zero-launch reducer bytes, Split-K ranking/fallback, "
+          "reducer-correctness/partial-byte/source-board negatives, "
           "essential/dominated axis regret, and missing denominator RED")
 
 

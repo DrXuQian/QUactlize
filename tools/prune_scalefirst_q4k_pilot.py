@@ -556,6 +556,11 @@ def adjudicate(manifest_rows: dict[str, dict[str, Any]],
             "winner": {"cell": cell_label(winner), "symbol": winner["symbol"],
                        "config": winner["config"],
                        "algorithm": winner["algorithm"],
+                       "metric_scope": winner["metric_scope"],
+                       "split": int(winner["split"]),
+                       "partial_bytes": int(winner["partial_bytes"]),
+                       "reducer_correctness_untimed":
+                           int(winner["reducer_correctness_untimed"]),
                        "grid": winner["grid"], "policy": winner["policy"],
                        "occupancy": winner["occupancy"],
                        "median_us": winner["median_us"],
@@ -565,6 +570,11 @@ def adjudicate(manifest_rows: dict[str, dict[str, Any]],
                 "cell": cell_label(runner_up), "symbol": runner_up["symbol"],
                 "config": runner_up["config"],
                 "algorithm": runner_up["algorithm"],
+                "metric_scope": runner_up["metric_scope"],
+                "split": int(runner_up["split"]),
+                "partial_bytes": int(runner_up["partial_bytes"]),
+                "reducer_correctness_untimed":
+                    int(runner_up["reducer_correctness_untimed"]),
                 "grid": runner_up["grid"], "policy": runner_up["policy"],
                 "occupancy": runner_up["occupancy"],
                 "median_us": runner_up["median_us"],
@@ -631,6 +641,7 @@ def self_test() -> None:
                 "grid": 1, "occupancy": 0, "capacity_b_mask": "0x0",
                 "balanced_b_mask": "0x0", "status": "MEASURED",
                 "reason": "MEASURED", "config": tactic_name(row),
+                "partial_bytes": 0, "reducer_correctness_untimed": 0,
                 "samples_us": samples, "min_us": min(samples),
                 "max_us": max(samples), "median_us": statistics.median(samples)}
     groups = {(symbol,): cell(symbol, samples) for symbol, samples in
@@ -663,11 +674,18 @@ def self_test() -> None:
     def scheduler_cell(algorithm: str, status: str = "MEASURED"
                        ) -> dict[str, Any]:
         producer = algorithm.startswith("SPLITK_")
+        split = ({"SPLITK_S2_PRODUCER": 2, "SPLITK_S4_PRODUCER": 4,
+                  "SPLITK_S8_PRODUCER": 8}.get(algorithm, 1))
         return {
             **cell("a", [10.]), "algorithm": algorithm,
             "metric_scope": ("PRODUCER_ONLY_NOT_PRODUCT_E2E"
                              if producer else FULL),
             "status": status,
+            "split": split,
+            "partial_bytes": (0 if split == 1 else
+                              2048 * 4096 * split * 4),
+            "reducer_correctness_untimed":
+                int(producer and status == "MEASURED"),
             "reason": ("MEASURED" if status == "MEASURED" else
                        "INADMISSIBLE_K_TILE_DOES_NOT_DIVIDE"),
         }
@@ -689,6 +707,12 @@ def self_test() -> None:
     if confirm_result["boards"]["SPLITK_S8_PRODUCER"]["verdict"] != \
             "UNAVAILABLE":
         raise AssertionError("confirm lost the all-terminal S8 verdict")
+    split2 = confirm_result["boards"]["SPLITK_S2_PRODUCER"]["winner"]
+    if split2["split"] != 2 or \
+            split2["partial_bytes"] != 2048 * 4096 * 2 * 4 or \
+            split2["reducer_correctness_untimed"] != 1 or \
+            split2["metric_scope"] != "PRODUCER_ONLY_NOT_PRODUCT_E2E":
+        raise AssertionError("confirm summary dropped Split-K model authority")
     try:
         missing_s8 = dict(scheduler_groups)
         del missing_s8[("SPLITK_S8_PRODUCER",)]
@@ -706,7 +730,7 @@ def self_test() -> None:
     print("[q4k-prune:self-test] PASS threshold, axis/noise sentinel, "
           "missing-coordinate RED, anchorless shape policy, "
           "producer/full-output isolation, all-terminal S8=UNAVAILABLE, "
-          "and actually-missing-S8=RED")
+          "Split-K model authority preservation, and actually-missing-S8=RED")
 
 
 def main() -> int:
