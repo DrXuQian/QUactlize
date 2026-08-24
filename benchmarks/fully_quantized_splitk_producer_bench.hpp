@@ -2,8 +2,9 @@
 // Exact runtime ABI for generated FullyQuantized tensor-core sweep shards.
 //
 // S==1 measures the complete shipping epilogue.  S>1 measures only the
-// producer kernel; an untimed invocation of the existing deterministic
-// reducer is mandatory before and after timing.  Consequently a producer-only
+// producer kernel.  Every timed producer is followed by the existing
+// deterministic reducer, submitted outside the producer event span, so its
+// partial workspace is consumed before reuse.  Consequently a producer-only
 // row can never be ranked as a product result against S1 or BC GEMV.
 
 #include <algorithm>
@@ -20,6 +21,7 @@
 #include "helper.h"
 #include "ppu_dense_shipping_policy.hpp"
 #include "ppu_group_schedule.hpp"
+#include "splitk_producer_timing.hpp"
 
 namespace fq_internal_sweep {
 
@@ -67,6 +69,10 @@ struct Options {
   int only_split = 0;
   bool measure = true;
   int tm8_max_m = ppu_dense_shipping::kDecodeDefaultExclusiveM - 1;
+  // Diagnostic negative.  The historical protocol synchronized/destroyed
+  // the producer stop event before enqueueing the reducer.  Keep it only to
+  // reproduce that publication-gap signature; ranked runs use ordered close.
+  bool legacy_split_timing = false;
 };
 
 struct DeviceInputs {
@@ -488,19 +494,51 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
         }
         if (!correct) { result.state = State::Correctness; row_ok = false; continue; }
         result.reducer_correctness_untimed = true;
-        if (options.measure &&
-            !measure(producer_launch, options.iterations, result)) {
-          result.failure_step = "PRODUCER_TIMING";
-          result.state = State::Timing; row_ok = false; continue;
-        }
-        // Timing is producer-only, but the final timed partial must still
-        // close through the real reducer and reproduce the exact output.
-        if (reducer.run(nullptr) != cutlass::Status::kSuccess ||
-            hggcDeviceSynchronize() != hggcSuccess || !inspect(in, result) ||
-            result.raw_bad != 0 || result.fingerprint != fingerprint) {
-          result.failure_step = result.raw_bad ? "POST_TIMING_RAW_FP16_MISMATCH" :
-                                                "POST_TIMING_REDUCER_OR_COPY";
-          result.state = State::Correctness; row_ok = false; continue;
+        if (options.measure) {
+          if (options.legacy_split_timing) {
+            if (!measure(producer_launch, options.iterations, result)) {
+              result.failure_step = "PRODUCER_TIMING";
+              result.state = State::Timing; row_ok = false; continue;
+            }
+            // Exact historical negative: the reducer is enqueued only after
+            // measure() has synchronized and destroyed the producer event.
+            if (reducer.run(nullptr) != cutlass::Status::kSuccess ||
+                hggcDeviceSynchronize() != hggcSuccess ||
+                !inspect(in, result) || result.raw_bad != 0 ||
+                result.fingerprint != fingerprint) {
+              result.failure_step = result.raw_bad
+                  ? "POST_TIMING_RAW_FP16_MISMATCH"
+                  : "POST_TIMING_REDUCER_OR_COPY";
+              result.state = State::Correctness; row_ok = false; continue;
+            }
+          } else {
+            auto timing = splitk_producer_timing::measure(
+                producer_launch, [&] { return reducer.run(nullptr); },
+                options.iterations);
+            result.failure_repeat = timing.failure_repeat;
+            result.failure_step =
+                splitk_producer_timing::failure_name(timing.failure);
+            if (timing.failure != splitk_producer_timing::Failure::None) {
+              result.state = splitk_producer_timing::is_launch_failure(
+                                 timing.failure)
+                  ? State::Launch : State::Timing;
+              row_ok = false;
+              continue;
+            }
+            result.samples_us = std::move(timing.samples_us);
+            result.min_us = timing.min_us;
+            result.max_us = timing.max_us;
+            result.median_us = timing.median_us;
+            if (!inspect(in, result) || result.raw_bad != 0 ||
+                result.fingerprint != fingerprint) {
+              result.failure_step = result.raw_bad
+                  ? "ORDERED_CLOSE_RAW_FP16_MISMATCH"
+                  : "ORDERED_CLOSE_REDUCER_OR_COPY";
+              result.state = State::Correctness;
+              row_ok = false;
+              continue;
+            }
+          }
         }
         result.failure_step = "NONE"; result.failure_repeat = -1;
         result.state = State::Measured;

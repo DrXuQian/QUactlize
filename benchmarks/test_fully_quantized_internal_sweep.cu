@@ -84,6 +84,7 @@ struct Cli {
   int repeats = 2;
   int only_split = 0;
   int tm8_max_m = ppu_dense_shipping::kDecodeDefaultExclusiveM - 1;
+  bool legacy_split_timing = false;
   enum class BcMode { All, Skip, Only } bc_mode = BcMode::All;
   std::string symbols_file;
   std::vector<Shape> shapes;
@@ -105,6 +106,8 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
       cli.tm8_max_m = std::atoi(argv[i] + 12);
     } else if (!std::strncmp(argv[i], "--symbols-file=", 15)) {
       cli.symbols_file = argv[i] + 15;
+    } else if (!std::strcmp(argv[i], "--legacy-split-timing")) {
+      cli.legacy_split_timing = true;
     } else if (!std::strncmp(argv[i], "--bc-mode=", 10)) {
       char const* mode = argv[i] + 10;
       if (!std::strcmp(mode, "all")) cli.bc_mode = Cli::BcMode::All;
@@ -360,16 +363,18 @@ int run_shape(Shape shape, Cli const& cli,
       dUnits.get(), dOut.get(), dWorkspace.get(), partial_bytes,
       fixture.golden.data(), shape.m, shape.n, shape.k};
   Options options{cli.iterations, cli.repeats, cli.only_split, true,
-                  cli.tm8_max_m};
+                  cli.tm8_max_m, cli.legacy_split_timing};
   bool all_runtime_ok = true;
   std::printf("FQ_SHARD q=%d A=%d bchunk=%d shape=%dx%dx%d "
               "typed_rows=%zu selected_rows=%zu only_split=%d bc_mode=%s "
-              "bc_batch=native-grid-y-m-lt8 iterations=%d correctness_repeats=%d\n",
+              "bc_batch=native-grid-y-m-lt8 split_timing=%s "
+              "iterations=%d correctness_repeats=%d\n",
               FQ_SWEEP_QTYPE, FQ_SWEEP_ARTIFACT_TK, FQ_SWEEP_BCHUNK,
               shape.m, shape.n, shape.k, typed_rows, rows.size(),
               cli.only_split,
               cli.bc_mode == Cli::BcMode::All ? "all" :
               cli.bc_mode == Cli::BcMode::Skip ? "skip" : "only",
+              cli.legacy_split_timing ? "legacy-host-gap" : "ordered-close",
               cli.iterations, cli.repeats);
   if (cli.bc_mode != Cli::BcMode::Only) for (auto const& entry : rows) {
     RowResult result;
@@ -414,12 +419,14 @@ int run_shape(Shape shape, Cli const& cli,
   }
   std::printf("FQ_SHAPE_DONE q=%d A=%d bchunk=%d shape=%dx%dx%d "
               "typed_rows=%zu selected_rows=%zu only_split=%d bc_mode=%s "
-              "bc_batch=native-grid-y-m-lt8 iterations=%d status=%s\n",
+              "bc_batch=native-grid-y-m-lt8 split_timing=%s "
+              "iterations=%d status=%s\n",
               FQ_SWEEP_QTYPE, FQ_SWEEP_ARTIFACT_TK, FQ_SWEEP_BCHUNK,
               shape.m, shape.n, shape.k, typed_rows, rows.size(),
               cli.only_split,
               cli.bc_mode == Cli::BcMode::All ? "all" :
               cli.bc_mode == Cli::BcMode::Skip ? "skip" : "only",
+              cli.legacy_split_timing ? "legacy-host-gap" : "ordered-close",
               cli.iterations,
               all_runtime_ok ? "PASS" : "FAIL");
   return all_runtime_ok ? 0 : 1;
@@ -434,7 +441,7 @@ int main(int argc, char** argv) {
         "usage: %s [--shape=MxNxK ...] [--iterations=N] "
         "[--correctness-repeats=N] [--only-split=0|1|2|4|8] "
         "[--tm8-max-m=N] [--symbols-file=PATH] "
-        "[--bc-mode=all|skip|only]\n", argv[0]);
+        "[--bc-mode=all|skip|only] [--legacy-split-timing]\n", argv[0]);
     return 2;
   }
   auto const all_rows = registry();

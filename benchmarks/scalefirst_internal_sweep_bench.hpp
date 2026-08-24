@@ -6,9 +6,9 @@
 //   - persistent DP at every deduplicated capacity/balanced grid admitted by
 //     the exact compiled kernel occupancy.
 // Diagnostic board:
-//   - fixed Split-K S2/S4/S8 producer only.  The deterministic reducer is run
-//     outside timing and must close raw FP16 correctness before and after the
-//     producer samples.
+//   - fixed Split-K S2/S4/S8 producer only.  The deterministic reducer is
+//     submitted after every producer but outside its event span; the final
+//     output must close raw FP16 correctness after the producer samples.
 
 // A producer-only sample is never a product result and never competes with a
 // full-output row.
@@ -28,6 +28,7 @@
 #include "ppu_dense_shipping_policy.hpp"
 #include "ppu_group_schedule.hpp"
 #include "scalefirst_persistent_policy.hpp"
+#include "splitk_producer_timing.hpp"
 #include "actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_persistent.hpp"
 
 namespace scalefirst_internal_sweep {
@@ -573,17 +574,31 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
       first = cell.fingerprint;
     }
     cell.reducer_correctness_untimed = true;
-    if (options.measure &&
-        !measure([&] { return producer.run(nullptr); }, options.iterations, cell)) {
-      cell.state = State::Timing;
-      return false;
+    if (options.measure) {
+      auto timing = splitk_producer_timing::measure(
+          [&] { return producer.run(nullptr); },
+          [&] { return reducer.run(nullptr); }, options.iterations);
+      cell.failure_repeat = timing.failure_repeat;
+      cell.failure_step = splitk_producer_timing::failure_name(timing.failure);
+      if (timing.failure != splitk_producer_timing::Failure::None) {
+        cell.state = splitk_producer_timing::is_launch_failure(timing.failure)
+            ? State::Launch : State::Timing;
+        return false;
+      }
+      cell.samples_us = std::move(timing.samples_us);
+      cell.min_us = timing.min_us;
+      cell.max_us = timing.max_us;
+      cell.median_us = timing.median_us;
+      if (!inspect(in, cell) || cell.raw_bad || cell.fingerprint != first) {
+        cell.failure_step = cell.raw_bad
+            ? "ORDERED_CLOSE_RAW_FP16_MISMATCH"
+            : "ORDERED_CLOSE_REDUCER_OR_COPY";
+        cell.state = State::Correctness;
+        return false;
+      }
     }
-    if (reducer.run(nullptr) != cutlass::Status::kSuccess ||
-        hggcDeviceSynchronize() != hggcSuccess || !inspect(in, cell) ||
-        cell.raw_bad || cell.fingerprint != first) {
-      cell.state = State::Correctness;
-      return false;
-    }
+    cell.failure_step = "NONE";
+    cell.failure_repeat = -1;
     cell.state = State::Measured;
   }
   return true;
