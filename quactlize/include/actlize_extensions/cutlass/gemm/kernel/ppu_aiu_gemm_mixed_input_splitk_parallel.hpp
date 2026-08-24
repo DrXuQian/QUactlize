@@ -46,6 +46,7 @@
 
 #include "actlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_last_arriver.hpp"
 #include "actlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_partition.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/detail/ppu_splitk_direct_accumulator_store.hpp"
 
 namespace cutlass::gemm::kernel {
 
@@ -375,12 +376,24 @@ class GemmUniversalMixedInputSplitKParallel {
     int const plane = int(work.peer_idx);
     auto const partial_shape = make_shape(M, N, K, int(params.partition.splits));
     auto const partial_coord = make_coord(m_coord, n_coord, _, Int<0>{});
+#if defined(PPU_SPLITK_DIRECT_ACCUMULATOR_STORE) && \
+    (PPU_SPLITK_DIRECT_ACCUMULATOR_STORE != 0)
+    // Diagnostic bisection only.  Everything through the final MMA above is
+    // byte-for-byte the shipping mainloop; only the post-mainloop partial
+    // delivery changes.  This separates a bad accumulator from the shared
+    // R2S/barrier/S2R/vectorized epilogue without inserting a fence or a new
+    // synchronization point into the producer.
+    detail::store_splitk_accumulators_direct(
+        params.partial_epilogue, partial_shape, blk_shape, partial_coord,
+        accumulators, tiled_mma, residue_mnk, plane, thread_idx);
+#else
     CollectivePartialEpilogue partial_epilogue{
         params.partial_epilogue, plane};
     partial_epilogue(partial_shape, blk_shape, partial_coord, accumulators,
                      tiled_mma, residue_mnk, thread_idx,
                      reinterpret_cast<char*>(
                          &shared_storage.tensors.partial_epilogue));
+#endif
     CompletionPolicy::after_partial(
         params.completion, work, thread_idx, TileShape{},
         shared_storage.tensors.completion);

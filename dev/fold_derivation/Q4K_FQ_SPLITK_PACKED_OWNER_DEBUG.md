@@ -49,12 +49,13 @@ scheduling outcome.  The executable oracle is
 `l221_packed_metadata_publishers.cu`; its modulo-all arm is the exact
 duplicate-owner negative.
 
-This does not yet prove that the physical overlap causes the PPU value
-corruption.  `PPU_PACKED_METADATA_OWNER_ONLY=1` is a factorial device arm that
-changes only whether surplus physical threads issue the packed-metadata copy.
-The legacy behavior remains the default until the device arm adjudicates it.
+This ownership result alone did not prove that the physical overlap caused the
+PPU value corruption.  `PPU_PACKED_METADATA_OWNER_ONLY=1` was therefore kept as
+a factorial device arm that changed only whether surplus physical threads
+issued the packed-metadata copy.  The device verdict below refuted it as the
+sole repair, so the shipping behavior remains the default.
 
-## Performance invariants for the candidate
+## Performance invariants of the owner-only diagnostic
 
 Unchanged:
 
@@ -78,14 +79,37 @@ duplicate owner set and is compile-time incompatible with this diagnostic.
 
 ## Device verdicts
 
-The next one-build diagnostic reuses the hash-checked 43fb02b legacy artifact.
-It emits one of:
+The owner-only device arm did **not** close the entire row.  It did, however,
+separate the two A providers sharply:
 
-- `OWNER_RACE_CLOSED_ALL_EXACT`;
-- `OWNER_RACE_CLOSED_DIRECT_GAP_REMAINS`;
-- `OWNER_ONLY_REFUTED`;
-- `UNADJUDICATED_LEGACY_DID_NOT_REPRODUCE`.
+```text
+owner-only packed-row   S2  0/128 bad samples, partials exact
+owner-only packed-row   S4  0/128 bad samples, partials exact
+owner-only standard-A   S2  probe partials exact; one direct and one sync-only 32-output event
+owner-only standard-A   S4 11/128 bad samples, 352 bad fp32 partial values
+                            plane mask=0xd, every event one stripe at local N=32
+```
 
-Only a candidate with exact fp32 partial planes proceeds to production
-closure.  Production closure must then rebuild legacy and candidate from one
+Thus duplicate packed-metadata publishers were a cadence/contribution seam,
+not the sole root cause.  The aggregate bad-sample rate changed from 28/256 to
+11/512, but a production repair cannot retain a workaround that merely lowers
+the probability.  `PPU_PACKED_METADATA_OWNER_ONLY` remains diagnostic-only.
+
+The next factorial is strictly post-mainloop.  Both arms keep owner-only
+metadata and the same standard-A/packed-A mainloop.  The control uses the
+shipping shared R2S/barrier/S2R/vectorized partial epilogue; the candidate maps
+the completed accumulator directly through the production TiledMma
+`partition_C` view.  The local exact-ownership oracle and its duplicate-thread
+and rotated-fragment negatives are in
+`l222_fq_splitk_direct_accumulator_store.cu`.
+
+The hash-bound two-build diagnostic emits one of:
+
+- `MAINLOOP_ACCUMULATOR_CORRUPTION_CONFIRMED`;
+- `PARTIAL_EPILOGUE_CORRUPTION_CONFIRMED`;
+- `DIRECT_STORE_NEGATIVE_CONTROL_FAILED`;
+- `UNADJUDICATED_EPILOGUE_ARM_DID_NOT_REPRODUCE`.
+
+Only that semantic verdict proceeds to the smallest production repair.
+Production closure must then rebuild the historical and repaired path from one
 SHA and report raw-bit correctness, latency, registers and spills.
