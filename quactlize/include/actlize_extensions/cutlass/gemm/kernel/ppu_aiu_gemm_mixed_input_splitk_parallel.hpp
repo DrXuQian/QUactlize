@@ -113,11 +113,22 @@ class GemmUniversalMixedInputSplitKParallel {
                 "partial D stride must describe compact [M,N,S] planes");
 
   struct SharedStorage {
+#if defined(PPU_SPLITK_SHARED_PROBE_DISJOINT_STORAGE) && \
+    (PPU_SPLITK_SHARED_PROBE_DISJOINT_STORAGE != 0)
+    // Diagnostic-only lifetime arm: preserve each concrete storage type but
+    // remove the mainloop/epilogue physical alias.
+    struct SharedTensorStorage {
+      typename CollectiveMainloop::SharedStorage mainloop;
+      typename CollectivePartialEpilogue::SharedStorage partial_epilogue;
+      typename CompletionPolicy::SharedStorage completion;
+    } tensors;
+#else
     union SharedTensorStorage {
       typename CollectiveMainloop::SharedStorage mainloop;
       typename CollectivePartialEpilogue::SharedStorage partial_epilogue;
       typename CompletionPolicy::SharedStorage completion;
     } tensors;
+#endif
   };
 
   static constexpr int SharedStorageSize = sizeof(SharedStorage);
@@ -395,6 +406,14 @@ class GemmUniversalMixedInputSplitKParallel {
         partial_coord, accumulators, tiled_mma, residue_mnk, thread_idx,
         reinterpret_cast<char*>(
             &shared_storage.tensors.partial_epilogue));
+#if PPU_SPLITK_SHARED_PROBE_DISCARD_GMEM
+    // Control arm: execute the complete shared round trip but publish the
+    // untouched MMA accumulator.  This distinguishes corruption of the input
+    // fragment/codegen from corruption introduced by the round-trip result.
+    detail::store_splitk_accumulators_direct(
+        params.partial_epilogue, partial_shape, blk_shape, partial_coord,
+        accumulators, tiled_mma, residue_mnk, plane, thread_idx);
+#endif
 #elif defined(PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE) && \
     (PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE != 0)
     // Exact historical negative for the PPU raw-bit closure.  The generic

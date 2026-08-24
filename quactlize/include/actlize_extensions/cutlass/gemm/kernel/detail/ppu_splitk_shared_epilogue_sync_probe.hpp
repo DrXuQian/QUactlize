@@ -21,6 +21,22 @@
 #define PPU_SPLITK_SHARED_SYNC_EPILOGUE_ID1 2
 #define PPU_SPLITK_SHARED_SYNC_CTA 3
 
+#ifndef PPU_SPLITK_SHARED_PROBE_PRE_R2S_CTA
+#define PPU_SPLITK_SHARED_PROBE_PRE_R2S_CTA 0
+#endif
+#ifndef PPU_SPLITK_SHARED_PROBE_IDENTITY_CONVERT
+#define PPU_SPLITK_SHARED_PROBE_IDENTITY_CONVERT 0
+#endif
+#ifndef PPU_SPLITK_SHARED_PROBE_SCALAR_R2S
+#define PPU_SPLITK_SHARED_PROBE_SCALAR_R2S 0
+#endif
+#ifndef PPU_SPLITK_SHARED_PROBE_SCALAR_S2R
+#define PPU_SPLITK_SHARED_PROBE_SCALAR_S2R 0
+#endif
+#ifndef PPU_SPLITK_SHARED_PROBE_DISCARD_GMEM
+#define PPU_SPLITK_SHARED_PROBE_DISCARD_GMEM 0
+#endif
+
 namespace cutlass::gemm::kernel::detail {
 
 template <int SyncPolicy, class TiledCopyS2R>
@@ -134,6 +150,13 @@ CUTLASS_DEVICE void store_splitk_accumulators_shared_sync_probe(
   CUTE_STATIC_ASSERT(size<1>(tCaC) % size<3>(tDgC) == 0);
   CUTE_STATIC_ASSERT(size<2>(tCaC) % size<4>(tDgC) == 0);
 
+#if PPU_SPLITK_SHARED_PROBE_PRE_R2S_CTA
+  // A causal control for reuse of the mainloop/epilogue shared-storage union.
+  // It is deliberately before the first R2S store; the historical barriers
+  // occur only after that store and cannot protect a prior lifetime.
+  __syncthreads();
+#endif
+
   CUTLASS_PRAGMA_UNROLL
   for (int step_m = 0; step_m < size<2>(cDt); ++step_m) {
     CUTLASS_PRAGMA_UNROLL
@@ -144,20 +167,42 @@ CUTLASS_DEVICE void store_splitk_accumulators_shared_sync_probe(
         for (int pipe_n = 0; pipe_n < size<2>(tCsC); ++pipe_n) {
           int mma_m = step_m * size<1>(tCsC) + pipe_m;
           int mma_n = step_n * size<2>(tCsC) + pipe_n;
+#if PPU_SPLITK_SHARED_PROBE_SCALAR_R2S
+          Tensor source = tCaC(_, mma_m, mma_n);
+          Tensor destination = tCsC(_, pipe_m, pipe_n);
+          CUTE_STATIC_ASSERT(size(source) == size(destination));
+          CUTLASS_PRAGMA_UNROLL
+          for (int i = 0; i < size(source); ++i) {
+            destination(i) = source(i);
+          }
+#else
           copy(tiled_r2s, tCaC(_, mma_m, mma_n),
                tCsC(_, pipe_m, pipe_n));
+#endif
         }
       }
 
       splitk_shared_epilogue_sync<SyncPolicy, TiledCopyS2R>();
+#if PPU_SPLITK_SHARED_PROBE_SCALAR_S2R
+      CUTE_STATIC_ASSERT(size(tDsC) == size(tDrC));
+      CUTLASS_PRAGMA_UNROLL
+      for (int i = 0; i < size(tDsC); ++i) {
+        tDrC(i) = tDsC(i);
+      }
+#else
       copy(tiled_s2r, tDsC, tDrC);
+#endif
       splitk_shared_epilogue_sync<SyncPolicy, TiledCopyS2R>();
 
       Tensor tDgDmn = tDgD(_, _, _, step_m, step_n);
       Tensor tDcDmn = tDcD(_, _, _, step_m, step_n);
       CUTLASS_PRAGMA_UNROLL
       for (int i = 0; i < size(tDrC); ++i) {
+#if PPU_SPLITK_SHARED_PROBE_IDENTITY_CONVERT
+        tDrD(i) = tDrC(i);
+#else
         tDrD(i) = epilogue_op(tDrC(i));
+#endif
       }
 
       CUTLASS_PRAGMA_UNROLL
@@ -166,7 +211,9 @@ CUTLASS_DEVICE void store_splitk_accumulators_shared_sync_probe(
         for (int n = 0; n < size<2>(tDgDmn); ++n) {
           if (get<0>(tDcDmn(0, m, n)) < get<0>(residue_mnk) &&
               get<1>(tDcDmn(0, m, n)) < get<1>(residue_mnk)) {
+#if !PPU_SPLITK_SHARED_PROBE_DISCARD_GMEM
             copy(CopyAtomR2G{}, tDrD(_, m, n), tDgDmn(_, m, n));
+#endif
           }
         }
       }
