@@ -58,12 +58,21 @@ def check(direct: str, probe: str) -> str:
                        row.get("S") in ("2", "4") and
                        row.get("state") == "RAW_FP16_MISMATCH" and
                        nonnegative(row, "raw_bad") > 0]
-    if not direct_ap0_fail:
-        raise ValueError("direct AP0 S2/S4 failure was not reproduced")
+    failed_splits = {row.get("S") for row in direct_ap0_fail}
+    if failed_splits != {"2", "4"}:
+        raise ValueError(
+            "direct AP0 S2/S4 failure denominator was not reproduced: "
+            f"{sorted(failed_splits)}")
     for row in direct_ap0_fail:
-        if nonnegative(row, "raw_bad") % 32 or \
-                nonnegative(row, "first_bad") % 32:
-            raise ValueError(f"direct failure lost 32-output stripe signature: {row}")
+        # The stable signature is the first affected 32-output stripe.  The
+        # number of unequal lanes inside one or more affected stripes is race
+        # dependent (the device has produced 32, 56 and 64), so raw_bad is not
+        # itself required to be a multiple of 32.
+        raw_bad = nonnegative(row, "raw_bad")
+        first_bad = nonnegative(row, "first_bad")
+        if raw_bad > 1024 or first_bad >= 1024 or first_bad % 32:
+            raise ValueError(
+                f"direct failure lost aligned stripe-origin signature: {row}")
 
     for row in direct_cells:
         if row.get("symbol") == AP1 and row.get("S") in ("1", "2", "4"):
@@ -134,7 +143,9 @@ def self_test() -> None:
         state = "SPLIT_PARTITION" if split == 8 else \
             "WORKSPACE_PROBE_COMPLETE" if probe and split in (2, 4) else \
             "RAW_FP16_MISMATCH" if fail else "MEASURED"
-        bad = 32 if fail else 0
+        # Preserve the observed non-integral stripe population: the first bad
+        # index is stripe-aligned even when only 56 outputs compare unequal.
+        bad = (56 if split == 4 else 32) if fail else 0
         first = 32 if fail else 2**64 - 1
         return (f"FQ_TC_CELL symbol={symbol} S={split} state={state} "
                 f"raw_bad={bad} first_bad={first}")
@@ -143,7 +154,7 @@ def self_test() -> None:
     for symbol in sorted(EXPECTED):
         for split in (1, 2, 4, 8):
             direct_lines.append(cell(symbol, split,
-                                     symbol == AP0 and split == 2))
+                                     symbol == AP0 and split in (2, 4)))
             probe_lines.append(cell(symbol, split, probe=True))
         for split in (2, 4):
             for repeat in range(2):
@@ -164,7 +175,7 @@ def self_test() -> None:
     assert check(direct, variants[1]) == "D2H_VISIBILITY_BRIDGE_REQUIRED"
     assert check(direct, variants[2]) == "REDUCER_LOAD_OR_INDEX_BAD"
     for broken_direct, broken_probe in (
-            (direct.replace("raw_bad=32", "raw_bad=31", 1), probe),
+            (direct.replace("first_bad=32", "first_bad=33", 1), probe),
             (direct, probe.replace("split_workspace_probe=1", "split_workspace_probe=0")),
             (direct, "\n".join(probe.splitlines()[:-1]))):
         try:
@@ -174,7 +185,7 @@ def self_test() -> None:
         else:
             raise AssertionError("workspace-probe negative stayed green")
     print("[fq-split-workspace-check:self-test] PASS five verdicts; "
-          "stripe, marker and denominator negatives RED")
+          "aligned stripe-origin, marker and denominator negatives RED")
 
 
 def main() -> int:

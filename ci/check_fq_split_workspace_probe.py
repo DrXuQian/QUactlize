@@ -59,7 +59,7 @@ def check(bench: str, main: str, runner: str, checker: str,
         'verdict = "SAME_STREAM_PUBLICATION_GAP"',
         'verdict = "D2H_VISIBILITY_BRIDGE_REQUIRED"',
         'verdict = "REDUCER_LOAD_OR_INDEX_BAD"',
-        "direct AP0 S2/S4 failure was not reproduced",
+        "direct AP0 S2/S4 failure denominator was not reproduced",
     ))
     require("selector", selector, (
         "fq_tc_q12_a64_tm8_tn64_tk256_wm8_wn16_s2_bc0_ap0",
