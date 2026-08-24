@@ -55,20 +55,23 @@ def check_texts(helper: str, kernel: str, runner: str,
         require(forbidden not in helper,
                 f"probe changed more than synchronization selection: {forbidden}")
 
-    require(kernel.count("#if defined(PPU_SPLITK_SHARED_SYNC_POLICY)") == 3,
+    require(kernel.count("#if defined(PPU_SPLITK_SHARED_SYNC_POLICY)") == 1,
             "kernel probe include/exclusion/call guards changed")
     require(kernel.count(
         "store_splitk_accumulators_shared_sync_probe<") == 1,
         "kernel shared synchronization probe call changed")
-    require(kernel.count("store_splitk_accumulators_direct(") == 2,
-            "diagnostic control/production direct accumulator stores changed")
+    require(kernel.count("store_splitk_accumulators_direct(") == 3,
+            "prefix/diagnostic control/production direct stores changed")
     require(kernel.count("PPU_SPLITK_SHARED_PROBE_DISJOINT_STORAGE") >= 2,
             "disjoint shared-storage lifetime arm changed")
-    require(kernel.index("#if defined(PPU_SPLITK_SHARED_SYNC_POLICY)",
-                         kernel.index("int const plane")) <
+    prefix_branch = kernel.index("#if defined(PPU_SPLITK_SHARED_PREFIX_POLICY)",
+                                 kernel.index("int const plane"))
+    sync_branch = kernel.index("#elif defined(PPU_SPLITK_SHARED_SYNC_POLICY)",
+                               prefix_branch)
+    require(prefix_branch < sync_branch <
             kernel.index("#elif defined(PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE") <
             kernel.rindex("store_splitk_accumulators_direct("),
-            "diagnostic/vendor/production branch order changed")
+            "prefix/diagnostic/vendor/production branch order changed")
 
     expected_defs = {
         "vendor-user0": "PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE=1",

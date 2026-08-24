@@ -48,13 +48,20 @@
 #include "actlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_last_arriver.hpp"
 #include "actlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_partition.hpp"
 #include "actlize_extensions/cutlass/gemm/kernel/detail/ppu_splitk_direct_accumulator_store.hpp"
+#if defined(PPU_SPLITK_SHARED_PREFIX_POLICY)
+#include "actlize_extensions/cutlass/gemm/kernel/detail/ppu_splitk_shared_prefix_probe.hpp"
+#endif
 #if defined(PPU_SPLITK_SHARED_SYNC_POLICY)
 #include "actlize_extensions/cutlass/gemm/kernel/detail/ppu_splitk_shared_epilogue_sync_probe.hpp"
 #endif
 
-#if defined(PPU_SPLITK_SHARED_SYNC_POLICY) && \
-    defined(PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE)
-#error "select either the shared synchronization probe or the vendor legacy epilogue"
+#if (defined(PPU_SPLITK_SHARED_PREFIX_POLICY) && \
+     defined(PPU_SPLITK_SHARED_SYNC_POLICY)) || \
+    (defined(PPU_SPLITK_SHARED_PREFIX_POLICY) && \
+     defined(PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE)) || \
+    (defined(PPU_SPLITK_SHARED_SYNC_POLICY) && \
+     defined(PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE))
+#error "select exactly one Split-K shared diagnostic family"
 #endif
 
 namespace cutlass::gemm::kernel {
@@ -396,7 +403,20 @@ class GemmUniversalMixedInputSplitKParallel {
     int const plane = int(work.peer_idx);
     auto const partial_shape = make_shape(M, N, K, int(params.partition.splits));
     auto const partial_coord = make_coord(m_coord, n_coord, _, Int<0>{});
-#if defined(PPU_SPLITK_SHARED_SYNC_POLICY)
+#if defined(PPU_SPLITK_SHARED_PREFIX_POLICY)
+    // Diagnostic-only, compile-time prefix.  It executes one selected
+    // post-mainloop operation and then publishes the still-live accumulator
+    // through the production direct path.  Default builds do not include or
+    // instantiate this helper.
+    detail::run_splitk_shared_prefix_probe<
+        PPU_SPLITK_SHARED_PREFIX_POLICY, CollectivePartialEpilogue>(
+        accumulators, tiled_mma, thread_idx,
+        reinterpret_cast<char*>(
+            &shared_storage.tensors.partial_epilogue));
+    detail::store_splitk_accumulators_direct(
+        params.partial_epilogue, partial_shape, blk_shape, partial_coord,
+        accumulators, tiled_mma, residue_mnk, plane, thread_idx);
+#elif defined(PPU_SPLITK_SHARED_SYNC_POLICY)
     // Diagnostic-only exact clone of the historical shared R2S/S2R path.
     // PPU_SPLITK_SHARED_SYNC_POLICY changes only its two synchronization
     // calls, allowing barrier selection to be causally adjudicated.

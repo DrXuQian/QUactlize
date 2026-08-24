@@ -129,10 +129,44 @@ source.  Corruption enters only while the old partial epilogue redistributes
 the fp32 fragment register-to-shared, synchronizes, reloads shared-to-register,
 and writes global.  The intermittent complete 32-output stripes and changing
 plane mask are an ordering/visibility signature, not a static CuTe coordinate
-permutation.  The factorial does not distinguish one backend shared-memory
-instruction inside that handoff, and the production repair does not need to:
-the handoff has no semantic job for an fp32 accumulator going to an fp32
-split-major workspace.
+permutation.
+
+The production repair does not need the obsolete handoff, but the backend
+micro-root was subsequently investigated rather than inferred from that
+bypass.  The exact L223 production-type CuTe oracle proves 512 R2S writers and
+512 S2R readers, each exact-once, with no coordinate or value permutation.  Its
+R2S-rotation negative produces 512 coordinate/value mismatches; its S2R-owner
+negative produces 256 holes and 256 duplicates.
+
+Two hash-bound device factorials then constructively excluded the first set of
+dynamic hypotheses:
+
+- legacy integer barrier 0 (effective hardware ID 6), its exact clone,
+  reserved epilogue barrier ID 1 and full CTA barriers all retained the
+  intermittent corruption;
+- a pre-R2S CTA barrier, physically disjoint mainloop/epilogue shared storage,
+  identity conversion, scalar R2S, scalar S2R and scalar R2S+S2R all retained
+  it;
+- most importantly, executing the shared round trip, discarding its result,
+  and then publishing the original accumulator through the proven direct map
+  still failed.
+
+The last result is not proof that the mainloop produced a bad accumulator.  In
+that arm, unused S2R/conversion values can be dead-code eliminated while R2S
+shared writes, barriers and their compiler footprint remain.  Its honest
+verdict is therefore `ACCUMULATOR_OR_COMPILER_FOOTPRINT_REMAINS`.
+
+The next and narrower experiment is
+`run_fq_q4k_split_shared_prefix_root_box.sh`.  It compiles a separate binary
+for each prefix before the correct direct store: opaque accumulator liveness,
+an extra register clone, CTA-only synchronization, exact-once flat shared
+stores from constants or live accumulators, vector/scalar/snapshotted R2S, and
+vector/scalar live S2R readback.  All data-path arms use disjoint shared
+storage; the complete historical discard arm is rebuilt as the negative.
+Every binary also records SDK `hgobjdump` register and spill usage.  This
+separates a backend register-footprint threshold from a generic shared store,
+a live-accumulator-to-shared dependency, CuTe `retile_S`/scatter lowering, and
+S2R readback without changing the production hot path.
 
 ## Production repair and invariants
 
