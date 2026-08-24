@@ -286,7 +286,11 @@ def main() -> int:
         'actually missing S8 board stayed green',
     ), "all-terminal versus missing-board adjudication")
     require(POSTPROCESS.read_text(), (
-        'one common ArtifactTileK per (N,K,gs) across measured M',
+        'one common ArtifactTileK per layer across measured M',
+        'different layers are never storage-coupled merely because N/K match',
+        'measurement reuse does not merge per-layer offline decisions',
+        'one layer accepted two offline decisions for the same M',
+        'winner registry re-coupled same-shape layer decisions',
         'PRODUCER_ONLY_NO_REDUCER_E2E',
         'physical bytes are recordable when the physical class is RESOLVED',
         'board-scoped winner is recordable only when both the ArtifactTileK descriptor and within-layout config are RESOLVED',

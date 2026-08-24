@@ -5,7 +5,7 @@ The device runner deliberately stops at per-shape/per-board winners.  This
 tool answers the three questions that must be answered after, rather than
 during, measurement:
 
-* one offline layout per (N,K) tensor family across every measured M;
+* one offline layout per concrete model/TP/tensor across every measured M;
 * which tactic axes can be conservatively pruned, and whether M alone can
   choose one configuration;
 * a model/tensor registry which records only resolved choices and preserves
@@ -38,11 +38,11 @@ if str(ROOT) not in sys.path:
 from quactlize import formats as qformats
 
 
-ANALYSIS_SCHEMA = "quactlize.scalefirst_q4k_real_shapes_analysis.v3"
+ANALYSIS_SCHEMA = "quactlize.scalefirst_q4k_real_shapes_analysis.v4"
 BUNDLE_SCHEMA = "quactlize.scalefirst_q4k_real_shapes_bundle.v1"
-OFFLINE_SCHEMA = "quactlize.scalefirst_q4k_offline_layout_decisions.v2"
+OFFLINE_SCHEMA = "quactlize.scalefirst_q4k_offline_layout_decisions.v3"
 HEURISTIC_SCHEMA = "quactlize.scalefirst_q4k_heuristic_evidence.v1"
-REGISTRY_SCHEMA = "quactlize.scalefirst_q4k_winner_registry.v3"
+REGISTRY_SCHEMA = "quactlize.scalefirst_q4k_winner_registry.v4"
 AXES = ("tile_m", "tile_n", "tactic_tile_k", "warp_m", "warp_n",
         "stages", "bchunk")
 
@@ -331,26 +331,75 @@ def ranked_decision(scored: list[dict[str, Any]]) -> tuple[
     return verdict, selected, runner, blocker
 
 
+def layer_identity(reference: dict[str, Any], tensor: str) -> dict[str, Any]:
+    if not isinstance(tensor, str) or not tensor:
+        raise AnalysisError("layer reference contains an empty tensor name")
+    return {
+        "model_id": str(reference["model_id"]),
+        "tensor": tensor,
+        "tp_world": int(reference["tp_world"]),
+        "tp_rank": int(reference["tp_rank"]),
+        "tp_partition": str(reference["tp_partition"]),
+    }
+
+
+def layer_key(layer: dict[str, Any]) -> tuple[str, int, int, str, str]:
+    return (str(layer["model_id"]), int(layer["tp_world"]),
+            int(layer["tp_rank"]), str(layer["tp_partition"]),
+            str(layer["tensor"]))
+
+
 def offline_layout_decisions(inputs: dict[str, Any]) -> list[dict[str, Any]]:
     plan = inputs["plan"]
     cell_summaries = inputs["cell_summaries"]
-    grouped: dict[tuple[int, int, int], list[dict[str, Any]]] = \
+    grouped: dict[tuple[str, int, int, str, str], list[dict[str, Any]]] = \
         collections.defaultdict(list)
+    identities: dict[tuple[str, int, int, str, str], dict[str, Any]] = {}
     for shape in plan["shapes"]:
-        grouped[(int(shape["n"]), int(shape["k"]),
-                 int(shape["group_size"]))].append(shape)
+        seen_in_shape = set()
+        references = shape.get("references")
+        if not isinstance(references, list) or not references:
+            raise AnalysisError(f"{shape.get('shape_key')} has no layer references")
+        for reference in references:
+            tensors = reference.get("source_tensors")
+            if not isinstance(tensors, list) or not tensors:
+                raise AnalysisError("layer reference has no source tensors")
+            for tensor in tensors:
+                identity = layer_identity(reference, tensor)
+                key = layer_key(identity)
+                if key in seen_in_shape:
+                    raise AnalysisError(
+                        f"layer {key} occurs twice in {shape['shape_key']}")
+                seen_in_shape.add(key)
+                prior = identities.setdefault(key, identity)
+                if prior != identity:
+                    raise AnalysisError(f"layer identity drifted for {key}")
+                grouped[key].append(shape)
     decisions = []
-    for (n, k, group_size), shapes in sorted(grouped.items()):
+    for identity_key, shapes in sorted(grouped.items()):
         shapes.sort(key=lambda item: int(item["m"]))
+        layer = identities[identity_key]
+        geometries = {(int(shape["n"]), int(shape["k"]),
+                       int(shape["group_size"])) for shape in shapes}
+        if len(geometries) != 1:
+            raise AnalysisError(
+                f"one layer changed N/K/group across M: "
+                f"{identity_key} -> {geometries}")
+        n, k, group_size = next(iter(geometries))
+        m_values = [int(shape["m"]) for shape in shapes]
+        if len(m_values) != len(set(m_values)):
+            raise AnalysisError(
+                f"one layer repeats a measured M: {identity_key}")
         per_shape: dict[str, list[dict[str, Any]]] = {}
         for shape in shapes:
-            key = str(shape["shape_key"])
-            per_shape[key] = [value for artifact in planner.ARTIFACTS
+            shape_key = str(shape["shape_key"])
+            per_shape[shape_key] = [value for artifact in planner.ARTIFACTS
                               if (value := measured_board(
-                                  cell_summaries, key, artifact,
+                                  cell_summaries, shape_key, artifact,
                                   "FULL_OUTPUT")) is not None]
-            if not per_shape[key]:
-                raise AnalysisError(f"FULL_OUTPUT has no layout for {key}")
+            if not per_shape[shape_key]:
+                raise AnalysisError(
+                    f"FULL_OUTPUT has no layout for {shape_key}")
         scored = []
         for artifact in planner.ARTIFACTS:
             if any(not any(item["artifact_tile_k"] == artifact
@@ -456,12 +505,12 @@ def offline_layout_decisions(inputs: dict[str, Any]) -> list[dict[str, Any]]:
                     "mapping_sha256"]
                 for item in candidates
                 if float(item["winner"]["median_us"]) == best})
-        references = sorted({canonical(reference): reference
-                             for shape in shapes
-                             for reference in shape["references"]}.values(),
-                            key=canonical)
-        decisions.append({"N": n, "K": k, "group_size": group_size,
-                          "M_values": [int(shape["m"]) for shape in shapes],
+        decisions.append({"layer": layer,
+                          "N": n, "K": k, "group_size": group_size,
+                          "M_values": m_values,
+                          "shape_keys_by_M": {
+                              str(int(shape["m"])): str(shape["shape_key"])
+                              for shape in shapes},
                           "verdict": verdict,
                           "per_m_point_winners": point_winners,
                           "per_m_point_physical_layout_classes": point_winner_classes,
@@ -479,8 +528,7 @@ def offline_layout_decisions(inputs: dict[str, Any]) -> list[dict[str, Any]]:
                           },
                           "selected": selected, "runner_up": runner,
                           "resolution_competitor": resolution_competitor,
-                          "all_common_layout_scores": scored,
-                          "references": references})
+                          "all_common_layout_scores": scored})
     return decisions
 
 
@@ -656,16 +704,6 @@ def confirmed_patterns(inputs: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def decision_by_nk(decisions: list[dict[str, Any]]) -> dict[tuple[int, int, int], dict[str, Any]]:
-    result = {}
-    for decision in decisions:
-        key = (decision["N"], decision["K"], decision["group_size"])
-        if key in result:
-            raise AnalysisError(f"duplicate offline decision {key}")
-        result[key] = decision
-    return result
-
-
 def is_product_e2e_recordable(board: str, board_recordable: bool) -> bool:
     return board_recordable and board == "FULL_OUTPUT"
 
@@ -674,51 +712,53 @@ def winner_registry(inputs: dict[str, Any], decisions: list[dict[str, Any]]
                    ) -> list[dict[str, Any]]:
     manifests = inputs["manifests"]
     cell_summaries = inputs["cell_summaries"]
-    by_nk = decision_by_nk(decisions)
+    root_shapes = {str(item["shape_key"]): item
+                   for item in inputs["summary"]["shapes"]}
+    if len(root_shapes) != len(inputs["summary"]["shapes"]):
+        raise AnalysisError("root summary shape key duplicate")
+    seen_layers = set()
     rows = []
-    for shape in inputs["plan"]["shapes"]:
-        key = (int(shape["n"]), int(shape["k"]), int(shape["group_size"]))
-        decision = by_nk[key]
+    for decision in decisions:
+        layer = decision["layer"]
+        key = layer_key(layer)
+        if key in seen_layers:
+            raise AnalysisError(f"duplicate layer decision {key}")
+        seen_layers.add(key)
         selected = decision.get("selected")
         artifact = None if selected is None else int(selected["artifact_tile_k"])
-        for board in planner.BOARDS:
-            board_result = (None if artifact is None else
-                            cell_summaries[(shape["shape_key"], artifact)][
-                                "boards"][board])
-            winner = None if board_result is None else board_result.get("winner")
-            runner = None if board_result is None else board_result.get("runner_up")
-            config_verdict = ("UNAVAILABLE" if winner is None else
-                              board_result["verdict"])
-            recordable = (decision["verdict"] == "RESOLVED" and
-                          config_verdict == "RESOLVED")
-            product_e2e_recordable = is_product_e2e_recordable(
-                board, recordable)
-            physical_decision = decision["xplane_byte_class_decision"]
-            physical_selected = physical_decision.get("selected")
-            axes = ({axis: None for axis in AXES} if winner is None else
-                    {axis: int(manifests[artifact][winner["symbol"]][axis])
-                     for axis in AXES})
-            best_cross = inputs["summary"]["shapes"]
-            # Root summaries are indexed once below by shape key in normal
-            # bundles; keeping this lookup explicit makes a missing row red.
-            root_shape = next((item for item in best_cross
-                               if item["shape_key"] == shape["shape_key"]), None)
+        physical_decision = decision["xplane_byte_class_decision"]
+        physical_selected = physical_decision.get("selected")
+        for m_text, shape_key in sorted(
+                decision["shape_keys_by_M"].items(), key=lambda item: int(item[0])):
+            m = int(m_text)
+            root_shape = root_shapes.get(shape_key)
             if root_shape is None:
-                raise AnalysisError(f"root summary lacks {shape['shape_key']}")
-            cross_winner = root_shape["boards"][board].get("winner")
-            regret = (None if winner is None or cross_winner is None else
-                      float(winner["median_us"]) /
-                      float(cross_winner["median_us"]) - 1.)
-            for reference in shape["references"]:
-                for tensor in reference["source_tensors"]:
-                    rows.append({
-                        "model_id": reference["model_id"],
-                        "tensor": tensor, "tp_world": reference["tp_world"],
-                        "tp_rank": reference["tp_rank"],
-                        "tp_partition": reference["tp_partition"],
-                        "M": int(shape["m"]), "N": int(shape["n"]),
-                        "K": int(shape["k"]),
-                        "group_size": int(shape["group_size"]),
+                raise AnalysisError(f"root summary lacks {shape_key}")
+            for board in planner.BOARDS:
+                board_result = (None if artifact is None else
+                                cell_summaries[(shape_key, artifact)][
+                                    "boards"][board])
+                winner = (None if board_result is None else
+                          board_result.get("winner"))
+                runner = (None if board_result is None else
+                          board_result.get("runner_up"))
+                config_verdict = ("UNAVAILABLE" if winner is None else
+                                  board_result["verdict"])
+                recordable = (decision["verdict"] == "RESOLVED" and
+                              config_verdict == "RESOLVED")
+                product_e2e_recordable = is_product_e2e_recordable(
+                    board, recordable)
+                axes = ({axis: None for axis in AXES} if winner is None else
+                        {axis: int(manifests[artifact][winner["symbol"]][axis])
+                         for axis in AXES})
+                cross_winner = root_shape["boards"][board].get("winner")
+                regret = (None if winner is None or cross_winner is None else
+                          float(winner["median_us"]) /
+                          float(cross_winner["median_us"]) - 1.)
+                rows.append({
+                        **layer,
+                        "M": m, "N": decision["N"], "K": decision["K"],
+                        "group_size": decision["group_size"],
                         "board": board,
                         "metric_scope": ("FULL_OUTPUT" if board == "FULL_OUTPUT"
                                          else "PRODUCER_ONLY_NO_REDUCER_E2E"),
@@ -757,7 +797,8 @@ def flatten_offline(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         physical_decision = item["xplane_byte_class_decision"]
         physical_selected = physical_decision.get("selected")
         physical_competitor = physical_decision.get("resolution_competitor")
-        rows.append({"N": item["N"], "K": item["K"],
+        rows.append({**item["layer"],
+                     "N": item["N"], "K": item["K"],
                      "group_size": item["group_size"],
                      "M_values": ",".join(map(str, item["M_values"])),
                      "descriptor_verdict": item["verdict"],
@@ -870,32 +911,60 @@ def report_text(inputs: dict[str, Any], decisions: list[dict[str, Any]],
                              for item in decisions)
     physical_changes = sum(bool(item["xplane_byte_class_winner_changes_with_m"])
                            for item in decisions)
+    measurement_families = {(item["N"], item["K"], item["group_size"],
+                             tuple(item["M_values"])) for item in decisions}
+    grouped_decisions: dict[str, list[dict[str, Any]]] = \
+        collections.defaultdict(list)
+    for item in decisions:
+        selected = item.get("selected")
+        physical = item["xplane_byte_class_decision"].get("selected")
+        signature = canonical({
+            "N": item["N"], "K": item["K"],
+            "group_size": item["group_size"], "M_values": item["M_values"],
+            "descriptor_verdict": item["verdict"],
+            "descriptor_A": (None if selected is None else
+                               selected["artifact_tile_k"]),
+            "descriptor_regret": (None if selected is None else
+                                    selected["max_regret"]),
+            "xplane_verdict": item["xplane_byte_class_decision"]["verdict"],
+            "xplane_mapping": (None if physical is None else
+                                physical["physical_layout_class"][
+                                    "mapping_sha256"]),
+            "xplane_regret": (None if physical is None else
+                               physical["max_regret"]),
+        })
+        grouped_decisions[signature].append(item)
     lines.append("Q4K_POSTPROCESS "
                  f"measurement_sha={authority.bundle.get('git_sha')} "
                  f"shapes={inputs['plan']['shape_count']} "
                  f"layout_cells={inputs['plan']['cell_count']} "
-                 f"tensor_families={len(decisions)}")
-    lines.append("OFFLINE_CENSUS descriptor_verdicts=" +
+                 f"measurement_families={len(measurement_families)} "
+                 f"layer_decisions={len(decisions)} "
+                 f"decision_signatures={len(grouped_decisions)}")
+    lines.append("OFFLINE_CENSUS layer_descriptor_verdicts=" +
                  canonical(dict(sorted(descriptor_verdicts.items()))) +
-                 " xplane_byte_class_verdicts=" +
+                 " layer_xplane_byte_class_verdicts=" +
                  canonical(dict(sorted(physical_verdicts.items()))) +
-                 " selected_descriptor_A=" +
+                 " layer_selected_descriptor_A=" +
                  canonical(dict(sorted(descriptors.items()))) +
-                 " selected_xplane_byte_class=" +
+                 " layer_selected_xplane_byte_class=" +
                  canonical(dict(sorted(physical_classes.items()))) +
                  f" per_M_descriptor_changes={descriptor_changes} "
                  f"per_M_xplane_byte_class_changes={physical_changes}")
-    for item in sorted(decisions,
-                       key=lambda value: (-float(value["selected"]["max_regret"])
-                                          if value.get("selected") else float("inf"),
-                                          value["N"], value["K"]))[:12]:
+    representatives = [(values[0], len(values))
+                       for values in grouped_decisions.values()]
+    for item, layer_count in sorted(
+            representatives,
+            key=lambda pair: (-float(pair[0]["selected"]["max_regret"])
+                              if pair[0].get("selected") else float("inf"),
+                              pair[0]["N"], pair[0]["K"]))[:24]:
         selected = item.get("selected")
         physical_decision = item["xplane_byte_class_decision"]
         physical = physical_decision.get("selected")
         descriptor_blocker = item.get("resolution_competitor")
         physical_blocker = physical_decision.get("resolution_competitor")
         lines.append("OFFLINE_HOT "
-                     f"N={item['N']} K={item['K']} "
+                     f"layers={layer_count} N={item['N']} K={item['K']} "
                      f"descriptor_verdict={item['verdict']} "
                      f"xplane_byte_class_verdict={physical_decision['verdict']} "
                      f"perM_descriptor_change={int(item['descriptor_winner_changes_with_m'])} "
@@ -949,8 +1018,10 @@ def analyze(bundle: pathlib.Path, output: pathlib.Path, threshold: float) -> Non
     registry = winner_registry(inputs, decisions)
     authority: Authority = inputs["authority"]
     offline_doc = {"schema": OFFLINE_SCHEMA,
-                   "descriptor_selection_rule": "one common ArtifactTileK per (N,K,gs) across measured M; minimize maximum median regret, then mean regret; resolution requires non-overlapping conservative max-regret envelopes",
-                   "physical_class_rule": "Score one physical byte class per (N,K,gs) across measured M. ArtifactTileK is a resident reader/copy descriptor: Q4_K A32/FoldN=2 is one class, while A64/A128/A256 share the proven tile-free F=1/TK<=256 class and may use different readers per M without repacking",
+                   "decision_key": "one concrete (model_id,tp_world,tp_rank,tp_partition,tensor); different layers are never storage-coupled merely because N/K match",
+                   "measurement_dedup_rule": "identical (M,N,K,gs,format,device) cells reuse one timing result, but measurement reuse does not merge per-layer offline decisions",
+                   "descriptor_selection_rule": "one common ArtifactTileK per layer across measured M; minimize maximum median regret, then mean regret; resolution requires non-overlapping conservative max-regret envelopes",
+                   "physical_class_rule": "Score one physical byte class per layer across that layer's measured M values. ArtifactTileK is a resident reader/copy descriptor: Q4_K A32/FoldN=2 is one class, while A64/A128/A256 share the proven tile-free F=1/TK<=256 class and may use different readers per M without repacking",
                    "decisions": decisions}
     registry_doc = {"schema": REGISTRY_SCHEMA,
                     "recording_rule": "physical bytes are recordable when the physical class is RESOLVED; a board-scoped winner is recordable only when both the ArtifactTileK descriptor and within-layout config are RESOLVED; product_e2e_recordable additionally requires FULL_OUTPUT, while producer-only boards remain explicitly scoped",
@@ -1001,14 +1072,24 @@ def analyze(bundle: pathlib.Path, output: pathlib.Path, threshold: float) -> Non
 
 def self_test() -> None:
     # Minimax must not quietly choose the layout which wins only one M.
+    reference_both = {
+        "model_id": "model", "source_tensors": ["layer0", "layer1"],
+        "tp_world": 1, "tp_rank": 0, "tp_partition": "replicated",
+    }
+    reference_layer0 = {
+        "model_id": "model", "source_tensors": ["layer0"],
+        "tp_world": 1, "tp_rank": 0, "tp_partition": "replicated",
+    }
     shapes = [{"shape_key": "m64", "m": 64, "n": 128, "k": 256,
-               "group_size": 32, "references": []},
+               "group_size": 32, "references": [reference_both]},
               {"shape_key": "m2048", "m": 2048, "n": 128, "k": 256,
-               "group_size": 32, "references": []}]
+               "group_size": 32, "references": [reference_layer0]}]
     def board(us: float) -> dict[str, Any]:
         return {"verdict": "RESOLVED", "winner": {
             "median_us": us, "range_us": [us * .99, us * 1.01],
-            "config": "c", "algorithm": "NONPERSISTENT"}, "runner_up": None}
+            "symbol": "c", "config": "c", "algorithm": "NONPERSISTENT",
+            "grid": 1, "policy": "ordinary", "MFU_pct_500TF": 1.,
+            "distinct_MBU_pct_2766GBs": 1.}, "runner_up": None}
     cells = {}
     values = {("m64", 32): 10., ("m64", 64): 11.,
               ("m2048", 32): 12., ("m2048", 64): 10.}
@@ -1020,10 +1101,65 @@ def self_test() -> None:
             cells[(key, artifact)] = {"boards": {"FULL_OUTPUT": result}}
     decisions = offline_layout_decisions(
         {"plan": {"shapes": shapes}, "cell_summaries": cells})
-    if len(decisions) != 1 or decisions[0]["selected"]["artifact_tile_k"] != 64 or \
-            not decisions[0]["descriptor_winner_changes_with_m"] or \
-            not decisions[0]["xplane_byte_class_winner_changes_with_m"]:
-        raise AssertionError("minimax/common-layout selection differs")
+    by_tensor = {item["layer"]["tensor"]: item for item in decisions}
+    if len(decisions) != 2 or \
+            by_tensor["layer0"]["selected"]["artifact_tile_k"] != 64 or \
+            by_tensor["layer1"]["selected"]["artifact_tile_k"] != 32 or \
+            not by_tensor["layer0"]["descriptor_winner_changes_with_m"] or \
+            not by_tensor["layer0"][
+                "xplane_byte_class_winner_changes_with_m"]:
+        raise AssertionError(
+            "per-layer minimax/common-M decision was shape-coupled")
+    duplicate_m = json.loads(json.dumps(shapes[0]))
+    duplicate_m["shape_key"] = "m64-duplicate-measurement"
+    try:
+        offline_layout_decisions({
+            "plan": {"shapes": [shapes[0], duplicate_m]},
+            "cell_summaries": cells,
+        })
+    except AnalysisError as error:
+        if "repeats a measured M" not in str(error):
+            raise
+    else:
+        raise AssertionError(
+            "one layer accepted two offline decisions for the same M")
+    registry_cells = {}
+    for cell_key, cell in cells.items():
+        full = cell["boards"]["FULL_OUTPUT"]
+        registry_cells[cell_key] = {
+            "boards": {name: full for name in planner.BOARDS}}
+    manifest_row = {axis: 1 for axis in AXES}
+    manifests = {
+        artifact: {"c": {"symbol": "c", **manifest_row}}
+        for artifact in planner.ARTIFACTS
+    }
+    summary_shapes = []
+    for shape in shapes:
+        root_winner = min(
+            (registry_cells[(shape["shape_key"], artifact)]
+             ["boards"]["FULL_OUTPUT"]["winner"]
+             for artifact in planner.ARTIFACTS
+             if registry_cells[(shape["shape_key"], artifact)]
+             ["boards"]["FULL_OUTPUT"].get("winner") is not None),
+            key=lambda item: item["median_us"])
+        summary_shapes.append({
+            "shape_key": shape["shape_key"],
+            "boards": {name: {"winner": root_winner}
+                       for name in planner.BOARDS},
+        })
+    registry = winner_registry({
+        "manifests": manifests,
+        "cell_summaries": registry_cells,
+        "summary": {"shapes": summary_shapes},
+    }, decisions)
+    registry_layers = collections.Counter(row["tensor"] for row in registry)
+    if registry_layers != {"layer0": 8, "layer1": 4} or \
+            {row["artifact_tile_k"] for row in registry
+             if row["tensor"] == "layer0"} != {64} or \
+            {row["artifact_tile_k"] for row in registry
+             if row["tensor"] == "layer1"} != {32}:
+        raise AssertionError(
+            "winner registry re-coupled same-shape layer decisions")
     if physical_layout_class(64) != physical_layout_class(128) or \
             physical_layout_class(32) == physical_layout_class(64):
         raise AssertionError("physical FoldN class collapsed/separated incorrectly")
@@ -1042,8 +1178,9 @@ def self_test() -> None:
             tied_values[(key, artifact)])}}
         for key in ("m64", "m2048") for artifact in planner.ARTIFACTS
     }
-    tied = offline_layout_decisions(
-        {"plan": {"shapes": shapes}, "cell_summaries": tied_cells})[0]
+    tied = next(item for item in offline_layout_decisions(
+        {"plan": {"shapes": shapes}, "cell_summaries": tied_cells})
+                if item["layer"]["tensor"] == "layer0")
     byte_decision = tied["xplane_byte_class_decision"]
     if tied["verdict"] != "UNRESOLVED" or \
             byte_decision["verdict"] != "RESOLVED" or \
@@ -1104,7 +1241,8 @@ def self_test() -> None:
         pass
     else:
         raise AssertionError("missing screen candidate stayed green")
-    print("[q4k-postprocess:self-test] PASS minimax cross-M descriptor, "
+    print("[q4k-postprocess:self-test] PASS per-layer minimax cross-M "
+          "descriptor, same-shape layer isolation, duplicate-M RED, "
           "descriptor-tie/byte-class separation, noisy-third-place RED, "
           "essential/dominated axis regret, and missing denominator RED")
 
