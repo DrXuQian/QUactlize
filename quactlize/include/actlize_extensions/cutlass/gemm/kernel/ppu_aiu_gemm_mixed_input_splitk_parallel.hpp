@@ -13,18 +13,19 @@
  *   plane = slice (dense v1 is L==1)
  *   slice = one equal-length contiguous interval of absolute K-tile coordinates
  *
- * Every CTA writes its accumulator to a distinct FP32 plane through
- * CollectivePartialEpilogue.  The default SeparateKernelCompletion policy has
- * no semaphore, peer fixup, D read, or final linear combination; a second
- * kernel performs its ordered reduction.  An explicitly selected completion
- * policy may append a post-store actual-last protocol without changing the
- * mainloop or partial ABI.
+ * Every CTA writes its accumulator directly to a distinct FP32 plane using the
+ * production MMA's partition_C ownership.  The default SeparateKernelCompletion
+ * policy has no semaphore, peer fixup, D read, or final linear combination; a
+ * second kernel performs its ordered reduction.  An explicitly selected
+ * completion policy may append a post-store actual-last protocol without
+ * changing the mainloop or partial ABI.
  *
- * CollectivePartialEpilogue follows actlize's EpilogueParallel protocol:
+ * CollectivePartialEpilogue still supplies the pointer/stride Params ABI:
  *   - ElementD is exactly the mainloop accumulator type (FP32 in shipping kernels),
  *   - Arguments/Params and to_underlying_arguments(problem_shape, args, workspace),
- *   - constructor (Params const&, int partial_plane), and
- *   - the ordinary collective epilogue call operator.
+ *   - to_underlying_arguments(problem_shape, args, workspace).
+ * The historical shared R2S/S2R collective call remains available only under
+ * PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE for hash-bound negative controls.
  * Its D tensor must be compact [M,N,S], with stride-S == M*N.  The kernel deliberately does not
  * allocate that buffer implicitly; the two-launch device wrapper owns its lifetime and size.
  **************************************************************************************************/
@@ -376,23 +377,26 @@ class GemmUniversalMixedInputSplitKParallel {
     int const plane = int(work.peer_idx);
     auto const partial_shape = make_shape(M, N, K, int(params.partition.splits));
     auto const partial_coord = make_coord(m_coord, n_coord, _, Int<0>{});
-#if defined(PPU_SPLITK_DIRECT_ACCUMULATOR_STORE) && \
-    (PPU_SPLITK_DIRECT_ACCUMULATOR_STORE != 0)
-    // Diagnostic bisection only.  Everything through the final MMA above is
-    // byte-for-byte the shipping mainloop; only the post-mainloop partial
-    // delivery changes.  This separates a bad accumulator from the shared
-    // R2S/barrier/S2R/vectorized epilogue without inserting a fence or a new
-    // synchronization point into the producer.
-    detail::store_splitk_accumulators_direct(
-        params.partial_epilogue, partial_shape, blk_shape, partial_coord,
-        accumulators, tiled_mma, residue_mnk, plane, thread_idx);
-#else
+#if defined(PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE) && \
+    (PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE != 0)
+    // Exact historical negative for the PPU raw-bit closure.  The generic
+    // output epilogue redistributes FP32 accumulators through shared memory;
+    // this is unnecessary for a same-type internal partial workspace and its
+    // cross-thread handoff is the device-confirmed corruption seam.
     CollectivePartialEpilogue partial_epilogue{
         params.partial_epilogue, plane};
     partial_epilogue(partial_shape, blk_shape, partial_coord, accumulators,
                      tiled_mma, residue_mnk, thread_idx,
                      reinterpret_cast<char*>(
                          &shared_storage.tensors.partial_epilogue));
+#else
+    // The mainloop accumulator is already partitioned by the production MMA's
+    // exact C ownership.  Store that FP32 fragment directly to the split-major
+    // FP32 workspace: no conversion, no shared redistribution, no added fence
+    // or synchronization, and the reducer ABI remains unchanged.
+    detail::store_splitk_accumulators_direct(
+        params.partial_epilogue, partial_shape, blk_shape, partial_coord,
+        accumulators, tiled_mma, residue_mnk, plane, thread_idx);
 #endif
     CompletionPolicy::after_partial(
         params.completion, work, thread_idx, TileShape{},

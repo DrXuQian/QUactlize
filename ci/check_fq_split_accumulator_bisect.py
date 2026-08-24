@@ -46,15 +46,20 @@ def check_evidence(evidence: str) -> None:
 def check(kernel: str, direct: str, oracle: str,
           runner: str, checker: str, evidence: str) -> None:
     require("kernel", kernel, (
-        "PPU_SPLITK_DIRECT_ACCUMULATOR_STORE",
+        "PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE",
         "detail::store_splitk_accumulators_direct(",
         "CollectivePartialEpilogue partial_epilogue",
         "collective_mainloop(params.mainloop",
     ))
-    if not (kernel.index("collective_mainloop(params.mainloop") <
-            kernel.index("PPU_SPLITK_DIRECT_ACCUMULATOR_STORE") <
-            kernel.index("CollectivePartialEpilogue partial_epilogue")):
-        raise CheckError("direct-store seam moved before mainloop or after epilogue")
+    mainloop_at = kernel.index("collective_mainloop(params.mainloop")
+    legacy_at = kernel.index(
+        "PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE", mainloop_at)
+    shared_at = kernel.index("CollectivePartialEpilogue partial_epilogue",
+                             legacy_at)
+    direct_at = kernel.index("detail::store_splitk_accumulators_direct(",
+                             shared_at)
+    if not (mainloop_at < legacy_at < shared_at < direct_at):
+        raise CheckError("production direct-store seam or legacy negative moved")
     require("direct", direct, (
         "get_thread_slice(thread_idx)",
         "partition_C(gD)",
@@ -72,11 +77,15 @@ def check(kernel: str, direct: str, oracle: str,
     ))
     require("runner", runner, (
         "shared-epilogue direct-accumulator",
-        "PPU_PACKED_METADATA_OWNER_ONLY=1",
-        'defs="$defs PPU_SPLITK_DIRECT_ACCUMULATOR_STORE=1"',
+        'defs="PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE=1"',
+        "retained diagnostic owner-only metadata",
         "l222_fq_splitk_direct_accumulator_store.expected.txt",
         "committed-local-oracle",
         "--split-workspace-probe",
+        "--epilogue-performance",
+        "--accumulator-performance",
+        "PERF_CORRECTNESS_REPEATS",
+        "PRODUCTION_CLOSURE_COMPLETE",
         "check_fq_split_accumulator_bisect.py",
     ))
     require("checker", checker, (
@@ -84,6 +93,9 @@ def check(kernel: str, direct: str, oracle: str,
         'verdict = "PARTIAL_EPILOGUE_CORRUPTION_CONFIRMED"',
         'verdict = "DIRECT_STORE_NEGATIVE_CONTROL_FAILED"',
         'mainloop_prefix=IDENTICAL_BY_COMPILE_TIME_POST_MAINLOOP_SEAM',
+        "FQ_ACCUMULATOR_PRODUCTION_CLOSURE",
+        "packed-row-S4-same-run",
+        "PERF_REGRESSION_LIMIT",
     ))
     check_evidence(evidence)
 
@@ -110,8 +122,8 @@ def main() -> int:
         (1, "partition_C(gD)", "partition_A(gD)"),
         (2, "#ifndef L222_BAD_THREAD_MODULO",
          "#ifndef L222_WRONG_THREAD_MODULO"),
-        (3, 'defs="$defs PPU_SPLITK_DIRECT_ACCUMULATOR_STORE=1"',
-         'defs="$defs PPU_SPLITK_DIRECT_ACCUMULATOR_STORE=0"'),
+        (3, 'defs="PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE=1"',
+         'defs="PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE=0"'),
         (4, 'verdict = "PARTIAL_EPILOGUE_CORRUPTION_CONFIRMED"',
          'verdict = "PARTIAL_EPILOGUE_UNKNOWN"'),
         (5, "holes=432 duplicates=144", "holes=0 duplicates=0"),
@@ -126,8 +138,8 @@ def main() -> int:
         else:
             raise CheckError(f"negative stayed green: {old}")
     print("[fq-accumulator-bisect-source:self-test] PASS post-mainloop seam, "
-          "actual CuTe direct map, two negatives, committed evidence, "
-          "two-arm runner and verdicts")
+          "production-default CuTe direct map, legacy shared negative, "
+          "two oracle negatives, committed evidence, two-arm runner and verdicts")
     return 0
 
 

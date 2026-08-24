@@ -2,13 +2,15 @@
  * Copyright (c) 2026 Quactlize contributors.
  * SPDX-License-Identifier: BSD-3-Clause
  *
- * Diagnostic-only direct store for fixed Split-K accumulator bisection.
+ * Direct FP32 partial store for fixed Split-K.
  *
  * This runs strictly after the shipping mainloop.  It bypasses the shared-memory
  * R2S/barrier/S2R/vectorized partial epilogue and maps each accumulator register
  * to its logical output through the production TiledMma partition_C view.  The
- * path is selected only by PPU_SPLITK_DIRECT_ACCUMULATOR_STORE and is never part
- * of a default build.
+ * partial workspace needs neither output conversion nor an output-layout
+ * redistribution, so the accumulator ownership is already the desired store
+ * ownership.  Keeping the path direct removes an otherwise unnecessary
+ * cross-thread shared-memory handoff and its two CTA barriers.
  **************************************************************************************************/
 
 #pragma once

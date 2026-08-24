@@ -95,13 +95,13 @@ not the sole root cause.  The aggregate bad-sample rate changed from 28/256 to
 11/512, but a production repair cannot retain a workaround that merely lowers
 the probability.  `PPU_PACKED_METADATA_OWNER_ONLY` remains diagnostic-only.
 
-The next factorial is strictly post-mainloop.  Both arms keep owner-only
-metadata and the same standard-A/packed-A mainloop.  The control uses the
-shipping shared R2S/barrier/S2R/vectorized partial epilogue; the candidate maps
-the completed accumulator directly through the production TiledMma
-`partition_C` view.  The local exact-ownership oracle and its duplicate-thread
-and rotated-fragment negatives are in
-`l222_fq_splitk_direct_accumulator_store.cu`.
+The post-mainloop factorial used the same standard-A/packed-A mainloop in both
+arms.  Its first diagnostic run kept owner-only metadata to hold the preceding
+factorial constant.  The control used the shared
+R2S/barrier/S2R/vectorized partial epilogue; the candidate mapped the completed
+accumulator directly through the production TiledMma `partition_C` view.  The
+local exact-ownership oracle and its duplicate-thread and rotated-fragment
+negatives are in `l222_fq_splitk_direct_accumulator_store.cu`.
 
 The PPU box's `nvcc` delegates device preprocessing to `ppu_clang++`, enables
 the HGGC FP8 include path, and cannot execute this NVIDIA/stub host oracle
@@ -109,13 +109,63 @@ without mixing incompatible SDK headers.  The box runner therefore validates
 the exact committed L222 output from the result SHA instead of inventing an
 `hggc_fp8.h` stub.  Both device arms are still built fresh with `hgcc`.
 
-The hash-bound two-build diagnostic emits one of:
+The hash-bound two-build diagnostic emitted:
+
+```text
+source sha  bc31c2e33c528a19e9987008ca68db88293515df
+shared AP0/S4   5/256 bad samples, 160 bad fp32 partial values,
+                plane mask=0xc, stripe origin=32
+shared other    AP0/S2 and AP1/S2/S4 exact in this census
+direct AP0/S2   0/256 bad samples, partials exact
+direct AP0/S4   0/256 bad samples, partials exact
+direct AP1/S2   0/256 bad samples, partials exact
+direct AP1/S4   0/256 bad samples, partials exact
+verdict         PARTIAL_EPILOGUE_CORRUPTION_CONFIRMED
+```
+
+This closes the causal boundary.  The completed mainloop accumulator is exact;
+the reducer, workspace addressing and cross-kernel publication are not the
+source.  Corruption enters only while the old partial epilogue redistributes
+the fp32 fragment register-to-shared, synchronizes, reloads shared-to-register,
+and writes global.  The intermittent complete 32-output stripes and changing
+plane mask are an ordering/visibility signature, not a static CuTe coordinate
+permutation.  The factorial does not distinguish one backend shared-memory
+instruction inside that handoff, and the production repair does not need to:
+the handoff has no semantic job for an fp32 accumulator going to an fp32
+split-major workspace.
+
+## Production repair and invariants
+
+The fixed Split-K producer now stores each completed accumulator fragment
+directly through the exact `tiled_mma.get_thread_slice(thread_idx).partition_C`
+mapping.  `PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE=1` retains the old path as
+the hash-bound negative control.  The default path:
+
+- preserves the mainloop, MMA count/order, scheduler and split partition;
+- preserves the split-major fp32 workspace bytes and deterministic reducer ABI;
+- preserves every output's unique CuTe owner, with residue predication;
+- performs no fp16 conversion or output-layout redistribution;
+- deletes the shared R2S/S2R traffic and two CTA barriers;
+- adds no fence, counter, atomic operation or synchronization;
+- does **not** enable `PPU_PACKED_METADATA_OWNER_ONLY`.
+
+The exact local ownership oracle visits all 576 test outputs once.  Its planted
+bad-thread arm produces 432 holes and 144 duplicates; its rotated-fragment arm
+produces 576 value mismatches.  Thus the direct map is not a scalar loop that
+can accidentally pass a weak aggregate check.
+
+The final box closure rebuilds both paths from one SHA with true shipping
+metadata.  It requires high-repeat raw-bit exactness for the production arm and
+times both paths in the same run.  The packed-row S4 producer is the performance
+control; more than 3% regression is red.  This replaces the earlier requirement
+to preserve an unnecessary shared epilogue merely to retain its cadence.
+
+The semantic checker can still emit one of:
 
 - `MAINLOOP_ACCUMULATOR_CORRUPTION_CONFIRMED`;
 - `PARTIAL_EPILOGUE_CORRUPTION_CONFIRMED`;
 - `DIRECT_STORE_NEGATIVE_CONTROL_FAILED`;
 - `UNADJUDICATED_EPILOGUE_ARM_DID_NOT_REPRODUCE`.
 
-Only that semantic verdict proceeds to the smallest production repair.
-Production closure must then rebuild the historical and repaired path from one
-SHA and report raw-bit correctness, latency, registers and spills.
+Only `PARTIAL_EPILOGUE_CORRUPTION_CONFIRMED`, followed by a raw-bit exact and
+non-regressing direct-store performance arm, admits the production repair.

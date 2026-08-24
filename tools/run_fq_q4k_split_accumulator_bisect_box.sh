@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# One hash-bound diagnostic bundle: owner-only packed metadata with the
-# shipping shared partial epilogue versus direct accumulator delivery.
+# One hash-bound production closure: the exact historical shared partial
+# epilogue versus the default direct FP32 partial delivery.  Both arms retain
+# the shipping packed-metadata behavior.
 set -uo pipefail
 
 main() {
   local root workspace_root sha short stamp out jobs repeats
+  local perf_iterations perf_repeats
   local full generated arm defs build_dir build_log binary direct_log probe_log
-  local l222_evidence
-  local build_rc direct_rc probe_rc
+  local performance_log l222_evidence
+  local build_rc direct_rc probe_rc performance_rc
 
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
   workspace_root="$(realpath -e /workspace)" || return 2
@@ -29,11 +31,19 @@ main() {
   fi
   jobs="${JOBS:-16}"
   repeats="${PROBE_REPEATS:-256}"
+  perf_iterations="${PERF_ITERATIONS:-200}"
+  perf_repeats="${PERF_CORRECTNESS_REPEATS:-32}"
   case "$jobs" in
     *[!0-9]*|0) printf '[fq-accumulator-bisect] FAIL: JOBS must be positive\n' >&2; return 2 ;;
   esac
   case "$repeats" in
     *[!0-9]*|0) printf '[fq-accumulator-bisect] FAIL: PROBE_REPEATS must be positive\n' >&2; return 2 ;;
+  esac
+  case "$perf_iterations" in
+    *[!0-9]*|0) printf '[fq-accumulator-bisect] FAIL: PERF_ITERATIONS must be positive\n' >&2; return 2 ;;
+  esac
+  case "$perf_repeats" in
+    *[!0-9]*|0) printf '[fq-accumulator-bisect] FAIL: PERF_CORRECTNESS_REPEATS must be positive\n' >&2; return 2 ;;
   esac
   mkdir -p "$out/generated/full" "$out/generated/closure" "$out/results" || return 2
 
@@ -65,9 +75,9 @@ main() {
     --source-dir "$full" --out-dir "$generated" || return 2
 
   for arm in shared-epilogue direct-accumulator; do
-    defs="PPU_PACKED_METADATA_OWNER_ONLY=1"
-    if [ "$arm" = direct-accumulator ]; then
-      defs="$defs PPU_SPLITK_DIRECT_ACCUMULATOR_STORE=1"
+    defs=""
+    if [ "$arm" = shared-epilogue ]; then
+      defs="PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE=1"
     fi
     build_dir="$out/build-$arm"
     build_log="$out/results/$arm-build.log"
@@ -84,21 +94,19 @@ main() {
       printf '[fq-accumulator-bisect] artifacts=%s\n' "$out" >&2
       return "$build_rc"
     fi
-    grep -Fq \
-      "PPU_DEFS verified on test_fully_quantized_internal_sweep's compile command: -DPPU_PACKED_METADATA_OWNER_ONLY=1" \
-      "$build_log" || {
-        printf '[fq-accumulator-bisect] FAIL: %s owner-only define missing\n' "$arm" >&2
-        return 2
-      }
-    if [ "$arm" = direct-accumulator ]; then
+    if [ "$arm" = shared-epilogue ]; then
       grep -Fq \
-        "PPU_DEFS verified on test_fully_quantized_internal_sweep's compile command: -DPPU_SPLITK_DIRECT_ACCUMULATOR_STORE=1" \
+        "PPU_DEFS verified on test_fully_quantized_internal_sweep's compile command: -DPPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE=1" \
         "$build_log" || {
-          printf '[fq-accumulator-bisect] FAIL: direct-store define missing\n' >&2
+          printf '[fq-accumulator-bisect] FAIL: historical epilogue define missing\n' >&2
           return 2
         }
-    elif grep -Fq -- '-DPPU_SPLITK_DIRECT_ACCUMULATOR_STORE' "$build_log"; then
-      printf '[fq-accumulator-bisect] FAIL: shared epilogue arm contains direct-store define\n' >&2
+    elif grep -Fq -- '-DPPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE' "$build_log"; then
+      printf '[fq-accumulator-bisect] FAIL: production arm contains legacy epilogue define\n' >&2
+      return 2
+    fi
+    if grep -Fq -- '-DPPU_PACKED_METADATA_OWNER_ONLY' "$build_log"; then
+      printf '[fq-accumulator-bisect] FAIL: %s retained diagnostic owner-only metadata\n' "$arm" >&2
       return 2
     fi
 
@@ -113,6 +121,7 @@ main() {
 
     direct_log="$out/results/$arm-direct.log"
     probe_log="$out/results/$arm-workspace-probe.log"
+    performance_log="$out/results/$arm-performance.log"
     "$binary" --shape=1x1024x5120 --iterations=1 \
       --correctness-repeats="$repeats" --tm8-max-m=8 --bc-mode=skip \
       >"$direct_log" 2>&1
@@ -130,9 +139,24 @@ main() {
       printf '[fq-accumulator-bisect] artifacts=%s\n' "$out" >&2
       return 2
     fi
+    "$binary" --shape=1x1024x5120 --iterations="$perf_iterations" \
+      --correctness-repeats="$perf_repeats" --tm8-max-m=8 --bc-mode=skip \
+      >"$performance_log" 2>&1
+    performance_rc=$?
+    if [ "$performance_rc" -ne 0 ]; then
+      if [ "$arm" = direct-accumulator ] || [ "$performance_rc" -ne 1 ]; then
+        printf '[fq-accumulator-bisect] FAIL: %s performance rc=%d\n' \
+          "$arm" "$performance_rc" >&2
+        tail -100 "$performance_log" >&2
+        printf '[fq-accumulator-bisect] artifacts=%s\n' "$out" >&2
+        return 2
+      fi
+    fi
     printf 'FQ_ACCUMULATOR_BISECT_ARM arm=%s binary_sha256=%s direct_rc=%d probe_rc=%d repeats=%d\n' \
       "$arm" "$(sha256sum "$binary" | awk '{print $1}')" \
       "$direct_rc" "$probe_rc" "$repeats"
+    printf 'FQ_ACCUMULATOR_PERF_ARM arm=%s rc=%d iterations=%d correctness_repeats=%d\n' \
+      "$arm" "$performance_rc" "$perf_iterations" "$perf_repeats"
   done
 
   python3 -B "$root/tools/check_fq_split_accumulator_bisect.py" \
@@ -140,10 +164,12 @@ main() {
     --epilogue-probe "$out/results/shared-epilogue-workspace-probe.log" \
     --accumulator-direct "$out/results/direct-accumulator-direct.log" \
     --accumulator-probe "$out/results/direct-accumulator-workspace-probe.log" \
+    --epilogue-performance "$out/results/shared-epilogue-performance.log" \
+    --accumulator-performance "$out/results/direct-accumulator-performance.log" \
     | tee "$out/results/verdict.log" || return 2
   sha256sum "$generated/manifest.json" "$out"/results/*.log \
     >"$out/results/authority.sha256" || return 2
-  printf '[fq-accumulator-bisect] DIAGNOSTIC_COMPLETE sha=%s artifacts=%s\n' \
+  printf '[fq-accumulator-bisect] PRODUCTION_CLOSURE_COMPLETE sha=%s artifacts=%s\n' \
     "$sha" "$out"
 }
 
