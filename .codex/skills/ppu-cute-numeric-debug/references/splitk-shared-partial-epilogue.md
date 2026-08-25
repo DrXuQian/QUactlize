@@ -226,29 +226,37 @@ Every dirty cell localized to a wrong producer FP32 partial; none of the seven
 counterfactuals closed both providers and S=2/S=4.  The two partially cleaner
 arms are code-layout/timing sensitivity, not repairs or causal proof.
 
-The first reduced closure at `d6e5589` built baseline and an exact inline-asm
-shared-memory contract.  The candidate kept the physical x4 instruction and
-added `memory` clobbers to the fp16 AIU/packed cp.async producer, commit/wait
-and m8 ldmatrix consumer.  Both arms were 0/8 clean S>1 cells across two
-32768-repeat attempts, and every dirty cell was a wrong producer FP32 partial.
-Thus the missing contract is a real source defect but not the complete device
-root.
+The first reduced closure at `d6e5589` was initially described as an exact
+inline-asm shared-memory contract.  Source re-audit proved that description
+false.  The macro covered the ordinary fp16-A AIU producer, packed-A zfill
+producer, commit/wait, and the common swizzle reader, but did **not** cover the
+Q4 B bulk-AIU producer or the non-zfill packed-metadata producer.  Both still
+wrote shared memory through input-only inline asm with no `memory` clobber.
+Therefore its 0/8 result cannot refute the compiler-memory-contract
+hypothesis; it tested only a partial chain.
+
+The current `asm-memory-contract` arm closes the complete frozen Q4 chain:
+ordinary fp16 A, Q4 B, packed A, packed metadata, commit/wait, and the common
+swizzle reader.  Keep this as a separate arm from the logical-x2 consumer and
+async-proxy-fence arms.  Only the complete arm may adjudicate the compiler
+contract.
 
 A logical-x2 scalar load that removes the physical x4 swizzle opcode is
 source-proved by L186 (512 exact logical addresses plus an offset negative).
-The other remaining arm adds only `fence_view_async_shared()` after each
+Another remaining arm adds only `fence_view_async_shared()` after each
 `cp_async_wait<Stages-2>()` and before packed decode/CTA publication.  The
-default closure runs one uncontaminated baseline plus these two orthogonal
-arms; neither combines with the failed clobber experiment.
+default closure runs one uncontaminated baseline plus three orthogonal arms:
+complete asm-memory contract, logical-x2 consumer, and async-shared proxy
+fence.  None of the candidates are combined.
 
 Missing memory side-effect declarations are a real inline-asm contract defect,
 but do not by themselves prove the stale-stage explanation.  A compiler may
 hoist or CSE pure address arithmetic only while preserving the runtime stage
-value.  The exact contract arm remained dirty on device.  The next closure
-therefore separates the physical m8 x4 consumer from async-shared proxy
-visibility.  One uniquely clean arm selects the next repair; two clean arms
-are cadence-sensitive and remain unadjudicated; two dirty arms retire both
-seams.
+value.  Do not cite the earlier partial contract arm as a device refutation.
+The current closure separately tests the complete contract, physical m8 x4
+consumer, and async-shared proxy visibility.  One uniquely clean arm selects
+the next repair; multiple clean arms are cadence-sensitive and remain
+unadjudicated; all dirty arms retire all three seams.
 
 The `plane2: 1.0 -> 6.0` value pair remains valuable evidence for a specific
 stale previous A tile, but physical output index 32 is not part of that

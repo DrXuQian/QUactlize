@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# One-box single-variable closure for the rare Q4_K packed-m8 Split-K A-stage
-# failure. The default closure runs the two remaining orthogonal seams beside
+# One-box single-contract closure for the rare Q4_K m8 Split-K operand-delivery
+# failure. The default closure runs the three remaining orthogonal seams beside
 # one uncontaminated baseline; numeric failures never truncate the bundle.
 #
 # Every binary contains the exact same generated AP0/AP1 tactic pair and uses
@@ -8,7 +8,8 @@
 # factorial excluded the earlier source-level scheduling seams. Each selected
 # candidate changes one variable only. `asm-memory-contract` keeps
 # the same x4 swizzle load and adds compiler-visible shared-memory effects to
-# the actual fp16-A producer, commit/wait and consumer asm statements.
+# the actual fp16-A producer, Q4-B producer, scalar packed-A/metadata producer,
+# commit/wait, and common consumer asm statements.
 # `logical-x2-scalar` keeps the baseline producer/wait contract and replaces
 # only the physical x4 consumer with the two exact semantic shared loads.
 # `async-shared-fence` is the actual issuer/wait publication test: it leaves
@@ -44,11 +45,11 @@ main() {
   jobs="${JOBS:-16}"
   repeats="${PROBE_REPEATS:-32768}"
   attempts="${PROBE_ATTEMPTS:-2}"
-  candidate="${FQ_A_STAGE_CANDIDATE:-remaining-two}"
+  candidate="${FQ_A_STAGE_CANDIDATE:-remaining-three}"
   case "$candidate" in
-    asm-memory-contract|logical-x2-scalar|async-shared-fence|remaining-two) ;;
+    asm-memory-contract|logical-x2-scalar|async-shared-fence|remaining-two|remaining-three) ;;
     *)
-      fail "FQ_A_STAGE_CANDIDATE must be asm-memory-contract, logical-x2-scalar, async-shared-fence, or remaining-two"
+      fail "FQ_A_STAGE_CANDIDATE must be asm-memory-contract, logical-x2-scalar, async-shared-fence, remaining-two, or remaining-three"
       return $?
       ;;
   esac
@@ -93,12 +94,18 @@ m8_copy = (root / (
 copy_async = (root / (
     "third_party/actlize/include/cute/arch/"
     "copy_ppu.hpp")).read_text()
+packed_metadata_async = copy_async.split(
+    "struct PPU_CP_ASYNC_CACHEGLOBAL", 1)[1].split(
+        "struct PPU_CP_ASYNC_CACHEALWAYS_ZFILL", 1)[0]
 copy_aiu = (root / (
     "third_party/actlize/include/cute/algorithm/"
     "ppu_copy.hpp")).read_text()
 nontrans_x4_impl = m8_copy.split(
     "struct PPU0010_TSM_LD_SWZL_IMPL<Element, false>", 1)[1].split(
         "struct PPU0010_TSM_LD_SWZL_IMPL<Element, true>", 1)[0]
+q4_bulk_producer = m8_copy.split(
+    "sizeof_bits<Element>::value == 4", 1)[1].split(
+        "sizeof_bits<Element>::value == 2", 1)[0]
 m8_wrapper = m8_copy.split("struct PPU0010_TSM_LD_SWZL_M8", 1)[1]
 hggc_aiu = copy_aiu.split(
     "#if defined(__HGGC_ARCH__) && __HGGC_ARCH__ == 100", 1)[1].split(
@@ -139,8 +146,10 @@ checks = {
         m8_copy.count("ppu.ld.shared.u32 %0, [%2]") == 1 and
         m8_copy.count("ppu.ld.shared.u32 %1, [%3]") == 1,
     "exact asm memory contract seam":
-        m8_copy.count("PPU_PACKED_A_ASM_MEMORY_CONTRACT") == 4 and
-        copy_async.count("PPU_PACKED_A_ASM_MEMORY_CONTRACT") == 6,
+        m8_copy.count("PPU_PACKED_A_ASM_MEMORY_CONTRACT") == 6 and
+        copy_async.count("PPU_PACKED_A_ASM_MEMORY_CONTRACT") == 8 and
+        packed_metadata_async.count("PPU_PACKED_A_ASM_MEMORY_CONTRACT") == 2 and
+        packed_metadata_async.count(': "memory"') == 1,
     "exact async shared visibility seam":
         pipeline.count("PPU_MIXED_ASYNC_SHARED_FENCE") == 2 and
         pipeline.count("mixed_async_shared_visibility_fence();") == 2 and
@@ -157,10 +166,12 @@ checks = {
         collective.count("PPU_PACKED_SPLIT_GROUPS") == 4 and
         packed_decode.count("PPU_PACKED_SPLIT_GROUPS") == 3 and
         "copy_aiu(" not in packed_decode,
-    "contract changes original nontrans x4 asm only":
+    "contract covers Q4 producer and original nontrans x4 consumer":
         nontrans_x4_impl.count("PPU_PACKED_A_ASM_MEMORY_CONTRACT") == 2 and
         nontrans_x4_impl.count("m8n8.x4.swzl.shared.b16") == 2 and
         nontrans_x4_impl.count(': "memory"') == 1 and
+        q4_bulk_producer.count("PPU_PACKED_A_ASM_MEMORY_CONTRACT") == 2 and
+        q4_bulk_producer.count(': "memory"') == 2 and
         "PPU_PACKED_A_ASM_MEMORY_CONTRACT" not in m8_wrapper,
 }
 bad = [name for name, ok in checks.items() if not ok]
@@ -265,7 +276,9 @@ PY
 
   : >"$out/results/infrastructure.tsv"
   local selected_arms
-  if [ "$candidate" = remaining-two ]; then
+  if [ "$candidate" = remaining-three ]; then
+    selected_arms="baseline asm-memory-contract logical-x2-scalar async-shared-fence"
+  elif [ "$candidate" = remaining-two ]; then
     selected_arms="baseline logical-x2-scalar async-shared-fence"
   else
     selected_arms="baseline $candidate"
@@ -345,10 +358,14 @@ attempts = int(sys.argv[2])
 repeats = int(sys.argv[3])
 selection = sys.argv[4]
 if selection not in {"asm-memory-contract", "logical-x2-scalar",
-                     "async-shared-fence", "remaining-two"}:
+                     "async-shared-fence", "remaining-two",
+                     "remaining-three"}:
     raise SystemExit("invalid candidate identity")
-candidates = (("logical-x2-scalar", "async-shared-fence")
-              if selection == "remaining-two" else (selection,))
+candidates = (("asm-memory-contract", "logical-x2-scalar",
+               "async-shared-fence")
+              if selection == "remaining-three" else
+              (("logical-x2-scalar", "async-shared-fence")
+               if selection == "remaining-two" else (selection,)))
 arms = ("baseline",) + candidates
 expected_symbols = {
     "standard-aiu": "fq_tc_q12_a64_tm8_tn64_tk256_wm8_wn16_s2_bc0_ap0",
@@ -585,11 +602,16 @@ try:
                 "fence before packed decode/CTA publication did not close every "
                 "stressed S1/S2/S4 cell; missing proxy visibility is not the root")
         else:
-            verdict = "BOTH_REMAINING_COMMON_SEAMS_DIRTY"
+            verdict = ("ALL_REMAINING_COMMON_SEAMS_DIRTY"
+                       if candidates == ("asm-memory-contract",
+                                         "logical-x2-scalar",
+                                         "async-shared-fence")
+                       else "BOTH_REMAINING_COMMON_SEAMS_DIRTY")
             interpretation = (
                 "the baseline reproduced, but neither removing the physical m8 "
-                "x4 reader nor adding the exact async-shared visibility fence "
-                "closed every stressed S1/S2/S4 cell")
+                "x4 reader, completing the Q4 operand asm-memory contract, nor "
+                "adding the exact async-shared visibility fence closed every "
+                "stressed S1/S2/S4 cell")
         diagnostic_rc = 1
     elif len(clean_candidates) > 1:
         verdict = "MULTIPLE_ORTHOGONAL_CLOSURES_UNADJUDICATED"
@@ -604,8 +626,9 @@ try:
             interpretation = (
                 "the baseline reproduced and the physical x4 opcode, packed bytes, "
                 "stage geometry, schedule and MMA order remained unchanged; "
-                "declaring the fp16-A producer, commit/wait and ldmatrix shared-"
-                "memory effects closed every independent S1/S2/S4 cell")
+                "declaring the fp16-A, Q4-B and scalar async producers plus "
+                "commit/wait and ldmatrix shared-memory effects closed every "
+                "independent S1/S2/S4 cell")
         elif winner == "logical-x2-scalar":
             verdict = "M8_X4_SWIZZLE_OPCODE_OR_SCOREBOARD_CAUSAL"
             interpretation = (
