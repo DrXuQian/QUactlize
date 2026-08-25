@@ -68,7 +68,7 @@ if [[ ${rows0_rc} -eq 0 || ${m16_rc} -eq 0 ||
 fi
 
 python3 "${repo}/ci/check_dense_m1_packed_a.py"
-for plant in missing-m1-guard default-type-wrapped query-launch-diverged coverage-denominator; do
+for plant in missing-m1-guard default-type-wrapped query-launch-diverged coverage-denominator physical-stage-pitch; do
   if python3 "${repo}/ci/check_dense_m1_packed_a.py" --plant "${plant}" \
       >"${out}/plant-${plant}.log" 2>&1; then
     echo "[l186] FAIL source plant escaped: ${plant}" >&2
@@ -77,4 +77,4 @@ for plant in missing-m1-guard default-type-wrapped query-launch-diverged coverag
 done
 
 echo "[l186] PASS: 7 production Q2/Q4 cells + writer/independent-reader geometry; " \
-     "rows0/m16/destination/slice-swap and 4 source plants RED; output=${out}"
+     "rows0/m16/destination/slice-swap and 5 source plants RED; output=${out}"

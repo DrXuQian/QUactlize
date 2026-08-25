@@ -16,6 +16,8 @@ LAUNCHER = ROOT / "quactlize/include/fpA_intB_ppu.cuh"
 BACKEND = ROOT / "quactlize/csrc/device/ppu_dense_backend.cu"
 TYPE_ORACLE = ROOT / "dev/fold_derivation/l186_dense_m1_packed_a.cu"
 GEOMETRY_ORACLE = ROOT / "dev/fold_derivation/l186_dense_m1_packed_a_geometry.cu"
+ACTLIZE_COPY = ROOT / "third_party/actlize/include/cute/arch/copy_ppu0010_aiu.hpp"
+ACTLIZE_TRAITS = ROOT / "third_party/actlize/include/cute/atom/copy_traits_ppu0010_aiu.hpp"
 
 
 def source_errors(text: dict[str, str]) -> list[str]:
@@ -33,17 +35,22 @@ def source_errors(text: dict[str, str]) -> list[str]:
         "builder": (
             "struct MixGemm_AIU_OperandPackedA", "ScheduledAPackRows",
             "MmaInstM == 8 && physicalBlockM == 16", "ScheduledAPackRows == 0, OrdinaryOperandA",
+            "kStagePitchA = detail::aPackStagePitchHalfs(",
         ),
         "collective": (
             "static constexpr int kACubeH      = PhysicalATileM",
             "static constexpr bool kPackedA = kAPackRows > 0;",
             "if constexpr (kPackedA)", "copy_A_packed_rows<kAPackRows>",
             "detail::aPackRunOffsetHalfs(kACubeH",
+            "static constexpr int kAPackStagePitch = detail::aPackStagePitchHalfs(",
+            "kAPackPitch * c + kAPackStagePitch * pipe",
         ),
         "pack_detail": (
             "CUTE_HOST_DEVICE constexpr int aPackRunOffsetHalfs",
             "aPackRunOffsetHalfs(16, 0, 1) == 288",
             "aPackRunOffsetHalfs(16, 0, 2) == 528",
+            "CUTE_HOST_DEVICE constexpr int aPackStagePitchHalfs",
+            "aPackStagePitchHalfs(64, 4, 16 * 64) == 1216",
         ),
         "launcher": (
             "struct DensePackedAKernelTypes", "using KernelTypes = DenseKernelTypes<",
@@ -67,7 +74,18 @@ def source_errors(text: dict[str, str]) -> list[str]:
             "constexpr int kLogicalM = 8;", "constexpr int kPhysicalM = 16;",
             "ppu0010_tsm_ld_swzl_m8_word", "make_ppu_read_inverse",
             "for (int visits : output)", "L186_BAD_DESTINATION_DELTA", "L186_BAD_SLICE_SWAP",
+            "historical_cross > 0 && production_cross == 0",
             "production writer -> independent hardware-calibrated PPU0010 reader",
+        ),
+        "actlize_copy": (
+            "int CubePitch = 0, int StagePitch = 0",
+            "static constexpr int kStagePitch =",
+            "kCubePitch * cube_in_stage + kStagePitch * stage",
+            "the physical x4 read",
+        ),
+        "actlize_traits": (
+            "int InstNum, int CubePitch, int StagePitch",
+            "CubePitch, StagePitch>>",
         ),
     }
     for name, tokens in required.items():
@@ -108,6 +126,10 @@ def plant(name: str, text: dict[str, str]) -> None:
         text["geometry_oracle"] = text["geometry_oracle"].replace(
             "for (int visits : output)",
             "for (int visits : std::array<int, 1>{output[0]})", 1)
+    elif name == "physical-stage-pitch":
+        text["collective"] = text["collective"].replace(
+            "kAPackPitch * c + kAPackStagePitch * pipe",
+            "kAPackPitch * (c + kACubes * pipe)", 1)
     elif name != "none":
         raise ValueError(f"unknown plant {name}")
 
@@ -121,6 +143,7 @@ def main() -> int:
         "collective": COLLECTIVE, "pack_detail": PACK_DETAIL,
         "launcher": LAUNCHER, "backend": BACKEND,
         "type_oracle": TYPE_ORACLE, "geometry_oracle": GEOMETRY_ORACLE,
+        "actlize_copy": ACTLIZE_COPY, "actlize_traits": ACTLIZE_TRAITS,
     }
     missing = [str(path.relative_to(ROOT)) for path in paths.values() if not path.is_file()]
     if missing:

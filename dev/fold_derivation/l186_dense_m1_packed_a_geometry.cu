@@ -15,6 +15,9 @@
 #include <vector>
 
 #include "cute/atom/mma_traits_ppu0010.hpp"
+#include "cute/arch/copy_ppu0010_aiu.hpp"
+#include "cute/ppu_tensor_mix.hpp"
+#include "cute/atom/copy_traits_ppu0010_aiu.hpp"
 #include "cute/tensor.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_a_pack.hpp"
 
@@ -38,6 +41,60 @@ using Mma = TiledMMA<MMA_Atom<Atom>,
     Tile<Int<(kLogicalM / kWarpM) * 8>, Int<(kTileN / kWarpN) * 16>, _16>>;
 using Fragment = decltype(make_fragment_like<float>(
     partition_fragment_C(Mma{}, Shape<Int<kLogicalM>, Int<kTileN>>{})));
+
+// The exact source-coordinate route of
+// fq_tc_q12_a64_tm8_tn64_tk256_wm8_wn16_s2_bc0_ap1.  The original L186
+// reader model started from the already-decoded (cube,stage) pair and therefore
+// did not prove that production CuTe partition_S delivered that pair.
+constexpr int kExactTileK = 256;
+constexpr int kExactStages = 2;
+constexpr int kExactCubes = kExactTileK / kCubeW;
+constexpr int kExactStagePitch =
+    cutlass::gemm::collective::detail::aPackStagePitchHalfs(
+        kPitch, kExactCubes, kPhysicalM * kCubeW);
+using ExactMma = TiledMMA<MMA_Atom<Atom>,
+    Layout<Shape<_1, _4, _1>>, Tile<_8, _64, _16>>;
+using ExactSmemAtom = Layout<Shape<_8, _64>, Stride<_64, _1>>;
+using ExactLogicalStage = decltype(tile_to_shape(
+    ExactSmemAtom{}, make_shape(_8{}, Int<kExactTileK>{})));
+using ExactPhysicalStage = decltype(tile_to_shape(
+    ExactSmemAtom{}, make_shape(_16{}, Int<kExactTileK>{})));
+using ExactSmemLayoutA = decltype(append(
+    ExactLogicalStage{},
+    make_layout(Int<kExactStages>{},
+                Int<cute::cosize_v<ExactPhysicalStage>>{})));
+using ExactSmemCopyOp = PPU0010_TSM_LD_SWZL_M8<
+    cutlass::half_t, 16, 64, true, false, kExactCubes, kPitch,
+    kExactStagePitch>;
+using ExactSmemCopyAtom = Copy_Atom<ExactSmemCopyOp, cutlass::half_t>;
+
+int verify_exact_cute_source_coordinates() {
+  std::array<cutlass::half_t, 1152> storage{};
+  auto s_a = make_tensor(make_smem_ptr(storage.data()), ExactSmemLayoutA{});
+  auto tiled_copy = make_tiled_copy_A(ExactSmemCopyAtom{}, ExactMma{});
+  int bad = 0;
+  for (int warp = 0; warp < 4; ++warp) {
+    auto t_cs_a = tiled_copy.get_thread_slice(warp * 32).partition_S(
+        make_mix_tensor_like(s_a));
+    for (int stage = 0; stage < kExactStages; ++stage) {
+      for (int k_block = 0; k_block < int(size<2>(t_cs_a)); ++k_block) {
+        auto source = t_cs_a(_, _, k_block, stage);
+        auto coord = source.data().coord_;
+        // copy_unpack forwards this four-tuple verbatim to
+        // PPU0010_TSM_LD_SWZL_M8::copy(coord_w,coord_h,cube,stage).
+        bad += int(get<0>(coord)) != (k_block % kSlices) * 16;
+        bad += int(get<1>(coord)) != 0;
+        bad += int(get<2>(coord)) != k_block / kSlices;
+        bad += int(get<3>(coord)) != stage;
+      }
+    }
+  }
+  std::printf("[l186:cute] exact=s2/tk256 warps=4 stages=2 k_blocks=%d "
+              "coord_bad=%d\n",
+              int(size<2>(tiled_copy.get_thread_slice(0).partition_S(
+                  make_mix_tensor_like(s_a)))), bad);
+  return bad;
+}
 
 static_assert(size<0>(typename MMA_Traits<Atom>::Shape_MNK{}) == 8 &&
               size<1>(typename MMA_Traits<Atom>::Shape_MNK{}) == 16 &&
@@ -177,6 +234,49 @@ int authority_errors() {
   return bad;
 }
 
+// The CuTe m8 atom publishes v0/v1, but the hardware instruction physically
+// reads x4.  This oracle deliberately counts the complete x4 footprint against
+// the other pipeline stage's live-row writer.  The historical flat cube pitch
+// must be RED; the production stage pitch must have no cross-stage address.
+int cross_stage_hardware_collisions(int stage_pitch) {
+  constexpr int kAddressLimit = 4096;
+  std::array<int, kAddressLimit> writer[2]{};
+  std::array<int, kAddressLimit> reader[2]{};
+  for (int stage = 0; stage < 2; ++stage) {
+    for (int cube = 0; cube < kExactCubes; ++cube) {
+      int const base = stage * stage_pitch + cube * kPitch;
+      for (int slice = 0; slice < kSlices; ++slice) {
+        for (int half_run = 0; half_run < 2; ++half_run) {
+          for (int e = 0; e < 8; ++e) {
+            int const dst = base +
+                cutlass::gemm::collective::detail::aPackRunOffsetHalfs(
+                    kPhysicalM, 0, slice) + half_run * 8 + e;
+            if (0 <= dst && dst < kAddressLimit) writer[stage][dst] = 1;
+          }
+        }
+        for (int lane = 0; lane < 32; ++lane) {
+          for (int vreg = 0; vreg < 4; ++vreg) {
+            int row = -1;
+            int const word = ppu0010_tsm_ld_swzl_m8_word(
+                lane, vreg, slice, kPhysicalM, &row);
+            (void)row;
+            for (int half = 0; half < 2; ++half) {
+              int const src = base + 2 * word + half;
+              if (0 <= src && src < kAddressLimit) reader[stage][src] = 1;
+            }
+          }
+        }
+      }
+    }
+  }
+  int collisions = 0;
+  for (int i = 0; i < kAddressLimit; ++i) {
+    collisions += reader[0][i] && writer[1][i];
+    collisions += reader[1][i] && writer[0][i];
+  }
+  return collisions;
+}
+
 constexpr int marker(int pipe, int tile_k, int logical_k) {
   return 1 + pipe * tile_k + logical_k;
 }
@@ -185,7 +285,11 @@ template <int TileK>
 Totals verify_k() {
   static_assert(TileK == 64 || TileK == 128 || TileK == 256);
   constexpr int cubes = TileK / kCubeW;
-  constexpr int span_raw = kPitch * (cubes * kStages - 1) + kPhysicalM * kCubeW;
+  constexpr int stage_pitch =
+      cutlass::gemm::collective::detail::aPackStagePitchHalfs(
+          kPitch, cubes, kPhysicalM * kCubeW);
+  constexpr int span_raw = stage_pitch * (kStages - 1) +
+      kPitch * (cubes - 1) + kPhysicalM * kCubeW;
   constexpr int span = ((span_raw + 63) / 64) * 64;
   constexpr int copies_per_pipe = cubes * kRows * kSlices * 2;
   constexpr int threads = int(size(Mma{}));
@@ -225,7 +329,7 @@ Totals verify_k() {
         for (int element = 0; element < 8; ++element) {
           int const k = cube * kCubeW + run * 16 + half * 8 + element;
           ++source[std::size_t(pipe * TileK + k)];
-          int const dst = kPitch * (cube + cubes * pipe) +
+          int const dst = kPitch * cube + stage_pitch * pipe +
               cutlass::gemm::collective::detail::aPackRunOffsetHalfs(
                   kPhysicalM, row, writer_run) +
               L186_BAD_DESTINATION_DELTA * (pipe == 1) + physical_half * 8 + element;
@@ -259,7 +363,7 @@ Totals verify_k() {
           ++z.reader_holes;
           continue;
         }
-        int const src = kPitch * (cube + cubes * pipe) + physical;
+        int const src = kPitch * cube + stage_pitch * pipe + physical;
         if (src < 0 || src >= span) {
           ++z.reader_holes;
           continue;
@@ -318,6 +422,17 @@ int main() {
   z.add(verify_k<128>());
   z.add(verify_k<256>());
   z.add(verify_output_ownership());
+  int const cute_coord_bad = verify_exact_cute_source_coordinates();
+  int const historical_cross = cross_stage_hardware_collisions(
+      kPitch * kExactCubes);
+  int const production_cross = cross_stage_hardware_collisions(
+      kExactStagePitch);
+  std::printf(
+      "[l186:physical-footprint] logical=x2 physical=x4 "
+      "historical_stage_pitch=%d historical_cross=%d "
+      "production_stage_pitch=%d production_cross=%d\n",
+      kPitch * kExactCubes, historical_cross,
+      kExactStagePitch, production_cross);
   std::printf(
       "[l186:geometry] tk=64,128,256 cells=%lld authority_bad=%d model_holes=%d model_duplicates=%d "
       "copy_holes=%d copy_duplicates=%d source_holes=%d source_duplicates=%d "
@@ -327,7 +442,8 @@ int main() {
       z.copy_holes, z.copy_duplicates, z.source_holes, z.source_duplicates,
       z.destination_duplicates, z.destination_oob, z.reader_holes, z.reader_duplicates,
       z.unread_writes, z.value_mismatches, z.output_holes, z.output_duplicates);
-  bool const ok = clean(z);
+  bool const ok = clean(z) && cute_coord_bad == 0 &&
+      historical_cross > 0 && production_cross == 0;
   std::printf(
       "[l186:geometry] %s: production writer -> independent hardware-calibrated PPU0010 reader is "
       "exact-once and value-correct\n", ok ? "PASS" : "FAIL");

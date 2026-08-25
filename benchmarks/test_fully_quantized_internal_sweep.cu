@@ -195,17 +195,22 @@ std::vector<uint8_t> make_units(int n, int k) {
 
 struct Fixture {
   std::vector<half_t> a, golden;
+  std::array<std::vector<float>, kSplits.size()> partial_golden;
   std::vector<uint8_t> low_native, high_native, low, high, units;
   bool exact = false, roundtrip = false;
 };
 
-Fixture make_fixture(Shape shape) {
+Fixture make_fixture(Shape shape, bool build_partial_golden = false) {
   constexpr int qtype = FQ_SWEEP_QTYPE;
   constexpr int low_bits = qtype == 10 || qtype == 11 ? 2 : 4;
   constexpr int high_bits = qtype == 11 || qtype == 13 ? 1 : qtype == 14 ? 2 : 0;
   Fixture f;
   f.a.assign(std::size_t(shape.m) * shape.k, half_t(0.f));
   f.golden.resize(std::size_t(shape.m) * shape.n);
+  if (build_partial_golden)
+    for (std::size_t slot = 0; slot < kSplits.size(); ++slot)
+      f.partial_golden[slot].assign(
+          std::size_t(kSplits[slot]) * shape.m * shape.n, 0.f);
   f.low_native.assign(std::size_t(shape.n) * shape.k * low_bits / 8, 0);
   f.high_native.assign(high_bits ? std::size_t(shape.n) * shape.k * high_bits / 8 : 0, 0);
   f.low.resize(f.low_native.size());
@@ -257,12 +262,33 @@ Fixture make_fixture(Shape shape) {
             int(float(f.a[std::size_t(m) * shape.k + k])) *
             decoded_value(qtype, code_value(qtype, n, k));
         sum += contribution;
+        if (build_partial_golden)
+          for (std::size_t slot = 0; slot < kSplits.size(); ++slot) {
+            int const splits = kSplits[slot];
+            int const plane = int(std::int64_t(k) * splits / shape.k);
+            std::size_t const offset =
+                (std::size_t(plane) * shape.m + m) * shape.n + n;
+            f.partial_golden[slot][offset] += float(contribution);
+          }
       }
       max_abs = std::max(max_abs, std::abs(sum));
       f.golden[std::size_t(m) * shape.n + n] = half_t(float(sum));
     }
   f.exact = max_abs < 2048;
   return f;
+}
+
+std::uint64_t hash_float_bits(float const* values, std::size_t count) {
+  std::uint64_t hash = UINT64_C(1469598103934665603);
+  for (std::size_t index = 0; index < count; ++index) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, values + index, sizeof(bits));
+    for (int byte = 0; byte < 4; ++byte) {
+      hash ^= std::uint8_t(bits >> (8 * byte));
+      hash *= UINT64_C(1099511628211);
+    }
+  }
+  return hash;
 }
 
 template <int QType, int ArtifactTileK, int RowsPerWarp>
@@ -343,7 +369,7 @@ bool run_bc_family(Shape shape, uint8_t const* low, uint8_t const* high,
 int run_shape(Shape shape, Cli const& cli,
               std::vector<RegistryRow> const& rows,
               std::size_t typed_rows) {
-  Fixture fixture = make_fixture(shape);
+  Fixture fixture = make_fixture(shape, cli.force_custom_splitk_s1);
   if (!fixture.exact || !fixture.roundtrip) {
     std::fprintf(stderr,
         "FQ_FIXTURE_FAIL q=%d A=%d shape=%dx%dx%d exact=%d roundtrip=%d\n",
@@ -362,9 +388,14 @@ int run_shape(Shape shape, Cli const& cli,
   dA.copy_from_host(fixture.a.data()); dLow.copy_from_host(fixture.low.data());
   if (!fixture.high.empty()) dHigh.copy_from_host(fixture.high.data());
   dUnits.copy_from_host(fixture.units.data());
+  std::array<float const*, kSplits.size()> partial_golden_ptrs{};
+  if (cli.force_custom_splitk_s1)
+    for (std::size_t slot = 0; slot < kSplits.size(); ++slot)
+      partial_golden_ptrs[slot] = fixture.partial_golden[slot].data();
   DeviceInputs inputs{
       dA.get(), dLow.get(), fixture.high.empty() ? nullptr : dHigh.get(),
       dUnits.get(), dOut.get(), dWorkspace.get(), partial_bytes,
+      partial_golden_ptrs,
       fixture.golden.data(), shape.m, shape.n, shape.k};
   Options options{cli.iterations, cli.repeats, cli.only_split, true,
                   cli.tm8_max_m, cli.force_custom_splitk_s1};
@@ -383,6 +414,21 @@ int run_shape(Shape shape, Cli const& cli,
     std::printf(
         "FQ_CUSTOM_SPLIT_COUNT_PROBE route=GemmUniversalMixedInputSplitKParallel "
         "runtime_splits=1,2,4 shipping_s1_bypassed=1 output=FP32_PARTIAL_THEN_REDUCER\n");
+    std::printf(
+        "FQ_CUSTOM_SPLIT_COUNT_ORACLE exact=1 "
+        "S1=0x%016llx S2=0x%016llx S4=0x%016llx S8=0x%016llx\n",
+        static_cast<unsigned long long>(hash_float_bits(
+            fixture.partial_golden[0].data(),
+            fixture.partial_golden[0].size())),
+        static_cast<unsigned long long>(hash_float_bits(
+            fixture.partial_golden[1].data(),
+            fixture.partial_golden[1].size())),
+        static_cast<unsigned long long>(hash_float_bits(
+            fixture.partial_golden[2].data(),
+            fixture.partial_golden[2].size())),
+        static_cast<unsigned long long>(hash_float_bits(
+            fixture.partial_golden[3].data(),
+            fixture.partial_golden[3].size())));
   }
   if (cli.bc_mode != Cli::BcMode::Only) for (auto const& entry : rows) {
     RowResult result;
@@ -421,6 +467,11 @@ int run_shape(Shape shape, Cli const& cli,
             "kernel=GemmUniversalMixedInputSplitKParallel state=%s "
             "raw_bad=%llu failure_step=%s failure_repeat=%d "
             "first_bad=%zu first_want=0x%04x first_got=0x%04x "
+            "partial_probe=%s partial_value_raw_bad=%llu "
+            "partial_bad_plane_mask=0x%x partial_first_bad_plane=%d "
+            "partial_first_bad_index=%zu partial_first_bad_want=0x%08x "
+            "partial_first_bad_got=0x%08x reducer_replay_raw_bad=%llu "
+            "reducer_replay_first_bad=%zu "
             "partial_bytes=%zu\n",
             entry.symbol,
             entry.a_provider ? "packed-row" : "standard-aiu",
@@ -428,6 +479,15 @@ int run_shape(Shape shape, Cli const& cli,
             static_cast<unsigned long long>(cell.raw_bad),
             cell.failure_step, cell.failure_repeat, cell.first_bad_index,
             unsigned(cell.first_bad_want), unsigned(cell.first_bad_got),
+            !cell.partial_probe_attempted ? "NOT_TRIGGERED" :
+                cell.partial_probe_complete ? "COMPLETE" : "API_FAIL",
+            static_cast<unsigned long long>(cell.partial_value_raw_bad),
+            unsigned(cell.partial_bad_plane_mask),
+            cell.partial_first_bad_plane, cell.partial_first_bad_index,
+            unsigned(cell.partial_first_bad_want),
+            unsigned(cell.partial_first_bad_got),
+            static_cast<unsigned long long>(cell.reducer_replay_raw_bad),
+            cell.reducer_replay_first_bad,
             cell.partial_bytes);
       }
     }

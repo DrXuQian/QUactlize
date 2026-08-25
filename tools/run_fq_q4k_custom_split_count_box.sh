@@ -54,6 +54,9 @@ partition = (root / (
 kernel = (root / (
     "quactlize/include/actlize_extensions/cutlass/gemm/kernel/"
     "ppu_aiu_gemm_mixed_input_splitk_parallel.hpp")).read_text()
+partial_layout = (root / (
+    "quactlize/include/actlize_extensions/cutlass/gemm/kernel/detail/"
+    "ppu_splitk_partial_layout.hpp")).read_text()
 checks = {
     "one host branch": bench.count(
         "if (splits == 1 && !options.force_custom_splitk_s1)") == 1,
@@ -66,6 +69,11 @@ checks = {
     "runtime split descriptor": "args.split_k_slices" in kernel,
     "S1 admitted by descriptor":
         "splits == 1 || splits == 2 || splits == 4 || splits == 8" in partition,
+    "singleton plane keeps physical stride":
+        "make_compact_fp32_partial_stride<PartialStride>(in.m, in.n)" in bench and
+        "cute::get<2>(stride) = rows * columns;" in partial_layout,
+    "failure-only partial oracle":
+        bench.count("inspect_failed_partials(") == 2,
 }
 bad = [name for name, ok in checks.items() if not ok]
 if bad:
@@ -275,13 +283,33 @@ def corrupt(row):
             int(row["raw_bad"]) > 0 and
             "RAW_FP16_MISMATCH" in row["failure_step"])
 
+def s1_inadmissible(row, split):
+    return (split == 1 and row["state"] == "REAL_CAN_IMPLEMENT" and
+            int(row["raw_bad"]) == 0 and row["failure_step"] == "NONE")
+
+def localization(row):
+    if not corrupt(row):
+        return "NOT_APPLICABLE"
+    if row.get("partial_probe") != "COMPLETE":
+        return "FAILURE_NOT_SNAPSHOTTED"
+    if int(row.get("partial_value_raw_bad", "-1")) > 0:
+        return "PRODUCER_PARTIAL_VALUE_BAD"
+    if int(row.get("reducer_replay_raw_bad", "-1")) == 0:
+        return "SAME_STREAM_PUBLICATION_GAP"
+    return "REDUCER_REPLAY_STILL_BAD"
+
 try:
     direct = parse(sys.argv[1])
     legacy = parse(sys.argv[2])
     for arm, rows in (("direct", direct), ("legacy-shared", legacy)):
-        if not all(clean(row) or corrupt(row) for row in rows.values()):
-            raise ValueError(
-                f"{arm} arm contains an infrastructure/non-numeric state")
+        bad_states = [
+            f"{provider}:S{split}:{row['state']}"
+            for (provider, split), row in rows.items()
+            if not (clean(row) or corrupt(row) or
+                    s1_inadmissible(row, split))]
+        if bad_states:
+            raise ValueError(f"{arm} arm contains infrastructure/non-numeric "
+                             f"states: {','.join(sorted(bad_states))}")
         for provider in expected_symbols:
             for split in (1, 2, 4):
                 row = rows[(provider, split)]
@@ -292,7 +320,15 @@ try:
                     f"failure_repeat={row['failure_repeat']} "
                     f"first_bad={row['first_bad']} "
                     f"first_want={row['first_want']} "
-                    f"first_got={row['first_got']}")
+                    f"first_got={row['first_got']} "
+                    f"partial_probe={row.get('partial_probe', 'MISSING')} "
+                    f"partial_value_raw_bad="
+                    f"{row.get('partial_value_raw_bad', 'MISSING')} "
+                    f"partial_bad_plane_mask="
+                    f"{row.get('partial_bad_plane_mask', 'MISSING')} "
+                    f"reducer_replay_raw_bad="
+                    f"{row.get('reducer_replay_raw_bad', 'MISSING')} "
+                    f"localization={localization(row)}")
 
     direct_s_gt1_bad = [
         f"{provider}:S{split}"
@@ -300,6 +336,8 @@ try:
         if corrupt(direct[(provider, split)])]
     direct_s1_bad = [provider for provider in expected_symbols
                      if corrupt(direct[(provider, 1)])]
+    direct_s1_inadmissible = [provider for provider in expected_symbols
+        if s1_inadmissible(direct[(provider, 1)], 1)]
     legacy_s_gt1_clean = [
         f"{provider}:S{split}"
         for provider in expected_symbols for split in (2, 4)
@@ -312,10 +350,21 @@ try:
     diagnostic_rc = 0
     if direct_s_gt1_bad:
         verdict = "PRODUCTION_DIRECT_S_GT1_REGRESSION"
+        loci = sorted({localization(direct[(provider, split)])
+                       for provider in expected_symbols for split in (2, 4)
+                       if corrupt(direct[(provider, split)])})
         interpretation = (
             "the production direct-store S2/S4 arm is not raw-bit exact; "
-            "the shipping repair must be re-opened before this causal test")
-        detail = ",".join(direct_s_gt1_bad)
+            "the shipping repair must be re-opened before this causal test; "
+            "failure localization=" + ",".join(loci))
+        detail = ",".join(direct_s_gt1_bad) + ";locus=" + ",".join(loci)
+        diagnostic_rc = 1
+    elif direct_s1_inadmissible:
+        verdict = "CUSTOM_S1_CONTROL_INADMISSIBLE"
+        interpretation = (
+            "the custom-kernel S1 route was rejected before launch; runtime "
+            "split count remains unadjudicated")
+        detail = ",".join(direct_s1_inadmissible)
         diagnostic_rc = 1
     elif direct_s1_bad:
         verdict = "CUSTOM_S1_CONTROL_INVALID"
@@ -333,6 +382,15 @@ try:
         detail = ",".join(legacy_s_gt1_clean)
         diagnostic_rc = 1
     else:
+        legacy_s1_inadmissible = [provider for provider in expected_symbols
+            if s1_inadmissible(legacy[(provider, 1)], 1)]
+        if legacy_s1_inadmissible:
+            print("FQ_CUSTOM_SPLIT_COUNT_VERDICT "
+                  "verdict=CUSTOM_S1_CONTROL_INADMISSIBLE "
+                  f"detail={','.join(legacy_s1_inadmissible)}")
+            print("FQ_CUSTOM_SPLIT_COUNT_INTERPRETATION the legacy custom-S1 "
+                  "route was rejected before launch")
+            raise SystemExit(1)
         s1_bad = [provider for provider in expected_symbols
                   if corrupt(legacy[(provider, 1)])]
         if not s1_bad:

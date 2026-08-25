@@ -382,8 +382,8 @@ class PreparedOnePlaneLauncher {
         SplitStrideA{}, cute::make_shape(m, k, 1));
     SplitStrideB split_sB = cutlass::make_cute_packed_stride(
         SplitStrideB{}, cute::make_shape(n / LowFold, k * LowFold, 1));
-    PartialStride sP = cutlass::make_cute_packed_stride(
-        PartialStride{}, cute::make_shape(m, n, split_k_slices));
+    PartialStride sP = cutlass::gemm::kernel::detail::
+        make_compact_fp32_partial_stride<PartialStride>(m, n);
     float* partials = reinterpret_cast<float*>(workspace);
     typename SplitGemm::Arguments main_args{
         cutlass::gemm::GemmUniversalMode::kGemm,
@@ -618,8 +618,8 @@ bool generic_launcher(
       StrideB{}, cute::make_shape(n / LowFold, k * LowFold, 1));
   StrideScale sS = cutlass::make_cute_packed_stride(
       StrideScale{}, cute::make_shape(n, scale_k, 1));
-  PartialStride sP = cutlass::make_cute_packed_stride(
-      PartialStride{}, cute::make_shape(m, n, split_k_slices));
+  PartialStride sP = cutlass::gemm::kernel::detail::
+      make_compact_fp32_partial_stride<PartialStride>(m, n);
   float* partials = reinterpret_cast<float*>(workspace);
 
   typename Gemm::Arguments main_args{

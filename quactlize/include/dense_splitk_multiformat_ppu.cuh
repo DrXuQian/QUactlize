@@ -279,8 +279,8 @@ class PreparedMultiformatLauncher {
     }
 
     using PartialStride = typename SplitKernel::StrideD;
-    PartialStride sP = cutlass::make_cute_packed_stride(
-        PartialStride{}, cute::make_shape(m, n, split_k_slices));
+    PartialStride sP = cutlass::gemm::kernel::detail::
+        make_compact_fp32_partial_stride<PartialStride>(m, n);
     float* partials = reinterpret_cast<float*>(workspace);
     typename SplitGemm::Arguments main_args{
         cutlass::gemm::GemmUniversalMode::kGemm,

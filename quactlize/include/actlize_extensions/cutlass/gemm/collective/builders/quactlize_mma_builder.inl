@@ -154,14 +154,18 @@ template <
   // was inert.
   // PPU_A_PACK=R: pack the cube BASES together. Each of the first R rows owns 32 of a cube's 512 words, in four
   // 8-word runs (fold_derivation/l84, l86); the bytes between those runs are read only into accumulator rows the
-  // epilogue masks. l85 derives the collision-free, 128-B-aligned pitch for R. Geometry, and therefore the swizzle
-  // and the write/read pairing, are untouched -- only the distance between bases changes.
+  // epilogue masks. l85 derives the writer-collision-free, 128-B-aligned cube pitch for R. The projected m8 opcode
+  // still physically reads x4, so pipeline stages use a separate full-footprint pitch. Geometry, swizzle and the
+  // write/read pairing are untouched.
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
   // Both the read atom and collective writer call the same constexpr function. Separate literals once diverged
   // (16 here, 64 there), making the kernel write at one spacing and read at another until the AIU load faulted.
   static constexpr int kCubePitchA = detail::aPackPitchForRows(PPU_A_PACK);
+  static constexpr int kStagePitchA = detail::aPackStagePitchHalfs(
+      kCubePitchA, InstNum, Block_MN{} * AiuContElemSize{});
 #else
   static constexpr int kCubePitchA = 0;    // 0 = natural CUBE_H * CUBE_W
+  static constexpr int kStagePitchA = 0;   // 0 = CubePitch * InstNum
 #endif
   using SmemCopyOp = PPU0010_TSM_LD_SWZL<Element, Block_MN{}, AiuContElemSize{}, Swap, false, InstNum, kCubePitchA>;
   using SmemCopyAtom = Copy_Atom<SmemCopyOp, Element>;
@@ -169,14 +173,15 @@ template <
   // projected atom contains x4 in a private temporary and publishes v0/v1; selecting the ordinary atom for m8
   // would write two registers past the fragment even though the physical cube geometry is otherwise correct.
   using SmemCopyOpM8 = PPU0010_TSM_LD_SWZL_M8<
-      Element, Block_MN{}, AiuContElemSize{}, Swap, false, InstNum, kCubePitchA>;
+      Element, Block_MN{}, AiuContElemSize{}, Swap, false, InstNum,
+      kCubePitchA, kStagePitchA>;
   using SmemCopyAtomM8 = Copy_Atom<SmemCopyOpM8, Element>;
   using SmemLayoutAtom = Layout<Shape<_8, AiuContElemSize>, Stride<AiuContElemSize, _1>>;
 };
 
 // Compile-time packed-row A variant used only by the independent dense M==1 schedule.  The physical write/read
-// cube remains Block_MN=16 and the projected m8 read remains x4->x2; only the distance between physical cube bases
-// changes.  Keeping this as a separate type leaves every existing MixGemm_AIU_Operand instantiation untouched.
+// cube remains Block_MN=16 and the projected m8 read remains x4->x2. Cube bases stay compressed, while stage bases
+// retain complete physical x4 footprints. Keeping this separate leaves every ordinary operand instantiation untouched.
 template <
   int Rows,
   typename Element,
@@ -193,12 +198,15 @@ template <
   using AiuContElemSize = typename Ordinary::AiuContElemSize;
   static constexpr int InstNum = Ordinary::InstNum;
   static constexpr int kCubePitchA = detail::aPackPitchForRows(Rows);
+  static constexpr int kStagePitchA = detail::aPackStagePitchHalfs(
+      kCubePitchA, InstNum, Block_MN{} * AiuContElemSize{});
   using GmemTiledCopy = typename Ordinary::GmemTiledCopy;
   using SmemCopyOp = PPU0010_TSM_LD_SWZL<
       Element, Block_MN{}, AiuContElemSize{}, Swap, false, InstNum, kCubePitchA>;
   using SmemCopyAtom = Copy_Atom<SmemCopyOp, Element>;
   using SmemCopyOpM8 = PPU0010_TSM_LD_SWZL_M8<
-      Element, Block_MN{}, AiuContElemSize{}, Swap, false, InstNum, kCubePitchA>;
+      Element, Block_MN{}, AiuContElemSize{}, Swap, false, InstNum,
+      kCubePitchA, kStagePitchA>;
   using SmemCopyAtomM8 = Copy_Atom<SmemCopyOpM8, Element>;
   using SmemLayoutAtom = typename Ordinary::SmemLayoutAtom;
 };

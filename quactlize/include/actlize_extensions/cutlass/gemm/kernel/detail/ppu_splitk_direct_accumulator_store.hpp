@@ -17,6 +17,7 @@
 
 #include "cutlass/cutlass.h"
 #include "cute/tensor.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/detail/ppu_splitk_partial_layout.hpp"
 
 namespace cutlass::gemm::kernel::detail {
 

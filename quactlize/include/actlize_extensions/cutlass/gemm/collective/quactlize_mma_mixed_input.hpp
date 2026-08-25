@@ -328,10 +328,10 @@ public:
   static constexpr int LogicalTileM = int(size<0>(TileShape{}));
   static constexpr int PhysicalATileM = LogicalTileM < 16 ? 16 : LogicalTileM;
   // Packed-A geometry, all read off fold_derivation/l84-l86 rather than extrapolated from row 0. Every real row
-  // occupies four 16-half runs. l85 searches all R-row collisions across eight cubes/stages and selects the first
-  // 128-B-aligned clean pitch; l86 supplies the odd-cache-line half-run swap needed by the writer. The last cube is
-  // still READ to its full natural span, so that remains the allocation tail.  For logical m8, the authority is the
-  // physical 16-row atom, never TileShape.M=8.
+  // occupies four 16-half runs. l85 selects the first 128-B-aligned cube pitch with no live-writer collisions; l86
+  // supplies the odd-cache-line half-run swap. The m8 CuTe atom publishes x2 but physically reads x4, so stages are
+  // separated by the complete physical footprint instead of the compressed cube span. For logical m8, the authority
+  // is the physical 16-row atom, never TileShape.M=8.
   static constexpr int kACubeH      = PhysicalATileM;                         // physical PPU0010 A cube height
   static constexpr int kACubeW      = 64;                                    // AiuContElemSize for fp16
   static constexpr int kASlices     = kACubeW / 16;                          // 8 words per slice
@@ -353,13 +353,18 @@ public:
   // The old tight row-0 pitch made smem_b start at a merely 16-B-aligned address and faulted on the box.
   static constexpr int kAPackPitch  = detail::aPackPitchForRows(kAPackGeometryRows); // halfs; model-derived R
   static constexpr int kACubes      = shape<2>(TileShape{}) / kACubeW;       // cubes per stage = InstNum
+  static constexpr int kAPackStagePitch = detail::aPackStagePitchHalfs(
+      kAPackPitch, kACubes, kACubeH * kACubeW);
   // Rounded up to 64 halfs so smem_b starts 128-B aligned whatever the cube geometry is.
-  static constexpr int kAPackSpanRaw = kAPackPitch * (kACubes * DispatchPolicy::Stages - 1) + kACubeH * kACubeW;
+  static constexpr int kAPackSpanRaw =
+      kAPackStagePitch * (DispatchPolicy::Stages - 1) +
+      kAPackPitch * (kACubes - 1) + kACubeH * kACubeW;
   static constexpr int kAPackSpan    = ((kAPackSpanRaw + 63) / 64) * 64;
   static constexpr int kAWrThreads   = kACubes * kAPackGeometryRows * kASlices * 2;
   // The run-start arithmetic is a single production authority in detail/ppu_a_pack.hpp. Odd cache lines swap the
   // two 4-word half-runs but do not change their union's start; copy_A_packed_rows applies that swap to h separately.
-  // l85's collision check. Defined here, ASSERTED in mma(): a static_assert in the class body calls a member of an
+  // l85's live-writer collision check. The physical cross-stage read/write check lives in L186. Defined here,
+  // ASSERTED in mma(): a static_assert in the class body calls a member of an
   // incomplete class, which EDG accepts and hgcc rejects with "no type named 'SharedStorage'".
   CUTLASS_HOST_DEVICE static constexpr bool aPackDisjoint() {
     int const n = kACubes * DispatchPolicy::Stages;
@@ -369,8 +374,12 @@ public:
           for (int row_j = 0; row_j < kAPackGeometryRows; ++row_j)
             for (int a = 0; a < kASlices; ++a)
               for (int b = 0; b < kASlices; ++b) {
-                int const x = kAPackPitch * i + detail::aPackRunOffsetHalfs(kACubeH, row_i, a);
-                int const y = kAPackPitch * j + detail::aPackRunOffsetHalfs(kACubeH, row_j, b);
+                int const x = kAPackPitch * (i % kACubes) +
+                    kAPackStagePitch * (i / kACubes) +
+                    detail::aPackRunOffsetHalfs(kACubeH, row_i, a);
+                int const y = kAPackPitch * (j % kACubes) +
+                    kAPackStagePitch * (j / kACubes) +
+                    detail::aPackRunOffsetHalfs(kACubeH, row_j, b);
                 if (x < y + 16 && y < x + 16) return false;
               }
     return true;
@@ -1970,7 +1979,7 @@ private:
       auto const& gsrc = *reinterpret_cast<cute::uint128_t const*>(
           &gA(row, c * kACubeW + run * 16 + h * 8, k_tile));
       auto&       sdst = *reinterpret_cast<cute::uint128_t*>(
-          smem_a + kAPackPitch * (c + kACubes * pipe) +
+          smem_a + kAPackPitch * c + kAPackStagePitch * pipe +
           detail::aPackRunOffsetHalfs(kACubeH, row, run) + physical_h * 8);
       PPU_CP_ASYNC_CACHEGLOBAL_ZFILL<cute::uint128_t>::copy(gsrc, sdst, row < valid_rows);
     }

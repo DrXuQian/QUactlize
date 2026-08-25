@@ -200,14 +200,11 @@ class GemmUniversalMixedInputSplitKParallel {
     if (m <= 0 || n <= 0 || m > (std::numeric_limits<int64_t>::max)() / n) {
       return false;
     }
-    int64_t const mn = m * n;
     auto const& dC = args.partial_epilogue.dC;
     auto const& dD = args.partial_epilogue.dD;
     bool const compact =
-        int64_t(cute::get<0>(dC)) == n && int64_t(cute::get<1>(dC)) == 1 &&
-        int64_t(cute::get<2>(dC)) == mn &&
-        int64_t(cute::get<0>(dD)) == n && int64_t(cute::get<1>(dD)) == 1 &&
-        int64_t(cute::get<2>(dD)) == mn;
+        detail::is_compact_fp32_partial_stride(dC, m, n) &&
+        detail::is_compact_fp32_partial_stride(dD, m, n);
     constexpr int kElementsPerStore = 128 / cutlass::sizeof_bits<ElementD>::value;
     static_assert(kElementsPerStore == 4,
                   "v1 partial epilogue assumes one 128-bit FP32 store atom");

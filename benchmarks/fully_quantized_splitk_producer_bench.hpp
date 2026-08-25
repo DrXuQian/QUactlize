@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <numeric>
 #include <type_traits>
 #include <vector>
@@ -85,6 +86,10 @@ struct DeviceInputs {
   half_t* output = nullptr;
   char* workspace = nullptr;
   std::size_t workspace_bytes = 0;
+  // Host-only exact FP32 partial planes used after a diagnostic failure.  The
+  // producer never receives these addresses and the normal sweep leaves them
+  // null, so this cannot perturb the pre-failure device cadence.
+  std::array<float const*, kSplits.size()> partial_golden{};
   half_t const* golden = nullptr;  // host pointer, m*n values
   int m = 0, n = 0, k = 0;
 };
@@ -104,6 +109,18 @@ struct CellResult {
   std::size_t shipping_smem = 0;
   std::size_t split_smem = 0;
   std::size_t partial_bytes = 0;
+  bool partial_probe_attempted = false;
+  bool partial_probe_complete = false;
+  std::uint64_t partial_value_raw_bad = 0;
+  std::uint32_t partial_bad_plane_mask = 0;
+  int partial_first_bad_plane = -1;
+  std::size_t partial_first_bad_index = std::size_t(-1);
+  std::uint32_t partial_first_bad_want = 0;
+  std::uint32_t partial_first_bad_got = 0;
+  std::uint64_t reducer_replay_raw_bad = 0;
+  std::size_t reducer_replay_first_bad = std::size_t(-1);
+  std::uint16_t reducer_replay_first_want = 0;
+  std::uint16_t reducer_replay_first_got = 0;
   int a_provider_capacity_rows = 0;
   double median_us = 0;
   double min_us = 0;
@@ -290,6 +307,44 @@ inline bool inspect(DeviceInputs const& in, CellResult& out) {
   return true;
 }
 
+inline bool inspect_failed_partials(
+    DeviceInputs const& in, int splits, float const* partials,
+    std::size_t partial_bytes, CellResult& out) {
+  auto const split_it = std::find(kSplits.begin(), kSplits.end(), splits);
+  if (split_it == kSplits.end()) return false;
+  std::size_t const slot = std::size_t(split_it - kSplits.begin());
+  float const* expected = in.partial_golden[slot];
+  std::size_t const elements = std::size_t(splits) * in.m * in.n;
+  if (expected == nullptr || partials == nullptr ||
+      partial_bytes != elements * sizeof(float)) return false;
+
+  std::vector<float> host(elements);
+  if (hggcMemcpy(host.data(), partials, partial_bytes,
+                 hggcMemcpyDeviceToHost) != hggcSuccess) return false;
+  out.partial_value_raw_bad = 0;
+  out.partial_bad_plane_mask = 0;
+  for (int plane = 0; plane < splits; ++plane) {
+    for (std::size_t index = 0; index < std::size_t(in.m) * in.n; ++index) {
+      std::size_t const offset = std::size_t(plane) * in.m * in.n + index;
+      std::uint32_t want = 0, got = 0;
+      std::memcpy(&want, expected + offset, sizeof(want));
+      std::memcpy(&got, host.data() + offset, sizeof(got));
+      // Partial planes are an internal semantic oracle.  Signed zero is
+      // equivalent here; retain raw bits only to explain a real value error.
+      if (expected[offset] == host[offset]) continue;
+      if (out.partial_value_raw_bad == 0) {
+        out.partial_first_bad_plane = plane;
+        out.partial_first_bad_index = index;
+        out.partial_first_bad_want = want;
+        out.partial_first_bad_got = got;
+      }
+      out.partial_bad_plane_mask |= std::uint32_t(1) << plane;
+      ++out.partial_value_raw_bad;
+    }
+  }
+  return true;
+}
+
 template <class Launch>
 bool measure(Launch&& launch, int iterations, CellResult& result) {
   std::vector<double> samples;
@@ -457,8 +512,8 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
         result.partial_bytes = plan.partial_bytes;
         float* partials = reinterpret_cast<float*>(in.workspace);
         using PartialStride = typename SplitKernel::StrideD;
-        PartialStride sP = cutlass::make_cute_packed_stride(
-            PartialStride{}, cute::make_shape(in.m, in.n, splits));
+        PartialStride sP = cutlass::gemm::kernel::detail::
+            make_compact_fp32_partial_stride<PartialStride>(in.m, in.n);
         typename SplitGemm::Arguments producer_args{
             cutlass::gemm::GemmUniversalMode::kGemm,
             {in.m, in.n, in.k, 1}, mainloop,
@@ -497,6 +552,27 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
           }
           if (result.raw_bad != 0 ||
               (repeat && result.fingerprint != fingerprint)) {
+            if (result.raw_bad != 0 && options.force_custom_splitk_s1) {
+              // Observe only after the original producer+reducer failure and
+              // device completion.  This preserves the cadence that exposed
+              // the bug, then distinguishes bad producer bytes from a
+              // same-stream publication/reducer failure.
+              result.partial_probe_attempted = true;
+              bool const partial_ok = inspect_failed_partials(
+                  in, splits, partials, plan.partial_bytes, result);
+              CellResult replay;
+              bool const replay_ok =
+                  reducer.run(nullptr) == cutlass::Status::kSuccess &&
+                  hggcDeviceSynchronize() == hggcSuccess &&
+                  inspect(in, replay);
+              result.partial_probe_complete = partial_ok && replay_ok;
+              if (replay_ok) {
+                result.reducer_replay_raw_bad = replay.raw_bad;
+                result.reducer_replay_first_bad = replay.first_bad_index;
+                result.reducer_replay_first_want = replay.first_bad_want;
+                result.reducer_replay_first_got = replay.first_bad_got;
+              }
+            }
             result.failure_step = result.raw_bad ? "RAW_FP16_MISMATCH" :
                                                    "FINGERPRINT_MISMATCH";
             correct = false; break;

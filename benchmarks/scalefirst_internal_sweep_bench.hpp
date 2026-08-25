@@ -540,8 +540,8 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
     cell.partial_bytes = plan.partial_bytes;
     float* partials = reinterpret_cast<float*>(in.workspace);
     using PartialStride = typename SplitKernel::StrideD;
-    PartialStride sP = cutlass::make_cute_packed_stride(
-        PartialStride{}, cute::make_shape(in.m, in.n, splits));
+    PartialStride sP = cutlass::gemm::kernel::detail::
+        make_compact_fp32_partial_stride<PartialStride>(in.m, in.n);
     typename SplitGemm::Arguments producer_args{
         cutlass::gemm::GemmUniversalMode::kGemm,
         {in.m, in.n, in.k, 1}, mainloop, {partials, sP, partials, sP}, splits};

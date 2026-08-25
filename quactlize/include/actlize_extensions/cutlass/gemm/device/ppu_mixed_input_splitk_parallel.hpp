@@ -30,6 +30,7 @@
 #include "cutlass/numeric_types.h"
 #include "cutlass/ppu_host_adapter.hpp"
 #include "actlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_partition.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/detail/ppu_splitk_partial_layout.hpp"
 
 namespace cutlass::gemm::device::splitk_parallel {
 
@@ -39,7 +40,8 @@ namespace cutlass::gemm::device::splitk_parallel {
 CUTLASS_HOST_DEVICE
 constexpr int64_t fp32_partial_offset(
     int split_k, int row, int column, int64_t rows, int64_t columns) {
-  return (int64_t(split_k) * rows + int64_t(row)) * columns + int64_t(column);
+  return cutlass::gemm::kernel::detail::fp32_partial_linear_offset(
+      split_k, row, column, rows, columns);
 }
 
 inline bool fp32_workspace_size(

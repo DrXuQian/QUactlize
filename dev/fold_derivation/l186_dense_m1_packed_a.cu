@@ -87,9 +87,12 @@ static_assert(Mainloop::kPackedA && Mainloop::kAPackRows == 1 &&
               "typed writer, allocation and read atom must share the Rows=1 pitch authority");
 static_assert(!Ordinary::CollectiveMainloop::kPackedA,
               "the established M>1/default collective must retain the ordinary A provider");
-static_assert(Mainloop::kAPackSpan <
-                  cute::cosize_v<typename Mainloop::SmemLayoutAPhysical>,
-              "M==1 packed A must reduce A-smem while retaining the final physical cube tail");
+static_assert(Mainloop::kAPackSpan <=
+                  cute::cosize_v<typename Mainloop::SmemLayoutAPhysical> &&
+              (Mainloop::kACubes == 1 ||
+               Mainloop::kAPackSpan <
+                   cute::cosize_v<typename Mainloop::SmemLayoutAPhysical>),
+              "packed A must cover the full x4 stage footprint and reduce smem when a stage has multiple cubes");
 static_assert(offsetof(typename Mainloop::SharedStorage, smem_b) % 32 == 0,
               "packed A must leave the following PPU0010 B shared-memory provider 32-byte aligned");
 
@@ -98,7 +101,8 @@ static_assert(offsetof(typename Mainloop::SharedStorage, smem_b) % 32 == 0,
 // minimum-delivery tactic; fully-quantized uses its TK256 tactic and the versioned arrangement admits each unfolded
 // ArtifactTileK divisor below. Q4/A32 and Q2/A32,A64 are intentionally absent because those resident artifacts are
 // folded; two-plane formats are intentionally absent because the shipping guard rejects High != void.
-template <int QType, class ElementB, int GroupSize, int TacticTileK, int ArtifactTileK>
+template <int QType, class ElementB, int GroupSize, int TacticTileK,
+          int ArtifactTileK, int PipelineStages = 3>
 struct ProductionPackedACell {
   static constexpr auto Format = ppu_formats::for_qtype(QType);
   using CellTile = Shape<_8, _128, Int<TacticTileK>>;
@@ -106,10 +110,12 @@ struct ProductionPackedACell {
   using CellWarp = Shape<_8, _32, Int<TacticTileK>>;
   using CellOrdinary = fpa_intb_ppu::DenseKernelTypes<
       QM::FinegrainedScaleZero, ppu_group_schedule::FinegrainedSchedule<GroupSize>,
-      CellTile, CellScale, CellWarp, 3, true, ElementB, void, ArtifactTileK>;
+      CellTile, CellScale, CellWarp, PipelineStages, true, ElementB, void,
+      ArtifactTileK>;
   using CellPacked = fpa_intb_ppu::DensePackedAKernelTypes<
       1, QM::FinegrainedScaleZero, ppu_group_schedule::FinegrainedSchedule<GroupSize>,
-      CellTile, CellScale, CellWarp, 3, true, ElementB, ArtifactTileK>;
+      CellTile, CellScale, CellWarp, PipelineStages, true, ElementB,
+      ArtifactTileK>;
   using CellMainloop = typename CellPacked::CollectiveMainloop;
   using CellPolicy = typename CellPacked::MainloopPolicy;
   using CellMma = typename CellMainloop::TiledMma;
@@ -144,6 +150,25 @@ struct ProductionPackedACell {
   static constexpr bool value = true;
 };
 
+// Exact type that exposed the rare direct-partial mismatch on the box.  L186
+// originally covered only Stages=3; that left the actual s2 symbol outside the
+// purported packed-A proof denominator.
+using ExactSplitKFailureCell = ProductionPackedACell<
+    12, cutlass::int4b_t, 32, 256, 64, 2>;
+using ExactSplitKFailureSmemCopy = Copy_Atom<
+    PPU0010_TSM_LD_SWZL_M8<cutlass::half_t, 16, 64, true, false,
+                            4, 64, 1216>,
+    cutlass::half_t>;
+static_assert(ExactSplitKFailureCell::CellMainloop::DispatchPolicy::Stages == 2 &&
+              ExactSplitKFailureCell::CellMainloop::kACubes == 4 &&
+              ExactSplitKFailureCell::CellMainloop::kAPackPitch == 64 &&
+              ExactSplitKFailureCell::CellMainloop::kAPackStagePitch == 1216 &&
+              std::is_same_v<
+                  typename ExactSplitKFailureCell::CellMainloop::SmemCopyAtomA,
+                  ExactSplitKFailureSmemCopy>,
+              "L186 must instantiate the exact TM8/TK256/Stages2 packed-A mainloop");
+
+
 constexpr auto kQ2 = ppu_formats::for_qtype(10);
 constexpr auto kQ4 = ppu_formats::for_qtype(12);
 static_assert(kQ2.scale_first_tile_k == 128 && kQ2.fully_quantized_tile_k == 256 &&
@@ -176,10 +201,14 @@ static_assert(SelectedPackedMetadataCell::CellMainloop::is_packed_scale,
 
 int main() {
   std::printf("[l186:type] ordinary_type_identity=1 packed_distinct=1 "
-              "atom=m8n16k16 physical/logical=%d/%d rows=%d pitch=%d span=%d natural=%d matrix=7(q4=4,q2=3)\n",
+              "atom=m8n16k16 physical/logical=%d/%d rows=%d pitch=%d span=%d natural=%d "
+              "exact_s2_tk256_stage_pitch=%d exact_span=%d exact_natural=%d matrix=7(q4=4,q2=3)\n",
               Mainloop::PhysicalATileM, Mainloop::LogicalTileM, Mainloop::kAPackRows,
               Mainloop::kAPackPitch, Mainloop::kAPackSpan,
-              int(cute::cosize_v<typename Mainloop::SmemLayoutAPhysical>));
+              int(cute::cosize_v<typename Mainloop::SmemLayoutAPhysical>),
+              ExactSplitKFailureCell::CellMainloop::kAPackStagePitch,
+              ExactSplitKFailureCell::CellMainloop::kAPackSpan,
+              int(cute::cosize_v<typename ExactSplitKFailureCell::CellMainloop::SmemLayoutAPhysical>));
   std::puts("[l186:type] PASS: exact shipping M1 type is packed; default/M>1 compiled type is identical to the direct historical construction");
   return 0;
 }

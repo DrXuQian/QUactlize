@@ -5,10 +5,48 @@ Split-K workspace contains intermittent, stripe-aligned corruptions.  The
 authoritative repository record is
 `dev/fold_derivation/Q4K_FQ_SPLITK_PARTIAL_EPILOGUE_ROOT_CAUSE.md`.
 
-Current status: production repair closed; internal root incomplete.  The
-shared prefix factorial localizes a trigger in the custom S>1 kernel but does
-not explain ordinary S1 correctness, because shipping S1 is a different
-compiled kernel and output epilogue.
+Current status: the rare direct-store failure has a structural root and a
+locally exact repair; device closure is pending.  The shared prefix factorial
+localized one earlier trigger, but a later 8192-repeat control found the
+direct-store packed-row S4 cell wrong once at repeat 2142 (`raw_bad=32`).  That
+second failure is caused by packed A's logical/physical CuTe footprint
+mismatch, not by Split-K plane synchronization.
+
+## Root: logical copy footprint was smaller than the hardware footprint
+
+`PPU0010_TSM_LD_SWZL_M8` publishes two registers (v0/v1) to the logical m8
+CuTe fragment, but executes an `m8n8.x4` shared load and physically reads four
+registers.  `Copy_Traits` describes the values consumed by MMA, but that
+logical x2 source layout was incorrectly reused as a storage-lifetime
+authority.  The packed-row provider placed consecutive pipeline stages only
+`4 * 64 = 256` fp16 elements apart.
+
+The exact failing TM8/TK256/Stages2 footprint oracle found:
+
+```text
+historical_stage_pitch=256  cross-stage physical read/write addresses=432
+repaired_stage_pitch=1216   cross-stage physical read/write addresses=0
+```
+
+The 432 addresses are reads into hidden/discarded x4 rows racing with the
+other stage's cp.async row-0 writes.  Their values are not mathematically used,
+but the memory operations are real; CuTe's logical x2 view cannot make the
+physical accesses disappear.  This explains why the bug is packed-row only
+and why code generation, provider, split count, and repetition count change
+its incidence.
+
+The repair keeps the 64-half cube pitch but gives stages separate physical
+footprints:
+
+```text
+stage_pitch = cube_pitch * (cubes_per_stage - 1) + physical_cube_span
+            = 64 * 3 + 16 * 64 = 1216 fp16 elements
+```
+
+For TK256/S2, packed A grows from about 2.9 KiB to 4.75 KiB, still far below
+the ordinary 16 KiB A allocation.  Both the writer and the m8 copy atom carry
+this stage pitch.  L186 requires the old layout to be RED and the new layout
+to have zero physical-footprint crossings.
 
 ## Frozen incident
 
@@ -42,10 +80,37 @@ frozen custom S>1 context.  Exact codegen kept 16 MMA instructions and added
 one vector TSM store at the first failing arm.  No stack allocation was
 reported.  This localizes the first corrupting operation to the extra
 shared-store lowering or its compiler/scoreboard footprint; it does not prove
-that this operation is sufficient in ordinary S1, nor justify blaming the
-CuTe layout or reducer.
+that this operation is sufficient in ordinary S1 and is superseded as the
+explanation for the rarer direct-store packed-row failure.
 
-## Do not diagnose this as a missing barrier
+## Reopened direct-store evidence
+
+The first custom split-count run produced:
+
+```text
+direct standard-aiu S2/S4: clean at 8192 repeats
+direct packed-row  S2:    clean at 8192 repeats
+direct packed-row  S4:    raw_bad=32 at repeat 2142
+custom S1, both providers: REAL_CAN_IMPLEMENT (not launched)
+```
+
+The S1 rejection was a diagnostic ABI error: CUTLASS canonicalizes the batch
+stride to zero when `L=1`, while the physical Split-K plane ABI requires
+`stride_L=M*N` even for one plane.  Construct that stride explicitly before
+interpreting any custom-S1 result.
+
+On a direct-store failure, preserve the original producer+reducer cadence,
+then snapshot the already completed FP32 workspace and rerun the reducer:
+
+- wrong FP32 plane bytes prove producer/mainloop/direct-store corruption;
+- exact FP32 planes plus a clean reducer replay prove a same-stream
+  publication gap;
+- exact planes plus a still-wrong replay keep the reducer open.
+
+This post-failure observation must not insert a synchronization or host copy
+before the original failure, because doing so can suppress a publication bug.
+
+## Do not diagnose this as Split-K synchronization
 
 Ordinary S=1 epilogues are clean controls.  In the failing Split-K producer,
 the mainloop already ended with `cp_async_wait<0>() + __syncthreads()`, and the
@@ -56,15 +121,23 @@ pre-R2S CTA barrier and physically disjoint shared storage also failed.
 The first failing prefix was an exact-once constant write to disjoint shared
 memory, bracketed by CTA barriers and never read, before the correct direct
 store.  It cannot be repaired or explained by adding a logical producer/
-consumer barrier.  The honest remaining boundary is a Split-K-kernel-specific
-codegen/scoreboard interaction with the additional vector TSM store.  Do not
-claim that the split count alone is causal: S=1 delegates to a different
-shipping kernel and output epilogue.
+consumer barrier.  For that earlier shared-output trigger, the narrow boundary
+is a Split-K-kernel-specific codegen/scoreboard interaction with the additional
+vector TSM store.  It is not the explanation for the later direct-store
+packed-row S4 failure; that failure is the packed-A cross-stage alias proven
+above.  Do not claim that the split count alone is causal: S=1 delegates to a
+different shipping kernel and output epilogue.
 
 A host observation made only after device completion still saw the wrong FP32
 values in individual producer planes.  This rejects a producer/reducer stream
 publication gap as the explanation for this incident; cross-kernel ordering
 cannot repair a value already corrupted inside the producer.
+
+Each producer CTA writes a distinct split plane.  No producer-to-producer
+publication is required.  The root above is an intra-CTA stage-storage alias:
+one stage's physical x4 shared read overlaps another stage's cp.async write.
+Fix the physical layout contract; do not add a global fence, counter, or
+inter-CTA barrier.
 
 If distinguishing "the custom Split-K kernel context" from "runtime S>1" is
 material, use the custom fixed Split-K kernel itself at S=1 as the control.
@@ -90,7 +163,12 @@ unnecessary R2S/barrier/S2R roundtrip while preserving accumulator order,
 workspace bytes and deterministic reduction.  Keep the historical shared
 path only as an exact negative.
 
-Required closure:
+Independently, packed m8 A must separate pipeline stages by the complete x4
+hardware footprint even though its CuTe value layout exposes only x2.  A
+logical layout proof is insufficient whenever an opcode has hidden physical
+reads or writes; prove storage lifetime against the opcode footprint too.
+
+Required closure (minimum 8192 correctness repeats for this frozen row):
 
 - direct-store ownership oracle is exact-once, with hole/duplicate and rotated
   fragment negatives;
