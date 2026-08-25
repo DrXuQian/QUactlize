@@ -833,11 +833,18 @@ try:
         failure_scope = "S1_MIXED_OR_INCOMPLETE"
     clean_candidates = [arm for arm in candidates if candidate_clean[arm]]
     if not baseline_target:
-        verdict = "BASELINE_FOUR_CELL_NONREPRODUCTION"
-        interpretation = (
-            "the complete AP0/AP1 x S2/S4 baseline denominator did not "
-            "reproduce producer-partial corruption; a clean candidate cannot "
-            "be assigned causally")
+        if single_issuer_selection:
+            verdict = "BASELINE_EVERY_ATTEMPT_NONREPRODUCTION"
+            interpretation = (
+                "at least one independent baseline attempt did not reproduce "
+                "producer-partial corruption in any AP0/AP1 S2/S4 cell; a clean "
+                "single-issuer candidate cannot be assigned causally")
+        else:
+            verdict = "BASELINE_FOUR_CELL_NONREPRODUCTION"
+            interpretation = (
+                "the complete AP0/AP1 x S2/S4 baseline denominator did not "
+                "reproduce producer-partial corruption; a clean candidate cannot "
+                "be assigned causally")
         diagnostic_rc = 1
     elif not clean_candidates:
         if candidates == ("asm-memory-contract",):
