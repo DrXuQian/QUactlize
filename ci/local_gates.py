@@ -1972,6 +1972,13 @@ def lint_fp32_residue_contract():
         "FP32 residue mask is shared by store/reduce/load-add while barriers remain unconditional")
 
 
+def lint_fq_splitk_partial_path():
+    """Fixed Split-K publishes same-type FP32 partials without a shared handoff."""
+    return _run_ci_script(
+        "check_fq_splitk_partial_path.py",
+        "fixed Split-K direct ownership and ordered-close timing are pinned")
+
+
 def lint_m8n16_g2_contract():
     """G2 must replay the historical provider index on one production x4 payload."""
     return _run_ci_script(
@@ -2586,6 +2593,7 @@ def main():
                 ("lint", "l122_streamk_fixup_cohort contract pins the exact 64/128-thread CTA cohort", lint_streamk_fixup_cohort),
                 ("lint", "l124 predicates every shipped FP32 accumulator residue and preserves S1-4", lint_fp32_residue_fixup),
                 ("lint", "FP32 residue predicates scalar fixup accesses without predicating locks", lint_fp32_residue_contract),
+                ("lint", "fixed Split-K FP32 partials bypass the fragile shared handoff", lint_fq_splitk_partial_path),
                 ("lint", "syntax baselines and live SYNTAX sources match", lint_syntax_inventory),
                 ("lint", "m8n16 G2 replays the historical bad index on the production x4 payload", lint_m8n16_g2_contract),
                 ("lint", "l125 exhausts all 256 G5 zero-plane addresses through the production CuTe map", lint_grouped_metadata_layout),

@@ -23,9 +23,6 @@ struct PackedMetadataColumnOwnership {
                 "packed metadata columns must divide among the available owners");
   static constexpr int columns_per_thread = TileN / owner_threads;
 
-  CUTE_HOST_DEVICE static constexpr bool owns_physical_thread(int thread_idx) {
-    return thread_idx >= 0 && thread_idx < owner_threads;
-  }
   CUTE_HOST_DEVICE static constexpr int copy_owner(int thread_idx) {
     return thread_idx % owner_threads;
   }

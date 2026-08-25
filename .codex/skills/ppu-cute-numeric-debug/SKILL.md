@@ -18,6 +18,10 @@ Read `references/packed-metadata-owner-deficit.md` when the first bad output is
 an N-column boundary, especially when TileN exceeds the CTA thread count or a
 packed scale/zero channel is decoded before its publishing barrier.
 
+Read `references/splitk-shared-partial-epilogue.md` when completed fp32
+accumulators are exact but Split-K partial workspace values intermittently
+lose whole output stripes after a register/shared/register epilogue.
+
 ## Workflow
 
 ### 1. Freeze one exact row

@@ -85,7 +85,7 @@ struct Cli {
   int repeats = 2;
   int only_split = 0;
   int tm8_max_m = ppu_dense_shipping::kDecodeDefaultExclusiveM - 1;
-  bool split_workspace_probe = false;
+  bool force_custom_splitk_s1 = false;
   enum class BcMode { All, Skip, Only } bc_mode = BcMode::All;
   std::string symbols_file;
   std::vector<Shape> shapes;
@@ -107,8 +107,8 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
       cli.tm8_max_m = std::atoi(argv[i] + 12);
     } else if (!std::strncmp(argv[i], "--symbols-file=", 15)) {
       cli.symbols_file = argv[i] + 15;
-    } else if (!std::strcmp(argv[i], "--split-workspace-probe")) {
-      cli.split_workspace_probe = true;
+    } else if (!std::strcmp(argv[i], "--force-custom-splitk-s1")) {
+      cli.force_custom_splitk_s1 = true;
     } else if (!std::strncmp(argv[i], "--bc-mode=", 10)) {
       char const* mode = argv[i] + 10;
       if (!std::strcmp(mode, "all")) cli.bc_mode = Cli::BcMode::All;
@@ -195,23 +195,17 @@ std::vector<uint8_t> make_units(int n, int k) {
 
 struct Fixture {
   std::vector<half_t> a, golden;
-  std::array<std::vector<float>, kSplits.size()> partial_golden;
   std::vector<uint8_t> low_native, high_native, low, high, units;
   bool exact = false, roundtrip = false;
 };
 
-Fixture make_fixture(Shape shape, bool build_partial_golden) {
+Fixture make_fixture(Shape shape) {
   constexpr int qtype = FQ_SWEEP_QTYPE;
   constexpr int low_bits = qtype == 10 || qtype == 11 ? 2 : 4;
   constexpr int high_bits = qtype == 11 || qtype == 13 ? 1 : qtype == 14 ? 2 : 0;
   Fixture f;
   f.a.assign(std::size_t(shape.m) * shape.k, half_t(0.f));
   f.golden.resize(std::size_t(shape.m) * shape.n);
-  if (build_partial_golden)
-    for (std::size_t slot = 0; slot < kSplits.size(); ++slot) {
-      f.partial_golden[slot].assign(
-          std::size_t(kSplits[slot]) * shape.m * shape.n, 0.f);
-    }
   f.low_native.assign(std::size_t(shape.n) * shape.k * low_bits / 8, 0);
   f.high_native.assign(high_bits ? std::size_t(shape.n) * shape.k * high_bits / 8 : 0, 0);
   f.low.resize(f.low_native.size());
@@ -263,16 +257,6 @@ Fixture make_fixture(Shape shape, bool build_partial_golden) {
             int(float(f.a[std::size_t(m) * shape.k + k])) *
             decoded_value(qtype, code_value(qtype, n, k));
         sum += contribution;
-        if (build_partial_golden)
-          for (std::size_t slot = 0; slot < kSplits.size(); ++slot) {
-            int const splits = kSplits[slot];
-            // Fixed Split-K requires K/TK to divide by S, so this element
-            // formula has exactly the same boundaries as its tile ranges.
-            int const plane = int(std::int64_t(k) * splits / shape.k);
-            std::size_t const offset =
-                (std::size_t(plane) * shape.m + m) * shape.n + n;
-            f.partial_golden[slot][offset] += float(contribution);
-          }
       }
       max_abs = std::max(max_abs, std::abs(sum));
       f.golden[std::size_t(m) * shape.n + n] = half_t(float(sum));
@@ -359,7 +343,7 @@ bool run_bc_family(Shape shape, uint8_t const* low, uint8_t const* high,
 int run_shape(Shape shape, Cli const& cli,
               std::vector<RegistryRow> const& rows,
               std::size_t typed_rows) {
-  Fixture fixture = make_fixture(shape, cli.split_workspace_probe);
+  Fixture fixture = make_fixture(shape);
   if (!fixture.exact || !fixture.roundtrip) {
     std::fprintf(stderr,
         "FQ_FIXTURE_FAIL q=%d A=%d shape=%dx%dx%d exact=%d roundtrip=%d\n",
@@ -378,41 +362,27 @@ int run_shape(Shape shape, Cli const& cli,
   dA.copy_from_host(fixture.a.data()); dLow.copy_from_host(fixture.low.data());
   if (!fixture.high.empty()) dHigh.copy_from_host(fixture.high.data());
   dUnits.copy_from_host(fixture.units.data());
-  std::array<float const*, kSplits.size()> partial_golden_ptrs{};
-  if (cli.split_workspace_probe)
-    for (std::size_t slot = 0; slot < kSplits.size(); ++slot)
-      partial_golden_ptrs[slot] = fixture.partial_golden[slot].data();
   DeviceInputs inputs{
       dA.get(), dLow.get(), fixture.high.empty() ? nullptr : dHigh.get(),
       dUnits.get(), dOut.get(), dWorkspace.get(), partial_bytes,
-      partial_golden_ptrs,
       fixture.golden.data(), shape.m, shape.n, shape.k};
   Options options{cli.iterations, cli.repeats, cli.only_split, true,
-                  cli.tm8_max_m, cli.split_workspace_probe};
+                  cli.tm8_max_m, cli.force_custom_splitk_s1};
   bool all_runtime_ok = true;
   std::printf("FQ_SHARD q=%d A=%d bchunk=%d shape=%dx%dx%d "
               "typed_rows=%zu selected_rows=%zu only_split=%d bc_mode=%s "
-              "bc_batch=native-grid-y-m-lt8 split_workspace_probe=%d "
+              "bc_batch=native-grid-y-m-lt8 split_timing=ordered-close "
               "iterations=%d correctness_repeats=%d\n",
               FQ_SWEEP_QTYPE, FQ_SWEEP_ARTIFACT_TK, FQ_SWEEP_BCHUNK,
               shape.m, shape.n, shape.k, typed_rows, rows.size(),
               cli.only_split,
               cli.bc_mode == Cli::BcMode::All ? "all" :
               cli.bc_mode == Cli::BcMode::Skip ? "skip" : "only",
-              int(cli.split_workspace_probe),
               cli.iterations, cli.repeats);
-  if (cli.split_workspace_probe) {
+  if (cli.force_custom_splitk_s1) {
     std::printf(
-        "FQ_WORKSPACE_ORACLE exact=1 S1=0x%016llx S2=0x%016llx "
-        "S4=0x%016llx S8=0x%016llx\n",
-        static_cast<unsigned long long>(hash_float_bits(
-            fixture.partial_golden[0].data(), fixture.partial_golden[0].size())),
-        static_cast<unsigned long long>(hash_float_bits(
-            fixture.partial_golden[1].data(), fixture.partial_golden[1].size())),
-        static_cast<unsigned long long>(hash_float_bits(
-            fixture.partial_golden[2].data(), fixture.partial_golden[2].size())),
-        static_cast<unsigned long long>(hash_float_bits(
-            fixture.partial_golden[3].data(), fixture.partial_golden[3].size())));
+        "FQ_CUSTOM_SPLIT_COUNT_PROBE route=GemmUniversalMixedInputSplitKParallel "
+        "runtime_splits=1,2,4 shipping_s1_bypassed=1 output=FP32_PARTIAL_THEN_REDUCER\n");
   }
   if (cli.bc_mode != Cli::BcMode::Only) for (auto const& entry : rows) {
     RowResult result;
@@ -420,7 +390,7 @@ int run_shape(Shape shape, Cli const& cli,
     all_runtime_ok = all_runtime_ok && ok;
     for (auto const& cell : result.cells) {
       if (cell.split == 0) continue;
-      char const* scope = cell.split == 1 ? "FULL_OUTPUT" :
+      char const* scope = cell.full_output ? "FULL_OUTPUT" :
           "PRODUCER_ONLY_REDUCER_UNTIMED_CORRECTNESS";
       std::printf(
           "FQ_TC_CELL q=%d A=%d bchunk=%d shape=%dx%dx%d symbol=%s "
@@ -444,33 +414,18 @@ int run_shape(Shape shape, Cli const& cli,
           cell.split_smem, cell.partial_bytes);
       print_samples(cell.samples_us);
       std::printf("\n");
-      for (auto const& probe : cell.workspace_probe_samples) {
+      if (cli.force_custom_splitk_s1 &&
+          (cell.split == 1 || cell.split == 2 || cell.split == 4)) {
         std::printf(
-            "FQ_WORKSPACE_PROBE q=%d A=%d shape=%dx%dx%d symbol=%s "
-            "provider=%s S=%d repeat=%d sync_only_raw_bad=%llu "
-            "canary_words=%llu host_reduce_raw_bad=%llu "
-            "host_first_bad=%zu host_first_want=0x%04x "
-            "host_first_got=0x%04x partial_fingerprint=0x%016llx "
-            "partial_value_raw_bad=%llu partial_bad_plane_mask=0x%x "
-            "partial_first_bad_plane=%d partial_first_bad_index=%zu "
-            "partial_first_bad_want=0x%08x partial_first_bad_got=0x%08x "
-            "observed_reducer_raw_bad=%llu\n",
-            entry.qtype, entry.artifact_tile_k, shape.m, shape.n, shape.k,
-            entry.symbol, entry.a_provider ? "packed-row" : "standard-aiu",
-            cell.split, probe.repeat,
-            static_cast<unsigned long long>(probe.sync_only_raw_bad),
-            static_cast<unsigned long long>(probe.canary_words),
-            static_cast<unsigned long long>(probe.host_reduce_raw_bad),
-            probe.host_first_bad_index, unsigned(probe.host_first_bad_want),
-            unsigned(probe.host_first_bad_got),
-            static_cast<unsigned long long>(probe.partial_fingerprint),
-            static_cast<unsigned long long>(probe.partial_value_raw_bad),
-            unsigned(probe.partial_bad_plane_mask),
-            probe.partial_first_bad_plane, probe.partial_first_bad_index,
-            unsigned(probe.partial_first_bad_want),
-            unsigned(probe.partial_first_bad_got),
-            static_cast<unsigned long long>(
-                probe.observed_reducer_raw_bad));
+            "FQ_CUSTOM_SPLIT_COUNT_CELL symbol=%s provider=%s S=%d "
+            "kernel=GemmUniversalMixedInputSplitKParallel state=%s "
+            "raw_bad=%llu failure_step=%s failure_repeat=%d "
+            "partial_bytes=%zu\n",
+            entry.symbol,
+            entry.a_provider ? "packed-row" : "standard-aiu",
+            cell.split, state_name(cell.state),
+            static_cast<unsigned long long>(cell.raw_bad),
+            cell.failure_step, cell.failure_repeat, cell.partial_bytes);
       }
     }
   }
@@ -485,14 +440,13 @@ int run_shape(Shape shape, Cli const& cli,
   }
   std::printf("FQ_SHAPE_DONE q=%d A=%d bchunk=%d shape=%dx%dx%d "
               "typed_rows=%zu selected_rows=%zu only_split=%d bc_mode=%s "
-              "bc_batch=native-grid-y-m-lt8 split_workspace_probe=%d "
+              "bc_batch=native-grid-y-m-lt8 split_timing=ordered-close "
               "iterations=%d status=%s\n",
               FQ_SWEEP_QTYPE, FQ_SWEEP_ARTIFACT_TK, FQ_SWEEP_BCHUNK,
               shape.m, shape.n, shape.k, typed_rows, rows.size(),
               cli.only_split,
               cli.bc_mode == Cli::BcMode::All ? "all" :
               cli.bc_mode == Cli::BcMode::Skip ? "skip" : "only",
-              int(cli.split_workspace_probe),
               cli.iterations,
               all_runtime_ok ? "PASS" : "FAIL");
   return all_runtime_ok ? 0 : 1;
@@ -507,7 +461,7 @@ int main(int argc, char** argv) {
         "usage: %s [--shape=MxNxK ...] [--iterations=N] "
         "[--correctness-repeats=N] [--only-split=0|1|2|4|8] "
         "[--tm8-max-m=N] [--symbols-file=PATH] "
-        "[--bc-mode=all|skip|only] [--split-workspace-probe]\n", argv[0]);
+        "[--bc-mode=all|skip|only] [--force-custom-splitk-s1]\n", argv[0]);
     return 2;
   }
   auto const all_rows = registry();

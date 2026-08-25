@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""Pin the repaired fixed Split-K partial path without retaining debug scaffolds."""
+
+from __future__ import annotations
+
+import pathlib
+import sys
+
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+KERNEL = ROOT / (
+    "quactlize/include/actlize_extensions/cutlass/gemm/kernel/"
+    "ppu_aiu_gemm_mixed_input_splitk_parallel.hpp")
+DIRECT = ROOT / (
+    "quactlize/include/actlize_extensions/cutlass/gemm/kernel/detail/"
+    "ppu_splitk_direct_accumulator_store.hpp")
+PIPELINE = ROOT / (
+    "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/"
+    "ppu_mixed_pipeline.hpp")
+TIMING = ROOT / "benchmarks/splitk_producer_timing.hpp"
+SCALEFIRST = ROOT / "benchmarks/scalefirst_internal_sweep_bench.hpp"
+FQ = ROOT / "benchmarks/fully_quantized_splitk_producer_bench.hpp"
+PARALLEL_EPILOGUE = ROOT / (
+    "third_party/actlize/include/cutlass/epilogue/collective/"
+    "ppu_epilogue_vectorized_parallel.hpp")
+LAUNCHER = ROOT / "quactlize/include/dense_splitk_parallel_ppu.cuh"
+
+
+def ordered(text: str, needles: tuple[str, ...], label: str) -> list[str]:
+    errors: list[str] = []
+    cursor = -1
+    for needle in needles:
+        position = text.find(needle, cursor + 1)
+        if position < 0:
+            errors.append(f"{label}: missing or reordered {needle!r}")
+            break
+        cursor = position
+    return errors
+
+
+def check(texts: dict[str, str]) -> list[str]:
+    kernel = texts["kernel"]
+    direct = texts["direct"]
+    pipeline = texts["pipeline"]
+    timing = texts["timing"]
+    scalefirst = texts["scalefirst"]
+    fq = texts["fq"]
+    parallel_epilogue = texts["parallel_epilogue"]
+    launcher = texts["launcher"]
+    errors: list[str] = []
+
+    if kernel.count("store_splitk_accumulators_direct(") != 1:
+        errors.append("fixed Split-K must have one production direct store")
+    if kernel.count("PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE") != 3:
+        errors.append("exactly one guarded legacy shared-output negative is required")
+    if kernel.count("partial_epilogue(partial_shape") != 1:
+        errors.append("legacy negative no longer invokes the historical collective")
+
+    banned = (
+        "PPU_SPLITK_SHARED_PREFIX_POLICY",
+        "PPU_SPLITK_SHARED_SYNC_POLICY",
+        "PPU_PACKED_METADATA_OWNER_ONLY",
+        "split_workspace_probe",
+    )
+    combined = "\n".join(texts.values())
+    for token in banned:
+        if token in combined:
+            errors.append(f"retired diagnostic seam returned: {token}")
+
+    required_direct = (
+        "tiled_mma.get_thread_slice(thread_idx)",
+        "thread_mma.partition_C(gD)",
+        "thread_mma.partition_C(identity)",
+        "size(decltype(tD){}) == size(AccumulatorTensor{})",
+        "elem_less(coordinates(i)",
+        "tD(i) = accumulators(i);",
+    )
+    for token in required_direct:
+        if direct.count(token) != 1:
+            errors.append(f"direct-store ownership seam differs: {token}")
+
+    errors += ordered(
+        pipeline,
+        ("cp_async_wait<0>();", "__syncthreads();", "}  // namespace"),
+        "mainloop terminal drain")
+
+    errors += ordered(
+        parallel_epilogue,
+        (
+            "copy(tiled_r2s,",
+            "// Step 2. Wait for SMEM writes to complete",
+            "synchronize();",
+            "copy(tiled_s2r, tDsC, tDrC);",
+            "// Step 4. Wait for SMEM reads to complete",
+            "synchronize();",
+        ),
+        "legacy shared epilogue synchronization")
+
+    errors += ordered(
+        launcher,
+        (
+            "if (split_k_slices == 1)",
+            "return fpa_intb_ppu::generic_launcher<",
+            "WorkspacePlan workspace_plan;",
+            "using SplitTypes = KernelTypes<",
+        ),
+        "shipping S1/custom Split-K type separation")
+
+    errors += ordered(
+        timing,
+        (
+            "hggcEventRecord(events.start, nullptr)",
+            "producer()",
+            "hggcEventRecord(events.stop, nullptr)",
+            "consumer()",
+            "hggcEventSynchronize(events.stop)",
+            "hggcEventElapsedTime(&ms, events.start, events.stop)",
+            "hggcDeviceSynchronize()",
+        ),
+        "producer-only ordered close")
+
+    for label, source in (("ScaleFirst", scalefirst), ("FullyQuantized", fq)):
+        if source.count("splitk_producer_timing::measure(") != 1:
+            errors.append(f"{label} must use the common ordered-close timer once")
+        if "[&] { return reducer.run(nullptr); }" not in source:
+            errors.append(f"{label} timing must enqueue the real reducer")
+
+    owned = ROOT / "quactlize/include"
+    owned_headers = {
+        path
+        for pattern in ("*.hpp", "*.cuh", "*.h")
+        for path in owned.rglob(pattern)
+    }
+    for path in sorted(owned_headers):
+        if path == DIRECT:
+            continue
+        source = path.read_text(errors="replace")
+        if "retile_S(accumulators)" in source:
+            errors.append(
+                f"owned completed-accumulator shared roundtrip remains: "
+                f"{path.relative_to(ROOT)}")
+    return errors
+
+
+def self_test(texts: dict[str, str]) -> None:
+    assert not check(texts), check(texts)
+    plants = (
+        ("kernel", "store_splitk_accumulators_direct(",
+         "store_splitk_accumulators_retired("),
+        ("pipeline", "cp_async_wait<0>();", "cp_async_wait<1>();"),
+        ("timing", "if (consumer() != cutlass::Status::kSuccess)",
+         "if (retired_call() != cutlass::Status::kSuccess)"),
+        ("kernel", "namespace cutlass::gemm::kernel {",
+         "PPU_SPLITK_SHARED_PREFIX_POLICY\nnamespace cutlass::gemm::kernel {"),
+        ("parallel_epilogue", "copy(tiled_s2r, tDsC, tDrC);",
+         "copy(retired_s2r, tDsC, tDrC);"),
+        ("launcher", "return fpa_intb_ppu::generic_launcher<",
+         "return retired_shipping_launcher<"),
+    )
+    for key, old, new in plants:
+        planted = dict(texts)
+        if old not in planted[key]:
+            raise AssertionError(f"self-test plant source missing: {old}")
+        planted[key] = planted[key].replace(old, new, 1)
+        if not check(planted):
+            raise AssertionError(f"negative plant stayed green: {key}/{old}")
+
+
+def main() -> int:
+    paths = {
+        "kernel": KERNEL,
+        "direct": DIRECT,
+        "pipeline": PIPELINE,
+        "timing": TIMING,
+        "scalefirst": SCALEFIRST,
+        "fq": FQ,
+        "parallel_epilogue": PARALLEL_EPILOGUE,
+        "launcher": LAUNCHER,
+    }
+    try:
+        texts = {name: path.read_text() for name, path in paths.items()}
+        errors = check(texts)
+        if errors:
+            raise ValueError("; ".join(errors))
+        self_test(texts)
+    except (AssertionError, OSError, ValueError) as error:
+        print(f"[fq-splitk-partial-path] FAIL: {error}", file=sys.stderr)
+        return 2
+    print("[fq-splitk-partial-path] PASS direct ownership, legacy negative, "
+          "mainloop/epilogue synchronization, distinct S1 type, "
+          "ordered-close timing, and six negative plants")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -48,21 +48,6 @@
 #include "actlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_last_arriver.hpp"
 #include "actlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_partition.hpp"
 #include "actlize_extensions/cutlass/gemm/kernel/detail/ppu_splitk_direct_accumulator_store.hpp"
-#if defined(PPU_SPLITK_SHARED_PREFIX_POLICY)
-#include "actlize_extensions/cutlass/gemm/kernel/detail/ppu_splitk_shared_prefix_probe.hpp"
-#endif
-#if defined(PPU_SPLITK_SHARED_SYNC_POLICY)
-#include "actlize_extensions/cutlass/gemm/kernel/detail/ppu_splitk_shared_epilogue_sync_probe.hpp"
-#endif
-
-#if (defined(PPU_SPLITK_SHARED_PREFIX_POLICY) && \
-     defined(PPU_SPLITK_SHARED_SYNC_POLICY)) || \
-    (defined(PPU_SPLITK_SHARED_PREFIX_POLICY) && \
-     defined(PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE)) || \
-    (defined(PPU_SPLITK_SHARED_SYNC_POLICY) && \
-     defined(PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE))
-#error "select exactly one Split-K shared diagnostic family"
-#endif
 
 namespace cutlass::gemm::kernel {
 
@@ -120,22 +105,11 @@ class GemmUniversalMixedInputSplitKParallel {
                 "partial D stride must describe compact [M,N,S] planes");
 
   struct SharedStorage {
-#if defined(PPU_SPLITK_SHARED_PROBE_DISJOINT_STORAGE) && \
-    (PPU_SPLITK_SHARED_PROBE_DISJOINT_STORAGE != 0)
-    // Diagnostic-only lifetime arm: preserve each concrete storage type but
-    // remove the mainloop/epilogue physical alias.
-    struct SharedTensorStorage {
-      typename CollectiveMainloop::SharedStorage mainloop;
-      typename CollectivePartialEpilogue::SharedStorage partial_epilogue;
-      typename CompletionPolicy::SharedStorage completion;
-    } tensors;
-#else
     union SharedTensorStorage {
       typename CollectiveMainloop::SharedStorage mainloop;
       typename CollectivePartialEpilogue::SharedStorage partial_epilogue;
       typename CompletionPolicy::SharedStorage completion;
     } tensors;
-#endif
   };
 
   static constexpr int SharedStorageSize = sizeof(SharedStorage);
@@ -403,43 +377,13 @@ class GemmUniversalMixedInputSplitKParallel {
     int const plane = int(work.peer_idx);
     auto const partial_shape = make_shape(M, N, K, int(params.partition.splits));
     auto const partial_coord = make_coord(m_coord, n_coord, _, Int<0>{});
-#if defined(PPU_SPLITK_SHARED_PREFIX_POLICY)
-    // Diagnostic-only, compile-time prefix.  It executes one selected
-    // post-mainloop operation and then publishes the still-live accumulator
-    // through the production direct path.  Default builds do not include or
-    // instantiate this helper.
-    detail::run_splitk_shared_prefix_probe<
-        PPU_SPLITK_SHARED_PREFIX_POLICY, CollectivePartialEpilogue>(
-        accumulators, tiled_mma, thread_idx,
-        reinterpret_cast<char*>(
-            &shared_storage.tensors.partial_epilogue));
-    detail::store_splitk_accumulators_direct(
-        params.partial_epilogue, partial_shape, blk_shape, partial_coord,
-        accumulators, tiled_mma, residue_mnk, plane, thread_idx);
-#elif defined(PPU_SPLITK_SHARED_SYNC_POLICY)
-    // Diagnostic-only exact clone of the historical shared R2S/S2R path.
-    // PPU_SPLITK_SHARED_SYNC_POLICY changes only its two synchronization
-    // calls, allowing barrier selection to be causally adjudicated.
-    detail::store_splitk_accumulators_shared_sync_probe<
-        PPU_SPLITK_SHARED_SYNC_POLICY, CollectivePartialEpilogue>(
-        params.partial_epilogue, plane, partial_shape, blk_shape,
-        partial_coord, accumulators, tiled_mma, residue_mnk, thread_idx,
-        reinterpret_cast<char*>(
-            &shared_storage.tensors.partial_epilogue));
-#if PPU_SPLITK_SHARED_PROBE_DISCARD_GMEM
-    // Control arm: execute the complete shared round trip but publish the
-    // untouched MMA accumulator.  This distinguishes corruption of the input
-    // fragment/codegen from corruption introduced by the round-trip result.
-    detail::store_splitk_accumulators_direct(
-        params.partial_epilogue, partial_shape, blk_shape, partial_coord,
-        accumulators, tiled_mma, residue_mnk, plane, thread_idx);
-#endif
-#elif defined(PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE) && \
+#if defined(PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE) && \
     (PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE != 0)
     // Exact historical negative for the PPU raw-bit closure.  The generic
-    // output epilogue redistributes FP32 accumulators through shared memory;
-    // this is unnecessary for a same-type internal partial workspace and its
-    // cross-thread handoff is the device-confirmed corruption seam.
+    // output epilogue redistributes FP32 accumulators through shared memory.
+    // That is unnecessary for a same-type partial workspace; in this Split-K
+    // kernel context the additional shared-store lowering/footprint is the
+    // device-confirmed corruption trigger.  Barrier variants did not repair it.
     CollectivePartialEpilogue partial_epilogue{
         params.partial_epilogue, plane};
     partial_epilogue(partial_shape, blk_shape, partial_coord, accumulators,
