@@ -285,6 +285,31 @@ The runner builds one binary and launches each state arm in a fresh process.
 It returns success after a complete device census even when corruption is
 observed; only infrastructure or denominator failures return nonzero.
 
+The completed closure at `254a3e4` kept exactly one binary and found the same
+reduced incident in all three modes.  Only packed-row/S4 failed in that binary,
+once in each of two attempts per mode; standard-aiu S2/S4 and packed-row S2
+were clean over their requested denominators.  The geometric exposures were
+197183, 202141 and 198612 launches for reuse, control-poison and target-poison,
+with two events in each (roughly `1e-5` per launch, but only two events per arm,
+so not a production probability).  Every failure was one 32-output band in an
+FP32 producer plane.  Target-poison produced the same small semantic wrong
+values (`-6`, `-2`, `6`) rather than poison bits.  Therefore prior partial
+workspace contents, missing producer stores and cross-launch overlap are not
+required for the failure.  This result also demonstrates that a clean AP0 or
+S2 cell in one codegen/cadence is not universal immunity.
+
+The next exact source seam is the opaque AIU issuer cardinality.  The
+`PPU0010_AIU_LOAD` copy atom declares `ThrID = Layout<_1>` and documents that
+one thread issues the bulk copy, while both mixed-input `copy_aiu` rvalue
+helpers admit all 32 physical lanes of warp 0.  L224 proves that all 32 lanes
+resolve identical source/destination coordinates; that is a CuTe coordinate
+proof, not an ISA guarantee that 32 overlapping asynchronous opaque issues are
+equivalent to one.  The `single-aiu-issuer` arm changes only those two helper
+guards to CTA thread 0.  It leaves the FA lvalue overload, descriptors, packed-A
+scalar copies, async groups, waits/barriers, MMA and stores unchanged.  A clean
+arm is causal only when every independent baseline attempt reproduces a wrong
+producer partial and the candidate closes the complete S1/S2/S4 denominator.
+
 The first reduced closure at `d6e5589` was initially described as an exact
 inline-asm shared-memory contract.  Source re-audit proved that description
 false.  The macro covered the ordinary fp16-A AIU producer, packed-A zfill

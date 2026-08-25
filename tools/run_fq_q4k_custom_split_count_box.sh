@@ -17,6 +17,9 @@
 # wait, before the existing CTA publication barrier.  PPU_PACKED_SPLIT_GROUPS
 # is deliberately absent because it changes metadata decode cadence, not A/B
 # issuer or waiter ownership.
+# `single-aiu-issuer` restores the opaque PPU0010 AIU copy atom's one-logical-
+# thread contract at the two mixed-input helper overloads. It changes no CuTe
+# coordinate, descriptor, packed-A scalar copy, wait/barrier, MMA or store.
 #
 # `FQ_A_STAGE_CANDIDATE=repeat-state` instead builds only the baseline binary
 # and runs reuse/control-poison/target-poison for S2 and S4. Every repeat checks
@@ -52,9 +55,9 @@ main() {
   attempts="${PROBE_ATTEMPTS:-2}"
   candidate="${FQ_A_STAGE_CANDIDATE:-remaining-three}"
   case "$candidate" in
-    asm-memory-contract|logical-x2-scalar|async-shared-fence|remaining-two|remaining-three|repeat-state) ;;
+    asm-memory-contract|logical-x2-scalar|async-shared-fence|single-aiu-issuer|remaining-two|remaining-three|repeat-state) ;;
     *)
-      fail "FQ_A_STAGE_CANDIDATE must be asm-memory-contract, logical-x2-scalar, async-shared-fence, remaining-two, remaining-three, or repeat-state"
+      fail "FQ_A_STAGE_CANDIDATE must be asm-memory-contract, logical-x2-scalar, async-shared-fence, single-aiu-issuer, remaining-two, remaining-three, or repeat-state"
       return $?
       ;;
   esac
@@ -105,6 +108,9 @@ packed_metadata_async = copy_async.split(
 copy_aiu = (root / (
     "third_party/actlize/include/cute/algorithm/"
     "ppu_copy.hpp")).read_text()
+copy_aiu_traits = (root / (
+    "third_party/actlize/include/cute/atom/"
+    "copy_traits_ppu0010_aiu.hpp")).read_text()
 nontrans_x4_impl = m8_copy.split(
     "struct PPU0010_TSM_LD_SWZL_IMPL<Element, false>", 1)[1].split(
         "struct PPU0010_TSM_LD_SWZL_IMPL<Element, true>", 1)[0]
@@ -112,12 +118,19 @@ q4_bulk_producer = m8_copy.split(
     "sizeof_bits<Element>::value == 4", 1)[1].split(
         "sizeof_bits<Element>::value == 2", 1)[0]
 m8_wrapper = m8_copy.split("struct PPU0010_TSM_LD_SWZL_M8", 1)[1]
-hggc_aiu = copy_aiu.split(
+aiu_overloads = [section.split("\ntemplate <", 1)[0]
+                 for section in copy_aiu.split("\ncopy_aiu(\n")[1:]]
+if len(aiu_overloads) != 3:
+    raise SystemExit("copy_aiu overload denominator changed")
+pair_aiu, fa_lvalue_aiu, single_rvalue_aiu = aiu_overloads
+hggc_aiu = pair_aiu.split(
     "#if defined(__HGGC_ARCH__) && __HGGC_ARCH__ == 100", 1)[1].split(
-        "#else", 1)[0]
-alternate_aiu = copy_aiu.split(
-    "#if defined(__HGGC_ARCH__) && __HGGC_ARCH__ == 100", 1)[1].split(
-        "#else", 1)[1].split("#endif", 1)[0]
+        "#else\n  if constexpr (SplitAIU)", 1)[0]
+alternate_aiu = pair_aiu.split(
+    "#else\n  if constexpr (SplitAIU)", 1)[1].rsplit("#endif", 1)[0]
+aiu_load_traits = copy_aiu_traits.split(
+    "struct Copy_Traits<PPU0010_AIU_LOAD", 1)[1].split(
+        "template <typename Element", 1)[0]
 packed_decode = collective.split(
     "packed_decode_stage(Storage& storage", 1)[1].split(
         "private:", 1)[0]
@@ -173,6 +186,18 @@ checks = {
     "warp-split A/B is alternate architecture only":
         alternate_aiu.count("warp_idx == 0") == 2 and
         alternate_aiu.count("warp_idx == 1") == 1,
+    "opaque AIU atom declares one logical issuer":
+        aiu_load_traits.count("using ThrID   = Layout<_1>;") == 1 and
+        "issued by ONE" in aiu_load_traits,
+    "single physical AIU issuer seam is exact":
+        copy_aiu.count("PPU_AIU_SINGLE_LOGICAL_ISSUER") == 4 and
+        pair_aiu.count("PPU_AIU_SINGLE_LOGICAL_ISSUER") == 2 and
+        single_rvalue_aiu.count("PPU_AIU_SINGLE_LOGICAL_ISSUER") == 2 and
+        "PPU_AIU_SINGLE_LOGICAL_ISSUER" not in fa_lvalue_aiu and
+        pair_aiu.count(
+            "if (warp_idx == 0 && int(threadIdx.x) == 0)") == 1 and
+        single_rvalue_aiu.count(
+            "if (warp_idx == 0 && int(threadIdx.x) == 0)") == 1,
     "split-groups is metadata-decode-only":
         collective.count("PPU_PACKED_SPLIT_GROUPS") == 4 and
         packed_decode.count("PPU_PACKED_SPLIT_GROUPS") == 3 and
@@ -188,8 +213,9 @@ checks = {
 bad = [name for name, ok in checks.items() if not ok]
 if bad:
     raise SystemExit("custom-S1 source seam changed: " + repr(bad))
-print("[fq-a-stage-root:source] PASS PPU0010 warp0 issues ordinary A+B; "
-      "split-groups is metadata-only; exact asm-memory, logical-x2 and "
+print("[fq-a-stage-root:source] PASS PPU0010 AIU atom is one logical "
+      "issuer while baseline warp0 has 32 physical callers; split-groups is "
+      "metadata-only; exact single-issuer, asm-memory, logical-x2 and "
       "async-shared-fence seams; S is runtime data")
 PY
 
@@ -302,6 +328,7 @@ PY
       asm-memory-contract) defs='PPU_PACKED_A_ASM_MEMORY_CONTRACT=1' ;;
       logical-x2-scalar) defs='PPU_M8_LOGICAL_X2_SCALAR_LOAD=1' ;;
       async-shared-fence) defs='PPU_MIXED_ASYNC_SHARED_FENCE=1' ;;
+      single-aiu-issuer) defs='PPU_AIU_SINGLE_LOGICAL_ISSUER=1' ;;
       *) fail "internal arm table error: $arm"; return $? ;;
     esac
     build_dir="$out/build-$arm"
@@ -326,7 +353,7 @@ PY
           >>"$out/results/infrastructure.tsv"
         continue
       fi
-    elif grep -Eq -- '-DPPU_(PACKED_A_ASM_MEMORY_CONTRACT|M8_LOGICAL_X2_SCALAR_LOAD|MIXED_ASYNC_SHARED_FENCE)=1' \
+    elif grep -Eq -- '-DPPU_(PACKED_A_ASM_MEMORY_CONTRACT|M8_LOGICAL_X2_SCALAR_LOAD|MIXED_ASYNC_SHARED_FENCE|AIU_SINGLE_LOGICAL_ISSUER)=1' \
         "$build_log"; then
       printf '%s\tbaseline-contaminated\t2\n' "$arm" \
         >>"$out/results/infrastructure.tsv"
@@ -569,7 +596,7 @@ attempts = int(sys.argv[2])
 repeats = int(sys.argv[3])
 selection = sys.argv[4]
 if selection not in {"asm-memory-contract", "logical-x2-scalar",
-                     "async-shared-fence", "remaining-two",
+                     "async-shared-fence", "single-aiu-issuer", "remaining-two",
                      "remaining-three"}:
     raise SystemExit("invalid candidate identity")
 candidates = (("asm-memory-contract", "logical-x2-scalar",
@@ -768,7 +795,27 @@ try:
                 runs[("baseline", attempt)][(provider, split)])
             for attempt in range(1, attempts + 1))
         for provider in expected_symbols for split in (2, 4))
-    baseline_target = baseline_target_cells == 4
+    baseline_failure_events = sum(
+        producer_partial_bad(
+            runs[("baseline", attempt)][(provider, split)])
+        for attempt in range(1, attempts + 1)
+        for provider in expected_symbols for split in (2, 4))
+    baseline_failure_attempts = sum(
+        any(producer_partial_bad(
+                runs[("baseline", attempt)][(provider, split)])
+            for provider in expected_symbols for split in (2, 4))
+        for attempt in range(1, attempts + 1))
+    # Earlier multi-seam closures preregistered all four AP0/AP1 x S2/S4
+    # cells.  The repeat-state audit subsequently froze the reduced incident:
+    # in one identical binary only packed-row/S4 failed, independently in both
+    # attempts.  The single-issuer arm therefore admits the observed family
+    # only when every baseline attempt contains a producer-partial failure;
+    # all other candidates retain the historical four-cell denominator.
+    single_issuer_selection = candidates == ("single-aiu-issuer",)
+    baseline_target = (
+        baseline_failure_attempts == attempts and
+        baseline_failure_events >= attempts
+        if single_issuer_selection else baseline_target_cells == 4)
     baseline_s1 = [runs[("baseline", attempt)][(provider, 1)]
                    for attempt in range(1, attempts + 1)
                    for provider in expected_symbols]
@@ -812,6 +859,13 @@ try:
                 "the baseline reproduced, but an explicit async-shared proxy "
                 "fence before packed decode/CTA publication did not close every "
                 "stressed S1/S2/S4 cell; missing proxy visibility is not the root")
+        elif candidates == ("single-aiu-issuer",):
+            verdict = "AIU_SINGLE_LOGICAL_ISSUER_REMAINS_DIRTY"
+            interpretation = (
+                "the baseline reproduced producer-partial corruption in every "
+                "attempt, but reducing each opaque AIU copy from 32 identical "
+                "warp0 callers to its one declared logical issuer did not close "
+                "every stressed S1/S2/S4 cell")
         else:
             verdict = ("ALL_REMAINING_COMMON_SEAMS_DIRTY"
                        if candidates == ("asm-memory-contract",
@@ -847,6 +901,15 @@ try:
                 "producer/wait contract, logical fragment, schedule and MMA order "
                 "remained unchanged; replacing only the physical x4 consumer with "
                 "its two exact semantic shared loads closed every S1/S2/S4 cell")
+        elif winner == "single-aiu-issuer":
+            verdict = "AIU_DUPLICATE_PHYSICAL_ISSUE_CAUSAL"
+            interpretation = (
+                "the baseline reproduced producer-partial corruption in every "
+                "attempt while CuTe coordinates, AIU descriptors, packed-A scalar "
+                "copies, waits, barriers, MMA and stores remained unchanged; "
+                "matching the PPU0010 opaque copy atom's Layout<_1> contract by "
+                "reducing 32 identical warp0 callers to one physical issuer closed "
+                "every S1/S2/S4 cell")
         else:
             verdict = "ASYNC_SHARED_VISIBILITY_FENCE_CAUSAL"
             interpretation = (
@@ -858,6 +921,8 @@ try:
     print("FQ_A_STAGE_ROOT_VERDICT "
           f"verdict={verdict} baseline_target={int(baseline_target)} "
           f"baseline_target_cells={baseline_target_cells}/4 "
+          f"baseline_failure_events={baseline_failure_events} "
+          f"baseline_failure_attempts={baseline_failure_attempts}/{attempts} "
           f"baseline_exact_fingerprint={int(baseline_exact_fingerprint)} "
           f"selection={selection} candidates={','.join(candidates)} "
           f"clean_candidates={','.join(clean_candidates) or 'NONE'} "

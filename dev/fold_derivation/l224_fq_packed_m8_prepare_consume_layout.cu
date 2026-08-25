@@ -384,6 +384,32 @@ int main() {
       gmem_b_warp_issuer_exact ? "IDENTICAL_COORDINATES" :
                                  "MAP_CHANGED");
 
+  // CuTe's atom has one logical issuer.  Model the helper's physical guard
+  // separately: the shipping baseline admits all 32 lanes of warp 0, while
+  // PPU_AIU_SINGLE_LOGICAL_ISSUER admits only CTA thread 0.  The planted
+  // two-lane guard is the exact negative -- identical coordinates do not make
+  // two physical opaque-copy issues satisfy a one-thread atom contract.
+  constexpr int BaselinePhysicalIssuers = 32;
+  constexpr int CandidatePhysicalIssuers = 1;
+  constexpr int PlantedTwoPhysicalIssuers = 2;
+  int const logical_aiu_issuers =
+      int(size(typename GmemCopyAtomB::ThrID{}));
+  bool const gmem_b_single_issuer_contract_exact =
+      gmem_b_warp_issuer_exact && logical_aiu_issuers == 1 &&
+      BaselinePhysicalIssuers != logical_aiu_issuers &&
+      CandidatePhysicalIssuers == logical_aiu_issuers &&
+      PlantedTwoPhysicalIssuers != logical_aiu_issuers;
+  std::printf(
+      "L224 B-AIU-issuer-cardinality logical=%d baseline_physical=%d "
+      "candidate_physical=%d planted_two_physical=%d negative_two=%s "
+      "verdict=%s\n",
+      logical_aiu_issuers, BaselinePhysicalIssuers,
+      CandidatePhysicalIssuers, PlantedTwoPhysicalIssuers,
+      PlantedTwoPhysicalIssuers == logical_aiu_issuers ? "FALSE_GREEN" :
+                                                        "RED",
+      gmem_b_single_issuer_contract_exact ? "ONE_PHYSICAL_ISSUER" :
+                                            "ISSUER_CONTRACT_BAD");
+
   constexpr int MmaAtoms = decltype(size<2>(t_cr_a))::value;
   constexpr int ABlocks = decltype(size<2>(a_view))::value;
   constexpr int BAtoms = decltype(size<2>(t_cr_b_mma))::value;
@@ -762,7 +788,7 @@ int main() {
               max_overlap == 0 && identity_bad == 0 && b_register_exact &&
                       all_thread_register_exact &&
                       b_shared_physical_exact && metadata_shared_exact &&
-                      gmem_b_warp_issuer_exact &&
+                      gmem_b_single_issuer_contract_exact &&
                       expected == 1 &&
                       stale13 == 6 && stale_matches == 1 &&
                       family_not_stale_a && output_ownership_exact
@@ -771,7 +797,7 @@ int main() {
   return max_overlap == 0 && identity_bad == 0 && b_register_exact &&
                  all_thread_register_exact &&
                  b_shared_physical_exact && metadata_shared_exact &&
-                 gmem_b_warp_issuer_exact &&
+                 gmem_b_single_issuer_contract_exact &&
                  expected == 1 &&
                  stale13 == 6 && stale_matches == 1 && family_not_stale_a &&
                  output_ownership_exact

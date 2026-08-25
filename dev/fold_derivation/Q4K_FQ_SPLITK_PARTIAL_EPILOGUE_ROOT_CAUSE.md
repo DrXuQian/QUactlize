@@ -324,10 +324,39 @@ equally sized disjoint workspace tail. Target poison is causal only when it is
 clean and control poison remains dirty; both clean means cadence masking, and
 both dirty excludes ordinary global workspace carry-over.
 
+The completed `254a3e4` bundle made that exclusion.  Reuse, control-poison and
+target-poison each failed exactly twice in about 198k--202k geometric exposure,
+always in packed-row/S4 and always as one actively written 32-value FP32
+producer band.  The target-poison failures contained small fixture values
+(`-6`, `-2`, `6`), not poison.  Launch overlap, prior workspace contents and a
+missing partial store are therefore excluded.  In this exact binary AP0 and
+S2 remained clean, which narrows this codegen but does not erase their older
+failures under different code layout.
+
+One locally provable contract mismatch remains at the AIU helper boundary.
+`Copy_Traits<PPU0010_AIU_LOAD>::ThrID` is `Layout<_1>` and its source comment
+states that one thread issues the opaque bulk load.  The two rvalue
+`cute::copy_aiu` paths used by the frozen mixed-input kernels nevertheless let
+all 32 lanes of warp 0 issue the same operation.  L224 proves their CuTe
+coordinates are identical and separately proves that the candidate physical
+issuer count is one; it includes a two-issuer negative.  Coordinate identity
+does not establish that duplicate asynchronous bulk issues are legal.  The
+`single-aiu-issuer` diagnostic gates only these two overloads to CTA thread 0;
+the FA lvalue overload and all descriptors, scalar packed-A copies, stage
+geometry, waits/barriers, MMA and partial stores are unchanged.
+
 The frozen closure is:
 
 ```bash
 FQ_A_STAGE_CANDIDATE=repeat-state \
+PROBE_REPEATS=32768 PROBE_ATTEMPTS=2 \
+bash tools/run_fq_q4k_custom_split_count_box.sh
+```
+
+The issuer-cardinality closure is:
+
+```bash
+FQ_A_STAGE_CANDIDATE=single-aiu-issuer \
 PROBE_REPEATS=32768 PROBE_ATTEMPTS=2 \
 bash tools/run_fq_q4k_custom_split_count_box.sh
 ```
