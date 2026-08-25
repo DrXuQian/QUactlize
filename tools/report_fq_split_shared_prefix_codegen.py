@@ -66,8 +66,12 @@ def report(arm: str, kernel: int, line_path: pathlib.Path,
         opcode: value for opcode, value in sorted(opcodes.items())
         if "smem.st" in opcode or "tsm.st" in opcode
     }
-    provider = ("packed-row" if "KernelAiuPackedA<" in demangled
-                else "standard-aiu")
+    # The packed-A schedule wrapper is erased from this SDK's emitted kernel
+    # spelling, so absence of its source-level type name is not evidence for
+    # the standard provider.  Keep the two exact ELF ordinals and make the
+    # provider hint explicitly unresolved unless the token is actually live.
+    provider_hint = ("packed-row" if "KernelAiuPackedA<" in demangled
+                     else "UNRESOLVED")
     hints = summarize_resource(resource)
     hint_mode = "keywords"
     if not hints:
@@ -80,7 +84,7 @@ def report(arm: str, kernel: int, line_path: pathlib.Path,
     focus_text = " ".join(f"{key}={value}" for key, value in focus.items())
     print(
         "FQ_SHARED_PREFIX_CODEGEN "
-        f"arm={arm} kernel={kernel} provider={provider} "
+        f"arm={arm} kernel={kernel} provider_hint={provider_hint} "
         f"instructions={sum(opcodes.values())} "
         f"{focus_text} resource_hint_mode={hint_mode} "
         f"shared_store_forms={store_json} resource_hints={hint_json} "

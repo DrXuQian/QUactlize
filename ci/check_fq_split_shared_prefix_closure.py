@@ -22,13 +22,17 @@ def require(condition: bool, message: str) -> None:
 def check_texts(runner: str, reporter: str, checker: str) -> None:
     require(runner.count(f"source_sha={SOURCE_SHA}") == 1,
             "parent device bundle SHA changed")
-    require(runner.count("build-legacy-shared-output") == 1,
-            "closure no longer has exactly one named build directory")
+    require(runner.count("build-legacy-shared-output") >= 1,
+            "closure lost the named legacy build directory")
     require(runner.count(
         "PPU_DEFS='PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE=1'") == 1,
         "true legacy-output negative define changed")
     require(runner.count("TARGET=test_fully_quantized_internal_sweep") == 1,
             "closure gained another build invocation")
+    require("ANALYSIS-ONLY-RESUME" in runner and
+            'case "$resume"' in runner and
+            "finalize_closure" in runner,
+            "preserved-artifact analysis resume disappeared")
     for arm in (
         "production-direct", "accumulator-opaque", "clone-opaque",
         "cta-only", "flat-constant-disjoint",
@@ -51,9 +55,12 @@ def check_texts(runner: str, reporter: str, checker: str) -> None:
             "exact-symbol resource/line disassembly changed")
     require("[ \"$count\" -eq 2 ]" in runner,
             "AP0/AP1 exact kernel denominator changed")
-    require("provider=$provider codegen denominator=" in runner and
-            "for provider in standard-aiu packed-row" in runner,
-            "AP0/AP1 provider codegen denominator changed")
+    require("kernel=$kernel codegen denominator=" in runner and
+            "for kernel in 1 2" in runner,
+            "exact ELF-ordinal codegen denominator changed")
+    require("legacy codegen binary authority is missing or non-unique" in runner and
+            "correctness_repeats=$repeats" in runner,
+            "preserved legacy binary/repeat authority changed")
     require("--legacy-shared-output-direct" in runner and
             "--legacy-shared-output-probe" in runner,
             "legacy logs no longer enter the adjudicator")
@@ -63,7 +70,8 @@ def check_texts(runner: str, reporter: str, checker: str) -> None:
     require("resource_hint_mode=" in reporter and
             "resource_hints=" in reporter and
             "shared_store_forms=" in reporter and
-            '"KernelAiuPackedA<"' in reporter,
+            '"KernelAiuPackedA<"' in reporter and
+            'else "UNRESOLVED"' in reporter,
             "flexible raw resource evidence disappeared")
     require("shared-store negative" in reporter,
             "reporter negative control disappeared")
@@ -85,6 +93,8 @@ def self_test(runner: str, reporter: str, checker: str) -> None:
             "PPU_SPLITK_SHARED_PROBE_DISCARD_GMEM=1", 1),
          reporter, checker),
         (runner.replace('"-res-usage=$candidate"', '"-isa"', 1),
+         reporter, checker),
+        (runner.replace("ANALYSIS-ONLY-RESUME", "FRESH-REBUILD", 1),
          reporter, checker),
         (runner, reporter.replace(
             'for name in ("mma", "smem.st", "tsm.st"',
@@ -108,8 +118,8 @@ def main() -> int:
                       (RUNNER, REPORTER, CHECKER))
         self_test(*texts)
         print("[fq-shared-prefix-closure-source:self-test] PASS parent/hash "
-              "reuse, one legacy build, exact AP0/AP1 codegen, corrected "
-              "admission and five negative plants")
+              "reuse, one legacy build, exact two-kernel codegen, corrected "
+              "admission and six negative plants")
         return 0
     except (AssertionError, OSError, ValueError) as error:
         print(f"[fq-shared-prefix-closure-source] FAIL: {error}",

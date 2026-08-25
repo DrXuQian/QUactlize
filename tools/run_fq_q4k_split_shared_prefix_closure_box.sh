@@ -8,8 +8,117 @@ fail() {
   return 2
 }
 
+finalize_closure() {
+  local root="$1" source_out="$2" out="$3" source_sha="$4"
+  local head_sha="$5" legacy_binary="$6" repeats="$7"
+  local legacy_direct_rc="$8" legacy_probe_rc="$9" execution="${10}"
+  local codegen_log="$out/results/codegen-summary.log"
+  local direct_log="$out/results/legacy-shared-output-direct.log"
+  local probe_log="$out/results/legacy-shared-output-probe.log"
+  [ -x "$legacy_binary" ] && [ ! -L "$legacy_binary" ] || {
+    fail "legacy binary missing during finalize: $legacy_binary"
+    return $?
+  }
+  for path in "$codegen_log" "$direct_log" "$probe_log"; do
+    [ -f "$path" ] && [ ! -L "$path" ] || {
+      fail "closure evidence missing during finalize: $path"
+      return $?
+    }
+  done
+  grep -Fq "correctness_repeats=$repeats" "$direct_log" || {
+    fail "legacy direct repeat authority differs from $repeats"
+    return $?
+  }
+  grep -Fq "correctness_repeats=$repeats" "$probe_log" || {
+    fail "legacy probe repeat authority differs from $repeats"
+    return $?
+  }
+  local legacy_codegen_sha legacy_actual_sha
+  legacy_codegen_sha="$(sed -n \
+    's/^FQ_SHARED_PREFIX_CODEGEN arm=legacy-shared-output .* binary_sha256=\([0-9a-f]\{64\}\) .*/\1/p' \
+    "$codegen_log" | sort -u)"
+  [ "$(printf '%s\n' "$legacy_codegen_sha" | grep -Ec '^[0-9a-f]{64}$' || true)" -eq 1 ] || {
+    fail 'legacy codegen binary authority is missing or non-unique'
+    return $?
+  }
+  legacy_actual_sha="$(sha256sum "$legacy_binary" | awk '{print $1}')" || return 2
+  [ "$legacy_actual_sha" = "$legacy_codegen_sha" ] || {
+    fail 'legacy binary differs from captured exact-symbol codegen'
+    return $?
+  }
+
+  # This SDK erases the source-level packed-A schedule wrapper from the
+  # demangled device spelling.  Preserve the two exact ELF ordinals instead
+  # of manufacturing an AP0/AP1 label from a missing token.
+  local -a codegen_arms=(
+    production-direct clone-opaque cta-only flat-constant-disjoint
+    flat-accumulator-disjoint r2s-vector-disjoint r2s-scalar-disjoint
+    r2s-snapshot-disjoint full-discard legacy-shared-output
+  )
+  local arm kernel count
+  for arm in "${codegen_arms[@]}"; do
+    count="$(grep -Ec \
+      "^FQ_SHARED_PREFIX_CODEGEN arm=$arm kernel=[12] " \
+      "$codegen_log" || true)"
+    [ "$count" -eq 2 ] || {
+      fail "$arm exact kernel denominator=$count, expected 2"
+      return $?
+    }
+    for kernel in 1 2; do
+      count="$(grep -Ec \
+        "^FQ_SHARED_PREFIX_CODEGEN arm=$arm kernel=$kernel " \
+        "$codegen_log" || true)"
+      [ "$count" -eq 1 ] || {
+        fail "$arm kernel=$kernel codegen denominator=$count, expected 1"
+        return $?
+      }
+    done
+  done
+
+  local -a reused_arms=(
+    production-direct accumulator-opaque clone-opaque cta-only
+    flat-constant-disjoint flat-accumulator-disjoint
+    r2s-vector-disjoint r2s-scalar-disjoint r2s-snapshot-disjoint
+    r2s-s2r-vector-disjoint r2s-s2r-scalar-disjoint full-discard
+  )
+  local -a verdict_args=()
+  for arm in "${reused_arms[@]}"; do
+    verdict_args+=(
+      "--$arm-direct" "$source_out/results/$arm-direct.log"
+      "--$arm-probe" "$source_out/results/$arm-probe.log")
+  done
+  verdict_args+=(
+    --legacy-shared-output-direct "$direct_log"
+    --legacy-shared-output-probe "$probe_log")
+  python3 -B "$root/tools/check_fq_split_shared_prefix_root.py" \
+    "${verdict_args[@]}" | tee "$out/results/verdict.log"
+  local verdict_rc=${PIPESTATUS[0]}
+
+  {
+    echo 'schema=quactlize.fq-shared-prefix-closure.v1'
+    echo "source_bundle=$source_out"
+    echo "source_sha=$source_sha"
+    echo "closure_sha=$head_sha"
+    echo "execution=$execution"
+    echo 'codegen_provider_binding=EXACT-ELF-ORDINAL-ONLY'
+    echo "legacy_binary_sha256=$(sha256sum "$legacy_binary" | awk '{print $1}')"
+    echo "legacy_direct_rc=$legacy_direct_rc"
+    echo "legacy_probe_rc=$legacy_probe_rc"
+    echo "probe_repeats=$repeats"
+  } >"$out/results/manifest.txt"
+  find "$out/results" -maxdepth 1 -type f \
+    ! -name authority.sha256 -print0 \
+    | sort -z | xargs -0 sha256sum \
+    >"$out/results/authority.sha256" || return 2
+  if [ "$verdict_rc" -ne 0 ]; then
+    echo "[fq-shared-prefix-closure] UNADJUDICATED artifacts=$out" >&2
+    return "$verdict_rc"
+  fi
+  echo "[fq-shared-prefix-closure] ROOT_CAUSE_COMPLETE artifacts=$out"
+}
+
 main() {
-  local root workspace_root source_out out source_sha head_sha jobs repeats
+  local root workspace_root source_out out source_sha head_sha jobs repeats resume
   local sdk_root hgobjdump generated build_dir build_log legacy_binary
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
   workspace_root="$(realpath -e /workspace)" || return 2
@@ -38,9 +147,14 @@ main() {
   fi
   jobs="${JOBS:-16}"
   repeats="${PROBE_REPEATS:-2048}"
+  resume="${RESUME:-0}"
   case "$jobs" in *[!0-9]*|0) fail 'JOBS must be positive'; return $? ;; esac
   case "$repeats" in
     *[!0-9]*|0) fail 'PROBE_REPEATS must be positive'; return $? ;;
+  esac
+  case "$resume" in
+    0|1) ;;
+    *) fail 'RESUME must be 0 or 1'; return $? ;;
   esac
 
   out="$(realpath -m -- "${OUT:-/workspace/quactlize-fq-q4k-shared-prefix-closure-${head_sha:0:8}-$(date -u +%Y%m%dT%H%M%SZ)-$$}")" || return 2
@@ -48,8 +162,15 @@ main() {
     "$workspace_root"/*) ;;
     *) fail "OUT must resolve below /workspace: $out"; return $? ;;
   esac
-  [ ! -e "$out" ] || { fail "refusing to overwrite $out"; return $?; }
-  mkdir -p "$out/results" || return 2
+  if [ "$resume" -eq 1 ]; then
+    [ -n "${OUT:-}" ] && [ -d "$out/results" ] || {
+      fail 'RESUME=1 requires OUT to name the preserved closure artifact'
+      return $?
+    }
+  else
+    [ ! -e "$out" ] || { fail "refusing to overwrite $out"; return $?; }
+    mkdir -p "$out/results" || return 2
+  fi
 
   cmp "$source_out/results/source.before.sha256" \
       "$source_out/results/source.after.sha256" >/dev/null || {
@@ -143,6 +264,14 @@ main() {
   python3 -B "$root/tools/report_fq_split_shared_prefix_codegen.py" --self-test || return 2
   python3 -B "$root/ci/check_fq_split_shared_prefix_root.py" || return 2
   python3 -B "$root/ci/check_fq_split_shared_prefix_closure.py" || return 2
+
+  if [ "$resume" -eq 1 ]; then
+    legacy_binary="$out/build-legacy-shared-output/ppu_targets/test_fully_quantized_internal_sweep"
+    finalize_closure "$root" "$source_out" "$out" "$source_sha" \
+      "$head_sha" "$legacy_binary" "$repeats" RECOVERED RECOVERED \
+      ANALYSIS-ONLY-RESUME
+    return $?
+  fi
 
   generated="$source_out/generated/closure"
   [ -f "$generated/manifest.json" ] || {
@@ -244,51 +373,9 @@ main() {
       return $?
     }
   done
-  local provider_count provider
-  for arm in "${codegen_arms[@]}"; do
-    for provider in standard-aiu packed-row; do
-      provider_count="$(grep -Ec \
-        "^FQ_SHARED_PREFIX_CODEGEN arm=$arm kernel=[12] provider=$provider " \
-        "$out/results/codegen-summary.log" || true)"
-      [ "$provider_count" -eq 1 ] || {
-        fail "$arm provider=$provider codegen denominator=$provider_count, expected 1"
-        return $?
-      }
-    done
-  done
-
-  local -a verdict_args=()
-  for arm in "${reused_arms[@]}"; do
-    verdict_args+=(
-      "--$arm-direct" "$source_out/results/$arm-direct.log"
-      "--$arm-probe" "$source_out/results/$arm-probe.log")
-  done
-  verdict_args+=(
-    --legacy-shared-output-direct "$direct_log"
-    --legacy-shared-output-probe "$probe_log")
-  python3 -B "$root/tools/check_fq_split_shared_prefix_root.py" \
-    "${verdict_args[@]}" | tee "$out/results/verdict.log"
-  local verdict_rc=${PIPESTATUS[0]}
-
-  {
-    echo 'schema=quactlize.fq-shared-prefix-closure.v1'
-    echo "source_bundle=$source_out"
-    echo "source_sha=$source_sha"
-    echo "closure_sha=$head_sha"
-    echo "legacy_binary_sha256=$(sha256sum "$legacy_binary" | awk '{print $1}')"
-    echo "legacy_direct_rc=$direct_rc"
-    echo "legacy_probe_rc=$probe_rc"
-    echo "probe_repeats=$repeats"
-  } >"$out/results/manifest.txt"
-  find "$out/results" -maxdepth 1 -type f \
-    ! -name authority.sha256 -print0 \
-    | sort -z | xargs -0 sha256sum \
-    >"$out/results/authority.sha256" || return 2
-  if [ "$verdict_rc" -ne 0 ]; then
-    echo "[fq-shared-prefix-closure] UNADJUDICATED artifacts=$out" >&2
-    return "$verdict_rc"
-  fi
-  echo "[fq-shared-prefix-closure] ROOT_CAUSE_COMPLETE artifacts=$out"
+  finalize_closure "$root" "$source_out" "$out" "$source_sha" \
+    "$head_sha" "$legacy_binary" "$repeats" "$direct_rc" "$probe_rc" \
+    FRESH-ONE-BUILD
 }
 
 main "$@"
