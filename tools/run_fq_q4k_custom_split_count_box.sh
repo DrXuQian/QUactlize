@@ -914,13 +914,14 @@ try:
             for provider in expected_symbols for split in (2, 4))
         for attempt in range(1, attempts + 1))
     # Earlier multi-seam closures preregistered all four AP0/AP1 x S2/S4
-    # cells.  The repeat-state audit subsequently froze the reduced incident:
-    # in one identical binary only packed-row/S4 failed, independently in both
-    # attempts.  The single-issuer arm therefore admits the observed family
-    # only when every baseline attempt contains a producer-partial failure;
-    # all other candidates retain the historical four-cell denominator.
+    # cells. The repeat-state audit subsequently froze the reduced incident:
+    # the corrupt cell migrates with code layout while every baseline attempt
+    # still contains a producer-partial failure. One-variable issuer/fence/
+    # lifetime arms therefore use that attempt denominator; combined legacy
+    # factorials retain the historical four-cell rule.
     reduced_incident_selection = candidates in {
-        ("single-aiu-issuer",), ("stable-k-tile-shape",)}
+        ("async-shared-fence",), ("single-aiu-issuer",),
+        ("stable-k-tile-shape",)}
     baseline_target = (
         baseline_failure_attempts == attempts and
         baseline_failure_events >= attempts
@@ -932,8 +933,14 @@ try:
     baseline_s1_corrupt = any(corrupt(row) for row in baseline_s1)
     baseline_s1_inadmissible = all(s1_inadmissible(row, 1)
                                    for row in baseline_s1)
-    if baseline_s1_corrupt:
-        failure_scope = "CUSTOM_KERNEL_COMMON_S1_S2_S4"
+    shipping_all_clean = shipping_clean_count == len(shipping_cells)
+    shipping_any_corrupt = shipping_corrupt_count != 0
+    if baseline_s1_corrupt and shipping_all_clean:
+        failure_scope = "CUSTOM_WRAPPER_OR_DIRECT_PARTIAL_NOT_SHIPPING_S1"
+    elif baseline_s1_corrupt and shipping_any_corrupt:
+        failure_scope = "CUSTOM_AND_SHIPPING_S1_COMMON_MAINLOOP"
+    elif baseline_s1_corrupt:
+        failure_scope = "CUSTOM_S1_WITH_INCOMPLETE_SHIPPING_CONTROL"
     elif baseline_s1_clean:
         failure_scope = "S_GT1_ONLY_IN_THIS_DENOMINATOR"
     elif baseline_s1_inadmissible:
