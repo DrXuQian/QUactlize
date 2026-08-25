@@ -205,15 +205,13 @@ PY
       --correctness-repeats="$repeats" --tm8-max-m=8 --bc-mode=skip \
       --force-custom-splitk-s1 >"$log" 2>&1
     rc=$?
-    if [ "$arm" = direct ]; then
-      [ "$rc" -eq 0 ] || {
-        tail -100 "$log" >&2
-        fail "direct arm rc=$rc artifacts=$out"
-        return $?
-      }
-    elif [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+    # The benchmark returns 1 when one or more selected cells fail numeric
+    # correctness.  That is evidence for this diagnostic, not a runner
+    # failure: retain both arms and let the closed denominator below classify
+    # it.  Only an rc outside {0,1} is an infrastructure failure.
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
       tail -100 "$log" >&2
-      fail "legacy arm infrastructure rc=$rc artifacts=$out"
+      fail "$arm infrastructure rc=$rc artifacts=$out"
       return $?
     fi
     printf 'FQ_CUSTOM_SPLIT_COUNT_BINARY arm=%s sha256=%s rc=%d repeats=%s\n' \
@@ -280,41 +278,83 @@ def corrupt(row):
 try:
     direct = parse(sys.argv[1])
     legacy = parse(sys.argv[2])
-    if not all(clean(row) for row in direct.values()):
-        raise ValueError("direct-store control is not raw-bit exact")
-    if not all(clean(row) or corrupt(row) for row in legacy.values()):
-        raise ValueError("legacy arm contains an infrastructure/non-numeric state")
-    for provider in expected_symbols:
-        for split in (1, 2, 4):
-            row = legacy[(provider, split)]
-            print(
-                "FQ_CUSTOM_SPLIT_COUNT_RESULT "
-                f"provider={provider} S={split} state={row['state']} "
-                f"raw_bad={row['raw_bad']} failure_repeat={row['failure_repeat']}")
-    split_rows = [legacy[(provider, split)]
-                  for provider in expected_symbols for split in (2, 4)]
-    if not all(corrupt(row) for row in split_rows):
-        raise ValueError("legacy S=2/S=4 historical negative did not reproduce")
-    s1_bad = [provider for provider in expected_symbols
-              if corrupt(legacy[(provider, 1)])]
-    if not s1_bad:
-        verdict = "RUNTIME_SPLIT_DECOMPOSITION_NECESSARY"
+    for arm, rows in (("direct", direct), ("legacy-shared", legacy)):
+        if not all(clean(row) or corrupt(row) for row in rows.values()):
+            raise ValueError(
+                f"{arm} arm contains an infrastructure/non-numeric state")
+        for provider in expected_symbols:
+            for split in (1, 2, 4):
+                row = rows[(provider, split)]
+                print(
+                    "FQ_CUSTOM_SPLIT_COUNT_RESULT "
+                    f"arm={arm} provider={provider} S={split} "
+                    f"state={row['state']} raw_bad={row['raw_bad']} "
+                    f"failure_repeat={row['failure_repeat']} "
+                    f"first_bad={row['first_bad']} "
+                    f"first_want={row['first_want']} "
+                    f"first_got={row['first_got']}")
+
+    direct_s_gt1_bad = [
+        f"{provider}:S{split}"
+        for provider in expected_symbols for split in (2, 4)
+        if corrupt(direct[(provider, split)])]
+    direct_s1_bad = [provider for provider in expected_symbols
+                     if corrupt(direct[(provider, 1)])]
+    legacy_s_gt1_clean = [
+        f"{provider}:S{split}"
+        for provider in expected_symbols for split in (2, 4)
+        if clean(legacy[(provider, split)])]
+
+    # Fail closed, but only after publishing all twelve cells and a semantic
+    # verdict.  A dirty production-direct S>1 cell invalidates the shipping
+    # repair.  A dirty production-direct custom S1 cell invalidates this S1
+    # control specifically; neither outcome may be hidden as a missing log.
+    diagnostic_rc = 0
+    if direct_s_gt1_bad:
+        verdict = "PRODUCTION_DIRECT_S_GT1_REGRESSION"
         interpretation = (
-            "same custom kernel and FP32 epilogue are clean at S1; "
-            "S>1 K partition/work-grid context is required")
-    elif len(s1_bad) == len(expected_symbols):
-        verdict = "CUSTOM_KERNEL_CONTEXT_SUFFICIENT"
+            "the production direct-store S2/S4 arm is not raw-bit exact; "
+            "the shipping repair must be re-opened before this causal test")
+        detail = ",".join(direct_s_gt1_bad)
+        diagnostic_rc = 1
+    elif direct_s1_bad:
+        verdict = "CUSTOM_S1_CONTROL_INVALID"
         interpretation = (
-            "runtime split count is not necessary; shipping S1 stays clean "
-            "because it is a different kernel/output epilogue")
+            "the custom-kernel S1 direct-store route is itself not raw-bit "
+            "exact, so legacy custom-S1 cannot adjudicate whether runtime "
+            "K partitioning is necessary")
+        detail = ",".join(direct_s1_bad)
+        diagnostic_rc = 1
+    elif legacy_s_gt1_clean:
+        verdict = "LEGACY_NEGATIVE_NONREPRODUCTION"
+        interpretation = (
+            "one or more legacy S2/S4 cells stayed clean; the historical "
+            "negative denominator did not reproduce")
+        detail = ",".join(legacy_s_gt1_clean)
+        diagnostic_rc = 1
     else:
-        verdict = "PROVIDER_DEPENDENT_CUSTOM_S1"
-        interpretation = (
-            "custom S1 sensitivity depends on the A provider; runtime split "
-            "is not a universal explanation")
-    print(f"FQ_CUSTOM_SPLIT_COUNT_VERDICT verdict={verdict} "
-          f"s1_bad_providers={','.join(s1_bad) if s1_bad else 'NONE'}")
+        s1_bad = [provider for provider in expected_symbols
+                  if corrupt(legacy[(provider, 1)])]
+        if not s1_bad:
+            verdict = "RUNTIME_SPLIT_DECOMPOSITION_NECESSARY"
+            interpretation = (
+                "same custom kernel and FP32 epilogue are clean at S1; "
+                "S>1 K partition/work-grid context is required")
+        elif len(s1_bad) == len(expected_symbols):
+            verdict = "CUSTOM_KERNEL_CONTEXT_SUFFICIENT"
+            interpretation = (
+                "runtime split count is not necessary; shipping S1 stays "
+                "clean because it is a different kernel/output epilogue")
+        else:
+            verdict = "PROVIDER_DEPENDENT_CUSTOM_S1"
+            interpretation = (
+                "custom S1 sensitivity depends on the A provider; runtime "
+                "split is not a universal explanation")
+        detail = ",".join(s1_bad) if s1_bad else "NONE"
+
+    print(f"FQ_CUSTOM_SPLIT_COUNT_VERDICT verdict={verdict} detail={detail}")
     print("FQ_CUSTOM_SPLIT_COUNT_INTERPRETATION " + interpretation)
+    raise SystemExit(diagnostic_rc)
 except (KeyError, OSError, ValueError) as error:
     print(f"[fq-custom-split-count] FAIL: {error}", file=sys.stderr)
     raise SystemExit(2)

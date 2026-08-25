@@ -420,12 +420,15 @@ int run_shape(Shape shape, Cli const& cli,
             "FQ_CUSTOM_SPLIT_COUNT_CELL symbol=%s provider=%s S=%d "
             "kernel=GemmUniversalMixedInputSplitKParallel state=%s "
             "raw_bad=%llu failure_step=%s failure_repeat=%d "
+            "first_bad=%zu first_want=0x%04x first_got=0x%04x "
             "partial_bytes=%zu\n",
             entry.symbol,
             entry.a_provider ? "packed-row" : "standard-aiu",
             cell.split, state_name(cell.state),
             static_cast<unsigned long long>(cell.raw_bad),
-            cell.failure_step, cell.failure_repeat, cell.partial_bytes);
+            cell.failure_step, cell.failure_repeat, cell.first_bad_index,
+            unsigned(cell.first_bad_want), unsigned(cell.first_bad_got),
+            cell.partial_bytes);
       }
     }
   }
