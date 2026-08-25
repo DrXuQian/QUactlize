@@ -39,19 +39,26 @@ main() {
     return 1
   fi
   grep -Fqx \
-    'L217_CASE tile_n=64 threads=32 owners=64 cpt=1 copy_missing=32 first_copy_missing=32 decode_missing=0 unowned_reads=32 map_bad=0 predicate_bad=256 first_predicate_bad=512' \
+    'L217_CASE tile_n=64 threads=32 owners=64 cpt=1 copy_missing=32 first_copy_missing=32 decode_missing=0 unowned_reads=32 map_bad=0 duplicate_publishers=0 predicate_bad=256 first_predicate_bad=512' \
     "$out/legacy.log" || {
       printf '[l217-runner] FAIL: legacy arm lost the exact device failure signature\n' >&2
       cat "$out/legacy.log" >&2
       return 1
     }
   grep -Fqx \
-    'L217_SUMMARY variant=derived-ownership cases=6 copy_missing=0 decode_missing=0 unowned_reads=0 map_bad=0 predicate_bad=0 verdict=PASS' \
+    'L217_SUMMARY variant=derived-ownership cases=6 copy_missing=0 decode_missing=0 unowned_reads=0 map_bad=0 duplicate_publishers=0 predicate_bad=0 verdict=PASS' \
     "$out/derived.log" || {
       printf '[l217-runner] FAIL: derived ownership denominator changed\n' >&2
       return 1
     }
-  printf '[l217-runner] PASS: exact 32-column historical hole RED; six derived ownership cells exact; artifacts=%s\n' "$out"
+  grep -Fqx \
+    'L217_CASE tile_n=64 threads=128 owners=64 cpt=1 copy_missing=0 first_copy_missing=-1 decode_missing=0 unowned_reads=0 map_bad=0 duplicate_publishers=64 predicate_bad=0 first_predicate_bad=-1' \
+    "$out/legacy.log" || {
+      printf '[l217-runner] FAIL: legacy arm lost the exact two-publisher CTA128 signature\n' >&2
+      cat "$out/legacy.log" >&2
+      return 1
+    }
+  printf '[l217-runner] PASS: exact 32-column hole and CTA128 duplicate publishers RED; six derived ownership cells exact; artifacts=%s\n' "$out"
 }
 
 main "$@"

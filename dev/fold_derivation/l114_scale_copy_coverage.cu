@@ -33,6 +33,12 @@ using Plan8 = md::ScaleCopyPlan<128, 8, 64>;
 using Plan16 = md::ScaleCopyPlan<128, 16, 64>;
 using Plan256 = md::ScaleCopyPlan<128, 8, 256>;
 using Q4A32Plan = md::ScaleCopyPlan<64, 4, 256>;
+// Exact pass/fail contrast from the Q4_K M=1 incident.  TM8/TN64/WN64 has one
+// 32-thread warp, so the old wrapped protocol happens to be exact.  WN16 has
+// four warps (128 CTA threads) but only 64 logical metadata slots, so modulo
+// replay publishes every destination twice.
+using Q4A64PassPlan = md::ScaleCopyPlan<64, 8, 32>;
+using Q4A64FailPlan = md::ScaleCopyPlan<64, 8, 128>;
 static_assert(Plan8::thread_layout_h_uncapped == 16 && Plan8::thread_layout_h == 8 &&
               Plan8::thread_layout_w == 8 && Plan8::values_per_thread == 16 &&
               Plan8::thread_slots == 64 && Plan8::Coverage::value);
@@ -46,6 +52,14 @@ static_assert(Q4A32Plan::thread_layout_h == 8 &&
               Q4A32Plan::thread_layout_w == 4 &&
               Q4A32Plan::values_per_thread == 8 &&
               Q4A32Plan::thread_slots == 32 && Q4A32Plan::Coverage::value);
+static_assert(Q4A64PassPlan::thread_layout_h == 4 &&
+              Q4A64PassPlan::thread_layout_w == 8 &&
+              Q4A64PassPlan::values_per_thread == 16 &&
+              Q4A64PassPlan::thread_slots == 32 && Q4A64PassPlan::Coverage::value);
+static_assert(Q4A64FailPlan::thread_layout_h == 8 &&
+              Q4A64FailPlan::thread_layout_w == 8 &&
+              Q4A64FailPlan::values_per_thread == 8 &&
+              Q4A64FailPlan::thread_slots == 64 && Q4A64FailPlan::Coverage::value);
 
 struct CopyStats {
   int unique = 0;
@@ -118,6 +132,10 @@ int main() {
   auto const cta256_wrap = copy_stats<Plan256, Protocol::WrappedAll>();
   auto const q4a32_owner = copy_stats<Q4A32Plan, Protocol::OwnersOnly>();
   auto const q4a32_legacy = copy_stats<Q4A32Plan, Protocol::WrappedAll>();
+  auto const q4a64_pass_owner = copy_stats<Q4A64PassPlan, Protocol::OwnersOnly>();
+  auto const q4a64_pass_legacy = copy_stats<Q4A64PassPlan, Protocol::WrappedAll>();
+  auto const q4a64_fail_owner = copy_stats<Q4A64FailPlan, Protocol::OwnersOnly>();
+  auto const q4a64_fail_legacy = copy_stats<Q4A64FailPlan, Protocol::WrappedAll>();
   print_stats("real-atom SK8 CTA64 owners", sk8);
   print_stats("real-atom SK16 CTA64 owners", sk16);
   print_stats("real-atom SK8 CTA256 raw", cta256_raw);
@@ -125,6 +143,10 @@ int main() {
   print_stats("real-atom SK8 CTA256 legacy-wrapped", cta256_wrap);
   print_stats("Q4/A32 CTA256 owners", q4a32_owner);
   print_stats("Q4/A32 CTA256 legacy-wrapped", q4a32_legacy);
+  print_stats("Q4/A64 CTA32 passing owners", q4a64_pass_owner);
+  print_stats("Q4/A64 CTA32 passing legacy-wrapped", q4a64_pass_legacy);
+  print_stats("Q4/A64 CTA128 failing owners", q4a64_fail_owner);
+  print_stats("Q4/A64 CTA128 failing legacy-wrapped", q4a64_fail_legacy);
 
   bool const sk8_full = sk8.unique == 1024 && sk8.visits == 1024 && sk8.duplicates == 0 &&
                         sk8.oob == 0 && sk8.min_hits == 1 && sk8.max_hits == 1;
@@ -152,15 +174,31 @@ int main() {
                                 q4a32_legacy.oob == 0 &&
                                 q4a32_legacy.min_hits == 8 &&
                                 q4a32_legacy.max_hits == 8;
+  auto const exact_q4a64 = [] (CopyStats const& s) {
+    return s.unique == 512 && s.visits == 512 && s.duplicates == 0 &&
+           s.oob == 0 && s.min_hits == 1 && s.max_hits == 1;
+  };
+  bool const q4a64_pass_exact = exact_q4a64(q4a64_pass_owner) &&
+                                exact_q4a64(q4a64_pass_legacy);
+  bool const q4a64_fail_owner_exact = exact_q4a64(q4a64_fail_owner);
+  bool const q4a64_fail_legacy_red =
+      q4a64_fail_legacy.unique == 512 && q4a64_fail_legacy.visits == 1024 &&
+      q4a64_fail_legacy.duplicates == 512 && q4a64_fail_legacy.oob == 0 &&
+      q4a64_fail_legacy.min_hits == 2 && q4a64_fail_legacy.max_hits == 2;
   std::printf("[l114] coverage: SK8=%s SK16=%s CTA256-raw-oob=%s "
-              "CTA256-owner=%s legacy-wrap=%s Q4A32-owner=%s Q4A32-legacy=%s\n",
+              "CTA256-owner=%s legacy-wrap=%s Q4A32-owner=%s Q4A32-legacy=%s "
+              "Q4A64-CTA32=%s Q4A64-CTA128-owner=%s Q4A64-CTA128-legacy=%s\n",
               sk8_full ? "FULL" : "FAIL", sk16_full ? "FULL" : "FAIL",
               raw_walks_out ? "LOCKED" : "FAIL", owner_exact ? "EXACT" : "FAIL",
               wrap_negative ? "RED" : "FALSE-GREEN",
               q4a32_exact ? "EXACT" : "FAIL",
-              q4a32_legacy_red ? "RED" : "FALSE-GREEN");
+              q4a32_legacy_red ? "RED" : "FALSE-GREEN",
+              q4a64_pass_exact ? "EXACT" : "FAIL",
+              q4a64_fail_owner_exact ? "EXACT" : "FAIL",
+              q4a64_fail_legacy_red ? "RED" : "FALSE-GREEN");
   return sk8_full && sk16_full && raw_walks_out && owner_exact &&
-         wrap_negative && q4a32_exact && q4a32_legacy_red ? 0 : 1;
+         wrap_negative && q4a32_exact && q4a32_legacy_red &&
+         q4a64_pass_exact && q4a64_fail_owner_exact && q4a64_fail_legacy_red ? 0 : 1;
 }
 
 #else

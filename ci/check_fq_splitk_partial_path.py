@@ -17,6 +17,15 @@ DIRECT = ROOT / (
 PIPELINE = ROOT / (
     "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/"
     "ppu_mixed_pipeline.hpp")
+PACKED_OWNER = ROOT / (
+    "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/"
+    "ppu_packed_metadata_ownership.hpp")
+ONE_PLANE = ROOT / (
+    "quactlize/include/actlize_extensions/cutlass/gemm/collective/"
+    "quactlize_mma_mixed_input.hpp")
+TWO_PLANE = ROOT / (
+    "quactlize/include/actlize_extensions/cutlass/gemm/collective/"
+    "ppu_mma_aiu_mixed_input_2plane.hpp")
 TIMING = ROOT / "benchmarks/splitk_producer_timing.hpp"
 SCALEFIRST = ROOT / "benchmarks/scalefirst_internal_sweep_bench.hpp"
 FQ = ROOT / "benchmarks/fully_quantized_splitk_producer_bench.hpp"
@@ -42,6 +51,9 @@ def check(texts: dict[str, str]) -> list[str]:
     kernel = texts["kernel"]
     direct = texts["direct"]
     pipeline = texts["pipeline"]
+    packed_owner = texts["packed_owner"]
+    one_plane = texts["one_plane"]
+    two_plane = texts["two_plane"]
     timing = texts["timing"]
     scalefirst = texts["scalefirst"]
     fq = texts["fq"]
@@ -66,6 +78,35 @@ def check(texts: dict[str, str]) -> list[str]:
     for token in banned:
         if token in combined:
             errors.append(f"retired diagnostic seam returned: {token}")
+
+    owner_contract = (
+        "static constexpr bool owns_physical_thread(int thread_idx)",
+        "return thread_idx >= 0 && thread_idx < owner_threads;",
+    )
+    for token in owner_contract:
+        if packed_owner.count(token) != 1:
+            errors.append(f"packed metadata physical-owner contract differs: {token}")
+
+    publication_order = (
+        "ScaleCopyPlan::owns_physical_thread(thread_idx)",
+        "PackedMetadataOwnership::owns_physical_thread(thread_idx)",
+        "ScaleCopyPlan::logical_slot(thread_idx)",
+        "PackedMetadataOwnership::copy_owner(thread_idx)",
+        "if constexpr (kPackedScaleOn && Scale_NumThreads > 32 &&",
+    )
+    for label, source in (("one-plane", one_plane), ("two-plane", two_plane)):
+        errors += ordered(source, publication_order, f"{label} exact metadata publication")
+        if "thread_idx % int(cute::size(GmemTiledCopyScalePacked{}))" in source:
+            errors.append(f"{label} restored modulo-replayed packed publishers")
+        if source.count("bool scale_copy_owner,\n        bool packed_copy_owner)") != 1:
+            errors.append(f"{label} async-copy helper lost distinct scale/packed ownership")
+        if source.count("int const scale_thread_idx,\n        int const packed_thread_idx,\n        bool scale_copy_owner)") != 1:
+            errors.append(f"{label} partition helper lost distinct logical copy slots")
+        if source.count("if (packed_copy_owner)") != 2:
+            errors.append(f"{label} packed prologue/steady-state copies are not both owner-guarded")
+        if source.count("PPU_MIXED_LEGACY_MODULO_METADATA_PUBLISHERS") != 2 or \
+                source.count("kLegacyModuloMetadataPublishers") != 5:
+            errors.append(f"{label} exact legacy modulo-publisher negative differs")
 
     required_direct = (
         "tiled_mma.get_thread_slice(thread_idx)",
@@ -156,6 +197,12 @@ def self_test(texts: dict[str, str]) -> None:
          "copy(retired_s2r, tDsC, tDrC);"),
         ("launcher", "return fpa_intb_ppu::generic_launcher<",
          "return retired_shipping_launcher<"),
+        ("packed_owner", "return thread_idx >= 0 && thread_idx < owner_threads;",
+         "return true;"),
+        ("one_plane", "ScaleCopyPlan::owns_physical_thread(thread_idx)",
+         "true"),
+        ("two_plane", "PackedMetadataOwnership::owns_physical_thread(thread_idx)",
+         "true"),
     )
     for key, old, new in plants:
         planted = dict(texts)
@@ -171,6 +218,9 @@ def main() -> int:
         "kernel": KERNEL,
         "direct": DIRECT,
         "pipeline": PIPELINE,
+        "packed_owner": PACKED_OWNER,
+        "one_plane": ONE_PLANE,
+        "two_plane": TWO_PLANE,
         "timing": TIMING,
         "scalefirst": SCALEFIRST,
         "fq": FQ,
@@ -188,7 +238,7 @@ def main() -> int:
         return 2
     print("[fq-splitk-partial-path] PASS direct ownership, legacy negative, "
           "mainloop/epilogue synchronization, distinct S1 type, "
-          "ordered-close timing, and six negative plants")
+          "ordered-close timing, exact metadata publication, and nine negative plants")
     return 0
 
 

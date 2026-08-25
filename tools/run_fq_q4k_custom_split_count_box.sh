@@ -20,6 +20,10 @@
 # `single-aiu-issuer` restores the opaque PPU0010 AIU copy atom's one-logical-
 # thread contract at the two mixed-input helper overloads. It changes no CuTe
 # coordinate, descriptor, packed-A scalar copy, wait/barrier, MMA or store.
+# `exact-metadata-publication` is the causal closure: its baseline reconstructs
+# the old all-thread modulo replay with one compile-time must-red define, while
+# the candidate is the production exact-owner path.  Both use the same source,
+# generated tactics, custom kernel, inputs and S=1/2/4 denominator.
 # `stable-k-tile-shape` is a lifetime-hygiene diagnostic, not a causal repair
 # candidate for this incident. CuTe's iterator retains Shape const& while the
 # baseline binds a temporary returned by shape<2>(gA), but this dense kernel's
@@ -61,9 +65,9 @@ main() {
   attempts="${PROBE_ATTEMPTS:-2}"
   candidate="${FQ_A_STAGE_CANDIDATE:-remaining-three}"
   case "$candidate" in
-    asm-memory-contract|logical-x2-scalar|async-shared-fence|single-aiu-issuer|stable-k-tile-shape|remaining-two|remaining-three|repeat-state) ;;
+    asm-memory-contract|logical-x2-scalar|async-shared-fence|single-aiu-issuer|stable-k-tile-shape|exact-metadata-publication|remaining-two|remaining-three|repeat-state) ;;
     *)
-      fail "FQ_A_STAGE_CANDIDATE must be asm-memory-contract, logical-x2-scalar, async-shared-fence, single-aiu-issuer, stable-k-tile-shape, remaining-two, remaining-three, or repeat-state"
+      fail "FQ_A_STAGE_CANDIDATE must be asm-memory-contract, logical-x2-scalar, async-shared-fence, single-aiu-issuer, stable-k-tile-shape, exact-metadata-publication, remaining-two, remaining-three, or repeat-state"
       return $?
       ;;
   esac
@@ -75,6 +79,8 @@ main() {
   esac
   mkdir -p "$out/generated/full" "$out/generated/closure" \
     "$out/results" || return 2
+
+  python3 -B "$root/ci/check_fq_splitk_partial_path.py" || return 2
 
   # Fail closed if a diagnostic macro escapes its intended source seam, or if
   # the host route starts changing a device type instead of selecting the
@@ -231,8 +237,8 @@ checks = {
         single_rvalue_aiu.count(
             "if (warp_idx == 0 && int(threadIdx.x) == 0)") == 1,
     "split-groups is metadata-decode-only":
-        collective.count("PPU_PACKED_SPLIT_GROUPS") == 4 and
-        packed_decode.count("PPU_PACKED_SPLIT_GROUPS") == 3 and
+        collective.count("PPU_PACKED_SPLIT_GROUPS") == 3 and
+        packed_decode.count("PPU_PACKED_SPLIT_GROUPS") == 2 and
         "copy_aiu(" not in packed_decode,
     "contract covers Q4 producer and original nontrans x4 consumer":
         nontrans_x4_impl.count("PPU_PACKED_A_ASM_MEMORY_CONTRACT") == 2 and
@@ -250,8 +256,8 @@ print("[fq-a-stage-root:source] PASS CuTe tensor shape<I>() returns by value "
       "temporary and stable-k-tile-shape names the same dynamic value, but "
       "the exact dense K coordinate is rank-1 so that lifetime seam is not "
       "causal by itself; "
-      "PPU0010 single-issuer, asm-memory, logical-x2 and async-shared-fence "
-      "seams remain exact; S is runtime data")
+      "PPU0010 single-issuer, asm-memory, logical-x2, async-shared-fence and "
+      "exact metadata-publication seams remain exact; S is runtime data")
 PY
 
   python3 -B "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
@@ -359,12 +365,19 @@ PY
   fi
   for arm in $selected_arms; do
     case "$arm" in
-      baseline) defs="" ;;
+      baseline)
+        if [ "$candidate" = exact-metadata-publication ]; then
+          defs='PPU_MIXED_LEGACY_MODULO_METADATA_PUBLISHERS=1'
+        else
+          defs=""
+        fi
+        ;;
       asm-memory-contract) defs='PPU_PACKED_A_ASM_MEMORY_CONTRACT=1' ;;
       logical-x2-scalar) defs='PPU_M8_LOGICAL_X2_SCALAR_LOAD=1' ;;
       async-shared-fence) defs='PPU_MIXED_ASYNC_SHARED_FENCE=1' ;;
       single-aiu-issuer) defs='PPU_AIU_SINGLE_LOGICAL_ISSUER=1' ;;
       stable-k-tile-shape) defs='PPU_SPLITK_STABLE_K_TILE_SHAPE=1' ;;
+      exact-metadata-publication) defs='' ;;
       *) fail "internal arm table error: $arm"; return $? ;;
     esac
     build_dir="$out/build-$arm"
@@ -389,7 +402,7 @@ PY
           >>"$out/results/infrastructure.tsv"
         continue
       fi
-    elif grep -Eq -- '-DPPU_(PACKED_A_ASM_MEMORY_CONTRACT|M8_LOGICAL_X2_SCALAR_LOAD|MIXED_ASYNC_SHARED_FENCE|AIU_SINGLE_LOGICAL_ISSUER|SPLITK_STABLE_K_TILE_SHAPE)=1' \
+    elif grep -Eq -- '-DPPU_(PACKED_A_ASM_MEMORY_CONTRACT|M8_LOGICAL_X2_SCALAR_LOAD|MIXED_ASYNC_SHARED_FENCE|AIU_SINGLE_LOGICAL_ISSUER|SPLITK_STABLE_K_TILE_SHAPE|MIXED_LEGACY_MODULO_METADATA_PUBLISHERS)=1' \
         "$build_log"; then
       printf '%s\tbaseline-contaminated\t2\n' "$arm" \
         >>"$out/results/infrastructure.tsv"
@@ -649,7 +662,7 @@ repeats = int(sys.argv[3])
 selection = sys.argv[4]
 if selection not in {"asm-memory-contract", "logical-x2-scalar",
                      "async-shared-fence", "single-aiu-issuer",
-                     "stable-k-tile-shape", "remaining-two",
+                     "stable-k-tile-shape", "exact-metadata-publication", "remaining-two",
                      "remaining-three"}:
     raise SystemExit("invalid candidate identity")
 candidates = (("asm-memory-contract", "logical-x2-scalar",
@@ -921,7 +934,7 @@ try:
     # factorials retain the historical four-cell rule.
     reduced_incident_selection = candidates in {
         ("async-shared-fence",), ("single-aiu-issuer",),
-        ("stable-k-tile-shape",)}
+        ("stable-k-tile-shape",), ("exact-metadata-publication",)}
     baseline_target = (
         baseline_failure_attempts == attempts and
         baseline_failure_events >= attempts
@@ -996,6 +1009,13 @@ try:
                 "attempt, but extending the dynamic K-tile shape lifetime across "
                 "the reference-holding CuTe iterator did not close every stressed "
                 "S1/S2/S4 cell")
+        elif candidates == ("exact-metadata-publication",):
+            verdict = "EXACT_METADATA_PUBLICATION_REMAINS_DIRTY"
+            interpretation = (
+                "the legacy modulo-publisher negative reproduced producer-partial "
+                "corruption in every attempt, but exact scale/zero/raw ownership "
+                "plus the one-time packed initialization edge did not close every "
+                "stressed S1/S2/S4 cell")
         else:
             verdict = ("ALL_REMAINING_COMMON_SEAMS_DIRTY"
                        if candidates == ("asm-memory-contract",
@@ -1049,6 +1069,13 @@ try:
                 "increment does not read Shape; the clean arm is a code-layout "
                 "sensitivity result and cannot assign the producer root")
             diagnostic_rc = 1
+        elif winner == "exact-metadata-publication":
+            verdict = "DUPLICATE_METADATA_PUBLICATION_CAUSAL"
+            interpretation = (
+                "the same source and tactic pair reproduced with the historical "
+                "all-thread modulo publishers, while production exact ownership "
+                "closed every custom S1/S2/S4 cell; the repaired contract covers "
+                "scale/zero initialization, ordinary metadata and packed raw copies")
         else:
             verdict = "ASYNC_SHARED_VISIBILITY_FENCE_CAUSAL"
             interpretation = (

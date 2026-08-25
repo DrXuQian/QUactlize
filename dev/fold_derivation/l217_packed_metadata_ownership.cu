@@ -33,6 +33,7 @@ struct Totals {
   int decode_missing = 0;
   int unowned_reads = 0;
   int map_bad = 0;
+  int duplicate_publishers = 0;
   int predicate_bad = 0;
   int first_predicate_bad = -1;
 };
@@ -50,6 +51,7 @@ Totals verify_case() {
 
   std::array<int, TileN> copied{};
   std::array<int, TileN> decoded{};
+  std::array<int, TileN> publishers{};
   std::array<int, Threads * TileN> copied_by_thread{};
   std::array<uint8_t, TileN * kUnitBytes> pred_src{};
   std::array<uint8_t, TileN * kUnitBytes> pred_dst{};
@@ -67,6 +69,9 @@ Totals verify_case() {
   Totals z{};
   z.cases = 1;
   for (int thread = 0; thread < Threads; ++thread) {
+    if constexpr (!L217_LEGACY_ONE_COLUMN) {
+      if (!Production::owns_physical_thread(thread)) continue;
+    }
     auto thr = Copy{}.get_slice(thread % owners);
     auto part = thr.partition_S(identity);
     for (int i = 0; i < int(size(part)); ++i) {
@@ -77,7 +82,11 @@ Totals verify_case() {
         continue;
       }
       copied[std::size_t(n)] = 1;
-      copied_by_thread[std::size_t(thread * TileN + n)] = 1;
+      auto& thread_published = copied_by_thread[std::size_t(thread * TileN + n)];
+      if (!thread_published) {
+        if (publishers[std::size_t(n)]++) ++z.duplicate_publishers;
+        thread_published = 1;
+      }
       int const owner = thread % owners;
       bool expected = false;
       for (int sub = 0; sub < cpt; ++sub)
@@ -134,9 +143,10 @@ Totals verify_case() {
   std::printf(
       "L217_CASE tile_n=%d threads=%d owners=%d cpt=%d copy_missing=%d "
       "first_copy_missing=%d decode_missing=%d unowned_reads=%d map_bad=%d "
-      "predicate_bad=%d first_predicate_bad=%d\n",
+      "duplicate_publishers=%d predicate_bad=%d first_predicate_bad=%d\n",
       TileN, Threads, owners, cpt, z.copy_missing, first_copy_missing,
-      z.decode_missing, z.unowned_reads, z.map_bad, z.predicate_bad,
+      z.decode_missing, z.unowned_reads, z.map_bad, z.duplicate_publishers,
+      z.predicate_bad,
       z.first_predicate_bad);
   return z;
 }
@@ -147,6 +157,7 @@ void add(Totals& a, Totals const& b) {
   a.decode_missing += b.decode_missing;
   a.unowned_reads += b.unowned_reads;
   a.map_bad += b.map_bad;
+  a.duplicate_publishers += b.duplicate_publishers;
   a.predicate_bad += b.predicate_bad;
   if (a.first_predicate_bad < 0 && b.first_predicate_bad >= 0)
     a.first_predicate_bad = b.first_predicate_bad;
@@ -164,12 +175,13 @@ int main() {
   add(z, verify_case<128, 256>());
   bool const ok = z.copy_missing == 0 && z.decode_missing == 0 &&
                   z.unowned_reads == 0 && z.map_bad == 0 &&
+                  z.duplicate_publishers == 0 &&
                   z.predicate_bad == 0;
   std::printf(
       "L217_SUMMARY variant=%s cases=%d copy_missing=%d decode_missing=%d "
-      "unowned_reads=%d map_bad=%d predicate_bad=%d verdict=%s\n",
+      "unowned_reads=%d map_bad=%d duplicate_publishers=%d predicate_bad=%d verdict=%s\n",
       L217_LEGACY_ONE_COLUMN ? "legacy-one-column" : "derived-ownership",
       z.cases, z.copy_missing, z.decode_missing, z.unowned_reads,
-      z.map_bad, z.predicate_bad, ok ? "PASS" : "FAIL");
+      z.map_bad, z.duplicate_publishers, z.predicate_bad, ok ? "PASS" : "FAIL");
   return ok ? 0 : 1;
 }

@@ -210,11 +210,6 @@ public:
   // the same H-capped plan; a wider value layout is extra 16-byte atom iterations, not a wider cp.async instruction.
   constexpr static int Scale_NumThreads = size(TiledMma{});
   using ScaleCopyPlan = typename MetadataPolicy::template ScaleCopy<Scale_TileN, Scale_NumThreads>;
-  // (j3) thread_idx -> thread slot, with the duplication explicit. Slots <= Scale_NumThreads is enforced above.
-  constexpr static int Scale_Slots = ScaleCopyPlan::thread_slots;
-  using ScaleThrDupL = cute::Layout<cute::Shape <cute::Int<Scale_Slots>,
-                                                 cute::Int<(Scale_NumThreads + Scale_Slots - 1) / Scale_Slots>>,
-                                    cute::Stride<cute::_1, cute::_0>>;
   using Scale_GmemCopyThrLayoutH = Int<ScaleCopyPlan::thread_layout_h>;
   using Scale_GmemCopyThrLayoutW = Int<ScaleCopyPlan::thread_layout_w>;
   using GmemTiledCopyScale = decltype(
@@ -302,6 +297,12 @@ public:
       int(Scale_TileN), int(Scale_NumThreads)>;
   static constexpr int kPackedOwnerThreads = PackedMetadataOwnership::owner_threads;
   static constexpr int kPackedColsPerThread = PackedMetadataOwnership::columns_per_thread;
+#if defined(PPU_MIXED_LEGACY_MODULO_METADATA_PUBLISHERS) && \
+    (PPU_MIXED_LEGACY_MODULO_METADATA_PUBLISHERS != 0)
+  static constexpr bool kLegacyModuloMetadataPublishers = true;
+#else
+  static constexpr bool kLegacyModuloMetadataPublishers = false;
+#endif
 
   // Q5 is one legal 16-byte cp.async per column; Q3/Q6 are seven/nine 4-byte copies of their byte-neutral 28/36-byte
   // paired units. The value tile remains exactly one complete column. If owners < TileN, CuTe carries additional
@@ -818,15 +819,28 @@ public:
     Tensor sB = make_tensor(make_smem_ptr(storage.smem_b.begin()), SmemLayoutB{}); // (BLK_N,BLK_K,PIPE)
     Tensor sB2 = make_tensor(make_smem_ptr(storage.smem_b2.begin()), SmemLayoutB2{}); // 2nd plane
 
-    // get extra inputs
+    // The fp16 scale/zero tile and packed raw tile use different logical copy layouts.  Construct an in-range slice for
+    // every physical thread, but let exactly one physical owner publish each destination; surplus threads only consume.
+    bool const scale_copy_owner =
+        kLegacyModuloMetadataPublishers ||
+        (ScaleCopyPlan::thread_slots == Scale_NumThreads) ||
+        ScaleCopyPlan::owns_physical_thread(thread_idx);
+    bool const packed_copy_owner =
+        kLegacyModuloMetadataPublishers ||
+        (kPackedOwnerThreads == Scale_NumThreads) ||
+        PackedMetadataOwnership::owns_physical_thread(thread_idx);
     auto extra_input_partitions = partition_extra_inputs(
-        // (j3) THE WRAP AS A LAYOUT, so the duplication is in the type rather than in a comment. The scale copy has
-        // Slots = ThrH*ThrW thread slots and the CTA has Scale_NumThreads; the static_assert above forbids Slots >
-        // NumThreads (that was the rung-4 defect -- 128 slots against a 64-thread CTA silently truncated to half the
-        // scale groups), so what remains is Slots <= NumThreads, where several threads issue the SAME copy. The stride-0
-        // mode says exactly that: ScaleThrDupL(thread_idx) == thread_idx % Slots, with the second mode marking the
-        // duplicates. Same value as the modulo, but the layout states the intent.
-        mainloop_params, load_inputs, storage, int(ScaleThrDupL{}(thread_idx)));
+        mainloop_params, load_inputs, storage,
+        ScaleCopyPlan::logical_slot(thread_idx),
+        PackedMetadataOwnership::copy_owner(thread_idx),
+        scale_copy_owner);
+
+    // Packed decode and fp16-tile initialization use different owner maps.  Publish the one-time exact clear before a
+    // multi-warp CTA can begin decoding; the single-warp geometry remains instruction-for-instruction unchanged.
+    if constexpr (kPackedScaleOn && Scale_NumThreads > 32 &&
+                  !kLegacyModuloMetadataPublishers) {
+      __syncthreads();
+    }
 
     CUTE_STATIC_ASSERT_V(size<0>(gA) == size<0>(sA_physical));                 // BLK_M_PHYSICAL
     CUTE_STATIC_ASSERT_V(size<1>(gA) == size<1>(sA_physical));                 // BLK_K
@@ -866,7 +880,8 @@ public:
         warp_idx
       );
       copy_aiu(gmem_tiled_copy_B2, tB2gB2(_,_,_,k_iter_crd_b2), tB2sB2(_,_,_,k_pipe), warp_idx);
-      copy_async_extra_info(mainloop_params, extra_input_partitions, *k_tile_iter, k_pipe);
+      copy_async_extra_info(mainloop_params, extra_input_partitions, *k_tile_iter, k_pipe,
+                            scale_copy_owner, packed_copy_owner);
       cp_async_fence();
       --k_tile_count;
       if (k_tile_count > 0) { ++k_tile_iter; }
@@ -1061,7 +1076,8 @@ public:
             warp_idx
           );
           copy_aiu(gmem_tiled_copy_B2, tB2gB2(_,_,_,k_iter_crd_b2), tB2sB2(_,_,_,write_stage), warp_idx);
-          copy_async_extra_info(mainloop_params, extra_input_partitions, k_tile, write_stage);
+          copy_async_extra_info(mainloop_params, extra_input_partitions, k_tile, write_stage,
+                                scale_copy_owner, packed_copy_owner);
     };
     auto consume = [&] (auto k_block, int b_consume_stage) {
         if constexpr (kBChunk) {
@@ -1209,7 +1225,9 @@ private:
         Params const& mainloop_params,
         cute::tuple<Ts...>& extra_input_partitions,
         int k_idx,
-        int write_stage) {
+        int write_stage,
+        bool scale_copy_owner,
+        bool packed_copy_owner) {
     if constexpr (ModeHasScales) {
       auto tSgS = get<0>(extra_input_partitions);
       auto tSsS = get<1>(extra_input_partitions);
@@ -1220,18 +1238,23 @@ private:
       // per-column path
       if constexpr(DispatchPolicy::StaticGroupSize == -1) {
         if constexpr (kPackedScaleOn) {
-          packed_tile_in_unit[write_stage] = 0;
-          detail::copy_packed_metadata_if<kPackedColsPerThread>(
-              mainloop_params.gmem_tiled_copy_scale_packed, scale_valid_pk, scale_residue_n,
-              get<kPkG>(extra_input_partitions)(_,_,_,0),
-              get<kPkG + 1>(extra_input_partitions)(_,_,_,write_stage),
-              get<kPkC>(extra_input_partitions));
-        } else
+          if (packed_copy_owner) {
+            packed_tile_in_unit[write_stage] = 0;
+            detail::copy_packed_metadata_if<kPackedColsPerThread>(
+                mainloop_params.gmem_tiled_copy_scale_packed, scale_valid_pk, scale_residue_n,
+                get<kPkG>(extra_input_partitions)(_,_,_,0),
+                get<kPkG + 1>(extra_input_partitions)(_,_,_,write_stage),
+                get<kPkC>(extra_input_partitions));
+          }
+        } else if (scale_copy_owner) {
           copy(mainloop_params.gmem_tiled_copy_scale, tSgS(_,_,_,0), tSsS(_,_,_,write_stage));
+        }
         if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero && !kPackedScaleOn) {
           auto tZgZ = get<3>(extra_input_partitions);
           auto tZsZ = get<4>(extra_input_partitions);
-          copy(mainloop_params.gmem_tiled_copy_zero, tZgZ(_,_,_,0), tZsZ(_,_,_,write_stage));
+          if (scale_copy_owner) {
+            copy(mainloop_params.gmem_tiled_copy_zero, tZgZ(_,_,_,0), tZsZ(_,_,_,write_stage));
+          }
         }
       }
       else {
@@ -1248,19 +1271,25 @@ private:
         if ((kPackedScaleOn || scale_valid) &&
             (scale_load_k * Scale_TileK < scale_residue_k)) {
           if constexpr (kPackedScaleOn) {
-            packed_tile_in_unit[write_stage] = scale_load_k % kPackedTilesPerUnit;
-            detail::copy_packed_metadata_if<kPackedColsPerThread>(
-                mainloop_params.gmem_tiled_copy_scale_packed, scale_valid_pk, scale_residue_n,
-                get<kPkG>(extra_input_partitions)(_,_,_,scale_load_k / kPackedTilesPerUnit),
-                get<kPkG + 1>(extra_input_partitions)(_,_,_,write_stage),
-                get<kPkC>(extra_input_partitions));
-          } else
+            if (packed_copy_owner) {
+              packed_tile_in_unit[write_stage] = scale_load_k % kPackedTilesPerUnit;
+              detail::copy_packed_metadata_if<kPackedColsPerThread>(
+                  mainloop_params.gmem_tiled_copy_scale_packed, scale_valid_pk, scale_residue_n,
+                  get<kPkG>(extra_input_partitions)(_,_,_,scale_load_k / kPackedTilesPerUnit),
+                  get<kPkG + 1>(extra_input_partitions)(_,_,_,write_stage),
+                  get<kPkC>(extra_input_partitions));
+            }
+          } else if (scale_copy_owner) {
             copy(mainloop_params.gmem_tiled_copy_scale,
                  tSgS(_,_,_,scale_load_k), tSsS(_,_,_,write_stage));
+          }
           if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero && !kPackedScaleOn) {
             auto tZgZ = get<3>(extra_input_partitions);
             auto tZsZ = get<4>(extra_input_partitions);
-            copy(mainloop_params.gmem_tiled_copy_zero, tZgZ(_,_,_,scale_load_k), tZsZ(_,_,_,write_stage));
+            if (scale_copy_owner) {
+              copy(mainloop_params.gmem_tiled_copy_zero,
+                   tZgZ(_,_,_,scale_load_k), tZsZ(_,_,_,write_stage));
+            }
           }
         }
       }
@@ -1273,7 +1302,9 @@ private:
         Params const& mainloop_params,
         cute::tuple<Ts...> const& load_inputs,
         SharedStorage& shared_tensors,
-        int const thread_idx) {
+        int const scale_thread_idx,
+        int const packed_thread_idx,
+        bool scale_copy_owner) {
     if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
       return cute::tuple{};
     }
@@ -1283,7 +1314,7 @@ private:
       // Construct identity layout for sS
       constexpr static Tensor cS = make_identity_tensor(make_shape(size<0>(sS), size<1>(sS)));
 
-      auto gmem_thr_copy_scale = mainloop_params.gmem_tiled_copy_scale.get_slice(thread_idx);
+      auto gmem_thr_copy_scale = mainloop_params.gmem_tiled_copy_scale.get_slice(scale_thread_idx);
 
       Tensor tSgS = gmem_thr_copy_scale.partition_S(gS);
       Tensor tSsS = gmem_thr_copy_scale.partition_D(sS);
@@ -1294,12 +1325,12 @@ private:
       Tensor sSraw = make_tensor(make_smem_ptr(shared_tensors.smem_scale_raw.begin()),
                                  SmemLayoutScaleRawStaged{});
       auto gmem_thr_copy_raw = mainloop_params.gmem_tiled_copy_scale_packed.get_slice(
-          thread_idx % int(cute::size(GmemTiledCopyScalePacked{})));
+          packed_thread_idx);
       Tensor tSgSp = gmem_thr_copy_raw.partition_S(cute::get<kPackedLoadIdx>(load_inputs));
       Tensor tSsSp = gmem_thr_copy_raw.partition_D(sSraw);
       Tensor cSp = make_identity_tensor(make_shape(Int<Scale_TileN>{}, Int<kPackedScaleUnit>{}));
       Tensor tScSp = gmem_thr_copy_raw.partition_S(cSp);
-      clear(tSsS);
+      if (scale_copy_owner) clear(tSsS);
       // init scale_residue_k
       if constexpr (kPackedScaleOn)
         scale_residue_k = int64_t(mainloop_params.scale_k / int(Scale_TileK)) * int64_t(Scale_TileK);
@@ -1317,11 +1348,13 @@ private:
         Tensor sZ  = make_tensor(make_smem_ptr(shared_tensors.smem_zero.begin()), SmemLayoutScale{});
         Tensor gZ = get<3>(load_inputs);
 
-        auto gmem_thr_copy_zero = mainloop_params.gmem_tiled_copy_zero.get_slice(thread_idx);
+        auto gmem_thr_copy_zero = mainloop_params.gmem_tiled_copy_zero.get_slice(scale_thread_idx);
 
         Tensor tZgZ = gmem_thr_copy_zero.partition_S(gZ);
         Tensor tZsZ = gmem_thr_copy_zero.partition_D(sZ);
-        if constexpr (!kPackedScaleOn) clear(tZsZ);
+        if constexpr (!kPackedScaleOn) {
+          if (scale_copy_owner) clear(tZsZ);
+        }
 
         return cute::make_tuple(tSgS, tSsS, tScS, tZgZ, tZsZ, tSgSp, tSsSp, tScSp);
       }

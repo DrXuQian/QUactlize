@@ -15,8 +15,9 @@ Read `references/q4-a32-case.md` when the failure resembles a mixed A/B
 register-delivery or prepare/consume lifetime problem.
 
 Read `references/packed-metadata-owner-deficit.md` when the first bad output is
-an N-column boundary, especially when TileN exceeds the CTA thread count or a
-packed scale/zero channel is decoded before its publishing barrier.
+an N-column boundary, especially when TileN and CTA thread count differ, when
+physical threads are wrapped onto fewer logical copy slots, or when a packed
+scale/zero channel is decoded before its publishing barrier.
 
 Read `references/splitk-shared-partial-epilogue.md` when completed fp32
 accumulators are exact but Split-K partial workspace values intermittently
