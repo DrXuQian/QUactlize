@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# One-box physical-load closure for the rare Q4_K packed-m8 Split-K A-stage
-# failure.
+# One-box inline-asm memory-contract closure for the rare Q4_K packed-m8
+# Split-K A-stage failure.
 #
 # Every binary contains the exact same generated AP0/AP1 tactic pair and uses
 # GemmUniversalMixedInputSplitKParallel for S=1/2/4. The previous eight-arm
-# factorial excluded every source-level scheduling/publication seam. This
-# closure compares the shipping baseline with (1) an exact inline-asm shared
-# memory contract and (2) a logical-x2 load that removes the physical x4
-# swizzle opcode. Numeric failures never truncate the bundle.
+# factorial excluded every source-level scheduling/publication seam.  This
+# first closure changes one variable only: the candidate keeps the same x4
+# swizzle load and adds compiler-visible shared-memory effects to the actual
+# fp16-A producer, commit/wait and consumer asm statements.  The already
+# source-proved logical-x2 scalar probe is reserved for a later run only if
+# this two-arm closure remains dirty.  Numeric failures never truncate the
+# bundle.
 set -uo pipefail
 
 fail() {
@@ -30,7 +33,7 @@ main() {
   esac
   [ ! -e "$out" ] || { fail "refusing to overwrite $out"; return $?; }
   if [ -n "${PPU_DEFS:-}" ] || [ -n "${PPU_EXTRA_DEFS:-}" ]; then
-    fail 'ambient PPU_DEFS/PPU_EXTRA_DEFS changes the three-arm identity'
+    fail 'ambient PPU_DEFS/PPU_EXTRA_DEFS changes the two-arm identity'
     return $?
   fi
   jobs="${JOBS:-16}"
@@ -74,6 +77,10 @@ m8_copy = (root / (
 copy_async = (root / (
     "third_party/actlize/include/cute/arch/"
     "copy_ppu.hpp")).read_text()
+nontrans_x4_impl = m8_copy.split(
+    "struct PPU0010_TSM_LD_SWZL_IMPL<Element, false>", 1)[1].split(
+        "struct PPU0010_TSM_LD_SWZL_IMPL<Element, true>", 1)[0]
+m8_wrapper = m8_copy.split("struct PPU0010_TSM_LD_SWZL_M8", 1)[1]
 checks = {
     "one host branch": bench.count(
         "if (splits == 1 && !options.force_custom_splitk_s1)") == 1,
@@ -99,19 +106,24 @@ checks = {
         collective.count("PPU_PACKED_A_BEFORE_B") == 2 and
         collective.count("PPU_PACKED_A_SEPARATE_ASYNC_GROUP") == 2 and
         m8_copy.count("PPU_M8_DIRECT_X4_PROJECTION") == 2,
-    "logical-x2 scalar seam":
+    "reserved logical-x2 scalar seam":
         m8_copy.count("PPU_M8_LOGICAL_X2_SCALAR_LOAD") == 2 and
         m8_copy.count("ppu.ld.shared.u32 %0, [%2]") == 1 and
         m8_copy.count("ppu.ld.shared.u32 %1, [%3]") == 1,
     "exact asm memory contract seam":
         m8_copy.count("PPU_PACKED_A_ASM_MEMORY_CONTRACT") == 4 and
         copy_async.count("PPU_PACKED_A_ASM_MEMORY_CONTRACT") == 6,
+    "contract changes original nontrans x4 asm only":
+        nontrans_x4_impl.count("PPU_PACKED_A_ASM_MEMORY_CONTRACT") == 2 and
+        nontrans_x4_impl.count("m8n8.x4.swzl.shared.b16") == 2 and
+        nontrans_x4_impl.count(': "memory"') == 1 and
+        "PPU_PACKED_A_ASM_MEMORY_CONTRACT" not in m8_wrapper,
 }
 bad = [name for name, ok in checks.items() if not ok]
 if bad:
     raise SystemExit("custom-S1 source seam changed: " + repr(bad))
-print("[fq-a-stage-root:source] PASS exact asm-memory-contract vs "
-      "physical-x4 removal; prior factorial retained; S is runtime data")
+print("[fq-a-stage-root:source] PASS exact two-arm asm-memory contract; "
+      "original x4 opcode retained; scalar probe reserved; S is runtime data")
 PY
 
   python3 -B "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
@@ -207,11 +219,10 @@ print(f"[fq-a-stage-root:select] PASS source_typed={len(rows)} selected=2")
 PY
 
   : >"$out/results/infrastructure.tsv"
-  for arm in baseline asm-memory-contract logical-x2-scalar; do
+  for arm in baseline asm-memory-contract; do
     case "$arm" in
       baseline) defs="" ;;
       asm-memory-contract) defs='PPU_PACKED_A_ASM_MEMORY_CONTRACT=1' ;;
-      logical-x2-scalar) defs='PPU_M8_LOGICAL_X2_SCALAR_LOAD=1' ;;
       *) fail "internal arm table error: $arm"; return $? ;;
     esac
     build_dir="$out/build-$arm"
@@ -282,7 +293,6 @@ repeats = int(sys.argv[3])
 arms = (
     "baseline",
     "asm-memory-contract",
-    "logical-x2-scalar",
 )
 expected_symbols = {
     "standard-aiu": "fq_tc_q12_a64_tm8_tn64_tk256_wm8_wn16_s2_bc0_ap0",
@@ -413,7 +423,7 @@ try:
                         f"frozen_incident={int(frozen_ap1_s4_incident(row))} "
                         f"localization={localization(row)}")
 
-    clean_arms = []
+    contract_clean = False
     denominator = attempts * len(expected_symbols) * 2
     for arm in arms:
         cells = [runs[(arm, attempt)][(provider, split)]
@@ -424,8 +434,8 @@ try:
         other_bad_count = sum(corrupt(row) and not producer_partial_bad(row)
                               for row in cells)
         is_clean = clean_count == denominator
-        if arm != "baseline" and is_clean:
-            clean_arms.append(arm)
+        if arm == "asm-memory-contract":
+            contract_clean = is_clean
         print(
             "FQ_A_STAGE_ROOT_ARM "
             f"arm={arm} attempts={attempts} repeats={repeats} "
@@ -443,38 +453,25 @@ try:
             "the exact packed-row S4 producer-plane 1.0-to-6.0 incident was "
             "not observed; clean counterfactual arms cannot be assigned causally")
         diagnostic_rc = 1
-    elif not clean_arms:
-        verdict = "BOTH_PHYSICAL_LOAD_HYPOTHESES_REMAIN_DIRTY"
+    elif not contract_clean:
+        verdict = "INLINE_ASM_SHARED_MEMORY_CONTRACT_REMAINS_DIRTY"
         interpretation = (
-            "the frozen incident reproduced; neither the exact asm memory "
-            "contract nor removal of the physical x4 swizzle opcode closed "
-            "every repeated S2/S4 cell")
+            "the frozen incident reproduced, but the x4-preserving exact asm "
+            "memory contract did not close every repeated S2/S4 cell; the "
+            "contract defect is real but is not a complete device root")
         diagnostic_rc = 1
     else:
-        clean_set = set(clean_arms)
-        if clean_set == {"asm-memory-contract"}:
-            verdict = "INLINE_ASM_SHARED_MEMORY_CONTRACT_CAUSAL"
-            interpretation = (
-                "the baseline reproduced and the physical x4 opcode remained; "
-                "declaring the packed-A cp.async/wait/ldmatrix shared-memory "
-                "effects closed every independent S2/S4 cell")
-        elif clean_set == {"logical-x2-scalar"}:
-            verdict = "M8_X4_SWIZZLE_OPCODE_OR_SCOREBOARD_CAUSAL"
-            interpretation = (
-                "the baseline and x4 asm-memory-contract arm reproduced, while "
-                "the same logical x2 CuTe fragment loaded without the physical "
-                "x4 swizzle opcode was raw-bit exact")
-        else:
-            verdict = "MEMORY_CONTRACT_OR_X4_BACKEND_BOUNDARY"
-            interpretation = (
-                "both independent physical-load arms closed the reproduced "
-                "incident; another factorial is required before choosing "
-                "between an inline-asm memory contract and the x4 backend")
-        diagnostic_rc = int(len(clean_set) != 1)
+        verdict = "INLINE_ASM_SHARED_MEMORY_CONTRACT_CAUSAL"
+        interpretation = (
+            "the baseline reproduced and the physical x4 opcode, packed bytes, "
+            "stage geometry, schedule and MMA order remained unchanged; "
+            "declaring the fp16-A producer, commit/wait and ldmatrix shared-"
+            "memory effects closed every independent S2/S4 cell")
+        diagnostic_rc = 0
 
     print("FQ_A_STAGE_ROOT_VERDICT "
           f"verdict={verdict} baseline_target={int(baseline_target)} "
-          f"clean_arms={','.join(clean_arms) if clean_arms else 'NONE'}")
+          f"contract_clean={int(contract_clean)}")
     print("FQ_A_STAGE_ROOT_INTERPRETATION " + interpretation)
     raise SystemExit(diagnostic_rc)
 except (KeyError, OSError, ValueError) as error:
