@@ -56,13 +56,19 @@ prove the intermittent numerical failure was removed.
 ## One stale-A-compatible signature is not the family root
 
 `l224_fq_packed_m8_prepare_consume_layout.cu` composes the exact failing
-TM8/TK256/WM8/WN16 CuTe A fragment and copy views.  It proves:
+TM8/TK256/WM8/WN16 CuTe A and B fragment/copy views, including the shipping
+builder's Q4/TK256 `MmaPermK=64`.  It proves:
 
 ```text
-MMA K atoms = 16, A copy blocks = 16, B deliveries = 4
-A copy block i maps exactly to MMA atom i
+MMA K atoms = 16, A copy blocks = 4, B copy blocks = 4
+A/B copy block i maps exactly to MMA atoms [4*i,4*i+4)
+B load/conversion coverage is exact
 prepare(next B delivery) vs consume(current B delivery): zero logical offsets overlap
 ```
+
+An older L224 used the atom's K16 default and therefore reported 16 one-atom
+A copy blocks.  That was not the shipping type; do not use that denominator as
+evidence.
 
 For the frozen fixture, AP1/S4 plane 2 at output column 32 contains
 superblocks 10..14.  Their expected contributions are:
@@ -225,6 +231,59 @@ A-before-B:     6/8 clean
 Every dirty cell localized to a wrong producer FP32 partial; none of the seven
 counterfactuals closed both providers and S=2/S=4.  The two partially cleaner
 arms are code-layout/timing sensitivity, not repairs or causal proof.
+
+## Repeated-state harness audit
+
+The high-repeat runner stops each cell at its first bad launch. Therefore
+`failure_repeat / correctness_repeats` is not an error probability. For
+zero-based first-failure indices `r_i`, the geometric maximum-likelihood
+estimate is `events / sum(r_i + 1)`. The two baseline attempts at `d6e5589`
+give only order-of-magnitude estimates:
+
+```text
+standard-aiu S2: 2 / 2561 = 0.0781%  (about 1 / 1281 launches)
+standard-aiu S4: 2 / 11253 = 0.0178% (about 1 / 5627 launches)
+packed-row   S2: 2 / 468 = 0.427%    (about 1 / 234 launches)
+packed-row   S4: 2 / 489 = 0.409%    (about 1 / 244 launches)
+```
+
+Each estimate has only two observed events and is code-layout/cadence
+sensitive; do not present these as stable production rates.
+
+The host loop submits producer then reducer, calls `hggcDeviceSynchronize`,
+and performs a D2H output check on every repeat, so different launches do not
+overlap. It does reuse `dWorkspace` and `dOut` without clearing them, and it
+historically inspected FP32 producer planes only after an FP16 output failure.
+That leaves one diagnostic hole: two wrong planes could cancel in reduction
+and seed a later reuse round even though the preceding FP16 output passed.
+
+Close that hole with three host-only modes using identical kernel codegen:
+
+- `reuse`: no prelaunch memset;
+- `target-poison`: poison the real partial workspace before each producer;
+- `control-poison`: perform the same memset/synchronize cadence on an equally
+  sized disjoint tail while leaving the real partial workspace untouched.
+
+All three must inspect every FP32 plane after every completed launch. A clean
+target-poison arm is causal only if the control-poison arm remains dirty at a
+comparable rate. If both become clean, the added host cadence masked a timing
+failure and the result is unadjudicated. If both remain dirty, ordinary global
+workspace carry-over is excluded. For the frozen fixture, the observed bad
+partial values `20, 18, 6, -6` are not any correct S1/S2/S4 partial value; this
+already rejects simple reuse of a previously correct plane, but not an earlier
+silently cancelling corrupt plane.
+
+Run the exact two-tactic, S2/S4 state closure with:
+
+```bash
+FQ_A_STAGE_CANDIDATE=repeat-state \
+PROBE_REPEATS=32768 PROBE_ATTEMPTS=2 \
+bash tools/run_fq_q4k_custom_split_count_box.sh
+```
+
+The runner builds one binary and launches each state arm in a fresh process.
+It returns success after a complete device census even when corruption is
+observed; only infrastructure or denominator failures return nonzero.
 
 The first reduced closure at `d6e5589` was initially described as an exact
 inline-asm shared-memory contract.  Source re-audit proved that description

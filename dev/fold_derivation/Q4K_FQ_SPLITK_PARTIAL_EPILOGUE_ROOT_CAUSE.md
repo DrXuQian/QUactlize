@@ -71,14 +71,19 @@ A-tile substitution can produce the observed `-6` delta.  Therefore the
 earlier statement that the failure family was “classified exactly as stale
 A” was false; only one captured value pair had that explanation.
 
-L224 independently composes the exact CuTe fragment/copy layouts.  All 16 A
-copy blocks map one-to-one to the 16 MMA K atoms, and prepare(next B delivery)
-has zero logical register-offset overlap with consume(current B delivery).
-Therefore the exact block map neither explains nor rules out the device
+L224 independently composes the exact shipping CuTe fragment/copy layouts,
+including the builder's Q4/TK256 `MmaPermK=64`.  The A and B fragments each
+contain 16 MMA K atoms and their copy views each contain four delivery blocks;
+delivery block `i` maps exactly to atoms `[4*i,4*i+4)`.  The reconstructed B
+load/conversion view is also exact, and prepare(next B delivery) has zero
+logical register-offset overlap with consume(current B delivery).  An older
+L224 accidentally used the atom's K16 default and reported 16 one-atom A copy
+blocks; that was not the shipping type and is not evidence.  With the corrected
+type, the exact block map still neither explains nor rules out the device
 failure.  The remaining candidates are operand publication/delivery,
 physical/backend register lifetime, the x4-to-x2 consumer and MMA/accumulator
-state.  The reduced closure isolates the two remaining publication/consumer
-seams without changing the shipping default.
+state.  The reduced closure isolates the remaining publication/consumer seams
+without changing the shipping default.
 
 The same exact `partition_C` oracle maps M=1 output ownership as 16 consecutive
 N values per warp: N0-15/W0, N16-31/W1, N32-47/W2, N48-63/W3.  One aligned
@@ -301,6 +306,38 @@ left every counterfactual dirty: baseline, prepare-after-consume,
 explicit-stage, direct-x4, separate-A-group and synchronous-store were 0/8
 clean S>1 cells; compiler-fence was 4/8 and A-before-B 6/8.  Those incidence
 changes are code-layout sensitivity, not closure.
+
+The repeated host harness was also audited. Every round is ordered as
+producer, reducer, device synchronize, then D2H output inspection, so launches
+cannot overlap across repeats. The FP32 workspace is reused without clearing,
+however, and historical runs inspected its planes only after a reduced FP16
+failure. This leaves a narrower harness-state possibility: corrupt planes in
+one apparently clean round could cancel during reduction and survive into the
+next round. Simple reuse of a previously correct plane is already inconsistent
+with the captured values (`25->20`, `22->18`, `1->6`, `0->-6`), because none
+of `20,18,6,-6` is a correct S1/S2/S4 partial for the frozen fixture.
+
+The host diagnostic now supports `reuse`, `target-poison`, and
+`control-poison` repeat-state modes and can inspect every FP32 plane on every
+round. `control-poison` applies the same memset/synchronize cadence to an
+equally sized disjoint workspace tail. Target poison is causal only when it is
+clean and control poison remains dirty; both clean means cadence masking, and
+both dirty excludes ordinary global workspace carry-over.
+
+The frozen closure is:
+
+```bash
+FQ_A_STAGE_CANDIDATE=repeat-state \
+PROBE_REPEATS=32768 PROBE_ATTEMPTS=2 \
+bash tools/run_fq_q4k_custom_split_count_box.sh
+```
+
+Because each cell stops at its first failure, probability uses the geometric
+exposure `sum(failure_repeat + 1)`, not the requested repeat count. Two
+baseline attempts estimate standard-aiu S2/S4 at about 0.078%/0.018% per
+launch and packed-row S2/S4 at about 0.427%/0.409%. Each estimate contains
+only two events and is an order-of-magnitude diagnostic, not a stable
+production rate.
 
 The first reduced closure at `d6e5589` compared baseline with one exact
 contract arm:

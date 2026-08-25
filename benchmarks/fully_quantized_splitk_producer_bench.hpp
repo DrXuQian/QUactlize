@@ -43,6 +43,7 @@ enum class State : int {
   Initialize,
   Launch,
   Correctness,
+  PartialCorrectness,
   Timing,
 };
 
@@ -59,9 +60,31 @@ inline char const* state_name(State state) {
     case State::Initialize: return "INITIALIZE";
     case State::Launch: return "LAUNCH";
     case State::Correctness: return "RAW_FP16_MISMATCH";
+    case State::PartialCorrectness: return "PARTIAL_FP32_MISMATCH";
     case State::Timing: return "TIMING";
   }
   return "UNKNOWN";
+}
+
+// Host-only controls for the repeated correctness harness. They do not alter
+// a generated kernel type or its arguments. TargetPoison overwrites the real
+// FP32 partial workspace before each producer launch. ControlPoison performs
+// the same memset/synchronize cadence on an equally sized disjoint tail while
+// leaving the producer workspace untouched. Their A/B comparison separates
+// buffer carry-over from a cadence-sensitive device failure.
+enum class RepeatState : int {
+  Reuse,
+  TargetPoison,
+  ControlPoison,
+};
+
+inline char const* repeat_state_name(RepeatState state) {
+  switch (state) {
+    case RepeatState::Reuse: return "reuse";
+    case RepeatState::TargetPoison: return "target-poison";
+    case RepeatState::ControlPoison: return "control-poison";
+  }
+  return "unknown";
 }
 
 struct Options {
@@ -76,6 +99,11 @@ struct Options {
   // FP32 partial plane followed by the deterministic fallback reducer.  This
   // isolates runtime partitioning from kernel/epilogue type differences.
   bool force_custom_splitk_s1 = false;
+  RepeatState repeat_state = RepeatState::Reuse;
+  // Inspect every completed producer plane, including rounds whose reduced
+  // FP16 output is exact. Without this, wrong planes that cancel in reduction
+  // can silently seed the next reuse round.
+  bool check_partials_each_repeat = false;
 };
 
 struct DeviceInputs {
@@ -345,6 +373,25 @@ inline bool inspect_failed_partials(
   return true;
 }
 
+inline bool prepare_repeat_state(
+    DeviceInputs const& in, Options const& options, char* partials,
+    std::size_t partial_bytes) {
+  if (options.repeat_state == RepeatState::Reuse) return true;
+  if (partials == nullptr || partial_bytes == 0 ||
+      partial_bytes > in.workspace_bytes) return false;
+
+  char* poison = partials;
+  if (options.repeat_state == RepeatState::ControlPoison) {
+    // The control must be byte-disjoint from the live partial plane while
+    // retaining the same transfer size and host/device synchronization.
+    if (partial_bytes > in.workspace_bytes / 2) return false;
+    poison = in.workspace + (in.workspace_bytes - partial_bytes);
+    if (poison < partials + partial_bytes) return false;
+  }
+  return hggcMemset(poison, 0x7f, partial_bytes) == hggcSuccess &&
+         hggcDeviceSynchronize() == hggcSuccess;
+}
+
 template <class Launch>
 bool measure(Launch&& launch, int iterations, CellResult& result) {
   std::vector<double> samples;
@@ -541,6 +588,14 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
         std::uint64_t fingerprint = 0;
         for (int repeat = 0; repeat < options.correctness_repeats; ++repeat) {
           result.failure_repeat = repeat;
+          if (!prepare_repeat_state(
+                  in, options, reinterpret_cast<char*>(partials),
+                  plan.partial_bytes)) {
+            result.failure_step = "REPEAT_STATE_PREPARE";
+            result.state = State::Initialize;
+            correct = false;
+            break;
+          }
           if (full_launch() != cutlass::Status::kSuccess) {
             result.failure_step = "CORRECTNESS_FULL_LAUNCH"; correct = false; break;
           }
@@ -550,16 +605,32 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
           if (!inspect(in, result)) {
             result.failure_step = "CORRECTNESS_OUTPUT_COPY"; correct = false; break;
           }
-          if (result.raw_bad != 0 ||
+          bool partial_checked = false;
+          if (options.check_partials_each_repeat) {
+            result.partial_probe_attempted = true;
+            partial_checked = inspect_failed_partials(
+                in, splits, partials, plan.partial_bytes, result);
+            result.partial_probe_complete = partial_checked;
+            if (!partial_checked) {
+              result.failure_step = "CORRECTNESS_PARTIAL_COPY";
+              result.state = State::Initialize;
+              correct = false;
+              break;
+            }
+          }
+          bool const partial_bad =
+              partial_checked && result.partial_value_raw_bad != 0;
+          if (result.raw_bad != 0 || partial_bad ||
               (repeat && result.fingerprint != fingerprint)) {
             if (result.raw_bad != 0 && options.force_custom_splitk_s1) {
               // Observe only after the original producer+reducer failure and
               // device completion.  This preserves the cadence that exposed
               // the bug, then distinguishes bad producer bytes from a
               // same-stream publication/reducer failure.
+              bool const partial_ok = partial_checked ||
+                  inspect_failed_partials(
+                      in, splits, partials, plan.partial_bytes, result);
               result.partial_probe_attempted = true;
-              bool const partial_ok = inspect_failed_partials(
-                  in, splits, partials, plan.partial_bytes, result);
               CellResult replay;
               bool const replay_ok =
                   reducer.run(nullptr) == cutlass::Status::kSuccess &&
@@ -573,13 +644,23 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
                 result.reducer_replay_first_got = replay.first_bad_got;
               }
             }
-            result.failure_step = result.raw_bad ? "RAW_FP16_MISMATCH" :
-                                                   "FINGERPRINT_MISMATCH";
+            result.failure_step = result.raw_bad
+                ? "RAW_FP16_MISMATCH"
+                : partial_bad ? "PARTIAL_FP32_MISMATCH_WITH_CLEAN_OUTPUT"
+                              : "FINGERPRINT_MISMATCH";
+            if (partial_bad && result.raw_bad == 0)
+              result.state = State::PartialCorrectness;
             correct = false; break;
           }
           fingerprint = result.fingerprint;
         }
-        if (!correct) { result.state = State::Correctness; row_ok = false; continue; }
+        if (!correct) {
+          if (result.state != State::Initialize &&
+              result.state != State::PartialCorrectness)
+            result.state = State::Correctness;
+          row_ok = false;
+          continue;
+        }
         result.reducer_correctness_untimed = true;
         if (options.measure) {
           auto timing = splitk_producer_timing::measure(

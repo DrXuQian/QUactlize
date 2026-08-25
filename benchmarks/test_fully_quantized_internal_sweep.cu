@@ -86,6 +86,9 @@ struct Cli {
   int only_split = 0;
   int tm8_max_m = ppu_dense_shipping::kDecodeDefaultExclusiveM - 1;
   bool force_custom_splitk_s1 = false;
+  bool measure = true;
+  bool check_partials_each_repeat = false;
+  RepeatState repeat_state = RepeatState::Reuse;
   enum class BcMode { All, Skip, Only } bc_mode = BcMode::All;
   std::string symbols_file;
   std::vector<Shape> shapes;
@@ -109,6 +112,20 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
       cli.symbols_file = argv[i] + 15;
     } else if (!std::strcmp(argv[i], "--force-custom-splitk-s1")) {
       cli.force_custom_splitk_s1 = true;
+    } else if (!std::strcmp(argv[i], "--correctness-only")) {
+      cli.measure = false;
+    } else if (!std::strcmp(argv[i], "--check-partials-each-repeat")) {
+      cli.check_partials_each_repeat = true;
+    } else if (!std::strncmp(argv[i], "--repeat-state=", 15)) {
+      char const* state = argv[i] + 15;
+      if (!std::strcmp(state, "reuse"))
+        cli.repeat_state = RepeatState::Reuse;
+      else if (!std::strcmp(state, "target-poison"))
+        cli.repeat_state = RepeatState::TargetPoison;
+      else if (!std::strcmp(state, "control-poison"))
+        cli.repeat_state = RepeatState::ControlPoison;
+      else
+        return false;
     } else if (!std::strncmp(argv[i], "--bc-mode=", 10)) {
       char const* mode = argv[i] + 10;
       if (!std::strcmp(mode, "all")) cli.bc_mode = Cli::BcMode::All;
@@ -121,6 +138,9 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
   return cli.iterations > 0 && cli.repeats > 0 && cli.tm8_max_m > 0 &&
       (cli.only_split == 0 || cli.only_split == 1 || cli.only_split == 2 ||
        cli.only_split == 4 || cli.only_split == 8) &&
+      ((!cli.check_partials_each_repeat &&
+        cli.repeat_state == RepeatState::Reuse) ||
+       cli.force_custom_splitk_s1) &&
       !(cli.bc_mode == Cli::BcMode::Only && cli.only_split != 0);
 }
 
@@ -397,8 +417,15 @@ int run_shape(Shape shape, Cli const& cli,
       dUnits.get(), dOut.get(), dWorkspace.get(), partial_bytes,
       partial_golden_ptrs,
       fixture.golden.data(), shape.m, shape.n, shape.k};
-  Options options{cli.iterations, cli.repeats, cli.only_split, true,
-                  cli.tm8_max_m, cli.force_custom_splitk_s1};
+  Options options;
+  options.iterations = cli.iterations;
+  options.correctness_repeats = cli.repeats;
+  options.only_split = cli.only_split;
+  options.measure = cli.measure;
+  options.tm8_max_m = cli.tm8_max_m;
+  options.force_custom_splitk_s1 = cli.force_custom_splitk_s1;
+  options.repeat_state = cli.repeat_state;
+  options.check_partials_each_repeat = cli.check_partials_each_repeat;
   bool all_runtime_ok = true;
   std::printf("FQ_SHARD q=%d A=%d bchunk=%d shape=%dx%dx%d "
               "typed_rows=%zu selected_rows=%zu only_split=%d bc_mode=%s "
@@ -410,6 +437,13 @@ int run_shape(Shape shape, Cli const& cli,
               cli.bc_mode == Cli::BcMode::All ? "all" :
               cli.bc_mode == Cli::BcMode::Skip ? "skip" : "only",
               cli.iterations, cli.repeats);
+  if (cli.repeat_state != RepeatState::Reuse ||
+      cli.check_partials_each_repeat || !cli.measure) {
+    std::printf(
+        "FQ_REPEAT_STATE mode=%s partial_check_each_repeat=%d measure=%d\n",
+        repeat_state_name(cli.repeat_state),
+        int(cli.check_partials_each_repeat), int(cli.measure));
+  }
   if (cli.force_custom_splitk_s1) {
     std::printf(
         "FQ_CUSTOM_SPLIT_COUNT_PROBE route=GemmUniversalMixedInputSplitKParallel "
@@ -524,7 +558,9 @@ int main(int argc, char** argv) {
         "usage: %s [--shape=MxNxK ...] [--iterations=N] "
         "[--correctness-repeats=N] [--only-split=0|1|2|4|8] "
         "[--tm8-max-m=N] [--symbols-file=PATH] "
-        "[--bc-mode=all|skip|only] [--force-custom-splitk-s1]\n", argv[0]);
+        "[--bc-mode=all|skip|only] [--force-custom-splitk-s1] "
+        "[--correctness-only] [--check-partials-each-repeat] "
+        "[--repeat-state=reuse|target-poison|control-poison]\n", argv[0]);
     return 2;
   }
   auto const all_rows = registry();

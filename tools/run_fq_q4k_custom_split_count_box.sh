@@ -17,6 +17,11 @@
 # wait, before the existing CTA publication barrier.  PPU_PACKED_SPLIT_GROUPS
 # is deliberately absent because it changes metadata decode cadence, not A/B
 # issuer or waiter ownership.
+#
+# `FQ_A_STAGE_CANDIDATE=repeat-state` instead builds only the baseline binary
+# and runs reuse/control-poison/target-poison for S2 and S4. Every repeat checks
+# every FP32 partial plane; the disjoint control has the same memset/sync
+# cadence as the live-workspace poison arm.
 set -uo pipefail
 
 fail() {
@@ -47,9 +52,9 @@ main() {
   attempts="${PROBE_ATTEMPTS:-2}"
   candidate="${FQ_A_STAGE_CANDIDATE:-remaining-three}"
   case "$candidate" in
-    asm-memory-contract|logical-x2-scalar|async-shared-fence|remaining-two|remaining-three) ;;
+    asm-memory-contract|logical-x2-scalar|async-shared-fence|remaining-two|remaining-three|repeat-state) ;;
     *)
-      fail "FQ_A_STAGE_CANDIDATE must be asm-memory-contract, logical-x2-scalar, async-shared-fence, remaining-two, or remaining-three"
+      fail "FQ_A_STAGE_CANDIDATE must be asm-memory-contract, logical-x2-scalar, async-shared-fence, remaining-two, remaining-three, or repeat-state"
       return $?
       ;;
   esac
@@ -131,8 +136,14 @@ checks = {
     "singleton plane keeps physical stride":
         "make_compact_fp32_partial_stride<PartialStride>(in.m, in.n)" in bench and
         "cute::get<2>(stride) = rows * columns;" in partial_layout,
-    "failure-only partial oracle":
-        bench.count("inspect_failed_partials(") == 2,
+    "partial oracle has one definition plus exact ordinary/every-repeat calls":
+        bench.count("inspect_failed_partials(") == 3,
+    "repeat-state diagnostic is host-only":
+        main.count("--check-partials-each-repeat") == 2 and
+        main.count("--repeat-state=") == 2 and
+        bench.count("RepeatState::TargetPoison") == 1 and
+        bench.count("RepeatState::ControlPoison") == 2 and
+        "repeat_state" not in kernel + collective,
     "prior factorial retained":
         schedule.count("PPU_MIXED_A_PREPARE_AFTER_CONSUME") == 4 and
         collective.count("PPU_MIXED_A_EXPLICIT_STAGE_VIEW") == 4 and
@@ -276,7 +287,9 @@ PY
 
   : >"$out/results/infrastructure.tsv"
   local selected_arms
-  if [ "$candidate" = remaining-three ]; then
+  if [ "$candidate" = repeat-state ]; then
+    selected_arms="baseline"
+  elif [ "$candidate" = remaining-three ]; then
     selected_arms="baseline asm-memory-contract logical-x2-scalar async-shared-fence"
   elif [ "$candidate" = remaining-two ]; then
     selected_arms="baseline logical-x2-scalar async-shared-fence"
@@ -328,26 +341,224 @@ PY
     printf 'FQ_A_STAGE_ROOT_BINARY arm=%s defs=%s sha256=%s attempts=%s repeats=%s\n' \
       "$arm" "${defs:-NONE}" "$(sha256sum "$binary" | awk '{print $1}')" \
       "$attempts" "$repeats"
-    attempt=1
-    while [ "$attempt" -le "$attempts" ]; do
-      log="$out/results/$arm-attempt$attempt.log"
-      "$binary" --shape=1x1024x5120 --iterations=1 \
-        --correctness-repeats="$repeats" --tm8-max-m=8 --bc-mode=skip \
-        --force-custom-splitk-s1 >"$log" 2>&1
-      rc=$?
-      # Numeric rc=1 is evidence, not a runner failure. Keep sampling every
-      # arm/attempt; only record infrastructure here and adjudicate once all
-      # arms have had their chance to run.
-      if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
-        tail -100 "$log" >&2
-        printf '%s\trun-attempt-%d\t%d\n' "$arm" "$attempt" "$rc" \
-          >>"$out/results/infrastructure.tsv"
-      fi
-      printf 'FQ_A_STAGE_ROOT_EXECUTION arm=%s attempt=%d rc=%d\n' \
-        "$arm" "$attempt" "$rc"
-      attempt=$((attempt + 1))
-    done
+    if [ "$candidate" = repeat-state ]; then
+      local mode split
+      for mode in reuse control-poison target-poison; do
+        for split in 2 4; do
+          attempt=1
+          while [ "$attempt" -le "$attempts" ]; do
+            log="$out/results/repeat-state-$mode-s$split-attempt$attempt.log"
+            "$binary" --shape=1x1024x5120 --iterations=1 \
+              --correctness-repeats="$repeats" --tm8-max-m=8 \
+              --bc-mode=skip --only-split="$split" \
+              --force-custom-splitk-s1 --correctness-only \
+              --check-partials-each-repeat --repeat-state="$mode" \
+              >"$log" 2>&1
+            rc=$?
+            # A numeric mismatch is the evidence sought by this diagnostic.
+            # Keep all six arms running and reserve rc=2 for infrastructure.
+            if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+              tail -100 "$log" >&2
+              printf '%s-s%d\trun-attempt-%d\t%d\n' \
+                "$mode" "$split" "$attempt" "$rc" \
+                >>"$out/results/infrastructure.tsv"
+            fi
+            printf 'FQ_REPEAT_STATE_EXECUTION mode=%s S=%d attempt=%d rc=%d\n' \
+              "$mode" "$split" "$attempt" "$rc"
+            attempt=$((attempt + 1))
+          done
+        done
+      done
+    else
+      attempt=1
+      while [ "$attempt" -le "$attempts" ]; do
+        log="$out/results/$arm-attempt$attempt.log"
+        "$binary" --shape=1x1024x5120 --iterations=1 \
+          --correctness-repeats="$repeats" --tm8-max-m=8 --bc-mode=skip \
+          --force-custom-splitk-s1 >"$log" 2>&1
+        rc=$?
+        # Numeric rc=1 is evidence, not a runner failure. Keep sampling every
+        # arm/attempt; only record infrastructure here and adjudicate once all
+        # arms have had their chance to run.
+        if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+          tail -100 "$log" >&2
+          printf '%s\trun-attempt-%d\t%d\n' "$arm" "$attempt" "$rc" \
+            >>"$out/results/infrastructure.tsv"
+        fi
+        printf 'FQ_A_STAGE_ROOT_EXECUTION arm=%s attempt=%d rc=%d\n' \
+          "$arm" "$attempt" "$rc"
+        attempt=$((attempt + 1))
+      done
+    fi
   done
+
+  if [ "$candidate" = repeat-state ]; then
+    python3 -B - "$out/results" "$attempts" "$repeats" <<'PY' \
+        | tee "$out/results/verdict.log"
+import pathlib, shlex, sys
+
+result_dir = pathlib.Path(sys.argv[1])
+attempts = int(sys.argv[2])
+repeats = int(sys.argv[3])
+modes = ("reuse", "control-poison", "target-poison")
+providers = {
+    "standard-aiu": "fq_tc_q12_a64_tm8_tn64_tk256_wm8_wn16_s2_bc0_ap0",
+    "packed-row": "fq_tc_q12_a64_tm8_tn64_tk256_wm8_wn16_s2_bc0_ap1",
+}
+
+def fields(line):
+    row = {}
+    for token in shlex.split(line.removeprefix("FQ_CUSTOM_SPLIT_COUNT_CELL ")):
+        if "=" not in token:
+            raise ValueError(f"malformed token {token!r}")
+        key, value = token.split("=", 1)
+        if key in row:
+            raise ValueError(f"duplicate field {key}")
+        row[key] = value
+    return row
+
+def parse(path, mode, split):
+    text = path.read_text()
+    marker = (f"FQ_REPEAT_STATE mode={mode} "
+              "partial_check_each_repeat=1 measure=0")
+    if text.count(marker) != 1:
+        raise ValueError(f"{path}: repeat-state marker denominator differs")
+    rows = [fields(line) for line in text.splitlines()
+            if line.startswith("FQ_CUSTOM_SPLIT_COUNT_CELL ")]
+    expected = {(provider, s) for provider in providers for s in (1, 2, 4)}
+    keyed = {(row.get("provider"), int(row.get("S", "0"))): row
+             for row in rows}
+    if len(rows) != len(expected) or set(keyed) != expected:
+        raise ValueError(f"{path}: custom cell denominator differs")
+    selected = {}
+    for provider, symbol in providers.items():
+        row = keyed[(provider, split)]
+        if row.get("symbol") != symbol:
+            raise ValueError(f"{path}: symbol/provider contradiction")
+        if row.get("kernel") != "GemmUniversalMixedInputSplitKParallel":
+            raise ValueError(f"{path}: custom producer route changed")
+        if row.get("partial_probe") != "COMPLETE":
+            raise ValueError(f"{path}: every-repeat partial oracle did not complete")
+        selected[provider] = row
+    return selected
+
+def is_clean(row):
+    return (row["state"] == "MEASURED" and row["failure_step"] == "NONE" and
+            int(row["raw_bad"]) == 0 and
+            int(row["partial_value_raw_bad"]) == 0 and
+            int(row["failure_repeat"]) == -1)
+
+def is_numeric(row):
+    return (row["state"] in {"RAW_FP16_MISMATCH", "PARTIAL_FP32_MISMATCH"} and
+            (int(row["raw_bad"]) > 0 or
+             int(row["partial_value_raw_bad"]) > 0) and
+            int(row["failure_repeat"]) >= 0)
+
+try:
+    infrastructure = (result_dir / "infrastructure.tsv").read_text().strip()
+    if infrastructure:
+        raise ValueError("infrastructure failures: " +
+                         infrastructure.replace("\n", ";"))
+    runs = {}
+    for mode in modes:
+        for split in (2, 4):
+            for attempt in range(1, attempts + 1):
+                path = result_dir / (
+                    f"repeat-state-{mode}-s{split}-attempt{attempt}.log")
+                if not path.is_file() or path.is_symlink():
+                    raise ValueError(f"missing regular log: {path}")
+                runs[(mode, split, attempt)] = parse(path, mode, split)
+
+    stats = {}
+    for mode in modes:
+        failures = 0
+        exposure = 0
+        output_bad = 0
+        latent_partial_bad = 0
+        cells = 0
+        for split in (2, 4):
+            for attempt in range(1, attempts + 1):
+                for provider, row in runs[(mode, split, attempt)].items():
+                    cells += 1
+                    if is_clean(row):
+                        exposure += repeats
+                    elif is_numeric(row):
+                        failures += 1
+                        exposure += int(row["failure_repeat"]) + 1
+                        output_bad += int(row["raw_bad"]) > 0
+                        latent_partial_bad += (
+                            int(row["raw_bad"]) == 0 and
+                            int(row["partial_value_raw_bad"]) > 0)
+                        print(
+                            "FQ_REPEAT_STATE_FAILURE "
+                            f"mode={mode} provider={provider} S={split} "
+                            f"attempt={attempt} repeat={row['failure_repeat']} "
+                            f"state={row['state']} raw_bad={row['raw_bad']} "
+                            f"partial_value_raw_bad={row['partial_value_raw_bad']} "
+                            f"plane_mask={row['partial_bad_plane_mask']} "
+                            f"partial_first_index={row['partial_first_bad_index']} "
+                            f"partial_first_want={row['partial_first_bad_want']} "
+                            f"partial_first_got={row['partial_first_bad_got']}")
+                    else:
+                        raise ValueError(
+                            f"{mode}/{provider}/S{split}: unexpected row {row}")
+        rate = failures / exposure if exposure else 0.0
+        stats[mode] = (failures, exposure, rate)
+        print(
+            "FQ_REPEAT_STATE_ARM "
+            f"mode={mode} cells={cells} failures={failures} "
+            f"exposure={exposure} mle_per_repeat={rate:.12g} "
+            f"output_bad={output_bad} latent_partial_bad={latent_partial_bad}")
+
+    reuse_bad = stats["reuse"][0] > 0
+    control_bad = stats["control-poison"][0] > 0
+    target_bad = stats["target-poison"][0] > 0
+    if not reuse_bad:
+        verdict = "BASELINE_NONREPRODUCTION"
+        interpretation = (
+            "fresh-process reuse did not reproduce; no state or cadence cause "
+            "can be assigned")
+    elif control_bad and not target_bad:
+        verdict = "PARTIAL_WORKSPACE_CARRYOVER_CAUSAL"
+        interpretation = (
+            "equal memset/synchronize cadence stayed dirty only when the live "
+            "partial workspace was not overwritten")
+    elif control_bad and target_bad:
+        verdict = "PARTIAL_WORKSPACE_REUSE_EXCLUDED"
+        interpretation = (
+            "both equal-cadence arms remained dirty; prior partial workspace "
+            "contents are not required for the failure")
+    elif not control_bad and not target_bad:
+        verdict = "MEMSET_CADENCE_MASKS_FAILURE"
+        interpretation = (
+            "both equal-cadence arms became clean; clearing the target cannot be "
+            "assigned causally because the disjoint control also masked the race")
+    else:
+        verdict = "TARGET_POISON_ONLY_DIRTY_UNADJUDICATED"
+        interpretation = (
+            "only poisoning the live workspace remained dirty; poison exposure or "
+            "missing producer stores needs a dedicated follow-up")
+    print(
+        "FQ_REPEAT_STATE_VERDICT "
+        f"verdict={verdict} attempts={attempts} repeats={repeats} "
+        "same_binary=1 fresh_process_per_arm=1 every_partial_checked=1")
+    print("FQ_REPEAT_STATE_INTERPRETATION " + interpretation)
+except (KeyError, OSError, ValueError) as error:
+    print(f"[fq-repeat-state] FAIL: {error}", file=sys.stderr)
+    raise SystemExit(2)
+PY
+    rc=${PIPESTATUS[0]}
+    find "$out/results" -maxdepth 1 -type f \
+        ! -name authority.sha256 -print0 | sort -z | \
+      xargs -0 sha256sum >"$out/results/authority.sha256" || return 2
+    if [ "$rc" -ne 0 ]; then
+      fail "repeat-state analysis failed artifacts=$out"
+      return "$rc"
+    fi
+    printf '[fq-repeat-state] DIAGNOSTIC_COMPLETE sha=%s artifacts=%s\n' \
+      "$sha" "$out"
+    return 0
+  fi
 
   python3 -B - "$out/results" "$attempts" "$repeats" "$candidate" <<'PY' \
       | tee "$out/results/verdict.log"
