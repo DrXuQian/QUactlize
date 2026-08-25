@@ -20,6 +20,10 @@
 # `single-aiu-issuer` restores the opaque PPU0010 AIU copy atom's one-logical-
 # thread contract at the two mixed-input helper overloads. It changes no CuTe
 # coordinate, descriptor, packed-A scalar copy, wait/barrier, MMA or store.
+# `stable-k-tile-shape` changes only the lifetime of the dynamic shape retained
+# by CuTe's reference-holding K-coordinate iterator.  The baseline binds that
+# reference to a temporary returned by shape<2>(gA); the candidate names the
+# identical value in the custom kernel scope before constructing the iterator.
 #
 # `FQ_A_STAGE_CANDIDATE=repeat-state` instead builds only the baseline binary
 # and runs reuse/control-poison/target-poison for S2 and S4. Every repeat checks
@@ -55,9 +59,9 @@ main() {
   attempts="${PROBE_ATTEMPTS:-2}"
   candidate="${FQ_A_STAGE_CANDIDATE:-remaining-three}"
   case "$candidate" in
-    asm-memory-contract|logical-x2-scalar|async-shared-fence|single-aiu-issuer|remaining-two|remaining-three|repeat-state) ;;
+    asm-memory-contract|logical-x2-scalar|async-shared-fence|single-aiu-issuer|stable-k-tile-shape|remaining-two|remaining-three|repeat-state) ;;
     *)
-      fail "FQ_A_STAGE_CANDIDATE must be asm-memory-contract, logical-x2-scalar, async-shared-fence, single-aiu-issuer, remaining-two, remaining-three, or repeat-state"
+      fail "FQ_A_STAGE_CANDIDATE must be asm-memory-contract, logical-x2-scalar, async-shared-fence, single-aiu-issuer, stable-k-tile-shape, remaining-two, remaining-three, or repeat-state"
       return $?
       ;;
   esac
@@ -111,6 +115,21 @@ copy_aiu = (root / (
 copy_aiu_traits = (root / (
     "third_party/actlize/include/cute/atom/"
     "copy_traits_ppu0010_aiu.hpp")).read_text()
+tensor_impl = (root / (
+    "third_party/actlize/include/cute/tensor_impl.hpp")).read_text()
+coord_iterator = (root / (
+    "third_party/actlize/include/cute/stride.hpp")).read_text()
+splitk_coord_iterator = (root / (
+    "third_party/actlize/include/cute/ppu_stride.hpp")).read_text()
+tensor_shape_mode = tensor_impl.split(
+    "// Return the shape of a mode", 1)[1].split(
+        "// Return the stride of a mode", 1)[0]
+forward_coord_type = coord_iterator.split(
+    "struct ForwardCoordIterator\n{", 1)[1].split(
+        "// A forward iterator for a coordinate that starts", 1)[0]
+splitk_coord_type = splitk_coord_iterator.split(
+    "struct SplitkCoordIterator\n{", 1)[1].split(
+        "template <class Shape>", 1)[0]
 nontrans_x4_impl = m8_copy.split(
     "struct PPU0010_TSM_LD_SWZL_IMPL<Element, false>", 1)[1].split(
         "struct PPU0010_TSM_LD_SWZL_IMPL<Element, true>", 1)[0]
@@ -144,6 +163,16 @@ checks = {
     "no device macro": "FORCE_CUSTOM_SPLITK_S1" not in bench + main,
     "cli exact": main.count("--force-custom-splitk-s1") == 2,
     "runtime split descriptor": "args.split_k_slices" in kernel,
+    "exact stable K-tile shape lifetime seam":
+        kernel.count("PPU_SPLITK_STABLE_K_TILE_SHAPE") == 2 and
+        kernel.count("auto const k_tile_shape = shape<2>(gA);") == 1 and
+        kernel.count("idx2crd(work.k_begin, k_tile_shape), k_tile_shape") == 1 and
+        kernel.count("idx2crd(work.k_begin, shape<2>(gA)), shape<2>(gA)") == 1,
+    "CuTe tensor shape is a value retained by iterator reference":
+        "auto\nshape(" in tensor_shape_mode and
+        "decltype(auto)\nshape(" not in tensor_shape_mode and
+        forward_coord_type.count("Shape const& shape;") == 1 and
+        splitk_coord_type.count("Shape const& shape;") == 1,
     "S1 admitted by descriptor":
         "splits == 1 || splits == 2 || splits == 4 || splits == 8" in partition,
     "singleton plane keeps physical stride":
@@ -213,10 +242,11 @@ checks = {
 bad = [name for name, ok in checks.items() if not ok]
 if bad:
     raise SystemExit("custom-S1 source seam changed: " + repr(bad))
-print("[fq-a-stage-root:source] PASS PPU0010 AIU atom is one logical "
-      "issuer while baseline warp0 has 32 physical callers; split-groups is "
-      "metadata-only; exact single-issuer, asm-memory, logical-x2 and "
-      "async-shared-fence seams; S is runtime data")
+print("[fq-a-stage-root:source] PASS CuTe tensor shape<I>() returns by value "
+      "while both K iterators retain Shape const&; custom baseline binds a "
+      "temporary and stable-k-tile-shape names the same dynamic value; "
+      "PPU0010 single-issuer, asm-memory, logical-x2 and async-shared-fence "
+      "seams remain exact; S is runtime data")
 PY
 
   python3 -B "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
@@ -329,6 +359,7 @@ PY
       logical-x2-scalar) defs='PPU_M8_LOGICAL_X2_SCALAR_LOAD=1' ;;
       async-shared-fence) defs='PPU_MIXED_ASYNC_SHARED_FENCE=1' ;;
       single-aiu-issuer) defs='PPU_AIU_SINGLE_LOGICAL_ISSUER=1' ;;
+      stable-k-tile-shape) defs='PPU_SPLITK_STABLE_K_TILE_SHAPE=1' ;;
       *) fail "internal arm table error: $arm"; return $? ;;
     esac
     build_dir="$out/build-$arm"
@@ -353,7 +384,7 @@ PY
           >>"$out/results/infrastructure.tsv"
         continue
       fi
-    elif grep -Eq -- '-DPPU_(PACKED_A_ASM_MEMORY_CONTRACT|M8_LOGICAL_X2_SCALAR_LOAD|MIXED_ASYNC_SHARED_FENCE|AIU_SINGLE_LOGICAL_ISSUER)=1' \
+    elif grep -Eq -- '-DPPU_(PACKED_A_ASM_MEMORY_CONTRACT|M8_LOGICAL_X2_SCALAR_LOAD|MIXED_ASYNC_SHARED_FENCE|AIU_SINGLE_LOGICAL_ISSUER|SPLITK_STABLE_K_TILE_SHAPE)=1' \
         "$build_log"; then
       printf '%s\tbaseline-contaminated\t2\n' "$arm" \
         >>"$out/results/infrastructure.tsv"
@@ -414,6 +445,22 @@ PY
         fi
         printf 'FQ_A_STAGE_ROOT_EXECUTION arm=%s attempt=%d rc=%d\n' \
           "$arm" "$attempt" "$rc"
+        if [ "$arm" = baseline ]; then
+          local shipping_log shipping_rc
+          shipping_log="$out/results/shipping-s1-attempt$attempt.log"
+          "$binary" --shape=1x1024x5120 --iterations=1 \
+            --correctness-repeats="$repeats" --tm8-max-m=8 --bc-mode=skip \
+            --only-split=1 --correctness-only >"$shipping_log" 2>&1
+          shipping_rc=$?
+          if [ "$shipping_rc" -ne 0 ] && [ "$shipping_rc" -ne 1 ]; then
+            tail -100 "$shipping_log" >&2
+            printf 'shipping-s1\trun-attempt-%d\t%d\n' \
+              "$attempt" "$shipping_rc" \
+              >>"$out/results/infrastructure.tsv"
+          fi
+          printf 'FQ_A_STAGE_ROOT_SHIPPING_EXECUTION attempt=%d rc=%d\n' \
+            "$attempt" "$shipping_rc"
+        fi
         attempt=$((attempt + 1))
       done
     fi
@@ -596,7 +643,8 @@ attempts = int(sys.argv[2])
 repeats = int(sys.argv[3])
 selection = sys.argv[4]
 if selection not in {"asm-memory-contract", "logical-x2-scalar",
-                     "async-shared-fence", "single-aiu-issuer", "remaining-two",
+                     "async-shared-fence", "single-aiu-issuer",
+                     "stable-k-tile-shape", "remaining-two",
                      "remaining-three"}:
     raise SystemExit("invalid candidate identity")
 candidates = (("asm-memory-contract", "logical-x2-scalar",
@@ -646,6 +694,40 @@ def parse(path):
             raise ValueError(f"{path}: S={split} did not use custom kernel")
         if int(fields.get("partial_bytes", "-1")) != split * 1024 * 4:
             raise ValueError(f"{path}: S={split} workspace differs")
+    return rows
+
+def parse_shipping(path):
+    text = pathlib.Path(path).read_text()
+    if "FQ_CUSTOM_SPLIT_COUNT_PROBE " in text:
+        raise ValueError(f"{path}: shipping control used the custom route")
+    rows = {}
+    for line in text.splitlines():
+        if not line.startswith("FQ_TC_CELL "):
+            continue
+        fields = {}
+        for token in shlex.split(line.removeprefix("FQ_TC_CELL ")):
+            if "=" not in token:
+                raise ValueError(f"{path}: malformed shipping token {token!r}")
+            key, value = token.split("=", 1)
+            if key in fields:
+                raise ValueError(f"{path}: duplicate shipping field {key}")
+            fields[key] = value
+        if fields.get("S") != "1":
+            continue
+        provider = fields.get("provider")
+        if provider in rows:
+            raise ValueError(f"{path}: duplicate shipping provider {provider}")
+        rows[provider] = fields
+    if set(rows) != set(expected_symbols):
+        raise ValueError(
+            f"{path}: shipping provider denominator differs "
+            f"missing={sorted(set(expected_symbols)-set(rows))} "
+            f"extra={sorted(set(rows)-set(expected_symbols))}")
+    for provider, fields in rows.items():
+        if fields.get("symbol") != expected_symbols[provider] or \
+                fields.get("scope") != "FULL_OUTPUT" or \
+                int(fields.get("partial_bytes", "-1")) != 0:
+            raise ValueError(f"{path}: shipping S1 identity differs for {provider}")
     return rows
 
 def clean(row):
@@ -710,6 +792,13 @@ try:
             if not path.is_file() or path.is_symlink():
                 raise ValueError(f"missing regular arm log: {path}")
             runs[(arm, attempt)] = parse(path)
+
+    shipping_runs = {}
+    for attempt in range(1, attempts + 1):
+        path = result_dir / f"shipping-s1-attempt{attempt}.log"
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"missing regular shipping control log: {path}")
+        shipping_runs[attempt] = parse_shipping(path)
 
     for (arm, attempt), rows in runs.items():
         bad_states = [
@@ -782,6 +871,20 @@ try:
             f"other_bad={other_bad_count} "
             f"all_s_clean={int(is_clean)} clean={int(is_clean)}")
 
+    shipping_cells = [shipping_runs[attempt][provider]
+                      for attempt in range(1, attempts + 1)
+                      for provider in expected_symbols]
+    shipping_clean_count = sum(clean(row) for row in shipping_cells)
+    shipping_corrupt_count = sum(corrupt(row) for row in shipping_cells)
+    if shipping_clean_count + shipping_corrupt_count != len(shipping_cells):
+        raise ValueError("shipping S1 control contains infrastructure/non-numeric states")
+    print(
+        "FQ_A_STAGE_ROOT_SHIPPING_S1 "
+        f"attempts={attempts} repeats={repeats} "
+        f"clean={shipping_clean_count}/{len(shipping_cells)} "
+        f"corrupt={shipping_corrupt_count} "
+        "kernel=GemmUniversal-SplitKSerialScheduler")
+
     baseline_exact_fingerprint = any(
         frozen_ap1_s4_incident(
             runs[("baseline", attempt)][("packed-row", 4)])
@@ -811,11 +914,12 @@ try:
     # attempts.  The single-issuer arm therefore admits the observed family
     # only when every baseline attempt contains a producer-partial failure;
     # all other candidates retain the historical four-cell denominator.
-    single_issuer_selection = candidates == ("single-aiu-issuer",)
+    reduced_incident_selection = candidates in {
+        ("single-aiu-issuer",), ("stable-k-tile-shape",)}
     baseline_target = (
         baseline_failure_attempts == attempts and
         baseline_failure_events >= attempts
-        if single_issuer_selection else baseline_target_cells == 4)
+        if reduced_incident_selection else baseline_target_cells == 4)
     baseline_s1 = [runs[("baseline", attempt)][(provider, 1)]
                    for attempt in range(1, attempts + 1)
                    for provider in expected_symbols]
@@ -833,7 +937,7 @@ try:
         failure_scope = "S1_MIXED_OR_INCOMPLETE"
     clean_candidates = [arm for arm in candidates if candidate_clean[arm]]
     if not baseline_target:
-        if single_issuer_selection:
+        if reduced_incident_selection:
             verdict = "BASELINE_EVERY_ATTEMPT_NONREPRODUCTION"
             interpretation = (
                 "at least one independent baseline attempt did not reproduce "
@@ -873,6 +977,13 @@ try:
                 "attempt, but reducing each opaque AIU copy from 32 identical "
                 "warp0 callers to its one declared logical issuer did not close "
                 "every stressed S1/S2/S4 cell")
+        elif candidates == ("stable-k-tile-shape",):
+            verdict = "K_TILE_ITERATOR_SHAPE_LIFETIME_REMAINS_DIRTY"
+            interpretation = (
+                "the baseline reproduced producer-partial corruption in every "
+                "attempt, but extending the dynamic K-tile shape lifetime across "
+                "the reference-holding CuTe iterator did not close every stressed "
+                "S1/S2/S4 cell")
         else:
             verdict = ("ALL_REMAINING_COMMON_SEAMS_DIRTY"
                        if candidates == ("asm-memory-contract",
@@ -917,6 +1028,14 @@ try:
                 "matching the PPU0010 opaque copy atom's Layout<_1> contract by "
                 "reducing 32 identical warp0 callers to one physical issuer closed "
                 "every S1/S2/S4 cell")
+        elif winner == "stable-k-tile-shape":
+            verdict = "K_TILE_ITERATOR_DANGLING_SHAPE_CAUSAL"
+            interpretation = (
+                "the baseline reproduced producer-partial corruption in every "
+                "attempt while K coordinates, split descriptors, mainloop, AIU, "
+                "barriers, MMA and stores remained unchanged; naming the dynamic "
+                "K-tile shape so CuTe's reference-holding iterator cannot outlive "
+                "its shape temporary closed every S1/S2/S4 cell")
         else:
             verdict = "ASYNC_SHARED_VISIBILITY_FENCE_CAUSAL"
             interpretation = (
@@ -933,7 +1052,8 @@ try:
           f"baseline_exact_fingerprint={int(baseline_exact_fingerprint)} "
           f"selection={selection} candidates={','.join(candidates)} "
           f"clean_candidates={','.join(clean_candidates) or 'NONE'} "
-          f"failure_scope={failure_scope}")
+          f"failure_scope={failure_scope} "
+          f"shipping_s1_clean={shipping_clean_count}/{len(shipping_cells)}")
     print("FQ_A_STAGE_ROOT_INTERPRETATION " + interpretation)
     raise SystemExit(diagnostic_rc)
 except (KeyError, OSError, ValueError) as error:
