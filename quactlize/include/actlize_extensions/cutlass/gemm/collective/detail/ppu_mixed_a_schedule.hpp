@@ -80,7 +80,19 @@ CUTLASS_DEVICE void prepare_mixed_a_for_b(
   cute::for_each(cute::make_int_sequence<Schedule::ABlocks>{},
                  [&] (auto a_block) {
     constexpr int A = decltype(a_block)::value;
+#if defined(PPU_MIXED_A_PREPARE_AFTER_CONSUME) && \
+    (PPU_MIXED_A_PREPARE_AFTER_CONSUME != 0)
+    // Diagnostic only: retain the one-time A prime, then move every
+    // steady-state A delivery to finish_mixed_a_after_consume(). B keeps its
+    // shipping look-ahead cadence. This distinguishes a hidden physical
+    // register clobber from a bad logical A/B block relation without changing
+    // the CuTe views or MMA order.
+    constexpr bool kPrepareNow = Prime::value != 0;
+#else
+    constexpr bool kPrepareNow = true;
+#endif
     if constexpr (Schedule::template prepare_loads<B, A>() &&
+                  kPrepareNow &&
                   !Schedule::template delay_prepare<
                       B, (Prime::value != 0)>()) {
       cute::copy(smem_tiled_copy_A,
@@ -101,11 +113,25 @@ CUTLASS_DEVICE void finish_mixed_a_after_consume(
 #if !defined(PPU_MIXED_LEGACY_B_INDEXED_A_COPY) || \
     (PPU_MIXED_LEGACY_B_INDEXED_A_COPY == 0)
   constexpr int B = BBlock::value;
+#if defined(PPU_MIXED_A_PREPARE_AFTER_CONSUME) && \
+    (PPU_MIXED_A_PREPARE_AFTER_CONSUME != 0)
+  constexpr int NextB = (B + 1) % Schedule::BBlocks;
+  cute::for_each(cute::make_int_sequence<Schedule::ABlocks>{},
+                 [&] (auto a_block) {
+    constexpr int A = decltype(a_block)::value;
+    if constexpr (Schedule::template prepare_loads<NextB, A>()) {
+      cute::copy(smem_tiled_copy_A,
+                 tCsA_p(cute::_, cute::_, a_block),
+                 tCrA_copy_view(cute::_, cute::_, a_block));
+    }
+  });
+#else
   if constexpr (Schedule::template load_after_consume<B>()) {
     cute::copy(smem_tiled_copy_A,
                tCsA_p(cute::_, cute::_, cute::Int<0>{}),
                tCrA_copy_view(cute::_, cute::_, cute::Int<0>{}));
   }
+#endif
 #endif
 }
 

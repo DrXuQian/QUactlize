@@ -1,12 +1,14 @@
 # Q4_K fully-quantized Split-K partial epilogue trigger record
 
-Status: the rarer direct-store failure now has a structural root and locally
-exact repair; device closure remains open.  The earlier shared-output path was
-one independent corruption trigger.  The packed-row S4 failure at repeat 2142
-comes from a CuTe logical-footprint / physical-opcode-footprint mismatch in the
-packed A stage layout.  It is not Split-K producer synchronization.
+Status: the rarer direct-store failure is localized to stale packed-A delivery
+but its final causal seam remains open.  The earlier shared-output path was one
+independent corruption trigger.  A proposed physical stage-footprint repair
+at ca01dc6 removed every modeled cross-stage x4/read-to-writer overlap, yet the
+same packed-row S4 producer failed at repeat 714 (`1.0 -> 6.0`).  The footprint
+overlap is a real fragility, not the complete numerical root.  This is not
+Split-K producer-to-producer synchronization.
 
-## Decisive packed-A root
+## Refuted complete-root hypothesis: packed-A physical stage overlap
 
 The exact failing symbol uses an m8 CuTe A copy atom whose semantic destination
 has two registers per lane.  Its implementation nevertheless executes the
@@ -29,8 +31,9 @@ direct partial/reducer ABI:            exact
 The conflicting writes are the other stage's row-0 cp.async transfers.  The
 conflicting reads feed hidden x4 rows that are discarded or output-masked, but
 the physical memory accesses still occur.  Thus the old layout contains a real
-intra-CTA shared-memory race even though the mathematical row-0 mapping and
-each Split-K output plane are disjoint.
+intra-CTA shared-memory fragility even though the mathematical row-0 mapping
+and each Split-K output plane are disjoint.  Removing it did not close the
+frozen numerical failure, so it cannot carry the root-cause verdict.
 
 The repair separates cube and stage pitches:
 
@@ -44,7 +47,26 @@ The writer, allocation, and `PPU0010_TSM_LD_SWZL_M8` operation now share that
 authority.  TK256/S2 A storage becomes 2432 half (4.75 KiB), still much smaller
 than the ordinary physical-m16 allocation of 8192 half (16 KiB).  L186 binds
 the production type to `(cube_pitch, stage_pitch)=(64,1216)`, requires the old
-layout to show crossings, and requires the repaired layout to show none.
+layout to show crossings, and requires the repaired layout to show none.  This
+is a physical-contract proof only, not a device numeric closure.
+
+## Exact stale previous-A-tile fingerprint
+
+The ca01dc6 failure snapshot found AP1/S4 plane 2, output column 32, expected
+FP32 `1.0` and observed `6.0`.  The exact fixture contributions from its five
+superblocks are `+3,-14,+1,-4,+15`.  Replacing sb13's complete A tile with the
+immediately preceding tile changes its contribution from `-4` to `+1` and
+uniquely gives `6.0`; the same substitution at sb10,11,12,14 gives
+`-2,18,-14,-18` respectively.
+
+L224 independently composes the exact CuTe fragment/copy layouts.  All 16 A
+copy blocks map one-to-one to the 16 MMA K atoms, and prepare(next B delivery)
+has zero logical register-offset overlap with consume(current B delivery).
+Therefore the stale value is not explained by the source-level CuTe block map.
+The remaining candidates are mutable stage binding, prepare-before-consume's
+physical/backend register lifetime, the x4-to-x2 temporary, and packed-A
+asynchronous publication/compiler ordering.  The one-box factorial isolates
+these without changing the shipping default.
 
 ## Scope
 
@@ -103,9 +125,10 @@ the custom partial ABI requires one physical plane with `stride_L=M*N=1024`.
 The next diagnostic explicitly supplies that plane stride.
 
 The packed-row S4 failure initially reopened the producer/reducer boundary.
-The physical-footprint proof instead identifies the packed-A mainloop stage
-storage as the repair point.  Failure-only partial snapshots remain useful
-device evidence, but no inter-CTA publication fix is called for.
+Failure-only partial snapshots prove the wrong value is already in one FP32
+producer plane, and the exact value classifies it as stale A.  The physical
+footprint change did not close it.  No inter-CTA publication fix is called for;
+the remaining experiment is entirely inside the packed-A delivery pipeline.
 
 ## Why this is not a missing barrier
 
@@ -139,7 +162,7 @@ ordering-sensitive, but no supported barrier variant repaired it.  Calling
 this a source-level missing-barrier bug would therefore overstate the evidence
 and point at a refuted fix.
 
-## Earlier shared-output trigger (separate from the packed-A root)
+## Earlier shared-output trigger (separate from the stale-A incident)
 
 The earlier, now superseded 512-repeat device arm reported:
 
@@ -164,9 +187,9 @@ shared-output path had an independent corruption trigger:
   required the custom kernel context, because S=1 changed the compiled kernel,
   FP16 versus FP32 output, copy ownership and register/shared footprint.
 
-This historical ambiguity does not remain open for the rarer direct-store
-failure.  That arm contains no shared-output round trip, and its packed-A
-stage alias is demonstrated directly by the x4 physical-address oracle above.
+The rarer direct-store failure contains no shared-output round trip.  Its exact
+stale-A value is independent of that historical epilogue trigger, while the
+final A-stage causal seam remains to be adjudicated.
 
 The direct-store candidate does not change accumulation or reduction order.  Its
 same-run packed-row S4 median was 11.300 us versus 11.320 us for the legacy
@@ -224,29 +247,21 @@ also structurally exposed.  No owned fixed Split-K launch uses its call
 operator after this repair, so it is not a current regression.  A future
 caller must not infer admission from type formation alone.
 
-The final device closure is implemented by
+The current device closure is implemented by
 `tools/run_fq_q4k_custom_split_count_box.sh`.  It launches the exact generated
-AP0/AP1 `GemmUniversalMixedInputSplitKParallel` symbols at runtime S=1/2/4,
-once with the production direct store and once with the legacy shared
-negative.  S=1 uses one FP32 partial plane plus the same deterministic reducer;
-the shipping S=1 kernel is deliberately bypassed.
+AP0/AP1 `GemmUniversalMixedInputSplitKParallel` symbols at runtime S=1/2/4
+across eight binaries.  Baseline is compared with seven one-variable A-stage
+arms: prepare-after-consume, explicit stage slicing, direct x4-to-x2 output,
+compiler memory fencing around packed-A cp.async, A-before-B issue order,
+separate packed-A commit group, and synchronous packed-A store.  Two
+independent high-repeat attempts run for every arm before the verdict; numeric
+failure never truncates the factorial.
 
-For the retained legacy-shared negative, its two diagnostic outcomes are:
-
-- `RUNTIME_SPLIT_DECOMPOSITION_NECESSARY`: legacy custom-S1 is clean while
-  custom-S2/S4 reproduce.  The S>1 K-range/work-grid decomposition is a
-  necessary trigger for this row (not merely an arbitrary shared store).
-- `CUSTOM_KERNEL_CONTEXT_SUFFICIENT`: legacy custom-S1 also reproduces.  The
-  split count is not necessary; the shipping S1 control stayed clean because
-  its compiled kernel/output epilogue was different.
-
-These labels classify the legacy trigger; they are not alternatives to the
-packed-A physical-footprint root.  Until the repaired packed-row S1/S2/S4 arms
-are hash-bound on device, the honest claim is: the legacy shared handoff is
-unsafe and direct store removes that trigger; the direct-store packed-row
-failure has an exact physical-layout root and a locally proven no-overlap
-repair, while production closure and the small shared-memory/performance delta
-still require one box run.
+Until one arm closes while the baseline reproduces, the honest claim is: the
+legacy shared handoff is unsafe and direct store removes that trigger; the
+remaining direct-store incident is an exact stale previous-A-tile delivery,
+its logical CuTe block map is exact, ca01dc6 stage separation did not repair
+it, and the final physical/backend delivery seam still requires one box run.
 
 ## Retained regression evidence
 

@@ -154,6 +154,10 @@ GATES = [
     # historical B-derived A coordinate aliases all A atoms at the wrap, while
     # B d0/d3 are disjoint, and checks the shared replacement schedule.
     ("l220_q4_a32_prepare_consume_layout", []),
+    # Exact failing FQ packed-m8 A views: one-to-one A-copy/MMA atom mapping,
+    # zero logical prepare-next/consume-current overlap, and the ca01dc6
+    # 1.0->6.0 value's unique previous-sb13 A-tile fingerprint.
+    ("l224_fq_packed_m8_prepare_consume_layout", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that

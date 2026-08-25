@@ -1083,9 +1083,26 @@ public:
     Tensor tBsB = gmem_thr_copy_B.partition_D(sB);                             // (BCPY,BCPY_N,BCPY_K,PIPE)
     auto copy_A_and_B = [&] (auto k_tile, auto k_iter_crd, int pipe) {
       if constexpr (kPackedA) {
+#if defined(PPU_PACKED_A_SEPARATE_ASYNC_GROUP) && \
+    (PPU_PACKED_A_SEPARATE_ASYNC_GROUP != 0)
+        // Diagnostic only: scalar packed-A cp.async gets its own committed
+        // group before B's bulk AIU copy. The outer fence still commits B and
+        // metadata as in shipping, and Stages2 waits all groups before use.
+        copy_A_packed_rows<kAPackRows>(
+            gA, storage.smem_a.begin(), k_tile, pipe, thread_idx, gmem_tiled_copy_A.desc_.dim_h);
+        cp_async_fence();
+        copy_aiu(gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd), tBsB(_,_,_,pipe), warp_idx);
+#elif defined(PPU_PACKED_A_BEFORE_B) && (PPU_PACKED_A_BEFORE_B != 0)
+        // Diagnostic only: preserve one shared commit group but issue A's
+        // scalar cp.async operations before B's bulk AIU operation.
+        copy_A_packed_rows<kAPackRows>(
+            gA, storage.smem_a.begin(), k_tile, pipe, thread_idx, gmem_tiled_copy_A.desc_.dim_h);
+        copy_aiu(gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd), tBsB(_,_,_,pipe), warp_idx);
+#else
         copy_aiu(gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd), tBsB(_,_,_,pipe), warp_idx);
         copy_A_packed_rows<kAPackRows>(
             gA, storage.smem_a.begin(), k_tile, pipe, thread_idx, gmem_tiled_copy_A.desc_.dim_h);
+#endif
       } else {
         auto gmem_thr_copy_A = gmem_tiled_copy_A.get_slice(thread_idx);
         Tensor tAgA = gmem_thr_copy_A.partition_S(gA);                         // (ACPY,ACPY_M,ACPY_K,k)
@@ -1244,8 +1261,34 @@ public:
       // PPU_A_CUBE_H (fold_derivation/l77), so M does not live on mode 1 and a loop over it is a no-op. With
       // CUBE_H=1 cute instead moves mode 2 from basis 2 to basis 0 with stride 64 and halves the A register
       // fragment (ArrayEngine 128 -> 64, with a stride-0 component), i.e. it re-derives the geometry itself.
+#if defined(PPU_MIXED_A_EXPLICIT_STAGE_VIEW) && \
+    (PPU_MIXED_A_EXPLICIT_STAGE_VIEW != 0)
+      // Diagnostic only: derive the A source directly from the driver's
+      // immutable stage integer at every delivery. The shipping path mutates
+      // one Tensor slice in bind_read(); the two forms must be equivalent.
+      auto tCsA_read = tCsA(_,_,_,read_stage);
+#if defined(PPU_PACKED_A_COMPILER_MEMORY_FENCE) && \
+    (PPU_PACKED_A_COMPILER_MEMORY_FENCE != 0)
+      if constexpr (kPackedA) asm volatile("" ::: "memory");
+#endif
+      detail::prepare_mixed_a_for_b<ARegisterSchedule>(
+          smem_tiled_copy_A, tCsA_read, tCrA_copy_view, k_block, prime);
+#if defined(PPU_PACKED_A_COMPILER_MEMORY_FENCE) && \
+    (PPU_PACKED_A_COMPILER_MEMORY_FENCE != 0)
+      if constexpr (kPackedA) asm volatile("" ::: "memory");
+#endif
+#else
+#if defined(PPU_PACKED_A_COMPILER_MEMORY_FENCE) && \
+    (PPU_PACKED_A_COMPILER_MEMORY_FENCE != 0)
+      if constexpr (kPackedA) asm volatile("" ::: "memory");
+#endif
       detail::prepare_mixed_a_for_b<ARegisterSchedule>(
           smem_tiled_copy_A, tCsA_p, tCrA_copy_view, k_block, prime);
+#if defined(PPU_PACKED_A_COMPILER_MEMORY_FENCE) && \
+    (PPU_PACKED_A_COMPILER_MEMORY_FENCE != 0)
+      if constexpr (kPackedA) asm volatile("" ::: "memory");
+#endif
+#endif
       transform_B_kblock<RealInternalElementB>(tCrB_copy_view, tCrB_mma, partitioned_extra_info, k_block,
           K_ATOM_PER_COPY, copy_partitions_extra_info, read_stage, scale_pf);
     };
@@ -1254,7 +1297,7 @@ public:
           copy_A_and_B(k_tile, k_iter_crd, write_stage);
           copy_async_extra_info(mainloop_params, extra_input_partitions, k_tile, write_stage);
     };
-    auto consume = [&] (auto k_block, int) {
+    auto consume = [&] (auto k_block, int read_stage) {
         CUTLASS_PRAGMA_UNROLL
         for (int k_loop = 0; k_loop < K_ATOM_PER_COPY; k_loop++) {
           auto atom_idx = k_block * K_ATOM_PER_COPY + k_loop;
@@ -1264,8 +1307,15 @@ public:
           // gemm for one tiled_mma atom on K
           cute::gemm(tiled_mma, tCrA(_,_,atom_idx), tCrB_mma(_,_,atom_idx), accum);
         }
+#if defined(PPU_MIXED_A_EXPLICIT_STAGE_VIEW) && \
+    (PPU_MIXED_A_EXPLICIT_STAGE_VIEW != 0)
+        auto tCsA_read = tCsA(_,_,_,read_stage);
+        detail::finish_mixed_a_after_consume<ARegisterSchedule>(
+            smem_tiled_copy_A, tCsA_read, tCrA_copy_view, k_block);
+#else
         detail::finish_mixed_a_after_consume<ARegisterSchedule>(
             smem_tiled_copy_A, tCsA_p, tCrA_copy_view, k_block);
+#endif
     };
 
     detail::run_mixed_pipeline<DispatchPolicy::Stages>(K_BLOCK_MAX, k_tile_iter, k_tile_count,
@@ -1968,6 +2018,14 @@ private:
     static_assert(R == kAPackRows, "packed-A writer and allocation must use the same row count");
     constexpr int kThreads = int(cute::size(TiledMma{}));
     int const per_cube = R * kASlices * 2;
+#if defined(PPU_PACKED_A_COMPILER_MEMORY_FENCE) && \
+    (PPU_PACKED_A_COMPILER_MEMORY_FENCE != 0)
+    // Diagnostic only. PPU cp.async and swizzle-load helpers are volatile asm
+    // without compiler memory clobbers. Bracket the packed-A issue loop and
+    // its s2r delivery (above) while leaving device operations/copy groups
+    // otherwise intact.
+    asm volatile("" ::: "memory");
+#endif
     for (int logical_thread = thread_idx; logical_thread < kAWrThreads; logical_thread += kThreads) {
       int const c   = logical_thread / per_cube;                    // which cube in this stage
       int const row = (logical_thread % per_cube) / (kASlices * 2); // which row slot (real or zfill)
@@ -1981,8 +2039,22 @@ private:
       auto&       sdst = *reinterpret_cast<cute::uint128_t*>(
           smem_a + kAPackPitch * c + kAPackStagePitch * pipe +
           detail::aPackRunOffsetHalfs(kACubeH, row, run) + physical_h * 8);
+#if defined(PPU_PACKED_A_SYNCHRONOUS_STORE) && \
+    (PPU_PACKED_A_SYNCHRONOUS_STORE != 0)
+      // Diagnostic only: replace packed A's asynchronous publication with an
+      // ordinary gmem->register->smem transfer. The existing wait+CTA barrier
+      // still publishes B and this store to all consumer warps.
+      cute::uint128_t value{};
+      if (row < valid_rows) value = gsrc;
+      sdst = value;
+#else
       PPU_CP_ASYNC_CACHEGLOBAL_ZFILL<cute::uint128_t>::copy(gsrc, sdst, row < valid_rows);
+#endif
     }
+#if defined(PPU_PACKED_A_COMPILER_MEMORY_FENCE) && \
+    (PPU_PACKED_A_COMPILER_MEMORY_FENCE != 0)
+    asm volatile("" ::: "memory");
+#endif
   }
 
   // PPU_B_DEQUANT_NOP -- TIMING ONLY, RESULTS ARE DELIBERATELY WRONG. It answers the one question the packed-scale

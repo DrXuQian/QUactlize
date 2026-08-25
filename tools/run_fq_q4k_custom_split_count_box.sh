@@ -1,48 +1,50 @@
 #!/usr/bin/env bash
-# One-box causal control for the Q4_K fixed Split-K partial epilogue.
+# One-box causal closure for the rare Q4_K packed-m8 Split-K A-stage failure.
 #
-# The generated AP0/AP1 symbols are identical across runtime S=1/2/4.  The
-# benchmark's diagnostic flag bypasses ShippingGemm at S=1 and submits that
-# cell through the same GemmUniversalMixedInputSplitKParallel type as S=2/4.
-# Two binaries differ only by the retained legacy shared partial epilogue.
+# Every binary contains the exact same generated AP0/AP1 tactic pair and uses
+# GemmUniversalMixedInputSplitKParallel for S=1/2/4. Compile-time arms change
+# one A-stage seam apiece; numeric failures are retained and every arm runs
+# before the fail-closed verdict is produced.
 set -uo pipefail
 
 fail() {
-  printf '[fq-custom-split-count] FAIL: %s\n' "$*" >&2
+  printf '[fq-a-stage-root] FAIL: %s\n' "$*" >&2
   return 2
 }
 
 main() {
-  local root workspace_root sha short stamp out jobs repeats
-  local full generated arm defs build_dir build_log binary log rc
+  local root workspace_root sha short stamp out jobs repeats attempts
+  local full generated arm defs build_dir build_log binary log rc attempt
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
   workspace_root="$(realpath -e /workspace)" || return 2
   sha="$(git -C "$root" rev-parse HEAD)" || return 2
   short="${sha:0:8}"
   stamp="$(date -u +%Y%m%dT%H%M%SZ)" || return 2
-  out="$(realpath -m -- "${OUT:-/workspace/quactlize-fq-q4k-custom-split-count-${short}-${stamp}-$$}")" || return 2
+  out="$(realpath -m -- "${OUT:-/workspace/quactlize-fq-q4k-a-stage-root-${short}-${stamp}-$$}")" || return 2
   case "$out" in
     "$workspace_root"/*) ;;
     *) fail "OUT must resolve below /workspace: $out"; return $? ;;
   esac
   [ ! -e "$out" ] || { fail "refusing to overwrite $out"; return $?; }
   if [ -n "${PPU_DEFS:-}" ] || [ -n "${PPU_EXTRA_DEFS:-}" ]; then
-    fail 'ambient PPU_DEFS/PPU_EXTRA_DEFS changes the two-arm identity'
+    fail 'ambient PPU_DEFS/PPU_EXTRA_DEFS changes the eight-arm identity'
     return $?
   fi
   jobs="${JOBS:-16}"
-  repeats="${PROBE_REPEATS:-8192}"
-  case "$jobs:$repeats" in
-    *[!0-9:]*|0:*|*:0)
-      fail 'JOBS and PROBE_REPEATS must be positive integers'
+  repeats="${PROBE_REPEATS:-16384}"
+  attempts="${PROBE_ATTEMPTS:-2}"
+  case "$jobs:$repeats:$attempts" in
+    *[!0-9:]*|0:*|*:0:*|*:*:0)
+      fail 'JOBS, PROBE_REPEATS and PROBE_ATTEMPTS must be positive integers'
       return $?
       ;;
   esac
   mkdir -p "$out/generated/full" "$out/generated/closure" \
     "$out/results" || return 2
 
-  # Fail closed if the diagnostic flag starts changing a device type instead
-  # of only selecting the already-instantiated custom type on the host.
+  # Fail closed if a diagnostic macro escapes its intended source seam, or if
+  # the host route starts changing a device type instead of selecting the
+  # already-instantiated custom type.
   python3 -B - "$root" <<'PY' || return 2
 import pathlib, sys
 root = pathlib.Path(sys.argv[1])
@@ -57,6 +59,15 @@ kernel = (root / (
 partial_layout = (root / (
     "quactlize/include/actlize_extensions/cutlass/gemm/kernel/detail/"
     "ppu_splitk_partial_layout.hpp")).read_text()
+schedule = (root / (
+    "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/"
+    "ppu_mixed_a_schedule.hpp")).read_text()
+collective = (root / (
+    "quactlize/include/actlize_extensions/cutlass/gemm/collective/"
+    "quactlize_mma_mixed_input.hpp")).read_text()
+m8_copy = (root / (
+    "third_party/actlize/include/cute/arch/"
+    "copy_ppu0010_aiu.hpp")).read_text()
 checks = {
     "one host branch": bench.count(
         "if (splits == 1 && !options.force_custom_splitk_s1)") == 1,
@@ -74,11 +85,25 @@ checks = {
         "cute::get<2>(stride) = rows * columns;" in partial_layout,
     "failure-only partial oracle":
         bench.count("inspect_failed_partials(") == 2,
+    "prepare-after-consume seam":
+        schedule.count("PPU_MIXED_A_PREPARE_AFTER_CONSUME") == 4,
+    "explicit-stage seam":
+        collective.count("PPU_MIXED_A_EXPLICIT_STAGE_VIEW") == 4,
+    "compiler-fence seam":
+        collective.count("PPU_PACKED_A_COMPILER_MEMORY_FENCE") == 12,
+    "synchronous-store seam":
+        collective.count("PPU_PACKED_A_SYNCHRONOUS_STORE") == 2,
+    "A-before-B seam":
+        collective.count("PPU_PACKED_A_BEFORE_B") == 2,
+    "separate-A-group seam":
+        collective.count("PPU_PACKED_A_SEPARATE_ASYNC_GROUP") == 2,
+    "direct-x4 seam":
+        m8_copy.count("PPU_M8_DIRECT_X4_PROJECTION") == 2,
 }
 bad = [name for name, ok in checks.items() if not ok]
 if bad:
     raise SystemExit("custom-S1 source seam changed: " + repr(bad))
-print("[fq-custom-split-count:source] PASS host-route-only; S is runtime data")
+print("[fq-a-stage-root:source] PASS exact seven seams; S is runtime data")
 PY
 
   python3 -B "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
@@ -160,7 +185,7 @@ registry = (
     f'set(FQ_TC_GENERATED_REGISTRY "{(output / "fq_tc_registry.inc").resolve()}")\n' +
     f'set(FQ_TC_GENERATED_MANIFEST "{(output / "manifest.json").resolve()}")\n')
 closure = {
-    "schema": "quactlize.fq-custom-split-count-closure.v1",
+    "schema": "quactlize.fq-a-stage-root-closure.v1",
     "source_manifest": str(manifest_path),
     "source_typed_denominator": len(rows),
     "selection_denominator": 2,
@@ -170,14 +195,23 @@ closure = {
 }
 (output / "manifest.json").write_text(
     json.dumps(closure, indent=2, sort_keys=True) + "\n")
-print(f"[fq-custom-split-count:select] PASS source_typed={len(rows)} selected=2")
+print(f"[fq-a-stage-root:select] PASS source_typed={len(rows)} selected=2")
 PY
 
-  for arm in direct legacy-shared; do
-    defs=""
-    if [ "$arm" = legacy-shared ]; then
-      defs='PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE=1'
-    fi
+  : >"$out/results/infrastructure.tsv"
+  for arm in baseline prepare-after-consume explicit-stage direct-x4 \
+      compiler-fence A-before-B separate-A-group synchronous-store; do
+    case "$arm" in
+      baseline) defs="" ;;
+      prepare-after-consume) defs='PPU_MIXED_A_PREPARE_AFTER_CONSUME=1' ;;
+      explicit-stage) defs='PPU_MIXED_A_EXPLICIT_STAGE_VIEW=1' ;;
+      direct-x4) defs='PPU_M8_DIRECT_X4_PROJECTION=1' ;;
+      compiler-fence) defs='PPU_PACKED_A_COMPILER_MEMORY_FENCE=1' ;;
+      A-before-B) defs='PPU_PACKED_A_BEFORE_B=1' ;;
+      separate-A-group) defs='PPU_PACKED_A_SEPARATE_ASYNC_GROUP=1' ;;
+      synchronous-store) defs='PPU_PACKED_A_SYNCHRONOUS_STORE=1' ;;
+      *) fail "internal arm table error: $arm"; return $? ;;
+    esac
     build_dir="$out/build-$arm"
     build_log="$out/results/$arm-build.log"
     mkdir -p "$build_dir" || return 2
@@ -190,47 +224,69 @@ PY
     rc=$?
     if [ "$rc" -ne 0 ]; then
       tail -160 "$build_log" >&2
-      fail "$arm build rc=$rc artifacts=$out"
-      return "$rc"
+      printf '%s\tbuild\t%d\n' "$arm" "$rc" \
+        >>"$out/results/infrastructure.tsv"
+      continue
     fi
-    if [ "$arm" = legacy-shared ]; then
-      grep -Fq -- '-DPPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE=1' \
-        "$build_log" || {
-          fail 'legacy define did not reach the compiled target'
-          return $?
-        }
-    elif grep -Fq 'PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE' "$build_log"; then
-      fail 'direct arm unexpectedly contains the legacy define'
-      return $?
+    if [ -n "$defs" ]; then
+      if ! grep -Fq -- "-D$defs" "$build_log"; then
+        printf '%s\tdefine-missing\t2\n' "$arm" \
+          >>"$out/results/infrastructure.tsv"
+        continue
+      fi
+    elif grep -Eq -- '-DPPU_(MIXED_A_PREPARE_AFTER_CONSUME|MIXED_A_EXPLICIT_STAGE_VIEW|M8_DIRECT_X4_PROJECTION|PACKED_A_COMPILER_MEMORY_FENCE|PACKED_A_BEFORE_B|PACKED_A_SEPARATE_ASYNC_GROUP|PACKED_A_SYNCHRONOUS_STORE)=1' \
+        "$build_log"; then
+      printf '%s\tbaseline-contaminated\t2\n' "$arm" \
+        >>"$out/results/infrastructure.tsv"
+      continue
     fi
     binary="$build_dir/ppu_targets/test_fully_quantized_internal_sweep"
     [ -x "$binary" ] && [ ! -L "$binary" ] || {
-      fail "$arm binary missing: $binary"
-      return $?
+      printf '%s\tbinary-missing\t2\n' "$arm" \
+        >>"$out/results/infrastructure.tsv"
+      continue
     }
-    log="$out/results/$arm.log"
-    "$binary" --shape=1x1024x5120 --iterations=1 \
-      --correctness-repeats="$repeats" --tm8-max-m=8 --bc-mode=skip \
-      --force-custom-splitk-s1 >"$log" 2>&1
-    rc=$?
-    # The benchmark returns 1 when one or more selected cells fail numeric
-    # correctness.  That is evidence for this diagnostic, not a runner
-    # failure: retain both arms and let the closed denominator below classify
-    # it.  Only an rc outside {0,1} is an infrastructure failure.
-    if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
-      tail -100 "$log" >&2
-      fail "$arm infrastructure rc=$rc artifacts=$out"
-      return $?
-    fi
-    printf 'FQ_CUSTOM_SPLIT_COUNT_BINARY arm=%s sha256=%s rc=%d repeats=%s\n' \
-      "$arm" "$(sha256sum "$binary" | awk '{print $1}')" "$rc" "$repeats"
+    printf 'FQ_A_STAGE_ROOT_BINARY arm=%s defs=%s sha256=%s attempts=%s repeats=%s\n' \
+      "$arm" "${defs:-NONE}" "$(sha256sum "$binary" | awk '{print $1}')" \
+      "$attempts" "$repeats"
+    attempt=1
+    while [ "$attempt" -le "$attempts" ]; do
+      log="$out/results/$arm-attempt$attempt.log"
+      "$binary" --shape=1x1024x5120 --iterations=1 \
+        --correctness-repeats="$repeats" --tm8-max-m=8 --bc-mode=skip \
+        --force-custom-splitk-s1 >"$log" 2>&1
+      rc=$?
+      # Numeric rc=1 is evidence, not a runner failure. Keep sampling every
+      # arm/attempt; only record infrastructure here and adjudicate once all
+      # arms have had their chance to run.
+      if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+        tail -100 "$log" >&2
+        printf '%s\trun-attempt-%d\t%d\n' "$arm" "$attempt" "$rc" \
+          >>"$out/results/infrastructure.tsv"
+      fi
+      printf 'FQ_A_STAGE_ROOT_EXECUTION arm=%s attempt=%d rc=%d\n' \
+        "$arm" "$attempt" "$rc"
+      attempt=$((attempt + 1))
+    done
   done
 
-  python3 -B - "$out/results/direct.log" \
-      "$out/results/legacy-shared.log" <<'PY' \
+  python3 -B - "$out/results" "$attempts" "$repeats" <<'PY' \
       | tee "$out/results/verdict.log"
 import pathlib, shlex, sys
 
+result_dir = pathlib.Path(sys.argv[1])
+attempts = int(sys.argv[2])
+repeats = int(sys.argv[3])
+arms = (
+    "baseline",
+    "prepare-after-consume",
+    "explicit-stage",
+    "direct-x4",
+    "compiler-fence",
+    "A-before-B",
+    "separate-A-group",
+    "synchronous-store",
+)
 expected_symbols = {
     "standard-aiu": "fq_tc_q12_a64_tm8_tn64_tk256_wm8_wn16_s2_bc0_ap0",
     "packed-row": "fq_tc_q12_a64_tm8_tn64_tk256_wm8_wn16_s2_bc0_ap1",
@@ -298,135 +354,147 @@ def localization(row):
         return "SAME_STREAM_PUBLICATION_GAP"
     return "REDUCER_REPLAY_STILL_BAD"
 
+def producer_partial_bad(row):
+    return (corrupt(row) and row.get("partial_probe") == "COMPLETE" and
+            int(row.get("partial_value_raw_bad", "-1")) > 0 and
+            int(row.get("reducer_replay_raw_bad", "-1")) > 0)
+
+def frozen_ap1_s4_incident(row):
+    # ca01dc6: output half 768 -> 1792, caused by producer plane 2 carrying
+    # FP32 6.0 instead of 1.0 at output column 32.  Require the complete bit
+    # signature so an unrelated intermittent failure cannot carry causality.
+    return (producer_partial_bad(row) and
+            int(row.get("raw_bad", "-1")) == 32 and
+            int(row.get("first_bad", "-1")) == 32 and
+            row.get("first_want") == "0x4e80" and
+            row.get("first_got") == "0x4fc0" and
+            int(row.get("partial_bad_plane_mask", "-1"), 0) == 0x4 and
+            int(row.get("partial_first_bad_plane", "-1")) == 2 and
+            int(row.get("partial_first_bad_index", "-1")) == 32 and
+            row.get("partial_first_bad_want") == "0x3f800000" and
+            row.get("partial_first_bad_got") == "0x40c00000")
+
 try:
-    direct = parse(sys.argv[1])
-    legacy = parse(sys.argv[2])
-    for arm, rows in (("direct", direct), ("legacy-shared", legacy)):
+    infrastructure = (result_dir / "infrastructure.tsv").read_text().strip()
+    if infrastructure:
+        raise ValueError("one or more arm infrastructure failures: " +
+                         infrastructure.replace("\n", ";"))
+
+    runs = {}
+    for arm in arms:
+        for attempt in range(1, attempts + 1):
+            path = result_dir / f"{arm}-attempt{attempt}.log"
+            if not path.is_file() or path.is_symlink():
+                raise ValueError(f"missing regular arm log: {path}")
+            runs[(arm, attempt)] = parse(path)
+
+    for (arm, attempt), rows in runs.items():
         bad_states = [
             f"{provider}:S{split}:{row['state']}"
             for (provider, split), row in rows.items()
             if not (clean(row) or corrupt(row) or
                     s1_inadmissible(row, split))]
         if bad_states:
-            raise ValueError(f"{arm} arm contains infrastructure/non-numeric "
+            raise ValueError(f"{arm}/attempt{attempt} contains infrastructure/non-numeric "
                              f"states: {','.join(sorted(bad_states))}")
         for provider in expected_symbols:
-            for split in (1, 2, 4):
+            for split in (2, 4):
                 row = rows[(provider, split)]
-                print(
-                    "FQ_CUSTOM_SPLIT_COUNT_RESULT "
-                    f"arm={arm} provider={provider} S={split} "
-                    f"state={row['state']} raw_bad={row['raw_bad']} "
-                    f"failure_repeat={row['failure_repeat']} "
-                    f"first_bad={row['first_bad']} "
-                    f"first_want={row['first_want']} "
-                    f"first_got={row['first_got']} "
-                    f"partial_probe={row.get('partial_probe', 'MISSING')} "
-                    f"partial_value_raw_bad="
-                    f"{row.get('partial_value_raw_bad', 'MISSING')} "
-                    f"partial_bad_plane_mask="
-                    f"{row.get('partial_bad_plane_mask', 'MISSING')} "
-                    f"reducer_replay_raw_bad="
-                    f"{row.get('reducer_replay_raw_bad', 'MISSING')} "
-                    f"localization={localization(row)}")
+                if corrupt(row):
+                    print(
+                        "FQ_A_STAGE_ROOT_FAILURE "
+                        f"arm={arm} attempt={attempt} provider={provider} S={split} "
+                        f"failure_repeat={row['failure_repeat']} "
+                        f"raw_bad={row['raw_bad']} first_bad={row['first_bad']} "
+                        f"first_want={row['first_want']} first_got={row['first_got']} "
+                        f"partial_value_raw_bad={row.get('partial_value_raw_bad', 'MISSING')} "
+                        f"partial_bad_plane_mask={row.get('partial_bad_plane_mask', 'MISSING')} "
+                        f"partial_first_bad_plane={row.get('partial_first_bad_plane', 'MISSING')} "
+                        f"partial_first_bad_index={row.get('partial_first_bad_index', 'MISSING')} "
+                        f"partial_first_bad_want={row.get('partial_first_bad_want', 'MISSING')} "
+                        f"partial_first_bad_got={row.get('partial_first_bad_got', 'MISSING')} "
+                        f"frozen_incident={int(frozen_ap1_s4_incident(row))} "
+                        f"localization={localization(row)}")
 
-    direct_s_gt1_bad = [
-        f"{provider}:S{split}"
-        for provider in expected_symbols for split in (2, 4)
-        if corrupt(direct[(provider, split)])]
-    direct_s1_bad = [provider for provider in expected_symbols
-                     if corrupt(direct[(provider, 1)])]
-    direct_s1_inadmissible = [provider for provider in expected_symbols
-        if s1_inadmissible(direct[(provider, 1)], 1)]
-    legacy_s_gt1_clean = [
-        f"{provider}:S{split}"
-        for provider in expected_symbols for split in (2, 4)
-        if clean(legacy[(provider, split)])]
+    clean_arms = []
+    denominator = attempts * len(expected_symbols) * 2
+    for arm in arms:
+        cells = [runs[(arm, attempt)][(provider, split)]
+                 for attempt in range(1, attempts + 1)
+                 for provider in expected_symbols for split in (2, 4)]
+        clean_count = sum(clean(row) for row in cells)
+        producer_bad_count = sum(producer_partial_bad(row) for row in cells)
+        other_bad_count = sum(corrupt(row) and not producer_partial_bad(row)
+                              for row in cells)
+        is_clean = clean_count == denominator
+        if arm != "baseline" and is_clean:
+            clean_arms.append(arm)
+        print(
+            "FQ_A_STAGE_ROOT_ARM "
+            f"arm={arm} attempts={attempts} repeats={repeats} "
+            f"s_gt1_clean={clean_count}/{denominator} "
+            f"producer_partial_bad={producer_bad_count} "
+            f"other_bad={other_bad_count} clean={int(is_clean)}")
 
-    # Fail closed, but only after publishing all twelve cells and a semantic
-    # verdict.  A dirty production-direct S>1 cell invalidates the shipping
-    # repair.  A dirty production-direct custom S1 cell invalidates this S1
-    # control specifically; neither outcome may be hidden as a missing log.
-    diagnostic_rc = 0
-    if direct_s_gt1_bad:
-        verdict = "PRODUCTION_DIRECT_S_GT1_REGRESSION"
-        loci = sorted({localization(direct[(provider, split)])
-                       for provider in expected_symbols for split in (2, 4)
-                       if corrupt(direct[(provider, split)])})
+    baseline_target = any(
+        frozen_ap1_s4_incident(
+            runs[("baseline", attempt)][("packed-row", 4)])
+        for attempt in range(1, attempts + 1))
+    if not baseline_target:
+        verdict = "BASELINE_AP1_S4_NONREPRODUCTION"
         interpretation = (
-            "the production direct-store S2/S4 arm is not raw-bit exact; "
-            "the shipping repair must be re-opened before this causal test; "
-            "failure localization=" + ",".join(loci))
-        detail = ",".join(direct_s_gt1_bad) + ";locus=" + ",".join(loci)
+            "the exact packed-row S4 producer-plane 1.0-to-6.0 incident was "
+            "not observed; clean counterfactual arms cannot be assigned causally")
         diagnostic_rc = 1
-    elif direct_s1_inadmissible:
-        verdict = "CUSTOM_S1_CONTROL_INADMISSIBLE"
+    elif not clean_arms:
+        verdict = "ALL_COUNTERFACTUAL_ARMS_REMAIN_DIRTY"
         interpretation = (
-            "the custom-kernel S1 route was rejected before launch; runtime "
-            "split count remains unadjudicated")
-        detail = ",".join(direct_s1_inadmissible)
-        diagnostic_rc = 1
-    elif direct_s1_bad:
-        verdict = "CUSTOM_S1_CONTROL_INVALID"
-        interpretation = (
-            "the custom-kernel S1 direct-store route is itself not raw-bit "
-            "exact, so legacy custom-S1 cannot adjudicate whether runtime "
-            "K partitioning is necessary")
-        detail = ",".join(direct_s1_bad)
-        diagnostic_rc = 1
-    elif legacy_s_gt1_clean:
-        verdict = "LEGACY_NEGATIVE_NONREPRODUCTION"
-        interpretation = (
-            "one or more legacy S2/S4 cells stayed clean; the historical "
-            "negative denominator did not reproduce")
-        detail = ",".join(legacy_s_gt1_clean)
+            "the frozen incident reproduced but none of the seven isolated "
+            "A-stage seams closed every repeated S2/S4 cell")
         diagnostic_rc = 1
     else:
-        legacy_s1_inadmissible = [provider for provider in expected_symbols
-            if s1_inadmissible(legacy[(provider, 1)], 1)]
-        if legacy_s1_inadmissible:
-            print("FQ_CUSTOM_SPLIT_COUNT_VERDICT "
-                  "verdict=CUSTOM_S1_CONTROL_INADMISSIBLE "
-                  f"detail={','.join(legacy_s1_inadmissible)}")
-            print("FQ_CUSTOM_SPLIT_COUNT_INTERPRETATION the legacy custom-S1 "
-                  "route was rejected before launch")
-            raise SystemExit(1)
-        s1_bad = [provider for provider in expected_symbols
-                  if corrupt(legacy[(provider, 1)])]
-        if not s1_bad:
-            verdict = "RUNTIME_SPLIT_DECOMPOSITION_NECESSARY"
-            interpretation = (
-                "same custom kernel and FP32 epilogue are clean at S1; "
-                "S>1 K partition/work-grid context is required")
-        elif len(s1_bad) == len(expected_symbols):
-            verdict = "CUSTOM_KERNEL_CONTEXT_SUFFICIENT"
-            interpretation = (
-                "runtime split count is not necessary; shipping S1 stays "
-                "clean because it is a different kernel/output epilogue")
+        clean_set = set(clean_arms)
+        if clean_set == {"explicit-stage"}:
+            verdict = "MUTABLE_A_STAGE_BINDING_CAUSAL"
+        elif clean_set == {"direct-x4"}:
+            verdict = "M8_X4_TEMPORARY_CAUSAL"
+        elif clean_set == {"compiler-fence", "synchronous-store"}:
+            verdict = "PACKED_A_COMPILER_PUBLICATION_CAUSAL"
+        elif clean_set == {"synchronous-store"}:
+            verdict = "PACKED_A_ASYNC_PUBLICATION_CAUSAL"
+        elif clean_set == {"separate-A-group", "synchronous-store"}:
+            verdict = "PACKED_A_MIXED_COMMIT_GROUP_CAUSAL"
+        elif "A-before-B" in clean_set or "separate-A-group" in clean_set:
+            verdict = "PACKED_A_BULK_SCALAR_ASYNC_ORDER_CAUSAL"
+        elif "prepare-after-consume" in clean_set:
+            verdict = "PREPARE_CONSUME_PHYSICAL_LIFETIME_CAUSAL"
         else:
-            verdict = "PROVIDER_DEPENDENT_CUSTOM_S1"
-            interpretation = (
-                "custom S1 sensitivity depends on the A provider; runtime "
-                "split is not a universal explanation")
-        detail = ",".join(s1_bad) if s1_bad else "NONE"
+            verdict = "MULTIPLE_A_STAGE_ARMS_CLOSE_ROOT_BOUNDARY"
+        interpretation = (
+            "baseline packed-row S4 reproduced a wrong FP32 producer plane; "
+            "the listed arms were raw-bit exact across every independent "
+            "attempt: " + ",".join(clean_arms))
+        diagnostic_rc = 0
 
-    print(f"FQ_CUSTOM_SPLIT_COUNT_VERDICT verdict={verdict} detail={detail}")
-    print("FQ_CUSTOM_SPLIT_COUNT_INTERPRETATION " + interpretation)
+    print("FQ_A_STAGE_ROOT_VERDICT "
+          f"verdict={verdict} baseline_target={int(baseline_target)} "
+          f"clean_arms={','.join(clean_arms) if clean_arms else 'NONE'}")
+    print("FQ_A_STAGE_ROOT_INTERPRETATION " + interpretation)
     raise SystemExit(diagnostic_rc)
 except (KeyError, OSError, ValueError) as error:
-    print(f"[fq-custom-split-count] FAIL: {error}", file=sys.stderr)
+    print(f"[fq-a-stage-root] FAIL: {error}", file=sys.stderr)
     raise SystemExit(2)
 PY
   rc=${PIPESTATUS[0]}
 
-  sha256sum "$generated/manifest.json" "$out/results/direct.log" \
-    "$out/results/legacy-shared.log" "$out/results/verdict.log" \
-    >"$out/results/authority.sha256" || return 2
+  find "$out/results" -maxdepth 1 -type f \
+      ! -name authority.sha256 -print0 | sort -z | \
+    xargs -0 sha256sum >"$out/results/authority.sha256" || return 2
   if [ "$rc" -ne 0 ]; then
     fail "unadjudicated device result artifacts=$out"
     return "$rc"
   fi
-  printf '[fq-custom-split-count] PASS sha=%s artifacts=%s\n' "$sha" "$out"
+  printf '[fq-a-stage-root] DIAGNOSTIC_COMPLETE sha=%s artifacts=%s\n' "$sha" "$out"
 }
 
 main "$@"
