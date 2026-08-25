@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import pathlib
+import re
 import sys
 
 
@@ -96,6 +97,29 @@ def check(texts: dict[str, str]) -> list[str]:
     )
     for label, source in (("one-plane", one_plane), ("two-plane", two_plane)):
         errors += ordered(source, publication_order, f"{label} exact metadata publication")
+        operator_marker = "CUTLASS_DEVICE void\n  operator() ("
+        if operator_marker not in source:
+            errors.append(f"{label} mixed collective operator marker differs")
+        else:
+            operator_body = source.split(operator_marker, 1)[1].split("\nprivate:", 1)[0]
+            errors += ordered(
+                operator_body,
+                (
+                    "auto extra_input_partitions = partition_extra_inputs(",
+                    "if constexpr (kPackedScaleOn && Scale_NumThreads > 32 &&",
+                    "!kLegacyModuloMetadataPublishers) {",
+                    "__syncthreads();",
+                    "// Start async loads for all pipes but the last",
+                    "copy_async_extra_info(",
+                ),
+                f"{label} packed metadata init publication edge")
+            if operator_body.count(
+                    "if constexpr (kPackedScaleOn && Scale_NumThreads > 32 &&") != 1:
+                errors.append(f"{label} packed init edge must occur exactly once outside the K loop")
+        if source.count("clear(tSsS)") != 1 or not re.search(
+                r"if\s*\(scale_copy_owner\)\s*(?:\{\s*)?clear\(tSsS\);",
+                source):
+            errors.append(f"{label} fp16 metadata initialization is not exact-owner guarded")
         if "thread_idx % int(cute::size(GmemTiledCopyScalePacked{}))" in source:
             errors.append(f"{label} restored modulo-replayed packed publishers")
         if source.count("bool scale_copy_owner,\n        bool packed_copy_owner)") != 1:
@@ -203,6 +227,10 @@ def self_test(texts: dict[str, str]) -> None:
          "true"),
         ("two_plane", "PackedMetadataOwnership::owns_physical_thread(thread_idx)",
          "true"),
+        ("one_plane", "!kLegacyModuloMetadataPublishers) {\n      __syncthreads();",
+         "!kLegacyModuloMetadataPublishers) {\n      /* planted missing init edge */"),
+        ("two_plane", "if (scale_copy_owner) clear(tSsS);",
+         "clear(tSsS);"),
     )
     for key, old, new in plants:
         planted = dict(texts)
@@ -238,7 +266,7 @@ def main() -> int:
         return 2
     print("[fq-splitk-partial-path] PASS direct ownership, legacy negative, "
           "mainloop/epilogue synchronization, distinct S1 type, "
-          "ordered-close timing, exact metadata publication, and nine negative plants")
+          "ordered-close timing, exact metadata publication, and eleven negative plants")
     return 0
 
 

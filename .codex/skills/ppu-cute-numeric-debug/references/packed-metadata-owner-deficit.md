@@ -1,4 +1,4 @@
-# Packed metadata owner deficit
+# Packed metadata ownership and initialization ordering
 
 ## Exact incident
 
@@ -52,10 +52,38 @@ WM/WN=8/16  stages=2  CTA threads=128
 For Q4_K, both the fp16 metadata plan and packed-column plan have 64 logical
 owners. The historical code constructed slices as `thread_idx % 64` and then
 let all 128 physical threads issue the operation. Every shared destination was
-therefore published twice. Failures were intermittent, but each event changed
-exactly one 32-output stripe and the producer FP32 partial was already wrong.
-The same custom kernel also failed at S=1, excluding Split-K partitioning and
-the reducer as necessary causes.
+therefore published twice. More importantly, the two operations touching the
+same fp16 shared tile use different warp maps:
+
+```text
+scale clear warp 0: all N, groups 0..3
+scale clear warp 1: all N, groups 4..7
+scale clear warp 2: duplicate of warp 0
+scale clear warp 3: duplicate of warp 1
+
+packed decode warp 0: N 0..31, all groups
+packed decode warp 1: N 32..63, all groups
+```
+
+The historical order was `clear`, initial async prefetch, per-thread wait,
+packed decode, then the first CTA barrier. A per-thread wait does not order an
+ordinary clear performed by another warp. Actual CuTe `partition_D` plus the
+packed-column ownership map gives the exact intersection census:
+
+```text
+CTA32 passing row:  same-warp pairs=1, cross-warp pairs=0
+CTA128 failing row: same-warp pairs=2, cross-warp pairs=6
+                    active-owner cross pairs=2
+                    surplus-warp cross pairs=4
+                    overlap per cross pair=128 metadata values
+```
+
+Consequently an allowed schedule can decode N0..31, execute one late clear,
+then decode N32..63. Exactly one 32-column half loses four scale groups. This
+is the observed signature: intermittent, 32-aligned `raw_bad=32`, a small
+fixed contribution delta, and a wrong producer FP32 partial. The same custom
+kernel also failed at S=1, excluding Split-K partitioning and the reducer as
+necessary causes.
 
 The exact passing contrast is `WM/WN=8/64`: its tiled MMA has one 32-thread
 warp and 32 logical metadata owners, so the old wrapped protocol happens to be
@@ -67,12 +95,11 @@ exact. Local L114 locks both geometries:
   legacy-wrapped makes 1024 visits with 512 duplicate destinations.
 
 An earlier `owner-only` experiment guarded only the packed raw async copy. It
-did not guard the ordinary scale/zero copies or the initial `clear(tSsS)`, so
-its dirty result was not a valid refutation of exact-once publication. Packed
-decode writes the fp16 tile by column owner while initialization clears it by
-scale-copy owner; on a multi-warp CTA those two maps also need one publication
-edge after initialization. Otherwise a late clear may overwrite a decoded
-scale even after raw-copy duplication has been removed.
+did not guard the ordinary scale/zero copies or the initial `clear(tSsS)`, and
+it added no clear-to-decode edge. Its dirty result therefore did not test the
+complete contract. Removing surplus publishers eliminates four cross-warp
+pairs, but the two active-owner cross pairs remain; exact ownership without an
+initialization barrier is still racy.
 
 The complete contract is therefore:
 
@@ -82,9 +109,10 @@ The complete contract is therefore:
    scale/zero partition;
 3. only `PackedMetadataColumnOwnership::owns_physical_thread()` may issue the
    packed raw copy;
-4. publish multi-warp packed initialization once before raw copy/decode;
-5. if a diagnostic splits one column's decode across surplus threads, add a
-   pre-decode CTA edge because those threads no longer issue duplicate copies.
+4. after the exact fp16 clear, execute one CTA publication edge before any
+   packed raw copy can progress to decode;
+5. keep the existing post-decode CTA barrier that publishes decoded metadata
+   to all MMA consumers.
 
 ## Required controls
 
@@ -96,6 +124,9 @@ The complete contract is therefore:
   publishers; production must report zero.
 - The Q4/A64 scale-copy oracle must keep CTA32 legacy-wrapped exact and CTA128
   legacy-wrapped red with two visits per destination.
+- The same actual-CuTe oracle must report zero cross-warp clear/decode pairs
+  for CTA32 and exactly six for CTA128: two active-owner plus four surplus,
+  each intersecting on 128 metadata values.
 - A partial-N residue must copy all and only live metadata bytes.
 - Both standard-A and packed-row-A rows must pass; changing A cannot repair a
   common metadata defect.

@@ -17,7 +17,10 @@ register-delivery or prepare/consume lifetime problem.
 Read `references/packed-metadata-owner-deficit.md` when the first bad output is
 an N-column boundary, especially when TileN and CTA thread count differ, when
 physical threads are wrapped onto fewer logical copy slots, or when a packed
-scale/zero channel is decoded before its publishing barrier.
+scale/zero channel is decoded before its publishing barrier.  Audit the
+one-time fp16 metadata clear separately from the packed raw copy: different
+clear/decode warp maps need a CTA edge even after duplicate publishers are
+removed.
 
 Read `references/splitk-shared-partial-epilogue.md` when completed fp32
 accumulators are exact but Split-K partial workspace values intermittently

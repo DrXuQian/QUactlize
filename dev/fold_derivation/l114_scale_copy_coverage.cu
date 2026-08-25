@@ -18,6 +18,7 @@
 #include "cute/atom/copy_traits_ppu.hpp"
 #include "cutlass/numeric_types.h"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_packed_metadata_ownership.hpp"
 
 using namespace cute;
 namespace md = cutlass::gemm::collective::detail;
@@ -70,6 +71,19 @@ struct CopyStats {
   int max_hits = 0;
 };
 
+struct WarpPublicationStats {
+  int clear_warps = 0;
+  int decode_warps = 0;
+  int surplus_clear_warps = 0;
+  int same_warp_pairs = 0;
+  int cross_warp_pairs = 0;
+  int owner_cross_warp_pairs = 0;
+  int surplus_cross_warp_pairs = 0;
+  int cross_warp_values = 0;
+  int min_cross_warp_values = 0;
+  int max_cross_warp_values = 0;
+};
+
 enum class Protocol { RawAll, WrappedAll, OwnersOnly };
 
 template <class Plan, Protocol P>
@@ -118,6 +132,106 @@ CopyStats copy_stats() {
   return stats;
 }
 
+// Reconstruct the exact source race in the Q4/A64 packed path.  clear(tSsS)
+// uses ScaleCopyPlan's (N,group) TiledCopy, while packed_decode_stage uses one
+// packed-column owner over every group.  The historical collective wrapped
+// every physical CTA thread onto the smaller scale-copy layout, performed the
+// clear before any mainloop work, then decoded after a per-thread async wait
+// and before the first CTA barrier.  A scale-copy warp can therefore execute
+// its clear after a different packed-column warp has decoded.  The historical
+// surplus warps duplicate four more such cross-warp pairs, but exact ownership
+// alone still leaves the two active-owner cross pairs and therefore still
+// needs the one-time initialization edge.
+template <class Plan>
+WarpPublicationStats warp_publication_stats() {
+  static_assert(Plan::cta_threads % 32 == 0);
+  using ScaleCopy = decltype(make_tiled_copy(
+      RealAtom{},
+      Layout<Shape<Int<Plan::thread_layout_h>, Int<Plan::thread_layout_w>>>{},
+      Layout<Shape<Int<Plan::values_per_thread>, _1>>{}));
+  using Packed = md::PackedMetadataColumnOwnership<Plan::tile_n, Plan::cta_threads>;
+  constexpr int Warps = Plan::cta_threads / 32;
+  constexpr int Values = Plan::tile_n * Plan::tile_k;
+  std::array<std::array<unsigned char, Values>, Warps> clears{};
+  std::array<std::array<unsigned char, Values>, Warps> decodes{};
+
+  auto metadata = make_counting_tensor(make_layout(
+      make_shape(Int<Plan::tile_n>{}, Int<Plan::tile_k>{}),
+      make_stride(_1{}, Int<Plan::tile_n>{})));
+  for (int physical = 0; physical < Plan::cta_threads; ++physical) {
+    auto part = ScaleCopy{}.get_slice(Plan::logical_slot(physical)).partition_D(metadata);
+    for (int i = 0; i < int(size(part)); ++i) {
+      int const address = int(part(i));
+      if (address >= 0 && address < Values)
+        clears[std::size_t(physical / 32)][std::size_t(address)] = 1;
+    }
+  }
+  for (int physical = 0; physical < Packed::owner_threads; ++physical) {
+    for (int sub = 0; sub < Packed::columns_per_thread; ++sub) {
+      int const n = Packed::column(physical, sub);
+      for (int group = 0; group < Plan::tile_k; ++group)
+        decodes[std::size_t(physical / 32)]
+               [std::size_t(n + Plan::tile_n * group)] = 1;
+    }
+  }
+
+  WarpPublicationStats stats;
+  for (int warp = 0; warp < Warps; ++warp) {
+    bool clear_nonempty = false;
+    bool decode_nonempty = false;
+    for (int i = 0; i < Values; ++i) {
+      clear_nonempty |= clears[std::size_t(warp)][std::size_t(i)] != 0;
+      decode_nonempty |= decodes[std::size_t(warp)][std::size_t(i)] != 0;
+    }
+    stats.clear_warps += clear_nonempty;
+    stats.decode_warps += decode_nonempty;
+    if (clear_nonempty && !decode_nonempty) ++stats.surplus_clear_warps;
+  }
+
+  // A cross-warp intersection is a legal late-clear race: clear() happens
+  // before the pipeline, packed decode happens after only a per-thread async
+  // wait, and the first CTA barrier is after decode.  Same-warp intersections
+  // retain program order; different warps have no such edge.  Surplus wrapped
+  // publishers add races, but the scale-copy and packed-column maps are
+  // orthogonal enough that active owner warps can also cross.
+  for (int clear_warp = 0; clear_warp < Warps; ++clear_warp) {
+    bool const surplus = clear_warp * 32 >= Plan::thread_slots;
+    for (int decode_warp = 0; decode_warp < Warps; ++decode_warp) {
+      int overlap = 0;
+      int clear_count = 0;
+      int decode_count = 0;
+      for (int i = 0; i < Values; ++i) {
+        bool const c = clears[std::size_t(clear_warp)][std::size_t(i)] != 0;
+        bool const d = decodes[std::size_t(decode_warp)][std::size_t(i)] != 0;
+        clear_count += c;
+        decode_count += d;
+        overlap += c && d;
+      }
+      if (overlap != 0) {
+        std::printf("[l114] Q4/A64 CTA%d clear-warp=%d decode-warp=%d "
+                    "overlap=%d clear-values=%d decode-values=%d surplus=%d\n",
+                    Plan::cta_threads, clear_warp, decode_warp, overlap,
+                    clear_count, decode_count, surplus ? 1 : 0);
+      }
+      if (overlap != 0) {
+        if (clear_warp == decode_warp) {
+          ++stats.same_warp_pairs;
+        } else {
+          ++stats.cross_warp_pairs;
+          stats.cross_warp_values += overlap;
+          if (surplus) ++stats.surplus_cross_warp_pairs;
+          else ++stats.owner_cross_warp_pairs;
+          if (stats.min_cross_warp_values == 0 || overlap < stats.min_cross_warp_values)
+            stats.min_cross_warp_values = overlap;
+          if (overlap > stats.max_cross_warp_values)
+            stats.max_cross_warp_values = overlap;
+        }
+      }
+    }
+  }
+  return stats;
+}
+
 void print_stats(char const* label, CopyStats const& stats) {
   std::printf("[l114] %s: unique=%d visits=%d dup=%d oob=%d hits=%d..%d\n",
               label, stats.unique, stats.visits, stats.duplicates, stats.oob,
@@ -136,6 +250,8 @@ int main() {
   auto const q4a64_pass_legacy = copy_stats<Q4A64PassPlan, Protocol::WrappedAll>();
   auto const q4a64_fail_owner = copy_stats<Q4A64FailPlan, Protocol::OwnersOnly>();
   auto const q4a64_fail_legacy = copy_stats<Q4A64FailPlan, Protocol::WrappedAll>();
+  auto const q4a64_pass_warps = warp_publication_stats<Q4A64PassPlan>();
+  auto const q4a64_fail_warps = warp_publication_stats<Q4A64FailPlan>();
   print_stats("real-atom SK8 CTA64 owners", sk8);
   print_stats("real-atom SK16 CTA64 owners", sk16);
   print_stats("real-atom SK8 CTA256 raw", cta256_raw);
@@ -147,6 +263,28 @@ int main() {
   print_stats("Q4/A64 CTA32 passing legacy-wrapped", q4a64_pass_legacy);
   print_stats("Q4/A64 CTA128 failing owners", q4a64_fail_owner);
   print_stats("Q4/A64 CTA128 failing legacy-wrapped", q4a64_fail_legacy);
+  std::printf("[l114] Q4/A64 CTA32 warp-publication clear=%d decode=%d "
+              "surplus=%d same-warp=%d cross-warp=%d owner-cross=%d "
+              "surplus-cross=%d overlap=%d..%d\n",
+              q4a64_pass_warps.clear_warps, q4a64_pass_warps.decode_warps,
+              q4a64_pass_warps.surplus_clear_warps,
+              q4a64_pass_warps.same_warp_pairs,
+              q4a64_pass_warps.cross_warp_pairs,
+              q4a64_pass_warps.owner_cross_warp_pairs,
+              q4a64_pass_warps.surplus_cross_warp_pairs,
+              q4a64_pass_warps.min_cross_warp_values,
+              q4a64_pass_warps.max_cross_warp_values);
+  std::printf("[l114] Q4/A64 CTA128 warp-publication clear=%d decode=%d "
+              "surplus=%d same-warp=%d cross-warp=%d owner-cross=%d "
+              "surplus-cross=%d overlap=%d..%d\n",
+              q4a64_fail_warps.clear_warps, q4a64_fail_warps.decode_warps,
+              q4a64_fail_warps.surplus_clear_warps,
+              q4a64_fail_warps.same_warp_pairs,
+              q4a64_fail_warps.cross_warp_pairs,
+              q4a64_fail_warps.owner_cross_warp_pairs,
+              q4a64_fail_warps.surplus_cross_warp_pairs,
+              q4a64_fail_warps.min_cross_warp_values,
+              q4a64_fail_warps.max_cross_warp_values);
 
   bool const sk8_full = sk8.unique == 1024 && sk8.visits == 1024 && sk8.duplicates == 0 &&
                         sk8.oob == 0 && sk8.min_hits == 1 && sk8.max_hits == 1;
@@ -185,9 +323,25 @@ int main() {
       q4a64_fail_legacy.unique == 512 && q4a64_fail_legacy.visits == 1024 &&
       q4a64_fail_legacy.duplicates == 512 && q4a64_fail_legacy.oob == 0 &&
       q4a64_fail_legacy.min_hits == 2 && q4a64_fail_legacy.max_hits == 2;
+  bool const q4a64_pass_no_late_clear =
+      q4a64_pass_warps.clear_warps == 1 && q4a64_pass_warps.decode_warps == 1 &&
+      q4a64_pass_warps.surplus_clear_warps == 0 &&
+      q4a64_pass_warps.same_warp_pairs == 1 &&
+      q4a64_pass_warps.cross_warp_pairs == 0;
+  bool const q4a64_fail_exact_late_clear =
+      q4a64_fail_warps.clear_warps == 4 && q4a64_fail_warps.decode_warps == 2 &&
+      q4a64_fail_warps.surplus_clear_warps == 2 &&
+      q4a64_fail_warps.same_warp_pairs == 2 &&
+      q4a64_fail_warps.cross_warp_pairs == 6 &&
+      q4a64_fail_warps.owner_cross_warp_pairs == 2 &&
+      q4a64_fail_warps.surplus_cross_warp_pairs == 4 &&
+      q4a64_fail_warps.cross_warp_values == 768 &&
+      q4a64_fail_warps.min_cross_warp_values == 128 &&
+      q4a64_fail_warps.max_cross_warp_values == 128;
   std::printf("[l114] coverage: SK8=%s SK16=%s CTA256-raw-oob=%s "
               "CTA256-owner=%s legacy-wrap=%s Q4A32-owner=%s Q4A32-legacy=%s "
-              "Q4A64-CTA32=%s Q4A64-CTA128-owner=%s Q4A64-CTA128-legacy=%s\n",
+              "Q4A64-CTA32=%s Q4A64-CTA128-owner=%s Q4A64-CTA128-legacy=%s "
+              "Q4A64-CTA32-race=%s Q4A64-CTA128-race=%s\n",
               sk8_full ? "FULL" : "FAIL", sk16_full ? "FULL" : "FAIL",
               raw_walks_out ? "LOCKED" : "FAIL", owner_exact ? "EXACT" : "FAIL",
               wrap_negative ? "RED" : "FALSE-GREEN",
@@ -195,10 +349,13 @@ int main() {
               q4a32_legacy_red ? "RED" : "FALSE-GREEN",
               q4a64_pass_exact ? "EXACT" : "FAIL",
               q4a64_fail_owner_exact ? "EXACT" : "FAIL",
-              q4a64_fail_legacy_red ? "RED" : "FALSE-GREEN");
+              q4a64_fail_legacy_red ? "RED" : "FALSE-GREEN",
+              q4a64_pass_no_late_clear ? "ABSENT" : "FAIL",
+              q4a64_fail_exact_late_clear ? "EXACT-32-COLUMN" : "FAIL");
   return sk8_full && sk16_full && raw_walks_out && owner_exact &&
          wrap_negative && q4a32_exact && q4a32_legacy_red &&
-         q4a64_pass_exact && q4a64_fail_owner_exact && q4a64_fail_legacy_red ? 0 : 1;
+         q4a64_pass_exact && q4a64_fail_owner_exact && q4a64_fail_legacy_red &&
+         q4a64_pass_no_late_clear && q4a64_fail_exact_late_clear ? 0 : 1;
 }
 
 #else

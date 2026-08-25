@@ -1070,12 +1070,14 @@ try:
                 "sensitivity result and cannot assign the producer root")
             diagnostic_rc = 1
         elif winner == "exact-metadata-publication":
-            verdict = "DUPLICATE_METADATA_PUBLICATION_CAUSAL"
+            verdict = "PACKED_METADATA_CLEAR_DECODE_RACE_CLOSED"
             interpretation = (
                 "the same source and tactic pair reproduced with the historical "
-                "all-thread modulo publishers, while production exact ownership "
-                "closed every custom S1/S2/S4 cell; the repaired contract covers "
-                "scale/zero initialization, ordinary metadata and packed raw copies")
+                "all-thread modulo publishers and missing initialization edge, "
+                "while production exact ownership plus the one-time pre-prefetch "
+                "CTA edge closed every custom S1/S2/S4 cell; the repaired contract "
+                "covers scale/zero initialization, ordinary metadata and packed "
+                "raw copies")
         else:
             verdict = "ASYNC_SHARED_VISIBILITY_FENCE_CAUSAL"
             interpretation = (
