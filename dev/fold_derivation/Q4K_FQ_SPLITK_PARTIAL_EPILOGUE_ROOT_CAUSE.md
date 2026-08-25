@@ -1,12 +1,16 @@
 # Q4_K fully-quantized Split-K partial epilogue trigger record
 
-Status: the rarer direct-store failure is localized to stale packed-A delivery
-but its final causal seam remains open.  The earlier shared-output path was one
-independent corruption trigger.  A proposed physical stage-footprint repair
-at ca01dc6 removed every modeled cross-stage x4/read-to-writer overlap, yet the
-same packed-row S4 producer failed at repeat 714 (`1.0 -> 6.0`).  The footprint
-overlap is a real fragility, not the complete numerical root.  This is not
-Split-K producer-to-producer synchronization.
+Status: the rarer direct-store failure is localized to one wrong 32-output
+band in a completed producer FP32 partial; its final causal seam remains open.
+That places the defect between operand delivery and the direct store, but does
+not separately observe or certify the accumulator.  The earlier shared-output
+path was one independent corruption trigger.  A proposed physical
+stage-footprint repair at ca01dc6
+removed every modeled cross-stage x4/read-to-writer overlap, yet the same
+packed-row S4 producer failed at repeat 714 (`1.0 -> 6.0`).  That value pair
+admits one stale-A explanation, but the full failure family does not.  The
+footprint overlap is a real fragility, not the complete numerical root.  This
+is not Split-K producer-to-producer synchronization.
 
 ## Refuted complete-root hypothesis: packed-A physical stage overlap
 
@@ -50,29 +54,42 @@ the production type to `(cube_pitch, stage_pitch)=(64,1216)`, requires the old
 layout to show crossings, and requires the repaired layout to show none.  This
 is a physical-contract proof only, not a device numeric closure.
 
-## Exact stale previous-A-tile fingerprint
+## One stale-A-compatible signature, not a family root
 
 The ca01dc6 failure snapshot found AP1/S4 plane 2, output column 32, expected
 FP32 `1.0` and observed `6.0`.  The exact fixture contributions from its five
 superblocks are `+3,-14,+1,-4,+15`.  Replacing sb13's complete A tile with the
 immediately preceding tile changes its contribution from `-4` to `+1` and
 uniquely gives `6.0`; the same substitution at sb10,11,12,14 gives
-`-2,18,-14,-18` respectively.
+`-2,18,-14,-18` respectively.  This proves compatibility, not causality.
+
+L224 now enumerates all 20 active K superblocks, all eight fixture column
+residues and every complete source-A/destination-B tile pairing.  Adjacent
+previous-A substitutions can produce the observed `+5` and `-5` deltas, and
+some non-adjacent complete-A substitutions can produce `-4`.  No complete
+A-tile substitution can produce the observed `-6` delta.  Therefore the
+earlier statement that the failure family was “classified exactly as stale
+A” was false; only one captured value pair had that explanation.
 
 L224 independently composes the exact CuTe fragment/copy layouts.  All 16 A
 copy blocks map one-to-one to the 16 MMA K atoms, and prepare(next B delivery)
 has zero logical register-offset overlap with consume(current B delivery).
-Therefore the stale value is not explained by the source-level CuTe block map.
-The remaining candidates are mutable stage binding, prepare-before-consume's
-physical/backend register lifetime, the x4-to-x2 temporary, and packed-A
-asynchronous publication/compiler ordering.  The one-box factorial isolates
-these without changing the shipping default.
+Therefore the exact block map neither explains nor rules out the device
+failure.  The remaining candidates are operand publication/delivery,
+physical/backend register lifetime, the x4-to-x2 consumer and MMA/accumulator
+state.  The reduced closure isolates the two remaining publication/consumer
+seams without changing the shipping default.
+
+The same exact `partition_C` oracle maps M=1 output ownership as 16 consecutive
+N values per warp: N0-15/W0, N16-31/W1, N32-47/W2, N48-63/W3.  One aligned
+32-output band is therefore two adjacent output warps.  It does not, by
+itself, identify an A/B copy issuer or prove a wait/barrier defect.
 
 ## Scope
 
 This incident is deliberately narrower than "PPU epilogues are broken".
-Ordinary S=1 output epilogues remain raw-bit-clean controls.  The failure was
-observed in the fully-quantized fixed Split-K producer below:
+Ordinary shipping S=1 output epilogues remain raw-bit-clean controls.  The
+failure was observed in the fully-quantized fixed Split-K producer below:
 
 ```text
 shape       M/N/K=1/1024/5120, group_size=32
@@ -82,18 +99,21 @@ providers   standard-aiu and packed-row
 splits      S=2 and S=4
 ```
 
-The S>1 route is not the S=1 kernel with one runtime integer changed.  S=1
+The shipping S>1 route is not the S=1 kernel with one runtime integer changed.  S=1
 delegates to the shipping GEMM and its product epilogue.  S>1 instantiates
 `GemmUniversalMixedInputSplitKParallel`, traverses a shorter K interval, and
 publishes FP32 partial planes before a deterministic reducer.  Consequently,
 the evidence proves a failure in this Split-K producer's compiled context; it
 does not prove that the split count alone would make an otherwise identical
-S=1 binary fail.
+S=1 binary fail.  The current diagnostic bypasses that dispatch and runs the
+same custom producer type at runtime S=1/2/4; its earlier parser accidentally
+dropped S1, so the S>1-only premise still requires one device census.
 
 ## What failed
 
-The mainloop accumulator was exact.  The old partial-output path then
-redistributed the completed FP32 fragment register-to-shared, synchronized,
+For the earlier shared-output trigger, the accumulator feeding a clean direct
+arm was exact.  The old partial-output path then redistributed the completed
+FP32 fragment register-to-shared, synchronized,
 reloaded shared-to-register, and wrote the split-major workspace.  Independent
 per-plane FP32 goldens found intermittent complete 32-output stripes already
 wrong in the producer workspace.  Canaries were intact.  The reducer,
@@ -104,7 +124,9 @@ The production candidate stores the completed accumulator directly through the
 real `TiledMma::partition_C` ownership into the FP32 partial plane.  This is a
 same-type internal store: no conversion or output-layout redistribution needs
 the shared round trip.  It sharply reduced the observed failure rate but did
-not close correctness at 8192 repeats.
+not close correctness at 8192 repeats.  In that rarer direct-store incident,
+a wrong FP32 partial leaves the source before or at the direct store; it does
+not prove that the accumulator itself was exact.
 
 ## Reopened high-repeat result
 
@@ -126,13 +148,15 @@ The next diagnostic explicitly supplies that plane stride.
 
 The packed-row S4 failure initially reopened the producer/reducer boundary.
 Failure-only partial snapshots prove the wrong value is already in one FP32
-producer plane, and the exact value classifies it as stale A.  The physical
-footprint change did not close it.  No inter-CTA publication fix is called for;
-the remaining experiment is entirely inside the packed-A delivery pipeline.
+producer plane.  One exact value pair admits stale A, but the later `-6`
+family member rules out complete stale-A substitution as the common root.  The
+physical footprint change did not close it.  No inter-CTA publication fix is
+called for; the remaining experiment is inside the mainloop operand/
+accumulator path.
 
-## Why this is not a missing barrier
+## What synchronization is closed, and what remains open
 
-All supported synchronization boundaries were present or tested directly:
+Producer-to-producer and producer-to-reducer synchronization are closed:
 
 1. The mixed-input mainloop exits with `cp_async_wait<0>()` followed by
    `__syncthreads()`.  No asynchronous mainloop copy remains in flight when the
@@ -157,12 +181,33 @@ direct accumulator store.  That binary still failed.  A missing producer to
 consumer ordering edge cannot explain corruption of unrelated live
 accumulator values in this arm.
 
-An undocumented backend or hardware scoreboard hazard may internally be
-ordering-sensitive, but no supported barrier variant repaired it.  Calling
-this a source-level missing-barrier bug would therefore overstate the evidence
-and point at a refuted fix.
+The barrier variants above were epilogue/prefix tests.  They do not directly
+adjudicate whether PPU async-shared writes require
+`fence_view_async_shared()` between the mainloop's per-thread
+`cp_async_wait<Stages-2>()` and ordinary shared consumers.  That one proxy-
+visibility question remains open and is tested separately from the m8 x4
+consumer.  Calling the bug a source-level missing barrier before that arm
+closes would still overstate the evidence.
 
-## Earlier shared-output trigger (separate from the stale-A incident)
+One proposed waiter diagnosis read the wrong `cute::copy_aiu` branch.  For
+`__HGGC_ARCH__ == 100`, warp 0 issues both ordinary A and B; the warp0/A,
+warp1/B split exists only in the alternate branch.  Packed A uses its explicit
+logical copy threads, and the wrapped extra-input partition gives CTA threads
+metadata-copy work.  `PPU_PACKED_SPLIT_GROUPS` changes only which duplicate
+metadata owners decode which groups.  It can change cadence, but it does not
+make previously nonparticipating A/B waiters participate and therefore cannot
+adjudicate that A/B hypothesis.
+
+The Stages2 driver does issue one redundant copy of the final K tile into the
+retired, physically disjoint write stage while draining.  Removing it changes
+async traffic and cadence but does not repair a proved address or ownership
+violation; a clean result would therefore be another sensitivity result, not a
+root-cause verdict.  It is intentionally excluded from the first causal
+closure.  Only if both exact candidates remain dirty should it be used as a
+second-stage localization arm, followed by a more direct producer/consumer
+proof before any production change.
+
+## Earlier shared-output trigger (separate from the direct-store incident)
 
 The earlier, now superseded 512-repeat device arm reported:
 
@@ -187,9 +232,9 @@ shared-output path had an independent corruption trigger:
   required the custom kernel context, because S=1 changed the compiled kernel,
   FP16 versus FP32 output, copy ownership and register/shared footprint.
 
-The rarer direct-store failure contains no shared-output round trip.  Its exact
-stale-A value is independent of that historical epilogue trigger, while the
-final A-stage causal seam remains to be adjudicated.
+The rarer direct-store failure contains no shared-output round trip.  Its
+producer-partial corruption is independent of that historical epilogue
+trigger, while the final operand/accumulator seam remains to be adjudicated.
 
 The direct-store candidate does not change accumulation or reduction order.  Its
 same-run packed-row S4 median was 11.300 us versus 11.320 us for the legacy
@@ -250,22 +295,25 @@ caller must not infer admission from type formation alone.
 The current device closure is implemented by
 `tools/run_fq_q4k_custom_split_count_box.sh`.  It launches the exact generated
 AP0/AP1 `GemmUniversalMixedInputSplitKParallel` symbols at runtime S=1/2/4
-across two binaries.  The preceding eight-binary factorial at `3e83a45`
+across one uncontaminated baseline and two orthogonal candidates.  The
+preceding eight-binary factorial at `3e83a45`
 left every counterfactual dirty: baseline, prepare-after-consume,
 explicit-stage, direct-x4, separate-A-group and synchronous-store were 0/8
 clean S>1 cells; compiler-fence was 4/8 and A-before-B 6/8.  Those incidence
 changes are code-layout sensitivity, not closure.
 
-The first reduced closure compares baseline with one exact contract arm:
+The first reduced closure at `d6e5589` compared baseline with one exact
+contract arm:
 
 - `asm-memory-contract` retains the physical x4 opcode and adds actual
   `memory` clobbers to the fp16-A AIU/packed cp.async producer, commit/wait and
   m8 ldmatrix consumer;
 
-The already source-proved `logical-x2-scalar` arm, which removes the physical
-x4 swizzle opcode and loads only its two semantic b32 values, is deliberately
-not part of this first Box run.  It is the next one-variable probe only if the
-exact memory-contract arm remains dirty.
+The first remaining arm is the source-proved `logical-x2-scalar` path, which
+removes the physical x4 swizzle opcode and loads only its two semantic b32
+values.  The second adds only `fence_view_async_shared()` after each
+`cp_async_wait<Stages-2>()` and before packed decode/CTA publication.  Neither
+combines with the failed clobber arm.
 
 L186 proves that reserved arm's 512 `(coord_h,slice,lane,vreg)` addresses against the
 independent calibrated PPU0010 model and requires a one-word-offset negative
@@ -273,19 +321,35 @@ to turn RED.  Two independent 32768-repeat attempts run for both current arms;
 numeric failure never truncates the closure.
 
 The missing inline-asm memory side-effect declarations are a real compiler
-contract defect, but they are not yet the device root.  Pure address arithmetic
-may be hoisted or commoned only while preserving the runtime stage value, so
-the source defect alone does not prove the proposed stale-stage mechanism.  A
-causal verdict requires the x4-preserving memory-contract arm to close while
-the exact frozen baseline incident reproduces.  If it remains dirty, run the
-reserved scalar arm separately; do not mix that opcode change into this first
-contract adjudication.
+contract defect, but the device run rejected it as a complete root.  Baseline
+and `asm-memory-contract` each produced zero clean S>1 cells out of eight;
+all sixteen dirty cells localized to wrong producer FP32 partials and no other
+failure class.  The first captured error did not repeat the narrow
+plane-2/index-32 location, but baseline attempt 2 reproduced its complete
+value signature at index 576: one aligned 32-output stripe, output
+`0x4e80 -> 0x4fc0`, and producer plane 2 FP32
+`0x3f800000 -> 0x40c00000` (`1.0 -> 6.0`).  Requiring index 32 made the first
+runner verdict a false nonreproduction.  The corrected rule freezes symbol,
+fixture, provider, S, plane and value pair while recording the aligned stripe
+index separately.  The corrected baseline admission no longer depends on that
+one value pair: all four AP0/AP1 x S2/S4 cells must reproduce a producer-
+partial corruption across the independent attempts.  Each candidate must
+keep custom S1 clean and close every S2/S4 cell.
+
+Pure address arithmetic may be hoisted or commoned only while preserving the
+runtime stage value.  The source defect alone did not prove the proposed
+stale-stage mechanism, and adding the exact clobbers did not change the device
+failure denominator.  The next isolated boundaries are the physical x4
+consumer and async-shared proxy visibility.  One uniquely clean arm selects a
+repair; two clean arms remain cadence-sensitive and unadjudicated; two dirty
+arms retire both hypotheses.
 
 Until one arm closes while the baseline reproduces, the honest claim is: the
 legacy shared handoff is unsafe and direct store removes that trigger; the
-remaining direct-store incident is an exact stale previous-A-tile delivery,
-its logical CuTe block map is exact, ca01dc6 stage separation did not repair
-it, and the final physical/backend delivery seam still requires one box run.
+remaining direct-store incident is a producer-side aligned 32-output band,
+its logical CuTe block map and output ownership are exact, ca01dc6 stage
+separation did not repair it, and one box run remains to adjudicate the final
+two publication/consumer seams.
 
 ## Retained regression evidence
 

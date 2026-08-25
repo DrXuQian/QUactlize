@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
-# One-box inline-asm memory-contract closure for the rare Q4_K packed-m8
-# Split-K A-stage failure.
+# One-box single-variable closure for the rare Q4_K packed-m8 Split-K A-stage
+# failure. The default closure runs the two remaining orthogonal seams beside
+# one uncontaminated baseline; numeric failures never truncate the bundle.
 #
 # Every binary contains the exact same generated AP0/AP1 tactic pair and uses
 # GemmUniversalMixedInputSplitKParallel for S=1/2/4. The previous eight-arm
-# factorial excluded every source-level scheduling/publication seam.  This
-# first closure changes one variable only: the candidate keeps the same x4
-# swizzle load and adds compiler-visible shared-memory effects to the actual
-# fp16-A producer, commit/wait and consumer asm statements.  The already
-# source-proved logical-x2 scalar probe is reserved for a later run only if
-# this two-arm closure remains dirty.  Numeric failures never truncate the
-# bundle.
+# factorial excluded the earlier source-level scheduling seams. Each selected
+# candidate changes one variable only. `asm-memory-contract` keeps
+# the same x4 swizzle load and adds compiler-visible shared-memory effects to
+# the actual fp16-A producer, commit/wait and consumer asm statements.
+# `logical-x2-scalar` keeps the baseline producer/wait contract and replaces
+# only the physical x4 consumer with the two exact semantic shared loads.
+# `async-shared-fence` is the actual issuer/wait publication test: it leaves
+# issuer ownership unchanged and adds one PPU async-proxy fence after each
+# wait, before the existing CTA publication barrier.  PPU_PACKED_SPLIT_GROUPS
+# is deliberately absent because it changes metadata decode cadence, not A/B
+# issuer or waiter ownership.
 set -uo pipefail
 
 fail() {
@@ -19,7 +24,7 @@ fail() {
 }
 
 main() {
-  local root workspace_root sha short stamp out jobs repeats attempts
+  local root workspace_root sha short stamp out jobs repeats attempts candidate
   local full generated arm defs build_dir build_log binary log rc attempt
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
   workspace_root="$(realpath -e /workspace)" || return 2
@@ -33,12 +38,20 @@ main() {
   esac
   [ ! -e "$out" ] || { fail "refusing to overwrite $out"; return $?; }
   if [ -n "${PPU_DEFS:-}" ] || [ -n "${PPU_EXTRA_DEFS:-}" ]; then
-    fail 'ambient PPU_DEFS/PPU_EXTRA_DEFS changes the two-arm identity'
+    fail 'ambient PPU_DEFS/PPU_EXTRA_DEFS changes the arm-set identity'
     return $?
   fi
   jobs="${JOBS:-16}"
   repeats="${PROBE_REPEATS:-32768}"
   attempts="${PROBE_ATTEMPTS:-2}"
+  candidate="${FQ_A_STAGE_CANDIDATE:-remaining-two}"
+  case "$candidate" in
+    asm-memory-contract|logical-x2-scalar|async-shared-fence|remaining-two) ;;
+    *)
+      fail "FQ_A_STAGE_CANDIDATE must be asm-memory-contract, logical-x2-scalar, async-shared-fence, or remaining-two"
+      return $?
+      ;;
+  esac
   case "$jobs:$repeats:$attempts" in
     *[!0-9:]*|0:*|*:0:*|*:*:0)
       fail 'JOBS, PROBE_REPEATS and PROBE_ATTEMPTS must be positive integers'
@@ -68,6 +81,9 @@ partial_layout = (root / (
 schedule = (root / (
     "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/"
     "ppu_mixed_a_schedule.hpp")).read_text()
+pipeline = (root / (
+    "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/"
+    "ppu_mixed_pipeline.hpp")).read_text()
 collective = (root / (
     "quactlize/include/actlize_extensions/cutlass/gemm/collective/"
     "quactlize_mma_mixed_input.hpp")).read_text()
@@ -77,10 +93,22 @@ m8_copy = (root / (
 copy_async = (root / (
     "third_party/actlize/include/cute/arch/"
     "copy_ppu.hpp")).read_text()
+copy_aiu = (root / (
+    "third_party/actlize/include/cute/algorithm/"
+    "ppu_copy.hpp")).read_text()
 nontrans_x4_impl = m8_copy.split(
     "struct PPU0010_TSM_LD_SWZL_IMPL<Element, false>", 1)[1].split(
         "struct PPU0010_TSM_LD_SWZL_IMPL<Element, true>", 1)[0]
 m8_wrapper = m8_copy.split("struct PPU0010_TSM_LD_SWZL_M8", 1)[1]
+hggc_aiu = copy_aiu.split(
+    "#if defined(__HGGC_ARCH__) && __HGGC_ARCH__ == 100", 1)[1].split(
+        "#else", 1)[0]
+alternate_aiu = copy_aiu.split(
+    "#if defined(__HGGC_ARCH__) && __HGGC_ARCH__ == 100", 1)[1].split(
+        "#else", 1)[1].split("#endif", 1)[0]
+packed_decode = collective.split(
+    "packed_decode_stage(Storage& storage", 1)[1].split(
+        "private:", 1)[0]
 checks = {
     "one host branch": bench.count(
         "if (splits == 1 && !options.force_custom_splitk_s1)") == 1,
@@ -113,6 +141,22 @@ checks = {
     "exact asm memory contract seam":
         m8_copy.count("PPU_PACKED_A_ASM_MEMORY_CONTRACT") == 4 and
         copy_async.count("PPU_PACKED_A_ASM_MEMORY_CONTRACT") == 6,
+    "exact async shared visibility seam":
+        pipeline.count("PPU_MIXED_ASYNC_SHARED_FENCE") == 2 and
+        pipeline.count("mixed_async_shared_visibility_fence();") == 2 and
+        pipeline.count("cutlass::arch::fence_view_async_shared();") == 1,
+    "PPU0010 ordinary A/B have one common issuer":
+        hggc_aiu.count("if (warp_idx == 0)") == 1 and
+        hggc_aiu.count("copy(copy_policy_a, src_a, dst_a);") == 1 and
+        hggc_aiu.count("copy(copy_policy_b, src_b, dst_b);") == 1 and
+        "warp_idx == 1" not in hggc_aiu,
+    "warp-split A/B is alternate architecture only":
+        alternate_aiu.count("warp_idx == 0") == 2 and
+        alternate_aiu.count("warp_idx == 1") == 1,
+    "split-groups is metadata-decode-only":
+        collective.count("PPU_PACKED_SPLIT_GROUPS") == 4 and
+        packed_decode.count("PPU_PACKED_SPLIT_GROUPS") == 3 and
+        "copy_aiu(" not in packed_decode,
     "contract changes original nontrans x4 asm only":
         nontrans_x4_impl.count("PPU_PACKED_A_ASM_MEMORY_CONTRACT") == 2 and
         nontrans_x4_impl.count("m8n8.x4.swzl.shared.b16") == 2 and
@@ -122,8 +166,9 @@ checks = {
 bad = [name for name, ok in checks.items() if not ok]
 if bad:
     raise SystemExit("custom-S1 source seam changed: " + repr(bad))
-print("[fq-a-stage-root:source] PASS exact two-arm asm-memory contract; "
-      "original x4 opcode retained; scalar probe reserved; S is runtime data")
+print("[fq-a-stage-root:source] PASS PPU0010 warp0 issues ordinary A+B; "
+      "split-groups is metadata-only; exact asm-memory, logical-x2 and "
+      "async-shared-fence seams; S is runtime data")
 PY
 
   python3 -B "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
@@ -219,10 +264,18 @@ print(f"[fq-a-stage-root:select] PASS source_typed={len(rows)} selected=2")
 PY
 
   : >"$out/results/infrastructure.tsv"
-  for arm in baseline asm-memory-contract; do
+  local selected_arms
+  if [ "$candidate" = remaining-two ]; then
+    selected_arms="baseline logical-x2-scalar async-shared-fence"
+  else
+    selected_arms="baseline $candidate"
+  fi
+  for arm in $selected_arms; do
     case "$arm" in
       baseline) defs="" ;;
       asm-memory-contract) defs='PPU_PACKED_A_ASM_MEMORY_CONTRACT=1' ;;
+      logical-x2-scalar) defs='PPU_M8_LOGICAL_X2_SCALAR_LOAD=1' ;;
+      async-shared-fence) defs='PPU_MIXED_ASYNC_SHARED_FENCE=1' ;;
       *) fail "internal arm table error: $arm"; return $? ;;
     esac
     build_dir="$out/build-$arm"
@@ -247,7 +300,7 @@ PY
           >>"$out/results/infrastructure.tsv"
         continue
       fi
-    elif grep -Eq -- '-DPPU_(PACKED_A_ASM_MEMORY_CONTRACT|M8_LOGICAL_X2_SCALAR_LOAD)=1' \
+    elif grep -Eq -- '-DPPU_(PACKED_A_ASM_MEMORY_CONTRACT|M8_LOGICAL_X2_SCALAR_LOAD|MIXED_ASYNC_SHARED_FENCE)=1' \
         "$build_log"; then
       printf '%s\tbaseline-contaminated\t2\n' "$arm" \
         >>"$out/results/infrastructure.tsv"
@@ -283,17 +336,20 @@ PY
     done
   done
 
-  python3 -B - "$out/results" "$attempts" "$repeats" <<'PY' \
+  python3 -B - "$out/results" "$attempts" "$repeats" "$candidate" <<'PY' \
       | tee "$out/results/verdict.log"
 import pathlib, shlex, sys
 
 result_dir = pathlib.Path(sys.argv[1])
 attempts = int(sys.argv[2])
 repeats = int(sys.argv[3])
-arms = (
-    "baseline",
-    "asm-memory-contract",
-)
+selection = sys.argv[4]
+if selection not in {"asm-memory-contract", "logical-x2-scalar",
+                     "async-shared-fence", "remaining-two"}:
+    raise SystemExit("invalid candidate identity")
+candidates = (("logical-x2-scalar", "async-shared-fence")
+              if selection == "remaining-two" else (selection,))
+arms = ("baseline",) + candidates
 expected_symbols = {
     "standard-aiu": "fq_tc_q12_a64_tm8_tn64_tk256_wm8_wn16_s2_bc0_ap0",
     "packed-row": "fq_tc_q12_a64_tm8_tn64_tk256_wm8_wn16_s2_bc0_ap1",
@@ -368,16 +424,21 @@ def producer_partial_bad(row):
 
 def frozen_ap1_s4_incident(row):
     # ca01dc6: output fp16 26 -> 31, caused by producer plane 2 carrying
-    # FP32 6.0 instead of 1.0 at output column 32.  Require the complete bit
-    # signature so an unrelated intermittent failure cannot carry causality.
+    # FP32 6.0 instead of 1.0 across one 32-output stripe.  The stripe can
+    # land on any physical N tile, so its aligned index is evidence to print,
+    # not part of the mechanism identity.  Symbol/provider/S and fixture are
+    # already frozen by the surrounding denominator.
+    output_index = int(row.get("first_bad", "-1"))
+    partial_index = int(row.get("partial_first_bad_index", "-2"))
     return (producer_partial_bad(row) and
+            row.get("provider") == "packed-row" and row.get("S") == "4" and
             int(row.get("raw_bad", "-1")) == 32 and
-            int(row.get("first_bad", "-1")) == 32 and
+            output_index == partial_index and
+            0 <= output_index < 1024 and output_index % 32 == 0 and
             row.get("first_want") == "0x4e80" and
             row.get("first_got") == "0x4fc0" and
             int(row.get("partial_bad_plane_mask", "-1"), 0) == 0x4 and
             int(row.get("partial_first_bad_plane", "-1")) == 2 and
-            int(row.get("partial_first_bad_index", "-1")) == 32 and
             row.get("partial_first_bad_want") == "0x3f800000" and
             row.get("partial_first_bad_got") == "0x40c00000")
 
@@ -405,7 +466,7 @@ try:
             raise ValueError(f"{arm}/attempt{attempt} contains infrastructure/non-numeric "
                              f"states: {','.join(sorted(bad_states))}")
         for provider in expected_symbols:
-            for split in (2, 4):
+            for split in (1, 2, 4):
                 row = rows[(provider, split)]
                 if corrupt(row):
                     print(
@@ -423,9 +484,27 @@ try:
                         f"frozen_incident={int(frozen_ap1_s4_incident(row))} "
                         f"localization={localization(row)}")
 
-    contract_clean = False
+    candidate_clean = {}
     denominator = attempts * len(expected_symbols) * 2
+    s1_denominator = attempts * len(expected_symbols)
     for arm in arms:
+        s1_cells = [runs[(arm, attempt)][(provider, 1)]
+                    for attempt in range(1, attempts + 1)
+                    for provider in expected_symbols]
+        s1_clean_count = sum(clean(row) for row in s1_cells)
+        s1_inadmissible_count = sum(s1_inadmissible(row, 1)
+                                    for row in s1_cells)
+        s1_corrupt_count = sum(corrupt(row) for row in s1_cells)
+        if (s1_clean_count + s1_inadmissible_count + s1_corrupt_count !=
+                s1_denominator):
+            raise ValueError(f"{arm}: custom-S1 census is not closed")
+        print(
+            "FQ_A_STAGE_ROOT_S1 "
+            f"arm={arm} attempts={attempts} repeats={repeats} "
+            f"clean={s1_clean_count}/{s1_denominator} "
+            f"inadmissible={s1_inadmissible_count} "
+            f"corrupt={s1_corrupt_count}")
+
         cells = [runs[(arm, attempt)][(provider, split)]
                  for attempt in range(1, attempts + 1)
                  for provider in expected_symbols for split in (2, 4)]
@@ -433,45 +512,122 @@ try:
         producer_bad_count = sum(producer_partial_bad(row) for row in cells)
         other_bad_count = sum(corrupt(row) and not producer_partial_bad(row)
                               for row in cells)
-        is_clean = clean_count == denominator
-        if arm == "asm-memory-contract":
-            contract_clean = is_clean
+        # A candidate is a closure only if it fixes every stressed S2/S4 cell
+        # and keeps the same custom producer/reducer route clean at S1. This
+        # prevents an S-dependent cadence change from merely moving the bug.
+        is_clean = (clean_count == denominator and
+                    s1_clean_count == s1_denominator)
+        if arm in candidates:
+            candidate_clean[arm] = is_clean
         print(
             "FQ_A_STAGE_ROOT_ARM "
             f"arm={arm} attempts={attempts} repeats={repeats} "
             f"s_gt1_clean={clean_count}/{denominator} "
             f"producer_partial_bad={producer_bad_count} "
-            f"other_bad={other_bad_count} clean={int(is_clean)}")
+            f"other_bad={other_bad_count} "
+            f"all_s_clean={int(is_clean)} clean={int(is_clean)}")
 
-    baseline_target = any(
+    baseline_exact_fingerprint = any(
         frozen_ap1_s4_incident(
             runs[("baseline", attempt)][("packed-row", 4)])
         for attempt in range(1, attempts + 1))
+    # Causality is assigned to the incident family, not to one historical
+    # output index/value pair. Require all four independent S>1 cells to
+    # reproduce producer-partial corruption at least once; the exact old
+    # AP1/S4 1.0->6.0 fingerprint remains a diagnostic field only.
+    baseline_target_cells = sum(
+        any(producer_partial_bad(
+                runs[("baseline", attempt)][(provider, split)])
+            for attempt in range(1, attempts + 1))
+        for provider in expected_symbols for split in (2, 4))
+    baseline_target = baseline_target_cells == 4
+    baseline_s1 = [runs[("baseline", attempt)][(provider, 1)]
+                   for attempt in range(1, attempts + 1)
+                   for provider in expected_symbols]
+    baseline_s1_clean = all(clean(row) for row in baseline_s1)
+    baseline_s1_corrupt = any(corrupt(row) for row in baseline_s1)
+    baseline_s1_inadmissible = all(s1_inadmissible(row, 1)
+                                   for row in baseline_s1)
+    if baseline_s1_corrupt:
+        failure_scope = "CUSTOM_KERNEL_COMMON_S1_S2_S4"
+    elif baseline_s1_clean:
+        failure_scope = "S_GT1_ONLY_IN_THIS_DENOMINATOR"
+    elif baseline_s1_inadmissible:
+        failure_scope = "S1_UNEXECUTED"
+    else:
+        failure_scope = "S1_MIXED_OR_INCOMPLETE"
+    clean_candidates = [arm for arm in candidates if candidate_clean[arm]]
     if not baseline_target:
-        verdict = "BASELINE_AP1_S4_NONREPRODUCTION"
+        verdict = "BASELINE_FOUR_CELL_NONREPRODUCTION"
         interpretation = (
-            "the exact packed-row S4 producer-plane 1.0-to-6.0 incident was "
-            "not observed; clean counterfactual arms cannot be assigned causally")
+            "the complete AP0/AP1 x S2/S4 baseline denominator did not "
+            "reproduce producer-partial corruption; a clean candidate cannot "
+            "be assigned causally")
         diagnostic_rc = 1
-    elif not contract_clean:
-        verdict = "INLINE_ASM_SHARED_MEMORY_CONTRACT_REMAINS_DIRTY"
+    elif not clean_candidates:
+        if candidates == ("asm-memory-contract",):
+            verdict = "INLINE_ASM_SHARED_MEMORY_CONTRACT_REMAINS_DIRTY"
+            interpretation = (
+                "the frozen specialization reproduced producer-partial corruption, "
+                "but the x4-preserving exact asm memory contract did not close every "
+                "stressed S1/S2/S4 cell; the contract defect is real but is not a "
+                "complete device root")
+        elif candidates == ("logical-x2-scalar",):
+            verdict = "M8_LOGICAL_X2_SCALAR_REMAINS_DIRTY"
+            interpretation = (
+                "the frozen specialization reproduced producer-partial corruption, "
+                "but removing the physical x4 swizzle consumer did not close every "
+                "stressed S1/S2/S4 cell; the x4 opcode is not a complete device root")
+        elif candidates == ("async-shared-fence",):
+            verdict = "ASYNC_SHARED_VISIBILITY_FENCE_REMAINS_DIRTY"
+            interpretation = (
+                "the baseline reproduced, but an explicit async-shared proxy "
+                "fence before packed decode/CTA publication did not close every "
+                "stressed S1/S2/S4 cell; missing proxy visibility is not the root")
+        else:
+            verdict = "BOTH_REMAINING_COMMON_SEAMS_DIRTY"
+            interpretation = (
+                "the baseline reproduced, but neither removing the physical m8 "
+                "x4 reader nor adding the exact async-shared visibility fence "
+                "closed every stressed S1/S2/S4 cell")
+        diagnostic_rc = 1
+    elif len(clean_candidates) > 1:
+        verdict = "MULTIPLE_ORTHOGONAL_CLOSURES_UNADJUDICATED"
         interpretation = (
-            "the frozen incident reproduced, but the x4-preserving exact asm "
-            "memory contract did not close every repeated S2/S4 cell; the "
-            "contract defect is real but is not a complete device root")
+            "more than one orthogonal arm closed; code-layout/cadence sensitivity "
+            "prevents assigning a unique source cause")
         diagnostic_rc = 1
     else:
-        verdict = "INLINE_ASM_SHARED_MEMORY_CONTRACT_CAUSAL"
-        interpretation = (
-            "the baseline reproduced and the physical x4 opcode, packed bytes, "
-            "stage geometry, schedule and MMA order remained unchanged; "
-            "declaring the fp16-A producer, commit/wait and ldmatrix shared-"
-            "memory effects closed every independent S2/S4 cell")
+        winner = clean_candidates[0]
+        if winner == "asm-memory-contract":
+            verdict = "INLINE_ASM_SHARED_MEMORY_CONTRACT_CAUSAL"
+            interpretation = (
+                "the baseline reproduced and the physical x4 opcode, packed bytes, "
+                "stage geometry, schedule and MMA order remained unchanged; "
+                "declaring the fp16-A producer, commit/wait and ldmatrix shared-"
+                "memory effects closed every independent S1/S2/S4 cell")
+        elif winner == "logical-x2-scalar":
+            verdict = "M8_X4_SWIZZLE_OPCODE_OR_SCOREBOARD_CAUSAL"
+            interpretation = (
+                "the baseline reproduced while the packed bytes, stage geometry, "
+                "producer/wait contract, logical fragment, schedule and MMA order "
+                "remained unchanged; replacing only the physical x4 consumer with "
+                "its two exact semantic shared loads closed every S1/S2/S4 cell")
+        else:
+            verdict = "ASYNC_SHARED_VISIBILITY_FENCE_CAUSAL"
+            interpretation = (
+                "the baseline reproduced while issuer sets, copy groups, stage "
+                "geometry, CTA barrier and MMA order remained unchanged; an "
+                "explicit async-shared proxy fence alone closed every S1/S2/S4 cell")
         diagnostic_rc = 0
 
     print("FQ_A_STAGE_ROOT_VERDICT "
           f"verdict={verdict} baseline_target={int(baseline_target)} "
-          f"contract_clean={int(contract_clean)}")
+          f"baseline_target_cells={baseline_target_cells}/4 "
+          f"baseline_exact_fingerprint={int(baseline_exact_fingerprint)} "
+          f"selection={selection} candidates={','.join(candidates)} "
+          f"clean_candidates={','.join(clean_candidates) or 'NONE'} "
+          f"failure_scope={failure_scope}")
     print("FQ_A_STAGE_ROOT_INTERPRETATION " + interpretation)
     raise SystemExit(diagnostic_rc)
 except (KeyError, OSError, ValueError) as error:

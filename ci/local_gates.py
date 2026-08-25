@@ -154,9 +154,10 @@ GATES = [
     # historical B-derived A coordinate aliases all A atoms at the wrap, while
     # B d0/d3 are disjoint, and checks the shared replacement schedule.
     ("l220_q4_a32_prepare_consume_layout", []),
-    # Exact failing FQ packed-m8 A views: one-to-one A-copy/MMA atom mapping,
-    # zero logical prepare-next/consume-current overlap, and the ca01dc6
-    # 1.0->6.0 value's unique previous-sb13 A-tile fingerprint.
+    # Exact failing FQ packed-m8 views: one-to-one A-copy/MMA atom mapping,
+    # zero logical prepare-next/consume-current overlap, exact M=1 output-warp
+    # ownership, and a fixture proof that one stale-A-compatible value pair
+    # does not classify the complete failure family.
     ("l224_fq_packed_m8_prepare_consume_layout", []),
 ]
 
@@ -164,6 +165,10 @@ GATES = [
 # ordinary parsing does not instantiate the combination someone will build on the box.
 SYNTAX = [
     ("tests/test_q4k_packed_gemm.cu", ""),
+    # Diagnostic-only PPU async-proxy fence at the shared mixed-pipeline
+    # publication edge. It is off in production, so baseline syntax does not
+    # instantiate the barrier intrinsic this closure is meant to test.
+    ("tests/test_q4k_packed_gemm.cu", "-DPPU_MIXED_ASYNC_SHARED_FENCE=1"),
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_PACKED_SCALE=1"),
     # THE CONFIGURATION THAT SHIPPED BROKEN. kFusedScaleZero's definition referenced KernelConversionMode from a
     # point in the class where it is not yet declared, and the offending conjunct lives inside

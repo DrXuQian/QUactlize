@@ -16,7 +16,7 @@ main() {
     "$repo/dev/fold_derivation/l224_fq_packed_m8_prepare_consume_layout.cu" \
     || return 2
   "$binary" || return 1
-  printf '[l224] PASS: exact A block/register lifetime and stale-sb13 incident fingerprint\n'
+  printf '[l224] PASS: exact A block/register lifetime; one stale-A-compatible signature does not classify the full failure family\n'
 }
 
 main "$@"

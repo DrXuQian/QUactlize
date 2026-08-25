@@ -38,6 +38,11 @@ using SmemCopyAtomA = Copy_Atom<SmemCopyOpA, cutlass::half_t>;
 // exact view below has 16 blocks and its MMA fragment has 16 K atoms.
 constexpr int kBBlocks = 4;
 
+struct OutputOwner {
+  int thread = -1;
+  int fragment = -1;
+};
+
 template <class Tensor>
 void mark_mode2(Tensor const& tensor, int k, std::array<int, 8192>& out) {
   for (int i = 0; i < int(size<0>(tensor)); ++i) {
@@ -101,6 +106,49 @@ int main() {
   show("A-fragment", t_cr_a);
   show("A-copy-view", a_view);
 
+  // Bind the observed aligned 32-output footprint to the production
+  // partition_C map. At M=1 each warp owns 16 live columns, so one bad
+  // 32-column band is exactly two adjacent N warps; it is not evidence for a
+  // single thread, register, or producer warp by itself.
+  auto c_identity = make_identity_tensor(Shape<_8, _64>{});
+  std::array<OutputOwner, 64> output_owners{};
+  std::array<int, 4> live_per_warp{};
+  int output_duplicates = 0;
+  for (int thread = 0; thread < int(size(Mma{})); ++thread) {
+    auto coordinates = mma.get_thread_slice(thread).partition_C(c_identity);
+    for (int fragment = 0; fragment < int(size(coordinates)); ++fragment) {
+      auto mn = coordinates(fragment);
+      int const m = int(get<0>(mn));
+      int const n = int(get<1>(mn));
+      if (m != 0) continue;
+      if (n < 0 || n >= int(output_owners.size()) ||
+          output_owners[std::size_t(n)].thread >= 0) {
+        ++output_duplicates;
+        continue;
+      }
+      output_owners[std::size_t(n)] = OutputOwner{thread, fragment};
+      ++live_per_warp[std::size_t(thread / 32)];
+    }
+  }
+  int output_holes = 0;
+  int output_band_bad = 0;
+  for (int n = 0; n < int(output_owners.size()); ++n) {
+    output_holes += output_owners[std::size_t(n)].thread < 0;
+    output_band_bad +=
+        output_owners[std::size_t(n)].thread / 32 != n / 16;
+  }
+  bool const output_ownership_exact = output_holes == 0 &&
+      output_duplicates == 0 && output_band_bad == 0 &&
+      live_per_warp == std::array<int, 4>{{16, 16, 16, 16}};
+  std::printf(
+      "L224 output-ownership live_per_warp=%d,%d,%d,%d "
+      "bands=N0-15:W0,N16-31:W1,N32-47:W2,N48-63:W3 "
+      "aligned32=two-adjacent-N-warps holes=%d duplicates=%d band_bad=%d "
+      "verdict=%s\n",
+      live_per_warp[0], live_per_warp[1], live_per_warp[2],
+      live_per_warp[3], output_holes, output_duplicates, output_band_bad,
+      output_ownership_exact ? "EXACT" : "BAD");
+
   int identity_bad = 0;
   for (int a = 0; a < ABlocks; ++a) {
     std::array<int, 8192> prepared{};
@@ -144,13 +192,13 @@ int main() {
       MmaAtoms, ABlocks, kBBlocks, Schedule::AAtomsPerCopy,
       Schedule::BAtomsPerCopy, max_overlap, total_overlap);
 
-  // Frozen ca01dc6 incident: S4 plane 2 spans superblocks [10,15) and
-  // first_bad=32. Its exact expected FP32 partial is 1.0, while the device
-  // observed 6.0. Replace one complete A tile with the immediately preceding
-  // tile while keeping the current B tile. Only sb13 produces 6.0. This is a
-  // full-value fingerprint, not merely a generic "stale" label: the fixture's
-  // active offset moves by 37 each superblock, so the old A nonzero is applied
-  // to a different current-B code.
+  // Frozen ca01dc6 signature: S4 plane 2 spans superblocks [10,15) and one
+  // captured 32-output band contained 6.0 instead of 1.0. Replacing sb13's
+  // complete A tile with its predecessor is one exact explanation for that
+  // value pair. It is not a classifier for the whole incident family: later
+  // captures also contained deltas -4 and -6. Enumerate every complete A-tile
+  // substitution below so this oracle cannot silently promote one compatible
+  // signature into the root cause.
   constexpr int n = 32;
   int expected = 0;
   int stale13 = 0;
@@ -181,15 +229,49 @@ int main() {
       "stale_matches=%d verdict=%s\n",
       expected, stale13, stale_matches,
       expected == 1 && stale13 == 6 && stale_matches == 1
-          ? "PREVIOUS_A_TILE_EXACT"
+          ? "ONE_SIGNATURE_ADMITS_PREVIOUS_A_TILE"
           : "INCIDENT_NOT_CLASSIFIED");
+
+  int adjacent_minus5 = 0;
+  int adjacent_plus5 = 0;
+  int any_minus4 = 0;
+  int any_minus6 = 0;
+  for (int col = 0; col < 8; ++col) {
+    for (int dst = 1; dst < 20; ++dst) {
+      int const current = active_sign(dst) *
+          q4_code(col, dst * 256 + active_offset(dst));
+      int const previous = active_sign(dst - 1) *
+          q4_code(col, dst * 256 + active_offset(dst - 1));
+      adjacent_minus5 += previous - current == -5;
+      adjacent_plus5 += previous - current == 5;
+      for (int src = 0; src < 20; ++src) {
+        if (src == dst) continue;
+        int const replacement = active_sign(src) *
+            q4_code(col, dst * 256 + active_offset(src));
+        any_minus4 += replacement - current == -4;
+        any_minus6 += replacement - current == -6;
+      }
+    }
+  }
+  bool const family_not_stale_a =
+      adjacent_minus5 > 0 && adjacent_plus5 > 0 && any_minus4 > 0 &&
+      any_minus6 == 0;
+  std::printf(
+      "L224 complete-A-substitution adjacent_delta_minus5=%d "
+      "adjacent_delta_plus5=%d any_source_delta_minus4=%d "
+      "any_source_delta_minus6=%d verdict=%s\n",
+      adjacent_minus5, adjacent_plus5, any_minus4, any_minus6,
+      family_not_stale_a ? "STALE_A_NOT_COMPLETE_FAMILY_ROOT" :
+                           "FIXTURE_CLASSIFIER_CHANGED");
   std::printf("L224 identity_bad=%d verdict=%s\n", identity_bad,
               max_overlap == 0 && identity_bad == 0 && expected == 1 &&
-                      stale13 == 6 && stale_matches == 1
+                      stale13 == 6 && stale_matches == 1 &&
+                      family_not_stale_a && output_ownership_exact
                   ? "REGISTER_LIFETIME_EXACT"
                   : "PREPARE_OR_BLOCK_MAP_BAD");
   return max_overlap == 0 && identity_bad == 0 && expected == 1 &&
-                 stale13 == 6 && stale_matches == 1
+                 stale13 == 6 && stale_matches == 1 && family_not_stale_a &&
+                 output_ownership_exact
       ? 0
       : 1;
 }

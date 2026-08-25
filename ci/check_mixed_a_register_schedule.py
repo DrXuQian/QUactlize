@@ -30,6 +30,13 @@ def without_comments(text: str) -> str:
     return re.sub(r"//[^\n]*", "", text)
 
 
+def replace_all(source: str, old: str, new: str) -> str:
+    """Plant every compile-time branch, not just the first duplicate arm."""
+    if old not in source:
+        raise ValueError(f"plant source lost {old}")
+    return source.replace(old, new)
+
+
 def audit(detail: str, collectives: tuple[str, ...]) -> list[str]:
     bad: list[str] = []
     d = compact(detail)
@@ -85,16 +92,16 @@ def main() -> int:
         ),
         (
             detail,
-            (collectives[0].replace(
+            (replace_all(collectives[0],
                 "detail::prepare_mixed_a_for_b<ARegisterSchedule>",
-                "removed_prepare<ARegisterSchedule>", 1),) + collectives[1:],
+                "removed_prepare<ARegisterSchedule>"),) + collectives[1:],
             "ordinary bypass",
         ),
         (
             detail,
-            collectives[:1] + (collectives[1].replace(
+            collectives[:1] + (replace_all(collectives[1],
                 "detail::finish_mixed_a_after_consume<ARegisterSchedule>",
-                "removed_finish<ARegisterSchedule>", 1),) + collectives[2:],
+                "removed_finish<ARegisterSchedule>"),) + collectives[2:],
             "fold finish bypass",
         ),
         (

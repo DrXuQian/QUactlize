@@ -5,14 +5,18 @@ Split-K workspace contains intermittent, stripe-aligned corruptions.  The
 authoritative repository record is
 `dev/fold_derivation/Q4K_FQ_SPLITK_PARTIAL_EPILOGUE_ROOT_CAUSE.md`.
 
-Current status: the rare direct-store failure remains open, but its value is
-now classified exactly as a stale previous A tile.  The shared prefix
-factorial localized one earlier trigger.  A later 8192-repeat control found
-the direct-store packed-row S4 cell wrong once at repeat 2142 (`raw_bad=32`).
-Separating the packed m8 stages' complete physical x4 footprints at
-`ca01dc6` did not close it: the same AP1/S4 row failed again at repeat 714 with
-the wrong FP32 producer plane (`1.0 -> 6.0`).  Do not cite the stage-pitch
-change as the root or as device-closed correctness evidence.
+Current status: the rare direct-store failure remains open and is localized to
+one wrong 32-output band in a completed producer FP32 partial.  That places the
+defect somewhere from operand delivery through accumulator state to the direct
+store; it does not separately observe or certify the accumulator.  The shared
+prefix factorial localized one earlier, independent trigger.  A later
+8192-repeat control found the direct-store packed-row S4
+cell wrong once at repeat 2142 (`raw_bad=32`).  Separating the packed m8
+stages' complete physical x4 footprints at `ca01dc6` did not close it.  One
+captured value pair (`1.0 -> 6.0`) admits a stale previous A tile, but the full
+failure family does not: another captured delta (`-6`) cannot be produced by
+any complete A-tile substitution in the exact fixture.  Do not cite either
+the stale-A match or the stage-pitch change as the root.
 
 ## Refuted complete-root hypothesis: compressed physical stage footprint
 
@@ -49,7 +53,7 @@ the ordinary 16 KiB A allocation.  Both the writer and the m8 copy atom carry
 this stage pitch.  L186 proves the physical crossing was removed; it does not
 prove the intermittent numerical failure was removed.
 
-## Exact stale-A incident fingerprint
+## One stale-A-compatible signature is not the family root
 
 `l224_fq_packed_m8_prepare_consume_layout.cu` composes the exact failing
 TM8/TK256/WM8/WN16 CuTe A fragment and copy views.  It proves:
@@ -69,11 +73,22 @@ superblocks 10..14.  Their expected contributions are:
 
 Replacing exactly superblock 13's A tile with the preceding A tile changes
 only `-4 -> +1`, producing the observed `6.0`.  None of the other four
-single-tile stale substitutions produces 6.  B repeats its code pattern every
-256 K elements, while the fixture's active A offset moves by 37, so this is a
-specific previous-A-tile fingerprint rather than a generic arithmetic match.
-The remaining boundary is therefore A delivery/publication or a physical
-register/backend lifetime not represented by the exact logical CuTe views.
+single-tile stale substitutions produces 6, so that one value pair is
+compatible with stale A.
+
+Do not generalize it.  L224 now enumerates all K superblocks, all eight fixture
+column residues and every complete source-A/destination-B tile pairing.  The
+observed `+5` and `-5` deltas occur for adjacent previous-A substitutions and
+`-4` occurs for some non-adjacent complete-A substitutions, but `-6` occurs
+for none.  Therefore stale complete-A delivery cannot classify the entire
+incident family.  The honest remaining boundary is operand delivery,
+MMA/accumulator state, or a backend lifetime not represented by the exact
+logical CuTe views.
+
+The same oracle binds the 32-output footprint to `partition_C`: for M=1 each
+of the four warps owns 16 consecutive live N values, so an aligned 32-value
+band is two adjacent output warps.  This footprint alone does not identify an
+A/B copy issuer or prove a wait/barrier defect.
 
 ## Frozen incident
 
@@ -137,9 +152,10 @@ then snapshot the already completed FP32 workspace and rerun the reducer:
 This post-failure observation must not insert a synchronization or host copy
 before the original failure, because doing so can suppress a publication bug.
 
-## Do not diagnose this as Split-K synchronization
+## Separate Split-K publication from intra-CTA operand publication
 
-Ordinary S=1 epilogues are clean controls.  In the failing Split-K producer,
+Ordinary shipping S=1 epilogues are clean controls, but they are a different
+kernel.  In the failing custom producer,
 the mainloop already ended with `cp_async_wait<0>() + __syncthreads()`, and the
 legacy epilogue synchronized on both sides of its shared readback.  Historical
 user, reserved epilogue, and full CTA barrier variants all failed; an extra
@@ -162,12 +178,37 @@ cannot repair a value already corrupted inside the producer.
 Each producer CTA writes a distinct split plane.  No producer-to-producer
 publication is required, and ca01dc6 removed the proposed cross-stage physical
 alias without closing correctness.  Do not add a global fence, counter, or
-inter-CTA barrier.  Isolate the intra-CTA A-stage source instead.
+inter-CTA barrier.  The remaining synchronization question is narrower and
+intra-CTA: whether PPU async-shared completion needs an explicit proxy fence
+before ordinary shared consumers, in addition to the established
+`cp_async_wait + __syncthreads` protocol.
 
 If distinguishing "the custom Split-K kernel context" from "runtime S>1" is
 material, use the custom fixed Split-K kernel itself at S=1 as the control.
 Do not compare against the shipping S=1 launcher and call the split integer
 causal; those arms are different instantiated kernels.
+
+The first custom-S1 runner did route S1 to the custom type, but its verdict
+parser silently discarded that row.  A claim that the defect is S>1-only was
+therefore not established.  The current runner requires an explicit S1 census
+for both providers and treats a candidate as closed only when S1 and every
+S2/S4 cell are clean.
+
+Do not use `PPU_PACKED_SPLIT_GROUPS` to adjudicate A/B wait ownership.  On
+PPU0010, `cute::copy_aiu` has warp 0 issue both ordinary A and B; the warp0/A,
+warp1/B split is the non-HGGC branch.  Packed A is issued by its explicit
+logical copy threads, while wrapped extra-input partitions also give CTA
+threads metadata-copy work.  `PPU_PACKED_SPLIT_GROUPS` only redistributes
+packed metadata decode groups between duplicate metadata owners.  It may
+change cadence, but it does not change the A/B issuer/wait relation.
+
+The Stages2 driver also issues one redundant final-tile prefetch into an
+already retired, physically disjoint stage while draining.  Removing it is a
+useful cadence/traffic ablation, but it changes the number of async operations
+without identifying a violated address or ownership relation.  Do not accept a
+clean no-final-prefetch arm as a root-cause repair.  Reserve it for a second
+localization step only if the exact proxy-fence and logical-x2 consumer arms
+both remain dirty.
 
 Use `tools/run_fq_q4k_custom_split_count_box.sh` for the current closure.  It
 freezes the generated AP0/AP1 symbols and runs the same custom S=1/2/4 kernel.
@@ -185,22 +226,41 @@ Every dirty cell localized to a wrong producer FP32 partial; none of the seven
 counterfactuals closed both providers and S=2/S=4.  The two partially cleaner
 arms are code-layout/timing sensitivity, not repairs or causal proof.
 
-The current first reduced closure builds two arms: baseline and an exact
-inline-asm shared-memory contract.  The candidate keeps the physical x4
-instruction and adds `memory` clobbers to the fp16 AIU/packed cp.async
-producer, commit/wait and m8 ldmatrix consumer.  Numeric rc=1 is retained;
-both arms and independent attempts complete before a fail-closed verdict is
-emitted.  A logical-x2 scalar load that removes the physical x4 swizzle opcode
-is source-proved by L186 (512 exact logical addresses plus an offset negative),
-but is deliberately reserved for a separate next run if the contract arm
-remains dirty.
+The first reduced closure at `d6e5589` built baseline and an exact inline-asm
+shared-memory contract.  The candidate kept the physical x4 instruction and
+added `memory` clobbers to the fp16 AIU/packed cp.async producer, commit/wait
+and m8 ldmatrix consumer.  Both arms were 0/8 clean S>1 cells across two
+32768-repeat attempts, and every dirty cell was a wrong producer FP32 partial.
+Thus the missing contract is a real source defect but not the complete device
+root.
+
+A logical-x2 scalar load that removes the physical x4 swizzle opcode is
+source-proved by L186 (512 exact logical addresses plus an offset negative).
+The other remaining arm adds only `fence_view_async_shared()` after each
+`cp_async_wait<Stages-2>()` and before packed decode/CTA publication.  The
+default closure runs one uncontaminated baseline plus these two orthogonal
+arms; neither combines with the failed clobber experiment.
 
 Missing memory side-effect declarations are a real inline-asm contract defect,
 but do not by themselves prove the stale-stage explanation.  A compiler may
 hoist or CSE pure address arithmetic only while preserving the runtime stage
-value.  Call the contract causal only if the x4-preserving memory-contract arm
-closes while baseline reproduces.  If it remains dirty, test the reserved
-opcode-removing arm as the next single-variable closure.
+value.  The exact contract arm remained dirty on device.  The next closure
+therefore separates the physical m8 x4 consumer from async-shared proxy
+visibility.  One uniquely clean arm selects the next repair; two clean arms
+are cadence-sensitive and remain unadjudicated; two dirty arms retire both
+seams.
+
+The `plane2: 1.0 -> 6.0` value pair remains valuable evidence for a specific
+stale previous A tile, but physical output index 32 is not part of that
+mechanism identity.  At `d6e5589`, baseline AP1/S4 attempt 2 reproduced the
+same output and producer-plane bits at aligned index 576.  The first runner
+incorrectly called this nonreproduction because it required index 32.  Freeze
+the symbol, fixture, provider, S4 cell, one-hot plane and value pair; require
+the output and partial indices to agree and remain 32-aligned, but print the
+specific index separately.  Baseline admission is no longer tied to that exact
+cell or value pair: it requires producer-partial corruption in all four
+AP0/AP1 x S2/S4 cells across the independent attempts.  The historical value
+pair remains a diagnostic field only.
 
 ## Repair and controls
 
@@ -220,7 +280,8 @@ Required closure (minimum 8192 correctness repeats for this frozen row):
 - direct-store ownership oracle is exact-once, with hole/duplicate and rotated
   fragment negatives;
 - legacy shared output reproduces corruption at high repeat count;
-- direct production path is raw-bit exact for both A providers and S=2/S=4;
+- the same custom producer path is raw-bit exact for both A providers at
+  S=1/2/4;
 - same-run producer timing does not regress.
 
 Do not retain cadence changes, alternate barriers or metadata-owner changes as
