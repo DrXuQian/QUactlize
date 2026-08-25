@@ -25,6 +25,7 @@ ARM_NAMES = (
     "r2s-snapshot-disjoint",
     "r2s-s2r-vector-disjoint",
     "r2s-s2r-scalar-disjoint",
+    "legacy-shared-output",
     "full-discard",
 )
 
@@ -47,8 +48,8 @@ def adjudicate(logs: dict[str, tuple[str, str]]) -> str:
 
     if not clean["production-direct"]:
         verdict = "UNADJUDICATED_PRODUCTION_CONTROL_FAILED"
-    elif clean["full-discard"]:
-        verdict = "UNADJUDICATED_FULL_SHARED_NEGATIVE_DID_NOT_REPRODUCE"
+    elif clean["legacy-shared-output"]:
+        verdict = "UNADJUDICATED_LEGACY_SHARED_OUTPUT_DID_NOT_REPRODUCE"
     elif not clean["accumulator-opaque"]:
         verdict = "ACCUMULATOR_OPAQUE_LIVENESS_CAUSAL"
     elif not clean["clone-opaque"]:
@@ -88,8 +89,11 @@ def adjudicate(logs: dict[str, tuple[str, str]]) -> str:
         "FQ_SHARED_PREFIX_ROOT "
         f"verdict={verdict} {flags} "
         "static_layout=L223-EXACT-BIJECTION "
-        "storage=DISJOINT-EXCEPT-FULL-NEGATIVE "
-        "publication=PRODUCTION-DIRECT-AFTER-PREFIX")
+        "prefix_data_storage=DISJOINT "
+        "legacy_storage=SHIPPING full_discard_storage=SHIPPING "
+        "publication=PRODUCTION-DIRECT-AFTER-PREFIX "
+        "historical_negative=LEGACY-SHARED-OUTPUT "
+        "full_discard=COUNTERFACTUAL-NOT-ADMISSION")
     return verdict
 
 
@@ -98,7 +102,7 @@ def self_test() -> None:
     bad_log = synthetic_logs(True)
 
     def case(*bad_names: str) -> dict[str, tuple[str, str]]:
-        bad = {"full-discard", *bad_names}
+        bad = {"legacy-shared-output", *bad_names}
         return {name: bad_log if name in bad else clean_log
                 for name in ARM_NAMES}
 
@@ -133,9 +137,16 @@ def self_test() -> None:
                 "UNADJUDICATED_PRODUCTION_CONTROL_FAILED")
         no_negative = {name: clean_log for name in ARM_NAMES}
         assert (adjudicate(no_negative) ==
-                "UNADJUDICATED_FULL_SHARED_NEGATIVE_DID_NOT_REPRODUCE")
-    print("[fq-shared-prefix-root:self-test] PASS ten causal/residual "
-          "prefix verdicts plus production/full-negative controls")
+                "UNADJUDICATED_LEGACY_SHARED_OUTPUT_DID_NOT_REPRODUCE")
+        # Discarding the shared result and publishing the original accumulator
+        # is a counterfactual dataflow arm, not the historical negative.  Its
+        # stochastic cleanliness must not mask a causal prefix.
+        full_discard_bad = case("flat-constant-disjoint", "full-discard")
+        assert (adjudicate(full_discard_bad) ==
+                "SHARED_STORE_BACKEND_OR_FOOTPRINT_CAUSAL")
+    print("[fq-shared-prefix-root:self-test] PASS twelve causal/residual "
+          "prefix verdicts plus production/legacy controls and discard "
+          "non-admission")
 
 
 def main() -> int:

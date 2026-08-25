@@ -53,6 +53,8 @@ ARMS = {
     "r2s-s2r-scalar-disjoint": (
         "PPU_SPLITK_SHARED_PREFIX_POLICY=10 "
         "PPU_SPLITK_SHARED_PROBE_DISJOINT_STORAGE=1"),
+    "legacy-shared-output":
+        "PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE=1",
     "full-discard": (
         "PPU_SPLITK_SHARED_SYNC_POLICY=3 "
         "PPU_SPLITK_SHARED_PROBE_DISCARD_GMEM=1"),
@@ -123,8 +125,9 @@ def check_texts(helper: str, kernel: str, runner: str,
     require("source.before.sha256" in runner and
             "source.after.sha256" in runner,
             "source authority before/after guard changed")
-    require("production/full-negative controls" in checker,
-            "checker self-test no longer names both controls")
+    require("production/legacy controls" in checker and
+            "non-admission" in checker,
+            "checker self-test lost historical/control distinction")
 
 
 def self_test(helper: str, kernel: str, runner: str,

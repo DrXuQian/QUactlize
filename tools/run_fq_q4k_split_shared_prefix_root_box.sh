@@ -107,6 +107,7 @@ main() {
     r2s-snapshot-disjoint
     r2s-s2r-vector-disjoint
     r2s-s2r-scalar-disjoint
+    legacy-shared-output
     full-discard
   )
 
@@ -134,6 +135,8 @@ main() {
         defs='PPU_SPLITK_SHARED_PREFIX_POLICY=9 PPU_SPLITK_SHARED_PROBE_DISJOINT_STORAGE=1' ;;
       r2s-s2r-scalar-disjoint)
         defs='PPU_SPLITK_SHARED_PREFIX_POLICY=10 PPU_SPLITK_SHARED_PROBE_DISJOINT_STORAGE=1' ;;
+      legacy-shared-output)
+        defs='PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE=1' ;;
       full-discard)
         defs='PPU_SPLITK_SHARED_SYNC_POLICY=3 PPU_SPLITK_SHARED_PROBE_DISCARD_GMEM=1' ;;
       *) return 2 ;;

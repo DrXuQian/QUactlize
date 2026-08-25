@@ -156,17 +156,39 @@ that arm, unused S2R/conversion values can be dead-code eliminated while R2S
 shared writes, barriers and their compiler footprint remain.  Its honest
 verdict is therefore `ACCUMULATOR_OR_COMPILER_FOOTPRINT_REMAINS`.
 
-The next and narrower experiment is
-`run_fq_q4k_split_shared_prefix_root_box.sh`.  It compiles a separate binary
+The next and narrower experiment was
+`run_fq_q4k_split_shared_prefix_root_box.sh`.  It compiled a separate binary
 for each prefix before the correct direct store: opaque accumulator liveness,
 an extra register clone, CTA-only synchronization, exact-once flat shared
 stores from constants or live accumulators, vector/scalar/snapshotted R2S, and
 vector/scalar live S2R readback.  All data-path arms use disjoint shared
-storage; the complete historical discard arm is rebuilt as the negative.
-Every binary also records SDK `hgobjdump` register and spill usage.  This
-separates a backend register-footprint threshold from a generic shared store,
+storage.  Every binary also records SDK `hgobjdump` register and spill usage.
+This separates a backend register-footprint threshold from a generic shared store,
 a live-accumulator-to-shared dependency, CuTe `retile_S`/scatter lowering, and
 S2R readback without changing the production hot path.
+
+At SHA `4288d8f`, 2,048 workspace samples per arm gave the following first
+prefix boundary:
+
+- production direct, opaque accumulator, an opaque clone and CTA-only were all
+  clean;
+- flat constant stores failed in 2/2,048 samples (64 bad fp32 values), and
+  flat live-accumulator stores failed in 1/2,048 (32 values);
+- vector R2S had one direct-correctness failure, while scalar R2S was clean;
+- scalar R2S from an additional snapshot failed in 1/2,048 (32 values);
+- full shared roundtrip followed by discard and direct publication happened to
+  be clean in this build.
+
+These low rates establish a backend/cadence-sensitive failure, not a static
+coordinate permutation.  They also exposed an error in the first adjudicator:
+the discard arm is not the historical negative.  It deliberately throws away
+the shared result and publishes the original accumulator, so cleanliness says
+only that this compiled roundtrip did not damage the original fragment.  The
+true negative is `legacy-shared-output`, which publishes the historical shared
+roundtrip result.  `run_fq_q4k_split_shared_prefix_closure_box.sh` reuses and
+hash-verifies all twelve `4288d8f` binaries, builds only that missing legacy
+binary, and captures flexible raw resource hints plus exact-symbol shared-store
+opcodes.  The corrected checker never admits or rejects on `full-discard`.
 
 ## Production repair and invariants
 
