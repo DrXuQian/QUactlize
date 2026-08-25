@@ -20,10 +20,12 @@
 # `single-aiu-issuer` restores the opaque PPU0010 AIU copy atom's one-logical-
 # thread contract at the two mixed-input helper overloads. It changes no CuTe
 # coordinate, descriptor, packed-A scalar copy, wait/barrier, MMA or store.
-# `stable-k-tile-shape` changes only the lifetime of the dynamic shape retained
-# by CuTe's reference-holding K-coordinate iterator.  The baseline binds that
-# reference to a temporary returned by shape<2>(gA); the candidate names the
-# identical value in the custom kernel scope before constructing the iterator.
+# `stable-k-tile-shape` is a lifetime-hygiene diagnostic, not a causal repair
+# candidate for this incident. CuTe's iterator retains Shape const& while the
+# baseline binds a temporary returned by shape<2>(gA), but this dense kernel's
+# exact K coordinate is rank-1: ForwardCoordIterator increments it without
+# reading the retained shape. A clean result therefore means cadence/codegen
+# sensitivity, not that the dangling reference supplied a wrong K coordinate.
 #
 # `FQ_A_STAGE_CANDIDATE=repeat-state` instead builds only the baseline binary
 # and runs reuse/control-poison/target-poison for S2 and S4. Every repeat checks
@@ -166,6 +168,7 @@ checks = {
     "exact stable K-tile shape lifetime seam":
         kernel.count("PPU_SPLITK_STABLE_K_TILE_SHAPE") == 2 and
         kernel.count("auto const k_tile_shape = shape<2>(gA);") == 1 and
+        kernel.count("rank(decltype(k_tile_shape){}) == 1") == 1 and
         kernel.count("idx2crd(work.k_begin, k_tile_shape), k_tile_shape") == 1 and
         kernel.count("idx2crd(work.k_begin, shape<2>(gA)), shape<2>(gA)") == 1,
     "CuTe tensor shape is a value retained by iterator reference":
@@ -244,7 +247,9 @@ if bad:
     raise SystemExit("custom-S1 source seam changed: " + repr(bad))
 print("[fq-a-stage-root:source] PASS CuTe tensor shape<I>() returns by value "
       "while both K iterators retain Shape const&; custom baseline binds a "
-      "temporary and stable-k-tile-shape names the same dynamic value; "
+      "temporary and stable-k-tile-shape names the same dynamic value, but "
+      "the exact dense K coordinate is rank-1 so that lifetime seam is not "
+      "causal by itself; "
       "PPU0010 single-issuer, asm-memory, logical-x2 and async-shared-fence "
       "seams remain exact; S is runtime data")
 PY
@@ -1029,20 +1034,22 @@ try:
                 "reducing 32 identical warp0 callers to one physical issuer closed "
                 "every S1/S2/S4 cell")
         elif winner == "stable-k-tile-shape":
-            verdict = "K_TILE_ITERATOR_DANGLING_SHAPE_CAUSAL"
+            verdict = "K_TILE_ITERATOR_RANK1_CADENCE_SENSITIVE"
             interpretation = (
                 "the baseline reproduced producer-partial corruption in every "
-                "attempt while K coordinates, split descriptors, mainloop, AIU, "
-                "barriers, MMA and stores remained unchanged; naming the dynamic "
-                "K-tile shape so CuTe's reference-holding iterator cannot outlive "
-                "its shape temporary closed every S1/S2/S4 cell")
+                "attempt and extending the K-shape lifetime changed the failure "
+                "rate, but this exact K iterator is rank-1 and its in-range "
+                "increment does not read Shape; the clean arm is a code-layout "
+                "sensitivity result and cannot assign the producer root")
+            diagnostic_rc = 1
         else:
             verdict = "ASYNC_SHARED_VISIBILITY_FENCE_CAUSAL"
             interpretation = (
                 "the baseline reproduced while issuer sets, copy groups, stage "
                 "geometry, CTA barrier and MMA order remained unchanged; an "
                 "explicit async-shared proxy fence alone closed every S1/S2/S4 cell")
-        diagnostic_rc = 0
+        if winner != "stable-k-tile-shape":
+            diagnostic_rc = 0
 
     print("FQ_A_STAGE_ROOT_VERDICT "
           f"verdict={verdict} baseline_target={int(baseline_target)} "

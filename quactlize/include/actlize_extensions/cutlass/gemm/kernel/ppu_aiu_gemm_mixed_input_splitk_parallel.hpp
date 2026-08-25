@@ -367,6 +367,8 @@ class GemmUniversalMixedInputSplitKParallel {
     // it referring to a temporary destroyed at the end of this statement.
     // Keep the dynamic K-tile shape alive for the complete mainloop call.
     auto const k_tile_shape = shape<2>(gA);
+    static_assert(rank(decltype(k_tile_shape){}) == 1,
+                  "dense fixed Split-K advances one scalar K-tile coordinate");
     auto k_tile_iter = make_coord_iterator(
         idx2crd(work.k_begin, k_tile_shape), k_tile_shape);
 #else
