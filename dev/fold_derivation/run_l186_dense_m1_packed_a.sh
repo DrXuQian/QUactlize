@@ -56,14 +56,24 @@ if [[ ${swap_build_rc} -eq 0 ]]; then
   "${out}/bad_slice_swap" >"${out}/bad_slice_swap.log" 2>&1
   swap_run_rc=$?
 fi
+nvcc "${common[@]}" -x cu -DL186_BAD_LOGICAL_X2_WORD_DELTA=1 \
+  -o "${out}/bad_logical_x2" "${geometry_src}" >"${out}/bad_logical_x2_build.log" 2>&1
+x2_build_rc=$?
+x2_run_rc=99
+if [[ ${x2_build_rc} -eq 0 ]]; then
+  "${out}/bad_logical_x2" >"${out}/bad_logical_x2.log" 2>&1
+  x2_run_rc=$?
+fi
 set -e
 
 if [[ ${rows0_rc} -eq 0 || ${m16_rc} -eq 0 ||
       ${bad_build_rc} -ne 0 || ${bad_run_rc} -eq 0 ||
-      ${swap_build_rc} -ne 0 || ${swap_run_rc} -eq 0 ]]; then
+      ${swap_build_rc} -ne 0 || ${swap_run_rc} -eq 0 ||
+      ${x2_build_rc} -ne 0 || ${x2_run_rc} -eq 0 ]]; then
   echo "[l186] FAIL RED controls rows0=${rows0_rc} m16=${m16_rc} " \
        "bad_build=${bad_build_rc} bad_run=${bad_run_rc} " \
-       "swap_build=${swap_build_rc} swap_run=${swap_run_rc}" >&2
+       "swap_build=${swap_build_rc} swap_run=${swap_run_rc} " \
+       "x2_build=${x2_build_rc} x2_run=${x2_run_rc}" >&2
   exit 1
 fi
 
@@ -77,4 +87,5 @@ for plant in missing-m1-guard default-type-wrapped query-launch-diverged coverag
 done
 
 echo "[l186] PASS: 7 production Q2/Q4 cells + writer/independent-reader geometry; " \
-     "rows0/m16/destination/slice-swap and 5 source plants RED; output=${out}"
+     "logical-x2 scalar map exact; rows0/m16/destination/slice-swap/x2-word " \
+     "and 5 source plants RED; output=${out}"

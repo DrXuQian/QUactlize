@@ -170,12 +170,37 @@ Do not compare against the shipping S=1 launcher and call the split integer
 causal; those arms are different instantiated kernels.
 
 Use `tools/run_fq_q4k_custom_split_count_box.sh` for the current closure.  It
-freezes the generated AP0/AP1 symbols, runs the same custom S=1/2/4 kernel,
-and builds eight exact arms: baseline, A prepare-after-consume, explicit
-A-stage view, direct x4-to-x2 projection, packed-A compiler memory fence,
-A-before-B in the same async group, a separate packed-A commit group, and
-packed-A synchronous store.  Numeric rc=1 is retained; all arms and
+freezes the generated AP0/AP1 symbols and runs the same custom S=1/2/4 kernel.
+
+The completed eight-arm factorial at `3e83a45` reported:
+
+```text
+baseline/prepare-after/explicit-stage/direct-x4/separate-group/sync-store:
+    0/8 clean S>1 cells
+compiler-fence: 4/8 clean
+A-before-B:     6/8 clean
+```
+
+Every dirty cell localized to a wrong producer FP32 partial; none of the seven
+counterfactuals closed both providers and S=2/S=4.  The two partially cleaner
+arms are code-layout/timing sensitivity, not repairs or causal proof.
+
+The current reduced closure builds three arms: baseline, an exact inline-asm
+shared-memory contract, and a logical-x2 scalar shared load that removes the
+physical x4 swizzle opcode.  The first arm keeps the physical x4 instruction
+and adds `memory` clobbers to the fp16 AIU/packed cp.async producer, commit/wait
+and m8 ldmatrix consumer.  The second keeps the baseline producer/wait
+contract and changes only the consumer's physical load instruction; L186
+proves all 512 logical addresses against an independent calibrated model and
+keeps an offset negative RED.  Numeric rc=1 is retained; all arms and
 independent attempts complete before a fail-closed verdict is emitted.
+
+Missing memory side-effect declarations are a real inline-asm contract defect,
+but do not by themselves prove the stale-stage explanation.  A compiler may
+hoist or CSE pure address arithmetic only while preserving the runtime stage
+value.  Call the contract causal only if the x4-preserving memory-contract arm
+closes while baseline reproduces; call the x4 backend causal only if the
+opcode-removing arm alone closes.
 
 ## Repair and controls
 

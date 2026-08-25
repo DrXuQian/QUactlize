@@ -106,10 +106,11 @@ static_assert(kPitch == 64 && kPhysicalM == 16 && kRows == 1 && int(size(Mma{}))
 // Independent verbatim PPU0010_TSM_LD_SWZL_M8 address model.  Do not replace this with
 // detail::aPackRunOffsetHalfs(): their agreement is one of the properties under test.
 constexpr int ppu0010_tsm_ld_swzl_m8_word(
-    int lane, int vreg, int slice, int cube_height, int* out_row) {
+    int lane, int vreg, int slice, int cube_height, int* out_row,
+    int coord_h = 0) {
   int const slice_word_base = cube_height * 8 * slice;
   int const slice_start_vec = (((slice & 1) << 1) + ((slice & 2) >> 1)) * 2;
-  int const lane_row_idx = lane / 4;  // coord_h == 0 for the first physical m8 read
+  int const lane_row_idx = lane / 4 + coord_h;
   int const lane_col_idx = lane % 4;
   int const vreg_row_idx = (vreg / 2) * 8 + lane_row_idx;
   int const vreg_line_idx = vreg_row_idx / 4;
@@ -126,6 +127,35 @@ constexpr int ppu0010_tsm_ld_swzl_m8_word(
 #ifndef L186_BAD_SLICE_SWAP
 #define L186_BAD_SLICE_SWAP 0
 #endif
+#ifndef L186_BAD_LOGICAL_X2_WORD_DELTA
+#define L186_BAD_LOGICAL_X2_WORD_DELTA 0
+#endif
+
+int verify_logical_x2_scalar_map() {
+  int bad = 0;
+  int cells = 0;
+  for (int coord_h : {0, 8}) {
+    for (int slice = 0; slice < kSlices; ++slice) {
+      for (int lane = 0; lane < 32; ++lane) {
+        for (int vreg = 0; vreg < ExactSmemCopyOp::kLogicalRegisters;
+             ++vreg) {
+          int row = -1;
+          int const expected = ppu0010_tsm_ld_swzl_m8_word(
+              lane, vreg, slice, kPhysicalM, &row, coord_h);
+          int const actual = ExactSmemCopyOp::logical_word_offset(
+              lane, vreg, slice * 16, coord_h) +
+              L186_BAD_LOGICAL_X2_WORD_DELTA;
+          bad += actual != expected;
+          bad += row != (vreg / 2) * 8 + lane / 4 + coord_h;
+          ++cells;
+        }
+      }
+    }
+  }
+  std::printf("[l186:logical-x2-load] cells=%d bad=%d verdict=%s\n",
+              cells, bad, bad == 0 ? "EXACT" : "NONIDENTITY");
+  return bad;
+}
 
 struct Totals {
   long long cells = 0;
@@ -423,6 +453,7 @@ int main() {
   z.add(verify_k<256>());
   z.add(verify_output_ownership());
   int const cute_coord_bad = verify_exact_cute_source_coordinates();
+  int const logical_x2_bad = verify_logical_x2_scalar_map();
   int const historical_cross = cross_stage_hardware_collisions(
       kPitch * kExactCubes);
   int const production_cross = cross_stage_hardware_collisions(
@@ -442,7 +473,7 @@ int main() {
       z.copy_holes, z.copy_duplicates, z.source_holes, z.source_duplicates,
       z.destination_duplicates, z.destination_oob, z.reader_holes, z.reader_duplicates,
       z.unread_writes, z.value_mismatches, z.output_holes, z.output_duplicates);
-  bool const ok = clean(z) && cute_coord_bad == 0 &&
+  bool const ok = clean(z) && cute_coord_bad == 0 && logical_x2_bad == 0 &&
       historical_cross > 0 && production_cross == 0;
   std::printf(
       "[l186:geometry] %s: production writer -> independent hardware-calibrated PPU0010 reader is "

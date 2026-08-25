@@ -250,12 +250,32 @@ caller must not infer admission from type formation alone.
 The current device closure is implemented by
 `tools/run_fq_q4k_custom_split_count_box.sh`.  It launches the exact generated
 AP0/AP1 `GemmUniversalMixedInputSplitKParallel` symbols at runtime S=1/2/4
-across eight binaries.  Baseline is compared with seven one-variable A-stage
-arms: prepare-after-consume, explicit stage slicing, direct x4-to-x2 output,
-compiler memory fencing around packed-A cp.async, A-before-B issue order,
-separate packed-A commit group, and synchronous packed-A store.  Two
-independent high-repeat attempts run for every arm before the verdict; numeric
+across three binaries.  The preceding eight-binary factorial at `3e83a45`
+left every counterfactual dirty: baseline, prepare-after-consume,
+explicit-stage, direct-x4, separate-A-group and synchronous-store were 0/8
+clean S>1 cells; compiler-fence was 4/8 and A-before-B 6/8.  Those incidence
+changes are code-layout sensitivity, not closure.
+
+The reduced factorial compares baseline with two stronger physical-load arms:
+
+- `asm-memory-contract` retains the physical x4 opcode and adds actual
+  `memory` clobbers to the fp16-A AIU/packed cp.async producer, commit/wait and
+  m8 ldmatrix consumer;
+- `logical-x2-scalar` keeps the baseline producer/wait contract but removes
+  the physical x4 swizzle opcode and loads only its two semantic b32 values.
+
+L186 proves the latter's 512 `(coord_h,slice,lane,vreg)` addresses against the
+independent calibrated PPU0010 model and requires a one-word-offset negative
+to turn RED.  Two independent 32768-repeat attempts run for every arm; numeric
 failure never truncates the factorial.
+
+The missing inline-asm memory side-effect declarations are a real compiler
+contract defect, but they are not yet the device root.  Pure address arithmetic
+may be hoisted or commoned only while preserving the runtime stage value, so
+the source defect alone does not prove the proposed stale-stage mechanism.  A
+causal verdict requires the x4-preserving memory-contract arm alone to close;
+if only the scalar arm closes, the remaining boundary is the x4 swizzle opcode
+or its scoreboard lowering.  If both close, one final cross-factor is needed.
 
 Until one arm closes while the baseline reproduces, the honest claim is: the
 legacy shared handoff is unsafe and direct store removes that trigger; the
