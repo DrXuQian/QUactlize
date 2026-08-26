@@ -163,7 +163,23 @@ The negative reconstructed all-thread modulo publishers and omitted the
 initialization edge. The candidate used exact ownership plus the one-time
 prefetch-before CTA edge and closed every custom S1/S2/S4 cell. This proves the
 root cause and conservative repair. It does not by itself validate the later
-total-overwrite cadence; that candidate needs a fresh narrow box closure.
+total-overwrite cadence.
+
+The total-overwrite candidate subsequently closed raw-bit exact on commit
+`d557509e1b511736ae9b769b8b371cd470fd686c`:
+
+```text
+artifact=/workspace/quactlize-fq-q4k-tm8-wn64-closure-d557509e-20260826T021632Z-2254120
+checker=PASS shapes=1 tactics=6 census_rows=24 raw_bad=0
+WN64-control=4 WN16-S1/S2/S4=6
+tail=LOCAL-L217/CURRENT-ABI-N%256
+```
+
+The rejected N=992 arm was a fixture-domain error (`prepare_dense_for_tile`
+requires N%256==0), not a kernel failure. Do not manufacture an illegal device
+tail to strengthen the evidence; L217 is the exact current tail oracle until
+the resident artifact ABI itself admits N residue. Performance remains a
+separate comparison against the conservative clear/barrier repair.
 
 After closure, the factorial runner, repeat-state controls, partial-plane
 failure probes, stale-A/issuer oracle and counterfactual compile macros were
@@ -177,5 +193,5 @@ For every full N tile, the packed path emits no initial clear or extra barrier;
 the already-required decoder stores are the complete destination write. A tail
 adds zero stores only for invalid columns owned by the same decoder threads.
 This removes rather than adds work on the common aligned shapes, but device
-timing and raw-bit closure are still required because compiler scheduling has
-already mattered for this incident.
+timing still needs comparison against the conservative repair; raw-bit closure
+is complete for the current production domain.

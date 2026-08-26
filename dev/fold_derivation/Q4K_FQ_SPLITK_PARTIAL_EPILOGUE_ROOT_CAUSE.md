@@ -1,11 +1,11 @@
 # Q4_K fully-quantized packed-metadata race
 
-Status: **root cause closed on device**. The conservative repair is commit
+Status: **root cause and decode-owner total overwrite raw-bit closed on
+device; performance comparison pending**. The conservative repair is commit
 `7124998`; its source/CuTe proof and exact device A/B are commit `265033f`.
 The later decode-owner total-overwrite simplification removes that repair's
-initial clear/barrier. Its local source/CuTe closure is complete; a fresh box
-raw-bit/performance closure is required before calling the simplification
-device-closed.
+initial clear/barrier. Its implementation is commit `d557509`; the runner's
+current-ABI correction is `3f24f8d`.
 
 The closing artifact is:
 
@@ -27,6 +27,25 @@ The must-red arm reconstructed the historical all-thread modulo publishers and
 omitted the initialization edge. The candidate used the production exact
 ownership plus one pre-prefetch CTA edge. The historical arm reproduced in
 both attempts; the candidate was raw-bit exact for every custom S1/S2/S4 cell.
+
+The later total-overwrite implementation closed on the current production
+domain at:
+
+```text
+/workspace/quactlize-fq-q4k-tm8-wn64-closure-d557509e-20260826T021632Z-2254120
+```
+
+The hash-bound six-tactic checker reported:
+
+```text
+[fq-tm8-wn64-check] PASS shapes=1 tactics=6 census_rows=24 raw_bad=0
+WN64-control=4 WN16-S1/S2/S4=6 tail=LOCAL-L217/CURRENT-ABI-N%256
+```
+
+Thus both A providers and the WN16 root-cause S1/S2/S4 cells are raw-bit
+exact after removing the clear/barrier. The attempted N=992 fixture was
+correctly classified as infrastructure, not a device result: the resident
+xplane ABI requires N%256==0. L217 remains the tail contract authority.
 
 ## Root cause
 
@@ -212,7 +231,8 @@ The retained narrow closure at
 `tools/run_fq_q4k_tm8_wn64_closure_box.sh` now covers four WN64 controls plus
 the two WN16 root-cause tactics at aligned N=1024. The resident xplane ABI
 requires N%256==0 and every admitted TileN divides 256, so a device N-tail is
-outside the current production domain; L217 owns that future-ABI proof. The large causal runner used for
+outside the current production domain; L217 owns that future-ABI proof. The
+large causal runner used for
 the now-closed bug was deliberately deleted; its exact output and source remain
 recoverable from commit `265033f` and the artifact path above. L217 additionally
 plants a missing decode-owner tail zero and requires it to fail.
@@ -221,6 +241,7 @@ plants a missing decode-owner tail zero and requires it to fail.
 
 The packed full-tile path removes both the fp16 clear and the conservative
 initialization-only CTA edge. Tail tiles replace the old whole-tile clear with
-zero stores only for invalid owner columns. The historical device A/B proves
-the race diagnosis and the conservative repair, not the new cadence; rerun the
-narrow raw-bit closure and compare medians before updating tactic rankings.
+zero stores only for invalid owner columns. The six-tactic device run proves
+raw-bit correctness of the new cadence, but correctness does not adjudicate
+performance. Compare its recorded 200-sample medians with the conservative
+repair before updating tactic rankings.
