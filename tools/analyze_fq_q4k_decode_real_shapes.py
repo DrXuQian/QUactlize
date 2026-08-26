@@ -29,7 +29,7 @@ import plan_fq_q4k_decode_real_shapes as planner
 
 RESULT_SCHEMA = "quactlize.fq_q4k_decode_real_shapes_result.v1"
 SCREEN_SCHEMA = "quactlize.fq_q4k_decode_screen.v1"
-SCHEDULER_SCHEMA = "quactlize.fq_q4k_decode_scheduler.v1"
+SCHEDULER_SCHEMA = "quactlize.fq_q4k_decode_scheduler.v2"
 TC_PREFIX = "FQ_TC_CELL "
 BC_PREFIX = "FQ_BC_CELL "
 SHARD_PREFIX = "FQ_SHARD "
@@ -37,6 +37,15 @@ DONE_PREFIX = "FQ_SHAPE_DONE "
 AXES = ("tile_m", "tile_n", "tactic_tile_k", "warp_m", "warp_n",
         "stages", "bchunk", "a_provider")
 TC_SPLITS = (1, 2, 4, 8)
+SCHEDULER_TERMINAL_STATES = frozenset({
+    "SHIPPING_SHARED_STORAGE",
+    "SPLIT_SHARED_STORAGE",
+    "SPLIT_PARTITION",
+    "INADMISSIBLE_PIPELINE_DEPTH",
+    "M8_DECODE_ONLY_M_GE_8",
+    "PACKED_A_DECODE_ONLY_M_NOT_1",
+    "REAL_CAN_IMPLEMENT",
+})
 
 
 class ContractError(ValueError):
@@ -327,27 +336,55 @@ def select_scheduler(manifest_path: pathlib.Path, log_path: pathlib.Path,
     if bc:
         raise ContractError("scheduler phase unexpectedly measured BC")
     by_split: dict[int, list[dict[str, Any]]] = collections.defaultdict(list)
+    terminal_by_split: dict[int, collections.Counter[str]] = \
+        collections.defaultdict(collections.Counter)
     for row in tc:
         if row["state"] == "MEASURED":
             row = dict(row)
             row["modeled_e2e_us"] = row["us_float"] + reducer_us(
                 shape[0], shape[1], row["S_int"], policy)
             by_split[row["S_int"]].append(row)
+        else:
+            if row["state"] not in SCHEDULER_TERMINAL_STATES:
+                raise ContractError(
+                    f"scheduler S={row['S_int']} has unknown terminal state "
+                    f"{row['state']}")
+            if row["us_float"] != 0.0 or row["raw_bad_int"] != 0 or \
+                    row["samples"] != "[]":
+                raise ContractError(
+                    f"scheduler S={row['S_int']} terminal row carries a result")
+            terminal_by_split[row["S_int"]][row["state"]] += 1
     retained: set[str] = set()
-    board_counts: dict[str, dict[str, int]] = {}
+    board_counts: dict[str, dict[str, Any]] = {}
     scheduler = policy["scheduler"]
-    for split in (1, 2, 4, 8):
+    for split in TC_SPLITS:
         values = sorted(by_split.get(split, []),
                         key=lambda row: (row["modeled_e2e_us"], row["symbol"]))
+        terminal = dict(sorted(terminal_by_split[split].items()))
+        if len(values) + sum(terminal.values()) != len(selected):
+            raise ContractError(f"scheduler S={split} board denominator differs")
         if not values:
-            raise ContractError(f"scheduler has no measured S={split} candidate")
+            if split == 1:
+                raise ContractError("scheduler has no measured S=1 candidate")
+            board_counts[f"S{split}"] = {
+                "status": "UNAVAILABLE",
+                "measured": 0,
+                "retained": 0,
+                "terminal_states": terminal,
+            }
+            continue
         leader = values[0]["modeled_e2e_us"]
         keep = values[:int(scheduler["top_n_per_board"])]
         keep += [row for row in values
                  if row["modeled_e2e_us"] <= leader * float(scheduler["relative_to_leader"])]
         names = {row["symbol"] for row in keep}
         retained.update(names)
-        board_counts[f"S{split}"] = {"measured": len(values), "retained": len(names)}
+        board_counts[f"S{split}"] = {
+            "status": "AVAILABLE",
+            "measured": len(values),
+            "retained": len(names),
+            "terminal_states": terminal,
+        }
     ordered = sorted(retained)
     atomic_text(symbols_output, "".join(f"{symbol}\n" for symbol in ordered))
     summary = {
@@ -621,8 +658,9 @@ def finalize(plan_path: pathlib.Path, policy_path: pathlib.Path,
 
 
 def self_test() -> None:
-    policy = load_policy(pathlib.Path(__file__).resolve().parents[1] /
-                         "benchmarks/fq_q4k_decode_real_shapes_policy.json")
+    policy_path = (pathlib.Path(__file__).resolve().parents[1] /
+                   "benchmarks/fq_q4k_decode_real_shapes_policy.json")
+    policy = load_policy(policy_path)
     value = reducer_us(4, 1024, 8, policy)
     expected = (4 * 1024 * 8 * 4 + 4 * 1024 * 2) / (.8 * 2766 * 1000)
     if not math.isclose(value, expected):
@@ -697,6 +735,38 @@ def self_test() -> None:
             "typed_rows=2 selected_rows=2 only_split=1 bc_mode=all "
             "bc_batch=native-grid-y-m-lt8 iterations=2 status=PASS")
         return "\n".join(lines) + "\n"
+    def tc_scheduler_log(
+            terminal_boards: dict[int, str] | None = None) -> str:
+        terminal_boards = terminal_boards or {}
+        symbols = ("tc_alpha", "tc_beta")
+        lines = [
+            "FQ_SHARD q=12 A=64 bchunk=0 shape=1x1024x5120 "
+            "typed_rows=2 selected_rows=2 only_split=0 bc_mode=skip "
+            "bc_batch=native-grid-y-m-lt8 iterations=2 correctness_repeats=1"
+        ]
+        for symbol in symbols:
+            for split in TC_SPLITS:
+                state = terminal_boards.get(split, "MEASURED")
+                measured = state == "MEASURED"
+                us = "1.100000000" if measured else "0.000000000"
+                samples = "[1.000000000,1.200000000]" if measured else "[]"
+                partial_bytes = 0 if split == 1 else 4096 * split
+                lines.append(
+                    "FQ_TC_CELL q=12 A=64 bchunk=0 shape=1x1024x5120 "
+                    f"symbol={symbol} tm=8 tn=64 tk=256 wm=8 wn=64 stages=3 "
+                    f"provider=standard-aiu S={split} scope="
+                    f"{'FULL_OUTPUT' if split == 1 else 'PRODUCER_ONLY_REDUCER_UNTIMED_CORRECTNESS'} "
+                    f"provider_capacity_rows=0 state={state} us={us} raw_bad=0 "
+                    f"reducer_untimed={int(measured and split > 1)} "
+                    "failure_step=NONE failure_repeat=-1 "
+                    "first_bad=18446744073709551615 first_want=0x0000 "
+                    "first_got=0x0000 shipping_smem=1 split_smem=1 "
+                    f"partial_bytes={partial_bytes} samples={samples}")
+        lines.append(
+            "FQ_SHAPE_DONE q=12 A=64 bchunk=0 shape=1x1024x5120 "
+            "typed_rows=2 selected_rows=2 only_split=0 bc_mode=skip "
+            "bc_batch=native-grid-y-m-lt8 iterations=2 status=PASS")
+        return "\n".join(lines) + "\n"
     with tempfile.TemporaryDirectory() as temporary:
         root = pathlib.Path(temporary)
         path = root / "bc.log"
@@ -735,10 +805,45 @@ def self_test() -> None:
                 pass
             else:
                 raise AssertionError(f"TC denominator negative {index} stayed green")
+        manifest_path = root / "manifest.json"
+        manifest_path.write_text(json.dumps({
+            "identity": {"qtype": 12, "artifact_tile_k": 64, "bchunk": 0},
+            "typed_rows": [{"symbol": symbol} for symbol in symbols],
+            "denominator": {"typed_rows": len(symbols)},
+        }))
+        screen_symbols = root / "screen-symbols.txt"
+        screen_symbols.write_text("".join(f"{symbol}\n" for symbol in symbols))
+        scheduler_symbols = root / "scheduler-symbols.txt"
+        scheduler_summary = root / "scheduler.json"
+        tc_path.write_text(tc_scheduler_log({8: "SPLIT_PARTITION"}))
+        scheduler_result = select_scheduler(
+            manifest_path, tc_path, screen_symbols, policy_path,
+            scheduler_symbols, scheduler_summary)
+        if scheduler_result["boards"]["S8"] != {
+                "status": "UNAVAILABLE", "measured": 0, "retained": 0,
+                "terminal_states": {"SPLIT_PARTITION": len(symbols)}} or \
+                scheduler_result["boards"]["S1"]["status"] != "AVAILABLE":
+            raise AssertionError("optional unavailable scheduler board was not closed")
+        scheduler_negatives = (
+            tc_scheduler_log({1: "REAL_CAN_IMPLEMENT", 8: "SPLIT_PARTITION"}),
+            tc_scheduler_log({8: "RAW_FP16_MISMATCH"}),
+        )
+        for index, log in enumerate(scheduler_negatives):
+            tc_path.write_text(log)
+            try:
+                select_scheduler(manifest_path, tc_path, screen_symbols,
+                                 policy_path, scheduler_symbols,
+                                 scheduler_summary)
+            except ContractError:
+                pass
+            else:
+                raise AssertionError(
+                    f"scheduler availability negative {index} stayed green")
     print("[fq-q4k-decode-analysis:self-test] PASS: 80%-HBM reducer bytes, "
           "confirmation-envelope fail-close, native M4 SIMT, M8 negative, "
           "complete S1/S2/S4/S8 census separated from S1 measurement, three "
-          "TC denominator negatives, and canonical layout classes")
+          "TC denominator negatives, optional S2/S4/S8 unavailable closure, "
+          "mandatory S1 and unknown-state negatives, and canonical layout classes")
 
 
 def main() -> int:
@@ -773,8 +878,12 @@ def main() -> int:
             result = select_scheduler(args.manifest, args.log, args.screen_symbols,
                                       args.policy, args.symbols_output,
                                       args.summary_output)
+            unavailable = ",".join(
+                board for board, value in result["boards"].items()
+                if value["status"] == "UNAVAILABLE") or "NONE"
             print(f"[fq-q4k-decode-scheduler] PASS input={result['input_symbols']} "
-                  f"retained={result['retained_symbols']}")
+                  f"retained={result['retained_symbols']} "
+                  f"unavailable={unavailable}")
         else:
             result = finalize(args.plan, args.policy, args.raw_root,
                               args.generated_root, args.output_dir)

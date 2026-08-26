@@ -68,6 +68,10 @@ def check(kernel: str, backend: str, thop: str, bench: str,
         '(row["symbol"], row["S_int"]) for row in tc)',
         'row["S_int"] == expected_split',
         'unselected split produced a non-census row',
+        "SCHEDULER_TERMINAL_STATES = frozenset(",
+        'board_counts[f"S{split}"] = {\n                "status": "UNAVAILABLE"',
+        "if not values:\n            if split == 1:",
+        "has unknown terminal state",
     )
     if any(token not in analyze for token in analyze_needles):
         raise CheckError("analysis mixes producer-only, reducer, or SIMT scope")
@@ -128,6 +132,10 @@ def main() -> int:
         (6, '"PRODUCER_PLUS_MODELED_REDUCER"', '"PRODUCER_ONLY"'),
         (6, "TC_SPLITS = (1, 2, 4, 8)", "TC_SPLITS = (1,)"),
         (6, 'row["S_int"] == expected_split', 'True'),
+        (6, 'board_counts[f"S{split}"] = {\n                "status": "UNAVAILABLE"',
+         'board_counts[f"S{split}"] = {\n                "status": "AVAILABLE"'),
+        (6, "if not values:\n            if split == 1:",
+         "if not values:\n            if False:"),
         (7, "--tile-m-filter 8", "--tile-m-filter 16"),
         (7, "--tm8-max-m=8", "--tm8-max-m=7"),
         (7, '"compiled_binary_identity":"MUST_MATCH_FROZEN_BINARY_HASHES"',
@@ -147,7 +155,8 @@ def main() -> int:
             raise CheckError(f"negative control stayed green: {old} -> {new}")
     print("[fq-q4k-decode:self-test] PASS: M=1/2/4/8, TM8-only TC, native "
           "one-launch M<8 SIMT, phase/census separation, analysis-only resume "
-          "binding, and eleven negative plants")
+          "binding, optional scheduler boards with mandatory S1, and thirteen "
+          "negative plants")
     return 0
 
 
