@@ -2518,15 +2518,15 @@ if(TARGET swzl_ldmatrix_probe)
   target_compile_options(swzl_ldmatrix_probe PRIVATE -w)
 endif()
 
-# Exact provider-map probe for the ppu001 plain x4 spelling used by the
-# standalone Marlin path.  This is deliberately separate from the tc01 swzl
-# probe: the Q4/A32 WN16 projection depends on lane-local row addresses.
+# Exact provider-map probe for lane-local base operands on the shipping ppu001
+# tc01 x4.swzl instruction. Q4/A32 must retain the AIU-write/read swizzle pair;
+# only the base/address provider is under test.
 quactlize_ppu_executable(
-  plain_ldmatrix_x4_gather_probe
-  plain_ldmatrix_x4_gather_probe.cu
+  swzl_ldmatrix_x4_lane_base_probe
+  swzl_ldmatrix_x4_lane_base_probe.cu
 )
-if(TARGET plain_ldmatrix_x4_gather_probe)
-  target_compile_options(plain_ldmatrix_x4_gather_probe PRIVATE -w)
+if(TARGET swzl_ldmatrix_x4_lane_base_probe)
+  target_compile_options(swzl_ldmatrix_x4_lane_base_probe PRIVATE -w)
 endif()
 
 # INT4 REFERENCE diag: same params as test_w2a16_diag but int4b_t, so the W2DBG cute-layout print for the
