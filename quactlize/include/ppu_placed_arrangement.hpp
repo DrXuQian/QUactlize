@@ -30,17 +30,19 @@ constexpr bool matches_compiled_tactic(
          tactic_tile_k % arrangement->artifact_tile_k == 0;
 }
 
-// The single-plane N-fold collective predates native packed metadata and cannot yet stage/decode a Q2/Q4 unit.
-// Two-plane packed collectives already own that channel.  Keep the missing seam explicit and fail closed: merely
-// instantiating F>1 under PPU_PACKED_SCALE otherwise dies at CollectiveMainloop::is_packed_scale, while pretending it
-// is supported would reinterpret raw unit bytes as fp16 metadata.  This predicate can be relaxed only with a real
-// flag-on compile control for the folded single-plane collective.
+// Packed metadata support is a property of the exact resident reader, not merely of the low-bit width.  Two-plane
+// readers own their general packed channel; unfolded single-plane readers retain the 32-byte floor.  Q4/A32 is the
+// one proved folded single-plane exception: its F2 collective reads each physical N/2 x 2K weight run directly and
+// decodes the unchanged logical-N Q4_K unit when the shipping tactic consumes one 256-code superblock.
 constexpr bool packed_tensor_reader_supported(
     quactlize_ppu_placed_arrangement_v1 const* arrangement, int qtype, int k, int tactic_tile_k) {
   if (!matches_compiled_tactic(arrangement, qtype, k, tactic_tile_k)) return false;
   auto const& format = ppu_formats::for_qtype(qtype);
   int const low_bytes = format.low_bits * arrangement->artifact_tile_k / 8;
-  return format.high_bits != 0 || low_bytes >= 32;
+  bool const q4_a32_fold2 = qtype == 12 &&
+                            arrangement->artifact_tile_k == 32 &&
+                            tactic_tile_k == 256;
+  return format.high_bits != 0 || low_bytes >= 32 || q4_a32_fold2;
 }
 
 template <int QType, int TacticTileK, int ArtifactTileK>
@@ -88,9 +90,11 @@ inline constexpr quactlize_ppu_placed_arrangement_v1 kFold2Q3Control{
 static_assert(packed_tensor_matches_exact_reader<11, 256, 64>(&kFold2Q3Control, 4096));
 static_assert(!packed_tensor_matches_exact_reader<11, 256, 256>(&kFold2Q3Control, 4096),
               "an F=2 artifact must be rejected by an F=1 reader, not silently decoded");
-inline constexpr quactlize_ppu_placed_arrangement_v1 kUnsupportedFold2Q4Control{
+inline constexpr quactlize_ppu_placed_arrangement_v1 kNativeFold2Q4Control{
     QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V1, 4, 32, 0};
-static_assert(!packed_tensor_reader_supported(&kUnsupportedFold2Q4Control, 12, 4096, 256),
-              "single-plane F>1 stays fail-closed until its packed metadata staging exists");
+static_assert(packed_tensor_reader_supported(&kNativeFold2Q4Control, 12, 4096, 256),
+              "Q4/A32 must retain its native folded packed-metadata reader");
+static_assert(!packed_tensor_reader_supported(&kNativeFold2Q4Control, 12, 4096, 128),
+              "Q4/A32 packed metadata requires the proved one-superblock tactic");
 
 }  // namespace ppu_arrangements

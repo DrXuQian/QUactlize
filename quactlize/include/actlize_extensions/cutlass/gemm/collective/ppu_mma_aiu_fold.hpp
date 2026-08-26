@@ -73,11 +73,35 @@
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_argument_contract.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_a_schedule.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_packed_metadata_ownership.hpp"
+#include "actlize_extensions/cutlass/gguf_packed_scale.h"
 #include "cutlass/detail/collective.hpp"
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass::gemm::collective {
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+namespace detail {
+
+// ArrayEngine<T,0> is an empty C++ object, not a zero-sized subobject, and its alignment can increase the enclosing
+// shared-storage type.  Use empty-base optimisation so every packed-off folded kernel retains its exact historical
+// footprint; the active specialization owns the staged native bytes.
+struct FoldedPackedMetadataStorageOff {
+  CUTE_HOST_DEVICE uint8_t* packed_metadata_begin() { return nullptr; }
+  CUTE_HOST_DEVICE uint8_t const* packed_metadata_begin() const { return nullptr; }
+};
+
+template <int Bytes>
+struct FoldedPackedMetadataStorageOn {
+  static_assert(Bytes > 0, "active folded packed metadata needs a nonempty staging allocation");
+  cute::ArrayEngine<uint8_t, Bytes> smem_scale_raw;
+  CUTE_HOST_DEVICE auto packed_metadata_begin() { return smem_scale_raw.begin(); }
+  CUTE_HOST_DEVICE auto packed_metadata_begin() const { return smem_scale_raw.begin(); }
+};
+
+}  // namespace detail
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -367,6 +391,47 @@ private:
   static constexpr bool ModeHasScales = KernelConversionMode == ConversionMode::ConvertAndScale ||
                                         KernelConversionMode == ConversionMode::ConvertAndScaleWithZero;
 
+  // Native Q4_K metadata does not share B's fold.  A32/F2 changes only the resident weight byte map; metadata remains
+  // one 16-byte GGUF unit per LOGICAL N column and 256-code superblock.  Decode it into the same logical fp16 scale
+  // and zero tiles that the established folded converter already consumes.  Keeping this gate deliberately narrow
+  // prevents a Q2/Q3/Q5/Q6 format selector from entering a collective whose decode has not been proved for it.
+#if defined(PPU_PACKED_FORMAT)
+  static constexpr cutlass::gguf_packed::Fmt kPackedFmt =
+      cutlass::gguf_packed::Fmt(PPU_PACKED_FORMAT);
+#else
+  static constexpr cutlass::gguf_packed::Fmt kPackedFmt = cutlass::gguf_packed::Fmt::Q4K;
+#endif
+  using PackedUnit = cutlass::gguf_packed::Unit<kPackedFmt>;
+  static constexpr bool kPackedFormatMatchesQ4 =
+      kPackedFmt == cutlass::gguf_packed::Fmt::Q4K &&
+      std::is_same_v<RealInternalElementB, cutlass::int4b_t>;
+  static constexpr bool kPackedScaleOn =
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
+      kPackedFormatMatchesQ4 && FoldF == 2 &&
+      KernelConversionMode == ConversionMode::ConvertAndScaleWithZero &&
+      int(Scale_TileK) == PackedUnit::kGroups;
+#else
+      false;
+#endif
+  static constexpr int kPackedScaleUnit = kPackedFormatMatchesQ4 ? PackedUnit::kUnitBytes : 16;
+  static_assert(!kPackedScaleOn || kPackedScaleUnit == 16,
+                "folded packed metadata currently supports the exact Q4_K 16-byte unit");
+  static_assert(!kPackedScaleOn || PackedUnit::kGroups == 8,
+                "folded packed metadata currently supports one Q4_K superblock per tactic tile");
+
+  using PackedMetadataOwnership =
+      detail::PackedMetadataColumnOwnership<int(Scale_TileN), int(Scale_NumThreads)>;
+  static constexpr int kPackedOwnerThreads = PackedMetadataOwnership::owner_threads;
+  static constexpr int kPackedColsPerThread = PackedMetadataOwnership::columns_per_thread;
+  using GmemTiledCopyScalePacked = decltype(
+      make_tiled_copy(Copy_Atom<PPU_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>, uint8_t>{},
+                      Layout<Shape<Int<kPackedOwnerThreads>, _1>>{},
+                      Layout<Shape<_1, Int<kPackedScaleUnit>>>{}));
+  using SmemLayoutScaleRawStaged =
+      Layout<Shape<Int<Scale_TileN>, Int<kPackedScaleUnit>, Int<DispatchPolicy::Stages>>,
+             Stride<Int<kPackedScaleUnit>, _1,
+                    Int<Scale_TileN * kPackedScaleUnit>>>;
+
   static constexpr auto
   elements_per_smem_scale() {
     if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
@@ -398,7 +463,18 @@ private:
 
 public:
 
-  struct SharedStorage
+  static constexpr bool is_packed_scale = kPackedScaleOn;
+  static constexpr int packed_scale_copy_threads = kPackedOwnerThreads;
+  static constexpr int packed_scale_columns_per_thread = kPackedColsPerThread;
+
+  static constexpr int kPackedRawBytes =
+      kPackedScaleOn ? int(cute::cosize(SmemLayoutScaleRawStaged{})) : 0;
+  using PackedMetadataStorage = cute::conditional_t<
+      kPackedScaleOn,
+      detail::FoldedPackedMetadataStorageOn<kPackedRawBytes>,
+      detail::FoldedPackedMetadataStorageOff>;
+
+  struct SharedStorage : PackedMetadataStorage
   {
     static constexpr int scale_elements = elements_per_smem_scale();
     static constexpr int zero_elements = elements_per_smem_zero();
@@ -407,6 +483,15 @@ public:
     cute::ArrayEngine<NonVoidElementScale, scale_elements> smem_scale;
     cute::ArrayEngine<NonVoidElementZero, zero_elements> smem_zero;
   };
+  struct LegacySharedStorageFootprint {
+    cute::ArrayEngine<RealInternalElementA, cute::cosize_v<SmemLayoutAPhysical>> smem_a;
+    cute::ArrayEngine<RealInternalElementB, cute::cosize_v<SmemLayoutB>> smem_b;
+    cute::ArrayEngine<NonVoidElementScale, elements_per_smem_scale()> smem_scale;
+    cute::ArrayEngine<NonVoidElementZero, elements_per_smem_zero()> smem_zero;
+  };
+  static_assert(kPackedScaleOn ||
+                    sizeof(SharedStorage) == sizeof(LegacySharedStorageFootprint),
+                "packed-off folded shared storage must retain its exact historical footprint");
   // Host side kernel arguments
   struct Arguments {
     ElementA const* ptr_A = nullptr;
@@ -441,6 +526,9 @@ public:
     c.low_bits = cutlass::sizeof_bits<RealInternalElementB>::value;
     c.interleave = int(kContinous{});
     c.has_scales = ModeHasScales;
+    c.packed_scale = kPackedScaleOn;
+    c.packed_tiles_per_unit = kPackedScaleOn ? PackedUnit::kSbPerUnit : 1;
+    c.ptr_Z_nonnull = args.ptr_Z != nullptr;
     c.dB0 = int64_t(get<0>(dB));
     c.dB1 = int64_t(get<1>(dB));
     c.dBL = int64_t(get<2>(dB));
@@ -453,6 +541,7 @@ public:
   // Device side kernel params
   struct Params {
     GmemTiledCopyScale gmem_tiled_copy_scale;
+    GmemTiledCopyScalePacked gmem_tiled_copy_scale_packed;
     GmemTiledCopyZero gmem_tiled_copy_zero;
 
     RealInternalElementA const* ptr_A = nullptr;
@@ -475,6 +564,7 @@ public:
   int64_t scale_residue_n = 0;
   int64_t scale_residue_k = 0;
   bool scale_valid = true;
+  bool scale_valid_pk = true;
   //
   // Methods
   //
@@ -500,6 +590,7 @@ public:
 
     if constexpr (ModeHasScales) {
       p.gmem_tiled_copy_scale = GmemTiledCopyScale{};
+      p.gmem_tiled_copy_scale_packed = GmemTiledCopyScalePacked{};
       p.ptr_S = reinterpret_cast<NonVoidElementScale const*>(args.ptr_S);
       p.dS = detail::lower_metadata_stride(args.dS);
       if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) {
@@ -571,13 +662,32 @@ public:
           N, int(size<1>(TileShape{})), n_coord);
 
       if constexpr (KernelConversionMode == ConversionMode::ConvertAndScale) {
+        static_assert(!kPackedScaleOn,
+                      "the native Q4_K folded unit carries both scale and zero");
         return cute::make_tuple(gA, gB, gS);
       }
       else if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) {
         Tensor gZ = detail::make_metadata_tile<ScaleTileShape>(
             mainloop_params.ptr_Z, mainloop_params.dS,
             N, scale_k, L, l_coord, n_coord);
-        return cute::make_tuple(gA, gB, gS, gZ);
+        if constexpr (kPackedScaleOn) {
+          // Packed Q4_K remains indexed by logical output column even though B is physically folded.  The source
+          // ABI is [superblock][N][16]; fold changes neither this tensor nor its N residue.
+          int const nsb = scale_k / int(Scale_TileK);
+          Tensor mSp = make_tensor(
+              make_gmem_ptr(reinterpret_cast<uint8_t const*>(mainloop_params.ptr_S)),
+              make_shape(N, Int<kPackedScaleUnit>{}, nsb, L),
+              make_stride(Int<kPackedScaleUnit>{}, _1{},
+                          Int<kPackedScaleUnit>{} * N,
+                          Int<kPackedScaleUnit>{} * N * nsb));
+          Tensor gSp = local_tile(
+              mSp(_,_,_,l_coord),
+              Shape<Int<Scale_TileN>, Int<kPackedScaleUnit>>{},
+              make_coord(n_coord, 0, _));
+          return cute::make_tuple(gA, gB, gS, gZ, gSp);
+        } else {
+          return cute::make_tuple(gA, gB, gS, gZ);
+        }
       }
       else {
         static_assert(cutlass::detail::dependent_false<KernelSchedule>,
@@ -634,9 +744,13 @@ public:
     // exact Q4/A32 row.  L114/L218 retain that protocol as a must-red negative.
     bool const metadata_copy_owner =
         ScaleCopyPlan::owns_physical_thread(thread_idx);
+    bool const packed_copy_owner =
+        PackedMetadataOwnership::owns_physical_thread(thread_idx);
     auto extra_input_partitions = partition_extra_inputs(
         mainloop_params, load_inputs, storage,
-        ScaleCopyPlan::logical_slot(thread_idx), metadata_copy_owner);
+        ScaleCopyPlan::logical_slot(thread_idx),
+        PackedMetadataOwnership::copy_owner(thread_idx),
+        metadata_copy_owner);
 
     CUTE_STATIC_ASSERT_V(size<0>(gA) == size<0>(sA_physical));                 // BLK_M_PHYSICAL
     CUTE_STATIC_ASSERT_V(size<1>(gA) == size<1>(sA_physical));                 // BLK_K
@@ -669,7 +783,8 @@ public:
         warp_idx
       );
       copy_async_extra_info(mainloop_params, extra_input_partitions,
-                            *k_tile_iter, k_pipe, metadata_copy_owner);
+                            *k_tile_iter, k_pipe,
+                            metadata_copy_owner, packed_copy_owner);
       cp_async_fence();
       --k_tile_count;
       if (k_tile_count > 0) { ++k_tile_iter; }
@@ -809,7 +924,10 @@ public:
       tCsA_p = tCsA(_,_,_,stage);
       tCsB_p = tCsB(_,_,_,stage);
     };
-    auto publish = [] (int) {};
+    auto publish = [&] (int stage) {
+      packed_decode_stage<kPackedScaleOn>(
+          storage, stage, thread_idx, scale_residue_n);
+    };
     // A and B are independently retiled copy views.  Their CPY_K extents are
     // not interchangeable: in the first Q4/A32 failure B had four deliveries
     // while one A delivery populated the entire eight-atom A fragment.  Using
@@ -834,7 +952,8 @@ public:
             warp_idx
           );
           copy_async_extra_info(mainloop_params, extra_input_partitions,
-                                k_tile, write_stage, metadata_copy_owner);
+                                k_tile, write_stage,
+                                metadata_copy_owner, packed_copy_owner);
     };
     auto consume = [&] (auto k_block, int b_consume_stage) {
         // N-FOLD: IDENTICAL to the unfolded mainloop. The fold lives only in the load layer -- gmem/smem are
@@ -947,19 +1066,38 @@ private:
         cute::tuple<Ts...>& extra_input_partitions,
         int k_idx,
         int write_stage,
-        bool metadata_copy_owner) {
+        bool metadata_copy_owner,
+        bool packed_copy_owner) {
     if constexpr (ModeHasScales) {
-      if (!metadata_copy_owner) return;
       auto tSgS = get<0>(extra_input_partitions);
       auto tSsS = get<1>(extra_input_partitions);
       auto tScS = get<2>(extra_input_partitions);
+      static constexpr int kPkG =
+          KernelConversionMode == ConversionMode::ConvertAndScaleWithZero ? 5 : 3;
+      static constexpr int kPkC = kPkG + 2;
       // per-column path
       if constexpr(DispatchPolicy::StaticGroupSize == -1) {
-        copy(mainloop_params.gmem_tiled_copy_scale, tSgS(_,_,_,0), tSsS(_,_,_,write_stage));
-        if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) {
+        if constexpr (kPackedScaleOn) {
+          if (packed_copy_owner) {
+            detail::copy_packed_metadata_if<kPackedColsPerThread>(
+                mainloop_params.gmem_tiled_copy_scale_packed,
+                scale_valid_pk, scale_residue_n,
+                get<kPkG>(extra_input_partitions)(_,_,_,0),
+                get<kPkG + 1>(extra_input_partitions)(_,_,_,write_stage),
+                get<kPkC>(extra_input_partitions));
+          }
+        } else if (metadata_copy_owner) {
+          copy(mainloop_params.gmem_tiled_copy_scale,
+               tSgS(_,_,_,0), tSsS(_,_,_,write_stage));
+        }
+        if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero &&
+                      !kPackedScaleOn) {
           auto tZgZ = get<3>(extra_input_partitions);
           auto tZsZ = get<4>(extra_input_partitions);
-          copy(mainloop_params.gmem_tiled_copy_zero, tZgZ(_,_,_,0), tZsZ(_,_,_,write_stage));
+          if (metadata_copy_owner) {
+            copy(mainloop_params.gmem_tiled_copy_zero,
+                 tZgZ(_,_,_,0), tZsZ(_,_,_,write_stage));
+          }
         }
       }
       else {
@@ -973,12 +1111,29 @@ private:
         else {
           scale_load_k = k_idx / mainloop_params.reload_factor; // This will always be 0 when group_size == K.
         }
-        if (scale_valid && (scale_load_k * Scale_TileK < scale_residue_k)) {
-          copy(mainloop_params.gmem_tiled_copy_scale, tSgS(_,_,_,scale_load_k), tSsS(_,_,_,write_stage));
-          if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) {
+        if ((kPackedScaleOn || scale_valid) &&
+            (scale_load_k * Scale_TileK < scale_residue_k)) {
+          if constexpr (kPackedScaleOn) {
+            if (packed_copy_owner) {
+              detail::copy_packed_metadata_if<kPackedColsPerThread>(
+                  mainloop_params.gmem_tiled_copy_scale_packed,
+                  scale_valid_pk, scale_residue_n,
+                  get<kPkG>(extra_input_partitions)(_,_,_,scale_load_k),
+                  get<kPkG + 1>(extra_input_partitions)(_,_,_,write_stage),
+                  get<kPkC>(extra_input_partitions));
+            }
+          } else if (metadata_copy_owner) {
+            copy(mainloop_params.gmem_tiled_copy_scale,
+                 tSgS(_,_,_,scale_load_k), tSsS(_,_,_,write_stage));
+          }
+          if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero &&
+                        !kPackedScaleOn) {
             auto tZgZ = get<3>(extra_input_partitions);
             auto tZsZ = get<4>(extra_input_partitions);
-            copy(mainloop_params.gmem_tiled_copy_zero, tZgZ(_,_,_,scale_load_k), tZsZ(_,_,_,write_stage));
+            if (metadata_copy_owner) {
+              copy(mainloop_params.gmem_tiled_copy_zero,
+                   tZgZ(_,_,_,scale_load_k), tZsZ(_,_,_,write_stage));
+            }
           }
         }
       }
@@ -991,7 +1146,8 @@ private:
         Params const& mainloop_params,
         cute::tuple<Ts...> const& load_inputs,
         SharedStorage& shared_tensors,
-        int const thread_idx,
+        int const scale_thread_idx,
+        int const packed_thread_idx,
         bool metadata_copy_owner) {
     if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
       return cute::tuple{};
@@ -1002,30 +1158,61 @@ private:
       // Construct identity layout for sS
       constexpr static Tensor cS = make_identity_tensor(make_shape(size<0>(sS), size<1>(sS)));
 
-      auto gmem_thr_copy_scale = mainloop_params.gmem_tiled_copy_scale.get_slice(thread_idx);
+      auto gmem_thr_copy_scale =
+          mainloop_params.gmem_tiled_copy_scale.get_slice(scale_thread_idx);
 
       Tensor tSgS = gmem_thr_copy_scale.partition_S(gS);
       Tensor tSsS = gmem_thr_copy_scale.partition_D(sS);
       Tensor tScS = gmem_thr_copy_scale.partition_S(cS);
-      if (metadata_copy_owner) clear(tSsS);
+
+      // Packed decode is a total overwrite by the same per-column owner that copied the unit.  Do not race it with
+      // the historical fp16 clear; tail columns are zeroed explicitly in packed_decode_stage().
+      if constexpr (!kPackedScaleOn) {
+        if (metadata_copy_owner) clear(tSsS);
+      }
       // init scale_residue_k
-      scale_residue_k = mainloop_params.scale_k - get<1>(tScS(0,0,0));
+      if constexpr (kPackedScaleOn) {
+        scale_residue_k =
+            int64_t(mainloop_params.scale_k / int(Scale_TileK)) * int64_t(Scale_TileK);
+      } else {
+        scale_residue_k = mainloop_params.scale_k - get<1>(tScS(0,0,0));
+      }
       scale_valid = get<0>(tScS(0,0,0)) < scale_residue_n;
 
       if constexpr (KernelConversionMode == ConversionMode::ConvertAndScale) {
+        static_assert(!kPackedScaleOn,
+                      "the native Q4_K folded unit carries both scale and zero");
         return cute::make_tuple(tSgS, tSsS, tScS);
       }
       else if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) {
         Tensor sZ  = make_tensor(make_smem_ptr(shared_tensors.smem_zero.begin()), SmemLayoutScale{});
         Tensor gZ = get<3>(load_inputs);
 
-        auto gmem_thr_copy_zero = mainloop_params.gmem_tiled_copy_zero.get_slice(thread_idx);
+        auto gmem_thr_copy_zero =
+            mainloop_params.gmem_tiled_copy_zero.get_slice(scale_thread_idx);
 
         Tensor tZgZ = gmem_thr_copy_zero.partition_S(gZ);
         Tensor tZsZ = gmem_thr_copy_zero.partition_D(sZ);
-        if (metadata_copy_owner) clear(tZsZ);
-
-        return cute::make_tuple(tSgS, tSsS, tScS, tZgZ, tZsZ);
+        if constexpr (kPackedScaleOn) {
+          Tensor sSraw = make_tensor(
+              make_smem_ptr(shared_tensors.packed_metadata_begin()),
+              SmemLayoutScaleRawStaged{});
+          auto gmem_thr_copy_raw =
+              mainloop_params.gmem_tiled_copy_scale_packed.get_slice(
+                  packed_thread_idx);
+          Tensor tSgSp = gmem_thr_copy_raw.partition_S(get<4>(load_inputs));
+          Tensor tSsSp = gmem_thr_copy_raw.partition_D(sSraw);
+          Tensor cSp = make_identity_tensor(
+              make_shape(Int<Scale_TileN>{}, Int<kPackedScaleUnit>{}));
+          Tensor tScSp = gmem_thr_copy_raw.partition_S(cSp);
+          scale_valid_pk = get<0>(tScSp(0,0,0)) < scale_residue_n;
+          return cute::make_tuple(
+              tSgS, tSsS, tScS, tZgZ, tZsZ,
+              tSgSp, tSsSp, tScSp);
+        } else {
+          if (metadata_copy_owner) clear(tZsZ);
+          return cute::make_tuple(tSgS, tSsS, tScS, tZgZ, tZsZ);
+        }
       }
       else {
         static_assert(cutlass::detail::dependent_false<KernelSchedule>,
@@ -1035,6 +1222,64 @@ private:
     else {
       static_assert(cutlass::detail::dependent_false<KernelSchedule>,
                     "Input partitioning requires direct conversion or scale metadata");
+    }
+  }
+
+  // Decode one staged native Q4_K metadata unit per logical N column.  B's A32/F2 physical shape is deliberately
+  // absent here: the offline fold changes weight addressing only, while scale and zero retain their logical-N ABI.
+  // This function runs after cp_async_wait and before the pipeline's existing CTA barrier, so the same barrier that
+  // publishes the B stage also publishes these decoded planes.  Each owner reads only the raw unit it copied and
+  // completely overwrites its destination column, including explicit zeros on an N tail.
+  template <bool On, class Storage>
+  CUTLASS_DEVICE static void
+  packed_decode_stage(Storage& storage, int stage, int thread_idx,
+                      int64_t residue_n) {
+    if constexpr (On) {
+      static_assert(kPackedScaleUnit == 16 && PackedUnit::kGroups == 8,
+                    "the folded packed decoder is the exact Q4_K unit");
+      static_assert(std::is_same_v<NonVoidElementScale, cutlass::half_t> &&
+                        std::is_same_v<NonVoidElementZero, cutlass::half_t>,
+                    "Q4_K packed decode publishes fp16 scale and zero planes");
+      Tensor sRaw = make_tensor(
+          make_smem_ptr(storage.packed_metadata_begin()),
+          SmemLayoutScaleRawStaged{});
+      Tensor sS = make_tensor(
+          make_smem_ptr(storage.smem_scale.begin()), SmemLayoutScale{});
+      Tensor sZ = make_tensor(
+          make_smem_ptr(storage.smem_zero.begin()), SmemLayoutScale{});
+
+      if (!PackedMetadataOwnership::owns_physical_thread(thread_idx)) return;
+      int const owner = PackedMetadataOwnership::copy_owner(thread_idx);
+      CUTLASS_PRAGMA_UNROLL
+      for (int sub = 0; sub < kPackedColsPerThread; ++sub) {
+        int const n = PackedMetadataOwnership::column(owner, sub);
+        if (int64_t(n) >= residue_n) {
+          cute::for_each(cute::make_int_sequence<PackedUnit::kGroups>{},
+                         [&](auto g_) {
+            constexpr int G = decltype(g_)::value;
+            sS(n, cute::Int<G>{}, stage) = NonVoidElementScale{};
+            sZ(n, cute::Int<G>{}, stage) = NonVoidElementZero{};
+          });
+          continue;
+        }
+
+        uint8_t const* unit = reinterpret_cast<uint8_t const*>(
+            &sRaw(n, cute::Int<0>{}, stage));
+        uint32_t u[4];
+        CUTLASS_PRAGMA_UNROLL
+        for (int word = 0; word < 4; ++word) {
+          u[word] = *reinterpret_cast<uint32_t const*>(unit + 4 * word);
+        }
+        uint32_t const m2 = cutlass::gguf_packed::mul2_of_words(u);
+        cute::for_each(cute::make_int_sequence<PackedUnit::kGroups>{},
+                       [&](auto g_) {
+          constexpr int G = decltype(g_)::value;
+          auto const scale_zero =
+              cutlass::gguf_packed::group_pair_of_words<G, 8, 0>(u, m2);
+          sS(n, cute::Int<G>{}, stage) = scale_zero.scale;
+          sZ(n, cute::Int<G>{}, stage) = scale_zero.zero;
+        });
+      }
     }
   }
 

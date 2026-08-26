@@ -58,10 +58,12 @@ int main() {
   A const f2{QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V1, 2, 64, 1};
   assert((ppu_arrangements::packed_tensor_matches_exact_reader<11, 256, 64>(&f2, 4096)));
   assert((!ppu_arrangements::packed_tensor_matches_exact_reader<11, 256, 256>(&f2, 4096)));
-  A const unsupported_single_plane{QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V1, 4, 32, 0};
+  A const native_q4_a32{QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V1, 4, 32, 0};
+  assert(ppu_arrangements::packed_tensor_reader_supported(
+      &native_q4_a32, 12, 4096, 256));
   assert(!ppu_arrangements::packed_tensor_reader_supported(
-      &unsupported_single_plane, 12, 4096, 256));
+      &native_q4_a32, 12, 4096, 128));
   std::cout << "L138 dense placed-arrangement ABI accepted=" << accepted
             << " rejected=" << rejected
-            << " F2_to_F1=EXPECTED_RED single_plane_F2=FAIL_CLOSED PASS\n";
+            << " F2_to_F1=EXPECTED_RED q4_a32=NATIVE_F2 PASS\n";
 }

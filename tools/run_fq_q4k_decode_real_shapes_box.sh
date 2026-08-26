@@ -111,6 +111,7 @@ main() {
       "$root/benchmarks/fully_quantized_splitk_producer_bench.hpp" \
       "$root/benchmarks/fully_quantized_splitk_producer_unit.inc" \
       "$root/quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/ppu_packed_metadata_ownership.hpp" \
+      "$root/quactlize/include/actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp" \
       "$root/quactlize/include/actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp" \
       "$root/quactlize/include/dense_splitk_multiformat_ppu.cuh" \
       "$root/quactlize/include/dense_splitk_parallel_ppu.cuh" \
@@ -151,6 +152,7 @@ authority_rel=[
  "benchmarks/fully_quantized_splitk_producer_bench.hpp",
  "benchmarks/fully_quantized_splitk_producer_unit.inc",
  "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/ppu_packed_metadata_ownership.hpp",
+ "quactlize/include/actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp",
  "quactlize/include/actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp",
  "quactlize/include/dense_splitk_multiformat_ppu.cuh",
  "quactlize/include/dense_splitk_parallel_ppu.cuh",
@@ -287,7 +289,7 @@ PY
     binary="$build_dir/ppu_targets/test_fully_quantized_internal_sweep"
     build_log="$out/build/a${artifact}.log"
     if [ ! -x "$binary" ]; then
-      printf '[fq-q4k-decode] build A=%s typed=%s (A32 is intentionally BC-only)\n' "$artifact" "$typed"
+      printf '[fq-q4k-decode] build A=%s typed=%s\n' "$artifact" "$typed"
       (cd "$root" && PPU_BUILD_DIR="$build_dir" PPU_ARCHS=ppu0010 JOBS="$jobs" \
         TARGET=test_fully_quantized_internal_sweep \
         FQ_SWEEP_GENERATED_DIR="$generated" FQ_SWEEP_QTYPE=12 \

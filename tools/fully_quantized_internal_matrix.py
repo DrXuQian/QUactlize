@@ -168,7 +168,12 @@ def artifact_supported(fmt: Format, artifact_tk: int,
         return False, "ARTIFACT_DOES_NOT_DIVIDE_TACTIC_TILE_K"
     low_bytes = fmt.low_bits * artifact_tk // 8
     if fmt.high_bits == 0 and low_bytes < 32:
-        return False, "PACKED_SINGLE_PLANE_READER_UNSUPPORTED"
+        # Q4/A32 is the one proved sub-32B single-plane artifact: Fold=2 turns
+        # each logical N64 x K32 pair into the physical N32 x K64 AIU run,
+        # while the folded collective restores logical N x K semantics.  The
+        # packed-metadata gate below independently requires logical TK=256.
+        if not (fmt.qtype == 12 and artifact_tk == 32):
+            return False, "PACKED_SINGLE_PLANE_READER_UNSUPPORTED"
     return True, "SUPPORTED_BY_DESCRIPTOR_PREDICATE"
 
 
@@ -477,6 +482,26 @@ def self_test() -> None:
            (8, 64, 256, 8, 3, 0, "TYPE_ADMISSION_REQUIRED")
     }
     assert m8_wn == {16, 32, 64}
+    q4 = next(fmt for fmt in formats if fmt.qtype == 12)
+    q2 = next(fmt for fmt in formats if fmt.qtype == 10)
+    assert artifact_supported(q4, 32, 256) == (
+        True, "SUPPORTED_BY_DESCRIPTOR_PREDICATE")
+    assert packed_metadata_tactic_supported(q4, 256) == (
+        True, "SUPPORTED_BY_SINGLE_PLANE_PACKED_COLLECTIVE")
+    assert artifact_supported(q2, 32, 256) == (
+        False, "PACKED_SINGLE_PLANE_READER_UNSUPPORTED")
+    q4_a32_tm8 = [
+        row for row in emitted_tactics(12, 32)
+        if row.bchunk == 0 and row.tile_m == 8 and
+        row.source_status == "TYPE_ADMISSION_REQUIRED" and
+        artifact_supported(q4, 32, row.tactic_tile_k)[0] and
+        packed_metadata_tactic_supported(q4, row.tactic_tile_k)[0] and
+        collective_atom_tiling_supported(q4, row, 32)[0]
+    ]
+    assert len(q4_a32_tm8) == 12
+    assert {(row.tile_n, row.warp_n) for row in q4_a32_tm8} == {
+        (64, 32), (128, 64)}
+    assert {row.stages for row in q4_a32_tm8} == set(STAGES)
     expected_supported_bc = 5 * 4 * 4
     expected_bc = expected_supported_bc + 1  # physical cell list includes Q8 sentinel
     expected_standard = 5 * 4 * 23040 * 4

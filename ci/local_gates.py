@@ -154,6 +154,7 @@ GATES = [
     # historical B-derived A coordinate aliases all A atoms at the wrap, while
     # B d0/d3 are disjoint, and checks the shared replacement schedule.
     ("l220_q4_a32_prepare_consume_layout", []),
+    ("l227_q4_a32_packed_decode_type", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -403,6 +404,10 @@ GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               "l120_streamk_min_iters_policy": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               "l121_grouped_streamk_wrapper": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               "l122_streamk_fixup_cohort": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
+              "l227_q4_a32_packed_decode_type": [
+                  "-D__HGGCCC__", "--expt-relaxed-constexpr",
+                  "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_FORMAT=0",
+                  "-DPPU_B_CHUNK=0"],
               # THE MACROS ARE THE POINT. This gate asserts the fused path is ON, so it has to be built the way the
               # box builds packfuse -- without these two it would assert about a configuration nobody runs and pass
               # for the wrong reason, which is the failure it exists to catch.

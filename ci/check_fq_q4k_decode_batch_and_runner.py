@@ -72,8 +72,8 @@ def check(kernel: str, backend: str, thop: str, bench: str,
         'board_counts[f"S{split}"] = {\n                "status": "UNAVAILABLE"',
         "if not values:\n            if split == 1:",
         "has unknown terminal state",
-        "UNAVAILABLE_NO_TC_AND_SIMT_M_GE_8",
-        "if artifact != 32 or typed_rows != 0 or shape[0] != 8",
+        "Every Q4 artifact now has a typed TM8 tensor-core denominator",
+        "typed_rows=12",
         '"unavailable_cell_count"',
         "def update_analysis_resume_audit(",
         '"schema": "quactlize.fq_q4k_decode_analysis_resume.v2"',
@@ -95,6 +95,7 @@ def check(kernel: str, backend: str, thop: str, bench: str,
         ".failed.",
         "analyze_fq_q4k_decode_real_shapes.py\" finalize",
         "ppu_packed_metadata_ownership.hpp",
+        "ppu_mma_aiu_fold.hpp",
         "quactlize_mma_mixed_input.hpp",
         "--tile-m-filter 8",
         "--tm8-max-m=8",
@@ -148,8 +149,7 @@ def main() -> int:
          'board_counts[f"S{split}"] = {\n                "status": "AVAILABLE"'),
         (6, "if not values:\n            if split == 1:",
          "if not values:\n            if False:"),
-        (6, "if artifact != 32 or typed_rows != 0 or shape[0] != 8",
-         "if artifact != 64 or typed_rows != 0 or shape[0] != 8"),
+        (6, "typed_rows=12", "typed_rows=0"),
         (6, '["status"] == "UNAVAILABLE":', '["status"] == "AVAILABLE":'),
         (7, "--tile-m-filter 8", "--tile-m-filter 16"),
         (7, "--tm8-max-m=8", "--tm8-max-m=7"),
@@ -173,7 +173,7 @@ def main() -> int:
     print("[fq-q4k-decode:self-test] PASS: M=1/2/4/8, TM8-only TC, native "
           "one-launch M<8 SIMT, phase/census separation, analysis-only resume "
           "binding with append-only multi-hop audit, optional scheduler boards "
-          "with mandatory S1, exact A32/M8 structural unavailability, and "
+          "with mandatory S1, native A32/F2 TM8 coverage, and "
           "sixteen "
           "negative plants")
     return 0

@@ -206,6 +206,18 @@ struct TcRowTypes {
   static_assert(Mainloop::packed_scale_copy_threads *
                     Mainloop::packed_scale_columns_per_thread == TN,
                 "packed metadata owner slices must cover every TileN column");
+  static_assert(!(QType == 12 && ArtifactTileK == 32) ||
+                    (std::is_same_v<
+                         typename Shipping::MainloopPolicy::Descriptor::BProviderType,
+                         ppu_mixed_policy::FoldedBProvider<2>> &&
+                     !use_packed_a &&
+                     TK == 256 && Mainloop::is_packed_scale),
+                "Q4/A32 decode must be the native F2 weight reader with one-superblock packed metadata");
+  static_assert(!(QType == 12 && ArtifactTileK == 32 &&
+                  TM == 8 && TN == 64 && WM == 8 && WN == 32) ||
+                    (Mainloop::packed_scale_copy_threads == 64 &&
+                     Mainloop::packed_scale_columns_per_thread == 1),
+                "the first Q4/A32 TM8 row must assign one logical metadata column to each CTA thread");
   static_assert(!(TM == 8 && WM == 8 && TN == 64 && WN == 64) ||
                     (Mainloop::packed_scale_copy_threads == 32 &&
                      Mainloop::packed_scale_columns_per_thread == 2),
