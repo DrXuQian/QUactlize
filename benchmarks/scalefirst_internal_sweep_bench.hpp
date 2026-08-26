@@ -198,9 +198,23 @@ struct RowTypes {
   using ScaleTile = cute::Shape<cute::C<TN>, cute::C<
       ppu_group_schedule::scale_groups_v<TK, F::GroupSize>>>;
   using Warp = cute::Shape<cute::C<WM>, cute::C<WN>, cute::C<TK>>;
+#if defined(PPU_Q4_F1_VIRTUAL_F2) && (PPU_Q4_F1_VIRTUAL_F2 != 0)
+  // Opt-in box closure only.  Invocation is recorded in
+  // tools/run_scalefirst_q4k_f1_virtual_f2_box.sh as
+  // PPU_DEFS=PPU_Q4_F1_VIRTUAL_F2=1.  The generated shard must be exactly
+  // Q4/A64/bc0; allowing the switch to reinterpret any other format would
+  // make one binary's denominator ambiguous.
+  static_assert(QType == 12 && ArtifactTileK == 64 && BChunk == 0 &&
+                    std::is_same_v<Low, cutlass::int4b_t> && std::is_void_v<High>,
+                "PPU_Q4_F1_VIRTUAL_F2 is exact Q4/A64/F1 only");
+  using Shipping = fpa_intb_ppu::DenseVirtualFoldKernelTypes<
+      2, F::Mode, Schedule, Tile, ScaleTile, Warp, Stages, true,
+      Low, ArtifactTileK>;
+#else
   using Shipping = fpa_intb_ppu::DenseKernelTypes<
       F::Mode, Schedule, Tile, ScaleTile, Warp, Stages, true,
       Low, High, ArtifactTileK>;
+#endif
   using Split = dense_splitk_parallel_ppu::KernelTypes<Shipping, Tile, Warp>;
   using PersistentKernel = cutlass::gemm::kernel::PersistentMixedInputKernel<
       cute::Shape<int, int, int, int>,

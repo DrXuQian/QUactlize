@@ -79,6 +79,7 @@ struct AiuAProvider {};
 struct PackedRowAProvider {};
 struct OrdinaryBProvider {};
 template <int Fold> struct FoldedBProvider {};
+template <int ArtifactFold, int ComputeFold> struct VirtualFoldedBProvider {};
 template <int LowFold, int HighFold> struct TwoPlaneBProvider {};
 template <bool Packed, bool HasZero> struct MetadataProvider {};
 template <bool AtomAtATime> struct ConversionProvider {};
@@ -195,6 +196,73 @@ struct MainloopPolicy {
       LayoutA, LayoutB, TileShape, ScaleTileShape, WarpShape, AProvider, BProvider,
       Mode, LowBits, HighBits, TacticTileK, ArtifactTileK, ArtifactLowFold, ArtifactHighFold,
       Stages, AiuInterleaved>;
+};
+
+// Q4 tile-free resident bytes with a fold-2 logical MMA fragment.  This policy is deliberately separate from
+// MainloopPolicy: default callers keep their exact schedule and CollectiveOp type, while an experimental build can
+// opt into the L224-proved same-thread fragment permutation.  The first slice admits only T>=A64.  T32 requires a
+// two-consume macrostep so the two halves of one A64 resident delivery are reused without doubling weight traffic;
+// that lifetime is not represented here and is rejected at compile time.
+template <int ComputeLowFold, QuantMode Mode, class BaseSchedule,
+          class TileShape, class ScaleTileShape, class WarpShape,
+          int Stages, bool AiuInterleaved, class ElementB = cutlass::int4b_t,
+          int ArtifactTileK_ = 64>
+struct VirtualFoldMainloopPolicy
+    : MainloopPolicy<Mode, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
+                     Stages, AiuInterleaved, ElementB, void, ArtifactTileK_> {
+private:
+  using Ordinary = MainloopPolicy<Mode, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
+                                  Stages, AiuInterleaved, ElementB, void, ArtifactTileK_>;
+public:
+  static constexpr int LowBits = Ordinary::LowBits;
+  static constexpr int HighBits = Ordinary::HighBits;
+  static constexpr int TacticTileK = Ordinary::TacticTileK;
+  static constexpr int ArtifactTileK = Ordinary::ArtifactTileK;
+  static constexpr int ArtifactLowFold = Ordinary::ArtifactLowFold;
+  static constexpr int ArtifactHighFold = Ordinary::ArtifactHighFold;
+  static constexpr int ComputeFold = ComputeLowFold;
+  static constexpr int TileK = Ordinary::TileK;
+  static constexpr int LowFold = Ordinary::LowFold;
+  static constexpr int HighFold = Ordinary::HighFold;
+  static_assert(LowBits == 4 && HighBits == 0,
+                "the first virtual-fold policy is the proved one-plane Q4 path only");
+  static_assert(ArtifactTileK == 64 && ArtifactLowFold == 1 && ComputeLowFold == 2,
+                "the first virtual-fold policy is exactly A64/F1 -> compute F2");
+  static_assert(TacticTileK >= ArtifactTileK && TacticTileK % ArtifactTileK == 0,
+                "sub-artifact TacticTileK requires the separately proved macrostep reader");
+
+  using ElementA = typename Ordinary::ElementA;
+  using ElementScale = typename Ordinary::ElementScale;
+  using ElementZero = typename Ordinary::ElementZero;
+  using LayoutA = typename Ordinary::LayoutA;
+  using LayoutB = typename Ordinary::LayoutB;
+  static constexpr int AlignmentA = Ordinary::AlignmentA;
+  static constexpr int AlignmentB = Ordinary::AlignmentB;
+  using KernelSchedule = cutlass::gemm::KernelAiuVirtualFold<ComputeLowFold,
+                                                             typename Ordinary::KernelSchedule>;
+  using ElementBInfo = typename Ordinary::ElementBInfo;
+  using CollectiveBuilderType = cutlass::gemm::collective::CollectiveBuilder<
+      cutlass::arch::PPU0010, cutlass::arch::OpClassTensorOp,
+      ElementA, LayoutA, AlignmentA, ElementBInfo, LayoutB, AlignmentB, float,
+      cute::tuple<TileShape, ScaleTileShape>, WarpShape, cute::Int<Stages>, KernelSchedule>;
+  static_assert(CollectiveBuilderType::ArtifactTileK == ArtifactTileK,
+                "virtual compute fold must preserve the A64 resident-byte contract");
+  static_assert(CollectiveBuilderType::ArtifactLowFold == ArtifactLowFold,
+                "virtual compute fold must not change physical gmem/smem folding");
+  static_assert(CollectiveBuilderType::ComputeLowFold == ComputeLowFold,
+                "virtual compute fold was lost before TiledMma construction");
+  using CollectiveOp = typename CollectiveBuilderType::CollectiveOp;
+
+  static constexpr bool PackedRowA = false;
+  using AProvider = AiuAProvider;
+  using BProvider = VirtualFoldedBProvider<ArtifactLowFold, ComputeLowFold>;
+  struct Descriptor : MixedPolicyDescriptor<CollectiveOp, BaseSchedule, KernelSchedule, ElementBInfo,
+      LayoutA, LayoutB, TileShape, ScaleTileShape, WarpShape, AProvider, BProvider,
+      Mode, LowBits, HighBits, TacticTileK, ArtifactTileK, ArtifactLowFold, ArtifactHighFold,
+      Stages, AiuInterleaved> {
+    static constexpr int compute_low_fold = ComputeLowFold;
+    static constexpr bool virtual_compute_fold = true;
+  };
 };
 
 // Independent dense-M==1 A provider.  This intentionally does not add a parameter to MainloopPolicy: callers that

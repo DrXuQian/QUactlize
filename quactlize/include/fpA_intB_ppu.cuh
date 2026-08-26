@@ -139,6 +139,39 @@ struct DensePackedAKernelTypes {
   static constexpr size_t SharedStorageSize = GemmKernel::SharedStorageSize;
 };
 
+// Explicit Q4 tile-free/F1 -> virtual-F2 compiled type.  As with DensePackedAKernelTypes, this is a second authority
+// rather than a parameter on DenseKernelTypes: default launchers retain their exact historical type.  The virtual
+// policy changes only TiledMma's logical K permutation; the established dense epilogue and scheduler stay identical.
+template <int ComputeLowFold, QuantMode QuantOp, class BaseSchedule,
+          class TileShape, class ScaleTileShape, class WarpShape, int Stages, bool AiuInterleaved,
+          class ElementB = cutlass::int4b_t, int ArtifactTileK = 64>
+struct DenseVirtualFoldKernelTypes {
+  using Ordinary = DenseKernelTypes<QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
+                                    Stages, AiuInterleaved, ElementB, void, ArtifactTileK>;
+  using MainloopPolicy = ppu_mixed_policy::VirtualFoldMainloopPolicy<
+      ComputeLowFold, QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
+      Stages, AiuInterleaved, ElementB, ArtifactTileK>;
+  using ElementA = typename MainloopPolicy::ElementA;
+  using ElementC = typename Ordinary::ElementC;
+  using LayoutC = typename Ordinary::LayoutC;
+  using ElementD = typename Ordinary::ElementD;
+  using LayoutD = typename Ordinary::LayoutD;
+  static constexpr int AlignmentC = Ordinary::AlignmentC;
+  static constexpr int AlignmentD = Ordinary::AlignmentD;
+  using ElementAccumulator = typename Ordinary::ElementAccumulator;
+  using OperatorClass = typename Ordinary::OperatorClass;
+  using ClusterShape = typename Ordinary::ClusterShape;
+  using CollectiveEpilogue = typename Ordinary::CollectiveEpilogue;
+  using CollectiveMainloop = typename MainloopPolicy::CollectiveOp;
+  using GemmKernel = cutlass::gemm::kernel::GemmUniversal<
+      cute::Shape<int, int, int, int>, CollectiveMainloop, CollectiveEpilogue,
+      cutlass::gemm::SplitKSerialScheduler>;
+  using Gemm = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
+  static constexpr size_t SharedStorageSize = GemmKernel::SharedStorageSize;
+  static_assert(SharedStorageSize == Ordinary::SharedStorageSize,
+                "virtual compute fold must not change the dense shared-memory footprint");
+};
+
 // One instantiation: fp16 x a packed 1/2/4-bit B plane, optionally with a second high plane. The ElementBInfo tuple
 // is the same seam moe_grouped_ppu uses: a fourth tuple element makes CollectiveBuilder select the already-existing
 // two-plane collective. There is no dense-specific second collective or converter to maintain here.
