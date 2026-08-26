@@ -15,22 +15,6 @@ namespace cutlass::gemm::collective::detail {
 // while the source-level local gate prevents a collective from retaining the witness but bypassing the driver.
 struct MixedPipelineDriver {};
 
-// Diagnostic seam for the remaining async-shared memory-order question after
-// the producer-partial and ownership closures.  cp_async_wait() is issued by
-// every thread but only producer threads have a non-empty group.  On PPU0010,
-// ordinary A/B are both issued by warp 0; packed A and metadata have their own
-// explicit thread owners.  The following CTA barrier is the established
-// CUTLASS publication protocol.  This optional proxy fence tests whether the
-// PPU0010 async writers additionally need an async-shared -> generic-shared
-// visibility edge before packed decode or ldmatrix reads.  It changes no
-// issuer, stage, address, copy count, CTA barrier, or MMA order.
-CUTLASS_DEVICE void mixed_async_shared_visibility_fence() {
-#if defined(PPU_MIXED_ASYNC_SHARED_FENCE) && \
-    (PPU_MIXED_ASYNC_SHARED_FENCE != 0)
-  cutlass::arch::fence_view_async_shared();
-#endif
-}
-
 // The one shared stage-ring driver for ordinary, folded and two-plane mixed-input providers. Hooks deliberately
 // describe lifetime boundaries rather than storage details:
 //   bind_read   -- point provider views at a stage before its async completion is published;
@@ -63,7 +47,6 @@ CUTLASS_DEVICE void run_mixed_pipeline(
   if constexpr (KBlocks > 1) {
     bind_read(smem_pipe_read);
     cp_async_wait<Stages - 2>();
-    mixed_async_shared_visibility_fence();
     publish(smem_pipe_read);
     __syncthreads();
     prepare(cute::Int<0>{}, smem_pipe_read, cute::Int<1>{});
@@ -75,7 +58,6 @@ CUTLASS_DEVICE void run_mixed_pipeline(
       if constexpr (decltype(k_block)::value == KBlocks - 1) {
         bind_read(smem_pipe_read);
         cp_async_wait<Stages - 2>();
-        mixed_async_shared_visibility_fence();
         publish(smem_pipe_read);
         __syncthreads();
       }

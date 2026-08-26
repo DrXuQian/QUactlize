@@ -56,12 +56,6 @@ VARIANTS=(
   # it changes nothing base does, and pack is the only variant that has the +73,728 to remove.
   "packfuse:SK_QUANT=2 PPU_PACKED_SCALE=1 PPU_PACKED_SCALE_FUSED=1"
   "packnop:SK_QUANT=2 PPU_PACKED_SCALE=1 PPU_PACKED_SCALE_NOP=1"
-  "packsplit:SK_QUANT=2 PPU_PACKED_SCALE=1 PPU_PACKED_SPLIT_GROUPS=1"
-  # splitnop prices the split's OWN added cost -- the duplicated 16 B unit read and the duplicated per-column setup --
-  # without the decode arithmetic. packsplit alone could not tell "the placement benefit is zero" from "the added
-  # cost exceeded it", and the difference of differences can:
-  #     (packsplit - pack) - (splitnop - packnop)
-  "splitnop:SK_QUANT=2 PPU_PACKED_SCALE=1 PPU_PACKED_SPLIT_GROUPS=1 PPU_PACKED_SCALE_NOP=1"
 )
 
 # EVERY BINARY THIS RUN IS RESPONSIBLE FOR, whether it was compiled, cached or skipped. The freshness stamp at the
@@ -77,7 +71,6 @@ ALL_BINS=()
 # scanning for FAIL. Adding "fuse" to the third list would have re-created the same hole for the next variant.
 PACKED_GATES=(
   "pack:PPU_PACKED_SCALE=1"
-  "split:PPU_PACKED_SCALE=1 PPU_PACKED_SPLIT_GROUPS=1"
   "swz:PPU_PACKED_SCALE=1 PPU_SCALE_SWIZZLE=1"
   # rowC is the ONLY row where kPackedScaleOn is true, so it is the only row that exercises the fused store -- and the
   # paired-column attempt this replaces passed rowA and rowB while rowC went to bad=128/4096.

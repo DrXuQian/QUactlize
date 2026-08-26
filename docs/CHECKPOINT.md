@@ -64,7 +64,6 @@ one run, one binary set, six binaries verified byte-distinct, pinned row `16x128
 | `PPU_B_DEQUANT_NOP=1` | **21.05** | **−11.1%** |
 | `PPU_PACKED_SCALE=1` | 24.23 | +2.4% |
 | `+ PPU_PACKED_SCALE_NOP=1` | 24.78 | *invalid, see below* |
-| `+ PPU_PACKED_SPLIT_GROUPS=1` | 26.92 | +13.7% |
 
 **The single largest real term anyone has measured on this kernel is the int4→fp16 dequant pipeline at 11.1%**
 (`base − bdqnop`). It is 43% of dynamic instructions and 11% of time, i.e. those instructions issue largely in
@@ -159,7 +158,6 @@ None of these belong on `main`. Recorded so the dev branch keeps their meaning.
 | `PPU_PACKED_SCALE` | consume the gguf's own 16 B scale unit instead of two pre-multiplied fp16 planes |
 | `PPU_PACKED_SCALE_NOP` | timing-only: keep the transport and stores, drop the decode arithmetic |
 | `PPU_PACKED_PAIR=0` | bisect: force the scalar per-group decode instead of the f16x2 one |
-| `PPU_PACKED_SPLIT_GROUPS` | eight warps decode four groups each instead of four decoding eight |
 | `PPU_B_DEQUANT_NOP` | timing-only: drop the baseline int4→fp16 conversion and affine chain |
 | `PPU_SCALE_SWIZZLE` | XOR the scale tile's address to take the read from 4-way to 1-way conflicted |
 | `PPU_SCALE_PAD` | the additive alternative to the swizzle; measured and lost |

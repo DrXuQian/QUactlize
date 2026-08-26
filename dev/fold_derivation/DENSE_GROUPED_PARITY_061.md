@@ -149,7 +149,7 @@ homes are:
 | `PPU_A_CPASYNC` capacity, `PPU_A_PACK` | A-provider tactic fields with exact type validity; fix dense M>1 first |
 | `PPU_B_CHUNK` | conversion-schedule tactic field with provider capability result `{unsupported, off, on}` |
 | `PPU_SCALE_SWIZZLE`, `PPU_SCALE_PAD`, `PPU_SCALE_PREFETCH` | metadata-policy fields; remove measured losers rather than preserve dead axes |
-| `PPU_PACKED_SCALE_FUSED`, `PPU_PACKED_SPLIT_GROUPS` | packed-metadata scheduling fields |
+| `PPU_PACKED_SCALE_FUSED` | packed-metadata scheduling field |
 | `PPU_PACKED_SCALE`, `PPU_PACKED_FORMAT` | scheme/artifact selection, not tactics; eventually separate format-specialized library variants or generated registrations |
 | `PPU_PACKED_PAIR=0`, `PPU_B_CHUNK_BISECT`, `PPU_MMA_PROBE`, `PPU_B_DEQUANT_NOP`, `PPU_PACKED_SCALE_NOP` | diagnostics/ablations; keep out of capability and tactic manifests |
 | `MOEG_FORCE3D`, `MOEG_PROBE`, `MOEG_SMEM` | grouped scheduler diagnostics; not mainloop capabilities |

@@ -62,11 +62,6 @@ MIGRATED_HEADERS = frozenset(
         "cutlass/gemm/kernel/ppu_grouped_ragged_geometry.hpp",
         "cutlass/gemm/quactlize_dispatch_policy.hpp",
         "cutlass/gguf_packed_scale.h",
-        "cutlass/linear_attention/ppu_chunked_gdn_aiu.cuh",
-        "cutlass/linear_attention/ppu_chunked_gdn_collective.cuh",
-        "cutlass/linear_attention/ppu_chunked_gdn_inverse.hpp",
-        "cutlass/linear_attention/ppu_chunked_gdn_kernel.cuh",
-        "cutlass/linear_attention/ppu_chunked_gdn_types.hpp",
         "cutlass/quactlize_mix_gemm_convert.h",
     }
 )

@@ -34,6 +34,9 @@ PARALLEL_EPILOGUE = ROOT / (
     "third_party/actlize/include/cutlass/epilogue/collective/"
     "ppu_epilogue_vectorized_parallel.hpp")
 LAUNCHER = ROOT / "quactlize/include/dense_splitk_parallel_ppu.cuh"
+ACTLIZE_COPY = ROOT / "third_party/actlize/include/cute/algorithm/ppu_copy.hpp"
+ACTLIZE_ASYNC = ROOT / "third_party/actlize/include/cute/arch/copy_ppu.hpp"
+ACTLIZE_M8 = ROOT / "third_party/actlize/include/cute/arch/copy_ppu0010_aiu.hpp"
 
 
 def ordered(text: str, needles: tuple[str, ...], label: str) -> list[str]:
@@ -74,6 +77,19 @@ def check(texts: dict[str, str]) -> list[str]:
         "PPU_SPLITK_SHARED_SYNC_POLICY",
         "PPU_PACKED_METADATA_OWNER_ONLY",
         "split_workspace_probe",
+        "PPU_MIXED_A_PREPARE_AFTER_CONSUME",
+        "PPU_MIXED_A_EXPLICIT_STAGE_VIEW",
+        "PPU_PACKED_A_COMPILER_MEMORY_FENCE",
+        "PPU_PACKED_A_SYNCHRONOUS_STORE",
+        "PPU_PACKED_A_BEFORE_B",
+        "PPU_PACKED_A_SEPARATE_ASYNC_GROUP",
+        "PPU_M8_DIRECT_X4_PROJECTION",
+        "PPU_PACKED_A_ASM_MEMORY_CONTRACT",
+        "PPU_M8_LOGICAL_X2_SCALAR_LOAD",
+        "PPU_MIXED_ASYNC_SHARED_FENCE",
+        "PPU_AIU_SINGLE_LOGICAL_ISSUER",
+        "PPU_SPLITK_STABLE_K_TILE_SHAPE",
+        "PPU_PACKED_SPLIT_GROUPS",
     )
     combined = "\n".join(texts.values())
     for token in banned:
@@ -254,6 +270,9 @@ def main() -> int:
         "fq": FQ,
         "parallel_epilogue": PARALLEL_EPILOGUE,
         "launcher": LAUNCHER,
+        "actlize_copy": ACTLIZE_COPY,
+        "actlize_async": ACTLIZE_ASYNC,
+        "actlize_m8": ACTLIZE_M8,
     }
     try:
         texts = {name: path.read_text() for name, path in paths.items()}

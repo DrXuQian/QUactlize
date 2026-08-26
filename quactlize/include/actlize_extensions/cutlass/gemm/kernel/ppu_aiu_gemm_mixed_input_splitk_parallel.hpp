@@ -360,8 +360,6 @@ class GemmUniversalMixedInputSplitKParallel {
     if (!fixed_splitk::work_matches_params(params.partition, work)) {
       return;
     }
-#if defined(PPU_SPLITK_STABLE_K_TILE_SHAPE) && \
-    (PPU_SPLITK_STABLE_K_TILE_SHAPE != 0)
     // CuTe's ForwardCoordIterator stores Shape const&, while tensor shape<I>()
     // returns by value.  Binding the iterator directly to shape<2>(gA) leaves
     // it referring to a temporary destroyed at the end of this statement.
@@ -371,12 +369,6 @@ class GemmUniversalMixedInputSplitKParallel {
                   "dense fixed Split-K advances one scalar K-tile coordinate");
     auto k_tile_iter = make_coord_iterator(
         idx2crd(work.k_begin, k_tile_shape), k_tile_shape);
-#else
-    // Historical control: both shape<2>(gA) expressions are temporaries, but
-    // ForwardCoordIterator retains the second one by reference.
-    auto k_tile_iter = make_coord_iterator(
-        idx2crd(work.k_begin, shape<2>(gA)), shape<2>(gA));
-#endif
 
     collective_mainloop(params.mainloop, load_inputs, accumulators,
                         k_tile_iter, int(work.k_count), thread_idx, smem_buf);

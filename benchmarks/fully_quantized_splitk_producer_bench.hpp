@@ -12,7 +12,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <numeric>
 #include <type_traits>
 #include <vector>
@@ -43,7 +42,6 @@ enum class State : int {
   Initialize,
   Launch,
   Correctness,
-  PartialCorrectness,
   Timing,
 };
 
@@ -60,31 +58,9 @@ inline char const* state_name(State state) {
     case State::Initialize: return "INITIALIZE";
     case State::Launch: return "LAUNCH";
     case State::Correctness: return "RAW_FP16_MISMATCH";
-    case State::PartialCorrectness: return "PARTIAL_FP32_MISMATCH";
     case State::Timing: return "TIMING";
   }
   return "UNKNOWN";
-}
-
-// Host-only controls for the repeated correctness harness. They do not alter
-// a generated kernel type or its arguments. TargetPoison overwrites the real
-// FP32 partial workspace before each producer launch. ControlPoison performs
-// the same memset/synchronize cadence on an equally sized disjoint tail while
-// leaving the producer workspace untouched. Their A/B comparison separates
-// buffer carry-over from a cadence-sensitive device failure.
-enum class RepeatState : int {
-  Reuse,
-  TargetPoison,
-  ControlPoison,
-};
-
-inline char const* repeat_state_name(RepeatState state) {
-  switch (state) {
-    case RepeatState::Reuse: return "reuse";
-    case RepeatState::TargetPoison: return "target-poison";
-    case RepeatState::ControlPoison: return "control-poison";
-  }
-  return "unknown";
 }
 
 struct Options {
@@ -93,17 +69,6 @@ struct Options {
   int only_split = 0;
   bool measure = true;
   int tm8_max_m = ppu_dense_shipping::kDecodeDefaultExclusiveM - 1;
-  // Diagnostic-only host routing control.  Production and sweep callers leave
-  // this false, so S=1 continues to use ShippingGemm.  When true, runtime S=1
-  // is submitted through the exact same SplitGemm type as S=2/4/8, with one
-  // FP32 partial plane followed by the deterministic fallback reducer.  This
-  // isolates runtime partitioning from kernel/epilogue type differences.
-  bool force_custom_splitk_s1 = false;
-  RepeatState repeat_state = RepeatState::Reuse;
-  // Inspect every completed producer plane, including rounds whose reduced
-  // FP16 output is exact. Without this, wrong planes that cancel in reduction
-  // can silently seed the next reuse round.
-  bool check_partials_each_repeat = false;
 };
 
 struct DeviceInputs {
@@ -114,10 +79,6 @@ struct DeviceInputs {
   half_t* output = nullptr;
   char* workspace = nullptr;
   std::size_t workspace_bytes = 0;
-  // Host-only exact FP32 partial planes used after a diagnostic failure.  The
-  // producer never receives these addresses and the normal sweep leaves them
-  // null, so this cannot perturb the pre-failure device cadence.
-  std::array<float const*, kSplits.size()> partial_golden{};
   half_t const* golden = nullptr;  // host pointer, m*n values
   int m = 0, n = 0, k = 0;
 };
@@ -137,18 +98,6 @@ struct CellResult {
   std::size_t shipping_smem = 0;
   std::size_t split_smem = 0;
   std::size_t partial_bytes = 0;
-  bool partial_probe_attempted = false;
-  bool partial_probe_complete = false;
-  std::uint64_t partial_value_raw_bad = 0;
-  std::uint32_t partial_bad_plane_mask = 0;
-  int partial_first_bad_plane = -1;
-  std::size_t partial_first_bad_index = std::size_t(-1);
-  std::uint32_t partial_first_bad_want = 0;
-  std::uint32_t partial_first_bad_got = 0;
-  std::uint64_t reducer_replay_raw_bad = 0;
-  std::size_t reducer_replay_first_bad = std::size_t(-1);
-  std::uint16_t reducer_replay_first_want = 0;
-  std::uint16_t reducer_replay_first_got = 0;
   int a_provider_capacity_rows = 0;
   double median_us = 0;
   double min_us = 0;
@@ -335,63 +284,6 @@ inline bool inspect(DeviceInputs const& in, CellResult& out) {
   return true;
 }
 
-inline bool inspect_failed_partials(
-    DeviceInputs const& in, int splits, float const* partials,
-    std::size_t partial_bytes, CellResult& out) {
-  auto const split_it = std::find(kSplits.begin(), kSplits.end(), splits);
-  if (split_it == kSplits.end()) return false;
-  std::size_t const slot = std::size_t(split_it - kSplits.begin());
-  float const* expected = in.partial_golden[slot];
-  std::size_t const elements = std::size_t(splits) * in.m * in.n;
-  if (expected == nullptr || partials == nullptr ||
-      partial_bytes != elements * sizeof(float)) return false;
-
-  std::vector<float> host(elements);
-  if (hggcMemcpy(host.data(), partials, partial_bytes,
-                 hggcMemcpyDeviceToHost) != hggcSuccess) return false;
-  out.partial_value_raw_bad = 0;
-  out.partial_bad_plane_mask = 0;
-  for (int plane = 0; plane < splits; ++plane) {
-    for (std::size_t index = 0; index < std::size_t(in.m) * in.n; ++index) {
-      std::size_t const offset = std::size_t(plane) * in.m * in.n + index;
-      std::uint32_t want = 0, got = 0;
-      std::memcpy(&want, expected + offset, sizeof(want));
-      std::memcpy(&got, host.data() + offset, sizeof(got));
-      // Partial planes are an internal semantic oracle.  Signed zero is
-      // equivalent here; retain raw bits only to explain a real value error.
-      if (expected[offset] == host[offset]) continue;
-      if (out.partial_value_raw_bad == 0) {
-        out.partial_first_bad_plane = plane;
-        out.partial_first_bad_index = index;
-        out.partial_first_bad_want = want;
-        out.partial_first_bad_got = got;
-      }
-      out.partial_bad_plane_mask |= std::uint32_t(1) << plane;
-      ++out.partial_value_raw_bad;
-    }
-  }
-  return true;
-}
-
-inline bool prepare_repeat_state(
-    DeviceInputs const& in, Options const& options, char* partials,
-    std::size_t partial_bytes) {
-  if (options.repeat_state == RepeatState::Reuse) return true;
-  if (partials == nullptr || partial_bytes == 0 ||
-      partial_bytes > in.workspace_bytes) return false;
-
-  char* poison = partials;
-  if (options.repeat_state == RepeatState::ControlPoison) {
-    // The control must be byte-disjoint from the live partial plane while
-    // retaining the same transfer size and host/device synchronization.
-    if (partial_bytes > in.workspace_bytes / 2) return false;
-    poison = in.workspace + (in.workspace_bytes - partial_bytes);
-    if (poison < partials + partial_bytes) return false;
-  }
-  return hggcMemset(poison, 0x7f, partial_bytes) == hggcSuccess &&
-         hggcDeviceSynchronize() == hggcSuccess;
-}
-
 template <class Launch>
 bool measure(Launch&& launch, int iterations, CellResult& result) {
   std::vector<double> samples;
@@ -450,7 +342,7 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
     result = CellResult{};
     int const splits = kSplits[index];
     result.split = splits;
-    result.full_output = splits == 1 && !options.force_custom_splitk_s1;
+    result.full_output = splits == 1;
     result.shipping_smem = Shipping::SharedStorageSize;
     result.split_smem = SplitKernel::SharedStorageSize;
     result.a_provider_capacity_rows = Types::a_provider_capacity_rows;
@@ -478,7 +370,7 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
           in.m, in.n, in.k, F::GroupSize,
           reinterpret_cast<High const*>(in.high));
 
-      if (splits == 1 && !options.force_custom_splitk_s1) {
+      if (splits == 1) {
         using StrideC = typename ShippingKernel::StrideC;
         using StrideD = typename ShippingKernel::StrideD;
         StrideC sC = cutlass::make_cute_packed_stride(
@@ -543,17 +435,9 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
           result.state = State::PipelineDepth; continue;
         }
         dense_splitk_parallel_ppu::WorkspacePlan plan;
-        bool workspace_ok = dense_splitk_parallel_ppu::query_workspace_plan(
-            in.m, in.n, splits, plan);
-        if (options.force_custom_splitk_s1 && splits == 1) {
-          // The public launcher intentionally reports zero workspace for its
-          // shipping S=1 route.  This diagnostic bypasses that route, so ask
-          // the producer/reducer ABI directly for its one FP32 plane.
-          workspace_ok = cutlass::gemm::device::splitk_parallel::
-              fp32_workspace_size(in.m, in.n, splits, plan.partial_bytes);
-          plan.total_bytes = plan.partial_bytes;
-        }
-        if (!workspace_ok || plan.partial_bytes > in.workspace_bytes) {
+        if (!dense_splitk_parallel_ppu::query_workspace_plan(
+                in.m, in.n, splits, plan) ||
+            plan.partial_bytes > in.workspace_bytes) {
           result.state = State::SplitPartition; continue;
         }
         result.partial_bytes = plan.partial_bytes;
@@ -588,14 +472,6 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
         std::uint64_t fingerprint = 0;
         for (int repeat = 0; repeat < options.correctness_repeats; ++repeat) {
           result.failure_repeat = repeat;
-          if (!prepare_repeat_state(
-                  in, options, reinterpret_cast<char*>(partials),
-                  plan.partial_bytes)) {
-            result.failure_step = "REPEAT_STATE_PREPARE";
-            result.state = State::Initialize;
-            correct = false;
-            break;
-          }
           if (full_launch() != cutlass::Status::kSuccess) {
             result.failure_step = "CORRECTNESS_FULL_LAUNCH"; correct = false; break;
           }
@@ -605,59 +481,16 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
           if (!inspect(in, result)) {
             result.failure_step = "CORRECTNESS_OUTPUT_COPY"; correct = false; break;
           }
-          bool partial_checked = false;
-          if (options.check_partials_each_repeat) {
-            result.partial_probe_attempted = true;
-            partial_checked = inspect_failed_partials(
-                in, splits, partials, plan.partial_bytes, result);
-            result.partial_probe_complete = partial_checked;
-            if (!partial_checked) {
-              result.failure_step = "CORRECTNESS_PARTIAL_COPY";
-              result.state = State::Initialize;
-              correct = false;
-              break;
-            }
-          }
-          bool const partial_bad =
-              partial_checked && result.partial_value_raw_bad != 0;
-          if (result.raw_bad != 0 || partial_bad ||
+          if (result.raw_bad != 0 ||
               (repeat && result.fingerprint != fingerprint)) {
-            if (result.raw_bad != 0 && options.force_custom_splitk_s1) {
-              // Observe only after the original producer+reducer failure and
-              // device completion.  This preserves the cadence that exposed
-              // the bug, then distinguishes bad producer bytes from a
-              // same-stream publication/reducer failure.
-              bool const partial_ok = partial_checked ||
-                  inspect_failed_partials(
-                      in, splits, partials, plan.partial_bytes, result);
-              result.partial_probe_attempted = true;
-              CellResult replay;
-              bool const replay_ok =
-                  reducer.run(nullptr) == cutlass::Status::kSuccess &&
-                  hggcDeviceSynchronize() == hggcSuccess &&
-                  inspect(in, replay);
-              result.partial_probe_complete = partial_ok && replay_ok;
-              if (replay_ok) {
-                result.reducer_replay_raw_bad = replay.raw_bad;
-                result.reducer_replay_first_bad = replay.first_bad_index;
-                result.reducer_replay_first_want = replay.first_bad_want;
-                result.reducer_replay_first_got = replay.first_bad_got;
-              }
-            }
-            result.failure_step = result.raw_bad
-                ? "RAW_FP16_MISMATCH"
-                : partial_bad ? "PARTIAL_FP32_MISMATCH_WITH_CLEAN_OUTPUT"
-                              : "FINGERPRINT_MISMATCH";
-            if (partial_bad && result.raw_bad == 0)
-              result.state = State::PartialCorrectness;
+            result.failure_step = result.raw_bad ? "RAW_FP16_MISMATCH" :
+                                                   "FINGERPRINT_MISMATCH";
             correct = false; break;
           }
           fingerprint = result.fingerprint;
         }
         if (!correct) {
-          if (result.state != State::Initialize &&
-              result.state != State::PartialCorrectness)
-            result.state = State::Correctness;
+          result.state = State::Correctness;
           row_ok = false;
           continue;
         }

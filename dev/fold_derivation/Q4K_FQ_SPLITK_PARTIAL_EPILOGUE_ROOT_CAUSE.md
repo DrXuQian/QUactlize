@@ -1,525 +1,208 @@
-# Q4_K fully-quantized packed-metadata race record
+# Q4_K fully-quantized packed-metadata race
 
-Status: source root found; production repair is locally proved and the narrow
-device A/B is pending. The direct-store incident is not caused by Split-K,
-the reducer, A-provider choice, AIU issue cardinality, the K-stage ring, or the
-partial epilogue. The same custom kernel now reproduces at S=1, S=2 and S=4.
-The common collective had a shared-memory data race between its one-time fp16
-metadata clear and its packed scale/zero decode.
+Status: **closed on device**. The production repair is commit `7124998`; the
+source/CuTe proof and exact device A/B are commit `265033f`.
 
-The earlier shared-output path was an independent corruption trigger and the
-packed-A physical-stage overlap was a real fragility. Removing both reduced
-the failure rate but could not close this separate race.
-
-## Source-proved root: clear and decode use orthogonal warp maps
-
-The exact FAIL tactic is Q4_K/A64, `TM/TN/TK=8/64/256`, `WM/WN=8/16`,
-Stages2, CTA128. The exact PASS contrast keeps the same data format and tile
-but uses WN64, CTA32.
-
-For the FAIL row, actual CuTe `ScaleCopyPlan::partition_D` maps the fp16
-metadata clear as follows:
+The closing artifact is:
 
 ```text
-warp 0: all 64 N columns, groups 0..3
-warp 1: all 64 N columns, groups 4..7
-warp 2: historical modulo duplicate of warp 0
-warp 3: historical modulo duplicate of warp 1
+/workspace/quactlize-fq-q4k-a-stage-root-265033f5-20260826T002715Z-2904796
 ```
 
-Packed decode uses the independent column-owner map:
+Its adjudicated result was:
 
 ```text
-warp 0: N 0..31, all eight groups
-warp 1: N 32..63, all eight groups
+verdict=PACKED_METADATA_CLEAR_DECODE_RACE_CLOSED
+baseline_failure_attempts=2/2
+selection=exact-metadata-publication
+clean_candidates=exact-metadata-publication
+shipping_s1_clean=4/4
 ```
 
-The historical program order was:
+The must-red arm reconstructed the historical all-thread modulo publishers and
+omitted the initialization edge. The candidate used the production exact
+ownership plus one pre-prefetch CTA edge. The historical arm reproduced in
+both attempts; the candidate was raw-bit exact for every custom S1/S2/S4 cell.
+
+## Root cause
+
+The failing Q4_K/A64 row was:
 
 ```text
-partition_extra_inputs -> clear(tSsS)
+M/N/K       1/1024/5120
+tile        8x64x256
+warp        8x16
+stages      2
+CTA         128 threads
+providers   standard-aiu and packed-row
+```
+
+The fp16 metadata clear and packed scale/zero decoder touched the same shared
+tile through different physical-warp maps. Historical code also wrapped 128
+physical threads onto 64 logical metadata owners.
+
+Actual CuTe `ScaleCopyPlan::partition_D` mapped the clear as:
+
+```text
+warp 0: N0..63, groups 0..3
+warp 1: N0..63, groups 4..7
+warp 2: duplicate of warp 0
+warp 3: duplicate of warp 1
+```
+
+Packed decode mapped work as:
+
+```text
+warp 0: N0..31, groups 0..7
+warp 1: N32..63, groups 0..7
+```
+
+The old order was:
+
+```text
+clear fp16 metadata
 initial async A/B/raw-metadata prefetch
-per-thread cp_async_wait
-packed_decode_stage
-__syncthreads                 // first CTA edge, too late
+per-thread async wait
+packed decode
+first CTA barrier
 ```
 
-`cp_async_wait` only orders work issued by that thread. It cannot order an
-ordinary `clear(tSsS)` executed by another warp. L114 composes the real copy
-atom, real CuTe destination partition and packed-column ownership and reports:
+A per-thread async wait does not order an ordinary shared-memory clear issued
+by another warp. The first CTA edge came after decode, so a late clear could
+erase one decoded 32-column half. The MMA then consumed the cleared scale
+values and wrote an already-wrong FP32 producer plane.
+
+The L114 actual-CuTe composition gives the decisive census:
 
 ```text
-CTA32 PASS: same-warp intersections=1, cross-warp intersections=0
-CTA128 FAIL: same-warp intersections=2, cross-warp intersections=6
-             active-owner cross=2, surplus-warp cross=4
-             each cross intersection=128 fp16 metadata values
+CTA32  PASS: same-warp clear/decode pairs=1, cross-warp pairs=0
+CTA128 FAIL: same-warp pairs=2, cross-warp pairs=6
+             active-owner cross pairs=2
+             surplus-warp cross pairs=4
+             128 metadata values per cross pair
 ```
 
-An allowed schedule can therefore decode one 32-column half, execute a late
-clear covering four groups, then decode the other half. Every output in the
-first half loses the same group contribution: exactly the observed moving,
-32-aligned bad stripe and fixed small delta. The producer FP32 partial is
-already wrong because the MMA consumed the cleared scale values.
+This exactly predicts the intermittent 32-aligned output stripe. Exact owner
+filtering removes the four surplus-warp pairs, but two active-owner cross-warp
+pairs remain; therefore ownership filtering alone is insufficient.
 
-This also explains why earlier experiments were misleading:
+## Production repair
 
-- `owner-only` guarded only the packed raw async copy, not the fp16 clear or
-  ordinary metadata operations, and added no initialization edge;
-- exact owner filtering alone removes the four surplus-warp intersections but
-  leaves two cross-warp intersections between active owner warps;
-- A scheduling, AIU issuer, inline-asm clobber, stage-pitch, reducer and
-  epilogue variants do not change this clear/decode relationship.
+Both one-plane and two-plane mixed-input collectives now enforce one contract:
 
-The production repair has both necessary parts in the one-plane and two-plane
-collectives:
+1. only the exact scale owner clears/copies fp16 scale/zero metadata;
+2. only the exact packed-column owner issues the packed raw copy;
+3. for a multi-warp packed row, one initialization-only `__syncthreads()` runs
+   after the fp16 clear and before the initial async prefetch;
+4. the existing post-decode CTA barrier remains the publication edge for MMA
+   consumers.
 
-1. only the exact scale owner clears/copies fp16 scale/zero metadata, and only
-   the exact packed-column owner issues packed raw copies;
-2. a single initialization-only `__syncthreads()` follows the fp16 clear and
-   precedes the first async prefetch for multi-warp packed rows.
+The new edge is outside the K loop. It is not emitted for the one-warp CTA32
+case. No accumulation order, stage-ring order, Split-K partition, reducer or
+epilogue math changed.
 
-The edge is outside the K loop. CTA32 emits neither the edge nor changed owner
-work. CTA128 removes duplicate publication and adds one kernel-initialization
-barrier; MMA order, stage ring, Split-K partitioning and epilogue are unchanged.
+The exact historical negative is retained behind
+`PPU_MIXED_LEGACY_MODULO_METADATA_PUBLISHERS`. All other counterfactual macros,
+factorial runners, repeat-state controls and failure-only partial-plane probes
+were removed after closure.
 
-## Refuted complete-root hypothesis: packed-A physical stage overlap
+The two retained negatives remain build-reachable through the ordinary target
+when an exact generated registry is supplied:
 
-The exact failing symbol uses an m8 CuTe A copy atom whose semantic destination
-has two registers per lane.  Its implementation nevertheless executes the
-PPU0010 `m8n8.x4` swizzled shared load into a private four-register temporary,
-then retains v0/v1.  The old packed layout compressed both cubes and stages at
-64 fp16 elements per cube.  CuTe's logical x2 layout proved the live row values
-were bijective, but it did not represent the two discarded registers' real
-shared-memory reads.
+```bash
+PPU_DEFS=PPU_MIXED_LEGACY_MODULO_METADATA_PUBLISHERS=1 \
+TARGET=test_fully_quantized_internal_sweep ./build.sh
 
-An exhaustive hardware-address replay for TM8/TK256/Stages2 gives:
-
-```text
-logical CuTe source coordinates:       exact, coord_bad=0
-historical stage pitch 256 half:       432 cross-stage physical read/write addresses
-repaired stage pitch 1216 half:        0 cross-stage physical read/write addresses
-writer -> calibrated reader values:    exact, value_mismatches=0
-direct partial/reducer ABI:            exact
+PPU_DEFS=PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE=1 \
+TARGET=test_fully_quantized_internal_sweep ./build.sh
 ```
 
-The conflicting writes are the other stage's row-0 cp.async transfers.  The
-conflicting reads feed hidden x4 rows that are discarded or output-masked, but
-the physical memory accesses still occur.  Thus the old layout contains a real
-intra-CTA shared-memory fragility even though the mathematical row-0 mapping
-and each Split-K output plane are disjoint.  Removing it did not close the
-frozen numerical failure, so it cannot carry the root-cause verdict.
+## Why it looked Split-K-specific
 
-The repair separates cube and stage pitches:
+The first reliable failures appeared in S2/S4 producer runs because changing
+the K interval and output path changed kernel cadence and code generation. A
+later same-custom-kernel diagnostic also reproduced at runtime S1. Split-K
+planes are disjoint and the reducer was not required for failure: the wrong
+FP32 value was already present in one producer plane.
+
+Shipping S1 remained a useful control, but it is a different compiled kernel
+with a product epilogue and cannot disprove a race in the common collective.
+
+## Two real but independent defects found during the investigation
+
+### Packed-A physical x4 footprint
+
+The m8 CuTe A copy exposes two logical registers per lane, while the PPU0010
+load instruction physically touches four. The old stage pitch described only
+the logical x2 view and allowed hidden x4 reads to overlap another stage.
+
+The repaired authority separates cube and stage pitch. For TK256/Stages2:
 
 ```text
 cube_pitch  = 64 half
-stage_pitch = cube_pitch * (cubes_per_stage - 1) + 16 * 64
-            = 1216 half for TK256
+stage_pitch = 1216 half
+old cross-stage physical intersections = 432
+new cross-stage physical intersections = 0
 ```
 
-The writer, allocation, and `PPU0010_TSM_LD_SWZL_M8` operation now share that
-authority.  TK256/S2 A storage becomes 2432 half (4.75 KiB), still much smaller
-than the ordinary physical-m16 allocation of 8192 half (16 KiB).  L186 binds
-the production type to `(cube_pitch, stage_pitch)=(64,1216)`, requires the old
-layout to show crossings, and requires the repaired layout to show none.  This
-is a physical-contract proof only, not a device numeric closure.
+L186 preserves this physical-footprint proof. The fix removed a genuine
+fragility but did not close the metadata race.
 
-## One stale-A-compatible signature, not a family root
+### Split-K shared partial-output handoff
 
-The ca01dc6 failure snapshot found AP1/S4 plane 2, output column 32, expected
-FP32 `1.0` and observed `6.0`.  The exact fixture contributions from its five
-superblocks are `+3,-14,+1,-4,+15`.  Replacing sb13's complete A tile with the
-immediately preceding tile changes its contribution from `-4` to `+1` and
-uniquely gives `6.0`; the same substitution at sb10,11,12,14 gives
-`-2,18,-14,-18` respectively.  This proves compatibility, not causality.
+The historical partial epilogue unnecessarily moved a completed FP32
+accumulator register-to-shared-to-register before writing the workspace. The
+direct store uses the real `TiledMma::partition_C` ownership and was raw-bit
+exact. It also avoided an independently observed shared-store backend/codegen
+corruption trigger.
 
-L224 now enumerates all 20 active K superblocks, all eight fixture column
-residues and every complete source-A/destination-B tile pairing.  Adjacent
-previous-A substitutions can produce the observed `+5` and `-5` deltas, and
-some non-adjacent complete-A substitutions can produce `-4`.  No complete
-A-tile substitution can produce the observed `-6` delta.  Therefore the
-earlier statement that the failure family was “classified exactly as stale
-A” was false; only one captured value pair had that explanation.
+The direct store does not change accumulation or reduction order. Its measured
+packed-row/S4 median was 11.300 us versus 11.320 us for the old shared path
+(-0.177%, inside the preregistered 3% limit). The exact old path remains under
+`PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE` as its one historical negative.
 
-L224 independently composes the exact shipping CuTe fragment/copy layouts,
-including the builder's Q4/TK256 `MmaPermK=64`.  The A and B fragments each
-contain 16 MMA K atoms and their copy views each contain four delivery blocks;
-delivery block `i` maps exactly to atoms `[4*i,4*i+4)`.  The reconstructed B
-load/conversion view is also exact, and prepare(next B delivery) has zero
-logical register-offset overlap with consume(current B delivery).  An older
-L224 accidentally used the atom's K16 default and reported 16 one-atom A copy
-blocks; that was not the shipping type and is not evidence.  With the corrected
-type, the exact block map did not explain the device failure. At that stage
-the remaining candidates were operand publication/delivery,
-physical/backend register lifetime, the x4-to-x2 consumer and MMA/accumulator
-state. The later clear/decode ownership composition identified the missing
-operand-publication edge without changing the shipping MMA path.
+Neither independent repair alone closed the later metadata race.
 
-The same exact `partition_C` oracle maps M=1 output ownership as 16 consecutive
-N values per warp: N0-15/W0, N16-31/W1, N32-47/W2, N48-63/W3.  One aligned
-32-output band is therefore two adjacent output warps.  It does not, by
-itself, identify an A/B copy issuer or prove a wait/barrier defect.
+## Refuted hypotheses
 
-## Scope
+The retained evidence excludes these as the complete root:
 
-This incident is deliberately narrower than "PPU epilogues are broken".
-It is a packed-metadata collective race. Ordinary shipping S=1 output
-epilogues were historically raw-bit-clean controls, but the same custom
-producer later failed at runtime S=1 as well as S=2/S=4. Therefore Split-K and
-the reducer are not necessary; a clean shipping S=1 binary only demonstrates
-different cadence/codegen, not absence of the source race. The original
-high-repeat target was:
+- stale partial-workspace contents or overlapping host launches;
+- producer-to-reducer publication;
+- reducer plane addressing;
+- A-provider choice;
+- duplicate logical AIU issuers;
+- A-before-B ordering and separate async groups;
+- inline-asm memory clobbers;
+- K iterator shape lifetime;
+- packed-A stage pitch;
+- shared partial epilogue and its synchronization policy.
 
-```text
-shape       M/N/K=1/1024/5120, group_size=32
-format      Q4_K, ArtifactTileK=64, bchunk=0
-tactic      TM/TN/TK=8/64/256, WM/WN=8/16, stages=2
-providers   standard-aiu and packed-row
-splits      S=2 and S=4
-```
-
-The shipping S>1 route is not the S=1 kernel with one runtime integer changed. S=1
-delegates to the shipping GEMM and its product epilogue. S>1 instantiates
-`GemmUniversalMixedInputSplitKParallel`, traverses a shorter K interval, and
-publishes FP32 partial planes before a deterministic reducer. The diagnostic
-bypasses that dispatch and runs one custom producer type at runtime S=1/2/4;
-its later census found 32-value producer corruption at S=1. This closed the
-earlier S>1-only premise.
-
-## What failed
-
-For the earlier shared-output trigger, the accumulator feeding a clean direct
-arm was exact.  The old partial-output path then redistributed the completed
-FP32 fragment register-to-shared, synchronized,
-reloaded shared-to-register, and wrote the split-major workspace.  Independent
-per-plane FP32 goldens found intermittent complete 32-output stripes already
-wrong in the producer workspace.  Canaries were intact.  The reducer,
-workspace plane addressing, and cross-kernel publication were therefore not
-the source.
-
-The production candidate stores the completed accumulator directly through the
-real `TiledMma::partition_C` ownership into the FP32 partial plane.  This is a
-same-type internal store: no conversion or output-layout redistribution needs
-the shared round trip.  It sharply reduced the observed failure rate but did
-not close correctness at 8192 repeats.  In that rarer direct-store incident,
-a wrong FP32 partial leaves the source before or at the direct store; it does
-not prove that the accumulator itself was exact.
-
-## Reopened high-repeat result
-
-At `79ff0a3`, the first same-custom-kernel S1/S2/S4 direct arm reported:
-
-```text
-standard-aiu S1: REAL_CAN_IMPLEMENT (not launched)
-standard-aiu S2: 8192 repeats clean
-standard-aiu S4: 8192 repeats clean
-packed-row  S1: REAL_CAN_IMPLEMENT (not launched)
-packed-row  S2: 8192 repeats clean
-packed-row  S4: raw_bad=32 at repeat 2142
-```
-
-The S1 result was an invalid diagnostic control, not a device verdict.
-`make_cute_packed_stride` canonicalized singleton `L=1` to `stride_L=0`, but
-the custom partial ABI requires one physical plane with `stride_L=M*N=1024`.
-The next diagnostic explicitly supplies that plane stride.
-
-The packed-row S4 failure initially reopened the producer/reducer boundary.
-Failure-only partial snapshots prove the wrong value is already in one FP32
-producer plane.  One exact value pair admits stale A, but the later `-6`
-family member rules out complete stale-A substitution as the common root.  The
-physical footprint change did not close it. No inter-CTA publication fix is
-called for. The later source audit found the intra-CTA fp16 metadata
-clear/decode race before MMA.
-
-## Closed noncausal synchronization seams
-
-Producer-to-producer and producer-to-reducer synchronization are closed:
-
-1. The mixed-input mainloop exits with `cp_async_wait<0>()` followed by
-   `__syncthreads()`.  No asynchronous mainloop copy remains in flight when the
-   epilogue starts.
-2. The historical partial epilogue synchronizes after register-to-shared and
-   again after shared-to-register.
-3. Separate binaries replaced those calls with the historical user barrier,
-   the reserved epilogue barrier, and full CTA `__syncthreads()`; every arm
-   retained intermittent corruption.
-4. An extra full CTA barrier before the first shared store did not close it.
-5. Mainloop and epilogue shared allocations were made physically disjoint and
-   the failure remained.
-6. A CTA-only prefix with no shared store was clean.
-7. A device completion boundary followed by D2H inspection found the wrong
-   FP32 values already resident in individual producer planes.  No
-   producer/reducer fence or launch ordering can repair bytes that are already
-   wrong before the reducer starts.
-
-The decisive prefix wrote one constant per owner to disjoint shared memory,
-used two CTA barriers, never read those constants, and then executed the proven
-direct accumulator store.  That binary still failed.  A missing producer to
-consumer ordering edge cannot explain corruption of unrelated live
-accumulator values in this arm.
-
-The barrier variants above were epilogue/prefix tests and therefore did not
-touch the eventual root. The async-shared proxy-fence arm also stayed dirty:
-the missing edge is not between async raw metadata and its consumer. It is
-between an ordinary fp16 `clear(tSsS)` owned by one warp map and packed decode
-stores owned by another. The repaired CTA edge is immediately after the
-one-time clear, before any async prefetch, rather than inside the steady-state
-wait/publish sequence.
-
-One proposed waiter diagnosis read the wrong `cute::copy_aiu` branch.  For
-`__HGGC_ARCH__ == 100`, warp 0 issues both ordinary A and B; the warp0/A,
-warp1/B split exists only in the alternate branch.  Packed A uses its explicit
-logical copy threads, and the wrapped extra-input partition gives CTA threads
-metadata-copy work.  `PPU_PACKED_SPLIT_GROUPS` changes only which duplicate
-metadata owners decode which groups.  It can change cadence, but it does not
-make previously nonparticipating A/B waiters participate and therefore cannot
-adjudicate that A/B hypothesis.
-
-The Stages2 driver does issue one redundant copy of the final K tile into the
-retired, physically disjoint write stage while draining.  Removing it changes
-async traffic and cadence but does not repair a proved address or ownership
-violation; a clean result would therefore be another sensitivity result, not a
-root-cause verdict.  It is intentionally excluded from the first causal
-closure.  Only if both exact candidates remain dirty should it be used as a
-second-stage localization arm, followed by a more direct producer/consumer
-proof before any production change.
-
-## Earlier shared-output trigger (separate from the direct-store incident)
-
-The earlier, now superseded 512-repeat device arm reported:
-
-```text
-legacy shared output: 776 / 8192 bad samples
-production direct:    raw-bit exact, standard-aiu + packed-row, S=2 + S=4
-verdict:              SHARED_STORE_BACKEND_OR_FOOTPRINT_CAUSAL
-```
-
-Exact-symbol disassembly kept 16 MMA instructions, 34 TSM stores, 67 TSM
-loads, and zero reported stack in the clean direct binary.  The first failing
-flat-constant binary kept the same MMA/load counts and added exactly one
-`tsm.st.b32x4` store.  Thus, within the frozen custom S>1 kernel, the old
-shared-output path had an independent corruption trigger:
-
-- removing the unnecessary shared-memory partial-output handoff is a
-  performance-neutral candidate that eliminates one strong trigger but is not
-  a correctness closure;
-- the first isolated operation that can trigger corruption is the additional
-  vector TSM-store lowering (or the compiler/hardware footprint it changes);
-- ordinary S=1 correctness did not isolate whether that earlier trigger also
-  required the custom kernel context, because S=1 changed the compiled kernel,
-  FP16 versus FP32 output, copy ownership and register/shared footprint.
-
-The rarer direct-store failure contains no shared-output round trip.  Its
-producer-partial corruption is independent of that historical epilogue
-trigger, while the final operand/accumulator seam remains to be adjudicated.
-
-The direct-store candidate does not change accumulation or reduction order.  Its
-same-run packed-row S4 median was 11.300 us versus 11.320 us for the legacy
-shared path (`-0.177%`), within the preregistered 3% regression limit.
-
-## Similar-path audit
-
-Only two owned collectives contain `packed_decode_stage`: the one-plane and
-two-plane mixed-input collectives. Both now share the exact scale owner,
-packed-column owner and one-time initialization-edge contract. The folded
-collective clears and copies unpacked fp16 metadata through the same exact
-owner map and has no packed decoder, so it has no cross-map clear/decode race.
-
-Actlize's vendor `ppu_mma_aiu_multistage_mixed_input.hpp` still wraps physical
-threads onto a smaller scale-copy map. It does not contain packed decode, so it
-does not have this root race, but its duplicate same-address async publishers
-remain a separate structural fragility for actlize-owned callers. Quactlize's
-GGUF sweep uses its additive `MainloopQuactlizeMixedInput` specialization, not
-that vendor collective; no third-party source is changed by this repair.
-
-The CuTe copy-op audit found one owned operation that publishes fewer
-registers than its hardware opcode touches: `PPU0010_TSM_LD_SWZL_M8` (logical
-x2, physical x4).  Ordinary A uses natural cube/stage spacing and is not
-exposed.  Every production Q2/Q4 packed-row specialization reaches the same
-typed m8 atom, so the independent stage-pitch fix covers the family rather
-than only the frozen Q4/S4 symbol.  L186 instantiates the complete seven-cell
-Q2/Q4 packed-A matrix and the exact Stages2 failure type.
-
-The packed-A gmem writer remains a narrow custom cp.async loop because the
-PPU swizzle/run permutation is not a plain affine CuTe layout.  Its source is
-the real CuTe `gA(row,k,k_tile)` tensor, and its destination is checked against
-an independent hardware-calibrated reader for every byte, cube and stage.
-Replacing that loop with a cosmetic logical CuTe tensor would not encode the
-hidden x4 footprint and therefore would not prevent this class of bug.  The
-design rule is instead: logical value mapping through CuTe, plus an explicit
-physical-footprint lifetime contract for any opcode whose physical accesses
-exceed its logical fragment.
-
-After cleanup, owned code has no other post-mainloop
-`retile_S(accumulators)` shared round trip.  The fixed Split-K hot path is
-direct; the exact historical collective call remains only under
-`PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE` as a negative control.
-
-Actlize's ordinary vectorized, array, and EVT epilogues contain structurally
-similar register/shared/register redistribution, but their shipping S=1 paths
-have independent correctness coverage and may require it for conversion or
-elementwise work.  They are controls, not implicated bugs, and must not be
-blanket-rewritten.
-
-`ppu_epilogue_vectorized_parallel.hpp` is the closest structural analogue for
-same-type partial publication.  Quactlize's fixed Split-K path retains its
-type only for Params/stride ABI and bypasses its call operator.  Any future
-owned producer that publishes same-type FP32 partials must either use direct
-MMA ownership or earn its own high-repeat raw-bit closure before reusing that
-shared path.
-
-The grouped MoE Split-K kernel is adjacent but not identical.  It invokes the
-ordinary pointer-array epilogue for every K slice, converts each partial to
-FP16, and later accumulates those FP16 planes in FP32.  Its benchmark compares
-S>1 output with S=1 under a numerical tolerance, so it covers the intended
-math but is not a high-repeat per-plane raw-bit test for intermittent shared
-handoff corruption.  Keep that path unchanged; before treating it as a
-shipping correctness authority, add a high-repeat partial-plane/canary census
-or give its completed same-type stage a direct-store route.
-
-The generic vendor `GemmUniversalParallel` plus `EpilogueParallel` route is
-also structurally exposed.  No owned fixed Split-K launch uses its call
-operator after this repair, so it is not a current regression.  A future
-caller must not infer admission from type formation alone.
-
-The retained device closure is implemented by
-`tools/run_fq_q4k_custom_split_count_box.sh`.  It launches the exact generated
-AP0/AP1 `GemmUniversalMixedInputSplitKParallel` symbols at runtime S=1/2/4.
-The final causal selection is `exact-metadata-publication`: its must-red arm
-reconstructs legacy modulo publishers and omits the initialization edge, while
-its candidate uses production exact ownership plus the edge. The
-preceding eight-binary factorial at `3e83a45`
-left every counterfactual dirty: baseline, prepare-after-consume,
-explicit-stage, direct-x4, separate-A-group and synchronous-store were 0/8
-clean S>1 cells; compiler-fence was 4/8 and A-before-B 6/8.  Those incidence
-changes are code-layout sensitivity, not closure.
-
-```bash
-FQ_A_STAGE_CANDIDATE=exact-metadata-publication \
-PROBE_REPEATS=32768 PROBE_ATTEMPTS=2 JOBS=16 \
-bash tools/run_fq_q4k_custom_split_count_box.sh
-```
-
-The repeated host harness was also audited. Every round is ordered as
-producer, reducer, device synchronize, then D2H output inspection, so launches
-cannot overlap across repeats. The FP32 workspace is reused without clearing,
-however, and historical runs inspected its planes only after a reduced FP16
-failure. This leaves a narrower harness-state possibility: corrupt planes in
-one apparently clean round could cancel during reduction and survive into the
-next round. Simple reuse of a previously correct plane is already inconsistent
-with the captured values (`25->20`, `22->18`, `1->6`, `0->-6`), because none
-of `20,18,6,-6` is a correct S1/S2/S4 partial for the frozen fixture.
-
-The host diagnostic now supports `reuse`, `target-poison`, and
-`control-poison` repeat-state modes and can inspect every FP32 plane on every
-round. `control-poison` applies the same memset/synchronize cadence to an
-equally sized disjoint workspace tail. Target poison is causal only when it is
-clean and control poison remains dirty; both clean means cadence masking, and
-both dirty excludes ordinary global workspace carry-over.
-
-The completed `254a3e4` bundle made that exclusion.  Reuse, control-poison and
-target-poison each failed exactly twice in about 198k--202k geometric exposure,
-always in packed-row/S4 and always as one actively written 32-value FP32
-producer band.  The target-poison failures contained small fixture values
-(`-6`, `-2`, `6`), not poison.  Launch overlap, prior workspace contents and a
-missing partial store are therefore excluded.  In this exact binary AP0 and
-S2 remained clean, which narrows this codegen but does not erase their older
-failures under different code layout.
-
-One locally provable but noncausal contract mismatch exists at the AIU helper boundary.
-`Copy_Traits<PPU0010_AIU_LOAD>::ThrID` is `Layout<_1>` and its source comment
-states that one thread issues the opaque bulk load.  The two rvalue
-`cute::copy_aiu` paths used by the frozen mixed-input kernels nevertheless let
-all 32 lanes of warp 0 issue the same operation.  L224 proves their CuTe
-coordinates are identical and separately proves that the candidate physical
-issuer count is one; it includes a two-issuer negative.  Coordinate identity
-does not establish that duplicate asynchronous bulk issues are legal.  The
-`single-aiu-issuer` diagnostic gates only these two overloads to CTA thread 0;
-the FA lvalue overload and all descriptors, scalar packed-A copies, stage
-geometry, waits/barriers, MMA and partial stores are unchanged.
-
-The frozen closure is:
-
-```bash
-FQ_A_STAGE_CANDIDATE=repeat-state \
-PROBE_REPEATS=32768 PROBE_ATTEMPTS=2 \
-bash tools/run_fq_q4k_custom_split_count_box.sh
-```
-
-The issuer-cardinality exclusion was:
-
-```bash
-FQ_A_STAGE_CANDIDATE=single-aiu-issuer \
-PROBE_REPEATS=32768 PROBE_ATTEMPTS=2 \
-bash tools/run_fq_q4k_custom_split_count_box.sh
-```
-
-Because each cell stops at its first failure, probability uses the geometric
-exposure `sum(failure_repeat + 1)`, not the requested repeat count. Two
-baseline attempts estimate standard-aiu S2/S4 at about 0.078%/0.018% per
-launch and packed-row S2/S4 at about 0.427%/0.409%. Each estimate contains
-only two events and is an order-of-magnitude diagnostic, not a stable
-production rate.
-
-The first reduced closure at `d6e5589` compared baseline with one exact
-contract arm:
-
-- `asm-memory-contract` retains the physical x4 opcode and adds actual
-  `memory` clobbers to the fp16-A AIU/packed cp.async producer, commit/wait and
-  m8 ldmatrix consumer;
-
-One historical arm was the source-proved `logical-x2-scalar` path, which
-removes the physical x4 swizzle opcode and loads only its two semantic b32
-values.  The second adds only `fence_view_async_shared()` after each
-`cp_async_wait<Stages-2>()` and before packed decode/CTA publication.  Neither
-combines with the failed clobber arm.
-
-L186 proves that reserved arm's 512 `(coord_h,slice,lane,vreg)` addresses against the
-independent calibrated PPU0010 model and requires a one-word-offset negative
-to turn RED.  Two independent 32768-repeat attempts run for both current arms;
-numeric failure never truncates the closure.
-
-The missing inline-asm memory side-effect declarations are a real compiler
-contract defect, but the device run rejected it as a complete root.  Baseline
-and `asm-memory-contract` each produced zero clean S>1 cells out of eight;
-all sixteen dirty cells localized to wrong producer FP32 partials and no other
-failure class.  The first captured error did not repeat the narrow
-plane-2/index-32 location, but baseline attempt 2 reproduced its complete
-value signature at index 576: one aligned 32-output stripe, output
-`0x4e80 -> 0x4fc0`, and producer plane 2 FP32
-`0x3f800000 -> 0x40c00000` (`1.0 -> 6.0`).  Requiring index 32 made the first
-runner verdict a false nonreproduction.  The corrected rule freezes symbol,
-fixture, provider, S, plane and value pair while recording the aligned stripe
-index separately.  The corrected baseline admission no longer depends on that
-one value pair: all four AP0/AP1 x S2/S4 cells must reproduce a producer-
-partial corruption across the independent attempts.  Each candidate must
-keep custom S1 clean and close every S2/S4 cell.
-
-Pure address arithmetic may be hoisted or commoned only while preserving the
-runtime stage value.  The source defect alone did not prove the proposed
-stale-stage mechanism, and adding the exact clobbers did not change the device
-failure denominator. The physical x4 consumer, async-shared proxy fence and
-single AIU issuer arms also remained dirty. Those failures are consistent
-with the source-proved metadata clear/decode race because none changed its
-owner maps or inserted the missing initialization edge.
-
-The current claim is: the legacy shared handoff is independently unsafe and
-direct store removes that trigger; the rarer direct-store incident is caused
-by the packed fp16 metadata initialization race described at the top. Local
-CuTe proof is complete. One device A/B remains to confirm that the production
-repair closes the stochastic hardware symptom and to measure its latency.
+Several of those arms changed failure incidence. That was schedule sensitivity,
+not causal closure. The final diagnosis required composing the actual clear
+and decode ownership maps and then testing the complete owner-plus-edge repair
+against the exact legacy negative.
 
 ## Retained regression evidence
 
-- `ppu_splitk_direct_accumulator_store.hpp`: production implementation.
-- `PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE`: exact historical negative.
-- `l222_fq_splitk_direct_accumulator_store.cu`: exact-once ownership oracle,
-  including duplicate-owner and rotated-fragment negatives.
-- `ci/check_fq_splitk_partial_path.py`: source contract for the direct path,
-  terminal mainloop synchronization, exact metadata ownership/init ordering,
-  and ordered producer/reducer timing.
-- `l114_scale_copy_coverage.cu`: real-CuTe PASS/FAIL ownership and six-pair
-  cross-warp race census.
+Long-lived local gates:
 
-The one-off owner, barrier, handoff, and prefix factorial programs are retained
-in Git history, not in the shipping tree.
+```bash
+python3 -B ci/check_fq_splitk_partial_path.py
+bash dev/fold_derivation/run_l217_packed_metadata_ownership.sh
+python3 -B ci/local_gates.py -k l114_scale_copy_coverage --strict
+bash dev/fold_derivation/run_l186_dense_m1_packed_a.sh
+bash dev/fold_derivation/run_l223_fq_splitk_partial_abi.sh
+```
+
+The WN64 narrow-CTA closure remains available through
+`tools/run_fq_q4k_tm8_wn64_closure_box.sh`. The large causal runner used for
+the now-closed bug was deliberately deleted; its exact output and source remain
+recoverable from commit `265033f` and the artifact path above.
+
+## Performance boundary
+
+CTA32 keeps its original compile-time owner work and emits no new barrier.
+CTA128 removes redundant publishers and adds one initialization-only CTA edge.
+The device A/B proves raw-bit correctness, not a complete performance census;
+the normal decode sweep is the authority for final tactic ranking.

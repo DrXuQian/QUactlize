@@ -979,8 +979,8 @@ def measure(plan_path: pathlib.Path, binary: pathlib.Path, out: pathlib.Path,
 def write_synthetic_gguf(path: pathlib.Path, tensors: list[tuple[str, list[int], int]] | None = None) -> None:
     """A tiny v3 header used by --self-test; contains no tensor payload."""
     tensors = tensors or [
-        # Hybrid control: block 0 is Gated DeltaNet and must not be mistaken
-        # for a full-attention q projection merely because its shape is close.
+        # Hybrid control: block 0 is not full attention and must not be mistaken
+        # for a q projection merely because its shape is close.
         ("blk.0.attn_qkv.weight", [2048, 8192], 12),
         ("blk.0.attn_gate.weight", [2048, 4096], 12),
         # First full-attention layer in the real Qwen3.5 checkpoint.
@@ -1258,7 +1258,7 @@ def self_test() -> int:
         assert not blocked_results.exists()
     finally:
         shutil.rmtree(td)
-    print("[prefill-sweep:self-test] PASS: hybrid blk0-GDN/blk3-attention selection, GGUF qtype/dim authority, "
+    print("[prefill-sweep:self-test] PASS: hybrid blk0-nonattention/blk3-attention selection, GGUF qtype/dim authority, "
           "q4 semantic tag, FoldN negative, Q3 legacy exclusion, denominator fail-close, cross-M conflict, "
           "controlled Q8_0 ScaleFirst admission, and all-unsupported pre-build admission")
     return 0

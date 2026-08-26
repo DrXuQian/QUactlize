@@ -137,9 +137,33 @@ The local implementation gates are
 `dev/fold_derivation/run_l217_packed_metadata_ownership.sh`, L114, and
 `ci/check_fq_splitk_partial_path.py`. The narrow-CTA device closure remains the
 four exact AP0/AP1 × stages3/4 rows driven by
-`tools/run_fq_q4k_tm8_wn64_closure_box.sh`; the surplus-publisher closure is
-`FQ_A_STAGE_CANDIDATE=exact-metadata-publication` in
-`tools/run_fq_q4k_custom_split_count_box.sh`.
+`tools/run_fq_q4k_tm8_wn64_closure_box.sh`.
+
+## Device causal closure
+
+The exact legacy-versus-production A/B closed on 2026-08-26 at commit
+`265033f5483f995cadb4ccda3b28a5af8a23d7b4`:
+
+```text
+artifact=/workspace/quactlize-fq-q4k-a-stage-root-265033f5-20260826T002715Z-2904796
+verdict=PACKED_METADATA_CLEAR_DECODE_RACE_CLOSED
+baseline_failure_attempts=2/2
+selection=exact-metadata-publication
+clean_candidates=exact-metadata-publication
+shipping_s1_clean=4/4
+```
+
+The negative reconstructed all-thread modulo publishers and omitted the
+initialization edge. The candidate used production exact ownership plus the
+one-time pre-prefetch CTA edge and closed every custom S1/S2/S4 cell. This is
+the required source-plus-device proof; failure-rate changes from narrower
+counterfactual arms are not equivalent evidence.
+
+After closure, the factorial runner, repeat-state controls, partial-plane
+failure probes, stale-A/issuer oracle and counterfactual compile macros were
+deleted. Retain only the production contract, local CuTe ownership gates, this
+record, and the exact legacy macro
+`PPU_MIXED_LEGACY_MODULO_METADATA_PUBLISHERS`.
 
 ## Performance boundary
 

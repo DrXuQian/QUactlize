@@ -90,7 +90,7 @@ I wrote all three here and none survives review. Three contradictions, two of th
     register allocation, so pricing the XOR needs swz-vs-base counters that were never captured. The +7.0% ABBA
     contrast against base is real; the MECHANISM behind it is not established, and naming it here smuggled that in.
   * **A placement test already contradicts "a shorter critical path is the only mechanism left".**
-    PPU_PACKED_SPLIT_GROUPS turns 4 publisher warps x 8 groups into 8 x 4 with identical decode, store and conflict
+    A retired split-group experiment turned 4 publisher warps x 8 groups into 8 x 4 with identical decode, store and conflict
     counts -- a strictly shorter producer critical path -- and it is WORSE, +3.4% (CI 1.022..1.045) even after the
     four-way difference of differences subtracts its added read. Shortening that path is not an untested hope; it is
     a tested loss.

@@ -154,21 +154,12 @@ GATES = [
     # historical B-derived A coordinate aliases all A atoms at the wrap, while
     # B d0/d3 are disjoint, and checks the shared replacement schedule.
     ("l220_q4_a32_prepare_consume_layout", []),
-    # Exact failing FQ packed-m8 views: one-to-one A-copy/MMA atom mapping,
-    # zero logical prepare-next/consume-current overlap, exact M=1 output-warp
-    # ownership, and a fixture proof that one stale-A-compatible value pair
-    # does not classify the complete failure family.
-    ("l224_fq_packed_m8_prepare_consume_layout", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
 # ordinary parsing does not instantiate the combination someone will build on the box.
 SYNTAX = [
     ("tests/test_q4k_packed_gemm.cu", ""),
-    # Diagnostic-only PPU async-proxy fence at the shared mixed-pipeline
-    # publication edge. It is off in production, so baseline syntax does not
-    # instantiate the barrier intrinsic this closure is meant to test.
-    ("tests/test_q4k_packed_gemm.cu", "-DPPU_MIXED_ASYNC_SHARED_FENCE=1"),
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_PACKED_SCALE=1"),
     # THE CONFIGURATION THAT SHIPPED BROKEN. kFusedScaleZero's definition referenced KernelConversionMode from a
     # point in the class where it is not yet declared, and the offending conjunct lives inside
@@ -187,7 +178,6 @@ SYNTAX = [
     # covers the formats l103 says can be active. 0=Q4_K 1=Q5_K 2=Q2_K 3=Q3_K 4=Q6_K -- all five now, since the
     # two-plane collective gained the shared packed-scale channel and Q3/Q6 gained paired-unit staging.
     *[("tests/test_q4k_packed_gemm.cu", f"-DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT={f}") for f in (0, 1, 2, 3, 4)],
-    ("tests/test_q4k_packed_gemm.cu", "-DPPU_PACKED_SCALE=1 -DPPU_PACKED_SPLIT_GROUPS=1"),
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_PACKED_SCALE=1 -DPPU_SCALE_SWIZZLE=1"),
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_SCALE_PAD=8"),
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_B_DEQUANT_NOP=1"),
@@ -1495,150 +1485,6 @@ def lint_streamk_tail_oracle():
     return "PASS", "4616 tail partitions exact/nonempty/min-peer; five planted policies red", dt
 
 
-def lint_ppu_chunked_gdn_oracle():
-    """The PPU GDN chunk algebra must equal an independent token recurrence.
-
-    L203 is deliberately host-only.  It exhausts the admitted chunk/tail grid,
-    binds one full 64x128x128 production specialization, proves the blocked
-    unit-lower inverse, and requires four semantic plants to turn red.  The
-    device compiler gate is separate: absence of a PPU SDK cannot weaken this
-    algebraic claim.
-    """
-    script = DEV / "run_l203_chunked_gdn_oracle.sh"
-    if not script.is_file():
-        return "FAIL", f"missing {script.name}", 0.0
-    rc, log, dt = run(["bash", str(script)], cwd=str(ROOT))
-    witness = (
-        "[L203] PASS: pure-C++ GDN recurrence == chunk/WY; "
-        "inverse/scheduler/tails/plants closed"
-    )
-    if rc != 0:
-        lines = [line.strip() for line in log.splitlines() if line.strip()]
-        return "FAIL", (lines[-1] if lines else f"{script.name} exited {rc}"), dt
-    if log.count(witness) != 1:
-        return "FAIL", "L203 exited zero without its unique complete PASS witness", dt
-    if log.count("EXPECTED_RED/PASS") != 4:
-        return "FAIL", "L203 did not exercise all four predeclared semantic plants", dt
-    return "PASS", "85 chunk cases + production 64x128x128 equal token recurrence; four plants red", dt
-
-
-def lint_ppu_chunked_gdn_device_compile():
-    """Instantiate the exact CUDA/CUTLASS device body and its admission reds."""
-    script = DEV / "run_l204_chunked_gdn_device_compile.sh"
-    if not script.is_file():
-        return "FAIL", f"missing {script.name}", 0.0
-    rc, log, dt = run(["bash", str(script)], cwd=str(ROOT))
-    if rc == 3:
-        lines = [line.strip() for line in log.splitlines() if line.strip()]
-        return "SKIP", (lines[-1] if lines else "L204 needs nvcc"), dt
-    witness = "[l204] PASS: exact device type compiled; C/head negatives red;"
-    if rc != 0 or log.count(witness) != 1:
-        lines = [line.strip() for line in log.splitlines() if line.strip()]
-        return "FAIL", (lines[-1] if lines else f"{script.name} exited {rc}"), dt
-    if log.count("EXPECTED_RED/PASS") != 2:
-        return "FAIL", "L204 did not exercise both compile-time admission negatives", dt
-    return "PASS", "shipping C64/K128/V128 device body instantiated; chunk/head plants red", dt
-
-
-def lint_ppu_chunked_gdn_abi_harness():
-    """Bind the box correctness harness to the public ABI and exact fixture."""
-    script = DEV / "run_l205_ppu_chunked_gdn_abi.sh"
-    if not script.is_file():
-        return "FAIL", f"missing {script.name}", 0.0
-    rc, log, dt = run(["bash", str(script), "--local"], cwd=str(ROOT))
-    contract = "[L205 contract] PASS: public ABI only; T65/C64/KV128/GVA1:2;"
-    compile_witness = "[L205 local] PASS: public-header/runtime compile contract;"
-    cuda_witness = "[L205 CUDA] PASS: exact scalar collective body launched with global test scratch"
-    honest_scope = "[L205 device] SKIP: --local selected; PPU execution requires --box"
-    if rc != 0:
-        lines = [line.strip() for line in log.splitlines() if line.strip()]
-        return "FAIL", (lines[-1] if lines else f"{script.name} exited {rc}"), dt
-    if log.count(contract) != 1 or log.count(compile_witness) != 1:
-        return "FAIL", "L205 lost its unique public-ABI contract or host-compile witness", dt
-    if log.count("[GDN fixture exactness plant] non-bf16-H EXPECTED_RED/PASS") != 1:
-        return "FAIL", "L205 BF16-boundary proof did not reject its non-representable H plant", dt
-    admission_plants = [
-        line for line in log.splitlines()
-        if line.startswith("[GDN admission] plant=") and line.endswith(" EXPECTED_RED/PASS")
-    ]
-    if len(admission_plants) != 7 or not any("plant=misaligned-q " in line for line in admission_plants) or not any(
-            "plant=grid-overflow " in line for line in admission_plants) or not any(
-            "plant=extent-overflow " in line for line in admission_plants):
-        return "FAIL", "L205 did not reject all seven admission plants, including alignment/overflow", dt
-    paired_coverage = (
-        "[GDN WY coverage] pattern=paired strict_lower_nonzero=64 "
-        "inverse_offdiag_nonzero=64 causal_offdiag_nonzero=64 expected=64 EXACT/PASS"
-    )
-    if log.count(paired_coverage) != 2:
-        return "FAIL", "L205 paired fixture did not exercise the exact 64/64/64 WY edges", dt
-    paired_device = [
-        line for line in log.splitlines()
-        if line.startswith("[GDN device] pattern=paired ") and line.endswith(" RAW-BIT/PASS")
-    ]
-    if len(paired_device) != 2 or not any("state=zero " in line for line in paired_device) or not any(
-            "state=nonzero " in line for line in paired_device):
-        return "FAIL", "L205 paired WY zero/nonzero device arms were not both raw-bit exact", dt
-    if log.count(honest_scope) != 1:
-        return "FAIL", "L205 local arm did not state that device execution remains a box postcondition", dt
-
-    # Same-file, one-variable negative control: only MODE changes.  /bin/false
-    # stands in for the box's misleading command named nvcc; if the --box arm
-    # consults it at all, `set -e` turns this preflight red before its witness.
-    # This is the exact failure that previously prevented the shipping hgcc
-    # build from being reached on PPU boxes.
-    box_env = os.environ.copy()
-    box_env.update({
-        "NVCC": "/bin/false",
-        "NVIDIA_SMI": "/bin/true",
-        "QZ_GDN_BOX_PREFLIGHT_ONLY": "1",
-        "OUT": "/workspace/quactlize-l205-box-mode-preflight",
-    })
-    box_rc, box_log, box_dt = run(
-        ["bash", str(script), "--box"], cwd=str(ROOT), env=box_env)
-    dt += box_dt
-    box_skip = (
-        "[L205 CUDA] SKIP: --box selects shipping PPU execution; "
-        "NVIDIA reference belongs to --local"
-    )
-    box_witness = "[L205 box preflight] PASS: local CUDA tools were not consulted"
-    if box_rc != 0 or box_log.count(box_skip) != 1 or box_log.count(box_witness) != 1:
-        lines = [line.strip() for line in box_log.splitlines() if line.strip()]
-        return "FAIL", (lines[-1] if lines else "L205 box mode consulted local CUDA tools"), dt
-
-    if log.count(cuda_witness) == 1:
-        return "PASS", "public ABI harness exact; full scalar body executed on local CUDA", dt
-    cuda_skip = next((line.strip() for line in log.splitlines()
-                      if line.startswith("[L205 CUDA] SKIP:")), "")
-    if cuda_skip:
-        return "SKIP", f"public ABI compile contract passed; {cuda_skip}", dt
-    return "FAIL", "L205 neither executed nor honestly skipped its local CUDA body", dt
-
-
-def lint_ppu_chunked_gdn_global_dot_ownership():
-    """Exhaust the shipping PPU TiledMma accumulator destination map."""
-    script = DEV / "run_l206_chunked_gdn_global_dot_ownership.sh"
-    if not script.is_file():
-        return "FAIL", f"missing {script.name}", 0.0
-    rc, log, dt = run(["bash", str(script)], cwd=str(ROOT))
-    if rc == 3:
-        lines = [line.strip() for line in log.splitlines() if line.strip()]
-        return "SKIP", (lines[-1] if lines else "L206 needs nvcc"), dt
-    witness = (
-        "[l206] PASS: production accumulator map exact-once; "
-        "two negatives red;"
-    )
-    ownership = (
-        "threads=128 coordinate_stride=1 tile=64x64 visits=4096 "
-        "holes=0 duplicate_coordinates=0 duplicate_visits=0 oob=0 min=1 max=1"
-    )
-    if rc != 0 or log.count(witness) != 1 or log.count(ownership) != 1:
-        lines = [line.strip() for line in log.splitlines() if line.strip()]
-        return "FAIL", (lines[-1] if lines else f"{script.name} exited {rc}"), dt
-    if log.count("EXPECTED_RED/PASS") != 2:
-        return "FAIL", "L206 did not reject both ownership-map plants", dt
-    return "PASS", "real PPU TiledMma owns every 64x64 destination exactly once", dt
-
-
 def lint_dense_marlin_contract():
     """Marlin must remain an additive K-fast scheduler with its own peer protocol and launch guard."""
     return _run_ci_script(
@@ -2569,10 +2415,6 @@ def main():
                 ("lint", "fixed Split-K multiformat metadata ABIs retain exact types", lint_dense_splitk_multiformat_types),
                 ("lint", "Stream-K tail scan covers attributed zero, medium, and extreme waves", lint_streamk_tail_plan),
                 ("lint", "dense Stream-K tail partitions exhaust the committed BPC domain", lint_streamk_tail_oracle),
-                ("lint", "PPU chunked GDN recurrence and WY algebra agree on every admitted tail", lint_ppu_chunked_gdn_oracle),
-                ("lint", "PPU chunked GDN exact device body instantiates with fail-closed geometry", lint_ppu_chunked_gdn_device_compile),
-                ("lint", "PPU chunked GDN public-ABI box harness is exactness-bound and locally compilable", lint_ppu_chunked_gdn_abi_harness),
-                ("lint", "PPU chunked GDN global-dot accumulator destinations are exact-once", lint_ppu_chunked_gdn_global_dot_ownership),
                 ("lint", "dense Marlin keeps K-fast stripes, reverse q locks, and the scheduler-owned grid", lint_dense_marlin_contract),
                 ("lint", "dense Marlin exhausts the declared deployment domain without sampling", lint_dense_marlin_exhaustive),
                 ("lint", "the real dense Marlin Cfg emits the proved raw-shape and unit seams", lint_dense_marlin_codegen),
