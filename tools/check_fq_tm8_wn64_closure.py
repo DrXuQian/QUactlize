@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Validate aligned and N-tail Q4_K packed-metadata device closure."""
+"""Validate the aligned Q4_K packed-metadata device closure.
+
+The current resident xplane ABI requires N % 256 == 0, while every admitted
+TileN divides 256.  An N-tail device row is therefore not a production domain;
+tail destination ownership is covered by the L217 CuTe oracle instead.
+"""
 
 from __future__ import annotations
 
@@ -92,11 +97,11 @@ def check_one(text: str, shape: str) -> None:
         raise ValueError("shape-level PASS marker missing")
 
 
-def check(aligned: str, tail: str) -> None:
+def check(aligned: str) -> None:
     check_one(aligned, "1x1024x5120")
-    check_one(tail, "1x992x5120")
-    print("[fq-tm8-wn64-check] PASS shapes=2 tactics=6 census_rows=48 "
-          "raw_bad=0 WN64-control=4 WN16-S1/S2/S4=6 tail=EXACT")
+    print("[fq-tm8-wn64-check] PASS shapes=1 tactics=6 census_rows=24 "
+          "raw_bad=0 WN64-control=4 WN16-S1/S2/S4=6 "
+          "tail=LOCAL-L217/CURRENT-ABI-N%256")
 
 
 def fixture(shape: str) -> str:
@@ -126,39 +131,37 @@ def fixture(shape: str) -> str:
 
 def self_test() -> None:
     aligned = fixture("1x1024x5120")
-    tail = fixture("1x992x5120")
-    check(aligned, tail)
+    check(aligned)
     first_s2 = next(line for line in aligned.splitlines()
                     if "_wn16_" in line and " S=2 " in line)
-    for broken_aligned, broken_tail in (
-            (aligned.replace(first_s2 + "\n", ""), tail),
-            (aligned.replace("raw_bad=0", "raw_bad=32", 1), tail),
-            (aligned.replace("_wn64_", "_wn32_", 1), tail),
-            (aligned.replace("state=MEASURED", "state=RAW_FP16_MISMATCH", 1), tail),
-            (aligned, tail.replace("status=PASS", "status=FAIL", 1))):
+    for broken in (
+            aligned.replace(first_s2 + "\n", ""),
+            aligned.replace("raw_bad=0", "raw_bad=32", 1),
+            aligned.replace("_wn64_", "_wn32_", 1),
+            aligned.replace("state=MEASURED", "state=RAW_FP16_MISMATCH", 1),
+            aligned.replace("status=PASS", "status=FAIL", 1)):
         try:
-            check(broken_aligned, broken_tail)
+            check(broken)
         except ValueError:
             pass
         else:
             raise AssertionError("closure negative stayed green")
-    print("[fq-tm8-wn64-check:self-test] PASS aligned/tail denominators, "
-          "raw_bad, WN-substitution, failure-state and tail-status RED")
+    print("[fq-tm8-wn64-check:self-test] PASS aligned denominator, "
+          "raw_bad, WN-substitution, failure-state and shape-status RED")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--aligned-log", type=pathlib.Path)
-    parser.add_argument("--tail-log", type=pathlib.Path)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     try:
         if args.self_test:
             self_test()
         else:
-            if args.aligned_log is None or args.tail_log is None:
-                parser.error("--aligned-log and --tail-log are required")
-            check(args.aligned_log.read_text(), args.tail_log.read_text())
+            if args.aligned_log is None:
+                parser.error("--aligned-log is required")
+            check(args.aligned_log.read_text())
         return 0
     except (OSError, ValueError, AssertionError) as exc:
         print(f"[fq-tm8-wn64-check] FAIL: {exc}", file=sys.stderr)

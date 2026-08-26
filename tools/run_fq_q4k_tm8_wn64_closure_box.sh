@@ -2,11 +2,12 @@
 # Exact device closure for the Q4_K packed-metadata destination contract.
 # The historical filename remains stable. It builds six tactics only: WN64 x
 # stages={3,4} controls plus the WN16/stage2 root-cause row, both A providers.
-# The one binary runs an aligned N tile and an N residue.
+# The current xplane ABI admits N multiples of 256 only, so the device closure
+# runs the aligned production domain. L217 covers the future N-tail contract.
 set -uo pipefail
 
 main() {
-  local root workspace_root sha short stamp out jobs full generated build_dir build_log binary aligned_log tail_log
+  local root workspace_root sha short stamp out jobs full generated build_dir build_log binary aligned_log
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
   workspace_root="$(realpath -e /workspace)" || return 2
   sha="$(git -C "$root" rev-parse HEAD)" || return 2
@@ -68,21 +69,11 @@ main() {
     printf '[fq-tm8-wn64] FAIL: aligned device target rc=%d artifacts=%s\n' "$run_rc" "$out" >&2
     return "$run_rc"
   fi
-  tail_log="$out/results/device-tail.log"
-  # N=992 leaves an aligned 32-column residue in the final TN64 tile.
-  "$binary" --shape=1x992x5120 --iterations="${ITERATIONS:-3}" \
-    --correctness-repeats="${CORRECTNESS_REPEATS:-8192}" \
-    --only-split=0 --bc-mode=skip | tee "$tail_log"
-  run_rc=${PIPESTATUS[0]}
-  if [ "$run_rc" -ne 0 ]; then
-    printf '[fq-tm8-wn64] FAIL: tail device target rc=%d artifacts=%s\n' "$run_rc" "$out" >&2
-    return "$run_rc"
-  fi
   python3 -B "$root/tools/check_fq_tm8_wn64_closure.py" \
-    --aligned-log "$aligned_log" --tail-log "$tail_log" || return 2
-  sha256sum "$binary" "$generated/manifest.json" "$aligned_log" "$tail_log" \
+    --aligned-log "$aligned_log" || return 2
+  sha256sum "$binary" "$generated/manifest.json" "$aligned_log" \
     > "$out/results/authority.sha256" || return 2
-  printf '[fq-tm8-wn64] PASS sha=%s rows=6 shapes=2 WN64=RETAINED WN16-S1/S2/S4=RAW-BIT tail=EXACT artifacts=%s\n' \
+  printf '[fq-tm8-wn64] PASS sha=%s rows=6 shapes=1 WN64=RETAINED WN16-S1/S2/S4=RAW-BIT tail=LOCAL-L217/CURRENT-ABI-N%%256 artifacts=%s\n' \
     "$sha" "$out"
 }
 

@@ -141,7 +141,9 @@ The local implementation gates are
 `dev/fold_derivation/run_l217_packed_metadata_ownership.sh`, L114, and
 `ci/check_fq_splitk_partial_path.py`. The narrow device closure is driven by
 `tools/run_fq_q4k_tm8_wn64_closure_box.sh`: four WN64 ownership controls plus
-the AP0/AP1 WN16/stage2 root-cause rows, each at aligned N=1024 and tail N=992.
+the AP0/AP1 WN16/stage2 root-cause rows at aligned N=1024. The resident xplane
+ABI requires N%256==0 and admitted TileN divides 256, so L217—not an illegal
+device fixture—closes the future N-tail destination contract.
 
 ## Device causal closure
 

@@ -210,7 +210,9 @@ bash dev/fold_derivation/run_l223_fq_splitk_partial_abi.sh
 
 The retained narrow closure at
 `tools/run_fq_q4k_tm8_wn64_closure_box.sh` now covers four WN64 controls plus
-the two WN16 root-cause tactics on both aligned N=1024 and tail N=992. The large causal runner used for
+the two WN16 root-cause tactics at aligned N=1024. The resident xplane ABI
+requires N%256==0 and every admitted TileN divides 256, so a device N-tail is
+outside the current production domain; L217 owns that future-ABI proof. The large causal runner used for
 the now-closed bug was deliberately deleted; its exact output and source remain
 recoverable from commit `265033f` and the artifact path above. L217 additionally
 plants a missing decode-owner tail zero and requires it to fail.
