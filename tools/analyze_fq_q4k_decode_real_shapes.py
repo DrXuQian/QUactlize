@@ -27,7 +27,7 @@ from typing import Any, Iterable
 import plan_fq_q4k_decode_real_shapes as planner
 
 
-RESULT_SCHEMA = "quactlize.fq_q4k_decode_real_shapes_result.v1"
+RESULT_SCHEMA = "quactlize.fq_q4k_decode_real_shapes_result.v2"
 SCREEN_SCHEMA = "quactlize.fq_q4k_decode_screen.v1"
 SCHEDULER_SCHEMA = "quactlize.fq_q4k_decode_scheduler.v2"
 TC_PREFIX = "FQ_TC_CELL "
@@ -481,6 +481,42 @@ def adjudicate(candidates: list[dict[str, Any]]) -> tuple[str, dict[str, Any], d
     return verdict, winner, runner
 
 
+def close_artifact_cell(candidates: list[dict[str, Any]], *, artifact: int,
+                        typed_rows: int, bc_rows: list[dict[str, Any]],
+                        shape: tuple[int, int, int]) -> dict[str, Any]:
+    if candidates:
+        verdict, winner, runner = adjudicate(candidates)
+        return {
+            "status": "AVAILABLE",
+            "verdict": verdict,
+            "winner": winner,
+            "runner_up": runner,
+            "unavailability": None,
+        }
+    bc_states = collections.Counter(row["state"] for row in bc_rows)
+    # A32 is deliberately not compiled for tensor core: it exists only so the
+    # placed SIMT reader can compete at M<8.  M=8 is the exact boundary where
+    # that reader closes UNSUPPORTED, so this one cell is structurally absent.
+    # Any other empty cell means a measured family disappeared and remains a
+    # hard failure rather than silently weakening the artifact denominator.
+    if artifact != 32 or typed_rows != 0 or shape[0] != 8 or \
+            bc_states != collections.Counter({"UNSUPPORTED_M_GE_8": 4}):
+        raise ContractError(
+            f"A{artifact}/{shape[0]}x{shape[1]}x{shape[2]} has no measured "
+            f"candidate (typed={typed_rows}, BC={dict(sorted(bc_states.items()))})")
+    return {
+        "status": "UNAVAILABLE",
+        "verdict": "UNAVAILABLE_NO_TC_AND_SIMT_M_GE_8",
+        "winner": None,
+        "runner_up": None,
+        "unavailability": {
+            "tensor_core": "A32_INTENTIONALLY_BC_ONLY",
+            "simt_bc": "UNSUPPORTED_M_GE_8",
+            "bc_terminal_rows": 4,
+        },
+    }
+
+
 def finalize(plan_path: pathlib.Path, policy_path: pathlib.Path,
              raw_root: pathlib.Path, generated_root: pathlib.Path,
              output_dir: pathlib.Path) -> dict[str, Any]:
@@ -522,18 +558,24 @@ def finalize(plan_path: pathlib.Path, policy_path: pathlib.Path,
             raise ContractError("BC confirmation unexpectedly contains TC")
         candidates.extend(candidate_from_bc(row, shape, artifact)
                           for row in bc_rows if row["state"] == "MEASURED")
-        verdict, winner, runner = adjudicate(candidates)
-        winner = dict(winner)
-        winner.update(metrics(winner, shape, policy))
+        closure = close_artifact_cell(
+            candidates, artifact=artifact, typed_rows=len(manifest_rows),
+            bc_rows=bc_rows, shape=shape)
+        winner = closure["winner"]
+        if winner is not None:
+            winner = dict(winner)
+            winner.update(metrics(winner, shape, policy))
         result = {
             "cell_key": cell["cell_key"],
             "shape_key": shape_key,
             "shape": list(shape),
             "artifact_tile_k": artifact,
             "physical_layout_class": cell["physical_layout_class"],
-            "verdict": verdict,
+            "status": closure["status"],
+            "verdict": closure["verdict"],
             "winner": winner,
-            "runner_up": runner,
+            "runner_up": closure["runner_up"],
+            "unavailability": closure["unavailability"],
             "candidate_count": len(candidates),
             "manifest_sha256": sha256(manifest_path),
         }
@@ -547,6 +589,8 @@ def finalize(plan_path: pathlib.Path, policy_path: pathlib.Path,
         candidates = []
         for artifact in planner.ARTIFACTS:
             result = cell_results[(artifact, shape_key)]
+            if result["status"] == "UNAVAILABLE":
+                continue
             candidates.append(result["winner"])
             if result["runner_up"] is not None:
                 candidates.append(result["runner_up"])
@@ -573,7 +617,10 @@ def finalize(plan_path: pathlib.Path, policy_path: pathlib.Path,
             klass = planner.layout_class(artifact)["name"]
             for row in family_rows:
                 m = row["shape"][0]
-                winner = cell_results[(artifact, row["shape_key"])]["winner"]
+                cell = cell_results[(artifact, row["shape_key"])]
+                if cell["status"] == "UNAVAILABLE":
+                    continue
+                winner = cell["winner"]
                 previous = classes[klass].get(m)
                 if previous is None or winner["median_us"] < previous["median_us"]:
                     classes[klass][m] = winner
@@ -581,7 +628,8 @@ def finalize(plan_path: pathlib.Path, policy_path: pathlib.Path,
         for name, per_m in sorted(classes.items()):
             if set(per_m) != set(planner.DECODE_M):
                 scores.append({"physical_layout_class": name, "available": False,
-                               "covered_m": sorted(per_m)})
+                               "covered_m": sorted(per_m),
+                               "missing_m": sorted(set(planner.DECODE_M) - set(per_m))})
                 continue
             rows = []
             for m in planner.DECODE_M:
@@ -624,6 +672,10 @@ def finalize(plan_path: pathlib.Path, policy_path: pathlib.Path,
             "TC_SPLITK": "PRODUCER_PLUS_MODELED_80PCT_HBM_REDUCER_ZERO_LAUNCH",
         },
         "cell_count": len(cell_results),
+        "available_cell_count": sum(
+            row["status"] == "AVAILABLE" for row in cell_results.values()),
+        "unavailable_cell_count": sum(
+            row["status"] == "UNAVAILABLE" for row in cell_results.values()),
         "shape_count": len(per_shape),
         "cells": [cell_results[key] for key in sorted(cell_results)],
         "shape_winners": per_shape,
@@ -676,6 +728,33 @@ def self_test() -> None:
     candidates[1]["min_us"] = 10.0
     if adjudicate(candidates)[0] != "UNRESOLVED_OVERLAPPING_ENVELOPES":
         raise AssertionError("overlapping confirmation envelopes resolved")
+    unsupported_bc = [{"state": "UNSUPPORTED_M_GE_8"} for _ in range(4)]
+    unavailable = close_artifact_cell(
+        [], artifact=32, typed_rows=0, bc_rows=unsupported_bc,
+        shape=(8, 1024, 5120))
+    if unavailable["status"] != "UNAVAILABLE" or \
+            unavailable["winner"] is not None or \
+            unavailable["verdict"] != "UNAVAILABLE_NO_TC_AND_SIMT_M_GE_8":
+        raise AssertionError("intentional A32/M8 structural hole did not close")
+    unavailable_negatives = (
+        {"artifact": 64, "typed_rows": 0, "bc_rows": unsupported_bc,
+         "shape": (8, 1024, 5120)},
+        {"artifact": 32, "typed_rows": 1, "bc_rows": unsupported_bc,
+         "shape": (8, 1024, 5120)},
+        {"artifact": 32, "typed_rows": 0, "bc_rows": unsupported_bc,
+         "shape": (4, 1024, 5120)},
+        {"artifact": 32, "typed_rows": 0,
+         "bc_rows": [{"state": "UNSUPPORTED_M_GE_8"} for _ in range(3)],
+         "shape": (8, 1024, 5120)},
+    )
+    for index, arguments in enumerate(unavailable_negatives):
+        try:
+            close_artifact_cell([], **arguments)
+        except ContractError:
+            pass
+        else:
+            raise AssertionError(
+                f"structural unavailable negative {index} stayed green")
     if planner.layout_class(64) != planner.layout_class(256) or \
             planner.layout_class(32) == planner.layout_class(64):
         raise AssertionError("canonical layout classes differ")
@@ -843,7 +922,8 @@ def self_test() -> None:
           "confirmation-envelope fail-close, native M4 SIMT, M8 negative, "
           "complete S1/S2/S4/S8 census separated from S1 measurement, three "
           "TC denominator negatives, optional S2/S4/S8 unavailable closure, "
-          "mandatory S1 and unknown-state negatives, and canonical layout classes")
+          "mandatory S1 and unknown-state negatives, exact A32/M8 structural "
+          "unavailability with four negatives, and canonical layout classes")
 
 
 def main() -> int:

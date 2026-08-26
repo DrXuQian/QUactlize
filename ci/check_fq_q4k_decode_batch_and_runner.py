@@ -72,9 +72,14 @@ def check(kernel: str, backend: str, thop: str, bench: str,
         'board_counts[f"S{split}"] = {\n                "status": "UNAVAILABLE"',
         "if not values:\n            if split == 1:",
         "has unknown terminal state",
+        "UNAVAILABLE_NO_TC_AND_SIMT_M_GE_8",
+        "if artifact != 32 or typed_rows != 0 or shape[0] != 8",
+        '"unavailable_cell_count"',
     )
     if any(token not in analyze for token in analyze_needles):
         raise CheckError("analysis mixes producer-only, reducer, or SIMT scope")
+    if analyze.count('["status"] == "UNAVAILABLE":') != 2:
+        raise CheckError("unavailable artifact cells are not skipped at both rankings")
     runner_needles = (
         "--only-split=1",
         "--bc-mode=all",
@@ -136,6 +141,9 @@ def main() -> int:
          'board_counts[f"S{split}"] = {\n                "status": "AVAILABLE"'),
         (6, "if not values:\n            if split == 1:",
          "if not values:\n            if False:"),
+        (6, "if artifact != 32 or typed_rows != 0 or shape[0] != 8",
+         "if artifact != 64 or typed_rows != 0 or shape[0] != 8"),
+        (6, '["status"] == "UNAVAILABLE":', '["status"] == "AVAILABLE":'),
         (7, "--tile-m-filter 8", "--tile-m-filter 16"),
         (7, "--tm8-max-m=8", "--tm8-max-m=7"),
         (7, '"compiled_binary_identity":"MUST_MATCH_FROZEN_BINARY_HASHES"',
@@ -155,7 +163,8 @@ def main() -> int:
             raise CheckError(f"negative control stayed green: {old} -> {new}")
     print("[fq-q4k-decode:self-test] PASS: M=1/2/4/8, TM8-only TC, native "
           "one-launch M<8 SIMT, phase/census separation, analysis-only resume "
-          "binding, optional scheduler boards with mandatory S1, and thirteen "
+          "binding, optional scheduler boards with mandatory S1, exact A32/M8 "
+          "structural unavailability, and fifteen "
           "negative plants")
     return 0
 
