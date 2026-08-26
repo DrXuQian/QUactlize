@@ -52,20 +52,6 @@ struct KernelAiuFold {
   using BaseSchedule = BaseSchedule_;
 };
 
-// Compute-only fold wrapper.  The wrapped KernelAiuFold remains the complete resident-byte ABI: its artifact fold,
-// ArtifactTileK and base schedule still select the physical gmem/smem copy path.  This outer tag changes only the
-// logical K permutation used to construct the MMA fragment.  The first admitted use is Q4 A64/F1 -> virtual F2 at
-// TacticTileK >= 64, proved by L224 to be a same-thread identity scatter over the exact F1 deliveries.  Keeping this
-// as a distinct wrapper (instead of adding a defaulted parameter to KernelAiuFold) preserves every existing schedule
-// type and mangled kernel name when the experiment is off.
-template<int ComputeLowFold_, class WrappedSchedule_>
-struct KernelAiuVirtualFold {
-  static_assert(ComputeLowFold_ > 1,
-                "KernelAiuVirtualFold is only for a nontrivial logical compute fold");
-  static constexpr int ComputeLowFold = ComputeLowFold_;
-  using WrappedSchedule = WrappedSchedule_;
-};
-
 // A provider choice is orthogonal to the resident-B fold contract.  Keep it in a distinct wrapper instead of
 // adding another defaulted argument to KernelAiuFold: every existing schedule type (and therefore every M>1
 // shipping kernel type) remains exactly the type it was before the M==1 packed-row provider existed.  The wrapper
@@ -93,7 +79,6 @@ template<class T> struct fold_schedule_traits {
   static constexpr int ArtifactLowFold = 0;
   static constexpr int ArtifactHighFold = 0;
   static constexpr int ArtifactTileK = 0;
-  static constexpr int ComputeLowFold = 0;
   using Base = T;
 };
 template<int LowFold, class B, int HighFold, int ArtifactTileK_>
@@ -102,22 +87,7 @@ struct fold_schedule_traits<KernelAiuFold<LowFold, B, HighFold, ArtifactTileK_>>
   static constexpr int ArtifactLowFold = LowFold;
   static constexpr int ArtifactHighFold = HighFold;
   static constexpr int ArtifactTileK = ArtifactTileK_;
-  static constexpr int ComputeLowFold = LowFold;
   using Base = B;
-};
-template<int ComputeLowFold_, class WrappedSchedule_>
-struct fold_schedule_traits<KernelAiuVirtualFold<ComputeLowFold_, WrappedSchedule_>> {
-private:
-  using WrappedTraits = fold_schedule_traits<WrappedSchedule_>;
-public:
-  static_assert(WrappedTraits::ArtifactLowFold > 0 && WrappedTraits::ArtifactTileK > 0,
-                "virtual compute fold requires an explicit resident artifact contract");
-  static constexpr int FoldF = WrappedTraits::FoldF;
-  static constexpr int ArtifactLowFold = WrappedTraits::ArtifactLowFold;
-  static constexpr int ArtifactHighFold = WrappedTraits::ArtifactHighFold;
-  static constexpr int ArtifactTileK = WrappedTraits::ArtifactTileK;
-  static constexpr int ComputeLowFold = ComputeLowFold_;
-  using Base = typename WrappedTraits::Base;
 };
 template<int Rows_, class WrappedSchedule_>
 struct fold_schedule_traits<KernelAiuPackedA<Rows_, WrappedSchedule_>> {
@@ -128,7 +98,6 @@ public:
   static constexpr int ArtifactLowFold = WrappedTraits::ArtifactLowFold;
   static constexpr int ArtifactHighFold = WrappedTraits::ArtifactHighFold;
   static constexpr int ArtifactTileK = WrappedTraits::ArtifactTileK;
-  static constexpr int ComputeLowFold = WrappedTraits::ComputeLowFold;
   // Preserve the A-provider wrapper after removing the artifact-fold wrapper.  This lets the ordinary one-plane
   // dispatch keep its exact group-size schedule while CollectiveMma can still see Rows at compile time.
   using Base = KernelAiuPackedA<Rows_, typename WrappedTraits::Base>;

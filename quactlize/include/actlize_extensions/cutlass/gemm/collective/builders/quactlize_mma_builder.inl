@@ -518,12 +518,6 @@ public:
   // legacy KernelAiuFold spelling predates an explicit artifact contract; for those callers A falls back to T.
   static constexpr int ArtifactTileK =
       fold_schedule_traits<KernelScheduleType>::ArtifactTileK;
-  // The resident artifact fold owns global/shared addressing.  A separately proved virtual fold may change only
-  // the logical MMA K permutation while leaving that physical path untouched.  Default schedules report their
-  // artifact fold here, so every pre-existing instantiation retains the exact old value and generated code.
-  static constexpr int ComputeLowFold =
-      fold_schedule_traits<KernelScheduleType>::ComputeLowFold > 0
-          ? fold_schedule_traits<KernelScheduleType>::ComputeLowFold : ArtifactLowFold;
   static constexpr int ScheduledAPackRows =
       a_provider_schedule_traits<KernelScheduleType>::Rows;
   static constexpr int blockM = cute::get<0>(TileShape_MNK{});
@@ -533,7 +527,7 @@ public:
   static constexpr int MmaPermK =
       cutlass::MixGemmMmaPermK<sizeof_bits<RealInternalElementB>::value,
                                cute::get<2>(TileShape_MNK{}),
-                               ComputeLowFold>::value;
+                               ArtifactLowFold>::value;
   using TiledMma = typename quactlize_detail::get_tiled_mma<
         Arch, ElementMma, ElementMma, ElementAccumulator, TileShape_MNK, ClusterShape_MNK,
         Int<MmaPermK>>::TiledMma;
