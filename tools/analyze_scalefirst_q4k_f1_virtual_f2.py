@@ -80,6 +80,13 @@ def performance(path: pathlib.Path) -> dict:
         groups.setdefault(key, []).append(row)
     if not groups:
         raise Error(f"{path}: no measured FULL_OUTPUT cells")
+    fingerprints = {
+        row.get("fingerprint")
+        for rows in groups.values()
+        for row in rows
+    }
+    if len(fingerprints) != 1 or None in fingerprints:
+        raise Error(f"{path}: FULL_OUTPUT fingerprints differ within one performance shape: {fingerprints}")
     scored = []
     for key, rows in groups.items():
         samples = sorted(int(r["sample"]) for r in rows)
@@ -113,9 +120,25 @@ def analyze(arms: list[list[str]], output: pathlib.Path | None) -> dict:
     fingerprints = {row["correctness"]["fingerprint"] for row in result["arms"].values()}
     if len(fingerprints) != 1:
         raise Error(f"correctness fingerprints differ across physical layouts: {fingerprints}")
-    for label, row in result["arms"].items():
-        if row["performance"]["fingerprint"] not in fingerprints:
-            raise Error(f"{label}: performance fingerprint differs from correctness closure")
+    correctness_shapes = {row["correctness"]["shape"] for row in result["arms"].values()}
+    performance_shapes = {row["performance"]["shape"] for row in result["arms"].values()}
+    if len(correctness_shapes) != 1 or len(performance_shapes) != 1:
+        raise Error(
+            "arm shapes differ within one phase: "
+            f"correctness={correctness_shapes} performance={performance_shapes}")
+    performance_fingerprints = {
+        row["performance"]["fingerprint"] for row in result["arms"].values()
+    }
+    if len(performance_fingerprints) != 1:
+        raise Error(
+            "performance fingerprints differ across physical layouts: "
+            f"{performance_fingerprints}")
+    # Fingerprints hash the complete output, so they are comparable across
+    # physical layouts at one shape, but not across different problem shapes.
+    # If both phases intentionally use the same shape, retain the stronger
+    # cross-phase closure as an additional guard.
+    if correctness_shapes == performance_shapes and fingerprints != performance_fingerprints:
+        raise Error("same-shape correctness/performance fingerprints differ")
     f1 = result["arms"]["f1"]["performance"]["median_us"]
     virtual = result["arms"]["virtual-f2"]["performance"]["median_us"]
     native = result["arms"]["native-f2"]["performance"]["median_us"]
@@ -140,8 +163,10 @@ def analyze(arms: list[list[str]], output: pathlib.Path | None) -> dict:
 
 def self_test() -> None:
     def emit(path: pathlib.Path, artifact: int, perf: bool, raw_bad: int = 0,
-             drop_sample: bool = False) -> None:
+             drop_sample: bool = False, fingerprint: str | None = None) -> None:
         iterations = 3 if perf else 1
+        shape = "4096x5120x8192" if perf else "64x1024x5120"
+        fingerprint = fingerprint or ("0x5678" if perf else "0x1234")
         rows = []
         algorithms = [("NONPERSISTENT", "ordinary", 8)]
         if perf:
@@ -155,12 +180,12 @@ def self_test() -> None:
                              "sample": sample, "sample_us": 10.0 + sample + (grid == 72),
                              "policy": policy, "grid": grid, "capacity_b_mask": "0x0",
                              "balanced_b_mask": "0x0", "config": "64x128x128_w64x64_s3_bc0",
-                             "fingerprint": "0x1234"})
+                             "fingerprint": fingerprint})
         lines = [f"SF_SHARD qtype=12 artifact_tile_k={artifact} bchunk=0 typed_rows=1 "
                  f"selected_rows=1 algorithm_mask=0x1 device=0 cu=72 iterations={iterations} "
                  "correctness_repeats=1 schedule_seed=0x1"]
         lines += [CELL + json.dumps(row, separators=(",", ":")) for row in rows]
-        lines.append(f"SF_COMPLETE status=COMPLETE shape=64x1024x5120 typed_rows=1 "
+        lines.append(f"SF_COMPLETE status=COMPLETE shape={shape} typed_rows=1 "
                      f"runtime_cells={len(algorithms)} measured_cells={len(algorithms)} records={len(rows)} "
                      f"iterations={iterations} fixture=ORDER-INDEPENDENT+FP16-EXACT")
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -194,7 +219,18 @@ def self_test() -> None:
             pass
         else:
             raise Error("missing-sample plant escaped")
-    print("[q4-f1-virtual-f2-analysis:self-test] PASS exact arms; raw_bad and missing-sample plants RED")
+
+        emit(bad, 64, True, fingerprint="0x9999")
+        bad_arms = [list(arm) for arm in arms]
+        bad_arms[1][2] = str(bad)
+        try:
+            analyze(bad_arms, None)
+        except Error:
+            pass
+        else:
+            raise Error("cross-layout performance-fingerprint plant escaped")
+    print("[q4-f1-virtual-f2-analysis:self-test] PASS cross-shape phase identity; "
+          "raw_bad, missing-sample and cross-layout fingerprint plants RED")
 
 
 def main() -> int:
