@@ -8,6 +8,7 @@ main() {
   case "$out" in /workspace/*) ;; *) echo "[l226] FAIL: output outside /workspace: $out" >&2; return 2 ;; esac
   mkdir -p "$out" || return 2
   log="$out/compile.log"
+  "$root/dev/fold_derivation/nvidia_nvcc_or_skip.sh" "$(command -v nvcc 2>/dev/null || true)" l226-runner || return $?
   set +e
   nvcc -std=c++17 -arch=sm_80 --expt-relaxed-constexpr \
     -D__HGGCCC__ -include "$root/dev/fold_derivation/stub_inc/ppu0010_arch_shim.h" \

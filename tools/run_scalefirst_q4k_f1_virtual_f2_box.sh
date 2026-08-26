@@ -37,9 +37,12 @@ main() {
     dev/fold_derivation/l224_q4_f1_virtual_f2.cu
     dev/fold_derivation/l225_q4_f1_virtual_f2_type.cu
     dev/fold_derivation/l226_q4_f1_virtual_f2_body.cu
+    dev/fold_derivation/nvidia_nvcc_or_skip.sh
+    dev/fold_derivation/q4_f1_virtual_f2.expected.txt
     dev/fold_derivation/run_l224_q4_f1_virtual_f2.sh
     dev/fold_derivation/run_l225_q4_f1_virtual_f2_type.sh
     dev/fold_derivation/run_l226_q4_f1_virtual_f2_body.sh
+    ci/check_q4_f1_virtual_f2_committed_evidence.py
     quactlize/include/actlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp
     quactlize/include/actlize_extensions/cutlass/gemm/collective/builders/quactlize_mma_builder.inl
     quactlize/include/fpA_intB_ppu.cuh
@@ -52,20 +55,20 @@ main() {
   dirty="$(git -C "$root" status --porcelain -- "${authority[@]}")" || return 2
   [[ -z "$dirty" ]] || { fail "source authority is dirty:\n$dirty"; return $?; }
 
-  # Host proofs execute before any device build: no box result is interpreted
-  # unless byte ownership and compiled-type invariants are already closed.
-  QUACTLIZE_L224_OUT="$out/results/l224" \
-    bash "$root/dev/fold_derivation/run_l224_q4_f1_virtual_f2.sh" \
-    >"$out/results/l224.log" 2>&1 || {
-      tail -n 120 "$out/results/l224.log" >&2; fail 'L224 mapping proof failed'; return $?; }
-  QUACTLIZE_L225_OUT="$out/results/l225" \
-    bash "$root/dev/fold_derivation/run_l225_q4_f1_virtual_f2_type.sh" \
-    >"$out/results/l225.log" 2>&1 || {
-      tail -n 120 "$out/results/l225.log" >&2; fail 'L225 type proof failed'; return $?; }
-  QUACTLIZE_L226_OUT="$out/results/l226" \
-    bash "$root/dev/fold_derivation/run_l226_q4_f1_virtual_f2_body.sh" \
-    >"$out/results/l226.log" 2>&1 || {
-      tail -n 120 "$out/results/l226.log" >&2; fail 'L226 body closure failed'; return $?; }
+  # L224-L226 are NVIDIA-nvcc/stub host oracles.  The PPU box executable named
+  # nvcc delegates device preprocessing to ppu_clang++, which enables the PPU
+  # fp8 bridge without carrying targets/<triple>/include and dies on
+  # hggc_fp8.h.  Never paper over this with a fake stub: consume exact evidence
+  # from the result SHA, then build all three shipping arms fresh through hgcc.
+  local proof_evidence="$out/inputs/q4_f1_virtual_f2.expected.txt"
+  git -C "$root" show "$sha:dev/fold_derivation/q4_f1_virtual_f2.expected.txt" \
+    >"$proof_evidence" || { fail 'result SHA lacks virtual-fold host evidence'; return $?; }
+  {
+    printf '[q4-f1-virtual-f2] host-evidence=committed-local-oracle source-sha=%s fresh-box-execution=0\n' "$sha"
+    python3 -B "$root/ci/check_q4_f1_virtual_f2_committed_evidence.py" \
+      --committed-only --evidence "$proof_evidence"
+  } 2>&1 | tee "$out/results/host-evidence.log"
+  [[ ${PIPESTATUS[0]} -eq 0 ]] || return 2
   python3 -B "$root/tools/analyze_scalefirst_q4k_f1_virtual_f2.py" --self-test \
     >"$out/results/analyzer-self-test.log" 2>&1 || {
       cat "$out/results/analyzer-self-test.log" >&2; fail 'analyzer self-test failed'; return $?; }

@@ -12,6 +12,7 @@ main() {
     printf '[l224-runner] FAIL: nvcc is unavailable; virtual-fold proof did not run\n' >&2
     return 2
   fi
+  "$repo/dev/fold_derivation/nvidia_nvcc_or_skip.sh" "$compiler" l224-runner || return $?
   "$compiler" -std=c++17 -O2 -x cu -arch=sm_80 --expt-relaxed-constexpr -w \
     -I "$repo/dev/fold_derivation/stub_inc" \
     -I "$repo/third_party/actlize/include" \

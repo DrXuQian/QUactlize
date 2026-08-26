@@ -9,6 +9,7 @@ if [[ -z "$compiler" ]]; then
   echo '[l225-runner] FAIL: nvcc unavailable' >&2
   exit 2
 fi
+"$repo/dev/fold_derivation/nvidia_nvcc_or_skip.sh" "$compiler" l225-runner || exit $?
 flags=(-std=c++17 -arch=sm_80 -w --expt-relaxed-constexpr -D__HGGCCC__ -DPPU_FORCE_INSTANTIATE=1
        -I "$repo/dev/fold_derivation/stub_inc"
        -I "$repo/third_party/actlize/include"

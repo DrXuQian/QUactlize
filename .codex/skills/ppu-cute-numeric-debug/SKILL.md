@@ -26,6 +26,12 @@ Read `references/splitk-shared-partial-epilogue.md` when completed fp32
 accumulators are exact but Split-K partial workspace values intermittently
 lose whole output stripes after a register/shared/register epilogue.
 
+Read `references/host-oracle-compiler-boundary.md` before adding or running an
+NVIDIA-nvcc/stub CuTe oracle on a PPU box, or whenever a proof fails at
+`cutlass/float8.h` with a missing `hggc_fp8.h`.  This compiler-boundary failure
+has recurred; do not diagnose it again from scratch and never add a fake fp8
+SDK header to `stub_inc`.
+
 ## Workflow
 
 ### 1. Freeze one exact row
