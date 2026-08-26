@@ -161,6 +161,8 @@ struct DenseVirtualFoldKernelTypes {
   using ElementAccumulator = typename Ordinary::ElementAccumulator;
   using OperatorClass = typename Ordinary::OperatorClass;
   using ClusterShape = typename Ordinary::ClusterShape;
+  using EpilogueSchedule = typename Ordinary::EpilogueSchedule;
+  using EpilogueTileType = typename Ordinary::EpilogueTileType;
   using CollectiveEpilogue = typename Ordinary::CollectiveEpilogue;
   using CollectiveMainloop = typename MainloopPolicy::CollectiveOp;
   using GemmKernel = cutlass::gemm::kernel::GemmUniversal<

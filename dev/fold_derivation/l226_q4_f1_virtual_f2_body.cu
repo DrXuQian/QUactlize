@@ -15,9 +15,12 @@
 using L226Types = scalefirst_internal_sweep::RowTypes<
     12, 64, 64, 128, 128, 64, 64, 3, 0>;
 using L226Kernel = typename L226Types::ShippingKernel;
+using L226Prepared = typename L226Types::Prepared;
 static_assert(L226Types::Shipping::MainloopPolicy::Descriptor::virtual_compute_fold &&
               L226Types::Shipping::MainloopPolicy::Descriptor::compute_low_fold == 2,
               "the exact ScaleFirst row must select the opt-in virtual-fold policy");
+static_assert(sizeof(L226Prepared) > 0,
+              "the exact ScaleFirst row must close the complete S1/Split-K prepared-launcher ABI");
 
 __global__ void l226_force_exact_body(L226Kernel::Params params) {
   extern __shared__ char smem[];

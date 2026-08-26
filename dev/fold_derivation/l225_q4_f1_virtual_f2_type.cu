@@ -74,10 +74,33 @@ using DenseVirtual128 = fpa_intb_ppu::DenseVirtualFoldKernelTypes<
     typename T128::Warp, 3, true, cutlass::int4b_t, 64>;
 static_assert(std::is_same_v<typename DenseOrdinary128::CollectiveMainloop, typename T128::O> &&
               std::is_same_v<typename DenseVirtual128::CollectiveMainloop, typename T128::V> &&
+              std::is_same_v<typename DenseOrdinary128::ElementA,
+                             typename DenseVirtual128::ElementA> &&
+              std::is_same_v<typename DenseOrdinary128::ElementC,
+                             typename DenseVirtual128::ElementC> &&
+              std::is_same_v<typename DenseOrdinary128::LayoutC,
+                             typename DenseVirtual128::LayoutC> &&
+              std::is_same_v<typename DenseOrdinary128::ElementD,
+                             typename DenseVirtual128::ElementD> &&
+              std::is_same_v<typename DenseOrdinary128::LayoutD,
+                             typename DenseVirtual128::LayoutD> &&
+              DenseOrdinary128::AlignmentC == DenseVirtual128::AlignmentC &&
+              DenseOrdinary128::AlignmentD == DenseVirtual128::AlignmentD &&
+              std::is_same_v<typename DenseOrdinary128::ElementAccumulator,
+                             typename DenseVirtual128::ElementAccumulator> &&
+              std::is_same_v<typename DenseOrdinary128::OperatorClass,
+                             typename DenseVirtual128::OperatorClass> &&
+              std::is_same_v<typename DenseOrdinary128::ClusterShape,
+                             typename DenseVirtual128::ClusterShape> &&
+              std::is_same_v<typename DenseOrdinary128::EpilogueSchedule,
+                             typename DenseVirtual128::EpilogueSchedule> &&
+              std::is_same_v<typename DenseOrdinary128::EpilogueTileType,
+                             typename DenseVirtual128::EpilogueTileType> &&
               std::is_same_v<typename DenseOrdinary128::CollectiveEpilogue,
                              typename DenseVirtual128::CollectiveEpilogue> &&
               DenseOrdinary128::SharedStorageSize == DenseVirtual128::SharedStorageSize,
-              "the ScaleFirst kernel authority must preserve epilogue/smem and select the proved mainloop");
+              "the virtual authority must mirror the complete dense public ABI, preserve epilogue/smem, "
+              "and select only the proved mainloop");
 
 #if defined(L225_NEG_T32)
 using RejectedT32 = Cell<32>;
