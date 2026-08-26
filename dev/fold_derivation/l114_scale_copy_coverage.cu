@@ -132,16 +132,17 @@ CopyStats copy_stats() {
   return stats;
 }
 
-// Reconstruct the exact source race in the Q4/A64 packed path.  clear(tSsS)
-// uses ScaleCopyPlan's (N,group) TiledCopy, while packed_decode_stage uses one
-// packed-column owner over every group.  The historical collective wrapped
-// every physical CTA thread onto the smaller scale-copy layout, performed the
-// clear before any mainloop work, then decoded after a per-thread async wait
-// and before the first CTA barrier.  A scale-copy warp can therefore execute
-// its clear after a different packed-column warp has decoded.  The historical
-// surplus warps duplicate four more such cross-warp pairs, but exact ownership
-// alone still leaves the two active-owner cross pairs and therefore still
-// needs the one-time initialization edge.
+// Reconstruct the exact HISTORICAL source race in the Q4/A64 packed path.
+// clear(tSsS) used ScaleCopyPlan's (N,group) TiledCopy, while
+// packed_decode_stage used one packed-column owner over every group.  The old
+// collective wrapped every physical CTA thread onto the smaller scale-copy
+// layout, performed the clear before any mainloop work, then decoded after a
+// per-thread async wait and before the first CTA barrier.  A scale-copy warp
+// could therefore clear after a different packed-column warp decoded.  The
+// production packed path no longer executes this clear at all: L217 proves its
+// one decode-owner total overwrite, including the N tail.  This census remains
+// the exact must-red legacy signature and the explanation for why merely
+// filtering surplus clear publishers was not a complete repair.
 template <class Plan>
 WarpPublicationStats warp_publication_stats() {
   static_assert(Plan::cta_threads % 32 == 0);

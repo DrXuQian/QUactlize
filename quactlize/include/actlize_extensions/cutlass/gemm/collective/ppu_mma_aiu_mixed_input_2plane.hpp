@@ -835,13 +835,6 @@ public:
         PackedMetadataOwnership::copy_owner(thread_idx),
         scale_copy_owner);
 
-    // Packed decode and fp16-tile initialization use different owner maps.  Publish the one-time exact clear before a
-    // multi-warp CTA can begin decoding; the single-warp geometry remains instruction-for-instruction unchanged.
-    if constexpr (kPackedScaleOn && Scale_NumThreads > 32 &&
-                  !kLegacyModuloMetadataPublishers) {
-      __syncthreads();
-    }
-
     CUTE_STATIC_ASSERT_V(size<0>(gA) == size<0>(sA_physical));                 // BLK_M_PHYSICAL
     CUTE_STATIC_ASSERT_V(size<1>(gA) == size<1>(sA_physical));                 // BLK_K
     CUTE_STATIC_ASSERT_V(size<0>(sA) == size<0>(TileShape{}));                 // BLK_M_LOGICAL
@@ -1330,7 +1323,12 @@ private:
       Tensor tSsSp = gmem_thr_copy_raw.partition_D(sSraw);
       Tensor cSp = make_identity_tensor(make_shape(Int<Scale_TileN>{}, Int<kPackedScaleUnit>{}));
       Tensor tScSp = gmem_thr_copy_raw.partition_S(cSp);
-      if (scale_copy_owner) clear(tSsS);
+      // Ordinary fp16 metadata still needs predicated-copy destination initialization.  Packed metadata is a total
+      // decode-owner write: valid columns are decoded and invalid N-tail columns are zeroed below by that same owner.
+      // Retain the old clear only for the exact legacy race negative.
+      if constexpr (!kPackedScaleOn || kLegacyModuloMetadataPublishers) {
+        if (scale_copy_owner) clear(tSsS);
+      }
       // init scale_residue_k
       if constexpr (kPackedScaleOn)
         scale_residue_k = int64_t(mainloop_params.scale_k / int(Scale_TileK)) * int64_t(Scale_TileK);
@@ -1442,7 +1440,17 @@ private:
       for_each(make_int_sequence<kPackedColsPerThread>{}, [&](auto sub_) {
         constexpr int Sub = decltype(sub_)::value;
         int const n = PackedMetadataOwnership::column(thread_idx, Sub);
-        if (int64_t(n) >= residue_n) return;
+        // PACKED METADATA TOTAL-OVERWRITE CONTRACT.  The current K tile consumes all Scale_TileK groups in this
+        // shared stage.  Its column owner writes either decoded values or the complete zero tail, never a predicated
+        // hole that depends on an earlier clear issued through another ownership map.
+        if (int64_t(n) >= residue_n) {
+          for_each(make_int_sequence<int(Scale_TileK)>{}, [&](auto g_) {
+            constexpr int G = decltype(g_)::value;
+            sS(n, cute::Int<G>{}, stage) = NonVoidElementScale{};
+            sZ(n, cute::Int<G>{}, stage) = NonVoidElementZero{};
+          });
+          return;
+        }
         uint8_t const* paired = reinterpret_cast<uint8_t const*>(
             &sRaw(n, cute::Int<0>{}, stage));
         // The tile coordinate is runtime pipeline state, while group bit positions must remain compile-time constants.

@@ -98,20 +98,22 @@ An earlier `owner-only` experiment guarded only the packed raw async copy. It
 did not guard the ordinary scale/zero copies or the initial `clear(tSsS)`, and
 it added no clear-to-decode edge. Its dirty result therefore did not test the
 complete contract. Removing surplus publishers eliminates four cross-warp
-pairs, but the two active-owner cross pairs remain; exact ownership without an
-initialization barrier is still racy.
+pairs, but the two active-owner cross pairs remain while the separate fp16
+clear exists. Exact ownership alone cannot order two different writer maps.
 
-The complete contract is therefore:
+The conservative device-closed repair added a clear-to-decode CTA edge. The
+shipping candidate now removes the second writer map entirely. Its complete
+contract is:
 
 1. construct an in-range logical scale slice and packed-column slice for every
    physical thread;
-2. only `ScaleCopyPlan::owns_physical_thread()` may clear/copy the fp16
-   scale/zero partition;
+2. only the ordinary fp16 path uses `ScaleCopyPlan` to clear/copy scale/zero;
 3. only `PackedMetadataColumnOwnership::owns_physical_thread()` may issue the
    packed raw copy;
-4. after the exact fp16 clear, execute one CTA publication edge before any
-   packed raw copy can progress to decode;
-5. keep the existing post-decode CTA barrier that publishes decoded metadata
+4. the same packed-column owner writes every destination group: decode a valid
+   N column, or write zero to an invalid tail column without reading raw bytes;
+5. perform no packed-path fp16 clear and no prefetch-before barrier;
+6. keep the existing post-decode CTA barrier that publishes decoded metadata
    to all MMA consumers.
 
 ## Required controls
@@ -128,6 +130,8 @@ The complete contract is therefore:
   for CTA32 and exactly six for CTA128: two active-owner plus four surplus,
   each intersecting on 128 metadata values.
 - A partial-N residue must copy all and only live metadata bytes.
+- Every partial-N destination `(n,group)` must still have exactly one packed
+  decode-owner write; a missing-tail-zero plant must fail.
 - Both standard-A and packed-row-A rows must pass; changing A cannot repair a
   common metadata defect.
 - The fix must not prune WN. The m8 selector is only `TM=8 && WM=8`; WN remains
@@ -135,9 +139,9 @@ The complete contract is therefore:
 
 The local implementation gates are
 `dev/fold_derivation/run_l217_packed_metadata_ownership.sh`, L114, and
-`ci/check_fq_splitk_partial_path.py`. The narrow-CTA device closure remains the
-four exact AP0/AP1 × stages3/4 rows driven by
-`tools/run_fq_q4k_tm8_wn64_closure_box.sh`.
+`ci/check_fq_splitk_partial_path.py`. The narrow device closure is driven by
+`tools/run_fq_q4k_tm8_wn64_closure_box.sh`: four WN64 ownership controls plus
+the AP0/AP1 WN16/stage2 root-cause rows, each at aligned N=1024 and tail N=992.
 
 ## Device causal closure
 
@@ -154,10 +158,10 @@ shipping_s1_clean=4/4
 ```
 
 The negative reconstructed all-thread modulo publishers and omitted the
-initialization edge. The candidate used production exact ownership plus the
-one-time pre-prefetch CTA edge and closed every custom S1/S2/S4 cell. This is
-the required source-plus-device proof; failure-rate changes from narrower
-counterfactual arms are not equivalent evidence.
+initialization edge. The candidate used exact ownership plus the one-time
+prefetch-before CTA edge and closed every custom S1/S2/S4 cell. This proves the
+root cause and conservative repair. It does not by itself validate the later
+total-overwrite cadence; that candidate needs a fresh narrow box closure.
 
 After closure, the factorial runner, repeat-state controls, partial-plane
 failure probes, stale-A/issuer oracle and counterfactual compile macros were
@@ -167,10 +171,9 @@ record, and the exact legacy macro
 
 ## Performance boundary
 
-For a one-warp CTA with no surplus publishers, ownership predicates are
-compile-time true and no initialization barrier is emitted. For a narrower
-CTA, copying and decoding additional owner columns is necessary work that was
-previously missing. For a wider packed CTA, exact ownership removes redundant
-work but adds one initialization-only CTA edge; it does not add a per-K-tile
-barrier or change MMA order. Device timing is still required after raw-bit
-closure.
+For every full N tile, the packed path emits no initial clear or extra barrier;
+the already-required decoder stores are the complete destination write. A tail
+adds zero stores only for invalid columns owned by the same decoder threads.
+This removes rather than adds work on the common aligned shapes, but device
+timing and raw-bit closure are still required because compiler scheduling has
+already mattered for this incident.

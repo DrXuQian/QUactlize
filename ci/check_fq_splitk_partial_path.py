@@ -109,7 +109,7 @@ def check(texts: dict[str, str]) -> list[str]:
         "PackedMetadataOwnership::owns_physical_thread(thread_idx)",
         "ScaleCopyPlan::logical_slot(thread_idx)",
         "PackedMetadataOwnership::copy_owner(thread_idx)",
-        "if constexpr (kPackedScaleOn && Scale_NumThreads > 32 &&",
+        "// Start async loads for all pipes but the last",
     )
     for label, source in (("one-plane", one_plane), ("two-plane", two_plane)):
         errors += ordered(source, publication_order, f"{label} exact metadata publication")
@@ -122,20 +122,35 @@ def check(texts: dict[str, str]) -> list[str]:
                 operator_body,
                 (
                     "auto extra_input_partitions = partition_extra_inputs(",
-                    "if constexpr (kPackedScaleOn && Scale_NumThreads > 32 &&",
-                    "!kLegacyModuloMetadataPublishers) {",
-                    "__syncthreads();",
                     "// Start async loads for all pipes but the last",
                     "copy_async_extra_info(",
                 ),
-                f"{label} packed metadata init publication edge")
-            if operator_body.count(
-                    "if constexpr (kPackedScaleOn && Scale_NumThreads > 32 &&") != 1:
-                errors.append(f"{label} packed init edge must occur exactly once outside the K loop")
+                f"{label} packed metadata transport order")
+            if "if constexpr (kPackedScaleOn && Scale_NumThreads > 32 &&" in operator_body:
+                errors.append(f"{label} restored redundant packed init barrier")
         if source.count("clear(tSsS)") != 1 or not re.search(
-                r"if\s*\(scale_copy_owner\)\s*(?:\{\s*)?clear\(tSsS\);",
+                r"if constexpr\s*\(!kPackedScaleOn \|\| "
+                r"kLegacyModuloMetadataPublishers\)\s*\{\s*"
+                r"if\s*\(scale_copy_owner\)\s*clear\(tSsS\);",
                 source):
-            errors.append(f"{label} fp16 metadata initialization is not exact-owner guarded")
+            errors.append(
+                f"{label} ordinary/legacy fp16 initialization is not isolated from packed production")
+        if source.count("PACKED METADATA TOTAL-OVERWRITE CONTRACT") != 1:
+            errors.append(f"{label} packed total-overwrite contract differs")
+        tail = source.split("PACKED METADATA TOTAL-OVERWRITE CONTRACT", 1)[-1]
+        errors += ordered(
+            tail,
+            (
+                "if (int64_t(n) >= residue_n) {",
+                "sS(n, cute::Int<G>{}, stage) = NonVoidElementScale{};",
+                "uint8_t const*",
+            ),
+            f"{label} decode-owner tail publication")
+        if "sZ(n, cute::Int<G>{}, stage) = NonVoidElementZero{};" not in tail:
+            errors.append(f"{label} decode owner does not zero the tail zero-plane")
+        if label == "one-plane" and \
+                "sSZw(n, cute::Int<G>{}, stage) = uint32_t(0);" not in tail:
+            errors.append("one-plane fused scale/zero tail is not a total word overwrite")
         if "thread_idx % int(cute::size(GmemTiledCopyScalePacked{}))" in source:
             errors.append(f"{label} restored modulo-replayed packed publishers")
         if source.count("bool scale_copy_owner,\n        bool packed_copy_owner)") != 1:
@@ -243,10 +258,15 @@ def self_test(texts: dict[str, str]) -> None:
          "true"),
         ("two_plane", "PackedMetadataOwnership::owns_physical_thread(thread_idx)",
          "true"),
-        ("one_plane", "!kLegacyModuloMetadataPublishers) {\n      __syncthreads();",
-         "!kLegacyModuloMetadataPublishers) {\n      /* planted missing init edge */"),
-        ("two_plane", "if (scale_copy_owner) clear(tSsS);",
-         "clear(tSsS);"),
+        ("one_plane", "// Start async loads for all pipes but the last",
+         "if constexpr (kPackedScaleOn && Scale_NumThreads > 32 && true) {\n"
+         "      __syncthreads();\n    }\n\n    // Start async loads for all pipes but the last"),
+        ("two_plane", "if constexpr (!kPackedScaleOn || kLegacyModuloMetadataPublishers) {",
+         "if constexpr (true) {"),
+        ("one_plane", "sSZw(n, cute::Int<G>{}, stage) = uint32_t(0);",
+         "/* planted missing fused-tail store */"),
+        ("two_plane", "sZ(n, cute::Int<G>{}, stage) = NonVoidElementZero{};",
+         "/* planted missing zero-tail store */"),
     )
     for key, old, new in plants:
         planted = dict(texts)
@@ -285,7 +305,7 @@ def main() -> int:
         return 2
     print("[fq-splitk-partial-path] PASS direct ownership, legacy negative, "
           "mainloop/epilogue synchronization, distinct S1 type, "
-          "ordered-close timing, exact metadata publication, and eleven negative plants")
+          "ordered-close timing, packed decode-owner total overwrite, and thirteen negative plants")
     return 0
 
 

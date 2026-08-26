@@ -1,7 +1,11 @@
 # Q4_K fully-quantized packed-metadata race
 
-Status: **closed on device**. The production repair is commit `7124998`; the
-source/CuTe proof and exact device A/B are commit `265033f`.
+Status: **root cause closed on device**. The conservative repair is commit
+`7124998`; its source/CuTe proof and exact device A/B are commit `265033f`.
+The later decode-owner total-overwrite simplification removes that repair's
+initial clear/barrier. Its local source/CuTe closure is complete; a fresh box
+raw-bit/performance closure is required before calling the simplification
+device-closed.
 
 The closing artifact is:
 
@@ -86,20 +90,29 @@ This exactly predicts the intermittent 32-aligned output stripe. Exact owner
 filtering removes the four surplus-warp pairs, but two active-owner cross-warp
 pairs remain; therefore ownership filtering alone is insufficient.
 
-## Production repair
+## Repair history and current contract
 
-Both one-plane and two-plane mixed-input collectives now enforce one contract:
+The device-closed conservative repair made the clear exact-owner-only and
+published it with one pre-prefetch CTA barrier. That proved the root cause, but
+retained two writer maps for one destination tile.
 
-1. only the exact scale owner clears/copies fp16 scale/zero metadata;
+Both one-plane and two-plane collectives now use the simpler production
+candidate contract:
+
+1. the ordinary fp16-metadata path keeps its exact-owner clear/copy;
 2. only the exact packed-column owner issues the packed raw copy;
-3. for a multi-warp packed row, one initialization-only `__syncthreads()` runs
-   after the fp16 clear and before the initial async prefetch;
-4. the existing post-decode CTA barrier remains the publication edge for MMA
+3. in the packed path that same column owner writes the complete fp16
+   destination column: valid N columns are decoded, invalid tail columns are
+   explicitly zeroed;
+4. the packed path performs no fp16 clear and no pre-prefetch CTA barrier;
+5. the existing post-decode CTA barrier remains the publication edge for MMA
    consumers.
 
-The new edge is outside the K loop. It is not emitted for the one-warp CTA32
-case. No accumulation order, stage-ring order, Split-K partition, reducer or
-epilogue math changed.
+Thus every packed `(n, group, stage)` slot has one owner and one write. Full N
+tiles execute only decode stores; a tail executes zero stores only for skipped
+columns and never reads their unfilled raw slots. The old single-warp safety no
+longer depends on warp lockstep. No accumulation order, stage-ring order,
+Split-K partition, reducer or epilogue math changed.
 
 The exact historical negative is retained behind
 `PPU_MIXED_LEGACY_MODULO_METADATA_PUBLISHERS`. All other counterfactual macros,
@@ -195,14 +208,17 @@ bash dev/fold_derivation/run_l186_dense_m1_packed_a.sh
 bash dev/fold_derivation/run_l223_fq_splitk_partial_abi.sh
 ```
 
-The WN64 narrow-CTA closure remains available through
-`tools/run_fq_q4k_tm8_wn64_closure_box.sh`. The large causal runner used for
+The retained narrow closure at
+`tools/run_fq_q4k_tm8_wn64_closure_box.sh` now covers four WN64 controls plus
+the two WN16 root-cause tactics on both aligned N=1024 and tail N=992. The large causal runner used for
 the now-closed bug was deliberately deleted; its exact output and source remain
-recoverable from commit `265033f` and the artifact path above.
+recoverable from commit `265033f` and the artifact path above. L217 additionally
+plants a missing decode-owner tail zero and requires it to fail.
 
 ## Performance boundary
 
-CTA32 keeps its original compile-time owner work and emits no new barrier.
-CTA128 removes redundant publishers and adds one initialization-only CTA edge.
-The device A/B proves raw-bit correctness, not a complete performance census;
-the normal decode sweep is the authority for final tactic ranking.
+The packed full-tile path removes both the fp16 clear and the conservative
+initialization-only CTA edge. Tail tiles replace the old whole-tile clear with
+zero stores only for invalid owner columns. The historical device A/B proves
+the race diagnosis and the conservative repair, not the new cadence; rerun the
+narrow raw-bit closure and compare medians before updating tactic rankings.

@@ -2102,3 +2102,22 @@ adjudicated decode and prefill rows; prefill directly compares `prepass+ScaleFir
 Stream-K is swept on PPU for the prefill rows and selected only where full E2E wins; missing/stale profiles fail
 closed to the exact shipping fallback; and llama.cpp can consume the versioned selector without remembering a
 layout, fold, qtype or phase out of band.
+
+### TODO #60 — make CuTe coordinate iterators own their shape lifetime
+
+`cute::ForwardCoordIterator` and PPU's `cute::SplitkCoordIterator` store
+`Shape const&`. Factory calls commonly receive expressions such as
+`shape<2>(tensor)`, which return by value; binding the iterator directly leaves
+it referring to a temporary destroyed at the end of the statement. The dense
+fixed Split-K call site currently keeps a local `k_tile_shape` alive and its K
+coordinate is rank 1, so the old and repaired sequences are identical and this
+was non-causal for the Q4_K metadata incident. It remains a real library defect:
+a future nested/rank>=2 K shape makes increment/`idx2crd` read the dangling
+reference and can produce the same intermittent, code-layout-sensitive symptom.
+
+Change both iterator members to value ownership (or another explicitly owned
+lifetime), add host/device constexpr sequence tests for scalar and nested
+shapes, and audit construction/copy cost in generated PPU kernels. Done means
+temporary-expression construction is safe, lvalue construction remains
+sequence-identical, and both ordinary and fixed Split-K syntax/device gates
+pass. Keep this separate from the packed-metadata hot-path repair.

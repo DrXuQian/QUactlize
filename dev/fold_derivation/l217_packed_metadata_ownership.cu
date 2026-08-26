@@ -22,6 +22,9 @@ namespace packed_detail = cutlass::gemm::collective::detail;
 #ifndef L217_LEGACY_ONE_COLUMN
 #define L217_LEGACY_ONE_COLUMN 0
 #endif
+#ifndef L217_SKIP_TAIL_ZERO
+#define L217_SKIP_TAIL_ZERO 0
+#endif
 
 namespace {
 
@@ -37,6 +40,52 @@ struct Totals {
   int predicate_bad = 0;
   int first_predicate_bad = -1;
 };
+
+struct TotalOverwriteTotals {
+  int cases = 0;
+  int missing = 0;
+  int duplicates = 0;
+  int decoded = 0;
+  int zeroed = 0;
+};
+
+// Model the production packed_decode_stage destination protocol independently
+// of the raw-copy census below.  PackedMetadataColumnOwnership is the actual
+// CuTe-derived owner map used by both transport and decode.  Every owner must
+// publish every group in each of its columns exactly once: decoded for a valid
+// N coordinate and zero for a predicated tail coordinate.
+template <int TileN, int Threads>
+TotalOverwriteTotals verify_total_overwrite() {
+  using Production = packed_detail::PackedMetadataColumnOwnership<TileN, Threads>;
+  constexpr int kGroups = 8;
+  constexpr int residue = TileN - TileN / 4;
+  std::array<unsigned char, TileN * kGroups> writes{};
+  TotalOverwriteTotals z{};
+  z.cases = 1;
+  for (int thread = 0; thread < Threads; ++thread) {
+    if (!Production::owns_physical_thread(thread)) continue;
+    int const owner = Production::copy_owner(thread);
+    for (int sub = 0; sub < Production::columns_per_thread; ++sub) {
+      int const n = Production::column(owner, sub);
+      bool const valid = n < residue;
+#if L217_SKIP_TAIL_ZERO
+      if (!valid) continue;
+#endif
+      for (int group = 0; group < kGroups; ++group) {
+        auto& count = writes[std::size_t(n + TileN * group)];
+        if (count++) ++z.duplicates;
+        if (valid) ++z.decoded;
+        else ++z.zeroed;
+      }
+    }
+  }
+  for (auto count : writes) z.missing += count != 1;
+  std::printf(
+      "L217_TOTAL tile_n=%d threads=%d residue=%d missing=%d duplicates=%d "
+      "decoded=%d zeroed=%d\n",
+      TileN, Threads, residue, z.missing, z.duplicates, z.decoded, z.zeroed);
+  return z;
+}
 
 template <int TileN, int Threads>
 Totals verify_case() {
@@ -163,25 +212,47 @@ void add(Totals& a, Totals const& b) {
     a.first_predicate_bad = b.first_predicate_bad;
 }
 
+void add(TotalOverwriteTotals& a, TotalOverwriteTotals const& b) {
+  a.cases += b.cases;
+  a.missing += b.missing;
+  a.duplicates += b.duplicates;
+  a.decoded += b.decoded;
+  a.zeroed += b.zeroed;
+}
+
 }  // namespace
 
 int main() {
   Totals z{};
+  TotalOverwriteTotals total{};
   add(z, verify_case<32, 32>());
+  add(total, verify_total_overwrite<32, 32>());
   add(z, verify_case<64, 32>());   // exact TM8/TN64/WN64 failure geometry
+  add(total, verify_total_overwrite<64, 32>());
   add(z, verify_case<128, 32>());
+  add(total, verify_total_overwrite<128, 32>());
   add(z, verify_case<64, 64>());
+  add(total, verify_total_overwrite<64, 64>());
   add(z, verify_case<64, 128>());
+  add(total, verify_total_overwrite<64, 128>());
   add(z, verify_case<128, 256>());
+  add(total, verify_total_overwrite<128, 256>());
   bool const ok = z.copy_missing == 0 && z.decode_missing == 0 &&
                   z.unowned_reads == 0 && z.map_bad == 0 &&
                   z.duplicate_publishers == 0 &&
-                  z.predicate_bad == 0;
+                  z.predicate_bad == 0 && total.missing == 0 &&
+                  total.duplicates == 0;
   std::printf(
       "L217_SUMMARY variant=%s cases=%d copy_missing=%d decode_missing=%d "
       "unowned_reads=%d map_bad=%d duplicate_publishers=%d predicate_bad=%d verdict=%s\n",
       L217_LEGACY_ONE_COLUMN ? "legacy-one-column" : "derived-ownership",
       z.cases, z.copy_missing, z.decode_missing, z.unowned_reads,
       z.map_bad, z.duplicate_publishers, z.predicate_bad, ok ? "PASS" : "FAIL");
+  std::printf(
+      "L217_TOTAL_SUMMARY cases=%d missing=%d duplicates=%d decoded=%d "
+      "zeroed=%d verdict=%s\n",
+      total.cases, total.missing, total.duplicates, total.decoded,
+      total.zeroed,
+      (total.missing == 0 && total.duplicates == 0) ? "PASS" : "FAIL");
   return ok ? 0 : 1;
 }

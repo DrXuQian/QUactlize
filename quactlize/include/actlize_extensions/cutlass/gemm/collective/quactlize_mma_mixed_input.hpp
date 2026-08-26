@@ -1084,14 +1084,6 @@ public:
         PackedMetadataOwnership::copy_owner(thread_idx),
         scale_copy_owner);
 
-    // Packed decode writes the fp16 metadata tile through a column-owner map, whereas initialization clears it through
-    // the scale-copy map.  On a multi-warp CTA those maps have no cross-warp program-order edge.  Publish the one-time
-    // exact clear before any packed raw copy can reach decode.  Single-warp rows need no barrier and remain unchanged.
-    if constexpr (kPackedScaleOn && Scale_NumThreads > 32 &&
-                  !kLegacyModuloMetadataPublishers) {
-      __syncthreads();
-    }
-
     CUTE_STATIC_ASSERT_V(size<0>(gA) == size<0>(sA_physical));                 // BLK_M_PHYSICAL
     CUTE_STATIC_ASSERT_V(size<1>(gA) == size<1>(sA_physical));                 // BLK_K
     CUTE_STATIC_ASSERT_V(size<0>(sA) == size<0>(TileShape{}));                 // BLK_M_LOGICAL
@@ -1456,8 +1448,11 @@ private:
       Tensor cSp   = make_identity_tensor(make_shape(Int<Scale_TileN>{}, Int<kPackedScaleUnit>{}));
       Tensor tScSp = gmem_thr_copy_raw.partition_S(cSp);
 
-      if (scale_copy_owner) {
-        clear(tSsS);    // both paths: the loader also relies on out-of-range columns staying zero
+      // Ordinary fp16 metadata still needs predicated-copy destination initialization.  Packed metadata does not:
+      // its decode owner is the sole writer of the complete destination column, including explicit zeroes for the N
+      // tail below.  Keeping the historical clear only behind the legacy switch preserves the exact race negative.
+      if constexpr (!kPackedScaleOn || kLegacyModuloMetadataPublishers) {
+        if (scale_copy_owner) clear(tSsS);
       }
 
       // THE K BOUND. The fp16 path counts GROUPS: scale_k - <this thread's first group>. The packed path consumes one
@@ -1635,9 +1630,7 @@ private:
   CUTLASS_DEVICE static void
   packed_decode_stage(Storage& storage, int stage, int thread_idx, int64_t residue_n) {
     if constexpr (On) {
-      constexpr int kTN      = int(Scale_TileN);
       constexpr int kGrp     = int(Scale_TileK);
-      constexpr int kThreads = int(cute::size(TiledMma{}));
       Tensor sRaw = make_tensor(make_smem_ptr(storage.smem_scale_raw.begin()), SmemLayoutScaleRawStaged{});
       Tensor sS   = make_tensor(make_smem_ptr(storage.smem_scale.begin()),  SmemLayoutScaleSZ{});
       Tensor sZ   = make_tensor(make_smem_ptr(zero_smem_base(storage)),     SmemLayoutScaleSZ{});
@@ -1672,7 +1665,23 @@ private:
       CUTLASS_PRAGMA_UNROLL
       for (int sub = 0; sub < kCPT; ++sub) {
         int const n = PackedMetadataOwnership::column(owner, sub);
-        if (n >= residue_n) continue;                        // the same N bound the fp16 path predicates on
+        // PACKED METADATA TOTAL-OVERWRITE CONTRACT.  The copy/decode owner also owns tail initialization, so there is
+        // one writer map and no clear/decode race.  A full tile takes the decode arm and executes no clear; on the last
+        // N tile the same owner writes every skipped destination explicitly without reading the unfilled raw slot.
+        if (int64_t(n) >= residue_n) {
+          cute::for_each(cute::make_int_sequence<kGrp>{}, [&](auto g_) {
+            constexpr int G = decltype(g_)::value;
+            if constexpr (kFusedScaleZero) {
+              sSZw(n, cute::Int<G>{}, stage) = uint32_t(0);
+            } else {
+              sS(n, cute::Int<G>{}, stage) = NonVoidElementScale{};
+              if constexpr (kPackedHasMin) {
+                sZ(n, cute::Int<G>{}, stage) = NonVoidElementZero{};
+              }
+            }
+          });
+          continue;
+        }
         uint8_t const* unit = reinterpret_cast<uint8_t const*>(&sRaw(n, cute::Int<0>{}, stage));
         uint32_t u[kPackedUnitWords];
         // THE LAST WORD MAY BE PARTIAL. With a unit that is not a multiple of four bytes the final read would run
