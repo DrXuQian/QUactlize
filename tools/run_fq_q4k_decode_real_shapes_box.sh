@@ -141,7 +141,7 @@ main() {
     # changed.  Generated and binary hashes are checked again below.
     python3 -B - "$root" "$inventory" "$policy" "$saved_source" \
       "$out/source.patch" "$out/source-analysis-resume.json" "$source_state" <<'PY' || return 2
-import hashlib,json,os,pathlib,subprocess,sys
+import hashlib,pathlib,subprocess,sys
 root=pathlib.Path(sys.argv[1]); inventory=pathlib.Path(sys.argv[2])
 policy=pathlib.Path(sys.argv[3]); saved=pathlib.Path(sys.argv[4])
 source_patch=pathlib.Path(sys.argv[5]); audit=pathlib.Path(sys.argv[6])
@@ -211,25 +211,26 @@ changed=set(subprocess.check_output(
 if not changed or not changed<=analysis_only:
  raise SystemExit("resume source authority changed outside analysis-only seam: "+
                   repr(sorted(changed)))
-document={
- "schema":"quactlize.fq_q4k_decode_analysis_resume.v1",
- "measurement_git_sha":measurement_commit,
- "resume_git_sha":current_commit,
- "changed_analysis_files":sorted(changed),
- "measurement_source_state_sha256":saved_state,
- "analysis_source_state_sha256":current_state,
- "compiled_binary_identity":"MUST_MATCH_FROZEN_BINARY_HASHES"}
-if audit.exists():
- if json.loads(audit.read_text())!=document:
-  raise SystemExit("analysis-only resume audit changed")
-else:
- temporary=audit.with_name(f".{audit.name}.current.{os.getpid()}")
- with temporary.open("w") as stream:
-  json.dump(document,stream,indent=2,sort_keys=True); stream.write("\n")
-  stream.flush(); os.fsync(stream.fileno())
- os.replace(temporary,audit)
+sys.path.insert(0,str(root/"tools"))
+from analyze_fq_q4k_decode_real_shapes import (  # pylint: disable=wrong-import-position
+ ContractError,update_analysis_resume_audit)
+def is_ancestor(older,newer):
+ return subprocess.run(
+  ["git","-C",str(root),"merge-base","--is-ancestor",older,newer],
+  stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0
+try:
+ document=update_analysis_resume_audit(
+  audit,measurement_git_sha=measurement_commit,
+  measurement_source_state_sha256=saved_state,
+  compiled_binary_identity="MUST_MATCH_FROZEN_BINARY_HASHES",
+  resume_git_sha=current_commit,changed_analysis_files=sorted(changed),
+  analysis_source_state_sha256=current_state,
+  allowed_analysis_files=analysis_only,is_ancestor=is_ancestor)
+except ContractError as error:
+ raise SystemExit(str(error))
 print("[fq-q4k-decode] analysis-only resume "
-      f"measurement_sha={measurement_commit} resume_sha={current_commit}")
+      f"measurement_sha={measurement_commit} resume_sha={current_commit} "
+      f"audit_hops={len(document['resumes'])}")
 PY
   fi
   if [ ! -s "$saved_source" ]; then

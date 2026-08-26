@@ -22,7 +22,7 @@ import pathlib
 import statistics
 import sys
 import tempfile
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import plan_fq_q4k_decode_real_shapes as planner
 
@@ -73,6 +73,96 @@ def atomic_text(path: pathlib.Path, text: str) -> None:
 
 def atomic_json(path: pathlib.Path, value: Any) -> None:
     atomic_text(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+def update_analysis_resume_audit(
+        path: pathlib.Path, *, measurement_git_sha: str,
+        measurement_source_state_sha256: str,
+        compiled_binary_identity: str, resume_git_sha: str,
+        changed_analysis_files: list[str], analysis_source_state_sha256: str,
+        allowed_analysis_files: set[str],
+        is_ancestor: Callable[[str, str], bool]) -> dict[str, Any]:
+    """Create/migrate/append the fail-closed analysis-only resume chain."""
+    def exact_hex(value: Any, width: int) -> bool:
+        if not isinstance(value, str) or len(value) != width:
+            return False
+        try:
+            int(value, 16)
+        except ValueError:
+            return False
+        return True
+
+    def validate_record(record: Any) -> dict[str, Any]:
+        keys = {"resume_git_sha", "changed_analysis_files",
+                "analysis_source_state_sha256"}
+        if not isinstance(record, dict) or set(record) != keys:
+            raise ContractError("analysis-only resume audit record schema differs")
+        files = record["changed_analysis_files"]
+        if not isinstance(files, list) or not files or \
+                files != sorted(set(files)) or not set(files) <= allowed_analysis_files:
+            raise ContractError("analysis-only resume audit file authority differs")
+        if not exact_hex(record["resume_git_sha"], 40) or \
+                not exact_hex(record["analysis_source_state_sha256"], 64):
+            raise ContractError("analysis-only resume audit identity is malformed")
+        return record
+
+    base = {
+        "measurement_git_sha": measurement_git_sha,
+        "measurement_source_state_sha256": measurement_source_state_sha256,
+        "compiled_binary_identity": compiled_binary_identity,
+    }
+    if not exact_hex(measurement_git_sha, 40) or \
+            not exact_hex(measurement_source_state_sha256, 64):
+        raise ContractError("analysis-only resume measurement identity is malformed")
+    current = validate_record({
+        "resume_git_sha": resume_git_sha,
+        "changed_analysis_files": changed_analysis_files,
+        "analysis_source_state_sha256": analysis_source_state_sha256,
+    })
+    history: list[dict[str, Any]] = []
+    if path.exists():
+        existing = json.loads(path.read_text())
+        if existing.get("schema") == "quactlize.fq_q4k_decode_analysis_resume.v1":
+            v1_keys = {"schema", *base, "resume_git_sha",
+                       "changed_analysis_files", "analysis_source_state_sha256"}
+            if set(existing) != v1_keys or \
+                    any(existing.get(key) != value for key, value in base.items()):
+                raise ContractError("analysis-only resume v1 audit authority differs")
+            history = [validate_record({key: existing[key] for key in (
+                "resume_git_sha", "changed_analysis_files",
+                "analysis_source_state_sha256")})]
+        elif existing.get("schema") == "quactlize.fq_q4k_decode_analysis_resume.v2":
+            if set(existing) != {"schema", *base, "resumes"} or \
+                    any(existing.get(key) != value for key, value in base.items()) or \
+                    not isinstance(existing.get("resumes"), list) or \
+                    not existing["resumes"]:
+                raise ContractError("analysis-only resume v2 audit authority differs")
+            history = [validate_record(record) for record in existing["resumes"]]
+        else:
+            raise ContractError("analysis-only resume audit schema is unknown")
+    previous = measurement_git_sha
+    seen: set[str] = set()
+    for record in history:
+        commit = record["resume_git_sha"]
+        if commit in seen or not is_ancestor(previous, commit):
+            raise ContractError("analysis-only resume audit ancestry differs")
+        seen.add(commit)
+        previous = commit
+    if history and current["resume_git_sha"] == history[-1]["resume_git_sha"]:
+        if current != history[-1]:
+            raise ContractError("analysis-only resume audit tail changed")
+    else:
+        if current["resume_git_sha"] in seen or \
+                not is_ancestor(previous, current["resume_git_sha"]):
+            raise ContractError("analysis-only resume audit is not append-only")
+        history.append(current)
+    document = {
+        "schema": "quactlize.fq_q4k_decode_analysis_resume.v2",
+        **base,
+        "resumes": history,
+    }
+    atomic_json(path, document)
+    return document
 
 
 def parse_kv(line: str, prefix: str) -> dict[str, str]:
@@ -713,6 +803,75 @@ def self_test() -> None:
     policy_path = (pathlib.Path(__file__).resolve().parents[1] /
                    "benchmarks/fq_q4k_decode_real_shapes_policy.json")
     policy = load_policy(policy_path)
+    measurement_sha, resume_one, resume_two = "1" * 40, "2" * 40, "3" * 40
+    measurement_state, state_one, state_two = "a" * 64, "b" * 64, "c" * 64
+    allowed_resume_files = {
+        "tools/analyze_fq_q4k_decode_real_shapes.py",
+        "tools/run_fq_q4k_decode_real_shapes_box.sh",
+        "ci/check_fq_q4k_decode_batch_and_runner.py",
+    }
+    ancestry = {measurement_sha: 0, resume_one: 1, resume_two: 2}
+    is_ancestor = lambda older, newer: (  # noqa: E731 - compact test oracle
+        older in ancestry and newer in ancestry and
+        ancestry[older] <= ancestry[newer])
+    with tempfile.TemporaryDirectory() as temporary:
+        audit_path = pathlib.Path(temporary) / "analysis-resume.json"
+        audit_path.write_text(json.dumps({
+            "schema": "quactlize.fq_q4k_decode_analysis_resume.v1",
+            "measurement_git_sha": measurement_sha,
+            "resume_git_sha": resume_one,
+            "changed_analysis_files": [
+                "tools/analyze_fq_q4k_decode_real_shapes.py"],
+            "measurement_source_state_sha256": measurement_state,
+            "analysis_source_state_sha256": state_one,
+            "compiled_binary_identity": "MUST_MATCH_FROZEN_BINARY_HASHES",
+        }))
+        audit = update_analysis_resume_audit(
+            audit_path, measurement_git_sha=measurement_sha,
+            measurement_source_state_sha256=measurement_state,
+            compiled_binary_identity="MUST_MATCH_FROZEN_BINARY_HASHES",
+            resume_git_sha=resume_two,
+            changed_analysis_files=sorted(allowed_resume_files),
+            analysis_source_state_sha256=state_two,
+            allowed_analysis_files=allowed_resume_files,
+            is_ancestor=is_ancestor)
+        if audit["schema"] != "quactlize.fq_q4k_decode_analysis_resume.v2" or \
+                [row["resume_git_sha"] for row in audit["resumes"]] != [
+                    resume_one, resume_two]:
+            raise AssertionError("v1 analysis resume audit did not migrate append-only")
+        repeated = update_analysis_resume_audit(
+            audit_path, measurement_git_sha=measurement_sha,
+            measurement_source_state_sha256=measurement_state,
+            compiled_binary_identity="MUST_MATCH_FROZEN_BINARY_HASHES",
+            resume_git_sha=resume_two,
+            changed_analysis_files=sorted(allowed_resume_files),
+            analysis_source_state_sha256=state_two,
+            allowed_analysis_files=allowed_resume_files,
+            is_ancestor=is_ancestor)
+        if repeated != audit:
+            raise AssertionError("analysis resume audit tail is not idempotent")
+        audit_negatives = (
+            {"resume_git_sha": resume_one,
+             "changed_analysis_files": [
+                 "tools/analyze_fq_q4k_decode_real_shapes.py"],
+             "analysis_source_state_sha256": state_one},
+            {"resume_git_sha": resume_two,
+             "changed_analysis_files": ["benchmarks/shipping_kernel.cu"],
+             "analysis_source_state_sha256": state_two},
+        )
+        for index, current in enumerate(audit_negatives):
+            try:
+                update_analysis_resume_audit(
+                    audit_path, measurement_git_sha=measurement_sha,
+                    measurement_source_state_sha256=measurement_state,
+                    compiled_binary_identity="MUST_MATCH_FROZEN_BINARY_HASHES",
+                    allowed_analysis_files=allowed_resume_files,
+                    is_ancestor=is_ancestor, **current)
+            except ContractError:
+                pass
+            else:
+                raise AssertionError(
+                    f"analysis resume audit negative {index} stayed green")
     value = reducer_us(4, 1024, 8, policy)
     expected = (4 * 1024 * 8 * 4 + 4 * 1024 * 2) / (.8 * 2766 * 1000)
     if not math.isclose(value, expected):
@@ -919,6 +1078,8 @@ def self_test() -> None:
                 raise AssertionError(
                     f"scheduler availability negative {index} stayed green")
     print("[fq-q4k-decode-analysis:self-test] PASS: 80%-HBM reducer bytes, "
+          "v1-to-v2 append-only analysis resume audit with rollback/authority "
+          "negatives, "
           "confirmation-envelope fail-close, native M4 SIMT, M8 negative, "
           "complete S1/S2/S4/S8 census separated from S1 measurement, three "
           "TC denominator negatives, optional S2/S4/S8 unavailable closure, "

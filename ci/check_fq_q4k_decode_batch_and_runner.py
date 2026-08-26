@@ -75,6 +75,9 @@ def check(kernel: str, backend: str, thop: str, bench: str,
         "UNAVAILABLE_NO_TC_AND_SIMT_M_GE_8",
         "if artifact != 32 or typed_rows != 0 or shape[0] != 8",
         '"unavailable_cell_count"',
+        "def update_analysis_resume_audit(",
+        '"schema": "quactlize.fq_q4k_decode_analysis_resume.v2"',
+        "analysis-only resume audit is not append-only",
     )
     if any(token not in analyze for token in analyze_needles):
         raise CheckError("analysis mixes producer-only, reducer, or SIMT scope")
@@ -98,8 +101,12 @@ def check(kernel: str, backend: str, thop: str, bench: str,
         "tensor_core=TM8/WM8/M<=8/source-typed-denominator-retained",
         "analysis-only resume requires an empty original source.patch",
         "resume source authority changed outside analysis-only seam",
-        '"compiled_binary_identity":"MUST_MATCH_FROZEN_BINARY_HASHES"',
+        'compiled_binary_identity="MUST_MATCH_FROZEN_BINARY_HASHES"',
         "measurement_source_state_sha256",
+        "update_analysis_resume_audit(",
+        '"merge-base","--is-ancestor"',
+        "allowed_analysis_files=analysis_only",
+        "audit_hops=",
     )
     if any(token not in runner for token in runner_needles):
         raise CheckError("runner does not execute screen/scheduler/TC/SIMT phases")
@@ -146,8 +153,10 @@ def main() -> int:
         (6, '["status"] == "UNAVAILABLE":', '["status"] == "AVAILABLE":'),
         (7, "--tile-m-filter 8", "--tile-m-filter 16"),
         (7, "--tm8-max-m=8", "--tm8-max-m=7"),
-        (7, '"compiled_binary_identity":"MUST_MATCH_FROZEN_BINARY_HASHES"',
-         '"compiled_binary_identity":"UNBOUND"'),
+        (7, 'compiled_binary_identity="MUST_MATCH_FROZEN_BINARY_HASHES"',
+         'compiled_binary_identity="UNBOUND"'),
+        (7, "allowed_analysis_files=analysis_only",
+         "allowed_analysis_files=set(authority_rel)"),
         (8, "r.tile_m == tile_m_filter", "True"),
     ]
     for index, old, new in plants:
@@ -163,8 +172,9 @@ def main() -> int:
             raise CheckError(f"negative control stayed green: {old} -> {new}")
     print("[fq-q4k-decode:self-test] PASS: M=1/2/4/8, TM8-only TC, native "
           "one-launch M<8 SIMT, phase/census separation, analysis-only resume "
-          "binding, optional scheduler boards with mandatory S1, exact A32/M8 "
-          "structural unavailability, and fifteen "
+          "binding with append-only multi-hop audit, optional scheduler boards "
+          "with mandatory S1, exact A32/M8 structural unavailability, and "
+          "sixteen "
           "negative plants")
     return 0
 
