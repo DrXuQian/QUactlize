@@ -243,5 +243,37 @@ The packed full-tile path removes both the fp16 clear and the conservative
 initialization-only CTA edge. Tail tiles replace the old whole-tile clear with
 zero stores only for invalid owner columns. The six-tactic device run proves
 raw-bit correctness of the new cadence, but correctness does not adjudicate
-performance. Compare its recorded 200-sample medians with the conservative
-repair before updating tactic rankings.
+performance.
+
+The d557509 run used 200 timing samples. Against the earlier same-shape/tactic
+timing context in
+`/workspace/quactlize-fq-q4k-partial-closure-219c15a-20260824T133319Z`
+(contextual, not a hash-paired conservative-repair A/B), the medians are:
+
+| provider | scope | old us | d557509 us | delta |
+|---|---|---:|---:|---:|
+| standard-aiu | S1 full output | 27.240 | 27.160 | -0.294% |
+| standard-aiu | S2 producer | 16.240 | 16.280 | +0.246% |
+| standard-aiu | S4 producer | 11.240 | 10.960 | -2.491% |
+| packed-row | S1 full output | 28.800 | 29.280 | +1.667% |
+| packed-row | S2 producer | 17.080 | 17.040 | -0.234% |
+| packed-row | S4 producer | 11.300 | 11.240 | -0.531% |
+
+All six absolute deltas are below the preregistered 3% boundary, so there is
+no observed regression signal. Standard-aiu is lower-latency than packed-row
+by 7.240%/4.460%/2.491% for S1/S2/S4 respectively.
+
+Under the analysis policy requested for decode—reducer bandwidth at
+`0.8 * 2766 GB/s`, launch time ignored, reading `S*M*N*4` partial bytes and
+writing `M*N*2` fp16 output bytes—the reducer contributes 0.004628 us for S2
+and 0.008330 us for S4. Modeled product times are therefore:
+
+```text
+standard-aiu S2  16.284627 us
+standard-aiu S4  10.968329 us  <-- winner, 2.476x vs its S1
+packed-row   S2  17.044627 us
+packed-row   S4  11.248330 us  <-- 2.603x vs its S1
+```
+
+S2/S4 remain producer-only measurements; these product values are model
+outputs, not measured reducer E2E.

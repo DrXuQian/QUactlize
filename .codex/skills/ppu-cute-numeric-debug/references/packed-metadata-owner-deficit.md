@@ -193,5 +193,15 @@ For every full N tile, the packed path emits no initial clear or extra barrier;
 the already-required decoder stores are the complete destination write. A tail
 adds zero stores only for invalid columns owned by the same decoder threads.
 This removes rather than adds work on the common aligned shapes, but device
-timing still needs comparison against the conservative repair; raw-bit closure
-is complete for the current production domain.
+raw-bit closure is complete for the current production domain. A strict
+hash-paired conservative-repair performance A/B is not available; retain the
+following same-tactic historical comparison as contextual evidence only.
+
+The d557509 200-sample medians were 27.160/16.280/10.960 us for
+standard-aiu S1/S2/S4 and 29.280/17.040/11.240 us for packed-row. Relative to
+the earlier same-tactic timing context at artifact `219c15a`, deltas were
+-0.294%/+0.246%/-2.491% and +1.667%/-0.234%/-0.531%; every absolute delta is
+inside the preregistered 3% boundary. This is contextual evidence, not a
+hash-paired conservative-repair A/B. Under the requested 80%-of-2766-GB/s
+reducer model with launch ignored, standard-aiu S4 is the modeled winner at
+10.968329 us. Keep producer-only measurements labeled as such.
