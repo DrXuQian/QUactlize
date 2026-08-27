@@ -6,7 +6,7 @@ set -uo pipefail
 
 main() {
   local root workspace_root sha short stamp out jobs full generated
-  local build_dir build_log binary device_log build_rc run_rc
+  local build_dir build_log target_make binary device_log build_rc run_rc
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
   workspace_root="$(realpath -e /workspace)" || return 2
   sha="$(git -C "$root" rev-parse HEAD)" || return 2
@@ -57,14 +57,21 @@ main() {
     printf '[fq-q4k-kpack4] artifacts=%s\n' "$out" >&2
     return "$build_rc"
   fi
+  target_make="$(find "$build_dir" -type f \
+    -path '*test_fully_quantized_internal_sweep.dir/build.make' \
+    -print -quit 2>/dev/null)"
   if ! grep -Fqx '[build.sh] FQ_SWEEP_WEIGHT_LAYOUT=1' "$build_log" ||
      ! grep -F 'FullyQuantized internal sweep: q=12 A=0 bc=0 format=0 layout=1 units=1' \
-       "$build_log" >/dev/null ||
+       "$build_dir/cmake.log" >/dev/null ||
      ! grep -Eq '^FQ_SWEEP_WEIGHT_LAYOUT(:[^=]*)?=1$' \
-       "$build_dir/CMakeCache.txt"; then
+       "$build_dir/CMakeCache.txt" ||
+     [ -z "$target_make" ] ||
+     ! grep -Eq -- '(^|[[:space:]])-DFQ_SWEEP_WEIGHT_LAYOUT=1([[:space:]]|$)' \
+       "$target_make"; then
     printf '[fq-q4k-kpack4] FAIL: weight-layout build ABI did not reach build.sh/CMake/target\n' >&2
     grep -E 'FQ_SWEEP_WEIGHT_LAYOUT|FullyQuantized internal sweep:' \
-      "$build_log" "$build_dir/CMakeCache.txt" 2>/dev/null >&2 || true
+      "$build_log" "$build_dir/cmake.log" "$build_dir/CMakeCache.txt" \
+      "$target_make" 2>/dev/null >&2 || true
     printf '[fq-q4k-kpack4] artifacts=%s\n' "$out" >&2
     return 2
   fi
