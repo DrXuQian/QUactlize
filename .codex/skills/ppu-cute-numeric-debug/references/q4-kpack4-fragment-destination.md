@@ -212,3 +212,16 @@ geometries are instantiated for both `standard-aiu` (AP0) and `packed-row`
 independent of the K-pack4 resident-B byte class.  New performance comparisons
 must match AP across layouts and must not compare an Xplane AP1 winner with a
 K-pack4 AP0-only result.
+
+## PPU codegen reporting boundary
+
+The PPU0010 source atoms spell the readers as
+`ppu.tc01.ldmatrix...m8n8.x4.swzl...` and
+`ppu.tc01.ldmatrix...m16n16.x1.swzl.trans...`, but `hgobjdump -line` normally
+reports both after assembler lowering as backend `tsm.ld...` operations.  Do
+not require a source `ldmatrix` mnemonic in final-object disassembly.  Bind the
+reader identity through the exact demangled kernel schedule
+(`KernelAiuQ4KPack4Transpose` and `KernelAiuPackedA<1` as applicable), then
+compare final instruction/resource counts through the lowered `tsm.ld`, MMA,
+register, spill and ACU evidence.  If a tool release preserves source
+mnemonics, their expected m8/m16 forms remain an additional positive check.

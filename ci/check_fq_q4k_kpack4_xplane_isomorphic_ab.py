@@ -48,6 +48,10 @@ def check(selector: str, analyzer: str, runner: str, bench: str,
         '"LastArriverM1Fp16Completion" not in pair[1]',
         '"m8n8.x4.swzl.shared.b16"',
         '"m16n16.x1.swzl.trans.shared.b16"',
+        '"KernelAiuQ4KPack4Transpose" in demangled',
+        'if has_kpack != expects_kpack or has_ap1 != expects_ap1',
+        'if focus["tsm_load"] <= 0',
+        'reader_lowering = "HGOBJDUMP_TSM_LOWERED"',
         'if len(mma_counts) != 1',
         'same_sign = all(value > 0 for value in paired)',
         'requires_acu = abs(delta) >= gap_threshold and same_sign',
@@ -71,6 +75,10 @@ def check(selector: str, analyzer: str, runner: str, bench: str,
         "launches=1 reducer_launches=0",
         '"$acu" --import "$report" --csv --page details',
         'acu-targets.tsv',
+        'RESUME must be 0 or 1',
+        'resume changed a measurement source',
+        'sha256sum -c "$out/results/binary-${arm}.sha256"',
+        'validate-inputs',
     ), "runner")
     if runner.count('--only-split=4 --tm8-max-m=8') != 2:
         raise CheckError("timing and ACU must both bind the exact S4 subject")
@@ -106,12 +114,17 @@ def main() -> int:
         (0, '"same_tactic": True', '"same_tactic": False'),
         (1, 'SPLIT = 4', 'SPLIT = 1'),
         (1, 'if len(mma_counts) != 1', 'if False'),
+        (1, 'if has_kpack != expects_kpack or has_ap1 != expects_ap1',
+         'if False'),
+        (1, 'if focus["tsm_load"] <= 0', 'if False'),
         (1, 'requires_acu = abs(delta) >= gap_threshold and same_sign',
          'requires_acu = False'),
         (2, '--only-split=4 --tm8-max-m=8',
          '--only-split=1 --tm8-max-m=8'),
         (2, 'launches=1 reducer_launches=0',
          'launches=2 reducer_launches=1'),
+        (2, 'resume changed a measurement source',
+         'resume accepted a measurement source'),
         (3, 'if (producer_launch() != cutlass::Status::kSuccess ||',
          'if (full_launch() != cutlass::Status::kSuccess ||'),
         (4, 'rows.size() != 1 || cli.only_split == 0',
@@ -132,7 +145,7 @@ def main() -> int:
             raise CheckError(f"negative stayed green: {old}")
     print("[fq-kpack4-xplane-ab:self-test] PASS exact AP0/AP1 factorial, "
           "same-config/S4 AB-BA timing, codegen resources and one-producer "
-          "conditional ACU; ten plants RED")
+          "conditional ACU plus analysis-only binary reuse; thirteen plants RED")
     return 0
 
 

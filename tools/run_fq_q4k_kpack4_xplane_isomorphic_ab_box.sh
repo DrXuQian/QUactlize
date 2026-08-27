@@ -32,6 +32,7 @@ main() {
   local source_x source_k selected plan arm artifact layout generated build_dir
   local build_log binary symbol_file list_elf symbol demangled line resource rc
   local shape_key m n k ap round order name log report_base report details
+  local resume measurement_sha changed
   local -a acu_cmd reports
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
   workspace="$(realpath -e /workspace)" || return 2
@@ -40,7 +41,14 @@ main() {
   stamp="$(date -u +%Y%m%dT%H%M%SZ)" || return 2
   out="$(realpath -m -- "${OUT:-/workspace/quactlize-fq-q4k-kpack4-xplane-ab-${short}-${stamp}-$$}")" || return 2
   case "$out" in "$workspace"/*) ;; *) fail 'OUT must be a strict /workspace child'; return 2;; esac
-  if [ -e "$out" ]; then fail "refusing existing OUT: $out"; return 2; fi
+  resume="${RESUME:-0}"
+  case "$resume" in 0|1) ;; *) fail 'RESUME must be 0 or 1'; return 2;; esac
+  if [ -e "$out" ] && [ "$resume" != 1 ]; then
+    fail "refusing existing OUT without RESUME=1: $out"; return 2
+  fi
+  if [ ! -e "$out" ] && [ "$resume" = 1 ]; then
+    fail "RESUME=1 requires an existing OUT: $out"; return 2
+  fi
   if [ -n "${PPU_DEFS:-}" ] || [ -n "${PPU_EXTRA_DEFS:-}" ]; then
     fail 'ambient PPU_DEFS/PPU_EXTRA_DEFS changes the A/B'; return 2
   fi
@@ -95,34 +103,69 @@ PY
 
   source_x="$out/generated/source-xplane"
   source_k="$out/generated/source-kpack4"
-  python3 -B "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
-    --qtype 12 --artifact-tk 64 --bchunk 0 --weight-layout xplane \
-    --tile-m-filter 8 --per-unit "$per_unit" --out-dir "$source_x" || return 2
-  python3 -B "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
-    --qtype 12 --artifact-tk 0 --bchunk 0 --weight-layout q4-kpack4 \
-    --tile-m-filter 8 --per-unit "$per_unit" --out-dir "$source_k" || return 2
   selected="$out/generated/ab"
-  python3 -B "$selector" materialize --xplane-dir "$source_x" \
-    --kpack4-dir "$source_k" --out-dir "$selected" || return 2
   plan="$out/plan.json"
-  python3 -B "$analyzer" plan --output "$plan" || return 2
-
-  git -C "$root" diff --binary --no-ext-diff HEAD > "$out/source.patch" || return 2
-  {
-    printf '%s\n' "$sha"
-    git -C "$root/third_party/actlize" rev-parse HEAD
-    sha256sum \
-      "$root/benchmarks/test_fully_quantized_internal_sweep.cu" \
-      "$root/benchmarks/fully_quantized_splitk_producer_bench.hpp" \
-      "$root/benchmarks/fully_quantized_splitk_producer_unit.inc" \
-      "$root/quactlize/include/ppu_mixed_policy.hpp" \
-      "$root/quactlize/include/fpA_intB_ppu.cuh" \
-      "$root/quactlize/include/actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp" \
-      "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
-      "$selector" "$analyzer" \
-      "$root/ci/check_fq_q4k_kpack4_xplane_isomorphic_ab.py" \
-      "$root/tools/run_fq_q4k_kpack4_xplane_isomorphic_ab_box.sh"
-  } > "$out/source-authority.sha256" || return 2
+  if [ "$resume" = 1 ]; then
+    [ -s "$out/source-authority.sha256" ] || {
+      fail 'resume source authority is missing'; return 2; }
+    measurement_sha="$(sed -n '1p' "$out/source-authority.sha256")"
+    [[ "$measurement_sha" =~ ^[0-9a-f]{40}$ ]] || {
+      fail 'resume measurement SHA is malformed'; return 2; }
+    git -C "$root" merge-base --is-ancestor "$measurement_sha" "$sha" || {
+      fail 'resume measurement SHA is not an ancestor of current HEAD'; return 2; }
+    while IFS= read -r changed; do
+      case "$changed" in
+        tools/analyze_fq_q4k_kpack4_xplane_isomorphic_ab.py|\
+        tools/run_fq_q4k_kpack4_xplane_isomorphic_ab_box.sh|\
+        ci/check_fq_q4k_kpack4_xplane_isomorphic_ab.py|\
+        .codex/skills/ppu-cute-numeric-debug/references/q4-kpack4-fragment-destination.md) ;;
+        *) fail "resume changed a measurement source: $changed"; return 2;;
+      esac
+    done < <(git -C "$root" diff --name-only "$measurement_sha..$sha")
+    python3 -B "$analyzer" validate-inputs \
+      --master "$selected/manifest.json" --plan "$plan" || return 2
+    {
+      printf 'measurement_sha=%s\nresume_sha=%s\n' "$measurement_sha" "$sha"
+      sha256sum "$analyzer" \
+        "$root/ci/check_fq_q4k_kpack4_xplane_isomorphic_ab.py" \
+        "$root/tools/run_fq_q4k_kpack4_xplane_isomorphic_ab_box.sh" \
+        "$root/.codex/skills/ppu-cute-numeric-debug/references/q4-kpack4-fragment-destination.md"
+    } > "$out/analysis-resume.sha256" || return 2
+    git -C "$root" diff --binary --no-ext-diff "$measurement_sha..$sha" -- \
+      tools/analyze_fq_q4k_kpack4_xplane_isomorphic_ab.py \
+      ci/check_fq_q4k_kpack4_xplane_isomorphic_ab.py \
+      tools/run_fq_q4k_kpack4_xplane_isomorphic_ab_box.sh \
+      .codex/skills/ppu-cute-numeric-debug/references/q4-kpack4-fragment-destination.md \
+      > "$out/analysis-resume.patch" || return 2
+    printf '[fq-kpack4-xplane-ab] resume measurement_sha=%s analysis_sha=%s\n' \
+      "$measurement_sha" "$sha"
+  else
+    python3 -B "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
+      --qtype 12 --artifact-tk 64 --bchunk 0 --weight-layout xplane \
+      --tile-m-filter 8 --per-unit "$per_unit" --out-dir "$source_x" || return 2
+    python3 -B "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
+      --qtype 12 --artifact-tk 0 --bchunk 0 --weight-layout q4-kpack4 \
+      --tile-m-filter 8 --per-unit "$per_unit" --out-dir "$source_k" || return 2
+    python3 -B "$selector" materialize --xplane-dir "$source_x" \
+      --kpack4-dir "$source_k" --out-dir "$selected" || return 2
+    python3 -B "$analyzer" plan --output "$plan" || return 2
+    git -C "$root" diff --binary --no-ext-diff HEAD > "$out/source.patch" || return 2
+    {
+      printf '%s\n' "$sha"
+      git -C "$root/third_party/actlize" rev-parse HEAD
+      sha256sum \
+        "$root/benchmarks/test_fully_quantized_internal_sweep.cu" \
+        "$root/benchmarks/fully_quantized_splitk_producer_bench.hpp" \
+        "$root/benchmarks/fully_quantized_splitk_producer_unit.inc" \
+        "$root/quactlize/include/ppu_mixed_policy.hpp" \
+        "$root/quactlize/include/fpA_intB_ppu.cuh" \
+        "$root/quactlize/include/actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp" \
+        "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
+        "$selector" "$analyzer" \
+        "$root/ci/check_fq_q4k_kpack4_xplane_isomorphic_ab.py" \
+        "$root/tools/run_fq_q4k_kpack4_xplane_isomorphic_ab_box.sh"
+    } > "$out/source-authority.sha256" || return 2
+  fi
 
   for arm in xplane-ap0 kpack4-ap0 xplane-ap1 kpack4-ap1; do
     case "$arm" in
@@ -133,28 +176,37 @@ PY
     build_dir="$out/build/$arm"
     build_log="$out/results/build-${arm}.log"
     mkdir -p "$build_dir" "$out/codegen/$arm" || return 2
-    printf '[fq-kpack4-xplane-ab] build arm=%s A=%s layout=%s\n' \
-      "$arm" "$artifact" "$layout"
-    (cd "$root" && env -u CMAKE_GENERATOR -u CMAKE_TOOLCHAIN_FILE -u CC -u CXX \
-      PPU_SDK="$sdk_root" PPU_HOME= PPU_SDK_SITE_DEFAULT= \
-      PPU_BUILD_DIR="$build_dir" PPU_ARCHS=ppu0010 JOBS="$jobs" \
-      TARGET=test_fully_quantized_internal_sweep \
-      FQ_SWEEP_GENERATED_DIR="$generated" FQ_SWEEP_QTYPE=12 \
-      FQ_SWEEP_ARTIFACT_TK="$artifact" FQ_SWEEP_BCHUNK=0 \
-      FQ_SWEEP_PACKED_FORMAT=0 FQ_SWEEP_WEIGHT_LAYOUT="$layout" \
-      PPU_DEFS= PPU_EXTRA_DEFS= CFLAGS= CXXFLAGS= CPPFLAGS= LDFLAGS= \
-      ./build.sh) > "$build_log" 2>&1
-    rc=$?
-    if [ "$rc" -ne 0 ]; then
-      tail -n 180 "$build_log" >&2
-      fail "$arm build rc=$rc artifacts=$out"; return "$rc"
+    if [ "$resume" = 1 ] && [ -s "$out/results/binary-${arm}.path" ] && \
+       [ -s "$out/results/binary-${arm}.sha256" ]; then
+      binary="$(cat "$out/results/binary-${arm}.path")"
+      [ -x "$binary" ] && [ ! -L "$binary" ] && \
+        sha256sum -c "$out/results/binary-${arm}.sha256" >/dev/null || {
+          fail "$arm resume binary/hash differs"; return 2; }
+      printf '[fq-kpack4-xplane-ab] reuse arm=%s binary=%s\n' "$arm" "$binary"
+    else
+      printf '[fq-kpack4-xplane-ab] build arm=%s A=%s layout=%s\n' \
+        "$arm" "$artifact" "$layout"
+      (cd "$root" && env -u CMAKE_GENERATOR -u CMAKE_TOOLCHAIN_FILE -u CC -u CXX \
+        PPU_SDK="$sdk_root" PPU_HOME= PPU_SDK_SITE_DEFAULT= \
+        PPU_BUILD_DIR="$build_dir" PPU_ARCHS=ppu0010 JOBS="$jobs" \
+        TARGET=test_fully_quantized_internal_sweep \
+        FQ_SWEEP_GENERATED_DIR="$generated" FQ_SWEEP_QTYPE=12 \
+        FQ_SWEEP_ARTIFACT_TK="$artifact" FQ_SWEEP_BCHUNK=0 \
+        FQ_SWEEP_PACKED_FORMAT=0 FQ_SWEEP_WEIGHT_LAYOUT="$layout" \
+        PPU_DEFS= PPU_EXTRA_DEFS= CFLAGS= CXXFLAGS= CPPFLAGS= LDFLAGS= \
+        ./build.sh) > "$build_log" 2>&1
+      rc=$?
+      if [ "$rc" -ne 0 ]; then
+        tail -n 180 "$build_log" >&2
+        fail "$arm build rc=$rc artifacts=$out"; return "$rc"
+      fi
+      binary="$(find "$build_dir" -type f -name test_fully_quantized_internal_sweep -perm -u+x -print -quit)"
+      if [ -z "$binary" ] || [ -L "$binary" ]; then
+        fail "$arm exact binary is missing or symlinked"; return 2
+      fi
+      printf '%s\n' "$binary" > "$out/results/binary-${arm}.path"
+      sha256sum "$binary" > "$out/results/binary-${arm}.sha256" || return 2
     fi
-    binary="$(find "$build_dir" -type f -name test_fully_quantized_internal_sweep -perm -u+x -print -quit)"
-    if [ -z "$binary" ] || [ -L "$binary" ]; then
-      fail "$arm exact binary is missing or symlinked"; return 2
-    fi
-    printf '%s\n' "$binary" > "$out/results/binary-${arm}.path"
-    sha256sum "$binary" > "$out/results/binary-${arm}.sha256" || return 2
     symbol_file="$out/results/row-symbol-${arm}.txt"
     python3 -B - "$generated/manifest.json" "$symbol_file" <<'PY' || return 2
 import json,pathlib,sys

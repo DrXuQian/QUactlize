@@ -70,7 +70,9 @@ def parse_samples(value: str) -> list[float]:
 
 def validate_arm_manifest(value: dict[str, Any], name: str) -> dict[str, Any]:
     if value.get("schema") != ARM_SCHEMA or value.get("name") != name or \
-            value.get("selection_denominator") != 1:
+            value.get("selection_denominator") != 1 or \
+            value.get("source_typed_denominator") != 144 or \
+            value.get("source_global_typed_denominator") != 918:
         raise AnalysisError(f"arm manifest identity differs: {name}")
     layout = "q4-kpack4" if name.startswith("kpack4") else "xplane"
     ap = 1 if name.endswith("ap1") else 0
@@ -126,6 +128,26 @@ def emit_plan(output: pathlib.Path) -> None:
     print(f"[fq-kpack4-xplane-ab-plan] PASS comparisons=8 output={output}")
 
 
+def validate_plan(value: dict[str, Any]) -> None:
+    expected = {key: (shape, providers) for key, shape, providers in CASES}
+    actual = {
+        row["shape_key"]: (tuple(row["shape"]), tuple(row["providers"]))
+        for row in value.get("cases", [])
+    }
+    if value.get("schema") != \
+            "quactlize.fq-q4k-kpack4-xplane-isomorphic-ab-plan.v1" or \
+            value.get("config") != CONFIG or value.get("split") != SPLIT or \
+            actual != expected:
+        raise AnalysisError("run plan differs from the exact five-shape authority")
+
+
+def validate_inputs(master_path: pathlib.Path, plan_path: pathlib.Path) -> None:
+    load_master(master_path)
+    validate_plan(json.loads(plan_path.read_text()))
+    print("[fq-kpack4-xplane-ab-inputs] PASS arms=4 comparisons=8 "
+          f"master={master_path} plan={plan_path}")
+
+
 def parse_list_elf(text: str) -> list[tuple[str, str]]:
     mangled = re.findall(r"^.*Func\s+\d+:\s*(\S+).*$", text, re.MULTILINE)
     if not mangled:
@@ -163,25 +185,26 @@ def select_symbol(list_elf: pathlib.Path, symbol_output: pathlib.Path,
           f"symbol={symbol}")
 
 
-INSTRUCTION = re.compile(
-    r"^\s*[0-9a-f]+:(?:\s+[0-9a-f]{2}){4,32}\s+"
-    r"(?P<op>[A-Za-z_][A-Za-z0-9_.:]*)\b", re.IGNORECASE)
-
-
 def parse_instructions(text: str) -> list[str]:
-    result = []
-    for line in text.splitlines():
-        match = INSTRUCTION.match(line)
+    """Parse both source mnemonics and hgobjdump's lowered dotted opcodes.
+
+    PPU hgobjdump normally prints the source ``ppu.tc01.ldmatrix`` operation
+    as a backend ``tsm.ld...`` instruction.  Requiring the source mnemonic in
+    that output confuses an assembler lowering boundary with a missing load.
+    This is the parser already proved by the historical shared-prefix codegen
+    closure, extended here without interpreting the opcode.
+    """
+    result: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("//", "#", ".", "File ",
+                                        "Function ")):
+            continue
+        match = re.search(
+            r"(?:^|\s)([sv]?\.?[A-Za-z][A-Za-z0-9_]*"
+            r"(?:\.[A-Za-z0-9_:]+)+)\s+", line)
         if match:
-            result.append(match.group("op").lower())
-    if not result:
-        # Some SDK releases omit encoded bytes from -line.
-        for line in text.splitlines():
-            match = re.search(
-                r"(?:^|\s)(ppu\.[A-Za-z0-9_.:]+|[sv]\.[A-Za-z0-9_.:]+)\s+",
-                line, re.IGNORECASE)
-            if match:
-                result.append(match.group(1).lower())
+            result.append(match.group(1).lower())
     if not result:
         raise AnalysisError("exact-symbol disassembly contains no parsed instruction")
     return result
@@ -233,6 +256,15 @@ def codegen(arm_manifest: pathlib.Path, line_path: pathlib.Path,
     validate_arm_manifest(arm, name)
     line = line_path.read_text(errors="replace")
     resource = resource_path.read_text(errors="replace")
+    demangled = demangled_path.read_text(errors="replace").strip()
+    expects_kpack = name.startswith("kpack4")
+    expects_ap1 = name.endswith("ap1")
+    has_kpack = "KernelAiuQ4KPack4Transpose" in demangled
+    has_ap1 = "KernelAiuPackedA<1" in demangled
+    if has_kpack != expects_kpack or has_ap1 != expects_ap1:
+        raise AnalysisError(
+            f"{name} exact producer schedule differs: "
+            f"kpack={int(has_kpack)} ap1={int(has_ap1)}")
     inst = parse_instructions(line)
     counts = collections.Counter(inst)
     local = parse_local_fields(resource)
@@ -253,12 +285,24 @@ def codegen(arm_manifest: pathlib.Path, line_path: pathlib.Path,
         "tsm_store": count_like(counts, "tsm.st"),
         "local_or_spill_ops": local_ops,
     }
-    is_kpack = name.startswith("kpack4")
-    if is_kpack:
-        if focus["m16n16_x1_swzl_trans"] <= 0 or focus["m8n8_x4_swzl"] != 0:
-            raise AnalysisError(f"{name} did not lower exclusively through trans m16 reader")
-    elif focus["m8n8_x4_swzl"] <= 0 or focus["m16n16_x1_swzl_trans"] != 0:
-        raise AnalysisError(f"{name} did not lower exclusively through xplane m8x4 reader")
+    source_reader_total = (focus["m8n8_x4_swzl"] +
+                           focus["m16n16_x1_swzl_trans"])
+    if source_reader_total:
+        if expects_kpack and (focus["m16n16_x1_swzl_trans"] <= 0 or
+                              focus["m8n8_x4_swzl"] != 0):
+            raise AnalysisError(
+                f"{name} source-mnemonic reader differs: focus={focus}")
+        if not expects_kpack and (focus["m8n8_x4_swzl"] <= 0 or
+                                  focus["m16n16_x1_swzl_trans"] != 0):
+            raise AnalysisError(
+                f"{name} source-mnemonic reader differs: focus={focus}")
+        reader_lowering = "SOURCE_MNEMONIC"
+    else:
+        if focus["tsm_load"] <= 0:
+            raise AnalysisError(
+                f"{name} exact producer contains no source reader or lowered "
+                f"tsm load: focus={focus} opcodes={dict(sorted(counts.items()))}")
+        reader_lowering = "HGOBJDUMP_TSM_LOWERED"
     if focus["mma"] <= 0:
         raise AnalysisError(f"{name} producer contains no MMA instruction")
     value = {
@@ -266,12 +310,13 @@ def codegen(arm_manifest: pathlib.Path, line_path: pathlib.Path,
         "arm": name,
         "binary_sha256": sha256(binary),
         "symbol": symbol_path.read_text().strip(),
-        "demangled": demangled_path.read_text().strip(),
+        "demangled": demangled,
         "instruction_total": len(inst),
         "focus_counts": focus,
         "registers": parse_registers(resource),
         "resource_local_fields": local,
         "spill_status": spill_status,
+        "reader_lowering": reader_lowering,
         "opcode_counts": dict(sorted(counts.items())),
         "line_sha256": sha256(line_path),
         "resource_sha256": sha256(resource_path),
@@ -281,6 +326,7 @@ def codegen(arm_manifest: pathlib.Path, line_path: pathlib.Path,
           f"arm={name} instructions={len(inst)} registers="
           f"{value['registers'] if value['registers'] is not None else 'UNKNOWN'} "
           f"spill={spill_status} ldmatrix={focus['ldmatrix_total']} "
+          f"tsm_load={focus['tsm_load']} reader={reader_lowering} "
           f"m8x4={focus['m8n8_x4_swzl']} "
           f"m16x1_trans={focus['m16n16_x1_swzl_trans']} mma={focus['mma']}")
 
@@ -341,16 +387,7 @@ def analyze(master_path: pathlib.Path, plan_path: pathlib.Path,
             output_json: pathlib.Path, output_tsv: pathlib.Path) -> None:
     arms = load_master(master_path)
     plan = json.loads(plan_path.read_text())
-    expected_plan = {
-        key: (shape, providers) for key, shape, providers in CASES
-    }
-    actual_plan = {
-        row["shape_key"]: (tuple(row["shape"]), tuple(row["providers"]))
-        for row in plan.get("cases", [])
-    }
-    if plan.get("config") != CONFIG or plan.get("split") != SPLIT or \
-            actual_plan != expected_plan:
-        raise AnalysisError("run plan differs from the exact five-shape authority")
+    validate_plan(plan)
     codegens = {}
     for name in ARMS:
         path = codegen_root / f"{name}.json"
@@ -442,7 +479,8 @@ def analyze(master_path: pathlib.Path, plan_path: pathlib.Path,
         "xplane_range\tkpack4_range\tpaired_deltas_pct\t"
         "xplane_instructions\tkpack4_instructions\tinstruction_delta\t"
         "xplane_registers\tkpack4_registers\txplane_spill\tkpack4_spill\t"
-        "xplane_ldmatrix\tkpack4_ldmatrix\tmma\tacu_required"
+        "xplane_ldmatrix\tkpack4_ldmatrix\txplane_tsm_load\t"
+        "kpack4_tsm_load\txplane_reader\tkpack4_reader\tmma\tacu_required"
     ]
     for row in comparisons:
         x, k = row["xplane"], row["kpack4"]
@@ -460,6 +498,9 @@ def analyze(master_path: pathlib.Path, plan_path: pathlib.Path,
             str(xcg["spill_status"]), str(kcg["spill_status"]),
             str(xcg["focus_counts"]["ldmatrix_total"]),
             str(kcg["focus_counts"]["ldmatrix_total"]),
+            str(xcg["focus_counts"]["tsm_load"]),
+            str(kcg["focus_counts"]["tsm_load"]),
+            str(xcg["reader_lowering"]), str(kcg["reader_lowering"]),
             str(xcg["focus_counts"]["mma"]),
             str(int(row["requires_acu"])),
         )))
@@ -490,12 +531,15 @@ def self_test() -> None:
     else:
         raise AssertionError("missing producer symbol stayed green")
     xinst = parse_instructions(
-        "0000: 00 00 00 00 ppu.tc01.ldmatrix.sync.aligned.m8n8.x4.swzl.shared.b16 r0\n"
-        "0004: 00 00 00 00 ppu.tc01.mma.f32.f16.m8n16k16 r1\n")
+        "0000 ppu.tc01.ldmatrix.sync.aligned.m8n8.x4.swzl.shared.b16 r0\n"
+        "0004 ppu.tc01.mma.f32.f16.m8n16k16 r1\n")
     kinst = parse_instructions(
-        "0000: 00 00 00 00 ppu.tc01.ldmatrix.sync.aligned.m16n16.x1.swzl.trans.shared.b16 r0\n"
-        "0004: 00 00 00 00 ppu.tc01.mma.f32.f16.m8n16k16 r1\n")
+        "0000 ppu.tc01.ldmatrix.sync.aligned.m16n16.x1.swzl.trans.shared.b16 r0\n"
+        "0004 ppu.tc01.mma.f32.f16.m8n16k16 r1\n")
     assert "m8n8.x4" in xinst[0] and "m16n16.x1" in kinst[0]
+    assert parse_instructions(
+        "0000 tsm.ld.swzl.b16 r0, [r1]\n0004 v.mma.f32.f16 r2, r3\n") == [
+            "tsm.ld.swzl.b16", "v.mma.f32.f16"]
     assert parse_registers("Registers: 128\nSTACK SIZE: 0\n") == 128
     assert parse_local_fields("Registers: 128\nSTACK SIZE: 0\n") == {"stack_size": 0}
     with tempfile.TemporaryDirectory(prefix="qz-kpack4-xplane-analysis-") as temp:
@@ -517,6 +561,8 @@ def self_test() -> None:
                 "weight_layout": int(kpack), "artifact_tile_k": artifact,
                 "a_provider": provider, "a_provider_id": ap,
                 "selection_denominator": 1,
+                "source_typed_denominator": 144,
+                "source_global_typed_denominator": 918,
                 "row": {
                     "qtype": 12, "artifact_tile_k": artifact,
                     "tile_m": 8, "tile_n": 64, "tactic_tile_k": 256,
@@ -542,8 +588,9 @@ def self_test() -> None:
                 "schema": "quactlize.fq-q4k-kpack4-xplane-codegen.v1",
                 "arm": name, "instruction_total": 102 if kpack else 100,
                 "registers": 128, "spill_status": "ZERO",
+                "reader_lowering": "SOURCE_MNEMONIC",
                 "focus_counts": {
-                    "mma": 16, "ldmatrix_total": 16,
+                    "mma": 16, "ldmatrix_total": 16, "tsm_load": 0,
                     "m8n8_x4_swzl": 0 if kpack else 16,
                     "m16n16_x1_swzl_trans": 16 if kpack else 0,
                 },
@@ -613,6 +660,9 @@ def main() -> int:
     sub.add_parser("self-test")
     plan = sub.add_parser("plan")
     plan.add_argument("--output", type=pathlib.Path, required=True)
+    validate = sub.add_parser("validate-inputs")
+    validate.add_argument("--master", type=pathlib.Path, required=True)
+    validate.add_argument("--plan", type=pathlib.Path, required=True)
     symbol = sub.add_parser("select-symbol")
     symbol.add_argument("--list-elf", type=pathlib.Path, required=True)
     symbol.add_argument("--symbol-output", type=pathlib.Path, required=True)
@@ -637,6 +687,8 @@ def main() -> int:
             self_test()
         elif args.command == "plan":
             emit_plan(args.output)
+        elif args.command == "validate-inputs":
+            validate_inputs(args.master, args.plan)
         elif args.command == "select-symbol":
             select_symbol(args.list_elf, args.symbol_output,
                           args.demangled_output)
