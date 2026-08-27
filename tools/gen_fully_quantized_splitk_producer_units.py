@@ -7,9 +7,12 @@ device type; every omitted raw row remains in ``manifest.json`` with its named
 reason.  The generated wrapper then lets the *real* Shipping/Split types decide
 shared storage and ``can_implement`` for each runtime shape.
 
-One invocation owns exactly one (qtype, ArtifactTileK, PPU_B_CHUNK) tuple.
-That makes the translation-unit policy explicit and gives a shard a stable,
-resume-safe identity.  S={1,2,4,8} is runtime data, not four duplicate types.
+One xplane invocation owns exactly one
+``(qtype, ArtifactTileK, PPU_B_CHUNK)`` tuple.  K-pack4 instead owns the
+canonical ``(qtype=12, weight-layout=q4-kpack4)`` identity and deliberately has
+no ArtifactTileK axis.  That makes the translation-unit policy explicit and
+gives a shard a stable, resume-safe identity.  S={1,2,4,8} is runtime data, not
+four duplicate types.
 An optional TileM selection records both the complete source-typed denominator
 and every excluded legal row; decode can therefore compile TM8 only without
 pretending the generic tactic space was smaller.
@@ -77,12 +80,20 @@ def row_json(qtype: int, artifact: int, row: matrix.Tactic,
 
 def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
              per_unit: int, drop_last: bool,
-             tile_m_filter: int | None = None) -> dict:
+             tile_m_filter: int | None = None,
+             weight_layout: str = "xplane") -> dict:
     formats = {fmt.qtype: fmt for fmt in matrix.parse_formats()}
     if qtype not in (10, 11, 12, 13, 14):
         raise ValueError("qtype must be one of the shipping FQ formats 10..14")
-    if artifact not in matrix.ARTIFACT_TILE_K:
-        raise ValueError("artifact-tk must be one of 32,64,128,256")
+    if weight_layout not in ("xplane", "q4-kpack4"):
+        raise ValueError("weight-layout must be xplane or q4-kpack4")
+    kpack4 = weight_layout == "q4-kpack4"
+    if kpack4:
+        if (qtype, artifact, bchunk) != (12, 0, 0):
+            raise ValueError(
+                "q4-kpack4 requires qtype=12, artifact-tk=0 and bchunk=0")
+    elif artifact not in matrix.ARTIFACT_TILE_K:
+        raise ValueError("xplane artifact-tk must be one of 32,64,128,256")
     if bchunk not in matrix.BCHUNK_REQUESTS:
         raise ValueError("bchunk must be 0 or 1")
     if per_unit <= 0:
@@ -91,13 +102,26 @@ def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
             8, 16, 32, 64, 128, 256):
         raise ValueError("tile-m-filter must be one of 8,16,32,64,128,256")
 
-    raw_rows = [r for r in matrix.emitted_tactics(qtype, artifact)
+    # K-pack4 has no ArtifactTileK.  The A64 emitter is used only as the raw
+    # 11,520-row topology source: its artifact predicates are discarded below.
+    # The independent K-pack4 predicate is then compared against the complete
+    # raw denominator by the generator gate.
+    emitter_artifact = 64 if kpack4 else artifact
+    raw_rows = [r for r in matrix.emitted_tactics(qtype, emitter_artifact)
                 if r.bchunk == bchunk]
     if len(raw_rows) != 11520:
         raise RuntimeError(
             f"raw tuple denominator drifted: got {len(raw_rows)}, expected 11520")
     fmt = formats[qtype]
     def row_admitted(row: matrix.Tactic) -> bool:
+        if kpack4:
+            transport_ok = (
+                row.tactic_tile_k >= 64 and row.tactic_tile_k % 64 == 0 and
+                row.tile_n % 16 == 0)
+            packed_ok, _ = matrix.packed_metadata_tactic_supported(
+                fmt, row.tactic_tile_k)
+            return (row.source_status == "TYPE_ADMISSION_REQUIRED" and
+                    transport_ok and packed_ok and row.bchunk == 0)
         artifact_ok, _ = matrix.artifact_supported(
             fmt, artifact, row.tactic_tile_k)
         packed_ok, _ = matrix.packed_metadata_tactic_supported(
@@ -110,7 +134,7 @@ def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
     all_rows: list[tuple[matrix.Tactic, int]] = []
     for row in raw_rows:
         all_rows.append((row, 0))
-        if matrix.packed_a_provider_candidate(fmt, row, artifact):
+        if not kpack4 and matrix.packed_a_provider_candidate(fmt, row, artifact):
             all_rows.append((row, 1))
     source_eligible = [(r, ap) for r, ap in all_rows if row_admitted(r)]
     eligible = [(r, ap) for r, ap in source_eligible
@@ -173,22 +197,33 @@ def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
 
     rejects = []
     for row, a_provider in static_rejects:
-        artifact_ok, artifact_reason = matrix.artifact_supported(
-            fmt, artifact, row.tactic_tile_k)
         packed_ok, packed_reason = matrix.packed_metadata_tactic_supported(
             fmt, row.tactic_tile_k)
-        atom_ok, atom_reason = matrix.collective_atom_tiling_supported(
-            fmt, row, artifact)
-        chunk_ok, chunk_reason = matrix.bchunk_state(fmt, row.bchunk)
         reason = row.source_reason
-        if row.source_status == "TYPE_ADMISSION_REQUIRED" and not artifact_ok:
-            reason = artifact_reason
-        elif row.source_status == "TYPE_ADMISSION_REQUIRED" and not packed_ok:
-            reason = packed_reason
-        elif row.source_status == "TYPE_ADMISSION_REQUIRED" and not atom_ok:
-            reason = atom_reason
-        elif row.source_status == "TYPE_ADMISSION_REQUIRED" and not chunk_ok:
-            reason = chunk_reason
+        if kpack4:
+            if row.source_status == "TYPE_ADMISSION_REQUIRED" and not (
+                    row.tactic_tile_k >= 64 and
+                    row.tactic_tile_k % 64 == 0 and
+                    row.tile_n % 16 == 0):
+                reason = "Q4_KPACK4_TRANSPORT_REQUIRES_N16_K64"
+            elif row.source_status == "TYPE_ADMISSION_REQUIRED" and not packed_ok:
+                reason = packed_reason
+            elif row.source_status == "TYPE_ADMISSION_REQUIRED" and row.bchunk != 0:
+                reason = "Q4_KPACK4_BCHUNK_UNSUPPORTED"
+        else:
+            artifact_ok, artifact_reason = matrix.artifact_supported(
+                fmt, artifact, row.tactic_tile_k)
+            atom_ok, atom_reason = matrix.collective_atom_tiling_supported(
+                fmt, row, artifact)
+            chunk_ok, chunk_reason = matrix.bchunk_state(fmt, row.bchunk)
+            if row.source_status == "TYPE_ADMISSION_REQUIRED" and not artifact_ok:
+                reason = artifact_reason
+            elif row.source_status == "TYPE_ADMISSION_REQUIRED" and not packed_ok:
+                reason = packed_reason
+            elif row.source_status == "TYPE_ADMISSION_REQUIRED" and not atom_ok:
+                reason = atom_reason
+            elif row.source_status == "TYPE_ADMISSION_REQUIRED" and not chunk_ok:
+                reason = chunk_reason
         entry = row_json(qtype, artifact, row, a_provider)
         entry["reason"] = reason
         rejects.append(entry)
@@ -199,6 +234,8 @@ def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
         "artifact_tile_k": artifact,
         "bchunk": bchunk,
     }
+    if kpack4:
+        identity["weight_layout"] = weight_layout
     if tile_m_filter is not None:
         identity["tile_m_filter"] = tile_m_filter
     selected_reject_rows = []
@@ -225,9 +262,10 @@ def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
             "shape": "runtime M,N,K; one compiled graph serves all shapes",
         },
         "placed_bc": {
-            "compiled_in_bchunk0": matrix.bc_artifact_supported(
-                fmt, artifact)[0],
-            "reason": matrix.bc_artifact_supported(fmt, artifact)[1],
+            "compiled_in_bchunk0": False if kpack4 else
+                matrix.bc_artifact_supported(fmt, artifact)[0],
+            "reason": "Q4_KPACK4_HAS_NO_BC_READER" if kpack4 else
+                matrix.bc_artifact_supported(fmt, artifact)[1],
         },
         "tactic_tile_k_axis": {
             "full_legal_space": list(matrix.TACTIC_TILE_K),
@@ -258,6 +296,14 @@ def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
             "tactic_space": matrix.sha256(matrix.TACTIC_SPACE),
         },
     }
+    if kpack4:
+        manifest["weight_mapping"] = {
+            "layout": "q4-kpack4-transpose-v1",
+            "mapping_id": "0x51344b5034540001",
+            "artifact_tile_k_is_not_an_axis": True,
+            "transport_tile_k": 64,
+            "transport_tile_n": 16,
+        }
     write(out / "manifest.json",
           json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return manifest
@@ -272,13 +318,16 @@ def main() -> int:
     parser.add_argument("--per-unit", type=int, default=1)
     parser.add_argument("--tile-m-filter", type=int,
                         help="compile one TileM while retaining the source denominator")
+    parser.add_argument("--weight-layout", choices=("xplane", "q4-kpack4"),
+                        default="xplane")
     parser.add_argument("--plant-drop-last", action="store_true",
                         help=argparse.SUPPRESS)
     args = parser.parse_args()
     try:
         manifest = generate(args.qtype, args.artifact_tk, args.bchunk,
                             args.out_dir, args.per_unit,
-                            args.plant_drop_last, args.tile_m_filter)
+                            args.plant_drop_last, args.tile_m_filter,
+                            args.weight_layout)
         den = manifest["denominator"]
         print("[fq-tc-generate] " + " ".join(
             f"{k}={v}" for k, v in manifest["identity"].items()) +

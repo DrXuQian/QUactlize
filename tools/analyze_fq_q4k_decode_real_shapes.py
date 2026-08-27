@@ -305,16 +305,24 @@ def load_log(path: pathlib.Path, *, artifact: int,
                 raise ContractError(f"{path}: median does not match samples")
     if expected_symbols is not None:
         expected = set(expected_symbols)
-        # --only-split controls execution, not the printed denominator.  Every
-        # selected symbol always emits the complete S=1/2/4/8 capability
-        # census; only the requested split is allowed to become MEASURED.
-        wanted = collections.Counter(
+        full_census = collections.Counter(
             (symbol, split) for symbol in expected for split in TC_SPLITS)
+        selected_census = collections.Counter(
+            (symbol, expected_split) for symbol in expected)
         observed = collections.Counter(
             (row["symbol"], row["S_int"]) for row in tc)
-        if observed != wanted:
-            raise ContractError(f"{path}: selected TC denominator differs")
+        # Historical binaries printed all four split capabilities during an
+        # --only-split run and represented unexecuted cells as
+        # REAL_CAN_IMPLEMENT.  Current binaries print only the requested split.
+        # Accept exactly those two versioned shapes so archived measurements
+        # remain re-analysable; an all-split scheduler still requires the full
+        # four-board census below.
         if expected_split in TC_SPLITS:
+            if observed not in (selected_census, full_census):
+                raise ContractError(f"{path}: selected TC denominator differs")
+        elif observed != full_census:
+            raise ContractError(f"{path}: selected TC denominator differs")
+        if expected_split in TC_SPLITS and observed == full_census:
             for row in tc:
                 if row["S_int"] == expected_split:
                     continue
@@ -907,7 +915,8 @@ def self_test() -> None:
         return "\n".join(lines) + "\n"
     def tc_screen_log(*, drop: tuple[str, int] | None = None,
                       duplicate: tuple[str, int] | None = None,
-                      measure_extra: tuple[str, int] | None = None) -> str:
+                      measure_extra: tuple[str, int] | None = None,
+                      selected_only: bool = False) -> str:
         symbols = ("tc_alpha", "tc_beta")
         lines = [
             "FQ_SHARD q=12 A=64 bchunk=0 shape=1x1024x5120 "
@@ -916,6 +925,8 @@ def self_test() -> None:
         ]
         for symbol in symbols:
             for split in TC_SPLITS:
+                if selected_only and split != 1:
+                    continue
                 if drop == (symbol, split):
                     continue
                 measured = split == 1 or measure_extra == (symbol, split)
@@ -995,6 +1006,14 @@ def self_test() -> None:
         if len(tc_rows) != len(symbols) * len(TC_SPLITS) or \
                 sum(row["state"] == "MEASURED" for row in tc_rows) != len(symbols):
             raise AssertionError("TC census and measured denominators were mixed")
+        tc_path.write_text(tc_screen_log(selected_only=True))
+        tc_rows, _, _ = load_log(
+            tc_path, artifact=64, expected_shape=(1, 1024, 5120),
+            expected_symbols=symbols, expected_split=1, expected_bc_mode="all")
+        if len(tc_rows) != len(symbols) or \
+                any(row["S_int"] != 1 or row["state"] != "MEASURED"
+                    for row in tc_rows):
+            raise AssertionError("selected-only TC screen ABI was not accepted exactly")
         negative_logs = (
             tc_screen_log(drop=("tc_alpha", 8)),
             tc_screen_log(duplicate=("tc_alpha", 8)),
