@@ -2123,7 +2123,42 @@ private:
 
     static constexpr int K_BLOCK_STATIC = int(KBlockT{});
     Tensor cvt_in  = recast<RealInternalElementB>(tCrB_load(_, _, k_block));
-    Tensor cvt_out = make_tensor(tCrB_mma(_, _, k_block * K_ATOM_PER_COPY).data(), cvt_in.layout());
+    Tensor cvt_out = [&] {
+      if constexpr (kQ4KPack4Transpose) {
+        // K-pack4's physical transposed-b16 loader and logical m8 MMA fragment
+        // have the same 32-value converter cohort, but not always the same N
+        // stride.  Reusing cvt_in.layout() here made distinct (N16,K64)
+        // cohorts alias whenever the loader's N stride was below the compute
+        // fragment's 128-half stride (for example TN32/WN32: cohort bases
+        // 0,1,1,2,... instead of 0,4,1,5,...).  L231 composes the real
+        // TiledMMA/SmemLayoutB types across all admitted TN/WN geometries and
+        // proves that only the cohort base differs; the 32-value converter
+        // order itself remains exact.
+        //
+        // Preserve cvt_in's first mode -- it is the proven int4 converter
+        // emission order -- and derive a compact N layout beginning at the
+        // compute fragment's own N stride.  Nested physical N modes such as
+        // (2,2) then become (128,256), rather than inheriting (32,256).
+#if defined(PPU_Q4_KPACK4_LEGACY_LOADER_OUTPUT_LAYOUT) && \
+    (PPU_Q4_KPACK4_LEGACY_LOADER_OUTPUT_LAYOUT != 0)
+        return make_tensor(
+            tCrB_mma(_, _, k_block * K_ATOM_PER_COPY).data(),
+            cvt_in.layout());
+#else
+        auto dst_n_stride = compact_col_major(
+            shape<1>(cvt_in.layout()), stride<1>(tCrB_mma.layout()));
+        auto dst_layout = make_layout(
+            shape(cvt_in.layout()),
+            make_stride(stride<0>(cvt_in.layout()), dst_n_stride));
+        return make_tensor(
+            tCrB_mma(_, _, k_block * K_ATOM_PER_COPY).data(), dst_layout);
+#endif
+      } else {
+        return make_tensor(
+            tCrB_mma(_, _, k_block * K_ATOM_PER_COPY).data(),
+            cvt_in.layout());
+      }
+    }();
 
     using CPY_VEC = Int<4 * 32 / sizeof_bits<RealInternalElementB>::value>;
 #if defined(PPU_B_DEQUANT_NOP) && (PPU_B_DEQUANT_NOP != 0)
@@ -2264,25 +2299,30 @@ private:
   /// Utilities for transforming the A operand prior to issuing tensor cell math.
   template <class EngineIn,
             class EngineOut,
-            class TensorLayout,
-            int ConversionVectorWidth = cosize_v<TensorLayout>>
+            class TensorLayoutIn,
+            class TensorLayoutOut,
+            int ConversionVectorWidth = cosize_v<TensorLayoutIn>>
   CUTLASS_DEVICE void
   convert_tensor(
-    Tensor<EngineIn,TensorLayout> const& in,
-    Tensor<EngineOut,TensorLayout>& out,
+    Tensor<EngineIn,TensorLayoutIn> const& in,
+    Tensor<EngineOut,TensorLayoutOut>& out,
     cute::Int<ConversionVectorWidth> width = {}) {
 
-    /// This is an element-wise conversion where we expect both tensors to have the same layout.
-    /// As a result, we can cast as a cutlass array to use the fast numeric converters without
-    /// worrying about indexing into the layout.
-    constexpr int N = size(TensorLayout{});
-    // constexpr int N = cosize_v<TensorLayout>;
+    /// The converter consumes one contiguous source cohort and emits one
+    /// contiguous destination cohort.  Their static logical sizes must match,
+    /// but their rest-mode strides need not: K-pack4 deliberately transports
+    /// physical (N,K/4) and writes logical (N,K) MMA storage.
+    constexpr int N = size(TensorLayoutIn{});
+    constexpr int NOut = size(TensorLayoutOut{});
+    // constexpr int N = cosize_v<TensorLayoutIn>;
 
     /// The inputs must be backed by registers & be statically sized.
     static_assert(is_rmem<EngineIn>::value, "Input tensor for A conversion must come from registers");
     static_assert(is_rmem<EngineOut>::value, "Output tensor for A conversion must come from registers");
-    static_assert(is_static_v<TensorLayout>, "Tensor layout for the conversion must be static");
-    // static_assert(cosize_v<TensorLayout> == size(TensorLayout{}), "Cosize and size of the layout must be equal.");
+    static_assert(is_static_v<TensorLayoutIn>, "Input tensor layout for the conversion must be static");
+    static_assert(is_static_v<TensorLayoutOut>, "Output tensor layout for the conversion must be static");
+    static_assert(N == NOut, "Input and output conversion tensors must have the same logical size");
+    // static_assert(cosize_v<TensorLayoutIn> == size(TensorLayoutIn{}), "Cosize and size of the layout must be equal.");
     static_assert(N % ConversionVectorWidth == 0, "Conversion vector width must divide cosize of the tensor layout.");
 
     using SrcType = typename EngineIn::value_type;

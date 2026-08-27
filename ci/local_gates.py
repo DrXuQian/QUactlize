@@ -157,6 +157,7 @@ GATES = [
     ("l227_q4_a32_packed_decode_type", []),
     ("l229_q4_kpack4_production_type", []),
     ("l230_q4_kpack4_offline_abi", []),
+    ("l231_q4_kpack4_production_fragment", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
