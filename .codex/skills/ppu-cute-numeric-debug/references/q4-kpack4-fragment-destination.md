@@ -179,7 +179,26 @@ The repair leaves unchanged:
 - barriers and scheduler;
 - runtime branch count.
 
-It changes only static register destination bases.  The six-row device closure
-proves correctness, not latency.  Run the fresh 72-row pilot before claiming a
-performance result; never resume the pre-fix artifact because its source
-authority and numeric denominator are obsolete.
+It changes only static register destination bases.  The fresh 72-row pilot
+subsequently closed with 18 confirmed symbols:
+
+```text
+shape=1x1024x5120
+winner=TC_SPLITK_S4_MODELED_E2E
+config=8x32x256_w8x16_s3_bc0_apstandard-aiu
+producer=10.800000280 us
+modeled_reducer=0.008329718 us
+modeled_e2e=10.808329998 us
+```
+
+This is 1.123% slower than the prior cross-format decode winner at
+10.688330016 us and 26.215% faster than the native A32/F2 decode result at
+14.648329 us.  The S4 winner and runner had overlapping sample envelopes
+(`gap=0.740%`), so the tactic verdict is correctly
+`UNRESOLVED_OVERLAPPING_ENVELOPES`; this is not a correctness or physical
+layout failure.  S8 was structurally unavailable for this K/TK partition.
+
+Do not resume the pre-fix artifact: its source authority and numeric
+denominator are obsolete.  This one-shape result admits the layout to the
+inventory-owned M=1/2/4/8 real-shape decode scan; it does not establish
+prefill performance.

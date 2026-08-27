@@ -23,17 +23,36 @@ from typing import Any, Iterable
 
 import analyze_fq_q4k_decode_real_shapes as decode
 import gen_fully_quantized_splitk_producer_units as generator
+import plan_fq_q4k_decode_real_shapes as planner
 
 
 SHAPE = (1, 1024, 5120)
 SHAPE_TEXT = "1x1024x5120"
 MAPPING_ID = "0x51344b5034540001"
 SCHEMA = "quactlize.fq_q4k_kpack4_pilot.v1"
+REAL_SHAPES_SCHEMA = "quactlize.fq_q4k_kpack4_decode_real_shapes.v1"
 TERMINAL_STATES = decode.SCHEDULER_TERMINAL_STATES
+KPACK4_CLASS = {
+    "name": "q4-kpack4-transpose-v1",
+    "mapping_id": MAPPING_ID,
+    "artifact_tile_k_is_not_an_axis": True,
+}
 
 
 class PilotError(ValueError):
     pass
+
+
+def set_shape(text: str) -> tuple[int, int, int]:
+    """Bind one CLI invocation to an exact registered decode shape."""
+    global SHAPE, SHAPE_TEXT  # pylint: disable=global-statement
+    shape = decode.parse_shape(text)
+    if shape[0] not in planner.DECODE_M:
+        raise PilotError(
+            f"K-pack4 decode M must be one of {planner.DECODE_M}: {shape[0]}")
+    SHAPE = shape
+    SHAPE_TEXT = "x".join(map(str, shape))
+    return shape
 
 
 def load_manifest(path: pathlib.Path) -> tuple[dict[str, dict[str, Any]], dict]:
@@ -197,7 +216,7 @@ def scheduler(manifest: pathlib.Path, log: pathlib.Path,
     if result["input_symbols"] != len(selected) or \
             result["retained_symbols"] <= 0:
         raise PilotError(f"K-pack4 scheduler result differs: {result}")
-    if result["boards"].get("S8") != {
+    if SHAPE == (1, 1024, 5120) and result["boards"].get("S8") != {
             "status": "UNAVAILABLE", "measured": 0, "retained": 0,
             "terminal_states": {"SPLIT_PARTITION": len(selected)}}:
         raise PilotError("K-pack4 pilot S8 must be the exact 20-tile partition negative")
@@ -221,9 +240,12 @@ def measured_candidate(row: dict[str, Any], meta: dict[str, Any],
     reduce = decode.reducer_us(SHAPE[0], SHAPE[1], split, policy)
     samples = [sample + reduce for sample in row["samples_list"]]
     return {
+        "family": "TENSOR_CORE",
         "symbol": row["symbol"],
         "config": decode.tactic_name(meta),
         "split": split,
+        "artifact_tile_k": 0,
+        "physical_layout_class": KPACK4_CLASS,
         "algorithm": "TC_S1_FULL_OUTPUT" if split == 1 else
                      f"TC_SPLITK_S{split}_MODELED_E2E",
         "metric_scope": "FULL_OUTPUT" if split == 1 else
@@ -299,8 +321,9 @@ def finalize(manifest: pathlib.Path, log: pathlib.Path,
         }
         all_candidates.extend(values)
     s8 = boards["S8"]
-    if s8["status"] != "UNAVAILABLE" or \
-            s8["terminal_states"] != {"SPLIT_PARTITION": len(symbols)}:
+    if SHAPE == (1, 1024, 5120) and (
+            s8["status"] != "UNAVAILABLE" or
+            s8["terminal_states"] != {"SPLIT_PARTITION": len(symbols)}):
         raise PilotError("S8 is not the exact structural 20-tile negative")
     verdict, winner, runner = rank(all_candidates)
     result = {
@@ -344,6 +367,108 @@ def finalize(manifest: pathlib.Path, log: pathlib.Path,
     return result
 
 
+def aggregate(plan_path: pathlib.Path, policy_path: pathlib.Path,
+              raw_root: pathlib.Path, output_json: pathlib.Path,
+              output_tsv: pathlib.Path) -> dict[str, Any]:
+    """Close the one-layout K-pack4 results over all real decode shapes."""
+    plan = json.loads(plan_path.read_text())
+    planner.validate_plan(plan)
+    policy = decode.load_policy(policy_path)
+    shape_rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for shape_obj in sorted(plan["shapes"], key=lambda row: row["shape_key"]):
+        shape_key = str(shape_obj["shape_key"])
+        if shape_key in seen:
+            raise PilotError(f"duplicate aggregate shape {shape_key}")
+        seen.add(shape_key)
+        shape = tuple(int(shape_obj[key]) for key in ("m", "n", "k"))
+        path = raw_root / shape_key / "summary.json"
+        value = json.loads(path.read_text())
+        if value.get("schema") != SCHEMA or \
+                tuple(value.get("shape", [])) != shape or \
+                value.get("layout") != KPACK4_CLASS["name"] or \
+                value.get("weight_mapping_id") != MAPPING_ID or \
+                value.get("typed_rows") != 72:
+            raise PilotError(f"{shape_key}: per-shape summary identity differs")
+        winner = dict(value["global"]["winner"])
+        runner = value["global"].get("runner_up")
+        winner.update(decode.metrics(winner, shape, policy))
+        shape_rows.append({
+            "shape_key": shape_key,
+            "shape": list(shape),
+            "references": shape_obj["references"],
+            "verdict": value["global"]["verdict"],
+            "winner": winner,
+            "runner_up": runner,
+            "boards": value["boards"],
+            "summary_sha256": decode.sha256(path),
+        })
+    if len(shape_rows) != int(plan["shape_count"]) or len(shape_rows) != 20:
+        raise PilotError(
+            f"real-shape denominator is {len(shape_rows)}, expected plan/20")
+
+    by_family: dict[tuple[int, int], list[dict[str, Any]]] = \
+        collections.defaultdict(list)
+    for row in shape_rows:
+        by_family[(row["shape"][1], row["shape"][2])].append(row)
+    decisions = []
+    for (n, k), rows in sorted(by_family.items()):
+        per_m = {row["shape"][0]: row for row in rows}
+        if set(per_m) != set(planner.DECODE_M):
+            raise PilotError(f"family {n}x{k} lost one decode M")
+        decisions.append({
+            "N": n, "K": k, "M_values": list(planner.DECODE_M),
+            "verdict": "KPACK4_ONLY_COMPLETE_COVERAGE",
+            "selected": {
+                "physical_layout_class": KPACK4_CLASS,
+                "available": True,
+                "max_internal_regret": 0.0,
+                "mean_internal_regret": 0.0,
+                "per_m": [{
+                    "M": m,
+                    "algorithm": per_m[m]["winner"]["algorithm"],
+                    "split": per_m[m]["winner"]["split"],
+                    "config": per_m[m]["winner"]["config"],
+                    "median_us": per_m[m]["winner"]["median_us"],
+                } for m in planner.DECODE_M],
+            },
+            "references": sorted(
+                {decode.canonical(ref): ref for row in rows
+                 for ref in row["references"]}.values(),
+                key=decode.canonical),
+        })
+    output = {
+        "schema": REAL_SHAPES_SCHEMA,
+        "plan_sha256": decode.sha256(plan_path),
+        "policy_sha256": decode.sha256(policy_path),
+        "layout": KPACK4_CLASS,
+        "metric_scope": {
+            "TC_S1": "FULL_OUTPUT",
+            "TC_SPLITK":
+                "PRODUCER_PLUS_MODELED_80PCT_HBM_REDUCER_ZERO_LAUNCH",
+        },
+        "shape_count": len(shape_rows),
+        "family_count": len(decisions),
+        "shape_winners": shape_rows,
+        "layout_decisions": decisions,
+    }
+    decode.atomic_json(output_json, output)
+    lines = [
+        "shape\tM\tN\tK\tverdict\talgorithm\tS\tproducer_us\t"
+        "reducer_us\te2e_us\tconfig\tMFU_pct\tdistinct_MBU_pct"
+    ]
+    for row in shape_rows:
+        winner = row["winner"]
+        lines.append("\t".join(map(str, (
+            row["shape_key"], *row["shape"], row["verdict"],
+            winner["algorithm"], winner["split"],
+            winner["producer_median_us"], winner["modeled_reducer_us"],
+            winner["median_us"], winner["config"], winner["MFU_pct"],
+            winner["distinct_MBU_pct"]))))
+    decode.atomic_text(output_tsv, "\n".join(lines) + "\n")
+    return output
+
+
 def fixture_lines() -> list[str]:
     return [
         f"FQ_KPACK4_FIXTURE phase=prepare q=12 shape={SHAPE_TEXT} version=2 "
@@ -357,7 +482,8 @@ def fixture_lines() -> list[str]:
 
 
 def synthetic_log(rows: list[dict[str, Any]], *, only_split: int,
-                  iterations: int, repeats: int, bc_mode: str) -> str:
+                  iterations: int, repeats: int, bc_mode: str,
+                  unavailable_s8: bool = True) -> str:
     lines = fixture_lines()
     lines.append(
         f"FQ_SHARD q=12 A=0 bchunk=0 shape={SHAPE_TEXT} weight_layout=1 "
@@ -368,7 +494,7 @@ def synthetic_log(rows: list[dict[str, Any]], *, only_split: int,
     splits = (only_split,) if only_split else decode.TC_SPLITS
     for index, meta in enumerate(rows):
         for split in splits:
-            measured = split != 8
+            measured = split != 8 or not unavailable_s8
             state = "MEASURED" if measured else "SPLIT_PARTITION"
             base_us = 20.0 + index * 0.05 - (5.0 if split == 2 else
                                              8.0 if split == 4 else 0.0)
@@ -463,9 +589,86 @@ def self_test(policy_path: pathlib.Path) -> None:
             pass
         else:
             raise PilotError("missing confirmation cell stayed green")
+        set_shape("8x5120x8192")
+        dynamic_scheduler = root / "dynamic-scheduler.log"
+        dynamic_scheduler.write_text(synthetic_log(
+            selected, only_split=0, iterations=1, repeats=1,
+            bc_mode="skip", unavailable_s8=False))
+        dynamic_symbols = root / "dynamic-symbols.txt"
+        scheduler(manifest, dynamic_scheduler, screen_symbols, policy_path,
+                  dynamic_symbols, root / "dynamic-scheduler.json")
+        dynamic_confirm = root / "dynamic-confirm.log"
+        dynamic_rows = [rows[symbol]
+                        for symbol in decode.read_symbols(dynamic_symbols)]
+        dynamic_confirm.write_text(synthetic_log(
+            dynamic_rows, only_split=0, iterations=7, repeats=2,
+            bc_mode="skip", unavailable_s8=False))
+        dynamic_result = finalize(
+            manifest, dynamic_confirm, dynamic_symbols, policy_path,
+            root / "dynamic.json", root / "dynamic.tsv")
+        if dynamic_result["shape"] != [8, 5120, 8192] or \
+                dynamic_result["boards"]["S8"]["status"] != "AVAILABLE":
+            raise PilotError("dynamic-shape/S8-available path did not close")
+        set_shape("1x1024x5120")
+        families = ((1024, 5120), (5120, 8192), (5120, 25600),
+                    (8192, 5120), (25600, 5120))
+        materialized = {"cells": [{
+            "qtype": 12, "inventory_status": "SUPPORTED",
+            "problem_route": "dense", "grouped": None, "group_size": 32,
+            "model_id": "model", "m": 1, "n": n, "k": k,
+            "tp_world": 1, "tp_rank": 0, "tp_partition": "replicated",
+            "sources": [[f"tensor_{n}_{k}", "weight", f"{index + 1:064x}"]],
+        } for index, (n, k) in enumerate(families)]}
+        plan = planner.build_plan(materialized, decode.load_policy(policy_path),
+                                  "a" * 64)
+        plan["policy_sha256"] = decode.sha256(policy_path)
+        planner.validate_plan(plan)
+        plan_path = root / "plan.json"
+        decode.atomic_json(plan_path, plan)
+        raw_root = root / "raw"
+        for shape_obj in plan["shapes"]:
+            shape = [shape_obj[key] for key in ("m", "n", "k")]
+            directory = raw_root / shape_obj["shape_key"]
+            directory.mkdir(parents=True)
+            decode.atomic_json(directory / "summary.json", {
+                "schema": SCHEMA, "shape": shape,
+                "layout": KPACK4_CLASS["name"],
+                "weight_mapping_id": MAPPING_ID, "typed_rows": 72,
+                "boards": {},
+                "global": {
+                    "verdict": "RESOLVED",
+                    "winner": {
+                        "family": "TENSOR_CORE", "algorithm":
+                            "TC_SPLITK_S4_MODELED_E2E",
+                        "split": 4, "artifact_tile_k": 0,
+                        "physical_layout_class": KPACK4_CLASS,
+                        "config": "fixture", "producer_median_us": 10.0,
+                        "modeled_reducer_us": 0.1, "median_us": 10.1,
+                        "min_us": 10.0, "max_us": 10.2,
+                        "samples_us": [10.0, 10.1, 10.2],
+                    },
+                    "runner_up": None,
+                },
+            })
+        aggregate_result = aggregate(
+            plan_path, policy_path, raw_root, root / "aggregate.json",
+            root / "aggregate.tsv")
+        if aggregate_result["shape_count"] != 20 or \
+                aggregate_result["family_count"] != 5:
+            raise PilotError("real-shape aggregate denominator differs")
+        missing = raw_root / plan["shapes"][-1]["shape_key"] / "summary.json"
+        missing.unlink()
+        try:
+            aggregate(plan_path, policy_path, raw_root, root / "red.json",
+                      root / "red.tsv")
+        except OSError:
+            pass
+        else:
+            raise PilotError("missing real-shape summary stayed green")
     print("[fq-q4k-kpack4-pilot:self-test] PASS native 72-row screen, "
-          "per-board scheduler union, seven-sample confirmation, 80%-HBM "
-          "reducer and structural S8; mapping/missing-cell negatives RED")
+          "per-board scheduler union, seven-sample confirmation, 20-shape "
+          "aggregate, 80%-HBM reducer and structural S8; mapping/missing-cell "
+          "negatives RED")
 
 
 def main() -> int:
@@ -476,10 +679,12 @@ def main() -> int:
     screen_parser = sub.add_parser("screen")
     scheduler_parser = sub.add_parser("scheduler")
     finalize_parser = sub.add_parser("finalize")
+    aggregate_parser = sub.add_parser("aggregate")
     for command in (screen_parser, scheduler_parser, finalize_parser):
         command.add_argument("--manifest", type=pathlib.Path, required=True)
         command.add_argument("--log", type=pathlib.Path, required=True)
         command.add_argument("--policy", type=pathlib.Path, required=True)
+        command.add_argument("--shape", default=SHAPE_TEXT)
     screen_parser.add_argument("--symbols-output", type=pathlib.Path, required=True)
     screen_parser.add_argument("--summary-output", type=pathlib.Path, required=True)
     scheduler_parser.add_argument("--screen-symbols", type=pathlib.Path, required=True)
@@ -488,16 +693,29 @@ def main() -> int:
     finalize_parser.add_argument("--symbols", type=pathlib.Path, required=True)
     finalize_parser.add_argument("--output-json", type=pathlib.Path, required=True)
     finalize_parser.add_argument("--output-tsv", type=pathlib.Path, required=True)
+    aggregate_parser.add_argument("--plan", type=pathlib.Path, required=True)
+    aggregate_parser.add_argument("--policy", type=pathlib.Path, required=True)
+    aggregate_parser.add_argument("--raw-root", type=pathlib.Path, required=True)
+    aggregate_parser.add_argument("--output-json", type=pathlib.Path, required=True)
+    aggregate_parser.add_argument("--output-tsv", type=pathlib.Path, required=True)
     args = parser.parse_args()
     try:
         if args.command == "self-test":
             self_test(args.policy)
+        elif args.command == "aggregate":
+            result = aggregate(args.plan, args.policy, args.raw_root,
+                               args.output_json, args.output_tsv)
+            print("[fq-q4k-kpack4-real-final] PASS "
+                  f"families={result['family_count']} "
+                  f"shapes={result['shape_count']} layout={KPACK4_CLASS['name']}")
         elif args.command == "screen":
+            set_shape(args.shape)
             result = screen(args.manifest, args.log, args.policy,
                             args.symbols_output, args.summary_output)
             print(f"[fq-q4k-kpack4-pilot-screen] PASS typed={result['typed']} "
                   f"measured={result['measured']} retained={result['retained']}")
         elif args.command == "scheduler":
+            set_shape(args.shape)
             result = scheduler(
                 args.manifest, args.log, args.screen_symbols, args.policy,
                 args.symbols_output, args.summary_output)
@@ -506,6 +724,7 @@ def main() -> int:
                   f"retained={result['retained_symbols']} "
                   f"boards={json.dumps(result['boards'], sort_keys=True)}")
         else:
+            set_shape(args.shape)
             result = finalize(args.manifest, args.log, args.symbols,
                               args.policy, args.output_json, args.output_tsv)
             winner = result["global"]["winner"]
