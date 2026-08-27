@@ -32,6 +32,12 @@ NVIDIA-nvcc/stub CuTe oracle on a PPU box, or whenever a proof fails at
 has recurred; do not diagnose it again from scratch and never add a fake fp8
 SDK header to `stub_inc`.
 
+Read `references/q4-kpack4-fragment-destination.md` when a K-pack4 row is
+deterministically wrong at repeat zero, the failure follows `(TileN,WarpN)`
+rather than stages, or a physical transposed loader fragment is converted into
+a differently shaped logical MMA fragment.  Never assume that equal converter
+cohort sizes imply equal rest-mode strides.
+
 ## Workflow
 
 ### 1. Freeze one exact row
