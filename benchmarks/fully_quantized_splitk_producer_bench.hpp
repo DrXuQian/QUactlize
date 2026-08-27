@@ -43,6 +43,7 @@ enum class State : int {
   Launch,
   Correctness,
   Timing,
+  ProfileSubject,
 };
 
 inline char const* state_name(State state) {
@@ -59,6 +60,7 @@ inline char const* state_name(State state) {
     case State::Launch: return "LAUNCH";
     case State::Correctness: return "RAW_FP16_MISMATCH";
     case State::Timing: return "TIMING";
+    case State::ProfileSubject: return "PROFILE_SUBJECT";
   }
   return "UNKNOWN";
 }
@@ -69,6 +71,7 @@ struct Options {
   int only_split = 0;
   bool measure = true;
   int tm8_max_m = ppu_dense_shipping::kDecodeDefaultExclusiveM - 1;
+  bool profile_subject_only = false;
 };
 
 struct DeviceInputs {
@@ -200,12 +203,12 @@ struct TcRowTypes {
   static constexpr bool use_kpack4 = WeightLayout == 1;
   static_assert(!use_kpack4 ||
                     (QType == 12 && ArtifactTileK == 0 && BChunk == 0 &&
-                     !use_packed_a && std::is_void_v<High>),
-                "the first K-pack4 denominator is Q4/one-plane/ordinary-A only");
+                     std::is_void_v<High>),
+                "K-pack4 denominator is Q4/one-plane/bchunk0 only");
   using LegacyShipping = std::conditional_t<use_packed_a, PackedA, Ordinary>;
   using KPack4 = fpa_intb_ppu::DenseQ4KPack4KernelTypes<
       QuantMode::FinegrainedScaleZero, Schedule, Tile, ScaleTile, Warp,
-      Stages, true>;
+      Stages, true, use_packed_a ? 1 : 0>;
   using Shipping = std::conditional_t<use_kpack4, KPack4, LegacyShipping>;
   using Split = dense_splitk_parallel_ppu::KernelTypes<Shipping, Tile, Warp>;
   using ShippingGemm = typename Shipping::Gemm;
@@ -431,6 +434,19 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
           result.state = State::Initialize; row_ok = false; continue;
         }
         auto launch = [&] { return gemm.run(nullptr); };
+        if (options.profile_subject_only) {
+          if (launch() != cutlass::Status::kSuccess ||
+              hggcDeviceSynchronize() != hggcSuccess) {
+            result.failure_step = "PROFILE_SUBJECT_LAUNCH";
+            result.state = State::Launch;
+            row_ok = false;
+          } else {
+            result.failure_step = "NONE";
+            result.failure_repeat = -1;
+            result.state = State::ProfileSubject;
+          }
+          continue;
+        }
         bool correct = true;
         std::uint64_t fingerprint = 0;
         for (int repeat = 0; repeat < options.correctness_repeats; ++repeat) {
@@ -510,6 +526,19 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
           auto status = producer.run(nullptr);
           return status == cutlass::Status::kSuccess ? reducer.run(nullptr) : status;
         };
+        if (options.profile_subject_only) {
+          if (producer_launch() != cutlass::Status::kSuccess ||
+              hggcDeviceSynchronize() != hggcSuccess) {
+            result.failure_step = "PROFILE_SUBJECT_LAUNCH";
+            result.state = State::Launch;
+            row_ok = false;
+          } else {
+            result.failure_step = "NONE";
+            result.failure_repeat = -1;
+            result.state = State::ProfileSubject;
+          }
+          continue;
+        }
         bool correct = true;
         std::uint64_t fingerprint = 0;
         for (int repeat = 0; repeat < options.correctness_repeats; ++repeat) {

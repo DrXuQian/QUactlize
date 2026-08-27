@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Native Q4_K K-pack4 decode sweep over the inventory-owned five N/K families
-# and M=1/2/4/8.  One 72-row TM8 binary serves every shape.
+# and M=1/2/4/8.  One 144-row TM8 AP0/AP1 binary serves every shape.
 set -uo pipefail
 
 atomic_text() {
@@ -119,7 +119,7 @@ PY
   pilot="${PILOT_BUNDLE:-}"
   if [ -z "$pilot" ]; then
     pilot="$out/pilot-source"
-    printf '[fq-kpack4-real] no PILOT_BUNDLE; building one reusable 72-row pilot\n'
+    printf '[fq-kpack4-real] no PILOT_BUNDLE; building one reusable 144-row pilot\n'
     OUT="$pilot" JOBS="$jobs" FQ_CONFIGS_PER_UNIT="$per_unit" \
       bash "$root/tools/run_fq_q4k_kpack4_pilot_box.sh" || return $?
   fi
@@ -152,7 +152,7 @@ PY
     screen_log="$directory/screen.log"
     scheduler_log="$directory/scheduler.log"
     confirm_log="$directory/confirm.log"
-    printf '[fq-kpack4-real] shape=%sx%sx%s phase=screen typed=72\n' "$m" "$n" "$k"
+    printf '[fq-kpack4-real] shape=%sx%sx%s phase=screen typed=144\n' "$m" "$n" "$k"
     run_phase "$screen_log" "$binary" --shape="${m}x${n}x${k}" \
       --iterations=2 --correctness-repeats=1 --only-split=1 \
       --tm8-max-m=8 --bc-mode=all || return $?

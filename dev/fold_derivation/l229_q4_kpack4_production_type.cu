@@ -18,8 +18,13 @@ using Warp = Shape<_8, _16, _256>;
 using Types = fpa_intb_ppu::DenseQ4KPack4KernelTypes<
     ppu_mixed_policy::QuantMode::FinegrainedScaleZero,
     Schedule, TileShape, ScaleTile, Warp, 2, true>;
+using PackedTypes = fpa_intb_ppu::DenseQ4KPack4KernelTypes<
+    ppu_mixed_policy::QuantMode::FinegrainedScaleZero,
+    Schedule, TileShape, ScaleTile, Warp, 2, true, 1>;
 using Policy = typename Types::MainloopPolicy;
+using PackedPolicy = typename PackedTypes::MainloopPolicy;
 using Mainloop = typename Types::CollectiveMainloop;
+using PackedMainloop = typename PackedTypes::CollectiveMainloop;
 using Builder = typename Policy::CollectiveBuilderType;
 using Split = dense_splitk_parallel_ppu::KernelTypes<Types, TileShape, Warp>;
 
@@ -42,11 +47,23 @@ static_assert(cute::cosize_v<typename Mainloop::SmemLayoutB> *
 static_assert(Mainloop::is_packed_scale);
 static_assert(std::is_same_v<typename Split::GemmKernel::CollectiveMainloop,
                              Mainloop>);
+static_assert(Policy::PackedARows == 0);
+static_assert(PackedPolicy::PackedARows == 1);
+static_assert(PackedPolicy::Descriptor::q4_kpack4_transpose);
+static_assert(std::is_same_v<typename PackedPolicy::Descriptor::AProviderType,
+                             ppu_mixed_policy::PackedRowAProvider>);
+static_assert(std::is_same_v<typename PackedPolicy::Descriptor::BProviderType,
+                             ppu_mixed_policy::KPack4TransposedBProvider>);
+static_assert(PackedPolicy::CollectiveBuilderType::HasQ4KPack4);
+static_assert(PackedMainloop::kQ4KPack4Transpose);
+static_assert(PackedMainloop::kPackedA);
+static_assert(PackedMainloop::kAPackRows == 1);
 
 int main() {
   std::printf("L229 Q4_K KPACK4 production-type PASS "
               "layout=0x%08x mapping=0x%016llx physical=NxK/4 "
-              "transport=N16xK64 tactic=8x64x256_w8x16_s2\n",
+              "transport=N16xK64 tactic=8x64x256_w8x16_s2 "
+              "providers=standard-aiu+packed-row\n",
               unsigned(q4_kpack4::kLayoutId),
               static_cast<unsigned long long>(q4_kpack4::kMappingId));
 }

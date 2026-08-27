@@ -56,14 +56,14 @@ def validate_source(value: dict[str, Any]) -> list[dict[str, Any]]:
             "weight_layout": "q4-kpack4"}:
         raise ClosureError("source must be the complete native K-pack4 TM8 authority")
     denominator = value.get("denominator", {})
-    if denominator.get("typed_rows") != 72 or \
-            denominator.get("source_typed_rows") != 846:
-        raise ClosureError("source typed denominator must be exact 72/846")
+    if denominator.get("typed_rows") != 144 or \
+            denominator.get("source_typed_rows") != 918:
+        raise ClosureError("source typed denominator must be exact 144/918")
     if value.get("weight_mapping", {}).get("mapping_id") != MAPPING_ID:
         raise ClosureError("source K-pack4 mapping identity differs")
     rows = {row.get("symbol"): row for row in value.get("typed_rows", [])}
-    if len(rows) != 72:
-        raise ClosureError("source typed symbol denominator is not 72 unique rows")
+    if len(rows) != 144:
+        raise ClosureError("source typed symbol denominator is not 144 unique rows")
     selected: list[dict[str, Any]] = []
     for name, expected in EXPECTED.items():
         row = rows.get(name)
@@ -129,8 +129,8 @@ def materialize(source: pathlib.Path, output: pathlib.Path) -> None:
             "weight_layout": "q4-kpack4", "mapping_id": MAPPING_ID,
         },
         "source_manifest": str(source_manifest.resolve()),
-        "source_typed_denominator": 72,
-        "source_global_typed_denominator": 846,
+        "source_typed_denominator": 144,
+        "source_global_typed_denominator": 918,
         "selection_denominator": 6,
         "typed_rows": selected,
         "units": [str(unit.resolve())],
@@ -144,7 +144,7 @@ def materialize(source: pathlib.Path, output: pathlib.Path) -> None:
         ")\n"
         f'set(FQ_TC_GENERATED_REGISTRY "{registry.resolve()}")\n'
         f'set(FQ_TC_GENERATED_MANIFEST "{manifest_path.resolve()}")\n')
-    print("[fq-kpack4-fragment-select] PASS source_typed=72/846 "
+    print("[fq-kpack4-fragment-select] PASS source_typed=144/918 "
           f"selected=6 mapping={MAPPING_ID} output={output}")
 
 
@@ -285,19 +285,26 @@ def self_test() -> None:
         "bchunk": 0, "a_provider": "standard-aiu",
     }
     rows = []
-    for i in range(72):
+    for i in range(144):
         if i < len(CASES):
             tn, wn, _, _ = CASES[i]
             rows.append({**source_row, "symbol": symbol(tn, wn),
                          "tile_n": tn, "warp_n": wn})
-        else:
+        elif i < 72:
             rows.append({**source_row, "symbol": f"filler_{i}",
                          "tile_n": 256, "warp_n": 16})
+        else:
+            rows.append({**source_row,
+                         "symbol": f"fq_tc_q12_a0_tm8_tn256_tk256_"
+                                   f"wm8_wn16_s2_bc0_ap1_filler_{i}",
+                         "tile_n": 256, "warp_n": 16,
+                         "a_provider": "packed-row",
+                         "a_provider_capacity_rows": 1})
     manifest = {
         "identity": {"qtype": 12, "format": "Q4_K", "artifact_tile_k": 0,
                      "bchunk": 0, "tile_m_filter": 8,
                      "weight_layout": "q4-kpack4"},
-        "denominator": {"typed_rows": 72, "source_typed_rows": 846},
+        "denominator": {"typed_rows": 144, "source_typed_rows": 918},
         "weight_mapping": {"mapping_id": MAPPING_ID},
         "typed_rows": rows,
     }

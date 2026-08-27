@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Conservative one-shape performance pilot for canonical Q4_K K-pack4.
-# Build the complete native 72-row TM8 graph once, then prune at runtime:
+# Build the complete native 144-row TM8 AP0/AP1 graph once, then prune at runtime:
 #   S1 screen -> all-scheduler screen -> seven-sample confirmation.
 set -uo pipefail
 
@@ -50,8 +50,8 @@ value=json.load(open(sys.argv[1]))
 assert value["identity"] == {
  "qtype":12,"format":"Q4_K","artifact_tile_k":0,"bchunk":0,
  "tile_m_filter":8,"weight_layout":"q4-kpack4"}
-assert value["denominator"]["typed_rows"] == 72
-assert value["denominator"]["source_typed_rows"] == 846
+assert value["denominator"]["typed_rows"] == 144
+assert value["denominator"]["source_typed_rows"] == 918
 assert value["weight_mapping"]["mapping_id"] == "0x51344b5034540001"
 assert value["weight_mapping"]["artifact_tile_k_is_not_an_axis"] is True
 PY
@@ -92,7 +92,7 @@ PY
     ./build.sh) > "$build_log" 2>&1
   rc=$?
   if [ "$rc" -ne 0 ]; then
-    printf '[fq-q4k-kpack4-pilot] FAIL: 72-row target did not build rc=%d\n' "$rc" >&2
+    printf '[fq-q4k-kpack4-pilot] FAIL: 144-row target did not build rc=%d\n' "$rc" >&2
     tail -n 180 "$build_log" >&2
     printf '[fq-q4k-kpack4-pilot] artifacts=%s\n' "$out" >&2
     return "$rc"
@@ -127,7 +127,7 @@ PY
   printf '%s  %s\n' "$binary_sha" "$binary" > "$out/results/binary.sha256" || return 2
 
   screen_log="$out/results/screen.log"
-  printf '[fq-q4k-kpack4-pilot] phase=screen shape=1x1024x5120 typed=72 S=1\n'
+  printf '[fq-q4k-kpack4-pilot] phase=screen shape=1x1024x5120 typed=144 S=1\n'
   "$binary" --shape=1x1024x5120 --iterations=2 \
     --correctness-repeats=1 --only-split=1 --tm8-max-m=8 \
     --bc-mode=all | tee "$screen_log"
@@ -180,7 +180,7 @@ PY
     "$out/results/confirm-symbols.txt" "$out/results/summary.json" \
     > "$out/results/authority.sha256" || return 2
   sed -n '1,8p' "$out/results/summary.tsv"
-  printf '[fq-q4k-kpack4-pilot] PASS sha=%s layout=1 mapping=0x51344b5034540001 typed=72 artifacts=%s\n' \
+  printf '[fq-q4k-kpack4-pilot] PASS sha=%s layout=1 mapping=0x51344b5034540001 typed=144 artifacts=%s\n' \
     "$sha" "$out"
 }
 

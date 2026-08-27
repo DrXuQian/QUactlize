@@ -93,7 +93,7 @@ main() {
   python3 -B "$root/ci/check_fq_q4k_kpack4_generator.py" || return 2
   python3 -B "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
     --qtype 12 --artifact-tk 0 --bchunk 0 --weight-layout q4-kpack4 \
-    --tile-m-filter 8 --per-unit 72 --out-dir "$full" || return 2
+    --tile-m-filter 8 --per-unit 144 --out-dir "$full" || return 2
   python3 -B "$root/tools/check_fq_q4k_kpack4_fragment_closure.py" select \
     --source-dir "$full" --out-dir "$generated" || return 2
 

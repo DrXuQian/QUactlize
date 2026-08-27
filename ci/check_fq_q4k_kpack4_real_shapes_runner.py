@@ -24,7 +24,7 @@ def check(runner: str, analyzer: str, bundle_checker: str) -> None:
         'check_fq_q4k_kpack4_pilot_bundle.py" self-test',
         "policy must be byte-identical to the pilot policy",
         'value["family_count"]==5 and value["shape_count"]==20',
-        "One 72-row TM8 binary serves every shape",
+        "One 144-row TM8 AP0/AP1 binary serves every shape",
         "--iterations=2 --correctness-repeats=1 --only-split=1",
         '--symbols-file="$directory/screen-symbols.txt"',
         "--iterations=1 --correctness-repeats=1",
@@ -103,7 +103,7 @@ def main() -> int:
             pass
         else:
             raise CheckError(f"negative control stayed green: {old}")
-    print("[fq-kpack4-real:self-test] PASS one reused 72-row binary, exact "
+    print("[fq-kpack4-real:self-test] PASS one reused 144-row AP0/AP1 binary, exact "
           "M=1/2/4/8 x five-family denominator, three phases, aggregate and "
           "seven authority plants RED")
     return 0

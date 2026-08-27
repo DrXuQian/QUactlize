@@ -202,3 +202,13 @@ Do not resume the pre-fix artifact: its source authority and numeric
 denominator are obsolete.  This one-shape result admits the layout to the
 inventory-owned M=1/2/4/8 real-shape decode scan; it does not establish
 prefill performance.
+
+## Current provider denominator
+
+The 72-row counts above are intentionally frozen historical AP0 evidence.  The
+current K-pack4 TM8 performance authority is 144/918: the same 72 tactic
+geometries are instantiated for both `standard-aiu` (AP0) and `packed-row`
+(AP1).  AP1 eligibility is derived from the layout-neutral A64 topology; it is
+independent of the K-pack4 resident-B byte class.  New performance comparisons
+must match AP across layouts and must not compare an Xplane AP1 winner with a
+K-pack4 AP0-only result.

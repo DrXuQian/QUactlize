@@ -3,7 +3,8 @@
 
 The pilot deliberately covers one real shape before the layout is admitted to
 the full decode sweep.  It uses the existing conservative three-phase policy:
-all 72 TM8 tactics at S1, a scheduler screen over the retained symbols, then a
+all 144 TM8 tactics (72 standard-AIU plus 72 packed-row) at S1, a scheduler
+screen over the retained symbols, then a
 seven-sample confirmation of the per-board union.  Split-K producer time is
 converted to modeled product time with the registered 80%-HBM reducer model;
 it is never compared to S1 as producer-only latency.
@@ -37,6 +38,7 @@ KPACK4_CLASS = {
     "mapping_id": MAPPING_ID,
     "artifact_tile_k_is_not_an_axis": True,
 }
+TYPED_ROWS = 144
 
 
 class PilotError(ValueError):
@@ -75,27 +77,35 @@ def load_manifest(path: pathlib.Path) -> tuple[dict[str, dict[str, Any]], dict]:
     denominator = value.get("denominator", {})
     if denominator != {
             "raw_topology_rows": 11520,
-            "provider_expanded_rows": 11520,
-            "source_typed_rows": 846,
-            "typed_rows": 72,
+            "provider_expanded_rows": 12000,
+            "source_typed_rows": 918,
+            "typed_rows": TYPED_ROWS,
             "selection_reject_rows": 774,
-            "static_reject_rows": 10674,
-            "runtime_tc_cells": 46080,
-            "typed_runtime_tc_cells": 288}:
+            "static_reject_rows": 11082,
+            "runtime_tc_cells": 48000,
+            "typed_runtime_tc_cells": 576}:
         raise PilotError(f"K-pack4 pilot denominator differs: {denominator}")
     rows: dict[str, dict[str, Any]] = {}
     for row in value.get("typed_rows", []):
         symbol = row.get("symbol")
         if not isinstance(symbol, str) or not symbol or symbol in rows:
             raise PilotError("K-pack4 pilot symbol denominator is malformed")
+        provider = row.get("a_provider")
+        capacity = row.get("a_provider_capacity_rows")
         if (row.get("qtype"), row.get("artifact_tile_k"),
                 row.get("tile_m"), row.get("warp_m"),
-                row.get("a_provider"), row.get("bchunk")) != \
-                (12, 0, 8, 8, "standard-aiu", 0):
+                row.get("bchunk")) != (12, 0, 8, 8, 0) or \
+                (provider, capacity) not in {
+                    ("standard-aiu", None), ("packed-row", 1)}:
             raise PilotError(f"K-pack4 pilot row carries a foreign axis: {row}")
         rows[symbol] = row
-    if len(rows) != 72:
-        raise PilotError(f"K-pack4 pilot typed denominator is {len(rows)}, expected 72")
+    provider_counts = collections.Counter(
+        row["a_provider"] for row in rows.values())
+    if len(rows) != TYPED_ROWS or provider_counts != {
+            "standard-aiu": 72, "packed-row": 72}:
+        raise PilotError(
+            "K-pack4 pilot typed/provider denominator differs: "
+            f"rows={len(rows)} providers={dict(provider_counts)}")
     return rows, value
 
 
@@ -137,7 +147,7 @@ def marker_contract(log: pathlib.Path, *, selected: int,
     common = {
         "q": "12", "A": "0", "bchunk": "0", "shape": SHAPE_TEXT,
         "weight_layout": "1", "weight_mapping_id": MAPPING_ID,
-        "typed_rows": "72", "selected_rows": str(selected),
+        "typed_rows": str(TYPED_ROWS), "selected_rows": str(selected),
         "only_split": str(only_split), "bc_mode": bc_mode,
         "bc_batch": "native-grid-y-m-lt8",
     }
@@ -171,7 +181,9 @@ def load_phase(log: pathlib.Path, rows: dict[str, dict[str, Any]],
             "tm": str(meta["tile_m"]), "tn": str(meta["tile_n"]),
             "tk": str(meta["tactic_tile_k"]), "wm": str(meta["warp_m"]),
             "wn": str(meta["warp_n"]), "stages": str(meta["stages"]),
-            "provider": "standard-aiu", "provider_capacity_rows": "0",
+            "provider": str(meta["a_provider"]),
+            "provider_capacity_rows": str(
+                meta.get("a_provider_capacity_rows") or 0),
         }
         if any(cell.get(key) != value for key, value in expected.items()):
             raise PilotError(f"K-pack4 cell/manifest axes differ: {cell}")
@@ -191,7 +203,7 @@ def screen(manifest: pathlib.Path, log: pathlib.Path, policy: pathlib.Path,
         raise PilotError("K-pack4 S1 screen denominator differs")
     result = decode.select_screen(
         manifest, log, policy, symbols_output, summary_output)
-    if result["typed"] != 72 or result["measured"] <= 0 or \
+    if result["typed"] != TYPED_ROWS or result["measured"] <= 0 or \
             result["retained"] <= 0 or result["retained"] > result["measured"]:
         raise PilotError(f"K-pack4 S1 screen result differs: {result}")
     return result
@@ -388,7 +400,7 @@ def aggregate(plan_path: pathlib.Path, policy_path: pathlib.Path,
                 tuple(value.get("shape", [])) != shape or \
                 value.get("layout") != KPACK4_CLASS["name"] or \
                 value.get("weight_mapping_id") != MAPPING_ID or \
-                value.get("typed_rows") != 72:
+                value.get("typed_rows") != TYPED_ROWS:
             raise PilotError(f"{shape_key}: per-shape summary identity differs")
         winner = dict(value["global"]["winner"])
         runner = value["global"].get("runner_up")
@@ -487,15 +499,23 @@ def synthetic_log(rows: list[dict[str, Any]], *, only_split: int,
     lines = fixture_lines()
     lines.append(
         f"FQ_SHARD q=12 A=0 bchunk=0 shape={SHAPE_TEXT} weight_layout=1 "
-        f"weight_mapping_id={MAPPING_ID} typed_rows=72 "
+        f"weight_mapping_id={MAPPING_ID} typed_rows={TYPED_ROWS} "
         f"selected_rows={len(rows)} only_split={only_split} bc_mode={bc_mode} "
         "bc_batch=native-grid-y-m-lt8 split_timing=ordered-close "
         f"iterations={iterations} correctness_repeats={repeats}")
     splits = (only_split,) if only_split else decode.TC_SPLITS
     for index, meta in enumerate(rows):
         for split in splits:
-            measured = split != 8 or not unavailable_s8
-            state = "MEASURED" if measured else "SPLIT_PARTITION"
+            packed_m_unavailable = (
+                SHAPE[0] != 1 and meta["a_provider"] == "packed-row")
+            measured = (not packed_m_unavailable and
+                        (split != 8 or not unavailable_s8))
+            if measured:
+                state = "MEASURED"
+            elif packed_m_unavailable:
+                state = "PACKED_A_DECODE_ONLY_M_NOT_1"
+            else:
+                state = "SPLIT_PARTITION"
             base_us = 20.0 + index * 0.05 - (5.0 if split == 2 else
                                              8.0 if split == 4 else 0.0)
             if measured:
@@ -516,8 +536,10 @@ def synthetic_log(rows: list[dict[str, Any]], *, only_split: int,
                 f"shape={SHAPE_TEXT} symbol={meta['symbol']} tm={meta['tile_m']} "
                 f"tn={meta['tile_n']} tk={meta['tactic_tile_k']} "
                 f"wm={meta['warp_m']} wn={meta['warp_n']} stages={meta['stages']} "
-                f"provider=standard-aiu S={split} scope={scope} "
-                f"provider_capacity_rows=0 state={state} us={us:.9f} raw_bad=0 "
+                f"provider={meta['a_provider']} S={split} scope={scope} "
+                "provider_capacity_rows="
+                f"{meta.get('a_provider_capacity_rows') or 0} "
+                f"state={state} us={us:.9f} raw_bad=0 "
                 f"reducer_untimed={int(measured and split > 1)} "
                 "failure_step=NONE failure_repeat=-1 "
                 "first_bad=18446744073709551615 first_want=0x0000 "
@@ -525,7 +547,8 @@ def synthetic_log(rows: list[dict[str, Any]], *, only_split: int,
                 f"partial_bytes={partial} samples={samples_text}")
     lines.append(
         f"FQ_SHAPE_DONE q=12 A=0 bchunk=0 shape={SHAPE_TEXT} "
-        f"weight_layout=1 weight_mapping_id={MAPPING_ID} typed_rows=72 "
+        f"weight_layout=1 weight_mapping_id={MAPPING_ID} "
+        f"typed_rows={TYPED_ROWS} "
         f"selected_rows={len(rows)} only_split={only_split} bc_mode={bc_mode} "
         "bc_batch=native-grid-y-m-lt8 split_timing=ordered-close "
         f"iterations={iterations} status=PASS")
@@ -562,7 +585,7 @@ def self_test(policy_path: pathlib.Path) -> None:
             bc_mode="skip"))
         result = finalize(manifest, confirm_log, confirm_symbols, policy_path,
                           root / "summary.json", root / "summary.tsv")
-        if result["typed_rows"] != 72 or \
+        if result["typed_rows"] != TYPED_ROWS or \
                 result["boards"]["S8"]["status"] != "UNAVAILABLE" or \
                 result["global"]["winner"]["split"] != 4:
             raise PilotError("synthetic K-pack4 pilot did not close")
@@ -633,7 +656,8 @@ def self_test(policy_path: pathlib.Path) -> None:
             decode.atomic_json(directory / "summary.json", {
                 "schema": SCHEMA, "shape": shape,
                 "layout": KPACK4_CLASS["name"],
-                "weight_mapping_id": MAPPING_ID, "typed_rows": 72,
+                "weight_mapping_id": MAPPING_ID,
+                "typed_rows": TYPED_ROWS,
                 "boards": {},
                 "global": {
                     "verdict": "RESOLVED",
@@ -665,7 +689,7 @@ def self_test(policy_path: pathlib.Path) -> None:
             pass
         else:
             raise PilotError("missing real-shape summary stayed green")
-    print("[fq-q4k-kpack4-pilot:self-test] PASS native 72-row screen, "
+    print("[fq-q4k-kpack4-pilot:self-test] PASS native 144-row AP0/AP1 screen, "
           "per-board scheduler union, seven-sample confirmation, 20-shape "
           "aggregate, 80%-HBM reducer and structural S8; mapping/missing-cell "
           "negatives RED")

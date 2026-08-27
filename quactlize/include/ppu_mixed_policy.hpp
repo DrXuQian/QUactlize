@@ -213,7 +213,7 @@ struct MainloopPolicy {
 // xplane type or descriptor changes when the new layout is not selected.
 template <QuantMode Mode, class BaseSchedule, class TileShape,
           class ScaleTileShape, class WarpShape, int Stages,
-          bool AiuInterleaved>
+          bool AiuInterleaved, int APackRows = 0>
 struct Q4KPack4MainloopPolicy {
   using ElementA = cutlass::half_t;
   using ElementB = cutlass::int4b_t;
@@ -240,7 +240,17 @@ struct Q4KPack4MainloopPolicy {
   static_assert(int(cute::size<1>(TileShape{})) % q4_kpack4::kTransportN == 0,
                 "K-pack4 production policy composes N16 transport tiles");
 
-  using KernelSchedule = cutlass::gemm::KernelAiuQ4KPack4Transpose<BaseSchedule>;
+  static_assert(APackRows == 0 || APackRows == 1,
+                "K-pack4 supports ordinary A or the proved one-row packed-A provider");
+  static_assert(APackRows == 0 ||
+                    (int(cute::size<0>(TileShape{})) == 8 &&
+                     int(cute::size<0>(WarpShape{})) == 8),
+                "K-pack4 packed-A is bound to the TM8/WM8 decode family");
+  using KPack4Schedule =
+      cutlass::gemm::KernelAiuQ4KPack4Transpose<BaseSchedule>;
+  using KernelSchedule = std::conditional_t<
+      APackRows == 0, KPack4Schedule,
+      cutlass::gemm::KernelAiuPackedA<APackRows, KPack4Schedule>>;
   using ElementBInfo = typename OperandInfo<Mode, ElementB, void,
                                             ElementScale, ElementZero>::Type;
   using CollectiveBuilderType = cutlass::gemm::collective::CollectiveBuilder<
@@ -253,8 +263,10 @@ struct Q4KPack4MainloopPolicy {
   static_assert(CollectiveBuilderType::HasQ4KPack4,
                 "K-pack4 schedule must select the transposed physical provider");
   using CollectiveOp = typename CollectiveBuilderType::CollectiveOp;
-  static constexpr bool PackedRowA = false;
-  using AProvider = AiuAProvider;
+  static constexpr bool PackedRowA = APackRows > 0;
+  static constexpr int PackedARows = APackRows;
+  using AProvider = std::conditional_t<
+      PackedRowA, PackedRowAProvider, AiuAProvider>;
   using BProvider = KPack4TransposedBProvider;
   using Descriptor = MixedPolicyDescriptor<
       CollectiveOp, BaseSchedule, KernelSchedule, ElementBInfo,

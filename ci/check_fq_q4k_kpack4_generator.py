@@ -5,8 +5,8 @@ K-pack4 deliberately has no ArtifactTileK axis.  Until the common tactic
 emitter grows a layout-neutral entry point, the generator uses the complete
 Q4/A64 raw topology as an enumeration source and applies an independent
 K-pack4 admission predicate.  This check proves that the resulting TM8
-geometry is exactly the standard-A half of the established A64 denominator,
-while keeping the legacy xplane manifest schema unchanged.
+geometry and AP0/AP1 provider product are exactly the established A64
+denominator, while keeping the legacy xplane manifest schema unchanged.
 """
 
 from __future__ import annotations
@@ -81,13 +81,13 @@ def validate(xplane: dict, kpack4: dict) -> None:
     den = kpack4.get("denominator", {})
     expected_den = {
         "raw_topology_rows": 11520,
-        "provider_expanded_rows": 11520,
-        "source_typed_rows": 846,
-        "typed_rows": 72,
+        "provider_expanded_rows": 12000,
+        "source_typed_rows": 918,
+        "typed_rows": 144,
         "selection_reject_rows": 774,
-        "static_reject_rows": 10674,
-        "runtime_tc_cells": 46080,
-        "typed_runtime_tc_cells": 288,
+        "static_reject_rows": 11082,
+        "runtime_tc_cells": 48000,
+        "typed_runtime_tc_cells": 576,
     }
     if den != expected_den:
         raise CheckError(f"K-pack4 denominator drifted: {den}")
@@ -95,24 +95,23 @@ def validate(xplane: dict, kpack4: dict) -> None:
             den["static_reject_rows"] != den["provider_expanded_rows"]):
         raise CheckError("K-pack4 selected/rejected partition is incomplete")
 
-    x_ap0 = [row for row in xplane.get("typed_rows", [])
-             if row.get("a_provider") == "standard-aiu"]
+    x_rows = xplane.get("typed_rows", [])
     rows = kpack4.get("typed_rows", [])
-    if len(x_ap0) != 72 or len(rows) != 72:
+    if len(x_rows) != 144 or len(rows) != 144:
         raise CheckError(
-            f"TM8 geometry denominator changed: xplane={len(x_ap0)} "
+            f"TM8 provider denominator changed: xplane={len(x_rows)} "
             f"kpack4={len(rows)}")
-    x_geometry = {geometry(row) for row in x_ap0}
-    kpack_geometry = {geometry(row) for row in rows}
-    if len(x_geometry) != 72 or len(kpack_geometry) != 72:
-        raise CheckError("typed geometry contains a duplicate")
-    if x_geometry != kpack_geometry:
+    x_product = {(geometry(row), row.get("a_provider")) for row in x_rows}
+    kpack_product = {(geometry(row), row.get("a_provider")) for row in rows}
+    if len(x_product) != 144 or len(kpack_product) != 144:
+        raise CheckError("typed geometry/provider product contains a duplicate")
+    if x_product != kpack_product:
         raise CheckError(
-            "K-pack4 geometry differs from the established A64/AP0 topology")
+            "K-pack4 geometry/provider product differs from xplane A64")
     for row in rows:
         if (row.get("qtype"), row.get("artifact_tile_k"),
-                row.get("a_provider"), row.get("bchunk")) != \
-                (12, 0, "standard-aiu", 0):
+                row.get("bchunk")) != (12, 0, 0) or \
+                row.get("a_provider") not in ("standard-aiu", "packed-row"):
             raise CheckError(f"K-pack4 row carries a foreign axis: {row}")
         if (row.get("tile_m") != 8 or row.get("warp_m") != 8 or
                 row.get("tactic_tile_k") != 256 or
@@ -156,7 +155,7 @@ def main() -> int:
         broken["typed_rows"].pop()
         plants.append(broken)
         broken = copy.deepcopy(kpack4)
-        broken["typed_rows"][0]["a_provider"] = "packed-row"
+        broken["typed_rows"][0]["a_provider"] = "foreign-provider"
         plants.append(broken)
         broken = copy.deepcopy(kpack4)
         broken["identity"]["artifact_tile_k"] = 64
@@ -181,8 +180,8 @@ def main() -> int:
     expect_invalid(qtype=12, artifact=64, bchunk=0)
     expect_invalid(qtype=12, artifact=0, bchunk=1)
     print("[fq-q4k-kpack4-generator:self-test] PASS "
-          "xplane=144/918 unchanged Kpack4=72/846 raw=11520 "
-          "geometry=A64/AP0-exact mapping=0x51344b5034540001; "
+          "xplane=144/918 unchanged Kpack4=144/918 raw=11520 "
+          "geometry=A64/AP0+AP1-exact mapping=0x51344b5034540001; "
           "four manifest and four generator negatives RED")
     return 0
 

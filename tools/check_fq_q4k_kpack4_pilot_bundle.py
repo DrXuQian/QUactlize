@@ -100,7 +100,9 @@ def validate(root: pathlib.Path, bundle: pathlib.Path) -> dict[str, str]:
         "bchunk": 0, "tile_m_filter": 8, "weight_layout": "q4-kpack4",
     }
     if manifest_value.get("identity") != expected_identity or \
-            manifest_value.get("denominator", {}).get("typed_rows") != 72 or \
+            manifest_value.get("denominator", {}).get("typed_rows") != 144 or \
+            manifest_value.get("denominator", {}).get(
+                "source_typed_rows") != 918 or \
             manifest_value.get("weight_mapping", {}).get("mapping_id") != MAPPING_ID:
         raise BundleError("pilot manifest identity differs")
 
@@ -111,7 +113,7 @@ def validate(root: pathlib.Path, bundle: pathlib.Path) -> dict[str, str]:
     summary_value = json.loads(summary.read_text())
     if summary_value.get("schema") != "quactlize.fq_q4k_kpack4_pilot.v1" or \
             summary_value.get("shape") != [1, 1024, 5120] or \
-            summary_value.get("typed_rows") != 72 or \
+            summary_value.get("typed_rows") != 144 or \
             summary_value.get("layout") != "q4-kpack4-transpose-v1" or \
             summary_value.get("weight_mapping_id") != MAPPING_ID:
         raise BundleError("pilot result did not close the admitted identity")
@@ -170,7 +172,8 @@ def self_test(root: pathlib.Path) -> None:
             "identity": {"qtype": 12, "format": "Q4_K",
                          "artifact_tile_k": 0, "bchunk": 0,
                          "tile_m_filter": 8, "weight_layout": "q4-kpack4"},
-            "denominator": {"typed_rows": 72},
+            "denominator": {"typed_rows": 144,
+                            "source_typed_rows": 918},
             "weight_mapping": {"mapping_id": MAPPING_ID},
         }, sort_keys=True) + "\n")
         binary.write_bytes(b"synthetic-kpack4-binary\n")
@@ -178,7 +181,7 @@ def self_test(root: pathlib.Path) -> None:
         summary = results / "summary.json"
         summary.write_text(json.dumps({
             "schema": "quactlize.fq_q4k_kpack4_pilot.v1",
-            "shape": [1, 1024, 5120], "typed_rows": 72,
+            "shape": [1, 1024, 5120], "typed_rows": 144,
             "layout": "q4-kpack4-transpose-v1",
             "weight_mapping_id": MAPPING_ID,
             "manifest_sha256": sha256(manifest),

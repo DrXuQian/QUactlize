@@ -95,6 +95,7 @@ struct Cli {
   int tm8_max_m = ppu_dense_shipping::kDecodeDefaultExclusiveM - 1;
   enum class BcMode { All, Skip, Only } bc_mode = BcMode::All;
   std::string symbols_file;
+  bool profile_subject_only = false;
   std::vector<Shape> shapes;
 };
 
@@ -114,6 +115,8 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
       cli.tm8_max_m = std::atoi(argv[i] + 12);
     } else if (!std::strncmp(argv[i], "--symbols-file=", 15)) {
       cli.symbols_file = argv[i] + 15;
+    } else if (!std::strcmp(argv[i], "--profile-subject-only")) {
+      cli.profile_subject_only = true;
     } else if (!std::strncmp(argv[i], "--bc-mode=", 10)) {
       char const* mode = argv[i] + 10;
       if (!std::strcmp(mode, "all")) cli.bc_mode = Cli::BcMode::All;
@@ -389,6 +392,13 @@ bool run_bc_family(Shape shape, uint8_t const* low, uint8_t const* high,
 int run_shape(Shape shape, Cli const& cli,
               std::vector<RegistryRow> const& rows,
               std::size_t typed_rows) {
+  if (cli.profile_subject_only &&
+      (rows.size() != 1 || cli.only_split == 0 ||
+       cli.bc_mode != Cli::BcMode::Skip)) {
+    std::fprintf(stderr,
+        "FQ_PROFILE_FAIL requires one selected row, one split, and bc-mode=skip\n");
+    return 2;
+  }
   Fixture fixture = make_fixture(shape);
   if (!fixture.exact || !fixture.roundtrip) {
     std::fprintf(stderr,
@@ -412,8 +422,9 @@ int run_shape(Shape shape, Cli const& cli,
       dA.get(), dLow.get(), fixture.high.empty() ? nullptr : dHigh.get(),
       dUnits.get(), dOut.get(), dWorkspace.get(), partial_bytes,
       fixture.golden.data(), shape.m, shape.n, shape.k};
-  Options options{cli.iterations, cli.repeats, cli.only_split, true,
-                  cli.tm8_max_m};
+  Options options{cli.iterations, cli.repeats, cli.only_split,
+                  !cli.profile_subject_only, cli.tm8_max_m,
+                  cli.profile_subject_only};
   bool all_runtime_ok = true;
   constexpr std::uint64_t weight_mapping_id =
       FQ_SWEEP_WEIGHT_LAYOUT == 1 ? q4_kpack4::kMappingId : 0;
@@ -460,6 +471,13 @@ int run_shape(Shape shape, Cli const& cli,
           cell.split_smem, cell.partial_bytes);
       print_samples(cell.samples_us);
       std::printf("\n");
+      if (cell.state == State::ProfileSubject) {
+        std::printf("FQ_PROFILE_SUBJECT symbol=%s shape=%dx%dx%d "
+                    "provider=%s S=%d launches=1 reducer_launches=0\n",
+                    entry.symbol, shape.m, shape.n, shape.k,
+                    entry.a_provider ? "packed-row" : "standard-aiu",
+                    cell.split);
+      }
     }
   }
   if constexpr (FQ_SWEEP_BCHUNK == 0 && FQ_SWEEP_WEIGHT_LAYOUT == 0) {
@@ -497,7 +515,7 @@ int main(int argc, char** argv) {
         "usage: %s [--shape=MxNxK ...] [--iterations=N] "
         "[--correctness-repeats=N] [--only-split=0|1|2|4|8] "
         "[--tm8-max-m=N] [--symbols-file=PATH] "
-        "[--bc-mode=all|skip|only]\n", argv[0]);
+        "[--bc-mode=all|skip|only] [--profile-subject-only]\n", argv[0]);
     return 2;
   }
   auto const all_rows = registry();

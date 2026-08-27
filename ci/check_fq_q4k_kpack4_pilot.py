@@ -25,7 +25,7 @@ def check(runner: str, analyzer: str, generator: str,
         "--tile-m-filter 8 --per-unit \"$per_unit\"",
         "FQ_SWEEP_ARTIFACT_TK=0 FQ_SWEEP_BCHUNK=0",
         "FQ_SWEEP_PACKED_FORMAT=0 FQ_SWEEP_WEIGHT_LAYOUT=1",
-        "typed=72 S=1",
+        "typed=144 S=1",
         "--iterations=2 \\",
         "--correctness-repeats=1 --only-split=1",
         "--symbols-file=\"$out/results/screen-symbols.txt\"",
@@ -45,12 +45,13 @@ def check(runner: str, analyzer: str, generator: str,
     if any(token not in runner for token in runner_needles):
         raise CheckError("K-pack4 pilot lost a generation/build/phase authority")
     if runner.count("TARGET=test_fully_quantized_internal_sweep") != 1:
-        raise CheckError("K-pack4 pilot must build its 72-row binary exactly once")
+        raise CheckError("K-pack4 pilot must build its 144-row binary exactly once")
     if "select_fq_q4k_kpack4_closure.py" in runner:
         raise CheckError("K-pack4 pilot regressed to the one-row closure selector")
     analyzer_needles = (
-        '"typed_rows": 72',
-        '"source_typed_rows": 846',
+        "TYPED_ROWS = 144",
+        '"source_typed_rows": 918',
+        '"packed-row": 72',
         '"artifact_tile_k_is_not_an_axis": True',
         "decode.select_screen(",
         "decode.select_scheduler(",
@@ -67,7 +68,8 @@ def check(runner: str, analyzer: str, generator: str,
     generator_needles = (
         'weight_layout: str = "xplane"',
         '"q4-kpack4 requires qtype=12, artifact-tk=0 and bchunk=0"',
-        "if not kpack4 and matrix.packed_a_provider_candidate",
+        "provider_artifact = emitter_artifact if kpack4 else artifact",
+        "matrix.packed_a_provider_candidate(fmt, row, provider_artifact)",
         'identity["weight_layout"] = weight_layout',
         '"mapping_id": "0x51344b5034540001"',
     )
@@ -113,7 +115,7 @@ def main() -> int:
             pass
         else:
             raise CheckError(f"pilot negative control stayed green: {old}")
-    print("[fq-q4k-kpack4-pilot:self-test] PASS one native 72-row binary, "
+    print("[fq-q4k-kpack4-pilot:self-test] PASS one native 144-row AP0/AP1 binary, "
           "S1/scheduler/confirm runtime pruning, exact layout and 80%-HBM "
           "scope; nine source plants RED")
     return 0

@@ -134,7 +134,12 @@ def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
     all_rows: list[tuple[matrix.Tactic, int]] = []
     for row in raw_rows:
         all_rows.append((row, 0))
-        if not kpack4 and matrix.packed_a_provider_candidate(fmt, row, artifact):
+        # A-provider eligibility is independent of the resident B byte class.
+        # K-pack4 borrows A64 only as its layout-neutral topology source; use
+        # that same fold-1 authority so AP0/AP1 geometry is exactly symmetric
+        # with xplane A64.
+        provider_artifact = emitter_artifact if kpack4 else artifact
+        if matrix.packed_a_provider_candidate(fmt, row, provider_artifact):
             all_rows.append((row, 1))
     source_eligible = [(r, ap) for r, ap in all_rows if row_admitted(r)]
     eligible = [(r, ap) for r, ap in source_eligible

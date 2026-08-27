@@ -144,11 +144,11 @@ struct DensePackedAKernelTypes {
 // TK64/128/256 tactic consumes the same physical bytes.
 template <QuantMode QuantOp, class BaseSchedule,
           class TileShape, class ScaleTileShape, class WarpShape,
-          int Stages, bool AiuInterleaved>
+          int Stages, bool AiuInterleaved, int APackRows = 0>
 struct DenseQ4KPack4KernelTypes {
   using MainloopPolicy = ppu_mixed_policy::Q4KPack4MainloopPolicy<
       QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
-      Stages, AiuInterleaved>;
+      Stages, AiuInterleaved, APackRows>;
   using ElementA = typename MainloopPolicy::ElementA;
   using ElementC = cutlass::half_t;
   using LayoutC = cutlass::layout::RowMajor;

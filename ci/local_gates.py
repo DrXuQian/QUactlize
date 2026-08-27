@@ -1851,14 +1851,21 @@ def lint_fq_q4k_kpack4_generator():
     """Canonical K-pack4 owns one layout-neutral, complete tactic denominator."""
     return _run_ci_script(
         "check_fq_q4k_kpack4_generator.py",
-        "K-pack4 TM8 geometry exactly equals A64/AP0 without inheriting its artifact")
+        "K-pack4 TM8 AP0/AP1 geometry exactly equals A64 without inheriting its artifact")
 
 
 def lint_fq_q4k_kpack4_pilot():
     """The first K-pack4 performance pilot must prune one complete binary."""
     return _run_ci_script(
         "check_fq_q4k_kpack4_pilot.py",
-        "K-pack4 uses one 72-row binary and three fail-closed runtime phases")
+        "K-pack4 uses one 144-row AP0/AP1 binary and three fail-closed runtime phases")
+
+
+def lint_fq_q4k_kpack4_xplane_isomorphic_ab():
+    """K-pack4 transpose cost uses an exact provider-matched A/B and conditional ACU."""
+    return _run_ci_script(
+        "check_fq_q4k_kpack4_xplane_isomorphic_ab.py",
+        "K-pack4/xplane fixes tactic and S4 across AP0/AP1 before one-producer ACU")
 
 
 def lint_m8n16_g2_contract():
@@ -2474,6 +2481,7 @@ def main():
                 ("lint", "fixed Split-K FP32 partials bypass the fragile shared handoff", lint_fq_splitk_partial_path),
                 ("lint", "Q4 K-pack4 generator keeps a complete layout-neutral tactic denominator", lint_fq_q4k_kpack4_generator),
                 ("lint", "Q4 K-pack4 pilot prunes one complete binary in three runtime phases", lint_fq_q4k_kpack4_pilot),
+                ("lint", "Q4 K-pack4 transpose cost uses provider-matched isomorphic timing and conditional ACU", lint_fq_q4k_kpack4_xplane_isomorphic_ab),
                 ("lint", "syntax baselines and live SYNTAX sources match", lint_syntax_inventory),
                 ("lint", "m8n16 G2 replays the historical bad index on the production x4 payload", lint_m8n16_g2_contract),
                 ("lint", "l125 exhausts all 256 G5 zero-plane addresses through the production CuTe map", lint_grouped_metadata_layout),
