@@ -2160,6 +2160,22 @@ Adjudicate the remaining candidates in this order, one variable at a time:
    K-pack4 byte map and reader; bind instruction count, async group boundaries
    and raw-bit output. Do not combine this with the grid-axis experiment.
 
+   The admitted counterfactual factors the resident `N64 x Kphys64` cube into
+   four `N16 x Kphys64` cubes. A 12-geometry CuTe proof binds every logical
+   fragment destination exactly; the offline byte map, total 8 KiB traffic,
+   MMA, metadata, Split-K partition and output ABI are unchanged. Device timing
+   must still adjudicate whether the four issued AIU operations restore useful
+   overlap or merely add issue overhead.
+
 Done means the N-wide regression has a repeat-stable causal counterfactual,
 balanced and K-heavy controls remain correct, and any selected change wins in
 full modeled E2E rather than merely restoring the synthetic L2 hit rate.
+
+**Grid-axis result (PPU, 2026-08-27).** The exact factorial is closed. At the
+N-wide target, N-on-x changed K-pack4 by `+0.98%` at AP0 and `-2.54%` at AP1;
+Xplane changed by `+1.55%` and `0.00%`, respectively. Balanced and K-heavy
+controls moved by at most 1.34%. Thus grid-axis spelling is not the common
+cause of the AP0/AP1 K-pack4 regression. It is retained only as a possible
+AP1/N-wide selector axis: there it saved about 0.46 us, but K-pack4 remained
+17.62 us versus Xplane's 17.00 us (3.65% behind). Do not enable it globally or
+use it to skip the address/granularity experiments below.

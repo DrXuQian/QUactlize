@@ -35,6 +35,9 @@ constexpr int kWidth = 32;
 #ifndef L231_LEGACY_CANDIDATE
 #define L231_LEGACY_CANDIDATE 0
 #endif
+#ifndef L231_KPACK4_CUBE_N
+#define L231_KPACK4_CUBE_N 0
+#endif
 
 struct Metrics {
   int exact = 0;
@@ -75,7 +78,10 @@ Metrics prove_geometry() {
   // CUBE_W from a 128-byte maximum N-contiguous run.  Spell only that public
   // type algebra here: including gemm_operands.hpp drags device collectives
   // into an nvcc host oracle and crosses the documented compiler boundary.
-  static constexpr int kCubeW = TN < 64 ? TN : 64;
+  static constexpr int kCubeW =
+      L231_KPACK4_CUBE_N > 0 ? L231_KPACK4_CUBE_N : (TN < 64 ? TN : 64);
+  static_assert(kCubeW >= 16 && TN % kCubeW == 0,
+                "K-pack4 N delivery must tile the complete CTA N extent");
   using SmemLayoutAtomB =
       Layout<Shape<Int<kCubeW>, Int<kPhysicalK>>,
              Stride<_1, Int<kCubeW>>>;
@@ -286,6 +292,10 @@ bool report(bool expected_current_exact) {
   return ok;
 }
 
+constexpr bool expected_current(bool native_expectation) {
+  return L231_KPACK4_CUBE_N == 16 ? true : native_expectation;
+}
+
 template <int TN, int WN>
 void print_layouts() {
   using WarpOnN = Int<TN / WN>;
@@ -298,7 +308,10 @@ void print_layouts() {
       MMA_Atom<PPU0010_16x16x16_F32F16F16F32_TN>,
       Layout<Shape<_1, WarpOnN, _1>>,
       Tile<_16, PermutationN, _16>>;
-  static constexpr int kCubeW = TN < 64 ? TN : 64;
+  static constexpr int kCubeW =
+      L231_KPACK4_CUBE_N > 0 ? L231_KPACK4_CUBE_N : (TN < 64 ? TN : 64);
+  static_assert(kCubeW >= 16 && TN % kCubeW == 0,
+                "K-pack4 N delivery must tile the complete CTA N extent");
   using Atom = Layout<Shape<Int<kCubeW>, Int<kPhysicalK>>,
                       Stride<_1, Int<kCubeW>>>;
   using Stage = decltype(tile_to_shape(
@@ -326,18 +339,18 @@ int main() {
   print_layouts<128, 32>();
   print_layouts<128, 64>();
   print_layouts<256, 64>();
-  ok &= report<16, 16>(true);
-  ok &= report<32, 16>(true);
-  ok &= report<32, 32>(false);
-  ok &= report<64, 16>(true);
-  ok &= report<64, 32>(false);
-  ok &= report<64, 64>(false);
-  ok &= report<128, 16>(true);
-  ok &= report<128, 32>(true);
-  ok &= report<128, 64>(false);
-  ok &= report<256, 16>(true);
-  ok &= report<256, 32>(true);
-  ok &= report<256, 64>(true);
+  ok &= report<16, 16>(expected_current(true));
+  ok &= report<32, 16>(expected_current(true));
+  ok &= report<32, 32>(expected_current(false));
+  ok &= report<64, 16>(expected_current(true));
+  ok &= report<64, 32>(expected_current(false));
+  ok &= report<64, 64>(expected_current(false));
+  ok &= report<128, 16>(expected_current(true));
+  ok &= report<128, 32>(expected_current(true));
+  ok &= report<128, 64>(expected_current(false));
+  ok &= report<256, 16>(expected_current(true));
+  ok &= report<256, 32>(expected_current(true));
+  ok &= report<256, 64>(expected_current(true));
   std::printf("L231 KPACK4_PRODUCTION_FRAGMENT %s\n", ok ? "PASS" : "FAIL");
   return ok ? 0 : 1;
 }

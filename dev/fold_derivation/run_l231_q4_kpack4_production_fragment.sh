@@ -39,7 +39,26 @@ planted = source.replace(
 )
 if planted == source or wrong not in planted:
     raise SystemExit("[l231-source] RED: wrong-stride plant did not fire")
-print("[l231-source] PASS compute-N-stride=BOUND legacy-negative=BOUND separate-layout-converter=BOUND")
+builder = (root / "quactlize/include/actlize_extensions/cutlass/gemm/collective/builders/quactlize_mma_builder.inl").read_text()
+n16_required = (
+    "PPU_Q4_KPACK4_N16_DELIVERY",
+    "using DeliveryN = Int<q4_kpack4::kTransportN>;",
+    "static constexpr int InstNum = Block_N{} / DeliveryN{};",
+    "DeliveryN{} * PhysicalBlockK{} * cutlass::sizeof_bits<TransportElement>::value",
+    "TransportElement, PhysicalBlockK{}, DeliveryN{}, Swap, true, InstNum",
+    "Shape<DeliveryN, PhysicalBlockK>, Stride<_1, DeliveryN>",
+)
+for index, token in enumerate(n16_required):
+    expected_count = 2 if index == 0 else 1
+    if builder.count(token) != expected_count:
+        raise SystemExit(f"[l231-source] RED: N16 production seam differs: {token!r}")
+planted_builder = builder.replace(
+    "static constexpr int InstNum = Block_N{} / DeliveryN{};",
+    "static constexpr int InstNum = 1;", 1)
+if planted_builder == builder or n16_required[2] in planted_builder:
+    raise SystemExit("[l231-source] RED: N16 one-cube plant did not fire")
+print("[l231-source] PASS compute-N-stride=BOUND legacy-negative=BOUND "
+      "separate-layout-converter=BOUND n16-production-type=BOUND")
 PY
 
   local -a common=(
@@ -83,6 +102,21 @@ PY
   fi
   grep -Fqx 'L231 KPACK4_PRODUCTION_FRAGMENT FAIL' "$out/red-loader-stride.run.log"
   printf '[l231-red] PASS plant=legacy-loader-stride result=RED\n'
+
+  # Same offline bytes and logical fragment, but four N16 delivery cubes in
+  # place of one N64 cube.  Every geometry becomes directly identity-mapped;
+  # this is the host CuTe admission gate for the device cadence A/B.
+  "$compiler" "${common[@]}" -DL231_KPACK4_CUBE_N=16 "$source" \
+    -o "$out/n16-delivery" >"$out/n16-delivery.build.log" 2>&1
+  "$out/n16-delivery" >"$out/n16-delivery.run.log"
+  grep -Fqx 'L231 KPACK4_PRODUCTION_FRAGMENT PASS' "$out/n16-delivery.run.log"
+  if [ "$(grep -Ec '^L231 GEOMETRY .*current=IDENTITY .*candidate=IDENTITY .*result=PASS$' \
+          "$out/n16-delivery.run.log")" -ne 12 ]; then
+    printf '[l231-runner] FAIL: N16 delivery identity denominator differs\n' >&2
+    grep '^L231 GEOMETRY ' "$out/n16-delivery.run.log" >&2
+    return 1
+  fi
+  printf '[l231-n16] PASS geometries=12/12 current=IDENTITY candidate=IDENTITY\n'
   printf '[l231-runner] PASS artifacts=%s\n' "$out"
 }
 

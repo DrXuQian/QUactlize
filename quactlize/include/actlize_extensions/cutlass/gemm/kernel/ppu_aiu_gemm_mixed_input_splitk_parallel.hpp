@@ -297,27 +297,12 @@ class GemmUniversalMixedInputSplitKParallel {
     if (!params.partition.is_valid()) {
       return dim3(0, 0, 0);
     }
-#if defined(PPU_FIXED_SPLITK_N_ON_X) && (PPU_FIXED_SPLITK_N_ON_X != 0)
-    // Diagnostic scheduling counterfactual: decoding has one logical M tile,
-    // so putting N on x avoids spending the launcher's fastest grid axis on a
-    // unit extent.  This changes only the grid-coordinate spelling; q, the
-    // contiguous Split-K interval and every mainloop/partial address remain
-    // identical.  Keep it compile-time so the measured kernel gains neither a
-    // runtime branch nor a Params ABI field.
-    return dim3(
-        cute::size(cute::ceil_div(cute::shape<1>(params.problem_shape),
-                                  cute::shape<1>(TileShape{}))),
-        cute::size(cute::ceil_div(cute::shape<0>(params.problem_shape),
-                                  cute::shape<0>(TileShape{}))),
-        params.partition.splits);
-#else
     return dim3(
         cute::size(cute::ceil_div(cute::shape<0>(params.problem_shape),
                                   cute::shape<0>(TileShape{}))),
         cute::size(cute::ceil_div(cute::shape<1>(params.problem_shape),
                                   cute::shape<1>(TileShape{}))),
         params.partition.splits);
-#endif
   }
 
   static dim3
@@ -342,13 +327,8 @@ class GemmUniversalMixedInputSplitKParallel {
         *reinterpret_cast<SharedStorage*>(smem_buf);
 
     uint32_t const slice = uint32_t(blockIdx.z);
-#if defined(PPU_FIXED_SPLITK_N_ON_X) && (PPU_FIXED_SPLITK_N_ON_X != 0)
-    int const m_coord = int(blockIdx.y);
-    int const n_coord = int(blockIdx.x);
-#else
     int const m_coord = int(blockIdx.x);
     int const n_coord = int(blockIdx.y);
-#endif
     int const thread_idx = int(threadIdx.x);
 
     auto const blk_shape = TileShape{};
@@ -373,15 +353,7 @@ class GemmUniversalMixedInputSplitKParallel {
         tiled_mma, take<0, 2>(blk_shape));
     clear(accumulators);
 
-    // The physical N axis changes with the diagnostic grid spelling.  Use its
-    // extent directly in both arms: the native preprocessing remains exactly
-    // its historical gridDim.y expression and neither arm gains a division or
-    // a runtime branch.
-#if defined(PPU_FIXED_SPLITK_N_ON_X) && (PPU_FIXED_SPLITK_N_ON_X != 0)
-    uint64_t const n_tiles = uint64_t(gridDim.x);
-#else
     uint64_t const n_tiles = uint64_t(gridDim.y);
-#endif
     uint64_t const q = uint64_t(m_coord) * n_tiles + uint64_t(n_coord);
     fixed_splitk::FixedSplitKWork const work =
         fixed_splitk::work_for(params.partition, q, slice);
