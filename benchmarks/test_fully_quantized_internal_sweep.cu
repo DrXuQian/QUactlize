@@ -240,9 +240,25 @@ Fixture make_fixture(Shape shape) {
     }
   if constexpr (FQ_SWEEP_WEIGHT_LAYOUT == 1) {
     auto const arrangement = ppu_arrangements::q4_kpack4_transpose_v1();
-    if (quactlize_ppu_prepare_dense_for_arrangement_v2(
-            f.low_native.data(), nullptr, f.low.data(), nullptr,
-            shape.n, shape.k, qtype, &arrangement) != 0) return f;
+    std::vector<uint8_t> direct(f.low.size(), uint8_t(0xcd));
+    int const direct_rc = q4_kpack4::prepare(
+        f.low_native.data(), direct.data(), shape.n, shape.k);
+    int const abi_rc = quactlize_ppu_prepare_dense_for_arrangement_v2(
+        f.low_native.data(), nullptr, f.low.data(), nullptr,
+        shape.n, shape.k, qtype, &arrangement);
+    bool const direct_equal = direct == f.low;
+    std::printf(
+        "FQ_KPACK4_FIXTURE phase=prepare q=%d shape=%dx%dx%d "
+        "version=%d layout=%d bits=%d high_bits=%d artifact_tile_k=%d "
+        "transport_tile_k=%d group_size=%d reserved=%d "
+        "mapping_id=0x%016llx direct_rc=%d abi_rc=%d direct_equal=%d\n",
+        qtype, shape.m, shape.n, shape.k, arrangement.version,
+        arrangement.layout, arrangement.bits, arrangement.high_bits,
+        arrangement.artifact_tile_k, arrangement.transport_tile_k,
+        arrangement.group_size, arrangement.reserved,
+        static_cast<unsigned long long>(arrangement.mapping_id),
+        direct_rc, abi_rc, int(direct_equal));
+    if (direct_rc != 0 || abi_rc != 0 || !direct_equal) return f;
   } else {
     if (quactlize_ppu_prepare_dense_for_tile(
             f.low_native.data(), high_bits ? f.high_native.data() : nullptr,
@@ -252,10 +268,23 @@ Fixture make_fixture(Shape shape) {
   std::vector<uint8_t> low_back(f.low_native.size()), high_back(f.high_native.size());
   if constexpr (FQ_SWEEP_WEIGHT_LAYOUT == 1) {
     auto const arrangement = ppu_arrangements::q4_kpack4_transpose_v1();
-    f.roundtrip = quactlize_ppu_recover_dense_for_arrangement_v2(
+    std::vector<uint8_t> direct_back(f.low_native.size(), uint8_t(0xab));
+    int const direct_rc = q4_kpack4::recover(
+        f.low.data(), direct_back.data(), shape.n, shape.k);
+    int const abi_rc = quactlize_ppu_recover_dense_for_arrangement_v2(
         f.low.data(), nullptr, low_back.data(), nullptr,
-        shape.n, shape.k, qtype, &arrangement) == 0 &&
-        low_back == f.low_native;
+        shape.n, shape.k, qtype, &arrangement);
+    bool const direct_equal = direct_back == low_back;
+    bool const native_equal = low_back == f.low_native;
+    std::printf(
+        "FQ_KPACK4_FIXTURE phase=recover q=%d shape=%dx%dx%d "
+        "mapping_id=0x%016llx direct_rc=%d abi_rc=%d "
+        "direct_equal=%d native_equal=%d\n",
+        qtype, shape.m, shape.n, shape.k,
+        static_cast<unsigned long long>(arrangement.mapping_id),
+        direct_rc, abi_rc, int(direct_equal), int(native_equal));
+    f.roundtrip = direct_rc == 0 && abi_rc == 0 &&
+                  direct_equal && native_equal;
   } else {
     f.roundtrip = quactlize_ppu_recover_dense_for_tile(
         f.low.data(), high_bits ? f.high.data() : nullptr,

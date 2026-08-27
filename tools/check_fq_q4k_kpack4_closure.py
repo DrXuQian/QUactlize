@@ -31,6 +31,33 @@ def one_line(text: str, prefix: str) -> dict[str, str]:
 
 
 def check(text: str) -> None:
+    fixture_lines = [fields(line, "FQ_KPACK4_FIXTURE ")
+                     for line in text.splitlines()
+                     if line.startswith("FQ_KPACK4_FIXTURE ")]
+    fixture = {row.get("phase"): row for row in fixture_lines}
+    if len(fixture_lines) != 2 or set(fixture) != {"prepare", "recover"}:
+        raise ValueError("fixture prepare/recover denominator is not exactly two")
+    prepare = fixture["prepare"]
+    required_prepare = {
+        "q": "12", "shape": SHAPE, "version": "2", "layout": "1",
+        "bits": "4", "high_bits": "0", "artifact_tile_k": "0",
+        "transport_tile_k": "64", "group_size": "32", "reserved": "0",
+        "mapping_id": MAPPING_ID, "direct_rc": "0", "abi_rc": "0",
+        "direct_equal": "1",
+    }
+    if any(prepare.get(key) != value
+           for key, value in required_prepare.items()):
+        raise ValueError(f"fixture prepare contract failed: {prepare}")
+    recover = fixture["recover"]
+    required_recover = {
+        "q": "12", "shape": SHAPE, "mapping_id": MAPPING_ID,
+        "direct_rc": "0", "abi_rc": "0", "direct_equal": "1",
+        "native_equal": "1",
+    }
+    if any(recover.get(key) != value
+           for key, value in required_recover.items()):
+        raise ValueError(f"fixture recover contract failed: {recover}")
+
     shard = one_line(text, "FQ_SHARD ")
     required_shard = {
         "q": "12", "A": "0", "bchunk": "0", "shape": SHAPE,
@@ -80,6 +107,13 @@ def check(text: str) -> None:
 
 def fixture() -> str:
     return "\n".join([
+        f"FQ_KPACK4_FIXTURE phase=prepare q=12 shape={SHAPE} version=2 "
+        "layout=1 bits=4 high_bits=0 artifact_tile_k=0 "
+        "transport_tile_k=64 group_size=32 reserved=0 "
+        f"mapping_id={MAPPING_ID} direct_rc=0 abi_rc=0 direct_equal=1",
+        f"FQ_KPACK4_FIXTURE phase=recover q=12 shape={SHAPE} "
+        f"mapping_id={MAPPING_ID} direct_rc=0 abi_rc=0 direct_equal=1 "
+        "native_equal=1",
         f"FQ_SHARD q=12 A=0 bchunk=0 shape={SHAPE} weight_layout=1 "
         f"weight_mapping_id={MAPPING_ID} typed_rows=1 selected_rows=1 "
         "only_split=1 bc_mode=skip iterations=1 correctness_repeats=64",
@@ -100,6 +134,8 @@ def self_test() -> None:
     good = fixture()
     check(good)
     negatives = (
+        good.replace("direct_rc=0", "direct_rc=24", 1),
+        good.replace("native_equal=1", "native_equal=0", 1),
         good.replace("weight_layout=1", "weight_layout=0", 1),
         good.replace(MAPPING_ID, "0x51344b5034540000", 1),
         good.replace("raw_bad=0", "raw_bad=32", 1),
@@ -117,7 +153,8 @@ def self_test() -> None:
         else:
             raise AssertionError("K-pack4 closure RED control stayed green")
     print("[fq-q4k-kpack4-check:self-test] PASS exact denominator; "
-          "layout, mapping, raw-bit, state, A, status and extra-cell plants RED")
+          "fixture rc/roundtrip, layout, mapping, raw-bit, state, A, status "
+          "and extra-cell plants RED")
 
 
 def main() -> int:
