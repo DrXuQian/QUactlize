@@ -2153,6 +2153,15 @@ Adjudicate the remaining candidates in this order, one variable at a time:
    L2 set distribution and DRAM partition distribution before naming this
    TLB pressure, cache-set aliasing or partition camping. Power-of-two N is a
    useful plant, not proof.
+
+   The first admitted address-only plant pads the physical leading N by 64
+   b16 words. At N8192 this changes the row stride from 16384 B to 16512 B:
+   both arms request exactly 64 aligned 128 B sectors (8 KiB), while the row
+   bases change from one page offset to 32. The fixture independently places
+   and recovers the padded map and the kernel descriptor receives the same
+   leading dimension. A gain isolates power-of-two address aliasing; no gain
+   does not yet exclude the 64-page footprint, which requires a blocked-map
+   experiment.
 3. **AIU async transaction granularity.** K-pack4 replaces four 2 KiB AIU
    operations with one 8 KiB transposed operation. The same byte count can
    still reduce memory-level parallelism or make `wait_group` depend on one
@@ -2179,3 +2188,14 @@ cause of the AP0/AP1 K-pack4 regression. It is retained only as a possible
 AP1/N-wide selector axis: there it saved about 0.46 us, but K-pack4 remained
 17.62 us versus Xplane's 17.00 us (3.65% behind). Do not enable it globally or
 use it to skip the address/granularity experiments below.
+
+**AIU-delivery result (PPU, 2026-08-27).** Factoring the same K-pack4 8 KiB
+tile from one `N64 x Kphys64` operation into four `N16 x Kphys64` operations
+is not a general fix. At the N-wide target it changed AP0 by `-1.62%` and AP1
+by `-2.44%`, leaving the candidates `3.24%` and `2.56%` behind their Xplane
+controls. More importantly, AP0 regressed by `4.80%` on the balanced control
+and `3.43%` on the K-heavy control; AP1 changed by `-0.62%` and `+1.70%`.
+Therefore opaque AIU request size is excluded as the common cause and the N16
+delivery must not ship globally. Retain it only as a possible AP1/N-wide
+selector component after the address-system experiment; do not assume its
+gain composes additively with N-on-x.

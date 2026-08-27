@@ -361,40 +361,11 @@ struct MixGemm_Q4_KPack4_Transpose_Operand {
                 "K-pack4 initially supports TK64/128/256; TK32 needs a K64 reuse mainloop");
   using TransportElement = cutlass::half_t;
   using PhysicalBlockK = Int<LogicalBlock_K{} / q4_kpack4::kPack>;
-#if defined(PPU_Q4_KPACK4_N16_DELIVERY) && \
-    (PPU_Q4_KPACK4_N16_DELIVERY != 0)
-  // Performance counterfactual for the exact decode row under study.  The
-  // resident bytes remain [N,K/4] b16 and the reader remains the matched
-  // transposed swizzle atom.  Only the opaque AIU delivery is factored from
-  // one N64 x Kphys64 (8 KiB) cube into four N16 x Kphys64 (2 KiB) cubes.
-  // Keeping the first experiment exact prevents an ambient build define from
-  // silently changing the complete tactic graph before this cadence is
-  // device-adjudicated.
-  static_assert(Block_N{} == 64 && LogicalBlock_K{} == 256,
-                "K-pack4 N16 delivery counterfactual is frozen to TN64/TK256");
-  using DeliveryN = Int<q4_kpack4::kTransportN>;
-  static constexpr int InstNum = Block_N{} / DeliveryN{};
-  static_assert(InstNum == 4, "the frozen K-pack4 counterfactual needs four N16 cubes");
-  static constexpr int bits_per_aiu =
-      DeliveryN{} * PhysicalBlockK{} * cutlass::sizeof_bits<TransportElement>::value;
-  using CopyInst = PPU0010_AIU_LOAD<
-      cute::C<bits_per_aiu>, TransportElement, true>;
-  using GmemTiledCopy = decltype(
-      make_tiled_copy(Copy_Atom<CopyInst, TransportElement>{},
-                      Layout<Shape<_1, _1>, Stride<_1, _1>>{},
-                      Layout<Shape<DeliveryN, PhysicalBlockK>>{}));
-  using SmemCopyOp = PPU0010_TSM_LD_SWZL<
-      TransportElement, PhysicalBlockK{}, DeliveryN{}, Swap, true, InstNum>;
-  using SmemCopyAtom = Copy_Atom<SmemCopyOp, TransportElement>;
-  using SmemLayoutAtom = Layout<
-      Shape<DeliveryN, PhysicalBlockK>, Stride<_1, DeliveryN>>;
-#else
   using Base = cutlass::gemm::config::DefaultGemm_AIU_Operand<
       Arch, TransportElement, true, Block_N, PhysicalBlockK, Swap>;
   using GmemTiledCopy = typename Base::GmemTiledCopy;
   using SmemCopyAtom = typename Base::SmemCopyAtom;
   using SmemLayoutAtom = typename Base::SmemLayoutAtom;
-#endif
   static constexpr int PhysicalK = PhysicalBlockK{};
   static constexpr int LogicalK = LogicalBlock_K{};
 };

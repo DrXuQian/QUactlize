@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Q4_K K-pack4 native N64/8KiB versus four-way N16/2KiB delivery A/B.
+# Q4_K K-pack4 compact stride versus +64-b16 leading-N padding A/B.
 set -uo pipefail
 
-fail() { printf '[fq-n16-delivery-ab] FAIL: %s\n' "$*" >&2; return 2; }
+fail() { printf '[fq-stride-pad-ab] FAIL: %s\n' "$*" >&2; return 2; }
 
 main() {
   local root workspace sha short stamp out jobs per_unit iterations rounds threshold
   local source_x source_k selected plan selector analyzer base layout artifact ap
   local variant defs name generated build_dir build_log binary target_make rc
-  local symbol_file unit registry shape_key m n k role round order log
+  local symbol_file unit registry shape_key m n k role round order log variants
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
   workspace="$(realpath -e /workspace)" || return 2
   sha="$(git -C "$root" rev-parse HEAD)" || return 2
   short="${sha:0:8}"; stamp="$(date -u +%Y%m%dT%H%M%SZ)" || return 2
-  out="$(realpath -m -- "${OUT:-/workspace/quactlize-fq-q4k-n16-delivery-${short}-${stamp}-$$}")" || return 2
+  out="$(realpath -m -- "${OUT:-/workspace/quactlize-fq-q4k-stride-pad-${short}-${stamp}-$$}")" || return 2
   case "$out" in "$workspace"/*) ;; *) fail 'OUT must be a strict /workspace child'; return 2;; esac
   [ ! -e "$out" ] || { fail "refusing existing OUT: $out"; return 2; }
   if [ -n "${PPU_DEFS:-}" ] || [ -n "${PPU_EXTRA_DEFS:-}" ]; then
@@ -32,7 +32,7 @@ assert 0 < float(sys.argv[1]) < 1
 PY
 
   selector="$root/tools/select_fq_q4k_kpack4_xplane_isomorphic_ab.py"
-  analyzer="$root/tools/analyze_fq_q4k_n16_delivery_ab.py"
+  analyzer="$root/tools/analyze_fq_q4k_stride_pad_ab.py"
   source_x="$out/generated/source-xplane"; source_k="$out/generated/source-kpack4"
   selected="$out/generated/ab"; plan="$out/plan.json"
   mkdir -p "$source_x" "$source_k" "$selected" "$out/build" \
@@ -41,8 +41,27 @@ PY
   python3 -B "$root/ci/check_fq_q4k_kpack4_generator.py" || return 2
   python3 -B "$selector" self-test || return 2
   python3 -B "$analyzer" self-test || return 2
-  QUACTLIZE_L231_OUT="$out/host-l231" \
-    bash "$root/dev/fold_derivation/run_l231_q4_kpack4_production_fragment.sh" || return 2
+  python3 -B - "$root" <<'PY' || return 2
+import pathlib,sys
+root=pathlib.Path(sys.argv[1])
+main=(root/'quactlize/include/actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp').read_text()
+bench=(root/'benchmarks/test_fully_quantized_internal_sweep.cu').read_text()
+required=(
+  'int const physical_n = N + kQ4KPack4DiagnosticPadN;',
+  'int64_t(physical_n) * int64_t(K)',
+  'make_stride(\n          _1{}, int64_t(physical_n), int64_t(physical_n) * physical_k)',
+)
+if any(main.count(token) != 1 for token in required):
+  raise SystemExit('[fq-stride-pad-source] RED: device stride seam differs')
+for token in ('q4_kpack4::placed_put(', 'q4_kpack4::placed_get(',
+              'weight_stride_pad_n=%d'):
+  if token not in bench:
+    raise SystemExit(f'[fq-stride-pad-source] RED: fixture seam missing: {token}')
+planted=main.replace(required[0], 'int const physical_n = N;', 1)
+if planted == main or required[0] in planted:
+  raise SystemExit('[fq-stride-pad-source] RED: compact-stride plant did not fire')
+print('[fq-stride-pad-source] PASS descriptor-stride=BOUND fixture-placement=BOUND compact-negative=RED')
+PY
   python3 -B "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
     --qtype 12 --artifact-tk 64 --bchunk 0 --weight-layout xplane \
     --tile-m-filter 8 --per-unit "$per_unit" --out-dir "$source_x" || return 2
@@ -59,12 +78,9 @@ PY
     sha256sum \
       "$root/benchmarks/test_fully_quantized_internal_sweep.cu" \
       "$root/benchmarks/fully_quantized_splitk_producer_bench.hpp" \
-      "$root/quactlize/include/actlize_extensions/cutlass/gemm/collective/builders/quactlize_mma_builder.inl" \
       "$root/quactlize/include/actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp" \
       "$root/quactlize/include/q4_kpack4_offline.hpp" \
-      "$root/dev/fold_derivation/l231_q4_kpack4_production_fragment.cu" \
-      "$root/dev/fold_derivation/run_l231_q4_kpack4_production_fragment.sh" \
-      "$selector" "$analyzer" "$root/tools/run_fq_q4k_n16_delivery_ab_box.sh"
+      "$selector" "$analyzer" "$root/tools/run_fq_q4k_stride_pad_ab_box.sh"
   } > "$out/source-authority.sha256" || return 2
   git -C "$root" diff --binary --no-ext-diff HEAD > "$out/source.patch" || return 2
 
@@ -85,12 +101,12 @@ out.write_text(r['symbol']+'\n'); print(v['units'][0])
 PY
     )" || return 2
     registry="$generated/fq_tc_registry.inc"
-    if [ "$layout" -eq 0 ]; then variants="native"; else variants="native n16"; fi
+    if [ "$layout" -eq 0 ]; then variants="native"; else variants="native pad64"; fi
     for variant in $variants; do
-      defs=""; [ "$variant" = n16 ] && defs="PPU_Q4_KPACK4_N16_DELIVERY=1"
+      defs=""; [ "$variant" = pad64 ] && defs="PPU_Q4_KPACK4_DIAGNOSTIC_PAD_N=64"
       name="$base-$variant"; build_dir="$out/build/$name"
       build_log="$out/results/build-${name}.log"; mkdir -p "$build_dir" || return 2
-      printf '[fq-n16-delivery-ab] build arm=%s layout=%s provider=AP%s variant=%s\n' \
+      printf '[fq-stride-pad-ab] build arm=%s layout=%s provider=AP%s variant=%s\n' \
         "$name" "$layout" "$ap" "$variant"
       (cd "$root" && env -u CMAKE_GENERATOR -u CMAKE_TOOLCHAIN_FILE -u CC -u CXX \
         PPU_BUILD_DIR="$build_dir" PPU_ARCHS=ppu0010 JOBS="$jobs" \
@@ -106,11 +122,11 @@ PY
       target_make="$(find "$build_dir" -type f -path '*test_fully_quantized_internal_sweep.dir/build.make' -print -quit)"
       [ -n "$binary" ] && [ ! -L "$binary" ] && [ -n "$target_make" ] || {
         fail "$name binary/build identity missing"; return 2; }
-      if [ "$variant" = n16 ]; then
-        grep -Eq -- '(^|[[:space:]])-DPPU_Q4_KPACK4_N16_DELIVERY=1([[:space:]]|$)' \
+      if [ "$variant" = pad64 ]; then
+        grep -Eq -- '(^|[[:space:]])-DPPU_Q4_KPACK4_DIAGNOSTIC_PAD_N=64([[:space:]]|$)' \
           "$target_make" || { fail "$name compile define missing"; return 2; }
-      elif grep -F -- '-DPPU_Q4_KPACK4_N16_DELIVERY' "$target_make" >/dev/null; then
-        fail "$name native control inherited N16 define"; return 2
+      elif grep -F -- '-DPPU_Q4_KPACK4_DIAGNOSTIC_PAD_N' "$target_make" >/dev/null; then
+        fail "$name native control inherited pad define"; return 2
       fi
       printf '%s\n' "$binary" > "$out/results/binary-${name}.path"
       sha256sum "$binary" "$target_make" "$generated/manifest.json" "$unit" "$registry" \
@@ -123,20 +139,20 @@ PY
       mkdir -p "$out/runs/$shape_key/ap$ap" || return 2
       for round in $(seq 1 "$rounds"); do
         if [ $((round % 2)) -eq 1 ]; then
-          order="xplane kpack4-native kpack4-n16"
+          order="xplane kpack4-native kpack4-pad64"
         else
-          order="kpack4-n16 kpack4-native xplane"
+          order="kpack4-pad64 kpack4-native xplane"
         fi
         for variant in $order; do
           case "$variant" in
             xplane) base="xplane-ap$ap"; name="$base-native";;
             kpack4-native) base="kpack4-ap$ap"; name="$base-native";;
-            kpack4-n16) base="kpack4-ap$ap"; name="$base-n16";;
+            kpack4-pad64) base="kpack4-ap$ap"; name="$base-pad64";;
           esac
           binary="$(cat "$out/results/binary-${name}.path")"
           symbol_file="$out/results/row-symbol-${base}.txt"
           log="$out/runs/$shape_key/ap$ap/round-${round}-${variant}.log"
-          printf '[fq-n16-delivery-ab] timing shape=%s role=%s provider=AP%s arm=%s round=%s\n' \
+          printf '[fq-stride-pad-ab] timing shape=%s role=%s provider=AP%s arm=%s round=%s\n' \
             "$shape_key" "$role" "$ap" "$variant" "$round"
           "$binary" --shape="${m}x${n}x${k}" --iterations="$iterations" \
             --correctness-repeats=16 --only-split=4 --tm8-max-m=8 \
@@ -160,7 +176,7 @@ PY
   find "$out" -type f ! -name bundle.sha256 -print0 | sort -z | \
     xargs -0 sha256sum > "$out/bundle.sha256" || return 2
   cat "$out/results/summary.tsv"
-  printf '[fq-n16-delivery-ab] PASS sha=%s comparisons=6 artifacts=%s\n' "$sha" "$out"
+  printf '[fq-stride-pad-ab] PASS sha=%s comparisons=6 artifacts=%s\n' "$sha" "$out"
 }
 
 main "$@"
