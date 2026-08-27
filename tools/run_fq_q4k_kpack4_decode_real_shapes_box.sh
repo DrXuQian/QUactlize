@@ -112,8 +112,9 @@ if value.get("identity")!={"qtype":12,"format":"Q4_K","artifact_tile_k":0,
  value.get("weight_mapping",{}).get("mapping_id")!="0x51344b5034540001":
  raise SystemExit("pilot manifest identity differs")
 manifest_matches=[digest for path,digest in records.items()
-                  if pathlib.Path(path)==manifest]
-if manifest_matches!=[hashlib.sha256(manifest.read_bytes()).hexdigest()]:
+                  if path.endswith("/generated/manifest.json")]
+if len(manifest_matches)!=1 or \
+   manifest_matches[0]!=hashlib.sha256(manifest.read_bytes()).hexdigest():
  raise SystemExit("pilot manifest source-authority hash differs")
 expected=binary_authority.read_text().split()[0]
 actual=hashlib.sha256(binary.read_bytes()).hexdigest()
