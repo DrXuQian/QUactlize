@@ -260,7 +260,11 @@ def codegen(arm_manifest: pathlib.Path, line_path: pathlib.Path,
     expects_kpack = name.startswith("kpack4")
     expects_ap1 = name.endswith("ap1")
     has_kpack = "KernelAiuQ4KPack4Transpose" in demangled
-    has_ap1 = "KernelAiuPackedA<1" in demangled
+    # c++filt spelling of the non-type Rows argument is toolchain-dependent
+    # (`1`, `(int)1`, or an elided alias context).  The generated manifest and
+    # selected row already bind Rows==1; final-object identity only needs to
+    # prove that the typed packed-A wrapper survived into the kernel type.
+    has_ap1 = "KernelAiuPackedA<" in demangled
     if has_kpack != expects_kpack or has_ap1 != expects_ap1:
         raise AnalysisError(
             f"{name} exact producer schedule differs: "

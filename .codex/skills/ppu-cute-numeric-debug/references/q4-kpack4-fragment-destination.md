@@ -221,7 +221,8 @@ The PPU0010 source atoms spell the readers as
 reports both after assembler lowering as backend `tsm.ld...` operations.  Do
 not require a source `ldmatrix` mnemonic in final-object disassembly.  Bind the
 reader identity through the exact demangled kernel schedule
-(`KernelAiuQ4KPack4Transpose` and `KernelAiuPackedA<1` as applicable), then
+(`KernelAiuQ4KPack4Transpose` and the typed `KernelAiuPackedA<...>` wrapper as
+applicable; do not bind a particular `c++filt` spelling of its integer), then
 compare final instruction/resource counts through the lowered `tsm.ld`, MMA,
 register, spill and ACU evidence.  If a tool release preserves source
 mnemonics, their expected m8/m16 forms remain an additional positive check.

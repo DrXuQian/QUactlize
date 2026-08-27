@@ -49,6 +49,7 @@ def check(selector: str, analyzer: str, runner: str, bench: str,
         '"m8n8.x4.swzl.shared.b16"',
         '"m16n16.x1.swzl.trans.shared.b16"',
         '"KernelAiuQ4KPack4Transpose" in demangled',
+        'has_ap1 = "KernelAiuPackedA<" in demangled',
         'if has_kpack != expects_kpack or has_ap1 != expects_ap1',
         'if focus["tsm_load"] <= 0',
         'reader_lowering = "HGOBJDUMP_TSM_LOWERED"',
@@ -116,6 +117,8 @@ def main() -> int:
         (1, 'if len(mma_counts) != 1', 'if False'),
         (1, 'if has_kpack != expects_kpack or has_ap1 != expects_ap1',
          'if False'),
+        (1, 'has_ap1 = "KernelAiuPackedA<" in demangled',
+         'has_ap1 = False'),
         (1, 'if focus["tsm_load"] <= 0', 'if False'),
         (1, 'requires_acu = abs(delta) >= gap_threshold and same_sign',
          'requires_acu = False'),
@@ -145,7 +148,7 @@ def main() -> int:
             raise CheckError(f"negative stayed green: {old}")
     print("[fq-kpack4-xplane-ab:self-test] PASS exact AP0/AP1 factorial, "
           "same-config/S4 AB-BA timing, codegen resources and one-producer "
-          "conditional ACU plus analysis-only binary reuse; thirteen plants RED")
+          "conditional ACU plus analysis-only binary reuse; fourteen plants RED")
     return 0
 
 
