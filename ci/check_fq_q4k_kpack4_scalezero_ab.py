@@ -69,6 +69,9 @@ def check(texts: list[str]) -> None:
         "DELIVERY_N = 32",
         'cell.get("scalezero_fused_read")',
         'value.get("scalezero_fused_read") is not fused_read',
+        'if tuple(store["resources"]) != tuple(load["resources"]):',
+        "Split-K partial workspace changed across variants",
+        'row["resource_delta_vs_plain"]',
         'if actual != expected or len(rows) != 6:',
         "Shared Load bank-conflict denominator differs",
         "SHARED_LOAD_CONFLICT_REDUCED",
@@ -78,6 +81,15 @@ def check(texts: list[str]) -> None:
     ), "analyzer")
     require(runner, (
         "scalezero) rounds_default=4",
+        'resume="${RESUME:-0}"',
+        "RESUME=1 requires explicit OUT",
+        "resume source.patch is non-empty",
+        "resume current tracked worktree differs from HEAD",
+        "resume changed device/source authority outside analysis seam",
+        "authority=ANALYSIS_ONLY",
+        "resume build/codegen identity is incomplete",
+        "resume build identity changed",
+        "resume timing log is missing",
         "python3 -B \"$scalezero_analyzer\" self-test",
         "check_fq_q4k_kpack4_scalezero_ab.py",
         "l232_q4_kpack4_fused_metadata_read.cu",
@@ -123,11 +135,17 @@ def main() -> int:
          'VARIANTS = ("plain", "load")'),
         (4, 'if actual != expected or len(rows) != 6:',
          'if actual != expected:'),
+        (4, 'if tuple(store["resources"]) != tuple(load["resources"]):',
+         'if False:'),
         (5, "specs='plain:32:0:0 store:32:1:0 load:32:1:1'",
          "specs='plain:32:0:0 load:32:1:1'"),
         (5, '3) order="store plain load"', '3) order="plain store load"'),
         (5, "non-read control unexpectedly carries the fused-read define",
          "non-read control accepted"),
+        (5, "resume changed device/source authority outside analysis seam",
+         "resume accepts every changed source"),
+        (5, "resume source.patch is non-empty",
+         "resume accepts dirty original binaries"),
         (6, "-DPPU_PACKED_SCALE_FUSED_READ=1",
          "-DPPU_PACKED_SCALE_FUSED=1"),
     )
@@ -143,7 +161,7 @@ def main() -> int:
         else:
             raise CheckError(f"negative stayed green: {old}")
     print("[fq-kpack4-scalezero-ab:self-test] PASS exact D32 plain/store/load "
-          "CuTe/raw-bit/codegen/timing/ACU chain; twelve plants RED")
+          "CuTe/raw-bit/codegen/timing/ACU chain; fifteen plants RED")
     return 0
 
 

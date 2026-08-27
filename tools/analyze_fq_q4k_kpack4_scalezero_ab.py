@@ -121,9 +121,22 @@ def analyze(master_path: pathlib.Path, runs_root: pathlib.Path,
                     codegen_root / f"ap{ap}-{variant}.json", ap, fused,
                     fused_read),
             }
-        if len({tuple(rows[name]["resources"]) for name in VARIANTS}) != 1:
-            raise AnalysisError(f"shared/workspace ABI changed across AP{ap}")
         plain, store, load = rows["plain"], rows["store"], rows["load"]
+        if tuple(store["resources"]) != tuple(load["resources"]):
+            raise AnalysisError(
+                f"AP{ap}: fused-read changed the fused-store resource ABI: "
+                f"store={store['resources']} load={load['resources']}")
+        if len({rows[name]["resources"][2] for name in VARIANTS}) != 1:
+            raise AnalysisError(f"AP{ap}: Split-K partial workspace changed across variants")
+        for row in rows.values():
+            row["resource_delta_vs_plain"] = [
+                value - control for control, value in zip(
+                    plain["resources"], row["resources"])
+            ]
+        print("FQ_KPACK4_SCALEZERO_RESOURCE "
+              f"provider=AP{ap} plain={plain['resources']} "
+              f"store={store['resources']} load={load['resources']} "
+              f"store_delta={store['resource_delta_vs_plain']}")
         for row in rows.values():
             row["delta_vs_plain"] = row["median_us"] / plain["median_us"] - 1.0
             row["paired_vs_plain"] = [
@@ -155,7 +168,8 @@ def analyze(master_path: pathlib.Path, runs_root: pathlib.Path,
         "provider\tvariant\tmedian_us\trange_us\tdelta_vs_plain_pct\t"
         "delta_vs_store_pct\tpaired_vs_plain_pct\tpaired_vs_store_pct\t"
         "instructions\tregisters\tspill\ttsm_load\t"
-        "mma\tshipping_smem\tsplit_smem\tpartial_bytes"
+        "mma\tshipping_smem\tsplit_smem\tpartial_bytes\t"
+        "resource_delta_vs_plain"
     ]
     for provider in providers:
         for row in provider["variants"]:
@@ -178,6 +192,7 @@ def analyze(master_path: pathlib.Path, runs_root: pathlib.Path,
                     else "UNKNOWN"), str(codegen["spill_status"]),
                 str(focus["tsm_load"]), str(focus["mma"]),
                 *(str(item) for item in row["resources"]),
+                ",".join(str(item) for item in row["resource_delta_vs_plain"]),
             )))
     output_tsv.write_text("\n".join(lines) + "\n")
     print("[fq-kpack4-scalezero-analysis] PASS providers=2 arms=6 "
@@ -320,6 +335,8 @@ def self_test() -> None:
                 }) + "\n")
                 for round_index in range(1, 5):
                     samples = [median - .1, median, median + .1]
+                    shipping = 1040 if variant == "plain" else 1024
+                    split_smem = 2064 if variant == "plain" else 2048
                     common = "q=12 A=0 bchunk=0 shape=1x8192x5120"
                     text = (
                         f"FQ_SHARD {common} weight_layout=1 "
@@ -335,8 +352,8 @@ def self_test() -> None:
                         f"scalezero_fused={int(fused)} "
                         f"scalezero_fused_read={int(fused_read)} state=MEASURED "
                         f"us={median:.9f} raw_bad=0 reducer_untimed=1 "
-                        "failure_step=NONE failure_repeat=-1 shipping_smem=1024 "
-                        "split_smem=2048 partial_bytes=131072 "
+                        f"failure_step=NONE failure_repeat=-1 shipping_smem={shipping} "
+                        f"split_smem={split_smem} partial_bytes=131072 "
                         f"samples=[{','.join(str(item) for item in samples)}]\n"
                         f"FQ_SHAPE_DONE {common} weight_layout=1 "
                         f"weight_mapping_id={base.MAPPING_ID} "
@@ -350,7 +367,8 @@ def self_test() -> None:
         assert all(row["verdict"] == "RESOLVED_FUSED_LOAD_FASTER"
                    for row in result["providers"])
         victim = runs / "ap0" / "round-1-load.log"
-        victim.write_text(victim.read_text().replace(
+        victim_original = victim.read_text()
+        victim.write_text(victim_original.replace(
             "weight_delivery_n=32", "weight_delivery_n=64"))
         try:
             analyze(master, runs, codegen, 3, 4, .02,
@@ -359,6 +377,18 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("D32 marker negative stayed green")
+        victim.write_text(victim_original)
+        for round_index in range(1, 5):
+            resource_victim = runs / "ap0" / f"round-{round_index}-load.log"
+            resource_victim.write_text(resource_victim.read_text().replace(
+                "split_smem=2048", "split_smem=2080"))
+        try:
+            analyze(master, runs, codegen, 3, 4, .02,
+                    root / "red-resource.json", root / "red-resource.tsv")
+        except AnalysisError:
+            pass
+        else:
+            raise AssertionError("fused-read resource ABI negative stayed green")
 
         details = root / "details"
         details.mkdir()
@@ -388,7 +418,8 @@ def self_test() -> None:
             raise AssertionError("missing bank-conflict denominator stayed green")
         assert broken  # keep the text-level plant live under static analysis
     print("[fq-kpack4-scalezero-analysis:self-test] PASS exact 2x3x4 timing, "
-          "D32/raw-bit/fused-read markers RED and six-arm bank-conflict ACU denominator")
+          "fused store/read resource ABI, D32/raw-bit markers RED and "
+          "six-arm bank-conflict ACU denominator")
 
 
 def main() -> int:

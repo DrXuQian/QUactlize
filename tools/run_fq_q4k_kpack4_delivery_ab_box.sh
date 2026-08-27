@@ -19,13 +19,13 @@ resolve_executable() {
 }
 
 main() {
-  local root workspace sha short stamp out jobs per_unit iterations rounds repeats
+  local root workspace sha short stamp out jobs per_unit iterations rounds repeats resume
   local experiment rounds_default specs spec fused fused_read defs
   local threshold run_acu sdk_root hgcc hgobjdump acu selector analyzer base_analyzer
   local scalezero_analyzer scalezero_checker committed_checker host_evidence
   local source_x source_k selected ap delivery tag arm generated build_dir build_log
   local binary target_make symbol_file unit registry list_elf symbol demangled line resource
-  local tmp_codegen round order log rc report_base report details raw_details raw_value
+  local tmp_codegen round order log rc report_base report details raw_details raw_value base_sha changed
   local -a acu_cmd reports
 
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
@@ -35,7 +35,14 @@ main() {
   stamp="$(date -u +%Y%m%dT%H%M%SZ)" || return 2
   out="$(realpath -m -- "${OUT:-/workspace/quactlize-fq-q4k-kpack4-delivery-${short}-${stamp}-$$}")" || return 2
   case "$out" in "$workspace"/*) ;; *) fail 'OUT must be a strict /workspace child'; return 2;; esac
-  [ ! -e "$out" ] || { fail "refusing existing OUT: $out"; return 2; }
+  resume="${RESUME:-0}"
+  case "$resume" in 0|1) ;; *) fail 'RESUME must be 0 or 1'; return 2;; esac
+  if [ "$resume" = 1 ]; then
+    [ -n "${OUT:-}" ] || { fail 'RESUME=1 requires explicit OUT'; return 2; }
+    [ -d "$out" ] || { fail "resume OUT is not a directory: $out"; return 2; }
+  else
+    [ ! -e "$out" ] || { fail "refusing existing OUT without RESUME=1: $out"; return 2; }
+  fi
   if [ -n "${PPU_DEFS:-}" ] || [ -n "${PPU_EXTRA_DEFS:-}" ]; then
     fail 'ambient PPU_DEFS/PPU_EXTRA_DEFS changes the factorial'; return 2
   fi
@@ -46,6 +53,9 @@ main() {
     scalezero) rounds_default=4;;
     *) fail 'FQ_KPACK4_EXPERIMENT must be delivery or scalezero'; return 2;;
   esac
+  if [ "$resume" = 1 ] && [ "$experiment" != scalezero ]; then
+    fail 'RESUME=1 is admitted only for the scalezero analysis/ACU closure'; return 2
+  fi
   jobs="${JOBS:-16}"
   per_unit="${FQ_CONFIGS_PER_UNIT:-144}"
   iterations="${PERF_ITERATIONS:-201}"
@@ -96,6 +106,31 @@ PY
   mkdir -p "$source_x" "$source_k" "$selected" "$out/build" "$out/codegen" \
     "$out/runs" "$out/results" "$out/acu" || return 2
 
+  if [ "$resume" = 1 ]; then
+    [ -s "$out/source-authority.sha256" ] || {
+      fail 'resume source authority is missing'; return 2; }
+    [ ! -s "$out/source.patch" ] || {
+      fail 'resume source.patch is non-empty; original binaries were built from a dirty tree'; return 2; }
+    git -C "$root" diff --quiet --no-ext-diff HEAD -- &&
+      git -C "$root" diff --cached --quiet --no-ext-diff HEAD -- || {
+      fail 'resume current tracked worktree differs from HEAD'; return 2; }
+    base_sha="$(sed -n '1p' "$out/source-authority.sha256")"
+    git -C "$root" cat-file -e "${base_sha}^{commit}" 2>/dev/null || {
+      fail "resume base SHA is not a commit: $base_sha"; return 2; }
+    changed="$(git -C "$root" diff --name-only "$base_sha" "$sha")" || return 2
+    while IFS= read -r path; do
+      [ -z "$path" ] && continue
+      case "$path" in
+        tools/analyze_fq_q4k_kpack4_scalezero_ab.py|\
+        ci/check_fq_q4k_kpack4_scalezero_ab.py|\
+        tools/run_fq_q4k_kpack4_delivery_ab_box.sh) ;;
+        *) fail "resume changed device/source authority outside analysis seam: $path"; return 2;;
+      esac
+    done <<< "$changed"
+    printf '[fq-kpack4-delivery-ab] RESUME base_sha=%s current_sha=%s authority=ANALYSIS_ONLY\n' \
+      "$base_sha" "$sha"
+  fi
+
   python3 -B "$root/ci/check_fq_q4k_kpack4_generator.py" || return 2
   python3 -B "$root/ci/check_fq_q4k_kpack4_delivery_ab.py" || return 2
   python3 -B "$scalezero_checker" || return 2
@@ -109,17 +144,18 @@ PY
     | tee "$out/results/host-evidence.log" || return 2
   printf 'FQ_KPACK4_DELIVERY_HOST_EVIDENCE sha=%s fresh_box_execution=0\n' "$sha"
 
-  python3 -B "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
-    --qtype 12 --artifact-tk 64 --bchunk 0 --weight-layout xplane \
-    --tile-m-filter 8 --per-unit "$per_unit" --out-dir "$source_x" || return 2
-  python3 -B "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
-    --qtype 12 --artifact-tk 0 --bchunk 0 --weight-layout q4-kpack4 \
-    --tile-m-filter 8 --per-unit "$per_unit" --out-dir "$source_k" || return 2
-  python3 -B "$selector" materialize --xplane-dir "$source_x" \
-    --kpack4-dir "$source_k" --out-dir "$selected" || return 2
+  if [ "$resume" = 0 ]; then
+    python3 -B "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
+      --qtype 12 --artifact-tk 64 --bchunk 0 --weight-layout xplane \
+      --tile-m-filter 8 --per-unit "$per_unit" --out-dir "$source_x" || return 2
+    python3 -B "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
+      --qtype 12 --artifact-tk 0 --bchunk 0 --weight-layout q4-kpack4 \
+      --tile-m-filter 8 --per-unit "$per_unit" --out-dir "$source_k" || return 2
+    python3 -B "$selector" materialize --xplane-dir "$source_x" \
+      --kpack4-dir "$source_k" --out-dir "$selected" || return 2
 
-  git -C "$root" diff --binary --no-ext-diff HEAD > "$out/source.patch" || return 2
-  {
+    git -C "$root" diff --binary --no-ext-diff HEAD > "$out/source.patch" || return 2
+    {
     printf '%s\n' "$sha"
     git -C "$root/third_party/actlize" rev-parse HEAD
     sha256sum "$hgcc" "$hgobjdump" \
@@ -143,7 +179,8 @@ PY
       "$scalezero_checker" \
       "$root/ci/check_fq_q4k_kpack4_delivery_ab.py" \
       "$root/tools/run_fq_q4k_kpack4_delivery_ab_box.sh"
-  } > "$out/source-authority.sha256" || return 2
+    } > "$out/source-authority.sha256" || return 2
+  fi
 
   for ap in 0 1; do
     generated="$selected/kpack4-ap$ap"
@@ -175,6 +212,18 @@ PY
       arm="kpack4-ap${ap}-${tag}"
       build_dir="$out/build/$arm"
       build_log="$out/results/build-${arm}.log"
+      if [ "$resume" = 1 ]; then
+        [ -s "$out/results/binary-${arm}.path" ] && \
+          [ -s "$out/results/build-identity-${arm}.sha256" ] && \
+          [ -s "$out/codegen/ap${ap}-${tag}.json" ] || {
+          fail "resume build/codegen identity is incomplete for $arm"; return 2; }
+        sha256sum -c "$out/results/build-identity-${arm}.sha256" >/dev/null || {
+          fail "resume build identity changed for $arm"; return 2; }
+        binary="$(cat "$out/results/binary-${arm}.path")"
+        [ -x "$binary" ] && [ ! -L "$binary" ] || {
+          fail "resume binary is missing or linked for $arm"; return 2; }
+        continue
+      fi
       mkdir -p "$build_dir" "$out/codegen/$arm" || return 2
       defs="FQ_TC_KPACK4_DELIVERY_N=$delivery"
       if [ "$fused" -eq 1 ]; then
@@ -287,6 +336,11 @@ PY
         binary="$(cat "$out/results/binary-${arm}.path")"
         symbol_file="$out/results/row-symbol-ap$ap.txt"
         log="$out/runs/ap$ap/round-${round}-${tag}.log"
+        if [ "$resume" = 1 ]; then
+          [ -s "$log" ] || {
+            fail "resume timing log is missing: $log"; return 2; }
+          continue
+        fi
         printf '[fq-kpack4-delivery-ab] timing provider=AP%s arm=%s round=%s\n' \
           "$ap" "$tag" "$round"
         "$binary" --shape=1x8192x5120 --iterations="$iterations" \
