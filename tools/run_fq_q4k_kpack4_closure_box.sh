@@ -57,6 +57,17 @@ main() {
     printf '[fq-q4k-kpack4] artifacts=%s\n' "$out" >&2
     return "$build_rc"
   fi
+  if ! grep -Fqx '[build.sh] FQ_SWEEP_WEIGHT_LAYOUT=1' "$build_log" ||
+     ! grep -F 'FullyQuantized internal sweep: q=12 A=0 bc=0 format=0 layout=1 units=1' \
+       "$build_log" >/dev/null ||
+     ! grep -Eq '^FQ_SWEEP_WEIGHT_LAYOUT(:[^=]*)?=1$' \
+       "$build_dir/CMakeCache.txt"; then
+    printf '[fq-q4k-kpack4] FAIL: weight-layout build ABI did not reach build.sh/CMake/target\n' >&2
+    grep -E 'FQ_SWEEP_WEIGHT_LAYOUT|FullyQuantized internal sweep:' \
+      "$build_log" "$build_dir/CMakeCache.txt" 2>/dev/null >&2 || true
+    printf '[fq-q4k-kpack4] artifacts=%s\n' "$out" >&2
+    return 2
+  fi
   binary="$build_dir/ppu_targets/test_fully_quantized_internal_sweep"
   if [ ! -x "$binary" ] || [ -L "$binary" ]; then
     binary="$(grep -m1 '^built: ' "$build_log" | cut -d' ' -f2-)"

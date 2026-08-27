@@ -236,7 +236,7 @@ def check(runner: str, generator: str, cmake: str, build: str,
             "root CMake does not bind both internal-sweep fragments to one fail-closed authority")
     for variable in (
         "FQ_SWEEP_GENERATED_DIR", "FQ_SWEEP_QTYPE", "FQ_SWEEP_ARTIFACT_TK",
-        "FQ_SWEEP_BCHUNK", "FQ_SWEEP_PACKED_FORMAT",
+        "FQ_SWEEP_BCHUNK", "FQ_SWEEP_PACKED_FORMAT", "FQ_SWEEP_WEIGHT_LAYOUT",
     ):
         if variable not in build:
             raise ValueError(f"build.sh does not forward {variable}")
@@ -527,6 +527,21 @@ def main() -> int:
     else:
         raise AssertionError("missing component fragment stayed green")
 
+    # Negative 13 removes only the physical-layout selector from build.sh.
+    # The old default is xplane(0), so silently dropping this one variable
+    # produces a valid A0 binary that fails in the host fixture before any
+    # K-pack4 code runs.  It must be diagnosed as a build-ABI break instead.
+    planted_weight_layout = texts["build"].replace(
+        " FQ_SWEEP_WEIGHT_LAYOUT", "", 1)
+    try:
+        check(texts["runner"], texts["generator"], texts["cmake"],
+              planted_weight_layout, texts["root_cmake"], texts["analyzer"])
+    except ValueError as error:
+        if "FQ_SWEEP_WEIGHT_LAYOUT" not in str(error):
+            raise
+    else:
+        raise AssertionError("dropped physical-layout build variable stayed green")
+
     # Exercise the runner's exact pre-run resume decision.  The analyzer already
     # deletes run.rc dynamically; cover all three committed sidecars here, both
     # missing and replaced, and require rejection rather than a fresh benchmark.
@@ -534,10 +549,10 @@ def main() -> int:
     check_binary_deletion_negative(texts["runner"])
 
     print("[fq-internal-runner] PASS: exact --out-dir ABI, hgcc generated "
-          "include, generated unit graph, five build variables, no-device "
+          "include, generated unit graph, six build variables, no-device "
           "fail-close, inventory/run/device resume identity, all-static guard, "
           "published generated/direct-source authority, parent-shard binding, "
-          "atomic authorities, and producer-only disclosure; twelve seam plus "
+          "atomic authorities, and producer-only disclosure; thirteen seam plus "
           "six dynamic run-sidecar and one delete-binary negative red")
     return 0
 
