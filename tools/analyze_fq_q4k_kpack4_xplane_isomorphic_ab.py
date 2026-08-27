@@ -258,17 +258,17 @@ def codegen(arm_manifest: pathlib.Path, line_path: pathlib.Path,
     resource = resource_path.read_text(errors="replace")
     demangled = demangled_path.read_text(errors="replace").strip()
     expects_kpack = name.startswith("kpack4")
-    expects_ap1 = name.endswith("ap1")
     has_kpack = "KernelAiuQ4KPack4Transpose" in demangled
-    # c++filt spelling of the non-type Rows argument is toolchain-dependent
-    # (`1`, `(int)1`, or an elided alias context).  The generated manifest and
-    # selected row already bind Rows==1; final-object identity only needs to
-    # prove that the typed packed-A wrapper survived into the kernel type.
+    # Packed-A changes the selected operand/copy types, but the schedule
+    # wrapper is not a retained template parameter of this final producer on
+    # every SDK.  Treat its presence as a diagnostic only.  AP identity is
+    # instead bound by the one-row generated unit + target compile ABI in the
+    # runner and independently checked again in every runtime FQ_TC_CELL.
     has_ap1 = "KernelAiuPackedA<" in demangled
-    if has_kpack != expects_kpack or has_ap1 != expects_ap1:
+    if has_kpack != expects_kpack:
         raise AnalysisError(
             f"{name} exact producer schedule differs: "
-            f"kpack={int(has_kpack)} ap1={int(has_ap1)}")
+            f"kpack={int(has_kpack)}")
     inst = parse_instructions(line)
     counts = collections.Counter(inst)
     local = parse_local_fields(resource)
@@ -321,6 +321,8 @@ def codegen(arm_manifest: pathlib.Path, line_path: pathlib.Path,
         "resource_local_fields": local,
         "spill_status": spill_status,
         "reader_lowering": reader_lowering,
+        "packed_a_wrapper_visible": has_ap1,
+        "a_provider_identity": "GENERATED_UNIT_BUILD_ABI_AND_RUNTIME_CELL",
         "opcode_counts": dict(sorted(counts.items())),
         "line_sha256": sha256(line_path),
         "resource_sha256": sha256(resource_path),
@@ -331,6 +333,7 @@ def codegen(arm_manifest: pathlib.Path, line_path: pathlib.Path,
           f"{value['registers'] if value['registers'] is not None else 'UNKNOWN'} "
           f"spill={spill_status} ldmatrix={focus['ldmatrix_total']} "
           f"tsm_load={focus['tsm_load']} reader={reader_lowering} "
+          f"ap_wrapper_visible={int(has_ap1)} "
           f"m8x4={focus['m8n8_x4_swzl']} "
           f"m16x1_trans={focus['m16n16_x1_swzl_trans']} mma={focus['mma']}")
 

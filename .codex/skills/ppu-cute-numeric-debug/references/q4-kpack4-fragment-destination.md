@@ -219,10 +219,13 @@ The PPU0010 source atoms spell the readers as
 `ppu.tc01.ldmatrix...m8n8.x4.swzl...` and
 `ppu.tc01.ldmatrix...m16n16.x1.swzl.trans...`, but `hgobjdump -line` normally
 reports both after assembler lowering as backend `tsm.ld...` operations.  Do
-not require a source `ldmatrix` mnemonic in final-object disassembly.  Bind the
-reader identity through the exact demangled kernel schedule
-(`KernelAiuQ4KPack4Transpose` and the typed `KernelAiuPackedA<...>` wrapper as
-applicable; do not bind a particular `c++filt` spelling of its integer), then
-compare final instruction/resource counts through the lowered `tsm.ld`, MMA,
-register, spill and ACU evidence.  If a tool release preserves source
-mnemonics, their expected m8/m16 forms remain an additional positive check.
+not require a source `ldmatrix` mnemonic in final-object disassembly.  Bind
+the K-pack4 reader identity through the retained
+`KernelAiuQ4KPack4Transpose` kernel type.  Packed-A's schedule wrapper is not
+a retained final-producer template parameter on every SDK, so bind AP0/AP1
+instead through the exact one-row generated macro, the target compile ABI and
+the runtime `FQ_TC_CELL provider` field.  Do not infer AP identity from a
+missing demangled wrapper.  Then compare final instruction/resource counts
+through the lowered `tsm.ld`, MMA, register, spill and ACU evidence.  If a
+tool release preserves source mnemonics, their expected m8/m16 forms remain an
+additional positive check.

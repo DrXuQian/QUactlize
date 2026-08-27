@@ -32,7 +32,7 @@ main() {
   local source_x source_k selected plan arm artifact layout generated build_dir
   local build_log binary symbol_file list_elf symbol demangled line resource rc
   local shape_key m n k ap round order name log report_base report details
-  local resume measurement_sha changed
+  local resume measurement_sha changed target_make unit registry ap_id
   local -a acu_cmd reports
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
   workspace="$(realpath -e /workspace)" || return 2
@@ -172,6 +172,10 @@ PY
       xplane-*) artifact=64; layout=0;;
       kpack4-*) artifact=0; layout=1;;
     esac
+    case "$arm" in
+      *-ap0) ap_id=0;;
+      *-ap1) ap_id=1;;
+    esac
     generated="$selected/$arm"
     build_dir="$out/build/$arm"
     build_log="$out/results/build-${arm}.log"
@@ -208,12 +212,61 @@ PY
       sha256sum "$binary" > "$out/results/binary-${arm}.sha256" || return 2
     fi
     symbol_file="$out/results/row-symbol-${arm}.txt"
-    python3 -B - "$generated/manifest.json" "$symbol_file" <<'PY' || return 2
+    unit="$(python3 -B - "$generated/manifest.json" "$symbol_file" \
+      "$artifact" "$layout" "$arm" <<'PY'
 import json,pathlib,sys
-value=json.load(open(sys.argv[1]))
-assert value['selection_denominator']==1
-pathlib.Path(sys.argv[2]).write_text(value['row']['symbol']+'\n')
+manifest=pathlib.Path(sys.argv[1])
+symbol_out=pathlib.Path(sys.argv[2])
+artifact,layout,arm=int(sys.argv[3]),int(sys.argv[4]),sys.argv[5]
+ap=1 if arm.endswith('-ap1') else 0
+provider='packed-row' if ap else 'standard-aiu'
+value=json.loads(manifest.read_text())
+assert value['schema']=='quactlize.fq-q4k-kpack4-xplane-isomorphic-arm.v1'
+assert value['name']==arm and value['selection_denominator']==1
+assert value['artifact_tile_k']==artifact and value['weight_layout']==layout
+assert value['a_provider_id']==ap and value['a_provider']==provider
+assert value['source_typed_denominator']==144
+assert value['source_global_typed_denominator']==918
+row=value['row']
+expected={'qtype':12,'artifact_tile_k':artifact,'tile_m':8,'tile_n':64,
+          'tactic_tile_k':256,'warp_m':8,'warp_n':16,'stages':2,
+          'bchunk':0,'a_provider':provider}
+assert all(row.get(k)==v for k,v in expected.items())
+assert len(value['units'])==1
+unit=pathlib.Path(value['units'][0])
+registry=manifest.parent/'fq_tc_registry.inc'
+macro=f"X({row['symbol']},12,{artifact},8,64,256,8,16,2,0,{ap})"
+assert unit.is_file() and registry.is_file()
+assert unit.read_text().count(macro)==1
+assert registry.read_text().count(macro)==1
+symbol_out.write_text(row['symbol']+'\n')
+print(unit)
 PY
+    )" || return 2
+    registry="$generated/fq_tc_registry.inc"
+    target_make="$(find "$build_dir" -type f \
+      -path '*test_fully_quantized_internal_sweep.dir/build.make' \
+      -print -quit 2>/dev/null)"
+    if ! grep -Fqx "[build.sh] FQ_SWEEP_WEIGHT_LAYOUT=$layout" "$build_log" ||
+       ! grep -F "FullyQuantized internal sweep: q=12 A=$artifact bc=0 format=0 layout=$layout units=1" \
+         "$build_dir/cmake.log" >/dev/null ||
+       ! grep -Eq "^FQ_SWEEP_WEIGHT_LAYOUT(:[^=]*)?=$layout$" \
+         "$build_dir/CMakeCache.txt" ||
+       [ -z "$target_make" ] ||
+       ! grep -Eq -- "(^|[[:space:]])-DFQ_SWEEP_WEIGHT_LAYOUT=$layout([[:space:]]|$)" \
+         "$target_make" ||
+       ! grep -F "$(basename "$unit")" "$target_make" >/dev/null; then
+      fail "$arm generated-row/build ABI is not exact"
+      grep -E 'FQ_SWEEP_WEIGHT_LAYOUT|FullyQuantized internal sweep:' \
+        "$build_log" "$build_dir/cmake.log" "$build_dir/CMakeCache.txt" \
+        "$target_make" 2>/dev/null >&2 || true
+      return 2
+    fi
+    sha256sum "$generated/manifest.json" "$unit" "$registry" \
+      "$target_make" "$build_dir/CMakeCache.txt" "$binary" \
+      > "$out/results/build-identity-${arm}.sha256" || return 2
+    printf '[fq-kpack4-xplane-ab] identity arm=%s provider=AP%s layout=%s generated-unit=1 target-abi=PASS\n' \
+      "$arm" "$ap_id" "$layout"
     list_elf="$out/codegen/$arm/list-elf.txt"
     "$hgobjdump" -lelf "$binary" > "$list_elf" \
       2> "$out/codegen/$arm/list-elf.err" || { fail "$arm hgobjdump -lelf"; return 2; }

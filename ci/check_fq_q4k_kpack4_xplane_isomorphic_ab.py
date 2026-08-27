@@ -50,7 +50,9 @@ def check(selector: str, analyzer: str, runner: str, bench: str,
         '"m16n16.x1.swzl.trans.shared.b16"',
         '"KernelAiuQ4KPack4Transpose" in demangled',
         'has_ap1 = "KernelAiuPackedA<" in demangled',
-        'if has_kpack != expects_kpack or has_ap1 != expects_ap1',
+        'if has_kpack != expects_kpack',
+        '"a_provider_identity": "GENERATED_UNIT_BUILD_ABI_AND_RUNTIME_CELL"',
+        '"provider": str(arm["a_provider"])',
         'if focus["tsm_load"] <= 0',
         'reader_lowering = "HGOBJDUMP_TSM_LOWERED"',
         'if len(mma_counts) != 1',
@@ -80,6 +82,11 @@ def check(selector: str, analyzer: str, runner: str, bench: str,
         'resume changed a measurement source',
         'sha256sum -c "$out/results/binary-${arm}.sha256"',
         'validate-inputs',
+        "assert value['a_provider_id']==ap and value['a_provider']==provider",
+        'assert unit.read_text().count(macro)==1',
+        'assert registry.read_text().count(macro)==1',
+        '! grep -F "$(basename "$unit")" "$target_make"',
+        'build-identity-${arm}.sha256',
     ), "runner")
     if runner.count('--only-split=4 --tm8-max-m=8') != 2:
         raise CheckError("timing and ACU must both bind the exact S4 subject")
@@ -115,11 +122,11 @@ def main() -> int:
         (0, '"same_tactic": True', '"same_tactic": False'),
         (1, 'SPLIT = 4', 'SPLIT = 1'),
         (1, 'if len(mma_counts) != 1', 'if False'),
-        (1, 'if has_kpack != expects_kpack or has_ap1 != expects_ap1',
+        (1, 'if has_kpack != expects_kpack',
          'if False'),
-        (1, 'has_ap1 = "KernelAiuPackedA<" in demangled',
-         'has_ap1 = False'),
         (1, 'if focus["tsm_load"] <= 0', 'if False'),
+        (1, '"provider": str(arm["a_provider"])',
+         '"provider": "standard-aiu"'),
         (1, 'requires_acu = abs(delta) >= gap_threshold and same_sign',
          'requires_acu = False'),
         (2, '--only-split=4 --tm8-max-m=8',
@@ -128,6 +135,10 @@ def main() -> int:
          'launches=2 reducer_launches=1'),
         (2, 'resume changed a measurement source',
          'resume accepted a measurement source'),
+        (2, "assert value['a_provider_id']==ap and value['a_provider']==provider",
+         "assert value['a_provider_id']==ap"),
+        (2, '! grep -F "$(basename "$unit")" "$target_make"',
+         ': # generated unit not bound to target'),
         (3, 'if (producer_launch() != cutlass::Status::kSuccess ||',
          'if (full_launch() != cutlass::Status::kSuccess ||'),
         (4, 'rows.size() != 1 || cli.only_split == 0',
@@ -148,7 +159,7 @@ def main() -> int:
             raise CheckError(f"negative stayed green: {old}")
     print("[fq-kpack4-xplane-ab:self-test] PASS exact AP0/AP1 factorial, "
           "same-config/S4 AB-BA timing, codegen resources and one-producer "
-          "conditional ACU plus analysis-only binary reuse; fourteen plants RED")
+          "conditional ACU plus analysis-only binary reuse; sixteen plants RED")
     return 0
 
 
