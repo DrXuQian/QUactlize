@@ -20,8 +20,9 @@ resolve_executable() {
 
 main() {
   local root workspace sha short stamp out jobs per_unit iterations rounds repeats
+  local experiment rounds_default specs spec fused fused_read defs
   local threshold run_acu sdk_root hgcc hgobjdump acu selector analyzer base_analyzer
-  local committed_checker host_evidence
+  local scalezero_analyzer scalezero_checker committed_checker host_evidence
   local source_x source_k selected ap delivery tag arm generated build_dir build_log
   local binary target_make symbol_file unit registry list_elf symbol demangled line resource
   local tmp_codegen round order log rc report_base report details raw_details raw_value
@@ -39,10 +40,16 @@ main() {
     fail 'ambient PPU_DEFS/PPU_EXTRA_DEFS changes the factorial'; return 2
   fi
 
+  experiment="${FQ_KPACK4_EXPERIMENT:-delivery}"
+  case "$experiment" in
+    delivery) rounds_default=3;;
+    scalezero) rounds_default=4;;
+    *) fail 'FQ_KPACK4_EXPERIMENT must be delivery or scalezero'; return 2;;
+  esac
   jobs="${JOBS:-16}"
   per_unit="${FQ_CONFIGS_PER_UNIT:-144}"
   iterations="${PERF_ITERATIONS:-201}"
-  rounds="${PERF_ROUNDS:-3}"
+  rounds="${PERF_ROUNDS:-$rounds_default}"
   repeats="${CORRECTNESS_REPEATS:-64}"
   threshold="${MATERIAL_THRESHOLD:-0.02}"
   run_acu="${RUN_ACU:-1}"
@@ -50,7 +57,8 @@ main() {
     *[!0-9:]*|0:*|*:0:*|*:*:0:*|*:*:*:0:*|*:*:*:*:0)
       fail 'JOBS/FQ_CONFIGS_PER_UNIT/PERF_ITERATIONS/PERF_ROUNDS/CORRECTNESS_REPEATS must be positive'; return 2;;
   esac
-  [ "$rounds" -eq 3 ] || { fail 'PERF_ROUNDS is frozen to 3 for cyclic order'; return 2; }
+  [ "$rounds" -eq "$rounds_default" ] || {
+    fail "PERF_ROUNDS is frozen to $rounds_default for $experiment order"; return 2; }
   case "$run_acu" in 0|1) ;; *) fail 'RUN_ACU must be 0 or 1'; return 2;; esac
   python3 -B - "$threshold" <<'PY' || return 2
 import sys
@@ -78,6 +86,8 @@ PY
 
   selector="$root/tools/select_fq_q4k_kpack4_xplane_isomorphic_ab.py"
   analyzer="$root/tools/analyze_fq_q4k_kpack4_delivery_ab.py"
+  scalezero_analyzer="$root/tools/analyze_fq_q4k_kpack4_scalezero_ab.py"
+  scalezero_checker="$root/ci/check_fq_q4k_kpack4_scalezero_ab.py"
   base_analyzer="$root/tools/analyze_fq_q4k_kpack4_xplane_isomorphic_ab.py"
   committed_checker="$root/ci/check_fq_q4k_kpack4_delivery_committed_evidence.py"
   source_x="$out/generated/source-xplane"
@@ -88,8 +98,10 @@ PY
 
   python3 -B "$root/ci/check_fq_q4k_kpack4_generator.py" || return 2
   python3 -B "$root/ci/check_fq_q4k_kpack4_delivery_ab.py" || return 2
+  python3 -B "$scalezero_checker" || return 2
   python3 -B "$selector" self-test || return 2
   python3 -B "$analyzer" self-test || return 2
+  python3 -B "$scalezero_analyzer" self-test || return 2
   host_evidence="$out/results/host-evidence.expected.txt"
   git -C "$root" show "$sha:dev/fold_derivation/q4_kpack4_delivery_host.expected.txt" \
     > "$host_evidence" || { fail 'committed host evidence is absent at result SHA'; return 2; }
@@ -124,8 +136,11 @@ PY
       "$root/dev/fold_derivation/l229_q4_kpack4_production_type.cu" \
       "$root/dev/fold_derivation/l231_q4_kpack4_production_fragment.cu" \
       "$root/dev/fold_derivation/run_l231_q4_kpack4_production_fragment.sh" \
+      "$root/dev/fold_derivation/l232_q4_kpack4_fused_metadata_read.cu" \
       "$root/dev/fold_derivation/q4_kpack4_delivery_host.expected.txt" \
       "$selector" "$base_analyzer" "$analyzer" \
+      "$scalezero_analyzer" \
+      "$scalezero_checker" \
       "$root/ci/check_fq_q4k_kpack4_delivery_ab.py" \
       "$root/tools/run_fq_q4k_kpack4_delivery_ab_box.sh"
   } > "$out/source-authority.sha256" || return 2
@@ -149,13 +164,27 @@ out.write_text(r['symbol']+'\n'); print(unit)
 PY
     )" || return 2
     registry="$generated/fq_tc_registry.inc"
-    for delivery in 0 32 16; do
-      case "$delivery" in 0) tag=auto64;; 32) tag=d32;; 16) tag=d16;; esac
+    if [ "$experiment" = delivery ]; then
+      specs='auto64:0:0 d32:32:0 d16:16:0'
+    else
+      specs='plain:32:0:0 store:32:1:0 load:32:1:1'
+    fi
+    for spec in $specs; do
+      IFS=: read -r tag delivery fused fused_read <<< "$spec"
+      if [ "$experiment" = delivery ]; then fused_read=0; fi
       arm="kpack4-ap${ap}-${tag}"
       build_dir="$out/build/$arm"
       build_log="$out/results/build-${arm}.log"
       mkdir -p "$build_dir" "$out/codegen/$arm" || return 2
-      printf '[fq-kpack4-delivery-ab] build arm=%s delivery_cap_n=%s\n' "$arm" "$delivery"
+      defs="FQ_TC_KPACK4_DELIVERY_N=$delivery"
+      if [ "$fused" -eq 1 ]; then
+        defs="$defs PPU_PACKED_SCALE_FUSED=1"
+      fi
+      if [ "$fused_read" -eq 1 ]; then
+        defs="$defs PPU_PACKED_SCALE_FUSED_READ=1"
+      fi
+      printf '[fq-kpack4-delivery-ab] build arm=%s delivery_cap_n=%s scalezero_fused=%s scalezero_fused_read=%s\n' \
+        "$arm" "$delivery" "$fused" "$fused_read"
       (cd "$root" && env -u CMAKE_GENERATOR -u CMAKE_TOOLCHAIN_FILE -u CC -u CXX \
         PPU_SDK="$sdk_root" PPU_HOME= PPU_SDK_SITE_DEFAULT= \
         PPU_BUILD_DIR="$build_dir" PPU_ARCHS=ppu0010 JOBS="$jobs" \
@@ -163,7 +192,7 @@ PY
         FQ_SWEEP_GENERATED_DIR="$generated" FQ_SWEEP_QTYPE=12 \
         FQ_SWEEP_ARTIFACT_TK=0 FQ_SWEEP_BCHUNK=0 \
         FQ_SWEEP_PACKED_FORMAT=0 FQ_SWEEP_WEIGHT_LAYOUT=1 \
-        PPU_DEFS="FQ_TC_KPACK4_DELIVERY_N=$delivery" PPU_EXTRA_DEFS= \
+        PPU_DEFS="$defs" PPU_EXTRA_DEFS= \
         CFLAGS= CXXFLAGS= CPPFLAGS= LDFLAGS= ./build.sh) > "$build_log" 2>&1
       rc=$?
       if [ "$rc" -ne 0 ]; then
@@ -178,6 +207,22 @@ PY
       if [ "$(grep -Eo -- '-DFQ_TC_KPACK4_DELIVERY_N=[0-9]+' "$target_make" | sort -u | tr '\n' ' ')" != \
            "-DFQ_TC_KPACK4_DELIVERY_N=$delivery " ]; then
         fail "$arm delivery compile ABI differs"; return 2
+      fi
+      if [ "$fused" -eq 1 ]; then
+        if [ "$(grep -Eo -- '-DPPU_PACKED_SCALE_FUSED=[0-9]+' "$target_make" | sort -u | tr '\n' ' ')" != \
+             '-DPPU_PACKED_SCALE_FUSED=1 ' ]; then
+          fail "$arm fused metadata compile ABI differs"; return 2
+        fi
+      elif grep -Eq -- '-DPPU_PACKED_SCALE_FUSED(=|[[:space:]])' "$target_make"; then
+        fail "$arm plain metadata unexpectedly carries the fused define"; return 2
+      fi
+      if [ "$fused_read" -eq 1 ]; then
+        if [ "$(grep -Eo -- '-DPPU_PACKED_SCALE_FUSED_READ=[0-9]+' "$target_make" | sort -u | tr '\n' ' ')" != \
+             '-DPPU_PACKED_SCALE_FUSED_READ=1 ' ]; then
+          fail "$arm fused-read compile ABI differs"; return 2
+        fi
+      elif grep -Eq -- '-DPPU_PACKED_SCALE_FUSED_READ(=|[[:space:]])' "$target_make"; then
+        fail "$arm non-read control unexpectedly carries the fused-read define"; return 2
       fi
       if ! grep -Fqx '[build.sh] FQ_SWEEP_WEIGHT_LAYOUT=1' "$build_log" ||
          ! grep -F 'FullyQuantized internal sweep: q=12 A=0 bc=0 format=0 layout=1 units=1' \
@@ -208,10 +253,13 @@ PY
       python3 -B "$base_analyzer" codegen --arm-manifest "$generated/manifest.json" \
         --line "$line" --resource "$resource" --binary "$binary" \
         --symbol "$symbol" --demangled "$demangled" --output "$tmp_codegen" || return 2
-      python3 -B - "$tmp_codegen" "$out/codegen/ap${ap}-${tag}.json" "$delivery" <<'PY' || return 2
+      python3 -B - "$tmp_codegen" "$out/codegen/ap${ap}-${tag}.json" "$delivery" "$fused" "$fused_read" <<'PY' || return 2
 import json,pathlib,sys
-source=pathlib.Path(sys.argv[1]); output=pathlib.Path(sys.argv[2]); delivery=int(sys.argv[3])
+source=pathlib.Path(sys.argv[1]); output=pathlib.Path(sys.argv[2])
+delivery=int(sys.argv[3]); fused=bool(int(sys.argv[4])); fused_read=bool(int(sys.argv[5]))
 value=json.loads(source.read_text()); value['delivery_cap_n']=delivery
+value['scalezero_fused']=fused
+value['scalezero_fused_read']=fused_read
 output.write_text(json.dumps(value,indent=2,sort_keys=True)+'\n')
 PY
     done
@@ -219,12 +267,21 @@ PY
 
   for ap in 0 1; do
     mkdir -p "$out/runs/ap$ap" || return 2
-    for round in 1 2 3; do
-      case "$round" in
-        1) order="auto64 d32 d16";;
-        2) order="d16 auto64 d32";;
-        3) order="d32 d16 auto64";;
-      esac
+    for round in $(seq 1 "$rounds"); do
+      if [ "$experiment" = delivery ]; then
+        case "$round" in
+          1) order="auto64 d32 d16";;
+          2) order="d16 auto64 d32";;
+          3) order="d32 d16 auto64";;
+        esac
+      else
+        case "$round" in
+          1) order="plain store load";;
+          2) order="load store plain";;
+          3) order="store plain load";;
+          4) order="load plain store";;
+        esac
+      fi
       for tag in $order; do
         arm="kpack4-ap${ap}-${tag}"
         binary="$(cat "$out/results/binary-${arm}.path")"
@@ -244,19 +301,33 @@ PY
     done
   done
 
-  python3 -B "$analyzer" analyze --master "$selected/manifest.json" \
-    --runs-root "$out/runs" --codegen-root "$out/codegen" \
-    --iterations "$iterations" --rounds "$rounds" --threshold "$threshold" \
-    --output-json "$out/results/summary.json" \
-    --output-tsv "$out/results/summary.tsv" | tee "$out/results/summary.log" || return 2
+  if [ "$experiment" = delivery ]; then
+    python3 -B "$analyzer" analyze --master "$selected/manifest.json" \
+      --runs-root "$out/runs" --codegen-root "$out/codegen" \
+      --iterations "$iterations" --rounds "$rounds" --threshold "$threshold" \
+      --output-json "$out/results/summary.json" \
+      --output-tsv "$out/results/summary.tsv" | tee "$out/results/summary.log" || return 2
+  else
+    python3 -B "$scalezero_analyzer" analyze --master "$selected/manifest.json" \
+      --runs-root "$out/runs" --codegen-root "$out/codegen" \
+      --iterations "$iterations" --rounds "$rounds" --threshold "$threshold" \
+      --output-json "$out/results/summary.json" \
+      --output-tsv "$out/results/summary.tsv" | tee "$out/results/summary.log" || return 2
+  fi
 
   if [ "$run_acu" = 1 ]; then
     acu="$(resolve_executable "${ACU:-$(command -v acu 2>/dev/null || true)}" || true)"
     [ -n "$acu" ] || { fail 'RUN_ACU=1 but acu is unavailable; set ACU to its absolute executable'; return 2; }
     sha256sum "$acu" > "$out/results/acu-tool.sha256" || return 2
-    printf 'provider\tdelivery\tarm\treport\tdetails\traw\n' > "$out/results/acu-index.tsv"
+    if [ "$experiment" = delivery ]; then
+      printf 'provider\tdelivery\tarm\treport\tdetails\traw\n' > "$out/results/acu-index.tsv"
+      specs='auto64 d32 d16'
+    else
+      printf 'provider\tvariant\tarm\treport\tdetails\traw\n' > "$out/results/acu-index.tsv"
+      specs='plain store load'
+    fi
     for ap in 0 1; do
-      for tag in auto64 d32 d16; do
+      for tag in $specs; do
         arm="kpack4-ap${ap}-${tag}"
         binary="$(cat "$out/results/binary-${arm}.path")"
         symbol_file="$out/results/row-symbol-ap$ap.txt"
@@ -298,9 +369,15 @@ PY
           >> "$out/results/acu-index.tsv"
       done
     done
-    python3 -B "$analyzer" acu --index "$out/results/acu-index.tsv" \
-      --output-json "$out/results/acu-summary.json" \
-      --output-tsv "$out/results/acu-summary.tsv" | tee "$out/results/acu-summary.log" || return 2
+    if [ "$experiment" = delivery ]; then
+      python3 -B "$analyzer" acu --index "$out/results/acu-index.tsv" \
+        --output-json "$out/results/acu-summary.json" \
+        --output-tsv "$out/results/acu-summary.tsv" | tee "$out/results/acu-summary.log" || return 2
+    else
+      python3 -B "$scalezero_analyzer" acu --index "$out/results/acu-index.tsv" \
+        --output-json "$out/results/acu-summary.json" \
+        --output-tsv "$out/results/acu-summary.tsv" | tee "$out/results/acu-summary.log" || return 2
+    fi
   fi
 
   find "$out" -type f ! -name bundle.sha256 -print0 | sort -z | \
@@ -309,8 +386,8 @@ PY
   if [ -s "$out/results/acu-summary.tsv" ]; then
     awk -F '\t' 'NR==1 || $NF==1' "$out/results/acu-summary.tsv"
   fi
-  printf '[fq-kpack4-delivery-ab] PASS sha=%s shape=1x8192x5120 config=8x64x256_w8x16_s2 S=4 arms=6 artifacts=%s\n' \
-    "$sha" "$out"
+  printf '[fq-kpack4-delivery-ab] PASS sha=%s experiment=%s shape=1x8192x5120 config=8x64x256_w8x16_s2 S=4 artifacts=%s\n' \
+    "$sha" "$experiment" "$out"
 }
 
 main "$@"

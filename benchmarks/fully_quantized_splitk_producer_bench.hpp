@@ -106,6 +106,8 @@ struct CellResult {
   std::size_t split_smem = 0;
   std::size_t partial_bytes = 0;
   int a_provider_capacity_rows = 0;
+  bool scalezero_fused = false;
+  bool scalezero_fused_read = false;
   double median_us = 0;
   double min_us = 0;
   double max_us = 0;
@@ -167,6 +169,20 @@ struct KPack4MainloopDelivery<
     std::void_t<decltype(Mainloop::kQ4KPack4ScheduledDeliveryN)>>
     : std::integral_constant<int,
                              Mainloop::kQ4KPack4ScheduledDeliveryN> {};
+
+template <class Mainloop, class = void>
+struct MainloopScaleZeroFused : std::false_type {};
+template <class Mainloop>
+struct MainloopScaleZeroFused<
+    Mainloop, std::void_t<decltype(Mainloop::is_fused_scale_zero)>>
+    : std::bool_constant<Mainloop::is_fused_scale_zero> {};
+
+template <class Mainloop, class = void>
+struct MainloopScaleZeroFusedRead : std::false_type {};
+template <class Mainloop>
+struct MainloopScaleZeroFusedRead<
+    Mainloop, std::void_t<decltype(Mainloop::is_fused_scale_zero_read)>>
+    : std::bool_constant<Mainloop::is_fused_scale_zero_read> {};
 
 template <class Policy, class = void>
 struct PackedAProviderCapacity : std::integral_constant<int, 0> {};
@@ -414,6 +430,10 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
     result.shipping_smem = Shipping::SharedStorageSize;
     result.split_smem = SplitKernel::SharedStorageSize;
     result.a_provider_capacity_rows = Types::a_provider_capacity_rows;
+    result.scalezero_fused = MainloopScaleZeroFused<
+        typename Types::Mainloop>::value;
+    result.scalezero_fused_read = MainloopScaleZeroFusedRead<
+        typename Types::Mainloop>::value;
     if constexpr (TM == 8) {
       if (in.m > options.tm8_max_m) {
         result.state = State::M8DecodeOnly;

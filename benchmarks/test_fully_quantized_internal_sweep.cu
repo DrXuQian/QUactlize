@@ -463,7 +463,7 @@ int run_shape(Shape shape, Cli const& cli,
       std::printf(
           "FQ_TC_CELL q=%d A=%d bchunk=%d shape=%dx%dx%d symbol=%s "
           "tm=%d tn=%d tk=%d wm=%d wn=%d stages=%d provider=%s S=%d scope=%s "
-          "provider_capacity_rows=%d "
+          "provider_capacity_rows=%d scalezero_fused=%d scalezero_fused_read=%d "
           "state=%s us=%.9f raw_bad=%llu reducer_untimed=%d "
           "failure_step=%s failure_repeat=%d first_bad=%zu "
           "first_want=0x%04x first_got=0x%04x "
@@ -473,6 +473,8 @@ int run_shape(Shape shape, Cli const& cli,
           entry.tm, entry.tn, entry.tk, entry.wm, entry.wn, entry.stages,
           entry.a_provider ? "packed-row" : "standard-aiu",
           cell.split, scope, cell.a_provider_capacity_rows,
+          int(cell.scalezero_fused),
+          int(cell.scalezero_fused_read),
           state_name(cell.state), cell.median_us,
           static_cast<unsigned long long>(cell.raw_bad),
           int(cell.reducer_correctness_untimed), cell.failure_step,

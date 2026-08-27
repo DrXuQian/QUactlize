@@ -13,8 +13,9 @@ EXPECTED = ROOT / "dev/fold_derivation/q4_kpack4_delivery_host.expected.txt"
 L229 = ROOT / "dev/fold_derivation/l229_q4_kpack4_production_type.cu"
 L231 = ROOT / "dev/fold_derivation/l231_q4_kpack4_production_fragment.cu"
 L231_RUNNER = ROOT / "dev/fold_derivation/run_l231_q4_kpack4_production_fragment.sh"
+L232 = ROOT / "dev/fold_derivation/l232_q4_kpack4_fused_metadata_read.cu"
 BOX_RUNNER = ROOT / "tools/run_fq_q4k_kpack4_delivery_ab_box.sh"
-SCHEMA = "quactlize.fq-q4k-kpack4-delivery-host-evidence.v1"
+SCHEMA = "quactlize.fq-q4k-kpack4-delivery-host-evidence.v2"
 
 
 class CheckError(ValueError):
@@ -37,19 +38,20 @@ def parse(text: str) -> dict[str, str]:
     return rows
 
 
-def validate(evidence: str, l229: str, l231: str, l231_runner: str,
+def validate(evidence: str, l229: str, l231: str, l231_runner: str, l232: str,
              box_runner: str) -> None:
     rows = parse(evidence)
     expected_keys = {
         "schema", "l229_source_sha256", "l231_source_sha256",
-        "l231_runner_sha256", "l229", "l231_source", "l231_d32",
-        "l231_d16", "l231_rotate", "l231_legacy",
+        "l231_runner_sha256", "l232_source_sha256", "l229", "l231_source",
+        "l231_d32", "l231_d16", "l231_rotate", "l231_legacy", "l232",
     }
     if set(rows) != expected_keys or rows["schema"] != SCHEMA:
         raise CheckError(f"evidence schema/denominator differs: {sorted(rows)}")
     for key, source in (("l229_source_sha256", l229),
                         ("l231_source_sha256", l231),
-                        ("l231_runner_sha256", l231_runner)):
+                        ("l231_runner_sha256", l231_runner),
+                        ("l232_source_sha256", l232)):
         if rows[key] != sha256_text(source):
             raise CheckError(f"{key} differs from the committed source")
     exact = {
@@ -63,6 +65,8 @@ def validate(evidence: str, l229: str, l231: str, l231_runner: str,
         "l231_d16": "[l231-delivery] PASS D=16 geometries=12 candidate=IDENTITY",
         "l231_rotate": "[l231-red] PASS plant=rotated-destination result=RED",
         "l231_legacy": "[l231-red] PASS plant=legacy-loader-stride result=RED",
+        "l232": "L232 Q4_K KPACK4 fused-metadata-read layout_bad=0 bits_bad=0 "
+                "providers=AP0+AP1 delivery=D32 values=1024-per-provider",
     }
     for key, value in exact.items():
         if rows[key] != value:
@@ -83,13 +87,14 @@ def validate(evidence: str, l229: str, l231: str, l231_runner: str,
         raise CheckError("box runner lost the exact committed-evidence boundary")
 
 
-def self_test(evidence: str, sources: tuple[str, str, str], box: str) -> None:
+def self_test(evidence: str, sources: tuple[str, str, str, str], box: str) -> None:
     validate(evidence, *sources, box)
     plants = (
         (evidence.replace("l231_d32=", "l231_d33=", 1), sources, box),
         (evidence.replace("candidate=IDENTITY", "candidate=NONIDENTITY", 1),
          sources, box),
-        (evidence, (sources[0] + "\n// drift", sources[1], sources[2]), box),
+        (evidence, (sources[0] + "\n// drift", sources[1], sources[2], sources[3]), box),
+        (evidence, (sources[0], sources[1], sources[2], sources[3] + "\n// drift"), box),
         (evidence, sources, box.replace(
             "--committed-only --evidence", "--evidence", 1)),
         (evidence, sources, box +
@@ -111,7 +116,8 @@ def main() -> int:
     args = parser.parse_args()
     try:
         evidence = args.evidence.read_text()
-        sources = (L229.read_text(), L231.read_text(), L231_RUNNER.read_text())
+        sources = (L229.read_text(), L231.read_text(), L231_RUNNER.read_text(),
+                   L232.read_text())
         box = BOX_RUNNER.read_text()
         validate(evidence, *sources, box)
         self_test(evidence, sources, box)
@@ -119,7 +125,8 @@ def main() -> int:
         print(f"[fq-kpack4-delivery-committed] FAIL: {exc}")
         return 2
     print("[fq-kpack4-delivery-committed] PASS exact L229 type + "
-          "L231 D32/D16/2-RED evidence; fresh_box_execution=0")
+          "L231 D32/D16/2-RED + L232 fused-read map evidence; "
+          "fresh_box_execution=0")
     return 0
 
 

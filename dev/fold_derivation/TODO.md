@@ -2269,3 +2269,28 @@ The 128 B same-bank-phase explanation is confirmed only if D32 or D16 lowers
 the Shared Load bank-conflict counter while shared-load volume remains
 comparable. Select a delivery per tactic/provider only from the full timing
 result; do not globally replace `auto64` merely because a counter falls.
+
+**Delivery result and metadata follow-up (2026-08-27).** D32 won the frozen
+row by about 6.2% on AP0 and 6.6% on AP1, but did not close the counted Shared
+Load conflict hypothesis.  Its measured reduction in `No Eligible` and warp
+cycles per instruction makes it a scheduler/scoreboard optimization, not the
+bank fix.
+
+The next closure fixes D32 and adds an exact `plain / fused-store /
+fused-load` factorial.  `PPU_PACKED_SCALE_FUSED` is the control that changes
+the decoder store/layout while retaining the two fp16 metadata loads.
+`PPU_PACKED_SCALE_FUSED_READ` uses the same CuTe source coordinate for one
+uint32 shared load and raw-bit splits the pair into the original scale/zero
+fragments.  L232 binds D32 AP0/AP1 word/half strides and 65,536 bit pairs; the
+flag-on syntax row instantiates the device path; runtime reports both fused
+flags.  The box analyzer requires 2 providers x 3 variants x 4 balanced
+timing rounds and all six ACU reports, then separately reports Shared Load
+conflicts for `load` versus `store`.  Do not make this the default before the
+device run is raw-bit clean and non-regressing.
+
+```
+FQ_KPACK4_EXPERIMENT=scalezero \
+JOBS=16 PERF_ITERATIONS=201 PERF_ROUNDS=4 \
+CORRECTNESS_REPEATS=64 RUN_ACU=1 \
+  bash tools/run_fq_q4k_kpack4_delivery_ab_box.sh
+```

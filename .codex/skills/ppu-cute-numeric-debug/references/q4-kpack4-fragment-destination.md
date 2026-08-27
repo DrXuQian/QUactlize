@@ -239,12 +239,14 @@ request and transaction counts were unchanged, but bank conflicts rose from
 other conflict classes stayed zero.  Therefore the complete extra-conflict
 denominator is on the opaque TSM read side.
 
-The strong mechanism is the resident row pitch.  For TN64/TK256 K-pack4,
-`SmemLayoutAtomB` is an N-contiguous `64 x 64` b16 cube: adjacent physical-K
-rows begin 128 B apart, exactly one `32 banks x 4 B` bank period.  Xplane's
-resident rows advance 32 B instead.  This explains why an earlier 64-b16 pad
-was non-diagnostic: it added another complete 128 B bank period and changed no
-bank phase.
+The resident row pitch was a plausible mechanism, but the matched device A/B
+refuted it as the explanation for the counted conflicts.  D32 improved the
+frozen row by about 6.2% (AP0) and 6.6% (AP1), while the Shared Load conflict
+counter did not provide the predicted fall.  The same run reduced `No
+Eligible` and warp cycles per instruction.  Treat D32 as a scheduler/
+scoreboard critical-path improvement, not as the bank-conflict repair.  The
+earlier 64-b16 pad was still non-diagnostic: it added a complete 128 B bank
+period and could not change bank phase.
 
 Do not add a CuTe-only XOR to this opaque AIU/TSM path and claim a fix.  The
 repository's scale-plane XOR changed logical placement but measured no change
@@ -277,7 +279,49 @@ two positive delivery denominators and two RED controls, prints
 fresh `hgcc`.  A direct box-host oracle is a compiler-boundary violation, not
 a stronger proof.
 
-Raw-bit equality is an admission gate.  The 128 B phase hypothesis is causal
-only if D32 or D16 reduces Shared Load bank conflicts while the load-volume
-denominator remains comparable.  Choose delivery per tactic/provider from full
-kernel time; a lower counter alone is not permission to change the default.
+Raw-bit equality is an admission gate.  The completed result did not satisfy
+the 128 B phase hypothesis.  Choose D32 per tactic/provider from full kernel
+time; do not cite the conflict model as its cause.
+
+## D32 scale/zero one-word reload follow-up
+
+The remaining counted conflicts are tested at the metadata reload, not by
+changing the resident B cube again.  Q4_K's packed decoder already has a
+byte-neutral interleaved `(scale, zero)` shared representation behind
+`PPU_PACKED_SCALE_FUSED`.  That historical switch fuses two fp16 *stores* but
+deliberately leaves two fp16 *loads*, so it cannot by itself establish a
+Shared Load reduction.
+
+`PPU_PACKED_SCALE_FUSED_READ` is a separate candidate.  It preserves the
+existing CuTe per-thread source coordinate, reads the adjacent even/odd halves
+once as `uint32_t`, and writes the low/high raw halves into the original scale
+and zero register fragments.  It is initially admitted only for Q4_K's 6-bit
+packed-pair path.  L232 binds both D32 AP0/AP1 production types, proves the
+complete half layout has exactly twice the word-layout strides, and checks
+65,536 raw half pairs.  The flag-on syntax row instantiates the real reader;
+the device `scalezero_fused_read` marker and raw-bit fixture close the compiler
+boundary.
+
+Use three arms, because two are insufficient for attribution:
+
+- `plain`: separate fp16 planes, separate stores and loads;
+- `store`: interleaved words and one decoder store, but old two-load reader;
+- `load`: identical interleaved storage plus one uint32 shared reload.
+
+The four timing rounds balance the order of every pair.  ACU must contain all
+six AP0/AP1 arms.  Occurrence zero of `Bank Conflicts` is the Shared Load row;
+the analyzer emits `FQ_KPACK4_SCALEZERO_CONFLICT`.  A shipping change requires
+raw-bit PASS, `load < store` on that counter, and a non-regressing full-kernel
+timing result; type/codegen changes alone are not admission.
+
+```bash
+FQ_KPACK4_EXPERIMENT=scalezero \
+JOBS=16 PERF_ITERATIONS=201 PERF_ROUNDS=4 \
+CORRECTNESS_REPEATS=64 RUN_ACU=1 \
+  bash tools/run_fq_q4k_kpack4_delivery_ab_box.sh
+```
+
+The packed arithmetic remains the fast path.  Q4_K uses
+`group_pair_of_words` (paired half2 sub/FMA) and the int4 converter's packed
+LOP3/sub/FMA sequence; a high FMA count is expected for affine dequantization
+and is not evidence that scalar dequant was selected.
