@@ -270,6 +270,13 @@ JOBS=16 PERF_ITERATIONS=201 PERF_ROUNDS=3 CORRECTNESS_REPEATS=64 RUN_ACU=1 \
   bash tools/run_fq_q4k_kpack4_delivery_ab_box.sh
 ```
 
+The box runner does not execute L229/L231 through its PPU-delegating `nvcc`.
+It reads the hash-bound host evidence from its own result SHA, validates the
+two positive delivery denominators and two RED controls, prints
+`fresh_box_execution=0`, and only then builds the six shipping binaries with
+fresh `hgcc`.  A direct box-host oracle is a compiler-boundary violation, not
+a stronger proof.
+
 Raw-bit equality is an admission gate.  The 128 B phase hypothesis is causal
 only if D32 or D16 reduces Shared Load bank conflicts while the load-volume
 denominator remains comparable.  Choose delivery per tactic/provider from full

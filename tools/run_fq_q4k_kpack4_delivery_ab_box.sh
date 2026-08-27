@@ -21,6 +21,7 @@ resolve_executable() {
 main() {
   local root workspace sha short stamp out jobs per_unit iterations rounds repeats
   local threshold run_acu sdk_root hgcc hgobjdump acu selector analyzer base_analyzer
+  local committed_checker host_evidence
   local source_x source_k selected ap delivery tag arm generated build_dir build_log
   local binary target_make symbol_file unit registry list_elf symbol demangled line resource
   local tmp_codegen round order log rc report_base report details raw_details raw_value
@@ -78,6 +79,7 @@ PY
   selector="$root/tools/select_fq_q4k_kpack4_xplane_isomorphic_ab.py"
   analyzer="$root/tools/analyze_fq_q4k_kpack4_delivery_ab.py"
   base_analyzer="$root/tools/analyze_fq_q4k_kpack4_xplane_isomorphic_ab.py"
+  committed_checker="$root/ci/check_fq_q4k_kpack4_delivery_committed_evidence.py"
   source_x="$out/generated/source-xplane"
   source_k="$out/generated/source-kpack4"
   selected="$out/generated/ab"
@@ -88,10 +90,12 @@ PY
   python3 -B "$root/ci/check_fq_q4k_kpack4_delivery_ab.py" || return 2
   python3 -B "$selector" self-test || return 2
   python3 -B "$analyzer" self-test || return 2
-  python3 -B "$root/ci/local_gates.py" \
-    -k l229_q4_kpack4_production_type --strict || return 2
-  QUACTLIZE_L231_OUT="$out/host-l231" \
-    bash "$root/dev/fold_derivation/run_l231_q4_kpack4_production_fragment.sh" || return 2
+  host_evidence="$out/results/host-evidence.expected.txt"
+  git -C "$root" show "$sha:dev/fold_derivation/q4_kpack4_delivery_host.expected.txt" \
+    > "$host_evidence" || { fail 'committed host evidence is absent at result SHA'; return 2; }
+  python3 -B "$committed_checker" --committed-only --evidence "$host_evidence" \
+    | tee "$out/results/host-evidence.log" || return 2
+  printf 'FQ_KPACK4_DELIVERY_HOST_EVIDENCE sha=%s fresh_box_execution=0\n' "$sha"
 
   python3 -B "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
     --qtype 12 --artifact-tk 64 --bchunk 0 --weight-layout xplane \
@@ -110,7 +114,7 @@ PY
       "$root/benchmarks/test_fully_quantized_internal_sweep.cu" \
       "$root/benchmarks/fully_quantized_splitk_producer_bench.hpp" \
       "$root/benchmarks/fully_quantized_splitk_producer_unit.inc" \
-      "$root/ci/local_gates.py" \
+      "$committed_checker" \
       "$root/quactlize/include/ppu_mixed_policy.hpp" \
       "$root/quactlize/include/fpA_intB_ppu.cuh" \
       "$root/quactlize/include/q4_kpack4_offline.hpp" \
@@ -120,6 +124,7 @@ PY
       "$root/dev/fold_derivation/l229_q4_kpack4_production_type.cu" \
       "$root/dev/fold_derivation/l231_q4_kpack4_production_fragment.cu" \
       "$root/dev/fold_derivation/run_l231_q4_kpack4_production_fragment.sh" \
+      "$root/dev/fold_derivation/q4_kpack4_delivery_host.expected.txt" \
       "$selector" "$base_analyzer" "$analyzer" \
       "$root/ci/check_fq_q4k_kpack4_delivery_ab.py" \
       "$root/tools/run_fq_q4k_kpack4_delivery_ab_box.sh"

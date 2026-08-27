@@ -101,6 +101,10 @@ def check(texts: list[str]) -> None:
         'iterations="${PERF_ITERATIONS:-201}"',
         'rounds="${PERF_ROUNDS:-3}"',
         'run_acu="${RUN_ACU:-1}"',
+        "check_fq_q4k_kpack4_delivery_committed_evidence.py",
+        'git -C "$root" show "$sha:dev/fold_derivation/q4_kpack4_delivery_host.expected.txt"',
+        "--committed-only --evidence",
+        "fresh_box_execution=0",
         'for delivery in 0 32 16',
         'PPU_DEFS="FQ_TC_KPACK4_DELIVERY_N=$delivery"',
         "generated-row/layout build ABI differs",
@@ -144,6 +148,7 @@ def main() -> int:
         (8, "ACU arm denominator differs", "ACU arms accepted"),
         (9, 'PPU_DEFS="FQ_TC_KPACK4_DELIVERY_N=$delivery"',
          "PPU_DEFS="),
+        (9, "--committed-only --evidence", "--evidence"),
         (9, 'order="d32 d16 auto64"', 'order="auto64 d32 d16"'),
         (9, "--profile-subject-only", "--profile-entire-run"),
     )
@@ -159,7 +164,7 @@ def main() -> int:
         else:
             raise CheckError(f"negative stayed green: {old}")
     print("[fq-kpack4-delivery-ab:self-test] PASS matched auto64/D32/D16 "
-          "type/layout/runtime/codegen/ACU chain; fourteen plants RED")
+          "type/layout/runtime/codegen/ACU chain; fifteen plants RED")
     return 0
 
 
