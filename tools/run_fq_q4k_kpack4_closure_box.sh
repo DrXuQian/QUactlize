@@ -6,7 +6,7 @@ set -uo pipefail
 
 main() {
   local root workspace_root sha short stamp out jobs full generated
-  local build_dir build_log target_make binary device_log build_rc run_rc
+  local build_dir build_log target_make binary device_log split_log build_rc run_rc
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
   workspace_root="$(realpath -e /workspace)" || return 2
   sha="$(git -C "$root" rev-parse HEAD)" || return 2
@@ -97,10 +97,24 @@ main() {
   fi
   python3 -B "$root/tools/check_fq_q4k_kpack4_closure.py" \
     --log "$device_log" || return 2
+
+  split_log="$out/results/device-all-splits.log"
+  "$binary" --shape=1x1024x5120 \
+    --iterations="${SPLIT_ITERATIONS:-3}" \
+    --correctness-repeats="${SPLIT_CORRECTNESS_REPEATS:-64}" \
+    --only-split=0 --bc-mode=skip | tee "$split_log"
+  run_rc=${PIPESTATUS[0]}
+  if [ "$run_rc" -ne 0 ]; then
+    printf '[fq-q4k-kpack4] FAIL: Split-K device closure rc=%d artifacts=%s\n' \
+      "$run_rc" "$out" >&2
+    return "$run_rc"
+  fi
+  python3 -B "$root/tools/check_fq_q4k_kpack4_closure.py" \
+    --all-splits-log "$split_log" || return 2
   sha256sum "$binary" "$generated/manifest.json" \
-    "$generated/fq_tc_registry.inc" "$device_log" \
+    "$generated/fq_tc_registry.inc" "$device_log" "$split_log" \
     >"$out/results/authority.sha256" || return 2
-  printf '[fq-q4k-kpack4] PASS sha=%s layout=q4-kpack4-transpose-v1 mapping=0x51344b5034540001 tactics=1 cells=1 S1=RAW-BIT artifacts=%s\n' \
+  printf '[fq-q4k-kpack4] PASS sha=%s layout=q4-kpack4-transpose-v1 mapping=0x51344b5034540001 tactics=1 cells=4 S1/S2/S4=RAW-BIT S8=STRUCTURAL-UNAVAILABLE artifacts=%s\n' \
     "$sha" "$out"
 }
 
