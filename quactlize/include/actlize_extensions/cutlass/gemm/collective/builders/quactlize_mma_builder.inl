@@ -350,7 +350,8 @@ template <
 // numerically: the collective recasts the delivered registers to int4 and
 // applies the existing converter.  One physical K coordinate holds four
 // logical Q4 codes, so a tactic TK maps to TK/4 b16 rows.
-template <typename Arch, typename Block_N, typename LogicalBlock_K, bool Swap>
+template <typename Arch, typename Block_N, typename LogicalBlock_K, bool Swap,
+          int ScheduledDeliveryN = 0>
 struct MixGemm_Q4_KPack4_Transpose_Operand {
   static_assert(cute::is_same_v<Arch, cutlass::arch::PPU0010>,
                 "the first K-pack4 transport is bound to the proved PPU0010 b16 pair");
@@ -361,26 +362,54 @@ struct MixGemm_Q4_KPack4_Transpose_Operand {
                 "K-pack4 initially supports TK64/128/256; TK32 needs a K64 reuse mainloop");
   using TransportElement = cutlass::half_t;
   using PhysicalBlockK = Int<LogicalBlock_K{} / q4_kpack4::kPack>;
-  using Base = cutlass::gemm::config::DefaultGemm_AIU_Operand<
-      Arch, TransportElement, true, Block_N, PhysicalBlockK, Swap>;
-  using GmemTiledCopy = typename Base::GmemTiledCopy;
-  using SmemCopyAtom = typename Base::SmemCopyAtom;
-  using SmemLayoutAtom = typename Base::SmemLayoutAtom;
+  static constexpr int AutoDeliveryN = Block_N{} < 64 ? Block_N{} : 64;
+  static constexpr int DeliveryN =
+      ScheduledDeliveryN > 0
+          ? (Block_N{} < ScheduledDeliveryN ? Block_N{} : ScheduledDeliveryN)
+          : AutoDeliveryN;
+  static_assert(DeliveryN == 16 || DeliveryN == 32 || DeliveryN == 64,
+                "K-pack4 resolved delivery N is 16, 32 or 64");
+  static_assert(Block_N{} % DeliveryN == 0,
+                "K-pack4 delivery N must exactly tile tactic N");
+  static constexpr int InstNum = Block_N{} / DeliveryN;
+
+  // The offline bytes remain canonical [K/4,N] b16 for every DeliveryN.
+  // DeliveryN changes only the matched AIU/TSM resident cube:
+  //   64 -> one 8 KiB cube, 128 B physical-K row pitch;
+  //   32 -> two 4 KiB cubes,  64 B physical-K row pitch;
+  //   16 -> four 2 KiB cubes, 32 B physical-K row pitch.
+  // The complete stage remains Block_N*(TK/4)*sizeof(b16), so converter,
+  // MMA, barriers and workspace ABI are independent of this scheduling axis.
+  static constexpr int bits_per_aiu =
+      DeliveryN * PhysicalBlockK{} * sizeof_bits<TransportElement>::value;
+  using CopyInst = PPU0010_AIU_LOAD<
+      cute::C<bits_per_aiu>, TransportElement, true>;
+  using GmemTiledCopy = decltype(
+      make_tiled_copy(Copy_Atom<CopyInst, TransportElement>{},
+                      Layout<Shape<_1, _1>, Stride<_1, _1>>{},
+                      Layout<Shape<Int<DeliveryN>, PhysicalBlockK>>{}));
+  using SmemCopyOp = PPU0010_TSM_LD_SWZL<
+      TransportElement, PhysicalBlockK{}, DeliveryN, Swap, true, InstNum>;
+  using SmemCopyAtom = Copy_Atom<SmemCopyOp, TransportElement>;
+  using SmemLayoutAtom = Layout<
+      Shape<Int<DeliveryN>, PhysicalBlockK>,
+      Stride<_1, Int<DeliveryN>>>;
   static constexpr int PhysicalK = PhysicalBlockK{};
   static constexpr int LogicalK = LogicalBlock_K{};
 };
 
 template <bool Enabled, typename Arch, typename Block_N,
-          typename LogicalBlock_K, bool Swap, typename LegacyOperand>
+          typename LogicalBlock_K, bool Swap, int DeliveryN,
+          typename LegacyOperand>
 struct SelectQ4KPack4Operand {
   using type = LegacyOperand;
 };
 template <typename Arch, typename Block_N, typename LogicalBlock_K,
-          bool Swap, typename LegacyOperand>
+          bool Swap, int DeliveryN, typename LegacyOperand>
 struct SelectQ4KPack4Operand<true, Arch, Block_N, LogicalBlock_K,
-                            Swap, LegacyOperand> {
+                            Swap, DeliveryN, LegacyOperand> {
   using type = MixGemm_Q4_KPack4_Transpose_Operand<
-      Arch, Block_N, LogicalBlock_K, Swap>;
+      Arch, Block_N, LogicalBlock_K, Swap, DeliveryN>;
 };
 
 #endif
@@ -562,6 +591,8 @@ public:
       a_provider_schedule_traits<KernelScheduleType>::Rows;
   static constexpr bool HasQ4KPack4 =
       q4_kpack4_schedule_traits<KernelScheduleType>::Value;
+  static constexpr int Q4KPack4DeliveryN =
+      q4_kpack4_schedule_traits<KernelScheduleType>::DeliveryN;
   static constexpr int blockM = cute::get<0>(TileShape_MNK{});
   static constexpr int blockN = cute::get<1>(TileShape_MNK{});
   static constexpr int blockK = cute::get<2>(TileShape_MNK{});
@@ -687,7 +718,8 @@ public:
   using LegacyOperandB = quactlize_detail::MixGemm_AIU_Operand<
       RealInternalElementB, false, Int<BFoldBlockN>, Int<FullBlockK>, true, ArtifactContigShape>;
   using DefaultOperandB = typename quactlize_detail::SelectQ4KPack4Operand<
-      HasQ4KPack4, Arch, Int<blockN>, Int<blockK>, true, LegacyOperandB>::type;
+      HasQ4KPack4, Arch, Int<blockN>, Int<blockK>, true,
+      Q4KPack4DeliveryN, LegacyOperandB>::type;
 #elif 0 // async_cp not work now
   static_assert(false, "async_cp not work now");
   using DispatchPolicy = MainloopQuactlizeMixedInput<PipelineStages, kContinous, KernelScheduleType>;

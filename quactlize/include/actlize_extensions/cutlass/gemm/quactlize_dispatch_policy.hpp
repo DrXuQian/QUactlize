@@ -67,18 +67,25 @@ struct KernelAiuPackedA {
 // transposed b16 tensor [K/4,N].  This wrapper is orthogonal to group-size and
 // A-provider schedules.  Keeping it as a type prevents a runtime layout branch
 // in the mainloop and prevents an xplane pointer from reaching this reader.
-template<class WrappedSchedule_>
+template<class WrappedSchedule_, int DeliveryN_ = 0>
 struct KernelAiuQ4KPack4Transpose {
+  static_assert(DeliveryN_ == 0 || DeliveryN_ == 16 ||
+                    DeliveryN_ == 32 || DeliveryN_ == 64,
+                "K-pack4 delivery N is auto(0), 16, 32 or 64");
   using WrappedSchedule = WrappedSchedule_;
+  static constexpr int DeliveryN = DeliveryN_;
 };
 
 template<class T> struct q4_kpack4_schedule_traits {
   static constexpr bool Value = false;
+  static constexpr int DeliveryN = 0;
   using Wrapped = T;
 };
-template<class WrappedSchedule_>
-struct q4_kpack4_schedule_traits<KernelAiuQ4KPack4Transpose<WrappedSchedule_>> {
+template<class WrappedSchedule_, int DeliveryN_>
+struct q4_kpack4_schedule_traits<
+    KernelAiuQ4KPack4Transpose<WrappedSchedule_, DeliveryN_>> {
   static constexpr bool Value = true;
+  static constexpr int DeliveryN = DeliveryN_;
   using Wrapped = WrappedSchedule_;
 };
 template<int Rows_, class WrappedSchedule_>
@@ -87,6 +94,7 @@ private:
   using WrappedTraits = q4_kpack4_schedule_traits<WrappedSchedule_>;
 public:
   static constexpr bool Value = WrappedTraits::Value;
+  static constexpr int DeliveryN = WrappedTraits::DeliveryN;
   using Wrapped = KernelAiuPackedA<Rows_, typename WrappedTraits::Wrapped>;
 };
 
@@ -201,11 +209,13 @@ struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuPackedA<Rows_,
   static constexpr int AProviderRows = Rows_;
 };
 
-template<int Stages_, class kContinous_, class WrappedSchedule_>
+template<int Stages_, class kContinous_, class WrappedSchedule_, int DeliveryN_>
 struct MainloopQuactlizeMixedInput<
-    Stages_, kContinous_, KernelAiuQ4KPack4Transpose<WrappedSchedule_>>
+    Stages_, kContinous_,
+    KernelAiuQ4KPack4Transpose<WrappedSchedule_, DeliveryN_>>
     : MainloopQuactlizeMixedInput<Stages_, kContinous_, WrappedSchedule_> {
   static constexpr bool Q4KPack4Transpose = true;
+  static constexpr int Q4KPack4DeliveryN = DeliveryN_;
 };
 
 //////////////////////////////////////////////////////////////////////////////

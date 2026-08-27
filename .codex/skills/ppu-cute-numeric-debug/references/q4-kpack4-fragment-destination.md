@@ -229,3 +229,48 @@ missing demangled wrapper.  Then compare final instruction/resource counts
 through the lowered `tsm.ld`, MMA, register, spill and ACU evidence.  If a
 tool release preserves source mnemonics, their expected m8/m16 forms remain an
 additional positive check.
+
+## Resident-delivery bank-conflict follow-up
+
+The fixed AP0/AP1 Xplane-versus-K-pack4 comparison later showed that K-pack4's
+remaining N-wide regression is not extra load volume.  Shared Load instruction,
+request and transaction counts were unchanged, but bank conflicts rose from
+`344064` to `516096` (`+50%`).  Shared Store conflicts stayed `98304`, and all
+other conflict classes stayed zero.  Therefore the complete extra-conflict
+denominator is on the opaque TSM read side.
+
+The strong mechanism is the resident row pitch.  For TN64/TK256 K-pack4,
+`SmemLayoutAtomB` is an N-contiguous `64 x 64` b16 cube: adjacent physical-K
+rows begin 128 B apart, exactly one `32 banks x 4 B` bank period.  Xplane's
+resident rows advance 32 B instead.  This explains why an earlier 64-b16 pad
+was non-diagnostic: it added another complete 128 B bank period and changed no
+bank phase.
+
+Do not add a CuTe-only XOR to this opaque AIU/TSM path and claim a fix.  The
+repository's scale-plane XOR changed logical placement but measured no change
+in Shared Load conflicts.  Instead change the matched writer and reader atom
+together while preserving the complete stage:
+
+- `auto64`: one N64/Kphys64 cube, 128 B row pitch;
+- `D32`: two N32/Kphys64 cubes, 64 B row pitch;
+- `D16`: four N16/Kphys64 cubes, 32 B row pitch.
+
+The delivery value is a compile-time cap carried by
+`KernelAiuQ4KPack4Transpose`, not an offline-layout field.  A smaller tactic N
+resolves to itself.  The offline mapping ID, total shared bytes, converter
+destination, MMA fragment, metadata, barriers and split workspace remain
+identical.  L229 binds these type/storage invariants; L231 proves candidate
+fragment identity for all 12 admitted geometries at D32 and D16.
+
+Use the following device closure, which fixes shape, tactic, provider and S4,
+runs cyclic `auto64/D32/D16` timing, and captures all six AP0/AP1 ACU reports:
+
+```bash
+JOBS=16 PERF_ITERATIONS=201 PERF_ROUNDS=3 CORRECTNESS_REPEATS=64 RUN_ACU=1 \
+  bash tools/run_fq_q4k_kpack4_delivery_ab_box.sh
+```
+
+Raw-bit equality is an admission gate.  The 128 B phase hypothesis is causal
+only if D32 or D16 reduces Shared Load bank conflicts while the load-volume
+denominator remains comparable.  Choose delivery per tactic/provider from full
+kernel time; a lower counter alone is not permission to change the default.

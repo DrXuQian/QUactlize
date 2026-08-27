@@ -25,6 +25,10 @@
 
 namespace fq_internal_sweep {
 
+#ifndef FQ_TC_KPACK4_DELIVERY_N
+#define FQ_TC_KPACK4_DELIVERY_N 0
+#endif
+
 using half_t = cutlass::half_t;
 using QuantMode = fpa_intb_ppu::QuantMode;
 
@@ -155,6 +159,15 @@ struct KPack4MainloopSelected<
     Mainloop, std::void_t<decltype(Mainloop::kQ4KPack4Transpose)>>
     : std::bool_constant<Mainloop::kQ4KPack4Transpose> {};
 
+template <class Mainloop, class = void>
+struct KPack4MainloopDelivery : std::integral_constant<int, 0> {};
+template <class Mainloop>
+struct KPack4MainloopDelivery<
+    Mainloop,
+    std::void_t<decltype(Mainloop::kQ4KPack4ScheduledDeliveryN)>>
+    : std::integral_constant<int,
+                             Mainloop::kQ4KPack4ScheduledDeliveryN> {};
+
 template <class Policy, class = void>
 struct PackedAProviderCapacity : std::integral_constant<int, 0> {};
 template <class Policy>
@@ -167,7 +180,8 @@ struct PackedAProviderCapacity<Policy, std::void_t<decltype(Policy::PackedARows)
 // device expressions.
 template <int QType, int ArtifactTileK, int TM, int TN, int TK,
           int WM, int WN, int Stages, int BChunk, int AProvider,
-          int WeightLayout = 0>
+          int WeightLayout = 0,
+          int KPack4DeliveryN = FQ_TC_KPACK4_DELIVERY_N>
 struct TcRowTypes {
   using F = Format<QType>;
   using Low = typename F::Low;
@@ -205,10 +219,12 @@ struct TcRowTypes {
                     (QType == 12 && ArtifactTileK == 0 && BChunk == 0 &&
                      std::is_void_v<High>),
                 "K-pack4 denominator is Q4/one-plane/bchunk0 only");
+  static_assert(use_kpack4 || KPack4DeliveryN == 0,
+                "a K-pack4 delivery N cannot affect an xplane row");
   using LegacyShipping = std::conditional_t<use_packed_a, PackedA, Ordinary>;
   using KPack4 = fpa_intb_ppu::DenseQ4KPack4KernelTypes<
       QuantMode::FinegrainedScaleZero, Schedule, Tile, ScaleTile, Warp,
-      Stages, true, use_packed_a ? 1 : 0>;
+      Stages, true, use_packed_a ? 1 : 0, KPack4DeliveryN>;
   using Shipping = std::conditional_t<use_kpack4, KPack4, LegacyShipping>;
   using Split = dense_splitk_parallel_ppu::KernelTypes<Shipping, Tile, Warp>;
   using ShippingGemm = typename Shipping::Gemm;
@@ -252,6 +268,8 @@ struct TcRowTypes {
                 "A-provider capacity must come from the selected shipping policy");
   static_assert(!use_kpack4 ||
                     (KPack4MainloopSelected<Mainloop>::value &&
+                     KPack4MainloopDelivery<Mainloop>::value ==
+                         KPack4DeliveryN &&
                      std::is_same_v<
                          typename Shipping::MainloopPolicy::Descriptor::BProviderType,
                          ppu_mixed_policy::KPack4TransposedBProvider>),
@@ -260,10 +278,12 @@ struct TcRowTypes {
 
 template <int QType, int ArtifactTileK, int TM, int TN, int TK,
           int WM, int WN, int Stages, int BChunk, int AProvider,
-          int WeightLayout = 0>
+          int WeightLayout = 0,
+          int KPack4DeliveryN = FQ_TC_KPACK4_DELIVERY_N>
 constexpr bool admit_tc_row_type() {
   using Types = TcRowTypes<QType, ArtifactTileK, TM, TN, TK,
-                           WM, WN, Stages, BChunk, AProvider, WeightLayout>;
+                           WM, WN, Stages, BChunk, AProvider, WeightLayout,
+                           KPack4DeliveryN>;
   return Types::Shipping::SharedStorageSize > 0 &&
          Types::SplitKernel::SharedStorageSize > 0;
 }
@@ -351,11 +371,13 @@ bool measure(Launch&& launch, int iterations, CellResult& result) {
 
 template <int QType, int ArtifactTileK, int TM, int TN, int TK,
           int WM, int WN, int Stages, int BChunk, int AProvider,
-          int WeightLayout = 0>
+          int WeightLayout = 0,
+          int KPack4DeliveryN = FQ_TC_KPACK4_DELIVERY_N>
 bool run_tc_row(DeviceInputs const& in, Options const& options,
                 RowResult& row) {
   using Types = TcRowTypes<QType, ArtifactTileK, TM, TN, TK,
-                           WM, WN, Stages, BChunk, AProvider, WeightLayout>;
+                           WM, WN, Stages, BChunk, AProvider, WeightLayout,
+                           KPack4DeliveryN>;
   using F = typename Types::F;
   using Low = typename Types::Low;
   using High = typename Types::High;

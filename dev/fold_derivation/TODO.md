@@ -2199,3 +2199,73 @@ Therefore opaque AIU request size is excluded as the common cause and the N16
 delivery must not ship globally. Retain it only as a possible AP1/N-wide
 selector component after the address-system experiment; do not assume its
 gain composes additively with N-on-x.
+
+**Leading-stride result (PPU, 2026-08-27).** Adding 64 b16 words to the
+physical leading N changed every measured cell by at most `1.03%`. At the
+N-wide target AP0/AP1 changed by `+0.49%` and `+0.44%`; balanced controls by
+`+0.43%` and `+0.41%`; K-heavy controls by `-0.71%` and `-1.03%`.
+Consequently the 16 KiB power-of-two row stride, fixed page offset and simple
+global cache-set/partition-alias hypothesis are excluded. This is NOT a
+shared-bank-stride negative: the admitted pad is 64 b16 words = 128 B, exactly
+one 32-bank x 4-byte period, so it preserves every row's bank phase by
+construction. Do not cite this experiment against the bank-conflict result
+below, and do not run another whole-period pad to test that result.
+
+**Shared-load result (PPU ACU, 2026-08-27).** In the fixed
+`8x64x256_w8x16_s2`, S4, `M=1,N=8192,K=5120` comparison, Xplane records
+`344064` shared-load bank conflicts and K-pack4 records `516096` (`+50%`, or
+exactly `+172032`). Shared-store conflicts remain exactly `98304` on both
+arms; store-from-global-load, atomic and other conflicts remain zero. Total
+bank conflicts therefore rise from `442368` to `614400` (`+38.89%`), with the
+entire delta on the shared-load side. The two arms have the same grid, loop
+count, dynamic shared memory, registers and lowered TSM-reader count, while
+the leading-stride and AIU-request-size counterfactuals above did not close the
+gap. Treat the earlier L2 hit-rate contrast as a secondary transaction symptom,
+not as evidence for extra weight bytes or global cache locality.
+
+The first causal follow-up needs no new performance sweep: reuse the already
+raw-bit-clean N16-delivery binary. Native N64 and N16 retain the same offline
+K-pack4 bytes, trans reader family, tactic, split, converter and MMA, while the
+resident row pitch changes from 64 b16 = 128 B (one complete bank period) to
+16 b16 = 32 B (an eight-bank phase step). Capture the same shared-load
+instructions, requests, transactions, conflicts and dependency/warp stalls on
+both. The global writer changes from one 8 KiB request to four 2 KiB requests,
+so timing alone cannot adjudicate the bank cause; the shared-load counters can.
+Only if N16 leaves conflicts unchanged should the next arm isolate the
+`m16n16.x1.swzl.trans` opcode itself. Raw-bit equality remains an admission
+gate for any later reader replacement.
+
+The superficially similar scale-plane `MaybeScaleSwizzle` is not a drop-in
+repair. Scale uses ordinary software-addressed shared copies; K-pack4 uses a
+matched opaque `AIU .swzl` writer and `TSM .swzl.trans` reader whose internal
+bank placement is not represented by `SmemLayoutAtom`. More importantly, this
+repository already measured the scale XOR arm: it removed zero load conflicts
+(`278528 -> 278528`) despite the logical CuTe swizzle being active. Therefore
+L98 is useful as a RED warning about relying on a static bank model, not as
+evidence that composing an XOR onto K-pack4 will change hardware banks. First
+attribute the existing report's dependency/warp stalls, then use a matched
+writer/reader or reader-opcode counterfactual whose emitted shared instruction
+actually changes; never advertise a logical-layout-only XOR as causal.
+
+**Matched resident-delivery implementation (2026-08-27).** K-pack4 now carries
+a compile-time delivery cap through schedule, builder, collective and policy
+descriptor. `auto64`, `D32` and `D16` preserve the canonical offline bytes and
+the complete per-stage byte count, but use respectively one `N64 x Kphys64`,
+two `N32 x Kphys64`, or four `N16 x Kphys64` matched AIU/TSM cubes for the
+frozen TN64/TK256 tactic. Their physical-K row pitches are 128 B, 64 B and
+32 B. D32 is the intended compromise: unlike the 128 B baseline it changes
+bank phase between adjacent physical-K rows, while issuing only two 4 KiB
+deliveries instead of D16's four 2 KiB deliveries. A named cap resolves down
+to tactic N (for example D32 on TN16 becomes D16), so it never invents a
+partial cube.
+
+L229 binds the production type and equal shared-storage size; L231 proves the
+same compute-fragment destination for 12 `(TN,WN)` geometries at D32 and D16,
+with rotated destination and legacy loader-stride controls RED. The device
+closure is `tools/run_fq_q4k_kpack4_delivery_ab_box.sh`: it fixes shape,
+tactic, provider, S4 and offline mapping; runs cyclic three-arm timing for both
+AP0/AP1; and captures all six ACU reports. Admission requires raw-bit PASS.
+The 128 B same-bank-phase explanation is confirmed only if D32 or D16 lowers
+the Shared Load bank-conflict counter while shared-load volume remains
+comparable. Select a delivery per tactic/provider only from the full timing
+result; do not globally replace `auto64` merely because a counter falls.

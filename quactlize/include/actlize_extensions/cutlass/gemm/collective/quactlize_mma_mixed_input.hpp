@@ -55,9 +55,6 @@
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_a_pack.hpp"
 #include "q4_kpack4_offline.hpp"
 
-#ifndef PPU_Q4_KPACK4_DIAGNOSTIC_PAD_N
-#define PPU_Q4_KPACK4_DIAGNOSTIC_PAD_N 0
-#endif
 #include "cutlass/detail/collective.hpp"
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -144,13 +141,8 @@ public:
   using DispatchPolicy = MainloopQuactlizeMixedInput<Stages, kContinous, KernelSchedule>;
   static constexpr bool kQ4KPack4Transpose =
       q4_kpack4_schedule_traits<KernelSchedule>::Value;
-  static constexpr int kQ4KPack4DiagnosticPadN =
-      PPU_Q4_KPACK4_DIAGNOSTIC_PAD_N;
-  static_assert(kQ4KPack4DiagnosticPadN >= 0 &&
-                    kQ4KPack4DiagnosticPadN % 64 == 0,
-                "K-pack4 diagnostic leading-N padding is measured in 64-word sectors");
-  static_assert(kQ4KPack4Transpose || kQ4KPack4DiagnosticPadN == 0,
-                "K-pack4 diagnostic leading-N padding cannot affect another layout");
+  static constexpr int kQ4KPack4ScheduledDeliveryN =
+      q4_kpack4_schedule_traits<KernelSchedule>::DeliveryN;
   using TileShape = detail::deduce_mixed_width_dtype_t<0, TileShapePair_>;
   using ScaleTileShape = cute::conditional_t<cute::is_void_v<TileShape_Scale>,
       decltype(make_shape(shape<1>(TileShape{}), Int<1>{})), TileShape_Scale>;
@@ -336,6 +328,13 @@ public:
   using InternalSmemLayoutAtomB = cute::conditional_t<!SwapAB, SmemLayoutAtomB, SmemLayoutAtomA>;
   using InternalSmemCopyAtomA   = cute::conditional_t<!SwapAB, SmemCopyAtomA, SmemCopyAtomB>;
   using InternalSmemCopyAtomB   = cute::conditional_t<!SwapAB, SmemCopyAtomB, SmemCopyAtomA>;
+  static constexpr int kQ4KPack4ResolvedDeliveryN =
+      kQ4KPack4Transpose ? int(size<0>(InternalSmemLayoutAtomB{})) : 0;
+  static_assert(!kQ4KPack4Transpose ||
+                    (kQ4KPack4ResolvedDeliveryN == 16 ||
+                     kQ4KPack4ResolvedDeliveryN == 32 ||
+                     kQ4KPack4ResolvedDeliveryN == 64),
+                "K-pack4 collective must retain a named resident delivery N");
   // TMA converts f32 input to tf32 when copying from GMEM to SMEM
   // For all other types, cast to size equivalent uint type to avoid any rounding by TMA.
   // static constexpr bool ConvertF32toTF32A = cute::is_same_v<float, ElementA>;
@@ -1366,14 +1365,11 @@ private:
       using TilerB = typename GmemTiledCopyB::Tiler_MN;
       using Transport = cutlass::half_t;
       int const physical_k = K / q4_kpack4::kPack;
-      int const physical_n = N + kQ4KPack4DiagnosticPadN;
       auto const* expert_base = detail::mixed_packed_byte_expert_base(
           mainloop_params.ptr_B,
-          int64_t(physical_n) * int64_t(K) *
-              sizeof_bits<RealInternalElementB>::value / 8,
+          int64_t(N) * int64_t(K) * sizeof_bits<RealInternalElementB>::value / 8,
           l_coord);
-      auto physical_stride = make_stride(
-          _1{}, int64_t(physical_n), int64_t(physical_n) * physical_k);
+      auto physical_stride = make_stride(_1{}, int64_t(N), int64_t(N) * physical_k);
       Tensor mB_nkl = make_tensor(
           make_gmem_ptr(reinterpret_cast<Transport const*>(expert_base)),
           make_shape(N, physical_k, L), physical_stride);

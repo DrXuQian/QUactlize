@@ -35,6 +35,13 @@ constexpr int kWidth = 32;
 #ifndef L231_LEGACY_CANDIDATE
 #define L231_LEGACY_CANDIDATE 0
 #endif
+#ifndef L231_KPACK4_DELIVERY_N
+#define L231_KPACK4_DELIVERY_N 0
+#endif
+static_assert(L231_KPACK4_DELIVERY_N == 0 ||
+              L231_KPACK4_DELIVERY_N == 16 ||
+              L231_KPACK4_DELIVERY_N == 32 ||
+              L231_KPACK4_DELIVERY_N == 64);
 
 struct Metrics {
   int exact = 0;
@@ -75,7 +82,11 @@ Metrics prove_geometry() {
   // CUBE_W from a 128-byte maximum N-contiguous run.  Spell only that public
   // type algebra here: including gemm_operands.hpp drags device collectives
   // into an nvcc host oracle and crosses the documented compiler boundary.
-  static constexpr int kCubeW = TN < 64 ? TN : 64;
+  static constexpr int kCubeW = L231_KPACK4_DELIVERY_N > 0
+      ? (TN < L231_KPACK4_DELIVERY_N ? TN : L231_KPACK4_DELIVERY_N)
+      : (TN < 64 ? TN : 64);
+  static_assert(kCubeW <= TN && TN % kCubeW == 0,
+                "K-pack4 delivery N must exactly tile tactic N");
   using SmemLayoutAtomB =
       Layout<Shape<Int<kCubeW>, Int<kPhysicalK>>,
              Stride<_1, Int<kCubeW>>>;
@@ -262,7 +273,9 @@ bool report(bool expected_current_exact) {
       m.source_holes == 0 && m.destination_holes == 0 &&
       m.desired_duplicates == 0 && m.candidate_duplicates == 0 &&
       m.cohort_map_conflicts == 0;
-  bool const ok = current_exact == expected_current_exact &&
+  bool const current_expectation = L231_KPACK4_DELIVERY_N == 0
+      ? current_exact == expected_current_exact : true;
+  bool const ok = current_expectation &&
                   candidate_exact && structurally_exact;
   std::printf(
       "L231 GEOMETRY TN=%d WN=%d warp_on_n=%d current=%s exact=%d/%d "
@@ -298,7 +311,11 @@ void print_layouts() {
       MMA_Atom<PPU0010_16x16x16_F32F16F16F32_TN>,
       Layout<Shape<_1, WarpOnN, _1>>,
       Tile<_16, PermutationN, _16>>;
-  static constexpr int kCubeW = TN < 64 ? TN : 64;
+  static constexpr int kCubeW = L231_KPACK4_DELIVERY_N > 0
+      ? (TN < L231_KPACK4_DELIVERY_N ? TN : L231_KPACK4_DELIVERY_N)
+      : (TN < 64 ? TN : 64);
+  static_assert(kCubeW <= TN && TN % kCubeW == 0,
+                "K-pack4 delivery N must exactly tile tactic N");
   using Atom = Layout<Shape<Int<kCubeW>, Int<kPhysicalK>>,
                       Stride<_1, Int<kCubeW>>>;
   using Stage = decltype(tile_to_shape(

@@ -34,15 +34,16 @@
 #ifndef FQ_SWEEP_WEIGHT_LAYOUT
 #define FQ_SWEEP_WEIGHT_LAYOUT 0
 #endif
-#ifndef PPU_Q4_KPACK4_DIAGNOSTIC_PAD_N
-#define PPU_Q4_KPACK4_DIAGNOSTIC_PAD_N 0
+#ifndef FQ_TC_KPACK4_DELIVERY_N
+#define FQ_TC_KPACK4_DELIVERY_N 0
 #endif
 static_assert(FQ_SWEEP_WEIGHT_LAYOUT == 0 || FQ_SWEEP_WEIGHT_LAYOUT == 1);
-static_assert(PPU_Q4_KPACK4_DIAGNOSTIC_PAD_N >= 0 &&
-                  PPU_Q4_KPACK4_DIAGNOSTIC_PAD_N % 64 == 0);
-static_assert(PPU_Q4_KPACK4_DIAGNOSTIC_PAD_N == 0 ||
-                  FQ_SWEEP_WEIGHT_LAYOUT == 1,
-              "diagnostic K-pack4 leading-N padding cannot affect Xplane");
+static_assert(FQ_TC_KPACK4_DELIVERY_N == 0 ||
+                  FQ_TC_KPACK4_DELIVERY_N == 16 ||
+                  FQ_TC_KPACK4_DELIVERY_N == 32 ||
+                  FQ_TC_KPACK4_DELIVERY_N == 64);
+static_assert(FQ_SWEEP_WEIGHT_LAYOUT == 1 || FQ_TC_KPACK4_DELIVERY_N == 0,
+              "K-pack4 delivery N cannot affect an xplane sweep");
 static_assert(FQ_SWEEP_WEIGHT_LAYOUT == 0 ||
                   (FQ_SWEEP_QTYPE == 12 && FQ_SWEEP_ARTIFACT_TK == 0 &&
                    FQ_SWEEP_BCHUNK == 0),
@@ -224,13 +225,7 @@ Fixture make_fixture(Shape shape) {
   f.golden.resize(std::size_t(shape.m) * shape.n);
   f.low_native.assign(std::size_t(shape.n) * shape.k * low_bits / 8, 0);
   f.high_native.assign(high_bits ? std::size_t(shape.n) * shape.k * high_bits / 8 : 0, 0);
-  if constexpr (FQ_SWEEP_WEIGHT_LAYOUT == 1 &&
-                PPU_Q4_KPACK4_DIAGNOSTIC_PAD_N != 0) {
-    f.low.resize(std::size_t(shape.n + PPU_Q4_KPACK4_DIAGNOSTIC_PAD_N) *
-                 shape.k * low_bits / 8);
-  } else {
-    f.low.resize(f.low_native.size());
-  }
+  f.low.resize(f.low_native.size());
   f.high.resize(f.high_native.size());
   std::vector<int> active;
   int const superblocks = shape.k / 256;
@@ -256,20 +251,6 @@ Fixture make_fixture(Shape shape) {
                    code >> low_bits);
     }
   if constexpr (FQ_SWEEP_WEIGHT_LAYOUT == 1) {
-#if PPU_Q4_KPACK4_DIAGNOSTIC_PAD_N != 0
-    int const physical_n = shape.n + PPU_Q4_KPACK4_DIAGNOSTIC_PAD_N;
-    std::fill(f.low.begin(), f.low.end(), uint8_t(0));
-    for (int col = 0; col < shape.n; ++col)
-      for (int kk = 0; kk < shape.k; ++kk)
-        q4_kpack4::placed_put(
-            f.low.data(), col, kk, physical_n,
-            q4_kpack4::native_get(f.low_native.data(), col, kk, shape.k));
-    std::printf(
-        "FQ_KPACK4_FIXTURE phase=prepare mode=diagnostic-leading-n "
-        "q=%d shape=%dx%dx%d physical_n=%d pad_n=%d exact=1\n",
-        qtype, shape.m, shape.n, shape.k, physical_n,
-        PPU_Q4_KPACK4_DIAGNOSTIC_PAD_N);
-#else
     auto const arrangement = ppu_arrangements::q4_kpack4_transpose_v1();
     std::vector<uint8_t> direct(f.low.size(), uint8_t(0xcd));
     int const direct_rc = q4_kpack4::prepare(
@@ -290,7 +271,6 @@ Fixture make_fixture(Shape shape) {
         static_cast<unsigned long long>(arrangement.mapping_id),
         direct_rc, abi_rc, int(direct_equal));
     if (direct_rc != 0 || abi_rc != 0 || !direct_equal) return f;
-#endif
   } else {
     if (quactlize_ppu_prepare_dense_for_tile(
             f.low_native.data(), high_bits ? f.high_native.data() : nullptr,
@@ -299,20 +279,6 @@ Fixture make_fixture(Shape shape) {
   }
   std::vector<uint8_t> low_back(f.low_native.size()), high_back(f.high_native.size());
   if constexpr (FQ_SWEEP_WEIGHT_LAYOUT == 1) {
-#if PPU_Q4_KPACK4_DIAGNOSTIC_PAD_N != 0
-    int const physical_n = shape.n + PPU_Q4_KPACK4_DIAGNOSTIC_PAD_N;
-    for (int col = 0; col < shape.n; ++col)
-      for (int kk = 0; kk < shape.k; ++kk)
-        q4_kpack4::native_put(
-            low_back.data(), col, kk, shape.k,
-            q4_kpack4::placed_get(f.low.data(), col, kk, physical_n));
-    f.roundtrip = low_back == f.low_native;
-    std::printf(
-        "FQ_KPACK4_FIXTURE phase=recover mode=diagnostic-leading-n "
-        "q=%d shape=%dx%dx%d physical_n=%d pad_n=%d native_equal=%d\n",
-        qtype, shape.m, shape.n, shape.k, physical_n,
-        PPU_Q4_KPACK4_DIAGNOSTIC_PAD_N, int(f.roundtrip));
-#else
     auto const arrangement = ppu_arrangements::q4_kpack4_transpose_v1();
     std::vector<uint8_t> direct_back(f.low_native.size(), uint8_t(0xab));
     int const direct_rc = q4_kpack4::recover(
@@ -331,7 +297,6 @@ Fixture make_fixture(Shape shape) {
         direct_rc, abi_rc, int(direct_equal), int(native_equal));
     f.roundtrip = direct_rc == 0 && abi_rc == 0 &&
                   direct_equal && native_equal;
-#endif
   } else {
     f.roundtrip = quactlize_ppu_recover_dense_for_tile(
         f.low.data(), high_bits ? f.high.data() : nullptr,
@@ -474,14 +439,14 @@ int run_shape(Shape shape, Cli const& cli,
       FQ_SWEEP_WEIGHT_LAYOUT == 1 ? q4_kpack4::kMappingId : 0;
   std::printf("FQ_SHARD q=%d A=%d bchunk=%d shape=%dx%dx%d "
               "weight_layout=%d weight_mapping_id=0x%016llx "
-              "weight_stride_pad_n=%d "
+              "weight_delivery_n=%d "
               "typed_rows=%zu selected_rows=%zu only_split=%d bc_mode=%s "
               "bc_batch=native-grid-y-m-lt8 split_timing=ordered-close "
               "iterations=%d correctness_repeats=%d\n",
               FQ_SWEEP_QTYPE, FQ_SWEEP_ARTIFACT_TK, FQ_SWEEP_BCHUNK,
               shape.m, shape.n, shape.k, FQ_SWEEP_WEIGHT_LAYOUT,
               static_cast<unsigned long long>(weight_mapping_id),
-              PPU_Q4_KPACK4_DIAGNOSTIC_PAD_N,
+              FQ_TC_KPACK4_DELIVERY_N,
               typed_rows, rows.size(),
               cli.only_split,
               cli.bc_mode == Cli::BcMode::All ? "all" :
@@ -537,14 +502,14 @@ int run_shape(Shape shape, Cli const& cli,
   }
   std::printf("FQ_SHAPE_DONE q=%d A=%d bchunk=%d shape=%dx%dx%d "
               "weight_layout=%d weight_mapping_id=0x%016llx "
-              "weight_stride_pad_n=%d "
+              "weight_delivery_n=%d "
               "typed_rows=%zu selected_rows=%zu only_split=%d bc_mode=%s "
               "bc_batch=native-grid-y-m-lt8 split_timing=ordered-close "
               "iterations=%d status=%s\n",
               FQ_SWEEP_QTYPE, FQ_SWEEP_ARTIFACT_TK, FQ_SWEEP_BCHUNK,
               shape.m, shape.n, shape.k, FQ_SWEEP_WEIGHT_LAYOUT,
               static_cast<unsigned long long>(weight_mapping_id),
-              PPU_Q4_KPACK4_DIAGNOSTIC_PAD_N,
+              FQ_TC_KPACK4_DELIVERY_N,
               typed_rows, rows.size(),
               cli.only_split,
               cli.bc_mode == Cli::BcMode::All ? "all" :

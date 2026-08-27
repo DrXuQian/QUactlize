@@ -101,6 +101,22 @@ template <class Collective>
 struct AtomAtATimeConversion<Collective, std::void_t<decltype(Collective::kBChunk)>>
     : std::bool_constant<Collective::kBChunk> {};
 
+template <class Collective, class = void>
+struct KPack4Delivery {
+  static constexpr int Scheduled = 0;
+  static constexpr int Resolved = 0;
+};
+
+template <class Collective>
+struct KPack4Delivery<Collective, std::void_t<
+    decltype(Collective::kQ4KPack4ScheduledDeliveryN),
+    decltype(Collective::kQ4KPack4ResolvedDeliveryN)>> {
+  static constexpr int Scheduled =
+      Collective::kQ4KPack4ScheduledDeliveryN;
+  static constexpr int Resolved =
+      Collective::kQ4KPack4ResolvedDeliveryN;
+};
+
 template <class Collective, class BaseSchedule, class KernelSchedule, class ElementBInfo,
           class LayoutA, class LayoutB, class TileShape, class ScaleTileShape, class WarpShape,
           class AProvider, class BProvider, class WeightLayout, QuantMode Mode, int LowBits, int HighBits,
@@ -144,6 +160,10 @@ struct MixedPolicyDescriptor {
       std::is_same_v<WeightLayout, Q4KPack4TransposeWeightLayout>;
   static constexpr int transport_tile_k =
       q4_kpack4_transpose ? q4_kpack4::kTransportK : ArtifactTileK;
+  static constexpr int kpack4_scheduled_delivery_n =
+      q4_kpack4_transpose ? KPack4Delivery<Collective>::Scheduled : 0;
+  static constexpr int kpack4_resolved_delivery_n =
+      q4_kpack4_transpose ? KPack4Delivery<Collective>::Resolved : 0;
 };
 
 template <QuantMode Mode, class BaseSchedule, class TileShape, class ScaleTileShape, class WarpShape,
@@ -213,7 +233,8 @@ struct MainloopPolicy {
 // xplane type or descriptor changes when the new layout is not selected.
 template <QuantMode Mode, class BaseSchedule, class TileShape,
           class ScaleTileShape, class WarpShape, int Stages,
-          bool AiuInterleaved, int APackRows = 0>
+          bool AiuInterleaved, int APackRows = 0,
+          int KPack4DeliveryN = 0>
 struct Q4KPack4MainloopPolicy {
   using ElementA = cutlass::half_t;
   using ElementB = cutlass::int4b_t;
@@ -242,12 +263,24 @@ struct Q4KPack4MainloopPolicy {
 
   static_assert(APackRows == 0 || APackRows == 1,
                 "K-pack4 supports ordinary A or the proved one-row packed-A provider");
+  static_assert(KPack4DeliveryN == 0 || KPack4DeliveryN == 16 ||
+                    KPack4DeliveryN == 32 || KPack4DeliveryN == 64,
+                "K-pack4 delivery N is auto(0), 16, 32 or 64");
+  static constexpr int ResolvedKPack4DeliveryN = KPack4DeliveryN == 0
+      ? (int(cute::size<1>(TileShape{})) < 64
+             ? int(cute::size<1>(TileShape{})) : 64)
+      : (int(cute::size<1>(TileShape{})) < KPack4DeliveryN
+             ? int(cute::size<1>(TileShape{})) : KPack4DeliveryN);
+  static_assert(int(cute::size<1>(TileShape{})) %
+                        ResolvedKPack4DeliveryN == 0,
+                "K-pack4 resolved delivery N must exactly tile tactic N");
   static_assert(APackRows == 0 ||
                     (int(cute::size<0>(TileShape{})) == 8 &&
                      int(cute::size<0>(WarpShape{})) == 8),
                 "K-pack4 packed-A is bound to the TM8/WM8 decode family");
   using KPack4Schedule =
-      cutlass::gemm::KernelAiuQ4KPack4Transpose<BaseSchedule>;
+      cutlass::gemm::KernelAiuQ4KPack4Transpose<
+          BaseSchedule, KPack4DeliveryN>;
   using KernelSchedule = std::conditional_t<
       APackRows == 0, KPack4Schedule,
       cutlass::gemm::KernelAiuPackedA<APackRows, KPack4Schedule>>;
@@ -262,6 +295,8 @@ struct Q4KPack4MainloopPolicy {
                 "K-pack4 must not acquire an xplane ArtifactTileK identity");
   static_assert(CollectiveBuilderType::HasQ4KPack4,
                 "K-pack4 schedule must select the transposed physical provider");
+  static_assert(CollectiveBuilderType::Q4KPack4DeliveryN == KPack4DeliveryN,
+                "K-pack4 delivery N must survive the policy/builder boundary");
   using CollectiveOp = typename CollectiveBuilderType::CollectiveOp;
   static constexpr bool PackedRowA = APackRows > 0;
   static constexpr int PackedARows = APackRows;
@@ -274,6 +309,10 @@ struct Q4KPack4MainloopPolicy {
       AProvider, BProvider, Q4KPack4TransposeWeightLayout,
       Mode, LowBits, HighBits, TacticTileK, ArtifactTileK,
       ArtifactLowFold, ArtifactHighFold, Stages, AiuInterleaved>;
+  static_assert(Descriptor::kpack4_scheduled_delivery_n == KPack4DeliveryN &&
+                    Descriptor::kpack4_resolved_delivery_n ==
+                        ResolvedKPack4DeliveryN,
+                "K-pack4 descriptor must expose the exact delivery cap and resolution");
 };
 
 // Independent dense-M==1 A provider.  This intentionally does not add a parameter to MainloopPolicy: callers that

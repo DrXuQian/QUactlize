@@ -66,6 +66,23 @@ PY
     "$repo/dev/fold_derivation/l231_q4_kpack4_production_fragment.expected.txt" \
     "$out/canonical.log"
 
+  for delivery_n in 32 16; do
+    "$compiler" "${common[@]}" \
+      -DL231_KPACK4_DELIVERY_N="$delivery_n" "$source" \
+      -o "$out/l231-d$delivery_n" \
+      >"$out/build-d$delivery_n.log" 2>&1
+    "$out/l231-d$delivery_n" | tee "$out/run-d$delivery_n.log"
+    grep -Fqx 'L231 KPACK4_PRODUCTION_FRAGMENT PASS' \
+      "$out/run-d$delivery_n.log"
+    if [ "$(grep -c 'candidate=IDENTITY' "$out/run-d$delivery_n.log")" -ne 12 ]; then
+      printf '[l231-runner] FAIL: D%s candidate identity denominator differs\n' \
+        "$delivery_n" >&2
+      return 2
+    fi
+    printf '[l231-delivery] PASS D=%s geometries=12 candidate=IDENTITY\n' \
+      "$delivery_n"
+  done
+
   "$compiler" "${common[@]}" -DL231_ROTATE_DESTINATION=1 "$source" \
     -o "$out/red-rotate" >"$out/red-rotate.build.log" 2>&1
   if "$out/red-rotate" >"$out/red-rotate.run.log" 2>&1; then
