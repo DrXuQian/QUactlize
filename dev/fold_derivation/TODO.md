@@ -2121,3 +2121,45 @@ shapes, and audit construction/copy cost in generated PPU kernels. Done means
 temporary-expression construction is safe, lvalue construction remains
 sequence-identical, and both ordinary and fixed Split-K syntax/device gates
 pass. Keep this separate from the packed-metadata hot-path repair.
+
+### TODO #61 — Q4_K K-pack4 decode locality after scheduler-axis adjudication
+
+The isomorphic `8x64x256_w8x16_s2`, fixed-S4 comparison at
+`M=1,N=8192,K=5120` keeps tactic, A provider and partial/reducer ABI fixed.
+K-pack4 is 4.5% slower at AP0 and 5.4% slower at AP1 despite fewer executed
+instructions, identical 86 registers/thread, identical dynamic shared memory
+and essentially identical occupancy. ACU instead reports 4.8--6.6% longer
+duration, 9--12% more warp cycles per instruction, fewer eligible issue cycles
+and lower memory throughput. This is a B-delivery latency problem, not an MMA,
+A-provider, metadata, register or occupancy result.
+
+Do not interpret the L2 hit-rate contrast (`77.41% -> about 22%`) as extra
+bytes without first accounting for request granularity. Xplane TK256 is four
+A64 deliveries over the same 128-byte lines: one miss plus three sector hits
+has an ideal 75% line-hit signature. K-pack4 reads each full line once. Both
+forms touch 64 unique lines and 8 KiB per TN64/TK256 CTA.
+
+Adjudicate the remaining candidates in this order, one variable at a time:
+
+1. **Grid-axis scheduling.** The shipping fixed Split-K grid is `(M,N,S)`;
+   decode spends x on unit-extent M and puts N on y. Compare it with the exact
+   compile-time `(N,M,S)` spelling while preserving logical
+   `q=m*N_tiles+n`, contiguous split intervals and every kernel ABI. Xplane is
+   the control in the same AP0/AP1 factorial. If N-on-x does not materially
+   improve K-pack4, scheduler ordering is excluded for this launch.
+2. **Long-stride address-system pressure.** K-pack4's physical `[N,K/4]` b16
+   view makes one CTA walk 128-byte rows separated by `2*N` bytes (16 KiB at
+   N=8192), versus Xplane's 128-byte row stride. Measure TLB/page-walk events,
+   L2 set distribution and DRAM partition distribution before naming this
+   TLB pressure, cache-set aliasing or partition camping. Power-of-two N is a
+   useful plant, not proof.
+3. **AIU async transaction granularity.** K-pack4 replaces four 2 KiB AIU
+   operations with one 8 KiB transposed operation. The same byte count can
+   still reduce memory-level parallelism or make `wait_group` depend on one
+   coarse long-stride request. Compare `4x2KiB` and `1x8KiB` on the same
+   K-pack4 byte map and reader; bind instruction count, async group boundaries
+   and raw-bit output. Do not combine this with the grid-axis experiment.
+
+Done means the N-wide regression has a repeat-stable causal counterfactual,
+balanced and K-heavy controls remain correct, and any selected change wins in
+full modeled E2E rather than merely restoring the synthetic L2 hit rate.

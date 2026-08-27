@@ -428,10 +428,15 @@ int run_shape(Shape shape, Cli const& cli,
   bool all_runtime_ok = true;
   constexpr std::uint64_t weight_mapping_id =
       FQ_SWEEP_WEIGHT_LAYOUT == 1 ? q4_kpack4::kMappingId : 0;
+#if defined(PPU_FIXED_SPLITK_N_ON_X) && (PPU_FIXED_SPLITK_N_ON_X != 0)
+  constexpr char const* split_grid_order = "n-on-x";
+#else
+  constexpr char const* split_grid_order = "native-grid";
+#endif
   std::printf("FQ_SHARD q=%d A=%d bchunk=%d shape=%dx%dx%d "
               "weight_layout=%d weight_mapping_id=0x%016llx "
               "typed_rows=%zu selected_rows=%zu only_split=%d bc_mode=%s "
-              "bc_batch=native-grid-y-m-lt8 split_timing=ordered-close "
+              "bc_batch=native-grid-y-m-lt8 split_timing=ordered-close split_grid_order=%s "
               "iterations=%d correctness_repeats=%d\n",
               FQ_SWEEP_QTYPE, FQ_SWEEP_ARTIFACT_TK, FQ_SWEEP_BCHUNK,
               shape.m, shape.n, shape.k, FQ_SWEEP_WEIGHT_LAYOUT,
@@ -440,6 +445,7 @@ int run_shape(Shape shape, Cli const& cli,
               cli.only_split,
               cli.bc_mode == Cli::BcMode::All ? "all" :
               cli.bc_mode == Cli::BcMode::Skip ? "skip" : "only",
+              split_grid_order,
               cli.iterations, cli.repeats);
   if (cli.bc_mode != Cli::BcMode::Only) for (auto const& entry : rows) {
     RowResult result;
@@ -492,7 +498,7 @@ int run_shape(Shape shape, Cli const& cli,
   std::printf("FQ_SHAPE_DONE q=%d A=%d bchunk=%d shape=%dx%dx%d "
               "weight_layout=%d weight_mapping_id=0x%016llx "
               "typed_rows=%zu selected_rows=%zu only_split=%d bc_mode=%s "
-              "bc_batch=native-grid-y-m-lt8 split_timing=ordered-close "
+              "bc_batch=native-grid-y-m-lt8 split_timing=ordered-close split_grid_order=%s "
               "iterations=%d status=%s\n",
               FQ_SWEEP_QTYPE, FQ_SWEEP_ARTIFACT_TK, FQ_SWEEP_BCHUNK,
               shape.m, shape.n, shape.k, FQ_SWEEP_WEIGHT_LAYOUT,
@@ -501,6 +507,7 @@ int run_shape(Shape shape, Cli const& cli,
               cli.only_split,
               cli.bc_mode == Cli::BcMode::All ? "all" :
               cli.bc_mode == Cli::BcMode::Skip ? "skip" : "only",
+              split_grid_order,
               cli.iterations,
               all_runtime_ok ? "PASS" : "FAIL");
   return all_runtime_ok ? 0 : 1;
