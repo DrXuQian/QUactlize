@@ -52,81 +52,9 @@ run_phase() {
 }
 
 validate_pilot_bundle() {
-  local root="$1" bundle="$2" manifest="$3" binary="$4"
-  local authority="$bundle/source-authority.sha256"
-  local binary_authority="$bundle/results/binary.sha256"
-  local summary="$bundle/results/summary.json"
-  [ -f "$authority" ] && [ -f "$binary_authority" ] && \
-    [ -f "$summary" ] && [ -f "$manifest" ] && [ -x "$binary" ] && \
-    [ ! -L "$binary" ] || {
-      printf '[fq-kpack4-real] FAIL: pilot bundle is incomplete: %s\n' "$bundle" >&2
-      return 2
-    }
-  python3 -B - "$root" "$authority" "$manifest" "$binary" \
-    "$binary_authority" "$summary" <<'PY' || return 2
-import hashlib,json,pathlib,re,subprocess,sys
-root=pathlib.Path(sys.argv[1]); authority=pathlib.Path(sys.argv[2])
-manifest=pathlib.Path(sys.argv[3]); binary=pathlib.Path(sys.argv[4])
-binary_authority=pathlib.Path(sys.argv[5])
-summary=pathlib.Path(sys.argv[6])
-lines=authority.read_text().splitlines()
-if len(lines)<4 or not re.fullmatch(r"[0-9a-f]{40}",lines[0]) or \
-   not re.fullmatch(r"[0-9a-f]{40}",lines[1]):
- raise SystemExit("pilot source authority header is malformed")
-actlize=subprocess.check_output(
- ["git","-C",str(root/"third_party/actlize"),"rev-parse","HEAD"],
- text=True).strip()
-if actlize!=lines[1]: raise SystemExit("pilot actlize authority differs")
-records={}
-for line in lines[2:]:
- match=re.fullmatch(r"([0-9a-f]{64})  (.+)",line)
- if not match: raise SystemExit("pilot source authority row is malformed")
- records[match.group(2)]=match.group(1)
-measurement_rel=(
- "benchmarks/fq_q4k_decode_real_shapes_policy.json",
- "benchmarks/test_fully_quantized_internal_sweep.cu",
- "benchmarks/fully_quantized_splitk_producer_bench.hpp",
- "benchmarks/fully_quantized_splitk_producer_unit.inc",
- "quactlize/include/q4_kpack4_offline.hpp",
- "quactlize/include/fpA_intB_ppu.cuh",
- "quactlize/include/ppu_mixed_policy.hpp",
- "quactlize/include/ppu_placed_arrangement.hpp",
- "quactlize/include/actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp",
- "quactlize/csrc/device/ppu_dense_layout.cu",
- "quactlize/csrc/fq_internal_sweep.cmake.in",
- "tools/fully_quantized_internal_matrix.py",
- "tools/gen_fully_quantized_splitk_producer_units.py",
- "tools/analyze_fq_q4k_decode_real_shapes.py",
- "ci/check_fq_q4k_kpack4_generator.py",
- "build.sh")
-for rel in measurement_rel:
- matches=[(path,digest) for path,digest in records.items()
-          if path==rel or path.endswith("/"+rel)]
- if len(matches)!=1: raise SystemExit(f"pilot authority lacks exact {rel}")
- current=hashlib.sha256((root/rel).read_bytes()).hexdigest()
- if current!=matches[0][1]: raise SystemExit(f"measurement source changed: {rel}")
-value=json.loads(manifest.read_text())
-if value.get("identity")!={"qtype":12,"format":"Q4_K","artifact_tile_k":0,
- "bchunk":0,"tile_m_filter":8,"weight_layout":"q4-kpack4"} or \
- value.get("denominator",{}).get("typed_rows")!=72 or \
- value.get("weight_mapping",{}).get("mapping_id")!="0x51344b5034540001":
- raise SystemExit("pilot manifest identity differs")
-manifest_matches=[digest for path,digest in records.items()
-                  if path.endswith("/generated/manifest.json")]
-if len(manifest_matches)!=1 or \
-   manifest_matches[0]!=hashlib.sha256(manifest.read_bytes()).hexdigest():
- raise SystemExit("pilot manifest source-authority hash differs")
-expected=binary_authority.read_text().split()[0]
-actual=hashlib.sha256(binary.read_bytes()).hexdigest()
-if expected!=actual: raise SystemExit("pilot binary hash differs")
-pilot=json.loads(summary.read_text())
-if pilot.get("schema")!="quactlize.fq_q4k_kpack4_pilot.v1" or \
- pilot.get("shape")!=[1,1024,5120] or pilot.get("typed_rows")!=72 or \
- pilot.get("layout")!="q4-kpack4-transpose-v1" or \
- pilot.get("weight_mapping_id")!="0x51344b5034540001":
- raise SystemExit("pilot result did not close the admitted pilot identity")
-print("[fq-kpack4-real] pilot-reuse PASS measurement-source=EXACT binary=HASHED")
-PY
+  local root="$1" bundle="$2"
+  python3 -B "$root/tools/check_fq_q4k_kpack4_pilot_bundle.py" validate \
+    --root "$root" --bundle "$bundle"
 }
 
 main() {
@@ -173,6 +101,8 @@ main() {
     --policy "$policy" || return 2
   python3 -B "$root/ci/check_fq_q4k_kpack4_generator.py" || return 2
   python3 -B "$root/ci/check_fq_q4k_kpack4_real_shapes_runner.py" || return 2
+  python3 -B "$root/tools/check_fq_q4k_kpack4_pilot_bundle.py" self-test \
+    --root "$root" || return 2
 
   plan="$out/plan.json"
   if [ ! -s "$plan" ]; then
@@ -199,7 +129,7 @@ PY
     return 2;; esac
   manifest="$pilot/generated/manifest.json"
   binary="$pilot/build/ppu_targets/test_fully_quantized_internal_sweep"
-  validate_pilot_bundle "$root" "$pilot" "$manifest" "$binary" || return 2
+  validate_pilot_bundle "$root" "$pilot" || return 2
 
   source_state="$({
     git -C "$root" rev-parse HEAD

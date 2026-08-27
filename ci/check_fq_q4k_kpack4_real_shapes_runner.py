@@ -9,19 +9,19 @@ import pathlib
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "tools/run_fq_q4k_kpack4_decode_real_shapes_box.sh"
 ANALYZER = ROOT / "tools/analyze_fq_q4k_kpack4_pilot.py"
+BUNDLE_CHECKER = ROOT / "tools/check_fq_q4k_kpack4_pilot_bundle.py"
 
 
 class CheckError(ValueError):
     pass
 
 
-def check(runner: str, analyzer: str) -> None:
+def check(runner: str, analyzer: str, bundle_checker: str) -> None:
     runner_needles = (
         "INTERNAL_SWEEP_SPEC must name COMPLETE inventory-v2 JSON",
         "PILOT_BUNDLE",
-        "pilot-reuse PASS measurement-source=EXACT binary=HASHED",
-        'path.endswith("/generated/manifest.json")',
-        "len(manifest_matches)!=1",
+        'check_fq_q4k_kpack4_pilot_bundle.py" validate',
+        'check_fq_q4k_kpack4_pilot_bundle.py" self-test',
         "policy must be byte-identical to the pilot policy",
         'value["family_count"]==5 and value["shape_count"]==20',
         "One 72-row TM8 binary serves every shape",
@@ -59,18 +59,27 @@ def check(runner: str, analyzer: str) -> None:
     )
     if any(token not in analyzer for token in analyzer_needles):
         raise CheckError("K-pack4 real-shape analyzer lost a denominator/scope seam")
+    bundle_needles = (
+        'result_authority = bundle / "results/authority.sha256"',
+        'summary_value.get("manifest_sha256") != manifest_sha',
+        'one_suffix(final_records, "/generated/manifest.json"',
+        'one_suffix(final_records, "/results/summary.json"',
+        '"/ppu_targets/test_fully_quantized_internal_sweep"',
+        'source_rows.append(("/original/pilot/generated/manifest.json"',
+        '"final-manifest"', '"summary-manifest"', '"binary"',
+    )
+    if any(token not in bundle_checker for token in bundle_needles):
+        raise CheckError("K-pack4 pilot-bundle checker lost a final authority seam")
 
 
 def main() -> int:
-    texts = [RUNNER.read_text(), ANALYZER.read_text()]
+    texts = [RUNNER.read_text(), ANALYZER.read_text(), BUNDLE_CHECKER.read_text()]
     check(*texts)
     plants = (
         (0, 'value["family_count"]==5 and value["shape_count"]==20',
          'value["shape_count"]==20'),
         (0, "--iterations=7 --correctness-repeats=2",
          "--iterations=1 --correctness-repeats=1"),
-        (0, 'path.endswith("/generated/manifest.json")',
-         "pathlib.Path(path)==manifest"),
         (0, 'sha256sum "$inventory" "$policy" "$plan" "$manifest" "$binary"',
          'sha256sum "$inventory" "$policy" "$plan" "$manifest"'),
         (1, "shape[0] not in planner.DECODE_M", "False"),
@@ -78,6 +87,10 @@ def main() -> int:
          '"artifact_tile_k": 64,\n        "physical_layout_class": KPACK4_CLASS,'),
         (1, 'len(shape_rows) != 20', 'len(shape_rows) != 19'),
         (1, '"max_internal_regret": 0.0', '"max_internal_regret": 0.1'),
+        (2, 'summary_value.get("manifest_sha256") != manifest_sha',
+         'summary_value.get("manifest_sha256") == manifest_sha'),
+        (2, 'one_suffix(final_records, "/generated/manifest.json"',
+         'one_suffix(final_records, "/generated/wrong.json"'),
     )
     for index, old, new in plants:
         broken = list(texts)
