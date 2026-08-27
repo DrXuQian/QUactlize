@@ -18,6 +18,7 @@
 #include "fully_quantized_splitk_producer_bench.hpp"
 #include "gguf_bc_vecdot.hpp"
 #include "gguf_packed_unit.hpp"
+#include "ppu_placed_arrangement.hpp"
 
 #include "fq_tc_registry.inc"
 
@@ -30,6 +31,14 @@
 #ifndef FQ_SWEEP_BCHUNK
 #error "FQ_SWEEP_BCHUNK must match the generated registry"
 #endif
+#ifndef FQ_SWEEP_WEIGHT_LAYOUT
+#define FQ_SWEEP_WEIGHT_LAYOUT 0
+#endif
+static_assert(FQ_SWEEP_WEIGHT_LAYOUT == 0 || FQ_SWEEP_WEIGHT_LAYOUT == 1);
+static_assert(FQ_SWEEP_WEIGHT_LAYOUT == 0 ||
+                  (FQ_SWEEP_QTYPE == 12 && FQ_SWEEP_ARTIFACT_TK == 0 &&
+                   FQ_SWEEP_BCHUNK == 0),
+              "the first K-pack4 closure is one Q4/ordinary-conversion shard");
 static_assert(FQ_SWEEP_QTYPE == FQ_TC_GENERATED_QTYPE);
 static_assert(FQ_SWEEP_ARTIFACT_TK == FQ_TC_GENERATED_ARTIFACT_TK);
 static_assert(FQ_SWEEP_BCHUNK == FQ_TC_GENERATED_BCHUNK);
@@ -229,16 +238,31 @@ Fixture make_fixture(Shape shape) {
         put_native(f.high_native, high_bits, n, k, shape.n, shape.k,
                    code >> low_bits);
     }
-  if (quactlize_ppu_prepare_dense_for_tile(
-          f.low_native.data(), high_bits ? f.high_native.data() : nullptr,
-          f.low.data(), high_bits ? f.high.data() : nullptr,
-          shape.n, shape.k, qtype, FQ_SWEEP_ARTIFACT_TK) != 0) return f;
+  if constexpr (FQ_SWEEP_WEIGHT_LAYOUT == 1) {
+    auto const arrangement = ppu_arrangements::q4_kpack4_transpose_v1();
+    if (quactlize_ppu_prepare_dense_for_arrangement_v2(
+            f.low_native.data(), nullptr, f.low.data(), nullptr,
+            shape.n, shape.k, qtype, &arrangement) != 0) return f;
+  } else {
+    if (quactlize_ppu_prepare_dense_for_tile(
+            f.low_native.data(), high_bits ? f.high_native.data() : nullptr,
+            f.low.data(), high_bits ? f.high.data() : nullptr,
+            shape.n, shape.k, qtype, FQ_SWEEP_ARTIFACT_TK) != 0) return f;
+  }
   std::vector<uint8_t> low_back(f.low_native.size()), high_back(f.high_native.size());
-  f.roundtrip = quactlize_ppu_recover_dense_for_tile(
-      f.low.data(), high_bits ? f.high.data() : nullptr,
-      low_back.data(), high_bits ? high_back.data() : nullptr,
-      shape.n, shape.k, qtype, FQ_SWEEP_ARTIFACT_TK) == 0 &&
-      low_back == f.low_native && high_back == f.high_native;
+  if constexpr (FQ_SWEEP_WEIGHT_LAYOUT == 1) {
+    auto const arrangement = ppu_arrangements::q4_kpack4_transpose_v1();
+    f.roundtrip = quactlize_ppu_recover_dense_for_arrangement_v2(
+        f.low.data(), nullptr, low_back.data(), nullptr,
+        shape.n, shape.k, qtype, &arrangement) == 0 &&
+        low_back == f.low_native;
+  } else {
+    f.roundtrip = quactlize_ppu_recover_dense_for_tile(
+        f.low.data(), high_bits ? f.high.data() : nullptr,
+        low_back.data(), high_bits ? high_back.data() : nullptr,
+        shape.n, shape.k, qtype, FQ_SWEEP_ARTIFACT_TK) == 0 &&
+        low_back == f.low_native && high_back == f.high_native;
+  }
   if constexpr (qtype == 10) f.units = make_units<gguf_scale::KType::Q2_K>(shape.n, shape.k);
   if constexpr (qtype == 11) f.units = make_units<gguf_scale::KType::Q3_K>(shape.n, shape.k);
   if constexpr (qtype == 12) f.units = make_units<gguf_scale::KType::Q4_K>(shape.n, shape.k);
@@ -362,12 +386,17 @@ int run_shape(Shape shape, Cli const& cli,
   Options options{cli.iterations, cli.repeats, cli.only_split, true,
                   cli.tm8_max_m};
   bool all_runtime_ok = true;
+  constexpr std::uint64_t weight_mapping_id =
+      FQ_SWEEP_WEIGHT_LAYOUT == 1 ? q4_kpack4::kMappingId : 0;
   std::printf("FQ_SHARD q=%d A=%d bchunk=%d shape=%dx%dx%d "
+              "weight_layout=%d weight_mapping_id=0x%016llx "
               "typed_rows=%zu selected_rows=%zu only_split=%d bc_mode=%s "
               "bc_batch=native-grid-y-m-lt8 split_timing=ordered-close "
               "iterations=%d correctness_repeats=%d\n",
               FQ_SWEEP_QTYPE, FQ_SWEEP_ARTIFACT_TK, FQ_SWEEP_BCHUNK,
-              shape.m, shape.n, shape.k, typed_rows, rows.size(),
+              shape.m, shape.n, shape.k, FQ_SWEEP_WEIGHT_LAYOUT,
+              static_cast<unsigned long long>(weight_mapping_id),
+              typed_rows, rows.size(),
               cli.only_split,
               cli.bc_mode == Cli::BcMode::All ? "all" :
               cli.bc_mode == Cli::BcMode::Skip ? "skip" : "only",
@@ -404,7 +433,7 @@ int run_shape(Shape shape, Cli const& cli,
       std::printf("\n");
     }
   }
-  if constexpr (FQ_SWEEP_BCHUNK == 0) {
+  if constexpr (FQ_SWEEP_BCHUNK == 0 && FQ_SWEEP_WEIGHT_LAYOUT == 0) {
     if (cli.bc_mode != Cli::BcMode::Skip) {
     all_runtime_ok = all_runtime_ok &&
         run_bc_family<FQ_SWEEP_QTYPE,FQ_SWEEP_ARTIFACT_TK>(
@@ -414,11 +443,14 @@ int run_shape(Shape shape, Cli const& cli,
     }
   }
   std::printf("FQ_SHAPE_DONE q=%d A=%d bchunk=%d shape=%dx%dx%d "
+              "weight_layout=%d weight_mapping_id=0x%016llx "
               "typed_rows=%zu selected_rows=%zu only_split=%d bc_mode=%s "
               "bc_batch=native-grid-y-m-lt8 split_timing=ordered-close "
               "iterations=%d status=%s\n",
               FQ_SWEEP_QTYPE, FQ_SWEEP_ARTIFACT_TK, FQ_SWEEP_BCHUNK,
-              shape.m, shape.n, shape.k, typed_rows, rows.size(),
+              shape.m, shape.n, shape.k, FQ_SWEEP_WEIGHT_LAYOUT,
+              static_cast<unsigned long long>(weight_mapping_id),
+              typed_rows, rows.size(),
               cli.only_split,
               cli.bc_mode == Cli::BcMode::All ? "all" :
               cli.bc_mode == Cli::BcMode::Skip ? "skip" : "only",

@@ -155,6 +155,8 @@ GATES = [
     # B d0/d3 are disjoint, and checks the shared replacement schedule.
     ("l220_q4_a32_prepare_consume_layout", []),
     ("l227_q4_a32_packed_decode_type", []),
+    ("l229_q4_kpack4_production_type", []),
+    ("l230_q4_kpack4_offline_abi", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -389,6 +391,7 @@ def run(cmd, **kw):
 # is the fastest way to teach people to ignore it. Sources, not flags, because the missing thing is a definition.
 GATE_SRCS = {
     "l110_unit_pack_abi": ["quactlize/csrc/device/ppu_dense_layout.cu"],
+    "l230_q4_kpack4_offline_abi": ["quactlize/csrc/device/ppu_dense_layout.cu"],
 }
 
 GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
@@ -405,6 +408,10 @@ GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               "l121_grouped_streamk_wrapper": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               "l122_streamk_fixup_cohort": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               "l227_q4_a32_packed_decode_type": [
+                  "-D__HGGCCC__", "--expt-relaxed-constexpr",
+                  "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_FORMAT=0",
+                  "-DPPU_B_CHUNK=0"],
+              "l229_q4_kpack4_production_type": [
                   "-D__HGGCCC__", "--expt-relaxed-constexpr",
                   "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_FORMAT=0",
                   "-DPPU_B_CHUNK=0"],

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ppu_format_config.hpp"
+#include "q4_kpack4_offline.hpp"
 #include "quactlize_ppu_config.h"
 
 namespace ppu_arrangements {
@@ -30,6 +31,47 @@ constexpr bool matches_compiled_tactic(
          tactic_tile_k % arrangement->artifact_tile_k == 0;
 }
 
+constexpr quactlize_ppu_placed_arrangement_v2 q4_kpack4_transpose_v1() {
+  return {QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V2,
+          QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1,
+          4, 0, 0, q4_kpack4::kTransportK, q4_kpack4::kGroupK, 0,
+          q4_kpack4::kMappingId};
+}
+
+// v2 is intentionally a separate predicate rather than a templated reinterpret
+// of v1.  Xplane and K-pack4 have different physical axes even though both
+// contain the same number of low-code bytes.
+constexpr bool matches_compiled_tactic(
+    quactlize_ppu_placed_arrangement_v2 const* arrangement,
+    int qtype, int k, int tactic_tile_k) {
+  if (!arrangement ||
+      arrangement->version != QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V2 ||
+      arrangement->reserved != 0)
+    return false;
+  if (arrangement->layout == QUACTLIZE_PPU_LAYOUT_XPLANE_V1) {
+    if (arrangement->transport_tile_k != 0 || arrangement->group_size != 0 ||
+        arrangement->mapping_id != 0)
+      return false;
+    quactlize_ppu_placed_arrangement_v1 const legacy{
+        QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V1,
+        arrangement->bits, arrangement->artifact_tile_k,
+        arrangement->high_bits};
+    return matches_compiled_tactic(&legacy, qtype, k, tactic_tile_k);
+  }
+  if (arrangement->layout !=
+      QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1)
+    return false;
+  return qtype == 12 && arrangement->bits == 4 &&
+         arrangement->high_bits == 0 &&
+         arrangement->artifact_tile_k == 0 &&
+         arrangement->transport_tile_k == q4_kpack4::kTransportK &&
+         arrangement->group_size == q4_kpack4::kGroupK &&
+         arrangement->mapping_id == q4_kpack4::kMappingId &&
+         k > 0 && k % q4_kpack4::kGroupK == 0 &&
+         tactic_tile_k >= q4_kpack4::kTransportK &&
+         tactic_tile_k % q4_kpack4::kTransportK == 0;
+}
+
 // Packed metadata support is a property of the exact resident reader, not merely of the low-bit width.  Two-plane
 // readers own their general packed channel; unfolded single-plane readers retain the 32-byte floor.  Q4/A32 is the
 // one proved folded single-plane exception: its F2 collective reads each physical N/2 x 2K weight run directly and
@@ -43,6 +85,21 @@ constexpr bool packed_tensor_reader_supported(
                             arrangement->artifact_tile_k == 32 &&
                             tactic_tile_k == 256;
   return format.high_bits != 0 || low_bytes >= 32 || q4_a32_fold2;
+}
+
+constexpr bool packed_tensor_reader_supported(
+    quactlize_ppu_placed_arrangement_v2 const* arrangement,
+    int qtype, int k, int tactic_tile_k) {
+  if (!matches_compiled_tactic(arrangement, qtype, k, tactic_tile_k))
+    return false;
+  if (arrangement->layout ==
+      QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1)
+    return true;
+  quactlize_ppu_placed_arrangement_v1 const legacy{
+      QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V1,
+      arrangement->bits, arrangement->artifact_tile_k,
+      arrangement->high_bits};
+  return packed_tensor_reader_supported(&legacy, qtype, k, tactic_tile_k);
 }
 
 template <int QType, int TacticTileK, int ArtifactTileK>
@@ -96,5 +153,13 @@ static_assert(packed_tensor_reader_supported(&kNativeFold2Q4Control, 12, 4096, 2
               "Q4/A32 must retain its native folded packed-metadata reader");
 static_assert(!packed_tensor_reader_supported(&kNativeFold2Q4Control, 12, 4096, 128),
               "Q4/A32 packed metadata requires the proved one-superblock tactic");
+inline constexpr auto kQ4KPack4Control = q4_kpack4_transpose_v1();
+static_assert(matches_compiled_tactic(&kQ4KPack4Control, 12, 5120, 64));
+static_assert(matches_compiled_tactic(&kQ4KPack4Control, 12, 5120, 256));
+static_assert(!matches_compiled_tactic(&kQ4KPack4Control, 12, 5120, 32),
+              "TK32 needs a separately proved K64-stage/two-consume mainloop");
+static_assert(!matches_compiled_tactic(&kQ4KPack4Control, 13, 5120, 256),
+              "the first K-pack4 ABI is Q4_K-only");
+static_assert(packed_tensor_reader_supported(&kQ4KPack4Control, 12, 5120, 256));
 
 }  // namespace ppu_arrangements

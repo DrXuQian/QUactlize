@@ -53,6 +53,7 @@
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_a_schedule.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_a_pack.hpp"
+#include "q4_kpack4_offline.hpp"
 #include "cutlass/detail/collective.hpp"
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -137,6 +138,8 @@ public:
   // Type Aliases
   //
   using DispatchPolicy = MainloopQuactlizeMixedInput<Stages, kContinous, KernelSchedule>;
+  static constexpr bool kQ4KPack4Transpose =
+      q4_kpack4_schedule_traits<KernelSchedule>::Value;
   using TileShape = detail::deduce_mixed_width_dtype_t<0, TileShapePair_>;
   using ScaleTileShape = cute::conditional_t<cute::is_void_v<TileShape_Scale>,
       decltype(make_shape(shape<1>(TileShape{}), Int<1>{})), TileShape_Scale>;
@@ -392,6 +395,15 @@ public:
     return true;
   }
   using RealInternalElementB = cute::conditional_t<!SwapAB, ElementB, ElementA>;
+  using BTransportElement = cute::conditional_t<
+      kQ4KPack4Transpose, cutlass::half_t, RealInternalElementB>;
+  static constexpr int PhysicalBTileK = kQ4KPack4Transpose
+      ? int(size<2>(TileShape{})) / q4_kpack4::kPack
+      : int(size<2>(TileShape{}));
+  static_assert(!kQ4KPack4Transpose ||
+                    (std::is_same_v<RealInternalElementB, cutlass::int4b_t> &&
+                     int(size<2>(TileShape{})) % q4_kpack4::kTransportK == 0),
+                "K-pack4 collective needs Q4 and a whole K64 transport");
   using InternalStrideA  = cute::conditional_t<!SwapAB, StrideA, StrideB>;
   using InternalStrideB  = cute::conditional_t<!SwapAB, StrideB, StrideA>;
 
@@ -496,7 +508,8 @@ public:
                 "TM8 must pay for complete 16-row A cubes in every stage");
   using SmemLayoutB = decltype(tile_to_shape(
       InternalSmemLayoutAtomB{},
-      make_shape(shape<1>(TileShape{}), shape<2>(TileShape{}), Int<DispatchPolicy::Stages>{})));
+      make_shape(shape<1>(TileShape{}), Int<PhysicalBTileK>{},
+                 Int<DispatchPolicy::Stages>{})));
 
   // It is assumed that the scales and zero-points share the same smem layout
   // PPU_SCALE_PAD: break the bank period on the GROUP stride.
@@ -774,7 +787,7 @@ public:
     // which PPU0010's AIU load requires (align_bytes = 32 in gemm_operands.hpp). Shrinking smem_a to one element
     // once put smem_b at offset 2 and produced 'AIU_ld TSM size out of range'. The alignment holds by arithmetic,
     // not by declaration.
-    cute::ArrayEngine<RealInternalElementB, cute::cosize_v<SmemLayoutB>> smem_b;
+    cute::ArrayEngine<BTransportElement, cute::cosize_v<SmemLayoutB>> smem_b;
     // PACKED SCALE CHANNEL (plan #20 option E). When on, the tile holds the gguf's own bytes -- one 16 B unit per
     // (superblock, column) carrying d, dmin and the codes -- so the ZERO TILE GOES TO ZERO ELEMENTS, not shrinks: `mn`
     // lives in the same unit. Chosen by TYPE rather than by #if, because one binary holds units of several shapes and
@@ -969,7 +982,20 @@ public:
 
     // B init (include init aiu desc)
     auto mB_nk = load_init_B(mainloop_params, N, K, L, l_coord);                                                // (n,k)
-    Tensor gB = local_tile(mB_nk, TileShape{}, take<0,3>(blk_coord_mnkl), Step< X,_1,_1>{});                    // (BLK_N,BLK_K,k)
+    Tensor gB = [&] {
+      if constexpr (kQ4KPack4Transpose) {
+        // Physical B is [N,K/4] b16.  Its K-tile count is nevertheless
+        // identical to the logical [N,K] Q4 tensor because both the problem
+        // and tactic K extents are divided by four here.
+        using PhysicalBTile = Shape<decltype(shape<1>(TileShape{})),
+                                    Int<PhysicalBTileK>>;
+        return local_tile(mB_nk, PhysicalBTile{},
+                          make_coord(n_coord, _));
+      } else {
+        return local_tile(mB_nk, TileShape{}, take<0,3>(blk_coord_mnkl),
+                          Step<X, _1, _1>{});
+      }
+    }();                                                                                                       // (BLK_N,BLK_K{phys},k)
 
     if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
       return cute::make_tuple(gA, gB);
@@ -1089,7 +1115,11 @@ public:
     CUTE_STATIC_ASSERT_V(size<0>(sA) == size<0>(TileShape{}));                 // BLK_M_LOGICAL
     CUTE_STATIC_ASSERT_V(size<0>(gB) == size<0>(sB));                          // BLK_N
     CUTE_STATIC_ASSERT_V(size<1>(gB) == size<1>(sB));                          // BLK_K
-    CUTE_STATIC_ASSERT_V(size<1>(sA) == size<1>(sB));                          // BLK_K
+    if constexpr (kQ4KPack4Transpose) {
+      CUTE_STATIC_ASSERT_V(size<1>(sA) == Int<q4_kpack4::kPack>{} * size<1>(sB));
+    } else {
+      CUTE_STATIC_ASSERT_V(size<1>(sA) == size<1>(sB));                        // BLK_K
+    }
     CUTE_STATIC_ASSERT_V(Int<DispatchPolicy::Stages>{} == size<2>(sA));        // PIPE
     CUTE_STATIC_ASSERT_V(Int<DispatchPolicy::Stages>{} == size<2>(sA_physical)); // PIPE
     CUTE_STATIC_ASSERT_V(Int<DispatchPolicy::Stages>{} == size<2>(sB));        // PIPE
@@ -1135,7 +1165,21 @@ public:
     TiledMma tiled_mma;
     auto thr_mma = tiled_mma.get_thread_slice(thread_idx);
     Tensor tCrA = thr_mma.partition_fragment_A(sA(_,_,0));                   // (MMA,MMA_M,MMA_K)
-    Tensor tCrB_mma = thr_mma.partition_fragment_B(sB(_,_,0));                // (MMA,MMA_N,MMA_K)
+    Tensor tCrB_mma = [&] {
+      if constexpr (kQ4KPack4Transpose) {
+        // Owning rmem fragment only: no load is performed through this logical
+        // view.  The physical b16 tile is read below, converted, and retiled
+        // into this ordinary N x logical-K MMA destination.
+        auto logical_b = make_tensor(
+            make_smem_ptr(reinterpret_cast<cutlass::half_t*>(storage.smem_b.begin())),
+            make_layout(
+                make_shape(shape<1>(TileShape{}), shape<2>(TileShape{})),
+                make_stride(shape<2>(TileShape{}), _1{})));
+        return thr_mma.partition_fragment_B(logical_b);
+      } else {
+        return thr_mma.partition_fragment_B(sB(_,_,0));
+      }
+    }();                                                                       // (MMA,MMA_N,MMA_K logical)
 #if defined(PPU_B_DEQUANT_NOP) && (PPU_B_DEQUANT_NOP != 0)
     // The ablation must not change what the MMA pipe is fed. partition_fragment_B does not initialise, and with the
     // conversion removed nothing else would either, so every atom would consume indeterminate bits -- which as fp16
@@ -1175,8 +1219,18 @@ public:
         Layout<Shape<warpOnM, warpOnN,_1>>,
         Tile<ShadowPermutationM, PermutationN, _32>>;
 
-    TiledMma_S8 tiled_mma_s8;
-    auto thr_mma_s8 = tiled_mma_s8.get_thread_slice(thread_idx);
+    // The K-pack4 reader uses the actual PPU0010 fp16 B-fragment map because
+    // each opaque b16 is one transport word.  Its K mode is physical K/4, so
+    // one x1 copy step (Kgroup16) feeds four logical K16 MMA atoms.
+    using TiledMma_KPack4 = TiledMMA<
+        MMA_Atom<PPU0010_16x16x16_F32F16F16F32_TN>,
+        Layout<Shape<warpOnM, warpOnN, _1>>,
+        Tile<ShadowPermutationM, PermutationN, _16>>;
+    using TiledMma_BLoad = cute::conditional_t<
+        kQ4KPack4Transpose, TiledMma_KPack4, TiledMma_S8>;
+
+    TiledMma_BLoad tiled_mma_bload;
+    auto thr_mma_bload = tiled_mma_bload.get_thread_slice(thread_idx);
 
     auto smem_tiled_copy_A = make_tiled_copy_A(SmemCopyAtomA{}, tiled_mma);
     auto smem_thr_copy_A   = smem_tiled_copy_A.get_thread_slice(aiu_warp_group_thread_idx);
@@ -1186,12 +1240,15 @@ public:
     CUTE_STATIC_ASSERT_V(size<1>(tCsA) == size<1>(tCrA_copy_view));            // CPY_M
     CUTE_STATIC_ASSERT_V(size<2>(tCsA) == size<2>(tCrA_copy_view));            // CPY_K
 
-    auto sB_s8 = recast<int8_t>(sB);
-    Tensor tCrB_load =thr_mma_s8.partition_fragment_B(sB_s8(_,_,0));
+    auto sB_load = [&] {
+      if constexpr (kQ4KPack4Transpose) return sB;
+      else return recast<int8_t>(sB);
+    }();
+    Tensor tCrB_load = thr_mma_bload.partition_fragment_B(sB_load(_,_,0));
 
-    auto smem_tiled_copy_B = make_tiled_copy_B(SmemCopyAtomB{}, tiled_mma_s8);
+    auto smem_tiled_copy_B = make_tiled_copy_B(SmemCopyAtomB{}, tiled_mma_bload);
     auto smem_thr_copy_B   = smem_tiled_copy_B.get_thread_slice(aiu_warp_group_thread_idx);
-    Tensor tCsB            = smem_thr_copy_B.partition_S(make_mix_tensor_like(sB_s8));             // (CPY,CPY_N,CPY_K,PIPE)
+    Tensor tCsB            = smem_thr_copy_B.partition_S(make_mix_tensor_like(sB_load));            // (CPY,CPY_N,CPY_K,PIPE)
     Tensor tCrB_copy_view  = smem_thr_copy_B.retile_D(tCrB_load);                                  // (CPY,CPY_N,CPY_K)
     CUTE_STATIC_ASSERT_V(size<1>(tCsB) == size<1>(tCrB_copy_view));            // CPY_N
     CUTE_STATIC_ASSERT_V(size<2>(tCsB) == size<2>(tCrB_copy_view));            // CPY_K
@@ -1294,6 +1351,25 @@ public:
 private:
   CUTLASS_DEVICE
   auto load_init_B(Params const& mainloop_params, int N, int K, int L, int l_coord) {
+    if constexpr (kQ4KPack4Transpose) {
+      using TilerB = typename GmemTiledCopyB::Tiler_MN;
+      using Transport = cutlass::half_t;
+      int const physical_k = K / q4_kpack4::kPack;
+      auto const* expert_base = detail::mixed_packed_byte_expert_base(
+          mainloop_params.ptr_B,
+          int64_t(N) * int64_t(K) * sizeof_bits<RealInternalElementB>::value / 8,
+          l_coord);
+      auto physical_stride = make_stride(_1{}, int64_t(N), int64_t(N) * physical_k);
+      Tensor mB_nkl = make_tensor(
+          make_gmem_ptr(reinterpret_cast<Transport const*>(expert_base)),
+          make_shape(N, physical_k, L), physical_stride);
+      auto mB_nk = make_mix_tensor_like(mB_nkl(_,_,l_coord));
+      gmem_tiled_copy_B.desc_.template init<
+          Transport, true, get<0>(TilerB{}), get<1>(TilerB{})>(
+              const_cast<uint8_t*>(expert_base), N, physical_k,
+              take<0,2>(physical_stride));
+      return mB_nk;
+    } else {
     auto kCon = kContinous{};
     using TilerB = typename GmemTiledCopyB::Tiler_MN;
     if constexpr (kCon != 1) {
@@ -1320,6 +1396,7 @@ private:
       gmem_tiled_copy_B.desc_.template init<RealInternalElementB, false, get<0>(TilerB{}), get<1>(TilerB{})>(
             nullptr, N, K, mainloop_params.dB);
       return mB_nk;
+    }
     }
   }
 

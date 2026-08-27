@@ -49,6 +49,42 @@ typedef struct quactlize_ppu_placed_arrangement_v1 {
   int32_t high_bits;
 } quactlize_ppu_placed_arrangement_v1;
 
+// v2 makes the physical byte map explicit.  v1 remains the immutable xplane
+// compatibility ABI; a v2 K-pack4 artifact must never be passed through a v1
+// pointer and inferred from ArtifactTileK.
+#define QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V2 2
+#define QUACTLIZE_PPU_LAYOUT_XPLANE_V1 0
+#define QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1 1
+#define QUACTLIZE_PPU_Q4_KPACK4_MAPPING_ID UINT64_C(0x51344b5034540001)
+typedef struct quactlize_ppu_placed_arrangement_v2 {
+  int32_t version;
+  int32_t layout;
+  int32_t bits;
+  int32_t high_bits;
+  // Xplane retains its resident copy quantum here.  K-pack4 has no artifact
+  // TileK axis and must set this field to zero.
+  int32_t artifact_tile_k;
+  int32_t transport_tile_k;
+  int32_t group_size;
+  int32_t reserved;
+  uint64_t mapping_id;
+} quactlize_ppu_placed_arrangement_v2;
+
+// Host-only offline placement/recovery.  The v2 descriptor is checked by the
+// same library that produces the bytes; null/unknown/mismatched descriptors
+// fail closed.  Existing fixed/tile-aware symbols remain source and ABI
+// compatible and continue to produce xplane bytes.
+int quactlize_ppu_prepare_dense_for_arrangement_v2(
+    uint8_t const* low_native, uint8_t const* high_native,
+    uint8_t* low_layout, uint8_t* high_layout,
+    int n, int k, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement);
+int quactlize_ppu_recover_dense_for_arrangement_v2(
+    uint8_t const* low_layout, uint8_t const* high_layout,
+    uint8_t* low_native, uint8_t* high_native,
+    int n, int k, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement);
+
 // Arrangement-aware inventory row.  v2 could use one TileK field only because its artifact and tactic were the
 // same registry value.  A folded artifact may be consumed by a wider tactic, so v3 names both quantities and makes
 // accidental substitution visible to callers.

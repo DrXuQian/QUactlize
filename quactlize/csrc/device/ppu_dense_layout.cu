@@ -7,6 +7,8 @@
 
 #include "fold_traits.hpp"
 #include "ppu_format_config.hpp"
+#include "ppu_placed_arrangement.hpp"
+#include "q4_kpack4_offline.hpp"
 #include "xplane_offline.hpp"
 
 namespace {
@@ -204,4 +206,69 @@ extern "C" int quactlize_ppu_recover_dense_for_tile(
     int n, int k, int qtype, int artifact_tile_k) {
   return tile_dispatch<true>(low_layout, high_layout, low_native, high_native,
                              n, k, qtype, artifact_tile_k);
+}
+
+namespace {
+
+template <bool Recover>
+int arrangement_v2_dispatch(
+    uint8_t const* low_in, uint8_t const* high_in,
+    uint8_t* low_out, uint8_t* high_out,
+    int n, int k, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement) {
+  if (!arrangement ||
+      arrangement->version != QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V2)
+    return 25;
+  if (arrangement->layout ==
+      QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1) {
+    auto const canonical = ppu_arrangements::q4_kpack4_transpose_v1();
+    if (qtype != 12 || arrangement->bits != canonical.bits ||
+        arrangement->high_bits != canonical.high_bits ||
+        arrangement->artifact_tile_k != canonical.artifact_tile_k ||
+        arrangement->transport_tile_k != canonical.transport_tile_k ||
+        arrangement->group_size != canonical.group_size ||
+        arrangement->reserved != canonical.reserved ||
+        arrangement->mapping_id != canonical.mapping_id ||
+        high_in || high_out)
+      return 25;
+    if constexpr (Recover)
+      return q4_kpack4::recover(low_in, low_out, n, k);
+    else
+      return q4_kpack4::prepare(low_in, low_out, n, k);
+  }
+  if (arrangement->layout == QUACTLIZE_PPU_LAYOUT_XPLANE_V1) {
+    if (arrangement->transport_tile_k != 0 || arrangement->group_size != 0 ||
+        arrangement->reserved != 0 || arrangement->mapping_id != 0)
+      return 25;
+    auto const& format = ppu_formats::for_qtype(qtype);
+    if (format.qtype < 0 || arrangement->bits != format.low_bits ||
+        arrangement->high_bits != format.high_bits)
+      return 25;
+    return tile_dispatch<Recover>(low_in, high_in, low_out, high_out,
+                                  n, k, qtype,
+                                  arrangement->artifact_tile_k);
+  }
+  return 25;
+}
+
+}  // namespace
+
+extern "C" int quactlize_ppu_prepare_dense_for_arrangement_v2(
+    uint8_t const* low_native, uint8_t const* high_native,
+    uint8_t* low_layout, uint8_t* high_layout,
+    int n, int k, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement) {
+  return arrangement_v2_dispatch<false>(
+      low_native, high_native, low_layout, high_layout,
+      n, k, qtype, arrangement);
+}
+
+extern "C" int quactlize_ppu_recover_dense_for_arrangement_v2(
+    uint8_t const* low_layout, uint8_t const* high_layout,
+    uint8_t* low_native, uint8_t* high_native,
+    int n, int k, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement) {
+  return arrangement_v2_dispatch<true>(
+      low_layout, high_layout, low_native, high_native,
+      n, k, qtype, arrangement);
 }

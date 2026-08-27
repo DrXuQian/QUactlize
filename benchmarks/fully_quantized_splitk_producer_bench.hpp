@@ -145,6 +145,13 @@ template <class T> struct ElementBits {
 };
 template <> struct ElementBits<void> { static constexpr int value = 0; };
 
+template <class Mainloop, class = void>
+struct KPack4MainloopSelected : std::false_type {};
+template <class Mainloop>
+struct KPack4MainloopSelected<
+    Mainloop, std::void_t<decltype(Mainloop::kQ4KPack4Transpose)>>
+    : std::bool_constant<Mainloop::kQ4KPack4Transpose> {};
+
 template <class Policy, class = void>
 struct PackedAProviderCapacity : std::integral_constant<int, 0> {};
 template <class Policy>
@@ -156,7 +163,8 @@ struct PackedAProviderCapacity<Policy, std::void_t<decltype(Policy::PackedARows)
 // bundle; the latter deliberately stops before CUDA tries to lower PPU-only
 // device expressions.
 template <int QType, int ArtifactTileK, int TM, int TN, int TK,
-          int WM, int WN, int Stages, int BChunk, int AProvider>
+          int WM, int WN, int Stages, int BChunk, int AProvider,
+          int WeightLayout = 0>
 struct TcRowTypes {
   using F = Format<QType>;
   using Low = typename F::Low;
@@ -187,7 +195,18 @@ struct TcRowTypes {
   using PackedA = fpa_intb_ppu::DensePackedAKernelTypes<
       1, QuantMode::FinegrainedScaleZero, Schedule, Tile, ScaleTile, Warp,
       Stages, true, Low, ArtifactTileK>;
-  using Shipping = std::conditional_t<use_packed_a, PackedA, Ordinary>;
+  static_assert(WeightLayout == 0 || WeightLayout == 1,
+                "generated weight layout is xplane(0) or Q4 K-pack4(1)");
+  static constexpr bool use_kpack4 = WeightLayout == 1;
+  static_assert(!use_kpack4 ||
+                    (QType == 12 && ArtifactTileK == 0 && BChunk == 0 &&
+                     !use_packed_a && std::is_void_v<High>),
+                "the first K-pack4 denominator is Q4/one-plane/ordinary-A only");
+  using LegacyShipping = std::conditional_t<use_packed_a, PackedA, Ordinary>;
+  using KPack4 = fpa_intb_ppu::DenseQ4KPack4KernelTypes<
+      QuantMode::FinegrainedScaleZero, Schedule, Tile, ScaleTile, Warp,
+      Stages, true>;
+  using Shipping = std::conditional_t<use_kpack4, KPack4, LegacyShipping>;
   using Split = dense_splitk_parallel_ppu::KernelTypes<Shipping, Tile, Warp>;
   using ShippingGemm = typename Shipping::Gemm;
   using ShippingKernel = typename Shipping::GemmKernel;
@@ -206,7 +225,7 @@ struct TcRowTypes {
   static_assert(Mainloop::packed_scale_copy_threads *
                     Mainloop::packed_scale_columns_per_thread == TN,
                 "packed metadata owner slices must cover every TileN column");
-  static_assert(!(QType == 12 && ArtifactTileK == 32) ||
+  static_assert(use_kpack4 || !(QType == 12 && ArtifactTileK == 32) ||
                     (std::is_same_v<
                          typename Shipping::MainloopPolicy::Descriptor::BProviderType,
                          ppu_mixed_policy::FoldedBProvider<2>> &&
@@ -228,13 +247,20 @@ struct TcRowTypes {
   static_assert((use_packed_a && a_provider_capacity_rows == 1) ||
                 (!use_packed_a && a_provider_capacity_rows == 0),
                 "A-provider capacity must come from the selected shipping policy");
+  static_assert(!use_kpack4 ||
+                    (KPack4MainloopSelected<Mainloop>::value &&
+                     std::is_same_v<
+                         typename Shipping::MainloopPolicy::Descriptor::BProviderType,
+                         ppu_mixed_policy::KPack4TransposedBProvider>),
+                "K-pack4 generated row must retain its named production provider");
 };
 
 template <int QType, int ArtifactTileK, int TM, int TN, int TK,
-          int WM, int WN, int Stages, int BChunk, int AProvider>
+          int WM, int WN, int Stages, int BChunk, int AProvider,
+          int WeightLayout = 0>
 constexpr bool admit_tc_row_type() {
   using Types = TcRowTypes<QType, ArtifactTileK, TM, TN, TK,
-                           WM, WN, Stages, BChunk, AProvider>;
+                           WM, WN, Stages, BChunk, AProvider, WeightLayout>;
   return Types::Shipping::SharedStorageSize > 0 &&
          Types::SplitKernel::SharedStorageSize > 0;
 }
@@ -321,11 +347,12 @@ bool measure(Launch&& launch, int iterations, CellResult& result) {
 }
 
 template <int QType, int ArtifactTileK, int TM, int TN, int TK,
-          int WM, int WN, int Stages, int BChunk, int AProvider>
+          int WM, int WN, int Stages, int BChunk, int AProvider,
+          int WeightLayout = 0>
 bool run_tc_row(DeviceInputs const& in, Options const& options,
                 RowResult& row) {
   using Types = TcRowTypes<QType, ArtifactTileK, TM, TN, TK,
-                           WM, WN, Stages, BChunk, AProvider>;
+                           WM, WN, Stages, BChunk, AProvider, WeightLayout>;
   using F = typename Types::F;
   using Low = typename Types::Low;
   using High = typename Types::High;
@@ -353,12 +380,15 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
     CellResult& result = row.cells[index];
     result = CellResult{};
     int const splits = kSplits[index];
+    // A filtered split is not a runtime cell.  Keep split==0 so the caller
+    // cannot accidentally publish a default-constructed MEASURED record for
+    // an algorithm that was never launched.
+    if (options.only_split && options.only_split != splits) continue;
     result.split = splits;
     result.full_output = splits == 1;
     result.shipping_smem = Shipping::SharedStorageSize;
     result.split_smem = SplitKernel::SharedStorageSize;
     result.a_provider_capacity_rows = Types::a_provider_capacity_rows;
-    if (options.only_split && options.only_split != splits) continue;
     if constexpr (TM == 8) {
       if (in.m > options.tm8_max_m) {
         result.state = State::M8DecodeOnly;

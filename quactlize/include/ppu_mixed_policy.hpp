@@ -9,6 +9,7 @@
 #include "cutlass/gemm/collective/collective_builder.hpp"
 
 #include "fold_traits.hpp"
+#include "q4_kpack4_offline.hpp"
 #include "ppu_group_schedule.hpp"
 #include "ppu_tactic_space.hpp"
 #include "quactlize_actlize.hpp"
@@ -80,6 +81,9 @@ struct PackedRowAProvider {};
 struct OrdinaryBProvider {};
 template <int Fold> struct FoldedBProvider {};
 template <int LowFold, int HighFold> struct TwoPlaneBProvider {};
+struct KPack4TransposedBProvider {};
+struct XPlaneWeightLayout {};
+struct Q4KPack4TransposeWeightLayout {};
 template <bool Packed, bool HasZero> struct MetadataProvider {};
 template <bool AtomAtATime> struct ConversionProvider {};
 
@@ -99,7 +103,7 @@ struct AtomAtATimeConversion<Collective, std::void_t<decltype(Collective::kBChun
 
 template <class Collective, class BaseSchedule, class KernelSchedule, class ElementBInfo,
           class LayoutA, class LayoutB, class TileShape, class ScaleTileShape, class WarpShape,
-          class AProvider, class BProvider, QuantMode Mode, int LowBits, int HighBits,
+          class AProvider, class BProvider, class WeightLayout, QuantMode Mode, int LowBits, int HighBits,
           int TacticTileK, int ArtifactTileK, int ArtifactLowFold, int ArtifactHighFold,
           int Stages, bool Interleaved>
 struct MixedPolicyDescriptor {
@@ -114,6 +118,7 @@ struct MixedPolicyDescriptor {
   using WarpShapeType = WarpShape;
   using AProviderType = AProvider;
   using BProviderType = BProvider;
+  using WeightLayoutType = WeightLayout;
   using MetadataPolicyType = typename Collective::MetadataPolicy;
   using PipelineDriverType = typename Collective::PipelineDriver;
   using MetadataProviderType = MetadataProvider<PackedMetadata<Collective>::value, has_zero(Mode)>;
@@ -135,6 +140,10 @@ struct MixedPolicyDescriptor {
   static constexpr bool interleaved = Interleaved;
   static constexpr bool packed_metadata = PackedMetadata<Collective>::value;
   static constexpr bool atom_at_a_time = AtomAtATimeConversion<Collective>::value;
+  static constexpr bool q4_kpack4_transpose =
+      std::is_same_v<WeightLayout, Q4KPack4TransposeWeightLayout>;
+  static constexpr int transport_tile_k =
+      q4_kpack4_transpose ? q4_kpack4::kTransportK : ArtifactTileK;
 };
 
 template <QuantMode Mode, class BaseSchedule, class TileShape, class ScaleTileShape, class WarpShape,
@@ -193,8 +202,66 @@ struct MainloopPolicy {
       std::conditional_t<(ArtifactLowFold > 1), FoldedBProvider<ArtifactLowFold>, OrdinaryBProvider>>;
   using Descriptor = MixedPolicyDescriptor<CollectiveOp, BaseSchedule, KernelSchedule, ElementBInfo,
       LayoutA, LayoutB, TileShape, ScaleTileShape, WarpShape, AProvider, BProvider,
+      XPlaneWeightLayout,
       Mode, LowBits, HighBits, TacticTileK, ArtifactTileK, ArtifactLowFold, ArtifactHighFold,
       Stages, AiuInterleaved>;
+};
+
+// Canonical one-plane Q4_K physical provider.  The weight bytes are independent
+// of tactic TileK; a compile-time K64 transport is composed inside TK64/128/256.
+// This is a sibling of MainloopPolicy rather than a mode on it, so no legacy
+// xplane type or descriptor changes when the new layout is not selected.
+template <QuantMode Mode, class BaseSchedule, class TileShape,
+          class ScaleTileShape, class WarpShape, int Stages,
+          bool AiuInterleaved>
+struct Q4KPack4MainloopPolicy {
+  using ElementA = cutlass::half_t;
+  using ElementB = cutlass::int4b_t;
+  using ElementScale = cutlass::half_t;
+  using ElementZero = cutlass::half_t;
+  using LayoutA = cutlass::layout::RowMajor;
+  using LayoutB = std::conditional_t<AiuInterleaved,
+      cutlass::layout::ColumnMajorInterleaved<256>,
+      cutlass::layout::ColumnMajor>;
+  static constexpr int AlignmentA = 128 / cutlass::sizeof_bits<ElementA>::value;
+  static constexpr int AlignmentB = 128 / cutlass::sizeof_bits<ElementB>::value;
+  static constexpr int LowBits = 4;
+  static constexpr int HighBits = 0;
+  static constexpr int TacticTileK = int(cute::size<2>(TileShape{}));
+  static constexpr int ArtifactTileK = 0;
+  static constexpr int ArtifactLowFold = 1;
+  static constexpr int ArtifactHighFold = 1;
+  static constexpr int TileK = TacticTileK;
+  static constexpr int LowFold = 1;
+  static constexpr int HighFold = 1;
+  static_assert(TacticTileK >= q4_kpack4::kTransportK &&
+                    TacticTileK % q4_kpack4::kTransportK == 0,
+                "K-pack4 production policy initially admits TK64/128/256");
+  static_assert(int(cute::size<1>(TileShape{})) % q4_kpack4::kTransportN == 0,
+                "K-pack4 production policy composes N16 transport tiles");
+
+  using KernelSchedule = cutlass::gemm::KernelAiuQ4KPack4Transpose<BaseSchedule>;
+  using ElementBInfo = typename OperandInfo<Mode, ElementB, void,
+                                            ElementScale, ElementZero>::Type;
+  using CollectiveBuilderType = cutlass::gemm::collective::CollectiveBuilder<
+      cutlass::arch::PPU0010, cutlass::arch::OpClassTensorOp,
+      ElementA, LayoutA, AlignmentA, ElementBInfo, LayoutB, AlignmentB, float,
+      cute::tuple<TileShape, ScaleTileShape>, WarpShape, cute::Int<Stages>,
+      KernelSchedule>;
+  static_assert(CollectiveBuilderType::ArtifactTileK == 0,
+                "K-pack4 must not acquire an xplane ArtifactTileK identity");
+  static_assert(CollectiveBuilderType::HasQ4KPack4,
+                "K-pack4 schedule must select the transposed physical provider");
+  using CollectiveOp = typename CollectiveBuilderType::CollectiveOp;
+  static constexpr bool PackedRowA = false;
+  using AProvider = AiuAProvider;
+  using BProvider = KPack4TransposedBProvider;
+  using Descriptor = MixedPolicyDescriptor<
+      CollectiveOp, BaseSchedule, KernelSchedule, ElementBInfo,
+      LayoutA, LayoutB, TileShape, ScaleTileShape, WarpShape,
+      AProvider, BProvider, Q4KPack4TransposeWeightLayout,
+      Mode, LowBits, HighBits, TacticTileK, ArtifactTileK,
+      ArtifactLowFold, ArtifactHighFold, Stages, AiuInterleaved>;
 };
 
 // Independent dense-M==1 A provider.  This intentionally does not add a parameter to MainloopPolicy: callers that
@@ -252,6 +319,7 @@ public:
   using BProvider = OrdinaryBProvider;
   using Descriptor = MixedPolicyDescriptor<CollectiveOp, BaseSchedule, KernelSchedule, ElementBInfo,
       LayoutA, LayoutB, TileShape, ScaleTileShape, WarpShape, AProvider, BProvider,
+      XPlaneWeightLayout,
       Mode, LowBits, HighBits, TacticTileK, ArtifactTileK, ArtifactLowFold, ArtifactHighFold,
       Stages, AiuInterleaved>;
 };

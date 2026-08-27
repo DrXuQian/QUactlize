@@ -63,6 +63,33 @@ struct KernelAiuPackedA {
   using WrappedSchedule = WrappedSchedule_;
 };
 
+// Physical Q4_K provider with converter-native K-pack4 words stored as a
+// transposed b16 tensor [K/4,N].  This wrapper is orthogonal to group-size and
+// A-provider schedules.  Keeping it as a type prevents a runtime layout branch
+// in the mainloop and prevents an xplane pointer from reaching this reader.
+template<class WrappedSchedule_>
+struct KernelAiuQ4KPack4Transpose {
+  using WrappedSchedule = WrappedSchedule_;
+};
+
+template<class T> struct q4_kpack4_schedule_traits {
+  static constexpr bool Value = false;
+  using Wrapped = T;
+};
+template<class WrappedSchedule_>
+struct q4_kpack4_schedule_traits<KernelAiuQ4KPack4Transpose<WrappedSchedule_>> {
+  static constexpr bool Value = true;
+  using Wrapped = WrappedSchedule_;
+};
+template<int Rows_, class WrappedSchedule_>
+struct q4_kpack4_schedule_traits<KernelAiuPackedA<Rows_, WrappedSchedule_>> {
+private:
+  using WrappedTraits = q4_kpack4_schedule_traits<WrappedSchedule_>;
+public:
+  static constexpr bool Value = WrappedTraits::Value;
+  using Wrapped = KernelAiuPackedA<Rows_, typename WrappedTraits::Wrapped>;
+};
+
 template<class T> struct a_provider_schedule_traits {
   static constexpr int Rows = 0;
   using Wrapped = T;
@@ -172,6 +199,13 @@ template<int Stages_, class kContinous_, int Rows_, class WrappedSchedule_>
 struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuPackedA<Rows_, WrappedSchedule_>>
     : MainloopQuactlizeMixedInput<Stages_, kContinous_, WrappedSchedule_> {
   static constexpr int AProviderRows = Rows_;
+};
+
+template<int Stages_, class kContinous_, class WrappedSchedule_>
+struct MainloopQuactlizeMixedInput<
+    Stages_, kContinous_, KernelAiuQ4KPack4Transpose<WrappedSchedule_>>
+    : MainloopQuactlizeMixedInput<Stages_, kContinous_, WrappedSchedule_> {
+  static constexpr bool Q4KPack4Transpose = true;
 };
 
 //////////////////////////////////////////////////////////////////////////////
