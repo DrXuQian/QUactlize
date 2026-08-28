@@ -285,7 +285,7 @@ LOWBIT_DENSE_CONFIGS_PER_UNIT="${LOWBIT_DENSE_CONFIGS_PER_UNIT:-4}"
 echo "[build.sh] TILE=${TILE_M}x${TILE_N} WARP=${WARP_M}x${WARP_N} STAGES=${STAGES} QUANT=${QUANT} TSK=${TSK} BENCH_GS=${BENCH_GS:-all} DENSE_CONFIGS_PER_UNIT=$LOWBIT_DENSE_CONFIGS_PER_UNIT"
 
 # --- configure & build just our target ---
-# OVERRIDABLE, because build.sh rm -rf's this and something that RUNS build.sh to check it must be able to point it
+# OVERRIDABLE, because a fresh build.sh run rm -rf's this and something that RUNS build.sh to check it must be able to point it
 # somewhere disposable. Without the override, ci/box_build_dryrun.sh destroyed the real build tree every time the
 # local tier ran -- on the box, that is someone's working build.
 # REPO-LOCAL, NOT INSIDE THE SUBMODULE. This defaulted to $ACTLIZE/build_w4a16_compare, i.e. build products in
@@ -304,6 +304,11 @@ echo "[build.sh] TILE=${TILE_M}x${TILE_N} WARP=${WARP_M}x${WARP_N} STAGES=${STAG
 # The old name was build_w4a16_compare, after an experiment this repo stopped being about; targets now land
 # under ppu_targets/ with no examples/ nesting, because they are no longer actlize examples.
 BUILD="${PPU_BUILD_DIR:-$HERE/build_ppu}"
+BUILD_RESUME="${PPU_BUILD_RESUME:-0}"
+case "$BUILD_RESUME" in
+  0|1) ;;
+  *) echo "ERROR: PPU_BUILD_RESUME must be 0 or 1 (got $BUILD_RESUME)." >&2; exit 2 ;;
+esac
 # An old tree has products in the submodule. Say so rather than leaving two candidates for `find` to pick from.
 for _stale in "$ACTLIZE/build_w4a16_compare" "$HERE/build_w4a16_compare"; do
   if [ -d "$_stale" ] && [ "$BUILD" != "$_stale" ]; then
@@ -314,7 +319,22 @@ done
 # EXPLICIT SOURCE DIRECTORY. `cmake ..` only meant "the actlize root" while $BUILD was inside it; once the build
 # directory became overridable, `..` resolved to wherever that happened to be. Naming the source is both correct and
 # independent of where the build lands.
-rm -rf "$BUILD" && mkdir -p "$BUILD" && cd "$BUILD"
+#
+# A production closure can contain hundreds of expensive hgcc translation units.  If an outer timeout stops make,
+# deleting the whole tree on the next invocation turns a recoverable interruption into another full box build.
+# Resume is therefore an EXPLICIT opt-in and requires a configured tree; ordinary invocations retain the historical
+# clean-build contract.  CMake still runs below, so changed sources/definitions are dependency-checked before make
+# resumes the unfinished target.
+if [ "$BUILD_RESUME" = 1 ]; then
+  if [ ! -d "$BUILD" ] || [ ! -f "$BUILD/CMakeCache.txt" ]; then
+    echo "ERROR: PPU_BUILD_RESUME=1 requires an existing configured PPU_BUILD_DIR: $BUILD" >&2
+    exit 2
+  fi
+  echo "[build.sh] resuming configured build tree $BUILD"
+  cd "$BUILD"
+else
+  rm -rf "$BUILD" && mkdir -p "$BUILD" && cd "$BUILD"
+fi
 # FORWARD THE SWEEP AXIS KNOBS. They were added to CMakeLists.txt and then not wired through here, so narrowing a sweep was
 # impossible from build.sh -- the knob existed and could not be reached, which is worse than no knob because it reads as
 # available. Keep this explicit list in lockstep with the cache variables advertised by CMake; the advice gate

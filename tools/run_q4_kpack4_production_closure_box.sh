@@ -5,24 +5,37 @@
 set -uo pipefail
 
 main() {
-  local root workspace_root sha short stamp out jobs timeout_s
+  local root workspace_root sha short stamp out jobs timeout_s resume
   local packed_log sf_log packed_so sf_so host_log audit_log pytest_log rc
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
   workspace_root="$(realpath -e /workspace)" || return 2
   sha="$(git -C "$root" rev-parse HEAD)" || return 2
   short="${sha:0:8}"
   stamp="$(date -u +%Y%m%dT%H%M%SZ)" || return 2
+  resume="${RESUME:-0}"
+  case "$resume" in
+    0|1) ;;
+    *) printf '[q4-kpack4-production] FAIL: RESUME must be 0 or 1\n' >&2; return 2 ;;
+  esac
+  if [ "$resume" = 1 ] && [ -z "${OUT:-}" ]; then
+    printf '[q4-kpack4-production] FAIL: RESUME=1 requires the exact existing OUT path\n' >&2
+    return 2
+  fi
   out="$(realpath -m -- "${OUT:-/workspace/quactlize-q4-kpack4-production-${short}-${stamp}-$$}")" || return 2
   case "$out" in
     "$workspace_root"/*) ;;
     *) printf '[q4-kpack4-production] FAIL: OUT must be a strict /workspace child: %s\n' "$out" >&2; return 2 ;;
   esac
-  if [ -e "$out" ]; then
+  if [ "$resume" = 0 ] && [ -e "$out" ]; then
     printf '[q4-kpack4-production] FAIL: refusing to overwrite %s\n' "$out" >&2
     return 2
   fi
+  if [ "$resume" = 1 ] && [ ! -d "$out" ]; then
+    printf '[q4-kpack4-production] FAIL: resume OUT is not an existing directory: %s\n' "$out" >&2
+    return 2
+  fi
   jobs="${JOBS:-16}"
-  timeout_s="${BUILD_TIMEOUT:-1200}"
+  timeout_s="${BUILD_TIMEOUT:-3600}"
   case "$jobs:$timeout_s" in
     *[!0-9:]*|0:*|*:0) printf '[q4-kpack4-production] FAIL: JOBS/BUILD_TIMEOUT must be positive integers\n' >&2; return 2 ;;
   esac
@@ -48,8 +61,14 @@ PY
   }
 
   packed_log="$out/results/build-packed.log"
+  if [ "$resume" = 1 ] && [ -s "$packed_log" ]; then
+    cp -p -- "$packed_log" "$packed_log.before-resume-$stamp" || return 2
+    printf '[q4-kpack4-production] resume packed build=%s timeout=%ss\n' \
+      "$out/build-packed" "$timeout_s"
+  fi
   timeout "$timeout_s" env \
-    PPU_BUILD_DIR="$out/build-packed" PPU_ARCHS=ppu0010 JOBS="$jobs" \
+    PPU_BUILD_DIR="$out/build-packed" PPU_BUILD_RESUME="$resume" \
+    PPU_ARCHS=ppu0010 JOBS="$jobs" \
     PPU_DEFS='PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=0 QUACTLIZE_DENSE_ONLY=12' \
     TARGET=quactlize_ppu "$root/build.sh" >"$packed_log" 2>&1
   rc=$?
@@ -72,8 +91,14 @@ PY
   done
 
   sf_log="$out/results/build-scalefirst.log"
+  if [ "$resume" = 1 ] && [ -s "$sf_log" ]; then
+    cp -p -- "$sf_log" "$sf_log.before-resume-$stamp" || return 2
+    printf '[q4-kpack4-production] resume ScaleFirst build=%s timeout=%ss\n' \
+      "$out/build-scalefirst" "$timeout_s"
+  fi
   timeout "$timeout_s" env \
-    PPU_BUILD_DIR="$out/build-scalefirst" PPU_ARCHS=ppu0010 JOBS="$jobs" \
+    PPU_BUILD_DIR="$out/build-scalefirst" PPU_BUILD_RESUME="$resume" \
+    PPU_ARCHS=ppu0010 JOBS="$jobs" \
     PPU_DEFS='QUACTLIZE_DENSE_ONLY=12' TARGET=quactlize_ppu \
     "$root/build.sh" >"$sf_log" 2>&1
   rc=$?
