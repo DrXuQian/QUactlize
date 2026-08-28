@@ -28,12 +28,24 @@ main() {
   esac
   mkdir -p "$out/results" "$out/build-packed" "$out/build-scalefirst" || return 2
 
-  for module in torch pytest gguf; do
+  for module in torch pytest; do
     python3 -c "import $module" >/dev/null 2>&1 || {
       printf '[q4-kpack4-production] FAIL: python module %s is required\n' "$module" >&2
       return 2
     }
   done
+  python3 - <<'PY' >/dev/null 2>&1 || {
+import gguf
+from gguf.constants import GGMLQuantizationType, GGML_QUANT_SIZES
+assert callable(gguf.quants.dequantize)
+assert GGMLQuantizationType.Q4_K in GGML_QUANT_SIZES
+PY
+    printf '%s\n' \
+      '[q4-kpack4-production] FAIL: official gguf oracle API is required.' \
+      'Install the version used by this repository, then rerun the same command:' \
+      "  python3 -m pip install 'gguf==0.19.0'" >&2
+    return 2
+  }
 
   packed_log="$out/results/build-packed.log"
   timeout "$timeout_s" env \
