@@ -133,6 +133,23 @@ fi
 BM="$(find "$BUILDDIR" -path "*${TARGET}.dir/build.make" 2>/dev/null | head -1)"
 [ -n "$BM" ] || fail "no build.make for $TARGET -- cmake configured but the target was not created"
 
+# 2b. hgcc custom commands have no header depfile, so an incremental resume is
+# sound only when build.sh can prove the tree belongs to this exact source
+# authority.  The production runner consumes this same stamp before it permits
+# RESUME=1; proving only the runner's check without proving the producer would
+# make every fresh build permanently non-resumable.
+AUTH="$BUILDDIR/.quactlize-source-head"
+[ -s "$AUTH" ] || fail "fresh build did not record .quactlize-source-head"
+WANT_AUTH="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
+[ -n "$WANT_AUTH" ] && [ "$(cat "$AUTH")" = "$WANT_AUTH" ] || \
+  fail "build source-authority stamp disagrees with repository HEAD"
+DIRTY_AUTH="$BUILDDIR/.quactlize-source-dirty"
+if git -C "$ROOT" diff --quiet HEAD --; then
+  [ ! -e "$DIRTY_AUTH" ] || fail "clean build was marked as tracked-dirty"
+else
+  [ -s "$DIRTY_AUTH" ] || fail "tracked-dirty build was not marked non-resumable"
+fi
+
 # 3. the defines must reach the DEVICE compile command. build.sh checks this too, but only if the build gets far
 #    enough to; here it is checked directly off the generated makefile.
 # A WHOLE ARGUMENT, not a substring: -DSK_QUANT=2 must not be satisfied by -DSK_QUANT=20.

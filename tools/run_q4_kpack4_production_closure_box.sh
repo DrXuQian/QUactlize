@@ -6,10 +6,15 @@ set -uo pipefail
 
 main() {
   local root workspace_root sha short stamp out jobs timeout_s resume
+  local packed_resume sf_resume build_dir authority have phase_resume
   local packed_log sf_log packed_so sf_so host_log audit_log pytest_log rc
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
   workspace_root="$(realpath -e /workspace)" || return 2
   sha="$(git -C "$root" rev-parse HEAD)" || return 2
+  if ! git -C "$root" diff --quiet HEAD --; then
+    printf '[q4-kpack4-production] FAIL: tracked source authority is dirty; commit or revert it before a production closure\n' >&2
+    return 2
+  fi
   short="${sha:0:8}"
   stamp="$(date -u +%Y%m%dT%H%M%SZ)" || return 2
   resume="${RESUME:-0}"
@@ -41,6 +46,40 @@ main() {
   esac
   mkdir -p "$out/results" "$out/build-packed" "$out/build-scalefirst" || return 2
 
+  packed_resume=0
+  sf_resume=0
+  if [ "$resume" = 1 ]; then
+    for build_dir in "$out/build-packed" "$out/build-scalefirst"; do
+      phase_resume=0
+      if [ -f "$build_dir/CMakeCache.txt" ]; then
+        authority="$build_dir/.quactlize-source-head"
+        if [ ! -f "$authority" ]; then
+          printf '[q4-kpack4-production] FAIL: cannot resume unversioned hgcc objects in %s\n' \
+            "$build_dir" >&2
+          printf '[q4-kpack4-production] INFO: headers are not CMake dependencies; run a fresh closure after a source update\n' >&2
+          return 2
+        fi
+        if [ -e "$build_dir/.quactlize-source-dirty" ]; then
+          printf '[q4-kpack4-production] FAIL: cannot resume hgcc objects built from tracked working-tree changes in %s\n' \
+            "$build_dir" >&2
+          return 2
+        fi
+        read -r have < "$authority" || return 2
+        if [ "$have" != "$sha" ]; then
+          printf '[q4-kpack4-production] FAIL: resume source authority changed build=%s source=%s\n' \
+            "$have" "$sha" >&2
+          printf '[q4-kpack4-production] INFO: run a fresh closure; reusing these objects would execute the old header code\n' >&2
+          return 2
+        fi
+        phase_resume=1
+      fi
+      case "$build_dir" in
+        "$out/build-packed") packed_resume="$phase_resume" ;;
+        "$out/build-scalefirst") sf_resume="$phase_resume" ;;
+      esac
+    done
+  fi
+
   for module in torch pytest; do
     python3 -c "import $module" >/dev/null 2>&1 || {
       printf '[q4-kpack4-production] FAIL: python module %s is required\n' "$module" >&2
@@ -63,11 +102,11 @@ PY
   packed_log="$out/results/build-packed.log"
   if [ "$resume" = 1 ] && [ -s "$packed_log" ]; then
     cp -p -- "$packed_log" "$packed_log.before-resume-$stamp" || return 2
-    printf '[q4-kpack4-production] resume packed build=%s timeout=%ss\n' \
-      "$out/build-packed" "$timeout_s"
+    printf '[q4-kpack4-production] continue packed build=%s incremental=%s timeout=%ss\n' \
+      "$out/build-packed" "$packed_resume" "$timeout_s"
   fi
   timeout "$timeout_s" env \
-    PPU_BUILD_DIR="$out/build-packed" PPU_BUILD_RESUME="$resume" \
+    PPU_BUILD_DIR="$out/build-packed" PPU_BUILD_RESUME="$packed_resume" \
     PPU_ARCHS=ppu0010 JOBS="$jobs" \
     PPU_DEFS='PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=0 QUACTLIZE_DENSE_ONLY=12' \
     TARGET=quactlize_ppu "$root/build.sh" >"$packed_log" 2>&1
@@ -93,11 +132,11 @@ PY
   sf_log="$out/results/build-scalefirst.log"
   if [ "$resume" = 1 ] && [ -s "$sf_log" ]; then
     cp -p -- "$sf_log" "$sf_log.before-resume-$stamp" || return 2
-    printf '[q4-kpack4-production] resume ScaleFirst build=%s timeout=%ss\n' \
-      "$out/build-scalefirst" "$timeout_s"
+    printf '[q4-kpack4-production] continue ScaleFirst build=%s incremental=%s timeout=%ss\n' \
+      "$out/build-scalefirst" "$sf_resume" "$timeout_s"
   fi
   timeout "$timeout_s" env \
-    PPU_BUILD_DIR="$out/build-scalefirst" PPU_BUILD_RESUME="$resume" \
+    PPU_BUILD_DIR="$out/build-scalefirst" PPU_BUILD_RESUME="$sf_resume" \
     PPU_ARCHS=ppu0010 JOBS="$jobs" \
     PPU_DEFS='QUACTLIZE_DENSE_ONLY=12' TARGET=quactlize_ppu \
     "$root/build.sh" >"$sf_log" 2>&1
@@ -121,6 +160,13 @@ PY
     printf '[q4-kpack4-production] FAIL: ScaleFirst library accidentally enabled packed metadata\n' >&2
     return 2
   fi
+
+  printf '%s\n' "$sha" > "$out/results/source-head.txt" || return 2
+  sha256sum "$packed_so" "$sf_so" > "$out/results/device-binaries.sha256" || return 2
+  printf 'Q4_KPACK4_PRODUCTION_BINARY source_sha=%s packed_sha256=%s scalefirst_sha256=%s\n' \
+    "$sha" \
+    "$(awk 'NR==1 {print $1}' "$out/results/device-binaries.sha256")" \
+    "$(awk 'NR==2 {print $1}' "$out/results/device-binaries.sha256")"
 
   host_log="$out/results/build-host-extension.log"
   (cd "$root" && python3 setup.py build_ext --inplace) >"$host_log" 2>&1 || {

@@ -375,6 +375,16 @@ address model is the RED control.  L231 remains the independent proof for all
 12 inner K-pack4 fragment geometries.  The direct device admission is the
 `kpack4_production` marker with the ragged/empty-expert fixture above.
 
+Do not resume a pre-fix hgcc build tree for this closure.  Actlize's
+`cutlass_build_dev_kernels` custom command records only the `.cu` as
+`MAIN_DEPENDENCY` and emits no header depfile; changing this collective header
+does not make the old object stale in Make's graph.  `build.sh` now stamps each
+fresh tree with `.quactlize-source-head` and permits resume only at the exact
+same clean Git HEAD; a fresh developer build made with tracked changes is
+marked `.quactlize-source-dirty` and cannot later be resumed.  An identical
+post-fix error from an unstamped resumed tree is old-binary evidence, not a
+device verdict on the repair.
+
 ## Prefill measurement boundary
 
 No completed K-pack4 prefill timing existed before 2026-08-28.  Do not

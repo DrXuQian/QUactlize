@@ -309,6 +309,12 @@ case "$BUILD_RESUME" in
   0|1) ;;
   *) echo "ERROR: PPU_BUILD_RESUME must be 0 or 1 (got $BUILD_RESUME)." >&2; exit 2 ;;
 esac
+BUILD_SOURCE_SHA="$(git -C "$HERE" rev-parse HEAD 2>/dev/null)" || {
+  echo "ERROR: cannot bind the PPU build tree to the repository HEAD." >&2
+  exit 2
+}
+BUILD_SOURCE_AUTHORITY="$BUILD/.quactlize-source-head"
+BUILD_SOURCE_DIRTY="$BUILD/.quactlize-source-dirty"
 # An old tree has products in the submodule. Say so rather than leaving two candidates for `find` to pick from.
 for _stale in "$ACTLIZE/build_w4a16_compare" "$HERE/build_w4a16_compare"; do
   if [ -d "$_stale" ] && [ "$BUILD" != "$_stale" ]; then
@@ -323,17 +329,49 @@ done
 # A production closure can contain hundreds of expensive hgcc translation units.  If an outer timeout stops make,
 # deleting the whole tree on the next invocation turns a recoverable interruption into another full box build.
 # Resume is therefore an EXPLICIT opt-in and requires a configured tree; ordinary invocations retain the historical
-# clean-build contract.  CMake still runs below, so changed sources/definitions are dependency-checked before make
-# resumes the unfinished target.
+# clean-build contract.  The source-authority check below covers included headers that CMake's custom hgcc rules do
+# not track; CMake then checks the translation units and definitions before make resumes the unfinished target.
 if [ "$BUILD_RESUME" = 1 ]; then
   if [ ! -d "$BUILD" ] || [ ! -f "$BUILD/CMakeCache.txt" ]; then
     echo "ERROR: PPU_BUILD_RESUME=1 requires an existing configured PPU_BUILD_DIR: $BUILD" >&2
     exit 2
   fi
+  # PPUToolchain.cmake compiles .cu files with add_custom_command and records
+  # only MAIN_DEPENDENCY=<translation-unit>; it emits no header depfile. Make
+  # therefore cannot discover that a pulled .hpp changed. Resume is sound only
+  # for an interrupted build of the exact same source authority.
+  if [ ! -f "$BUILD_SOURCE_AUTHORITY" ]; then
+    echo "ERROR: PPU_BUILD_RESUME=1 refused an unversioned build tree: $BUILD" >&2
+    echo "       hgcc custom objects do not track header dependencies; start a fresh build." >&2
+    exit 2
+  fi
+  if [ -e "$BUILD_SOURCE_DIRTY" ]; then
+    echo "ERROR: PPU_BUILD_RESUME refused a tree built from tracked working-tree changes." >&2
+    echo "       hgcc custom objects do not track header dependencies; start a fresh build." >&2
+    exit 2
+  fi
+  read -r BUILD_SOURCE_HAVE < "$BUILD_SOURCE_AUTHORITY" || exit 2
+  if [ "$BUILD_SOURCE_HAVE" != "$BUILD_SOURCE_SHA" ]; then
+    echo "ERROR: PPU_BUILD_RESUME source authority changed." >&2
+    echo "       build tree: ${BUILD_SOURCE_HAVE:-<empty>}" >&2
+    echo "       source HEAD: $BUILD_SOURCE_SHA" >&2
+    echo "       hgcc custom objects do not track header dependencies; start a fresh build." >&2
+    exit 2
+  fi
+  if ! git -C "$HERE" diff --quiet HEAD --; then
+    echo "ERROR: PPU_BUILD_RESUME refused tracked working-tree changes." >&2
+    echo "       Header changes are not dependencies of hgcc custom objects; start a fresh build." >&2
+    exit 2
+  fi
   echo "[build.sh] resuming configured build tree $BUILD"
   cd "$BUILD"
 else
-  rm -rf "$BUILD" && mkdir -p "$BUILD" && cd "$BUILD"
+  rm -rf "$BUILD" && mkdir -p "$BUILD"
+  printf '%s\n' "$BUILD_SOURCE_SHA" > "$BUILD_SOURCE_AUTHORITY"
+  if ! git -C "$HERE" diff --quiet HEAD --; then
+    git -C "$HERE" status --short --untracked-files=no > "$BUILD_SOURCE_DIRTY" || exit 2
+  fi
+  cd "$BUILD"
 fi
 # FORWARD THE SWEEP AXIS KNOBS. They were added to CMakeLists.txt and then not wired through here, so narrowing a sweep was
 # impossible from build.sh -- the knob existed and could not be reached, which is worse than no knob because it reads as
