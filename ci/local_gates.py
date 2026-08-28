@@ -1888,10 +1888,10 @@ def lint_fq_q4k_kpack4_delivery_committed_evidence():
 
 
 def lint_fq_q4k_kpack4_fused_store_real_shapes():
-    """D32 plain/store uses one matched denominator over every decode shape."""
+    """Shipping-auto plain/store uses one matched denominator over every decode shape."""
     return _run_ci_script(
         "check_fq_q4k_kpack4_fused_store_real_shapes_runner.py",
-        "K-pack4 D32 plain/store shares exact 144-row screen and confirm unions over 20 shapes")
+        "K-pack4 auto64 plain/store shares exact 144-row screen and confirm unions over 20 shapes")
 
 
 def lint_m8n16_g2_contract():
@@ -2510,7 +2510,7 @@ def main():
                 ("lint", "Q4 K-pack4 transpose cost uses provider-matched isomorphic timing and conditional ACU", lint_fq_q4k_kpack4_xplane_isomorphic_ab),
                 ("lint", "Q4 K-pack4 resident delivery isolates shared-bank phase with matched AIU/TSM atoms", lint_fq_q4k_kpack4_delivery_ab),
                 ("lint", "Q4 K-pack4 delivery consumes source-bound host evidence without box nvcc", lint_fq_q4k_kpack4_delivery_committed_evidence),
-                ("lint", "Q4 K-pack4 D32 fused-store sweep matches all real decode-shape candidates", lint_fq_q4k_kpack4_fused_store_real_shapes),
+                ("lint", "Q4 K-pack4 auto64 fused-store sweep matches all real decode-shape candidates", lint_fq_q4k_kpack4_fused_store_real_shapes),
                 ("lint", "syntax baselines and live SYNTAX sources match", lint_syntax_inventory),
                 ("lint", "m8n16 G2 replays the historical bad index on the production x4 payload", lint_m8n16_g2_contract),
                 ("lint", "l125 exhausts all 256 G5 zero-plane addresses through the production CuTe map", lint_grouped_metadata_layout),

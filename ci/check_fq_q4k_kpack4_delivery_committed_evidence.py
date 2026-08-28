@@ -66,7 +66,7 @@ def validate(evidence: str, l229: str, l231: str, l231_runner: str, l232: str,
         "l231_rotate": "[l231-red] PASS plant=rotated-destination result=RED",
         "l231_legacy": "[l231-red] PASS plant=legacy-loader-stride result=RED",
         "l232": "L232 Q4_K KPACK4 fused-metadata-store layout_bad=0 bits_bad=0 "
-                "providers=AP0+AP1 delivery=D32 values=1024-per-provider",
+                "providers=AP0+AP1 delivery=auto64 values=1024-per-provider",
     }
     for key, value in exact.items():
         if rows[key] != value:

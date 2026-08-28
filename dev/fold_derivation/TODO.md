@@ -2276,7 +2276,7 @@ conflict hypothesis.  Its measured reduction in `No Eligible` and warp cycles
 per instruction makes it a scheduler/scoreboard optimization, not a proved
 bank fix.
 
-The subsequent D32 metadata factorial resolved which implementation to keep.
+The subsequent frozen-row D32 metadata factorial resolved which implementation to keep.
 On AP1, the shipping fused-store arm was raw-bit exact and improved the regular
 four-round timing from `16.880000010` to `16.240000725 us` (`-3.791465%`), with
 all paired deltas negative.  It also reduced instructions `1703 -> 1660` and
@@ -2290,10 +2290,18 @@ intended counter reduction nor a timing benefit and was deleted completely.
 An individual ACU Duration sample that disagrees with the balanced four-round
 timing remains diagnostic only; it is not product-performance authority.
 
-L232 now proves only the retained fused-store word/half CuTe mapping and raw
-packed-half bit identity.  The shipping decision is being validated with one
-matched D32 `plain/store` factorial over the complete inventory-owned decode
+L232 now proves the retained fused-store word/half CuTe mapping and raw
+packed-half bit identity under the shipping auto64 delivery type.  The
+shipping decision is being validated with one matched auto64 `plain/store`
+factorial over the complete inventory-owned decode
 denominator: 144 AP0/AP1 tactics, five `(N,K)` families, and
 `M={1,2,4,8}`.  M=1 admits both providers; packed-A's declared one-row capacity
 makes its M=2/4/8 rows explicit terminal states rather than hidden candidates.
 Both arms share the exact screen and confirmation symbol unions.
+
+Do not force D32 across this denominator.  The first accidental full-D32 run
+was a useful RED control: even its plain arm lost all 20 median comparisons to
+the archived Xplane baseline, with per-family worst regrets from 57.7% to
+96.8%.  The one frozen TN64 win did not transfer to other tactics/M values.
+D32 remains an explicit per-tactic delivery candidate, never a deployment
+default or a fused-store confounder.

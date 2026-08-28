@@ -16,13 +16,13 @@ using Warp = Shape<_8, _16, _256>;
 template <int AProvider>
 using Types = fpa_intb_ppu::DenseQ4KPack4KernelTypes<
     ppu_mixed_policy::QuantMode::FinegrainedScaleZero,
-    Schedule, TileShape, ScaleTile, Warp, 2, true, AProvider, 32>;
+    Schedule, TileShape, ScaleTile, Warp, 2, true, AProvider, 0>;
 
 using AP0 = typename Types<0>::CollectiveMainloop;
 using AP1 = typename Types<1>::CollectiveMainloop;
 
-static_assert(AP0::kQ4KPack4ResolvedDeliveryN == 32);
-static_assert(AP1::kQ4KPack4ResolvedDeliveryN == 32);
+static_assert(AP0::kQ4KPack4ResolvedDeliveryN == 64);
+static_assert(AP1::kQ4KPack4ResolvedDeliveryN == 64);
 static_assert(AP0::is_packed_scale && AP1::is_packed_scale);
 static_assert(AP0::is_fused_scale_zero && AP1::is_fused_scale_zero);
 
@@ -57,7 +57,7 @@ int main() {
     bits_bad += cutlass::gguf_packed::hi_h2(pair).raw() != hi;
   }
   std::printf("L232 Q4_K KPACK4 fused-metadata-store layout_bad=%d bits_bad=%d "
-              "providers=AP0+AP1 delivery=D32 values=1024-per-provider\n",
+              "providers=AP0+AP1 delivery=auto64 values=1024-per-provider\n",
               layout_bad, bits_bad);
   return (layout_bad == 0 && bits_bad == 0) ? 0 : 1;
 }

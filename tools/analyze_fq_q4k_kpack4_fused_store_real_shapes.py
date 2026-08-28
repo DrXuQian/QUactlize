@@ -17,8 +17,8 @@ import gen_fully_quantized_splitk_producer_units as generator
 import plan_fq_q4k_decode_real_shapes as planner
 
 
-SCHEMA = "quactlize.fq_q4k_kpack4_fused_store_real_shapes.v1"
-DELIVERY_N = 32
+SCHEMA = "quactlize.fq_q4k_kpack4_fused_store_real_shapes.v2"
+DELIVERY_N = 0
 ARMS = {"plain": False, "store": True}
 
 
@@ -195,7 +195,7 @@ def compare(plan_path: pathlib.Path, policy_path: pathlib.Path,
         ))))
     decode.atomic_text(output_tsv, "\n".join(lines) + "\n")
     print("FQ_KPACK4_FUSED_STORE_CENSUS "
-          f"shapes={len(output_rows)} families={len(families)} "
+          f"shapes={len(output_rows)} families={len(families)} delivery=auto64 "
           f"verdicts={json.dumps(dict(sorted(census.items())), sort_keys=True)} "
           f"worst_regression_pct={100 * result['worst_store_regression']:.6f} "
           f"best_gain_pct={100 * result['best_store_gain']:.6f}")
@@ -294,7 +294,7 @@ def self_test(policy: pathlib.Path) -> None:
         else:
             raise AnalysisError("mismatched confirm union stayed green")
     print("[fq-kpack4-fused-store-analysis:self-test] PASS exact 20-shape "
-          "plain/store D32 denominator, matched confirm unions and one RED plant")
+          "plain/store auto64 denominator, matched confirm unions and one RED plant")
 
 
 def main() -> int:

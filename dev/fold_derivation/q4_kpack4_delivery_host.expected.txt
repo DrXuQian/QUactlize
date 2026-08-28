@@ -2,11 +2,11 @@ schema=quactlize.fq-q4k-kpack4-delivery-host-evidence.v2
 l229_source_sha256=f1fc2a3492578a83a8854a93e6c2bd06c453440ee584396858951f99ef9e7e27
 l231_source_sha256=65ba72ec9da0402039f33245739a0e1a0534d9c6c995d1d69d47c5c0842c0ee4
 l231_runner_sha256=14497bf1e69631e0e3536a810420aa39d43a9a7a7d1b93d8dcb1daec7e5fa3fb
-l232_source_sha256=089c0f8d7b7e46aaa1213df3160360931dfb7036c3111e181fdb8494873b2105
+l232_source_sha256=421418942e2cb466c30997885d86bbc4bf9479d7d989c30ba6135def3d61c500
 l229=L229 Q4_K KPACK4 production-type PASS layout=0x00000001 mapping=0x51344b5034540001 physical=NxK/4 transport=N16xK64 delivery=auto64+32+16 tactic=8x64x256_w8x16_s2 providers=standard-aiu+packed-row
 l231_source=[l231-source] PASS compute-N-stride=BOUND legacy-negative=BOUND separate-layout-converter=BOUND
 l231_d32=[l231-delivery] PASS D=32 geometries=12 candidate=IDENTITY
 l231_d16=[l231-delivery] PASS D=16 geometries=12 candidate=IDENTITY
 l231_rotate=[l231-red] PASS plant=rotated-destination result=RED
 l231_legacy=[l231-red] PASS plant=legacy-loader-stride result=RED
-l232=L232 Q4_K KPACK4 fused-metadata-store layout_bad=0 bits_bad=0 providers=AP0+AP1 delivery=D32 values=1024-per-provider
+l232=L232 Q4_K KPACK4 fused-metadata-store layout_bad=0 bits_bad=0 providers=AP0+AP1 delivery=auto64 values=1024-per-provider

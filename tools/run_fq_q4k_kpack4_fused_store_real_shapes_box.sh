@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Matched D32 plain/fused-store K-pack4 sweep over all inventory-owned decode shapes.
+# Matched shipping-auto plain/fused-store K-pack4 sweep over all inventory-owned decode shapes.
 set -uo pipefail
 
 fail() {
@@ -69,9 +69,9 @@ build_arm() {
   [ ! -e "$build_dir" ] || {
     fail "partial build residue requires a new OUT: $build_dir"; return 2; }
   mkdir -p "$build_dir" || return 2
-  defs='FQ_TC_KPACK4_DELIVERY_N=32'
-  [ "$fused" -eq 0 ] || defs="$defs PPU_PACKED_SCALE_FUSED=1"
-  printf '[fq-kpack4-fused-store-real] build arm=%s D32 fused=%s typed=144\n' \
+  defs=''
+  [ "$fused" -eq 0 ] || defs='PPU_PACKED_SCALE_FUSED=1'
+  printf '[fq-kpack4-fused-store-real] build arm=%s delivery=auto64 fused=%s typed=144\n' \
     "$arm" "$fused"
   (cd "$root" && env -u CMAKE_GENERATOR -u CMAKE_TOOLCHAIN_FILE -u CC -u CXX \
     PPU_BUILD_DIR="$build_dir" PPU_ARCHS=ppu0010 JOBS="$jobs" \
@@ -100,9 +100,9 @@ build_arm() {
     grep -Eq -- '(^|[[:space:]])-DFQ_SWEEP_WEIGHT_LAYOUT=1([[:space:]]|$)' \
       "$target_make" || {
     fail "$arm generated/layout build ABI differs"; return 2; }
-  [ "$(grep -Eo -- '-DFQ_TC_KPACK4_DELIVERY_N=[0-9]+' "$target_make" | \
-      sort -u | tr '\n' ' ')" = '-DFQ_TC_KPACK4_DELIVERY_N=32 ' ] || {
-    fail "$arm D32 compile ABI differs"; return 2; }
+  if grep -Eq -- '-DFQ_TC_KPACK4_DELIVERY_N(=|[[:space:]])' "$target_make"; then
+    fail "$arm retained a non-shipping delivery override"; return 2
+  fi
   if [ "$fused" -eq 1 ]; then
     [ "$(grep -Eo -- '-DPPU_PACKED_SCALE_FUSED=[0-9]+' "$target_make" | \
         sort -u | tr '\n' ' ')" = '-DPPU_PACKED_SCALE_FUSED=1 ' ] || {
@@ -230,7 +230,7 @@ PY
         --tm8-max-m=8 --bc-mode=all || return $?
       python3 -B "$root/tools/analyze_fq_q4k_kpack4_pilot.py" screen \
         --shape="${m}x${n}x${k}" --manifest "$manifest" --log "$screen_log" \
-        --policy "$policy" --scalezero-fused "$fused" --delivery-n 32 \
+        --policy "$policy" --scalezero-fused "$fused" --delivery-n 0 \
         --symbols-output "$directory/screen-symbols.txt" \
         --summary-output "$directory/screen.json" || return 2
     done
@@ -255,7 +255,7 @@ PY
       python3 -B "$root/tools/analyze_fq_q4k_kpack4_pilot.py" scheduler \
         --shape="${m}x${n}x${k}" --manifest "$manifest" --log "$scheduler_log" \
         --screen-symbols "$shared/screen-union-symbols.txt" --policy "$policy" \
-        --scalezero-fused "$fused" --delivery-n 32 \
+        --scalezero-fused "$fused" --delivery-n 0 \
         --symbols-output "$directory/confirm-symbols.txt" \
         --summary-output "$directory/scheduler.json" || return 2
     done
@@ -280,7 +280,7 @@ PY
       python3 -B "$root/tools/analyze_fq_q4k_kpack4_pilot.py" finalize \
         --shape="${m}x${n}x${k}" --manifest "$manifest" --log "$confirm_log" \
         --symbols "$shared/confirm-union-symbols.txt" --policy "$policy" \
-        --scalezero-fused "$fused" --delivery-n 32 \
+        --scalezero-fused "$fused" --delivery-n 0 \
         --output-json "$directory/summary.json" \
         --output-tsv "$directory/summary.tsv" || return 2
     done
@@ -296,7 +296,7 @@ PY
     [ "$arm" = store ] && fused=1 || fused=0
     python3 -B "$root/tools/analyze_fq_q4k_kpack4_pilot.py" aggregate \
       --plan "$plan" --policy "$policy" --raw-root "$out/raw/$arm" \
-      --scalezero-fused "$fused" --delivery-n 32 \
+      --scalezero-fused "$fused" --delivery-n 0 \
       --output-json "$out/results/$arm.json" \
       --output-tsv "$out/results/$arm.tsv" || return 2
   done
@@ -312,7 +312,7 @@ PY
     "$(cat "$out/results/binary-store.path")" "$out/results/summary.json" \
     > "$out/results/authority.sha256" || return 2
   sed -n '1,21p' "$out/results/summary.tsv"
-  printf '[fq-kpack4-fused-store-real] PASS sha=%s families=5 shapes=20 variants=plain+store D32 artifacts=%s\n' \
+  printf '[fq-kpack4-fused-store-real] PASS sha=%s families=5 shapes=20 variants=plain+store auto64 artifacts=%s\n' \
     "$sha" "$out"
   printf '[fq-kpack4-fused-store-real] summary=%s\n' "$out/results/summary.tsv"
 }

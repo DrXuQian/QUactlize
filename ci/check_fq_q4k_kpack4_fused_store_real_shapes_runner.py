@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed source contract for the full K-pack4 fused-store A/B."""
+"""Fail-closed source contract for the shipping-auto K-pack4 fused-store A/B."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def check(texts: list[str]) -> None:
         "source_typed_rows\"] == 918",
         "build_arm \"$root\" \"$out\" \"$generated\" \"$jobs\" \"$units\" plain 0",
         "build_arm \"$root\" \"$out\" \"$generated\" \"$jobs\" \"$units\" store 1",
-        "FQ_TC_KPACK4_DELIVERY_N=32",
+        "retained a non-shipping delivery override",
         "PPU_PACKED_SCALE_FUSED=1",
         "plain binary carries fused-store define",
         "retained deleted fused-load define",
@@ -45,8 +45,8 @@ def check(texts: list[str]) -> None:
         "--iterations=7 --correctness-repeats=2",
         "screen-union-symbols.txt",
         "confirm-union-symbols.txt",
-        '--scalezero-fused "$fused" --delivery-n 32',
-        "variants=plain+store D32",
+        '--scalezero-fused "$fused" --delivery-n 0',
+        "variants=plain+store auto64",
         "source-state.sha256",
         "raw-authority.sha256",
     ), "runner")
@@ -55,8 +55,8 @@ def check(texts: list[str]) -> None:
     if runner.count("analyze_fq_q4k_kpack4_pilot.py\" finalize") != 1:
         raise CheckError("runner must have one looped finalizer seam")
     require(analyzer, (
-        'SCHEMA = "quactlize.fq_q4k_kpack4_fused_store_real_shapes.v1"',
-        "DELIVERY_N = 32",
+        'SCHEMA = "quactlize.fq_q4k_kpack4_fused_store_real_shapes.v2"',
+        "DELIVERY_N = 0",
         'ARMS = {"plain": False, "store": True}',
         "symbol union requires exact plain/store inputs",
         'value.get("shape_count") != 20',
@@ -96,6 +96,7 @@ def check(texts: list[str]) -> None:
     require(l232, (
         "fused-metadata-store",
         "is_fused_scale_zero && AP1::is_fused_scale_zero",
+        "kQ4KPack4ResolvedDeliveryN == 64",
         "SharedStorage::zero_elements == 0",
         "SharedStorage::scale_elements == 2 * cosize_v<Word>",
     ), "L232")
@@ -120,7 +121,7 @@ def main() -> int:
          "--iterations=1 --correctness-repeats=1"),
         (1, 'plain_detail.get("symbols_sha256") != store_detail.get("symbols_sha256")',
          "False"),
-        (1, "DELIVERY_N = 32", "DELIVERY_N = 64"),
+        (1, "DELIVERY_N = 0", "DELIVERY_N = 32"),
         (2, 'cell.get("scalezero_fused") != str(scalezero_fused)', "False"),
         (3, "MetadataPolicy::reload(", "legacy_reload("),
         (6, "SharedStorage::zero_elements == 0",
@@ -138,7 +139,7 @@ def main() -> int:
         else:
             raise CheckError(f"negative stayed green: {old}")
     print("[fq-kpack4-fused-store-real:self-test] PASS exact 2x144x20 "
-          "D32 denominator, matched screen/confirm unions and eight plants RED")
+          "auto64 denominator, matched screen/confirm unions and eight plants RED")
     return 0
 
 

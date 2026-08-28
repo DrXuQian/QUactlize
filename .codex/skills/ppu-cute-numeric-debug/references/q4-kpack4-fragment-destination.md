@@ -283,15 +283,15 @@ Raw-bit equality is an admission gate.  The completed result did not satisfy
 the 128 B phase hypothesis.  Choose D32 per tactic/provider from full kernel
 time; do not cite the conflict model as its cause.
 
-## D32 fused scale/zero store closure
+## Fused scale/zero store closure
 
 Q4_K's packed decoder has a byte-neutral interleaved `(scale, zero)` shared
 representation behind `PPU_PACKED_SCALE_FUSED`.  It fuses the two fp16
 metadata stores into one packed word while preserving the established CuTe
 reload path.
 
-The D32 device factorial admitted that fused-store path and rejected the
-experimental one-word reload.  On AP1, balanced four-round timing improved
+The frozen-row D32 device factorial admitted that fused-store path and rejected
+the experimental one-word reload.  On AP1, balanced four-round timing improved
 from `16.880000010` to `16.240000725 us` (`-3.791465%`), every paired delta was
 negative, instructions fell `1703 -> 1660`, and TSM loads fell `67 -> 47`.
 AP0 improved by `-2.296812%`.  Shared storage increased by 16 bytes and split
@@ -300,17 +300,17 @@ AP0 and `+16.995065%` on AP1 versus fused-store, while its Shared Load bank
 conflict count was unchanged.  It had no causal or performance value and was
 deleted rather than retained as a dormant switch.
 
-L232 now binds only the retained D32 AP0/AP1 fused-store word/half CuTe maps,
-zero-plane overlay, allocation coverage, and raw packed-half identity.  ACU
-Duration from one profiled launch is diagnostic; the cyclic balanced timing is
-the product-performance authority.
+L232 now binds the retained shipping-auto AP0/AP1 fused-store word/half CuTe
+maps, zero-plane overlay, allocation coverage, and raw packed-half identity.
+ACU Duration from one profiled launch is diagnostic; the cyclic balanced
+timing is the product-performance authority.
 
 The deployment closure must not reuse the frozen one-shape row.  Sweep all 20
 inventory-owned decode shapes with an exact matched factorial:
 
 - five `(N,K)` families times `M={1,2,4,8}`;
 - one 144-row K-pack4 manifest: 72 AP0 plus 72 packed-A AP1 tactics;
-- D32 in both binaries;
+- the default auto64 delivery policy in both binaries;
 - full raw-bit screen for both arms, then a union shortlist;
 - scheduler and seven-sample confirmation on the same arm-union denominator.
 
@@ -318,6 +318,14 @@ Packed-A has capacity one row.  It is a real candidate at M=1 and an explicit
 `PACKED_A_DECODE_ONLY_M_NOT_1` terminal at M=2/4/8.  Never delete those rows
 from the denominator or compare an AP0-only K-pack4 board to an Xplane AP1
 winner.
+
+Do not promote the frozen D32 result globally.  An accidental full-D32
+plain/store scan subsequently lost all 20 plain-arm median comparisons to the
+archived Xplane baseline; its five per-family worst regrets were 57.7%--96.8%.
+That is a direct RED control showing that one TN64 delivery win does not
+transfer across tactics or M.  Delivery is a separate per-tactic search axis;
+the fused-store deployment A/B must reproduce the original auto64 baseline and
+change only the store macro.
 
 ```bash
 INTERNAL_SWEEP_SPEC=/path/to/complete/inventory.json \
