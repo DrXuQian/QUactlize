@@ -283,42 +283,46 @@ Raw-bit equality is an admission gate.  The completed result did not satisfy
 the 128 B phase hypothesis.  Choose D32 per tactic/provider from full kernel
 time; do not cite the conflict model as its cause.
 
-## D32 scale/zero one-word reload follow-up
+## D32 fused scale/zero store closure
 
-The remaining counted conflicts are tested at the metadata reload, not by
-changing the resident B cube again.  Q4_K's packed decoder already has a
-byte-neutral interleaved `(scale, zero)` shared representation behind
-`PPU_PACKED_SCALE_FUSED`.  That historical switch fuses two fp16 *stores* but
-deliberately leaves two fp16 *loads*, so it cannot by itself establish a
-Shared Load reduction.
+Q4_K's packed decoder has a byte-neutral interleaved `(scale, zero)` shared
+representation behind `PPU_PACKED_SCALE_FUSED`.  It fuses the two fp16
+metadata stores into one packed word while preserving the established CuTe
+reload path.
 
-`PPU_PACKED_SCALE_FUSED_READ` is a separate candidate.  It preserves the
-existing CuTe per-thread source coordinate, reads the adjacent even/odd halves
-once as `uint32_t`, and writes the low/high raw halves into the original scale
-and zero register fragments.  It is initially admitted only for Q4_K's 6-bit
-packed-pair path.  L232 binds both D32 AP0/AP1 production types, proves the
-complete half layout has exactly twice the word-layout strides, and checks
-65,536 raw half pairs.  The flag-on syntax row instantiates the real reader;
-the device `scalezero_fused_read` marker and raw-bit fixture close the compiler
-boundary.
+The D32 device factorial admitted that fused-store path and rejected the
+experimental one-word reload.  On AP1, balanced four-round timing improved
+from `16.880000010` to `16.240000725 us` (`-3.791465%`), every paired delta was
+negative, instructions fell `1703 -> 1660`, and TSM loads fell `67 -> 47`.
+AP0 improved by `-2.296812%`.  Shared storage increased by 16 bytes and split
+workspace did not change.  The extra reload experiment was `+14.647371%` on
+AP0 and `+16.995065%` on AP1 versus fused-store, while its Shared Load bank
+conflict count was unchanged.  It had no causal or performance value and was
+deleted rather than retained as a dormant switch.
 
-Use three arms, because two are insufficient for attribution:
+L232 now binds only the retained D32 AP0/AP1 fused-store word/half CuTe maps,
+zero-plane overlay, allocation coverage, and raw packed-half identity.  ACU
+Duration from one profiled launch is diagnostic; the cyclic balanced timing is
+the product-performance authority.
 
-- `plain`: separate fp16 planes, separate stores and loads;
-- `store`: interleaved words and one decoder store, but old two-load reader;
-- `load`: identical interleaved storage plus one uint32 shared reload.
+The deployment closure must not reuse the frozen one-shape row.  Sweep all 20
+inventory-owned decode shapes with an exact matched factorial:
 
-The four timing rounds balance the order of every pair.  ACU must contain all
-six AP0/AP1 arms.  Occurrence zero of `Bank Conflicts` is the Shared Load row;
-the analyzer emits `FQ_KPACK4_SCALEZERO_CONFLICT`.  A shipping change requires
-raw-bit PASS, `load < store` on that counter, and a non-regressing full-kernel
-timing result; type/codegen changes alone are not admission.
+- five `(N,K)` families times `M={1,2,4,8}`;
+- one 144-row K-pack4 manifest: 72 AP0 plus 72 packed-A AP1 tactics;
+- D32 in both binaries;
+- full raw-bit screen for both arms, then a union shortlist;
+- scheduler and seven-sample confirmation on the same arm-union denominator.
+
+Packed-A has capacity one row.  It is a real candidate at M=1 and an explicit
+`PACKED_A_DECODE_ONLY_M_NOT_1` terminal at M=2/4/8.  Never delete those rows
+from the denominator or compare an AP0-only K-pack4 board to an Xplane AP1
+winner.
 
 ```bash
-FQ_KPACK4_EXPERIMENT=scalezero \
-JOBS=16 PERF_ITERATIONS=201 PERF_ROUNDS=4 \
-CORRECTNESS_REPEATS=64 RUN_ACU=1 \
-  bash tools/run_fq_q4k_kpack4_delivery_ab_box.sh
+INTERNAL_SWEEP_SPEC=/path/to/complete/inventory.json \
+JOBS=16 FQ_CONFIGS_PER_UNIT=4 MATERIAL_THRESHOLD=0.02 \
+  bash tools/run_fq_q4k_kpack4_fused_store_real_shapes_box.sh
 ```
 
 The packed arithmetic remains the fast path.  Q4_K uses

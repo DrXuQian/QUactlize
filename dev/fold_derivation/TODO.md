@@ -2270,27 +2270,30 @@ the Shared Load bank-conflict counter while shared-load volume remains
 comparable. Select a delivery per tactic/provider only from the full timing
 result; do not globally replace `auto64` merely because a counter falls.
 
-**Delivery result and metadata follow-up (2026-08-27).** D32 won the frozen
-row by about 6.2% on AP0 and 6.6% on AP1, but did not close the counted Shared
-Load conflict hypothesis.  Its measured reduction in `No Eligible` and warp
-cycles per instruction makes it a scheduler/scoreboard optimization, not the
+**Delivery result and metadata closure (2026-08-27).** D32 won the frozen row
+by about 6.2% on AP0 and 6.6% on AP1, but did not close the counted Shared Load
+conflict hypothesis.  Its measured reduction in `No Eligible` and warp cycles
+per instruction makes it a scheduler/scoreboard optimization, not a proved
 bank fix.
 
-The next closure fixes D32 and adds an exact `plain / fused-store /
-fused-load` factorial.  `PPU_PACKED_SCALE_FUSED` is the control that changes
-the decoder store/layout while retaining the two fp16 metadata loads.
-`PPU_PACKED_SCALE_FUSED_READ` uses the same CuTe source coordinate for one
-uint32 shared load and raw-bit splits the pair into the original scale/zero
-fragments.  L232 binds D32 AP0/AP1 word/half strides and 65,536 bit pairs; the
-flag-on syntax row instantiates the device path; runtime reports both fused
-flags.  The box analyzer requires 2 providers x 3 variants x 4 balanced
-timing rounds and all six ACU reports, then separately reports Shared Load
-conflicts for `load` versus `store`.  Do not make this the default before the
-device run is raw-bit clean and non-regressing.
+The subsequent D32 metadata factorial resolved which implementation to keep.
+On AP1, the shipping fused-store arm was raw-bit exact and improved the regular
+four-round timing from `16.880000010` to `16.240000725 us` (`-3.791465%`), with
+all paired deltas negative.  It also reduced instructions `1703 -> 1660` and
+TSM loads `67 -> 47`; shared storage grew by only 16 bytes and split workspace
+was unchanged.  AP0 likewise favored fused-store by `-2.296812%`.
 
-```
-FQ_KPACK4_EXPERIMENT=scalezero \
-JOBS=16 PERF_ITERATIONS=201 PERF_ROUNDS=4 \
-CORRECTNESS_REPEATS=64 RUN_ACU=1 \
-  bash tools/run_fq_q4k_kpack4_delivery_ab_box.sh
-```
+The experimental one-word reload was strictly worse than fused-store
+(`+14.647371%` AP0, `+16.995065%` AP1), and its ACU Shared Load bank-conflict
+count did not differ from fused-store.  It therefore supplied neither the
+intended counter reduction nor a timing benefit and was deleted completely.
+An individual ACU Duration sample that disagrees with the balanced four-round
+timing remains diagnostic only; it is not product-performance authority.
+
+L232 now proves only the retained fused-store word/half CuTe mapping and raw
+packed-half bit identity.  The shipping decision is being validated with one
+matched D32 `plain/store` factorial over the complete inventory-owned decode
+denominator: 144 AP0/AP1 tactics, five `(N,K)` families, and
+`M={1,2,4,8}`.  M=1 admits both providers; packed-A's declared one-row capacity
+makes its M=2/4/8 rows explicit terminal states rather than hidden candidates.
+Both arms share the exact screen and confirmation symbol unions.

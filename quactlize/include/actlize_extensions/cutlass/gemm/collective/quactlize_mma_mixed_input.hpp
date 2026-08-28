@@ -662,24 +662,6 @@ private:
       false;
 #endif
 
-  // PPU_PACKED_SCALE_FUSED_READ is deliberately a second switch.  The older
-  // fused feature changes the packed decoder's two fp16 shared stores into one
-  // fp16x2 store, but keeps the two independent scale/zero reloads.  That is a
-  // useful control, but it cannot reduce a Shared Load conflict counter.  The
-  // read feature below consumes the exact same interleaved bytes with one
-  // uint32_t shared load and splits the two raw halves in registers.
-  //
-  // Keep this Q4_K 6-bit pair-format-only for the first closure.  Other packed formats
-  // can share the mechanism only after their own exact typed/layout witness;
-  // silently applying a byte interpretation across formats is not admission.
-  static constexpr bool kFusedScaleZeroRead =
-#if defined(PPU_PACKED_SCALE_FUSED_READ) && (PPU_PACKED_SCALE_FUSED_READ != 0)
-      kFusedScaleZero && (kPackedFmt == cutlass::gguf_packed::Fmt::Q4K) &&
-      (PackedUnit::kScaleBits == 6) && (PackedUnit::kMinBits == 6);
-#else
-      false;
-#endif
-
   // THE ASSUMPTION IS CHECKED, NOT ASSUMED. The fused layouts below are written out compactly rather than derived
   // from SmemLayoutScale, because a stride-doubling transform of an arbitrary (possibly swizzled, possibly padded)
   // layout is not a thing I can state in one line and be sure of. That is only sound while the layout it replaces IS
@@ -794,7 +776,6 @@ public:
   // for THIS configuration" without a device, which no counter can do, and it is what proves a null result is a
   // real null rather than an inactive path.
   static constexpr bool is_fused_scale_zero = kFusedScaleZero;
-  static constexpr bool is_fused_scale_zero_read = kFusedScaleZeroRead;
   static constexpr bool is_packed_scale     = kPackedScaleOn;
   static constexpr bool has_zero_channel    = (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero);
   static constexpr int packed_scale_copy_threads = kPackedOwnerThreads;
@@ -2024,37 +2005,6 @@ private:
     }
   }
 
-  // Reload one interleaved (scale, zero) word per logical metadata value.
-  // `scale_src` is the even-half view of SmemLayoutScaleFusedHalf.  Each CuTe
-  // source coordinate is therefore 32-bit aligned and its following half is
-  // the matching zero.  Load that pair through the address selected by the
-  // existing per-thread CuTe source map.  The register destinations retain
-  // the ordinary scale/zero fragment layouts; only the shared transaction is
-  // fused.  L232 binds the full-tile word/half bijection for the production
-  // D32 AP0/AP1 types, and the device A/B remains the raw-bit admission gate.
-  template <class Info, class Views>
-  CUTLASS_DEVICE static void reload_scale_zero_metadata(
-      Info const& info, Views const& views, int group, int stage) {
-    if constexpr (kFusedScaleZeroRead) {
-      using MetadataAddress = typename MetadataPolicy::AddressPolicy;
-      auto scale_src = MetadataAddress::template source<Scale_TileK>(
-          cute::get<0>(info), group, stage);
-      auto scale_dst = cute::get<1>(views)(cute::_, cute::_, 0);
-      auto zero_dst  = cute::get<2>(views)(cute::_, cute::_, 0);
-      CUTE_STATIC_ASSERT_V(size(scale_dst) == size(zero_dst),
-                           "fused scale/zero destinations must have identical logical coordinates");
-      CUTE_UNROLL
-      for (int i = 0; i < size(scale_dst); ++i) {
-        uint32_t const bits = *reinterpret_cast<uint32_t const*>(
-            raw_pointer_cast(&scale_src(i)));
-        scale_dst(i) = cutlass::gguf_packed::lo_h2(bits);
-        zero_dst(i)  = cutlass::gguf_packed::hi_h2(bits);
-      }
-    } else {
-      MetadataPolicy::reload(info, views, group, stage);
-    }
-  }
-
   /// Utilities to copy B and extra inputs from smem to RF
   template <class SmemTiledCopy,
             class TensorSmemView,
@@ -2087,8 +2037,8 @@ private:
         // nothing to do
       }
       else if constexpr (ModeHasScales) {
-        reload_scale_zero_metadata(partitioned_mma_extra_info, tiled_copy_and_views,
-                                   ScalePolicy::group(k_block), read_stage);
+        MetadataPolicy::reload(partitioned_mma_extra_info, tiled_copy_and_views,
+                               ScalePolicy::group(k_block), read_stage);
       }
       else {
         static_assert(cutlass::detail::dependent_false<KernelSchedule>,
@@ -2260,8 +2210,8 @@ private:
           constexpr int I = decltype(i_)::value;
           constexpr int atom_idx = K_BLOCK_STATIC * K_ATOM_PER_COPY + I;
           if constexpr (FinePolicy::starts_group(atom_idx))              // reload only at a group's first atom
-            reload_scale_zero_metadata(partitioned_extra_info, tiled_copy_and_views,
-                                       FinePolicy::group(atom_idx), read_stage);
+            MetadataPolicy::reload(partitioned_extra_info, tiled_copy_and_views,
+                                   FinePolicy::group(atom_idx), read_stage);
           bdq_transform(tCrB_mma(_, _, Int<atom_idx>{}), cute::get<1>(partitioned_extra_info)(_, _, 0),
                           tCrB_mma(_, _, Int<atom_idx>{}), cute::multiplies{});
         });
@@ -2339,8 +2289,8 @@ private:
             constexpr int I = decltype(i_)::value;
             constexpr int atom_idx = K_BLOCK_STATIC * K_ATOM_PER_COPY + I;
             if constexpr (FinePolicy::starts_group(atom_idx)) {          // reload only at a group's first atom
-              reload_scale_zero_metadata(partitioned_extra_info, tiled_copy_and_views,
-                                         FinePolicy::group(atom_idx), read_stage);
+              MetadataPolicy::reload(partitioned_extra_info, tiled_copy_and_views,
+                                     FinePolicy::group(atom_idx), read_stage);
             }
             bdq_transform(tCrB_mma(_, _, Int<atom_idx>{}), cute::get<1>(partitioned_extra_info)(_, _, 0),
                             tCrB_mma(_, _, Int<atom_idx>{}), cute::multiplies{});

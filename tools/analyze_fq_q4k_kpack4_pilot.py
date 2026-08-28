@@ -134,7 +134,8 @@ def fixture_contract(log: pathlib.Path) -> None:
 
 
 def marker_contract(log: pathlib.Path, *, selected: int,
-                    only_split: int, bc_mode: str) -> None:
+                    only_split: int, bc_mode: str,
+                    delivery_n: int | None = None) -> None:
     fixture_contract(log)
     shard = [decode.parse_kv(line, decode.SHARD_PREFIX)
              for line in log.read_text().splitlines()
@@ -154,16 +155,20 @@ def marker_contract(log: pathlib.Path, *, selected: int,
     for marker in (shard[0], done[0]):
         if any(marker.get(key) != value for key, value in common.items()):
             raise PilotError(f"{log}: runtime marker identity differs: {marker}")
+        if delivery_n is not None and marker.get("weight_delivery_n") != str(delivery_n):
+            raise PilotError(f"{log}: runtime delivery cap differs: {marker}")
     if done[0].get("status") != "PASS":
         raise PilotError(f"{log}: runtime did not close PASS")
 
 
 def load_phase(log: pathlib.Path, rows: dict[str, dict[str, Any]],
                symbols: Iterable[str], *, only_split: int,
-               bc_mode: str) -> tuple[list[dict[str, Any]], dict[str, str]]:
+               bc_mode: str, scalezero_fused: int | None = None,
+               delivery_n: int | None = None
+               ) -> tuple[list[dict[str, Any]], dict[str, str]]:
     selected = list(symbols)
     marker_contract(log, selected=len(selected), only_split=only_split,
-                    bc_mode=bc_mode)
+                    bc_mode=bc_mode, delivery_n=delivery_n)
     tc, bc, marker = decode.load_log(
         log, artifact=0, expected_shape=SHAPE, expected_symbols=selected,
         expected_split=only_split, expected_bc_mode=bc_mode)
@@ -187,13 +192,21 @@ def load_phase(log: pathlib.Path, rows: dict[str, dict[str, Any]],
         }
         if any(cell.get(key) != value for key, value in expected.items()):
             raise PilotError(f"K-pack4 cell/manifest axes differ: {cell}")
+        if scalezero_fused is not None and \
+                cell.get("scalezero_fused") != str(scalezero_fused):
+            raise PilotError(
+                f"K-pack4 scalezero fused marker differs: {cell}")
     return tc, marker
 
 
 def screen(manifest: pathlib.Path, log: pathlib.Path, policy: pathlib.Path,
-           symbols_output: pathlib.Path, summary_output: pathlib.Path) -> dict:
+           symbols_output: pathlib.Path, summary_output: pathlib.Path,
+           scalezero_fused: int | None = None,
+           delivery_n: int | None = None) -> dict:
     rows, _ = load_manifest(manifest)
-    tc, marker = load_phase(log, rows, rows, only_split=1, bc_mode="all")
+    tc, marker = load_phase(
+        log, rows, rows, only_split=1, bc_mode="all",
+        scalezero_fused=scalezero_fused, delivery_n=delivery_n)
     policy_value = decode.load_policy(policy)
     if int(marker["iterations"]) != int(policy_value["screen"]["iterations"]) or \
             int(marker["correctness_repeats"]) != \
@@ -212,10 +225,14 @@ def screen(manifest: pathlib.Path, log: pathlib.Path, policy: pathlib.Path,
 def scheduler(manifest: pathlib.Path, log: pathlib.Path,
               screen_symbols: pathlib.Path, policy: pathlib.Path,
               symbols_output: pathlib.Path,
-              summary_output: pathlib.Path) -> dict:
+              summary_output: pathlib.Path,
+              scalezero_fused: int | None = None,
+              delivery_n: int | None = None) -> dict:
     rows, _ = load_manifest(manifest)
     selected = decode.read_symbols(screen_symbols)
-    tc, marker = load_phase(log, rows, selected, only_split=0, bc_mode="skip")
+    tc, marker = load_phase(
+        log, rows, selected, only_split=0, bc_mode="skip",
+        scalezero_fused=scalezero_fused, delivery_n=delivery_n)
     policy_value = decode.load_policy(policy)
     if int(marker["iterations"]) != int(policy_value["scheduler"]["iterations"]) or \
             int(marker["correctness_repeats"]) != \
@@ -286,10 +303,14 @@ def rank(values: list[dict[str, Any]]) -> tuple[str, dict[str, Any], dict[str, A
 
 def finalize(manifest: pathlib.Path, log: pathlib.Path,
              symbols_path: pathlib.Path, policy_path: pathlib.Path,
-             output_json: pathlib.Path, output_tsv: pathlib.Path) -> dict:
+             output_json: pathlib.Path, output_tsv: pathlib.Path,
+             scalezero_fused: int | None = None,
+             delivery_n: int | None = None) -> dict:
     rows, manifest_value = load_manifest(manifest)
     symbols = decode.read_symbols(symbols_path)
-    tc, marker = load_phase(log, rows, symbols, only_split=0, bc_mode="skip")
+    tc, marker = load_phase(
+        log, rows, symbols, only_split=0, bc_mode="skip",
+        scalezero_fused=scalezero_fused, delivery_n=delivery_n)
     policy = decode.load_policy(policy_path)
     if int(marker["iterations"]) != int(policy["confirm"]["iterations"]) or \
             int(marker["correctness_repeats"]) != \
@@ -354,6 +375,10 @@ def finalize(manifest: pathlib.Path, log: pathlib.Path,
         "global": {"verdict": verdict, "winner": winner,
                    "runner_up": runner},
     }
+    if scalezero_fused is not None:
+        result["scalezero_fused"] = bool(scalezero_fused)
+    if delivery_n is not None:
+        result["weight_delivery_n"] = delivery_n
     decode.atomic_json(output_json, result)
     lines = [
         "board\tstatus\tverdict\tmeasured\talgorithm\tS\tproducer_us\t"
@@ -381,7 +406,9 @@ def finalize(manifest: pathlib.Path, log: pathlib.Path,
 
 def aggregate(plan_path: pathlib.Path, policy_path: pathlib.Path,
               raw_root: pathlib.Path, output_json: pathlib.Path,
-              output_tsv: pathlib.Path) -> dict[str, Any]:
+              output_tsv: pathlib.Path,
+              scalezero_fused: int | None = None,
+              delivery_n: int | None = None) -> dict[str, Any]:
     """Close the one-layout K-pack4 results over all real decode shapes."""
     plan = json.loads(plan_path.read_text())
     planner.validate_plan(plan)
@@ -402,6 +429,11 @@ def aggregate(plan_path: pathlib.Path, policy_path: pathlib.Path,
                 value.get("weight_mapping_id") != MAPPING_ID or \
                 value.get("typed_rows") != TYPED_ROWS:
             raise PilotError(f"{shape_key}: per-shape summary identity differs")
+        if scalezero_fused is not None and \
+                value.get("scalezero_fused") is not bool(scalezero_fused):
+            raise PilotError(f"{shape_key}: fused-store identity differs")
+        if delivery_n is not None and value.get("weight_delivery_n") != delivery_n:
+            raise PilotError(f"{shape_key}: delivery identity differs")
         winner = dict(value["global"]["winner"])
         runner = value["global"].get("runner_up")
         winner.update(decode.metrics(winner, shape, policy))
@@ -464,6 +496,10 @@ def aggregate(plan_path: pathlib.Path, policy_path: pathlib.Path,
         "shape_winners": shape_rows,
         "layout_decisions": decisions,
     }
+    if scalezero_fused is not None:
+        output["scalezero_fused"] = bool(scalezero_fused)
+    if delivery_n is not None:
+        output["weight_delivery_n"] = delivery_n
     decode.atomic_json(output_json, output)
     lines = [
         "shape\tM\tN\tK\tverdict\talgorithm\tS\tproducer_us\t"
@@ -709,6 +745,8 @@ def main() -> int:
         command.add_argument("--log", type=pathlib.Path, required=True)
         command.add_argument("--policy", type=pathlib.Path, required=True)
         command.add_argument("--shape", default=SHAPE_TEXT)
+        command.add_argument("--scalezero-fused", type=int, choices=(0, 1))
+        command.add_argument("--delivery-n", type=int)
     screen_parser.add_argument("--symbols-output", type=pathlib.Path, required=True)
     screen_parser.add_argument("--summary-output", type=pathlib.Path, required=True)
     scheduler_parser.add_argument("--screen-symbols", type=pathlib.Path, required=True)
@@ -722,27 +760,32 @@ def main() -> int:
     aggregate_parser.add_argument("--raw-root", type=pathlib.Path, required=True)
     aggregate_parser.add_argument("--output-json", type=pathlib.Path, required=True)
     aggregate_parser.add_argument("--output-tsv", type=pathlib.Path, required=True)
+    aggregate_parser.add_argument("--scalezero-fused", type=int, choices=(0, 1))
+    aggregate_parser.add_argument("--delivery-n", type=int)
     args = parser.parse_args()
     try:
         if args.command == "self-test":
             self_test(args.policy)
         elif args.command == "aggregate":
             result = aggregate(args.plan, args.policy, args.raw_root,
-                               args.output_json, args.output_tsv)
+                               args.output_json, args.output_tsv,
+                               args.scalezero_fused, args.delivery_n)
             print("[fq-q4k-kpack4-real-final] PASS "
                   f"families={result['family_count']} "
                   f"shapes={result['shape_count']} layout={KPACK4_CLASS['name']}")
         elif args.command == "screen":
             set_shape(args.shape)
             result = screen(args.manifest, args.log, args.policy,
-                            args.symbols_output, args.summary_output)
+                            args.symbols_output, args.summary_output,
+                            args.scalezero_fused, args.delivery_n)
             print(f"[fq-q4k-kpack4-pilot-screen] PASS typed={result['typed']} "
                   f"measured={result['measured']} retained={result['retained']}")
         elif args.command == "scheduler":
             set_shape(args.shape)
             result = scheduler(
                 args.manifest, args.log, args.screen_symbols, args.policy,
-                args.symbols_output, args.summary_output)
+                args.symbols_output, args.summary_output,
+                args.scalezero_fused, args.delivery_n)
             print(f"[fq-q4k-kpack4-pilot-scheduler] PASS "
                   f"input={result['input_symbols']} "
                   f"retained={result['retained_symbols']} "
@@ -750,7 +793,8 @@ def main() -> int:
         else:
             set_shape(args.shape)
             result = finalize(args.manifest, args.log, args.symbols,
-                              args.policy, args.output_json, args.output_tsv)
+                              args.policy, args.output_json, args.output_tsv,
+                              args.scalezero_fused, args.delivery_n)
             winner = result["global"]["winner"]
             print("[fq-q4k-kpack4-pilot-final] PASS "
                   f"verdict={result['global']['verdict']} "

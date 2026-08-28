@@ -1,6 +1,6 @@
 // L232 -- production-type/layout proof for the Q4_K K-pack4 fused metadata
-// read.  This is host evidence only: the box consumes the committed result and
-// uses fresh hgcc for the device closure.
+// store. This is host evidence only: the box consumes the committed result
+// and uses fresh hgcc for the device closure.
 
 #include <cstdio>
 #include <type_traits>
@@ -25,12 +25,6 @@ static_assert(AP0::kQ4KPack4ResolvedDeliveryN == 32);
 static_assert(AP1::kQ4KPack4ResolvedDeliveryN == 32);
 static_assert(AP0::is_packed_scale && AP1::is_packed_scale);
 static_assert(AP0::is_fused_scale_zero && AP1::is_fused_scale_zero);
-// The read switch itself is bound by the flag-on syntax row, the source
-// contract and the device `scalezero_fused_read=1` marker.  This executable is
-// compiled without that switch because NVIDIA nvcc cannot device-codegen the
-// PPU-only ordinary shared reload (the syntax tier explicitly filters that
-// known CuTe `product` boundary).  Its job is the host-checkable byte map.
-static_assert(!AP0::is_fused_scale_zero_read && !AP1::is_fused_scale_zero_read);
 
 template <class Mainloop>
 struct Closure {
@@ -62,7 +56,7 @@ int main() {
     bits_bad += cutlass::gguf_packed::lo_h2(pair).raw() != lo;
     bits_bad += cutlass::gguf_packed::hi_h2(pair).raw() != hi;
   }
-  std::printf("L232 Q4_K KPACK4 fused-metadata-read layout_bad=%d bits_bad=%d "
+  std::printf("L232 Q4_K KPACK4 fused-metadata-store layout_bad=%d bits_bad=%d "
               "providers=AP0+AP1 delivery=D32 values=1024-per-provider\n",
               layout_bad, bits_bad);
   return (layout_bad == 0 && bits_bad == 0) ? 0 : 1;

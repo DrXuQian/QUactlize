@@ -66,14 +66,12 @@ def check(texts: list[str]) -> None:
         "KPack4MainloopDelivery<Mainloop>::value ==",
         "struct MainloopScaleZeroFused",
         "result.scalezero_fused = MainloopScaleZeroFused<",
-        "struct MainloopScaleZeroFusedRead",
-        "result.scalezero_fused_read = MainloopScaleZeroFusedRead<",
     ), "benchmark")
     require(driver, (
         "FQ_TC_KPACK4_DELIVERY_N == 16",
         "FQ_TC_KPACK4_DELIVERY_N == 32",
         '"weight_delivery_n=%d "',
-        '"provider_capacity_rows=%d scalezero_fused=%d scalezero_fused_read=%d "',
+        '"provider_capacity_rows=%d scalezero_fused=%d "',
     ), "driver")
     if driver.count('"weight_delivery_n=%d "') != 2:
         raise CheckError("shard and shape-done must both bind the delivery cap")
@@ -104,16 +102,14 @@ def check(texts: list[str]) -> None:
     ), "analyzer")
     require(runner, (
         'iterations="${PERF_ITERATIONS:-201}"',
-        'experiment="${FQ_KPACK4_EXPERIMENT:-delivery}"',
-        'delivery) rounds_default=3',
-        "specs='auto64:0:0 d32:32:0 d16:16:0'",
+        'rounds="${PERF_ROUNDS:-3}"',
+        'for delivery in 0 32 16',
         'run_acu="${RUN_ACU:-1}"',
         "check_fq_q4k_kpack4_delivery_committed_evidence.py",
         'git -C "$root" show "$sha:dev/fold_derivation/q4_kpack4_delivery_host.expected.txt"',
         "--committed-only --evidence",
         "fresh_box_execution=0",
-        'defs="FQ_TC_KPACK4_DELIVERY_N=$delivery"',
-        'PPU_DEFS="$defs"',
+        'PPU_DEFS="FQ_TC_KPACK4_DELIVERY_N=$delivery"',
         "generated-row/layout build ABI differs",
         'order="auto64 d32 d16"',
         'order="d16 auto64 d32"',
@@ -153,8 +149,8 @@ def main() -> int:
         (7, "for delivery_n in 32 16", "for delivery_n in 32"),
         (8, 'marker.get("weight_delivery_n")', 'marker.get("ignored")'),
         (8, "ACU arm denominator differs", "ACU arms accepted"),
-        (9, "specs='auto64:0:0 d32:32:0 d16:16:0'",
-         "specs='auto64:0:0 d32:32:0'"),
+        (9, 'for delivery in 0 32 16', 'for delivery in 0 32'),
+        (9, 'PPU_DEFS="FQ_TC_KPACK4_DELIVERY_N=$delivery"', 'PPU_DEFS='),
         (9, "--committed-only --evidence", "--evidence"),
         (9, 'order="d32 d16 auto64"', 'order="auto64 d32 d16"'),
         (9, "--profile-subject-only", "--profile-entire-run"),
@@ -171,7 +167,7 @@ def main() -> int:
         else:
             raise CheckError(f"negative stayed green: {old}")
     print("[fq-kpack4-delivery-ab:self-test] PASS matched auto64/D32/D16 "
-          "type/layout/runtime/codegen/ACU chain; fifteen plants RED")
+          "type/layout/runtime/codegen/ACU chain; sixteen plants RED")
     return 0
 
 

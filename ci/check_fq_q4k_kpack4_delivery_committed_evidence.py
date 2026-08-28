@@ -13,7 +13,7 @@ EXPECTED = ROOT / "dev/fold_derivation/q4_kpack4_delivery_host.expected.txt"
 L229 = ROOT / "dev/fold_derivation/l229_q4_kpack4_production_type.cu"
 L231 = ROOT / "dev/fold_derivation/l231_q4_kpack4_production_fragment.cu"
 L231_RUNNER = ROOT / "dev/fold_derivation/run_l231_q4_kpack4_production_fragment.sh"
-L232 = ROOT / "dev/fold_derivation/l232_q4_kpack4_fused_metadata_read.cu"
+L232 = ROOT / "dev/fold_derivation/l232_q4_kpack4_fused_metadata_store.cu"
 BOX_RUNNER = ROOT / "tools/run_fq_q4k_kpack4_delivery_ab_box.sh"
 SCHEMA = "quactlize.fq-q4k-kpack4-delivery-host-evidence.v2"
 
@@ -65,7 +65,7 @@ def validate(evidence: str, l229: str, l231: str, l231_runner: str, l232: str,
         "l231_d16": "[l231-delivery] PASS D=16 geometries=12 candidate=IDENTITY",
         "l231_rotate": "[l231-red] PASS plant=rotated-destination result=RED",
         "l231_legacy": "[l231-red] PASS plant=legacy-loader-stride result=RED",
-        "l232": "L232 Q4_K KPACK4 fused-metadata-read layout_bad=0 bits_bad=0 "
+        "l232": "L232 Q4_K KPACK4 fused-metadata-store layout_bad=0 bits_bad=0 "
                 "providers=AP0+AP1 delivery=D32 values=1024-per-provider",
     }
     for key, value in exact.items():
@@ -125,7 +125,7 @@ def main() -> int:
         print(f"[fq-kpack4-delivery-committed] FAIL: {exc}")
         return 2
     print("[fq-kpack4-delivery-committed] PASS exact L229 type + "
-          "L231 D32/D16/2-RED + L232 fused-read map evidence; "
+          "L231 D32/D16/2-RED + L232 fused-store map evidence; "
           "fresh_box_execution=0")
     return 0
 
