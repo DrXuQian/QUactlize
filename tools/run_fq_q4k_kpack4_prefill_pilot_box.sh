@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # First raw-bit and performance pilot for canonical Q4_K K-pack4 prefill.
-# The complete TM64/AP0 graph is compiled once, then pruned at runtime:
+# The complete TM64/AP0 TK64/TK128/TK256 graph is compiled once, then pruned at runtime:
 #   S1 screen -> S1/S2/S4/S8 scheduler -> seven-sample confirmation.
 set -uo pipefail
 
@@ -113,22 +113,26 @@ PY
   if [ ! -s "$manifest" ]; then
     python3 -B "$root/tools/gen_fully_quantized_splitk_producer_units.py" \
       --qtype 12 --artifact-tk 0 --bchunk 0 --weight-layout q4-kpack4 \
-      --tile-m-filter 64 --per-unit "$per_unit" --out-dir "$generated" || return 2
+      --kpack4-subsuperblocks --tile-m-filter 64 --per-unit "$per_unit" \
+      --out-dir "$generated" || return 2
   fi
   python3 -B - "$manifest" <<'PY' || return 2
 import json, sys
 value = json.load(open(sys.argv[1]))
 assert value["identity"] == {
     "qtype": 12, "format": "Q4_K", "artifact_tile_k": 0, "bchunk": 0,
-    "tile_m_filter": 64, "weight_layout": "q4-kpack4"}
+    "tile_m_filter": 64, "weight_layout": "q4-kpack4",
+    "kpack4_subsuperblocks": True}
 assert value["denominator"] == {
     "raw_topology_rows": 11520, "provider_expanded_rows": 12000,
-    "source_typed_rows": 918, "typed_rows": 210,
-    "selection_reject_rows": 708, "static_reject_rows": 11082,
-    "runtime_tc_cells": 48000, "typed_runtime_tc_cells": 840}
+    "source_typed_rows": 2754, "typed_rows": 630,
+    "selection_reject_rows": 2124, "static_reject_rows": 9246,
+    "runtime_tc_cells": 48000, "typed_runtime_tc_cells": 2520}
 assert {row["tile_m"] for row in value["typed_rows"]} == {64}
 assert {row["a_provider"] for row in value["typed_rows"]} == {"standard-aiu"}
-assert {row["tactic_tile_k"] for row in value["typed_rows"]} == {256}
+assert {row["tactic_tile_k"] for row in value["typed_rows"]} == {64,128,256}
+assert {tk: sum(row["tactic_tile_k"] == tk for row in value["typed_rows"])
+        for tk in (64,128,256)} == {64:210,128:210,256:210}
 assert value["weight_mapping"]["mapping_id"] == "0x51344b5034540001"
 assert value["weight_mapping"]["artifact_tile_k_is_not_an_axis"] is True
 PY
@@ -148,7 +152,7 @@ PY
     rc=$?
     if [ "$rc" -ne 0 ]; then
       tail -n 180 "$build_log" >&2
-      fail "TM64=210 target build rc=$rc artifacts=$out"
+      fail "TM64=630 target build rc=$rc artifacts=$out"
       return "$rc"
     fi
     target_make="$(find "$build_dir" -type f \
@@ -198,7 +202,7 @@ PY
   git -C "$root" diff --binary --no-ext-diff HEAD > "$out/source.patch" || return 2
 
   screen_log="$out/raw/screen.log"
-  printf '[fq-kpack4-prefill] shape=2048x1024x5120 phase=screen typed=210 S=1\n'
+  printf '[fq-kpack4-prefill] shape=2048x1024x5120 phase=screen typed=630 S=1\n'
   run_phase "$screen_log" "$binary" --shape=2048x1024x5120 \
     --iterations=2 --correctness-repeats=1 --only-split=1 \
     --tm8-max-m=8 --bc-mode=all || return $?
@@ -231,12 +235,28 @@ PY
     --output-json "$out/results/summary.json" \
     --output-tsv "$out/results/summary.tsv" || return 2
 
+  python3 -B - "$out/results/summary.json" <<'PY' || return 2
+import json, sys
+value = json.load(open(sys.argv[1]))
+for tk in (64, 128, 256):
+    score = value["by_tactic_tile_k"][str(tk)]
+    winner = score["winner"]
+    runner = score["runner_up"]
+    gap = "NONE" if runner is None else \
+        f"{(runner['median_us'] / winner['median_us'] - 1) * 100:.6f}"
+    print("FQ_KPACK4_PREFILL_TK "
+          f"TK={tk} verdict={score['verdict']} candidates={score['candidates']} "
+          f"algorithm={winner['algorithm']} S={winner['split']} "
+          f"e2e_us={winner['median_us']:.9f} config={winner['config']} "
+          f"runner_gap_pct={gap}")
+PY
+
   sha256sum "$plan" "$manifest" "$binary" "$screen_log" "$scheduler_log" \
     "$confirm_log" "$out/results/screen-symbols.txt" \
     "$out/results/confirm-symbols.txt" "$out/results/summary.json" \
     > "$out/results/authority.sha256" || return 2
   sed -n '1,5p' "$out/results/summary.tsv"
-  printf '[fq-kpack4-prefill] PASS sha=%s shape=2048x1024x5120 TM64=210/AP0 auto64/plain artifacts=%s\n' \
+  printf '[fq-kpack4-prefill] PASS sha=%s shape=2048x1024x5120 TM64=630/AP0 TK64+128+256 auto64/plain artifacts=%s\n' \
     "$sha" "$out"
   printf '[fq-kpack4-prefill] summary=%s\n' "$out/results/summary.tsv"
 }

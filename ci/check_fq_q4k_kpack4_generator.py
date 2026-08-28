@@ -125,6 +125,47 @@ def validate(xplane: dict, kpack4: dict) -> None:
         raise CheckError("K-pack4 accidentally advertised a BC reader")
 
 
+def validate_subsuperblocks(legacy: dict, expanded: dict) -> None:
+    identity = expanded.get("identity", {})
+    if identity != {
+            "qtype": 12, "format": "Q4_K", "artifact_tile_k": 0,
+            "bchunk": 0, "tile_m_filter": 8,
+            "weight_layout": "q4-kpack4",
+            "kpack4_subsuperblocks": True}:
+        raise CheckError(f"K-pack4 sub-superblock identity drifted: {identity}")
+    expected = {
+        "raw_topology_rows": 11520,
+        "provider_expanded_rows": 12000,
+        "source_typed_rows": 2754,
+        "typed_rows": 432,
+        "selection_reject_rows": 2322,
+        "static_reject_rows": 9246,
+        "runtime_tc_cells": 48000,
+        "typed_runtime_tc_cells": 1728,
+    }
+    if expanded.get("denominator") != expected:
+        raise CheckError(
+            f"K-pack4 sub-superblock denominator drifted: "
+            f"{expanded.get('denominator')}")
+    rows = expanded.get("typed_rows", [])
+    by_tk = {
+        tk: [row for row in rows if row.get("tactic_tile_k") == tk]
+        for tk in (64, 128, 256)
+    }
+    if any(len(values) != 144 for values in by_tk.values()):
+        raise CheckError(
+            "K-pack4 sub-superblock TK denominator is not 144 each")
+    legacy_product = {(geometry(row), row.get("a_provider"))
+                      for row in legacy.get("typed_rows", [])}
+    expanded_tk256 = {(geometry(row), row.get("a_provider"))
+                      for row in by_tk[256]}
+    if expanded_tk256 != legacy_product:
+        raise CheckError("enabling sub-superblocks changed the TK256 product")
+    if any(row.get("tile_m") != 8 or row.get("warp_m") != 8
+           for row in rows):
+        raise CheckError("sub-superblock TM8 filter admitted a foreign row")
+
+
 def expect_invalid(*, qtype: int, artifact: int, bchunk: int) -> None:
     with tempfile.TemporaryDirectory(prefix="qz-kpack4-invalid-") as temp:
         try:
@@ -146,6 +187,10 @@ def main() -> int:
         kpack4 = generator.generate(12, 0, 0, root / "kpack4", 4,
                                     False, 8, "q4-kpack4")
         validate(xplane, kpack4)
+        expanded = generator.generate(
+            12, 0, 0, root / "kpack4-subsuperblocks", 4,
+            False, 8, "q4-kpack4", True)
+        validate_subsuperblocks(kpack4, expanded)
 
         plants: list[dict] = []
         broken = copy.deepcopy(kpack4)
@@ -180,9 +225,10 @@ def main() -> int:
     expect_invalid(qtype=12, artifact=64, bchunk=0)
     expect_invalid(qtype=12, artifact=0, bchunk=1)
     print("[fq-q4k-kpack4-generator:self-test] PASS "
-          "xplane=144/918 unchanged Kpack4=144/918 raw=11520 "
-          "geometry=A64/AP0+AP1-exact mapping=0x51344b5034540001; "
-          "four manifest and four generator negatives RED")
+          "xplane=144/918 unchanged legacy-Kpack4=144/918 "
+          "subsuperblock-Kpack4=432/2754 TK64/TK128/TK256=144-each "
+          "raw=11520 mapping=0x51344b5034540001; four manifest and "
+          "four generator negatives RED")
     return 0
 
 

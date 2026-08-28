@@ -237,15 +237,10 @@ public:
   static constexpr int kPackedScaleUnit = kPackedFormatMatchesElement ? PackedUnit::kUnitBytes : 16;
   using SmemLayoutScalePacked = Layout<Shape <Int<Scale_TileN>, Int<kPackedScaleUnit>>,
                                        Stride<Int<kPackedScaleUnit>, _1>>;
-  // APPLICABILITY, NOT A REQUIREMENT. smem delta = TN*Stages*(16 - 4*Scale_TileK): strictly negative only for
-  // Scale_TileK > 4, a wash at 4, and POSITIVE below it -- the unit always carries eight groups' codes while a k-tile
-  // with small Scale_TileK needs fewer. Measured on ppu001 across the splitk bench's 11 units: three configs shrank by
-  // exactly one zero tile (-8176, -6128, -4080 = -(8192, 6144, 4096) + 16 B of alignment) and at least one GREW (+1040).
-  //
-  // At gs=32, Scale_TileK == 8 is the same condition as TileK == 256, i.e. one superblock per k-tile -- so one test
-  // covers both the smem win and the load cadence. A static_assert would be wrong here: the splitk bench generates 11
-  // differently-shaped units into ONE binary, so a requirement fails the whole build instead of letting the other shapes
-  // keep the fp16 path. Same mistake the PPU_SCALE_PREFETCH assert made earlier in this work.
+  // APPLICABILITY, NOT A REQUIREMENT. The ordinary Xplane path retains its historical one-superblock gate. K-pack4
+  // has no fp16 metadata plane to fall back to, so its TK64/TK128 tactics consume integral two-/four-group runs from
+  // the same native Q4_K unit. The unit is copied whole for this first closure; only the selected run is decoded into
+  // the existing local (group,stage) fp16 planes. This changes neither the offline bytes nor the MMA read view.
   // THE FORMAT, AND EVERY CONSTANT DERIVED FROM IT. PPU_PACKED_FORMAT selects one of cutlass::gguf_packed::Fmt and
   // defaults to Q4_K, so a build that does not set it is byte-identical to what shipped. Before this the six numbers
   // below were literals -- 16 bytes per unit, Scale_TileK == 8, bias 0, has-min, ZMul 8, four 32-bit words -- and
@@ -253,15 +248,27 @@ public:
   //
   // The selected trait's unit size genuinely differs per format. Only Q4/Q2 can activate this one-plane collective;
   // a two-plane selector keeps an inert legal 16-byte staging type here and is consumed by the other collective.
-  // Scale_TileK is the number of GROUPS a k-tile covers, and one unit carries a whole superblock's worth -- so the
-  // applicability test is "the k-tile is exactly one superblock", which for Q4_K means 8 and for the 16-group
-  // formats means 16. It was written as == 8, which is the same condition only for Q4_K.
+  // Scale_TileK is the number of GROUPS a k-tile covers. The default path activates only for one complete
+  // superblock. The K-pack4 schedule additionally admits a divisor of the superblock; tying that condition to
+  // kQ4KPack4Transpose prevents this experiment from silently changing the established Xplane denominator.
+  static constexpr bool kPackedTileDividesSb =
+      int(Scale_TileK) > 0 && PackedUnit::kGroups % int(Scale_TileK) == 0;
+  static constexpr bool kPackedKpack4Subtile =
+      kQ4KPack4Transpose && kPackedFormatMatchesElement &&
+      int(Scale_TileK) < PackedUnit::kGroups && kPackedTileDividesSb;
   static constexpr bool kPackedScaleOn =
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
-      kPackedFormatMatchesElement && (int(Scale_TileK) == PackedUnit::kGroups);
+      kPackedFormatMatchesElement &&
+      ((int(Scale_TileK) == PackedUnit::kGroups) || kPackedKpack4Subtile);
 #else
       false;
 #endif
+  static_assert(!kPackedScaleOn || kPackedTileDividesSb,
+                "a packed single-plane K tile must cover an integral group run");
+  static constexpr int kPackedTilesPerSb =
+      kPackedKpack4Subtile ? PackedUnit::kGroups / int(Scale_TileK) : 1;
+  static constexpr int kPackedTilesPerUnit =
+      kPackedScaleOn ? PackedUnit::kSbPerUnit * kPackedTilesPerSb : 1;
 
   // THE STAGING TILE: the gguf's own bytes, cp.async'd in and decoded at the barrier. At Scale_TileK == 8 its size is
   // exactly one scale tile (TN*16 == TN*SK*2), so the channel goes from two smem tiles to three -- the price of keeping
@@ -777,6 +784,7 @@ public:
   // real null rather than an inactive path.
   static constexpr bool is_fused_scale_zero = kFusedScaleZero;
   static constexpr bool is_packed_scale     = kPackedScaleOn;
+  static constexpr int packed_scale_tiles_per_unit = kPackedTilesPerUnit;
   static constexpr bool has_zero_channel    = (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero);
   static constexpr int packed_scale_copy_threads = kPackedOwnerThreads;
   static constexpr int packed_scale_columns_per_thread = kPackedColsPerThread;
@@ -800,8 +808,8 @@ public:
     cute::ArrayEngine<BTransportElement, cute::cosize_v<SmemLayoutB>> smem_b;
     // PACKED SCALE CHANNEL (plan #20 option E). When on, the tile holds the gguf's own bytes -- one 16 B unit per
     // (superblock, column) carrying d, dmin and the codes -- so the ZERO TILE GOES TO ZERO ELEMENTS, not shrinks: `mn`
-    // lives in the same unit. Chosen by TYPE rather than by #if, because one binary holds units of several shapes and
-    // only those with Scale_TileK == 8 take this path (see kPackedScaleOn).
+    // lives in the same unit. Chosen by TYPE rather than by #if, because one binary holds units of several shapes:
+    // Xplane activates at one full superblock, while the explicit K-pack4 schedule also activates integral sub-runs.
     //
     // smem_zero stays declared, at zero elements, rather than being deleted: it is the LAST member, so a zero-length
     // ArrayEngine cannot move anything (unlike smem_a, whose comment above records what shrinking a leading member did
@@ -854,7 +862,7 @@ public:
     c.interleave = int(kContinous{});
     c.has_scales = ModeHasScales;
     c.packed_scale = kPackedScaleOn;
-    c.packed_tiles_per_unit = kPackedScaleOn ? PackedUnit::kSbPerUnit : 1;
+    c.packed_tiles_per_unit = kPackedTilesPerUnit;
     c.ptr_Z_nonnull = args.ptr_Z != nullptr;
     c.dB0 = int64_t(get<0>(dB));
     c.dB1 = int64_t(get<1>(dB));
@@ -901,6 +909,10 @@ public:
   // out-of-bounds GLOBAL read. The raw-byte copy therefore always carries its
   // own predicate rather than borrowing the fp16 copy's coordinate.
   bool scale_valid_pk = true;
+  // Per-thread stage state for the metadata unit copied by THIS thread. It is consumed before the CTA publication
+  // barrier by that same owner, so no shared tag or additional synchronization is needed. For the historical TK256
+  // path kPackedTilesPerUnit is one and every use folds to the constant zero.
+  int packed_tile_in_unit[DispatchPolicy::Stages] = {};
   //
   // Methods
   //
@@ -1020,17 +1032,18 @@ public:
       scale_residue_n = detail::mixed_logical_n_residue(
           N, int(size<1>(TileShape{})), n_coord);
 
-      // THE PACKED PLANE: [nsb][N][16] bytes, i.e. one 16 B unit per (superblock, column) holding d, dmin and the codes.
-      // nsb is DERIVED, not a new parameter: at Scale_TileK groups per k-tile, scale_k / Scale_TileK is the superblock
-      // count. Built unconditionally and appended, because `auto` return-type deduction sees BOTH branches of an
-      // `if constexpr` whose condition is a class constant, so a macro-dependent tuple type would not compile.
-      int const nsb_ = scale_k / int(Scale_TileK);
+      // THE PACKED PLANE: [unit][N][bytes]. A TK256 Q4 tile owns one unit; TK128/TK64 K-pack4 tiles select two/four
+      // integral runs from one unit. Built unconditionally and appended because a macro-dependent tuple return type
+      // would not compile; kPackedTilesPerUnit is one for every established off/TK256 instantiation.
+      int const packed_tiles_ = scale_k / int(Scale_TileK);
+      int const packed_units_ = packed_tiles_ / kPackedTilesPerUnit;
       Tensor mSp = make_tensor(make_gmem_ptr(reinterpret_cast<uint8_t const*>(mainloop_params.ptr_S)),
-                               make_shape (N, Int<kPackedScaleUnit>{}, nsb_, L),
+                               make_shape (N, Int<kPackedScaleUnit>{}, packed_units_, L),
                                make_stride(Int<kPackedScaleUnit>{}, _1{},
-                                           Int<kPackedScaleUnit>{} * N, Int<kPackedScaleUnit>{} * N * nsb_));
+                                           Int<kPackedScaleUnit>{} * N,
+                                           Int<kPackedScaleUnit>{} * N * packed_units_));
       Tensor gSp = local_tile(mSp(_,_,_,l_coord), Shape<Int<Scale_TileN>, Int<kPackedScaleUnit>>{},
-                              make_coord(n_coord, 0, _));                                    // (BLK_N, 16, nsb)
+                              make_coord(n_coord, 0, _));                           // (BLK_N, bytes, packed_unit)
 
       if constexpr (KernelConversionMode == ConversionMode::ConvertAndScale) {
         return cute::make_tuple(gA, gB, gS, gSp);
@@ -1320,7 +1333,8 @@ public:
       tCsB_p = tCsB(_,_,_,stage);
     };
     auto publish = [&] (int stage) {
-      packed_decode_stage<kPackedScaleOn>(storage, stage, thread_idx, scale_residue_n);
+      packed_decode_stage<kPackedScaleOn>(
+          storage, stage, packed_tile_in_unit[stage], thread_idx, scale_residue_n);
     };
     auto prepare = [&] (auto k_block, int read_stage, auto prime) {
       copy_B_and_extra_info(smem_tiled_copy_B, tCsB, tCrB_copy_view,
@@ -1434,6 +1448,7 @@ private:
         // Packed: ONE cp.async of the gguf's own bytes into staging. The decode is at the barrier, in mma().
         if constexpr (kPackedScaleOn) {
           if (packed_copy_owner) {
+            packed_tile_in_unit[write_stage] = 0;
             detail::copy_packed_metadata_if<kPackedColsPerThread>(
                 mainloop_params.gmem_tiled_copy_scale_packed, scale_valid_pk, scale_residue_n,
                 get<kPkG>(extra_input_partitions)(_,_,_,0),
@@ -1468,13 +1483,13 @@ private:
         // kPackedScaleOn picks the predicate that belongs to the copy actually being issued.
         if ((kPackedScaleOn || scale_valid) && (scale_load_k * Scale_TileK < scale_residue_k)) {
           if constexpr (kPackedScaleOn) {
-            // scale_load_k IS ALREADY A TILE INDEX (partition_S leaves the last mode selecting which block of
-            // Scale_TileK groups a call loads), and one k-tile is one superblock, so it indexes superblocks directly and
-            // must NOT be divided. The k bound above already encoded that reading.
+            // scale_load_k is a logical metadata TILE index. K-pack4 TK64/TK128 share one source unit across four/two
+            // consecutive tiles; the per-stage phase selects the compile-time group run after the unit lands.
             if (packed_copy_owner) {
+              packed_tile_in_unit[write_stage] = scale_load_k % kPackedTilesPerUnit;
               detail::copy_packed_metadata_if<kPackedColsPerThread>(
                   mainloop_params.gmem_tiled_copy_scale_packed, scale_valid_pk, scale_residue_n,
-                  get<kPkG>(extra_input_partitions)(_,_,_,scale_load_k),
+                  get<kPkG>(extra_input_partitions)(_,_,_,scale_load_k / kPackedTilesPerUnit),
                   get<kPkG+1>(extra_input_partitions)(_,_,_,write_stage),
                   get<kPkC>(extra_input_partitions));
             }
@@ -1542,11 +1557,11 @@ private:
         if (scale_copy_owner) clear(tSsS);
       }
 
-      // THE K BOUND. The fp16 path counts GROUPS: scale_k - <this thread's first group>. The packed path consumes one
-      // UNIT per k-tile, so the bound is the superblock count -- and it is written as nsb * Scale_TileK precisely so the
-      // use site (`scale_load_k * Scale_TileK < scale_residue_k`) needs no change: dividing both sides by Scale_TileK
-      // leaves `scale_load_k < nsb`. The N bound is unchanged; mode 0 is still the column in both layouts, while mode 1
-      // is BYTES here and groups there, which is why only this line moves.
+      // THE K BOUND. The fp16 path counts GROUPS from this thread's first coordinate. The packed path also keeps the
+      // bound in logical groups; its source-unit quotient and tile-within-unit remainder are applied only at the copy
+      // site. Thus `scale_load_k * Scale_TileK < scale_residue_k` is valid for TK64/TK128/TK256 and for nonzero
+      // Split-K starts. The N bound is unchanged: mode 0 is the column in both layouts, while mode 1 is bytes here and
+      // groups there.
       if constexpr (kPackedScaleOn)
         scale_residue_k = int64_t(mainloop_params.scale_k / int(Scale_TileK)) * int64_t(Scale_TileK);
       else
@@ -1715,7 +1730,8 @@ private:
   // is why this needs no plumbing through any tuple.
   template <bool On, class Storage>
   CUTLASS_DEVICE static void
-  packed_decode_stage(Storage& storage, int stage, int thread_idx, int64_t residue_n) {
+  packed_decode_stage(Storage& storage, int stage, int tile_in_unit,
+                      int thread_idx, int64_t residue_n) {
     if constexpr (On) {
       constexpr int kGrp     = int(Scale_TileK);
       Tensor sRaw = make_tensor(make_smem_ptr(storage.smem_scale_raw.begin()), SmemLayoutScaleRawStaged{});
@@ -1795,8 +1811,9 @@ private:
         (void)m2; (void)h;
         // ONE body, called from both halves with a compile-time G. The group index has to be a template argument --
         // every bit position in the unit is derived from it -- so the two halves cannot share a runtime offset.
-        auto decode_group = [&] (auto g_) {
-          constexpr int G = decltype(g_)::value;
+        auto decode_group = [&] (auto source_g_, auto destination_g_) {
+          constexpr int SourceG = decltype(source_g_)::value;
+          constexpr int G = decltype(destination_g_)::value;
           // TIMING-ONLY ABLATION. PPU_PACKED_SCALE_NOP=1 keeps the native transport and the shared STORES but drops
           // the decode ARITHMETIC, so three builds decompose the +12.9% instead of attributing all of it at once:
           //     baseline B   fp16 planes, cp.async writes them, no decode
@@ -1839,9 +1856,10 @@ private:
             // group down to ~11, and bit-identical rather than close -- l96 (A) checks that over 32768 real Q4_K
             // groups and (A0) checks each of the four identities it rests on separately. This touches only the
             // thread's OWN column, so it is independent of the constraint above.
-            sz = cutlass::gguf_packed::group_pair_of_words<G, kPackedZMul, kPackedScaleBias>(u, m2);
+            sz = cutlass::gguf_packed::group_pair_of_words<SourceG, kPackedZMul, kPackedScaleBias>(u, m2);
           } else {
-            sz = cutlass::gguf_packed::group_of_words<G, kPackedScaleBias, kPackedHasMin, kPackedZMul, kPackedFmt>(u, h);
+            sz = cutlass::gguf_packed::group_of_words<
+                SourceG, kPackedScaleBias, kPackedHasMin, kPackedZMul, kPackedFmt>(u, h);
           }
           // (n, group, stage): SmemLayoutScale's own modes. NOT the read side's flattened (n, 1, stage*SK+g) -- two
           // functions build a tensor called sS with DIFFERENT layouts, and using the wrong one faulted as
@@ -1860,8 +1878,26 @@ private:
             if constexpr (kPackedHasMin) sZ(n, cute::Int<G>{}, stage) = sz.zero;
           }
         };
-        cute::for_each(cute::make_int_sequence<kGrp>{},
-                       [&] (auto i_) { decode_group(cute::Int<decltype(i_)::value>{}); });
+        if constexpr (kPackedTilesPerUnit == 1) {
+          // Preserve the historical one-superblock path without a runtime phase branch.
+          cute::for_each(cute::make_int_sequence<kGrp>{}, [&] (auto i_) {
+            constexpr int G = decltype(i_)::value;
+            decode_group(cute::Int<G>{}, cute::Int<G>{});
+          });
+        } else {
+          // The pipeline phase is runtime state, while GGUF bit positions are template constants. Enumerating at most
+          // four phases gives both: exactly one branch runs and each selected source group remains compile-time.
+          cute::for_each(cute::make_int_sequence<kPackedTilesPerUnit>{}, [&] (auto tile_) {
+            constexpr int Tile = decltype(tile_)::value;
+            if (tile_in_unit != Tile) return;
+            constexpr int GroupBase =
+                (Tile % kPackedTilesPerSb) * int(Scale_TileK);
+            cute::for_each(cute::make_int_sequence<kGrp>{}, [&] (auto i_) {
+              constexpr int G = decltype(i_)::value;
+              decode_group(cute::Int<GroupBase + G>{}, cute::Int<G>{});
+            });
+          });
+        }
       }
     }
   }
@@ -2368,7 +2404,7 @@ public:
   template <bool On, class Storage>
   CUTLASS_DEVICE static void probe_packed_decode_stage(Storage& storage, int stage, int thread_idx,
                                                        int64_t residue_n) {
-    packed_decode_stage<On>(storage, stage, thread_idx, residue_n);
+    packed_decode_stage<On>(storage, stage, 0, thread_idx, residue_n);
   }
 
 };

@@ -23,7 +23,8 @@
     "iterations": 1,
     "correctness_repeats": 1,
     "top_n_per_board": 8,
-    "relative_to_leader": 1.05
+    "relative_to_leader": 1.05,
+    "top_per_tactic_tile_k": 2
   },
   "confirm": {
     "iterations": 7,

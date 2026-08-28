@@ -81,13 +81,16 @@ def row_json(qtype: int, artifact: int, row: matrix.Tactic,
 def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
              per_unit: int, drop_last: bool,
              tile_m_filter: int | None = None,
-             weight_layout: str = "xplane") -> dict:
+             weight_layout: str = "xplane",
+             kpack4_subsuperblocks: bool = False) -> dict:
     formats = {fmt.qtype: fmt for fmt in matrix.parse_formats()}
     if qtype not in (10, 11, 12, 13, 14):
         raise ValueError("qtype must be one of the shipping FQ formats 10..14")
     if weight_layout not in ("xplane", "q4-kpack4"):
         raise ValueError("weight-layout must be xplane or q4-kpack4")
     kpack4 = weight_layout == "q4-kpack4"
+    if kpack4_subsuperblocks and not kpack4:
+        raise ValueError("kpack4-subsuperblocks requires q4-kpack4")
     if kpack4:
         if (qtype, artifact, bchunk) != (12, 0, 0):
             raise ValueError(
@@ -118,8 +121,11 @@ def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
             transport_ok = (
                 row.tactic_tile_k >= 64 and row.tactic_tile_k % 64 == 0 and
                 row.tile_n % 16 == 0)
-            packed_ok, _ = matrix.packed_metadata_tactic_supported(
-                fmt, row.tactic_tile_k)
+            packed_predicate = (
+                matrix.q4_kpack4_subsuperblock_tactic_supported
+                if kpack4_subsuperblocks else
+                matrix.packed_metadata_tactic_supported)
+            packed_ok, _ = packed_predicate(fmt, row.tactic_tile_k)
             return (row.source_status == "TYPE_ADMISSION_REQUIRED" and
                     transport_ok and packed_ok and row.bchunk == 0)
         artifact_ok, _ = matrix.artifact_supported(
@@ -202,8 +208,11 @@ def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
 
     rejects = []
     for row, a_provider in static_rejects:
-        packed_ok, packed_reason = matrix.packed_metadata_tactic_supported(
-            fmt, row.tactic_tile_k)
+        packed_predicate = (
+            matrix.q4_kpack4_subsuperblock_tactic_supported
+            if kpack4 and kpack4_subsuperblocks else
+            matrix.packed_metadata_tactic_supported)
+        packed_ok, packed_reason = packed_predicate(fmt, row.tactic_tile_k)
         reason = row.source_reason
         if kpack4:
             if row.source_status == "TYPE_ADMISSION_REQUIRED" and not (
@@ -241,6 +250,8 @@ def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
     }
     if kpack4:
         identity["weight_layout"] = weight_layout
+        if kpack4_subsuperblocks:
+            identity["kpack4_subsuperblocks"] = True
     if tile_m_filter is not None:
         identity["tile_m_filter"] = tile_m_filter
     selected_reject_rows = []
@@ -325,6 +336,8 @@ def main() -> int:
                         help="compile one TileM while retaining the source denominator")
     parser.add_argument("--weight-layout", choices=("xplane", "q4-kpack4"),
                         default="xplane")
+    parser.add_argument("--kpack4-subsuperblocks", action="store_true",
+                        help="admit K-pack4 TK64/TK128 integral metadata runs")
     parser.add_argument("--plant-drop-last", action="store_true",
                         help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -332,7 +345,7 @@ def main() -> int:
         manifest = generate(args.qtype, args.artifact_tk, args.bchunk,
                             args.out_dir, args.per_unit,
                             args.plant_drop_last, args.tile_m_filter,
-                            args.weight_layout)
+                            args.weight_layout, args.kpack4_subsuperblocks)
         den = manifest["denominator"]
         print("[fq-tc-generate] " + " ".join(
             f"{k}={v}" for k, v in manifest["identity"].items()) +

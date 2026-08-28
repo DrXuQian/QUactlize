@@ -159,6 +159,7 @@ GATES = [
     ("l230_q4_kpack4_offline_abi", []),
     ("l231_q4_kpack4_production_fragment", []),
     ("l232_q4_kpack4_fused_metadata_store", []),
+    ("l233_q4_kpack4_subsuperblock_type", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -421,6 +422,10 @@ GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
                   "-D__HGGCCC__", "--expt-relaxed-constexpr",
                   "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_SCALE_FUSED=1",
                   "-DPPU_PACKED_FORMAT=0", "-DPPU_B_CHUNK=0"],
+              "l233_q4_kpack4_subsuperblock_type": [
+                  "-D__HGGCCC__", "--expt-relaxed-constexpr",
+                  "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_FORMAT=0",
+                  "-DPPU_B_CHUNK=0"],
               # THE MACROS ARE THE POINT. This gate asserts the fused path is ON, so it has to be built the way the
               # box builds packfuse -- without these two it would assert about a configuration nobody runs and pass
               # for the wrong reason, which is the failure it exists to catch.
@@ -1853,10 +1858,10 @@ def lint_fq_splitk_partial_path():
 
 
 def lint_fq_q4k_kpack4_generator():
-    """Canonical K-pack4 owns one layout-neutral, complete tactic denominator."""
+    """Canonical K-pack4 owns legacy and explicit sub-superblock denominators."""
     return _run_ci_script(
         "check_fq_q4k_kpack4_generator.py",
-        "K-pack4 TM8 AP0/AP1 geometry exactly equals A64 without inheriting its artifact")
+        "K-pack4 preserves TK256 and adds exact TK64/TK128 integral metadata runs")
 
 
 def lint_fq_q4k_kpack4_pilot():
@@ -1898,7 +1903,7 @@ def lint_fq_q4k_kpack4_prefill_pilot():
     """The first K-pack4 prefill pilot must own one complete TM64 graph."""
     return _run_ci_script(
         "check_fq_q4k_kpack4_prefill_pilot.py",
-        "K-pack4 prefill binds inventory M2048 to exact TM64=210/918 raw-bit phases")
+        "K-pack4 prefill binds M2048 to exact TM64=630/2754 TK64/128/256 raw-bit phases")
 
 
 def lint_fq_q4k_kpack4_prefill_real_shapes():

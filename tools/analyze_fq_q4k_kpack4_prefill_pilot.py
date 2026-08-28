@@ -19,8 +19,8 @@ import gen_fully_quantized_splitk_producer_units as generator
 SHAPE = (2048, 1024, 5120)
 SHAPE_TEXT = "2048x1024x5120"
 MAPPING_ID = "0x51344b5034540001"
-TYPED_ROWS = 210
-SOURCE_TYPED_ROWS = 918
+TYPED_ROWS = 630
+SOURCE_TYPED_ROWS = 2754
 SCHEMA = "quactlize.fq_q4k_kpack4_prefill_pilot.v1"
 SCREEN_SCHEMA = "quactlize.fq_q4k_kpack4_prefill_screen.v1"
 SCHEDULER_SCHEMA = "quactlize.fq_q4k_kpack4_prefill_scheduler.v1"
@@ -61,7 +61,8 @@ def load_policy(path: pathlib.Path) -> dict[str, Any]:
                    "correctness_repeats": 1, "top_n": 32,
                    "relative_to_leader": 1.2, "top_per_axis_value": 2},
         "scheduler": {"iterations": 1, "correctness_repeats": 1,
-                      "top_n_per_board": 8, "relative_to_leader": 1.05},
+                      "top_n_per_board": 8, "relative_to_leader": 1.05,
+                      "top_per_tactic_tile_k": 2},
         "confirm": {"iterations": 7, "correctness_repeats": 2,
                     "unresolved_if_sample_envelopes_overlap": True},
     }
@@ -82,7 +83,8 @@ def load_manifest(path: pathlib.Path) -> tuple[dict[str, dict[str, Any]], dict]:
     if value.get("identity") != {
             "qtype": 12, "format": "Q4_K", "artifact_tile_k": 0,
             "bchunk": 0, "tile_m_filter": 64,
-            "weight_layout": "q4-kpack4"}:
+            "weight_layout": "q4-kpack4",
+            "kpack4_subsuperblocks": True}:
         raise PrefillError("prefill manifest identity differs")
     if value.get("weight_mapping") != {
             "layout": KPACK4_CLASS["name"], "mapping_id": MAPPING_ID,
@@ -94,10 +96,10 @@ def load_manifest(path: pathlib.Path) -> tuple[dict[str, dict[str, Any]], dict]:
             "provider_expanded_rows": 12000,
             "source_typed_rows": SOURCE_TYPED_ROWS,
             "typed_rows": TYPED_ROWS,
-            "selection_reject_rows": 708,
-            "static_reject_rows": 11082,
+            "selection_reject_rows": 2124,
+            "static_reject_rows": 9246,
             "runtime_tc_cells": 48000,
-            "typed_runtime_tc_cells": 840}:
+            "typed_runtime_tc_cells": 2520}:
         raise PrefillError("prefill manifest denominator differs")
     rows: dict[str, dict[str, Any]] = {}
     for row in value.get("typed_rows", []):
@@ -106,8 +108,9 @@ def load_manifest(path: pathlib.Path) -> tuple[dict[str, dict[str, Any]], dict]:
             raise PrefillError("prefill manifest symbols are malformed")
         if (row.get("tile_m"), row.get("a_provider"),
                 row.get("a_provider_capacity_rows"),
-                row.get("tactic_tile_k"), row.get("artifact_tile_k")) != \
-                (64, "standard-aiu", None, 256, 0):
+                row.get("artifact_tile_k")) != \
+                (64, "standard-aiu", None, 0) or \
+                row.get("tactic_tile_k") not in (64, 128, 256):
             raise PrefillError(f"prefill manifest carries a foreign row: {row}")
         rows[symbol] = row
     if len(rows) != TYPED_ROWS:
@@ -281,6 +284,10 @@ def scheduler(manifest: pathlib.Path, log: pathlib.Path,
         keep = values[:int(spec["top_n_per_board"])]
         keep += [row for row in values if row["modeled_e2e_us"] <=
                  leader * float(spec["relative_to_leader"])]
+        for tactic_tile_k in (64, 128, 256):
+            per_tk = [row for row in values
+                      if rows[row["symbol"]]["tactic_tile_k"] == tactic_tile_k]
+            keep += per_tk[:int(spec["top_per_tactic_tile_k"])]
         names = {row["symbol"] for row in keep}
         retained.update(names)
         boards[f"S{split}"] = {"status": "AVAILABLE", "measured": len(values),
@@ -320,6 +327,7 @@ def measured_candidate(row: dict[str, Any], meta: dict[str, Any],
     return {
         "family": "TENSOR_CORE", "symbol": row["symbol"],
         "config": core.tactic_name(meta), "split": split,
+        "tactic_tile_k": int(meta["tactic_tile_k"]),
         "artifact_tile_k": 0, "physical_layout_class": KPACK4_CLASS,
         "algorithm": "TC_S1_FULL_OUTPUT" if split == 1 else
                      f"TC_SPLITK_S{split}_MODELED_E2E",
@@ -400,6 +408,18 @@ def finalize(manifest: pathlib.Path, log: pathlib.Path,
     verdict, winner, runner = rank(candidates)
     winner = dict(winner)
     winner.update(metrics(winner))
+    by_tactic_tile_k: dict[str, dict[str, Any]] = {}
+    for tactic_tile_k in (64, 128, 256):
+        values = [row for row in candidates
+                  if row["tactic_tile_k"] == tactic_tile_k]
+        if not values:
+            raise PrefillError(
+                f"confirmation lost every TK{tactic_tile_k} candidate")
+        tk_verdict, tk_winner, tk_runner = rank(values)
+        by_tactic_tile_k[str(tactic_tile_k)] = {
+            "verdict": tk_verdict, "winner": tk_winner,
+            "runner_up": tk_runner, "candidates": len(values),
+        }
     result = {
         "schema": SCHEMA, "shape": list(SHAPE), "tile_m": [64],
         "layout": KPACK4_CLASS, "scheduled_delivery_n": 0,
@@ -412,6 +432,7 @@ def finalize(manifest: pathlib.Path, log: pathlib.Path,
         "log_sha256": core.sha256(log),
         "symbols_sha256": core.sha256(symbols_path),
         "reducer_model": policy["reducer_model"], "boards": boards,
+        "by_tactic_tile_k": by_tactic_tile_k,
         "global": {"verdict": verdict, "winner": winner, "runner_up": runner},
     }
     core.atomic_json(output_json, result)
@@ -498,7 +519,7 @@ def self_test(policy_path: pathlib.Path) -> None:
         root = pathlib.Path(temporary)
         generated = root / "generated"
         generator.generate(12, 0, 0, generated, TYPED_ROWS, False, 64,
-                           "q4-kpack4")
+                           "q4-kpack4", True)
         manifest = generated / "manifest.json"
         rows, _ = load_manifest(manifest)
         screen_log = root / "screen.log"
@@ -523,7 +544,8 @@ def self_test(policy_path: pathlib.Path) -> None:
                           root / "summary.json", root / "summary.tsv")
         if result["typed_rows"] != TYPED_ROWS or \
                 result["global"]["winner"]["split"] != 4 or \
-                result["boards"]["S8"]["status"] != "UNAVAILABLE":
+                result["boards"]["S8"]["status"] != "UNAVAILABLE" or \
+                set(result["by_tactic_tile_k"]) != {"64", "128", "256"}:
             raise PrefillError("synthetic prefill pilot did not close")
         original = confirm_log.read_text()
         confirm_log.write_text(original.replace(MAPPING_ID, "0x0", 1))
@@ -553,9 +575,9 @@ def self_test(policy_path: pathlib.Path) -> None:
             pass
         else:
             raise PrefillError("prefill raw-bit negative stayed green")
-    print("[fq-kpack4-prefill-analysis:self-test] PASS exact TM64=210/918 "
-          "M2048 raw-bit screen, four scheduler boards, seven-sample confirm "
-          "and three RED plants")
+    print("[fq-kpack4-prefill-analysis:self-test] PASS exact TM64=630/2754 "
+          "TK64/TK128/TK256 M2048 raw-bit screen, four scheduler boards, "
+          "seven-sample confirm and three RED plants")
 
 
 def main() -> int:

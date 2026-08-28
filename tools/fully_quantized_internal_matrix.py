@@ -201,6 +201,28 @@ def packed_metadata_tactic_supported(fmt: Format,
         False, "TWO_PLANE_PACKED_METADATA_TILE_DOES_NOT_DIVIDE_SUPERBLOCK")
 
 
+def q4_kpack4_subsuperblock_tactic_supported(
+        fmt: Format, tactic_tk: int) -> tuple[bool, str]:
+    """Admission for the explicit K-pack4 sub-superblock experiment.
+
+    The offline byte map composes fixed K64 transports and has no tactic-K
+    axis. Its one-plane collective can therefore decode an integral run of
+    Q4_K's eight gs32 groups while retaining the same 16-byte source unit.
+    Keep this separate from ``packed_metadata_tactic_supported`` until the
+    anchored device closure is complete so historical Xplane manifests and
+    resume authorities do not change implicitly.
+    """
+    if fmt.qtype != 12 or fmt.high_bits != 0 or fmt.group_size != 32:
+        return False, "Q4_KPACK4_SUBSUPERBLOCK_REQUIRES_Q4_K"
+    if tactic_tk not in TACTIC_TILE_K or tactic_tk < 64 or tactic_tk % 64:
+        return False, "Q4_KPACK4_SUBSUPERBLOCK_REQUIRES_K64_MULTIPLE"
+    groups = 256 // fmt.group_size
+    tile_groups = tactic_tk // fmt.group_size
+    ok = tile_groups > 0 and groups % tile_groups == 0
+    return (ok, "SUPPORTED_BY_Q4_KPACK4_SUBSUPERBLOCK_COLLECTIVE") if ok else (
+        False, "Q4_KPACK4_TILE_DOES_NOT_DIVIDE_SUPERBLOCK")
+
+
 def collective_atom_tiling_supported(fmt: Format, tactic: Tactic,
                                      artifact_tk: int) -> tuple[bool, str]:
     """Mirror the sub-byte collective's real 8-row copy-atom divisibility.
@@ -488,6 +510,10 @@ def self_test() -> None:
         True, "SUPPORTED_BY_DESCRIPTOR_PREDICATE")
     assert packed_metadata_tactic_supported(q4, 256) == (
         True, "SUPPORTED_BY_SINGLE_PLANE_PACKED_COLLECTIVE")
+    assert {
+        tk: q4_kpack4_subsuperblock_tactic_supported(q4, tk)[0]
+        for tk in TACTIC_TILE_K
+    } == {32: False, 64: True, 128: True, 256: True}
     assert artifact_supported(q2, 32, 256) == (
         False, "PACKED_SINGLE_PLANE_READER_UNSUPPORTED")
     q4_a32_tm8 = [
