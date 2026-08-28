@@ -1901,6 +1901,13 @@ def lint_fq_q4k_kpack4_prefill_pilot():
         "K-pack4 prefill binds inventory M2048 to exact TM64=210/918 raw-bit phases")
 
 
+def lint_fq_q4k_kpack4_prefill_real_shapes():
+    """K-pack4 prefill must sweep every registered M/family with full AP0."""
+    return _run_ci_script(
+        "check_fq_q4k_kpack4_prefill_real_shapes_runner.py",
+        "K-pack4 prefill uses one 918-row binary and exact 774x15 runtime denominator")
+
+
 def lint_m8n16_g2_contract():
     """G2 must replay the historical provider index on one production x4 payload."""
     return _run_ci_script(
@@ -2519,6 +2526,7 @@ def main():
                 ("lint", "Q4 K-pack4 delivery consumes source-bound host evidence without box nvcc", lint_fq_q4k_kpack4_delivery_committed_evidence),
                 ("lint", "Q4 K-pack4 auto64 fused-store sweep matches all real decode-shape candidates", lint_fq_q4k_kpack4_fused_store_real_shapes),
                 ("lint", "Q4 K-pack4 prefill binds one inventory-owned complete TM64 graph", lint_fq_q4k_kpack4_prefill_pilot),
+                ("lint", "Q4 K-pack4 prefill sweeps every registered sequence length and family", lint_fq_q4k_kpack4_prefill_real_shapes),
                 ("lint", "syntax baselines and live SYNTAX sources match", lint_syntax_inventory),
                 ("lint", "m8n16 G2 replays the historical bad index on the production x4 payload", lint_m8n16_g2_contract),
                 ("lint", "l125 exhausts all 256 G5 zero-plane addresses through the production CuTe map", lint_grouped_metadata_layout),

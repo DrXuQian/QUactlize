@@ -2057,17 +2057,26 @@ rank these complete pipelines against the same resident bytes, activation, outpu
 1. `FQ -> dequant-scale prepass -> ScaleFirst mixed-input GEMM`; and
 2. `FQ -> direct fully-quantized GEMM`.
 
-**First direct Q4_K/K-pack4 prefill admission (2026-08-28, awaiting PPU
-result).**  The decode result cannot be extrapolated to prefill.  The first
+**First direct Q4_K/K-pack4 prefill admission (2026-08-28).**  The decode
+result cannot be extrapolated to prefill.  The first
 pilot is therefore preregistered at the inventory-owned
 `M=2048,N=1024,K=5120` cell with the complete TM64/AP0 graph: 210 tactics from
 the 918 source-typed denominator, all TK256.  It holds K-pack4 mapping,
 shipping-auto delivery and plain metadata fixed, screens S1 for raw-bit
 correctness, then adjudicates S1/S2/S4/S8 with the 80%-HBM zero-launch reducer
 model and seven-sample confirmation.  Packed-A is decode-only and is not a
-prefill candidate.  This is an internal production-collective pilot, not yet
-the full shipping-entry comparison required by this TODO.  Only after it is
-raw-bit clean should TM128 and the remaining 14 real prefill cells be opened.
+prefill candidate.  The pilot was raw-bit clean and selected S1 at
+`101.759999990 us`; modeled S2/S4 were `116.917370303/134.339261431 us` and
+S8 was unavailable.  The same-cell archived Xplane/native-F2 result is about
+`69.320000708 us`, so TM64 K-pack4 is 46.797% behind and Split-K is not the
+missing win on this row.
+
+The complete follow-up is now admitted: one 918-row binary, exactly 774 AP0
+prefill rows (TM16/32/64/128/256, all TK256), and all five inventory `(N,K)`
+families at `M={64,2048,4096}` for 15 shapes.  This remains an internal
+production-collective sweep, not yet the full shipping-entry comparison
+required by this TODO.  Its purpose is to distinguish a K-pack4 format cost
+from the first pilot's single-TM/single-sequence-length restriction.
 
 Pipeline 1 is two kernels.  Its ranked time includes the scale prepass and both launches; workspace allocation is
 excluded only when the production ABI preallocates it, in which case the workspace byte count is part of the

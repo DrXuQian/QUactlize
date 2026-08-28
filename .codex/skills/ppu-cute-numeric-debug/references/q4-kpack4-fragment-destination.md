@@ -368,8 +368,38 @@ numeric failure reopens the K-pack4 fragment/metadata diagnosis; a successful
 pilot admits TM128 and the remaining real families, but does not by itself
 establish the shipping operator or fused-store default.
 
+The pilot was raw-bit clean.  Its nine confirmed TM64 candidates selected S1:
+
+```text
+shape=2048x1024x5120
+config=64x128x256_w64x16_s2_bc0_apstandard-aiu
+S1=101.759999990 us
+S2 modeled E2E=116.917370303 us
+S4 modeled E2E=134.339261431 us
+S8=UNAVAILABLE
+```
+
+The archived Xplane/native-F2 result on the same cell was about
+`69.320000708 us`, so the TM64 K-pack4 pilot was 46.797% slower.  This excludes
+Split-K as the missing win on that row, but it does not separate K-pack4 format
+cost from the pilot's single-TM denominator.
+
+The admitted follow-up compiles the complete 918-row K-pack4 graph once and
+selects exactly 774 AP0 prefill rows: TM16/32/64/128/256, all TK256.  It runs
+all five inventory `(N,K)` families at `M={64,2048,4096}`, 15 shapes total,
+with the same raw-bit-first three phases.  TM8/AP1 remains an explicit
+decode-only complement of the manifest rather than a hidden missing row.
+
 ```bash
 INTERNAL_SWEEP_SPEC=/path/to/complete/inventory.json \
 JOBS=16 FQ_CONFIGS_PER_UNIT=4 \
   bash tools/run_fq_q4k_kpack4_prefill_pilot_box.sh
+```
+
+Full prefill command:
+
+```bash
+INTERNAL_SWEEP_SPEC=/path/to/complete/inventory.json \
+JOBS=16 FQ_CONFIGS_PER_UNIT=4 \
+  bash tools/run_fq_q4k_kpack4_prefill_real_shapes_box.sh
 ```
