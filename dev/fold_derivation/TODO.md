@@ -2057,6 +2057,18 @@ rank these complete pipelines against the same resident bytes, activation, outpu
 1. `FQ -> dequant-scale prepass -> ScaleFirst mixed-input GEMM`; and
 2. `FQ -> direct fully-quantized GEMM`.
 
+**First direct Q4_K/K-pack4 prefill admission (2026-08-28, awaiting PPU
+result).**  The decode result cannot be extrapolated to prefill.  The first
+pilot is therefore preregistered at the inventory-owned
+`M=2048,N=1024,K=5120` cell with the complete TM64/AP0 graph: 210 tactics from
+the 918 source-typed denominator, all TK256.  It holds K-pack4 mapping,
+shipping-auto delivery and plain metadata fixed, screens S1 for raw-bit
+correctness, then adjudicates S1/S2/S4/S8 with the 80%-HBM zero-launch reducer
+model and seven-sample confirmation.  Packed-A is decode-only and is not a
+prefill candidate.  This is an internal production-collective pilot, not yet
+the full shipping-entry comparison required by this TODO.  Only after it is
+raw-bit clean should TM128 and the remaining 14 real prefill cells be opened.
+
 Pipeline 1 is two kernels.  Its ranked time includes the scale prepass and both launches; workspace allocation is
 excluded only when the production ABI preallocates it, in which case the workspace byte count is part of the
 profile.  It does not materialize the whole fp16 weight: it expands the packed metadata into consumer-ready fp16

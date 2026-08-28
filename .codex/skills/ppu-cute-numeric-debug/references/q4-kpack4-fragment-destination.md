@@ -337,3 +337,39 @@ The packed arithmetic remains the fast path.  Q4_K uses
 `group_pair_of_words` (paired half2 sub/FMA) and the int4 converter's packed
 LOP3/sub/FMA sequence; a high FMA count is expected for affine dequantization
 and is not evidence that scalar dequant was selected.
+
+## Prefill measurement boundary
+
+No completed K-pack4 prefill timing existed before 2026-08-28.  Do not
+mislabel either of these earlier results as K-pack4 prefill:
+
+- the inventory-owned K-pack4 versus Xplane comparison covers only
+  `M={1,2,4,8}` decode; K-pack4 won 12 of 20 median comparisons there;
+- the `4096x5120x8192` result with `A32/native-F2=2663.840055 us` is a
+  ScaleFirst folded-Xplane experiment, not the K-pack4 mapping.
+
+The first registered K-pack4 prefill pilot deliberately admits one real
+inventory shape before opening the full 15-shape denominator:
+
+- shape `M=2048,N=1024,K=5120`;
+- mapping `q4-kpack4-transpose-v1`, ID `0x51344b5034540001`;
+- the complete TM64 denominator: 210 AP0 tactics out of 918 source-typed rows;
+- all admitted tactics have TK256; packed-A/AP1 remains decode-only and is not
+  silently borrowed at M=2048;
+- shipping-auto delivery and plain metadata, so neither global D32 nor the
+  fused-store experiment can confound the first result;
+- full S1 raw-bit screen, S1/S2/S4/S8 scheduler census, and seven-sample
+  confirmation; S>1 is ranked only after adding the registered zero-launch,
+  80%-HBM reducer model.
+
+The runner requires the complete inventory-v2 JSON and proves that the target
+shape belongs to the registered 15-shape prefill plan.  A deterministic
+numeric failure reopens the K-pack4 fragment/metadata diagnosis; a successful
+pilot admits TM128 and the remaining real families, but does not by itself
+establish the shipping operator or fused-store default.
+
+```bash
+INTERNAL_SWEEP_SPEC=/path/to/complete/inventory.json \
+JOBS=16 FQ_CONFIGS_PER_UNIT=4 \
+  bash tools/run_fq_q4k_kpack4_prefill_pilot_box.sh
+```

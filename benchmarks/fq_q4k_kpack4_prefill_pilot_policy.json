@@ -1,0 +1,42 @@
+{
+  "schema": "quactlize.fq_q4k_kpack4_prefill_pilot_policy.v1",
+  "name": "q4-kpack4-prefill-m2048-tm64-first",
+  "qtype": 12,
+  "format": "Q4_K",
+  "quant_mode": "FinegrainedScaleZero",
+  "group_size": 32,
+  "shape": [2048, 1024, 5120],
+  "weight_layout": "q4-kpack4-transpose-v1",
+  "mapping_id": "0x51344b5034540001",
+  "tile_m": [64],
+  "a_provider": ["standard-aiu"],
+  "scheduled_delivery_n": 0,
+  "screen": {
+    "only_split": 1,
+    "iterations": 2,
+    "correctness_repeats": 1,
+    "top_n": 32,
+    "relative_to_leader": 1.2,
+    "top_per_axis_value": 2
+  },
+  "scheduler": {
+    "iterations": 1,
+    "correctness_repeats": 1,
+    "top_n_per_board": 8,
+    "relative_to_leader": 1.05
+  },
+  "confirm": {
+    "iterations": 7,
+    "correctness_repeats": 2,
+    "unresolved_if_sample_envelopes_overlap": true
+  },
+  "split_k": [1, 2, 4, 8],
+  "reducer_model": {
+    "bandwidth_fraction": 0.8,
+    "hbm_gbs": 2766.0,
+    "launch_us": 0.0,
+    "partial_element_bytes": 4,
+    "output_element_bytes": 2,
+    "formula": "(M*N*S*4 + M*N*2) / (0.8*2766 GB/s); producer workspace write is already timed"
+  }
+}

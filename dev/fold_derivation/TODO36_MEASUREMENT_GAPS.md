@@ -6,7 +6,7 @@ and different ways to close them.  No device result is invented here.
 
 | item | classification at this revision | what is already established | what is not established |
 |---|---|---|---|
-| fully-quantized prefill | **Not measured; the current repository has no production-route performance harness.** It is measurable in principle, but not by an existing command. | The packed artifact ABI, production readers, independent numerical golden, and planted metadata fault are covered.  The only timing is a small-M paired A/B: +13.1% native-scale tax. | No M=2048 timing for either shipping dense or grouped-L1 fully-quantized entry.  Neither the ~65% scale-first prefill result nor the +13.1% decode-band tax may be extrapolated to it. |
+| fully-quantized prefill | **Not measured at the shipping entry.** A preregistered direct Q4_K/K-pack4 internal-collective pilot now exists for one M=2048 cell, but has no device result yet and is not the shipping operator. | The packed artifact ABI, production readers, independent numerical golden, planted metadata fault, and exact TM64=210/918 pilot denominator are covered.  The only completed direct timing remains a small-M paired A/B. | No M=2048 timing for either shipping dense or grouped-L1 fully-quantized entry.  Neither the ScaleFirst prefill result, decode K-pack4 comparison, nor the small-M native-scale tax may be extrapolated to it. |
 | int4 gs=128 COARSE | **Not measured after the COARSE runtime-assert fix; measurable by the existing dense bench.** | The exact ScaleOnly row instantiates; local layout/metadata contracts cover the COARSE/FINE boundary. | Device numerical correctness and timing on the repaired ScaleOnly implementation.  BACKTEST B1/B2/B3 remain old-implementation targets, not current results. |
 | int4 gs=16 post-`w64x32` | **Measured historically; current native-dense HEAD has not been refreshed.** | `HANDOFF_TASK12.md` records 234.16 µs, followed by 228.13 → 227.35 µs, at M=2048/N=K=4096 and gs=16.  Thus the old claim that 58.7% was only arithmetic is false. | A fresh regression result through today's dense operator and generated tactic row. |
 
@@ -24,7 +24,9 @@ not time the launch.  Consequently:
 - the predicted 16-fold per-m-tile packed decode at M=2048 remains a mechanism,
   not a measured slowdown.
 
-Closing this requires a new benchmark, not a different command.  It must call
+The new K-pack4 pilot can establish raw-bit and timing evidence for the direct
+production collective at one inventory-owned M=2048 cell; it still cannot
+close this shipping-entry gap.  Closing the gap requires a benchmark that calls
 the shipping `*_fully_quantized` entry, prepare the artifact/H2D/workspace
 outside the timed interval, run the existing independent golden and planted
 metadata fault first, and use one device-event pair per launch.  Dense and
@@ -58,5 +60,6 @@ a changed time alone is not proof that either kernel regressed.
 
 The runnable gs=128 and gs=16 commands live in `.coord/BOX.md` under a section
 explicitly ordered **after** the two frozen morning runs.  Fully-quantized
-prefill is recorded there as blocked on its production-route timing harness;
-there is intentionally no pretend command for it.
+prefill remains blocked on its shipping-entry timing harness.  The K-pack4
+internal-collective pilot is a narrower admission command and must not be
+reported as closure of TODO #36.
