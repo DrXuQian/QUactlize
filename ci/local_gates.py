@@ -309,6 +309,11 @@ SYNTAX = [
     # THE SHIPPING .so BOUNDARY. The benches compiled the grouped collective for years while the product wrapper
     # did not expose it; compiling this translation unit is what covers the six-entry ABI and every qtype dispatch.
     ("quactlize/csrc/device/ppu_dense_backend.cu", ""),
+    # Q4 packed arrangement-v2 is a distinct physical provider.  The default
+    # and Q3 builds above cannot instantiate its production launch seam, so
+    # keep one narrowed flag-on backend parse in the local denominator.
+    ("quactlize/csrc/device/ppu_dense_backend.cu",
+     "-DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT=0 -DQUACTLIZE_DENSE_ONLY=12"),
     # True folded-reader control: Q3 ArtifactTileK=64 is F_low/F_high=2/4 beneath a TK256 tensor tactic.  This
     # flag-on row proves the arrangement-aware ABI instantiates the packed two-plane collective rather than merely
     # accepting the descriptor in host arithmetic.  Single-plane F>1 remains explicitly fail-closed (l138).

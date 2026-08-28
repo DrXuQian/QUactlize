@@ -265,6 +265,16 @@ def gguf_backend():
     return _ops().gguf_backend()
 
 
+def gguf_backend_for_qtype(qtype: int):
+    """Report the format-selected library used by arrangement-v2 artifacts of ``qtype``.
+
+    ``gguf_backend()`` intentionally reports the legacy/default handle. Q4 K-pack4 preparation and FQ execution
+    instead use ``QUACTLIZE_PPU_LIB_FMT0`` (or the derived ``_fmt0`` path), so deployment checks must ask about
+    that exact handle rather than infer it from the default one.
+    """
+    return _ops().gguf_backend_for_qtype(qtype)
+
+
 def gguf_pack_unit(scale_blocks, d, dmin, qtype: int):
     """GGUF scale block -> the REORDERED packed unit the in-kernel path reads. Byte-neutral by construction.
 
@@ -376,6 +386,6 @@ def matmul_w4a16(a, b_packed, scales, zeros=None, group_size: int = 128,
 
 __all__ = [
     "preprocess_weights_to_layout", "symmetric_quantize", "symmetric_quantize_unprocessed",
-    "gguf_scale_prepass", "gguf_scale_block_shape", "gguf_vecdot", "gguf_vecdot_dense", "gguf_vecdot_moe", "gguf_dequantize", "gguf_unpack", "gguf_prepare_gemv", "gguf_prepare_dense", "gguf_gemv_artifact_dequantize", "gguf_gemv_artifact_dequantize_scale", "gguf_dense_artifact_dequantize", "gguf_dense_artifact_dequantize_scale", "gguf_gemv_scale_first", "gguf_gemv_scale_first_moe", "gguf_dense_scale_first", "gguf_backend", "gguf_pack_unit", "gguf_unit_decode", "gguf_q4_artifact_dequantize",
+    "gguf_scale_prepass", "gguf_scale_block_shape", "gguf_vecdot", "gguf_vecdot_dense", "gguf_vecdot_moe", "gguf_dequantize", "gguf_unpack", "gguf_prepare_gemv", "gguf_prepare_dense", "gguf_gemv_artifact_dequantize", "gguf_gemv_artifact_dequantize_scale", "gguf_dense_artifact_dequantize", "gguf_dense_artifact_dequantize_scale", "gguf_gemv_scale_first", "gguf_gemv_scale_first_moe", "gguf_dense_scale_first", "gguf_backend", "gguf_backend_for_qtype", "gguf_pack_unit", "gguf_unit_decode", "gguf_q4_artifact_dequantize",
     "pack_int4", "unpack_int4", "pack_uint4", "unpack_uint4", "matmul_w4a16",
 ]

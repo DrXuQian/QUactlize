@@ -30,7 +30,10 @@ from . import (gguf_dequantize, gguf_vecdot_dense, gguf_vecdot_moe, gguf_prepare
                gguf_gemv_artifact_dequantize, gguf_gemv_artifact_dequantize_scale,
                gguf_dense_artifact_dequantize, gguf_dense_artifact_dequantize_scale,
                gguf_gemv_scale_first, gguf_gemv_scale_first_moe, gguf_dense_scale_first)
-from .formats import PlacedArrangement, QuantType, placed_arrangement, placed_code_planes
+from .formats import (PLACED_ARRANGEMENT_VERSION_V1, PLACED_ARRANGEMENT_VERSION_V2,
+                      PLACED_LAYOUT_Q4_KPACK4_TRANSPOSE_V1, PlacedArrangement,
+                      PlacedArrangementV2, QuantType, placed_arrangement,
+                      placed_code_planes, q4_kpack4_arrangement)
 
 
 def _check_shape(blocks: torch.Tensor, n: int, k: int, qtype: int) -> None:
@@ -242,7 +245,8 @@ def has_op(name: str) -> bool:
         return False                     # extension not built at all -- absent, not stale
 
 
-PLACED_ARTIFACT_VERSION = 1
+PLACED_ARTIFACT_VERSION = PLACED_ARRANGEMENT_VERSION_V1
+PLACED_ARTIFACT_VERSION_V2 = PLACED_ARRANGEMENT_VERSION_V2
 
 
 class PlacedArtifact(tuple):
@@ -264,16 +268,19 @@ class PlacedArtifact(tuple):
     """
     # NO __slots__: a tuple subclass cannot have a nonempty one (TypeError at class creation).
 
-    def __new__(cls, tensors, arrangement: PlacedArrangement, version: int = PLACED_ARTIFACT_VERSION):
+    def __new__(cls, tensors, arrangement, version: int | None = None):
         return super().__new__(cls, tuple(tensors))
 
-    def __init__(self, tensors, arrangement: PlacedArrangement, version: int = PLACED_ARTIFACT_VERSION):
+    def __init__(self, tensors, arrangement, version: int | None = None):
         super().__init__()
-        if not isinstance(arrangement, PlacedArrangement):
+        if not isinstance(arrangement, (PlacedArrangement, PlacedArrangementV2)):
             raise TypeError(
-                "PlacedArtifact arrangement must be formats.PlacedArrangement(bits, tile_k, high_bits); "
+                "PlacedArtifact arrangement must be formats.PlacedArrangement or PlacedArrangementV2; "
                 f"got {type(arrangement).__name__}")
         self.arrangement = arrangement
+        if version is None:
+            version = (PLACED_ARTIFACT_VERSION_V2 if isinstance(arrangement, PlacedArrangementV2)
+                       else PLACED_ARTIFACT_VERSION)
         self.arrangement_version = int(version)
 
     def __reduce__(self):
@@ -303,7 +310,15 @@ class PlacedArtifact(tuple):
     @property
     def requested_tile_k(self):
         """Compatibility VIEW, not the ABI: old diagnostics named this field before the full descriptor existed."""
-        return self.arrangement.tile_k
+        return (self.arrangement.tile_k if isinstance(self.arrangement, PlacedArrangement)
+                else self.arrangement.artifact_tile_k)
+
+
+def _arrangement_v2_wire(arrangement: PlacedArrangementV2):
+    """Exact torch-op field order for ``quactlize_ppu_placed_arrangement_v2``."""
+    return (PLACED_ARTIFACT_VERSION_V2, arrangement.layout, arrangement.bits, arrangement.high_bits,
+            arrangement.artifact_tile_k, arrangement.transport_tile_k, arrangement.group_size,
+            arrangement.reserved, arrangement.mapping_id)
 
 
 def _require_placed_artifact(artifact, qtype: int, where: str):
@@ -313,13 +328,16 @@ def _require_placed_artifact(artifact, qtype: int, where: str):
             f"{where}: expected a PlacedArtifact carrying its placement descriptor; got "
             f"{type(artifact).__name__}. Converting one to tuple/list strips (bits,tile_k,high_bits), so the "
             f"reader must refuse rather than guess a fold")
-    if artifact.arrangement_version != PLACED_ARTIFACT_VERSION:
+    arrangement = artifact.arrangement
+    expected_version = (PLACED_ARTIFACT_VERSION_V2 if isinstance(arrangement, PlacedArrangementV2)
+                        else PLACED_ARTIFACT_VERSION)
+    if artifact.arrangement_version != expected_version:
         raise ValueError(
             f"{where}: unsupported placed-artifact descriptor version {artifact.arrangement_version}; "
-            f"this build reads version {PLACED_ARTIFACT_VERSION}. Guessing the meaning of a future descriptor "
+            f"this {type(arrangement).__name__} requires version {expected_version}. Guessing another descriptor "
             f"would silently ignore a placement axis")
     expected_bits = placed_code_planes(qtype)
-    got_bits = (artifact.arrangement.bits, artifact.arrangement.high_bits)
+    got_bits = (arrangement.bits, arrangement.high_bits)
     if got_bits != expected_bits:
         raise ValueError(
             f"{where}: artifact code planes are {got_bits[0]}+{got_bits[1]} bits but "
@@ -327,7 +345,12 @@ def _require_placed_artifact(artifact, qtype: int, where: str):
             f"mismatch, not a layout the reader can reinterpret")
     # Force validation of the derived arrangement before dispatch. This catches non-integral delivery runs at the
     # Python ABI instead of relying on whichever reader happens to instantiate first.
-    _ = artifact.arrangement.fold, artifact.arrangement.high_fold
+    if isinstance(arrangement, PlacedArrangement):
+        _ = arrangement.fold, arrangement.high_fold
+    else:
+        arrangement.validate()
+        if arrangement.layout == PLACED_LAYOUT_Q4_KPACK4_TRANSPOSE_V1 and QuantType(qtype) != QuantType.Q4_K:
+            raise ValueError(f"{where}: Q4 K-pack4 bytes cannot be consumed as {QuantType(qtype).name}")
     low, high, units = _unpack_fq(artifact, where)
     if low.dtype != torch.uint8 or high.dtype != torch.uint8:
         raise ValueError(f"{where}: placed code planes must be uint8, got low={low.dtype} high={high.dtype}")
@@ -346,7 +369,7 @@ def _require_placed_artifact(artifact, qtype: int, where: str):
         if low.shape[2] * expected_bits[1] != high.shape[2] * expected_bits[0]:
             raise ValueError(
                 f"{where}: low/high planes encode different K extents: {tuple(low.shape)} vs {tuple(high.shape)}")
-    return low, high, units, artifact.arrangement
+    return low, high, units, arrangement
 
 
 def _unpack_fq(artifact, where: str):
@@ -406,6 +429,10 @@ def matmul_bc_gemv(a: torch.Tensor, artifact, qtype: int) -> torch.Tensor:
     and warm +11%. Both paths stay callable until it is.
     """
     low, high, units, arrangement = _require_placed_artifact(artifact, qtype, "matmul_bc_gemv")
+    if isinstance(arrangement, PlacedArrangementV2):
+        raise NotImplementedError(
+            "matmul_bc_gemv: K-pack4 has no CUDA-core/BC reader. Use the tensor-core dense route; refusing to "
+            "send a v2 byte map through the v1 Xplane BC ABI")
     return _op("gguf_gemv_bc_for_arrangement")(
         a, low, high, units, int(qtype), PLACED_ARTIFACT_VERSION,
         arrangement.bits, arrangement.tile_k, arrangement.high_bits)
@@ -421,6 +448,10 @@ def matmul_bc_gemv_moe(a: torch.Tensor, artifact, qtype: int, num_experts: int,
     special case.
     """
     if isinstance(artifact, PlacedArtifact):
+        if isinstance(artifact.arrangement, PlacedArrangementV2):
+            raise NotImplementedError(
+                "matmul_bc_gemv_moe: K-pack4 has no grouped CUDA-core/BC reader; use the tensor-core grouped "
+                "route. Refusing to erase v2 and send layout=1 bytes through the Xplane-v1 ABI")
         raise ValueError(
             "matmul_bc_gemv_moe: the grouped legacy op cannot carry a placed-artifact descriptor; refusing to "
             "strip it and guess the registry map. A grouped arrangement-aware ABI must land with its producer")
@@ -457,8 +488,12 @@ def dequantize_fully_quantized(artifact, qtype: int, grouped: bool = False) -> t
         low, high, units = _unpack_fq(artifact, "dequantize_fully_quantized(grouped=True)")
     scale, zero = dequantize_scale_from_units(units, qtype)
     if arrangement is not None:
-        op = ("gguf_grouped_artifact_dequantize_for_tile" if grouped
-              else "gguf_dense_artifact_dequantize_for_tile")
+        if isinstance(arrangement, PlacedArrangementV2):
+            op = ("gguf_grouped_artifact_dequantize_for_arrangement_v2" if grouped
+                  else "gguf_dense_artifact_dequantize_for_arrangement_v2")
+        else:
+            op = ("gguf_grouped_artifact_dequantize_for_tile" if grouped
+                  else "gguf_dense_artifact_dequantize_for_tile")
     else:
         op = "gguf_grouped_artifact_dequantize" if grouped else "gguf_dense_artifact_dequantize"
     if grouped and not has_op(op):
@@ -467,10 +502,13 @@ def dequantize_fully_quantized(artifact, qtype: int, grouped: bool = False) -> t
             "artifact is one expert. A grouped weight needs the per-expert form -- request it rather than "
             "looping here, since a python loop over experts would not exercise the same addressing.")
     args = (low, high, scale, zero, int(qtype))
+    if isinstance(arrangement, PlacedArrangementV2):
+        return _op(op)(*args, *_arrangement_v2_wire(arrangement))
     return _op(op)(*args, arrangement.tile_k) if arrangement is not None else _op(op)(*args)
 
 
-def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: int, tile_k: int | None = None):
+def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: int,
+                                  tile_k: int | None = None, layout: str = "auto"):
     """Offline artifact for FULLY_QUANTIZED/DENSE: the code plane plus the PACKED SCALE UNIT.
 
     Unlike prepare_scale_first_dense, the scale is NOT expanded to fp16 planes -- it stays in the format's own
@@ -481,13 +519,33 @@ def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: i
     uint8[1, n, k/8] for Q5_K's 1-bit plane -- so the tuple's shape does not change with the format and `units`
     is always the LAST element. That is the property both oracles plant their fault on.
 
-    tile_k SELECTS THE PLACEMENT, and F follows from it -- see formats.fold_for. Passing None keeps the
-    format's default placement, which is what every existing caller wants and what the oracles compare against.
+    ``layout="auto"`` selects the canonical unified K-pack4 bytes for Q4_K and Xplane for every other format.
+    An explicit ``tile_k`` is an explicit Xplane request and is incompatible with K-pack4, which has no artifact
+    TileK axis. Compatibility callers that still need Q4 Xplane must say ``layout="xplane"``.
+
+    tile_k SELECTS AN XPLANE PLACEMENT, and F follows from it -- see formats.fold_for. Passing None keeps the
+    Xplane format's default placement when Xplane was explicitly selected.
     An explicit tile_k routes to the *_for_tile op, which is the only way to obtain a folded artifact: the
     default producer pins the fold at 1, so before this existed, `PlacedArrangement` could record arrangements
     nothing could build.
     """
     _check_shape(blocks, n, k, int(qtype))
+    if layout == "auto":
+        layout = ("q4-kpack4" if QuantType(qtype) == QuantType.Q4_K and tile_k is None
+                  else "xplane")
+    if layout == "q4-kpack4":
+        if QuantType(qtype) != QuantType.Q4_K:
+            raise ValueError(f"q4-kpack4 is defined only for Q4_K, got {QuantType(qtype).name}")
+        if tile_k is not None:
+            raise ValueError("q4-kpack4 has no artifact TileK axis; tile_k must be None")
+        arrangement = q4_kpack4_arrangement()
+        arrangement.validate()
+        tensors = _op("gguf_prepare_fully_quantized_dense_for_arrangement_v2")(
+            blocks, n, k, int(qtype), *_arrangement_v2_wire(arrangement))
+        return PlacedArtifact(tensors, arrangement, PLACED_ARTIFACT_VERSION_V2)
+    if layout != "xplane":
+        raise ValueError(
+            f"unknown fully-quantized dense layout {layout!r}; expected 'auto', 'xplane' or 'q4-kpack4'")
     arrangement = placed_arrangement(qtype, tile_k)
     if tile_k is None:
         tensors = _op("gguf_prepare_fully_quantized_dense")(blocks, n, k, int(qtype))
@@ -505,22 +563,42 @@ def matmul_fully_quantized_dense(a: torch.Tensor, artifact, qtype: int):
     """
     low, high, units, arrangement = _require_placed_artifact(
         artifact, qtype, "matmul_fully_quantized_dense")
+    if isinstance(arrangement, PlacedArrangementV2):
+        return _op("gguf_dense_fully_quantized_for_arrangement_v2")(
+            a, low, high, units, int(qtype), *_arrangement_v2_wire(arrangement))
     return _op("gguf_dense_fully_quantized_for_arrangement")(
         a, low, high, units, int(qtype), PLACED_ARTIFACT_VERSION,
         arrangement.bits, arrangement.tile_k, arrangement.high_bits)
 
 
-def prepare_fully_quantized_grouped(blocks: torch.Tensor, n: int, k: int, qtype: int, experts: int):
+def prepare_fully_quantized_grouped(blocks: torch.Tensor, n: int, k: int,
+                                    qtype: int, experts: int,
+                                    layout: str = "auto"):
     """The MoE artifact: one (low, units) pair per expert, nothing expanded.
 
-    blocks is [E*n*(k/256), type_size] -- expert-major, so expert e's weight is a contiguous slice. Returns
-    (low, high, units), with `high` empty for single-plane formats and uint8[E, n, k/8] for Q5_K.
+    blocks is [E*n*(k/256), type_size] -- expert-major, so expert e's weight is a contiguous slice. ``auto``
+    selects the canonical K-pack4 artifact for Q4_K and the compatibility Xplane tuple for other formats.
+    Returns (low, high, units), with `high` empty for single-plane formats and uint8[E, n, k/8] for Q5_K.
     """
     want = experts * n * (k // 256)
     if blocks.dim() != 2 or blocks.shape[0] != want:
         raise ValueError(f"blocks should be [{want}, type_size] for {experts} experts of an ({n}, {k}) weight, "
                          f"got {tuple(blocks.shape)}")
-    return _op("gguf_prepare_fully_quantized_grouped")(blocks, n, k, int(qtype), int(experts))
+    if layout == "auto":
+        layout = "q4-kpack4" if QuantType(qtype) == QuantType.Q4_K else "xplane"
+    if layout == "q4-kpack4":
+        if QuantType(qtype) != QuantType.Q4_K:
+            raise ValueError(f"q4-kpack4 is defined only for Q4_K, got {QuantType(qtype).name}")
+        arrangement = q4_kpack4_arrangement()
+        arrangement.validate()
+        tensors = _op("gguf_prepare_fully_quantized_grouped_for_arrangement_v2")(
+            blocks, n, k, int(qtype), int(experts), *_arrangement_v2_wire(arrangement))
+        return PlacedArtifact(tensors, arrangement, PLACED_ARTIFACT_VERSION_V2)
+    if layout != "xplane":
+        raise ValueError(
+            f"unknown fully-quantized grouped layout {layout!r}; expected 'auto', 'xplane' or 'q4-kpack4'")
+    return _op("gguf_prepare_fully_quantized_grouped")(
+        blocks, n, k, int(qtype), int(experts))
 
 
 def matmul_fully_quantized_grouped(a: torch.Tensor, artifact, qtype: int, rows_per_expert: torch.Tensor):
@@ -531,17 +609,82 @@ def matmul_fully_quantized_grouped(a: torch.Tensor, artifact, qtype: int, rows_p
     convention per layer -- the alternative is a caller that has to remember which side it is on.
     """
     if isinstance(artifact, PlacedArtifact):
-        raise ValueError(
-            "matmul_fully_quantized_grouped: the grouped legacy op cannot carry a placed-artifact descriptor; "
-            "refusing to strip it and guess the registry map")
-    low, high, units = _unpack_fq(artifact, "matmul_fully_quantized_grouped")
+        low, high, units, arrangement = _require_placed_artifact(
+            artifact, qtype, "matmul_fully_quantized_grouped")
+        if not isinstance(arrangement, PlacedArrangementV2):
+            raise ValueError(
+                "matmul_fully_quantized_grouped: grouped Xplane-v1 has no descriptor-aware production ABI; "
+                "refusing to erase its arrangement")
+        return _op("gguf_grouped_fully_quantized_for_arrangement_v2")(
+            a, low, high, units, rows_per_expert.to(torch.int32), int(qtype),
+            *_arrangement_v2_wire(arrangement))
+    low, high, units = _unpack_fq(
+        artifact, "matmul_fully_quantized_grouped")
     return _op("gguf_grouped_fully_quantized")(a, low, high, units, rows_per_expert.to(torch.int32), int(qtype))
 
 
-def matmul_scale_first_dense(a: torch.Tensor, artifact, qtype: int) -> torch.Tensor:
-    """SCALE_FIRST/DENSE through fpA_intB_ppu.cuh; packed codes and resident fp16 planes."""
+def matmul_scale_first_dense(a: torch.Tensor, artifact, qtype: int, scale_zero=None) -> torch.Tensor:
+    """SCALE_FIRST/DENSE through fpA_intB_ppu.cuh.
+
+    A legacy four-tensor artifact keeps the established Xplane route.  Passing the canonical K-pack4
+    ``PlacedArtifact`` reuses its resident code bytes; scale/zero are derived from its packed units (or supplied as
+    a hoisted ``scale_zero=(scale, zero)`` workspace) and the persistent v2 reader is selected.  Thus prefill and
+    fully-quantized decode share one offline weight format without forcing metadata expansion into the checkpoint.
+    """
+    if isinstance(artifact, PlacedArtifact):
+        low, high, units, arrangement = _require_placed_artifact(
+            artifact, qtype, "matmul_scale_first_dense")
+        if not isinstance(arrangement, PlacedArrangementV2):
+            raise ValueError(
+                "matmul_scale_first_dense: a placed fully-quantized Xplane artifact is not the legacy four-plane "
+                "ScaleFirst artifact; refusing to infer a different offline placement")
+        if scale_zero is None:
+            scale_zero = dequantize_scale_from_units(units, qtype)
+        if not isinstance(scale_zero, (tuple, list)) or len(scale_zero) != 2:
+            raise ValueError("scale_zero must be the (scale, zero) pair derived from this artifact's units")
+        scale, zero = scale_zero
+        return _op("gguf_dense_scale_first_for_arrangement_v2")(
+            a, low, high, scale, zero, int(qtype), *_arrangement_v2_wire(arrangement))
     low, high, scale, zero = artifact
     return gguf_dense_scale_first(a, low, high, scale, zero, int(qtype))
+
+
+KPACK4_DECODE_MAX_ROWS = 8
+
+
+def prepare_q4_kpack4_scale_workspace(artifact, qtype: int = QuantType.Q4_K):
+    """Hoist the fp16 affine workspace used by K-pack4 prefill.
+
+    The returned tensors are runtime workspace, not a second checkpoint artifact. Keeping this operation explicit
+    prevents the dispatcher below from rebuilding scale/zero inside every timed prefill call.
+    """
+    _low, _high, units, arrangement = _require_placed_artifact(
+        artifact, qtype, "prepare_q4_kpack4_scale_workspace")
+    if not isinstance(arrangement, PlacedArrangementV2):
+        raise ValueError("prepare_q4_kpack4_scale_workspace requires the canonical K-pack4 v2 artifact")
+    return dequantize_scale_from_units(units, qtype)
+
+
+def matmul_q4_kpack4_dense(a: torch.Tensor, artifact, qtype: int = QuantType.Q4_K,
+                            scale_workspace=None) -> torch.Tensor:
+    """Production dense dispatcher over one Q4 K-pack4 artifact.
+
+    Decode ``M<=8`` uses fully-quantized K-pack4. Larger M uses persistent ScaleFirst over the same code bytes and
+    requires a workspace returned by :func:`prepare_q4_kpack4_scale_workspace`.
+    """
+    if a.dim() != 2:
+        raise ValueError(f"activation must be [M,K], got {tuple(a.shape)}")
+    _low, _high, _units, arrangement = _require_placed_artifact(
+        artifact, qtype, "matmul_q4_kpack4_dense")
+    if not isinstance(arrangement, PlacedArrangementV2):
+        raise ValueError("matmul_q4_kpack4_dense requires the canonical K-pack4 v2 artifact")
+    if a.shape[0] <= KPACK4_DECODE_MAX_ROWS:
+        return matmul_fully_quantized_dense(a, artifact, qtype)
+    if scale_workspace is None:
+        raise ValueError(
+            "K-pack4 prefill requires a hoisted scale_workspace; call "
+            "prepare_q4_kpack4_scale_workspace(artifact) once outside the hot path")
+    return matmul_scale_first_dense(a, artifact, qtype, scale_zero=scale_workspace)
 
 
 ROUTES = {
@@ -551,4 +694,5 @@ ROUTES = {
     "scale_first_gemv": matmul_scale_first_gemv,
     "scale_first_gemv_moe": matmul_scale_first_gemv_moe,
     "scale_first_dense": matmul_scale_first_dense,
+    "q4_kpack4_dense": matmul_q4_kpack4_dense,
 }

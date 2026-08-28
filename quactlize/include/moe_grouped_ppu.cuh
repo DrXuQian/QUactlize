@@ -94,7 +94,8 @@ template <QuantMode QuantOp, class BaseSchedule,
           bool ExpectPackedScale = false,
           bool QueryOnly = false, bool RequireUniversalFallback = false,
           int ArtifactTileK = 0,
-          bool UsePersistent = false>
+          bool UsePersistent = false,
+          class MainloopPolicyOverride = void>
 bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* scales,
             const cutlass::half_t* zeros,
             cutlass::half_t** ptr_D,        // device [L] per-expert output base pointers (contiguous: D+offs[e]*N)
@@ -138,9 +139,12 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
             bool /*unused, was a_row_broadcast*/ = false,
             KernelSpanEvents* kernel_span = nullptr) {
   if (kernel_span != nullptr) kernel_span->recorded = false;
-  using MainloopPolicy = MixedMainloopPolicy<QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
-                                              Stages, AiuInterleaved, ElementB, PlaneB2,
-                                              ArtifactTileK>;
+  using DefaultMainloopPolicy = MixedMainloopPolicy<
+      QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
+      Stages, AiuInterleaved, ElementB, PlaneB2, ArtifactTileK>;
+  using MainloopPolicy = std::conditional_t<
+      std::is_void_v<MainloopPolicyOverride>, DefaultMainloopPolicy,
+      MainloopPolicyOverride>;
   using ElementA = typename MainloopPolicy::ElementA;
   using ElementC = cutlass::half_t;  using LayoutC = cutlass::layout::RowMajor;
   using ElementD = cutlass::half_t;  using LayoutD = cutlass::layout::RowMajor;

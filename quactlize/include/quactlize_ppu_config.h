@@ -100,6 +100,22 @@ typedef struct quactlize_ppu_config_v3 {
   int32_t stages;
 } quactlize_ppu_config_v3;
 
+// Scheduler-aware successor.  K-pack4 decode uses fixed Split-K while prefill uses S1; encoding S only in a
+// human-readable config name would make a deployment registry unable to prove which measured product it selected.
+// Existing v3 queries remain ABI compatible and expose the same rows without this final field.
+typedef struct quactlize_ppu_config_v4 {
+  bool enable_cuda_kernel;
+  char const* name;
+  int32_t tile_m;
+  int32_t tile_n;
+  int32_t tactic_tile_k;
+  int32_t artifact_tile_k;
+  int32_t warp_m;
+  int32_t warp_n;
+  int32_t stages;
+  int32_t split_k_slices;
+} quactlize_ppu_config_v4;
+
 // Stores a static config-array address in *configs when configs is non-null and returns its element count.
 // No CUDA/PPU context is required. Dense and grouped are separate operators and therefore separate inventories;
 // each array also contains its CUDA-core GEMV tactic, discriminated before its meaningless tile fields.
@@ -122,9 +138,28 @@ int32_t quactlize_ppu_list_valid_dense_fully_quantized_configs_for_arrangement_v
     quactlize_ppu_config_v3* configs, int32_t capacity,
     int m, int n, int k, int group_size, int qtype,
     quactlize_ppu_placed_arrangement_v1 const* arrangement);
+// v2 descriptor successor. Xplane-v2 delegates to the immutable v1 reader
+// classes; Q4 K-pack4 returns rows whose artifact_tile_k is zero because the
+// physical bytes have no tactic-TileK identity.
+int32_t quactlize_ppu_list_valid_dense_fully_quantized_configs_for_arrangement_v2(
+    quactlize_ppu_config_v3* configs, int32_t capacity,
+    int m, int n, int k, int group_size, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement);
+int32_t quactlize_ppu_list_valid_dense_fully_quantized_configs_for_arrangement_v2_v4(
+    quactlize_ppu_config_v4* configs, int32_t capacity,
+    int m, int n, int k, int group_size, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement);
 int32_t quactlize_ppu_list_valid_grouped_fully_quantized_configs_v2(
     quactlize_ppu_config_v2* configs, int32_t capacity,
     int total_rows, int n, int k, int group_size, int experts, int max_rows, int qtype);
+// Physical-layout-aware grouped inventory. K-pack4 has no artifact TileK, so
+// returned v3 rows carry tactic_tile_k=256 and artifact_tile_k=0. The same
+// predicate is used by host/device launches; malformed descriptors yield zero
+// rows rather than inheriting the legacy Xplane map.
+int32_t quactlize_ppu_list_valid_grouped_fully_quantized_configs_for_arrangement_v2(
+    quactlize_ppu_config_v3* configs, int32_t capacity,
+    int total_rows, int n, int k, int group_size, int experts, int max_rows,
+    int qtype, quactlize_ppu_placed_arrangement_v2 const* arrangement);
 int32_t quactlize_ppu_list_valid_vecdot_moe_configs_v2(
     quactlize_ppu_config_v2* configs, int32_t capacity,
     int total_rows, int n, int k, int group_size, int experts, int max_rows, int qtype);
@@ -147,6 +182,9 @@ int32_t quactlize_ppu_list_valid_vecdot_moe_configs_v2(
 // default build and return invalid unless PPU_PACKED_SCALE and that qtype's PPU_PACKED_FORMAT were compiled.
 int32_t quactlize_ppu_dense_lowbit_config_valid_v1(
     int m, int n, int k, int group_size, int qtype, char const* config_name);
+int32_t quactlize_ppu_dense_lowbit_config_valid_for_arrangement_v2(
+    int m, int n, int k, int group_size, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement, char const* config_name);
 int32_t quactlize_ppu_gemv_lowbit_config_valid_v1(
     int m, int n, int k, int group_size, int qtype, char const* config_name);
 int32_t quactlize_ppu_dense_fully_quantized_config_valid_v1(
@@ -154,12 +192,19 @@ int32_t quactlize_ppu_dense_fully_quantized_config_valid_v1(
 int32_t quactlize_ppu_dense_fully_quantized_config_valid_for_arrangement_v1(
     int m, int n, int k, int group_size, int qtype,
     quactlize_ppu_placed_arrangement_v1 const* arrangement, char const* config_name);
+int32_t quactlize_ppu_dense_fully_quantized_config_valid_for_arrangement_v2(
+    int m, int n, int k, int group_size, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement, char const* config_name);
 int32_t quactlize_ppu_grouped_lowbit_config_valid_v1(
     int total_rows, int n, int k, int group_size, int experts, int max_rows,
     int qtype, char const* config_name);
 int32_t quactlize_ppu_grouped_fully_quantized_config_valid_v1(
     int total_rows, int n, int k, int group_size, int experts, int max_rows,
     int qtype, char const* config_name);
+int32_t quactlize_ppu_grouped_fully_quantized_config_valid_for_arrangement_v2(
+    int total_rows, int n, int k, int group_size, int experts, int max_rows,
+    int qtype, quactlize_ppu_placed_arrangement_v2 const* arrangement,
+    char const* config_name);
 int32_t quactlize_ppu_vecdot_moe_config_valid_v1(
     int total_rows, int n, int k, int group_size, int experts, int max_rows,
     int qtype, char const* config_name);
@@ -174,6 +219,11 @@ int quactlize_ppu_dense_lowbit_config_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high,
     uint16_t const* scale, uint16_t const* zero, uint16_t* out,
     int m, int n, int k, int group_size, int qtype, char const* config_name);
+int quactlize_ppu_dense_lowbit_for_arrangement_v2(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high,
+    uint16_t const* scale, uint16_t const* zero, uint16_t* out,
+    int m, int n, int k, int group_size, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement, char const* config_name);
 int quactlize_ppu_gemv_lowbit_config_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high,
     uint16_t const* scale, uint16_t const* zero, uint16_t* out,
@@ -188,6 +238,10 @@ int quactlize_ppu_dense_fully_quantized_for_arrangement_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
     int m, int n, int k, int qtype,
     quactlize_ppu_placed_arrangement_v1 const* arrangement, char const* config_name);
+int quactlize_ppu_dense_fully_quantized_for_arrangement_v2(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
+    int m, int n, int k, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement, char const* config_name);
 int quactlize_ppu_grouped_lowbit_config_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint16_t const* scale,
     int const* rows_per_expert, uint16_t* out,
@@ -196,6 +250,12 @@ int quactlize_ppu_grouped_fully_quantized_config_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
     int const* rows_per_expert, uint16_t* out,
     int total_rows, int n, int k, int experts, int qtype, char const* config_name);
+int quactlize_ppu_grouped_fully_quantized_for_arrangement_v2(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high,
+    uint8_t const* units, int const* rows_per_expert, uint16_t* out,
+    int total_rows, int n, int k, int experts, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement,
+    char const* config_name);
 int quactlize_ppu_vecdot_moe_config_v1(
     uint8_t const* blocks, int64_t block_bytes, uint16_t const* x,
     int const* offsets, float* out, int n, int blocks_per_row, int experts,

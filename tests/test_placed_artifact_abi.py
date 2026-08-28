@@ -71,6 +71,166 @@ def test_dense_producer_attaches_the_exact_arrangement(monkeypatch):
     assert calls[0][1][-1] == arrangement.tile_k
 
 
+def test_q4_kpack4_v2_producer_and_dense_reader_forward_the_exact_byte_map(monkeypatch):
+    calls = []
+    arrangement = formats.q4_kpack4_arrangement()
+
+    def fake_op(name):
+        def call(*args):
+            calls.append((name, args))
+            if name.startswith("gguf_prepare"):
+                return _planes(arrangement)
+            return torch.empty((1, 2), dtype=torch.float16)
+        return call
+
+    monkeypatch.setattr(routes, "_op", fake_op)
+    blocks = torch.zeros((2, 144), dtype=torch.uint8)
+    artifact = routes.prepare_fully_quantized_dense(
+        blocks, 2, 256, formats.QuantType.Q4_K)
+    assert artifact.arrangement == arrangement
+    assert artifact.arrangement_version == routes.PLACED_ARTIFACT_VERSION_V2
+    wire = (routes.PLACED_ARTIFACT_VERSION_V2, *arrangement)
+    assert calls[0][0] == "gguf_prepare_fully_quantized_dense_for_arrangement_v2"
+    assert calls[0][1][-9:] == wire
+
+    routes.matmul_fully_quantized_dense(
+        torch.zeros((1, 256), dtype=torch.float16), artifact, formats.QuantType.Q4_K)
+    assert calls[1][0] == "gguf_dense_fully_quantized_for_arrangement_v2"
+    assert calls[1][1][-9:] == wire
+
+
+def test_q4_kpack4_rejects_mutated_identity_and_unimplemented_bc_before_dispatch(monkeypatch):
+    called = []
+    monkeypatch.setattr(routes, "_op", lambda name: lambda *args: called.append((name, args)))
+    canonical = formats.q4_kpack4_arrangement()
+    bad = canonical._replace(mapping_id=canonical.mapping_id ^ 1)
+    bad_artifact = routes.PlacedArtifact(_planes(bad), bad)
+    a = torch.zeros((1, 256), dtype=torch.float16)
+    with pytest.raises(ValueError, match="noncanonical Q4 K-pack4 descriptor"):
+        routes.matmul_fully_quantized_dense(a, bad_artifact, formats.QuantType.Q4_K)
+    assert called == []
+
+    artifact = routes.PlacedArtifact(_planes(canonical), canonical)
+    with pytest.raises(NotImplementedError, match="no CUDA-core/BC reader"):
+        routes.matmul_bc_gemv(a, artifact, formats.QuantType.Q4_K)
+    assert called == []
+
+
+def test_q4_kpack4_inverse_uses_the_v2_recovery_op(monkeypatch):
+    calls = []
+    arrangement = formats.q4_kpack4_arrangement()
+    artifact = routes.PlacedArtifact(_planes(arrangement), arrangement)
+
+    def fake_op(name):
+        def call(*args):
+            calls.append((name, args))
+            if name == "gguf_packed_scale_prepass":
+                return (torch.ones((1, 8, 2), dtype=torch.float16),) * 2
+            return torch.empty((1, 2, 256), dtype=torch.float16)
+        return call
+
+    monkeypatch.setattr(routes, "_op", fake_op)
+    routes.dequantize_fully_quantized(artifact, formats.QuantType.Q4_K)
+    assert calls[-1][0] == "gguf_dense_artifact_dequantize_for_arrangement_v2"
+    assert calls[-1][1][-9:] == (routes.PLACED_ARTIFACT_VERSION_V2, *arrangement)
+
+
+def test_q4_kpack4_grouped_producer_reader_and_inverse_keep_one_descriptor(monkeypatch):
+    calls = []
+    arrangement = formats.q4_kpack4_arrangement()
+
+    def fake_op(name):
+        def call(*args):
+            calls.append((name, args))
+            if name.startswith("gguf_prepare"):
+                return _planes(arrangement)
+            if name == "gguf_packed_scale_prepass":
+                return (torch.ones((1, 8, 2), dtype=torch.float16),) * 2
+            return torch.empty((1, 2), dtype=torch.float16)
+        return call
+
+    monkeypatch.setattr(routes, "_op", fake_op)
+    artifact = routes.prepare_fully_quantized_grouped(
+        torch.zeros((2, 144), dtype=torch.uint8), 2, 256,
+        formats.QuantType.Q4_K, 1)
+    wire = (routes.PLACED_ARTIFACT_VERSION_V2, *arrangement)
+    assert isinstance(artifact, routes.PlacedArtifact)
+    assert artifact.arrangement == arrangement
+    assert calls[-1][0] == "gguf_prepare_fully_quantized_grouped_for_arrangement_v2"
+    assert calls[-1][1][-9:] == wire
+
+    routes.matmul_fully_quantized_grouped(
+        torch.zeros((1, 256), dtype=torch.float16), artifact,
+        formats.QuantType.Q4_K, torch.tensor([1], dtype=torch.int32))
+    assert calls[-1][0] == "gguf_grouped_fully_quantized_for_arrangement_v2"
+    assert calls[-1][1][-9:] == wire
+
+    routes.dequantize_fully_quantized(
+        artifact, formats.QuantType.Q4_K, grouped=True)
+    assert calls[-1][0] == "gguf_grouped_artifact_dequantize_for_arrangement_v2"
+    assert calls[-1][1][-9:] == wire
+
+    bad = arrangement._replace(mapping_id=arrangement.mapping_id ^ 1)
+    with pytest.raises(ValueError, match="noncanonical Q4 K-pack4 descriptor"):
+        routes.matmul_fully_quantized_grouped(
+            torch.zeros((1, 256), dtype=torch.float16),
+            routes.PlacedArtifact(_planes(bad), bad), formats.QuantType.Q4_K,
+            torch.tensor([1], dtype=torch.int32))
+    with pytest.raises(NotImplementedError, match="no grouped CUDA-core/BC reader"):
+        routes.matmul_bc_gemv_moe(
+            torch.zeros((1, 256), dtype=torch.float16), artifact,
+            formats.QuantType.Q4_K, 1, torch.tensor([1], dtype=torch.int32))
+
+
+def test_q4_kpack4_scalefirst_view_reuses_the_v2_bytes_and_hoisted_metadata(monkeypatch):
+    calls = []
+    arrangement = formats.q4_kpack4_arrangement()
+    artifact = routes.PlacedArtifact(_planes(arrangement), arrangement)
+    scale_zero = (torch.ones((1, 8, 2), dtype=torch.float16),) * 2
+
+    def fake_op(name):
+        def call(*args):
+            calls.append((name, args))
+            return torch.empty((64, 2), dtype=torch.float16)
+        return call
+
+    monkeypatch.setattr(routes, "_op", fake_op)
+    routes.matmul_scale_first_dense(
+        torch.zeros((64, 256), dtype=torch.float16), artifact,
+        formats.QuantType.Q4_K, scale_zero=scale_zero)
+    assert [name for name, _ in calls] == ["gguf_dense_scale_first_for_arrangement_v2"]
+    assert calls[0][1][-9:] == (routes.PLACED_ARTIFACT_VERSION_V2, *arrangement)
+
+
+def test_kpack4_dense_dispatches_decode_and_prefill_without_hidden_workspace_build(monkeypatch):
+    calls = []
+    arrangement = formats.q4_kpack4_arrangement()
+    artifact = routes.PlacedArtifact(_planes(arrangement), arrangement)
+
+    def fake_op(name):
+        def call(*args):
+            calls.append((name, args))
+            return torch.empty((args[0].shape[0], 2), dtype=torch.float16)
+        return call
+
+    monkeypatch.setattr(routes, "_op", fake_op)
+    routes.matmul_q4_kpack4_dense(
+        torch.zeros((8, 256), dtype=torch.float16), artifact)
+    assert calls[-1][0] == "gguf_dense_fully_quantized_for_arrangement_v2"
+
+    before = len(calls)
+    with pytest.raises(ValueError, match="hoisted scale_workspace"):
+        routes.matmul_q4_kpack4_dense(
+            torch.zeros((64, 256), dtype=torch.float16), artifact)
+    assert len(calls) == before
+
+    workspace = (torch.ones((1, 8, 2), dtype=torch.float16),) * 2
+    routes.matmul_q4_kpack4_dense(
+        torch.zeros((64, 256), dtype=torch.float16), artifact,
+        scale_workspace=workspace)
+    assert calls[-1][0] == "gguf_dense_scale_first_for_arrangement_v2"
+
+
 @pytest.mark.parametrize("reader", ["dense", "bc", "dequant"])
 def test_tuple_stripping_and_unknown_versions_fail_before_reader_dispatch(monkeypatch, reader):
     called = []
@@ -234,6 +394,70 @@ def test_manifest_roundtrip_restores_descriptor_and_rejects_legacy_or_future_ver
         pack_gguf.restore_artifact(tmp_path, bad_arrangement)
 
 
+def test_manifest_roundtrip_restores_q4_kpack4_v2_and_rejects_mapping_drift(tmp_path):
+    arrangement = formats.q4_kpack4_arrangement()
+    artifact = routes.PlacedArtifact(_planes(arrangement), arrangement)
+    tensor_dir = tmp_path / "weight"
+    tensor_dir.mkdir()
+    pack_gguf._write(tensor_dir, *artifact)
+    record = {
+        "name": "blk.0.weight", "dir": "weight", "ggml_type": int(formats.QuantType.Q4_K),
+        "arrangement_version": routes.PLACED_ARTIFACT_VERSION_V2,
+        "arrangement": arrangement._asdict(),
+    }
+    restored = pack_gguf.restore_artifact(tmp_path, record)
+    assert restored == artifact
+    assert restored.arrangement == arrangement
+
+    planted = dict(record, arrangement=dict(record["arrangement"], mapping_id=arrangement.mapping_id ^ 1))
+    with pytest.raises(ValueError, match="noncanonical Q4 K-pack4 descriptor"):
+        pack_gguf.restore_artifact(tmp_path, planted)
+
+
+def test_whole_model_packer_admits_q4_kpack4_grouped_and_holds_back_ambiguous_rank3():
+    supported = {int(formats.QuantType.Q3_K), int(formats.QuantType.Q4_K)}
+    q4 = int(formats.QuantType.Q4_K)
+    q3 = int(formats.QuantType.Q3_K)
+
+    assert pack_gguf._packability(q4, 2, supported, q4, "q4-kpack4") == (True, "dense", None)
+    assert pack_gguf._packability(q4, 3, supported, q4, "q4-kpack4") == (True, "grouped", None)
+    ok, route, why = pack_gguf._packability(q4, 3, supported, q4, "xplane")
+    assert not ok and route is None and "descriptor ABI is absent" in why
+    ok, route, why = pack_gguf._packability(q3, 3, supported, q4, "q4-kpack4")
+    assert not ok and route is None and "descriptor-aware reader" in why
+
+    assert pack_gguf._tensor_geometry((5120, 8192)) == (8192, 5120, None)
+    assert pack_gguf._tensor_geometry((5120, 8192, 64)) == (8192, 5120, 64)
+    with pytest.raises(ValueError, match="multiples of 256"):
+        pack_gguf._tensor_geometry((5119, 8192, 64))
+    with pytest.raises(ValueError, match="multiples of 256"):
+        pack_gguf._tensor_geometry((5120, 8191, 64))
+
+    assert pack_gguf._grouped_role_authority("blk.12.ffn_down_exps.weight") == (True, None)
+    ok, why = pack_gguf._grouped_role_authority("blk.12.unknown_rank3.weight")
+    assert not ok and "no grouped role authority" in why
+
+
+def test_whole_model_grouped_kpack_dispatch_preserves_expert_major_rows(monkeypatch):
+    calls = []
+
+    def fake_op(name):
+        def invoke(*args):
+            calls.append((name, args))
+            return _planes(formats.q4_kpack4_arrangement())
+        return invoke
+
+    monkeypatch.setattr(routes, "_op", fake_op)
+    n, k, experts = pack_gguf._tensor_geometry((512, 256, 4))
+    blocks = torch.zeros((experts * n * (k // 256), 144), dtype=torch.uint8)
+    artifact = routes.prepare_fully_quantized_grouped(
+        blocks, n, k, formats.QuantType.Q4_K, experts, layout="q4-kpack4")
+    assert artifact.arrangement == formats.q4_kpack4_arrangement()
+    assert calls[-1][0] == "gguf_prepare_fully_quantized_grouped_for_arrangement_v2"
+    assert tuple(calls[-1][1][0].shape) == (experts * n * (k // 256), 144)
+    assert calls[-1][1][1:5] == (n, k, int(formats.QuantType.Q4_K), experts)
+
+
 def test_copy_pickle_and_identity_keep_descriptor_attached():
     folded = _artifact(formats.QuantType.Q3_K, 64)
     unfolded = routes.PlacedArtifact(folded, formats.placed_arrangement(formats.QuantType.Q3_K, 256))
@@ -323,4 +547,44 @@ print("zero-M predicate-only-without-reader=EXPECTED_RED")
     env = dict(os.environ, QUACTLIZE_PPU_LIB_FMT3=str(predicate_only))
     run = subprocess.run(
         [sys.executable, "-c", missing_reader], cwd=root, env=env, capture_output=True, text=True)
+    assert run.returncode == 0, run.stdout + run.stderr
+
+
+def test_zero_m_kpack4_v2_reaches_the_exact_dlsym_predicate(tmp_path):
+    """The real torch/dlsym seam must preserve all nine v2 fields even when no kernel launch occurs."""
+    root = pathlib.Path(__file__).parents[1]
+    if not routes.has_op("gguf_dense_fully_quantized_for_arrangement_v2"):
+        pytest.skip("the local extension is not built; setup.py build_ext enables this dlsym contract test")
+    fake = root / "dev" / "fold_derivation" / "l140_fake_ppu_backend.cpp"
+    output = tmp_path / "fmt0_v2.so"
+    built = subprocess.run([
+        os.environ.get("CXX", "c++"), "-std=c++17", "-O2", "-shared", "-fPIC",
+        f"-I{root / 'quactlize' / 'include'}", "-DL140_BACKEND_MARKER=140", "-DL140_ACCEPT_V2=1",
+        str(fake), "-o", str(output)], capture_output=True, text=True)
+    assert built.returncode == 0, built.stdout + built.stderr
+    code = r'''
+import torch
+from quactlize import formats, routes
+
+arr = formats.q4_kpack4_arrangement()
+artifact = routes.PlacedArtifact((
+    torch.zeros((1, 256, 256), dtype=torch.uint8),
+    torch.empty((0,), dtype=torch.uint8),
+    torch.zeros((2, 256, 16), dtype=torch.uint8)), arr)
+got = routes.matmul_fully_quantized_dense(
+    torch.zeros((0, 512), dtype=torch.float16), artifact, formats.QuantType.Q4_K)
+assert tuple(got.shape) == (0, 256)
+
+grouped = routes.PlacedArtifact((
+    torch.zeros((1, 256, 256), dtype=torch.uint8),
+    torch.empty((0,), dtype=torch.uint8),
+    torch.zeros((1, 2, 256, 16), dtype=torch.uint8)), arr)
+grouped_out = routes.matmul_fully_quantized_grouped(
+    torch.zeros((1, 512), dtype=torch.float16), grouped,
+    formats.QuantType.Q4_K, torch.tensor([1], dtype=torch.int32))
+assert tuple(grouped_out.shape) == (1, 256)
+print("zero-M K-pack4-v2 exact-predicate=PASS grouped-v2-dlsym=PASS")
+'''
+    env = dict(os.environ, QUACTLIZE_PPU_LIB_FMT0=str(output))
+    run = subprocess.run([sys.executable, "-c", code], cwd=root, env=env, capture_output=True, text=True)
     assert run.returncode == 0, run.stdout + run.stderr

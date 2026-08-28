@@ -323,6 +323,68 @@ class PlacedArrangement(NamedTuple):
         return self.fold == 1 and self.high_fold == 1
 
 
+# Physical placement ABI constants.  Keep these numeric values identical to quactlize_ppu_config.h: they are
+# serialized with the tensor and cross the host-extension/device-library boundary as data, not as Python types.
+PLACED_ARRANGEMENT_VERSION_V1 = 1
+PLACED_ARRANGEMENT_VERSION_V2 = 2
+PLACED_LAYOUT_XPLANE_V1 = 0
+PLACED_LAYOUT_Q4_KPACK4_TRANSPOSE_V1 = 1
+Q4_KPACK4_MAPPING_ID = 0x51344B5034540001
+Q4_KPACK4_TRANSPORT_TILE_K = 64
+Q4_KPACK4_GROUP_SIZE = 32
+
+
+class PlacedArrangementV2(NamedTuple):
+    """A byte-map identity, not a tactic hint.
+
+    Xplane v1 could be identified by code widths plus ArtifactTileK.  K-pack4 transposes and packs the physical
+    axes, has no ArtifactTileK axis, and therefore needs an explicit layout and mapping id.  Every field mirrors
+    ``quactlize_ppu_placed_arrangement_v2`` in order so a Python artifact cannot lose or reorder an ABI field.
+    """
+    layout: int
+    bits: int
+    high_bits: int
+    artifact_tile_k: int
+    transport_tile_k: int
+    group_size: int
+    reserved: int
+    mapping_id: int
+
+    def validate(self) -> None:
+        values = (self.layout, self.bits, self.high_bits, self.artifact_tile_k,
+                  self.transport_tile_k, self.group_size, self.reserved, self.mapping_id)
+        if any(not isinstance(x, int) for x in values):
+            raise TypeError("placed arrangement v2 fields must all be integers")
+        if self.layout == PLACED_LAYOUT_Q4_KPACK4_TRANSPOSE_V1:
+            canonical = q4_kpack4_arrangement()
+            if self != canonical:
+                raise ValueError(
+                    f"noncanonical Q4 K-pack4 descriptor {self}; expected {canonical}. The mapping id and "
+                    "physical quanta identify bytes and are not tunable reader parameters")
+        elif self.layout == PLACED_LAYOUT_XPLANE_V1:
+            if (self.bits <= 0 or self.high_bits < 0 or self.artifact_tile_k <= 0 or
+                    self.transport_tile_k != 0 or self.group_size != 0 or self.reserved != 0 or
+                    self.mapping_id != 0):
+                raise ValueError(f"invalid Xplane arrangement-v2 descriptor {self}")
+            _ = fold_for(self.bits, self.artifact_tile_k)
+            if self.high_bits:
+                _ = fold_for(self.high_bits, self.artifact_tile_k)
+        else:
+            raise ValueError(f"unknown placed arrangement-v2 layout {self.layout}")
+
+
+def q4_kpack4_arrangement() -> PlacedArrangementV2:
+    """The sole shipping K-pack4 byte class.
+
+    Returning a canonical value rather than accepting knobs is deliberate: changing any field changes the bytes,
+    so such a change is a new layout/version, not another kernel configuration.
+    """
+    return PlacedArrangementV2(
+        PLACED_LAYOUT_Q4_KPACK4_TRANSPOSE_V1, 4, 0, 0,
+        Q4_KPACK4_TRANSPORT_TILE_K, Q4_KPACK4_GROUP_SIZE, 0,
+        Q4_KPACK4_MAPPING_ID)
+
+
 # LOGICAL CODE PLANES ARE PART OF THE GGUF FORMAT, NOT A TACTIC CHOICE. Keeping this beside BLOCKS makes the
 # Python artifact header derive from the same format identity that validates the raw blocks. TileK is deliberately
 # absent: the producer records the TileK it actually used, and fold_for derives the physical fold from that value.

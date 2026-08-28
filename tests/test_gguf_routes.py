@@ -30,7 +30,7 @@ from gguf.constants import GGMLQuantizationType as GT
 from gguf.constants import GGML_QUANT_SIZES
 
 import quactlize
-from quactlize import routes
+from quactlize import formats, routes
 
 #  name    ggml type   fp16 header ranges (d, dmin)   qtype int
 FORMATS = [
@@ -549,7 +549,7 @@ def test_packed_unit_scale_derivation_matches_the_scale_first_planes(name, gt, h
     # the scale channel -- which is a claim about the WEIGHT bytes as much as about the scale, and the weight half
     # was assumed throughout. If the two producers place the codes differently then the merge is not a
     # scale-channel change and every conclusion drawn from calling it one is unsupported.
-    fq = routes.prepare_fully_quantized_dense(blocks, n, k, qtype)
+    fq = routes.prepare_fully_quantized_dense(blocks, n, k, qtype, layout="xplane")
     # derive_from_bc=FALSE, AND THIS IS THE POINT OF THE TEST AFTER THE SWITCH. prepare_scale_first_dense now
     # derives from BC by default, so calling it plainly would compare the derivation against itself -- green,
     # and evidence of nothing. The raw producer is kept reachable precisely to remain an independent arm, and
@@ -639,7 +639,8 @@ def test_bc_dequant_all_matches_official_gguf(name, gt, hdr, qtype, ppu_backend_
     n, k = 256, 512
     rng = np.random.default_rng(43000 + qtype)
     raw = _raw_blocks(gt, hdr, n * (k // 256), rng)
-    artifact = routes.prepare_fully_quantized_dense(torch.from_numpy(raw), n, k, qtype)
+    artifact = routes.prepare_fully_quantized_dense(
+        torch.from_numpy(raw), n, k, qtype, layout="xplane")
     official = gguf.quants.dequantize(raw.reshape(-1), gt).reshape(n, k).astype(np.float64)
     rel = lambda w: float(np.max(np.abs(w.astype(np.float64) - official)) / max(np.max(np.abs(official)), 1e-9))
 
@@ -677,7 +678,7 @@ def test_bc_gemv_matches_dequant_first_and_rejects_fault(name, gt, hdr, qtype, p
     rng = np.random.default_rng(37000 + qtype)
     raw = _raw_blocks(gt, hdr, n * (k // 256), rng)
     blocks = torch.from_numpy(raw)
-    artifact = routes.prepare_fully_quantized_dense(blocks, n, k, qtype)
+    artifact = routes.prepare_fully_quantized_dense(blocks, n, k, qtype, layout="xplane")
     official = gguf.quants.dequantize(raw.reshape(-1), gt).reshape(n, k).astype(np.float64)
 
     a = (rng.standard_normal((1, k)) * .2).astype(np.float16)
@@ -716,7 +717,8 @@ def test_bc_gemv_moe_matches_dequant_first_and_rejects_fault(name, gt, hdr, qtyp
     rng = np.random.default_rng(41000 + qtype)
     raw = _raw_blocks(gt, hdr, experts * n * (k // 256), rng)
     blocks = torch.from_numpy(raw)
-    artifact = routes.prepare_fully_quantized_grouped(blocks, n, k, qtype, experts)
+    artifact = routes.prepare_fully_quantized_grouped(
+        blocks, n, k, qtype, experts, layout="xplane")
     official = gguf.quants.dequantize(raw.reshape(-1), gt).reshape(experts, n, k).astype(np.float64)
 
     m = int(rows.sum())
@@ -801,6 +803,86 @@ def test_fully_quantized_grouped_matches_dequant_first_and_rejects_fault(name, g
     assert err < bound, f"{name}: packed grouped disagrees with dequant-first ({err:.3e})"
     observed.append(f"rows={list(rows)} err={err:.3e} planted={planted_err:.3e}")
     print(f"{name} packed grouped vs dequant-first: " + "; ".join(observed))
+
+
+@pytest.mark.kpack4_production
+def test_q4_kpack4_production_routes_share_one_artifact(ppu_backend_dense):
+    """One physical Q4 artifact closes dense decode, persistent prefill and ragged grouped addressing.
+
+    This is intentionally outside the five-format compatibility marker: it requires two libraries at once --
+    format0/packed for FQ and the non-packed default for ScaleFirst persistent -- and a skip is a failed production
+    closure, not an expected format gate.
+    """
+    required = (
+        "gguf_backend_for_qtype",
+        "gguf_prepare_fully_quantized_dense_for_arrangement_v2",
+        "gguf_dense_fully_quantized_for_arrangement_v2",
+        "gguf_dense_scale_first_for_arrangement_v2",
+        "gguf_prepare_fully_quantized_grouped_for_arrangement_v2",
+        "gguf_grouped_fully_quantized_for_arrangement_v2",
+        "gguf_grouped_artifact_dequantize_for_arrangement_v2",
+    )
+    missing = [name for name in required if not routes.has_op(name)]
+    assert not missing, f"K-pack4 production torch ops are missing: {missing}"
+    assert os.environ.get("QUACTLIZE_PPU_LIB_FMT0"), (
+        "K-pack4 production closure requires QUACTLIZE_PPU_LIB_FMT0=packed-format0.so")
+
+    qtype, gt, hdr = 12, GT.Q4_K, [(0, 2), (2, 4)]
+    assert quactlize.gguf_backend_for_qtype(qtype).startswith("ppu"), (
+        quactlize.gguf_backend_for_qtype(qtype))
+    n, k = 256, 5120
+    rng = np.random.default_rng(46012)
+    raw = _raw_blocks(gt, hdr, n * (k // 256), rng)
+    blocks = torch.from_numpy(raw)
+    artifact = routes.prepare_fully_quantized_dense(blocks, n, k, qtype)
+    assert artifact.arrangement == formats.q4_kpack4_arrangement()
+    official = gguf.quants.dequantize(raw.reshape(-1), gt).reshape(n, k).astype(np.float64)
+    official_fp16 = torch.from_numpy(official.astype(np.float16))
+    scale_workspace = routes.prepare_q4_kpack4_scale_workspace(artifact, qtype)
+
+    for m in (1, 4, 64, 2048):
+        a = (rng.standard_normal((m, k)) * .2).astype(np.float16)
+        at = torch.from_numpy(a)
+        reference = routes.matmul_dequant_first(
+            at, blocks, n, k, qtype, weight=official_fp16).numpy().astype(np.float64)
+        # Algebraically identical to the broadcasted conditioned denominator, without materialising
+        # [M,N,K] (which would exceed 20 GiB at the real M=2048 prefill row).
+        denom = np.abs(a.astype(np.float64)) @ np.abs(official).T
+        got = routes.matmul_q4_kpack4_dense(
+            at, artifact, qtype, scale_workspace=scale_workspace).numpy().astype(np.float64)
+        err = float(np.max(np.abs(got - reference) /
+                           np.maximum(denom, np.finfo(np.float64).tiny)))
+        assert err < 5e-3, f"K-pack4 dense M={m} disagrees with independent dequant-first ({err:.3e})"
+
+    experts = 4
+    rows = np.array([2, 0, 3, 1], dtype=np.int32)
+    grouped_raw = _raw_blocks(gt, hdr, experts * n * (k // 256), rng)
+    grouped_blocks = torch.from_numpy(grouped_raw)
+    grouped_artifact = routes.prepare_fully_quantized_grouped(
+        grouped_blocks, n, k, qtype, experts)
+    a = (rng.standard_normal((int(rows.sum()), k)) * .2).astype(np.float16)
+    at, rt = torch.from_numpy(a), torch.from_numpy(rows)
+    reference = routes.matmul_dequant_first_grouped(
+        at, grouped_blocks, n, k, qtype, experts, rt).numpy().astype(np.float64)
+    official_grouped = gguf.quants.dequantize(grouped_raw.reshape(-1), gt).reshape(
+        experts, n, k).astype(np.float64)
+    per_row = np.repeat(np.arange(experts), rows)
+    denom = np.stack([
+        np.abs(a.astype(np.float64)[i][None, :] * official_grouped[per_row[i]]).sum(1)
+        for i in range(len(a))])
+    got = routes.matmul_fully_quantized_grouped(
+        at, grouped_artifact, qtype, rt).numpy().astype(np.float64)
+    err = float(np.max(np.abs(got - reference) /
+                       np.maximum(denom, np.finfo(np.float64).tiny)))
+    assert err < 5e-3, f"K-pack4 grouped disagrees with independent dequant-first ({err:.3e})"
+
+    inverse = routes.dequantize_fully_quantized(
+        grouped_artifact, qtype, grouped=True).numpy().astype(np.float64)
+    inv_denom = np.maximum(np.abs(official_grouped), 1.0)
+    inv_err = float(np.max(np.abs(inverse - official_grouped) / inv_denom))
+    assert inv_err < 5e-3, f"K-pack4 grouped inverse disagrees with official GGUF ({inv_err:.3e})"
+    print(f"Q4_KPACK4_PRODUCTION dense=M1/M4/M64/M2048 grouped_rows={rows.tolist()} "
+          f"grouped_err={err:.3e} inverse_err={inv_err:.3e}")
 
 
 # THE DEVICE LIBRARY IS BUILT PER FORMAT, and that is deliberate: a PPU_PACKED_FORMAT=2 binary intentionally

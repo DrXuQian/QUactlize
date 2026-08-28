@@ -4,9 +4,10 @@
 THE QUESTION THIS EXISTS TO ANSWER PRECISELY -- is the offline format M-dependent? The two halves have different
 answers and conflating them is the trap:
 
-  * THE BYTES ARE NOT chosen per M. Each PlacedArtifact carries a versioned
-    PlacedArrangement(bits, artifact_tile_k, high_bits), and config selection receives that descriptor instead of
-    choosing an offline TileK. A sweep that moved the layout per M would invalidate every artifact on disk.
+  * THE BYTES ARE NOT chosen per M. Each PlacedArtifact carries a versioned descriptor. Q4_K deployment selects
+    PlacedArrangementV2(q4-kpack4-transpose-v1); the other formats retain the Xplane-v1 TileK descriptor. Config
+    selection receives that identity instead of choosing an offline map. A sweep that moved layout per M would
+    invalidate every artifact on disk.
   * WHICH KERNEL READS THEM IS chosen per M. Three routes -- the CUDA-core GEMV at decode, the mixed-input GEMM in
     the middle, dequantise-then-dense at large M -- and two schemes (SCALE_FIRST, FULLY_QUANTIZED) whose TileK the
     registry deliberately makes DIFFERENT for four of the five k-quants.
@@ -169,13 +170,14 @@ def plan_tensor(t: Tensor, row: dict) -> dict:
     # dequant readers receive that ARTIFACT TileK independently of their tactic TileK. Whether a compiled tactic
     # accepts the pairing is an availability result from list_valid_*_for_arrangement, not a reason to silently
     # build a second file. A missing compatible tactic must refuse at dispatch; it is not a storage conflict.
-    # GROUPED IS NOT CLAIMED HERE. Its producer/reader still use the fixed F=1 ABI. Today's registry rows are all
-    # tile-free, so that is harmless today; a future folded grouped row remains a real storage/ABI conflict until
-    # PlacedArtifact is carried through the grouped routes too.
-    if t.is_moe and sf != fq and not (f_sf and f_fq and f_sf[2] and f_fq[2]):
+    # Q4 K-pack4 now carries the exact same v2 descriptor through dense and grouped producer/reader/inverse paths.
+    # Other formats still use grouped's legacy fixed-Xplane compatibility entry; a future folded grouped Xplane row
+    # therefore remains a real ABI conflict until it receives its own arrangement-aware grouped reader.
+    if q != F.QuantType.Q4_K and t.is_moe and sf != fq and not (
+            f_sf and f_fq and f_sf[2] and f_fq[2]):
         conflicts.append(
-            "GROUPED FOLDED ARTIFACT HAS NO DESCRIPTOR ABI: the dense readers carry PlacedArrangement, but the "
-            f"grouped producer/reader are still fixed; SCALE_FIRST TK={sf}, FULLY_QUANTIZED TK={fq}")
+                "GROUPED FOLDED XPLANE ARTIFACT HAS NO DESCRIPTOR ABI: Q4 K-pack4 carries v2 end to end, but this "
+            f"format's grouped compatibility reader is fixed; SCALE_FIRST TK={sf}, FULLY_QUANTIZED TK={fq}")
 
     # The status of each cell, taken from the matrix rather than assumed.
     cells = {}
@@ -201,8 +203,11 @@ def plan_tensor(t: Tensor, row: dict) -> dict:
     growth = F.storage_growth(q)
     per_expert = (t.n * t.k // blk.weights * blk.block_bytes) if blk else None
     total = per_expert * max(t.experts, 1) if per_expert is not None else None
+    deployment_arrangement = (F.q4_kpack4_arrangement()
+                              if q == F.QuantType.Q4_K else a_fq)
     return dict(tensor=t, qtype=q, row=row, sf=sf, fq=fq, f_sf=f_sf, f_fq=f_fq,
                 ef_sf=ef_sf, ef_fq=ef_fq, conflicts=conflicts, cells=cells, routes=routes,
+                deployment_arrangement=deployment_arrangement,
                 block=blk, growth=growth, bytes_per_expert=per_expert, bytes_total=total)
 
 
@@ -250,6 +255,10 @@ def invariants() -> list:
     producer = body("prepare_fully_quantized_dense")
     out.append(("PlacedArtifact(" in producer and "placed_arrangement(" in producer,
                 "dense producer attaches PlacedArrangement to PlacedArtifact"))
+    grouped_producer = body("prepare_fully_quantized_grouped")
+    out.append(("gguf_prepare_fully_quantized_grouped_for_arrangement_v2" in grouped_producer and
+                "PlacedArtifact(" in grouped_producer,
+                "grouped Q4 producer attaches the physical-layout-v2 descriptor"))
     reader_contracts = {
         "matmul_fully_quantized_dense": "gguf_dense_fully_quantized_for_arrangement",
         "matmul_bc_gemv": "gguf_gemv_bc_for_arrangement",
@@ -259,6 +268,30 @@ def invariants() -> list:
         src = body(name)
         ok = "_require_placed_artifact(" in src and seam in src
         out.append((ok, f"{name} consumes versioned artifact descriptor through {seam}"))
+    grouped_reader = body("matmul_fully_quantized_grouped")
+    out.append(("_require_placed_artifact(" in grouped_reader and
+                "gguf_grouped_fully_quantized_for_arrangement_v2" in grouped_reader,
+                "grouped Q4 reader consumes the K-pack4 v2 descriptor"))
+    inverse = body("dequantize_fully_quantized")
+    out.append(("gguf_grouped_artifact_dequantize_for_arrangement_v2" in inverse,
+                "grouped Q4 inverse recovers through the K-pack4 v2 map"))
+    runtime = body("matmul_q4_kpack4_dense")
+    out.append(("KPACK4_DECODE_MAX_ROWS" in runtime and
+                "matmul_fully_quantized_dense(" in runtime and
+                "matmul_scale_first_dense(" in runtime and
+                "hoisted scale_workspace" in runtime,
+                "one K-pack4 dense route selects FQ decode or persistent ScaleFirst without a hidden prepass"))
+    packer = (ROOT / "tools" / "pack_gguf.py").read_text()
+    out.append(("route == \"grouped\"" in packer and
+                "prepare_fully_quantized_grouped(" in packer and
+                '"route_class": route' in packer and
+                "_tensor_geometry(t.shape)" in packer and
+                "classify_role(name, 3)" in packer,
+                "whole-model packer proves GGUF rank-3 MUL_MAT_ID authority before grouped K-pack4 placement"))
+    host = (ROOT / "quactlize" / "csrc" / "preprocess" / "thop" / "gguf_prepass_ops.cpp").read_text()
+    out.append(("gguf_backend_for_qtype" in host and
+                "arrangement_v2\n          ? ppu_backend::load_format" in host,
+                "K-pack4 placement and packed units are owned by the same format-selected library"))
     return out
 
 
@@ -306,7 +339,9 @@ def main() -> int:
                 p = plan_tensor(t, reg[fname])
                 f_sf = f"F={p['f_sf'][0]}/{p['f_sf'][1]}" if p["f_sf"] else f"({p['ef_sf']})"
                 f_fq = f"F={p['f_fq'][0]}/{p['f_fq'][1]}" if p["f_fq"] else f"({p['ef_fq']})"
-                if p["tensor"].is_moe:
+                if p["qtype"] == F.QuantType.Q4_K:
+                    free = ("one q4-kpack4-transpose-v1 v2 artifact; dense/grouped decode and prefill share bytes")
+                elif p["tensor"].is_moe:
                     free = ("one tile-free grouped artifact" if (p["f_sf"] and p["f_fq"]
                                                                   and p["f_sf"][2] and p["f_fq"][2])
                             else "SEE CONFLICT")
@@ -320,6 +355,8 @@ def main() -> int:
                       f"   SCALE_FIRST TK={p['sf']} {f_sf}"
                       f"   FULLY_QUANTIZED TK={p['fq']} {f_fq}"
                       f"   -> {free}")
+                if p["qtype"] == F.QuantType.Q4_K:
+                    print(f"           deployment descriptor {p['deployment_arrangement']}")
                 if nb:
                     per = f" ({p['bytes_per_expert']:,} x {t.experts} experts)" if t.is_moe else ""
                     blk = p["block"]

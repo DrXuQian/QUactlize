@@ -79,9 +79,29 @@ struct Api {
   int (*recover_dense_for_tile)(uint8_t const* low_layout, uint8_t const* high_layout,
                                 uint8_t* low_native, uint8_t* high_native,
                                 int n, int k, int qtype, int tile_k);
+  // Physical-layout-aware successors.  v1's TileK-only descriptor cannot name K-pack4 because K-pack4 has no
+  // artifact-TileK axis; carrying the full v2 descriptor is what prevents an Xplane reader from accepting the
+  // same-sized bytes.  Optional so an older v1 device library still loads, but every v2 torch op checks both
+  // pointers explicitly and fails before touching the artifact.
+  int (*prepare_dense_for_arrangement_v2)(
+      uint8_t const* low_native, uint8_t const* high_native,
+      uint8_t* low_layout, uint8_t* high_layout, int n, int k, int qtype,
+      quactlize_ppu_placed_arrangement_v2 const* arrangement);
+  int (*recover_dense_for_arrangement_v2)(
+      uint8_t const* low_layout, uint8_t const* high_layout,
+      uint8_t* low_native, uint8_t* high_native, int n, int k, int qtype,
+      quactlize_ppu_placed_arrangement_v2 const* arrangement);
   int (*dense_lowbit)(uint16_t const* act, uint8_t const* low, uint8_t const* high,
                       uint16_t const* scale, uint16_t const* zero, uint16_t* out,
                       int m, int n, int k, int group_size, int qtype);
+  int (*dense_lowbit_for_arrangement_v2)(
+      uint16_t const* act, uint8_t const* low, uint8_t const* high,
+      uint16_t const* scale, uint16_t const* zero, uint16_t* out,
+      int m, int n, int k, int group_size, int qtype,
+      quactlize_ppu_placed_arrangement_v2 const* arrangement, char const* config_name);
+  int32_t (*dense_lowbit_arrangement_valid_v2)(
+      int m, int n, int k, int group_size, int qtype,
+      quactlize_ppu_placed_arrangement_v2 const* arrangement, char const* config_name);
   // Flag-selected fully-quantized entries. high is null for Q4/Q2 and the resident plane for two-plane formats;
   // units are the format's byte-neutral reordered metadata. rc=34 means PPU_PACKED_SCALE was not built in.
   int (*dense_fully_quantized)(uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
@@ -96,9 +116,26 @@ struct Api {
   int32_t (*dense_fully_quantized_arrangement_valid)(
       int m, int n, int k, int group_size, int qtype,
       quactlize_ppu_placed_arrangement_v1 const* arrangement, char const* config_name);
+  int (*dense_fully_quantized_for_arrangement_v2)(
+      uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
+      uint16_t* out, int m, int n, int k, int qtype,
+      quactlize_ppu_placed_arrangement_v2 const* arrangement, char const* config_name);
+  int32_t (*dense_fully_quantized_arrangement_valid_v2)(
+      int m, int n, int k, int group_size, int qtype,
+      quactlize_ppu_placed_arrangement_v2 const* arrangement, char const* config_name);
   int (*grouped_fully_quantized)(uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
                                  int const* rows_per_expert, uint16_t* out,
                                  int total_rows, int n, int k, int experts, int qtype);
+  int (*grouped_fully_quantized_for_arrangement_v2)(
+      uint16_t const* act, uint8_t const* low, uint8_t const* high,
+      uint8_t const* units, int const* rows_per_expert, uint16_t* out,
+      int total_rows, int n, int k, int experts, int qtype,
+      quactlize_ppu_placed_arrangement_v2 const* arrangement,
+      char const* config_name);
+  int32_t (*grouped_fully_quantized_arrangement_valid_v2)(
+      int total_rows, int n, int k, int group_size, int experts, int max_rows,
+      int qtype, quactlize_ppu_placed_arrangement_v2 const* arrangement,
+      char const* config_name);
 };
 
 // Loads libquactlize_ppu.so once. QUACTLIZE_PPU_LIB overrides the path, which is what lets a stub stand in for the

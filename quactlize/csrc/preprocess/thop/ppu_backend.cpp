@@ -121,7 +121,23 @@ State& state(int fmt) {
     s.api.recover_dense_for_tile = reinterpret_cast<decltype(s.api.recover_dense_for_tile)>(
         dlsym(h, "quactlize_ppu_recover_dense_for_tile"));
     dlerror();
+    s.api.prepare_dense_for_arrangement_v2 =
+        reinterpret_cast<decltype(s.api.prepare_dense_for_arrangement_v2)>(
+            dlsym(h, "quactlize_ppu_prepare_dense_for_arrangement_v2"));
+    dlerror();
+    s.api.recover_dense_for_arrangement_v2 =
+        reinterpret_cast<decltype(s.api.recover_dense_for_arrangement_v2)>(
+            dlsym(h, "quactlize_ppu_recover_dense_for_arrangement_v2"));
+    dlerror();
     s.api.dense_lowbit = reinterpret_cast<decltype(s.api.dense_lowbit)>(dlsym(h, "quactlize_ppu_dense_lowbit"));
+    dlerror();
+    s.api.dense_lowbit_for_arrangement_v2 =
+        reinterpret_cast<decltype(s.api.dense_lowbit_for_arrangement_v2)>(
+            dlsym(h, "quactlize_ppu_dense_lowbit_for_arrangement_v2"));
+    dlerror();
+    s.api.dense_lowbit_arrangement_valid_v2 =
+        reinterpret_cast<decltype(s.api.dense_lowbit_arrangement_valid_v2)>(
+            dlsym(h, "quactlize_ppu_dense_lowbit_config_valid_for_arrangement_v2"));
     dlerror();
     s.api.dense_fully_quantized = reinterpret_cast<decltype(s.api.dense_fully_quantized)>(
         dlsym(h, "quactlize_ppu_dense_fully_quantized"));
@@ -134,8 +150,25 @@ State& state(int fmt) {
         reinterpret_cast<decltype(s.api.dense_fully_quantized_arrangement_valid)>(
             dlsym(h, "quactlize_ppu_dense_fully_quantized_config_valid_for_arrangement_v1"));
     dlerror();
+    s.api.dense_fully_quantized_for_arrangement_v2 =
+        reinterpret_cast<decltype(s.api.dense_fully_quantized_for_arrangement_v2)>(
+            dlsym(h, "quactlize_ppu_dense_fully_quantized_for_arrangement_v2"));
+    dlerror();
+    s.api.dense_fully_quantized_arrangement_valid_v2 =
+        reinterpret_cast<decltype(s.api.dense_fully_quantized_arrangement_valid_v2)>(
+            dlsym(h, "quactlize_ppu_dense_fully_quantized_config_valid_for_arrangement_v2"));
+    dlerror();
     s.api.grouped_fully_quantized = reinterpret_cast<decltype(s.api.grouped_fully_quantized)>(
         dlsym(h, "quactlize_ppu_grouped_fully_quantized"));
+    dlerror();
+    s.api.grouped_fully_quantized_for_arrangement_v2 =
+        reinterpret_cast<decltype(s.api.grouped_fully_quantized_for_arrangement_v2)>(
+            dlsym(h, "quactlize_ppu_grouped_fully_quantized_for_arrangement_v2"));
+    dlerror();
+    s.api.grouped_fully_quantized_arrangement_valid_v2 =
+        reinterpret_cast<decltype(s.api.grouped_fully_quantized_arrangement_valid_v2)>(
+            dlsym(h,
+                  "quactlize_ppu_grouped_fully_quantized_config_valid_for_arrangement_v2"));
     dlerror();
     s.ok = true;
     s.why = std::string("loaded ") + path;

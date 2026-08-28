@@ -22,11 +22,13 @@ WHAT IT REFUSES TO DO, and each refusal is a mistake this project has made or ne
 
     python3 tools/pack_gguf.py MODEL.gguf OUT_DIR [--limit N] [--dry-run]
 
-Needs the device library (the placement lives there), so it runs on the box:
-    QUACTLIZE_PPU_LIB=<...>/libquactlize_ppu.so python3 tools/pack_gguf.py ...
+Needs the device library (the placement lives there), so it runs on the box. The default Q4 K-pack4 path uses
+the format-selected FMT0 handle:
+    QUACTLIZE_PPU_LIB_FMT0=<...>/libquactlize_ppu.so python3 tools/pack_gguf.py ...
 """
 import argparse
 import json
+import os
 import pathlib
 import re
 import sys
@@ -41,9 +43,13 @@ def main() -> int:
     ap.add_argument("model", help="a .gguf file")
     ap.add_argument("out", help="output directory; created, and only finished artifacts land in it")
     ap.add_argument("--limit", type=int, default=0, help="stop after N packable tensors (0 = all)")
+    ap.add_argument("--q4-layout", choices=("q4-kpack4", "xplane"), default="q4-kpack4",
+                    help="physical layout for Q4_K tensors (default: one tile-free K-pack4 byte class)")
     ap.add_argument("--dry-run", action="store_true",
                     help="report what WOULD be packed, touching no device and writing nothing")
     a = ap.parse_args()
+    if a.limit < 0:
+        ap.error("--limit must be nonnegative (0 means all packable tensors)")
 
     try:
         from gguf import GGUFReader
@@ -61,18 +67,29 @@ def main() -> int:
                                      F.QuantType.Q5_K, F.QuantType.Q6_K)}
 
     seen, packable, skipped = Counter(), [], []
+    route_mix = Counter()
     for t in reader.tensors:
         tt = int(t.tensor_type)
         seen[t.tensor_type.name] += 1
-        if tt in supported and len(t.shape) == 2:
-            packable.append(t)
+        ok, route, why = _packability(
+            tt, len(t.shape), supported, int(F.QuantType.Q4_K), a.q4_layout)
+        if ok and route == "grouped":
+            ok, why = _grouped_role_authority(t.name)
+        if ok:
+            try:
+                _tensor_geometry(t.shape)
+            except ValueError as exc:
+                skipped.append((t.name, t.tensor_type.name, str(exc)))
+            else:
+                packable.append((t, route))
+                route_mix[route] += 1
         else:
-            why = "not a k-quant this build packs" if tt not in supported else f"{len(t.shape)}-D, expected 2-D"
             skipped.append((t.name, t.tensor_type.name, why))
 
     print(f"model      {a.model}")
     print(f"tensors    {sum(seen.values())}  ->  {len(packable)} packable, {len(skipped)} skipped")
     print(f"type mix   {dict(seen)}")
+    print(f"routes     {dict(route_mix)}")
     # THE MIX IS THE POINT OF PRINTING IT. A _K_M checkpoint is named for its dominant format and carries others,
     # and one device library serves ONE PPU_PACKED_FORMAT -- so this line says how many libraries a deployment of
     # this model needs, which is a fact about our build rather than about the file.
@@ -93,22 +110,65 @@ def main() -> int:
     from quactlize import routes
     import quactlize
 
-    backend = quactlize.gguf_backend()
-    if not backend.startswith("ppu"):
-        print(f"\nrefusing to pack on backend '{backend}'.\n"
-              f"  The placement lives in the device library, so a host fallback would either fail or -- worse --\n"
-              f"  produce something. Set QUACTLIZE_PPU_LIB to a built libquactlize_ppu.so.", file=sys.stderr)
+    todo = packable[:a.limit] if a.limit else packable
+    # Check exactly the handles this plan will call. Q4 K-pack4 placement is served by FMT0; asking only the
+    # legacy/default backend made a valid FMT0-only pack fail, while a default-only environment failed much later
+    # at the first K-pack4 tensor.
+    uses_kpack4 = any(
+        route == "grouped" or
+        (int(t.tensor_type) == int(F.QuantType.Q4_K) and a.q4_layout == "q4-kpack4")
+        for t, route in todo)
+    uses_default = any(
+        not (route == "grouped" or
+             (int(t.tensor_type) == int(F.QuantType.Q4_K) and a.q4_layout == "q4-kpack4"))
+        for t, route in todo)
+    required_backends = {}
+    if uses_kpack4:
+        required_backends["Q4 K-pack4 FMT0"] = quactlize.gguf_backend_for_qtype(int(F.QuantType.Q4_K))
+    if uses_default:
+        required_backends["legacy/default Xplane"] = quactlize.gguf_backend()
+    unavailable = {name: value for name, value in required_backends.items() if not value.startswith("ppu")}
+    if unavailable:
+        details = "\n".join(f"  {name}: {value}" for name, value in unavailable.items())
+        print(f"\nrefusing to pack because required device placement backend(s) are unavailable:\n{details}\n"
+              "  Set QUACTLIZE_PPU_LIB_FMT0 for Q4 K-pack4 and QUACTLIZE_PPU_LIB for legacy Xplane tensors.",
+              file=sys.stderr)
         return 3
 
-    out = pathlib.Path(a.out)
-    out.mkdir(parents=True, exist_ok=True)
+    if not todo:
+        print("\nrefusing to create an empty artifact bundle: this plan contains no packable tensors", file=sys.stderr)
+        return 4
+
+    final_out = pathlib.Path(a.out)
+    final_out.parent.mkdir(parents=True, exist_ok=True)
+    if final_out.exists():
+        print(f"refusing to overwrite existing output {final_out}", file=sys.stderr)
+        return 4
+    # Root-level atomic publication. A failed run leaves an explicitly named diagnostic directory and never makes
+    # the requested final path exist; individual tensor atomic renames alone were insufficient because the old
+    # root directory appeared complete after the first tensor.
+    out = final_out.with_name(final_out.name + f".partial.{os.getpid()}")
+    if out.exists():
+        print(f"refusing to reuse partial output {out}", file=sys.stderr)
+        return 4
+    out.mkdir()
     manifest, t0 = [], time.time()
-    todo = packable[:a.limit] if a.limit else packable
-    for i, t in enumerate(todo):
-        n, k = int(t.shape[1]), int(t.shape[0])         # gguf reports (k, n); the routes want (n, k)
+    for i, (t, route) in enumerate(todo):
+        n, k, experts = _tensor_geometry(t.shape)
         qtype = int(t.tensor_type)
-        blocks = torch.from_numpy(t.data.reshape(n * (k // 256), -1).copy())
-        artifact = routes.prepare_fully_quantized_dense(blocks, n, k, qtype, tile_k=_tile_k(qtype))
+        # GGUF dimensions are fast-first [K,N,(E)].  Flattening therefore leaves one expert's N rows
+        # contiguous and experts adjacent, exactly the grouped producer's [E*N*(K/256), type_size] ABI.
+        block_rows = (experts or 1) * n * (k // 256)
+        blocks = torch.from_numpy(t.data.reshape(block_rows, -1).copy())
+        if route == "grouped":
+            assert experts is not None
+            artifact = routes.prepare_fully_quantized_grouped(
+                blocks, n, k, qtype, experts, layout="q4-kpack4")
+        elif qtype == int(F.QuantType.Q4_K) and a.q4_layout == "q4-kpack4":
+            artifact = routes.prepare_fully_quantized_dense(
+                blocks, n, k, qtype, layout="q4-kpack4")
+        else:
+            artifact = routes.prepare_fully_quantized_dense(blocks, n, k, qtype, tile_k=_tile_k(qtype))
         low, high, units = artifact
 
         stem = t.name.replace("/", "_").replace(".", "_")
@@ -123,26 +183,98 @@ def main() -> int:
         # not true before the *_for_tile ops existed (INBOX 027/028): the producer pinned F=1 whatever this
         # recorded, and a manifest naming an unbuildable arrangement reads as a capability.
         arr = artifact.arrangement
-        expected = F.PlacedArrangement(bits=_low_bits(qtype), tile_k=_tile_k(qtype), high_bits=_high_bits(qtype))
+        expected = (F.q4_kpack4_arrangement()
+                    if qtype == int(F.QuantType.Q4_K) and a.q4_layout == "q4-kpack4"
+                    else F.PlacedArrangement(
+                        bits=_low_bits(qtype), tile_k=_tile_k(qtype), high_bits=_high_bits(qtype)))
         if arr != expected:
             raise RuntimeError(
                 f"{t.name}: producer returned arrangement {arr}, pack plan expected {expected}; refusing to write "
                 f"a manifest that describes different bytes from the ones just produced")
         manifest.append({"name": t.name, "dir": stem, "ggml_type": qtype, "type_name": t.tensor_type.name,
-                         "n": n, "k": k, "arrangement_version": artifact.arrangement_version,
+                         "route_class": route, "rank": len(t.shape), "n": n, "k": k, "experts": experts,
+                         "arrangement_version": artifact.arrangement_version,
                          "arrangement": arr._asdict(),
-                         "fold": [arr.fold, arr.high_fold],  # derived, printed for a human; readers re-derive
+                         "fold": ([arr.fold, arr.high_fold]
+                                  if isinstance(arr, F.PlacedArrangement) else None),
                          "shapes": {"low": list(low.shape), "high": list(high.shape), "units": list(units.shape)}})
         if (i + 1) % 25 == 0 or i + 1 == len(todo):
             print(f"  packed {i+1}/{len(todo)}  ({time.time()-t0:.1f}s)")
 
-    (out / "manifest.json").write_text(json.dumps(
-        {"artifact_schema_version": routes.PLACED_ARTIFACT_VERSION, "model": a.model, "tensors": manifest},
-        indent=2) + "\n")
-    print(f"\nwrote {len(manifest)} artifact(s) + manifest.json to {out}")
-    print("The manifest carries the ARRANGEMENT per tensor, not per format: dense and MoE want different folds,\n"
-          "and a reader that has to infer it is a reader that will one day infer wrongly.")
+    held_back = [
+        {"name": t.name, "type_name": t.tensor_type.name, "reason": "held back by --limit"}
+        for t, _route in packable[len(todo):]
+    ] if a.limit else []
+    skipped_manifest = [
+        {"name": name, "type_name": type_name, "reason": reason}
+        for name, type_name, reason in skipped
+    ]
+    (out / "manifest.json").write_text(json.dumps({
+        "artifact_schema_version": 2,
+        "model": a.model,
+        "selection": {"limit": a.limit, "packable_total": len(packable), "packed": len(manifest),
+                      "skipped": len(skipped_manifest), "held_back_by_limit": len(held_back)},
+        "tensors": manifest,
+        "skipped": skipped_manifest,
+        "held_back_by_limit": held_back,
+    }, indent=2) + "\n")
+    out.rename(final_out)
+    print(f"\nwrote {len(manifest)} artifact(s) + manifest.json to {final_out}")
+    print("The manifest carries the ARRANGEMENT and route class per tensor, not per format: dense and grouped\n"
+          "readers must consume the exact bytes their producer built; a reader that infers either will infer wrongly.")
     return 0
+
+
+def _packability(qtype: int, rank: int, supported, q4_type: int, q4_layout: str):
+    """Return ``(packable, route, reason)`` without consulting tensor names.
+
+    Rank three is GGUF's grouped ``[K,N,E]`` storage, not a dense matrix with an ignorable axis.  Only Q4
+    K-pack4 currently has a descriptor-aware grouped producer *and* reader, so every other rank-three case is
+    visible but held back.  This is deliberately stricter than the legacy grouped tuple API: an on-disk artifact
+    whose consumer has to guess its Xplane descriptor is not a production artifact.
+    """
+    if int(qtype) not in supported:
+        return False, None, "not a k-quant this build packs"
+    if rank == 2:
+        return True, "dense", None
+    if rank == 3:
+        if int(qtype) != int(q4_type):
+            return False, None, "3-D grouped artifact lacks a descriptor-aware reader for this format"
+        if q4_layout != "q4-kpack4":
+            return False, None, "3-D grouped Xplane descriptor ABI is absent; use --q4-layout q4-kpack4"
+        return True, "grouped", None
+    return False, None, f"{rank}-D, expected dense rank 2 or grouped rank 3"
+
+
+def _tensor_geometry(shape):
+    """Translate GGUF fast-first dimensions to the route ABI's ``(N,K,E-or-None)``."""
+    dims = tuple(int(x) for x in shape)
+    if len(dims) not in (2, 3):
+        raise ValueError(f"GGUF tensor rank must be 2 (dense) or 3 (grouped), got shape={dims}")
+    k, n = dims[:2]
+    experts = dims[2] if len(dims) == 3 else None
+    if k <= 0 or n <= 0 or (experts is not None and experts <= 0):
+        raise ValueError(f"GGUF tensor dimensions must be positive, got shape={dims}")
+    if k % 256 or n % 256:
+        raise ValueError(f"resident tensor-core artifact requires N/K multiples of 256, got N={n} K={k}")
+    return n, k, experts
+
+
+def _grouped_role_authority(name: str):
+    """Prove that a rank-3 tensor is a recognised GGML ``MUL_MAT_ID`` weight.
+
+    Rank alone is not an operation. Reuse the immutable inventory's exact llama.cpp tensor-symbol rules instead of
+    maintaining a second regex list here; unknown rank-3 tensors remain visible in the skipped manifest.
+    """
+    from tools.gguf_internal_shape_inventory import InventoryError, classify_role
+    try:
+        role, source = classify_role(name, 3)
+    except InventoryError as exc:
+        return False, f"rank-3 tensor has no grouped role authority: {exc}"
+    if role.route_class != "grouped" or role.operation != "MUL_MAT_ID":
+        return False, (f"rank-3 tensor role {role.name} is {role.route_class}/{role.operation}, "
+                       "not grouped/MUL_MAT_ID")
+    return True, None
 
 
 # THE PLANE WIDTHS COME FROM THE REGISTRY TOO. These used to decode schemes.CODE_PLANE's string tags through a
@@ -226,18 +358,33 @@ def restore_artifact(root: pathlib.Path, record: dict):
     from quactlize import routes
 
     version = record.get("arrangement_version")
-    if version != routes.PLACED_ARTIFACT_VERSION:
-        raise ValueError(
-            f"artifact {record.get('name', '<unnamed>')}: arrangement_version={version!r}, this build reads "
-            f"{routes.PLACED_ARTIFACT_VERSION}; missing is legacy/ambiguous, not version 1")
     raw = record.get("arrangement")
-    if not isinstance(raw, dict) or set(raw) != {"bits", "tile_k", "high_bits"}:
+    if version == routes.PLACED_ARTIFACT_VERSION:
+        if not isinstance(raw, dict) or set(raw) != {"bits", "tile_k", "high_bits"}:
+            raise ValueError(
+                f"artifact {record.get('name', '<unnamed>')}: v1 arrangement must contain exactly "
+                f"bits/tile_k/high_bits, got {raw!r}")
+        arrangement = F.PlacedArrangement(int(raw["bits"]), int(raw["tile_k"]), int(raw["high_bits"]))
+        _ = arrangement.fold, arrangement.high_fold
+        expected = F.placed_arrangement(int(record["ggml_type"]), arrangement.tile_k)
+    elif version == routes.PLACED_ARTIFACT_VERSION_V2:
+        fields = set(F.PlacedArrangementV2._fields)
+        if not isinstance(raw, dict) or set(raw) != fields:
+            raise ValueError(
+                f"artifact {record.get('name', '<unnamed>')}: arrangement_version=2 requires exactly "
+                f"{sorted(fields)}, got {raw!r}")
+        arrangement = F.PlacedArrangementV2(*(int(raw[name]) for name in F.PlacedArrangementV2._fields))
+        arrangement.validate()
+        if int(record["ggml_type"]) != int(F.QuantType.Q4_K):
+            raise ValueError(
+                f"artifact {record.get('name', '<unnamed>')}: K-pack4 v2 descriptor requires Q4_K, got "
+                f"ggml_type={record['ggml_type']}")
+        expected = F.q4_kpack4_arrangement()
+    else:
         raise ValueError(
-            f"artifact {record.get('name', '<unnamed>')}: arrangement must contain exactly "
-            f"bits/tile_k/high_bits, got {raw!r}")
-    arrangement = F.PlacedArrangement(int(raw["bits"]), int(raw["tile_k"]), int(raw["high_bits"]))
-    _ = arrangement.fold, arrangement.high_fold
-    expected = F.placed_arrangement(int(record["ggml_type"]), arrangement.tile_k)
+            f"artifact {record.get('name', '<unnamed>')}: arrangement_version={version!r}; this build reads "
+            f"versions {routes.PLACED_ARTIFACT_VERSION} and {routes.PLACED_ARTIFACT_VERSION_V2}. Missing is "
+            "legacy/ambiguous, not version 1")
     if arrangement != expected:
         raise ValueError(
             f"artifact {record.get('name', '<unnamed>')}: manifest arrangement {arrangement} disagrees with "

@@ -66,6 +66,14 @@ int quactlize_ppu_gemv_lowbit_dev_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high,
     uint16_t const* scale, uint16_t const* zero, uint16_t* out,
     int m, int n, int k, int group_size, int qtype, void* stream, char const* config_name);
+// Persistent ScaleFirst prefill over the same canonical K-pack4 bytes as the fully-quantized decode entry.  It owns
+// no workspace; scale/zero are caller-owned fp16 planes derived from the resident packed units.  K-pack4 is admitted
+// only for Q4_K and M>=64; decode continues through the fully-quantized v2 entry.
+int quactlize_ppu_dense_lowbit_dev_for_arrangement_v2(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high,
+    uint16_t const* scale, uint16_t const* zero, uint16_t* out,
+    int m, int n, int k, int group_size, int qtype, void* stream,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement, char const* config_name);
 
 // Dense symmetric W4A16 tensor-core route over the resident int4 xplane-TK64
 // artifact and native fp16 gs128 scales.  It is deliberately separate from
@@ -111,6 +119,12 @@ int quactlize_ppu_bc_gemv_for_arrangement_dev_v1(
 // dimensions or qtype do not match this format-selected library. A successful device entry only enqueues work.
 int64_t quactlize_ppu_dense_fully_quantized_workspace_bytes_v1(
     int m, int n, int k, int qtype);
+// Arrangement-aware query. It validates the exact v2 byte map before returning a bound shared by every compiled
+// K-pack4 profile (SplitKSerial semaphore or S4 FP32 partials); unsupported descriptors return -1 and can never
+// inherit the registry-default Xplane interpretation.
+int64_t quactlize_ppu_dense_fully_quantized_workspace_bytes_for_arrangement_v2(
+    int m, int n, int k, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement);
 int quactlize_ppu_dense_fully_quantized_dev_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
     int m, int n, int k, int qtype, void* workspace, int64_t workspace_bytes, void* stream);
@@ -129,6 +143,10 @@ int quactlize_ppu_dense_fully_quantized_dev_for_arrangement_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
     int m, int n, int k, int qtype, void* workspace, int64_t workspace_bytes, void* stream,
     char const* config_name, quactlize_ppu_placed_arrangement_v1 const* arrangement);
+int quactlize_ppu_dense_fully_quantized_dev_for_arrangement_v2(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
+    int m, int n, int k, int qtype, void* workspace, int64_t workspace_bytes, void* stream,
+    char const* config_name, quactlize_ppu_placed_arrangement_v2 const* arrangement);
 
 // Grouped activations/output are concatenated in expert order. offsets is a cumulative device int[experts+1]
 // with offsets[0]=0 and offsets[experts]=total_rows; max_rows is an upper bound on every expert row count.
@@ -150,6 +168,9 @@ int quactlize_ppu_grouped_lowbit_dev_v2(
 
 int64_t quactlize_ppu_grouped_fully_quantized_workspace_bytes_v1(
     int max_rows, int n, int k, int experts, int qtype);
+int64_t quactlize_ppu_grouped_fully_quantized_workspace_bytes_for_arrangement_v2(
+    int total_rows, int max_rows, int n, int k, int experts, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement);
 int quactlize_ppu_grouped_fully_quantized_dev_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units,
     int const* offsets, uint16_t* out,
@@ -161,6 +182,17 @@ int quactlize_ppu_grouped_fully_quantized_dev_v2(
     int const* offsets, uint16_t* out,
     int total_rows, int n, int k, int experts, int max_rows, int qtype,
     void* workspace, int64_t workspace_bytes, void* stream, char const* config_name);
+// Arrangement-aware grouped successor. The descriptor is validated before
+// metadata setup or GEMM enqueue; layout=1 selects the canonical K-pack4
+// mainloop while retaining the existing ragged scheduler and ptr-array
+// epilogue. Unknown config names return 39 rather than falling back.
+int quactlize_ppu_grouped_fully_quantized_dev_for_arrangement_v2(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high,
+    uint8_t const* units, int const* offsets, uint16_t* out,
+    int total_rows, int n, int k, int experts, int max_rows, int qtype,
+    void* workspace, int64_t workspace_bytes, void* stream,
+    char const* config_name,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement);
 
 #ifdef __cplusplus
 }
