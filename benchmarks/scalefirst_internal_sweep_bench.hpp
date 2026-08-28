@@ -33,6 +33,10 @@
 
 namespace scalefirst_internal_sweep {
 
+#ifndef SCALEFIRST_SWEEP_WEIGHT_LAYOUT
+#define SCALEFIRST_SWEEP_WEIGHT_LAYOUT 0
+#endif
+
 using half_t = cutlass::half_t;
 using QuantMode = fpa_intb_ppu::QuantMode;
 
@@ -187,8 +191,41 @@ template <class T> struct ElementBits {
 };
 template <> struct ElementBits<void> { static constexpr int value = 0; };
 
+// Keep the established Xplane/ScaleFirst type completely independent of the
+// canonical K-pack4 experiment.  A specialization, rather than a
+// conditional_t over two eagerly named aliases, prevents every legacy format
+// from instantiating the Q4-only K-pack4 policy while compiling its ordinary
+// shard.
+template <bool UseKPack4, QuantMode Mode, class Schedule,
+          class Tile, class ScaleTile, class Warp, int Stages,
+          class Low, class High, int ArtifactTileK>
+struct ScaleFirstShippingSelector;
+
+template <QuantMode Mode, class Schedule, class Tile, class ScaleTile,
+          class Warp, int Stages, class Low, class High,
+          int ArtifactTileK>
+struct ScaleFirstShippingSelector<false, Mode, Schedule, Tile, ScaleTile,
+                                  Warp, Stages, Low, High, ArtifactTileK> {
+  using Type = fpa_intb_ppu::DenseKernelTypes<
+      Mode, Schedule, Tile, ScaleTile, Warp, Stages, true,
+      Low, High, ArtifactTileK>;
+};
+
+template <QuantMode Mode, class Schedule, class Tile, class ScaleTile,
+          class Warp, int Stages, class Low, class High,
+          int ArtifactTileK>
+struct ScaleFirstShippingSelector<true, Mode, Schedule, Tile, ScaleTile,
+                                  Warp, Stages, Low, High, ArtifactTileK> {
+  static_assert(std::is_same_v<Low, cutlass::int4b_t> &&
+                    std::is_void_v<High> && ArtifactTileK == 0,
+                "K-pack4 ScaleFirst is the Q4 one-plane/no-artifact reader");
+  using Type = fpa_intb_ppu::DenseQ4KPack4KernelTypes<
+      Mode, Schedule, Tile, ScaleTile, Warp, Stages, true, 0, 0>;
+};
+
 template <int QType, int ArtifactTileK, int TM, int TN, int TK,
-          int WM, int WN, int Stages, int BChunk>
+          int WM, int WN, int Stages, int BChunk,
+          int WeightLayout = SCALEFIRST_SWEEP_WEIGHT_LAYOUT>
 struct RowTypes {
   using F = Format<QType>;
   using Low = typename F::Low;
@@ -198,9 +235,18 @@ struct RowTypes {
   using ScaleTile = cute::Shape<cute::C<TN>, cute::C<
       ppu_group_schedule::scale_groups_v<TK, F::GroupSize>>>;
   using Warp = cute::Shape<cute::C<WM>, cute::C<WN>, cute::C<TK>>;
-  using Shipping = fpa_intb_ppu::DenseKernelTypes<
-      F::Mode, Schedule, Tile, ScaleTile, Warp, Stages, true,
-      Low, High, ArtifactTileK>;
+  static_assert(WeightLayout == 0 || WeightLayout == 1,
+                "ScaleFirst weight layout is Xplane(0) or K-pack4(1)");
+  static constexpr bool use_kpack4 = WeightLayout == 1;
+  static_assert(!use_kpack4 ||
+                    (QType == 12 && ArtifactTileK == 0 && BChunk == 0),
+                "K-pack4 ScaleFirst is Q4/A0/bchunk0 only");
+  using Shipping = typename ScaleFirstShippingSelector<
+      use_kpack4, F::Mode, Schedule, Tile, ScaleTile, Warp, Stages,
+      Low, High, ArtifactTileK>::Type;
+  using MainloopPolicy = typename Shipping::MainloopPolicy;
+  using MainloopDescriptor = typename MainloopPolicy::Descriptor;
+  using Mainloop = typename Shipping::CollectiveMainloop;
   using Split = dense_splitk_parallel_ppu::KernelTypes<Shipping, Tile, Warp>;
   using PersistentKernel = cutlass::gemm::kernel::PersistentMixedInputKernel<
       cute::Shape<int, int, int, int>,
@@ -227,10 +273,17 @@ struct RowTypes {
   static_assert(!dense_splitk_parallel_ppu::MainloopUsesPackedMetadata<
                     typename Shipping::CollectiveMainloop>::value,
                 "ScaleFirst must consume fp16 scale/zero planes, not GGUF units");
-  static_assert(Shipping::MainloopPolicy::ArtifactLowFold ==
-                    ppu_tactics::artifact_low_fold(candidate));
-  static_assert(Shipping::MainloopPolicy::ArtifactHighFold ==
-                    ppu_tactics::artifact_high_fold(candidate));
+  static_assert(use_kpack4 ||
+                    Shipping::MainloopPolicy::ArtifactLowFold ==
+                        ppu_tactics::artifact_low_fold(candidate));
+  static_assert(use_kpack4 ||
+                    Shipping::MainloopPolicy::ArtifactHighFold ==
+                        ppu_tactics::artifact_high_fold(candidate));
+  static_assert(!use_kpack4 ||
+                    (MainloopDescriptor::q4_kpack4_transpose &&
+                     MainloopDescriptor::transport_tile_k == 64 &&
+                     Mainloop::kQ4KPack4Transpose),
+                "K-pack4 ScaleFirst must retain the canonical physical reader");
   static_assert(std::is_same_v<typename SplitKernel::CollectiveMainloop,
                                typename Shipping::CollectiveMainloop>,
                 "fixed Split-K must reuse the exact ScaleFirst collective");
@@ -240,10 +293,11 @@ struct RowTypes {
 };
 
 template <int QType, int ArtifactTileK, int TM, int TN, int TK,
-          int WM, int WN, int Stages, int BChunk>
+          int WM, int WN, int Stages, int BChunk,
+          int WeightLayout = SCALEFIRST_SWEEP_WEIGHT_LAYOUT>
 constexpr bool admit_row_type() {
   using T = RowTypes<QType, ArtifactTileK, TM, TN, TK,
-                     WM, WN, Stages, BChunk>;
+                     WM, WN, Stages, BChunk, WeightLayout>;
   return T::Shipping::SharedStorageSize > 0 &&
          T::PersistentKernel::SharedStorageSize > 0 &&
          T::SplitKernel::SharedStorageSize > 0;
@@ -352,10 +406,11 @@ bool validate_and_measure(DeviceInputs const& in, Options const& options,
 }
 
 template <int QType, int ArtifactTileK, int TM, int TN, int TK,
-          int WM, int WN, int Stages, int BChunk>
+          int WM, int WN, int Stages, int BChunk,
+          int WeightLayout = SCALEFIRST_SWEEP_WEIGHT_LAYOUT>
 bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
   using T = RowTypes<QType, ArtifactTileK, TM, TN, TK,
-                     WM, WN, Stages, BChunk>;
+                     WM, WN, Stages, BChunk, WeightLayout>;
   using F = typename T::F;
   using High = typename T::High;
   using ShippingGemm = typename T::ShippingGemm;

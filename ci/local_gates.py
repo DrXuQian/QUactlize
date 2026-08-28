@@ -160,6 +160,7 @@ GATES = [
     ("l231_q4_kpack4_production_fragment", []),
     ("l232_q4_kpack4_fused_metadata_store", []),
     ("l233_q4_kpack4_subsuperblock_type", []),
+    ("l234_q4_kpack4_scalefirst_persistent_type", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -426,6 +427,10 @@ GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
                   "-D__HGGCCC__", "--expt-relaxed-constexpr",
                   "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_FORMAT=0",
                   "-DPPU_B_CHUNK=0"],
+              "l234_q4_kpack4_scalefirst_persistent_type": [
+                  "-D__HGGCCC__", "--expt-relaxed-constexpr",
+                  "-DPPU_PACKED_SCALE=0", "-DPPU_B_CHUNK=0",
+                  "-DSCALEFIRST_SWEEP_WEIGHT_LAYOUT=1"],
               # THE MACROS ARE THE POINT. This gate asserts the fused path is ON, so it has to be built the way the
               # box builds packfuse -- without these two it would assert about a configuration nobody runs and pass
               # for the wrong reason, which is the failure it exists to catch.
@@ -1913,6 +1918,13 @@ def lint_fq_q4k_kpack4_prefill_real_shapes():
         "K-pack4 prefill uses one 918-row binary and exact 774x15 runtime denominator")
 
 
+def lint_scalefirst_q4k_kpack4_prefill_ab():
+    """Large-prefill transpose cost must use the historical ScaleFirst driver."""
+    return _run_ci_script(
+        "check_scalefirst_q4k_kpack4_prefill_ab.py",
+        "K-pack4/Xplane share FP16 metadata, persistent driver and M2048/M4096 denominator")
+
+
 def lint_m8n16_g2_contract():
     """G2 must replay the historical provider index on one production x4 payload."""
     return _run_ci_script(
@@ -2532,6 +2544,7 @@ def main():
                 ("lint", "Q4 K-pack4 auto64 fused-store sweep matches all real decode-shape candidates", lint_fq_q4k_kpack4_fused_store_real_shapes),
                 ("lint", "Q4 K-pack4 prefill binds one inventory-owned complete TM64 graph", lint_fq_q4k_kpack4_prefill_pilot),
                 ("lint", "Q4 K-pack4 prefill sweeps every registered sequence length and family", lint_fq_q4k_kpack4_prefill_real_shapes),
+                ("lint", "Q4 K-pack4 transpose uses the ScaleFirst persistent prefill baseline", lint_scalefirst_q4k_kpack4_prefill_ab),
                 ("lint", "syntax baselines and live SYNTAX sources match", lint_syntax_inventory),
                 ("lint", "m8n16 G2 replays the historical bad index on the production x4 payload", lint_m8n16_g2_contract),
                 ("lint", "l125 exhausts all 256 G5 zero-plane addresses through the production CuTe map", lint_grouped_metadata_layout),

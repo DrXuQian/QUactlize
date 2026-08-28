@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "cutlass/util/device_memory.h"
+#include "ppu_placed_arrangement.hpp"
 #include "scalefirst_internal_sweep_bench.hpp"
 #include "xplane_offline.hpp"
 #include "scalefirst_registry.inc"
@@ -31,6 +32,16 @@
 #ifndef SCALEFIRST_SWEEP_BCHUNK
 #error "SCALEFIRST_SWEEP_BCHUNK must match the generated registry"
 #endif
+#ifndef SCALEFIRST_SWEEP_WEIGHT_LAYOUT
+#define SCALEFIRST_SWEEP_WEIGHT_LAYOUT 0
+#endif
+static_assert(SCALEFIRST_SWEEP_WEIGHT_LAYOUT == 0 ||
+                  SCALEFIRST_SWEEP_WEIGHT_LAYOUT == 1);
+static_assert(SCALEFIRST_SWEEP_WEIGHT_LAYOUT == 0 ||
+                  (SCALEFIRST_SWEEP_QTYPE == 12 &&
+                   SCALEFIRST_SWEEP_ARTIFACT_TK == 0 &&
+                   SCALEFIRST_SWEEP_BCHUNK == 0),
+              "K-pack4 ScaleFirst target is Q4/A0/bchunk0 only");
 static_assert(SCALEFIRST_SWEEP_QTYPE == SCALEFIRST_GENERATED_QTYPE);
 static_assert(SCALEFIRST_SWEEP_ARTIFACT_TK == SCALEFIRST_GENERATED_ARTIFACT_TK);
 static_assert(SCALEFIRST_SWEEP_BCHUNK == SCALEFIRST_GENERATED_BCHUNK);
@@ -563,6 +574,28 @@ Fixture make_fixture(Shape shape, FixtureMode mode, TagRound tag_round) {
         zero_varied : zero_is_zero;
     f.isolation_covered = code_covered && scale_covered && zero_covered;
   }
+#if SCALEFIRST_SWEEP_WEIGHT_LAYOUT == 1
+  {
+    auto const arrangement = ppu_arrangements::q4_kpack4_transpose_v1();
+    std::vector<std::uint8_t> direct(f.low.size(), std::uint8_t(0xcd));
+    int const direct_rc = q4_kpack4::prepare(
+        f.low_native.data(), direct.data(), shape.n, shape.k);
+    int const abi_rc = quactlize_ppu_prepare_dense_for_arrangement_v2(
+        f.low_native.data(), nullptr, f.low.data(), nullptr,
+        shape.n, shape.k, SCALEFIRST_SWEEP_QTYPE, &arrangement);
+    if (direct_rc != 0 || abi_rc != 0 || direct != f.low) return f;
+    std::vector<std::uint8_t> direct_back(f.low_native.size(),
+                                          std::uint8_t(0xab));
+    std::vector<std::uint8_t> low_back(f.low_native.size());
+    int const direct_recover_rc = q4_kpack4::recover(
+        f.low.data(), direct_back.data(), shape.n, shape.k);
+    int const abi_recover_rc = quactlize_ppu_recover_dense_for_arrangement_v2(
+        f.low.data(), nullptr, low_back.data(), nullptr,
+        shape.n, shape.k, SCALEFIRST_SWEEP_QTYPE, &arrangement);
+    f.roundtrip = direct_recover_rc == 0 && abi_recover_rc == 0 &&
+                  direct_back == low_back && low_back == f.low_native;
+  }
+#else
 #if SCALEFIRST_SWEEP_QTYPE == 8
   {
     xplane::place_derived<8,64,64,32,32,32,1,32>(
@@ -590,6 +623,7 @@ Fixture make_fixture(Shape shape, FixtureMode mode, TagRound tag_round) {
         SCALEFIRST_SWEEP_ARTIFACT_TK) == 0 &&
         low_back == f.low_native && high_back == f.high_native;
   }
+#endif
 #endif
   if constexpr (HB == 0) {
     f.high_plane_covered = true;
@@ -866,11 +900,15 @@ int main(int argc, char** argv) {
   if (cu <= 0) return 2;
   std::printf(
       "SF_SHARD qtype=%d artifact_tile_k=%d bchunk=%d typed_rows=%d "
+      "weight_layout=%d weight_mapping_id=0x%016llx "
       "selected_rows=%zu algorithm_mask=0x%x device=%d cu=%d "
       "iterations=%d correctness_repeats=%d "
       "schedule_seed=0x%llx\n",
       SCALEFIRST_SWEEP_QTYPE, SCALEFIRST_SWEEP_ARTIFACT_TK,
       SCALEFIRST_SWEEP_BCHUNK, SCALEFIRST_GENERATED_TYPED_ROWS,
+      SCALEFIRST_SWEEP_WEIGHT_LAYOUT,
+      static_cast<unsigned long long>(
+          SCALEFIRST_SWEEP_WEIGHT_LAYOUT == 1 ? q4_kpack4::kMappingId : 0),
       rows.size(), cli.algorithm_mask, device, cu, cli.iterations, cli.repeats,
       static_cast<unsigned long long>(cli.schedule_seed));
   for (auto const& shape : cli.shapes) {
