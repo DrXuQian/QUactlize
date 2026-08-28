@@ -4,6 +4,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BACKEND = ROOT / "quactlize/csrc/device/ppu_dense_backend.cu"
+MIXED = (ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/"
+         "quactlize_mma_mixed_input.hpp")
 
 
 def test_grouped_lowbit_has_the_full_grouped_operator_surface():
@@ -74,3 +76,31 @@ def test_grouped_kpack4_changes_only_the_mainloop_policy():
     grouped = (ROOT / "quactlize/include/moe_grouped_ppu.cuh").read_text()
     assert "class MainloopPolicyOverride = void" in grouped
     assert "std::conditional_t<" in grouped and "MainloopPolicyOverride" in grouped
+
+
+def test_grouped_kpack4_selects_the_expert_axis_exactly_once():
+    """The byte base and CuTe L slice must not both consume the expert coordinate.
+
+    Dense exercises only expert zero, so a doubled L offset is invisible there.
+    The independent address model below keeps the historical construction as a
+    must-red control for every nonzero expert.
+    """
+    source = MIXED.read_text()
+    begin = source.index("if constexpr (kQ4KPack4Transpose) {", source.index("auto load_init_B"))
+    end = source.index("} else {", begin)
+    body = source[begin:end]
+    assert "mixed_packed_byte_expert_base" not in body
+    assert "make_shape(N, physical_k, L), physical_stride" in body
+    assert body.count("mB_nkl(_,_,l_coord)") == 1
+    assert "rank(decltype(mB_nk.layout()){}) == 2" in body
+    assert "raw_pointer_cast(mB_nk.data())" in body
+
+    experts, n, k, bits = 4, 256, 5120, 4
+    bytes_per_expert = n * k * bits // 8
+    expected = [e * bytes_per_expert for e in range(experts)]
+    once_selected = [e * bytes_per_expert for e in range(experts)]
+    legacy_double_selected = [2 * e * bytes_per_expert for e in range(experts)]
+    assert once_selected == expected
+    assert legacy_double_selected[0] == expected[0]
+    assert all(legacy_double_selected[e] != expected[e]
+               for e in range(1, experts))

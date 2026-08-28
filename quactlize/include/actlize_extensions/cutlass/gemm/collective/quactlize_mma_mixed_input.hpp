@@ -1379,20 +1379,30 @@ private:
       using TilerB = typename GmemTiledCopyB::Tiler_MN;
       using Transport = cutlass::half_t;
       int const physical_k = K / q4_kpack4::kPack;
-      auto const* expert_base = detail::mixed_packed_byte_expert_base(
-          mainloop_params.ptr_B,
-          int64_t(N) * int64_t(K) * sizeof_bits<RealInternalElementB>::value / 8,
-          l_coord);
-      auto physical_stride = make_stride(_1{}, int64_t(N), int64_t(N) * physical_k);
+      static_assert(sizeof_bits<Transport>::value ==
+                        q4_kpack4::kPack * sizeof_bits<RealInternalElementB>::value,
+                    "one K-pack4 transport word must cover four logical codes");
+      // Keep the outer expert coordinate inside the CuTe tensor until it is
+      // selected.  The first grouped K-pack4 port manually advanced a byte
+      // pointer by l_coord and then sliced this L mode by l_coord as well;
+      // expert e consequently read physical expert 2*e while dense (e=0)
+      // remained exact.  One CuTe L slice now owns both the coordinate view
+      // and the raw base exported to the opaque AIU descriptor.
+      auto physical_stride =
+          make_stride(_1{}, int64_t(N), int64_t(N) * physical_k);
       Tensor mB_nkl = make_tensor(
-          make_gmem_ptr(reinterpret_cast<Transport const*>(expert_base)),
+          make_gmem_ptr(reinterpret_cast<Transport const*>(mainloop_params.ptr_B)),
           make_shape(N, physical_k, L), physical_stride);
-      auto mB_nk = make_mix_tensor_like(mB_nkl(_,_,l_coord));
+      auto mB_nk = mB_nkl(_,_,l_coord);
+      static_assert(rank(decltype(mB_nk.layout()){}) == 2,
+                    "the selected K-pack4 expert view must not retain an L mode");
+      auto const* expert_base = reinterpret_cast<uint8_t const*>(
+          raw_pointer_cast(mB_nk.data()));
       gmem_tiled_copy_B.desc_.template init<
           Transport, true, get<0>(TilerB{}), get<1>(TilerB{})>(
               const_cast<uint8_t*>(expert_base), N, physical_k,
               take<0,2>(physical_stride));
-      return mB_nk;
+      return make_mix_tensor_like(mB_nk);
     } else {
     auto kCon = kContinous{};
     using TilerB = typename GmemTiledCopyB::Tiler_MN;

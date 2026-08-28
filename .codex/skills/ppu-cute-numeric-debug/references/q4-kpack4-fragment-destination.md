@@ -338,6 +338,43 @@ The packed arithmetic remains the fast path.  Q4_K uses
 LOP3/sub/FMA sequence; a high FMA count is expected for affine dequantization
 and is not evidence that scalar dequant was selected.
 
+## Grouped outer-expert coordinate closure
+
+The first production grouped K-pack4 closure at commit `d1c5d88` used:
+
+```text
+qtype=12 E=4 N=256 K=5120 rows=[2,0,3,1]
+dense M=1/4/64/2048: PASS
+grouped conditioned error: 9.3063795e-2 (limit 5e-3)
+```
+
+The offline artifact and the inner physical-to-MMA fragment were not the
+defect.  `load_init_B` selected the outer expert twice:
+
+```cpp
+expert_base = base + l_coord * bytes_per_expert;       // first selection
+mB_nkl = make_tensor(expert_base, shape(N,K/4,L), d);  // L still present
+mB_nk = mB_nkl(_,_,l_coord);                           // second selection
+```
+
+Thus expert `e` read physical expert `2*e`; dense and expert zero stayed exact,
+which is why all dense K-pack4 closure rows passed.  For `E=4,N=256,K=5120`,
+the correct byte bases are `[0,655360,1310720,1966080]`, while the historical
+construction produces `[0,1310720,2621440,3932160]`, including out-of-artifact
+reads for the tail experts.
+
+The repair keeps the full physical `(N,K/4,L)` b16 tensor rooted at the original
+base, slices `L` exactly once with CuTe, then derives the opaque AIU descriptor's
+raw byte base from that rank-2 slice.  Do not mix a manually pre-offset byte
+pointer with a tensor that still carries the same semantic outer mode.
+
+The retained source oracle in `tests/test_grouped_lowbit_exports.py` requires
+exactly one `mB_nkl(_,_,l_coord)` selection, a rank-2 result, and descriptor base
+derivation from `raw_pointer_cast(mB_nk.data())`; its historical double-offset
+address model is the RED control.  L231 remains the independent proof for all
+12 inner K-pack4 fragment geometries.  The direct device admission is the
+`kpack4_production` marker with the ragged/empty-expert fixture above.
+
 ## Prefill measurement boundary
 
 No completed K-pack4 prefill timing existed before 2026-08-28.  Do not
