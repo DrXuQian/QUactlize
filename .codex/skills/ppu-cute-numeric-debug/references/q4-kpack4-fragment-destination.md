@@ -385,6 +385,25 @@ marked `.quactlize-source-dirty` and cannot later be resumed.  An identical
 post-fix error from an unstamped resumed tree is old-binary evidence, not a
 device verdict on the repair.
 
+The next clean closure passed the grouped GEMM and stopped only in its
+dequant-all diagnostic at `1.8432617e-2`.  This exact value is the Q4
+consumer-centering cancellation, not another expert offset.  The offline
+artifact still stores the raw packed unit; because the converter uses `q-8`,
+the packed-unit decoder derives
+`centered_zero=fp16(raw_zero+8*scale)`.  In the frozen fixture the worst cell
+is `q=1, scale=4.84375, raw_zero=-4.671875`, for which
+`centered_zero=34.0625` and the inverse produces `0.15625` while official
+GGUF's pre-rounded affine value is `0.1746826171875`.  A pointwise denominator
+of `max(abs(reference),1)` reports the absolute cancellation as 1.843%; the
+established per-weight-row dynamic-range denominator reports `9.804e-4`.
+
+The production oracle must therefore make two separate claims: require the
+inverse to be bit-identical to a reconstruction from recovered codes plus the
+consumer-ready fp16 metadata, then compare that represented weight with the
+official GGUF materialisation using the per-row conditioned metric.  Do not
+simply raise the pointwise tolerance; that would weaken the layout/expert
+addressing proof instead of separating representation error from placement.
+
 ## Prefill measurement boundary
 
 No completed K-pack4 prefill timing existed before 2026-08-28.  Do not
