@@ -276,9 +276,10 @@ QUACTLIZE_PPU_LIB_FMT0=/path/to/libquactlize_ppu.so \
 legacy/default handle used by Xplane and by ScaleFirst execution; the two queries are intentionally not aliases.
 
 The arrangement is recorded **per tensor**. Xplane uses `PlacedArrangement(bits,tile_k,high_bits)`; Q4 K-pack4
-uses the complete `PlacedArrangementV2`. `tools/pack_gguf.py` defaults Q4 tensors to K-pack4 and retains Xplane
-only when `--q4-layout xplane` is requested. Different layers may use different arrangements; every batch/M for
-one stored layer must use that layer's one descriptor.
+uses the complete `PlacedArrangementV2`. `tools/pack_gguf.py` has no Q4 layout switch: whole-model production
+packing always emits K-pack4 for Q4_K and Xplane for Q2_K/Q3_K/Q5_K/Q6_K. The low-level explicit Q4 Xplane
+producer remains only for diagnostic compatibility. Different layers may use different arrangements; every
+batch/M for one stored layer must use that layer's one descriptor.
 
 ---
 

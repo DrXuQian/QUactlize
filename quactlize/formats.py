@@ -333,6 +333,42 @@ Q4_KPACK4_MAPPING_ID = 0x51344B5034540001
 Q4_KPACK4_TRANSPORT_TILE_K = 64
 Q4_KPACK4_GROUP_SIZE = 32
 
+# One production offline-layout decision per k-quant format.  K-pack4 is a
+# Q4-specific byte map: four K-adjacent nibbles form the b16 transport used by
+# the transpose reader.  Applying its name to Q2/Q3/Q5/Q6 would hide different
+# plane widths behind one descriptor, not unify those formats.  They retain
+# Xplane until each gets its own correctness/performance adjudication.
+CANONICAL_FULLY_QUANTIZED_LAYOUT: Dict[QuantType, str] = {
+    QuantType.Q2_K: "xplane",
+    QuantType.Q3_K: "xplane",
+    QuantType.Q4_K: "q4-kpack4",
+    QuantType.Q5_K: "xplane",
+    QuantType.Q6_K: "xplane",
+}
+
+# Archived means absent from automatic/whole-model production selection.  The
+# low-level explicit reader remains available as diagnostic compatibility and,
+# more importantly, the shared Xplane implementation remains live for the four
+# formats above.
+ARCHIVED_FULLY_QUANTIZED_LAYOUTS: Dict[QuantType, FrozenSet[str]] = {
+    QuantType.Q4_K: frozenset({"xplane"}),
+}
+
+
+def canonical_fully_quantized_layout(qtype) -> str:
+    """Return the sole automatic offline layout for a shipping k-quant."""
+    q = QuantType(qtype)
+    try:
+        return CANONICAL_FULLY_QUANTIZED_LAYOUT[q]
+    except KeyError as error:
+        raise NotImplementedError(
+            f"{q.name} has no canonical fully-quantized offline layout") from error
+
+
+def archived_fully_quantized_layouts(qtype) -> FrozenSet[str]:
+    """Layouts retained for diagnostics but forbidden to automatic packers."""
+    return ARCHIVED_FULLY_QUANTIZED_LAYOUTS.get(QuantType(qtype), frozenset())
+
 
 class PlacedArrangementV2(NamedTuple):
     """A byte-map identity, not a tactic hint.

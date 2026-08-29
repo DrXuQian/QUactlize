@@ -26,9 +26,9 @@ This descriptor, rather than tensor shape or byte count, is the authority at eve
 | Grouped/MoE FQ device launch | grouped arrangement-v2 workspace query and device entry | integrated; async caller-owned workspace |
 | Grouped tactic inventory | grouped arrangement-v2 list and shared validity predicate | integrated; tactic TK256, artifact TK0 |
 | Torch producer/reader/inverse | `gguf_*_for_arrangement_v2` dense and grouped ops | integrated; optional dlsym keeps old libraries loadable, use is fail-closed |
-| Python artifact and routes | `PlacedArrangementV2`, `PlacedArtifact`, dense/grouped FQ and ScaleFirst routes | integrated; Q4 `layout=auto` defaults to K-pack4, Xplane is explicit compatibility |
+| Python artifact and routes | `PlacedArrangementV2`, `PlacedArtifact`, dense/grouped FQ and ScaleFirst routes | integrated; Q4 `layout=auto` defaults to K-pack4, Xplane is explicit diagnostic compatibility |
 | Dense runtime policy | `matmul_q4_kpack4_dense` + hoisted scale workspace | integrated; M<=8 FQ decode, M>8 persistent ScaleFirst over the same bytes |
-| Whole-model pack/restore | `tools/pack_gguf.py --q4-layout q4-kpack4` (default) | integrated; rank-2 dense and rank-3 `[K,N,E]` grouped tensors retain route/E/N/K plus descriptor |
+| Whole-model pack/restore | `tools/pack_gguf.py` | integrated; Q4 has no layout switch and always emits K-pack4; rank-2 dense and rank-3 `[K,N,E]` grouped tensors retain route/E/N/K plus descriptor |
 | Format-selected loading | `gguf_backend_for_qtype(12)` / `QUACTLIZE_PPU_LIB_FMT0` | integrated; v2 placement and packed units come from one format-owned handle |
 
 ## Deliberately unsupported
@@ -57,3 +57,18 @@ instantiation, and both packed/non-packed backend variants. Device closure still
 Existing measured ScaleFirst evidence for `(N,K)=(1024,5120)` is within 0.6% of Xplane at M=2048 and M=4096,
 with K-pack4 slightly faster in both rows. That result establishes the shared prefill bytes; it does not substitute
 for the grouped device closure above.
+
+## Non-Q4 format boundary
+
+Q4's K-pack4 map is not a generic k-quant map. It relies on exactly four adjacent Q4 nibbles forming the b16
+transport consumed by the transpose reader. Q2/Q3/Q5/Q6 have different low/high plane widths and must keep the
+shared Xplane producer/reader until each format has its own byte-map derivation and device adjudication.
+
+Two separate obligations follow:
+
+1. A Q4 release must rerun the existing raw-bit/numeric device oracle for Q2/Q3/Q5/Q6, using one
+   `PPU_PACKED_FORMAT` build per format, to prove the shared Xplane path was not regressed.
+2. Replacing Xplane for any non-Q4 format is a separate design decision. It requires that format's own exact
+   mapping proof plus real-shape decode and prefill sweeps; Q4's K-pack4 performance evidence cannot be reused.
+
+Therefore archiving Q4 Xplane never authorizes deleting the shared Xplane implementation or its generic sweep.

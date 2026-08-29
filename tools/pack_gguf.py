@@ -25,6 +25,11 @@ WHAT IT REFUSES TO DO, and each refusal is a mistake this project has made or ne
 Needs the device library (the placement lives there), so it runs on the box. The default Q4 K-pack4 path uses
 the format-selected FMT0 handle:
     QUACTLIZE_PPU_LIB_FMT0=<...>/libquactlize_ppu.so python3 tools/pack_gguf.py ...
+
+There is deliberately no Q4 layout switch: Q4 Xplane/FoldN is archived from
+whole-model production packing.  Low-level explicit Xplane APIs remain only
+for reproducing historical evidence and for the four non-Q4 formats that still
+use the shared Xplane implementation.
 """
 import argparse
 import json
@@ -43,8 +48,6 @@ def main() -> int:
     ap.add_argument("model", help="a .gguf file")
     ap.add_argument("out", help="output directory; created, and only finished artifacts land in it")
     ap.add_argument("--limit", type=int, default=0, help="stop after N packable tensors (0 = all)")
-    ap.add_argument("--q4-layout", choices=("q4-kpack4", "xplane"), default="q4-kpack4",
-                    help="physical layout for Q4_K tensors (default: one tile-free K-pack4 byte class)")
     ap.add_argument("--dry-run", action="store_true",
                     help="report what WOULD be packed, touching no device and writing nothing")
     a = ap.parse_args()
@@ -71,8 +74,7 @@ def main() -> int:
     for t in reader.tensors:
         tt = int(t.tensor_type)
         seen[t.tensor_type.name] += 1
-        ok, route, why = _packability(
-            tt, len(t.shape), supported, int(F.QuantType.Q4_K), a.q4_layout)
+        ok, route, why = _packability(tt, len(t.shape), supported)
         if ok and route == "grouped":
             ok, why = _grouped_role_authority(t.name)
         if ok:
@@ -111,27 +113,25 @@ def main() -> int:
     import quactlize
 
     todo = packable[:a.limit] if a.limit else packable
-    # Check exactly the handles this plan will call. Q4 K-pack4 placement is served by FMT0; asking only the
-    # legacy/default backend made a valid FMT0-only pack fail, while a default-only environment failed much later
-    # at the first K-pack4 tensor.
+    # Check exactly the handles this plan will call. Q4 K-pack4 placement is served by FMT0; the default handle
+    # remains the canonical Xplane producer for Q2/Q3/Q5/Q6. Asking only one of them makes a mixed-format model
+    # fail late at its first tensor of the other physical layout.
     uses_kpack4 = any(
-        route == "grouped" or
-        (int(t.tensor_type) == int(F.QuantType.Q4_K) and a.q4_layout == "q4-kpack4")
-        for t, route in todo)
+        F.canonical_fully_quantized_layout(int(t.tensor_type)) == "q4-kpack4"
+        for t, _route in todo)
     uses_default = any(
-        not (route == "grouped" or
-             (int(t.tensor_type) == int(F.QuantType.Q4_K) and a.q4_layout == "q4-kpack4"))
-        for t, route in todo)
+        F.canonical_fully_quantized_layout(int(t.tensor_type)) == "xplane"
+        for t, _route in todo)
     required_backends = {}
     if uses_kpack4:
         required_backends["Q4 K-pack4 FMT0"] = quactlize.gguf_backend_for_qtype(int(F.QuantType.Q4_K))
     if uses_default:
-        required_backends["legacy/default Xplane"] = quactlize.gguf_backend()
+        required_backends["canonical non-Q4 Xplane"] = quactlize.gguf_backend()
     unavailable = {name: value for name, value in required_backends.items() if not value.startswith("ppu")}
     if unavailable:
         details = "\n".join(f"  {name}: {value}" for name, value in unavailable.items())
         print(f"\nrefusing to pack because required device placement backend(s) are unavailable:\n{details}\n"
-              "  Set QUACTLIZE_PPU_LIB_FMT0 for Q4 K-pack4 and QUACTLIZE_PPU_LIB for legacy Xplane tensors.",
+              "  Set QUACTLIZE_PPU_LIB_FMT0 for Q4 K-pack4 and QUACTLIZE_PPU_LIB for non-Q4 Xplane tensors.",
               file=sys.stderr)
         return 3
 
@@ -160,11 +160,13 @@ def main() -> int:
         # contiguous and experts adjacent, exactly the grouped producer's [E*N*(K/256), type_size] ABI.
         block_rows = (experts or 1) * n * (k // 256)
         blocks = torch.from_numpy(t.data.reshape(block_rows, -1).copy())
+        layout = F.canonical_fully_quantized_layout(qtype)
         if route == "grouped":
             assert experts is not None
+            assert layout == "q4-kpack4"
             artifact = routes.prepare_fully_quantized_grouped(
                 blocks, n, k, qtype, experts, layout="q4-kpack4")
-        elif qtype == int(F.QuantType.Q4_K) and a.q4_layout == "q4-kpack4":
+        elif layout == "q4-kpack4":
             artifact = routes.prepare_fully_quantized_dense(
                 blocks, n, k, qtype, layout="q4-kpack4")
         else:
@@ -184,7 +186,7 @@ def main() -> int:
         # recorded, and a manifest naming an unbuildable arrangement reads as a capability.
         arr = artifact.arrangement
         expected = (F.q4_kpack4_arrangement()
-                    if qtype == int(F.QuantType.Q4_K) and a.q4_layout == "q4-kpack4"
+                    if layout == "q4-kpack4"
                     else F.PlacedArrangement(
                         bits=_low_bits(qtype), tile_k=_tile_k(qtype), high_bits=_high_bits(qtype)))
         if arr != expected:
@@ -225,7 +227,7 @@ def main() -> int:
     return 0
 
 
-def _packability(qtype: int, rank: int, supported, q4_type: int, q4_layout: str):
+def _packability(qtype: int, rank: int, supported):
     """Return ``(packable, route, reason)`` without consulting tensor names.
 
     Rank three is GGUF's grouped ``[K,N,E]`` storage, not a dense matrix with an ignorable axis.  Only Q4
@@ -238,10 +240,9 @@ def _packability(qtype: int, rank: int, supported, q4_type: int, q4_layout: str)
     if rank == 2:
         return True, "dense", None
     if rank == 3:
-        if int(qtype) != int(q4_type):
+        from quactlize import formats as F
+        if F.canonical_fully_quantized_layout(qtype) != "q4-kpack4":
             return False, None, "3-D grouped artifact lacks a descriptor-aware reader for this format"
-        if q4_layout != "q4-kpack4":
-            return False, None, "3-D grouped Xplane descriptor ABI is absent; use --q4-layout q4-kpack4"
         return True, "grouped", None
     return False, None, f"{rank}-D, expected dense rank 2 or grouped rank 3"
 

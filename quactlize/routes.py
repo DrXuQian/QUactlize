@@ -32,7 +32,8 @@ from . import (gguf_dequantize, gguf_vecdot_dense, gguf_vecdot_moe, gguf_prepare
                gguf_gemv_scale_first, gguf_gemv_scale_first_moe, gguf_dense_scale_first)
 from .formats import (PLACED_ARRANGEMENT_VERSION_V1, PLACED_ARRANGEMENT_VERSION_V2,
                       PLACED_LAYOUT_Q4_KPACK4_TRANSPOSE_V1, PlacedArrangement,
-                      PlacedArrangementV2, QuantType, placed_arrangement,
+                      PlacedArrangementV2, QuantType,
+                      canonical_fully_quantized_layout, placed_arrangement,
                       placed_code_planes, q4_kpack4_arrangement)
 
 
@@ -531,8 +532,8 @@ def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: i
     """
     _check_shape(blocks, n, k, int(qtype))
     if layout == "auto":
-        layout = ("q4-kpack4" if QuantType(qtype) == QuantType.Q4_K and tile_k is None
-                  else "xplane")
+        layout = (canonical_fully_quantized_layout(qtype)
+                  if tile_k is None else "xplane")
     if layout == "q4-kpack4":
         if QuantType(qtype) != QuantType.Q4_K:
             raise ValueError(f"q4-kpack4 is defined only for Q4_K, got {QuantType(qtype).name}")
@@ -585,7 +586,7 @@ def prepare_fully_quantized_grouped(blocks: torch.Tensor, n: int, k: int,
         raise ValueError(f"blocks should be [{want}, type_size] for {experts} experts of an ({n}, {k}) weight, "
                          f"got {tuple(blocks.shape)}")
     if layout == "auto":
-        layout = "q4-kpack4" if QuantType(qtype) == QuantType.Q4_K else "xplane"
+        layout = canonical_fully_quantized_layout(qtype)
     if layout == "q4-kpack4":
         if QuantType(qtype) != QuantType.Q4_K:
             raise ValueError(f"q4-kpack4 is defined only for Q4_K, got {QuantType(qtype).name}")

@@ -99,6 +99,46 @@ def test_q4_kpack4_v2_producer_and_dense_reader_forward_the_exact_byte_map(monke
     assert calls[1][1][-9:] == wire
 
 
+def test_canonical_offline_layout_policy_keeps_non_q4_xplane(monkeypatch):
+    expected = {
+        formats.QuantType.Q2_K: "xplane",
+        formats.QuantType.Q3_K: "xplane",
+        formats.QuantType.Q4_K: "q4-kpack4",
+        formats.QuantType.Q5_K: "xplane",
+        formats.QuantType.Q6_K: "xplane",
+    }
+    assert {q: formats.canonical_fully_quantized_layout(q) for q in expected} == expected
+    assert formats.archived_fully_quantized_layouts(formats.QuantType.Q4_K) == \
+        frozenset({"xplane"})
+    assert all(not formats.archived_fully_quantized_layouts(q)
+               for q in expected if q != formats.QuantType.Q4_K)
+
+    calls = []
+
+    def fake_op(name):
+        def call(*args):
+            qtype = formats.QuantType(args[3])
+            arrangement = (formats.q4_kpack4_arrangement()
+                           if qtype == formats.QuantType.Q4_K
+                           else formats.placed_arrangement(qtype))
+            calls.append((qtype, name))
+            return _planes(arrangement)
+        return call
+
+    monkeypatch.setattr(routes, "_op", fake_op)
+    for qtype, layout in expected.items():
+        blocks = torch.zeros((2, formats.BLOCKS[qtype].block_bytes),
+                             dtype=torch.uint8)
+        artifact = routes.prepare_fully_quantized_dense(blocks, 2, 256, qtype)
+        if layout == "q4-kpack4":
+            assert artifact.arrangement == formats.q4_kpack4_arrangement()
+            assert calls[-1][1] == \
+                "gguf_prepare_fully_quantized_dense_for_arrangement_v2"
+        else:
+            assert artifact.arrangement == formats.placed_arrangement(qtype)
+            assert calls[-1][1] == "gguf_prepare_fully_quantized_dense"
+
+
 def test_q4_kpack4_rejects_mutated_identity_and_unimplemented_bc_before_dispatch(monkeypatch):
     called = []
     monkeypatch.setattr(routes, "_op", lambda name: lambda *args: called.append((name, args)))
@@ -419,11 +459,9 @@ def test_whole_model_packer_admits_q4_kpack4_grouped_and_holds_back_ambiguous_ra
     q4 = int(formats.QuantType.Q4_K)
     q3 = int(formats.QuantType.Q3_K)
 
-    assert pack_gguf._packability(q4, 2, supported, q4, "q4-kpack4") == (True, "dense", None)
-    assert pack_gguf._packability(q4, 3, supported, q4, "q4-kpack4") == (True, "grouped", None)
-    ok, route, why = pack_gguf._packability(q4, 3, supported, q4, "xplane")
-    assert not ok and route is None and "descriptor ABI is absent" in why
-    ok, route, why = pack_gguf._packability(q3, 3, supported, q4, "q4-kpack4")
+    assert pack_gguf._packability(q4, 2, supported) == (True, "dense", None)
+    assert pack_gguf._packability(q4, 3, supported) == (True, "grouped", None)
+    ok, route, why = pack_gguf._packability(q3, 3, supported)
     assert not ok and route is None and "descriptor-aware reader" in why
 
     assert pack_gguf._tensor_geometry((5120, 8192)) == (8192, 5120, None)
