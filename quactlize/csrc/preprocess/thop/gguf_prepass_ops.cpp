@@ -689,8 +689,7 @@ torch::Tensor gguf_dense_scale_first_impl(
         reinterpret_cast<uint16_t*>(get_ptr<at::Half>(out)),
         m, n, k, group_size, int(qtype));
   }
-  TORCH_CHECK(rc == 0,
-              "PPU scale-first dense GEMM failed");
+  TORCH_CHECK(rc == 0, "PPU scale-first dense GEMM failed (rc=", rc, ")");
   return out;
 }
 
