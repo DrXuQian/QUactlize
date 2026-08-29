@@ -521,8 +521,7 @@ def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: i
     is always the LAST element. That is the property both oracles plant their fault on.
 
     ``layout="auto"`` selects the canonical unified K-pack4 bytes for Q4_K and Xplane for every other format.
-    An explicit ``tile_k`` is an explicit Xplane request and is incompatible with K-pack4, which has no artifact
-    TileK axis. Compatibility callers that still need Q4 Xplane must say ``layout="xplane"``.
+    An explicit ``tile_k`` is itself a low-level Xplane compatibility request; K-pack4 has no artifact TileK axis.
 
     tile_k SELECTS AN XPLANE PLACEMENT, and F follows from it -- see formats.fold_for. Passing None keeps the
     Xplane format's default placement when Xplane was explicitly selected.
