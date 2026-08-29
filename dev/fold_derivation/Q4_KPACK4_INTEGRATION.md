@@ -66,8 +66,9 @@ shared Xplane producer/reader until each format has its own byte-map derivation 
 
 Two separate obligations follow:
 
-1. A Q4 release must rerun the existing raw-bit/numeric device oracle for Q2/Q3/Q5/Q6, using one
-   `PPU_PACKED_FORMAT` build per format, to prove the shared Xplane path was not regressed.
+1. A Q4 release must rerun `tools/run_nonq4_xplane_correctness_box.sh`, which uses one independent default/base
+   library plus one `PPU_PACKED_FORMAT` build per Q2/Q3/Q5/Q6 reader. The two library handles must remain distinct:
+   using a selected format library as the base changes the supposed ScaleFirst oracle and invalidates the test.
 2. Replacing Xplane for any non-Q4 format is a separate design decision. It requires that format's own exact
    mapping proof plus real-shape decode and prefill sweeps; Q4's K-pack4 performance evidence cannot be reused.
 

@@ -43,6 +43,7 @@ def main() -> int:
 
         routes = (ROOT / "quactlize/routes.py").read_text()
         packer = (ROOT / "tools/pack_gguf.py").read_text()
+        runner = (ROOT / "tools/run_nonq4_xplane_correctness_box.sh").read_text()
         placed = (ROOT / "quactlize/include/ppu_placed_arrangement.hpp").read_text()
         require(routes, (
             "layout = (canonical_fully_quantized_layout(qtype)",
@@ -55,6 +56,15 @@ def main() -> int:
         ), "whole-model packer")
         if "--q4-layout" in packer:
             raise AssertionError("whole-model packer still exposes archived Q4 Xplane")
+        require(runner, (
+            'QUACTLIZE_PPU_LIB="$base_so"',
+            '"QUACTLIZE_PPU_LIB_FMT${fmt}=$format_so"',
+            "PPU_ARCHS=ppu0010",
+            '"$sdk_root/bin/hgobjdump" -lelf "$so"',
+        ), "non-Q4 device runner")
+        if 'QUACTLIZE_PPU_LIB="$format_so"' in runner:
+            raise AssertionError(
+                "non-Q4 runner merged the format reader into the independent base/oracle arm")
         require(placed, (
             "return qtype == 12 && arrangement->bits == 4",
             "arrangement->mapping_id == q4_kpack4::kMappingId",
