@@ -74,10 +74,11 @@ def source_rows(layout: str) -> tuple[list[Any], int]:
     return eligible, len(raw)
 
 
-def select(layout: str) -> list[Any]:
+def select(layout: str,
+           candidates: tuple[tuple[int, ...], ...] = CANDIDATES) -> list[Any]:
     eligible, _ = source_rows(layout)
     selected = []
-    for wanted in CANDIDATES:
+    for wanted in candidates:
         matches = [row for row in eligible if coordinates(row) == wanted]
         if len(matches) != 1:
             raise SelectError(
@@ -123,8 +124,12 @@ def row_json(layout: str, row: Any) -> dict[str, Any]:
     }
 
 
-def materialize_arm(output: pathlib.Path, layout: str) -> dict[str, Any]:
-    rows = select(layout)
+def materialize_arm(
+        output: pathlib.Path, layout: str,
+        candidates: tuple[tuple[int, ...], ...] = CANDIDATES,
+        schema: str = "quactlize.scalefirst-q4k-kpack4-prefill-arm.v1",
+        ) -> dict[str, Any]:
+    rows = select(layout, candidates)
     eligible, raw_count = source_rows(layout)
     artifact = 64 if layout == "xplane" else 0
     weight_layout = 0 if layout == "xplane" else 1
@@ -150,7 +155,7 @@ def materialize_arm(output: pathlib.Path, layout: str) -> dict[str, Any]:
         f"#define SCALEFIRST_GENERATED_TYPED_ROWS {len(rows)}\n" +
         macro("SCALEFIRST_REGISTRY_ROWS", layout, rows))
     manifest = {
-        "schema": "quactlize.scalefirst-q4k-kpack4-prefill-arm.v1",
+        "schema": schema,
         "layout": layout,
         "weight_layout": weight_layout,
         "weight_mapping_id": "0x0" if weight_layout == 0 else MAPPING_ID,
@@ -178,12 +183,18 @@ def materialize_arm(output: pathlib.Path, layout: str) -> dict[str, Any]:
     return manifest
 
 
-def validate_bundle(value: dict[str, Any]) -> None:
-    if value.get("schema") != \
-            "quactlize.scalefirst-q4k-kpack4-prefill-ab.v1":
+def validate_bundle(
+        value: dict[str, Any],
+        candidates: tuple[tuple[int, ...], ...] = CANDIDATES,
+        shapes: tuple[tuple[int, int, int], ...] = SHAPES,
+        schema: str = "quactlize.scalefirst-q4k-kpack4-prefill-ab.v1",
+        ) -> None:
+    if value.get("schema") != schema:
         raise SelectError("bundle schema differs")
-    if value.get("shapes") != [list(shape) for shape in SHAPES]:
+    if value.get("shapes") != [list(shape) for shape in shapes]:
         raise SelectError("large-prefill shape denominator differs")
+    if value.get("candidates") != [list(row) for row in candidates]:
+        raise SelectError("matched tactic denominator differs")
     arms = value.get("arms", [])
     if len(arms) != 2 or {arm.get("layout") for arm in arms} != \
             {"xplane", "q4-kpack4"}:
@@ -199,28 +210,36 @@ def validate_bundle(value: dict[str, Any]) -> None:
                 arm.get("algorithms") != ["PERSISTENT"]:
             raise SelectError(f"{arm.get('layout')} identity differs")
         rows = arm.get("typed_rows", [])
-        if len(rows) != len(CANDIDATES) or \
+        if len(rows) != len(candidates) or \
                 {tuple(row[key] for key in (
                     "tile_m", "tile_n", "tactic_tile_k", "warp_m",
-                    "warp_n", "stages")) for row in rows} != set(CANDIDATES):
+                    "warp_n", "stages")) for row in rows} != set(candidates):
             raise SelectError(f"{arm.get('layout')} tactic denominator differs")
 
 
-def materialize(output: pathlib.Path) -> dict[str, Any]:
+def materialize(
+        output: pathlib.Path,
+        candidates: tuple[tuple[int, ...], ...] = CANDIDATES,
+        shapes: tuple[tuple[int, int, int], ...] = SHAPES,
+        schema: str = "quactlize.scalefirst-q4k-kpack4-prefill-ab.v1",
+        arm_schema: str = "quactlize.scalefirst-q4k-kpack4-prefill-arm.v1",
+        purpose: str = "isolate weight layout under identical ScaleFirst metadata and persistent driver",
+        ) -> dict[str, Any]:
     output.mkdir(parents=True, exist_ok=True)
-    arms = [materialize_arm(output / layout, layout)
+    arms = [materialize_arm(output / layout, layout, candidates, arm_schema)
             for layout in ("xplane", "q4-kpack4")]
     value = {
-        "schema": "quactlize.scalefirst-q4k-kpack4-prefill-ab.v1",
-        "purpose": "isolate weight layout under identical ScaleFirst metadata and persistent driver",
-        "shapes": [list(shape) for shape in SHAPES],
-        "candidates": [list(row) for row in CANDIDATES],
+        "schema": schema,
+        "purpose": purpose,
+        "shapes": [list(shape) for shape in shapes],
+        "candidates": [list(row) for row in candidates],
         "arms": arms,
     }
-    validate_bundle(value)
+    validate_bundle(value, candidates, shapes, schema)
     (output / "manifest.json").write_text(
         json.dumps(value, indent=2, sort_keys=True) + "\n")
-    print("[sf-kpack4-prefill-select] PASS layouts=2 rows=3 shapes=2 "
+    print(f"[sf-kpack4-prefill-select] PASS layouts=2 rows={len(candidates)} "
+          f"shapes={len(shapes)} "
           "metadata=ScaleFirst-FP16 algorithm=PERSISTENT "
           f"output={output}")
     return value

@@ -55,9 +55,11 @@ def parse_log(path: pathlib.Path, arm: str, shape: tuple[int, int, int],
         raise AnalysisError(f"{path}: shard/complete denominator differs")
     expected = ARMS[arm]
     shard = shards[0]
+    row_count = str(len(CONFIGS))
     checks = {
         "qtype": "12", "artifact_tile_k": str(expected["artifact"]),
-        "bchunk": "0", "typed_rows": "3", "selected_rows": "3",
+        "bchunk": "0", "typed_rows": row_count,
+        "selected_rows": row_count,
         "weight_layout": str(expected["weight_layout"]),
         "weight_mapping_id": expected["mapping"],
         "algorithm_mask": "0x2", "iterations": str(iterations),
@@ -70,7 +72,7 @@ def parse_log(path: pathlib.Path, arm: str, shape: tuple[int, int, int],
     complete = completes[0]
     if complete.get("status") != "COMPLETE" or \
             complete.get("shape") != shape_text or \
-            complete.get("typed_rows") != "3" or \
+            complete.get("typed_rows") != row_count or \
             complete.get("iterations") != str(iterations) or \
             complete.get("roundtrip") != "PASS":
         raise AnalysisError(f"{path}: SF_COMPLETE identity differs")
