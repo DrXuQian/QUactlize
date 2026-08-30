@@ -49,8 +49,11 @@ assert body.replace("PPU_PREPASS_IMAGE_ARM == 2", "PPU_PREPASS_IMAGE_ARM == 9") 
 assert body.replace("marker_launch.immediate == 0", "marker_launch.immediate != 0") != body
 bad_copy = 'cp "$configure_' + 'log" "$build_log"'
 assert bad_copy not in runner, "marker log must not be copied onto itself"
+bad_clean_env = 'env ' + '-i'
+assert bad_clean_env not in runner, "hgcc needs the box SDK/module environment; do not clear it wholesale"
+assert 'env -u CC -u CXX -u CMAKE_GENERATOR -u CMAKE_TOOLCHAIN_FILE' in runner
 assert 'RESUME=1 reusing' in runner
-print("[gguf-prepass-image:self-test] PASS four distinct objects, exact raw/packed symbols, inert guards, two negatives and resumable marker build")
+print("[gguf-prepass-image:self-test] PASS four distinct objects, exact raw/packed symbols, inert guards, inherited SDK environment, two negatives and resumable marker build")
 PY
 
 [ -x "$sdk_root/bin/hgcc" ] || fail "real PPU hgcc is absent; set PPU_SDK"
@@ -60,6 +63,8 @@ if [ "$resume" = 0 ]; then
 else
   [ -f "$out/build/CMakeCache.txt" ] || fail "RESUME=1 needs the configured build in $out/build"
   [ -s "$out/results/build-marker.log" ] || fail "RESUME=1 needs the completed marker build log"
+  [ "$(cat "$out/results/build-environment.mode" 2>/dev/null)" = inherit-sdk-module-v1 ] || \
+    fail "RESUME=1 refused an older env-cleared build; start a fresh OUT"
   authority_file="$out/build/.quactlize-source-head"
   [ -s "$authority_file" ] || fail "RESUME=1 artifact has no source authority"
   read -r authority <"$authority_file"
@@ -82,9 +87,7 @@ trap 'rc=$?; printf "[gguf-prepass-image] DONE rc=%d artifacts=%s\n" "$rc" "$out
 build="$out/build"
 configure_log="$out/results/build-marker.log"
 if [ "$resume" = 0 ]; then
-  env -i \
-    HOME="$HOME" USER="${USER:-root}" PATH="$PATH" \
-    LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" LANG="${LANG:-C.UTF-8}" \
+  env -u CC -u CXX -u CMAKE_GENERATOR -u CMAKE_TOOLCHAIN_FILE \
     PPU_SDK="$sdk_root" PPU_ARCHS=ppu0010 \
     PPU_BUILD_DIR="$build" TARGET=test_gguf_prepass_ppu_image_marker JOBS="$jobs" \
     CFLAGS= CXXFLAGS= CPPFLAGS= LDFLAGS= \
@@ -95,6 +98,7 @@ if [ "$resume" = 0 ]; then
       tail -40 "$configure_log" >&2
       fail "marker build failed"
     }
+  printf '%s\n' inherit-sdk-module-v1 >"$out/results/build-environment.mode"
 fi
 grep -qF '[build.sh] CUTLASS_PPU_ARCHS=ppu0010' "$configure_log" || fail "configured tree lost ppu0010"
 
