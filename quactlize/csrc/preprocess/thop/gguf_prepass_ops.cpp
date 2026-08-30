@@ -925,9 +925,12 @@ torch::Tensor gguf_grouped_fully_quantized_impl(
 
   torch::Tensor a16 = a.dtype() == torch::kFloat16 ? a : a.to(torch::kFloat16);
   torch::Tensor out = torch::empty({total, n}, torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCPU));
-  auto const* api = arrangement_v2
-      ? ppu_backend::load_format(packed_format_for_qtype(qtype))
-      : ppu_backend::load();
+  // Packed-scale tensor-core readers are format-selected even when the compatibility Xplane artifact travels
+  // through the legacy tuple ABI.  PPU_PACKED_FORMAT is a compile-time kernel identity, not an arrangement-v2
+  // property: loading the default library here made Q2/Q3/Q5/Q6 call the default Q4 specialization and return
+  // rc=33 before any grouped kernel ran.  The descriptor chooses the reader ABI below; qtype always chooses the
+  // binary that implements that reader.
+  auto const* api = ppu_backend::load_format(packed_format_for_qtype(qtype));
   TORCH_CHECK(api, "fully-quantized grouped requires a current hgcc libquactlize_ppu.so");
   if (arrangement_v2) {
     TORCH_CHECK(api->grouped_fully_quantized_for_arrangement_v2 &&

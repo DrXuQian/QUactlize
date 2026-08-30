@@ -32,6 +32,14 @@ int quactlize_ppu_gemv_lowbit(uint16_t const*, uint8_t const*, uint8_t const*,
   return L140_BACKEND_MARKER;
 }
 
+#if defined(L140_GROUPED_LEGACY)
+int quactlize_ppu_grouped_fully_quantized(
+    uint16_t const*, uint8_t const*, uint8_t const*, uint8_t const*,
+    int const*, uint16_t*, int, int, int, int, int) {
+  return L140_BACKEND_MARKER;
+}
+#endif
+
 int32_t quactlize_ppu_dense_fully_quantized_config_valid_for_arrangement_v1(
     int m, int n, int k, int group_size, int qtype,
     quactlize_ppu_placed_arrangement_v1 const* arrangement, char const*) {

@@ -222,6 +222,51 @@ def test_q4_kpack4_grouped_producer_reader_and_inverse_keep_one_descriptor(monke
             formats.QuantType.Q4_K, 1, torch.tensor([1], dtype=torch.int32))
 
 
+def test_legacy_grouped_xplane_reader_loads_the_qtype_selected_binary(tmp_path):
+    """Xplane's tuple ABI does not make its packed-scale kernel format-agnostic.
+
+    Q2/Q3/Q5/Q6 still use the legacy grouped wire, but each reader is compiled into its own PPU_PACKED_FORMAT
+    image.  Give the default image a failing grouped marker and FMT2 a successful one: this reaches the real
+    torch/dlopen seam and proves Q2 is dispatched by qtype rather than accidentally into the default Q4 image.
+    """
+    root = pathlib.Path(__file__).parents[1]
+    if not routes.has_op("gguf_grouped_fully_quantized"):
+        pytest.skip("the local extension is not built; setup.py build_ext enables this dlsym contract test")
+    fake = root / "dev" / "fold_derivation" / "l140_fake_ppu_backend.cpp"
+
+    def build(name, marker):
+        output = tmp_path / name
+        built = subprocess.run([
+            os.environ.get("CXX", "c++"), "-std=c++17", "-O2", "-shared", "-fPIC",
+            f"-I{root / 'quactlize' / 'include'}", f"-DL140_BACKEND_MARKER={marker}",
+            "-DL140_GROUPED_LEGACY=1", str(fake), "-o", str(output),
+        ], capture_output=True, text=True)
+        assert built.returncode == 0, built.stdout + built.stderr
+        return output
+
+    default = build("default.so", 140)
+    q2 = build("fmt2.so", 0)
+    code = r'''
+import torch
+from quactlize import formats, routes
+
+artifact = (
+    torch.zeros((1, 256, 128), dtype=torch.uint8),
+    torch.empty((0,), dtype=torch.uint8),
+    torch.zeros((1, 2, 256, 20), dtype=torch.uint8),
+)
+out = routes.matmul_fully_quantized_grouped(
+    torch.zeros((1, 512), dtype=torch.float16), artifact,
+    formats.QuantType.Q2_K, torch.tensor([1], dtype=torch.int32))
+assert tuple(out.shape) == (1, 256)
+print("legacy-grouped-xplane qtype-selected-format=PASS")
+'''
+    env = dict(os.environ, QUACTLIZE_PPU_LIB=str(default), QUACTLIZE_PPU_LIB_FMT2=str(q2))
+    run = subprocess.run([sys.executable, "-c", code], cwd=root, env=env, capture_output=True, text=True)
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "qtype-selected-format=PASS" in run.stdout
+
+
 def test_q4_kpack4_scalefirst_view_reuses_the_v2_bytes_and_hoisted_metadata(monkeypatch):
     calls = []
     arrangement = formats.q4_kpack4_arrangement()
