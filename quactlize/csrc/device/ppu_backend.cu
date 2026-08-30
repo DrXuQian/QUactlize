@@ -245,18 +245,28 @@ int prepass(uint8_t const* blocks, uint16_t const* d, uint16_t const* dmin,
 template <KType T>
 __global__ void prepass_unit_ladder_kernel(
     uint8_t const* units, uint16_t* coverage, uint16_t* header,
-    uint16_t* code, uint16_t* product,
+    uint16_t* code, uint16_t* product, uint16_t* meta,
     int num_experts, int num_cols, int num_superblocks) {
   using U = gguf_scale::packed_unit::Unit<T>;
-  int64_t const tid = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
-  int64_t const per_expert = int64_t(num_superblocks) * num_cols;
-  int64_t const total = int64_t(num_experts) * per_expert;
+  int const tid = blockIdx.x * blockDim.x + threadIdx.x;
+  int const per_expert = num_superblocks * num_cols;
+  int const total = num_experts * per_expert;
+  if (blockIdx.x == 0 && threadIdx.x == 0) {
+    meta[0] = 0x3c00u;
+    meta[1] = uint16_t(num_experts);
+    meta[2] = uint16_t(num_cols);
+    meta[3] = uint16_t(num_superblocks);
+    meta[4] = uint16_t(blockDim.x);
+    meta[5] = uint16_t(gridDim.x);
+    meta[6] = uint16_t(tid >= total);
+    meta[7] = uint16_t(total);
+  }
   if (tid >= total) return;
 
-  int const e = int(tid / per_expert);
-  int64_t const in_expert = tid - int64_t(e) * per_expert;
-  int const sb = int(in_expert / num_cols);
-  int const n = int(in_expert - int64_t(sb) * num_cols);
+  int const e = tid / per_expert;
+  int const in_expert = tid - e * per_expert;
+  int const sb = in_expert / num_cols;
+  int const n = in_expert - sb * num_cols;
   int const num_units = num_superblocks / U::kSbPerUnit;
   int const unit = sb / U::kSbPerUnit;
   int const sb_in_unit = sb % U::kSbPerUnit;
@@ -276,6 +286,13 @@ __global__ void prepass_unit_ladder_kernel(
   }
 }
 
+// If this marker remains poisoned, the problem precedes every packed-unit expression: the PPU did not execute even
+// a non-template one-pointer kernel from this translation unit.  It is intentionally separate from the ladder so a
+// template instantiation/argument-ABI problem cannot erase the control together with the subject.
+__global__ void prepass_unit_bootstrap_kernel(uint16_t* meta) {
+  if (blockIdx.x == 0 && threadIdx.x == 0) meta[8] = 0x3c00u;
+}
+
 template <KType T>
 bool run_prepass_unit_ladder(uint8_t const* host_units, DevBuf const& device_units,
                              int experts, int n, int num_superblocks) {
@@ -285,21 +302,25 @@ bool run_prepass_unit_ladder(uint8_t const* host_units, DevBuf const& device_uni
   size_t const count = size_t(count64);
   size_t const bytes = count * sizeof(uint16_t);
   std::vector<uint16_t> poison(count, uint16_t(0x7bff));
-  DevBuf dc(bytes), dh(bytes), dk(bytes), dp(bytes);
+  std::vector<uint16_t> meta_poison(9, uint16_t(0x7bff));
+  DevBuf dc(bytes), dh(bytes), dk(bytes), dp(bytes), dm(meta_poison.size() * sizeof(uint16_t));
   dc.from_host(poison.data()); dh.from_host(poison.data());
   dk.from_host(poison.data()); dp.from_host(poison.data());
+  dm.from_host(meta_poison.data());
   if (!ppu_gemv::rt_ok()) return false;
 
   int const grid = gguf_scale::prepass::prepass_unit_serial_grid_size(experts, n, num_superblocks, 256);
+  prepass_unit_bootstrap_kernel<<<1, 32>>>(dm.as<uint16_t>());
   prepass_unit_ladder_kernel<T><<<grid, 256>>>(
       device_units.as<uint8_t>(), dc.as<uint16_t>(), dh.as<uint16_t>(),
-      dk.as<uint16_t>(), dp.as<uint16_t>(), experts, n, num_superblocks);
+      dk.as<uint16_t>(), dp.as<uint16_t>(), dm.as<uint16_t>(), experts, n, num_superblocks);
   ppu_gemv::rt_sync("packed-unit prefix ladder");
   if (!ppu_gemv::rt_ok()) return false;
 
-  std::vector<uint16_t> got_c(count), got_h(count), got_k(count), got_p(count);
+  std::vector<uint16_t> got_c(count), got_h(count), got_k(count), got_p(count), got_m(9);
   if (!dc.to_host(got_c.data()) || !dh.to_host(got_h.data()) ||
-      !dk.to_host(got_k.data()) || !dp.to_host(got_p.data()) || !ppu_gemv::rt_ok()) return false;
+      !dk.to_host(got_k.data()) || !dp.to_host(got_p.data()) || !dm.to_host(got_m.data()) ||
+      !ppu_gemv::rt_ok()) return false;
 
   size_t bad_c = 0, bad_h = 0, bad_k = 0, bad_p = 0;
   size_t sentinel_c = 0, sentinel_h = 0, sentinel_k = 0, sentinel_p = 0;
@@ -339,11 +360,16 @@ bool run_prepass_unit_ladder(uint8_t const* host_units, DevBuf const& device_uni
   std::fprintf(stderr,
       "FQ_PACKED_UNIT_PREPASS_LADDER qtype=%d cells=%zu grid=%d "
       "coverage_bad=%zu header_bad=%zu code_bad=%zu product_bad=%zu "
-      "sentinel=[%zu,%zu,%zu,%zu] first=[e%d,sb%d,n%d,g%d,want=0x%04x,got=0x%04x]\n",
+      "sentinel=[%zu,%zu,%zu,%zu] "
+      "meta=[0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,0x%04x] "
+      "first=[e%d,sb%d,n%d,g%d,want=0x%04x,got=0x%04x]\n",
       T == KType::Q2_K ? 10 : T == KType::Q3_K ? 11 : T == KType::Q4_K ? 12 :
       T == KType::Q5_K ? 13 : 14,
       count, grid, bad_c, bad_h, bad_k, bad_p,
       sentinel_c, sentinel_h, sentinel_k, sentinel_p,
+      unsigned(got_m[0]), unsigned(got_m[1]), unsigned(got_m[2]),
+      unsigned(got_m[3]), unsigned(got_m[4]), unsigned(got_m[5]),
+      unsigned(got_m[6]), unsigned(got_m[7]), unsigned(got_m[8]),
       first_e, first_sb, first_n, first_g, unsigned(first_want), unsigned(first_got));
   return true;
 }

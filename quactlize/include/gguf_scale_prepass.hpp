@@ -350,15 +350,18 @@ template <KType T, int ZMul>
 __global__ void prepass_unit_kernel_serial(uint8_t const* units, UnitPlaneDesc dst,
                                            int num_experts, int num_cols, int num_superblocks) {
   using U = packed_unit::Unit<T>;
-  int64_t const tid = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
-  int64_t const per_expert = int64_t(num_superblocks) * num_cols;
-  int64_t const total = int64_t(num_experts) * per_expert;
+  // This counterfactual is intentionally int32.  PPU's host launch accepts int64 address arithmetic, but using a
+  // 64-bit divide in the thread-ownership guard made an unwritten destination indistinguishable from a bad unit
+  // decode.  Production probe shapes are far below INT_MAX; keep int64 only in byte/destination offsets below.
+  int const tid = blockIdx.x * blockDim.x + threadIdx.x;
+  int const per_expert = num_superblocks * num_cols;
+  int const total = num_experts * per_expert;
   if (tid >= total) return;
 
-  int const e = int(tid / per_expert);
-  int64_t const in_expert = tid - int64_t(e) * per_expert;
-  int const sb = int(in_expert / num_cols);
-  int const n = int(in_expert - int64_t(sb) * num_cols);
+  int const e = tid / per_expert;
+  int const in_expert = tid - e * per_expert;
+  int const sb = in_expert / num_cols;
+  int const n = in_expert - sb * num_cols;
   int const num_units = num_superblocks / U::kSbPerUnit;
   int const unit = sb / U::kSbPerUnit;
   int const sb_in_unit = sb % U::kSbPerUnit;

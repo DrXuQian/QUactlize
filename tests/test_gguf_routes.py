@@ -540,7 +540,12 @@ def test_packed_unit_scale_derivation_matches_the_scale_first_planes(name, gt, h
         pytest.skip("the packed-unit scale derivation is not in this build yet (INBOX 016)")
     _require_packed_format(qtype, name)
 
-    n, k = 256, 512
+    # The default remains the compact compatibility oracle.  The production
+    # prepass runner may bind a real model family without cloning this test;
+    # both dimensions stay on the artifact's 256-element ABI boundary.
+    n = int(os.environ.get("QUACTLIZE_PREPASS_TEST_N", "256"))
+    k = int(os.environ.get("QUACTLIZE_PREPASS_TEST_K", "512"))
+    assert n > 0 and n % 256 == 0 and k > 0 and k % 256 == 0, (n, k)
     rng = np.random.default_rng(31000 + qtype)
     raw = _raw_blocks(gt, hdr, n * (k // 256), rng)
     blocks = torch.from_numpy(raw)

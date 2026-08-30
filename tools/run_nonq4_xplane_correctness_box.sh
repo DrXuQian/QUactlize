@@ -20,6 +20,12 @@ resume="${RESUME:-0}"
 formats="${FORMATS:-Q2_K Q3_K Q5_K Q6_K}"
 prepass_arm="${PREPASS_ARM:-cooperative}"
 scope="${SCOPE:-full}"
+# The broad compatibility board historically enables every packed-scale
+# specialization.  A prepass-only production-isomorphism check can instead
+# name the model-format build, e.g. QUACTLIZE_DENSE_ONLY=10 for Q2_K.
+base_defs="${BASE_DEFS:-PPU_PACKED_SCALE=1}"
+prepass_n="${PREPASS_N:-256}"
+prepass_k="${PREPASS_K:-512}"
 sdk_root="${PPU_SDK:-${PPU_HOME:-${PPU_SDK_SITE_DEFAULT:-}}}"
 sha="$(git rev-parse HEAD)"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -43,6 +49,12 @@ case "$scope" in
   full|prepass) ;;
   *) fail "SCOPE must be full or prepass, got $scope" ;;
 esac
+if [ "$scope" = prepass ]; then
+  [[ "$prepass_n" =~ ^[1-9][0-9]*$ ]] && ((prepass_n % 256 == 0)) || \
+    fail "PREPASS_N must be a positive multiple of 256, got $prepass_n"
+  [[ "$prepass_k" =~ ^[1-9][0-9]*$ ]] && ((prepass_k % 256 == 0)) || \
+    fail "PREPASS_K must be a positive multiple of 256, got $prepass_k"
+fi
 
 if [ "$resume" -eq 0 ] && [ -e "$out" ]; then
   fail "OUT already exists; choose a fresh path or use RESUME=1: $out"
@@ -154,8 +166,10 @@ if [ "$resume" -eq 1 ] && [ "$scope" = prepass ] && [ "$prepass_arm" = ladder ];
 fi
 
 # The base has packed-unit support but deliberately has no selected
-# PPU_PACKED_FORMAT.  It remains the independent producer/oracle arm.
-build_device base "PPU_PACKED_SCALE=1 $prepass_defs"
+# PPU_PACKED_FORMAT.  It remains the independent producer/oracle arm.  Keep
+# its production build identity caller-selectable for the prepass isolate;
+# the default preserves the complete compatibility board.
+build_device base "$base_defs $prepass_defs"
 base_so="$(cat "$out/results/base.so.path")"
 base_make="$(find "$out/build-base" -path '*quactlize_ppu.dir/build.make' -print -quit)"
 ! grep -qE -- '(^|[[:space:]])-DPPU_PACKED_FORMAT(=|[[:space:]])' "$base_make" || \
@@ -165,6 +179,13 @@ format_spec() {
   case "$1" in
     Q2_K) printf '10 2\n' ;;
     Q3_K) printf '11 3\n' ;;
+    # Q4_K remains outside this runner's product denominator.  It is admitted
+    # only as the same-binary/same-shape packed-unit prepass control: SCOPE=prepass
+    # does not build or invoke a format-selected tensor-core reader.
+    Q4_K)
+      [ "$scope" = prepass ] || fail "Q4_K is only a prepass control in the non-Q4 runner"
+      printf '12 0\n'
+      ;;
     Q5_K) printf '13 1\n' ;;
     Q6_K) printf '14 4\n' ;;
     *) fail "unknown non-Q4 format $1" ;;
@@ -204,6 +225,9 @@ for label in $formats; do
   for oracle in "${oracle_nodes[@]}"; do
     oracle_log="$out/results/$label.$oracle.log"
     oracle_env=(QUACTLIZE_PPU_LIB="$base_so" QUACTLIZE_PACKED_FORMAT="$qtype" PYTHONPATH="$root")
+    if [ "$scope" = prepass ]; then
+      oracle_env+=("QUACTLIZE_PREPASS_TEST_N=$prepass_n" "QUACTLIZE_PREPASS_TEST_K=$prepass_k")
+    fi
     if [ "$scope" = full ]; then
       oracle_env+=("QUACTLIZE_PPU_LIB_FMT${fmt}=$format_so")
     fi
@@ -223,8 +247,8 @@ for label in $formats; do
   done
   expected="${#oracle_nodes[@]}"
   [ "$passed" -eq "$expected" ] || fail "$label ran $passed/$expected isolated oracles"
-  printf 'NONQ4_XPLANE format=%s verdict=PASS tests=%s scope=%s prepass_arm=%s\n' \
-    "$label" "$expected" "$scope" "$prepass_arm"
+  printf 'NONQ4_XPLANE format=%s verdict=PASS tests=%s scope=%s prepass_arm=%s N=%s K=%s base_defs=%s\n' \
+    "$label" "$expected" "$scope" "$prepass_arm" "$prepass_n" "$prepass_k" "${base_defs// /,}"
 done
 
 printf 'NONQ4_XPLANE_ALL verdict=PASS formats=%s\n' "${formats// /,}"
