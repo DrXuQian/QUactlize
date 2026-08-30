@@ -236,6 +236,119 @@ int prepass(uint8_t const* blocks, uint16_t const* d, uint16_t const* dmin,
   return ppu_gemv::rt_copy_two_outputs(ds, scale, dz, zero, size_t(count) * Tr::kGroups);
 }
 
+#if defined(PPU_PACKED_UNIT_PREPASS_PROBE) && PPU_PACKED_UNIT_PREPASS_PROBE
+// ONE LAUNCH, FOUR PREFIXES.  This is deliberately raw uint16_t output: coverage and source-byte checks must not
+// inherit half conversion or half store lowering from the operation they are adjudicating.  The four columns answer
+// in order whether the kernel covered its destination, read the unit header, decoded the CuTe-addressed scale code,
+// and completed the fp16 scale arithmetic.  Keeping them in one kernel/binary prevents another round trip from
+// changing code generation between questions.
+template <KType T>
+__global__ void prepass_unit_ladder_kernel(
+    uint8_t const* units, uint16_t* coverage, uint16_t* header,
+    uint16_t* code, uint16_t* product,
+    int num_experts, int num_cols, int num_superblocks) {
+  using U = gguf_scale::packed_unit::Unit<T>;
+  int64_t const tid = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+  int64_t const per_expert = int64_t(num_superblocks) * num_cols;
+  int64_t const total = int64_t(num_experts) * per_expert;
+  if (tid >= total) return;
+
+  int const e = int(tid / per_expert);
+  int64_t const in_expert = tid - int64_t(e) * per_expert;
+  int const sb = int(in_expert / num_cols);
+  int const n = int(in_expert - int64_t(sb) * num_cols);
+  int const num_units = num_superblocks / U::kSbPerUnit;
+  int const unit = sb / U::kSbPerUnit;
+  int const sb_in_unit = sb % U::kSbPerUnit;
+  uint8_t const* src = units +
+      ((int64_t(e) * num_units + unit) * num_cols + n) * U::kUnitTotal
+      + sb_in_unit * U::kSbBytes;
+  uint16_t const d_bits = uint16_t(src[0]) | uint16_t(uint16_t(src[1]) << 8);
+
+  CUTLASS_PRAGMA_UNROLL
+  for (int g = 0; g < U::kGroups; ++g) {
+    int64_t const o = int64_t(e) * num_superblocks * U::kGroups * num_cols
+                    + (int64_t(sb) * U::kGroups + g) * num_cols + n;
+    coverage[o] = 0x3c00u;
+    header[o] = d_bits;
+    code[o] = uint16_t(0x5000u | gguf_scale::packed_unit::code_of<T>(src, g, 0));
+    product[o] = gguf_scale::packed_unit::unit_group<T, 0>(src, g).scale.raw();
+  }
+}
+
+template <KType T>
+bool run_prepass_unit_ladder(uint8_t const* host_units, DevBuf const& device_units,
+                             int experts, int n, int num_superblocks) {
+  using U = gguf_scale::packed_unit::Unit<T>;
+  int const num_units = num_superblocks / U::kSbPerUnit;
+  int64_t const count64 = int64_t(experts) * num_superblocks * U::kGroups * n;
+  size_t const count = size_t(count64);
+  size_t const bytes = count * sizeof(uint16_t);
+  std::vector<uint16_t> poison(count, uint16_t(0x7bff));
+  DevBuf dc(bytes), dh(bytes), dk(bytes), dp(bytes);
+  dc.from_host(poison.data()); dh.from_host(poison.data());
+  dk.from_host(poison.data()); dp.from_host(poison.data());
+  if (!ppu_gemv::rt_ok()) return false;
+
+  int const grid = gguf_scale::prepass::prepass_unit_serial_grid_size(experts, n, num_superblocks, 256);
+  prepass_unit_ladder_kernel<T><<<grid, 256>>>(
+      device_units.as<uint8_t>(), dc.as<uint16_t>(), dh.as<uint16_t>(),
+      dk.as<uint16_t>(), dp.as<uint16_t>(), experts, n, num_superblocks);
+  ppu_gemv::rt_sync("packed-unit prefix ladder");
+  if (!ppu_gemv::rt_ok()) return false;
+
+  std::vector<uint16_t> got_c(count), got_h(count), got_k(count), got_p(count);
+  if (!dc.to_host(got_c.data()) || !dh.to_host(got_h.data()) ||
+      !dk.to_host(got_k.data()) || !dp.to_host(got_p.data()) || !ppu_gemv::rt_ok()) return false;
+
+  size_t bad_c = 0, bad_h = 0, bad_k = 0, bad_p = 0;
+  size_t sentinel_c = 0, sentinel_h = 0, sentinel_k = 0, sentinel_p = 0;
+  int first_e = -1, first_sb = -1, first_n = -1, first_g = -1;
+  uint16_t first_want = 0, first_got = 0;
+  for (int e = 0; e < experts; ++e) {
+    for (int sb = 0; sb < num_superblocks; ++sb) {
+      int const unit = sb / U::kSbPerUnit;
+      int const sb_in_unit = sb % U::kSbPerUnit;
+      for (int col = 0; col < n; ++col) {
+        uint8_t const* src = host_units +
+            ((int64_t(e) * num_units + unit) * n + col) * U::kUnitTotal
+            + sb_in_unit * U::kSbBytes;
+        uint16_t const want_h = uint16_t(src[0]) | uint16_t(uint16_t(src[1]) << 8);
+        for (int g = 0; g < U::kGroups; ++g) {
+          size_t const o = size_t(int64_t(e) * num_superblocks * U::kGroups * n
+                           + (int64_t(sb) * U::kGroups + g) * n + col);
+          uint16_t const want_k = uint16_t(0x5000u | gguf_scale::packed_unit::code_of<T>(src, g, 0));
+          uint16_t const want_p = gguf_scale::packed_unit::unit_group<T, 0>(src, g).scale.raw();
+          bad_c += got_c[o] != uint16_t(0x3c00);
+          bad_h += got_h[o] != want_h;
+          bad_k += got_k[o] != want_k;
+          bool const product_bad = got_p[o] != want_p;
+          bad_p += product_bad;
+          sentinel_c += got_c[o] == uint16_t(0x7bff);
+          sentinel_h += got_h[o] == uint16_t(0x7bff);
+          sentinel_k += got_k[o] == uint16_t(0x7bff);
+          sentinel_p += got_p[o] == uint16_t(0x7bff);
+          if (product_bad && first_e < 0) {
+            first_e = e; first_sb = sb; first_n = col; first_g = g;
+            first_want = want_p; first_got = got_p[o];
+          }
+        }
+      }
+    }
+  }
+  std::fprintf(stderr,
+      "FQ_PACKED_UNIT_PREPASS_LADDER qtype=%d cells=%zu grid=%d "
+      "coverage_bad=%zu header_bad=%zu code_bad=%zu product_bad=%zu "
+      "sentinel=[%zu,%zu,%zu,%zu] first=[e%d,sb%d,n%d,g%d,want=0x%04x,got=0x%04x]\n",
+      T == KType::Q2_K ? 10 : T == KType::Q3_K ? 11 : T == KType::Q4_K ? 12 :
+      T == KType::Q5_K ? 13 : 14,
+      count, grid, bad_c, bad_h, bad_k, bad_p,
+      sentinel_c, sentinel_h, sentinel_k, sentinel_p,
+      first_e, first_sb, first_n, first_g, unsigned(first_want), unsigned(first_got));
+  return true;
+}
+#endif
+
 template <KType T, int ZMul>
 int prepass_unit(uint8_t const* units, uint16_t* scale, uint16_t* zero,
                  int n, int k, int experts) {
@@ -249,6 +362,10 @@ int prepass_unit(uint8_t const* units, uint16_t* scale, uint16_t* zero,
   DevBuf du(unit_bytes), ds(size_t(plane_elems) * 2), dz(size_t(plane_elems) * 2);
   du.from_host(units);
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
+#if defined(PPU_PACKED_UNIT_PREPASS_PROBE) && PPU_PACKED_UNIT_PREPASS_PROBE
+  if (!run_prepass_unit_ladder<T>(units, du, experts, n, num_superblocks))
+    return ppu_gemv::kRuntimeError;
+#endif
   int64_t const expert_stride = int64_t(num_superblocks) * U::kGroups * n;
   gguf_scale::prepass::UnitPlaneDesc dst{
       ds.as<cutlass::half_t>(), dz.as<cutlass::half_t>(), expert_stride, n, 1};

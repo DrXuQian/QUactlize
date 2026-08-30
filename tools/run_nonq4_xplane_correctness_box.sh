@@ -37,7 +37,8 @@ esac
 case "$prepass_arm" in
   cooperative) prepass_defs='' ;;
   serial) prepass_defs='PPU_PACKED_UNIT_PREPASS_SERIAL=1' ;;
-  *) fail "PREPASS_ARM must be cooperative or serial, got $prepass_arm" ;;
+  ladder) prepass_defs='PPU_PACKED_UNIT_PREPASS_SERIAL=1 PPU_PACKED_UNIT_PREPASS_PROBE=1' ;;
+  *) fail "PREPASS_ARM must be cooperative, serial or ladder, got $prepass_arm" ;;
 esac
 case "$scope" in
   full|prepass) ;;
@@ -182,6 +183,7 @@ for label in $formats; do
         python3 -m pytest -q -rs -s tests/test_gguf_routes.py \
           -m fully_quantized_dense -k "$label and $oracle" >"$oracle_log" 2>&1; then
       printf 'NONQ4_XPLANE_ORACLE format=%s oracle=%s verdict=FAIL\n' "$label" "$oracle" | tee -a "$test_log"
+      grep -E '^FQ_PACKED_UNIT_PREPASS_LADDER ' "$oracle_log" >&2 || true
       tail -80 "$oracle_log" >&2
       fail "$label oracle $oracle failed"
     fi
