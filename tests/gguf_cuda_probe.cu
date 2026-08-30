@@ -113,9 +113,10 @@ void launch_prepass(PrepassDevice<T> const& q, int cols, int superblocks) {
 #endif
   constexpr int kThreads = GGUF_PROBE_THREADS;
   if constexpr (Cooperative) {
-    int const grid = gguf_scale::prepass::prepass_grid_size(cols, superblocks, kThreads);
-    gguf_scale::prepass::prepass_kernel<T, 8><<<grid, kThreads>>>(
+    auto const args = gguf_scale::prepass::make_prepass_kernel_args(
         q.src(superblocks), q.dst(superblocks), cols, superblocks);
+    int const grid = gguf_scale::prepass::prepass_grid_size(cols, superblocks, kThreads);
+    gguf_scale::prepass::prepass_kernel<T, 8><<<grid, kThreads>>>(args);
   } else {
     int const total = cols * superblocks;
     gguf_scale::prepass::prepass_kernel_serial<T, 8><<<(total + kThreads - 1) / kThreads, kThreads>>>(

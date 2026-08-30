@@ -229,8 +229,9 @@ int prepass(uint8_t const* blocks, uint16_t const* d, uint16_t const* dmin,
   gguf_scale::prepass::BlockDesc src{db.as<uint8_t>(), dd.as<cutlass::half_t>(),
       Tr::kHasMin ? dm.as<cutlass::half_t>() : nullptr, Tr::kBlockBytes, 0, 1, 0};
   gguf_scale::prepass::PlaneDesc dst{ds.as<cutlass::half_t>(), dz.as<cutlass::half_t>(), Tr::kGroups, 1};
+  auto const args = gguf_scale::prepass::make_prepass_kernel_args(src, dst, count, 1);
   int const grid = gguf_scale::prepass::prepass_grid_size(count, 1, 256);
-  gguf_scale::prepass::prepass_kernel<T, ZMul><<<grid, 256>>>(src, dst, count, 1);
+  gguf_scale::prepass::prepass_kernel<T, ZMul><<<grid, 256>>>(args);
   ppu_gemv::rt_sync("GGUF scale prepass");
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
   return ppu_gemv::rt_copy_two_outputs(ds, scale, dz, zero, size_t(count) * Tr::kGroups);
@@ -400,9 +401,10 @@ int prepass_unit(uint8_t const* units, uint16_t* scale, uint16_t* zero,
   gguf_scale::prepass::prepass_unit_kernel_serial<T, ZMul><<<grid, 256>>>(
       du.as<uint8_t>(), dst, experts, n, num_superblocks);
 #else
-  int const grid = gguf_scale::prepass::prepass_unit_grid_size<T>(experts, n, num_superblocks, 256);
-  gguf_scale::prepass::prepass_unit_kernel<T, ZMul><<<grid, 256>>>(
+  auto const args = gguf_scale::prepass::make_unit_prepass_kernel_args(
       du.as<uint8_t>(), dst, experts, n, num_superblocks);
+  int const grid = gguf_scale::prepass::prepass_unit_grid_size<T>(experts, n, num_superblocks, 256);
+  gguf_scale::prepass::prepass_unit_kernel<T, ZMul><<<grid, 256>>>(args);
 #endif
   ppu_gemv::rt_sync("packed-unit scale prepass");
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
