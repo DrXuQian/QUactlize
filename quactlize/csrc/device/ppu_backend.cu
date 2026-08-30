@@ -253,7 +253,7 @@ int prepass_unit(uint8_t const* units, uint16_t* scale, uint16_t* zero,
   gguf_scale::prepass::UnitPlaneDesc dst{
       ds.as<cutlass::half_t>(), dz.as<cutlass::half_t>(), expert_stride, n, 1};
 #if defined(PPU_PACKED_UNIT_PREPASS_SERIAL) && PPU_PACKED_UNIT_PREPASS_SERIAL
-  int const grid = gguf_scale::prepass::prepass_unit_serial_grid_size<T>(experts, n, num_superblocks, 256);
+  int const grid = gguf_scale::prepass::prepass_unit_serial_grid_size(experts, n, num_superblocks, 256);
   gguf_scale::prepass::prepass_unit_kernel_serial<T, ZMul><<<grid, 256>>>(
       du.as<uint8_t>(), dst, experts, n, num_superblocks);
 #else

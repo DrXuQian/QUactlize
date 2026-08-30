@@ -87,6 +87,9 @@ build_device() {
     PPU_DEFS="$defs" TARGET=quactlize_ppu JOBS="$jobs" \
     CFLAGS= CXXFLAGS= CPPFLAGS= LDFLAGS= \
     "$root/build.sh" >"$log" 2>&1 || {
+      grep -n -B4 -A8 -E \
+        'error:|fatal error:|undefined reference|ld\.lld:|LLVM ERROR|Killed|timed out|Segmentation|PLEASE submit' \
+        "$log" | head -120 >&2 || true
       tail -40 "$log" >&2
       fail "$label device build failed"
     }
