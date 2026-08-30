@@ -57,6 +57,17 @@ if [ "$scope" = prepass ]; then
     fail "PREPASS_K must be a positive multiple of 256, got $prepass_k"
 fi
 
+python3 - <<'PY'
+from pathlib import Path
+
+runner = Path("tools/run_nonq4_xplane_correctness_box.sh").read_text()
+bad_clean_env = "env " + "-i"
+assert bad_clean_env not in runner, "device builds must retain the box SDK/module environment"
+assert "env -u CC -u CXX -u CMAKE_GENERATOR -u CMAKE_TOOLCHAIN_FILE" in runner
+assert "inherit-sdk-module-v1" in runner
+print("[nonq4-xplane:environment] PASS inherited SDK/module environment and fail-closed resume identity")
+PY
+
 if [ "$prepass_arm" = ladder ]; then
   python3 - <<'PY'
 from pathlib import Path
@@ -179,9 +190,13 @@ build_device() {
   local build_make so
 
   printf '[nonq4-xplane] build label=%s defs=%s\n' "$label" "$defs"
-  env -i \
-    HOME="$HOME" USER="${USER:-root}" PATH="$PATH" \
-    LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" LANG="${LANG:-C.UTF-8}" \
+  if [ "$resume" = 1 ]; then
+    [ "$(cat "$out/results/$label.build-environment.mode" 2>/dev/null)" = inherit-sdk-module-v1 ] || \
+      fail "$label resume refused an older env-cleared build; use a fresh OUT"
+  fi
+  # hgcc/UMD consumes SDK/module-owned environment in addition to the explicit compiler path and -arch flag.
+  # Clearing it made a one-store marker, both prepasses and an established control all report InvalidKernelImage.
+  env -u CC -u CXX -u CMAKE_GENERATOR -u CMAKE_TOOLCHAIN_FILE \
     PPU_SDK="$sdk_root" PPU_ARCHS=ppu0010 \
     PPU_BUILD_DIR="$build" PPU_BUILD_RESUME="$resume" \
     PPU_DEFS="$defs" TARGET=quactlize_ppu JOBS="$jobs" \
@@ -193,6 +208,7 @@ build_device() {
       tail -40 "$log" >&2
       fail "$label device build failed"
     }
+  printf '%s\n' inherit-sdk-module-v1 >"$out/results/$label.build-environment.mode"
 
   grep -qF '[build.sh] CUTLASS_PPU_ARCHS=ppu0010' "$log" || \
     fail "$label did not bind ppu0010"
