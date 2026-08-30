@@ -10,6 +10,12 @@ sdk_root="${PPU_SDK:-${PPU_HOME:-${PPU_SDK_SITE_DEFAULT:-}}}"
 sha="$(git rev-parse HEAD)"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 out="${OUT:-/workspace/quactlize-gguf-prepass-image-${sha:0:8}-${stamp}}"
+resume="${RESUME:-0}"
+
+case "$resume" in
+  0|1) ;;
+  *) printf '[gguf-prepass-image] FAIL: RESUME must be 0 or 1, got %q\n' "$resume" >&2; exit 2 ;;
+esac
 
 fail() {
   printf '[gguf-prepass-image] FAIL: %s\n' "$*" >&2
@@ -21,6 +27,7 @@ from pathlib import Path
 
 body = Path("tests/gguf_prepass_ppu_image_arm.inc").read_text()
 cmake = Path("quactlize/csrc/CMakeLists.txt.in").read_text()
+runner = Path("tools/run_gguf_prepass_ppu_image_ladder_box.sh").read_text()
 for arm, value in (("marker", 0), ("header", 1), ("raw", 2), ("packed", 3)):
     wrapper = Path(f"tests/test_gguf_prepass_ppu_image_{arm}.cu").read_text()
     assert wrapper == (f'#define PPU_PREPASS_IMAGE_ARM {value}\n'
@@ -40,37 +47,62 @@ assert "if (n >= args.num_cols) return;" in production
 assert "if (e >= args.num_experts) return;" in production
 assert body.replace("PPU_PREPASS_IMAGE_ARM == 2", "PPU_PREPASS_IMAGE_ARM == 9") != body
 assert body.replace("marker_launch.immediate == 0", "marker_launch.immediate != 0") != body
-print("[gguf-prepass-image:self-test] PASS four distinct objects, exact raw/packed symbols, inert guards and two negatives")
+bad_copy = 'cp "$configure_' + 'log" "$build_log"'
+assert bad_copy not in runner, "marker log must not be copied onto itself"
+assert 'RESUME=1 reusing' in runner
+print("[gguf-prepass-image:self-test] PASS four distinct objects, exact raw/packed symbols, inert guards, two negatives and resumable marker build")
 PY
 
 [ -x "$sdk_root/bin/hgcc" ] || fail "real PPU hgcc is absent; set PPU_SDK"
 [ -x "$sdk_root/bin/hgobjdump" ] || fail "real PPU hgobjdump is absent; set PPU_SDK"
-[ ! -e "$out" ] || fail "OUT already exists: $out"
+if [ "$resume" = 0 ]; then
+  [ ! -e "$out" ] || fail "OUT already exists: $out"
+else
+  [ -f "$out/build/CMakeCache.txt" ] || fail "RESUME=1 needs the configured build in $out/build"
+  [ -s "$out/results/build-marker.log" ] || fail "RESUME=1 needs the completed marker build log"
+  authority_file="$out/build/.quactlize-source-head"
+  [ -s "$authority_file" ] || fail "RESUME=1 artifact has no source authority"
+  read -r authority <"$authority_file"
+  git cat-file -e "${authority}^{commit}" 2>/dev/null || fail "RESUME=1 source authority is not in this checkout"
+  # The resume commit may differ only by this runner fix. hgcc custom rules have no header depfiles, so explicitly
+  # prove every CMake/device input to the four arms is byte-identical before reusing even one object.
+  git diff --quiet "$authority" HEAD -- \
+    quactlize/csrc/CMakeLists.txt.in \
+    tests/gguf_prepass_ppu_image_arm.inc \
+    tests/test_gguf_prepass_ppu_image_marker.cu \
+    tests/test_gguf_prepass_ppu_image_header.cu \
+    tests/test_gguf_prepass_ppu_image_raw.cu \
+    tests/test_gguf_prepass_ppu_image_packed.cu || \
+    fail "RESUME=1 refused changed CMake/device inputs since $authority"
+  printf '[gguf-prepass-image] RESUME=1 reusing marker build authority=%s artifacts=%s\n' "$authority" "$out"
+fi
 mkdir -p "$out/results"
 trap 'rc=$?; printf "[gguf-prepass-image] DONE rc=%d artifacts=%s\n" "$rc" "$out"' EXIT
 
 build="$out/build"
 configure_log="$out/results/build-marker.log"
-env -i \
-  HOME="$HOME" USER="${USER:-root}" PATH="$PATH" \
-  LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" LANG="${LANG:-C.UTF-8}" \
-  PPU_SDK="$sdk_root" PPU_ARCHS=ppu0010 \
-  PPU_BUILD_DIR="$build" TARGET=test_gguf_prepass_ppu_image_marker JOBS="$jobs" \
-  CFLAGS= CXXFLAGS= CPPFLAGS= LDFLAGS= \
-  "$root/build.sh" >"$configure_log" 2>&1 || {
-    grep -n -B5 -A10 -E \
-      'error:|fatal error:|undefined reference|ld\.lld:|LLVM ERROR|Killed|timed out|Segmentation|PLEASE submit' \
-      "$configure_log" | head -120 >&2 || true
-    tail -40 "$configure_log" >&2
-    fail "marker build failed"
-  }
+if [ "$resume" = 0 ]; then
+  env -i \
+    HOME="$HOME" USER="${USER:-root}" PATH="$PATH" \
+    LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" LANG="${LANG:-C.UTF-8}" \
+    PPU_SDK="$sdk_root" PPU_ARCHS=ppu0010 \
+    PPU_BUILD_DIR="$build" TARGET=test_gguf_prepass_ppu_image_marker JOBS="$jobs" \
+    CFLAGS= CXXFLAGS= CPPFLAGS= LDFLAGS= \
+    "$root/build.sh" >"$configure_log" 2>&1 || {
+      grep -n -B5 -A10 -E \
+        'error:|fatal error:|undefined reference|ld\.lld:|LLVM ERROR|Killed|timed out|Segmentation|PLEASE submit' \
+        "$configure_log" | head -120 >&2 || true
+      tail -40 "$configure_log" >&2
+      fail "marker build failed"
+    }
+fi
 grep -qF '[build.sh] CUTLASS_PPU_ARCHS=ppu0010' "$configure_log" || fail "configured tree lost ppu0010"
 
 build_and_run() {
   local arm="$1" target="test_gguf_prepass_ppu_image_${1}"
   local build_log="$out/results/build-${arm}.log"
   if [ "$arm" = marker ]; then
-    cp "$configure_log" "$build_log"
+    : # build-marker.log is configure_log itself; do not copy a path onto itself.
   elif ! cmake --build "$build" --target "$target" -- -j"$jobs" >"$build_log" 2>&1; then
       grep -n -B5 -A10 -E \
         'error:|fatal error:|undefined reference|ld\.lld:|LLVM ERROR|Killed|timed out|Segmentation|PLEASE submit' \
