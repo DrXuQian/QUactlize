@@ -555,6 +555,25 @@ def test_packed_unit_scale_derivation_matches_the_scale_first_planes(name, gt, h
     # was assumed throughout. If the two producers place the codes differently then the merge is not a
     # scale-channel change and every conclusion drawn from calling it one is unsupported.
     fq = routes.prepare_fully_quantized_dense(blocks, n, k, qtype, layout="xplane")
+
+    # RUN THE PACKED DEVICE ISOLATE BEFORE THE INDEPENDENT RAW PREPASS.  PPU's runtime can retain a prior launch
+    # error, so invoking the raw producer first makes a later packed failure ambiguous: the packed entry may only
+    # be observing the raw kernel's sticky state.  fq construction above is host placement only; this is therefore
+    # the first device launch in this fresh pytest process.
+    zmul = formats.placed_code_zmul(qtype)
+    derived = routes.dequantize_scale_from_units(fq[-1], qtype)
+    host_scale, host_zero = quactlize.gguf_unit_decode(fq[-1], int(qtype), int(zmul))
+    host_unit = tuple(x.permute(1, 2, 0).contiguous().reshape_as(derived[i])
+                      for i, x in enumerate((host_scale, host_zero)))
+    for what, host, device in zip(("scale", "zero"), host_unit, derived):
+        bad = int((host.reshape(-1) != device.reshape(-1)).sum())
+        assert bad == 0, (
+            f"{name} {what}: host packed-unit decode and PPU packed-unit prepass differ in {bad} of "
+            f"{host.numel()} elements; host_nonzero={int((host != 0).sum())} "
+            f"device_nonzero={int((device != 0).sum())}. The unit bytes are already frozen, so this is a "
+            "device decode/placement failure, not an Xplane or ScaleFirst layout difference.")
+    print(f"FQ_PACKED_UNIT_DEVICE_ISOLATE qtype={qtype} cells={host_unit[0].numel()} verdict=PASS")
+
     # derive_from_bc=FALSE, AND THIS IS THE POINT OF THE TEST AFTER THE SWITCH. prepare_scale_first_dense now
     # derives from BC by default, so calling it plainly would compare the derivation against itself -- green,
     # and evidence of nothing. The raw producer is kept reachable precisely to remain an independent arm, and
@@ -584,24 +603,6 @@ def test_packed_unit_scale_derivation_matches_the_scale_first_planes(name, gt, h
     # view, not a defect. But putting it in the middle of this comparison meant bending the new code's output to
     # match a view, and then explaining the bend; comparing the stored planes directly removes both.
     stored = (sf[2], sf[3])
-    derived = routes.dequantize_scale_from_units(fq[-1], qtype)
-
-    # LOCALISE DEVICE DECODING BEFORE COMPARING IT WITH ANOTHER PRODUCER. gguf_unit_decode is the host consumer of
-    # the exact bytes in fq[-1]; dequantize_scale_from_units runs the PPU prepass when the base device library is
-    # loaded.  The former returns [N,superblock,group], while the latter's resident plane is
-    # [1,superblock*group,N].  A mismatch here proves the raw ScaleFirst producer is innocent and distinguishes a
-    # packed-unit device decode/store failure from an offline bit-layout failure.
-    zmul = formats.placed_code_zmul(qtype)
-    host_scale, host_zero = quactlize.gguf_unit_decode(fq[-1], int(qtype), int(zmul))
-    host_unit = tuple(x.permute(1, 2, 0).contiguous().reshape_as(derived[i])
-                      for i, x in enumerate((host_scale, host_zero)))
-    for what, host, device in zip(("scale", "zero"), host_unit, derived):
-        bad = int((host.reshape(-1) != device.reshape(-1)).sum())
-        assert bad == 0, (
-            f"{name} {what}: host packed-unit decode and PPU packed-unit prepass differ in {bad} of "
-            f"{host.numel()} elements; host_nonzero={int((host != 0).sum())} "
-            f"device_nonzero={int((device != 0).sum())}. The unit bytes are already frozen, so this is a "
-            "device decode/placement failure, not an Xplane or ScaleFirst layout difference.")
     for i, what in enumerate(("scale", "zero")):
         a_, b_ = stored[i], derived[i]
         # SHAPES FIRST, and named. The derivation always returns [E, k/gs, n] -- one expert for a dense weight --

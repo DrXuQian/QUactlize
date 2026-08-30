@@ -43,7 +43,8 @@ esac
 case "$prepass_arm" in
   cooperative) prepass_defs='' ;;
   serial|ladder) prepass_defs='PPU_PACKED_UNIT_PREPASS_SERIAL=1' ;;
-  *) fail "PREPASS_ARM must be cooperative, serial or ladder, got $prepass_arm" ;;
+  launch-audit) prepass_defs='PPU_PREPASS_LAUNCH_AUDIT=1' ;;
+  *) fail "PREPASS_ARM must be cooperative, serial, ladder or launch-audit, got $prepass_arm" ;;
 esac
 case "$scope" in
   full|prepass) ;;
@@ -110,6 +111,36 @@ for marker in ("half_scale[o] = sz.scale", "half_zero[o] = sz.zero",
                "dequant_kernel<T><<<1, 128>>>"):
     assert marker in source, f"missing ladder seam: {marker}"
 print("[nonq4-xplane:ladder-source] PASS exact header/.cu bodies; mutation and missing-seam negatives RED")
+PY
+fi
+
+if [ "$prepass_arm" = launch-audit ]; then
+  [ "$scope" = prepass ] || fail "PREPASS_ARM=launch-audit requires SCOPE=prepass"
+  [ "$formats" = Q2_K ] || fail "PREPASS_ARM=launch-audit requires FORMATS=Q2_K"
+  python3 - <<'PY'
+from pathlib import Path
+
+source = Path("quactlize/csrc/device/ppu_backend.cu").read_text()
+required = (
+    "FQ_PREPASS_LAUNCH_AUDIT op=%s",
+    'print_prepass_launch_audit("dequant"',
+    'print_prepass_launch_audit("raw-prepass"',
+    'print_prepass_launch_audit("packed-prepass"',
+    "int const audit_before = prepass_runtime_last_error()",
+    "PrepassLaunchAudit const audit = prepass_finish_launch_audit(audit_before)",
+)
+for marker in required:
+    assert marker in source, f"missing production-isomorphic launch audit seam: {marker}"
+
+# This diagnostic must not add a kernel to the image it is diagnosing.  Every audit-only definition lives between
+# these two markers; a __global__ there would make an invalid diagnostic image indistinguishable from a bad
+# production kernel image, which is exactly what the previous many-kernel ladder could not rule out.
+begin = source.index("#if defined(PPU_PREPASS_LAUNCH_AUDIT)")
+end = source.index("template <KType T> constexpr int qtype_number", begin)
+assert "__global__ void" not in source[begin:end], "launch audit added a diagnostic device kernel"
+assert source[begin:end].replace("audit.immediate == 0", "audit.immediate == 200") != source[begin:end], \
+    "launch-audit error predicate negative plant did not turn RED"
+print("[nonq4-xplane:launch-audit-source] PASS no diagnostic kernel; exact dequant/raw/packed launch seams")
 PY
 fi
 
@@ -260,6 +291,98 @@ format_spec() {
     *) fail "unknown non-Q4 format $1" ;;
   esac
 }
+
+if [ "$prepass_arm" = launch-audit ]; then
+  # THREE FRESH PROCESSES, ONE FIRST DEVICE OPERATION EACH.  The former combined oracle ran raw-prepass before
+  # packed-prepass, so a sticky PPU launch error made the second result non-causal.  These controls all load the
+  # same .so and differ only in which existing production kernel is launched first.
+  dequant_log="$out/results/Q2_K.launch-audit.dequant.log"
+  raw_log="$out/results/Q2_K.launch-audit.raw-prepass.log"
+  packed_log="$out/results/Q2_K.launch-audit.packed-prepass.log"
+
+  if env QUACTLIZE_PPU_LIB="$base_so" PYTHONPATH="$root" \
+      python3 -m pytest -q -rs -s tests/test_gguf_golden.py \
+        -k 'test_dequantize_matches_llama_cpp and Q2_K' >"$dequant_log" 2>&1; then
+    dequant_rc=0
+  else
+    dequant_rc=$?
+  fi
+  if env QUACTLIZE_PPU_LIB="$base_so" PYTHONPATH="$root" \
+      python3 -m pytest -q -rs -s tests/test_gguf_golden.py \
+        -k 'test_prepass_scale_matches_llama_cpp and Q2_K' >"$raw_log" 2>&1; then
+    raw_rc=0
+  else
+    raw_rc=$?
+  fi
+  if env QUACTLIZE_PPU_LIB="$base_so" QUACTLIZE_PACKED_FORMAT=10 \
+      QUACTLIZE_PREPASS_TEST_N="$prepass_n" QUACTLIZE_PREPASS_TEST_K="$prepass_k" PYTHONPATH="$root" \
+      python3 -m pytest -q -rs -s tests/test_gguf_routes.py -m fully_quantized_dense \
+        -k 'Q2_K and test_packed_unit_scale_derivation_matches_the_scale_first_planes' \
+        >"$packed_log" 2>&1; then
+    packed_rc=0
+  else
+    packed_rc=$?
+  fi
+
+  grep -hE '^FQ_(PREPASS_LAUNCH_AUDIT|PACKED_UNIT_DEVICE_ISOLATE) ' \
+    "$dequant_log" "$raw_log" "$packed_log" || true
+
+  python3 - "$dequant_log" "$raw_log" "$packed_log" \
+      "$dequant_rc" "$raw_rc" "$packed_rc" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+dequant_path, raw_path, packed_path = map(Path, sys.argv[1:4])
+dequant_rc, raw_rc, packed_rc = map(int, sys.argv[4:7])
+pattern = re.compile(
+    r"^FQ_PREPASS_LAUNCH_AUDIT op=(\S+) qtype=(\d+) "
+    r"before=(\d+):(\S+) immediate=(\d+):(\S+) "
+    r"synchronize=(\d+):(\S+) deferred=(\d+):(\S+)", re.M)
+
+def one(path, operation):
+    rows = [m for m in pattern.finditer(path.read_text(errors="replace")) if m.group(1) == operation]
+    if len(rows) != 1:
+        raise SystemExit(f"launch audit expected one {operation} row in {path}, got {len(rows)}")
+    m = rows[0]
+    return {
+        "before": int(m.group(3)), "before_name": m.group(4),
+        "immediate": int(m.group(5)), "immediate_name": m.group(6),
+        "sync": int(m.group(7)), "sync_name": m.group(8),
+        "deferred": int(m.group(9)), "deferred_name": m.group(10),
+    }
+
+dq = one(dequant_path, "dequant")
+raw = one(raw_path, "raw-prepass")
+packed = one(packed_path, "packed-prepass")
+packed_exact = "FQ_PACKED_UNIT_DEVICE_ISOLATE qtype=10" in packed_path.read_text(errors="replace")
+
+def admitted(row):
+    return row["immediate"] == row["sync"] == row["deferred"] == 0
+
+if admitted(dq) and admitted(raw) and admitted(packed):
+    verdict = "ALL_LAUNCHES_ADMITTED" if dequant_rc == raw_rc == packed_rc == 0 else "KERNEL_BODY_OR_NUMERIC_REMAINS"
+elif admitted(dq) and not admitted(raw) and admitted(packed):
+    verdict = "RAW_PREPASS_LAUNCH_REJECTED_PACKED_ADMITTED"
+elif admitted(dq) and not admitted(raw) and not admitted(packed):
+    verdict = "BOTH_PREPASS_LAUNCHES_REJECTED_DEQUANT_CONTROL_CLEAN"
+elif not admitted(dq):
+    verdict = "SHARED_IMAGE_OR_REGISTRATION_REJECTS_KNOWN_GOOD_CONTROL"
+else:
+    verdict = "MIXED_LAUNCH_RESULTS"
+
+def compact(row):
+    return f"{row['before']}/{row['immediate']}:{row['immediate_name']}/{row['sync']}:{row['sync_name']}/{row['deferred']}"
+
+print(
+    "FQ_PREPASS_LAUNCH_AUDIT_VERDICT "
+    f"verdict={verdict} dequant={compact(dq)} raw={compact(raw)} packed={compact(packed)} "
+    f"numeric=[dequant_rc:{dequant_rc},raw_rc:{raw_rc},packed_rc:{packed_rc},packed_exact:{int(packed_exact)}] "
+    "same_binary=1 fresh_process_per_operation=1 diagnostic_device_kernels=0")
+PY
+  printf '[nonq4-xplane] LAUNCH_AUDIT_COMPLETE artifacts=%s\n' "$out"
+  exit 0
+fi
 
 oracle_nodes=(
   test_packed_unit_scale_derivation_matches_the_scale_first_planes

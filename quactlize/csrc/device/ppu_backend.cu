@@ -158,6 +158,84 @@ int prepass_launch_error() {
 }
 #endif
 
+#if defined(PPU_PREPASS_LAUNCH_AUDIT) && PPU_PREPASS_LAUNCH_AUDIT
+// PRODUCTION-ISOMORPHIC LAUNCH AUDIT.  This macro adds no __global__ function and changes no grid, block, argument,
+// or kernel body.  Each operation is run as the first device operation in a fresh process by the box runner.  The
+// `before` read is essential on PPU: hggcGetLastError may retain an error from an earlier launch, so an error read
+// only after this launch cannot by itself be assigned to this kernel.
+struct PrepassLaunchAudit {
+  int before;
+  int immediate;
+  int synchronize;
+  int deferred;
+};
+
+int prepass_runtime_last_error() {
+#if defined(__HGGCCC__)
+  return int(hggcGetLastError());
+#else
+  return int(cudaGetLastError());
+#endif
+}
+
+int prepass_runtime_synchronize() {
+#if defined(__HGGCCC__)
+  return int(hggcDeviceSynchronize());
+#else
+  return int(cudaDeviceSynchronize());
+#endif
+}
+
+char const* prepass_runtime_error_name(int code) {
+#if defined(__HGGCCC__)
+  char const* value = hggcGetErrorName(hggcError_t(code));
+#else
+  char const* value = cudaGetErrorName(cudaError_t(code));
+#endif
+  return value ? value : "UNKNOWN";
+}
+
+char const* prepass_runtime_error_string(int code) {
+#if defined(__HGGCCC__)
+  char const* value = hggcGetErrorString(hggcError_t(code));
+#else
+  char const* value = cudaGetErrorString(cudaError_t(code));
+#endif
+  return value ? value : "UNKNOWN";
+}
+
+PrepassLaunchAudit prepass_finish_launch_audit(int before) {
+  int const immediate = prepass_runtime_last_error();
+  int const synchronize = prepass_runtime_synchronize();
+  int const deferred = prepass_runtime_last_error();
+  return PrepassLaunchAudit{before, immediate, synchronize, deferred};
+}
+
+bool prepass_launch_audit_ok(PrepassLaunchAudit const& audit) {
+  // `before` is the deliberately consumed prior state, not a result of this launch.  Keep it in the verdict line,
+  // but judge this operation only by the state produced after the clear.
+  return audit.immediate == 0 && audit.synchronize == 0 && audit.deferred == 0;
+}
+
+void print_prepass_launch_audit(char const* operation, int qtype, PrepassLaunchAudit const& audit) {
+  std::fprintf(stderr,
+      "FQ_PREPASS_LAUNCH_AUDIT op=%s qtype=%d "
+      "before=%d:%s immediate=%d:%s synchronize=%d:%s deferred=%d:%s "
+      "immediate_text=%s\n",
+      operation, qtype,
+      audit.before, prepass_runtime_error_name(audit.before),
+      audit.immediate, prepass_runtime_error_name(audit.immediate),
+      audit.synchronize, prepass_runtime_error_name(audit.synchronize),
+      audit.deferred, prepass_runtime_error_name(audit.deferred),
+      prepass_runtime_error_string(audit.immediate));
+}
+#endif
+
+template <KType T> constexpr int qtype_number() {
+  return T == KType::Q2_K ? 10 : T == KType::Q3_K ? 11 : T == KType::Q4_K ? 12
+       : T == KType::Q5_K ? 13 : 14;
+}
+
 template <ppu_gemv::WFormat F, int StepK, int Threads>
 bool lowbit_dense_config_valid(int m, int n, int k, int group_size) {
   using D = ppu_gemv::KernelDetails<ppu_gemv::FP16DetailsA, F, ppu_gemv::WLayout::Native, StepK, Threads>;
@@ -337,9 +415,18 @@ int dequant(uint8_t const* blocks, uint16_t* out, int count) {
   DevBuf dout(size_t(count) * 256 * sizeof(uint16_t));
   db.from_host(blocks);
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
+#if defined(PPU_PREPASS_LAUNCH_AUDIT) && PPU_PREPASS_LAUNCH_AUDIT
+  int const audit_before = prepass_runtime_last_error();
+#endif
   dequant_kernel<T><<<(count + 127) / 128, 128>>>(db.as<uint8_t>(), dout.as<cutlass::half_t>(), count);
+#if defined(PPU_PREPASS_LAUNCH_AUDIT) && PPU_PREPASS_LAUNCH_AUDIT
+  PrepassLaunchAudit const audit = prepass_finish_launch_audit(audit_before);
+  print_prepass_launch_audit("dequant", qtype_number<T>(), audit);
+  if (!prepass_launch_audit_ok(audit)) return ppu_gemv::kRuntimeError;
+#else
   ppu_gemv::rt_sync("GGUF dequantize");
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
+#endif
   return ppu_gemv::rt_copy_output(dout, out, size_t(count) * 256);
 }
 
@@ -358,9 +445,18 @@ int prepass(uint8_t const* blocks, uint16_t const* d, uint16_t const* dmin,
   gguf_scale::prepass::PlaneDesc dst{ds.as<cutlass::half_t>(), dz.as<cutlass::half_t>(), Tr::kGroups, 1};
   auto const args = gguf_scale::prepass::make_prepass_kernel_args(src, dst, count, 1);
   int const grid = gguf_scale::prepass::prepass_grid_size(count, 1, 256);
+#if defined(PPU_PREPASS_LAUNCH_AUDIT) && PPU_PREPASS_LAUNCH_AUDIT
+  int const audit_before = prepass_runtime_last_error();
+#endif
   gguf_scale::prepass::prepass_kernel<T, ZMul><<<grid, 256>>>(args);
+#if defined(PPU_PREPASS_LAUNCH_AUDIT) && PPU_PREPASS_LAUNCH_AUDIT
+  PrepassLaunchAudit const audit = prepass_finish_launch_audit(audit_before);
+  print_prepass_launch_audit("raw-prepass", qtype_number<T>(), audit);
+  if (!prepass_launch_audit_ok(audit)) return ppu_gemv::kRuntimeError;
+#else
   ppu_gemv::rt_sync("GGUF scale prepass");
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
+#endif
   return ppu_gemv::rt_copy_two_outputs(ds, scale, dz, zero, size_t(count) * Tr::kGroups);
 }
 
@@ -640,6 +736,9 @@ int prepass_unit(uint8_t const* units, uint16_t* scale, uint16_t* zero,
   int64_t const expert_stride = int64_t(num_superblocks) * U::kGroups * n;
   gguf_scale::prepass::UnitPlaneDesc dst{
       ds.as<cutlass::half_t>(), dz.as<cutlass::half_t>(), expert_stride, n, 1};
+#if defined(PPU_PREPASS_LAUNCH_AUDIT) && PPU_PREPASS_LAUNCH_AUDIT
+  int const audit_before = prepass_runtime_last_error();
+#endif
 #if defined(PPU_PACKED_UNIT_PREPASS_SERIAL) && PPU_PACKED_UNIT_PREPASS_SERIAL
   int const grid = gguf_scale::prepass::prepass_unit_serial_grid_size(experts, n, num_superblocks, 256);
   gguf_scale::prepass::prepass_unit_kernel_serial<T, ZMul><<<grid, 256>>>(
@@ -650,8 +749,14 @@ int prepass_unit(uint8_t const* units, uint16_t* scale, uint16_t* zero,
   int const grid = gguf_scale::prepass::prepass_unit_grid_size<T>(experts, n, num_superblocks, 256);
   gguf_scale::prepass::prepass_unit_kernel<T, ZMul><<<grid, 256>>>(args);
 #endif
+#if defined(PPU_PREPASS_LAUNCH_AUDIT) && PPU_PREPASS_LAUNCH_AUDIT
+  PrepassLaunchAudit const audit = prepass_finish_launch_audit(audit_before);
+  print_prepass_launch_audit("packed-prepass", qtype_number<T>(), audit);
+  if (!prepass_launch_audit_ok(audit)) return ppu_gemv::kRuntimeError;
+#else
   ppu_gemv::rt_sync("packed-unit scale prepass");
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
+#endif
   return ppu_gemv::rt_copy_two_outputs(ds, scale, dz, zero, size_t(plane_elems));
 }
 
