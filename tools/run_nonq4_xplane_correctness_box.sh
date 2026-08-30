@@ -328,7 +328,7 @@ if [ "$prepass_arm" = launch-audit ]; then
     "$dequant_log" "$raw_log" "$packed_log" || true
 
   python3 - "$dequant_log" "$raw_log" "$packed_log" \
-      "$dequant_rc" "$raw_rc" "$packed_rc" <<'PY'
+      "$dequant_rc" "$raw_rc" "$packed_rc" <<'PY' | tee "$out/results/launch-audit-verdict.log"
 from pathlib import Path
 import re
 import sys
