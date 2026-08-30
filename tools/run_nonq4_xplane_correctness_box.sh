@@ -300,9 +300,33 @@ if [ "$prepass_arm" = launch-audit ]; then
   raw_log="$out/results/Q2_K.launch-audit.raw-prepass.log"
   packed_log="$out/results/Q2_K.launch-audit.packed-prepass.log"
 
+  # gguf_dequantize is deliberately a CPU fallback and therefore cannot serve as this control.  Resolve the
+  # exported device C ABI from the exact .so after importing torch/quactlize (same process image as the two route
+  # tests), then launch one all-zero Q2 block.  With d=dmin=0 its exact fp16 output is 256 zero words.
   if env QUACTLIZE_PPU_LIB="$base_so" PYTHONPATH="$root" \
-      python3 -m pytest -q -rs -s tests/test_gguf_golden.py \
-        -k 'test_dequantize_matches_llama_cpp and Q2_K' >"$dequant_log" 2>&1; then
+      python3 - "$base_so" >"$dequant_log" 2>&1 <<'PY'
+import ctypes
+import sys
+
+import torch  # noqa: F401 -- load the same process-wide CUDA/PPU dependencies as the route tests
+import quactlize
+
+so = sys.argv[1]
+assert quactlize.gguf_backend().startswith("ppu"), quactlize.gguf_backend()
+lib = ctypes.CDLL(so, mode=ctypes.RTLD_LOCAL)
+fn = lib.quactlize_ppu_dequantize
+fn.argtypes = [ctypes.POINTER(ctypes.c_uint8), ctypes.c_int64,
+               ctypes.POINTER(ctypes.c_uint16), ctypes.c_int, ctypes.c_int]
+fn.restype = ctypes.c_int
+raw = (ctypes.c_uint8 * 84)()
+out = (ctypes.c_uint16 * 256)(*([0x7BFF] * 256))
+rc = int(fn(raw, 84, out, 1, 10))
+bad = sum(int(value) != 0 for value in out)
+sentinel = sum(int(value) == 0x7BFF for value in out)
+print(f"FQ_PREPASS_DEQUANT_CONTROL qtype=10 rc={rc} bad={bad} sentinel={sentinel} backend={quactlize.gguf_backend()}")
+raise SystemExit(0 if rc == 0 and bad == 0 and sentinel == 0 else 1)
+PY
+  then
     dequant_rc=0
   else
     dequant_rc=$?
@@ -324,7 +348,7 @@ if [ "$prepass_arm" = launch-audit ]; then
     packed_rc=$?
   fi
 
-  grep -hE '^FQ_(PREPASS_LAUNCH_AUDIT|PACKED_UNIT_DEVICE_ISOLATE) ' \
+  grep -hE '^FQ_(PREPASS_LAUNCH_AUDIT|PREPASS_DEQUANT_CONTROL|PACKED_UNIT_DEVICE_ISOLATE) ' \
     "$dequant_log" "$raw_log" "$packed_log" || true
 
   python3 - "$dequant_log" "$raw_log" "$packed_log" \
