@@ -236,7 +236,7 @@ int prepass(uint8_t const* blocks, uint16_t const* d, uint16_t const* dmin,
   return ppu_gemv::rt_copy_two_outputs(ds, scale, dz, zero, size_t(count) * Tr::kGroups);
 }
 
-#if defined(PPU_PACKED_UNIT_PREPASS_PROBE) && PPU_PACKED_UNIT_PREPASS_PROBE
+#if defined(PPU_PACKED_UNIT_PREPASS_SERIAL) && PPU_PACKED_UNIT_PREPASS_SERIAL
 // ONE LAUNCH, FOUR PREFIXES.  This is deliberately raw uint16_t output: coverage and source-byte checks must not
 // inherit half conversion or half store lowering from the operation they are adjudicating.  The four columns answer
 // in order whether the kernel covered its destination, read the unit header, decoded the CuTe-addressed scale code,
@@ -362,7 +362,7 @@ int prepass_unit(uint8_t const* units, uint16_t* scale, uint16_t* zero,
   DevBuf du(unit_bytes), ds(size_t(plane_elems) * 2), dz(size_t(plane_elems) * 2);
   du.from_host(units);
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
-#if defined(PPU_PACKED_UNIT_PREPASS_PROBE) && PPU_PACKED_UNIT_PREPASS_PROBE
+#if defined(PPU_PACKED_UNIT_PREPASS_SERIAL) && PPU_PACKED_UNIT_PREPASS_SERIAL
   if (!run_prepass_unit_ladder<T>(units, du, experts, n, num_superblocks))
     return ppu_gemv::kRuntimeError;
 #endif

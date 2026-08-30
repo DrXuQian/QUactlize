@@ -36,8 +36,7 @@ case "$resume" in
 esac
 case "$prepass_arm" in
   cooperative) prepass_defs='' ;;
-  serial) prepass_defs='PPU_PACKED_UNIT_PREPASS_SERIAL=1' ;;
-  ladder) prepass_defs='PPU_PACKED_UNIT_PREPASS_SERIAL=1 PPU_PACKED_UNIT_PREPASS_PROBE=1' ;;
+  serial|ladder) prepass_defs='PPU_PACKED_UNIT_PREPASS_SERIAL=1' ;;
   *) fail "PREPASS_ARM must be cooperative, serial or ladder, got $prepass_arm" ;;
 esac
 case "$scope" in
@@ -124,6 +123,35 @@ build_device() {
   sha256sum "$so" >"$out/results/$label.so.sha256"
   printf '%s\n' "$so" >"$out/results/$label.so.path"
 }
+
+# A failed/diagnostic build may be resumed across a change to the ONE translation unit that owns the probe.  hgcc's
+# custom command tracks that .cu as MAIN_DEPENDENCY, so make will rebuild it; included headers are deliberately not
+# allowed because the generated command has no header depfile.  The runner itself may differ because it is not an
+# input to any device object.  This is narrower than build.sh's normal source-authority rule and exists only for the
+# prepass ladder, where throwing away an otherwise complete base build would add no evidence.
+if [ "$resume" -eq 1 ] && [ "$scope" = prepass ] && [ "$prepass_arm" = ladder ]; then
+  authority="$out/build-base/.quactlize-source-head"
+  if [ -f "$authority" ]; then
+    read -r prior_sha <"$authority"
+    if [ "$prior_sha" != "$sha" ]; then
+      git diff --quiet HEAD -- || fail "ladder resume refuses tracked working-tree changes"
+      changed="$(git diff --name-only "$prior_sha..$sha")" || fail "cannot compare ladder resume authorities"
+      saw_device=0
+      while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        case "$path" in
+          quactlize/csrc/device/ppu_backend.cu) saw_device=1 ;;
+          tools/run_nonq4_xplane_correctness_box.sh) ;;
+          *) fail "ladder resume source change is not a directly tracked probe TU: $path" ;;
+        esac
+      done <<<"$changed"
+      [ "$saw_device" -eq 1 ] || fail "ladder resume changed no device probe translation unit"
+      printf '%s\n' "$sha" >"$authority"
+      printf '[nonq4-xplane] resume authority advanced %s -> %s for direct probe TU only\n' \
+        "$prior_sha" "$sha"
+    fi
+  fi
+fi
 
 # The base has packed-unit support but deliberately has no selected
 # PPU_PACKED_FORMAT.  It remains the independent producer/oracle arm.
