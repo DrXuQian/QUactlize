@@ -341,11 +341,52 @@ __global__ void prepass_unit_kernel(uint8_t const* units, UnitPlaneDesc dst,
   }
 }
 
+// ONE THREAD PER (expert, superblock, column), retained as a device-localisation arm for the packed-unit prepass.
+// It deliberately shares unit_group_sb and the destination descriptor with the cooperative kernel above; the only
+// changed variable is ownership/placement.  This matters on PPU, where a cooperative launch can return success yet
+// leave a plane unwritten without implicating the packed-unit bit map.  Do not use a host fallback for this check:
+// that would remove both device decoding and device placement at once and could not adjudicate either one.
+template <KType T, int ZMul>
+__global__ void prepass_unit_kernel_serial(uint8_t const* units, UnitPlaneDesc dst,
+                                           int num_experts, int num_cols, int num_superblocks) {
+  using U = packed_unit::Unit<T>;
+  int64_t const tid = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+  int64_t const per_expert = int64_t(num_superblocks) * num_cols;
+  int64_t const total = int64_t(num_experts) * per_expert;
+  if (tid >= total) return;
+
+  int const e = int(tid / per_expert);
+  int64_t const in_expert = tid - int64_t(e) * per_expert;
+  int const sb = int(in_expert / num_cols);
+  int const n = int(in_expert - int64_t(sb) * num_cols);
+  int const num_units = num_superblocks / U::kSbPerUnit;
+  int const unit = sb / U::kSbPerUnit;
+  int const sb_in_unit = sb % U::kSbPerUnit;
+  uint8_t const* src = units +
+      ((int64_t(e) * num_units + unit) * num_cols + n) * U::kUnitTotal;
+
+  CUTLASS_PRAGMA_UNROLL
+  for (int g = 0; g < U::kGroups; ++g) {
+    GroupScale const sz = packed_unit::unit_group_sb<T, ZMul>(src, sb_in_unit, g);
+    int64_t const o = int64_t(e) * dst.stride_e
+                    + (int64_t(sb) * U::kGroups + g) * dst.stride_k
+                    + int64_t(n) * dst.stride_n;
+    dst.scale[o] = sz.scale;
+    if (dst.zero) dst.zero[o] = sz.zero;
+  }
+}
+
 template <KType T>
 CUTLASS_HOST_DEVICE constexpr int prepass_unit_grid_size(
     int num_experts, int num_cols, int num_superblocks, int threads_per_cta) {
   int64_t const warps = int64_t(num_experts) * num_superblocks * ((num_cols + 7) / 8);
   int64_t const threads = warps * 32;
+  return int((threads + threads_per_cta - 1) / threads_per_cta);
+}
+
+CUTLASS_HOST_DEVICE constexpr int prepass_unit_serial_grid_size(
+    int num_experts, int num_cols, int num_superblocks, int threads_per_cta) {
+  int64_t const threads = int64_t(num_experts) * num_superblocks * num_cols;
   return int((threads + threads_per_cta - 1) / threads_per_cta);
 }
 #endif

@@ -252,9 +252,15 @@ int prepass_unit(uint8_t const* units, uint16_t* scale, uint16_t* zero,
   int64_t const expert_stride = int64_t(num_superblocks) * U::kGroups * n;
   gguf_scale::prepass::UnitPlaneDesc dst{
       ds.as<cutlass::half_t>(), dz.as<cutlass::half_t>(), expert_stride, n, 1};
+#if defined(PPU_PACKED_UNIT_PREPASS_SERIAL) && PPU_PACKED_UNIT_PREPASS_SERIAL
+  int const grid = gguf_scale::prepass::prepass_unit_serial_grid_size<T>(experts, n, num_superblocks, 256);
+  gguf_scale::prepass::prepass_unit_kernel_serial<T, ZMul><<<grid, 256>>>(
+      du.as<uint8_t>(), dst, experts, n, num_superblocks);
+#else
   int const grid = gguf_scale::prepass::prepass_unit_grid_size<T>(experts, n, num_superblocks, 256);
   gguf_scale::prepass::prepass_unit_kernel<T, ZMul><<<grid, 256>>>(
       du.as<uint8_t>(), dst, experts, n, num_superblocks);
+#endif
   ppu_gemv::rt_sync("packed-unit scale prepass");
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
   return ppu_gemv::rt_copy_two_outputs(ds, scale, dz, zero, size_t(plane_elems));

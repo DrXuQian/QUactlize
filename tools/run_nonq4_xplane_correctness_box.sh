@@ -8,9 +8,8 @@
 #     fully-quantized arrangement reader.
 #
 # Using format_so as QUACTLIZE_PPU_LIB makes the independent arm inherit the
-# packed format under test.  Q2 exposed that invalid topology as 7686/8192
-# differing scale values.  This runner therefore names both handles and checks
-# their build identities before pytest starts.
+# packed format under test.  This runner therefore names both handles and
+# checks their build identities before pytest starts.
 set -Eeuo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -19,6 +18,8 @@ cd "$root"
 jobs="${JOBS:-16}"
 resume="${RESUME:-0}"
 formats="${FORMATS:-Q2_K Q3_K Q5_K Q6_K}"
+prepass_arm="${PREPASS_ARM:-cooperative}"
+scope="${SCOPE:-full}"
 sdk_root="${PPU_SDK:-${PPU_HOME:-${PPU_SDK_SITE_DEFAULT:-}}}"
 sha="$(git rev-parse HEAD)"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -32,6 +33,15 @@ fail() {
 case "$resume" in
   0|1) ;;
   *) fail "RESUME must be 0 or 1, got $resume" ;;
+esac
+case "$prepass_arm" in
+  cooperative) prepass_defs='' ;;
+  serial) prepass_defs='PPU_PACKED_UNIT_PREPASS_SERIAL=1' ;;
+  *) fail "PREPASS_ARM must be cooperative or serial, got $prepass_arm" ;;
+esac
+case "$scope" in
+  full|prepass) ;;
+  *) fail "SCOPE must be full or prepass, got $scope" ;;
 esac
 
 if [ "$resume" -eq 0 ] && [ -e "$out" ]; then
@@ -113,7 +123,7 @@ build_device() {
 
 # The base has packed-unit support but deliberately has no selected
 # PPU_PACKED_FORMAT.  It remains the independent producer/oracle arm.
-build_device base 'PPU_PACKED_SCALE=1'
+build_device base "PPU_PACKED_SCALE=1 $prepass_defs"
 base_so="$(cat "$out/results/base.so.path")"
 base_make="$(find "$out/build-base" -path '*quactlize_ppu.dir/build.make' -print -quit)"
 ! grep -qE -- '(^|[[:space:]])-DPPU_PACKED_FORMAT(=|[[:space:]])' "$base_make" || \
@@ -129,31 +139,59 @@ format_spec() {
   esac
 }
 
+oracle_nodes=(
+  test_packed_unit_scale_derivation_matches_the_scale_first_planes
+  test_bc_dequant_all_matches_official_gguf
+  test_bc_gemv_matches_dequant_first_and_rejects_fault
+  test_bc_gemv_moe_matches_dequant_first_and_rejects_fault
+  test_fully_quantized_grouped_matches_dequant_first_and_rejects_fault
+  test_fully_quantized_dense_matches_dequant_first_and_rejects_fault
+)
+if [ "$scope" = prepass ]; then
+  oracle_nodes=(test_packed_unit_scale_derivation_matches_the_scale_first_planes)
+fi
+
 for label in $formats; do
   read -r qtype fmt < <(format_spec "$label")
-  build_device "$label" "PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=$fmt"
-  format_so="$(cat "$out/results/$label.so.path")"
   test_log="$out/results/$label.test.log"
+  format_so=''
 
-  if cmp -s "$base_so" "$format_so"; then
-    fail "$label format library is byte-identical to the base despite a different compile identity"
+  if [ "$scope" = full ]; then
+    build_device "$label" "PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=$fmt"
+    format_so="$(cat "$out/results/$label.so.path")"
+    if cmp -s "$base_so" "$format_so"; then
+      fail "$label format library is byte-identical to the base despite a different compile identity"
+    fi
   fi
 
   # KEEP THESE TWO HANDLES DIFFERENT.  load() owns generic placement, BC and
   # the independent ScaleFirst arm; load_format(fmt) owns the selected FQ
   # reader.  Reversing this assignment invalidates the oracle itself.
-  if ! env \
-      QUACTLIZE_PPU_LIB="$base_so" \
-      "QUACTLIZE_PPU_LIB_FMT${fmt}=$format_so" \
-      QUACTLIZE_PACKED_FORMAT="$qtype" PYTHONPATH="$root" \
-      python3 -m pytest -q -rs -s tests/test_gguf_routes.py \
-        -m fully_quantized_dense -k "$label" >"$test_log" 2>&1; then
-    tail -80 "$test_log" >&2
-    fail "$label device oracle failed"
-  fi
-  grep -Eq '(^| )6 passed' "$test_log" || fail "$label did not run six passing oracles"
-  ! grep -qi 'skipped' "$test_log" || fail "$label unexpectedly skipped an oracle"
-  printf 'NONQ4_XPLANE format=%s verdict=PASS tests=6\n' "$label"
+  : >"$test_log"
+  passed=0
+  for oracle in "${oracle_nodes[@]}"; do
+    oracle_log="$out/results/$label.$oracle.log"
+    oracle_env=(QUACTLIZE_PPU_LIB="$base_so" QUACTLIZE_PACKED_FORMAT="$qtype" PYTHONPATH="$root")
+    if [ "$scope" = full ]; then
+      oracle_env+=("QUACTLIZE_PPU_LIB_FMT${fmt}=$format_so")
+    fi
+    if ! env "${oracle_env[@]}" \
+        python3 -m pytest -q -rs -s tests/test_gguf_routes.py \
+          -m fully_quantized_dense -k "$label and $oracle" >"$oracle_log" 2>&1; then
+      printf 'NONQ4_XPLANE_ORACLE format=%s oracle=%s verdict=FAIL\n' "$label" "$oracle" | tee -a "$test_log"
+      tail -80 "$oracle_log" >&2
+      fail "$label oracle $oracle failed"
+    fi
+    grep -Eq '(^| )1 passed' "$oracle_log" || fail "$label oracle $oracle did not run exactly one passing test"
+    ! grep -qi 'skipped' "$oracle_log" || fail "$label oracle $oracle unexpectedly skipped"
+    cat "$oracle_log" >>"$test_log"
+    printf 'NONQ4_XPLANE_ORACLE format=%s oracle=%s verdict=PASS\n' "$label" "$oracle" | tee -a "$test_log"
+    passed=$((passed + 1))
+  done
+  expected="${#oracle_nodes[@]}"
+  [ "$passed" -eq "$expected" ] || fail "$label ran $passed/$expected isolated oracles"
+  printf 'NONQ4_XPLANE format=%s verdict=PASS tests=%s scope=%s prepass_arm=%s\n' \
+    "$label" "$expected" "$scope" "$prepass_arm"
 done
 
 printf 'NONQ4_XPLANE_ALL verdict=PASS formats=%s\n' "${formats// /,}"
