@@ -329,7 +329,9 @@ PLACED_ARRANGEMENT_VERSION_V1 = 1
 PLACED_ARRANGEMENT_VERSION_V2 = 2
 PLACED_LAYOUT_XPLANE_V1 = 0
 PLACED_LAYOUT_Q4_KPACK4_TRANSPOSE_V1 = 1
+PLACED_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1 = 2
 Q4_KPACK4_MAPPING_ID = 0x51344B5034540001
+KQUANT_KPACK_MAPPING_ID = 0x514B504B54000001
 Q4_KPACK4_TRANSPORT_TILE_K = 64
 Q4_KPACK4_GROUP_SIZE = 32
 
@@ -397,6 +399,13 @@ class PlacedArrangementV2(NamedTuple):
                 raise ValueError(
                     f"noncanonical Q4 K-pack4 descriptor {self}; expected {canonical}. The mapping id and "
                     "physical quanta identify bytes and are not tunable reader parameters")
+        elif self.layout == PLACED_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1:
+            matches = [q for q in (QuantType.Q2_K, QuantType.Q3_K,
+                                    QuantType.Q5_K, QuantType.Q6_K)
+                       if self == kquant_kpack_arrangement(q)]
+            if len(matches) != 1:
+                raise ValueError(
+                    f"noncanonical k-quant K-pack descriptor {self}; expected one exact Q2/Q3/Q5/Q6 mapping")
         elif self.layout == PLACED_LAYOUT_XPLANE_V1:
             if (self.bits <= 0 or self.high_bits < 0 or self.artifact_tile_k <= 0 or
                     self.transport_tile_k != 0 or self.group_size != 0 or self.reserved != 0 or
@@ -419,6 +428,24 @@ def q4_kpack4_arrangement() -> PlacedArrangementV2:
         PLACED_LAYOUT_Q4_KPACK4_TRANSPOSE_V1, 4, 0, 0,
         Q4_KPACK4_TRANSPORT_TILE_K, Q4_KPACK4_GROUP_SIZE, 0,
         Q4_KPACK4_MAPPING_ID)
+
+
+def kquant_kpack_arrangement(qtype) -> PlacedArrangementV2:
+    """Canonical per-plane b16 K-pack map for Q2/Q3/Q5/Q6.
+
+    Each plane's pack factor is 16/bits; ``transport_tile_k`` is the smallest
+    logical K quantum that lets every plane deliver one physical K16 reader
+    tile. Q4 keeps its already-shipped layout-1 descriptor.
+    """
+    q = QuantType(qtype)
+    if q == QuantType.Q4_K:
+        raise ValueError("Q4_K retains the shipping q4-kpack4 descriptor")
+    low, high = placed_code_planes(q)
+    group = BLOCKS[q].group_size
+    packs = [16 // low] + ([16 // high] if high else [])
+    return PlacedArrangementV2(
+        PLACED_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1, low, high, 0,
+        16 * max(packs), group, 0, KQUANT_KPACK_MAPPING_ID)
 
 
 # LOGICAL CODE PLANES ARE PART OF THE GGUF FORMAT, NOT A TACTIC CHOICE. Keeping this beside BLOCKS makes the

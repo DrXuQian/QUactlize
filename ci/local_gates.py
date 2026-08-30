@@ -161,6 +161,10 @@ GATES = [
     ("l232_q4_kpack4_fused_metadata_store", []),
     ("l233_q4_kpack4_subsuperblock_type", []),
     ("l234_q4_kpack4_scalefirst_persistent_type", []),
+    ("l235_kquant_kpack_offline_abi", []),
+    ("l236_kquant_kpack_production_fragment", []),
+    *[(f"l237_kquant_kpack_production_type@q{q}", [])
+      for q in (10, 11, 13, 14)],
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -314,11 +318,18 @@ SYNTAX = [
     # keep one narrowed flag-on backend parse in the local denominator.
     ("quactlize/csrc/device/ppu_dense_backend.cu",
      "-DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT=0 -DQUACTLIZE_DENSE_ONLY=12"),
-    # True folded-reader control: Q3 ArtifactTileK=64 is F_low/F_high=2/4 beneath a TK256 tensor tactic.  This
-    # flag-on row proves the arrangement-aware ABI instantiates the packed two-plane collective rather than merely
-    # accepting the descriptor in host arithmetic.  Single-plane F>1 remains explicitly fail-closed (l138).
+    # Every format-selected backend must instantiate the physical K-pack v2
+    # dense/grouped branches, not merely accept their descriptors in host
+    # arithmetic.  Q3 additionally remains the true folded-Xplane control:
+    # ArtifactTileK=64 is F_low/F_high=2/4 beneath a TK256 tactic.
+    ("quactlize/csrc/device/ppu_dense_backend.cu",
+     "-DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT=2 -DQUACTLIZE_DENSE_ONLY=10"),
     ("quactlize/csrc/device/ppu_dense_backend.cu",
      "-DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT=3 -DQUACTLIZE_DENSE_ONLY=11"),
+    ("quactlize/csrc/device/ppu_dense_backend.cu",
+     "-DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT=1 -DQUACTLIZE_DENSE_ONLY=13"),
+    ("quactlize/csrc/device/ppu_dense_backend.cu",
+     "-DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT=4 -DQUACTLIZE_DENSE_ONLY=14"),
     ("benchmarks/test_moe_splitk_bench.cu", "-DPPU_PACKED_SCALE=1"),
     # dev/'s top-level probes. They are DEVICE probes -- swzl_ldmatrix_probe reads the hardware swizzle, the
     # ablations and sweeps run on the accelerator -- so build.sh overlays them onto the box, and anything that
@@ -401,6 +412,7 @@ def run(cmd, **kw):
 GATE_SRCS = {
     "l110_unit_pack_abi": ["quactlize/csrc/device/ppu_dense_layout.cu"],
     "l230_q4_kpack4_offline_abi": ["quactlize/csrc/device/ppu_dense_layout.cu"],
+    "l235_kquant_kpack_offline_abi": ["quactlize/csrc/device/ppu_dense_layout.cu"],
 }
 
 GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
@@ -436,6 +448,13 @@ GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
                   "-D__HGGCCC__", "--expt-relaxed-constexpr",
                   "-DPPU_PACKED_SCALE=0", "-DPPU_B_CHUNK=0",
                   "-DSCALEFIRST_SWEEP_WEIGHT_LAYOUT=1"],
+              **{
+                  f"l237_kquant_kpack_production_type@q{q}": [
+                      "-D__HGGCCC__", "--expt-relaxed-constexpr",
+                      "-DPPU_PACKED_SCALE=1", f"-DPPU_PACKED_FORMAT={fmt}",
+                      f"-DL237_QTYPE={q}", "-DPPU_B_CHUNK=0"]
+                  for q, fmt in ((10, 2), (11, 3), (13, 1), (14, 4))
+              },
               # THE MACROS ARE THE POINT. This gate asserts the fused path is ON, so it has to be built the way the
               # box builds packfuse -- without these two it would assert about a configuration nobody runs and pass
               # for the wrong reason, which is the failure it exists to catch.

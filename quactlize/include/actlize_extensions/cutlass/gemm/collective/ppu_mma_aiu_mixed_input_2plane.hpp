@@ -102,6 +102,9 @@ template <
   int ArtifactLowFold_,
   int ArtifactHighFold_,
   int ArtifactTileK_,
+  int LowKPack_,
+  int HighKPack_,
+  int KPackDeliveryN_,
   class TileShapePair_,
   class ElementAOptionalTuple,
   class StrideA_,
@@ -119,7 +122,8 @@ template <
 struct CollectiveMma<
     Arch,
     MainloopPPUAiuMixedInput2Plane<Stages, kContinous, KernelSchedule,
-                                  ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_>,
+                                  ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_,
+                                  LowKPack_, HighKPack_, KPackDeliveryN_>,
     TileShapePair_,
     ElementAOptionalTuple,
     StrideA_,
@@ -152,7 +156,8 @@ public:
   // Type Aliases
   //
   using DispatchPolicy = MainloopPPUAiuMixedInput2Plane<Stages, kContinous, KernelSchedule,
-                                                       ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_>;
+                                                       ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_,
+                                                       LowKPack_, HighKPack_, KPackDeliveryN_>;
   using TileShape = detail::deduce_mixed_width_dtype_t<0, TileShapePair_>;
   using ScaleTileShape = cute::conditional_t<cute::is_void_v<TileShape_Scale>,
       decltype(make_shape(shape<1>(TileShape{}), Int<1>{})), TileShape_Scale>;
@@ -258,6 +263,23 @@ public:
   static constexpr int kHiBits  = cutlass::sizeof_bits<PlaneB2>::value;
   static_assert((kLowBits == 2 && kHiBits == 1) || (kLowBits == 4 && kHiBits == 2) || (kLowBits == 4 && kHiBits == 1),
                 "2-plane mainloop supports Q3 (int2+int1), Q6 (int4+int2) and Q5 (int4+int1)");
+  static constexpr bool kKPackTranspose = DispatchPolicy::KPackTranspose;
+  static constexpr int kLowKPack = DispatchPolicy::LowKPack;
+  static constexpr int kHighKPack = DispatchPolicy::HighKPack;
+  static constexpr int kSafeLowKPack = kLowKPack > 0 ? kLowKPack : 1;
+  static constexpr int kSafeHighKPack = kHighKPack > 0 ? kHighKPack : 1;
+  static constexpr int kKPackScheduledDeliveryN =
+      kKPackTranspose ? DispatchPolicy::KPackDeliveryN : 0;
+  static constexpr int kKPackResolvedDeliveryN =
+      kKPackTranspose ? int(size<0>(InternalSmemLayoutAtomB{})) : 0;
+  static_assert(!kKPackTranspose ||
+                    (kLowKPack * kLowBits == 16 &&
+                     kHighKPack * kHiBits == 16),
+                "each two-plane K-pack word must be exactly one b16 transport");
+  using BTransportElement = cute::conditional_t<
+      kKPackTranspose, cutlass::half_t, RealInternalElementB>;
+  using B2TransportElement = cute::conditional_t<
+      kKPackTranspose, cutlass::half_t, PlaneB2>;
 
   // THE SAME PACKED SCALE CHANNEL AS THE SINGLE-PLANE COLLECTIVE. PPU_PACKED_FORMAT selects the artifact trait;
   // plane widths additionally have to match that format so a Q4-selected broad build cannot reinterpret Q5's fp16
@@ -334,6 +356,8 @@ public:
 #endif
   // Chunking needs MixGemmChunkEmit for the LOW plane, which covers int1/int2/int4, so every supported pair qualifies.
   static constexpr bool kBChunk = (kBChunkMode != 0);
+  static_assert(!kKPackTranspose || !kBChunk,
+                "K-pack two-plane functionality first closes the full-fragment converter path");
   using InternalStrideA  = cute::conditional_t<!SwapAB, StrideA, StrideB>;
   using InternalStrideB  = cute::conditional_t<!SwapAB, StrideB, StrideA>;
 
@@ -355,8 +379,12 @@ public:
   static constexpr int ArtifactTileK = DispatchPolicy::ArtifactTileK;
   static constexpr int P1ArtifactBytes = P1Fold * ArtifactTileK * kLowBits / 8;
   static constexpr int P2ArtifactBytes = P2Fold * ArtifactTileK * kHiBits / 8;
-  static constexpr int P1ExpectedAtomK = (P1ArtifactBytes > 128 ? 128 : P1ArtifactBytes) * 8 / kLowBits;
-  static constexpr int P2ExpectedAtomK = (P2ArtifactBytes > 128 ? 128 : P2ArtifactBytes) * 8 / kHiBits;
+  static constexpr int P1ExpectedAtomK = kKPackTranspose
+      ? ArtifactTileK / kSafeLowKPack
+      : (P1ArtifactBytes > 128 ? 128 : P1ArtifactBytes) * 8 / kLowBits;
+  static constexpr int P2ExpectedAtomK = kKPackTranspose
+      ? ArtifactTileK / kSafeHighKPack
+      : (P2ArtifactBytes > 128 ? 128 : P2ArtifactBytes) * 8 / kHiBits;
   static_assert(P1Fold >= 1 && P2Fold >= 1 && ArtifactTileK >= 1,
                 "two-plane artifact geometry must carry positive folds and TileK");
   static_assert((size<1>(TileShape{}) % P1Fold) == 0 &&
@@ -401,16 +429,26 @@ public:
   static_assert(LogicalTileM != 8 ||
                     cute::cosize_v<SmemLayoutAPhysical> >= 16 * int(size<2>(TileShape{})) * DispatchPolicy::Stages,
                 "two-plane TM8 must pay for complete 16-row A cubes in every stage");
+  static constexpr int LogicalTileN = decltype(size<1>(TileShape{}))::value;
+  static constexpr int LogicalTileK = decltype(size<2>(TileShape{}))::value;
+  using SmemShapeB = cute::conditional_t<kKPackTranspose,
+      Shape<Int<LogicalTileN>, Int<LogicalTileK / kSafeLowKPack>,
+            Int<DispatchPolicy::Stages>>,
+      Shape<Int<LogicalTileN / P1Fold>, Int<P1Fold * LogicalTileK>,
+            Int<DispatchPolicy::Stages>>>;
   using SmemLayoutB = decltype(tile_to_shape(
-      InternalSmemLayoutAtomB{},
-      make_shape(Int<size<1>(TileShape{}) / P1Fold>{}, Int<P1Fold * size<2>(TileShape{})>{},
-                 Int<DispatchPolicy::Stages>{})));
+      InternalSmemLayoutAtomB{}, SmemShapeB{}));
   // The fold-in-N LOGICAL view the MMA fragment must be partitioned from when P1Fold > 1: (n'=(f,g), k) -> phys
   // (g, f*TKe + k). Partitioning the PHYSICAL shape would give MMA_N = Ng and MMA_K = P1Fold*TKe/16, mismatching the
   // accumulator's N and A's MMA_K. Verified in the single-plane fold collective, whose comment block this mirrors.
-  using SmemLayoutB_MmaView = decltype(make_layout(
-      make_shape (make_shape(Int<P1Fold>{}, Int<size<1>(TileShape{}) / P1Fold>{}), Int<size<2>(TileShape{})>{}),
-      make_stride(make_stride(Int<size<2>(TileShape{})>{}, Int<P1Fold * size<2>(TileShape{})>{}), _1{})));
+  using FoldSmemLayoutB_MmaView = decltype(make_layout(
+      make_shape (make_shape(Int<P1Fold>{}, Int<LogicalTileN / P1Fold>{}), Int<LogicalTileK>{}),
+      make_stride(make_stride(Int<LogicalTileK>{}, Int<P1Fold * LogicalTileK>{}), _1{})));
+  using KPackSmemLayoutB_MmaView = Layout<
+      Shape<Int<LogicalTileN>, Int<LogicalTileK>>,
+      Stride<Int<LogicalTileK>, _1>>;
+  using SmemLayoutB_MmaView = cute::conditional_t<kKPackTranspose,
+      KPackSmemLayoutB_MmaView, FoldSmemLayoutB_MmaView>;
 
   // The atoms now describe one resident artifact cube, so atomK/T can be fractional and can also be hidden by the
   // operand's 128-B cap. The dispatch policy is the source of truth; these assertions make the atom an independent
@@ -421,10 +459,13 @@ public:
                 "plane 2 artifact copy K must tile the full folded tactic K span");
   static_assert(size<1>(SmemLayoutAtomB2{}) == P2ExpectedAtomK,
                 "plane 2 copy atom K must come from F2 * ArtifactTileK with the AIU 128-B cap");
+  using SmemShapeB2 = cute::conditional_t<kKPackTranspose,
+      Shape<Int<LogicalTileN>, Int<LogicalTileK / kSafeHighKPack>,
+            Int<DispatchPolicy::Stages>>,
+      Shape<Int<LogicalTileN / P2Fold>, Int<P2Fold * LogicalTileK>,
+            Int<DispatchPolicy::Stages>>>;
   using SmemLayoutB2 = decltype(tile_to_shape(
-      SmemLayoutAtomB2{},
-      make_shape(Int<size<1>(TileShape{}) / P2Fold>{}, Int<P2Fold * size<2>(TileShape{})>{},
-                 Int<DispatchPolicy::Stages>{})));
+      SmemLayoutAtomB2{}, SmemShapeB2{}));
 
   static_assert((P1Fold * kLowBits) % (P2Fold * kHiBits) == 0,
                 "plane delivery ratio must be integral");
@@ -520,8 +561,8 @@ public:
     static constexpr int scale_elements = elements_per_smem_scale();
     static constexpr int zero_elements = elements_per_smem_zero();
     cute::ArrayEngine<RealInternalElementA, cute::cosize_v<SmemLayoutAPhysical>> smem_a;
-    cute::ArrayEngine<RealInternalElementB, cute::cosize_v<SmemLayoutB>> smem_b;
-    cute::ArrayEngine<PlaneB2, cute::cosize_v<SmemLayoutB2>> smem_b2;   // 2nd bit plane
+    cute::ArrayEngine<BTransportElement, cute::cosize_v<SmemLayoutB>> smem_b;
+    cute::ArrayEngine<B2TransportElement, cute::cosize_v<SmemLayoutB2>> smem_b2;   // 2nd bit plane
     cute::ArrayEngine<NonVoidElementScale, scale_elements> smem_scale;
     cute::ArrayEngine<NonVoidElementZero, zero_elements> smem_zero;
     // Last so an off/default instantiation has no effect on the preceding members' alignment.
@@ -712,7 +753,12 @@ public:
     using FoldTilerB1 = Shape<Int<size<0>(TileShape{})>,
                               Int<size<1>(TileShape{}) / P1Fold>,
                               Int<P1Fold * size<2>(TileShape{})>>;
-    Tensor gB = local_tile(mB_nk, FoldTilerB1{}, take<0,3>(blk_coord_mnkl), Step< X,_1,_1>{});                    // (BLK_N_phys,BLK_K_phys,k)
+    using KPackTilerB1 = Shape<Int<size<0>(TileShape{})>,
+                               Int<size<1>(TileShape{})>,
+                               Int<size<2>(TileShape{}) / kSafeLowKPack>>;
+    using TilerB1 = cute::conditional_t<kKPackTranspose,
+        KPackTilerB1, FoldTilerB1>;
+    Tensor gB = local_tile(mB_nk, TilerB1{}, take<0,3>(blk_coord_mnkl), Step< X,_1,_1>{});                    // (BLK_N_phys,BLK_K_phys,k)
 
     // Plane 2: same tiling as gB, appended LAST to the returned tuple. Safe because both kernels only index
     // get<0>/get<1>, static_assert size>=2, and forward the tail opaquely.
@@ -726,7 +772,12 @@ public:
     using FoldTilerB2 = Shape<Int<size<0>(TileShape{})>,
                               Int<size<1>(TileShape{}) / P2Fold>,
                               Int<P2Fold * size<2>(TileShape{})>>;
-    Tensor gB2 = local_tile(mB2_nk, FoldTilerB2{}, take<0,3>(blk_coord_mnkl), Step< X,_1,_1>{});
+    using KPackTilerB2 = Shape<Int<size<0>(TileShape{})>,
+                               Int<size<1>(TileShape{})>,
+                               Int<size<2>(TileShape{}) / kSafeHighKPack>>;
+    using TilerB2 = cute::conditional_t<kKPackTranspose,
+        KPackTilerB2, FoldTilerB2>;
+    Tensor gB2 = local_tile(mB2_nk, TilerB2{}, take<0,3>(blk_coord_mnkl), Step< X,_1,_1>{});
 
     if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
       return cute::make_tuple(gA, gB, gB2);
@@ -843,8 +894,11 @@ public:
     // PER-PLANE N-FOLD: sB's K extent is the PHYSICAL folded run (P1Fold * BLK_K) while sA's is the real BLK_K, so the
     // equality only holds unfolded. Assert the folded relation instead of dropping the check -- it still catches a
     // mismatched B operand Block_K, which is what it was there for.
-    static_assert(size<1>(SmemLayoutB{}) == P1Fold * size<2>(TileShape{}),
-                  "fold: sB's physical BLK_K must be P1Fold * TileShape.K");
+    static_assert(size<1>(SmemLayoutB{}) ==
+                      (kKPackTranspose
+                           ? size<2>(TileShape{}) / kSafeLowKPack
+                           : P1Fold * size<2>(TileShape{})),
+                  "sB's physical K must match the selected fold/K-pack provider");
     CUTE_STATIC_ASSERT_V(Int<DispatchPolicy::Stages>{} == size<2>(sA));        // PIPE
     CUTE_STATIC_ASSERT_V(Int<DispatchPolicy::Stages>{} == size<2>(sA_physical)); // PIPE
     CUTE_STATIC_ASSERT_V(Int<DispatchPolicy::Stages>{} == size<2>(sB));        // PIPE
@@ -927,7 +981,14 @@ public:
         Layout<Shape<warpOnM, warpOnN,_1>>,
         Tile<ShadowPermutationM, PermutationN, _32>>;
 
-    TiledMma_S8 tiled_mma_s8;
+    using TiledMma_KPack = TiledMMA<
+        MMA_Atom<PPU0010_16x16x16_F32F16F16F32_TN>,
+        Layout<Shape<warpOnM, warpOnN, _1>>,
+        Tile<ShadowPermutationM, PermutationN, _16>>;
+    using TiledMma_BLoad = cute::conditional_t<
+        kKPackTranspose, TiledMma_KPack, TiledMma_S8>;
+
+    TiledMma_BLoad tiled_mma_s8;
     auto thr_mma_s8 = tiled_mma_s8.get_thread_slice(thread_idx);
 
     auto smem_tiled_copy_A = make_tiled_copy_A(SmemCopyAtomA{}, tiled_mma);
@@ -938,7 +999,10 @@ public:
     CUTE_STATIC_ASSERT_V(size<1>(tCsA) == size<1>(tCrA_copy_view));            // CPY_M
     CUTE_STATIC_ASSERT_V(size<2>(tCsA) == size<2>(tCrA_copy_view));            // CPY_K
 
-    auto sB_s8 = recast<int8_t>(sB);
+    auto sB_s8 = [&] {
+      if constexpr (kKPackTranspose) return sB;
+      else return recast<int8_t>(sB);
+    }();
     Tensor tCrB_load =thr_mma_s8.partition_fragment_B(sB_s8(_,_,0));
 
     auto smem_tiled_copy_B = make_tiled_copy_B(SmemCopyAtomB{}, tiled_mma_s8);
@@ -947,7 +1011,10 @@ public:
     Tensor tCrB_copy_view  = smem_thr_copy_B.retile_D(tCrB_load);                                  // (CPY,CPY_N,CPY_K)
 
     // Plane 2: its own swzl atom (different CUBE_W, since its byte extent is 2x/4x smaller for the same Block_K).
-    auto sB2_s8 = recast<int8_t>(sB2);
+    auto sB2_s8 = [&] {
+      if constexpr (kKPackTranspose) return sB2;
+      else return recast<int8_t>(sB2);
+    }();
     Tensor tCrB2_load = thr_mma_s8.partition_fragment_B(sB2_s8(_,_,0));
     auto smem_tiled_copy_B2 = make_tiled_copy_B(SmemCopyAtomB2{}, tiled_mma_s8);
     auto smem_thr_copy_B2   = smem_tiled_copy_B2.get_thread_slice(aiu_warp_group_thread_idx);
@@ -1113,6 +1180,24 @@ public:
 private:
   CUTLASS_DEVICE
   auto load_init_B(Params const& mainloop_params, int N, int K, int L, int l_coord) {
+    if constexpr (kKPackTranspose) {
+      using TilerB = typename GmemTiledCopyB::Tiler_MN;
+      using Transport = cutlass::half_t;
+      int const physical_k = K / kSafeLowKPack;
+      auto physical_stride =
+          make_stride(_1{}, int64_t(N), int64_t(N) * physical_k);
+      Tensor mB_nkl = make_tensor(
+          make_gmem_ptr(reinterpret_cast<Transport const*>(mainloop_params.ptr_B)),
+          make_shape(N, physical_k, L), physical_stride);
+      auto mB_nk = mB_nkl(_,_,l_coord);
+      auto const* expert_base = reinterpret_cast<uint8_t const*>(
+          raw_pointer_cast(mB_nk.data()));
+      gmem_tiled_copy_B.desc_.template init<
+          Transport, true, get<0>(TilerB{}), get<1>(TilerB{})>(
+              const_cast<uint8_t*>(expert_base), N, physical_k,
+              take<0,2>(physical_stride));
+      return make_mix_tensor_like(mB_nk);
+    } else {
     // PER-PLANE N-FOLD: a folded plane-1 buffer is (N/P1Fold) physical rows of (K*P1Fold) codes, so BOTH shape and
     // stride must be folded. dB already carries the folded pitch (moe_grouped_ppu builds it from n/MOEG_FOLD), so the
     // SHAPE has to match it. P1Fold == 1 is the previous code exactly.
@@ -1168,12 +1253,31 @@ private:
             nullptr, int(cute::size<0>(mB_nk)), int(cute::size<1>(mB_nk)), mainloop_params.dB);
       return mB_nk;
     }
+    }
   }
 
   // Plane 2's gmem tensor + AIU descriptor. Exact mirror of load_init_B; note the per-expert L-stride uses
   // PlaneB2's OWN bit width, since the interleaved desc treats that byte count as the plane stride.
   CUTLASS_DEVICE
   auto load_init_B2(Params const& mainloop_params, int N, int K, int L, int l_coord) {
+    if constexpr (kKPackTranspose) {
+      using TilerB2 = typename GmemTiledCopyB2::Tiler_MN;
+      using Transport = cutlass::half_t;
+      int const physical_k = K / kSafeHighKPack;
+      auto physical_stride =
+          make_stride(_1{}, int64_t(N), int64_t(N) * physical_k);
+      Tensor mB_nkl = make_tensor(
+          make_gmem_ptr(reinterpret_cast<Transport const*>(mainloop_params.ptr_B2)),
+          make_shape(N, physical_k, L), physical_stride);
+      auto mB_nk = mB_nkl(_,_,l_coord);
+      auto const* expert_base = reinterpret_cast<uint8_t const*>(
+          raw_pointer_cast(mB_nk.data()));
+      gmem_tiled_copy_B2.desc_.template init<
+          Transport, true, get<0>(TilerB2{}), get<1>(TilerB2{})>(
+              const_cast<uint8_t*>(expert_base), N, physical_k,
+              take<0,2>(physical_stride));
+      return make_mix_tensor_like(mB_nk);
+    } else {
     auto kCon = kContinous{};
     using TilerB2 = typename GmemTiledCopyB2::Tiler_MN;
     // PER-PLANE N-FOLD: a folded plane-2 buffer is (N/P2Fold) physical rows of (K*P2Fold) codes, so BOTH the shape and
@@ -1209,6 +1313,7 @@ private:
       gmem_tiled_copy_B2.desc_.template init<PlaneB2, false, get<0>(TilerB2{}), get<1>(TilerB2{})>(
             nullptr, int(cute::size<0>(mB_nk)), int(cute::size<1>(mB_nk)), d2);
       return mB_nk;
+    }
     }
   }
 
@@ -1658,7 +1763,25 @@ private:
     // a linear write scatters the fp16 into the wrong register slots (symptom: |D| 30-100x too large with random
     // signs, which cannot come from wrong BITS since q = low + 4*high is bounded by 7).
     // Mode-0 of cvt_in is one CPY_VEC chunk (64 low codes = 4 vregs); mode-1 is the chunk count.
-    Tensor cvt_out = make_tensor(tCrB_mma(_, _, k_block * K_ATOM_PER_COPY).data(), cvt_in.layout());
+    Tensor cvt_out = [&] {
+      if constexpr (kKPackTranspose) {
+        // The physical m16 b16 loader and the logical compute fragment share
+        // converter cohort order but not necessarily the rest-mode N stride.
+        // Preserve the loader's within-cohort order and root each cohort at
+        // the compute fragment's own N stride (the same proved seam as Q4).
+        auto dst_n_stride = compact_col_major(
+            shape<1>(cvt_in.layout()), stride<1>(tCrB_mma.layout()));
+        auto dst_layout = make_layout(
+            shape(cvt_in.layout()),
+            make_stride(stride<0>(cvt_in.layout()), dst_n_stride));
+        return make_tensor(
+            tCrB_mma(_, _, k_block * K_ATOM_PER_COPY).data(), dst_layout);
+      } else {
+        return make_tensor(
+            tCrB_mma(_, _, k_block * K_ATOM_PER_COPY).data(),
+            cvt_in.layout());
+      }
+    }();
     constexpr int NumIter = decltype(cute::size<1>(cvt_in))::value;
     // A delivery is 16 B/thread either way, so each plane's chunk holds 128/bits codes -- 64 low + 128 high for Q3,
     // 32 + 64 for Q6, 32 + 128 for Q5. Derived from the widths instead of asserting Q3's two literals.

@@ -76,6 +76,62 @@ struct KernelAiuQ4KPack4Transpose {
   static constexpr int DeliveryN = DeliveryN_;
 };
 
+// Converter-native b16 transport shared by Q2/Q3/Q5/Q6.  LowPack/HighPack
+// are physical facts of the resident byte map (16 / plane_bits), not tactic
+// knobs.  A zero HighPack marks the single-plane Q2 path.  Q4 keeps the
+// historical wrapper above so its already-shipped type identity is unchanged.
+template<int LowPack_, int HighPack_, class WrappedSchedule_, int DeliveryN_ = 0>
+struct KernelAiuKPackTranspose {
+  static_assert(LowPack_ == 4 || LowPack_ == 8,
+                "low K-pack plane must be int4/Pack4 or int2/Pack8");
+  static_assert(HighPack_ == 0 || HighPack_ == 8 || HighPack_ == 16,
+                "high K-pack plane must be absent, int2/Pack8 or int1/Pack16");
+  static_assert(DeliveryN_ == 0 || DeliveryN_ == 16 ||
+                    DeliveryN_ == 32 || DeliveryN_ == 64,
+                "K-pack delivery N is auto(0), 16, 32 or 64");
+  static constexpr int LowPack = LowPack_;
+  static constexpr int HighPack = HighPack_;
+  static constexpr int DeliveryN = DeliveryN_;
+  using WrappedSchedule = WrappedSchedule_;
+};
+
+template<class T> struct kpack_schedule_traits {
+  static constexpr bool Value = false;
+  static constexpr int LowPack = 1;
+  static constexpr int HighPack = 0;
+  static constexpr int DeliveryN = 0;
+  using Wrapped = T;
+};
+template<int LowPack_, int HighPack_, class WrappedSchedule_, int DeliveryN_>
+struct kpack_schedule_traits<
+    KernelAiuKPackTranspose<LowPack_, HighPack_, WrappedSchedule_, DeliveryN_>> {
+  static constexpr bool Value = true;
+  static constexpr int LowPack = LowPack_;
+  static constexpr int HighPack = HighPack_;
+  static constexpr int DeliveryN = DeliveryN_;
+  using Wrapped = WrappedSchedule_;
+};
+template<class WrappedSchedule_, int DeliveryN_>
+struct kpack_schedule_traits<
+    KernelAiuQ4KPack4Transpose<WrappedSchedule_, DeliveryN_>> {
+  static constexpr bool Value = true;
+  static constexpr int LowPack = 4;
+  static constexpr int HighPack = 0;
+  static constexpr int DeliveryN = DeliveryN_;
+  using Wrapped = WrappedSchedule_;
+};
+template<int Rows_, class WrappedSchedule_>
+struct kpack_schedule_traits<KernelAiuPackedA<Rows_, WrappedSchedule_>> {
+private:
+  using WrappedTraits = kpack_schedule_traits<WrappedSchedule_>;
+public:
+  static constexpr bool Value = WrappedTraits::Value;
+  static constexpr int LowPack = WrappedTraits::LowPack;
+  static constexpr int HighPack = WrappedTraits::HighPack;
+  static constexpr int DeliveryN = WrappedTraits::DeliveryN;
+  using Wrapped = KernelAiuPackedA<Rows_, typename WrappedTraits::Wrapped>;
+};
+
 template<class T> struct q4_kpack4_schedule_traits {
   static constexpr bool Value = false;
   static constexpr int DeliveryN = 0;
@@ -218,6 +274,18 @@ struct MainloopQuactlizeMixedInput<
   static constexpr int Q4KPack4DeliveryN = DeliveryN_;
 };
 
+template<int Stages_, class kContinous_, int LowPack_, int HighPack_,
+         class WrappedSchedule_, int DeliveryN_>
+struct MainloopQuactlizeMixedInput<
+    Stages_, kContinous_,
+    KernelAiuKPackTranspose<LowPack_, HighPack_, WrappedSchedule_, DeliveryN_>>
+    : MainloopQuactlizeMixedInput<Stages_, kContinous_, WrappedSchedule_> {
+  static constexpr bool KPackTranspose = true;
+  static constexpr int KPackLow = LowPack_;
+  static constexpr int KPackHigh = HighPack_;
+  static constexpr int KPackDeliveryN = DeliveryN_;
+};
+
 //////////////////////////////////////////////////////////////////////////////
 // B BIT-PLANE CONCAT (Q3 = int2+int1, Q5 = int4+int1, Q6 = int4+int2)
 //////////////////////////////////////////////////////////////////////////////
@@ -227,53 +295,75 @@ struct MainloopQuactlizeMixedInput<
 // because the 2-plane mainloop reuses the same scale/zero machinery (and the GGUF concats are gs=16, i.e. the
 // FINE per-mma-atom scale path).
 template<int Stages_, class kContinous_, int StaticGroupSize_,
-         int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_>
+         int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_,
+         int LowKPack_, int HighKPack_, int KPackDeliveryN_>
 struct MainloopPPUAiuMixedInput2PlaneBase {
   constexpr static int Stages = Stages_;
   constexpr static int StaticGroupSize = StaticGroupSize_;
   constexpr static int ArtifactLowFold = ArtifactLowFold_;
   constexpr static int ArtifactHighFold = ArtifactHighFold_;
   constexpr static int ArtifactTileK = ArtifactTileK_;
+  constexpr static int LowKPack = LowKPack_;
+  constexpr static int HighKPack = HighKPack_;
+  constexpr static bool KPackTranspose = LowKPack_ > 0;
+  constexpr static int KPackDeliveryN = KPackDeliveryN_;
   using kContinous = kContinous_;
   using Schedule = KernelAiuMultistageMixedInput;
   using ClusterShape = Shape<_1,_1,_1>;
 };
 
 template<int Stages_, class kContinous_, typename Schedule_ = KernelAiuMultistageMixedInput,
-         int ArtifactLowFold_ = 1, int ArtifactHighFold_ = 1, int ArtifactTileK_ = 0>
+         int ArtifactLowFold_ = 1, int ArtifactHighFold_ = 1, int ArtifactTileK_ = 0,
+         int LowKPack_ = 0, int HighKPack_ = 0, int KPackDeliveryN_ = 0>
 struct MainloopPPUAiuMixedInput2Plane
     : MainloopPPUAiuMixedInput2PlaneBase<Stages_, kContinous_, 0,
-                                        ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_> {};
+                                        ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_,
+                                        LowKPack_, HighKPack_, KPackDeliveryN_> {};
 
-template<int Stages_, class kContinous_, int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_>
+template<int Stages_, class kContinous_, int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_,
+         int LowKPack_, int HighKPack_, int KPackDeliveryN_>
 struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageMixedInputPerCol,
-                                     ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_>
+                                     ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_, LowKPack_, HighKPack_,
+                                     KPackDeliveryN_>
     : MainloopPPUAiuMixedInput2PlaneBase<Stages_, kContinous_, -1,
-                                        ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_> {};
+                                        ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_,
+                                        LowKPack_, HighKPack_, KPackDeliveryN_> {};
 
-template<int Stages_, class kContinous_, int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_>
+template<int Stages_, class kContinous_, int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_,
+         int LowKPack_, int HighKPack_, int KPackDeliveryN_>
 struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs128,
-                                     ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_>
+                                     ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_, LowKPack_, HighKPack_,
+                                     KPackDeliveryN_>
     : MainloopPPUAiuMixedInput2PlaneBase<Stages_, kContinous_, 128,
-                                        ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_> {};
+                                        ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_,
+                                        LowKPack_, HighKPack_, KPackDeliveryN_> {};
 
-template<int Stages_, class kContinous_, int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_>
+template<int Stages_, class kContinous_, int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_,
+         int LowKPack_, int HighKPack_, int KPackDeliveryN_>
 struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs64,
-                                     ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_>
+                                     ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_, LowKPack_, HighKPack_,
+                                     KPackDeliveryN_>
     : MainloopPPUAiuMixedInput2PlaneBase<Stages_, kContinous_, 64,
-                                        ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_> {};
+                                        ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_,
+                                        LowKPack_, HighKPack_, KPackDeliveryN_> {};
 
-template<int Stages_, class kContinous_, int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_>
+template<int Stages_, class kContinous_, int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_,
+         int LowKPack_, int HighKPack_, int KPackDeliveryN_>
 struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs32,
-                                     ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_>
+                                     ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_, LowKPack_, HighKPack_,
+                                     KPackDeliveryN_>
     : MainloopPPUAiuMixedInput2PlaneBase<Stages_, kContinous_, 32,
-                                        ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_> {};
+                                        ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_,
+                                        LowKPack_, HighKPack_, KPackDeliveryN_> {};
 
-template<int Stages_, class kContinous_, int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_>
+template<int Stages_, class kContinous_, int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_,
+         int LowKPack_, int HighKPack_, int KPackDeliveryN_>
 struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs16,
-                                     ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_>
+                                     ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_, LowKPack_, HighKPack_,
+                                     KPackDeliveryN_>
     : MainloopPPUAiuMixedInput2PlaneBase<Stages_, kContinous_, 16,
-                                        ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_> {};
+                                        ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_,
+                                        LowKPack_, HighKPack_, KPackDeliveryN_> {};
 
 //////////////////////////////////////////////////////////////////////////////
 // N-FOLD (TK-freeing) mainloop policy

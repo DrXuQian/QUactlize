@@ -180,6 +180,50 @@ struct DenseQ4KPack4KernelTypes {
   static constexpr size_t SharedStorageSize = GemmKernel::SharedStorageSize;
 };
 
+// Exact type authority for the Q2/Q3/Q5/Q6 per-plane b16 K-pack layout.
+// Q4 retains DenseQ4KPack4KernelTypes so its historical type identity remains
+// unchanged; the kernel/epilogue construction is otherwise intentionally the
+// same.
+template <QuantMode QuantOp, class BaseSchedule,
+          class TileShape, class ScaleTileShape, class WarpShape,
+          int Stages, bool AiuInterleaved, class ElementB,
+          class PlaneB2 = void, int APackRows = 0,
+          int KPackDeliveryN = 0>
+struct DenseKPackKernelTypes {
+  using MainloopPolicy = ppu_mixed_policy::KPackMainloopPolicy<
+      QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
+      Stages, AiuInterleaved, ElementB, PlaneB2, APackRows,
+      KPackDeliveryN>;
+  using ElementA = typename MainloopPolicy::ElementA;
+  using ElementC = cutlass::half_t;
+  using LayoutC = cutlass::layout::RowMajor;
+  using ElementD = cutlass::half_t;
+  using LayoutD = cutlass::layout::RowMajor;
+  static constexpr int AlignmentC = 128 / cutlass::sizeof_bits<ElementC>::value;
+  static constexpr int AlignmentD = 128 / cutlass::sizeof_bits<ElementD>::value;
+  using ElementAccumulator = float;
+  using OperatorClass = cutlass::arch::OpClassTensorOp;
+  using ClusterShape = WarpShape;
+  using EpilogueSchedule = cutlass::epilogue::EpilogueSimtVectorizedWithoutEvt;
+  using EpilogueTileType = cutlass::epilogue::collective::EpilogueTileAuto;
+  using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
+      cutlass::arch::PPU0010, OperatorClass, TileShape, ClusterShape,
+      EpilogueTileType, ElementAccumulator, ElementAccumulator,
+      ElementC, LayoutC, AlignmentC, ElementD, LayoutD, AlignmentD,
+      EpilogueSchedule>::CollectiveOp;
+  using CollectiveMainloop = typename MainloopPolicy::CollectiveOp;
+  static_assert(
+      cute::size<0>(typename CollectiveEpilogue::SmemLayout{}) ==
+          cute::size<0>(typename CollectiveMainloop::TiledMma::AtomShape_MNK{}) *
+              cute::size<1>(typename CollectiveMainloop::TiledMma::ThrLayoutVMNK{}),
+      "K-pack dense epilogue M ownership must match the mainloop");
+  using GemmKernel = cutlass::gemm::kernel::GemmUniversal<
+      cute::Shape<int, int, int, int>, CollectiveMainloop,
+      CollectiveEpilogue, cutlass::gemm::SplitKSerialScheduler>;
+  using Gemm = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
+  static constexpr size_t SharedStorageSize = GemmKernel::SharedStorageSize;
+};
+
 // One instantiation: fp16 x a packed 1/2/4-bit B plane, optionally with a second high plane. The ElementBInfo tuple
 // is the same seam moe_grouped_ppu uses: a fourth tuple element makes CollectiveBuilder select the already-existing
 // two-plane collective. There is no dense-specific second collective or converter to maintain here.
@@ -235,9 +279,11 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
     return false;
   } else {
   if constexpr (!std::is_void_v<KernelTypesOverride>) {
-    static_assert(MainloopPolicy::PackedARows == 1,
-                  "the independent shipping override must remain the exact M==1 packed-A provider");
-    if (m != 1) return false;
+    if constexpr (MainloopPolicy::PackedARows > 0) {
+      static_assert(MainloopPolicy::PackedARows == 1,
+                    "the first typed packed-A provider remains the exact M==1 path");
+      if (m != MainloopPolicy::PackedARows) return false;
+    }
   }
 #if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
   // The packed writer materialises rows [0,R); all later accumulator rows are padding. Dense used to have no

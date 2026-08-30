@@ -54,6 +54,7 @@
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_a_pack.hpp"
 #include "q4_kpack4_offline.hpp"
+#include "kquant_kpack_offline.hpp"
 
 #include "cutlass/detail/collective.hpp"
 
@@ -139,6 +140,17 @@ public:
   // Type Aliases
   //
   using DispatchPolicy = MainloopQuactlizeMixedInput<Stages, kContinous, KernelSchedule>;
+  static constexpr bool kKPackTranspose =
+      kpack_schedule_traits<KernelSchedule>::Value;
+  static constexpr int kKPackLow =
+      kpack_schedule_traits<KernelSchedule>::LowPack;
+  static constexpr int kKPackHigh =
+      kpack_schedule_traits<KernelSchedule>::HighPack;
+  static constexpr int kKPackScheduledDeliveryN =
+      kpack_schedule_traits<KernelSchedule>::DeliveryN;
+  static_assert(!kKPackTranspose || kKPackHigh == 0,
+                "the single-plane collective cannot consume a second K-pack plane");
+  // Historical names remain public for the Q4 type/codegen gates.
   static constexpr bool kQ4KPack4Transpose =
       q4_kpack4_schedule_traits<KernelSchedule>::Value;
   static constexpr int kQ4KPack4ScheduledDeliveryN =
@@ -254,7 +266,7 @@ public:
   static constexpr bool kPackedTileDividesSb =
       int(Scale_TileK) > 0 && PackedUnit::kGroups % int(Scale_TileK) == 0;
   static constexpr bool kPackedKpack4Subtile =
-      kQ4KPack4Transpose && kPackedFormatMatchesElement &&
+      kKPackTranspose && kPackedFormatMatchesElement &&
       int(Scale_TileK) < PackedUnit::kGroups && kPackedTileDividesSb;
   static constexpr bool kPackedScaleOn =
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
@@ -342,6 +354,13 @@ public:
                      kQ4KPack4ResolvedDeliveryN == 32 ||
                      kQ4KPack4ResolvedDeliveryN == 64),
                 "K-pack4 collective must retain a named resident delivery N");
+  static constexpr int kKPackResolvedDeliveryN =
+      kKPackTranspose ? int(size<0>(InternalSmemLayoutAtomB{})) : 0;
+  static_assert(!kKPackTranspose ||
+                    (kKPackResolvedDeliveryN == 16 ||
+                     kKPackResolvedDeliveryN == 32 ||
+                     kKPackResolvedDeliveryN == 64),
+                "K-pack collective must retain a named resident delivery N");
   // TMA converts f32 input to tf32 when copying from GMEM to SMEM
   // For all other types, cast to size equivalent uint type to avoid any rounding by TMA.
   // static constexpr bool ConvertF32toTF32A = cute::is_same_v<float, ElementA>;
@@ -413,14 +432,15 @@ public:
   }
   using RealInternalElementB = cute::conditional_t<!SwapAB, ElementB, ElementA>;
   using BTransportElement = cute::conditional_t<
-      kQ4KPack4Transpose, cutlass::half_t, RealInternalElementB>;
-  static constexpr int PhysicalBTileK = kQ4KPack4Transpose
-      ? int(size<2>(TileShape{})) / q4_kpack4::kPack
+      kKPackTranspose, cutlass::half_t, RealInternalElementB>;
+  static constexpr int PhysicalBTileK = kKPackTranspose
+      ? int(size<2>(TileShape{})) / kKPackLow
       : int(size<2>(TileShape{}));
-  static_assert(!kQ4KPack4Transpose ||
-                    (std::is_same_v<RealInternalElementB, cutlass::int4b_t> &&
-                     int(size<2>(TileShape{})) % q4_kpack4::kTransportK == 0),
-                "K-pack4 collective needs Q4 and a whole K64 transport");
+  static_assert(!kKPackTranspose ||
+                    (kKPackLow * sizeof_bits<RealInternalElementB>::value == 16 &&
+                     int(size<2>(TileShape{})) %
+                         (kquant_kpack::kReaderPhysicalK * kKPackLow) == 0),
+                "K-pack collective needs one full b16 word and a whole physical K16 read");
   using InternalStrideA  = cute::conditional_t<!SwapAB, StrideA, StrideB>;
   using InternalStrideB  = cute::conditional_t<!SwapAB, StrideB, StrideA>;
 
@@ -1005,10 +1025,10 @@ public:
     // B init (include init aiu desc)
     auto mB_nk = load_init_B(mainloop_params, N, K, L, l_coord);                                                // (n,k)
     Tensor gB = [&] {
-      if constexpr (kQ4KPack4Transpose) {
-        // Physical B is [N,K/4] b16.  Its K-tile count is nevertheless
-        // identical to the logical [N,K] Q4 tensor because both the problem
-        // and tactic K extents are divided by four here.
+      if constexpr (kKPackTranspose) {
+        // Physical B is [N,K/Pack] b16.  Its K-tile count is nevertheless
+        // identical to the logical [N,K] tensor because both the problem and
+        // tactic K extents are divided by the same plane-owned Pack here.
         using PhysicalBTile = Shape<decltype(shape<1>(TileShape{})),
                                     Int<PhysicalBTileK>>;
         return local_tile(mB_nk, PhysicalBTile{},
@@ -1138,8 +1158,8 @@ public:
     CUTE_STATIC_ASSERT_V(size<0>(sA) == size<0>(TileShape{}));                 // BLK_M_LOGICAL
     CUTE_STATIC_ASSERT_V(size<0>(gB) == size<0>(sB));                          // BLK_N
     CUTE_STATIC_ASSERT_V(size<1>(gB) == size<1>(sB));                          // BLK_K
-    if constexpr (kQ4KPack4Transpose) {
-      CUTE_STATIC_ASSERT_V(size<1>(sA) == Int<q4_kpack4::kPack>{} * size<1>(sB));
+    if constexpr (kKPackTranspose) {
+      CUTE_STATIC_ASSERT_V(size<1>(sA) == Int<kKPackLow>{} * size<1>(sB));
     } else {
       CUTE_STATIC_ASSERT_V(size<1>(sA) == size<1>(sB));                        // BLK_K
     }
@@ -1189,7 +1209,7 @@ public:
     auto thr_mma = tiled_mma.get_thread_slice(thread_idx);
     Tensor tCrA = thr_mma.partition_fragment_A(sA(_,_,0));                   // (MMA,MMA_M,MMA_K)
     Tensor tCrB_mma = [&] {
-      if constexpr (kQ4KPack4Transpose) {
+      if constexpr (kKPackTranspose) {
         // Owning rmem fragment only: no load is performed through this logical
         // view.  The physical b16 tile is read below, converted, and retiled
         // into this ordinary N x logical-K MMA destination.
@@ -1242,15 +1262,15 @@ public:
         Layout<Shape<warpOnM, warpOnN,_1>>,
         Tile<ShadowPermutationM, PermutationN, _32>>;
 
-    // The K-pack4 reader uses the actual PPU0010 fp16 B-fragment map because
-    // each opaque b16 is one transport word.  Its K mode is physical K/4, so
-    // one x1 copy step (Kgroup16) feeds four logical K16 MMA atoms.
+    // K-pack uses the actual PPU0010 fp16 B-fragment map because each opaque
+    // b16 is one transport word.  One physical K16 copy step feeds Pack
+    // logical K16 MMA atoms.
     using TiledMma_KPack4 = TiledMMA<
         MMA_Atom<PPU0010_16x16x16_F32F16F16F32_TN>,
         Layout<Shape<warpOnM, warpOnN, _1>>,
         Tile<ShadowPermutationM, PermutationN, _16>>;
     using TiledMma_BLoad = cute::conditional_t<
-        kQ4KPack4Transpose, TiledMma_KPack4, TiledMma_S8>;
+        kKPackTranspose, TiledMma_KPack4, TiledMma_S8>;
 
     TiledMma_BLoad tiled_mma_bload;
     auto thr_mma_bload = tiled_mma_bload.get_thread_slice(thread_idx);
@@ -1264,7 +1284,7 @@ public:
     CUTE_STATIC_ASSERT_V(size<2>(tCsA) == size<2>(tCrA_copy_view));            // CPY_K
 
     auto sB_load = [&] {
-      if constexpr (kQ4KPack4Transpose) return sB;
+      if constexpr (kKPackTranspose) return sB;
       else return recast<int8_t>(sB);
     }();
     Tensor tCrB_load = thr_mma_bload.partition_fragment_B(sB_load(_,_,0));
@@ -1375,13 +1395,13 @@ public:
 private:
   CUTLASS_DEVICE
   auto load_init_B(Params const& mainloop_params, int N, int K, int L, int l_coord) {
-    if constexpr (kQ4KPack4Transpose) {
+    if constexpr (kKPackTranspose) {
       using TilerB = typename GmemTiledCopyB::Tiler_MN;
       using Transport = cutlass::half_t;
-      int const physical_k = K / q4_kpack4::kPack;
+      int const physical_k = K / kKPackLow;
       static_assert(sizeof_bits<Transport>::value ==
-                        q4_kpack4::kPack * sizeof_bits<RealInternalElementB>::value,
-                    "one K-pack4 transport word must cover four logical codes");
+                        kKPackLow * sizeof_bits<RealInternalElementB>::value,
+                    "one K-pack transport word must cover one complete logical code pack");
       // Keep the outer expert coordinate inside the CuTe tensor until it is
       // selected.  The first grouped K-pack4 port manually advanced a byte
       // pointer by l_coord and then sliced this L mode by l_coord as well;
@@ -1395,7 +1415,7 @@ private:
           make_shape(N, physical_k, L), physical_stride);
       auto mB_nk = mB_nkl(_,_,l_coord);
       static_assert(rank(decltype(mB_nk.layout()){}) == 2,
-                    "the selected K-pack4 expert view must not retain an L mode");
+                    "the selected K-pack expert view must not retain an L mode");
       auto const* expert_base = reinterpret_cast<uint8_t const*>(
           raw_pointer_cast(mB_nk.data()));
       gmem_tiled_copy_B.desc_.template init<
@@ -2180,8 +2200,8 @@ private:
     static constexpr int K_BLOCK_STATIC = int(KBlockT{});
     Tensor cvt_in  = recast<RealInternalElementB>(tCrB_load(_, _, k_block));
     Tensor cvt_out = [&] {
-      if constexpr (kQ4KPack4Transpose) {
-        // K-pack4's physical transposed-b16 loader and logical m8 MMA fragment
+      if constexpr (kKPackTranspose) {
+        // K-pack's physical transposed-b16 loader and logical MMA fragment
         // have the same 32-value converter cohort, but not always the same N
         // stride.  Reusing cvt_in.layout() here made distinct (N16,K64)
         // cohorts alias whenever the loader's N stride was below the compute
@@ -2191,7 +2211,7 @@ private:
         // proves that only the cohort base differs; the 32-value converter
         // order itself remains exact.
         //
-        // Preserve cvt_in's first mode -- it is the proven int4 converter
+        // Preserve cvt_in's first mode -- it is the proven plane converter
         // emission order -- and derive a compact N layout beginning at the
         // compute fragment's own N stride.  Nested physical N modes such as
         // (2,2) then become (128,256), rather than inheriting (32,256).

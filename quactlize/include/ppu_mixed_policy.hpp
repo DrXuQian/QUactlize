@@ -9,6 +9,7 @@
 #include "cutlass/gemm/collective/collective_builder.hpp"
 
 #include "fold_traits.hpp"
+#include "kquant_kpack_offline.hpp"
 #include "q4_kpack4_offline.hpp"
 #include "ppu_group_schedule.hpp"
 #include "ppu_tactic_space.hpp"
@@ -82,8 +83,10 @@ struct OrdinaryBProvider {};
 template <int Fold> struct FoldedBProvider {};
 template <int LowFold, int HighFold> struct TwoPlaneBProvider {};
 struct KPack4TransposedBProvider {};
+template <int LowPack, int HighPack> struct KPackTransposedBProvider {};
 struct XPlaneWeightLayout {};
 struct Q4KPack4TransposeWeightLayout {};
+template <int LowPack, int HighPack> struct KQuantKPackTransposeWeightLayout {};
 template <bool Packed, bool HasZero> struct MetadataProvider {};
 template <bool AtomAtATime> struct ConversionProvider {};
 
@@ -115,6 +118,42 @@ struct KPack4Delivery<Collective, std::void_t<
       Collective::kQ4KPack4ScheduledDeliveryN;
   static constexpr int Resolved =
       Collective::kQ4KPack4ResolvedDeliveryN;
+};
+
+template <class Collective, class = void>
+struct KPackDelivery {
+  static constexpr int Scheduled = 0;
+  static constexpr int Resolved = 0;
+};
+
+template <class Collective>
+struct KPackDelivery<Collective, std::void_t<
+    decltype(Collective::kKPackScheduledDeliveryN),
+    decltype(Collective::kKPackResolvedDeliveryN)>> {
+  static constexpr int Scheduled = Collective::kKPackScheduledDeliveryN;
+  static constexpr int Resolved = Collective::kKPackResolvedDeliveryN;
+};
+
+template <class WeightLayout>
+struct KPackWeightLayoutTraits {
+  static constexpr bool Value = false;
+  static constexpr int LowPack = 1;
+  static constexpr int HighPack = 0;
+};
+
+template <>
+struct KPackWeightLayoutTraits<Q4KPack4TransposeWeightLayout> {
+  static constexpr bool Value = true;
+  static constexpr int LowPack = 4;
+  static constexpr int HighPack = 0;
+};
+
+template <int LowPack_, int HighPack_>
+struct KPackWeightLayoutTraits<
+    KQuantKPackTransposeWeightLayout<LowPack_, HighPack_>> {
+  static constexpr bool Value = true;
+  static constexpr int LowPack = LowPack_;
+  static constexpr int HighPack = HighPack_;
 };
 
 template <class Collective, class BaseSchedule, class KernelSchedule, class ElementBInfo,
@@ -158,8 +197,21 @@ struct MixedPolicyDescriptor {
   static constexpr bool atom_at_a_time = AtomAtATimeConversion<Collective>::value;
   static constexpr bool q4_kpack4_transpose =
       std::is_same_v<WeightLayout, Q4KPack4TransposeWeightLayout>;
+  static constexpr bool kpack_transpose =
+      KPackWeightLayoutTraits<WeightLayout>::Value;
+  static constexpr int kpack_low =
+      KPackWeightLayoutTraits<WeightLayout>::LowPack;
+  static constexpr int kpack_high =
+      KPackWeightLayoutTraits<WeightLayout>::HighPack;
   static constexpr int transport_tile_k =
-      q4_kpack4_transpose ? q4_kpack4::kTransportK : ArtifactTileK;
+      kpack_transpose
+          ? kquant_kpack::kReaderPhysicalK *
+                (kpack_low > kpack_high ? kpack_low : kpack_high)
+          : ArtifactTileK;
+  static constexpr int kpack_scheduled_delivery_n =
+      kpack_transpose ? KPackDelivery<Collective>::Scheduled : 0;
+  static constexpr int kpack_resolved_delivery_n =
+      kpack_transpose ? KPackDelivery<Collective>::Resolved : 0;
   static constexpr int kpack4_scheduled_delivery_n =
       q4_kpack4_transpose ? KPack4Delivery<Collective>::Scheduled : 0;
   static constexpr int kpack4_resolved_delivery_n =
@@ -313,6 +365,112 @@ struct Q4KPack4MainloopPolicy {
                     Descriptor::kpack4_resolved_delivery_n ==
                         ResolvedKPack4DeliveryN,
                 "K-pack4 descriptor must expose the exact delivery cap and resolution");
+};
+
+// Per-plane b16 K-pack provider for Q2/Q3/Q5/Q6.  ElementB and PlaneB2 retain
+// the existing converter types; only the global/shared delivery is changed.
+// Pack factors are derived from the plane widths and carried in the schedule,
+// so no runtime qtype/layout branch can reinterpret the bytes.
+template <QuantMode Mode, class BaseSchedule, class TileShape,
+          class ScaleTileShape, class WarpShape, int Stages,
+          bool AiuInterleaved, class ElementB, class PlaneB2 = void,
+          int APackRows = 0, int KPackDeliveryN = 0>
+struct KPackMainloopPolicy {
+  using ElementA = cutlass::half_t;
+  using ElementScale = cutlass::half_t;
+  using ElementZero = cutlass::half_t;
+  using LayoutA = cutlass::layout::RowMajor;
+  using LayoutB = std::conditional_t<AiuInterleaved,
+      cutlass::layout::ColumnMajorInterleaved<256>,
+      cutlass::layout::ColumnMajor>;
+  static constexpr int AlignmentA = 128 / cutlass::sizeof_bits<ElementA>::value;
+  static constexpr int AlignmentB = 128 / cutlass::sizeof_bits<ElementB>::value;
+  static constexpr int LowBits = element_bits_v<ElementB>;
+  static constexpr int HighBits = element_bits_v<PlaneB2>;
+  static constexpr int LowPack = kquant_kpack::pack_for_bits(LowBits);
+  static constexpr int HighPack = kquant_kpack::pack_for_bits(HighBits);
+  static constexpr int TacticTileK = int(cute::size<2>(TileShape{}));
+  static constexpr int ArtifactTileK = 0;
+  static constexpr int ArtifactLowFold = 1;
+  static constexpr int ArtifactHighFold = 1;
+  static constexpr int TileK = TacticTileK;
+  static constexpr int LowFold = 1;
+  static constexpr int HighFold = 1;
+  static constexpr int TransportTileK = kquant_kpack::kReaderPhysicalK *
+      (LowPack > HighPack ? LowPack : HighPack);
+  static_assert(LowBits == 2 || LowBits == 4,
+                "non-Q4 K-pack low plane is int2 or int4");
+  static_assert(HighBits == 0 || HighBits == 1 || HighBits == 2,
+                "non-Q4 K-pack high plane is absent, int1 or int2");
+  static_assert(LowPack * LowBits == 16 &&
+                    (HighBits == 0 || HighPack * HighBits == 16),
+                "each K-pack plane must exactly fill one b16 word");
+  static_assert(TacticTileK >= TransportTileK &&
+                    TacticTileK % TransportTileK == 0,
+                "tactic TK must compose whole physical K16 b16 reads for every plane");
+  static_assert(int(cute::size<1>(TileShape{})) %
+                        kquant_kpack::kTransportN == 0,
+                "K-pack production policy composes N16 transport tiles");
+  static_assert(APackRows == 0 ||
+                    (APackRows == 1 && HighBits == 0),
+                "the first generic K-pack packed-A arm is Q2 single-plane only");
+  static_assert(KPackDeliveryN == 0 || KPackDeliveryN == 16 ||
+                    KPackDeliveryN == 32 || KPackDeliveryN == 64,
+                "K-pack delivery N is auto(0), 16, 32 or 64");
+  static constexpr int ResolvedKPackDeliveryN = KPackDeliveryN == 0
+      ? (int(cute::size<1>(TileShape{})) < 64
+             ? int(cute::size<1>(TileShape{})) : 64)
+      : (int(cute::size<1>(TileShape{})) < KPackDeliveryN
+             ? int(cute::size<1>(TileShape{})) : KPackDeliveryN);
+  static_assert(int(cute::size<1>(TileShape{})) %
+                        ResolvedKPackDeliveryN == 0,
+                "K-pack resolved delivery N must exactly tile tactic N");
+  static_assert(APackRows == 0 ||
+                    (int(cute::size<0>(TileShape{})) == 8 &&
+                     int(cute::size<0>(WarpShape{})) == 8),
+                "K-pack packed-A is bound to the TM8/WM8 decode family");
+
+  using KPackSchedule = cutlass::gemm::KernelAiuKPackTranspose<
+      LowPack, HighPack, BaseSchedule, KPackDeliveryN>;
+  using KernelSchedule = std::conditional_t<
+      APackRows == 0, KPackSchedule,
+      cutlass::gemm::KernelAiuPackedA<APackRows, KPackSchedule>>;
+  using ElementBInfo = typename OperandInfo<
+      Mode, ElementB, PlaneB2, ElementScale, ElementZero>::Type;
+  using CollectiveBuilderType = cutlass::gemm::collective::CollectiveBuilder<
+      cutlass::arch::PPU0010, cutlass::arch::OpClassTensorOp,
+      ElementA, LayoutA, AlignmentA, ElementBInfo, LayoutB, AlignmentB, float,
+      cute::tuple<TileShape, ScaleTileShape>, WarpShape, cute::Int<Stages>,
+      KernelSchedule>;
+  static_assert(CollectiveBuilderType::ArtifactTileK == 0,
+                "K-pack must not acquire an Xplane ArtifactTileK identity");
+  static_assert(CollectiveBuilderType::HasKPack,
+                "K-pack schedule must select the transposed b16 provider");
+  static_assert(CollectiveBuilderType::KPackLow == LowPack &&
+                    CollectiveBuilderType::KPackHigh == HighPack &&
+                    CollectiveBuilderType::KPackDeliveryN == KPackDeliveryN,
+                "K-pack factors/delivery must survive the policy/builder boundary");
+  using CollectiveOp = typename CollectiveBuilderType::CollectiveOp;
+  static constexpr bool PackedRowA = APackRows > 0;
+  static constexpr int PackedARows = APackRows;
+  using AProvider = std::conditional_t<
+      PackedRowA, PackedRowAProvider, AiuAProvider>;
+  using BProvider = KPackTransposedBProvider<LowPack, HighPack>;
+  using Descriptor = MixedPolicyDescriptor<
+      CollectiveOp, BaseSchedule, KernelSchedule, ElementBInfo,
+      LayoutA, LayoutB, TileShape, ScaleTileShape, WarpShape,
+      AProvider, BProvider,
+      KQuantKPackTransposeWeightLayout<LowPack, HighPack>,
+      Mode, LowBits, HighBits, TacticTileK, ArtifactTileK,
+      ArtifactLowFold, ArtifactHighFold, Stages, AiuInterleaved>;
+  static_assert(Descriptor::kpack_transpose &&
+                    Descriptor::kpack_low == LowPack &&
+                    Descriptor::kpack_high == HighPack &&
+                    Descriptor::transport_tile_k == TransportTileK &&
+                    Descriptor::kpack_scheduled_delivery_n == KPackDeliveryN &&
+                    Descriptor::kpack_resolved_delivery_n ==
+                        ResolvedKPackDeliveryN,
+                "K-pack descriptor must expose the exact physical provider");
 };
 
 // Independent dense-M==1 A provider.  This intentionally does not add a parameter to MainloopPolicy: callers that

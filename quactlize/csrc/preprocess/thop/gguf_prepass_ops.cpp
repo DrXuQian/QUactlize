@@ -933,11 +933,13 @@ torch::Tensor gguf_grouped_fully_quantized_impl(
   auto const* api = ppu_backend::load_format(packed_format_for_qtype(qtype));
   TORCH_CHECK(api, "fully-quantized grouped requires a current hgcc libquactlize_ppu.so");
   if (arrangement_v2) {
+    int const group_size =
+        (qtype == kGgmlQ4K || qtype == kGgmlQ5K) ? 32 : 16;
     TORCH_CHECK(api->grouped_fully_quantized_for_arrangement_v2 &&
                     api->grouped_fully_quantized_arrangement_valid_v2,
                 "fully-quantized grouped reader lacks the physical-layout-aware v2 ABI");
     TORCH_CHECK(api->grouped_fully_quantized_arrangement_valid_v2(
-                    int(std::max<int64_t>(total, 1)), n, k, 32, experts,
+                    int(std::max<int64_t>(total, 1)), n, k, group_size, experts,
                     std::max(max_rows, 1), int(qtype),
                     arrangement_v2, nullptr) == 1,
                 "fully-quantized grouped v2 artifact has no compatible compiled reader");

@@ -31,10 +31,12 @@ from . import (gguf_dequantize, gguf_vecdot_dense, gguf_vecdot_moe, gguf_prepare
                gguf_dense_artifact_dequantize, gguf_dense_artifact_dequantize_scale,
                gguf_gemv_scale_first, gguf_gemv_scale_first_moe, gguf_dense_scale_first)
 from .formats import (PLACED_ARRANGEMENT_VERSION_V1, PLACED_ARRANGEMENT_VERSION_V2,
+                      PLACED_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1,
                       PLACED_LAYOUT_Q4_KPACK4_TRANSPOSE_V1, PlacedArrangement,
                       PlacedArrangementV2, QuantType,
                       canonical_fully_quantized_layout, placed_arrangement,
-                      placed_code_planes, q4_kpack4_arrangement)
+                      kquant_kpack_arrangement, placed_code_planes,
+                      q4_kpack4_arrangement)
 
 
 def _check_shape(blocks: torch.Tensor, n: int, k: int, qtype: int) -> None:
@@ -352,6 +354,12 @@ def _require_placed_artifact(artifact, qtype: int, where: str):
         arrangement.validate()
         if arrangement.layout == PLACED_LAYOUT_Q4_KPACK4_TRANSPOSE_V1 and QuantType(qtype) != QuantType.Q4_K:
             raise ValueError(f"{where}: Q4 K-pack4 bytes cannot be consumed as {QuantType(qtype).name}")
+        if arrangement.layout == PLACED_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1:
+            expected = kquant_kpack_arrangement(qtype)
+            if arrangement != expected:
+                raise ValueError(
+                    f"{where}: {QuantType(qtype).name} requires K-pack descriptor {expected}, got {arrangement}; "
+                    "the plane pack factors are part of the bytes and cannot be inferred from layout=2 alone")
     low, high, units = _unpack_fq(artifact, where)
     if low.dtype != torch.uint8 or high.dtype != torch.uint8:
         raise ValueError(f"{where}: placed code planes must be uint8, got low={low.dtype} high={high.dtype}")
@@ -451,8 +459,8 @@ def matmul_bc_gemv_moe(a: torch.Tensor, artifact, qtype: int, num_experts: int,
     if isinstance(artifact, PlacedArtifact):
         if isinstance(artifact.arrangement, PlacedArrangementV2):
             raise NotImplementedError(
-                "matmul_bc_gemv_moe: K-pack4 has no grouped CUDA-core/BC reader; use the tensor-core grouped "
-                "route. Refusing to erase v2 and send layout=1 bytes through the Xplane-v1 ABI")
+                "matmul_bc_gemv_moe: K-pack v2 has no grouped CUDA-core/BC reader; use the tensor-core grouped "
+                "route. Refusing to erase its physical descriptor and send those bytes through the Xplane-v1 ABI")
         raise ValueError(
             "matmul_bc_gemv_moe: the grouped legacy op cannot carry a placed-artifact descriptor; refusing to "
             "strip it and guess the registry map. A grouped arrangement-aware ABI must land with its producer")
@@ -484,8 +492,9 @@ def dequantize_fully_quantized(artifact, qtype: int, grouped: bool = False) -> t
         low, high, units, arrangement = _require_placed_artifact(
             artifact, qtype, "dequantize_fully_quantized")
     else:
-        # The grouped producer does not yet accept TileK and therefore cannot manufacture a folded artifact. Keep
-        # its fixed-layout inverse reachable until that producer is upgraded in the same change as its descriptor.
+        # This is only the legacy descriptor-less grouped Xplane tuple.  The
+        # Q4 and generic K-pack grouped producers return PlacedArtifact above
+        # and therefore always select their exact v2 inverse.
         low, high, units = _unpack_fq(artifact, "dequantize_fully_quantized(grouped=True)")
     scale, zero = dequantize_scale_from_units(units, qtype)
     if arrangement is not None:
@@ -520,8 +529,10 @@ def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: i
     uint8[1, n, k/8] for Q5_K's 1-bit plane -- so the tuple's shape does not change with the format and `units`
     is always the LAST element. That is the property both oracles plant their fault on.
 
-    ``layout="auto"`` selects the canonical unified K-pack4 bytes for Q4_K and Xplane for every other format.
-    An explicit ``tile_k`` is itself a low-level Xplane compatibility request; K-pack4 has no artifact TileK axis.
+    ``layout="auto"`` selects the canonical K-pack4 bytes for Q4_K and Xplane for every other format.  Explicit
+    ``layout="kquant-kpack"`` selects the per-plane b16 map for Q2/Q3/Q5/Q6; each plane uses Pack=16/bits and the
+    exact pack factors travel in the canonical descriptor.  An explicit ``tile_k`` is itself a low-level Xplane
+    compatibility request; neither K-pack layout has an artifact TileK axis.
 
     tile_k SELECTS AN XPLANE PLACEMENT, and F follows from it -- see formats.fold_for. Passing None keeps the
     Xplane format's default placement when Xplane was explicitly selected.
@@ -543,9 +554,20 @@ def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: i
         tensors = _op("gguf_prepare_fully_quantized_dense_for_arrangement_v2")(
             blocks, n, k, int(qtype), *_arrangement_v2_wire(arrangement))
         return PlacedArtifact(tensors, arrangement, PLACED_ARTIFACT_VERSION_V2)
+    if layout == "kquant-kpack":
+        if QuantType(qtype) == QuantType.Q4_K:
+            raise ValueError("Q4_K retains the shipping q4-kpack4 layout; use layout='q4-kpack4'")
+        if tile_k is not None:
+            raise ValueError("kquant-kpack has no artifact TileK axis; tile_k must be None")
+        arrangement = kquant_kpack_arrangement(qtype)
+        arrangement.validate()
+        tensors = _op("gguf_prepare_fully_quantized_dense_for_arrangement_v2")(
+            blocks, n, k, int(qtype), *_arrangement_v2_wire(arrangement))
+        return PlacedArtifact(tensors, arrangement, PLACED_ARTIFACT_VERSION_V2)
     if layout != "xplane":
         raise ValueError(
-            f"unknown fully-quantized dense layout {layout!r}; expected 'auto', 'xplane' or 'q4-kpack4'")
+            f"unknown fully-quantized dense layout {layout!r}; expected 'auto', 'xplane', 'q4-kpack4' or "
+            "'kquant-kpack'")
     arrangement = placed_arrangement(qtype, tile_k)
     if tile_k is None:
         tensors = _op("gguf_prepare_fully_quantized_dense")(blocks, n, k, int(qtype))
@@ -577,7 +599,8 @@ def prepare_fully_quantized_grouped(blocks: torch.Tensor, n: int, k: int,
     """The MoE artifact: one (low, units) pair per expert, nothing expanded.
 
     blocks is [E*n*(k/256), type_size] -- expert-major, so expert e's weight is a contiguous slice. ``auto``
-    selects the canonical K-pack4 artifact for Q4_K and the compatibility Xplane tuple for other formats.
+    selects the canonical K-pack4 artifact for Q4_K and the compatibility Xplane tuple for other formats.  Use
+    ``layout="kquant-kpack"`` to build the descriptor-carrying Q2/Q3/Q5/Q6 artifact.
     Returns (low, high, units), with `high` empty for single-plane formats and uint8[E, n, k/8] for Q5_K.
     """
     want = experts * n * (k // 256)
@@ -594,9 +617,18 @@ def prepare_fully_quantized_grouped(blocks: torch.Tensor, n: int, k: int,
         tensors = _op("gguf_prepare_fully_quantized_grouped_for_arrangement_v2")(
             blocks, n, k, int(qtype), int(experts), *_arrangement_v2_wire(arrangement))
         return PlacedArtifact(tensors, arrangement, PLACED_ARTIFACT_VERSION_V2)
+    if layout == "kquant-kpack":
+        if QuantType(qtype) == QuantType.Q4_K:
+            raise ValueError("Q4_K retains the shipping q4-kpack4 layout; use layout='q4-kpack4'")
+        arrangement = kquant_kpack_arrangement(qtype)
+        arrangement.validate()
+        tensors = _op("gguf_prepare_fully_quantized_grouped_for_arrangement_v2")(
+            blocks, n, k, int(qtype), int(experts), *_arrangement_v2_wire(arrangement))
+        return PlacedArtifact(tensors, arrangement, PLACED_ARTIFACT_VERSION_V2)
     if layout != "xplane":
         raise ValueError(
-            f"unknown fully-quantized grouped layout {layout!r}; expected 'auto', 'xplane' or 'q4-kpack4'")
+            f"unknown fully-quantized grouped layout {layout!r}; expected 'auto', 'xplane', 'q4-kpack4' or "
+            "'kquant-kpack'")
     return _op("gguf_prepare_fully_quantized_grouped")(
         blocks, n, k, int(qtype), int(experts))
 

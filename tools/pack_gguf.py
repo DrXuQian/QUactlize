@@ -376,11 +376,10 @@ def restore_artifact(root: pathlib.Path, record: dict):
                 f"{sorted(fields)}, got {raw!r}")
         arrangement = F.PlacedArrangementV2(*(int(raw[name]) for name in F.PlacedArrangementV2._fields))
         arrangement.validate()
-        if int(record["ggml_type"]) != int(F.QuantType.Q4_K):
-            raise ValueError(
-                f"artifact {record.get('name', '<unnamed>')}: K-pack4 v2 descriptor requires Q4_K, got "
-                f"ggml_type={record['ggml_type']}")
-        expected = F.q4_kpack4_arrangement()
+        qtype = F.QuantType(int(record["ggml_type"]))
+        expected = (F.q4_kpack4_arrangement()
+                    if qtype == F.QuantType.Q4_K
+                    else F.kquant_kpack_arrangement(qtype))
     else:
         raise ValueError(
             f"artifact {record.get('name', '<unnamed>')}: arrangement_version={version!r}; this build reads "

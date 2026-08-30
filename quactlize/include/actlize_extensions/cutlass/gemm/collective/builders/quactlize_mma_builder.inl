@@ -17,6 +17,7 @@
 #include "actlize_extensions/cutlass/detail/quactlize_mixed_dtype.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_a_pack.hpp"
 #include "q4_kpack4_offline.hpp"
+#include "kquant_kpack_offline.hpp"
 
 #define ENABLE_AIU 1
 
@@ -345,40 +346,42 @@ template <
   using SmemLayoutAtom = Layout<Shape<_8, AiuContElemSize>, Stride<AiuContElemSize, _1>>;
 };
 
-// Q4_K's canonical K-pack4 provider transports opaque b16 words through the
-// already-shipping transposed fp16 AIU/TSM pair.  The b16 is never interpreted
-// numerically: the collective recasts the delivered registers to int4 and
-// applies the existing converter.  One physical K coordinate holds four
-// logical Q4 codes, so a tactic TK maps to TK/4 b16 rows.
-template <typename Arch, typename Block_N, typename LogicalBlock_K, bool Swap,
-          int ScheduledDeliveryN = 0>
-struct MixGemm_Q4_KPack4_Transpose_Operand {
+// One converter-native code plane transported as opaque b16 words through the
+// already-shipping transposed fp16 AIU/TSM pair.  Pack is 16/plane_bits, so a
+// logical TK maps to TK/Pack physical b16 rows.  The transport never performs
+// fp16 arithmetic; the collective recasts the registers to the original
+// sub-byte type before invoking the existing converter.
+template <int Pack, typename Arch, typename Block_N, typename LogicalBlock_K,
+          bool Swap, int ScheduledDeliveryN = 0>
+struct MixGemm_KPack_Transpose_Operand {
   static_assert(cute::is_same_v<Arch, cutlass::arch::PPU0010>,
-                "the first K-pack4 transport is bound to the proved PPU0010 b16 pair");
-  static_assert(Block_N{} % q4_kpack4::kTransportN == 0,
-                "K-pack4 transposed N must compose whole N16 reads");
-  static_assert(LogicalBlock_K{} >= q4_kpack4::kTransportK &&
-                    LogicalBlock_K{} % q4_kpack4::kTransportK == 0,
-                "K-pack4 initially supports TK64/128/256; TK32 needs a K64 reuse mainloop");
+                "K-pack transport is bound to the proved PPU0010 b16 pair");
+  static_assert(Pack == 4 || Pack == 8 || Pack == 16,
+                "b16 K-pack supports int4/int2/int1 planes");
+  static_assert(Block_N{} % kquant_kpack::kTransportN == 0,
+                "K-pack transposed N must compose whole N16 reads");
+  static_assert(LogicalBlock_K{} >= kquant_kpack::kReaderPhysicalK * Pack &&
+                    LogicalBlock_K{} % (kquant_kpack::kReaderPhysicalK * Pack) == 0,
+                "logical TK must contain whole physical K16 b16 reads");
   using TransportElement = cutlass::half_t;
-  using PhysicalBlockK = Int<LogicalBlock_K{} / q4_kpack4::kPack>;
+  using PhysicalBlockK = Int<LogicalBlock_K{} / Pack>;
   static constexpr int AutoDeliveryN = Block_N{} < 64 ? Block_N{} : 64;
   static constexpr int DeliveryN =
       ScheduledDeliveryN > 0
           ? (Block_N{} < ScheduledDeliveryN ? Block_N{} : ScheduledDeliveryN)
           : AutoDeliveryN;
   static_assert(DeliveryN == 16 || DeliveryN == 32 || DeliveryN == 64,
-                "K-pack4 resolved delivery N is 16, 32 or 64");
+                "K-pack resolved delivery N is 16, 32 or 64");
   static_assert(Block_N{} % DeliveryN == 0,
-                "K-pack4 delivery N must exactly tile tactic N");
+                "K-pack delivery N must exactly tile tactic N");
   static constexpr int InstNum = Block_N{} / DeliveryN;
 
-  // The offline bytes remain canonical [K/4,N] b16 for every DeliveryN.
+  // The offline bytes remain canonical [K/Pack,N] b16 for every DeliveryN.
   // DeliveryN changes only the matched AIU/TSM resident cube:
   //   64 -> one 8 KiB cube, 128 B physical-K row pitch;
   //   32 -> two 4 KiB cubes,  64 B physical-K row pitch;
   //   16 -> four 2 KiB cubes, 32 B physical-K row pitch.
-  // The complete stage remains Block_N*(TK/4)*sizeof(b16), so converter,
+  // The complete stage remains Block_N*(TK/Pack)*sizeof(b16), so converter,
   // MMA, barriers and workspace ABI are independent of this scheduling axis.
   static constexpr int bits_per_aiu =
       DeliveryN * PhysicalBlockK{} * sizeof_bits<TransportElement>::value;
@@ -396,6 +399,30 @@ struct MixGemm_Q4_KPack4_Transpose_Operand {
       Stride<_1, Int<DeliveryN>>>;
   static constexpr int PhysicalK = PhysicalBlockK{};
   static constexpr int LogicalK = LogicalBlock_K{};
+  static constexpr int CodesPerWord = Pack;
+};
+
+// Preserve the Q4 type name and all of its nested members as a source/type ABI.
+template <typename Arch, typename Block_N, typename LogicalBlock_K, bool Swap,
+          int ScheduledDeliveryN = 0>
+struct MixGemm_Q4_KPack4_Transpose_Operand
+    : MixGemm_KPack_Transpose_Operand<
+          q4_kpack4::kPack, Arch, Block_N, LogicalBlock_K, Swap,
+          ScheduledDeliveryN> {};
+
+template <bool Enabled, int Pack, typename Arch, typename Block_N,
+          typename LogicalBlock_K, bool Swap, int DeliveryN,
+          typename LegacyOperand>
+struct SelectKPackOperand {
+  using type = LegacyOperand;
+};
+template <int Pack, typename Arch, typename Block_N,
+          typename LogicalBlock_K, bool Swap, int DeliveryN,
+          typename LegacyOperand>
+struct SelectKPackOperand<true, Pack, Arch, Block_N, LogicalBlock_K,
+                          Swap, DeliveryN, LegacyOperand> {
+  using type = MixGemm_KPack_Transpose_Operand<
+      Pack, Arch, Block_N, LogicalBlock_K, Swap, DeliveryN>;
 };
 
 template <bool Enabled, typename Arch, typename Block_N,
@@ -530,7 +557,7 @@ struct CollectiveBuilder<
       (cute::is_same_v<KernelScheduleType, KernelAiuMultistageMixedInputFinegrainedGs32> ||
        cute::is_same_v<KernelScheduleType, KernelAiuMultistageMixedInputFinegrainedGs16> ||
        (fold_schedule_traits<KernelScheduleType>::ArtifactLowFold > 0) ||
-       q4_kpack4_schedule_traits<KernelScheduleType>::Value)>   // physical provider contract
+       kpack_schedule_traits<KernelScheduleType>::Value)>   // physical provider contract
 > {
 private:
   using ScaleA = detail::deduce_mixed_width_dtype_t<1, ElementPairA_>;
@@ -593,6 +620,14 @@ public:
       q4_kpack4_schedule_traits<KernelScheduleType>::Value;
   static constexpr int Q4KPack4DeliveryN =
       q4_kpack4_schedule_traits<KernelScheduleType>::DeliveryN;
+  static constexpr bool HasKPack =
+      kpack_schedule_traits<KernelScheduleType>::Value;
+  static constexpr int KPackLow =
+      kpack_schedule_traits<KernelScheduleType>::LowPack;
+  static constexpr int KPackHigh =
+      kpack_schedule_traits<KernelScheduleType>::HighPack;
+  static constexpr int KPackDeliveryN =
+      kpack_schedule_traits<KernelScheduleType>::DeliveryN;
   static constexpr int blockM = cute::get<0>(TileShape_MNK{});
   static constexpr int blockN = cute::get<1>(TileShape_MNK{});
   static constexpr int blockK = cute::get<2>(TileShape_MNK{});
@@ -652,8 +687,9 @@ public:
       ArtifactLowFold * EffectiveArtifactTileK * cutlass::sizeof_bits<P2Elem>::value / 8;
   static constexpr int LegacyP2ExtraFold =
       P2ArtifactBytesBeforeExtraFold >= 32 ? 1 : 32 / P2ArtifactBytesBeforeExtraFold;
-  static constexpr int ArtifactHighFold = ExplicitArtifactHighFold > 0
-      ? ExplicitArtifactHighFold : ArtifactLowFold * LegacyP2ExtraFold;
+  static constexpr int ArtifactHighFold = HasKPack ? 1 :
+      (ExplicitArtifactHighFold > 0
+          ? ExplicitArtifactHighFold : ArtifactLowFold * LegacyP2ExtraFold);
   static_assert(!HasPlane2 || ArtifactHighFold >= ArtifactLowFold,
                 "artifact high fold cannot be smaller than the low fold");
   static_assert(!HasPlane2 || ArtifactHighFold % ArtifactLowFold == 0,
@@ -664,11 +700,23 @@ public:
   // ordinary low-plane collective even when an independently folded high plane supplied the wrapper.
   static constexpr int FoldF = ArtifactLowFold;  // compatibility inside the existing collective API
   static constexpr bool HasFold = ArtifactLowFold > 1;
+  static_assert(!HasKPack ||
+                    (KPackLow * sizeof_bits<RealInternalElementB>::value == 16 &&
+                     (!HasPlane2 ||
+                        KPackHigh * sizeof_bits<P2Elem>::value == 16) &&
+                     ArtifactLowFold == 1 && ArtifactHighFold == 1),
+                "K-pack factors must exactly fill b16 and must not inherit an xplane fold");
   static_assert(!HasQ4KPack4 ||
-                    (!HasPlane2 && sizeof_bits<RealInternalElementB>::value == 4 &&
-                     ArtifactLowFold == 1),
-                "K-pack4 is one Q4 plane and must not inherit an xplane fold");
-  using BaseSchedule = typename fold_schedule_traits<KernelScheduleType>::Base;   // == KernelScheduleType if no fold
+                    (!HasPlane2 && KPackLow == 4 && KPackHigh == 0),
+                "the historical Q4 wrapper remains the exact one-plane Pack4 path");
+  using FoldBaseSchedule = typename fold_schedule_traits<KernelScheduleType>::Base;
+  // The one-plane collective reads K-pack directly from its schedule wrapper.
+  // The two-plane collective instead receives both pack factors explicitly in
+  // its dispatch policy, so strip only that outer wrapper and retain the
+  // underlying group-size (and optional A-provider) schedule.
+  using BaseSchedule = cute::conditional_t<HasKPack && HasPlane2,
+      typename kpack_schedule_traits<FoldBaseSchedule>::Wrapped,
+      FoldBaseSchedule>;
 
   // HasPlane2 must WIN over HasFold. It used to be the other way round, which meant a 2-plane build whose LOW plane
   // needs a fold (int2 at Block_K=64 -> F1=2) was routed to the single-plane fold collective and plane 2 was silently
@@ -677,7 +725,10 @@ public:
   // owns the shared MMA fragment.
   using DispatchPolicy = cute::conditional_t<HasPlane2,
       MainloopPPUAiuMixedInput2Plane<PipelineStages, kContinous, BaseSchedule,
-                                    ArtifactLowFold, ArtifactHighFold, EffectiveArtifactTileK>,
+                                    ArtifactLowFold, ArtifactHighFold, EffectiveArtifactTileK,
+                                    (HasKPack ? KPackLow : 0),
+                                    (HasKPack ? KPackHigh : 0),
+                                    (HasKPack ? KPackDeliveryN : 0)>,
       cute::conditional_t<HasFold,
           MainloopPPUAiuFold<PipelineStages, kContinous, (HasFold ? FoldF : 2), BaseSchedule>,
           MainloopQuactlizeMixedInput<PipelineStages, kContinous, BaseSchedule>>>;
@@ -717,9 +768,9 @@ public:
   using ArtifactContigShape = Shape<Int<ArtifactLowFold>, Int<EffectiveArtifactTileK>>;
   using LegacyOperandB = quactlize_detail::MixGemm_AIU_Operand<
       RealInternalElementB, false, Int<BFoldBlockN>, Int<FullBlockK>, true, ArtifactContigShape>;
-  using DefaultOperandB = typename quactlize_detail::SelectQ4KPack4Operand<
-      HasQ4KPack4, Arch, Int<blockN>, Int<blockK>, true,
-      Q4KPack4DeliveryN, LegacyOperandB>::type;
+  using DefaultOperandB = typename quactlize_detail::SelectKPackOperand<
+      HasKPack, KPackLow, Arch, Int<blockN>, Int<blockK>, true,
+      KPackDeliveryN, LegacyOperandB>::type;
 #elif 0 // async_cp not work now
   static_assert(false, "async_cp not work now");
   using DispatchPolicy = MainloopQuactlizeMixedInput<PipelineStages, kContinous, KernelScheduleType>;
@@ -762,8 +813,12 @@ public:
   static_assert(blockN % ArtifactHighFold == 0 || !HasPlane2,
                 "artifact high fold must divide Block_N");
   using ArtifactContigShape2 = Shape<Int<OperandB2Fold>, Int<EffectiveArtifactTileK>>;
-  using DefaultOperandB2 = quactlize_detail::MixGemm_AIU_Operand<
+  using LegacyOperandB2 = quactlize_detail::MixGemm_AIU_Operand<
       P2Elem, false, Int<blockN / OperandB2Fold>, Int<FullBlockK2>, true, ArtifactContigShape2>;
+  using DefaultOperandB2 = typename quactlize_detail::SelectKPackOperand<
+      HasKPack && HasPlane2, (HasPlane2 ? KPackHigh : KPackLow),
+      Arch, Int<blockN>, Int<blockK>, true, KPackDeliveryN,
+      LegacyOperandB2>::type;
 
   // Both planes' atoms ride the EXISTING single template params (CollectiveMma's parameter list is fixed by its
   // primary template). collective::BPlanes is the marker -- NOT cute::is_tuple, since a cute Layout is itself

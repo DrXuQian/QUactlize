@@ -286,6 +286,63 @@ int launch_grouped_q4_kpack4_config(
 }
 #endif
 
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
+    defined(PPU_PACKED_FORMAT) && (PPU_PACKED_FORMAT != 0)
+// Canonical Q2/Q3/Q5/Q6 K-pack grouped path.  The ragged scheduler,
+// ptr-array epilogue and packed-metadata channel are unchanged; the override
+// names only the physical per-plane b16 reader.  ArtifactTileK remains zero
+// because layout=2 is tactic-independent.
+template <class Low, class High, int GroupSize, int TileK,
+          int TileM, int TileN, int WarpM, int WarpN, int Stages,
+          bool QueryOnly = false, bool RequireUniversalFallback = false>
+int launch_grouped_kpack_tactic(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high,
+    uint8_t const* units, half_t** out_ptrs, DS* out_strides,
+    int const* rows, int max_rows, int n, int k, int experts, GS* shapes,
+    GS const* shapes_host, int const* offsets, char* workspace,
+    size_t workspace_bytes, hggcStream_t stream) {
+  using Schedule = ppu_group_schedule::FinegrainedSchedule<GroupSize>;
+  using Tile = cute::Shape<cute::C<TileM>, cute::C<TileN>, cute::C<TileK>>;
+  using Scale = cute::Shape<
+      cute::C<TileN>,
+      cute::C<ppu_group_schedule::scale_groups_v<TileK, GroupSize>>>;
+  using Warp = cute::Shape<cute::C<WarpM>, cute::C<WarpN>, cute::C<TileK>>;
+  using Policy = ppu_mixed_policy::KPackMainloopPolicy<
+      GQM::FinegrainedScaleZero, Schedule, Tile, Scale, Warp, Stages,
+      true, Low, High, 0, 0>;
+  return launch_grouped_tactic<
+      GQM::FinegrainedScaleZero, true, Low, High, GroupSize, TileK,
+      TileM, TileN, WarpM, WarpN, Stages, QueryOnly,
+      RequireUniversalFallback, 0, Policy>(
+          act, low, high, units, nullptr, out_ptrs, out_strides, rows,
+          max_rows, n, k, experts, shapes, shapes_host, offsets, workspace,
+          workspace_bytes, stream);
+}
+
+template <class Low, class High, int GroupSize, int TileK,
+          bool QueryOnly = false>
+int launch_grouped_kpack_config(
+    GroupedConfigId config, uint16_t const* act, uint8_t const* low,
+    uint8_t const* high, uint8_t const* units, half_t** out_ptrs,
+    DS* out_strides, int const* rows, int max_rows, int n, int k,
+    int experts, GS* shapes, GS const* shapes_host, int const* offsets,
+    char* workspace, size_t workspace_bytes, hggcStream_t stream) {
+  switch (config) {
+#define QUACTLIZE_PPU_GROUPED_KPACK_CONFIG_CASE(ID, NAME, TM, TN, WM, WN, STAGES) \
+    case GroupedConfigId::ID: \
+      return launch_grouped_kpack_tactic< \
+          Low, High, GroupSize, TileK, TM, TN, WM, WN, STAGES, QueryOnly, \
+          GroupedConfigId::ID == kDefaultGroupedConfig>( \
+              act, low, high, units, out_ptrs, out_strides, rows, max_rows, \
+              n, k, experts, shapes, shapes_host, offsets, workspace, \
+              workspace_bytes, stream);
+    QUACTLIZE_PPU_GROUPED_CONFIGS(QUACTLIZE_PPU_GROUPED_KPACK_CONFIG_CASE)
+#undef QUACTLIZE_PPU_GROUPED_KPACK_CONFIG_CASE
+  }
+  return 31;
+}
+#endif
+
 template <GQM QuantOp, bool PackedScale, class Low, class High, int GroupSize, int TileK,
           bool QueryOnly = false>
 int launch_grouped_config(
@@ -400,6 +457,85 @@ int launch_dense_config(DenseConfigId config, uint16_t const* act, uint8_t const
   }
   return 31;
 }
+
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
+    defined(PPU_PACKED_FORMAT) && (PPU_PACKED_FORMAT != 0)
+template <class Low, class High, int GroupSize, int TacticTileK,
+          int TileM, int TileN, int WarpM, int WarpN, int Stages,
+          bool QueryOnly = false, bool RequireUniversalFallback = false>
+int launch_dense_kpack_tactic(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high,
+    uint8_t const* units, uint16_t* out, int m, int n, int k,
+    void* workspace, size_t workspace_bytes, hggcStream_t stream) {
+  constexpr ppu_tactics::Candidate kTactic{
+      {ppu_tactics::Format::I4, "dense-kpack",
+       ppu_mixed_policy::element_bits_v<Low>,
+       ppu_mixed_policy::element_bits_v<High>},
+      TileM, TileN, TacticTileK, WarpM, WarpN, TacticTileK};
+  constexpr auto kKernelExclusion =
+      ppu_tactics::DenseSpace::kernel_exclusion(kTactic);
+  constexpr auto kProducerExclusion =
+      ppu_tactics::common_producer_exclusion(kTactic);
+  static_assert(!RequireUniversalFallback ||
+                    (kKernelExclusion == ppu_tactics::Exclusion::None &&
+                     kProducerExclusion == ppu_tactics::Exclusion::None),
+                "the default dense K-pack tactic must be statically legal");
+  if constexpr (kKernelExclusion != ppu_tactics::Exclusion::None ||
+                kProducerExclusion != ppu_tactics::Exclusion::None) {
+    return 31;
+  } else {
+    using Schedule = ppu_group_schedule::FinegrainedSchedule<GroupSize>;
+    using Tile = cute::Shape<cute::C<TileM>, cute::C<TileN>,
+                             cute::C<TacticTileK>>;
+    using Scale = cute::Shape<
+        cute::C<TileN>, cute::C<ppu_group_schedule::scale_groups_v<
+                               TacticTileK, GroupSize>>>;
+    using Warp = cute::Shape<cute::C<WarpM>, cute::C<WarpN>,
+                             cute::C<TacticTileK>>;
+    using Types = fpa_intb_ppu::DenseKPackKernelTypes<
+        QM::FinegrainedScaleZero, Schedule, Tile, Scale, Warp, Stages,
+        true, Low, High, 0, 0>;
+    bool const launched = fpa_intb_ppu::generic_launcher<
+        QM::FinegrainedScaleZero, Schedule, Tile, Scale, Warp, Stages, true,
+        Low, High, true, QueryOnly, RequireUniversalFallback, 0, Types>(
+            reinterpret_cast<half_t const*>(act),
+            reinterpret_cast<Low const*>(low),
+            reinterpret_cast<half_t const*>(units), nullptr,
+            reinterpret_cast<half_t*>(out), m, n, k, GroupSize, 1,
+            static_cast<char*>(workspace), workspace_bytes, stream,
+            [&]() {
+              if constexpr (std::is_void_v<High>)
+                return static_cast<High const*>(nullptr);
+              else
+                return reinterpret_cast<High const*>(high);
+            }());
+    return launched ? 0 : 31;
+  }
+}
+
+template <class Low, class High, int GroupSize, int TacticTileK,
+          bool QueryOnly = false>
+int launch_dense_kpack_config(
+    DenseConfigId config, uint16_t const* act, uint8_t const* low,
+    uint8_t const* high, uint8_t const* units, uint16_t* out,
+    int m, int n, int k, void* workspace, size_t workspace_bytes,
+    hggcStream_t stream) {
+  switch (config) {
+#define QUACTLIZE_PPU_DENSE_KPACK_CONFIG_CASE(ID, NAME, TM, TN, WM, WN, STAGES) \
+    case DenseConfigId::ID: \
+      return launch_dense_kpack_tactic< \
+          Low, High, GroupSize, TacticTileK, TM, TN, WM, WN, STAGES, \
+          QueryOnly, \
+          DenseConfigId::ID == kDefaultDenseConfig || \
+              DenseConfigId::ID == kDecodeDefaultDenseConfig>( \
+                  act, low, high, units, out, m, n, k, workspace, \
+                  workspace_bytes, stream);
+    QUACTLIZE_PPU_DENSE_CONFIGS(QUACTLIZE_PPU_DENSE_KPACK_CONFIG_CASE)
+#undef QUACTLIZE_PPU_DENSE_KPACK_CONFIG_CASE
+  }
+  return 31;
+}
+#endif
 
 // K-pack4 is a physical sibling of the Xplane collective, not an
 // ArtifactTileK value.  Keep its exact kernel type and logical stride
@@ -662,6 +798,26 @@ bool grouped_config_type_valid(GroupedConfigId config, int max_rows, int n, int 
       max_rows, n, k, experts, nullptr, nullptr, nullptr, nullptr, 0, nullptr) == 0;
 }
 
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
+    defined(PPU_PACKED_FORMAT) && (PPU_PACKED_FORMAT != 0)
+template <class Low, class High, int GroupSize, int TileK>
+bool dense_kpack_config_type_valid(
+    DenseConfigId config, int m, int n, int k) {
+  return launch_dense_kpack_config<Low, High, GroupSize, TileK, true>(
+             config, nullptr, nullptr, nullptr, nullptr, nullptr,
+             m, n, k, nullptr, 0, nullptr) == 0;
+}
+
+template <class Low, class High, int GroupSize, int TileK>
+bool grouped_kpack_config_type_valid(
+    GroupedConfigId config, int max_rows, int n, int k, int experts) {
+  return launch_grouped_kpack_config<Low, High, GroupSize, TileK, true>(
+             config, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+             nullptr, max_rows, n, k, experts, nullptr, nullptr, nullptr,
+             nullptr, 0, nullptr) == 0;
+}
+#endif
+
 #if QUACTLIZE_PPU_DENSE_W4_SPLITK_ENABLED && \
     defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
     (!defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0)
@@ -819,9 +975,31 @@ bool dense_fully_quantized_config_valid(
     return dense_fully_quantized_config_valid(
         config, m, n, k, group_size, qtype, &legacy);
   }
+  if (arrangement->layout ==
+          QUACTLIZE_PPU_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1) {
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
+    defined(PPU_PACKED_FORMAT)
+#if PPU_PACKED_FORMAT == 2
+    return qtype == 10 && dense_kpack_config_type_valid<
+        cutlass::uint2b_t, void, 16, 256>(config, m, n, k);
+#elif PPU_PACKED_FORMAT == 3
+    return qtype == 11 && dense_kpack_config_type_valid<
+        cutlass::uint2b_t, cutlass::uint1b_t, 16, 256>(config, m, n, k);
+#elif PPU_PACKED_FORMAT == 1
+    return qtype == 13 && dense_kpack_config_type_valid<
+        cutlass::int4b_t, cutlass::uint1b_t, 32, 256>(config, m, n, k);
+#elif PPU_PACKED_FORMAT == 4
+    return qtype == 14 && dense_kpack_config_type_valid<
+        cutlass::int4b_t, cutlass::uint2b_t, 16, 128>(config, m, n, k);
+#else
+    return false;
+#endif
+#else
+    return false;
+#endif
+  }
   if (arrangement->layout !=
-          QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1 ||
-      qtype != 12) {
+          QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1 || qtype != 12) {
     return false;
   }
   (void)config;
@@ -941,13 +1119,43 @@ bool grouped_fully_quantized_config_valid(
     GroupedConfigId config, int total_rows, int n, int k, int group_size,
     int experts, int max_rows, int qtype,
     quactlize_ppu_placed_arrangement_v2 const* arrangement) {
-  constexpr int kTacticTileK = 256;
+  int const tactic_tile_k = ppu_formats::for_qtype(qtype).fully_quantized_tile_k;
   if (experts <= 0 || max_rows <= 0 || max_rows > total_rows ||
       !tensor_problem_domain(total_rows, n, k, group_size, qtype) ||
       !selected_fully_quantized_qtype(qtype, k) ||
       !ppu_arrangements::packed_tensor_reader_supported(
-          arrangement, qtype, k, kTacticTileK) ||
-      arrangement->layout != QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1) {
+          arrangement, qtype, k, tactic_tile_k)) {
+    return false;
+  }
+  if (arrangement->layout ==
+          QUACTLIZE_PPU_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1) {
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
+    defined(PPU_PACKED_FORMAT)
+#if PPU_PACKED_FORMAT == 2
+    return qtype == 10 && grouped_kpack_config_type_valid<
+        cutlass::uint2b_t, void, 16, 256>(
+            config, max_rows, n, k, experts);
+#elif PPU_PACKED_FORMAT == 3
+    return qtype == 11 && grouped_kpack_config_type_valid<
+        cutlass::uint2b_t, cutlass::uint1b_t, 16, 256>(
+            config, max_rows, n, k, experts);
+#elif PPU_PACKED_FORMAT == 1
+    return qtype == 13 && grouped_kpack_config_type_valid<
+        cutlass::int4b_t, cutlass::uint1b_t, 32, 256>(
+            config, max_rows, n, k, experts);
+#elif PPU_PACKED_FORMAT == 4
+    return qtype == 14 && grouped_kpack_config_type_valid<
+        cutlass::int4b_t, cutlass::uint2b_t, 16, 128>(
+            config, max_rows, n, k, experts);
+#else
+    return false;
+#endif
+#else
+    return false;
+#endif
+  }
+  if (arrangement->layout !=
+          QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1) {
     return false;
   }
 #if QUACTLIZE_PPU_DENSE_W4_SPLITK_ENABLED && \
@@ -1128,6 +1336,8 @@ int32_t list_valid_grouped_configs_for_arrangement_v2(
     quactlize_ppu_config_v3* configs, int32_t capacity,
     int total_rows, int n, int k, int group_size, int experts, int max_rows,
     int qtype, quactlize_ppu_placed_arrangement_v2 const* arrangement) {
+  int const tactic_tile_k =
+      ppu_formats::for_qtype(qtype).fully_quantized_tile_k;
   int32_t count = 0;
   for (int i = 0; i < int(GroupedConfigId::Count); ++i) {
     auto const id = static_cast<GroupedConfigId>(i);
@@ -1138,7 +1348,8 @@ int32_t list_valid_grouped_configs_for_arrangement_v2(
     }
     auto const& row = kGroupedConfigs[i];
     if (configs && count < capacity) {
-      configs[count] = {false, row.name, row.tile_m, row.tile_n, 256, 0,
+      configs[count] = {false, row.name, row.tile_m, row.tile_n,
+                        tactic_tile_k, 0,
                         row.warp_m, row.warp_n, row.stages};
     }
     ++count;
@@ -1160,6 +1371,67 @@ int dense_fully_quantized_device(uint16_t const* act, uint8_t const* low, uint8_
   return ppu_gemv::rt_check_launch("fully-quantized dense GEMM enqueue")
       ? 0 : ppu_gemv::kRuntimeError;
 }
+
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
+    defined(PPU_PACKED_FORMAT) && (PPU_PACKED_FORMAT != 0)
+template <class Low, class High, int GroupSize, int TacticTileK>
+int dense_kpack_device(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high,
+    uint8_t const* units, uint16_t* out, int m, int n, int k,
+    DenseConfigId config, void* workspace, size_t workspace_bytes,
+    hggcStream_t stream) {
+  size_t const need = dense_workspace_bytes(m, n);
+  if (!workspace || workspace_bytes < need) return 37;
+  int const launch_rc = launch_dense_kpack_config<
+      Low, High, GroupSize, TacticTileK>(
+          config, act, low, high, units, out, m, n, k, workspace,
+          workspace_bytes, stream);
+  if (launch_rc) return launch_rc;
+  return ppu_gemv::rt_check_launch(
+             "fully-quantized dense K-pack GEMM enqueue")
+      ? 0 : ppu_gemv::kRuntimeError;
+}
+
+template <class Low, class High, int GroupSize, int TacticTileK>
+int dense_kpack(
+    uint16_t const* act, uint8_t const* low, uint8_t const* high,
+    uint8_t const* units, uint16_t* out, int m, int n, int k,
+    DenseConfigId config) {
+  ppu_gemv::rt_clear_error();
+  constexpr int LowBits = cutlass::sizeof_bits<Low>::value;
+  constexpr int HighBits = std::is_void_v<High>
+      ? 0 : cutlass::sizeof_bits<High>::value;
+  size_t const low_bytes = size_t(n) * k * LowBits / 8;
+  size_t const high_bytes = size_t(n) * k * HighBits / 8;
+  size_t const unit_bytes =
+      size_t(k / (256 * SelectedPackedUnit::kSbPerUnit)) * n *
+      SelectedPackedUnit::kUnitTotal;
+  DevBuf da(size_t(m) * k * 2), dl(low_bytes), dh(high_bytes),
+      ds(unit_bytes), dout(size_t(m) * n * 2);
+  size_t const ws_bytes = dense_workspace_bytes(m, n);
+  DevBuf ws(ws_bytes);
+  da.from_host(act);
+  dl.from_host(low);
+  ds.from_host(units);
+  if constexpr (HighBits != 0) {
+    if (!high) return 33;
+    dh.from_host(high);
+  }
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
+  int const launch_rc = dense_kpack_device<
+      Low, High, GroupSize, TacticTileK>(
+          reinterpret_cast<uint16_t const*>(da.p),
+          reinterpret_cast<uint8_t const*>(dl.p),
+          reinterpret_cast<uint8_t const*>(dh.p),
+          reinterpret_cast<uint8_t const*>(ds.p),
+          reinterpret_cast<uint16_t*>(dout.p), m, n, k, config,
+          ws.p, ws_bytes, nullptr);
+  if (launch_rc) return launch_rc;
+  ppu_gemv::rt_sync("fully-quantized dense K-pack GEMM");
+  if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
+  return ppu_gemv::rt_copy_output(dout, out, size_t(m) * n);
+}
+#endif
 
 #if QUACTLIZE_PPU_DENSE_W4_SPLITK_ENABLED && \
     defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
@@ -1800,6 +2072,36 @@ extern "C" int quactlize_ppu_dense_fully_quantized_for_arrangement_v2(
         act, low, high, units, out, m, n, k, qtype,
         &legacy, config_name);
   }
+  if (arrangement->layout ==
+          QUACTLIZE_PPU_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1) {
+    DenseConfigId config{};
+    if (!find_dense_config(config_name, m, config)) return 39;
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
+    defined(PPU_PACKED_FORMAT)
+#if PPU_PACKED_FORMAT == 2
+    if (qtype != 10 || high) return 33;
+    return dense_kpack<cutlass::uint2b_t, void, 16, 256>(
+        act, low, nullptr, units, out, m, n, k, config);
+#elif PPU_PACKED_FORMAT == 3
+    if (qtype != 11 || !high) return 33;
+    return dense_kpack<cutlass::uint2b_t, cutlass::uint1b_t, 16, 256>(
+        act, low, high, units, out, m, n, k, config);
+#elif PPU_PACKED_FORMAT == 1
+    if (qtype != 13 || !high) return 33;
+    return dense_kpack<cutlass::int4b_t, cutlass::uint1b_t, 32, 256>(
+        act, low, high, units, out, m, n, k, config);
+#elif PPU_PACKED_FORMAT == 4
+    if (qtype != 14 || !high) return 33;
+    return dense_kpack<cutlass::int4b_t, cutlass::uint2b_t, 16, 128>(
+        act, low, high, units, out, m, n, k, config);
+#else
+    return 35;
+#endif
+#else
+    (void)high; (void)config;
+    return 34;
+#endif
+  }
   Kpack4ConfigId config{};
   if (!ppu_q4_kpack4_shipping::find_config(
           config_name, m, n, k, config)) return 39;
@@ -1987,6 +2289,45 @@ extern "C" int quactlize_ppu_dense_fully_quantized_dev_for_arrangement_v2(
         act, low, high, units, out, m, n, k, qtype,
         workspace, workspace_bytes, stream, config_name, &legacy);
   }
+  if (arrangement->layout ==
+          QUACTLIZE_PPU_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1) {
+    DenseConfigId config{};
+    if (!find_dense_config(config_name, m, config)) return 39;
+    ppu_gemv::rt_clear_error();
+    hggcStream_t const s = static_cast<hggcStream_t>(stream);
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
+    defined(PPU_PACKED_FORMAT)
+#if PPU_PACKED_FORMAT == 2
+    if (qtype != 10 || high) return 33;
+    return dense_kpack_device<cutlass::uint2b_t, void, 16, 256>(
+        act, low, nullptr, units, out, m, n, k, config,
+        workspace, size_t(workspace_bytes), s);
+#elif PPU_PACKED_FORMAT == 3
+    if (qtype != 11 || !high) return 33;
+    return dense_kpack_device<
+        cutlass::uint2b_t, cutlass::uint1b_t, 16, 256>(
+            act, low, high, units, out, m, n, k, config,
+            workspace, size_t(workspace_bytes), s);
+#elif PPU_PACKED_FORMAT == 1
+    if (qtype != 13 || !high) return 33;
+    return dense_kpack_device<
+        cutlass::int4b_t, cutlass::uint1b_t, 32, 256>(
+            act, low, high, units, out, m, n, k, config,
+            workspace, size_t(workspace_bytes), s);
+#elif PPU_PACKED_FORMAT == 4
+    if (qtype != 14 || !high) return 33;
+    return dense_kpack_device<
+        cutlass::int4b_t, cutlass::uint2b_t, 16, 128>(
+            act, low, high, units, out, m, n, k, config,
+            workspace, size_t(workspace_bytes), s);
+#else
+    return 35;
+#endif
+#else
+    (void)high; (void)config; (void)s;
+    return 34;
+#endif
+  }
   Kpack4ConfigId config{};
   if (!ppu_q4_kpack4_shipping::find_config(
           config_name, m, n, k, config)) return 39;
@@ -2028,7 +2369,7 @@ static __global__ void grouped_metadata(
 }
 
 template <GQM QuantOp, bool PackedScale, class Low, class High, int GroupSize,
-          int TileK, bool Q4Kpack4 = false>
+          int TileK, bool Q4Kpack4 = false, bool KQuantKpack = false>
 int grouped_device(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, void const* scale,
     int const* offsets, uint16_t* out, int total_rows, int n, int k, int experts, int max_rows,
@@ -2050,6 +2391,8 @@ int grouped_device(
     return ppu_gemv::kRuntimeError;
 
   int launch_rc = 31;
+  static_assert(!(Q4Kpack4 && KQuantKpack),
+                "a grouped launch selects exactly one physical K-pack ABI");
   if constexpr (Q4Kpack4) {
 #if QUACTLIZE_PPU_DENSE_W4_SPLITK_ENABLED && \
     defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
@@ -2062,6 +2405,16 @@ int grouped_device(
         config, act, low, reinterpret_cast<uint8_t const*>(scale), out_ptrs,
         out_strides, rows, max_rows, n, k, experts, shapes, nullptr, offsets,
         kernel_workspace, layout.kernel_bytes, stream);
+#endif
+  } else if constexpr (KQuantKpack) {
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
+    defined(PPU_PACKED_FORMAT) && (PPU_PACKED_FORMAT != 0)
+    static_assert(QuantOp == GQM::FinegrainedScaleZero && PackedScale,
+                  "generic grouped K-pack consumes packed metadata");
+    launch_rc = launch_grouped_kpack_config<Low, High, GroupSize, TileK>(
+        config, act, low, high, reinterpret_cast<uint8_t const*>(scale),
+        out_ptrs, out_strides, rows, max_rows, n, k, experts, shapes,
+        nullptr, offsets, kernel_workspace, layout.kernel_bytes, stream);
 #endif
   } else {
     launch_rc = launch_grouped_config<QuantOp, PackedScale,
@@ -2077,7 +2430,7 @@ int grouped_device(
 }
 
 template <GQM QuantOp, bool PackedScale, class Low, class High, int GroupSize,
-          int TileK, bool Q4Kpack4 = false>
+          int TileK, bool Q4Kpack4 = false, bool KQuantKpack = false>
 int grouped(uint16_t const* act, uint8_t const* low, uint8_t const* high, void const* scale,
             int const* rows_per_expert, uint16_t* out,
             int total_rows, int n, int k, int experts,
@@ -2140,6 +2493,8 @@ int grouped(uint16_t const* act, uint8_t const* low, uint8_t const* high, void c
   // Call the fixed group-size instantiations directly. filter_and_run's runtime ladder instantiates several SK values
   // together, so asserting packed selection there would correctly fail on its non-selected control branches.
   int launch_rc = 31;
+  static_assert(!(Q4Kpack4 && KQuantKpack),
+                "a grouped host launch selects exactly one physical K-pack ABI");
   if constexpr (Q4Kpack4) {
 #if QUACTLIZE_PPU_DENSE_W4_SPLITK_ENABLED && \
     defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
@@ -2151,6 +2506,20 @@ int grouped(uint16_t const* act, uint8_t const* low, uint8_t const* high, void c
     launch_rc = launch_grouped_q4_kpack4_config(
         config, reinterpret_cast<uint16_t const*>(da.p),
         reinterpret_cast<uint8_t const*>(dl.p),
+        reinterpret_cast<uint8_t const*>(ds.p), d_out_ptrs.as<half_t*>(),
+        d_out_strides.as<DS>(), d_rows.as<int>(), max_rows, n, k, experts,
+        d_shapes.as<GS>(), shapes.data(), d_offsets.as<int>(), ws.as<char>(),
+        ws_bytes, nullptr);
+#endif
+  } else if constexpr (KQuantKpack) {
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
+    defined(PPU_PACKED_FORMAT) && (PPU_PACKED_FORMAT != 0)
+    static_assert(QuantOp == GQM::FinegrainedScaleZero && PackedScale,
+                  "host generic grouped K-pack consumes packed metadata");
+    launch_rc = launch_grouped_kpack_config<Low, High, GroupSize, TileK>(
+        config, reinterpret_cast<uint16_t const*>(da.p),
+        reinterpret_cast<uint8_t const*>(dl.p),
+        reinterpret_cast<uint8_t const*>(dh.p),
         reinterpret_cast<uint8_t const*>(ds.p), d_out_ptrs.as<half_t*>(),
         d_out_strides.as<DS>(), d_rows.as<int>(), max_rows, n, k, experts,
         d_shapes.as<GS>(), shapes.data(), d_offsets.as<int>(), ws.as<char>(),
@@ -2388,7 +2757,7 @@ extern "C" int quactlize_ppu_grouped_fully_quantized_for_arrangement_v2(
     int total_rows, int n, int k, int experts, int qtype,
     quactlize_ppu_placed_arrangement_v2 const* arrangement,
     char const* config_name) {
-  if (!act || !low || high || !units || !rows_per_expert || !out ||
+  if (!act || !low || !units || !rows_per_expert || !out ||
       total_rows <= 0 || n <= 0 || k <= 0 || experts <= 0) {
     return 30;
   }
@@ -2403,13 +2772,51 @@ extern "C" int quactlize_ppu_grouped_fully_quantized_for_arrangement_v2(
   }
   if (row_sum != total_rows ||
       !grouped_fully_quantized_config_valid(
-          config, total_rows, n, k, 32, experts, max_rows, qtype,
+          config, total_rows, n, k, qtype_group_size(qtype),
+          experts, max_rows, qtype,
           arrangement)) {
     return 30;
+  }
+  if (arrangement->layout ==
+          QUACTLIZE_PPU_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1) {
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
+    defined(PPU_PACKED_FORMAT)
+#if PPU_PACKED_FORMAT == 2
+    if (qtype != 10 || high) return 33;
+    return grouped<GQM::FinegrainedScaleZero, true, cutlass::uint2b_t,
+                   void, 16, 256, false, true>(
+        act, low, nullptr, units, rows_per_expert, out, total_rows, n, k,
+        experts, config);
+#elif PPU_PACKED_FORMAT == 3
+    if (qtype != 11 || !high) return 33;
+    return grouped<GQM::FinegrainedScaleZero, true, cutlass::uint2b_t,
+                   cutlass::uint1b_t, 16, 256, false, true>(
+        act, low, high, units, rows_per_expert, out, total_rows, n, k,
+        experts, config);
+#elif PPU_PACKED_FORMAT == 1
+    if (qtype != 13 || !high) return 33;
+    return grouped<GQM::FinegrainedScaleZero, true, cutlass::int4b_t,
+                   cutlass::uint1b_t, 32, 256, false, true>(
+        act, low, high, units, rows_per_expert, out, total_rows, n, k,
+        experts, config);
+#elif PPU_PACKED_FORMAT == 4
+    if (qtype != 14 || !high) return 33;
+    return grouped<GQM::FinegrainedScaleZero, true, cutlass::int4b_t,
+                   cutlass::uint2b_t, 16, 128, false, true>(
+        act, low, high, units, rows_per_expert, out, total_rows, n, k,
+        experts, config);
+#else
+    return 35;
+#endif
+#else
+    (void)high;
+    return 34;
+#endif
   }
 #if QUACTLIZE_PPU_DENSE_W4_SPLITK_ENABLED && \
     defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
     (!defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0)
+  if (qtype != 12 || high) return 33;
   return grouped<GQM::FinegrainedScaleZero, true, cutlass::int4b_t,
                  void, 32, 256, true>(
       act, low, nullptr, units, rows_per_expert, out, total_rows, n, k,
@@ -2438,7 +2845,8 @@ extern "C" int64_t quactlize_ppu_grouped_fully_quantized_workspace_bytes_for_arr
     int total_rows, int max_rows, int n, int k, int experts, int qtype,
     quactlize_ppu_placed_arrangement_v2 const* arrangement) {
   if (!grouped_fully_quantized_config_valid(
-          kDefaultGroupedConfig, total_rows, n, k, 32, experts, max_rows,
+          kDefaultGroupedConfig, total_rows, n, k, qtype_group_size(qtype),
+          experts, max_rows,
           qtype, arrangement)) {
     return -1;
   }
@@ -2457,16 +2865,56 @@ extern "C" int quactlize_ppu_grouped_fully_quantized_dev_for_arrangement_v2(
   int64_t const need =
       quactlize_ppu_grouped_fully_quantized_workspace_bytes_for_arrangement_v2(
           total_rows, max_rows, n, k, experts, qtype, arrangement);
-  if (!act || !low || high || !units || !offsets || !out || !workspace ||
+  if (!act || !low || !units || !offsets || !out || !workspace ||
       total_rows <= 0 || need < 0 || workspace_bytes < need ||
       !grouped_fully_quantized_config_valid(
-          config, total_rows, n, k, 32, experts, max_rows, qtype,
+          config, total_rows, n, k, qtype_group_size(qtype),
+          experts, max_rows, qtype,
           arrangement)) {
     return 30;
+  }
+  if (arrangement->layout ==
+          QUACTLIZE_PPU_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1) {
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
+    defined(PPU_PACKED_FORMAT)
+    ppu_gemv::rt_clear_error();
+    hggcStream_t const s = static_cast<hggcStream_t>(stream);
+#if PPU_PACKED_FORMAT == 2
+    if (qtype != 10 || high) return 33;
+    return grouped_device<GQM::FinegrainedScaleZero, true,
+        cutlass::uint2b_t, void, 16, 256, false, true>(
+            act, low, nullptr, units, offsets, out, total_rows, n, k,
+            experts, max_rows, config, workspace, size_t(workspace_bytes), s);
+#elif PPU_PACKED_FORMAT == 3
+    if (qtype != 11 || !high) return 33;
+    return grouped_device<GQM::FinegrainedScaleZero, true,
+        cutlass::uint2b_t, cutlass::uint1b_t, 16, 256, false, true>(
+            act, low, high, units, offsets, out, total_rows, n, k,
+            experts, max_rows, config, workspace, size_t(workspace_bytes), s);
+#elif PPU_PACKED_FORMAT == 1
+    if (qtype != 13 || !high) return 33;
+    return grouped_device<GQM::FinegrainedScaleZero, true,
+        cutlass::int4b_t, cutlass::uint1b_t, 32, 256, false, true>(
+            act, low, high, units, offsets, out, total_rows, n, k,
+            experts, max_rows, config, workspace, size_t(workspace_bytes), s);
+#elif PPU_PACKED_FORMAT == 4
+    if (qtype != 14 || !high) return 33;
+    return grouped_device<GQM::FinegrainedScaleZero, true,
+        cutlass::int4b_t, cutlass::uint2b_t, 16, 128, false, true>(
+            act, low, high, units, offsets, out, total_rows, n, k,
+            experts, max_rows, config, workspace, size_t(workspace_bytes), s);
+#else
+    return 35;
+#endif
+#else
+    (void)high; (void)stream;
+    return 34;
+#endif
   }
 #if QUACTLIZE_PPU_DENSE_W4_SPLITK_ENABLED && \
     defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
     (!defined(PPU_PACKED_FORMAT) || PPU_PACKED_FORMAT == 0)
+  if (qtype != 12 || high) return 33;
   ppu_gemv::rt_clear_error();
   return grouped_device<GQM::FinegrainedScaleZero, true,
                         cutlass::int4b_t, void, 32, 256, true>(

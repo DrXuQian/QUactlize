@@ -99,6 +99,106 @@ def test_q4_kpack4_v2_producer_and_dense_reader_forward_the_exact_byte_map(monke
     assert calls[1][1][-9:] == wire
 
 
+@pytest.mark.parametrize("qtype,low_bits,high_bits,transport_k,group_size", [
+    (formats.QuantType.Q2_K, 2, 0, 128, 16),
+    (formats.QuantType.Q3_K, 2, 1, 256, 16),
+    (formats.QuantType.Q5_K, 4, 1, 256, 32),
+    (formats.QuantType.Q6_K, 4, 2, 128, 16),
+])
+def test_kquant_kpack_v2_dense_and_grouped_forward_one_exact_descriptor(
+        monkeypatch, qtype, low_bits, high_bits, transport_k, group_size):
+    """The new byte map is one dense/grouped ABI, not four route-local guesses."""
+    calls = []
+    arrangement = formats.kquant_kpack_arrangement(qtype)
+    assert arrangement == formats.PlacedArrangementV2(
+        formats.PLACED_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1,
+        low_bits, high_bits, 0, transport_k, group_size, 0,
+        formats.KQUANT_KPACK_MAPPING_ID)
+
+    dense_planes = _planes(arrangement)
+    grouped_planes = (
+        torch.zeros((2, 2, 256 * low_bits // 8), dtype=torch.uint8),
+        (torch.zeros((2, 2, 256 * high_bits // 8), dtype=torch.uint8)
+         if high_bits else torch.empty((0,), dtype=torch.uint8)),
+        torch.zeros((2, 1, 2, 16), dtype=torch.uint8),
+    )
+
+    def fake_op(name):
+        def call(*args):
+            calls.append((name, args))
+            if name == "gguf_prepare_fully_quantized_dense_for_arrangement_v2":
+                return dense_planes
+            if name == "gguf_prepare_fully_quantized_grouped_for_arrangement_v2":
+                return grouped_planes
+            return torch.empty((1, 2), dtype=torch.float16)
+        return call
+
+    monkeypatch.setattr(routes, "_op", fake_op)
+    block_bytes = formats.BLOCKS[qtype].block_bytes
+    dense = routes.prepare_fully_quantized_dense(
+        torch.zeros((2, block_bytes), dtype=torch.uint8), 2, 256, qtype,
+        layout="kquant-kpack")
+    wire = (routes.PLACED_ARTIFACT_VERSION_V2, *arrangement)
+    assert dense.arrangement == arrangement
+    assert calls[-1][0] == "gguf_prepare_fully_quantized_dense_for_arrangement_v2"
+    assert calls[-1][1][-9:] == wire
+
+    routes.matmul_fully_quantized_dense(
+        torch.zeros((1, 256), dtype=torch.float16), dense, qtype)
+    assert calls[-1][0] == "gguf_dense_fully_quantized_for_arrangement_v2"
+    assert calls[-1][1][-9:] == wire
+
+    grouped = routes.prepare_fully_quantized_grouped(
+        torch.zeros((4, block_bytes), dtype=torch.uint8), 2, 256, qtype, 2,
+        layout="kquant-kpack")
+    assert grouped.arrangement == arrangement
+    assert calls[-1][0] == "gguf_prepare_fully_quantized_grouped_for_arrangement_v2"
+    assert calls[-1][1][-9:] == wire
+
+    routes.matmul_fully_quantized_grouped(
+        torch.zeros((1, 256), dtype=torch.float16), grouped, qtype,
+        torch.tensor([1, 0], dtype=torch.int32))
+    assert calls[-1][0] == "gguf_grouped_fully_quantized_for_arrangement_v2"
+    assert calls[-1][1][-9:] == wire
+
+
+@pytest.mark.parametrize("qtype", [
+    formats.QuantType.Q2_K, formats.QuantType.Q3_K,
+    formats.QuantType.Q5_K, formats.QuantType.Q6_K,
+])
+def test_kquant_kpack_rejects_mapping_qtype_and_plane_drift_before_dispatch(
+        monkeypatch, qtype):
+    called = []
+    monkeypatch.setattr(
+        routes, "_op", lambda name: lambda *args: called.append((name, args)))
+    arrangement = formats.kquant_kpack_arrangement(qtype)
+    a = torch.zeros((1, 256), dtype=torch.float16)
+
+    mutated = arrangement._replace(mapping_id=arrangement.mapping_id ^ 1)
+    with pytest.raises(ValueError, match="noncanonical k-quant K-pack descriptor"):
+        routes.matmul_fully_quantized_dense(
+            a, routes.PlacedArtifact(_planes(mutated), mutated), qtype)
+
+    other = next(q for q in (
+        formats.QuantType.Q2_K, formats.QuantType.Q3_K,
+        formats.QuantType.Q5_K, formats.QuantType.Q6_K) if q != qtype)
+    with pytest.raises(ValueError, match="artifact code planes|requires K-pack descriptor"):
+        routes.matmul_fully_quantized_dense(
+            a, routes.PlacedArtifact(_planes(arrangement), arrangement), other)
+
+    low, high, units = _planes(arrangement)
+    if arrangement.high_bits:
+        bad_planes = (low, torch.empty((0,), dtype=torch.uint8), units)
+        message = "high plane"
+    else:
+        bad_planes = (low, torch.ones((1,), dtype=torch.uint8), units)
+        message = "single-plane"
+    with pytest.raises(ValueError, match=message):
+        routes.matmul_fully_quantized_dense(
+            a, routes.PlacedArtifact(bad_planes, arrangement), qtype)
+    assert called == []
+
+
 def test_canonical_offline_layout_policy_keeps_non_q4_xplane(monkeypatch):
     expected = {
         formats.QuantType.Q2_K: "xplane",
@@ -496,6 +596,35 @@ def test_manifest_roundtrip_restores_q4_kpack4_v2_and_rejects_mapping_drift(tmp_
 
     planted = dict(record, arrangement=dict(record["arrangement"], mapping_id=arrangement.mapping_id ^ 1))
     with pytest.raises(ValueError, match="noncanonical Q4 K-pack4 descriptor"):
+        pack_gguf.restore_artifact(tmp_path, planted)
+
+
+@pytest.mark.parametrize("qtype", [
+    formats.QuantType.Q2_K, formats.QuantType.Q3_K,
+    formats.QuantType.Q5_K, formats.QuantType.Q6_K,
+])
+def test_manifest_roundtrip_restores_kquant_kpack_v2_and_rejects_identity_drift(
+        tmp_path, qtype):
+    arrangement = formats.kquant_kpack_arrangement(qtype)
+    artifact = routes.PlacedArtifact(_planes(arrangement), arrangement)
+    tensor_dir = tmp_path / "weight"
+    tensor_dir.mkdir()
+    pack_gguf._write(tensor_dir, *artifact)
+    record = {
+        "name": "blk.0.weight", "dir": "weight", "ggml_type": int(qtype),
+        "arrangement_version": routes.PLACED_ARTIFACT_VERSION_V2,
+        "arrangement": arrangement._asdict(),
+    }
+    restored = pack_gguf.restore_artifact(tmp_path, record)
+    assert restored == artifact
+    assert restored.arrangement == arrangement
+
+    planted = dict(
+        record,
+        arrangement=dict(
+            record["arrangement"],
+            transport_tile_k=arrangement.transport_tile_k // 2))
+    with pytest.raises(ValueError, match="noncanonical k-quant K-pack descriptor"):
         pack_gguf.restore_artifact(tmp_path, planted)
 
 

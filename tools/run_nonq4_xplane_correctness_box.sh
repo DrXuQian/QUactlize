@@ -10,6 +10,8 @@
 # Using format_so as QUACTLIZE_PPU_LIB makes the independent arm inherit the
 # packed format under test.  This runner therefore names both handles and
 # checks their build identities before pytest starts.
+# FQ_LAYOUT=kquant-kpack reuses the same independent controls while selecting
+# the new v2 artifact for dequant-all and the dense/grouped tensor-core cells.
 set -Eeuo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -20,6 +22,7 @@ resume="${RESUME:-0}"
 formats="${FORMATS:-Q2_K Q3_K Q5_K Q6_K}"
 prepass_arm="${PREPASS_ARM:-cooperative}"
 scope="${SCOPE:-full}"
+fq_layout="${FQ_LAYOUT:-xplane}"
 # The broad compatibility board historically enables every packed-scale
 # specialization.  A prepass-only production-isomorphism check can instead
 # name the model-format build, e.g. QUACTLIZE_DENSE_ONLY=10 for Q2_K.
@@ -50,6 +53,13 @@ case "$scope" in
   full|prepass) ;;
   *) fail "SCOPE must be full or prepass, got $scope" ;;
 esac
+case "$fq_layout" in
+  xplane|kquant-kpack) ;;
+  *) fail "FQ_LAYOUT must be xplane or kquant-kpack, got $fq_layout" ;;
+esac
+if [ "$fq_layout" = kquant-kpack ] && [ "$scope" != full ]; then
+  fail "FQ_LAYOUT=kquant-kpack requires SCOPE=full"
+fi
 if [ "$scope" = prepass ]; then
   [[ "$prepass_n" =~ ^[1-9][0-9]*$ ]] && ((prepass_n % 256 == 0)) || \
     fail "PREPASS_N must be a positive multiple of 256, got $prepass_n"
@@ -457,6 +467,9 @@ for label in $formats; do
   for oracle in "${oracle_nodes[@]}"; do
     oracle_log="$out/results/$label.$oracle.log"
     oracle_env=(QUACTLIZE_PPU_LIB="$base_so" QUACTLIZE_PACKED_FORMAT="$qtype" PYTHONPATH="$root")
+    if [ "$fq_layout" = kquant-kpack ]; then
+      oracle_env+=(QUACTLIZE_FQ_TEST_LAYOUT=kquant-kpack)
+    fi
     if [ "$scope" = prepass ]; then
       oracle_env+=("QUACTLIZE_PREPASS_TEST_N=$prepass_n" "QUACTLIZE_PREPASS_TEST_K=$prepass_k")
     fi
@@ -479,8 +492,8 @@ for label in $formats; do
   done
   expected="${#oracle_nodes[@]}"
   [ "$passed" -eq "$expected" ] || fail "$label ran $passed/$expected isolated oracles"
-  printf 'NONQ4_XPLANE format=%s verdict=PASS tests=%s scope=%s prepass_arm=%s N=%s K=%s base_defs=%s\n' \
-    "$label" "$expected" "$scope" "$prepass_arm" "$prepass_n" "$prepass_k" "${base_defs// /,}"
+  printf 'NONQ4_XPLANE format=%s verdict=PASS tests=%s scope=%s layout=%s prepass_arm=%s N=%s K=%s base_defs=%s\n' \
+    "$label" "$expected" "$scope" "$fq_layout" "$prepass_arm" "$prepass_n" "$prepass_k" "${base_defs// /,}"
 done
 
-printf 'NONQ4_XPLANE_ALL verdict=PASS formats=%s\n' "${formats// /,}"
+printf 'NONQ4_XPLANE_ALL verdict=PASS formats=%s layout=%s\n' "${formats// /,}" "$fq_layout"

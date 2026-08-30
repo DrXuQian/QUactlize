@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "fold_traits.hpp"
+#include "kquant_kpack_offline.hpp"
 #include "ppu_format_config.hpp"
 #include "ppu_placed_arrangement.hpp"
 #include "q4_kpack4_offline.hpp"
@@ -235,6 +236,29 @@ int arrangement_v2_dispatch(
       return q4_kpack4::recover(low_in, low_out, n, k);
     else
       return q4_kpack4::prepare(low_in, low_out, n, k);
+  }
+  if (arrangement->layout ==
+      QUACTLIZE_PPU_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1) {
+    auto const canonical = ppu_arrangements::kquant_kpack_transpose_v1(qtype);
+    if (qtype == 12 || arrangement->bits != canonical.bits ||
+        arrangement->high_bits != canonical.high_bits ||
+        arrangement->artifact_tile_k != canonical.artifact_tile_k ||
+        arrangement->transport_tile_k != canonical.transport_tile_k ||
+        arrangement->group_size != canonical.group_size ||
+        arrangement->reserved != canonical.reserved ||
+        arrangement->mapping_id != canonical.mapping_id)
+      return 25;
+#define KQUANT_KPACK_CALL(LOW, HIGH, GROUP) \
+    kquant_kpack::transform<LOW, HIGH, GROUP, Recover>( \
+        low_in, high_in, low_out, high_out, n, k)
+    switch (qtype) {
+      case 10: return KQUANT_KPACK_CALL(2, 0, 16);
+      case 11: return KQUANT_KPACK_CALL(2, 1, 16);
+      case 13: return KQUANT_KPACK_CALL(4, 1, 32);
+      case 14: return KQUANT_KPACK_CALL(4, 2, 16);
+      default: return 25;
+    }
+#undef KQUANT_KPACK_CALL
   }
   if (arrangement->layout == QUACTLIZE_PPU_LAYOUT_XPLANE_V1) {
     if (arrangement->transport_tile_k != 0 || arrangement->group_size != 0 ||

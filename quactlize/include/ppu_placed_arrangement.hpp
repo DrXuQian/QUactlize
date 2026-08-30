@@ -1,10 +1,22 @@
 #pragma once
 
 #include "ppu_format_config.hpp"
+#include "kquant_kpack_offline.hpp"
 #include "q4_kpack4_offline.hpp"
 #include "quactlize_ppu_config.h"
 
 namespace ppu_arrangements {
+
+static_assert(q4_kpack4::kLayoutId ==
+                  QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1 &&
+              q4_kpack4::kMappingId ==
+                  QUACTLIZE_PPU_Q4_KPACK4_MAPPING_ID,
+              "Q4 K-pack C/C++ layout identities must remain identical");
+static_assert(kquant_kpack::kLayoutId ==
+                  QUACTLIZE_PPU_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1 &&
+              kquant_kpack::kMappingId ==
+                  QUACTLIZE_PPU_KQUANT_KPACK_MAPPING_ID,
+              "generic K-pack C/C++ layout identities must remain identical");
 
 // Legacy fully-quantized C readers predate the descriptor and historically consume the fully-quantized placement.
 // Do not reuse the no-tile Python producer's scale-first default here: changing this map would silently reinterpret
@@ -38,6 +50,16 @@ constexpr quactlize_ppu_placed_arrangement_v2 q4_kpack4_transpose_v1() {
           q4_kpack4::kMappingId};
 }
 
+constexpr quactlize_ppu_placed_arrangement_v2 kquant_kpack_transpose_v1(
+    int qtype) {
+  auto const& format = ppu_formats::for_qtype(qtype);
+  return {QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V2,
+          QUACTLIZE_PPU_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1,
+          format.low_bits, format.high_bits, 0,
+          kquant_kpack::transport_k(format.low_bits, format.high_bits),
+          format.group_size, 0, kquant_kpack::kMappingId};
+}
+
 // v2 is intentionally a separate predicate rather than a templated reinterpret
 // of v1.  Xplane and K-pack4 have different physical axes even though both
 // contain the same number of low-code bytes.
@@ -59,8 +81,23 @@ constexpr bool matches_compiled_tactic(
     return matches_compiled_tactic(&legacy, qtype, k, tactic_tile_k);
   }
   if (arrangement->layout !=
-      QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1)
-    return false;
+      QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1) {
+    if (arrangement->layout !=
+        QUACTLIZE_PPU_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1)
+      return false;
+    auto const& format = ppu_formats::for_qtype(qtype);
+    auto const canonical = kquant_kpack_transpose_v1(qtype);
+    return qtype != 12 && format.qtype == qtype &&
+           arrangement->bits == canonical.bits &&
+           arrangement->high_bits == canonical.high_bits &&
+           arrangement->artifact_tile_k == 0 &&
+           arrangement->transport_tile_k == canonical.transport_tile_k &&
+           arrangement->group_size == canonical.group_size &&
+           arrangement->mapping_id == canonical.mapping_id &&
+           k > 0 && k % format.group_size == 0 &&
+           tactic_tile_k >= canonical.transport_tile_k &&
+           tactic_tile_k % canonical.transport_tile_k == 0;
+  }
   return qtype == 12 && arrangement->bits == 4 &&
          arrangement->high_bits == 0 &&
          arrangement->artifact_tile_k == 0 &&
@@ -93,7 +130,9 @@ constexpr bool packed_tensor_reader_supported(
   if (!matches_compiled_tactic(arrangement, qtype, k, tactic_tile_k))
     return false;
   if (arrangement->layout ==
-      QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1)
+          QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1 ||
+      arrangement->layout ==
+          QUACTLIZE_PPU_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1)
     return true;
   quactlize_ppu_placed_arrangement_v1 const legacy{
       QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V1,
@@ -161,5 +200,14 @@ static_assert(!matches_compiled_tactic(&kQ4KPack4Control, 12, 5120, 32),
 static_assert(!matches_compiled_tactic(&kQ4KPack4Control, 13, 5120, 256),
               "the first K-pack4 ABI is Q4_K-only");
 static_assert(packed_tensor_reader_supported(&kQ4KPack4Control, 12, 5120, 256));
+inline constexpr auto kQ2KPack8Control = kquant_kpack_transpose_v1(10);
+inline constexpr auto kQ3KPackControl = kquant_kpack_transpose_v1(11);
+inline constexpr auto kQ5KPackControl = kquant_kpack_transpose_v1(13);
+inline constexpr auto kQ6KPackControl = kquant_kpack_transpose_v1(14);
+static_assert(matches_compiled_tactic(&kQ2KPack8Control, 10, 5120, 256));
+static_assert(matches_compiled_tactic(&kQ3KPackControl, 11, 5120, 256));
+static_assert(matches_compiled_tactic(&kQ5KPackControl, 13, 5120, 256));
+static_assert(matches_compiled_tactic(&kQ6KPackControl, 14, 5120, 128));
+static_assert(!matches_compiled_tactic(&kQ2KPack8Control, 12, 5120, 256));
 
 }  // namespace ppu_arrangements

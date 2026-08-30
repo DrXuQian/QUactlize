@@ -20,7 +20,10 @@ from pathlib import Path
 root = Path(sys.argv[1])
 source = (root / "quactlize/include/actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp").read_text()
 required = (
-    "if constexpr (kQ4KPack4Transpose)",
+    # Q4 now shares the one-plane b16 transport implementation with Q2 while
+    # retaining its historical schedule/type aliases.  The destination seam
+    # is therefore guarded by the generic physical-provider fact.
+    "if constexpr (kKPackTranspose)",
     "PPU_Q4_KPACK4_LEGACY_LOADER_OUTPUT_LAYOUT",
     "compact_col_major(\n            shape<1>(cvt_in.layout()), stride<1>(tCrB_mma.layout()))",
     "class TensorLayoutIn,\n            class TensorLayoutOut",

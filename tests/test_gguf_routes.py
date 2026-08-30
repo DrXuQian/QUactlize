@@ -431,6 +431,93 @@ def test_dense_artifact_affine_chain_matches_official_oracle_and_rejects_faults(
     print(run.stdout.strip())
 
 
+def test_kquant_kpack_dense_and_grouped_artifacts_match_official_gguf(
+        ppu_backend_cuda):
+    """Host/NVIDIA closure for the new Q2/Q3/Q5/Q6 resident byte maps.
+
+    The PPU collective itself is covered by the type/fragment gates and still
+    needs a PPU box.  This test closes everything that is locally decidable:
+    raw GGUF -> dense/grouped K-pack -> packed metadata -> v2 inverse, with an
+    expert-base plant that must be visible.  One subprocess owns all four
+    format handles so the per-format dlopen cache cannot inherit another test.
+    """
+    import subprocess, sys, textwrap
+
+    root = Path(__file__).resolve().parent.parent
+    code = textwrap.dedent(r'''
+        import numpy as np, torch, gguf
+        from gguf.constants import GGMLQuantizationType as GT, GGML_QUANT_SIZES
+        from quactlize import formats, routes
+
+        specs = [
+          ("Q2_K", GT.Q2_K, [(80,82),(82,84)], 10),
+          ("Q3_K", GT.Q3_K, [(108,110)], 11),
+          ("Q5_K", GT.Q5_K, [(0,2),(2,4)], 13),
+          ("Q6_K", GT.Q6_K, [(208,210)], 14),
+        ]
+        experts, n, k = 3, 256, 512
+        rows = []
+        for name, gt, hdr, qtype in specs:
+            rng = np.random.default_rng(57000 + qtype)
+            raw = rng.integers(
+                0, 256,
+                (experts * n * (k // 256), GGML_QUANT_SIZES[gt][1]),
+                dtype=np.uint8)
+            for lo, hi in hdr:
+                values = (rng.random(raw.shape[0]) * .1 + .001).astype(np.float16)
+                raw[:, lo:hi] = values.view(np.uint8).reshape(-1, 2)
+            official = gguf.quants.dequantize(raw.reshape(-1), gt).reshape(
+                experts, n, k).astype(np.float64)
+
+            def err(got, want):
+                denom = np.maximum(np.abs(want).max(axis=2, keepdims=True), 1e-9)
+                return float(np.max(np.abs(got.astype(np.float64) - want) / denom))
+
+            blocks = torch.from_numpy(raw)
+            dense = routes.prepare_fully_quantized_dense(
+                blocks[:n * (k // 256)], n, k, qtype,
+                layout="kquant-kpack")
+            assert dense.arrangement == formats.kquant_kpack_arrangement(qtype)
+            dense_got = routes.dequantize_fully_quantized(
+                dense, qtype).numpy()
+            dense_err = err(dense_got, official[:1])
+            assert dense_err < 5e-3, (name, "dense", dense_err)
+
+            grouped = routes.prepare_fully_quantized_grouped(
+                blocks, n, k, qtype, experts, layout="kquant-kpack")
+            assert grouped.arrangement == formats.kquant_kpack_arrangement(qtype)
+            grouped_got = routes.dequantize_fully_quantized(
+                grouped, qtype, grouped=True).numpy()
+            grouped_err = err(grouped_got, official)
+            assert grouped_err < 5e-3, (name, "grouped", grouped_err)
+
+            fault = [x.clone() for x in grouped]
+            for tensor in fault:
+                if tensor.ndim >= 3 and tensor.shape[0] == experts:
+                    tensor[1].copy_(tensor[0])
+            planted = routes.PlacedArtifact(
+                fault, grouped.arrangement,
+                version=grouped.arrangement_version)
+            planted_err = err(
+                routes.dequantize_fully_quantized(
+                    planted, qtype, grouped=True).numpy(), official)
+            assert planted_err > 5e-3, (name, "expert plant", planted_err)
+            rows.append(
+                f"{name}:dense={dense_err:.3e},grouped={grouped_err:.3e},"
+                f"plant={planted_err:.3e}")
+        print("KQUANT_KPACK_LOCAL " + " ".join(rows))
+    ''')
+    env = os.environ.copy()
+    env["QUACTLIZE_PPU_LIB"] = str(ppu_backend_cuda)
+    for packed_format in (1, 2, 3, 4):
+        env[f"QUACTLIZE_PPU_LIB_FMT{packed_format}"] = str(ppu_backend_cuda)
+    run = subprocess.run(
+        [sys.executable, "-c", code], cwd=root, env=env,
+        capture_output=True, text=True)
+    assert run.returncode == 0, run.stdout + run.stderr
+    print(run.stdout.strip())
+
+
 @pytest.fixture(scope="module")
 def ppu_backend_dense():
     """An actual hgcc-built library, supplied by the device tier; never substitute the nvcc GEMV fixture."""
@@ -663,7 +750,8 @@ def test_bc_dequant_all_matches_official_gguf(name, gt, hdr, qtype, ppu_backend_
     rng = np.random.default_rng(43000 + qtype)
     raw = _raw_blocks(gt, hdr, n * (k // 256), rng)
     artifact = routes.prepare_fully_quantized_dense(
-        torch.from_numpy(raw), n, k, qtype, layout="xplane")
+        torch.from_numpy(raw), n, k, qtype,
+        layout=_fq_tensorcore_layout(qtype))
     official = gguf.quants.dequantize(raw.reshape(-1), gt).reshape(n, k).astype(np.float64)
     rel = lambda w: float(np.max(np.abs(w.astype(np.float64) - official)) / max(np.max(np.abs(official)), 1e-9))
 
@@ -796,7 +884,9 @@ def test_fully_quantized_grouped_matches_dequant_first_and_rejects_fault(name, g
     rng = np.random.default_rng(29000 + qtype)
     raw = _raw_blocks(gt, hdr, experts * n * (k // 256), rng)
     blocks = torch.from_numpy(raw)
-    artifact = prepare(blocks, n, k, qtype, experts)
+    artifact = prepare(
+        blocks, n, k, qtype, experts,
+        layout=_fq_tensorcore_layout(qtype))
     official = gguf.quants.dequantize(raw.reshape(-1), gt).reshape(experts, n, k).astype(np.float64)
     bound, observed = 5e-3, []
 
@@ -816,7 +906,9 @@ def test_fully_quantized_grouped_matches_dequant_first_and_rejects_fault(name, g
         if x.ndim >= 3 and x.shape[0] == experts:
             for e in range(1, experts):
                 x[e].copy_(x[0])
-    planted_in = tuple(fault) if isinstance(artifact, (tuple, list)) else fault[0]
+    planted_in = (routes.PlacedArtifact(
+        fault, artifact.arrangement, version=artifact.arrangement_version)
+        if isinstance(artifact, routes.PlacedArtifact) else tuple(fault))
     planted_err = conditioned(launch(at, planted_in, qtype, rt).numpy())
     assert planted_err > bound, (
         f"{name}: the grouped oracle MISSED every expert reading expert 0 ({planted_err:.3e}). "
@@ -960,6 +1052,22 @@ def _require_packed_format(qtype: int, name: str):
                     f"Set QUACTLIZE_PACKED_FORMAT={qtype} against a matching build to run this case.")
 
 
+def _fq_tensorcore_layout(qtype: int) -> str:
+    """Select only the tensor-core artifact changed by a device closure.
+
+    Compatibility jobs leave this at ``auto``.  A generic K-pack job changes
+    the inverse/dense/grouped cells while the independent ScaleFirst and
+    BC-GEMV controls retain Xplane.
+    """
+    layout = os.environ.get("QUACTLIZE_FQ_TEST_LAYOUT", "auto")
+    if layout not in ("auto", "kquant-kpack"):
+        raise AssertionError(f"unknown QUACTLIZE_FQ_TEST_LAYOUT={layout!r}")
+    if layout == "kquant-kpack" and qtype == int(formats.QuantType.Q4_K):
+        raise AssertionError(
+            "Q4_K uses its shipping q4-kpack4 closure, not generic non-Q4 K-pack")
+    return layout
+
+
 @pytest.mark.fully_quantized_dense
 @pytest.mark.parametrize("name,gt,hdr,qtype", FQ_IMPLEMENTED)
 def test_fully_quantized_dense_matches_dequant_first_and_rejects_fault(name, gt, hdr, qtype, ppu_backend_dense):
@@ -992,7 +1100,8 @@ def test_fully_quantized_dense_matches_dequant_first_and_rejects_fault(name, gt,
     rng = np.random.default_rng(23000 + qtype)
     raw = _raw_blocks(gt, hdr, n * (k // 256), rng)
     blocks = torch.from_numpy(raw)
-    artifact = prepare(blocks, n, k, qtype)
+    artifact = prepare(
+        blocks, n, k, qtype, layout=_fq_tensorcore_layout(qtype))
     official = gguf.quants.dequantize(raw.reshape(-1), gt).reshape(n, k).astype(np.float64)
     official_fp16 = torch.from_numpy(official.astype(np.float16))
     bound, observed = 5e-3, []
