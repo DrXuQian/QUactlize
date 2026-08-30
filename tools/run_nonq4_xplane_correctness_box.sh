@@ -56,6 +56,61 @@ if [ "$scope" = prepass ]; then
     fail "PREPASS_K must be a positive multiple of 256, got $prepass_k"
 fi
 
+if [ "$prepass_arm" = ladder ]; then
+  python3 - <<'PY'
+from pathlib import Path
+import re
+
+header = Path("quactlize/include/gguf_scale_prepass.hpp")
+device = Path("quactlize/csrc/device/ppu_backend.cu")
+
+def body(path, needle):
+    source = path.read_text()
+    begin = source.index(needle)
+    begin = source.index("{", begin)
+    depth = 0
+    for end in range(begin, len(source)):
+        depth += (source[end] == "{") - (source[end] == "}")
+        if depth == 0:
+            return source[begin + 1:end]
+    raise AssertionError(f"unterminated body: {needle}")
+
+def tokens(source):
+    source = re.sub(r"//.*", "", source)
+    source = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+    return re.sub(r"\s+", "", source)
+
+pairs = (
+    ("production-clone", "__global__ void prepass_unit_kernel(UnitPrepassKernelArgs args)",
+     "__global__ void prepass_unit_kernel_cu_clone", ("lane&3", "lane&7")),
+    ("bootstrap", "__global__ void prepass_header_bootstrap_kernel",
+     "__global__ void prepass_cu_bootstrap_kernel", ("0x3c00u", "0x3c01u")),
+    ("template-bootstrap", "__global__ void prepass_header_template_bootstrap_kernel",
+     "__global__ void prepass_cu_template_bootstrap_kernel", ("0x3c00u", "0x3c01u")),
+)
+for name, header_needle, device_needle, mutation in pairs:
+    left = tokens(body(header, header_needle))
+    right = tokens(body(device, device_needle))
+    assert left == right, f"{name} changed more than source location"
+    assert mutation[0] in right, f"{name} negative plant target is absent"
+    assert left != right.replace(*mutation), f"{name} negative plant did not turn RED"
+
+production_tail = tokens(body(header, pairs[0][1])).split("usingU=", 1)[1]
+scalar_tail = tokens(body(device, "__global__ void prepass_unit_kernel_cu_scalar")).split("usingU=", 1)[1]
+assert production_tail == scalar_tail, "flat-scalar arm changed the cooperative body"
+assert production_tail != scalar_tail.replace("lane&3", "lane&7"), \
+    "flat-scalar body negative plant did not turn RED"
+
+source = device.read_text()
+for marker in ("half_scale[o] = sz.scale", "half_zero[o] = sz.zero",
+               "prepass_device_arch_marker_kernel", "header_serial=[scale:%zu,zero:%zu]",
+               "header_production=[scale:%zu,zero:%zu]", "cu_clone=[scale:%zu,zero:%zu]",
+               "cu_scalar=[scale:%zu,zero:%zu]"):
+    assert marker in source, f"missing ladder seam: {marker}"
+print("[nonq4-xplane:ladder-source] PASS exact header/.cu bodies; mutation and missing-seam negatives RED")
+PY
+fi
+
 if [ "$resume" -eq 0 ] && [ -e "$out" ]; then
   fail "OUT already exists; choose a fresh path or use RESUME=1: $out"
 fi
@@ -132,6 +187,18 @@ build_device() {
     fail "$label shared library is not parseable by PPU hgobjdump"
   grep -q 'Func ' "$out/results/$label.elf.txt" || \
     fail "$label shared library exposes no PPU device functions"
+  if [ "$prepass_arm" = ladder ]; then
+    for symbol in \
+      prepass_header_bootstrap_kernel prepass_cu_bootstrap_kernel \
+      prepass_header_template_bootstrap_kernel prepass_cu_template_bootstrap_kernel \
+      prepass_device_arch_marker_kernel prepass_unit_kernel_cu_clone prepass_unit_kernel_cu_scalar
+    do
+      # Identical-code folding may retain only one symbol for the token-identical pairs.  Runtime launches are the
+      # authority; record the census without rejecting a valid alias before it can run.
+      printf 'FQ_PACKED_UNIT_PREPASS_ELF label=%s symbol=%s count=%s\n' \
+        "$label" "$symbol" "$(grep -c "$symbol" "$out/results/$label.elf.txt" || true)"
+    done
+  fi
   sha256sum "$so" >"$out/results/$label.so.sha256"
   printf '%s\n' "$so" >"$out/results/$label.so.path"
 }

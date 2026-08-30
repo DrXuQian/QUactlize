@@ -116,22 +116,21 @@ struct UnitPlaneDesc {
   int64_t stride_n;
 };
 
-// PPU KERNEL-ARGUMENT ABI: CROSS ONE AGGREGATE, NOT TWO DESCRIPTORS PLUS TRAILING SCALARS.
+// PPU KERNEL-ARGUMENT ABI CANDIDATE, NOW REFUTED AS THE ROOT CAUSE.
 //
 // The host/device arithmetic above deliberately keeps BlockDesc, PlaneDesc and UnitPlaneDesc as the public layout
-// vocabulary.  They are convenient host-side views, but the first PPU production closure isolated their kernel
-// signature as the remaining common seam: both the raw and packed-unit prepasses returned rc=0 while
-// leaving every output element zero, whereas the dequant kernel in the same translation unit was bit exact.  Both
-// failing symbols were present in the PPU ELF.  Their one distinctive ABI shape was
+// vocabulary.  They are convenient host-side views.  An earlier PPU closure suspected their kernel signature:
+// both raw and packed-unit prepasses returned rc=0 while leaving every output zero, whereas dequant in the same
+// translation unit was bit exact and both failing symbols were present in the ELF.  The old signatures were
 //
 //     kernel(BlockDesc, PlaneDesc, int, int)
 //     kernel(pointer, UnitPlaneDesc, int, int, int)
 //
-// while the shipping GEMV crosses one (larger) trivially-copyable KernelArgs aggregate successfully.  Flatten the
-// complete launch contract into ONE object so no trailing scalar can be decoded at an offset derived from a prior
-// aggregate.  This changes neither ownership nor a single source/destination coordinate; the CUDA golden therefore
-// remains an exact cadence-preserving check, while the PPU old binary is the frozen negative.  The fresh PPU
-// closure must still adjudicate this as an ABI cause rather than merely an ABI-shaped candidate.
+// A one-aggregate candidate preserved every coordinate and passed the CUDA golden, but the fresh PPU binary still
+// produced all-zero raw and packed outputs.  Therefore "two aggregates plus trailing scalars" is conclusively not
+// the root.  These flattened structs remain only to keep the current frozen subject stable while the diagnostic
+// ladder isolates the first failing compiler/device seam; they must not be cited as a fix and can be restored or
+// retained on ordinary API-merit after that closure.
 struct PrepassKernelArgs {
   uint8_t const* blocks;
   half_t const* d;
@@ -448,6 +447,23 @@ __global__ void prepass_unit_kernel_serial(uint8_t const* units, UnitPlaneDesc d
     if (dst.zero) dst.zero[o] = sz.zero;
   }
 }
+
+#if defined(PPU_PACKED_UNIT_PREPASS_SERIAL) && PPU_PACKED_UNIT_PREPASS_SERIAL
+// DIAGNOSTIC-ONLY SOURCE-LOCATION CONTROLS.  After preprocessing a header body and a .cu body belong to the same
+// translation unit, so "defined in a header" is not a C++ semantic explanation by itself.  hgcc could nonetheless
+// miscompile one of the two forms.  These controls deliberately have the same one-pointer ABI and body as their .cu
+// twins; the caller launches each at both 32 and 256 threads.  A source-location claim is admissible only if the
+// otherwise identical pair diverges on device.
+__global__ void prepass_header_bootstrap_kernel(uint16_t* marker) {
+  if (blockIdx.x == 0 && threadIdx.x == 0) marker[0] = 0x3c00u;
+}
+
+template <KType T>
+__global__ void prepass_header_template_bootstrap_kernel(uint16_t* marker) {
+  if (blockIdx.x == 0 && threadIdx.x == 0)
+    marker[0] = uint16_t(0x3c00u + uint16_t(T));
+}
+#endif
 
 template <KType T>
 CUTLASS_HOST_DEVICE constexpr int prepass_unit_grid_size(
