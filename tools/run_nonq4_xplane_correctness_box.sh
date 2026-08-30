@@ -105,7 +105,9 @@ source = device.read_text()
 for marker in ("half_scale[o] = sz.scale", "half_zero[o] = sz.zero",
                "prepass_device_arch_marker_kernel", "header_serial=[scale:%zu,zero:%zu]",
                "header_production=[scale:%zu,zero:%zu]", "cu_clone=[scale:%zu,zero:%zu]",
-               "cu_scalar=[scale:%zu,zero:%zu]"):
+               "cu_scalar=[scale:%zu,zero:%zu]", "dequant_control=[bad:%zu,sentinel:%zu]",
+               "launch=[%d,%d,%d", "prepass_cu_bootstrap_kernel<<<1, 128>>>",
+               "dequant_kernel<T><<<1, 128>>>"):
     assert marker in source, f"missing ladder seam: {marker}"
 print("[nonq4-xplane:ladder-source] PASS exact header/.cu bodies; mutation and missing-seam negatives RED")
 PY

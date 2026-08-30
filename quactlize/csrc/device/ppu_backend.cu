@@ -145,6 +145,19 @@ using gguf_scale::KType;
 using gguf_scale::vecdot::VecdotActivation;
 using ppu_gemv::DevBuf;
 
+#if defined(PPU_PACKED_UNIT_PREPASS_SERIAL) && PPU_PACKED_UNIT_PREPASS_SERIAL
+// Diagnostic-only raw launch status.  Do not latch it into rt_status(): the whole point is to print every rung even
+// when an earlier launch was rejected.  GetLastError clears each rung before the next one, so one rejected launch
+// cannot make all later entries repeat its code; the local CUDA build checks the same host control flow.
+int prepass_launch_error() {
+#if defined(__HGGCCC__)
+  return int(hggcGetLastError());
+#else
+  return int(cudaGetLastError());
+#endif
+}
+#endif
+
 template <ppu_gemv::WFormat F, int StepK, int Threads>
 bool lowbit_dense_config_valid(int m, int n, int k, int group_size) {
   using D = ppu_gemv::KernelDetails<ppu_gemv::FP16DetailsA, F, ppu_gemv::WLayout::Native, StepK, Threads>;
@@ -414,10 +427,13 @@ bool run_prepass_unit_ladder(uint8_t const* host_units, DevBuf const& device_uni
   size_t const count = size_t(count64);
   size_t const bytes = count * sizeof(uint16_t);
   std::vector<uint16_t> poison(count, uint16_t(0x7bff));
-  std::vector<uint16_t> meta_poison(15, uint16_t(0x7bff));
+  std::vector<uint16_t> meta_poison(17, uint16_t(0x7bff));
+  std::vector<uint8_t> dequant_raw(size_t(raw_block_bytes<T>()), uint8_t(0));
+  std::vector<uint16_t> dequant_poison(256, uint16_t(0x7bff));
   DevBuf dc(bytes), dh(bytes), dk(bytes), dp(bytes), dfs(bytes), dfz(bytes),
          drs(bytes), drz(bytes), dhs(bytes), dhz(bytes), dcs(bytes), dcz(bytes), dss(bytes), dsz(bytes),
-         dm(meta_poison.size() * sizeof(uint16_t));
+         dm(meta_poison.size() * sizeof(uint16_t)),
+         dqr(dequant_raw.size()), dqo(dequant_poison.size() * sizeof(uint16_t));
   dc.from_host(poison.data()); dh.from_host(poison.data());
   dk.from_host(poison.data()); dp.from_host(poison.data());
   dfs.from_host(poison.data()); dfz.from_host(poison.data());
@@ -426,24 +442,39 @@ bool run_prepass_unit_ladder(uint8_t const* host_units, DevBuf const& device_uni
   dcs.from_host(poison.data()); dcz.from_host(poison.data());
   dss.from_host(poison.data()); dsz.from_host(poison.data());
   dm.from_host(meta_poison.data());
+  dqr.from_host(dequant_raw.data()); dqo.from_host(dequant_poison.data());
   if (!ppu_gemv::rt_ok()) return false;
 
   int const serial_grid = gguf_scale::prepass::prepass_unit_serial_grid_size(experts, n, num_superblocks, 256);
   int const production_grid = gguf_scale::prepass::prepass_unit_grid_size<T>(experts, n, num_superblocks, 256);
 
-  // Six source/block/template controls, all one pointer and all writing through pointer[0].
+  int launch_error[15]{};
+
+  // Source/block/template controls, all one pointer and all writing through pointer[0].
   gguf_scale::prepass::prepass_cu_bootstrap_kernel<<<1, 32>>>(dm.as<uint16_t>() + 8);
-  gguf_scale::prepass::prepass_cu_bootstrap_kernel<<<1, 256>>>(dm.as<uint16_t>() + 9);
-  gguf_scale::prepass::prepass_header_bootstrap_kernel<<<1, 32>>>(dm.as<uint16_t>() + 10);
-  gguf_scale::prepass::prepass_header_bootstrap_kernel<<<1, 256>>>(dm.as<uint16_t>() + 11);
-  gguf_scale::prepass::prepass_cu_template_bootstrap_kernel<T><<<1, 256>>>(dm.as<uint16_t>() + 12);
-  gguf_scale::prepass::prepass_header_template_bootstrap_kernel<T><<<1, 256>>>(dm.as<uint16_t>() + 13);
-  gguf_scale::prepass::prepass_device_arch_marker_kernel<<<1, 32>>>(dm.as<uint16_t>() + 14);
+  launch_error[0] = prepass_launch_error();
+  gguf_scale::prepass::prepass_cu_bootstrap_kernel<<<1, 128>>>(dm.as<uint16_t>() + 9);
+  launch_error[1] = prepass_launch_error();
+  gguf_scale::prepass::prepass_cu_bootstrap_kernel<<<1, 256>>>(dm.as<uint16_t>() + 10);
+  launch_error[2] = prepass_launch_error();
+  gguf_scale::prepass::prepass_header_bootstrap_kernel<<<1, 32>>>(dm.as<uint16_t>() + 11);
+  launch_error[3] = prepass_launch_error();
+  gguf_scale::prepass::prepass_header_bootstrap_kernel<<<1, 128>>>(dm.as<uint16_t>() + 12);
+  launch_error[4] = prepass_launch_error();
+  gguf_scale::prepass::prepass_header_bootstrap_kernel<<<1, 256>>>(dm.as<uint16_t>() + 13);
+  launch_error[5] = prepass_launch_error();
+  gguf_scale::prepass::prepass_cu_template_bootstrap_kernel<T><<<1, 256>>>(dm.as<uint16_t>() + 14);
+  launch_error[6] = prepass_launch_error();
+  gguf_scale::prepass::prepass_header_template_bootstrap_kernel<T><<<1, 256>>>(dm.as<uint16_t>() + 15);
+  launch_error[7] = prepass_launch_error();
+  gguf_scale::prepass::prepass_device_arch_marker_kernel<<<1, 128>>>(dm.as<uint16_t>() + 16);
+  launch_error[8] = prepass_launch_error();
 
   prepass_unit_ladder_kernel<T><<<serial_grid, 256>>>(
       device_units.as<uint8_t>(), dc.as<uint16_t>(), dh.as<uint16_t>(),
       dk.as<uint16_t>(), dp.as<uint16_t>(), dfs.as<cutlass::half_t>(),
       dfz.as<cutlass::half_t>(), dm.as<uint16_t>(), experts, n, num_superblocks);
+  launch_error[9] = prepass_launch_error();
 
   int64_t const stride_e = int64_t(num_superblocks) * U::kGroups * n;
   auto const header_args = gguf_scale::prepass::make_unit_prepass_kernel_args(
@@ -460,18 +491,24 @@ bool run_prepass_unit_ladder(uint8_t const* host_units, DevBuf const& device_uni
       drs.as<cutlass::half_t>(), drz.as<cutlass::half_t>(), stride_e, n, 1};
   gguf_scale::prepass::prepass_unit_kernel_serial<T, 0><<<serial_grid, 256>>>(
       device_units.as<uint8_t>(), serial_dst, experts, n, num_superblocks);
+  launch_error[10] = prepass_launch_error();
   gguf_scale::prepass::prepass_unit_kernel<T, 0><<<production_grid, 256>>>(header_args);
+  launch_error[11] = prepass_launch_error();
   gguf_scale::prepass::prepass_unit_kernel_cu_clone<T, 0><<<production_grid, 256>>>(clone_args);
+  launch_error[12] = prepass_launch_error();
   gguf_scale::prepass::prepass_unit_kernel_cu_scalar<T, 0><<<production_grid, 256>>>(
       device_units.as<uint8_t>(), dss.as<cutlass::half_t>(), dsz.as<cutlass::half_t>(),
       stride_e, n, 1, experts, n, num_superblocks);
+  launch_error[13] = prepass_launch_error();
+  dequant_kernel<T><<<1, 128>>>(dqr.as<uint8_t>(), dqo.as<cutlass::half_t>(), 1);
+  launch_error[14] = prepass_launch_error();
   ppu_gemv::rt_sync("packed-unit prefix ladder");
   if (!ppu_gemv::rt_ok()) return false;
 
   std::vector<uint16_t> got_c(count), got_h(count), got_k(count), got_p(count),
       got_fs(count), got_fz(count), got_rs(count), got_rz(count),
       got_hs(count), got_hz(count), got_cs(count), got_cz(count), got_ss(count), got_sz(count),
-      got_m(meta_poison.size());
+      got_m(meta_poison.size()), got_dq(dequant_poison.size());
   if (!dc.to_host(got_c.data()) || !dh.to_host(got_h.data()) ||
       !dk.to_host(got_k.data()) || !dp.to_host(got_p.data()) ||
       !dfs.to_host(got_fs.data()) || !dfz.to_host(got_fz.data()) ||
@@ -479,7 +516,7 @@ bool run_prepass_unit_ladder(uint8_t const* host_units, DevBuf const& device_uni
       !dhs.to_host(got_hs.data()) || !dhz.to_host(got_hz.data()) ||
       !dcs.to_host(got_cs.data()) || !dcz.to_host(got_cz.data()) ||
       !dss.to_host(got_ss.data()) || !dsz.to_host(got_sz.data()) ||
-      !dm.to_host(got_m.data()) ||
+      !dm.to_host(got_m.data()) || !dqo.to_host(got_dq.data()) ||
       !ppu_gemv::rt_ok()) return false;
 
   size_t bad_c = 0, bad_h = 0, bad_k = 0, bad_p = 0, bad_fs = 0, bad_fz = 0,
@@ -544,20 +581,28 @@ bool run_prepass_unit_ladder(uint8_t const* host_units, DevBuf const& device_uni
       }
     }
   }
+  size_t dequant_control_bad = 0, dequant_control_sentinel = 0;
+  for (uint16_t value : got_dq) {
+    dequant_control_bad += value != uint16_t(0);
+    dequant_control_sentinel += value == uint16_t(0x7bff);
+  }
   std::fprintf(stderr,
       "FQ_PACKED_UNIT_PREPASS_LADDER qtype=%d cells=%zu serial_grid=%d production_grid=%d "
       "coverage_bad=%zu header_bad=%zu code_bad=%zu product_bad=%zu "
       "half=[scale:%zu,zero:%zu] header_serial=[scale:%zu,zero:%zu] "
       "header_production=[scale:%zu,zero:%zu] cu_clone=[scale:%zu,zero:%zu] "
       "cu_scalar=[scale:%zu,zero:%zu] "
+      "dequant_control=[bad:%zu,sentinel:%zu] "
       "sentinel=[%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu] "
       "meta=[0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,"
-      "0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,0x%04x] "
+      "0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,0x%04x] "
+      "launch=[%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d] "
       "first=[e%d,sb%d,n%d,g%d,want=0x%04x,got=0x%04x]\n",
       T == KType::Q2_K ? 10 : T == KType::Q3_K ? 11 : T == KType::Q4_K ? 12 :
       T == KType::Q5_K ? 13 : 14,
       count, serial_grid, production_grid, bad_c, bad_h, bad_k, bad_p,
       bad_fs, bad_fz, bad_rs, bad_rz, bad_hs, bad_hz, bad_cs, bad_cz, bad_ss, bad_sz,
+      dequant_control_bad, dequant_control_sentinel,
       sentinel_c, sentinel_h, sentinel_k, sentinel_p, sentinel_fs, sentinel_fz,
       sentinel_rs, sentinel_rz, sentinel_hs, sentinel_hz, sentinel_cs, sentinel_cz,
       sentinel_ss, sentinel_sz,
@@ -566,6 +611,10 @@ bool run_prepass_unit_ladder(uint8_t const* host_units, DevBuf const& device_uni
       unsigned(got_m[6]), unsigned(got_m[7]), unsigned(got_m[8]),
       unsigned(got_m[9]), unsigned(got_m[10]), unsigned(got_m[11]),
       unsigned(got_m[12]), unsigned(got_m[13]), unsigned(got_m[14]),
+      unsigned(got_m[15]), unsigned(got_m[16]),
+      launch_error[0], launch_error[1], launch_error[2], launch_error[3], launch_error[4],
+      launch_error[5], launch_error[6], launch_error[7], launch_error[8], launch_error[9],
+      launch_error[10], launch_error[11], launch_error[12], launch_error[13], launch_error[14],
       first_e, first_sb, first_n, first_g, unsigned(first_want), unsigned(first_got));
   return true;
 }
