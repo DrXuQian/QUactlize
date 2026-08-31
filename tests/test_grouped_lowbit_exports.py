@@ -116,6 +116,47 @@ def test_grouped_device_c_abi_admits_its_device_resident_shape_contract():
     assert not legacy_admitted(False, True)  # historical guard rejects the positive device arm
 
 
+def test_grouped_arrangement_v2_retains_the_exact_xplane_control_arm():
+    """The K-pack A/B needs the old Xplane kernel in the same binary.
+
+    Grouped only instantiates its shipping Xplane ArtifactTileK, so the
+    descriptor guard must admit exactly that type and keep smaller dense-only
+    reader variants red.
+    """
+    source = BACKEND.read_text()
+    valid_begin = source.index(
+        "bool grouped_fully_quantized_config_valid(\n",
+        source.index("bool grouped_fully_quantized_config_valid(\n") + 1)
+    valid_end = source.index("quactlize_ppu_config_v2 config_v2", valid_begin)
+    valid = source[valid_begin:valid_end]
+    assert "arrangement->layout == QUACTLIZE_PPU_LAYOUT_XPLANE_V1" in valid
+    assert "arrangement->artifact_tile_k == tactic_tile_k" in valid
+    assert "grouped_fully_quantized_config_valid(\n            config, total_rows" in valid
+
+    host_begin = source.index(
+        'extern "C" int quactlize_ppu_grouped_fully_quantized_for_arrangement_v2(')
+    host_end = source.index(
+        'extern "C" int quactlize_ppu_grouped_fully_quantized(', host_begin)
+    host = source[host_begin:host_end]
+    assert "QUACTLIZE_PPU_LAYOUT_XPLANE_V1" in host
+    assert "quactlize_ppu_grouped_fully_quantized_config_v1(" in host
+
+    dev_begin = source.index(
+        'extern "C" int quactlize_ppu_grouped_fully_quantized_dev_for_arrangement_v2(')
+    dev_end = source.index(
+        'extern "C" int quactlize_ppu_grouped_fully_quantized_dev_v2(', dev_begin)
+    dev = source[dev_begin:dev_end]
+    assert "QUACTLIZE_PPU_LAYOUT_XPLANE_V1" in dev
+    assert "quactlize_ppu_grouped_fully_quantized_dev_v2(" in dev
+
+    def admitted(layout, artifact_tile_k, tactic_tile_k):
+        return layout == "xplane" and artifact_tile_k == tactic_tile_k
+
+    assert admitted("xplane", 256, 256)
+    assert not admitted("xplane", 64, 256)
+    assert not admitted("kpack", 256, 256)
+
+
 def test_grouped_kpack4_selects_the_expert_axis_exactly_once():
     """The byte base and CuTe L slice must not both consume the expert coordinate.
 

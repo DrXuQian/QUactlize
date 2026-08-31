@@ -1127,6 +1127,14 @@ bool grouped_fully_quantized_config_valid(
           arrangement, qtype, k, tactic_tile_k)) {
     return false;
   }
+  if (arrangement->layout == QUACTLIZE_PPU_LAYOUT_XPLANE_V1) {
+    // The legacy grouped kernel already owns the exact shipping Xplane reader
+    // in this same binary. Unlike dense, grouped has not instantiated the four
+    // artifact-TileK reader variants, so admit precisely that compiled type.
+    return arrangement->artifact_tile_k == tactic_tile_k &&
+        grouped_fully_quantized_config_valid(
+            config, total_rows, n, k, group_size, experts, max_rows, qtype);
+  }
   if (arrangement->layout ==
           QUACTLIZE_PPU_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1) {
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
@@ -1349,7 +1357,9 @@ int32_t list_valid_grouped_configs_for_arrangement_v2(
     auto const& row = kGroupedConfigs[i];
     if (configs && count < capacity) {
       configs[count] = {false, row.name, row.tile_m, row.tile_n,
-                        tactic_tile_k, 0,
+                        tactic_tile_k,
+                        arrangement->layout == QUACTLIZE_PPU_LAYOUT_XPLANE_V1
+                            ? arrangement->artifact_tile_k : 0,
                         row.warp_m, row.warp_n, row.stages};
     }
     ++count;
@@ -2777,6 +2787,13 @@ extern "C" int quactlize_ppu_grouped_fully_quantized_for_arrangement_v2(
           arrangement)) {
     return 30;
   }
+  if (arrangement->layout == QUACTLIZE_PPU_LAYOUT_XPLANE_V1) {
+    // The v1 grouped entry is the exact Xplane implementation; the v2
+    // descriptor guard above proves that its compiled artifact TileK matches.
+    return quactlize_ppu_grouped_fully_quantized_config_v1(
+        act, low, high, units, rows_per_expert, out, total_rows, n, k,
+        experts, qtype, config_name);
+  }
   if (arrangement->layout ==
           QUACTLIZE_PPU_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1) {
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
@@ -2872,6 +2889,14 @@ extern "C" int quactlize_ppu_grouped_fully_quantized_dev_for_arrangement_v2(
           experts, max_rows, qtype,
           arrangement)) {
     return 30;
+  }
+  if (arrangement->layout == QUACTLIZE_PPU_LAYOUT_XPLANE_V1) {
+    // Reuse the already-instantiated exact Xplane device path. It consumes the
+    // same device offsets and workspace; only v2 descriptor admission was
+    // missing.
+    return quactlize_ppu_grouped_fully_quantized_dev_v2(
+        act, low, high, units, offsets, out, total_rows, n, k, experts,
+        max_rows, qtype, workspace, workspace_bytes, stream, config_name);
   }
   if (arrangement->layout ==
           QUACTLIZE_PPU_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1) {
