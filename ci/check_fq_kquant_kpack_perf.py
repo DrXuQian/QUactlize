@@ -11,6 +11,26 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
+def q3_legacy_signed_zero_mismatches(k: int, n: int = 512,
+                                     rows: int = 8) -> int:
+    """Exact false-RED count from the removed host `-0` golden."""
+    superblocks = k // 256
+    active = [
+        (sb, sb * 256 + ((37 * sb + 11) & 255))
+        for sb in range(superblocks)
+    ]
+    base = []
+    for col in range(8):
+        total = 0
+        for sb, kk in active:
+            logical = ((13 * col + 7 * kk + 3) & 7) - 3
+            code = max(0, min(7, logical + 4))
+            total += (-1 if sb & 1 else 1) * (code - 4)
+        base.append(total)
+    zero_columns = sum(base[col % 8] == 0 for col in range(n))
+    return (rows // 2) * zero_columns
+
+
 def require(source: str, markers: tuple[str, ...], label: str) -> None:
     for marker in markers:
         if marker not in source:
@@ -18,6 +38,8 @@ def require(source: str, markers: tuple[str, ...], label: str) -> None:
 
 
 def main() -> int:
+    assert q3_legacy_signed_zero_mismatches(2048) == 0
+    assert q3_legacy_signed_zero_mismatches(3072) == 256
     bench = (ROOT / "benchmarks/test_fq_kquant_layout_perf.cu").read_text()
     runner = (ROOT / "tools/run_fq_kquant_kpack_perf_box.sh").read_text()
     cmake = (ROOT / "quactlize/csrc/fq_kquant_layout_perf.cmake.in").read_text()
