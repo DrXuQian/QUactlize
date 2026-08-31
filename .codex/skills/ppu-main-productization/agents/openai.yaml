@@ -1,0 +1,4 @@
+interface:
+  display_name: "PPU Main Productization"
+  short_description: "Curate PPU changes from develop into a clean product main branch"
+  default_prompt: "Audit and productize selected PPU changes for main using the repository admission rules."

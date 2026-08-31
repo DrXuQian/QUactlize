@@ -2396,3 +2396,45 @@ selects the distinct direct operand, followed by fresh-PPU raw-bit closure and
 the three decode/prefill/grouped performance denominators above.  Until that
 step, the scaffold proves composability and offline ABI only; it is not evidence
 that UniversalCopy lowers correctly or performs well on PPU.
+
+### TODO #63 — retire develop debt before a K-pack-only PPU main rebuild
+
+Do not merge `develop` wholesale.  At the `40c0875` audit point it is 1,111
+commits and 918 files ahead of `origin/main`, including experiments, negative
+controls, profiling harnesses and collaboration state.  Rebuild each admitted
+feature from the current remote main tip by following the develop-only
+`.codex/skills/ppu-main-productization/SKILL.md`; the skill itself must never be
+copied to main.
+
+The product decision is one resident K-pack family: Q4 uses K-pack4 and
+Q2/Q3/Q5/Q6 use their exact per-plane K-pack descriptors.  Main contains no
+Xplane producer, reader, restore path or fallback, and no NVIDIA-only runtime
+or validation path.  A performance waiver may permit this maintenance choice,
+but does not erase the measured K-pack versus Xplane debt or change a technical
+`KEEP_XPLANE` result into a win.
+
+| ID | Priority | Debt at `40c0875` | Completion boundary |
+|---|---|---|---|
+| D01 | P0 | Layout 3 AIU-plain + UniversalCopy has offline/CuTe evidence only | A real PPU kernel is raw-bit exact, lowers through the intended writer/reader and covers decode, prefill and grouped performance; otherwise delete the complete layout-3 slice |
+| D02 | P0 | Q2/Q3/Q5/Q6 remain canonically Xplane | Canonical policy, whole-model packer and automatic routes emit only the exact K-pack descriptor for all five formats |
+| D03 | P0 | BC GEMV, non-Q4 ScaleFirst and legacy restore remain live Xplane consumers | Every supported product consumer reads K-pack or is removed before Xplane is omitted from main |
+| D04 | P0 | K-pack decode can still encounter a BC route that rejects arrangement v2 | Product scheduling sends a K-pack artifact only to a descriptor-aware FQ dense/grouped consumer, unless a measured K-pack GEMV is added |
+| D05 | P1 | Non-Q4 K-pack has no ScaleFirst reader | Add low/high-plane K-pack ScaleFirst closure for M=64/2048/4096, or explicitly select the already measured FQ kernel as the only prefill path |
+| D06 | P1 | K-pack is raw-bit exact but slower in parts of the complete A/B board | Preserve the full denominator and reduce the gaps; current maxima are Q2 `1.96/5.41%`, Q3 `3.78/4.82%`, Q4 grouped `3.05%`, Q5 `4.57/5.31%`, and Q6 `6.62/7.20%` for dense/grouped |
+| D07 | P0 | The placed-artifact route primarily admits N and K divisible by 256 | Implement a tail, retain an explicit non-product fallback, or fail closed with a tested/documented boundary |
+| D08 | P0 | Prepass ladder, launch audit, poison state and deliberately wrong timing NOPs live in production source | Remove them from product TUs/headers and retain any useful negative as a separate test implementation |
+| D09 | P1 | Historical-negative, print, bisect, pad/swizzle and scheduler experiment macros remain in collective code | Convert a selected implementation into a type/policy or delete it; no dormant diagnostic macro enters main |
+| D10 | P1 | Fused metadata store is still selected by `PPU_PACKED_SCALE_FUSED` | Fix the measured winner as an ordinary implementation and remove the flag, or delete the full branch after a complete denominator rejects it |
+| D11 | P1 | `ForwardCoordIterator` and `SplitkCoordIterator` store `Shape const&` | Own shape lifetime by value and pass scalar, nested, temporary-expression and lvalue-equivalence sequence tests |
+| D12 | P1/P2 | `PPU_A_PACK` duplicates typed schedules and `PPU_B_CHUNK` is global compile state | Remove the packed-A macro after typed coverage; eventually move BChunk into schedule/type identity |
+| D13 | P0 | Product comments contain collaboration provenance; dev-only tooling is intermingled with the source tree | Product comments state only technical facts; `.coord`, `.codex`, `dev`, local artifacts and collaboration tools remain outside main |
+| D14 | P1 | NVIDIA/CPU/fake validation seams share headers with PPU product code | Split product PPU implementation from development adapters; preserve license notices while removing NVIDIA-only product dependencies |
+| D15 | P1 | README, Python exports, packer and device-library installation expose different product boundaries | Make `quactlize.routes` the supported API, install one packer CLI and document host extension plus format-selected PPU libraries |
+| D16 | P2 | `PPU_PACKED_FORMAT`/`PPU_PACKED_SCALE` currently require format-selected libraries | Keep the working multi-library ABI until either a fat binary or a documented installed multi-library contract replaces it |
+
+Resolve locally provable debt before requesting device time: D13 wording and
+source guards, D08/D09 dead diagnostics, D11 iterator lifetime, local ABI and
+policy tests, and the main admission checklist.  Reserve box runs for actual
+PPU lowering, raw-bit results, resource usage, scheduling and performance:
+D01, any consumer kernel added for D03--D05, and D06.  Each box admission is
+bound to the exact candidate SHA and binary/config identity.
