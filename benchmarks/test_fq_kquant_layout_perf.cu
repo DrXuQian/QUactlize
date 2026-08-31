@@ -1,4 +1,6 @@
-// Production-C-ABI Xplane vs K-pack performance closure for Q2/Q3/Q5/Q6.
+// Production-C-ABI Xplane vs K-pack performance closure for K-quants.  The
+// production runner measures Q2/Q3/Q5/Q6 dense+grouped and Q4 grouped; Q4
+// dense already has its own real-shape K-pack4 closure.
 //
 // One format-selected binary contains both physical readers.  Every timed
 // pair therefore shares compiler, code inventory, input values, config,
@@ -31,10 +33,11 @@
 #include "quactlize_ppu_device.h"
 
 #ifndef FQ_KQUANT_PERF_QTYPE
-#error "FQ_KQUANT_PERF_QTYPE must select Q2/Q3/Q5/Q6"
+#error "FQ_KQUANT_PERF_QTYPE must select Q2/Q3/Q4/Q5/Q6"
 #endif
 static_assert(FQ_KQUANT_PERF_QTYPE == 10 ||
               FQ_KQUANT_PERF_QTYPE == 11 ||
+              FQ_KQUANT_PERF_QTYPE == 12 ||
               FQ_KQUANT_PERF_QTYPE == 13 ||
               FQ_KQUANT_PERF_QTYPE == 14);
 
@@ -51,6 +54,10 @@ template <> struct Format<10> {
 template <> struct Format<11> {
   static constexpr auto Type = gguf_scale::KType::Q3_K;
   static constexpr int LowBits = 2, HighBits = 1, Group = 16;
+};
+template <> struct Format<12> {
+  static constexpr auto Type = gguf_scale::KType::Q4_K;
+  static constexpr int LowBits = 4, HighBits = 0, Group = 32;
 };
 template <> struct Format<13> {
   static constexpr auto Type = gguf_scale::KType::Q5_K;
@@ -152,6 +159,7 @@ int code_value(int n, int k) {
   int const logical = ((13 * n + 7 * k + 3) & 7) - 3;
   if constexpr (kQtype == 10) return logical & 3;
   if constexpr (kQtype == 11) return std::max(0, std::min(7, logical + 4));
+  if constexpr (kQtype == 12) return logical + 8;
   if constexpr (kQtype == 13) return logical & 31;
   return std::max(0, std::min(63, logical + 32));
 }
@@ -196,7 +204,11 @@ std::vector<uint8_t> make_units(int n, int k) {
 }
 
 quactlize_ppu_placed_arrangement_v2 arrangement(bool kpack) {
-  if (kpack) return ppu_arrangements::kquant_kpack_transpose_v1(kQtype);
+  if (kpack) {
+    if constexpr (kQtype == 12)
+      return ppu_arrangements::q4_kpack4_transpose_v1();
+    return ppu_arrangements::kquant_kpack_transpose_v1(kQtype);
+  }
   auto const& format = ppu_formats::for_qtype(kQtype);
   return {QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V2,
           QUACTLIZE_PPU_LAYOUT_XPLANE_V1,

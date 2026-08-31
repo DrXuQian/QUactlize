@@ -20,16 +20,23 @@ from benchmarks.workloads import MODELS, N_TOKENS, projections  # noqa: E402
 from tools.gguf_internal_shape_inventory import _routing_fixture  # noqa: E402
 
 
-SCHEMA = "quactlize.fq-kquant-kpack-perf-plan.v1"
+SCHEMA = "quactlize.fq-kquant-kpack-perf-plan.v2"
 FORMATS = {
     10: {"name": "Q2_K", "packed_format": 2, "low_bits": 2,
-         "high_bits": 0, "group_size": 16, "tactic_tile_k": 256},
+         "high_bits": 0, "group_size": 16, "tactic_tile_k": 256,
+         "operators": ["dense", "grouped"], "layout_key": "kpack"},
     11: {"name": "Q3_K", "packed_format": 3, "low_bits": 2,
-         "high_bits": 1, "group_size": 16, "tactic_tile_k": 256},
+         "high_bits": 1, "group_size": 16, "tactic_tile_k": 256,
+         "operators": ["dense", "grouped"], "layout_key": "kpack"},
+    12: {"name": "Q4_K", "packed_format": 0, "low_bits": 4,
+         "high_bits": 0, "group_size": 32, "tactic_tile_k": 256,
+         "operators": ["grouped"], "layout_key": "q4-kpack4"},
     13: {"name": "Q5_K", "packed_format": 1, "low_bits": 4,
-         "high_bits": 1, "group_size": 32, "tactic_tile_k": 256},
+         "high_bits": 1, "group_size": 32, "tactic_tile_k": 256,
+         "operators": ["dense", "grouped"], "layout_key": "kpack"},
     14: {"name": "Q6_K", "packed_format": 4, "low_bits": 4,
-         "high_bits": 2, "group_size": 16, "tactic_tile_k": 128},
+         "high_bits": 2, "group_size": 16, "tactic_tile_k": 128,
+         "operators": ["dense", "grouped"], "layout_key": "kpack"},
 }
 DENSE_M = (1, 2, 4, 8, 64, 2048, 4096)
 GROUPED_TOKENS = tuple(N_TOKENS)
@@ -37,6 +44,15 @@ EXPERTS = 256
 TOPK = 8
 ROUTER = "token-topk-hot16x4-wor-sm64-s44-v1"
 MAPPING_ID = "0x514b504b54000001"
+Q4_MAPPING_ID = "0x51344b5034540001"
+
+
+def operators(qtype: int) -> tuple[str, ...]:
+    return tuple(FORMATS[qtype]["operators"])
+
+
+def mapping_id(qtype: int) -> str:
+    return Q4_MAPPING_ID if qtype == 12 else MAPPING_ID
 
 
 class PlanError(ValueError):
@@ -96,6 +112,8 @@ def materialize() -> dict[str, Any]:
                        "artifact_tile_k": "format-fully-quantized-default"},
             "kpack": {"layout": 2, "mapping_id": MAPPING_ID,
                       "artifact_tile_k": 0},
+            "q4-kpack4": {"layout": 1, "mapping_id": Q4_MAPPING_ID,
+                           "artifact_tile_k": 0},
         },
         "policy": {
             "dense_config": "production-shape-default",
@@ -141,6 +159,7 @@ def self_test() -> None:
     broken = copy.deepcopy(value); broken["grouped"][0]["experts"] = 255; plants.append(broken)
     broken = copy.deepcopy(value); broken["formats"]["11"]["packed_format"] = 2; plants.append(broken)
     broken = copy.deepcopy(value); broken["layouts"]["kpack"]["mapping_id"] = "0x0"; plants.append(broken)
+    broken = copy.deepcopy(value); broken["layouts"]["q4-kpack4"]["mapping_id"] = "0x0"; plants.append(broken)
     for broken in plants:
         try:
             validate(broken)
@@ -148,8 +167,8 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("plan negative stayed green")
-    print("[fq-kquant-perf-plan:self-test] PASS formats=4 dense=77/11-family "
-          "grouped=24/4-family; four plants RED")
+    print("[fq-kquant-perf-plan:self-test] PASS formats=5 dense=77/11-family "
+          "grouped=24/4-family Q4=grouped-only; five plants RED")
 
 
 def main() -> int:

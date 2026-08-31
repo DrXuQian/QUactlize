@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Production-C-ABI real-shape performance A/B for Q2/Q3/Q5/Q6.
+# Production-C-ABI real-shape performance A/B for Q2/Q3/Q4/Q5/Q6.
 set -uo pipefail
 
 fail() {
@@ -47,7 +47,7 @@ run_committed() {
 main() {
   [ "$#" -eq 0 ] || { fail 'no positional arguments are accepted'; return 2; }
   local root workspace sha short stamp out resume jobs iterations warmups rounds
-  local threshold all_configs sdk_root plan planner analyzer q fmt build build_log
+  local threshold all_configs sdk_root plan planner analyzer q fmt format_defs build build_log
   local binary library target_make round order log rc
   local -a dense_args grouped_args run_args
 
@@ -136,8 +136,9 @@ PY
       fail 'RESUME requires the exact measurement HEAD'; return 2; }
   fi
 
-  for q in 10 11 13 14; do
-    case "$q" in 10) fmt=2;; 11) fmt=3;; 13) fmt=1;; 14) fmt=4;; esac
+  for q in 10 11 12 13 14; do
+    case "$q" in 10) fmt=2;; 11) fmt=3;; 12) fmt=0;; 13) fmt=1;; 14) fmt=4;; esac
+    format_defs="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=$fmt QUACTLIZE_DENSE_ONLY=$q"
     build="$out/build/q$q"; build_log="$out/results/build-q$q.log"
     if [ "$resume" = 1 ] && [ -s "$out/results/binary-q$q.path" ] && \
        [ -s "$out/results/binary-q$q.sha256" ]; then
@@ -153,7 +154,7 @@ PY
       (cd "$root" && env -u CC -u CXX -u CMAKE_GENERATOR -u CMAKE_TOOLCHAIN_FILE \
         PPU_BUILD_DIR="$build" PPU_ARCHS=ppu0010 JOBS="$jobs" \
         TARGET=test_fq_kquant_layout_perf FQ_KQUANT_PERF_QTYPE="$q" \
-        PPU_DEFS="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=$fmt" \
+        PPU_DEFS="$format_defs" \
         ./build.sh) > "$build_log" 2>&1
       rc=$?
       if [ "$rc" -ne 0 ]; then
@@ -167,6 +168,7 @@ PY
       target_make="$(find "$build" -type f -path '*test_fq_kquant_layout_perf.dir/build.make' -print -quit)"
       grep -Fqx "[build.sh] FQ_KQUANT_PERF_QTYPE=$q" "$build_log" && \
       grep -F "PPU_PACKED_FORMAT=$fmt" "$build_log" >/dev/null && \
+      grep -F "QUACTLIZE_DENSE_ONLY=$q" "$build_log" >/dev/null && \
       grep -F "FullyQuantized K-quant layout perf: qtype=$q carrier=production-C-ABI" \
         "$build/cmake.log" >/dev/null && [ -n "$target_make" ] && \
       grep -F -- "-DFQ_KQUANT_PERF_QTYPE=$q" "$target_make" >/dev/null || {
@@ -180,8 +182,12 @@ PY
       if ((round % 2)); then order=xplane-first; else order=kpack-first; fi
       log="$out/runs/q$q-round$round.log"
       run_args=("--iterations=$iterations" "--warmups=$warmups" "--round=$round"
-                "--order=$order" "--all-configs=$all_configs"
-                "${dense_args[@]}" "${grouped_args[@]}")
+                "--order=$order" "--all-configs=$all_configs")
+      if [ "$q" = 12 ]; then
+        run_args+=("${grouped_args[@]}")
+      else
+        run_args+=("${dense_args[@]}" "${grouped_args[@]}")
+      fi
       printf '[fq-kquant-perf] run q=%s round=%s order=%s\n' "$q" "$round" "$order"
       run_committed "$log" env \
         LD_LIBRARY_PATH="$(dirname "$library")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \

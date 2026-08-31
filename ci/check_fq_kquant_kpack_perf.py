@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Source contract for the non-Q4 production layout performance closure."""
+"""Source contract for the five-format production layout performance closure."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ def main() -> int:
         "quactlize_ppu_dense_fully_quantized_dev_for_arrangement_v2",
         "quactlize_ppu_grouped_fully_quantized_dev_for_arrangement_v2",
         "ppu_arrangements::kquant_kpack_transpose_v1(kQtype)",
+        "ppu_arrangements::q4_kpack4_transpose_v1()",
         "QUACTLIZE_PPU_LAYOUT_XPLANE_V1",
         "compare_raw_kernel<<<blocks, 256>>>",
         "hggcEventRecord(begin, nullptr)",
@@ -36,9 +37,11 @@ def main() -> int:
         "FQ_KQUANT_LAYOUT_GROUPED",
     ), "benchmark")
     require(runner, (
-        "for q in 10 11 13 14",
-        "PPU_DEFS=\"PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=$fmt\"",
+        "for q in 10 11 12 13 14",
+        'format_defs="PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=$fmt QUACTLIZE_DENSE_ONLY=$q"',
         "--order=$order",
+        'if [ "$q" = 12 ]',
+        'run_args+=("${grouped_args[@]}")',
         '"${dense_args[@]}" "${grouped_args[@]}"',
         'grep -F -- "-DFQ_KQUANT_PERF_QTYPE=$q" "$target_make"',
         "python3 -B \"$analyzer\" analyze",
@@ -56,19 +59,20 @@ def main() -> int:
                       "hggcEventRecord(begin, nullptr)", 1),
         bench.replace("QUACTLIZE_PPU_LAYOUT_XPLANE_V1",
                       "QUACTLIZE_PPU_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1", 1),
-        runner.replace('"${dense_args[@]}" "${grouped_args[@]}"',
-                       '"${dense_args[@]}"', 1),
+        runner.replace('run_args+=("${grouped_args[@]}")',
+                       'run_args+=("${dense_args[@]}")', 1),
     )
     assert plants[0] != bench and "hggcEventRecord(end, nullptr)" not in plants[0]
     assert plants[1] != bench and plants[1].count("QUACTLIZE_PPU_LAYOUT_XPLANE_V1") == 0
-    assert plants[2] != runner and '"${grouped_args[@]}"' not in plants[2]
+    assert plants[2] != runner and \
+        'run_args+=("${grouped_args[@]}")' not in plants[2]
 
     for script in ("plan_fq_kquant_kpack_perf.py",
                    "analyze_fq_kquant_kpack_perf.py"):
         subprocess.run([sys.executable, "-B", str(ROOT / "tools" / script),
                         "self-test"], check=True, stdout=subprocess.DEVNULL)
     print("[fq-kquant-perf:self-test] PASS production dense/grouped C ABI, "
-          "same-binary events, 101 real shapes and three source plants RED")
+          "five-format same-binary events, Q4 grouped and three source plants RED")
     return 0
 
 

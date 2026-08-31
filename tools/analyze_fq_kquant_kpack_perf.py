@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 import plan_fq_kquant_kpack_perf as planner  # noqa: E402
 
 
-SCHEMA = "quactlize.fq-kquant-kpack-perf-result.v1"
+SCHEMA = "quactlize.fq-kquant-kpack-perf-result.v2"
 
 
 class AnalysisError(ValueError):
@@ -104,7 +104,8 @@ def validate_cell(row: dict[str, str], operator: str, qtype: int,
         raise AnalysisError("cell A/B order differs from containing round")
     if row["layout"] not in ("xplane", "kpack"):
         raise AnalysisError("unknown layout")
-    mapping = "0x0000000000000000" if row["layout"] == "xplane" else planner.MAPPING_ID
+    mapping = ("0x0000000000000000" if row["layout"] == "xplane"
+               else planner.mapping_id(qtype))
     if row["mapping_id"].lower() != mapping.lower():
         raise AnalysisError(f"{row['layout']} mapping id differs")
     if parse_case(operator, row) != case_identity(operator, plan_row):
@@ -166,7 +167,8 @@ def analyze(plan_path: pathlib.Path, runs: pathlib.Path, rounds: int,
             expected_marker = {
                 "q": str(qtype), "round": str(round_id), "order": order,
                 "iterations": str(iterations), "all_configs": str(int(all_configs)),
-                "dense_cases": str(len(plan["dense"])),
+                "dense_cases": str(len(plan["dense"])
+                                   if "dense" in planner.operators(qtype) else 0),
                 "grouped_cases": str(len(plan["grouped"])), "status": "PASS",
             }
             if any(marker.get(k) != v for k, v in expected_marker.items()):
@@ -176,9 +178,14 @@ def analyze(plan_path: pathlib.Path, runs: pathlib.Path, rounds: int,
             for operator, prefix in (
                     ("dense", "FQ_KQUANT_LAYOUT_DENSE "),
                     ("grouped", "FQ_KQUANT_LAYOUT_GROUPED ")):
-                for line in text.splitlines():
-                    if not line.startswith(prefix):
-                        continue
+                operator_lines = [line for line in text.splitlines()
+                                  if line.startswith(prefix)]
+                if operator not in planner.operators(qtype):
+                    if operator_lines:
+                        raise AnalysisError(
+                            f"qtype {qtype} emitted out-of-scope {operator} cells")
+                    continue
+                for line in operator_lines:
                     row = fields(line, prefix)
                     identity = parse_case(operator, row)
                     if identity not in plan_rows[operator]:
@@ -192,7 +199,7 @@ def analyze(plan_path: pathlib.Path, runs: pathlib.Path, rounds: int,
                     seen.add(key)
                     collected[(qtype, operator, identity, row["layout"], config)].extend(values)
                     config_sets[(qtype, operator, identity, row["layout"], round_id)].add(config)
-            for operator in ("dense", "grouped"):
+            for operator in planner.operators(qtype):
                 for identity in plan_rows[operator]:
                     for layout in ("xplane", "kpack"):
                         configs = config_sets.get(
@@ -202,8 +209,9 @@ def analyze(plan_path: pathlib.Path, runs: pathlib.Path, rounds: int,
                                 f"missing {qtype}/{operator}/{identity}/{layout}/round{round_id}")
                         if not all_configs and len(configs) != 1:
                             raise AnalysisError("default-only cell has multiple configs")
-    if orders.count("xplane-first") != 4 * ((rounds + 1) // 2) or \
-            orders.count("kpack-first") != 4 * (rounds // 2):
+    format_count = len(planner.FORMATS)
+    if orders.count("xplane-first") != format_count * ((rounds + 1) // 2) or \
+            orders.count("kpack-first") != format_count * (rounds // 2):
         raise AnalysisError("A/B order denominator differs")
     expected_samples = rounds * iterations
     for key, values in collected.items():
@@ -215,7 +223,7 @@ def analyze(plan_path: pathlib.Path, runs: pathlib.Path, rounds: int,
     rows: list[dict[str, Any]] = []
     format_operator: dict[tuple[int, str], list[dict[str, Any]]] = collections.defaultdict(list)
     for qtype in sorted(planner.FORMATS):
-        for operator in ("dense", "grouped"):
+        for operator in planner.operators(qtype):
             for identity, source in plan_rows[operator].items():
                 candidates: dict[str, list[dict[str, Any]]] = {}
                 for layout in ("xplane", "kpack"):
@@ -309,8 +317,9 @@ def publish(result: dict[str, Any], output: pathlib.Path) -> None:
                 f"kpack_us={row['kpack']['median_us']:.9f} delta_pct={row['delta_pct']:.6f}")
         print(line); lines.append(line)
     final = ("FQ_KQUANT_LAYOUT_ARCHIVE "
-             f"verdict={result['archive_verdict']} formats=4 "
-             f"dense_shapes=77 grouped_shapes=24 threshold_pct={result['threshold_pct']:.6f}")
+             f"verdict={result['archive_verdict']} formats=5 "
+             f"dense_shapes=77x4 grouped_shapes=24x5 q4_scope=grouped-only "
+             f"threshold_pct={result['threshold_pct']:.6f}")
     print(final); lines.append(final)
     atomic(output / "verdict.log", "\n".join(lines) + "\n")
 
@@ -319,7 +328,7 @@ def synthetic_log(plan: dict[str, Any], qtype: int, round_id: int,
                   iterations: int, regression: bool = False) -> str:
     order = "xplane-first" if round_id & 1 else "kpack-first"
     lines = []
-    for operator in ("dense", "grouped"):
+    for operator in planner.operators(qtype):
         prefix = ("FQ_KQUANT_LAYOUT_DENSE" if operator == "dense" else
                   "FQ_KQUANT_LAYOUT_GROUPED")
         for index, source in enumerate(plan[operator]):
@@ -329,7 +338,8 @@ def synthetic_log(plan: dict[str, Any], qtype: int, round_id: int,
                     base *= 1.05 if regression and qtype == 10 and operator == "dense" and index == 0 else .99
                 vals = sorted([base + (i - iterations // 2) * .001
                                for i in range(iterations)])
-                mapping = "0x0000000000000000" if layout == "xplane" else planner.MAPPING_ID
+                mapping = ("0x0000000000000000" if layout == "xplane"
+                           else planner.mapping_id(qtype))
                 config = expected_config(operator, source)
                 provider = ("packed-row" if operator == "dense" and qtype == 10 and
                             layout == "xplane" and source["m"] == 1 else "standard-aiu")
@@ -350,6 +360,10 @@ def synthetic_log(plan: dict[str, Any], qtype: int, round_id: int,
     lines.append(
         f"FQ_KQUANT_LAYOUT_RUN q={qtype} round={round_id} order={order} "
         f"iterations={iterations} warmups=1 all_configs=0 dense_cases=77 "
+        f"grouped_cases=24 status=PASS" if "dense" in planner.operators(qtype)
+        else
+        f"FQ_KQUANT_LAYOUT_RUN q={qtype} round={round_id} order={order} "
+        f"iterations={iterations} warmups=1 all_configs=0 dense_cases=0 "
         f"grouped_cases=24 status=PASS")
     return "\n".join(lines) + "\n"
 
@@ -389,8 +403,19 @@ def self_test() -> None:
             else:
                 raise AssertionError("analysis negative stayed green")
         (runs / "q10-round1.log").write_text(original)
-    print("[fq-kquant-perf-analysis:self-test] PASS 4 formats, 101 shapes, "
-          "archive/retain verdicts and three plants RED")
+        q4_path = runs / "q12-round1.log"
+        q4_original = q4_path.read_text()
+        q4_path.write_text(q4_original.replace(
+            planner.Q4_MAPPING_ID, "0x0000000000000001", 1))
+        try:
+            analyze(plan_path, runs, 2, 3, 3.0, False)
+        except AnalysisError:
+            pass
+        else:
+            raise AssertionError("Q4 mapping negative stayed green")
+        q4_path.write_text(q4_original)
+    print("[fq-kquant-perf-analysis:self-test] PASS 5 formats, 101 shapes, "
+          "Q4 grouped-only archive/retain verdicts and four plants RED")
 
 
 def main() -> int:

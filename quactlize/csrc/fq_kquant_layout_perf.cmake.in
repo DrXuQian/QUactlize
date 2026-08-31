@@ -1,13 +1,14 @@
-# Exact production-C-ABI Q2/Q3/Q5/Q6 Xplane/K-pack performance target.
+# Exact production-C-ABI Q2/Q3/Q4/Q5/Q6 Xplane/K-pack performance target.
 # Inert unless FQ_KQUANT_PERF_QTYPE is supplied by its box runner.
 if(DEFINED FQ_KQUANT_PERF_QTYPE AND
    NOT "${FQ_KQUANT_PERF_QTYPE}" STREQUAL "")
   if(NOT FQ_KQUANT_PERF_QTYPE STREQUAL "10" AND
      NOT FQ_KQUANT_PERF_QTYPE STREQUAL "11" AND
+     NOT FQ_KQUANT_PERF_QTYPE STREQUAL "12" AND
      NOT FQ_KQUANT_PERF_QTYPE STREQUAL "13" AND
      NOT FQ_KQUANT_PERF_QTYPE STREQUAL "14")
     message(FATAL_ERROR
-      "FQ_KQUANT_PERF_QTYPE must be one of Q2/Q3/Q5/Q6 (10,11,13,14)")
+      "FQ_KQUANT_PERF_QTYPE must be one of Q2/Q3/Q4/Q5/Q6 (10,11,12,13,14)")
   endif()
   qz_resolve_sources(_FQ_KQUANT_PERF_SOURCE
     test_fq_kquant_layout_perf.cu)

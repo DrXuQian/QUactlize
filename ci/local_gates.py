@@ -338,6 +338,8 @@ SYNTAX = [
     ("benchmarks/test_fq_kquant_layout_perf.cu",
      "-DFQ_KQUANT_PERF_QTYPE=11 -DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT=3 -DQUACTLIZE_DENSE_ONLY=11"),
     ("benchmarks/test_fq_kquant_layout_perf.cu",
+     "-DFQ_KQUANT_PERF_QTYPE=12 -DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT=0 -DQUACTLIZE_DENSE_ONLY=12"),
+    ("benchmarks/test_fq_kquant_layout_perf.cu",
      "-DFQ_KQUANT_PERF_QTYPE=13 -DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT=1 -DQUACTLIZE_DENSE_ONLY=13"),
     ("benchmarks/test_fq_kquant_layout_perf.cu",
      "-DFQ_KQUANT_PERF_QTYPE=14 -DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT=4 -DQUACTLIZE_DENSE_ONLY=14"),
@@ -1961,10 +1963,10 @@ def lint_scalefirst_q4k_kpack4_prefill_ab():
 
 
 def lint_fq_kquant_kpack_perf():
-    """Non-Q4 layout retirement needs production dense and grouped timing."""
+    """K-quant layout retirement needs production dense and grouped timing."""
     return _run_ci_script(
         "check_fq_kquant_kpack_perf.py",
-        "non-Q4 K-pack uses same-binary production dense/grouped timing over 101 real shapes")
+        "K-pack uses same-binary production timing; Q4 includes real ragged grouped shapes")
 
 
 def lint_m8n16_g2_contract():
@@ -2587,7 +2589,7 @@ def main():
                 ("lint", "Q4 K-pack4 prefill binds one inventory-owned complete TM64 graph", lint_fq_q4k_kpack4_prefill_pilot),
                 ("lint", "Q4 K-pack4 prefill sweeps every registered sequence length and family", lint_fq_q4k_kpack4_prefill_real_shapes),
                 ("lint", "Q4 K-pack4 transpose uses the ScaleFirst persistent prefill baseline", lint_scalefirst_q4k_kpack4_prefill_ab),
-                ("lint", "non-Q4 K-pack compares production dense/grouped readers on every real shape", lint_fq_kquant_kpack_perf),
+                ("lint", "K-pack compares production readers including Q4 ragged grouped shapes", lint_fq_kquant_kpack_perf),
                 ("lint", "syntax baselines and live SYNTAX sources match", lint_syntax_inventory),
                 ("lint", "m8n16 G2 replays the historical bad index on the production x4 payload", lint_m8n16_g2_contract),
                 ("lint", "l125 exhausts all 256 G5 zero-plane addresses through the production CuTe map", lint_grouped_metadata_layout),
