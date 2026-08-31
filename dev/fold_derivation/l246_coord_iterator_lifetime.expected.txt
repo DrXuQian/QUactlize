@@ -1,0 +1,1 @@
+L246 COORD_ITERATOR_LIFETIME PASS forward=scalar+nested splitk=scalar+nested lvalue=equivalent ownership=value

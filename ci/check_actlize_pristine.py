@@ -67,6 +67,12 @@ OWNED = [
 # FIXES are corrections to actlize, true whether or not quactlize exists. They came in as cd17c2b9 on the
 # nvcc-portability branch off v1.0.0, and every one is nvcc/EDG rejecting what clang accepted.
 FIXES = {
+    "include/cute/stride.hpp":
+        "ForwardCoordIterator owns its Shape value instead of retaining a factory argument by reference; shape "
+        "projections are commonly temporaries, so the upstream reference member becomes dangling immediately",
+    "include/cute/ppu_stride.hpp":
+        "SplitkCoordIterator applies the same lifetime correction as ForwardCoordIterator; temporary and lvalue "
+        "shapes keep identical coordinate sequences while the iterator no longer retains a dangling reference",
     "include/cutlass/arch/barrier.h":
         "A0 Stream-K correctness: all four PPU named-barrier asm arms retain upstream CUTLASS's compiler "
         "`memory` clobber; the hardware barrier/fence strings alone cannot stop ordinary partial stores and "
