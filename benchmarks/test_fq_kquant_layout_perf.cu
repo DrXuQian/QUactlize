@@ -219,8 +219,11 @@ quactlize_ppu_placed_arrangement_v2 arrangement(bool kpack) {
 struct HostWeights {
   std::vector<uint8_t> low, high, units;
   quactlize_ppu_placed_arrangement_v2 descriptor{};
+  std::uint64_t low_hash = 0, high_hash = 0, unit_hash = 0;
   bool exact = false;
 };
+
+std::uint64_t hash_bytes(void const* data, std::size_t bytes);
 
 HostWeights make_weights(int n, int k, int experts, bool kpack) {
   HostWeights out;
@@ -250,6 +253,8 @@ HostWeights make_weights(int n, int k, int experts, bool kpack) {
   out.exact = rc == 0 && recover == 0 && back_low == native_low &&
               back_high == native_high;
   if (!out.exact) return out;
+  out.low_hash = hash_bytes(placed_low.data(), placed_low.size());
+  out.high_hash = hash_bytes(placed_high.data(), placed_high.size());
   out.low.resize(low_bytes * experts);
   out.high.resize(high_bytes * experts);
   for (int e = 0; e < experts; ++e) {
@@ -260,6 +265,7 @@ HostWeights make_weights(int n, int k, int experts, bool kpack) {
                 out.high.begin() + std::size_t(e) * high_bytes);
   }
   std::vector<uint8_t> one_units = make_units<F::Type>(n, k);
+  out.unit_hash = hash_bytes(one_units.data(), one_units.size());
   out.units.resize(one_units.size() * experts);
   for (int e = 0; e < experts; ++e)
     std::copy(one_units.begin(), one_units.end(),
@@ -282,6 +288,16 @@ struct DeviceWeights {
 struct ProblemData {
   std::vector<half_t> a, golden;
 };
+
+std::uint64_t hash_bytes(void const* data, std::size_t bytes) {
+  auto const* p = static_cast<std::uint8_t const*>(data);
+  std::uint64_t hash = UINT64_C(1469598103934665603);
+  for (std::size_t i = 0; i < bytes; ++i) {
+    hash ^= p[i];
+    hash *= UINT64_C(1099511628211);
+  }
+  return hash;
+}
 
 ProblemData make_problem(int rows, int n, int k) {
   ProblemData out;
@@ -308,8 +324,16 @@ ProblemData make_problem(int rows, int n, int k) {
       out.a[std::size_t(row) * k + kk] = half_t((row + sb) & 1 ? -1.f : 1.f);
     for (int col = 0; col < n; ++col) {
       float const value = float(base[col]);
+      // The device accumulates from +0.  Negating an exactly-zero host golden
+      // would instead manufacture fp16 -0 on odd rows, which is numerically
+      // equal but fails this benchmark's intentional raw-bit comparison.  At
+      // Q3 K=3072 the fixture has 64 zero columns, so the old expression made
+      // exactly 4 odd rows * 64 columns = 256 false mismatches.  Canonicalize
+      // only the oracle's exact zero; finite nonzero signs remain row-sensitive.
+      float const signed_value = value == 0.f ? 0.f :
+          (row & 1 ? -value : value);
       out.golden[std::size_t(row) * n + col] =
-          half_t(row & 1 ? -value : value);
+          half_t(signed_value);
     }
   }
   return out;
@@ -338,6 +362,77 @@ bool raw_bad(uint16_t const* got, uint16_t const* want, std::size_t count,
                  hggcMemcpyDeviceToHost) != hggcSuccess)
     return false;
   return true;
+}
+
+struct RawMismatch {
+  std::uint64_t bad = 0;
+  std::size_t first = std::size_t(-1);
+  std::uint16_t want = 0, got = 0;
+  std::uint64_t got_hash = 0, want_hash = 0;
+  std::uint64_t bad_row_mask = 0, bad_col_mod64_mask = 0;
+  int bad_rows = 0, first_row_bad = 0;
+  int bad_col_min = INT_MAX, bad_col_max = -1;
+};
+
+bool inspect_raw(uint16_t const* got_device,
+                 std::vector<half_t> const& want,
+                 int n, RawMismatch& out) {
+  if (!got_device || want.empty() || n <= 0 || want.size() % std::size_t(n))
+    return false;
+  std::vector<std::uint16_t> got(want.size());
+  if (hggcMemcpy(got.data(), got_device, got.size() * sizeof(got[0]),
+                 hggcMemcpyDeviceToHost) != hggcSuccess)
+    return false;
+  std::vector<unsigned int> row_bad(want.size() / std::size_t(n), 0);
+  out = {};
+  out.first = std::size_t(-1);
+  out.bad_col_min = INT_MAX;
+  out.bad_col_max = -1;
+  for (std::size_t i = 0; i < got.size(); ++i) {
+    std::uint16_t const expected = want[i].raw();
+    if (got[i] == expected) continue;
+    int const row = int(i / std::size_t(n));
+    int const col = int(i % std::size_t(n));
+    if (out.bad++ == 0) {
+      out.first = i;
+      out.want = expected;
+      out.got = got[i];
+    }
+    ++row_bad[std::size_t(row)];
+    if (row < 64) out.bad_row_mask |= UINT64_C(1) << row;
+    out.bad_col_mod64_mask |= UINT64_C(1) << (col & 63);
+    out.bad_col_min = std::min(out.bad_col_min, col);
+    out.bad_col_max = std::max(out.bad_col_max, col);
+  }
+  for (unsigned int count : row_bad) out.bad_rows += count != 0;
+  if (out.first != std::size_t(-1))
+    out.first_row_bad = int(row_bad[out.first / std::size_t(n)]);
+  out.got_hash = hash_bytes(got.data(), got.size() * sizeof(got[0]));
+  out.want_hash = hash_bytes(want.data(), want.size() * sizeof(want[0]));
+  return true;
+}
+
+void print_mismatch(char const* operator_name, char const* layout,
+                    int n, RawMismatch const& row, int first_expert) {
+  std::size_t const first_row = row.first == std::size_t(-1)
+      ? std::size_t(-1) : row.first / std::size_t(n);
+  std::size_t const first_col = row.first == std::size_t(-1)
+      ? std::size_t(-1) : row.first % std::size_t(n);
+  std::printf(
+      "FQ_KQUANT_LAYOUT_MISMATCH q=%d operator=%s layout=%s raw_bad=%llu "
+      "first_bad=%zu first_row=%zu first_col=%zu first_expert=%d "
+      "first_want=0x%04x first_got=0x%04x first_row_bad=%d bad_rows=%d "
+      "bad_col_range=[%d,%d] bad_row_mask=0x%016llx "
+      "bad_col_mod64_mask=0x%016llx got_hash=0x%016llx want_hash=0x%016llx\n",
+      kQtype, operator_name, layout,
+      static_cast<unsigned long long>(row.bad), row.first, first_row,
+      first_col, first_expert, unsigned(row.want), unsigned(row.got),
+      row.first_row_bad, row.bad_rows,
+      row.bad_col_min == INT_MAX ? -1 : row.bad_col_min, row.bad_col_max,
+      static_cast<unsigned long long>(row.bad_row_mask),
+      static_cast<unsigned long long>(row.bad_col_mod64_mask),
+      static_cast<unsigned long long>(row.got_hash),
+      static_cast<unsigned long long>(row.want_hash));
 }
 
 struct Timing {
@@ -486,7 +581,14 @@ bool run_dense_cell(DenseCase shape, bool kpack, DeviceWeights& weights,
                  reinterpret_cast<uint16_t const*>(golden.get()),
                  host.golden.size(), counter, bad))
       return fail("RAW_COMPARE", -1, config.label.c_str());
-    if (bad) return fail("RAW_MISMATCH", int(bad), config.label.c_str());
+    if (bad) {
+      RawMismatch mismatch;
+      if (!inspect_raw(reinterpret_cast<uint16_t const*>(out.get()),
+                       host.golden, shape.n, mismatch) || mismatch.bad != bad)
+        return fail("RAW_DIAGNOSTIC", int(bad), config.label.c_str());
+      print_mismatch("dense", layout_name(kpack), shape.n, mismatch, -1);
+      return fail("RAW_MISMATCH", int(bad), config.label.c_str());
+    }
     Timing timing;
     if (!measure(launch, cli.warmups, cli.iterations, timing))
       return fail("TIMING", last_launch_rc, config.label.c_str());
@@ -573,7 +675,25 @@ bool run_grouped_cell(GroupedCase shape, bool kpack, DeviceWeights& weights,
                  reinterpret_cast<uint16_t const*>(golden.get()),
                  host.golden.size(), counter, bad))
       return fail("RAW_COMPARE", -1, config.label.c_str());
-    if (bad) return fail("RAW_MISMATCH", int(bad), config.label.c_str());
+    if (bad) {
+      RawMismatch mismatch;
+      if (!inspect_raw(reinterpret_cast<uint16_t const*>(out.get()),
+                       host.golden, shape.n, mismatch) || mismatch.bad != bad)
+        return fail("RAW_DIAGNOSTIC", int(bad), config.label.c_str());
+      int first_expert = -1;
+      if (mismatch.first != std::size_t(-1)) {
+        int const first_row = int(mismatch.first / std::size_t(shape.n));
+        for (int e = 0; e < shape.experts; ++e)
+          if (offsets[std::size_t(e)] <= first_row &&
+              first_row < offsets[std::size_t(e + 1)]) {
+            first_expert = e;
+            break;
+          }
+      }
+      print_mismatch("grouped", layout_name(kpack), shape.n, mismatch,
+                     first_expert);
+      return fail("RAW_MISMATCH", int(bad), config.label.c_str());
+    }
     Timing timing;
     if (!measure(launch, cli.warmups, cli.iterations, timing))
       return fail("TIMING", last_launch_rc, config.label.c_str());
@@ -608,11 +728,19 @@ bool run_families(Cases const& cases, int experts, Cli const& cli, Run&& run) {
     std::printf(
         "FQ_KQUANT_LAYOUT_WEIGHT q=%d n=%d k=%d experts=%d "
         "xplane_mapping=0x%016llx kpack_mapping=0x%016llx "
-        "low_bytes=%zu high_bytes=%zu unit_bytes=%zu roundtrip=PASS\n",
+        "low_bytes=%zu high_bytes=%zu unit_bytes=%zu "
+        "xplane_low_hash=0x%016llx xplane_high_hash=0x%016llx "
+        "kpack_low_hash=0x%016llx kpack_high_hash=0x%016llx "
+        "unit_hash=0x%016llx roundtrip=PASS\n",
         kQtype, n, k, experts,
         static_cast<unsigned long long>(hx.descriptor.mapping_id),
         static_cast<unsigned long long>(hk.descriptor.mapping_id),
-        hx.low.size(), hx.high.size(), hx.units.size());
+        hx.low.size(), hx.high.size(), hx.units.size(),
+        static_cast<unsigned long long>(hx.low_hash),
+        static_cast<unsigned long long>(hx.high_hash),
+        static_cast<unsigned long long>(hk.low_hash),
+        static_cast<unsigned long long>(hk.high_hash),
+        static_cast<unsigned long long>(hx.unit_hash));
     for (auto const& row : family.second) {
       if (cli.kpack_first) {
         if (!run(row, true, dk, cli) || !run(row, false, dx, cli)) return false;

@@ -30,6 +30,15 @@ def main() -> int:
         "ppu_arrangements::q4_kpack4_transpose_v1()",
         "QUACTLIZE_PPU_LAYOUT_XPLANE_V1",
         "compare_raw_kernel<<<blocks, 256>>>",
+        "FQ_KQUANT_LAYOUT_MISMATCH",
+        "first_want=0x%04x first_got=0x%04x",
+        "bad_col_mod64_mask=0x%016llx",
+        "got_hash=0x%016llx want_hash=0x%016llx",
+        "xplane_low_hash=0x%016llx xplane_high_hash=0x%016llx",
+        "kpack_low_hash=0x%016llx kpack_high_hash=0x%016llx",
+        "unit_hash=0x%016llx roundtrip=PASS",
+        "float const signed_value = value == 0.f ? 0.f :",
+        "4 odd rows * 64 columns = 256 false mismatches",
         "hggcEventRecord(begin, nullptr)",
         "hggcEventRecord(end, nullptr)",
         "moe_router_fixture::route(",
@@ -87,6 +96,8 @@ def main() -> int:
             "        grouped_fully_quantized_config_valid(",
             "return false && arrangement->artifact_tile_k == tactic_tile_k &&\n"
             "        grouped_fully_quantized_config_valid(", 1),
+        bench.replace("float const signed_value = value == 0.f ? 0.f :",
+                      "float const signed_value =", 1),
     )
     assert plants[0] != bench and "hggcEventRecord(end, nullptr)" not in plants[0]
     assert plants[1] != bench and plants[1].count("QUACTLIZE_PPU_LAYOUT_XPLANE_V1") == 0
@@ -96,6 +107,8 @@ def main() -> int:
         "bool const has_device_geometry = false &&" in plants[3]
     assert plants[4] != backend and \
         "return false && arrangement->artifact_tile_k == tactic_tile_k" in plants[4]
+    assert plants[5] != bench and \
+        "float const signed_value = value == 0.f ? 0.f :" not in plants[5]
 
     for script in ("plan_fq_kquant_kpack_perf.py",
                    "analyze_fq_kquant_kpack_perf.py"):
@@ -103,7 +116,7 @@ def main() -> int:
                         "self-test"], check=True, stdout=subprocess.DEVNULL)
     print("[fq-kquant-perf:self-test] PASS production dense/grouped C ABI, "
           "five-format same-binary events, device-only admission, exact "
-          "grouped Xplane control, Q4 grouped and five source plants RED")
+          "grouped Xplane control, signed-zero oracle, Q4 grouped and six source plants RED")
     return 0
 
 

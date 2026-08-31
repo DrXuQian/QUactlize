@@ -2326,3 +2326,45 @@ the archived Xplane baseline, with per-family worst regrets from 57.7% to
 96.8%.  The one frozen TN64 win did not transfer to other tactics/M values.
 D32 remains an explicit per-tactic delivery candidate, never a deployment
 default or a fused-store confounder.
+
+### TODO #62 — DeepGEMM W4 `int32` K-pack8 as a Q4-only reader/layout counterfactual
+
+Do not change the canonical Q4 K-pack4 or generic Q2/Q3/Q5/Q6 K-pack ABI from
+source inspection alone.  DeepGEMM-for-sail commit
+`f89eae10c0e90c20630b50e4314448f01321bfba` supplies a materially different
+Q4-only alternative: its producer permutes each logical W4 tile into an
+`int32` tensor shaped `[E,K/16,N*2]`, one word holds eight nibbles in the
+reader's register-emission order, and the kernel uses a `uint128_t` shared-to-
+register copy before `int32 -> 8xbf16` conversion.  This moves more fragment
+placement offline and avoids the current `m16n16 ... swzl.trans.b16` reader,
+so it is an admissible counterfactual for the unresolved K-pack4 shared-load
+bank-conflict channel.
+
+Keep the boundary exact:
+
+* this is not evidence of fewer weight bytes; both layouts store `N*K/2`;
+* its separate BF16/E8M0 scale tensor is not GGUF Q4_K semantics and must not
+  replace the packed scale/min unit in the experiment;
+* the upstream implementation is W4-only and constrains `WarpN=64` and
+  `N%64==0`; it does not establish a unified Q2/Q3/Q5/Q6 two-plane format;
+* its scheduler and group-boundary scale cadence are reader ideas, not reasons
+  to change the offline mapping ID.
+
+Build one optional Q4 arrangement with a fresh layout/mapping identity.  Keep
+the current GGUF packed metadata, scale/zero arithmetic, tactic, provider,
+scheduler, split/reducer and epilogue fixed; vary only the Q4 code-plane bytes,
+shared reader and register converter.  The offline fixture must independently
+prove prepare/recover and plant a wrong permutation.  A production CuTe oracle
+must compose the actual shared partition, register copy view, converter
+emission and MMA fragment, with a wrong cohort/order control RED.
+
+Measure three matched device denominators: an M=1 N-wide decode row, an
+M=2048/4096 prefill row, and a real grouped-MoE row.  Admission requires
+raw-bit equality before timing.  Report weight/shared bytes, gmem and shared
+load counts, shared-load transactions and bank conflicts, conversion
+instructions, registers, spills and full kernel latency.  Promote this layout
+only if it removes the reader-side conflict/stall signature without losing the
+WN16/32 decode tactic space or regressing any of the three workloads.  Until
+that closure, `q4-kpack4-transpose-v1` and `kquant-kpack-transpose-v1` remain
+the canonical all-K-pack offline formats; this arm is a benchmark candidate,
+not a shipping fallback.
