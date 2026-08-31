@@ -20,16 +20,25 @@ WHAT IT REFUSES TO DO, and each refusal is a mistake this project has made or ne
     "packed the tensors we happened to handle" are distinguishable.
   * it does not write a partial artifact on failure. A directory that exists is a directory that finished.
 
-    python3 tools/pack_gguf.py MODEL.gguf OUT_DIR [--limit N] [--dry-run]
+    python3 tools/pack_gguf.py MODEL.gguf OUT_DIR \
+        [--layout-policy canonical|all-kpack] [--limit N] [--dry-run]
 
 Needs the device library (the placement lives there), so it runs on the box. The default Q4 K-pack4 path uses
 the format-selected FMT0 handle:
     QUACTLIZE_PPU_LIB_FMT0=<...>/libquactlize_ppu.so python3 tools/pack_gguf.py ...
 
-There is deliberately no Q4 layout switch: Q4 Xplane/FoldN is archived from
-whole-model production packing.  Low-level explicit Xplane APIs remain only
-for reproducing historical evidence and for the four non-Q4 formats that still
-use the shared Xplane implementation.
+``--layout-policy all-kpack`` is the format-unification producer:
+
+  Q2_K -> low2 Pack8
+  Q3_K -> low2 Pack8 + high1 Pack16
+  Q4_K -> low4 Pack4 (the shipping q4-kpack4 descriptor)
+  Q5_K -> low4 Pack4 + high1 Pack16 (including its proved high-plane transpose)
+  Q6_K -> low4 Pack4 + high2 Pack8
+
+Every plane is stored as converter-native little-endian b16 words and metadata
+stays in the byte-neutral packed-unit channel. ``canonical`` preserves the
+currently adjudicated automatic policy while the five-format performance run
+is in flight; selecting ``all-kpack`` is explicit and recorded in the manifest.
 """
 import argparse
 import json
@@ -48,6 +57,10 @@ def main() -> int:
     ap.add_argument("model", help="a .gguf file")
     ap.add_argument("out", help="output directory; created, and only finished artifacts land in it")
     ap.add_argument("--limit", type=int, default=0, help="stop after N packable tensors (0 = all)")
+    ap.add_argument(
+        "--layout-policy", choices=("canonical", "all-kpack"), default="canonical",
+        help=("canonical keeps the current automatic shipping policy; all-kpack emits q4-kpack4 for Q4_K and "
+              "the per-plane K-pack map for Q2/Q3/Q5/Q6"))
     ap.add_argument("--dry-run", action="store_true",
                     help="report what WOULD be packed, touching no device and writing nothing")
     a = ap.parse_args()
@@ -74,7 +87,8 @@ def main() -> int:
     for t in reader.tensors:
         tt = int(t.tensor_type)
         seen[t.tensor_type.name] += 1
-        ok, route, why = _packability(tt, len(t.shape), supported)
+        ok, route, why = _packability(
+            tt, len(t.shape), supported, a.layout_policy)
         if ok and route == "grouped":
             ok, why = _grouped_role_authority(t.name)
         if ok:
@@ -92,6 +106,7 @@ def main() -> int:
     print(f"tensors    {sum(seen.values())}  ->  {len(packable)} packable, {len(skipped)} skipped")
     print(f"type mix   {dict(seen)}")
     print(f"routes     {dict(route_mix)}")
+    print(f"layout     {a.layout_policy}")
     # THE MIX IS THE POINT OF PRINTING IT. A _K_M checkpoint is named for its dominant format and carries others,
     # and one device library serves ONE PPU_PACKED_FORMAT -- so this line says how many libraries a deployment of
     # this model needs, which is a fact about our build rather than about the file.
@@ -113,25 +128,30 @@ def main() -> int:
     import quactlize
 
     todo = packable[:a.limit] if a.limit else packable
-    # Check exactly the handles this plan will call. Q4 K-pack4 placement is served by FMT0; the default handle
-    # remains the canonical Xplane producer for Q2/Q3/Q5/Q6. Asking only one of them makes a mixed-format model
-    # fail late at its first tensor of the other physical layout.
-    uses_kpack4 = any(
-        F.canonical_fully_quantized_layout(int(t.tensor_type)) == "q4-kpack4"
-        for t, _route in todo)
+    # Check exactly the handles this plan will call. Every layout-v2 producer is
+    # owned by its format-selected library; canonical non-Q4 Xplane remains on
+    # the legacy/default handle. Asking only one makes a mixed-format model fail
+    # late at its first tensor of another physical layout.
+    v2_qtypes = {
+        int(t.tensor_type) for t, _route in todo
+        if _target_layout(int(t.tensor_type), a.layout_policy)
+        in ("q4-kpack4", "kquant-kpack")
+    }
     uses_default = any(
-        F.canonical_fully_quantized_layout(int(t.tensor_type)) == "xplane"
+        _target_layout(int(t.tensor_type), a.layout_policy) == "xplane"
         for t, _route in todo)
     required_backends = {}
-    if uses_kpack4:
-        required_backends["Q4 K-pack4 FMT0"] = quactlize.gguf_backend_for_qtype(int(F.QuantType.Q4_K))
+    for qtype in sorted(v2_qtypes):
+        name = F.QuantType(qtype).name
+        required_backends[f"{name} layout-v2"] = quactlize.gguf_backend_for_qtype(qtype)
     if uses_default:
         required_backends["canonical non-Q4 Xplane"] = quactlize.gguf_backend()
     unavailable = {name: value for name, value in required_backends.items() if not value.startswith("ppu")}
     if unavailable:
         details = "\n".join(f"  {name}: {value}" for name, value in unavailable.items())
         print(f"\nrefusing to pack because required device placement backend(s) are unavailable:\n{details}\n"
-              "  Set QUACTLIZE_PPU_LIB_FMT0 for Q4 K-pack4 and QUACTLIZE_PPU_LIB for non-Q4 Xplane tensors.",
+              "  Set the matching QUACTLIZE_PPU_LIB_FMT* handle for each layout-v2 qtype, and "
+              "QUACTLIZE_PPU_LIB only when canonical Xplane tensors are requested.",
               file=sys.stderr)
         return 3
 
@@ -160,17 +180,8 @@ def main() -> int:
         # contiguous and experts adjacent, exactly the grouped producer's [E*N*(K/256), type_size] ABI.
         block_rows = (experts or 1) * n * (k // 256)
         blocks = torch.from_numpy(t.data.reshape(block_rows, -1).copy())
-        layout = F.canonical_fully_quantized_layout(qtype)
-        if route == "grouped":
-            assert experts is not None
-            assert layout == "q4-kpack4"
-            artifact = routes.prepare_fully_quantized_grouped(
-                blocks, n, k, qtype, experts, layout="q4-kpack4")
-        elif layout == "q4-kpack4":
-            artifact = routes.prepare_fully_quantized_dense(
-                blocks, n, k, qtype, layout="q4-kpack4")
-        else:
-            artifact = routes.prepare_fully_quantized_dense(blocks, n, k, qtype, tile_k=_tile_k(qtype))
+        layout, artifact = _prepare_artifact(
+            routes, blocks, n, k, qtype, experts, route, a.layout_policy)
         low, high, units = artifact
 
         stem = t.name.replace("/", "_").replace(".", "_")
@@ -179,22 +190,27 @@ def main() -> int:
         _write(tmp, low, high, units)
         tmp.rename(out / stem)                          # a directory that exists is a directory that finished
 
-        # THE ARRANGEMENT IS NOT A CHOICE THIS TOOL MAKES. tile_k comes from the format, F follows from tile_k
-        # and the width by the same expression the consumer uses (formats.fold_for). The SAME _tile_k value is
-        # passed to the producer above, so the manifest describes bytes that were actually built -- which was
-        # not true before the *_for_tile ops existed (INBOX 027/028): the producer pinned F=1 whatever this
-        # recorded, and a manifest naming an unbuildable arrangement reads as a capability.
+        # THE ARRANGEMENT IS NOT INFERRED FROM THE OUTPUT. The selected policy
+        # names one producer, that producer returns the descriptor for the bytes
+        # it built, and this exact expected value prevents a manifest from
+        # relabelling Xplane as K-pack (or one K-pack mapping as another).
         arr = artifact.arrangement
-        expected = (F.q4_kpack4_arrangement()
-                    if layout == "q4-kpack4"
-                    else F.PlacedArrangement(
-                        bits=_low_bits(qtype), tile_k=_tile_k(qtype), high_bits=_high_bits(qtype)))
+        expected = (
+            F.q4_kpack4_arrangement() if layout == "q4-kpack4" else
+            F.kquant_kpack_arrangement(qtype) if layout == "kquant-kpack" else
+            F.PlacedArrangement(
+                bits=_low_bits(qtype), tile_k=_tile_k(qtype),
+                high_bits=_high_bits(qtype)))
         if arr != expected:
             raise RuntimeError(
                 f"{t.name}: producer returned arrangement {arr}, pack plan expected {expected}; refusing to write "
                 f"a manifest that describes different bytes from the ones just produced")
+        low_bits, high_bits = F.placed_code_planes(qtype)
         manifest.append({"name": t.name, "dir": stem, "ggml_type": qtype, "type_name": t.tensor_type.name,
-                         "route_class": route, "rank": len(t.shape), "n": n, "k": k, "experts": experts,
+                         "route_class": route, "layout_name": layout,
+                         "plane_packs": {"low": 16 // low_bits,
+                                         "high": 16 // high_bits if high_bits else 0},
+                         "rank": len(t.shape), "n": n, "k": k, "experts": experts,
                          "arrangement_version": artifact.arrangement_version,
                          "arrangement": arr._asdict(),
                          "fold": ([arr.fold, arr.high_fold]
@@ -214,7 +230,8 @@ def main() -> int:
     (out / "manifest.json").write_text(json.dumps({
         "artifact_schema_version": 2,
         "model": a.model,
-        "selection": {"limit": a.limit, "packable_total": len(packable), "packed": len(manifest),
+        "selection": {"layout_policy": a.layout_policy, "limit": a.limit,
+                      "packable_total": len(packable), "packed": len(manifest),
                       "skipped": len(skipped_manifest), "held_back_by_limit": len(held_back)},
         "tensors": manifest,
         "skipped": skipped_manifest,
@@ -227,22 +244,63 @@ def main() -> int:
     return 0
 
 
-def _packability(qtype: int, rank: int, supported):
+def _target_layout(qtype: int, layout_policy: str) -> str:
+    """Resolve one explicit whole-model layout policy without duplicating plane widths.
+
+    The arrangement constructors derive Pack=16/bits from the shared format
+    registry. Keeping this function at the layout-name level prevents the GGUF
+    tool from growing a second Q2/Q3/Q5/Q6 plane table.
+    """
+    from quactlize import formats as F
+    q = F.QuantType(int(qtype))
+    if layout_policy == "canonical":
+        return F.canonical_fully_quantized_layout(q)
+    if layout_policy == "all-kpack":
+        return "q4-kpack4" if q == F.QuantType.Q4_K else "kquant-kpack"
+    raise ValueError(
+        f"unknown layout policy {layout_policy!r}; expected 'canonical' or 'all-kpack'")
+
+
+def _prepare_artifact(routes, blocks, n: int, k: int, qtype: int,
+                      experts, route: str, layout_policy: str):
+    """Raw GGUF block tensor -> exact resident (low, high, units) artifact."""
+    layout = _target_layout(qtype, layout_policy)
+    if route == "grouped":
+        if experts is None:
+            raise ValueError("grouped K-pack preparation requires an expert extent")
+        artifact = routes.prepare_fully_quantized_grouped(
+            blocks, n, k, qtype, experts, layout=layout)
+    elif route == "dense":
+        if layout in ("q4-kpack4", "kquant-kpack"):
+            artifact = routes.prepare_fully_quantized_dense(
+                blocks, n, k, qtype, layout=layout)
+        else:
+            artifact = routes.prepare_fully_quantized_dense(
+                blocks, n, k, qtype, tile_k=_tile_k(qtype))
+    else:
+        raise ValueError(f"unknown GGUF pack route {route!r}")
+    return layout, artifact
+
+
+def _packability(qtype: int, rank: int, supported,
+                 layout_policy: str = "canonical"):
     """Return ``(packable, route, reason)`` without consulting tensor names.
 
-    Rank three is GGUF's grouped ``[K,N,E]`` storage, not a dense matrix with an ignorable axis.  Only Q4
-    K-pack4 currently has a descriptor-aware grouped producer *and* reader, so every other rank-three case is
-    visible but held back.  This is deliberately stricter than the legacy grouped tuple API: an on-disk artifact
-    whose consumer has to guess its Xplane descriptor is not a production artifact.
+    Rank three is GGUF's grouped ``[K,N,E]`` storage, not a dense matrix with
+    an ignorable axis. The all-Kpack policy has descriptor-aware grouped
+    producers/readers for all five formats. Canonical Xplane rank-three rows
+    remain visible but held back rather than losing their descriptor.
     """
     if int(qtype) not in supported:
         return False, None, "not a k-quant this build packs"
     if rank == 2:
         return True, "dense", None
     if rank == 3:
-        from quactlize import formats as F
-        if F.canonical_fully_quantized_layout(qtype) != "q4-kpack4":
-            return False, None, "3-D grouped artifact lacks a descriptor-aware reader for this format"
+        if _target_layout(qtype, layout_policy) not in (
+                "q4-kpack4", "kquant-kpack"):
+            return False, None, (
+                "3-D grouped artifact lacks a descriptor-aware reader under "
+                f"layout policy {layout_policy}")
         return True, "grouped", None
     return False, None, f"{rank}-D, expected dense rank 2 or grouped rank 3"
 

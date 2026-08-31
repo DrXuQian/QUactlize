@@ -628,15 +628,36 @@ def test_manifest_roundtrip_restores_kquant_kpack_v2_and_rejects_identity_drift(
         pack_gguf.restore_artifact(tmp_path, planted)
 
 
-def test_whole_model_packer_admits_q4_kpack4_grouped_and_holds_back_ambiguous_rank3():
+def test_whole_model_packer_all_kpack_policy_covers_every_plane_and_grouped_route():
     supported = {int(formats.QuantType.Q3_K), int(formats.QuantType.Q4_K)}
     q4 = int(formats.QuantType.Q4_K)
     q3 = int(formats.QuantType.Q3_K)
 
+    # The unchanged canonical policy still refuses to erase a non-Q4 Xplane
+    # descriptor on rank-three weights.
     assert pack_gguf._packability(q4, 2, supported) == (True, "dense", None)
     assert pack_gguf._packability(q4, 3, supported) == (True, "grouped", None)
     ok, route, why = pack_gguf._packability(q3, 3, supported)
     assert not ok and route is None and "descriptor-aware reader" in why
+
+    expected = {
+        formats.QuantType.Q2_K: ("kquant-kpack", 8, 0),
+        formats.QuantType.Q3_K: ("kquant-kpack", 8, 16),
+        formats.QuantType.Q4_K: ("q4-kpack4", 4, 0),
+        formats.QuantType.Q5_K: ("kquant-kpack", 4, 16),
+        formats.QuantType.Q6_K: ("kquant-kpack", 4, 8),
+    }
+    for qtype, (layout, low_pack, high_pack) in expected.items():
+        assert pack_gguf._target_layout(qtype, "all-kpack") == layout
+        low_bits, high_bits = formats.placed_code_planes(qtype)
+        assert 16 // low_bits == low_pack
+        assert (16 // high_bits if high_bits else 0) == high_pack
+        assert pack_gguf._packability(
+            int(qtype), 3, {int(qtype)}, "all-kpack") == \
+            (True, "grouped", None)
+
+    with pytest.raises(ValueError, match="unknown layout policy"):
+        pack_gguf._target_layout(q3, "guess")
 
     assert pack_gguf._tensor_geometry((5120, 8192)) == (8192, 5120, None)
     assert pack_gguf._tensor_geometry((5120, 8192, 64)) == (8192, 5120, 64)
@@ -648,6 +669,46 @@ def test_whole_model_packer_admits_q4_kpack4_grouped_and_holds_back_ambiguous_ra
     assert pack_gguf._grouped_role_authority("blk.12.ffn_down_exps.weight") == (True, None)
     ok, why = pack_gguf._grouped_role_authority("blk.12.unknown_rank3.weight")
     assert not ok and "no grouped role authority" in why
+
+
+def test_whole_model_all_kpack_conversion_dispatches_dense_and_grouped_exactly_once():
+    calls = []
+
+    class FakeRoutes:
+        @staticmethod
+        def prepare_fully_quantized_dense(blocks, n, k, qtype, **kwargs):
+            calls.append(("dense", blocks, n, k, int(qtype), kwargs))
+            return "dense-artifact"
+
+        @staticmethod
+        def prepare_fully_quantized_grouped(
+                blocks, n, k, qtype, experts, **kwargs):
+            calls.append(("grouped", blocks, n, k, int(qtype), experts, kwargs))
+            return "grouped-artifact"
+
+    blocks = object()
+    for qtype in formats.PLACED_CODE_PLANES:
+        want = ("q4-kpack4" if qtype == formats.QuantType.Q4_K
+                else "kquant-kpack")
+        layout, artifact = pack_gguf._prepare_artifact(
+            FakeRoutes, blocks, 256, 512, int(qtype), None, "dense",
+            "all-kpack")
+        assert (layout, artifact) == (want, "dense-artifact")
+        assert calls[-1] == (
+            "dense", blocks, 256, 512, int(qtype), {"layout": want})
+
+        layout, artifact = pack_gguf._prepare_artifact(
+            FakeRoutes, blocks, 256, 512, int(qtype), 4, "grouped",
+            "all-kpack")
+        assert (layout, artifact) == (want, "grouped-artifact")
+        assert calls[-1] == (
+            "grouped", blocks, 256, 512, int(qtype), 4,
+            {"layout": want})
+
+    with pytest.raises(ValueError, match="expert extent"):
+        pack_gguf._prepare_artifact(
+            FakeRoutes, blocks, 256, 512, 10, None, "grouped",
+            "all-kpack")
 
 
 def test_whole_model_grouped_kpack_dispatch_preserves_expert_major_rows(monkeypatch):
