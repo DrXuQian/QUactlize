@@ -19,8 +19,8 @@
 // gmem in fp16: slice s+1 reads slice s's output, adds, writes back. That serialises the tail and rounds S
 // times. Slicing K on the HOST instead needs no new GemmUniversal specialisation at all -- each slice is a
 // complete grouped GEMM over k/S -- and the merge becomes one elementwise kernel that accumulates the S
-// partials in fp32. This is the shape the user asked for ("splitk 可以在另外一个 kernel 轻量 reduce"), and
-// it is strictly better numerically than the serial chain: fold_derivation/l70_splitk_fp16_merge.cu measured
+// partials in fp32. This is also strictly better numerically than the serial chain:
+// fold_derivation/l70_splitk_fp16_merge.cu measured
 // the fp16 chain at 1 ulp for S<=4 and 2 ulp for S>=8, whereas a single fp32 accumulation of S fp16 partials
 // is correctly rounded once.
 //

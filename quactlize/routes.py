@@ -238,8 +238,8 @@ def has_op(name: str) -> bool:
     IT ASKS THE OPERATOR REGISTRY, NOT THE MODULE NAMESPACE, and that distinction is the whole point. Every op
     reaches quactlize/__init__.py through a HAND-WRITTEN wrapper, so a newly registered op is invisible as a
     module attribute until somebody adds one. Keying on that would have made this test skip forever on a box
-    where the op was built, registered and working -- a green run that checked nothing, caught here only because
-    codex's commit registered gguf_dense_fully_quantized in C++ while __init__.py knew nothing about it.
+    where the op was built, registered and working -- a green run that checked nothing. This happened when
+    gguf_dense_fully_quantized was registered in C++ before the Python module namespace exposed it.
 
     torch.ops.quactlize is the source of truth: the op is there iff RegisterOperators ran."""
     import quactlize as _q
@@ -418,8 +418,8 @@ def dequantize_scale_from_units(units: torch.Tensor, qtype: int, zmul: Optional[
     [E, k/group_size, n] for both -- a dense weight is one expert, so the consumer needs no second code path.
     """
     # zmul DERIVED, not defaulted. It was `= 0` for one commit, which is right for Q2_K and silently wrong for
-    # the other four -- they would have returned plausible finite scales. codex caught it before it reached the
-    # box (088). An explicit value is still accepted, for probing a format against a correction it does not own.
+    # the other four -- they would have returned plausible finite scales. An explicit value is still accepted,
+    # for probing a format against a correction it does not own.
     if zmul is None:
         from .formats import placed_code_zmul
         zmul = placed_code_zmul(qtype)
@@ -437,7 +437,7 @@ def matmul_bc_gemv(a: torch.Tensor, artifact, qtype: int) -> torch.Tensor:
     tensor-core paths read the placed planes, so a deployment that wanted both had to keep two arrangements of
     the same weight -- and weights exist once in HBM, which is the constraint the whole merge is about.
 
-    NOT YET A REPLACEMENT FOR matmul_native_gemv. The user's bar is PARITY with the raw path at the real layer
+    NOT YET A REPLACEMENT FOR matmul_native_gemv. The admission bar is parity with the raw path at the real layer
     shape, not "no worse under one condition", and it has not been met: at N=K=2048 the measurement is a cold tie
     and warm +11%. Both paths stay callable until it is.
     """
@@ -479,7 +479,7 @@ def dequantize_fully_quantized(artifact, qtype: int, grouped: bool = False) -> t
     THE ENTRY RULE THIS SATISFIES. A stored arrangement needs dequant-all AND dequant-scale, because without them
     the only way to check it is end to end -- and that mixes a PACKING mistake with a COMPUTATION mistake.
     dequantize_scale_from_units gave BC the second; this is the first, and until it existed BC was the one format
-    in the tree carrying only half its inverse while the rule that requires both is the user's own.
+    in the tree carrying only half its inverse while the artifact contract requires both.
 
     IT IS A COMPOSITION, NOT A REIMPLEMENTATION, and that is the point rather than a shortcut:
 

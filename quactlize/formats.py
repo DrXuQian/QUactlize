@@ -242,7 +242,7 @@ def storage_growth(qtype: QuantType) -> Optional[float]:
 # WHAT A RECORDED ARRANGEMENT BINDS. The online tactic search is bounded by the tensor's LAYOUT CLASS, not by its
 # F. At F=1 the class absorbs every TK <= 256 and every tile and warp shape measured, so the search is wide. At
 # F>1 the same F at a different TK is a DIFFERENT class, so TK is pinned too and the search is narrower. Treating
-# "same F" as "same layout" is the specific mistake to avoid; codex flagged it after l105 was corrected.
+# "same F" as "same layout" is the specific mistake to avoid; l105 has a regression case for that distinction.
 #
 # THE TK <= 256 BOUND IS REAL AND WAS FOUND BY LOOKING FOR IT: int4 at TM64/TN64/TK512 w32x32 F=1 compiles and
 # produces DIFFERENT bytes, so "F=1 is tile-invariant" holds within the unfolded interleave-256 domain and not
@@ -261,8 +261,8 @@ def fold_for(bits: int, tile_k: int) -> int:
     and the two disagreeing is not a crash -- the weight is placed for one fold and read at another, which
     returns finite wrong numbers. So there is one expression and everything asks it.
 
-    The arrangement the user pinned is what this returns, which is the point: nobody chose those folds, the
-    32-byte AIU floor did.
+    The arrangement contract is what this returns: the folds are determined by the 32-byte AIU floor rather than
+    selected independently by a caller.
 
         int4 TK=256 -> run 128 B -> F=1     int2 TK=64 -> 16 B -> F=2     int1 TK=64 -> 8 B -> F=4
     """
@@ -521,7 +521,7 @@ def placed_arrangement(qtype, tile_k: int | None = None) -> PlacedArrangement:
 
 # THE CODE CORRECTION OF THE PLACED DENSE ARRANGEMENT, per format. NOT a free parameter and NOT zero by default:
 # a placed weight's codes carry a per-format offset, and reading them back with the wrong one produces plausible
-# scales rather than an error. codex measured these against the stored planes (heartbeat 088) --
+# scales rather than an error. These values were measured against the stored planes --
 #
 #     Q2_K 0    Q3_K -4    Q4_K 8    Q5_K 8    Q6_K -24
 #
