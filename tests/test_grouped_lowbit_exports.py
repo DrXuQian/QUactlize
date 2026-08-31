@@ -6,6 +6,8 @@ ROOT = Path(__file__).resolve().parent.parent
 BACKEND = ROOT / "quactlize/csrc/device/ppu_dense_backend.cu"
 MIXED = (ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/"
          "quactlize_mma_mixed_input.hpp")
+GROUP_KERNEL = ROOT / "quactlize/include/ppu_aiu_gemm_mixed_input_group.hpp"
+GROUP_LAUNCHER = ROOT / "quactlize/include/moe_grouped_ppu.cuh"
 
 
 def test_grouped_lowbit_has_the_full_grouped_operator_surface():
@@ -76,6 +78,42 @@ def test_grouped_kpack4_changes_only_the_mainloop_policy():
     grouped = (ROOT / "quactlize/include/moe_grouped_ppu.cuh").read_text()
     assert "class MainloopPolicyOverride = void" in grouped
     assert "std::conditional_t<" in grouped and "MainloopPolicyOverride" in grouped
+
+
+def test_grouped_device_c_abi_admits_its_device_resident_shape_contract():
+    """The async C ABI has no host shape mirror; its 3-D fallback must remain admissible.
+
+    The kernel already reads the exact per-expert M/N/K from device in its
+    early-exit path.  Requiring a host mirror as well made every device ABI
+    launch fail in can_implement before that path ran.
+    """
+    source = GROUP_KERNEL.read_text()
+    begin = source.index("  static bool can_implement(Arguments const& args) {")
+    end = source.index("  static int get_workspace_size", begin)
+    body = source[begin:end]
+    assert "has_host_geometry" in body
+    assert "has_device_geometry" in body
+    assert "args.problem_shape.problem_shapes != nullptr" in body
+    assert "args.representative_m > 0" in body
+    assert "args.representative_n > 0" in body
+    assert "args.representative_k > 0" in body
+    assert "args.mtiles_uniform > 0" in body
+    assert "args.problem_shape.host_problem_shapes == nullptr" not in body
+
+    launcher = GROUP_LAUNCHER.read_text()
+    assert "A device-only caller cannot read the ragged tile sum" in launcher
+    assert "args.mtiles_uniform = int(cute::ceil_div(m, TMv));" in launcher
+
+    def admitted(host, device, m, n, k, mtiles):
+        device_geometry = not host and device and m > 0 and n > 0 and k > 0 and mtiles > 0
+        return device and (host or device_geometry)
+
+    assert admitted(True, True, 0, 0, 0, 0)       # exact host mirror path
+    assert admitted(False, True, 447, 512, 3072, 56)  # production device ABI
+    assert not admitted(False, True, 447, 512, 3072, 0)
+    assert not admitted(False, False, 447, 512, 3072, 56)
+    legacy_admitted = lambda host, device: host and device
+    assert not legacy_admitted(False, True)  # historical guard rejects the positive device arm
 
 
 def test_grouped_kpack4_selects_the_expert_axis_exactly_once():

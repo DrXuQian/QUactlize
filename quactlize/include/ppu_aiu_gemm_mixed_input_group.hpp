@@ -188,8 +188,28 @@ public:
         args.mode != GemmUniversalMode::kArray) {
       return false;
     }
+    // Two equally valid launch contracts reach this kernel:
+    //
+    //   * host wrappers provide the exact host mirror and may select the flat
+    //     ragged grid; and
+    //   * the asynchronous production C ABI owns only device-resident shapes.
+    //     It supplies representative M/N/K plus a conservative per-expert
+    //     m-tile bound, so get_grid_shape uses the 3-D path and the kernel
+    //     trims each expert from problem_shapes on device.
+    //
+    // The latter contract was already implemented in get_grid_shape and
+    // operator(), but this old unconditional host-mirror guard rejected it
+    // before either could run.  Require every value actually consumed by the
+    // device-only path; do not weaken admission to a bare null bypass.
+    bool const has_host_geometry =
+        args.problem_shape.host_problem_shapes != nullptr;
+    bool const has_device_geometry =
+        !has_host_geometry && args.problem_shape.problem_shapes != nullptr &&
+        args.representative_m > 0 && args.representative_n > 0 &&
+        args.representative_k > 0 && args.mtiles_uniform > 0;
     if (args.problem_shape.groups() <= 0 ||
-        args.problem_shape.host_problem_shapes == nullptr) {
+        args.problem_shape.problem_shapes == nullptr ||
+        (!has_host_geometry && !has_device_geometry)) {
       return false;
     }
     auto host0 = args.problem_shape.get_host_problem_shape(0);

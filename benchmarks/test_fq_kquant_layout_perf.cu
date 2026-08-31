@@ -439,39 +439,57 @@ char const* layout_name(bool kpack) { return kpack ? "kpack" : "xplane"; }
 
 bool run_dense_cell(DenseCase shape, bool kpack, DeviceWeights& weights,
                     Cli const& cli) {
+  auto fail = [&](char const* phase, int code, char const* config) {
+    std::printf(
+        "FQ_KQUANT_LAYOUT_FAILURE q=%d round=%d operator=dense layout=%s "
+        "shape=%dx%dx%d config=%s phase=%s code=%d\n",
+        kQtype, cli.round, layout_name(kpack), shape.m, shape.n, shape.k,
+        config, phase, code);
+    return false;
+  };
   ProblemData host = make_problem(shape.m, shape.n, shape.k);
-  if (host.a.empty() || host.golden.empty()) return false;
+  if (host.a.empty() || host.golden.empty()) return fail("FIXTURE", -1, "NONE");
   cutlass::DeviceAllocation<half_t> a(host.a.size()), out(host.golden.size()),
       golden(host.golden.size());
   a.copy_from_host(host.a.data()); golden.copy_from_host(host.golden.data());
   int64_t const ws_bytes =
       quactlize_ppu_dense_fully_quantized_workspace_bytes_for_arrangement_v2(
           shape.m, shape.n, shape.k, kQtype, &weights.descriptor);
-  if (ws_bytes <= 0) return false;
+  if (ws_bytes <= 0) return fail("WORKSPACE_QUERY", int(ws_bytes), "NONE");
   cutlass::DeviceAllocation<uint8_t> workspace{std::size_t(ws_bytes)};
   cutlass::DeviceAllocation<unsigned int> counter(1);
   auto configs = dense_configs(shape.m, shape.n, shape.k,
                                weights.descriptor, cli.all_configs);
-  if (configs.empty()) return false;
+  if (configs.empty()) return fail("CONFIG_QUERY", 0, "NONE");
   for (auto const& config : configs) {
+    int last_launch_rc = 0;
     auto launch = [&] {
-      return quactlize_ppu_dense_fully_quantized_dev_for_arrangement_v2(
+      last_launch_rc = quactlize_ppu_dense_fully_quantized_dev_for_arrangement_v2(
           reinterpret_cast<uint16_t const*>(a.get()), weights.low.get(),
           F::HighBits ? weights.high.get() : nullptr, weights.units.get(),
           reinterpret_cast<uint16_t*>(out.get()), shape.m, shape.n, shape.k,
           kQtype, workspace.get(), ws_bytes, nullptr, config.wire,
           &weights.descriptor);
+      return last_launch_rc;
     };
-    if (hggcMemset(out.get(), 0x7b, host.golden.size() * sizeof(half_t)) !=
-            hggcSuccess || launch() != 0 || hggcDeviceSynchronize() != hggcSuccess)
-      return false;
+    hggcError_t const memset_status =
+        hggcMemset(out.get(), 0x7b, host.golden.size() * sizeof(half_t));
+    if (memset_status != hggcSuccess)
+      return fail("OUTPUT_POISON", int(memset_status), config.label.c_str());
+    if (launch() != 0)
+      return fail("LAUNCH", last_launch_rc, config.label.c_str());
+    hggcError_t const sync_status = hggcDeviceSynchronize();
+    if (sync_status != hggcSuccess)
+      return fail("SYNCHRONIZE", int(sync_status), config.label.c_str());
     unsigned int bad = 0;
     if (!raw_bad(reinterpret_cast<uint16_t const*>(out.get()),
                  reinterpret_cast<uint16_t const*>(golden.get()),
-                 host.golden.size(), counter, bad) || bad)
-      return false;
+                 host.golden.size(), counter, bad))
+      return fail("RAW_COMPARE", -1, config.label.c_str());
+    if (bad) return fail("RAW_MISMATCH", int(bad), config.label.c_str());
     Timing timing;
-    if (!measure(launch, cli.warmups, cli.iterations, timing)) return false;
+    if (!measure(launch, cli.warmups, cli.iterations, timing))
+      return fail("TIMING", last_launch_rc, config.label.c_str());
     bool const packed_a = !kpack && kQtype == 10 && shape.m == 1 &&
         config.label == "8x128:8x32:s3";
     std::printf(
@@ -492,17 +510,27 @@ bool run_dense_cell(DenseCase shape, bool kpack, DeviceWeights& weights,
 bool run_grouped_cell(GroupedCase shape, bool kpack, DeviceWeights& weights,
                       Cli const& cli) {
   moe_router_fixture::Rows route;
+  auto fail = [&](char const* phase, int code, char const* config) {
+    std::printf(
+        "FQ_KQUANT_LAYOUT_FAILURE q=%d round=%d operator=grouped layout=%s "
+        "tokens=%d shape=%dx%dx%d experts=%d topk=%d active=%d zero=%d "
+        "max_rows=%d config=%s phase=%s code=%d\n",
+        kQtype, cli.round, layout_name(kpack), shape.tokens, route.total,
+        shape.n, shape.k, shape.experts, shape.topk, route.active, route.zero,
+        route.max, config, phase, code);
+    return false;
+  };
   char why[160]{};
   if (!moe_router_fixture::route(
           shape.tokens, shape.topk, shape.experts, route, why, sizeof why))
-    return false;
+    return fail("ROUTER", -1, "NONE");
   std::vector<int> offsets(std::size_t(shape.experts + 1), 0);
   for (int e = 0; e < shape.experts; ++e)
     offsets[std::size_t(e + 1)] = offsets[std::size_t(e)] +
                                   route.per_expert[std::size_t(e)];
-  if (offsets.back() != route.total) return false;
+  if (offsets.back() != route.total) return fail("OFFSETS", -1, "NONE");
   ProblemData host = make_problem(route.total, shape.n, shape.k);
-  if (host.a.empty() || host.golden.empty()) return false;
+  if (host.a.empty() || host.golden.empty()) return fail("FIXTURE", -1, "NONE");
   cutlass::DeviceAllocation<half_t> a(host.a.size()), out(host.golden.size()),
       golden(host.golden.size());
   cutlass::DeviceAllocation<int> d_offsets(offsets.size());
@@ -512,33 +540,43 @@ bool run_grouped_cell(GroupedCase shape, bool kpack, DeviceWeights& weights,
       quactlize_ppu_grouped_fully_quantized_workspace_bytes_for_arrangement_v2(
           route.total, route.max, shape.n, shape.k, shape.experts, kQtype,
           &weights.descriptor);
-  if (ws_bytes <= 0) return false;
+  if (ws_bytes <= 0) return fail("WORKSPACE_QUERY", int(ws_bytes), "NONE");
   cutlass::DeviceAllocation<uint8_t> workspace{std::size_t(ws_bytes)};
   cutlass::DeviceAllocation<unsigned int> counter(1);
   auto configs = grouped_configs(route.total, shape.n, shape.k, shape.experts,
                                  route.max, weights.descriptor,
                                  cli.all_configs);
-  if (configs.empty()) return false;
+  if (configs.empty()) return fail("CONFIG_QUERY", 0, "NONE");
   for (auto const& config : configs) {
+    int last_launch_rc = 0;
     auto launch = [&] {
-      return quactlize_ppu_grouped_fully_quantized_dev_for_arrangement_v2(
+      last_launch_rc = quactlize_ppu_grouped_fully_quantized_dev_for_arrangement_v2(
           reinterpret_cast<uint16_t const*>(a.get()), weights.low.get(),
           F::HighBits ? weights.high.get() : nullptr, weights.units.get(),
           d_offsets.get(), reinterpret_cast<uint16_t*>(out.get()),
           route.total, shape.n, shape.k, shape.experts, route.max, kQtype,
           workspace.get(), ws_bytes, nullptr, config.wire,
           &weights.descriptor);
+      return last_launch_rc;
     };
-    if (hggcMemset(out.get(), 0x7b, host.golden.size() * sizeof(half_t)) !=
-            hggcSuccess || launch() != 0 || hggcDeviceSynchronize() != hggcSuccess)
-      return false;
+    hggcError_t const memset_status =
+        hggcMemset(out.get(), 0x7b, host.golden.size() * sizeof(half_t));
+    if (memset_status != hggcSuccess)
+      return fail("OUTPUT_POISON", int(memset_status), config.label.c_str());
+    if (launch() != 0)
+      return fail("LAUNCH", last_launch_rc, config.label.c_str());
+    hggcError_t const sync_status = hggcDeviceSynchronize();
+    if (sync_status != hggcSuccess)
+      return fail("SYNCHRONIZE", int(sync_status), config.label.c_str());
     unsigned int bad = 0;
     if (!raw_bad(reinterpret_cast<uint16_t const*>(out.get()),
                  reinterpret_cast<uint16_t const*>(golden.get()),
-                 host.golden.size(), counter, bad) || bad)
-      return false;
+                 host.golden.size(), counter, bad))
+      return fail("RAW_COMPARE", -1, config.label.c_str());
+    if (bad) return fail("RAW_MISMATCH", int(bad), config.label.c_str());
     Timing timing;
-    if (!measure(launch, cli.warmups, cli.iterations, timing)) return false;
+    if (!measure(launch, cli.warmups, cli.iterations, timing))
+      return fail("TIMING", last_launch_rc, config.label.c_str());
     std::printf(
         "FQ_KQUANT_LAYOUT_GROUPED q=%d round=%d order=%s layout=%s "
         "mapping_id=0x%016llx tokens=%d shape=%dx%dx%d experts=%d topk=%d "
@@ -561,7 +599,6 @@ bool run_families(Cases const& cases, int experts, Cli const& cli, Run&& run) {
   using Case = typename Cases::value_type;
   std::map<std::pair<int,int>, std::vector<Case>> families;
   for (auto const& row : cases) families[{row.n, row.k}].push_back(row);
-  bool ok = true;
   for (auto const& family : families) {
     int const n = family.first.first, k = family.first.second;
     HostWeights hx = make_weights(n, k, experts, false);
@@ -578,15 +615,13 @@ bool run_families(Cases const& cases, int experts, Cli const& cli, Run&& run) {
         hx.low.size(), hx.high.size(), hx.units.size());
     for (auto const& row : family.second) {
       if (cli.kpack_first) {
-        ok = run(row, true, dk, cli) && ok;
-        ok = run(row, false, dx, cli) && ok;
+        if (!run(row, true, dk, cli) || !run(row, false, dx, cli)) return false;
       } else {
-        ok = run(row, false, dx, cli) && ok;
-        ok = run(row, true, dk, cli) && ok;
+        if (!run(row, false, dx, cli) || !run(row, true, dk, cli)) return false;
       }
     }
   }
-  return ok;
+  return true;
 }
 
 }  // namespace
@@ -606,11 +641,14 @@ int main(int argc, char** argv) {
       format.high_bits != F::HighBits || format.group_size != F::Group)
     return 2;
   bool ok = true;
-  if (!cli.dense.empty())
-    ok = run_families(cli.dense, 1, cli, run_dense_cell) && ok;
+  // Grouped is the less broadly exercised deployment surface and owns the
+  // larger admission contract.  Run it first so a rejected real ragged row
+  // fails before the 77-cell dense timing board, not forty minutes later.
   if (!cli.grouped.empty())
     ok = run_families(cli.grouped, cli.grouped.front().experts, cli,
-                      run_grouped_cell) && ok;
+                      run_grouped_cell);
+  if (ok && !cli.dense.empty())
+    ok = run_families(cli.dense, 1, cli, run_dense_cell);
   std::printf(
       "FQ_KQUANT_LAYOUT_RUN q=%d round=%d order=%s iterations=%d warmups=%d "
       "all_configs=%d dense_cases=%zu grouped_cases=%zu status=%s\n",
