@@ -1273,14 +1273,6 @@ public:
         return thr_mma.partition_fragment_B(sB(_,_,0));
       }
     }();                                                                       // (MMA,MMA_N,MMA_K logical)
-#if defined(PPU_B_DEQUANT_NOP) && (PPU_B_DEQUANT_NOP != 0)
-    // The ablation must not change what the MMA pipe is fed. partition_fragment_B does not initialise, and with the
-    // conversion removed nothing else would either, so every atom would consume indeterminate bits -- which as fp16
-    // are freely NaN or Inf, and a timing measurement taken over exceptional operands measures the exception
-    // handling. One fill, outside the k-loop, so it costs nothing the measurement cares about.
-    cute::fill(tCrB_mma, static_cast<typename decltype(tCrB_mma)::value_type>(1.0f));
-#endif
-
     CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(accum));                    // MMA_M
     CUTE_STATIC_ASSERT_V(size<1>(tCrB_mma) == size<2>(accum));                // MMA_N
     CUTE_STATIC_ASSERT_V(size<2>(tCrA) == size<2>(tCrB_mma));                 // MMA_K
@@ -1894,42 +1886,7 @@ private:
         auto decode_group = [&] (auto source_g_, auto destination_g_) {
           constexpr int SourceG = decltype(source_g_)::value;
           constexpr int G = decltype(destination_g_)::value;
-          // TIMING-ONLY ABLATION. PPU_PACKED_SCALE_NOP=1 keeps the native transport and the shared STORES but drops
-          // the decode ARITHMETIC, so three builds decompose the +12.9% instead of attributing all of it at once:
-          //     baseline B   fp16 planes, cp.async writes them, no decode
-          //     nop      N   native 16 B transport + the same stores, no arithmetic
-          //     full     P   everything
-          // giving arithmetic = P - N and transport+stores = N - B. RESULTS ARE DELIBERATELY WRONG under this flag.
-          // The store still consumes the unit's first half so the 16 B smem load cannot be dead-code eliminated --
-          // an ablation the compiler optimises away measures the compiler, not the kernel.
-          //
-          // A switch by this name was DOCUMENTED in PLAN_task20_scale.md and HANDOFF_packed_scale.md while its code
-          // no longer existed: it did not survive the F/F' rewrites and nothing noticed, because a timing flag has no
-          // gate that fails. Same defect shape as the rest of this task, one level up.
-#if defined(PPU_PACKED_SCALE_NOP) && (PPU_PACKED_SCALE_NOP != 0)
-          // NORMAL VALUES, NOT d AND dmin. Writing the unit's own d and dmin kept the 16 B load alive but made the
-          // planes depend on the input, and d IS subnormal for 80.5% of superblocks on the real fixture.
-          //
-          // THAT IS NOT WHY packnop CAME OUT SLOWER, and I asserted it was. test_moe_splitk_bench fills its scale
-          // buffer with a constant 0.0625 and its zero buffer with -0.0625 and hands the same allocation to the
-          // packed path, which reinterprets it as 16-byte units -- so the bench's d and dmin are 0.0625, normal, and
-          // the fixture's subnormals never reach it. Second time I attached that measured fact to the wrong effect.
-          // The packnop anomaly is still unexplained; the leading candidates are timing noise at 2.3% against a
-          // documented 13% dispersion, and a different compiler schedule, since the full decoder consumes all four
-          // u[] words while this consumes only u[0] and the other shared loads may simply be eliminated.
-          //
-          // The change is kept because input-independent constants are the right shape for an ablation regardless --
-          // it just does not buy what the first version of this comment claimed.
-          //
-          // 0x3C00 is 1.0 and 0x0000 is +0; ORing one bit of u[0] into the mantissa keeps the load from being dead
-          // while staying firmly normal. The planes are still wrong on purpose -- read the time, never the MATCH.
           cutlass::gguf_packed::GroupScale sz;
-          sz.scale = cutlass::half_t::bitcast(uint16_t(0x3C00u | (u[0] & 1u)));
-          sz.zero  = cutlass::half_t::bitcast(uint16_t((u[0] >> 16) & 1u));
-          if (false)
-#else
-          cutlass::gguf_packed::GroupScale sz;
-#endif
           if constexpr (kPackedPairFast) {
             // BOTH FIELDS OF THE GROUP IN ONE 32-BIT LANE PAIR: one integer add carries the bias, the mask and the
             // magic OR for scale AND min together, then one ppu.sub.f16x2 and one ppu.fma.rtte.f16x2. 15 opcodes per
@@ -2193,26 +2150,9 @@ private:
     }
   }
 
-  // PPU_B_DEQUANT_NOP -- TIMING ONLY, RESULTS ARE DELIBERATELY WRONG. It answers the one question the packed-scale
-  // NOP cannot: how much of the 20.11 us baseline is the int4->fp16 dequant pipeline itself? That chain is 1,898,496
-  // instructions against 131,072 mma, i.e. 43% of dynamic instruction count -- but an instruction share is not a
-  // cycle share, and those instructions can issue while memory operations are outstanding. Only removing them says.
-  //
-  // WHAT IT KEEPS, because an ablation that changes memory traffic answers a different question: the B s2r loads
-  // (cvt_in stays live), the scale/zero smem reads (one element of each fragment is still consumed, so the copies
-  // cannot be dead-code eliminated), the mma count, the tile shapes and every barrier. What it drops: the conversion
-  // for all but one word, and N-1 of the N elementwise scale/zero applications per atom.
-  //
-  // The one-element form is deliberate. Skipping the transforms entirely would let the compiler delete the scale
-  // copies with them, and the run would then measure a kernel that also stopped reading shared memory -- the same
-  // trap PPU_PACKED_SCALE_NOP avoids by keeping its unit load consumed.
   template <class TA, class TB, class TC, class Op>
-  CUTLASS_DEVICE static void bdq_transform(TA&& a, TB&& b, TC&& c, Op op) {
-#if defined(PPU_B_DEQUANT_NOP) && (PPU_B_DEQUANT_NOP != 0)
-    c(0) = op(a(0), b(0));
-#else
+  CUTLASS_DEVICE static void transform_fragment(TA&& a, TB&& b, TC&& c, Op op) {
     cute::transform(a, b, c, op);
-#endif
   }
 
   /// Utilities to transform B.
@@ -2287,15 +2227,7 @@ private:
     }();
 
     using CPY_VEC = Int<4 * 32 / sizeof_bits<RealInternalElementB>::value>;
-#if defined(PPU_B_DEQUANT_NOP) && (PPU_B_DEQUANT_NOP != 0)
-    // Nothing. The earlier version copied one 32-bit word of cvt_in into cvt_out to keep the B load alive, on the
-    // belief that the rest of cvt_out held the previous k-tile's converted halfs -- it does not, the fragment is
-    // never initialised, and those raw int4 bits read as fp16 are NaN or Inf about as often as not. The B s2r does
-    // not need that crutch: it is a TSM_LD_SWZL implemented as asm volatile, so it survives its results going unused.
-    (void)cvt_in; (void)cvt_out;
-#else
     convert_tensor(cvt_in, cvt_out, CPY_VEC{});
-#endif
 
     constexpr int MMA_KA_ = decltype(cute::size<2>(tCrB_mma))::value;   // total mma-K atoms in the tile
     constexpr int KBM_    = MMA_KA_ / K_ATOM_PER_COPY;                  // K_BLOCK_MAX (copy steps)
@@ -2311,7 +2243,7 @@ private:
       if constexpr (!FINE) {
         cute::for_each(cute::make_int_sequence<K_ATOM_PER_COPY>{}, [&] (auto i_) {
           constexpr int atom_idx = K_BLOCK_STATIC * K_ATOM_PER_COPY + decltype(i_)::value;
-          bdq_transform(tCrB_mma(_, _, Int<atom_idx>{}), tCrS(_, _, 0), tCrB_mma(_, _, Int<atom_idx>{}), cute::multiplies{});
+          transform_fragment(tCrB_mma(_, _, Int<atom_idx>{}), tCrS(_, _, 0), tCrB_mma(_, _, Int<atom_idx>{}), cute::multiplies{});
         });
       } else {
         // FINE: write via tCrS_copy_view (a retile VIEW of the ORIGINAL fragment) then read the ORIGINAL back --
@@ -2328,7 +2260,7 @@ private:
           if constexpr (FinePolicy::starts_group(atom_idx))              // reload only at a group's first atom
             MetadataPolicy::reload(partitioned_extra_info, tiled_copy_and_views,
                                    FinePolicy::group(atom_idx), read_stage);
-          bdq_transform(tCrB_mma(_, _, Int<atom_idx>{}), cute::get<1>(partitioned_extra_info)(_, _, 0),
+          transform_fragment(tCrB_mma(_, _, Int<atom_idx>{}), cute::get<1>(partitioned_extra_info)(_, _, 0),
                           tCrB_mma(_, _, Int<atom_idx>{}), cute::multiplies{});
         });
       }
@@ -2339,8 +2271,8 @@ private:
       if constexpr (!FINE) {
         cute::for_each(cute::make_int_sequence<K_ATOM_PER_COPY>{}, [&] (auto i_) {
           constexpr int atom_idx = K_BLOCK_STATIC * K_ATOM_PER_COPY + decltype(i_)::value;
-          bdq_transform(tCrB_mma(_, _, Int<atom_idx>{}), tCrS(_, _, 0), tCrB_mma(_, _, Int<atom_idx>{}), cute::multiplies{});
-          bdq_transform(tCrB_mma(_, _, Int<atom_idx>{}), tCrZ(_, _, 0), tCrB_mma(_, _, Int<atom_idx>{}), cute::plus{});
+          transform_fragment(tCrB_mma(_, _, Int<atom_idx>{}), tCrS(_, _, 0), tCrB_mma(_, _, Int<atom_idx>{}), cute::multiplies{});
+          transform_fragment(tCrB_mma(_, _, Int<atom_idx>{}), tCrZ(_, _, 0), tCrB_mma(_, _, Int<atom_idx>{}), cute::plus{});
         });
       } else {
         // FINE: see ConvertAndScale note -- write via the copy VIEWs, read the ORIGINAL fragments back.
@@ -2389,14 +2321,14 @@ private:
             constexpr int atom_idx = K_BLOCK_STATIC * K_ATOM_PER_COPY + I;
             constexpr int GI       = I / APG_;
             if constexpr (GI % 2 == 0) {
-              bdq_transform(tCrB_mma(_,_,Int<atom_idx>{}), cute::get<1>(partitioned_extra_info)(_,_,0),
+              transform_fragment(tCrB_mma(_,_,Int<atom_idx>{}), cute::get<1>(partitioned_extra_info)(_,_,0),
                               tCrB_mma(_,_,Int<atom_idx>{}), cute::multiplies{});
-              bdq_transform(tCrB_mma(_,_,Int<atom_idx>{}), cute::get<3>(partitioned_extra_info)(_,_,0),
+              transform_fragment(tCrB_mma(_,_,Int<atom_idx>{}), cute::get<3>(partitioned_extra_info)(_,_,0),
                               tCrB_mma(_,_,Int<atom_idx>{}), cute::plus{});
             } else {
-              bdq_transform(tCrB_mma(_,_,Int<atom_idx>{}), cute::get<0>(pf)(_,_,0),
+              transform_fragment(tCrB_mma(_,_,Int<atom_idx>{}), cute::get<0>(pf)(_,_,0),
                               tCrB_mma(_,_,Int<atom_idx>{}), cute::multiplies{});
-              bdq_transform(tCrB_mma(_,_,Int<atom_idx>{}), cute::get<1>(pf)(_,_,0),
+              transform_fragment(tCrB_mma(_,_,Int<atom_idx>{}), cute::get<1>(pf)(_,_,0),
                               tCrB_mma(_,_,Int<atom_idx>{}), cute::plus{});
             }
           });
@@ -2408,9 +2340,9 @@ private:
               MetadataPolicy::reload(partitioned_extra_info, tiled_copy_and_views,
                                      FinePolicy::group(atom_idx), read_stage);
             }
-            bdq_transform(tCrB_mma(_, _, Int<atom_idx>{}), cute::get<1>(partitioned_extra_info)(_, _, 0),
+            transform_fragment(tCrB_mma(_, _, Int<atom_idx>{}), cute::get<1>(partitioned_extra_info)(_, _, 0),
                             tCrB_mma(_, _, Int<atom_idx>{}), cute::multiplies{});
-            bdq_transform(tCrB_mma(_, _, Int<atom_idx>{}), cute::get<3>(partitioned_extra_info)(_, _, 0),
+            transform_fragment(tCrB_mma(_, _, Int<atom_idx>{}), cute::get<3>(partitioned_extra_info)(_, _, 0),
                             tCrB_mma(_, _, Int<atom_idx>{}), cute::plus{});
           });
         }

@@ -200,7 +200,6 @@ SYNTAX = [
     *[("tests/test_q4k_packed_gemm.cu", f"-DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT={f}") for f in (0, 1, 2, 3, 4)],
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_PACKED_SCALE=1 -DPPU_SCALE_SWIZZLE=1"),
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_SCALE_PAD=8"),
-    ("tests/test_q4k_packed_gemm.cu", "-DPPU_B_DEQUANT_NOP=1"),
     ("tests/test_moe_grouped_verify.cu", ""),
     ("tests/test_moe_grouped_real.cu", ""),
     ("tests/test_moe_grouped_streamk.cu", ""),
@@ -2510,6 +2509,14 @@ def lint_stale_repo_path():
     return "PASS", f"no absolute path names a repo dir other than '{root_name}'", 0.0
 
 
+def lint_product_source_provenance():
+    """Installable source comments describe technical facts, not development sessions."""
+    checker = ROOT / "ci" / "check_product_source_provenance.py"
+    rc, log, dt = run([sys.executable, str(checker)])
+    lines = [line.strip() for line in log.splitlines() if line.strip()]
+    return ("PASS" if rc == 0 else "FAIL"), (lines[-1] if lines else f"exit {rc}"), dt
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", action="store_true")
@@ -2563,6 +2570,8 @@ def main():
                 ("lint", "duplicate unroll directives (hgcc-only error)", lint_unroll),
                 ("lint", "PPU asm uses device-pass architecture guard", lint_ppu_asm_device_guard),
                 ("lint", "absolute paths name this repo dir, not a renamed one", lint_stale_repo_path),
+                ("lint", "product source contains no collaboration-tool provenance",
+                 lint_product_source_provenance),
                 ("lint", "names used before they exist (device-only tests get no other flow check)", lint_undefined_names),
                 ("lint", "every ggml.h quant type is classified, in scope or out", lint_gguf_coverage),
                 ("lint", "the C++ and Python selection procedures agree on planted data", lint_selection_agrees),

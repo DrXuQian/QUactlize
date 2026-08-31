@@ -1329,26 +1329,6 @@ quactlize_ppu_executable(
 )
 target_compile_options(test_gemv_lowbit PRIVATE -w)
 
-# Minimal PPU carrier for the two GGUF metadata-prepass kernels.  The production shared backend has accumulated
-# enough unrelated kernels and host stubs that changing diagnostic host code can invalidate its complete HGCC image;
-# this standalone target answers the one remaining causal question without copying either kernel body.
-quactlize_ppu_executable(
-  test_gguf_prepass_ppu_isolate
-  test_gguf_prepass_ppu_isolate.cu
-)
-target_compile_options(test_gguf_prepass_ppu_isolate PRIVATE -w)
-
-# Four separate objects are intentional. PPUToolchain.cmake keys an hgcc object by source path, not by target flags,
-# so compiling one source four times with -DPPU_PREPASS_IMAGE_ARM would make every arm share whichever object won
-# first. These wrappers include one body but give marker/header/raw/packed independent device images.
-foreach(_arm IN ITEMS marker header raw packed)
-  quactlize_ppu_executable(
-    test_gguf_prepass_ppu_image_${_arm}
-    test_gguf_prepass_ppu_image_${_arm}.cu
-  )
-  target_compile_options(test_gguf_prepass_ppu_image_${_arm} PRIVATE -w)
-endforeach()
-
 # Python device backend: a shared C ABI with no torch dependency. The host extension dlopens this exact filename;
 # building it through actlize keeps hgcc, the PPU runtime libraries and every device include identical to the proven
 # harnesses. The CUDA-core backend and host-only dense layout also build under plain nvcc for the local independent-

@@ -149,16 +149,16 @@ are conflict-free" is not what happened.
 Following it shows a clean win and hides the relocation completely. Read both rows; the guidance in
 `benchmarks/run_batch.sh` says so now.
 
-## 5. Every switch, and what it is for
+## 5. Retained switches, and what they are for
 
-None of these belong on `main`. Recorded so the dev branch keeps their meaning.
+None of these belong on `main`. Recorded so the dev branch keeps their meaning. The deliberately incorrect
+`PPU_PACKED_SCALE_NOP` and `PPU_B_DEQUANT_NOP` timing arms were retired after producing the historical measurements
+above; they are not buildable configurations.
 
 | macro | purpose |
 |---|---|
 | `PPU_PACKED_SCALE` | consume the gguf's own 16 B scale unit instead of two pre-multiplied fp16 planes |
-| `PPU_PACKED_SCALE_NOP` | timing-only: keep the transport and stores, drop the decode arithmetic |
 | `PPU_PACKED_PAIR=0` | bisect: force the scalar per-group decode instead of the f16x2 one |
-| `PPU_B_DEQUANT_NOP` | timing-only: drop the baseline int4→fp16 conversion and affine chain |
 | `PPU_SCALE_SWIZZLE` | XOR the scale tile's address to take the read from 4-way to 1-way conflicted |
 | `PPU_SCALE_PAD` | the additive alternative to the swizzle; measured and lost |
 | `PPU_SCALE_PREFETCH` | prefetch the next group's scale; measured at 0.7% of a 7.3% channel |

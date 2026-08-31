@@ -49,13 +49,11 @@ mkdir -p "$OUT"
 VARIANTS=(
   "base:SK_QUANT=2"
   "swz:SK_QUANT=2 PPU_SCALE_SWIZZLE=1"
-  "bdqnop:SK_QUANT=2 PPU_B_DEQUANT_NOP=1"
   "pack:SK_QUANT=2 PPU_PACKED_SCALE=1"
   # THE STORE-CONFLICT FIX: one interleaved 32-bit (scale, zero) slot instead of two 16-bit planes, so the
   # decoder's 32 lanes write 32 adjacent WORDS and hit all 32 banks once. Read against pack, never base:
   # it changes nothing base does, and pack is the only variant that has the +73,728 to remove.
   "packfuse:SK_QUANT=2 PPU_PACKED_SCALE=1 PPU_PACKED_SCALE_FUSED=1"
-  "packnop:SK_QUANT=2 PPU_PACKED_SCALE=1 PPU_PACKED_SCALE_NOP=1"
 )
 
 # EVERY BINARY THIS RUN IS RESPONSIBLE FOR, whether it was compiled, cached or skipped. The freshness stamp at the

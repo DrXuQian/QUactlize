@@ -13,7 +13,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <vector>
 
 #include "gguf_bc_vecdot.hpp"
 #include "gguf_scale_prepass.hpp"
@@ -25,119 +24,6 @@
 #include "ppu_grouped_configs.inc"
 #include "quactlize_ppu_device.h"
 
-#if defined(PPU_PACKED_UNIT_PREPASS_SERIAL) && PPU_PACKED_UNIT_PREPASS_SERIAL
-namespace gguf_scale {
-namespace prepass {
-
-// SAME-NAMESPACE, SAME-LINKAGE .cu CONTROLS for the header controls.  The launch passes a pointer to the selected
-// marker, so the body and ABI do not change between the 32-thread and 256-thread arms.
-__global__ void prepass_cu_bootstrap_kernel(uint16_t* marker) {
-  if (blockIdx.x == 0 && threadIdx.x == 0) marker[0] = 0x3c00u;
-}
-
-template <KType T>
-__global__ void prepass_cu_template_bootstrap_kernel(uint16_t* marker) {
-  if (blockIdx.x == 0 && threadIdx.x == 0)
-    marker[0] = uint16_t(0x3c00u + uint16_t(T));
-}
-
-__global__ void prepass_device_arch_marker_kernel(uint16_t* marker) {
-  if (blockIdx.x != 0 || threadIdx.x != 0) return;
-#if defined(__HGGC_ARCH__)
-  marker[0] = uint16_t(__HGGC_ARCH__);
-#elif defined(__CUDA_ARCH__)
-  marker[0] = uint16_t(__CUDA_ARCH__);
-#else
-  marker[0] = 0xbad0u;
-#endif
-}
-
-// EXACT .cu CLONE OF prepass_unit_kernel's packed-unit ownership/decode/store body.  Both take the same aggregate,
-// launch the same grid, call unit_group_sb and write half_t directly.  Namespace, linkage and body are identical;
-// the only intended axis is whether the wrapper definition came from the included header or this .cu source file.
-// This diagnostic duplication must be deleted after the device result adjudicates that hypothesis.
-template <KType T, int ZMul>
-__global__ void prepass_unit_kernel_cu_clone(UnitPrepassKernelArgs args) {
-  using U = packed_unit::Unit<T>;
-  static_assert(U::kGroups == 8 || U::kGroups == 16, "packed unit warp mapping expects 8 or 16 groups");
-  static_assert(U::kUnitTotal == U::kSbPerUnit * U::kSbBytes,
-                "the kernel must address a complete copyable/paired unit");
-  int const warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
-  int const lane = threadIdx.x & 31;
-  int const col_tiles = (args.num_cols + 7) / 8;
-  int const warps_per_expert = args.num_superblocks * col_tiles;
-  int const e = warp / warps_per_expert;
-  if (e >= args.num_experts) return;
-  int const in_expert = warp - e * warps_per_expert;
-  int const sb = in_expert / col_tiles;
-  int const n = (in_expert - sb * col_tiles) * 8 + lane / 4;
-  if (n >= args.num_cols) return;
-  int const g0 = lane & 3;
-  int const unit = sb / U::kSbPerUnit;
-  int const sb_in_unit = sb % U::kSbPerUnit;
-  int const num_units = args.num_superblocks / U::kSbPerUnit;
-  uint8_t const* src = args.units
-      + ((int64_t(e) * num_units + unit) * args.num_cols + n) * U::kUnitTotal;
-
-  CUTLASS_PRAGMA_UNROLL
-  for (int pass = 0; pass < U::kGroups / 4; ++pass) {
-    int const g = g0 + 4 * pass;
-    GroupScale const sz = packed_unit::unit_group_sb<T, ZMul>(src, sb_in_unit, g);
-    int64_t const o = int64_t(e) * args.stride_e
-                    + (int64_t(sb) * U::kGroups + g) * args.stride_k
-                    + int64_t(n) * args.stride_n;
-    args.scale[o] = sz.scale;
-    if (args.zero) args.zero[o] = sz.zero;
-  }
-}
-
-// SAME COOPERATIVE BODY, FLAT SCALAR ABI.  If both aggregate wrappers fail but this arm is exact, aggregate-by-value
-// remains causal; if this also fails while the serial half-store prefix is exact, the failure is in the cooperative
-// ownership/codegen rather than argument packing.  The source checker compares everything from `using U` onward.
-template <KType T, int ZMul>
-__global__ void prepass_unit_kernel_cu_scalar(
-    uint8_t const* units, half_t* scale, half_t* zero,
-    int64_t stride_e, int64_t stride_k, int64_t stride_n,
-    int num_experts, int num_cols, int num_superblocks) {
-  UnitPrepassKernelArgs args{
-      units, scale, zero, stride_e, stride_k, stride_n,
-      num_experts, num_cols, num_superblocks};
-  using U = packed_unit::Unit<T>;
-  static_assert(U::kGroups == 8 || U::kGroups == 16, "packed unit warp mapping expects 8 or 16 groups");
-  static_assert(U::kUnitTotal == U::kSbPerUnit * U::kSbBytes,
-                "the kernel must address a complete copyable/paired unit");
-  int const warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
-  int const lane = threadIdx.x & 31;
-  int const col_tiles = (args.num_cols + 7) / 8;
-  int const warps_per_expert = args.num_superblocks * col_tiles;
-  int const e = warp / warps_per_expert;
-  if (e >= args.num_experts) return;
-  int const in_expert = warp - e * warps_per_expert;
-  int const sb = in_expert / col_tiles;
-  int const n = (in_expert - sb * col_tiles) * 8 + lane / 4;
-  if (n >= args.num_cols) return;
-  int const g0 = lane & 3;
-  int const unit = sb / U::kSbPerUnit;
-  int const sb_in_unit = sb % U::kSbPerUnit;
-  int const num_units = args.num_superblocks / U::kSbPerUnit;
-  uint8_t const* src = args.units
-      + ((int64_t(e) * num_units + unit) * args.num_cols + n) * U::kUnitTotal;
-
-  CUTLASS_PRAGMA_UNROLL
-  for (int pass = 0; pass < U::kGroups / 4; ++pass) {
-    int const g = g0 + 4 * pass;
-    GroupScale const sz = packed_unit::unit_group_sb<T, ZMul>(src, sb_in_unit, g);
-    int64_t const o = int64_t(e) * args.stride_e
-                    + (int64_t(sb) * U::kGroups + g) * args.stride_k
-                    + int64_t(n) * args.stride_n;
-    args.scale[o] = sz.scale;
-    if (args.zero) args.zero[o] = sz.zero;
-  }
-}
-
-}  // namespace prepass
-}  // namespace gguf_scale
-#endif
 
 namespace {
 
@@ -145,96 +31,6 @@ using gguf_scale::KType;
 using gguf_scale::vecdot::VecdotActivation;
 using ppu_gemv::DevBuf;
 
-#if defined(PPU_PACKED_UNIT_PREPASS_SERIAL) && PPU_PACKED_UNIT_PREPASS_SERIAL
-// Diagnostic-only raw launch status.  Do not latch it into rt_status(): the whole point is to print every rung even
-// when an earlier launch was rejected.  GetLastError clears each rung before the next one, so one rejected launch
-// cannot make all later entries repeat its code; the local CUDA build checks the same host control flow.
-int prepass_launch_error() {
-#if defined(__HGGCCC__)
-  return int(hggcGetLastError());
-#else
-  return int(cudaGetLastError());
-#endif
-}
-#endif
-
-#if defined(PPU_PREPASS_LAUNCH_AUDIT) && PPU_PREPASS_LAUNCH_AUDIT
-// PRODUCTION-ISOMORPHIC LAUNCH AUDIT.  This macro adds no __global__ function and changes no grid, block, argument,
-// or kernel body.  Each operation is run as the first device operation in a fresh process by the box runner.  The
-// `before` read is essential on PPU: hggcGetLastError may retain an error from an earlier launch, so an error read
-// only after this launch cannot by itself be assigned to this kernel.
-struct PrepassLaunchAudit {
-  int before;
-  int immediate;
-  int synchronize;
-  int deferred;
-};
-
-int prepass_runtime_last_error() {
-#if defined(__HGGCCC__)
-  return int(hggcGetLastError());
-#else
-  return int(cudaGetLastError());
-#endif
-}
-
-int prepass_runtime_synchronize() {
-#if defined(__HGGCCC__)
-  return int(hggcDeviceSynchronize());
-#else
-  return int(cudaDeviceSynchronize());
-#endif
-}
-
-char const* prepass_runtime_error_name(int code) {
-#if defined(__HGGCCC__)
-  char const* value = hggcGetErrorName(hggcError_t(code));
-#else
-  char const* value = cudaGetErrorName(cudaError_t(code));
-#endif
-  return value ? value : "UNKNOWN";
-}
-
-char const* prepass_runtime_error_string(int code) {
-#if defined(__HGGCCC__)
-  char const* value = hggcGetErrorString(hggcError_t(code));
-#else
-  char const* value = cudaGetErrorString(cudaError_t(code));
-#endif
-  return value ? value : "UNKNOWN";
-}
-
-PrepassLaunchAudit prepass_finish_launch_audit(int before) {
-  int const immediate = prepass_runtime_last_error();
-  int const synchronize = prepass_runtime_synchronize();
-  int const deferred = prepass_runtime_last_error();
-  return PrepassLaunchAudit{before, immediate, synchronize, deferred};
-}
-
-bool prepass_launch_audit_ok(PrepassLaunchAudit const& audit) {
-  // `before` is the deliberately consumed prior state, not a result of this launch.  Keep it in the verdict line,
-  // but judge this operation only by the state produced after the clear.
-  return audit.immediate == 0 && audit.synchronize == 0 && audit.deferred == 0;
-}
-
-void print_prepass_launch_audit(char const* operation, int qtype, PrepassLaunchAudit const& audit) {
-  std::fprintf(stderr,
-      "FQ_PREPASS_LAUNCH_AUDIT op=%s qtype=%d "
-      "before=%d:%s immediate=%d:%s synchronize=%d:%s deferred=%d:%s "
-      "immediate_text=%s\n",
-      operation, qtype,
-      audit.before, prepass_runtime_error_name(audit.before),
-      audit.immediate, prepass_runtime_error_name(audit.immediate),
-      audit.synchronize, prepass_runtime_error_name(audit.synchronize),
-      audit.deferred, prepass_runtime_error_name(audit.deferred),
-      prepass_runtime_error_string(audit.immediate));
-}
-#endif
-
-template <KType T> constexpr int qtype_number() {
-  return T == KType::Q2_K ? 10 : T == KType::Q3_K ? 11 : T == KType::Q4_K ? 12
-       : T == KType::Q5_K ? 13 : 14;
-}
 
 template <ppu_gemv::WFormat F, int StepK, int Threads>
 bool lowbit_dense_config_valid(int m, int n, int k, int group_size) {
@@ -415,18 +211,9 @@ int dequant(uint8_t const* blocks, uint16_t* out, int count) {
   DevBuf dout(size_t(count) * 256 * sizeof(uint16_t));
   db.from_host(blocks);
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
-#if defined(PPU_PREPASS_LAUNCH_AUDIT) && PPU_PREPASS_LAUNCH_AUDIT
-  int const audit_before = prepass_runtime_last_error();
-#endif
   dequant_kernel<T><<<(count + 127) / 128, 128>>>(db.as<uint8_t>(), dout.as<cutlass::half_t>(), count);
-#if defined(PPU_PREPASS_LAUNCH_AUDIT) && PPU_PREPASS_LAUNCH_AUDIT
-  PrepassLaunchAudit const audit = prepass_finish_launch_audit(audit_before);
-  print_prepass_launch_audit("dequant", qtype_number<T>(), audit);
-  if (!prepass_launch_audit_ok(audit)) return ppu_gemv::kRuntimeError;
-#else
   ppu_gemv::rt_sync("GGUF dequantize");
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
-#endif
   return ppu_gemv::rt_copy_output(dout, out, size_t(count) * 256);
 }
 
@@ -445,276 +232,12 @@ int prepass(uint8_t const* blocks, uint16_t const* d, uint16_t const* dmin,
   gguf_scale::prepass::PlaneDesc dst{ds.as<cutlass::half_t>(), dz.as<cutlass::half_t>(), Tr::kGroups, 1};
   auto const args = gguf_scale::prepass::make_prepass_kernel_args(src, dst, count, 1);
   int const grid = gguf_scale::prepass::prepass_grid_size(count, 1, 256);
-#if defined(PPU_PREPASS_LAUNCH_AUDIT) && PPU_PREPASS_LAUNCH_AUDIT
-  int const audit_before = prepass_runtime_last_error();
-#endif
   gguf_scale::prepass::prepass_kernel<T, ZMul><<<grid, 256>>>(args);
-#if defined(PPU_PREPASS_LAUNCH_AUDIT) && PPU_PREPASS_LAUNCH_AUDIT
-  PrepassLaunchAudit const audit = prepass_finish_launch_audit(audit_before);
-  print_prepass_launch_audit("raw-prepass", qtype_number<T>(), audit);
-  if (!prepass_launch_audit_ok(audit)) return ppu_gemv::kRuntimeError;
-#else
   ppu_gemv::rt_sync("GGUF scale prepass");
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
-#endif
   return ppu_gemv::rt_copy_two_outputs(ds, scale, dz, zero, size_t(count) * Tr::kGroups);
 }
 
-#if defined(PPU_PACKED_UNIT_PREPASS_SERIAL) && PPU_PACKED_UNIT_PREPASS_SERIAL
-// ONE LAUNCH, AN ORDERED PREFIX.  The first four outputs are deliberately raw uint16_t: coverage and source-byte
-// checks must not inherit half conversion or half-store lowering from the operation they adjudicate.  The next two
-// write the same decoded scale/zero through real half_t pointers.  Separate, poisoned outputs below then run the
-// actual header-defined cooperative kernel and its token-identical .cu clone.  Keeping every arm in one binary and
-// launch sequence prevents another box round or build from changing code generation between questions.
-template <KType T>
-__global__ void prepass_unit_ladder_kernel(
-    uint8_t const* units, uint16_t* coverage, uint16_t* header,
-    uint16_t* code, uint16_t* product, cutlass::half_t* half_scale,
-    cutlass::half_t* half_zero, uint16_t* meta,
-    int num_experts, int num_cols, int num_superblocks) {
-  using U = gguf_scale::packed_unit::Unit<T>;
-  int const tid = blockIdx.x * blockDim.x + threadIdx.x;
-  int const per_expert = num_superblocks * num_cols;
-  int const total = num_experts * per_expert;
-  if (blockIdx.x == 0 && threadIdx.x == 0) {
-    meta[0] = 0x3c00u;
-    meta[1] = uint16_t(num_experts);
-    meta[2] = uint16_t(num_cols);
-    meta[3] = uint16_t(num_superblocks);
-    meta[4] = uint16_t(blockDim.x);
-    meta[5] = uint16_t(gridDim.x);
-    meta[6] = uint16_t(tid >= total);
-    meta[7] = uint16_t(total);
-  }
-  if (tid >= total) return;
-
-  int const e = tid / per_expert;
-  int const in_expert = tid - e * per_expert;
-  int const sb = in_expert / num_cols;
-  int const n = in_expert - sb * num_cols;
-  int const num_units = num_superblocks / U::kSbPerUnit;
-  int const unit = sb / U::kSbPerUnit;
-  int const sb_in_unit = sb % U::kSbPerUnit;
-  uint8_t const* src = units +
-      ((int64_t(e) * num_units + unit) * num_cols + n) * U::kUnitTotal
-      + sb_in_unit * U::kSbBytes;
-  uint16_t const d_bits = uint16_t(src[0]) | uint16_t(uint16_t(src[1]) << 8);
-
-  CUTLASS_PRAGMA_UNROLL
-  for (int g = 0; g < U::kGroups; ++g) {
-    int64_t const o = int64_t(e) * num_superblocks * U::kGroups * num_cols
-                    + (int64_t(sb) * U::kGroups + g) * num_cols + n;
-    coverage[o] = 0x3c00u;
-    header[o] = d_bits;
-    code[o] = uint16_t(0x5000u | gguf_scale::packed_unit::code_of<T>(src, g, 0));
-    auto const sz = gguf_scale::packed_unit::unit_group<T, 0>(src, g);
-    product[o] = sz.scale.raw();
-    half_scale[o] = sz.scale;
-    half_zero[o] = sz.zero;
-  }
-}
-
-template <KType T>
-bool run_prepass_unit_ladder(uint8_t const* host_units, DevBuf const& device_units,
-                             int experts, int n, int num_superblocks) {
-  using U = gguf_scale::packed_unit::Unit<T>;
-  int const num_units = num_superblocks / U::kSbPerUnit;
-  int64_t const count64 = int64_t(experts) * num_superblocks * U::kGroups * n;
-  size_t const count = size_t(count64);
-  size_t const bytes = count * sizeof(uint16_t);
-  std::vector<uint16_t> poison(count, uint16_t(0x7bff));
-  std::vector<uint16_t> meta_poison(17, uint16_t(0x7bff));
-  std::vector<uint8_t> dequant_raw(size_t(raw_block_bytes<T>()), uint8_t(0));
-  std::vector<uint16_t> dequant_poison(256, uint16_t(0x7bff));
-  DevBuf dc(bytes), dh(bytes), dk(bytes), dp(bytes), dfs(bytes), dfz(bytes),
-         drs(bytes), drz(bytes), dhs(bytes), dhz(bytes), dcs(bytes), dcz(bytes), dss(bytes), dsz(bytes),
-         dm(meta_poison.size() * sizeof(uint16_t)),
-         dqr(dequant_raw.size()), dqo(dequant_poison.size() * sizeof(uint16_t));
-  dc.from_host(poison.data()); dh.from_host(poison.data());
-  dk.from_host(poison.data()); dp.from_host(poison.data());
-  dfs.from_host(poison.data()); dfz.from_host(poison.data());
-  drs.from_host(poison.data()); drz.from_host(poison.data());
-  dhs.from_host(poison.data()); dhz.from_host(poison.data());
-  dcs.from_host(poison.data()); dcz.from_host(poison.data());
-  dss.from_host(poison.data()); dsz.from_host(poison.data());
-  dm.from_host(meta_poison.data());
-  dqr.from_host(dequant_raw.data()); dqo.from_host(dequant_poison.data());
-  if (!ppu_gemv::rt_ok()) return false;
-
-  int const serial_grid = gguf_scale::prepass::prepass_unit_serial_grid_size(experts, n, num_superblocks, 256);
-  int const production_grid = gguf_scale::prepass::prepass_unit_grid_size<T>(experts, n, num_superblocks, 256);
-
-  int launch_error[15]{};
-
-  // Source/block/template controls, all one pointer and all writing through pointer[0].
-  gguf_scale::prepass::prepass_cu_bootstrap_kernel<<<1, 32>>>(dm.as<uint16_t>() + 8);
-  launch_error[0] = prepass_launch_error();
-  gguf_scale::prepass::prepass_cu_bootstrap_kernel<<<1, 128>>>(dm.as<uint16_t>() + 9);
-  launch_error[1] = prepass_launch_error();
-  gguf_scale::prepass::prepass_cu_bootstrap_kernel<<<1, 256>>>(dm.as<uint16_t>() + 10);
-  launch_error[2] = prepass_launch_error();
-  gguf_scale::prepass::prepass_header_bootstrap_kernel<<<1, 32>>>(dm.as<uint16_t>() + 11);
-  launch_error[3] = prepass_launch_error();
-  gguf_scale::prepass::prepass_header_bootstrap_kernel<<<1, 128>>>(dm.as<uint16_t>() + 12);
-  launch_error[4] = prepass_launch_error();
-  gguf_scale::prepass::prepass_header_bootstrap_kernel<<<1, 256>>>(dm.as<uint16_t>() + 13);
-  launch_error[5] = prepass_launch_error();
-  gguf_scale::prepass::prepass_cu_template_bootstrap_kernel<T><<<1, 256>>>(dm.as<uint16_t>() + 14);
-  launch_error[6] = prepass_launch_error();
-  gguf_scale::prepass::prepass_header_template_bootstrap_kernel<T><<<1, 256>>>(dm.as<uint16_t>() + 15);
-  launch_error[7] = prepass_launch_error();
-  gguf_scale::prepass::prepass_device_arch_marker_kernel<<<1, 128>>>(dm.as<uint16_t>() + 16);
-  launch_error[8] = prepass_launch_error();
-
-  prepass_unit_ladder_kernel<T><<<serial_grid, 256>>>(
-      device_units.as<uint8_t>(), dc.as<uint16_t>(), dh.as<uint16_t>(),
-      dk.as<uint16_t>(), dp.as<uint16_t>(), dfs.as<cutlass::half_t>(),
-      dfz.as<cutlass::half_t>(), dm.as<uint16_t>(), experts, n, num_superblocks);
-  launch_error[9] = prepass_launch_error();
-
-  int64_t const stride_e = int64_t(num_superblocks) * U::kGroups * n;
-  auto const header_args = gguf_scale::prepass::make_unit_prepass_kernel_args(
-      device_units.as<uint8_t>(),
-      gguf_scale::prepass::UnitPlaneDesc{
-          dhs.as<cutlass::half_t>(), dhz.as<cutlass::half_t>(), stride_e, n, 1},
-      experts, n, num_superblocks);
-  auto const clone_args = gguf_scale::prepass::make_unit_prepass_kernel_args(
-      device_units.as<uint8_t>(),
-      gguf_scale::prepass::UnitPlaneDesc{
-          dcs.as<cutlass::half_t>(), dcz.as<cutlass::half_t>(), stride_e, n, 1},
-      experts, n, num_superblocks);
-  gguf_scale::prepass::UnitPlaneDesc const serial_dst{
-      drs.as<cutlass::half_t>(), drz.as<cutlass::half_t>(), stride_e, n, 1};
-  gguf_scale::prepass::prepass_unit_kernel_serial<T, 0><<<serial_grid, 256>>>(
-      device_units.as<uint8_t>(), serial_dst, experts, n, num_superblocks);
-  launch_error[10] = prepass_launch_error();
-  gguf_scale::prepass::prepass_unit_kernel<T, 0><<<production_grid, 256>>>(header_args);
-  launch_error[11] = prepass_launch_error();
-  gguf_scale::prepass::prepass_unit_kernel_cu_clone<T, 0><<<production_grid, 256>>>(clone_args);
-  launch_error[12] = prepass_launch_error();
-  gguf_scale::prepass::prepass_unit_kernel_cu_scalar<T, 0><<<production_grid, 256>>>(
-      device_units.as<uint8_t>(), dss.as<cutlass::half_t>(), dsz.as<cutlass::half_t>(),
-      stride_e, n, 1, experts, n, num_superblocks);
-  launch_error[13] = prepass_launch_error();
-  dequant_kernel<T><<<1, 128>>>(dqr.as<uint8_t>(), dqo.as<cutlass::half_t>(), 1);
-  launch_error[14] = prepass_launch_error();
-  ppu_gemv::rt_sync("packed-unit prefix ladder");
-  if (!ppu_gemv::rt_ok()) return false;
-
-  std::vector<uint16_t> got_c(count), got_h(count), got_k(count), got_p(count),
-      got_fs(count), got_fz(count), got_rs(count), got_rz(count),
-      got_hs(count), got_hz(count), got_cs(count), got_cz(count), got_ss(count), got_sz(count),
-      got_m(meta_poison.size()), got_dq(dequant_poison.size());
-  if (!dc.to_host(got_c.data()) || !dh.to_host(got_h.data()) ||
-      !dk.to_host(got_k.data()) || !dp.to_host(got_p.data()) ||
-      !dfs.to_host(got_fs.data()) || !dfz.to_host(got_fz.data()) ||
-      !drs.to_host(got_rs.data()) || !drz.to_host(got_rz.data()) ||
-      !dhs.to_host(got_hs.data()) || !dhz.to_host(got_hz.data()) ||
-      !dcs.to_host(got_cs.data()) || !dcz.to_host(got_cz.data()) ||
-      !dss.to_host(got_ss.data()) || !dsz.to_host(got_sz.data()) ||
-      !dm.to_host(got_m.data()) || !dqo.to_host(got_dq.data()) ||
-      !ppu_gemv::rt_ok()) return false;
-
-  size_t bad_c = 0, bad_h = 0, bad_k = 0, bad_p = 0, bad_fs = 0, bad_fz = 0,
-         bad_rs = 0, bad_rz = 0, bad_hs = 0, bad_hz = 0,
-         bad_cs = 0, bad_cz = 0, bad_ss = 0, bad_sz = 0;
-  size_t sentinel_c = 0, sentinel_h = 0, sentinel_k = 0, sentinel_p = 0,
-         sentinel_fs = 0, sentinel_fz = 0, sentinel_rs = 0, sentinel_rz = 0,
-         sentinel_hs = 0, sentinel_hz = 0, sentinel_cs = 0, sentinel_cz = 0,
-         sentinel_ss = 0, sentinel_sz = 0;
-  int first_e = -1, first_sb = -1, first_n = -1, first_g = -1;
-  uint16_t first_want = 0, first_got = 0;
-  for (int e = 0; e < experts; ++e) {
-    for (int sb = 0; sb < num_superblocks; ++sb) {
-      int const unit = sb / U::kSbPerUnit;
-      int const sb_in_unit = sb % U::kSbPerUnit;
-      for (int col = 0; col < n; ++col) {
-        uint8_t const* src = host_units +
-            ((int64_t(e) * num_units + unit) * n + col) * U::kUnitTotal
-            + sb_in_unit * U::kSbBytes;
-        uint16_t const want_h = uint16_t(src[0]) | uint16_t(uint16_t(src[1]) << 8);
-        for (int g = 0; g < U::kGroups; ++g) {
-          size_t const o = size_t(int64_t(e) * num_superblocks * U::kGroups * n
-                           + (int64_t(sb) * U::kGroups + g) * n + col);
-          uint16_t const want_k = uint16_t(0x5000u | gguf_scale::packed_unit::code_of<T>(src, g, 0));
-          auto const want_sz = gguf_scale::packed_unit::unit_group<T, 0>(src, g);
-          uint16_t const want_p = want_sz.scale.raw();
-          uint16_t const want_z = want_sz.zero.raw();
-          bad_c += got_c[o] != uint16_t(0x3c00);
-          bad_h += got_h[o] != want_h;
-          bad_k += got_k[o] != want_k;
-          bool const product_bad = got_p[o] != want_p;
-          bad_p += product_bad;
-          bad_fs += got_fs[o] != want_p;
-          bad_fz += got_fz[o] != want_z;
-          bad_rs += got_rs[o] != want_p;
-          bad_rz += got_rz[o] != want_z;
-          bad_hs += got_hs[o] != want_p;
-          bad_hz += got_hz[o] != want_z;
-          bad_cs += got_cs[o] != want_p;
-          bad_cz += got_cz[o] != want_z;
-          bad_ss += got_ss[o] != want_p;
-          bad_sz += got_sz[o] != want_z;
-          sentinel_c += got_c[o] == uint16_t(0x7bff);
-          sentinel_h += got_h[o] == uint16_t(0x7bff);
-          sentinel_k += got_k[o] == uint16_t(0x7bff);
-          sentinel_p += got_p[o] == uint16_t(0x7bff);
-          sentinel_fs += got_fs[o] == uint16_t(0x7bff);
-          sentinel_fz += got_fz[o] == uint16_t(0x7bff);
-          sentinel_rs += got_rs[o] == uint16_t(0x7bff);
-          sentinel_rz += got_rz[o] == uint16_t(0x7bff);
-          sentinel_hs += got_hs[o] == uint16_t(0x7bff);
-          sentinel_hz += got_hz[o] == uint16_t(0x7bff);
-          sentinel_cs += got_cs[o] == uint16_t(0x7bff);
-          sentinel_cz += got_cz[o] == uint16_t(0x7bff);
-          sentinel_ss += got_ss[o] == uint16_t(0x7bff);
-          sentinel_sz += got_sz[o] == uint16_t(0x7bff);
-          if (product_bad && first_e < 0) {
-            first_e = e; first_sb = sb; first_n = col; first_g = g;
-            first_want = want_p; first_got = got_p[o];
-          }
-        }
-      }
-    }
-  }
-  size_t dequant_control_bad = 0, dequant_control_sentinel = 0;
-  for (uint16_t value : got_dq) {
-    dequant_control_bad += value != uint16_t(0);
-    dequant_control_sentinel += value == uint16_t(0x7bff);
-  }
-  std::fprintf(stderr,
-      "FQ_PACKED_UNIT_PREPASS_LADDER qtype=%d cells=%zu serial_grid=%d production_grid=%d "
-      "coverage_bad=%zu header_bad=%zu code_bad=%zu product_bad=%zu "
-      "half=[scale:%zu,zero:%zu] header_serial=[scale:%zu,zero:%zu] "
-      "header_production=[scale:%zu,zero:%zu] cu_clone=[scale:%zu,zero:%zu] "
-      "cu_scalar=[scale:%zu,zero:%zu] "
-      "dequant_control=[bad:%zu,sentinel:%zu] "
-      "sentinel=[%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu] "
-      "meta=[0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,"
-      "0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,0x%04x,0x%04x] "
-      "launch=[%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d] "
-      "first=[e%d,sb%d,n%d,g%d,want=0x%04x,got=0x%04x]\n",
-      T == KType::Q2_K ? 10 : T == KType::Q3_K ? 11 : T == KType::Q4_K ? 12 :
-      T == KType::Q5_K ? 13 : 14,
-      count, serial_grid, production_grid, bad_c, bad_h, bad_k, bad_p,
-      bad_fs, bad_fz, bad_rs, bad_rz, bad_hs, bad_hz, bad_cs, bad_cz, bad_ss, bad_sz,
-      dequant_control_bad, dequant_control_sentinel,
-      sentinel_c, sentinel_h, sentinel_k, sentinel_p, sentinel_fs, sentinel_fz,
-      sentinel_rs, sentinel_rz, sentinel_hs, sentinel_hz, sentinel_cs, sentinel_cz,
-      sentinel_ss, sentinel_sz,
-      unsigned(got_m[0]), unsigned(got_m[1]), unsigned(got_m[2]),
-      unsigned(got_m[3]), unsigned(got_m[4]), unsigned(got_m[5]),
-      unsigned(got_m[6]), unsigned(got_m[7]), unsigned(got_m[8]),
-      unsigned(got_m[9]), unsigned(got_m[10]), unsigned(got_m[11]),
-      unsigned(got_m[12]), unsigned(got_m[13]), unsigned(got_m[14]),
-      unsigned(got_m[15]), unsigned(got_m[16]),
-      launch_error[0], launch_error[1], launch_error[2], launch_error[3], launch_error[4],
-      launch_error[5], launch_error[6], launch_error[7], launch_error[8], launch_error[9],
-      launch_error[10], launch_error[11], launch_error[12], launch_error[13], launch_error[14],
-      first_e, first_sb, first_n, first_g, unsigned(first_want), unsigned(first_got));
-  return true;
-}
-#endif
 
 template <KType T, int ZMul>
 int prepass_unit(uint8_t const* units, uint16_t* scale, uint16_t* zero,
@@ -729,34 +252,15 @@ int prepass_unit(uint8_t const* units, uint16_t* scale, uint16_t* zero,
   DevBuf du(unit_bytes), ds(size_t(plane_elems) * 2), dz(size_t(plane_elems) * 2);
   du.from_host(units);
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
-#if defined(PPU_PACKED_UNIT_PREPASS_SERIAL) && PPU_PACKED_UNIT_PREPASS_SERIAL
-  if (!run_prepass_unit_ladder<T>(units, du, experts, n, num_superblocks))
-    return ppu_gemv::kRuntimeError;
-#endif
   int64_t const expert_stride = int64_t(num_superblocks) * U::kGroups * n;
   gguf_scale::prepass::UnitPlaneDesc dst{
       ds.as<cutlass::half_t>(), dz.as<cutlass::half_t>(), expert_stride, n, 1};
-#if defined(PPU_PREPASS_LAUNCH_AUDIT) && PPU_PREPASS_LAUNCH_AUDIT
-  int const audit_before = prepass_runtime_last_error();
-#endif
-#if defined(PPU_PACKED_UNIT_PREPASS_SERIAL) && PPU_PACKED_UNIT_PREPASS_SERIAL
-  int const grid = gguf_scale::prepass::prepass_unit_serial_grid_size(experts, n, num_superblocks, 256);
-  gguf_scale::prepass::prepass_unit_kernel_serial<T, ZMul><<<grid, 256>>>(
-      du.as<uint8_t>(), dst, experts, n, num_superblocks);
-#else
   auto const args = gguf_scale::prepass::make_unit_prepass_kernel_args(
       du.as<uint8_t>(), dst, experts, n, num_superblocks);
   int const grid = gguf_scale::prepass::prepass_unit_grid_size<T>(experts, n, num_superblocks, 256);
   gguf_scale::prepass::prepass_unit_kernel<T, ZMul><<<grid, 256>>>(args);
-#endif
-#if defined(PPU_PREPASS_LAUNCH_AUDIT) && PPU_PREPASS_LAUNCH_AUDIT
-  PrepassLaunchAudit const audit = prepass_finish_launch_audit(audit_before);
-  print_prepass_launch_audit("packed-prepass", qtype_number<T>(), audit);
-  if (!prepass_launch_audit_ok(audit)) return ppu_gemv::kRuntimeError;
-#else
   ppu_gemv::rt_sync("packed-unit scale prepass");
   if (!ppu_gemv::rt_ok()) return ppu_gemv::kRuntimeError;
-#endif
   return ppu_gemv::rt_copy_two_outputs(ds, scale, dz, zero, size_t(plane_elems));
 }
 

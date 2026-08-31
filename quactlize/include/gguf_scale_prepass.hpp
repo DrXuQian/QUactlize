@@ -410,60 +410,6 @@ __global__ void prepass_unit_kernel(UnitPrepassKernelArgs args) {
   }
 }
 
-// ONE THREAD PER (expert, superblock, column), retained as a device-localisation arm for the packed-unit prepass.
-// It deliberately shares unit_group_sb and the destination descriptor with the cooperative kernel above; the only
-// changed variable is ownership/placement.  This matters on PPU, where a cooperative launch can return success yet
-// leave a plane unwritten without implicating the packed-unit bit map.  Do not use a host fallback for this check:
-// that would remove both device decoding and device placement at once and could not adjudicate either one.
-template <KType T, int ZMul>
-__global__ void prepass_unit_kernel_serial(uint8_t const* units, UnitPlaneDesc dst,
-                                           int num_experts, int num_cols, int num_superblocks) {
-  using U = packed_unit::Unit<T>;
-  // This counterfactual is intentionally int32.  PPU's host launch accepts int64 address arithmetic, but using a
-  // 64-bit divide in the thread-ownership guard made an unwritten destination indistinguishable from a bad unit
-  // decode.  Production probe shapes are far below INT_MAX; keep int64 only in byte/destination offsets below.
-  int const tid = blockIdx.x * blockDim.x + threadIdx.x;
-  int const per_expert = num_superblocks * num_cols;
-  int const total = num_experts * per_expert;
-  if (tid >= total) return;
-
-  int const e = tid / per_expert;
-  int const in_expert = tid - e * per_expert;
-  int const sb = in_expert / num_cols;
-  int const n = in_expert - sb * num_cols;
-  int const num_units = num_superblocks / U::kSbPerUnit;
-  int const unit = sb / U::kSbPerUnit;
-  int const sb_in_unit = sb % U::kSbPerUnit;
-  uint8_t const* src = units +
-      ((int64_t(e) * num_units + unit) * num_cols + n) * U::kUnitTotal;
-
-  CUTLASS_PRAGMA_UNROLL
-  for (int g = 0; g < U::kGroups; ++g) {
-    GroupScale const sz = packed_unit::unit_group_sb<T, ZMul>(src, sb_in_unit, g);
-    int64_t const o = int64_t(e) * dst.stride_e
-                    + (int64_t(sb) * U::kGroups + g) * dst.stride_k
-                    + int64_t(n) * dst.stride_n;
-    dst.scale[o] = sz.scale;
-    if (dst.zero) dst.zero[o] = sz.zero;
-  }
-}
-
-#if defined(PPU_PACKED_UNIT_PREPASS_SERIAL) && PPU_PACKED_UNIT_PREPASS_SERIAL
-// DIAGNOSTIC-ONLY SOURCE-LOCATION CONTROLS.  After preprocessing a header body and a .cu body belong to the same
-// translation unit, so "defined in a header" is not a C++ semantic explanation by itself.  hgcc could nonetheless
-// miscompile one of the two forms.  These controls deliberately have the same one-pointer ABI and body as their .cu
-// twins; the caller launches each at both 32 and 256 threads.  A source-location claim is admissible only if the
-// otherwise identical pair diverges on device.
-__global__ void prepass_header_bootstrap_kernel(uint16_t* marker) {
-  if (blockIdx.x == 0 && threadIdx.x == 0) marker[0] = 0x3c00u;
-}
-
-template <KType T>
-__global__ void prepass_header_template_bootstrap_kernel(uint16_t* marker) {
-  if (blockIdx.x == 0 && threadIdx.x == 0)
-    marker[0] = uint16_t(0x3c00u + uint16_t(T));
-}
-#endif
 
 template <KType T>
 CUTLASS_HOST_DEVICE constexpr int prepass_unit_grid_size(
@@ -473,11 +419,6 @@ CUTLASS_HOST_DEVICE constexpr int prepass_unit_grid_size(
   return int((threads + threads_per_cta - 1) / threads_per_cta);
 }
 
-CUTLASS_HOST_DEVICE constexpr int prepass_unit_serial_grid_size(
-    int num_experts, int num_cols, int num_superblocks, int threads_per_cta) {
-  int64_t const threads = int64_t(num_experts) * num_superblocks * num_cols;
-  return int((threads + threads_per_cta - 1) / threads_per_cta);
-}
 #endif
 
 // THE TRAFFIC, as an expression rather than a comment, because the whole case for this path is a byte count and a
