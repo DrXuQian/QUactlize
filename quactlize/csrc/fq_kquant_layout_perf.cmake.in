@@ -1,0 +1,31 @@
+# Exact production-C-ABI Q2/Q3/Q5/Q6 Xplane/K-pack performance target.
+# Inert unless FQ_KQUANT_PERF_QTYPE is supplied by its box runner.
+if(DEFINED FQ_KQUANT_PERF_QTYPE AND
+   NOT "${FQ_KQUANT_PERF_QTYPE}" STREQUAL "")
+  if(NOT FQ_KQUANT_PERF_QTYPE STREQUAL "10" AND
+     NOT FQ_KQUANT_PERF_QTYPE STREQUAL "11" AND
+     NOT FQ_KQUANT_PERF_QTYPE STREQUAL "13" AND
+     NOT FQ_KQUANT_PERF_QTYPE STREQUAL "14")
+    message(FATAL_ERROR
+      "FQ_KQUANT_PERF_QTYPE must be one of Q2/Q3/Q5/Q6 (10,11,13,14)")
+  endif()
+  qz_resolve_sources(_FQ_KQUANT_PERF_SOURCE
+    test_fq_kquant_layout_perf.cu)
+  list(GET _FQ_KQUANT_PERF_SOURCE 0 _FQ_KQUANT_PERF_SOURCE)
+  quactlize_ppu_executable(
+    test_fq_kquant_layout_perf
+    "${_FQ_KQUANT_PERF_SOURCE}"
+    DEV_COMPILE_FLAGS
+      -DFQ_KQUANT_PERF_QTYPE=${FQ_KQUANT_PERF_QTYPE})
+  # The wrapper's hgcc custom command consumes DEV_COMPILE_FLAGS, while the
+  # host pass consumes target_compile_definitions.  Keep the selector on both
+  # sides of that deliberately split build contract.
+  target_compile_definitions(test_fq_kquant_layout_perf PRIVATE
+    FQ_KQUANT_PERF_QTYPE=${FQ_KQUANT_PERF_QTYPE})
+  target_link_libraries(test_fq_kquant_layout_perf PRIVATE quactlize_ppu)
+  add_dependencies(test_fq_kquant_layout_perf quactlize_ppu)
+  target_compile_options(test_fq_kquant_layout_perf PRIVATE -w)
+  message(STATUS
+    "FullyQuantized K-quant layout perf: qtype=${FQ_KQUANT_PERF_QTYPE} "
+    "carrier=production-C-ABI")
+endif()

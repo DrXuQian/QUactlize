@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Materialize the production Xplane/K-pack real-shape A/B denominator."""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import hashlib
+import json
+import os
+import pathlib
+import sys
+import tempfile
+from typing import Any
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from benchmarks.workloads import MODELS, N_TOKENS, projections  # noqa: E402
+from tools.gguf_internal_shape_inventory import _routing_fixture  # noqa: E402
+
+
+SCHEMA = "quactlize.fq-kquant-kpack-perf-plan.v1"
+FORMATS = {
+    10: {"name": "Q2_K", "packed_format": 2, "low_bits": 2,
+         "high_bits": 0, "group_size": 16, "tactic_tile_k": 256},
+    11: {"name": "Q3_K", "packed_format": 3, "low_bits": 2,
+         "high_bits": 1, "group_size": 16, "tactic_tile_k": 256},
+    13: {"name": "Q5_K", "packed_format": 1, "low_bits": 4,
+         "high_bits": 1, "group_size": 32, "tactic_tile_k": 256},
+    14: {"name": "Q6_K", "packed_format": 4, "low_bits": 4,
+         "high_bits": 2, "group_size": 16, "tactic_tile_k": 128},
+}
+DENSE_M = (1, 2, 4, 8, 64, 2048, 4096)
+GROUPED_TOKENS = tuple(N_TOKENS)
+EXPERTS = 256
+TOPK = 8
+ROUTER = "token-topk-hot16x4-wor-sm64-s44-v1"
+MAPPING_ID = "0x514b504b54000001"
+
+
+class PlanError(ValueError):
+    pass
+
+
+def canonical(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def atomic_json(path: pathlib.Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.current.{os.getpid()}")
+    temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+    os.replace(temporary, path)
+
+
+def source_families() -> tuple[dict[tuple[int, int], set[str]],
+                               dict[tuple[int, int], set[str]]]:
+    dense: dict[tuple[int, int], set[str]] = {}
+    grouped: dict[tuple[int, int], set[str]] = {}
+    for model, config in MODELS.items():
+        for role, n, k, _ in projections(config):
+            target = (grouped if config["kind"] == "moe" and
+                      role.startswith("expert_") else dense)
+            target.setdefault((n, k), set()).add(f"{model}:{role}")
+    return dense, grouped
+
+
+def materialize() -> dict[str, Any]:
+    dense_families, grouped_families = source_families()
+    dense = [
+        {"key": f"dense_m{m}_n{n}_k{k}", "m": m, "n": n, "k": k,
+         "sources": sorted(sources)}
+        for (n, k), sources in sorted(dense_families.items())
+        for m in DENSE_M
+    ]
+    grouped = []
+    for (n, k), sources in sorted(grouped_families.items()):
+        for tokens in GROUPED_TOKENS:
+            route = _routing_fixture(EXPERTS, TOPK, tokens)
+            if route["fixture"] != ROUTER:
+                raise PlanError("routing fixture identity differs")
+            grouped.append({
+                "key": f"grouped_t{tokens}_n{n}_k{k}_e{EXPERTS}_top{TOPK}",
+                "tokens": tokens, "n": n, "k": k, "experts": EXPERTS,
+                "topk": TOPK, "router": ROUTER,
+                "total_rows": route["total_rows"], "active": route["active"],
+                "zero": route["zero"], "max_rows": route["max_rows"],
+                "sources": sorted(sources),
+            })
+    return {
+        "schema": SCHEMA,
+        "formats": {str(q): row for q, row in FORMATS.items()},
+        "layouts": {
+            "xplane": {"layout": 0, "mapping_id": "0x0000000000000000",
+                       "artifact_tile_k": "format-fully-quantized-default"},
+            "kpack": {"layout": 2, "mapping_id": MAPPING_ID,
+                      "artifact_tile_k": 0},
+        },
+        "policy": {
+            "dense_config": "production-shape-default",
+            "grouped_config": "production-default",
+            "split_k": 1,
+            "timing": "same-binary-distinct-event-pairs",
+            "correctness": "full-output-raw-bit-device-compare",
+            "archive_threshold_pct": 3.0,
+        },
+        "dense_m": list(DENSE_M),
+        "grouped_tokens": list(GROUPED_TOKENS),
+        "dense_families": len(dense_families),
+        "grouped_families": len(grouped_families),
+        "dense": dense,
+        "grouped": grouped,
+        "source_sha256": {
+            "workloads.py": hashlib.sha256(
+                (ROOT / "benchmarks/workloads.py").read_bytes()).hexdigest(),
+            "moe_router_fixture.hpp": hashlib.sha256(
+                (ROOT / "benchmarks/moe_router_fixture.hpp").read_bytes()).hexdigest(),
+        },
+    }
+
+
+def validate(value: dict[str, Any]) -> None:
+    expected = materialize()
+    if value != expected:
+        raise PlanError("plan differs from the workloads/router authority")
+    dense = value["dense"]
+    grouped = value["grouped"]
+    if len(dense) != 77 or len(grouped) != 24:
+        raise PlanError(
+            f"shape denominator differs: dense={len(dense)} grouped={len(grouped)}")
+    if len({row["key"] for row in dense + grouped}) != 101:
+        raise PlanError("shape keys are not 101 unique identities")
+
+
+def self_test() -> None:
+    value = materialize()
+    validate(value)
+    plants = []
+    broken = copy.deepcopy(value); broken["dense"].pop(); plants.append(broken)
+    broken = copy.deepcopy(value); broken["grouped"][0]["experts"] = 255; plants.append(broken)
+    broken = copy.deepcopy(value); broken["formats"]["11"]["packed_format"] = 2; plants.append(broken)
+    broken = copy.deepcopy(value); broken["layouts"]["kpack"]["mapping_id"] = "0x0"; plants.append(broken)
+    for broken in plants:
+        try:
+            validate(broken)
+        except PlanError:
+            pass
+        else:
+            raise AssertionError("plan negative stayed green")
+    print("[fq-kquant-perf-plan:self-test] PASS formats=4 dense=77/11-family "
+          "grouped=24/4-family; four plants RED")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("self-test")
+    emit = sub.add_parser("materialize")
+    emit.add_argument("--output", type=pathlib.Path, required=True)
+    check = sub.add_parser("validate")
+    check.add_argument("--plan", type=pathlib.Path, required=True)
+    args = parser.parse_args()
+    try:
+        if args.command == "self-test":
+            self_test()
+        elif args.command == "materialize":
+            value = materialize(); validate(value); atomic_json(args.output, value)
+            print(f"[fq-kquant-perf-plan] PASS dense=77 grouped=24 output={args.output}")
+        else:
+            validate(json.loads(args.plan.read_text()))
+            print(f"[fq-kquant-perf-plan] PASS validated={args.plan}")
+        return 0
+    except (AssertionError, OSError, PlanError, ValueError) as error:
+        print(f"[fq-kquant-perf-plan] FAIL: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
