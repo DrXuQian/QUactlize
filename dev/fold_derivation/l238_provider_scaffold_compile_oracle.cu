@@ -49,16 +49,16 @@ constexpr char const* aiu_plain_name() { return "aiu-plain"; }
 constexpr char const* cp_async_name() { return "cp-async"; }
 constexpr char const* universal_name() { return "universal"; }
 
-using LegacyWriter = MockWriter<bd::LegacyAiuSwizzleG2S,
-                                LegacyShared, legacy_name>;
-using LegacyReader = MockReader<bd::TsmSwizzleS2R,
-                                LegacyShared, legacy_name>;
-using AiuPlainWriter = MockWriter<bd::AiuPlainG2S,
-                                  PlainShared, aiu_plain_name>;
-using CpAsyncWriter = MockWriter<bd::CpAsyncG2S,
-                                 PlainShared, cp_async_name>;
-using UniversalReader = MockReader<bd::UniversalS2R,
-                                   PlainShared, universal_name>;
+using MockLegacyWriter = MockWriter<bd::LegacyAiuSwizzleG2S,
+                                    LegacyShared, legacy_name>;
+using MockLegacyReader = MockReader<bd::TsmSwizzleS2R,
+                                    LegacyShared, legacy_name>;
+using MockAiuPlainWriter = MockWriter<bd::AiuPlainG2S,
+                                      PlainShared, aiu_plain_name>;
+using MockCpAsyncWriter = MockWriter<bd::CpAsyncG2S,
+                                     PlainShared, cp_async_name>;
+using MockUniversalReader = MockReader<bd::UniversalS2R,
+                                       PlainShared, universal_name>;
 
 #if defined(L238_PLANT_LAYOUT_MISMATCH)
 using NegativeShared = bd::PhysicalSharedContract<
@@ -100,7 +100,7 @@ int main() {
 #if defined(L238_PLANT_TAG_MISMATCH)
   using NegativeReader = MockReader<bd::UniversalS2R,
                                     LegacyShared, universal_name>;
-  using Negative = bd::BoundBDelivery<LegacyWriter, NegativeReader>;
+  using Negative = bd::BoundBDelivery<MockLegacyWriter, NegativeReader>;
   static_assert(Negative::Shared::bytes_per_stage > 0);
 #elif defined(L238_PLANT_LAYOUT_MISMATCH) || \
       defined(L238_PLANT_ELEMENT_MISMATCH) || \
@@ -109,20 +109,20 @@ int main() {
       defined(L238_PLANT_K_ATOM_MISMATCH)
   using NegativeReader = MockReader<bd::UniversalS2R,
                                     NegativeShared, universal_name>;
-  using Negative = bd::BoundBDelivery<AiuPlainWriter, NegativeReader>;
+  using Negative = bd::BoundBDelivery<MockAiuPlainWriter, NegativeReader>;
   static_assert(Negative::Shared::bytes_per_stage > 0);
 #else
-  using Legacy = bd::BoundBDelivery<LegacyWriter, LegacyReader>;
-  using AiuPlain = bd::BoundBDelivery<AiuPlainWriter, UniversalReader>;
-  using CpAsync = bd::BoundBDelivery<CpAsyncWriter, UniversalReader>;
+  using Legacy = bd::BoundBDelivery<MockLegacyWriter, MockLegacyReader>;
+  using AiuPlain = bd::BoundBDelivery<MockAiuPlainWriter, MockUniversalReader>;
+  using CpAsync = bd::BoundBDelivery<MockCpAsyncWriter, MockUniversalReader>;
   static_assert(Legacy::single_issuer && AiuPlain::single_issuer);
   static_assert(CpAsync::thread_partitioned);
   static_assert(std::is_same_v<typename AiuPlain::Shared,
                                typename CpAsync::Shared>);
 
-  print_case<LegacyWriter, LegacyReader>();
-  print_case<AiuPlainWriter, UniversalReader>();
-  print_case<CpAsyncWriter, UniversalReader>();
+  print_case<MockLegacyWriter, MockLegacyReader>();
+  print_case<MockAiuPlainWriter, MockUniversalReader>();
+  print_case<MockCpAsyncWriter, MockUniversalReader>();
   std::printf("L238 PROVIDER_SCAFFOLD_COMPILE_ORACLE PASS "
               "providers=3 shared-contracts=2 reds=6\n");
 #endif
