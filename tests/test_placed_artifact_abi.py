@@ -99,6 +99,122 @@ def test_q4_kpack4_v2_producer_and_dense_reader_forward_the_exact_byte_map(monke
     assert calls[1][1][-9:] == wire
 
 
+def test_q4_n16k64_direct_layout3_descriptor_is_explicit_and_nondefault():
+    arrangement = formats.q4_n16k64_direct_arrangement()
+    assert arrangement == formats.PlacedArrangementV2(
+        formats.PLACED_LAYOUT_Q4_N16K64_DIRECT_V1,
+        4, 0, 0, 64, 32, 0,
+        formats.Q4_N16K64_DIRECT_MAPPING_ID)
+    arrangement.validate()
+
+    # Registering layout 3 must not change automatic checkpoint production.
+    assert formats.canonical_fully_quantized_layout(formats.QuantType.Q4_K) == \
+        "q4-kpack4"
+    assert formats.q4_kpack4_arrangement().layout == \
+        formats.PLACED_LAYOUT_Q4_KPACK4_TRANSPOSE_V1
+
+    for field, value in (
+            ("mapping_id", arrangement.mapping_id ^ 1),
+            ("transport_tile_k", 128),
+            ("group_size", 64),
+            ("artifact_tile_k", 64),
+            ("high_bits", 1)):
+        with pytest.raises(
+                ValueError, match="noncanonical Q4 N16xK64 direct descriptor"):
+            arrangement._replace(**{field: value}).validate()
+
+
+def test_q4_n16k64_direct_public_producers_forward_layout3_but_compute_rejects(
+        monkeypatch):
+    """Layout 3 is producible/recoverable without becoming a shipping reader by accident."""
+    calls = []
+    direct = formats.q4_n16k64_direct_arrangement()
+
+    def fake_op(name):
+        def call(*args):
+            calls.append((name, args))
+            if name == "gguf_prepare_fully_quantized_grouped_for_arrangement_v2":
+                low, high, units = _planes(direct, n=256)
+                return low.repeat(2, 1, 1), high, units.repeat(2, 1, 1)
+            if name.startswith("gguf_prepare_fully_quantized_dense"):
+                return _planes(direct, n=256)
+            if name == "gguf_packed_scale_prepass":
+                return (torch.ones((1, 8, 256), dtype=torch.float16),) * 2
+            if name == "gguf_dense_artifact_dequantize_for_arrangement_v2":
+                return torch.empty((1, 256, 256), dtype=torch.float16)
+            raise AssertionError(f"unexpected op {name}")
+        return call
+
+    monkeypatch.setattr(routes, "_op", fake_op)
+    blocks = torch.zeros((256, formats.BLOCKS[formats.QuantType.Q4_K].block_bytes), dtype=torch.uint8)
+    dense = routes.prepare_fully_quantized_dense(
+        blocks, 256, 256, formats.QuantType.Q4_K,
+        layout="q4-n16k64-direct")
+    wire = (routes.PLACED_ARTIFACT_VERSION_V2, *direct)
+    assert dense.arrangement == direct
+    assert dense.arrangement_version == routes.PLACED_ARTIFACT_VERSION_V2
+    assert calls[-1][0] == "gguf_prepare_fully_quantized_dense_for_arrangement_v2"
+    assert calls[-1][1][-9:] == wire
+
+    grouped = routes.prepare_fully_quantized_grouped(
+        blocks.repeat(2, 1), 256, 256, formats.QuantType.Q4_K, 2,
+        layout="q4-n16k64-direct")
+    assert grouped.arrangement == direct
+    assert calls[-1][0] == "gguf_prepare_fully_quantized_grouped_for_arrangement_v2"
+    assert calls[-1][1][-9:] == wire
+
+    # Inverse support is part of an offline ABI and does not imply that a
+    # production GEMM reader has been routed.
+    routes.dequantize_fully_quantized(dense, formats.QuantType.Q4_K)
+    assert calls[-1][0] == "gguf_dense_artifact_dequantize_for_arrangement_v2"
+    assert calls[-1][1][-9:] == wire
+
+    before = len(calls)
+    with pytest.raises(NotImplementedError, match="production reader is not routed"):
+        routes.matmul_fully_quantized_dense(
+            torch.zeros((1, 256), dtype=torch.float16), dense,
+            formats.QuantType.Q4_K)
+    with pytest.raises(NotImplementedError, match="production reader is not routed"):
+        routes.matmul_fully_quantized_grouped(
+            torch.zeros((1, 256), dtype=torch.float16), grouped,
+            formats.QuantType.Q4_K, torch.tensor([1, 0], dtype=torch.int32))
+    with pytest.raises(NotImplementedError, match="no routed ScaleFirst reader"):
+        routes.matmul_scale_first_dense(
+            torch.zeros((64, 256), dtype=torch.float16), dense,
+            formats.QuantType.Q4_K,
+            scale_zero=(torch.ones((1, 8, 256), dtype=torch.float16),) * 2)
+    assert len(calls) == before
+
+    # The map is N16-atomic, but the public GGUF producer's established tensor
+    # boundary is N%256.  Both failures occur before an arrangement-v2
+    # producer can see the request.
+    q5 = formats.QuantType.Q5_K
+    with pytest.raises(ValueError, match="defined only for Q4_K"):
+        routes.prepare_fully_quantized_dense(
+            torch.zeros((256, formats.BLOCKS[q5].block_bytes), dtype=torch.uint8),
+            256, 256, q5, layout="q4-n16k64-direct")
+    with pytest.raises(ValueError, match="defined only for Q4_K"):
+        routes.prepare_fully_quantized_grouped(
+            torch.zeros((512, formats.BLOCKS[q5].block_bytes), dtype=torch.uint8),
+            256, 256, q5, 2, layout="q4-n16k64-direct")
+    with pytest.raises(ValueError, match="n divisible by 256"):
+        routes.prepare_fully_quantized_dense(
+            torch.zeros((255, formats.BLOCKS[formats.QuantType.Q4_K].block_bytes), dtype=torch.uint8),
+            255, 256, formats.QuantType.Q4_K,
+            layout="q4-n16k64-direct")
+    with pytest.raises(ValueError, match="unknown fully-quantized dense layout"):
+        routes.prepare_fully_quantized_dense(
+            blocks, 256, 256, formats.QuantType.Q4_K,
+            layout="q4-n16k64")
+    assert len(calls) == before
+
+    # Explicit layout 3 must not perturb the automatic Q4 factory.
+    auto = routes.prepare_fully_quantized_dense(
+        blocks, 256, 256, formats.QuantType.Q4_K)
+    assert auto.arrangement == formats.q4_kpack4_arrangement()
+    assert auto.arrangement.layout == formats.PLACED_LAYOUT_Q4_KPACK4_TRANSPOSE_V1
+
+
 @pytest.mark.parametrize("qtype,low_bits,high_bits,transport_k,group_size", [
     (formats.QuantType.Q2_K, 2, 0, 128, 16),
     (formats.QuantType.Q3_K, 2, 1, 256, 16),
@@ -597,6 +713,36 @@ def test_manifest_roundtrip_restores_q4_kpack4_v2_and_rejects_mapping_drift(tmp_
     planted = dict(record, arrangement=dict(record["arrangement"], mapping_id=arrangement.mapping_id ^ 1))
     with pytest.raises(ValueError, match="noncanonical Q4 K-pack4 descriptor"):
         pack_gguf.restore_artifact(tmp_path, planted)
+
+
+def test_manifest_roundtrip_restores_q4_n16k64_layout3_without_aliasing_layout1(
+        tmp_path):
+    arrangement = formats.q4_n16k64_direct_arrangement()
+    artifact = routes.PlacedArtifact(_planes(arrangement, n=16), arrangement)
+    tensor_dir = tmp_path / "weight"
+    tensor_dir.mkdir()
+    pack_gguf._write(tensor_dir, *artifact)
+    record = {
+        "name": "blk.0.weight", "dir": "weight",
+        "ggml_type": int(formats.QuantType.Q4_K),
+        "arrangement_version": routes.PLACED_ARTIFACT_VERSION_V2,
+        "arrangement": arrangement._asdict(),
+    }
+    restored = pack_gguf.restore_artifact(tmp_path, record)
+    assert restored == artifact
+    assert restored.arrangement == arrangement
+    assert restored.arrangement != formats.q4_kpack4_arrangement()
+
+    planted = dict(
+        record,
+        arrangement=dict(
+            record["arrangement"], mapping_id=arrangement.mapping_id ^ 1))
+    with pytest.raises(ValueError, match="noncanonical Q4 N16xK64 direct descriptor"):
+        pack_gguf.restore_artifact(tmp_path, planted)
+
+    wrong_qtype = dict(record, ggml_type=int(formats.QuantType.Q5_K))
+    with pytest.raises(ValueError, match="layout 3 is Q4_K-only"):
+        pack_gguf.restore_artifact(tmp_path, wrong_qtype)
 
 
 @pytest.mark.parametrize("qtype", [

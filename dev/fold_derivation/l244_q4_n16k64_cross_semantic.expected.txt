@@ -1,0 +1,4 @@
+L244 CROSS WN=16 map=16384/16384 source_bad=0 destination_bad=0 logical_bad=0 physical_bad=0 warp_n_bad=0 result=PASS
+L244 CROSS WN=32 map=16384/16384 source_bad=0 destination_bad=0 logical_bad=0 physical_bad=0 warp_n_bad=0 result=PASS
+L244 CROSS WN=64 map=16384/16384 source_bad=0 destination_bad=0 logical_bad=0 physical_bad=0 warp_n_bad=0 result=PASS
+L244 Q4_N16K64_CROSS_SEMANTIC PASS shape=64x256 WN=16,32,64 coverage=16384/16384 reds=2

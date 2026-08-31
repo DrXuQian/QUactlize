@@ -435,9 +435,24 @@ def restore_artifact(root: pathlib.Path, record: dict):
         arrangement = F.PlacedArrangementV2(*(int(raw[name]) for name in F.PlacedArrangementV2._fields))
         arrangement.validate()
         qtype = F.QuantType(int(record["ggml_type"]))
-        expected = (F.q4_kpack4_arrangement()
-                    if qtype == F.QuantType.Q4_K
-                    else F.kquant_kpack_arrangement(qtype))
+        if arrangement.layout == F.PLACED_LAYOUT_Q4_KPACK4_TRANSPOSE_V1:
+            if qtype != F.QuantType.Q4_K:
+                raise ValueError(
+                    f"artifact {record.get('name', '<unnamed>')}: layout 1 is Q4_K-only, got {qtype.name}")
+            expected = F.q4_kpack4_arrangement()
+        elif arrangement.layout == F.PLACED_LAYOUT_Q4_N16K64_DIRECT_V1:
+            if qtype != F.QuantType.Q4_K:
+                raise ValueError(
+                    f"artifact {record.get('name', '<unnamed>')}: layout 3 is Q4_K-only, got {qtype.name}")
+            expected = F.q4_n16k64_direct_arrangement()
+        elif arrangement.layout == F.PLACED_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1:
+            if qtype == F.QuantType.Q4_K:
+                raise ValueError(
+                    f"artifact {record.get('name', '<unnamed>')}: layout 2 does not describe Q4_K bytes")
+            expected = F.kquant_kpack_arrangement(qtype)
+        else:  # validate() above is fail-closed; keep this branch explicit for future layout additions.
+            raise ValueError(
+                f"artifact {record.get('name', '<unnamed>')}: layout {arrangement.layout} has no restore policy")
     else:
         raise ValueError(
             f"artifact {record.get('name', '<unnamed>')}: arrangement_version={version!r}; this build reads "

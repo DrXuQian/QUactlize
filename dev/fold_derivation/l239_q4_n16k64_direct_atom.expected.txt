@@ -1,0 +1,6 @@
+L239 DIRECT_ATOM n=16 logical_k=64 physical=4x32u32 bytes=512 lanes=32 vector_bytes=16 codes_per_lane=32 alignment=32 coverage=128/128 result=PASS
+L239 DIRECT_CHAIN writer=aiu-plain reader=universal issue=single shared=same result=PASS
+L239 DIRECT_CHAIN writer=cp-async reader=universal issue=threads shared=same result=PASS
+L239 CTA_STAGE n=64 logical_k=256 threads=128 rounds=4 coverage=2048/2048 result=PASS
+L239 AIU_STAGE n=64 logical_k=256 issuer=1 cubes=4 coverage=2048/2048 result=PASS
+L239 N16_K64_DIRECT_ATOM PASS chains=2 lanes=32 vectors=32 words=128 cta_threads=128 reds=6

@@ -330,10 +330,14 @@ PLACED_ARRANGEMENT_VERSION_V2 = 2
 PLACED_LAYOUT_XPLANE_V1 = 0
 PLACED_LAYOUT_Q4_KPACK4_TRANSPOSE_V1 = 1
 PLACED_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1 = 2
+PLACED_LAYOUT_Q4_N16K64_DIRECT_V1 = 3
 Q4_KPACK4_MAPPING_ID = 0x51344B5034540001
 KQUANT_KPACK_MAPPING_ID = 0x514B504B54000001
+Q4_N16K64_DIRECT_MAPPING_ID = 0x51344E3136440001
 Q4_KPACK4_TRANSPORT_TILE_K = 64
 Q4_KPACK4_GROUP_SIZE = 32
+Q4_N16K64_DIRECT_TRANSPORT_TILE_K = 64
+Q4_N16K64_DIRECT_GROUP_SIZE = 32
 
 # One production offline-layout decision per k-quant format.  K-pack4 is a
 # Q4-specific byte map: four K-adjacent nibbles form the b16 transport used by
@@ -399,6 +403,12 @@ class PlacedArrangementV2(NamedTuple):
                 raise ValueError(
                     f"noncanonical Q4 K-pack4 descriptor {self}; expected {canonical}. The mapping id and "
                     "physical quanta identify bytes and are not tunable reader parameters")
+        elif self.layout == PLACED_LAYOUT_Q4_N16K64_DIRECT_V1:
+            canonical = q4_n16k64_direct_arrangement()
+            if self != canonical:
+                raise ValueError(
+                    f"noncanonical Q4 N16xK64 direct descriptor {self}; expected {canonical}. The layout is an "
+                    "explicit non-default offline ABI and none of its physical identity fields are tunable")
         elif self.layout == PLACED_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1:
             matches = [q for q in (QuantType.Q2_K, QuantType.Q3_K,
                                     QuantType.Q5_K, QuantType.Q6_K)
@@ -428,6 +438,21 @@ def q4_kpack4_arrangement() -> PlacedArrangementV2:
         PLACED_LAYOUT_Q4_KPACK4_TRANSPOSE_V1, 4, 0, 0,
         Q4_KPACK4_TRANSPORT_TILE_K, Q4_KPACK4_GROUP_SIZE, 0,
         Q4_KPACK4_MAPPING_ID)
+
+
+def q4_n16k64_direct_arrangement() -> PlacedArrangementV2:
+    """Explicit Q4 N16xK64 direct-reader byte map; never selected by ``auto``.
+
+    The artifact is a compact ``[K/16][2*N]`` uint32 tensor.  Keeping this as
+    layout 3 instead of overloading the shipping layout-1 descriptor makes a
+    checkpoint opt in to the new mapping while canonical Q4 production remains
+    q4-kpack4.
+    """
+    return PlacedArrangementV2(
+        PLACED_LAYOUT_Q4_N16K64_DIRECT_V1, 4, 0, 0,
+        Q4_N16K64_DIRECT_TRANSPORT_TILE_K,
+        Q4_N16K64_DIRECT_GROUP_SIZE, 0,
+        Q4_N16K64_DIRECT_MAPPING_ID)
 
 
 def kquant_kpack_arrangement(qtype) -> PlacedArrangementV2:

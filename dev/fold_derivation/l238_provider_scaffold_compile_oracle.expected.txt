@@ -1,0 +1,4 @@
+L238 provider-scaffold writer=legacy-swzl reader=legacy-swzl layout=0x2381 bytes=8192 natom=16 katom=64 issue=single result=PASS
+L238 provider-scaffold writer=aiu-plain reader=universal layout=0x2382 bytes=8192 natom=16 katom=64 issue=single result=PASS
+L238 provider-scaffold writer=cp-async reader=universal layout=0x2382 bytes=8192 natom=16 katom=64 issue=threads result=PASS
+L238 PROVIDER_SCAFFOLD_COMPILE_ORACLE PASS providers=3 shared-contracts=2 reds=6

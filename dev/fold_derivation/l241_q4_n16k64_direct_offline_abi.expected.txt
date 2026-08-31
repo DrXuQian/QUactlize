@@ -1,0 +1,3 @@
+L241 OFFLINE shape=32x128 bytes=2048 map=4096/4096 production_bijection_bad=0 oracle_bijection_bad=0 inverse_bad=0 placed_bit_bad=0 get_bad=0 roundtrip_bit_bad=0 layout1_equal=32/4096 result=PASS
+L241 OFFLINE shape=64x256 bytes=8192 map=16384/16384 production_bijection_bad=0 oracle_bijection_bad=0 inverse_bad=0 placed_bit_bad=0 get_bad=0 roundtrip_bit_bad=0 layout1_equal=32/16384 result=PASS
+L241 Q4_N16K64_DIRECT_OFFLINE PASS layout=3 mapping=0x51344e3136440001 atom=0x74443aed0cce4083 shapes=2 reds=2

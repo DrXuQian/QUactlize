@@ -1,0 +1,7 @@
+L240 FRAGMENT WN=16 cohorts=1 mapping=0x74443aed0cce4083 source_bad=0 destination_bad=0 physical_denominator_bad=0 logical_denominator_bad=0 cohort_mismatch=0 noncontiguous_destination=0 fixture_bad=0 reversible_bad=0 result=PASS
+L240 FRAGMENT WN=32 cohorts=2 mapping=0x74443aed0cce4083 source_bad=0 destination_bad=0 physical_denominator_bad=0 logical_denominator_bad=0 cohort_mismatch=0 noncontiguous_destination=0 fixture_bad=0 reversible_bad=0 result=PASS
+L240 FRAGMENT WN=64 cohorts=4 mapping=0x74443aed0cce4083 source_bad=0 destination_bad=0 physical_denominator_bad=0 logical_denominator_bad=0 cohort_mismatch=0 noncontiguous_destination=0 fixture_bad=0 reversible_bad=0 result=PASS
+L240 MAP_ANCHOR n0_k0_15=0,4,32,36,64,68,96,100,1,5,33,37,65,69,97,101 n15_k48_63=922,926,954,958,986,990,1018,1022,923,927,955,959,987,991,1019,1023
+L240 REVERSIBLE_MAP bitperm=p0:k3,p1:k4,p2:k0,p3:k5,p4:n3,p5:k1,p6:k2,p7:n0,p8:n1,p9:n2 inverse=EXACT
+L240 OFFLINE_ABI shape=32x128 direct_denominator_bad=0 layout1_denominator_bad=0 header_mismatch=0 equal=32/4096 verdict=DISTINCT_REQUIRES_NEW_MAPPING
+L240 Q4_N16K64_DIRECT_FRAGMENT PASS mapping=0x74443aed0cce4083 bijection=1024/1024 recast=EXACT outer=32x128 geometries=3 reds=2

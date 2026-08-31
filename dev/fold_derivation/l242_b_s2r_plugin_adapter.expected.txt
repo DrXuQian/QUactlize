@@ -1,0 +1,5 @@
+L242 LEGACY exact_shared_source=1 exact_tiled_copy=1 exact_owner=1 exact_copy_view=1 result=PASS
+L242 DIRECT wn=16 source=512 register_words=4 converter=32 mma=32 k_atoms_per_copy=4 source_bad=0 legacy_dst_diff=0 adversarial_dst_same=1 wrong_warp_pitch_bad=448 warp_n_coordinate_bad=0
+L242 DIRECT wn=32 source=512 register_words=8 converter=64 mma=64 k_atoms_per_copy=4 source_bad=0 legacy_dst_diff=32 adversarial_dst_same=1 wrong_warp_pitch_bad=384 warp_n_coordinate_bad=0
+L242 DIRECT wn=64 source=512 register_words=16 converter=128 mma=128 k_atoms_per_copy=4 source_bad=0 legacy_dst_diff=96 adversarial_dst_same=1 wrong_warp_pitch_bad=0 warp_n_coordinate_bad=0
+L242 B_S2R_PLUGIN PASS legacy=1 direct=1 owner_alias=SEPARATE source_destination=INDEPENDENT lane_scope=WARP_LOCAL reds=4

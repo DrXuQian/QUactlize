@@ -397,6 +397,46 @@ struct MixGemm_KPack_Transpose_Operand {
   using SmemLayoutAtom = Layout<
       Shape<Int<DeliveryN>, PhysicalBlockK>,
       Stride<_1, Int<DeliveryN>>>;
+  // This is the shipping transposed-b16 operand and deliberately keeps its
+  // historical six-template-argument type identity.  Adding a provider
+  // parameter here would change the type even when the default were selected.
+  // A plain-shared/direct provider therefore owns a distinct physical operand;
+  // the selector below may choose it only after its complete G2S/S2R chain is
+  // admitted.  The legacy operand itself remains exactly bound to the matched
+  // AIU-swzl/TSM-swzl endpoints.
+  using BDeliveryTags =
+      cutlass::gemm::collective::detail::quactlize_b_delivery::
+          ProductionBDelivery;
+  using StageSmemLayout = decltype(tile_to_shape(
+      SmemLayoutAtom{}, make_shape(Block_N{}, PhysicalBlockK{})));
+  static constexpr std::size_t StageBytes =
+      std::size_t(Block_N{}) * std::size_t(PhysicalBlockK{}) *
+      sizeof_bits<TransportElement>::value / 8;
+  using PhysicalSharedContract =
+      cutlass::gemm::collective::detail::quactlize_b_delivery::
+          PhysicalSharedContract<
+              StageSmemLayout, TransportElement, StageBytes,
+              kquant_kpack::kTransportN,
+              kquant_kpack::kReaderPhysicalK * Pack, 32>;
+  struct WriterBinding {
+    using G2S = typename BDeliveryTags::G2S;
+    using Shared = PhysicalSharedContract;
+    using Copy = GmemTiledCopy;
+  };
+  struct ReaderBinding {
+    using S2R = typename BDeliveryTags::S2R;
+    using Shared = PhysicalSharedContract;
+    using Copy = SmemCopyAtom;
+  };
+  using BDeliveryBinding =
+      cutlass::gemm::collective::detail::quactlize_b_delivery::
+          BoundBDelivery<WriterBinding, ReaderBinding>;
+  static_assert(BDeliveryBinding::single_issuer,
+                "the shipping K-pack AIU writer remains one opaque issuer");
+  static_assert(cute::cosize_v<StageSmemLayout> *
+                        sizeof_bits<TransportElement>::value / 8 ==
+                    StageBytes,
+                "the shipping K-pack shared layout must own exactly one stage");
   static constexpr int PhysicalK = PhysicalBlockK{};
   static constexpr int LogicalK = LogicalBlock_K{};
   static constexpr int CodesPerWord = Pack;
@@ -412,29 +452,50 @@ struct MixGemm_Q4_KPack4_Transpose_Operand
 
 template <bool Enabled, int Pack, typename Arch, typename Block_N,
           typename LogicalBlock_K, bool Swap, int DeliveryN,
-          typename LegacyOperand>
+          typename LegacyOperand,
+          typename BDeliveryTags =
+              cutlass::gemm::collective::detail::quactlize_b_delivery::
+                  ProductionBDelivery>
 struct SelectKPackOperand {
   using type = LegacyOperand;
 };
 template <int Pack, typename Arch, typename Block_N,
           typename LogicalBlock_K, bool Swap, int DeliveryN,
-          typename LegacyOperand>
+          typename LegacyOperand, typename BDeliveryTags>
 struct SelectKPackOperand<true, Pack, Arch, Block_N, LogicalBlock_K,
-                          Swap, DeliveryN, LegacyOperand> {
+                          Swap, DeliveryN, LegacyOperand, BDeliveryTags> {
+  static_assert(
+      std::is_same_v<
+          BDeliveryTags,
+          cutlass::gemm::collective::detail::quactlize_b_delivery::
+              ProductionBDelivery>,
+      "plain/direct K-pack delivery requires its distinct physical operand "
+      "selector; it cannot reinterpret the shipping transposed-b16 operand");
   using type = MixGemm_KPack_Transpose_Operand<
       Pack, Arch, Block_N, LogicalBlock_K, Swap, DeliveryN>;
 };
 
 template <bool Enabled, typename Arch, typename Block_N,
           typename LogicalBlock_K, bool Swap, int DeliveryN,
-          typename LegacyOperand>
+          typename LegacyOperand,
+          typename BDeliveryTags =
+              cutlass::gemm::collective::detail::quactlize_b_delivery::
+                  ProductionBDelivery>
 struct SelectQ4KPack4Operand {
   using type = LegacyOperand;
 };
 template <typename Arch, typename Block_N, typename LogicalBlock_K,
-          bool Swap, int DeliveryN, typename LegacyOperand>
+          bool Swap, int DeliveryN, typename LegacyOperand,
+          typename BDeliveryTags>
 struct SelectQ4KPack4Operand<true, Arch, Block_N, LogicalBlock_K,
-                            Swap, DeliveryN, LegacyOperand> {
+                            Swap, DeliveryN, LegacyOperand, BDeliveryTags> {
+  static_assert(
+      std::is_same_v<
+          BDeliveryTags,
+          cutlass::gemm::collective::detail::quactlize_b_delivery::
+              ProductionBDelivery>,
+      "plain/direct Q4 delivery requires its distinct physical operand "
+      "selector; it cannot reinterpret the shipping transposed-b16 operand");
   using type = MixGemm_Q4_KPack4_Transpose_Operand<
       Arch, Block_N, LogicalBlock_K, Swap, DeliveryN>;
 };
@@ -628,6 +689,8 @@ public:
       kpack_schedule_traits<KernelScheduleType>::HighPack;
   static constexpr int KPackDeliveryN =
       kpack_schedule_traits<KernelScheduleType>::DeliveryN;
+  using ScheduledBDelivery =
+      typename kpack_schedule_traits<KernelScheduleType>::BDelivery;
   static constexpr int blockM = cute::get<0>(TileShape_MNK{});
   static constexpr int blockN = cute::get<1>(TileShape_MNK{});
   static constexpr int blockK = cute::get<2>(TileShape_MNK{});
@@ -770,7 +833,7 @@ public:
       RealInternalElementB, false, Int<BFoldBlockN>, Int<FullBlockK>, true, ArtifactContigShape>;
   using DefaultOperandB = typename quactlize_detail::SelectKPackOperand<
       HasKPack, KPackLow, Arch, Int<blockN>, Int<blockK>, true,
-      KPackDeliveryN, LegacyOperandB>::type;
+      KPackDeliveryN, LegacyOperandB, ScheduledBDelivery>::type;
 #elif 0 // async_cp not work now
   static_assert(false, "async_cp not work now");
   using DispatchPolicy = MainloopQuactlizeMixedInput<PipelineStages, kContinous, KernelScheduleType>;
@@ -818,7 +881,7 @@ public:
   using DefaultOperandB2 = typename quactlize_detail::SelectKPackOperand<
       HasKPack && HasPlane2, (HasPlane2 ? KPackHigh : KPackLow),
       Arch, Int<blockN>, Int<blockK>, true, KPackDeliveryN,
-      LegacyOperandB2>::type;
+      LegacyOperandB2, ScheduledBDelivery>::type;
 
   // Both planes' atoms ride the EXISTING single template params (CollectiveMma's parameter list is fixed by its
   // primary template). collective::BPlanes is the marker -- NOT cute::is_tuple, since a cute Layout is itself

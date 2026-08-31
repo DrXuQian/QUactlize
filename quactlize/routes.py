@@ -32,11 +32,12 @@ from . import (gguf_dequantize, gguf_vecdot_dense, gguf_vecdot_moe, gguf_prepare
                gguf_gemv_scale_first, gguf_gemv_scale_first_moe, gguf_dense_scale_first)
 from .formats import (PLACED_ARRANGEMENT_VERSION_V1, PLACED_ARRANGEMENT_VERSION_V2,
                       PLACED_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1,
+                      PLACED_LAYOUT_Q4_N16K64_DIRECT_V1,
                       PLACED_LAYOUT_Q4_KPACK4_TRANSPOSE_V1, PlacedArrangement,
                       PlacedArrangementV2, QuantType,
                       canonical_fully_quantized_layout, placed_arrangement,
                       kquant_kpack_arrangement, placed_code_planes,
-                      q4_kpack4_arrangement)
+                      q4_kpack4_arrangement, q4_n16k64_direct_arrangement)
 
 
 def _check_shape(blocks: torch.Tensor, n: int, k: int, qtype: int) -> None:
@@ -354,6 +355,9 @@ def _require_placed_artifact(artifact, qtype: int, where: str):
         arrangement.validate()
         if arrangement.layout == PLACED_LAYOUT_Q4_KPACK4_TRANSPOSE_V1 and QuantType(qtype) != QuantType.Q4_K:
             raise ValueError(f"{where}: Q4 K-pack4 bytes cannot be consumed as {QuantType(qtype).name}")
+        if arrangement.layout == PLACED_LAYOUT_Q4_N16K64_DIRECT_V1 and QuantType(qtype) != QuantType.Q4_K:
+            raise ValueError(
+                f"{where}: Q4 N16xK64 direct bytes cannot be consumed as {QuantType(qtype).name}")
         if arrangement.layout == PLACED_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1:
             expected = kquant_kpack_arrangement(qtype)
             if arrangement != expected:
@@ -530,9 +534,10 @@ def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: i
     is always the LAST element. That is the property both oracles plant their fault on.
 
     ``layout="auto"`` selects the canonical K-pack4 bytes for Q4_K and Xplane for every other format.  Explicit
+    ``layout="q4-n16k64-direct"`` builds the non-default Q4 direct-reader ABI, while
     ``layout="kquant-kpack"`` selects the per-plane b16 map for Q2/Q3/Q5/Q6; each plane uses Pack=16/bits and the
     exact pack factors travel in the canonical descriptor.  An explicit ``tile_k`` is itself a low-level Xplane
-    compatibility request; neither K-pack layout has an artifact TileK axis.
+    compatibility request; none of the K-pack layouts has an artifact TileK axis.
 
     tile_k SELECTS AN XPLANE PLACEMENT, and F follows from it -- see formats.fold_for. Passing None keeps the
     Xplane format's default placement when Xplane was explicitly selected.
@@ -554,6 +559,23 @@ def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: i
         tensors = _op("gguf_prepare_fully_quantized_dense_for_arrangement_v2")(
             blocks, n, k, int(qtype), *_arrangement_v2_wire(arrangement))
         return PlacedArtifact(tensors, arrangement, PLACED_ARTIFACT_VERSION_V2)
+    if layout == "q4-n16k64-direct":
+        if QuantType(qtype) != QuantType.Q4_K:
+            raise ValueError(
+                f"q4-n16k64-direct is defined only for Q4_K, got {QuantType(qtype).name}")
+        if tile_k is not None:
+            raise ValueError("q4-n16k64-direct has no artifact TileK axis; tile_k must be None")
+        # The byte map is N16-atomic, while the existing fully-quantized
+        # torch producer has a stricter public tensor ABI: N/K are multiples
+        # of 256.  Do not advertise a shape the real producer rejects before
+        # it reaches the layout transform.
+        if n % 256:
+            raise ValueError(f"q4-n16k64-direct producer requires n divisible by 256, got n={n}")
+        arrangement = q4_n16k64_direct_arrangement()
+        arrangement.validate()
+        tensors = _op("gguf_prepare_fully_quantized_dense_for_arrangement_v2")(
+            blocks, n, k, int(qtype), *_arrangement_v2_wire(arrangement))
+        return PlacedArtifact(tensors, arrangement, PLACED_ARTIFACT_VERSION_V2)
     if layout == "kquant-kpack":
         if QuantType(qtype) == QuantType.Q4_K:
             raise ValueError("Q4_K retains the shipping q4-kpack4 layout; use layout='q4-kpack4'")
@@ -566,8 +588,8 @@ def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: i
         return PlacedArtifact(tensors, arrangement, PLACED_ARTIFACT_VERSION_V2)
     if layout != "xplane":
         raise ValueError(
-            f"unknown fully-quantized dense layout {layout!r}; expected 'auto', 'xplane', 'q4-kpack4' or "
-            "'kquant-kpack'")
+            f"unknown fully-quantized dense layout {layout!r}; expected 'auto', 'xplane', 'q4-kpack4', "
+            "'q4-n16k64-direct' or 'kquant-kpack'")
     arrangement = placed_arrangement(qtype, tile_k)
     if tile_k is None:
         tensors = _op("gguf_prepare_fully_quantized_dense")(blocks, n, k, int(qtype))
@@ -586,6 +608,10 @@ def matmul_fully_quantized_dense(a: torch.Tensor, artifact, qtype: int):
     low, high, units, arrangement = _require_placed_artifact(
         artifact, qtype, "matmul_fully_quantized_dense")
     if isinstance(arrangement, PlacedArrangementV2):
+        if arrangement.layout == PLACED_LAYOUT_Q4_N16K64_DIRECT_V1:
+            raise NotImplementedError(
+                "matmul_fully_quantized_dense: q4-n16k64-direct is an explicit offline ABI whose production "
+                "reader is not routed; refusing to send layout 3 through a shipping layout-1/2 compute op")
         return _op("gguf_dense_fully_quantized_for_arrangement_v2")(
             a, low, high, units, int(qtype), *_arrangement_v2_wire(arrangement))
     return _op("gguf_dense_fully_quantized_for_arrangement")(
@@ -600,6 +626,7 @@ def prepare_fully_quantized_grouped(blocks: torch.Tensor, n: int, k: int,
 
     blocks is [E*n*(k/256), type_size] -- expert-major, so expert e's weight is a contiguous slice. ``auto``
     selects the canonical K-pack4 artifact for Q4_K and the compatibility Xplane tuple for other formats.  Use
+    ``layout="q4-n16k64-direct"`` to build the explicit non-default Q4 direct-reader ABI, or
     ``layout="kquant-kpack"`` to build the descriptor-carrying Q2/Q3/Q5/Q6 artifact.
     Returns (low, high, units), with `high` empty for single-plane formats and uint8[E, n, k/8] for Q5_K.
     """
@@ -617,6 +644,17 @@ def prepare_fully_quantized_grouped(blocks: torch.Tensor, n: int, k: int,
         tensors = _op("gguf_prepare_fully_quantized_grouped_for_arrangement_v2")(
             blocks, n, k, int(qtype), int(experts), *_arrangement_v2_wire(arrangement))
         return PlacedArtifact(tensors, arrangement, PLACED_ARTIFACT_VERSION_V2)
+    if layout == "q4-n16k64-direct":
+        if QuantType(qtype) != QuantType.Q4_K:
+            raise ValueError(
+                f"q4-n16k64-direct is defined only for Q4_K, got {QuantType(qtype).name}")
+        if n % 256:
+            raise ValueError(f"q4-n16k64-direct producer requires n divisible by 256, got n={n}")
+        arrangement = q4_n16k64_direct_arrangement()
+        arrangement.validate()
+        tensors = _op("gguf_prepare_fully_quantized_grouped_for_arrangement_v2")(
+            blocks, n, k, int(qtype), int(experts), *_arrangement_v2_wire(arrangement))
+        return PlacedArtifact(tensors, arrangement, PLACED_ARTIFACT_VERSION_V2)
     if layout == "kquant-kpack":
         if QuantType(qtype) == QuantType.Q4_K:
             raise ValueError("Q4_K retains the shipping q4-kpack4 layout; use layout='q4-kpack4'")
@@ -627,8 +665,8 @@ def prepare_fully_quantized_grouped(blocks: torch.Tensor, n: int, k: int,
         return PlacedArtifact(tensors, arrangement, PLACED_ARTIFACT_VERSION_V2)
     if layout != "xplane":
         raise ValueError(
-            f"unknown fully-quantized grouped layout {layout!r}; expected 'auto', 'xplane', 'q4-kpack4' or "
-            "'kquant-kpack'")
+            f"unknown fully-quantized grouped layout {layout!r}; expected 'auto', 'xplane', 'q4-kpack4', "
+            "'q4-n16k64-direct' or 'kquant-kpack'")
     return _op("gguf_prepare_fully_quantized_grouped")(
         blocks, n, k, int(qtype), int(experts))
 
@@ -647,6 +685,10 @@ def matmul_fully_quantized_grouped(a: torch.Tensor, artifact, qtype: int, rows_p
             raise ValueError(
                 "matmul_fully_quantized_grouped: grouped Xplane-v1 has no descriptor-aware production ABI; "
                 "refusing to erase its arrangement")
+        if arrangement.layout == PLACED_LAYOUT_Q4_N16K64_DIRECT_V1:
+            raise NotImplementedError(
+                "matmul_fully_quantized_grouped: q4-n16k64-direct is an explicit offline ABI whose production "
+                "reader is not routed; refusing to send layout 3 through a shipping layout-1/2 compute op")
         return _op("gguf_grouped_fully_quantized_for_arrangement_v2")(
             a, low, high, units, rows_per_expert.to(torch.int32), int(qtype),
             *_arrangement_v2_wire(arrangement))
@@ -670,6 +712,10 @@ def matmul_scale_first_dense(a: torch.Tensor, artifact, qtype: int, scale_zero=N
             raise ValueError(
                 "matmul_scale_first_dense: a placed fully-quantized Xplane artifact is not the legacy four-plane "
                 "ScaleFirst artifact; refusing to infer a different offline placement")
+        if arrangement.layout == PLACED_LAYOUT_Q4_N16K64_DIRECT_V1:
+            raise NotImplementedError(
+                "matmul_scale_first_dense: q4-n16k64-direct has no routed ScaleFirst reader; refusing to "
+                "reinterpret layout 3 as the shipping K-pack4 byte map")
         if scale_zero is None:
             scale_zero = dequantize_scale_from_units(units, qtype)
         if not isinstance(scale_zero, (tuple, list)) or len(scale_zero) != 2:

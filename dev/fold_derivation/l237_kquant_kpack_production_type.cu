@@ -3,6 +3,7 @@
 // with the matching PPU_PACKED_FORMAT.  It deliberately instantiates both the
 // dense and grouped launch adapters over one shared KPackMainloopPolicy.
 
+#include <cstddef>
 #include <cstdio>
 #include <type_traits>
 
@@ -16,6 +17,8 @@
 #endif
 
 using namespace cute;
+namespace b_delivery =
+    cutlass::gemm::collective::detail::quactlize_b_delivery;
 
 #if L237_QTYPE == 10
 using Low = cutlass::uint2b_t;
@@ -73,12 +76,48 @@ struct ProductionTypes {
       Schedule, Tile, Scale, Warp, Stages, true, Low, High>;
   using Policy = typename Dense::MainloopPolicy;
   using Mainloop = typename Dense::CollectiveMainloop;
+  using Builder = typename Policy::CollectiveBuilderType;
+  using DefaultOperandB = typename Builder::DefaultOperandB;
+  using BDeliveryBinding = typename DefaultOperandB::BDeliveryBinding;
+  using BDeliveryShared = typename BDeliveryBinding::Shared;
+  using MainloopStorage = typename Mainloop::SharedStorage;
   static_assert(ppu_mixed_policy::kernel_policy_valid_v<
                 ppu_tactics::DenseSpace, Policy>);
   static_assert(ppu_mixed_policy::kernel_policy_valid_v<
                 ppu_tactics::GroupedSpace, Policy>);
   static_assert(Dense::SharedStorageSize > 0 &&
                 Dense::SharedStorageSize <= ppu_tactics::kBlockSmemBytes);
+  static_assert(std::is_same_v<typename Mainloop::BDeliveryPolicy,
+                               b_delivery::ProductionBDelivery>);
+  static_assert(std::is_same_v<typename DefaultOperandB::BDeliveryTags,
+                               b_delivery::ProductionBDelivery>);
+  static_assert(std::is_same_v<typename BDeliveryBinding::G2S,
+                               typename b_delivery::ProductionBDelivery::G2S>);
+  static_assert(std::is_same_v<typename BDeliveryBinding::S2R,
+                               typename b_delivery::ProductionBDelivery::S2R>);
+  static_assert(std::is_same_v<
+                BDeliveryShared,
+                typename DefaultOperandB::PhysicalSharedContract>);
+  static_assert(std::is_same_v<typename BDeliveryShared::Layout,
+                               typename DefaultOperandB::StageSmemLayout>);
+  static_assert(std::is_same_v<typename BDeliveryShared::Element,
+                               typename Mainloop::BTransportElement>);
+  static_assert(BDeliveryShared::bytes_per_stage ==
+                    kquant_kpack::PlaneMap<kLowBits, kGroup>::placed_bytes(
+                        TN, kTileK),
+                "K-pack B-delivery bytes must be one compact low-plane tile");
+  static_assert(BDeliveryShared::n_atom == kquant_kpack::kTransportN);
+  static_assert(BDeliveryShared::logical_k_atom ==
+                kquant_kpack::kReaderPhysicalK * (16 / kLowBits));
+  static_assert(BDeliveryShared::alignment_bytes == 32,
+                "PPU0010 AIU shared base is a 32-byte contract");
+  static_assert(offsetof(MainloopStorage, smem_b) %
+                        BDeliveryShared::alignment_bytes == 0,
+                "K-quant storage must realize the declared B alignment");
+  static_assert(DefaultOperandB::CodesPerWord == 16 / kLowBits &&
+                DefaultOperandB::PhysicalK *
+                        DefaultOperandB::CodesPerWord ==
+                    kTileK);
   static_assert(cute::cosize_v<typename Mainloop::SmemLayoutB> *
                     int(sizeof(typename Mainloop::BTransportElement)) ==
                 TN * kTileK * kLowBits / 8 * Stages,

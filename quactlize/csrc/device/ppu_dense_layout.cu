@@ -9,6 +9,7 @@
 #include "kquant_kpack_offline.hpp"
 #include "ppu_format_config.hpp"
 #include "ppu_placed_arrangement.hpp"
+#include "q4_n16k64_direct_offline.hpp"
 #include "q4_kpack4_offline.hpp"
 #include "xplane_offline.hpp"
 
@@ -220,6 +221,23 @@ int arrangement_v2_dispatch(
   if (!arrangement ||
       arrangement->version != QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V2)
     return 25;
+  if (arrangement->layout ==
+      QUACTLIZE_PPU_LAYOUT_Q4_N16K64_DIRECT_V1) {
+    auto const canonical = ppu_arrangements::q4_n16k64_direct_v1();
+    if (qtype != 12 || arrangement->bits != canonical.bits ||
+        arrangement->high_bits != canonical.high_bits ||
+        arrangement->artifact_tile_k != canonical.artifact_tile_k ||
+        arrangement->transport_tile_k != canonical.transport_tile_k ||
+        arrangement->group_size != canonical.group_size ||
+        arrangement->reserved != canonical.reserved ||
+        arrangement->mapping_id != canonical.mapping_id ||
+        high_in || high_out)
+      return 25;
+    if constexpr (Recover)
+      return q4_n16k64_direct::recover(low_in, low_out, n, k);
+    else
+      return q4_n16k64_direct::prepare(low_in, low_out, n, k);
+  }
   if (arrangement->layout ==
       QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1) {
     auto const canonical = ppu_arrangements::q4_kpack4_transpose_v1();

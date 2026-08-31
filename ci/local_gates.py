@@ -165,6 +165,15 @@ GATES = [
     ("l236_kquant_kpack_production_fragment", []),
     *[(f"l237_kquant_kpack_production_type@q{q}", [])
       for q in (10, 11, 13, 14)],
+    ("l238_provider_scaffold_compile_oracle", []),
+    ("l239_q4_n16k64_direct_atom", []),
+    ("l240_q4_n16k64_direct_fragment", []),
+    ("l241_q4_n16k64_direct_offline_abi", []),
+    ("l242_b_s2r_plugin_adapter", []),
+    ("l242_b_s2r_plugin_adapter@production", []),
+    ("l243_q4_n16k64_direct_layout3_abi", []),
+    ("l244_q4_n16k64_cross_semantic", []),
+    ("l245_q4_n16k64_grouped_offline", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -426,6 +435,29 @@ GATE_SRCS = {
     "l110_unit_pack_abi": ["quactlize/csrc/device/ppu_dense_layout.cu"],
     "l230_q4_kpack4_offline_abi": ["quactlize/csrc/device/ppu_dense_layout.cu"],
     "l235_kquant_kpack_offline_abi": ["quactlize/csrc/device/ppu_dense_layout.cu"],
+    "l243_q4_n16k64_direct_layout3_abi": ["quactlize/csrc/device/ppu_dense_layout.cu"],
+}
+
+# These gates own compile-fail and numeric RED controls in addition to their
+# positive executable.  Running only the generic .cu compile would leave the
+# controls outside CI and let a denominator collapse look green.  Their
+# fail-closed runners perform the same compiler probe as gate() and print one
+# explicit PASS/SKIP terminal line.
+RUNNER_GATES = {
+    "l238_provider_scaffold_compile_oracle":
+        "run_l238_provider_scaffold_compile_oracle.sh",
+    "l239_q4_n16k64_direct_atom":
+        "run_l239_q4_n16k64_direct_atom.sh",
+    "l240_q4_n16k64_direct_fragment":
+        "run_l240_q4_n16k64_direct_fragment.sh",
+    "l241_q4_n16k64_direct_offline_abi":
+        "run_l241_q4_n16k64_direct_offline_abi.sh",
+    "l242_b_s2r_plugin_adapter":
+        "run_l242_b_s2r_plugin_adapter.sh",
+    "l244_q4_n16k64_cross_semantic":
+        "run_l244_q4_n16k64_cross_semantic.sh",
+    "l245_q4_n16k64_grouped_offline":
+        "run_l245_q4_n16k64_grouped_offline.sh",
 }
 
 GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
@@ -449,6 +481,10 @@ GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
                   "-D__HGGCCC__", "--expt-relaxed-constexpr",
                   "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_FORMAT=0",
                   "-DPPU_B_CHUNK=0"],
+              "l242_b_s2r_plugin_adapter@production": [
+                  "-D__HGGCCC__", "--expt-relaxed-constexpr",
+                  "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_FORMAT=0",
+                  "-DPPU_B_CHUNK=0", "-DL242_PPU_TYPE_PROBE=1"],
               "l232_q4_kpack4_fused_metadata_store": [
                   "-D__HGGCCC__", "--expt-relaxed-constexpr",
                   "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_SCALE_FUSED=1",
@@ -791,6 +827,27 @@ def gate(name, args):
     been rewritten to catch. Five entries need five names, and five names for one file need this.
     """
     base = name.split("@", 1)[0]
+    if name == base and base in RUNNER_GATES:
+        script = DEV / RUNNER_GATES[base]
+        if not script.is_file():
+            return "MISSING", f"{script} not found", 0.0
+        rc, log, dt = run(["bash", str(script)])
+        lines = [line.strip() for line in log.splitlines() if line.strip()]
+        if rc != 0:
+            diagnostic = next(
+                (line for line in reversed(lines)
+                 if " FAIL" in line or "error:" in line),
+                lines[-1] if lines else f"runner exited {rc}")
+            return "FAIL", diagnostic, dt
+        terminal = next(
+            (line for line in reversed(lines)
+             if "-runner] PASS" in line or "-runner] SKIP" in line),
+            "")
+        if "-runner] PASS" in terminal:
+            return "PASS", terminal, dt
+        if "-runner] SKIP" in terminal:
+            return "SKIP", terminal, dt
+        return "FAIL", "runner exited zero without an explicit PASS/SKIP verdict", dt
     src = DEV / f"{base}.cu"
     if not src.exists():
         return "MISSING", f"{src} not found", 0.0

@@ -1,0 +1,1 @@
+L245 Q4_N16K64_GROUPED_OFFLINE PASS experts=2 N=256 K=256 placed_bytes_per_expert=32768 units_bytes_per_expert=4096 code=2/2 recover=2/2 expert_stride=PASS raw_unchanged=1 units_unchanged=1 fingerprints=DISTINCT reds=2

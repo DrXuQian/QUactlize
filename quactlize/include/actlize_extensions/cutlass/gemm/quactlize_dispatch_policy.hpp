@@ -25,6 +25,7 @@
 #pragma once
 
 #include "cutlass/gemm/dispatch_policy.hpp"   // actlize's, for the Schedule tags we specialise on
+#include "actlize_extensions/cutlass/gemm/collective/detail/quactlize_b_delivery_policy.hpp"
 
 //////////////////////////////////////////////////////////////////////////////
 
@@ -100,6 +101,7 @@ template<class T> struct kpack_schedule_traits {
   static constexpr int LowPack = 1;
   static constexpr int HighPack = 0;
   static constexpr int DeliveryN = 0;
+  using BDelivery = void;
   using Wrapped = T;
 };
 template<int LowPack_, int HighPack_, class WrappedSchedule_, int DeliveryN_>
@@ -109,6 +111,8 @@ struct kpack_schedule_traits<
   static constexpr int LowPack = LowPack_;
   static constexpr int HighPack = HighPack_;
   static constexpr int DeliveryN = DeliveryN_;
+  using BDelivery =
+      collective::detail::quactlize_b_delivery::ProductionBDelivery;
   using Wrapped = WrappedSchedule_;
 };
 template<class WrappedSchedule_, int DeliveryN_>
@@ -118,6 +122,8 @@ struct kpack_schedule_traits<
   static constexpr int LowPack = 4;
   static constexpr int HighPack = 0;
   static constexpr int DeliveryN = DeliveryN_;
+  using BDelivery =
+      collective::detail::quactlize_b_delivery::ProductionBDelivery;
   using Wrapped = WrappedSchedule_;
 };
 template<int Rows_, class WrappedSchedule_>
@@ -129,12 +135,14 @@ public:
   static constexpr int LowPack = WrappedTraits::LowPack;
   static constexpr int HighPack = WrappedTraits::HighPack;
   static constexpr int DeliveryN = WrappedTraits::DeliveryN;
+  using BDelivery = typename WrappedTraits::BDelivery;
   using Wrapped = KernelAiuPackedA<Rows_, typename WrappedTraits::Wrapped>;
 };
 
 template<class T> struct q4_kpack4_schedule_traits {
   static constexpr bool Value = false;
   static constexpr int DeliveryN = 0;
+  using BDelivery = void;
   using Wrapped = T;
 };
 template<class WrappedSchedule_, int DeliveryN_>
@@ -142,6 +150,8 @@ struct q4_kpack4_schedule_traits<
     KernelAiuQ4KPack4Transpose<WrappedSchedule_, DeliveryN_>> {
   static constexpr bool Value = true;
   static constexpr int DeliveryN = DeliveryN_;
+  using BDelivery =
+      collective::detail::quactlize_b_delivery::ProductionBDelivery;
   using Wrapped = WrappedSchedule_;
 };
 template<int Rows_, class WrappedSchedule_>
@@ -151,6 +161,7 @@ private:
 public:
   static constexpr bool Value = WrappedTraits::Value;
   static constexpr int DeliveryN = WrappedTraits::DeliveryN;
+  using BDelivery = typename WrappedTraits::BDelivery;
   using Wrapped = KernelAiuPackedA<Rows_, typename WrappedTraits::Wrapped>;
 };
 
@@ -272,6 +283,8 @@ struct MainloopQuactlizeMixedInput<
     : MainloopQuactlizeMixedInput<Stages_, kContinous_, WrappedSchedule_> {
   static constexpr bool Q4KPack4Transpose = true;
   static constexpr int Q4KPack4DeliveryN = DeliveryN_;
+  using BDelivery =
+      collective::detail::quactlize_b_delivery::ProductionBDelivery;
 };
 
 template<int Stages_, class kContinous_, int LowPack_, int HighPack_,
@@ -284,6 +297,8 @@ struct MainloopQuactlizeMixedInput<
   static constexpr int KPackLow = LowPack_;
   static constexpr int KPackHigh = HighPack_;
   static constexpr int KPackDeliveryN = DeliveryN_;
+  using BDelivery =
+      collective::detail::quactlize_b_delivery::ProductionBDelivery;
 };
 
 //////////////////////////////////////////////////////////////////////////////
@@ -307,6 +322,10 @@ struct MainloopPPUAiuMixedInput2PlaneBase {
   constexpr static int HighKPack = HighKPack_;
   constexpr static bool KPackTranspose = LowKPack_ > 0;
   constexpr static int KPackDeliveryN = KPackDeliveryN_;
+  using BDelivery = std::conditional_t<
+      KPackTranspose,
+      collective::detail::quactlize_b_delivery::ProductionBDelivery,
+      void>;
   using kContinous = kContinous_;
   using Schedule = KernelAiuMultistageMixedInput;
   using ClusterShape = Shape<_1,_1,_1>;

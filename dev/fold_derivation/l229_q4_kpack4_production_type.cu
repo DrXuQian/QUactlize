@@ -3,6 +3,7 @@
 // packed metadata channel, dense epilogue and Split-K wrapper without lowering
 // PPU-only instructions on the host.
 
+#include <cstddef>
 #include <cstdio>
 #include <type_traits>
 
@@ -11,6 +12,8 @@
 #include "q4_kpack4_offline.hpp"
 
 using namespace cute;
+namespace b_delivery =
+    cutlass::gemm::collective::detail::quactlize_b_delivery;
 using Schedule = ppu_group_schedule::FinegrainedSchedule<32>;
 using TileShape = Shape<_8, _64, _256>;
 using ScaleTile = Shape<_64, _8>;
@@ -52,7 +55,12 @@ using D16Mainloop = typename D16Types::CollectiveMainloop;
 using PackedD32Mainloop = typename PackedD32Types::CollectiveMainloop;
 using PackedD16Mainloop = typename PackedD16Types::CollectiveMainloop;
 using D32CapN16Mainloop = typename D32CapN16Types::CollectiveMainloop;
+using MainloopStorage = typename Mainloop::SharedStorage;
+using PackedMainloopStorage = typename PackedMainloop::SharedStorage;
 using Builder = typename Policy::CollectiveBuilderType;
+using DefaultOperandB = typename Builder::DefaultOperandB;
+using BDeliveryBinding = typename DefaultOperandB::BDeliveryBinding;
+using BDeliveryShared = typename BDeliveryBinding::Shared;
 using Split = dense_splitk_parallel_ppu::KernelTypes<Types, TileShape, Warp>;
 
 static_assert(Policy::ArtifactTileK == 0);
@@ -75,6 +83,38 @@ static_assert(std::is_same_v<typename Policy::Descriptor::WeightLayoutType,
                              ppu_mixed_policy::Q4KPack4TransposeWeightLayout>);
 static_assert(Builder::HasQ4KPack4);
 static_assert(Builder::ArtifactTileK == 0);
+static_assert(std::is_same_v<typename Mainloop::BDeliveryPolicy,
+                             b_delivery::ProductionBDelivery>);
+static_assert(std::is_same_v<typename DefaultOperandB::BDeliveryTags,
+                             b_delivery::ProductionBDelivery>);
+static_assert(std::is_same_v<typename BDeliveryBinding::G2S,
+                             typename b_delivery::ProductionBDelivery::G2S>);
+static_assert(std::is_same_v<typename BDeliveryBinding::S2R,
+                             typename b_delivery::ProductionBDelivery::S2R>);
+static_assert(std::is_same_v<BDeliveryShared,
+                             typename DefaultOperandB::PhysicalSharedContract>);
+static_assert(std::is_same_v<typename BDeliveryShared::Layout,
+                             typename DefaultOperandB::StageSmemLayout>);
+static_assert(std::is_same_v<typename BDeliveryShared::Element,
+                             typename Mainloop::BTransportElement>);
+static_assert(BDeliveryShared::bytes_per_stage ==
+                  q4_kpack4::placed_bytes(
+                      int(cute::size<1>(TileShape{})),
+                      int(cute::size<2>(TileShape{}))),
+              "Q4 K-pack B-delivery bytes must be one compact offline tile");
+static_assert(BDeliveryShared::n_atom == q4_kpack4::kTransportN);
+static_assert(BDeliveryShared::logical_k_atom == q4_kpack4::kTransportK);
+static_assert(BDeliveryShared::alignment_bytes == 32,
+              "PPU0010 AIU shared base is a 32-byte contract");
+static_assert(offsetof(MainloopStorage, smem_b) %
+                      BDeliveryShared::alignment_bytes == 0,
+              "ordinary Q4 storage must realize the declared B alignment");
+static_assert(offsetof(PackedMainloopStorage, smem_b) %
+                      BDeliveryShared::alignment_bytes == 0,
+              "packed-A Q4 storage must realize the declared B alignment");
+static_assert(DefaultOperandB::CodesPerWord == q4_kpack4::kPack &&
+                  DefaultOperandB::PhysicalK * DefaultOperandB::CodesPerWord ==
+                      int(cute::size<2>(TileShape{})));
 static_assert(Mainloop::kQ4KPack4Transpose);
 static_assert(Mainloop::kQ4KPack4ResolvedDeliveryN == 64);
 static_assert(D32Mainloop::kQ4KPack4ResolvedDeliveryN == 32);

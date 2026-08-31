@@ -264,6 +264,7 @@ public:
   static_assert((kLowBits == 2 && kHiBits == 1) || (kLowBits == 4 && kHiBits == 2) || (kLowBits == 4 && kHiBits == 1),
                 "2-plane mainloop supports Q3 (int2+int1), Q6 (int4+int2) and Q5 (int4+int1)");
   static constexpr bool kKPackTranspose = DispatchPolicy::KPackTranspose;
+  using BDeliveryPolicy = typename DispatchPolicy::BDelivery;
   static constexpr int kLowKPack = DispatchPolicy::LowKPack;
   static constexpr int kHighKPack = DispatchPolicy::HighKPack;
   static constexpr int kSafeLowKPack = kLowKPack > 0 ? kLowKPack : 1;
@@ -276,6 +277,12 @@ public:
                     (kLowKPack * kLowBits == 16 &&
                      kHighKPack * kHiBits == 16),
                 "each two-plane K-pack word must be exactly one b16 transport");
+  static_assert(
+      !kKPackTranspose ||
+          std::is_same_v<
+              BDeliveryPolicy,
+              detail::quactlize_b_delivery::ProductionBDelivery>,
+      "the shipping two-plane K-pack schedule must retain its matched AIU/TSM B delivery");
   using BTransportElement = cute::conditional_t<
       kKPackTranspose, cutlass::half_t, RealInternalElementB>;
   using B2TransportElement = cute::conditional_t<

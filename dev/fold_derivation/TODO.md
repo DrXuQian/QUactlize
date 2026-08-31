@@ -2368,3 +2368,31 @@ WN16/32 decode tactic space or regressing any of the three workloads.  Until
 that closure, `q4-kpack4-transpose-v1` and `kquant-kpack-transpose-v1` remain
 the canonical all-K-pack offline formats; this arm is a benchmark candidate,
 not a shipping fallback.
+
+**Phase-1 scaffold landed locally (2026-08-31; not a device admission).**  The
+counterfactual now has a separate, explicit layout-3 identity
+(`q4-n16k64-direct`, mapping `0x51344e3136440001`) and an independent little-
+endian prepare/recover oracle.  Its physical stage is the upstream-compatible
+`[K/16][2*N] uint32` byte class, but its proved compositional atom is stated as
+N16 x logical-K64 so the same bytes admit WN16/WN32/WN64 compute ownership.
+The low-level C ABI remains N16-atomic; the public PyTorch producer deliberately
+retains the wrapper's real N%256 boundary rather than advertising an impossible
+shape.
+
+The delivery vocabulary now separates a physical shared contract from its two
+endpoints and compile-proves exactly three legal pairs: shipping AIU-swizzle +
+TSM-swizzle, AIU-plain + UniversalCopy, and cp.async + UniversalCopy.  The two
+direct writers share one byte-identical plain-shared contract; the cp.async arm
+has exact CTA ownership and the AIU arm has one logical issuer.  The S2R adapter
+keeps the owning register fragment separate from its alias and derives the
+converter destination from the logical MMA owner, not from physical loader
+strides.  In particular, full TileN row pitch is `2*TileN`, not `2*WarpN`.
+
+This work intentionally does **not** route layout 3 into a production kernel.
+`auto` still emits layout 1, all layout-3 compute entries fail closed, and the
+historical transposed-b16 operand keeps its original template type identity.
+The remaining admission work is an explicitly named experimental schedule that
+selects the distinct direct operand, followed by fresh-PPU raw-bit closure and
+the three decode/prefill/grouped performance denominators above.  Until that
+step, the scaffold proves composability and offline ABI only; it is not evidence
+that UniversalCopy lowers correctly or performs well on PPU.

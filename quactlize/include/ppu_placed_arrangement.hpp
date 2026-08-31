@@ -2,6 +2,7 @@
 
 #include "ppu_format_config.hpp"
 #include "kquant_kpack_offline.hpp"
+#include "q4_n16k64_direct_offline.hpp"
 #include "q4_kpack4_offline.hpp"
 #include "quactlize_ppu_config.h"
 
@@ -17,6 +18,11 @@ static_assert(kquant_kpack::kLayoutId ==
               kquant_kpack::kMappingId ==
                   QUACTLIZE_PPU_KQUANT_KPACK_MAPPING_ID,
               "generic K-pack C/C++ layout identities must remain identical");
+static_assert(q4_n16k64_direct::kLayoutId ==
+                  QUACTLIZE_PPU_LAYOUT_Q4_N16K64_DIRECT_V1 &&
+              q4_n16k64_direct::kMappingId ==
+                  QUACTLIZE_PPU_Q4_N16K64_DIRECT_MAPPING_ID,
+              "Q4 N16xK64 direct C/C++ layout identities must remain identical");
 
 // Legacy fully-quantized C readers predate the descriptor and historically consume the fully-quantized placement.
 // Do not reuse the no-tile Python producer's scale-first default here: changing this map would silently reinterpret
@@ -60,6 +66,39 @@ constexpr quactlize_ppu_placed_arrangement_v2 kquant_kpack_transpose_v1(
           format.group_size, 0, kquant_kpack::kMappingId};
 }
 
+constexpr quactlize_ppu_placed_arrangement_v2 q4_n16k64_direct_v1() {
+  return {QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V2,
+          QUACTLIZE_PPU_LAYOUT_Q4_N16K64_DIRECT_V1,
+          4, 0, 0, q4_n16k64_direct::kKAtom,
+          ppu_formats::for_qtype(12).group_size, 0,
+          q4_n16k64_direct::kMappingId};
+}
+
+// Layout 3 has a proved offline byte geometry but no admitted production
+// reader.  Keep that fact separate from matches_compiled_tactic(): callers
+// preparing or recovering the explicit artifact may validate its shape here,
+// while inventory/launch admission remains false until a real direct-reader
+// specialization is compiled and routed.
+constexpr bool q4_n16k64_direct_descriptor_compatible(
+    quactlize_ppu_placed_arrangement_v2 const* arrangement,
+    int qtype, int k, int tactic_tile_k) {
+  if (!arrangement ||
+      arrangement->version != QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V2 ||
+      arrangement->reserved != 0)
+    return false;
+  auto const canonical = q4_n16k64_direct_v1();
+  return arrangement->layout == canonical.layout && qtype == 12 &&
+         arrangement->bits == canonical.bits &&
+         arrangement->high_bits == canonical.high_bits &&
+         arrangement->artifact_tile_k == canonical.artifact_tile_k &&
+         arrangement->transport_tile_k == canonical.transport_tile_k &&
+         arrangement->group_size == canonical.group_size &&
+         arrangement->mapping_id == canonical.mapping_id &&
+         k > 0 && k % q4_n16k64_direct::kKAtom == 0 &&
+         tactic_tile_k >= q4_n16k64_direct::kKAtom &&
+         tactic_tile_k % q4_n16k64_direct::kKAtom == 0;
+}
+
 // v2 is intentionally a separate predicate rather than a templated reinterpret
 // of v1.  Xplane and K-pack4 have different physical axes even though both
 // contain the same number of low-code bytes.
@@ -79,6 +118,10 @@ constexpr bool matches_compiled_tactic(
         arrangement->bits, arrangement->artifact_tile_k,
         arrangement->high_bits};
     return matches_compiled_tactic(&legacy, qtype, k, tactic_tile_k);
+  }
+  if (arrangement->layout ==
+      QUACTLIZE_PPU_LAYOUT_Q4_N16K64_DIRECT_V1) {
+    return false;
   }
   if (arrangement->layout !=
       QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1) {
@@ -128,6 +171,12 @@ constexpr bool packed_tensor_reader_supported(
     quactlize_ppu_placed_arrangement_v2 const* arrangement,
     int qtype, int k, int tactic_tile_k) {
   if (!matches_compiled_tactic(arrangement, qtype, k, tactic_tile_k))
+    return false;
+  // Layout 3 is registered for explicit offline preparation/recovery only.
+  // No shipping dispatch selects its direct reader yet, so it must not borrow
+  // the packed-reader admission of layout 1 merely because both are Q4.
+  if (arrangement->layout ==
+      QUACTLIZE_PPU_LAYOUT_Q4_N16K64_DIRECT_V1)
     return false;
   if (arrangement->layout ==
           QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1 ||
@@ -209,5 +258,20 @@ static_assert(matches_compiled_tactic(&kQ3KPackControl, 11, 5120, 256));
 static_assert(matches_compiled_tactic(&kQ5KPackControl, 13, 5120, 256));
 static_assert(matches_compiled_tactic(&kQ6KPackControl, 14, 5120, 128));
 static_assert(!matches_compiled_tactic(&kQ2KPack8Control, 12, 5120, 256));
+inline constexpr auto kQ4N16K64DirectControl = q4_n16k64_direct_v1();
+static_assert(q4_n16k64_direct_descriptor_compatible(
+    &kQ4N16K64DirectControl, 12, 5120, 64));
+static_assert(q4_n16k64_direct_descriptor_compatible(
+    &kQ4N16K64DirectControl, 12, 5120, 256));
+static_assert(!q4_n16k64_direct_descriptor_compatible(
+    &kQ4N16K64DirectControl, 12, 5120, 32));
+static_assert(!q4_n16k64_direct_descriptor_compatible(
+    &kQ4N16K64DirectControl, 13, 5120, 256));
+static_assert(!matches_compiled_tactic(
+    &kQ4N16K64DirectControl, 12, 5120, 256),
+    "offline-only layout 3 must not claim a compiled tactic");
+static_assert(!packed_tensor_reader_supported(
+    &kQ4N16K64DirectControl, 12, 5120, 256),
+    "layout 3 remains offline-only until a direct reader is dispatched");
 
 }  // namespace ppu_arrangements

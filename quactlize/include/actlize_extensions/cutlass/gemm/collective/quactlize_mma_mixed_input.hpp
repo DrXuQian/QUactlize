@@ -81,6 +81,27 @@ template <bool On, class Swz, class L> struct MaybeScaleSwizzle { using type = L
 template <class Swz, class L> struct MaybeScaleSwizzle<true, Swz, L> {
   using type = decltype(cute::composition(Swz{}, L{}));
 };
+
+// One issue seam for every physical B writer.  Opaque AIU delivery is a
+// logical single-issuer operation and must retain copy_aiu's warp ownership;
+// a cp.async tiled copy is already partitioned over physical CTA threads and
+// every owner must execute its slice.  Keeping this decision next to the
+// delivery policy prevents a future reader experiment from accidentally
+// reusing the AIU issuer rule and publishing only one warp's fraction.
+template <class BDelivery, class CopyPolicy, class SrcTensor, class DstTensor>
+CUTLASS_DEVICE void issue_mixed_b_g2s(
+    CopyPolicy const& copy_policy,
+    SrcTensor const& src,
+    DstTensor&& dst,
+    int& warp_idx) {
+  if constexpr (BDelivery::single_issuer) {
+    copy_aiu(copy_policy, src, static_cast<DstTensor&&>(dst), warp_idx);
+  } else {
+    static_assert(BDelivery::thread_partitioned,
+                  "B writer must declare single-issuer or thread-partitioned ownership");
+    copy(copy_policy, src, static_cast<DstTensor&&>(dst));
+  }
+}
 }  // namespace cutlass::gemm::collective::detail
 
 namespace cutlass::gemm::collective {
@@ -148,8 +169,24 @@ public:
       kpack_schedule_traits<KernelSchedule>::HighPack;
   static constexpr int kKPackScheduledDeliveryN =
       kpack_schedule_traits<KernelSchedule>::DeliveryN;
+  using ScheduledBDeliveryPolicy =
+      typename kpack_schedule_traits<KernelSchedule>::BDelivery;
+  // Ordinary/Xplane schedules predate the explicit provider wrapper but use
+  // the same opaque AIU-swzl/TSM-swzl issue contract.  Give them that effective
+  // policy locally instead of taking a member from `void`; K-pack schedules
+  // still have to carry their policy explicitly through the schedule.
+  using BDeliveryPolicy = cute::conditional_t<
+      cute::is_void_v<ScheduledBDeliveryPolicy>,
+      detail::quactlize_b_delivery::ProductionBDelivery,
+      ScheduledBDeliveryPolicy>;
   static_assert(!kKPackTranspose || kKPackHigh == 0,
                 "the single-plane collective cannot consume a second K-pack plane");
+  static_assert(
+      !kKPackTranspose ||
+          std::is_same_v<
+              BDeliveryPolicy,
+              detail::quactlize_b_delivery::ProductionBDelivery>,
+      "the shipping K-pack schedule must retain its matched AIU/TSM B delivery");
   // Historical names remain public for the Q4 type/codegen gates.
   static constexpr bool kQ4KPack4Transpose =
       q4_kpack4_schedule_traits<KernelSchedule>::Value;
@@ -1173,18 +1210,31 @@ public:
     Tensor tBsB = gmem_thr_copy_B.partition_D(sB);                             // (BCPY,BCPY_N,BCPY_K,PIPE)
     auto copy_A_and_B = [&] (auto k_tile, auto k_iter_crd, int pipe) {
       if constexpr (kPackedA) {
-        copy_aiu(gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd), tBsB(_,_,_,pipe), warp_idx);
+        detail::issue_mixed_b_g2s<BDeliveryPolicy>(
+            gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd),
+            tBsB(_,_,_,pipe), warp_idx);
         copy_A_packed_rows<kAPackRows>(
             gA, storage.smem_a.begin(), k_tile, pipe, thread_idx, gmem_tiled_copy_A.desc_.dim_h);
       } else {
         auto gmem_thr_copy_A = gmem_tiled_copy_A.get_slice(thread_idx);
         Tensor tAgA = gmem_thr_copy_A.partition_S(gA);                         // (ACPY,ACPY_M,ACPY_K,k)
         Tensor tAsA = gmem_thr_copy_A.partition_D(sA_physical);                // (ACPY,ACPY_M_PHYS,ACPY_K,PIPE)
-        copy_aiu(
-          gmem_tiled_copy_A, tAgA(_,_,_,k_tile), tAsA(_,_,_,pipe),
-          gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd), tBsB(_,_,_,pipe),
-          warp_idx
-        );
+        if constexpr (BDeliveryPolicy::single_issuer) {
+          // Preserve the shipping paired AIU call exactly; splitting this
+          // branch merely for abstraction would make codegen equality an
+          // assumption instead of a measured invariant.
+          copy_aiu(
+            gmem_tiled_copy_A, tAgA(_,_,_,k_tile), tAsA(_,_,_,pipe),
+            gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd), tBsB(_,_,_,pipe),
+            warp_idx
+          );
+        } else {
+          copy_aiu(gmem_tiled_copy_A, tAgA(_,_,_,k_tile),
+                   tAsA(_,_,_,pipe), warp_idx);
+          detail::issue_mixed_b_g2s<BDeliveryPolicy>(
+              gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd),
+              tBsB(_,_,_,pipe), warp_idx);
+        }
       }
     };
 
