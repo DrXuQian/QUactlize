@@ -21,6 +21,10 @@ using Types = fpa_intb_ppu::DenseQ4KPack4KernelTypes<
 using AP0 = typename Types<0>::CollectiveMainloop;
 using AP1 = typename Types<1>::CollectiveMainloop;
 
+static_assert(std::is_same_v<typename AP0::MetadataPublication,
+                             cutlass::gemm::InterleavedHalf2>);
+static_assert(std::is_same_v<typename AP1::MetadataPublication,
+                             cutlass::gemm::InterleavedHalf2>);
 static_assert(AP0::kQ4KPack4ResolvedDeliveryN == 64);
 static_assert(AP1::kQ4KPack4ResolvedDeliveryN == 64);
 static_assert(AP0::is_packed_scale && AP1::is_packed_scale);

@@ -63,7 +63,7 @@ LOWBIT_DENSE_UNIT_CONFIGS(LOWBIT_DENSE_DEFINE_STANDALONE_WRAPPER)
 
 #else
 
-template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int ST>
+template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int ST, int BChunk>
 static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
 #if defined(DENSE_STREAMK_SWEEP)
   // This executable is a compile-time Stream-K table, not a DP table plus a
@@ -74,7 +74,7 @@ static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
                 "the first dense Stream-K sweep is fixed to gs32");
   static_assert(TM >= 16,
                 "the dense Stream-K prefill sweep excludes decode-only TM8");
-  using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::StreamKGemm;
+  using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST, BChunk>::StreamKGemm;
   using Kernel = typename G::GemmKernel;
   using DispatchPolicy = typename Kernel::DispatchPolicy;
   static_assert(Kernel::IsDenseStreamK,
@@ -94,7 +94,7 @@ static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
   // the production scheduler's structural capability here so a future
   // generator mistake fails compilation instead of growing a second cohort
   // whitelist in the benchmark.
-  using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::MarlinGemm;
+  using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST, BChunk>::MarlinGemm;
   using Kernel = typename G::GemmKernel;
   static_assert(Kernel::TileScheduler::fixup_thread_count_capable(
                     Kernel::MaxThreadsPerBlock),
@@ -140,51 +140,51 @@ static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
 #else
 #if defined(DENSE_MARLIN_AB)
   if (options.marlin) {
-    using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::MarlinGemm;
+    using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST, BChunk>::MarlinGemm;
     return run<G>(options, dense_tactic(cfg), "marlin");
   }
 #endif
 #if defined(DENSE_STREAMK_AB)
   if (options.streamk) {
-    using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::StreamKGemm;
+    using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST, BChunk>::StreamKGemm;
     return run<G>(options, dense_tactic(cfg), "streamk");
   }
 #endif
 #if defined(DENSE_SCHEDULER_AB)
   if (options.persistent) {
-    using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::PersistentGemm;
+    using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST, BChunk>::PersistentGemm;
     return run<G>(options, dense_tactic(cfg), "persistent");
   }
 #endif
-  using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST>::Gemm;
+  using G = typename Cfg<GroupSize, TM, TN, TK, WM, WN, ST, BChunk>::Gemm;
   return run<G>(options, dense_tactic(cfg), "non-persistent");
 #endif
 #endif
 }
 
 #if DENSE_GS_ARM(16)
-#define LOWBIT_DENSE_CASE_16(TM,TN,TK,WM,WN,ST) \
-  case 16: return lowbit_dense_run_config<16,TM,TN,TK,WM,WN,ST>(options, cfg);
+#define LOWBIT_DENSE_CASE_16(TM,TN,TK,WM,WN,ST,BC) \
+  case 16: return lowbit_dense_run_config<16,TM,TN,TK,WM,WN,ST,BC>(options, cfg);
 #else
-#define LOWBIT_DENSE_CASE_16(TM,TN,TK,WM,WN,ST)
+#define LOWBIT_DENSE_CASE_16(TM,TN,TK,WM,WN,ST,BC)
 #endif
 #if DENSE_GS_ARM(32)
-#define LOWBIT_DENSE_CASE_32(TM,TN,TK,WM,WN,ST) \
-  case 32: return lowbit_dense_run_config<32,TM,TN,TK,WM,WN,ST>(options, cfg);
+#define LOWBIT_DENSE_CASE_32(TM,TN,TK,WM,WN,ST,BC) \
+  case 32: return lowbit_dense_run_config<32,TM,TN,TK,WM,WN,ST,BC>(options, cfg);
 #else
-#define LOWBIT_DENSE_CASE_32(TM,TN,TK,WM,WN,ST)
+#define LOWBIT_DENSE_CASE_32(TM,TN,TK,WM,WN,ST,BC)
 #endif
 #if DENSE_GS_ARM(64)
-#define LOWBIT_DENSE_CASE_64(TM,TN,TK,WM,WN,ST) \
-  case 64: return lowbit_dense_run_config<64,TM,TN,TK,WM,WN,ST>(options, cfg);
+#define LOWBIT_DENSE_CASE_64(TM,TN,TK,WM,WN,ST,BC) \
+  case 64: return lowbit_dense_run_config<64,TM,TN,TK,WM,WN,ST,BC>(options, cfg);
 #else
-#define LOWBIT_DENSE_CASE_64(TM,TN,TK,WM,WN,ST)
+#define LOWBIT_DENSE_CASE_64(TM,TN,TK,WM,WN,ST,BC)
 #endif
 #if DENSE_GS_ARM(128)
-#define LOWBIT_DENSE_CASE_128(TM,TN,TK,WM,WN,ST) \
-  case 128: return lowbit_dense_run_config<128,TM,TN,TK,WM,WN,ST>(options, cfg);
+#define LOWBIT_DENSE_CASE_128(TM,TN,TK,WM,WN,ST,BC) \
+  case 128: return lowbit_dense_run_config<128,TM,TN,TK,WM,WN,ST,BC>(options, cfg);
 #else
-#define LOWBIT_DENSE_CASE_128(TM,TN,TK,WM,WN,ST)
+#define LOWBIT_DENSE_CASE_128(TM,TN,TK,WM,WN,ST,BC)
 #endif
 
 #if defined(BENCH_GS)
@@ -192,14 +192,14 @@ static Result lowbit_dense_run_config(Options& options, TileCfg const& cfg) {
 #else
 #define LOWBIT_DENSE_TAG_GS 16
 #endif
-template <int TM, int TN, int TK, int WM, int WN, int ST>
+template <int TM, int TN, int TK, int WM, int WN, int ST, int BChunk>
 constexpr int lowbit_dense_effective() {
 #if defined(DENSE_MARLIN_WK4_AB)
   // The standalone target owns neither the generic mixed-input policy nor its
   // B-chunk descriptor.  Its one admitted classic format has no B-chunk axis.
   return 0;
 #else
-  using TagCfg = Cfg<LOWBIT_DENSE_TAG_GS,TM,TN,TK,WM,WN,ST>;
+  using TagCfg = Cfg<LOWBIT_DENSE_TAG_GS,TM,TN,TK,WM,WN,ST,BChunk>;
   return TagCfg::Policy::Descriptor::atom_at_a_time ? 1 : 0;
 #endif
 }
@@ -207,10 +207,10 @@ constexpr int lowbit_dense_effective() {
 // the path: ordinary/folded/two-plane builders expose one unified atom_at_a_time witness through Descriptor.
 #define LOWBIT_DENSE_DEFINE_WRAPPER(FN,TM,TN,TK,WM,WN,ST,BC) \
   int FN##_effective() { \
-    return lowbit_dense_effective<TM,TN,TK,WM,WN,ST>(); \
+    return lowbit_dense_effective<TM,TN,TK,WM,WN,ST,BC>(); \
   } \
   int FN##_instruction_m() { \
-    using TagCfg = Cfg<LOWBIT_DENSE_TAG_GS,TM,TN,TK,WM,WN,ST>; \
+    using TagCfg = Cfg<LOWBIT_DENSE_TAG_GS,TM,TN,TK,WM,WN,ST,BC>; \
     using TiledMma = typename TagCfg::Main::TiledMma; \
     constexpr int atom_m = int(cute::size<0>(typename TiledMma::AtomShape_MNK{})); \
     static_assert(atom_m == 8 || atom_m == 16, \
@@ -227,10 +227,10 @@ constexpr int lowbit_dense_effective() {
   } \
   Result FN(Options& options, TileCfg const& cfg) { \
     switch (options.g) { \
-      LOWBIT_DENSE_CASE_16(TM,TN,TK,WM,WN,ST) \
-      LOWBIT_DENSE_CASE_32(TM,TN,TK,WM,WN,ST) \
-      LOWBIT_DENSE_CASE_64(TM,TN,TK,WM,WN,ST) \
-      LOWBIT_DENSE_CASE_128(TM,TN,TK,WM,WN,ST) \
+      LOWBIT_DENSE_CASE_16(TM,TN,TK,WM,WN,ST,BC) \
+      LOWBIT_DENSE_CASE_32(TM,TN,TK,WM,WN,ST,BC) \
+      LOWBIT_DENSE_CASE_64(TM,TN,TK,WM,WN,ST,BC) \
+      LOWBIT_DENSE_CASE_128(TM,TN,TK,WM,WN,ST,BC) \
       default: \
         std::fprintf(stderr, "unsupported dense group size %d (supported: 16, 32, 64, 128)\n", options.g); \
         return {}; \
@@ -244,7 +244,7 @@ LOWBIT_DENSE_UNIT_CONFIGS(LOWBIT_DENSE_DEFINE_WRAPPER)
 // register/smem model in the host runner.
 #define LOWBIT_DENSE_DEFINE_PERSISTENT_OCCUPANCY(FN,TM,TN,TK,WM,WN,ST,BC) \
   int FN##_persistent_occupancy() { \
-    using G = typename Cfg<LOWBIT_DENSE_TAG_GS,TM,TN,TK,WM,WN,ST>::PersistentGemm; \
+    using G = typename Cfg<LOWBIT_DENSE_TAG_GS,TM,TN,TK,WM,WN,ST,BC>::PersistentGemm; \
     return G::maximum_active_blocks(); \
   }
 LOWBIT_DENSE_UNIT_CONFIGS(LOWBIT_DENSE_DEFINE_PERSISTENT_OCCUPANCY)

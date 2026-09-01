@@ -104,6 +104,7 @@ template <
   class kContinous,
   int FoldF,
   class KernelSchedule,
+  int BChunk,
   class TileShapePair_,
   class ElementAOptionalTuple,
   class StrideA_,
@@ -120,7 +121,7 @@ template <
   class TransformB_>
 struct CollectiveMma<
     Arch,
-    MainloopPPUAiuFold<Stages, kContinous, FoldF, KernelSchedule>,
+    MainloopPPUAiuFold<Stages, kContinous, FoldF, KernelSchedule, BChunk>,
     TileShapePair_,
     ElementAOptionalTuple,
     StrideA_,
@@ -151,7 +152,8 @@ public:
   //
   // Type Aliases
   //
-  using DispatchPolicy =  MainloopPPUAiuFold<Stages, kContinous, FoldF, KernelSchedule>;
+  using DispatchPolicy = MainloopPPUAiuFold<Stages, kContinous, FoldF, KernelSchedule, BChunk>;
+  using MetadataPublication = typename DispatchPolicy::MetadataPublication;
   // N-FOLD: the B plane loads FoldF adjacent N-columns folded into each 32B AIU contiguous run, so its smem K-extent
   // is FoldF x the tile's K, while A / MMA use the small TileShape.K (=> A-smem shrinks by FoldF). See dispatch
   // policy MainloopPPUAiuFold and the offline nfold_column_pairs_ppu (P1.1).
@@ -239,7 +241,7 @@ public:
   using RealInternalElementA = cute::conditional_t<!SwapAB, ElementA, ElementB>;
   using RealInternalElementB = cute::conditional_t<!SwapAB, ElementB, ElementA>;
 
-  // PPU_B_CHUNK gate. This USED to be `sizeof_bits == 1` for two reasons, and BOTH are now stale:
+  // Typed BChunk gate. This USED to be `sizeof_bits == 1` for two reasons, and BOTH are now stale:
   //
   //   * "transform_B_atom calls MixGemmInt1Emit unconditionally, so the flag instantiated it for uint2b_t and 576
   //     errors followed" -- it now calls MixGemmChunkEmit<sizeof_bits<RealB>::value, ...>, width-templated, since the
@@ -253,12 +255,7 @@ public:
   // is only kOut for some (TileN, warpN) combinations -- excluding those here keeps a build that instantiates several
   // configurations from failing to compile on one of them, instead of a hard error the caller cannot act on.
   // int4 stays out: its B fragment is 16 registers already, so there is nothing to win.
-  static constexpr int kBChunkMode =
-#if defined(PPU_B_CHUNK)
-      (PPU_B_CHUNK);
-#else
-      0;
-#endif
+  static constexpr int kBChunkMode = DispatchPolicy::BChunk;
   static constexpr int kBChunkBits_ = cutlass::sizeof_bits<RealInternalElementB>::value;
   // one mma B atom is 8 fp16, so the fragment holds 8*MMA_N*MMA_K; a delivery is 4*(32/bits) fp16 (kOut).
   // PermN comes from the TiledMma itself (same expression the mainloop uses at line ~633), not from a re-derived
@@ -887,7 +884,7 @@ public:
     // 4*MMA_N*MMA_K registers -> 4*MMA_N. Declared unconditionally and dead-code-eliminated when kBChunk is false,
     // because the for_each lambda below captures it by reference.
     static_assert(!kBChunk || (128 % decltype(K_ATOM_PER_COPY)::value == 0),
-        "PPU_B_CHUNK: the delivery's 128 outputs must split evenly into K_ATOM_PER_COPY chunks");
+        "typed BChunk: the delivery's 128 outputs must split evenly into K_ATOM_PER_COPY chunks");
     Tensor tCrB_one = make_fragment_like(tCrB_mma(_,_,Int<0>{}));
 
     int initial_read_stage = 0;
@@ -1517,7 +1514,7 @@ private:
     }
   }
 
-  // PPU_B_CHUNK: convert and scale ONE k-atom into a one-atom fragment, instead of converting a whole delivery into
+  // typed BChunk: convert and scale ONE k-atom into a one-atom fragment, instead of converting a whole delivery into
   // a fragment that holds all MMA_K atoms. See fold_derivation/HANDOFF_TASK9.md for the why; the short version is that
   // a 16 B delivery carries 16/Bits mma atom-slots, so the fp16 fragment is FORCED to >= 4*16/Bits = 64 registers for
   // int1, and those 64 push the best config past the power-of-two register billing boundary, halving warps/CU from 32

@@ -71,7 +71,7 @@ inline constexpr std::array<int, 4> kWarpM{{8, 16, 32, 64}};
 // WN=128 is deliberate.  The current MoE generator omits it, but it is the delivery escape for an int1 plane at TK32;
 // whether the remaining constraints reject a row must be printed, not encoded by leaving the axis out.
 inline constexpr std::array<int, 4> kWarpN{{16, 32, 64, 128}};
-// PPU_B_CHUNK is a per-tactic compile-time axis.  The collective remains authoritative about whether a requested
+// BChunk is a per-tactic typed compile-time axis. The collective remains authoritative about whether a requested
 // mode is effective for one concrete TiledMma; this host-readable domain only avoids duplicating formats for which
 // no 1- or 2-bit plane can use the chunk emitter at all.
 inline constexpr std::array<int, 2> kBChunkModes{{0, 1}};
@@ -122,7 +122,7 @@ constexpr char const* exclusion_clause(Exclusion e) {
     case Exclusion::ProducerMap: return "the Q6 offline producer inverse at ArtifactTileK=256 is incomplete";
     case Exclusion::ProducerConsumerLayout:
       return "the tactic's folded B reader does not decode the canonical resident artifact byte map";
-    case Exclusion::BChunkUnsupportedBits: return "single-plane PPU_B_CHUNK requires a 1- or 2-bit format";
+    case Exclusion::BChunkUnsupportedBits: return "single-plane BChunk requires a 1- or 2-bit format";
   }
   return "unknown exclusion";
 }

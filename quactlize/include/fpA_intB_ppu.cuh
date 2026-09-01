@@ -56,10 +56,10 @@ using ppu_mixed_policy::is_finegrained;
 
 template <QuantMode QuantOp, class BaseSchedule, class TileShape, class ScaleTileShape, class WarpShape,
           int Stages, bool AiuInterleaved, class ElementB = cutlass::int4b_t, class PlaneB2 = void,
-          int ArtifactTileK = 0>
+          int ArtifactTileK = 0, int BChunk = 0>
 using MixedMainloopPolicy = ppu_mixed_policy::MainloopPolicy<QuantOp, BaseSchedule, TileShape, ScaleTileShape,
                                                              WarpShape, Stages, AiuInterleaved, ElementB, PlaneB2,
-                                                             ArtifactTileK>;
+                                                             ArtifactTileK, BChunk>;
 
 // The exact compiled kernel type is one authority shared by launch and by build-time shipping censuses.  In
 // particular, packed-scale collectives add raw metadata staging that the broad host tactic arithmetic cannot
@@ -67,10 +67,12 @@ using MixedMainloopPolicy = ppu_mixed_policy::MainloopPolicy<QuantOp, BaseSchedu
 // must not reconstruct the kernel from tile coordinates in parallel with production.
 template <QuantMode QuantOp, class BaseSchedule,
           class TileShape, class ScaleTileShape, class WarpShape, int Stages, bool AiuInterleaved,
-          class ElementB = cutlass::int4b_t, class PlaneB2 = void, int ArtifactTileK = 0>
+          class ElementB = cutlass::int4b_t, class PlaneB2 = void,
+          int ArtifactTileK = 0, int BChunk = 0>
 struct DenseKernelTypes {
   using MainloopPolicy = MixedMainloopPolicy<QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
-                                              Stages, AiuInterleaved, ElementB, PlaneB2, ArtifactTileK>;
+                                              Stages, AiuInterleaved, ElementB,
+                                              PlaneB2, ArtifactTileK, BChunk>;
   using ElementA = typename MainloopPolicy::ElementA;
   using ElementC = cutlass::half_t;
   using LayoutC = cutlass::layout::RowMajor;
@@ -145,11 +147,13 @@ struct DensePackedAKernelTypes {
 template <QuantMode QuantOp, class BaseSchedule,
           class TileShape, class ScaleTileShape, class WarpShape,
           int Stages, bool AiuInterleaved, int APackRows = 0,
-          int KPack4DeliveryN = 0>
+          int KPack4DeliveryN = 0,
+          class MetadataPublication = cutlass::gemm::InterleavedHalf2>
 struct DenseQ4KPack4KernelTypes {
   using MainloopPolicy = ppu_mixed_policy::Q4KPack4MainloopPolicy<
       QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
-      Stages, AiuInterleaved, APackRows, KPack4DeliveryN>;
+      Stages, AiuInterleaved, APackRows, KPack4DeliveryN,
+      MetadataPublication>;
   using ElementA = typename MainloopPolicy::ElementA;
   using ElementC = cutlass::half_t;
   using LayoutC = cutlass::layout::RowMajor;

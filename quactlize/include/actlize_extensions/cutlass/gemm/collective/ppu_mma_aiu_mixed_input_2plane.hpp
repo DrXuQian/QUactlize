@@ -105,6 +105,7 @@ template <
   int LowKPack_,
   int HighKPack_,
   int KPackDeliveryN_,
+  int BChunk_,
   class TileShapePair_,
   class ElementAOptionalTuple,
   class StrideA_,
@@ -123,7 +124,7 @@ struct CollectiveMma<
     Arch,
     MainloopPPUAiuMixedInput2Plane<Stages, kContinous, KernelSchedule,
                                   ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_,
-                                  LowKPack_, HighKPack_, KPackDeliveryN_>,
+                                  LowKPack_, HighKPack_, KPackDeliveryN_, BChunk_>,
     TileShapePair_,
     ElementAOptionalTuple,
     StrideA_,
@@ -157,7 +158,8 @@ public:
   //
   using DispatchPolicy = MainloopPPUAiuMixedInput2Plane<Stages, kContinous, KernelSchedule,
                                                        ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_,
-                                                       LowKPack_, HighKPack_, KPackDeliveryN_>;
+                                                       LowKPack_, HighKPack_, KPackDeliveryN_, BChunk_>;
+  using MetadataPublication = typename DispatchPolicy::MetadataPublication;
   using TileShape = detail::deduce_mixed_width_dtype_t<0, TileShapePair_>;
   using ScaleTileShape = cute::conditional_t<cute::is_void_v<TileShape_Scale>,
       decltype(make_shape(shape<1>(TileShape{}), Int<1>{})), TileShape_Scale>;
@@ -346,15 +348,10 @@ public:
       Layout<Shape<Int<Scale_TileN>, Int<kPackedScaleUnit>, Int<DispatchPolicy::Stages>>,
              Stride<Int<kPackedScaleUnit>, _1, Int<Scale_TileN * kPackedScaleUnit>>>;
 
-  // PPU_B_CHUNK on the 2-plane path (task #12). Same flag as the fold collective, and the same reason it is a
-  // constexpr bool rather than an #if: an #if leaves the other branch un-type-checked, which is how an int1-only
+  // Typed BChunk on the 2-plane path. Same field as the fold collective, and the same reason it is a
+  // constexpr bool: a preprocessor branch leaves the other branch un-type-checked, which is how an int1-only
   // emitter got instantiated for uint2b_t and produced 576 errors.
-  static constexpr int kBChunkMode =
-#if defined(PPU_B_CHUNK)
-      (PPU_B_CHUNK);
-#else
-      0;
-#endif
+  static constexpr int kBChunkMode = DispatchPolicy::BChunk;
   // Chunking needs MixGemmChunkEmit for the LOW plane, which covers int1/int2/int4, so every supported pair qualifies.
   static constexpr bool kBChunk = (kBChunkMode != 0);
   static_assert(!kKPackTranspose || !kBChunk,
@@ -945,7 +942,7 @@ public:
     // P1Fold == 1 SmemLayoutB_MmaView is the plain row-major (TN, TK) and this is the previous expression.
     Tensor tCrB_mma = thr_mma.partition_fragment_B(
         make_tensor(sB(_,_,0).data(), SmemLayoutB_MmaView{}));                 // (MMA,MMA_N,MMA_K) ordinary N x K
-    // PPU_B_CHUNK: one k-atom of converted B, reused across atoms, instead of tCrB_mma's MMA_K atoms held at once:
+    // typed BChunk: one k-atom of converted B, reused across atoms, instead of tCrB_mma's MMA_K atoms held at once:
     // 4*MMA_N*MMA_K fp16 registers -> 4*MMA_N. Declared unconditionally and dead-code-eliminated when kBChunk is
     // false, because the mainloop lambda captures it by reference.
     Tensor tCrB_one = make_fragment_like(tCrB_mma(_,_,Int<0>{}));
@@ -1064,7 +1061,7 @@ public:
     static_assert(!kBChunk || decltype(K_ATOM_PER_COPY)::value
                               * (decltype(cute::size<1>(tCrB_mma))::value / decltype(cute::size<1>(tCrB_copy_view))::value)
                               == Cvt2Plane::kAtoms,
-        "PPU_B_CHUNK (2-plane): K_ATOM_PER_COPY * (MMA_N / CPY_N) must be the kAtoms one int2 delivery carries");
+        "typed BChunk (2-plane): K_ATOM_PER_COPY * (MMA_N / CPY_N) must be the kAtoms one int2 delivery carries");
 
     int initial_read_stage = 0;
     Tensor tCsA_p = tCsA(_,_,_,initial_read_stage);
@@ -1833,7 +1830,7 @@ private:
     }
   }
 
-  // PPU_B_CHUNK (task #12): convert ONE k-atom of BOTH planes into a one-atom fp16 buffer, so B costs 4*MMA_N
+  // typed BChunk (task #12): convert ONE k-atom of BOTH planes into a one-atom fp16 buffer, so B costs 4*MMA_N
   // registers instead of 4*MMA_N*MMA_K. Chunk must be a TEMPLATE parameter -- the emission gate is
   // `if constexpr (keep(T, V))`, and a runtime `if` would make the saving depend on the compiler folding branches.
   //

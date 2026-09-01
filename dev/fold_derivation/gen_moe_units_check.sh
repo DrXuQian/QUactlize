@@ -116,8 +116,8 @@ CMIN="$(grep -m1 -oE '^cmake_minimum_required\(VERSION [0-9.]+' "$QZ_ROOT/CMakeL
           # Preserve the raw count while changing the multiset. A count-only gate and a set-only gate each miss half
           # of this plant; raw==unique==expected is the required invariant.
           3) sed 's/^  list(REMOVE_DUPLICATES _MOE_SHAPES)$/&\n  list(GET _MOE_SHAPES 1 _planted_dup)\n  list(REMOVE_AT _MOE_SHAPES 0)\n  list(APPEND _MOE_SHAPES "${_planted_dup}")/' ;;
-          # The collective reads PPU_B_CHUNK once per TU. Make every per-shape request say 1 while the bc0 TU policy
-          # remains 0; the content gate must reject it before a compile can silently instantiate the wrong policy.
+          # Make every per-shape typed request say 1 while the bc0 batching identity remains 0; the content gate must
+          # reject it before a compile can silently report the wrong request cohort.
           4) sed 's/"#define UNIT_B_CHUNK ${_bc}\\n"/"#define UNIT_B_CHUNK 1\\n"/' ;;
           # Accept the requested TM/TN/WM values but make their row predicate unconditional. The independent
           # expected-name projection below must observe the extra wrappers.
@@ -312,12 +312,13 @@ function(qz_assert_moe_band LABEL TABLE_SUFFIX GEN_DIR GEN_TU_N GEN_SRCS EXPECT_
   set(_cross_format FALSE)
   foreach(_g IN LISTS _gen)
     file(READ "${_g}" _src)
-    string(REGEX MATCHALL "#define[ \t]+PPU_B_CHUNK[ \t]+[01]" _policy_defs "${_src}")
-    list(LENGTH _policy_defs _npolicy)
-    if(NOT _npolicy EQUAL 1)
-      message(FATAL_ERROR "${LABEL}: ${_g} has ${_npolicy} TU-level PPU_B_CHUNK definitions, expected one")
+    if(_src MATCHES "PPU_B_CHUNK")
+      message(FATAL_ERROR "${LABEL}: ${_g} reintroduced global PPU_B_CHUNK state")
     endif()
-    string(REGEX REPLACE ".*[ \t]([01])$" "\\1" _tu_bc "${_policy_defs}")
+    if(NOT _g MATCHES "_bc([01])_[0-9]+\\.cu$")
+      message(FATAL_ERROR "${LABEL}: cannot read the typed BChunk cohort from ${_g}")
+    endif()
+    set(_tu_bc "${CMAKE_MATCH_1}")
     string(REGEX MATCHALL "#define[ \t]+UNIT_FN[ \t]+moe_unit_[A-Za-z0-9_]+" _fn_defs "${_src}")
     string(REGEX MATCHALL "#define[ \t]+UNIT_B_CHUNK[ \t]+[01]" _unit_bc_defs "${_src}")
     string(REGEX MATCHALL "#define[ \t]+UNIT_ARTIFACT_TILEK[ \t]+[1-9][0-9]*" _unit_artifact_defs "${_src}")
@@ -363,7 +364,7 @@ function(qz_assert_moe_band LABEL TABLE_SUFFIX GEN_DIR GEN_TU_N GEN_SRCS EXPECT_
     foreach(_line IN LISTS _unit_bc_defs)
       string(REGEX REPLACE ".*[ \t]" "" _shape_bc "${_line}")
       if(NOT _shape_bc STREQUAL _tu_bc)
-        message(FATAL_ERROR "${LABEL}: ${_g} mixes UNIT_B_CHUNK=${_shape_bc} into PPU_B_CHUNK=${_tu_bc}")
+        message(FATAL_ERROR "${LABEL}: ${_g} mixes UNIT_B_CHUNK=${_shape_bc} into bc${_tu_bc} batching cohort")
       endif()
     endforeach()
     if(_tu_bc EQUAL 0)

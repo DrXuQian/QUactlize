@@ -49,10 +49,6 @@ mkdir -p "$OUT"
 VARIANTS=(
   "base:SK_QUANT=2"
   "pack:SK_QUANT=2 PPU_PACKED_SCALE=1"
-  # THE STORE-CONFLICT FIX: one interleaved 32-bit (scale, zero) slot instead of two 16-bit planes, so the
-  # decoder's 32 lanes write 32 adjacent WORDS and hit all 32 banks once. Read against pack, never base:
-  # it changes nothing base does, and pack is the only variant that has the +73,728 to remove.
-  "packfuse:SK_QUANT=2 PPU_PACKED_SCALE=1 PPU_PACKED_SCALE_FUSED=1"
 )
 
 # EVERY BINARY THIS RUN IS RESPONSIBLE FOR, whether it was compiled, cached or skipped. The freshness stamp at the
@@ -61,16 +57,8 @@ VARIANTS=(
 ALL_BINS=()
 
 # THE PACKED CORRECTNESS GATES, ONE LIST, USED THREE TIMES: to build them, to require them fresh, and to RUN them.
-# It is a list because the previous shape -- three literal enumerations in three functions -- lost `fuse` on the third
-# one. gate_fuse was built and its freshness was demanded, and then the run loop said `for g in split swz` and never
-# executed it, so a round reported five green PASS blocks while the variant the round existed for was never launched.
-# A missing gate does not fail; it is simply absent, which is the hardest kind of hole to see in an output someone is
-# scanning for FAIL. Adding "fuse" to the third list would have re-created the same hole for the next variant.
 PACKED_GATES=(
   "pack:PPU_PACKED_SCALE=1"
-  # rowC is the ONLY row where kPackedScaleOn is true, so it is the only row that exercises the fused store -- and the
-  # paired-column attempt this replaces passed rowA and rowB while rowC went to bad=128/4096.
-  "fuse:PPU_PACKED_SCALE=1 PPU_PACKED_SCALE_FUSED=1"
 )
 
 PACKED_GATE_BINS=()
@@ -141,11 +129,7 @@ build_one() {  # $1 name  $2 defines  $3 target
   # never satisfy this. Requiring it there was a guaranteed false failure in a script whose whole job is to be
   # trusted before any timing is read.
   # EVERY DEFINE, NOT ONE OF THEM. build.sh prints one verification line per define and a WARNING for each one that
-  # is missing, so a single `grep -q "PPU_DEFS verified"` passes as long as ANY define landed. That is how
-  # PPU_PACKED_SCALE_FUSED reached the box applying to nothing: SK_QUANT and PPU_PACKED_SCALE verified, the third did
-  # not, the gate saw a verified line and let it through, and the resulting binary was pack under another name -- with
-  # a passing correctness run and an acu capture identical to pack's, which is the most expensive possible way to
-  # learn that a flag did nothing.
+  # is missing, so a single `grep -q "PPU_DEFS verified"` passes as long as ANY define landed.
   if [ -n "$defs" ]; then
     local _d _miss=()
     for _d in $defs; do
@@ -238,8 +222,7 @@ do_build() {
   fi
   # THE STAMP IS WRITTEN AT THE VERY END, AFTER the distinct-binary check below, and that ordering is the bug this
   # comment exists for. It used to be written here, so two IDENTICAL binaries set ok=0 and printed a loud warning
-  # while the stamp was already on disk -- do_perf's freshness guard then passed and timed one binary against itself,
-  # which is indistinguishable from "the change does nothing". That is exactly the reading the packfuse round got.
+  # while the stamp was already on disk -- do_perf's freshness guard then passed and timed one binary against itself.
   echo "== distinct-binary check =="
   # Two identical binaries mean an A/B that compares something with itself.
   #
@@ -266,10 +249,7 @@ do_build() {
       ok=0
     else echo "  all $have splitk binaries differ"; fi
   fi
-  # ALWAYS SHOW THE FINGERPRINTS. A byte-neutral change -- one whose shared memory, results and counters are
-  # identical by design, which is exactly what PPU_PACKED_SCALE_FUSED is -- cannot be seen in any run. The binary
-  # hash is the one observable that always moves when the code does, so it is printed whether or not anything is
-  # wrong, and a reader comparing two rounds can see at a glance which variants actually changed.
+  # ALWAYS SHOW THE FINGERPRINTS, so a reader comparing two rounds can see at a glance which variants changed.
   echo "  binary fingerprints:"
   target_bins test_moe_splitk_bench | xargs -r md5sum |
     awk '{n=$2; sub(/.*__/,"",n); printf "        %-12s %s\n", n, substr($1,1,12)}'
@@ -831,19 +811,6 @@ EOR
   cat <<'EOT'
 
 == what each difference isolates ==
-   packfuse  - pack     THE STORE-CONFLICT FIX. pack adds +73,728 store conflicts over base -- 32 lanes storing
-                        32 adjacent 2-byte values cover 16 of 32 banks two deep, and stores cannot broadcast.
-                        Fusing makes it one 32-bit store per (n, group). Read it against PACK, not base.
-                        Shared bytes do NOT change (4 KiB + 4 KiB is 8 KiB either way), so expect no
-                        occupancy movement; if the time moves it is bank service and instruction count.
-                        MEASURED AND ANSWERED, 2026-08-03 -- see CHECKPOINT.md 4a. It fused (tsm.st -26.83%,
-                        tsm.ld -48.8%, total shared conflicts -48.30%) and the time moved +0.46%, because
-                        Compute is at 38.99% and Memory at 29.87% of their roofs, so the shared work removed
-                        was issuing in something else's shadow. It also PAYS ALU to save shared (v.shrl.i
-                        +63.61%, v.or.i +89.16%, v.cnvt +720%) on the pipe that IS limiting. Does not ship.
-                        READ BOTH `Shared Store` AND `Shared Store From Global Load`. A counter on the second
-                        went 0 -> 36,864, exactly the store reduction: the fuse RELOCATED one conflict per
-                        publication onto the global->shared path. Reading only the first shows a clean win.
    swz       - base       DELETED FROM THE PLAN. acu: it removed ZERO conflicts (278,528, +0.00%) while
                         Inst Executed Pipe SALU rose ~97% of peak. Kept only as the record of that.
    base      - bdqnop     what the BASELINE int4->fp16 dequant costs. Upper bound: the ablation also drops most of

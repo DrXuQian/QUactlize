@@ -316,7 +316,8 @@ struct GroupKernels {
 // fpA_intB (../fpA_intB_standalone) do it. Cfg<> rebuilds the ScaleOnly (mode-1) type stack with a given
 // tile/warp/stages. Generated translation units instantiate the configs behind exported wrappers, and TileCfg
 // stores the matching wrapper pointer for runtime selection. This replaces the recompile-per-config sweep.sh.
-template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int St>
+template <int GroupSize, int TM, int TN, int TK, int WM, int WN, int St,
+          int BChunk = 0>
 struct Cfg {
   // TK IS THE ROW'S TacticTileK, not the binary's. Until 2026-08-05 these three used the global TileShapeK,
   // because TileK was a build-time constant that also determined the bytes on disk. It no longer does: the artifact
@@ -342,7 +343,7 @@ struct Cfg {
   using Policy = ppu_mixed_policy::MainloopPolicy<
       ppu_mixed_policy::QuantMode::FinegrainedScaleOnly,
       ppu_group_schedule::FinegrainedSchedule<GroupSize>, CfgTile, CfgScale, CfgWarp,
-      St, true, ElementB, void, kArtifactTileK>;
+      St, true, ElementB, void, kArtifactTileK, BChunk>;
   using Main = typename Policy::CollectiveOp;
   static_assert(ppu_mixed_policy::kernel_policy_valid_v<ppu_tactics::DenseSpace, Policy>);
   using Kernel = cutlass::gemm::kernel::GemmUniversal<Shape<int,int,int,int>, Main, Epi>;
@@ -432,14 +433,10 @@ inline bench_measure::Tactic dense_convert_tactic() {
 }
 
 #if !defined(LOWBIT_DENSE_UNIT_BUILD)
-#if defined(PPU_B_CHUNK)
-inline constexpr int kDenseFixedBChunkRequest = PPU_B_CHUNK;
-#else
 inline constexpr int kDenseFixedBChunkRequest = 0;
-#endif
 
 // Fixed (non-generated) scale rows still compile a real Policy. Read its descriptor rather than claiming bc0->0:
-// PPU_DEFS=PPU_B_CHUNK=1 reaches this main TU, and the policy may accept or reject that request by format.
+// Non-generated rows are the stable bc0 control; generated row types carry the typed request.
 template <class Policy>
 inline bench_measure::Tactic dense_fixed_tactic() {
   return {nullptr, TILE_M, TILE_N, TileShapeK, WARP_M, WARP_N, STAGES,
@@ -4330,7 +4327,7 @@ int run_q8_persistent_policy_sweep(Options& options) {
       }
       double const us = result.avg_runtime_ms * 1.0e3;
       double const tflops = result.gflops / 1.0e3;
-      double const mfu = tflops / 500.0 * 100.0;
+      double const mfu = bench_measure::mfu_pct(tflops);
       double const distinct_bytes =
           double(options.m) * options.k * 2.0 +
           double(options.n) * options.k +

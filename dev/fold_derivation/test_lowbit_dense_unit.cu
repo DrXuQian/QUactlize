@@ -1,8 +1,8 @@
 // One real generated-unit instantiation for the local front-end gate. Compiling only the dense main TU proves
 // declarations and the registry parse; it does not compile lowbit_dense_unit.inc, where each exported tag and
 // wrapper is actually defined. CMake emits this same preamble around batches of rows.
-#ifndef PPU_B_CHUNK
-#define PPU_B_CHUNK 0
+#ifndef PPU_TEST_B_CHUNK
+#define PPU_TEST_B_CHUNK 0
 #endif
 #if defined(DENSE_MARLIN_STANDALONE_SWEEP)
 // One exact row from the independent eight-field standalone authority.  WarpK
@@ -36,6 +36,6 @@
   X(lowbit_dense_persistent_rung3_probe,64,128,64,32,32,2,0)
 #else
 #define LOWBIT_DENSE_UNIT_CONFIGS(X) \
-  X(lowbit_dense_measurement_probe,64,64,64,32,32,4,PPU_B_CHUNK)
+  X(lowbit_dense_measurement_probe,64,64,64,32,32,4,PPU_TEST_B_CHUNK)
 #endif
 #include "lowbit_dense_unit.inc"

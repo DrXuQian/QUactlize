@@ -272,11 +272,11 @@ def audit(
     for owner in ("exact_tn64", "exact_tn128"):
         exact = files[owner]
         for token in (
-            "#define PPU_B_CHUNK 0",
             "run_exact_warm_ab<8,",
             "dense_splitk_sweep_exact",
         ):
             require(exact, token, owner, bad)
+        forbid(exact, "PPU_B_CHUNK", owner, bad)
     return bad
 
 

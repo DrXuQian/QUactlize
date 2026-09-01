@@ -55,10 +55,12 @@ def test_distribution_metadata_installs_entry_module_registry_and_packer_extra(t
     assert (info / "entry_points.txt").read_text().splitlines() == [
         "[console_scripts]",
         "quactlize-pack-gguf = quactlize.pack_gguf:main",
+        "quactlize-verify-ppu-bundle = quactlize.ppu_bundle:main",
     ]
     sources = set((info / "SOURCES.txt").read_text().splitlines())
     assert {
         "quactlize/pack_gguf.py",
+        "quactlize/ppu_bundle.py",
         "quactlize/gguf_roles.py",
         "quactlize/include/ppu_format_config.inc",
     } <= sources

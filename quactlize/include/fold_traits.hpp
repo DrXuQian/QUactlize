@@ -223,7 +223,8 @@ inline constexpr bool regs_ok = regs_per_thread<TM, TN, TK, WM, WN, Zero> <= 256
 // so the estimate is useless without it: 120 looks like it clears 128 and does not.
 //
 // THIRD ANCHOR, AND IT BREAKS THE OFFSET FOR CHUNKED CONFIGS (acu, 2026-07-27, the shipping best config
-// (64,128,64) w64x64 s2 gs=32 ScaleOnly int1 with PPU_B_CHUNK=1): acu reports **140 regs**, grid (64,32,1)x(64,1,1),
+// (64,128,64) w64x64 s2 gs=32 ScaleOnly int1 with typed atom-at-a-time B conversion): acu reports **140 regs**,
+// grid (64,32,1)x(64,1,1),
 // 260.90 us on ONE cold launch. regs_per_thread_chunked predicts 224 (accum 128 + A 64 + B 16 + scale 16), so the
 // error is **-84**, not +12. Both earlier anchors (176->186, 128->142) were UNCHUNKED. The compiler is evidently not
 // keeping accum and the whole A fragment live simultaneously -- 140 is below accum+A = 192 on its own.

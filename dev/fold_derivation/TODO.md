@@ -190,7 +190,7 @@ STILL OPEN, and to be answered with the local cute-layout harness rather than by
 (n = Scale_TileN, group = Scale_TileK) with Scale_TileK = 8. Eight is not sixteen. Print the layouts before deciding.
 Bound it first: the WHOLE load channel is 0.8-2.3%, so this is a large change for a small ceiling.
 
-## PPU_PACKED_SCALE_FUSED IS BUILT AND THE CONFLICT COUNTER DID NOT MOVE. UNSOLVED.
+## HISTORICAL: THE FUSED-METADATA BUILD FLAG DID NOT MOVE THE CONFLICT COUNTER.
 
 Do not read the +0.3% (CI 0.989..1.017) as "the fix is correct but worth nothing". acu reports Shared Store bank
 conflicts UNCHANGED at 81,920. If the word store were emitted and still conflicted, the count would HALVE (two
@@ -2413,24 +2413,24 @@ or validation path.  A performance waiver may permit this maintenance choice,
 but does not erase the measured K-pack versus Xplane debt or change a technical
 `KEEP_XPLANE` result into a win.
 
-| ID | Priority | Debt at `40c0875` | Completion boundary |
+| ID | Status | Debt at `40c0875` | Completion boundary / current result |
 |---|---|---|---|
-| D01 | P0 | Layout 3 AIU-plain + UniversalCopy has offline/CuTe evidence only | A real PPU kernel is raw-bit exact, lowers through the intended writer/reader and covers decode, prefill and grouped performance; otherwise delete the complete layout-3 slice |
-| D02 | P0 | Q2/Q3/Q5/Q6 remain canonically Xplane | Canonical policy, whole-model packer and automatic routes emit only the exact K-pack descriptor for all five formats |
-| D03 | P0 | BC GEMV, non-Q4 ScaleFirst and legacy restore remain live Xplane consumers | Every supported product consumer reads K-pack or is removed before Xplane is omitted from main |
-| D04 | P0 | K-pack decode can still encounter a BC route that rejects arrangement v2 | Product scheduling sends a K-pack artifact only to a descriptor-aware FQ dense/grouped consumer, unless a measured K-pack GEMV is added |
-| D05 | P1 | Non-Q4 K-pack has no ScaleFirst reader | Add low/high-plane K-pack ScaleFirst closure for M=64/2048/4096, or explicitly select the already measured FQ kernel as the only prefill path |
-| D06 | P1 | K-pack is raw-bit exact but slower in parts of the complete A/B board | Preserve the full denominator and reduce the gaps; current maxima are Q2 `1.96/5.41%`, Q3 `3.78/4.82%`, Q4 grouped `3.05%`, Q5 `4.57/5.31%`, and Q6 `6.62/7.20%` for dense/grouped |
-| D07 | P0 | The placed-artifact route primarily admits N and K divisible by 256 | Implement a tail, retain an explicit non-product fallback, or fail closed with a tested/documented boundary |
-| D08 | P0 | Prepass ladder, launch audit, poison state and deliberately wrong timing NOPs live in production source | Remove them from product TUs/headers and retain any useful negative as a separate test implementation |
-| D09 | P1 | Historical-negative, print, bisect, pad/swizzle and scheduler experiment macros remain in collective code | Convert a selected implementation into a type/policy or delete it; no dormant diagnostic macro enters main |
-| D10 | P1 | Fused metadata store is still selected by `PPU_PACKED_SCALE_FUSED` | Fix the measured winner as an ordinary implementation and remove the flag, or delete the full branch after a complete denominator rejects it |
-| D11 | P1 | `ForwardCoordIterator` and `SplitkCoordIterator` store `Shape const&` | Own shape lifetime by value and pass scalar, nested, temporary-expression and lvalue-equivalence sequence tests |
-| D12 | P1/P2 | `PPU_A_PACK` duplicates typed schedules and `PPU_B_CHUNK` is global compile state | Remove the packed-A macro after typed coverage; eventually move BChunk into schedule/type identity |
-| D13 | P0 | Product comments contain collaboration provenance; dev-only tooling is intermingled with the source tree | Product comments state only technical facts; `.coord`, `.codex`, `dev`, local artifacts and collaboration tools remain outside main |
-| D14 | P1 | NVIDIA/CPU/fake validation seams share headers with PPU product code | Split product PPU implementation from development adapters; preserve license notices while removing NVIDIA-only product dependencies |
-| D15 | P1 | README, Python exports, packer and device-library installation expose different product boundaries | Make `quactlize.routes` the supported API, install one packer CLI and document host extension plus format-selected PPU libraries |
-| D16 | P2 | `PPU_PACKED_FORMAT`/`PPU_PACKED_SCALE` currently require format-selected libraries | Keep the working multi-library ABI until either a fat binary or a documented installed multi-library contract replaces it |
+| D01 | DEVICE | Layout 3 AIU-plain + UniversalCopy had offline/CuTe evidence only | A runnable raw-bit kernel now builds locally and lowers to exactly four AIU-plain writes plus sixteen UniversalCopy loads. It remains fail-closed until exact-binary box execution and decode/prefill/grouped performance pass; otherwise delete the layout-3 slice |
+| D02 | CLOSED | Q2/Q3/Q5/Q6 were canonically Xplane | Canonical policy, whole-model packer and automatic routes emit only Q4 K-pack4 or the exact per-plane K-pack descriptor |
+| D03 | MAIN-PORT | BC GEMV, non-Q4 ScaleFirst and legacy restore remain develop-only Xplane consumers | Selective main staging omits those consumers; the main-admission inventory and retired-layout deny rule make accidental inclusion fail |
+| D04 | CLOSED | K-pack decode could reach a BC route that rejects arrangement v2 | One descriptor-aware fully-quantized dense/grouped route owns every K-pack decode case |
+| D05 | CLOSED | Non-Q4 K-pack had no ScaleFirst reader | Non-Q4 prefill deliberately uses the measured fully-quantized reader; no unproven second reader is required |
+| D06 | DEVICE | K-pack is raw-bit exact but slower in parts of the complete A/B board | Preserve the denominator and improve after shipment; current maxima remain Q2 `1.96/5.41%`, Q3 `3.78/4.82%`, Q4 grouped `3.05%`, Q5 `4.57/5.31%`, and Q6 `6.62/7.20%` for dense/grouped |
+| D07 | CLOSED | The placed-artifact route primarily admitted N and K divisible by 256 | One shared producer/route geometry validator fails unsupported tails explicitly |
+| D08 | CLOSED | Prepass ladder, launch audit, poison state and deliberately wrong timing NOPs lived in production source | Production paths are clean; useful negatives remain in separate development tests |
+| D09 | CLOSED | Historical-negative, print, bisect, pad/swizzle and scheduler experiment macros remained in collective code | Selected behavior is typed policy; a product-source deny gate rejects all retired names |
+| D10 | CLOSED | Fused Q4 metadata was a global build switch | Dense Q4 selects `InterleavedHalf2`; grouped Q4, generic and non-Q4 select `SeparateHalfPlanes`. The global switch and dedicated A/B runner are gone |
+| D11 | CLOSED | `ForwardCoordIterator` and `SplitkCoordIterator` stored `Shape const&` | Both own shape by value and pass scalar, nested, temporary-expression and lvalue-equivalence tests |
+| D12 | CLOSED | Packed-A and BChunk duplicated typed policy with global compile state | Packed-A and BChunk are per-row schedule identity. Product K-pack fixes canonical bc0; generators compile mixed typed requests without a process-wide macro |
+| D13 | CLOSED | Product comments contained collaboration provenance and dev files had no executable main boundary | Product provenance and exact main-inventory gates reject collaboration text, development controls, artifacts, profilers and diagnostics |
+| D14 | MAIN-PORT | Non-PPU validation adapters still exist in develop | Selective main staging admits only the PPU dependency closure and preserves license notices; the exact gate rejects non-PPU runtime/compiler seams |
+| D15 | CLOSED | README, Python exports, packer and device-library installation exposed different boundaries | One packer CLI writes a versioned complete K-pack bundle; README and Python exports describe the same product surface |
+| D16 | CLOSED | Format selection required an undocumented set of libraries | One verified six-library runtime bundle owns exact FMT identities, hashes, SDK receipt and loader precedence; missing/misplaced identities fail before operator exposure |
 
 Resolve locally provable debt before requesting device time: D13 wording and
 source guards, D08/D09 dead diagnostics, D11 iterator lifetime, local ABI and
@@ -2462,17 +2462,20 @@ closed without consuming a device run:
   gate rejects all 22 retired names. Real strategy axes remain explicit.
 - D11: both coordinate iterators own their shape lifetime by value in the
   pinned actlize submodule.
-- D12: the global A-pack half is gone; exact M=1 packing is a typed schedule.
-  `PPU_B_CHUNK` remains open because it changes code generation and resources.
+- D12: the global A-pack and BChunk switches are gone. Exact M=1 packing and
+  each BChunk request are typed schedule identity; canonical K-pack fixes bc0.
 - D13: product-source provenance and main-port policy have executable guards.
-- D15/D16, partial: README and routes now document the one K-pack API, five
-  format-selected packed library IDs/handles, and the separate default Q4
-  ScaleFirst library required for persistent prefill. Installing a dedicated
-  packer console entry remains part of the selective main rebuild.
+- D15/D16: the installed packer writes a collision-safe, complete, versioned
+  K-pack bundle with exact qtype/route tensor shapes and hashes. The runtime
+  builder verifies the pinned SDK archive and compiler release, builds exactly
+  the default plus FMT0--4 libraries, and publishes a manifest-bound directory.
+  The loader requires every library to report its exact build identity.
 
-D01 now has stronger local evidence: a real PPU kernel lowers the AIU-plain
+D01 now has stronger local evidence: a runnable PPU kernel lowers the AIU-plain
 writer, commit/wait/barrier edge and UniversalCopy reader to four exact AIU
 loads plus sixteen `tsm.ld.b32x4` loads. It is still not admitted: raw-bit
 execution and decode/prefill/grouped performance remain box work. D03 and D14
 are selective-main-port tasks rather than reasons to delete develop's archived
-A/B evidence. D06, D10 and the B-chunk half of D12 also remain box-bound.
+A/B evidence. D06 is the remaining measured product-performance debt. Fresh
+device confirmation of the typed D10/D12 source identity is an admission gate,
+not an unresolved implementation choice.

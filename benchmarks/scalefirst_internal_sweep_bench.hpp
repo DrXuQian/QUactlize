@@ -206,24 +206,27 @@ struct MainloopUsesQ4KPack4Transpose<
 // shard.
 template <bool UseKPack4, QuantMode Mode, class Schedule,
           class Tile, class ScaleTile, class Warp, int Stages,
-          class Low, class High, int ArtifactTileK>
+          class Low, class High, int ArtifactTileK, int BChunk>
 struct ScaleFirstShippingSelector;
 
 template <QuantMode Mode, class Schedule, class Tile, class ScaleTile,
           class Warp, int Stages, class Low, class High,
-          int ArtifactTileK>
+          int ArtifactTileK, int BChunk>
 struct ScaleFirstShippingSelector<false, Mode, Schedule, Tile, ScaleTile,
-                                  Warp, Stages, Low, High, ArtifactTileK> {
+                                  Warp, Stages, Low, High, ArtifactTileK,
+                                  BChunk> {
   using Type = fpa_intb_ppu::DenseKernelTypes<
       Mode, Schedule, Tile, ScaleTile, Warp, Stages, true,
-      Low, High, ArtifactTileK>;
+      Low, High, ArtifactTileK, BChunk>;
 };
 
 template <QuantMode Mode, class Schedule, class Tile, class ScaleTile,
           class Warp, int Stages, class Low, class High,
-          int ArtifactTileK>
+          int ArtifactTileK, int BChunk>
 struct ScaleFirstShippingSelector<true, Mode, Schedule, Tile, ScaleTile,
-                                  Warp, Stages, Low, High, ArtifactTileK> {
+                                  Warp, Stages, Low, High, ArtifactTileK,
+                                  BChunk> {
+  static_assert(BChunk == 0, "canonical K-pack4 fixes conversion at bc0");
   static_assert(std::is_same_v<Low, cutlass::int4b_t> &&
                     std::is_void_v<High> && ArtifactTileK == 0,
                 "K-pack4 ScaleFirst is the Q4 one-plane/no-artifact reader");
@@ -251,7 +254,7 @@ struct RowTypes {
                 "K-pack4 ScaleFirst is Q4/A0/bchunk0 only");
   using Shipping = typename ScaleFirstShippingSelector<
       use_kpack4, F::Mode, Schedule, Tile, ScaleTile, Warp, Stages,
-      Low, High, ArtifactTileK>::Type;
+      Low, High, ArtifactTileK, BChunk>::Type;
   using MainloopPolicy = typename Shipping::MainloopPolicy;
   using MainloopDescriptor = typename MainloopPolicy::Descriptor;
   using Mainloop = typename Shipping::CollectiveMainloop;
@@ -276,8 +279,8 @@ struct RowTypes {
   static constexpr ppu_tactics::Candidate candidate{
       spec, TM, TN, TK, WM, WN, ArtifactTileK, BChunk};
 
-  static_assert(PPU_B_CHUNK == BChunk,
-                "generated unit must bind the requested BChunk policy");
+  static_assert(MainloopPolicy::BChunkRequest == BChunk,
+                "generated row must bind its typed BChunk request");
   static_assert(!dense_splitk_parallel_ppu::MainloopUsesPackedMetadata<
                     typename Shipping::CollectiveMainloop>::value,
                 "ScaleFirst must consume fp16 scale/zero planes, not GGUF units");

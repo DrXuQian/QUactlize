@@ -181,13 +181,6 @@ GATES = [
 SYNTAX = [
     ("tests/test_q4k_packed_gemm.cu", ""),
     ("tests/test_q4k_packed_gemm.cu", "-DPPU_PACKED_SCALE=1"),
-    # THE CONFIGURATION THAT SHIPPED BROKEN. kFusedScaleZero's definition referenced KernelConversionMode from a
-    # point in the class where it is not yet declared, and the offending conjunct lives inside
-    # `#if defined(PPU_PACKED_SCALE_FUSED)` -- so every build WITHOUT the macro preprocessed it away and compiled,
-    # and the one build that used it was the only one that could not. Nothing here covered that combination, so the
-    # define reached the box, was reported as a WARNING, applied to nothing, and produced a green correctness run and
-    # an acu capture identical to pack. A macro that changes types needs its own row; this is why.
-    ("tests/test_q4k_packed_gemm.cu", "-DPPU_PACKED_SCALE=1 -DPPU_PACKED_SCALE_FUSED=1"),
     # EVERY FORMAT THE PACKED PATH NOW CLAIMS. The generalisation is only real if each one instantiates, and the
     # limits it hit on the way -- a unit that is 2 mod 4 bytes against a cp.async that takes 4, 8 or 16, and a
     # second construction of the copy that spelled uint128 out while its declared type derived it -- were both
@@ -202,10 +195,9 @@ SYNTAX = [
     ("tests/test_moe_grouped_real.cu", ""),
     ("tests/test_moe_grouped_streamk.cu", ""),
     # L>1 is the unique coverage here: each expert gets different low/high weights and metadata, then the grouped
-    # result is checked against per-expert L=1 launches.  Both optional collective headers must therefore instantiate,
-    # and PPU_B_CHUNK changes the converter pipeline rather than merely changing host code.
+    # result is checked against per-expert L=1 launches. Both optional collective headers must therefore instantiate.
     ("tests/test_lowbit_grouped.cu", ""),
-    ("tests/test_lowbit_grouped.cu", "-DPPU_B_CHUNK=1"),
+    ("tests/test_lowbit_grouped.cu", "-DPPU_TEST_B_CHUNK=1"),
     # These registered targets all had baseline files but no SYNTAX row.  Keep the boundaries that still provide
     # distinct evidence: all five placed k-quant formats, the standalone GEMV converter/kernel matrix and perf main,
     # and the native-scale device decoder.  test_fpA_intB_ppu and test_moe_grouped_ppu are superseded perf-only
@@ -249,7 +241,6 @@ SYNTAX = [
     ("benchmarks/test_lowbit_dense_bench.cu", ""),
     ("benchmarks/test_lowbit_dense_bench.cu", "-DBENCH_UINT2"),
     ("benchmarks/test_lowbit_dense_bench.cu", "-DBENCH_UINT1"),
-    ("benchmarks/test_lowbit_dense_bench.cu", "-DPPU_B_CHUNK=1"),
     # 107a's dedicated main has a one-row registry; compile that preprocessor identity separately from the full
     # tactic table. The unit row below is what instantiates the named persistent kernel and its scheduler loop.
     ("benchmarks/test_lowbit_dense_bench.cu",
@@ -290,7 +281,7 @@ SYNTAX = [
     # Main mode only declares generated wrappers. This is one real unit-mode row, so shared tag/metric plumbing in
     # lowbit_dense_unit.inc is instantiated locally instead of waiting for hgcc on the box.
     ("dev/fold_derivation/test_lowbit_dense_unit.cu", ""),
-    ("dev/fold_derivation/test_lowbit_dense_unit.cu", "-DPPU_B_CHUNK=1"),
+    ("dev/fold_derivation/test_lowbit_dense_unit.cu", "-DPPU_TEST_B_CHUNK=1"),
     ("dev/fold_derivation/test_lowbit_dense_unit.cu", "-DDENSE_PERSISTENT_AB=1 -DBENCH_GS=32"),
     ("dev/fold_derivation/test_lowbit_dense_unit.cu",
      "-DDENSE_STREAMK_AB=1 -DBENCH_GS=128 -DTILE_M=64 -DTILE_N=128 "
@@ -472,43 +463,37 @@ GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               "l122_streamk_fixup_cohort": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
               "l227_q4_a32_packed_decode_type": [
                   "-D__HGGCCC__", "--expt-relaxed-constexpr",
-                  "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_FORMAT=0",
-                  "-DPPU_B_CHUNK=0"],
+                  "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_FORMAT=0"],
               "l229_q4_kpack4_production_type": [
                   "-D__HGGCCC__", "--expt-relaxed-constexpr",
-                  "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_FORMAT=0",
-                  "-DPPU_B_CHUNK=0"],
+                  "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_FORMAT=0"],
               "l242_b_s2r_plugin_adapter@production": [
                   "-D__HGGCCC__", "--expt-relaxed-constexpr",
                   "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_FORMAT=0",
-                  "-DPPU_B_CHUNK=0", "-DL242_PPU_TYPE_PROBE=1"],
+                  "-DL242_PPU_TYPE_PROBE=1"],
               "l232_q4_kpack4_fused_metadata_store": [
                   "-D__HGGCCC__", "--expt-relaxed-constexpr",
-                  "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_SCALE_FUSED=1",
-                  "-DPPU_PACKED_FORMAT=0", "-DPPU_B_CHUNK=0"],
+                  "-DPPU_PACKED_SCALE=1",
+                  "-DPPU_PACKED_FORMAT=0"],
               "l233_q4_kpack4_subsuperblock_type": [
                   "-D__HGGCCC__", "--expt-relaxed-constexpr",
-                  "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_FORMAT=0",
-                  "-DPPU_B_CHUNK=0"],
+                  "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_FORMAT=0"],
               "l234_q4_kpack4_scalefirst_persistent_type": [
                   "-D__HGGCCC__", "--expt-relaxed-constexpr",
-                  "-DPPU_PACKED_SCALE=0", "-DPPU_B_CHUNK=0",
+                  "-DPPU_PACKED_SCALE=0",
                   "-DSCALEFIRST_SWEEP_WEIGHT_LAYOUT=1"],
               **{
                   f"l237_kquant_kpack_production_type@q{q}": [
                       "-D__HGGCCC__", "--expt-relaxed-constexpr",
                       "-DPPU_PACKED_SCALE=1", f"-DPPU_PACKED_FORMAT={fmt}",
-                      f"-DL237_QTYPE={q}", "-DPPU_B_CHUNK=0"]
+                      f"-DL237_QTYPE={q}"]
                   for q, fmt in ((10, 2), (11, 3), (13, 1), (14, 4))
               },
-              # THE MACROS ARE THE POINT. This gate asserts the fused path is ON, so it has to be built the way the
-              # box builds packfuse -- without these two it would assert about a configuration nobody runs and pass
-              # for the wrong reason, which is the failure it exists to catch.
               **{f"l103_packed_format_active@fmt{f}":
                      ["-D__HGGCCC__", "--expt-relaxed-constexpr",
                       "-DPPU_PACKED_SCALE=1", f"-DPPU_PACKED_FORMAT={f}"] for f in (0, 1, 2, 3, 4)},
               "l100_fused_active": ["-D__HGGCCC__", "--expt-relaxed-constexpr",
-                                    "-DPPU_PACKED_SCALE=1", "-DPPU_PACKED_SCALE_FUSED=1"]}
+                                    "-DPPU_PACKED_SCALE=1"]}
 
 
 def lint_mixed_policy_parity_fires():
@@ -1979,13 +1964,6 @@ def lint_fq_q4k_kpack4_delivery_committed_evidence():
         "K-pack4 delivery host evidence is exact, source-bound, and box-safe")
 
 
-def lint_fq_q4k_kpack4_fused_store_real_shapes():
-    """Shipping-auto plain/store uses one matched denominator over every decode shape."""
-    return _run_ci_script(
-        "check_fq_q4k_kpack4_fused_store_real_shapes_runner.py",
-        "K-pack4 auto64 plain/store shares exact 144-row screen and confirm unions over 20 shapes")
-
-
 def lint_fq_q4k_kpack4_prefill_pilot():
     """The first K-pack4 prefill pilot must own one complete TM64 graph."""
     return _run_ci_script(
@@ -2649,7 +2627,6 @@ def main():
                 ("lint", "Q4 K-pack4 transpose cost uses provider-matched isomorphic timing and conditional ACU", lint_fq_q4k_kpack4_xplane_isomorphic_ab),
                 ("lint", "Q4 K-pack4 resident delivery isolates shared-bank phase with matched AIU/TSM atoms", lint_fq_q4k_kpack4_delivery_ab),
                 ("lint", "Q4 K-pack4 delivery consumes source-bound host evidence without box nvcc", lint_fq_q4k_kpack4_delivery_committed_evidence),
-                ("lint", "Q4 K-pack4 auto64 fused-store sweep matches all real decode-shape candidates", lint_fq_q4k_kpack4_fused_store_real_shapes),
                 ("lint", "Q4 K-pack4 prefill binds one inventory-owned complete TM64 graph", lint_fq_q4k_kpack4_prefill_pilot),
                 ("lint", "Q4 K-pack4 prefill sweeps every registered sequence length and family", lint_fq_q4k_kpack4_prefill_real_shapes),
                 ("lint", "Q4 K-pack4 transpose uses the ScaleFirst persistent prefill baseline", lint_scalefirst_q4k_kpack4_prefill_ab),

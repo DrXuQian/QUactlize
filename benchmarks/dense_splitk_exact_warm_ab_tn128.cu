@@ -2,10 +2,6 @@
  * Exact warm-resident reshape A/B for the committed TN128 row.
  * Kept in its own TU so the diagnostic does not multiply the 201-row generated sweep bodies.
  **************************************************************************************************/
-#ifdef PPU_B_CHUNK
-#undef PPU_B_CHUNK
-#endif
-#define PPU_B_CHUNK 0
 
 #include "dense_splitk_parallel_bench.hpp"
 

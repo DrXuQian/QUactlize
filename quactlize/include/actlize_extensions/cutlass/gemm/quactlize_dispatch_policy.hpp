@@ -24,6 +24,8 @@
 // reads those members, not because the two are meant to be interchangeable.
 #pragma once
 
+#include <type_traits>
+
 #include "cutlass/gemm/dispatch_policy.hpp"   // actlize's, for the Schedule tags we specialise on
 #include "actlize_extensions/cutlass/gemm/collective/detail/quactlize_b_delivery_policy.hpp"
 
@@ -38,18 +40,30 @@ namespace cutlass::gemm {
 struct KernelAiuMultistageMixedInputFinegrainedGs32 { };  // gs=32 (Q4_0/Q4_1/Q4_K-as-AWQ)
 struct KernelAiuMultistageMixedInputFinegrainedGs16 { };  // gs=16 (Q2/Q3/Q6 k-quants)
 
+// How a packed affine metadata producer publishes fp16 scale/zero values into
+// shared memory.  This is an ordinary schedule identity: it changes the
+// shared-memory address map and store width, so it cannot be a process-wide
+// preprocessor switch.  Generic schedules and every non-Q4 K-pack default to
+// the established two-plane representation.
+struct SeparateHalfPlanes { };
+struct InterleavedHalf2 { };
+
 // Artifact-fold schedule wrapper. The folds describe the resident B planes, not the consumer TileShape.K: a tactic
 // with a larger TileK may read the same bytes, but it must keep both physical (N/F, F*K) descriptors. The low fold
 // selects the ordinary-vs-folded collective; the independent high fold sizes the second plane. ArtifactTileK is the
 // resident delivery width that cannot be recovered from F when F==1. Keep BaseSchedule_ in the middle and append the
 // new value with a zero default so existing KernelAiuFold<F[, Base[, HighFold]]> spellings remain source compatible.
 template<int ArtifactLowFold_, class BaseSchedule_ = KernelAiuMultistageMixedInputFinegrainedGs32,
-         int ArtifactHighFold_ = 0, int ArtifactTileK_ = 0>
+         int ArtifactHighFold_ = 0, int ArtifactTileK_ = 0,
+         int BChunk_ = 0>
 struct KernelAiuFold {
+  static_assert(BChunk_ == 0 || BChunk_ == 1,
+                "BChunk is a typed boolean conversion schedule");
   static constexpr int FoldF = ArtifactLowFold_;  // compatibility for downstream users of the old name
   static constexpr int ArtifactLowFold = ArtifactLowFold_;
   static constexpr int ArtifactHighFold = ArtifactHighFold_;
   static constexpr int ArtifactTileK = ArtifactTileK_;
+  static constexpr int BChunk = BChunk_;
   using BaseSchedule = BaseSchedule_;
 };
 
@@ -68,12 +82,17 @@ struct KernelAiuPackedA {
 // transposed b16 tensor [K/4,N].  This wrapper is orthogonal to group-size and
 // A-provider schedules.  Keeping it as a type prevents a runtime layout branch
 // in the mainloop and prevents an xplane pointer from reaching this reader.
-template<class WrappedSchedule_, int DeliveryN_ = 0>
+template<class WrappedSchedule_, int DeliveryN_ = 0,
+         class MetadataPublication_ = SeparateHalfPlanes>
 struct KernelAiuQ4KPack4Transpose {
   static_assert(DeliveryN_ == 0 || DeliveryN_ == 16 ||
                     DeliveryN_ == 32 || DeliveryN_ == 64,
                 "K-pack4 delivery N is auto(0), 16, 32 or 64");
+  static_assert(std::is_same_v<MetadataPublication_, SeparateHalfPlanes> ||
+                    std::is_same_v<MetadataPublication_, InterleavedHalf2>,
+                "K-pack4 metadata publication must be a known schedule tag");
   using WrappedSchedule = WrappedSchedule_;
+  using MetadataPublication = MetadataPublication_;
   static constexpr int DeliveryN = DeliveryN_;
 };
 
@@ -102,6 +121,7 @@ template<class T> struct kpack_schedule_traits {
   static constexpr int HighPack = 0;
   static constexpr int DeliveryN = 0;
   using BDelivery = void;
+  using MetadataPublication = SeparateHalfPlanes;
   using Wrapped = T;
 };
 template<int LowPack_, int HighPack_, class WrappedSchedule_, int DeliveryN_>
@@ -113,17 +133,19 @@ struct kpack_schedule_traits<
   static constexpr int DeliveryN = DeliveryN_;
   using BDelivery =
       collective::detail::quactlize_b_delivery::ProductionBDelivery;
+  using MetadataPublication = SeparateHalfPlanes;
   using Wrapped = WrappedSchedule_;
 };
-template<class WrappedSchedule_, int DeliveryN_>
+template<class WrappedSchedule_, int DeliveryN_, class MetadataPublication_>
 struct kpack_schedule_traits<
-    KernelAiuQ4KPack4Transpose<WrappedSchedule_, DeliveryN_>> {
+    KernelAiuQ4KPack4Transpose<WrappedSchedule_, DeliveryN_, MetadataPublication_>> {
   static constexpr bool Value = true;
   static constexpr int LowPack = 4;
   static constexpr int HighPack = 0;
   static constexpr int DeliveryN = DeliveryN_;
   using BDelivery =
       collective::detail::quactlize_b_delivery::ProductionBDelivery;
+  using MetadataPublication = MetadataPublication_;
   using Wrapped = WrappedSchedule_;
 };
 template<int Rows_, class WrappedSchedule_>
@@ -136,6 +158,7 @@ public:
   static constexpr int HighPack = WrappedTraits::HighPack;
   static constexpr int DeliveryN = WrappedTraits::DeliveryN;
   using BDelivery = typename WrappedTraits::BDelivery;
+  using MetadataPublication = typename WrappedTraits::MetadataPublication;
   using Wrapped = KernelAiuPackedA<Rows_, typename WrappedTraits::Wrapped>;
 };
 
@@ -143,15 +166,17 @@ template<class T> struct q4_kpack4_schedule_traits {
   static constexpr bool Value = false;
   static constexpr int DeliveryN = 0;
   using BDelivery = void;
+  using MetadataPublication = SeparateHalfPlanes;
   using Wrapped = T;
 };
-template<class WrappedSchedule_, int DeliveryN_>
+template<class WrappedSchedule_, int DeliveryN_, class MetadataPublication_>
 struct q4_kpack4_schedule_traits<
-    KernelAiuQ4KPack4Transpose<WrappedSchedule_, DeliveryN_>> {
+    KernelAiuQ4KPack4Transpose<WrappedSchedule_, DeliveryN_, MetadataPublication_>> {
   static constexpr bool Value = true;
   static constexpr int DeliveryN = DeliveryN_;
   using BDelivery =
       collective::detail::quactlize_b_delivery::ProductionBDelivery;
+  using MetadataPublication = MetadataPublication_;
   using Wrapped = WrappedSchedule_;
 };
 template<int Rows_, class WrappedSchedule_>
@@ -162,6 +187,7 @@ public:
   static constexpr bool Value = WrappedTraits::Value;
   static constexpr int DeliveryN = WrappedTraits::DeliveryN;
   using BDelivery = typename WrappedTraits::BDelivery;
+  using MetadataPublication = typename WrappedTraits::MetadataPublication;
   using Wrapped = KernelAiuPackedA<Rows_, typename WrappedTraits::Wrapped>;
 };
 
@@ -181,14 +207,16 @@ template<class T> struct fold_schedule_traits {
   static constexpr int ArtifactLowFold = 0;
   static constexpr int ArtifactHighFold = 0;
   static constexpr int ArtifactTileK = 0;
+  static constexpr int BChunk = 0;
   using Base = T;
 };
-template<int LowFold, class B, int HighFold, int ArtifactTileK_>
-struct fold_schedule_traits<KernelAiuFold<LowFold, B, HighFold, ArtifactTileK_>> {
+template<int LowFold, class B, int HighFold, int ArtifactTileK_, int BChunk_>
+struct fold_schedule_traits<KernelAiuFold<LowFold, B, HighFold, ArtifactTileK_, BChunk_>> {
   static constexpr int FoldF = LowFold;
   static constexpr int ArtifactLowFold = LowFold;
   static constexpr int ArtifactHighFold = HighFold;
   static constexpr int ArtifactTileK = ArtifactTileK_;
+  static constexpr int BChunk = BChunk_;
   using Base = B;
 };
 template<int Rows_, class WrappedSchedule_>
@@ -200,6 +228,7 @@ public:
   static constexpr int ArtifactLowFold = WrappedTraits::ArtifactLowFold;
   static constexpr int ArtifactHighFold = WrappedTraits::ArtifactHighFold;
   static constexpr int ArtifactTileK = WrappedTraits::ArtifactTileK;
+  static constexpr int BChunk = WrappedTraits::BChunk;
   // Preserve the A-provider wrapper after removing the artifact-fold wrapper.  This lets the ordinary one-plane
   // dispatch keep its exact group-size schedule while CollectiveMma can still see Rows at compile time.
   using Base = KernelAiuPackedA<Rows_, typename WrappedTraits::Base>;
@@ -219,6 +248,7 @@ struct MainloopQuactlizeMixedInput {
   constexpr static int StaticGroupSize = 0;  // default value
   using kContinous = kContinous_;
   using Schedule = KernelAiuMultistageMixedInput;
+  using MetadataPublication = SeparateHalfPlanes;
   using ClusterShape = Shape<_1,_1,_1>;
 };
 
@@ -228,6 +258,7 @@ struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuMultistageMixe
   constexpr static int StaticGroupSize = -1;
   using kContinous = kContinous_;
   using Schedule = KernelAiuMultistageMixedInput;
+  using MetadataPublication = SeparateHalfPlanes;
   using ClusterShape = Shape<_1,_1,_1>;
 };
 
@@ -237,6 +268,7 @@ struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuMultistageMixe
   constexpr static int StaticGroupSize = 128;
   using kContinous = kContinous_;
   using Schedule = KernelAiuMultistageMixedInput;
+  using MetadataPublication = SeparateHalfPlanes;
   using ClusterShape = Shape<_1,_1,_1>;
 };
 
@@ -246,6 +278,7 @@ struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuMultistageMixe
   constexpr static int StaticGroupSize = 64;
   using kContinous = kContinous_;
   using Schedule = KernelAiuMultistageMixedInput;
+  using MetadataPublication = SeparateHalfPlanes;
   using ClusterShape = Shape<_1,_1,_1>;
 };
 
@@ -255,6 +288,7 @@ struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuMultistageMixe
   constexpr static int StaticGroupSize = 32;
   using kContinous = kContinous_;
   using Schedule = KernelAiuMultistageMixedInput;
+  using MetadataPublication = SeparateHalfPlanes;
   using ClusterShape = Shape<_1,_1,_1>;
 };
 
@@ -264,6 +298,7 @@ struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuMultistageMixe
   constexpr static int StaticGroupSize = 16;
   using kContinous = kContinous_;
   using Schedule = KernelAiuMultistageMixedInput;
+  using MetadataPublication = SeparateHalfPlanes;
   using ClusterShape = Shape<_1,_1,_1>;
 };
 
@@ -276,13 +311,15 @@ struct MainloopQuactlizeMixedInput<Stages_, kContinous_, KernelAiuPackedA<Rows_,
   static constexpr int AProviderRows = Rows_;
 };
 
-template<int Stages_, class kContinous_, class WrappedSchedule_, int DeliveryN_>
+template<int Stages_, class kContinous_, class WrappedSchedule_, int DeliveryN_,
+         class MetadataPublication_>
 struct MainloopQuactlizeMixedInput<
     Stages_, kContinous_,
-    KernelAiuQ4KPack4Transpose<WrappedSchedule_, DeliveryN_>>
+    KernelAiuQ4KPack4Transpose<WrappedSchedule_, DeliveryN_, MetadataPublication_>>
     : MainloopQuactlizeMixedInput<Stages_, kContinous_, WrappedSchedule_> {
   static constexpr bool Q4KPack4Transpose = true;
   static constexpr int Q4KPack4DeliveryN = DeliveryN_;
+  using MetadataPublication = MetadataPublication_;
   using BDelivery =
       collective::detail::quactlize_b_delivery::ProductionBDelivery;
 };
@@ -311,7 +348,7 @@ struct MainloopQuactlizeMixedInput<
 // FINE per-mma-atom scale path).
 template<int Stages_, class kContinous_, int StaticGroupSize_,
          int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_,
-         int LowKPack_, int HighKPack_, int KPackDeliveryN_>
+         int LowKPack_, int HighKPack_, int KPackDeliveryN_, int BChunk_>
 struct MainloopPPUAiuMixedInput2PlaneBase {
   constexpr static int Stages = Stages_;
   constexpr static int StaticGroupSize = StaticGroupSize_;
@@ -322,67 +359,70 @@ struct MainloopPPUAiuMixedInput2PlaneBase {
   constexpr static int HighKPack = HighKPack_;
   constexpr static bool KPackTranspose = LowKPack_ > 0;
   constexpr static int KPackDeliveryN = KPackDeliveryN_;
+  constexpr static int BChunk = BChunk_;
   using BDelivery = std::conditional_t<
       KPackTranspose,
       collective::detail::quactlize_b_delivery::ProductionBDelivery,
       void>;
   using kContinous = kContinous_;
   using Schedule = KernelAiuMultistageMixedInput;
+  using MetadataPublication = SeparateHalfPlanes;
   using ClusterShape = Shape<_1,_1,_1>;
 };
 
 template<int Stages_, class kContinous_, typename Schedule_ = KernelAiuMultistageMixedInput,
          int ArtifactLowFold_ = 1, int ArtifactHighFold_ = 1, int ArtifactTileK_ = 0,
-         int LowKPack_ = 0, int HighKPack_ = 0, int KPackDeliveryN_ = 0>
+         int LowKPack_ = 0, int HighKPack_ = 0, int KPackDeliveryN_ = 0,
+         int BChunk_ = 0>
 struct MainloopPPUAiuMixedInput2Plane
     : MainloopPPUAiuMixedInput2PlaneBase<Stages_, kContinous_, 0,
                                         ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_,
-                                        LowKPack_, HighKPack_, KPackDeliveryN_> {};
+                                        LowKPack_, HighKPack_, KPackDeliveryN_, BChunk_> {};
 
 template<int Stages_, class kContinous_, int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_,
-         int LowKPack_, int HighKPack_, int KPackDeliveryN_>
+         int LowKPack_, int HighKPack_, int KPackDeliveryN_, int BChunk_>
 struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageMixedInputPerCol,
                                      ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_, LowKPack_, HighKPack_,
-                                     KPackDeliveryN_>
+                                     KPackDeliveryN_, BChunk_>
     : MainloopPPUAiuMixedInput2PlaneBase<Stages_, kContinous_, -1,
                                         ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_,
-                                        LowKPack_, HighKPack_, KPackDeliveryN_> {};
+                                        LowKPack_, HighKPack_, KPackDeliveryN_, BChunk_> {};
 
 template<int Stages_, class kContinous_, int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_,
-         int LowKPack_, int HighKPack_, int KPackDeliveryN_>
+         int LowKPack_, int HighKPack_, int KPackDeliveryN_, int BChunk_>
 struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs128,
                                      ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_, LowKPack_, HighKPack_,
-                                     KPackDeliveryN_>
+                                     KPackDeliveryN_, BChunk_>
     : MainloopPPUAiuMixedInput2PlaneBase<Stages_, kContinous_, 128,
                                         ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_,
-                                        LowKPack_, HighKPack_, KPackDeliveryN_> {};
+                                        LowKPack_, HighKPack_, KPackDeliveryN_, BChunk_> {};
 
 template<int Stages_, class kContinous_, int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_,
-         int LowKPack_, int HighKPack_, int KPackDeliveryN_>
+         int LowKPack_, int HighKPack_, int KPackDeliveryN_, int BChunk_>
 struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs64,
                                      ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_, LowKPack_, HighKPack_,
-                                     KPackDeliveryN_>
+                                     KPackDeliveryN_, BChunk_>
     : MainloopPPUAiuMixedInput2PlaneBase<Stages_, kContinous_, 64,
                                         ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_,
-                                        LowKPack_, HighKPack_, KPackDeliveryN_> {};
+                                        LowKPack_, HighKPack_, KPackDeliveryN_, BChunk_> {};
 
 template<int Stages_, class kContinous_, int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_,
-         int LowKPack_, int HighKPack_, int KPackDeliveryN_>
+         int LowKPack_, int HighKPack_, int KPackDeliveryN_, int BChunk_>
 struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs32,
                                      ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_, LowKPack_, HighKPack_,
-                                     KPackDeliveryN_>
+                                     KPackDeliveryN_, BChunk_>
     : MainloopPPUAiuMixedInput2PlaneBase<Stages_, kContinous_, 32,
                                         ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_,
-                                        LowKPack_, HighKPack_, KPackDeliveryN_> {};
+                                        LowKPack_, HighKPack_, KPackDeliveryN_, BChunk_> {};
 
 template<int Stages_, class kContinous_, int ArtifactLowFold_, int ArtifactHighFold_, int ArtifactTileK_,
-         int LowKPack_, int HighKPack_, int KPackDeliveryN_>
+         int LowKPack_, int HighKPack_, int KPackDeliveryN_, int BChunk_>
 struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageMixedInputFinegrainedGs16,
                                      ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_, LowKPack_, HighKPack_,
-                                     KPackDeliveryN_>
+                                     KPackDeliveryN_, BChunk_>
     : MainloopPPUAiuMixedInput2PlaneBase<Stages_, kContinous_, 16,
                                         ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_,
-                                        LowKPack_, HighKPack_, KPackDeliveryN_> {};
+                                        LowKPack_, HighKPack_, KPackDeliveryN_, BChunk_> {};
 
 //////////////////////////////////////////////////////////////////////////////
 // N-FOLD (TK-freeing) mainloop policy
@@ -393,44 +433,52 @@ struct MainloopPPUAiuMixedInput2Plane<Stages_, kContinous_, KernelAiuMultistageM
 // TileM*TK*2 shrinks by F). B smem K-extent = F * TileShape.K; mainloop runs F gemm passes (B's K-atom blocks,
 // reusing one A) into an F*N-wide accumulator. Offline data prepared by nfold_column_pairs_ppu (P1.1). Mirrors the
 // per-Schedule StaticGroupSize set (GGUF concats are gs=16 = FINE per-atom scale).
-template<int Stages_, class kContinous_, int FoldF_ = 2, typename Schedule_ = KernelAiuMultistageMixedInput>
+template<int Stages_, class kContinous_, int FoldF_ = 2,
+         typename Schedule_ = KernelAiuMultistageMixedInput, int BChunk_ = 0>
 struct MainloopPPUAiuFold {
   constexpr static int Stages = Stages_;
   constexpr static int StaticGroupSize = 0;
   constexpr static int FoldFactor = FoldF_;
+  constexpr static int BChunk = BChunk_;
   using kContinous = kContinous_;
   using Schedule = KernelAiuMultistageMixedInput;
+  using MetadataPublication = SeparateHalfPlanes;
   using ClusterShape = Shape<_1,_1,_1>;
 };
-template<int Stages_, class kContinous_, int FoldF_>
-struct MainloopPPUAiuFold<Stages_, kContinous_, FoldF_, KernelAiuMultistageMixedInputPerCol> {
+template<int Stages_, class kContinous_, int FoldF_, int BChunk_>
+struct MainloopPPUAiuFold<Stages_, kContinous_, FoldF_, KernelAiuMultistageMixedInputPerCol, BChunk_> {
   constexpr static int Stages = Stages_; constexpr static int StaticGroupSize = -1;
-  constexpr static int FoldFactor = FoldF_; using kContinous = kContinous_;
-  using Schedule = KernelAiuMultistageMixedInput; using ClusterShape = Shape<_1,_1,_1>;
+  constexpr static int FoldFactor = FoldF_; constexpr static int BChunk = BChunk_; using kContinous = kContinous_;
+  using Schedule = KernelAiuMultistageMixedInput; using MetadataPublication = SeparateHalfPlanes;
+  using ClusterShape = Shape<_1,_1,_1>;
 };
-template<int Stages_, class kContinous_, int FoldF_>
-struct MainloopPPUAiuFold<Stages_, kContinous_, FoldF_, KernelAiuMultistageMixedInputFinegrainedGs128> {
+template<int Stages_, class kContinous_, int FoldF_, int BChunk_>
+struct MainloopPPUAiuFold<Stages_, kContinous_, FoldF_, KernelAiuMultistageMixedInputFinegrainedGs128, BChunk_> {
   constexpr static int Stages = Stages_; constexpr static int StaticGroupSize = 128;
-  constexpr static int FoldFactor = FoldF_; using kContinous = kContinous_;
-  using Schedule = KernelAiuMultistageMixedInput; using ClusterShape = Shape<_1,_1,_1>;
+  constexpr static int FoldFactor = FoldF_; constexpr static int BChunk = BChunk_; using kContinous = kContinous_;
+  using Schedule = KernelAiuMultistageMixedInput; using MetadataPublication = SeparateHalfPlanes;
+  using ClusterShape = Shape<_1,_1,_1>;
 };
-template<int Stages_, class kContinous_, int FoldF_>
-struct MainloopPPUAiuFold<Stages_, kContinous_, FoldF_, KernelAiuMultistageMixedInputFinegrainedGs64> {
+template<int Stages_, class kContinous_, int FoldF_, int BChunk_>
+struct MainloopPPUAiuFold<Stages_, kContinous_, FoldF_, KernelAiuMultistageMixedInputFinegrainedGs64, BChunk_> {
   constexpr static int Stages = Stages_; constexpr static int StaticGroupSize = 64;
-  constexpr static int FoldFactor = FoldF_; using kContinous = kContinous_;
-  using Schedule = KernelAiuMultistageMixedInput; using ClusterShape = Shape<_1,_1,_1>;
+  constexpr static int FoldFactor = FoldF_; constexpr static int BChunk = BChunk_; using kContinous = kContinous_;
+  using Schedule = KernelAiuMultistageMixedInput; using MetadataPublication = SeparateHalfPlanes;
+  using ClusterShape = Shape<_1,_1,_1>;
 };
-template<int Stages_, class kContinous_, int FoldF_>
-struct MainloopPPUAiuFold<Stages_, kContinous_, FoldF_, KernelAiuMultistageMixedInputFinegrainedGs32> {
+template<int Stages_, class kContinous_, int FoldF_, int BChunk_>
+struct MainloopPPUAiuFold<Stages_, kContinous_, FoldF_, KernelAiuMultistageMixedInputFinegrainedGs32, BChunk_> {
   constexpr static int Stages = Stages_; constexpr static int StaticGroupSize = 32;
-  constexpr static int FoldFactor = FoldF_; using kContinous = kContinous_;
-  using Schedule = KernelAiuMultistageMixedInput; using ClusterShape = Shape<_1,_1,_1>;
+  constexpr static int FoldFactor = FoldF_; constexpr static int BChunk = BChunk_; using kContinous = kContinous_;
+  using Schedule = KernelAiuMultistageMixedInput; using MetadataPublication = SeparateHalfPlanes;
+  using ClusterShape = Shape<_1,_1,_1>;
 };
-template<int Stages_, class kContinous_, int FoldF_>
-struct MainloopPPUAiuFold<Stages_, kContinous_, FoldF_, KernelAiuMultistageMixedInputFinegrainedGs16> {
+template<int Stages_, class kContinous_, int FoldF_, int BChunk_>
+struct MainloopPPUAiuFold<Stages_, kContinous_, FoldF_, KernelAiuMultistageMixedInputFinegrainedGs16, BChunk_> {
   constexpr static int Stages = Stages_; constexpr static int StaticGroupSize = 16;
-  constexpr static int FoldFactor = FoldF_; using kContinous = kContinous_;
-  using Schedule = KernelAiuMultistageMixedInput; using ClusterShape = Shape<_1,_1,_1>;
+  constexpr static int FoldFactor = FoldF_; constexpr static int BChunk = BChunk_; using kContinous = kContinous_;
+  using Schedule = KernelAiuMultistageMixedInput; using MetadataPublication = SeparateHalfPlanes;
+  using ClusterShape = Shape<_1,_1,_1>;
 };
 
 //////////////////////////////////////////////////////////////////////////////

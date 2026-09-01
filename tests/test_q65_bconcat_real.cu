@@ -16,7 +16,7 @@
 // The low plane is written by place_derived DIRECTLY, not through preprocess_weights_for_mixed_gemm: the shim adds int4's
 // +8 to reproduce the legacy pipeline, and here the stored code must be q & 15 with the bias handled by the zero point.
 //
-//   Build: TARGET=test_q65_bconcat_real ./build.sh          (PPU_DEFS=PPU_B_CHUNK=1 to exercise the chunked path)
+//   Build: PPU_DEFS=PPU_TEST_B_CHUNK=1 TARGET=test_q65_bconcat_real ./build.sh
 //   Run:   ./<bin>                                          (synthetic, full code range, CPU golden)
 #include <cstdio>
 #include <cstdlib>
@@ -34,18 +34,16 @@
 // include optional specializations, so naming only the launcher leaves CollectiveMma at its failing primary template.
 #include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 
-// SELF-DESCRIBING RUN. Whether PPU_B_CHUNK was active has now been undeterminable from the build output twice: the
+// SELF-DESCRIBING RUN. The typed BChunk test request is printed by the binary.
 // device compiles are add_custom_command with a COMMENT so make.log holds no compile line, and the build.sh line that
 // does check scrolls away above a long result. The binary reports its own configuration instead -- a log that does not
 // describe its own run has cost this work three separate rounds.
-// `#x` stringizes a macro PARAMETER only, so `#PPU_B_CHUNK` outside a function-like macro is ill-formed -- two levels.
 #define PPU_STR2_(x) #x
 #define PPU_STR1_(x) PPU_STR2_(x)
-#if defined(PPU_B_CHUNK)
-#define PPU_CHUNK_STR "PPU_B_CHUNK=" PPU_STR1_(PPU_B_CHUNK)
-#else
-#define PPU_CHUNK_STR "PPU_B_CHUNK=off"
+#ifndef PPU_TEST_B_CHUNK
+#define PPU_TEST_B_CHUNK 0
 #endif
+#define PPU_CHUNK_STR "BChunk=" PPU_STR1_(PPU_TEST_B_CHUNK)
 
 
 using half_t  = cutlass::half_t;
@@ -157,7 +155,7 @@ int main(int argc, char** argv) {
     dbhi.copy_from_host(reinterpret_cast<HIELEM const*>(bhi.data()));                                 \
     CUTLASS_PPU_CHECK(hggcMemset(dD.get(), 0, sizeof(half_t) * (size_t)M * N));                       \
     moe_grouped_ppu::filter_and_run<QMODEv, TMv, TNv, TKv, WMv, WNv, Sv,                              \
-                                    int4_t, HIELEM, false, Av>(                                       \
+                                    int4_t, HIELEM, false, Av, PPU_TEST_B_CHUNK>(                     \
         dA.get(), dblo.get(), dSc.get(), dZr.get(), pd.get(), sd.get(), gm.get(),                     \
         M, N, K, L, gs, shpd.get(), shp.data(), offdev.get(), ws.get(), wsb, nullptr, dbhi.get());    \
     CUTLASS_PPU_CHECK(hggcDeviceSynchronize());                                                       \

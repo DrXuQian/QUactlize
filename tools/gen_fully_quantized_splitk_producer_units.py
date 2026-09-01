@@ -8,7 +8,7 @@ reason.  The generated wrapper then lets the *real* Shipping/Split types decide
 shared storage and ``can_implement`` for each runtime shape.
 
 One xplane invocation owns exactly one
-``(qtype, ArtifactTileK, PPU_B_CHUNK)`` tuple.  K-pack4 instead owns the
+``(qtype, ArtifactTileK, typed BChunk)`` tuple. K-pack4 instead owns the
 canonical ``(qtype=12, weight-layout=q4-kpack4)`` identity and deliberately has
 no ArtifactTileK axis.  That makes the translation-unit policy explicit and
 gives a shard a stable, resume-safe identity.  S={1,2,4,8} is runtime data, not
@@ -190,9 +190,7 @@ def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
             "#ifdef PPU_PACKED_SCALE\n#undef PPU_PACKED_SCALE\n#endif\n"
             "#define PPU_PACKED_SCALE 1\n"
             "#ifdef PPU_PACKED_FORMAT\n#undef PPU_PACKED_FORMAT\n#endif\n"
-            f"#define PPU_PACKED_FORMAT {formats[qtype].packed_format}\n"
-            "#ifdef PPU_B_CHUNK\n#undef PPU_B_CHUNK\n#endif\n"
-            f"#define PPU_B_CHUNK {bchunk}\n" +
+            f"#define PPU_PACKED_FORMAT {formats[qtype].packed_format}\n" +
             macro("FQ_TC_UNIT_ROWS", batch, qtype, artifact) +
             '#include "fully_quantized_splitk_producer_unit.inc"\n')
         write(path, body)

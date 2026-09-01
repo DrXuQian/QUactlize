@@ -773,6 +773,7 @@ def _build_stub(tmp_path):
     src = tmp_path / "stub.c"
     src.write_text(
         "#include <stdint.h>\n"
+        "int32_t quactlize_ppu_build_packed_format_v1(void){return -1;}\n"
         "int quactlize_ppu_vecdot(uint8_t const* b,int64_t bb,uint16_t const* x,float* o,int r,int p,int q){"
         "(void)b;(void)bb;(void)x;(void)p;(void)q;for(int i=0;i<r;++i)o[i]=-12345.f;return 0;}\n"
         "int quactlize_ppu_vecdot_moe(uint8_t const*b,int64_t bb,uint16_t const*x,int const*of,float*o,"

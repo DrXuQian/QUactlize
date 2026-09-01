@@ -23,7 +23,7 @@
 // (test_w1a16_grouped) that passes, so int1 failing here while passing there means this harness is wrong. A new test
 // with no known-good row in it can only tell you that something is broken, never which of the two.
 //
-//   Build: TARGET=test_lowbit_grouped ./build.sh      (PPU_DEFS=PPU_B_CHUNK=1 for the chunked path)
+//   Build: PPU_DEFS=PPU_TEST_B_CHUNK=1 TARGET=test_lowbit_grouped ./build.sh
 //   Run:   ./<bin> [L] [ragged 0|1] [Mb] [N] [K] [gs]
 #include <cstdio>
 #include <cstdlib>
@@ -44,18 +44,16 @@
 #include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp"
 
-// SELF-DESCRIBING RUN. Whether PPU_B_CHUNK was active has now been undeterminable from the build output twice: the
+// SELF-DESCRIBING RUN. The typed BChunk test request is printed by the binary.
 // device compiles are add_custom_command with a COMMENT so make.log holds no compile line, and the build.sh line that
 // does check scrolls away above a long result. The binary reports its own configuration instead -- a log that does not
 // describe its own run has cost this work three separate rounds.
-// `#x` stringizes a macro PARAMETER only, so `#PPU_B_CHUNK` outside a function-like macro is ill-formed -- two levels.
 #define PPU_STR2_(x) #x
 #define PPU_STR1_(x) PPU_STR2_(x)
-#if defined(PPU_B_CHUNK)
-#define PPU_CHUNK_STR "PPU_B_CHUNK=" PPU_STR1_(PPU_B_CHUNK)
-#else
-#define PPU_CHUNK_STR "PPU_B_CHUNK=off"
+#ifndef PPU_TEST_B_CHUNK
+#define PPU_TEST_B_CHUNK 0
 #endif
+#define PPU_CHUNK_STR "BChunk=" PPU_STR1_(PPU_TEST_B_CHUNK)
 
 
 using half_t  = cutlass::half_t;
@@ -196,7 +194,7 @@ int main(int argc, char** argv) {
     cutlass::DeviceAllocation<char> ws(wsb);                                                                             \
     CUTLASS_PPU_CHECK(hggcMemset(dD.get(), 0, sizeof(half_t) * (size_t)total * N));                                     \
     int const launch_failures_before = moe_grouped_ppu::moeg_fail_count();                                             \
-    moe_grouped_ppu::filter_and_run<QMODE, TMv, TNv, TKv, WMv, WNv, Sv, LOWELEM, HIELEM>(                              \
+    moe_grouped_ppu::filter_and_run<QMODE, TMv, TNv, TKv, WMv, WNv, Sv, LOWELEM, HIELEM, false, TKv, PPU_TEST_B_CHUNK>( \
         dA.get(), reinterpret_cast<LOWELEM const*>(dblo.get()), dSc.get(), dZr.get(), pd.get(), sd.get(), gm.get(),      \
         Mmax, N, K, L, gs, rdev.get(), rsh.data(), ragged ? offdev.get() : nullptr, ws.get(), wsb, nullptr,              \
         reinterpret_cast<HIELEM const*>(dbhi.get()));                                                                    \
@@ -215,7 +213,7 @@ int main(int argc, char** argv) {
       cutlass::DeviceAllocation<int> o1d(1);      o1d.copy_from_host(o1.data());                                          \
       const size_t w1b = (size_t)cutlass::ceil_div(Me,16)*cutlass::ceil_div(N,64)*64;                                    \
       cutlass::DeviceAllocation<char> w1(w1b);                                                                            \
-      moe_grouped_ppu::filter_and_run<QMODE, TMv, TNv, TKv, WMv, WNv, Sv, LOWELEM, HIELEM>(                            \
+      moe_grouped_ppu::filter_and_run<QMODE, TMv, TNv, TKv, WMv, WNv, Sv, LOWELEM, HIELEM, false, TKv, PPU_TEST_B_CHUNK>( \
           dA.get() + (size_t)offs[e] * K, reinterpret_cast<LOWELEM const*>(dblo.get() + (size_t)e * lo_per),            \
           dSc.get() + (size_t)e * scale_k * N, dZr.get() + (size_t)e * scale_k * N,                                     \
           p1d.get(), t1d.get(), g1d.get(), Me, N, K, 1, gs, s1d.get(), s1.data(), nullptr, w1.get(), w1b, nullptr,      \
@@ -260,7 +258,7 @@ int main(int argc, char** argv) {
     cutlass::DeviceAllocation<char> ws(wsb);                                                                               \
     CUTLASS_PPU_CHECK(hggcMemset(dD.get(), 0, sizeof(half_t) * (size_t)total * N));                                       \
     int const launch_failures_before = moe_grouped_ppu::moeg_fail_count();                                               \
-    moe_grouped_ppu::filter_and_run<QMODE, TMv, TNv, TKv, WMv, WNv, Sv, ELEM>(                                          \
+    moe_grouped_ppu::filter_and_run<QMODE, TMv, TNv, TKv, WMv, WNv, Sv, ELEM, void, false, TKv, PPU_TEST_B_CHUNK>(       \
         dA.get(), reinterpret_cast<ELEM const*>(db.get()), dSc.get(), dZr.get(), pd.get(), sd.get(), gm.get(),           \
         Mmax, N, K, L, gs, rdev.get(), rsh.data(), ragged ? offdev.get() : nullptr, ws.get(), wsb, nullptr);              \
     CUTLASS_PPU_CHECK(hggcDeviceSynchronize());                                                                            \
@@ -276,7 +274,7 @@ int main(int argc, char** argv) {
       cutlass::DeviceAllocation<int> g1d(1);      g1d.copy_from_host(g1.data());                                            \
       const size_t w1b = (size_t)cutlass::ceil_div(Me,16)*cutlass::ceil_div(N,64)*64;                                      \
       cutlass::DeviceAllocation<char> w1(w1b);                                                                              \
-      moe_grouped_ppu::filter_and_run<QMODE, TMv, TNv, TKv, WMv, WNv, Sv, ELEM>(                                        \
+      moe_grouped_ppu::filter_and_run<QMODE, TMv, TNv, TKv, WMv, WNv, Sv, ELEM, void, false, TKv, PPU_TEST_B_CHUNK>(     \
           dA.get() + (size_t)offs[e] * K, reinterpret_cast<ELEM const*>(db.get() + (size_t)e * per),                    \
           dSc.get() + (size_t)e * scale_k * N, dZr.get() + (size_t)e * scale_k * N,                                      \
           p1d.get(), t1d.get(), g1d.get(), Me, N, K, 1, gs, s1d.get(), s1.data(), nullptr, w1.get(), w1b, nullptr);      \

@@ -58,7 +58,8 @@ struct OperandInfo {
                                          cute::tuple<ElementB, ElementScale>>>;
 };
 
-template <int ArtifactLowFold, int ArtifactHighFold, class BaseSchedule, int ArtifactTileK>
+template <int ArtifactLowFold, int ArtifactHighFold, class BaseSchedule,
+          int ArtifactTileK, int BChunk = 0>
 struct ArtifactFoldedSchedule {
   // The wrapper is also required when only the high plane folds: it is the type-level ABI carrying the resident
   // provider's two independent physical layouts AND delivery TileK into CollectiveBuilder. The folds alone lose A
@@ -74,7 +75,8 @@ struct ArtifactFoldedSchedule {
   // floors it at 1, so KernelAiuFold<1, Base, 0, A> yields HasFold = (1 > 1) = false and BaseSchedule = Base --
   // bit-for-bit the derivation the bare tag produced. Only the specialisation that MATCHES changes.
   using Type = cutlass::gemm::KernelAiuFold<(ArtifactLowFold > 1 ? ArtifactLowFold : 1),
-                                            BaseSchedule, ArtifactHighFold, ArtifactTileK>;
+                                            BaseSchedule, ArtifactHighFold,
+                                            ArtifactTileK, BChunk>;
 };
 
 struct AiuAProvider {};
@@ -175,6 +177,7 @@ struct MixedPolicyDescriptor {
   using BProviderType = BProvider;
   using WeightLayoutType = WeightLayout;
   using MetadataPolicyType = typename Collective::MetadataPolicy;
+  using MetadataPublicationType = typename Collective::MetadataPublication;
   using PipelineDriverType = typename Collective::PipelineDriver;
   using MetadataProviderType = MetadataProvider<PackedMetadata<Collective>::value, has_zero(Mode)>;
   using ConversionProviderType = ConversionProvider<AtomAtATimeConversion<Collective>::value>;
@@ -194,6 +197,8 @@ struct MixedPolicyDescriptor {
   static constexpr int scale_tile_k = int(cute::size<1>(ScaleTileShape{}));
   static constexpr bool interleaved = Interleaved;
   static constexpr bool packed_metadata = PackedMetadata<Collective>::value;
+  static constexpr bool interleaved_metadata =
+      std::is_same_v<MetadataPublicationType, cutlass::gemm::InterleavedHalf2>;
   static constexpr bool atom_at_a_time = AtomAtATimeConversion<Collective>::value;
   static constexpr bool q4_kpack4_transpose =
       std::is_same_v<WeightLayout, Q4KPack4TransposeWeightLayout>;
@@ -220,7 +225,7 @@ struct MixedPolicyDescriptor {
 
 template <QuantMode Mode, class BaseSchedule, class TileShape, class ScaleTileShape, class WarpShape,
           int Stages, bool AiuInterleaved, class ElementB = cutlass::int4b_t, class PlaneB2 = void,
-          int ArtifactTileK_ = 0>
+          int ArtifactTileK_ = 0, int BChunk = 0>
 struct MainloopPolicy {
   using ElementA = cutlass::half_t;
   using ElementScale = cutlass::half_t;
@@ -252,9 +257,13 @@ struct MainloopPolicy {
   static constexpr int TileK = TacticTileK;
   static constexpr int LowFold = ArtifactLowFold;
   static constexpr int HighFold = ArtifactHighFold;
+  static constexpr int BChunkRequest = BChunk;
+  static_assert(BChunk == 0 || BChunk == 1,
+                "BChunk is a typed boolean conversion schedule");
 
   using KernelSchedule = typename ArtifactFoldedSchedule<ArtifactLowFold, ArtifactHighFold,
-                                                          BaseSchedule, ArtifactTileK>::Type;
+                                                          BaseSchedule, ArtifactTileK,
+                                                          BChunk>::Type;
   using ElementBInfo = typename OperandInfo<Mode, ElementB, PlaneB2, ElementScale, ElementZero>::Type;
   using CollectiveBuilderType = cutlass::gemm::collective::CollectiveBuilder<
       cutlass::arch::PPU0010, cutlass::arch::OpClassTensorOp,
@@ -262,6 +271,9 @@ struct MainloopPolicy {
       cute::tuple<TileShape, ScaleTileShape>, WarpShape, cute::Int<Stages>, KernelSchedule>;
   static_assert(CollectiveBuilderType::ArtifactTileK == ArtifactTileK,
                 "ArtifactTileK must survive the shared policy/schedule boundary into CollectiveBuilder");
+  static_assert(std::is_same_v<typename CollectiveBuilderType::MetadataPublication,
+                               cutlass::gemm::SeparateHalfPlanes>,
+                "generic mixed-input policies retain separate metadata planes");
   using CollectiveOp = typename CollectiveBuilderType::CollectiveOp;
 
   static constexpr bool PackedRowA = false;
@@ -283,7 +295,8 @@ struct MainloopPolicy {
 template <QuantMode Mode, class BaseSchedule, class TileShape,
           class ScaleTileShape, class WarpShape, int Stages,
           bool AiuInterleaved, int APackRows = 0,
-          int KPack4DeliveryN = 0>
+          int KPack4DeliveryN = 0,
+          class MetadataPublication = cutlass::gemm::SeparateHalfPlanes>
 struct Q4KPack4MainloopPolicy {
   using ElementA = cutlass::half_t;
   using ElementB = cutlass::int4b_t;
@@ -304,6 +317,7 @@ struct Q4KPack4MainloopPolicy {
   static constexpr int TileK = TacticTileK;
   static constexpr int LowFold = 1;
   static constexpr int HighFold = 1;
+  static constexpr int BChunkRequest = 0;
   static_assert(TacticTileK >= q4_kpack4::kTransportK &&
                     TacticTileK % q4_kpack4::kTransportK == 0,
                 "K-pack4 production policy initially admits TK64/128/256");
@@ -329,7 +343,7 @@ struct Q4KPack4MainloopPolicy {
                 "K-pack4 packed-A is bound to the TM8/WM8 decode family");
   using KPack4Schedule =
       cutlass::gemm::KernelAiuQ4KPack4Transpose<
-          BaseSchedule, KPack4DeliveryN>;
+          BaseSchedule, KPack4DeliveryN, MetadataPublication>;
   using KernelSchedule = std::conditional_t<
       APackRows == 0, KPack4Schedule,
       cutlass::gemm::KernelAiuPackedA<APackRows, KPack4Schedule>>;
@@ -346,7 +360,13 @@ struct Q4KPack4MainloopPolicy {
                 "K-pack4 schedule must select the transposed physical provider");
   static_assert(CollectiveBuilderType::Q4KPack4DeliveryN == KPack4DeliveryN,
                 "K-pack4 delivery N must survive the policy/builder boundary");
+  static_assert(std::is_same_v<typename CollectiveBuilderType::MetadataPublication,
+                               MetadataPublication>,
+                "K-pack4 metadata publication must survive the policy/builder boundary");
   using CollectiveOp = typename CollectiveBuilderType::CollectiveOp;
+  static_assert(std::is_same_v<typename CollectiveOp::MetadataPublication,
+                               MetadataPublication>,
+                "K-pack4 metadata publication must survive into the collective dispatch");
   static constexpr bool PackedRowA = APackRows > 0;
   static constexpr int PackedARows = APackRows;
   using AProvider = std::conditional_t<
@@ -362,6 +382,12 @@ struct Q4KPack4MainloopPolicy {
                     Descriptor::kpack4_resolved_delivery_n ==
                         ResolvedKPack4DeliveryN,
                 "K-pack4 descriptor must expose the exact delivery cap and resolution");
+  static_assert(Descriptor::interleaved_metadata ==
+                    std::is_same_v<MetadataPublication,
+                                   cutlass::gemm::InterleavedHalf2>,
+                "K-pack4 descriptor must expose the metadata publication schedule");
+  static_assert(!Descriptor::atom_at_a_time,
+                "canonical Q4 K-pack fixes conversion at bc0");
 };
 
 // Per-plane b16 K-pack provider for Q2/Q3/Q5/Q6.  ElementB and PlaneB2 retain
@@ -393,6 +419,7 @@ struct KPackMainloopPolicy {
   static constexpr int TileK = TacticTileK;
   static constexpr int LowFold = 1;
   static constexpr int HighFold = 1;
+  static constexpr int BChunkRequest = 0;
   static constexpr int TransportTileK = kquant_kpack::kReaderPhysicalK *
       (LowPack > HighPack ? LowPack : HighPack);
   static_assert(LowBits == 2 || LowBits == 4,
@@ -447,6 +474,9 @@ struct KPackMainloopPolicy {
                     CollectiveBuilderType::KPackHigh == HighPack &&
                     CollectiveBuilderType::KPackDeliveryN == KPackDeliveryN,
                 "K-pack factors/delivery must survive the policy/builder boundary");
+  static_assert(std::is_same_v<typename CollectiveBuilderType::MetadataPublication,
+                               cutlass::gemm::SeparateHalfPlanes>,
+                "non-Q4 K-pack policies retain separate metadata planes");
   using CollectiveOp = typename CollectiveBuilderType::CollectiveOp;
   static constexpr bool PackedRowA = APackRows > 0;
   static constexpr int PackedARows = APackRows;
@@ -468,6 +498,8 @@ struct KPackMainloopPolicy {
                     Descriptor::kpack_resolved_delivery_n ==
                         ResolvedKPackDeliveryN,
                 "K-pack descriptor must expose the exact physical provider");
+  static_assert(!Descriptor::atom_at_a_time,
+                "canonical K-pack fixes conversion at bc0");
 };
 
 // Independent dense-M==1 A provider.  This intentionally does not add a parameter to MainloopPolicy: callers that
@@ -480,10 +512,11 @@ template <int APackRows, QuantMode Mode, class BaseSchedule,
           int ArtifactTileK_ = 0>
 struct PackedAMainloopPolicy
     : MainloopPolicy<Mode, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
-                     Stages, AiuInterleaved, ElementB, void, ArtifactTileK_> {
+                     Stages, AiuInterleaved, ElementB, void, ArtifactTileK_, 0> {
 private:
   using Ordinary = MainloopPolicy<Mode, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
-                                  Stages, AiuInterleaved, ElementB, void, ArtifactTileK_>;
+                                  Stages, AiuInterleaved, ElementB, void,
+                                  ArtifactTileK_, 0>;
 public:
   static_assert(APackRows == 1,
                 "the first shipping packed-A provider is deliberately the exact dense M==1 path");

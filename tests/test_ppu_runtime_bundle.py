@@ -1,0 +1,113 @@
+import hashlib
+import json
+import pathlib
+import re
+import subprocess
+
+import pytest
+
+from quactlize import ppu_bundle
+
+
+ROOT = pathlib.Path(__file__).parents[1]
+
+
+def _bundle(tmp_path):
+    libraries = []
+    for role in ppu_bundle.LIBRARY_ROLES:
+        payload = f"{role.role}:{role.packed_format}".encode()
+        (tmp_path / role.filename).write_bytes(payload)
+        libraries.append({
+            "role": role.role,
+            "filename": role.filename,
+            "packed_scale": role.packed_scale,
+            "packed_format": role.packed_format,
+            "qtype": role.qtype,
+            "dense_only": role.qtype,
+            "size": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "definitions": role.definitions,
+        })
+    manifest = {
+        "schema": ppu_bundle.SCHEMA,
+        "schema_version": ppu_bundle.SCHEMA_VERSION,
+        "source": {"commit": "a" * 40, "tree_state": "clean", "submodules": []},
+        "toolchain": {
+            "arch": "ppu0010",
+            "sdk_release": ppu_bundle.SDK_RELEASE,
+            "sdk_archive_sha256": ppu_bundle.SDK_ARCHIVE_SHA256,
+            "hgcc": "test",
+        },
+        "libraries": libraries,
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    return manifest
+
+
+def test_runtime_bundle_manifest_binds_all_six_files(tmp_path):
+    expected = _bundle(tmp_path)
+    assert ppu_bundle.verify_bundle(tmp_path, inspect_binaries=False) == expected
+
+
+@pytest.mark.parametrize("plant", [
+    "wrong-role", "wrong-format", "wrong-hash", "wrong-definitions",
+    "extra-manifest-field", "extra-library-field", "extra-file", "symlink",
+])
+def test_runtime_bundle_rejects_identity_and_file_plants(tmp_path, plant):
+    manifest = _bundle(tmp_path)
+    if plant == "wrong-role":
+        manifest["libraries"][0]["role"] = "fmt0"
+    elif plant == "wrong-format":
+        manifest["libraries"][3]["packed_format"] = 4
+    elif plant == "wrong-hash":
+        manifest["libraries"][2]["sha256"] = "0" * 64
+    elif plant == "wrong-definitions":
+        manifest["libraries"][2]["definitions"] = ["PPU_PACKED_SCALE=1"]
+    elif plant == "extra-manifest-field":
+        manifest["unmeasured"] = True
+    elif plant == "extra-library-field":
+        manifest["libraries"][2]["unmeasured"] = True
+    elif plant == "extra-file":
+        (tmp_path / "stale.log").write_text("not admitted")
+    else:
+        path = tmp_path / ppu_bundle.LIBRARY_ROLES[0].filename
+        path.unlink()
+        path.symlink_to(ppu_bundle.LIBRARY_ROLES[1].filename)
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ppu_bundle.BundleError):
+        ppu_bundle.verify_bundle(tmp_path, inspect_binaries=False)
+
+
+def test_bundle_builder_owns_the_exact_six_role_recipe():
+    script = (ROOT / "tools" / "build_ppu_runtime_bundle.sh").read_text()
+    rows = re.findall(
+        r"^(default|fmt[0-4]) ([01]) (-?\d+) (\d+) (libquactlize_ppu(?:_fmt[0-4])?\.so)$",
+        script, re.MULTILINE)
+    got = [
+        (role, filename, int(packed_scale),
+         None if int(packed_format) < 0 else int(packed_format), int(qtype))
+        for role, packed_scale, packed_format, qtype, filename in rows
+    ]
+    want = [
+        (role.role, role.filename, role.packed_scale, role.packed_format, role.qtype)
+        for role in ppu_bundle.LIBRARY_ROLES
+    ]
+    assert got == want
+    assert "PPU_BUILD_RESUME=0" in script
+    assert "PPU_SDK_ARCHIVE" in script
+    assert "sha256sum \"$sdk_archive\"" in script
+    assert "Release version $sdk_release" in script
+    assert 'python3 -m quactlize.ppu_bundle "$stage" --ppu-sdk "$sdk"' in script
+    assert "mv -- \"$stage\" \"$out\"" in script
+    result = subprocess.run(["bash", "-n", str(ROOT / "tools" / "build_ppu_runtime_bundle.sh")])
+    assert result.returncode == 0
+
+
+def test_bundle_builder_rejects_a_dangling_output_symlink(tmp_path):
+    output = tmp_path / "bundle"
+    output.symlink_to(tmp_path / "missing")
+    result = subprocess.run(
+        ["bash", str(ROOT / "tools" / "build_ppu_runtime_bundle.sh"), str(output)],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    assert result.returncode != 0
+    assert "refusing to overwrite" in result.stdout

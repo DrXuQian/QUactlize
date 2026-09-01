@@ -130,8 +130,6 @@ def materialize_arm(output: pathlib.Path, *, name: str, layout: str,
         "#define PPU_PACKED_SCALE 1\n"
         "#ifdef PPU_PACKED_FORMAT\n#undef PPU_PACKED_FORMAT\n#endif\n"
         "#define PPU_PACKED_FORMAT 0\n"
-        "#ifdef PPU_B_CHUNK\n#undef PPU_B_CHUNK\n#endif\n"
-        "#define PPU_B_CHUNK 0\n"
         "#define FQ_TC_UNIT_ROWS(X) \\\n" + macro +
         '#include "fully_quantized_splitk_producer_unit.inc"\n'
     )

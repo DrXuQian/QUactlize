@@ -622,7 +622,8 @@ constexpr bool moe_ok() {
 // TiledMma-dependent gate, and the two-plane collective owns a third implementation. MainloopPolicy's descriptor
 // folds those cases into one witness without making this bench duplicate any of their predicates.
 template <int TM, int TN, int TK, int WM, int WN, int Stages,
-          class ElementB, class PlaneB2 = void, int ArtifactTileK = TK>
+          class ElementB, class PlaneB2 = void, int ArtifactTileK = TK,
+          int BChunk = 0>
 constexpr bool moe_b_chunk_effective() {
   using TileShape = cute::Shape<cute::Int<TM>, cute::Int<TN>, cute::Int<TK>>;
   using ScaleShape = cute::Shape<cute::Int<TN>,
@@ -630,7 +631,7 @@ constexpr bool moe_b_chunk_effective() {
   using WarpShape = cute::Shape<cute::Int<WM>, cute::Int<WN>, cute::Int<TK>>;
   using Policy = moe_grouped_ppu::MixedMainloopPolicy<
       LOWBIT_QMODE_SEL, ppu_group_schedule::FinegrainedSchedule<32>, TileShape, ScaleShape, WarpShape,
-      Stages, true, ElementB, PlaneB2, ArtifactTileK>;
+      Stages, true, ElementB, PlaneB2, ArtifactTileK, BChunk>;
   return Policy::Descriptor::atom_at_a_time;
 }
 
@@ -703,14 +704,14 @@ constexpr bool moe_b_chunk_effective() {
 // sweep only became affordable at this size because of it.
 #define MOE2_TIME(BD,BEST,NAME,LOELEM,HIELEM,LOB,HIB,TMv,TNv,TKv,Av,WMv,WNv,Sv)                                    \
   if constexpr (moe_ok<TMv,TNv,TKv,WMv,WNv,Sv,LOB,HIB,Av>()) {                                                     \
-    constexpr bool _bc = moe_b_chunk_effective<TMv,TNv,TKv,WMv,WNv,Sv,LOELEM,HIELEM,Av>();                         \
+    constexpr bool _bc = moe_b_chunk_effective<TMv,TNv,TKv,WMv,WNv,Sv,LOELEM,HIELEM,Av,UNIT_B_CHUNK>();            \
     const bench_measure::Tactic _cfg{NAME,TMv,TNv,TKv,WMv,WNv,Sv,                                                  \
                                       int(UNIT_B_CHUNK),int(_bc),moe_abcast()};                                     \
     char _t[bench_measure::kTagBytes]; bench_measure::format_tag(_t, sizeof _t, _cfg);                              \
     if (moe_row_selected(_t)) {                                                                                    \
       (BEST).any_selected = true;                                                                                  \
       auto _go = [&](moe_grouped_ppu::KernelSpanEvents* _kev){                                                    \
-        moe_grouped_ppu::filter_and_run<LOWBIT_QMODE_SEL,TMv,TNv,TKv,WMv,WNv,Sv,LOELEM,HIELEM,false,Av>(           \
+        moe_grouped_ppu::filter_and_run<LOWBIT_QMODE_SEL,TMv,TNv,TKv,WMv,WNv,Sv,LOELEM,HIELEM,false,Av,UNIT_B_CHUNK>( \
             (BD).dA, reinterpret_cast<LOELEM const*>(_b1.get()), (BD).dSc, (BD).dZr, (BD).pd, (BD).sd, (BD).gm,     \
             (BD).Mmax, (BD).N, (BD).K, (BD).L, (BD).gs, (BD).rdev, (BD).rsh.data(),                                \
             (BD).mode ? (BD).offdev : nullptr, (BD).ws, (BD).wsb, nullptr,                                         \
@@ -759,7 +760,7 @@ constexpr bool moe_b_chunk_effective() {
 // ---- single plane, same structure.
 #define MOE1_TIME(BD,BEST,NAME,ELEM,BITS,TMv,TNv,TKv,Av,WMv,WNv,Sv)                                                \
   if constexpr (moe_ok<TMv,TNv,TKv,WMv,WNv,Sv,BITS,0,Av>()) {                                                      \
-    constexpr bool _bc = moe_b_chunk_effective<TMv,TNv,TKv,WMv,WNv,Sv,ELEM,void,Av>();                             \
+    constexpr bool _bc = moe_b_chunk_effective<TMv,TNv,TKv,WMv,WNv,Sv,ELEM,void,Av,UNIT_B_CHUNK>();                \
     const bench_measure::Tactic _cfg{NAME,TMv,TNv,TKv,WMv,WNv,Sv,                                                  \
                                       int(UNIT_B_CHUNK),int(_bc),moe_abcast()};                                     \
     char _t[bench_measure::kTagBytes]; bench_measure::format_tag(_t, sizeof _t, _cfg);                              \
@@ -769,7 +770,7 @@ constexpr bool moe_b_chunk_effective() {
         /* PlaneB2 is NAMED (void) on purpose: passing nullptr for B2 while letting PlaneB2 deduce makes the    \
            deduction fail on std::nullptr_t, and a failed deduction is NOT rescued by the default template       \
            argument -- the call simply stops matching. */                                                        \
-        moe_grouped_ppu::filter_and_run<LOWBIT_QMODE_SEL,TMv,TNv,TKv,WMv,WNv,Sv,ELEM,void,false,Av>(               \
+        moe_grouped_ppu::filter_and_run<LOWBIT_QMODE_SEL,TMv,TNv,TKv,WMv,WNv,Sv,ELEM,void,false,Av,UNIT_B_CHUNK>(  \
             (BD).dA, reinterpret_cast<ELEM const*>(_db.get()), (BD).dSc, (BD).dZr, (BD).pd, (BD).sd, (BD).gm,       \
             (BD).Mmax, (BD).N, (BD).K, (BD).L, (BD).gs, (BD).rdev, (BD).rsh.data(),                                \
             (BD).mode ? (BD).offdev : nullptr, (BD).ws, (BD).wsb, nullptr,                                          \

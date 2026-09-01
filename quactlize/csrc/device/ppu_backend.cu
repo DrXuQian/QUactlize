@@ -320,6 +320,18 @@ int lowbit(uint16_t const* act, uint8_t const* low, uint8_t const* high,
 
 }  // namespace
 
+// Build identity for the multi-library loader and bundle verifier. -1 is the
+// non-packed/default library; FMT0..4 are the format-selected packed builds.
+// Keep this a host-only C ABI function so inspecting the library never needs a
+// PPU device or a kernel launch.
+extern "C" int32_t quactlize_ppu_build_packed_format_v1() {
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT)
+  return PPU_PACKED_FORMAT;
+#else
+  return -1;
+#endif
+}
+
 extern "C" int quactlize_ppu_vecdot(uint8_t const* b, int64_t block_bytes, uint16_t const* x, float* out,
                                       int rows, int bpr, int qtype) {
 #define RUN(T) (block_bytes == raw_block_bytes<KType::T>() && rows > 0 && bpr > 0 \

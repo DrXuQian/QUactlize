@@ -662,12 +662,16 @@ public:
   // legacy KernelAiuFold spelling predates an explicit artifact contract; for those callers A falls back to T.
   static constexpr int ArtifactTileK =
       fold_schedule_traits<KernelScheduleType>::ArtifactTileK;
+  static constexpr int BChunk =
+      fold_schedule_traits<KernelScheduleType>::BChunk;
   static constexpr int ScheduledAPackRows =
       a_provider_schedule_traits<KernelScheduleType>::Rows;
   static constexpr bool HasQ4KPack4 =
       q4_kpack4_schedule_traits<KernelScheduleType>::Value;
   static constexpr int Q4KPack4DeliveryN =
       q4_kpack4_schedule_traits<KernelScheduleType>::DeliveryN;
+  using MetadataPublication = typename
+      q4_kpack4_schedule_traits<KernelScheduleType>::MetadataPublication;
   static constexpr bool HasKPack =
       kpack_schedule_traits<KernelScheduleType>::Value;
   static constexpr int KPackLow =
@@ -750,6 +754,8 @@ public:
                         KPackHigh * sizeof_bits<P2Elem>::value == 16) &&
                      ArtifactLowFold == 1 && ArtifactHighFold == 1),
                 "K-pack factors must exactly fill b16 and must not inherit an xplane fold");
+  static_assert(!HasKPack || BChunk == 0,
+                "canonical K-pack schedules fix conversion at bc0");
   static_assert(!HasQ4KPack4 ||
                     (!HasPlane2 && KPackLow == 4 && KPackHigh == 0),
                 "the historical Q4 wrapper remains the exact one-plane Pack4 path");
@@ -772,10 +778,13 @@ public:
                                     ArtifactLowFold, ArtifactHighFold, EffectiveArtifactTileK,
                                     (HasKPack ? KPackLow : 0),
                                     (HasKPack ? KPackHigh : 0),
-                                    (HasKPack ? KPackDeliveryN : 0)>,
+                                    (HasKPack ? KPackDeliveryN : 0), BChunk>,
       cute::conditional_t<HasFold,
-          MainloopPPUAiuFold<PipelineStages, kContinous, (HasFold ? FoldF : 2), BaseSchedule>,
+          MainloopPPUAiuFold<PipelineStages, kContinous, (HasFold ? FoldF : 2), BaseSchedule, BChunk>,
           MainloopQuactlizeMixedInput<PipelineStages, kContinous, BaseSchedule>>>;
+  static_assert(std::is_same_v<typename DispatchPolicy::MetadataPublication,
+                               MetadataPublication>,
+                "metadata publication tag must survive the schedule/builder boundary");
 
   using GmemLayoutA = cutlass::layout::RowMajor;
   using GmemLayoutB = cutlass::layout::ColumnMajor;

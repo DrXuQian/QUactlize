@@ -100,6 +100,29 @@ for fmt in 0 1 2 3 4; do
 done
 ```
 
+For an installable set, use the atomic bundle builder instead of copying those
+six outputs by hand:
+
+```bash
+PPU_SDK=/path/to/ppu-sdk-2.1.1 \
+PPU_SDK_ARCHIVE=/path/to/PPU_SDK_cuda-13.0.0-ubuntu2404-2.1.1-a5c56e.tar.gz \
+JOBS=16 \
+  bash tools/build_ppu_runtime_bundle.sh /opt/quactlize/ppu0010
+
+quactlize-verify-ppu-bundle \
+  /opt/quactlize/ppu0010 --ppu-sdk /path/to/ppu-sdk-2.1.1
+```
+
+The builder accepts only a clean tracked source identity and the admitted SDK
+archive digest, cross-checks the installed compiler release against that
+archive, builds each role in
+an isolated directory, verifies its exports and embedded PPU image, and then
+publishes the directory atomically. `manifest.json` binds the source commit,
+submodule commits, compiler/SDK identity, exact compile definitions, filename,
+size and SHA-256 for all six libraries. A format-selected library also exports
+its compiled FMT identity; the runtime rejects a misplaced library before it
+exposes any operator entry point.
+
 `build.sh` configures this repository directly and prints the exact output
 binary. `PPU_BUILD_DIR` selects an out-of-tree build directory;
 `PPU_BUILD_RESUME=1` resumes only when the recorded source identity is still
@@ -110,8 +133,18 @@ not reach that target's HGCC command.
 
 ## Offline conversion
 
-The format-unified producer is explicit and records the selected arrangement
-in `manifest.json`. Installation provides one packer entry point:
+The format-unified producer is explicit and writes the named
+`quactlize.kquant-kpack.bundle` schema. Each tensor has collision-safe storage,
+an arrangement-v2 descriptor and per-array hashes; the strict bundle reader
+rejects partial, extra or noncanonical contents. Installation provides one
+packer entry point. The normal deployment form needs only the bundle root:
+
+```bash
+export QUACTLIZE_PPU_BUNDLE=/opt/quactlize/ppu0010
+quactlize-pack-gguf MODEL.gguf OUT_DIR
+```
+
+Individual overrides remain available for debugging or a nonstandard install:
 
 ```bash
 QUACTLIZE_PPU_LIB_FMT0=/path/to/q4/libquactlize_ppu.so \
@@ -128,7 +161,7 @@ format present in a model. The Python extension resolves the matching
 `QUACTLIZE_PPU_LIB_FMT*` handle; it never sends a K-pack artifact to a library
 built for another format.
 
-Set the default handle as well when running Q4 prefill. The packed FMT0 library
+The bundle supplies the default handle as well when running Q4 prefill. The packed FMT0 library
 owns K-pack4 placement and fully-quantized compute. The default non-packed
 library derives the hoisted metadata workspace and consumes it through the
 persistent ScaleFirst v2 reader:
@@ -163,16 +196,8 @@ and qtype before calling a device operation.
 Local validation covers source policy, host round trips, CuTe layout algebra,
 template instantiation, HGCC device compilation, embedded-image inspection,
 ABI checks, and planted negative controls. These checks do not establish a
-device result.
-
-The compile-only Q4 delivery gate is an example. It instantiates the real
-AIU-plain writer and UniversalCopy reader, then checks their PPU ISA without
-linking or launching a host executable:
-
-```bash
-PPU_SDK=/path/to/ppu-sdk-2.1.1 \
-bash dev/fold_derivation/run_l247_q4_n16k64_delivery_codegen.sh
-```
+device result; development-only probes and negative controls are intentionally
+not part of the installed product.
 
 The box is required for:
 
@@ -192,9 +217,6 @@ INTERNAL_SWEEP_SPEC=/workspace/path/to/inventory.json \
 OUT=/workspace/q4-kpack-prefill JOBS=16 \
   bash tools/run_fq_q4k_kpack4_prefill_real_shapes_box.sh
 
-# Q2/Q3/Q5/Q6 dense+grouped and Q4 grouped K-pack/Xplane development A/B
-OUT=/workspace/kquant-kpack-ab JOBS=16 \
-  bash tools/run_fq_kquant_kpack_perf_box.sh
 ```
 
 Every device result is bound to the source SHA, generated manifest, binary,

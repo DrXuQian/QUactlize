@@ -469,18 +469,6 @@ def main() -> int:
                 return 1
             controls += 1
 
-    guard_open = "#if !defined(LOWBIT_DENSE_UNIT_BUILD)\n#if defined(PPU_B_CHUNK)"
-    if guard_open not in texts["benchmarks/test_lowbit_dense_bench.cu"]:
-        print("[bench-measurement] FAIL: cannot plant the generated-unit ODR guard control")
-        return 1
-    planted = dict(texts)
-    planted["benchmarks/test_lowbit_dense_bench.cu"] = planted[
-        "benchmarks/test_lowbit_dense_bench.cu"].replace(guard_open, "#if 1\n#if defined(PPU_B_CHUNK)", 1)
-    if not audit(planted):
-        print("[bench-measurement] FAIL: fixed bc witness was accepted outside the generated-unit guard")
-        return 1
-    controls += 1
-
     # Same caller, same statements, only their order is wrong.  This is the
     # exact regression that made a sweep with passing rows print
     # ``no config passed``: upd() had populated Best.seen, but Best.tag is

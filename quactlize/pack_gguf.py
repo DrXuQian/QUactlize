@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""GGUF -> BC artifacts, one per tensor, with the arrangement recorded beside them.
+"""GGUF -> production K-pack bundle, with one placed artifact per tensor.
 
-WHY THIS DOES NOT WAIT FOR THE ON-DISK FORMAT. Producing (low, high, units) has been possible and
-device-validated for a while; what is still undecided is the CONTAINER llama.cpp will read. Those are separate,
-and coupling them would have held a working tool behind a decision. So the writer is one small function at the
-bottom and everything above it is container-agnostic: when the GGUF-native form lands, that function changes and
-nothing else does.
+The directory container is a named, versioned interchange boundary. It is not
+a rewritten GGUF file: each tensor directory contains the three resident arrays
+``low.npy``, ``high.npy`` and ``units.npy``, while ``manifest.json`` binds those
+bytes to their exact arrangement descriptor. ``load_kpack_bundle`` validates
+the complete directory before returning any artifact.
 
 IT IS ALSO USEFUL BEFORE llama.cpp EXISTS AS A CONSUMER. Every artifact this repo has measured so far came from a
 SYNTHESISED fixture -- random code bytes with sane fp16 headers, chosen because the official gguf package has no
@@ -20,12 +20,13 @@ WHAT IT REFUSES TO DO, and each refusal is a mistake this project has made or ne
     "packed the tensors we happened to handle" are distinguishable.
   * it does not write a partial artifact on failure. A directory that exists is a directory that finished.
 
-    quactlize-pack-gguf MODEL.gguf OUT_DIR \
-        [--limit N] [--dry-run]
+    quactlize-pack-gguf MODEL.gguf OUT_DIR [--dry-run]
 
 Placement is host code exported by the format-selected PPU library. Conversion
 does not launch a PPU kernel, but the matching library and its runtime
-dependencies must be loadable. For example Q4 K-pack4 uses FMT0:
+dependencies must be loadable. A complete install is selected with
+``QUACTLIZE_PPU_BUNDLE``; an individual Q4 K-pack4 override uses FMT0:
+    QUACTLIZE_PPU_BUNDLE=<...>/ppu0010 quactlize-pack-gguf ...
     QUACTLIZE_PPU_LIB_FMT0=<...>/libquactlize_ppu.so quactlize-pack-gguf ...
 
 The sole canonical format-unification policy is:
@@ -41,6 +42,7 @@ stays in the byte-neutral packed-unit channel. Xplane is not an automatic
 fallback and cannot be selected by this product packer.
 """
 import argparse
+import hashlib
 import json
 import os
 import pathlib
@@ -48,18 +50,38 @@ import re
 import sys
 import time
 from collections import Counter
+from typing import NamedTuple
+
+
+KPACK_BUNDLE_SCHEMA = "quactlize.kquant-kpack.bundle"
+KPACK_BUNDLE_VERSION = 1
+KPACK_BUNDLE_MANIFEST = "manifest.json"
+_BUNDLE_TOP_LEVEL_FIELDS = {
+    "schema", "schema_version", "arrangement_version", "model", "selection",
+    "tensors", "skipped",
+}
+_BUNDLE_TENSOR_FIELDS = {
+    "name", "dir", "ggml_type", "type_name", "route_class", "layout_name",
+    "plane_packs", "rank", "n", "k", "experts", "arrangement_version",
+    "arrangement", "shapes", "sha256",
+}
+_BUNDLE_ARRAYS = ("low", "high", "units")
+
+
+class KPackBundle(NamedTuple):
+    """A validated manifest and its descriptor-carrying resident artifacts."""
+
+    manifest: dict
+    artifacts: dict
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("model", help="a .gguf file")
     ap.add_argument("out", help="output directory; created, and only finished artifacts land in it")
-    ap.add_argument("--limit", type=int, default=0, help="stop after N packable tensors (0 = all)")
     ap.add_argument("--dry-run", action="store_true",
                     help="report what WOULD be packed, touching no device and writing nothing")
     a = ap.parse_args(argv)
-    if a.limit < 0:
-        ap.error("--limit must be nonnegative (0 means all packable tensors)")
 
     try:
         from gguf import GGUFReader
@@ -121,7 +143,7 @@ def main(argv=None) -> int:
     from quactlize import routes
     import quactlize
 
-    todo = packable[:a.limit] if a.limit else packable
+    todo = packable
     # Check exactly the format-selected handles this plan will call. Asking only
     # one makes a mixed-format model fail late at its first tensor of another
     # physical layout.
@@ -137,7 +159,8 @@ def main(argv=None) -> int:
     if unavailable:
         details = "\n".join(f"  {name}: {value}" for name, value in unavailable.items())
         print(f"\nrefusing to pack because required device placement backend(s) are unavailable:\n{details}\n"
-              "  Set the matching QUACTLIZE_PPU_LIB_FMT* handle for each qtype.",
+              "  Set QUACTLIZE_PPU_BUNDLE to a verified six-library bundle, or set the matching "
+              "QUACTLIZE_PPU_LIB_FMT* handle for each qtype.",
               file=sys.stderr)
         return 3
 
@@ -146,18 +169,11 @@ def main(argv=None) -> int:
         return 4
 
     final_out = pathlib.Path(a.out)
-    final_out.parent.mkdir(parents=True, exist_ok=True)
-    if final_out.exists():
-        print(f"refusing to overwrite existing output {final_out}", file=sys.stderr)
+    try:
+        out = _create_bundle_staging_root(final_out)
+    except FileExistsError as exc:
+        print(str(exc), file=sys.stderr)
         return 4
-    # Root-level atomic publication. A failed run leaves an explicitly named diagnostic directory and never makes
-    # the requested final path exist; individual tensor atomic renames alone were insufficient because the old
-    # root directory appeared complete after the first tensor.
-    out = final_out.with_name(final_out.name + f".partial.{os.getpid()}")
-    if out.exists():
-        print(f"refusing to reuse partial output {out}", file=sys.stderr)
-        return 4
-    out.mkdir()
     manifest, t0 = [], time.time()
     for i, (t, route) in enumerate(todo):
         qtype = int(t.tensor_type)
@@ -170,7 +186,7 @@ def main(argv=None) -> int:
             routes, blocks, n, k, qtype, experts, route)
         low, high, units = artifact
 
-        stem = t.name.replace("/", "_").replace(".", "_")
+        stem = _tensor_dir_name(i, t.name)
         tmp = out / (stem + ".partial")
         tmp.mkdir(exist_ok=True)
         _write(tmp, low, high, units)
@@ -195,29 +211,25 @@ def main(argv=None) -> int:
                          "rank": len(t.shape), "n": n, "k": k, "experts": experts,
                          "arrangement_version": artifact.arrangement_version,
                          "arrangement": arr._asdict(),
-                         "fold": ([arr.fold, arr.high_fold]
-                                  if isinstance(arr, F.PlacedArrangement) else None),
-                         "shapes": {"low": list(low.shape), "high": list(high.shape), "units": list(units.shape)}})
+                         "shapes": {"low": list(low.shape), "high": list(high.shape), "units": list(units.shape)},
+                         "sha256": _bundle_file_hashes(out / stem)})
         if (i + 1) % 25 == 0 or i + 1 == len(todo):
             print(f"  packed {i+1}/{len(todo)}  ({time.time()-t0:.1f}s)")
 
-    held_back = [
-        {"name": t.name, "type_name": t.tensor_type.name, "reason": "held back by --limit"}
-        for t, _route in packable[len(todo):]
-    ] if a.limit else []
     skipped_manifest = [
         {"name": name, "type_name": type_name, "reason": reason}
         for name, type_name, reason in skipped
     ]
-    (out / "manifest.json").write_text(json.dumps({
-        "artifact_schema_version": 2,
+    (out / KPACK_BUNDLE_MANIFEST).write_text(json.dumps({
+        "schema": KPACK_BUNDLE_SCHEMA,
+        "schema_version": KPACK_BUNDLE_VERSION,
+        "arrangement_version": 2,
         "model": a.model,
-        "selection": {"layout_policy": "canonical", "limit": a.limit,
+        "selection": {"layout_policy": "production-kpack-only",
                       "packable_total": len(packable), "packed": len(manifest),
-                      "skipped": len(skipped_manifest), "held_back_by_limit": len(held_back)},
+                      "skipped": len(skipped_manifest)},
         "tensors": manifest,
         "skipped": skipped_manifest,
-        "held_back_by_limit": held_back,
     }, indent=2) + "\n")
     out.rename(final_out)
     print(f"\nwrote {len(manifest)} artifact(s) + manifest.json to {final_out}")
@@ -235,6 +247,39 @@ def _target_layout(qtype: int) -> str:
     """
     from quactlize import formats as F
     return F.canonical_fully_quantized_layout(F.QuantType(int(qtype)))
+
+
+def _tensor_dir_name(index: int, name: str) -> str:
+    """Return a unique, deterministic directory without normalising a tensor name.
+
+    Replacing punctuation is not injective (``a/b`` and ``a.b`` used to collide).
+    The ordinal makes every directory unique and the digest binds it to the name;
+    the loader recomputes both, so neither field can be silently edited.
+    """
+    if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+        raise ValueError(f"tensor index must be a nonnegative integer, got {index!r}")
+    if not isinstance(name, str) or not name:
+        raise ValueError("tensor name must be a nonempty string")
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
+    return f"tensor-{index:06d}-{digest}"
+
+
+def _create_bundle_staging_root(final_out: pathlib.Path) -> pathlib.Path:
+    """Create the sibling staging root without replacing any directory entry.
+
+    ``Path.exists()`` follows symlinks and is false for a dangling one. Such a
+    link is still an existing output chosen by the caller, so both the final and
+    process-specific staging names reject it explicitly before publication.
+    """
+    final_out = pathlib.Path(final_out)
+    final_out.parent.mkdir(parents=True, exist_ok=True)
+    if final_out.exists() or final_out.is_symlink():
+        raise FileExistsError(f"refusing to overwrite existing output {final_out}")
+    out = final_out.with_name(final_out.name + f".partial.{os.getpid()}")
+    if out.exists() or out.is_symlink():
+        raise FileExistsError(f"refusing to reuse partial output {out}")
+    out.mkdir()
+    return out
 
 
 def _prepare_artifact(routes, blocks, n: int, k: int, qtype: int,
@@ -372,11 +417,7 @@ def _tile_k(qtype: int) -> int:
 
 
 def _write(d: pathlib.Path, low, high, units) -> None:
-    """THE CONTAINER, and the only part that changes when the on-disk format is decided.
-
-    Raw .npy today: it needs no schema, any reader has it, and nothing above this function knows about it. When
-    the GGUF-native representation lands this becomes a writer into that, and the rest of the tool is unchanged.
-    """
+    """Write one tensor's arrays inside the versioned directory container."""
     import numpy as np
     for name, t in (("low", low), ("high", high), ("units", units)):
         np.save(d / f"{name}.npy", t.numpy())
@@ -441,8 +482,249 @@ def restore_artifact(root: pathlib.Path, record: dict):
             f"artifact {record.get('name', '<unnamed>')}: manifest arrangement {arrangement} disagrees with "
             f"ggml_type={record['ggml_type']} ({expected})")
     d = pathlib.Path(root) / record["dir"]
-    tensors = tuple(torch.from_numpy(np.load(d / f"{name}.npy")) for name in ("low", "high", "units"))
+    tensors = tuple(torch.from_numpy(np.load(d / f"{name}.npy", allow_pickle=False))
+                    for name in _BUNDLE_ARRAYS)
     return routes.PlacedArtifact(tensors, arrangement, version)
+
+
+def load_kpack_bundle(root: pathlib.Path) -> KPackBundle:
+    """Load a complete production bundle, rejecting ambiguity and extra files.
+
+    This is intentionally stricter than :func:`restore_artifact`, which remains
+    a development compatibility reader for old descriptors. A product bundle
+    accepts only arrangement-v2 Q4 K-pack4 or Q2/Q3/Q5/Q6 per-plane K-pack,
+    validates every recorded shape and byte count, and rejects partial or
+    unlisted filesystem entries.
+    """
+    root = pathlib.Path(root)
+    manifest_path = root / KPACK_BUNDLE_MANIFEST
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError(f"K-pack bundle root must be a real directory: {root}")
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        raise ValueError(f"K-pack bundle is missing a regular {KPACK_BUNDLE_MANIFEST}")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid K-pack bundle manifest: {exc}") from exc
+    _validate_bundle_manifest(manifest)
+
+    records = manifest["tensors"]
+    expected_root = {KPACK_BUNDLE_MANIFEST, *(record["dir"] for record in records)}
+    actual_root = {entry.name for entry in root.iterdir()}
+    if actual_root != expected_root:
+        raise ValueError(
+            "K-pack bundle root entries disagree with the manifest: "
+            f"missing={sorted(expected_root - actual_root)} extra={sorted(actual_root - expected_root)}")
+
+    artifacts = {}
+    for record in records:
+        name = record["name"]
+        directory = root / record["dir"]
+        if not directory.is_dir() or directory.is_symlink():
+            raise ValueError(f"artifact {name}: tensor entry must be a real directory")
+        expected_files = {f"{array}.npy" for array in _BUNDLE_ARRAYS}
+        entries = list(directory.iterdir())
+        actual_files = {entry.name for entry in entries}
+        if actual_files != expected_files or any(entry.is_symlink() for entry in entries):
+            raise ValueError(
+                f"artifact {name}: tensor files disagree with the schema: "
+                f"missing={sorted(expected_files - actual_files)} extra={sorted(actual_files - expected_files)}")
+        observed_hashes = _bundle_file_hashes(directory)
+        if observed_hashes != record["sha256"]:
+            raise ValueError(
+                f"artifact {name}: array checksum mismatch: expected={record['sha256']} "
+                f"observed={observed_hashes}")
+        artifact = restore_artifact(root, record)
+        _validate_loaded_artifact(record, artifact)
+        artifacts[name] = artifact
+    return KPackBundle(manifest, artifacts)
+
+
+def _validate_bundle_manifest(manifest: dict) -> None:
+    from quactlize import routes
+
+    if not isinstance(manifest, dict) or set(manifest) != _BUNDLE_TOP_LEVEL_FIELDS:
+        got = sorted(manifest) if isinstance(manifest, dict) else type(manifest).__name__
+        raise ValueError(
+            f"K-pack manifest must contain exactly {sorted(_BUNDLE_TOP_LEVEL_FIELDS)}, got {got}")
+    if manifest["schema"] != KPACK_BUNDLE_SCHEMA or manifest["schema_version"] != KPACK_BUNDLE_VERSION:
+        raise ValueError(
+            f"unsupported K-pack bundle schema {manifest.get('schema')!r} "
+            f"version {manifest.get('schema_version')!r}")
+    if manifest["arrangement_version"] != routes.PLACED_ARTIFACT_VERSION_V2:
+        raise ValueError("production K-pack bundles require placed arrangement version 2")
+    if not isinstance(manifest["model"], str) or not manifest["model"]:
+        raise ValueError("K-pack manifest model must be a nonempty string")
+    selection = manifest["selection"]
+    selection_fields = {"layout_policy", "packable_total", "packed", "skipped"}
+    if not isinstance(selection, dict) or set(selection) != selection_fields:
+        raise ValueError(f"K-pack selection must contain exactly {sorted(selection_fields)}")
+    if selection["layout_policy"] != "production-kpack-only":
+        raise ValueError("K-pack bundle layout_policy must be production-kpack-only")
+    for field in selection_fields - {"layout_policy"}:
+        _require_nonnegative_int(selection[field], f"selection.{field}")
+    if not isinstance(manifest["tensors"], list) or not manifest["tensors"]:
+        raise ValueError("a production K-pack bundle must contain at least one tensor")
+    if not isinstance(manifest["skipped"], list):
+        raise ValueError("skipped must be a list")
+    if selection["packed"] != len(manifest["tensors"]):
+        raise ValueError("selection.packed disagrees with tensors length")
+    if selection["skipped"] != len(manifest["skipped"]):
+        raise ValueError("selection.skipped disagrees with skipped length")
+    if selection["packable_total"] != selection["packed"]:
+        raise ValueError("selection.packable_total must equal packed for a complete product bundle")
+    _validate_omission_records(manifest["skipped"], "skipped")
+
+    names, directories = set(), set()
+    for index, record in enumerate(manifest["tensors"]):
+        _validate_bundle_record(record, index)
+        if record["name"] in names:
+            raise ValueError(f"duplicate tensor name in K-pack manifest: {record['name']}")
+        if record["dir"] in directories:
+            raise ValueError(f"duplicate tensor directory in K-pack manifest: {record['dir']}")
+        names.add(record["name"])
+        directories.add(record["dir"])
+
+
+def _validate_bundle_record(record: dict, index: int) -> None:
+    from quactlize import formats as F
+    from quactlize import routes
+
+    if not isinstance(record, dict) or set(record) != _BUNDLE_TENSOR_FIELDS:
+        raise ValueError(
+            f"tensor record {index} must contain exactly {sorted(_BUNDLE_TENSOR_FIELDS)}")
+    name = record["name"]
+    if not isinstance(name, str) or not name:
+        raise ValueError(f"tensor record {index} has an invalid name")
+    if record["dir"] != _tensor_dir_name(index, name):
+        raise ValueError(f"artifact {name}: directory is not the canonical collision-safe name")
+    try:
+        qtype = F.QuantType(_require_nonnegative_int(record["ggml_type"], f"artifact {name}.ggml_type"))
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"artifact {name}: unsupported ggml_type {record.get('ggml_type')!r}") from exc
+    if qtype not in (F.QuantType.Q2_K, F.QuantType.Q3_K, F.QuantType.Q4_K,
+                     F.QuantType.Q5_K, F.QuantType.Q6_K):
+        raise ValueError(f"artifact {name}: {qtype.name} is not a production K-pack qtype")
+    if record["type_name"] != qtype.name:
+        raise ValueError(f"artifact {name}: type_name disagrees with ggml_type")
+    route = record["route_class"]
+    if route not in ("dense", "grouped"):
+        raise ValueError(f"artifact {name}: route_class must be dense or grouped")
+    rank = _require_nonnegative_int(record["rank"], f"artifact {name}.rank")
+    if (route, rank) not in (("dense", 2), ("grouped", 3)):
+        raise ValueError(f"artifact {name}: route_class/rank disagree")
+    n = _require_positive_int(record["n"], f"artifact {name}.n")
+    k = _require_positive_int(record["k"], f"artifact {name}.k")
+    experts = record["experts"]
+    if route == "dense":
+        if experts is not None:
+            raise ValueError(f"artifact {name}: dense tensor must record experts=null")
+        expert_count = 1
+    else:
+        expert_count = _require_positive_int(experts, f"artifact {name}.experts")
+    F.validate_fully_quantized_resident_geometry(qtype, n, k)
+    layout = _target_layout(qtype)
+    if record["layout_name"] != layout:
+        raise ValueError(f"artifact {name}: layout_name must be canonical {layout}")
+    if record["arrangement_version"] != routes.PLACED_ARTIFACT_VERSION_V2:
+        raise ValueError(f"artifact {name}: production bundle requires arrangement_version=2")
+    low_bits, high_bits = F.placed_code_planes(qtype)
+    if record["plane_packs"] != {
+            "low": 16 // low_bits, "high": 16 // high_bits if high_bits else 0}:
+        raise ValueError(f"artifact {name}: plane_packs disagree with {qtype.name}")
+    expected = (F.q4_kpack4_arrangement() if qtype == F.QuantType.Q4_K
+                else F.kquant_kpack_arrangement(qtype))
+    raw = record["arrangement"]
+    if not isinstance(raw, dict) or set(raw) != set(F.PlacedArrangementV2._fields):
+        raise ValueError(f"artifact {name}: arrangement has the wrong fields")
+    try:
+        arrangement = F.PlacedArrangementV2(
+            *(_require_nonnegative_int(raw[field], f"artifact {name}.arrangement.{field}")
+              for field in F.PlacedArrangementV2._fields))
+        arrangement.validate()
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"artifact {name}: invalid production arrangement: {exc}") from exc
+    if arrangement != expected:
+        raise ValueError(f"artifact {name}: arrangement is not canonical for {qtype.name}")
+    shapes = record["shapes"]
+    if not isinstance(shapes, dict) or set(shapes) != set(_BUNDLE_ARRAYS):
+        raise ValueError(f"artifact {name}: shapes must name low/high/units exactly")
+    for array, shape in shapes.items():
+        if (not isinstance(shape, list) or
+                any(not isinstance(x, int) or isinstance(x, bool) or x < 0 for x in shape)):
+            raise ValueError(f"artifact {name}: invalid {array} shape {shape!r}")
+    expected_shapes = _canonical_bundle_shapes(qtype, route, expert_count, n, k)
+    for array, expected_shape in expected_shapes.items():
+        if shapes[array] != expected_shape:
+            raise ValueError(
+                f"artifact {name}: {array} shape must be canonical {expected_shape}, "
+                f"got {shapes[array]}")
+    hashes = record["sha256"]
+    if (not isinstance(hashes, dict) or set(hashes) != set(_BUNDLE_ARRAYS) or
+            any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+                for value in hashes.values())):
+        raise ValueError(f"artifact {name}: sha256 must contain exact lowercase low/high/units digests")
+
+
+def _validate_loaded_artifact(record: dict, artifact) -> None:
+    import torch
+
+    for array, tensor in zip(_BUNDLE_ARRAYS, artifact):
+        if tensor.dtype != torch.uint8:
+            raise ValueError(f"artifact {record['name']}: {array} dtype must be uint8, got {tensor.dtype}")
+        if list(tensor.shape) != record["shapes"][array]:
+            raise ValueError(
+                f"artifact {record['name']}: {array} shape {list(tensor.shape)} disagrees with manifest "
+                f"{record['shapes'][array]}")
+
+
+def _canonical_bundle_shapes(qtype, route: str, experts: int, n: int, k: int) -> dict:
+    """Exact tensor ABI emitted by the dense and grouped v2 producers."""
+    from quactlize import formats as F
+
+    qtype = F.QuantType(qtype)
+    low_bits, high_bits = F.placed_code_planes(qtype)
+    prefix = [experts, n]
+    low = prefix + [k * low_bits // 8]
+    high = prefix + [k * high_bits // 8] if high_bits else [0]
+    metadata_bytes = F.BLOCKS[qtype].scale_meta_bytes
+    superblocks_per_unit = 1 if metadata_bytes % 4 == 0 else 2
+    unit_shape = [k // (256 * superblocks_per_unit), n,
+                  metadata_bytes * superblocks_per_unit]
+    units = unit_shape if route == "dense" else [experts] + unit_shape
+    return {"low": low, "high": high, "units": units}
+
+
+def _bundle_file_hashes(directory: pathlib.Path) -> dict:
+    hashes = {}
+    for name in _BUNDLE_ARRAYS:
+        digest = hashlib.sha256()
+        with (pathlib.Path(directory) / f"{name}.npy").open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        hashes[name] = digest.hexdigest()
+    return hashes
+
+
+def _validate_omission_records(records: list, field: str) -> None:
+    required = {"name", "type_name", "reason"}
+    for index, record in enumerate(records):
+        if (not isinstance(record, dict) or set(record) != required or
+                any(not isinstance(record[key], str) or not record[key] for key in required)):
+            raise ValueError(f"{field}[{index}] must contain nonempty name/type_name/reason strings")
+
+
+def _require_nonnegative_int(value, field: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{field} must be a nonnegative integer")
+    return value
+
+
+def _require_positive_int(value, field: str) -> int:
+    value = _require_nonnegative_int(value, field)
+    if value == 0:
+        raise ValueError(f"{field} must be positive")
+    return value
 
 
 if __name__ == "__main__":
@@ -451,10 +733,17 @@ if __name__ == "__main__":
 
 __all__ = [
     "main",
+    "KPACK_BUNDLE_SCHEMA",
+    "KPACK_BUNDLE_VERSION",
+    "KPACK_BUNDLE_MANIFEST",
+    "KPackBundle",
+    "load_kpack_bundle",
     "_target_layout",
     "_prepare_artifact",
     "_packability",
     "_tensor_geometry",
+    "_create_bundle_staging_root",
+    "_canonical_bundle_shapes",
     "_route_role_authority",
     "_low_bits",
     "_high_bits",

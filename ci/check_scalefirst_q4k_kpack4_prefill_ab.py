@@ -84,9 +84,10 @@ def main() -> int:
                 ), f"{arm} registry")
                 require(unit, (
                     "#define PPU_PACKED_SCALE 0",
-                    "#define PPU_B_CHUNK 0",
                     '#include "scalefirst_internal_sweep_unit.inc"',
                 ), f"{arm} unit")
+                if "PPU_B_CHUNK" in unit:
+                    raise AssertionError(f"{arm} unit reintroduced global BChunk state")
         print("[sf-kpack4-prefill-ab:self-test] PASS M=2048/4096 only; "
               "same FP16 metadata, persistent driver and three tactics; "
               "layout/build/fixture authority bound")

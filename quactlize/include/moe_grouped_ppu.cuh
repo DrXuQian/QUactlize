@@ -58,10 +58,10 @@ using ppu_mixed_policy::is_finegrained;
 
 template <QuantMode QuantOp, class BaseSchedule, class TileShape, class ScaleTileShape, class WarpShape,
           int Stages, bool AiuInterleaved, class ElementB = cutlass::int4b_t, class PlaneB2 = void,
-          int ArtifactTileK = 0>
+          int ArtifactTileK = 0, int BChunk = 0>
 using MixedMainloopPolicy = ppu_mixed_policy::MainloopPolicy<QuantOp, BaseSchedule, TileShape, ScaleTileShape,
                                                              WarpShape, Stages, AiuInterleaved, ElementB, PlaneB2,
-                                                             ArtifactTileK>;
+                                                             ArtifactTileK, BChunk>;
 
 using GroupShape = cute::Shape<int,int,int>;                            // per-expert [M,N,K]
 using GroupProblemShape = cutlass::gemm::GroupProblemShape<GroupShape>;
@@ -95,7 +95,8 @@ template <QuantMode QuantOp, class BaseSchedule,
           bool QueryOnly = false, bool RequireUniversalFallback = false,
           int ArtifactTileK = 0,
           bool UsePersistent = false,
-          class MainloopPolicyOverride = void>
+          class MainloopPolicyOverride = void,
+          int BChunk = 0>
 bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* scales,
             const cutlass::half_t* zeros,
             cutlass::half_t** ptr_D,        // device [L] per-expert output base pointers (contiguous: D+offs[e]*N)
@@ -141,7 +142,7 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   if (kernel_span != nullptr) kernel_span->recorded = false;
   using DefaultMainloopPolicy = MixedMainloopPolicy<
       QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
-      Stages, AiuInterleaved, ElementB, PlaneB2, ArtifactTileK>;
+      Stages, AiuInterleaved, ElementB, PlaneB2, ArtifactTileK, BChunk>;
   using MainloopPolicy = std::conditional_t<
       std::is_void_v<MainloopPolicyOverride>, DefaultMainloopPolicy,
       MainloopPolicyOverride>;
@@ -389,7 +390,8 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
 template <QuantMode QuantOp, int TM, int TN, int TK, int WM, int WN, int Stages,
           class ElementB = cutlass::int4b_t,   // default W4A16; pass cutlass::uint2b_t for W2A16
           class PlaneB2 = void,                // bit-plane concat: 2nd (high) B plane; void = single plane
-          bool ExpectPackedScale = false, int ArtifactTileK = TK>
+          bool ExpectPackedScale = false, int ArtifactTileK = TK,
+          int BChunk = 0>
 void filter_and_run(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* scales,
                     const cutlass::half_t* zeros,
                     cutlass::half_t** ptr_D, DStride* stride_D, int const* group_M,
@@ -404,7 +406,7 @@ void filter_and_run(const cutlass::half_t* A, const ElementB* B, const cutlass::
   const bool il = (n % 256 == 0 && k % 256 == 0);
   // Artifact folds come from ArtifactTileK; TK here is TacticTileK and changes only the consumer geometry. A larger
   // tactic keeps the resident physical (N/F, F*K) descriptors instead of re-deriving F and switching providers.
-  #define MOEG_CALL(SCH, STK, IL) launch<QuantOp, SCH, TileShape, cute::Shape<cute::Int<TN>, STK>, WarpShape, Stages, IL, ElementB, PlaneB2, ExpectPackedScale, false, false, ArtifactTileK, kPersistentBuild>( \
+  #define MOEG_CALL(SCH, STK, IL) launch<QuantOp, SCH, TileShape, cute::Shape<cute::Int<TN>, STK>, WarpShape, Stages, IL, ElementB, PlaneB2, ExpectPackedScale, false, false, ArtifactTileK, kPersistentBuild, void, BChunk>( \
       A,B,scales,zeros,ptr_D,stride_D,group_M,m,n,k,L,group_size,gsd,gsh,group_row_offsets,ws,ws_bytes,stream,B2,k_full,prefix_ready,splitk,false,kernel_span)
   // COLLECTIVE CONSTRAINT (SK = Scale_TileK = ceil(TK/gs) = #scale groups per K-tile):
   //   Scale_TileK <= mma_K_atoms (= TK/16), i.e. gs >= 16, so each scale group covers >=1 mma atom. The collective

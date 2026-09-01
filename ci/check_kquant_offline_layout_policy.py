@@ -58,7 +58,9 @@ def main() -> int:
         require(packer, (
             "return F.canonical_fully_quantized_layout",
             "F.validate_fully_quantized_resident_geometry(qtype, n, k)",
-            '"layout_policy": "canonical"',
+            '"layout_policy": "production-kpack-only"',
+            'KPACK_BUNDLE_SCHEMA = "quactlize.kquant-kpack.bundle"',
+            "def load_kpack_bundle(",
         ), "whole-model packer")
         if "--layout-policy" in packer or "all-kpack" in packer:
             raise AssertionError("whole-model packer still exposes a redundant layout policy")

@@ -106,9 +106,7 @@ def generate(qtype: int, artifact: int, bchunk: int, out: pathlib.Path,
         body = (
             "// GENERATED -- real ScaleFirst shipping/persistent/Split-K types.\n"
             "#ifdef PPU_PACKED_SCALE\n#undef PPU_PACKED_SCALE\n#endif\n"
-            "#define PPU_PACKED_SCALE 0\n"
-            "#ifdef PPU_B_CHUNK\n#undef PPU_B_CHUNK\n#endif\n"
-            f"#define PPU_B_CHUNK {bchunk}\n" +
+            "#define PPU_PACKED_SCALE 0\n" +
             macro("SCALEFIRST_UNIT_ROWS", batch, qtype, artifact) +
             '#include "scalefirst_internal_sweep_unit.inc"\n')
         write(path, body)

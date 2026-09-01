@@ -140,6 +140,10 @@ public:
   // Type Aliases
   //
   using DispatchPolicy = MainloopQuactlizeMixedInput<Stages, kContinous, KernelSchedule>;
+  using MetadataPublication = typename DispatchPolicy::MetadataPublication;
+  static_assert(std::is_same_v<MetadataPublication, SeparateHalfPlanes> ||
+                    std::is_same_v<MetadataPublication, InterleavedHalf2>,
+                "mixed-input metadata publication requires a known schedule tag");
   static constexpr bool kKPackTranspose =
       kpack_schedule_traits<KernelSchedule>::Value;
   static constexpr int kKPackLow =
@@ -576,7 +580,7 @@ private:
   static constexpr bool ModeHasScales = KernelConversionMode == ConversionMode::ConvertAndScale ||
                                         KernelConversionMode == ConversionMode::ConvertAndScaleWithZero;
 
-  // PPU_PACKED_SCALE_FUSED -- ONE INTERLEAVED (scale, zero) TILE INSTEAD OF TWO PLANES.
+  // ONE INTERLEAVED (scale, zero) TILE INSTEAD OF TWO PLANES.
   //
   // WHAT IT IS FOR, and it is the STORE side only. The packed decoder writes `sS(n,G,st)` and `sZ(n,G,st)` as two
   // 16-bit stores; 32 lanes with consecutive n cover 32 adjacent 2-byte slots, which is 16 of the 32 four-byte banks
@@ -603,11 +607,9 @@ private:
   // the SERVICE count per pair of reads is what it was. Halving the read count is a SEPARATE change (one 32-bit read
   // plus a register deinterleave) and is not attempted here -- one variable at a time, and this one is the 73,728.
   static constexpr bool kFusedScaleZero =
-#if defined(PPU_PACKED_SCALE_FUSED) && (PPU_PACKED_SCALE_FUSED != 0)
-      kPackedScaleOn && (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero);
-#else
-      false;
-#endif
+      std::is_same_v<MetadataPublication, InterleavedHalf2> &&
+      kPackedScaleOn &&
+      (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero);
 
   // The fused views below require the compact layout selected above. Keep that
   // relationship explicit so the publication and flattened read views cannot
@@ -629,7 +631,7 @@ private:
     }
   }
   static_assert(sz_layout_is_compact<kFusedScaleZero, SmemLayoutScale>(),
-                "PPU_PACKED_SCALE_FUSED assumes the compact (n, group, stage) scale layout");
+                "interleaved metadata publication assumes compact (n, group, stage) scale layout");
   // Same discarding requirement for the flattened read view; see above.
   template <bool Fused, class L>
   static constexpr bool sz_copy_layout_is_compact() {
@@ -696,26 +698,10 @@ private:
   }
 
 public:
-  // OBSERVABLE ON PURPOSE. kFusedScaleZero and the layouts it selects sit in the private section because they live
-  // beside KernelConversionMode, which they need. But a flag nobody outside can read is a flag that silently does
-  // nothing, and that is not hypothetical here: PPU_PACKED_SCALE_FUSED shipped to the box in a state where the only
-  // translation unit that used it could not compile, the define was reported as a WARNING nobody's gate checked, the
-  // binary built without it, correctness passed, and acu reported the store conflicts unchanged at 81,920 (+0.00%).
-  //
-  // CORRECTION, and it matters because the wrong version of this sentence closed off the one probe that works.
-  // This used to read "every observable the bench and the profiler have -- shared bytes, instruction counts,
-  // results -- is identical whether this path is on or off, BY DESIGN". Shared BYTES and RESULTS are identical, and
-  // the read side is untouched. The STORE INSTRUCTION COUNT IS NOT: the publication below emits ONE uint32_t
-  // assignment where the unfused branch emits two half assignments, so at this launch's
-  //     4 warps x 8 groups x 9 publications x 128 CTAs = 36,864
-  // shared-store instructions disappear. acu's `Shared Store / Inst` is therefore a valid machine-code probe --
-  // ~84,480 -> ~47,616 -- and reading only `Bank Conflicts` is what made the previous round look undecidable.
-  // (A backend is still free to lower the 32-bit store into two 16-bit ones. That is exactly what the Inst count
-  // detects, and it is why the count is the probe rather than the source.)
-  //
-  // What the type-level gate is still for: dev/fold_derivation/l100_fused_active.cu answers "is this path selected
-  // for THIS configuration" without a device, which no counter can do, and it is what proves a null result is a
-  // real null rather than an inactive path.
+  // Public witnesses let type/codegen gates prove that the requested schedule
+  // reached this exact collective. Shared bytes and numerical semantics stay
+  // unchanged; only the packed ScaleZero publication address map/store width
+  // differs.
   static constexpr bool is_fused_scale_zero = kFusedScaleZero;
   static constexpr bool is_packed_scale     = kPackedScaleOn;
   static constexpr int packed_scale_tiles_per_unit = kPackedTilesPerUnit;
@@ -1820,7 +1806,7 @@ private:
       // against the unfused layout rather than assumed, for the reason given at SmemLayoutScaleFusedWord: this is the
       // SECOND view of the same buffer, and the two going out of step is the documented failure here.
       static_assert(sz_copy_layout_is_compact<kFusedScaleZero, UnfusedSmemCopyLayoutScale>(),
-                    "PPU_PACKED_SCALE_FUSED assumes the compact flattened scale copy layout");
+                    "interleaved metadata publication assumes the compact flattened scale copy layout");
       using FusedSmemCopyLayoutScale = decltype(make_layout(
           make_shape(Int<kSZ_N>{}, Int<1>{}, Int<smem_scale_k>{}),
           make_stride(_2{}, _0{}, Int<2 * kSZ_N>{})));

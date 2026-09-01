@@ -8,6 +8,7 @@
 // accidentally invoking one fails rather than manufacturing a result.
 #include <cstdint>
 
+extern "C" int32_t quactlize_ppu_build_packed_format_v1() { return -1; }
 extern "C" int quactlize_ppu_vecdot(
     uint8_t const*, int64_t, uint16_t const*, float*, int, int, int) { return 193; }
 extern "C" int quactlize_ppu_vecdot_moe(

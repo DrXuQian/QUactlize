@@ -167,10 +167,8 @@ PY
       grep -Eq -- '(^|[[:space:]])-DFQ_SWEEP_WEIGHT_LAYOUT=1([[:space:]]|$)' \
         "$target_make" || {
       fail 'generated/layout build ABI differs'; return 2; }
-    if grep -Eq -- '-DFQ_TC_KPACK4_DELIVERY_N(=|[[:space:]])' "$target_make" || \
-       grep -Eq -- '-DPPU_PACKED_SCALE_FUSED(=|[[:space:]])' "$target_make" || \
-       grep -F 'PPU_PACKED_SCALE_FUSED_READ' "$target_make" >/dev/null; then
-      fail 'full sweep binary carries a delivery/fused-metadata experiment'; return 2
+    if grep -Eq -- '-DFQ_TC_KPACK4_DELIVERY_N(=|[[:space:]])' "$target_make"; then
+      fail 'full sweep binary carries a delivery experiment'; return 2
     fi
     printf '%s\n' "$binary" > "$out/results/binary.path" || return 2
     sha256sum "$binary" "$target_make" "$manifest" \

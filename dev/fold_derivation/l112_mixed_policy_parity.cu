@@ -40,18 +40,21 @@ struct SamePolicy {
 
 template <Q Mode, int GroupSize, class Tile, class Scale, class Warp, int Stages,
           class Low, class High = void, bool Interleaved = true,
-          int ArtifactTileK = 0>
+          int ArtifactTileK = 0, int BChunk = 0>
 struct AdapterPair {
   using Dense = fpa_intb_ppu::MixedMainloopPolicy<Mode, ppu_group_schedule::FinegrainedSchedule<GroupSize>,
-      Tile, Scale, Warp, Stages, Interleaved, Low, High, ArtifactTileK>;
+      Tile, Scale, Warp, Stages, Interleaved, Low, High, ArtifactTileK,
+      BChunk>;
 #if defined(PPU_PLANT_MIXED_POLICY_DRIFT) && (PPU_PLANT_MIXED_POLICY_DRIFT != 0)
   // Keep every input but the physical B layout the same. The planted compile must fail SamePolicy below; this is
   // how the local tier proves that the parity assertion observes a policy difference instead of comparing nothing.
   using Grouped = moe_grouped_ppu::MixedMainloopPolicy<Mode, ppu_group_schedule::FinegrainedSchedule<GroupSize>,
-      Tile, Scale, Warp, Stages, false, Low, High, ArtifactTileK>;
+      Tile, Scale, Warp, Stages, false, Low, High, ArtifactTileK,
+      BChunk>;
 #else
   using Grouped = moe_grouped_ppu::MixedMainloopPolicy<Mode, ppu_group_schedule::FinegrainedSchedule<GroupSize>,
-      Tile, Scale, Warp, Stages, Interleaved, Low, High, ArtifactTileK>;
+      Tile, Scale, Warp, Stages, Interleaved, Low, High, ArtifactTileK,
+      BChunk>;
 #endif
   static constexpr bool value = SamePolicy<Dense, Grouped>::value;
 };
@@ -83,6 +86,20 @@ static_assert(AdapterPair<Q::FinegrainedScaleZero, 128, T64, S64Gs128, W32x32, 4
 // Folded one-plane (int2/TK64 => F=2).
 static_assert(AdapterPair<Q::FinegrainedScaleZero, 16, T64, S64Gs16, W32x64, 3,
                           cutlass::uint2b_t>::value);
+using TypedBc0 = AdapterPair<Q::FinegrainedScaleZero, 16, T64, S64Gs16,
+                             W32x64, 3, cutlass::uint2b_t, void, true, 64, 0>;
+using TypedBc1 = AdapterPair<Q::FinegrainedScaleZero, 16, T64, S64Gs16,
+                             W32x64, 3, cutlass::uint2b_t, void, true, 64, 1>;
+static_assert(TypedBc0::value && TypedBc1::value);
+static_assert(TypedBc0::Dense::BChunkRequest == 0 &&
+              TypedBc1::Dense::BChunkRequest == 1);
+static_assert(cutlass::gemm::fold_schedule_traits<
+                  typename TypedBc1::Dense::KernelSchedule>::BChunk == 1);
+static_assert(TypedBc0::Dense::CollectiveOp::DispatchPolicy::BChunk == 0 &&
+              TypedBc1::Dense::CollectiveOp::DispatchPolicy::BChunk == 1);
+static_assert(!std::is_same_v<typename TypedBc0::Dense::CollectiveOp,
+                              typename TypedBc1::Dense::CollectiveOp>,
+              "BChunk must be part of the typed mainloop identity");
 // Two planes, with and without zero. The latter is the tuple branch that once silently selected ScaleZero.
 static_assert(AdapterPair<Q::FinegrainedScaleZero, 16, T64, S64Gs16, W32x32, 3,
                           cutlass::int4b_t, cutlass::uint2b_t>::value);

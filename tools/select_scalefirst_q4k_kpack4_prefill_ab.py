@@ -140,9 +140,7 @@ def materialize_arm(
     unit.write_text(
         "// GENERATED -- exact Q4 ScaleFirst persistent layout A/B rows.\n"
         "#ifdef PPU_PACKED_SCALE\n#undef PPU_PACKED_SCALE\n#endif\n"
-        "#define PPU_PACKED_SCALE 0\n"
-        "#ifdef PPU_B_CHUNK\n#undef PPU_B_CHUNK\n#endif\n"
-        "#define PPU_B_CHUNK 0\n" +
+        "#define PPU_PACKED_SCALE 0\n" +
         macro("SCALEFIRST_UNIT_ROWS", layout, rows) +
         '#include "scalefirst_internal_sweep_unit.inc"\n')
     registry = output / "scalefirst_registry.inc"

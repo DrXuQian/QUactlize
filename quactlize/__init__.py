@@ -256,7 +256,8 @@ def gguf_backend():
     PPU device code is built by build.sh with hgcc and cannot live in this extension, which setup.py builds with gcc
     and which has to keep running on machines with no SDK -- that is what makes the official gguf package usable as
     an oracle at all. The two halves share a PROCESS instead: build.sh emits libquactlize_ppu.so with C entry points,
-    this extension dlopens it, and the op forwards. Set QUACTLIZE_PPU_LIB to point at a specific one.
+    this extension dlopens it, and the op forwards. Set QUACTLIZE_PPU_BUNDLE to a verified six-library install, or
+    QUACTLIZE_PPU_LIB to override the default library directly.
 
     Returns "ppu (...)" or "cpu (...)". It is a value rather than something to infer from a timing because a silent
     fallback produces correct numbers slowly and reports nothing, which is indistinguishable from the device path
@@ -269,8 +270,8 @@ def gguf_backend_for_qtype(qtype: int):
     """Report the format-selected library used by arrangement-v2 artifacts of ``qtype``.
 
     ``gguf_backend()`` intentionally reports the legacy/default handle. Q4 K-pack4 preparation and FQ execution
-    instead use ``QUACTLIZE_PPU_LIB_FMT0`` (or the derived ``_fmt0`` path), so deployment checks must ask about
-    that exact handle rather than infer it from the default one.
+    instead use the FMT0 member of ``QUACTLIZE_PPU_BUNDLE``, ``QUACTLIZE_PPU_LIB_FMT0``, or the derived ``_fmt0``
+    path, so deployment checks must ask about that exact handle rather than infer it from the default one.
     """
     return _ops().gguf_backend_for_qtype(qtype)
 

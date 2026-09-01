@@ -29,22 +29,41 @@ constexpr int kDefaultFormat = -1;
 // Resolution, most specific first:
 //   QUACTLIZE_PPU_LIB_FMT<k>   an explicit path for format k
 //   QUACTLIZE_PPU_LIB          the default library's path, with _fmt<k> spliced before the suffix
+//   QUACTLIZE_PPU_BUNDLE       a directory containing the six canonical installed names
 //   libquactlize_ppu_fmt<k>.so the bare name, left to the loader search path
 // Format kDefaultFormat means "the default build", which is the path QUACTLIZE_PPU_LIB names verbatim -- so every
 // existing caller keeps its exact behaviour and nothing has to know about formats to keep working.
 std::string library_path(int fmt) {
   char const* base_env = std::getenv("QUACTLIZE_PPU_LIB");
-  std::string base = (base_env && *base_env) ? base_env : "libquactlize_ppu.so";
-  if (fmt == kDefaultFormat) return base;
+  bool const has_base = base_env && *base_env;
+  std::string const base = has_base ? base_env : "libquactlize_ppu.so";
+  char const* bundle_env = std::getenv("QUACTLIZE_PPU_BUNDLE");
+  bool const has_bundle = bundle_env && *bundle_env;
+  auto bundle_path = [&](std::string const& name) {
+    std::string root(bundle_env);
+    if (!root.empty() && root.back() != '/') root.push_back('/');
+    return root + name;
+  };
+  if (fmt == kDefaultFormat) {
+    if (has_base) return base;
+    if (has_bundle) return bundle_path("libquactlize_ppu.so");
+    return base;
+  }
 
   std::string const key = "QUACTLIZE_PPU_LIB_FMT" + std::to_string(fmt);
   if (char const* e = std::getenv(key.c_str())) { if (*e) return e; }
 
   std::string const suffix = ".so";
   std::string const tag = "_fmt" + std::to_string(fmt);
-  if (base.size() > suffix.size() && base.compare(base.size() - suffix.size(), suffix.size(), suffix) == 0)
-    return base.substr(0, base.size() - suffix.size()) + tag + suffix;
-  return base + tag;
+  if (has_base) {
+    if (base.size() > suffix.size() &&
+        base.compare(base.size() - suffix.size(), suffix.size(), suffix) == 0)
+      return base.substr(0, base.size() - suffix.size()) + tag + suffix;
+    return base + tag;
+  }
+  if (has_bundle)
+    return bundle_path("libquactlize_ppu" + tag + suffix);
+  return "libquactlize_ppu" + tag + suffix;
 }
 
 // ONE ATTEMPT PER FORMAT, and each failure is remembered separately. Retrying dlopen per call would turn a
@@ -81,6 +100,15 @@ State& state(int fmt) {
       if (e || !*out) { s.why = std::string("missing symbol ") + n + " in " + path; return false; }
       return true;
     };
+    if (!sym("quactlize_ppu_build_packed_format_v1",
+             reinterpret_cast<void**>(&s.api.build_packed_format))) return s;
+    int const actual = s.api.build_packed_format();
+    if (actual != fmt) {
+      s.why = std::string("packed-format identity mismatch in ") + path +
+              ": requested fmt" + std::to_string(fmt) +
+              ", library reports fmt" + std::to_string(actual);
+      return s;
+    }
     if (!sym("quactlize_ppu_vecdot", reinterpret_cast<void**>(&s.api.vecdot))) return s;
     dlerror();
     s.api.vecdot_dense = reinterpret_cast<decltype(s.api.vecdot_dense)>(

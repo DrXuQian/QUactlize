@@ -201,7 +201,7 @@ struct TcRowTypes {
   using Warp = cute::Shape<cute::C<WM>, cute::C<WN>, cute::C<TK>>;
   using Ordinary = fpa_intb_ppu::DenseKernelTypes<
       QuantMode::FinegrainedScaleZero, Schedule, Tile, ScaleTile, Warp,
-      Stages, true, Low, High, ArtifactTileK>;
+      Stages, true, Low, High, ArtifactTileK, BChunk>;
   static constexpr ppu_tactics::FormatSpec spec{
       QType == 10 ? ppu_tactics::Format::I2 :
       QType == 11 ? ppu_tactics::Format::Q3_K :
@@ -244,8 +244,8 @@ struct TcRowTypes {
   static constexpr int a_provider_capacity_rows =
       PackedAProviderCapacity<typename Shipping::MainloopPolicy>::value;
 
-  static_assert(PPU_B_CHUNK == BChunk,
-                "generated unit must bind the requested BChunk policy");
+  static_assert(Shipping::MainloopPolicy::BChunkRequest == BChunk,
+                "generated row must bind its typed BChunk request");
   static_assert(dense_splitk_parallel_ppu::MainloopUsesPackedMetadata<
                     typename Shipping::CollectiveMainloop>::value,
                 "FQ benchmark must instantiate the packed-unit collective");

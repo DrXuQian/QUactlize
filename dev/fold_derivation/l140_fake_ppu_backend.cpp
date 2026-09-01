@@ -5,8 +5,15 @@
 #ifndef L140_BACKEND_MARKER
 #error L140_BACKEND_MARKER must identify this fake binary
 #endif
+#ifndef L140_PACKED_FORMAT
+#define L140_PACKED_FORMAT -1
+#endif
 
 extern "C" {
+
+#if !defined(L140_OMIT_BUILD_IDENTITY)
+int32_t quactlize_ppu_build_packed_format_v1() { return L140_PACKED_FORMAT; }
+#endif
 
 int quactlize_ppu_vecdot(uint8_t const*, int64_t, uint16_t const*, float*, int, int, int) {
   return L140_BACKEND_MARKER;

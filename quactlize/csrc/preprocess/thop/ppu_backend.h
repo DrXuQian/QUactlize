@@ -25,6 +25,9 @@ namespace ppu_backend {
 // Every entry point the device .so must export, with C linkage. Raw pointers and shapes only -- no torch types, so
 // the .so can be built by a toolchain that has never heard of torch.
 struct Api {
+  // Mandatory build identity. Both the default slot (-1) and every format slot (0..4) reject a missing or
+  // mismatched identity before any placement or kernel entry is exposed.
+  int32_t (*build_packed_format)();
   // Independent block rows: blocks [rows*bpr,block_bytes], x fp16 [rows*bpr*256], out fp32 [rows].
   int (*vecdot)(uint8_t const* blocks, int64_t block_bytes, uint16_t const* x, float* out,
                 int rows, int blocks_per_row, int qtype);
@@ -146,8 +149,9 @@ struct Api {
 // model. Each format gets its own dlopen, its own cached failure, and its own message. RTLD_LOCAL (already used)
 // is what keeps several loaded at once from answering for each other's identically-named symbols.
 //
-// Path: QUACTLIZE_PPU_LIB_FMT<k>, else QUACTLIZE_PPU_LIB with _fmt<k> spliced before .so, else
-// libquactlize_ppu_fmt<k>.so. load() without a format keeps its exact previous behaviour.
+// Path: QUACTLIZE_PPU_LIB_FMT<k>, else QUACTLIZE_PPU_LIB with _fmt<k> spliced before .so, else the canonical
+// filename under QUACTLIZE_PPU_BUNDLE, else libquactlize_ppu_fmt<k>.so. load() uses the explicit base, then the
+// bundle's canonical default name, then the loader search path.
 Api const* load_format(int fmt, std::string* why = nullptr);
 
 Api const* load(std::string* why = nullptr);

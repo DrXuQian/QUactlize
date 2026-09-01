@@ -1032,9 +1032,9 @@ def test_zero_m_cannot_bypass_the_compiled_v2_arrangement_predicate(tmp_path):
         pytest.skip("the local extension is not built; setup.py build_ext enables this dlsym contract test")
     fake = root / "dev" / "fold_derivation" / "l140_fake_ppu_backend.cpp"
     common = [
-        os.environ.get("CXX", "c++"), "-std=c++17", "-O2", "-shared", "-fPIC",
-        f"-I{root / 'quactlize' / 'include'}", "-DL140_BACKEND_MARKER=140",
-        "-DL140_ACCEPT_V2=1",
+            os.environ.get("CXX", "c++"), "-std=c++17", "-O2", "-shared", "-fPIC",
+            f"-I{root / 'quactlize' / 'include'}", "-DL140_BACKEND_MARKER=140",
+            "-DL140_ACCEPT_V2=1", "-DL140_PACKED_FORMAT=0",
     ]
     wrong_layout = tmp_path / "fmt0_wrong_layout.so"
     predicate_only = tmp_path / "fmt0_predicate_only.so"
@@ -1086,8 +1086,9 @@ def test_zero_m_kpack4_v2_reaches_the_exact_dlsym_predicate(tmp_path):
     fake = root / "dev" / "fold_derivation" / "l140_fake_ppu_backend.cpp"
     output = tmp_path / "fmt0_v2.so"
     built = subprocess.run([
-        os.environ.get("CXX", "c++"), "-std=c++17", "-O2", "-shared", "-fPIC",
-        f"-I{root / 'quactlize' / 'include'}", "-DL140_BACKEND_MARKER=140", "-DL140_ACCEPT_V2=1",
+            os.environ.get("CXX", "c++"), "-std=c++17", "-O2", "-shared", "-fPIC",
+            f"-I{root / 'quactlize' / 'include'}", "-DL140_BACKEND_MARKER=140", "-DL140_ACCEPT_V2=1",
+            "-DL140_PACKED_FORMAT=0",
         str(fake), "-o", str(output)], capture_output=True, text=True)
     assert built.returncode == 0, built.stdout + built.stderr
     code = r'''

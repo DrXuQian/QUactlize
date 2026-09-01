@@ -315,10 +315,6 @@ bool run_row(DeviceInputs const& inputs, Options const& options,
                 "generated M1 packed-A rows must use the m8 instruction family");
   static_assert(BChunk == 0,
                 "the committed packed-A legal domain currently contains only bc0");
-#if defined(PPU_B_CHUNK)
-  static_assert(PPU_B_CHUNK == BChunk,
-                "generated unit and committed row disagree on B-chunk mode");
-#endif
   static_assert(Shipping::MainloopPolicy::ArtifactTileK == kArtifactTileK &&
                     Shipping::MainloopPolicy::ArtifactLowFold == 1,
                 "the sweep must consume the committed unfolded TK64 artifact");

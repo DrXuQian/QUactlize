@@ -253,7 +253,13 @@ int launch_grouped_q4_kpack4_tactic(
   using Warp = cute::Shape<cute::C<WarpM>, cute::C<WarpN>, cute::C<256>>;
   using Kpack4Policy = ppu_mixed_policy::Q4KPack4MainloopPolicy<
       GQM::FinegrainedScaleZero, Schedule, Tile, Scale, Warp, Stages,
-      true, 0, 0>;
+      true, 0, 0, cutlass::gemm::SeparateHalfPlanes>;
+  static_assert(std::is_same_v<
+                    typename Kpack4Policy::CollectiveOp::MetadataPublication,
+                    cutlass::gemm::SeparateHalfPlanes>,
+                "ragged grouped Q4 retains separate metadata planes");
+  static_assert(!Kpack4Policy::Descriptor::interleaved_metadata,
+                "ragged grouped Q4 must not inherit dense metadata publication");
   return launch_grouped_tactic<
       GQM::FinegrainedScaleZero, true, cutlass::int4b_t, void, 32,
       256, TileM, TileN, WarpM, WarpN, Stages, QueryOnly,
@@ -581,6 +587,9 @@ int launch_dense_q4_kpack4_exact(
                 "shipping K-pack4 A provider is ordinary or one-row packed");
   static_assert(Mainloop::is_packed_scale,
                 "fully-quantized K-pack4 must retain packed Q4_K metadata");
+  static_assert(Shipping::MainloopPolicy::Descriptor::interleaved_metadata &&
+                    Mainloop::is_fused_scale_zero,
+                "canonical dense Q4 K-pack4 must use typed interleaved ScaleZero publication");
   static_assert(
       std::is_same_v<typename Shipping::MainloopPolicy::Descriptor::BProviderType,
                      ppu_mixed_policy::KPack4TransposedBProvider>,
