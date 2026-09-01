@@ -49,10 +49,14 @@ class _Fmt2PolicyLibrary:
     def __init__(self, *, exact_name=b"32x32:16x16:s3"):
         self._exact_name = exact_name
         self.quactlize_ppu_canonical_arrangement_v2 = _Function(self._canonical)
+        self.quactlize_ppu_dense_fully_quantized_any_m_valid_for_arrangement_v2 = (
+            _Function(self._dense_any_m))
         self.quactlize_ppu_dense_fully_quantized_selected_config_for_arrangement_v2 = (
             _Function(self._dense))
         self.quactlize_ppu_grouped_fully_quantized_selected_config_for_arrangement_v2 = (
             _Function(self._grouped))
+        self.quactlize_ppu_grouped_fully_quantized_any_m_valid_for_arrangement_v2 = (
+            _Function(self._grouped_any_m))
 
     @staticmethod
     def _canonical(qtype, output):
@@ -110,14 +114,35 @@ class _Fmt2PolicyLibrary:
         })
         return 1
 
+    @staticmethod
+    def _grouped_any_m(n, k, experts, qtype, arrangement):
+        if not arrangement or n <= 0 or k <= 0 or experts <= 0 or qtype != 10:
+            return 0
+        value = ctypes.cast(
+            arrangement, ctypes.POINTER(oracle.ArrangementV2)).contents
+        return int(value.mapping_id == 0x514B504B54000001)
+
+    @staticmethod
+    def _dense_any_m(n, k, qtype, arrangement):
+        if not arrangement or n <= 0 or k <= 0 or qtype != 10:
+            return 0
+        value = ctypes.cast(
+            arrangement, ctypes.POINTER(oracle.ArrangementV2)).contents
+        return int(value.mapping_id == 0x514B504B54000001)
+
 
 def test_current_runtime_bundle_contract_requires_selected_config_exports():
     assert ppu_bundle.REQUIRED_EXPORTS == (
         ppu_bundle.LEGACY_REQUIRED_EXPORTS |
-        ppu_bundle.SELECTED_CONFIG_REQUIRED_EXPORTS)
+        ppu_bundle.SELECTED_CONFIG_REQUIRED_EXPORTS |
+        ppu_bundle.ANY_M_REQUIRED_EXPORTS)
     assert ppu_bundle.SELECTED_CONFIG_REQUIRED_EXPORTS == {
         "quactlize_ppu_dense_fully_quantized_selected_config_for_arrangement_v2",
         "quactlize_ppu_grouped_fully_quantized_selected_config_for_arrangement_v2",
+    }
+    assert ppu_bundle.ANY_M_REQUIRED_EXPORTS == {
+        "quactlize_ppu_dense_fully_quantized_any_m_valid_for_arrangement_v2",
+        "quactlize_ppu_grouped_fully_quantized_any_m_valid_for_arrangement_v2",
     }
 
 
@@ -134,7 +159,9 @@ def test_selected_config_oracle_covers_exact_default_override_stale_and_grouped(
         "dense_unmeasured": "8x128:8x32:s3",
         "dense_explicit": "8x128:8x32:s3",
         "dense_stale": "FAIL_CLOSED",
+        "dense_any_m": "ALL_M_VALID",
         "grouped_default": "16x128:16x16:s2",
+        "grouped_any_m": "ALL_M_VALID",
     }
 
 
@@ -145,11 +172,28 @@ def test_selected_config_oracle_rejects_policy_drift(monkeypatch, tmp_path):
         oracle.verify_selected_config(tmp_path)
 
 
-def test_missing_selected_config_symbol_is_called_legacy_not_current():
+@pytest.mark.parametrize("field", [
+    "quactlize_ppu_dense_fully_quantized_any_m_valid_for_arrangement_v2",
+    "quactlize_ppu_grouped_fully_quantized_any_m_valid_for_arrangement_v2",
+])
+def test_selected_config_oracle_rejects_permissive_any_m(
+        monkeypatch, tmp_path, field):
+    library = _Fmt2PolicyLibrary()
+    setattr(library, field, _Function(lambda *_arguments: 1))
+    monkeypatch.setattr(oracle, "_load_libraries", lambda _bundle: {"fmt2": library})
+    with pytest.raises(oracle.OracleError, match="did not fail closed"):
+        oracle.verify_selected_config(tmp_path)
+
+
+@pytest.mark.parametrize("symbol", [
+    "quactlize_ppu_dense_fully_quantized_selected_config_for_arrangement_v2",
+    "quactlize_ppu_grouped_fully_quantized_selected_config_for_arrangement_v2",
+    "quactlize_ppu_dense_fully_quantized_any_m_valid_for_arrangement_v2",
+    "quactlize_ppu_grouped_fully_quantized_any_m_valid_for_arrangement_v2",
+])
+def test_missing_policy_symbol_is_called_legacy_not_current(symbol):
     class Legacy:
         _name = str(Path("libquactlize_ppu_fmt2.so"))
 
     with pytest.raises(oracle.OracleError, match="legacy runtime bundle"):
-        oracle._symbol(
-            Legacy(),
-            "quactlize_ppu_dense_fully_quantized_selected_config_for_arrangement_v2")
+        oracle._symbol(Legacy(), symbol)

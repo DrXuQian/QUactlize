@@ -117,8 +117,22 @@ def _selected_library(spec):
         _write_config(output, gate.ConfigV3, spec.expected_grouped_record)
         return 1
 
+    def grouped_any_m(_n, _k, _experts, qtype, arrangement):
+        if not arrangement or qtype != spec.qtype:
+            return 0
+        value = ctypes.cast(arrangement, gate.ARRP).contents
+        return int(value.mapping_id == spec.mapping_id)
+
+    def dense_any_m(_n, _k, qtype, arrangement):
+        if not arrangement or qtype != spec.qtype:
+            return 0
+        value = ctypes.cast(arrangement, gate.ARRP).contents
+        return int(value.mapping_id == spec.mapping_id)
+
     return SimpleNamespace(
-        dense_selected=_Function(dense), grouped_selected=_Function(grouped))
+        dense_selected=_Function(dense), grouped_selected=_Function(grouped),
+        dense_any_m=_Function(dense_any_m),
+        grouped_any_m=_Function(grouped_any_m))
 
 
 def _manifest(tmp_path):
@@ -249,6 +263,36 @@ def test_selected_config_contract_rejects_geometry_drift_with_same_name():
     arrangement = gate.ArrangementV2(*spec.expected_arrangement)
     with pytest.raises(gate.GateError, match="null dense selector differs"):
         gate._assert_selected_config_contract(library, spec, arrangement)
+
+
+@pytest.mark.parametrize("spec", gate.FORMATS, ids=lambda spec: spec.name)
+def test_any_m_contract_admits_shapes_and_rejects_identity_plants(spec):
+    arrangement = gate.ArrangementV2(*spec.expected_arrangement)
+    assert gate._assert_any_m_contract(
+        _selected_library(spec), spec, arrangement) == {
+            "dense": {
+                "valid": 1,
+                "bad_mapping": 0,
+                "null_arrangement": 0,
+                "foreign_format": 0,
+            },
+            "grouped": {
+                "valid": 1,
+                "bad_mapping": 0,
+                "null_arrangement": 0,
+                "foreign_format": 0,
+            },
+        }
+
+
+@pytest.mark.parametrize("field", ["dense_any_m", "grouped_any_m"])
+def test_any_m_contract_rejects_a_permissive_export(field):
+    spec = gate.FORMATS[0]
+    library = _selected_library(spec)
+    setattr(library, field, _Function(lambda *_arguments: 1))
+    arrangement = gate.ArrangementV2(*spec.expected_arrangement)
+    with pytest.raises(gate.GateError, match="did not fail closed"):
+        gate._assert_any_m_contract(library, spec, arrangement)
 
 
 @pytest.mark.parametrize("spec", gate.FORMATS, ids=lambda spec: spec.name)

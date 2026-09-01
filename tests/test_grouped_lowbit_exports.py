@@ -52,6 +52,7 @@ def test_grouped_fully_quantized_exposes_the_kpack4_arrangement_surface():
         "quactlize_ppu_grouped_fully_quantized_workspace_bytes_v1",
         "quactlize_ppu_grouped_fully_quantized_for_arrangement_v2",
         "quactlize_ppu_grouped_fully_quantized_config_valid_for_arrangement_v2",
+        "quactlize_ppu_grouped_fully_quantized_any_m_valid_for_arrangement_v2",
         "quactlize_ppu_grouped_fully_quantized_selected_config_for_arrangement_v2",
         "quactlize_ppu_grouped_fully_quantized_dev_for_arrangement_v2",
         "quactlize_ppu_grouped_fully_quantized_workspace_bytes_for_arrangement_v2",

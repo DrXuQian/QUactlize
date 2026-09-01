@@ -95,7 +95,16 @@ SELECTED_CONFIG_REQUIRED_EXPORTS = {
     "quactlize_ppu_grouped_fully_quantized_selected_config_for_arrangement_v2",
 }
 
-REQUIRED_EXPORTS = LEGACY_REQUIRED_EXPORTS | SELECTED_CONFIG_REQUIRED_EXPORTS
+ANY_M_REQUIRED_EXPORTS = {
+    "quactlize_ppu_dense_fully_quantized_any_m_valid_for_arrangement_v2",
+    "quactlize_ppu_grouped_fully_quantized_any_m_valid_for_arrangement_v2",
+}
+
+REQUIRED_EXPORTS = (
+    LEGACY_REQUIRED_EXPORTS |
+    SELECTED_CONFIG_REQUIRED_EXPORTS |
+    ANY_M_REQUIRED_EXPORTS
+)
 
 
 class BundleError(ValueError):

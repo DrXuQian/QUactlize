@@ -215,6 +215,8 @@ class BoundLibrary:
     handle: ctypes.CDLL
     identity: object
     canonical: object
+    dense_any_m: object
+    grouped_any_m: object
     units_bytes: object
     prepare: object
     recover: object
@@ -251,6 +253,14 @@ def _bind_format_library(path: pathlib.Path) -> BoundLibrary:
         canonical=_bind(
             handle, "quactlize_ppu_canonical_arrangement_v2",
             [i32, ARRP], i32),
+        dense_any_m=_bind(
+            handle,
+            "quactlize_ppu_dense_fully_quantized_any_m_valid_for_arrangement_v2",
+            [i32, i32, i32, ARRP], i32),
+        grouped_any_m=_bind(
+            handle,
+            "quactlize_ppu_grouped_fully_quantized_any_m_valid_for_arrangement_v2",
+            [i32, i32, i32, i32, ARRP], i32),
         units_bytes=_bind(
             handle, "quactlize_ppu_units_bytes", [i32, i32, i32], i64),
         prepare=_bind(
@@ -797,6 +807,66 @@ def _assert_selected_config_contract(
     )
 
 
+def _assert_any_m_contract(
+        library: BoundLibrary, spec: FormatSpec,
+        arrangement: ArrangementV2) -> dict[str, dict[str, int]]:
+    _m, dense_n, dense_k = DENSE_SHAPE
+    dense_admitted = int(library.dense_any_m(
+        dense_n, dense_k, spec.qtype, ctypes.byref(arrangement)))
+    if dense_admitted != 1:
+        raise GateError(
+            f"{spec.name} dense any-M admission returned {dense_admitted}, "
+            "expected 1")
+
+    _total, n, k, experts = GROUPED_SHAPE
+    grouped_admitted = int(library.grouped_any_m(
+        n, k, experts, spec.qtype, ctypes.byref(arrangement)))
+    if grouped_admitted != 1:
+        raise GateError(
+            f"{spec.name} grouped any-M admission returned {grouped_admitted}, "
+            "expected 1")
+
+    bad = _copy_arrangement(arrangement)
+    bad.mapping_id ^= 1
+    dense_bad_mapping = int(library.dense_any_m(
+        dense_n, dense_k, spec.qtype, ctypes.byref(bad)))
+    dense_null_arrangement = int(library.dense_any_m(
+        dense_n, dense_k, spec.qtype, None))
+    grouped_bad_mapping = int(library.grouped_any_m(
+        n, k, experts, spec.qtype, ctypes.byref(bad)))
+    grouped_null_arrangement = int(library.grouped_any_m(
+        n, k, experts, spec.qtype, None))
+    foreign_qtype = 10 if spec.qtype != 10 else 11
+    dense_foreign_format = int(library.dense_any_m(
+        dense_n, dense_k, foreign_qtype, ctypes.byref(arrangement)))
+    grouped_foreign_format = int(library.grouped_any_m(
+        n, k, experts, foreign_qtype, ctypes.byref(arrangement)))
+    failures = (
+        dense_bad_mapping, dense_null_arrangement, dense_foreign_format,
+        grouped_bad_mapping, grouped_null_arrangement, grouped_foreign_format,
+    )
+    if any(failures):
+        raise GateError(
+            f"{spec.name} any-M admission did not fail closed: "
+            f"dense=[{dense_bad_mapping},{dense_null_arrangement},"
+            f"{dense_foreign_format}] grouped=[{grouped_bad_mapping},"
+            f"{grouped_null_arrangement},{grouped_foreign_format}]")
+    return {
+        "dense": {
+            "valid": dense_admitted,
+            "bad_mapping": dense_bad_mapping,
+            "null_arrangement": dense_null_arrangement,
+            "foreign_format": dense_foreign_format,
+        },
+        "grouped": {
+            "valid": grouped_admitted,
+            "bad_mapping": grouped_bad_mapping,
+            "null_arrangement": grouped_null_arrangement,
+            "foreign_format": grouped_foreign_format,
+        },
+    }
+
+
 def _raw_blocks(
         spec: FormatSpec, n: int, k: int, experts: int, seed: int) -> np.ndarray:
     block_rows = experts * n * (k // 256)
@@ -1059,6 +1129,8 @@ def _run_format_gate(
             f"{spec.name} canonical arrangement differs rc={rc}: "
             f"got={got_arrangement!r} expected={spec.expected_arrangement!r}")
 
+    any_m = _assert_any_m_contract(
+        library, spec, arrangement)
     dense_config, grouped_config, selected = _assert_selected_config_contract(
         library, spec, arrangement)
     bad_mapping = _mapping_red(library, spec, arrangement)
@@ -1157,6 +1229,7 @@ def _run_format_gate(
         "role": spec.role,
         "packed_format": spec.packed_format,
         "arrangement": list(got_arrangement),
+        "any_m": any_m,
         "selected_config": selected,
         "host_prepare_recover": "BYTE_EXACT",
         "frozen_host_artifact": frozen_artifact,

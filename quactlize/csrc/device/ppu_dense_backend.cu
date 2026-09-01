@@ -1806,6 +1806,55 @@ extern "C" int32_t quactlize_ppu_grouped_fully_quantized_selected_config_for_arr
   return 1;
 }
 
+extern "C" int32_t quactlize_ppu_dense_fully_quantized_any_m_valid_for_arrangement_v2(
+    int n, int k, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement) {
+  if (!arrangement ||
+      (arrangement->layout != QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1 &&
+       arrangement->layout != QUACTLIZE_PPU_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1)) {
+    return 0;
+  }
+  auto valid_at = [&](int m) {
+    quactlize_ppu_config_v4 selected{};
+    return quactlize_ppu_dense_fully_quantized_selected_config_for_arrangement_v2(
+               &selected, m, n, k, qtype_group_size(qtype), qtype,
+               arrangement, nullptr) == 1;
+  };
+
+  if (arrangement->layout ==
+      QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1) {
+    // For fixed N/K the Q4 policy has three M equivalence classes: M<8,
+    // the M==8 boundary, and prefill M>8.
+    return valid_at(1) && valid_at(8) && valid_at(9);
+  }
+
+  // Generic K-pack has finite exact measured points.  Every other positive M
+  // falls into one of the existing decode/prefill compiled-default regions.
+  if (!valid_at(3) || !valid_at(9)) return 0;
+  for (int m : ppu_kquant_measured_policy::kMeasuredDynamicValues) {
+    if (!valid_at(m)) return 0;
+  }
+  return 1;
+}
+
+extern "C" int32_t quactlize_ppu_grouped_fully_quantized_any_m_valid_for_arrangement_v2(
+    int n, int k, int experts, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement) {
+  if (experts <= 0 || !arrangement ||
+      (arrangement->layout != QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1 &&
+       arrangement->layout != QUACTLIZE_PPU_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1)) {
+    return 0;
+  }
+  quactlize_ppu_config_v3 selected{};
+  // The grouped null selector always names the compiled default.  Its
+  // RequireUniversalFallback instantiation statically rejects shared storage
+  // overflow and a bounded Packed-A provider, so (1,1) is a proof witness for
+  // every legal total_rows/max_rows pair rather than a sampled M.
+  return quactlize_ppu_grouped_fully_quantized_selected_config_for_arrangement_v2(
+             &selected, 1, n, k, qtype_group_size(qtype), experts, 1,
+             qtype, arrangement, nullptr) == 1;
+}
+
 extern "C" int32_t quactlize_ppu_list_valid_dense_lowbit_configs_v2(
     quactlize_ppu_config_v2* configs, int32_t capacity,
     int m, int n, int k, int group_size, int qtype) {

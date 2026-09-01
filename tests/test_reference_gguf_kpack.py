@@ -84,7 +84,7 @@ def test_reference_dense_is_byte_exact_and_has_canonical_carriers(qtype):
     assert torch.equal(ref.recover_raw_blocks(artifact), raw)
 
 
-@pytest.mark.parametrize("qtype", [11, 13])
+@pytest.mark.parametrize("qtype", [10, 11, 12, 13, 14])
 def test_reference_grouped_adds_only_the_expert_major_axis(qtype):
     spec = ref.SPECS[qtype]
     raw = _raw(spec, experts=2)
@@ -98,7 +98,10 @@ def test_reference_grouped_adds_only_the_expert_major_axis(qtype):
             raw[expert * per_expert_rows:(expert + 1) * per_expert_rows],
             256, 512, qtype)
         assert torch.equal(grouped.low[expert], dense.low[0])
-        assert torch.equal(grouped.high[expert], dense.high[0])
+        if spec.high_bits:
+            assert torch.equal(grouped.high[expert], dense.high[0])
+        else:
+            assert grouped.high.numel() == dense.high.numel() == 0
         assert torch.equal(grouped.units[expert], dense.units)
     assert torch.equal(ref.recover_raw_blocks(grouped), raw)
 

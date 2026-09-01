@@ -50,11 +50,20 @@ constexpr bool matches_compiled_tactic(
 }
 
 constexpr quactlize_ppu_placed_arrangement_v2 q4_kpack4_transpose_v1() {
+  auto const& format = ppu_formats::for_qtype(12);
   return {QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V2,
           QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1,
-          4, 0, 0, q4_kpack4::kTransportK, q4_kpack4::kGroupK, 0,
+          format.low_bits, format.high_bits, 0, q4_kpack4::kTransportK,
+          format.group_size, 0,
           q4_kpack4::kMappingId};
 }
+
+static_assert(ppu_formats::for_qtype(12).qtype == 12 &&
+                  ppu_formats::for_qtype(12).low_bits == 4 &&
+                  ppu_formats::for_qtype(12).high_bits == 0 &&
+                  ppu_formats::for_qtype(12).group_size ==
+                      q4_kpack4::kGroupK,
+              "Q4 K-pack physical constants must agree with the format registry");
 
 constexpr quactlize_ppu_placed_arrangement_v2 kquant_kpack_transpose_v1(
     int qtype) {

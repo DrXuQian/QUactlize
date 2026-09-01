@@ -2,14 +2,16 @@
 """Verify the host-only K-pack selected-config ABI in a runtime bundle.
 
 This oracle creates no PPU context and launches no kernel.  It first binds the
-six manifest-owned libraries, requires the two selected-config exports in each
-one, and then exercises the FMT2/Q2 library at five policy boundaries:
+six manifest-owned libraries, requires the selected-config and dense/grouped
+any-M exports in each one, and then exercises the FMT2/Q2 library at the policy
+boundaries below:
 
 * an exact measured dense point;
 * an unmeasured dense point falling back to the compiled shipping default;
 * an explicit config overriding the measured point;
 * an unknown explicit config failing closed and clearing its output;
 * the grouped compiled default (grouped measured routing is not public yet).
+* loader-time dense/grouped any-M admission and descriptor-negative controls.
 
 The exact measured row is deliberately fixed.  A regenerated policy that
 changes it must update this admission oracle in the same reviewed change.
@@ -116,7 +118,7 @@ def _symbol(library: ctypes.CDLL, name: str):
     except AttributeError as exc:
         raise OracleError(
             f"{pathlib.Path(library._name).name} lacks {name}; this is a "
-            "legacy runtime bundle, not a selected-config ABI bundle") from exc
+            "legacy runtime bundle, not a current policy ABI bundle") from exc
 
 
 def _load_libraries(bundle: pathlib.Path) -> dict[str, ctypes.CDLL]:
@@ -135,11 +137,15 @@ def _load_libraries(bundle: pathlib.Path) -> dict[str, ctypes.CDLL]:
             line.split()[-1] for line in inspected.stdout.splitlines()
             if line.split()
         }
-        missing = sorted(ppu_bundle.SELECTED_CONFIG_REQUIRED_EXPORTS - exports)
+        policy_exports = (
+            ppu_bundle.SELECTED_CONFIG_REQUIRED_EXPORTS |
+            ppu_bundle.ANY_M_REQUIRED_EXPORTS
+        )
+        missing = sorted(policy_exports - exports)
         if missing:
             raise OracleError(
                 f"{role.filename} lacks {missing}; this is a legacy runtime "
-                "bundle, not a selected-config ABI bundle")
+                "bundle, not a current policy ABI bundle")
         try:
             library = ctypes.CDLL(
                 str(path), mode=os.RTLD_NOW | os.RTLD_LOCAL)
@@ -154,7 +160,7 @@ def _load_libraries(bundle: pathlib.Path) -> dict[str, ctypes.CDLL]:
             raise OracleError(
                 f"{role.filename} reports packed format {got_identity}, "
                 f"expected {expected_identity}")
-        for required in ppu_bundle.SELECTED_CONFIG_REQUIRED_EXPORTS:
+        for required in policy_exports:
             _symbol(library, required)
         libraries[role.role] = library
     return libraries
@@ -208,6 +214,46 @@ def verify_selected_config(bundle: pathlib.Path) -> dict[str, str]:
         raise OracleError(
             f"FMT2 canonical Q2 arrangement differs: rc={rc} "
             f"got={got_arrangement!r} expected={expected_arrangement!r}")
+
+    dense_any_m = _symbol(
+        library,
+        "quactlize_ppu_dense_fully_quantized_any_m_valid_for_arrangement_v2")
+    dense_any_m.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ARRP]
+    dense_any_m.restype = ctypes.c_int32
+    dense_any_m_rc = int(dense_any_m(
+        256, 3072, 10, ctypes.byref(arrangement)))
+    if dense_any_m_rc != 1:
+        raise OracleError(
+            f"dense any-M admission returned {dense_any_m_rc}, expected 1")
+
+    grouped_any_m = _symbol(
+        library,
+        "quactlize_ppu_grouped_fully_quantized_any_m_valid_for_arrangement_v2")
+    grouped_any_m.argtypes = [
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ARRP,
+    ]
+    grouped_any_m.restype = ctypes.c_int32
+    any_m_rc = int(grouped_any_m(
+        512, 2048, 256, 10, ctypes.byref(arrangement)))
+    if any_m_rc != 1:
+        raise OracleError(
+            f"grouped any-M admission returned {any_m_rc}, expected 1")
+    bad_arrangement = ArrangementV2.from_buffer_copy(bytes(arrangement))
+    bad_arrangement.mapping_id ^= 1
+    dense_bad_mapping_rc = int(dense_any_m(
+        256, 3072, 10, ctypes.byref(bad_arrangement)))
+    dense_null_rc = int(dense_any_m(256, 3072, 10, None))
+    grouped_bad_mapping_rc = int(grouped_any_m(
+        512, 2048, 256, 10, ctypes.byref(bad_arrangement)))
+    grouped_null_rc = int(grouped_any_m(512, 2048, 256, 10, None))
+    if (dense_bad_mapping_rc != 0 or dense_null_rc != 0 or
+            grouped_bad_mapping_rc != 0 or grouped_null_rc != 0):
+        raise OracleError(
+            "any-M admission did not fail closed: "
+            f"dense_bad_mapping={dense_bad_mapping_rc} "
+            f"dense_null={dense_null_rc} "
+            f"grouped_bad_mapping={grouped_bad_mapping_rc} "
+            f"grouped_null={grouped_null_rc}")
 
     dense = _symbol(
         library,
@@ -275,7 +321,9 @@ def verify_selected_config(bundle: pathlib.Path) -> dict[str, str]:
         "dense_unmeasured": fallback_name,
         "dense_explicit": explicit_name,
         "dense_stale": "FAIL_CLOSED",
+        "dense_any_m": "ALL_M_VALID",
         "grouped_default": grouped_name,
+        "grouped_any_m": "ALL_M_VALID",
     }
 
 

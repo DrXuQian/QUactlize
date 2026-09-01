@@ -161,6 +161,24 @@ int32_t quactlize_ppu_grouped_fully_quantized_selected_config_for_arrangement_v2
     int qtype, quactlize_ppu_placed_arrangement_v2 const* arrangement,
     char const* requested_config_name);
 
+// Host-only admission for loaders that replace the source GGUF bytes with one
+// resident K-pack artifact before runtime M is known.  These queries describe
+// the null-config device path, not merely whether an unrelated explicit row is
+// present in the inventory.  They launch no work and return 1 only when that
+// path has a compiled tactic for every positive runtime M in its public domain.
+//
+// Dense covers every exact measured-M selector point and both unmeasured
+// fallback regions.  Grouped covers every legal ragged distribution with
+// total_rows > 0 and 0 < max_rows <= total_rows; zero-row experts remain legal.
+// This is a tactic-capability query, not a promise that an arbitrary-size
+// workspace allocation will succeed.
+int32_t quactlize_ppu_dense_fully_quantized_any_m_valid_for_arrangement_v2(
+    int n, int k, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement);
+int32_t quactlize_ppu_grouped_fully_quantized_any_m_valid_for_arrangement_v2(
+    int n, int k, int experts, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement);
+
 // Writes up to capacity valid records and returns the full valid-record count, so a caller may first pass
 // (NULL, 0), allocate exactly that many records, and query again. A negative capacity writes nothing. These are
 // host-only queries and require no CUDA/PPU context. Dense/grouped tensor records report the scheme-specific TileK

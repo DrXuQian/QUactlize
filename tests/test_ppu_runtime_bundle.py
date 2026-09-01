@@ -61,8 +61,10 @@ def test_runtime_bundle_requires_loader_facing_arrangement_v2_exports():
         "quactlize_ppu_grouped_fully_quantized_dev_for_arrangement_v2",
         "quactlize_ppu_list_valid_dense_fully_quantized_configs_for_arrangement_v2_v4",
         "quactlize_ppu_dense_fully_quantized_config_valid_for_arrangement_v2",
+        "quactlize_ppu_dense_fully_quantized_any_m_valid_for_arrangement_v2",
         "quactlize_ppu_list_valid_grouped_fully_quantized_configs_for_arrangement_v2",
         "quactlize_ppu_grouped_fully_quantized_config_valid_for_arrangement_v2",
+        "quactlize_ppu_grouped_fully_quantized_any_m_valid_for_arrangement_v2",
     } <= ppu_bundle.REQUIRED_EXPORTS
 
 
@@ -72,6 +74,28 @@ def test_runtime_bundle_requires_complete_units_producer_exports():
         "quactlize_ppu_prepare_units",
         "quactlize_ppu_prepare_units_grouped",
     } <= ppu_bundle.REQUIRED_EXPORTS
+
+
+@pytest.mark.parametrize("missing", sorted(ppu_bundle.ANY_M_REQUIRED_EXPORTS))
+def test_runtime_bundle_binary_inspection_requires_each_any_m_export(
+        tmp_path, monkeypatch, missing):
+    _bundle(tmp_path)
+    sdk = tmp_path.with_name(tmp_path.name + "-sdk")
+    (sdk / "bin").mkdir(parents=True)
+    (sdk / "release.yaml").write_text(
+        f"version: {ppu_bundle.SDK_RELEASE}\n", encoding="utf-8")
+    inspector = sdk / "bin" / "hgobjdump"
+    inspector.write_text("#!/bin/sh\n", encoding="utf-8")
+    inspector.chmod(0o755)
+    exports = ppu_bundle.REQUIRED_EXPORTS - {missing}
+
+    def inspect(command):
+        assert command[:3] == ["nm", "-D", "--defined-only"]
+        return "\n".join(f"00000000 T {symbol}" for symbol in sorted(exports))
+
+    monkeypatch.setattr(ppu_bundle, "_run", inspect)
+    with pytest.raises(ppu_bundle.BundleError, match=missing):
+        ppu_bundle.verify_bundle(tmp_path, sdk_root=sdk, inspect_binaries=True)
 
 
 @pytest.mark.parametrize("plant", [
