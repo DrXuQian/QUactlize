@@ -265,6 +265,10 @@ Whole-model driver: `quactlize-pack-gguf MODEL.gguf OUT_DIR [--dry-run]`. `--dry
 rank-2 GGML `MUL_MAT` tensors use the dense producer. Recognised rank-3 fast-first `[K,N,E]` K-quant tensors use the
 grouped producer and retain `route_class=grouped`, `experts=E`, and the v2 descriptor in the manifest; they are not
 silently flattened into a dense matrix. Unknown and non-matrix roles fail closed instead of being guessed from rank.
+The output directory is a persistent sidecar, not a rewritten GGUF. Bundle schema v2 records the source GGUF byte
+size and SHA-256; a cache consumer calls `load_kpack_bundle(OUT_DIR, source=MODEL.gguf)` before reuse. The `model`
+path is diagnostic, so an identical model may move, while a different model at the same path is rejected. Omitting
+`source=` validates only the sidecar's internal bytes and cannot authorize a cache hit.
 
 The default Q4 pack command names the format-selected library explicitly:
 

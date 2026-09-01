@@ -143,7 +143,9 @@ not reach that target's HGCC command.
 
 The format-unified producer is explicit and writes the named
 `quactlize.kquant-kpack.bundle` schema. Each tensor has collision-safe storage,
-an arrangement-v2 descriptor and per-array hashes; the strict bundle reader
+an arrangement-v2 descriptor and per-array hashes. Schema v2 also binds the
+bundle to `source={format,size_bytes,sha256}`, so replacing a model at
+the same path cannot silently reuse stale K-pack bytes. The strict bundle reader
 rejects partial, extra or noncanonical contents. Installation provides one
 packer entry point. The normal deployment form needs only the bundle root:
 
@@ -151,6 +153,24 @@ packer entry point. The normal deployment form needs only the bundle root:
 export QUACTLIZE_PPU_BUNDLE=/opt/quactlize/ppu0010
 quactlize-pack-gguf MODEL.gguf OUT_DIR
 ```
+
+`OUT_DIR` is the persistent sidecar. Build it once, retain it beside the model,
+and on later loads validate and read it without converting again. Publication
+uses a sibling staging directory plus one final rename, and an existing
+`OUT_DIR` is never overwritten:
+
+```python
+from quactlize.pack_gguf import load_kpack_bundle
+
+bundle = load_kpack_bundle("OUT_DIR", source="MODEL.gguf")
+```
+
+The `model` path in the manifest is a diagnostic hint; identical contents at a
+different path still validate. A content mismatch is fatal. Validation hashes
+the current GGUF and then uploads the saved arrays, but does not redo placement.
+The original GGUF is never overwritten, and K-pack bytes are never labelled as
+ordinary GGUF `Q*_K` tensors. Calling `load_kpack_bundle` without `source=` only
+checks the sidecar itself and is insufficient to authorize a cache hit.
 
 Individual overrides remain available for debugging or a nonstandard install:
 

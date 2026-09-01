@@ -4,8 +4,9 @@
 The directory container is a named, versioned interchange boundary. It is not
 a rewritten GGUF file: each tensor directory contains the three resident arrays
 ``low.npy``, ``high.npy`` and ``units.npy``, while ``manifest.json`` binds those
-bytes to their exact arrangement descriptor. ``load_kpack_bundle`` validates
-the complete directory before returning any artifact.
+bytes to their exact arrangement descriptor and the source GGUF's size and
+SHA-256. ``load_kpack_bundle(..., source=MODEL)`` validates both authorities
+before returning any artifact suitable for cache reuse.
 
 IT IS ALSO USEFUL BEFORE llama.cpp EXISTS AS A CONSUMER. Every artifact this repo has measured so far came from a
 SYNTHESISED fixture -- random code bytes with sane fp16 headers, chosen because the official gguf package has no
@@ -47,6 +48,7 @@ import json
 import os
 import pathlib
 import re
+import stat
 import sys
 import time
 from collections import Counter
@@ -54,12 +56,13 @@ from typing import NamedTuple
 
 
 KPACK_BUNDLE_SCHEMA = "quactlize.kquant-kpack.bundle"
-KPACK_BUNDLE_VERSION = 1
+KPACK_BUNDLE_VERSION = 2
 KPACK_BUNDLE_MANIFEST = "manifest.json"
 _BUNDLE_TOP_LEVEL_FIELDS = {
     "schema", "schema_version", "arrangement_version", "model", "selection",
-    "tensors", "skipped",
+    "source", "tensors", "skipped",
 }
+_BUNDLE_SOURCE_FIELDS = {"format", "size_bytes", "sha256"}
 _BUNDLE_TENSOR_FIELDS = {
     "name", "dir", "ggml_type", "type_name", "route_class", "layout_name",
     "plane_packs", "rank", "n", "k", "experts", "arrangement_version",
@@ -91,6 +94,7 @@ def main(argv=None) -> int:
 
     from quactlize import formats as F
 
+    source_identity = None if a.dry_run else _source_file_identity(a.model)
     reader = GGUFReader(a.model)
     # THE SUPPORTED SET COMES FROM THE FORMAT TABLE, not from a list here. A second list is a second place to
     # forget a format, and this file would forget it silently -- the tensor would land in "skipped" looking like
@@ -220,11 +224,17 @@ def main(argv=None) -> int:
         {"name": name, "type_name": type_name, "reason": reason}
         for name, type_name, reason in skipped
     ]
+    final_source_identity = _source_file_identity(a.model)
+    if final_source_identity != source_identity:
+        raise RuntimeError(
+            f"source GGUF changed while K-pack artifacts were being produced: {a.model}; "
+            "refusing to publish a bundle whose source authority is ambiguous")
     (out / KPACK_BUNDLE_MANIFEST).write_text(json.dumps({
         "schema": KPACK_BUNDLE_SCHEMA,
         "schema_version": KPACK_BUNDLE_VERSION,
         "arrangement_version": 2,
         "model": a.model,
+        "source": source_identity,
         "selection": {"layout_policy": "production-kpack-only",
                       "packable_total": len(packable), "packed": len(manifest),
                       "skipped": len(skipped_manifest)},
@@ -487,14 +497,17 @@ def restore_artifact(root: pathlib.Path, record: dict):
     return routes.PlacedArtifact(tensors, arrangement, version)
 
 
-def load_kpack_bundle(root: pathlib.Path) -> KPackBundle:
+def load_kpack_bundle(root: pathlib.Path, *, source=None) -> KPackBundle:
     """Load a complete production bundle, rejecting ambiguity and extra files.
 
     This is intentionally stricter than :func:`restore_artifact`, which remains
     a development compatibility reader for old descriptors. A product bundle
     accepts only arrangement-v2 Q4 K-pack4 or Q2/Q3/Q5/Q6 per-plane K-pack,
     validates every recorded shape and byte count, and rejects partial or
-    unlisted filesystem entries.
+    unlisted filesystem entries. With no ``source`` this proves only that the
+    sidecar is internally intact; callers deciding a persistent cache hit must
+    pass the current GGUF so its source authority is checked before artifacts
+    are returned.
     """
     root = pathlib.Path(root)
     manifest_path = root / KPACK_BUNDLE_MANIFEST
@@ -507,6 +520,8 @@ def load_kpack_bundle(root: pathlib.Path) -> KPackBundle:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"invalid K-pack bundle manifest: {exc}") from exc
     _validate_bundle_manifest(manifest)
+    if source is not None:
+        validate_kpack_bundle_source(manifest, source)
 
     records = manifest["tensors"]
     expected_root = {KPACK_BUNDLE_MANIFEST, *(record["dir"] for record in records)}
@@ -543,6 +558,9 @@ def load_kpack_bundle(root: pathlib.Path) -> KPackBundle:
 def _validate_bundle_manifest(manifest: dict) -> None:
     from quactlize import routes
 
+    if (isinstance(manifest, dict) and manifest.get("schema") == KPACK_BUNDLE_SCHEMA and
+            manifest.get("schema_version") == 1):
+        raise ValueError("K-pack bundle schema v1 is source-unbound; repack it from the source GGUF")
     if not isinstance(manifest, dict) or set(manifest) != _BUNDLE_TOP_LEVEL_FIELDS:
         got = sorted(manifest) if isinstance(manifest, dict) else type(manifest).__name__
         raise ValueError(
@@ -555,6 +573,16 @@ def _validate_bundle_manifest(manifest: dict) -> None:
         raise ValueError("production K-pack bundles require placed arrangement version 2")
     if not isinstance(manifest["model"], str) or not manifest["model"]:
         raise ValueError("K-pack manifest model must be a nonempty string")
+    source = manifest["source"]
+    if not isinstance(source, dict) or set(source) != _BUNDLE_SOURCE_FIELDS:
+        raise ValueError(
+            f"K-pack source authority must contain exactly {sorted(_BUNDLE_SOURCE_FIELDS)}")
+    if source["format"] != "gguf":
+        raise ValueError("K-pack source authority format must be gguf")
+    _require_positive_int(source["size_bytes"], "source.size_bytes")
+    if (not isinstance(source["sha256"], str) or
+            not re.fullmatch(r"[0-9a-f]{64}", source["sha256"])):
+        raise ValueError("source.sha256 must be an exact lowercase SHA-256 digest")
     selection = manifest["selection"]
     selection_fields = {"layout_policy", "packable_total", "packed", "skipped"}
     if not isinstance(selection, dict) or set(selection) != selection_fields:
@@ -706,6 +734,58 @@ def _bundle_file_hashes(directory: pathlib.Path) -> dict:
     return hashes
 
 
+def _source_file_identity(path) -> dict:
+    """Hash one stable regular-file snapshot for persistent-cache authority.
+
+    Symlinks are accepted because the target bytes, rather than a path or inode,
+    are the authority. Opening nonblocking and checking the opened descriptor
+    avoids a path-check/open race accepting or blocking on a FIFO or device.
+    """
+    path = pathlib.Path(path)
+    digest = hashlib.sha256()
+    size = 0
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(f"cannot open source GGUF {path}: {exc}") from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(f"source GGUF must resolve to a regular file: {path}")
+        with os.fdopen(descriptor, "rb", closefd=False) as source:
+            for chunk in iter(lambda: source.read(4 * 1024 * 1024), b""):
+                digest.update(chunk)
+                size += len(chunk)
+        after = os.fstat(descriptor)
+    except OSError as exc:
+        raise ValueError(f"cannot read source GGUF {path}: {exc}") from exc
+    finally:
+        os.close(descriptor)
+    stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+    if any(getattr(before, field) != getattr(after, field) for field in stable_fields) or size != after.st_size:
+        raise ValueError(f"source GGUF changed while it was being hashed: {path}")
+    if size == 0:
+        raise ValueError(f"source GGUF must not be empty: {path}")
+    return {"format": "gguf", "size_bytes": size, "sha256": digest.hexdigest()}
+
+
+def validate_kpack_bundle_source(manifest: dict, source) -> dict:
+    """Prove that ``source`` is the exact GGUF used to build ``manifest``.
+
+    ``manifest['model']`` is a label, not authority: an identical GGUF may move between pack and
+    deployment. Size plus SHA-256 binds the content and rejects a stale sidecar
+    when another model replaces the source at the same path.
+    """
+    _validate_bundle_manifest(manifest)
+    observed = _source_file_identity(source)
+    if observed != manifest["source"]:
+        raise ValueError(
+            f"K-pack bundle source mismatch for {source}: "
+            f"expected={manifest['source']} observed={observed}")
+    return observed
+
+
 def _validate_omission_records(records: list, field: str) -> None:
     required = {"name", "type_name", "reason"}
     for index, record in enumerate(records):
@@ -738,6 +818,7 @@ __all__ = [
     "KPACK_BUNDLE_MANIFEST",
     "KPackBundle",
     "load_kpack_bundle",
+    "validate_kpack_bundle_source",
     "_target_layout",
     "_prepare_artifact",
     "_packability",

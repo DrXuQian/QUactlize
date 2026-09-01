@@ -25,6 +25,8 @@ _RECIPES = {
 def _bundle(tmp_path, qtype=formats.QuantType.Q4_K, route="dense"):
     root = tmp_path / "bundle"
     root.mkdir()
+    source = tmp_path / "model.gguf"
+    source.write_bytes(b"GGUF source authority fixture\n")
     grouped = route == "grouped"
     name = "blk.0.ffn_up_exps.weight" if grouped else "blk.0.attn_q.weight"
     directory = pack_gguf._tensor_dir_name(0, name)
@@ -66,7 +68,8 @@ def _bundle(tmp_path, qtype=formats.QuantType.Q4_K, route="dense"):
         "schema": pack_gguf.KPACK_BUNDLE_SCHEMA,
         "schema_version": pack_gguf.KPACK_BUNDLE_VERSION,
         "arrangement_version": routes.PLACED_ARTIFACT_VERSION_V2,
-        "model": "model.gguf",
+        "model": str(source),
+        "source": pack_gguf._source_file_identity(source),
         "selection": {
             "layout_policy": "production-kpack-only",
             "packable_total": 1,
@@ -86,10 +89,66 @@ def _rewrite(root, manifest):
 
 def test_kpack_bundle_loads_only_after_complete_schema_and_byte_validation(tmp_path):
     root, manifest, artifact = _bundle(tmp_path)
-    loaded = pack_gguf.load_kpack_bundle(root)
+    loaded = pack_gguf.load_kpack_bundle(root, source=tmp_path / "model.gguf")
     assert loaded.manifest == manifest
     assert list(loaded.artifacts) == ["blk.0.attn_q.weight"]
     assert loaded.artifacts["blk.0.attn_q.weight"] == artifact
+
+
+def test_persistent_bundle_source_binding_is_content_based_and_fail_closed(tmp_path):
+    root, manifest, _ = _bundle(tmp_path)
+    source = tmp_path / "model.gguf"
+    relocated = tmp_path / "relocated.gguf"
+    relocated.write_bytes(source.read_bytes())
+
+    # Moving an identical source is safe; the recorded path is diagnostic only.
+    pack_gguf.load_kpack_bundle(root, source=relocated)
+    assert pack_gguf.validate_kpack_bundle_source(manifest, relocated) == manifest["source"]
+
+    # Replacing a model at the same path must never reuse the old K-pack bytes.
+    source.write_bytes(b"X" * manifest["source"]["size_bytes"])
+    with pytest.raises(ValueError, match="K-pack bundle source mismatch"):
+        pack_gguf.load_kpack_bundle(root, source=source)
+
+
+def test_source_identity_is_exact_and_rejects_missing_or_nonregular_inputs(tmp_path):
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"known GGUF bytes")
+    assert pack_gguf._source_file_identity(source) == {
+        "format": "gguf",
+        "size_bytes": 16,
+        "sha256": "203ac6a39daa689f08fdd867c5ed59c8e5183340e2118e854ed0908655f4055e",
+    }
+    with pytest.raises(ValueError, match="cannot open source GGUF"):
+        pack_gguf._source_file_identity(tmp_path / "missing.gguf")
+    with pytest.raises(ValueError, match="must resolve to a regular file"):
+        pack_gguf._source_file_identity(tmp_path)
+
+
+@pytest.mark.parametrize("plant,match", [
+    (lambda source: source.pop("format"), "contain exactly"),
+    (lambda source: source.update(extra=1), "contain exactly"),
+    (lambda source: source.update(format="raw"), "format must be gguf"),
+    (lambda source: source.update(size_bytes=True), "must be a nonnegative integer"),
+    (lambda source: source.update(size_bytes=-1), "must be a nonnegative integer"),
+    (lambda source: source.update(sha256="A" * 64), "exact lowercase SHA-256"),
+])
+def test_source_authority_schema_plants_fail_closed(tmp_path, plant, match):
+    root, manifest, _ = _bundle(tmp_path)
+    plant(manifest["source"])
+    _rewrite(root, manifest)
+    with pytest.raises(ValueError, match=match):
+        pack_gguf.load_kpack_bundle(root)
+
+
+@pytest.mark.parametrize("field,value", [("size_bytes", 1), ("sha256", "0" * 64)])
+def test_source_aware_load_rejects_validly_shaped_manifest_authority_plants(
+        tmp_path, field, value):
+    root, manifest, _ = _bundle(tmp_path)
+    manifest["source"][field] = value
+    _rewrite(root, manifest)
+    with pytest.raises(ValueError, match="K-pack bundle source mismatch"):
+        pack_gguf.load_kpack_bundle(root, source=tmp_path / "model.gguf")
 
 
 @pytest.mark.parametrize("qtype", list(_RECIPES))
@@ -112,6 +171,9 @@ def test_tensor_directories_are_collision_safe_and_bound_to_order_and_name():
 
 @pytest.mark.parametrize("plant,match", [
     (lambda m: m.update(schema_version=999), "unsupported K-pack bundle schema"),
+    (lambda m: m["source"].update(format="raw"), "format must be gguf"),
+    (lambda m: m["source"].update(size_bytes=0), "source.size_bytes must be positive"),
+    (lambda m: m["source"].update(sha256="ABC"), "exact lowercase SHA-256"),
     (lambda m: m.update(arrangement_version=1), "arrangement version 2"),
     (lambda m: m["selection"].update(layout_policy="x"), "production-kpack-only"),
     (lambda m: m["tensors"][0].update(dir="weight"), "collision-safe"),
@@ -126,6 +188,15 @@ def test_kpack_bundle_manifest_plants_fail_closed(tmp_path, plant, match):
     plant(planted)
     _rewrite(root, planted)
     with pytest.raises(ValueError, match=match):
+        pack_gguf.load_kpack_bundle(root)
+
+
+def test_source_unbound_v1_bundle_requires_repack(tmp_path):
+    root, manifest, _ = _bundle(tmp_path)
+    manifest["schema_version"] = 1
+    manifest.pop("source")
+    _rewrite(root, manifest)
+    with pytest.raises(ValueError, match="v1 is source-unbound; repack"):
         pack_gguf.load_kpack_bundle(root)
 
 

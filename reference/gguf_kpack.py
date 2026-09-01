@@ -41,7 +41,9 @@ Whole-file reference use::
 The output is an augmented verification GGUF: it retains every source tensor
 and metadata field, then appends standard I8 carrier tensors plus a versioned
 manifest.  It is deliberately self-verifying and is not a stock llama.cpp
-runtime model until a consumer implements those companion tensor names.
+runtime model until a consumer implements those companion tensor names. Use
+``quactlize-pack-gguf`` for the source-bound persistent runtime sidecar; this
+augmented file remains the portable mapping and inverse oracle.
 """
 
 from __future__ import annotations
